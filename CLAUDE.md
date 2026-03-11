@@ -9,7 +9,7 @@ Go 语言实现的 AI 编程 CLI 工具，类似 Claude Code。支持多模型�
 - Go 1.24+
 - CLI: `cobra` + `viper`
 - LLM: `anthropic-sdk-go` (v1.26.0), OpenAI-compatible HTTP client
-- TUI: `bubbletea` + `lipgloss` + `glamour`（待实现）
+- TUI: `bubbletea` + `lipgloss` + `glamour`
 
 ## 核心架构：Agentic While-Loop
 
@@ -44,18 +44,30 @@ sid-code/
 │   │   ├── openai/client.go    # OpenAI 兼容实现（SSE）
 │   │   └── ollama/client.go    # Ollama（复用 OpenAI）
 │   ├── app/app.go              # 应用编排 + Agentic While-Loop
+│   ├── command/                # Slash 命令系统
+│   │   ├── command.go          # Command 接口 + Registry
+│   │   └── builtin.go          # 内置命令（exit/clear/help/model/status/cost/context/diff）
 │   ├── tool/                   # 6 个内置工具
 │   │   ├── tool.go, registry.go
 │   │   ├── read.go, write.go, edit.go
 │   │   ├── bash.go, grep.go, glob.go
 │   │   └── tool_test.go
+│   ├── mcp/                    # MCP 协议客户端
+│   │   ├── types.go            # JSON-RPC 2.0 + MCP 协议类型
+│   │   ├── transport.go        # Transport 接口
+│   │   ├── transport_stdio.go  # stdio 传输（子进程）
+│   │   ├── transport_http.go   # HTTP 传输
+│   │   ├── client.go           # MCP 客户端核心
+│   │   ├── manager.go          # 多服务器管理
+│   │   └── mcp_tool.go         # MCP 工具适配器（→ Tool 接口）
 │   ├── context/manager.go      # 上下文窗口管理 + 自动压缩
 │   ├── permission/             # 权限检查 + 危险命令拦截
 │   │   ├── permission.go
 │   │   ├── checker.go
 │   │   └── permission_test.go
 │   ├── hook/hook.go            # Hook 系统（pre/post 工具调用）
-│   └── session/store.go        # 会话持久化（JSON）
+│   ├── session/store.go        # 会话持久化（JSON）
+│   ├── ui/model.go             # Bubble Tea TUI（viewport + textarea）
 ├── docs/                       # SDDD 文档体系
 │   ├── specs/
 │   │   ├── SPEC_COUNTER.txt
@@ -162,3 +174,14 @@ type Checker interface {
 | 失败模式 | `docs/failure-modes.md` | AI 常犯错误和已知的坑 |
 | ADR 目录 | `docs/decisions/` | 架构决策记录 |
 | 迭代文档 | `docs/iterations/` | Sprint 跟踪 |
+| Sprint 1 | `docs/iterations/2026-Q1-Sprint1.md` | Phase 1-6 完成（SPEC-001~006） |
+| Sprint 2 | `docs/iterations/2026-Q1-Sprint2.md` | 集成接线 + CLI 增强 + MCP（SPEC-007~009） |
+| SPEC-001 | `docs/specs/archive/001-foundation-mvp/` | Foundation MVP（已完成） |
+| SPEC-002 | `docs/specs/archive/002-tool-system/` | Tool System + Agentic Loop（已完成） |
+| SPEC-003 | `docs/specs/archive/003-context-management/` | Context Management（已完成） |
+| SPEC-004 | `docs/specs/archive/004-permission-system/` | Permission System（已完成） |
+| SPEC-005 | `docs/specs/archive/005-advanced-features/` | Multi-Provider + Hook（已完成） |
+| SPEC-006 | `docs/specs/archive/006-polish/` | TUI + Session（已完成） |
+| SPEC-007 | `docs/specs/active/007-integration-wiring/` | 集成接线 + Slash 命令（进行中） |
+| SPEC-008 | `docs/specs/active/008-cli-enhancement/` | CLI 增强 + Headless 模式（待开始） |
+| SPEC-009 | `docs/specs/active/009-mcp-protocol/` | MCP 协议基础（待开始） |
