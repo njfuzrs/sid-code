@@ -8,6 +8,7 @@
 - 每个 task 完成后运行 `make build` 和 `make test`
 - 不要跳过测试，不要忽略编译错误
 - 不要过度工程化——Spec 只要求 2 种场景就不要设计成支持 10 种
+- **涉及安全、架构变更、Spec 状态推进、紧急修复时**，须遵守 `docs/specs/constitution.md` 中的硬约束
 
 ### 当前迭代焦点
 - **Sprint 2**（`docs/iterations/2026-Q1-Sprint2.md`）
