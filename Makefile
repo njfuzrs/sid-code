@@ -1,5 +1,5 @@
 BINARY=sid-code
-MODULE=gitlab.example.com/zhourusheng/sdddd
+MODULE=gitlab.example.com/zhourusheng/sid-code
 
 .PHONY: build run test clean
 
