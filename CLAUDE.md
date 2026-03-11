@@ -97,9 +97,11 @@ sid-code/
 1. 更新所有 Task 状态为 DONE
 2. 更新 spec.md 状态为 Done
 3. 更新 tasks.md 进度概览
-4. 更新迭代文档
-5. 如有架构变更，更新本文件（CLAUDE.md）
-6. 如涉及架构决策，新增 ADR
+4. 填写 tasks.md 归档回顾（实际 vs 预期、经验教训、产生的新知识）
+5. 更新迭代文档
+6. 如有架构变更，更新本文件（CLAUDE.md）
+7. 如涉及架构决策，新增 ADR
+8. 如发现新的失败模式，更新 `docs/failure-modes.md`
 
 ### 常见失败模式
 - **跳过澄清阶段** — 直接从 Spec 跳到实现，遗漏边界条件
@@ -107,6 +109,16 @@ sid-code/
 - **忽略偏差记录** — 实现偏离 Plan 但未记录，导致文档与代码不同步
 - **不更新文档** — 代码完成但 Spec/CLAUDE.md 未同步更新
 - **硬编码配置** — API Key、模型名等应通过 config 注入
+- **AI 过度工程化** — 不必要的抽象、工厂模式，Spec 只要求 2 种场景就不要设计成支持 10 种
+- **AI 回写偏差但开发者不看** — 偏差越积越多，Spec 与代码严重脱节
+- **Hotfix 不补文档** — 紧急修复后 48 小时内必须补充完整文档
+
+> 完整的失败模式记录见 `docs/failure-modes.md`
+
+### 文档维护规范
+- 如果发现本文件中的路径、命令、描述与实际代码不一致，请立即更新
+- 如果发现新的失败模式，请添加到 `docs/failure-modes.md`
+- 如果做了架构级决策，请在 `docs/decisions/` 中新增 ADR
 
 ## 配置加载优先级
 
@@ -142,10 +154,11 @@ type Checker interface {
 
 | 文档 | 路径 | 说明 |
 |------|------|------|
-| 宪法 | `docs/specs/constitution.md` | SDDD 方法论、规范定义 |
+| 宪法 | `docs/specs/constitution.md` | SDDD 方法论、规范定义、PR Review、知识反馈闭环 |
 | Spec 模板 | `docs/specs/templates/spec-template.md` | 新 Spec 模板 |
 | Plan 模板 | `docs/specs/templates/plan-template.md` | 新 Plan 模板 |
 | Tasks 模板 | `docs/specs/templates/tasks-template.md` | 新 Tasks 模板 |
 | Hotfix 模板 | `docs/specs/templates/hotfix-template.md` | 紧急修复模板 |
+| 失败模式 | `docs/failure-modes.md` | AI 常犯错误和已知的坑 |
 | ADR 目录 | `docs/decisions/` | 架构决策记录 |
 | 迭代文档 | `docs/iterations/` | Sprint 跟踪 |
