@@ -11,10 +11,12 @@
 - **涉及安全、架构变更、Spec 状态推进、紧急修复时**，须遵守 `docs/specs/constitution.md`
 
 ### 当前迭代焦点
-- **Sprint 2**（`docs/iterations/2026-Q1-Sprint2.md`）
-- SPEC-007：集成接线 + Slash 命令 ✅ 已完成
-- SPEC-008：CLI 增强 + Headless 模式（`docs/specs/active/008-cli-enhancement/`）
-- SPEC-009：MCP 协议基础（`docs/specs/active/009-mcp-protocol/`）
+- **Sprint 3**（`docs/iterations/2026-Q1-Sprint3.md`）— 稳固基础 + 启用 TUI
+- SPEC-011：Headless 模式修复 + 权限策略（P0）
+- SPEC-010：TUI 启用 + Glamour 渲染（P1）
+- SPEC-012：Token 计费追踪（P1）
+- SPEC-013：测试覆盖补充（P1）
+- SPEC-014：上下文压缩优化（P2，可延后）
 
 ## 1. 项目概述
 
