@@ -454,6 +454,9 @@ export class App {
 
     // TUI 版本的 agentLoop
     const tuiAgentLoop = async (userInput: string) => {
+      // 清空上一次的流式文本
+      updateState({ streamingText: "" });
+
       this.ctxMgr.addMessage({
         role: "user",
         content: [{ type: "text", text: userInput }],
@@ -462,7 +465,6 @@ export class App {
       updateState({
         messages: this.ctxMgr.getMessages(),
         isLoading: true,
-        streamingText: "",
       });
 
       let turns = 0;
@@ -497,9 +499,10 @@ export class App {
           content: response.content,
         });
 
+        // 不清空 streamingText，让完整内容保持显示
+        // 下一次用户输入时会清空
         updateState({
           messages: this.ctxMgr.getMessages(),
-          streamingText: "",
           usage: { ...this.totalUsage },
         });
 
@@ -508,6 +511,9 @@ export class App {
         }
 
         if (response.stopReason === "tool_use") {
+          // 工具调用时清空流式文本，避免和工具状态重叠
+          updateState({ streamingText: "" });
+
           // 显示工具执行状态
           const toolBlocks = response.content.filter((b) => b.type === "tool_use");
           for (const block of toolBlocks) {

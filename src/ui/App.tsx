@@ -3,7 +3,7 @@
  * 布局：标题栏 + 消息区 + 工具状态 + 输入区
  */
 
-import React, { useState, useCallback, useEffect } from "react";
+import React, { useState, useCallback, useEffect, useRef } from "react";
 import { Box, Text, useApp, useInput } from "ink";
 import { MessageList } from "./MessageList.tsx";
 import { InputArea } from "./InputArea.tsx";
@@ -37,6 +37,7 @@ interface AppProps {
 export function TUIApp({ initialState, callbacks, stateRef }: AppProps) {
   const { exit } = useApp();
   const [state, setState] = useState<TUIState>(initialState);
+  const isSubmittingRef = useRef(false); // 防止重复提交
 
   // 同步外部状态（使用深度比较避免不必要的重新渲染）
   useEffect(() => {
@@ -72,15 +73,23 @@ export function TUIApp({ initialState, callbacks, stateRef }: AppProps) {
   });
 
   const handleSubmit = useCallback(async (text: string) => {
-    if (text.startsWith("/")) {
-      const [cmd, ...rest] = text.slice(1).split(" ");
-      if (cmd === "exit" || cmd === "quit") {
-        exit();
-        return;
+    // 防止重复提交
+    if (isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
+
+    try {
+      if (text.startsWith("/")) {
+        const [cmd, ...rest] = text.slice(1).split(" ");
+        if (cmd === "exit" || cmd === "quit") {
+          exit();
+          return;
+        }
+        await callbacks.onSlashCommand(cmd, rest.join(" "));
+      } else {
+        await callbacks.onUserInput(text);
       }
-      await callbacks.onSlashCommand(cmd, rest.join(" "));
-    } else {
-      await callbacks.onUserInput(text);
+    } finally {
+      isSubmittingRef.current = false;
     }
   }, [callbacks, exit]);
 

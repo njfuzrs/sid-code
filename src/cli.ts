@@ -3,6 +3,11 @@
  * 使用 Node.js 内置 parseArgs 解析命令行参数，路由到不同模式
  */
 
+// 强制启用终端颜色（必须在所有 import 之前，否则 chalk 检测不到 TTY）
+if (!process.env.FORCE_COLOR && (process.stdout.isTTY || process.stderr.isTTY)) {
+  process.env.FORCE_COLOR = "3";
+}
+
 import { parseArgs } from "node:util";
 import { loadConfig } from "./config/config.ts";
 import type { Config } from "./config/config.ts";

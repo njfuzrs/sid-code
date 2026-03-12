@@ -4,7 +4,7 @@
  */
 
 import React from "react";
-import { Box, Text } from "ink";
+import { Box, Text, Static } from "ink";
 import type { Message, ContentBlock } from "../llm/types.ts";
 import { renderMarkdown } from "./markdown.ts";
 
@@ -109,11 +109,26 @@ function getMessageKey(msg: Message, idx: number): string {
 }
 
 export function MessageList({ messages, streamingText }: MessageListProps) {
+  // 如果有流式文本，历史消息 = 除了最后一条助手消息的所有消息
+  // 否则，历史消息 = 所有消息
+  let historyMessages = messages;
+  if (streamingText && messages.length > 0) {
+    const last = messages[messages.length - 1];
+    if (last && last.role === "assistant") {
+      historyMessages = messages.slice(0, -1);
+    }
+  }
+
   return (
     <Box flexDirection="column" flexGrow={1}>
-      {messages.map((msg, idx) => (
-        <MessageItem key={getMessageKey(msg, idx)} message={msg} />
-      ))}
+      {/* 使用 Static 渲染历史消息，永久写入终端历史 */}
+      <Static items={historyMessages}>
+        {(msg, idx) => (
+          <MessageItem key={getMessageKey(msg, idx)} message={msg} />
+        )}
+      </Static>
+
+      {/* 动态渲染流式文本 */}
       {streamingText && (
         <Box flexDirection="column" marginBottom={1}>
           <Text bold color="green">助手</Text>
