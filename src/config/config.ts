@@ -8,6 +8,7 @@ import { parse as parseYAML } from "yaml";
 import { join } from "path";
 import { homedir } from "os";
 import { existsSync, mkdirSync } from "fs";
+import { getLogger } from "../debug/logger.ts";
 
 /** MCP 服务器配置 */
 export interface MCPServerConfig {
@@ -70,6 +71,11 @@ export interface Config {
   // UI 配置
   noTUI: boolean;
 
+  // 调试配置
+  debug: boolean;
+  debugLevel: string;
+  debugLogFile: string;
+
   // Hook 和 MCP
   hooks: HookConfig[];
   mcpServers: Record<string, MCPServerConfig>;
@@ -100,6 +106,9 @@ export function defaultConfig(): Config {
     appendSystemPrompt: "",
     systemPromptFile: "",
     noTUI: false,
+    debug: false,
+    debugLevel: "INFO",
+    debugLogFile: "~/.sid-code/debug.log",
     hooks: [],
     mcpServers: {},
   };
@@ -134,6 +143,9 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     append_system_prompt: "appendSystemPrompt",
     system_prompt_file: "systemPromptFile",
     no_tui: "noTUI",
+    debug: "debug",
+    debug_level: "debugLevel",
+    debug_log_file: "debugLogFile",
     hooks: "hooks",
     mcp_servers: "mcpServers",
   };
@@ -160,10 +172,12 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
 
 /** 加载配置文件 */
 async function loadConfigFile(): Promise<Partial<Config>> {
+  const log = getLogger();
   const configDir = join(homedir(), ".sid-code");
   const configPath = join(configDir, "config.yaml");
 
   if (!existsSync(configPath)) {
+    log.debug("CONFIG", `配置文件不存在: ${configPath}`);
     return {};
   }
 
@@ -171,8 +185,11 @@ async function loadConfigFile(): Promise<Partial<Config>> {
     const file = Bun.file(configPath);
     const content = await file.text();
     const parsed = parseYAML(content);
-    return normalizeConfigKeys(parsed);
+    const normalized = normalizeConfigKeys(parsed);
+    log.configLoaded("配置文件", { path: configPath, keys: Object.keys(normalized) });
+    return normalized;
   } catch (err) {
+    log.error("CONFIG", `读取配置文件失败: ${configPath}`, err);
     throw new Error(`读取配置文件失败: ${err}`);
   }
 }

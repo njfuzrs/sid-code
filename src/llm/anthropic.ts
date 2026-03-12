@@ -12,6 +12,7 @@ import type {
   ToolUseBlock,
   Usage,
 } from "./types.ts";
+import { getLogger } from "../debug/logger.ts";
 
 export class AnthropicProvider implements Provider {
   private client: Anthropic;
@@ -67,6 +68,14 @@ export class AnthropicProvider implements Provider {
     }));
 
     try {
+      const log = getLogger();
+      log.debug("LLM:ANTHROPIC", `发送请求`, {
+        model: params.model || this._model,
+        messageCount: messages.length,
+        toolCount: tools?.length ?? 0,
+        maxTokens: params.maxTokens,
+      });
+
       const stream = await this.client.messages.stream({
         model: params.model || this._model,
         max_tokens: params.maxTokens,
@@ -146,6 +155,8 @@ export class AnthropicProvider implements Provider {
         }
       }
     } catch (err: any) {
+      const log = getLogger();
+      log.error("LLM:ANTHROPIC", `请求异常`, { error: err.message, stack: err.stack });
       yield {
         type: "error",
         error: { message: err.message || String(err) },

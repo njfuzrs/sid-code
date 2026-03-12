@@ -11,6 +11,7 @@ if (!process.env.FORCE_COLOR && (process.stdout.isTTY || process.stderr.isTTY)) 
 import { parseArgs } from "node:util";
 import { loadConfig } from "./config/config.ts";
 import type { Config } from "./config/config.ts";
+import { initLogger, LogLevel } from "./debug/logger.ts";
 
 /** 解析命令行参数 */
 function parseCLIArgs(): Partial<Config> & { prompt?: string } {
@@ -42,7 +43,12 @@ function parseCLIArgs(): Partial<Config> & { prompt?: string } {
       
       // UI
       "no-tui": { type: "boolean" },
-      
+
+      // 调试
+      debug: { type: "boolean", short: "d" },
+      "debug-level": { type: "string" },
+      "debug-log-file": { type: "string" },
+
       // 帮助
       help: { type: "boolean", short: "h" },
       version: { type: "boolean", short: "v" },
@@ -78,6 +84,9 @@ function parseCLIArgs(): Partial<Config> & { prompt?: string } {
     appendSystemPrompt: values["append-system-prompt"],
     systemPromptFile: values["system-prompt-file"],
     noTUI: values["no-tui"],
+    debug: values.debug,
+    debugLevel: values["debug-level"],
+    debugLogFile: values["debug-log-file"],
   };
 
   // 位置参数作为初始提示词
@@ -123,6 +132,11 @@ LLM 配置:
 UI:
   --no-tui                    禁用 TUI，使用纯文本 REPL
 
+调试:
+  -d, --debug                 启用调试模式（日志输出到 ~/.sid-code/debug.log）
+  --debug-level <level>       日志级别 (ERROR/WARN/INFO/DEBUG，默认 DEBUG)
+  --debug-log-file <path>     自定义日志文件路径
+
 其他:
   -h, --help                  显示帮助信息
   -v, --version               显示版本信息
@@ -144,6 +158,30 @@ async function main(): Promise<void> {
   try {
     const cliArgs = parseCLIArgs();
     const config = await loadConfig(cliArgs);
+
+    // 初始化调试日志
+    if (config.debug) {
+      const levelMap: Record<string, LogLevel> = {
+        ERROR: LogLevel.ERROR,
+        WARN: LogLevel.WARN,
+        INFO: LogLevel.INFO,
+        DEBUG: LogLevel.DEBUG,
+      };
+      const level = levelMap[config.debugLevel?.toUpperCase() || "DEBUG"] ?? LogLevel.DEBUG;
+
+      const logger = initLogger({
+        enabled: true,
+        level,
+        logFile: config.debugLogFile,
+        console: true,
+      });
+
+      logger.info("CLI", "调试模式已启用", {
+        level: LogLevel[level],
+        logFile: logger.getLogFilePath(),
+      });
+      logger.configLoaded("CLI", config);
+    }
 
     // 验证 API Key
     if (config.provider === "anthropic" && !config.anthropicKey) {

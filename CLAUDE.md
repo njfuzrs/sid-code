@@ -61,6 +61,7 @@ sid-code/
 │   │   ├── App.tsx, MessageList.tsx, InputArea.tsx, ToolStatus.tsx, markdown.ts
 │   ├── config/                   # 配置加载 + 规则文件
 │   ├── context/manager.ts        # 上下文管理 + 摘要压缩
+│   ├── debug/logger.ts           # 调试日志系统
 │   ├── permission/               # 权限检查
 │   ├── hook/runner.ts            # Hook 执行器
 │   ├── session/store.ts          # JSON 会话持久化
@@ -73,7 +74,7 @@ sid-code/
 └── Makefile
 ```
 
-模块依赖：`cli` → `app` → `llm` / `tool` / `context` / `permission` / `hook` / `session` / `command` / `mcp` / `ui`
+模块依赖：`cli` → `app` → `llm` / `tool` / `context` / `permission` / `hook` / `session` / `command` / `mcp` / `ui` / `debug`
 
 ## 4. 编码约定
 
@@ -133,6 +134,51 @@ available_models:
 - 切换模型时，如果模型配置了不同的 `provider` 或 `baseURL`，会自动更新这些配置
 
 详细文档：`docs/model-switching.md`、`docs/examples/model-switching-example.md`
+
+## 8. 调试模式
+
+支持完整的调试日志系统，记录所有关键流程的执行细节。
+
+### 启用方式
+
+```bash
+# 命令行参数
+sid-code --debug                    # 启用调试模式（默认 DEBUG 级别）
+sid-code -d                         # 短选项
+sid-code --debug --debug-level INFO  # 指定日志级别
+sid-code --debug --debug-log-file /tmp/debug.log  # 自定义日志文件
+
+# 配置文件 ~/.sid-code/config.yaml
+debug: true
+debug_level: DEBUG  # ERROR, WARN, INFO, DEBUG
+debug_log_file: ~/.sid-code/debug.log
+```
+
+### 日志级别
+
+- **ERROR**: 只记录错误信息
+- **WARN**: 记录警告和错误
+- **INFO**: 记录一般信息、警告和错误（推荐用于生产环境）
+- **DEBUG**: 记录所有详细信息（推荐用于开发调试）
+
+### 记录内容
+
+- **配置加载**: 配置文件路径、加载的配置项、环境变量覆盖
+- **应用初始化**: 系统提示词长度、注册的工具数量、CLAUDE.md 规则加载
+- **LLM 请求/响应**: 请求参数（模型、消息数、工具数）、响应状态、Token 用量
+- **工具执行**: 工具名称和参数、执行时间、输出长度、错误信息和堆栈
+- **Agent 循环**: 每轮对话的轮次、消息历史长度、停止原因
+- **MCP 连接**: 服务器连接状态、注册的工具列表、连接错误
+
+### 实现细节
+
+- `src/debug/logger.ts` - 日志系统核心实现
+- `getLogger()` - 获取全局 logger 单例
+- `initLogger(options)` - 初始化 logger（在 cli.ts 中调用）
+- 日志格式：`[时间戳] [级别] [分类] 消息 + JSON 数据`
+- 日志文件：默认 `~/.sid-code/debug.log`，每次启动清空旧日志
+
+详细文档：`docs/debug-mode.md`
 
 ## 文档维护规范
 

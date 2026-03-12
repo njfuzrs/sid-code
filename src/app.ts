@@ -19,6 +19,7 @@ import { Manager as ContextManager } from "./context/manager.ts";
 import { Registry as ToolRegistry } from "./tool/registry.ts";
 import { Registry as CommandRegistry } from "./command/registry.ts";
 import { loadCLAUDEmd } from "./config/rules.ts";
+import { getLogger } from "./debug/logger.ts";
 import * as readline from "readline";
 
 /** App 配置 */
@@ -50,6 +51,9 @@ export class App {
 
   /** 初始化：加载系统提示词 */
   async init(): Promise<void> {
+    const log = getLogger();
+    log.info("APP", "开始初始化...");
+
     let systemPrompt = this.config.systemPrompt;
 
     if (!systemPrompt) {
@@ -61,6 +65,7 @@ export class App {
       const rules = await loadCLAUDEmd(process.cwd());
       if (rules) {
         parts.push(`\n<project-rules>\n${rules}\n</project-rules>`);
+        log.debug("APP", `加载 CLAUDE.md 规则 (${rules.length} 字符)`);
       }
 
       // 追加系统提示词
@@ -73,7 +78,9 @@ export class App {
         try {
           const content = await Bun.file(this.config.systemPromptFile).text();
           parts.push(`\n${content}`);
+          log.debug("APP", `加载系统提示词文件: ${this.config.systemPromptFile}`);
         } catch (err) {
+          log.error("APP", `加载系统提示词文件失败: ${err}`);
           console.error(`加载系统提示词文件失败: ${err}`);
         }
       }
@@ -82,6 +89,7 @@ export class App {
     }
 
     this.ctxMgr.setSystemPrompt(systemPrompt);
+    log.info("APP", `初始化完成，系统提示词 ${systemPrompt.length} 字符，工具数 ${this.toolRegistry.size()}`);
   }
 
   /** 处理流式响应，累积内容块 */
@@ -167,6 +175,9 @@ export class App {
 
   /** Agentic 主循环：发送消息 → 处理响应 → 执行工具 → 循环 */
   async agentLoop(userInput: string): Promise<void> {
+    const log = getLogger();
+    log.info("AGENT", `用户输入: ${userInput.slice(0, 200)}${userInput.length > 200 ? '...' : ''}`);
+
     // 添加用户消息
     this.ctxMgr.addMessage({
       role: "user",
@@ -178,15 +189,19 @@ export class App {
 
     while (turns < maxTurns) {
       turns++;
+      log.debug("AGENT", `轮次 ${turns}/${maxTurns}，消息数 ${this.ctxMgr.getMessages().length}`);
 
       // 发送消息给 LLM
+      const toolDefs = this.toolRegistry.size() > 0 ? this.toolRegistry.definitions() : undefined;
+      log.llmRequest(this.config.provider, this.config.model, this.ctxMgr.getMessages().length, toolDefs?.length ?? 0);
+
       const stream = this.provider.sendMessageStream(
         {
           model: this.config.model,
           messages: this.ctxMgr.getMessages(),
           system: this.ctxMgr.getSystemPrompt(),
           maxTokens: this.config.maxTokens,
-          tools: this.toolRegistry.size() > 0 ? this.toolRegistry.definitions() : undefined,
+          tools: toolDefs,
         },
         this.abortController?.signal,
       );
@@ -200,6 +215,9 @@ export class App {
       this.totalUsage.inputTokens += response.usage.inputTokens;
       this.totalUsage.outputTokens += response.usage.outputTokens;
 
+      log.llmResponse(response.stopReason || "unknown", response.usage);
+      log.debug("AGENT", `累计用量: input=${this.totalUsage.inputTokens}, output=${this.totalUsage.outputTokens}`);
+
       // 添加助手消息到历史
       this.ctxMgr.addMessage({
         role: "assistant",
@@ -208,12 +226,16 @@ export class App {
 
       // 检查停止原因
       if (response.stopReason === "end_turn" || response.stopReason === "stop") {
+        log.info("AGENT", `对话结束 (${response.stopReason})，共 ${turns} 轮`);
         process.stdout.write("\n");
         break;
       }
 
       // 处理工具调用
       if (response.stopReason === "tool_use") {
+        const toolBlocks = response.content.filter(b => b.type === "tool_use");
+        log.info("AGENT", `工具调用: ${toolBlocks.map(b => b.type === "tool_use" ? b.name : "").join(", ")}`);
+
         const toolResults = await this.executeTools(response.content);
         // 添加工具结果到历史
         this.ctxMgr.addMessage({
@@ -225,17 +247,20 @@ export class App {
       }
 
       // 其他停止原因
+      log.warn("AGENT", `未知停止原因: ${response.stopReason}`);
       process.stdout.write("\n");
       break;
     }
 
     if (turns >= maxTurns) {
+      log.warn("AGENT", `达到最大轮次限制: ${maxTurns}`);
       console.log(`\n[达到最大轮次限制: ${maxTurns}]`);
     }
   }
 
   /** 执行工具调用 */
   async executeTools(content: ContentBlock[]): Promise<ContentBlock[]> {
+    const log = getLogger();
     const results: ContentBlock[] = [];
 
     for (const block of content) {
@@ -243,6 +268,7 @@ export class App {
 
       const tool = this.toolRegistry.get(block.name);
       if (!tool) {
+        log.error("TOOL", `工具未找到: ${block.name}`);
         results.push({
           type: "tool_result",
           tool_use_id: block.id,
@@ -257,8 +283,19 @@ export class App {
         console.log(`\n[工具调用: ${block.name}]`);
       }
 
+      log.debug("TOOL", `开始执行: ${block.name}`, block.input);
+      const startTime = Date.now();
+
       try {
         const result = await tool.execute(block.input, this.abortController?.signal);
+        const elapsed = Date.now() - startTime;
+
+        log.toolExecution(block.name, block.input, {
+          success: !result.isError,
+          error: result.isError ? result.output.slice(0, 500) : undefined,
+        });
+        log.debug("TOOL", `执行完成: ${block.name} (${elapsed}ms)，输出 ${result.output.length} 字符`);
+
         results.push({
           type: "tool_result",
           tool_use_id: block.id,
@@ -278,6 +315,12 @@ export class App {
           }
         }
       } catch (err: any) {
+        const elapsed = Date.now() - startTime;
+        log.error("TOOL", `执行异常: ${block.name} (${elapsed}ms)`, {
+          error: err.message,
+          stack: err.stack,
+        });
+
         results.push({
           type: "tool_result",
           tool_use_id: block.id,

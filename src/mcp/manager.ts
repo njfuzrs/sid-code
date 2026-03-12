@@ -8,6 +8,7 @@ import type { Tool, ToolResult } from "../tool/types.ts";
 import type { MCPToolDefinition } from "./types.ts";
 import { MCPClient } from "./client.ts";
 import { StdioTransport, HTTPTransport } from "./transport.ts";
+import { getLogger } from "../debug/logger.ts";
 
 /** MCP 工具适配器 - 将 MCP 工具适配为内部 Tool 接口 */
 class MCPToolAdapter implements Tool {
@@ -63,18 +64,24 @@ export class MCPManager {
 
   /** 连接所有配置的 MCP 服务器 */
   async connectAll(servers: Record<string, MCPServerConfig>): Promise<Tool[]> {
+    const log = getLogger();
     const allTools: Tool[] = [];
 
     const entries = Object.entries(servers);
     if (entries.length === 0) return allTools;
 
+    log.info("MCP", `开始连接 ${entries.length} 个 MCP 服务器`);
+
     // 并行连接所有服务器
     const results = await Promise.allSettled(
       entries.map(async ([name, config]) => {
         try {
+          log.debug("MCP", `连接服务器: ${name}`, config);
           const tools = await this.connect(name, config);
+          log.info("MCP", `${name} 连接成功，注册 ${tools.length} 个工具`);
           return { name, tools };
         } catch (err: any) {
+          log.error("MCP", `连接 ${name} 失败`, { error: err.message, stack: err.stack });
           console.error(`[MCP] 连接 ${name} 失败: ${err.message}`);
           return { name, tools: [] as Tool[] };
         }

@@ -10,6 +10,7 @@ import type {
   ContentBlock,
   Usage,
 } from "./types.ts";
+import { getLogger } from "../debug/logger.ts";
 
 export class OpenAIProvider implements Provider {
   private apiKey: string;
@@ -92,6 +93,14 @@ export class OpenAIProvider implements Provider {
     }
 
     try {
+      const log = getLogger();
+      log.debug("LLM:OPENAI", `发送请求到 ${this.baseURL}/chat/completions`, {
+        model: requestBody.model,
+        messageCount: requestBody.messages.length,
+        toolCount: requestBody.tools?.length ?? 0,
+        maxTokens: requestBody.max_tokens,
+      });
+
       const response = await fetch(`${this.baseURL}/chat/completions`, {
         method: "POST",
         headers: {
@@ -104,6 +113,7 @@ export class OpenAIProvider implements Provider {
 
       if (!response.ok) {
         const error = await response.text();
+        log.error("LLM:OPENAI", `API 错误: ${response.status}`, error);
         yield {
           type: "error",
           error: { message: `OpenAI API 错误: ${response.status} ${error}` },
@@ -111,9 +121,12 @@ export class OpenAIProvider implements Provider {
         return;
       }
 
+      log.debug("LLM:OPENAI", `开始接收 SSE 流`);
       // 解析 SSE 流
       yield* this.parseSSE(response.body!);
     } catch (err: any) {
+      const log = getLogger();
+      log.error("LLM:OPENAI", `请求异常`, { error: err.message, stack: err.stack });
       yield {
         type: "error",
         error: { message: err.message || String(err) },
