@@ -185,9 +185,15 @@ async function main(): Promise<void> {
     toolRegistry.register(new GrepTool());
     toolRegistry.register(new GlobTool());
 
+    // 注册内置命令
+    const { Registry: CommandRegistry } = await import("./command/registry.ts");
+    const { registerBuiltins } = await import("./command/builtins.ts");
+    const commandRegistry = new CommandRegistry();
+    registerBuiltins(commandRegistry);
+
     // 创建 App
     const { App } = await import("./app.ts");
-    const app = new App({ config, provider, toolRegistry });
+    const app = new App({ config, provider, toolRegistry, commandRegistry });
 
     // 根据模式路由
     if (config.print) {

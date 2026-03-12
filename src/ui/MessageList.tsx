@@ -13,18 +13,36 @@ interface MessageListProps {
   streamingText: string;
 }
 
+/** 生成内容块的唯一 key */
+function getBlockKey(block: ContentBlock, idx: number): string {
+  if (block.type === "text") {
+    // 使用文本内容的前 50 个字符作为 key 的一部分
+    const preview = block.text.slice(0, 50);
+    return `text-${idx}-${preview.length}`;
+  }
+  if (block.type === "tool_use") {
+    return `tool-${block.id}`;
+  }
+  if (block.type === "tool_result") {
+    return `result-${block.tool_use_id}`;
+  }
+  return `unknown-${idx}`;
+}
+
 /** 渲染单个内容块 */
 function renderBlock(block: ContentBlock, idx: number): React.ReactNode {
+  const key = getBlockKey(block, idx);
+
   if (block.type === "text") {
     const rendered = renderMarkdown(block.text);
     return (
-      <Text key={idx}>{rendered}</Text>
+      <Text key={key}>{rendered}</Text>
     );
   }
 
   if (block.type === "tool_use") {
     return (
-      <Box key={idx} marginY={0}>
+      <Box key={key} marginY={0}>
         <Text color="yellow">{"[工具调用: "}{block.name}{"]"}</Text>
       </Box>
     );
@@ -37,7 +55,7 @@ function renderBlock(block: ContentBlock, idx: number): React.ReactNode {
       ? block.content.slice(0, 200) + "..."
       : block.content;
     return (
-      <Box key={idx} marginY={0}>
+      <Box key={key} marginY={0}>
         <Text color={color}>{"["}{prefix}{": "}{preview}{"]"}</Text>
       </Box>
     );
@@ -70,11 +88,31 @@ function MessageItem({ message }: { message: Message }) {
   );
 }
 
+/** 生成消息的唯一 key */
+function getMessageKey(msg: Message, idx: number): string {
+  // 使用消息内容的哈希作为 key，避免使用索引
+  const contentStr = msg.content.map((b) => {
+    if (b.type === "text") return b.text;
+    if (b.type === "tool_use") return `tool:${b.id}:${b.name}`;
+    if (b.type === "tool_result") return `result:${b.tool_use_id}`;
+    return "";
+  }).join("|");
+
+  // 简单哈希函数
+  let hash = 0;
+  for (let i = 0; i < contentStr.length; i++) {
+    hash = ((hash << 5) - hash) + contentStr.charCodeAt(i);
+    hash = hash & hash; // Convert to 32bit integer
+  }
+
+  return `${msg.role}-${idx}-${hash}`;
+}
+
 export function MessageList({ messages, streamingText }: MessageListProps) {
   return (
     <Box flexDirection="column" flexGrow={1}>
       {messages.map((msg, idx) => (
-        <MessageItem key={idx} message={msg} />
+        <MessageItem key={getMessageKey(msg, idx)} message={msg} />
       ))}
       {streamingText && (
         <Box flexDirection="column" marginBottom={1}>

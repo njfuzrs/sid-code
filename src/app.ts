@@ -38,6 +38,7 @@ export class App {
   private commandRegistry: CommandRegistry;
   private totalUsage: Usage = { inputTokens: 0, outputTokens: 0 };
   private abortController: AbortController | null = null;
+  private isTUIMode: boolean = false; // 标记是否在 TUI 模式下
 
   constructor(opts: AppOptions) {
     this.config = opts.config;
@@ -251,7 +252,10 @@ export class App {
         continue;
       }
 
-      console.log(`\n[工具调用: ${block.name}]`);
+      // TUI 模式下不输出到 console，避免和 Ink 渲染冲突
+      if (!this.isTUIMode) {
+        console.log(`\n[工具调用: ${block.name}]`);
+      }
 
       try {
         const result = await tool.execute(block.input, this.abortController?.signal);
@@ -262,14 +266,16 @@ export class App {
           is_error: result.isError,
         });
 
-        if (result.isError) {
-          console.log(`[工具错误: ${result.output.slice(0, 100)}]`);
-        } else {
-          // 截断显示
-          const preview = result.output.length > 200
-            ? result.output.slice(0, 200) + "..."
-            : result.output;
-          console.log(`[工具结果: ${preview}]`);
+        if (!this.isTUIMode) {
+          if (result.isError) {
+            console.log(`[工具错误: ${result.output.slice(0, 100)}]`);
+          } else {
+            // 截断显示
+            const preview = result.output.length > 200
+              ? result.output.slice(0, 200) + "..."
+              : result.output;
+            console.log(`[工具结果: ${preview}]`);
+          }
         }
       } catch (err: any) {
         results.push({
@@ -278,7 +284,9 @@ export class App {
           content: `工具执行异常: ${err.message}`,
           is_error: true,
         });
-        console.log(`[工具异常: ${err.message}]`);
+        if (!this.isTUIMode) {
+          console.log(`[工具异常: ${err.message}]`);
+        }
       }
     }
 
@@ -322,44 +330,10 @@ export class App {
           const [cmdName, ...rest] = trimmed.slice(1).split(" ");
           const args = rest.join(" ");
 
+          // 特殊处理 exit（需要关闭 readline）
           if (cmdName === "exit" || cmdName === "quit") {
             console.log("再见！");
             rl.close();
-            return;
-          }
-
-          if (cmdName === "cost") {
-            console.log(`Token 用量: 输入 ${this.totalUsage.inputTokens}, 输出 ${this.totalUsage.outputTokens}`);
-            prompt();
-            return;
-          }
-
-          if (cmdName === "clear") {
-            this.ctxMgr.clear();
-            console.log("对话已清空");
-            prompt();
-            return;
-          }
-
-          if (cmdName === "help") {
-            console.log("可用命令:");
-            console.log("  /help    - 显示帮助");
-            console.log("  /cost    - 显示 token 用量");
-            console.log("  /clear   - 清空对话");
-            console.log("  /model   - 显示/切换模型");
-            console.log("  /exit    - 退出");
-            prompt();
-            return;
-          }
-
-          if (cmdName === "model") {
-            if (args) {
-              this.config.model = args;
-              console.log(`模型已切换为: ${args}`);
-            } else {
-              console.log(`当前模型: ${this.config.model}`);
-            }
-            prompt();
             return;
           }
 
@@ -452,6 +426,7 @@ export class App {
 
   /** TUI 模式 */
   async runTUI(initialPrompt?: string): Promise<void> {
+    this.isTUIMode = true;
     await this.init();
 
     const React = await import("react");
@@ -570,19 +545,58 @@ export class App {
         }
       },
       onSlashCommand: async (cmd, args) => {
-        if (cmd === "cost") {
-          const u = this.totalUsage;
-          console.log(`Token: 输入 ${u.inputTokens}, 输出 ${u.outputTokens}`);
-        } else if (cmd === "clear") {
+        // 构建命令上下文
+        const cmdCtx: import("./command/types.ts").AppContext = {
+          ctxMgr: this.ctxMgr,
+          registry: this.toolRegistry,
+          config: this.config,
+          sessionId: "",
+          provider: this.provider,
+          setModel: (m) => {
+            this.config.model = m;
+            updateState({ model: m });
+          },
+          exitRequested: false,
+          totalUsage: this.totalUsage,
+        };
+
+        // 特殊处理 clear（需要更新 TUI 状态）
+        if (cmd === "clear") {
           this.ctxMgr.clear();
           updateState({ messages: [] });
-        } else if (cmd === "model") {
-          if (args) {
-            this.config.model = args;
-            updateState({ model: args });
+          return;
+        }
+
+        // 捕获命令输出
+        const outputs: string[] = [];
+        const originalLog = console.log;
+        console.log = (...args: any[]) => {
+          outputs.push(args.map(String).join(" "));
+        };
+
+        try {
+          // 从命令注册表查找并执行
+          const command = this.commandRegistry.get(cmd);
+          if (command) {
+            await command.execute(args, cmdCtx);
+            // 同步模型状态到 TUI
+            updateState({ model: this.config.model, provider: this.config.provider });
+          } else {
+            outputs.push(`未知命令: /${cmd}，输入 /help 查看可用命令`);
           }
-        } else if (cmd === "help") {
-          console.log("/help /cost /clear /model /exit");
+        } catch (err: any) {
+          outputs.push(`命令执行失败: ${err.message}`);
+        } finally {
+          console.log = originalLog;
+        }
+
+        // 将命令输出添加到消息历史（作为系统消息）
+        if (outputs.length > 0) {
+          this.ctxMgr.addMessage({
+            role: "user",
+            content: [{ type: "text", text: `[系统] /${cmd} ${args}\n${outputs.join("\n")}` }],
+          });
+          updateState({ messages: this.ctxMgr.getMessages() });
         }
       },
     };

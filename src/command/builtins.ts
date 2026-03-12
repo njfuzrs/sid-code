@@ -13,14 +13,15 @@ export class HelpCommand implements Command {
 
   async execute(_args: string, ctx: AppContext): Promise<void> {
     console.log("可用命令:");
-    console.log("  /help      - 显示帮助信息");
-    console.log("  /model     - 显示/切换模型");
-    console.log("  /cost      - 显示 token 用量和费用");
-    console.log("  /compact   - 压缩对话历史");
-    console.log("  /clear     - 清空对话");
-    console.log("  /sessions  - 列出历史会话");
-    console.log("  /config    - 显示当前配置");
-    console.log("  /exit      - 退出");
+    console.log("  /help           - 显示帮助信息");
+    console.log("  /model [name]   - 显示/切换模型");
+    console.log("  /model list     - 显示所有可用模型");
+    console.log("  /cost           - 显示 token 用量和费用");
+    console.log("  /compact        - 压缩对话历史");
+    console.log("  /clear          - 清空对话");
+    console.log("  /sessions       - 列出历史会话");
+    console.log("  /config         - 显示当前配置");
+    console.log("  /exit           - 退出");
   }
 }
 
@@ -31,13 +32,89 @@ export class ModelCommand implements Command {
   description() { return "显示或切换模型"; }
 
   async execute(args: string, ctx: AppContext): Promise<void> {
-    if (args) {
-      ctx.setModel(args.trim());
-      console.log(`模型已切换为: ${args.trim()}`);
-    } else {
-      console.log(`当前模型: ${ctx.config.model}`);
-      console.log(`提供商: ${ctx.config.provider}`);
+    const trimmedArgs = args.trim();
+
+    // /model list - 显示所有可用模型
+    if (trimmedArgs === "list" || trimmedArgs === "ls") {
+      this.showAvailableModels(ctx);
+      return;
     }
+
+    // /model <name> - 切换模型
+    if (trimmedArgs) {
+      this.switchModel(trimmedArgs, ctx);
+      return;
+    }
+
+    // /model - 显示当前模型和可用模型
+    this.showCurrentModel(ctx);
+  }
+
+  private showCurrentModel(ctx: AppContext): void {
+    console.log(`当前模型: ${ctx.config.model}`);
+    console.log(`提供商: ${ctx.config.provider}`);
+
+    if (ctx.config.availableModels.length > 0) {
+      console.log("\n可用模型:");
+      ctx.config.availableModels.forEach((m) => {
+        const current = m.name === ctx.config.model ? " (当前)" : "";
+        const provider = m.provider ? ` [${m.provider}]` : "";
+        console.log(`  - ${m.name}${provider}${current}`);
+      });
+      console.log("\n使用 /model <name> 切换模型");
+      console.log("使用 /model list 查看详细信息");
+    }
+  }
+
+  private showAvailableModels(ctx: AppContext): void {
+    if (ctx.config.availableModels.length === 0) {
+      console.log("未配置可用模型列表");
+      console.log("请在 ~/.sid-code/config.yaml 中添加 available_models 配置");
+      return;
+    }
+
+    console.log("可用模型列表:");
+    ctx.config.availableModels.forEach((m, idx) => {
+      const current = m.name === ctx.config.model ? " ✓ 当前" : "";
+      console.log(`\n${idx + 1}. ${m.name}${current}`);
+      if (m.provider) {
+        console.log(`   提供商: ${m.provider}`);
+      }
+      if (m.baseURL) {
+        console.log(`   API 地址: ${m.baseURL}`);
+      }
+    });
+  }
+
+  private switchModel(modelName: string, ctx: AppContext): void {
+    // 如果配置了可用模型列表，验证模型名称
+    if (ctx.config.availableModels.length > 0) {
+      const modelConfig = ctx.config.availableModels.find((m) => m.name === modelName);
+
+      if (!modelConfig) {
+        console.log(`错误: 模型 "${modelName}" 不在可用模型列表中`);
+        console.log("\n可用模型:");
+        ctx.config.availableModels.forEach((m) => {
+          console.log(`  - ${m.name}`);
+        });
+        console.log("\n使用 /model list 查看详细信息");
+        return;
+      }
+
+      // 如果模型配置了特定的 provider 或 baseURL，也一起更新
+      if (modelConfig.provider && modelConfig.provider !== ctx.config.provider) {
+        ctx.config.provider = modelConfig.provider;
+        console.log(`提供商已切换为: ${modelConfig.provider}`);
+      }
+      if (modelConfig.baseURL && modelConfig.baseURL !== ctx.config.baseURL) {
+        ctx.config.baseURL = modelConfig.baseURL;
+        console.log(`API 地址已更新: ${modelConfig.baseURL}`);
+      }
+    }
+
+    // 切换模型
+    ctx.setModel(modelName);
+    console.log(`模型已切换为: ${modelName}`);
   }
 }
 

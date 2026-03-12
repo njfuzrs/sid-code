@@ -16,14 +16,29 @@ marked.use(
   }) as any,
 );
 
+// 渲染缓存（避免重复渲染相同内容）
+const renderCache = new Map<string, string>();
+const MAX_CACHE_SIZE = 100;
+
 /** 将 Markdown 文本渲染为终端格式 */
 export function renderMarkdown(text: string): string {
+  // 检查缓存
+  if (renderCache.has(text)) {
+    return renderCache.get(text)!;
+  }
+
   try {
     const rendered = marked.parse(text);
-    if (typeof rendered === "string") {
-      return rendered.trimEnd();
+    const result = typeof rendered === "string" ? rendered.trimEnd() : text;
+
+    // 添加到缓存（限制缓存大小）
+    if (renderCache.size >= MAX_CACHE_SIZE) {
+      const firstKey = renderCache.keys().next().value;
+      renderCache.delete(firstKey);
     }
-    return text;
+    renderCache.set(text, result);
+
+    return result;
   } catch {
     return text;
   }

@@ -95,6 +95,45 @@ sid-code/
 
 环境变量：`ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN`、`OPENAI_API_KEY` / `LLM_API_KEY`、`LLM_PROVIDER`、`LLM_MODEL`、`LLM_BASE_URL`
 
+## 7. 模型切换功能
+
+支持运行时动态切换模型，无需重启程序。
+
+### 配置示例
+
+在 `~/.sid-code/config.yaml` 中配置可用模型列表：
+
+```yaml
+provider: openai
+model: qwen3.5-plus
+openai_api_key: sk-xxx
+base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+
+available_models:
+  - name: qwen-plus
+    provider: openai
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  - name: qwen3.5-plus
+    provider: openai
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+```
+
+### 使用命令
+
+- `/model` - 显示当前模型和可用模型列表
+- `/model <name>` - 切换到指定模型（会验证模型是否在可用列表中）
+- `/model list` - 显示详细模型信息
+- `/m` - `/model` 的别名
+
+### 实现细节
+
+- `Config.availableModels: ModelConfig[]` - 可用模型配置列表
+- `ModelCommand` - 增强的 `/model` 命令，支持模型验证和自动更新 provider/baseURL
+- `normalizeConfigKeys()` - YAML 字段名（snake_case）到 TypeScript 字段名（camelCase）的转换
+- 切换模型时，如果模型配置了不同的 `provider` 或 `baseURL`，会自动更新这些配置
+
+详细文档：`docs/model-switching.md`、`docs/examples/model-switching-example.md`
+
 ## 文档维护规范
 
 - 发现本文件与实际代码不一致，请立即更新

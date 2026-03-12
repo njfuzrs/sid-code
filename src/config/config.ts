@@ -26,6 +26,14 @@ export interface HookConfig {
   timeout?: number;
 }
 
+/** 可用模型配置 */
+export interface ModelConfig {
+  name: string;
+  provider?: string;
+  baseURL?: string;
+  apiKey?: string;
+}
+
 /** 应用配置 */
 export interface Config {
   // LLM 配置
@@ -35,6 +43,7 @@ export interface Config {
   openaiKey: string;
   baseURL: string;
   maxTokens: number;
+  availableModels: ModelConfig[];
 
   // 权限配置
   permissionMode: string;
@@ -75,6 +84,7 @@ export function defaultConfig(): Config {
     openaiKey: "",
     baseURL: "",
     maxTokens: 8192,
+    availableModels: [],
     permissionMode: "default",
     skipPermissions: false,
     allowedTools: [],
@@ -95,6 +105,59 @@ export function defaultConfig(): Config {
   };
 }
 
+/** 将 YAML 字段名转换为 Config 字段名 */
+function normalizeConfigKeys(raw: any): Partial<Config> {
+  if (!raw || typeof raw !== "object") {
+    return {};
+  }
+
+  const keyMap: Record<string, keyof Config> = {
+    provider: "provider",
+    model: "model",
+    anthropic_key: "anthropicKey",
+    openai_api_key: "openaiKey",
+    base_url: "baseURL",
+    max_tokens: "maxTokens",
+    available_models: "availableModels",
+    permission_mode: "permissionMode",
+    skip_permissions: "skipPermissions",
+    allowed_tools: "allowedTools",
+    disallowed_tools: "disallowedTools",
+    yes_mode: "yesMode",
+    session_id: "sessionId",
+    continue: "continue",
+    resume: "resume",
+    print: "print",
+    output_format: "outputFormat",
+    max_turns: "maxTurns",
+    system_prompt: "systemPrompt",
+    append_system_prompt: "appendSystemPrompt",
+    system_prompt_file: "systemPromptFile",
+    no_tui: "noTUI",
+    hooks: "hooks",
+    mcp_servers: "mcpServers",
+  };
+
+  const result: any = {};
+  for (const [yamlKey, value] of Object.entries(raw)) {
+    const configKey = keyMap[yamlKey] || yamlKey;
+
+    // 特殊处理 available_models，转换字段名
+    if (configKey === "availableModels" && Array.isArray(value)) {
+      result[configKey] = value.map((m: any) => ({
+        name: m.name,
+        provider: m.provider,
+        baseURL: m.base_url || m.baseURL,
+        apiKey: m.api_key || m.apiKey,
+      }));
+    } else {
+      result[configKey] = value;
+    }
+  }
+
+  return result;
+}
+
 /** 加载配置文件 */
 async function loadConfigFile(): Promise<Partial<Config>> {
   const configDir = join(homedir(), ".sid-code");
@@ -108,7 +171,7 @@ async function loadConfigFile(): Promise<Partial<Config>> {
     const file = Bun.file(configPath);
     const content = await file.text();
     const parsed = parseYAML(content);
-    return parsed || {};
+    return normalizeConfigKeys(parsed);
   } catch (err) {
     throw new Error(`读取配置文件失败: ${err}`);
   }

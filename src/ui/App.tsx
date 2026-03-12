@@ -38,18 +38,24 @@ export function TUIApp({ initialState, callbacks, stateRef }: AppProps) {
   const { exit } = useApp();
   const [state, setState] = useState<TUIState>(initialState);
 
-  // 同步外部状态
+  // 同步外部状态（使用深度比较避免不必要的重新渲染）
   useEffect(() => {
     const interval = setInterval(() => {
       const s = stateRef.current;
       setState((prev) => {
-        if (
-          prev.messages !== s.messages ||
-          prev.streamingText !== s.streamingText ||
-          prev.isLoading !== s.isLoading ||
-          prev.toolName !== s.toolName ||
-          prev.isToolExecuting !== s.isToolExecuting
-        ) {
+        // 检查是否真的有变化
+        const messagesChanged = prev.messages.length !== s.messages.length ||
+          prev.messages !== s.messages;
+        const streamingChanged = prev.streamingText !== s.streamingText;
+        const loadingChanged = prev.isLoading !== s.isLoading;
+        const toolChanged = prev.toolName !== s.toolName ||
+          prev.isToolExecuting !== s.isToolExecuting;
+        const modelChanged = prev.model !== s.model || prev.provider !== s.provider;
+        const usageChanged = prev.usage.inputTokens !== s.usage.inputTokens ||
+          prev.usage.outputTokens !== s.usage.outputTokens;
+
+        if (messagesChanged || streamingChanged || loadingChanged ||
+            toolChanged || modelChanged || usageChanged) {
           return { ...s };
         }
         return prev;
