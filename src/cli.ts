@@ -1,0 +1,214 @@
+/**
+ * CLI 入口
+ * 使用 Node.js 内置 parseArgs 解析命令行参数，路由到不同模式
+ */
+
+import { parseArgs } from "node:util";
+import { loadConfig } from "./config/config.ts";
+import type { Config } from "./config/config.ts";
+
+/** 解析命令行参数 */
+function parseCLIArgs(): Partial<Config> & { prompt?: string } {
+  const { values, positionals } = parseArgs({
+    options: {
+      // LLM 配置
+      provider: { type: "string" },
+      model: { type: "string", short: "m" },
+      "max-tokens": { type: "string" },
+      
+      // 权限配置
+      "permission-mode": { type: "string" },
+      "dangerously-skip-permissions": { type: "boolean" },
+      yes: { type: "boolean", short: "y" },
+      
+      // 会话配置
+      continue: { type: "boolean", short: "c" },
+      resume: { type: "string", short: "r" },
+      
+      // 无头模式
+      print: { type: "boolean", short: "p" },
+      "output-format": { type: "string" },
+      "max-turns": { type: "string" },
+      
+      // 系统提示词
+      "system-prompt": { type: "string" },
+      "append-system-prompt": { type: "string" },
+      "system-prompt-file": { type: "string" },
+      
+      // UI
+      "no-tui": { type: "boolean" },
+      
+      // 帮助
+      help: { type: "boolean", short: "h" },
+      version: { type: "boolean", short: "v" },
+    },
+    allowPositionals: true,
+  });
+
+  // 处理帮助和版本
+  if (values.help) {
+    printHelp();
+    process.exit(0);
+  }
+
+  if (values.version) {
+    console.log("sid-code v0.1.0 (TypeScript)");
+    process.exit(0);
+  }
+
+  // 转换为 Config 格式
+  const cliConfig: Partial<Config> & { prompt?: string } = {
+    provider: values.provider,
+    model: values.model,
+    maxTokens: values["max-tokens"] ? parseInt(values["max-tokens"]) : undefined,
+    permissionMode: values["permission-mode"],
+    skipPermissions: values["dangerously-skip-permissions"],
+    yesMode: values.yes,
+    continue: values.continue,
+    resume: values.resume,
+    print: values.print,
+    outputFormat: values["output-format"],
+    maxTurns: values["max-turns"] ? parseInt(values["max-turns"]) : undefined,
+    systemPrompt: values["system-prompt"],
+    appendSystemPrompt: values["append-system-prompt"],
+    systemPromptFile: values["system-prompt-file"],
+    noTUI: values["no-tui"],
+  };
+
+  // 位置参数作为初始提示词
+  if (positionals.length > 0) {
+    cliConfig.prompt = positionals.join(" ");
+  }
+
+  return cliConfig;
+}
+
+/** 打印帮助信息 */
+function printHelp(): void {
+  console.log(`
+sid-code - AI 编程 CLI 工具
+
+用法:
+  sid-code [选项] [提示词]
+
+LLM 配置:
+  --provider <name>           LLM 提供商 (anthropic/openai/ollama)
+  -m, --model <name>          模型名称
+  --max-tokens <n>            响应最大 token 数
+
+权限配置:
+  --permission-mode <mode>    权限模式 (default/always-allow/deny-write)
+  --dangerously-skip-permissions  跳过所有权限检查
+  -y, --yes                   自动批准所有权限请求
+
+会话配置:
+  -c, --continue              继续最近一次会话
+  -r, --resume <id>           恢复指定会话
+
+无头模式:
+  -p, --print                 无头模式（非交互式）
+  --output-format <fmt>       输出格式 (text/json)
+  --max-turns <n>             Agent 循环最大轮次
+
+系统提示词:
+  --system-prompt <text>      覆盖系统提示词
+  --append-system-prompt <text>  追加到系统提示词
+  --system-prompt-file <path>    从文件加载系统提示词
+
+UI:
+  --no-tui                    禁用 TUI，使用纯文本 REPL
+
+其他:
+  -h, --help                  显示帮助信息
+  -v, --version               显示版本信息
+
+环境变量:
+  ANTHROPIC_API_KEY           Anthropic API 密钥
+  OPENAI_API_KEY              OpenAI API 密钥
+  LLM_PROVIDER                LLM 提供商
+  LLM_MODEL                   模型名称
+  LLM_BASE_URL                自定义 API 基础 URL
+
+配置文件:
+  ~/.sid-code/config.yaml     YAML 格式配置文件
+`);
+}
+
+/** 主函数 */
+async function main(): Promise<void> {
+  try {
+    const cliArgs = parseCLIArgs();
+    const config = await loadConfig(cliArgs);
+
+    // 验证 API Key
+    if (config.provider === "anthropic" && !config.anthropicKey) {
+      console.error("错误: 未设置 ANTHROPIC_API_KEY 环境变量");
+      process.exit(1);
+    }
+    if (config.provider === "openai" && !config.openaiKey) {
+      console.error("错误: 未设置 OPENAI_API_KEY 环境变量");
+      process.exit(1);
+    }
+
+    // 创建 Provider
+    let provider: import("./llm/provider.ts").Provider;
+
+    if (config.provider === "anthropic") {
+      const { AnthropicProvider } = await import("./llm/anthropic.ts");
+      provider = new AnthropicProvider(config.anthropicKey, config.model);
+    } else if (config.provider === "openai") {
+      const { OpenAIProvider } = await import("./llm/openai.ts");
+      provider = new OpenAIProvider(config.openaiKey, config.model, config.baseURL);
+    } else if (config.provider === "ollama") {
+      const { OllamaProvider } = await import("./llm/ollama.ts");
+      provider = new OllamaProvider(config.model, config.baseURL);
+    } else {
+      console.error(`未知的 Provider: ${config.provider}`);
+      process.exit(1);
+    }
+
+    // 注册内置工具
+    const { Registry: ToolRegistry } = await import("./tool/registry.ts");
+    const toolRegistry = new ToolRegistry();
+
+    const { ReadTool } = await import("./tool/read.ts");
+    const { WriteTool } = await import("./tool/write.ts");
+    const { EditTool } = await import("./tool/edit.ts");
+    const { BashTool } = await import("./tool/bash.ts");
+    const { GrepTool } = await import("./tool/grep.ts");
+    const { GlobTool } = await import("./tool/glob.ts");
+
+    toolRegistry.register(new ReadTool());
+    toolRegistry.register(new WriteTool());
+    toolRegistry.register(new EditTool());
+    toolRegistry.register(new BashTool());
+    toolRegistry.register(new GrepTool());
+    toolRegistry.register(new GlobTool());
+
+    // 创建 App
+    const { App } = await import("./app.ts");
+    const app = new App({ config, provider, toolRegistry });
+
+    // 根据模式路由
+    if (config.print) {
+      // 无头模式
+      if (!cliArgs.prompt) {
+        console.error("错误: 无头模式需要提供提示词");
+        process.exit(1);
+      }
+      await app.runHeadless(cliArgs.prompt);
+    } else if (config.noTUI) {
+      // 纯文本 REPL
+      await app.runREPL(cliArgs.prompt);
+    } else {
+      // TUI 模式
+      await app.runTUI(cliArgs.prompt);
+    }
+  } catch (err) {
+    console.error("错误:", err);
+    process.exit(1);
+  }
+}
+
+// 运行主函数
+main();

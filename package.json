@@ -1,0 +1,32 @@
+{
+  "name": "sid-code",
+  "version": "0.1.0",
+  "description": "AI 编程 CLI 工具 (TypeScript + Bun + Ink)",
+  "type": "module",
+  "main": "src/cli.ts",
+  "scripts": {
+    "dev": "bun run src/cli.ts",
+    "build": "bun build --compile --outfile sid-code src/cli.ts",
+    "test": "bun test",
+    "lint": "echo 'TODO: add linter'"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.52.0",
+    "@inkjs/ui": "^2.0.0",
+    "glob": "^11.0.0",
+    "ink": "^5.2.0",
+    "marked": "^15.0.0",
+    "marked-terminal": "^7.0.0",
+    "react": "^18.3.0",
+    "react-devtools-core": "^7.0.1",
+    "yaml": "^2.7.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.0",
+    "@types/bun": "latest",
+    "@types/node": "^22.0.0"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
+  }
+}

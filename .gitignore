@@ -1,10 +1,16 @@
 # sid-code build output
 /sid-code
+/sid-code-go
 
-# Go
+# Go (保留作参考)
 *.exe
 *.test
 *.out
+
+# TypeScript / Bun
+node_modules/
+bun.lockb
+*.tsbuildinfo
 
 # IDE
 .idea/
@@ -19,3 +25,7 @@ Thumbs.db
 # Env
 .env
 *.env
+
+# 会话和配置（用户数据）
+.sid-code/sessions/
+.sid-code/config.yaml

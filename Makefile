@@ -1,23 +1,22 @@
 BINARY=sid-code
-MODULE=gitlab.example.com/zhourusheng/sid-code
+BUN=bun
 
-.PHONY: build run test clean
+.PHONY: build run test clean deps lint
 
 build:
-	go build -o $(BINARY) ./cmd/sid-code
+	$(BUN) build --compile --outfile $(BINARY) src/cli.ts
 
-run: build
-	./$(BINARY)
+run:
+	$(BUN) run src/cli.ts
 
 test:
-	go test ./...
+	$(BUN) test
 
 clean:
 	rm -f $(BINARY)
 
 deps:
-	go mod tidy
+	$(BUN) install
 
-.PHONY: lint
 lint:
-	golangci-lint run ./...
+	$(BUN) run lint
