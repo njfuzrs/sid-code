@@ -5,6 +5,7 @@
 
 import { marked } from "marked";
 import { markedTerminal } from "marked-terminal";
+import { getLogger } from "../debug/logger.ts";
 
 // 配置 marked 使用终端渲染器
 marked.use(
@@ -27,6 +28,8 @@ export function renderMarkdown(text: string): string {
     return renderCache.get(text)!;
   }
 
+  const log = getLogger();
+
   try {
     const rendered = marked.parse(text);
     const result = typeof rendered === "string" ? rendered.trimEnd() : text;
@@ -35,11 +38,13 @@ export function renderMarkdown(text: string): string {
     if (renderCache.size >= MAX_CACHE_SIZE) {
       const firstKey = renderCache.keys().next().value;
       renderCache.delete(firstKey);
+      log.debug("UI:MD", `缓存已满，淘汰最旧条目，当前 ${renderCache.size} 条`);
     }
     renderCache.set(text, result);
 
     return result;
-  } catch {
+  } catch (err: any) {
+    log.error("UI:MD", `Markdown 渲染失败`, { error: err.message, textLen: text.length, textPreview: text.slice(0, 100) });
     return text;
   }
 }

@@ -3,10 +3,11 @@
  * 渲染用户/助手/工具消息，支持 Markdown 渲染
  */
 
-import React from "react";
+import React, { useRef } from "react";
 import { Box, Text, Static } from "ink";
 import type { Message, ContentBlock } from "../llm/types.ts";
 import { renderMarkdown } from "./markdown.ts";
+import { getLogger } from "../debug/logger.ts";
 
 interface MessageListProps {
   messages: Message[];
@@ -109,6 +110,18 @@ function getMessageKey(msg: Message, idx: number): string {
 }
 
 export function MessageList({ messages, streamingText }: MessageListProps) {
+  const log = getLogger();
+  const renderCountRef = useRef(0);
+  renderCountRef.current++;
+
+  // 每 20 次渲染记录一次，避免日志爆炸
+  if (renderCountRef.current % 20 === 1) {
+    log.debug("UI:MSGLIST", `渲染 #${renderCountRef.current}`, {
+      messagesLen: messages.length,
+      streamingTextLen: streamingText.length,
+    });
+  }
+
   // 如果有流式文本，历史消息 = 除了最后一条助手消息的所有消息
   // 否则，历史消息 = 所有消息
   let historyMessages = messages;
@@ -116,6 +129,9 @@ export function MessageList({ messages, streamingText }: MessageListProps) {
     const last = messages[messages.length - 1];
     if (last && last.role === "assistant") {
       historyMessages = messages.slice(0, -1);
+      log.debug("UI:MSGLIST", `流式模式: 历史消息 ${historyMessages.length} 条，排除最后一条助手消息`);
+    } else {
+      log.debug("UI:MSGLIST", `流式模式: 最后一条消息不是助手消息 (role=${last?.role})，不排除`);
     }
   }
 

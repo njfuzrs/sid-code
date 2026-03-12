@@ -469,6 +469,11 @@ export class App {
 
   /** TUI 模式 */
   async runTUI(initialPrompt?: string): Promise<void> {
+    const log = getLogger();
+    // TUI 模式下切换为仅文件输出，避免干扰 Ink 渲染
+    log.setFileOnly(true);
+    log.info("TUI", "进入 TUI 模式");
+
     this.isTUIMode = true;
     await this.init();
 
@@ -492,11 +497,21 @@ export class App {
     };
 
     const updateState = (patch: Partial<import("./ui/App.tsx").TUIState>) => {
+      const keys = Object.keys(patch);
+      log.debug("TUI:STATE", `updateState: ${keys.join(", ")}`, {
+        streamingTextLen: patch.streamingText !== undefined ? patch.streamingText.length : undefined,
+        messagesLen: patch.messages !== undefined ? patch.messages.length : undefined,
+        isLoading: patch.isLoading,
+        toolName: patch.toolName,
+        isToolExecuting: patch.isToolExecuting,
+      });
       stateRef.current = { ...stateRef.current, ...patch };
     };
 
     // TUI 版本的 agentLoop
     const tuiAgentLoop = async (userInput: string) => {
+      log.info("TUI:AGENT", `用户输入: ${userInput.slice(0, 200)}${userInput.length > 200 ? '...' : ''}`);
+
       // 清空上一次的流式文本
       updateState({ streamingText: "" });
 
@@ -515,6 +530,10 @@ export class App {
 
       while (turns < maxTurns) {
         turns++;
+        log.debug("TUI:AGENT", `轮次 ${turns}/${maxTurns}，消息数 ${this.ctxMgr.getMessages().length}`);
+
+        const toolDefs = this.toolRegistry.size() > 0 ? this.toolRegistry.definitions() : undefined;
+        log.llmRequest(this.config.provider, this.config.model, this.ctxMgr.getMessages().length, toolDefs?.length ?? 0);
 
         const stream = this.provider.sendMessageStream(
           {
@@ -522,17 +541,22 @@ export class App {
             messages: this.ctxMgr.getMessages(),
             system: this.ctxMgr.getSystemPrompt(),
             maxTokens: this.config.maxTokens,
-            tools: this.toolRegistry.size() > 0 ? this.toolRegistry.definitions() : undefined,
+            tools: toolDefs,
           },
           this.abortController?.signal,
         );
 
         // 处理流式响应，更新 TUI 状态
         let streamingText = "";
+        let streamChunks = 0;
         const response = await this.processStream(stream, (text) => {
           streamingText += text;
+          streamChunks++;
           updateState({ streamingText });
         });
+
+        log.debug("TUI:AGENT", `流式响应完成，共 ${streamChunks} 个文本块，总长 ${streamingText.length} 字符`);
+        log.llmResponse(response.stopReason || "unknown", response.usage);
 
         this.totalUsage.inputTokens += response.usage.inputTokens;
         this.totalUsage.outputTokens += response.usage.outputTokens;
@@ -550,6 +574,7 @@ export class App {
         });
 
         if (response.stopReason === "end_turn" || response.stopReason === "stop") {
+          log.info("TUI:AGENT", `对话结束 (${response.stopReason})，共 ${turns} 轮`);
           break;
         }
 
@@ -559,14 +584,19 @@ export class App {
 
           // 显示工具执行状态
           const toolBlocks = response.content.filter((b) => b.type === "tool_use");
+          const toolNames = toolBlocks.map(b => b.type === "tool_use" ? b.name : "").filter(Boolean);
+          log.info("TUI:AGENT", `工具调用: ${toolNames.join(", ")}`);
+
           for (const block of toolBlocks) {
             if (block.type !== "tool_use") continue;
+            log.debug("TUI:STATE", `设置工具状态: toolName=${block.name}, isToolExecuting=true`);
             updateState({ toolName: block.name, isToolExecuting: true });
           }
 
           const toolResults = await this.executeTools(response.content);
           this.ctxMgr.addMessage({ role: "user", content: toolResults });
 
+          log.debug("TUI:STATE", `工具执行完成，清除工具状态`);
           updateState({
             messages: this.ctxMgr.getMessages(),
             toolName: null,
@@ -575,25 +605,31 @@ export class App {
           continue;
         }
 
+        log.warn("TUI:AGENT", `未知停止原因: ${response.stopReason}`);
         break;
       }
 
+      log.debug("TUI:STATE", `设置 isLoading=false`);
       updateState({ isLoading: false });
     };
 
     // 回调
     const callbacks: import("./ui/App.tsx").TUICallbacks = {
       onUserInput: async (text) => {
+        log.debug("TUI:CB", `onUserInput 被调用: "${text.slice(0, 100)}"`);
         try {
           this.abortController = new AbortController();
           await tuiAgentLoop(text);
         } catch (err: any) {
+          log.error("TUI:CB", `onUserInput 异常`, { error: err.message, stack: err.stack });
           updateState({ isLoading: false, streamingText: "" });
         } finally {
           this.abortController = null;
         }
       },
       onSlashCommand: async (cmd, args) => {
+        log.info("TUI:CMD", `斜杠命令: /${cmd} ${args}`);
+
         // 构建命令上下文
         const cmdCtx: import("./command/types.ts").AppContext = {
           ctxMgr: this.ctxMgr,
@@ -602,6 +638,7 @@ export class App {
           sessionId: "",
           provider: this.provider,
           setModel: (m) => {
+            log.info("TUI:CMD", `切换模型: ${this.config.model} → ${m}`);
             this.config.model = m;
             updateState({ model: m });
           },
@@ -611,6 +648,7 @@ export class App {
 
         // 特殊处理 clear（需要更新 TUI 状态）
         if (cmd === "clear") {
+          log.info("TUI:CMD", "清空消息历史");
           this.ctxMgr.clear();
           updateState({ messages: [] });
           return;
@@ -627,13 +665,17 @@ export class App {
           // 从命令注册表查找并执行
           const command = this.commandRegistry.get(cmd);
           if (command) {
+            log.debug("TUI:CMD", `执行命令: /${cmd}`);
             await command.execute(args, cmdCtx);
             // 同步模型状态到 TUI
             updateState({ model: this.config.model, provider: this.config.provider });
+            log.debug("TUI:CMD", `命令执行完成，输出 ${outputs.length} 行`);
           } else {
+            log.warn("TUI:CMD", `未知命令: /${cmd}`);
             outputs.push(`未知命令: /${cmd}，输入 /help 查看可用命令`);
           }
         } catch (err: any) {
+          log.error("TUI:CMD", `命令执行失败: /${cmd}`, { error: err.message, stack: err.stack });
           outputs.push(`命令执行失败: ${err.message}`);
         } finally {
           console.log = originalLog;
@@ -651,6 +693,7 @@ export class App {
     };
 
     // 渲染 TUI
+    log.info("TUI", "开始渲染 TUI 组件");
     const app = render(
       React.createElement(TUIApp, {
         initialState: stateRef.current,
@@ -661,9 +704,11 @@ export class App {
 
     // 处理初始提示词
     if (initialPrompt) {
+      log.info("TUI", `处理初始提示词: ${initialPrompt.slice(0, 100)}`);
       await callbacks.onUserInput(initialPrompt);
     }
 
     await app.waitUntilExit();
+    log.info("TUI", "TUI 退出");
   }
 }

@@ -19,6 +19,7 @@ export interface LoggerOptions {
   level: LogLevel;
   logFile?: string;
   console: boolean;
+  fileOnly: boolean;
 }
 
 class Logger {
@@ -30,6 +31,7 @@ class Logger {
       enabled: options.enabled ?? false,
       level: options.level ?? LogLevel.INFO,
       console: options.console ?? true,
+      fileOnly: options.fileOnly ?? false,
       logFile: options.logFile,
     };
 
@@ -129,7 +131,15 @@ class Logger {
     const formatted = this.formatMessage(level, category, message, data);
 
     this.writeToFile(formatted);
-    this.writeToConsole(level, formatted);
+    // fileOnly 模式下不输出到控制台（TUI 模式避免干扰 Ink 渲染）
+    if (!this.options.fileOnly) {
+      this.writeToConsole(level, formatted);
+    }
+  }
+
+  /** 切换为仅文件输出模式（TUI 模式下使用） */
+  setFileOnly(fileOnly: boolean): void {
+    this.options.fileOnly = fileOnly;
   }
 
   error(category: string, message: string, data?: unknown): void {
