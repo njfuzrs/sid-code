@@ -4,11 +4,11 @@
  */
 
 import { marked } from "marked";
-import TerminalRenderer from "marked-terminal";
+import { markedTerminal } from "marked-terminal";
 
 // 配置 marked 使用终端渲染器
 marked.use(
-  TerminalRenderer({
+  markedTerminal({
     reflowText: true,
     width: Math.min(process.stdout.columns || 80, 120),
     showSectionPrefix: false,
