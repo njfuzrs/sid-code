@@ -13,6 +13,10 @@ import { getLogger } from "../debug/logger.ts";
 export class SubAgentTool implements Tool {
   private subAgent: SubAgent;
 
+  /** 并发控制 */
+  static running = 0;
+  static readonly MAX_CONCURRENT = 3;
+
   constructor(provider: Provider, model: string, toolRegistry: ToolRegistry) {
     this.subAgent = new SubAgent(provider, model, toolRegistry);
   }
@@ -27,6 +31,7 @@ export class SubAgentTool implements Tool {
 - explore: 搜索和分析代码库，返回关键发现
 - task: 执行特定的编码子任务
 - summarize: 总结大量内容
+- plan: 分析代码库并输出结构化的实现方案
 子代理完成后只返回最终结果。`;
   }
 
@@ -36,8 +41,8 @@ export class SubAgentTool implements Tool {
       properties: {
         type: {
           type: "string",
-          enum: ["explore", "task", "summarize"],
-          description: "子代理类型：explore(代码探索)、task(任务执行)、summarize(内容总结)",
+          enum: ["explore", "task", "summarize", "plan"],
+          description: "子代理类型：explore(代码探索)、task(任务执行)、summarize(内容总结)、plan(代码分析和规划)",
         },
         description: {
           type: "string",
@@ -54,6 +59,12 @@ export class SubAgentTool implements Tool {
 
   async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
     const log = getLogger();
+
+    // 并发控制
+    if (SubAgentTool.running >= SubAgentTool.MAX_CONCURRENT) {
+      return { output: `子代理并发数已达上限(${SubAgentTool.MAX_CONCURRENT})，请等待其他子代理完成`, isError: true };
+    }
+
     const params = input as {
       type: SubAgentType;
       description: string;
@@ -64,11 +75,12 @@ export class SubAgentTool implements Tool {
       return { output: "错误: 缺少必需参数 (type, description, prompt)", isError: true };
     }
 
-    const validTypes: SubAgentType[] = ["explore", "task", "summarize"];
+    const validTypes: SubAgentType[] = ["explore", "task", "summarize", "plan"];
     if (!validTypes.includes(params.type)) {
       return { output: `错误: 无效的子代理类型 "${params.type}"，可选: ${validTypes.join(", ")}`, isError: true };
     }
 
+    SubAgentTool.running++;
     try {
       const result = await this.subAgent.execute(
         {
@@ -90,6 +102,8 @@ export class SubAgentTool implements Tool {
     } catch (err: any) {
       log.error("SUBAGENT", `子代理执行失败`, { error: err.message, stack: err.stack });
       return { output: `子代理执行失败: ${err.message}`, isError: true };
+    } finally {
+      SubAgentTool.running--;
     }
   }
 }

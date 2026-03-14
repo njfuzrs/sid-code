@@ -11,7 +11,7 @@ import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { getLogger } from "../debug/logger.ts";
 
 /** 子代理类型 */
-export type SubAgentType = "explore" | "task" | "summarize";
+export type SubAgentType = "explore" | "task" | "summarize" | "plan";
 
 /** 子代理任务定义 */
 export interface SubAgentTask {
@@ -24,6 +24,8 @@ export interface SubAgentTask {
   maxTurns?: number;
   /** 子代理上下文窗口大小（默认 50000） */
   maxTokens?: number;
+  /** 超时时间（毫秒，默认 120000） */
+  timeout?: number;
 }
 
 /** 子代理执行结果 */
@@ -53,12 +55,30 @@ const SYSTEM_PROMPTS: Record<SubAgentType, string> = {
 - 保留关键信息：文件路径、代码修改、决策、待办事项
 - 使用中文
 - 保持简洁`,
+
+  plan: `你是一个代码分析和规划代理。分析代码库并输出结构化的实现方案。
+规则：
+- 使用 grep、glob、read 工具搜索和阅读代码
+- 输出包含：问题分析、方案设计、涉及文件、实现步骤
+- 不要修改任何文件，保持输出简洁可操作`,
+};
+
+/** 子代理工具白名单：null 表示不需要工具 */
+const ALLOWED_TOOLS: Record<SubAgentType, string[] | null> = {
+  explore: ["read", "grep", "glob"],
+  task: ["read", "write", "edit", "bash", "grep", "glob"],
+  plan: ["read", "grep", "glob"],
+  summarize: null,
 };
 
 export class SubAgent {
   private provider: Provider;
   private model: string;
   private toolRegistry: ToolRegistry;
+
+  /** 嵌套深度计数器（不允许子代理再 spawn 子代理） */
+  static depth = 0;
+  static readonly MAX_DEPTH = 1;
 
   constructor(provider: Provider, model: string, toolRegistry: ToolRegistry) {
     this.provider = provider;
@@ -69,91 +89,141 @@ export class SubAgent {
   /** 执行子代理任务 */
   async execute(task: SubAgentTask, signal?: AbortSignal): Promise<SubAgentResult> {
     const log = getLogger();
+
+    // 嵌套防护
+    if (SubAgent.depth >= SubAgent.MAX_DEPTH) {
+      log.warn("SUBAGENT", `嵌套深度超限 (${SubAgent.depth}/${SubAgent.MAX_DEPTH})，拒绝执行`);
+      return {
+        success: false,
+        output: "子代理不允许嵌套调用",
+        usage: { inputTokens: 0, outputTokens: 0 },
+        turns: 0,
+      };
+    }
+
+    SubAgent.depth++;
+    try {
+      return await this.executeInner(task, signal);
+    } finally {
+      SubAgent.depth--;
+    }
+  }
+
+  /** 内部执行逻辑（含超时控制） */
+  private async executeInner(task: SubAgentTask, signal?: AbortSignal): Promise<SubAgentResult> {
+    const log = getLogger();
     log.info("SUBAGENT", `启动子代理 [${task.type}]: ${task.description}`);
 
-    // 独立的上下文
-    const ctxMgr = new ContextManager({
-      maxTokens: task.maxTokens ?? 50000,
-    });
+    // 超时控制（默认 120 秒）
+    const timeout = task.timeout ?? 120_000;
+    const timeoutCtrl = new AbortController();
+    const timer = setTimeout(() => timeoutCtrl.abort(), timeout);
+    const mergedSignal = signal
+      ? AbortSignal.any([signal, timeoutCtrl.signal])
+      : timeoutCtrl.signal;
 
-    const systemPrompt = SYSTEM_PROMPTS[task.type];
-    ctxMgr.setSystemPrompt(systemPrompt);
-
-    // 添加任务提示
-    ctxMgr.addMessage({
-      role: "user",
-      content: [{ type: "text", text: task.prompt }],
-    });
-
-    const tools = task.tools ?? this.toolRegistry;
-    const maxTurns = task.maxTurns ?? 10;
-    const totalUsage: Usage = { inputTokens: 0, outputTokens: 0 };
-    let turns = 0;
-    let lastTextOutput = "";
-
-    while (turns < maxTurns) {
-      turns++;
-      log.debug("SUBAGENT", `[${task.type}] 轮次 ${turns}/${maxTurns}`);
-
-      const toolDefs = tools.size() > 0 ? tools.definitions() : undefined;
-
-      const stream = this.provider.sendMessageStream(
-        {
-          model: this.model,
-          messages: ctxMgr.getMessages(),
-          system: ctxMgr.getSystemPrompt(),
-          maxTokens: 4096,
-          tools: toolDefs,
-        },
-        signal,
-      );
-
-      // 处理流式响应
-      const response = await this.processStream(stream);
-
-      totalUsage.inputTokens += response.usage.inputTokens;
-      totalUsage.outputTokens += response.usage.outputTokens;
-
-      // 提取文本输出
-      const textBlocks = response.content.filter(b => b.type === "text");
-      if (textBlocks.length > 0) {
-        lastTextOutput = textBlocks
-          .map(b => b.type === "text" ? b.text : "")
-          .join("\n");
-      }
-
-      ctxMgr.addMessage({
-        role: "assistant",
-        content: response.content,
+    try {
+      // 独立的上下文
+      const ctxMgr = new ContextManager({
+        maxTokens: task.maxTokens ?? 50000,
       });
 
-      // 检查停止原因
-      if (response.stopReason === "end_turn" || response.stopReason === "stop") {
-        log.info("SUBAGENT", `[${task.type}] 完成，共 ${turns} 轮`);
+      const systemPrompt = SYSTEM_PROMPTS[task.type];
+      ctxMgr.setSystemPrompt(systemPrompt);
+
+      // 添加任务提示
+      ctxMgr.addMessage({
+        role: "user",
+        content: [{ type: "text", text: task.prompt }],
+      });
+
+      const allowedNames = ALLOWED_TOOLS[task.type];
+      const tools = allowedNames
+        ? (task.tools ?? this.toolRegistry).filter(allowedNames)
+        : new ToolRegistry();
+      const maxTurns = task.maxTurns ?? 10;
+      const totalUsage: Usage = { inputTokens: 0, outputTokens: 0 };
+      let turns = 0;
+      let lastTextOutput = "";
+
+      while (turns < maxTurns) {
+        turns++;
+        log.debug("SUBAGENT", `[${task.type}] 轮次 ${turns}/${maxTurns}`);
+
+        const toolDefs = tools.size() > 0 ? tools.definitions() : undefined;
+
+        const stream = this.provider.sendMessageStream(
+          {
+            model: this.model,
+            messages: ctxMgr.getMessages(),
+            system: ctxMgr.getSystemPrompt(),
+            maxTokens: 4096,
+            tools: toolDefs,
+          },
+          mergedSignal,
+        );
+
+        // 处理流式响应
+        const response = await this.processStream(stream);
+
+        totalUsage.inputTokens += response.usage.inputTokens;
+        totalUsage.outputTokens += response.usage.outputTokens;
+
+        // 提取文本输出
+        const textBlocks = response.content.filter(b => b.type === "text");
+        if (textBlocks.length > 0) {
+          lastTextOutput = textBlocks
+            .map(b => b.type === "text" ? b.text : "")
+            .join("\n");
+        }
+
+        ctxMgr.addMessage({
+          role: "assistant",
+          content: response.content,
+        });
+
+        // 检查停止原因
+        if (response.stopReason === "end_turn" || response.stopReason === "stop") {
+          log.info("SUBAGENT", `[${task.type}] 完成，共 ${turns} 轮`);
+          break;
+        }
+
+        // 处理工具调用
+        if (response.stopReason === "tool_use") {
+          const toolResults = await this.executeTools(response.content, tools, mergedSignal);
+          ctxMgr.addMessage({
+            role: "user",
+            content: toolResults,
+          });
+          continue;
+        }
+
         break;
       }
 
-      // 处理工具调用
-      if (response.stopReason === "tool_use") {
-        const toolResults = await this.executeTools(response.content, tools, signal);
-        ctxMgr.addMessage({
-          role: "user",
-          content: toolResults,
-        });
-        continue;
+      log.info("SUBAGENT", `[${task.type}] 结果: ${lastTextOutput.slice(0, 200)}`);
+
+      return {
+        success: true,
+        output: lastTextOutput,
+        usage: totalUsage,
+        turns,
+      };
+    } catch (err: any) {
+      // 超时中断时返回友好提示
+      if (timeoutCtrl.signal.aborted) {
+        log.warn("SUBAGENT", `[${task.type}] 超时 (${timeout}ms)`);
+        return {
+          success: false,
+          output: `子代理执行超时 (${Math.round(timeout / 1000)}秒)`,
+          usage: { inputTokens: 0, outputTokens: 0 },
+          turns: 0,
+        };
       }
-
-      break;
+      throw err;
+    } finally {
+      clearTimeout(timer);
     }
-
-    log.info("SUBAGENT", `[${task.type}] 结果: ${lastTextOutput.slice(0, 200)}`);
-
-    return {
-      success: true,
-      output: lastTextOutput,
-      usage: totalUsage,
-      turns,
-    };
   }
 
   /** 处理流式响应 */

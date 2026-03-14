@@ -45,7 +45,11 @@ make deps     # bun install
 sid-code/
 ├── src/
 │   ├── cli.ts                    # 入口：parseArgs + 模式路由
-│   ├── app.ts                    # Agentic While-Loop 主循环
+│   ├── app.ts                    # Agentic While-Loop 主循环（委托 AgentLoopRunner）
+│   ├── agent/                    # 子代理系统
+│   │   ├── loop.ts               # AgentLoopRunner 统一循环（REPL/TUI 共用）
+│   │   ├── sub-agent.ts          # SubAgent（工具白名单 + 嵌套防护 + 超时控制）
+│   │   └── tool.ts               # SubAgentTool（并发控制）
 │   ├── llm/                      # Provider 接口 + 3 个实现
 │   │   ├── types.ts              # Message, StreamEvent, Usage
 │   │   ├── provider.ts           # Provider 接口
@@ -81,7 +85,7 @@ sid-code/
 └── Makefile
 ```
 
-模块依赖：`cli` → `app` → `llm` / `tool` / `context` / `permission` / `hook` / `session` / `command` / `mcp` / `ui` / `debug`
+模块依赖：`cli` → `app` → `agent` / `llm` / `tool` / `context` / `permission` / `hook` / `session` / `command` / `mcp` / `ui` / `debug`
 
 ## 4. 编码约定
 
@@ -428,6 +432,40 @@ interface SystemPromptContext {
 
 - `src/memory/store.ts` — MemoryStore（CRUD + 搜索 + 摘要生成）
 - `src/config/attachments.ts` — `generateMemoryAttachment()` 记忆附件生成
+
+## 15. 子代理系统
+
+支持 4 种子代理类型，每种有独立的工具白名单和系统提示词。
+
+### 子代理类型
+
+| 类型 | 用途 | 可用工具 |
+|------|------|----------|
+| `explore` | 搜索和分析代码库 | read, grep, glob |
+| `task` | 执行编码子任务 | read, write, edit, bash, grep, glob |
+| `plan` | 代码分析和规划 | read, grep, glob |
+| `summarize` | 总结大量内容 | 无（纯文本） |
+
+### 安全防护
+
+- **工具白名单隔离**：每种子代理类型只能使用白名单内的工具，`Registry.filter()` 实现过滤
+- **嵌套防护**：`SubAgent.depth` 静态计数器，`MAX_DEPTH=1`，不允许子代理再 spawn 子代理
+- **超时控制**：默认 120 秒，通过 `AbortSignal.any()` 合并外部 signal 和超时 signal
+- **并发控制**：`SubAgentTool.running` 静态计数器，`MAX_CONCURRENT=3`
+
+### 统一 Agent 循环
+
+`AgentLoopRunner`（`src/agent/loop.ts`）提取了 REPL 和 TUI 共用的核心循环逻辑：
+- thinking hint 解析 → 上下文两段式监控 → LLM 请求（含重试/回退/溢出自动调整）→ 流式处理 → 工具执行 → max_tokens 续写
+- 通过 `AgentLoopCallbacks` 接口处理 UI 差异（REPL 用 console 输出，TUI 用 updateState）
+- TUI 模式自动获得 Extended Thinking 和上下文溢出自动调整
+
+### 核心文件
+
+- `src/agent/loop.ts` — AgentLoopRunner + AgentLoopCallbacks + AgentLoopDeps
+- `src/agent/sub-agent.ts` — SubAgent（白名单 + 嵌套防护 + 超时）
+- `src/agent/tool.ts` — SubAgentTool（并发控制）
+- `src/tool/registry.ts` — `Registry.filter()` 工具过滤
 
 ## 文档维护规范
 

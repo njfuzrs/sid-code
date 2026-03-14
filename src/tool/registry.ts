@@ -33,6 +33,16 @@ export class Registry {
     }));
   }
 
+  /** 按名称过滤，返回只包含指定工具的新 Registry */
+  filter(names: string[]): Registry {
+    const filtered = new Registry();
+    for (const name of names) {
+      const tool = this.get(name);
+      if (tool) filtered.register(tool);
+    }
+    return filtered;
+  }
+
   /** 已注册工具数量 */
   size(): number {
     return this.tools.size;

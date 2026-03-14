@@ -9,7 +9,6 @@ import type {
   ToolUseBlock,
   StreamEvent,
   AccumulatedResponse,
-  SendParams,
 } from "./llm/types.ts";
 import type { Config } from "./config/config.ts";
 import type { Checker } from "./permission/types.ts";
@@ -22,6 +21,8 @@ import { SessionState } from "./session/state.ts";
 import { loadCLAUDEmd } from "./config/rules.ts";
 import { getLogger } from "./debug/logger.ts";
 import { maskSensitiveData } from "./permission/sensitive.ts";
+import { AgentLoopRunner } from "./agent/loop.ts";
+import type { AgentLoopCallbacks } from "./agent/loop.ts";
 import * as readline from "readline";
 
 /** App 配置 */
@@ -46,6 +47,7 @@ export class App {
   private sessionState: SessionState;
   private abortController: AbortController | null = null;
   private isTUIMode: boolean = false;
+  private loopRunner: AgentLoopRunner;
   /** TUI 模式下的权限确认回调（由 TUI 注入） */
   private tuiConfirmCallback: ((desc: string) => Promise<boolean>) | null = null;
 
@@ -77,19 +79,29 @@ export class App {
         }
       },
     });
-  }
 
-  /** 发送消息给 LLM（带重试和回退） */
-  private sendWithRetry(params: SendParams, signal?: AbortSignal): AsyncIterable<StreamEvent> {
-    this.fallback.reset();
-    return this.fallback.executeWithFallback(this.provider, params, signal);
+    // 初始化统一循环 Runner
+    this.loopRunner = new AgentLoopRunner({
+      config: this.config,
+      provider: this.provider,
+      ctxMgr: this.ctxMgr,
+      toolRegistry: this.toolRegistry,
+      sessionState: this.sessionState,
+      fallback: this.fallback,
+      thinkingMgr: this.thinkingMgr,
+      executeTools: (content) => this.executeTools(content),
+      processStream: (stream, onText) => this.processStream(stream, onText),
+      autoCompact: () => this.autoCompact(),
+      handleContextOverflow: (err, max) => this.handleContextOverflow(err, max),
+      getAbortSignal: () => this.abortController?.signal,
+    });
   }
 
   /**
    * 处理上下文溢出错误，尝试自动缩小 max_tokens
    * 返回调整后的 maxTokens，无法恢复时返回 null
    */
-  private handleContextOverflow(err: any, currentMaxTokens: number): number | null {
+  private handleContextOverflow(err: any, _currentMaxTokens: number): number | null {
     const msg = err.message || String(err);
     // 匹配常见的上下文溢出错误格式
     const overflowMatch = msg.match(/(\d+)\s*\+\s*(\d+)\s*>\s*(\d+)/);
@@ -402,141 +414,17 @@ export class App {
 
   /** Agentic 主循环：发送消息 → 处理响应 → 执行工具 → 循环 */
   async agentLoop(userInput: string): Promise<void> {
-    const log = getLogger();
-    log.info("AGENT", `用户输入: ${userInput.slice(0, 200)}${userInput.length > 200 ? '...' : ''}`);
-
-    // 解析 thinking hint（如 "think", "think hard", "ultrathink"）
-    const { cleaned: cleanedInput, config: thinkingConfig } = this.thinkingMgr.parseThinkingHint(userInput);
-    // 如果没有显式 hint，根据输入自动推断
-    const thinking = thinkingConfig ?? this.thinkingMgr.getThinkingConfig(cleanedInput);
-
-    // 添加用户消息（使用清理后的输入）
-    this.ctxMgr.addMessage({
-      role: "user",
-      content: [{ type: "text", text: cleanedInput }],
-    });
-
-    let turns = 0;
-    const maxTurns = this.config.maxTurns || 50;
-
-    while (turns < maxTurns) {
-      turns++;
-      log.debug("AGENT", `轮次 ${turns}/${maxTurns}，消息数 ${this.ctxMgr.getMessages().length}`);
-
-      // 上下文使用率监控（两段式触发，对标 Claude Code）
-      const toolCount = this.toolRegistry.size();
-      const currentTokens = this.ctxMgr.estimateTokens(toolCount);
-      const contextMax = this.ctxMgr.getMaxTokens();
-      const usagePercent = (currentTokens / contextMax) * 100;
-      const remaining = 100 - usagePercent;
-
-      if (remaining <= 0) {
-        // 强制压缩
-        log.warn("AGENT", "上下文已满，强制压缩");
-        console.log("\n[Auto-compacting context...]");
-        await this.autoCompact();
-      } else if (remaining <= 6) {
-        // 警告（94-100%）
-        console.log(`\n[Context left until auto-compact: ${remaining.toFixed(0)}%]`);
-      } else if (this.ctxMgr.needsCompaction(toolCount)) {
-        // 70% 阈值触发常规压缩
-        log.warn("AGENT", `上下文接近上限 (${currentTokens} tokens, ${usagePercent.toFixed(0)}%)，触发自动压缩`);
-        await this.autoCompact();
-      }
-
-      // 发送消息给 LLM（使用清理后的消息，旧的大输出会被替换，带重试和回退）
-      const cleanedMessages = this.ctxMgr.getCleanedMessages();
-      const toolDefs = toolCount > 0 ? this.toolRegistry.definitions() : undefined;
-      log.llmRequest(this.config.provider, this.config.model, cleanedMessages.length, toolDefs?.length ?? 0);
-
-      // 构建请求参数（maxTokens 可能被上下文溢出自动调整）
-      const sendParams: SendParams = {
-        model: this.config.model,
-        messages: cleanedMessages,
-        system: this.ctxMgr.getSystemPrompt(),
-        maxTokens: this.config.maxTokens,
-        tools: toolDefs,
-        // Extended Thinking（仅首轮传入，后续工具循环不需要）
-        thinking: turns === 1 ? thinking : undefined,
-      };
-
-      let stream: AsyncIterable<StreamEvent>;
-      try {
-        stream = this.sendWithRetry(sendParams, this.abortController?.signal);
-      } catch (err: any) {
-        // 上下文溢出自动调整 max_tokens
-        const adjusted = this.handleContextOverflow(err, sendParams.maxTokens);
-        if (adjusted !== null) {
-          log.info("AGENT", `上下文溢出，自动调整 maxTokens: ${sendParams.maxTokens} → ${adjusted}`);
-          sendParams.maxTokens = adjusted;
-          stream = this.sendWithRetry(sendParams, this.abortController?.signal);
-        } else {
-          // 无法调整，触发自动压缩后重试
-          log.warn("AGENT", "上下文溢出且无法调整 maxTokens，触发自动压缩");
-          await this.autoCompact();
-          continue;
-        }
-      }
-
-      // 处理流式响应（记录 API 耗时）
-      const apiStart = Date.now();
-      const response = await this.processStream(stream, (text) => {
-        process.stdout.write(text);
-      });
-      const apiDuration = Date.now() - apiStart;
-
-      // 更新 SessionState（按模型分开统计 + 成本计算 + 耗时追踪）
-      this.sessionState.updateUsage(this.config.model, response.usage, apiDuration);
-
-      log.llmResponse(response.stopReason || "unknown", response.usage);
-      const totalUsage = this.sessionState.getTotalUsage();
-      log.debug("AGENT", `累计用量: input=${totalUsage.inputTokens}, output=${totalUsage.outputTokens}, 费用=$${this.sessionState.totalCostUSD.toFixed(4)}`);
-
-      // 添加助手消息到历史
-      this.ctxMgr.addMessage({
-        role: "assistant",
-        content: response.content,
-      });
-
-      // 检查停止原因
-      if (response.stopReason === "end_turn" || response.stopReason === "stop") {
-        log.info("AGENT", `对话结束 (${response.stopReason})，共 ${turns} 轮`);
-        process.stdout.write("\n");
-        break;
-      }
-
-      // 处理工具调用
-      if (response.stopReason === "tool_use") {
-        const toolBlocks = response.content.filter(b => b.type === "tool_use");
-        log.info("AGENT", `工具调用: ${toolBlocks.map(b => b.type === "tool_use" ? b.name : "").join(", ")}`);
-
-        const toolResults = await this.executeTools(response.content);
-        // 添加工具结果到历史
-        this.ctxMgr.addMessage({
-          role: "user",
-          content: toolResults,
-        });
-        // 继续循环
-        continue;
-      }
-
-      // max_tokens 续写：模型输出撞上 token 上限，自动继续
-      if (response.stopReason === "max_tokens" || response.stopReason === "length") {
-        log.info("AGENT", `输出达到 token 上限，自动续写 (轮次 ${turns})`);
-        // 不需要添加额外消息，模型会自动接着上次的内容继续
-        continue;
-      }
-
-      // 其他停止原因
-      log.warn("AGENT", `未知停止原因: ${response.stopReason}`);
-      process.stdout.write("\n");
-      break;
-    }
-
-    if (turns >= maxTurns) {
-      log.warn("AGENT", `达到最大轮次限制: ${maxTurns}`);
-      console.log(`\n[达到最大轮次限制: ${maxTurns}]`);
-    }
+    const callbacks: AgentLoopCallbacks = {
+      onStreamText: (text) => process.stdout.write(text),
+      onToolStart: (name) => console.log(`\n[工具调用: ${name}]`),
+      onToolEnd: () => {},
+      onCompact: () => console.log("\n[上下文已自动压缩]"),
+      onComplete: () => process.stdout.write("\n"),
+      onContextWarning: (remaining) =>
+        console.log(`\n[Context left until auto-compact: ${remaining.toFixed(0)}%]`),
+      onMaxTurns: (max) => console.log(`\n[达到最大轮次限制: ${max}]`),
+    };
+    await this.loopRunner.run(userInput, callbacks);
   }
 
   /** 设置 TUI 模式下的权限确认回调 */
@@ -924,139 +812,44 @@ export class App {
       stateRef.current = { ...stateRef.current, ...patch };
     };
 
-    // TUI 版本的 agentLoop
+    // TUI 版本的 agentLoop（使用统一 Runner）
     const tuiAgentLoop = async (userInput: string) => {
-      log.info("TUI:AGENT", `用户输入: ${userInput.slice(0, 200)}${userInput.length > 200 ? '...' : ''}`);
-
       // 清空上一次的流式文本
-      updateState({ streamingText: "" });
+      updateState({ streamingText: "", isLoading: true });
 
-      this.ctxMgr.addMessage({
-        role: "user",
-        content: [{ type: "text", text: userInput }],
-      });
-
-      updateState({
-        messages: this.ctxMgr.getMessages(),
-        isLoading: true,
-      });
-
-      let turns = 0;
-      const maxTurns = this.config.maxTurns || 50;
-
-      while (turns < maxTurns) {
-        turns++;
-        log.debug("TUI:AGENT", `轮次 ${turns}/${maxTurns}，消息数 ${this.ctxMgr.getMessages().length}`);
-
-        // 上下文使用率监控（两段式触发，对标 Claude Code）
-        const toolCount = this.toolRegistry.size();
-        const tuiCurrentTokens = this.ctxMgr.estimateTokens(toolCount);
-        const tuiContextMax = this.ctxMgr.getMaxTokens();
-        const tuiUsagePercent = (tuiCurrentTokens / tuiContextMax) * 100;
-        const tuiRemaining = 100 - tuiUsagePercent;
-
-        if (tuiRemaining <= 0) {
-          log.warn("TUI:AGENT", "上下文已满，强制压缩");
-          await this.autoCompact();
-          updateState({ messages: this.ctxMgr.getMessages() });
-        } else if (tuiRemaining <= 6) {
-          log.warn("TUI:AGENT", `上下文剩余 ${tuiRemaining.toFixed(0)}%，接近自动压缩`);
-        } else if (this.ctxMgr.needsCompaction(toolCount)) {
-          log.warn("TUI:AGENT", `上下文接近上限 (${tuiCurrentTokens} tokens, ${tuiUsagePercent.toFixed(0)}%)，触发自动压缩`);
-          await this.autoCompact();
-          updateState({ messages: this.ctxMgr.getMessages() });
-        }
-
-        // 发送消息给 LLM（使用清理后的消息，带重试和回退）
-        const cleanedMessages = this.ctxMgr.getCleanedMessages();
-        const toolDefs = toolCount > 0 ? this.toolRegistry.definitions() : undefined;
-        log.llmRequest(this.config.provider, this.config.model, cleanedMessages.length, toolDefs?.length ?? 0);
-
-        const stream = this.sendWithRetry(
-          {
-            model: this.config.model,
-            messages: cleanedMessages,
-            system: this.ctxMgr.getSystemPrompt(),
-            maxTokens: this.config.maxTokens,
-            tools: toolDefs,
-          },
-          this.abortController?.signal,
-        );
-
-        // 处理流式响应，更新 TUI 状态（记录 API 耗时）
-        let streamingText = "";
-        let streamChunks = 0;
-        const tuiApiStart = Date.now();
-        const response = await this.processStream(stream, (text) => {
-          streamingText += text;
-          streamChunks++;
-          updateState({ streamingText });
-        });
-        const tuiApiDuration = Date.now() - tuiApiStart;
-
-        log.debug("TUI:AGENT", `流式响应完成，共 ${streamChunks} 个文本块，总长 ${streamingText.length} 字符`);
-        log.llmResponse(response.stopReason || "unknown", response.usage);
-
-        // 更新 SessionState
-        this.sessionState.updateUsage(this.config.model, response.usage, tuiApiDuration);
-
-        this.ctxMgr.addMessage({
-          role: "assistant",
-          content: response.content,
-        });
-
-        // 不清空 streamingText，让完整内容保持显示
-        // 下一次用户输入时会清空
-        updateState({
-          messages: this.ctxMgr.getMessages(),
-          usage: { ...this.sessionState.getTotalUsage() },
-        });
-
-        if (response.stopReason === "end_turn" || response.stopReason === "stop") {
-          log.info("TUI:AGENT", `对话结束 (${response.stopReason})，共 ${turns} 轮`);
-          break;
-        }
-
-        if (response.stopReason === "tool_use") {
-          // 工具调用时清空流式文本，避免和工具状态重叠
-          updateState({ streamingText: "" });
-
-          // 显示工具执行状态
-          const toolBlocks = response.content.filter((b) => b.type === "tool_use");
-          const toolNames = toolBlocks.map(b => b.type === "tool_use" ? b.name : "").filter(Boolean);
-          log.info("TUI:AGENT", `工具调用: ${toolNames.join(", ")}`);
-
-          for (const block of toolBlocks) {
-            if (block.type !== "tool_use") continue;
-            log.debug("TUI:STATE", `设置工具状态: toolName=${block.name}, isToolExecuting=true`);
-            updateState({ toolName: block.name, isToolExecuting: true });
-          }
-
-          const toolResults = await this.executeTools(response.content);
-          this.ctxMgr.addMessage({ role: "user", content: toolResults });
-
-          log.debug("TUI:STATE", `工具执行完成，清除工具状态`);
+      const tuiCallbacks: AgentLoopCallbacks = {
+        onStreamText: (text) => {
+          const current = stateRef.current.streamingText || "";
+          updateState({ streamingText: current + text });
+        },
+        onToolStart: (name) => {
+          updateState({ streamingText: "", toolName: name, isToolExecuting: true });
+        },
+        onToolEnd: () => {
           updateState({
             messages: this.ctxMgr.getMessages(),
             toolName: null,
             isToolExecuting: false,
           });
-          continue;
-        }
+        },
+        onCompact: () => {
+          updateState({ messages: this.ctxMgr.getMessages() });
+        },
+        onComplete: () => {
+          updateState({
+            messages: this.ctxMgr.getMessages(),
+            usage: { ...this.sessionState.getTotalUsage() },
+          });
+        },
+      };
 
-        // max_tokens 续写：模型输出撞上 token 上限，自动继续
-        if (response.stopReason === "max_tokens" || response.stopReason === "length") {
-          log.info("TUI:AGENT", `输出达到 token 上限，自动续写 (轮次 ${turns})`);
-          // 不需要添加额外消息，模型会自动接着上次的内容继续
-          continue;
-        }
+      await this.loopRunner.run(userInput, tuiCallbacks);
 
-        log.warn("TUI:AGENT", `未知停止原因: ${response.stopReason}`);
-        break;
-      }
-
-      log.debug("TUI:STATE", `设置 isLoading=false`);
-      updateState({ isLoading: false });
+      updateState({
+        isLoading: false,
+        messages: this.ctxMgr.getMessages(),
+        usage: { ...this.sessionState.getTotalUsage() },
+      });
     };
 
     // 回调
