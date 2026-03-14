@@ -59,6 +59,16 @@ export class AnthropicProvider implements Provider {
       }),
     }));
 
+    // Prompt Caching：在最后一条用户消息的最后一个 content block 上标记 cache_control
+    // 这样 system prompt + 工具定义 + 历史消息都能被缓存，只有新增部分需要计算
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "user" && messages[i].content.length > 0) {
+        const lastBlock = messages[i].content[messages[i].content.length - 1];
+        (lastBlock as any).cache_control = { type: "ephemeral" };
+        break;
+      }
+    }
+
     // 转换工具定义
     const tools = params.tools?.map((t) => ({
       name: t.name,
@@ -66,9 +76,14 @@ export class AnthropicProvider implements Provider {
       input_schema: t.input_schema,
     }));
 
+    // system prompt 也标记缓存
+    const system = params.system
+      ? [{ type: "text" as const, text: params.system, cache_control: { type: "ephemeral" as const } }]
+      : undefined;
+
     try {
       const log = getLogger();
-      log.debug("LLM:ANTHROPIC", `发送请求`, {
+      log.debug("LLM:ANTHROPIC", `发送请求（Prompt Caching 已启用）`, {
         model: params.model || this._model,
         messageCount: messages.length,
         toolCount: tools?.length ?? 0,
@@ -79,7 +94,7 @@ export class AnthropicProvider implements Provider {
         model: params.model || this._model,
         max_tokens: params.maxTokens,
         messages: messages as any,
-        system: params.system,
+        system: system as any,
         tools: tools as any,
         // Extended Thinking 支持
         ...(params.thinking?.enabled && {

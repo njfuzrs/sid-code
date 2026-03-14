@@ -7,6 +7,10 @@ import type { Tool, ToolResult } from "./types.ts";
 import { glob } from "glob";
 
 export class GlobTool implements Tool {
+  readOnly(): boolean {
+    return true;
+  }
+
   name(): string {
     return "glob";
   }

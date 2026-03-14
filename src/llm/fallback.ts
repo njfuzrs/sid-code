@@ -98,13 +98,14 @@ export class ModelFallback {
           break; // 跳到 fallback 阶段
         }
 
-        // 计算指数退避延迟
-        const delayMs = Math.min(
+        // 优先使用 retry-after 头（如果错误信息中包含），否则指数退避
+        const retryAfterMs = this.parseRetryAfter(errorMsg);
+        const delayMs = retryAfterMs ?? Math.min(
           this.config.initialDelayMs * Math.pow(2, attempt),
           this.config.maxDelayMs,
         );
 
-        log.info("FALLBACK", `重试 ${attempt + 1}/${this.config.maxRetries}，延迟 ${delayMs}ms`);
+        log.info("FALLBACK", `重试 ${attempt + 1}/${this.config.maxRetries}，延迟 ${delayMs}ms${retryAfterMs ? ' (来自 retry-after)' : ' (指数退避)'}`);
         this.listener?.onRetry?.(attempt + 1, errorMsg, delayMs);
 
         // 等待后重试
@@ -140,6 +141,19 @@ export class ModelFallback {
   private isRetryableError(errorMsg: string): boolean {
     const lowerMsg = errorMsg.toLowerCase();
     return RETRYABLE_ERRORS.some(pattern => lowerMsg.includes(pattern.toLowerCase()));
+  }
+
+  /** 从错误信息中解析 retry-after 值（秒），返回毫秒数；解析失败返回 null */
+  private parseRetryAfter(errorMsg: string): number | null {
+    // 匹配常见格式：retry-after: 30, retry_after: 30, "retry-after":"30"
+    const match = errorMsg.match(/retry[_-]after[:\s"]*(\d+)/i);
+    if (match) {
+      const seconds = parseInt(match[1], 10);
+      if (seconds > 0 && seconds <= 300) {
+        return seconds * 1000;
+      }
+    }
+    return null;
   }
 
   /** 异步睡眠 */

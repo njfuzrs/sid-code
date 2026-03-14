@@ -6,6 +6,7 @@
 import type { Provider } from "./llm/provider.ts";
 import type {
   ContentBlock,
+  ToolUseBlock,
   StreamEvent,
   AccumulatedResponse,
   Usage,
@@ -355,6 +356,13 @@ export class App {
         continue;
       }
 
+      // max_tokens 续写：模型输出撞上 token 上限，自动继续
+      if (response.stopReason === "max_tokens" || response.stopReason === "length") {
+        log.info("AGENT", `输出达到 token 上限，自动续写 (轮次 ${turns})`);
+        // 不需要添加额外消息，模型会自动接着上次的内容继续
+        continue;
+      }
+
       // 其他停止原因
       log.warn("AGENT", `未知停止原因: ${response.stopReason}`);
       process.stdout.write("\n");
@@ -392,18 +400,26 @@ export class App {
     });
   }
 
-  /** 执行工具调用（含权限检查） */
+  /** 执行工具调用（含权限检查，只读工具并行、写入工具串行） */
   async executeTools(content: ContentBlock[]): Promise<ContentBlock[]> {
     const log = getLogger();
-    const results: ContentBlock[] = [];
 
-    for (const block of content) {
-      if (block.type !== "tool_use") continue;
+    // 提取所有 tool_use 块，保留原始顺序索引
+    const toolBlocks = content
+      .map((block, idx) => ({ block, idx }))
+      .filter((item): item is { block: ToolUseBlock; idx: number } => item.block.type === "tool_use");
 
+    if (toolBlocks.length === 0) return [];
+
+    // 权限预检：先对所有工具做权限检查，收集通过/拒绝结果
+    const checkedTools: { block: ToolUseBlock; tool: import("./tool/types.ts").Tool; idx: number }[] = [];
+    const rejectedResults: Map<number, ContentBlock> = new Map();
+
+    for (const { block, idx } of toolBlocks) {
       const tool = this.toolRegistry.get(block.name);
       if (!tool) {
         log.error("TOOL", `工具未找到: ${block.name}`);
-        results.push({
+        rejectedResults.set(idx, {
           type: "tool_result",
           tool_use_id: block.id,
           content: `工具 "${block.name}" 未找到`,
@@ -422,13 +438,12 @@ export class App {
 
         if (!decision.allowed) {
           if (decision.needsConfirmation) {
-            // 需要用户确认
             const desc = decision.reason || `工具 "${block.name}" 需要用户确认`;
             log.info("PERMISSION", `请求用户确认: ${desc}`);
             const confirmed = await this.requestUserConfirmation(desc);
             if (!confirmed) {
               log.info("PERMISSION", `用户拒绝: ${block.name}`);
-              results.push({
+              rejectedResults.set(idx, {
                 type: "tool_result",
                 tool_use_id: block.id,
                 content: `用户拒绝执行工具 "${block.name}"`,
@@ -438,12 +453,11 @@ export class App {
             }
             log.info("PERMISSION", `用户批准: ${block.name}`);
           } else {
-            // 直接拒绝
             log.warn("PERMISSION", `权限拒绝: ${block.name} - ${decision.reason}`);
             if (!this.isTUIMode) {
               console.log(`\n[权限拒绝] ${decision.reason}`);
             }
-            results.push({
+            rejectedResults.set(idx, {
               type: "tool_result",
               tool_use_id: block.id,
               content: `权限拒绝: ${decision.reason}`,
@@ -454,65 +468,103 @@ export class App {
         }
       }
 
-      // TUI 模式下不输出到 console，避免和 Ink 渲染冲突
-      if (!this.isTUIMode) {
-        console.log(`\n[工具调用: ${block.name}]`);
-      }
+      checkedTools.push({ block, tool, idx });
+    }
 
-      log.debug("TOOL", `开始执行: ${block.name}`, block.input);
-      const startTime = Date.now();
+    // 分离只读和写入工具
+    const readOnlyTools = checkedTools.filter(({ tool }) => tool.readOnly?.() === true);
+    const writingTools = checkedTools.filter(({ tool }) => tool.readOnly?.() !== true);
 
-      try {
-        const result = await tool.execute(block.input, this.abortController?.signal);
-        const elapsed = Date.now() - startTime;
+    log.debug("TOOL", `工具分类: 只读 ${readOnlyTools.length} 个并行执行, 写入 ${writingTools.length} 个串行执行`);
 
-        // 截断超大输出，防止上下文爆炸
-        const truncatedOutput = ContextManager.truncateToolOutput(result.output);
+    // 结果收集（按原始顺序索引存储）
+    const resultMap: Map<number, ContentBlock> = new Map(rejectedResults);
 
-        log.toolExecution(block.name, block.input, {
-          success: !result.isError,
-          error: result.isError ? result.output.slice(0, 500) : undefined,
-        });
-        log.debug("TOOL", `执行完成: ${block.name} (${elapsed}ms)，输出 ${result.output.length} 字符${truncatedOutput.length < result.output.length ? `，截断为 ${truncatedOutput.length} 字符` : ""}`);
-
-        results.push({
-          type: "tool_result",
-          tool_use_id: block.id,
-          content: truncatedOutput,
-          is_error: result.isError,
-        });
-
-        if (!this.isTUIMode) {
-          if (result.isError) {
-            console.log(`[工具错误: ${result.output.slice(0, 100)}]`);
-          } else {
-            // 截断显示
-            const preview = result.output.length > 200
-              ? result.output.slice(0, 200) + "..."
-              : result.output;
-            console.log(`[工具结果: ${preview}]`);
-          }
-        }
-      } catch (err: any) {
-        const elapsed = Date.now() - startTime;
-        log.error("TOOL", `执行异常: ${block.name} (${elapsed}ms)`, {
-          error: err.message,
-          stack: err.stack,
-        });
-
-        results.push({
-          type: "tool_result",
-          tool_use_id: block.id,
-          content: `工具执行异常: ${err.message}`,
-          is_error: true,
-        });
-        if (!this.isTUIMode) {
-          console.log(`[工具异常: ${err.message}]`);
-        }
+    // 只读工具并行执行
+    if (readOnlyTools.length > 0) {
+      const readResults = await Promise.all(
+        readOnlyTools.map(({ block, tool, idx }) => this.executeSingleTool(block, tool).then(r => ({ idx, result: r })))
+      );
+      for (const { idx, result } of readResults) {
+        resultMap.set(idx, result);
       }
     }
 
+    // 写入工具串行执行
+    for (const { block, tool, idx } of writingTools) {
+      const result = await this.executeSingleTool(block, tool);
+      resultMap.set(idx, result);
+    }
+
+    // 按原始顺序组装结果
+    const results: ContentBlock[] = [];
+    for (const { idx } of toolBlocks) {
+      const result = resultMap.get(idx);
+      if (result) results.push(result);
+    }
+
     return results;
+  }
+
+  /** 执行单个工具 */
+  private async executeSingleTool(block: ToolUseBlock, tool: import("./tool/types.ts").Tool): Promise<ContentBlock> {
+    const log = getLogger();
+
+    if (!this.isTUIMode) {
+      console.log(`\n[工具调用: ${block.name}]`);
+    }
+
+    log.debug("TOOL", `开始执行: ${block.name}`, block.input);
+    const startTime = Date.now();
+
+    try {
+      const result = await tool.execute(block.input, this.abortController?.signal);
+      const elapsed = Date.now() - startTime;
+
+      // 截断超大输出，防止上下文爆炸
+      const truncatedOutput = ContextManager.truncateToolOutput(result.output);
+
+      log.toolExecution(block.name, block.input, {
+        success: !result.isError,
+        error: result.isError ? result.output.slice(0, 500) : undefined,
+      });
+      log.debug("TOOL", `执行完成: ${block.name} (${elapsed}ms)，输出 ${result.output.length} 字符${truncatedOutput.length < result.output.length ? `，截断为 ${truncatedOutput.length} 字符` : ""}`);
+
+      if (!this.isTUIMode) {
+        if (result.isError) {
+          console.log(`[工具错误: ${result.output.slice(0, 100)}]`);
+        } else {
+          const preview = result.output.length > 200
+            ? result.output.slice(0, 200) + "..."
+            : result.output;
+          console.log(`[工具结果: ${preview}]`);
+        }
+      }
+
+      return {
+        type: "tool_result",
+        tool_use_id: block.id,
+        content: truncatedOutput,
+        is_error: result.isError,
+      };
+    } catch (err: any) {
+      const elapsed = Date.now() - startTime;
+      log.error("TOOL", `执行异常: ${block.name} (${elapsed}ms)`, {
+        error: err.message,
+        stack: err.stack,
+      });
+
+      if (!this.isTUIMode) {
+        console.log(`[工具异常: ${err.message}]`);
+      }
+
+      return {
+        type: "tool_result",
+        tool_use_id: block.id,
+        content: `工具执行异常: ${err.message}`,
+        is_error: true,
+      };
+    }
   }
 
   /** 纯文本 REPL 模式 */
@@ -613,7 +665,6 @@ export class App {
     await this.init();
 
     // 捕获输出
-    const chunks: string[] = [];
     const origWrite = process.stdout.write.bind(process.stdout);
 
     if (this.config.outputFormat === "json") {
@@ -659,7 +710,6 @@ export class App {
     const React = await import("react");
     const { render } = await import("ink");
     const { TUIApp } = await import("./ui/App.tsx");
-    const type = await import("./ui/App.tsx");
 
     // 共享状态引用（TUI 通过轮询读取）
     const stateRef: { current: import("./ui/App.tsx").TUIState } = {
@@ -790,6 +840,13 @@ export class App {
             toolName: null,
             isToolExecuting: false,
           });
+          continue;
+        }
+
+        // max_tokens 续写：模型输出撞上 token 上限，自动继续
+        if (response.stopReason === "max_tokens" || response.stopReason === "length") {
+          log.info("TUI:AGENT", `输出达到 token 上限，自动续写 (轮次 ${turns})`);
+          // 不需要添加额外消息，模型会自动接着上次的内容继续
           continue;
         }
 

@@ -7,6 +7,10 @@ import type { Tool, ToolResult } from "./types.ts";
 import { spawn } from "bun";
 
 export class GrepTool implements Tool {
+  readOnly(): boolean {
+    return true;
+  }
+
   name(): string {
     return "grep";
   }

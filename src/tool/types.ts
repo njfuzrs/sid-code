@@ -22,4 +22,7 @@ export interface Tool {
 
   /** 执行工具操作 */
   execute(input: unknown, signal?: AbortSignal): Promise<ToolResult>;
+
+  /** 是否为只读工具（只读工具可以并行执行） */
+  readOnly?(): boolean;
 }

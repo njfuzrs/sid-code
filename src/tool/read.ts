@@ -15,6 +15,10 @@ export class ReadTool implements Tool {
     this.tracker = tracker ?? null;
   }
 
+  readOnly(): boolean {
+    return true;
+  }
+
   name(): string {
     return "read";
   }
