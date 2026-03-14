@@ -5,19 +5,19 @@
 
 import type { Provider } from "./llm/provider.ts";
 import type {
-  Message,
   ContentBlock,
   StreamEvent,
   AccumulatedResponse,
-  ToolDefinition,
   Usage,
-  TextDelta,
-  InputJsonDelta,
+  SendParams,
 } from "./llm/types.ts";
 import type { Config } from "./config/config.ts";
+import type { Checker } from "./permission/types.ts";
 import { Manager as ContextManager } from "./context/manager.ts";
 import { Registry as ToolRegistry } from "./tool/registry.ts";
 import { Registry as CommandRegistry } from "./command/registry.ts";
+import { ModelFallback } from "./llm/fallback.ts";
+import { ThinkingManager } from "./llm/thinking.ts";
 import { loadCLAUDEmd } from "./config/rules.ts";
 import { getLogger } from "./debug/logger.ts";
 import * as readline from "readline";
@@ -28,6 +28,7 @@ export interface AppOptions {
   provider: Provider;
   toolRegistry?: ToolRegistry;
   commandRegistry?: CommandRegistry;
+  permissionChecker?: Checker;
   initialPrompt?: string;
 }
 
@@ -37,16 +38,110 @@ export class App {
   private ctxMgr: ContextManager;
   private toolRegistry: ToolRegistry;
   private commandRegistry: CommandRegistry;
+  private permissionChecker: Checker | null;
+  private fallback: ModelFallback;
+  private thinkingMgr: ThinkingManager;
   private totalUsage: Usage = { inputTokens: 0, outputTokens: 0 };
   private abortController: AbortController | null = null;
-  private isTUIMode: boolean = false; // 标记是否在 TUI 模式下
+  private isTUIMode: boolean = false;
+  /** TUI 模式下的权限确认回调（由 TUI 注入） */
+  private tuiConfirmCallback: ((desc: string) => Promise<boolean>) | null = null;
 
   constructor(opts: AppOptions) {
     this.config = opts.config;
     this.provider = opts.provider;
     this.toolRegistry = opts.toolRegistry ?? new ToolRegistry();
     this.commandRegistry = opts.commandRegistry ?? new CommandRegistry();
+    this.permissionChecker = opts.permissionChecker ?? null;
     this.ctxMgr = new ContextManager({ maxTokens: 200000 });
+    // Extended Thinking 仅 Anthropic 支持
+    this.thinkingMgr = new ThinkingManager(opts.config.provider === "anthropic");
+    this.fallback = new ModelFallback({ maxRetries: 3 }, {
+      onRetry: (attempt, error, delayMs) => {
+        const log = getLogger();
+        log.info("FALLBACK", `重试 ${attempt}，错误: ${error}，延迟 ${delayMs}ms`);
+        if (!this.isTUIMode) {
+          console.log(`\n[重试 ${attempt}，${delayMs}ms 后重试...]`);
+        }
+      },
+      onFallback: (reason, model) => {
+        const log = getLogger();
+        log.warn("FALLBACK", `降级到 ${model}，原因: ${reason}`);
+        if (!this.isTUIMode) {
+          console.log(`\n[模型降级到 ${model}]`);
+        }
+      },
+    });
+  }
+
+  /** 发送消息给 LLM（带重试和回退） */
+  private sendWithRetry(params: SendParams, signal?: AbortSignal): AsyncIterable<StreamEvent> {
+    this.fallback.reset();
+    return this.fallback.executeWithFallback(this.provider, params, signal);
+  }
+
+  /**
+   * 自动压缩：上下文接近上限时，用 LLM 生成摘要并压缩消息历史
+   * 如果 LLM 不可用，则使用简单截断策略
+   */
+  private async autoCompact(): Promise<void> {
+    const log = getLogger();
+    const messages = this.ctxMgr.getMessages();
+
+    if (messages.length <= 4) {
+      log.debug("AGENT", "消息太少，跳过压缩");
+      return;
+    }
+
+    try {
+      // 尝试用 LLM 生成摘要
+      const toSummarize = messages.slice(0, -4);
+      const summaryPrompt = `请用中文简洁地总结以下对话内容，保留关键信息（文件路径、代码修改、决策、待办事项）：\n\n${
+        toSummarize.map(m => {
+          const texts = m.content
+            .filter(b => b.type === "text")
+            .map(b => b.type === "text" ? b.text : "")
+            .join("\n");
+          return `[${m.role}] ${texts.slice(0, 500)}`;
+        }).join("\n\n")
+      }`;
+
+      const stream = this.provider.sendMessageStream(
+        {
+          model: this.config.model,
+          messages: [{ role: "user", content: [{ type: "text", text: summaryPrompt }] }],
+          system: "你是一个对话摘要助手。请简洁准确地总结对话内容。",
+          maxTokens: 2000,
+        },
+        this.abortController?.signal,
+      );
+
+      let summary = "";
+      for await (const event of stream) {
+        if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+          summary += event.delta.text;
+        }
+      }
+
+      if (summary) {
+        this.ctxMgr.compactWithSummary(summary);
+        log.info("AGENT", `自动压缩完成，摘要 ${summary.length} 字符，剩余 ${this.ctxMgr.messageCount()} 条消息`);
+        if (!this.isTUIMode) {
+          console.log("\n[上下文已自动压缩]");
+        }
+        return;
+      }
+    } catch (err: any) {
+      log.warn("AGENT", `LLM 摘要失败，使用简单截断: ${err.message}`);
+    }
+
+    // 降级：简单截断（保留最近消息，丢弃旧消息）
+    const simpleSummary = `[自动截断] 之前有 ${messages.length - 4} 条消息被截断以释放上下文空间。`;
+    this.ctxMgr.compactWithSummary(simpleSummary);
+    log.info("AGENT", `简单截断完成，剩余 ${this.ctxMgr.messageCount()} 条消息`);
+    if (!this.isTUIMode) {
+      console.log("\n[上下文已自动截断]");
+    }
   }
 
   /** 初始化：加载系统提示词 */
@@ -178,10 +273,15 @@ export class App {
     const log = getLogger();
     log.info("AGENT", `用户输入: ${userInput.slice(0, 200)}${userInput.length > 200 ? '...' : ''}`);
 
-    // 添加用户消息
+    // 解析 thinking hint（如 "think", "think hard", "ultrathink"）
+    const { cleaned: cleanedInput, config: thinkingConfig } = this.thinkingMgr.parseThinkingHint(userInput);
+    // 如果没有显式 hint，根据输入自动推断
+    const thinking = thinkingConfig ?? this.thinkingMgr.getThinkingConfig(cleanedInput);
+
+    // 添加用户消息（使用清理后的输入）
     this.ctxMgr.addMessage({
       role: "user",
-      content: [{ type: "text", text: userInput }],
+      content: [{ type: "text", text: cleanedInput }],
     });
 
     let turns = 0;
@@ -191,17 +291,26 @@ export class App {
       turns++;
       log.debug("AGENT", `轮次 ${turns}/${maxTurns}，消息数 ${this.ctxMgr.getMessages().length}`);
 
-      // 发送消息给 LLM
-      const toolDefs = this.toolRegistry.size() > 0 ? this.toolRegistry.definitions() : undefined;
-      log.llmRequest(this.config.provider, this.config.model, this.ctxMgr.getMessages().length, toolDefs?.length ?? 0);
+      // 上下文溢出检测：接近上限时自动压缩
+      if (this.ctxMgr.needsCompaction()) {
+        log.warn("AGENT", `上下文接近上限 (${this.ctxMgr.estimateTokens()} tokens)，触发自动压缩`);
+        await this.autoCompact();
+      }
 
-      const stream = this.provider.sendMessageStream(
+      // 发送消息给 LLM（使用清理后的消息，旧的大输出会被替换，带重试和回退）
+      const cleanedMessages = this.ctxMgr.getCleanedMessages();
+      const toolDefs = this.toolRegistry.size() > 0 ? this.toolRegistry.definitions() : undefined;
+      log.llmRequest(this.config.provider, this.config.model, cleanedMessages.length, toolDefs?.length ?? 0);
+
+      const stream = this.sendWithRetry(
         {
           model: this.config.model,
-          messages: this.ctxMgr.getMessages(),
+          messages: cleanedMessages,
           system: this.ctxMgr.getSystemPrompt(),
           maxTokens: this.config.maxTokens,
           tools: toolDefs,
+          // Extended Thinking（仅首轮传入，后续工具循环不需要）
+          thinking: turns === 1 ? thinking : undefined,
         },
         this.abortController?.signal,
       );
@@ -258,7 +367,32 @@ export class App {
     }
   }
 
-  /** 执行工具调用 */
+  /** 设置 TUI 模式下的权限确认回调 */
+  setTUIConfirmCallback(cb: (desc: string) => Promise<boolean>): void {
+    this.tuiConfirmCallback = cb;
+  }
+
+  /** 请求用户确认（根据运行模式选择不同方式） */
+  private async requestUserConfirmation(description: string): Promise<boolean> {
+    // TUI 模式：使用注入的回调
+    if (this.isTUIMode && this.tuiConfirmCallback) {
+      return this.tuiConfirmCallback(description);
+    }
+
+    // REPL 模式：使用 readline
+    return new Promise((resolve) => {
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout,
+      });
+      rl.question(`\n[权限请求] ${description}\n允许执行？(y/n) `, (answer) => {
+        rl.close();
+        resolve(answer.toLowerCase() === "y" || answer.toLowerCase() === "yes");
+      });
+    });
+  }
+
+  /** 执行工具调用（含权限检查） */
   async executeTools(content: ContentBlock[]): Promise<ContentBlock[]> {
     const log = getLogger();
     const results: ContentBlock[] = [];
@@ -278,6 +412,48 @@ export class App {
         continue;
       }
 
+      // 权限检查
+      if (this.permissionChecker) {
+        const decision = await this.permissionChecker.check({
+          toolName: block.name,
+          input: block.input,
+          description: `${block.name}: ${JSON.stringify(block.input).slice(0, 120)}`,
+        });
+
+        if (!decision.allowed) {
+          if (decision.needsConfirmation) {
+            // 需要用户确认
+            const desc = decision.reason || `工具 "${block.name}" 需要用户确认`;
+            log.info("PERMISSION", `请求用户确认: ${desc}`);
+            const confirmed = await this.requestUserConfirmation(desc);
+            if (!confirmed) {
+              log.info("PERMISSION", `用户拒绝: ${block.name}`);
+              results.push({
+                type: "tool_result",
+                tool_use_id: block.id,
+                content: `用户拒绝执行工具 "${block.name}"`,
+                is_error: true,
+              });
+              continue;
+            }
+            log.info("PERMISSION", `用户批准: ${block.name}`);
+          } else {
+            // 直接拒绝
+            log.warn("PERMISSION", `权限拒绝: ${block.name} - ${decision.reason}`);
+            if (!this.isTUIMode) {
+              console.log(`\n[权限拒绝] ${decision.reason}`);
+            }
+            results.push({
+              type: "tool_result",
+              tool_use_id: block.id,
+              content: `权限拒绝: ${decision.reason}`,
+              is_error: true,
+            });
+            continue;
+          }
+        }
+      }
+
       // TUI 模式下不输出到 console，避免和 Ink 渲染冲突
       if (!this.isTUIMode) {
         console.log(`\n[工具调用: ${block.name}]`);
@@ -290,16 +466,19 @@ export class App {
         const result = await tool.execute(block.input, this.abortController?.signal);
         const elapsed = Date.now() - startTime;
 
+        // 截断超大输出，防止上下文爆炸
+        const truncatedOutput = ContextManager.truncateToolOutput(result.output);
+
         log.toolExecution(block.name, block.input, {
           success: !result.isError,
           error: result.isError ? result.output.slice(0, 500) : undefined,
         });
-        log.debug("TOOL", `执行完成: ${block.name} (${elapsed}ms)，输出 ${result.output.length} 字符`);
+        log.debug("TOOL", `执行完成: ${block.name} (${elapsed}ms)，输出 ${result.output.length} 字符${truncatedOutput.length < result.output.length ? `，截断为 ${truncatedOutput.length} 字符` : ""}`);
 
         results.push({
           type: "tool_result",
           tool_use_id: block.id,
-          content: result.output,
+          content: truncatedOutput,
           is_error: result.isError,
         });
 
@@ -532,13 +711,22 @@ export class App {
         turns++;
         log.debug("TUI:AGENT", `轮次 ${turns}/${maxTurns}，消息数 ${this.ctxMgr.getMessages().length}`);
 
-        const toolDefs = this.toolRegistry.size() > 0 ? this.toolRegistry.definitions() : undefined;
-        log.llmRequest(this.config.provider, this.config.model, this.ctxMgr.getMessages().length, toolDefs?.length ?? 0);
+        // 上下文溢出检测：接近上限时自动压缩
+        if (this.ctxMgr.needsCompaction()) {
+          log.warn("TUI:AGENT", `上下文接近上限 (${this.ctxMgr.estimateTokens()} tokens)，触发自动压缩`);
+          await this.autoCompact();
+          updateState({ messages: this.ctxMgr.getMessages() });
+        }
 
-        const stream = this.provider.sendMessageStream(
+        // 发送消息给 LLM（使用清理后的消息，带重试和回退）
+        const cleanedMessages = this.ctxMgr.getCleanedMessages();
+        const toolDefs = this.toolRegistry.size() > 0 ? this.toolRegistry.definitions() : undefined;
+        log.llmRequest(this.config.provider, this.config.model, cleanedMessages.length, toolDefs?.length ?? 0);
+
+        const stream = this.sendWithRetry(
           {
             model: this.config.model,
-            messages: this.ctxMgr.getMessages(),
+            messages: cleanedMessages,
             system: this.ctxMgr.getSystemPrompt(),
             maxTokens: this.config.maxTokens,
             tools: toolDefs,

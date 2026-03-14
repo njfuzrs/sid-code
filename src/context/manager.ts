@@ -1,9 +1,15 @@
 /**
  * 上下文管理器
- * 管理对话消息历史、token 估算、自动压缩
+ * 管理对话消息历史、token 估算、自动压缩、持久化输出管理
  */
 
-import type { Message, ContentBlock, Usage } from "../llm/types.ts";
+import type { Message } from "../llm/types.ts";
+
+/** 持久化输出阈值 */
+const OUTPUT_THRESHOLD = 400000; // 400KB，超过此大小的工具输出会被截断
+const PREVIEW_SIZE = 2000;       // 截断后保留的预览大小
+const KEEP_RECENT_OUTPUTS = 3;   // 保留最近 N 个大输出，旧的清理掉
+const CLEARED_MARKER = "[旧的工具输出已清理]";
 
 /** 上下文管理器配置 */
 export interface ManagerOptions {
@@ -37,9 +43,52 @@ export class Manager {
     this.messages.push(msg);
   }
 
-  /** 获取所有消息 */
+  /** 获取所有消息（发送给 LLM 前调用，会自动清理旧的大输出） */
   getMessages(): Message[] {
     return [...this.messages];
+  }
+
+  /**
+   * 获取清理后的消息列表（发送给 LLM 前调用）
+   * 1. 清理旧的大输出，只保留最近 N 个
+   * 2. 返回深拷贝，不影响原始消息
+   */
+  getCleanedMessages(): Message[] {
+    // 找到所有大输出的位置（从后往前扫描）
+    const largeOutputPositions: { msgIdx: number; blockIdx: number }[] = [];
+
+    for (let i = 0; i < this.messages.length; i++) {
+      const msg = this.messages[i];
+      for (let j = 0; j < msg.content.length; j++) {
+        const block = msg.content[j];
+        if (block.type === "tool_result" && block.content.length > OUTPUT_THRESHOLD) {
+          largeOutputPositions.push({ msgIdx: i, blockIdx: j });
+        }
+      }
+    }
+
+    // 如果大输出数量不超过保留数，直接返回
+    if (largeOutputPositions.length <= KEEP_RECENT_OUTPUTS) {
+      return [...this.messages];
+    }
+
+    // 需要清理的旧输出（保留最近 N 个）
+    const toClean = largeOutputPositions.slice(0, -KEEP_RECENT_OUTPUTS);
+    const cleanSet = new Set(toClean.map(p => `${p.msgIdx}:${p.blockIdx}`));
+
+    // 深拷贝并清理
+    return this.messages.map((msg, msgIdx) => ({
+      role: msg.role,
+      content: msg.content.map((block, blockIdx) => {
+        if (cleanSet.has(`${msgIdx}:${blockIdx}`) && block.type === "tool_result") {
+          return {
+            ...block,
+            content: CLEARED_MARKER,
+          };
+        }
+        return block;
+      }),
+    }));
   }
 
   /** 设置消息列表（用于恢复会话） */
@@ -50,6 +99,23 @@ export class Manager {
   /** 清空消息 */
   clear(): void {
     this.messages = [];
+  }
+
+  /**
+   * 截断超大工具输出，只保留预览
+   * 在工具结果添加到消息历史前调用
+   */
+  static truncateToolOutput(content: string): string {
+    if (content.length <= OUTPUT_THRESHOLD) {
+      return content;
+    }
+
+    // 保留头部预览
+    const preview = content.slice(0, PREVIEW_SIZE);
+    const totalLines = content.split("\n").length;
+    const previewLines = preview.split("\n").length;
+
+    return `${preview}\n\n... [输出已截断: 原始 ${content.length} 字符, ${totalLines} 行，仅显示前 ${PREVIEW_SIZE} 字符 ${previewLines} 行]`;
   }
 
   /** 估算当前 token 数（粗略：4 字符 ≈ 1 token） */

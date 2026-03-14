@@ -210,9 +210,11 @@ async function main(): Promise<void> {
       process.exit(1);
     }
 
-    // 注册内置工具
+    // 注册内置工具（共享 FileReadTracker 实例）
     const { Registry: ToolRegistry } = await import("./tool/registry.ts");
+    const { FileReadTracker } = await import("./tool/file-read-tracker.ts");
     const toolRegistry = new ToolRegistry();
+    const fileReadTracker = new FileReadTracker();
 
     const { ReadTool } = await import("./tool/read.ts");
     const { WriteTool } = await import("./tool/write.ts");
@@ -221,12 +223,16 @@ async function main(): Promise<void> {
     const { GrepTool } = await import("./tool/grep.ts");
     const { GlobTool } = await import("./tool/glob.ts");
 
-    toolRegistry.register(new ReadTool());
+    toolRegistry.register(new ReadTool(fileReadTracker));
     toolRegistry.register(new WriteTool());
-    toolRegistry.register(new EditTool());
+    toolRegistry.register(new EditTool(fileReadTracker));
     toolRegistry.register(new BashTool());
     toolRegistry.register(new GrepTool());
     toolRegistry.register(new GlobTool());
+
+    // 注册子代理工具
+    const { SubAgentTool } = await import("./agent/tool.ts");
+    toolRegistry.register(new SubAgentTool(provider, config.model, toolRegistry));
 
     // 注册内置命令
     const { Registry: CommandRegistry } = await import("./command/registry.ts");
@@ -234,9 +240,13 @@ async function main(): Promise<void> {
     const commandRegistry = new CommandRegistry();
     registerBuiltins(commandRegistry);
 
+    // 创建权限检查器
+    const { PermissionChecker } = await import("./permission/checker.ts");
+    const permissionChecker = new PermissionChecker(config);
+
     // 创建 App
     const { App } = await import("./app.ts");
-    const app = new App({ config, provider, toolRegistry, commandRegistry });
+    const app = new App({ config, provider, toolRegistry, commandRegistry, permissionChecker });
 
     // 根据模式路由
     if (config.print) {

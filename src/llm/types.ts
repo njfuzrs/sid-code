@@ -81,6 +81,11 @@ export interface SendParams {
   system?: string;
   maxTokens: number;
   tools?: ToolDefinition[];
+  /** Extended Thinking 配置（仅 Anthropic 支持） */
+  thinking?: {
+    enabled: boolean;
+    budgetTokens: number;  // 思考预算 token 数
+  };
 }
 
 /** 累积的流式响应 */

@@ -1,6 +1,7 @@
 /**
  * 会话持久化
  * 将对话历史保存为 JSON 文件，支持恢复会话
+ * 支持会话摘要保存和恢复（上下文溢出时自动触发）
  */
 
 import type { Message } from "../llm/types.ts";
@@ -18,14 +19,32 @@ export interface SessionData {
   updatedAt: string;
 }
 
+/** 会话摘要数据 */
+export interface SessionSummary {
+  sessionId: string;
+  summary: string;
+  model: string;
+  provider: string;
+  createdAt: string;
+  /** 摘要生成时的消息数 */
+  messageCount: number;
+  /** 摘要生成时的 token 估算 */
+  estimatedTokens: number;
+}
+
 export class SessionStore {
   private sessionDir: string;
+  private summaryDir: string;
 
   constructor() {
     const home = process.env.HOME || homedir();
     this.sessionDir = join(home, ".sid-code", "sessions");
+    this.summaryDir = join(home, ".sid-code", "sessions", "summaries");
     if (!existsSync(this.sessionDir)) {
       mkdirSync(this.sessionDir, { recursive: true });
+    }
+    if (!existsSync(this.summaryDir)) {
+      mkdirSync(this.summaryDir, { recursive: true });
     }
   }
 
@@ -99,6 +118,40 @@ export class SessionStore {
     }
 
     return sessions.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  /** 保存会话摘要 */
+  async saveSummary(summary: SessionSummary): Promise<void> {
+    const filePath = join(this.summaryDir, `${summary.sessionId}.json`);
+    await Bun.write(filePath, JSON.stringify(summary, null, 2));
+  }
+
+  /** 加载会话摘要 */
+  async loadSummary(sessionId: string): Promise<SessionSummary | null> {
+    const filePath = join(this.summaryDir, `${sessionId}.json`);
+    if (!existsSync(filePath)) {
+      return null;
+    }
+
+    try {
+      const content = await Bun.file(filePath).text();
+      return JSON.parse(content) as SessionSummary;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 构建恢复消息
+   * 从摘要构建一条用户消息，让 LLM 从上次中断的地方继续
+   */
+  static buildResumeMessage(summary: string): string {
+    return `本次会话是从之前的对话中恢复的，之前的对话因上下文窗口限制而中断。
+以下是之前对话的摘要：
+
+${summary}
+
+请从上次中断的地方继续，无需再次询问。`;
   }
 
   /** 生成新的会话 ID */

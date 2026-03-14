@@ -9,7 +9,6 @@ import type {
   SendParams,
   StreamEvent,
   ContentBlock,
-  ToolUseBlock,
   Usage,
 } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -82,6 +81,13 @@ export class AnthropicProvider implements Provider {
         messages: messages as any,
         system: params.system,
         tools: tools as any,
+        // Extended Thinking 支持
+        ...(params.thinking?.enabled && {
+          thinking: {
+            type: "enabled",
+            budget_tokens: params.thinking.budgetTokens,
+          },
+        }),
       });
 
       // 转换 Anthropic SDK 事件到统一格式
@@ -146,11 +152,14 @@ export class AnthropicProvider implements Provider {
             yield { type: "message_stop" };
             break;
 
-          case "error":
-            yield {
-              type: "error",
-              error: { message: (event as any).error?.message || "Unknown error" },
-            };
+          default:
+            // 处理未知事件类型（如 error）
+            if ((event as any).type === "error") {
+              yield {
+                type: "error",
+                error: { message: (event as any).error?.message || "Unknown error" },
+              };
+            }
             break;
         }
       }

@@ -1,11 +1,20 @@
 /**
  * Read 工具 - 读取文件内容
  * 支持行偏移和限制，用于读取大文件的部分内容
+ * 读取后会记录到 FileReadTracker，供 Edit 工具校验
  */
 
 import type { Tool, ToolResult } from "./types.ts";
+import type { FileReadTracker } from "./file-read-tracker.ts";
+import { statSync } from "fs";
 
 export class ReadTool implements Tool {
+  private tracker: FileReadTracker | null;
+
+  constructor(tracker?: FileReadTracker) {
+    this.tracker = tracker ?? null;
+  }
+
   name(): string {
     return "read";
   }
@@ -57,6 +66,12 @@ export class ReadTool implements Tool {
       const startIdx = offset - 1;
       const endIdx = params.limit ? startIdx + params.limit : lines.length;
       const selectedLines = lines.slice(startIdx, endIdx);
+
+      // 记录文件已被读取
+      if (this.tracker) {
+        const mtime = statSync(params.file_path).mtimeMs;
+        this.tracker.markAsRead(params.file_path, mtime);
+      }
 
       // 格式化输出（带行号）
       const output = selectedLines
