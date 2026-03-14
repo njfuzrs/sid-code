@@ -21,6 +21,7 @@ import { ModelFallback } from "./llm/fallback.ts";
 import { ThinkingManager } from "./llm/thinking.ts";
 import { loadCLAUDEmd } from "./config/rules.ts";
 import { getLogger } from "./debug/logger.ts";
+import { maskSensitiveData } from "./permission/sensitive.ts";
 import * as readline from "readline";
 
 /** App 配置 */
@@ -539,12 +540,14 @@ export class App {
 
       if (!this.isTUIMode) {
         if (result.isError) {
-          console.log(`[工具错误: ${result.output.slice(0, 100)}]`);
+          const maskedError = maskSensitiveData(result.output.slice(0, 100));
+          console.log(`[工具错误: ${maskedError}]`);
         } else {
           const preview = result.output.length > 200
             ? result.output.slice(0, 200) + "..."
             : result.output;
-          console.log(`[工具结果: ${preview}]`);
+          const maskedPreview = maskSensitiveData(preview);
+          console.log(`[工具结果: ${maskedPreview}]`);
         }
       }
 

@@ -6,6 +6,7 @@
 import { writeFileSync, appendFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { maskSensitiveData } from '../permission/sensitive.ts';
 
 export enum LogLevel {
   ERROR = 0,
@@ -72,13 +73,14 @@ class Logger {
 
   private formatData(data: unknown): string {
     if (typeof data === 'string') {
-      return data;
+      return maskSensitiveData(data);
     }
 
     try {
-      return JSON.stringify(data, this.sensitiveReplacer, 2);
+      const json = JSON.stringify(data, this.sensitiveReplacer, 2);
+      return maskSensitiveData(json);
     } catch (err) {
-      return String(data);
+      return maskSensitiveData(String(data));
     }
   }
 
