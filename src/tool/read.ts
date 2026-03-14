@@ -27,6 +27,13 @@ export class ReadTool implements Tool {
     return "读取文件内容。支持指定行偏移和限制来读取大文件的部分内容。";
   }
 
+  usageGuide(): string {
+    return `- 使用 read 而不是 bash cat/head/tail 来读取文件
+- 对于大文件，使用 offset 和 limit 参数只读取需要的部分
+- 修改文件前必须先用 read 读取，确保了解当前内容
+- file_path 必须是绝对路径`;
+  }
+
   inputSchema(): Record<string, unknown> {
     return {
       type: "object",

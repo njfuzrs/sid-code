@@ -25,4 +25,7 @@ export interface Tool {
 
   /** 是否为只读工具（只读工具可以并行执行） */
   readOnly?(): boolean;
+
+  /** 工具使用指南（告诉 AI 何时以及如何使用此工具） */
+  usageGuide?(): string;
 }

@@ -16,6 +16,13 @@ export class WriteTool implements Tool {
     return "写入内容到文件。如果文件已存在则覆盖，自动创建所需的目录。";
   }
 
+  usageGuide(): string {
+    return `- 使用 write 而不是 bash echo/cat 来创建文件
+- 会自动创建不存在的父目录
+- 如果文件已存在会被覆盖，修改已有文件请用 edit 工具
+- file_path 必须是绝对路径`;
+  }
+
   inputSchema(): Record<string, unknown> {
     return {
       type: "object",

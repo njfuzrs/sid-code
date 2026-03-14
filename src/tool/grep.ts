@@ -19,6 +19,13 @@ export class GrepTool implements Tool {
     return "在文件中搜索匹配正则表达式的内容。支持递归搜索目录。";
   }
 
+  usageGuide(): string {
+    return `- 使用 grep 工具而不是 bash grep/rg 来搜索文件内容
+- 支持正则表达式模式
+- 用 glob 参数过滤文件类型（如 '*.ts'）
+- 搜索文件名请用 glob 工具，搜索内容请用 grep 工具`;
+  }
+
   inputSchema(): Record<string, unknown> {
     return {
       type: "object",

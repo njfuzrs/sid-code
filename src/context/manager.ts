@@ -4,6 +4,8 @@
  */
 
 import type { Message } from "../llm/types.ts";
+import { MessageValidator } from "./validator.ts";
+import { getLogger } from "../debug/logger.ts";
 
 /** 持久化输出阈值 */
 const OUTPUT_THRESHOLD = 400000; // 400KB，超过此大小的工具输出会被截断
@@ -38,8 +40,30 @@ export class Manager {
     return this.systemPrompt;
   }
 
-  /** 添加消息 */
+  /** 添加消息（带验证） */
   addMessage(msg: Message): void {
+    const log = getLogger();
+
+    // 验证单条消息的基本格式
+    if (!msg.content || msg.content.length === 0) {
+      log.warn("CONTEXT", "尝试添加空内容消息，已忽略");
+      return;
+    }
+
+    // 检查角色交替
+    if (this.messages.length > 0) {
+      const lastMsg = this.messages[this.messages.length - 1];
+      if (lastMsg.role === msg.role) {
+        log.warn("CONTEXT", `角色未交替: 上一条=${lastMsg.role}, 当前=${msg.role}，自动修复`);
+        // 插入占位消息以保持交替
+        const placeholderRole = msg.role === "user" ? "assistant" : "user";
+        this.messages.push({
+          role: placeholderRole,
+          content: [{ type: "text", text: "[系统] 自动插入占位消息以保持角色交替" }],
+        });
+      }
+    }
+
     this.messages.push(msg);
   }
 
@@ -51,9 +75,11 @@ export class Manager {
   /**
    * 获取清理后的消息列表（发送给 LLM 前调用）
    * 1. 清理旧的大输出，只保留最近 N 个
-   * 2. 返回深拷贝，不影响原始消息
+   * 2. 验证消息格式
+   * 3. 返回深拷贝，不影响原始消息
    */
   getCleanedMessages(): Message[] {
+    const log = getLogger();
     // 找到所有大输出的位置（从后往前扫描）
     const largeOutputPositions: { msgIdx: number; blockIdx: number }[] = [];
 
@@ -77,7 +103,7 @@ export class Manager {
     const cleanSet = new Set(toClean.map(p => `${p.msgIdx}:${p.blockIdx}`));
 
     // 深拷贝并清理
-    return this.messages.map((msg, msgIdx) => ({
+    const cleaned = this.messages.map((msg, msgIdx) => ({
       role: msg.role,
       content: msg.content.map((block, blockIdx) => {
         if (cleanSet.has(`${msgIdx}:${blockIdx}`) && block.type === "tool_result") {
@@ -89,6 +115,16 @@ export class Manager {
         return block;
       }),
     }));
+
+    // 验证消息格式（仅警告，不阻塞）
+    const errors = MessageValidator.validate(cleaned);
+    if (errors.length > 0) {
+      log.warn("CONTEXT", `消息验证发现 ${errors.length} 个问题:`, {
+        errors: errors.map(e => `[${e.code}] ${e.message}`),
+      });
+    }
+
+    return cleaned;
   }
 
   /** 设置消息列表（用于恢复会话） */
@@ -118,26 +154,41 @@ export class Manager {
     return `${preview}\n\n... [输出已截断: 原始 ${content.length} 字符, ${totalLines} 行，仅显示前 ${PREVIEW_SIZE} 字符 ${previewLines} 行]`;
   }
 
-  /** 估算当前 token 数（粗略：4 字符 ≈ 1 token） */
-  estimateTokens(): number {
+  /**
+   * 估算当前 token 数（粗略：4 字符 ≈ 1 token）
+   * 包含：系统提示词 + 消息内容 + 消息结构开销 + 工具定义开销
+   */
+  estimateTokens(toolCount: number = 0): number {
+    // 系统提示词
     let total = Math.ceil(this.systemPrompt.length / 4);
+
+    // 工具定义开销（每个工具约 80 token）
+    total += toolCount * 80;
+
+    // 消息内容 + 结构开销
     for (const msg of this.messages) {
+      // 消息结构开销（每条消息约 4 token）
+      total += 4;
+
       for (const block of msg.content) {
         if (block.type === "text") {
           total += Math.ceil(block.text.length / 4);
         } else if (block.type === "tool_use") {
-          total += Math.ceil(JSON.stringify(block.input).length / 4);
+          // tool_use 块：JSON 内容 + 结构开销（约 20 token）
+          total += Math.ceil(JSON.stringify(block.input).length / 4) + 20;
         } else if (block.type === "tool_result") {
-          total += Math.ceil(block.content.length / 4);
+          // tool_result 块：内容 + 结构开销（约 10 token）
+          total += Math.ceil(block.content.length / 4) + 10;
         }
       }
     }
+
     return total;
   }
 
   /** 是否需要压缩 */
-  needsCompaction(): boolean {
-    return this.estimateTokens() > this.maxTokens * this.compactThreshold;
+  needsCompaction(toolCount: number = 0): boolean {
+    return this.estimateTokens(toolCount) > this.maxTokens * this.compactThreshold;
   }
 
   /** 消息数量 */

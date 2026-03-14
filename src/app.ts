@@ -153,27 +153,18 @@ export class App {
     let systemPrompt = this.config.systemPrompt;
 
     if (!systemPrompt) {
-      // 构建默认系统提示词
-      const parts: string[] = [];
-      parts.push("你是一个 AI 编程助手。你可以帮助用户编写代码、调试问题、解释概念。");
-
       // 加载 CLAUDE.md 规则
       const rules = await loadCLAUDEmd(process.cwd());
       if (rules) {
-        parts.push(`\n<project-rules>\n${rules}\n</project-rules>`);
         log.debug("APP", `加载 CLAUDE.md 规则 (${rules.length} 字符)`);
       }
 
-      // 追加系统提示词
-      if (this.config.appendSystemPrompt) {
-        parts.push(`\n${this.config.appendSystemPrompt}`);
-      }
-
       // 从文件加载系统提示词
+      let filePrompt: string | undefined;
       if (this.config.systemPromptFile) {
         try {
           const content = await Bun.file(this.config.systemPromptFile).text();
-          parts.push(`\n${content}`);
+          filePrompt = content;
           log.debug("APP", `加载系统提示词文件: ${this.config.systemPromptFile}`);
         } catch (err) {
           log.error("APP", `加载系统提示词文件失败: ${err}`);
@@ -181,7 +172,14 @@ export class App {
         }
       }
 
-      systemPrompt = parts.join("\n");
+      // 使用新的系统提示词构建模块
+      const { buildSystemPrompt } = await import("./config/system-prompt.ts");
+      systemPrompt = buildSystemPrompt({
+        tools: this.toolRegistry.all(),
+        projectRules: rules || undefined,
+        appendPrompt: this.config.appendSystemPrompt || undefined,
+        filePrompt,
+      });
     }
 
     this.ctxMgr.setSystemPrompt(systemPrompt);
@@ -293,14 +291,15 @@ export class App {
       log.debug("AGENT", `轮次 ${turns}/${maxTurns}，消息数 ${this.ctxMgr.getMessages().length}`);
 
       // 上下文溢出检测：接近上限时自动压缩
-      if (this.ctxMgr.needsCompaction()) {
-        log.warn("AGENT", `上下文接近上限 (${this.ctxMgr.estimateTokens()} tokens)，触发自动压缩`);
+      const toolCount = this.toolRegistry.size();
+      if (this.ctxMgr.needsCompaction(toolCount)) {
+        log.warn("AGENT", `上下文接近上限 (${this.ctxMgr.estimateTokens(toolCount)} tokens)，触发自动压缩`);
         await this.autoCompact();
       }
 
       // 发送消息给 LLM（使用清理后的消息，旧的大输出会被替换，带重试和回退）
       const cleanedMessages = this.ctxMgr.getCleanedMessages();
-      const toolDefs = this.toolRegistry.size() > 0 ? this.toolRegistry.definitions() : undefined;
+      const toolDefs = toolCount > 0 ? this.toolRegistry.definitions() : undefined;
       log.llmRequest(this.config.provider, this.config.model, cleanedMessages.length, toolDefs?.length ?? 0);
 
       const stream = this.sendWithRetry(
@@ -324,6 +323,12 @@ export class App {
       // 累计 token 用量
       this.totalUsage.inputTokens += response.usage.inputTokens;
       this.totalUsage.outputTokens += response.usage.outputTokens;
+      if (response.usage.cacheCreationInputTokens) {
+        this.totalUsage.cacheCreationInputTokens = (this.totalUsage.cacheCreationInputTokens ?? 0) + response.usage.cacheCreationInputTokens;
+      }
+      if (response.usage.cacheReadInputTokens) {
+        this.totalUsage.cacheReadInputTokens = (this.totalUsage.cacheReadInputTokens ?? 0) + response.usage.cacheReadInputTokens;
+      }
 
       log.llmResponse(response.stopReason || "unknown", response.usage);
       log.debug("AGENT", `累计用量: input=${this.totalUsage.inputTokens}, output=${this.totalUsage.outputTokens}`);
@@ -762,15 +767,16 @@ export class App {
         log.debug("TUI:AGENT", `轮次 ${turns}/${maxTurns}，消息数 ${this.ctxMgr.getMessages().length}`);
 
         // 上下文溢出检测：接近上限时自动压缩
-        if (this.ctxMgr.needsCompaction()) {
-          log.warn("TUI:AGENT", `上下文接近上限 (${this.ctxMgr.estimateTokens()} tokens)，触发自动压缩`);
+        const toolCount = this.toolRegistry.size();
+        if (this.ctxMgr.needsCompaction(toolCount)) {
+          log.warn("TUI:AGENT", `上下文接近上限 (${this.ctxMgr.estimateTokens(toolCount)} tokens)，触发自动压缩`);
           await this.autoCompact();
           updateState({ messages: this.ctxMgr.getMessages() });
         }
 
         // 发送消息给 LLM（使用清理后的消息，带重试和回退）
         const cleanedMessages = this.ctxMgr.getCleanedMessages();
-        const toolDefs = this.toolRegistry.size() > 0 ? this.toolRegistry.definitions() : undefined;
+        const toolDefs = toolCount > 0 ? this.toolRegistry.definitions() : undefined;
         log.llmRequest(this.config.provider, this.config.model, cleanedMessages.length, toolDefs?.length ?? 0);
 
         const stream = this.sendWithRetry(
@@ -798,6 +804,12 @@ export class App {
 
         this.totalUsage.inputTokens += response.usage.inputTokens;
         this.totalUsage.outputTokens += response.usage.outputTokens;
+        if (response.usage.cacheCreationInputTokens) {
+          this.totalUsage.cacheCreationInputTokens = (this.totalUsage.cacheCreationInputTokens ?? 0) + response.usage.cacheCreationInputTokens;
+        }
+        if (response.usage.cacheReadInputTokens) {
+          this.totalUsage.cacheReadInputTokens = (this.totalUsage.cacheReadInputTokens ?? 0) + response.usage.cacheReadInputTokens;
+        }
 
         this.ctxMgr.addMessage({
           role: "assistant",

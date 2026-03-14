@@ -15,6 +15,13 @@ export class BashTool implements Tool {
     return "执行 shell 命令。支持设置超时时间和工作目录。";
   }
 
+  usageGuide(): string {
+    return `- 仅用于需要 shell 执行的系统命令，文件操作请用专用工具
+- 不要用 bash 执行 cat/head/tail（用 read）、echo/cat 写文件（用 write）、sed/awk（用 edit）、find（用 glob）、grep（用 grep 工具）
+- 设置合理的 timeout，默认 2 分钟
+- 避免执行长时间运行的进程（如 dev server、watch 模式）`;
+  }
+
   inputSchema(): Record<string, unknown> {
     return {
       type: "object",

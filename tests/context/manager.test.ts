@@ -41,15 +41,56 @@ describe("ContextManager", () => {
     expect(tokens).toBeGreaterThan(100);
   });
 
-  test("needsCompaction 在 token 超过阈值时返回 true", () => {
-    const mgr = new Manager({ maxTokens: 100, compactThreshold: 0.5 });
-    // 添加足够多的内容超过 50 tokens（100 * 0.5）
+  test("token 估算包含工具定义开销", () => {
+    const mgr = new Manager({ maxTokens: 100000 });
+    const baseTokens = mgr.estimateTokens(0);
+    const withTools = mgr.estimateTokens(6); // 6 个工具
+
+    // 6 个工具 × 80 token/工具 = 480 token 开销
+    expect(withTools - baseTokens).toBe(480);
+  });
+
+  test("token 估算包含消息结构开销", () => {
+    const mgr = new Manager({ maxTokens: 100000 });
+    const before = mgr.estimateTokens();
+
     mgr.addMessage({
       role: "user",
-      content: [{ type: "text", text: "x".repeat(400) }], // ~100 tokens
+      content: [{ type: "text", text: "" }], // 空文本，只有结构开销
     });
 
-    expect(mgr.needsCompaction()).toBe(true);
+    const after = mgr.estimateTokens();
+    // 每条消息 4 token 结构开销
+    expect(after - before).toBe(4);
+  });
+
+  test("token 估算 tool_use 块包含额外开销", () => {
+    const mgr = new Manager({ maxTokens: 100000 });
+    mgr.addMessage({
+      role: "user",
+      content: [{ type: "text", text: "test" }],
+    });
+    mgr.addMessage({
+      role: "assistant",
+      content: [{
+        type: "tool_use",
+        id: "c1",
+        name: "read",
+        input: {},
+      }],
+    });
+
+    const tokens = mgr.estimateTokens();
+    // 应包含 tool_use 的 20 token 结构开销
+    expect(tokens).toBeGreaterThan(20);
+  });
+
+  test("needsCompaction 支持 toolCount 参数", () => {
+    const mgr = new Manager({ maxTokens: 1000, compactThreshold: 0.5 });
+    // 不带工具时不需要压缩
+    expect(mgr.needsCompaction(0)).toBe(false);
+    // 带大量工具时可能需要压缩（6 × 80 = 480 > 500 阈值）
+    expect(mgr.needsCompaction(7)).toBe(true); // 7 × 80 = 560 > 500
   });
 
   test("compactWithSummary 用摘要替换历史", () => {

@@ -59,8 +59,9 @@ sid-code/
 │   │   ├── types.ts, transport.ts, client.ts, manager.ts
 │   ├── ui/                       # Ink TUI 组件
 │   │   ├── App.tsx, MessageList.tsx, InputArea.tsx, ToolStatus.tsx, markdown.ts
-│   ├── config/                   # 配置加载 + 规则文件
-│   ├── context/manager.ts        # 上下文管理 + 摘要压缩
+│   ├── config/                   # 配置加载 + 规则文件 + 系统提示词构建
+│   ├── context/manager.ts        # 上下文管理 + 摘要压缩 + token 估算
+│   ├── context/validator.ts      # 消息格式验证 + 自动修复
 │   ├── debug/logger.ts           # 调试日志系统
 │   ├── permission/               # 权限检查
 │   ├── hook/runner.ts            # Hook 执行器

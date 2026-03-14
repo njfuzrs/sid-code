@@ -19,6 +19,13 @@ export class GlobTool implements Tool {
     return "使用 glob 模式查找文件。支持通配符如 **/*.ts";
   }
 
+  usageGuide(): string {
+    return `- 使用 glob 而不是 bash find/ls 来查找文件
+- 支持通配符：* 匹配文件名，** 匹配任意层级目录
+- 默认忽略 node_modules、.git、dist 目录
+- 搜索文件内容请用 grep 工具，glob 只按文件名匹配`;
+  }
+
   inputSchema(): Record<string, unknown> {
     return {
       type: "object",

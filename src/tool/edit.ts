@@ -22,6 +22,14 @@ export class EditTool implements Tool {
     return "通过查找替换来编辑文件内容。必须先用 read 工具读取文件后才能编辑。old_string 必须在文件中唯一存在，否则操作失败。";
   }
 
+  usageGuide(): string {
+    return `- 使用 edit 而不是 bash sed/awk 来修改文件
+- 必须先用 read 读取文件，否则会被拒绝
+- old_string 必须在文件中唯一匹配，提供足够的上下文确保唯一性
+- 如果 read 输出带行号前缀（如 "123→"），edit 会自动剥离，无需手动处理
+- 设置 replace_all=true 可替换所有匹配项`;
+  }
+
   inputSchema(): Record<string, unknown> {
     return {
       type: "object",

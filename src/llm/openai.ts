@@ -1,16 +1,29 @@
 /**
  * OpenAI Provider 实现
  * 使用 fetch + SSE 流式解析
+ *
+ * 消息格式转换规则（sid-code 内部格式 → OpenAI API 格式）：
+ * - assistant 消息中的 tool_use 块 → 顶层 tool_calls 字段
+ * - user 消息中的 tool_result 块 → 独立的 role:"tool" 消息
+ * - 纯文本消息 → content 为字符串
  */
 
 import type { Provider } from "./provider.ts";
 import type {
   SendParams,
   StreamEvent,
-  ContentBlock,
+  Message,
   Usage,
 } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
+
+/** 工具调用追踪状态（用于 SSE 流中多工具并行解析） */
+interface ToolCallState {
+  id: string;
+  name: string;
+  arguments: string;
+  contentIndex: number; // 对应的 content block 索引
+}
 
 export class OpenAIProvider implements Provider {
   private apiKey: string;
@@ -31,37 +44,92 @@ export class OpenAIProvider implements Provider {
     return "gpt-4o";
   }
 
+  /**
+   * 将 sid-code 内部消息格式转换为 OpenAI API 格式
+   *
+   * 关键差异：
+   * 1. OpenAI 的 tool_use 不在 content 数组里，而是 assistant 消息顶层的 tool_calls 字段
+   * 2. OpenAI 的 tool_result 不在 user 消息的 content 里，而是独立的 role:"tool" 消息
+   * 3. OpenAI 的 content 字段对于纯文本消息应该是字符串，不是数组
+   */
+  private convertMessages(messages: Message[]): any[] {
+    const result: any[] = [];
+
+    for (const msg of messages) {
+      if (msg.role === "assistant") {
+        // 提取文本和工具调用
+        const textParts: string[] = [];
+        const toolCalls: any[] = [];
+
+        for (const block of msg.content) {
+          if (block.type === "text") {
+            textParts.push(block.text);
+          } else if (block.type === "tool_use") {
+            toolCalls.push({
+              id: block.id,
+              type: "function",
+              function: {
+                name: block.name,
+                arguments: JSON.stringify(block.input),
+              },
+            });
+          }
+        }
+
+        const assistantMsg: any = {
+          role: "assistant",
+          content: textParts.join("") || null,
+        };
+
+        if (toolCalls.length > 0) {
+          assistantMsg.tool_calls = toolCalls;
+        }
+
+        result.push(assistantMsg);
+      } else if (msg.role === "user") {
+        // 分离 tool_result 和普通内容
+        const textParts: string[] = [];
+        const toolResults: { tool_call_id: string; content: string }[] = [];
+
+        for (const block of msg.content) {
+          if (block.type === "text") {
+            textParts.push(block.text);
+          } else if (block.type === "tool_result") {
+            toolResults.push({
+              tool_call_id: block.tool_use_id,
+              content: block.content,
+            });
+          }
+        }
+
+        // tool_result 拆分为独立的 role:"tool" 消息
+        for (const tr of toolResults) {
+          result.push({
+            role: "tool",
+            tool_call_id: tr.tool_call_id,
+            content: tr.content,
+          });
+        }
+
+        // 纯文本部分作为 user 消息（如果有的话）
+        if (textParts.length > 0) {
+          result.push({
+            role: "user",
+            content: textParts.join("\n"),
+          });
+        }
+      }
+    }
+
+    return result;
+  }
+
   async *sendMessageStream(
     params: SendParams,
     signal?: AbortSignal,
   ): AsyncIterable<StreamEvent> {
     // 转换消息格式
-    const messages = params.messages.map((msg) => ({
-      role: msg.role,
-      content: msg.content.map((block) => {
-        if (block.type === "text") {
-          return { type: "text", text: block.text };
-        } else if (block.type === "tool_use") {
-          // OpenAI 使用 tool_calls 格式
-          return {
-            type: "tool_call",
-            id: block.id,
-            function: {
-              name: block.name,
-              arguments: JSON.stringify(block.input),
-            },
-          };
-        } else if (block.type === "tool_result") {
-          // OpenAI 使用 tool 角色
-          return {
-            type: "tool",
-            tool_call_id: block.tool_use_id,
-            content: block.content,
-          };
-        }
-        return block;
-      }),
-    }));
+    const messages = this.convertMessages(params.messages);
 
     // 转换工具定义
     const tools = params.tools?.map((t) => ({
@@ -134,12 +202,18 @@ export class OpenAIProvider implements Provider {
     }
   }
 
+  /**
+   * 解析 SSE 流，转换为统一的 StreamEvent
+   * 支持多工具并行调用：用 Map<index, ToolCallState> 追踪每个工具调用
+   */
   private async *parseSSE(stream: ReadableStream<Uint8Array>): AsyncIterable<StreamEvent> {
     const reader = stream.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
-    let contentIndex = 0;
-    let currentToolCall: any = null;
+    let nextContentIndex = 0;
+    let textBlockStarted = false;
+    // 多工具并行追踪：key 是 OpenAI 的 tool_call index
+    const toolCalls = new Map<number, ToolCallState>();
     const usage: Usage = { inputTokens: 0, outputTokens: 0 };
 
     try {
@@ -166,50 +240,79 @@ export class OpenAIProvider implements Provider {
             const delta = chunk.choices?.[0]?.delta;
             const finishReason = chunk.choices?.[0]?.finish_reason;
 
-            if (!delta) continue;
+            if (!delta && !finishReason) continue;
 
             // 文本内容
-            if (delta.content) {
-              if (contentIndex === 0) {
+            if (delta?.content) {
+              if (!textBlockStarted) {
+                textBlockStarted = true;
                 yield {
                   type: "content_block_start",
-                  index: contentIndex,
+                  index: nextContentIndex,
                   content_block: { type: "text", text: "" },
                 };
               }
               yield {
                 type: "content_block_delta",
-                index: contentIndex,
+                index: 0, // 文本块始终是 index 0
                 delta: { type: "text_delta", text: delta.content },
               };
             }
 
-            // 工具调用
-            if (delta.tool_calls) {
+            // 工具调用（支持多个并行）
+            if (delta?.tool_calls) {
               for (const tc of delta.tool_calls) {
-                if (!currentToolCall) {
-                  currentToolCall = {
+                const tcIndex = tc.index ?? 0;
+
+                if (!toolCalls.has(tcIndex)) {
+                  // 新工具调用开始
+                  // 如果文本块已开始，先关闭它
+                  if (textBlockStarted && nextContentIndex === 0) {
+                    yield { type: "content_block_stop", index: 0 };
+                    nextContentIndex = 1;
+                  }
+                  if (!textBlockStarted && nextContentIndex === 0) {
+                    nextContentIndex = 0;
+                  }
+
+                  const contentIdx = textBlockStarted ? nextContentIndex : nextContentIndex;
+                  const state: ToolCallState = {
                     id: tc.id || "",
                     name: tc.function?.name || "",
                     arguments: "",
+                    contentIndex: contentIdx,
                   };
+                  toolCalls.set(tcIndex, state);
+                  nextContentIndex = contentIdx + 1;
+
                   yield {
                     type: "content_block_start",
-                    index: contentIndex,
+                    index: state.contentIndex,
                     content_block: {
                       type: "tool_use",
-                      id: currentToolCall.id,
-                      name: currentToolCall.name,
+                      id: state.id,
+                      name: state.name,
                       input: {},
                     },
                   };
                 }
 
+                const state = toolCalls.get(tcIndex)!;
+
+                // 补充 id（首个 chunk 可能没有 id）
+                if (tc.id && !state.id) {
+                  state.id = tc.id;
+                }
+                // 补充 name
+                if (tc.function?.name && !state.name) {
+                  state.name = tc.function.name;
+                }
+
                 if (tc.function?.arguments) {
-                  currentToolCall.arguments += tc.function.arguments;
+                  state.arguments += tc.function.arguments;
                   yield {
                     type: "content_block_delta",
-                    index: contentIndex,
+                    index: state.contentIndex,
                     delta: {
                       type: "input_json_delta",
                       partial_json: tc.function.arguments,
@@ -221,10 +324,17 @@ export class OpenAIProvider implements Provider {
 
             // 完成
             if (finishReason) {
-              yield {
-                type: "content_block_stop",
-                index: contentIndex,
-              };
+              // 关闭文本块（如果还没关闭）
+              if (textBlockStarted && nextContentIndex === 0) {
+                yield { type: "content_block_stop", index: 0 };
+                nextContentIndex = 1;
+              }
+
+              // 关闭所有工具调用块
+              for (const [, state] of toolCalls) {
+                yield { type: "content_block_stop", index: state.contentIndex };
+              }
+
               yield {
                 type: "message_delta",
                 delta: {
