@@ -210,6 +210,19 @@ export class App {
         }
       }
 
+      // 加载记忆（全局/项目双层）
+      let memorySummary: string | undefined;
+      try {
+        const { MemoryStore } = await import("./memory/store.ts");
+        const memStore = new MemoryStore(process.cwd());
+        memorySummary = await memStore.generateSummary() || undefined;
+        if (memorySummary) {
+          log.debug("APP", `加载记忆摘要 (${memorySummary.length} 字符)`);
+        }
+      } catch (err) {
+        log.warn("APP", `加载记忆失败: ${err}`);
+      }
+
       // 使用增强的系统提示词构建模块（动态附件 + 优先级 + 缓存）
       const { buildSystemPrompt } = await import("./config/system-prompt.ts");
       systemPrompt = buildSystemPrompt({
@@ -223,6 +236,7 @@ export class App {
         workingDir: process.cwd(),
         permissionMode: this.config.permissionMode,
         gitStatus: true,
+        memorySummary,
 
         // 限制
         maxTokens: 180000,
@@ -409,10 +423,24 @@ export class App {
       turns++;
       log.debug("AGENT", `轮次 ${turns}/${maxTurns}，消息数 ${this.ctxMgr.getMessages().length}`);
 
-      // 上下文溢出检测：接近上限时自动压缩
+      // 上下文使用率监控（两段式触发，对标 Claude Code）
       const toolCount = this.toolRegistry.size();
-      if (this.ctxMgr.needsCompaction(toolCount)) {
-        log.warn("AGENT", `上下文接近上限 (${this.ctxMgr.estimateTokens(toolCount)} tokens)，触发自动压缩`);
+      const currentTokens = this.ctxMgr.estimateTokens(toolCount);
+      const contextMax = this.ctxMgr.getMaxTokens();
+      const usagePercent = (currentTokens / contextMax) * 100;
+      const remaining = 100 - usagePercent;
+
+      if (remaining <= 0) {
+        // 强制压缩
+        log.warn("AGENT", "上下文已满，强制压缩");
+        console.log("\n[Auto-compacting context...]");
+        await this.autoCompact();
+      } else if (remaining <= 6) {
+        // 警告（94-100%）
+        console.log(`\n[Context left until auto-compact: ${remaining.toFixed(0)}%]`);
+      } else if (this.ctxMgr.needsCompaction(toolCount)) {
+        // 70% 阈值触发常规压缩
+        log.warn("AGENT", `上下文接近上限 (${currentTokens} tokens, ${usagePercent.toFixed(0)}%)，触发自动压缩`);
         await this.autoCompact();
       }
 
@@ -920,10 +948,21 @@ export class App {
         turns++;
         log.debug("TUI:AGENT", `轮次 ${turns}/${maxTurns}，消息数 ${this.ctxMgr.getMessages().length}`);
 
-        // 上下文溢出检测：接近上限时自动压缩
+        // 上下文使用率监控（两段式触发，对标 Claude Code）
         const toolCount = this.toolRegistry.size();
-        if (this.ctxMgr.needsCompaction(toolCount)) {
-          log.warn("TUI:AGENT", `上下文接近上限 (${this.ctxMgr.estimateTokens(toolCount)} tokens)，触发自动压缩`);
+        const tuiCurrentTokens = this.ctxMgr.estimateTokens(toolCount);
+        const tuiContextMax = this.ctxMgr.getMaxTokens();
+        const tuiUsagePercent = (tuiCurrentTokens / tuiContextMax) * 100;
+        const tuiRemaining = 100 - tuiUsagePercent;
+
+        if (tuiRemaining <= 0) {
+          log.warn("TUI:AGENT", "上下文已满，强制压缩");
+          await this.autoCompact();
+          updateState({ messages: this.ctxMgr.getMessages() });
+        } else if (tuiRemaining <= 6) {
+          log.warn("TUI:AGENT", `上下文剩余 ${tuiRemaining.toFixed(0)}%，接近自动压缩`);
+        } else if (this.ctxMgr.needsCompaction(toolCount)) {
+          log.warn("TUI:AGENT", `上下文接近上限 (${tuiCurrentTokens} tokens, ${tuiUsagePercent.toFixed(0)}%)，触发自动压缩`);
           await this.autoCompact();
           updateState({ messages: this.ctxMgr.getMessages() });
         }

@@ -60,8 +60,12 @@ sid-code/
 │   ├── ui/                       # Ink TUI 组件
 │   │   ├── App.tsx, MessageList.tsx, InputArea.tsx, ToolStatus.tsx, markdown.ts
 │   ├── config/                   # 配置加载 + 规则文件 + 系统提示词构建
-│   ├── context/manager.ts        # 上下文管理 + 摘要压缩 + token 估算
+│   ├── context/manager.ts        # 上下文管理 + 智能截断 + 增量压缩 + token 估算
 │   ├── context/validator.ts      # 消息格式验证 + 自动修复
+│   ├── checkpoint/               # 文件快照系统（LCS diff + gzip + 回滚）
+│   │   ├── manager.ts            # Checkpoint 管理器（创建/回滚/清理）
+│   │   └── diff.ts               # LCS 差分算法（computeDiff/applyDiff/reverseDiff）
+│   ├── memory/store.ts           # 双层记忆系统（全局/项目 + 注入系统提示词）
 │   ├── debug/logger.ts           # 调试日志系统
 │   ├── permission/               # 权限检查（6 种模式 + 规则配置 + 审计日志）
 │   │   ├── types.ts, checker.ts, rules.ts, audit.ts, sensitive.ts
@@ -303,6 +307,7 @@ permissions:
   priority 10 — CLAUDE.md 项目规则
   priority 15 — 诊断信息（预留）
   priority 20 — IDE 选中代码（预留）
+  priority 30 — 记忆信息（全局/项目双层记忆）
   priority 35 — Todo 列表（预留）
   priority 40 — Git 状态（分支 + 变更 + 最近提交）
   priority 50 — 追加提示词
@@ -339,9 +344,90 @@ interface SystemPromptContext {
   ideSelection?: string;   // IDE 选中代码（预留）
   diagnostics?: string;    // 诊断信息（预留）
   todoList?: string;       // Todo 列表（预留）
+  memorySummary?: string;  // 记忆摘要（全局/项目双层记忆）
   maxTokens?: number;      // 最大 token 数（默认 180000）
 }
 ```
+
+## 12. 上下文管理优化（对标 Claude Code）
+
+### 智能截断（三层策略）
+
+工具输出超过 30K 字符时，按内容类型智能截断：
+
+1. **代码块**（\`\`\` 包裹）：保留 60% 头 + 40% 尾（行级别）
+2. **文件内容**（行号特征 `→` 或 `数字│`）：保留前 20 行 + 后 10 行
+3. **普通文本**：70% 头 + 30% 尾（字符级别）
+
+### 压缩阈值
+
+- `compactThreshold`: **0.7**（对齐 Claude Code 的 70%）
+- `compactWithSummary` 默认保留最近 **10** 条消息
+
+### 两段式自动压缩监控
+
+在 agentLoop 每轮循环中检测上下文使用率：
+- **94-100%**：输出警告 `[Context left until auto-compact: X%]`
+- **100%（剩余 0%）**：强制触发 `autoCompact()`
+
+### 增量压缩
+
+`addMessage` 时对 `tool_result` 内容块自动应用截断，在源头控制上下文膨胀。
+
+### 核心文件
+
+- `src/context/manager.ts` — 智能截断 + 增量压缩 + 阈值调优
+
+## 13. Checkpoint 文件快照系统
+
+在 write/edit 工具执行前自动保存文件快照，支持 `/undo` 回滚。
+
+### 存储策略
+
+- 第一次保存完整内容（>1KB 时 gzip 压缩 + base64）
+- 后续保存增量 diff（LCS 算法）
+- 每文件最多 50 个 checkpoint，总共最多 200MB，30 天自动清理
+- 存储路径：`~/.sid-code/checkpoints/<session-id>/`
+
+### 使用命令
+
+- `/undo` — 撤销最近一次文件修改，回滚到上一个 checkpoint
+
+### 核心文件
+
+- `src/checkpoint/manager.ts` — Checkpoint 管理器（创建/回滚/清理/索引持久化）
+- `src/checkpoint/diff.ts` — LCS 差分算法（computeDiff/applyDiff/reverseDiff）
+
+## 14. 双层记忆系统
+
+全局/项目双层记忆，跨会话持久化，自动注入系统提示词。
+
+### 存储路径
+
+- 全局记忆：`~/.sid-code/memory/memories.json`
+- 项目记忆：`<project>/.sid-code/memory/memories.json`
+
+### 查询优先级
+
+项目记忆 > 全局记忆（同 key 时项目覆盖全局）
+
+### 使用命令
+
+- `/memory` 或 `/memory list` — 列出所有记忆
+- `/memory set <key> <value>` — 保存项目记忆
+- `/memory set <key> <value> --global` — 保存全局记忆
+- `/memory get <key>` — 查询记忆
+- `/memory delete <key>` — 删除记忆
+- `/memory search <keyword>` — 搜索记忆
+
+### 系统提示词注入
+
+记忆通过附件系统注入（priority 30），在应用初始化时自动加载。
+
+### 核心文件
+
+- `src/memory/store.ts` — MemoryStore（CRUD + 搜索 + 摘要生成）
+- `src/config/attachments.ts` — `generateMemoryAttachment()` 记忆附件生成
 
 ## 文档维护规范
 

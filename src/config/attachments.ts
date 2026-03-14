@@ -196,3 +196,15 @@ export function generateTodoListAttachment(todoList: string): Attachment {
     priority: PRIORITY.TODO_LIST,
   };
 }
+
+/**
+ * 生成记忆附件
+ * 将全局/项目双层记忆注入系统提示词
+ */
+export function generateMemoryAttachment(memorySummary: string): Attachment {
+  return {
+    type: "memory",
+    content: `<memory>\n## 记忆\n以下是之前会话中保存的记忆信息，请参考：\n\n${memorySummary}\n</memory>`,
+    priority: PRIORITY.MEMORY,
+  };
+}

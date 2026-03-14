@@ -16,6 +16,7 @@ import {
   generateDiagnosticsAttachment,
   generateIDESelectionAttachment,
   generateTodoListAttachment,
+  generateMemoryAttachment,
 } from "./attachments.ts";
 import { getLogger } from "../debug/logger.ts";
 
@@ -44,6 +45,8 @@ export interface SystemPromptContext {
   diagnostics?: string;
   /** Todo 列表 */
   todoList?: string;
+  /** 记忆摘要（全局/项目双层记忆） */
+  memorySummary?: string;
 
   // 限制
   /** 系统提示词最大 token 数（默认 180000） */
@@ -87,6 +90,7 @@ function generateCacheKey(ctx: SystemPromptContext): string {
     ctx.ideSelection ? simpleHash(ctx.ideSelection) : "",
     ctx.diagnostics ? simpleHash(ctx.diagnostics) : "",
     ctx.todoList ? simpleHash(ctx.todoList) : "",
+    ctx.memorySummary ? simpleHash(ctx.memorySummary) : "",
   ].filter(Boolean).join(":");
 }
 
@@ -172,6 +176,11 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
   // Todo 列表
   if (ctx.todoList) {
     attachments.push(generateTodoListAttachment(ctx.todoList));
+  }
+
+  // 记忆（全局/项目双层）
+  if (ctx.memorySummary) {
+    attachments.push(generateMemoryAttachment(ctx.memorySummary));
   }
 
   // 追加提示词

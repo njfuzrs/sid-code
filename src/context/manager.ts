@@ -9,14 +9,13 @@ import { getLogger } from "../debug/logger.ts";
 
 /** 持久化输出阈值（对标 Claude Code 30000 字符） */
 const OUTPUT_THRESHOLD = 30000;  // 30K 字符，超过此大小的工具输出会被截断
-const PREVIEW_SIZE = 8000;       // 截断后保留的预览大小（头部）
 const KEEP_RECENT_OUTPUTS = 3;   // 保留最近 N 个大输出，旧的清理掉
 const CLEARED_MARKER = "[旧的工具输出已清理]";
 
 /** 上下文管理器配置 */
 export interface ManagerOptions {
   maxTokens: number;        // 上下文窗口最大 token 数
-  compactThreshold?: number; // 触发压缩的阈值比例（默认 0.8）
+  compactThreshold?: number; // 触发压缩的阈值比例（默认 0.7）
 }
 
 export class Manager {
@@ -27,7 +26,7 @@ export class Manager {
 
   constructor(opts: ManagerOptions) {
     this.maxTokens = opts.maxTokens;
-    this.compactThreshold = opts.compactThreshold ?? 0.8;
+    this.compactThreshold = opts.compactThreshold ?? 0.7;
   }
 
   /** 设置系统提示词 */
@@ -64,7 +63,19 @@ export class Manager {
       }
     }
 
-    this.messages.push(msg);
+    // 增量压缩：tool_result 内容在添加时即截断，防止上下文膨胀
+    const compressed: Message = {
+      ...msg,
+      content: msg.content.map(block => {
+        if (block.type === "tool_result" && block.content.length > OUTPUT_THRESHOLD) {
+          log.debug("CONTEXT", `增量压缩 tool_result: ${block.content.length} → 截断`);
+          return { ...block, content: Manager.truncateToolOutput(block.content) };
+        }
+        return block;
+      }),
+    };
+
+    this.messages.push(compressed);
   }
 
   /** 获取所有消息（发送给 LLM 前调用，会自动清理旧的大输出） */
@@ -138,20 +149,53 @@ export class Manager {
   }
 
   /**
-   * 截断超大工具输出，只保留预览
-   * 在工具结果添加到消息历史前调用
+   * 智能截断超大工具输出（三层策略，对标 Claude Code）
+   * 1. 代码块：保留 60% 头 + 40% 尾（行级别）
+   * 2. 文件内容（行号特征）：保留前 20 行 + 后 10 行
+   * 3. 普通文本：70% 头 + 30% 尾（字符级别）
    */
-  static truncateToolOutput(content: string): string {
-    if (content.length <= OUTPUT_THRESHOLD) {
+  static truncateToolOutput(content: string, maxChars: number = OUTPUT_THRESHOLD): string {
+    if (content.length <= maxChars) {
       return content;
     }
 
-    // 保留头部预览
-    const preview = content.slice(0, PREVIEW_SIZE);
-    const totalLines = content.split("\n").length;
-    const previewLines = preview.split("\n").length;
+    // 1. 检测并压缩代码块（``` 包裹的代码）
+    const codeBlockRegex = /```(\w*)\n([\s\S]*?)```/g;
+    let result = content;
+    let match;
+    while ((match = codeBlockRegex.exec(content)) !== null) {
+      const code = match[2];
+      if (code.length > 2000) {
+        const lines = code.split('\n');
+        const keepHead = Math.ceil(lines.length * 0.6);
+        const keepTail = Math.floor(lines.length * 0.4);
+        const omitted = lines.length - keepHead - keepTail;
+        if (omitted > 0) {
+          const compressed = [
+            ...lines.slice(0, keepHead),
+            `\n... [省略 ${omitted} 行] ...\n`,
+            ...lines.slice(-keepTail),
+          ].join('\n');
+          result = result.replace(match[0], `\`\`\`${match[1]}\n${compressed}\`\`\``);
+        }
+      }
+    }
+    if (result.length <= maxChars) return result;
 
-    return `${preview}\n\n... [输出已截断: 原始 ${content.length} 字符, ${totalLines} 行，仅显示前 ${PREVIEW_SIZE} 字符 ${previewLines} 行]`;
+    // 2. 检测文件内容（行号特征：→ 或 数字│）
+    if (content.includes('→') || /^\s*\d+\s*[│|]/m.test(content)) {
+      const lines = content.split('\n');
+      if (lines.length > 30) {
+        const head = lines.slice(0, 20).join('\n');
+        const tail = lines.slice(-10).join('\n');
+        return `${head}\n\n... [省略 ${lines.length - 30} 行，共 ${lines.length} 行] ...\n\n${tail}`;
+      }
+    }
+
+    // 3. 默认：70% 头 + 30% 尾（字符级别）
+    const keepHead = Math.floor(maxChars * 0.7);
+    const keepTail = Math.floor(maxChars * 0.3);
+    return `${result.slice(0, keepHead)}\n\n... [省略约 ${content.length - maxChars} 字符，共 ${content.length} 字符] ...\n\n${result.slice(-keepTail)}`;
   }
 
   /**
@@ -186,6 +230,11 @@ export class Manager {
     return total;
   }
 
+  /** 获取上下文窗口最大 token 数 */
+  getMaxTokens(): number {
+    return this.maxTokens;
+  }
+
   /** 是否需要压缩 */
   needsCompaction(toolCount: number = 0): boolean {
     return this.estimateTokens(toolCount) > this.maxTokens * this.compactThreshold;
@@ -196,8 +245,8 @@ export class Manager {
     return this.messages.length;
   }
 
-  /** 用摘要替换历史消息（保留最近 N 条） */
-  compactWithSummary(summary: string, keepRecent: number = 4): void {
+  /** 用摘要替换历史消息（保留最近 N 条，对标 Claude Code 保留 10 条） */
+  compactWithSummary(summary: string, keepRecent: number = 10): void {
     if (this.messages.length <= keepRecent) {
       return;
     }

@@ -6,6 +6,7 @@
 import type { Tool, ToolResult } from "./types.ts";
 import { dirname } from "path";
 import { mkdirSync, existsSync } from "fs";
+import { getCheckpointManager } from "../checkpoint/manager.ts";
 
 export class WriteTool implements Tool {
   name(): string {
@@ -52,6 +53,14 @@ export class WriteTool implements Tool {
     }
 
     try {
+      // 写入前创建 Checkpoint（用于 /undo 回滚）
+      try {
+        const cpMgr = await getCheckpointManager(process.env.SID_CODE_SESSION_ID || "default");
+        await cpMgr.createCheckpoint(params.file_path);
+      } catch {
+        // Checkpoint 失败不影响写入操作
+      }
+
       // 确保目录存在
       const dir = dirname(params.file_path);
       if (!existsSync(dir)) {

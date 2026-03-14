@@ -21,6 +21,8 @@ export class HelpCommand implements Command {
     console.log("  /clear          - 清空对话");
     console.log("  /sessions       - 列出历史会话");
     console.log("  /config         - 显示当前配置");
+    console.log("  /undo           - 撤销最近一次文件修改");
+    console.log("  /memory         - 管理记忆 (set/get/delete/list/search)");
     console.log("  /exit           - 退出");
   }
 }
@@ -231,6 +233,128 @@ export class ExitCommand implements Command {
   }
 }
 
+/** /undo 命令 */
+export class UndoCommand implements Command {
+  name() { return "undo"; }
+  aliases() { return []; }
+  description() { return "撤销最近一次文件修改（回滚到上一个 checkpoint）"; }
+
+  async execute(_args: string, _ctx: AppContext): Promise<void> {
+    const { getCheckpointManager } = await import("../checkpoint/manager.ts");
+    const cpMgr = await getCheckpointManager(process.env.SID_CODE_SESSION_ID || "default");
+
+    const result = await cpMgr.undo();
+    if (result) {
+      console.log(`已撤销: ${result.filePath}`);
+      console.log(`文件已回滚到上一个版本 (${result.restoredContent.length} 字符)`);
+    } else {
+      console.log("没有可撤销的修改");
+    }
+  }
+}
+
+/** /memory 命令 */
+export class MemoryCommand implements Command {
+  name() { return "memory"; }
+  aliases() { return ["mem"]; }
+  description() { return "管理记忆（set/get/delete/list/search）"; }
+
+  async execute(args: string, _ctx: AppContext): Promise<void> {
+    const { MemoryStore } = await import("../memory/store.ts");
+    const store = new MemoryStore(process.cwd());
+    await store.load();
+
+    const parts = args.trim().split(/\s+/);
+    const subCmd = parts[0] || "list";
+
+    switch (subCmd) {
+      case "set": {
+        const key = parts[1];
+        const value = parts.slice(2).join(" ");
+        if (!key || !value) {
+          console.log("用法: /memory set <key> <value> [--global]");
+          return;
+        }
+        const scope = args.includes("--global") ? "global" as const : "project" as const;
+        const cleanValue = value.replace("--global", "").trim();
+        await store.set(key, cleanValue, scope);
+        console.log(`记忆已保存: [${scope}] ${key} = ${cleanValue}`);
+        break;
+      }
+
+      case "get": {
+        const key = parts[1];
+        if (!key) {
+          console.log("用法: /memory get <key>");
+          return;
+        }
+        const entry = await store.get(key);
+        if (entry) {
+          const date = new Date(entry.updatedAt).toLocaleString();
+          console.log(`[${entry.scope}] ${entry.key} = ${entry.value}`);
+          console.log(`  更新时间: ${date}`);
+        } else {
+          console.log(`未找到记忆: ${key}`);
+        }
+        break;
+      }
+
+      case "delete":
+      case "del":
+      case "rm": {
+        const key = parts[1];
+        if (!key) {
+          console.log("用法: /memory delete <key>");
+          return;
+        }
+        const deleted = await store.delete(key);
+        if (deleted) {
+          console.log(`已删除记忆: ${key}`);
+        } else {
+          console.log(`未找到记忆: ${key}`);
+        }
+        break;
+      }
+
+      case "search": {
+        const keyword = parts.slice(1).join(" ");
+        if (!keyword) {
+          console.log("用法: /memory search <keyword>");
+          return;
+        }
+        const results = await store.search(keyword);
+        if (results.length === 0) {
+          console.log(`未找到匹配 "${keyword}" 的记忆`);
+        } else {
+          console.log(`找到 ${results.length} 条匹配:`);
+          for (const entry of results) {
+            console.log(`  [${entry.scope}] ${entry.key}: ${entry.value}`);
+          }
+        }
+        break;
+      }
+
+      case "list":
+      case "ls":
+      default: {
+        const entries = await store.list();
+        if (entries.length === 0) {
+          console.log("暂无记忆");
+          console.log("使用 /memory set <key> <value> 添加记忆");
+        } else {
+          const stats = await store.getStats();
+          console.log(`记忆列表 (全局 ${stats.globalCount} 条, 项目 ${stats.projectCount} 条):`);
+          for (const entry of entries) {
+            const date = new Date(entry.updatedAt).toLocaleDateString();
+            console.log(`  [${entry.scope}] ${entry.key}: ${entry.value} (${date})`);
+          }
+        }
+        break;
+      }
+    }
+  }
+}
+
 /** 注册所有内置命令 */
 export function registerBuiltins(registry: import("./registry.ts").Registry): void {
   registry.register(new HelpCommand());
@@ -239,5 +363,7 @@ export function registerBuiltins(registry: import("./registry.ts").Registry): vo
   registry.register(new CompactCommand());
   registry.register(new ClearCommand());
   registry.register(new ConfigCommand());
+  registry.register(new UndoCommand());
+  registry.register(new MemoryCommand());
   registry.register(new ExitCommand());
 }

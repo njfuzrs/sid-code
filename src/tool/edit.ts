@@ -6,6 +6,7 @@
 
 import type { Tool, ToolResult } from "./types.ts";
 import type { FileReadTracker } from "./file-read-tracker.ts";
+import { getCheckpointManager } from "../checkpoint/manager.ts";
 
 export class EditTool implements Tool {
   private tracker: FileReadTracker | null;
@@ -80,6 +81,14 @@ export class EditTool implements Tool {
       const exists = await file.exists();
       if (!exists) {
         return { output: `错误: 文件不存在: ${params.file_path}`, isError: true };
+      }
+
+      // 编辑前创建 Checkpoint（用于 /undo 回滚）
+      try {
+        const cpMgr = await getCheckpointManager(process.env.SID_CODE_SESSION_ID || "default");
+        await cpMgr.createCheckpoint(params.file_path);
+      } catch {
+        // Checkpoint 失败不影响编辑操作
       }
 
       let content = await file.text();
