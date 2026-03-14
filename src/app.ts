@@ -438,7 +438,9 @@ export class App {
         const decision = await this.permissionChecker.check({
           toolName: block.name,
           input: block.input,
-          description: `${block.name}: ${JSON.stringify(block.input).slice(0, 120)}`,
+          description: (block.input as any)?.description
+            ? `${block.name}: ${(block.input as any).description}`
+            : `${block.name}: ${JSON.stringify(block.input).slice(0, 120)}`,
         });
 
         if (!decision.allowed) {

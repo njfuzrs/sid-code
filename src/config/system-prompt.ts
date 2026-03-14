@@ -123,7 +123,8 @@ ${toolList}
 - **搜索文件**: 使用 glob 工具（按文件名）或 grep 工具（按内容）
 - **修改文件**: 先 read 读取，再 edit 精确替换（不要用 bash sed）
 - **创建文件**: 使用 write 工具（不要用 bash echo 或 cat）
-- **执行命令**: 使用 bash 工具，设置合理的超时时间
+- **执行命令**: 使用 bash 工具，必须提供 description 参数说明命令意图，设置合理的超时时间
+- **搜索内容**: grep 工具默认只返回文件路径（省 token），需要看内容时用 output_mode=content
 ${customGuides.length > 0 ? "\n" + customGuides.join("\n") : ""}
 </tool-guide>`;
 }

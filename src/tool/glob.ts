@@ -1,10 +1,12 @@
 /**
  * Glob 工具 - 文件名模式匹配
- * 使用 glob 模式查找文件
+ * 对标 Claude Code：按修改时间降序排列，最近编辑的在前面
  */
 
 import type { Tool, ToolResult } from "./types.ts";
 import { glob } from "glob";
+import { statSync } from "fs";
+import { join } from "path";
 
 export class GlobTool implements Tool {
   readOnly(): boolean {
@@ -16,13 +18,14 @@ export class GlobTool implements Tool {
   }
 
   description(): string {
-    return "使用 glob 模式查找文件。支持通配符如 **/*.ts";
+    return "使用 glob 模式查找文件。结果按修改时间降序排列（最近编辑的在前）。支持通配符如 **/*.ts";
   }
 
   usageGuide(): string {
     return `- 使用 glob 而不是 bash find/ls 来查找文件
 - 支持通配符：* 匹配文件名，** 匹配任意层级目录
 - 默认忽略 node_modules、.git、dist 目录
+- 结果按修改时间排序，最近编辑的文件排在前面
 - 搜索文件内容请用 grep 工具，glob 只按文件名匹配`;
   }
 
@@ -73,10 +76,20 @@ export class GlobTool implements Tool {
         return { output: "未找到匹配的文件" };
       }
 
-      // 按修改时间排序（最新的在前）
-      const sorted = files.sort();
+      // 按修改时间降序排列（最近编辑的在前）
+      const filesWithMtime = files.map(f => {
+        const fullPath = join(cwd, f);
+        try {
+          const stat = statSync(fullPath);
+          return { file: f, mtime: stat.mtimeMs };
+        } catch {
+          return { file: f, mtime: 0 };
+        }
+      });
 
-      return { output: sorted.join("\n") };
+      filesWithMtime.sort((a, b) => b.mtime - a.mtime);
+
+      return { output: filesWithMtime.map(f => f.file).join("\n") };
     } catch (err: any) {
       return { output: `文件匹配失败: ${err.message}`, isError: true };
     }

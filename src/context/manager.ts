@@ -7,9 +7,9 @@ import type { Message } from "../llm/types.ts";
 import { MessageValidator } from "./validator.ts";
 import { getLogger } from "../debug/logger.ts";
 
-/** 持久化输出阈值 */
-const OUTPUT_THRESHOLD = 400000; // 400KB，超过此大小的工具输出会被截断
-const PREVIEW_SIZE = 2000;       // 截断后保留的预览大小
+/** 持久化输出阈值（对标 Claude Code 30000 字符） */
+const OUTPUT_THRESHOLD = 30000;  // 30K 字符，超过此大小的工具输出会被截断
+const PREVIEW_SIZE = 8000;       // 截断后保留的预览大小（头部）
 const KEEP_RECENT_OUTPUTS = 3;   // 保留最近 N 个大输出，旧的清理掉
 const CLEARED_MARKER = "[旧的工具输出已清理]";
 
