@@ -7,7 +7,7 @@ import type { Config } from "../config/config.ts";
 import type { Manager as ContextManager } from "../context/manager.ts";
 import type { Provider } from "../llm/provider.ts";
 import type { Registry as ToolRegistry } from "../tool/registry.ts";
-import type { Usage } from "../llm/types.ts";
+import type { SessionState } from "../session/state.ts";
 
 /** 应用上下文 - 将应用内部状态暴露给命令 */
 export interface AppContext {
@@ -18,7 +18,7 @@ export interface AppContext {
   provider: Provider;
   setModel: (model: string) => void;
   exitRequested: boolean;
-  totalUsage: Usage;
+  sessionState: SessionState;
 }
 
 /** 命令接口 - 所有斜杠命令必须实现 */

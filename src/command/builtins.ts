@@ -125,22 +125,37 @@ export class CostCommand implements Command {
   description() { return "显示 token 用量和费用"; }
 
   async execute(_args: string, ctx: AppContext): Promise<void> {
-    const u = ctx.totalUsage;
-    console.log(`Token 用量:`);
-    console.log(`  输入: ${u.inputTokens}`);
-    console.log(`  输出: ${u.outputTokens}`);
-    if (u.cacheCreationInputTokens) {
-      console.log(`  缓存创建: ${u.cacheCreationInputTokens}`);
+    const { SessionState } = await import("../session/state.ts");
+    const ss = ctx.sessionState;
+    const totalUsage = ss.getTotalUsage();
+
+    // 汇总信息
+    console.log(`会话时长: ${SessionState.formatDuration(ss.getElapsedMs())}`);
+    console.log(`总费用: $${ss.totalCostUSD.toFixed(4)}`);
+    console.log(`API 耗时: ${SessionState.formatDuration(ss.totalAPIDuration)}`);
+    console.log(`工具耗时: ${SessionState.formatDuration(ss.totalToolDuration)}`);
+    console.log("");
+
+    // 汇总 token
+    console.log(`Token 用量（汇总）:`);
+    console.log(`  输入: ${totalUsage.inputTokens}`);
+    console.log(`  输出: ${totalUsage.outputTokens}`);
+    if (totalUsage.cacheCreationInputTokens) {
+      console.log(`  缓存创建: ${totalUsage.cacheCreationInputTokens}`);
     }
-    if (u.cacheReadInputTokens) {
-      console.log(`  缓存读取: ${u.cacheReadInputTokens}`);
+    if (totalUsage.cacheReadInputTokens) {
+      console.log(`  缓存读取: ${totalUsage.cacheReadInputTokens}`);
     }
 
-    // 估算费用（基于 Claude Sonnet 定价）
-    const inputCost = (u.inputTokens / 1_000_000) * 3;
-    const outputCost = (u.outputTokens / 1_000_000) * 15;
-    const totalCost = inputCost + outputCost;
-    console.log(`  估算费用: $${totalCost.toFixed(4)}`);
+    // 按模型分开展示
+    const models = Object.entries(ss.modelUsage);
+    if (models.length > 1) {
+      console.log("");
+      console.log(`按模型统计:`);
+      for (const [model, stats] of models) {
+        console.log(`  ${model}: ${stats.requests} 次请求, $${stats.costUSD.toFixed(4)}, input=${stats.inputTokens}, output=${stats.outputTokens}`);
+      }
+    }
   }
 }
 

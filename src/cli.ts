@@ -248,6 +248,30 @@ async function main(): Promise<void> {
     const { App } = await import("./app.ts");
     const app = new App({ config, provider, toolRegistry, commandRegistry, permissionChecker });
 
+    // 会话恢复：--continue 或 --resume <id>
+    if (config.continue || config.resume) {
+      const { SessionStore } = await import("./session/store.ts");
+      const store = new SessionStore();
+      let session: import("./session/store.ts").SessionData | null = null;
+
+      if (config.resume) {
+        session = await store.load(config.resume);
+        if (!session) {
+          console.error(`错误: 未找到会话 ${config.resume}`);
+          process.exit(1);
+        }
+      } else {
+        session = await store.loadLatest();
+        if (!session) {
+          console.error("错误: 没有可恢复的历史会话");
+          process.exit(1);
+        }
+      }
+
+      console.log(`恢复会话: ${session.id} (${session.messages.length} 条消息)`);
+      await app.restoreSession(session);
+    }
+
     // 根据模式路由
     if (config.print) {
       // 无头模式

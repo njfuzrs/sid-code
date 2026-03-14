@@ -7,10 +7,18 @@
 import type { Message } from "../llm/types.ts";
 import { join } from "path";
 import { homedir } from "os";
-import { existsSync, mkdirSync, readdirSync, statSync } from "fs";
+import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "fs";
+
+/** 当前会话数据格式版本 */
+const CURRENT_VERSION = "1.0";
+
+/** 文件锁超时时间（5 分钟） */
+const LOCK_TIMEOUT_MS = 5 * 60 * 1000;
 
 /** 会话数据 */
 export interface SessionData {
+  /** 数据格式版本，方便后续升级兼容 */
+  version: string;
   id: string;
   model: string;
   provider: string;
@@ -48,14 +56,21 @@ export class SessionStore {
     }
   }
 
-  /** 保存会话 */
+  /** 保存会话（带文件锁） */
   async save(session: SessionData): Promise<void> {
+    session.version = CURRENT_VERSION;
     session.updatedAt = new Date().toISOString();
     const filePath = join(this.sessionDir, `${session.id}.json`);
-    await Bun.write(filePath, JSON.stringify(session, null, 2));
+
+    this.acquireLock(session.id);
+    try {
+      await Bun.write(filePath, JSON.stringify(session, null, 2));
+    } finally {
+      this.releaseLock(session.id);
+    }
   }
 
-  /** 加载会话 */
+  /** 加载会话（兼容无版本号的旧数据） */
   async load(id: string): Promise<SessionData | null> {
     const filePath = join(this.sessionDir, `${id}.json`);
     if (!existsSync(filePath)) {
@@ -64,7 +79,12 @@ export class SessionStore {
 
     try {
       const content = await Bun.file(filePath).text();
-      return JSON.parse(content) as SessionData;
+      const data = JSON.parse(content) as SessionData;
+      // 兼容旧版本：补上 version 字段
+      if (!data.version) {
+        data.version = "0.0";
+      }
+      return data;
     } catch {
       return null;
     }
@@ -157,5 +177,40 @@ ${summary}
   /** 生成新的会话 ID */
   static generateId(): string {
     return crypto.randomUUID().slice(0, 8);
+  }
+
+  /**
+   * 获取文件锁（防止并发写入）
+   * 如果锁文件存在且未超时，抛出错误
+   * 如果锁文件超时（5 分钟），自动清理僵尸锁
+   */
+  private acquireLock(sessionId: string): void {
+    const lockPath = join(this.sessionDir, `.${sessionId}.lock`);
+    if (existsSync(lockPath)) {
+      try {
+        const lockTimeStr = Bun.file(lockPath).text();
+        const lockTime = parseInt(lockTimeStr as any, 10);
+        if (Date.now() - lockTime > LOCK_TIMEOUT_MS) {
+          // 超时，清理僵尸锁
+          unlinkSync(lockPath);
+        } else {
+          throw new Error(`会话 ${sessionId} 被另一个进程锁定`);
+        }
+      } catch (err: any) {
+        if (err.message.includes("锁定")) throw err;
+        // 读取失败，清理损坏的锁文件
+        unlinkSync(lockPath);
+      }
+    }
+    // 写入锁文件
+    Bun.write(lockPath, Date.now().toString());
+  }
+
+  /** 释放文件锁 */
+  private releaseLock(sessionId: string): void {
+    const lockPath = join(this.sessionDir, `.${sessionId}.lock`);
+    if (existsSync(lockPath)) {
+      unlinkSync(lockPath);
+    }
   }
 }

@@ -98,12 +98,9 @@ export class ModelFallback {
           break; // 跳到 fallback 阶段
         }
 
-        // 优先使用 retry-after 头（如果错误信息中包含），否则指数退避
+        // 优先使用 retry-after 头（如果错误信息中包含），否则指数退避 + jitter
         const retryAfterMs = this.parseRetryAfter(errorMsg);
-        const delayMs = retryAfterMs ?? Math.min(
-          this.config.initialDelayMs * Math.pow(2, attempt),
-          this.config.maxDelayMs,
-        );
+        const delayMs = retryAfterMs ?? this.calculateDelay(attempt);
 
         log.info("FALLBACK", `重试 ${attempt + 1}/${this.config.maxRetries}，延迟 ${delayMs}ms${retryAfterMs ? ' (来自 retry-after)' : ' (指数退避)'}`);
         this.listener?.onRetry?.(attempt + 1, errorMsg, delayMs);
@@ -135,6 +132,17 @@ export class ModelFallback {
       type: "error",
       error: { message: "模型请求失败，已达最大重试次数且无可用 fallback" },
     };
+  }
+
+  /** 计算重试延迟（指数退避 + ±10% 随机抖动，避免惊群效应） */
+  private calculateDelay(attempt: number): number {
+    let delay = Math.min(
+      this.config.initialDelayMs * Math.pow(2, attempt),
+      this.config.maxDelayMs,
+    );
+    const jitter = delay * 0.1;
+    delay += Math.random() * jitter * 2 - jitter;
+    return Math.round(delay);
   }
 
   /** 检查错误是否可重试 */

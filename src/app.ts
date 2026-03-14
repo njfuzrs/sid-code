@@ -9,7 +9,6 @@ import type {
   ToolUseBlock,
   StreamEvent,
   AccumulatedResponse,
-  Usage,
   SendParams,
 } from "./llm/types.ts";
 import type { Config } from "./config/config.ts";
@@ -19,6 +18,7 @@ import { Registry as ToolRegistry } from "./tool/registry.ts";
 import { Registry as CommandRegistry } from "./command/registry.ts";
 import { ModelFallback } from "./llm/fallback.ts";
 import { ThinkingManager } from "./llm/thinking.ts";
+import { SessionState } from "./session/state.ts";
 import { loadCLAUDEmd } from "./config/rules.ts";
 import { getLogger } from "./debug/logger.ts";
 import { maskSensitiveData } from "./permission/sensitive.ts";
@@ -43,7 +43,7 @@ export class App {
   private permissionChecker: Checker | null;
   private fallback: ModelFallback;
   private thinkingMgr: ThinkingManager;
-  private totalUsage: Usage = { inputTokens: 0, outputTokens: 0 };
+  private sessionState: SessionState;
   private abortController: AbortController | null = null;
   private isTUIMode: boolean = false;
   /** TUI 模式下的权限确认回调（由 TUI 注入） */
@@ -56,6 +56,9 @@ export class App {
     this.commandRegistry = opts.commandRegistry ?? new CommandRegistry();
     this.permissionChecker = opts.permissionChecker ?? null;
     this.ctxMgr = new ContextManager({ maxTokens: 200000 });
+    this.sessionState = new SessionState(
+      opts.config.sessionId || crypto.randomUUID().slice(0, 8),
+    );
     // Extended Thinking 仅 Anthropic 支持
     this.thinkingMgr = new ThinkingManager(opts.config.provider === "anthropic");
     this.fallback = new ModelFallback({ maxRetries: 3 }, {
@@ -80,6 +83,40 @@ export class App {
   private sendWithRetry(params: SendParams, signal?: AbortSignal): AsyncIterable<StreamEvent> {
     this.fallback.reset();
     return this.fallback.executeWithFallback(this.provider, params, signal);
+  }
+
+  /**
+   * 处理上下文溢出错误，尝试自动缩小 max_tokens
+   * 返回调整后的 maxTokens，无法恢复时返回 null
+   */
+  private handleContextOverflow(err: any, currentMaxTokens: number): number | null {
+    const msg = err.message || String(err);
+    // 匹配常见的上下文溢出错误格式
+    const overflowMatch = msg.match(/(\d+)\s*\+\s*(\d+)\s*>\s*(\d+)/);
+    if (!overflowMatch && !msg.toLowerCase().includes("context") && !msg.toLowerCase().includes("token")) {
+      return null; // 不是上下文溢出错误
+    }
+
+    let contextLimit = 200000; // 默认上下文窗口
+    let inputTokens = 0;
+
+    if (overflowMatch) {
+      inputTokens = parseInt(overflowMatch[1], 10);
+      contextLimit = parseInt(overflowMatch[3], 10);
+    } else {
+      // 用估算值
+      inputTokens = this.ctxMgr.estimateTokens(this.toolRegistry.size());
+    }
+
+    // 留 1000 token buffer
+    const available = Math.max(0, contextLimit - inputTokens - 1000);
+
+    // 至少需要 3000 tokens 输出空间，否则没意义
+    if (available < 3000) {
+      return null;
+    }
+
+    return available;
   }
 
   /**
@@ -187,11 +224,58 @@ export class App {
     log.info("APP", `初始化完成，系统提示词 ${systemPrompt.length} 字符，工具数 ${this.toolRegistry.size()}`);
   }
 
-  /** 处理流式响应，累积内容块 */
+  /**
+   * 恢复会话：从 SessionData 恢复消息历史
+   * 如果消息太多，注入摘要而非完整历史
+   */
+  async restoreSession(sessionData: import("./session/store.ts").SessionData): Promise<void> {
+    const log = getLogger();
+    const { SessionStore } = await import("./session/store.ts");
+
+    log.info("APP", `恢复会话: ${sessionData.id}, 消息数 ${sessionData.messages.length}`);
+
+    // 如果消息数量不多，直接恢复
+    const SUMMARY_THRESHOLD = 20;
+    if (sessionData.messages.length <= SUMMARY_THRESHOLD) {
+      this.ctxMgr.setMessages(sessionData.messages);
+      log.info("APP", `直接恢复 ${sessionData.messages.length} 条消息`);
+      return;
+    }
+
+    // 消息太多，尝试加载摘要
+    const store = new SessionStore();
+    const summary = await store.loadSummary(sessionData.id);
+
+    if (summary) {
+      // 有摘要，注入摘要 + 最近消息
+      const recentMessages = sessionData.messages.slice(-10);
+      const resumeMsg = SessionStore.buildResumeMessage(summary.summary);
+      this.ctxMgr.addMessage({
+        role: "user",
+        content: [{ type: "text", text: resumeMsg }],
+      });
+      this.ctxMgr.addMessage({
+        role: "assistant",
+        content: [{ type: "text", text: "好的，我已了解之前的对话内容。请继续。" }],
+      });
+      for (const msg of recentMessages) {
+        this.ctxMgr.addMessage(msg);
+      }
+      log.info("APP", `恢复会话：摘要 + 最近 ${recentMessages.length} 条消息`);
+    } else {
+      // 无摘要，简单截断
+      const recentMessages = sessionData.messages.slice(-15);
+      this.ctxMgr.setMessages(recentMessages);
+      log.warn("APP", `无摘要，仅恢复最近 ${recentMessages.length} 条消息`);
+    }
+  }
+
+  /** 处理流式响应，累积内容块（含心跳检测） */
   async processStream(
     stream: AsyncIterable<StreamEvent>,
     onText?: (text: string) => void,
   ): Promise<AccumulatedResponse> {
+    const log = getLogger();
     const response: AccumulatedResponse = {
       role: "assistant",
       content: [],
@@ -202,7 +286,24 @@ export class App {
     // 用于累积工具调用的 JSON 分片
     const jsonAccumulators = new Map<number, string>();
 
+    // 心跳检测：30 秒无数据则认为流挂死
+    const HEARTBEAT_TIMEOUT = 30_000;
+    const HEARTBEAT_CHECK_INTERVAL = 5_000;
+    let lastActivityTime = Date.now();
+    let heartbeatError: Error | null = null;
+
+    const heartbeatTimer = setInterval(() => {
+      if (Date.now() - lastActivityTime > HEARTBEAT_TIMEOUT) {
+        heartbeatError = new Error("Stream heartbeat timeout: 30 秒无数据");
+        log.warn("STREAM", "心跳超时，30 秒未收到任何事件");
+        // 通过 abort 中断流
+        this.abortController?.abort();
+      }
+    }, HEARTBEAT_CHECK_INTERVAL);
+
+    try {
     for await (const event of stream) {
+      lastActivityTime = Date.now();
       switch (event.type) {
         case "message_start":
           response.usage.inputTokens += event.message.usage.inputTokens;
@@ -264,6 +365,14 @@ export class App {
           throw new Error(`LLM 错误: ${event.error.message}`);
       }
     }
+    } finally {
+      clearInterval(heartbeatTimer);
+    }
+
+    // 如果是心跳超时导致的中断，抛出心跳错误（触发重试）
+    if (heartbeatError) {
+      throw heartbeatError;
+    }
 
     return response;
   }
@@ -303,36 +412,48 @@ export class App {
       const toolDefs = toolCount > 0 ? this.toolRegistry.definitions() : undefined;
       log.llmRequest(this.config.provider, this.config.model, cleanedMessages.length, toolDefs?.length ?? 0);
 
-      const stream = this.sendWithRetry(
-        {
-          model: this.config.model,
-          messages: cleanedMessages,
-          system: this.ctxMgr.getSystemPrompt(),
-          maxTokens: this.config.maxTokens,
-          tools: toolDefs,
-          // Extended Thinking（仅首轮传入，后续工具循环不需要）
-          thinking: turns === 1 ? thinking : undefined,
-        },
-        this.abortController?.signal,
-      );
+      // 构建请求参数（maxTokens 可能被上下文溢出自动调整）
+      const sendParams: SendParams = {
+        model: this.config.model,
+        messages: cleanedMessages,
+        system: this.ctxMgr.getSystemPrompt(),
+        maxTokens: this.config.maxTokens,
+        tools: toolDefs,
+        // Extended Thinking（仅首轮传入，后续工具循环不需要）
+        thinking: turns === 1 ? thinking : undefined,
+      };
 
-      // 处理流式响应
+      let stream: AsyncIterable<StreamEvent>;
+      try {
+        stream = this.sendWithRetry(sendParams, this.abortController?.signal);
+      } catch (err: any) {
+        // 上下文溢出自动调整 max_tokens
+        const adjusted = this.handleContextOverflow(err, sendParams.maxTokens);
+        if (adjusted !== null) {
+          log.info("AGENT", `上下文溢出，自动调整 maxTokens: ${sendParams.maxTokens} → ${adjusted}`);
+          sendParams.maxTokens = adjusted;
+          stream = this.sendWithRetry(sendParams, this.abortController?.signal);
+        } else {
+          // 无法调整，触发自动压缩后重试
+          log.warn("AGENT", "上下文溢出且无法调整 maxTokens，触发自动压缩");
+          await this.autoCompact();
+          continue;
+        }
+      }
+
+      // 处理流式响应（记录 API 耗时）
+      const apiStart = Date.now();
       const response = await this.processStream(stream, (text) => {
         process.stdout.write(text);
       });
+      const apiDuration = Date.now() - apiStart;
 
-      // 累计 token 用量
-      this.totalUsage.inputTokens += response.usage.inputTokens;
-      this.totalUsage.outputTokens += response.usage.outputTokens;
-      if (response.usage.cacheCreationInputTokens) {
-        this.totalUsage.cacheCreationInputTokens = (this.totalUsage.cacheCreationInputTokens ?? 0) + response.usage.cacheCreationInputTokens;
-      }
-      if (response.usage.cacheReadInputTokens) {
-        this.totalUsage.cacheReadInputTokens = (this.totalUsage.cacheReadInputTokens ?? 0) + response.usage.cacheReadInputTokens;
-      }
+      // 更新 SessionState（按模型分开统计 + 成本计算 + 耗时追踪）
+      this.sessionState.updateUsage(this.config.model, response.usage, apiDuration);
 
       log.llmResponse(response.stopReason || "unknown", response.usage);
-      log.debug("AGENT", `累计用量: input=${this.totalUsage.inputTokens}, output=${this.totalUsage.outputTokens}`);
+      const totalUsage = this.sessionState.getTotalUsage();
+      log.debug("AGENT", `累计用量: input=${totalUsage.inputTokens}, output=${totalUsage.outputTokens}, 费用=$${this.sessionState.totalCostUSD.toFixed(4)}`);
 
       // 添加助手消息到历史
       this.ctxMgr.addMessage({
@@ -529,6 +650,9 @@ export class App {
       const result = await tool.execute(block.input, this.abortController?.signal);
       const elapsed = Date.now() - startTime;
 
+      // 记录工具耗时到 SessionState
+      this.sessionState.addToolDuration(elapsed);
+
       // 截断超大输出，防止上下文爆炸
       const truncatedOutput = ContextManager.truncateToolOutput(result.output);
 
@@ -559,6 +683,8 @@ export class App {
       };
     } catch (err: any) {
       const elapsed = Date.now() - startTime;
+      // 异常时也记录工具耗时
+      this.sessionState.addToolDuration(elapsed);
       log.error("TOOL", `执行异常: ${block.name} (${elapsed}ms)`, {
         error: err.message,
         stack: err.stack,
@@ -633,7 +759,7 @@ export class App {
                 provider: this.provider,
                 setModel: (m) => { this.config.model = m; },
                 exitRequested: false,
-                totalUsage: this.totalUsage,
+                sessionState: this.sessionState,
               });
             } catch (err: any) {
               console.error(`命令执行失败: ${err.message}`);
@@ -699,7 +825,7 @@ export class App {
       const result = {
         role: "assistant",
         content: lastAssistant?.content || [],
-        usage: this.totalUsage,
+        usage: this.sessionState.getTotalUsage(),
       };
       console.log(JSON.stringify(result, null, 2));
     }
@@ -731,7 +857,7 @@ export class App {
         isToolExecuting: false,
         model: this.config.model,
         provider: this.config.provider,
-        usage: { ...this.totalUsage },
+        usage: { ...this.sessionState.getTotalUsage() },
       },
     };
 
@@ -795,26 +921,22 @@ export class App {
           this.abortController?.signal,
         );
 
-        // 处理流式响应，更新 TUI 状态
+        // 处理流式响应，更新 TUI 状态（记录 API 耗时）
         let streamingText = "";
         let streamChunks = 0;
+        const tuiApiStart = Date.now();
         const response = await this.processStream(stream, (text) => {
           streamingText += text;
           streamChunks++;
           updateState({ streamingText });
         });
+        const tuiApiDuration = Date.now() - tuiApiStart;
 
         log.debug("TUI:AGENT", `流式响应完成，共 ${streamChunks} 个文本块，总长 ${streamingText.length} 字符`);
         log.llmResponse(response.stopReason || "unknown", response.usage);
 
-        this.totalUsage.inputTokens += response.usage.inputTokens;
-        this.totalUsage.outputTokens += response.usage.outputTokens;
-        if (response.usage.cacheCreationInputTokens) {
-          this.totalUsage.cacheCreationInputTokens = (this.totalUsage.cacheCreationInputTokens ?? 0) + response.usage.cacheCreationInputTokens;
-        }
-        if (response.usage.cacheReadInputTokens) {
-          this.totalUsage.cacheReadInputTokens = (this.totalUsage.cacheReadInputTokens ?? 0) + response.usage.cacheReadInputTokens;
-        }
+        // 更新 SessionState
+        this.sessionState.updateUsage(this.config.model, response.usage, tuiApiDuration);
 
         this.ctxMgr.addMessage({
           role: "assistant",
@@ -825,7 +947,7 @@ export class App {
         // 下一次用户输入时会清空
         updateState({
           messages: this.ctxMgr.getMessages(),
-          usage: { ...this.totalUsage },
+          usage: { ...this.sessionState.getTotalUsage() },
         });
 
         if (response.stopReason === "end_turn" || response.stopReason === "stop") {
@@ -905,7 +1027,7 @@ export class App {
             updateState({ model: m });
           },
           exitRequested: false,
-          totalUsage: this.totalUsage,
+          sessionState: this.sessionState,
         };
 
         // 特殊处理 clear（需要更新 TUI 状态）

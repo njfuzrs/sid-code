@@ -65,7 +65,8 @@ sid-code/
 │   ├── debug/logger.ts           # 调试日志系统
 │   ├── permission/               # 权限检查
 │   ├── hook/runner.ts            # Hook 执行器
-│   ├── session/store.ts          # JSON 会话持久化
+│   ├── session/store.ts          # JSON 会话持久化（版本号 + 文件锁）
+│   ├── session/state.ts          # SessionState 会话状态管理（单一真相源）
 │   └── command/                  # 斜杠命令系统
 ├── tests/                        # bun:test 测试
 ├── internal/                     # Go 源码（保留作参考）
@@ -180,6 +181,38 @@ debug_log_file: ~/.sid-code/debug.log
 - 日志文件：默认 `~/.sid-code/debug.log`，每次启动清空旧日志
 
 详细文档：`docs/debug-mode.md`
+
+## 9. SessionState 会话状态管理
+
+对标 Claude Code 的 SessionState，作为"单一真相源"集中管理会话运行时状态。
+
+### 核心功能
+
+- **按模型分开统计** token 用量（支持多模型混用场景）
+- **成本计算**：区分缓存 token 计价（缓存读取 90% 折扣，缓存写入 25% 加价）
+- **耗时追踪**：API 调用耗时 vs 工具执行耗时分开统计，方便诊断瓶颈
+- **内置定价表**：Claude Opus/Sonnet/Haiku，未知模型按 $0 计算
+
+### 实现细节
+
+- `src/session/state.ts` — `SessionState` 类
+- `updateUsage(model, usage, durationMs)` — 每次 API 调用后更新
+- `addToolDuration(durationMs)` — 每次工具执行后累加
+- `calculateCost(model, usage)` — 单次成本计算
+- `getTotalUsage()` — 兼容旧 `Usage` 接口的汇总
+- `/cost` 命令展示：会话时长、总费用、API/工具耗时、按模型分开的详细统计
+
+### 流式处理增强
+
+- **心跳检测**：`processStream` 中 30 秒无数据自动超时，防止流挂死
+- **重试 Jitter**：指数退避加 ±10% 随机抖动，避免惊群效应
+- **上下文溢出自动恢复**：捕获 `input + max_tokens > context_limit` 错误，自动缩小 `maxTokens`（至少保留 3000 tokens），无法恢复时触发自动压缩
+
+### 会话持久化增强
+
+- `SessionData.version` 字段（当前 "1.0"），方便后续格式升级
+- 文件锁机制：`save` 时写入 `.lock` 文件，防止并发写入，5 分钟超时自动清理僵尸锁
+- `--continue` / `--resume <id>`：CLI 中完整接入会话恢复，消息多时注入摘要
 
 ## 文档维护规范
 
