@@ -2,8 +2,8 @@
  * 系统提示词构建测试
  */
 
-import { describe, test, expect } from "bun:test";
-import { buildSystemPrompt } from "../../src/config/system-prompt.ts";
+import { describe, test, expect, beforeEach } from "bun:test";
+import { buildSystemPrompt, clearPromptCache } from "../../src/config/system-prompt.ts";
 import type { Tool } from "../../src/tool/types.ts";
 
 /** 创建一个简单的测试工具 */
@@ -19,6 +19,11 @@ function makeTool(opts: { name: string; desc: string; guide?: string }): Tool {
 }
 
 describe("buildSystemPrompt", () => {
+  // 每个测试前清除缓存，避免测试间干扰
+  beforeEach(() => {
+    clearPromptCache();
+  });
+
   test("包含身份指令", () => {
     const prompt = buildSystemPrompt({ tools: [] });
     expect(prompt).toContain("sid-code");
@@ -99,5 +104,110 @@ describe("buildSystemPrompt", () => {
       filePrompt: "从文件加载的提示词",
     });
     expect(prompt).toContain("从文件加载的提示词");
+  });
+
+  // === 新增：动态附件测试 ===
+
+  test("包含 Git 状态附件", () => {
+    const prompt = buildSystemPrompt({
+      tools: [],
+      workingDir: process.cwd(),
+      gitStatus: true,
+    });
+    expect(prompt).toContain("<git-status>");
+    expect(prompt).toContain("当前分支:");
+  });
+
+  test("不请求 Git 状态时不包含", () => {
+    const prompt = buildSystemPrompt({
+      tools: [],
+      gitStatus: false,
+    });
+    expect(prompt).not.toContain("<git-status>");
+  });
+
+  test("包含权限模式附件（非默认模式）", () => {
+    const prompt = buildSystemPrompt({
+      tools: [],
+      permissionMode: "plan",
+    });
+    expect(prompt).toContain("规划");
+  });
+
+  test("默认权限模式不注入附件", () => {
+    const prompt1 = buildSystemPrompt({ tools: [] });
+    const prompt2 = buildSystemPrompt({ tools: [], permissionMode: "default" });
+    // 默认模式不注入权限附件
+    expect(prompt1).not.toContain("权限模式");
+    expect(prompt2).not.toContain("权限模式");
+  });
+
+  test("包含诊断信息附件", () => {
+    const prompt = buildSystemPrompt({
+      tools: [],
+      diagnostics: "Error: 类型不匹配 at line 42",
+    });
+    expect(prompt).toContain("<diagnostics>");
+    expect(prompt).toContain("类型不匹配");
+  });
+
+  test("包含 IDE 选中代码附件", () => {
+    const prompt = buildSystemPrompt({
+      tools: [],
+      ideSelection: "const x: number = 'hello';",
+    });
+    expect(prompt).toContain("<ide-selection>");
+    expect(prompt).toContain("const x: number");
+  });
+
+  test("包含 Todo 列表附件", () => {
+    const prompt = buildSystemPrompt({
+      tools: [],
+      todoList: "- [ ] 修复 bug\n- [x] 写测试",
+    });
+    expect(prompt).toContain("<todo-list>");
+    expect(prompt).toContain("修复 bug");
+  });
+
+  test("附件按优先级排序", () => {
+    const prompt = buildSystemPrompt({
+      tools: [],
+      projectRules: "RULES_MARKER",
+      todoList: "TODO_MARKER",
+      appendPrompt: "APPEND_MARKER",
+    });
+    // CLAUDE.md (priority 10) 应在 Todo (35) 之前，Todo 在 Append (50) 之前
+    const rulesIdx = prompt.indexOf("RULES_MARKER");
+    const todoIdx = prompt.indexOf("TODO_MARKER");
+    const appendIdx = prompt.indexOf("APPEND_MARKER");
+    expect(rulesIdx).toBeLessThan(todoIdx);
+    expect(todoIdx).toBeLessThan(appendIdx);
+  });
+
+  // === 缓存测试 ===
+
+  test("相同上下文使用缓存", () => {
+    const ctx = { tools: [], projectRules: "缓存测试规则" };
+    const prompt1 = buildSystemPrompt(ctx);
+    const prompt2 = buildSystemPrompt(ctx);
+    // 内容应该完全相同（来自缓存）
+    expect(prompt1).toBe(prompt2);
+  });
+
+  test("不同上下文不使用缓存", () => {
+    const prompt1 = buildSystemPrompt({ tools: [], projectRules: "规则A" });
+    const prompt2 = buildSystemPrompt({ tools: [], projectRules: "规则B" });
+    expect(prompt1).not.toBe(prompt2);
+    expect(prompt1).toContain("规则A");
+    expect(prompt2).toContain("规则B");
+  });
+
+  test("clearPromptCache 清除缓存", () => {
+    const ctx = { tools: [], projectRules: "清除缓存测试" };
+    const prompt1 = buildSystemPrompt(ctx);
+    clearPromptCache();
+    const prompt2 = buildSystemPrompt(ctx);
+    // 内容相同但确实重新构建了（无法直接验证，但至少不报错）
+    expect(prompt1).toBe(prompt2);
   });
 });

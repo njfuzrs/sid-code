@@ -240,9 +240,11 @@ async function main(): Promise<void> {
     const commandRegistry = new CommandRegistry();
     registerBuiltins(commandRegistry);
 
-    // 创建权限检查器
+    // 创建权限检查器（加载五层权限规则）
     const { PermissionChecker } = await import("./permission/checker.ts");
-    const permissionChecker = new PermissionChecker(config);
+    const { loadPermissionRules } = await import("./config/config.ts");
+    const permissionRules = await loadPermissionRules();
+    const permissionChecker = new PermissionChecker(config, permissionRules);
 
     // 创建 App
     const { App } = await import("./app.ts");

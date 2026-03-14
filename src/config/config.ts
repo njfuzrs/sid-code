@@ -47,11 +47,16 @@ export interface Config {
   availableModels: ModelConfig[];
 
   // 权限配置
+  // 支持 6 种模式：default, always-allow, deny-write, acceptEdits, plan, dontAsk
   permissionMode: string;
   skipPermissions: boolean;
   allowedTools: string[];
   disallowedTools: string[];
   yesMode: boolean;
+
+  // 目录白名单/黑名单
+  allowedDirectories: string[];
+  blockedDirectories: string[];
 
   // 会话配置
   sessionId: string;
@@ -96,6 +101,8 @@ export function defaultConfig(): Config {
     allowedTools: [],
     disallowedTools: [],
     yesMode: false,
+    allowedDirectories: [],
+    blockedDirectories: [],
     sessionId: "",
     continue: false,
     resume: "",
@@ -133,6 +140,8 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     allowed_tools: "allowedTools",
     disallowed_tools: "disallowedTools",
     yes_mode: "yesMode",
+    allowed_directories: "allowedDirectories",
+    blocked_directories: "blockedDirectories",
     session_id: "sessionId",
     continue: "continue",
     resume: "resume",
@@ -238,4 +247,60 @@ export async function ensureConfigDir(): Promise<string> {
     mkdirSync(configDir, { recursive: true });
   }
   return configDir;
+}
+
+/**
+ * 五层权限规则加载
+ * 优先级（数组合并，deny > allow > ask）：
+ * 1. 策略配置：/etc/sid-code/policy.yaml（企业级，可选）
+ * 2. 全局配置：~/.sid-code/config.yaml 中的 permissions 字段
+ * 3. 项目配置：<project>/.sid-code/permissions.yaml（团队共享）
+ * 4. 本地配置：<project>/.sid-code/permissions.local.yaml（个人，加入 .gitignore）
+ * 5. 会话配置：内存中的临时规则（由 checker 的 sessionMemory 管理）
+ */
+export async function loadPermissionRules(): Promise<import("../permission/types.ts").PermissionRule> {
+  const log = getLogger();
+  const { mergeRules } = await import("../permission/rules.ts");
+
+  const layers: string[] = [
+    "/etc/sid-code/policy.yaml",
+    join(homedir(), ".sid-code/config.yaml"),
+    join(process.cwd(), ".sid-code/permissions.yaml"),
+    join(process.cwd(), ".sid-code/permissions.local.yaml"),
+  ];
+
+  const allRules: import("../permission/types.ts").PermissionRule[] = [];
+
+  for (const filePath of layers) {
+    if (!existsSync(filePath)) continue;
+
+    try {
+      const content = await Bun.file(filePath).text();
+      const parsed = parseYAML(content);
+      const permissions = parsed?.permissions || parsed?.permission_rules;
+      if (!permissions) continue;
+
+      const rule: import("../permission/types.ts").PermissionRule = {
+        allow: permissions.allow || [],
+        deny: permissions.deny || [],
+        ask: permissions.ask || [],
+      };
+
+      // 同时提取目录白名单/黑名单（如果有）
+      allRules.push(rule);
+      log.debug("CONFIG", `加载权限规则: ${filePath}`, {
+        allow: rule.allow?.length || 0,
+        deny: rule.deny?.length || 0,
+        ask: rule.ask?.length || 0,
+      });
+    } catch (err) {
+      log.warn("CONFIG", `读取权限规则失败: ${filePath}`, err);
+    }
+  }
+
+  if (allRules.length === 0) {
+    return { allow: [], deny: [], ask: [] };
+  }
+
+  return mergeRules(...allRules);
 }

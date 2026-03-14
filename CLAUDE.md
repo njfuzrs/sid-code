@@ -63,7 +63,8 @@ sid-code/
 │   ├── context/manager.ts        # 上下文管理 + 摘要压缩 + token 估算
 │   ├── context/validator.ts      # 消息格式验证 + 自动修复
 │   ├── debug/logger.ts           # 调试日志系统
-│   ├── permission/               # 权限检查
+│   ├── permission/               # 权限检查（6 种模式 + 规则配置 + 审计日志）
+│   │   ├── types.ts, checker.ts, rules.ts, audit.ts, sensitive.ts
 │   ├── hook/runner.ts            # Hook 执行器
 │   ├── session/store.ts          # JSON 会话持久化（版本号 + 文件锁）
 │   ├── session/state.ts          # SessionState 会话状态管理（单一真相源）
@@ -213,6 +214,134 @@ debug_log_file: ~/.sid-code/debug.log
 - `SessionData.version` 字段（当前 "1.0"），方便后续格式升级
 - 文件锁机制：`save` 时写入 `.lock` 文件，防止并发写入，5 分钟超时自动清理僵尸锁
 - `--continue` / `--resume <id>`：CLI 中完整接入会话恢复，消息多时注入摘要
+
+## 10. 权限系统增强
+
+对标 Claude Code 的权限系统，支持 6 种权限模式、规则配置、五层配置继承、会话记忆、审计日志、目录白名单/黑名单。
+
+### 6 种权限模式
+
+- `default` — 默认模式，写操作需要用户确认
+- `always-allow` — 自动放行所有操作
+- `deny-write` — 拒绝所有写操作
+- `acceptEdits` — 自动接受文件操作（read/write/edit），bash 仍需确认
+- `plan` — 只读模式，只允许 read/grep/glob，拒绝所有写入和 bash
+- `dontAsk` — 智能自动决策：读操作放行，工作目录内写入放行，危险操作拒绝
+
+### 权限规则配置
+
+支持 `allow/deny/ask` 规则，带 glob 模式匹配：
+
+```yaml
+# .sid-code/permissions.yaml
+permissions:
+  allow:
+    - Read
+    - Glob
+    - Bash(npm *)
+  deny:
+    - Edit(.env*)
+    - Bash(rm *)
+  ask:
+    - Edit
+    - Write
+```
+
+规则格式：`工具名` 或 `工具名(glob模式)`，优先级：deny > allow > ask
+
+### 五层配置继承
+
+1. `/etc/sid-code/policy.yaml` — 策略配置（企业级）
+2. `~/.sid-code/config.yaml` — 全局配置（permissions 字段）
+3. `<project>/.sid-code/permissions.yaml` — 项目配置（团队共享）
+4. `<project>/.sid-code/permissions.local.yaml` — 本地配置（个人）
+5. 会话内记忆 — 内存中的临时决策
+
+### 会话内权限记忆
+
+用户确认时可选 `a`（always allow），本次会话内记住决策，不再重复询问。最多记忆 1000 条。
+
+### 审计日志
+
+JSONL 格式，路径 `~/.sid-code/permissions-audit.log`，10MB 自动轮转，保留 10 个历史文件。
+
+### 目录白名单/黑名单
+
+```yaml
+permissions:
+  allowed_directories:
+    - /Users/dev/projects
+  blocked_directories:
+    - /Users/dev/projects/secrets
+```
+
+黑名单优先于白名单。
+
+### 核心文件
+
+- `src/permission/types.ts` — PermissionRule, AuditEntry, Checker 接口
+- `src/permission/checker.ts` — 14 层权限检查（会话记忆 → 危险命令 → 禁用工具 → 目录白名单 → 路径安全 → 敏感文件 → 规则检查 → 模式检查 → 读操作 → 预授权 → deny-write → always-allow → 用户确认）
+- `src/permission/rules.ts` — 规则解析和 glob 匹配
+- `src/permission/audit.ts` — 审计日志（JSONL + 轮转）
+- `src/config/config.ts` — `loadPermissionRules()` 五层配置加载
+
+## 11. System Prompt 动态拼接
+
+对标 Claude Code 的 11 部分动态拼接，系统提示词不再是固定结构，而是由固定模板 + 动态附件组成。
+
+### 架构设计
+
+```
+固定模板（4 部分，必须保留）:
+  1. 身份指令 — buildIdentitySection()
+  2. 环境信息 — buildEnvironmentSection(workingDir)
+  3. 工具指南 — buildToolGuideSection(tools)
+  4. 行为约束 — buildConstraintsSection()
+
+动态附件（按优先级排序，超限时截断低优先级）:
+  priority 5  — 权限模式提示词（plan/readonly/strict 等）
+  priority 10 — CLAUDE.md 项目规则
+  priority 15 — 诊断信息（预留）
+  priority 20 — IDE 选中代码（预留）
+  priority 35 — Todo 列表（预留）
+  priority 40 — Git 状态（分支 + 变更 + 最近提交）
+  priority 50 — 追加提示词
+  priority 60 — 文件提示词
+```
+
+### 核心文件
+
+- `src/config/system-prompt.ts` — 构建器（缓存 + 附件收集 + Token 截断）
+- `src/config/attachments.ts` — 附件系统（Attachment 接口 + 各类生成函数）
+- `src/config/token-utils.ts` — Token 估算（区分中文/英文/代码）+ 按优先级截断
+- `src/config/rules.ts` — CLAUDE.md 搜索（5 种文件名 + 向上查找 + 全局配置）
+
+### 关键特性
+
+- **缓存机制**：5 分钟 TTL，最多 100 条，相同上下文直接返回缓存
+- **Token 估算**：中文 ~2.0 字符/token，代码 ~3.0，英文 ~3.5
+- **智能截断**：超限时保留核心模板，按优先级逐个添加附件
+- **CLAUDE.md 搜索**：`CLAUDE.md` / `.claude.md` / `claude.md` / `.claude/CLAUDE.md` / `.claude/instructions.md` + `~/.claude/CLAUDE.md`
+- **Git 状态注入**：自动获取当前分支、变更文件、最近提交
+- **权限模式提示词**：6 种模式（default/bypassPermissions/plan/readonly/yesMode/strict）
+
+### SystemPromptContext 接口
+
+```typescript
+interface SystemPromptContext {
+  tools: Tool[];           // 已注册工具
+  projectRules?: string;   // CLAUDE.md 内容
+  appendPrompt?: string;   // 追加提示词
+  filePrompt?: string;     // 文件提示词
+  workingDir?: string;     // 工作目录
+  permissionMode?: string; // 权限模式
+  gitStatus?: boolean;     // 是否包含 Git 状态
+  ideSelection?: string;   // IDE 选中代码（预留）
+  diagnostics?: string;    // 诊断信息（预留）
+  todoList?: string;       // Todo 列表（预留）
+  maxTokens?: number;      // 最大 token 数（默认 180000）
+}
+```
 
 ## 文档维护规范
 

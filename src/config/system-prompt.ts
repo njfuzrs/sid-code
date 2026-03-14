@@ -1,14 +1,27 @@
 /**
  * 系统提示词构建模块
- * 对标 Claude Code，包含：身份、环境信息、工具指南、行为约束、项目规则
+ * 对标 Claude Code 的 11 部分动态拼接：固定模板 + 动态附件 + 优先级排序 + Token 截断 + 缓存
  */
 
 import type { Tool } from "../tool/types.ts";
+import type { Attachment } from "./attachments.ts";
 import { platform, homedir } from "os";
 import { cwd } from "process";
+import { estimateTokens, truncateToLimit } from "./token-utils.ts";
+import {
+  PRIORITY,
+  generateClaudeMdAttachment,
+  generateGitStatusAttachment,
+  generatePermissionModeAttachment,
+  generateDiagnosticsAttachment,
+  generateIDESelectionAttachment,
+  generateTodoListAttachment,
+} from "./attachments.ts";
+import { getLogger } from "../debug/logger.ts";
 
 /** 系统提示词构建上下文 */
 export interface SystemPromptContext {
+  // 基础
   /** 已注册的工具实例（用于获取 usageGuide） */
   tools: Tool[];
   /** 项目规则（CLAUDE.md 内容） */
@@ -17,45 +30,191 @@ export interface SystemPromptContext {
   appendPrompt?: string;
   /** 从文件加载的系统提示词 */
   filePrompt?: string;
+
+  // 动态上下文
+  /** 工作目录 */
+  workingDir?: string;
+  /** 权限模式 */
+  permissionMode?: string;
+  /** 是否包含 Git 状态 */
+  gitStatus?: boolean;
+  /** IDE 选中代码 */
+  ideSelection?: string;
+  /** 诊断信息 */
+  diagnostics?: string;
+  /** Todo 列表 */
+  todoList?: string;
+
+  // 限制
+  /** 系统提示词最大 token 数（默认 180000） */
+  maxTokens?: number;
+}
+
+/** 缓存条目 */
+interface CacheEntry {
+  content: string;
+  timestamp: number;
+}
+
+/** 缓存配置 */
+const CACHE_TTL = 5 * 60 * 1000; // 5 分钟
+const CACHE_MAX_SIZE = 100;
+
+/** 缓存存储 */
+const cache = new Map<string, CacheEntry>();
+
+/** 简单字符串 hash（用于缓存键） */
+function simpleHash(str: string): string {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash |= 0; // 转为 32 位整数
+  }
+  return hash.toString(36);
+}
+
+/** 生成缓存键 */
+function generateCacheKey(ctx: SystemPromptContext): string {
+  return [
+    ctx.workingDir || cwd(),
+    ctx.permissionMode || "default",
+    ctx.gitStatus ? "git" : "nogit",
+    ctx.tools.length.toString(),
+    ctx.projectRules ? simpleHash(ctx.projectRules) : "",
+    ctx.appendPrompt ? simpleHash(ctx.appendPrompt) : "",
+    ctx.filePrompt ? simpleHash(ctx.filePrompt) : "",
+    ctx.ideSelection ? simpleHash(ctx.ideSelection) : "",
+    ctx.diagnostics ? simpleHash(ctx.diagnostics) : "",
+    ctx.todoList ? simpleHash(ctx.todoList) : "",
+  ].filter(Boolean).join(":");
+}
+
+/** 清理过期缓存 */
+function cleanExpiredCache(): void {
+  if (cache.size < CACHE_MAX_SIZE) return;
+
+  const now = Date.now();
+  for (const [key, entry] of cache.entries()) {
+    if (now - entry.timestamp > CACHE_TTL) {
+      cache.delete(key);
+    }
+  }
+}
+
+/** 清除所有缓存（供外部调用，如 CLAUDE.md 变更时） */
+export function clearPromptCache(): void {
+  cache.clear();
 }
 
 /**
  * 构建完整的系统提示词
- * 包含：身份、环境、工具指南、约束、项目规则
+ * 固定模板（身份、环境、工具指南、约束）+ 动态附件（按优先级排序）+ Token 截断 + 缓存
  */
 export function buildSystemPrompt(ctx: SystemPromptContext): string {
-  const parts: string[] = [];
+  const log = getLogger();
 
-  // 1. 身份指令
-  parts.push(buildIdentitySection());
+  // 检查缓存
+  const cacheKey = generateCacheKey(ctx);
+  const cached = cache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+    log.debug("PROMPT", "使用缓存的系统提示词");
+    return cached.content;
+  }
 
-  // 2. 环境信息
-  parts.push(buildEnvironmentSection());
+  // 清理过期缓存
+  cleanExpiredCache();
 
-  // 3. 工具使用指南
+  // 1. 构建核心部分（固定模板，必须保留）
+  const coreParts: string[] = [
+    buildIdentitySection(),
+    buildEnvironmentSection(ctx.workingDir),
+  ];
+
   if (ctx.tools.length > 0) {
-    parts.push(buildToolGuideSection(ctx.tools));
+    coreParts.push(buildToolGuideSection(ctx.tools));
   }
 
-  // 4. 行为约束
-  parts.push(buildConstraintsSection());
+  coreParts.push(buildConstraintsSection());
 
-  // 5. 项目规则（CLAUDE.md）
+  // 2. 收集动态附件
+  const attachments: Attachment[] = [];
+
+  // 权限模式提示词
+  if (ctx.permissionMode && ctx.permissionMode !== "default") {
+    attachments.push(generatePermissionModeAttachment(ctx.permissionMode));
+  }
+
+  // CLAUDE.md 项目规则
   if (ctx.projectRules) {
-    parts.push(`\n<project-rules>\n${ctx.projectRules}\n</project-rules>`);
+    attachments.push(generateClaudeMdAttachment(ctx.projectRules));
   }
 
-  // 6. 追加提示词
+  // Git 状态
+  if (ctx.gitStatus) {
+    const workDir = ctx.workingDir || cwd();
+    const gitAttachment = generateGitStatusAttachment(workDir);
+    if (gitAttachment) {
+      attachments.push(gitAttachment);
+    }
+  }
+
+  // IDE 选中代码
+  if (ctx.ideSelection) {
+    attachments.push(generateIDESelectionAttachment(ctx.ideSelection));
+  }
+
+  // 诊断信息
+  if (ctx.diagnostics) {
+    attachments.push(generateDiagnosticsAttachment(ctx.diagnostics));
+  }
+
+  // Todo 列表
+  if (ctx.todoList) {
+    attachments.push(generateTodoListAttachment(ctx.todoList));
+  }
+
+  // 追加提示词
   if (ctx.appendPrompt) {
-    parts.push(`\n${ctx.appendPrompt}`);
+    attachments.push({
+      type: "append",
+      content: ctx.appendPrompt,
+      priority: PRIORITY.APPEND_PROMPT,
+    });
   }
 
-  // 7. 文件提示词
+  // 文件提示词
   if (ctx.filePrompt) {
-    parts.push(`\n${ctx.filePrompt}`);
+    attachments.push({
+      type: "file",
+      content: ctx.filePrompt,
+      priority: PRIORITY.FILE_PROMPT,
+    });
   }
 
-  return parts.join("\n");
+  // 3. 按优先级排序（数字越小越靠前）
+  attachments.sort((a, b) => a.priority - b.priority);
+
+  // 4. 拼接所有部分
+  const allParts = [...coreParts, ...attachments.map((a) => a.content)];
+  let content = allParts.join("\n\n");
+
+  // 5. Token 估算和截断
+  const maxTokens = ctx.maxTokens || 180000;
+  const tokens = estimateTokens(content);
+
+  if (tokens > maxTokens) {
+    log.warn("PROMPT", `系统提示词超限 (${tokens} > ${maxTokens} tokens)，执行截断`);
+    content = truncateToLimit(coreParts, attachments, maxTokens);
+    log.info("PROMPT", `截断后 ${estimateTokens(content)} tokens`);
+  }
+
+  log.debug("PROMPT", `系统提示词构建完成: ${content.length} 字符, ~${estimateTokens(content)} tokens, ${attachments.length} 个附件`);
+
+  // 6. 写入缓存
+  cache.set(cacheKey, { content, timestamp: Date.now() });
+
+  return content;
 }
 
 /** 构建身份指令部分 */
@@ -70,8 +229,8 @@ function buildIdentitySection(): string {
 }
 
 /** 构建环境信息部分 */
-function buildEnvironmentSection(): string {
-  const workDir = cwd();
+function buildEnvironmentSection(workingDir?: string): string {
+  const workDir = workingDir || cwd();
   const homeDir = homedir();
   const os = platform();
   const shell = process.env.SHELL || "unknown";

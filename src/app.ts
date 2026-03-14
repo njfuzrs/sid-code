@@ -210,13 +210,22 @@ export class App {
         }
       }
 
-      // 使用新的系统提示词构建模块
+      // 使用增强的系统提示词构建模块（动态附件 + 优先级 + 缓存）
       const { buildSystemPrompt } = await import("./config/system-prompt.ts");
       systemPrompt = buildSystemPrompt({
+        // 基础
         tools: this.toolRegistry.all(),
         projectRules: rules || undefined,
         appendPrompt: this.config.appendSystemPrompt || undefined,
         filePrompt,
+
+        // 动态上下文
+        workingDir: process.cwd(),
+        permissionMode: this.config.permissionMode,
+        gitStatus: true,
+
+        // 限制
+        maxTokens: 180000,
       });
     }
 
@@ -507,22 +516,35 @@ export class App {
     this.tuiConfirmCallback = cb;
   }
 
-  /** 请求用户确认（根据运行模式选择不同方式） */
-  private async requestUserConfirmation(description: string): Promise<boolean> {
-    // TUI 模式：使用注入的回调
+  /** 请求用户确认（根据运行模式选择不同方式，支持 a=always allow） */
+  private async requestUserConfirmation(
+    description: string,
+    req?: import("./permission/types.ts").PermissionRequest,
+  ): Promise<boolean> {
+    // TUI 模式：使用注入的回调（TUI 暂不支持 always allow）
     if (this.isTUIMode && this.tuiConfirmCallback) {
-      return this.tuiConfirmCallback(description);
+      const confirmed = await this.tuiConfirmCallback(description);
+      return confirmed;
     }
 
-    // REPL 模式：使用 readline
+    // REPL 模式：使用 readline，支持 a=always allow
     return new Promise((resolve) => {
       const rl = readline.createInterface({
         input: process.stdin,
         output: process.stdout,
       });
-      rl.question(`\n[权限请求] ${description}\n允许执行？(y/n) `, (answer) => {
+      rl.question(`\n[权限请求] ${description}\n允许执行？(y/n/a) [a=本次会话内始终允许] `, (answer) => {
         rl.close();
-        resolve(answer.toLowerCase() === "y" || answer.toLowerCase() === "yes");
+        const lower = answer.toLowerCase();
+        if (lower === "a" || lower === "always") {
+          // 记住决策
+          if (req && this.permissionChecker?.rememberDecision) {
+            this.permissionChecker.rememberDecision(req, true);
+          }
+          resolve(true);
+        } else {
+          resolve(lower === "y" || lower === "yes");
+        }
       });
     });
   }
@@ -557,19 +579,20 @@ export class App {
 
       // 权限检查
       if (this.permissionChecker) {
-        const decision = await this.permissionChecker.check({
+        const permReq: import("./permission/types.ts").PermissionRequest = {
           toolName: block.name,
           input: block.input,
           description: (block.input as any)?.description
             ? `${block.name}: ${(block.input as any).description}`
             : `${block.name}: ${JSON.stringify(block.input).slice(0, 120)}`,
-        });
+        };
+        const decision = await this.permissionChecker.check(permReq);
 
         if (!decision.allowed) {
           if (decision.needsConfirmation) {
             const desc = decision.reason || `工具 "${block.name}" 需要用户确认`;
             log.info("PERMISSION", `请求用户确认: ${desc}`);
-            const confirmed = await this.requestUserConfirmation(desc);
+            const confirmed = await this.requestUserConfirmation(desc, permReq);
             if (!confirmed) {
               log.info("PERMISSION", `用户拒绝: ${block.name}`);
               rejectedResults.set(idx, {
