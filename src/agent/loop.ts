@@ -153,6 +153,7 @@ export class AgentLoopRunner {
       const cleanedMessages = ctxMgr.getCleanedMessages();
       const toolDefs = toolCount > 0 ? toolRegistry.definitions() : undefined;
       log.llmRequest(config.provider, config.model, cleanedMessages.length, toolDefs?.length ?? 0, config.maxTokens);
+      log.info("LLM", `系统提示词 ${ctxMgr.getSystemPrompt().length}字符`);
 
       const sendParams: SendParams = {
         model: config.model,
@@ -228,7 +229,7 @@ export class AgentLoopRunner {
 
       // 检查停止原因
       if (response.stopReason === "end_turn" || response.stopReason === "stop") {
-        log.info("AGENT", `对话结束 (${response.stopReason})，共 ${turns} 轮`);
+        log.info("AGENT", `对话结束 (${response.stopReason})，共 ${turns} 轮，累计费用 $${sessionState.totalCostUSD.toFixed(4)}`);
         callbacks.onComplete(turns);
         break;
       }

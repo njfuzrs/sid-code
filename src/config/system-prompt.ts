@@ -204,6 +204,12 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
   // 3. 按优先级排序（数字越小越靠前）
   attachments.sort((a, b) => a.priority - b.priority);
 
+  // 记录每个附件的名称和 token 数
+  for (const att of attachments) {
+    const attTokens = estimateTokens(att.content);
+    log.info("PROMPT", `附件: ${att.type}(${(attTokens / 1000).toFixed(1)}K tok, priority=${att.priority})`);
+  }
+
   // 4. 拼接所有部分
   const allParts = [...coreParts, ...attachments.map((a) => a.content)];
   let content = allParts.join("\n\n");
@@ -215,10 +221,17 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
   if (tokens > maxTokens) {
     log.warn("PROMPT", `系统提示词超限 (${tokens} > ${maxTokens} tokens)，执行截断`);
     content = truncateToLimit(coreParts, attachments, maxTokens);
-    log.info("PROMPT", `截断后 ${estimateTokens(content)} tokens`);
+    // 记录被丢弃的附件
+    const afterTokens = estimateTokens(content);
+    for (const att of attachments) {
+      if (!content.includes(att.content.slice(0, 100))) {
+        log.info("PROMPT", `附件被截断丢弃: ${att.type}(priority=${att.priority})`);
+      }
+    }
+    log.info("PROMPT", `截断后 ${afterTokens} tokens`);
   }
 
-  log.debug("PROMPT", `系统提示词构建完成: ${content.length} 字符, ~${estimateTokens(content)} tokens, ${attachments.length} 个附件`);
+  log.info("PROMPT", `系统提示词构建完成: ${content.length}字符, ~${estimateTokens(content)} tokens, ${attachments.length}个附件`);
 
   // 6. 写入缓存
   cache.set(cacheKey, { content, timestamp: Date.now() });

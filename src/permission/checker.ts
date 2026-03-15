@@ -8,6 +8,7 @@ import type { Checker, Decision, PermissionRequest, PermissionRule } from "./typ
 import type { Config } from "../config/config.ts";
 import { checkRules } from "./rules.ts";
 import { AuditLogger } from "./audit.ts";
+import { getLogger } from "../debug/logger.ts";
 import * as readline from "readline";
 import * as path from "node:path";
 
@@ -144,11 +145,13 @@ export class PermissionChecker implements Checker {
   }
 
   async check(req: PermissionRequest): Promise<Decision> {
+    const log = getLogger();
     const filePath = (req.input as any)?.file_path || "";
     const resource = filePath || (req.input as any)?.command || "";
 
     // 跳过权限检查模式
     if (this.config.skipPermissions || this.config.yesMode) {
+      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(skipPermissions/yesMode)`);
       this.auditLogger.log({
         timestamp: new Date().toISOString(),
         type: "tool_use",
@@ -164,6 +167,7 @@ export class PermissionChecker implements Checker {
     const memKey = this.getMemoryKey(req);
     if (this.sessionMemory.has(memKey)) {
       const allowed = this.sessionMemory.get(memKey)!;
+      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → ${allowed ? "允许" : "拒绝"}(会话记忆)`);
       this.auditLogger.log({
         timestamp: new Date().toISOString(),
         type: "tool_use",
@@ -180,6 +184,7 @@ export class PermissionChecker implements Checker {
       const cmd = (req.input as any)?.command || "";
       for (const dp of DANGEROUS_PATTERNS) {
         if (dp.pattern.test(cmd)) {
+          log.info("PERMISSION", `${req.toolName}(${cmd.slice(0, 80)}) → ${dp.severity === "critical" ? "拒绝" : "需确认"}(危险命令: ${dp.name})`);
           this.auditLogger.log({
             timestamp: new Date().toISOString(),
             type: "tool_use",
@@ -208,6 +213,7 @@ export class PermissionChecker implements Checker {
 
     // 第 2 层：禁用工具检查
     if (this.config.disallowedTools.includes(req.toolName)) {
+      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(工具已禁用)`);
       this.auditLogger.log({
         timestamp: new Date().toISOString(),
         type: "tool_use",
@@ -226,6 +232,7 @@ export class PermissionChecker implements Checker {
     if (filePath) {
       const dirDecision = this.checkDirectoryAccess(filePath);
       if (dirDecision) {
+        log.info("PERMISSION", `${req.toolName}(${filePath.slice(0, 80)}) → ${dirDecision.allowed ? "允许" : "拒绝"}(目录检查: ${dirDecision.reason})`);
         this.auditLogger.log({
           timestamp: new Date().toISOString(),
           type: "tool_use",
@@ -242,6 +249,7 @@ export class PermissionChecker implements Checker {
     if (filePath && FILE_TOOLS.has(req.toolName)) {
       const pathDecision = this.checkPathSecurity(filePath, req.toolName);
       if (pathDecision) {
+        log.info("PERMISSION", `${req.toolName}(${filePath.slice(0, 80)}) → 拒绝(路径安全: ${pathDecision.reason})`);
         this.auditLogger.log({
           timestamp: new Date().toISOString(),
           type: "tool_use",
@@ -258,6 +266,7 @@ export class PermissionChecker implements Checker {
     if (filePath) {
       for (const pattern of SENSITIVE_FILES) {
         if (pattern.test(filePath)) {
+          log.info("PERMISSION", `${req.toolName}(${filePath.slice(0, 80)}) → 需确认(敏感文件: ${pattern.source})`);
           this.auditLogger.log({
             timestamp: new Date().toISOString(),
             type: "tool_use",
@@ -280,6 +289,7 @@ export class PermissionChecker implements Checker {
     if (this.rules) {
       const ruleDecision = checkRules(this.rules, req);
       if (ruleDecision) {
+        log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → ${ruleDecision.allowed ? "允许" : "拒绝"}(规则匹配: ${ruleDecision.reason})`);
         this.auditLogger.log({
           timestamp: new Date().toISOString(),
           type: "tool_use",
@@ -295,8 +305,10 @@ export class PermissionChecker implements Checker {
     // 第 7 层：plan 模式（只读，拒绝所有写入和 bash）
     if (this.config.permissionMode === "plan") {
       if (READ_ONLY_TOOLS.has(req.toolName)) {
+        log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(plan模式+只读工具)`);
         return { allowed: true };
       }
+      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(plan模式)`);
       this.auditLogger.log({
         timestamp: new Date().toISOString(),
         type: "tool_use",
@@ -313,12 +325,14 @@ export class PermissionChecker implements Checker {
 
     // 第 8 层：读操作自动放行
     if (READ_ONLY_TOOLS.has(req.toolName)) {
+      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(只读工具)`);
       return { allowed: true };
     }
 
     // 第 9 层：acceptEdits 模式（自动接受文件操作，其他仍需检查）
     if (this.config.permissionMode === "acceptEdits") {
       if (FILE_TOOLS.has(req.toolName)) {
+        log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(acceptEdits模式)`);
         return { allowed: true };
       }
     }
@@ -330,22 +344,26 @@ export class PermissionChecker implements Checker {
         const resolved = path.resolve(filePath);
         const cwd = process.cwd();
         if (resolved.startsWith(cwd)) {
+          log.info("PERMISSION", `${req.toolName}(${filePath.slice(0, 80)}) → 允许(dontAsk+工作目录)`);
           return { allowed: true };
         }
       }
       // 非危险的 bash 命令放行（危险操作已在第 1 层拦截）
       if (req.toolName === "bash") {
+        log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(dontAsk+bash)`);
         return { allowed: true };
       }
     }
 
     // 第 11 层：预授权工具放行
     if (this.preApproved.has(req.toolName)) {
+      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(预授权)`);
       return { allowed: true };
     }
 
     // 第 12 层：deny-write 模式
     if (this.config.permissionMode === "deny-write") {
+      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(deny-write模式)`);
       this.auditLogger.log({
         timestamp: new Date().toISOString(),
         type: "tool_use",
@@ -362,10 +380,12 @@ export class PermissionChecker implements Checker {
 
     // 第 13 层：always-allow 模式
     if (this.config.permissionMode === "always-allow") {
+      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(always-allow模式)`);
       return { allowed: true };
     }
 
     // 第 14 层：需要用户确认
+    log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 需确认(默认策略)`);
     return {
       allowed: false,
       needsConfirmation: true,

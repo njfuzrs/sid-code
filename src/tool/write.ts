@@ -7,6 +7,7 @@ import type { Tool, ToolResult } from "./types.ts";
 import { dirname } from "path";
 import { mkdirSync, existsSync } from "fs";
 import { getCheckpointManager } from "../checkpoint/manager.ts";
+import { getLogger } from "../debug/logger.ts";
 
 export class WriteTool implements Tool {
   name(): string {
@@ -42,6 +43,7 @@ export class WriteTool implements Tool {
   }
 
   async execute(input: unknown): Promise<ToolResult> {
+    const log = getLogger();
     const params = input as { file_path: string; content: string };
 
     if (!params.file_path) {
@@ -51,6 +53,8 @@ export class WriteTool implements Tool {
     if (params.content === undefined) {
       return { output: "错误: 缺少 content 参数", isError: true };
     }
+
+    log.info("TOOL", `▶ 写入 ${params.file_path} (${params.content.length}字符)`);
 
     try {
       // 写入前创建 Checkpoint（用于 /undo 回滚）
@@ -69,6 +73,8 @@ export class WriteTool implements Tool {
 
       // 写入文件
       await Bun.write(params.file_path, params.content);
+
+      log.info("TOOL", `✓ 写入 ${params.file_path} 完成`);
 
       return { output: `文件已写入: ${params.file_path}` };
     } catch (err: any) {

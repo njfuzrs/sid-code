@@ -208,6 +208,12 @@ async function main(): Promise<void> {
       process.exit(1);
     }
 
+    // 记录 Provider 信息
+    if (config.debug) {
+      const { getLogger } = await import("./debug/logger.ts");
+      getLogger().info("CONFIG", `Provider: ${config.provider} model=${config.model} baseURL=${config.baseURL || "(默认)"}`);
+    }
+
     // 注册内置工具（共享 FileReadTracker 实例）
     const { Registry: ToolRegistry } = await import("./tool/registry.ts");
     const { FileReadTracker } = await import("./tool/file-read-tracker.ts");
@@ -260,11 +266,27 @@ async function main(): Promise<void> {
       toolRegistry.register(new CustomAgentTool(def, providerRegistry, toolRegistry));
     }
 
+    // 记录注册的工具
+    if (config.debug) {
+      const { getLogger } = await import("./debug/logger.ts");
+      const toolNames = toolRegistry.all().map(t => t.name()).join(", ");
+      getLogger().info("CONFIG", `注册工具: ${toolNames} (共${toolRegistry.size()}个)`);
+    }
+
     // 创建权限检查器（加载五层权限规则）
     const { PermissionChecker } = await import("./permission/checker.ts");
     const { loadPermissionRules } = await import("./config/config.ts");
     const permissionRules = await loadPermissionRules();
     const permissionChecker = new PermissionChecker(config, permissionRules);
+
+    // 记录权限规则
+    if (config.debug && permissionRules) {
+      const { getLogger } = await import("./debug/logger.ts");
+      const allowCount = permissionRules.allow?.length ?? 0;
+      const denyCount = permissionRules.deny?.length ?? 0;
+      const askCount = permissionRules.ask?.length ?? 0;
+      getLogger().info("CONFIG", `权限规则: ${allowCount}条 allow, ${denyCount}条 deny, ${askCount}条 ask`);
+    }
 
     // 创建 App
     const { App } = await import("./app.ts");

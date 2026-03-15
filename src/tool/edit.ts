@@ -7,6 +7,7 @@
 import type { Tool, ToolResult } from "./types.ts";
 import type { FileReadTracker } from "./file-read-tracker.ts";
 import { getCheckpointManager } from "../checkpoint/manager.ts";
+import { getLogger } from "../debug/logger.ts";
 
 export class EditTool implements Tool {
   private tracker: FileReadTracker | null;
@@ -57,6 +58,7 @@ export class EditTool implements Tool {
   }
 
   async execute(input: unknown): Promise<ToolResult> {
+    const log = getLogger();
     const params = input as {
       file_path: string;
       old_string: string;
@@ -67,6 +69,8 @@ export class EditTool implements Tool {
     if (!params.file_path || !params.old_string || params.new_string === undefined) {
       return { output: "错误: 缺少必需参数", isError: true };
     }
+
+    log.info("TOOL", `▶ 编辑 ${params.file_path} 替换${params.old_string.length}→${params.new_string.length}字符`);
 
     // 先读后改校验
     if (this.tracker) {
@@ -137,6 +141,8 @@ export class EditTool implements Tool {
       if (this.tracker) {
         this.tracker.updateMtime(params.file_path);
       }
+
+      log.info("TOOL", `✓ 编辑 ${params.file_path} 完成 (替换${matches}处)`);
 
       return {
         output: `文件已编辑: ${params.file_path}（替换了 ${matches} 处）`,

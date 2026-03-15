@@ -7,6 +7,7 @@ import type { Tool, ToolResult } from "./types.ts";
 import { glob } from "glob";
 import { statSync } from "fs";
 import { join } from "path";
+import { getLogger } from "../debug/logger.ts";
 
 export class GlobTool implements Tool {
   readOnly(): boolean {
@@ -52,6 +53,7 @@ export class GlobTool implements Tool {
   }
 
   async execute(input: unknown): Promise<ToolResult> {
+    const log = getLogger();
     const params = input as {
       pattern: string;
       path?: string;
@@ -61,6 +63,8 @@ export class GlobTool implements Tool {
     if (!params.pattern) {
       return { output: "错误: 缺少 pattern 参数", isError: true };
     }
+
+    log.info("TOOL", `▶ 匹配 "${params.pattern}" in ${params.path || "."}`);
 
     try {
       const cwd = params.path || process.cwd();
@@ -88,6 +92,8 @@ export class GlobTool implements Tool {
       });
 
       filesWithMtime.sort((a, b) => b.mtime - a.mtime);
+
+      log.info("TOOL", `✓ 匹配完成 ${filesWithMtime.length}个文件`);
 
       return { output: filesWithMtime.map(f => f.file).join("\n") };
     } catch (err: any) {

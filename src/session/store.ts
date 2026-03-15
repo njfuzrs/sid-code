@@ -8,6 +8,7 @@ import type { Message } from "../llm/types.ts";
 import { join } from "path";
 import { homedir } from "os";
 import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "fs";
+import { getLogger } from "../debug/logger.ts";
 
 /** 当前会话数据格式版本 */
 const CURRENT_VERSION = "1.0";
@@ -58,6 +59,7 @@ export class SessionStore {
 
   /** 保存会话（带文件锁） */
   async save(session: SessionData): Promise<void> {
+    const log = getLogger();
     session.version = CURRENT_VERSION;
     session.updatedAt = new Date().toISOString();
     const filePath = join(this.sessionDir, `${session.id}.json`);
@@ -65,6 +67,11 @@ export class SessionStore {
     this.acquireLock(session.id);
     try {
       await Bun.write(filePath, JSON.stringify(session, null, 2));
+      const fileSize = statSync(filePath).size;
+      const sizeStr = fileSize > 1024 * 1024
+        ? `${(fileSize / 1024 / 1024).toFixed(1)}MB`
+        : `${(fileSize / 1024).toFixed(1)}KB`;
+      log.info("SESSION", `会话已保存: ${session.id} (${session.messages.length}条消息, ${sizeStr})`);
     } finally {
       this.releaseLock(session.id);
     }
@@ -72,6 +79,7 @@ export class SessionStore {
 
   /** 加载会话（兼容无版本号的旧数据） */
   async load(id: string): Promise<SessionData | null> {
+    const log = getLogger();
     const filePath = join(this.sessionDir, `${id}.json`);
     if (!existsSync(filePath)) {
       return null;
@@ -84,6 +92,7 @@ export class SessionStore {
       if (!data.version) {
         data.version = "0.0";
       }
+      log.info("SESSION", `会话已加载: ${id} (${data.messages.length}条消息)`);
       return data;
     } catch {
       return null;

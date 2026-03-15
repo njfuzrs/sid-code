@@ -456,6 +456,13 @@ export class App {
       throw heartbeatError;
     }
 
+    // 流结束日志：统计文本长度和工具调用数
+    const totalTextLen = response.content
+      .filter(b => b.type === "text")
+      .reduce((sum, b) => sum + (b.type === "text" ? b.text.length : 0), 0);
+    const toolCallCount = response.content.filter(b => b.type === "tool_use").length;
+    log.info("STREAM", `流结束: 文本${totalTextLen}字符, 工具调用${toolCallCount}个, stop=${response.stopReason}`);
+
     return response;
   }
 

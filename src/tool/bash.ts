@@ -6,6 +6,7 @@
 import type { Tool, ToolResult } from "./types.ts";
 import { spawn } from "bun";
 import { platform } from "os";
+import { getLogger } from "../debug/logger.ts";
 
 /** Bash 输出截断阈值（对标 Claude Code 30000 字符） */
 const MAX_OUTPUT_LENGTH = 30000;
@@ -74,6 +75,7 @@ export class BashTool implements Tool {
   }
 
   async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
+    const log = getLogger();
     const params = input as {
       command: string;
       description?: string;
@@ -84,6 +86,8 @@ export class BashTool implements Tool {
     if (!params.command) {
       return { output: "错误: 缺少 command 参数", isError: true };
     }
+
+    log.info("TOOL", `▶ 执行: ${params.command.slice(0, 200)}${params.command.length > 200 ? "..." : ""}`);
 
     // 超时限制：最短 1 秒，最长 10 分钟
     const timeout = Math.min(Math.max(params.timeout || 120000, 1000), 600000);
@@ -147,11 +151,14 @@ export class BashTool implements Tool {
       }
 
       if (exitCode !== 0) {
+        log.info("TOOL", `✓ 命令完成 code=${exitCode} stdout=${stdout.length}字符 stderr=${stderr.length}字符`);
         return {
           output: `命令执行失败（退出码 ${exitCode}）:\n${output}`,
           isError: true,
         };
       }
+
+      log.info("TOOL", `✓ 命令完成 code=0 stdout=${stdout.length}字符 stderr=${stderr.length}字符`);
 
       return { output };
     } catch (err: any) {

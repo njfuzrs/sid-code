@@ -5,6 +5,7 @@
 
 import type { Tool, ToolResult } from "./types.ts";
 import { spawn } from "bun";
+import { getLogger } from "../debug/logger.ts";
 
 /** 输出截断阈值 */
 const MAX_OUTPUT_LENGTH = 30000;
@@ -78,6 +79,7 @@ export class GrepTool implements Tool {
   }
 
   async execute(input: unknown): Promise<ToolResult> {
+    const log = getLogger();
     const params = input as {
       pattern: string;
       path?: string;
@@ -97,13 +99,21 @@ export class GrepTool implements Tool {
     const searchPath = params.path || ".";
     const mode = params.output_mode || "files_with_matches";
 
+    log.info("TOOL", `▶ 搜索 "${params.pattern}" in ${searchPath}`);
+
     // 优先尝试 ripgrep，降级到系统 grep
     const useRipgrep = await this.hasRipgrep();
 
     if (useRipgrep) {
-      return this.executeRipgrep(params, searchPath, mode);
+      const result = await this.executeRipgrep(params, searchPath, mode);
+      const matchCount = result.output === "未找到匹配的内容" ? 0 : result.output.split("\n").filter(Boolean).length;
+      log.info("TOOL", `✓ 搜索完成 ${matchCount}个匹配`);
+      return result;
     }
-    return this.executeFallbackGrep(params, searchPath, mode);
+    const result = await this.executeFallbackGrep(params, searchPath, mode);
+    const matchCount = result.output === "未找到匹配的内容" ? 0 : result.output.split("\n").filter(Boolean).length;
+    log.info("TOOL", `✓ 搜索完成 ${matchCount}个匹配`);
+    return result;
   }
 
   /** 检查 ripgrep 是否可用 */

@@ -181,6 +181,7 @@ export class SubAgent {
   /** 内部执行逻辑（含超时控制） */
   private async executeInner(task: SubAgentTask, signal?: AbortSignal): Promise<SubAgentResult> {
     const log = getLogger();
+    const startTime = Date.now();
     log.info("SUBAGENT", `启动子代理 [${task.type}]: ${task.description}`);
 
     // 超时控制（默认 120 秒）
@@ -214,6 +215,8 @@ export class SubAgent {
       const totalUsage: Usage = { inputTokens: 0, outputTokens: 0 };
       let turns = 0;
       let lastTextOutput = "";
+
+      log.info("SUBAGENT", `[${task.type}] 可用工具: ${allowedNames?.join(", ") ?? "无"}, 超时: ${timeout / 1000}秒, 最大轮次: ${maxTurns}`);
 
       while (turns < maxTurns) {
         turns++;
@@ -279,6 +282,7 @@ export class SubAgent {
       }
 
       log.info("SUBAGENT", `[${task.type}] 结果: ${lastTextOutput.slice(0, 200)}`);
+      log.info("SUBAGENT", `[${task.type}] 完成，共 ${turns} 轮，耗时 ${((Date.now() - startTime) / 1000).toFixed(1)}秒`);
 
       return {
         success: true,
@@ -306,6 +310,7 @@ export class SubAgent {
   /** 自定义子代理内部执行逻辑（复用流式处理和工具执行） */
   private async executeCustomInner(task: CustomSubAgentTask, signal?: AbortSignal): Promise<SubAgentResult> {
     const log = getLogger();
+    const startTime = Date.now();
     log.info("SUBAGENT", `启动自定义子代理`);
 
     const timeout = task.timeout ?? 120_000;
@@ -333,6 +338,8 @@ export class SubAgent {
       const totalUsage: Usage = { inputTokens: 0, outputTokens: 0 };
       let turns = 0;
       let lastTextOutput = "";
+
+      log.info("SUBAGENT", `[custom] 可用工具: ${task.allowedTools.join(", ") || "无"}, 超时: ${timeout / 1000}秒, 最大轮次: ${maxTurns}`);
 
       while (turns < maxTurns) {
         turns++;
@@ -394,7 +401,7 @@ export class SubAgent {
         break;
       }
 
-      log.info("SUBAGENT", `[custom] 完成，共 ${turns} 轮`);
+      log.info("SUBAGENT", `[custom] 完成，共 ${turns} 轮，耗时 ${((Date.now() - startTime) / 1000).toFixed(1)}秒`);
 
       return {
         success: true,

@@ -7,6 +7,7 @@
 import type { Tool, ToolResult } from "./types.ts";
 import type { FileReadTracker } from "./file-read-tracker.ts";
 import { statSync } from "fs";
+import { getLogger } from "../debug/logger.ts";
 
 export class ReadTool implements Tool {
   private tracker: FileReadTracker | null;
@@ -56,11 +57,14 @@ export class ReadTool implements Tool {
   }
 
   async execute(input: unknown): Promise<ToolResult> {
+    const log = getLogger();
     const params = input as { file_path: string; offset?: number; limit?: number };
 
     if (!params.file_path) {
       return { output: "错误: 缺少 file_path 参数", isError: true };
     }
+
+    log.info("TOOL", `▶ 读取 ${params.file_path} offset=${params.offset ?? 1} limit=${params.limit ?? "全部"}`);
 
     try {
       const file = Bun.file(params.file_path);
@@ -88,6 +92,8 @@ export class ReadTool implements Tool {
       const output = selectedLines
         .map((line, idx) => `${startIdx + idx + 1}→${line}`)
         .join("\n");
+
+      log.info("TOOL", `✓ 读取 ${params.file_path} ${selectedLines.length}行 ${output.length}字符`);
 
       return { output };
     } catch (err: any) {
