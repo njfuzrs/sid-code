@@ -174,10 +174,8 @@ export class REPLRenderer {
   private spinnerFrameIdx = 0;
   private readonly spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-  // 流式 Markdown 缓冲
-  private streamBuffer = "";
-  private inCodeBlock = false;
-  private codeBlockContent = "";
+  // 流式渲染：累积全部文本，flush 时用 markdown 渲染替换原始输出
+  private fullStreamText = "";
 
   /** 渲染欢迎信息 */
   renderWelcome(config: Config, toolCount: number, cwd: string, gitBranch?: string): void {
@@ -318,87 +316,61 @@ export class REPLRenderer {
     );
   }
 
-  /** 流式 Markdown 渲染：接收文本块 */
+  /** 流式文本：接收增量文本块 */
   renderStreamChunk(text: string): void {
-    this.streamBuffer += text;
-
-    // 逐字符扫描，检测代码块边界
-    while (this.streamBuffer.length > 0) {
-      if (this.inCodeBlock) {
-        // 在代码块内，查找闭合 ```
-        const closeIdx = this.streamBuffer.indexOf("```");
-        if (closeIdx !== -1) {
-          // 找到闭合标记
-          this.codeBlockContent += this.streamBuffer.slice(0, closeIdx + 3);
-          this.streamBuffer = this.streamBuffer.slice(closeIdx + 3);
-          this.inCodeBlock = false;
-
-          // 渲染完整代码块
-          try {
-            const rendered = renderMarkdown(this.codeBlockContent);
-            process.stdout.write(rendered);
-          } catch {
-            process.stdout.write(this.codeBlockContent);
-          }
-          this.codeBlockContent = "";
-        } else {
-          // 还没闭合，继续累积
-          this.codeBlockContent += this.streamBuffer;
-          this.streamBuffer = "";
-        }
-      } else {
-        // 不在代码块内，查找开启 ```
-        const openIdx = this.streamBuffer.indexOf("```");
-        if (openIdx !== -1) {
-          // 输出 ``` 之前的文本
-          if (openIdx > 0) {
-            const before = this.streamBuffer.slice(0, openIdx);
-            process.stdout.write(before);
-          }
-          // 开始代码块
-          this.inCodeBlock = true;
-          this.codeBlockContent = this.streamBuffer.slice(openIdx);
-          this.streamBuffer = "";
-        } else {
-          // 没有 ```，但可能 buffer 末尾是不完整的 ` 或 ``
-          // 保留末尾最多 2 个字符以防截断
-          if (this.streamBuffer.length > 2) {
-            const safe = this.streamBuffer.slice(0, -2);
-            const keep = this.streamBuffer.slice(-2);
-            process.stdout.write(safe);
-            this.streamBuffer = keep;
-          }
-          // buffer 太短，等待更多数据
-          break;
-        }
-      }
-    }
+    this.fullStreamText += text;
+    // 原样输出到 stdout，保证用户能实时看到生成的文本
+    process.stdout.write(text);
   }
 
-  /** 刷新流式缓冲区 */
+  /** 刷新流式缓冲区：用 markdown 渲染结果替换原始输出 */
   flushStream(): void {
-    // 输出剩余 buffer
-    if (this.streamBuffer.length > 0) {
-      process.stdout.write(this.streamBuffer);
-      this.streamBuffer = "";
-    }
-    // 如果还在代码块中（未闭合），直接输出
-    if (this.inCodeBlock && this.codeBlockContent.length > 0) {
-      try {
-        const rendered = renderMarkdown(this.codeBlockContent);
-        process.stdout.write(rendered);
-      } catch {
-        process.stdout.write(this.codeBlockContent);
+    if (this.fullStreamText.length === 0) return;
+
+    // 计算原始输出占用的可视行数（考虑 CJK 双宽字符和终端折行）
+    const termWidth = process.stdout.columns || 80;
+    const rawLines = this.fullStreamText.split("\n");
+    let visualLineCount = 0;
+    for (const line of rawLines) {
+      let lineWidth = 0;
+      for (const ch of line) {
+        const code = ch.codePointAt(0)!;
+        // CJK 字符占 2 列宽
+        if (
+          (code >= 0x4E00 && code <= 0x9FFF) || (code >= 0x3000 && code <= 0x303F) ||
+          (code >= 0xFF00 && code <= 0xFFEF) || (code >= 0x3400 && code <= 0x4DBF) ||
+          (code >= 0x20000 && code <= 0x2A6DF) || (code >= 0xF900 && code <= 0xFAFF) ||
+          (code >= 0x3040 && code <= 0x309F) || (code >= 0x30A0 && code <= 0x30FF) ||
+          (code >= 0xAC00 && code <= 0xD7AF)
+        ) {
+          lineWidth += 2;
+        } else {
+          lineWidth += 1;
+        }
       }
-      this.codeBlockContent = "";
-      this.inCodeBlock = false;
+      visualLineCount += Math.max(1, Math.ceil(lineWidth / termWidth));
     }
+
+    // 光标回退到原始输出起始位置，清除原始文本
+    const goBack = visualLineCount - 1;
+    if (goBack > 0) {
+      process.stdout.write(`\x1b[${goBack}A`); // 向上移动 N 行
+    }
+    process.stdout.write("\r\x1b[J"); // 回到行首 + 清除到屏幕底部
+
+    // 用完整的 markdown 渲染结果替换
+    try {
+      const rendered = renderMarkdown(this.fullStreamText);
+      process.stdout.write(rendered);
+    } catch {
+      process.stdout.write(this.fullStreamText);
+    }
+
+    this.fullStreamText = "";
   }
 
   /** 重置流式状态（每次新对话前调用） */
   resetStream(): void {
-    this.streamBuffer = "";
-    this.inCodeBlock = false;
-    this.codeBlockContent = "";
+    this.fullStreamText = "";
   }
 }

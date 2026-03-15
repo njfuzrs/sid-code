@@ -3,8 +3,12 @@
  * 使用 Node.js 内置 parseArgs 解析命令行参数，路由到不同模式
  */
 
-// 强制启用终端颜色（必须在所有 import 之前，否则 chalk 检测不到 TTY）
-if (!process.env.FORCE_COLOR && (process.stdout.isTTY || process.stderr.isTTY)) {
+// 强制启用终端颜色（必须在所有 import 之前）
+// sid-code 是 TUI 应用，始终需要颜色支持（加粗/斜体/代码高亮等）。
+// chalk / cli-highlight 在模块加载时读取此变量创建 theme，
+// 如果不设置，Ink 接管 stdout 后 chalk 检测不到 TTY 会禁用所有样式。
+// 尊重用户显式设置的 NO_COLOR / FORCE_COLOR。
+if (!process.env.FORCE_COLOR && !process.env.NO_COLOR) {
   process.env.FORCE_COLOR = "3";
 }
 
