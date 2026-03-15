@@ -18,6 +18,7 @@ import { ModelFallback } from "../llm/fallback.ts";
 import { ThinkingManager } from "../llm/thinking.ts";
 import { SessionState } from "../session/state.ts";
 import { getLogger } from "../debug/logger.ts";
+import type { HookRunner } from "../hook/runner.ts";
 
 /** UI 回调接口，处理 REPL/TUI 的差异 */
 export interface AgentLoopCallbacks {
@@ -46,6 +47,7 @@ export interface AgentLoopDeps {
   sessionState: SessionState;
   fallback: ModelFallback;
   thinkingMgr: ThinkingManager;
+  hookRunner?: HookRunner;
   /** 执行工具调用（含权限检查） */
   executeTools: (content: ContentBlock[]) => Promise<ContentBlock[]>;
   /** 处理流式响应 */
@@ -81,9 +83,29 @@ export class AgentLoopRunner {
 
     log.info("AGENT", `用户输入: ${userInput.slice(0, 200)}${userInput.length > 200 ? "..." : ""}`);
 
+    // user_prompt_submit hook：可拦截或修改用户输入
+    let finalInput = userInput;
+    if (this.deps.hookRunner) {
+      const hookResults = await this.deps.hookRunner.run("user_prompt_submit", {
+        userInput,
+      });
+      // 检查是否被阻止
+      const blocked = hookResults.find(r => r.blocked);
+      if (blocked) {
+        log.info("HOOK", `用户输入被 hook 阻止: ${blocked.reason || "无原因"}`);
+        return;
+      }
+      // 检查是否修改了输入
+      const modified = hookResults.find(r => r.modifiedInput);
+      if (modified?.modifiedInput) {
+        log.info("HOOK", `用户输入被 hook 修改`);
+        finalInput = modified.modifiedInput;
+      }
+    }
+
     // 解析 thinking hint（如 "think", "think hard", "ultrathink"）
     const { cleaned: cleanedInput, config: thinkingConfig } =
-      this.deps.thinkingMgr.parseThinkingHint(userInput);
+      this.deps.thinkingMgr.parseThinkingHint(finalInput);
     // 如果没有显式 hint，根据输入自动推断
     const thinking = thinkingConfig ?? this.deps.thinkingMgr.getThinkingConfig(cleanedInput);
 

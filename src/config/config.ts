@@ -20,12 +20,21 @@ export interface MCPServerConfig {
   headers?: Record<string, string>;
 }
 
-/** Hook 配置 */
+/** Hook 配置（支持 command 和 url 两种类型） */
 export interface HookConfig {
-  event: string;
-  command: string;
-  timeout?: number;
+  type?: "command" | "url";       // 钩子类型，默认 command
+  event?: string;                  // 旧格式兼容：事件名
+  command?: string;                // command 类型：shell 命令
+  url?: string;                    // url 类型：HTTP 地址
+  method?: string;                 // url 类型：HTTP 方法，默认 POST
+  headers?: Record<string, string>; // url 类型：HTTP 头
+  timeout?: number;                // 超时（秒），默认 30
+  blocking?: boolean;              // 是否阻塞，默认 false
+  matcher?: string;                // 工具匹配（精确或 /regex/）
 }
+
+/** Hook 配置集合（按事件分组，新格式） */
+export type HooksConfig = Record<string, HookConfig[]>;
 
 /** 可用模型配置 */
 export interface ModelConfig {
@@ -82,7 +91,7 @@ export interface Config {
   debugLogFile: string;
 
   // Hook 和 MCP
-  hooks: HookConfig[];
+  hooks: HooksConfig;
   mcpServers: Record<string, MCPServerConfig>;
 }
 
@@ -116,7 +125,7 @@ export function defaultConfig(): Config {
     debug: false,
     debugLevel: "INFO",
     debugLogFile: "~/.sid-code/debug.log",
-    hooks: [],
+    hooks: {},
     mcpServers: {},
   };
 }
@@ -171,6 +180,15 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
         baseURL: m.base_url || m.baseURL,
         apiKey: m.api_key || m.apiKey,
       }));
+    // 特殊处理 hooks：旧格式（数组）→ 新格式（按事件分组）
+    } else if (configKey === "hooks" && Array.isArray(value)) {
+      const grouped: HooksConfig = {};
+      for (const hook of value) {
+        const event = hook.event || "pre_tool_use";
+        if (!grouped[event]) grouped[event] = [];
+        grouped[event].push(hook);
+      }
+      result[configKey] = grouped;
     } else {
       result[configKey] = value;
     }

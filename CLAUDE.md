@@ -73,7 +73,7 @@ sid-code/
 │   ├── debug/logger.ts           # 调试日志系统
 │   ├── permission/               # 权限检查（6 种模式 + 规则配置 + 审计日志）
 │   │   ├── types.ts, checker.ts, rules.ts, audit.ts, sensitive.ts
-│   ├── hook/runner.ts            # Hook 执行器
+│   ├── hook/runner.ts            # Hook 执行器（10 种事件 + command/url 类型 + blocking + matcher）
 │   ├── session/store.ts          # JSON 会话持久化（版本号 + 文件锁）
 │   ├── session/state.ts          # SessionState 会话状态管理（单一真相源）
 │   └── command/                  # 斜杠命令系统
@@ -564,6 +564,83 @@ frontmatter 字段：`name`, `description`, `tools`（逗号分隔或数组）
 ### usageGuide 注入
 
 `Registry.definitions()` 中，如果工具实现了 `usageGuide()`，将其拼接到 description 末尾，格式为 `\n\n使用指南:\n{guide}`。
+
+## 17. Hook 系统
+
+对标 Claude Code 的 Hook 系统，支持 10 种事件、2 种钩子类型、blocking 机制、matcher 匹配、stdin JSON 传递、返回值解析。
+
+### 10 种事件类型
+
+| 事件 | 触发时机 | 可阻止 | 调用位置 |
+|------|----------|--------|----------|
+| `pre_tool_use` | 工具执行前 | 是 | `app.ts` executeSingleTool |
+| `post_tool_use` | 工具执行后 | 否 | `app.ts` executeSingleTool |
+| `post_tool_use_failure` | 工具执行失败后 | 否 | `app.ts` executeSingleTool catch |
+| `user_prompt_submit` | 用户提交输入时 | 是（可修改输入） | `agent/loop.ts` run |
+| `session_start` | 会话开始 | 否 | `app.ts` init |
+| `session_end` | 会话结束 | 否 | `app.ts` runREPL/runHeadless/runTUI |
+| `pre_compact` | 上下文压缩前 | 是 | `app.ts` autoCompact |
+| `subagent_stop` | 子代理停止 | 否 | `agent/sub-agent.ts` execute/executeCustom |
+| `permission_request` | 权限请求时 | 否 | 预留 |
+| `notification` | 通知事件 | 否 | 预留 |
+
+### 2 种钩子类型
+
+- **command**（默认）：执行 shell 命令，通过环境变量 + stdin JSON 传递上下文
+- **url**：HTTP 远程回调（fetch POST），JSON body 传递上下文
+
+### blocking 机制
+
+- `blocking: true` 的 hook 可以阻止后续操作（工具执行、压缩、用户输入）
+- command 类型：非零退出码 或 stdout JSON `{"blocked":true}` 触发阻止
+- url 类型：非 2xx 响应触发阻止
+- 阻止后立即中断 hook 链，不执行后续 hook
+
+### matcher 匹配
+
+- 无 matcher：通配所有工具
+- 精确匹配：`matcher: "bash"`（不区分大小写）
+- 正则匹配：`matcher: "/^(bash|write)$/"`
+
+### 数据传递
+
+- **环境变量**：`SID_CODE_HOOK_EVENT`、`SID_CODE_TOOL_NAME`、`SID_CODE_TOOL_INPUT`、`SID_CODE_TOOL_OUTPUT`、`SID_CODE_TOOL_IS_ERROR`、`SID_CODE_SESSION_ID`、`SID_CODE_USER_INPUT`、`SID_CODE_ERROR`
+- **stdin JSON**：完整上下文 `{ event, toolName, toolInput, ... }`
+- **返回值**：stdout JSON 解析为 `HookResult`，支持 `blocked`、`reason`、`modifiedInput` 字段
+
+### 配置格式
+
+新格式（按事件分组，推荐）：
+```yaml
+hooks:
+  pre_tool_use:
+    - type: command
+      command: "echo 检查安全性"
+      matcher: Bash
+      blocking: true
+      timeout: 10
+  post_tool_use:
+    - type: url
+      url: "https://audit.company.com/log"
+      method: POST
+      blocking: false
+  session_start:
+    - type: command
+      command: "./scripts/session-init.sh"
+```
+
+旧格式（数组，向后兼容，自动按 event 分组）：
+```yaml
+hooks:
+  - event: pre_tool_use
+    command: "echo hook"
+    timeout: 30
+```
+
+### 核心文件
+
+- `src/hook/runner.ts` — HookRunner（事件分发 + matcher + blocking + command/url 执行 + 返回值解析）
+- `src/config/config.ts` — HookConfig / HooksConfig 接口 + 旧格式兼容转换
 
 ## 文档维护规范
 

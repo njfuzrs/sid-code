@@ -9,6 +9,7 @@ import type { ContentBlock, StreamEvent, Usage } from "../llm/types.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { getLogger } from "../debug/logger.ts";
+import type { HookRunner } from "../hook/runner.ts";
 
 /** 子代理类型 */
 export type SubAgentType = "explore" | "task" | "summarize" | "plan";
@@ -85,15 +86,17 @@ export class SubAgent {
   private provider: Provider;
   private model: string;
   private toolRegistry: ToolRegistry;
+  private hookRunner?: HookRunner;
 
   /** 嵌套深度计数器（不允许子代理再 spawn 子代理） */
   static depth = 0;
   static readonly MAX_DEPTH = 1;
 
-  constructor(provider: Provider, model: string, toolRegistry: ToolRegistry) {
+  constructor(provider: Provider, model: string, toolRegistry: ToolRegistry, hookRunner?: HookRunner) {
     this.provider = provider;
     this.model = model;
     this.toolRegistry = toolRegistry;
+    this.hookRunner = hookRunner;
   }
 
   /** 执行子代理任务 */
@@ -112,11 +115,17 @@ export class SubAgent {
     }
 
     SubAgent.depth++;
+    let result: SubAgentResult;
     try {
-      return await this.executeInner(task, signal);
+      result = await this.executeInner(task, signal);
     } finally {
       SubAgent.depth--;
+      // subagent_stop hook（非阻塞）
+      this.hookRunner?.run("subagent_stop", {
+        toolName: `subagent:${task.type}`,
+      }).catch(err => log.error("HOOK", `subagent_stop hook 失败: ${err.message}`));
     }
+    return result;
   }
 
   /** 执行自定义子代理任务（Skills/Agents 用） */
@@ -135,11 +144,17 @@ export class SubAgent {
     }
 
     SubAgent.depth++;
+    let result: SubAgentResult;
     try {
-      return await this.executeCustomInner(task, signal);
+      result = await this.executeCustomInner(task, signal);
     } finally {
       SubAgent.depth--;
+      // subagent_stop hook（非阻塞）
+      this.hookRunner?.run("subagent_stop", {
+        toolName: "subagent:custom",
+      }).catch(err => log.error("HOOK", `subagent_stop hook 失败: ${err.message}`));
     }
+    return result;
   }
 
   /** 内部执行逻辑（含超时控制） */

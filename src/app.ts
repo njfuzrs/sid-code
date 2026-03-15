@@ -23,6 +23,7 @@ import { getLogger } from "./debug/logger.ts";
 import { maskSensitiveData } from "./permission/sensitive.ts";
 import { AgentLoopRunner } from "./agent/loop.ts";
 import type { AgentLoopCallbacks } from "./agent/loop.ts";
+import { HookRunner } from "./hook/runner.ts";
 import * as readline from "readline";
 
 /** App 配置 */
@@ -48,6 +49,7 @@ export class App {
   private abortController: AbortController | null = null;
   private isTUIMode: boolean = false;
   private loopRunner: AgentLoopRunner;
+  private hookRunner!: HookRunner;
   /** TUI 模式下的权限确认回调（由 TUI 注入） */
   private tuiConfirmCallback: ((desc: string) => Promise<boolean>) | null = null;
 
@@ -80,6 +82,9 @@ export class App {
       },
     });
 
+    // 初始化 Hook 执行器
+    this.hookRunner = new HookRunner(this.config.hooks);
+
     // 初始化统一循环 Runner
     this.loopRunner = new AgentLoopRunner({
       config: this.config,
@@ -89,6 +94,7 @@ export class App {
       sessionState: this.sessionState,
       fallback: this.fallback,
       thinkingMgr: this.thinkingMgr,
+      hookRunner: this.hookRunner,
       executeTools: (content) => this.executeTools(content),
       processStream: (stream, onText) => this.processStream(stream, onText),
       autoCompact: () => this.autoCompact(),
@@ -151,6 +157,16 @@ export class App {
 
     if (messages.length <= 4) {
       log.debug("AGENT", "消息太少，跳过压缩");
+      return;
+    }
+
+    // pre_compact hook（blocking 时可阻止压缩）
+    const preResults = await this.hookRunner.run("pre_compact", {
+      sessionId: this.sessionState.sessionId,
+    });
+    const blocked = preResults.find(r => r.blocked);
+    if (blocked) {
+      log.info("HOOK", `压缩被 hook 阻止: ${blocked.reason || "无原因"}`);
       return;
     }
 
@@ -267,6 +283,11 @@ export class App {
 
     this.ctxMgr.setSystemPrompt(systemPrompt);
     log.info("APP", `初始化完成，系统提示词 ${systemPrompt.length} 字符，工具数 ${this.toolRegistry.size()}`);
+
+    // session_start hook（非阻塞）
+    this.hookRunner.run("session_start", {
+      sessionId: this.sessionState.sessionId,
+    }).catch(err => log.error("HOOK", `session_start hook 失败: ${err.message}`));
   }
 
   /**
@@ -593,6 +614,24 @@ export class App {
     }
 
     log.debug("TOOL", `开始执行: ${block.name}`, block.input);
+
+    // pre_tool_use hook（blocking 时可阻止工具执行）
+    const preResults = await this.hookRunner.run("pre_tool_use", {
+      toolName: block.name,
+      toolInput: block.input,
+      sessionId: this.sessionState.sessionId,
+    });
+    const blocked = preResults.find(r => r.blocked);
+    if (blocked) {
+      log.info("HOOK", `工具 ${block.name} 被 hook 阻止: ${blocked.reason || "无原因"}`);
+      return {
+        type: "tool_result",
+        tool_use_id: block.id,
+        content: `Hook 阻止执行: ${blocked.reason || "被 pre_tool_use hook 阻止"}`,
+        is_error: true,
+      };
+    }
+
     const startTime = Date.now();
 
     try {
@@ -624,6 +663,15 @@ export class App {
         }
       }
 
+      // post_tool_use hook（非阻塞）
+      this.hookRunner.run("post_tool_use", {
+        toolName: block.name,
+        toolInput: block.input,
+        toolOutput: truncatedOutput,
+        isError: result.isError,
+        sessionId: this.sessionState.sessionId,
+      }).catch(err => log.error("HOOK", `post_tool_use hook 失败: ${err.message}`));
+
       return {
         type: "tool_result",
         tool_use_id: block.id,
@@ -642,6 +690,15 @@ export class App {
       if (!this.isTUIMode) {
         console.log(`[工具异常: ${err.message}]`);
       }
+
+      // post_tool_use_failure hook（非阻塞）
+      this.hookRunner.run("post_tool_use_failure", {
+        toolName: block.name,
+        toolInput: block.input,
+        error: err.message,
+        isError: true,
+        sessionId: this.sessionState.sessionId,
+      }).catch(e => log.error("HOOK", `post_tool_use_failure hook 失败: ${e.message}`));
 
       return {
         type: "tool_result",
@@ -691,6 +748,7 @@ export class App {
 
           // 特殊处理 exit（需要关闭 readline）
           if (cmdName === "exit" || cmdName === "quit") {
+            await this.hookRunner.run("session_end", { sessionId: this.sessionState.sessionId });
             console.log("再见！");
             rl.close();
             return;
@@ -743,8 +801,12 @@ export class App {
 
     // 处理 Ctrl+C
     rl.on("close", () => {
-      console.log("\n再见！");
-      process.exit(0);
+      this.hookRunner.run("session_end", { sessionId: this.sessionState.sessionId })
+        .catch(() => {})
+        .finally(() => {
+          console.log("\n再见！");
+          process.exit(0);
+        });
     });
 
     prompt();
@@ -783,6 +845,9 @@ export class App {
       };
       console.log(JSON.stringify(result, null, 2));
     }
+
+    // session_end hook（非阻塞）
+    await this.hookRunner.run("session_end", { sessionId: this.sessionState.sessionId });
 
     return "";
   }
@@ -968,6 +1033,7 @@ export class App {
     }
 
     await app.waitUntilExit();
+    await this.hookRunner.run("session_end", { sessionId: this.sessionState.sessionId });
     log.info("TUI", "TUI 退出");
   }
 }

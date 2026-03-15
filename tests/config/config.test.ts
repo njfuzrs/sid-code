@@ -14,7 +14,7 @@ describe("config", () => {
     expect(cfg.noTUI).toBe(false);
     expect(cfg.print).toBe(false);
     expect(cfg.yesMode).toBe(false);
-    expect(cfg.hooks).toEqual([]);
+    expect(cfg.hooks).toEqual({});
     expect(cfg.mcpServers).toEqual({});
   });
 
