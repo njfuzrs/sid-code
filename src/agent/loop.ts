@@ -26,7 +26,7 @@ export interface AgentLoopCallbacks {
   /** 流式文本输出 */
   onStreamText(text: string): void;
   /** 工具开始执行 */
-  onToolStart(toolName: string): void;
+  onToolStart(toolName: string, toolInput?: unknown): void;
   /** 工具执行结束 */
   onToolEnd(toolName: string): void;
   /** 上下文压缩完成 */
@@ -229,8 +229,10 @@ export class AgentLoopRunner {
         const toolNames = toolBlocks.map(b => b.type === "tool_use" ? b.name : "").filter(Boolean);
         log.info("AGENT", `工具调用: ${toolNames.join(", ")}`);
 
-        for (const name of toolNames) {
-          callbacks.onToolStart(name);
+        for (const b of toolBlocks) {
+          if (b.type === "tool_use") {
+            callbacks.onToolStart(b.name, b.input);
+          }
         }
 
         const toolResults = await this.deps.executeTools(response.content);

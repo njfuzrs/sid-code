@@ -23,10 +23,18 @@ export interface TUIState {
   streamingText: string;
   isLoading: boolean;
   toolName: string | null;
+  toolInput: unknown;
   isToolExecuting: boolean;
   model: string;
   provider: string;
   usage: Usage;
+  costUSD: number;
+  costLimit: number;
+  contextPercent: number;
+  permissionMode: string;
+  gitBranch: string;
+  /** 临时状态消息（上下文警告、hook 阻塞等），几秒后自动清除 */
+  statusMessage: string;
 }
 
 interface AppProps {
@@ -135,27 +143,66 @@ export function TUIApp({ initialState, callbacks, stateRef }: AppProps) {
     });
   }
 
+  /** 权限模式 badge 颜色 */
+  const permColor = (() => {
+    switch (state.permissionMode) {
+      case "plan": return "cyan";
+      case "deny-write": return "red";
+      case "always-allow": return "yellow";
+      case "dontAsk": return "yellow";
+      default: return "green";
+    }
+  })();
+
+  /** 费用颜色：根据配额百分比变色 */
+  const costColor = (() => {
+    if (state.costLimit <= 0 || state.costUSD <= 0) return undefined; // dimColor
+    const pct = (state.costUSD / state.costLimit) * 100;
+    if (pct >= 95) return "red" as const;
+    if (pct >= 80) return "yellow" as const;
+    return undefined;
+  })();
+
+  const costText = state.costUSD > 0 ? `$${state.costUSD.toFixed(4)}` : "$0";
+
   return (
     <Box flexDirection="column" height="100%">
       {/* 标题栏 */}
       <Box borderStyle="single" borderColor="blue" paddingX={1} justifyContent="space-between">
-        <Text bold color="blue">sid-code</Text>
+        <Box>
+          <Text bold color="blue">sid-code</Text>
+          <Text dimColor> | </Text>
+          <Text color={permColor}>{state.permissionMode}</Text>
+          {state.gitBranch ? <><Text dimColor> | </Text><Text color="cyan">{state.gitBranch}</Text></> : null}
+        </Box>
         <Text dimColor>{state.model} | {state.provider}</Text>
       </Box>
+
+      {/* 状态消息（上下文警告、hook 阻塞等） */}
+      {state.statusMessage ? (
+        <Box paddingX={1}>
+          <Text color="yellow">{state.statusMessage}</Text>
+        </Box>
+      ) : null}
 
       {/* 消息区 */}
       <MessageList messages={state.messages} streamingText={state.streamingText} />
 
       {/* 工具状态 */}
-      <ToolStatus toolName={state.toolName} isExecuting={state.isToolExecuting} />
+      <ToolStatus toolName={state.toolName} isExecuting={state.isToolExecuting} toolInput={state.toolInput} />
 
       {/* 输入区 */}
       <InputArea onSubmit={handleSubmit} isLoading={state.isLoading} />
 
       {/* 状态栏 */}
-      <Box paddingX={1}>
+      <Box paddingX={1} justifyContent="space-between">
+        <Text>
+          <Text dimColor>{state.usage.inputTokens}↓ {state.usage.outputTokens}↑ tokens | </Text>
+          <Text color={costColor} dimColor={!costColor}>{costText}</Text>
+          <Text dimColor> | ctx {state.contextPercent}%</Text>
+        </Text>
         <Text dimColor>
-          Token: {state.usage.inputTokens}↓ {state.usage.outputTokens}↑ | Ctrl+C 退出 | /help 帮助
+          Ctrl+C 退出 | /help 帮助
         </Text>
       </Box>
     </Box>

@@ -30,6 +30,73 @@ function getBlockKey(block: ContentBlock, idx: number): string {
   return `unknown-${idx}`;
 }
 
+/** 从工具输入中提取参数摘要（TUI 版本） */
+function getToolSummary(name: string, input: unknown): string {
+  const inp = input as any;
+  const lower = name.toLowerCase();
+
+  if (lower === "read") {
+    const fp = inp?.file_path || inp?.filePath || "";
+    const offset = inp?.offset;
+    const limit = inp?.limit;
+    let suffix = "";
+    if (offset && limit) suffix = ` (行 ${offset}-${offset + limit})`;
+    else if (limit) suffix = ` (前 ${limit} 行)`;
+    return `${fp}${suffix}`;
+  }
+  if (lower === "edit") return inp?.file_path || inp?.filePath || "";
+  if (lower === "write") return inp?.file_path || inp?.filePath || "";
+  if (lower === "bash") {
+    const cmd = inp?.command || "";
+    return cmd.length > 50 ? cmd.slice(0, 47) + "..." : cmd;
+  }
+  if (lower === "grep") {
+    const pattern = inp?.pattern || "";
+    const glob = inp?.glob || "";
+    return glob ? `"${pattern}" in ${glob}` : `"${pattern}"`;
+  }
+  if (lower === "glob") {
+    const pattern = inp?.pattern || "";
+    const path = inp?.path || "";
+    return path ? `${pattern} in ${path}` : pattern;
+  }
+  // SubAgent / Skill
+  if (lower.startsWith("subagent") || lower.startsWith("agent__") || lower.startsWith("skill__")) {
+    const agentType = inp?.type || inp?.agentType || "";
+    const prompt = inp?.prompt || inp?.task || "";
+    const short = prompt.length > 30 ? prompt.slice(0, 27) + "..." : prompt;
+    return agentType ? `${agentType} "${short}"` : short;
+  }
+  return "";
+}
+
+/** 从工具结果中提取结果摘要（TUI 版本） */
+function getResultSummary(name: string, content: string, isError?: boolean): string {
+  if (isError) {
+    return content.length > 60 ? content.slice(0, 57) + "..." : content;
+  }
+  const lower = name.toLowerCase();
+  if (lower === "read") {
+    const lines = content.split("\n").length;
+    return `${lines} 行`;
+  }
+  if (lower === "edit") return "替换完成";
+  if (lower === "write") return `${content.length} 字符`;
+  if (lower === "bash") {
+    const lines = content.split("\n").length;
+    return `${lines} 行输出`;
+  }
+  if (lower === "grep") {
+    const lines = content.trim().split("\n").filter(l => l.length > 0).length;
+    return `${lines} 个结果`;
+  }
+  if (lower === "glob") {
+    const lines = content.trim().split("\n").filter(l => l.length > 0).length;
+    return `${lines} 个文件`;
+  }
+  return `${content.length} 字符`;
+}
+
 /** 渲染单个内容块 */
 function renderBlock(block: ContentBlock, idx: number): React.ReactNode {
   const key = getBlockKey(block, idx);
@@ -42,22 +109,26 @@ function renderBlock(block: ContentBlock, idx: number): React.ReactNode {
   }
 
   if (block.type === "tool_use") {
+    const summary = getToolSummary(block.name, block.input);
     return (
       <Box key={key} marginY={0}>
-        <Text color="yellow">{"[工具调用: "}{block.name}{"]"}</Text>
+        <Text color="yellow">{"● "}{block.name}</Text>
+        {summary ? <Text dimColor>{" "}{summary}</Text> : null}
       </Box>
     );
   }
 
   if (block.type === "tool_result") {
-    const color = block.is_error ? "red" : "green";
-    const prefix = block.is_error ? "工具错误" : "工具结果";
-    const preview = block.content.length > 200
-      ? block.content.slice(0, 200) + "..."
-      : block.content;
+    const isErr = !!block.is_error;
+    // 尝试从上下文中找到对应的 tool_use 块名称（通过 tool_use_id 匹配）
+    // 这里简化处理，只显示结果摘要
+    const icon = isErr ? "✗" : "✓";
+    const color = isErr ? "red" : "green";
+    const summary = getResultSummary("", block.content, isErr);
     return (
       <Box key={key} marginY={0}>
-        <Text color={color}>{"["}{prefix}{": "}{preview}{"]"}</Text>
+        <Text color={color}>{icon} </Text>
+        <Text dimColor>{summary}</Text>
       </Box>
     );
   }

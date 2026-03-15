@@ -22,11 +22,12 @@ import { SessionState } from "./session/state.ts";
 import { QuotaManager } from "./llm/quota.ts";
 import { loadCLAUDEmd } from "./config/rules.ts";
 import { getLogger } from "./debug/logger.ts";
-import { maskSensitiveData } from "./permission/sensitive.ts";
 import { AgentLoopRunner } from "./agent/loop.ts";
 import type { AgentLoopCallbacks } from "./agent/loop.ts";
 import { HookRunner } from "./hook/runner.ts";
+import { REPLRenderer } from "./ui/repl-renderer.ts";
 import * as readline from "readline";
+import { execSync } from "child_process";
 
 /** App 配置 */
 export interface AppOptions {
@@ -55,6 +56,7 @@ export class App {
   private isTUIMode: boolean = false;
   private loopRunner: AgentLoopRunner;
   private hookRunner!: HookRunner;
+  private renderer: REPLRenderer;
   /** TUI 模式下的权限确认回调（由 TUI 注入） */
   private tuiConfirmCallback: ((desc: string) => Promise<boolean>) | null = null;
 
@@ -94,6 +96,9 @@ export class App {
 
     // 初始化 Hook 执行器
     this.hookRunner = new HookRunner(this.config.hooks);
+
+    // 初始化 REPL 渲染器
+    this.renderer = new REPLRenderer();
 
     // 初始化统一循环 Runner
     this.loopRunner = new AgentLoopRunner({
@@ -456,12 +461,23 @@ export class App {
 
   /** Agentic 主循环：发送消息 → 处理响应 → 执行工具 → 循环 */
   async agentLoop(userInput: string): Promise<void> {
+    this.renderer.resetStream();
+    let turns = 0;
     const callbacks: AgentLoopCallbacks = {
-      onStreamText: (text) => process.stdout.write(text),
-      onToolStart: (name) => console.log(`\n[工具调用: ${name}]`),
+      onStreamText: (text) => this.renderer.renderStreamChunk(text),
+      onToolStart: (_name) => {
+        this.renderer.flushStream();
+      },
       onToolEnd: () => {},
       onCompact: () => console.log("\n[上下文已自动压缩]"),
-      onComplete: () => process.stdout.write("\n"),
+      onComplete: (t) => {
+        turns = t;
+        this.renderer.flushStream();
+        process.stdout.write("\n");
+        this.renderer.renderCompletionSummary(
+          turns, this.sessionState, this.ctxMgr, this.toolRegistry.size(),
+        );
+      },
       onContextWarning: (remaining) =>
         console.log(`\n[Context left until auto-compact: ${remaining.toFixed(0)}%]`),
       onMaxTurns: (max) => console.log(`\n[达到最大轮次限制: ${max}]`),
@@ -478,6 +494,8 @@ export class App {
   private async requestUserConfirmation(
     description: string,
     req?: import("./permission/types.ts").PermissionRequest,
+    toolName?: string,
+    toolInput?: unknown,
   ): Promise<boolean> {
     // TUI 模式：使用注入的回调（TUI 暂不支持 always allow）
     if (this.isTUIMode && this.tuiConfirmCallback) {
@@ -485,25 +503,42 @@ export class App {
       return confirmed;
     }
 
-    // REPL 模式：使用 readline，支持 a=always allow
+    // REPL 模式：使用结构化权限确认界面
     return new Promise((resolve) => {
       const rl = readline.createInterface({
         input: process.stdin,
         output: process.stdout,
       });
-      rl.question(`\n[权限请求] ${description}\n允许执行？(y/n/a) [a=本次会话内始终允许] `, (answer) => {
-        rl.close();
-        const lower = answer.toLowerCase();
-        if (lower === "a" || lower === "always") {
-          // 记住决策
-          if (req && this.permissionChecker?.rememberDecision) {
-            this.permissionChecker.rememberDecision(req, true);
+      // 如果有工具名和输入，显示结构化界面
+      if (toolName && toolInput) {
+        const formatted = this.renderer.formatPermissionRequest(toolName, toolInput);
+        process.stderr.write(formatted + "\n");
+        rl.question("  允许执行？ (y)是 (n)否 (a)始终允许 > ", (answer) => {
+          rl.close();
+          const lower = answer.toLowerCase();
+          if (lower === "a" || lower === "always") {
+            if (req && this.permissionChecker?.rememberDecision) {
+              this.permissionChecker.rememberDecision(req, true);
+            }
+            resolve(true);
+          } else {
+            resolve(lower === "y" || lower === "yes");
           }
-          resolve(true);
-        } else {
-          resolve(lower === "y" || lower === "yes");
-        }
-      });
+        });
+      } else {
+        rl.question(`\n[权限请求] ${description}\n允许执行？(y/n/a) [a=本次会话内始终允许] `, (answer) => {
+          rl.close();
+          const lower = answer.toLowerCase();
+          if (lower === "a" || lower === "always") {
+            if (req && this.permissionChecker?.rememberDecision) {
+              this.permissionChecker.rememberDecision(req, true);
+            }
+            resolve(true);
+          } else {
+            resolve(lower === "y" || lower === "yes");
+          }
+        });
+      }
     });
   }
 
@@ -550,7 +585,7 @@ export class App {
           if (decision.needsConfirmation) {
             const desc = decision.reason || `工具 "${block.name}" 需要用户确认`;
             log.info("PERMISSION", `请求用户确认: ${desc}`);
-            const confirmed = await this.requestUserConfirmation(desc, permReq);
+            const confirmed = await this.requestUserConfirmation(desc, permReq, block.name, block.input);
             if (!confirmed) {
               log.info("PERMISSION", `用户拒绝: ${block.name}`);
               rejectedResults.set(idx, {
@@ -621,7 +656,8 @@ export class App {
     const log = getLogger();
 
     if (!this.isTUIMode) {
-      console.log(`\n[工具调用: ${block.name}]`);
+      this.renderer.renderToolStart(block.name, block.input);
+      this.renderer.startSpinner(`${block.name} 执行中...`);
     }
 
     log.debug("TOOL", `开始执行: ${block.name}`, block.input);
@@ -634,6 +670,7 @@ export class App {
     });
     const blocked = preResults.find(r => r.blocked);
     if (blocked) {
+      if (!this.isTUIMode) this.renderer.stopSpinner();
       log.info("HOOK", `工具 ${block.name} 被 hook 阻止: ${blocked.reason || "无原因"}`);
       return {
         type: "tool_result",
@@ -662,16 +699,8 @@ export class App {
       log.debug("TOOL", `执行完成: ${block.name} (${elapsed}ms)，输出 ${result.output.length} 字符${truncatedOutput.length < result.output.length ? `，截断为 ${truncatedOutput.length} 字符` : ""}`);
 
       if (!this.isTUIMode) {
-        if (result.isError) {
-          const maskedError = maskSensitiveData(result.output.slice(0, 100));
-          console.log(`[工具错误: ${maskedError}]`);
-        } else {
-          const preview = result.output.length > 200
-            ? result.output.slice(0, 200) + "..."
-            : result.output;
-          const maskedPreview = maskSensitiveData(preview);
-          console.log(`[工具结果: ${maskedPreview}]`);
-        }
+        this.renderer.stopSpinner();
+        this.renderer.renderToolResult(block.name, block.input, result.output, !!result.isError, elapsed);
       }
 
       // post_tool_use hook（非阻塞）
@@ -699,7 +728,8 @@ export class App {
       });
 
       if (!this.isTUIMode) {
-        console.log(`[工具异常: ${err.message}]`);
+        this.renderer.stopSpinner();
+        this.renderer.renderToolResult(block.name, block.input, err.message, true, elapsed);
       }
 
       // post_tool_use_failure hook（非阻塞）
@@ -729,9 +759,13 @@ export class App {
       output: process.stdout,
     });
 
-    console.log("sid-code v0.1.0 (TypeScript)");
-    console.log(`模型: ${this.config.model} | 提供商: ${this.config.provider}`);
-    console.log("输入 /help 查看命令，Ctrl+C 退出\n");
+    // 获取 git 分支
+    let gitBranch: string | undefined;
+    try {
+      gitBranch = execSync("git rev-parse --abbrev-ref HEAD 2>/dev/null", { encoding: "utf-8" }).trim();
+    } catch { /* 非 git 仓库 */ }
+
+    this.renderer.renderWelcome(this.config, this.toolRegistry.size(), process.cwd(), gitBranch);
 
     // 处理初始提示词
     if (initialPrompt) {
@@ -892,10 +926,17 @@ export class App {
         streamingText: "",
         isLoading: false,
         toolName: null,
+        toolInput: null,
         isToolExecuting: false,
         model: this.config.model,
         provider: this.config.provider,
         usage: { ...this.sessionState.getTotalUsage() },
+        costUSD: 0,
+        costLimit: this.config.costLimit ?? 0,
+        contextPercent: 0,
+        permissionMode: this.config.permissionMode || "default",
+        gitBranch: (() => { try { return execSync("git rev-parse --abbrev-ref HEAD 2>/dev/null", { encoding: "utf-8" }).trim(); } catch { return ""; } })(),
+        statusMessage: "",
       },
     };
 
@@ -921,24 +962,38 @@ export class App {
           const current = stateRef.current.streamingText || "";
           updateState({ streamingText: current + text });
         },
-        onToolStart: (name) => {
-          updateState({ streamingText: "", toolName: name, isToolExecuting: true });
+        onToolStart: (name, input) => {
+          updateState({ streamingText: "", toolName: name, toolInput: input ?? null, isToolExecuting: true });
         },
         onToolEnd: () => {
           updateState({
             messages: this.ctxMgr.getMessages(),
             toolName: null,
+            toolInput: null,
             isToolExecuting: false,
           });
         },
         onCompact: () => {
-          updateState({ messages: this.ctxMgr.getMessages() });
+          updateState({ messages: this.ctxMgr.getMessages(), statusMessage: "上下文已自动压缩" });
+          // 3 秒后清除状态消息
+          setTimeout(() => updateState({ statusMessage: "" }), 3000);
         },
         onComplete: () => {
+          const ctxUsed = this.ctxMgr.estimateTokens(this.toolRegistry.size());
+          const ctxPct = Math.round((ctxUsed / 200000) * 100);
           updateState({
             messages: this.ctxMgr.getMessages(),
             usage: { ...this.sessionState.getTotalUsage() },
+            costUSD: this.sessionState.totalCostUSD,
+            contextPercent: ctxPct,
+            statusMessage: "",
           });
+        },
+        onContextWarning: (remaining) => {
+          updateState({ statusMessage: `⚠ 上下文剩余 ${remaining.toFixed(0)}%，即将自动压缩` });
+        },
+        onMaxTurns: (max) => {
+          updateState({ statusMessage: `达到最大轮次限制: ${max}` });
         },
       };
 
@@ -948,6 +1003,8 @@ export class App {
         isLoading: false,
         messages: this.ctxMgr.getMessages(),
         usage: { ...this.sessionState.getTotalUsage() },
+        costUSD: this.sessionState.totalCostUSD,
+        contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / 200000) * 100),
       });
     };
 

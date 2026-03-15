@@ -1,0 +1,404 @@
+/**
+ * REPL 模式渲染器
+ * 集中所有 REPL 模式的 UI 渲染逻辑：欢迎信息、工具调用展示、权限确认、
+ * spinner、流式 Markdown 渲染、完成摘要
+ */
+
+import type { Config } from "../config/config.ts";
+import type { SessionState } from "../session/state.ts";
+import type { Manager as ContextManager } from "../context/manager.ts";
+import { renderMarkdown } from "./markdown.ts";
+
+// ANSI 颜色码
+const C = {
+  reset: "\x1b[0m",
+  bold: "\x1b[1m",
+  dim: "\x1b[2m",
+  yellow: "\x1b[33m",
+  cyan: "\x1b[36m",
+  green: "\x1b[32m",
+  red: "\x1b[31m",
+  gray: "\x1b[90m",
+  white: "\x1b[37m",
+} as const;
+
+/** 格式化耗时：<1s 显示 XXms，>=1s 显示 X.Xs */
+function formatElapsed(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
+/** 格式化文件大小 */
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  return `${(bytes / 1024).toFixed(1)}KB`;
+}
+
+/** 缩短路径（用 ~ 替代 home 目录） */
+function shortenPath(p: string): string {
+  const home = process.env.HOME || process.env.USERPROFILE || "";
+  if (home && p.startsWith(home)) {
+    return "~" + p.slice(home.length);
+  }
+  return p;
+}
+
+/** 从工具输入中提取文件路径 */
+function extractFilePath(input: any): string {
+  return input?.file_path || input?.filePath || input?.path || "";
+}
+
+/** 从工具输入中提取摘要信息 */
+function extractToolSummary(toolName: string, input: any): string {
+  const lower = toolName.toLowerCase();
+
+  if (lower === "read") {
+    const fp = extractFilePath(input);
+    const offset = input?.offset;
+    const limit = input?.limit;
+    let suffix = "";
+    if (offset && limit) suffix = ` (行 ${offset}-${offset + limit})`;
+    else if (offset) suffix = ` (从行 ${offset})`;
+    else if (limit) suffix = ` (前 ${limit} 行)`;
+    return `${C.cyan}${shortenPath(fp)}${C.reset}${suffix}`;
+  }
+
+  if (lower === "edit") {
+    const fp = extractFilePath(input);
+    return `${C.cyan}${shortenPath(fp)}${C.reset}`;
+  }
+
+  if (lower === "write") {
+    const fp = extractFilePath(input);
+    return `${C.cyan}${shortenPath(fp)}${C.reset}`;
+  }
+
+  if (lower === "bash") {
+    const cmd = input?.command || "";
+    const desc = input?.description || "";
+    const short = cmd.length > 60 ? cmd.slice(0, 57) + "..." : cmd;
+    const parts = [`${C.dim}${short}${C.reset}`];
+    if (desc) parts.push(`${C.gray}"${desc}"${C.reset}`);
+    return parts.join(" ");
+  }
+
+  if (lower === "grep") {
+    const pattern = input?.pattern || "";
+    const glob = input?.glob || input?.include || "";
+    const path = input?.path || "";
+    const parts = [`${C.yellow}"${pattern}"${C.reset}`];
+    if (glob) parts.push(`in ${C.cyan}${glob}${C.reset}`);
+    else if (path) parts.push(`in ${C.cyan}${shortenPath(path)}${C.reset}`);
+    return parts.join(" ");
+  }
+
+  if (lower === "glob") {
+    const pattern = input?.pattern || "";
+    const path = input?.path || "";
+    const parts = [`${C.cyan}${pattern}${C.reset}`];
+    if (path) parts.push(`in ${C.cyan}${shortenPath(path)}${C.reset}`);
+    return parts.join(" ");
+  }
+
+  // SubAgent / Skill / 自定义 Agent
+  if (lower.startsWith("subagent") || lower.startsWith("agent__") || lower.startsWith("skill__")) {
+    const agentType = input?.type || input?.agentType || "";
+    const prompt = input?.prompt || input?.task || "";
+    const short = prompt.length > 40 ? prompt.slice(0, 37) + "..." : prompt;
+    const parts: string[] = [];
+    if (agentType) parts.push(`${C.cyan}${agentType}${C.reset}`);
+    if (short) parts.push(`${C.dim}"${short}"${C.reset}`);
+    return parts.join(" ");
+  }
+
+  // 通用：显示 JSON 摘要
+  const json = JSON.stringify(input);
+  if (json.length > 80) return `${C.dim}${json.slice(0, 77)}...${C.reset}`;
+  return `${C.dim}${json}${C.reset}`;
+}
+
+/** 从工具结果中提取完成摘要 */
+function extractResultSummary(toolName: string, input: any, output: string, isError: boolean): string {
+  const lower = toolName.toLowerCase();
+
+  if (isError) {
+    const short = output.length > 80 ? output.slice(0, 77) + "..." : output;
+    return `${C.red}${short}${C.reset}`;
+  }
+
+  if (lower === "read") {
+    const fp = extractFilePath(input);
+    const lines = output.split("\n").length;
+    return `${C.cyan}${shortenPath(fp)}${C.reset} ${lines} 行`;
+  }
+
+  if (lower === "edit") {
+    const fp = extractFilePath(input);
+    return `${C.cyan}${shortenPath(fp)}${C.reset} 替换完成`;
+  }
+
+  if (lower === "write") {
+    const fp = extractFilePath(input);
+    const size = formatSize(output.length);
+    return `${C.cyan}${shortenPath(fp)}${C.reset} ${size}`;
+  }
+
+  if (lower === "bash") {
+    // 尝试提取退出码
+    const exitMatch = output.match(/exit code[:\s]*(\d+)/i);
+    if (exitMatch) return `退出码 ${exitMatch[1]}`;
+    const lines = output.split("\n").length;
+    return `${lines} 行输出`;
+  }
+
+  if (lower === "grep") {
+    const lines = output.trim().split("\n").filter(l => l.length > 0);
+    return `找到 ${lines.length} 个结果`;
+  }
+
+  if (lower === "glob") {
+    const lines = output.trim().split("\n").filter(l => l.length > 0);
+    return `找到 ${lines.length} 个文件`;
+  }
+
+  if (lower.startsWith("subagent") || lower.startsWith("agent__") || lower.startsWith("skill__")) {
+    return "完成";
+  }
+
+  return `${output.length} 字符`;
+}
+
+export class REPLRenderer {
+  // Spinner 状态
+  private spinnerTimer: ReturnType<typeof setInterval> | null = null;
+  private spinnerFrameIdx = 0;
+  private readonly spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+  // 流式 Markdown 缓冲
+  private streamBuffer = "";
+  private inCodeBlock = false;
+  private codeBlockContent = "";
+
+  /** 渲染欢迎信息 */
+  renderWelcome(config: Config, toolCount: number, cwd: string, gitBranch?: string): void {
+    const model = config.model;
+    const provider = config.provider;
+    const permMode = config.permissionMode || "default";
+    const maxTokens = `${Math.round(200000 / 1000)}K`;
+
+    // 构建内容行
+    const line1 = `  模型: ${model} | 提供商: ${provider}`;
+    const dirDisplay = shortenPath(cwd) + (gitBranch ? ` (${gitBranch})` : "");
+    const line2 = `  目录: ${dirDisplay}`;
+    const line3 = `  权限: ${permMode} | 工具: ${toolCount} | 上下文: ${maxTokens} tokens`;
+
+    // 计算最大宽度
+    const contentLines = [line1, line2, line3];
+    // 去掉 ANSI 码后计算实际宽度
+    const maxLen = Math.max(...contentLines.map(l => l.length));
+    const boxWidth = Math.max(maxLen + 4, 50);
+
+    const title = ` sid-code v0.1.0 `;
+    const topPad = boxWidth - 2 - title.length;
+    const topLine = `╭─${title}${"─".repeat(Math.max(0, topPad))}╮`;
+    const bottomLine = `╰${"─".repeat(boxWidth - 2)}╯`;
+
+    process.stdout.write(`${C.cyan}${topLine}${C.reset}\n`);
+    for (const line of contentLines) {
+      const pad = boxWidth - 2 - line.length;
+      process.stdout.write(`${C.cyan}│${C.reset}${line}${" ".repeat(Math.max(0, pad))}${C.cyan}│${C.reset}\n`);
+    }
+    process.stdout.write(`${C.cyan}${bottomLine}${C.reset}\n`);
+    process.stdout.write(`${C.dim}  输入 /help 查看命令，Ctrl+C 退出${C.reset}\n\n`);
+  }
+
+  /** 渲染工具开始执行 */
+  renderToolStart(toolName: string, input: unknown): void {
+    const summary = extractToolSummary(toolName, input);
+    process.stderr.write(`\n  ${C.yellow}●${C.reset} ${C.bold}${toolName}${C.reset} ${summary}\n`);
+  }
+
+  /** 渲染工具执行结果 */
+  renderToolResult(toolName: string, input: unknown, output: string, isError: boolean, elapsedMs: number): void {
+    const icon = isError ? `${C.red}✗${C.reset}` : `${C.green}✓${C.reset}`;
+    const summary = extractResultSummary(toolName, input, output, isError);
+    const elapsed = `${C.dim}(${formatElapsed(elapsedMs)})${C.reset}`;
+    process.stderr.write(`  ${icon} ${C.bold}${toolName}${C.reset} ${summary} ${elapsed}\n`);
+  }
+
+  /** 格式化权限请求 */
+  formatPermissionRequest(toolName: string, input: unknown): string {
+    const lines: string[] = [];
+    const boxWidth = 52;
+    const topLine = `┌ 权限请求 ${"─".repeat(boxWidth - 12)}┐`;
+    const bottomLine = `└${"─".repeat(boxWidth - 2)}┘`;
+
+    lines.push(`\n${C.yellow}${topLine}${C.reset}`);
+    lines.push(`${C.yellow}│${C.reset}  工具: ${C.bold}${toolName}${C.reset}${" ".repeat(Math.max(0, boxWidth - 10 - toolName.length))}${C.yellow}│${C.reset}`);
+
+    // 按工具类型显示关键参数
+    const lower = toolName.toLowerCase();
+    if (lower === "bash") {
+      const cmd = (input as any)?.command || "";
+      const short = cmd.length > 38 ? cmd.slice(0, 35) + "..." : cmd;
+      lines.push(`${C.yellow}│${C.reset}  命令: ${C.cyan}${short}${C.reset}${" ".repeat(Math.max(0, boxWidth - 10 - short.length))}${C.yellow}│${C.reset}`);
+    } else if (lower === "edit") {
+      const fp = extractFilePath(input);
+      const short = shortenPath(fp);
+      const displayPath = short.length > 38 ? short.slice(0, 35) + "..." : short;
+      lines.push(`${C.yellow}│${C.reset}  文件: ${C.cyan}${displayPath}${C.reset}${" ".repeat(Math.max(0, boxWidth - 10 - displayPath.length))}${C.yellow}│${C.reset}`);
+      // 显示简化 diff（前 3 行）
+      const oldStr = (input as any)?.old_string || (input as any)?.oldString || "";
+      const newStr = (input as any)?.new_string || (input as any)?.newString || "";
+      if (oldStr || newStr) {
+        const oldLines = oldStr.split("\n").slice(0, 3);
+        const newLines = newStr.split("\n").slice(0, 3);
+        lines.push(`${C.yellow}│${C.reset}  ${C.red}- ${oldLines[0] || ""}${C.reset}${" ".repeat(Math.max(0, boxWidth - 6 - (oldLines[0] || "").length))}${C.yellow}│${C.reset}`);
+        lines.push(`${C.yellow}│${C.reset}  ${C.green}+ ${newLines[0] || ""}${C.reset}${" ".repeat(Math.max(0, boxWidth - 6 - (newLines[0] || "").length))}${C.yellow}│${C.reset}`);
+      }
+    } else if (lower === "write") {
+      const fp = extractFilePath(input);
+      const short = shortenPath(fp);
+      const displayPath = short.length > 38 ? short.slice(0, 35) + "..." : short;
+      lines.push(`${C.yellow}│${C.reset}  文件: ${C.cyan}${displayPath}${C.reset}${" ".repeat(Math.max(0, boxWidth - 10 - displayPath.length))}${C.yellow}│${C.reset}`);
+    } else {
+      const json = JSON.stringify(input);
+      const short = json.length > 38 ? json.slice(0, 35) + "..." : json;
+      lines.push(`${C.yellow}│${C.reset}  参数: ${C.dim}${short}${C.reset}${" ".repeat(Math.max(0, boxWidth - 10 - short.length))}${C.yellow}│${C.reset}`);
+    }
+
+    lines.push(`${C.yellow}${bottomLine}${C.reset}`);
+    return lines.join("\n");
+  }
+
+  /** 启动 spinner（写到 stderr 避免干扰管道） */
+  startSpinner(label: string): void {
+    this.stopSpinner();
+    this.spinnerFrameIdx = 0;
+    this.spinnerTimer = setInterval(() => {
+      const frame = this.spinnerFrames[this.spinnerFrameIdx % this.spinnerFrames.length];
+      process.stderr.write(`\r  ${C.cyan}${frame}${C.reset} ${C.dim}${label}${C.reset}`);
+      this.spinnerFrameIdx++;
+    }, 80);
+  }
+
+  /** 停止 spinner */
+  stopSpinner(): void {
+    if (this.spinnerTimer) {
+      clearInterval(this.spinnerTimer);
+      this.spinnerTimer = null;
+      // 清除 spinner 行
+      process.stderr.write("\r\x1b[K");
+    }
+  }
+
+  /** 渲染完成摘要（dim 色，不抢视觉焦点） */
+  renderCompletionSummary(
+    turns: number,
+    sessionState: SessionState,
+    ctxMgr: ContextManager,
+    toolCount: number,
+  ): void {
+    const usage = sessionState.getTotalUsage();
+    const inputK = usage.inputTokens > 1000
+      ? `${(usage.inputTokens / 1000).toFixed(1)}K`
+      : `${usage.inputTokens}`;
+    const outputK = usage.outputTokens > 1000
+      ? `${(usage.outputTokens / 1000).toFixed(1)}K`
+      : `${usage.outputTokens}`;
+    const cost = sessionState.totalCostUSD > 0
+      ? `$${sessionState.totalCostUSD.toFixed(4)}`
+      : "$0";
+    const ctxUsed = ctxMgr.estimateTokens(toolCount);
+    const ctxMax = 200000;
+    const ctxPct = Math.round((ctxUsed / ctxMax) * 100);
+
+    process.stdout.write(
+      `\n${C.dim}  ─ ${turns} 轮 | ${inputK}↓ ${outputK}↑ tokens | ${cost} | 上下文 ${ctxPct}% ─${C.reset}\n`,
+    );
+  }
+
+  /** 流式 Markdown 渲染：接收文本块 */
+  renderStreamChunk(text: string): void {
+    this.streamBuffer += text;
+
+    // 逐字符扫描，检测代码块边界
+    while (this.streamBuffer.length > 0) {
+      if (this.inCodeBlock) {
+        // 在代码块内，查找闭合 ```
+        const closeIdx = this.streamBuffer.indexOf("```");
+        if (closeIdx !== -1) {
+          // 找到闭合标记
+          this.codeBlockContent += this.streamBuffer.slice(0, closeIdx + 3);
+          this.streamBuffer = this.streamBuffer.slice(closeIdx + 3);
+          this.inCodeBlock = false;
+
+          // 渲染完整代码块
+          try {
+            const rendered = renderMarkdown(this.codeBlockContent);
+            process.stdout.write(rendered);
+          } catch {
+            process.stdout.write(this.codeBlockContent);
+          }
+          this.codeBlockContent = "";
+        } else {
+          // 还没闭合，继续累积
+          this.codeBlockContent += this.streamBuffer;
+          this.streamBuffer = "";
+        }
+      } else {
+        // 不在代码块内，查找开启 ```
+        const openIdx = this.streamBuffer.indexOf("```");
+        if (openIdx !== -1) {
+          // 输出 ``` 之前的文本
+          if (openIdx > 0) {
+            const before = this.streamBuffer.slice(0, openIdx);
+            process.stdout.write(before);
+          }
+          // 开始代码块
+          this.inCodeBlock = true;
+          this.codeBlockContent = this.streamBuffer.slice(openIdx);
+          this.streamBuffer = "";
+        } else {
+          // 没有 ```，但可能 buffer 末尾是不完整的 ` 或 ``
+          // 保留末尾最多 2 个字符以防截断
+          if (this.streamBuffer.length > 2) {
+            const safe = this.streamBuffer.slice(0, -2);
+            const keep = this.streamBuffer.slice(-2);
+            process.stdout.write(safe);
+            this.streamBuffer = keep;
+          }
+          // buffer 太短，等待更多数据
+          break;
+        }
+      }
+    }
+  }
+
+  /** 刷新流式缓冲区 */
+  flushStream(): void {
+    // 输出剩余 buffer
+    if (this.streamBuffer.length > 0) {
+      process.stdout.write(this.streamBuffer);
+      this.streamBuffer = "";
+    }
+    // 如果还在代码块中（未闭合），直接输出
+    if (this.inCodeBlock && this.codeBlockContent.length > 0) {
+      try {
+        const rendered = renderMarkdown(this.codeBlockContent);
+        process.stdout.write(rendered);
+      } catch {
+        process.stdout.write(this.codeBlockContent);
+      }
+      this.codeBlockContent = "";
+      this.inCodeBlock = false;
+    }
+  }
+
+  /** 重置流式状态（每次新对话前调用） */
+  resetStream(): void {
+    this.streamBuffer = "";
+    this.inCodeBlock = false;
+    this.codeBlockContent = "";
+  }
+}
