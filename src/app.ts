@@ -660,7 +660,7 @@ export class App {
       this.renderer.startSpinner(`${block.name} 执行中...`);
     }
 
-    log.debug("TOOL", `开始执行: ${block.name}`, block.input);
+    log.toolStart(block.name, block.input);
 
     // pre_tool_use hook（blocking 时可阻止工具执行）
     const preResults = await this.hookRunner.run("pre_tool_use", {
@@ -692,11 +692,7 @@ export class App {
       // 截断超大输出，防止上下文爆炸
       const truncatedOutput = ContextManager.truncateToolOutput(result.output);
 
-      log.toolExecution(block.name, block.input, {
-        success: !result.isError,
-        error: result.isError ? result.output.slice(0, 500) : undefined,
-      });
-      log.debug("TOOL", `执行完成: ${block.name} (${elapsed}ms)，输出 ${result.output.length} 字符${truncatedOutput.length < result.output.length ? `，截断为 ${truncatedOutput.length} 字符` : ""}`);
+      log.toolEnd(block.name, result.output, !!result.isError, elapsed);
 
       if (!this.isTUIMode) {
         this.renderer.stopSpinner();

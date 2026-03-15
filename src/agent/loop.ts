@@ -127,7 +127,6 @@ export class AgentLoopRunner {
 
     while (turns < maxTurns) {
       turns++;
-      log.debug("AGENT", `轮次 ${turns}/${maxTurns}，消息数 ${ctxMgr.getMessages().length}`);
 
       // 上下文使用率监控（两段式触发，对标 Claude Code）
       const toolCount = toolRegistry.size();
@@ -135,6 +134,8 @@ export class AgentLoopRunner {
       const contextMax = ctxMgr.getMaxTokens();
       const usagePercent = (currentTokens / contextMax) * 100;
       const remaining = 100 - usagePercent;
+
+      log.info("AGENT", `轮次 ${turns}/${maxTurns}，消息数 ${ctxMgr.getMessages().length}，上下文 ${usagePercent.toFixed(0)}%`);
 
       if (remaining <= 0) {
         log.warn("AGENT", "上下文已满，强制压缩");
@@ -151,7 +152,7 @@ export class AgentLoopRunner {
       // 构建请求参数
       const cleanedMessages = ctxMgr.getCleanedMessages();
       const toolDefs = toolCount > 0 ? toolRegistry.definitions() : undefined;
-      log.llmRequest(config.provider, config.model, cleanedMessages.length, toolDefs?.length ?? 0);
+      log.llmRequest(config.provider, config.model, cleanedMessages.length, toolDefs?.length ?? 0, config.maxTokens);
 
       const sendParams: SendParams = {
         model: config.model,
@@ -206,9 +207,18 @@ export class AgentLoopRunner {
         }
       }
 
-      log.llmResponse(response.stopReason || "unknown", response.usage);
+      log.llmResponse(response.stopReason || "unknown", response.usage, apiDuration, sessionState.totalCostUSD);
       const totalUsage = sessionState.getTotalUsage();
       log.debug("AGENT", `累计用量: input=${totalUsage.inputTokens}, output=${totalUsage.outputTokens}, 费用=$${sessionState.totalCostUSD.toFixed(4)}`);
+
+      // 记录 LLM 回复文本内容
+      const responseText = response.content
+        .filter(b => b.type === "text")
+        .map(b => b.type === "text" ? b.text : "")
+        .join("");
+      if (responseText) {
+        log.llmResponseText(responseText);
+      }
 
       // 添加助手消息到历史
       ctxMgr.addMessage({
