@@ -8,6 +8,7 @@ import { SubAgent } from "../../src/agent/sub-agent.ts";
 import { SubAgentTool } from "../../src/agent/tool.ts";
 import type { Tool, ToolResult } from "../../src/tool/types.ts";
 import type { Provider } from "../../src/llm/provider.ts";
+import type { ProviderRegistry } from "../../src/llm/registry.ts";
 import type { SendParams, StreamEvent } from "../../src/llm/types.ts";
 
 /** Mock 工具 */
@@ -73,6 +74,18 @@ class HangingProvider implements Provider {
     // 不会执行到这里
     yield {} as StreamEvent;
   }
+}
+
+/** 创建 MockProviderRegistry */
+function mockProviderRegistry(provider: Provider, model: string = "test-model"): ProviderRegistry {
+  return {
+    getProvider: () => provider,
+    getProviderFor: () => provider,
+    getCurrentModel: () => model,
+    getModelForSubAgent: () => model,
+    getProviderForSubAgent: () => provider,
+    clearCache: () => {},
+  } as unknown as ProviderRegistry;
 }
 
 // 每个测试后重置静态计数器
@@ -266,7 +279,7 @@ describe("SubAgentTool 并发控制", () => {
   test("超过并发上限时拒绝执行", async () => {
     const provider = new MockProvider();
     const toolRegistry = new Registry();
-    const tool = new SubAgentTool(provider, "test-model", toolRegistry);
+    const tool = new SubAgentTool(mockProviderRegistry(provider), toolRegistry);
 
     SubAgentTool.running = 3; // 模拟已满
 
@@ -283,7 +296,7 @@ describe("SubAgentTool 并发控制", () => {
   test("执行完成后并发计数器正确递减", async () => {
     const provider = new MockProvider();
     const toolRegistry = new Registry();
-    const tool = new SubAgentTool(provider, "test-model", toolRegistry);
+    const tool = new SubAgentTool(mockProviderRegistry(provider), toolRegistry);
 
     expect(SubAgentTool.running).toBe(0);
     await tool.execute({ type: "explore", description: "测试", prompt: "测试" });
@@ -313,7 +326,7 @@ describe("SubAgent plan 类型", () => {
   test("SubAgentTool 接受 plan 类型", async () => {
     const provider = new MockProvider();
     const toolRegistry = new Registry();
-    const tool = new SubAgentTool(provider, "test-model", toolRegistry);
+    const tool = new SubAgentTool(mockProviderRegistry(provider), toolRegistry);
 
     const result = await tool.execute({
       type: "plan",
@@ -328,7 +341,7 @@ describe("SubAgent plan 类型", () => {
   test("SubAgentTool 拒绝无效类型", async () => {
     const provider = new MockProvider();
     const toolRegistry = new Registry();
-    const tool = new SubAgentTool(provider, "test-model", toolRegistry);
+    const tool = new SubAgentTool(mockProviderRegistry(provider), toolRegistry);
 
     const result = await tool.execute({
       type: "invalid_type",

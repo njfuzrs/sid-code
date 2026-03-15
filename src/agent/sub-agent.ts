@@ -6,6 +6,7 @@
 
 import type { Provider } from "../llm/provider.ts";
 import type { ContentBlock, StreamEvent, Usage } from "../llm/types.ts";
+import type { ProviderRegistry } from "../llm/registry.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -87,6 +88,10 @@ export class SubAgent {
   private model: string;
   private toolRegistry: ToolRegistry;
   private hookRunner?: HookRunner;
+  /** ProviderRegistry 引用（fromRegistry 创建时设置） */
+  private registry?: ProviderRegistry;
+  /** 模型覆盖（自定义 Agent/Skill 指定模型时使用） */
+  private modelOverride?: string;
 
   /** 嵌套深度计数器（不允许子代理再 spawn 子代理） */
   static depth = 0;
@@ -97,6 +102,22 @@ export class SubAgent {
     this.model = model;
     this.toolRegistry = toolRegistry;
     this.hookRunner = hookRunner;
+  }
+
+  /** 从 ProviderRegistry 创建（子代理类型决定 model/provider） */
+  static fromRegistry(
+    registry: ProviderRegistry,
+    toolRegistry: ToolRegistry,
+    hookRunner?: HookRunner,
+    modelOverride?: string,
+  ): SubAgent {
+    // 用主 provider/model 初始化（executeInner 中会动态替换）
+    const provider = registry.getProvider();
+    const model = modelOverride || registry.getCurrentModel();
+    const agent = new SubAgent(provider, model, toolRegistry, hookRunner);
+    agent.registry = registry;
+    agent.modelOverride = modelOverride;
+    return agent;
   }
 
   /** 执行子代理任务 */
@@ -200,9 +221,17 @@ export class SubAgent {
 
         const toolDefs = tools.size() > 0 ? tools.definitions() : undefined;
 
-        const stream = this.provider.sendMessageStream(
+        // 动态获取 provider/model（registry 模式下按子代理类型选择）
+        const activeProvider = this.registry
+          ? this.registry.getProviderForSubAgent(task.type)
+          : this.provider;
+        const activeModel = this.registry
+          ? this.registry.getModelForSubAgent(task.type)
+          : this.model;
+
+        const stream = activeProvider.sendMessageStream(
           {
-            model: this.model,
+            model: activeModel,
             messages: ctxMgr.getMessages(),
             system: ctxMgr.getSystemPrompt(),
             maxTokens: 4096,
@@ -311,9 +340,19 @@ export class SubAgent {
 
         const toolDefs = tools.size() > 0 ? tools.definitions() : undefined;
 
-        const stream = this.provider.sendMessageStream(
+        // 动态获取 provider/model（registry 模式下使用 modelOverride 或主模型）
+        const activeProvider = this.registry
+          ? (this.modelOverride
+            ? this.registry.getProviderForSubAgent("task")  // 自定义 agent 按 task 类型查找
+            : this.registry.getProvider())
+          : this.provider;
+        const activeModel = this.modelOverride || (this.registry
+          ? this.registry.getCurrentModel()
+          : this.model);
+
+        const stream = activeProvider.sendMessageStream(
           {
-            model: this.model,
+            model: activeModel,
             messages: ctxMgr.getMessages(),
             system: ctxMgr.getSystemPrompt(),
             maxTokens: 4096,

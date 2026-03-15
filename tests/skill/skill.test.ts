@@ -108,7 +108,7 @@ describe("SkillTool", () => {
       source: "project" as const,
       filePath: "/test/review.md",
     };
-    const tool = new SkillTool(skill, {} as any, "test-model", {} as any);
+    const tool = new SkillTool(skill, {} as any, {} as any);
     expect(tool.name()).toBe("skill__review");
   });
 
@@ -121,7 +121,7 @@ describe("SkillTool", () => {
       source: "project" as const,
       filePath: "/test/review.md",
     };
-    const tool = new SkillTool(skill, {} as any, "test-model", {} as any);
+    const tool = new SkillTool(skill, {} as any, {} as any);
     expect(tool.description()).toContain("代码审查");
     expect(tool.description()).toContain("当用户要求审查代码时");
   });
@@ -134,7 +134,7 @@ describe("SkillTool", () => {
       source: "project" as const,
       filePath: "/test.md",
     };
-    const tool = new SkillTool(skill, {} as any, "test-model", {} as any);
+    const tool = new SkillTool(skill, {} as any, {} as any);
     const schema = tool.inputSchema();
     expect(schema.type).toBe("object");
     expect((schema.properties as any).input).toBeDefined();
@@ -159,8 +159,8 @@ describe("SkillTool", () => {
       filePath: "/test.md",
     };
 
-    const readTool = new SkillTool(readOnlySkill, {} as any, "m", {} as any);
-    const writeTool = new SkillTool(writeSkill, {} as any, "m", {} as any);
+    const readTool = new SkillTool(readOnlySkill, {} as any, {} as any);
+    const writeTool = new SkillTool(writeSkill, {} as any, {} as any);
 
     expect(readTool.readOnly()).toBe(true);
     expect(writeTool.readOnly()).toBe(false);

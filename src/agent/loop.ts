@@ -12,6 +12,7 @@ import type {
   SendParams,
 } from "../llm/types.ts";
 import type { Config } from "../config/config.ts";
+import type { QuotaManager } from "../llm/quota.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { ModelFallback } from "../llm/fallback.ts";
@@ -48,6 +49,7 @@ export interface AgentLoopDeps {
   fallback: ModelFallback;
   thinkingMgr: ThinkingManager;
   hookRunner?: HookRunner;
+  quotaManager?: QuotaManager;
   /** 执行工具调用（含权限检查） */
   executeTools: (content: ContentBlock[]) => Promise<ContentBlock[]>;
   /** 处理流式响应 */
@@ -68,6 +70,11 @@ export class AgentLoopRunner {
 
   constructor(deps: AgentLoopDeps) {
     this.deps = deps;
+  }
+
+  /** 更新 Provider（模型切换时调用） */
+  updateProvider(provider: Provider): void {
+    this.deps.provider = provider;
   }
 
   /** 发送消息给 LLM（带重试和回退） */
@@ -184,6 +191,20 @@ export class AgentLoopRunner {
 
       // 更新 SessionState
       sessionState.updateUsage(config.model, response.usage, apiDuration);
+
+      // 成本配额检查
+      if (this.deps.quotaManager) {
+        const quotaResult = this.deps.quotaManager.check(sessionState.totalCostUSD);
+        if (quotaResult) {
+          if (quotaResult.level === "exceeded") {
+            callbacks.onStreamText(`\n⚠️ ${quotaResult.message}\n`);
+            callbacks.onComplete(turns);
+            break;
+          } else if (quotaResult.level === "critical" || quotaResult.level === "warning") {
+            callbacks.onStreamText(`\n⚠️ ${quotaResult.message}\n`);
+          }
+        }
+      }
 
       log.llmResponse(response.stopReason || "unknown", response.usage);
       const totalUsage = sessionState.getTotalUsage();

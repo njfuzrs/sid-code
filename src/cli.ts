@@ -193,20 +193,14 @@ async function main(): Promise<void> {
       process.exit(1);
     }
 
-    // 创建 Provider
+    // 创建 ProviderRegistry（Provider 工厂 + 缓存 + 子代理模型映射）
+    const { ProviderRegistry } = await import("./llm/registry.ts");
+    const providerRegistry = new ProviderRegistry(config, config.subAgentModels);
     let provider: import("./llm/provider.ts").Provider;
-
-    if (config.provider === "anthropic") {
-      const { AnthropicProvider } = await import("./llm/anthropic.ts");
-      provider = new AnthropicProvider(config.anthropicKey, config.model);
-    } else if (config.provider === "openai") {
-      const { OpenAIProvider } = await import("./llm/openai.ts");
-      provider = new OpenAIProvider(config.openaiKey, config.model, config.baseURL);
-    } else if (config.provider === "ollama") {
-      const { OllamaProvider } = await import("./llm/ollama.ts");
-      provider = new OllamaProvider(config.model, config.baseURL);
-    } else {
-      console.error(`未知的 Provider: ${config.provider}`);
+    try {
+      provider = providerRegistry.getProvider();
+    } catch (err: any) {
+      console.error(`创建 Provider 失败: ${err.message}`);
       process.exit(1);
     }
 
@@ -232,7 +226,7 @@ async function main(): Promise<void> {
 
     // 注册子代理工具
     const { SubAgentTool } = await import("./agent/tool.ts");
-    toolRegistry.register(new SubAgentTool(provider, config.model, toolRegistry));
+    toolRegistry.register(new SubAgentTool(providerRegistry, toolRegistry));
 
     // 注册内置命令
     const { Registry: CommandRegistry } = await import("./command/registry.ts");
@@ -251,7 +245,7 @@ async function main(): Promise<void> {
     const skills = await new SkillLoader().loadAll();
     for (const skill of skills) {
       if (!skill.disableModelInvocation) {
-        toolRegistry.register(new SkillTool(skill, provider, config.model, toolRegistry));
+        toolRegistry.register(new SkillTool(skill, providerRegistry, toolRegistry));
       }
     }
 
@@ -259,7 +253,7 @@ async function main(): Promise<void> {
     const { CustomAgentLoader, CustomAgentTool } = await import("./agent/custom.ts");
     const customAgents = await new CustomAgentLoader().loadAll();
     for (const def of customAgents) {
-      toolRegistry.register(new CustomAgentTool(def, provider, config.model, toolRegistry));
+      toolRegistry.register(new CustomAgentTool(def, providerRegistry, toolRegistry));
     }
 
     // 创建权限检查器（加载五层权限规则）
@@ -270,7 +264,7 @@ async function main(): Promise<void> {
 
     // 创建 App
     const { App } = await import("./app.ts");
-    const app = new App({ config, provider, toolRegistry, commandRegistry, permissionChecker });
+    const app = new App({ config, provider, providerRegistry, toolRegistry, commandRegistry, permissionChecker });
 
     // 会话恢复：--continue 或 --resume <id>
     if (config.continue || config.resume) {

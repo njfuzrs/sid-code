@@ -12,12 +12,14 @@ import type {
 } from "./llm/types.ts";
 import type { Config } from "./config/config.ts";
 import type { Checker } from "./permission/types.ts";
+import type { ProviderRegistry } from "./llm/registry.ts";
 import { Manager as ContextManager } from "./context/manager.ts";
 import { Registry as ToolRegistry } from "./tool/registry.ts";
 import { Registry as CommandRegistry } from "./command/registry.ts";
 import { ModelFallback } from "./llm/fallback.ts";
 import { ThinkingManager } from "./llm/thinking.ts";
 import { SessionState } from "./session/state.ts";
+import { QuotaManager } from "./llm/quota.ts";
 import { loadCLAUDEmd } from "./config/rules.ts";
 import { getLogger } from "./debug/logger.ts";
 import { maskSensitiveData } from "./permission/sensitive.ts";
@@ -30,6 +32,7 @@ import * as readline from "readline";
 export interface AppOptions {
   config: Config;
   provider: Provider;
+  providerRegistry?: ProviderRegistry;
   toolRegistry?: ToolRegistry;
   commandRegistry?: CommandRegistry;
   permissionChecker?: Checker;
@@ -39,6 +42,7 @@ export interface AppOptions {
 export class App {
   private config: Config;
   private provider: Provider;
+  private providerRegistry?: ProviderRegistry;
   private ctxMgr: ContextManager;
   private toolRegistry: ToolRegistry;
   private commandRegistry: CommandRegistry;
@@ -46,6 +50,7 @@ export class App {
   private fallback: ModelFallback;
   private thinkingMgr: ThinkingManager;
   private sessionState: SessionState;
+  private quotaManager?: QuotaManager;
   private abortController: AbortController | null = null;
   private isTUIMode: boolean = false;
   private loopRunner: AgentLoopRunner;
@@ -56,6 +61,7 @@ export class App {
   constructor(opts: AppOptions) {
     this.config = opts.config;
     this.provider = opts.provider;
+    this.providerRegistry = opts.providerRegistry;
     this.toolRegistry = opts.toolRegistry ?? new ToolRegistry();
     this.commandRegistry = opts.commandRegistry ?? new CommandRegistry();
     this.permissionChecker = opts.permissionChecker ?? null;
@@ -63,6 +69,10 @@ export class App {
     this.sessionState = new SessionState(
       opts.config.sessionId || crypto.randomUUID().slice(0, 8),
     );
+    // 成本配额管理
+    if (opts.config.costLimit && opts.config.costLimit > 0) {
+      this.quotaManager = new QuotaManager(opts.config.costLimit);
+    }
     // Extended Thinking 仅 Anthropic 支持
     this.thinkingMgr = new ThinkingManager(opts.config.provider === "anthropic");
     this.fallback = new ModelFallback({ maxRetries: 3 }, {
@@ -95,6 +105,7 @@ export class App {
       fallback: this.fallback,
       thinkingMgr: this.thinkingMgr,
       hookRunner: this.hookRunner,
+      quotaManager: this.quotaManager,
       executeTools: (content) => this.executeTools(content),
       processStream: (stream, onText) => this.processStream(stream, onText),
       autoCompact: () => this.autoCompact(),
@@ -764,7 +775,15 @@ export class App {
                 config: this.config,
                 sessionId: "",
                 provider: this.provider,
-                setModel: (m) => { this.config.model = m; },
+                setModel: (m) => {
+                  this.config.model = m;
+                  // Provider 重建（registry 模式）
+                  if (this.providerRegistry) {
+                    this.providerRegistry.clearCache();
+                    this.provider = this.providerRegistry.getProvider();
+                    this.loopRunner.updateProvider(this.provider);
+                  }
+                },
                 exitRequested: false,
                 sessionState: this.sessionState,
                 sendToLLM: async (text) => {
@@ -959,6 +978,12 @@ export class App {
           setModel: (m) => {
             log.info("TUI:CMD", `切换模型: ${this.config.model} → ${m}`);
             this.config.model = m;
+            // Provider 重建（registry 模式）
+            if (this.providerRegistry) {
+              this.providerRegistry.clearCache();
+              this.provider = this.providerRegistry.getProvider();
+              this.loopRunner.updateProvider(this.provider);
+            }
             updateState({ model: m });
           },
           exitRequested: false,

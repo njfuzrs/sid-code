@@ -100,7 +100,7 @@ describe("CustomAgentTool", () => {
       source: "project" as const,
       filePath: "/test/checker.md",
     };
-    const tool = new CustomAgentTool(def, {} as any, "test-model", {} as any);
+    const tool = new CustomAgentTool(def, {} as any, {} as any);
     expect(tool.name()).toBe("agent__checker");
   });
 
@@ -113,7 +113,7 @@ describe("CustomAgentTool", () => {
       source: "project" as const,
       filePath: "/test.md",
     };
-    const tool = new CustomAgentTool(def, {} as any, "m", {} as any);
+    const tool = new CustomAgentTool(def, {} as any, {} as any);
     expect(tool.description()).toBe("检查代理");
   });
 
@@ -126,7 +126,7 @@ describe("CustomAgentTool", () => {
       source: "project" as const,
       filePath: "/test.md",
     };
-    const tool = new CustomAgentTool(def, {} as any, "m", {} as any);
+    const tool = new CustomAgentTool(def, {} as any, {} as any);
     expect(tool.description()).toBe("自定义 Agent: test");
   });
 
@@ -139,7 +139,7 @@ describe("CustomAgentTool", () => {
       source: "project" as const,
       filePath: "/test.md",
     };
-    const tool = new CustomAgentTool(def, {} as any, "m", {} as any);
+    const tool = new CustomAgentTool(def, {} as any, {} as any);
     const schema = tool.inputSchema();
     expect(schema.type).toBe("object");
     expect((schema.properties as any).task).toBeDefined();
@@ -164,8 +164,8 @@ describe("CustomAgentTool", () => {
       filePath: "",
     };
 
-    const readTool = new CustomAgentTool(readDef, {} as any, "m", {} as any);
-    const writeTool = new CustomAgentTool(writeDef, {} as any, "m", {} as any);
+    const readTool = new CustomAgentTool(readDef, {} as any, {} as any);
+    const writeTool = new CustomAgentTool(writeDef, {} as any, {} as any);
 
     expect(readTool.readOnly()).toBe(true);
     expect(writeTool.readOnly()).toBe(false);

@@ -5,7 +5,7 @@
  */
 
 import type { Tool, ToolResult } from "../tool/types.ts";
-import type { Provider } from "../llm/provider.ts";
+import type { ProviderRegistry } from "../llm/registry.ts";
 import type { Registry as ToolRegistry } from "../tool/registry.ts";
 import { ExtensionLoader } from "../extension/loader.ts";
 import { SubAgent } from "./sub-agent.ts";
@@ -71,14 +71,12 @@ export class CustomAgentLoader {
 /** 自定义 Agent 工具（包装为 Tool 接口） */
 export class CustomAgentTool implements Tool {
   private def: CustomAgentDefinition;
-  private provider: Provider;
-  private model: string;
+  private providerRegistry: ProviderRegistry;
   private toolRegistry: ToolRegistry;
 
-  constructor(def: CustomAgentDefinition, provider: Provider, model: string, toolRegistry: ToolRegistry) {
+  constructor(def: CustomAgentDefinition, providerRegistry: ProviderRegistry, toolRegistry: ToolRegistry) {
     this.def = def;
-    this.provider = provider;
-    this.model = model;
+    this.providerRegistry = providerRegistry;
     this.toolRegistry = toolRegistry;
   }
 
@@ -115,7 +113,7 @@ export class CustomAgentTool implements Tool {
 
     log.info("CUSTOM_AGENT", `执行自定义 Agent: ${this.def.name}`, { task: task.slice(0, 200) });
 
-    const subAgent = new SubAgent(this.provider, this.model, this.toolRegistry);
+    const subAgent = SubAgent.fromRegistry(this.providerRegistry, this.toolRegistry);
 
     const result = await subAgent.executeCustom({
       systemPrompt: this.def.prompt,

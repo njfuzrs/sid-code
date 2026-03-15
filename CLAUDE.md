@@ -140,9 +140,43 @@ available_models:
 ### 实现细节
 
 - `Config.availableModels: ModelConfig[]` - 可用模型配置列表
+- `ModelConfig` 支持元数据：`contextWindow`、`maxOutputTokens`、`supportsThinking`
+- `ProviderRegistry` — Provider 工厂 + 缓存层，所有组件通过 registry 按需获取 provider/model
 - `ModelCommand` - 增强的 `/model` 命令，支持模型验证和自动更新 provider/baseURL
 - `normalizeConfigKeys()` - YAML 字段名（snake_case）到 TypeScript 字段名（camelCase）的转换
-- 切换模型时，如果模型配置了不同的 `provider` 或 `baseURL`，会自动更新这些配置
+- 切换模型时，`ProviderRegistry.clearCache()` + `getProvider()` 自动重建 Provider 实例
+
+### 子代理模型映射
+
+支持为不同类型的子代理分配不同模型（便宜/快速模型降低成本）：
+
+```yaml
+sub_agent_models:
+  explore: qwen-plus       # 探索用便宜模型
+  summarize: qwen-plus     # 摘要用便宜模型
+  # task/plan 未配置则跟主模型
+```
+
+- `SubAgent.fromRegistry()` 静态工厂方法，根据子代理类型动态选择 provider/model
+- `SubAgentTool`、`SkillTool`、`CustomAgentTool` 均通过 `ProviderRegistry` 获取 provider
+
+### 成本配额管理
+
+```yaml
+cost_limit: 5.0  # 5 美元上限
+```
+
+四级预警：50% info、80% warning、95% critical、100% exceeded（自动停止循环）。
+`QuotaManager` 在 `AgentLoopRunner.run()` 每轮循环后检查。
+
+### 核心文件
+
+- `src/llm/registry.ts` — ProviderRegistry（工厂 + 缓存 + 子代理模型映射）
+- `src/llm/quota.ts` — QuotaManager（四级预警 + 去重）
+- `src/agent/sub-agent.ts` — `SubAgent.fromRegistry()` 静态工厂方法
+- `src/agent/tool.ts` — SubAgentTool（通过 registry 创建 SubAgent）
+- `src/skill/tool.ts` — SkillTool（通过 registry 创建 SubAgent，支持 modelOverride）
+- `src/agent/custom.ts` — CustomAgentTool（通过 registry 创建 SubAgent）
 
 详细文档：`docs/model-switching.md`、`docs/examples/model-switching-example.md`
 

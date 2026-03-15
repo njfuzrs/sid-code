@@ -36,12 +36,18 @@ export interface HookConfig {
 /** Hook 配置集合（按事件分组，新格式） */
 export type HooksConfig = Record<string, HookConfig[]>;
 
+/** 子代理模型映射（从 registry 重导出，方便配置层使用） */
+export type { SubAgentModelMap } from "../llm/registry.ts";
+
 /** 可用模型配置 */
 export interface ModelConfig {
   name: string;
   provider?: string;
   baseURL?: string;
   apiKey?: string;
+  contextWindow?: number;       // 上下文窗口（tokens）
+  maxOutputTokens?: number;     // 最大输出 tokens
+  supportsThinking?: boolean;   // 是否支持 Extended Thinking
 }
 
 /** 应用配置 */
@@ -89,6 +95,12 @@ export interface Config {
   debug: boolean;
   debugLevel: string;
   debugLogFile: string;
+
+  // 子代理模型映射
+  subAgentModels?: import("../llm/registry.ts").SubAgentModelMap;
+
+  // 成本配额（美元）
+  costLimit?: number;
 
   // Hook 和 MCP
   hooks: HooksConfig;
@@ -166,6 +178,8 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     debug_log_file: "debugLogFile",
     hooks: "hooks",
     mcp_servers: "mcpServers",
+    sub_agent_models: "subAgentModels",
+    cost_limit: "costLimit",
   };
 
   const result: any = {};
@@ -179,6 +193,9 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
         provider: m.provider,
         baseURL: m.base_url || m.baseURL,
         apiKey: m.api_key || m.apiKey,
+        contextWindow: m.context_window || m.contextWindow,
+        maxOutputTokens: m.max_output_tokens || m.maxOutputTokens,
+        supportsThinking: m.supports_thinking ?? m.supportsThinking,
       }));
     // 特殊处理 hooks：旧格式（数组）→ 新格式（按事件分组）
     } else if (configKey === "hooks" && Array.isArray(value)) {

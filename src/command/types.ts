@@ -6,6 +6,7 @@
 import type { Config } from "../config/config.ts";
 import type { Manager as ContextManager } from "../context/manager.ts";
 import type { Provider } from "../llm/provider.ts";
+import type { ProviderRegistry } from "../llm/registry.ts";
 import type { Registry as ToolRegistry } from "../tool/registry.ts";
 import type { SessionState } from "../session/state.ts";
 
@@ -16,6 +17,7 @@ export interface AppContext {
   config: Config;
   sessionId: string;
   provider: Provider;
+  providerRegistry?: ProviderRegistry;
   setModel: (model: string) => void;
   exitRequested: boolean;
   sessionState: SessionState;

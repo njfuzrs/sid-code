@@ -4,21 +4,23 @@
  */
 
 import type { Tool, ToolResult } from "../tool/types.ts";
-import type { Provider } from "../llm/provider.ts";
+import type { ProviderRegistry } from "../llm/registry.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { SubAgent } from "./sub-agent.ts";
 import type { SubAgentType } from "./sub-agent.ts";
 import { getLogger } from "../debug/logger.ts";
 
 export class SubAgentTool implements Tool {
-  private subAgent: SubAgent;
+  private providerRegistry: ProviderRegistry;
+  private toolRegistry: ToolRegistry;
 
   /** 并发控制 */
   static running = 0;
   static readonly MAX_CONCURRENT = 3;
 
-  constructor(provider: Provider, model: string, toolRegistry: ToolRegistry) {
-    this.subAgent = new SubAgent(provider, model, toolRegistry);
+  constructor(providerRegistry: ProviderRegistry, toolRegistry: ToolRegistry) {
+    this.providerRegistry = providerRegistry;
+    this.toolRegistry = toolRegistry;
   }
 
   name(): string {
@@ -82,7 +84,10 @@ export class SubAgentTool implements Tool {
 
     SubAgentTool.running++;
     try {
-      const result = await this.subAgent.execute(
+      // 每次执行创建新 SubAgent（轻量对象，通过 registry 动态获取 provider/model）
+      const subAgent = SubAgent.fromRegistry(this.providerRegistry, this.toolRegistry);
+
+      const result = await subAgent.execute(
         {
           type: params.type,
           description: params.description,

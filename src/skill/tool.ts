@@ -4,7 +4,7 @@
  */
 
 import type { Tool, ToolResult } from "../tool/types.ts";
-import type { Provider } from "../llm/provider.ts";
+import type { ProviderRegistry } from "../llm/registry.ts";
 import type { Registry as ToolRegistry } from "../tool/registry.ts";
 import { SubAgent } from "../agent/sub-agent.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -12,14 +12,12 @@ import type { SkillDefinition } from "./types.ts";
 
 export class SkillTool implements Tool {
   private skill: SkillDefinition;
-  private provider: Provider;
-  private model: string;
+  private providerRegistry: ProviderRegistry;
   private toolRegistry: ToolRegistry;
 
-  constructor(skill: SkillDefinition, provider: Provider, model: string, toolRegistry: ToolRegistry) {
+  constructor(skill: SkillDefinition, providerRegistry: ProviderRegistry, toolRegistry: ToolRegistry) {
     this.skill = skill;
-    this.provider = provider;
-    this.model = model;
+    this.providerRegistry = providerRegistry;
     this.toolRegistry = toolRegistry;
   }
 
@@ -67,10 +65,12 @@ export class SkillTool implements Tool {
     // 构建用户提示词：Skill 模板 + 用户输入
     const userPrompt = this.skill.prompt + (userInput ? `\n\n用户输入:\n${userInput}` : "");
 
-    const subAgent = new SubAgent(
-      this.provider,
-      this.skill.model || this.model,
+    // 通过 registry 创建 SubAgent，skill.model 作为 modelOverride
+    const subAgent = SubAgent.fromRegistry(
+      this.providerRegistry,
       this.toolRegistry,
+      undefined,
+      this.skill.model,
     );
 
     const result = await subAgent.executeCustom({
