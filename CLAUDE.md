@@ -463,9 +463,107 @@ interface SystemPromptContext {
 ### 核心文件
 
 - `src/agent/loop.ts` — AgentLoopRunner + AgentLoopCallbacks + AgentLoopDeps
-- `src/agent/sub-agent.ts` — SubAgent（白名单 + 嵌套防护 + 超时）
+- `src/agent/sub-agent.ts` — SubAgent（白名单 + 嵌套防护 + 超时 + executeCustom）
 - `src/agent/tool.ts` — SubAgentTool（并发控制）
-- `src/tool/registry.ts` — `Registry.filter()` 工具过滤
+- `src/agent/custom.ts` — CustomAgentLoader + CustomAgentTool（自定义 Agent）
+- `src/tool/registry.ts` — `Registry.filter()` 工具过滤 + `definitions()` 含 usageGuide
+
+## 16. Commands/Skills/Agents 三层扩展体系
+
+对标 Claude Code 的扩展系统，支持用户自定义斜杠命令、Skills（LLM 可调用的提示词模板）、Agents（自定义子代理）。
+
+### 共享基础设施
+
+`src/extension/` 模块提供三层扩展共用的文件扫描、frontmatter 解析、TTL 缓存：
+
+- `src/extension/types.ts` — ExtensionSource, ExtensionFile, ParsedExtensionFile
+- `src/extension/frontmatter.ts` — 轻量 YAML frontmatter 解析器（复用 `yaml` 库）
+- `src/extension/loader.ts` — ExtensionLoader（扫描 `~/.sid-code/{type}/` 和 `{project}/.sid-code/{type}/`，5 分钟 TTL 缓存，project 覆盖 user）
+
+### 自定义 Commands
+
+从 `.sid-code/commands/*.md` 加载用户自定义斜杠命令：
+
+```bash
+# 创建自定义命令
+mkdir -p .sid-code/commands
+cat > .sid-code/commands/review.md << 'EOF'
+---
+description: 代码审查
+---
+请审查以下代码，关注代码质量、潜在 bug 和性能问题: $@
+EOF
+
+# 使用
+/review src/app.ts
+```
+
+- 文件名即命令名，frontmatter `description` 或第一行 HTML 注释 `<!-- ... -->` 作为描述
+- 支持参数替换：`$1`, `$2`, `$@`（所有参数）
+- 保护命令名（help/exit/clear 等）不可覆盖
+- `execute()` 将替换后的文本注入对话，触发 LLM 响应
+
+核心文件：`src/command/custom.ts`
+
+### Skills 系统
+
+Skills 是带元数据的提示词模板，注册为工具后 LLM 可自动调用：
+
+```bash
+mkdir -p .sid-code/skills
+cat > .sid-code/skills/review.md << 'EOF'
+---
+name: code-review
+description: 代码审查
+allowed-tools: read, grep, glob
+when-to-use: 当用户要求审查代码时
+argument-hint: 要审查的文件路径
+---
+请审查以下代码，关注：
+1. 代码质量
+2. 潜在 bug
+3. 性能问题
+EOF
+```
+
+frontmatter 字段：
+- `name` — Skill 名称（默认用文件名）
+- `description` — 描述
+- `allowed-tools` — 允许使用的工具（逗号分隔或数组）
+- `when-to-use` — 何时使用（提示 LLM）
+- `argument-hint` — 参数提示
+- `model` — 指定模型（可选）
+- `disable-model-invocation` — 禁止 LLM 自动调用（仅手动触发）
+
+注册为工具名 `skill__<name>`，最多 20 个。
+
+核心文件：`src/skill/types.ts`, `src/skill/loader.ts`, `src/skill/tool.ts`
+
+### 自定义 Agents
+
+从 `.sid-code/agents/*.md` 加载自定义 Agent 定义：
+
+```bash
+mkdir -p .sid-code/agents
+cat > .sid-code/agents/checker.md << 'EOF'
+---
+name: code-checker
+description: 代码检查代理
+tools: read, grep, glob
+---
+你是一个代码检查代理。检查代码中的问题并报告。
+EOF
+```
+
+frontmatter 字段：`name`, `description`, `tools`（逗号分隔或数组）
+
+注册为工具名 `agent__<name>`，通过 `SubAgent.executeCustom()` 执行。
+
+核心文件：`src/agent/custom.ts`
+
+### usageGuide 注入
+
+`Registry.definitions()` 中，如果工具实现了 `usageGuide()`，将其拼接到 description 末尾，格式为 `\n\n使用指南:\n{guide}`。
 
 ## 文档维护规范
 

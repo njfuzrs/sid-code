@@ -24,6 +24,15 @@ export class HelpCommand implements Command {
     console.log("  /undo           - 撤销最近一次文件修改");
     console.log("  /memory         - 管理记忆 (set/get/delete/list/search)");
     console.log("  /exit           - 退出");
+
+    // 显示自定义命令
+    if (ctx.customCommands && ctx.customCommands.length > 0) {
+      console.log("\n自定义命令:");
+      for (const cmd of ctx.customCommands) {
+        const desc = cmd.description ? ` - ${cmd.description}` : "";
+        console.log(`  /${cmd.name}${desc}`);
+      }
+    }
   }
 }
 

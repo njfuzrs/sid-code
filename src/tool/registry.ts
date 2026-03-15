@@ -26,11 +26,18 @@ export class Registry {
 
   /** 返回所有工具的 LLM 定义（用于发送给 AI） */
   definitions(): ToolDefinition[] {
-    return this.all().map((t) => ({
-      name: t.name(),
-      description: t.description(),
-      input_schema: t.inputSchema(),
-    }));
+    return this.all().map((t) => {
+      let desc = t.description();
+      if (t.usageGuide) {
+        const guide = t.usageGuide();
+        if (guide) desc += `\n\n使用指南:\n${guide}`;
+      }
+      return {
+        name: t.name(),
+        description: desc,
+        input_schema: t.inputSchema(),
+      };
+    });
   }
 
   /** 按名称过滤，返回只包含指定工具的新 Registry */

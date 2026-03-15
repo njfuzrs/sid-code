@@ -71,6 +71,16 @@ const ALLOWED_TOOLS: Record<SubAgentType, string[] | null> = {
   summarize: null,
 };
 
+/** 自定义子代理任务（Skills/Agents 用） */
+export interface CustomSubAgentTask {
+  systemPrompt: string;
+  userPrompt: string;
+  allowedTools: string[];
+  maxTurns?: number;
+  maxTokens?: number;
+  timeout?: number;
+}
+
 export class SubAgent {
   private provider: Provider;
   private model: string;
@@ -104,6 +114,29 @@ export class SubAgent {
     SubAgent.depth++;
     try {
       return await this.executeInner(task, signal);
+    } finally {
+      SubAgent.depth--;
+    }
+  }
+
+  /** 执行自定义子代理任务（Skills/Agents 用） */
+  async executeCustom(task: CustomSubAgentTask, signal?: AbortSignal): Promise<SubAgentResult> {
+    const log = getLogger();
+
+    // 嵌套防护
+    if (SubAgent.depth >= SubAgent.MAX_DEPTH) {
+      log.warn("SUBAGENT", `嵌套深度超限，拒绝执行自定义子代理`);
+      return {
+        success: false,
+        output: "子代理不允许嵌套调用",
+        usage: { inputTokens: 0, outputTokens: 0 },
+        turns: 0,
+      };
+    }
+
+    SubAgent.depth++;
+    try {
+      return await this.executeCustomInner(task, signal);
     } finally {
       SubAgent.depth--;
     }
@@ -226,7 +259,110 @@ export class SubAgent {
     }
   }
 
-  /** 处理流式响应 */
+  /** 自定义子代理内部执行逻辑（复用流式处理和工具执行） */
+  private async executeCustomInner(task: CustomSubAgentTask, signal?: AbortSignal): Promise<SubAgentResult> {
+    const log = getLogger();
+    log.info("SUBAGENT", `启动自定义子代理`);
+
+    const timeout = task.timeout ?? 120_000;
+    const timeoutCtrl = new AbortController();
+    const timer = setTimeout(() => timeoutCtrl.abort(), timeout);
+    const mergedSignal = signal
+      ? AbortSignal.any([signal, timeoutCtrl.signal])
+      : timeoutCtrl.signal;
+
+    try {
+      const ctxMgr = new ContextManager({
+        maxTokens: task.maxTokens ?? 50000,
+      });
+
+      ctxMgr.setSystemPrompt(task.systemPrompt);
+      ctxMgr.addMessage({
+        role: "user",
+        content: [{ type: "text", text: task.userPrompt }],
+      });
+
+      const tools = task.allowedTools.length > 0
+        ? this.toolRegistry.filter(task.allowedTools)
+        : new ToolRegistry();
+      const maxTurns = task.maxTurns ?? 10;
+      const totalUsage: Usage = { inputTokens: 0, outputTokens: 0 };
+      let turns = 0;
+      let lastTextOutput = "";
+
+      while (turns < maxTurns) {
+        turns++;
+        log.debug("SUBAGENT", `[custom] 轮次 ${turns}/${maxTurns}`);
+
+        const toolDefs = tools.size() > 0 ? tools.definitions() : undefined;
+
+        const stream = this.provider.sendMessageStream(
+          {
+            model: this.model,
+            messages: ctxMgr.getMessages(),
+            system: ctxMgr.getSystemPrompt(),
+            maxTokens: 4096,
+            tools: toolDefs,
+          },
+          mergedSignal,
+        );
+
+        const response = await this.processStream(stream);
+
+        totalUsage.inputTokens += response.usage.inputTokens;
+        totalUsage.outputTokens += response.usage.outputTokens;
+
+        const textBlocks = response.content.filter(b => b.type === "text");
+        if (textBlocks.length > 0) {
+          lastTextOutput = textBlocks
+            .map(b => b.type === "text" ? b.text : "")
+            .join("\n");
+        }
+
+        ctxMgr.addMessage({
+          role: "assistant",
+          content: response.content,
+        });
+
+        if (response.stopReason === "end_turn" || response.stopReason === "stop") {
+          break;
+        }
+
+        if (response.stopReason === "tool_use") {
+          const toolResults = await this.executeTools(response.content, tools, mergedSignal);
+          ctxMgr.addMessage({
+            role: "user",
+            content: toolResults,
+          });
+          continue;
+        }
+
+        break;
+      }
+
+      log.info("SUBAGENT", `[custom] 完成，共 ${turns} 轮`);
+
+      return {
+        success: true,
+        output: lastTextOutput,
+        usage: totalUsage,
+        turns,
+      };
+    } catch (err: any) {
+      if (timeoutCtrl.signal.aborted) {
+        log.warn("SUBAGENT", `[custom] 超时 (${timeout}ms)`);
+        return {
+          success: false,
+          output: `子代理执行超时 (${Math.round(timeout / 1000)}秒)`,
+          usage: { inputTokens: 0, outputTokens: 0 },
+          turns: 0,
+        };
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
   private async processStream(stream: AsyncIterable<StreamEvent>): Promise<{
     content: ContentBlock[];
     stopReason: string | null;

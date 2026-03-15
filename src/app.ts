@@ -97,6 +97,16 @@ export class App {
     });
   }
 
+  /** 获取自定义命令摘要（供 /help 显示） */
+  private getCustomCommandsSummary(): Array<{ name: string; description: string }> {
+    const builtinNames = new Set([
+      "help", "model", "cost", "compact", "clear", "config", "exit", "undo", "memory",
+    ]);
+    return this.commandRegistry.all()
+      .filter(cmd => !builtinNames.has(cmd.name()))
+      .map(cmd => ({ name: cmd.name(), description: cmd.description() }));
+  }
+
   /**
    * 处理上下文溢出错误，尝试自动缩小 max_tokens
    * 返回调整后的 maxTokens，无法恢复时返回 null
@@ -699,6 +709,11 @@ export class App {
                 setModel: (m) => { this.config.model = m; },
                 exitRequested: false,
                 sessionState: this.sessionState,
+                sendToLLM: async (text) => {
+                  this.abortController = new AbortController();
+                  try { await this.agentLoop(text); } finally { this.abortController = null; }
+                },
+                customCommands: this.getCustomCommandsSummary(),
               });
             } catch (err: any) {
               console.error(`命令执行失败: ${err.message}`);
@@ -883,6 +898,11 @@ export class App {
           },
           exitRequested: false,
           sessionState: this.sessionState,
+          sendToLLM: async (text) => {
+            // TUI 模式下通过 onUserInput 触发 agentLoop
+            await callbacks.onUserInput(text);
+          },
+          customCommands: this.getCustomCommandsSummary(),
         };
 
         // 特殊处理 clear（需要更新 TUI 状态）

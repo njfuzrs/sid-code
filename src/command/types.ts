@@ -19,6 +19,10 @@ export interface AppContext {
   setModel: (model: string) => void;
   exitRequested: boolean;
   sessionState: SessionState;
+  /** 将文本注入对话并触发 LLM 响应（自定义命令用） */
+  sendToLLM?: (text: string) => Promise<void>;
+  /** 自定义命令列表（/help 显示用） */
+  customCommands?: Array<{ name: string; description: string }>;
 }
 
 /** 命令接口 - 所有斜杠命令必须实现 */

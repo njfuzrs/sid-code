@@ -240,6 +240,28 @@ async function main(): Promise<void> {
     const commandRegistry = new CommandRegistry();
     registerBuiltins(commandRegistry);
 
+    // 加载自定义命令
+    const { CustomCommandLoader } = await import("./command/custom.ts");
+    const customCmds = await new CustomCommandLoader().loadAll();
+    for (const cmd of customCmds) commandRegistry.register(cmd);
+
+    // 加载 Skills（注册为工具，LLM 可自动调用）
+    const { SkillLoader } = await import("./skill/loader.ts");
+    const { SkillTool } = await import("./skill/tool.ts");
+    const skills = await new SkillLoader().loadAll();
+    for (const skill of skills) {
+      if (!skill.disableModelInvocation) {
+        toolRegistry.register(new SkillTool(skill, provider, config.model, toolRegistry));
+      }
+    }
+
+    // 加载自定义 Agents（注册为工具）
+    const { CustomAgentLoader, CustomAgentTool } = await import("./agent/custom.ts");
+    const customAgents = await new CustomAgentLoader().loadAll();
+    for (const def of customAgents) {
+      toolRegistry.register(new CustomAgentTool(def, provider, config.model, toolRegistry));
+    }
+
     // 创建权限检查器（加载五层权限规则）
     const { PermissionChecker } = await import("./permission/checker.ts");
     const { loadPermissionRules } = await import("./config/config.ts");
