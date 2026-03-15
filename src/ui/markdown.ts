@@ -185,7 +185,10 @@ export function renderMarkdown(text: string): string {
 
   try {
     const rendered = marked.parse(text);
-    const result = typeof rendered === "string" ? rendered.trimEnd() : text;
+    // marked-terminal 硬编码 BULLET_POINT = '* '，替换为 bullet 符号
+    const result = typeof rendered === "string"
+      ? rendered.trimEnd().replace(/^(\s*)\* /gm, "$1• ")
+      : text;
 
     if (renderCache.size >= MAX_CACHE_SIZE) {
       const firstKey = renderCache.keys().next().value;
