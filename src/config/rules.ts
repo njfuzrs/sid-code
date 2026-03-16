@@ -127,30 +127,28 @@ function extractRules(sections: ClaudeMdSection[], sourcePath: string, rawConten
     // 去掉标题中的序号前缀（如 "10. 权限系统增强" → "权限系统增强"）
     const titleClean = section.title.replace(/^\d+[\.\-\s]+/, "").trim().toLowerCase();
 
-    // 精确匹配配置标题，避免误匹配文档描述性标题
-    // 例如 "Instructions" 匹配，但 "10. 权限系统增强" 不匹配 "permission mode"
-    if (titleClean === "instructions" || titleClean === "指令") {
+    // 累积型字段用 includes 匹配（宽松，多匹配无害）
+    // 覆盖型字段（permission/model）用精确匹配（严格，防止文档标题误匹配）
+    if (titleClean.includes("instruction") || titleClean.includes("指令")) {
       rules.instructions = (rules.instructions || "") + section.content + "\n";
-    } else if (titleClean === "disallowed tools" || titleClean === "disallowed tool"
-            || titleClean === "禁止的工具" || titleClean === "工具黑名单") {
+    } else if (titleClean.includes("disallowed tool") || titleClean.includes("禁止的工具") || titleClean.includes("工具黑名单")) {
       rules.disallowedTools = parseListItems(section.content);
-    } else if (titleClean === "allowed tools" || titleClean === "allowed tool"
-            || titleClean === "允许的工具" || titleClean === "工具白名单") {
+    } else if (titleClean.includes("allowed tool") || titleClean.includes("允许的工具") || titleClean.includes("工具白名单")) {
       rules.allowedTools = parseListItems(section.content);
     } else if (titleClean === "permission mode" || titleClean === "permission"
             || titleClean === "权限模式") {
+      // 精确匹配：避免 "权限系统增强" 等文档标题误匹配
       const firstLine = section.content.trim().split("\n")[0];
       if (firstLine) rules.permissionMode = firstLine.trim();
     } else if (titleClean === "model" || titleClean === "模型") {
+      // 精确匹配：避免 "模型切换功能" 等文档标题误匹配
       const firstLine = section.content.trim().split("\n")[0];
       if (firstLine) rules.model = firstLine.trim();
-    } else if (titleClean === "system prompt addition" || titleClean === "system prompt"
-            || titleClean === "系统提示") {
+    } else if (titleClean.includes("system prompt") || titleClean.includes("系统提示")) {
       rules.systemPromptAddition = (rules.systemPromptAddition || "") + section.content + "\n";
-    } else if (titleClean === "custom rules" || titleClean === "custom rule"
-            || titleClean === "自定义规则") {
+    } else if (titleClean.includes("custom rule") || titleClean.includes("自定义规则")) {
       rules.customRules = [...(rules.customRules || []), ...parseListItems(section.content)];
-    } else if (titleClean === "memory" || titleClean === "记忆") {
+    } else if (titleClean.includes("memory") || titleClean.includes("记忆")) {
       rules.memory = { ...(rules.memory || {}), ...parseKeyValuePairs(section.content) };
     }
   }
