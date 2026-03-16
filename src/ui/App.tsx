@@ -1,26 +1,28 @@
 /**
  * 主 TUI 组件
- * 布局：标题栏 + 消息区 + 工具状态 + 输入区
+ * 布局：Static（消息历史，终端滚动缓冲区）+ Live 区域（流式文本 + 输入 + 状态栏）
+ * 消息通过 Static 写入终端原生滚动缓冲区，鼠标滚轮可滚动浏览历史
  */
 
 import React, { useState, useCallback, useEffect, useRef } from "react";
-import { Box, Text, useApp, useInput, useStdout } from "ink";
-import { MessageList } from "./MessageList.tsx";
+import { Box, Text, Static, useApp, useInput, useStdout } from "ink";
+import { MessageItem } from "./MessageList.tsx";
 import { InputArea } from "./InputArea.tsx";
 import { ToolStatus } from "./ToolStatus.tsx";
+import { renderMarkdown } from "./markdown.ts";
 import type { Message, Usage } from "../llm/types.ts";
 import { getLogger } from "../debug/logger.ts";
 
-/** 终端尺寸 hook（替代 fullscreen-ink 的 useScreenSize，避免双重状态） */
-function useTerminalSize() {
+/** 终端宽度 hook */
+function useTerminalWidth() {
   const { stdout } = useStdout();
-  const [size, setSize] = useState({ height: stdout.rows, width: stdout.columns });
+  const [width, setWidth] = useState(stdout.columns);
   useEffect(() => {
-    const onResize = () => setSize({ height: stdout.rows, width: stdout.columns });
+    const onResize = () => setWidth(stdout.columns);
     stdout.on("resize", onResize);
     return () => { stdout.off("resize", onResize); };
   }, [stdout]);
-  return size;
+  return width;
 }
 
 /** TUI 回调接口 */
@@ -53,11 +55,8 @@ export interface TUIState {
   contextPercent: number;
   permissionMode: string;
   gitBranch: string;
-  /** 临时状态消息（上下文警告、hook 阻塞等），几秒后自动清除 */
   statusMessage: string;
-  /** 当前待确认的权限请求 */
   permissionRequest: PermissionRequestInfo | null;
-  /** 是否处于调试模式 */
   debug: boolean;
 }
 
@@ -108,59 +107,33 @@ function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
 
 export function TUIApp({ initialState, callbacks, stateRef }: AppProps) {
   const { exit } = useApp();
-  // 使用自管理的终端尺寸（不再依赖 FullScreenBox）
-  const { height: termHeight, width: termWidth } = useTerminalSize();
+  const termWidth = useTerminalWidth();
   const [state, setState] = useState<TUIState>(initialState);
-  const [scrollOffset, setScrollOffset] = useState(0);
-  const isSubmittingRef = useRef(false); // 防止重复提交
+  const isSubmittingRef = useRef(false);
   const log = getLogger();
   const renderCountRef = useRef(0);
 
-  // 组件挂载/卸载日志
   useEffect(() => {
-    log.info("UI:APP", "TUIApp 组件已挂载");
-    return () => {
-      log.info("UI:APP", "TUIApp 组件已卸载");
-    };
+    log.info("UI:APP", "TUIApp 组件已挂载（主缓冲区模式）");
+    return () => { log.info("UI:APP", "TUIApp 组件已卸载"); };
   }, []);
 
-  // 同步外部状态（使用深度比较避免不必要的重新渲染）
+  // 同步外部状态
   useEffect(() => {
     const interval = setInterval(() => {
       const s = stateRef.current;
       setState((prev) => {
-        // 检查是否真的有变化
-        const messagesChanged = prev.messages.length !== s.messages.length ||
-          prev.messages !== s.messages;
+        const messagesChanged = prev.messages.length !== s.messages.length || prev.messages !== s.messages;
         const streamingChanged = prev.streamingText !== s.streamingText;
         const loadingChanged = prev.isLoading !== s.isLoading;
-        const toolChanged = prev.toolName !== s.toolName ||
-          prev.isToolExecuting !== s.isToolExecuting;
+        const toolChanged = prev.toolName !== s.toolName || prev.isToolExecuting !== s.isToolExecuting;
         const modelChanged = prev.model !== s.model || prev.provider !== s.provider;
-        const usageChanged = prev.usage.inputTokens !== s.usage.inputTokens ||
-          prev.usage.outputTokens !== s.usage.outputTokens;
+        const usageChanged = prev.usage.inputTokens !== s.usage.inputTokens || prev.usage.outputTokens !== s.usage.outputTokens;
         const permChanged = prev.permissionRequest !== s.permissionRequest;
 
         if (messagesChanged || streamingChanged || loadingChanged ||
             toolChanged || modelChanged || usageChanged || permChanged) {
-          const changes: string[] = [];
-          if (messagesChanged) changes.push(`messages(${prev.messages.length}→${s.messages.length})`);
-          if (streamingChanged) changes.push(`streaming(${prev.streamingText.length}→${s.streamingText.length})`);
-          if (loadingChanged) changes.push(`loading(${prev.isLoading}→${s.isLoading})`);
-          if (toolChanged) changes.push(`tool(${prev.toolName}→${s.toolName})`);
-          if (modelChanged) changes.push(`model(${prev.model}→${s.model})`);
-          if (usageChanged) changes.push(`usage`);
-          if (permChanged) changes.push(`permission(${prev.permissionRequest ? 'active' : 'none'}→${s.permissionRequest ? 'active' : 'none'})`);
-          log.debug("UI:SYNC", `状态同步触发重渲染: ${changes.join(", ")}`);
-
-          // 新消息到达或流式文本开始时，自动滚回底部
-          if (messagesChanged && s.messages.length > prev.messages.length) {
-            setScrollOffset(0);
-          }
-          if (streamingChanged && s.streamingText.length > 0 && prev.streamingText.length === 0) {
-            setScrollOffset(0);
-          }
-
+          log.debug("UI:SYNC", `状态同步`);
           return { ...s };
         }
         return prev;
@@ -169,134 +142,131 @@ export function TUIApp({ initialState, callbacks, stateRef }: AppProps) {
     return () => clearInterval(interval);
   }, [stateRef]);
 
-  // Ctrl+C 退出 + 权限对话框快捷键 + PageUp/PageDown 滚动
+  // Ctrl+C 退出 + 权限对话框快捷键
   useInput((input, key) => {
     if (key.ctrl && input === "c") {
       log.info("UI:APP", "用户按下 Ctrl+C，退出");
       exit();
       return;
     }
-
-    // PageUp / PageDown 滚动消息区
-    if (key.pageUp) {
-      setScrollOffset((prev) => Math.min(prev + 3, Math.max(0, state.messages.length - 1)));
-      return;
-    }
-    if (key.pageDown) {
-      setScrollOffset((prev) => Math.max(0, prev - 3));
-      return;
-    }
-
-    // 权限对话框快捷键
     const perm = state.permissionRequest;
     if (perm) {
       const lower = input.toLowerCase();
-      if (lower === "y") {
-        log.info("UI:PERM", "用户批准权限请求 (y)");
-        perm.resolve("yes");
-      } else if (lower === "n") {
-        log.info("UI:PERM", "用户拒绝权限请求 (n)");
-        perm.resolve("no");
-      } else if (lower === "a") {
-        log.info("UI:PERM", "用户始终允许权限请求 (a)");
-        perm.resolve("always");
-      }
+      if (lower === "y") { perm.resolve("yes"); }
+      else if (lower === "n") { perm.resolve("no"); }
+      else if (lower === "a") { perm.resolve("always"); }
     }
   });
 
   const handleSubmit = useCallback(async (text: string) => {
-    log.info("UI:INPUT", `handleSubmit 被调用: "${text.slice(0, 100)}"${text.length > 100 ? '...' : ''}`);
-
-    // 防止重复提交
-    if (isSubmittingRef.current) {
-      log.warn("UI:INPUT", "重复提交被拦截，当前正在处理中");
-      return;
-    }
+    log.info("UI:INPUT", `handleSubmit: "${text.slice(0, 100)}"`);
+    if (isSubmittingRef.current) return;
     isSubmittingRef.current = true;
-
     try {
       if (text.startsWith("/")) {
         const [cmd, ...rest] = text.slice(1).split(" ");
-        if (cmd === "exit" || cmd === "quit") {
-          log.info("UI:INPUT", "用户输入退出命令");
-          exit();
-          return;
-        }
-        log.debug("UI:INPUT", `路由到斜杠命令: /${cmd} ${rest.join(" ")}`);
+        if (cmd === "exit" || cmd === "quit") { exit(); return; }
         await callbacks.onSlashCommand(cmd, rest.join(" "));
       } else {
-        log.debug("UI:INPUT", "路由到 LLM 对话");
         await callbacks.onUserInput(text);
       }
     } catch (err: any) {
-      log.error("UI:INPUT", `handleSubmit 异常`, { error: err.message, stack: err.stack });
+      log.error("UI:INPUT", `handleSubmit 异常`, { error: err.message });
     } finally {
       isSubmittingRef.current = false;
-      log.debug("UI:INPUT", "handleSubmit 完成，解除提交锁");
     }
   }, [callbacks, exit]);
 
-  // 渲染计数日志——每次都记录尺寸，用于调试布局偏移
   renderCountRef.current++;
-  const rc = renderCountRef.current;
-  if (rc <= 10 || rc % 20 === 0) {
-    log.info("UI:RENDER", `#${rc} termH=${termHeight} termW=${termWidth} msgH=${Math.max(3, termHeight - (3 + 3 + 1 + (state.isToolExecuting && state.toolName ? 1 : 0) + (state.statusMessage ? 1 : 0) + (state.permissionRequest ? 3 : 0)))} isLoading=${state.isLoading} msgs=${state.messages.length} streaming=${state.streamingText.length}`);
-  }
 
   /** 权限模式 badge 颜色 */
   const permColor = (() => {
     switch (state.permissionMode) {
       case "plan": return "cyan";
       case "deny-write": return "red";
-      case "always-allow": return "yellow";
-      case "dontAsk": return "yellow";
+      case "always-allow": case "dontAsk": return "yellow";
       default: return "green";
     }
   })();
 
-  /** 费用颜色：根据配额百分比变色 */
   const costColor = (() => {
-    if (state.costLimit <= 0 || state.costUSD <= 0) return undefined; // dimColor
+    if (state.costLimit <= 0 || state.costUSD <= 0) return undefined;
     const pct = (state.costUSD / state.costLimit) * 100;
     if (pct >= 95) return "red" as const;
     if (pct >= 80) return "yellow" as const;
     return undefined;
   })();
 
-  // 计算消息区可用高度
-  // 标题栏(border): 3行, 输入区(border): 3行, 状态栏: 1行, 工具状态: 1行(可能0)
-  // 权限对话框: 6行, 状态消息: 1行(可能0)
-  const fixedRows = 3 /* 标题栏 */ + 3 /* 输入区/权限框 */ + 1 /* 状态栏 */
-    + (state.isToolExecuting && state.toolName ? 1 : 0)
-    + (state.statusMessage ? 1 : 0)
-    + (state.permissionRequest ? 3 : 0); // 权限框比输入区多占几行
-  const messageHeight = Math.max(3, termHeight - fixedRows);
-
   const costText = state.costUSD > 0 ? `$${state.costUSD.toFixed(4)}` : "$0";
+  const isEmpty = state.messages.length === 0 && !state.streamingText;
+
+  // 分隔线
+  const sepWidth = Math.max(10, termWidth - 4);
+  const separator = "── ".repeat(Math.floor(sepWidth / 3));
+
+  // 流式文本：排除已在 messages 中的最后一条助手消息
+  let streamingText = state.streamingText;
+  // Static 只展示 messages 数组中确定的消息
+  const staticMessages = state.messages;
 
   return (
-    <Box flexDirection="column" height={termHeight} width={termWidth}>
-      {/* 标题栏（固定 3 行含 border，超宽截断不换行） */}
-      <Box borderStyle="single" borderColor="blue" paddingX={1} justifyContent="space-between" height={3} overflowX="hidden">
-        <Box flexShrink={1} overflow="hidden">
-          <Text bold color="blue" wrap="truncate">sid-code</Text>
-          <Text dimColor> | </Text>
-          <Text color={permColor} wrap="truncate">{state.permissionMode}</Text>
-          {state.gitBranch ? <><Text dimColor> | </Text><Text color="cyan" wrap="truncate">{state.gitBranch}</Text></> : null}
-          {state.debug ? <><Text dimColor> | </Text><Text color="yellow">DEBUG</Text></> : null}
-        </Box>
-        <Text dimColor wrap="truncate">{state.model} | {state.provider}</Text>
-      </Box>
+    <>
+      {/* ── Static 区域：已完成消息，写入终端滚动缓冲区 ── */}
+      <Static items={staticMessages}>
+        {(msg: Message, idx: number) => {
+          const prevMsg = idx > 0 ? staticMessages[idx - 1] : undefined;
+          const isUserNonTool = msg.role === "user"
+            && !msg.content.every((b) => b.type === "tool_result");
+          const showSep = idx > 0 && isUserNonTool;
+          return (
+            <Box key={`msg-${idx}`} flexDirection="column">
+              {showSep && (
+                <Box paddingX={1}>
+                  <Text dimColor>{separator}</Text>
+                </Box>
+              )}
+              <MessageItem message={msg} prevMessage={prevMsg} />
+            </Box>
+          );
+        }}
+      </Static>
 
-      {/* 状态消息（上下文警告、hook 阻塞等） */}
+      {/* ── Live 区域：始终在底部，动态更新 ── */}
+
+      {/* 空状态 logo */}
+      {isEmpty && (
+        <Box flexDirection="column" alignItems="center" paddingY={2}>
+          <Text color="blue" bold>
+            {`   _____ _     _     _____          _
+  / ____(_)   | |   / ____|        | |
+ | (___  _  __| |  | |     ___   __| | ___
+  \\___ \\| |/ _\` |  | |    / _ \\ / _\` |/ _ \\
+  ____) | | (_| |  | |___| (_) | (_| |  __/
+ |_____/|_|\\__,_|   \\_____\\___/ \\__,_|\\___|`}
+          </Text>
+          <Box marginTop={1}>
+            <Text dimColor>输入消息开始对话，或输入 /help 查看可用命令</Text>
+          </Box>
+        </Box>
+      )}
+
+      {/* 状态消息（上下文警告等） */}
       {state.statusMessage ? (
         <Box paddingX={1}>
           <Text color="yellow">{state.statusMessage}</Text>
         </Box>
       ) : null}
 
-      {/* 消息区（固定高度，overflow hidden 自动裁剪顶部） */}
-      <MessageList messages={state.messages} streamingText={state.streamingText} height={messageHeight} termWidth={termWidth} scrollOffset={scrollOffset} />
+      {/* 流式文本 */}
+      {streamingText ? (
+        <Box flexDirection="column">
+          <Box>
+            <Text bold color="green">{"助手 "}</Text>
+            <Text color="green">●</Text>
+          </Box>
+          <Text>{renderMarkdown(streamingText)}</Text>
+        </Box>
+      ) : null}
 
       {/* 工具状态 */}
       <ToolStatus toolName={state.toolName} isExecuting={state.isToolExecuting} toolInput={state.toolInput} />
@@ -305,20 +275,27 @@ export function TUIApp({ initialState, callbacks, stateRef }: AppProps) {
       {state.permissionRequest ? (
         <PermissionDialog request={state.permissionRequest} />
       ) : (
-        <InputArea onSubmit={handleSubmit} isLoading={state.isLoading} termHeight={termHeight} />
+        <InputArea onSubmit={handleSubmit} isLoading={state.isLoading} />
       )}
 
-      {/* 状态栏（固定 1 行，超宽截断） */}
-      <Box paddingX={1} justifyContent="space-between" height={1} overflowX="hidden">
+      {/* 状态栏 */}
+      <Box paddingX={1} justifyContent="space-between">
         <Text wrap="truncate">
-          <Text dimColor>{state.usage.inputTokens}↓ {state.usage.outputTokens}↑ tokens | </Text>
+          <Text bold color="blue">sid-code</Text>
+          <Text dimColor> | </Text>
+          <Text color={permColor}>{state.permissionMode}</Text>
+          {state.gitBranch ? <><Text dimColor> | </Text><Text color="cyan">{state.gitBranch}</Text></> : null}
+          {state.debug ? <><Text dimColor> | </Text><Text color="yellow">DEBUG</Text></> : null}
+          <Text dimColor> | </Text>
+          <Text dimColor>{state.usage.inputTokens}↓ {state.usage.outputTokens}↑</Text>
+          <Text dimColor> | </Text>
           <Text color={costColor} dimColor={!costColor}>{costText}</Text>
           <Text dimColor> | ctx {state.contextPercent}%</Text>
         </Text>
         <Text dimColor wrap="truncate">
-          Ctrl+C 退出 | PageUp/Down 滚动 | /help 帮助
+          {state.model} | Ctrl+C 退出
         </Text>
       </Box>
-    </Box>
+    </>
   );
 }
