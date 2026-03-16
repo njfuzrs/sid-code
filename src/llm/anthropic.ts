@@ -90,7 +90,7 @@ export class AnthropicProvider implements Provider {
         maxTokens: params.maxTokens,
       });
 
-      const stream = await this.client.messages.stream({
+      const stream = this.client.messages.stream({
         model: params.model || this._model,
         max_tokens: params.maxTokens,
         messages: messages as any,
@@ -145,7 +145,15 @@ export class AnthropicProvider implements Provider {
                   partial_json: event.delta.partial_json,
                 },
               };
+            } else if (event.delta.type === "thinking_delta") {
+              // SDK v0.78 Extended Thinking：thinking_delta 作为 text_delta 透传
+              yield {
+                type: "content_block_delta",
+                index: event.index,
+                delta: { type: "text_delta", text: (event.delta as any).thinking || "" },
+              };
             }
+            // 其他 delta 类型（signature_delta、citations_delta）静默忽略
             break;
 
           case "content_block_stop":
@@ -207,7 +215,13 @@ export class AnthropicProvider implements Provider {
         name: block.name,
         input: block.input || {},
       };
+    } else if (block.type === "thinking") {
+      // SDK v0.78 Extended Thinking：thinking 块作为文本透传
+      return { type: "text", text: block.thinking || "" };
     }
-    throw new Error(`Unknown content block type: ${block.type}`);
+    // 未知块类型（server_tool_use、redacted_thinking 等）静默忽略
+    const log = getLogger();
+    log.debug("LLM:ANTHROPIC", `忽略未知 content block 类型: ${block.type}`);
+    return { type: "text", text: "" };
   }
 }

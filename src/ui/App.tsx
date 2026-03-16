@@ -284,7 +284,7 @@ export function TUIApp({ initialState, callbacks, stateRef }: AppProps) {
       {state.permissionRequest ? (
         <PermissionDialog request={state.permissionRequest} />
       ) : (
-        <InputArea onSubmit={handleSubmit} isLoading={state.isLoading} />
+        <InputArea onSubmit={handleSubmit} isLoading={state.isLoading} termHeight={termHeight} />
       )}
 
       {/* 状态栏（固定 1 行，超宽截断） */}

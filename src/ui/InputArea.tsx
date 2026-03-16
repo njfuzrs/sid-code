@@ -1,24 +1,69 @@
 /**
  * 输入区域组件
- * 使用 @inkjs/ui TextInput 处理用户输入
+ * 使用 ink v6 的 useCursor() 控制终端真实光标位置，解决 IME 预编辑文本布局偏移问题。
+ * 内联实现文本状态管理（useTextInputState 未从 @inkjs/ui 公开导出）。
  */
 
-import React, { useState, useRef, useEffect } from "react";
-import { Box, Text } from "ink";
-import { TextInput } from "@inkjs/ui";
+import React, { useReducer, useCallback, useRef, useEffect } from "react";
+import { Box, Text, useInput, useCursor } from "ink";
+import stringWidth from "string-width";
 import { getLogger } from "../debug/logger.ts";
 
 interface InputAreaProps {
   onSubmit: (text: string) => void;
   isLoading: boolean;
+  /** 终端高度（用于计算光标 y 坐标） */
+  termHeight: number;
 }
 
-export function InputArea({ onSubmit, isLoading }: InputAreaProps) {
+const PLACEHOLDER = "输入消息或 /help 查看命令...";
+
+// ── 文本输入状态管理 ──────────────────────────────────────────────
+
+interface InputState {
+  value: string;
+  cursorOffset: number;
+}
+
+type InputAction =
+  | { type: "insert"; text: string }
+  | { type: "delete" }
+  | { type: "move-left" }
+  | { type: "move-right" }
+  | { type: "reset" };
+
+function inputReducer(state: InputState, action: InputAction): InputState {
+  switch (action.type) {
+    case "insert":
+      return {
+        value: state.value.slice(0, state.cursorOffset) + action.text + state.value.slice(state.cursorOffset),
+        cursorOffset: state.cursorOffset + action.text.length,
+      };
+    case "delete": {
+      if (state.cursorOffset === 0) return state;
+      const offset = state.cursorOffset - 1;
+      return {
+        value: state.value.slice(0, offset) + state.value.slice(offset + 1),
+        cursorOffset: offset,
+      };
+    }
+    case "move-left":
+      return { ...state, cursorOffset: Math.max(0, state.cursorOffset - 1) };
+    case "move-right":
+      return { ...state, cursorOffset: Math.min(state.value.length, state.cursorOffset + 1) };
+    case "reset":
+      return { value: "", cursorOffset: 0 };
+  }
+}
+
+// ── 组件 ──────────────────────────────────────────────────────────
+
+export function InputArea({ onSubmit, isLoading, termHeight }: InputAreaProps) {
   const lastSubmittedRef = useRef<string>("");
-  const [key, setKey] = useState(0); // 用于强制重新挂载 TextInput
   const log = getLogger();
   const prevLoadingRef = useRef(isLoading);
-  const inputRenderRef = useRef(0);
+  const { setCursorPosition } = useCursor();
+  const [state, dispatch] = useReducer(inputReducer, { value: "", cursorOffset: 0 });
 
   // 记录 isLoading 状态变化
   useEffect(() => {
@@ -28,12 +73,9 @@ export function InputArea({ onSubmit, isLoading }: InputAreaProps) {
     }
   }, [isLoading]);
 
-  const handleSubmit = (text: string) => {
-    const trimmed = text.trim();
-    if (!trimmed) {
-      log.debug("UI:INPUT", "空输入被忽略");
-      return;
-    }
+  const handleSubmit = useCallback(() => {
+    const trimmed = state.value.trim();
+    if (!trimmed) return;
 
     // 防止重复提交相同内容
     if (trimmed === lastSubmittedRef.current) {
@@ -41,20 +83,55 @@ export function InputArea({ onSubmit, isLoading }: InputAreaProps) {
       return;
     }
 
-    log.info("UI:INPUT", `提交输入: "${trimmed.slice(0, 100)}"${trimmed.length > 100 ? '...' : ''} (key=${key})`);
+    log.info("UI:INPUT", `提交输入: "${trimmed.slice(0, 100)}"${trimmed.length > 100 ? '...' : ''}`);
     lastSubmittedRef.current = trimmed;
     onSubmit(trimmed);
-
-    // 强制重新挂载 TextInput 以清空输入
-    setKey((k) => k + 1);
-    log.debug("UI:INPUT", `TextInput 重新挂载 key=${key + 1}`);
+    dispatch({ type: "reset" });
 
     // 1秒后清除防重复标记
     setTimeout(() => {
       lastSubmittedRef.current = "";
-      log.debug("UI:INPUT", "防重复标记已清除");
     }, 1000);
-  };
+  }, [state.value, onSubmit]);
+
+  // 处理键盘输入
+  useInput((input, key) => {
+    if (key.return) {
+      handleSubmit();
+      return;
+    }
+    if (key.leftArrow) {
+      dispatch({ type: "move-left" });
+      return;
+    }
+    if (key.rightArrow) {
+      dispatch({ type: "move-right" });
+      return;
+    }
+    if (key.backspace || key.delete) {
+      dispatch({ type: "delete" });
+      return;
+    }
+    // 普通字符输入（排除控制键组合）
+    if (input && !key.ctrl && !key.meta) {
+      dispatch({ type: "insert", text: input });
+    }
+  }, { isActive: !isLoading });
+
+  // 设置终端真实光标位置
+  // buildCursorSuffix: moveUp = visibleLineCount - y
+  // ink 渲染后光标在最后一行末尾，moveUp=N 表示从那里往上 N 行
+  // 布局（从下往上）：状态栏(1行, y=termHeight-1) + border底(1行) + 输入内容(1行)
+  // 输入内容行需要 moveUp=2（跳过状态栏 + border 底线），所以 y = termHeight - 2
+  if (!isLoading) {
+    const prefixWidth = 1 + 1 + 2; // border(1) + padding(1) + "> "(2)
+    const textBeforeCursor = state.value.slice(0, state.cursorOffset);
+    const cursorX = prefixWidth + stringWidth(textBeforeCursor);
+    const cursorY = termHeight - 2;
+    setCursorPosition({ x: cursorX, y: cursorY });
+  } else {
+    setCursorPosition(undefined); // 加载中隐藏光标
+  }
 
   if (isLoading) {
     return (
@@ -64,15 +141,18 @@ export function InputArea({ onSubmit, isLoading }: InputAreaProps) {
     );
   }
 
+  // 渲染输入文本（不用 chalk.inverse 模拟光标，终端真实光标由 useCursor 控制）
+  const showPlaceholder = state.value.length === 0;
+
   return (
     <Box borderStyle="single" borderColor="cyan" paddingX={1}>
       <Text color="cyan" bold>{">"} </Text>
       <Box flexGrow={1}>
-        <TextInput
-          key={key}
-          onSubmit={handleSubmit}
-          placeholder="输入消息或 /help 查看命令..."
-        />
+        {showPlaceholder ? (
+          <Text dimColor>{PLACEHOLDER}</Text>
+        ) : (
+          <Text>{state.value}</Text>
+        )}
       </Box>
     </Box>
   );

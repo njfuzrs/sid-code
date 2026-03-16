@@ -202,12 +202,11 @@ export function renderMarkdown(text: string): string {
   const log = getLogger();
 
   try {
-    const rendered = marked.parse(text);
+    // marked v17: 明确 async: false 确保返回 string（不是 Promise）
+    const rendered = marked.parse(text, { async: false });
     // marked-terminal 硬编码 BULLET_POINT = '* '，替换为 • 符号。
     // 列表 bullet 后紧跟 ANSI 码（chalk.reset 的 \x1b[），以此区分代码块中的 '* '。
-    const result = typeof rendered === "string"
-      ? rendered.trimEnd().replace(/^(\s*)\* (\x1b\[)/gm, `$1${BULLET}$2`)
-      : text;
+    const result = rendered.trimEnd().replace(/^(\s*)\* (\x1b\[)/gm, `$1${BULLET}$2`);
 
     if (renderCache.size >= MAX_CACHE_SIZE) {
       const firstKey = renderCache.keys().next().value;
