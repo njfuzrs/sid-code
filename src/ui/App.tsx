@@ -111,6 +111,7 @@ export function TUIApp({ initialState, callbacks, stateRef }: AppProps) {
   // 使用自管理的终端尺寸（不再依赖 FullScreenBox）
   const { height: termHeight, width: termWidth } = useTerminalSize();
   const [state, setState] = useState<TUIState>(initialState);
+  const [scrollOffset, setScrollOffset] = useState(0);
   const isSubmittingRef = useRef(false); // 防止重复提交
   const log = getLogger();
   const renderCountRef = useRef(0);
@@ -151,6 +152,15 @@ export function TUIApp({ initialState, callbacks, stateRef }: AppProps) {
           if (usageChanged) changes.push(`usage`);
           if (permChanged) changes.push(`permission(${prev.permissionRequest ? 'active' : 'none'}→${s.permissionRequest ? 'active' : 'none'})`);
           log.debug("UI:SYNC", `状态同步触发重渲染: ${changes.join(", ")}`);
+
+          // 新消息到达或流式文本开始时，自动滚回底部
+          if (messagesChanged && s.messages.length > prev.messages.length) {
+            setScrollOffset(0);
+          }
+          if (streamingChanged && s.streamingText.length > 0 && prev.streamingText.length === 0) {
+            setScrollOffset(0);
+          }
+
           return { ...s };
         }
         return prev;
@@ -159,13 +169,24 @@ export function TUIApp({ initialState, callbacks, stateRef }: AppProps) {
     return () => clearInterval(interval);
   }, [stateRef]);
 
-  // Ctrl+C 退出 + 权限对话框快捷键
+  // Ctrl+C 退出 + 权限对话框快捷键 + PageUp/PageDown 滚动
   useInput((input, key) => {
     if (key.ctrl && input === "c") {
       log.info("UI:APP", "用户按下 Ctrl+C，退出");
       exit();
       return;
     }
+
+    // PageUp / PageDown 滚动消息区
+    if (key.pageUp) {
+      setScrollOffset((prev) => Math.min(prev + 3, Math.max(0, state.messages.length - 1)));
+      return;
+    }
+    if (key.pageDown) {
+      setScrollOffset((prev) => Math.max(0, prev - 3));
+      return;
+    }
+
     // 权限对话框快捷键
     const perm = state.permissionRequest;
     if (perm) {
@@ -275,7 +296,7 @@ export function TUIApp({ initialState, callbacks, stateRef }: AppProps) {
       ) : null}
 
       {/* 消息区（固定高度，overflow hidden 自动裁剪顶部） */}
-      <MessageList messages={state.messages} streamingText={state.streamingText} height={messageHeight} />
+      <MessageList messages={state.messages} streamingText={state.streamingText} height={messageHeight} termWidth={termWidth} scrollOffset={scrollOffset} />
 
       {/* 工具状态 */}
       <ToolStatus toolName={state.toolName} isExecuting={state.isToolExecuting} toolInput={state.toolInput} />
@@ -295,7 +316,7 @@ export function TUIApp({ initialState, callbacks, stateRef }: AppProps) {
           <Text dimColor> | ctx {state.contextPercent}%</Text>
         </Text>
         <Text dimColor wrap="truncate">
-          Ctrl+C 退出 | /help 帮助
+          Ctrl+C 退出 | PageUp/Down 滚动 | /help 帮助
         </Text>
       </Box>
     </Box>
