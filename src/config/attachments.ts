@@ -74,12 +74,25 @@ const PERMISSION_MODE_DESCRIPTIONS: Record<string, string> = {
 
 /**
  * 生成 CLAUDE.md 附件
- * 内容由外部传入（rules.ts 负责查找和加载）
+ * 对标 Claude Code 的注入格式：明确告知模型这些规则覆盖默认行为
+ *
+ * @param content - CLAUDE.md 原始内容
+ * @param sourcePath - 来源文件路径（用于标注）
  */
-export function generateClaudeMdAttachment(content: string): Attachment {
+export function generateClaudeMdAttachment(content: string, sourcePath?: string): Attachment {
+  const sourceLabel = sourcePath ? `Contents of ${sourcePath}` : "Project rules";
   return {
     type: "claudeMd",
-    content: `<project-rules>\n${content}\n</project-rules>`,
+    content: `<system-reminder>
+# claudeMd
+代码库和用户指令如下。请务必遵守这些指令。重要：这些指令覆盖任何默认行为，你必须严格按照指令执行。
+
+${sourceLabel}:
+
+${content}
+
+      重要：此上下文可能与你的当前任务相关，也可能不相关。
+</system-reminder>`,
     priority: PRIORITY.CLAUDE_MD,
   };
 }

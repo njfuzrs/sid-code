@@ -85,9 +85,18 @@ describe("buildSystemPrompt", () => {
       tools: [],
       projectRules: "# 项目规则\n使用 TypeScript",
     });
-    expect(prompt).toContain("<project-rules>");
+    expect(prompt).toContain("<system-reminder>");
     expect(prompt).toContain("使用 TypeScript");
-    expect(prompt).toContain("</project-rules>");
+    expect(prompt).toContain("覆盖任何默认行为");
+  });
+
+  test("包含项目规则来源路径", () => {
+    const prompt = buildSystemPrompt({
+      tools: [],
+      projectRules: "规则内容",
+      projectRulesPath: "/project/CLAUDE.md",
+    });
+    expect(prompt).toContain("Contents of /project/CLAUDE.md");
   });
 
   test("包含追加提示词", () => {

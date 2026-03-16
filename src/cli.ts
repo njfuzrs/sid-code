@@ -173,11 +173,14 @@ async function main(): Promise<void> {
       };
       const level = levelMap[config.debugLevel?.toUpperCase() || "DEBUG"] ?? LogLevel.DEBUG;
 
+      // TUI 模式下日志只写文件，不输出到控制台（避免启动时一闪而过的调试信息）
+      const isTUI = !config.noTUI && !config.print;
       const logger = initLogger({
         enabled: true,
         level,
         logFile: config.debugLogFile,
-        console: true,
+        console: !isTUI,
+        fileOnly: isTUI,
       });
 
       logger.info("CLI", "调试模式已启用", {

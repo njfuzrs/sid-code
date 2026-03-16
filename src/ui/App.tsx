@@ -4,8 +4,7 @@
  */
 
 import React, { useState, useCallback, useEffect, useRef } from "react";
-import { Box, Text, useApp, useInput } from "ink";
-import { useScreenSize } from "fullscreen-ink";
+import { Box, Text, useApp, useInput, useStdout } from "ink";
 import { MessageList } from "./MessageList.tsx";
 import { InputArea } from "./InputArea.tsx";
 import { ToolStatus } from "./ToolStatus.tsx";
@@ -46,6 +45,8 @@ export interface TUIState {
   statusMessage: string;
   /** 当前待确认的权限请求 */
   permissionRequest: PermissionRequestInfo | null;
+  /** 是否处于调试模式 */
+  debug: boolean;
 }
 
 interface AppProps {
@@ -95,7 +96,10 @@ function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
 
 export function TUIApp({ initialState, callbacks, stateRef }: AppProps) {
   const { exit } = useApp();
-  const { height: termHeight, width: termWidth } = useScreenSize();
+  const { stdout } = useStdout();
+  // 直接从 stdout 同步读取终端尺寸，避免与外层 FullScreenBox 的 useScreenSize 产生双重状态更新
+  const termHeight = stdout.rows;
+  const termWidth = stdout.columns;
   const [state, setState] = useState<TUIState>(initialState);
   const isSubmittingRef = useRef(false); // 防止重复提交
   const log = getLogger();
@@ -245,15 +249,16 @@ export function TUIApp({ initialState, callbacks, stateRef }: AppProps) {
 
   return (
     <Box flexDirection="column" height={termHeight} width={termWidth}>
-      {/* 标题栏 */}
-      <Box borderStyle="single" borderColor="blue" paddingX={1} justifyContent="space-between">
-        <Box>
-          <Text bold color="blue">sid-code</Text>
+      {/* 标题栏（固定 3 行含 border，超宽截断不换行） */}
+      <Box borderStyle="single" borderColor="blue" paddingX={1} justifyContent="space-between" height={3} overflowX="hidden">
+        <Box flexShrink={1} overflow="hidden">
+          <Text bold color="blue" wrap="truncate">sid-code</Text>
           <Text dimColor> | </Text>
-          <Text color={permColor}>{state.permissionMode}</Text>
-          {state.gitBranch ? <><Text dimColor> | </Text><Text color="cyan">{state.gitBranch}</Text></> : null}
+          <Text color={permColor} wrap="truncate">{state.permissionMode}</Text>
+          {state.gitBranch ? <><Text dimColor> | </Text><Text color="cyan" wrap="truncate">{state.gitBranch}</Text></> : null}
+          {state.debug ? <><Text dimColor> | </Text><Text color="yellow">DEBUG</Text></> : null}
         </Box>
-        <Text dimColor>{state.model} | {state.provider}</Text>
+        <Text dimColor wrap="truncate">{state.model} | {state.provider}</Text>
       </Box>
 
       {/* 状态消息（上下文警告、hook 阻塞等） */}
@@ -276,14 +281,14 @@ export function TUIApp({ initialState, callbacks, stateRef }: AppProps) {
         <InputArea onSubmit={handleSubmit} isLoading={state.isLoading} />
       )}
 
-      {/* 状态栏 */}
-      <Box paddingX={1} justifyContent="space-between">
-        <Text>
+      {/* 状态栏（固定 1 行，超宽截断） */}
+      <Box paddingX={1} justifyContent="space-between" height={1} overflowX="hidden">
+        <Text wrap="truncate">
           <Text dimColor>{state.usage.inputTokens}↓ {state.usage.outputTokens}↑ tokens | </Text>
           <Text color={costColor} dimColor={!costColor}>{costText}</Text>
           <Text dimColor> | ctx {state.contextPercent}%</Text>
         </Text>
-        <Text dimColor>
+        <Text dimColor wrap="truncate">
           Ctrl+C 退出 | /help 帮助
         </Text>
       </Box>

@@ -30,9 +30,20 @@ describe("generateClaudeMdAttachment", () => {
     const attachment = generateClaudeMdAttachment("# 项目规则\n使用 TypeScript");
     expect(attachment.type).toBe("claudeMd");
     expect(attachment.priority).toBe(PRIORITY.CLAUDE_MD);
-    expect(attachment.content).toContain("<project-rules>");
+    expect(attachment.content).toContain("<system-reminder>");
     expect(attachment.content).toContain("使用 TypeScript");
-    expect(attachment.content).toContain("</project-rules>");
+    expect(attachment.content).toContain("覆盖任何默认行为");
+    expect(attachment.content).toContain("</system-reminder>");
+  });
+
+  test("包含来源路径标注", () => {
+    const attachment = generateClaudeMdAttachment("内容", "/project/CLAUDE.md");
+    expect(attachment.content).toContain("Contents of /project/CLAUDE.md");
+  });
+
+  test("无来源路径时使用默认标注", () => {
+    const attachment = generateClaudeMdAttachment("内容");
+    expect(attachment.content).toContain("Project rules");
   });
 });
 

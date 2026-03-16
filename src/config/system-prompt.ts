@@ -27,6 +27,8 @@ export interface SystemPromptContext {
   tools: Tool[];
   /** 项目规则（CLAUDE.md 内容） */
   projectRules?: string;
+  /** 项目规则来源路径（用于注入时标注） */
+  projectRulesPath?: string;
   /** 追加的系统提示词 */
   appendPrompt?: string;
   /** 从文件加载的系统提示词 */
@@ -151,7 +153,7 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
 
   // CLAUDE.md 项目规则
   if (ctx.projectRules) {
-    attachments.push(generateClaudeMdAttachment(ctx.projectRules));
+    attachments.push(generateClaudeMdAttachment(ctx.projectRules, ctx.projectRulesPath));
   }
 
   // Git 状态

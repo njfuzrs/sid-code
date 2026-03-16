@@ -21,7 +21,8 @@ import { ModelFallback } from "./llm/fallback.ts";
 import { ThinkingManager } from "./llm/thinking.ts";
 import { SessionState } from "./session/state.ts";
 import { QuotaManager } from "./llm/quota.ts";
-import { loadCLAUDEmd } from "./config/rules.ts";
+import { loadAllCLAUDEmd, watchCLAUDEmd, unwatchCLAUDEmd } from "./config/rules.ts";
+import type { ProjectRules } from "./config/rules.ts";
 import { getLogger } from "./debug/logger.ts";
 import { AgentLoopRunner } from "./agent/loop.ts";
 import type { AgentLoopCallbacks } from "./agent/loop.ts";
@@ -249,10 +250,13 @@ export class App {
     let systemPrompt = this.config.systemPrompt;
 
     if (!systemPrompt) {
-      // 加载 CLAUDE.md 规则
-      const rules = await loadCLAUDEmd(process.cwd());
-      if (rules) {
-        log.debug("APP", `加载 CLAUDE.md 规则 (${rules.length} 字符)`);
+      // 加载并解析 CLAUDE.md 规则（全局 + 项目合并）
+      const projectRules = await loadAllCLAUDEmd(process.cwd());
+      if (projectRules) {
+        log.debug("APP", `加载 CLAUDE.md 规则 (${projectRules.rawContent.length} 字符, 来源: ${projectRules.sourcePath})`);
+
+        // 应用结构化规则到配置（CLAUDE.md 中的规则覆盖默认配置）
+        this.applyProjectRules(projectRules);
       }
 
       // 从文件加载系统提示词
@@ -286,7 +290,8 @@ export class App {
       systemPrompt = buildSystemPrompt({
         // 基础
         tools: this.toolRegistry.all(),
-        projectRules: rules || undefined,
+        projectRules: projectRules?.rawContent || undefined,
+        projectRulesPath: projectRules?.sourcePath,
         appendPrompt: this.config.appendSystemPrompt || undefined,
         filePrompt,
 
@@ -304,10 +309,53 @@ export class App {
     this.ctxMgr.setSystemPrompt(systemPrompt);
     log.info("APP", `初始化完成，系统提示词 ${systemPrompt.length} 字符，工具数 ${this.toolRegistry.size()}`);
 
+    // 启动 CLAUDE.md 文件变化监听
+    watchCLAUDEmd(process.cwd(), (changedPath) => {
+      log.info("APP", `CLAUDE.md 已变更: ${changedPath}，下次请求将使用新规则`);
+    });
+
     // session_start hook（非阻塞）
     this.hookRunner.run("session_start", {
       sessionId: this.sessionState.sessionId,
     }).catch(err => log.error("HOOK", `session_start hook 失败: ${err.message}`));
+  }
+
+  /**
+   * 应用 CLAUDE.md 中解析出的结构化规则到运行时配置
+   * 只覆盖 CLAUDE.md 中明确指定的字段，不影响命令行参数和配置文件的设置
+   */
+  private applyProjectRules(rules: ProjectRules): void {
+    const log = getLogger();
+
+    // 工具白名单（合并，不覆盖命令行配置）
+    if (rules.allowedTools?.length) {
+      this.config.allowedTools = [
+        ...this.config.allowedTools,
+        ...rules.allowedTools,
+      ];
+      log.info("APP", `CLAUDE.md 工具白名单: ${rules.allowedTools.join(", ")}`);
+    }
+
+    // 工具黑名单（合并）
+    if (rules.disallowedTools?.length) {
+      this.config.disallowedTools = [
+        ...this.config.disallowedTools,
+        ...rules.disallowedTools,
+      ];
+      log.info("APP", `CLAUDE.md 工具黑名单: ${rules.disallowedTools.join(", ")}`);
+    }
+
+    // 权限模式（仅当命令行未指定时才覆盖）
+    if (rules.permissionMode && this.config.permissionMode === "default") {
+      this.config.permissionMode = rules.permissionMode;
+      log.info("APP", `CLAUDE.md 权限模式: ${rules.permissionMode}`);
+    }
+
+    // 模型选择（仅当命令行未指定时才覆盖）
+    if (rules.model && !process.argv.includes("--model")) {
+      this.config.model = rules.model;
+      log.info("APP", `CLAUDE.md 模型: ${rules.model}`);
+    }
   }
 
   /**
@@ -807,6 +855,7 @@ export class App {
           // 特殊处理 exit（需要关闭 readline）
           if (cmdName === "exit" || cmdName === "quit") {
             await this.hookRunner.run("session_end", { sessionId: this.sessionState.sessionId });
+            unwatchCLAUDEmd();
             this.mcpManager?.closeAll();
             console.log("再见！");
             rl.close();
@@ -872,6 +921,7 @@ export class App {
       this.hookRunner.run("session_end", { sessionId: this.sessionState.sessionId })
         .catch(() => {})
         .finally(() => {
+          unwatchCLAUDEmd();
           this.mcpManager?.closeAll();
           console.log("\n再见！");
           process.exit(0);
@@ -917,6 +967,7 @@ export class App {
 
     // session_end hook（非阻塞）
     await this.hookRunner.run("session_end", { sessionId: this.sessionState.sessionId });
+    unwatchCLAUDEmd();
     this.mcpManager?.closeAll();
 
     return "";
@@ -955,6 +1006,7 @@ export class App {
         gitBranch: (() => { try { return execSync("git rev-parse --abbrev-ref HEAD 2>/dev/null", { encoding: "utf-8" }).trim(); } catch { return ""; } })(),
         statusMessage: "",
         permissionRequest: null,
+        debug: !!this.config.debug,
       },
     };
 
@@ -1153,6 +1205,7 @@ export class App {
 
     await app.waitUntilExit();
     await this.hookRunner.run("session_end", { sessionId: this.sessionState.sessionId });
+    unwatchCLAUDEmd();
     this.mcpManager?.closeAll();
     log.info("TUI", "TUI 退出");
   }
