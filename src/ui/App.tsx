@@ -225,7 +225,7 @@ export function TUIApp({ initialState, callbacks, stateRef }: AppProps) {
                   <Text dimColor>{separator}</Text>
                 </Box>
               )}
-              <MessageItem message={msg} prevMessage={prevMsg} />
+              <MessageItem message={msg} prevMessage={prevMsg} termWidth={termWidth} />
             </Box>
           );
         }}

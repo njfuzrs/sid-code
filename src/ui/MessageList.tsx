@@ -147,34 +147,41 @@ function renderBlock(block: ContentBlock, idx: number, toolNameMap: Map<string, 
 }
 
 /** 渲染单条消息（供 Static 组件使用） */
-export function MessageItem({ message, prevMessage }: { message: Message; prevMessage?: Message }) {
+export function MessageItem({ message, prevMessage, termWidth }: { message: Message; prevMessage?: Message; termWidth?: number }) {
   const isUser = message.role === "user";
   const toolNameMap = buildToolNameMap(message, prevMessage);
+  const tw = termWidth || 80;
 
   // 纯 tool_result 消息——无角色标签
   const hasOnlyToolResults = message.content.every((b) => b.type === "tool_result");
   if (isUser && hasOnlyToolResults) {
     return (
-      <Box flexDirection="column">
+      <Box flexDirection="column" width={tw}>
         {message.content.map((block, idx) => renderBlock(block, idx, toolNameMap))}
       </Box>
     );
   }
 
-  // 用户消息：边框包裹
+  // 用户消息：右对齐，圆角气泡
   if (isUser) {
     return (
-      <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1}>
-        <Text bold color="cyan">你</Text>
-        {message.content.map((block, idx) => renderBlock(block, idx, toolNameMap))}
+      <Box width={tw} justifyContent="flex-end">
+        <Box flexDirection="column" borderStyle="round" borderColor="blueBright" paddingX={1} paddingY={0}>
+          {message.content.map((block, idx) => {
+            const key = getBlockKey(block, idx);
+            if (block.type === "text") {
+              return <Text key={key}>{block.text}</Text>;
+            }
+            return renderBlock(block, idx, toolNameMap);
+          })}
+        </Box>
       </Box>
     );
   }
 
-  // 助手消息：无边框
+  // 助手消息：左对齐
   return (
-    <Box flexDirection="column">
-      <Text bold color="green">助手</Text>
+    <Box flexDirection="column" paddingRight={10}>
       {message.content.map((block, idx) => renderBlock(block, idx, toolNameMap))}
     </Box>
   );
