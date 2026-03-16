@@ -676,6 +676,92 @@ hooks:
 - `src/hook/runner.ts` — HookRunner（事件分发 + matcher + blocking + command/url 执行 + 返回值解析）
 - `src/config/config.ts` — HookConfig / HooksConfig 接口 + 旧格式兼容转换
 
+## 18. MCP 协议集成
+
+对标 Claude Code 的 MCP（Model Context Protocol）支持，连接外部工具服务器，扩展工具能力。
+
+### 配置方式
+
+全局配置 `~/.sid-code/config.yaml`：
+
+```yaml
+mcp_servers:
+  filesystem:
+    transport: stdio
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    timeout: 15000
+    retries: 2
+  remote:
+    transport: sse
+    url: https://mcp.example.com/sse
+    headers:
+      Authorization: "Bearer xxx"
+  disabled-server:
+    transport: stdio
+    command: some-server
+    enabled: false  # 临时禁用
+```
+
+项目级配置 `.mcp.json`（覆盖全局同名服务器）：
+
+```json
+{
+  "mcpServers": {
+    "project-tools": {
+      "transport": "stdio",
+      "command": "node",
+      "args": ["./tools/mcp-server.js"]
+    }
+  }
+}
+```
+
+### MCPServerConfig 字段
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `transport` | `"stdio" \| "http" \| "sse"` | 传输方式 |
+| `command` | `string` | stdio 模式：可执行命令 |
+| `args` | `string[]` | stdio 模式：命令参数 |
+| `env` | `Record<string, string>` | stdio 模式：环境变量 |
+| `url` | `string` | http/sse 模式：服务器 URL |
+| `headers` | `Record<string, string>` | http/sse 模式：HTTP 头 |
+| `enabled` | `boolean` | 默认 true，设为 false 临时禁用 |
+| `timeout` | `number` | 请求超时毫秒，默认 30000 |
+| `retries` | `number` | 重试次数，默认 2 |
+
+### 三种传输方式
+
+- **stdio**：通过子进程 stdin/stdout 通信，最常用
+- **http**：HTTP POST 请求通信
+- **sse**：GET 连接 SSE 流接收响应/通知，POST 发送请求（MCP Streamable HTTP）
+
+### 生命周期
+
+1. `cli.ts` 中创建 `MCPManager`，调用 `connectAll()` 并行连接所有启用的服务器
+2. MCP 工具适配为内部 `Tool` 接口，工具名格式：`mcp__<serverName>__<toolName>`
+3. 连接失败不阻止应用启动（优雅降级）
+4. 应用退出时（exit/Ctrl+C/headless/TUI）调用 `mcpManager.closeAll()` 清理连接
+
+### 使用命令
+
+- `/mcp` — 显示已连接服务器列表、状态、工具数量
+
+### 核心特性
+
+- **重试机制**：指数退避 + ±30% 随机抖动，默认重试 2 次
+- **通知处理**：`notifications/initialized` 作为通知发送（无 id），监听 `notifications/tools/list_changed` 自动刷新工具列表
+- **工具变更回调**：服务器通知工具列表变更时，自动移除旧工具、注册新工具
+
+### 核心文件
+
+- `src/mcp/types.ts` — JSON-RPC 2.0 + MCP 协议类型
+- `src/mcp/transport.ts` — Transport 接口 + StdioTransport + HTTPTransport + SSETransport
+- `src/mcp/client.ts` — MCPClient（initialize/listTools/callTool + 重试 + 通知监听）
+- `src/mcp/manager.ts` — MCPManager（多服务器管理 + 工具适配 + 状态查询）
+- `src/config/config.ts` — MCPServerConfig 接口 + `.mcp.json` 加载
+
 ## 文档维护规范
 
 - 发现本文件与实际代码不一致，请立即更新

@@ -1,10 +1,11 @@
 /**
  * 消息列表组件
  * 渲染用户/助手/工具消息，支持 Markdown 渲染
+ * 全屏模式：不使用 Static，通过 overflow hidden + 自动滚动实现
  */
 
 import React, { useRef } from "react";
-import { Box, Text, Static } from "ink";
+import { Box, Text } from "ink";
 import type { Message, ContentBlock } from "../llm/types.ts";
 import { renderMarkdown } from "./markdown.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -12,12 +13,13 @@ import { getLogger } from "../debug/logger.ts";
 interface MessageListProps {
   messages: Message[];
   streamingText: string;
+  /** 可用高度（行数），由父组件传入 */
+  height?: number;
 }
 
 /** 生成内容块的唯一 key */
 function getBlockKey(block: ContentBlock, idx: number): string {
   if (block.type === "text") {
-    // 使用文本内容的前 50 个字符作为 key 的一部分
     const preview = block.text.slice(0, 50);
     return `text-${idx}-${preview.length}`;
   }
@@ -120,8 +122,6 @@ function renderBlock(block: ContentBlock, idx: number): React.ReactNode {
 
   if (block.type === "tool_result") {
     const isErr = !!block.is_error;
-    // 尝试从上下文中找到对应的 tool_use 块名称（通过 tool_use_id 匹配）
-    // 这里简化处理，只显示结果摘要
     const icon = isErr ? "✗" : "✓";
     const color = isErr ? "red" : "green";
     const summary = getResultSummary("", block.content, isErr);
@@ -162,7 +162,6 @@ function MessageItem({ message }: { message: Message }) {
 
 /** 生成消息的唯一 key */
 function getMessageKey(msg: Message, idx: number): string {
-  // 使用消息内容的哈希作为 key，避免使用索引
   const contentStr = msg.content.map((b) => {
     if (b.type === "text") return b.text;
     if (b.type === "tool_use") return `tool:${b.id}:${b.name}`;
@@ -170,22 +169,20 @@ function getMessageKey(msg: Message, idx: number): string {
     return "";
   }).join("|");
 
-  // 简单哈希函数
   let hash = 0;
   for (let i = 0; i < contentStr.length; i++) {
     hash = ((hash << 5) - hash) + contentStr.charCodeAt(i);
-    hash = hash & hash; // Convert to 32bit integer
+    hash = hash & hash;
   }
 
   return `${msg.role}-${idx}-${hash}`;
 }
 
-export function MessageList({ messages, streamingText }: MessageListProps) {
+export function MessageList({ messages, streamingText, height }: MessageListProps) {
   const log = getLogger();
   const renderCountRef = useRef(0);
   renderCountRef.current++;
 
-  // 每 20 次渲染记录一次，避免日志爆炸
   if (renderCountRef.current % 20 === 1) {
     log.debug("UI:MSGLIST", `渲染 #${renderCountRef.current}`, {
       messagesLen: messages.length,
@@ -193,34 +190,54 @@ export function MessageList({ messages, streamingText }: MessageListProps) {
     });
   }
 
-  // 如果有流式文本，历史消息 = 除了最后一条助手消息的所有消息
-  // 否则，历史消息 = 所有消息
-  let historyMessages = messages;
+  const isEmpty = messages.length === 0 && !streamingText;
+
+  // 如果有流式文本，排除最后一条助手消息（它的内容正在被流式文本区域显示）
+  let displayMessages = messages;
   if (streamingText && messages.length > 0) {
     const last = messages[messages.length - 1];
     if (last && last.role === "assistant") {
-      historyMessages = messages.slice(0, -1);
-      log.debug("UI:MSGLIST", `流式模式: 历史消息 ${historyMessages.length} 条，排除最后一条助手消息`);
-    } else {
-      log.debug("UI:MSGLIST", `流式模式: 最后一条消息不是助手消息 (role=${last?.role})，不排除`);
+      displayMessages = messages.slice(0, -1);
     }
   }
 
+  // 全屏模式：所有消息直接渲染，通过 Box overflow="hidden" + height 裁剪
+  // Ink 的 Box 会自动从顶部裁剪超出部分，实现"滚动到底部"效果
   return (
-    <Box flexDirection="column" flexGrow={1}>
-      {/* 使用 Static 渲染历史消息，永久写入终端历史 */}
-      <Static items={historyMessages}>
-        {(msg, idx) => (
-          <MessageItem key={getMessageKey(msg, idx)} message={msg} />
-        )}
-      </Static>
-
-      {/* 动态渲染流式文本 */}
-      {streamingText && (
-        <Box flexDirection="column" marginBottom={1}>
-          <Text bold color="green">助手</Text>
-          <Text>{renderMarkdown(streamingText)}</Text>
+    <Box
+      flexDirection="column"
+      flexGrow={1}
+      overflow="hidden"
+      {...(height ? { height } : {})}
+    >
+      {isEmpty ? (
+        <Box flexGrow={1} flexDirection="column" alignItems="center" justifyContent="center">
+          <Text color="blue" bold>
+            {`   _____ _     _    _____          _
+  / ____(_)   | |  / ____|        | |
+ | (___  _  __| || |     ___   __| | ___
+  \\___ \\| |/ _\` || |    / _ \\ / _\` |/ _ \\
+  ____) | | (_| || |___| (_) | (_| |  __/
+ |_____/|_|\\__,_| \\_____\\___/ \\__,_|\\___|`}
+          </Text>
+          <Box marginTop={1}>
+            <Text dimColor>输入消息开始对话，或输入 /help 查看可用命令</Text>
+          </Box>
         </Box>
+      ) : (
+        <>
+          {displayMessages.map((msg, idx) => (
+            <MessageItem key={getMessageKey(msg, idx)} message={msg} />
+          ))}
+
+          {/* 流式文本 */}
+          {streamingText && (
+            <Box flexDirection="column" marginBottom={1}>
+              <Text bold color="green">助手</Text>
+              <Text>{renderMarkdown(streamingText)}</Text>
+            </Box>
+          )}
+        </>
       )}
     </Box>
   );

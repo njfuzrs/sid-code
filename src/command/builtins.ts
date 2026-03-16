@@ -23,6 +23,7 @@ export class HelpCommand implements Command {
     console.log("  /config         - 显示当前配置");
     console.log("  /undo           - 撤销最近一次文件修改");
     console.log("  /memory         - 管理记忆 (set/get/delete/list/search)");
+    console.log("  /mcp            - 显示 MCP 服务器状态");
     console.log("  /exit           - 退出");
 
     // 显示自定义命令
@@ -364,6 +365,35 @@ export class MemoryCommand implements Command {
   }
 }
 
+/** /mcp 命令 */
+export class MCPCommand implements Command {
+  name() { return "mcp"; }
+  aliases() { return []; }
+  description() { return "显示 MCP 服务器连接状态"; }
+
+  async execute(_args: string, ctx: AppContext): Promise<void> {
+    if (!ctx.mcpManager) {
+      console.log("未配置 MCP 服务器");
+      console.log("在 ~/.sid-code/config.yaml 或 .mcp.json 中添加 mcp_servers 配置");
+      return;
+    }
+
+    const statuses = ctx.mcpManager.getStatus();
+    if (statuses.length === 0) {
+      console.log("没有已连接的 MCP 服务器");
+      return;
+    }
+
+    console.log("MCP 服务器状态:");
+    for (const s of statuses) {
+      const status = s.connected ? "已连接" : "连接失败";
+      const tools = s.connected ? `${s.toolCount} 个工具` : "";
+      const error = s.error ? ` (${s.error})` : "";
+      console.log(`  ${s.name} [${s.transport}] — ${status} ${tools}${error}`);
+    }
+  }
+}
+
 /** 注册所有内置命令 */
 export function registerBuiltins(registry: import("./registry.ts").Registry): void {
   registry.register(new HelpCommand());
@@ -374,5 +404,6 @@ export function registerBuiltins(registry: import("./registry.ts").Registry): vo
   registry.register(new ConfigCommand());
   registry.register(new UndoCommand());
   registry.register(new MemoryCommand());
+  registry.register(new MCPCommand());
   registry.register(new ExitCommand());
 }

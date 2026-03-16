@@ -266,6 +266,33 @@ async function main(): Promise<void> {
       toolRegistry.register(new CustomAgentTool(def, providerRegistry, toolRegistry));
     }
 
+    // 初始化 MCP 服务器（失败不阻止应用启动）
+    let mcpManager: import("./mcp/manager.ts").MCPManager | undefined;
+    if (config.mcpServers && Object.keys(config.mcpServers).length > 0) {
+      try {
+        const { MCPManager } = await import("./mcp/manager.ts");
+        mcpManager = new MCPManager();
+
+        // 工具变更回调：刷新工具注册表
+        mcpManager.onToolsRefresh = (serverName, tools) => {
+          // 移除该服务器的旧工具，注册新工具
+          const prefix = `mcp__${serverName}__`;
+          toolRegistry.removeByPrefix(prefix);
+          for (const tool of tools) toolRegistry.register(tool);
+        };
+
+        const mcpTools = await mcpManager.connectAll(config.mcpServers);
+        for (const tool of mcpTools) toolRegistry.register(tool);
+
+        if (mcpTools.length > 0) {
+          console.error(`[MCP] 已连接，注册 ${mcpTools.length} 个工具`);
+        }
+      } catch (err: any) {
+        console.error(`[MCP] 初始化失败: ${err.message}`);
+        mcpManager = undefined;
+      }
+    }
+
     // 记录注册的工具
     if (config.debug) {
       const { getLogger } = await import("./debug/logger.ts");
@@ -290,7 +317,7 @@ async function main(): Promise<void> {
 
     // 创建 App
     const { App } = await import("./app.ts");
-    const app = new App({ config, provider, providerRegistry, toolRegistry, commandRegistry, permissionChecker });
+    const app = new App({ config, provider, providerRegistry, toolRegistry, commandRegistry, permissionChecker, mcpManager });
 
     // 会话恢复：--continue 或 --resume <id>
     if (config.continue || config.resume) {

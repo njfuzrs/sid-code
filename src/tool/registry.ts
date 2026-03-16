@@ -50,6 +50,15 @@ export class Registry {
     return filtered;
   }
 
+  /** 移除名称以指定前缀开头的所有工具 */
+  removeByPrefix(prefix: string): void {
+    for (const name of this.tools.keys()) {
+      if (name.startsWith(prefix)) {
+        this.tools.delete(name);
+      }
+    }
+  }
+
   /** 已注册工具数量 */
   size(): number {
     return this.tools.size;

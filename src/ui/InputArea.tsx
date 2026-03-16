@@ -66,11 +66,13 @@ export function InputArea({ onSubmit, isLoading }: InputAreaProps) {
   return (
     <Box borderStyle="single" borderColor="cyan" paddingX={1}>
       <Text color="cyan" bold>{">"} </Text>
-      <TextInput
-        key={key}
-        onSubmit={handleSubmit}
-        placeholder="输入消息或 /help 查看命令..."
-      />
+      <Box flexGrow={1}>
+        <TextInput
+          key={key}
+          onSubmit={handleSubmit}
+          placeholder="输入消息或 /help 查看命令..."
+        />
+      </Box>
     </Box>
   );
 }

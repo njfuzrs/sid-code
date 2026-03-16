@@ -5,6 +5,7 @@
 
 import React, { useState, useCallback, useEffect, useRef } from "react";
 import { Box, Text, useApp, useInput } from "ink";
+import { useScreenSize } from "fullscreen-ink";
 import { MessageList } from "./MessageList.tsx";
 import { InputArea } from "./InputArea.tsx";
 import { ToolStatus } from "./ToolStatus.tsx";
@@ -94,6 +95,7 @@ function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
 
 export function TUIApp({ initialState, callbacks, stateRef }: AppProps) {
   const { exit } = useApp();
+  const { height: termHeight, width: termWidth } = useScreenSize();
   const [state, setState] = useState<TUIState>(initialState);
   const isSubmittingRef = useRef(false); // 防止重复提交
   const log = getLogger();
@@ -230,10 +232,19 @@ export function TUIApp({ initialState, callbacks, stateRef }: AppProps) {
     return undefined;
   })();
 
+  // 计算消息区可用高度
+  // 标题栏(border): 3行, 输入区(border): 3行, 状态栏: 1行, 工具状态: 1行(可能0)
+  // 权限对话框: 6行, 状态消息: 1行(可能0)
+  const fixedRows = 3 /* 标题栏 */ + 3 /* 输入区/权限框 */ + 1 /* 状态栏 */
+    + (state.isToolExecuting && state.toolName ? 1 : 0)
+    + (state.statusMessage ? 1 : 0)
+    + (state.permissionRequest ? 3 : 0); // 权限框比输入区多占几行
+  const messageHeight = Math.max(3, termHeight - fixedRows);
+
   const costText = state.costUSD > 0 ? `$${state.costUSD.toFixed(4)}` : "$0";
 
   return (
-    <Box flexDirection="column" height="100%">
+    <Box flexDirection="column" height={termHeight} width={termWidth}>
       {/* 标题栏 */}
       <Box borderStyle="single" borderColor="blue" paddingX={1} justifyContent="space-between">
         <Box>
@@ -252,8 +263,8 @@ export function TUIApp({ initialState, callbacks, stateRef }: AppProps) {
         </Box>
       ) : null}
 
-      {/* 消息区 */}
-      <MessageList messages={state.messages} streamingText={state.streamingText} />
+      {/* 消息区（固定高度，overflow hidden 自动裁剪顶部） */}
+      <MessageList messages={state.messages} streamingText={state.streamingText} height={messageHeight} />
 
       {/* 工具状态 */}
       <ToolStatus toolName={state.toolName} isExecuting={state.isToolExecuting} toolInput={state.toolInput} />

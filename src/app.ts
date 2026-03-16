@@ -13,6 +13,7 @@ import type {
 import type { Config } from "./config/config.ts";
 import type { Checker } from "./permission/types.ts";
 import type { ProviderRegistry } from "./llm/registry.ts";
+import type { MCPManager } from "./mcp/manager.ts";
 import { Manager as ContextManager } from "./context/manager.ts";
 import { Registry as ToolRegistry } from "./tool/registry.ts";
 import { Registry as CommandRegistry } from "./command/registry.ts";
@@ -38,12 +39,14 @@ export interface AppOptions {
   commandRegistry?: CommandRegistry;
   permissionChecker?: Checker;
   initialPrompt?: string;
+  mcpManager?: MCPManager;
 }
 
 export class App {
   private config: Config;
   private provider: Provider;
   private providerRegistry?: ProviderRegistry;
+  private mcpManager?: MCPManager;
   private ctxMgr: ContextManager;
   private toolRegistry: ToolRegistry;
   private commandRegistry: CommandRegistry;
@@ -64,6 +67,7 @@ export class App {
     this.config = opts.config;
     this.provider = opts.provider;
     this.providerRegistry = opts.providerRegistry;
+    this.mcpManager = opts.mcpManager;
     this.toolRegistry = opts.toolRegistry ?? new ToolRegistry();
     this.commandRegistry = opts.commandRegistry ?? new CommandRegistry();
     this.permissionChecker = opts.permissionChecker ?? null;
@@ -803,6 +807,7 @@ export class App {
           // 特殊处理 exit（需要关闭 readline）
           if (cmdName === "exit" || cmdName === "quit") {
             await this.hookRunner.run("session_end", { sessionId: this.sessionState.sessionId });
+            this.mcpManager?.closeAll();
             console.log("再见！");
             rl.close();
             return;
@@ -829,6 +834,7 @@ export class App {
                 },
                 exitRequested: false,
                 sessionState: this.sessionState,
+                mcpManager: this.mcpManager,
                 sendToLLM: async (text) => {
                   this.abortController = new AbortController();
                   try { await this.agentLoop(text); } finally { this.abortController = null; }
@@ -866,6 +872,7 @@ export class App {
       this.hookRunner.run("session_end", { sessionId: this.sessionState.sessionId })
         .catch(() => {})
         .finally(() => {
+          this.mcpManager?.closeAll();
           console.log("\n再见！");
           process.exit(0);
         });
@@ -910,6 +917,7 @@ export class App {
 
     // session_end hook（非阻塞）
     await this.hookRunner.run("session_end", { sessionId: this.sessionState.sessionId });
+    this.mcpManager?.closeAll();
 
     return "";
   }
@@ -925,7 +933,7 @@ export class App {
     await this.init();
 
     const React = await import("react");
-    const { render } = await import("ink");
+    const { withFullScreen } = await import("fullscreen-ink");
     const { TUIApp } = await import("./ui/App.tsx");
 
     // 共享状态引用（TUI 通过轮询读取）
@@ -1007,6 +1015,7 @@ export class App {
           const ctxUsed = this.ctxMgr.estimateTokens(this.toolRegistry.size());
           const ctxPct = Math.round((ctxUsed / 200000) * 100);
           updateState({
+            streamingText: "",
             messages: this.ctxMgr.getMessages(),
             usage: { ...this.sessionState.getTotalUsage() },
             costUSD: this.sessionState.totalCostUSD,
@@ -1026,6 +1035,7 @@ export class App {
 
       updateState({
         isLoading: false,
+        streamingText: "",
         messages: this.ctxMgr.getMessages(),
         usage: { ...this.sessionState.getTotalUsage() },
         costUSD: this.sessionState.totalCostUSD,
@@ -1070,6 +1080,7 @@ export class App {
           },
           exitRequested: false,
           sessionState: this.sessionState,
+          mcpManager: this.mcpManager,
           sendToLLM: async (text) => {
             // TUI 模式下通过 onUserInput 触发 agentLoop
             await callbacks.onUserInput(text);
@@ -1123,15 +1134,16 @@ export class App {
       },
     };
 
-    // 渲染 TUI
-    log.info("TUI", "开始渲染 TUI 组件");
-    const app = render(
+    // 渲染 TUI（全屏模式，使用 alternate screen buffer）
+    log.info("TUI", "开始渲染 TUI 组件（全屏模式）");
+    const app = withFullScreen(
       React.createElement(TUIApp, {
         initialState: stateRef.current,
         callbacks,
         stateRef,
       }),
     );
+    await app.start();
 
     // 处理初始提示词
     if (initialPrompt) {
@@ -1141,6 +1153,7 @@ export class App {
 
     await app.waitUntilExit();
     await this.hookRunner.run("session_end", { sessionId: this.sessionState.sessionId });
+    this.mcpManager?.closeAll();
     log.info("TUI", "TUI 退出");
   }
 }

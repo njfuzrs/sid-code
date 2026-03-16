@@ -12,12 +12,15 @@ import { getLogger } from "../debug/logger.ts";
 
 /** MCP 服务器配置 */
 export interface MCPServerConfig {
-  transport: "stdio" | "http";
+  transport: "stdio" | "http" | "sse";
   command?: string;
   args?: string[];
   env?: Record<string, string>;
   url?: string;
   headers?: Record<string, string>;
+  enabled?: boolean;    // 默认 true，可临时禁用服务器
+  timeout?: number;     // 请求超时毫秒，默认 30000
+  retries?: number;     // 重试次数，默认 2
 }
 
 /** Hook 配置（支持 command 和 url 两种类型） */
@@ -261,6 +264,32 @@ function mergeConfig(base: Partial<Config>, override: Partial<Config>): Partial<
   return result;
 }
 
+/** 加载项目级 .mcp.json 配置 */
+async function loadMCPJson(): Promise<Record<string, MCPServerConfig>> {
+  const log = getLogger();
+  const mcpJsonPath = join(process.cwd(), ".mcp.json");
+
+  if (!existsSync(mcpJsonPath)) {
+    return {};
+  }
+
+  try {
+    const content = await Bun.file(mcpJsonPath).text();
+    const parsed = JSON.parse(content);
+    // 支持 { "mcpServers": { ... } } 或直接 { "serverName": { ... } }
+    const servers = parsed.mcpServers || parsed.mcp_servers || parsed;
+    if (typeof servers !== "object" || Array.isArray(servers)) {
+      log.warn("CONFIG", `.mcp.json 格式不正确，期望对象`);
+      return {};
+    }
+    log.info("CONFIG", `.mcp.json 加载 ${Object.keys(servers).length} 个 MCP 服务器`);
+    return servers;
+  } catch (err) {
+    log.warn("CONFIG", `读取 .mcp.json 失败: ${err}`);
+    return {};
+  }
+}
+
 /** 加载完整配置 */
 export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config> {
   const defaults = defaultConfig();
@@ -271,6 +300,13 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
   let merged = mergeConfig(defaults, fileConfig);
   merged = mergeConfig(merged, envConfig);
   merged = mergeConfig(merged, cliArgs);
+
+  // 合并项目级 .mcp.json（项目级覆盖全局）
+  const mcpJsonServers = await loadMCPJson();
+  if (Object.keys(mcpJsonServers).length > 0) {
+    const existing = (merged as Config).mcpServers || {};
+    (merged as any).mcpServers = { ...existing, ...mcpJsonServers };
+  }
 
   return merged as Config;
 }

@@ -9,6 +9,7 @@ import type { Provider } from "../llm/provider.ts";
 import type { ProviderRegistry } from "../llm/registry.ts";
 import type { Registry as ToolRegistry } from "../tool/registry.ts";
 import type { SessionState } from "../session/state.ts";
+import type { MCPManager } from "../mcp/manager.ts";
 
 /** 应用上下文 - 将应用内部状态暴露给命令 */
 export interface AppContext {
@@ -18,6 +19,7 @@ export interface AppContext {
   sessionId: string;
   provider: Provider;
   providerRegistry?: ProviderRegistry;
+  mcpManager?: MCPManager;
   setModel: (model: string) => void;
   exitRequested: boolean;
   sessionState: SessionState;
