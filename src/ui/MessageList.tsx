@@ -213,12 +213,12 @@ export function MessageList({ messages, streamingText, height }: MessageListProp
       {isEmpty ? (
         <Box flexGrow={1} flexDirection="column" alignItems="center" justifyContent="center">
           <Text color="blue" bold>
-            {`   _____ _     _    _____          _
-  / ____(_)   | |  / ____|        | |
- | (___  _  __| || |     ___   __| | ___
-  \\___ \\| |/ _\` || |    / _ \\ / _\` |/ _ \\
-  ____) | | (_| || |___| (_) | (_| |  __/
- |_____/|_|\\__,_| \\_____\\___/ \\__,_|\\___|`}
+            {`   _____ _     _     _____          _
+  / ____(_)   | |   / ____|        | |
+ | (___  _  __| |  | |     ___   __| | ___
+  \\___ \\| |/ _\` |  | |    / _ \\ / _\` |/ _ \\
+  ____) | | (_| |  | |___| (_) | (_| |  __/
+ |_____/|_|\\__,_|   \\_____\\___/ \\__,_|\\___|`}
           </Text>
           <Box marginTop={1}>
             <Text dimColor>输入消息开始对话，或输入 /help 查看可用命令</Text>
