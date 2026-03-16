@@ -18,6 +18,7 @@ export function InputArea({ onSubmit, isLoading }: InputAreaProps) {
   const [key, setKey] = useState(0); // 用于强制重新挂载 TextInput
   const log = getLogger();
   const prevLoadingRef = useRef(isLoading);
+  const inputRenderRef = useRef(0);
 
   // 记录 isLoading 状态变化
   useEffect(() => {

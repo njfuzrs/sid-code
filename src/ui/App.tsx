@@ -11,6 +11,18 @@ import { ToolStatus } from "./ToolStatus.tsx";
 import type { Message, Usage } from "../llm/types.ts";
 import { getLogger } from "../debug/logger.ts";
 
+/** 终端尺寸 hook（替代 fullscreen-ink 的 useScreenSize，避免双重状态） */
+function useTerminalSize() {
+  const { stdout } = useStdout();
+  const [size, setSize] = useState({ height: stdout.rows, width: stdout.columns });
+  useEffect(() => {
+    const onResize = () => setSize({ height: stdout.rows, width: stdout.columns });
+    stdout.on("resize", onResize);
+    return () => { stdout.off("resize", onResize); };
+  }, [stdout]);
+  return size;
+}
+
 /** TUI 回调接口 */
 export interface TUICallbacks {
   onUserInput: (text: string) => Promise<void>;
@@ -96,10 +108,8 @@ function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
 
 export function TUIApp({ initialState, callbacks, stateRef }: AppProps) {
   const { exit } = useApp();
-  const { stdout } = useStdout();
-  // 直接从 stdout 同步读取终端尺寸，避免与外层 FullScreenBox 的 useScreenSize 产生双重状态更新
-  const termHeight = stdout.rows;
-  const termWidth = stdout.columns;
+  // 使用自管理的终端尺寸（不再依赖 FullScreenBox）
+  const { height: termHeight, width: termWidth } = useTerminalSize();
   const [state, setState] = useState<TUIState>(initialState);
   const isSubmittingRef = useRef(false); // 防止重复提交
   const log = getLogger();
@@ -205,15 +215,11 @@ export function TUIApp({ initialState, callbacks, stateRef }: AppProps) {
     }
   }, [callbacks, exit]);
 
-  // 渲染计数日志
+  // 渲染计数日志——每次都记录尺寸，用于调试布局偏移
   renderCountRef.current++;
-  if (renderCountRef.current % 20 === 1) {
-    log.debug("UI:RENDER", `TUIApp 渲染 #${renderCountRef.current}`, {
-      messagesLen: state.messages.length,
-      streamingTextLen: state.streamingText.length,
-      isLoading: state.isLoading,
-      toolName: state.toolName,
-    });
+  const rc = renderCountRef.current;
+  if (rc <= 10 || rc % 20 === 0) {
+    log.info("UI:RENDER", `#${rc} termH=${termHeight} termW=${termWidth} msgH=${Math.max(3, termHeight - (3 + 3 + 1 + (state.isToolExecuting && state.toolName ? 1 : 0) + (state.statusMessage ? 1 : 0) + (state.permissionRequest ? 3 : 0)))} isLoading=${state.isLoading} msgs=${state.messages.length} streaming=${state.streamingText.length}`);
   }
 
   /** 权限模式 badge 颜色 */

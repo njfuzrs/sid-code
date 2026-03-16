@@ -984,7 +984,7 @@ export class App {
     await this.init();
 
     const React = await import("react");
-    const { withFullScreen } = await import("fullscreen-ink");
+    const { createFullScreen } = await import("./ui/fullscreen.ts");
     const { TUIApp } = await import("./ui/App.tsx");
 
     // 共享状态引用（TUI 通过轮询读取）
@@ -1188,7 +1188,8 @@ export class App {
 
     // 渲染 TUI（全屏模式，使用 alternate screen buffer）
     log.info("TUI", "开始渲染 TUI 组件（全屏模式）");
-    const app = withFullScreen(
+
+    const app = createFullScreen(
       React.createElement(TUIApp, {
         initialState: stateRef.current,
         callbacks,
