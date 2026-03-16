@@ -57,8 +57,8 @@ export class App {
   private loopRunner: AgentLoopRunner;
   private hookRunner!: HookRunner;
   private renderer: REPLRenderer;
-  /** TUI 模式下的权限确认回调（由 TUI 注入） */
-  private tuiConfirmCallback: ((desc: string) => Promise<boolean>) | null = null;
+  /** TUI 模式下的权限确认回调（由 TUI 注入），返回 "yes" | "no" | "always" */
+  private tuiConfirmCallback: ((toolName: string, toolInput: unknown, desc: string) => Promise<"yes" | "no" | "always">) | null = null;
 
   constructor(opts: AppOptions) {
     this.config = opts.config;
@@ -493,7 +493,7 @@ export class App {
   }
 
   /** 设置 TUI 模式下的权限确认回调 */
-  setTUIConfirmCallback(cb: (desc: string) => Promise<boolean>): void {
+  setTUIConfirmCallback(cb: (toolName: string, toolInput: unknown, desc: string) => Promise<"yes" | "no" | "always">): void {
     this.tuiConfirmCallback = cb;
   }
 
@@ -504,10 +504,16 @@ export class App {
     toolName?: string,
     toolInput?: unknown,
   ): Promise<boolean> {
-    // TUI 模式：使用注入的回调（TUI 暂不支持 always allow）
+    // TUI 模式：使用注入的回调
     if (this.isTUIMode && this.tuiConfirmCallback) {
-      const confirmed = await this.tuiConfirmCallback(description);
-      return confirmed;
+      const answer = await this.tuiConfirmCallback(toolName || "", toolInput, description);
+      if (answer === "always") {
+        if (req && this.permissionChecker?.rememberDecision) {
+          this.permissionChecker.rememberDecision(req, true);
+        }
+        return true;
+      }
+      return answer === "yes";
     }
 
     // REPL 模式：使用结构化权限确认界面
@@ -940,6 +946,7 @@ export class App {
         permissionMode: this.config.permissionMode || "default",
         gitBranch: (() => { try { return execSync("git rev-parse --abbrev-ref HEAD 2>/dev/null", { encoding: "utf-8" }).trim(); } catch { return ""; } })(),
         statusMessage: "",
+        permissionRequest: null,
       },
     };
 
@@ -954,6 +961,21 @@ export class App {
       });
       stateRef.current = { ...stateRef.current, ...patch };
     };
+
+    // 设置 TUI 权限确认回调
+    this.setTUIConfirmCallback(async (toolName, toolInput, desc) => {
+      return new Promise<"yes" | "no" | "always">((resolve) => {
+        log.info("TUI:PERM", `显示权限对话框: ${toolName} - ${desc}`);
+        const wrappedResolve = (answer: "yes" | "no" | "always") => {
+          log.info("TUI:PERM", `权限对话框响应: ${answer}`);
+          updateState({ permissionRequest: null });
+          resolve(answer);
+        };
+        updateState({
+          permissionRequest: { toolName, toolInput, description: desc, resolve: wrappedResolve },
+        });
+      });
+    });
 
     // TUI 版本的 agentLoop（使用统一 Runner）
     const tuiAgentLoop = async (userInput: string) => {

@@ -17,6 +17,14 @@ export interface TUICallbacks {
   onSlashCommand: (cmd: string, args: string) => Promise<void>;
 }
 
+/** 权限请求信息 */
+export interface PermissionRequestInfo {
+  toolName: string;
+  toolInput: unknown;
+  description: string;
+  resolve: (answer: "yes" | "no" | "always") => void;
+}
+
 /** TUI 状态（由外部 App 驱动） */
 export interface TUIState {
   messages: Message[];
@@ -35,12 +43,53 @@ export interface TUIState {
   gitBranch: string;
   /** 临时状态消息（上下文警告、hook 阻塞等），几秒后自动清除 */
   statusMessage: string;
+  /** 当前待确认的权限请求 */
+  permissionRequest: PermissionRequestInfo | null;
 }
 
 interface AppProps {
   initialState: TUIState;
   callbacks: TUICallbacks;
   stateRef: { current: TUIState };
+}
+
+/** 格式化工具输入的关键信息 */
+function formatToolDetail(toolName: string, input: unknown): string {
+  const lower = toolName.toLowerCase();
+  if (lower === "bash") {
+    return (input as any)?.command || JSON.stringify(input).slice(0, 80);
+  } else if (lower === "write" || lower === "edit" || lower === "read") {
+    const fp = (input as any)?.file_path || (input as any)?.filePath || (input as any)?.path || "";
+    return fp;
+  } else if (lower === "grep") {
+    return `pattern: ${(input as any)?.pattern || ""}`;
+  } else if (lower === "glob") {
+    return `pattern: ${(input as any)?.pattern || ""}`;
+  }
+  return JSON.stringify(input).slice(0, 80);
+}
+
+/** 权限确认对话框组件 */
+function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
+  const detail = formatToolDetail(request.toolName, request.toolInput);
+  return (
+    <Box flexDirection="column" borderStyle="single" borderColor="yellow" paddingX={1}>
+      <Text color="yellow" bold>权限请求</Text>
+      <Box marginTop={0}>
+        <Text>  工具: </Text>
+        <Text bold>{request.toolName}</Text>
+      </Box>
+      <Box>
+        <Text>  详情: </Text>
+        <Text color="cyan">{detail.length > 60 ? detail.slice(0, 57) + "..." : detail}</Text>
+      </Box>
+      <Box marginTop={0}>
+        <Text color="green" bold> (y)</Text><Text>允许 </Text>
+        <Text color="red" bold> (n)</Text><Text>拒绝 </Text>
+        <Text color="yellow" bold> (a)</Text><Text>始终允许</Text>
+      </Box>
+    </Box>
+  );
 }
 
 export function TUIApp({ initialState, callbacks, stateRef }: AppProps) {
@@ -73,9 +122,10 @@ export function TUIApp({ initialState, callbacks, stateRef }: AppProps) {
         const modelChanged = prev.model !== s.model || prev.provider !== s.provider;
         const usageChanged = prev.usage.inputTokens !== s.usage.inputTokens ||
           prev.usage.outputTokens !== s.usage.outputTokens;
+        const permChanged = prev.permissionRequest !== s.permissionRequest;
 
         if (messagesChanged || streamingChanged || loadingChanged ||
-            toolChanged || modelChanged || usageChanged) {
+            toolChanged || modelChanged || usageChanged || permChanged) {
           const changes: string[] = [];
           if (messagesChanged) changes.push(`messages(${prev.messages.length}→${s.messages.length})`);
           if (streamingChanged) changes.push(`streaming(${prev.streamingText.length}→${s.streamingText.length})`);
@@ -83,6 +133,7 @@ export function TUIApp({ initialState, callbacks, stateRef }: AppProps) {
           if (toolChanged) changes.push(`tool(${prev.toolName}→${s.toolName})`);
           if (modelChanged) changes.push(`model(${prev.model}→${s.model})`);
           if (usageChanged) changes.push(`usage`);
+          if (permChanged) changes.push(`permission(${prev.permissionRequest ? 'active' : 'none'}→${s.permissionRequest ? 'active' : 'none'})`);
           log.debug("UI:SYNC", `状态同步触发重渲染: ${changes.join(", ")}`);
           return { ...s };
         }
@@ -92,11 +143,27 @@ export function TUIApp({ initialState, callbacks, stateRef }: AppProps) {
     return () => clearInterval(interval);
   }, [stateRef]);
 
-  // Ctrl+C 退出
+  // Ctrl+C 退出 + 权限对话框快捷键
   useInput((input, key) => {
     if (key.ctrl && input === "c") {
       log.info("UI:APP", "用户按下 Ctrl+C，退出");
       exit();
+      return;
+    }
+    // 权限对话框快捷键
+    const perm = state.permissionRequest;
+    if (perm) {
+      const lower = input.toLowerCase();
+      if (lower === "y") {
+        log.info("UI:PERM", "用户批准权限请求 (y)");
+        perm.resolve("yes");
+      } else if (lower === "n") {
+        log.info("UI:PERM", "用户拒绝权限请求 (n)");
+        perm.resolve("no");
+      } else if (lower === "a") {
+        log.info("UI:PERM", "用户始终允许权限请求 (a)");
+        perm.resolve("always");
+      }
     }
   });
 
@@ -191,8 +258,12 @@ export function TUIApp({ initialState, callbacks, stateRef }: AppProps) {
       {/* 工具状态 */}
       <ToolStatus toolName={state.toolName} isExecuting={state.isToolExecuting} toolInput={state.toolInput} />
 
-      {/* 输入区 */}
-      <InputArea onSubmit={handleSubmit} isLoading={state.isLoading} />
+      {/* 权限确认对话框 或 输入区 */}
+      {state.permissionRequest ? (
+        <PermissionDialog request={state.permissionRequest} />
+      ) : (
+        <InputArea onSubmit={handleSubmit} isLoading={state.isLoading} />
+      )}
 
       {/* 状态栏 */}
       <Box paddingX={1} justifyContent="space-between">
