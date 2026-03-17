@@ -18,6 +18,8 @@ import chalk from "chalk";
 import { marked } from "marked";
 import { markedTerminal } from "marked-terminal";
 import { highlight as cliHighlight, supportsLanguage } from "cli-highlight";
+import Table from "cli-table3";
+import stripAnsi from "strip-ansi";
 import { getLogger } from "../debug/logger.ts";
 
 // ── 常量 ────────────────────────────────────────────────────────
@@ -103,6 +105,122 @@ function highlightCode(code: string, lang?: string): string {
   }
 }
 
+// ── 自定义表格渲染 ──────────────────────────────────────────────
+// 覆盖 marked-terminal 默认表格渲染，限制总宽度，宽表格降级为 key-value 格式。
+
+const MIN_COL_WIDTH = 8;
+const MAX_TABLE_COLS = 6;
+// cli-table3 每列开销：左边框 │ + 左 padding + 右 padding = 3 字符，最右还有 │ 收尾 = +1
+const BORDER_OVERHEAD_PER_COL = 3;
+const BORDER_OVERHEAD_EXTRA = 1;
+
+/** 计算字符串的可见宽度（去除 ANSI 转义码） */
+function visibleWidth(s: string): number {
+  return stripAnsi(s).length;
+}
+
+/** 将 marked table token 渲染为终端友好的表格或 key-value 降级格式 */
+function renderTable(token: any): string {
+  const headers: string[] = token.header.map((cell: any) => cell.text || "");
+  const rows: string[][] = token.rows.map((row: any[]) =>
+    row.map((cell: any) => cell.text || ""),
+  );
+  const colCount = headers.length;
+  const termWidth = Math.min(getTermWidth(), MAX_RENDER_WIDTH);
+
+  // 计算每列内容的最大可见宽度
+  const maxContentWidths = headers.map((h: string, i: number) => {
+    let max = visibleWidth(h);
+    for (const row of rows) {
+      if (row[i] !== undefined) {
+        max = Math.max(max, visibleWidth(row[i]));
+      }
+    }
+    return max;
+  });
+
+  // 可用于内容的总宽度（扣除边框开销）
+  const borderTotal = colCount * BORDER_OVERHEAD_PER_COL + BORDER_OVERHEAD_EXTRA;
+  const availableWidth = termWidth - borderTotal;
+
+  // 降级条件：列太多 或 平均每列宽度不足 MIN_COL_WIDTH
+  if (colCount > MAX_TABLE_COLS || availableWidth / colCount < MIN_COL_WIDTH) {
+    return renderKeyValue(headers, rows, termWidth);
+  }
+
+  // 按内容最大宽度比例分配列宽
+  const totalContent = maxContentWidths.reduce((a: number, b: number) => a + b, 0);
+  let colWidths: number[];
+
+  if (totalContent <= availableWidth) {
+    // 内容总宽度未超限，直接用内容宽度（加上 padding 后的 cli-table3 colWidths）
+    colWidths = maxContentWidths.map((w: number) => w + 2); // cli-table3 colWidths 包含左右 padding
+  } else {
+    // 按比例分配
+    colWidths = maxContentWidths.map((w: number) => {
+      const ratio = w / totalContent;
+      return Math.max(MIN_COL_WIDTH, Math.floor(availableWidth * ratio));
+    });
+
+    // 修正舍入误差：把剩余宽度分给最宽的列
+    const allocated = colWidths.reduce((a: number, b: number) => a + b, 0);
+    let remaining = availableWidth - allocated;
+    while (remaining > 0) {
+      let maxIdx = 0;
+      for (let i = 1; i < colWidths.length; i++) {
+        if (colWidths[i] > colWidths[maxIdx]) maxIdx = i;
+      }
+      colWidths[maxIdx]++;
+      remaining--;
+    }
+
+    // colWidths 需要加上 padding（cli-table3 的 colWidths 包含 padding）
+    colWidths = colWidths.map((w: number) => w + 2);
+  }
+
+  // 最终检查：如果总宽度仍超限，降级
+  const totalTableWidth = colWidths.reduce((a: number, b: number) => a + b, 0) + colCount + 1;
+  if (totalTableWidth > termWidth) {
+    return renderKeyValue(headers, rows, termWidth);
+  }
+
+  try {
+    const table = new Table({
+      head: headers.map((h: string) => chalk.bold(h)),
+      colWidths,
+      wordWrap: true,
+      style: { head: [], border: [], compact: false },
+    });
+    for (const row of rows) {
+      table.push(row);
+    }
+    return "\n" + table.toString() + "\n";
+  } catch {
+    // cli-table3 渲染失败时降级
+    return renderKeyValue(headers, rows, termWidth);
+  }
+}
+
+/** key-value 竖排降级格式 */
+function renderKeyValue(headers: string[], rows: string[][], termWidth: number): string {
+  const separator = chalk.gray("─".repeat(Math.min(termWidth - 2, 40)));
+  const lines: string[] = [""];
+
+  for (let r = 0; r < rows.length; r++) {
+    for (let c = 0; c < headers.length; c++) {
+      const key = chalk.bold(headers[c]);
+      const value = rows[r][c] || "";
+      lines.push(`${key}: ${value}`);
+    }
+    if (r < rows.length - 1) {
+      lines.push("", separator, "");
+    }
+  }
+
+  lines.push("");
+  return lines.join("\n");
+}
+
 // ── marked-terminal 配置 ────────────────────────────────────────
 // 封装为函数，终端宽度变化时重新配置，确保 reflowText 跟随实际宽度。
 function configureMarked(): void {
@@ -171,6 +289,9 @@ function configureMarked(): void {
           .map((line: string) => TAB_INDENT + line)
           .join("\n");
         return "\n" + indented + "\n";
+      },
+      table(token: any): string {
+        return renderTable(token);
       },
     },
   } as any);
