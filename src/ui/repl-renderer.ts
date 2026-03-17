@@ -20,6 +20,7 @@ const C = {
   red: "\x1b[31m",
   gray: "\x1b[90m",
   white: "\x1b[37m",
+  blue: "\x1b[34m",
 } as const;
 
 /** 格式化耗时：<1s 显示 XXms，>=1s 显示 X.Xs */
@@ -178,36 +179,60 @@ export class REPLRenderer {
   private fullStreamText = "";
 
   /** 渲染欢迎信息 */
-  renderWelcome(config: Config, toolCount: number, cwd: string, gitBranch?: string): void {
-    const model = config.model;
-    const provider = config.provider;
-    const permMode = config.permissionMode || "default";
-    const maxTokens = `${Math.round(200000 / 1000)}K`;
+  renderWelcome(_config: Config, _toolCount: number, _cwd: string, _gitBranch?: string): void {
+    const w = process.stdout.columns || 80;
 
-    // 构建内容行
-    const line1 = `  模型: ${model} | 提供商: ${provider}`;
-    const dirDisplay = shortenPath(cwd) + (gitBranch ? ` (${gitBranch})` : "");
-    const line2 = `  目录: ${dirDisplay}`;
-    const line3 = `  权限: ${permMode} | 工具: ${toolCount} | 上下文: ${maxTokens} tokens`;
+    const logoLines = [
+      "   _____ _     _     _____          _      ",
+      "  / ____(_)   | |   / ____|        | |     ",
+      " | (___  _  __| |  | |     ___   __| | ___ ",
+      "  \\___ \\| |/ _` |  | |    / _ \\ / _` |/ _ \\",
+      "  ____) | | (_| |  | |___| (_) | (_| |  __/",
+      " |_____/|_|\\__,_|   \\_____\\___/ \\__,_|\\___|",
+    ];
 
-    // 计算最大宽度
-    const contentLines = [line1, line2, line3];
-    // 去掉 ANSI 码后计算实际宽度
-    const maxLen = Math.max(...contentLines.map(l => l.length));
-    const boxWidth = Math.max(maxLen + 4, 50);
+    // 边框撑满窗口，左右各留 2 列 margin
+    const margin = 2;
+    const boxInner = w - margin * 2 - 2;
+    const indent = " ".repeat(margin);
 
-    const title = ` sid-code v0.1.0 `;
-    const topPad = boxWidth - 2 - title.length;
-    const topLine = `╭─${title}${"─".repeat(Math.max(0, topPad))}╮`;
-    const bottomLine = `╰${"─".repeat(boxWidth - 2)}╯`;
+    const topLine = `${indent}${C.cyan}╭${"─".repeat(boxInner)}╮${C.reset}`;
+    const botLine = `${indent}${C.cyan}╰${"─".repeat(boxInner)}╯${C.reset}`;
+    const emptyLine = `${indent}${C.cyan}│${C.reset}${" ".repeat(boxInner)}${C.cyan}│${C.reset}`;
 
-    process.stdout.write(`${C.cyan}${topLine}${C.reset}\n`);
-    for (const line of contentLines) {
-      const pad = boxWidth - 2 - line.length;
-      process.stdout.write(`${C.cyan}│${C.reset}${line}${" ".repeat(Math.max(0, pad))}${C.cyan}│${C.reset}\n`);
+    const centerLine = (colored: string, visLen: number): string => {
+      const pad = boxInner - visLen;
+      const left = Math.floor(Math.max(0, pad) / 2);
+      const right = Math.max(0, pad - left);
+      return `${indent}${C.cyan}│${C.reset}${" ".repeat(left)}${colored}${" ".repeat(right)}${C.cyan}│${C.reset}`;
+    };
+
+    process.stdout.write("\n");
+    process.stdout.write(`${topLine}\n`);
+    process.stdout.write(`${emptyLine}\n`);
+
+    for (const line of logoLines) {
+      const colored = `${C.cyan}${C.bold}${line}${C.reset}`;
+      process.stdout.write(`${centerLine(colored, line.length)}\n`);
     }
-    process.stdout.write(`${C.cyan}${bottomLine}${C.reset}\n`);
-    process.stdout.write(`${C.dim}  输入 /help 查看命令，Ctrl+C 退出${C.reset}\n\n`);
+
+    process.stdout.write(`${emptyLine}\n`);
+
+    const version = "v0.1.0  ·  AI-Powered Coding Assistant";
+    process.stdout.write(`${centerLine(`${C.dim}${version}${C.reset}`, version.length)}\n`);
+
+    process.stdout.write(`${emptyLine}\n`);
+
+    const hint = "输入消息开始对话，或 /help 查看命令";
+    // 中文占 2 列宽
+    const hintVisLen = [...hint].reduce((w, ch) => {
+      const c = ch.codePointAt(0)!;
+      return w + ((c >= 0x4E00 && c <= 0x9FFF) || (c >= 0x3000 && c <= 0x303F) || (c >= 0xFF00 && c <= 0xFFEF) ? 2 : 1);
+    }, 0);
+    process.stdout.write(`${centerLine(`${C.dim}${hint}${C.reset}`, hintVisLen)}\n`);
+
+    process.stdout.write(`${emptyLine}\n`);
+    process.stdout.write(`${botLine}\n\n`);
   }
 
   /** 渲染工具开始执行 */

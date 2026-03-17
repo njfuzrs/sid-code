@@ -216,21 +216,54 @@ export function TUIApp({ initialState, callbacks, bridge }: AppProps) {
       {/* ── Live 区域：始终在底部，动态更新 ── */}
 
       {/* 空状态 logo */}
-      {isEmpty && (
-        <Box flexDirection="column" alignItems="center" paddingY={2}>
-          <Text color="blue" bold>
-            {`   _____ _     _     _____          _
-  / ____(_)   | |   / ____|        | |
- | (___  _  __| |  | |     ___   __| | ___
-  \\___ \\| |/ _\` |  | |    / _ \\ / _\` |/ _ \\
-  ____) | | (_| |  | |___| (_) | (_| |  __/
- |_____/|_|\\__,_|   \\_____\\___/ \\__,_|\\___|`}
-          </Text>
-          <Box marginTop={1}>
-            <Text dimColor>输入消息开始对话，或输入 /help 查看可用命令</Text>
+      {isEmpty && (() => {
+        const logoLines = [
+          "   _____ _     _     _____          _      ",
+          "  / ____(_)   | |   / ____|        | |     ",
+          " | (___  _  __| |  | |     ___   __| | ___ ",
+          "  \\___ \\| |/ _` |  | |    / _ \\ / _` |/ _ \\",
+          "  ____) | | (_| |  | |___| (_) | (_| |  __/",
+          " |_____/|_|\\__,_|   \\_____\\___/ \\__,_|\\___|",
+        ];
+        const margin = 2;
+        const boxInner = Math.max(47, termWidth - margin * 2 - 2);
+        const topLine = "╭" + "─".repeat(boxInner) + "╮";
+        const botLine = "╰" + "─".repeat(boxInner) + "╯";
+        const emptyLine = "│" + " ".repeat(boxInner) + "│";
+        const version = "v0.1.0  ·  AI-Powered Coding Assistant";
+        const vLeft = Math.floor(Math.max(0, boxInner - version.length) / 2);
+        const vRight = Math.max(0, boxInner - version.length - vLeft);
+
+        return (
+          <Box flexDirection="column" paddingX={margin} paddingY={1}>
+            <Text color="cyan">{topLine}</Text>
+            <Text color="cyan">{emptyLine}</Text>
+            {logoLines.map((line, i) => {
+              const left = Math.floor(Math.max(0, boxInner - line.length) / 2);
+              const right = Math.max(0, boxInner - line.length - left);
+              return (
+                <Box key={`logo-${i}`}>
+                  <Text color="cyan">{"│"}</Text>
+                  <Text>{" ".repeat(left)}</Text>
+                  <Text color="cyan" bold>{line}</Text>
+                  <Text>{" ".repeat(right)}</Text>
+                  <Text color="cyan">{"│"}</Text>
+                </Box>
+              );
+            })}
+            <Text color="cyan">{emptyLine}</Text>
+            <Box>
+              <Text color="cyan">{"│"}</Text>
+              <Text>{" ".repeat(vLeft)}</Text>
+              <Text dimColor>{version}</Text>
+              <Text>{" ".repeat(vRight)}</Text>
+              <Text color="cyan">{"│"}</Text>
+            </Box>
+            <Text color="cyan">{emptyLine}</Text>
+            <Text color="cyan">{botLine}</Text>
           </Box>
-        </Box>
-      )}
+        );
+      })()}
 
       {/* 状态消息（上下文警告等） */}
       {state.statusMessage ? (
