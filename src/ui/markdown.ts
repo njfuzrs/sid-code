@@ -150,6 +150,7 @@ function wrapText(text: string, maxWidth: number): string[] {
       if (line) result.push(line);
     } else {
       // 慢速路径：需要跳过 ANSI 转义码
+      // TODO: 断行时未继承 ANSI 样式状态，跨行样式会丢失（当前场景影响极小，cell 内容通常不跨行）
       let line = "";
       let lineWidth = 0;
       let i = 0;

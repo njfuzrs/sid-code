@@ -2,8 +2,9 @@
  * Markdown 终端渲染器测试
  */
 
-import { describe, test, expect, beforeEach } from "bun:test";
+import { describe, test, expect } from "bun:test";
 import stripAnsi from "strip-ansi";
+import stringWidth from "string-width";
 import { renderMarkdown } from "../../src/ui/markdown.ts";
 
 // 每个测试前清空渲染缓存（通过渲染一个不同宽度触发清空，再恢复）
@@ -190,14 +191,7 @@ describe("renderMarkdown", () => {
       const lines = stripAnsi(result).split("\n").filter(l => l.trim());
       // 验证每行宽度不超过 80
       for (const line of lines) {
-        const w = [...line].reduce((sum, ch) => {
-          const cp = ch.codePointAt(0)!;
-          // 简化宽度计算：CJK 范围占 2，其他占 1
-          const isCJK = (cp >= 0x4E00 && cp <= 0x9FFF) || (cp >= 0x3000 && cp <= 0x30FF) ||
-                        cp === 0x2014 || cp === 0x2026 || cp === 0x201C || cp === 0x201D;
-          return sum + (isCJK ? 2 : 1);
-        }, 0);
-        expect(w).toBeLessThanOrEqual(80);
+        expect(stringWidth(line)).toBeLessThanOrEqual(80);
       }
     });
 
@@ -217,15 +211,7 @@ describe("renderMarkdown", () => {
       const result = renderMarkdown(md, 60);
       const lines = stripAnsi(result).split("\n").filter(l => l.startsWith("│"));
       // 所有内容行宽度应一致（使用 string-width 验证）
-      const widths = lines.map(l => {
-        let w = 0;
-        for (const ch of l) {
-          const cp = ch.codePointAt(0)!;
-          const isCJK = (cp >= 0x4E00 && cp <= 0x9FFF) || (cp >= 0x3000 && cp <= 0x30FF);
-          w += isCJK ? 2 : 1;
-        }
-        return w;
-      });
+      const widths = lines.map(l => stringWidth(l));
       const firstWidth = widths[0];
       for (const w of widths) {
         expect(w).toBe(firstWidth);
@@ -256,15 +242,7 @@ describe("renderMarkdown", () => {
       const result = renderMarkdown(md, 80);
       const lines = stripAnsi(result).split("\n").filter(l => l.startsWith("│"));
       // 所有行宽度应一致（即使 header 有 ANSI 码）
-      const widths = lines.map(l => {
-        let w = 0;
-        for (const ch of l) {
-          const cp = ch.codePointAt(0)!;
-          const isCJK = (cp >= 0x4E00 && cp <= 0x9FFF) || (cp >= 0x3000 && cp <= 0x30FF);
-          w += isCJK ? 2 : 1;
-        }
-        return w;
-      });
+      const widths = lines.map(l => stringWidth(l));
       const firstWidth = widths[0];
       for (const w of widths) {
         expect(w).toBe(firstWidth);
