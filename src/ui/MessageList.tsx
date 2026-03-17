@@ -109,11 +109,11 @@ function buildToolNameMap(message: Message, prevMessage?: Message): Map<string, 
 }
 
 /** 渲染单个内容块 */
-function renderBlock(block: ContentBlock, idx: number, toolNameMap: Map<string, string>): React.ReactNode {
+function renderBlock(block: ContentBlock, idx: number, toolNameMap: Map<string, string>, maxWidth?: number): React.ReactNode {
   const key = getBlockKey(block, idx);
 
   if (block.type === "text") {
-    const rendered = renderMarkdown(block.text);
+    const rendered = renderMarkdown(block.text, maxWidth);
     return <Text key={key}>{rendered}</Text>;
   }
 
@@ -157,7 +157,7 @@ export const MessageItem = React.memo(function MessageItem({ message, prevMessag
   if (isUser && hasOnlyToolResults) {
     return (
       <Box flexDirection="column" width={tw}>
-        {message.content.map((block, idx) => renderBlock(block, idx, toolNameMap))}
+        {message.content.map((block, idx) => renderBlock(block, idx, toolNameMap, tw))}
       </Box>
     );
   }
@@ -179,10 +179,11 @@ export const MessageItem = React.memo(function MessageItem({ message, prevMessag
     );
   }
 
-  // 助手消息：左对齐
+  // 助手消息：左对齐，paddingRight=10 所以可用宽度要减去
+  const ASSISTANT_PADDING_RIGHT = 10;
   return (
-    <Box flexDirection="column" paddingRight={10}>
-      {message.content.map((block, idx) => renderBlock(block, idx, toolNameMap))}
+    <Box flexDirection="column" paddingRight={ASSISTANT_PADDING_RIGHT}>
+      {message.content.map((block, idx) => renderBlock(block, idx, toolNameMap, tw - ASSISTANT_PADDING_RIGHT))}
     </Box>
   );
 });

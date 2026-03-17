@@ -183,10 +183,11 @@ export function TUIApp({ initialState, callbacks, bridge }: AppProps) {
   const sepWidth = Math.max(10, termWidth - 4);
   const separator = "── ".repeat(Math.floor(sepWidth / 3));
 
-  // 流式文本 markdown 渲染缓存
+  // 流式文本 markdown 渲染缓存（流式区域无额外 padding，直接用终端宽度）
+  const streamingMaxWidth = termWidth;
   const renderedStreaming = useMemo(
-    () => state.streamingText ? renderMarkdown(state.streamingText) : "",
-    [state.streamingText],
+    () => state.streamingText ? renderMarkdown(state.streamingText, streamingMaxWidth) : "",
+    [state.streamingText, streamingMaxWidth],
   );
 
   const staticMessages = state.messages;

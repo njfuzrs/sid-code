@@ -27,6 +27,9 @@ const TAB_SIZE = 2;
 const TAB_INDENT = " ".repeat(TAB_SIZE);
 const MAX_CACHE_SIZE = 100;
 
+/** 当前渲染可用宽度（由 renderMarkdown 设置，renderTable 读取） */
+let currentRenderWidth = DEFAULT_TERM_WIDTH;
+
 // 兜底：cli.ts 入口已在 import 前设置 FORCE_COLOR=3，
 // 这里再修正 chalk 实例的 level，确保样式正常。
 if (chalk.level === 0 && !process.env.NO_COLOR) {
@@ -107,9 +110,43 @@ const MAX_TABLE_COLS = 6;
 const BORDER_OVERHEAD_PER_COL = 3;
 const BORDER_OVERHEAD_EXTRA = 1;
 
-/** 计算字符串的可见宽度（去除 ANSI 转义码） */
+/** 判断字符是否为东亚全角字符（终端占 2 列） */
+function isFullWidth(code: number): boolean {
+  // CJK 统一表意文字
+  return (code >= 0x4E00 && code <= 0x9FFF)
+    // CJK 扩展 A/B
+    || (code >= 0x3400 && code <= 0x4DBF)
+    || (code >= 0x20000 && code <= 0x2A6DF)
+    // CJK 兼容表意文字
+    || (code >= 0xF900 && code <= 0xFAFF)
+    // 全角 ASCII / 全角标点
+    || (code >= 0xFF01 && code <= 0xFF60)
+    || (code >= 0xFFE0 && code <= 0xFFE6)
+    // CJK 符号和标点
+    || (code >= 0x3000 && code <= 0x303F)
+    // 平假名 / 片假名
+    || (code >= 0x3040 && code <= 0x30FF)
+    // 韩文音节
+    || (code >= 0xAC00 && code <= 0xD7AF)
+    // 中文特殊标点（—、…、·等）
+    || code === 0x2014 || code === 0x2026 || code === 0x00B7
+    // 中文引号
+    || code === 0x201C || code === 0x201D || code === 0x2018 || code === 0x2019
+    // 中文书名号、顿号等
+    || code === 0x3001 || code === 0x3002 || code === 0x300A || code === 0x300B
+    || code === 0x300C || code === 0x300D || code === 0x300E || code === 0x300F
+    || code === 0x3010 || code === 0x3011;
+}
+
+/** 计算字符串的终端可见列宽（去除 ANSI 转义码，CJK 字符占 2 列） */
 function visibleWidth(s: string): number {
-  return stripAnsi(s).length;
+  const stripped = stripAnsi(s);
+  let width = 0;
+  for (const ch of stripped) {
+    const code = ch.codePointAt(0)!;
+    width += isFullWidth(code) ? 2 : 1;
+  }
+  return width;
 }
 
 /** 将 marked table token 渲染为终端友好的表格或 key-value 降级格式 */
@@ -123,7 +160,7 @@ function renderTable(token: any): string {
     ),
   );
   const colCount = headers.length;
-  const termWidth = Math.min(getTermWidth(), MAX_RENDER_WIDTH);
+  const termWidth = currentRenderWidth;
 
   const maxContentWidths = headers.map((h: string, i: number) => {
     let max = visibleWidth(h);
@@ -135,26 +172,34 @@ function renderTable(token: any): string {
     return max;
   });
 
+  // cli-table3 的 colWidths 包含 padding（每列左右各 1 = 2）
+  // border 开销：每列 │ 占 1 + 左右 padding 各 1 = 3，加最右边 │ = 1
+  const CELL_PADDING = 2;
   const borderTotal = colCount * BORDER_OVERHEAD_PER_COL + BORDER_OVERHEAD_EXTRA;
-  const availableWidth = termWidth - borderTotal;
+  const paddingTotal = colCount * CELL_PADDING;
+  // 可用于纯内容的宽度（扣除 border + padding）
+  const contentBudget = termWidth - borderTotal - paddingTotal;
 
-  if (colCount > MAX_TABLE_COLS || availableWidth / colCount < MIN_COL_WIDTH) {
+  if (colCount > MAX_TABLE_COLS || contentBudget / colCount < MIN_COL_WIDTH) {
     return renderKeyValue(headers, rows, termWidth);
   }
 
   const totalContent = maxContentWidths.reduce((a: number, b: number) => a + b, 0);
   let colWidths: number[];
 
-  if (totalContent <= availableWidth) {
-    colWidths = maxContentWidths.map((w: number) => w + 2);
+  if (totalContent <= contentBudget) {
+    // 内容不超宽，每列按实际内容宽度 + padding
+    colWidths = maxContentWidths.map((w: number) => w + CELL_PADDING);
   } else {
+    // 按比例压缩分配纯内容宽度
     colWidths = maxContentWidths.map((w: number) => {
       const ratio = w / totalContent;
-      return Math.max(MIN_COL_WIDTH, Math.floor(availableWidth * ratio));
+      return Math.max(MIN_COL_WIDTH, Math.floor(contentBudget * ratio));
     });
 
+    // 分配剩余空间给最宽的列
     const allocated = colWidths.reduce((a: number, b: number) => a + b, 0);
-    let remaining = availableWidth - allocated;
+    let remaining = contentBudget - allocated;
     while (remaining > 0) {
       let maxIdx = 0;
       for (let i = 1; i < colWidths.length; i++) {
@@ -164,7 +209,8 @@ function renderTable(token: any): string {
       remaining--;
     }
 
-    colWidths = colWidths.map((w: number) => w + 2);
+    // 加回 padding
+    colWidths = colWidths.map((w: number) => w + CELL_PADDING);
   }
 
   const totalTableWidth = colWidths.reduce((a: number, b: number) => a + b, 0) + colCount + 1;
@@ -425,20 +471,28 @@ function renderTokens(tokens: any[]): string {
 const renderCache = new Map<string, string>();
 let lastWidth = 0;
 
-/** 将 Markdown 文本渲染为终端格式 */
-export function renderMarkdown(text: string): string {
+/** 将 Markdown 文本渲染为终端格式
+ * @param maxWidth 可选，指定渲染可用宽度（用于表格等宽度敏感元素）
+ */
+export function renderMarkdown(text: string, maxWidth?: number): string {
   // 终端宽度变化时清空缓存
   const w = getTermWidth();
+  const effectiveWidth = Math.min(maxWidth ?? w, MAX_RENDER_WIDTH, w);
   if (w !== lastWidth) {
     renderCache.clear();
     lastWidth = w;
   }
 
-  if (renderCache.has(text)) {
-    return renderCache.get(text)!;
+  // 缓存 key 需要包含宽度，因为同一文本在不同宽度下渲染结果不同
+  const cacheKey = `${effectiveWidth}:${text}`;
+  if (renderCache.has(cacheKey)) {
+    return renderCache.get(cacheKey)!;
   }
 
   const log = getLogger();
+
+  // 设置当前渲染宽度供 renderTable 使用
+  currentRenderWidth = effectiveWidth;
 
   try {
     const tokens = marked.lexer(text);
@@ -449,7 +503,7 @@ export function renderMarkdown(text: string): string {
       if (firstKey !== undefined) renderCache.delete(firstKey);
       log.debug("UI:MD", `缓存已满，淘汰最旧条目，当前 ${renderCache.size} 条`);
     }
-    renderCache.set(text, result);
+    renderCache.set(cacheKey, result);
 
     return result;
   } catch (err: any) {
