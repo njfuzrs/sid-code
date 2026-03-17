@@ -934,7 +934,8 @@ export class App {
             this.quotaManager?.resetAlertLevel();
             this.fallback.reset();
             // 清屏
-            process.stdout.write("\x1b[H\x1b[J");
+            // \x1b[H 光标归位 + \x1b[2J 清屏 + \x1b[3J 清除滚动缓冲区
+            process.stdout.write("\x1b[H\x1b[2J\x1b[3J");
             console.log("对话已清空");
             prompt();
             return;
@@ -1245,7 +1246,8 @@ export class App {
           this.fallback.reset();
           // Static 组件已写入终端滚动缓冲区的内容无法通过 React 状态清除，
           // 必须用 ANSI 转义序列清屏，然后 Ink 会在干净画布上重新渲染 Live 区域
-          process.stdout.write("\x1b[H\x1b[J");
+          // \x1b[H 光标归位 + \x1b[2J 清屏 + \x1b[3J 清除滚动缓冲区
+          process.stdout.write("\x1b[H\x1b[2J\x1b[3J");
           updateState({
             messages: [],
             contextPercent: 0,
