@@ -13,7 +13,6 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
     "@inkjs/ui": "^2.0.0",
-
     "glob": "^13.0.6",
     "ink": "^6.8.0",
     "marked": "^17.0.4",

@@ -7,7 +7,7 @@
  * - # 标题（h1 加粗斜体下划线，h2+ 加粗）
  * - > 引用（│ 前缀 + 斜体）
  * - 代码块语法高亮（cli-highlight，指定语言时启用）
- * - 表格（cli-table3 box-drawing）
+ * - 表格（自绘 box-drawing，统一 string-width 宽度计算）
  * - 链接（OSC 8 超链接 + 蓝色下划线）
  * - 有序/无序列表（嵌套缩进，有序按深度循环数字/字母/罗马）
  * - 水平分割线
@@ -16,8 +16,7 @@
 import chalk from "chalk";
 import { marked } from "marked";
 import { highlight as cliHighlight, supportsLanguage } from "cli-highlight";
-import Table from "cli-table3";
-import stripAnsi from "strip-ansi";
+import stringWidth from "string-width";
 import { getLogger } from "../debug/logger.ts";
 
 // ── 常量 ────────────────────────────────────────────────────────
@@ -107,46 +106,137 @@ function highlightCode(code: string, lang?: string): string {
 
 const MIN_COL_WIDTH = 8;
 const MAX_TABLE_COLS = 6;
-const BORDER_OVERHEAD_PER_COL = 3;
-const BORDER_OVERHEAD_EXTRA = 1;
-
-/** 判断字符是否为东亚全角字符（终端占 2 列） */
-function isFullWidth(code: number): boolean {
-  // CJK 统一表意文字
-  return (code >= 0x4E00 && code <= 0x9FFF)
-    // CJK 扩展 A/B
-    || (code >= 0x3400 && code <= 0x4DBF)
-    || (code >= 0x20000 && code <= 0x2A6DF)
-    // CJK 兼容表意文字
-    || (code >= 0xF900 && code <= 0xFAFF)
-    // 全角 ASCII / 全角标点
-    || (code >= 0xFF01 && code <= 0xFF60)
-    || (code >= 0xFFE0 && code <= 0xFFE6)
-    // CJK 符号和标点
-    || (code >= 0x3000 && code <= 0x303F)
-    // 平假名 / 片假名
-    || (code >= 0x3040 && code <= 0x30FF)
-    // 韩文音节
-    || (code >= 0xAC00 && code <= 0xD7AF)
-    // 中文特殊标点（—、…、·等）
-    || code === 0x2014 || code === 0x2026 || code === 0x00B7
-    // 中文引号
-    || code === 0x201C || code === 0x201D || code === 0x2018 || code === 0x2019
-    // 中文书名号、顿号等
-    || code === 0x3001 || code === 0x3002 || code === 0x300A || code === 0x300B
-    || code === 0x300C || code === 0x300D || code === 0x300E || code === 0x300F
-    || code === 0x3010 || code === 0x3011;
-}
+/** 每列左右各 1 空格 padding */
+const CELL_PADDING = 2;
 
 /** 计算字符串的终端可见列宽（去除 ANSI 转义码，CJK 字符占 2 列） */
 function visibleWidth(s: string): number {
-  const stripped = stripAnsi(s);
-  let width = 0;
-  for (const ch of stripped) {
-    const code = ch.codePointAt(0)!;
-    width += isFullWidth(code) ? 2 : 1;
+  return stringWidth(s);
+}
+
+// ── ANSI 转义码正则 ──────────────────────────────────────────────
+const ANSI_RE = /\x1b\[[\d;]*m/g;
+
+/**
+ * CJK 感知的文本换行
+ * - 按 \n 分割后逐字符遍历，用 stringWidth 累计宽度
+ * - CJK 字符可在任意字符边界换行
+ * - 正确跳过 ANSI 转义码（不计入宽度）
+ */
+function wrapText(text: string, maxWidth: number): string[] {
+  if (maxWidth <= 0) return [text];
+  const result: string[] = [];
+  for (const paragraph of text.split("\n")) {
+    if (paragraph === "") { result.push(""); continue; }
+    // 检测是否含 ANSI 转义码
+    const hasAnsi = ANSI_RE.test(paragraph);
+    ANSI_RE.lastIndex = 0; // 重置 lastIndex
+
+    if (!hasAnsi) {
+      // 快速路径：无 ANSI 码，直接遍历字符
+      let line = "";
+      let lineWidth = 0;
+      for (const ch of paragraph) {
+        const cw = stringWidth(ch);
+        if (lineWidth + cw > maxWidth && lineWidth > 0) {
+          result.push(line);
+          line = ch;
+          lineWidth = cw;
+        } else {
+          line += ch;
+          lineWidth += cw;
+        }
+      }
+      if (line) result.push(line);
+    } else {
+      // 慢速路径：需要跳过 ANSI 转义码
+      let line = "";
+      let lineWidth = 0;
+      let i = 0;
+      while (i < paragraph.length) {
+        // 尝试匹配 ANSI 转义码
+        ANSI_RE.lastIndex = i;
+        const m = ANSI_RE.exec(paragraph);
+        if (m && m.index === i) {
+          // ANSI 码直接追加，不计宽度
+          line += m[0];
+          i += m[0].length;
+          continue;
+        }
+        // 普通字符（可能是多字节）
+        const cp = paragraph.codePointAt(i)!;
+        const ch = String.fromCodePoint(cp);
+        const cw = stringWidth(ch);
+        if (lineWidth + cw > maxWidth && lineWidth > 0) {
+          result.push(line);
+          line = ch;
+          lineWidth = cw;
+        } else {
+          line += ch;
+          lineWidth += cw;
+        }
+        i += ch.length;
+      }
+      if (line) result.push(line);
+    }
   }
-  return width;
+  return result;
+}
+
+// ── 自绘表格（box-drawing） ─────────────────────────────────────
+
+/** 右侧补空格，使 visibleWidth 达到 targetWidth */
+function padRight(text: string, targetWidth: number): string {
+  const w = visibleWidth(text);
+  const pad = targetWidth - w;
+  return pad > 0 ? text + " ".repeat(pad) : text;
+}
+
+/** 绘制水平分隔线 */
+function hLine(colWidths: number[], left: string, mid: string, right: string): string {
+  return left + colWidths.map(w => "─".repeat(w + CELL_PADDING)).join(mid) + right;
+}
+
+/** 绘制内容行（支持多行 cell） */
+function contentRows(cells: string[][], colWidths: number[], isBold: boolean): string[] {
+  // cells[col] = wrapText 后的行数组
+  const maxLines = Math.max(...cells.map(c => c.length), 1);
+  const lines: string[] = [];
+  for (let l = 0; l < maxLines; l++) {
+    let row = "│";
+    for (let c = 0; c < colWidths.length; c++) {
+      const text = cells[c]?.[l] || "";
+      const display = isBold ? chalk.bold(text) : text;
+      row += " " + padRight(display, colWidths[c]) + " │";
+    }
+    lines.push(row);
+  }
+  return lines;
+}
+
+/** 用 box-drawing 字符绘制完整表格 */
+function drawTable(
+  headers: string[][],   // headers[col] = wrapText 后的行数组
+  rows: string[][][],    // rows[row][col] = wrapText 后的行数组
+  colWidths: number[],   // 每列纯内容宽度
+): string {
+  const lines: string[] = [];
+  // 顶部边框
+  lines.push(hLine(colWidths, "┌", "┬", "┐"));
+  // 表头
+  lines.push(...contentRows(headers, colWidths, true));
+  // 表头分隔线
+  lines.push(hLine(colWidths, "├", "┼", "┤"));
+  // 数据行
+  for (let r = 0; r < rows.length; r++) {
+    lines.push(...contentRows(rows[r], colWidths, false));
+    if (r < rows.length - 1) {
+      lines.push(hLine(colWidths, "├", "┼", "┤"));
+    }
+  }
+  // 底部边框
+  lines.push(hLine(colWidths, "└", "┴", "┘"));
+  return lines.join("\n");
 }
 
 /** 将 marked table token 渲染为终端友好的表格或 key-value 降级格式 */
@@ -162,6 +252,15 @@ function renderTable(token: any): string {
   const colCount = headers.length;
   const termWidth = currentRenderWidth;
 
+  // 总表格宽度 = Σ(contentWidth[i] + CELL_PADDING) + colCount + 1
+  // contentBudget = termWidth - colCount * (CELL_PADDING + 1) - 1
+  const contentBudget = termWidth - colCount * (CELL_PADDING + 1) - 1;
+
+  if (colCount > MAX_TABLE_COLS || contentBudget / colCount < MIN_COL_WIDTH) {
+    return renderKeyValue(headers, rows, termWidth);
+  }
+
+  // 计算每列自然内容宽度
   const maxContentWidths = headers.map((h: string, i: number) => {
     let max = visibleWidth(h);
     for (const row of rows) {
@@ -172,24 +271,12 @@ function renderTable(token: any): string {
     return max;
   });
 
-  // cli-table3 的 colWidths 包含 padding（每列左右各 1 = 2）
-  // border 开销：每列 │ 占 1 + 左右 padding 各 1 = 3，加最右边 │ = 1
-  const CELL_PADDING = 2;
-  const borderTotal = colCount * BORDER_OVERHEAD_PER_COL + BORDER_OVERHEAD_EXTRA;
-  const paddingTotal = colCount * CELL_PADDING;
-  // 可用于纯内容的宽度（扣除 border + padding）
-  const contentBudget = termWidth - borderTotal - paddingTotal;
-
-  if (colCount > MAX_TABLE_COLS || contentBudget / colCount < MIN_COL_WIDTH) {
-    return renderKeyValue(headers, rows, termWidth);
-  }
-
-  const totalContent = maxContentWidths.reduce((a: number, b: number) => a + b, 0);
+  const totalContent = maxContentWidths.reduce((a, b) => a + b, 0);
   let colWidths: number[];
 
   if (totalContent <= contentBudget) {
-    // 内容不超宽，每列按实际内容宽度 + padding
-    colWidths = maxContentWidths.map((w: number) => w + CELL_PADDING);
+    // 内容不超宽，每列按实际内容宽度
+    colWidths = maxContentWidths.slice();
   } else {
     // 按比例压缩分配纯内容宽度
     colWidths = maxContentWidths.map((w: number) => {
@@ -198,7 +285,7 @@ function renderTable(token: any): string {
     });
 
     // 分配剩余空间给最宽的列
-    const allocated = colWidths.reduce((a: number, b: number) => a + b, 0);
+    const allocated = colWidths.reduce((a, b) => a + b, 0);
     let remaining = contentBudget - allocated;
     while (remaining > 0) {
       let maxIdx = 0;
@@ -208,30 +295,21 @@ function renderTable(token: any): string {
       colWidths[maxIdx]++;
       remaining--;
     }
-
-    // 加回 padding
-    colWidths = colWidths.map((w: number) => w + CELL_PADDING);
   }
 
-  const totalTableWidth = colWidths.reduce((a: number, b: number) => a + b, 0) + colCount + 1;
+  // 验证总宽度不超终端
+  const totalTableWidth = colWidths.reduce((a, b) => a + b, 0) + colCount * (CELL_PADDING + 1) + 1;
   if (totalTableWidth > termWidth) {
     return renderKeyValue(headers, rows, termWidth);
   }
 
-  try {
-    const table = new Table({
-      head: headers.map((h: string) => chalk.bold(h)),
-      colWidths,
-      wordWrap: true,
-      style: { head: [], border: [], compact: false },
-    });
-    for (const row of rows) {
-      table.push(row);
-    }
-    return "\n" + table.toString() + "\n";
-  } catch {
-    return renderKeyValue(headers, rows, termWidth);
-  }
+  // 对每个 cell 调用 wrapText 换行
+  const wrappedHeaders: string[][] = headers.map((h, i) => wrapText(h, colWidths[i]));
+  const wrappedRows: string[][][] = rows.map(row =>
+    row.map((cell, i) => wrapText(cell, colWidths[i])),
+  );
+
+  return "\n" + drawTable(wrappedHeaders, wrappedRows, colWidths) + "\n";
 }
 
 /** key-value 竖排降级格式 */

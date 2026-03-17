@@ -183,6 +183,93 @@ describe("renderMarkdown", () => {
       // header 中的 bold 应被渲染
       expect(result).toMatch(/\x1b\[1m/);
     });
+
+    test("中文标点表格不溢出", () => {
+      const md = "| 名称 | 描述 |\n|------|------|\n| 功能——测试 | \u201C引号\u201D内容 |\n| 省略…符号 | 更多·内容 |";
+      const result = renderMarkdown(md, 80);
+      const lines = stripAnsi(result).split("\n").filter(l => l.trim());
+      // 验证每行宽度不超过 80
+      for (const line of lines) {
+        const w = [...line].reduce((sum, ch) => {
+          const cp = ch.codePointAt(0)!;
+          // 简化宽度计算：CJK 范围占 2，其他占 1
+          const isCJK = (cp >= 0x4E00 && cp <= 0x9FFF) || (cp >= 0x3000 && cp <= 0x30FF) ||
+                        cp === 0x2014 || cp === 0x2026 || cp === 0x201C || cp === 0x201D;
+          return sum + (isCJK ? 2 : 1);
+        }, 0);
+        expect(w).toBeLessThanOrEqual(80);
+      }
+    });
+
+    test("纯中文长内容换行而非截断", () => {
+      const md = "| 列 |\n|----|\n| 这是一段很长的纯中文内容没有空格应该正常换行而不是被截断显示省略号 |";
+      const result = renderMarkdown(md, 40);
+      const plain = stripAnsi(result);
+      // 不应出现 … 截断符号
+      expect(plain).not.toContain("…");
+      // 应包含完整内容
+      expect(plain).toContain("这是一段很长");
+      expect(plain).toContain("显示省略号");
+    });
+
+    test("多列表格每行宽度一致", () => {
+      const md = "| A | B | C |\n|---|---|---|\n| 短 | 中等长度 | 很长很长很长 |\n| x | y | z |";
+      const result = renderMarkdown(md, 60);
+      const lines = stripAnsi(result).split("\n").filter(l => l.startsWith("│"));
+      // 所有内容行宽度应一致（使用 string-width 验证）
+      const widths = lines.map(l => {
+        let w = 0;
+        for (const ch of l) {
+          const cp = ch.codePointAt(0)!;
+          const isCJK = (cp >= 0x4E00 && cp <= 0x9FFF) || (cp >= 0x3000 && cp <= 0x30FF);
+          w += isCJK ? 2 : 1;
+        }
+        return w;
+      });
+      const firstWidth = widths[0];
+      for (const w of widths) {
+        expect(w).toBe(firstWidth);
+      }
+    });
+
+    test("超窄终端降级为 key-value", () => {
+      const md = "| A | B | C | D | E | F | G |\n|---|---|---|---|---|---|---|\n| 1 | 2 | 3 | 4 | 5 | 6 | 7 |";
+      const result = renderMarkdown(md, 30);
+      const plain = stripAnsi(result);
+      // 超过 MAX_TABLE_COLS 或宽度不足，应降级为 key-value 格式
+      expect(plain).toContain("A:");
+      expect(plain).toContain("B:");
+    });
+
+    test("空 cell 不崩溃", () => {
+      const md = "| A | B |\n|---|---|\n| x |  |\n|  | y |";
+      expect(() => renderMarkdown(md)).not.toThrow();
+      const result = renderMarkdown(md);
+      const plain = stripAnsi(result);
+      expect(plain).toContain("x");
+      expect(plain).toContain("y");
+    });
+
+    test("含 ANSI 样式的 cell 内容正确对齐", () => {
+      // 模拟 header 中有 bold 的情况（renderTable 会对 header 应用 chalk.bold）
+      const md = "| 名称 | 值 |\n|------|----|\n| foo | bar |";
+      const result = renderMarkdown(md, 80);
+      const lines = stripAnsi(result).split("\n").filter(l => l.startsWith("│"));
+      // 所有行宽度应一致（即使 header 有 ANSI 码）
+      const widths = lines.map(l => {
+        let w = 0;
+        for (const ch of l) {
+          const cp = ch.codePointAt(0)!;
+          const isCJK = (cp >= 0x4E00 && cp <= 0x9FFF) || (cp >= 0x3000 && cp <= 0x30FF);
+          w += isCJK ? 2 : 1;
+        }
+        return w;
+      });
+      const firstWidth = widths[0];
+      for (const w of widths) {
+        expect(w).toBe(firstWidth);
+      }
+    });
   });
 
   // ── 水平分割线 ────────────────────────────────────────────────
