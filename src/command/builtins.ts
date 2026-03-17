@@ -114,7 +114,7 @@ export class ModelCommand implements Command {
         return;
       }
 
-      // 如果模型配置了特定的 provider 或 baseURL，也一起更新
+      // 如果模型配置了特定的 provider、baseURL 或 apiKey，也一起更新
       if (modelConfig.provider && modelConfig.provider !== ctx.config.provider) {
         ctx.config.provider = modelConfig.provider;
         console.log(`提供商已切换为: ${modelConfig.provider}`);
@@ -122,6 +122,15 @@ export class ModelCommand implements Command {
       if (modelConfig.baseURL && modelConfig.baseURL !== ctx.config.baseURL) {
         ctx.config.baseURL = modelConfig.baseURL;
         console.log(`API 地址已更新: ${modelConfig.baseURL}`);
+      }
+      // 模型级 apiKey 覆盖对应 provider 的全局 key
+      if (modelConfig.apiKey) {
+        const provider = modelConfig.provider || ctx.config.provider;
+        if (provider === "anthropic") {
+          ctx.config.anthropicKey = modelConfig.apiKey;
+        } else {
+          ctx.config.openaiKey = modelConfig.apiKey;
+        }
       }
     }
 

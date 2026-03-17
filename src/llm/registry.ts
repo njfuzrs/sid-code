@@ -111,7 +111,7 @@ export class ProviderRegistry {
       case "anthropic": {
         // 动态导入 Anthropic Provider
         const { AnthropicProvider } = require("./anthropic.ts");
-        return new AnthropicProvider(apiKey, this.config.model);
+        return new AnthropicProvider(apiKey, this.config.model, baseURL);
       }
       case "openai": {
         const { OpenAIProvider } = require("./openai.ts");
