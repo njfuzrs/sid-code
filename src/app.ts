@@ -23,6 +23,7 @@ import { SessionState } from "./session/state.ts";
 import { QuotaManager } from "./llm/quota.ts";
 import { loadAllCLAUDEmd, watchCLAUDEmd, unwatchCLAUDEmd } from "./config/rules.ts";
 import type { ProjectRules } from "./config/rules.ts";
+import { clearPromptCache } from "./config/system-prompt.ts";
 import { getLogger } from "./debug/logger.ts";
 import { AgentLoopRunner } from "./agent/loop.ts";
 import type { AgentLoopCallbacks } from "./agent/loop.ts";
@@ -926,6 +927,19 @@ export class App {
             return;
           }
 
+          // 特殊处理 clear（需要清屏 + 重置运行时状态）
+          if (cmdName === "clear") {
+            this.ctxMgr.clear();
+            clearPromptCache();
+            this.quotaManager?.resetAlertLevel();
+            this.fallback.reset();
+            // 清屏
+            process.stdout.write("\x1b[H\x1b[J");
+            console.log("对话已清空");
+            prompt();
+            return;
+          }
+
           // 尝试从命令注册表查找
           const cmd = this.commandRegistry.get(cmdName);
           if (cmd) {
@@ -1222,11 +1236,23 @@ export class App {
           customCommands: this.getCustomCommandsSummary(),
         };
 
-        // 特殊处理 clear（需要更新 TUI 状态）
+        // 特殊处理 clear（需要更新 TUI 状态 + 重置相关运行时状态）
         if (cmd === "clear") {
-          log.info("TUI:CMD", "清空消息历史");
+          log.info("TUI:CMD", "清空消息历史，重置上下文");
           this.ctxMgr.clear();
-          updateState({ messages: [] });
+          clearPromptCache();
+          this.quotaManager?.resetAlertLevel();
+          this.fallback.reset();
+          // Static 组件已写入终端滚动缓冲区的内容无法通过 React 状态清除，
+          // 必须用 ANSI 转义序列清屏，然后 Ink 会在干净画布上重新渲染 Live 区域
+          process.stdout.write("\x1b[H\x1b[J");
+          updateState({
+            messages: [],
+            contextPercent: 0,
+            streamingText: "",
+            statusMessage: "",
+            lastToolResult: null,
+          });
           return;
         }
 

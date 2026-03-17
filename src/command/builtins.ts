@@ -4,6 +4,7 @@
  */
 
 import type { Command, AppContext } from "./types.ts";
+import { clearPromptCache } from "../config/system-prompt.ts";
 
 /** /help 命令 */
 export class HelpCommand implements Command {
@@ -211,6 +212,7 @@ export class ClearCommand implements Command {
 
   async execute(_args: string, ctx: AppContext): Promise<void> {
     ctx.ctxMgr.clear();
+    clearPromptCache();
     console.log("对话已清空");
   }
 }

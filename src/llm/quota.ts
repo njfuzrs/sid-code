@@ -60,6 +60,11 @@ export class QuotaManager {
     return { level, message: messages[level] };
   }
 
+  /** 重置告警级别（/clear 时调用） */
+  resetAlertLevel(): void {
+    this.lastAlertLevel = null;
+  }
+
   /** 是否已超限 */
   isExceeded(currentCost: number): boolean {
     if (this.costLimit <= 0) return false;
