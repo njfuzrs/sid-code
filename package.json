@@ -17,7 +17,6 @@
     "glob": "^13.0.6",
     "ink": "^6.8.0",
     "marked": "^17.0.4",
-    "marked-terminal": "^7.3.0",
     "minimatch": "^10.2.4",
     "react": "^19.2.4",
     "react-devtools-core": "^7.0.1",

@@ -1,22 +1,20 @@
 /**
  * Markdown 终端渲染
- * 使用 marked + marked-terminal 将 Markdown 渲染为终端格式
+ * 使用 marked.lexer() 获取 token AST，自定义递归渲染器生成 ANSI 字符串
  *
  * 支持的渲染效果：
  * - **加粗**、*斜体*、~~删除线~~、`行内代码`
- * - # 标题（一级紫色下划线加粗，二级+绿色加粗）
- * - > 引用（灰色斜体）
+ * - # 标题（h1 加粗斜体下划线，h2+ 加粗）
+ * - > 引用（│ 前缀 + 斜体）
  * - 代码块语法高亮（cli-highlight，指定语言时启用）
  * - 表格（cli-table3 box-drawing）
- * - 链接（蓝色 + 下划线 URL）
- * - 有序/无序列表（• bullet）
+ * - 链接（OSC 8 超链接 + 蓝色下划线）
+ * - 有序/无序列表（嵌套缩进，有序按深度循环数字/字母/罗马）
  * - 水平分割线
- * - :emoji: 表情符号
  */
 
 import chalk from "chalk";
 import { marked } from "marked";
-import { markedTerminal } from "marked-terminal";
 import { highlight as cliHighlight, supportsLanguage } from "cli-highlight";
 import Table from "cli-table3";
 import stripAnsi from "strip-ansi";
@@ -28,7 +26,6 @@ const MAX_RENDER_WIDTH = 120;
 const TAB_SIZE = 2;
 const TAB_INDENT = " ".repeat(TAB_SIZE);
 const MAX_CACHE_SIZE = 100;
-const BULLET = "• ";
 
 // 兜底：cli.ts 入口已在 import 前设置 FORCE_COLOR=3，
 // 这里再修正 chalk 实例的 level，确保样式正常。
@@ -42,8 +39,6 @@ function getTermWidth(): number {
 }
 
 // ── 代码高亮 ────────────────────────────────────────────────────
-// 使用我们的 chalk 实例构建 theme，绕过 marked-terminal/cli-highlight
-// 内部 bundle 的 chalk level=0 问题（Bun ESM static import 时序）。
 const codeHighlightTheme: Record<string, (s: string) => string> = {
   keyword: chalk.blue,
   built_in: chalk.cyan,
@@ -106,11 +101,9 @@ function highlightCode(code: string, lang?: string): string {
 }
 
 // ── 自定义表格渲染 ──────────────────────────────────────────────
-// 覆盖 marked-terminal 默认表格渲染，限制总宽度，宽表格降级为 key-value 格式。
 
 const MIN_COL_WIDTH = 8;
 const MAX_TABLE_COLS = 6;
-// cli-table3 每列开销：左边框 │ + 左 padding + 右 padding = 3 字符，最右还有 │ 收尾 = +1
 const BORDER_OVERHEAD_PER_COL = 3;
 const BORDER_OVERHEAD_EXTRA = 1;
 
@@ -121,14 +114,17 @@ function visibleWidth(s: string): number {
 
 /** 将 marked table token 渲染为终端友好的表格或 key-value 降级格式 */
 function renderTable(token: any): string {
-  const headers: string[] = token.header.map((cell: any) => cell.text || "");
+  const headers: string[] = token.header.map((cell: any) =>
+    cell.tokens ? renderInline(cell.tokens) : (cell.text || ""),
+  );
   const rows: string[][] = token.rows.map((row: any[]) =>
-    row.map((cell: any) => cell.text || ""),
+    row.map((cell: any) =>
+      cell.tokens ? renderInline(cell.tokens) : (cell.text || ""),
+    ),
   );
   const colCount = headers.length;
   const termWidth = Math.min(getTermWidth(), MAX_RENDER_WIDTH);
 
-  // 计算每列内容的最大可见宽度
   const maxContentWidths = headers.map((h: string, i: number) => {
     let max = visibleWidth(h);
     for (const row of rows) {
@@ -139,30 +135,24 @@ function renderTable(token: any): string {
     return max;
   });
 
-  // 可用于内容的总宽度（扣除边框开销）
   const borderTotal = colCount * BORDER_OVERHEAD_PER_COL + BORDER_OVERHEAD_EXTRA;
   const availableWidth = termWidth - borderTotal;
 
-  // 降级条件：列太多 或 平均每列宽度不足 MIN_COL_WIDTH
   if (colCount > MAX_TABLE_COLS || availableWidth / colCount < MIN_COL_WIDTH) {
     return renderKeyValue(headers, rows, termWidth);
   }
 
-  // 按内容最大宽度比例分配列宽
   const totalContent = maxContentWidths.reduce((a: number, b: number) => a + b, 0);
   let colWidths: number[];
 
   if (totalContent <= availableWidth) {
-    // 内容总宽度未超限，直接用内容宽度（加上 padding 后的 cli-table3 colWidths）
-    colWidths = maxContentWidths.map((w: number) => w + 2); // cli-table3 colWidths 包含左右 padding
+    colWidths = maxContentWidths.map((w: number) => w + 2);
   } else {
-    // 按比例分配
     colWidths = maxContentWidths.map((w: number) => {
       const ratio = w / totalContent;
       return Math.max(MIN_COL_WIDTH, Math.floor(availableWidth * ratio));
     });
 
-    // 修正舍入误差：把剩余宽度分给最宽的列
     const allocated = colWidths.reduce((a: number, b: number) => a + b, 0);
     let remaining = availableWidth - allocated;
     while (remaining > 0) {
@@ -174,11 +164,9 @@ function renderTable(token: any): string {
       remaining--;
     }
 
-    // colWidths 需要加上 padding（cli-table3 的 colWidths 包含 padding）
     colWidths = colWidths.map((w: number) => w + 2);
   }
 
-  // 最终检查：如果总宽度仍超限，降级
   const totalTableWidth = colWidths.reduce((a: number, b: number) => a + b, 0) + colCount + 1;
   if (totalTableWidth > termWidth) {
     return renderKeyValue(headers, rows, termWidth);
@@ -196,7 +184,6 @@ function renderTable(token: any): string {
     }
     return "\n" + table.toString() + "\n";
   } catch {
-    // cli-table3 渲染失败时降级
     return renderKeyValue(headers, rows, termWidth);
   }
 }
@@ -221,100 +208,231 @@ function renderKeyValue(headers: string[], rows: string[][], termWidth: number):
   return lines.join("\n");
 }
 
-// ── marked-terminal 配置 ────────────────────────────────────────
-// 封装为函数，终端宽度变化时重新配置，确保 reflowText 跟随实际宽度。
-function configureMarked(): void {
-  const width = Math.min(getTermWidth(), MAX_RENDER_WIDTH);
+// ── 有序列表辅助函数 ────────────────────────────────────────────
 
-  marked.setOptions({});
-  marked.use(
-    markedTerminal(
-      {
-        // 样式
-        firstHeading: chalk.magenta.underline.bold,
-        heading: chalk.green.bold,
-        strong: chalk.bold,
-        em: chalk.italic,
-        codespan: chalk.cyan,
-        del: chalk.dim.gray.strikethrough,
-        code: chalk.yellow,
-        blockquote: chalk.gray.italic,
-        link: chalk.blue,
-        href: chalk.blue.underline,
-        hr: chalk.gray,
-        listitem: chalk.reset,
-        table: chalk.reset,
-        paragraph: chalk.reset,
-        html: chalk.gray,
-        // 格式
-        reflowText: true,
-        width,
-        showSectionPrefix: false,
-        tab: TAB_SIZE,
-        unescape: true,
-        emoji: true,
-      },
-      { ignoreIllegals: true },
-    ) as any,
-  );
+/** 数字转小写字母：1→a, 2→b, ..., 26→z, 27→aa */
+function toAlpha(n: number): string {
+  let result = "";
+  let num = n;
+  while (num > 0) {
+    num--;
+    result = String.fromCharCode(97 + (num % 26)) + result;
+    num = Math.floor(num / 26);
+  }
+  return result;
+}
 
-  // 修复 marked-terminal v7 + marked v15 兼容性问题：
-  //
-  // Bug 1 — 列表项内联格式不渲染：
-  //   text renderer 只取 text.text 原始字符串，不解析 inline tokens。
-  //
-  // Bug 2 — 代码块无语法高亮：
-  //   内部 bundle 的 chalk level=0，highlight() 直接返回原文。
-  //   用自定义 code renderer + 我们的 chalk theme 绕过。
-  marked.use({
-    renderer: {
-      text(token: any): string {
-        if (typeof token === "object" && token.tokens) {
-          return (this as any).parser.parseInline(token.tokens);
-        }
-        return typeof token === "object" ? token.text : token;
-      },
-      code(token: any): string {
-        let code: string;
-        let lang: string | undefined;
-        if (typeof token === "object") {
-          code = token.text;
-          lang = token.lang;
+/** 数字转小写罗马数字 */
+function toRoman(n: number): string {
+  const values = [1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1];
+  const symbols = ["m", "cm", "d", "cd", "c", "xc", "l", "xl", "x", "ix", "v", "iv", "i"];
+  let result = "";
+  let num = n;
+  for (let i = 0; i < values.length; i++) {
+    while (num >= values[i]) {
+      result += symbols[i];
+      num -= values[i];
+    }
+  }
+  return result;
+}
+
+/** 按嵌套深度格式化有序列表前缀：depth 0 数字，depth 1 字母，depth 2 罗马 */
+function formatOrderedPrefix(num: number, depth: number): string {
+  switch (depth % 3) {
+    case 0: return `${num}.`;
+    case 1: return `${toAlpha(num)}.`;
+    case 2: return `${toRoman(num)}.`;
+    default: return `${num}.`;
+  }
+}
+
+// ── OSC 8 超链接 ────────────────────────────────────────────────
+
+/** 渲染 OSC 8 终端超链接 */
+function renderLink(label: string, href: string): string {
+  const styledLabel = chalk.blue.underline(label);
+  return `\x1b]8;;${href}\x1b\\${styledLabel}\x1b]8;;\x1b\\`;
+}
+
+// ── 内联 token 递归渲染 ─────────────────────────────────────────
+
+/** 递归渲染内联 token 数组为 ANSI 字符串 */
+function renderInline(tokens: any[]): string {
+  let result = "";
+  for (const token of tokens) {
+    switch (token.type) {
+      case "text":
+        result += token.tokens ? renderInline(token.tokens) : token.text;
+        break;
+      case "strong":
+        result += chalk.bold(renderInline(token.tokens));
+        break;
+      case "em":
+        result += chalk.italic(renderInline(token.tokens));
+        break;
+      case "codespan":
+        result += chalk.cyan(token.text);
+        break;
+      case "del":
+        result += chalk.dim.gray.strikethrough(renderInline(token.tokens));
+        break;
+      case "link":
+        result += renderLink(
+          token.tokens ? renderInline(token.tokens) : token.text,
+          token.href,
+        );
+        break;
+      case "image":
+        result += token.href || token.text;
+        break;
+      case "br":
+        result += "\n";
+        break;
+      case "escape":
+        result += token.text;
+        break;
+      case "html":
+        result += token.text;
+        break;
+      default:
+        result += token.raw || token.text || "";
+        break;
+    }
+  }
+  return result;
+}
+
+// ── 列表渲染 ────────────────────────────────────────────────────
+
+/** 递归渲染列表（支持嵌套） */
+function renderList(token: any, depth: number = 0): string {
+  const indent = TAB_INDENT.repeat(depth);
+  const lines: string[] = [];
+
+  for (let i = 0; i < token.items.length; i++) {
+    const item = token.items[i];
+    const prefix = token.ordered
+      ? `${formatOrderedPrefix((token.start || 1) + i, depth)} `
+      : "- ";
+
+    // 收集当前列表项的内容
+    const parts: string[] = [];
+    for (const child of item.tokens) {
+      if (child.type === "text") {
+        parts.push(child.tokens ? renderInline(child.tokens) : child.text);
+      } else if (child.type === "paragraph") {
+        parts.push(renderInline(child.tokens));
+      } else if (child.type === "list") {
+        // 嵌套列表单独处理
+        parts.push("\n" + renderList(child, depth + 1));
+      } else {
+        // 其他块级元素（代码块等）
+        parts.push(renderTokens([child]));
+      }
+    }
+
+    const content = parts.join("");
+    // 第一行带前缀，后续行对齐
+    const firstLine = `${indent}${prefix}${content.split("\n")[0]}`;
+    const restLines = content.split("\n").slice(1).map(line => {
+      // 嵌套列表已经有自己的缩进，不需要额外对齐
+      if (line.startsWith(TAB_INDENT.repeat(depth + 1))) return line;
+      return line;
+    });
+
+    lines.push(firstLine);
+    if (restLines.length > 0) {
+      lines.push(...restLines);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+// ── 块级 token 渲染 ─────────────────────────────────────────────
+
+/** 递归渲染块级 token 数组为 ANSI 字符串 */
+function renderTokens(tokens: any[]): string {
+  const blocks: string[] = [];
+
+  for (const token of tokens) {
+    switch (token.type) {
+      case "heading": {
+        const text = renderInline(token.tokens);
+        if (token.depth === 1) {
+          blocks.push(chalk.bold.italic.underline(text));
         } else {
-          code = token;
+          blocks.push(chalk.bold(text));
         }
-        const highlighted = highlightCode(code, lang);
+        break;
+      }
+      case "paragraph": {
+        blocks.push(renderInline(token.tokens));
+        break;
+      }
+      case "code": {
+        const highlighted = highlightCode(token.text, token.lang);
         const indented = highlighted
           .split("\n")
           .map((line: string) => TAB_INDENT + line)
           .join("\n");
-        return "\n" + indented + "\n";
-      },
-      table(token: any): string {
-        return renderTable(token);
-      },
-    },
-  } as any);
-}
-
-// 记录上次配置时的终端宽度，宽度变化时重新配置并清空缓存
-let lastConfiguredWidth = 0;
-
-function ensureConfigured(): void {
-  const w = getTermWidth();
-  if (w !== lastConfiguredWidth) {
-    configureMarked();
-    lastConfiguredWidth = w;
-    renderCache.clear();
+        blocks.push(indented);
+        break;
+      }
+      case "blockquote": {
+        const inner = renderTokens(token.tokens);
+        const quoted = inner
+          .split("\n")
+          .map((line: string) => chalk.dim("│") + " " + chalk.italic(line))
+          .join("\n");
+        blocks.push(quoted);
+        break;
+      }
+      case "list": {
+        blocks.push(renderList(token));
+        break;
+      }
+      case "table": {
+        blocks.push(renderTable(token));
+        break;
+      }
+      case "hr": {
+        blocks.push("---");
+        break;
+      }
+      case "html": {
+        const trimmed = token.text.trim();
+        if (trimmed) blocks.push(chalk.gray(trimmed));
+        break;
+      }
+      case "space": {
+        // 块间距由 \n\n 连接处理，跳过
+        break;
+      }
+      default: {
+        // 未知 token 类型，输出原始文本
+        if (token.raw) blocks.push(token.raw);
+        break;
+      }
+    }
   }
+
+  return blocks.join("\n\n");
 }
 
-// ── 渲染缓存 ────────────────────────────────────────────────────
+// ── 渲染缓存 + 宽度检测 ─────────────────────────────────────────
 const renderCache = new Map<string, string>();
+let lastWidth = 0;
 
 /** 将 Markdown 文本渲染为终端格式 */
 export function renderMarkdown(text: string): string {
-  ensureConfigured();
+  // 终端宽度变化时清空缓存
+  const w = getTermWidth();
+  if (w !== lastWidth) {
+    renderCache.clear();
+    lastWidth = w;
+  }
 
   if (renderCache.has(text)) {
     return renderCache.get(text)!;
@@ -323,11 +441,8 @@ export function renderMarkdown(text: string): string {
   const log = getLogger();
 
   try {
-    // marked v17: 明确 async: false 确保返回 string（不是 Promise）
-    const rendered = marked.parse(text, { async: false });
-    // marked-terminal 硬编码 BULLET_POINT = '* '，替换为 • 符号。
-    // 列表 bullet 后紧跟 ANSI 码（chalk.reset 的 \x1b[），以此区分代码块中的 '* '。
-    const result = rendered.trimEnd().replace(/^(\s*)\* (\x1b\[)/gm, `$1${BULLET}$2`);
+    const tokens = marked.lexer(text);
+    const result = renderTokens(tokens).trimEnd();
 
     if (renderCache.size >= MAX_CACHE_SIZE) {
       const firstKey = renderCache.keys().next().value;
