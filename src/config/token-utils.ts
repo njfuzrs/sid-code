@@ -40,15 +40,28 @@ export function estimateTokens(text: string): number {
   return Math.ceil(text.length / charsPerToken);
 }
 
+/** 截断结果（结构化，便于日志追踪） */
+export interface TruncateResult {
+  /** 拼接后的最终内容 */
+  content: string;
+  /** 完整包含的附件 */
+  included: Attachment[];
+  /** 被部分截断的附件（最多一个） */
+  truncated?: Attachment;
+  /** 被完全丢弃的附件 */
+  discarded: Attachment[];
+}
+
 /**
  * 按优先级截断附件，确保总 token 不超过限制
  * 核心部分（身份、环境、工具指南、约束）必须保留，附件按优先级逐个添加
+ * 返回结构化结果，包含被包含/截断/丢弃的附件列表
  */
 export function truncateToLimit(
   coreParts: string[],
   attachments: Attachment[],
   maxTokens: number,
-): string {
+): TruncateResult {
   // 保留 10% 余量给消息历史
   const targetTokens = Math.floor(maxTokens * 0.9);
 
@@ -56,24 +69,38 @@ export function truncateToLimit(
   let content = coreParts.join("\n\n");
   let currentTokens = estimateTokens(content);
 
+  const included: Attachment[] = [];
+  const discarded: Attachment[] = [];
+  let truncated: Attachment | undefined;
+
   // 按优先级逐个添加附件（附件已排序，数字越小越重要）
+  let hitLimit = false;
   for (const attachment of attachments) {
+    if (hitLimit) {
+      discarded.push(attachment);
+      continue;
+    }
+
     const attachmentTokens = estimateTokens(attachment.content);
     if (currentTokens + attachmentTokens < targetTokens) {
       content += "\n\n" + attachment.content;
       currentTokens += attachmentTokens;
+      included.push(attachment);
     } else {
       // 超限，尝试截断当前附件内容（保留前半部分）
       const remainingTokens = targetTokens - currentTokens;
       if (remainingTokens > 200) {
         // 至少还能放 200 token 才值得截断
         const truncatedChars = Math.floor(remainingTokens * 2.5); // 保守估算
-        const truncated = attachment.content.slice(0, truncatedChars) + "\n\n[... 内容已截断 ...]";
-        content += "\n\n" + truncated;
+        const truncatedContent = attachment.content.slice(0, truncatedChars) + "\n\n[... 内容已截断 ...]";
+        content += "\n\n" + truncatedContent;
+        truncated = attachment;
+      } else {
+        discarded.push(attachment);
       }
-      break;
+      hitLimit = true;
     }
   }
 
-  return content;
+  return { content, included, truncated, discarded };
 }

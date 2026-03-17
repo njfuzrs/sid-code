@@ -2,10 +2,21 @@
  * 权限规则匹配
  * 支持 allow/deny/ask 规则配置，带 glob 模式匹配
  * 规则格式：工具名(参数模式)，如 "Read", "Bash(npm *)", "Edit(.env*)"
+ *
+ * 优先级计算：具体规则优先于通用规则（对标 Claude Code）
+ * - 带参数的规则（如 Bash(npm *)）比通用规则（如 Bash）优先级更高
+ * - 同等具体度下，deny > ask > allow
  */
 
 import { minimatch } from "minimatch";
 import type { PermissionRule, PermissionRequest, Decision } from "./types.ts";
+
+/** 规则匹配结果（带分数） */
+interface RuleMatch {
+  rule: string;
+  type: "allow" | "deny" | "ask";
+  score: number;
+}
 
 /**
  * 匹配单条规则
@@ -38,34 +49,68 @@ export function matchRule(rule: string, req: PermissionRequest): boolean {
 }
 
 /**
+ * 计算规则匹配分数
+ * 分数越高优先级越高：
+ * - 基础分：deny=1000, ask=500, allow=0
+ * - 有参数（更具体）：+100
+ * 返回 null 表示不匹配
+ */
+function scoreMatch(rule: string, req: PermissionRequest, type: "allow" | "deny" | "ask"): number | null {
+  if (!matchRule(rule, req)) return null;
+
+  let score = 0;
+  // 类型基础分
+  if (type === "deny") score += 1000;
+  else if (type === "ask") score += 500;
+
+  // 有参数 = 更具体 = 更高优先级
+  if (rule.includes("(")) score += 100;
+
+  return score;
+}
+
+/**
  * 检查权限规则
- * 优先级：deny > allow > ask
+ * 收集所有匹配的规则，按分数排序选最高分（具体规则优先于通用规则）
  * 返回 null 表示无匹配规则
  */
 export function checkRules(rules: PermissionRule, req: PermissionRequest): Decision | null {
-  // 黑名单优先
-  if (rules.deny?.some(r => matchRule(r, req))) {
-    return {
-      allowed: false,
-      reason: `规则拒绝: ${req.toolName}`,
-    };
+  const matches: RuleMatch[] = [];
+
+  for (const r of rules.deny || []) {
+    const score = scoreMatch(r, req, "deny");
+    if (score !== null) matches.push({ rule: r, type: "deny", score });
+  }
+  for (const r of rules.allow || []) {
+    const score = scoreMatch(r, req, "allow");
+    if (score !== null) matches.push({ rule: r, type: "allow", score });
+  }
+  for (const r of rules.ask || []) {
+    const score = scoreMatch(r, req, "ask");
+    if (score !== null) matches.push({ rule: r, type: "ask", score });
   }
 
-  // 白名单
-  if (rules.allow?.some(r => matchRule(r, req))) {
-    return { allowed: true };
-  }
+  if (matches.length === 0) return null;
 
-  // ask 列表
-  if (rules.ask?.some(r => matchRule(r, req))) {
-    return {
-      allowed: false,
-      needsConfirmation: true,
-      reason: `规则要求确认: ${req.toolName}`,
-    };
-  }
+  // 选最高分
+  matches.sort((a, b) => b.score - a.score);
+  const best = matches[0];
 
-  return null; // 无匹配规则
+  switch (best.type) {
+    case "deny":
+      return {
+        allowed: false,
+        reason: `规则拒绝: ${req.toolName} (匹配 ${best.rule})`,
+      };
+    case "allow":
+      return { allowed: true };
+    case "ask":
+      return {
+        allowed: false,
+        needsConfirmation: true,
+        reason: `规则要求确认: ${req.toolName} (匹配 ${best.rule})`,
+      };
+  }
 }
 
 /**

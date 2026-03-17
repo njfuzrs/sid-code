@@ -50,10 +50,13 @@ describe("truncateToLimit", () => {
     ];
 
     const result = truncateToLimit(core, attachments, 100000);
-    expect(result).toContain("身份指令");
-    expect(result).toContain("环境信息");
-    expect(result).toContain("项目规则");
-    expect(result).toContain("Git 状态");
+    expect(result.content).toContain("身份指令");
+    expect(result.content).toContain("环境信息");
+    expect(result.content).toContain("项目规则");
+    expect(result.content).toContain("Git 状态");
+    expect(result.included).toHaveLength(2);
+    expect(result.discarded).toHaveLength(0);
+    expect(result.truncated).toBeUndefined();
   });
 
   test("超限时按优先级截断低优先级附件", () => {
@@ -67,10 +70,12 @@ describe("truncateToLimit", () => {
 
     // 设置很小的 token 限制
     const result = truncateToLimit(core, attachments, 100);
-    expect(result).toContain("A".repeat(100));
-    expect(result).toContain("重要内容");
+    expect(result.content).toContain("A".repeat(100));
+    expect(result.content).toContain("重要内容");
     // 大附件应该被截断或丢弃
-    expect(result).not.toContain(bigContent);
+    expect(result.content).not.toContain(bigContent);
+    // 结构化追踪
+    expect(result.included.length + (result.truncated ? 1 : 0) + result.discarded.length).toBe(2);
   });
 
   test("核心部分始终保留", () => {
@@ -80,6 +85,22 @@ describe("truncateToLimit", () => {
     ];
 
     const result = truncateToLimit(core, attachments, 50);
-    expect(result).toContain("核心内容必须保留");
+    expect(result.content).toContain("核心内容必须保留");
+  });
+
+  test("返回结构化的截断追踪信息", () => {
+    const core = ["核心"];
+    const attachments = [
+      makeAttachment("a", "小附件", 10),
+      makeAttachment("b", "Y".repeat(50000), 20),
+      makeAttachment("c", "被丢弃的附件", 30),
+    ];
+
+    const result = truncateToLimit(core, attachments, 200);
+    // a 应该被包含
+    expect(result.included.some(att => att.type === "a")).toBe(true);
+    // b 或 c 应该在 truncated 或 discarded 中
+    const allTracked = result.included.length + (result.truncated ? 1 : 0) + result.discarded.length;
+    expect(allTracked).toBe(3);
   });
 });

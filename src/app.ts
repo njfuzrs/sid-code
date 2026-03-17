@@ -309,9 +309,37 @@ export class App {
     this.ctxMgr.setSystemPrompt(systemPrompt);
     log.info("APP", `初始化完成，系统提示词 ${systemPrompt.length} 字符，工具数 ${this.toolRegistry.size()}`);
 
-    // 启动 CLAUDE.md 文件变化监听
-    watchCLAUDEmd(process.cwd(), (changedPath) => {
-      log.info("APP", `CLAUDE.md 已变更: ${changedPath}，下次请求将使用新规则`);
+    // 启动 CLAUDE.md 文件变化监听（变更时重新加载规则 + 重建系统提示词）
+    watchCLAUDEmd(process.cwd(), async (changedPath) => {
+      log.info("APP", `CLAUDE.md 已变更: ${changedPath}`);
+      // 1. clearPromptCache 已在 watchCLAUDEmd 内部调用
+      // 2. 重新加载并应用规则
+      const newRules = await loadAllCLAUDEmd(process.cwd());
+      if (newRules) {
+        this.applyProjectRules(newRules);
+        // 3. 重建系统提示词
+        const { buildSystemPrompt } = await import("./config/system-prompt.ts");
+        let memorySummary: string | undefined;
+        try {
+          const { MemoryStore } = await import("./memory/store.ts");
+          const memStore = new MemoryStore(process.cwd());
+          memorySummary = await memStore.generateSummary() || undefined;
+        } catch { /* 忽略 */ }
+
+        const newPrompt = buildSystemPrompt({
+          tools: this.toolRegistry.all(),
+          projectRules: newRules.rawContent,
+          projectRulesPath: newRules.sourcePath,
+          appendPrompt: this.config.appendSystemPrompt || undefined,
+          workingDir: process.cwd(),
+          permissionMode: this.config.permissionMode,
+          gitStatus: true,
+          memorySummary,
+          maxTokens: 180000,
+        });
+        this.ctxMgr.setSystemPrompt(newPrompt);
+        log.info("APP", `系统提示词已重建: ${newPrompt.length} 字符`);
+      }
     });
 
     // session_start hook（非阻塞）
@@ -355,6 +383,42 @@ export class App {
     if (rules.model && !process.argv.includes("--model")) {
       this.config.model = rules.model;
       log.info("APP", `CLAUDE.md 模型: ${rules.model}`);
+    }
+
+    // systemPromptAddition → appendSystemPrompt（仅当 CLI 未指定 --append-system-prompt 时）
+    if (rules.systemPromptAddition && !this.config.appendSystemPrompt) {
+      this.config.appendSystemPrompt = rules.systemPromptAddition;
+      log.info("APP", `CLAUDE.md 系统提示词追加: ${rules.systemPromptAddition.length} 字符`);
+    }
+
+    // instructions → 拼接到 rawContent 前面（作为高优先级指令）
+    if (rules.instructions) {
+      rules.rawContent = `# Instructions\n${rules.instructions}\n\n---\n\n${rules.rawContent}`;
+      log.info("APP", `CLAUDE.md 指令已注入 rawContent 前部: ${rules.instructions.length} 字符`);
+    }
+
+    // memory → 异步写入 MemoryStore（不阻塞初始化）
+    if (rules.memory && Object.keys(rules.memory).length > 0) {
+      this.applyProjectMemory(rules.memory);
+    }
+  }
+
+  /**
+   * 将 CLAUDE.md 中的 memory 键值对写入 MemoryStore
+   * 异步执行，不阻塞主流程
+   */
+  private async applyProjectMemory(memory: Record<string, string>): Promise<void> {
+    const log = getLogger();
+    try {
+      const { MemoryStore } = await import("./memory/store.ts");
+      const memStore = new MemoryStore(process.cwd());
+      await memStore.load();
+      for (const [key, value] of Object.entries(memory)) {
+        await memStore.set(key, value, "project");
+        log.info("APP", `CLAUDE.md 记忆写入: ${key} = ${value.slice(0, 50)}${value.length > 50 ? "..." : ""}`);
+      }
+    } catch (err: any) {
+      log.warn("APP", `CLAUDE.md 记忆写入失败: ${err.message}`);
     }
   }
 

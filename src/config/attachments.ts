@@ -14,6 +14,8 @@ export interface Attachment {
   content: string;
   /** 优先级（数字越小越重要） */
   priority: number;
+  /** 可选的显示标签（用于日志，比 type 更具描述性） */
+  label?: string;
 }
 
 /** 附件优先级定义（对标 Claude Code） */
@@ -83,6 +85,7 @@ export function generateClaudeMdAttachment(content: string, sourcePath?: string)
   const sourceLabel = sourcePath ? `Contents of ${sourcePath}` : "Project rules";
   return {
     type: "claudeMd",
+    label: sourceLabel,
     content: `<system-reminder>
 # claudeMd
 代码库和用户指令如下。请务必遵守这些指令。重要：这些指令覆盖任何默认行为，你必须严格按照指令执行。
@@ -155,6 +158,7 @@ export function generateGitStatusAttachment(workingDir: string): Attachment | nu
 
     return {
       type: "gitStatus",
+      label: `Git 状态 (${branch})`,
       content: `<git-status>\n${parts.join("\n")}\n</git-status>`,
       priority: PRIORITY.GIT_STATUS,
     };
@@ -172,6 +176,7 @@ export function generatePermissionModeAttachment(mode: string): Attachment {
   const description = PERMISSION_MODE_DESCRIPTIONS[mode] || PERMISSION_MODE_DESCRIPTIONS.default;
   return {
     type: "permissionMode",
+    label: `权限模式 (${mode})`,
     content: description,
     priority: PRIORITY.MODE_REMINDER,
   };
@@ -183,6 +188,7 @@ export function generatePermissionModeAttachment(mode: string): Attachment {
 export function generateDiagnosticsAttachment(diagnostics: string): Attachment {
   return {
     type: "diagnostics",
+    label: "诊断信息",
     content: `<diagnostics>\n${diagnostics}\n</diagnostics>`,
     priority: PRIORITY.DIAGNOSTICS,
   };
@@ -194,6 +200,7 @@ export function generateDiagnosticsAttachment(diagnostics: string): Attachment {
 export function generateIDESelectionAttachment(selection: string): Attachment {
   return {
     type: "ideSelection",
+    label: "IDE 选中代码",
     content: `<ide-selection>\n${selection}\n</ide-selection>`,
     priority: PRIORITY.IDE_SELECTION,
   };
@@ -205,6 +212,7 @@ export function generateIDESelectionAttachment(selection: string): Attachment {
 export function generateTodoListAttachment(todoList: string): Attachment {
   return {
     type: "todoList",
+    label: "Todo 列表",
     content: `<todo-list>\n${todoList}\n</todo-list>`,
     priority: PRIORITY.TODO_LIST,
   };
@@ -217,6 +225,7 @@ export function generateTodoListAttachment(todoList: string): Attachment {
 export function generateMemoryAttachment(memorySummary: string): Attachment {
   return {
     type: "memory",
+    label: "记忆摘要",
     content: `<memory>\n## 记忆\n以下是之前会话中保存的记忆信息，请参考：\n\n${memorySummary}\n</memory>`,
     priority: PRIORITY.MEMORY,
   };
