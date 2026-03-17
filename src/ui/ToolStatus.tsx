@@ -1,10 +1,10 @@
 /**
  * 工具执行状态组件
- * 显示工具调用的 spinner 和结构化工具信息
+ * 显示工具调用的 spinner、成功/失败状态和耗时
  */
 
-import React, { useEffect } from "react";
-import { Box } from "ink";
+import React, { useEffect, useState } from "react";
+import { Box, Text } from "ink";
 import { Spinner } from "@inkjs/ui";
 import { getLogger } from "../debug/logger.ts";
 
@@ -12,6 +12,7 @@ interface ToolStatusProps {
   toolName: string | null;
   isExecuting: boolean;
   toolInput?: unknown;
+  lastResult?: { toolName: string; isError: boolean; elapsedMs: number } | null;
 }
 
 /** 从工具输入中提取简短描述 */
@@ -51,26 +52,54 @@ function getToolLabel(name: string, input: unknown): string {
   return name;
 }
 
-export function ToolStatus({ toolName, isExecuting, toolInput }: ToolStatusProps) {
+/** 格式化耗时 */
+function formatElapsed(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
+export const ToolStatus = React.memo(function ToolStatus({ toolName, isExecuting, toolInput, lastResult }: ToolStatusProps) {
   const log = getLogger();
+  const [showResult, setShowResult] = useState(false);
 
   useEffect(() => {
     if (isExecuting && toolName) {
       log.debug("UI:TOOL", `显示工具状态: ${toolName}`);
-    } else {
-      log.debug("UI:TOOL", `隐藏工具状态`);
     }
   }, [toolName, isExecuting]);
 
-  if (!isExecuting || !toolName) {
-    return null;
+  // 工具完成后显示结果，1.5 秒后消失
+  useEffect(() => {
+    if (lastResult) {
+      setShowResult(true);
+      const timer = setTimeout(() => setShowResult(false), 1500);
+      return () => clearTimeout(timer);
+    }
+    setShowResult(false);
+  }, [lastResult]);
+
+  // 执行中：cyan spinner
+  if (isExecuting && toolName) {
+    const label = toolInput ? getToolLabel(toolName, toolInput) : toolName;
+    return (
+      <Box>
+        <Spinner label={` ${label}`} />
+      </Box>
+    );
   }
 
-  const label = toolInput ? getToolLabel(toolName, toolInput) : toolName;
+  // 刚完成：显示成功/失败状态 + 耗时
+  if (showResult && lastResult) {
+    const icon = lastResult.isError ? "✗" : "✓";
+    const color = lastResult.isError ? "red" : "green";
+    return (
+      <Box>
+        <Text color={color}>{icon} </Text>
+        <Text bold>{lastResult.toolName}</Text>
+        <Text dimColor> {formatElapsed(lastResult.elapsedMs)}</Text>
+      </Box>
+    );
+  }
 
-  return (
-    <Box>
-      <Spinner label={` ${label}`} />
-    </Box>
-  );
-}
+  return null;
+});

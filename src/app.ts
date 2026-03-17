@@ -1051,28 +1051,29 @@ export class App {
     const { createFullScreen } = await import("./ui/fullscreen.ts");
     const { TUIApp } = await import("./ui/App.tsx");
 
-    // 共享状态引用（TUI 通过轮询读取）
-    const stateRef: { current: import("./ui/App.tsx").TUIState } = {
-      current: {
-        messages: [],
-        streamingText: "",
-        isLoading: false,
-        toolName: null,
-        toolInput: null,
-        isToolExecuting: false,
-        model: this.config.model,
-        provider: this.config.provider,
-        usage: { ...this.sessionState.getTotalUsage() },
-        costUSD: 0,
-        costLimit: this.config.costLimit ?? 0,
-        contextPercent: 0,
-        permissionMode: this.config.permissionMode || "default",
-        gitBranch: (() => { try { return execSync("git rev-parse --abbrev-ref HEAD 2>/dev/null", { encoding: "utf-8" }).trim(); } catch { return ""; } })(),
-        statusMessage: "",
-        permissionRequest: null,
-        debug: !!this.config.debug,
-      },
-    };
+    const { StateBridge } = await import("./ui/state-bridge.ts");
+
+    // 事件驱动状态桥接（替代 50ms 轮询）
+    const bridge = new StateBridge({
+      messages: [],
+      streamingText: "",
+      isLoading: false,
+      toolName: null,
+      toolInput: null,
+      isToolExecuting: false,
+      model: this.config.model,
+      provider: this.config.provider,
+      usage: { ...this.sessionState.getTotalUsage() },
+      costUSD: 0,
+      costLimit: this.config.costLimit ?? 0,
+      contextPercent: 0,
+      permissionMode: this.config.permissionMode || "default",
+      gitBranch: (() => { try { return execSync("git rev-parse --abbrev-ref HEAD 2>/dev/null", { encoding: "utf-8" }).trim(); } catch { return ""; } })(),
+      statusMessage: "",
+      permissionRequest: null,
+      debug: !!this.config.debug,
+      lastToolResult: null,
+    });
 
     const updateState = (patch: Partial<import("./ui/App.tsx").TUIState>) => {
       const keys = Object.keys(patch);
@@ -1083,7 +1084,7 @@ export class App {
         toolName: patch.toolName,
         isToolExecuting: patch.isToolExecuting,
       });
-      stateRef.current = { ...stateRef.current, ...patch };
+      bridge.update(patch);
     };
 
     // 设置 TUI 权限确认回调
@@ -1118,7 +1119,7 @@ export class App {
       let streamSynced = false;
       const tuiCallbacks: AgentLoopCallbacks = {
         onStreamText: (text) => {
-          const current = stateRef.current.streamingText || "";
+          const current = bridge.current.streamingText || "";
           // 首次收到流式文本时，同步 ctxMgr 中的真实消息（用户消息已在 run() 中被 addMessage）
           if (!streamSynced) {
             streamSynced = true;
@@ -1130,12 +1131,13 @@ export class App {
         onToolStart: (name, input) => {
           updateState({ streamingText: "", toolName: name, toolInput: input ?? null, isToolExecuting: true, messages: this.ctxMgr.getMessages() });
         },
-        onToolEnd: () => {
+        onToolEnd: (name, result) => {
           updateState({
             messages: this.ctxMgr.getMessages(),
             toolName: null,
             toolInput: null,
             isToolExecuting: false,
+            lastToolResult: result ? { toolName: name, isError: !!result.isError, elapsedMs: result.elapsedMs ?? 0 } : null,
           });
         },
         onCompact: () => {
@@ -1271,9 +1273,9 @@ export class App {
 
     const app = createFullScreen(
       React.createElement(TUIApp, {
-        initialState: stateRef.current,
+        initialState: bridge.current,
         callbacks,
-        stateRef,
+        bridge,
       }),
     );
     await app.start();

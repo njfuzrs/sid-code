@@ -28,7 +28,7 @@ export interface AgentLoopCallbacks {
   /** 工具开始执行 */
   onToolStart(toolName: string, toolInput?: unknown): void;
   /** 工具执行结束 */
-  onToolEnd(toolName: string): void;
+  onToolEnd(toolName: string, result?: { isError?: boolean; elapsedMs?: number }): void;
   /** 上下文压缩完成 */
   onCompact(): void;
   /** 循环结束 */
@@ -246,12 +246,17 @@ export class AgentLoopRunner {
           }
         }
 
+        const toolStartTime = Date.now();
         const toolResults = await this.deps.executeTools(response.content);
+        const toolElapsed = Date.now() - toolStartTime;
         ctxMgr.addMessage({ role: "user", content: toolResults });
 
-        for (const name of toolNames) {
-          callbacks.onToolEnd(name);
-        }
+        // 从结果中提取最后一个工具的 isError 状态
+        const lastResult = toolResults[toolResults.length - 1];
+        const lastIsError = lastResult && lastResult.type === "tool_result" ? !!lastResult.is_error : false;
+        const lastName = toolNames[toolNames.length - 1] || "";
+
+        callbacks.onToolEnd(lastName, { isError: lastIsError, elapsedMs: toolElapsed });
         continue;
       }
 

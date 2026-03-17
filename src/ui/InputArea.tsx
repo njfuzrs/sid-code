@@ -1,7 +1,7 @@
 /**
  * 输入区域组件
  * 使用可见光标字符（inverse 样式）标记光标位置，
- * 兼容非全屏模式（无需绝对坐标定位）。
+ * 支持历史记录（↑↓）和 Emacs 快捷键（Ctrl+A/E/U/K）。
  */
 
 import React, { useReducer, useCallback, useRef, useEffect } from "react";
@@ -14,12 +14,16 @@ interface InputAreaProps {
 }
 
 const PLACEHOLDER = "输入消息或 /help 查看命令...";
+const MAX_HISTORY = 100;
 
 // ── 文本输入状态管理 ──────────────────────────────────────────────
 
 interface InputState {
   value: string;
   cursorOffset: number;
+  history: string[];
+  historyIndex: number; // -1 表示当前输入，0+ 表示历史记录
+  savedInput: string;   // 进入历史浏览前保存当前输入
 }
 
 type InputAction =
@@ -27,19 +31,28 @@ type InputAction =
   | { type: "delete" }
   | { type: "move-left" }
   | { type: "move-right" }
+  | { type: "home" }
+  | { type: "end" }
+  | { type: "kill-line" }
+  | { type: "kill-to-start" }
+  | { type: "history-up" }
+  | { type: "history-down" }
   | { type: "reset" };
 
 function inputReducer(state: InputState, action: InputAction): InputState {
   switch (action.type) {
     case "insert":
       return {
+        ...state,
         value: state.value.slice(0, state.cursorOffset) + action.text + state.value.slice(state.cursorOffset),
         cursorOffset: state.cursorOffset + action.text.length,
+        historyIndex: -1,
       };
     case "delete": {
       if (state.cursorOffset === 0) return state;
       const offset = state.cursorOffset - 1;
       return {
+        ...state,
         value: state.value.slice(0, offset) + state.value.slice(offset + 1),
         cursorOffset: offset,
       };
@@ -48,8 +61,42 @@ function inputReducer(state: InputState, action: InputAction): InputState {
       return { ...state, cursorOffset: Math.max(0, state.cursorOffset - 1) };
     case "move-right":
       return { ...state, cursorOffset: Math.min(state.value.length, state.cursorOffset + 1) };
-    case "reset":
-      return { value: "", cursorOffset: 0 };
+    case "home":
+      return { ...state, cursorOffset: 0 };
+    case "end":
+      return { ...state, cursorOffset: state.value.length };
+    case "kill-line":
+      // Ctrl+K：删除光标到行尾
+      return { ...state, value: state.value.slice(0, state.cursorOffset) };
+    case "kill-to-start":
+      // Ctrl+U：删除光标到行首
+      return { ...state, value: state.value.slice(state.cursorOffset), cursorOffset: 0 };
+    case "history-up": {
+      if (state.history.length === 0) return state;
+      const newIdx = state.historyIndex + 1;
+      if (newIdx >= state.history.length) return state;
+      // 首次进入历史浏览，保存当前输入
+      const saved = state.historyIndex === -1 ? state.value : state.savedInput;
+      const histValue = state.history[newIdx];
+      return { ...state, value: histValue, cursorOffset: histValue.length, historyIndex: newIdx, savedInput: saved };
+    }
+    case "history-down": {
+      if (state.historyIndex <= -1) return state;
+      const newIdx = state.historyIndex - 1;
+      if (newIdx === -1) {
+        // 回到当前输入
+        return { ...state, value: state.savedInput, cursorOffset: state.savedInput.length, historyIndex: -1 };
+      }
+      const histValue = state.history[newIdx];
+      return { ...state, value: histValue, cursorOffset: histValue.length, historyIndex: newIdx };
+    }
+    case "reset": {
+      // 提交时将当前值加入历史
+      const newHistory = state.value.trim()
+        ? [state.value.trim(), ...state.history].slice(0, MAX_HISTORY)
+        : state.history;
+      return { value: "", cursorOffset: 0, history: newHistory, historyIndex: -1, savedInput: "" };
+    }
   }
 }
 
@@ -59,7 +106,9 @@ export function InputArea({ onSubmit, isLoading }: InputAreaProps) {
   const lastSubmittedRef = useRef<string>("");
   const log = getLogger();
   const prevLoadingRef = useRef(isLoading);
-  const [state, dispatch] = useReducer(inputReducer, { value: "", cursorOffset: 0 });
+  const [state, dispatch] = useReducer(inputReducer, {
+    value: "", cursorOffset: 0, history: [], historyIndex: -1, savedInput: "",
+  });
 
   // 记录 isLoading 状态变化
   useEffect(() => {
@@ -94,6 +143,15 @@ export function InputArea({ onSubmit, isLoading }: InputAreaProps) {
       handleSubmit();
       return;
     }
+    // ↑↓ 历史浏览
+    if (key.upArrow) {
+      dispatch({ type: "history-up" });
+      return;
+    }
+    if (key.downArrow) {
+      dispatch({ type: "history-down" });
+      return;
+    }
     if (key.leftArrow) {
       dispatch({ type: "move-left" });
       return;
@@ -105,6 +163,13 @@ export function InputArea({ onSubmit, isLoading }: InputAreaProps) {
     if (key.backspace || key.delete) {
       dispatch({ type: "delete" });
       return;
+    }
+    // Emacs 快捷键
+    if (key.ctrl) {
+      if (input === "a") { dispatch({ type: "home" }); return; }
+      if (input === "e") { dispatch({ type: "end" }); return; }
+      if (input === "k") { dispatch({ type: "kill-line" }); return; }
+      if (input === "u") { dispatch({ type: "kill-to-start" }); return; }
     }
     if (input && !key.ctrl && !key.meta) {
       dispatch({ type: "insert", text: input });

@@ -147,7 +147,7 @@ function renderBlock(block: ContentBlock, idx: number, toolNameMap: Map<string, 
 }
 
 /** 渲染单条消息（供 Static 组件使用） */
-export function MessageItem({ message, prevMessage, termWidth }: { message: Message; prevMessage?: Message; termWidth?: number }) {
+export const MessageItem = React.memo(function MessageItem({ message, prevMessage, termWidth }: { message: Message; prevMessage?: Message; termWidth?: number }) {
   const isUser = message.role === "user";
   const toolNameMap = buildToolNameMap(message, prevMessage);
   const tw = termWidth || 80;
@@ -185,4 +185,4 @@ export function MessageItem({ message, prevMessage, termWidth }: { message: Mess
       {message.content.map((block, idx) => renderBlock(block, idx, toolNameMap))}
     </Box>
   );
-}
+});

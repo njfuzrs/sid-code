@@ -4,12 +4,14 @@
  * 消息通过 Static 写入终端原生滚动缓冲区，鼠标滚轮可滚动浏览历史
  */
 
-import React, { useState, useCallback, useEffect, useRef } from "react";
+import React, { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { Box, Text, Static, useApp, useInput, useStdout } from "ink";
 import { MessageItem } from "./MessageList.tsx";
 import { InputArea } from "./InputArea.tsx";
 import { ToolStatus } from "./ToolStatus.tsx";
+import { StatusBar } from "./StatusBar.tsx";
 import { renderMarkdown } from "./markdown.ts";
+import type { StateBridge } from "./state-bridge.ts";
 import type { Message, Usage } from "../llm/types.ts";
 import { getLogger } from "../debug/logger.ts";
 
@@ -58,12 +60,13 @@ export interface TUIState {
   statusMessage: string;
   permissionRequest: PermissionRequestInfo | null;
   debug: boolean;
+  lastToolResult: { toolName: string; isError: boolean; elapsedMs: number } | null;
 }
 
 interface AppProps {
   initialState: TUIState;
   callbacks: TUICallbacks;
-  stateRef: { current: TUIState };
+  bridge: StateBridge;
 }
 
 /** 格式化工具输入的关键信息 */
@@ -83,7 +86,7 @@ function formatToolDetail(toolName: string, input: unknown): string {
 }
 
 /** 权限确认对话框组件 */
-function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
+const PermissionDialog = React.memo(function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
   const detail = formatToolDetail(request.toolName, request.toolInput);
   return (
     <Box flexDirection="column" borderStyle="single" borderColor="yellow" paddingX={1}>
@@ -103,9 +106,19 @@ function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
       </Box>
     </Box>
   );
+});
+
+/** 为消息生成稳定的 key（避免用索引导致不必要的重挂载） */
+function getMessageKey(msg: Message, idx: number): string {
+  for (const block of msg.content) {
+    if (block.type === "tool_use") return `tu-${block.id}`;
+    if (block.type === "tool_result") return `tr-${block.tool_use_id}`;
+  }
+  // 文本消息用角色+索引（文本消息无稳定 ID）
+  return `${msg.role}-${idx}`;
 }
 
-export function TUIApp({ initialState, callbacks, stateRef }: AppProps) {
+export function TUIApp({ initialState, callbacks, bridge }: AppProps) {
   const { exit } = useApp();
   const termWidth = useTerminalWidth();
   const [state, setState] = useState<TUIState>(initialState);
@@ -118,29 +131,14 @@ export function TUIApp({ initialState, callbacks, stateRef }: AppProps) {
     return () => { log.info("UI:APP", "TUIApp 组件已卸载"); };
   }, []);
 
-  // 同步外部状态
+  // 事件驱动状态同步（替代 50ms 轮询）
   useEffect(() => {
-    const interval = setInterval(() => {
-      const s = stateRef.current;
-      setState((prev) => {
-        const messagesChanged = prev.messages.length !== s.messages.length || prev.messages !== s.messages;
-        const streamingChanged = prev.streamingText !== s.streamingText;
-        const loadingChanged = prev.isLoading !== s.isLoading;
-        const toolChanged = prev.toolName !== s.toolName || prev.isToolExecuting !== s.isToolExecuting;
-        const modelChanged = prev.model !== s.model || prev.provider !== s.provider;
-        const usageChanged = prev.usage.inputTokens !== s.usage.inputTokens || prev.usage.outputTokens !== s.usage.outputTokens;
-        const permChanged = prev.permissionRequest !== s.permissionRequest;
-
-        if (messagesChanged || streamingChanged || loadingChanged ||
-            toolChanged || modelChanged || usageChanged || permChanged) {
-          log.debug("UI:SYNC", `状态同步`);
-          return { ...s };
-        }
-        return prev;
-      });
-    }, 50);
-    return () => clearInterval(interval);
-  }, [stateRef]);
+    const onChange = (newState: TUIState) => {
+      setState(newState);
+    };
+    bridge.on("change", onChange);
+    return () => { bridge.off("change", onChange); };
+  }, [bridge]);
 
   // Ctrl+C 退出 + 权限对话框快捷键
   useInput((input, key) => {
@@ -179,34 +177,18 @@ export function TUIApp({ initialState, callbacks, stateRef }: AppProps) {
 
   renderCountRef.current++;
 
-  /** 权限模式 badge 颜色 */
-  const permColor = (() => {
-    switch (state.permissionMode) {
-      case "plan": return "cyan";
-      case "deny-write": return "red";
-      case "always-allow": case "dontAsk": return "yellow";
-      default: return "green";
-    }
-  })();
-
-  const costColor = (() => {
-    if (state.costLimit <= 0 || state.costUSD <= 0) return undefined;
-    const pct = (state.costUSD / state.costLimit) * 100;
-    if (pct >= 95) return "red" as const;
-    if (pct >= 80) return "yellow" as const;
-    return undefined;
-  })();
-
-  const costText = state.costUSD > 0 ? `$${state.costUSD.toFixed(4)}` : "$0";
   const isEmpty = state.messages.length === 0 && !state.streamingText;
 
   // 分隔线
   const sepWidth = Math.max(10, termWidth - 4);
   const separator = "── ".repeat(Math.floor(sepWidth / 3));
 
-  // 流式文本：排除已在 messages 中的最后一条助手消息
-  let streamingText = state.streamingText;
-  // Static 只展示 messages 数组中确定的消息
+  // 流式文本 markdown 渲染缓存
+  const renderedStreaming = useMemo(
+    () => state.streamingText ? renderMarkdown(state.streamingText) : "",
+    [state.streamingText],
+  );
+
   const staticMessages = state.messages;
 
   return (
@@ -219,7 +201,7 @@ export function TUIApp({ initialState, callbacks, stateRef }: AppProps) {
             && !msg.content.every((b) => b.type === "tool_result");
           const showSep = idx > 0 && isUserNonTool;
           return (
-            <Box key={`msg-${idx}`} flexDirection="column">
+            <Box key={getMessageKey(msg, idx)} flexDirection="column">
               {showSep && (
                 <Box paddingX={1}>
                   <Text dimColor>{separator}</Text>
@@ -258,18 +240,23 @@ export function TUIApp({ initialState, callbacks, stateRef }: AppProps) {
       ) : null}
 
       {/* 流式文本 */}
-      {streamingText ? (
+      {state.streamingText ? (
         <Box flexDirection="column">
           <Box>
             <Text bold color="green">{"助手 "}</Text>
             <Text color="green">●</Text>
           </Box>
-          <Text>{renderMarkdown(streamingText)}</Text>
+          <Text>{renderedStreaming}</Text>
         </Box>
       ) : null}
 
       {/* 工具状态 */}
-      <ToolStatus toolName={state.toolName} isExecuting={state.isToolExecuting} toolInput={state.toolInput} />
+      <ToolStatus
+        toolName={state.toolName}
+        isExecuting={state.isToolExecuting}
+        toolInput={state.toolInput}
+        lastResult={state.lastToolResult}
+      />
 
       {/* 权限确认对话框 或 输入区 */}
       {state.permissionRequest ? (
@@ -279,23 +266,16 @@ export function TUIApp({ initialState, callbacks, stateRef }: AppProps) {
       )}
 
       {/* 状态栏 */}
-      <Box paddingX={1} justifyContent="space-between">
-        <Text wrap="truncate">
-          <Text bold color="blue">sid-code</Text>
-          <Text dimColor> | </Text>
-          <Text color={permColor}>{state.permissionMode}</Text>
-          {state.gitBranch ? <><Text dimColor> | </Text><Text color="cyan">{state.gitBranch}</Text></> : null}
-          {state.debug ? <><Text dimColor> | </Text><Text color="yellow">DEBUG</Text></> : null}
-          <Text dimColor> | </Text>
-          <Text dimColor>{state.usage.inputTokens}↓ {state.usage.outputTokens}↑</Text>
-          <Text dimColor> | </Text>
-          <Text color={costColor} dimColor={!costColor}>{costText}</Text>
-          <Text dimColor> | ctx {state.contextPercent}%</Text>
-        </Text>
-        <Text dimColor wrap="truncate">
-          {state.model} | Ctrl+C 退出
-        </Text>
-      </Box>
+      <StatusBar
+        permissionMode={state.permissionMode}
+        gitBranch={state.gitBranch}
+        debug={state.debug}
+        usage={state.usage}
+        costUSD={state.costUSD}
+        costLimit={state.costLimit}
+        contextPercent={state.contextPercent}
+        model={state.model}
+      />
     </>
   );
 }
