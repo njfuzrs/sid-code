@@ -28,8 +28,6 @@ import { getLogger } from "./debug/logger.ts";
 import { AgentLoopRunner } from "./agent/loop.ts";
 import type { AgentLoopCallbacks } from "./agent/loop.ts";
 import { HookRunner } from "./hook/runner.ts";
-import { REPLRenderer } from "./ui/repl-renderer.ts";
-import * as readline from "readline";
 import { execSync } from "child_process";
 
 /** App 配置 */
@@ -58,10 +56,8 @@ export class App {
   private sessionState: SessionState;
   private quotaManager?: QuotaManager;
   private abortController: AbortController | null = null;
-  private isTUIMode: boolean = false;
   private loopRunner: AgentLoopRunner;
   private hookRunner!: HookRunner;
-  private renderer: REPLRenderer;
   /** TUI 模式下的权限确认回调（由 TUI 注入），返回 "yes" | "no" | "always" */
   private tuiConfirmCallback: ((toolName: string, toolInput: unknown, desc: string) => Promise<"yes" | "no" | "always">) | null = null;
 
@@ -87,24 +83,15 @@ export class App {
       onRetry: (attempt, error, delayMs) => {
         const log = getLogger();
         log.info("FALLBACK", `重试 ${attempt}，错误: ${error}，延迟 ${delayMs}ms`);
-        if (!this.isTUIMode) {
-          console.log(`\n[重试 ${attempt}，${delayMs}ms 后重试...]`);
-        }
       },
       onFallback: (reason, model) => {
         const log = getLogger();
         log.warn("FALLBACK", `降级到 ${model}，原因: ${reason}`);
-        if (!this.isTUIMode) {
-          console.log(`\n[模型降级到 ${model}]`);
-        }
       },
     });
 
     // 初始化 Hook 执行器
     this.hookRunner = new HookRunner(this.config.hooks);
-
-    // 初始化 REPL 渲染器
-    this.renderer = new REPLRenderer();
 
     // 初始化统一循环 Runner
     this.loopRunner = new AgentLoopRunner({
@@ -225,9 +212,6 @@ export class App {
       if (summary) {
         this.ctxMgr.compactWithSummary(summary);
         log.info("AGENT", `自动压缩完成，摘要 ${summary.length} 字符，剩余 ${this.ctxMgr.messageCount()} 条消息`);
-        if (!this.isTUIMode) {
-          console.log("\n[上下文已自动压缩]");
-        }
         return;
       }
     } catch (err: any) {
@@ -238,9 +222,6 @@ export class App {
     const simpleSummary = `[自动截断] 之前有 ${messages.length - 4} 条消息被截断以释放上下文空间。`;
     this.ctxMgr.compactWithSummary(simpleSummary);
     log.info("AGENT", `简单截断完成，剩余 ${this.ctxMgr.messageCount()} 条消息`);
-    if (!this.isTUIMode) {
-      console.log("\n[上下文已自动截断]");
-    }
   }
 
   /** 初始化：加载系统提示词 */
@@ -583,38 +564,12 @@ export class App {
     return response;
   }
 
-  /** Agentic 主循环：发送消息 → 处理响应 → 执行工具 → 循环 */
-  async agentLoop(userInput: string): Promise<void> {
-    this.renderer.resetStream();
-    let turns = 0;
-    const callbacks: AgentLoopCallbacks = {
-      onStreamText: (text) => this.renderer.renderStreamChunk(text),
-      onToolStart: (_name) => {
-        this.renderer.flushStream();
-      },
-      onToolEnd: () => {},
-      onCompact: () => console.log("\n[上下文已自动压缩]"),
-      onComplete: (t) => {
-        turns = t;
-        this.renderer.flushStream();
-        process.stdout.write("\n");
-        this.renderer.renderCompletionSummary(
-          turns, this.sessionState, this.ctxMgr, this.toolRegistry.size(),
-        );
-      },
-      onContextWarning: (remaining) =>
-        console.log(`\n[Context left until auto-compact: ${remaining.toFixed(0)}%]`),
-      onMaxTurns: (max) => console.log(`\n[达到最大轮次限制: ${max}]`),
-    };
-    await this.loopRunner.run(userInput, callbacks);
-  }
-
   /** 设置 TUI 模式下的权限确认回调 */
   setTUIConfirmCallback(cb: (toolName: string, toolInput: unknown, desc: string) => Promise<"yes" | "no" | "always">): void {
     this.tuiConfirmCallback = cb;
   }
 
-  /** 请求用户确认（根据运行模式选择不同方式，支持 a=always allow） */
+  /** 请求用户确认（TUI 回调 或 headless 自动决策） */
   private async requestUserConfirmation(
     description: string,
     req?: import("./permission/types.ts").PermissionRequest,
@@ -622,7 +577,7 @@ export class App {
     toolInput?: unknown,
   ): Promise<boolean> {
     // TUI 模式：使用注入的回调
-    if (this.isTUIMode && this.tuiConfirmCallback) {
+    if (this.tuiConfirmCallback) {
       const answer = await this.tuiConfirmCallback(toolName || "", toolInput, description);
       if (answer === "always") {
         if (req && this.permissionChecker?.rememberDecision) {
@@ -633,43 +588,8 @@ export class App {
       return answer === "yes";
     }
 
-    // REPL 模式：使用结构化权限确认界面
-    return new Promise((resolve) => {
-      const rl = readline.createInterface({
-        input: process.stdin,
-        output: process.stdout,
-      });
-      // 如果有工具名和输入，显示结构化界面
-      if (toolName && toolInput) {
-        const formatted = this.renderer.formatPermissionRequest(toolName, toolInput);
-        process.stderr.write(formatted + "\n");
-        rl.question("  允许执行？ (y)是 (n)否 (a)始终允许 > ", (answer) => {
-          rl.close();
-          const lower = answer.toLowerCase();
-          if (lower === "a" || lower === "always") {
-            if (req && this.permissionChecker?.rememberDecision) {
-              this.permissionChecker.rememberDecision(req, true);
-            }
-            resolve(true);
-          } else {
-            resolve(lower === "y" || lower === "yes");
-          }
-        });
-      } else {
-        rl.question(`\n[权限请求] ${description}\n允许执行？(y/n/a) [a=本次会话内始终允许] `, (answer) => {
-          rl.close();
-          const lower = answer.toLowerCase();
-          if (lower === "a" || lower === "always") {
-            if (req && this.permissionChecker?.rememberDecision) {
-              this.permissionChecker.rememberDecision(req, true);
-            }
-            resolve(true);
-          } else {
-            resolve(lower === "y" || lower === "yes");
-          }
-        });
-      }
-    });
+    // headless 模式：根据权限模式自动决策
+    return this.config.permissionMode === "always-allow";
   }
 
   /** 执行工具调用（含权限检查，只读工具并行、写入工具串行） */
@@ -729,9 +649,6 @@ export class App {
             log.info("PERMISSION", `用户批准: ${block.name}`);
           } else {
             log.warn("PERMISSION", `权限拒绝: ${block.name} - ${decision.reason}`);
-            if (!this.isTUIMode) {
-              console.log(`\n[权限拒绝] ${decision.reason}`);
-            }
             rejectedResults.set(idx, {
               type: "tool_result",
               tool_use_id: block.id,
@@ -785,11 +702,6 @@ export class App {
   private async executeSingleTool(block: ToolUseBlock, tool: import("./tool/types.ts").Tool): Promise<ContentBlock> {
     const log = getLogger();
 
-    if (!this.isTUIMode) {
-      this.renderer.renderToolStart(block.name, block.input);
-      this.renderer.startSpinner(`${block.name} 执行中...`);
-    }
-
     log.toolStart(block.name, block.input);
 
     // pre_tool_use hook（blocking 时可阻止工具执行）
@@ -800,7 +712,6 @@ export class App {
     });
     const blocked = preResults.find(r => r.blocked);
     if (blocked) {
-      if (!this.isTUIMode) this.renderer.stopSpinner();
       log.info("HOOK", `工具 ${block.name} 被 hook 阻止: ${blocked.reason || "无原因"}`);
       return {
         type: "tool_result",
@@ -823,11 +734,6 @@ export class App {
       const truncatedOutput = ContextManager.truncateToolOutput(result.output);
 
       log.toolEnd(block.name, result.output, !!result.isError, elapsed);
-
-      if (!this.isTUIMode) {
-        this.renderer.stopSpinner();
-        this.renderer.renderToolResult(block.name, block.input, result.output, !!result.isError, elapsed);
-      }
 
       // post_tool_use hook（非阻塞）
       this.hookRunner.run("post_tool_use", {
@@ -853,11 +759,6 @@ export class App {
         stack: err.stack,
       });
 
-      if (!this.isTUIMode) {
-        this.renderer.stopSpinner();
-        this.renderer.renderToolResult(block.name, block.input, err.message, true, elapsed);
-      }
-
       // post_tool_use_failure hook（非阻塞）
       this.hookRunner.run("post_tool_use_failure", {
         toolName: block.name,
@@ -876,163 +777,27 @@ export class App {
     }
   }
 
-  /** 纯文本 REPL 模式 */
-  async runREPL(initialPrompt?: string): Promise<void> {
-    await this.init();
-
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-    });
-
-    // 获取 git 分支
-    let gitBranch: string | undefined;
-    try {
-      gitBranch = execSync("git rev-parse --abbrev-ref HEAD 2>/dev/null", { encoding: "utf-8" }).trim();
-    } catch { /* 非 git 仓库 */ }
-
-    this.renderer.renderWelcome(this.config, this.toolRegistry.size(), process.cwd(), gitBranch);
-
-    // 处理初始提示词
-    if (initialPrompt) {
-      console.log(`> ${initialPrompt}\n`);
-      await this.agentLoop(initialPrompt);
-      // 非交互式环境下直接退出
-      if (!process.stdin.isTTY) {
-        rl.close();
-        return;
-      }
-    }
-
-    const prompt = (): void => {
-      rl.question("> ", async (input) => {
-        const trimmed = input.trim();
-        if (!trimmed) {
-          prompt();
-          return;
-        }
-
-        // 处理斜杠命令
-        if (trimmed.startsWith("/")) {
-          const [cmdName, ...rest] = trimmed.slice(1).split(" ");
-          const args = rest.join(" ");
-
-          // 特殊处理 exit（需要关闭 readline）
-          if (cmdName === "exit" || cmdName === "quit") {
-            await this.hookRunner.run("session_end", { sessionId: this.sessionState.sessionId });
-            unwatchCLAUDEmd();
-            this.mcpManager?.closeAll();
-            console.log("再见！");
-            rl.close();
-            return;
-          }
-
-          // 特殊处理 clear（需要清屏 + 重置运行时状态）
-          if (cmdName === "clear") {
-            this.ctxMgr.clear();
-            clearPromptCache();
-            this.quotaManager?.resetAlertLevel();
-            this.fallback.reset();
-            // 清屏
-            // \x1b[H 光标归位 + \x1b[2J 清屏 + \x1b[3J 清除滚动缓冲区
-            process.stdout.write("\x1b[H\x1b[2J\x1b[3J");
-            console.log("对话已清空");
-            prompt();
-            return;
-          }
-
-          // 尝试从命令注册表查找
-          const cmd = this.commandRegistry.get(cmdName);
-          if (cmd) {
-            try {
-              await cmd.execute(args, {
-                ctxMgr: this.ctxMgr,
-                registry: this.toolRegistry,
-                config: this.config,
-                sessionId: "",
-                provider: this.provider,
-                setModel: (m) => {
-                  this.config.model = m;
-                  // Provider 重建（registry 模式）
-                  if (this.providerRegistry) {
-                    this.providerRegistry.clearCache();
-                    this.provider = this.providerRegistry.getProvider();
-                    this.loopRunner.updateProvider(this.provider);
-                  }
-                },
-                exitRequested: false,
-                sessionState: this.sessionState,
-                mcpManager: this.mcpManager,
-                sendToLLM: async (text) => {
-                  this.abortController = new AbortController();
-                  try { await this.agentLoop(text); } finally { this.abortController = null; }
-                },
-                customCommands: this.getCustomCommandsSummary(),
-              });
-            } catch (err: any) {
-              console.error(`命令执行失败: ${err.message}`);
-            }
-            prompt();
-            return;
-          }
-
-          console.log(`未知命令: /${cmdName}，输入 /help 查看可用命令`);
-          prompt();
-          return;
-        }
-
-        // 发送给 LLM
-        try {
-          this.abortController = new AbortController();
-          await this.agentLoop(trimmed);
-        } catch (err: any) {
-          console.error(`\n错误: ${err.message}`);
-        } finally {
-          this.abortController = null;
-        }
-
-        prompt();
-      });
-    };
-
-    // 处理 Ctrl+C
-    rl.on("close", () => {
-      this.hookRunner.run("session_end", { sessionId: this.sessionState.sessionId })
-        .catch(() => {})
-        .finally(() => {
-          unwatchCLAUDEmd();
-          this.mcpManager?.closeAll();
-          console.log("\n再见！");
-          process.exit(0);
-        });
-    });
-
-    prompt();
-  }
-
-  /** 无头模式 */
+  /** 无头模式：直接用 AgentLoopRunner + 最小回调，不依赖任何 renderer */
   async runHeadless(input: string): Promise<string> {
     await this.init();
 
-    // 捕获输出
-    const origWrite = process.stdout.write.bind(process.stdout);
+    let streamBuffer = "";
+    const callbacks: AgentLoopCallbacks = {
+      onStreamText: (text) => { streamBuffer += text; },
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onCompact: () => {},
+      onComplete: () => {},
+    };
 
-    if (this.config.outputFormat === "json") {
-      // JSON 模式下静默输出
-      process.stdout.write = (() => true) as any;
-    }
-
+    this.abortController = new AbortController();
     try {
-      this.abortController = new AbortController();
-      await this.agentLoop(input);
+      await this.loopRunner.run(input, callbacks);
     } finally {
       this.abortController = null;
-      if (this.config.outputFormat === "json") {
-        process.stdout.write = origWrite;
-      }
     }
 
-    // JSON 输出
+    // 输出结果
     if (this.config.outputFormat === "json") {
       const messages = this.ctxMgr.getMessages();
       const lastAssistant = messages.filter((m) => m.role === "assistant").pop();
@@ -1042,9 +807,11 @@ export class App {
         usage: this.sessionState.getTotalUsage(),
       };
       console.log(JSON.stringify(result, null, 2));
+    } else {
+      process.stdout.write(streamBuffer);
     }
 
-    // session_end hook（非阻塞）
+    // session_end hook + 清理
     await this.hookRunner.run("session_end", { sessionId: this.sessionState.sessionId });
     unwatchCLAUDEmd();
     this.mcpManager?.closeAll();
@@ -1059,7 +826,6 @@ export class App {
     log.setFileOnly(true);
     log.info("TUI", "进入 TUI 模式");
 
-    this.isTUIMode = true;
     await this.init();
 
     const React = await import("react");

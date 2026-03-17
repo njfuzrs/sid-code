@@ -31,7 +31,6 @@ function createMockContext(config: Partial<Config> = {}): AppContext {
     systemPrompt: "",
     appendSystemPrompt: "",
     systemPromptFile: "",
-    noTUI: false,
     debug: false,
     debugLevel: "INFO",
     debugLogFile: "~/.sid-code/debug.log",

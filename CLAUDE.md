@@ -47,7 +47,7 @@ sid-code/
 │   ├── cli.ts                    # 入口：parseArgs + 模式路由
 │   ├── app.ts                    # Agentic While-Loop 主循环（委托 AgentLoopRunner）
 │   ├── agent/                    # 子代理系统
-│   │   ├── loop.ts               # AgentLoopRunner 统一循环（REPL/TUI 共用）
+│   │   ├── loop.ts               # AgentLoopRunner 统一循环（TUI/headless 共用）
 │   │   ├── sub-agent.ts          # SubAgent（工具白名单 + 嵌套防护 + 超时控制）
 │   │   └── tool.ts               # SubAgentTool（并发控制）
 │   ├── llm/                      # Provider 接口 + 3 个实现
@@ -404,7 +404,7 @@ interface SystemPromptContext {
 
 ### 两段式自动压缩监控
 
-在 agentLoop 每轮循环中检测上下文使用率：
+在 AgentLoopRunner 每轮循环中检测上下文使用率：
 - **94-100%**：输出警告 `[Context left until auto-compact: X%]`
 - **100%（剩余 0%）**：强制触发 `autoCompact()`
 
@@ -489,10 +489,9 @@ interface SystemPromptContext {
 
 ### 统一 Agent 循环
 
-`AgentLoopRunner`（`src/agent/loop.ts`）提取了 REPL 和 TUI 共用的核心循环逻辑：
+`AgentLoopRunner`（`src/agent/loop.ts`）是 TUI 和 headless 共用的核心循环逻辑：
 - thinking hint 解析 → 上下文两段式监控 → LLM 请求（含重试/回退/溢出自动调整）→ 流式处理 → 工具执行 → max_tokens 续写
-- 通过 `AgentLoopCallbacks` 接口处理 UI 差异（REPL 用 console 输出，TUI 用 updateState）
-- TUI 模式自动获得 Extended Thinking 和上下文溢出自动调整
+- 通过 `AgentLoopCallbacks` 接口处理 UI 差异（TUI 用 updateState，headless 用最小回调）
 
 ### 核心文件
 
@@ -612,7 +611,7 @@ frontmatter 字段：`name`, `description`, `tools`（逗号分隔或数组）
 | `post_tool_use_failure` | 工具执行失败后 | 否 | `app.ts` executeSingleTool catch |
 | `user_prompt_submit` | 用户提交输入时 | 是（可修改输入） | `agent/loop.ts` run |
 | `session_start` | 会话开始 | 否 | `app.ts` init |
-| `session_end` | 会话结束 | 否 | `app.ts` runREPL/runHeadless/runTUI |
+| `session_end` | 会话结束 | 否 | `app.ts` runHeadless/runTUI |
 | `pre_compact` | 上下文压缩前 | 是 | `app.ts` autoCompact |
 | `subagent_stop` | 子代理停止 | 否 | `agent/sub-agent.ts` execute/executeCustom |
 | `permission_request` | 权限请求时 | 否 | 预留 |

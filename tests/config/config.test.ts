@@ -11,7 +11,6 @@ describe("config", () => {
     expect(cfg.provider).toBe("anthropic");
     expect(cfg.model).toBe("claude-sonnet-4-20250514");
     expect(cfg.maxTokens).toBe(8192);
-    expect(cfg.noTUI).toBe(false);
     expect(cfg.print).toBe(false);
     expect(cfg.yesMode).toBe(false);
     expect(cfg.hooks).toEqual({});
@@ -23,12 +22,10 @@ describe("config", () => {
       provider: "openai",
       model: "gpt-4o",
       maxTokens: 4096,
-      noTUI: true,
     });
     expect(cfg.provider).toBe("openai");
     expect(cfg.model).toBe("gpt-4o");
     expect(cfg.maxTokens).toBe(4096);
-    expect(cfg.noTUI).toBe(true);
   });
 
   test("loadConfig CLI 参数优先级最高", async () => {

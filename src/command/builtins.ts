@@ -228,7 +228,7 @@ export class ConfigCommand implements Command {
     console.log(`模型: ${ctx.config.model}`);
     console.log(`最大 Token: ${ctx.config.maxTokens}`);
     console.log(`权限模式: ${ctx.config.permissionMode}`);
-    console.log(`TUI: ${ctx.config.noTUI ? "禁用" : "启用"}`);
+    console.log(`TUI: 启用`);
     console.log(`工具数量: ${ctx.registry.size()}`);
   }
 }

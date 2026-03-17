@@ -45,9 +45,6 @@ function parseCLIArgs(): Partial<Config> & { prompt?: string } {
       "append-system-prompt": { type: "string" },
       "system-prompt-file": { type: "string" },
       
-      // UI
-      "no-tui": { type: "boolean" },
-
       // 调试
       debug: { type: "boolean", short: "d" },
       "debug-level": { type: "string" },
@@ -87,7 +84,6 @@ function parseCLIArgs(): Partial<Config> & { prompt?: string } {
     systemPrompt: values["system-prompt"],
     appendSystemPrompt: values["append-system-prompt"],
     systemPromptFile: values["system-prompt-file"],
-    noTUI: values["no-tui"],
     debug: values.debug,
     debugLevel: values["debug-level"],
     debugLogFile: values["debug-log-file"],
@@ -133,9 +129,6 @@ LLM 配置:
   --append-system-prompt <text>  追加到系统提示词
   --system-prompt-file <path>    从文件加载系统提示词
 
-UI:
-  --no-tui                    禁用 TUI，使用纯文本 REPL
-
 调试:
   -d, --debug                 启用调试模式（日志输出到 ~/.sid-code/debug.log）
   --debug-level <level>       日志级别 (ERROR/WARN/INFO/DEBUG，默认 DEBUG)
@@ -174,7 +167,7 @@ async function main(): Promise<void> {
       const level = levelMap[config.debugLevel?.toUpperCase() || "DEBUG"] ?? LogLevel.DEBUG;
 
       // TUI 模式下日志只写文件，不输出到控制台（避免启动时一闪而过的调试信息）
-      const isTUI = !config.noTUI && !config.print;
+      const isTUI = !config.print;
       const logger = initLogger({
         enabled: true,
         level,
@@ -354,9 +347,6 @@ async function main(): Promise<void> {
         process.exit(1);
       }
       await app.runHeadless(cliArgs.prompt);
-    } else if (config.noTUI) {
-      // 纯文本 REPL
-      await app.runREPL(cliArgs.prompt);
     } else {
       // TUI 模式
       await app.runTUI(cliArgs.prompt);

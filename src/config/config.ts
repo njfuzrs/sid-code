@@ -91,9 +91,6 @@ export interface Config {
   appendSystemPrompt: string;
   systemPromptFile: string;
 
-  // UI 配置
-  noTUI: boolean;
-
   // 调试配置
   debug: boolean;
   debugLevel: string;
@@ -136,7 +133,6 @@ export function defaultConfig(): Config {
     systemPrompt: "",
     appendSystemPrompt: "",
     systemPromptFile: "",
-    noTUI: false,
     debug: false,
     debugLevel: "INFO",
     debugLogFile: "~/.sid-code/debug.log",
@@ -175,7 +171,6 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     system_prompt: "systemPrompt",
     append_system_prompt: "appendSystemPrompt",
     system_prompt_file: "systemPromptFile",
-    no_tui: "noTUI",
     debug: "debug",
     debug_level: "debugLevel",
     debug_log_file: "debugLogFile",
