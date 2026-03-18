@@ -4,13 +4,12 @@
  * 消息通过 Static 写入终端原生滚动缓冲区，鼠标滚轮可滚动浏览历史
  */
 
-import React, { useState, useCallback, useEffect, useRef, useMemo } from "react";
+import React, { useState, useCallback, useEffect, useRef } from "react";
 import { Box, Text, Static, useApp, useInput, useStdout } from "ink";
 import { MessageItem, SystemItem, CommandItem } from "./MessageList.tsx";
 import { InputArea } from "./InputArea.tsx";
 import { ToolStatus } from "./ToolStatus.tsx";
 import { StatusBar } from "./StatusBar.tsx";
-import { renderMarkdown } from "./markdown.ts";
 import type { StateBridge } from "./state-bridge.ts";
 import type { Message, Usage, ContentBlock } from "../llm/types.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -69,10 +68,6 @@ export interface PermissionRequestInfo {
 export interface TUIState {
   messages: Message[];
   displayItems: DisplayItem[];
-  /** 流式文本尾部（Live 区域只渲染这部分，减少 eraseLines 行数） */
-  streamingTail: string;
-  /** "助手 ●" 标题是否已移入 Static 区域 */
-  streamHeaderFlushed: boolean;
   isLoading: boolean;
   toolName: string | null;
   toolInput: unknown;
@@ -208,22 +203,11 @@ export function TUIApp({ initialState, callbacks, bridge }: AppProps) {
 
   renderCountRef.current++;
 
-  const isEmpty = state.displayItems.length === 0 && !state.streamingTail;
+  const isEmpty = state.displayItems.length === 0;
 
   // 分隔线
   const sepWidth = Math.max(10, termWidth - 4);
   const separator = "── ".repeat(Math.floor(sepWidth / 3));
-
-  // Live 区域只渲染 streamingTail（尾部未完成的文本），减少 eraseLines 行数
-  const streamingMaxWidth = termWidth;
-  const renderedTail = useMemo(
-    () => {
-      if (!state.streamingTail) return "";
-      // tail 可能以 \n\n 开头（段落边界拆分后的尾部），trimStart 避免渲染空行
-      return renderMarkdown(state.streamingTail.trimStart(), streamingMaxWidth);
-    },
-    [state.streamingTail, streamingMaxWidth],
-  );
 
   const staticItems = state.displayItems;
 
@@ -340,20 +324,6 @@ export function TUIApp({ initialState, callbacks, bridge }: AppProps) {
       {state.statusMessage ? (
         <Box paddingX={1}>
           <Text color="yellow">{state.statusMessage}</Text>
-        </Box>
-      ) : null}
-
-      {/* 流式文本尾部（Live 区域只渲染最后未完成的部分，减少 eraseLines 造成的视口跳动） */}
-      {state.streamingTail ? (
-        <Box flexDirection="column">
-          {/* 当标题还没被 flush 到 Static 时，在 Live 区域显示 */}
-          {!state.streamHeaderFlushed && (
-            <Box>
-              <Text bold color="green">{"助手 "}</Text>
-              <Text color="green">●</Text>
-            </Box>
-          )}
-          <Text>{renderedTail}</Text>
         </Box>
       ) : null}
 

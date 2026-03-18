@@ -29,7 +29,7 @@ import { AgentLoopRunner } from "./agent/loop.ts";
 import type { AgentLoopCallbacks } from "./agent/loop.ts";
 import { HookRunner } from "./hook/runner.ts";
 import { execSync } from "child_process";
-import chalk from "chalk";
+
 
 /** App 配置 */
 export interface AppOptions {
@@ -832,16 +832,17 @@ export class App {
     const React = await import("react");
     const { createFullScreen } = await import("./ui/fullscreen.ts");
     const { TUIApp } = await import("./ui/App.tsx");
-    const { renderMarkdown } = await import("./ui/markdown.ts");
+    const { StreamWriter } = await import("./ui/stream-writer.ts");
 
     const { StateBridge } = await import("./ui/state-bridge.ts");
+
+    // 直接 stdout 流式输出器（不经过 ink 渲染循环）
+    const streamWriter = new StreamWriter();
 
     // 事件驱动状态桥接（替代 50ms 轮询）
     const bridge = new StateBridge({
       messages: [],
       displayItems: [],
-      streamingTail: "",
-      streamHeaderFlushed: false,
       isLoading: false,
       toolName: null,
       toolInput: null,
@@ -863,7 +864,6 @@ export class App {
     const updateState = (patch: Partial<import("./ui/App.tsx").TUIState>) => {
       const keys = Object.keys(patch);
       log.debug("TUI:STATE", `updateState: ${keys.join(", ")}`, {
-        streamingTailLen: patch.streamingTail !== undefined ? patch.streamingTail.length : undefined,
         messagesLen: patch.messages !== undefined ? patch.messages.length : undefined,
         isLoading: patch.isLoading,
         toolName: patch.toolName,
@@ -936,152 +936,30 @@ export class App {
     });
 
     // TUI 版本的 agentLoop（使用统一 Runner）
-    /** 检测文本中是否处于未闭合的代码块内（支持 ``` 和 ~~~ 两种 fence） */
-    const isInsideCodeFence = (text: string): boolean => {
-      const fenceCount = (text.match(/^(?:```|~~~)/gm) || []).length;
-      return fenceCount % 2 !== 0;
-    };
-    /** "助手 ●" 标题（通过 chalk 生成，自动尊重 NO_COLOR） */
-    const assistantHeader = chalk.bold.green("助手 ") + chalk.green("●");
-
     const tuiAgentLoop = async (userInput: string) => {
       updateState({
-        streamingTail: "",
-        streamHeaderFlushed: false,
         isLoading: true,
       });
 
       let streamSynced = false;
-      // 流式文本增量拆分状态：累积全文用于段落边界检测
-      let streamFullText = "";
-      // 已移入 Static 的文本长度（字符偏移）
-      let streamFlushedLen = 0;
-      // streaming-chunk 的自增 ID
-      let streamChunkId = 0;
-      // 是否已输出过 "助手 ●" 标题
-      let streamHeaderEmitted = false;
-
-      /** 将已完成的行从流式文本移入 Static 区域，Live 区域只保留尾部少量行 */
-      const TAIL_MAX_LINES = 8; // Live 区域最多保留的行数
-      const flushStreamToStatic = (extraPatch?: Partial<import("./ui/App.tsx").TUIState>) => {
-        const unflushed = streamFullText.slice(streamFlushedLen);
-
-        // 短路：unflushed 中没有段落边界且行数未超阈值，直接更新 tail
-        const unflushedLines = unflushed.split("\n");
-        if (!unflushed.includes("\n\n") && unflushedLines.length <= TAIL_MAX_LINES) {
-          updateState({ streamingTail: unflushed, streamHeaderFlushed: streamHeaderEmitted, ...extraPatch });
-          return;
-        }
-
-        // 在 unflushed 区域内搜索段落边界（双换行）
-        const paragraphIdx = unflushed.lastIndexOf("\n\n");
-        let splitPos = paragraphIdx >= 0 ? streamFlushedLen + paragraphIdx : streamFlushedLen;
-
-        // 检查拆分点是否在代码块内部（避免截断代码块）
-        if (splitPos > streamFlushedLen) {
-          if (isInsideCodeFence(streamFullText.slice(0, splitPos))) {
-            splitPos = streamFlushedLen;
-          }
-        }
-
-        // 如果没有安全的段落边界，按单换行行数阈值拆分
-        if (splitPos <= streamFlushedLen) {
-          if (unflushedLines.length > TAIL_MAX_LINES) {
-            // 计算候选拆分位置
-            const flushLineCount = unflushedLines.length - TAIL_MAX_LINES;
-            const flushText = unflushedLines.slice(0, flushLineCount).join("\n");
-            const candidatePos = streamFlushedLen + flushText.length;
-            // 检查候选位置是否在代码块内部
-            if (!isInsideCodeFence(streamFullText.slice(0, candidatePos))) {
-              splitPos = candidatePos;
-            }
-            // 在代码块内部时不拆分，等代码块结束
-          }
-        }
-
-        if (splitPos <= streamFlushedLen) {
-          // 没有需要 flush 的内容，只更新 tail
-          updateState({ streamingTail: unflushed, streamHeaderFlushed: streamHeaderEmitted, ...extraPatch });
-          return;
-        }
-
-        // 有内容需要移入 Static
-        const toFlush = streamFullText.slice(streamFlushedLen, splitPos);
-        streamFlushedLen = splitPos;
-        const tail = streamFullText.slice(streamFlushedLen);
-
-        const termWidth = process.stdout.columns || 80;
-        const newItems: import("./ui/App.tsx").DisplayItem[] = [];
-
-        // 首次 flush 时先输出 "助手 ●" 标题
-        if (!streamHeaderEmitted) {
-          streamHeaderEmitted = true;
-          newItems.push({ kind: "streaming-chunk" as const, text: assistantHeader, id: streamChunkId++ });
-        }
-
-        const rendered = renderMarkdown(toFlush.trimStart(), termWidth);
-        if (rendered) {
-          newItems.push({ kind: "streaming-chunk" as const, text: rendered, id: streamChunkId++ });
-        }
-
-        if (newItems.length > 0) {
-          const items = [...bridge.current.displayItems, ...newItems];
-          updateState({ displayItems: items, streamingTail: tail, streamHeaderFlushed: streamHeaderEmitted, ...extraPatch });
-        } else {
-          updateState({ streamingTail: tail, streamHeaderFlushed: streamHeaderEmitted, ...extraPatch });
-        }
-      };
-
-      /** 将所有剩余流式文本移入 Static（流式结束或工具开始时调用） */
-      const flushAllStream = (extraPatch?: Partial<import("./ui/App.tsx").TUIState>) => {
-        if (streamFlushedLen < streamFullText.length) {
-          const remaining = streamFullText.slice(streamFlushedLen);
-          const termWidth = process.stdout.columns || 80;
-
-          const newItems: import("./ui/App.tsx").DisplayItem[] = [];
-
-          if (!streamHeaderEmitted) {
-            streamHeaderEmitted = true;
-            newItems.push({ kind: "streaming-chunk" as const, text: assistantHeader, id: streamChunkId++ });
-          }
-
-          const rendered = renderMarkdown(remaining.trimStart(), termWidth);
-          if (rendered) {
-            newItems.push({ kind: "streaming-chunk" as const, text: rendered, id: streamChunkId++ });
-          }
-
-          streamFlushedLen = streamFullText.length;
-
-          if (newItems.length > 0) {
-            const items = [...bridge.current.displayItems, ...newItems];
-            updateState({ displayItems: items, streamingTail: "", streamHeaderFlushed: true, ...extraPatch });
-            return;
-          }
-        }
-        updateState({ streamingTail: "", streamHeaderFlushed: true, ...extraPatch });
-      };
 
       const tuiCallbacks: AgentLoopCallbacks = {
         onUserMessageAdded: () => {
           syncDisplay();
         },
         onStreamText: (text) => {
-          streamFullText += text;
-          // 首次收到流式文本时，同步 ctxMgr 中的真实消息
+          // 首次收到流式文本时，启动 StreamWriter 并同步消息
           if (!streamSynced) {
             streamSynced = true;
+            streamWriter.start();
             syncDisplay();
           }
-          flushStreamToStatic();
+          streamWriter.write(text);
         },
         onToolStart: (name, input) => {
-          // 工具开始前，把所有剩余流式文本移入 Static
-          flushAllStream();
-          // 重置流式状态（下一轮流式可能产生新文本）
-          streamFullText = "";
-          streamFlushedLen = 0;
-          streamHeaderEmitted = false;
-          syncDisplay({ streamingTail: "", streamHeaderFlushed: false, toolName: name, toolInput: input ?? null, isToolExecuting: true });
+          // 工具开始前，结束当前流式输出
+          streamWriter.finish();
+          syncDisplay({ toolName: name, toolInput: input ?? null, isToolExecuting: true });
         },
         onToolEnd: (name, result) => {
           syncDisplay({
@@ -1099,11 +977,9 @@ export class App {
         onComplete: () => {
           const ctxUsed = this.ctxMgr.estimateTokens(this.toolRegistry.size());
           const ctxPct = Math.round((ctxUsed / 200000) * 100);
-          // 流式结束，把所有剩余文本移入 Static
-          flushAllStream();
+          // 流式结束，完成输出
+          streamWriter.finish();
           syncDisplay({
-            streamingTail: "",
-            streamHeaderFlushed: true,
             usage: { ...this.sessionState.getTotalUsage() },
             costUSD: this.sessionState.totalCostUSD,
             contextPercent: ctxPct,
@@ -1122,8 +998,6 @@ export class App {
 
       syncDisplay({
         isLoading: false,
-        streamingTail: "",
-        streamHeaderFlushed: true,
         usage: { ...this.sessionState.getTotalUsage() },
         costUSD: this.sessionState.totalCostUSD,
         contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / 200000) * 100),
@@ -1139,7 +1013,7 @@ export class App {
           await tuiAgentLoop(text);
         } catch (err: any) {
           log.error("TUI:CB", `onUserInput 异常`, { error: err.message, stack: err.stack });
-          updateState({ isLoading: false, streamingTail: "", streamHeaderFlushed: true });
+          updateState({ isLoading: false });
         } finally {
           this.abortController = null;
         }
@@ -1198,8 +1072,6 @@ export class App {
             messages: [],
             displayItems: [],
             contextPercent: 0,
-            streamingTail: "",
-            streamHeaderFlushed: false,
             statusMessage: "",
             lastToolResult: null,
           });
