@@ -3,6 +3,11 @@
  *
  * 不使用 alternate screen buffer，消息通过 Static 组件写入终端原生滚动缓冲区，
  * 支持鼠标滚轮浏览历史消息。退出时对话记录保留在终端中。
+ *
+ * DEC Mode 2026 (Synchronized Output)：
+ * 在 ink 的 stdout.write 外包裹 BSU/ESU 序列，支持的终端（Ghostty, Kitty,
+ * WezTerm, foot, Contour 等）会原子性刷新帧，彻底消除撕裂和闪烁。
+ * 不支持的终端静默忽略这些序列，无副作用。
  */
 
 import { render } from "ink";
@@ -14,6 +19,11 @@ const SHOW_CURSOR = "\x1b[?25h";
 const CURSOR_HOME = "\x1b[H";
 /** ESC[J — 从光标位置清除到屏幕末尾 */
 const CLEAR_BELOW = "\x1b[J";
+
+/** DEC Mode 2026: Begin Synchronized Update */
+const BSU = "\x1b[?2026h";
+/** DEC Mode 2026: End Synchronized Update */
+const ESU = "\x1b[?2026l";
 
 interface FullScreenInstance {
   instance: ReturnType<typeof render>;
@@ -64,8 +74,26 @@ export function createFullScreen(
       };
       stdout.on("resize", resizeHandler);
 
+      // Hook stdout.write，为 ink 的渲染输出包裹 DEC 2026 synchronized output。
+      // 支持的终端（Ghostty, Kitty, WezTerm 等）会原子性刷新帧，消除撕裂。
+      // 不支持的终端静默忽略 BSU/ESU 序列，无副作用。
+      const originalWrite = stdout.write.bind(stdout) as typeof stdout.write;
+      (stdout as any).write = function syncWrite(
+        chunk: any,
+        encodingOrCb?: BufferEncoding | ((err?: Error | null) => void),
+        cb?: (err?: Error | null) => void,
+      ): boolean {
+        // 只对包含 ANSI 转义序列的字符串输出包裹（即 ink 的渲染输出）
+        // 纯文本（如 StreamWriter 的直接输出）不需要包裹
+        if (typeof chunk === "string" && chunk.includes("\x1b[")) {
+          const wrapped = BSU + chunk + ESU;
+          return originalWrite(wrapped, encodingOrCb as any, cb);
+        }
+        return originalWrite(chunk, encodingOrCb as any, cb);
+      };
+
       instance = render(node, options);
-      log.info("TUI:RENDER", "ink 实例已创建（主缓冲区模式）");
+      log.info("TUI:RENDER", "ink 实例已创建（主缓冲区模式 + DEC 2026）");
 
       exitPromise = (async () => {
         await instance.waitUntilExit();
@@ -73,6 +101,8 @@ export function createFullScreen(
           stdout.off("resize", resizeHandler);
           resizeHandler = null;
         }
+        // 恢复原始 stdout.write，移除 DEC 2026 包裹
+        (stdout as any).write = originalWrite;
         stdout.write(SHOW_CURSOR);
         log.info("TUI:RENDER", "ink 实例已退出");
       })();

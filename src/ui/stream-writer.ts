@@ -23,6 +23,10 @@ const CLEAR_LINE = "\r\x1b[K";
 /** 匹配代码块 fence（允许最多 3 空格缩进） */
 const FENCE_RE = /^ {0,3}(?:```|~~~)/gm;
 
+/** Thinking spinner 帧序列 */
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const SPINNER_INTERVAL = 80;
+
 export class StreamWriter {
   /** 累积的全部流式文本 */
   private fullText = "";
@@ -36,8 +40,12 @@ export class StreamWriter {
   private headerEmitted = false;
   /** stdout 引用 */
   private stdout = process.stdout;
+  /** thinking spinner 定时器 */
+  private spinnerTimer: ReturnType<typeof setInterval> | null = null;
+  /** thinking spinner 帧索引 */
+  private spinnerFrame = 0;
 
-  /** 开始流式输出 */
+  /** 开始流式输出，立即显示 thinking spinner */
   start(): void {
     const log = getLogger();
     log.debug("STREAM_WRITER", "开始流式输出");
@@ -46,6 +54,32 @@ export class StreamWriter {
     this.currentLine = "";
     this.active = true;
     this.headerEmitted = false;
+    this.startThinkingSpinner();
+  }
+
+  /** 启动 thinking spinner（首 token 到达前的等待动画） */
+  private startThinkingSpinner(): void {
+    this.spinnerFrame = 0;
+    const label = chalk.dim(" 思考中...");
+    // 立即显示第一帧
+    const firstFrame = chalk.cyan(SPINNER_FRAMES[0]) + label;
+    this.stdout.write(firstFrame);
+
+    this.spinnerTimer = setInterval(() => {
+      this.spinnerFrame = (this.spinnerFrame + 1) % SPINNER_FRAMES.length;
+      const frame = chalk.cyan(SPINNER_FRAMES[this.spinnerFrame]) + label;
+      this.stdout.write(CLEAR_LINE + frame);
+    }, SPINNER_INTERVAL);
+  }
+
+  /** 停止 thinking spinner */
+  private stopThinkingSpinner(): void {
+    if (this.spinnerTimer) {
+      clearInterval(this.spinnerTimer);
+      this.spinnerTimer = null;
+      // 清除 spinner 行
+      this.stdout.write(CLEAR_LINE);
+    }
   }
 
   /** 追加流式文本 */
@@ -54,9 +88,10 @@ export class StreamWriter {
 
     this.fullText += text;
 
-    // 首次收到文本时输出 "助手 ●" 标题
+    // 首次收到文本时：停止 spinner，输出 "助手 ●" 标题
     if (!this.headerEmitted) {
       this.headerEmitted = true;
+      this.stopThinkingSpinner();
       const header = chalk.bold.green("助手 ") + chalk.green("●");
       this.stdout.write(header + "\n");
     }
@@ -73,6 +108,9 @@ export class StreamWriter {
     if (!this.active) return;
     const log = getLogger();
     log.debug("STREAM_WRITER", `结束流式输出: fullTextLen=${this.fullText.length}`);
+
+    // 确保 spinner 已停止（可能没收到任何 token 就结束）
+    this.stopThinkingSpinner();
 
     // 清除当前未完成行
     if (this.currentLine) {
