@@ -212,7 +212,13 @@ export function TUIApp({ initialState, callbacks, bridge }: AppProps) {
   // 流式文本 markdown 渲染缓存（流式区域无额外 padding，直接用终端宽度）
   const streamingMaxWidth = termWidth;
   const renderedStreaming = useMemo(
-    () => state.streamingText ? renderMarkdown(state.streamingText, streamingMaxWidth) : "",
+    () => {
+      if (!state.streamingText) return "";
+      log.debug("UI:STREAM", `流式渲染: textLen=${state.streamingText.length} maxWidth=${streamingMaxWidth} preview=${JSON.stringify(state.streamingText.slice(0, 80))}`);
+      const result = renderMarkdown(state.streamingText, streamingMaxWidth);
+      log.debug("UI:STREAM", `流式渲染结果: resultLen=${result.length} hasAnsi=${/\x1b\[/.test(result)} preview=${JSON.stringify(result.slice(0, 80))}`);
+      return result;
+    },
     [state.streamingText, streamingMaxWidth],
   );
 

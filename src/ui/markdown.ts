@@ -574,8 +574,11 @@ export function renderMarkdown(text: string, maxWidth?: number): string {
   currentRenderWidth = effectiveWidth;
 
   try {
+    log.debug("UI:MD", `renderMarkdown 开始: textLen=${text.length} effectiveWidth=${effectiveWidth} textPreview=${JSON.stringify(text.slice(0, 100))}`);
     const tokens = marked.lexer(text);
+    log.debug("UI:MD", `marked.lexer 完成: tokenCount=${tokens.length} tokenTypes=${tokens.map((t: any) => t.type).join(",")}`);
     const result = renderTokens(tokens).trimEnd();
+    log.debug("UI:MD", `renderTokens 完成: resultLen=${result.length} hasAnsi=${/\x1b\[/.test(result)} resultPreview=${JSON.stringify(result.slice(0, 100))}`);
 
     if (renderCache.size >= MAX_CACHE_SIZE) {
       const firstKey = renderCache.keys().next().value;
@@ -586,7 +589,7 @@ export function renderMarkdown(text: string, maxWidth?: number): string {
 
     return result;
   } catch (err: any) {
-    log.error("UI:MD", `Markdown 渲染失败`, { error: err.message, textLen: text.length, textPreview: text.slice(0, 100) });
+    log.error("UI:MD", `Markdown 渲染失败`, { error: err.message, stack: err.stack, textLen: text.length, textPreview: text.slice(0, 100) });
     return text;
   }
 }

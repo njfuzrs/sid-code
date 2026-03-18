@@ -7,6 +7,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import type { Message, ContentBlock } from "../llm/types.ts";
 import { renderMarkdown } from "./markdown.ts";
+import { getLogger } from "../debug/logger.ts";
 
 /** 生成内容块的唯一 key */
 function getBlockKey(block: ContentBlock, idx: number): string {
@@ -111,9 +112,12 @@ function buildToolNameMap(message: Message, prevMessage?: Message): Map<string, 
 /** 渲染单个内容块 */
 function renderBlock(block: ContentBlock, idx: number, toolNameMap: Map<string, string>, maxWidth?: number): React.ReactNode {
   const key = getBlockKey(block, idx);
+  const log = getLogger();
 
   if (block.type === "text") {
+    log.debug("UI:RENDER", `renderBlock text idx=${idx} maxWidth=${maxWidth} textLen=${block.text.length} textPreview=${JSON.stringify(block.text.slice(0, 80))}`);
     const rendered = renderMarkdown(block.text, maxWidth);
+    log.debug("UI:RENDER", `renderBlock result idx=${idx} renderedLen=${rendered.length} hasAnsi=${/\x1b\[/.test(rendered)} renderedPreview=${JSON.stringify(rendered.slice(0, 80))}`);
     return <Text key={key}>{rendered}</Text>;
   }
 
