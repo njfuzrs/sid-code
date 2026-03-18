@@ -11,7 +11,7 @@
     "lint": "echo 'TODO: add linter'"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.78.0",
+    "@anthropic-ai/sdk": "^0.79.0",
     "@inkjs/ui": "^2.0.0",
     "glob": "^13.0.6",
     "ink": "^6.8.0",

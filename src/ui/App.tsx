@@ -38,15 +38,27 @@ export function messagesToDisplayItems(msgs: Message[]): DisplayItem[] {
     .map(m => ({ kind: "message" as const, message: m }));
 }
 
-/** 终端宽度 hook */
-function useTerminalWidth() {
+/** 终端宽度 hook，宽度增大时调用 onWidthIncrease 清除 Live 区域避免残留 */
+function useTerminalWidth(onWidthIncrease?: () => void) {
   const { stdout } = useStdout();
   const [width, setWidth] = useState(stdout.columns);
+  const lastWidthRef = useRef(stdout.columns);
+
   useEffect(() => {
-    const onResize = () => setWidth(stdout.columns);
+    const onResize = () => {
+      const newWidth = stdout.columns;
+      const oldWidth = lastWidthRef.current;
+      lastWidthRef.current = newWidth;
+      setWidth(newWidth);
+      // 宽度增大时，Ink 内部不会清除 Live 区域，手动清除避免残留
+      if (newWidth > oldWidth && onWidthIncrease) {
+        onWidthIncrease();
+      }
+    };
     stdout.on("resize", onResize);
     return () => { stdout.off("resize", onResize); };
-  }, [stdout]);
+  }, [stdout, onWidthIncrease]);
+
   return width;
 }
 
@@ -92,6 +104,8 @@ interface AppProps {
   initialState: TUIState;
   callbacks: TUICallbacks;
   bridge: StateBridge;
+  /** 终端宽度增大时的回调（用于清除 Ink Live 区域避免残留） */
+  onWidthIncrease?: () => void;
 }
 
 /** 格式化工具输入的关键信息 */
@@ -146,9 +160,9 @@ function getDisplayItemKey(item: DisplayItem, idx: number): string {
   return `${msg.role}-${idx}`;
 }
 
-export function TUIApp({ initialState, callbacks, bridge }: AppProps) {
+export function TUIApp({ initialState, callbacks, bridge, onWidthIncrease }: AppProps) {
   const { exit } = useApp();
-  const termWidth = useTerminalWidth();
+  const termWidth = useTerminalWidth(onWidthIncrease);
   const [state, setState] = useState<TUIState>(initialState);
   const isSubmittingRef = useRef(false);
   const log = getLogger();

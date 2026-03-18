@@ -1158,6 +1158,7 @@ export class App {
         initialState: bridge.current,
         callbacks,
         bridge,
+        onWidthIncrease: () => app.clear(),
       }),
     );
     await app.start();
