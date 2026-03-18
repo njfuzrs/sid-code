@@ -839,6 +839,9 @@ export class App {
     // 直接 stdout 流式输出器（不经过 ink 渲染循环）
     const streamWriter = new StreamWriter();
 
+    // ink Live 区域清除函数（app 创建后赋值）
+    let clearInkLive: (() => void) | null = null;
+
     // 事件驱动状态桥接（替代 50ms 轮询）
     const bridge = new StateBridge({
       messages: [],
@@ -948,10 +951,11 @@ export class App {
           syncDisplay();
         },
         onStreamText: (text) => {
-          // 首次收到流式文本时，启动 StreamWriter，同步消息，然后暂停 ink 渲染
+          // 首次收到流式文本时：清除 ink Live 区域 → 启动 StreamWriter → 暂停 ink
           if (!streamSynced) {
             streamSynced = true;
-            syncDisplay(); // 先同步，确保用户消息已显示
+            syncDisplay(); // 先同步，确保用户消息已在 Static 区域
+            clearInkLive?.(); // 清除 ink Live 区域（输入栏+状态栏），为 stdout 直写腾出空间
             streamWriter.start();
             bridge.pause(); // 暂停 ink 渲染，避免与 stdout 竞争
           }
@@ -961,6 +965,10 @@ export class App {
           // 工具开始前，结束当前流式输出并恢复 ink 渲染
           streamWriter.finish();
           bridge.resume();
+          // 跳过已被 StreamWriter 输出的助手消息，避免 Static 重复渲染
+          if (streamSynced) {
+            lastSyncedCount = this.ctxMgr.getMessages().length;
+          }
           streamSynced = false;
           syncDisplay({ toolName: name, toolInput: input ?? null, isToolExecuting: true });
         },
@@ -983,6 +991,10 @@ export class App {
           // 先完成 stdout 输出，再恢复 ink 渲染
           streamWriter.finish();
           bridge.resume();
+          // 跳过已被 StreamWriter 输出的助手消息，避免 Static 重复渲染
+          if (streamSynced) {
+            lastSyncedCount = this.ctxMgr.getMessages().length;
+          }
           streamSynced = false;
           syncDisplay({
             usage: { ...this.sessionState.getTotalUsage() },
@@ -1005,6 +1017,11 @@ export class App {
         // 兜底：确保异常路径也能恢复 ink 渲染
         streamWriter.finish();
         bridge.resume();
+        // 跳过流式期间的助手消息，避免 Static 重复渲染
+        if (streamSynced) {
+          lastSyncedCount = this.ctxMgr.getMessages().length;
+          streamSynced = false;
+        }
       }
 
       syncDisplay({
@@ -1134,6 +1151,9 @@ export class App {
       }),
     );
     await app.start();
+
+    // app 创建后赋值 clearLive 函数
+    clearInkLive = () => app.clearLive();
 
     // 处理初始提示词
     if (initialPrompt) {
