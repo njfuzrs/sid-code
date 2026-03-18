@@ -21,8 +21,6 @@ interface FullScreenInstance {
   instance: ReturnType<typeof render>;
   start: () => Promise<void>;
   waitUntilExit: () => Promise<void>;
-  /** 清除 ink Live 区域（流式输出前调用，为 stdout 直写腾出空间） */
-  clearLive: () => void;
 }
 
 /**
@@ -44,11 +42,6 @@ export function createFullScreen(
 
   return {
     get instance() { return instance; },
-    clearLive: () => {
-      if (instance) {
-        instance.clear();
-      }
-    },
     start: async () => {
       // 启动前清屏，为 Ink 提供干净的渲染空间
       stdout.write(CURSOR_HOME + CLEAR_BELOW);

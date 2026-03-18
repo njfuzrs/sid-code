@@ -84,6 +84,8 @@ export interface TUIState {
   permissionRequest: PermissionRequestInfo | null;
   debug: boolean;
   lastToolResult: { toolName: string; isError: boolean; elapsedMs: number } | null;
+  /** 流式输出的未完成行预览（在 Live 区域显示） */
+  streamingLine: string;
 }
 
 interface AppProps {
@@ -324,6 +326,13 @@ export function TUIApp({ initialState, callbacks, bridge }: AppProps) {
       {state.statusMessage ? (
         <Box paddingX={1}>
           <Text color="yellow">{state.statusMessage}</Text>
+        </Box>
+      ) : null}
+
+      {/* 流式输出未完成行预览 */}
+      {state.streamingLine ? (
+        <Box paddingX={1}>
+          <Text dimColor>{state.streamingLine}</Text>
         </Box>
       ) : null}
 

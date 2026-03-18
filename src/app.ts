@@ -836,11 +836,26 @@ export class App {
 
     const { StateBridge } = await import("./ui/state-bridge.ts");
 
-    // 直接 stdout 流式输出器（不经过 ink 渲染循环）
-    const streamWriter = new StreamWriter();
+    // ink 的 writeToStdout 函数（app 创建后赋值）
+    // 通过此函数写入的内容，ink 会自动清除/恢复 Live 区域，输入栏始终在底部
+    let inkWriteToStdout: ((data: string) => void) | null = null;
 
-    // ink Live 区域清除函数（app 创建后赋值）
-    let clearInkLive: (() => void) | null = null;
+    // 流式输出器：已完成段落通过 ink writeToStdout 输出，未完成行通过 bridge 更新到 Live 区域
+    const streamWriter = new StreamWriter({
+      writeFn: (data) => {
+        // ink 已 patch console.log，会自动调用 writeToStdout
+        // 这样 ink 会自动清除/恢复 Live 区域
+        if (inkWriteToStdout) {
+          inkWriteToStdout(data);
+        } else {
+          // 回退：直接写 stdout（TUI 启动前）
+          process.stdout.write(data);
+        }
+      },
+      onCurrentLine: (line) => {
+        bridge.update({ streamingLine: line });
+      },
+    });
 
     // 事件驱动状态桥接（替代 50ms 轮询）
     const bridge = new StateBridge({
@@ -862,6 +877,7 @@ export class App {
       permissionRequest: null,
       debug: !!this.config.debug,
       lastToolResult: null,
+      streamingLine: "",
     });
 
     const updateState = (patch: Partial<import("./ui/App.tsx").TUIState>) => {
@@ -951,26 +967,23 @@ export class App {
           syncDisplay();
         },
         onStreamText: (text) => {
-          // 首次收到流式文本时：清除 ink Live 区域 → 启动 StreamWriter → 暂停 ink
+          // 首次收到流式文本时启动 StreamWriter
           if (!streamSynced) {
             streamSynced = true;
             syncDisplay(); // 先同步，确保用户消息已在 Static 区域
-            clearInkLive?.(); // 清除 ink Live 区域（输入栏+状态栏），为 stdout 直写腾出空间
             streamWriter.start();
-            bridge.pause(); // 暂停 ink 渲染，避免与 stdout 竞争
           }
           streamWriter.write(text);
         },
         onToolStart: (name, input) => {
-          // 工具开始前，结束当前流式输出并恢复 ink 渲染
+          // 工具开始前，结束当前流式输出
           streamWriter.finish();
-          bridge.resume();
           // 跳过已被 StreamWriter 输出的助手消息，避免 Static 重复渲染
           if (streamSynced) {
             lastSyncedCount = this.ctxMgr.getMessages().length;
           }
           streamSynced = false;
-          syncDisplay({ toolName: name, toolInput: input ?? null, isToolExecuting: true });
+          syncDisplay({ toolName: name, toolInput: input ?? null, isToolExecuting: true, streamingLine: "" });
         },
         onToolEnd: (name, result) => {
           syncDisplay({
@@ -988,9 +1001,7 @@ export class App {
         onComplete: () => {
           const ctxUsed = this.ctxMgr.estimateTokens(this.toolRegistry.size());
           const ctxPct = Math.round((ctxUsed / 200000) * 100);
-          // 先完成 stdout 输出，再恢复 ink 渲染
           streamWriter.finish();
-          bridge.resume();
           // 跳过已被 StreamWriter 输出的助手消息，避免 Static 重复渲染
           if (streamSynced) {
             lastSyncedCount = this.ctxMgr.getMessages().length;
@@ -1001,6 +1012,7 @@ export class App {
             costUSD: this.sessionState.totalCostUSD,
             contextPercent: ctxPct,
             statusMessage: "",
+            streamingLine: "",
           });
         },
         onContextWarning: (remaining) => {
@@ -1014,10 +1026,8 @@ export class App {
       try {
         await this.loopRunner.run(userInput, tuiCallbacks);
       } finally {
-        // 兜底：确保异常路径也能恢复 ink 渲染
+        // 兜底：确保异常路径也能正确清理
         streamWriter.finish();
-        bridge.resume();
-        // 跳过流式期间的助手消息，避免 Static 重复渲染
         if (streamSynced) {
           lastSyncedCount = this.ctxMgr.getMessages().length;
           streamSynced = false;
@@ -1152,8 +1162,15 @@ export class App {
     );
     await app.start();
 
-    // app 创建后赋值 clearLive 函数
-    clearInkLive = () => app.clearLive();
+    // app 创建后，使用 console.log 作为 writeToStdout
+    // ink 已 patch console.log，会自动调用内部的 writeToStdout
+    inkWriteToStdout = (data: string) => {
+      // 去掉末尾换行，因为 console.log 会自动加
+      const trimmed = data.endsWith("\n") ? data.slice(0, -1) : data;
+      if (trimmed) {
+        console.log(trimmed);
+      }
+    };
 
     // 处理初始提示词
     if (initialPrompt) {
