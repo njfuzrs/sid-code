@@ -69,9 +69,10 @@ export interface PermissionRequestInfo {
 export interface TUIState {
   messages: Message[];
   displayItems: DisplayItem[];
-  streamingText: string;
   /** 流式文本尾部（Live 区域只渲染这部分，减少 eraseLines 行数） */
   streamingTail: string;
+  /** "助手 ●" 标题是否已移入 Static 区域 */
+  streamHeaderFlushed: boolean;
   isLoading: boolean;
   toolName: string | null;
   toolInput: unknown;
@@ -207,7 +208,7 @@ export function TUIApp({ initialState, callbacks, bridge }: AppProps) {
 
   renderCountRef.current++;
 
-  const isEmpty = state.displayItems.length === 0 && !state.streamingText && !state.streamingTail;
+  const isEmpty = state.displayItems.length === 0 && !state.streamingTail;
 
   // 分隔线
   const sepWidth = Math.max(10, termWidth - 4);
@@ -346,7 +347,7 @@ export function TUIApp({ initialState, callbacks, bridge }: AppProps) {
       {state.streamingTail ? (
         <Box flexDirection="column">
           {/* 当标题还没被 flush 到 Static 时，在 Live 区域显示 */}
-          {state.streamingText === state.streamingTail && (
+          {!state.streamHeaderFlushed && (
             <Box>
               <Text bold color="green">{"助手 "}</Text>
               <Text color="green">●</Text>
