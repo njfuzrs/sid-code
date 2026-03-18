@@ -911,6 +911,12 @@ export class App {
       updateState({ displayItems: items });
     };
 
+    /** 追加命令消息（输入+输出分离，不进 ctxMgr） */
+    const appendCommandOutput = (input: string, output: string | null) => {
+      const items = [...bridge.current.displayItems, { kind: "command" as const, input, output }];
+      updateState({ displayItems: items });
+    };
+
     // 设置 TUI 权限确认回调
     this.setTUIConfirmCallback(async (toolName, toolInput, desc) => {
       return new Promise<"yes" | "no" | "always">((resolve) => {
@@ -1089,10 +1095,10 @@ export class App {
           console.log = originalLog;
         }
 
-        // 将命令输出显示为系统消息（不进 ctxMgr，不发给 LLM）
-        if (outputs.length > 0) {
-          appendSystemOutput(`/${cmd}${args ? " " + args : ""}\n${outputs.join("\n")}`);
-        }
+        // 将命令输出显示为命令消息（输入+输出分离，不进 ctxMgr，不发给 LLM）
+        const commandInput = `/${cmd}${args ? " " + args : ""}`;
+        const commandOutput = outputs.length > 0 ? outputs.join("\n") : null;
+        appendCommandOutput(commandInput, commandOutput);
       },
     };
 

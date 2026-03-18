@@ -6,7 +6,7 @@
 
 import React, { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { Box, Text, Static, useApp, useInput, useStdout } from "ink";
-import { MessageItem, SystemItem } from "./MessageList.tsx";
+import { MessageItem, SystemItem, CommandItem } from "./MessageList.tsx";
 import { InputArea } from "./InputArea.tsx";
 import { ToolStatus } from "./ToolStatus.tsx";
 import { StatusBar } from "./StatusBar.tsx";
@@ -21,7 +21,8 @@ const PLACEHOLDER_TEXT = "[系统] 自动插入占位消息以保持角色交替
 /** 渲染数据源联合类型 */
 export type DisplayItem =
   | { kind: "message"; message: Message }
-  | { kind: "system"; text: string };
+  | { kind: "system"; text: string }
+  | { kind: "command"; input: string; output: string | null };
 
 /** 判断是否为占位消息 */
 export function isPlaceholderMessage(msg: Message): boolean {
@@ -134,6 +135,7 @@ const PermissionDialog = React.memo(function PermissionDialog({ request }: { req
 /** 为 DisplayItem 生成稳定的 key */
 function getDisplayItemKey(item: DisplayItem, idx: number): string {
   if (item.kind === "system") return `sys-${idx}`;
+  if (item.kind === "command") return `cmd-${idx}`;
   const msg = item.message;
   for (const block of msg.content) {
     if (block.type === "tool_use") return `tu-${block.id}`;
@@ -225,6 +227,18 @@ export function TUIApp({ initialState, callbacks, bridge }: AppProps) {
             return (
               <Box key={getDisplayItemKey(item, idx)} flexDirection="column">
                 <SystemItem text={item.text} termWidth={termWidth} />
+              </Box>
+            );
+          }
+          if (item.kind === "command") {
+            return (
+              <Box key={getDisplayItemKey(item, idx)} flexDirection="column">
+                {idx > 0 && (
+                  <Box paddingX={1}>
+                    <Text dimColor>{separator}</Text>
+                  </Box>
+                )}
+                <CommandItem input={item.input} output={item.output} termWidth={termWidth} />
               </Box>
             );
           }

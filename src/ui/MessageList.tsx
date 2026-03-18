@@ -199,3 +199,26 @@ export const SystemItem = React.memo(function SystemItem({ text, termWidth }: { 
     </Box>
   );
 });
+
+/** 命令消息组件（输入右对齐灰色气泡 + 输出左对齐 dimColor） */
+export const CommandItem = React.memo(function CommandItem({
+  input, output, termWidth,
+}: { input: string; output: string | null; termWidth?: number }) {
+  const tw = termWidth || 80;
+  return (
+    <Box flexDirection="column">
+      {/* 命令输入：右对齐，灰色气泡 */}
+      <Box width={tw} justifyContent="flex-end">
+        <Box borderStyle="round" borderColor="gray" paddingX={1}>
+          <Text dimColor>{input}</Text>
+        </Box>
+      </Box>
+      {/* 命令输出：左对齐，缩进，dimColor */}
+      {output ? (
+        <Box paddingLeft={2} paddingRight={10}>
+          <Text dimColor>{output}</Text>
+        </Box>
+      ) : null}
+    </Box>
+  );
+});
