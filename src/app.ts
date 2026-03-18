@@ -927,12 +927,6 @@ export class App {
       updateState({ messages: allMsgs, displayItems: items, ...extraPatch });
     };
 
-    /** 追加系统消息（命令输出，不进 ctxMgr） */
-    const appendSystemOutput = (text: string) => {
-      const items = [...bridge.current.displayItems, { kind: "system" as const, text }];
-      updateState({ displayItems: items });
-    };
-
     /** 追加命令消息（输入+输出分离，不进 ctxMgr） */
     const appendCommandOutput = (input: string, output: string | null) => {
       const items = [...bridge.current.displayItems, { kind: "command" as const, input, output }];

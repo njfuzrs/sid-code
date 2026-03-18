@@ -43,6 +43,9 @@ function useTerminalWidth(onWidthIncrease?: () => void) {
   const { stdout } = useStdout();
   const [width, setWidth] = useState(stdout.columns);
   const lastWidthRef = useRef(stdout.columns);
+  // 用 ref 包装回调，避免回调引用变化导致 effect 重复注册
+  const callbackRef = useRef(onWidthIncrease);
+  callbackRef.current = onWidthIncrease;
 
   useEffect(() => {
     const onResize = () => {
@@ -51,13 +54,13 @@ function useTerminalWidth(onWidthIncrease?: () => void) {
       lastWidthRef.current = newWidth;
       setWidth(newWidth);
       // 宽度增大时，Ink 内部不会清除 Live 区域，手动清除避免残留
-      if (newWidth > oldWidth && onWidthIncrease) {
-        onWidthIncrease();
+      if (newWidth > oldWidth) {
+        callbackRef.current?.();
       }
     };
     stdout.on("resize", onResize);
     return () => { stdout.off("resize", onResize); };
-  }, [stdout, onWidthIncrease]);
+  }, [stdout]); // 不再依赖 onWidthIncrease，避免重复注册
 
   return width;
 }
