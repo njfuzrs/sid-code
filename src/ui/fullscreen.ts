@@ -21,8 +21,6 @@ interface FullScreenInstance {
   instance: ReturnType<typeof render>;
   start: () => Promise<void>;
   waitUntilExit: () => Promise<void>;
-  /** 清除 Ink Live 区域（宽度增大时外部调用，避免残留） */
-  clear: () => void;
 }
 
 /**
@@ -57,10 +55,5 @@ export function createFullScreen(
       })();
     },
     waitUntilExit: () => exitPromise,
-    clear: () => {
-      if (instance) {
-        instance.clear();
-      }
-    },
   };
 }

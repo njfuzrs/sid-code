@@ -38,29 +38,20 @@ export function messagesToDisplayItems(msgs: Message[]): DisplayItem[] {
     .map(m => ({ kind: "message" as const, message: m }));
 }
 
-/** 终端宽度 hook，宽度增大时调用 onWidthIncrease 清除 Live 区域避免残留 */
-function useTerminalWidth(onWidthIncrease?: () => void) {
+/** 终端宽度 hook */
+function useTerminalWidth() {
   const { stdout } = useStdout();
   const [width, setWidth] = useState(stdout.columns);
-  const lastWidthRef = useRef(stdout.columns);
-  // 用 ref 包装回调，避免回调引用变化导致 effect 重复注册
-  const callbackRef = useRef(onWidthIncrease);
-  callbackRef.current = onWidthIncrease;
 
   useEffect(() => {
-    const onResize = () => {
-      const newWidth = stdout.columns;
-      const oldWidth = lastWidthRef.current;
-      lastWidthRef.current = newWidth;
-      setWidth(newWidth);
-      // 宽度增大时，Ink 内部不会清除 Live 区域，手动清除避免残留
-      if (newWidth > oldWidth) {
-        callbackRef.current?.();
-      }
-    };
+    // Ink 内部 resized() 已处理宽度变化：
+    // - 缩小时：log.clear() + 重置 lastOutput + 重新渲染（强制写入）
+    // - 增大时：重新布局 + eraseLines(previousLineCount) 覆盖旧内容
+    // 这里只需要同步 React 状态，触发组件用新宽度重新渲染
+    const onResize = () => setWidth(stdout.columns);
     stdout.on("resize", onResize);
     return () => { stdout.off("resize", onResize); };
-  }, [stdout]); // 不再依赖 onWidthIncrease，避免重复注册
+  }, [stdout]);
 
   return width;
 }
@@ -107,8 +98,6 @@ interface AppProps {
   initialState: TUIState;
   callbacks: TUICallbacks;
   bridge: StateBridge;
-  /** 终端宽度增大时的回调（用于清除 Ink Live 区域避免残留） */
-  onWidthIncrease?: () => void;
 }
 
 /** 格式化工具输入的关键信息 */
@@ -163,9 +152,9 @@ function getDisplayItemKey(item: DisplayItem, idx: number): string {
   return `${msg.role}-${idx}`;
 }
 
-export function TUIApp({ initialState, callbacks, bridge, onWidthIncrease }: AppProps) {
+export function TUIApp({ initialState, callbacks, bridge }: AppProps) {
   const { exit } = useApp();
-  const termWidth = useTerminalWidth(onWidthIncrease);
+  const termWidth = useTerminalWidth();
   const [state, setState] = useState<TUIState>(initialState);
   const isSubmittingRef = useRef(false);
   const log = getLogger();
