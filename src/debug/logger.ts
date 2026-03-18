@@ -84,10 +84,6 @@ class Logger {
     }
   }
 
-  private shouldLog(level: LogLevel): boolean {
-    return this.options.enabled && level <= this.options.level;
-  }
-
   private formatMessage(level: LogLevel, category: string, message: string, data?: unknown): string {
     const now = new Date();
     const time = now.toLocaleTimeString('zh-CN', { hour12: false });
@@ -156,13 +152,15 @@ class Logger {
   }
 
   private log(level: LogLevel, category: string, message: string, data?: unknown): void {
-    if (!this.shouldLog(level)) return;
+    if (!this.options.enabled) return;
 
     const formatted = this.formatMessage(level, category, message, data);
 
+    // 文件始终写入所有级别，确保日志文件包含完整信息
     this.writeToFile(formatted);
-    // fileOnly 模式下不输出到控制台（TUI 模式避免干扰 Ink 渲染）
-    if (!this.options.fileOnly) {
+
+    // 控制台输出受 level 过滤（fileOnly 模式下不输出到控制台）
+    if (!this.options.fileOnly && level <= this.options.level) {
       this.writeToConsole(level, formatted);
     }
   }
