@@ -885,20 +885,16 @@ export class App {
 
     // TUI 版本的 agentLoop（使用统一 Runner）
     const tuiAgentLoop = async (userInput: string) => {
-      // 立即将用户消息追加到 TUI state 中，确保用户输入即时可见（不等 LLM 回复）
-      const currentMessages = this.ctxMgr.getMessages();
-      const userMsg: import("./llm/types.ts").Message = {
-        role: "user",
-        content: [{ type: "text", text: userInput }],
-      };
       updateState({
         streamingText: "",
         isLoading: true,
-        messages: [...currentMessages, userMsg],
       });
 
       let streamSynced = false;
       const tuiCallbacks: AgentLoopCallbacks = {
+        onUserMessageAdded: () => {
+          updateState({ messages: this.ctxMgr.getMessages() });
+        },
         onStreamText: (text) => {
           const current = bridge.current.streamingText || "";
           // 首次收到流式文本时，同步 ctxMgr 中的真实消息（用户消息已在 run() 中被 addMessage）

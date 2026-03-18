@@ -23,6 +23,8 @@ import type { HookRunner } from "../hook/runner.ts";
 
 /** UI 回调接口，处理 REPL/TUI 的差异 */
 export interface AgentLoopCallbacks {
+  /** 用户消息已添加到上下文（用于 TUI 即时显示） */
+  onUserMessageAdded?(): void;
   /** 流式文本输出 */
   onStreamText(text: string): void;
   /** 工具开始执行 */
@@ -121,6 +123,7 @@ export class AgentLoopRunner {
       role: "user",
       content: [{ type: "text", text: cleanedInput }],
     });
+    callbacks.onUserMessageAdded?.();
 
     let turns = 0;
     const maxTurns = config.maxTurns || 50;
