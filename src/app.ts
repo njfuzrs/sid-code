@@ -559,7 +559,7 @@ export class App {
       .filter(b => b.type === "text")
       .reduce((sum, b) => sum + (b.type === "text" ? b.text.length : 0), 0);
     const toolCallCount = response.content.filter(b => b.type === "tool_use").length;
-    log.info("STREAM", `流结束: 文本${totalTextLen}字符, 工具调用${toolCallCount}个, stop=${response.stopReason}`);
+    log.info("STREAM", `流结束: 文本${totalTextLen}字符, 工具调用${toolCallCount}个, stop=${response.stopReason}, in=${response.usage.inputTokens} out=${response.usage.outputTokens}`);
 
     return response;
   }
@@ -1027,6 +1027,13 @@ export class App {
           setModel: (m) => {
             log.info("TUI:CMD", `切换模型: ${this.config.model} → ${m}`);
             this.config.model = m;
+            // 同步模型级 maxOutputTokens
+            const { resolveModelMaxOutputTokens } = require("./config/config.ts");
+            const modelMaxOutput = resolveModelMaxOutputTokens(this.config);
+            if (modelMaxOutput) {
+              this.config.maxTokens = modelMaxOutput;
+              log.info("TUI:CMD", `maxTokens 已更新: ${modelMaxOutput}`);
+            }
             // Provider 重建（registry 模式）
             if (this.providerRegistry) {
               this.providerRegistry.clearCache();

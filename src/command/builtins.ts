@@ -132,6 +132,11 @@ export class ModelCommand implements Command {
           ctx.config.openaiKey = modelConfig.apiKey;
         }
       }
+      // 模型级 maxOutputTokens 覆盖全局 maxTokens
+      if (modelConfig.maxOutputTokens) {
+        ctx.config.maxTokens = modelConfig.maxOutputTokens;
+        console.log(`最大输出 tokens 已更新: ${modelConfig.maxOutputTokens}`);
+      }
     }
 
     // 切换模型

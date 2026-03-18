@@ -232,7 +232,8 @@ export class AgentLoopRunner {
 
       // 检查停止原因
       if (response.stopReason === "end_turn" || response.stopReason === "stop") {
-        log.info("AGENT", `对话结束 (${response.stopReason})，共 ${turns} 轮，累计费用 $${sessionState.totalCostUSD.toFixed(4)}`);
+        const totalUsage = sessionState.getTotalUsage();
+        log.info("AGENT", `对话结束 (${response.stopReason})，共 ${turns} 轮，in=${totalUsage.inputTokens} out=${totalUsage.outputTokens}，累计费用 $${sessionState.totalCostUSD.toFixed(4)}`);
         callbacks.onComplete(turns);
         break;
       }
@@ -265,12 +266,12 @@ export class AgentLoopRunner {
 
       // max_tokens 续写
       if (response.stopReason === "max_tokens" || response.stopReason === "length") {
-        log.info("AGENT", `输出达到 token 上限，自动续写 (轮次 ${turns})`);
+        log.info("AGENT", `输出达到 token 上限 (maxTokens=${config.maxTokens})，自动续写 (轮次 ${turns}，本次 out=${response.usage.outputTokens})`);
         continue;
       }
 
       // 其他停止原因
-      log.warn("AGENT", `未知停止原因: ${response.stopReason}`);
+      log.warn("AGENT", `未知停止原因: ${response.stopReason}，in=${response.usage.inputTokens} out=${response.usage.outputTokens}`);
       callbacks.onComplete(turns);
       break;
     }

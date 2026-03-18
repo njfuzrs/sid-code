@@ -115,7 +115,7 @@ export function defaultConfig(): Config {
     anthropicKey: "",
     openaiKey: "",
     baseURL: "",
-    maxTokens: 8192,
+    maxTokens: 16384,
     availableModels: [],
     permissionMode: "default",
     skipPermissions: false,
@@ -303,7 +303,25 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
     (merged as any).mcpServers = { ...existing, ...mcpJsonServers };
   }
 
-  return merged as Config;
+  const config = merged as Config;
+
+  // 如果用户未显式配置 maxTokens，从当前模型的 maxOutputTokens 自动推导
+  const userExplicitMaxTokens = cliArgs.maxTokens || (fileConfig as any).maxTokens || (envConfig as any).maxTokens;
+  if (!userExplicitMaxTokens) {
+    const modelMaxOutput = resolveModelMaxOutputTokens(config);
+    if (modelMaxOutput) {
+      config.maxTokens = modelMaxOutput;
+    }
+  }
+
+  return config;
+}
+
+/** 从 availableModels 中查找当前模型的 maxOutputTokens */
+export function resolveModelMaxOutputTokens(config: Config): number | undefined {
+  if (!config.availableModels?.length) return undefined;
+  const modelConfig = config.availableModels.find(m => m.name === config.model);
+  return modelConfig?.maxOutputTokens || undefined;
 }
 
 /** 确保配置目录存在 */

@@ -338,7 +338,12 @@ export class OpenAIProvider implements Provider {
               yield {
                 type: "message_delta",
                 delta: {
-                  stop_reason: finishReason === "tool_calls" ? "tool_use" : "end_turn",
+                  stop_reason:
+                    finishReason === "tool_calls"
+                      ? "tool_use"
+                      : finishReason === "length"
+                        ? "max_tokens"
+                        : "end_turn",
                 },
                 usage,
               };
