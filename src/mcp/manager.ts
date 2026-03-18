@@ -14,6 +14,7 @@ import { getLogger } from "../debug/logger.ts";
 export interface MCPServerStatus {
   name: string;
   connected: boolean;
+  connecting: boolean;
   toolCount: number;
   transport: string;
   error?: string;
@@ -73,6 +74,8 @@ export class MCPManager {
   private serverConfigs = new Map<string, MCPServerConfig>();
   private serverToolCounts = new Map<string, number>();
   private serverErrors = new Map<string, string>();
+  /** 正在连接中的服务器 */
+  private connecting = new Set<string>();
   /** 工具变更时的回调（供外部刷新工具列表） */
   onToolsRefresh?: (serverName: string, tools: Tool[]) => void;
 
@@ -94,17 +97,32 @@ export class MCPManager {
 
     log.info("MCP", `开始连接 ${entries.length} 个 MCP 服务器`);
 
-    // 并行连接所有服务器
+    // 并行连接所有服务器（每个服务器有独立超时保护）
     const results = await Promise.allSettled(
       entries.map(async ([name, config]) => {
         this.serverConfigs.set(name, config);
+        this.connecting.add(name);
+        const connectTimeout = config.timeout ?? 30000;
         try {
           log.debug("MCP", `连接服务器: ${name}`, config);
-          const tools = await this.connect(name, config);
+          const tools = await Promise.race([
+            this.connect(name, config),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error(`连接超时 (${connectTimeout}ms)`)), connectTimeout)
+            ),
+          ]);
+          this.connecting.delete(name);
           log.info("MCP", `${name} 连接成功，注册 ${tools.length} 个工具`);
           this.serverToolCounts.set(name, tools.length);
           return { name, tools };
         } catch (err: any) {
+          this.connecting.delete(name);
+          // 超时或连接失败，清理已创建的 client/transport
+          const client = this.clients.get(name);
+          if (client) {
+            client.close();
+            this.clients.delete(name);
+          }
           log.error("MCP", `连接 ${name} 失败`, { error: err.message, stack: err.stack });
           this.serverErrors.set(name, err.message);
           console.error(`[MCP] 连接 ${name} 失败: ${err.message}`);
@@ -177,10 +195,12 @@ export class MCPManager {
 
     for (const [name, config] of this.serverConfigs) {
       const connected = this.clients.has(name);
+      const isConnecting = this.connecting.has(name);
       const error = this.serverErrors.get(name);
       statuses.push({
         name,
         connected,
+        connecting: isConnecting,
         toolCount: this.serverToolCounts.get(name) ?? 0,
         transport: config.transport,
         error,

@@ -45,6 +45,18 @@ export class StdioTransport implements Transport {
       env: { ...process.env as Record<string, string>, ...env },
     });
 
+    // 监听进程退出，立即 reject 所有 pending 请求
+    this.proc.exited.then((code) => {
+      if (!this.closed) {
+        this.closed = true;
+        const err = new Error(`MCP 子进程退出 (code=${code})`);
+        for (const [, pending] of this.pendingRequests) {
+          pending.reject(err);
+        }
+        this.pendingRequests.clear();
+      }
+    });
+
     // 读取 stdout 响应
     this.readLoop();
   }
@@ -106,9 +118,8 @@ export class StdioTransport implements Transport {
       this.pendingRequests.set(request.id, { resolve, reject });
 
       const data = JSON.stringify(request) + "\n";
-      const writer = this.proc.stdin.getWriter();
-      writer.write(new TextEncoder().encode(data));
-      writer.releaseLock();
+      this.proc.stdin.write(data);
+      this.proc.stdin.flush();
 
       // 超时
       setTimeout(() => {
@@ -123,9 +134,8 @@ export class StdioTransport implements Transport {
   sendNotification(notification: JsonRpcNotification): void {
     if (this.closed) return;
     const data = JSON.stringify(notification) + "\n";
-    const writer = this.proc.stdin.getWriter();
-    writer.write(new TextEncoder().encode(data));
-    writer.releaseLock();
+    this.proc.stdin.write(data);
+    this.proc.stdin.flush();
   }
 
   close(): void {

@@ -397,7 +397,7 @@ export class MCPCommand implements Command {
 
     console.log("MCP 服务器状态:");
     for (const s of statuses) {
-      const status = s.connected ? "已连接" : "连接失败";
+      const status = s.connecting ? "连接中..." : s.connected ? "已连接" : "连接失败";
       const tools = s.connected ? `${s.toolCount} 个工具` : "";
       const error = s.error ? ` (${s.error})` : "";
       console.log(`  ${s.name} [${s.transport}] — ${status} ${tools}${error}`);
