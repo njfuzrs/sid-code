@@ -5,18 +5,23 @@
  * 彻底消除 ink eraseLines 导致的闪烁和滚动问题。
  *
  * 策略：
- * - 已完成的段落用 renderMarkdown() 渲染后写入 stdout
+ * - 按行 flush：每收到完整行（\n 结尾）就尝试渲染输出
+ * - 代码块内不拆分，等 fence 闭合后整块输出
  * - 当前未完成行用 \r\x1b[K 原地覆写（原始文本，不做 markdown 渲染）
+ * - 未完成行截断到终端宽度，避免折行产生幽灵行
  * - finish() 时渲染最后一段未输出的文本
- * - 不做光标回退，避免超出可见区域的边界问题
  */
 
 import chalk from "chalk";
+import stringWidth from "string-width";
 import { renderMarkdown } from "./markdown.ts";
 import { getLogger } from "../debug/logger.ts";
 
 /** 清除当前行：回车 + 清除行尾 */
 const CLEAR_LINE = "\r\x1b[K";
+
+/** 匹配代码块 fence（允许最多 3 空格缩进） */
+const FENCE_RE = /^ {0,3}(?:```|~~~)/gm;
 
 export class StreamWriter {
   /** 累积的全部流式文本 */
@@ -56,7 +61,7 @@ export class StreamWriter {
       this.stdout.write(header + "\n");
     }
 
-    // 尝试将已完成的段落（双换行分隔）渲染输出
+    // 尝试将已完成的行渲染输出
     this.flushCompleted();
 
     // 更新当前未完成行的显示
@@ -102,25 +107,35 @@ export class StreamWriter {
     return this.fullText;
   }
 
+  /** 统计文本中的 fence 数量 */
+  private countFences(text: string): number {
+    FENCE_RE.lastIndex = 0;
+    let count = 0;
+    while (FENCE_RE.exec(text)) count++;
+    return count;
+  }
+
   /**
-   * 将已完成的段落（双换行分隔）渲染输出到 stdout
-   * 在代码块内部不拆分，等代码块闭合后再输出
+   * 将已完成的行渲染输出到 stdout
+   *
+   * 改进策略：按行（单换行）查找 flush 边界，而非仅双换行。
+   * 在代码块内部不拆分，等 fence 闭合后再输出。
    */
   private flushCompleted(): void {
     const unrendered = this.fullText.slice(this.renderedLen);
 
-    // 查找最后一个段落边界（双换行）
-    const paragraphIdx = unrendered.lastIndexOf("\n\n");
-    if (paragraphIdx < 0) return;
+    // 查找最后一个换行符作为候选拆分点
+    const lastNewline = unrendered.lastIndexOf("\n");
+    if (lastNewline < 0) return;
 
-    const splitPos = this.renderedLen + paragraphIdx;
+    const splitPos = this.renderedLen + lastNewline;
 
     // 检查拆分点是否在未闭合的代码块内
     const textToSplit = this.fullText.slice(0, splitPos);
-    const fenceCount = (textToSplit.match(/^(?:```|~~~)/gm) || []).length;
+    const fenceCount = this.countFences(textToSplit);
     if (fenceCount % 2 !== 0) return; // 代码块未闭合，不拆分
 
-    // 渲染已完成的段落
+    // 渲染已完成的内容
     const toRender = this.fullText.slice(this.renderedLen, splitPos).trim();
     this.renderedLen = splitPos;
 
@@ -139,16 +154,40 @@ export class StreamWriter {
     }
   }
 
-  /** 更新当前未完成行的显示（\r 覆写，不换行） */
+  /**
+   * 更新当前未完成行的显示（\r 覆写，不换行）
+   * 截断到终端宽度，避免折行导致幽灵行
+   */
   private updateCurrentLine(): void {
     const unrendered = this.fullText.slice(this.renderedLen);
     // 取最后一个换行后的内容作为当前行
     const lastNewline = unrendered.lastIndexOf("\n");
     const line = lastNewline >= 0 ? unrendered.slice(lastNewline + 1) : unrendered;
 
-    this.currentLine = line;
-    if (line) {
-      this.stdout.write(CLEAR_LINE + line);
+    if (!line) {
+      this.currentLine = "";
+      return;
     }
+
+    // 截断到终端宽度，避免终端自动折行后 \r 只回到折行最后一行
+    const maxWidth = (this.stdout.columns || 80) - 2; // 留 2 列 buffer
+    let truncated = line;
+    if (stringWidth(line) > maxWidth) {
+      // 逐字符截断，确保 CJK 字符正确处理
+      truncated = "";
+      let w = 0;
+      for (const ch of line) {
+        const cw = stringWidth(ch);
+        if (w + cw > maxWidth - 1) { // -1 留给省略号
+          truncated += "…";
+          break;
+        }
+        truncated += ch;
+        w += cw;
+      }
+    }
+
+    this.currentLine = truncated;
+    this.stdout.write(CLEAR_LINE + truncated);
   }
 }

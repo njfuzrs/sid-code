@@ -948,17 +948,20 @@ export class App {
           syncDisplay();
         },
         onStreamText: (text) => {
-          // 首次收到流式文本时，启动 StreamWriter 并同步消息
+          // 首次收到流式文本时，启动 StreamWriter，同步消息，然后暂停 ink 渲染
           if (!streamSynced) {
             streamSynced = true;
+            syncDisplay(); // 先同步，确保用户消息已显示
             streamWriter.start();
-            syncDisplay();
+            bridge.pause(); // 暂停 ink 渲染，避免与 stdout 竞争
           }
           streamWriter.write(text);
         },
         onToolStart: (name, input) => {
-          // 工具开始前，结束当前流式输出
+          // 工具开始前，结束当前流式输出并恢复 ink 渲染
           streamWriter.finish();
+          bridge.resume();
+          streamSynced = false;
           syncDisplay({ toolName: name, toolInput: input ?? null, isToolExecuting: true });
         },
         onToolEnd: (name, result) => {
@@ -977,8 +980,10 @@ export class App {
         onComplete: () => {
           const ctxUsed = this.ctxMgr.estimateTokens(this.toolRegistry.size());
           const ctxPct = Math.round((ctxUsed / 200000) * 100);
-          // 流式结束，完成输出
+          // 先完成 stdout 输出，再恢复 ink 渲染
           streamWriter.finish();
+          bridge.resume();
+          streamSynced = false;
           syncDisplay({
             usage: { ...this.sessionState.getTotalUsage() },
             costUSD: this.sessionState.totalCostUSD,
@@ -994,7 +999,13 @@ export class App {
         },
       };
 
-      await this.loopRunner.run(userInput, tuiCallbacks);
+      try {
+        await this.loopRunner.run(userInput, tuiCallbacks);
+      } finally {
+        // 兜底：确保异常路径也能恢复 ink 渲染
+        streamWriter.finish();
+        bridge.resume();
+      }
 
       syncDisplay({
         isLoading: false,
