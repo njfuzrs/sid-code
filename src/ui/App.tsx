@@ -12,7 +12,7 @@ import { ToolStatus } from "./ToolStatus.tsx";
 import { StatusBar } from "./StatusBar.tsx";
 import { renderMarkdown } from "./markdown.ts";
 import type { StateBridge } from "./state-bridge.ts";
-import type { Message, Usage } from "../llm/types.ts";
+import type { Message, Usage, ContentBlock } from "../llm/types.ts";
 import { getLogger } from "../debug/logger.ts";
 
 /** 占位消息文本常量 */
@@ -22,7 +22,8 @@ const PLACEHOLDER_TEXT = "[系统] 自动插入占位消息以保持角色交替
 export type DisplayItem =
   | { kind: "message"; message: Message }
   | { kind: "system"; text: string }
-  | { kind: "command"; input: string; output: string | null };
+  | { kind: "command"; input: string; output: string | null }
+  | { kind: "streaming-chunk"; text: string; id: number };
 
 /** 判断是否为占位消息 */
 export function isPlaceholderMessage(msg: Message): boolean {
@@ -69,6 +70,8 @@ export interface TUIState {
   messages: Message[];
   displayItems: DisplayItem[];
   streamingText: string;
+  /** 流式文本尾部（Live 区域只渲染这部分，减少 eraseLines 行数） */
+  streamingTail: string;
   isLoading: boolean;
   toolName: string | null;
   toolInput: unknown;
@@ -136,6 +139,7 @@ const PermissionDialog = React.memo(function PermissionDialog({ request }: { req
 function getDisplayItemKey(item: DisplayItem, idx: number): string {
   if (item.kind === "system") return `sys-${idx}`;
   if (item.kind === "command") return `cmd-${idx}`;
+  if (item.kind === "streaming-chunk") return `sc-${item.id}`;
   const msg = item.message;
   for (const block of msg.content) {
     if (block.type === "tool_use") return `tu-${block.id}`;
@@ -203,23 +207,21 @@ export function TUIApp({ initialState, callbacks, bridge }: AppProps) {
 
   renderCountRef.current++;
 
-  const isEmpty = state.displayItems.length === 0 && !state.streamingText;
+  const isEmpty = state.displayItems.length === 0 && !state.streamingText && !state.streamingTail;
 
   // 分隔线
   const sepWidth = Math.max(10, termWidth - 4);
   const separator = "── ".repeat(Math.floor(sepWidth / 3));
 
-  // 流式文本 markdown 渲染缓存（流式区域无额外 padding，直接用终端宽度）
+  // Live 区域只渲染 streamingTail（尾部未完成的文本），减少 eraseLines 行数
   const streamingMaxWidth = termWidth;
-  const renderedStreaming = useMemo(
+  const renderedTail = useMemo(
     () => {
-      if (!state.streamingText) return "";
-      log.debug("UI:STREAM", `流式渲染: textLen=${state.streamingText.length} maxWidth=${streamingMaxWidth} preview=${JSON.stringify(state.streamingText.slice(0, 80))}`);
-      const result = renderMarkdown(state.streamingText, streamingMaxWidth);
-      log.debug("UI:STREAM", `流式渲染结果: resultLen=${result.length} hasAnsi=${/\x1b\[/.test(result)} preview=${JSON.stringify(result.slice(0, 80))}`);
-      return result;
+      if (!state.streamingTail) return "";
+      // tail 可能以 \n\n 开头（段落边界拆分后的尾部），trimStart 避免渲染空行
+      return renderMarkdown(state.streamingTail.trimStart(), streamingMaxWidth);
     },
-    [state.streamingText, streamingMaxWidth],
+    [state.streamingTail, streamingMaxWidth],
   );
 
   const staticItems = state.displayItems;
@@ -248,6 +250,13 @@ export function TUIApp({ initialState, callbacks, bridge }: AppProps) {
               </Box>
             );
           }
+          if (item.kind === "streaming-chunk") {
+            return (
+              <Box key={getDisplayItemKey(item, idx)} flexDirection="column">
+                <Text>{item.text}</Text>
+              </Box>
+            );
+          }
           const msg = item.message;
           // 找前一个 message 类型的 item 作为 prevMessage
           let prevMsg: Message | undefined;
@@ -259,7 +268,7 @@ export function TUIApp({ initialState, callbacks, bridge }: AppProps) {
             }
           }
           const isUserNonTool = msg.role === "user"
-            && !msg.content.every((b) => b.type === "tool_result");
+            && !msg.content.every((b: ContentBlock) => b.type === "tool_result");
           const showSep = idx > 0 && isUserNonTool;
           return (
             <Box key={getDisplayItemKey(item, idx)} flexDirection="column">
@@ -333,14 +342,17 @@ export function TUIApp({ initialState, callbacks, bridge }: AppProps) {
         </Box>
       ) : null}
 
-      {/* 流式文本 */}
-      {state.streamingText ? (
+      {/* 流式文本尾部（Live 区域只渲染最后未完成的部分，减少 eraseLines 造成的视口跳动） */}
+      {state.streamingTail ? (
         <Box flexDirection="column">
-          <Box>
-            <Text bold color="green">{"助手 "}</Text>
-            <Text color="green">●</Text>
-          </Box>
-          <Text>{renderedStreaming}</Text>
+          {/* 当标题还没被 flush 到 Static 时，在 Live 区域显示 */}
+          {state.streamingText === state.streamingTail && (
+            <Box>
+              <Text bold color="green">{"助手 "}</Text>
+              <Text color="green">●</Text>
+            </Box>
+          )}
+          <Text>{renderedTail}</Text>
         </Box>
       ) : null}
 

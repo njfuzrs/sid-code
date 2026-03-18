@@ -839,6 +839,7 @@ export class App {
       messages: [],
       displayItems: [],
       streamingText: "",
+      streamingTail: "",
       isLoading: false,
       toolName: null,
       toolInput: null,
@@ -936,26 +937,141 @@ export class App {
     const tuiAgentLoop = async (userInput: string) => {
       updateState({
         streamingText: "",
+        streamingTail: "",
         isLoading: true,
       });
 
       let streamSynced = false;
+      // 流式文本增量拆分状态：累积全文用于段落边界检测
+      let streamFullText = "";
+      // 已移入 Static 的文本长度（字符偏移）
+      let streamFlushedLen = 0;
+      // streaming-chunk 的自增 ID
+      let streamChunkId = 0;
+      // 是否已输出过 "助手 ●" 标题
+      let streamHeaderEmitted = false;
+
+      /** 将已完成的行从流式文本移入 Static 区域，Live 区域只保留尾部少量行 */
+      const TAIL_MAX_LINES = 8; // Live 区域最多保留的行数
+      const flushStreamToStatic = (extraPatch?: Partial<import("./ui/App.tsx").TUIState>) => {
+        const unflushed = streamFullText.slice(streamFlushedLen);
+        // 优先按双换行（段落边界）拆分
+        let splitPos = streamFullText.lastIndexOf("\n\n", streamFullText.length - 1);
+
+        // 检查拆分点是否在代码块内部（避免截断代码块）
+        if (splitPos > streamFlushedLen) {
+          const beforeSplit = streamFullText.slice(0, splitPos);
+          const fenceCount = (beforeSplit.match(/^```/gm) || []).length;
+          if (fenceCount % 2 !== 0) {
+            // 在未闭合的代码块内，不在此处拆分
+            splitPos = streamFlushedLen;
+          }
+        }
+
+        // 如果没有安全的段落边界，按单换行行数阈值拆分
+        if (splitPos <= streamFlushedLen) {
+          const lines = unflushed.split("\n");
+          if (lines.length > TAIL_MAX_LINES) {
+            // 检查是否在代码块内部
+            const fullTextSoFar = streamFullText;
+            const fenceCount = (fullTextSoFar.match(/^```/gm) || []).length;
+            if (fenceCount % 2 === 0) {
+              // 不在代码块内，可以按行拆分
+              const flushLineCount = lines.length - TAIL_MAX_LINES;
+              const flushText = lines.slice(0, flushLineCount).join("\n");
+              splitPos = streamFlushedLen + flushText.length;
+            }
+            // 在代码块内部时不拆分，等代码块结束
+          }
+        }
+
+        if (splitPos <= streamFlushedLen) {
+          // 没有需要 flush 的内容，只更新 tail
+          updateState({ streamingText: streamFullText, streamingTail: unflushed, ...extraPatch });
+          return;
+        }
+
+        // 有内容需要移入 Static
+        const toFlush = streamFullText.slice(streamFlushedLen, splitPos);
+        streamFlushedLen = splitPos;
+        const tail = streamFullText.slice(streamFlushedLen);
+
+        // 渲染已完成的文本为 ANSI
+        const { renderMarkdown } = require("./ui/markdown.ts");
+        const termWidth = process.stdout.columns || 80;
+
+        const newItems: import("./ui/App.tsx").DisplayItem[] = [];
+
+        // 首次 flush 时先输出 "助手 ●" 标题
+        if (!streamHeaderEmitted) {
+          streamHeaderEmitted = true;
+          newItems.push({ kind: "streaming-chunk" as const, text: "\x1b[1m\x1b[32m助手 \x1b[0m\x1b[32m●\x1b[0m", id: streamChunkId++ });
+        }
+
+        const rendered = renderMarkdown(toFlush.trim(), termWidth);
+        if (rendered) {
+          newItems.push({ kind: "streaming-chunk" as const, text: rendered, id: streamChunkId++ });
+        }
+
+        if (newItems.length > 0) {
+          const items = [...bridge.current.displayItems, ...newItems];
+          updateState({ displayItems: items, streamingText: streamFullText, streamingTail: tail, ...extraPatch });
+        } else {
+          updateState({ streamingText: streamFullText, streamingTail: tail, ...extraPatch });
+        }
+      };
+
+      /** 将所有剩余流式文本移入 Static（流式结束或工具开始时调用） */
+      const flushAllStream = (extraPatch?: Partial<import("./ui/App.tsx").TUIState>) => {
+        if (streamFlushedLen < streamFullText.length) {
+          const remaining = streamFullText.slice(streamFlushedLen);
+          const { renderMarkdown } = require("./ui/markdown.ts");
+          const termWidth = process.stdout.columns || 80;
+
+          const newItems: import("./ui/App.tsx").DisplayItem[] = [];
+
+          if (!streamHeaderEmitted) {
+            streamHeaderEmitted = true;
+            newItems.push({ kind: "streaming-chunk" as const, text: "\x1b[1m\x1b[32m助手 \x1b[0m\x1b[32m●\x1b[0m", id: streamChunkId++ });
+          }
+
+          const rendered = renderMarkdown(remaining.trim(), termWidth);
+          if (rendered) {
+            newItems.push({ kind: "streaming-chunk" as const, text: rendered, id: streamChunkId++ });
+          }
+
+          streamFlushedLen = streamFullText.length;
+
+          if (newItems.length > 0) {
+            const items = [...bridge.current.displayItems, ...newItems];
+            updateState({ displayItems: items, streamingText: "", streamingTail: "", ...extraPatch });
+            return;
+          }
+        }
+        updateState({ streamingText: "", streamingTail: "", ...extraPatch });
+      };
+
       const tuiCallbacks: AgentLoopCallbacks = {
         onUserMessageAdded: () => {
           syncDisplay();
         },
         onStreamText: (text) => {
-          const current = bridge.current.streamingText || "";
-          // 首次收到流式文本时，同步 ctxMgr 中的真实消息（用户消息已在 run() 中被 addMessage）
+          streamFullText += text;
+          // 首次收到流式文本时，同步 ctxMgr 中的真实消息
           if (!streamSynced) {
             streamSynced = true;
-            syncDisplay({ streamingText: current + text });
-          } else {
-            updateState({ streamingText: current + text });
+            syncDisplay();
           }
+          flushStreamToStatic();
         },
         onToolStart: (name, input) => {
-          syncDisplay({ streamingText: "", toolName: name, toolInput: input ?? null, isToolExecuting: true });
+          // 工具开始前，把所有剩余流式文本移入 Static
+          flushAllStream();
+          // 重置流式状态（下一轮流式可能产生新文本）
+          streamFullText = "";
+          streamFlushedLen = 0;
+          streamHeaderEmitted = false;
+          syncDisplay({ streamingText: "", streamingTail: "", toolName: name, toolInput: input ?? null, isToolExecuting: true });
         },
         onToolEnd: (name, result) => {
           syncDisplay({
@@ -973,8 +1089,11 @@ export class App {
         onComplete: () => {
           const ctxUsed = this.ctxMgr.estimateTokens(this.toolRegistry.size());
           const ctxPct = Math.round((ctxUsed / 200000) * 100);
+          // 流式结束，把所有剩余文本移入 Static
+          flushAllStream();
           syncDisplay({
             streamingText: "",
+            streamingTail: "",
             usage: { ...this.sessionState.getTotalUsage() },
             costUSD: this.sessionState.totalCostUSD,
             contextPercent: ctxPct,
@@ -994,6 +1113,7 @@ export class App {
       syncDisplay({
         isLoading: false,
         streamingText: "",
+        streamingTail: "",
         usage: { ...this.sessionState.getTotalUsage() },
         costUSD: this.sessionState.totalCostUSD,
         contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / 200000) * 100),
@@ -1009,7 +1129,7 @@ export class App {
           await tuiAgentLoop(text);
         } catch (err: any) {
           log.error("TUI:CB", `onUserInput 异常`, { error: err.message, stack: err.stack });
-          updateState({ isLoading: false, streamingText: "" });
+          updateState({ isLoading: false, streamingText: "", streamingTail: "" });
         } finally {
           this.abortController = null;
         }
@@ -1069,6 +1189,7 @@ export class App {
             displayItems: [],
             contextPercent: 0,
             streamingText: "",
+            streamingTail: "",
             statusMessage: "",
             lastToolResult: null,
           });
