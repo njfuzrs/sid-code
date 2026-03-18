@@ -187,3 +187,15 @@ export const MessageItem = React.memo(function MessageItem({ message, prevMessag
     </Box>
   );
 });
+
+/** 系统消息组件（命令输出等，居中灰色圆角气泡） */
+export const SystemItem = React.memo(function SystemItem({ text, termWidth }: { text: string; termWidth?: number }) {
+  const tw = termWidth || 80;
+  return (
+    <Box width={tw} justifyContent="center">
+      <Box flexDirection="column" borderStyle="round" borderColor="gray" paddingX={1}>
+        <Text>{text}</Text>
+      </Box>
+    </Box>
+  );
+});

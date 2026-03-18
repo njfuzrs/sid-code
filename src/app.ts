@@ -837,6 +837,7 @@ export class App {
     // 事件驱动状态桥接（替代 50ms 轮询）
     const bridge = new StateBridge({
       messages: [],
+      displayItems: [],
       streamingText: "",
       isLoading: false,
       toolName: null,
@@ -868,6 +869,48 @@ export class App {
       bridge.update(patch);
     };
 
+    // DisplayItem 增量同步：追踪上次同步的 ctxMgr 消息数
+    const { messagesToDisplayItems, isPlaceholderMessage } = await import("./ui/App.tsx");
+    let lastSyncedCount = 0;
+
+    // 会话恢复：如果 ctxMgr 已有消息（restoreSession 在 runTUI 之前调用），初始化 displayItems
+    {
+      const existingMsgs = this.ctxMgr.getMessages();
+      if (existingMsgs.length > 0) {
+        lastSyncedCount = existingMsgs.length;
+        const items = messagesToDisplayItems(existingMsgs);
+        bridge.update({ messages: existingMsgs, displayItems: items });
+      }
+    }
+
+    /** 从 ctxMgr 增量同步新消息到 displayItems */
+    const syncDisplay = (extraPatch?: Partial<import("./ui/App.tsx").TUIState>) => {
+      const allMsgs = this.ctxMgr.getMessages();
+      const newMsgs = allMsgs.slice(lastSyncedCount);
+      lastSyncedCount = allMsgs.length;
+
+      const newItems = newMsgs
+        .filter(m => !isPlaceholderMessage(m))
+        .map(m => ({ kind: "message" as const, message: m }));
+
+      const items = [...bridge.current.displayItems, ...newItems];
+      updateState({ messages: allMsgs, displayItems: items, ...extraPatch });
+    };
+
+    /** 重建 displayItems（/compact 后消息被压缩，需要完整重建） */
+    const rebuildDisplay = (extraPatch?: Partial<import("./ui/App.tsx").TUIState>) => {
+      const allMsgs = this.ctxMgr.getMessages();
+      lastSyncedCount = allMsgs.length;
+      const items = messagesToDisplayItems(allMsgs);
+      updateState({ messages: allMsgs, displayItems: items, ...extraPatch });
+    };
+
+    /** 追加系统消息（命令输出，不进 ctxMgr） */
+    const appendSystemOutput = (text: string) => {
+      const items = [...bridge.current.displayItems, { kind: "system" as const, text }];
+      updateState({ displayItems: items });
+    };
+
     // 设置 TUI 权限确认回调
     this.setTUIConfirmCallback(async (toolName, toolInput, desc) => {
       return new Promise<"yes" | "no" | "always">((resolve) => {
@@ -893,24 +936,23 @@ export class App {
       let streamSynced = false;
       const tuiCallbacks: AgentLoopCallbacks = {
         onUserMessageAdded: () => {
-          updateState({ messages: this.ctxMgr.getMessages() });
+          syncDisplay();
         },
         onStreamText: (text) => {
           const current = bridge.current.streamingText || "";
           // 首次收到流式文本时，同步 ctxMgr 中的真实消息（用户消息已在 run() 中被 addMessage）
           if (!streamSynced) {
             streamSynced = true;
-            updateState({ streamingText: current + text, messages: this.ctxMgr.getMessages() });
+            syncDisplay({ streamingText: current + text });
           } else {
             updateState({ streamingText: current + text });
           }
         },
         onToolStart: (name, input) => {
-          updateState({ streamingText: "", toolName: name, toolInput: input ?? null, isToolExecuting: true, messages: this.ctxMgr.getMessages() });
+          syncDisplay({ streamingText: "", toolName: name, toolInput: input ?? null, isToolExecuting: true });
         },
         onToolEnd: (name, result) => {
-          updateState({
-            messages: this.ctxMgr.getMessages(),
+          syncDisplay({
             toolName: null,
             toolInput: null,
             isToolExecuting: false,
@@ -918,16 +960,15 @@ export class App {
           });
         },
         onCompact: () => {
-          updateState({ messages: this.ctxMgr.getMessages(), statusMessage: "上下文已自动压缩" });
+          rebuildDisplay({ statusMessage: "上下文已自动压缩" });
           // 3 秒后清除状态消息
           setTimeout(() => updateState({ statusMessage: "" }), 3000);
         },
         onComplete: () => {
           const ctxUsed = this.ctxMgr.estimateTokens(this.toolRegistry.size());
           const ctxPct = Math.round((ctxUsed / 200000) * 100);
-          updateState({
+          syncDisplay({
             streamingText: "",
-            messages: this.ctxMgr.getMessages(),
             usage: { ...this.sessionState.getTotalUsage() },
             costUSD: this.sessionState.totalCostUSD,
             contextPercent: ctxPct,
@@ -944,10 +985,9 @@ export class App {
 
       await this.loopRunner.run(userInput, tuiCallbacks);
 
-      updateState({
+      syncDisplay({
         isLoading: false,
         streamingText: "",
-        messages: this.ctxMgr.getMessages(),
         usage: { ...this.sessionState.getTotalUsage() },
         costUSD: this.sessionState.totalCostUSD,
         contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / 200000) * 100),
@@ -1006,12 +1046,14 @@ export class App {
           clearPromptCache();
           this.quotaManager?.resetAlertLevel();
           this.fallback.reset();
+          lastSyncedCount = 0;
           // Static 组件已写入终端滚动缓冲区的内容无法通过 React 状态清除，
           // 必须用 ANSI 转义序列清屏，然后 Ink 会在干净画布上重新渲染 Live 区域
           // \x1b[H 光标归位 + \x1b[2J 清屏 + \x1b[3J 清除滚动缓冲区
           process.stdout.write("\x1b[H\x1b[2J\x1b[3J");
           updateState({
             messages: [],
+            displayItems: [],
             contextPercent: 0,
             streamingText: "",
             statusMessage: "",
@@ -1047,13 +1089,9 @@ export class App {
           console.log = originalLog;
         }
 
-        // 将命令输出添加到消息历史（作为系统消息）
+        // 将命令输出显示为系统消息（不进 ctxMgr，不发给 LLM）
         if (outputs.length > 0) {
-          this.ctxMgr.addMessage({
-            role: "user",
-            content: [{ type: "text", text: `[系统] /${cmd} ${args}\n${outputs.join("\n")}` }],
-          });
-          updateState({ messages: this.ctxMgr.getMessages() });
+          appendSystemOutput(`/${cmd}${args ? " " + args : ""}\n${outputs.join("\n")}`);
         }
       },
     };

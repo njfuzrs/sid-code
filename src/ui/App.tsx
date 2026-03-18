@@ -6,7 +6,7 @@
 
 import React, { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { Box, Text, Static, useApp, useInput, useStdout } from "ink";
-import { MessageItem } from "./MessageList.tsx";
+import { MessageItem, SystemItem } from "./MessageList.tsx";
 import { InputArea } from "./InputArea.tsx";
 import { ToolStatus } from "./ToolStatus.tsx";
 import { StatusBar } from "./StatusBar.tsx";
@@ -14,6 +14,28 @@ import { renderMarkdown } from "./markdown.ts";
 import type { StateBridge } from "./state-bridge.ts";
 import type { Message, Usage } from "../llm/types.ts";
 import { getLogger } from "../debug/logger.ts";
+
+/** 占位消息文本常量 */
+const PLACEHOLDER_TEXT = "[系统] 自动插入占位消息以保持角色交替";
+
+/** 渲染数据源联合类型 */
+export type DisplayItem =
+  | { kind: "message"; message: Message }
+  | { kind: "system"; text: string };
+
+/** 判断是否为占位消息 */
+export function isPlaceholderMessage(msg: Message): boolean {
+  return msg.content.length === 1
+    && msg.content[0].type === "text"
+    && msg.content[0].text === PLACEHOLDER_TEXT;
+}
+
+/** 从消息数组构建 DisplayItem（过滤占位消息） */
+export function messagesToDisplayItems(msgs: Message[]): DisplayItem[] {
+  return msgs
+    .filter(m => !isPlaceholderMessage(m))
+    .map(m => ({ kind: "message" as const, message: m }));
+}
 
 /** 终端宽度 hook */
 function useTerminalWidth() {
@@ -44,6 +66,7 @@ export interface PermissionRequestInfo {
 /** TUI 状态（由外部 App 驱动） */
 export interface TUIState {
   messages: Message[];
+  displayItems: DisplayItem[];
   streamingText: string;
   isLoading: boolean;
   toolName: string | null;
@@ -108,13 +131,14 @@ const PermissionDialog = React.memo(function PermissionDialog({ request }: { req
   );
 });
 
-/** 为消息生成稳定的 key（避免用索引导致不必要的重挂载） */
-function getMessageKey(msg: Message, idx: number): string {
+/** 为 DisplayItem 生成稳定的 key */
+function getDisplayItemKey(item: DisplayItem, idx: number): string {
+  if (item.kind === "system") return `sys-${idx}`;
+  const msg = item.message;
   for (const block of msg.content) {
     if (block.type === "tool_use") return `tu-${block.id}`;
     if (block.type === "tool_result") return `tr-${block.tool_use_id}`;
   }
-  // 文本消息用角色+索引（文本消息无稳定 ID）
   return `${msg.role}-${idx}`;
 }
 
@@ -177,7 +201,7 @@ export function TUIApp({ initialState, callbacks, bridge }: AppProps) {
 
   renderCountRef.current++;
 
-  const isEmpty = state.messages.length === 0 && !state.streamingText;
+  const isEmpty = state.displayItems.length === 0 && !state.streamingText;
 
   // 分隔线
   const sepWidth = Math.max(10, termWidth - 4);
@@ -190,19 +214,35 @@ export function TUIApp({ initialState, callbacks, bridge }: AppProps) {
     [state.streamingText, streamingMaxWidth],
   );
 
-  const staticMessages = state.messages;
+  const staticItems = state.displayItems;
 
   return (
     <>
       {/* ── Static 区域：已完成消息，写入终端滚动缓冲区 ── */}
-      <Static items={staticMessages}>
-        {(msg: Message, idx: number) => {
-          const prevMsg = idx > 0 ? staticMessages[idx - 1] : undefined;
+      <Static items={staticItems}>
+        {(item: DisplayItem, idx: number) => {
+          if (item.kind === "system") {
+            return (
+              <Box key={getDisplayItemKey(item, idx)} flexDirection="column">
+                <SystemItem text={item.text} termWidth={termWidth} />
+              </Box>
+            );
+          }
+          const msg = item.message;
+          // 找前一个 message 类型的 item 作为 prevMessage
+          let prevMsg: Message | undefined;
+          for (let i = idx - 1; i >= 0; i--) {
+            const prev = staticItems[i];
+            if (prev.kind === "message") {
+              prevMsg = prev.message;
+              break;
+            }
+          }
           const isUserNonTool = msg.role === "user"
             && !msg.content.every((b) => b.type === "tool_result");
           const showSep = idx > 0 && isUserNonTool;
           return (
-            <Box key={getMessageKey(msg, idx)} flexDirection="column">
+            <Box key={getDisplayItemKey(item, idx)} flexDirection="column">
               {showSep && (
                 <Box paddingX={1}>
                   <Text dimColor>{separator}</Text>
