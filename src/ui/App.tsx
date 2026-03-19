@@ -1,12 +1,15 @@
 /**
- * 主 TUI 组件
- * 布局：Static（消息历史，终端滚动缓冲区）+ Live 区域（流式文本 + 输入 + 状态栏）
- * 消息通过 Static 写入终端原生滚动缓冲区，鼠标滚轮可滚动浏览历史
+ * 主 TUI 组件（Alternate Screen Buffer 模式）
+ *
+ * 布局：
+ * - 消息区域：由 ScrollBuffer + RenderController 直接写入屏幕上方（不经过 React）
+ * - Live 区域：Ink 渲染，固定在屏幕底部（流式预览/工具状态/输入框/状态栏）
+ *
+ * 用户可用 PageUp/PageDown/Shift+↑↓ 滚动浏览消息历史
  */
 
 import React, { useState, useCallback, useEffect, useRef } from "react";
-import { Box, Text, Static, useApp, useInput, useStdout } from "ink";
-import { MessageItem, SystemItem, CommandItem } from "./MessageList.tsx";
+import { Box, Text, useApp, useInput, useStdout } from "ink";
 import { InputArea } from "./InputArea.tsx";
 import { ToolStatus } from "./ToolStatus.tsx";
 import { StatusBar } from "./StatusBar.tsx";
@@ -36,24 +39,6 @@ export function messagesToDisplayItems(msgs: Message[]): DisplayItem[] {
   return msgs
     .filter(m => !isPlaceholderMessage(m))
     .map(m => ({ kind: "message" as const, message: m }));
-}
-
-/** 终端宽度 hook */
-function useTerminalWidth() {
-  const { stdout } = useStdout();
-  const [width, setWidth] = useState(stdout.columns);
-
-  useEffect(() => {
-    // Ink 内部 resized() 已处理宽度变化：
-    // - 缩小时：log.clear() + 重置 lastOutput + 重新渲染（强制写入）
-    // - 增大时：重新布局 + eraseLines(previousLineCount) 覆盖旧内容
-    // 这里只需要同步 React 状态，触发组件用新宽度重新渲染
-    const onResize = () => setWidth(stdout.columns);
-    stdout.on("resize", onResize);
-    return () => { stdout.off("resize", onResize); };
-  }, [stdout]);
-
-  return width;
 }
 
 /** TUI 回调接口 */
@@ -92,6 +77,8 @@ export interface TUIState {
   lastToolResult: { toolName: string; isError: boolean; elapsedMs: number } | null;
   /** 流式输出的未完成行预览（在 Live 区域显示） */
   streamingLine: string;
+  /** 滚动百分比（0-100），100 表示在底部 */
+  scrollPercent?: number;
 }
 
 interface AppProps {
@@ -139,33 +126,19 @@ const PermissionDialog = React.memo(function PermissionDialog({ request }: { req
   );
 });
 
-/** 为 DisplayItem 生成稳定的 key */
-function getDisplayItemKey(item: DisplayItem, idx: number): string {
-  if (item.kind === "system") return `sys-${idx}`;
-  if (item.kind === "command") return `cmd-${idx}`;
-  if (item.kind === "streaming-chunk") return `sc-${item.id}`;
-  const msg = item.message;
-  for (const block of msg.content) {
-    if (block.type === "tool_use") return `tu-${block.id}`;
-    if (block.type === "tool_result") return `tr-${block.tool_use_id}`;
-  }
-  return `${msg.role}-${idx}`;
-}
-
 export function TUIApp({ initialState, callbacks, bridge }: AppProps) {
   const { exit } = useApp();
-  const termWidth = useTerminalWidth();
+  const { stdout } = useStdout();
   const [state, setState] = useState<TUIState>(initialState);
   const isSubmittingRef = useRef(false);
   const log = getLogger();
-  const renderCountRef = useRef(0);
 
   useEffect(() => {
-    log.info("UI:APP", "TUIApp 组件已挂载（主缓冲区模式）");
+    log.info("UI:APP", "TUIApp 组件已挂载（alternate screen 模式）");
     return () => { log.info("UI:APP", "TUIApp 组件已卸载"); };
   }, []);
 
-  // 事件驱动状态同步（替代 50ms 轮询）
+  // 事件驱动状态同步
   useEffect(() => {
     const onChange = (newState: TUIState) => {
       setState(newState);
@@ -174,19 +147,37 @@ export function TUIApp({ initialState, callbacks, bridge }: AppProps) {
     return () => { bridge.off("change", onChange); };
   }, [bridge]);
 
-  // Ctrl+C 退出 + 权限对话框快捷键
+  // 快捷键处理：Ctrl+C 退出 + 权限对话框 + 滚动
   useInput((input, key) => {
     if (key.ctrl && input === "c") {
       log.info("UI:APP", "用户按下 Ctrl+C，退出");
       exit();
       return;
     }
+
+    // 权限对话框快捷键
     const perm = state.permissionRequest;
     if (perm) {
       const lower = input.toLowerCase();
       if (lower === "y") { perm.resolve("yes"); }
       else if (lower === "n") { perm.resolve("no"); }
       else if (lower === "a") { perm.resolve("always"); }
+      return;
+    }
+
+    // 滚动快捷键
+    if (key.pageUp) {
+      bridge.emit("scroll", "pageup");
+    } else if (key.pageDown) {
+      bridge.emit("scroll", "pagedown");
+    } else if (key.shift && key.upArrow) {
+      bridge.emit("scroll", "up");
+    } else if (key.shift && key.downArrow) {
+      bridge.emit("scroll", "down");
+    } else if (key.home) {
+      bridge.emit("scroll", "top");
+    } else if (key.end) {
+      bridge.emit("scroll", "bottom");
     }
   });
 
@@ -209,74 +200,12 @@ export function TUIApp({ initialState, callbacks, bridge }: AppProps) {
     }
   }, [callbacks, exit]);
 
-  renderCountRef.current++;
-
   const isEmpty = state.displayItems.length === 0;
-
-  // 分隔线
-  const sepWidth = Math.max(10, termWidth - 4);
-  const separator = "── ".repeat(Math.floor(sepWidth / 3));
-
-  const staticItems = state.displayItems;
+  const termWidth = stdout.columns || 80;
 
   return (
     <>
-      {/* ── Static 区域：已完成消息，写入终端滚动缓冲区 ── */}
-      <Static items={staticItems}>
-        {(item: DisplayItem, idx: number) => {
-          if (item.kind === "system") {
-            return (
-              <Box key={getDisplayItemKey(item, idx)} flexDirection="column">
-                <SystemItem text={item.text} termWidth={termWidth} />
-              </Box>
-            );
-          }
-          if (item.kind === "command") {
-            return (
-              <Box key={getDisplayItemKey(item, idx)} flexDirection="column">
-                {idx > 0 && (
-                  <Box paddingX={1}>
-                    <Text dimColor>{separator}</Text>
-                  </Box>
-                )}
-                <CommandItem input={item.input} output={item.output} termWidth={termWidth} />
-              </Box>
-            );
-          }
-          if (item.kind === "streaming-chunk") {
-            return (
-              <Box key={getDisplayItemKey(item, idx)} flexDirection="column">
-                <Text>{item.text}</Text>
-              </Box>
-            );
-          }
-          const msg = item.message;
-          // 找前一个 message 类型的 item 作为 prevMessage
-          let prevMsg: Message | undefined;
-          for (let i = idx - 1; i >= 0; i--) {
-            const prev = staticItems[i];
-            if (prev.kind === "message") {
-              prevMsg = prev.message;
-              break;
-            }
-          }
-          const isUserNonTool = msg.role === "user"
-            && !msg.content.every((b: ContentBlock) => b.type === "tool_result");
-          const showSep = idx > 0 && isUserNonTool;
-          return (
-            <Box key={getDisplayItemKey(item, idx)} flexDirection="column">
-              {showSep && (
-                <Box paddingX={1}>
-                  <Text dimColor>{separator}</Text>
-                </Box>
-              )}
-              <MessageItem message={msg} prevMessage={prevMsg} termWidth={termWidth} />
-            </Box>
-          );
-        }}
-      </Static>
-
-      {/* ── Live 区域：始终在底部，动态更新 ── */}
+      {/* ── Live 区域：固定在屏幕底部 ── */}
 
       {/* 空状态 logo */}
       {isEmpty && (() => {
@@ -367,6 +296,7 @@ export function TUIApp({ initialState, callbacks, bridge }: AppProps) {
         costLimit={state.costLimit}
         contextPercent={state.contextPercent}
         model={state.model}
+        scrollPercent={state.scrollPercent}
       />
     </>
   );

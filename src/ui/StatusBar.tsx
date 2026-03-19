@@ -16,10 +16,12 @@ interface StatusBarProps {
   costLimit: number;
   contextPercent: number;
   model: string;
+  /** 滚动百分比（0-100），100 或 undefined 表示在底部 */
+  scrollPercent?: number;
 }
 
 export const StatusBar = React.memo(function StatusBar(props: StatusBarProps) {
-  const { permissionMode, gitBranch, debug, usage, costUSD, costLimit, contextPercent, model } = props;
+  const { permissionMode, gitBranch, debug, usage, costUSD, costLimit, contextPercent, model, scrollPercent } = props;
 
   const permColor = (() => {
     switch (permissionMode) {
@@ -40,6 +42,9 @@ export const StatusBar = React.memo(function StatusBar(props: StatusBarProps) {
 
   const costText = costUSD > 0 ? `$${costUSD.toFixed(4)}` : "$0";
 
+  // 滚动位置指示（不在底部时显示）
+  const showScroll = scrollPercent !== undefined && scrollPercent < 100;
+
   return (
     <Box paddingX={1} justifyContent="space-between">
       <Text wrap="truncate">
@@ -53,6 +58,7 @@ export const StatusBar = React.memo(function StatusBar(props: StatusBarProps) {
         <Text dimColor> | </Text>
         <Text color={costColor} dimColor={!costColor}>{costText}</Text>
         <Text dimColor> | ctx {contextPercent}%</Text>
+        {showScroll ? <><Text dimColor> | </Text><Text color="yellow">↑ {scrollPercent}%</Text></> : null}
       </Text>
       <Text dimColor wrap="truncate">
         {model} | Ctrl+C 退出

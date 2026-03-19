@@ -37,7 +37,7 @@ src/
 ├── llm/                # Provider 接口 + anthropic/openai/ollama 实现 + registry + quota
 ├── tool/               # 6 个内置工具（read/write/edit/bash/grep/glob）+ registry
 ├── mcp/                # MCP 协议客户端（transport/client/manager）
-├── ui/                 # Ink TUI 组件（App.tsx / MessageList / InputArea / ToolStatus）
+├── ui/                 # Ink TUI 组件（App.tsx / MessageList / InputArea / ToolStatus / scroll-buffer.ts）
 ├── config/             # 配置加载 + 规则文件 + 系统提示词构建 + 附件系统
 ├── context/            # 上下文管理 + 智能截断 + 增量压缩 + 消息验证
 ├── checkpoint/         # 文件快照系统（LCS diff + gzip + /undo 回滚）
@@ -110,6 +110,15 @@ src/
 - 心跳检测：30 秒无数据超时
 - 重试：指数退避 + ±10% Jitter
 - 上下文溢出自动恢复：缩小 maxTokens（至少 3000），无法恢复时触发压缩
+
+### TUI 渲染架构（Alternate Screen Buffer）
+
+- 进入 alternate screen buffer（`\x1b[?1049h`），整个屏幕由我们完全控制
+- 消息区域（上方）：`ScrollBuffer` 存储渲染后的 ANSI 文本行，`RenderController` 每帧将可见行用 CUP 绝对定位写入屏幕上方，支持 PageUp/PageDown 滚动
+- Live 区域（下方）：Ink 组件树 + `ScreenRenderer` 双缓冲逐 cell 差分输出，固定在屏幕底部
+- `StreamWriter` 已完成段落渲染为行追加到 `ScrollBuffer`（不再写入终端 scrollback）
+- resize 时直接清屏重绘（alternate screen 无 scrollback reflow 问题）
+- 退出时恢复主缓冲区（`\x1b[?1049l`），输出简要对话摘要
 
 ## 7. 扩展体系
 

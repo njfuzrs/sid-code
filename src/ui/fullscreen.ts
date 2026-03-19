@@ -1,63 +1,86 @@
 /**
- * TUI 渲染模块
+ * TUI 渲染模块（Alternate Screen Buffer 模式）
  *
- * 不使用 alternate screen buffer，消息通过 Static 组件写入终端原生滚动缓冲区，
- * 支持鼠标滚轮浏览历史消息。退出时对话记录保留在终端中。
+ * 进入 alternate screen buffer，整个屏幕由我们完全控制：
+ * - 消息区域：ScrollBuffer 管理，RenderController 直接写入屏幕上方
+ * - Live 区域：Ink 组件树 + ScreenRenderer 差分输出，固定在屏幕底部
  *
- * 渲染策略：
- * 使用自研 RenderController + DiffRenderer 替换 Ink 的 onRender() + log-update，
- * 将 6 条分散的渲染路径合并为 1 条，彻底解决 ghost lines 和渲染闪烁问题。
+ * 退出时恢复主缓冲区，输出简要对话摘要。
  */
 
 import { render } from "ink";
 import type { ReactElement } from "react";
 import { getLogger } from "../debug/logger.ts";
 import { patchInk } from "./renderer/index.ts";
+import type { RenderController } from "./renderer/render-controller.ts";
 
 const SHOW_CURSOR = "\x1b[?25h";
+const HIDE_CURSOR = "\x1b[?25l";
+/** 进入 alternate screen buffer */
+const ENTER_ALT_SCREEN = "\x1b[?1049h";
+/** 退出 alternate screen buffer */
+const EXIT_ALT_SCREEN = "\x1b[?1049l";
 /** ESC[H — 光标移动到左上角 */
 const CURSOR_HOME = "\x1b[H";
 /** ESC[J — 从光标位置清除到屏幕末尾 */
 const CLEAR_BELOW = "\x1b[J";
 
-interface FullScreenInstance {
+export interface FullScreenInstance {
   instance: ReturnType<typeof render>;
+  controller: RenderController | null;
   start: () => Promise<void>;
   waitUntilExit: () => Promise<void>;
 }
 
+/** 退出时生成对话摘要的回调 */
+export type OnExitCallback = () => string[];
+
 /**
- * 创建 ink 应用（主缓冲区模式）
+ * 创建 ink 应用（Alternate Screen Buffer 模式）
  *
- * 不进入 alternate screen buffer，渲染到主缓冲区。
- * Static 输出写入终端滚动缓冲区，支持原生鼠标滚轮滚动。
+ * 进入 alternate screen buffer，消息区域由 ScrollBuffer + RenderController 管理，
+ * Live 区域由 Ink 组件树渲染。退出时恢复主缓冲区并输出简要摘要。
  */
 export function createFullScreen(
   node: ReactElement,
   options?: Parameters<typeof render>[1],
+  onExit?: OnExitCallback,
 ): FullScreenInstance {
   const log = getLogger();
   const stdout = process.stdout;
 
   let instance: ReturnType<typeof render>;
+  let controller: RenderController | null = null;
   let exitPromise: Promise<void>;
 
   return {
     get instance() { return instance; },
+    get controller() { return controller; },
     start: async () => {
-      // 启动前清屏，为 Ink 提供干净的渲染空间
-      stdout.write(CURSOR_HOME + CLEAR_BELOW);
+      // 进入 alternate screen buffer + 隐藏光标 + 清屏
+      stdout.write(ENTER_ALT_SCREEN + HIDE_CURSOR + CURSOR_HOME + CLEAR_BELOW);
 
       instance = render(node, options);
-      log.info("TUI:RENDER", "ink 实例已创建（主缓冲区模式）");
+      log.info("TUI:RENDER", "ink 实例已创建（alternate screen 模式）");
 
       // 用 RenderController 替换 Ink 的渲染层
-      patchInk(stdout);
+      controller = patchInk(stdout);
 
       exitPromise = (async () => {
         await instance.waitUntilExit();
-        stdout.write(SHOW_CURSOR);
-        log.info("TUI:RENDER", "ink 实例已退出");
+
+        // 退出 alternate screen buffer + 显示光标
+        stdout.write(EXIT_ALT_SCREEN + SHOW_CURSOR);
+
+        // 在主缓冲区输出简要对话摘要
+        if (onExit) {
+          const summaryLines = onExit();
+          if (summaryLines.length > 0) {
+            stdout.write("\n" + summaryLines.join("\n") + "\n");
+          }
+        }
+
+        log.info("TUI:RENDER", "ink 实例已退出（已恢复主缓冲区）");
       })();
     },
     waitUntilExit: () => exitPromise,

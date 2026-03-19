@@ -4,13 +4,17 @@
  * 维护 front（当前屏幕显示）和 back（下一帧目标）两个 ScreenBuffer，
  * flush() 时逐 cell 比较，只输出变化的部分。
  *
+ * Alternate Screen 模式：
+ * - Live 区域固定在屏幕底部，起始行由 liveStartRow 指定
+ * - flush() 使用 CUP 绝对定位到 liveStartRow
+ * - resize 时只需清屏重绘，无 scrollback reflow 问题
+ *
  * 光标不变量：flush() 结束后，若找到 inverse cell（输入框光标），
  * 终端光标定位到该 cell 并可见（用于 IME）；否则隐藏在最后一行末尾。
  */
 
 import { ScreenBuffer } from "./screen-buffer.ts";
 import {
-  CELL_STRIDE,
   COLOR_DEFAULT,
   MOD_BOLD,
   MOD_DIM,
@@ -23,8 +27,7 @@ import {
   HIDE_CURSOR,
   SHOW_CURSOR,
   RESET_STYLE,
-  CUU,
-  CUD,
+  CUP,
   CUF,
 } from "./constants.ts";
 
@@ -47,10 +50,8 @@ export class ScreenRenderer {
   /** Live 区域高度（上次 flush 的行数） */
   private liveHeight: number = 0;
 
-  /** flush 结束后终端光标的实际位置（行号，0-based，相对于 Live 区域） */
-  private cursorRow: number = 0;
-  /** flush 结束后终端光标的实际列位置 */
-  private cursorCol: number = 0;
+  /** Live 区域在屏幕中的起始行（0-based），由 RenderController 设置 */
+  private liveStartRow: number = 0;
 
   constructor(stdout: NodeJS.WriteStream, width: number = 80, height: number = 1) {
     this.stdout = stdout;
@@ -73,17 +74,16 @@ export class ScreenRenderer {
     return this.liveHeight;
   }
 
+  /** 设置 Live 区域在屏幕中的起始行（0-based） */
+  setLiveStartRow(row: number): void {
+    this.liveStartRow = row;
+  }
+
   /**
    * 逐 cell 差分输出
    *
-   * 算法：
-   * 1. BSU + HIDE_CURSOR
-   * 2. 光标从上次位置移到 Live 区域第一行
-   * 3. 逐行逐 cell 遍历，只输出变化的 cell
-   * 4. 处理行数变化（增加/减少）
-   * 5. 扫描 back buffer 找到 inverse cell（输入框光标），定位终端光标并 SHOW_CURSOR
-   * 6. RESET_STYLE + ESU
-   * 7. front.copyFrom(back)
+   * Alternate Screen 模式下使用 CUP 绝对定位到 liveStartRow，
+   * 逐行逐 cell 遍历，只输出变化的 cell。
    */
   flush(): void {
     const back = this.back;
@@ -95,12 +95,6 @@ export class ScreenRenderer {
     const sync = shouldSynchronize(this.stdout);
     if (sync) out.push(bsu);
     out.push(HIDE_CURSOR);
-
-    // 从上次光标位置移到 Live 区域第一行行首
-    if (this.cursorRow > 0) {
-      out.push(CUU(this.cursorRow));
-    }
-    out.push("\r");
 
     // 重置样式追踪
     this.lastFg = COLOR_DEFAULT;
@@ -114,20 +108,15 @@ export class ScreenRenderer {
     const frontWidth = front.width;
 
     for (let y = 0; y < compareHeight; y++) {
-      if (y > 0) {
-        out.push("\r\n");
-      }
-
       if (y >= newHeight) {
-        // 多余的旧行：清除
-        out.push(EL);
+        // 多余的旧行：用 CUP 定位后清除
+        out.push(CUP(this.liveStartRow + y, 0) + EL);
         continue;
       }
 
       // 检查这一行是否有变化
       let lineChanged = false;
       if (y >= frontHeight || width !== frontWidth) {
-        // front 没有这一行或宽度不同 → 整行变化
         lineChanged = true;
       } else {
         for (let x = 0; x < width; x++) {
@@ -140,9 +129,8 @@ export class ScreenRenderer {
 
       if (!lineChanged) continue;
 
-      // 这一行有变化，逐 cell 输出
-      // 先清除整行，然后输出非空内容
-      out.push(EL);
+      // 用 CUP 定位到这一行行首，然后清除整行
+      out.push(CUP(this.liveStartRow + y, 0) + EL);
 
       // 找到这一行最后一个非空格 cell 的位置（避免输出尾部空格）
       let lastNonEmpty = -1;
@@ -187,16 +175,6 @@ export class ScreenRenderer {
       }
     }
 
-    // 当前终端光标在 compareHeight-1 行
-    // 先确保在 newHeight-1 行
-    if (newHeight < compareHeight) {
-      const moveUp = compareHeight - newHeight;
-      if (moveUp > 0) {
-        out.push(CUU(moveUp));
-      }
-    }
-    // 此时终端光标在 newHeight-1 行
-
     // 扫描 back buffer 找到第一个 inverse cell（输入框光标位置）
     let inversePos: { x: number; y: number } | null = null;
     for (let y = 0; y < newHeight && !inversePos; y++) {
@@ -210,27 +188,14 @@ export class ScreenRenderer {
     }
 
     if (inversePos) {
-      // 移动终端光标到 inverse cell 位置（用于 IME 预编辑文本定位）
-      const moveUp = (newHeight - 1) - inversePos.y;
-      if (moveUp > 0) {
-        out.push(CUU(moveUp));
-      } else if (moveUp < 0) {
-        out.push(CUD(-moveUp));
-      }
-      out.push("\r");
-      if (inversePos.x > 0) {
-        out.push(CUF(inversePos.x));
-      }
+      // 用 CUP 绝对定位到 inverse cell（用于 IME 预编辑文本定位）
+      out.push(CUP(this.liveStartRow + inversePos.y, inversePos.x));
       out.push(SHOW_CURSOR);
-      this.cursorRow = inversePos.y;
-      this.cursorCol = inversePos.x;
     } else {
       // 没有 inverse cell，光标隐藏在最后一行末尾
       if (newHeight > 0) {
-        out.push("\r" + CUF(back.width));
+        out.push(CUP(this.liveStartRow + newHeight - 1, back.width));
       }
-      this.cursorRow = Math.max(0, newHeight - 1);
-      this.cursorCol = back.width;
     }
 
     // 重置样式
@@ -245,72 +210,39 @@ export class ScreenRenderer {
   }
 
   /**
-   * 清除 Live 区域（用于 Static 输出前）
-   *
-   * 光标不变量：调用结束后光标在 Live 区域第一行行首。
+   * 清除 Live 区域
+   * 在 alternate screen 模式下用 CUP 绝对定位逐行清除。
    */
   clearLive(): void {
     if (this.liveHeight === 0) return;
 
     const out: string[] = [];
-
-    // 先从当前光标位置移到最后一行
-    const toBottom = (this.liveHeight - 1) - this.cursorRow;
-    if (toBottom > 0) {
-      out.push(CUD(toBottom));
+    for (let i = 0; i < this.liveHeight; i++) {
+      out.push(CUP(this.liveStartRow + i, 0) + EL);
     }
-
-    // 从最后一行逐行上移清除
-    for (let i = this.liveHeight - 1; i >= 0; i--) {
-      out.push("\r" + EL);
-      if (i > 0) {
-        out.push(CUU(1));
-      }
-    }
-
     this.stdout.write(out.join(""));
 
     // 重置状态
     this.front.clear();
     this.liveHeight = 0;
-    this.cursorRow = 0;
-    this.cursorCol = 0;
   }
 
   /**
-   * resize 专用清除 — 用换行滚动把旧内容推入 scrollback
+   * resize 专用清除 — alternate screen 模式下直接清屏
    *
-   * 终端 resize 时 reflow 会改变 scrollback 中内容的行数，
-   * 导致光标的相对位置（cursorRow/liveHeight）不再可靠。
-   * 所有基于相对移动（CUU/CUD）或绝对定位（CUP）的清除方案
-   * 在主缓冲区模式下都无法正确工作。
-   *
-   * 本方法使用最可靠的策略：输出足够多的换行把所有可见内容
-   * （包括 reflow 后的旧 Live 区域）滚入 scrollback 缓冲区，
-   * 然后在干净的屏幕底部重绘 Live 区域。
-   *
-   * @param newLiveHeight 新 Live 区域的预期高度，用于定位 flush 起始行
+   * alternate screen 没有 scrollback reflow 问题，
+   * 直接清屏 + reset 即可，RenderController 会重绘消息区域和 Live 区域。
    */
-  clearLiveForResize(newLiveHeight: number): void {
-    const rows = this.stdout.rows || 24;
-
-    // 输出足够多的换行，把所有可见内容滚入 scrollback
-    // 这样可见区域变成全空，旧 Live 区域的残留被彻底清除
-    this.stdout.write("\n".repeat(rows));
-
-    // 光标现在在屏幕最底行
-    // 上移到 Live 区域应该开始的位置
-    const moveUp = newLiveHeight - 1;
-    if (moveUp > 0) {
-      this.stdout.write(CUU(moveUp));
-    }
-    this.stdout.write("\r");
+  clearScreen(): void {
+    // ESC[2J 清屏 + ESC[H 光标归位
+    this.stdout.write("\x1b[2J\x1b[H");
 
     // 重置状态
     this.front.clear();
     this.liveHeight = 0;
-    this.cursorRow = 0;
-    this.cursorCol = 0;
+    this.lastFg = COLOR_DEFAULT;
+    this.lastBg = COLOR_DEFAULT;
+    this.lastMods = 0;
   }
 
   /**
@@ -321,8 +253,6 @@ export class ScreenRenderer {
     this.front.resize(newWidth, newHeight);
     this.back.resize(newWidth, newHeight);
     this.liveHeight = 0;
-    this.cursorRow = 0;
-    this.cursorCol = 0;
     this.lastFg = COLOR_DEFAULT;
     this.lastBg = COLOR_DEFAULT;
     this.lastMods = 0;
@@ -335,21 +265,9 @@ export class ScreenRenderer {
     this.front.clear();
     this.back.clear();
     this.liveHeight = 0;
-    this.cursorRow = 0;
-    this.cursorCol = 0;
     this.lastFg = COLOR_DEFAULT;
     this.lastBg = COLOR_DEFAULT;
     this.lastMods = 0;
-  }
-
-  /**
-   * 同步状态（外部直接写入后，告知 renderer 当前 Live 区域高度）
-   */
-  syncLiveHeight(height: number): void {
-    this.liveHeight = height;
-    // 外部写入后假设光标在最后一行末尾
-    this.cursorRow = Math.max(0, height - 1);
-    this.cursorCol = this.back.width;
   }
 
   /** 输出 SGR 样式序列（只在变化时输出） */
@@ -359,7 +277,6 @@ export class ScreenRenderer {
     }
 
     // 如果 mods 减少了某些标志，需要先 reset 再重新设置
-    // （fg/bg 变为默认色可以直接用 SGR 39/49，不需要 reset）
     const needReset = (this.lastMods & ~mods) !== 0;
 
     if (needReset) {

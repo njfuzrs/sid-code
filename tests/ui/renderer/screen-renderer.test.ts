@@ -223,10 +223,11 @@ describe("ScreenRenderer", () => {
     });
   });
 
-  describe("syncLiveHeight()", () => {
-    it("同步 Live 区域高度", () => {
-      renderer.syncLiveHeight(5);
-      expect(renderer.getLiveHeight()).toBe(5);
+  describe("setLiveStartRow()", () => {
+    it("设置 Live 区域起始行", () => {
+      // setLiveStartRow 不影响 liveHeight，只影响 flush 时的 CUP 定位
+      renderer.setLiveStartRow(10);
+      expect(renderer.getLiveHeight()).toBe(0);
     });
   });
 });
