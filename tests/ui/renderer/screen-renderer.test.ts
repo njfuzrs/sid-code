@@ -48,13 +48,13 @@ describe("ScreenRenderer", () => {
   });
 
   describe("flush() 基本功能", () => {
-    it("空 buffer flush 输出 HIDE/SHOW CURSOR", () => {
+    it("空 buffer flush 输出 HIDE_CURSOR 但不输出 SHOW_CURSOR（终端光标始终隐藏）", () => {
       const back = renderer.getBackBuffer();
       back.clear();
       renderer.flush();
       const output = stdout.getOutput();
       expect(output).toContain(HIDE_CURSOR);
-      expect(output).toContain(SHOW_CURSOR);
+      expect(output).not.toContain(SHOW_CURSOR);
       expect(output).toContain(RESET_STYLE);
     });
 

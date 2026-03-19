@@ -4,7 +4,8 @@
  * 维护 front（当前屏幕显示）和 back（下一帧目标）两个 ScreenBuffer，
  * flush() 时逐 cell 比较，只输出变化的部分。
  *
- * 光标不变量：flush() 结束后光标在 Live 区域最后一行末尾。
+ * 光标不变量：flush() 结束后，若找到 inverse cell（输入框光标），
+ * 终端光标定位到该 cell 并可见（用于 IME）；否则隐藏在最后一行末尾。
  */
 
 import { ScreenBuffer } from "./screen-buffer.ts";
@@ -46,6 +47,11 @@ export class ScreenRenderer {
   /** Live 区域高度（上次 flush 的行数） */
   private liveHeight: number = 0;
 
+  /** flush 结束后终端光标的实际位置（行号，0-based，相对于 Live 区域） */
+  private cursorRow: number = 0;
+  /** flush 结束后终端光标的实际列位置 */
+  private cursorCol: number = 0;
+
   constructor(stdout: NodeJS.WriteStream, width: number = 80, height: number = 1) {
     this.stdout = stdout;
     this.front = new ScreenBuffer(width, height);
@@ -72,11 +78,12 @@ export class ScreenRenderer {
    *
    * 算法：
    * 1. BSU + HIDE_CURSOR
-   * 2. 光标从 Live 区域末尾移到第一行
+   * 2. 光标从上次位置移到 Live 区域第一行
    * 3. 逐行逐 cell 遍历，只输出变化的 cell
    * 4. 处理行数变化（增加/减少）
-   * 5. RESET_STYLE + SHOW_CURSOR + ESU
-   * 6. front.copyFrom(back)
+   * 5. 扫描 back buffer 找到 inverse cell（输入框光标），定位终端光标并 SHOW_CURSOR
+   * 6. RESET_STYLE + ESU
+   * 7. front.copyFrom(back)
    */
   flush(): void {
     const back = this.back;
@@ -89,12 +96,11 @@ export class ScreenRenderer {
     if (sync) out.push(bsu);
     out.push(HIDE_CURSOR);
 
-    // 光标当前在 Live 区域最后一行末尾（不变量保证）
-    // 移到 Live 区域第一行
-    if (this.liveHeight > 1) {
-      out.push(CUU(this.liveHeight - 1));
+    // 从上次光标位置移到 Live 区域第一行行首
+    if (this.cursorRow > 0) {
+      out.push(CUU(this.cursorRow));
     }
-    out.push("\r"); // 回到行首
+    out.push("\r");
 
     // 重置样式追踪
     this.lastFg = COLOR_DEFAULT;
@@ -181,24 +187,54 @@ export class ScreenRenderer {
       }
     }
 
-    // 确保光标在最后一行
-    // 当前光标在 compareHeight-1 行，需要移到 newHeight-1 行
+    // 当前终端光标在 compareHeight-1 行
+    // 先确保在 newHeight-1 行
     if (newHeight < compareHeight) {
-      // 行数减少，光标需要上移
       const moveUp = compareHeight - newHeight;
       if (moveUp > 0) {
         out.push(CUU(moveUp));
       }
     }
+    // 此时终端光标在 newHeight-1 行
 
-    // 光标不变量：flush 结束后光标在 Live 区域最后一行末尾
-    // 移到最后一行末尾（列位置 = buffer 宽度）
-    if (newHeight > 0) {
-      out.push("\r" + CUF(back.width));
+    // 扫描 back buffer 找到第一个 inverse cell（输入框光标位置）
+    let inversePos: { x: number; y: number } | null = null;
+    for (let y = 0; y < newHeight && !inversePos; y++) {
+      for (let x = 0; x < width; x++) {
+        const mods = back.getMods(x, y);
+        if (mods & MOD_REVERSE) {
+          inversePos = { x, y };
+          break;
+        }
+      }
     }
 
-    // 重置样式 + 显示光标
-    out.push(RESET_STYLE + SHOW_CURSOR);
+    if (inversePos) {
+      // 移动终端光标到 inverse cell 位置（用于 IME 预编辑文本定位）
+      const moveUp = (newHeight - 1) - inversePos.y;
+      if (moveUp > 0) {
+        out.push(CUU(moveUp));
+      } else if (moveUp < 0) {
+        out.push(CUD(-moveUp));
+      }
+      out.push("\r");
+      if (inversePos.x > 0) {
+        out.push(CUF(inversePos.x));
+      }
+      out.push(SHOW_CURSOR);
+      this.cursorRow = inversePos.y;
+      this.cursorCol = inversePos.x;
+    } else {
+      // 没有 inverse cell，光标隐藏在最后一行末尾
+      if (newHeight > 0) {
+        out.push("\r" + CUF(back.width));
+      }
+      this.cursorRow = Math.max(0, newHeight - 1);
+      this.cursorCol = back.width;
+    }
+
+    // 重置样式
+    out.push(RESET_STYLE);
     if (sync) out.push(esu);
 
     this.stdout.write(out.join(""));
@@ -218,7 +254,13 @@ export class ScreenRenderer {
 
     const out: string[] = [];
 
-    // 光标在最后一行末尾 → 逐行上移清除
+    // 先从当前光标位置移到最后一行
+    const toBottom = (this.liveHeight - 1) - this.cursorRow;
+    if (toBottom > 0) {
+      out.push(CUD(toBottom));
+    }
+
+    // 从最后一行逐行上移清除
     for (let i = this.liveHeight - 1; i >= 0; i--) {
       out.push("\r" + EL);
       if (i > 0) {
@@ -228,9 +270,11 @@ export class ScreenRenderer {
 
     this.stdout.write(out.join(""));
 
-    // 重置 front buffer
+    // 重置状态
     this.front.clear();
     this.liveHeight = 0;
+    this.cursorRow = 0;
+    this.cursorCol = 0;
   }
 
   /**
@@ -241,6 +285,8 @@ export class ScreenRenderer {
     this.front.resize(newWidth, newHeight);
     this.back.resize(newWidth, newHeight);
     this.liveHeight = 0;
+    this.cursorRow = 0;
+    this.cursorCol = 0;
     this.lastFg = COLOR_DEFAULT;
     this.lastBg = COLOR_DEFAULT;
     this.lastMods = 0;
@@ -253,6 +299,8 @@ export class ScreenRenderer {
     this.front.clear();
     this.back.clear();
     this.liveHeight = 0;
+    this.cursorRow = 0;
+    this.cursorCol = 0;
     this.lastFg = COLOR_DEFAULT;
     this.lastBg = COLOR_DEFAULT;
     this.lastMods = 0;
@@ -263,6 +311,9 @@ export class ScreenRenderer {
    */
   syncLiveHeight(height: number): void {
     this.liveHeight = height;
+    // 外部写入后假设光标在最后一行末尾
+    this.cursorRow = Math.max(0, height - 1);
+    this.cursorCol = this.back.width;
   }
 
   /** 输出 SGR 样式序列（只在变化时输出） */
