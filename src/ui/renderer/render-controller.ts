@@ -1,25 +1,26 @@
 /**
- * 统一渲染控制器
+ * 统一渲染控制器（方案 B：ScreenBuffer 游戏引擎）
  *
  * 替代 Ink 的 onRender() + log-update，将 6 条分散的渲染路径合并为 1 条。
  * 通过 patchInk() 入口函数 monkey-patch Ink 实例，接管所有渲染逻辑。
  *
+ * 方案 B 用 ScreenRenderer（双缓冲 + 逐 cell 差分）+ Rasterizer（Yoga DOM → ScreenBuffer）
+ * 替换方案 A 的 DiffRenderer（逐行差分），从根本上解决 resize 渲染问题。
+ *
  * 注意：本模块不处理 Ink 的 cursorPosition 功能（setCursorPosition / isCursorDirty），
  * 因为项目使用 inverse 样式模拟光标，不依赖 Ink 的原生光标定位。
- * 如果将来引入 Ink 的 <TextInput> 或 useCursor，需要在此集成 cursor 逻辑。
  */
 
-import { DiffRenderer } from "./diff-renderer.ts";
+import { ScreenRenderer } from "./screen-renderer.ts";
+import { Rasterizer } from "./rasterizer.ts";
 import { getLogger } from "../../debug/logger.ts";
 
-// 直接用相对路径静态 import ink 内部模块，绕过 exports 限制，
-// 同时让 bun bundler 在 --compile 时能正确内联这些依赖。
 // @ts-ignore — ink 未在 exports 中暴露这些内部文件
-import inkRenderer from "../../../node_modules/ink/build/renderer.js";
-// @ts-ignore
 import { shouldSynchronize, bsu, esu } from "../../../node_modules/ink/build/write-synchronized.js";
 // @ts-ignore
 import instances from "../../../node_modules/ink/build/instances.js";
+// @ts-ignore — 仅用于 Static 区域的字符串生成和 Ink 内部状态同步
+import inkRenderer from "../../../node_modules/ink/build/renderer.js";
 import { throttle } from "es-toolkit/compat";
 
 /** ESC[2J — 清除整个可见屏幕（不影响 scrollback） */
@@ -29,7 +30,8 @@ const CURSOR_HOME = "\x1b[H";
 
 export class RenderController {
   private stdout: NodeJS.WriteStream;
-  private diff: DiffRenderer;
+  private screenRenderer: ScreenRenderer;
+  private rasterizer: Rasterizer;
   private fullStaticOutput = "";
   private lastOutput = "";
   private lastOutputHeight = 0;
@@ -37,74 +39,85 @@ export class RenderController {
 
   constructor(stdout: NodeJS.WriteStream) {
     this.stdout = stdout;
-    this.diff = new DiffRenderer(stdout);
-    this.lastWidth = stdout.columns || 80;
+    const width = stdout.columns || 80;
+    this.screenRenderer = new ScreenRenderer(stdout, width, 1);
+    this.rasterizer = new Rasterizer();
+    this.lastWidth = width;
   }
 
   /**
    * 统一渲染入口 — 替代 ink.js 的 onRender() 全部 6 条路径
+   *
+   * 方案 B 流程：
+   * 1. 处理 Static 输出（仍用 Ink 的 Output 生成字符串）
+   * 2. Live 区域光栅化到 back buffer
+   * 3. 逐 cell 差分输出
+   * 4. 同步 Ink 内部状态
    */
   handleRender(ink: any): void {
     if (ink.isUnmounted) return;
 
     const startTime = performance.now();
-    const { output, outputHeight, staticOutput } = inkRenderer(
-      ink.rootNode,
+    const rootNode = ink.rootNode;
+
+    if (!rootNode?.yogaNode) return;
+
+    // --- Static 输出处理 ---
+    // 仍用 Ink 的 inkRenderer 获取 staticOutput 字符串
+    // （Static 写入终端滚动缓冲区，不经过 ScreenBuffer）
+    const { output: inkOutput, outputHeight: inkOutputHeight, staticOutput } = inkRenderer(
+      rootNode,
       ink.isScreenReaderEnabled,
     );
-    const renderTime = performance.now() - startTime;
 
-    // 触发 onRender 回调（性能监控等）
+    const renderTime = performance.now() - startTime;
     ink.options?.onRender?.({ renderTime });
 
     const hasStaticOutput = staticOutput && staticOutput !== "\n";
 
-    // 累积 Static 输出
     if (hasStaticOutput) {
       this.fullStaticOutput += staticOutput;
     }
 
-    // 全屏检测
-    const isFullscreen =
-      this.stdout.isTTY && outputHeight >= (this.stdout.rows || 24);
-    const outputToRender = isFullscreen ? output : output + "\n";
+    // --- Live 区域光栅化 ---
+    // 计算 Live 区域尺寸
+    const width = rootNode.yogaNode.getComputedWidth();
+    const height = rootNode.yogaNode.getComputedHeight();
+
+    if (width <= 0 || height <= 0) return;
+
+    // 确保 back buffer 尺寸匹配
+    const back = this.screenRenderer.getBackBuffer();
+    if (back.width !== width || back.height !== height) {
+      back.resize(width, height);
+    }
+    back.clear();
+
+    // 光栅化 Live 区域到 back buffer
+    this.rasterizer.rasterize(rootNode, back, { skipStaticElements: true });
 
     if (hasStaticOutput) {
-      // 有新的 Static 内容：清除 Live → 写入 Static → 重新渲染 Live
-      const sync = shouldSynchronize(this.stdout);
-      if (sync) this.stdout.write(bsu);
-
-      this.diff.clear();
+      // 有新的 Static 内容：清除 Live → 写入 Static → flush Live
+      this.screenRenderer.clearLive();
       this.stdout.write(staticOutput);
-      this.diff.render(outputToRender);
-
-      if (sync) this.stdout.write(esu);
-    } else if (output !== this.lastOutput) {
-      // 正常更新：差分渲染
-      const sync = shouldSynchronize(this.stdout);
-      if (sync) this.stdout.write(bsu);
-
-      this.diff.render(outputToRender);
-
-      if (sync) this.stdout.write(esu);
+      this.screenRenderer.flush();
+    } else {
+      // 正常更新：逐 cell 差分输出
+      this.screenRenderer.flush();
     }
 
-    // 更新状态
-    this.lastOutput = output;
-    this.lastOutputHeight = outputHeight;
+    // --- 同步 Ink 内部状态 ---
+    this.lastOutput = inkOutput;
+    this.lastOutputHeight = inkOutputHeight;
 
-    // 同步 Ink 内部状态（某些 Ink 代码可能读取）
-    ink.lastOutput = output;
-    ink.lastOutputToRender = outputToRender;
-    ink.lastOutputHeight = outputHeight;
+    ink.lastOutput = inkOutput;
+    ink.lastOutputToRender = inkOutput + "\n";
+    ink.lastOutputHeight = inkOutputHeight;
     ink.fullStaticOutput = this.fullStaticOutput;
   }
 
   /**
    * 统一 resize 处理 — 替代 ink.js 的 resized()
-   *
-   * 注意：fullStaticOutput 是在旧宽度下生成的字符串，resize 后重写时
-   * 换行位置可能不完全正确。这是方案 A 的已知局限（Static 输出无法重新布局）。
    */
   handleResize(ink: any): void {
     const log = getLogger();
@@ -122,8 +135,8 @@ export class RenderController {
       const sync = shouldSynchronize(this.stdout);
       if (sync) this.stdout.write(bsu);
 
-      // 重置差分状态
-      this.diff.reset();
+      // 重置 ScreenRenderer 状态
+      this.screenRenderer.reset();
       // 清除整个可见视口
       this.stdout.write(CLEAR_SCREEN + CURSOR_HOME);
       // 重写 Static 历史
@@ -137,7 +150,7 @@ export class RenderController {
     this.lastWidth = newWidth;
     ink.lastTerminalWidth = newWidth;
     ink.calculateLayout();
-    // 重新渲染（diff.reset 后会全量输出）
+    // 重新渲染（reset 后会全量输出）
     this.handleRender(ink);
   }
 
@@ -150,7 +163,7 @@ export class RenderController {
     const sync = shouldSynchronize(this.stdout);
     if (sync) this.stdout.write(bsu);
 
-    this.diff.clear();
+    this.screenRenderer.clearLive();
     this.stdout.write(data);
     this.restoreOutput();
 
@@ -159,24 +172,27 @@ export class RenderController {
 
   /**
    * 恢复 Live 区域 — 替代 ink.js 的 restoreLastOutput()
+   *
+   * 重新 flush 当前 back buffer 的内容。
    */
   restoreOutput(): void {
     if (!this.lastOutput) return;
-
-    const isFullscreen =
-      this.stdout.isTTY &&
-      this.lastOutputHeight >= (this.stdout.rows || 24);
-    const outputToRender = isFullscreen
-      ? this.lastOutput
-      : this.lastOutput + "\n";
-    this.diff.render(outputToRender);
+    // flush 会将 back buffer 的内容输出到终端
+    this.screenRenderer.flush();
   }
 
   /**
-   * 获取 DiffRenderer 实例（供 patchInk 中的 clear 使用）
+   * 清除 Live 区域
    */
-  getDiffRenderer(): DiffRenderer {
-    return this.diff;
+  clearLive(): void {
+    this.screenRenderer.clearLive();
+  }
+
+  /**
+   * 获取 ScreenRenderer 实例
+   */
+  getScreenRenderer(): ScreenRenderer {
+    return this.screenRenderer;
   }
 }
 
@@ -204,8 +220,8 @@ function createNoopLog(stdout: NodeJS.WriteStream) {
 /**
  * patchInk — 替换 Ink 实例的渲染逻辑
  *
- * 将 Ink 的 6 条渲染路径统一为 RenderController 的 1 条路径，
- * 彻底解决 ghost lines 和渲染闪烁问题。
+ * 方案 B：用 ScreenRenderer（双缓冲 + 逐 cell 差分）+ Rasterizer（Yoga DOM → ScreenBuffer）
+ * 替换 Ink 的整个输出管线，从根本上解决 resize 渲染问题。
  */
 export function patchInk(stdout: NodeJS.WriteStream): RenderController {
   const log = getLogger();
@@ -218,10 +234,9 @@ export function patchInk(stdout: NodeJS.WriteStream): RenderController {
 
   // 0. 同步首次渲染状态
   //    render() 内部会触发首次渲染（走 Ink 原始路径），
-  //    需要将 log-update 的状态同步到 DiffRenderer，避免第二次渲染时重复输出。
-  if (ink.lastOutputToRender || ink.lastOutput) {
-    const existingOutput = ink.lastOutputToRender || ink.lastOutput + "\n";
-    controller.getDiffRenderer().sync(existingOutput);
+  //    需要告知 ScreenRenderer 当前 Live 区域高度，避免第二次渲染时光标计算错误。
+  if (ink.lastOutputHeight > 0) {
+    controller.getScreenRenderer().syncLiveHeight(ink.lastOutputHeight);
   }
 
   // 1. 替换 onRender — 核心：统一所有渲染路径
@@ -251,13 +266,10 @@ export function patchInk(stdout: NodeJS.WriteStream): RenderController {
   ink.rootNode.onImmediateRender = ink.onRender;
 
   // 2. 替换 resized — 必须重新注册事件监听器
-  //    autoBind 使得 stdout.on('resize', this.resized) 持有的是旧的绑定函数引用，
-  //    仅替换 ink.resized 属性不会影响已注册的事件监听器。
   const oldResized = ink.resized;
   ink.resized = () => controller.handleResize(ink);
   stdout.off("resize", oldResized);
   stdout.on("resize", ink.resized);
-  // 更新 unsubscribeResize 以匹配新的监听器
   ink.unsubscribeResize = () => {
     stdout.off("resize", ink.resized);
   };
@@ -269,11 +281,10 @@ export function patchInk(stdout: NodeJS.WriteStream): RenderController {
   };
   ink.writeToStderr = (data: string) => {
     if (ink.isUnmounted) return;
-    // stderr 和 stdout 通常指向同一个终端，需要先清除再恢复 Live 区域
     const sync = shouldSynchronize(stdout);
     if (sync) stdout.write(bsu);
 
-    controller.getDiffRenderer().clear();
+    controller.clearLive();
     process.stderr.write(data);
     controller.restoreOutput();
 
@@ -285,14 +296,12 @@ export function patchInk(stdout: NodeJS.WriteStream): RenderController {
 
   // 5. 替换 clear（Ink 的 clear() 方法在 unmount 时调用）
   ink.clear = () => {
-    controller.getDiffRenderer().clear();
+    controller.clearLive();
   };
 
-  // 6. 替换 log 对象 — 防止 unmount 时 log.done() 与 DiffRenderer 状态冲突
-  //    Ink 的 unmount() 会调用 this.log.done()，如果不替换，
-  //    log-update 会用陈旧的 previousLineCount 执行 eraseLines，导致终端状态异常。
+  // 6. 替换 log 对象
   ink.log = createNoopLog(stdout);
 
-  log.info("TUI:RENDER", "已 patch Ink 渲染层 → RenderController");
+  log.info("TUI:RENDER", "已 patch Ink 渲染层 → RenderController（方案 B: ScreenBuffer）");
   return controller;
 }
