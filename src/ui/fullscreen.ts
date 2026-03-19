@@ -24,6 +24,10 @@ const EXIT_ALT_SCREEN = "\x1b[?1049l";
 const CURSOR_HOME = "\x1b[H";
 /** ESC[J — 从光标位置清除到屏幕末尾 */
 const CLEAR_BELOW = "\x1b[J";
+/** 启用鼠标按钮事件 + SGR 编码（支持滚轮） */
+const ENABLE_MOUSE = "\x1b[?1000h\x1b[?1006h";
+/** 禁用鼠标按钮事件 + SGR 编码 */
+const DISABLE_MOUSE = "\x1b[?1000l\x1b[?1006l";
 
 export interface FullScreenInstance {
   instance: ReturnType<typeof render>;
@@ -54,11 +58,11 @@ export function createFullScreen(
   let exitPromise: Promise<void>;
   let altScreenActive = false;
 
-  /** 确保退出 alternate screen buffer + 显示光标 */
+  /** 确保退出 alternate screen buffer + 显示光标 + 禁用鼠标 */
   const restoreTerminal = () => {
     if (altScreenActive) {
       altScreenActive = false;
-      stdout.write(EXIT_ALT_SCREEN + SHOW_CURSOR);
+      stdout.write(DISABLE_MOUSE + EXIT_ALT_SCREEN + SHOW_CURSOR);
     }
   };
 
@@ -70,8 +74,8 @@ export function createFullScreen(
     get instance() { return instance; },
     get controller() { return controller; },
     start: async () => {
-      // 进入 alternate screen buffer + 隐藏光标 + 清屏
-      stdout.write(ENTER_ALT_SCREEN + HIDE_CURSOR + CURSOR_HOME + CLEAR_BELOW);
+      // 进入 alternate screen buffer + 隐藏光标 + 清屏 + 启用鼠标
+      stdout.write(ENTER_ALT_SCREEN + HIDE_CURSOR + CURSOR_HOME + CLEAR_BELOW + ENABLE_MOUSE);
       altScreenActive = true;
 
       // 注册安全网：确保异常退出时恢复终端

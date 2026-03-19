@@ -393,6 +393,8 @@ export function InputArea({ onSubmit, isLoading }: InputAreaProps) {
       if (input === "u") { dispatch({ type: "kill-to-start" }); return; }
     }
     if (input && !key.ctrl && !key.meta) {
+      // 过滤 SGR 鼠标序列（Ink 去掉 ESC 后格式为 [<btn;col;row[Mm]）
+      if (/^\[<\d+;\d+;\d+[Mm]$/.test(input)) return;
       dispatch({ type: "insert", text: input });
     }
   }, { isActive: !isLoading });

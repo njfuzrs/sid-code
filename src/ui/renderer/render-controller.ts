@@ -35,6 +35,8 @@ export class RenderController {
   private lastOutput = "";
   private lastWidth: number;
   private scrollBuffer: ScrollBuffer | null = null;
+  /** 上一帧 Live 区域起始行（用于检测位置上移时清屏） */
+  private lastLiveStartRow = 0;
 
   constructor(stdout: NodeJS.WriteStream) {
     this.stdout = stdout;
@@ -94,16 +96,27 @@ export class RenderController {
 
     // --- 消息区域渲染 ---
     const rows = this.stdout.rows || 24;
-    const messageAreaHeight = Math.max(0, rows - liveHeight);
-    const liveStartRow = messageAreaHeight;
+    const maxMessageAreaHeight = Math.max(0, rows - liveHeight);
+    const messageLines = this.scrollBuffer?.totalLines() ?? 0;
+
+    // Live 区域紧跟消息内容：消息不满一屏时紧贴消息下方，满屏后固定在底部
+    const liveStartRow = Math.min(messageLines, maxMessageAreaHeight);
+
+    // Live 区域位置变化时处理残影
+    if (liveStartRow !== this.lastLiveStartRow) {
+      // 先清除旧位置的 Live 区域（CUP 定位 + EL 逐行清除 + 重置 front buffer）
+      this.screenRenderer.clearLive();
+      this.scrollBuffer?.markDirty();
+    }
+    this.lastLiveStartRow = liveStartRow;
 
     // 设置 Live 区域起始行
     this.screenRenderer.setLiveStartRow(liveStartRow);
 
-    // 渲染消息区域（只在 ScrollBuffer 内容/滚动变化时重绘）
-    if (this.scrollBuffer && messageAreaHeight > 0) {
+    // 渲染消息区域（只在有消息且 ScrollBuffer 内容/滚动变化时重绘）
+    if (messageLines > 0 && this.scrollBuffer && maxMessageAreaHeight > 0) {
       if (this.scrollBuffer.isDirtyAndReset()) {
-        this.renderMessageArea(messageAreaHeight, width);
+        this.renderMessageArea(liveStartRow, width);
       }
     }
 
@@ -121,11 +134,13 @@ export class RenderController {
 
   /**
    * 渲染消息区域 — 将 ScrollBuffer 可见行写入屏幕上方
+   * 当内容超过一屏时，在最右列绘制滚动条
    */
   private renderMessageArea(height: number, width: number): void {
     if (!this.scrollBuffer) return;
 
     const visibleLines = this.scrollBuffer.getVisibleLines(height);
+    const scrollbar = this.scrollBuffer.getScrollbarInfo(height);
     const sync = shouldSynchronize(this.stdout);
     const out: string[] = [];
 
@@ -135,8 +150,14 @@ export class RenderController {
       out.push(CUP(y, 0) + EL);
       if (y < visibleLines.length) {
         const line = visibleLines[y];
-        // 每行末尾追加 RESET_STYLE，防止未闭合的 ANSI 序列泄漏到后续行
         out.push(line + RESET_STYLE);
+      }
+      // 在最右列绘制滚动条
+      if (scrollbar) {
+        const isThumb = y >= scrollbar.thumbStart && y <= scrollbar.thumbEnd;
+        // CUP 定位到最右列，绘制滚动条字符
+        out.push(CUP(y, width - 1) + RESET_STYLE);
+        out.push(isThumb ? "\x1b[38;5;245m█\x1b[0m" : "\x1b[38;5;238m│\x1b[0m");
       }
     }
     if (sync) out.push(esu);

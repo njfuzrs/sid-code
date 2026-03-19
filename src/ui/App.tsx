@@ -146,12 +146,21 @@ export function TUIApp({ initialState, callbacks, bridge }: AppProps) {
     return () => { bridge.off("change", onChange); };
   }, [bridge]);
 
-  // 快捷键处理：Ctrl+C 退出 + 权限对话框 + 滚动
+  // 快捷键处理：Ctrl+C 退出 + 权限对话框 + 鼠标滚轮 + 键盘滚动
   useInput((input, key) => {
     if (key.ctrl && input === "c") {
       log.info("UI:APP", "用户按下 Ctrl+C，退出");
       exit();
       return;
+    }
+
+    // SGR 鼠标事件拦截（\x1b[<btn;col;row[Mm]，Ink 去掉 ESC 后变成 [<btn;col;row[Mm]）
+    const mouseMatch = /^\[<(\d+);\d+;\d+[Mm]$/.exec(input);
+    if (mouseMatch) {
+      const button = parseInt(mouseMatch[1], 10);
+      if (button === 64) bridge.emit("scroll", "up");       // 滚轮上
+      else if (button === 65) bridge.emit("scroll", "down"); // 滚轮下
+      return; // 所有鼠标事件都拦截，不传给其他组件
     }
 
     // 权限对话框快捷键

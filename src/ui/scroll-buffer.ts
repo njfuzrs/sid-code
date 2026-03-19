@@ -137,6 +137,31 @@ export class ScrollBuffer {
   markDirty(): void {
     this.dirty = true;
   }
+
+  /**
+   * 计算滚动条参数（thumb 位置和大小）
+   * 返回 null 表示内容不足一屏，不需要滚动条
+   */
+  getScrollbarInfo(viewportHeight: number): { thumbStart: number; thumbEnd: number } | null {
+    const total = this.lines.length;
+    if (total <= viewportHeight || viewportHeight <= 0) return null;
+
+    // thumb 高度：视口占总内容的比例，最小 1 行
+    const thumbHeight = Math.max(1, Math.round(viewportHeight * viewportHeight / total));
+
+    // 可滚动的 track 范围
+    const trackRange = viewportHeight - thumbHeight;
+    if (trackRange <= 0) return { thumbStart: 0, thumbEnd: viewportHeight - 1 };
+
+    // 当前滚动位置比例（0 = 顶部，1 = 底部）
+    const maxOffset = total - viewportHeight;
+    const scrollRatio = 1 - (this.scrollOffset / maxOffset); // scrollOffset=0 是底部
+
+    const thumbStart = Math.round(scrollRatio * trackRange);
+    const thumbEnd = thumbStart + thumbHeight - 1;
+
+    return { thumbStart, thumbEnd };
+  }
 }
 
 // ── DisplayItem → ANSI 文本行 渲染函数 ──────────────────────────
