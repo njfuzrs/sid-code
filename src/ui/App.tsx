@@ -337,7 +337,7 @@ export function TUIApp({ initialState, callbacks, bridge }: AppProps) {
 
       {/* 流式输出未完成行预览 */}
       {state.streamingLine ? (
-        <Box paddingX={1}>
+        <Box>
           <Text dimColor>{state.streamingLine}</Text>
         </Box>
       ) : null}

@@ -19,6 +19,7 @@ import { getLogger } from "../debug/logger.ts";
 /** 匹配代码块 fence（允许最多 3 空格缩进） */
 const FENCE_RE = /^ {0,3}(?:```|~~~)/gm;
 
+
 /** StreamWriter 配置 */
 export interface StreamWriterOptions {
   /**
@@ -128,13 +129,67 @@ export class StreamWriter {
   }
 
   /**
-   * 将已完成的行渲染输出
-   * 在代码块内部不拆分，等 fence 闭合后再输出。
+   * 检查文本末尾是否处于未完成的表格中
+   * 表格行格式：以 | 开头并以 | 结尾（忽略前后空白）
+   * 如果最后一个非空行是表格行，说明表格可能还没结束
+   */
+  private isInTable(text: string): boolean {
+    // 从末尾向前找最后一个非空行
+    const lines = text.split("\n");
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const trimmed = lines[i].trim();
+      if (!trimmed) continue;
+      // 检查是否是表格行（以 | 开头且以 | 结尾）
+      return trimmed.startsWith("|") && trimmed.endsWith("|");
+    }
+    return false;
+  }
+
+  /**
+   * 在文本中找到安全的拆分点（段落边界）
+   * 返回从 renderedLen 开始的偏移量，-1 表示没有安全拆分点
+   * 安全拆分点 = 连续两个换行符（空行），且不在代码块/表格内
+   */
+  private findSafeSplitPoint(unrendered: string): number {
+    // 查找所有空行位置（段落边界）作为候选拆分点
+    // 从后往前找最大的安全拆分点
+    let bestSplit = -1;
+
+    // 查找 \n\n 段落边界
+    let searchFrom = 0;
+    while (true) {
+      const idx = unrendered.indexOf("\n\n", searchFrom);
+      if (idx < 0) break;
+
+      const candidatePos = this.renderedLen + idx + 1; // +1: 在第一个 \n 之后拆分
+      const textToSplit = this.fullText.slice(0, candidatePos);
+
+      // 检查代码块
+      const fenceCount = this.countFences(textToSplit);
+      if (fenceCount % 2 !== 0) {
+        searchFrom = idx + 2;
+        continue;
+      }
+
+      // 检查表格：拆分点前的最后一个非空行不能是表格行
+      if (!this.isInTable(textToSplit)) {
+        bestSplit = idx + 1;
+      }
+
+      searchFrom = idx + 2;
+    }
+
+    return bestSplit;
+  }
+
+  /**
+   * 将已完成的段落渲染输出
+   * 在代码块和表格内部不拆分，等结构完整后再输出。
    */
   private flushCompleted(): void {
     const unrendered = this.fullText.slice(this.renderedLen);
 
-    // 查找最后一个换行符作为候选拆分点
+    // 查找最后一个换行符
     const lastNewline = unrendered.lastIndexOf("\n");
     if (lastNewline < 0) return;
 
@@ -144,6 +199,25 @@ export class StreamWriter {
     const textToSplit = this.fullText.slice(0, splitPos);
     const fenceCount = this.countFences(textToSplit);
     if (fenceCount % 2 !== 0) return; // 代码块未闭合，不拆分
+
+    // 检查拆分点是否在表格内部
+    if (this.isInTable(textToSplit)) {
+      // 表格未结束，尝试找段落边界拆分（表格前的内容可以先输出）
+      const safeSplit = this.findSafeSplitPoint(unrendered);
+      if (safeSplit < 0) return; // 没有安全拆分点，等待表格结束
+
+      const toRender = this.fullText.slice(this.renderedLen, this.renderedLen + safeSplit).trim();
+      this.renderedLen = this.renderedLen + safeSplit;
+
+      if (!toRender) return;
+
+      const termWidth = process.stdout.columns || 80;
+      const rendered = renderMarkdown(toRender, termWidth);
+      if (rendered) {
+        this.writeFn(rendered + "\n");
+      }
+      return;
+    }
 
     // 渲染已完成的内容
     const toRender = this.fullText.slice(this.renderedLen, splitPos).trim();
@@ -158,13 +232,11 @@ export class StreamWriter {
     }
   }
 
-  /** 通知外部当前未完成行（截断到终端宽度） */
+  /** 通知外部当前未完成内容（支持多行预渲染） */
   private notifyCurrentLine(): void {
     const unrendered = this.fullText.slice(this.renderedLen);
-    const lastNewline = unrendered.lastIndexOf("\n");
-    const line = lastNewline >= 0 ? unrendered.slice(lastNewline + 1) : unrendered;
 
-    if (!line) {
+    if (!unrendered) {
       if (this.currentLine) {
         this.currentLine = "";
         this.onCurrentLine?.("");
@@ -172,11 +244,11 @@ export class StreamWriter {
       return;
     }
 
-    // 截断到终端宽度
+    // 截断每行到终端宽度
     const maxWidth = (process.stdout.columns || 80) - 4;
-    let truncated = line;
-    if (stringWidth(line) > maxWidth) {
-      truncated = "";
+    const truncatedLines = unrendered.split("\n").map((line: string) => {
+      if (stringWidth(line) <= maxWidth) return line;
+      let truncated = "";
       let w = 0;
       for (const ch of line) {
         const cw = stringWidth(ch);
@@ -187,11 +259,13 @@ export class StreamWriter {
         truncated += ch;
         w += cw;
       }
-    }
+      return truncated;
+    });
 
-    if (truncated !== this.currentLine) {
-      this.currentLine = truncated;
-      this.onCurrentLine?.(truncated);
+    const result = truncatedLines.join("\n");
+    if (result !== this.currentLine) {
+      this.currentLine = result;
+      this.onCurrentLine?.(result);
     }
   }
 }
