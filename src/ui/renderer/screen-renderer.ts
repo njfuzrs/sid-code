@@ -191,6 +191,12 @@ export class ScreenRenderer {
       }
     }
 
+    // 光标不变量：flush 结束后光标在 Live 区域最后一行末尾
+    // 移到最后一行末尾（列位置 = buffer 宽度）
+    if (newHeight > 0) {
+      out.push("\r" + CUF(back.width));
+    }
+
     // 重置样式 + 显示光标
     out.push(RESET_STYLE + SHOW_CURSOR);
     if (sync) out.push(esu);
@@ -266,10 +272,8 @@ export class ScreenRenderer {
     }
 
     // 如果 mods 减少了某些标志，需要先 reset 再重新设置
-    const modsRemoved = (this.lastMods & ~mods) !== 0;
-    const needReset =
-      modsRemoved ||
-      (this.lastFg !== COLOR_DEFAULT && fg === COLOR_DEFAULT && this.lastBg !== COLOR_DEFAULT && bg === COLOR_DEFAULT);
+    // （fg/bg 变为默认色可以直接用 SGR 39/49，不需要 reset）
+    const needReset = (this.lastMods & ~mods) !== 0;
 
     if (needReset) {
       out.push(RESET_STYLE);

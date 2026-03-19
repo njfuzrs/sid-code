@@ -225,12 +225,12 @@ describe("writeStyledChars", () => {
     expect(buf.getSymbol(2, 0)).toBe("C");
   });
 
-  it("水平裁剪：x2", () => {
+  it("水平裁剪：x2（exclusive 边界）", () => {
     const buf = new ScreenBuffer(10, 1);
-    writeStyledChars(buf, 0, 0, [sc("A"), sc("B"), sc("C")], { x2: 1 });
+    writeStyledChars(buf, 0, 0, [sc("A"), sc("B"), sc("C")], { x2: 2 });
     expect(buf.getSymbol(0, 0)).toBe("A");
     expect(buf.getSymbol(1, 0)).toBe("B");
-    expect(buf.getSymbol(2, 0)).toBe(" "); // 被裁剪
+    expect(buf.getSymbol(2, 0)).toBe(" "); // 被裁剪（x2=2 是 exclusive）
   });
 
   it("垂直裁剪：y1", () => {
@@ -239,10 +239,10 @@ describe("writeStyledChars", () => {
     expect(buf.getSymbol(0, 0)).toBe(" "); // 被裁剪
   });
 
-  it("垂直裁剪：y2", () => {
+  it("垂直裁剪：y2（exclusive 边界）", () => {
     const buf = new ScreenBuffer(10, 3);
-    writeStyledChars(buf, 0, 2, [sc("X")], { y2: 1 });
-    expect(buf.getSymbol(0, 2)).toBe(" "); // 被裁剪
+    writeStyledChars(buf, 0, 2, [sc("X")], { y2: 2 });
+    expect(buf.getSymbol(0, 2)).toBe(" "); // 被裁剪（y2=2 是 exclusive）
   });
 });
 

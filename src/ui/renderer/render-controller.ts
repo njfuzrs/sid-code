@@ -28,6 +28,9 @@ const CLEAR_SCREEN = "\x1b[2J";
 /** ESC[H — 光标移动到左上角 */
 const CURSOR_HOME = "\x1b[H";
 
+/** fullStaticOutput 最大长度（1MB），超过时截断旧内容 */
+const MAX_STATIC_OUTPUT_LENGTH = 1024 * 1024;
+
 export class RenderController {
   private stdout: NodeJS.WriteStream;
   private screenRenderer: ScreenRenderer;
@@ -77,6 +80,10 @@ export class RenderController {
 
     if (hasStaticOutput) {
       this.fullStaticOutput += staticOutput;
+      // 限制 fullStaticOutput 大小，超过时截断旧内容（保留尾部）
+      if (this.fullStaticOutput.length > MAX_STATIC_OUTPUT_LENGTH) {
+        this.fullStaticOutput = this.fullStaticOutput.slice(-MAX_STATIC_OUTPUT_LENGTH);
+      }
     }
 
     // --- Live 区域光栅化 ---
@@ -174,6 +181,8 @@ export class RenderController {
    * 恢复 Live 区域 — 替代 ink.js 的 restoreLastOutput()
    *
    * 重新 flush 当前 back buffer 的内容。
+   * 注意：这依赖于 clearLive() 只清空 front buffer 而不清空 back buffer 的行为——
+   * clearLive() 后 front 全空 vs back 仍有上一帧内容，flush() 会全量输出 Live 区域。
    */
   restoreOutput(): void {
     if (!this.lastOutput) return;

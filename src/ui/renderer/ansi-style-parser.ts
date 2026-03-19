@@ -20,6 +20,28 @@ import {
 } from "./constants.ts";
 import type { ScreenBuffer } from "./screen-buffer.ts";
 
+// 命名颜色表（chalk 支持的命名颜色）— 模块级常量，避免每次调用 resolveInkColor 时重建
+const NAMED_COLORS: Record<string, number> = {
+  black: 0x000000,
+  red: 0xaa0000,
+  green: 0x00aa00,
+  yellow: 0xaa5500,
+  blue: 0x0000aa,
+  magenta: 0xaa00aa,
+  cyan: 0x00aaaa,
+  white: 0xaaaaaa,
+  gray: 0x555555,
+  grey: 0x555555,
+  blackBright: 0x555555,
+  redBright: 0xff5555,
+  greenBright: 0x55ff55,
+  yellowBright: 0xffff55,
+  blueBright: 0x5555ff,
+  magentaBright: 0xff55ff,
+  cyanBright: 0x55ffff,
+  whiteBright: 0xffffff,
+};
+
 // 8 色基本色表（ANSI 30-37, 40-47）
 const BASIC_COLORS = [
   0x000000, // 黑
@@ -100,29 +122,7 @@ export function resolveInkColor(color: string | undefined): number {
     return get256Color(parseInt(ansi256Match[1], 10));
   }
 
-  // named colors（chalk 支持的命名颜色）
-  const namedColors: Record<string, number> = {
-    black: 0x000000,
-    red: 0xaa0000,
-    green: 0x00aa00,
-    yellow: 0xaa5500,
-    blue: 0x0000aa,
-    magenta: 0xaa00aa,
-    cyan: 0x00aaaa,
-    white: 0xaaaaaa,
-    gray: 0x555555,
-    grey: 0x555555,
-    blackBright: 0x555555,
-    redBright: 0xff5555,
-    greenBright: 0x55ff55,
-    yellowBright: 0xffff55,
-    blueBright: 0x5555ff,
-    magentaBright: 0xff55ff,
-    cyanBright: 0x55ffff,
-    whiteBright: 0xffffff,
-  };
-
-  return namedColors[color] ?? COLOR_DEFAULT;
+  return NAMED_COLORS[color] ?? COLOR_DEFAULT;
 }
 
 /**
@@ -260,9 +260,9 @@ export function writeStyledChars(
   chars: StyledChar[],
   clipRect?: { x1?: number; x2?: number; y1?: number; y2?: number },
 ): void {
-  // 垂直裁剪
+  // 垂直裁剪（y2 为 exclusive 边界，与 rasterizer 计算的 clip 一致）
   if (clipRect?.y1 !== undefined && y < clipRect.y1) return;
-  if (clipRect?.y2 !== undefined && y > clipRect.y2) return;
+  if (clipRect?.y2 !== undefined && y >= clipRect.y2) return;
 
   let offsetX = x;
 
@@ -272,7 +272,7 @@ export function writeStyledChars(
       offsetX += Math.max(1, stringWidth(char.value));
       continue;
     }
-    if (clipRect?.x2 !== undefined && offsetX > clipRect.x2) {
+    if (clipRect?.x2 !== undefined && offsetX >= clipRect.x2) {
       break;
     }
 

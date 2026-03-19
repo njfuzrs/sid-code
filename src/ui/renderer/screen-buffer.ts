@@ -86,7 +86,7 @@ export class ScreenBuffer {
     } else {
       const cp = char.codePointAt(0)!;
       // 单码点且在 BMP 内 → 直接存储
-      if (char.length <= 2 && cp <= 0xffff && char.length === 1) {
+      if (char.length === 1) {
         charCode = cp;
       } else {
         // 溢出：emoji、ZWJ 序列等
@@ -112,7 +112,13 @@ export class ScreenBuffer {
     }
   }
 
-  /** 比较两个 buffer 在 (x, y) 处的 cell 是否相同 */
+  /**
+   * 比较两个 buffer 在 (x, y) 处的 cell 是否相同。
+   *
+   * 注意：只比较 4 个 uint32 slot，不比较 overflow map 中的实际字符串。
+   * 这依赖于一个隐式假设：front buffer 总是通过 copyFrom(back) 得到的，
+   * 因此同一个 overflow ID 在两个 buffer 中一定对应相同的字符串。
+   */
   cellEquals(other: ScreenBuffer, x: number, y: number): boolean {
     const off = this.offset(x, y);
     const a = this.buffer;

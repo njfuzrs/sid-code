@@ -50,6 +50,19 @@ function applyPaddingToText(node: any, text: string): string {
   return text;
 }
 
+/** 计算多个裁剪区域的交集 */
+function intersectClips(clips: ClipRect[]): ClipRect | undefined {
+  if (clips.length === 0) return undefined;
+  const result: ClipRect = {};
+  for (const c of clips) {
+    if (c.x1 !== undefined) result.x1 = Math.max(result.x1 ?? -Infinity, c.x1);
+    if (c.x2 !== undefined) result.x2 = Math.min(result.x2 ?? Infinity, c.x2);
+    if (c.y1 !== undefined) result.y1 = Math.max(result.y1 ?? -Infinity, c.y1);
+    if (c.y2 !== undefined) result.y2 = Math.min(result.y2 ?? Infinity, c.y2);
+  }
+  return result;
+}
+
 export class Rasterizer {
   /**
    * 将 Yoga DOM 树光栅化到 ScreenBuffer
@@ -62,7 +75,7 @@ export class Rasterizer {
     buffer: ScreenBuffer,
     options: { skipStaticElements: boolean } = { skipStaticElements: true },
   ): void {
-    if (!rootNode.yogaNode) return;
+    if (!rootNode?.yogaNode) return;
     this.renderNode(rootNode, 0, 0, buffer, [], [], options.skipStaticElements);
   }
 
@@ -196,8 +209,8 @@ export class Rasterizer {
 
     text = applyPaddingToText(node, text);
 
-    // 当前活跃的裁剪区域
-    const clip = clips.length > 0 ? clips[clips.length - 1] : undefined;
+    // 当前活跃的裁剪区域（取所有嵌套 clip 的交集）
+    const clip = intersectClips(clips);
 
     // 按行处理
     const lines = text.split("\n");
@@ -235,15 +248,11 @@ export class Rasterizer {
     const width = yogaNode.getComputedWidth();
     const height = yogaNode.getComputedHeight();
 
-    // 计算内容区域（排除边框）
-    const leftBorder =
-      node.style.borderStyle && node.style.borderLeft !== false ? 1 : 0;
-    const rightBorder =
-      node.style.borderStyle && node.style.borderRight !== false ? 1 : 0;
-    const topBorder =
-      node.style.borderStyle && node.style.borderTop !== false ? 1 : 0;
-    const bottomBorder =
-      node.style.borderStyle && node.style.borderBottom !== false ? 1 : 0;
+    // 计算内容区域（排除边框，使用 Yoga computed border 保持一致）
+    const leftBorder = yogaNode.getComputedBorder(Yoga.EDGE_LEFT);
+    const rightBorder = yogaNode.getComputedBorder(Yoga.EDGE_RIGHT);
+    const topBorder = yogaNode.getComputedBorder(Yoga.EDGE_TOP);
+    const bottomBorder = yogaNode.getComputedBorder(Yoga.EDGE_BOTTOM);
 
     const contentWidth = width - leftBorder - rightBorder;
     const contentHeight = height - topBorder - bottomBorder;
