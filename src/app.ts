@@ -1212,6 +1212,11 @@ export class App {
       app.controller.requestMessageAreaRedraw();
     }
 
+    // 鼠标滚轮 → 页面滚动（在 stdin 层面拦截，不经过 Ink useInput）
+    app.onMouseScroll((direction) => {
+      bridge.emit("scroll", direction);
+    });
+
     // 监听滚动事件（动态计算滚动行数和消息区域高度）
     bridge.on("scroll", (direction: string) => {
       const rows = process.stdout.rows || 24;
