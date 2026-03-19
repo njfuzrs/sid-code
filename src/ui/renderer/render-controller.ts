@@ -241,11 +241,13 @@ export function patchInk(stdout: NodeJS.WriteStream): RenderController {
 
   const controller = new RenderController(stdout);
 
-  // 0. 同步首次渲染状态
-  //    render() 内部会触发首次渲染（走 Ink 原始路径），
-  //    需要告知 ScreenRenderer 当前 Live 区域高度，避免第二次渲染时光标计算错误。
+  // 0. 清除 Ink 首次渲染的输出
+  //    render() 内部会触发首次渲染（走 Ink 原始路径 log-update），
+  //    其输出高度与 ScreenBuffer 光栅化高度可能不一致，
+  //    直接 syncLiveHeight 会导致光标偏移错误、出现残影（双重边框）。
+  //    最可靠的做法：清屏 + liveHeight=0，由末尾的 handleRender 全量重绘。
   if (ink.lastOutputHeight > 0) {
-    controller.getScreenRenderer().syncLiveHeight(ink.lastOutputHeight);
+    stdout.write("\x1b[H\x1b[J"); // CURSOR_HOME + CLEAR_BELOW
   }
 
   // 1. 替换 onRender — 核心：统一所有渲染路径
@@ -312,5 +314,9 @@ export function patchInk(stdout: NodeJS.WriteStream): RenderController {
   ink.log = createNoopLog(stdout);
 
   log.info("TUI:RENDER", "已 patch Ink 渲染层 → RenderController（方案 B: ScreenBuffer）");
+
+  // 7. 立即触发一次渲染，确保清除首次输出后画面不为空
+  controller.handleRender(ink);
+
   return controller;
 }
