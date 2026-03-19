@@ -23,11 +23,6 @@ import instances from "../../../node_modules/ink/build/instances.js";
 import inkRenderer from "../../../node_modules/ink/build/renderer.js";
 import { throttle } from "es-toolkit/compat";
 
-/** ESC[2J — 清除整个可见屏幕（不影响 scrollback） */
-const CLEAR_SCREEN = "\x1b[2J";
-/** ESC[H — 光标移动到左上角 */
-const CURSOR_HOME = "\x1b[H";
-
 /** fullStaticOutput 最大长度（1MB），超过时截断旧内容 */
 const MAX_STATIC_OUTPUT_LENGTH = 1024 * 1024;
 
@@ -125,39 +120,54 @@ export class RenderController {
 
   /**
    * 统一 resize 处理 — 替代 ink.js 的 resized()
+   *
+   * 关键：resize 时只清除并重绘 Live 区域（输入框+状态栏），
+   * 不重写 Static 历史。Static 内容已在终端 scrollback 缓冲区中，
+   * 终端自身会处理宽度变化时的文本重排。
+   *
+   * 之前的 bug：CLEAR_SCREEN(ESC[2J) 只清除可见视口不清除 scrollback，
+   * 重写 fullStaticOutput 会追加到 scrollback 中（而非替换），
+   * 导致每次 resize 都多出一份 Static 历史副本，产生重影。
    */
   handleResize(ink: any): void {
     const log = getLogger();
     const newWidth = ink.getTerminalWidth();
     const widthChanged = newWidth !== this.lastWidth;
 
-    log.info("TUI:RESIZE", `宽度: ${this.lastWidth} → ${newWidth}, rows=${this.stdout.rows}`);
+    log.info("TUI:RESIZE", `宽度: ${this.lastWidth} → ${newWidth}, rows=${this.stdout.rows}, liveHeight=${this.screenRenderer.getLiveHeight()}`);
 
     if (widthChanged) {
       log.debug(
         "TUI:RESIZE",
-        `宽度${newWidth < this.lastWidth ? "缩小" : "增大"}，执行清屏+重写`,
+        `宽度${newWidth < this.lastWidth ? "缩小" : "增大"}，清除可见区域并重绘`,
       );
 
-      const sync = shouldSynchronize(this.stdout);
-      if (sync) this.stdout.write(bsu);
+      // 先更新宽度并重新计算布局，这样才能知道新 Live 区域的高度
+      this.lastWidth = newWidth;
+      ink.lastTerminalWidth = newWidth;
+      ink.calculateLayout();
 
-      // 重置 ScreenRenderer 状态
+      // 获取新 Live 区域高度
+      const rootNode = ink.rootNode;
+      const newLiveHeight = rootNode?.yogaNode
+        ? rootNode.yogaNode.getComputedHeight()
+        : this.screenRenderer.getLiveHeight();
+
+      // 用 CUP 绝对定位清除整个可见区域，然后定位到 Live 区域起始行
+      // 这是唯一不受终端 reflow 影响的方案
+      this.screenRenderer.clearLiveForResize(newLiveHeight);
+      // 重置 ScreenRenderer 状态（front buffer 清空，下次 flush 全量输出）
       this.screenRenderer.reset();
-      // 清除整个可见视口
-      this.stdout.write(CLEAR_SCREEN + CURSOR_HOME);
-      // 重写 Static 历史
-      if (this.fullStaticOutput) {
-        this.stdout.write(this.fullStaticOutput);
-      }
 
-      if (sync) this.stdout.write(esu);
+      // 重新渲染（reset 后会全量输出）
+      this.handleRender(ink);
+      return;
     }
 
     this.lastWidth = newWidth;
     ink.lastTerminalWidth = newWidth;
     ink.calculateLayout();
-    // 重新渲染（reset 后会全量输出）
+    // 重新渲染
     this.handleRender(ink);
   }
 

@@ -278,6 +278,42 @@ export class ScreenRenderer {
   }
 
   /**
+   * resize 专用清除 — 用换行滚动把旧内容推入 scrollback
+   *
+   * 终端 resize 时 reflow 会改变 scrollback 中内容的行数，
+   * 导致光标的相对位置（cursorRow/liveHeight）不再可靠。
+   * 所有基于相对移动（CUU/CUD）或绝对定位（CUP）的清除方案
+   * 在主缓冲区模式下都无法正确工作。
+   *
+   * 本方法使用最可靠的策略：输出足够多的换行把所有可见内容
+   * （包括 reflow 后的旧 Live 区域）滚入 scrollback 缓冲区，
+   * 然后在干净的屏幕底部重绘 Live 区域。
+   *
+   * @param newLiveHeight 新 Live 区域的预期高度，用于定位 flush 起始行
+   */
+  clearLiveForResize(newLiveHeight: number): void {
+    const rows = this.stdout.rows || 24;
+
+    // 输出足够多的换行，把所有可见内容滚入 scrollback
+    // 这样可见区域变成全空，旧 Live 区域的残留被彻底清除
+    this.stdout.write("\n".repeat(rows));
+
+    // 光标现在在屏幕最底行
+    // 上移到 Live 区域应该开始的位置
+    const moveUp = newLiveHeight - 1;
+    if (moveUp > 0) {
+      this.stdout.write(CUU(moveUp));
+    }
+    this.stdout.write("\r");
+
+    // 重置状态
+    this.front.clear();
+    this.liveHeight = 0;
+    this.cursorRow = 0;
+    this.cursorCol = 0;
+  }
+
+  /**
    * 调整 buffer 大小
    * front 清空，下次 flush 时 diff 会输出全部内容（等效全量重绘）。
    */
