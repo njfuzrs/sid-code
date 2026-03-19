@@ -4,18 +4,26 @@
  * 支持历史记录（↑↓）和 Emacs 快捷键（Ctrl+A/E/U/K）。
  *
  * 多行文本处理：自行计算视觉行，不依赖 Ink 的自动换行（避免 Ink issue #883）
+ *
+ * 粘贴处理（Bracketed Paste Mode）：
+ * 终端粘贴时用 ESC[200~ ... ESC[201~ 包裹内容。
+ * Ink 的 inputParser 会把原始 stdin chunk 拆分为独立事件：
+ *   1. ESC[200~ 作为一个事件（PASTE_START）
+ *   2. 粘贴的文本内容作为若干事件（可能含 \r\n）
+ *   3. ESC[201~ 作为一个事件（PASTE_END）
+ * 这些事件通过 internal_eventEmitter → useInput 传递。
+ * 因此我们在 useInput 回调中通过检查 raw sequence 来识别粘贴，
+ * 不需要也不应该直接监听 process.stdin（会和 Ink 的 readable 竞争数据）。
  */
 
-import React, { useReducer, useCallback, useRef, useEffect, useState } from "react";
+import React, { useReducer, useCallback, useRef, useEffect } from "react";
 import { Box, Text, useInput, useStdout } from "ink";
 import stringWidth from "string-width";
 import { getLogger } from "../debug/logger.ts";
 
 // ── Bracketed Paste Mode ────────────────────────────────────────────
-// 终端粘贴时用 ESC[200~ ... ESC[201~ 包裹内容
-// 检测到该序列时，将换行符当作普通文本插入而非触发提交
-const PASTE_START = "\x1b[200~";
-const PASTE_END = "\x1b[201~";
+const PASTE_START_SEQ = "\x1b[200~";
+const PASTE_END_SEQ = "\x1b[201~";
 const PASTE_ENABLE = "\x1b[?2004h";
 const PASTE_DISABLE = "\x1b[?2004l";
 
@@ -186,9 +194,42 @@ export function InputArea({ onSubmit, isLoading }: InputAreaProps) {
     value: "", cursorOffset: 0, history: [], historyIndex: -1, savedInput: "",
   });
 
-  // Bracketed Paste 状态：缓冲区收集粘贴内容
+  // ── Bracketed Paste ────────────────────────────────────────────────
+  // 用 ref 让 useInput 回调能同步读取粘贴状态
+  const isPastingRef = useRef(false);
   const pasteBufferRef = useRef<string>("");
-  const [isPasting, setIsPasting] = useState(false);
+  // 超时 timer 也用 ref 保存，方便清理
+  const pasteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /** 清理粘贴状态 + timer */
+  const finishPaste = useCallback((textToInsert: string) => {
+    if (pasteTimerRef.current) {
+      clearTimeout(pasteTimerRef.current);
+      pasteTimerRef.current = null;
+    }
+    isPastingRef.current = false;
+    pasteBufferRef.current = "";
+    if (textToInsert.length > 0) {
+      dispatch({ type: "insert", text: textToInsert });
+    }
+  }, []);
+
+  /** 开始粘贴：设置状态 + 启动超时保护 */
+  const startPaste = useCallback(() => {
+    isPastingRef.current = true;
+    pasteBufferRef.current = "";
+    // 5 秒超时保护：如果终端异常导致 PASTE_END 永远不来
+    pasteTimerRef.current = setTimeout(() => {
+      if (isPastingRef.current) {
+        log.warn("UI:INPUT", `粘贴超时（5s），强制插入: ${pasteBufferRef.current.length} 字符`);
+        finishPaste(pasteBufferRef.current);
+      }
+    }, 5000);
+  }, [finishPaste]);
+
+  /** 把粘贴内容中的换行替换为空格 */
+  const cleanPasteText = (raw: string): string =>
+    raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n/g, " ");
 
   // 启用 / 禁用 Bracketed Paste Mode
   useEffect(() => {
@@ -199,58 +240,12 @@ export function InputArea({ onSubmit, isLoading }: InputAreaProps) {
       if (process.stdin.isTTY) {
         process.stdout.write(PASTE_DISABLE);
       }
+      // 清理可能残留的 timer
+      if (pasteTimerRef.current) {
+        clearTimeout(pasteTimerRef.current);
+      }
     };
   }, []);
-
-  // 监听 stdin 原始数据，检测 bracketed paste 序列
-  useEffect(() => {
-    if (isLoading) return;
-
-    const onData = (data: Buffer) => {
-      const str = data.toString();
-
-      // 检测粘贴开始
-      if (str.includes(PASTE_START)) {
-        setIsPasting(true);
-        // 提取 PASTE_START 之后的内容
-        const afterStart = str.split(PASTE_START).slice(1).join(PASTE_START);
-        // 可能同一个 data 里就包含结束标记
-        if (afterStart.includes(PASTE_END)) {
-          const content = afterStart.split(PASTE_END)[0];
-          // 换行符替换为空格，粘贴内容作为单行插入
-          const cleaned = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n/g, " ");
-          log.debug("UI:INPUT", `粘贴完成（单次）: ${cleaned.length} 字符`);
-          dispatch({ type: "insert", text: cleaned });
-          pasteBufferRef.current = "";
-          setIsPasting(false);
-        } else {
-          pasteBufferRef.current = afterStart.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n/g, " ");
-        }
-        return;
-      }
-
-      // 正在粘贴中
-      if (isPasting) {
-        if (str.includes(PASTE_END)) {
-          const beforeEnd = str.split(PASTE_END)[0];
-          const full = pasteBufferRef.current + beforeEnd.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n/g, " ");
-          log.debug("UI:INPUT", `粘贴完成（多块）: ${full.length} 字符`);
-          dispatch({ type: "insert", text: full });
-          pasteBufferRef.current = "";
-          setIsPasting(false);
-        } else {
-          pasteBufferRef.current += str.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n/g, " ");
-        }
-        return;
-      }
-    };
-
-    // 使用 'data' 事件在 useInput 之前拦截原始输入
-    process.stdin.on("data", onData);
-    return () => {
-      process.stdin.off("data", onData);
-    };
-  }, [isLoading, isPasting]);
 
   useEffect(() => {
     if (prevLoadingRef.current !== isLoading) {
@@ -276,10 +271,41 @@ export function InputArea({ onSubmit, isLoading }: InputAreaProps) {
     setTimeout(() => { lastSubmittedRef.current = ""; }, 1000);
   }, [state.value, onSubmit]);
 
+  // ── 核心 useInput：同时处理普通键盘输入和粘贴序列 ──────────────
+  // Ink 的 inputParser 把 stdin 原始 chunk 拆分为事件，经 parseKeypress 后
+  // 以 (input, key) 传入此回调。粘贴序列的事件流：
+  //   1. input="" key.sequence="\x1b[200~"  ← PASTE_START
+  //   2. input="hello world\r\nline2"       ← 粘贴文本（可能多次）
+  //   3. input="" key.sequence="\x1b[201~"  ← PASTE_END
+  // 我们据此在 useInput 内部完成粘贴状态机，不需要额外 stdin 监听。
   useInput((input, key) => {
-    // 粘贴模式下跳过 useInput 处理，由 stdin data 事件处理
-    if (isPasting) return;
+    // 获取原始 sequence（key 对象上有 Ink 保留的 raw/sequence 字段）
+    const rawSeq: string = (key as any).sequence ?? (key as any).raw ?? input;
 
+    // ── 粘贴开始 ──
+    if (rawSeq === PASTE_START_SEQ) {
+      startPaste();
+      log.debug("UI:INPUT", "粘贴开始 (bracketed paste)");
+      return;
+    }
+
+    // ── 粘贴结束 ──
+    if (rawSeq === PASTE_END_SEQ) {
+      if (isPastingRef.current) {
+        log.debug("UI:INPUT", `粘贴完成: ${pasteBufferRef.current.length} 字符`);
+        finishPaste(pasteBufferRef.current);
+      }
+      return;
+    }
+
+    // ── 粘贴中：累积文本 ──
+    if (isPastingRef.current) {
+      // rawSeq 可能包含文本 + 换行，全部累积（换行替换为空格）
+      pasteBufferRef.current += cleanPasteText(rawSeq);
+      return;
+    }
+
+    // ── 普通键盘输入 ──
     if (key.return) { handleSubmit(); return; }
     if (key.upArrow) { dispatch({ type: "history-up" }); return; }
     if (key.downArrow) { dispatch({ type: "history-down" }); return; }
