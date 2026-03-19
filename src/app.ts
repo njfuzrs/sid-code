@@ -1095,10 +1095,14 @@ export class App {
           this.quotaManager?.resetAlertLevel();
           this.fallback.reset();
           lastSyncedCount = 0;
-          // Static 组件已写入终端滚动缓冲区的内容无法通过 React 状态清除，
-          // 必须用 ANSI 转义序列清屏，然后 Ink 会在干净画布上重新渲染 Live 区域
-          // \x1b[H 光标归位 + \x1b[2J 清屏 + \x1b[3J 清除滚动缓冲区
-          process.stdout.write("\x1b[H\x1b[2J\x1b[3J");
+          // 仅当有 Static 内容时才需要 ANSI 清屏；
+          // 初始欢迎界面没有 Static 内容，清屏会导致 Live 区域（logo/输入框/状态栏）被擦除
+          if (bridge.current.displayItems.length > 0) {
+            // Static 组件已写入终端滚动缓冲区的内容无法通过 React 状态清除，
+            // 必须用 ANSI 转义序列清屏，然后 Ink 会在干净画布上重新渲染 Live 区域
+            // \x1b[H 光标归位 + \x1b[2J 清屏 + \x1b[3J 清除滚动缓冲区
+            process.stdout.write("\x1b[H\x1b[2J\x1b[3J");
+          }
           updateState({
             messages: [],
             displayItems: [],
