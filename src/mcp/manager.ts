@@ -125,7 +125,6 @@ export class MCPManager {
           }
           log.error("MCP", `连接 ${name} 失败`, { error: err.message, stack: err.stack });
           this.serverErrors.set(name, err.message);
-          console.error(`[MCP] 连接 ${name} 失败: ${err.message}`);
           return { name, tools: [] as Tool[] };
         }
       }),

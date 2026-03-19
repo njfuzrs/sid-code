@@ -21,6 +21,8 @@ export interface LoggerOptions {
   logFile?: string;
   console: boolean;
   fileOnly: boolean;
+  /** 静默的日志分类（支持前缀匹配，如 "UI:MD" 会匹配 "UI:MD" 分类） */
+  mutedCategories?: string[];
 }
 
 // ANSI 颜色码
@@ -65,6 +67,7 @@ class Logger {
       console: options.console ?? true,
       fileOnly: options.fileOnly ?? false,
       logFile: options.logFile,
+      mutedCategories: options.mutedCategories,
     };
 
     if (this.options.enabled && this.options.logFile) {
@@ -79,7 +82,7 @@ class Logger {
       }
 
       // 初始化日志文件（清空旧日志）
-      const header = `${C.cyan}${C.bold}${'─'.repeat(60)}\n SID-CODE DEBUG LOG  ${new Date().toLocaleString('zh-CN')}\n${'─'.repeat(60)}${C.reset}\n\n`;
+      const header = `${'─'.repeat(60)}\n SID-CODE DEBUG LOG  ${new Date().toLocaleString('zh-CN')}\n${'─'.repeat(60)}\n\n`;
       writeFileSync(this.logFilePath, header, 'utf-8');
     }
   }
@@ -131,10 +134,15 @@ class Logger {
     return value;
   }
 
+  /** 去除 ANSI 转义码 */
+  private stripAnsi(str: string): string {
+    return str.replace(/\x1b\[[0-9;]*m/g, '');
+  }
+
   private writeToFile(message: string): void {
     if (this.logFilePath) {
       try {
-        appendFileSync(this.logFilePath, message + '\n', 'utf-8');
+        appendFileSync(this.logFilePath, this.stripAnsi(message) + '\n', 'utf-8');
       } catch (err) {
         // 静默失败，避免日志系统本身导致程序崩溃
       }
@@ -154,6 +162,9 @@ class Logger {
   private log(level: LogLevel, category: string, message: string, data?: unknown): void {
     if (!this.options.enabled) return;
 
+    // 静默分类过滤（ERROR 级别不受影响，始终输出）
+    if (level > LogLevel.ERROR && this.isMuted(category)) return;
+
     const formatted = this.formatMessage(level, category, message, data);
 
     // 文件始终写入所有级别，确保日志文件包含完整信息
@@ -163,6 +174,13 @@ class Logger {
     if (!this.options.fileOnly && level <= this.options.level) {
       this.writeToConsole(level, formatted);
     }
+  }
+
+  /** 检查分类是否被静默 */
+  private isMuted(category: string): boolean {
+    const muted = this.options.mutedCategories;
+    if (!muted || muted.length === 0) return false;
+    return muted.some(m => category === m || category.startsWith(m + ':'));
   }
 
   /** 切换为仅文件输出模式（TUI 模式下使用） */

@@ -251,7 +251,6 @@ export class App {
           log.debug("APP", `加载系统提示词文件: ${this.config.systemPromptFile}`);
         } catch (err) {
           log.error("APP", `加载系统提示词文件失败: ${err}`);
-          console.error(`加载系统提示词文件失败: ${err}`);
         }
       }
 

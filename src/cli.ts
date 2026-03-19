@@ -15,7 +15,7 @@ if (!process.env.FORCE_COLOR && !process.env.NO_COLOR) {
 import { parseArgs } from "node:util";
 import { loadConfig } from "./config/config.ts";
 import type { Config } from "./config/config.ts";
-import { initLogger, LogLevel } from "./debug/logger.ts";
+import { initLogger, getLogger, LogLevel } from "./debug/logger.ts";
 
 /** 解析命令行参数 */
 function parseCLIArgs(): Partial<Config> & { prompt?: string } {
@@ -174,6 +174,7 @@ async function main(): Promise<void> {
         logFile: config.debugLogFile,
         console: !isTUI,
         fileOnly: isTUI,
+        mutedCategories: ["UI:MD", "TUI:STATE", "TUI:RESIZE", "STREAM_WRITER"],
       });
 
       logger.info("CLI", "调试模式已启用", {
@@ -279,10 +280,10 @@ async function main(): Promise<void> {
       mcpManager.connectAll(config.mcpServers).then((mcpTools) => {
         for (const tool of mcpTools) toolRegistry.register(tool);
         if (mcpTools.length > 0) {
-          console.error(`[MCP] 已连接，注册 ${mcpTools.length} 个工具`);
+          getLogger().info("MCP", `已连接，注册 ${mcpTools.length} 个工具`);
         }
       }).catch((err: any) => {
-        console.error(`[MCP] 初始化失败: ${err.message}`);
+        getLogger().error("MCP", `初始化失败: ${err.message}`);
       });
     }
 
