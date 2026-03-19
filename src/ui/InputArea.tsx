@@ -9,11 +9,21 @@
  * 终端粘贴时用 ESC[200~ ... ESC[201~ 包裹内容。
  * Ink 的 inputParser 会把原始 stdin chunk 拆分为独立事件：
  *   1. ESC[200~ 作为一个事件（PASTE_START）
- *   2. 粘贴的文本内容作为若干事件（可能含 \r\n）
+ *   2. 粘贴的文本内容作为若干事件（可能含 \r\n、ANSI 颜色码等）
  *   3. ESC[201~ 作为一个事件（PASTE_END）
- * 这些事件通过 internal_eventEmitter → useInput 传递。
- * 因此我们在 useInput 回调中通过检查 raw sequence 来识别粘贴，
- * 不需要也不应该直接监听 process.stdin（会和 Ink 的 readable 竞争数据）。
+ *
+ * 关键：Ink 的 use-input.js 会对 input 做两个变换：
+ *   - 构造的 key 对象不含 sequence/raw 字段
+ *   - 以 ESC 开头的 input 被 slice(1) 去掉前缀
+ * 因此 PASTE_START/END 到达回调时 input 为 "[200~"/"[201~"。
+ *
+ * 粘贴内容中的 ANSI 颜色码（如 ESC[31m）会被 Ink 解析为独立的
+ * ctrl 事件（input=""），我们在粘贴状态下跳过空 input 事件。
+ *
+ * 防御机制：
+ *   - 5s 超时保护：PASTE_END 不来时强制插入已累积文本
+ *   - 超时冷却期：500ms 内丢弃残留事件，避免被当作普通输入
+ *   - 控制字符清理：Tab/\x00-\x1f 等控制字符被清理
  */
 
 import React, { useReducer, useCallback, useRef, useEffect } from "react";
@@ -207,14 +217,31 @@ export function InputArea({ onSubmit, isLoading }: InputAreaProps) {
   // 超时 timer 也用 ref 保存，方便清理
   const pasteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // 超时冷却期标记：超时 finishPaste 后，后续残留的粘贴文本和 PASTE_END 仍会到达，
+  // 需要在短暂窗口内丢弃这些事件，避免它们被当作普通输入插入。
+  const pasteCooldownRef = useRef(false);
+  const pasteCooldownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   /** 清理粘贴状态 + timer */
-  const finishPaste = useCallback((textToInsert: string) => {
+  const finishPaste = useCallback((textToInsert: string, isTimeout = false) => {
     if (pasteTimerRef.current) {
       clearTimeout(pasteTimerRef.current);
       pasteTimerRef.current = null;
     }
     isPastingRef.current = false;
     pasteBufferRef.current = "";
+
+    // 漏洞6修复：超时触发时，进入冷却期丢弃残留事件
+    if (isTimeout) {
+      pasteCooldownRef.current = true;
+      if (pasteCooldownTimerRef.current) clearTimeout(pasteCooldownTimerRef.current);
+      // 500ms 冷却期足以让终端缓冲区中的残留事件全部到达
+      pasteCooldownTimerRef.current = setTimeout(() => {
+        pasteCooldownRef.current = false;
+        pasteCooldownTimerRef.current = null;
+      }, 500);
+    }
+
     if (textToInsert.length > 0) {
       dispatch({ type: "insert", text: textToInsert });
     }
@@ -224,18 +251,35 @@ export function InputArea({ onSubmit, isLoading }: InputAreaProps) {
   const startPaste = useCallback(() => {
     isPastingRef.current = true;
     pasteBufferRef.current = "";
+    // 取消冷却期（新粘贴开始了）
+    if (pasteCooldownTimerRef.current) {
+      clearTimeout(pasteCooldownTimerRef.current);
+      pasteCooldownTimerRef.current = null;
+    }
+    pasteCooldownRef.current = false;
     // 5 秒超时保护：如果终端异常导致 PASTE_END 永远不来
     pasteTimerRef.current = setTimeout(() => {
       if (isPastingRef.current) {
         log.warn("UI:INPUT", `粘贴超时（5s），强制插入: ${pasteBufferRef.current.length} 字符`);
-        finishPaste(pasteBufferRef.current);
+        finishPaste(pasteBufferRef.current, true);
       }
     }, 5000);
   }, [finishPaste]);
 
-  /** 把粘贴内容中的换行替换为空格 */
+  /**
+   * 清理粘贴文本：
+   * - 换行（\r\n / \r / \n）→ 空格
+   * - Tab → 空格
+   * - 控制字符（\x00-\x1f 除空格外已处理的 \t \r \n）→ 删除
+   */
   const cleanPasteText = (raw: string): string =>
-    raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n/g, " ");
+    raw
+      .replace(/\r\n/g, "\n")
+      .replace(/\r/g, "\n")
+      .replace(/\n/g, " ")
+      .replace(/\t/g, " ")
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "");
 
   // 启用 / 禁用 Bracketed Paste Mode
   useEffect(() => {
@@ -249,6 +293,9 @@ export function InputArea({ onSubmit, isLoading }: InputAreaProps) {
       // 清理可能残留的 timer
       if (pasteTimerRef.current) {
         clearTimeout(pasteTimerRef.current);
+      }
+      if (pasteCooldownTimerRef.current) {
+        clearTimeout(pasteCooldownTimerRef.current);
       }
     };
   }, []);
@@ -297,18 +344,38 @@ export function InputArea({ onSubmit, isLoading }: InputAreaProps) {
     }
 
     // ── 粘贴结束 ──
+    // 漏洞5修复：无论是否在粘贴状态，都拦截 PASTE_END，避免 [201~ 被当作普通输入插入。
+    // 场景：超时 finishPaste 后 PASTE_END 姗姗来迟，或终端异常发送了孤立的 PASTE_END。
     if (input === PASTE_END_STRIPPED || input === PASTE_END_SEQ) {
       if (isPastingRef.current) {
         log.debug("UI:INPUT", `粘贴完成: ${pasteBufferRef.current.length} 字符`);
         finishPaste(pasteBufferRef.current);
+      } else {
+        // 非粘贴状态收到 PASTE_END，静默丢弃
+        log.debug("UI:INPUT", "收到孤立的 PASTE_END，已丢弃");
       }
+      // 收到正常的 PASTE_END 时，结束冷却期
+      pasteCooldownRef.current = false;
+      if (pasteCooldownTimerRef.current) {
+        clearTimeout(pasteCooldownTimerRef.current);
+        pasteCooldownTimerRef.current = null;
+      }
+      return;
+    }
+
+    // ── 漏洞6修复：冷却期内丢弃残留事件 ──
+    // 超时 finishPaste 后，残留的粘贴文本事件仍会到达，
+    // 在冷却期内全部丢弃，直到 PASTE_END 到达或冷却期结束。
+    if (pasteCooldownRef.current) {
       return;
     }
 
     // ── 粘贴中：累积文本 ──
     if (isPastingRef.current) {
-      // input 可能包含文本 + 换行，全部累积（换行替换为空格）
-      pasteBufferRef.current += cleanPasteText(input);
+      // 漏洞4修复：跳过空 input（如 ANSI 颜色码产生的 ctrl 事件 input=""）
+      if (input) {
+        pasteBufferRef.current += cleanPasteText(input);
+      }
       return;
     }
 
