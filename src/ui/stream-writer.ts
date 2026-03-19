@@ -89,8 +89,8 @@ export class StreamWriter {
     const log = getLogger();
     log.debug("STREAM_WRITER", `结束流式输出: fullTextLen=${this.fullText.length}`);
 
-    // 渲染剩余未输出的文本
-    const remaining = this.fullText.slice(this.renderedLen).trim();
+    // 渲染剩余未输出的文本（只去除首尾空行，保留内部空白）
+    const remaining = this.fullText.slice(this.renderedLen).replace(/^\n+|\n+$/g, "");
     if (remaining) {
       const termWidth = process.stdout.columns || 80;
       const rendered = renderMarkdown(remaining, termWidth);

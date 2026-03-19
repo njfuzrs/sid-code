@@ -52,6 +52,19 @@ export function createFullScreen(
   let instance: ReturnType<typeof render>;
   let controller: RenderController | null = null;
   let exitPromise: Promise<void>;
+  let altScreenActive = false;
+
+  /** 确保退出 alternate screen buffer + 显示光标 */
+  const restoreTerminal = () => {
+    if (altScreenActive) {
+      altScreenActive = false;
+      stdout.write(EXIT_ALT_SCREEN + SHOW_CURSOR);
+    }
+  };
+
+  // 安全网：进程异常退出时恢复终端
+  const onProcessExit = () => restoreTerminal();
+  const onSignal = () => { restoreTerminal(); process.exit(1); };
 
   return {
     get instance() { return instance; },
@@ -59,6 +72,12 @@ export function createFullScreen(
     start: async () => {
       // 进入 alternate screen buffer + 隐藏光标 + 清屏
       stdout.write(ENTER_ALT_SCREEN + HIDE_CURSOR + CURSOR_HOME + CLEAR_BELOW);
+      altScreenActive = true;
+
+      // 注册安全网：确保异常退出时恢复终端
+      process.on("exit", onProcessExit);
+      process.on("SIGINT", onSignal);
+      process.on("SIGTERM", onSignal);
 
       instance = render(node, options);
       log.info("TUI:RENDER", "ink 实例已创建（alternate screen 模式）");
@@ -70,13 +89,22 @@ export function createFullScreen(
         await instance.waitUntilExit();
 
         // 退出 alternate screen buffer + 显示光标
-        stdout.write(EXIT_ALT_SCREEN + SHOW_CURSOR);
+        restoreTerminal();
+
+        // 清理安全网监听器
+        process.off("exit", onProcessExit);
+        process.off("SIGINT", onSignal);
+        process.off("SIGTERM", onSignal);
 
         // 在主缓冲区输出简要对话摘要
         if (onExit) {
-          const summaryLines = onExit();
-          if (summaryLines.length > 0) {
-            stdout.write("\n" + summaryLines.join("\n") + "\n");
+          try {
+            const summaryLines = onExit();
+            if (summaryLines.length > 0) {
+              stdout.write("\n" + summaryLines.join("\n") + "\n");
+            }
+          } catch (err) {
+            log.error("TUI:RENDER", `onExit 回调异常: ${err}`);
           }
         }
 

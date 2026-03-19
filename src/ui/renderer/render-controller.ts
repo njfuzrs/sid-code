@@ -134,13 +134,11 @@ export class RenderController {
     for (let y = 0; y < height; y++) {
       out.push(CUP(y, 0) + EL);
       if (y < visibleLines.length) {
-        // 截断到终端宽度（粗略截断，ANSI 序列可能被截断但不影响功能）
         const line = visibleLines[y];
-        out.push(line);
+        // 每行末尾追加 RESET_STYLE，防止未闭合的 ANSI 序列泄漏到后续行
+        out.push(line + RESET_STYLE);
       }
     }
-
-    out.push(RESET_STYLE);
     if (sync) out.push(esu);
 
     this.stdout.write(out.join(""));
@@ -162,9 +160,8 @@ export class RenderController {
     ink.lastTerminalWidth = newWidth;
     ink.calculateLayout();
 
-    // 清屏 + reset（alternate screen 无 reflow，直接清屏即可）
+    // 清屏（alternate screen 无 reflow，直接清屏即可；clearScreen 内部已 reset 状态）
     this.screenRenderer.clearScreen();
-    this.screenRenderer.reset();
 
     // 标记 ScrollBuffer 为脏，强制重绘消息区域
     this.scrollBuffer?.markDirty();
@@ -193,6 +190,13 @@ export class RenderController {
    */
   getScreenRenderer(): ScreenRenderer {
     return this.screenRenderer;
+  }
+
+  /**
+   * 获取当前 Live 区域高度（由最近一次 handleRender 计算）
+   */
+  getLiveHeight(): number {
+    return this.screenRenderer.getLiveHeight();
   }
 
   /**

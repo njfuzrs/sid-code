@@ -21,11 +21,16 @@ export class ScrollBuffer {
   private maxLines = MAX_LINES;
   /** 脏标记：内容或滚动位置变化时为 true */
   private dirty = true;
+  /** 上次使用的视口高度（由 getVisibleLines 自动记录） */
+  private lastViewportHeight = 0;
 
   /** 追加新消息的渲染行 */
   appendLines(newLines: string[]): void {
     if (newLines.length === 0) return;
-    this.lines.push(...newLines);
+    // 避免 push(...newLines) 在大数组时超出调用栈限制
+    for (let i = 0; i < newLines.length; i++) {
+      this.lines.push(newLines[i]);
+    }
     // 超限时截断旧内容
     if (this.lines.length > this.maxLines) {
       const excess = this.lines.length - this.maxLines;
@@ -39,6 +44,9 @@ export class ScrollBuffer {
   /** 获取当前视口应显示的行 */
   getVisibleLines(viewportHeight: number): string[] {
     if (viewportHeight <= 0 || this.lines.length === 0) return [];
+
+    // 记录视口高度，供 scrollUp/scrollToTop 限制 maxOffset
+    this.lastViewportHeight = viewportHeight;
 
     const total = this.lines.length;
 
@@ -55,7 +63,9 @@ export class ScrollBuffer {
 
   /** 向上滚动 n 行，返回是否实际发生了滚动 */
   scrollUp(n: number): boolean {
-    const maxOffset = Math.max(0, this.lines.length - 1);
+    // 限制最大偏移：至少显示一整屏内容（不会滚到几乎全空的位置）
+    const vh = Math.max(1, this.lastViewportHeight);
+    const maxOffset = Math.max(0, this.lines.length - vh);
     const newOffset = Math.min(maxOffset, this.scrollOffset + n);
     if (newOffset === this.scrollOffset) return false;
     this.scrollOffset = newOffset;
@@ -81,7 +91,8 @@ export class ScrollBuffer {
 
   /** 滚动到顶部 */
   scrollToTop(): void {
-    const maxOffset = Math.max(0, this.lines.length - 1);
+    const vh = Math.max(1, this.lastViewportHeight);
+    const maxOffset = Math.max(0, this.lines.length - vh);
     if (this.scrollOffset === maxOffset) return;
     this.scrollOffset = maxOffset;
     this.dirty = true;
@@ -247,11 +258,6 @@ export function renderDisplayItemToLines(
         lines.push("  " + chalk.dim(line));
       }
     }
-    return lines;
-  }
-
-  if (item.kind === "streaming-chunk") {
-    lines.push(item.text);
     return lines;
   }
 

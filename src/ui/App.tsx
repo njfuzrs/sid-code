@@ -14,7 +14,7 @@ import { InputArea } from "./InputArea.tsx";
 import { ToolStatus } from "./ToolStatus.tsx";
 import { StatusBar } from "./StatusBar.tsx";
 import type { StateBridge } from "./state-bridge.ts";
-import type { Message, Usage, ContentBlock } from "../llm/types.ts";
+import type { Message, Usage } from "../llm/types.ts";
 import { getLogger } from "../debug/logger.ts";
 
 /** 占位消息文本常量 */
@@ -24,8 +24,7 @@ const PLACEHOLDER_TEXT = "[系统] 自动插入占位消息以保持角色交替
 export type DisplayItem =
   | { kind: "message"; message: Message }
   | { kind: "system"; text: string }
-  | { kind: "command"; input: string; output: string | null }
-  | { kind: "streaming-chunk"; text: string; id: number };
+  | { kind: "command"; input: string; output: string | null };
 
 /** 判断是否为占位消息 */
 export function isPlaceholderMessage(msg: Message): boolean {
