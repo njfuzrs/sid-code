@@ -166,18 +166,25 @@ export const MessageItem = React.memo(function MessageItem({ message, prevMessag
     );
   }
 
-  // 用户消息：右对齐，圆角气泡
+  // 用户消息：右对齐，无边框，带角色标识
   if (isUser) {
     return (
-      <Box width={tw} justifyContent="flex-end">
-        <Box flexDirection="column" borderStyle="round" borderColor="blueBright" paddingX={1} paddingY={0}>
-          {message.content.map((block, idx) => {
-            const key = getBlockKey(block, idx);
-            if (block.type === "text") {
-              return <Text key={key}>{block.text}</Text>;
-            }
-            return renderBlock(block, idx, toolNameMap);
-          })}
+      <Box width={tw} flexDirection="column" marginBottom={1}>
+        {/* 角色标识行：右对齐 */}
+        <Box justifyContent="flex-end" paddingRight={1}>
+          <Text color="blueBright" bold>{"● 你"}</Text>
+        </Box>
+        {/* 消息内容：右对齐，白色文字区分于标识 */}
+        <Box justifyContent="flex-end" paddingRight={2}>
+          <Box flexDirection="column">
+            {message.content.map((block, idx) => {
+              const key = getBlockKey(block, idx);
+              if (block.type === "text") {
+                return <Text key={key}>{block.text}</Text>;
+              }
+              return renderBlock(block, idx, toolNameMap);
+            })}
+          </Box>
         </Box>
       </Box>
     );
@@ -192,30 +199,29 @@ export const MessageItem = React.memo(function MessageItem({ message, prevMessag
   );
 });
 
-/** 系统消息组件（命令输出等，居中灰色圆角气泡） */
+/** 系统消息组件（命令输出等，居中灰色文本） */
 export const SystemItem = React.memo(function SystemItem({ text, termWidth }: { text: string; termWidth?: number }) {
   const tw = termWidth || 80;
   return (
-    <Box width={tw} justifyContent="center">
-      <Box flexDirection="column" borderStyle="round" borderColor="gray" paddingX={1}>
-        <Text>{text}</Text>
-      </Box>
+    <Box width={tw} justifyContent="center" paddingX={1}>
+      <Text dimColor>{"── "}{text}{" ──"}</Text>
     </Box>
   );
 });
 
-/** 命令消息组件（输入右对齐灰色气泡 + 输出左对齐 dimColor） */
+/** 命令消息组件（输入右对齐 + 输出左对齐 dimColor） */
 export const CommandItem = React.memo(function CommandItem({
   input, output, termWidth,
 }: { input: string; output: string | null; termWidth?: number }) {
   const tw = termWidth || 80;
   return (
     <Box flexDirection="column">
-      {/* 命令输入：右对齐，灰色气泡 */}
-      <Box width={tw} justifyContent="flex-end">
-        <Box borderStyle="round" borderColor="gray" paddingX={1}>
-          <Text dimColor>{input}</Text>
-        </Box>
+      {/* 命令输入：右对齐，带角色标识 */}
+      <Box width={tw} justifyContent="flex-end" paddingRight={1}>
+        <Text color="blueBright" bold>{"● 你"}</Text>
+      </Box>
+      <Box width={tw} justifyContent="flex-end" paddingRight={2}>
+        <Text dimColor>{input}</Text>
       </Box>
       {/* 命令输出：左对齐，缩进，dimColor */}
       {output ? (

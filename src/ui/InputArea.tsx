@@ -6,10 +6,18 @@
  * 多行文本处理：自行计算视觉行，不依赖 Ink 的自动换行（避免 Ink issue #883）
  */
 
-import React, { useReducer, useCallback, useRef, useEffect } from "react";
+import React, { useReducer, useCallback, useRef, useEffect, useState } from "react";
 import { Box, Text, useInput, useStdout } from "ink";
 import stringWidth from "string-width";
 import { getLogger } from "../debug/logger.ts";
+
+// ── Bracketed Paste Mode ────────────────────────────────────────────
+// 终端粘贴时用 ESC[200~ ... ESC[201~ 包裹内容
+// 检测到该序列时，将换行符当作普通文本插入而非触发提交
+const PASTE_START = "\x1b[200~";
+const PASTE_END = "\x1b[201~";
+const PASTE_ENABLE = "\x1b[?2004h";
+const PASTE_DISABLE = "\x1b[?2004l";
 
 interface InputAreaProps {
   onSubmit: (text: string) => void;
@@ -160,6 +168,13 @@ function layoutText(
   return { lines, cursorRow, cursorColIdx };
 }
 
+// ── 水平分隔线组件 ─────────────────────────────────────────────────
+
+/** 只渲染上下水平线，不使用 Ink 的 borderStyle 避免左右边框与文本宽度冲突 */
+function HorizontalRule({ color, width }: { color: string; width: number }) {
+  return <Text color={color}>{"─".repeat(Math.max(0, width))}</Text>;
+}
+
 // ── 组件 ──────────────────────────────────────────────────────────
 
 export function InputArea({ onSubmit, isLoading }: InputAreaProps) {
@@ -170,6 +185,72 @@ export function InputArea({ onSubmit, isLoading }: InputAreaProps) {
   const [state, dispatch] = useReducer(inputReducer, {
     value: "", cursorOffset: 0, history: [], historyIndex: -1, savedInput: "",
   });
+
+  // Bracketed Paste 状态：缓冲区收集粘贴内容
+  const pasteBufferRef = useRef<string>("");
+  const [isPasting, setIsPasting] = useState(false);
+
+  // 启用 / 禁用 Bracketed Paste Mode
+  useEffect(() => {
+    if (process.stdin.isTTY) {
+      process.stdout.write(PASTE_ENABLE);
+    }
+    return () => {
+      if (process.stdin.isTTY) {
+        process.stdout.write(PASTE_DISABLE);
+      }
+    };
+  }, []);
+
+  // 监听 stdin 原始数据，检测 bracketed paste 序列
+  useEffect(() => {
+    if (isLoading) return;
+
+    const onData = (data: Buffer) => {
+      const str = data.toString();
+
+      // 检测粘贴开始
+      if (str.includes(PASTE_START)) {
+        setIsPasting(true);
+        // 提取 PASTE_START 之后的内容
+        const afterStart = str.split(PASTE_START).slice(1).join(PASTE_START);
+        // 可能同一个 data 里就包含结束标记
+        if (afterStart.includes(PASTE_END)) {
+          const content = afterStart.split(PASTE_END)[0];
+          // 换行符替换为空格，粘贴内容作为单行插入
+          const cleaned = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n/g, " ");
+          log.debug("UI:INPUT", `粘贴完成（单次）: ${cleaned.length} 字符`);
+          dispatch({ type: "insert", text: cleaned });
+          pasteBufferRef.current = "";
+          setIsPasting(false);
+        } else {
+          pasteBufferRef.current = afterStart.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n/g, " ");
+        }
+        return;
+      }
+
+      // 正在粘贴中
+      if (isPasting) {
+        if (str.includes(PASTE_END)) {
+          const beforeEnd = str.split(PASTE_END)[0];
+          const full = pasteBufferRef.current + beforeEnd.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n/g, " ");
+          log.debug("UI:INPUT", `粘贴完成（多块）: ${full.length} 字符`);
+          dispatch({ type: "insert", text: full });
+          pasteBufferRef.current = "";
+          setIsPasting(false);
+        } else {
+          pasteBufferRef.current += str.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n/g, " ");
+        }
+        return;
+      }
+    };
+
+    // 使用 'data' 事件在 useInput 之前拦截原始输入
+    process.stdin.on("data", onData);
+    return () => {
+      process.stdin.off("data", onData);
+    };
+  }, [isLoading, isPasting]);
 
   useEffect(() => {
     if (prevLoadingRef.current !== isLoading) {
@@ -196,6 +277,9 @@ export function InputArea({ onSubmit, isLoading }: InputAreaProps) {
   }, [state.value, onSubmit]);
 
   useInput((input, key) => {
+    // 粘贴模式下跳过 useInput 处理，由 stdin data 事件处理
+    if (isPasting) return;
+
     if (key.return) { handleSubmit(); return; }
     if (key.upArrow) { dispatch({ type: "history-up" }); return; }
     if (key.downArrow) { dispatch({ type: "history-down" }); return; }
@@ -213,26 +297,35 @@ export function InputArea({ onSubmit, isLoading }: InputAreaProps) {
     }
   }, { isActive: !isLoading });
 
+  const termWidth = stdout.columns || 80;
+
   if (isLoading) {
     return (
-      <Box borderStyle="single" borderColor="gray" paddingX={1}>
-        <Text dimColor>等待响应中...</Text>
+      <Box flexDirection="column">
+        <HorizontalRule color="gray" width={termWidth} />
+        <Box paddingX={1}>
+          <Text dimColor>等待响应中...</Text>
+        </Box>
+        <HorizontalRule color="gray" width={termWidth} />
       </Box>
     );
   }
 
-  // 可用宽度：终端宽度 - 边框(2) - padding(2)
-  const termWidth = stdout.columns || 80;
-  const availableWidth = Math.max(10, termWidth - 4);
+  // 可用宽度：终端宽度 - 左右 padding(2)，不再减去边框
+  const availableWidth = Math.max(10, termWidth - 2);
 
   if (state.value.length === 0) {
     return (
-      <Box borderStyle="single" borderColor="cyan" paddingX={1}>
-        <Text>
-          <Text color="cyan" bold>{PROMPT}</Text>
-          <Text inverse> </Text>
-          <Text dimColor>{PLACEHOLDER}</Text>
-        </Text>
+      <Box flexDirection="column">
+        <HorizontalRule color="cyan" width={termWidth} />
+        <Box paddingX={1}>
+          <Text>
+            <Text color="cyan" bold>{PROMPT}</Text>
+            <Text inverse> </Text>
+            <Text dimColor>{PLACEHOLDER}</Text>
+          </Text>
+        </Box>
+        <HorizontalRule color="cyan" width={termWidth} />
       </Box>
     );
   }
@@ -286,8 +379,12 @@ export function InputArea({ onSubmit, isLoading }: InputAreaProps) {
   });
 
   return (
-    <Box borderStyle="single" borderColor="cyan" paddingX={1} flexDirection="column">
-      {renderedLines}
+    <Box flexDirection="column">
+      <HorizontalRule color="cyan" width={termWidth} />
+      <Box paddingX={1} flexDirection="column">
+        {renderedLines}
+      </Box>
+      <HorizontalRule color="cyan" width={termWidth} />
     </Box>
   );
 }
