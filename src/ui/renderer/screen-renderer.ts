@@ -31,8 +31,12 @@ import {
   CUF,
 } from "./constants.ts";
 
-// @ts-ignore — ink 未在 exports 中暴露这些内部文件
-import { shouldSynchronize, bsu, esu } from "../../../node_modules/ink/build/write-synchronized.js";
+// DEC 2026 同步输出（BSU/ESU）— fork 中不存在 write-synchronized.js，内联实现
+const bsu = "\x1b[?2026h";
+const esu = "\x1b[?2026l";
+function shouldSynchronize(stream: NodeJS.WriteStream): boolean {
+  return stream.isTTY === true;
+}
 
 /** ESC[2K — 清除整行 */
 const EL = "\x1b[2K";

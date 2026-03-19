@@ -17,9 +17,14 @@ import { CUP, RESET_STYLE } from "./constants.ts";
 import { getLogger } from "../../debug/logger.ts";
 import type { ScrollBuffer } from "../scroll-buffer.ts";
 
+// DEC 2026 同步输出（BSU/ESU）— fork 中不存在 write-synchronized.js，内联实现
+const bsu = "\x1b[?2026h";
+const esu = "\x1b[?2026l";
+function shouldSynchronize(stream: NodeJS.WriteStream): boolean {
+  return stream.isTTY === true;
+}
+
 // @ts-ignore — ink 未在 exports 中暴露这些内部文件
-import { shouldSynchronize, bsu, esu } from "../../../node_modules/ink/build/write-synchronized.js";
-// @ts-ignore
 import instances from "../../../node_modules/ink/build/instances.js";
 // @ts-ignore — 仅用于 Ink 内部状态同步
 import inkRenderer from "../../../node_modules/ink/build/renderer.js";
@@ -127,7 +132,6 @@ export class RenderController {
     this.lastOutput = inkOutput;
 
     ink.lastOutput = inkOutput;
-    ink.lastOutputToRender = inkOutput + "\n";
     ink.lastOutputHeight = inkOutputHeight;
     ink.fullStaticOutput = "";
   }
@@ -173,12 +177,11 @@ export class RenderController {
    */
   handleResize(ink: any): void {
     const log = getLogger();
-    const newWidth = ink.getTerminalWidth();
+    const newWidth = this.stdout.columns || 80;
 
     log.info("TUI:RESIZE", `宽度: ${this.lastWidth} → ${newWidth}, rows=${this.stdout.rows}`);
 
     this.lastWidth = newWidth;
-    ink.lastTerminalWidth = newWidth;
     ink.calculateLayout();
 
     // 清屏（alternate screen 无 reflow，直接清屏即可；clearScreen 内部已 reset 状态）
@@ -252,10 +255,12 @@ function createNoopLog(stdout: NodeJS.WriteStream) {
  */
 export function patchInk(stdout: NodeJS.WriteStream): RenderController {
   const log = getLogger();
-  const ink = instances.get(stdout);
-  if (!ink) {
+  const inkTyped = instances.get(stdout);
+  if (!inkTyped) {
     throw new Error("无法获取 Ink 实例，patchInk 必须在 render() 之后调用");
   }
+  // 转为 any 绕过 fork 的 private/readonly 属性限制（运行时 JS 无 private 约束）
+  const ink: any = inkTyped;
 
   const controller = new RenderController(stdout);
 
@@ -267,25 +272,15 @@ export function patchInk(stdout: NodeJS.WriteStream): RenderController {
   // 1. 替换 onRender
   ink.onRender = () => controller.handleRender(ink);
 
-  // 重新绑定 rootNode 的回调
-  if (ink.throttledOnRender) {
-    ink.throttledOnRender.cancel?.();
-    const maxFps = ink.options?.maxFps ?? 30;
-    const renderThrottleMs =
-      maxFps > 0 ? Math.max(1, Math.ceil(1000 / maxFps)) : 0;
-    const throttled = throttle(ink.onRender, renderThrottleMs, {
-      leading: true,
-      trailing: true,
-    });
-    ink.rootNode.onRender = () => {
-      ink.hasPendingThrottledRender = true;
-      throttled();
-    };
-    ink.throttledOnRender = throttled;
-    ink.throttledLog = () => {};
-  } else {
-    ink.rootNode.onRender = ink.onRender;
-  }
+  // 重新绑定 rootNode 的回调（fork 没有 throttledOnRender，直接创建新的 throttle）
+  const maxFps = ink.options?.maxFps ?? 30;
+  const renderThrottleMs =
+    maxFps > 0 ? Math.max(1, Math.ceil(1000 / maxFps)) : 0;
+  const throttled = throttle(ink.onRender, renderThrottleMs, {
+    leading: true,
+    trailing: true,
+  });
+  ink.rootNode.onRender = throttled;
   ink.rootNode.onImmediateRender = ink.onRender;
 
   // 2. 替换 resized
@@ -308,8 +303,10 @@ export function patchInk(stdout: NodeJS.WriteStream): RenderController {
     process.stderr.write(data);
   };
 
-  // 4. 替换 restoreLastOutput
-  ink.restoreLastOutput = () => controller.restoreOutput();
+  // 4. 安全替换 restoreLastOutput（fork 中可能不存在此属性）
+  if ('restoreLastOutput' in ink) {
+    ink.restoreLastOutput = () => controller.restoreOutput();
+  }
 
   // 5. 替换 clear
   ink.clear = () => {

@@ -16,8 +16,7 @@ import widestLine from "widest-line";
 
 // @ts-ignore — ink 未在 exports 中暴露这些内部文件
 import squashTextNodes from "../../../node_modules/ink/build/squash-text-nodes.js";
-// @ts-ignore
-import wrapText from "../../../node_modules/ink/build/wrap-text.js";
+import wrapText from "./wrap-text-compat.ts";
 // @ts-ignore
 import getMaxWidth from "../../../node_modules/ink/build/get-max-width.js";
 // @ts-ignore
