@@ -24,6 +24,12 @@ import { getLogger } from "../debug/logger.ts";
 // ── Bracketed Paste Mode ────────────────────────────────────────────
 const PASTE_START_SEQ = "\x1b[200~";
 const PASTE_END_SEQ = "\x1b[201~";
+// Ink 的 use-input.js 会对以 ESC 开头的 input 执行 input.slice(1)，
+// 导致 useInput 回调收到的 input 是去掉 ESC 前缀的 "[200~" / "[201~"。
+// 同时 use-input.js 构造的 key 对象不包含 sequence/raw 字段，
+// 所以必须同时匹配去掉 ESC 后的序列。
+const PASTE_START_STRIPPED = "[200~";
+const PASTE_END_STRIPPED = "[201~";
 const PASTE_ENABLE = "\x1b[?2004h";
 const PASTE_DISABLE = "\x1b[?2004l";
 
@@ -273,24 +279,25 @@ export function InputArea({ onSubmit, isLoading }: InputAreaProps) {
 
   // ── 核心 useInput：同时处理普通键盘输入和粘贴序列 ──────────────
   // Ink 的 inputParser 把 stdin 原始 chunk 拆分为事件，经 parseKeypress 后
-  // 以 (input, key) 传入此回调。粘贴序列的事件流：
-  //   1. input="" key.sequence="\x1b[200~"  ← PASTE_START
-  //   2. input="hello world\r\nline2"       ← 粘贴文本（可能多次）
-  //   3. input="" key.sequence="\x1b[201~"  ← PASTE_END
-  // 我们据此在 useInput 内部完成粘贴状态机，不需要额外 stdin 监听。
+  // 以 (input, key) 传入此回调。
+  //
+  // 重要：Ink 的 use-input.js 有两个行为影响粘贴检测：
+  //   1. 构造的 key 对象不包含 sequence/raw 字段（只有布尔标志）
+  //   2. 对以 ESC 开头的 input 执行 input.slice(1)，去掉 ESC 前缀
+  // 因此 PASTE_START "\x1b[200~" 到达回调时 input="[200~"，
+  //       PASTE_END   "\x1b[201~" 到达回调时 input="[201~"。
+  // 粘贴文本本身不以 ESC 开头，所以 input 保持完整。
   useInput((input, key) => {
-    // 获取原始 sequence（key 对象上有 Ink 保留的 raw/sequence 字段）
-    const rawSeq: string = (key as any).sequence ?? (key as any).raw ?? input;
-
     // ── 粘贴开始 ──
-    if (rawSeq === PASTE_START_SEQ) {
+    // 匹配 Ink 去掉 ESC 后的 "[200~"，同时兼容原始序列（以防 Ink 版本变化）
+    if (input === PASTE_START_STRIPPED || input === PASTE_START_SEQ) {
       startPaste();
       log.debug("UI:INPUT", "粘贴开始 (bracketed paste)");
       return;
     }
 
     // ── 粘贴结束 ──
-    if (rawSeq === PASTE_END_SEQ) {
+    if (input === PASTE_END_STRIPPED || input === PASTE_END_SEQ) {
       if (isPastingRef.current) {
         log.debug("UI:INPUT", `粘贴完成: ${pasteBufferRef.current.length} 字符`);
         finishPaste(pasteBufferRef.current);
@@ -300,8 +307,8 @@ export function InputArea({ onSubmit, isLoading }: InputAreaProps) {
 
     // ── 粘贴中：累积文本 ──
     if (isPastingRef.current) {
-      // rawSeq 可能包含文本 + 换行，全部累积（换行替换为空格）
-      pasteBufferRef.current += cleanPasteText(rawSeq);
+      // input 可能包含文本 + 换行，全部累积（换行替换为空格）
+      pasteBufferRef.current += cleanPasteText(input);
       return;
     }
 
