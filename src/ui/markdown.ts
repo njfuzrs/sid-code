@@ -585,9 +585,29 @@ export function renderMarkdown(text: string, maxWidth?: number): string {
 // ── React 版本渲染（用于 VirtualizedList）─────────────────────────
 
 import React from "react";
-import { Text } from "ink";
+import { Text, Box } from "ink";
 import { highlightToReact, supportsLanguage as lowlightSupportsLang } from "./components/CodeColorizer.tsx";
 import { theme } from "./semantic-colors.ts";
+
+/**
+ * 将包含 \n 的多行字符串拆成 <Box flexDirection="column"> + 每行一个 <Text>。
+ *
+ * Ink 的 Output.get() 中 styledCharsToString 会原样输出 char.value，
+ * 如果单个 <Text> 内含 \n，会导致 generatedOutput 的行数 > styledOutput 数组行数，
+ * 破坏增量渲染的行级差分（lineLength 索引错位 → 旧内容不被清除 → 重影）。
+ */
+function multilineText(content: string, key: string | number, textProps?: Record<string, unknown>): React.ReactNode {
+  const lines = content.split("\n");
+  if (lines.length <= 1) {
+    return React.createElement(Text, { key, ...textProps }, content);
+  }
+  return React.createElement(
+    Box, { key, flexDirection: "column" as const },
+    ...lines.map((line, j) =>
+      React.createElement(Text, { key: `${key}-${j}`, ...textProps }, line)
+    ),
+  );
+}
 
 /** React 渲染缓存（与 ANSI 版本独立） */
 const reactRenderCache = new Map<string, React.ReactNode>();
@@ -659,41 +679,54 @@ function renderTokensToReact(tokens: any[], maxWidth: number): React.ReactNode[]
         if (lang && lowlightSupportsLang(lang)) {
           // 整块高亮，保持多行语法上下文
           const highlighted = highlightToReact(token.text, lang);
+          // highlightToReact 返回的是 React 元素数组，可能包含 \n
+          // 用 Box 包裹确保每行独立渲染
           blocks.push(
-            React.createElement(Text, { key: i },
-              TAB_INDENT, highlighted
+            React.createElement(Box, { key: i, flexDirection: "column" as const },
+              ...codeLines.map((_line: string, j: number) => {
+                // 逐行高亮以避免单个 <Text> 内含 \n
+                const lineHighlighted = highlightToReact(codeLines[j], lang);
+                return React.createElement(Text, { key: `${i}-${j}` }, TAB_INDENT, lineHighlighted);
+              })
             )
           );
         } else {
-          const indented = codeLines.map((line: string) => TAB_INDENT + line).join("\n");
-          blocks.push(React.createElement(Text, { key: i }, indented));
+          blocks.push(
+            React.createElement(Box, { key: i, flexDirection: "column" as const },
+              ...codeLines.map((line: string, j: number) =>
+                React.createElement(Text, { key: `${i}-${j}` }, TAB_INDENT + line)
+              )
+            )
+          );
         }
         break;
       }
       case "blockquote": {
-        // 引用块：React 原生渲染
+        // 引用块：每个子块用 Box 横向排列 "│ " 前缀 + 内容
+        // 不能用 <Text> 包裹子块，因为子块可能是 <Box>
         const innerBlocks = renderTokensToReact(token.tokens, maxWidth);
-        const quoteChildren: React.ReactNode[] = [];
-        for (let j = 0; j < innerBlocks.length; j++) {
-          if (j > 0) quoteChildren.push("\n\n");
-          quoteChildren.push(innerBlocks[j]);
-        }
         blocks.push(
-          React.createElement(Text, { key: i, dimColor: true, italic: true },
-            "│ ", ...quoteChildren
+          React.createElement(
+            Box, { key: i, flexDirection: "column" as const },
+            ...innerBlocks.map((block, j) =>
+              React.createElement(Box, { key: `${i}-q-${j}` },
+                React.createElement(Text, { dimColor: true, italic: true }, "│ "),
+                block
+              )
+            )
           )
         );
         break;
       }
       case "list": {
-        // 列表：ANSI 渲染仍可接受（列表内无块级布局需求）
+        // 列表：拆成每行一个 <Text>，避免单个 <Text> 内含 \n
         const listText = renderList(token);
-        blocks.push(React.createElement(Text, { key: i }, listText));
+        blocks.push(multilineText(listText, i));
         break;
       }
       case "table": {
         const tableText = renderTable(token, maxWidth);
-        blocks.push(React.createElement(Text, { key: i }, tableText));
+        blocks.push(multilineText(tableText, i));
         break;
       }
       case "hr":
@@ -742,13 +775,13 @@ export function renderMarkdownToReact(text: string, maxWidth?: number): React.Re
     } else if (blocks.length === 1) {
       result = blocks[0];
     } else {
-      // 块间用双换行分隔
+      // 块间用空行分隔，使用 Box 布局避免在 <Text> 内嵌套 <Box>
       const nodes: React.ReactNode[] = [];
       for (let i = 0; i < blocks.length; i++) {
-        if (i > 0) nodes.push("\n\n");
+        if (i > 0) nodes.push(React.createElement(Text, { key: `sep-${i}` }, ""));
         nodes.push(blocks[i]);
       }
-      result = React.createElement(Text, null, ...nodes);
+      result = React.createElement(Box, { flexDirection: "column" as const }, ...nodes);
     }
 
     // 缓存结果（FIFO 淘汰）

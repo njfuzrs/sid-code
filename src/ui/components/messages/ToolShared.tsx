@@ -36,10 +36,7 @@ export const ToolStatusIndicator: React.FC<{
         <Text color={theme.status.success}>{TOOL_STATUS_ICONS.PENDING}</Text>
       )}
       {status === "executing" && (
-        <Text color={theme.status.warning}>
-          <Spinner />
-          {" "}
-        </Text>
+        <Spinner label=" " />
       )}
       {status === "success" && (
         <Text color={theme.status.success}>{TOOL_STATUS_ICONS.SUCCESS}</Text>

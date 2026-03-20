@@ -80,7 +80,9 @@ export const SlicingMaxSizedBox = React.memo(function SlicingMaxSizedBox({
   return (
     <Box flexDirection="column">
       {truncated && overflowDirection === "top" && indicator}
-      <Text>{lines.join("\n")}</Text>
+      {lines.map((line, idx) => (
+        <Text key={idx}>{line}</Text>
+      ))}
       {truncated && overflowDirection === "bottom" && indicator}
     </Box>
   );

@@ -11,6 +11,12 @@
 - 硬编码配置是 bug——API Key、模型名等通过 config 注入
 - **遇到不熟悉的 API、库用法、报错信息时，主动使用联网工具（WebSearch / WebFetch / context7）查询最新文档和解决方案**，不要凭记忆猜测
 - **排查复杂 bug 时，主动在关键路径添加详细的调试日志**（console.log / debug 模块），帮助定位问题根因；修复确认后再清理调试日志
+- **Ink 渲染铁律（违反会导致滚动重影或崩溃）：**
+  - **禁止在 `<Text>` 内嵌套 `<Box>`**——Ink 会直接抛异常 `<Box> can't be nested inside <Text>`
+  - **禁止在 `<Text>` 的字符串内容中使用 `\n` 换行**——会导致 `Output.get()` 的 `styledOutput`（二维数组）和 `generatedOutput`（字符串）行数不一致，破坏增量渲染的行级差分，产生滚动重影
+  - **多行文本必须拆成每行一个 `<Text>`，用 `<Box flexDirection="column">` 包裹**
+  - **块间空行用 `<Box height={1} />` 或空 `<Text>` 元素表示，不用 `"\n\n"` 字符串**
+  - 参考 gemini-cli 的 `MarkdownDisplay.tsx`：逐行解析、每行独立组件、Fragment 返回
 
 ## 1. 项目概述
 

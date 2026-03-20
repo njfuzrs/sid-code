@@ -231,18 +231,9 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
   const termWidth = stdout.columns || 80;
   const rows = stdout.rows || 24;
 
-  // 退出回显模式：渲染完整对话历史到主缓冲区
-  if (state.isQuitting) {
-    return (
-      <AlternateBufferQuittingDisplay
-        displayItems={state.displayItems}
-        streamingText={state.isStreaming ? state.streamingText : undefined}
-      />
-    );
-  }
-
   // 流式内容作为数据数组末尾的虚拟项处理
   // 构建包含流式内容的完整数据数组
+  // 注意：所有 hooks 必须在条件 return 之前调用，否则 React 会报 hooks 数量不一致
   const listData = useMemo(() => {
     const items: DisplayItem[] = [...state.displayItems];
     // 流式内容作为一个特殊的 system 类型项追加到末尾
@@ -314,8 +305,27 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
   const scrollState = getScrollState();
   const scrollPercent = scrollState ? scrollState.percent : undefined;
 
+  // 退出回显模式：渲染完整对话历史到主缓冲区
+  // 必须放在所有 hooks 之后，避免提前 return 导致 hooks 数量不一致
+  if (state.isQuitting) {
+    return (
+      <AlternateBufferQuittingDisplay
+        displayItems={state.displayItems}
+        streamingText={state.isStreaming ? state.streamingText : undefined}
+      />
+    );
+  }
+
   return (
-    <Box flexDirection="column" height={rows}>
+    <Box
+      flexDirection="column"
+      width={termWidth}
+      height={rows}
+      paddingBottom={1}
+      flexShrink={0}
+      flexGrow={0}
+      overflow="hidden"
+    >
       {/* ── 消息区域：ScrollableList ── */}
       <Box flexGrow={1}>
         {isEmpty ? (
