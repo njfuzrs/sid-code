@@ -831,25 +831,11 @@ export class App {
     const React = await import("react");
     const { createFullScreen } = await import("./ui/fullscreen.ts");
     const { TUIApp } = await import("./ui/App.tsx");
-    const { StreamWriter } = await import("./ui/stream-writer.ts");
-    const { ScrollBuffer, renderDisplayItemToLines } = await import("./ui/scroll-buffer.ts");
 
     const { StateBridge } = await import("./ui/state-bridge.ts");
 
-    // 消息历史滚动缓冲区
-    const scrollBuffer = new ScrollBuffer();
-
-    // 流式输出器：已完成段落渲染为行追加到 ScrollBuffer，未完成行通过 bridge 更新到 Live 区域
-    const streamWriter = new StreamWriter({
-      appendToScroll: (lines) => {
-        scrollBuffer.appendLines(lines);
-        // 新内容到达时自动滚动到底部
-        scrollBuffer.scrollToBottom();
-      },
-      onCurrentLine: (line) => {
-        bridge.update({ streamingLine: line });
-      },
-    });
+    // 流式文本累积器（状态驱动）
+    let streamingFullText = "";
 
     // 事件驱动状态桥接（替代 50ms 轮询）
     const bridge = new StateBridge({
@@ -871,6 +857,8 @@ export class App {
       permissionRequest: null,
       debug: !!this.config.debug,
       lastToolResult: null,
+      streamingText: "",
+      isStreaming: false,
       streamingLine: "",
     });
 
@@ -888,31 +876,17 @@ export class App {
     // DisplayItem 增量同步：追踪上次同步的 ctxMgr 消息数
     const { messagesToDisplayItems, isPlaceholderMessage } = await import("./ui/App.tsx");
     let lastSyncedCount = 0;
-    const termWidth = () => process.stdout.columns || 80;
-
-    /** 将 DisplayItem 渲染为行并追加到 ScrollBuffer */
-    const appendItemToScroll = (item: import("./ui/App.tsx").DisplayItem, prevItem?: import("./ui/App.tsx").DisplayItem) => {
-      const lines = renderDisplayItemToLines(item, termWidth(), prevItem);
-      scrollBuffer.appendLines(lines);
-      scrollBuffer.scrollToBottom();
-    };
-
     // 会话恢复：如果 ctxMgr 已有消息（restoreSession 在 runTUI 之前调用），初始化 displayItems
     {
       const existingMsgs = this.ctxMgr.getMessages();
       if (existingMsgs.length > 0) {
         lastSyncedCount = existingMsgs.length;
         const items = messagesToDisplayItems(existingMsgs);
-        // 渲染到 ScrollBuffer
-        for (let i = 0; i < items.length; i++) {
-          appendItemToScroll(items[i], i > 0 ? items[i - 1] : undefined);
-        }
         bridge.update({ messages: existingMsgs, displayItems: items });
       }
     }
 
-    /** 从 ctxMgr 增量同步新消息到 ScrollBuffer + displayItems */
-    let skipScrollRenderCount = 0; // StreamWriter 已渲染到 ScrollBuffer 的消息数，syncDisplay 跳过其 ScrollBuffer 渲染
+    /** 从 ctxMgr 增量同步新消息到 displayItems */
     const syncDisplay = (extraPatch?: Partial<import("./ui/App.tsx").TUIState>) => {
       const allMsgs = this.ctxMgr.getMessages();
       const newMsgs = allMsgs.slice(lastSyncedCount);
@@ -923,32 +897,15 @@ export class App {
         .filter(m => !isPlaceholderMessage(m))
         .map(m => ({ kind: "message" as const, message: m }));
 
-      // 渲染新消息到 ScrollBuffer（跳过 StreamWriter 已渲染的消息）
-      for (let i = 0; i < newItems.length; i++) {
-        if (skipScrollRenderCount > 0) {
-          skipScrollRenderCount--;
-          continue;
-        }
-        const prevItem = i === 0
-          ? (prevItems.length > 0 ? prevItems[prevItems.length - 1] : undefined)
-          : newItems[i - 1];
-        appendItemToScroll(newItems[i], prevItem);
-      }
-
       const items = [...prevItems, ...newItems];
       updateState({ messages: allMsgs, displayItems: items, ...extraPatch });
     };
 
-    /** 重建 displayItems + ScrollBuffer（/compact 后消息被压缩，需要完整重建） */
+    /** 重建 displayItems（/compact 后消息被压缩，需要完整重建） */
     const rebuildDisplay = (extraPatch?: Partial<import("./ui/App.tsx").TUIState>) => {
       const allMsgs = this.ctxMgr.getMessages();
       lastSyncedCount = allMsgs.length;
       const items = messagesToDisplayItems(allMsgs);
-      // 重建 ScrollBuffer
-      scrollBuffer.clear();
-      for (let i = 0; i < items.length; i++) {
-        appendItemToScroll(items[i], i > 0 ? items[i - 1] : undefined);
-      }
       updateState({ messages: allMsgs, displayItems: items, ...extraPatch });
     };
 
@@ -956,8 +913,6 @@ export class App {
     const appendCommandOutput = (input: string, output: string | null) => {
       const item = { kind: "command" as const, input, output };
       const prevItems = bridge.current.displayItems;
-      const prevItem = prevItems.length > 0 ? prevItems[prevItems.length - 1] : undefined;
-      appendItemToScroll(item, prevItem);
       const items = [...prevItems, item];
       updateState({ displayItems: items });
     };
@@ -990,23 +945,20 @@ export class App {
           syncDisplay();
         },
         onStreamText: (text) => {
-          // 首次收到流式文本时启动 StreamWriter
+          // 状态驱动的流式输出
           if (!streamSynced) {
             streamSynced = true;
-            syncDisplay(); // 先同步，确保用户消息已在 Static 区域
-            streamWriter.start();
+            syncDisplay();
+            streamingFullText = "";
           }
-          streamWriter.write(text);
+          streamingFullText += text;
+          updateState({ streamingText: streamingFullText, isStreaming: true });
         },
         onToolStart: (name, input) => {
           // 工具开始前，结束当前流式输出
-          streamWriter.finish();
-          // StreamWriter 已将助手消息写入 ScrollBuffer，标记跳过下次 syncDisplay 的 ScrollBuffer 渲染
-          if (streamSynced) {
-            skipScrollRenderCount++;
-          }
+          streamingFullText = "";
           streamSynced = false;
-          syncDisplay({ toolName: name, toolInput: input ?? null, isToolExecuting: true, streamingLine: "" });
+          syncDisplay({ toolName: name, toolInput: input ?? null, isToolExecuting: true, streamingText: "", isStreaming: false, streamingLine: "" });
         },
         onToolEnd: (name, result) => {
           syncDisplay({
@@ -1024,17 +976,15 @@ export class App {
         onComplete: () => {
           const ctxUsed = this.ctxMgr.estimateTokens(this.toolRegistry.size());
           const ctxPct = Math.round((ctxUsed / 200000) * 100);
-          streamWriter.finish();
-          // StreamWriter 已将助手消息写入 ScrollBuffer，标记跳过下次 syncDisplay 的 ScrollBuffer 渲染
-          if (streamSynced) {
-            skipScrollRenderCount++;
-          }
+          streamingFullText = "";
           streamSynced = false;
           syncDisplay({
             usage: { ...this.sessionState.getTotalUsage() },
             costUSD: this.sessionState.totalCostUSD,
             contextPercent: ctxPct,
             statusMessage: "",
+            streamingText: "",
+            isStreaming: false,
             streamingLine: "",
           });
         },
@@ -1050,11 +1000,7 @@ export class App {
         await this.loopRunner.run(userInput, tuiCallbacks);
       } finally {
         // 兜底：确保异常路径也能正确清理
-        streamWriter.finish();
-        if (streamSynced) {
-          skipScrollRenderCount++;
-          streamSynced = false;
-        }
+        streamingFullText = "";
       }
 
       syncDisplay({
@@ -1125,14 +1071,14 @@ export class App {
           this.quotaManager?.resetAlertLevel();
           this.fallback.reset();
           lastSyncedCount = 0;
-          // alternate screen 模式：清空 ScrollBuffer 即可，RenderController 会重绘
-          scrollBuffer.clear();
           updateState({
             messages: [],
             displayItems: [],
             contextPercent: 0,
             statusMessage: "",
             lastToolResult: null,
+            streamingText: "",
+            isStreaming: false,
           });
           return;
         }
@@ -1205,39 +1151,7 @@ export class App {
     );
     await app.start();
 
-    // 将 ScrollBuffer 注入 RenderController
-    if (app.controller) {
-      app.controller.setScrollBuffer(scrollBuffer);
-      // 触发一次重绘以显示恢复的消息
-      app.controller.requestMessageAreaRedraw();
-    }
-
-    // 鼠标滚轮 → 页面滚动（在 stdin 层面拦截，不经过 Ink useInput）
-    app.onMouseScroll((direction) => {
-      bridge.emit("scroll", direction);
-    });
-
-    // 监听滚动事件（动态计算滚动行数和消息区域高度）
-    bridge.on("scroll", (direction: string) => {
-      const rows = process.stdout.rows || 24;
-      const liveHeight = app.controller?.getLiveHeight() || 10;
-      const messageAreaHeight = Math.max(1, rows - liveHeight);
-      const pageScrollLines = Math.max(1, messageAreaHeight - 2);
-
-      let scrolled = false;
-      switch (direction) {
-        case "pageup": scrolled = scrollBuffer.scrollUp(pageScrollLines); break;
-        case "pagedown": scrolled = scrollBuffer.scrollDown(pageScrollLines); break;
-        case "up": scrolled = scrollBuffer.scrollUp(3); break;
-        case "down": scrolled = scrollBuffer.scrollDown(3); break;
-        case "top": scrollBuffer.scrollToTop(); scrolled = true; break;
-        case "bottom": scrollBuffer.scrollToBottom(); scrolled = true; break;
-      }
-      if (scrolled) {
-        const pct = scrollBuffer.getScrollPercent(messageAreaHeight);
-        updateState({ scrollPercent: scrollBuffer.isAtBottom() ? undefined : pct });
-      }
-    });
+    // 滚动由 ScrollProvider + KeypressContext 在 React 层面处理，不再需要外部接线
 
     // 处理初始提示词
     if (initialPrompt) {

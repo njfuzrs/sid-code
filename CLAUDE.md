@@ -37,7 +37,11 @@ src/
 ├── llm/                # Provider 接口 + anthropic/openai/ollama 实现 + registry + quota
 ├── tool/               # 6 个内置工具（read/write/edit/bash/grep/glob）+ registry
 ├── mcp/                # MCP 协议客户端（transport/client/manager）
-├── ui/                 # Ink TUI 组件（App.tsx / MessageList / InputArea / ToolStatus / scroll-buffer.ts）
+├── ui/                 # Ink TUI 组件（App.tsx / VirtualizedList / InputArea / ToolStatus）
+│   ├── contexts/       # KeypressContext（键盘优先级）+ ScrollProvider（统一滚动）
+│   ├── components/     # VirtualizedList / MessageItemRenderer / StreamingMessage / DialogManager / SlicingMaxSizedBox / CodeColorizer
+│   ├── stores/         # MessageDataStore
+│   └── renderer/       # RenderController + ScreenRenderer + Rasterizer（双缓冲差分输出）
 ├── config/             # 配置加载 + 规则文件 + 系统提示词构建 + 附件系统
 ├── context/            # 上下文管理 + 智能截断 + 增量压缩 + 消息验证
 ├── checkpoint/         # 文件快照系统（LCS diff + gzip + /undo 回滚）
@@ -111,12 +115,15 @@ src/
 - 重试：指数退避 + ±10% Jitter
 - 上下文溢出自动恢复：缩小 maxTokens（至少 3000），无法恢复时触发压缩
 
-### TUI 渲染架构（Alternate Screen Buffer）
+### TUI 渲染架构（Alternate Screen Buffer + React 虚拟化）
 
-- 进入 alternate screen buffer（`\x1b[?1049h`），整个屏幕由我们完全控制
-- 消息区域（上方）：`ScrollBuffer` 存储渲染后的 ANSI 文本行，`RenderController` 每帧将可见行用 CUP 绝对定位写入屏幕上方，支持 PageUp/PageDown 滚动
-- Live 区域（下方）：Ink 组件树 + `ScreenRenderer` 双缓冲逐 cell 差分输出，固定在屏幕底部
-- `StreamWriter` 已完成段落渲染为行追加到 `ScrollBuffer`（不再写入终端 scrollback）
+- 进入 alternate screen buffer（`\x1b[?1049h`），整个屏幕由 Ink 组件树控制
+- 消息区域（上方）：`VirtualizedList` 虚拟化滚动，只渲染可见项 + 缓冲项，`MessageItemRenderer` 用 `renderMarkdownToReact()` 渲染
+- 流式输出：`StreamingMessage` 组件，状态驱动（`streamingText` / `isStreaming`），安全分割已完成/未完成部分
+- 底部固定区域：`ToolStatus` / `DialogRenderer`（权限确认）或 `InputArea` / `StatusBar`
+- 键盘事件：`KeypressProvider` 单一 `useInput()` 入口，按优先级分发（Critical > High > Normal > Low）
+- 滚动管理：`ScrollProvider` 注册表模式，`queueMicrotask` 合并同帧滚动，支持 PageUp/Down/Shift+↑↓/鼠标滚轮
+- `RenderController` 光栅化整棵组件树 + `ScreenRenderer` 双缓冲差分输出
 - resize 时直接清屏重绘（alternate screen 无 scrollback reflow 问题）
 - 退出时恢复主缓冲区（`\x1b[?1049l`），输出简要对话摘要
 

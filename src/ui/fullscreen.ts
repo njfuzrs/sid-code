@@ -1,9 +1,9 @@
 /**
  * TUI 渲染模块（Alternate Screen Buffer 模式）
  *
- * 进入 alternate screen buffer，整个屏幕由我们完全控制：
- * - 消息区域：ScrollBuffer 管理，RenderController 直接写入屏幕上方
- * - Live 区域：Ink 组件树 + ScreenRenderer 差分输出，固定在屏幕底部
+ * 进入 alternate screen buffer，整个屏幕由 Ink 组件树控制：
+ * - 消息区域：VirtualizedList 虚拟化渲染
+ * - 底部区域：工具状态 / 输入框 / 状态栏
  *
  * 退出时恢复主缓冲区，输出简要对话摘要。
  */
@@ -29,20 +29,11 @@ const ENABLE_MOUSE = "\x1b[?1000h\x1b[?1006h";
 /** 禁用鼠标按钮事件 + SGR 编码 */
 const DISABLE_MOUSE = "\x1b[?1000l\x1b[?1006l";
 
-/** SGR 鼠标序列全局正则 */
-const SGR_MOUSE_RE = /\x1b\[<(\d+);\d+;\d+[Mm]/g;
-const WHEEL_UP = 64;
-const WHEEL_DOWN = 65;
-
-export type MouseScrollCallback = (direction: "up" | "down") => void;
-
 export interface FullScreenInstance {
   instance: ReturnType<typeof render>;
   controller: RenderController | null;
   start: () => Promise<void>;
   waitUntilExit: () => Promise<void>;
-  /** 注册鼠标滚轮回调（在 stdin 层面拦截，Ink 不会看到鼠标序列） */
-  onMouseScroll: (cb: MouseScrollCallback) => void;
 }
 
 /** 退出时生成对话摘要的回调 */
@@ -51,8 +42,8 @@ export type OnExitCallback = () => string[];
 /**
  * 创建 ink 应用（Alternate Screen Buffer 模式）
  *
- * 进入 alternate screen buffer，消息区域由 ScrollBuffer + RenderController 管理，
- * Live 区域由 Ink 组件树渲染。退出时恢复主缓冲区并输出简要摘要。
+ * 进入 alternate screen buffer，整个屏幕由 Ink 组件树渲染。
+ * 退出时恢复主缓冲区并输出简要摘要。
  */
 export function createFullScreen(
   node: ReactElement,
@@ -61,24 +52,16 @@ export function createFullScreen(
 ): FullScreenInstance {
   const log = getLogger();
   const stdout = process.stdout;
-  const stdin = process.stdin;
 
   let instance: ReturnType<typeof render>;
   let controller: RenderController | null = null;
   let exitPromise: Promise<void>;
   let altScreenActive = false;
-  let mouseScrollCb: MouseScrollCallback | null = null;
-  let originalRead: typeof stdin.read | null = null;
 
   /** 确保退出 alternate screen buffer + 显示光标 + 禁用鼠标 */
   const restoreTerminal = () => {
     if (altScreenActive) {
       altScreenActive = false;
-      // 恢复 stdin.read
-      if (originalRead) {
-        stdin.read = originalRead;
-        originalRead = null;
-      }
       stdout.write(DISABLE_MOUSE + EXIT_ALT_SCREEN + SHOW_CURSOR);
     }
   };
@@ -90,41 +73,10 @@ export function createFullScreen(
   return {
     get instance() { return instance; },
     get controller() { return controller; },
-    onMouseScroll(cb: MouseScrollCallback) {
-      mouseScrollCb = cb;
-    },
     start: async () => {
       // 进入 alternate screen buffer + 隐藏光标 + 清屏 + 启用鼠标
       stdout.write(ENTER_ALT_SCREEN + HIDE_CURSOR + CURSOR_HOME + CLEAR_BELOW + ENABLE_MOUSE);
       altScreenActive = true;
-
-      // patch stdin.read()：在 Ink 读取数据前过滤掉鼠标序列
-      originalRead = stdin.read.bind(stdin);
-      const patchedOriginalRead = originalRead;
-      stdin.read = function mouseFilterRead(size?: number): any {
-        const chunk = patchedOriginalRead(size);
-        if (chunk === null || typeof chunk !== "string") return chunk;
-
-        // 从数据流中提取鼠标事件并过滤掉
-        let hasMouseEvent = false;
-        SGR_MOUSE_RE.lastIndex = 0;
-        let match: RegExpExecArray | null;
-        while ((match = SGR_MOUSE_RE.exec(chunk)) !== null) {
-          hasMouseEvent = true;
-          const button = parseInt(match[1], 10);
-          if (mouseScrollCb) {
-            if (button === WHEEL_UP) mouseScrollCb("up");
-            else if (button === WHEEL_DOWN) mouseScrollCb("down");
-          }
-        }
-
-        if (!hasMouseEvent) return chunk;
-
-        // 移除所有鼠标序列
-        const filtered = chunk.replace(SGR_MOUSE_RE, "");
-        if (filtered.length === 0) return null;
-        return filtered;
-      } as typeof stdin.read;
 
       // 注册安全网：确保异常退出时恢复终端
       process.on("exit", onProcessExit);

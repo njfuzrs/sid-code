@@ -593,3 +593,135 @@ export function renderMarkdown(text: string, maxWidth?: number): string {
     return text;
   }
 }
+
+// ── React 版本渲染（用于 VirtualizedList）─────────────────────────
+
+import React from "react";
+import { Text } from "ink";
+
+/** 递归渲染内联 token 为 React 元素 */
+function renderInlineToReact(tokens: any[]): React.ReactNode[] {
+  const nodes: React.ReactNode[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    switch (token.type) {
+      case "text":
+        nodes.push(token.tokens
+          ? React.createElement(React.Fragment, { key: i }, ...renderInlineToReact(token.tokens))
+          : token.text);
+        break;
+      case "strong":
+        nodes.push(React.createElement(Text, { key: i, bold: true }, ...renderInlineToReact(token.tokens)));
+        break;
+      case "em":
+        nodes.push(React.createElement(Text, { key: i, italic: true }, ...renderInlineToReact(token.tokens)));
+        break;
+      case "codespan":
+        nodes.push(React.createElement(Text, { key: i, color: "cyan" }, token.text));
+        break;
+      case "del":
+        nodes.push(React.createElement(Text, { key: i, dimColor: true, strikethrough: true, color: "gray" }, ...renderInlineToReact(token.tokens)));
+        break;
+      case "link": {
+        const label = token.tokens ? renderInlineToReact(token.tokens) : [token.text];
+        // OSC 8 超链接在 React 模式下降级为蓝色下划线文本
+        nodes.push(React.createElement(Text, { key: i, color: "blue", underline: true }, ...label));
+        break;
+      }
+      case "br":
+        nodes.push("\n");
+        break;
+      default:
+        nodes.push(token.raw || token.text || "");
+        break;
+    }
+  }
+  return nodes;
+}
+
+/** 递归渲染块级 token 为 React 元素 */
+function renderTokensToReact(tokens: any[], maxWidth: number): React.ReactNode[] {
+  const blocks: React.ReactNode[] = [];
+
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    switch (token.type) {
+      case "heading": {
+        const inlineNodes = renderInlineToReact(token.tokens);
+        if (token.depth === 1) {
+          blocks.push(React.createElement(Text, { key: i, bold: true, italic: true, underline: true }, ...inlineNodes));
+        } else {
+          blocks.push(React.createElement(Text, { key: i, bold: true }, ...inlineNodes));
+        }
+        break;
+      }
+      case "paragraph":
+        blocks.push(React.createElement(Text, { key: i }, ...renderInlineToReact(token.tokens)));
+        break;
+      case "code": {
+        // 代码块：使用 ANSI 渲染（复用现有 highlightCode），包裹在 Text 中
+        const highlighted = highlightCode(token.text, token.lang);
+        const indented = highlighted.split("\n").map((line: string) => TAB_INDENT + line).join("\n");
+        blocks.push(React.createElement(Text, { key: i }, indented));
+        break;
+      }
+      case "blockquote": {
+        // 引用块：ANSI 渲染后包裹
+        const inner = renderTokens(token.tokens);
+        const quoted = inner.split("\n").map((line: string) => chalk.dim("│") + " " + chalk.italic(line)).join("\n");
+        blocks.push(React.createElement(Text, { key: i }, quoted));
+        break;
+      }
+      case "list": {
+        const listText = renderList(token);
+        blocks.push(React.createElement(Text, { key: i }, listText));
+        break;
+      }
+      case "table": {
+        currentRenderWidth = maxWidth;
+        const tableText = renderTable(token);
+        blocks.push(React.createElement(Text, { key: i }, tableText));
+        break;
+      }
+      case "hr":
+        blocks.push(React.createElement(Text, { key: i, dimColor: true }, "───"));
+        break;
+      case "space":
+        break;
+      default:
+        if (token.raw) blocks.push(React.createElement(Text, { key: i }, token.raw));
+        break;
+    }
+  }
+
+  return blocks;
+}
+
+/**
+ * 将 Markdown 文本渲染为 React 元素（用于 VirtualizedList 内的消息渲染）
+ *
+ * 与 renderMarkdown() 的区别：返回 React.ReactNode 而非 ANSI 字符串，
+ * 可直接嵌入 Ink 组件树。代码块和表格仍使用 ANSI 字符串（包裹在 <Text> 中）。
+ */
+export function renderMarkdownToReact(text: string, maxWidth?: number): React.ReactNode {
+  const w = getTermWidth();
+  const effectiveWidth = Math.min(maxWidth ?? w, MAX_RENDER_WIDTH, w);
+
+  try {
+    const tokens = marked.lexer(text);
+    const blocks = renderTokensToReact(tokens, effectiveWidth);
+
+    if (blocks.length === 0) return null;
+    if (blocks.length === 1) return blocks[0];
+
+    // 块间用双换行分隔
+    const result: React.ReactNode[] = [];
+    for (let i = 0; i < blocks.length; i++) {
+      if (i > 0) result.push("\n\n");
+      result.push(blocks[i]);
+    }
+    return React.createElement(Text, null, ...result);
+  } catch {
+    return React.createElement(Text, null, text);
+  }
+}
