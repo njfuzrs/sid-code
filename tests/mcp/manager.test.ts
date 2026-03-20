@@ -1,10 +1,11 @@
 /**
  * MCPManager 测试
- * 测试 enabled 过滤、工具名格式、getStatus、SSE 传输支持
+ * 测试 enabled 过滤、工具名格式、getStatus、SSE 传输支持、工具过滤、状态枚举
  */
 
 import { describe, test, expect } from "bun:test";
 import { MCPManager } from "../../src/mcp/manager.ts";
+import { MCPConnectionStatus } from "../../src/mcp/types.ts";
 import type { MCPServerConfig } from "../../src/config/config.ts";
 
 describe("MCPManager", () => {
@@ -46,7 +47,7 @@ describe("MCPManager", () => {
     manager.closeAll();
   });
 
-  test("getStatus 返回正确的服务器状态", async () => {
+  test("getStatus 返回正确的服务器状态（使用状态枚举）", async () => {
     const servers: Record<string, MCPServerConfig> = {
       server1: {
         transport: "stdio",
@@ -63,8 +64,11 @@ describe("MCPManager", () => {
     expect(statuses[0].name).toBe("server1");
     expect(statuses[0].transport).toBe("stdio");
     // 连接失败（命令不存在）
-    expect(statuses[0].connected).toBe(false);
+    expect(statuses[0].status).toBe(MCPConnectionStatus.FAILED);
     expect(statuses[0].error).toBeDefined();
+    // 新字段默认值
+    expect(statuses[0].resourceCount).toBe(0);
+    expect(statuses[0].promptCount).toBe(0);
 
     manager.closeAll();
   });
@@ -119,7 +123,7 @@ describe("MCPManager", () => {
 
     manager.closeAll();
     const statuses = manager.getStatus();
-    // getStatus 仍然返回配置过的服务器（但 connected 为 false）
+    // getStatus 仍然返回配置过的服务器（但状态为 FAILED）
     expect(statuses.length).toBe(1);
   });
 
@@ -146,8 +150,36 @@ describe("MCPManager", () => {
     expect(tools).toEqual([]);
 
     const statuses = manager.getStatus();
-    expect(statuses[0].connected).toBe(false);
+    expect(statuses[0].status).toBe(MCPConnectionStatus.FAILED);
 
+    manager.closeAll();
+  });
+
+  test("getAllResources 初始为空", () => {
+    const manager = new MCPManager();
+    expect(manager.getAllResources()).toEqual([]);
+    manager.closeAll();
+  });
+
+  test("getAllPrompts 初始为空", () => {
+    const manager = new MCPManager();
+    expect(manager.getAllPrompts()).toEqual([]);
+    manager.closeAll();
+  });
+
+  test("readResource 未连接时抛错", async () => {
+    const manager = new MCPManager();
+    await expect(
+      manager.readResource("nonexistent", "file:///test"),
+    ).rejects.toThrow("未连接");
+    manager.closeAll();
+  });
+
+  test("getPrompt 未连接时抛错", async () => {
+    const manager = new MCPManager();
+    await expect(
+      manager.getPrompt("nonexistent", "test-prompt"),
+    ).rejects.toThrow("未连接");
     manager.closeAll();
   });
 });

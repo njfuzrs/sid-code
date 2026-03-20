@@ -20,6 +20,8 @@ export interface Transport {
   sendNotification?(notification: JsonRpcNotification): void;
   /** 通知回调（处理无 id 的 JSON-RPC 消息） */
   onNotification?: (notification: JsonRpcNotification) => void;
+  /** 连接关闭回调（用于断线检测） */
+  onClose?: () => void;
   close(): void;
 }
 
@@ -34,6 +36,7 @@ export class StdioTransport implements Transport {
   private closed = false;
   private timeout: number;
   onNotification?: (notification: JsonRpcNotification) => void;
+  onClose?: () => void;
 
   constructor(command: string, args: string[] = [], env?: Record<string, string>, timeout?: number) {
     this.timeout = timeout ?? 30000;
@@ -54,6 +57,7 @@ export class StdioTransport implements Transport {
           pending.reject(err);
         }
         this.pendingRequests.clear();
+        this.onClose?.();
       }
     });
 
@@ -199,6 +203,7 @@ export class SSETransport implements Transport {
   private postEndpoint: string | null = null;
   private connectPromise: Promise<void>;
   onNotification?: (notification: JsonRpcNotification) => void;
+  onClose?: () => void;
 
   constructor(url: string, headers?: Record<string, string>, timeout?: number) {
     this.url = url;
@@ -271,6 +276,15 @@ export class SSETransport implements Transport {
       // 连接关闭
     } finally {
       reader.releaseLock();
+      if (!this.closed) {
+        this.closed = true;
+        // SSE 流意外断开，通知上层
+        for (const [, pending] of this.pendingRequests) {
+          pending.reject(new Error("SSE 连接断开"));
+        }
+        this.pendingRequests.clear();
+        this.onClose?.();
+      }
     }
   }
 

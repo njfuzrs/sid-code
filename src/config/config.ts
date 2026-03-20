@@ -18,9 +18,11 @@ export interface MCPServerConfig {
   env?: Record<string, string>;
   url?: string;
   headers?: Record<string, string>;
-  enabled?: boolean;    // 默认 true，可临时禁用服务器
-  timeout?: number;     // 请求超时毫秒，默认 30000
-  retries?: number;     // 重试次数，默认 2
+  enabled?: boolean;       // 默认 true，可临时禁用服务器
+  timeout?: number;        // 请求超时毫秒，默认 30000
+  retries?: number;        // 重试次数，默认 2
+  includeTools?: string[]; // 工具白名单（优先于 excludeTools）
+  excludeTools?: string[]; // 工具黑名单
 }
 
 /** Hook 配置（支持 command 和 url 两种类型） */

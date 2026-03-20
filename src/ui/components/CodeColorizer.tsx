@@ -9,6 +9,7 @@ import React from "react";
 import { Text } from "ink";
 import { createLowlight } from "lowlight";
 import type { Element, Text as HastText, RootContent } from "hast";
+import { theme } from "../semantic-colors.ts";
 
 // 延迟初始化带常用语言的 lowlight 实例
 let lowlightInstance: ReturnType<typeof createLowlight> | null = null;
@@ -26,52 +27,55 @@ function getLowlight() {
   }
 }
 
-/** HAST class → 终端颜色映射 */
-const classToColor: Record<string, string> = {
-  "hljs-keyword": "blue",
-  "hljs-built_in": "cyan",
-  "hljs-type": "cyan",
-  "hljs-literal": "blue",
-  "hljs-number": "green",
-  "hljs-regexp": "red",
-  "hljs-string": "green",
-  "hljs-subst": "white",
-  "hljs-symbol": "green",
-  "hljs-class": "blue",
-  "hljs-function": "yellow",
-  "hljs-title": "yellow",
-  "hljs-params": "white",
-  "hljs-comment": "gray",
-  "hljs-doctag": "green",
-  "hljs-meta": "gray",
-  "hljs-section": "green",
-  "hljs-tag": "gray",
-  "hljs-name": "blue",
-  "hljs-attr": "cyan",
-  "hljs-attribute": "cyan",
-  "hljs-variable": "red",
-  "hljs-bullet": "green",
-  "hljs-code": "green",
-  "hljs-emphasis": "white",
-  "hljs-strong": "white",
-  "hljs-formula": "green",
-  "hljs-link": "blue",
-  "hljs-quote": "gray",
-  "hljs-selector-tag": "blue",
-  "hljs-selector-id": "blue",
-  "hljs-selector-class": "blue",
-  "hljs-selector-attr": "cyan",
-  "hljs-selector-pseudo": "cyan",
-  "hljs-template-tag": "cyan",
-  "hljs-template-variable": "cyan",
-  "hljs-addition": "green",
-  "hljs-deletion": "red",
-};
+/** HAST class → 终端颜色映射（使用语义颜色 token） */
+function getClassToColor(): Record<string, string> {
+  return {
+    "hljs-keyword": theme.ui.active,
+    "hljs-built_in": theme.ui.active,
+    "hljs-type": theme.ui.active,
+    "hljs-literal": theme.ui.active,
+    "hljs-number": theme.status.success,
+    "hljs-regexp": theme.status.error,
+    "hljs-string": theme.status.success,
+    "hljs-subst": theme.text.primary,
+    "hljs-symbol": theme.status.success,
+    "hljs-class": theme.ui.active,
+    "hljs-function": theme.status.warning,
+    "hljs-title": theme.status.warning,
+    "hljs-params": theme.text.primary,
+    "hljs-comment": theme.ui.comment,
+    "hljs-doctag": theme.status.success,
+    "hljs-meta": theme.ui.comment,
+    "hljs-section": theme.status.success,
+    "hljs-tag": theme.ui.comment,
+    "hljs-name": theme.ui.active,
+    "hljs-attr": theme.ui.active,
+    "hljs-attribute": theme.ui.active,
+    "hljs-variable": theme.status.error,
+    "hljs-bullet": theme.status.success,
+    "hljs-code": theme.status.success,
+    "hljs-emphasis": theme.text.primary,
+    "hljs-strong": theme.text.primary,
+    "hljs-formula": theme.status.success,
+    "hljs-link": theme.text.link,
+    "hljs-quote": theme.ui.comment,
+    "hljs-selector-tag": theme.ui.active,
+    "hljs-selector-id": theme.ui.active,
+    "hljs-selector-class": theme.ui.active,
+    "hljs-selector-attr": theme.ui.active,
+    "hljs-selector-pseudo": theme.ui.active,
+    "hljs-template-tag": theme.ui.active,
+    "hljs-template-variable": theme.ui.active,
+    "hljs-addition": theme.background.diff.added,
+    "hljs-deletion": theme.background.diff.removed,
+  };
+}
 
 /** 从 HAST Element 的 className 获取颜色 */
 function getColorFromClasses(classNames: string[]): string | undefined {
+  const colorMap = getClassToColor();
   for (const cls of classNames) {
-    if (classToColor[cls]) return classToColor[cls];
+    if (colorMap[cls]) return colorMap[cls];
   }
   return undefined;
 }

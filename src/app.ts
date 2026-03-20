@@ -890,6 +890,7 @@ export class App {
       streamingText: "",
       isStreaming: false,
       streamingLine: "",
+      isQuitting: false,
     });
 
     const updateState = (patch: Partial<import("./ui/App.tsx").TUIState>) => {
@@ -1175,28 +1176,6 @@ export class App {
         callbacks,
         bridge,
       }),
-      undefined,
-      // onExit 回调：退出时在主缓冲区输出简要对话摘要
-      () => {
-        const msgs = this.ctxMgr.getMessages();
-        if (msgs.length === 0) return [];
-        const summaryLines: string[] = ["── sid-code 对话摘要 ──"];
-        // 取最近几条消息的文本摘要
-        const recent = msgs.slice(-6);
-        for (const msg of recent) {
-          const role = msg.role === "user" ? "你" : "助手";
-          const texts = msg.content
-            .filter(b => b.type === "text")
-            .map(b => b.type === "text" ? b.text : "")
-            .join(" ");
-          if (texts) {
-            const short = texts.length > 100 ? texts.slice(0, 97) + "..." : texts;
-            summaryLines.push(`  [${role}] ${short}`);
-          }
-        }
-        summaryLines.push("────────────────────────");
-        return summaryLines;
-      },
     );
     await app.start();
 

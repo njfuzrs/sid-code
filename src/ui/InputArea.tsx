@@ -30,6 +30,7 @@ import React, { useReducer, useCallback, useRef, useEffect } from "react";
 import { Box, Text, useInput, useStdout } from "ink";
 import stringWidth from "string-width";
 import { getLogger } from "../debug/logger.ts";
+import { theme } from "./semantic-colors.ts";
 
 // ── Bracketed Paste Mode ────────────────────────────────────────────
 const PASTE_START_SEQ = "\x1b[200~";
@@ -404,11 +405,11 @@ export function InputArea({ onSubmit, isLoading }: InputAreaProps) {
   if (isLoading) {
     return (
       <Box flexDirection="column">
-        <HorizontalRule color="gray" width={termWidth} />
+        <HorizontalRule color={theme.ui.dark} width={termWidth} />
         <Box paddingX={1}>
           <Text dimColor>等待响应中...</Text>
         </Box>
-        <HorizontalRule color="gray" width={termWidth} />
+        <HorizontalRule color={theme.ui.dark} width={termWidth} />
       </Box>
     );
   }
@@ -419,15 +420,15 @@ export function InputArea({ onSubmit, isLoading }: InputAreaProps) {
   if (state.value.length === 0) {
     return (
       <Box flexDirection="column">
-        <HorizontalRule color="cyan" width={termWidth} />
+        <HorizontalRule color={theme.ui.active} width={termWidth} />
         <Box paddingX={1}>
           <Text>
-            <Text color="cyan" bold>{PROMPT}</Text>
+            <Text color={theme.ui.active} bold>{PROMPT}</Text>
             <Text inverse> </Text>
             <Text dimColor>{PLACEHOLDER}</Text>
           </Text>
         </Box>
-        <HorizontalRule color="cyan" width={termWidth} />
+        <HorizontalRule color={theme.ui.active} width={termWidth} />
       </Box>
     );
   }
@@ -447,7 +448,7 @@ export function InputArea({ onSubmit, isLoading }: InputAreaProps) {
       if (lineIdx === 0) {
         return (
           <Text key={lineIdx}>
-            <Text color="cyan" bold>{PROMPT}</Text>
+            <Text color={theme.ui.active} bold>{PROMPT}</Text>
             {lineText.slice(PROMPT.length)}
           </Text>
         );
@@ -463,7 +464,7 @@ export function InputArea({ onSubmit, isLoading }: InputAreaProps) {
     if (lineIdx === 0) {
       return (
         <Text key={lineIdx}>
-          <Text color="cyan" bold>{PROMPT}</Text>
+          <Text color={theme.ui.active} bold>{PROMPT}</Text>
           {before.slice(PROMPT.length)}
           <Text inverse>{cursorChar}</Text>
           {after}
@@ -482,11 +483,11 @@ export function InputArea({ onSubmit, isLoading }: InputAreaProps) {
 
   return (
     <Box flexDirection="column">
-      <HorizontalRule color="cyan" width={termWidth} />
+      <HorizontalRule color={theme.ui.active} width={termWidth} />
       <Box paddingX={1} flexDirection="column">
         {renderedLines}
       </Box>
-      <HorizontalRule color="cyan" width={termWidth} />
+      <HorizontalRule color={theme.ui.active} width={termWidth} />
     </Box>
   );
 }

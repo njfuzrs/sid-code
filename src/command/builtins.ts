@@ -361,9 +361,9 @@ export class MemoryCommand implements Command {
 export class MCPCommand implements Command {
   name() { return "mcp"; }
   aliases() { return []; }
-  description() { return "显示 MCP 服务器连接状态"; }
+  description() { return "MCP 管理：/mcp [status|prompts|resources|prompt <server>:<name>]"; }
 
-  async execute(_args: string, ctx: AppContext): Promise<CommandResult> {
+  async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     if (!ctx.mcpManager) {
       return {
         kind: "message",
@@ -371,17 +371,110 @@ export class MCPCommand implements Command {
       };
     }
 
-    const statuses = ctx.mcpManager.getStatus();
+    const parts = args.trim().split(/\s+/);
+    const subCmd = parts[0]?.toLowerCase() || "status";
+
+    switch (subCmd) {
+      case "status":
+      case "":
+        return this.showStatus(ctx);
+      case "prompts":
+        return this.listPrompts(ctx);
+      case "prompt":
+        return this.usePrompt(parts.slice(1).join(" "), ctx);
+      case "resources":
+        return this.listResources(ctx);
+      default:
+        return this.showStatus(ctx);
+    }
+  }
+
+  private showStatus(ctx: AppContext): CommandResult {
+    const statuses = ctx.mcpManager!.getStatus();
     if (statuses.length === 0) {
       return { kind: "message", message: "没有已连接的 MCP 服务器" };
     }
 
     const lines = ["MCP 服务器状态:"];
     for (const s of statuses) {
-      const status = s.connecting ? "连接中..." : s.connected ? "已连接" : "连接失败";
-      const tools = s.connected ? `${s.toolCount} 个工具` : "";
+      const statusText = {
+        connected: "已连接",
+        connecting: "连接中...",
+        reconnecting: "重连中...",
+        failed: "连接失败",
+        disabled: "已禁用",
+        disconnected: "未连接",
+      }[s.status] || s.status;
+      const counts: string[] = [];
+      if (s.status === "connected") {
+        counts.push(`${s.toolCount} 个工具`);
+        if (s.resourceCount > 0) counts.push(`${s.resourceCount} 个资源`);
+        if (s.promptCount > 0) counts.push(`${s.promptCount} 个提示词`);
+      }
+      const reconnect = s.reconnectAttempts ? ` 重连 ${s.reconnectAttempts}/5` : "";
       const error = s.error ? ` (${s.error})` : "";
-      lines.push(`  ${s.name} [${s.transport}] — ${status} ${tools}${error}`);
+      lines.push(`  ${s.name} [${s.transport}] — ${statusText} ${counts.join(", ")}${reconnect}${error}`);
+    }
+    return { kind: "message", message: lines.join("\n") };
+  }
+
+  private listPrompts(ctx: AppContext): CommandResult {
+    const prompts = ctx.mcpManager!.getAllPrompts();
+    if (prompts.length === 0) {
+      return { kind: "message", message: "没有可用的 MCP 提示词" };
+    }
+
+    const lines = ["MCP 提示词:"];
+    for (const { serverName, prompt } of prompts) {
+      const argList = prompt.arguments?.map(a => a.required ? `<${a.name}>` : `[${a.name}]`).join(" ") || "";
+      const desc = prompt.description ? ` — ${prompt.description}` : "";
+      lines.push(`  /mcp prompt ${serverName}:${prompt.name} ${argList}${desc}`);
+    }
+    return { kind: "message", message: lines.join("\n") };
+  }
+
+  private async usePrompt(args: string, ctx: AppContext): Promise<CommandResult> {
+    // 格式：<server>:<promptName> [arg1=val1 arg2=val2 ...]
+    const match = args.match(/^(\S+?):(\S+)(?:\s+(.*))?$/);
+    if (!match) {
+      return {
+        kind: "error",
+        message: "用法: /mcp prompt <server>:<name> [arg1=val1 arg2=val2 ...]",
+      };
+    }
+
+    const [, serverName, promptName, argStr] = match;
+    const promptArgs: Record<string, string> = {};
+    if (argStr) {
+      for (const pair of argStr.split(/\s+/)) {
+        const eq = pair.indexOf("=");
+        if (eq > 0) {
+          promptArgs[pair.slice(0, eq)] = pair.slice(eq + 1);
+        }
+      }
+    }
+
+    try {
+      const messages = await ctx.mcpManager!.getPrompt(serverName, promptName, Object.keys(promptArgs).length > 0 ? promptArgs : undefined);
+      // 将提示词消息拼接为文本，提交给 LLM
+      const text = messages.map(m => m.content).join("\n\n");
+      return { kind: "submit_prompt", prompt: text };
+    } catch (err: any) {
+      return { kind: "error", message: `获取提示词失败: ${err.message}` };
+    }
+  }
+
+  private listResources(ctx: AppContext): CommandResult {
+    const resources = ctx.mcpManager!.getAllResources();
+    if (resources.length === 0) {
+      return { kind: "message", message: "没有可用的 MCP 资源" };
+    }
+
+    const lines = ["MCP 资源:"];
+    for (const { serverName, resource } of resources) {
+      const desc = resource.description ? ` — ${resource.description}` : "";
+      const mime = resource.mimeType ? ` [${resource.mimeType}]` : "";
+      lines.push(`  ${serverName}: ${resource.name} (${resource.uri})${mime}${desc}`);
     }
     return { kind: "message", message: lines.join("\n") };
   }

@@ -1,7 +1,7 @@
 /**
  * MCP 客户端
- * 实现 MCP 协议的 initialize / listTools / callTool
- * 支持重试、通知处理、工具变更监听
+ * 实现 MCP 协议的 initialize / listTools / callTool / listResources / readResource / listPrompts / getPrompt / ping
+ * 支持重试、通知处理、工具/资源/提示词变更监听、断线检测
  */
 
 import type { Transport, JsonRpcNotification } from "./transport.ts";
@@ -12,6 +12,12 @@ import type {
   ListToolsResult,
   CallToolResult,
   MCPToolDefinition,
+  ListResourcesResult,
+  ReadResourceResult,
+  MCPResource,
+  ListPromptsResult,
+  GetPromptResult,
+  MCPPrompt,
 } from "./types.ts";
 
 /** MCPClient 配置选项 */
@@ -29,6 +35,12 @@ export class MCPClient {
 
   /** 工具列表变更回调 */
   onToolsChanged?: () => void;
+  /** 资源列表变更回调 */
+  onResourcesChanged?: () => void;
+  /** 提示词列表变更回调 */
+  onPromptsChanged?: () => void;
+  /** 连接断开回调 */
+  onDisconnected?: () => void;
 
   constructor(transport: Transport, options?: MCPClientOptions) {
     this.transport = transport;
@@ -38,12 +50,27 @@ export class MCPClient {
     this.transport.onNotification = (notification: JsonRpcNotification) => {
       this.handleNotification(notification);
     };
+
+    // 监听传输层断线
+    if (this.transport.onClose) {
+      this.transport.onClose = () => {
+        this.onDisconnected?.();
+      };
+    }
   }
 
   /** 处理服务器通知 */
   private handleNotification(notification: JsonRpcNotification): void {
-    if (notification.method === "notifications/tools/list_changed") {
-      this.onToolsChanged?.();
+    switch (notification.method) {
+      case "notifications/tools/list_changed":
+        this.onToolsChanged?.();
+        break;
+      case "notifications/resources/list_changed":
+        this.onResourcesChanged?.();
+        break;
+      case "notifications/prompts/list_changed":
+        this.onPromptsChanged?.();
+        break;
     }
   }
 
@@ -113,6 +140,95 @@ export class MCPClient {
     }
 
     return response.result as CallToolResult;
+  }
+
+  // ─── Resources ───
+
+  /** 列出可用资源 */
+  async listResources(): Promise<MCPResource[]> {
+    if (!this.initialized) {
+      await this.initialize();
+    }
+
+    const response = await this.sendWithRetry(this.makeRequest("resources/list", {}));
+
+    if (response.error) {
+      // -32601 Method not found 表示服务器不支持，返回空
+      if (response.error.code === -32601) return [];
+      throw new Error(`列出资源失败: ${response.error.message}`);
+    }
+
+    const result = response.result as ListResourcesResult;
+    return result.resources || [];
+  }
+
+  /** 读取资源 */
+  async readResource(uri: string): Promise<ReadResourceResult> {
+    if (!this.initialized) {
+      await this.initialize();
+    }
+
+    const response = await this.sendWithRetry(this.makeRequest("resources/read", { uri }));
+
+    if (response.error) {
+      throw new Error(`读取资源失败: ${response.error.message}`);
+    }
+
+    return response.result as ReadResourceResult;
+  }
+
+  // ─── Prompts ───
+
+  /** 列出可用提示词 */
+  async listPrompts(): Promise<MCPPrompt[]> {
+    if (!this.initialized) {
+      await this.initialize();
+    }
+
+    const response = await this.sendWithRetry(this.makeRequest("prompts/list", {}));
+
+    if (response.error) {
+      // -32601 Method not found 表示服务器不支持，返回空
+      if (response.error.code === -32601) return [];
+      throw new Error(`列出提示词失败: ${response.error.message}`);
+    }
+
+    const result = response.result as ListPromptsResult;
+    return result.prompts || [];
+  }
+
+  /** 获取提示词内容 */
+  async getPrompt(name: string, args?: Record<string, string>): Promise<GetPromptResult> {
+    if (!this.initialized) {
+      await this.initialize();
+    }
+
+    const params: Record<string, unknown> = { name };
+    if (args) params.arguments = args;
+
+    const response = await this.sendWithRetry(this.makeRequest("prompts/get", params));
+
+    if (response.error) {
+      throw new Error(`获取提示词失败: ${response.error.message}`);
+    }
+
+    return response.result as GetPromptResult;
+  }
+
+  // ─── 健康检查 ───
+
+  /** ping 服务器，返回是否存活 */
+  async ping(): Promise<boolean> {
+    try {
+      const response = await this.transport.send(this.makeRequest("ping", {}));
+      // -32601 Method not found 也算存活（服务器不支持 ping 但连接正常）
+      if (response.error && response.error.code !== -32601) {
+        return false;
+      }
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /** 关闭连接 */

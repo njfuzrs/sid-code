@@ -10,6 +10,7 @@ import { Box, Text } from "ink";
 import { useKeypress, KeypressPriority } from "../contexts/KeypressContext.tsx";
 import type { PermissionRequestInfo, ShellConfirmRequestInfo } from "../App.tsx";
 import { getToolSummary } from "../ui-utils.ts";
+import { theme } from "../semantic-colors.ts";
 
 /** 权限确认对话框 */
 function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
@@ -26,20 +27,20 @@ function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
   });
 
   return (
-    <Box flexDirection="column" borderStyle="single" borderColor="yellow" paddingX={1}>
-      <Text color="yellow" bold>权限请求</Text>
+    <Box flexDirection="column" borderStyle="single" borderColor={theme.status.warning} paddingX={1}>
+      <Text color={theme.status.warning} bold>权限请求</Text>
       <Box marginTop={0}>
         <Text>  工具: </Text>
         <Text bold>{request.toolName}</Text>
       </Box>
       <Box>
         <Text>  详情: </Text>
-        <Text color="cyan">{detail.length > 60 ? detail.slice(0, 57) + "..." : detail}</Text>
+        <Text color={theme.ui.active}>{detail.length > 60 ? detail.slice(0, 57) + "..." : detail}</Text>
       </Box>
       <Box marginTop={0}>
-        <Text color="green" bold> (y)</Text><Text>允许 </Text>
-        <Text color="red" bold> (n)</Text><Text>拒绝 </Text>
-        <Text color="yellow" bold> (a)</Text><Text>始终允许</Text>
+        <Text color={theme.status.success} bold> (y)</Text><Text>允许 </Text>
+        <Text color={theme.status.error} bold> (n)</Text><Text>拒绝 </Text>
+        <Text color={theme.status.warning} bold> (a)</Text><Text>始终允许</Text>
       </Box>
     </Box>
   );
@@ -58,18 +59,18 @@ function ShellConfirmDialog({ request }: { request: ShellConfirmRequestInfo }) {
   });
 
   return (
-    <Box flexDirection="column" borderStyle="single" borderColor="magenta" paddingX={1}>
-      <Text color="magenta" bold>Shell 命令确认</Text>
+    <Box flexDirection="column" borderStyle="single" borderColor={theme.text.accent} paddingX={1}>
+      <Text color={theme.text.accent} bold>Shell 命令确认</Text>
       <Text dimColor>自定义命令将执行以下 Shell 命令：</Text>
       {request.commands.map((cmd, i) => (
         <Box key={i} marginLeft={2}>
-          <Text color="cyan">$ </Text>
+          <Text color={theme.ui.active}>$ </Text>
           <Text>{cmd}</Text>
         </Box>
       ))}
       <Box marginTop={0}>
-        <Text color="green" bold> (y)</Text><Text>确认执行 </Text>
-        <Text color="red" bold> (n)</Text><Text>取消</Text>
+        <Text color={theme.status.success} bold> (y)</Text><Text>确认执行 </Text>
+        <Text color={theme.status.error} bold> (n)</Text><Text>取消</Text>
       </Box>
     </Box>
   );

@@ -587,6 +587,7 @@ export function renderMarkdown(text: string, maxWidth?: number): string {
 import React from "react";
 import { Text } from "ink";
 import { highlightToReact, supportsLanguage as lowlightSupportsLang } from "./components/CodeColorizer.tsx";
+import { theme } from "./semantic-colors.ts";
 
 /** React 渲染缓存（与 ANSI 版本独立） */
 const reactRenderCache = new Map<string, React.ReactNode>();
@@ -610,15 +611,15 @@ function renderInlineToReact(tokens: any[]): React.ReactNode[] {
         nodes.push(React.createElement(Text, { key: i, italic: true }, ...renderInlineToReact(token.tokens)));
         break;
       case "codespan":
-        nodes.push(React.createElement(Text, { key: i, color: "cyan" }, token.text));
+        nodes.push(React.createElement(Text, { key: i, color: theme.ui.active }, token.text));
         break;
       case "del":
-        nodes.push(React.createElement(Text, { key: i, dimColor: true, strikethrough: true, color: "gray" }, ...renderInlineToReact(token.tokens)));
+        nodes.push(React.createElement(Text, { key: i, dimColor: true, strikethrough: true, color: theme.ui.comment }, ...renderInlineToReact(token.tokens)));
         break;
       case "link": {
         const label = token.tokens ? renderInlineToReact(token.tokens) : [token.text];
         // OSC 8 超链接在 React 模式下降级为蓝色下划线文本
-        nodes.push(React.createElement(Text, { key: i, color: "blue", underline: true }, ...label));
+        nodes.push(React.createElement(Text, { key: i, color: theme.text.link, underline: true }, ...label));
         break;
       }
       case "br":

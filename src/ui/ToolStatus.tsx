@@ -7,6 +7,7 @@ import React, { useEffect, useState } from "react";
 import { Box, Text } from "ink";
 import { Spinner } from "@inkjs/ui";
 import { getLogger } from "../debug/logger.ts";
+import { theme } from "./semantic-colors.ts";
 
 interface ToolStatusProps {
   toolName: string | null;
@@ -91,7 +92,7 @@ export const ToolStatus = React.memo(function ToolStatus({ toolName, isExecuting
   // 刚完成：显示成功/失败状态 + 耗时
   if (showResult && lastResult) {
     const icon = lastResult.isError ? "✗" : "✓";
-    const color = lastResult.isError ? "red" : "green";
+    const color = lastResult.isError ? theme.status.error : theme.status.success;
     return (
       <Box>
         <Text color={color}>{icon} </Text>

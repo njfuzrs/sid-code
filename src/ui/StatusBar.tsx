@@ -6,6 +6,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 import type { Usage } from "../llm/types.ts";
+import { theme } from "./semantic-colors.ts";
 
 interface StatusBarProps {
   permissionMode: string;
@@ -25,18 +26,18 @@ export const StatusBar = React.memo(function StatusBar(props: StatusBarProps) {
 
   const permColor = (() => {
     switch (permissionMode) {
-      case "plan": return "cyan";
-      case "deny-write": return "red";
-      case "always-allow": case "dontAsk": return "yellow";
-      default: return "green";
+      case "plan": return theme.ui.active;
+      case "deny-write": return theme.status.error;
+      case "always-allow": case "dontAsk": return theme.status.warning;
+      default: return theme.status.success;
     }
   })();
 
   const costColor = (() => {
     if (costLimit <= 0 || costUSD <= 0) return undefined;
     const pct = (costUSD / costLimit) * 100;
-    if (pct >= 95) return "red" as const;
-    if (pct >= 80) return "yellow" as const;
+    if (pct >= 95) return theme.status.error;
+    if (pct >= 80) return theme.status.warning;
     return undefined;
   })();
 
@@ -48,17 +49,17 @@ export const StatusBar = React.memo(function StatusBar(props: StatusBarProps) {
   return (
     <Box paddingX={1} justifyContent="space-between">
       <Text wrap="truncate">
-        <Text bold color="blue">sid-code</Text>
+        <Text bold color={theme.ui.active}>sid-code</Text>
         <Text dimColor> | </Text>
         <Text color={permColor}>{permissionMode}</Text>
-        {gitBranch ? <><Text dimColor> | </Text><Text color="cyan">{gitBranch}</Text></> : null}
-        {debug ? <><Text dimColor> | </Text><Text color="yellow">DEBUG</Text></> : null}
+        {gitBranch ? <><Text dimColor> | </Text><Text color={theme.ui.active}>{gitBranch}</Text></> : null}
+        {debug ? <><Text dimColor> | </Text><Text color={theme.status.warning}>DEBUG</Text></> : null}
         <Text dimColor> | </Text>
         <Text dimColor>{usage.inputTokens}↓ {usage.outputTokens}↑</Text>
         <Text dimColor> | </Text>
         <Text color={costColor} dimColor={!costColor}>{costText}</Text>
         <Text dimColor> | ctx {contextPercent}%</Text>
-        {showScroll ? <><Text dimColor> | </Text><Text color="yellow">↑ {scrollPercent}%</Text></> : null}
+        {showScroll ? <><Text dimColor> | </Text><Text color={theme.status.warning}>↑ {scrollPercent}%</Text></> : null}
       </Text>
       <Text dimColor wrap="truncate">
         {model} | Ctrl+C 退出

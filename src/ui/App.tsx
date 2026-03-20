@@ -21,9 +21,11 @@ import { DialogRenderer } from "./components/DialogManager.tsx";
 import { VirtualizedList } from "./components/VirtualizedList.tsx";
 import { MessageItemRenderer } from "./components/MessageItemRenderer.tsx";
 import { StreamingMessage } from "./components/StreamingMessage.tsx";
+import { AlternateBufferQuittingDisplay } from "./components/AlternateBufferQuittingDisplay.tsx";
 import type { StateBridge } from "./state-bridge.ts";
 import type { Message, Usage } from "../llm/types.ts";
 import { getLogger } from "../debug/logger.ts";
+import { theme } from "./semantic-colors.ts";
 
 /** 占位消息文本常量 */
 const PLACEHOLDER_TEXT = "[系统] 自动插入占位消息以保持角色交替";
@@ -97,6 +99,8 @@ export interface TUIState {
   streamingLine: string;
   /** 滚动百分比（0-100），100 表示在底部 */
   scrollPercent?: number;
+  /** 是否正在退出（切换到退出回显模式） */
+  isQuitting: boolean;
 }
 
 interface AppProps {
@@ -126,31 +130,31 @@ function EmptyLogo({ termWidth }: { termWidth: number }) {
 
   return (
     <Box flexDirection="column" paddingX={margin} paddingY={1}>
-      <Text color="cyan">{topLine}</Text>
-      <Text color="cyan">{emptyLine}</Text>
+      <Text color={theme.ui.active}>{topLine}</Text>
+      <Text color={theme.ui.active}>{emptyLine}</Text>
       {logoLines.map((line, i) => {
         const left = Math.floor(Math.max(0, boxInner - line.length) / 2);
         const right = Math.max(0, boxInner - line.length - left);
         return (
           <Box key={`logo-${i}`}>
-            <Text color="cyan">{"│"}</Text>
+            <Text color={theme.ui.active}>{"│"}</Text>
             <Text>{" ".repeat(left)}</Text>
-            <Text color="cyan" bold>{line}</Text>
+            <Text color={theme.ui.active} bold>{line}</Text>
             <Text>{" ".repeat(right)}</Text>
-            <Text color="cyan">{"│"}</Text>
+            <Text color={theme.ui.active}>{"│"}</Text>
           </Box>
         );
       })}
-      <Text color="cyan">{emptyLine}</Text>
+      <Text color={theme.ui.active}>{emptyLine}</Text>
       <Box>
-        <Text color="cyan">{"│"}</Text>
+        <Text color={theme.ui.active}>{"│"}</Text>
         <Text>{" ".repeat(vLeft)}</Text>
         <Text dimColor>{version}</Text>
         <Text>{" ".repeat(vRight)}</Text>
-        <Text color="cyan">{"│"}</Text>
+        <Text color={theme.ui.active}>{"│"}</Text>
       </Box>
-      <Text color="cyan">{emptyLine}</Text>
-      <Text color="cyan">{botLine}</Text>
+      <Text color={theme.ui.active}>{emptyLine}</Text>
+      <Text color={theme.ui.active}>{botLine}</Text>
     </Box>
   );
 }
@@ -178,11 +182,21 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
     return () => { bridge.off("change", onChange); };
   }, [bridge]);
 
+  // 触发退出：先设置 isQuitting=true 让 Ink 渲染最终帧，再延迟退出
+  const triggerQuit = useCallback(() => {
+    log.info("UI:APP", "触发退出，切换到退出回显模式");
+    bridge.update({ isQuitting: true });
+    // 延迟 100ms 让 Ink 渲染最终帧到主缓冲区
+    setTimeout(() => {
+      exit();
+    }, 100);
+  }, [bridge, exit]);
+
   // Ctrl+C 退出（Critical 优先级）
   useKeypress(KeypressPriority.Critical, (input, key) => {
     if (key.ctrl && input === "c") {
       log.info("UI:APP", "用户按下 Ctrl+C，退出");
-      exit();
+      triggerQuit();
       return true;
     }
     return false;
@@ -218,7 +232,7 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
     try {
       if (text.startsWith("/")) {
         const [cmd, ...rest] = text.slice(1).split(" ");
-        if (cmd === "exit" || cmd === "quit") { exit(); return; }
+        if (cmd === "exit" || cmd === "quit") { triggerQuit(); return; }
         await callbacks.onSlashCommand(cmd, rest.join(" "));
       } else {
         await callbacks.onUserInput(text);
@@ -233,6 +247,16 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
   const isEmpty = state.displayItems.length === 0 && !state.isStreaming;
   const termWidth = stdout.columns || 80;
   const rows = stdout.rows || 24;
+
+  // 退出回显模式：渲染完整对话历史到主缓冲区
+  if (state.isQuitting) {
+    return (
+      <AlternateBufferQuittingDisplay
+        displayItems={state.displayItems}
+        streamingText={state.isStreaming ? state.streamingText : undefined}
+      />
+    );
+  }
 
   // 渲染单个 DisplayItem
   const renderItem = useCallback((item: DisplayItem, _index: number, prevItem?: DisplayItem) => {
@@ -283,7 +307,7 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
         {/* 状态消息（上下文警告等） */}
         {state.statusMessage ? (
           <Box paddingX={1}>
-            <Text color="yellow">{state.statusMessage}</Text>
+            <Text color={theme.status.warning}>{state.statusMessage}</Text>
           </Box>
         ) : null}
 

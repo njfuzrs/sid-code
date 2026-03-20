@@ -57,3 +57,61 @@ export interface CallToolResult {
   content: Array<{ type: string; text?: string }>;
   isError?: boolean;
 }
+
+/** MCP 服务器连接状态 */
+export enum MCPConnectionStatus {
+  DISCONNECTED = "disconnected",     // 初始/关闭状态
+  CONNECTING   = "connecting",       // 正在连接
+  CONNECTED    = "connected",        // 已连接正常
+  RECONNECTING = "reconnecting",     // 断线重连中
+  FAILED       = "failed",           // 超过最大重试，永久失败
+  DISABLED     = "disabled",         // 配置 enabled: false
+}
+
+/** MCP 资源定义 */
+export interface MCPResource {
+  uri: string;
+  name: string;
+  description?: string;
+  mimeType?: string;
+}
+
+/** MCP 资源列表结果 */
+export interface ListResourcesResult {
+  resources: MCPResource[];
+}
+
+/** MCP 资源读取结果 */
+export interface ReadResourceResult {
+  contents: Array<{
+    uri: string;
+    mimeType?: string;
+    text?: string;
+    blob?: string;
+  }>;
+}
+
+/** MCP 提示词定义 */
+export interface MCPPrompt {
+  name: string;
+  description?: string;
+  arguments?: Array<{
+    name: string;
+    description?: string;
+    required?: boolean;
+  }>;
+}
+
+/** MCP 提示词列表结果 */
+export interface ListPromptsResult {
+  prompts: MCPPrompt[];
+}
+
+/** MCP 提示词获取结果 */
+export interface GetPromptResult {
+  description?: string;
+  messages: Array<{
+    role: "user" | "assistant";
+    content: { type: string; text?: string; data?: string; mimeType?: string };
+  }>;
+}

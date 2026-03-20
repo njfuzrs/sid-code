@@ -13,6 +13,7 @@ import type { Message, ContentBlock } from "../../llm/types.ts";
 import { renderMarkdownToReact } from "../markdown.ts";
 import { SlicingMaxSizedBox } from "./SlicingMaxSizedBox.tsx";
 import { getToolSummary, getResultSummary, ASSISTANT_PADDING_RIGHT } from "../ui-utils.ts";
+import { theme } from "../semantic-colors.ts";
 
 /** 分隔线 */
 function Separator({ width }: { width: number }) {
@@ -50,7 +51,7 @@ function RenderBlock({ block, toolNameMap, maxWidth }: {
     const summary = getToolSummary(block.name, block.input);
     return (
       <Box paddingLeft={2}>
-        <Text color="yellow">{"● "}</Text>
+        <Text color={theme.status.warning}>{"● "}</Text>
         <Text bold>{block.name}</Text>
         {summary ? <Text dimColor>{"  "}{summary}</Text> : null}
       </Box>
@@ -60,7 +61,7 @@ function RenderBlock({ block, toolNameMap, maxWidth }: {
   if (block.type === "tool_result") {
     const isErr = !!block.is_error;
     const icon = isErr ? "✗" : "✓";
-    const color = isErr ? "red" as const : "green" as const;
+    const color = isErr ? theme.status.error : theme.status.success;
     const toolName = toolNameMap.get(block.tool_use_id) || "";
     const summary = getResultSummary(toolName, block.content, isErr);
 
@@ -114,7 +115,7 @@ export const MessageItemRenderer = React.memo(function MessageItemRenderer({
     return (
       <Box flexDirection="column">
         {prevItem && <Separator width={termWidth} />}
-        <Text color="blueBright" bold>{"● 你"}</Text>
+        <Text color={theme.ui.active} bold>{"● 你"}</Text>
         <Box paddingLeft={2}>
           <Text dimColor>{item.input}</Text>
         </Box>
@@ -149,7 +150,7 @@ export const MessageItemRenderer = React.memo(function MessageItemRenderer({
     return (
       <Box flexDirection="column">
         {prevItem && <Separator width={termWidth} />}
-        <Text color="blueBright" bold>{"● 你"}</Text>
+        <Text color={theme.ui.active} bold>{"● 你"}</Text>
         {msg.content.map((block, idx) => {
           if (block.type === "text") {
             return <Box key={idx} paddingLeft={2}><Text>{block.text}</Text></Box>;
