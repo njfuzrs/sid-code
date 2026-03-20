@@ -26,9 +26,6 @@ const TAB_SIZE = 2;
 const TAB_INDENT = " ".repeat(TAB_SIZE);
 const MAX_CACHE_SIZE = 100;
 
-/** 当前渲染可用宽度（由 renderMarkdown 设置，renderTable 读取） */
-let currentRenderWidth = DEFAULT_TERM_WIDTH;
-
 // 兜底：cli.ts 入口已在 import 前设置 FORCE_COLOR=3，
 // 这里再修正 chalk 实例的 level，确保样式正常。
 if (chalk.level === 0 && !process.env.NO_COLOR) {
@@ -241,7 +238,7 @@ function drawTable(
 }
 
 /** 将 marked table token 渲染为终端友好的表格或 key-value 降级格式 */
-function renderTable(token: any, width?: number): string {
+function renderTable(token: any, width: number): string {
   const headers: string[] = token.header.map((cell: any) =>
     cell.tokens ? renderInline(cell.tokens) : (cell.text || ""),
   );
@@ -251,7 +248,7 @@ function renderTable(token: any, width?: number): string {
     ),
   );
   const colCount = headers.length;
-  const termWidth = width ?? currentRenderWidth;
+  const termWidth = width;
 
   // 总表格宽度 = Σ(contentWidth[i] + CELL_PADDING) + colCount + 1
   // contentBudget = termWidth - colCount * (CELL_PADDING + 1) - 1
@@ -458,17 +455,11 @@ function renderList(token: any, depth: number = 0): string {
     }
 
     const content = parts.join("");
-    // 第一行带前缀，后续行对齐
-    const firstLine = `${indent}${prefix}${content.split("\n")[0]}`;
-    const restLines = content.split("\n").slice(1).map(line => {
-      // 嵌套列表已经有自己的缩进，不需要额外对齐
-      if (line.startsWith(TAB_INDENT.repeat(depth + 1))) return line;
-      return line;
-    });
-
-    lines.push(firstLine);
-    if (restLines.length > 0) {
-      lines.push(...restLines);
+    // 第一行带前缀，后续行直接追加（嵌套列表已有自己的缩进）
+    const contentLines = content.split("\n");
+    lines.push(`${indent}${prefix}${contentLines[0]}`);
+    if (contentLines.length > 1) {
+      lines.push(...contentLines.slice(1));
     }
   }
 
@@ -478,7 +469,7 @@ function renderList(token: any, depth: number = 0): string {
 // ── 块级 token 渲染 ─────────────────────────────────────────────
 
 /** 递归渲染块级 token 数组为 ANSI 字符串 */
-function renderTokens(tokens: any[]): string {
+function renderTokens(tokens: any[], renderWidth?: number): string {
   const blocks: string[] = [];
 
   for (const token of tokens) {
@@ -506,7 +497,7 @@ function renderTokens(tokens: any[]): string {
         break;
       }
       case "blockquote": {
-        const inner = renderTokens(token.tokens);
+        const inner = renderTokens(token.tokens, renderWidth);
         const quoted = inner
           .split("\n")
           .map((line: string) => chalk.dim("│") + " " + chalk.italic(line))
@@ -519,7 +510,7 @@ function renderTokens(tokens: any[]): string {
         break;
       }
       case "table": {
-        blocks.push(renderTable(token));
+        blocks.push(renderTable(token, renderWidth ?? DEFAULT_TERM_WIDTH));
         break;
       }
       case "hr": {
@@ -570,14 +561,11 @@ export function renderMarkdown(text: string, maxWidth?: number): string {
 
   const log = getLogger();
 
-  // 设置当前渲染宽度供 renderTable 使用
-  currentRenderWidth = effectiveWidth;
-
   try {
     log.debug("UI:MD", `renderMarkdown 开始: textLen=${text.length} effectiveWidth=${effectiveWidth} textPreview=${JSON.stringify(text.slice(0, 100))}`);
     const tokens = marked.lexer(text);
     log.debug("UI:MD", `marked.lexer 完成: tokenCount=${tokens.length} tokenTypes=${tokens.map((t: any) => t.type).join(",")}`);
-    const result = renderTokens(tokens).trimEnd();
+    const result = renderTokens(tokens, effectiveWidth).trimEnd();
     log.debug("UI:MD", `renderTokens 完成: resultLen=${result.length} hasAnsi=${/\x1b\[/.test(result)} resultPreview=${JSON.stringify(result.slice(0, 100))}`);
 
     if (renderCache.size >= MAX_CACHE_SIZE) {
@@ -598,6 +586,7 @@ export function renderMarkdown(text: string, maxWidth?: number): string {
 
 import React from "react";
 import { Text } from "ink";
+import { highlightToReact, supportsLanguage as lowlightSupportsLang } from "./components/CodeColorizer.tsx";
 
 /** React 渲染缓存（与 ANSI 版本独立） */
 const reactRenderCache = new Map<string, React.ReactNode>();
@@ -663,20 +652,40 @@ function renderTokensToReact(tokens: any[], maxWidth: number): React.ReactNode[]
         blocks.push(React.createElement(Text, { key: i }, ...renderInlineToReact(token.tokens)));
         break;
       case "code": {
-        // 代码块：使用 ANSI 渲染（复用现有 highlightCode），包裹在 Text 中
-        const highlighted = highlightCode(token.text, token.lang);
-        const indented = highlighted.split("\n").map((line: string) => TAB_INDENT + line).join("\n");
-        blocks.push(React.createElement(Text, { key: i }, indented));
+        // 代码块：使用 lowlight React 渲染（整块高亮后按行拆分）
+        const codeLines = token.text.split("\n");
+        const lang = token.lang;
+        if (lang && lowlightSupportsLang(lang)) {
+          // 整块高亮，保持多行语法上下文
+          const highlighted = highlightToReact(token.text, lang);
+          blocks.push(
+            React.createElement(Text, { key: i },
+              TAB_INDENT, highlighted
+            )
+          );
+        } else {
+          const indented = codeLines.map((line: string) => TAB_INDENT + line).join("\n");
+          blocks.push(React.createElement(Text, { key: i }, indented));
+        }
         break;
       }
       case "blockquote": {
-        // 引用块：ANSI 渲染后包裹
-        const inner = renderTokens(token.tokens);
-        const quoted = inner.split("\n").map((line: string) => chalk.dim("│") + " " + chalk.italic(line)).join("\n");
-        blocks.push(React.createElement(Text, { key: i }, quoted));
+        // 引用块：React 原生渲染
+        const innerBlocks = renderTokensToReact(token.tokens, maxWidth);
+        const quoteChildren: React.ReactNode[] = [];
+        for (let j = 0; j < innerBlocks.length; j++) {
+          if (j > 0) quoteChildren.push("\n\n");
+          quoteChildren.push(innerBlocks[j]);
+        }
+        blocks.push(
+          React.createElement(Text, { key: i, dimColor: true, italic: true },
+            "│ ", ...quoteChildren
+          )
+        );
         break;
       }
       case "list": {
+        // 列表：ANSI 渲染仍可接受（列表内无块级布局需求）
         const listText = renderList(token);
         blocks.push(React.createElement(Text, { key: i }, listText));
         break;
@@ -741,7 +750,7 @@ export function renderMarkdownToReact(text: string, maxWidth?: number): React.Re
       result = React.createElement(Text, null, ...nodes);
     }
 
-    // 缓存结果（LRU 淘汰）
+    // 缓存结果（FIFO 淘汰）
     if (reactRenderCache.size >= MAX_CACHE_SIZE) {
       const firstKey = reactRenderCache.keys().next().value;
       if (firstKey !== undefined) reactRenderCache.delete(firstKey);

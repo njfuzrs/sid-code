@@ -3,9 +3,14 @@
  *
  * 注册表模式管理多个可滚动区域，鼠标滚轮/键盘滚动事件路由到活跃区域。
  * 批量滚动：queueMicrotask 合并同帧多次滚动。
+ *
+ * 坐标系说明：
+ * scrollOffset = 从底部向上偏移的行数（0 = 底部）
+ * 因此 "up"（向上滚动查看历史）= 增大 offset = 正 delta
+ *      "down"（向下滚动回到底部）= 减小 offset = 负 delta
  */
 
-import React, { createContext, useContext, useCallback, useRef, useEffect } from "react";
+import React, { createContext, useContext, useCallback, useRef, useEffect, useMemo } from "react";
 
 /** 可滚动区域接口 */
 export interface ScrollableArea {
@@ -91,6 +96,7 @@ export function ScrollProvider({ children }: { children: React.ReactNode }) {
 
     const state = area.getScrollState();
     const pageLines = Math.max(1, state.viewportHeight - 2);
+    // 坐标系：offset 从底部向上计数，所以 "up"（查看历史）= 正 delta
     let delta = 0;
     switch (action) {
       case "up": delta = 3; break;
@@ -106,8 +112,13 @@ export function ScrollProvider({ children }: { children: React.ReactNode }) {
     }
   }, [getActiveArea, flushScroll]);
 
+  // useMemo 包裹 context value，避免不必要的 consumer 重渲染
+  const contextValue = useMemo(() => ({
+    registerArea, unregisterArea, setActiveArea, getActiveScrollState, scrollActive,
+  }), [registerArea, unregisterArea, setActiveArea, getActiveScrollState, scrollActive]);
+
   return (
-    <ScrollCtx.Provider value={{ registerArea, unregisterArea, setActiveArea, getActiveScrollState, scrollActive }}>
+    <ScrollCtx.Provider value={contextValue}>
       {children}
     </ScrollCtx.Provider>
   );
@@ -137,11 +148,14 @@ export function useScrollable(id: string, callbacks: {
   }, [ctx, id]);
 }
 
-/** 获取滚动状态（供 StatusBar 等使用） */
+/** 获取滚动状态（供 StatusBar 等使用）— 返回稳定引用 */
 export function useScrollState() {
   const ctx = useContext(ScrollCtx);
-  return {
-    getScrollState: ctx?.getActiveScrollState ?? (() => null),
-    scrollActive: ctx?.scrollActive ?? (() => {}),
-  };
+  const getScrollState = useCallback(() => {
+    return ctx?.getActiveScrollState() ?? null;
+  }, [ctx]);
+  const scrollActive = useCallback((action: "up" | "down" | "pageup" | "pagedown" | "top" | "bottom") => {
+    ctx?.scrollActive(action);
+  }, [ctx]);
+  return useMemo(() => ({ getScrollState, scrollActive }), [getScrollState, scrollActive]);
 }

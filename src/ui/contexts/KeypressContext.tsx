@@ -33,37 +33,49 @@ interface KeypressContextValue {
 
 const KeypressCtx = createContext<KeypressContextValue | null>(null);
 
+/** 二分查找插入位置（按 priority 降序） */
+function findInsertIndex(arr: Registration[], priority: KeypressPriority): number {
+  let lo = 0, hi = arr.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (arr[mid].priority >= priority) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
 export function KeypressProvider({ children }: { children: React.ReactNode }) {
   const registrationsRef = useRef<Registration[]>([]);
   // 局部 ID 计数器，避免跨实例泄漏
   const nextIdRef = useRef(0);
-  // 缓存已知的优先级集合，只在新优先级出现时重新排序
-  const knownPrioritiesRef = useRef<Set<KeypressPriority>>(new Set());
 
   const register = useCallback((priority: KeypressPriority, handler: KeypressHandler): number => {
     const id = nextIdRef.current++;
-    registrationsRef.current.push({ id, priority, handler });
-    // 只在新优先级出现时排序
-    if (!knownPrioritiesRef.current.has(priority)) {
-      knownPrioritiesRef.current.add(priority);
-      registrationsRef.current.sort((a, b) => b.priority - a.priority);
-    } else {
-      // 同优先级追加到末尾，已经是正确位置（stable sort 保证）
-      // 但如果有多个优先级，需要插入到正确位置
-      registrationsRef.current.sort((a, b) => b.priority - a.priority);
-    }
+    const reg = { id, priority, handler };
+    // 二分插入，保持按 priority 降序排列
+    const idx = findInsertIndex(registrationsRef.current, priority);
+    registrationsRef.current.splice(idx, 0, reg);
     return id;
   }, []);
 
   const unregister = useCallback((id: number) => {
-    registrationsRef.current = registrationsRef.current.filter(r => r.id !== id);
+    const arr = registrationsRef.current;
+    const idx = arr.findIndex(r => r.id === id);
+    if (idx !== -1) arr.splice(idx, 1);
   }, []);
 
   // 单一 useInput 入口
   useInput((input, key) => {
     for (const reg of registrationsRef.current) {
-      if (reg.handler(input, key)) {
-        return; // 事件被消费
+      try {
+        if (reg.handler(input, key)) {
+          return; // 事件被消费
+        }
+      } catch (err) {
+        // 防止单个 handler 异常导致整个 TUI 崩溃
+        if (process.env.DEBUG) {
+          console.error(`[KeypressProvider] handler(id=${reg.id}) 异常:`, err);
+        }
       }
     }
   });

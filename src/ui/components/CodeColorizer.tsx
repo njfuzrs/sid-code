@@ -10,21 +10,19 @@ import { Text } from "ink";
 import { createLowlight } from "lowlight";
 import type { Element, Text as HastText, RootContent } from "hast";
 
-// 创建 lowlight 实例（加载所有语言）
-const lowlight = createLowlight();
-
-// 同步创建带常用语言的实例
-let lowlightWithLangs: ReturnType<typeof createLowlight> | null = null;
+// 延迟初始化带常用语言的 lowlight 实例
+let lowlightInstance: ReturnType<typeof createLowlight> | null = null;
 function getLowlight() {
-  if (lowlightWithLangs) return lowlightWithLangs;
+  if (lowlightInstance) return lowlightInstance;
   try {
     // lowlight 3.x: common 是一个 grammars 对象
     const common = require("lowlight/lib/common.js");
-    lowlightWithLangs = createLowlight(common.default || common);
-    return lowlightWithLangs;
+    lowlightInstance = createLowlight(common.default || common);
+    return lowlightInstance;
   } catch {
-    // 回退：无语言支持
-    return lowlight;
+    // 回退：创建无语言支持的实例（registered() 始终返回 false）
+    lowlightInstance = createLowlight();
+    return lowlightInstance;
   }
 }
 
@@ -151,16 +149,11 @@ export const CodeBlock = React.memo(function CodeBlock({ code, lang }: CodeBlock
     return <Text>{indented}</Text>;
   }
 
-  // 有高亮：逐行渲染，每行添加 2 空格缩进
-  const lines = code.split("\n");
+  // 整块高亮（保持多行语法上下文），然后按行添加缩进
+  const highlighted = highlightToReact(code, lang);
   return (
     <Text>
-      {lines.map((line, i) => (
-        <React.Fragment key={i}>
-          {i > 0 ? "\n" : null}
-          {"  "}{highlightToReact(line, lang)}
-        </React.Fragment>
-      ))}
+      {"  "}{highlighted}
     </Text>
   );
 });

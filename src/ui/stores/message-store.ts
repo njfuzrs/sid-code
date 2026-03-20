@@ -16,6 +16,12 @@ interface MessageStoreEvents {
 export class MessageDataStore extends EventEmitter {
   private items: DisplayItem[] = [];
 
+  constructor() {
+    super();
+    // 设置最大监听器数量，避免默认 10 个的警告
+    this.setMaxListeners(50);
+  }
+
   // 类型安全的 emit/on/off 重载
   override emit<K extends keyof MessageStoreEvents>(event: K, ...args: MessageStoreEvents[K]): boolean {
     return super.emit(event, ...args);
@@ -37,7 +43,9 @@ export class MessageDataStore extends EventEmitter {
   /** 替换最后一项（创建新数组引用） */
   updateLastItem(item: DisplayItem): void {
     if (this.items.length > 0) {
-      this.items = this.items.slice(0, -1).concat(item);
+      const newItems = this.items.slice(0, -1);
+      newItems.push(item);
+      this.items = newItems;
     } else {
       this.items = [item];
     }
@@ -71,8 +79,9 @@ export class MessageDataStore extends EventEmitter {
     this.emit("itemsChanged");
   }
 
-  /** 清理所有监听器 */
+  /** 清理所有监听器和数据 */
   destroy(): void {
     this.removeAllListeners();
+    this.items = [];
   }
 }

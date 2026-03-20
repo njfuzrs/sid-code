@@ -2,8 +2,9 @@
  * 虚拟化列表组件
  *
  * 只渲染可见项 + 上下各 1 个缓冲项，用 spacer 占位不可见区域。
- * 锚点滚动：anchor { index, offset } 替代行偏移。
  * 粘底行为：stickyToBottom 自动跟随新内容。
+ *
+ * 坐标系：scrollOffset = 从底部向上偏移的行数（0 = 底部）
  */
 
 import React, { useState, useCallback, useRef, useEffect, useMemo } from "react";
@@ -22,16 +23,38 @@ function estimateItemHeight(item: DisplayItem, termWidth: number): number {
   // message
   const msg = item.message;
   let totalLines = 0;
+  // 宽度扣除左右 padding（助手消息右侧 10 列留白 + 左侧约 2 列）
+  const effectiveWidth = Math.max(1, termWidth - 12);
   for (const block of msg.content) {
     if (block.type === "text") {
-      // 粗略估算：每 termWidth 字符一行，最少 1 行
       const textLen = block.text.length;
-      totalLines += Math.max(1, Math.ceil(textLen / Math.max(1, termWidth - 10)));
+      // markdown 渲染后通常比纯文本更长（标题、代码块缩进等），乘以 1.3 补偿
+      totalLines += Math.max(1, Math.ceil((textLen * 1.3) / effectiveWidth));
     } else if (block.type === "tool_use" || block.type === "tool_result") {
       totalLines += 1;
     }
   }
   return Math.max(1, totalLines);
+}
+
+/** 为 DisplayItem 生成稳定 key */
+function getItemKey(item: DisplayItem, index: number): string {
+  if (item.kind === "system") return `sys-${index}-${item.text.slice(0, 20)}`;
+  if (item.kind === "command") return `cmd-${index}-${item.input.slice(0, 20)}`;
+  // message: 用 role + 第一个 content block 的特征
+  const msg = item.message;
+  const first = msg.content[0];
+  if (first?.type === "text") return `msg-${index}-${msg.role}-${first.text.slice(0, 16)}`;
+  if (first?.type === "tool_use") return `msg-${index}-${msg.role}-tu-${first.id}`;
+  if (first?.type === "tool_result") return `msg-${index}-${msg.role}-tr-${first.tool_use_id}`;
+  return `msg-${index}-${msg.role}`;
+}
+
+/** 流式内容的估算高度（行数） */
+function estimateStreamingHeight(text: string, termWidth: number): number {
+  if (!text) return 0;
+  const effectiveWidth = Math.max(1, termWidth - 12);
+  return Math.max(1, Math.ceil(text.length / effectiveWidth));
 }
 
 interface VirtualizedListProps {
@@ -41,9 +64,11 @@ interface VirtualizedListProps {
   height: number;
   /** 流式内容组件（渲染在列表最后） */
   streamingContent?: React.ReactNode;
+  /** 流式文本（用于计算滚动高度） */
+  streamingText?: string;
 }
 
-export function VirtualizedList({ items, renderItem, height, streamingContent }: VirtualizedListProps) {
+export function VirtualizedList({ items, renderItem, height, streamingContent, streamingText }: VirtualizedListProps) {
   const { stdout } = useStdout();
   const termWidth = stdout.columns || 80;
 
@@ -62,9 +87,11 @@ export function VirtualizedList({ items, renderItem, height, streamingContent }:
     prevItemCountRef.current = items.length;
   }, [items.length]);
 
-  // 增量计算每项高度：只计算新增 item，缓存已有结果
+  // 增量计算每项高度：缓存已有结果，检测最后一项变化（流式更新）
   const heightCacheRef = useRef<number[]>([]);
   const lastTermWidthRef = useRef(termWidth);
+  // 缓存最后一项的引用，用于检测 updateLastItem
+  const lastItemRef = useRef<DisplayItem | null>(null);
 
   const itemHeights = useMemo(() => {
     const cache = heightCacheRef.current;
@@ -73,28 +100,48 @@ export function VirtualizedList({ items, renderItem, height, streamingContent }:
       lastTermWidthRef.current = termWidth;
       const newHeights = items.map(item => estimateItemHeight(item, termWidth));
       heightCacheRef.current = newHeights;
+      lastItemRef.current = items.length > 0 ? items[items.length - 1] : null;
       return newHeights;
     }
-    // items 数组引用变化时（MessageDataStore 每次变更都创建新引用）
-    // 复用已有缓存，只计算新增部分
+
+    // items 数组引用变化时
     if (cache.length <= items.length) {
-      // 可能有新增项，补算
       const newHeights = cache.slice(0, Math.min(cache.length, items.length));
+
+      // 检测最后一项是否被替换（流式更新场景）
+      if (newHeights.length > 0 && items.length > 0) {
+        const currentLast = items[newHeights.length - 1];
+        if (currentLast !== lastItemRef.current && newHeights.length === items.length) {
+          // 最后一项引用变了但总数没变 → updateLastItem，重算最后一项
+          newHeights[newHeights.length - 1] = estimateItemHeight(currentLast, termWidth);
+        }
+      }
+
+      // 补算新增项
       for (let i = newHeights.length; i < items.length; i++) {
         newHeights.push(estimateItemHeight(items[i], termWidth));
       }
       heightCacheRef.current = newHeights;
+      lastItemRef.current = items.length > 0 ? items[items.length - 1] : null;
       return newHeights;
     }
+
     // items 减少了（compact/clear），全量重算
     const newHeights = items.map(item => estimateItemHeight(item, termWidth));
     heightCacheRef.current = newHeights;
+    lastItemRef.current = items.length > 0 ? items[items.length - 1] : null;
     return newHeights;
   }, [items, termWidth]);
 
+  // 流式内容的估算高度
+  const streamingHeight = useMemo(() => {
+    return streamingText ? estimateStreamingHeight(streamingText, termWidth) : 0;
+  }, [streamingText, termWidth]);
+
+  // 总高度包含流式内容
   const totalEstimatedLines = useMemo(() => {
-    return itemHeights.reduce((sum, h) => sum + h, 0);
-  }, [itemHeights]);
+    return itemHeights.reduce((sum, h) => sum + h, 0) + streamingHeight;
+  }, [itemHeights, streamingHeight]);
 
   // 计算可见范围
   const { visibleRange, topSpacerHeight, bottomSpacerHeight } = useMemo(() => {
@@ -103,7 +150,8 @@ export function VirtualizedList({ items, renderItem, height, streamingContent }:
     }
 
     // 从底部开始计算：scrollOffset 行之后的内容是可见的
-    let bottomSkip = scrollOffset;
+    // 先扣除流式内容占用的行数
+    let bottomSkip = Math.max(0, scrollOffset - streamingHeight);
     let endIdx = items.length;
 
     // 跳过底部不可见的项
@@ -140,7 +188,7 @@ export function VirtualizedList({ items, renderItem, height, streamingContent }:
       topSpacerHeight: topH,
       bottomSpacerHeight: bottomH,
     };
-  }, [items.length, height, scrollOffset, itemHeights]);
+  }, [items.length, height, scrollOffset, itemHeights, streamingHeight]);
 
   // 注册到 ScrollProvider
   const scrollBy = useCallback((delta: number) => {
@@ -170,13 +218,13 @@ export function VirtualizedList({ items, renderItem, height, streamingContent }:
 
   useScrollable("message-list", { getScrollState, scrollBy, scrollTo });
 
-  // 渲染可见项
+  // 渲染可见项（使用稳定 key）
   const visibleItems: React.ReactNode[] = [];
   for (let i = visibleRange.start; i < visibleRange.end; i++) {
     const item = items[i];
     const prevItem = i > 0 ? items[i - 1] : undefined;
     visibleItems.push(
-      <Box key={`item-${i}`} flexDirection="column">
+      <Box key={getItemKey(item, i)} flexDirection="column">
         {renderItem(item, i, prevItem)}
       </Box>
     );

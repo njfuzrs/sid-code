@@ -17,7 +17,7 @@ import { ToolStatus } from "./ToolStatus.tsx";
 import { StatusBar } from "./StatusBar.tsx";
 import { KeypressProvider, useKeypress, KeypressPriority } from "./contexts/KeypressContext.tsx";
 import { ScrollProvider, useScrollState } from "./contexts/ScrollProvider.tsx";
-import { DialogManagerProvider, DialogRenderer } from "./components/DialogManager.tsx";
+import { DialogRenderer } from "./components/DialogManager.tsx";
 import { VirtualizedList } from "./components/VirtualizedList.tsx";
 import { MessageItemRenderer } from "./components/MessageItemRenderer.tsx";
 import { StreamingMessage } from "./components/StreamingMessage.tsx";
@@ -113,7 +113,7 @@ function EmptyLogo({ termWidth }: { termWidth: number }) {
   const topLine = "╭" + "─".repeat(boxInner) + "╮";
   const botLine = "╰" + "─".repeat(boxInner) + "╯";
   const emptyLine = "│" + " ".repeat(boxInner) + "│";
-  const version = "v0.1.0  ·  AI-Powered Coding Assistant";
+  const version = `v${require("../../package.json").version}  ·  AI-Powered Coding Assistant`;
   const vLeft = Math.floor(Math.max(0, boxInner - version.length) / 2);
   const vRight = Math.max(0, boxInner - version.length - vLeft);
 
@@ -245,6 +245,13 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
   const scrollState = getScrollState();
   const scrollPercent = scrollState ? scrollState.percent : undefined;
 
+  // 动态计算底部区域高度
+  // StatusBar: 1 行, InputArea/DialogRenderer: 约 3 行（对话框可能 5 行）, ToolStatus: 1 行（有工具时）, statusMessage: 1 行（有消息时）
+  const bottomHeight = 1 /* StatusBar */
+    + (state.permissionRequest ? 5 : 3) /* DialogRenderer 或 InputArea */
+    + (state.toolName || state.lastToolResult ? 1 : 0) /* ToolStatus */
+    + (state.statusMessage ? 1 : 0); /* statusMessage */
+
   return (
     <Box flexDirection="column" height={rows}>
       {/* ── 消息区域：VirtualizedList ── */}
@@ -257,8 +264,9 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
           <VirtualizedList
             items={state.displayItems}
             renderItem={renderItem}
-            height={Math.max(1, rows - 6)}
+            height={Math.max(1, rows - bottomHeight)}
             streamingContent={streamingContent}
+            streamingText={state.isStreaming ? state.streamingText : undefined}
           />
         )}
       </Box>
@@ -309,9 +317,7 @@ export function TUIApp(props: AppProps) {
   return (
     <KeypressProvider>
       <ScrollProvider>
-        <DialogManagerProvider>
-          <TUIAppInner {...props} />
-        </DialogManagerProvider>
+        <TUIAppInner {...props} />
       </ScrollProvider>
     </KeypressProvider>
   );
