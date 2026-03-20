@@ -17,9 +17,10 @@ function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
   const detail = getToolSummary(request.toolName, request.toolInput);
   const resolvedRef = useRef(false);
 
-  useKeypress(KeypressPriority.Critical, (input, _key) => {
+  useKeypress(KeypressPriority.Critical, (key) => {
     if (resolvedRef.current) return false;
-    const lower = input.toLowerCase();
+    if (!key.insertable) return false;
+    const lower = key.name;
     if (lower === "y") { resolvedRef.current = true; request.resolve("yes"); return true; }
     if (lower === "n") { resolvedRef.current = true; request.resolve("no"); return true; }
     if (lower === "a") { resolvedRef.current = true; request.resolve("always"); return true; }
@@ -50,9 +51,10 @@ function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
 function ShellConfirmDialog({ request }: { request: ShellConfirmRequestInfo }) {
   const resolvedRef = useRef(false);
 
-  useKeypress(KeypressPriority.Critical, (input, _key) => {
+  useKeypress(KeypressPriority.Critical, (key) => {
     if (resolvedRef.current) return false;
-    const lower = input.toLowerCase();
+    if (!key.insertable) return false;
+    const lower = key.name;
     if (lower === "y") { resolvedRef.current = true; request.resolve(true); return true; }
     if (lower === "n") { resolvedRef.current = true; request.resolve(false); return true; }
     return false;

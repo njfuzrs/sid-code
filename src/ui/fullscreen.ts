@@ -4,18 +4,13 @@
  * 使用 Ink fork 提供的 alternateBuffer + incrementalRendering 参数，
  * 不再手动管理 ANSI 转义序列，不再 monkey-patch Ink 内部 API。
  *
- * 退出时 Ink fork 会自动将最终帧渲染到主缓冲区（由 AlternateBufferQuittingDisplay 提供内容），
- * 不再需要手动输出文本摘要。
+ * 鼠标事件启用/禁用已移至 MouseContext 管理。
+ * 退出时 Ink fork 会自动将最终帧渲染到主缓冲区（由 AlternateBufferQuittingDisplay 提供内容）。
  */
 
 import { render } from "ink";
 import type { ReactElement } from "react";
 import { getLogger } from "../debug/logger.ts";
-
-/** 启用鼠标按钮事件 + SGR 编码（支持滚轮） */
-const ENABLE_MOUSE = "\x1b[?1000h\x1b[?1006h";
-/** 禁用鼠标按钮事件 + SGR 编码 */
-const DISABLE_MOUSE = "\x1b[?1000l\x1b[?1006l";
 
 export interface FullScreenInstance {
   instance: ReturnType<typeof render>;
@@ -41,9 +36,6 @@ export function createFullScreen(
   return {
     get instance() { return instance; },
     start: async () => {
-      // 启用鼠标事件（Ink fork 不自动管理鼠标）
-      stdout.write(ENABLE_MOUSE);
-
       instance = render(node, {
         stdout,
         stdin: process.stdin,
@@ -57,10 +49,6 @@ export function createFullScreen(
 
       exitPromise = (async () => {
         await instance.waitUntilExit();
-
-        // 禁用鼠标事件
-        stdout.write(DISABLE_MOUSE);
-
         log.info("TUI:RENDER", "ink 实例已退出");
       })();
     },

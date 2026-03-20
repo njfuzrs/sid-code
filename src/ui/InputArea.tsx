@@ -5,44 +5,18 @@
  *
  * 多行文本处理：自行计算视觉行，不依赖 Ink 的自动换行（避免 Ink issue #883）
  *
- * 粘贴处理（Bracketed Paste Mode）：
- * 终端粘贴时用 ESC[200~ ... ESC[201~ 包裹内容。
- * Ink 的 inputParser 会把原始 stdin chunk 拆分为独立事件：
- *   1. ESC[200~ 作为一个事件（PASTE_START）
- *   2. 粘贴的文本内容作为若干事件（可能含 \r\n、ANSI 颜色码等）
- *   3. ESC[201~ 作为一个事件（PASTE_END）
- *
- * 关键：Ink 的 use-input.js 会对 input 做两个变换：
- *   - 构造的 key 对象不含 sequence/raw 字段
- *   - 以 ESC 开头的 input 被 slice(1) 去掉前缀
- * 因此 PASTE_START/END 到达回调时 input 为 "[200~"/"[201~"。
- *
- * 粘贴内容中的 ANSI 颜色码（如 ESC[31m）会被 Ink 解析为独立的
- * ctrl 事件（input=""），我们在粘贴状态下跳过空 input 事件。
- *
- * 防御机制：
- *   - 5s 超时保护：PASTE_END 不来时强制插入已累积文本
- *   - 超时冷却期：500ms 内丢弃残留事件，避免被当作普通输入
- *   - 控制字符清理：Tab/\x00-\x1f 等控制字符被清理
+ * 粘贴处理：
+ * KeypressContext 的 bufferPaste 中间件已将 Bracketed Paste Mode 的
+ * paste-start ... paste-end 序列合并为单个 name='paste' 事件，
+ * InputArea 只需处理该事件即可。
  */
 
 import React, { useReducer, useCallback, useRef, useEffect } from "react";
-import { Box, Text, useInput, useStdout } from "ink";
+import { Box, Text, useStdout } from "ink";
 import stringWidth from "string-width";
 import { getLogger } from "../debug/logger.ts";
 import { theme } from "./semantic-colors.ts";
-
-// ── Bracketed Paste Mode ────────────────────────────────────────────
-const PASTE_START_SEQ = "\x1b[200~";
-const PASTE_END_SEQ = "\x1b[201~";
-// Ink 的 use-input.js 会对以 ESC 开头的 input 执行 input.slice(1)，
-// 导致 useInput 回调收到的 input 是去掉 ESC 前缀的 "[200~" / "[201~"。
-// 同时 use-input.js 构造的 key 对象不包含 sequence/raw 字段，
-// 所以必须同时匹配去掉 ESC 后的序列。
-const PASTE_START_STRIPPED = "[200~";
-const PASTE_END_STRIPPED = "[201~";
-const PASTE_ENABLE = "\x1b[?2004h";
-const PASTE_DISABLE = "\x1b[?2004l";
+import { useKeypress, KeypressPriority } from "./contexts/KeypressContext.tsx";
 
 interface InputAreaProps {
   onSubmit: (text: string) => void;
@@ -212,66 +186,14 @@ export function InputArea({ onSubmit, isLoading }: InputAreaProps) {
   });
 
   // ── Bracketed Paste ────────────────────────────────────────────────
-  // 用 ref 让 useInput 回调能同步读取粘贴状态
-  const isPastingRef = useRef(false);
-  const pasteBufferRef = useRef<string>("");
-  // 超时 timer 也用 ref 保存，方便清理
-  const pasteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // 超时冷却期标记：超时 finishPaste 后，后续残留的粘贴文本和 PASTE_END 仍会到达，
-  // 需要在短暂窗口内丢弃这些事件，避免它们被当作普通输入插入。
-  const pasteCooldownRef = useRef(false);
-  const pasteCooldownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  /** 清理粘贴状态 + timer */
-  const finishPaste = useCallback((textToInsert: string, isTimeout = false) => {
-    if (pasteTimerRef.current) {
-      clearTimeout(pasteTimerRef.current);
-      pasteTimerRef.current = null;
-    }
-    isPastingRef.current = false;
-    pasteBufferRef.current = "";
-
-    // 漏洞6修复：超时触发时，进入冷却期丢弃残留事件
-    if (isTimeout) {
-      pasteCooldownRef.current = true;
-      if (pasteCooldownTimerRef.current) clearTimeout(pasteCooldownTimerRef.current);
-      // 500ms 冷却期足以让终端缓冲区中的残留事件全部到达
-      pasteCooldownTimerRef.current = setTimeout(() => {
-        pasteCooldownRef.current = false;
-        pasteCooldownTimerRef.current = null;
-      }, 500);
-    }
-
-    if (textToInsert.length > 0) {
-      dispatch({ type: "insert", text: textToInsert });
-    }
-  }, []);
-
-  /** 开始粘贴：设置状态 + 启动超时保护 */
-  const startPaste = useCallback(() => {
-    isPastingRef.current = true;
-    pasteBufferRef.current = "";
-    // 取消冷却期（新粘贴开始了）
-    if (pasteCooldownTimerRef.current) {
-      clearTimeout(pasteCooldownTimerRef.current);
-      pasteCooldownTimerRef.current = null;
-    }
-    pasteCooldownRef.current = false;
-    // 5 秒超时保护：如果终端异常导致 PASTE_END 永远不来
-    pasteTimerRef.current = setTimeout(() => {
-      if (isPastingRef.current) {
-        log.warn("UI:INPUT", `粘贴超时（5s），强制插入: ${pasteBufferRef.current.length} 字符`);
-        finishPaste(pasteBufferRef.current, true);
-      }
-    }, 5000);
-  }, [finishPaste]);
+  // KeypressContext 的 bufferPaste 中间件已将粘贴内容合并为 name='paste' 事件，
+  // 这里只需要清理粘贴文本中的控制字符。
 
   /**
    * 清理粘贴文本：
    * - 换行（\r\n / \r / \n）→ 空格
    * - Tab → 空格
-   * - 控制字符（\x00-\x1f 除空格外已处理的 \t \r \n）→ 删除
+   * - 控制字符（\x00-\x1f 除已处理的 \t \r \n）→ 删除
    */
   const cleanPasteText = (raw: string): string =>
     raw
@@ -281,25 +203,6 @@ export function InputArea({ onSubmit, isLoading }: InputAreaProps) {
       .replace(/\t/g, " ")
       // eslint-disable-next-line no-control-regex
       .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "");
-
-  // 启用 / 禁用 Bracketed Paste Mode
-  useEffect(() => {
-    if (process.stdin.isTTY) {
-      process.stdout.write(PASTE_ENABLE);
-    }
-    return () => {
-      if (process.stdin.isTTY) {
-        process.stdout.write(PASTE_DISABLE);
-      }
-      // 清理可能残留的 timer
-      if (pasteTimerRef.current) {
-        clearTimeout(pasteTimerRef.current);
-      }
-      if (pasteCooldownTimerRef.current) {
-        clearTimeout(pasteCooldownTimerRef.current);
-      }
-    };
-  }, []);
 
   useEffect(() => {
     if (prevLoadingRef.current !== isLoading) {
@@ -325,80 +228,55 @@ export function InputArea({ onSubmit, isLoading }: InputAreaProps) {
     setTimeout(() => { lastSubmittedRef.current = ""; }, 1000);
   }, [state.value, onSubmit]);
 
-  // ── 核心 useInput：同时处理普通键盘输入和粘贴序列 ──────────────
-  // Ink 的 inputParser 把 stdin 原始 chunk 拆分为事件，经 parseKeypress 后
-  // 以 (input, key) 传入此回调。
-  //
-  // 重要：Ink 的 use-input.js 有两个行为影响粘贴检测：
-  //   1. 构造的 key 对象不包含 sequence/raw 字段（只有布尔标志）
-  //   2. 对以 ESC 开头的 input 执行 input.slice(1)，去掉 ESC 前缀
-  // 因此 PASTE_START "\x1b[200~" 到达回调时 input="[200~"，
-  //       PASTE_END   "\x1b[201~" 到达回调时 input="[201~"。
-  // 粘贴文本本身不以 ESC 开头，所以 input 保持完整。
-  useInput((input, key) => {
-    // ── 粘贴开始 ──
-    // 匹配 Ink 去掉 ESC 后的 "[200~"，同时兼容原始序列（以防 Ink 版本变化）
-    if (input === PASTE_START_STRIPPED || input === PASTE_START_SEQ) {
-      startPaste();
-      log.debug("UI:INPUT", "粘贴开始 (bracketed paste)");
-      return;
-    }
+  // ── 核心键盘处理（通过 KeypressContext 的 useKeypress） ──────────────
+  // KeypressContext 直接读取 stdin 原始数据，解析为结构化 Key 事件。
+  // 粘贴已由 bufferPaste 中间件合并为 name='paste' 事件。
+  // 鼠标事件已由 nonKeyboardEventFilter 过滤，不会到达此处。
+  useKeypress(KeypressPriority.Normal, (key) => {
+    if (isLoading) return false;
 
-    // ── 粘贴结束 ──
-    // 漏洞5修复：无论是否在粘贴状态，都拦截 PASTE_END，避免 [201~ 被当作普通输入插入。
-    // 场景：超时 finishPaste 后 PASTE_END 姗姗来迟，或终端异常发送了孤立的 PASTE_END。
-    if (input === PASTE_END_STRIPPED || input === PASTE_END_SEQ) {
-      if (isPastingRef.current) {
-        log.debug("UI:INPUT", `粘贴完成: ${pasteBufferRef.current.length} 字符`);
-        finishPaste(pasteBufferRef.current);
-      } else {
-        // 非粘贴状态收到 PASTE_END，静默丢弃
-        log.debug("UI:INPUT", "收到孤立的 PASTE_END，已丢弃");
+    // ── 粘贴事件（由 bufferPaste 中间件合并） ──
+    if (key.name === 'paste') {
+      const cleaned = cleanPasteText(key.sequence);
+      if (cleaned.length > 0) {
+        log.debug("UI:INPUT", `粘贴: ${cleaned.length} 字符`);
+        dispatch({ type: "insert", text: cleaned });
       }
-      // 收到正常的 PASTE_END 时，结束冷却期
-      pasteCooldownRef.current = false;
-      if (pasteCooldownTimerRef.current) {
-        clearTimeout(pasteCooldownTimerRef.current);
-        pasteCooldownTimerRef.current = null;
-      }
-      return;
-    }
-
-    // ── 漏洞6修复：冷却期内丢弃残留事件 ──
-    // 超时 finishPaste 后，残留的粘贴文本事件仍会到达，
-    // 在冷却期内全部丢弃，直到 PASTE_END 到达或冷却期结束。
-    if (pasteCooldownRef.current) {
-      return;
-    }
-
-    // ── 粘贴中：累积文本 ──
-    if (isPastingRef.current) {
-      // 漏洞4修复：跳过空 input（如 ANSI 颜色码产生的 ctrl 事件 input=""）
-      if (input) {
-        pasteBufferRef.current += cleanPasteText(input);
-      }
-      return;
+      return true;
     }
 
     // ── 普通键盘输入 ──
-    if (key.return) { handleSubmit(); return; }
-    if (key.upArrow) { dispatch({ type: "history-up" }); return; }
-    if (key.downArrow) { dispatch({ type: "history-down" }); return; }
-    if (key.leftArrow) { dispatch({ type: "move-left" }); return; }
-    if (key.rightArrow) { dispatch({ type: "move-right" }); return; }
-    if (key.backspace || key.delete) { dispatch({ type: "delete" }); return; }
+    if (key.name === 'enter' && !key.shift) { handleSubmit(); return true; }
+    if (key.name === 'up' && !key.shift) { dispatch({ type: "history-up" }); return true; }
+    if (key.name === 'down' && !key.shift) { dispatch({ type: "history-down" }); return true; }
+    if (key.name === 'left') { dispatch({ type: "move-left" }); return true; }
+    if (key.name === 'right') { dispatch({ type: "move-right" }); return true; }
+    if (key.name === 'backspace' || key.name === 'delete') { dispatch({ type: "delete" }); return true; }
+    if (key.name === 'home') { dispatch({ type: "home" }); return true; }
+    if (key.name === 'end') { dispatch({ type: "end" }); return true; }
+
+    // Emacs 快捷键
     if (key.ctrl) {
-      if (input === "a") { dispatch({ type: "home" }); return; }
-      if (input === "e") { dispatch({ type: "end" }); return; }
-      if (input === "k") { dispatch({ type: "kill-line" }); return; }
-      if (input === "u") { dispatch({ type: "kill-to-start" }); return; }
+      if (key.name === "a") { dispatch({ type: "home" }); return true; }
+      if (key.name === "e") { dispatch({ type: "end" }); return true; }
+      if (key.name === "k") { dispatch({ type: "kill-line" }); return true; }
+      if (key.name === "u") { dispatch({ type: "kill-to-start" }); return true; }
     }
-    if (input && !key.ctrl && !key.meta) {
-      // 过滤 SGR 鼠标序列（Ink 去掉 ESC 后格式为 [<btn;col;row[Mm]）
-      if (/^\[<\d+;\d+;\d+[Mm]$/.test(input)) return;
-      dispatch({ type: "insert", text: input });
+
+    // 可插入字符
+    if (key.insertable && !key.ctrl && !key.alt && !key.cmd) {
+      dispatch({ type: "insert", text: key.sequence });
+      return true;
     }
-  }, { isActive: !isLoading });
+
+    // Shift+Enter 插入换行（作为空格处理，单行输入）
+    if (key.name === 'enter' && key.shift) {
+      dispatch({ type: "insert", text: " " });
+      return true;
+    }
+
+    return false;
+  });
 
   const termWidth = stdout.columns || 80;
 

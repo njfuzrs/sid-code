@@ -273,12 +273,12 @@ function ScrollableList<T>(
   );
 
   // ── 键盘导航 ──
-  useKeypress(KeypressPriority.High, (_input, key) => {
+  useKeypress(KeypressPriority.High, (key) => {
     if (!hasFocus) return false;
 
     // PageUp / PageDown
-    if (key.pageUp || key.pageDown) {
-      const direction = key.pageUp ? -1 : 1;
+    if (key.name === "pageup" || key.name === "pagedown") {
+      const direction = key.name === "pageup" ? -1 : 1;
       const scrollState = getScrollState();
       const maxScroll = Math.max(
         0,
@@ -293,12 +293,12 @@ function ScrollableList<T>(
     }
 
     // Shift+Up / Shift+Down（单行滚动）
-    if (key.shift && key.upArrow) {
+    if (key.shift && key.name === "up") {
       stopSmoothScroll();
       scrollByWithAnimation(-1);
       return true;
     }
-    if (key.shift && key.downArrow) {
+    if (key.shift && key.name === "down") {
       stopSmoothScroll();
       scrollByWithAnimation(1);
       return true;

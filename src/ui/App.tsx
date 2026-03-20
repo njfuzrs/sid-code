@@ -15,8 +15,10 @@ import { Box, Text, useApp, useStdout } from "ink";
 import { InputArea } from "./InputArea.tsx";
 import { ToolStatus } from "./ToolStatus.tsx";
 import { StatusBar } from "./StatusBar.tsx";
-import { KeypressProvider, useKeypress, KeypressPriority } from "./contexts/KeypressContext.tsx";
+import { KeypressProvider, useKeypress, KeypressPriority, type Key } from "./contexts/KeypressContext.tsx";
 import { ScrollProvider, useScrollState } from "./contexts/ScrollProvider.tsx";
+import { TerminalProvider } from "./contexts/TerminalContext.tsx";
+import { MouseProvider } from "./contexts/MouseContext.tsx";
 import { DialogRenderer } from "./components/DialogManager.tsx";
 import { ScrollableList } from "./components/ScrollableList.tsx";
 import { SCROLL_TO_ITEM_END } from "./components/VirtualizedList.tsx";
@@ -194,8 +196,8 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
   }, [bridge, exit]);
 
   // Ctrl+C 退出（Critical 优先级）
-  useKeypress(KeypressPriority.Critical, (input, key) => {
-    if (key.ctrl && input === "c") {
+  useKeypress(KeypressPriority.Critical, (key: Key) => {
+    if (key.ctrl && key.name === "c") {
       log.info("UI:APP", "用户按下 Ctrl+C，退出");
       triggerQuit();
       return true;
@@ -203,26 +205,15 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
     return false;
   });
 
-  // SGR 鼠标事件拦截（Critical 优先级）
-  useKeypress(KeypressPriority.Critical, (input, _key) => {
-    const mouseMatch = /^\[<(\d+);\d+;\d+[Mm]$/.exec(input);
-    if (mouseMatch) {
-      const button = parseInt(mouseMatch[1], 10);
-      if (button === 64) scrollActive("up");
-      else if (button === 65) scrollActive("down");
-      return true;
-    }
-    return false;
-  });
-
   // 滚动快捷键（High 优先级）
-  useKeypress(KeypressPriority.High, (_input, key) => {
-    if (key.pageUp) { scrollActive("pageup"); return true; }
-    if (key.pageDown) { scrollActive("pagedown"); return true; }
-    if (key.shift && key.upArrow) { scrollActive("up"); return true; }
-    if (key.shift && key.downArrow) { scrollActive("down"); return true; }
-    // Home/End 键在 Ink 的 Key 类型中不存在，通过 input 匹配
-    // （保留为注释，实际由 fullscreen.ts 的 stdin 层面处理）
+  // 注意：鼠标滚轮事件现在由 MouseContext 处理，不再在 KeypressContext 中拦截
+  useKeypress(KeypressPriority.High, (key: Key) => {
+    if (key.name === "pageup") { scrollActive("pageup"); return true; }
+    if (key.name === "pagedown") { scrollActive("pagedown"); return true; }
+    if (key.shift && key.name === "up") { scrollActive("up"); return true; }
+    if (key.shift && key.name === "down") { scrollActive("down"); return true; }
+    if (key.name === "home") { scrollActive("top"); return true; }
+    if (key.name === "end") { scrollActive("bottom"); return true; }
     return false;
   });
 
@@ -400,10 +391,14 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
 /** 顶层 TUI 组件：包裹 Provider 层 */
 export function TUIApp(props: AppProps) {
   return (
-    <KeypressProvider>
-      <ScrollProvider>
-        <TUIAppInner {...props} />
-      </ScrollProvider>
-    </KeypressProvider>
+    <TerminalProvider>
+      <KeypressProvider>
+        <MouseProvider>
+          <ScrollProvider>
+            <TUIAppInner {...props} />
+          </ScrollProvider>
+        </MouseProvider>
+      </KeypressProvider>
+    </TerminalProvider>
   );
 }
