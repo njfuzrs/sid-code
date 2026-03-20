@@ -26,6 +26,7 @@ import {
   SCROLL_TO_ITEM_END,
 } from "./VirtualizedList.tsx";
 import { useScrollable, type ScrollableEntry } from "../contexts/ScrollProvider.tsx";
+type ScrollableEntryWithoutId = Omit<ScrollableEntry, "id">;
 import { Box, type DOMElement } from "ink";
 import { useKeypress, KeypressPriority } from "../contexts/KeypressContext.tsx";
 import { theme } from "../semantic-colors.ts";
@@ -310,7 +311,7 @@ function ScrollableList<T>(
   // ── ScrollProvider 注册 ──
   const hasFocusCallback = useCallback(() => hasFocus, [hasFocus]);
 
-  const scrollableEntry = useMemo<ScrollableEntry>(
+  const scrollableEntry = useMemo<ScrollableEntryWithoutId>(
     () => ({
       ref: containerRef as React.RefObject<DOMElement>,
       getScrollState,

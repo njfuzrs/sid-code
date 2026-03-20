@@ -26,12 +26,11 @@ export const StreamingMessage = React.memo(function StreamingMessage({
   isActive,
   maxWidth,
 }: StreamingMessageProps) {
-  if (!fullText) return null;
-
   const effectiveWidth = (maxWidth || 80) - ASSISTANT_PADDING_RIGHT;
 
   // 找到安全分割点：已完成部分可以安全渲染
   const splitPoint = useMemo(() => {
+    if (!fullText) return 0;
     if (!isActive) return fullText.length;
     return findLastSafeSplitPoint(fullText);
   }, [fullText, isActive]);
@@ -42,6 +41,8 @@ export const StreamingMessage = React.memo(function StreamingMessage({
     if (!completedText) return null;
     return renderMarkdownToReact(completedText, effectiveWidth);
   }, [completedText, effectiveWidth]);
+
+  if (!fullText) return null;
 
   // 未完成部分
   const pendingText = splitPoint > 0 ? fullText.slice(splitPoint) : fullText;

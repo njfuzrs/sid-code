@@ -1,223 +1,447 @@
 /**
- * 统一滚动管理
+ * 统一滚动管理（对齐 gemini-cli）
  *
- * 注册表模式管理多个可滚动区域，鼠标滚轮/键盘滚动事件路由到活跃区域。
- * 批量滚动：queueMicrotask 合并同帧多次滚动。
+ * 核心改动（vs 旧实现）：
+ * - getBoundingBox() 空间检测替代简单 activeId
+ * - 完整鼠标事件支持：滚轮/点击轨道/拖拽 thumb
+ * - setTimeout(0) 批量滚动（per-component 累积）
+ * - canScroll(direction) 方向检测
+ * - 最小面积优先（处理嵌套滚动区域）
  *
- * 支持两种注册方式：
- * 1. useScrollable(id, callbacks) — 旧接口，兼容 App.tsx 直接使用
- * 2. useScrollable(entry, isActive) — 新接口，ScrollableList 对象式注册
- *
- * 坐标系说明（scrollTop 语义）：
- * scrollTop = 从顶部向下偏移的行数（0 = 顶部）
- * "up"（向上滚动查看历史）= 减小 scrollTop = 负 delta
- * "down"（向下滚动回到底部）= 增大 scrollTop = 正 delta
+ * 参考 gemini-cli/packages/cli/src/ui/contexts/ScrollProvider.tsx
  */
 
-import React, { createContext, useContext, useCallback, useRef, useEffect, useMemo } from "react";
-import type { DOMElement } from "ink";
+import React, {
+  createContext,
+  useContext,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { getBoundingBox, type DOMElement } from "ink";
+import { useMouse, type MouseEvent } from "./MouseContext.tsx";
 
-/** 可滚动区域接口（内部统一格式） */
-export interface ScrollableArea {
-  id: string;
-  getScrollState: () => { scrollTop: number; scrollHeight: number; viewportHeight: number };
-  scrollBy: (delta: number) => void;
-  scrollTo: (position: "top" | "bottom" | number) => void;
+export interface ScrollState {
+  scrollTop: number;
+  scrollHeight: number;
+  innerHeight: number;
 }
 
-/** ScrollableList 注册入口（新接口） */
 export interface ScrollableEntry {
+  id: string;
   ref: React.RefObject<DOMElement>;
-  getScrollState: () => { scrollTop: number; scrollHeight: number; innerHeight: number };
+  getScrollState: () => ScrollState;
   scrollBy: (delta: number) => void;
-  scrollTo: (offset: number) => void;
+  scrollTo?: (scrollTop: number, duration?: number) => void;
   hasFocus: () => boolean;
   flashScrollbar: () => void;
 }
 
-interface ScrollContextValue {
-  registerArea: (area: ScrollableArea) => void;
-  unregisterArea: (id: string) => void;
-  /** 切换活跃滚动区域 */
-  setActiveArea: (id: string) => void;
-  /** 获取活跃区域的滚动状态 */
-  getActiveScrollState: () => { scrollTop: number; scrollHeight: number; viewportHeight: number; percent: number } | null;
-  /** 向活跃区域发送滚动指令 */
-  scrollActive: (action: "up" | "down" | "pageup" | "pagedown" | "top" | "bottom") => void;
+interface ScrollContextType {
+  register: (entry: ScrollableEntry) => void;
+  unregister: (id: string) => void;
+  getFocusedEntry: () => ScrollableEntry | null;
 }
 
-const ScrollCtx = createContext<ScrollContextValue | null>(null);
+const ScrollContext = createContext<ScrollContextType | null>(null);
 
-let nextAreaId = 0;
+/** 根据鼠标坐标查找候选滚动区域，按面积从小到大排序（最内层优先） */
+const findScrollableCandidates = (
+  mouseEvent: MouseEvent,
+  scrollables: Map<string, ScrollableEntry>,
+) => {
+  const candidates: Array<ScrollableEntry & { area: number }> = [];
 
-export function ScrollProvider({ children }: { children: React.ReactNode }) {
-  const areasRef = useRef<Map<string, ScrollableArea>>(new Map());
-  /** 当前活跃区域 ID（默认第一个注册的） */
-  const activeIdRef = useRef<string | null>(null);
-  /** 批量滚动累积 */
-  const pendingDeltaRef = useRef(0);
-  const flushScheduledRef = useRef(false);
+  for (const entry of scrollables.values()) {
+    if (!entry.ref.current) continue;
 
-  const registerArea = useCallback((area: ScrollableArea) => {
-    areasRef.current.set(area.id, area);
-    if (!activeIdRef.current) activeIdRef.current = area.id;
-  }, []);
+    const boundingBox = getBoundingBox(entry.ref.current);
+    if (!boundingBox) continue;
 
-  const unregisterArea = useCallback((id: string) => {
-    areasRef.current.delete(id);
-    if (activeIdRef.current === id) {
-      const first = areasRef.current.keys().next().value;
-      activeIdRef.current = first ?? null;
+    const { x, y, width, height } = boundingBox;
+
+    // +1 宽度包含滚动条列
+    const isInside =
+      mouseEvent.col >= x &&
+      mouseEvent.col < x + width + 1 &&
+      mouseEvent.row >= y &&
+      mouseEvent.row < y + height;
+
+    if (isInside) {
+      candidates.push({ ...entry, area: width * height });
     }
-  }, []);
-
-  const setActiveArea = useCallback((id: string) => {
-    if (areasRef.current.has(id)) {
-      activeIdRef.current = id;
-    }
-  }, []);
-
-  const getActiveArea = useCallback((): ScrollableArea | null => {
-    if (!activeIdRef.current) return null;
-    return areasRef.current.get(activeIdRef.current) ?? null;
-  }, []);
-
-  const flushScroll = useCallback(() => {
-    flushScheduledRef.current = false;
-    const delta = pendingDeltaRef.current;
-    pendingDeltaRef.current = 0;
-    if (delta === 0) return;
-    const area = getActiveArea();
-    area?.scrollBy(delta);
-  }, [getActiveArea]);
-
-  const getActiveScrollState = useCallback(() => {
-    const area = getActiveArea();
-    if (!area) return null;
-    const state = area.getScrollState();
-    const maxScroll = Math.max(0, state.scrollHeight - state.viewportHeight);
-    const percent = maxScroll <= 0 ? 100 : Math.round((state.scrollTop / maxScroll) * 100);
-    return { ...state, percent };
-  }, [getActiveArea]);
-
-  const scrollActive = useCallback((action: "up" | "down" | "pageup" | "pagedown" | "top" | "bottom") => {
-    const area = getActiveArea();
-    if (!area) return;
-
-    if (action === "top" || action === "bottom") {
-      pendingDeltaRef.current = 0;
-      area.scrollTo(action);
-      return;
-    }
-
-    const state = area.getScrollState();
-    const pageLines = Math.max(1, state.viewportHeight - 2);
-    let delta = 0;
-    switch (action) {
-      case "up": delta = -3; break;
-      case "down": delta = 3; break;
-      case "pageup": delta = -pageLines; break;
-      case "pagedown": delta = pageLines; break;
-    }
-
-    pendingDeltaRef.current += delta;
-    if (!flushScheduledRef.current) {
-      flushScheduledRef.current = true;
-      queueMicrotask(flushScroll);
-    }
-  }, [getActiveArea, flushScroll]);
-
-  const contextValue = useMemo(() => ({
-    registerArea, unregisterArea, setActiveArea, getActiveScrollState, scrollActive,
-  }), [registerArea, unregisterArea, setActiveArea, getActiveScrollState, scrollActive]);
-
-  return (
-    <ScrollCtx.Provider value={contextValue}>
-      {children}
-    </ScrollCtx.Provider>
-  );
-}
-
-/**
- * 注册一个可滚动区域
- *
- * 重载 1（旧接口）：useScrollable(id, callbacks)
- * 重载 2（新接口）：useScrollable(entry, isActive) — ScrollableList 使用
- */
-export function useScrollable(
-  idOrEntry: string | ScrollableEntry,
-  callbacksOrIsActive?: {
-    getScrollState: () => { scrollTop: number; scrollHeight: number; viewportHeight: number };
-    scrollBy: (delta: number) => void;
-    scrollTo: (position: "top" | "bottom") => void;
-  } | boolean,
-): void {
-  const ctx = useContext(ScrollCtx);
-  if (!ctx) throw new Error("useScrollable 必须在 ScrollProvider 内使用");
-
-  // 新接口：ScrollableEntry 对象
-  if (typeof idOrEntry === "object") {
-    const entry = idOrEntry;
-    const isActive = callbacksOrIsActive === true;
-    const idRef = useRef(`scrollable-${nextAreaId++}`);
-
-    const entryRef = useRef(entry);
-    entryRef.current = entry;
-
-    useEffect(() => {
-      const id = idRef.current;
-      const area: ScrollableArea = {
-        id,
-        getScrollState: () => {
-          const s = entryRef.current.getScrollState();
-          return { scrollTop: s.scrollTop, scrollHeight: s.scrollHeight, viewportHeight: s.innerHeight };
-        },
-        scrollBy: (delta) => entryRef.current.scrollBy(delta),
-        scrollTo: (pos) => {
-          if (pos === "top") entryRef.current.scrollTo(0);
-          else if (pos === "bottom") entryRef.current.scrollTo(Number.MAX_SAFE_INTEGER);
-          else entryRef.current.scrollTo(pos);
-        },
-      };
-      ctx.registerArea(area);
-      if (isActive) ctx.setActiveArea(id);
-      return () => ctx.unregisterArea(id);
-    }, [ctx, isActive]);
-
-    return;
   }
 
-  // 旧接口：id + callbacks
-  const id = idOrEntry;
-  const callbacks = callbacksOrIsActive as {
-    getScrollState: () => { scrollTop: number; scrollHeight: number; viewportHeight: number };
-    scrollBy: (delta: number) => void;
-    scrollTo: (position: "top" | "bottom") => void;
+  // 最小面积优先（最内层嵌套区域）
+  candidates.sort((a, b) => a.area - b.area);
+  return candidates;
+};
+
+export const ScrollProvider: React.FC<{ children: React.ReactNode }> = ({
+  children,
+}) => {
+  const [scrollables, setScrollables] = useState(
+    new Map<string, ScrollableEntry>(),
+  );
+
+  const register = useCallback((entry: ScrollableEntry) => {
+    setScrollables((prev) => new Map(prev).set(entry.id, entry));
+  }, []);
+
+  const unregister = useCallback((id: string) => {
+    setScrollables((prev) => {
+      const next = new Map(prev);
+      next.delete(id);
+      return next;
+    });
+  }, []);
+
+  const scrollablesRef = useRef(scrollables);
+  useEffect(() => {
+    scrollablesRef.current = scrollables;
+  }, [scrollables]);
+
+  // per-component 批量滚动累积
+  const pendingScrollsRef = useRef(new Map<string, number>());
+  const flushScheduledRef = useRef(false);
+
+  // 滚动条拖拽状态
+  const dragStateRef = useRef<{
+    active: boolean;
+    id: string | null;
+    offset: number;
+  }>({
+    active: false,
+    id: null,
+    offset: 0,
+  });
+
+  const scheduleFlush = useCallback(() => {
+    if (!flushScheduledRef.current) {
+      flushScheduledRef.current = true;
+      setTimeout(() => {
+        flushScheduledRef.current = false;
+        for (const [id, delta] of pendingScrollsRef.current.entries()) {
+          const entry = scrollablesRef.current.get(id);
+          if (entry) {
+            entry.scrollBy(delta);
+          }
+        }
+        pendingScrollsRef.current.clear();
+      }, 0);
+    }
+  }, []);
+
+  /** 处理鼠标滚轮 */
+  const handleScroll = (direction: "up" | "down", mouseEvent: MouseEvent) => {
+    const delta = direction === "up" ? -1 : 1;
+    const candidates = findScrollableCandidates(
+      mouseEvent,
+      scrollablesRef.current,
+    );
+
+    for (const candidate of candidates) {
+      const { scrollTop, scrollHeight, innerHeight } =
+        candidate.getScrollState();
+      const pendingDelta = pendingScrollsRef.current.get(candidate.id) || 0;
+      const effectiveScrollTop = scrollTop + pendingDelta;
+
+      // 浮点精度容差
+      const canScrollUp = effectiveScrollTop > 0.001;
+      const canScrollDown =
+        effectiveScrollTop < scrollHeight - innerHeight - 0.001;
+
+      if (direction === "up" && canScrollUp) {
+        pendingScrollsRef.current.set(candidate.id, pendingDelta + delta);
+        scheduleFlush();
+        return true;
+      }
+
+      if (direction === "down" && canScrollDown) {
+        pendingScrollsRef.current.set(candidate.id, pendingDelta + delta);
+        scheduleFlush();
+        return true;
+      }
+    }
+    return false;
   };
 
-  const cbRef = useRef(callbacks);
-  cbRef.current = callbacks;
+  /** 处理鼠标左键按下（滚动条交互） */
+  const handleLeftPress = (mouseEvent: MouseEvent) => {
+    for (const entry of scrollablesRef.current.values()) {
+      if (!entry.ref.current || !entry.hasFocus()) continue;
+
+      const boundingBox = getBoundingBox(entry.ref.current);
+      if (!boundingBox) continue;
+
+      const { x, y, width, height } = boundingBox;
+
+      // 检查点击是否在滚动条列（x + width）
+      if (
+        mouseEvent.col === x + width &&
+        mouseEvent.row >= y &&
+        mouseEvent.row < y + height
+      ) {
+        const { scrollTop, scrollHeight, innerHeight } = entry.getScrollState();
+
+        if (scrollHeight <= innerHeight) continue;
+
+        const thumbHeight = Math.max(
+          1,
+          Math.floor((innerHeight / scrollHeight) * innerHeight),
+        );
+        const maxScrollTop = scrollHeight - innerHeight;
+        const maxThumbY = innerHeight - thumbHeight;
+
+        if (maxThumbY <= 0) continue;
+
+        const currentThumbY = Math.round(
+          (scrollTop / maxScrollTop) * maxThumbY,
+        );
+
+        const absoluteThumbTop = y + currentThumbY;
+        const absoluteThumbBottom = absoluteThumbTop + thumbHeight;
+
+        // 边缘扩展命中区域
+        const isTop = mouseEvent.row === y;
+        const isBottom = mouseEvent.row === y + height - 1;
+
+        const hitTop = isTop ? absoluteThumbTop : absoluteThumbTop - 1;
+        const hitBottom = isBottom
+          ? absoluteThumbBottom
+          : absoluteThumbBottom + 1;
+
+        const isThumbClick =
+          mouseEvent.row >= hitTop && mouseEvent.row < hitBottom;
+
+        let offset = 0;
+        const relativeMouseY = mouseEvent.row - y;
+
+        if (isThumbClick) {
+          // 拖拽 thumb：记录偏移量
+          offset = relativeMouseY - currentThumbY;
+        } else {
+          // 轨道点击：跳转到位置，thumb 居中于点击位置
+          const targetThumbY = Math.max(
+            0,
+            Math.min(maxThumbY, relativeMouseY - Math.floor(thumbHeight / 2)),
+          );
+
+          const newScrollTop = Math.round(
+            (targetThumbY / maxThumbY) * maxScrollTop,
+          );
+          if (entry.scrollTo) {
+            entry.scrollTo(newScrollTop);
+          } else {
+            entry.scrollBy(newScrollTop - scrollTop);
+          }
+
+          offset = relativeMouseY - targetThumbY;
+        }
+
+        // 开始拖拽
+        dragStateRef.current = {
+          active: true,
+          id: entry.id,
+          offset,
+        };
+        return true;
+      }
+    }
+
+    // 非滚动条区域点击：闪烁最内层候选的滚动条
+    const candidates = findScrollableCandidates(
+      mouseEvent,
+      scrollablesRef.current,
+    );
+
+    if (candidates.length > 0) {
+      candidates[0].flashScrollbar();
+      return false;
+    }
+    return false;
+  };
+
+  /** 处理鼠标移动（拖拽滚动条） */
+  const handleMove = (mouseEvent: MouseEvent) => {
+    const state = dragStateRef.current;
+    if (!state.active || !state.id) return false;
+
+    const entry = scrollablesRef.current.get(state.id);
+    if (!entry || !entry.ref.current) {
+      state.active = false;
+      return false;
+    }
+
+    const boundingBox = getBoundingBox(entry.ref.current);
+    if (!boundingBox) return false;
+
+    const { y } = boundingBox;
+    const { scrollTop, scrollHeight, innerHeight } = entry.getScrollState();
+
+    const thumbHeight = Math.max(
+      1,
+      Math.floor((innerHeight / scrollHeight) * innerHeight),
+    );
+    const maxScrollTop = scrollHeight - innerHeight;
+    const maxThumbY = innerHeight - thumbHeight;
+
+    if (maxThumbY <= 0) return false;
+
+    const relativeMouseY = mouseEvent.row - y;
+    const targetThumbY = Math.max(
+      0,
+      Math.min(maxThumbY, relativeMouseY - state.offset),
+    );
+
+    const targetScrollTop = Math.round(
+      (targetThumbY / maxThumbY) * maxScrollTop,
+    );
+
+    if (entry.scrollTo) {
+      entry.scrollTo(targetScrollTop, 0);
+    } else {
+      entry.scrollBy(targetScrollTop - scrollTop);
+    }
+    return true;
+  };
+
+  /** 处理鼠标左键释放（结束拖拽） */
+  const handleLeftRelease = () => {
+    if (dragStateRef.current.active) {
+      dragStateRef.current = {
+        active: false,
+        id: null,
+        offset: 0,
+      };
+      return true;
+    }
+    return false;
+  };
+
+  // 注册鼠标事件处理
+  useMouse(
+    useCallback((event: MouseEvent) => {
+      if (event.name === "scroll-up") {
+        return handleScroll("up", event);
+      } else if (event.name === "scroll-down") {
+        return handleScroll("down", event);
+      } else if (event.name === "left-press") {
+        return handleLeftPress(event);
+      } else if (event.name === "move") {
+        return handleMove(event);
+      } else if (event.name === "left-release") {
+        return handleLeftRelease();
+      }
+      return false;
+    }, []),
+    { isActive: true },
+  );
+
+  const getFocusedEntry = useCallback((): ScrollableEntry | null => {
+    for (const entry of scrollablesRef.current.values()) {
+      if (entry.hasFocus()) return entry;
+    }
+    // 没有焦点的，返回第一个
+    const first = scrollablesRef.current.values().next();
+    return first.done ? null : first.value;
+  }, []);
+
+  const contextValue = useMemo(
+    () => ({ register, unregister, getFocusedEntry }),
+    [register, unregister, getFocusedEntry],
+  );
+
+  return (
+    <ScrollContext.Provider value={contextValue}>
+      {children}
+    </ScrollContext.Provider>
+  );
+};
+
+let nextId = 0;
+
+/**
+ * 注册可滚动区域到 ScrollProvider
+ *
+ * @param entry - 滚动区域入口（不含 id，自动生成）
+ * @param isActive - 是否激活注册
+ */
+export const useScrollable = (
+  entry: Omit<ScrollableEntry, "id">,
+  isActive: boolean,
+) => {
+  const context = useContext(ScrollContext);
+  if (!context) {
+    throw new Error("useScrollable 必须在 ScrollProvider 内使用");
+  }
+
+  const [id] = useState(() => `scrollable-${nextId++}`);
 
   useEffect(() => {
-    const area: ScrollableArea = {
-      id,
-      getScrollState: () => cbRef.current.getScrollState(),
-      scrollBy: (delta) => cbRef.current.scrollBy(delta),
-      scrollTo: (pos) => cbRef.current.scrollTo(pos as "top" | "bottom"),
-    };
-    ctx.registerArea(area);
-    return () => ctx.unregisterArea(id);
-  }, [ctx, id]);
-}
+    if (isActive) {
+      context.register({ ...entry, id });
+      return () => {
+        context.unregister(id);
+      };
+    }
+    return;
+  }, [context, entry, id, isActive]);
+};
 
-/** 获取滚动状态（供 StatusBar 等使用）— 返回稳定引用 */
+/**
+ * 获取滚动状态和控制方法（供 App 级组件使用）
+ *
+ * - getScrollState(): 返回当前焦点 scrollable 的滚动百分比
+ * - scrollActive(action): 对焦点 scrollable 执行滚动操作
+ */
 export function useScrollState() {
-  const ctx = useContext(ScrollCtx);
-  const getScrollState = useCallback(() => {
-    return ctx?.getActiveScrollState() ?? null;
-  }, [ctx]);
-  const scrollActive = useCallback((action: "up" | "down" | "pageup" | "pagedown" | "top" | "bottom") => {
-    ctx?.scrollActive(action);
-  }, [ctx]);
-  return useMemo(() => ({ getScrollState, scrollActive }), [getScrollState, scrollActive]);
+  const context = useContext(ScrollContext);
+  if (!context) {
+    throw new Error("useScrollState 必须在 ScrollProvider 内使用");
+  }
+
+  const getScrollState = useCallback((): { percent: number } | null => {
+    const entry = context.getFocusedEntry?.();
+    if (!entry) return null;
+    const { scrollTop, scrollHeight, innerHeight } = entry.getScrollState();
+    if (scrollHeight <= innerHeight) return { percent: 100 };
+    const maxScroll = scrollHeight - innerHeight;
+    const percent = Math.round(Math.min(100, (scrollTop / maxScroll) * 100));
+    return { percent };
+  }, [context]);
+
+  const scrollActive = useCallback((action: "pageup" | "pagedown" | "up" | "down" | "top" | "bottom") => {
+    const entry = context.getFocusedEntry?.();
+    if (!entry) return;
+    const { scrollTop, scrollHeight, innerHeight } = entry.getScrollState();
+    const maxScroll = Math.max(0, scrollHeight - innerHeight);
+
+    switch (action) {
+      case "up":
+        entry.scrollBy(-1);
+        break;
+      case "down":
+        entry.scrollBy(1);
+        break;
+      case "pageup":
+        entry.scrollBy(-Math.max(1, innerHeight - 1));
+        break;
+      case "pagedown":
+        entry.scrollBy(Math.max(1, innerHeight - 1));
+        break;
+      case "top":
+        if (entry.scrollTo) entry.scrollTo(0);
+        else entry.scrollBy(-scrollTop);
+        break;
+      case "bottom":
+        if (entry.scrollTo) entry.scrollTo(maxScroll);
+        else entry.scrollBy(maxScroll - scrollTop);
+        break;
+    }
+  }, [context]);
+
+  return { getScrollState, scrollActive };
 }

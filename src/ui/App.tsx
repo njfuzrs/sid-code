@@ -162,14 +162,14 @@ function EmptyLogo({ termWidth }: { termWidth: number }) {
   );
 }
 
-/** 内部 App 组件（在 Provider 内部，可使用 useKeypress/useScrollState） */
+/** 内部 App 组件（在 Provider 内部，可使用 useKeypress） */
 function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
   const { exit } = useApp();
   const { stdout } = useStdout();
   const [state, setState] = useState<TUIState>(initialState);
   const isSubmittingRef = useRef(false);
   const log = getLogger();
-  const { getScrollState, scrollActive } = useScrollState();
+  const { getScrollState } = useScrollState();
 
   useEffect(() => {
     log.info("UI:APP", "TUIApp 组件已挂载（VirtualizedList 模式）");
@@ -205,17 +205,8 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
     return false;
   });
 
-  // 滚动快捷键（High 优先级）
-  // 注意：鼠标滚轮事件现在由 MouseContext 处理，不再在 KeypressContext 中拦截
-  useKeypress(KeypressPriority.High, (key: Key) => {
-    if (key.name === "pageup") { scrollActive("pageup"); return true; }
-    if (key.name === "pagedown") { scrollActive("pagedown"); return true; }
-    if (key.shift && key.name === "up") { scrollActive("up"); return true; }
-    if (key.shift && key.name === "down") { scrollActive("down"); return true; }
-    if (key.name === "home") { scrollActive("top"); return true; }
-    if (key.name === "end") { scrollActive("bottom"); return true; }
-    return false;
-  });
+  // 注意：滚动快捷键（PageUp/PageDown/Shift+↑↓/Home/End）和鼠标滚轮
+  // 已由 ScrollableList + ScrollProvider 内部处理，无需在此重复注册
 
   const handleSubmit = useCallback(async (text: string) => {
     log.info("UI:INPUT", `handleSubmit: "${text.slice(0, 100)}"`);
@@ -319,7 +310,7 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
     return Math.max(1, totalLines);
   }, [listData, termWidth, state.streamingText]);
 
-  // 获取滚动百分比（从 ScrollProvider）
+  // 获取滚动百分比
   const scrollState = getScrollState();
   const scrollPercent = scrollState ? scrollState.percent : undefined;
 
@@ -345,7 +336,7 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
       </Box>
 
       {/* ── 底部固定区域 ── */}
-      <Box flexDirection="column">
+      <Box flexDirection="column" flexShrink={0}>
         {/* 状态消息（上下文警告等） */}
         {state.statusMessage ? (
           <Box paddingX={1}>
