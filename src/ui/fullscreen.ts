@@ -1,8 +1,8 @@
 /**
- * TUI 渲染模块（Ink 原生 alternateBuffer 模式）
+ * TUI 渲染模块（支持双模式）
  *
- * 使用 Ink fork 提供的 alternateBuffer + incrementalRendering 参数，
- * 不再手动管理 ANSI 转义序列，不再 monkey-patch Ink 内部 API。
+ * 模式 1（默认）：Ink 原生 alternateBuffer + incrementalRendering
+ * 模式 2（--no-alternate-buffer）：标准 Ink 渲染（Static 模式，屏幕阅读器友好）
  *
  * 鼠标事件启用/禁用已移至 MouseContext 管理。
  * 退出时 Ink fork 会自动将最终帧渲染到主缓冲区（由 AlternateBufferQuittingDisplay 提供内容）。
@@ -19,13 +19,13 @@ export interface FullScreenInstance {
 }
 
 /**
- * 创建 ink 应用（Ink 原生 alternateBuffer 模式）
+ * 创建 ink 应用
  *
- * 使用 Ink fork 的 alternateBuffer: true 参数，Ink 自动管理 alternate screen。
- * 退出时 Ink 自动恢复终端状态，并在主缓冲区渲染最终帧（由 React 组件树提供）。
+ * @param useAlternateBuffer - true: Ink 原生 alternateBuffer 模式；false: 标准 Ink 渲染（Static 模式）
  */
 export function createFullScreen(
   node: ReactElement,
+  useAlternateBuffer: boolean = true,
 ): FullScreenInstance {
   const log = getLogger();
   const stdout = process.stdout;
@@ -36,16 +36,23 @@ export function createFullScreen(
   return {
     get instance() { return instance; },
     start: async () => {
-      instance = render(node, {
+      const options: Parameters<typeof render>[1] = {
         stdout,
         stdin: process.stdin,
         exitOnCtrlC: false,
         patchConsole: false,
-        alternateBuffer: true,
-        incrementalRendering: true,
-      } as Parameters<typeof render>[1]);
+      };
 
-      log.info("TUI:RENDER", "ink 实例已创建（Ink 原生 alternateBuffer 模式）");
+      if (useAlternateBuffer) {
+        // Alternate Buffer 模式：全屏接管
+        (options as any).alternateBuffer = true;
+        (options as any).incrementalRendering = true;
+      }
+
+      instance = render(node, options);
+
+      const modeName = useAlternateBuffer ? "Alternate Buffer" : "Static";
+      log.info("TUI:RENDER", `ink 实例已创建（${modeName} 模式）`);
 
       exitPromise = (async () => {
         await instance.waitUntilExit();

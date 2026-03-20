@@ -107,6 +107,10 @@ export interface Config {
   // Hook 和 MCP
   hooks: HooksConfig;
   mcpServers: Record<string, MCPServerConfig>;
+
+  // UI 配置
+  /** 是否使用 alternate buffer 模式（默认 true，--no-alternate-buffer 可切换为 false） */
+  useAlternateBuffer: boolean;
 }
 
 /** 默认配置 */
@@ -140,6 +144,7 @@ export function defaultConfig(): Config {
     debugLogFile: "~/.sid-code/debug.log",
     hooks: {},
     mcpServers: {},
+    useAlternateBuffer: true,
   };
 }
 
@@ -180,6 +185,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     mcp_servers: "mcpServers",
     sub_agent_models: "subAgentModels",
     cost_limit: "costLimit",
+    use_alternate_buffer: "useAlternateBuffer",
   };
 
   const result: any = {};

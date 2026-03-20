@@ -867,9 +867,13 @@ export class App {
     let streamingFullText = "";
 
     // 事件驱动状态桥接（替代 50ms 轮询）
+    const useAlternateBuffer = (this.config as any).useAlternateBuffer !== false;
+
     const bridge = new StateBridge({
       messages: [],
       displayItems: [],
+      confirmedHistoryItems: [],
+      pendingHistoryItems: [],
       isLoading: false,
       toolName: null,
       toolInput: null,
@@ -891,6 +895,7 @@ export class App {
       isStreaming: false,
       streamingLine: "",
       isQuitting: false,
+      useAlternateBuffer,
     });
 
     const updateState = (patch: Partial<import("./ui/App.tsx").TUIState>) => {
@@ -907,13 +912,44 @@ export class App {
     // DisplayItem 增量同步：追踪上次同步的 ctxMgr 消息数
     const { messagesToDisplayItems, isPlaceholderMessage } = await import("./ui/App.tsx");
     let lastSyncedCount = 0;
+
+    /**
+     * 计算 confirmed / pending 分割（Static 模式用）
+     * confirmed = 已完成轮次的消息，pending = 当前轮次进行中的消息
+     * 分割点：最后一条用户消息（含该消息之前为 confirmed）
+     */
+    const splitConfirmedPending = (items: import("./ui/App.tsx").DisplayItem[], isLoading: boolean) => {
+      if (!isLoading) {
+        // 不在加载中，所有消息都是 confirmed
+        return { confirmedHistoryItems: items, pendingHistoryItems: [] as import("./ui/App.tsx").DisplayItem[] };
+      }
+      // 找最后一条用户消息的位置作为分割点
+      let splitIndex = items.length;
+      for (let i = items.length - 1; i >= 0; i--) {
+        const item = items[i];
+        if (item.kind === "message" && item.message.role === "user") {
+          splitIndex = i;
+          break;
+        }
+        if (item.kind === "command") {
+          splitIndex = i;
+          break;
+        }
+      }
+      return {
+        confirmedHistoryItems: items.slice(0, splitIndex),
+        pendingHistoryItems: items.slice(splitIndex),
+      };
+    };
+
     // 会话恢复：如果 ctxMgr 已有消息（restoreSession 在 runTUI 之前调用），初始化 displayItems
     {
       const existingMsgs = this.ctxMgr.getMessages();
       if (existingMsgs.length > 0) {
         lastSyncedCount = existingMsgs.length;
         const items = messagesToDisplayItems(existingMsgs);
-        bridge.update({ messages: existingMsgs, displayItems: items });
+        const { confirmedHistoryItems, pendingHistoryItems } = splitConfirmedPending(items, false);
+        bridge.update({ messages: existingMsgs, displayItems: items, confirmedHistoryItems, pendingHistoryItems });
       }
     }
 
@@ -929,7 +965,9 @@ export class App {
         .map(m => ({ kind: "message" as const, message: m }));
 
       const items = [...prevItems, ...newItems];
-      updateState({ messages: allMsgs, displayItems: items, ...extraPatch });
+      const isLoading = extraPatch?.isLoading ?? bridge.current.isLoading;
+      const { confirmedHistoryItems, pendingHistoryItems } = splitConfirmedPending(items, isLoading);
+      updateState({ messages: allMsgs, displayItems: items, confirmedHistoryItems, pendingHistoryItems, ...extraPatch });
     };
 
     /** 重建 displayItems（/compact 后消息被压缩，需要完整重建） */
@@ -937,7 +975,9 @@ export class App {
       const allMsgs = this.ctxMgr.getMessages();
       lastSyncedCount = allMsgs.length;
       const items = messagesToDisplayItems(allMsgs);
-      updateState({ messages: allMsgs, displayItems: items, ...extraPatch });
+      const isLoading = extraPatch?.isLoading ?? bridge.current.isLoading;
+      const { confirmedHistoryItems, pendingHistoryItems } = splitConfirmedPending(items, isLoading);
+      updateState({ messages: allMsgs, displayItems: items, confirmedHistoryItems, pendingHistoryItems, ...extraPatch });
     };
 
     /** 追加命令消息（输入+输出分离，不进 ctxMgr） */
@@ -945,7 +985,8 @@ export class App {
       const item = { kind: "command" as const, input, output };
       const prevItems = bridge.current.displayItems;
       const items = [...prevItems, item];
-      updateState({ displayItems: items });
+      const { confirmedHistoryItems, pendingHistoryItems } = splitConfirmedPending(items, bridge.current.isLoading);
+      updateState({ displayItems: items, confirmedHistoryItems, pendingHistoryItems });
     };
 
     // 设置 TUI 权限确认回调
@@ -1167,8 +1208,9 @@ export class App {
       },
     };
 
-    // 渲染 TUI（Alternate Screen Buffer 模式）
-    log.info("TUI", "开始渲染 TUI 组件（alternate screen 模式）");
+    // 渲染 TUI
+    const modeName = useAlternateBuffer ? "Alternate Buffer" : "Static";
+    log.info("TUI", `开始渲染 TUI 组件（${modeName} 模式）`);
 
     const app = createFullScreen(
       React.createElement(TUIApp, {
@@ -1176,6 +1218,7 @@ export class App {
         callbacks,
         bridge,
       }),
+      useAlternateBuffer,
     );
     await app.start();
 

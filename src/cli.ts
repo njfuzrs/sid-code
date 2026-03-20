@@ -50,6 +50,9 @@ function parseCLIArgs(): Partial<Config> & { prompt?: string } {
       "debug-level": { type: "string" },
       "debug-log-file": { type: "string" },
 
+      // UI
+      "no-alternate-buffer": { type: "boolean" },
+
       // 帮助
       help: { type: "boolean", short: "h" },
       version: { type: "boolean", short: "v" },
@@ -87,6 +90,7 @@ function parseCLIArgs(): Partial<Config> & { prompt?: string } {
     debug: values.debug,
     debugLevel: values["debug-level"],
     debugLogFile: values["debug-log-file"],
+    useAlternateBuffer: values["no-alternate-buffer"] ? false : undefined,
   };
 
   // 位置参数作为初始提示词
@@ -133,6 +137,9 @@ LLM 配置:
   -d, --debug                 启用调试模式（日志输出到 ~/.sid-code/debug.log）
   --debug-level <level>       日志级别 (ERROR/WARN/INFO/DEBUG，默认 DEBUG)
   --debug-log-file <path>     自定义日志文件路径
+
+UI:
+  --no-alternate-buffer       禁用 alternate buffer 模式（使用 Static 模式，屏幕阅读器友好）
 
 其他:
   -h, --help                  显示帮助信息
