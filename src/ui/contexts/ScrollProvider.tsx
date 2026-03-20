@@ -4,10 +4,10 @@
  * 注册表模式管理多个可滚动区域，鼠标滚轮/键盘滚动事件路由到活跃区域。
  * 批量滚动：queueMicrotask 合并同帧多次滚动。
  *
- * 坐标系说明：
- * scrollOffset = 从底部向上偏移的行数（0 = 底部）
- * 因此 "up"（向上滚动查看历史）= 增大 offset = 正 delta
- *      "down"（向下滚动回到底部）= 减小 offset = 负 delta
+ * 坐标系说明（scrollTop 语义）：
+ * scrollTop = 从顶部向下偏移的行数（0 = 顶部）
+ * "up"（向上滚动查看历史）= 减小 scrollTop = 负 delta
+ * "down"（向下滚动回到底部）= 增大 scrollTop = 正 delta
  */
 
 import React, { createContext, useContext, useCallback, useRef, useEffect, useMemo } from "react";
@@ -15,7 +15,7 @@ import React, { createContext, useContext, useCallback, useRef, useEffect, useMe
 /** 可滚动区域接口 */
 export interface ScrollableArea {
   id: string;
-  getScrollState: () => { offset: number; maxOffset: number; viewportHeight: number };
+  getScrollState: () => { scrollTop: number; scrollHeight: number; viewportHeight: number };
   scrollBy: (delta: number) => void;
   scrollTo: (position: "top" | "bottom") => void;
 }
@@ -26,7 +26,7 @@ interface ScrollContextValue {
   /** 切换活跃滚动区域 */
   setActiveArea: (id: string) => void;
   /** 获取活跃区域的滚动状态 */
-  getActiveScrollState: () => { offset: number; maxOffset: number; viewportHeight: number; percent: number } | null;
+  getActiveScrollState: () => { scrollTop: number; scrollHeight: number; viewportHeight: number; percent: number } | null;
   /** 向活跃区域发送滚动指令 */
   scrollActive: (action: "up" | "down" | "pageup" | "pagedown" | "top" | "bottom") => void;
 }
@@ -78,8 +78,9 @@ export function ScrollProvider({ children }: { children: React.ReactNode }) {
     const area = getActiveArea();
     if (!area) return null;
     const state = area.getScrollState();
-    // offset=0 表示在底部（100%），offset=maxOffset 表示在顶部（0%）
-    const percent = state.maxOffset <= 0 ? 100 : Math.round(((state.maxOffset - state.offset) / state.maxOffset) * 100);
+    const maxScroll = Math.max(0, state.scrollHeight - state.viewportHeight);
+    // scrollTop=maxScroll 表示在底部（100%），scrollTop=0 表示在顶部（0%）
+    const percent = maxScroll <= 0 ? 100 : Math.round((state.scrollTop / maxScroll) * 100);
     return { ...state, percent };
   }, [getActiveArea]);
 
@@ -96,13 +97,13 @@ export function ScrollProvider({ children }: { children: React.ReactNode }) {
 
     const state = area.getScrollState();
     const pageLines = Math.max(1, state.viewportHeight - 2);
-    // 坐标系：offset 从底部向上计数，所以 "up"（查看历史）= 正 delta
+    // scrollTop 语义："up"（查看历史）= 负 delta，"down"（回到底部）= 正 delta
     let delta = 0;
     switch (action) {
-      case "up": delta = 3; break;
-      case "down": delta = -3; break;
-      case "pageup": delta = pageLines; break;
-      case "pagedown": delta = -pageLines; break;
+      case "up": delta = -3; break;
+      case "down": delta = 3; break;
+      case "pageup": delta = -pageLines; break;
+      case "pagedown": delta = pageLines; break;
     }
 
     pendingDeltaRef.current += delta;
@@ -126,7 +127,7 @@ export function ScrollProvider({ children }: { children: React.ReactNode }) {
 
 /** 注册一个可滚动区域 */
 export function useScrollable(id: string, callbacks: {
-  getScrollState: () => { offset: number; maxOffset: number; viewportHeight: number };
+  getScrollState: () => { scrollTop: number; scrollHeight: number; viewportHeight: number };
   scrollBy: (delta: number) => void;
   scrollTo: (position: "top" | "bottom") => void;
 }): void {
