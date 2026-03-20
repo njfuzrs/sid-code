@@ -10,6 +10,7 @@ import React, { useMemo } from "react";
 import { Box, Text } from "ink";
 import { renderMarkdownToReact } from "../markdown.ts";
 import { findLastSafeSplitPoint, getStreamingSuffix } from "../markdown-utils.ts";
+import { ASSISTANT_PADDING_RIGHT } from "../ui-utils.ts";
 
 interface StreamingMessageProps {
   /** 累积的全部流式文本 */
@@ -27,7 +28,6 @@ export const StreamingMessage = React.memo(function StreamingMessage({
 }: StreamingMessageProps) {
   if (!fullText) return null;
 
-  const ASSISTANT_PADDING_RIGHT = 10;
   const effectiveWidth = (maxWidth || 80) - ASSISTANT_PADDING_RIGHT;
 
   // 找到安全分割点：已完成部分可以安全渲染

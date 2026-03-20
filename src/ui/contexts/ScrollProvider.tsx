@@ -18,6 +18,8 @@ export interface ScrollableArea {
 interface ScrollContextValue {
   registerArea: (area: ScrollableArea) => void;
   unregisterArea: (id: string) => void;
+  /** 切换活跃滚动区域 */
+  setActiveArea: (id: string) => void;
   /** 获取活跃区域的滚动状态 */
   getActiveScrollState: () => { offset: number; maxOffset: number; viewportHeight: number; percent: number } | null;
   /** 向活跃区域发送滚动指令 */
@@ -47,6 +49,12 @@ export function ScrollProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const setActiveArea = useCallback((id: string) => {
+    if (areasRef.current.has(id)) {
+      activeIdRef.current = id;
+    }
+  }, []);
+
   const getActiveArea = useCallback((): ScrollableArea | null => {
     if (!activeIdRef.current) return null;
     return areasRef.current.get(activeIdRef.current) ?? null;
@@ -65,6 +73,7 @@ export function ScrollProvider({ children }: { children: React.ReactNode }) {
     const area = getActiveArea();
     if (!area) return null;
     const state = area.getScrollState();
+    // offset=0 表示在底部（100%），offset=maxOffset 表示在顶部（0%）
     const percent = state.maxOffset <= 0 ? 100 : Math.round(((state.maxOffset - state.offset) / state.maxOffset) * 100);
     return { ...state, percent };
   }, [getActiveArea]);
@@ -98,7 +107,7 @@ export function ScrollProvider({ children }: { children: React.ReactNode }) {
   }, [getActiveArea, flushScroll]);
 
   return (
-    <ScrollCtx.Provider value={{ registerArea, unregisterArea, getActiveScrollState, scrollActive }}>
+    <ScrollCtx.Provider value={{ registerArea, unregisterArea, setActiveArea, getActiveScrollState, scrollActive }}>
       {children}
     </ScrollCtx.Provider>
   );

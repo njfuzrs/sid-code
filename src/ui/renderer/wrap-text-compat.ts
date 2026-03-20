@@ -10,7 +10,7 @@
  */
 
 import wrapAnsi from "wrap-ansi";
-import stringWidth from "string-width";
+import cliTruncate from "cli-truncate";
 
 /**
  * 对文本进行换行或截断处理
@@ -30,16 +30,17 @@ export default function wrapText(
   }
 
   if (textWrap.startsWith("truncate")) {
+    // 根据截断模式选择 cli-truncate 的 position 参数
+    let position: "start" | "middle" | "end" = "end";
+    if (textWrap === "truncate-start") {
+      position = "start";
+    } else if (textWrap === "truncate-middle") {
+      position = "middle";
+    }
+
     const lines = text.split("\n");
     return lines
-      .map((line) => {
-        if (stringWidth(line) <= maxWidth) return line;
-        // 简化截断：只保留前 maxWidth 列
-        // truncate-end（默认）/ truncate / truncate-start / truncate-middle
-        // 这里统一用 slice 近似处理，对纯 ASCII 足够精确
-        // 对于含 ANSI 的文本，wrap-ansi 的 trim 模式也是类似处理
-        return line.slice(0, maxWidth);
-      })
+      .map((line) => cliTruncate(line, maxWidth, { position }))
       .join("\n");
   }
 

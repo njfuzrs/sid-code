@@ -18,25 +18,41 @@ interface SlicingMaxSizedBoxProps {
   text: string;
 }
 
+/** 按码点安全切割字符串，避免切断 UTF-16 代理对（emoji/CJK 扩展字符） */
+function safeSlice(text: string, start: number, end?: number): string {
+  const codePoints = Array.from(text);
+  return codePoints.slice(start, end).join("");
+}
+
+/** 统计字符串中的换行数（不需要 split 创建数组） */
+function countNewlines(text: string): number {
+  let count = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) === 10) count++;
+  }
+  return count;
+}
+
 export const SlicingMaxSizedBox = React.memo(function SlicingMaxSizedBox({
   maxChars = 20000,
   maxLines,
   overflowDirection = "top",
   text,
 }: SlicingMaxSizedBoxProps) {
+  // 预先计算原始行数（只遍历一次）
+  const originalLineCount = countNewlines(text) + 1;
   let lines = text.split("\n");
   let hiddenCount = 0;
   let truncated = false;
 
-  // 字符级截断
-  if (text.length > maxChars) {
+  // 字符级截断（按码点安全切割）
+  const codePointLength = Array.from(text).length;
+  if (codePointLength > maxChars) {
     truncated = true;
     if (overflowDirection === "top") {
-      const truncatedText = text.slice(-maxChars);
-      lines = truncatedText.split("\n");
+      lines = safeSlice(text, codePointLength - maxChars).split("\n");
     } else {
-      const truncatedText = text.slice(0, maxChars);
-      lines = truncatedText.split("\n");
+      lines = safeSlice(text, 0, maxChars).split("\n");
     }
   }
 
@@ -54,9 +70,8 @@ export const SlicingMaxSizedBox = React.memo(function SlicingMaxSizedBox({
   if (!truncated) {
     hiddenCount = 0;
   } else if (hiddenCount === 0) {
-    // 字符截断但没有行截断时，估算隐藏行数
-    const originalLines = text.split("\n").length;
-    hiddenCount = Math.max(0, originalLines - lines.length);
+    // 字符截断但没有行截断时，用预计算的原始行数
+    hiddenCount = Math.max(0, originalLineCount - lines.length);
   }
 
   const indicator = hiddenCount > 0

@@ -1,30 +1,45 @@
 /**
  * 消息数据存储
  *
- * 存储 DisplayItem[]，提供增删查接口，EventEmitter 通知变化。
+ * 存储 DisplayItem[]，提供增删查接口，类型安全的事件通知。
+ * 每次变更都创建新数组引用，确保 React 不可变性约定。
  */
 
 import { EventEmitter } from "events";
 import type { DisplayItem } from "../App.tsx";
 
+/** 类型安全的事件定义 */
+interface MessageStoreEvents {
+  itemsChanged: [];
+}
+
 export class MessageDataStore extends EventEmitter {
   private items: DisplayItem[] = [];
 
-  /** 追加项目 */
+  // 类型安全的 emit/on/off 重载
+  override emit<K extends keyof MessageStoreEvents>(event: K, ...args: MessageStoreEvents[K]): boolean {
+    return super.emit(event, ...args);
+  }
+  override on<K extends keyof MessageStoreEvents>(event: K, listener: (...args: MessageStoreEvents[K]) => void): this {
+    return super.on(event, listener as (...args: any[]) => void);
+  }
+  override off<K extends keyof MessageStoreEvents>(event: K, listener: (...args: MessageStoreEvents[K]) => void): this {
+    return super.off(event, listener as (...args: any[]) => void);
+  }
+
+  /** 追加项目（创建新数组引用） */
   appendItems(newItems: DisplayItem[]): void {
     if (newItems.length === 0) return;
-    for (const item of newItems) {
-      this.items.push(item);
-    }
+    this.items = [...this.items, ...newItems];
     this.emit("itemsChanged");
   }
 
-  /** 替换最后一项（用于流式更新） */
+  /** 替换最后一项（创建新数组引用） */
   updateLastItem(item: DisplayItem): void {
     if (this.items.length > 0) {
-      this.items[this.items.length - 1] = item;
+      this.items = this.items.slice(0, -1).concat(item);
     } else {
-      this.items.push(item);
+      this.items = [item];
     }
     this.emit("itemsChanged");
   }
@@ -35,7 +50,7 @@ export class MessageDataStore extends EventEmitter {
     this.emit("itemsChanged");
   }
 
-  /** 获取所有项目 */
+  /** 获取所有项目（返回当前数组引用，变更时引用会更新） */
   getItems(): readonly DisplayItem[] {
     return this.items;
   }
@@ -52,7 +67,12 @@ export class MessageDataStore extends EventEmitter {
 
   /** 设置全部项目（重建时使用） */
   setItems(items: DisplayItem[]): void {
-    this.items = items;
+    this.items = [...items];
     this.emit("itemsChanged");
+  }
+
+  /** 清理所有监听器 */
+  destroy(): void {
+    this.removeAllListeners();
   }
 }

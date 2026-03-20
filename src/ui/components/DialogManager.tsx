@@ -5,12 +5,13 @@
  * 权限确认对话框注册 Critical 优先级键盘处理器。
  */
 
-import React, { createContext, useContext, useState, useCallback } from "react";
+import React, { createContext, useContext, useState, useCallback, useRef } from "react";
 import { Box, Text } from "ink";
 import { useKeypress, KeypressPriority } from "../contexts/KeypressContext.tsx";
 import type { PermissionRequestInfo } from "../App.tsx";
+import { getToolSummary } from "../ui-utils.ts";
 
-/** 对话框类型优先级 */
+/** 对话框类型及其优先级 */
 const DIALOG_PRIORITY = {
   toolConfirmation: 200,
   askUser: 100,
@@ -18,15 +19,22 @@ const DIALOG_PRIORITY = {
 
 type DialogType = keyof typeof DIALOG_PRIORITY;
 
-interface DialogState {
-  type: DialogType;
-  props: any;
+/** 类型安全的对话框 props 映射 */
+interface DialogPropsMap {
+  toolConfirmation: { request: PermissionRequestInfo };
+  askUser: { question: string; resolve: (answer: string) => void };
+}
+
+interface DialogState<T extends DialogType = DialogType> {
+  type: T;
+  props: DialogPropsMap[T];
 }
 
 interface DialogManagerContextValue {
-  showDialog: (type: DialogType, props: any) => void;
+  showDialog: <T extends DialogType>(type: T, props: DialogPropsMap[T]) => void;
   hideDialog: (type: DialogType) => void;
-  hasActiveDialog: () => boolean;
+  /** 当前是否有活跃对话框 */
+  hasActiveDialog: boolean;
 }
 
 const DialogManagerCtx = createContext<DialogManagerContextValue | null>(null);
@@ -37,31 +45,18 @@ export function useDialogManager() {
   return ctx;
 }
 
-/** 格式化工具输入的关键信息 */
-function formatToolDetail(toolName: string, input: unknown): string {
-  const lower = toolName.toLowerCase();
-  if (lower === "bash") {
-    return (input as any)?.command || JSON.stringify(input).slice(0, 80);
-  } else if (lower === "write" || lower === "edit" || lower === "read") {
-    return (input as any)?.file_path || (input as any)?.filePath || (input as any)?.path || "";
-  } else if (lower === "grep") {
-    return `pattern: ${(input as any)?.pattern || ""}`;
-  } else if (lower === "glob") {
-    return `pattern: ${(input as any)?.pattern || ""}`;
-  }
-  return JSON.stringify(input).slice(0, 80);
-}
-
 /** 权限确认对话框 */
 function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
-  const detail = formatToolDetail(request.toolName, request.toolInput);
+  const detail = getToolSummary(request.toolName, request.toolInput);
+  // 防止双击：resolve 只执行一次
+  const resolvedRef = useRef(false);
 
-  // 注册 Critical 优先级键盘处理器
   useKeypress(KeypressPriority.Critical, (input, _key) => {
+    if (resolvedRef.current) return false;
     const lower = input.toLowerCase();
-    if (lower === "y") { request.resolve("yes"); return true; }
-    if (lower === "n") { request.resolve("no"); return true; }
-    if (lower === "a") { request.resolve("always"); return true; }
+    if (lower === "y") { resolvedRef.current = true; request.resolve("yes"); return true; }
+    if (lower === "n") { resolvedRef.current = true; request.resolve("no"); return true; }
+    if (lower === "a") { resolvedRef.current = true; request.resolve("always"); return true; }
     return false;
   });
 
@@ -88,10 +83,10 @@ function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
 export function DialogManagerProvider({ children }: { children: React.ReactNode }) {
   const [dialogs, setDialogs] = useState<Map<DialogType, DialogState>>(new Map());
 
-  const showDialog = useCallback((type: DialogType, props: any) => {
+  const showDialog = useCallback(<T extends DialogType>(type: T, props: DialogPropsMap[T]) => {
     setDialogs(prev => {
       const next = new Map(prev);
-      next.set(type, { type, props });
+      next.set(type, { type, props } as DialogState);
       return next;
     });
   }, []);
@@ -104,9 +99,7 @@ export function DialogManagerProvider({ children }: { children: React.ReactNode 
     });
   }, []);
 
-  const hasActiveDialog = useCallback(() => {
-    return dialogs.size > 0;
-  }, [dialogs]);
+  const hasActiveDialog = dialogs.size > 0;
 
   return (
     <DialogManagerCtx.Provider value={{ showDialog, hideDialog, hasActiveDialog }}>
@@ -115,7 +108,7 @@ export function DialogManagerProvider({ children }: { children: React.ReactNode 
   );
 }
 
-/** 对话框渲染器：只渲染最高优先级的活跃对话框 */
+/** 对话框渲染器：渲染最高优先级的活跃对话框 */
 export function DialogRenderer({ permissionRequest }: { permissionRequest: PermissionRequestInfo | null }) {
   if (permissionRequest) {
     return <PermissionDialog request={permissionRequest} />;

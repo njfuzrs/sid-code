@@ -5,7 +5,7 @@
  * 返回 true 的 handler 消费事件，后续 handler 不再收到。
  */
 
-import React, { createContext, useContext, useCallback, useRef, useEffect } from "react";
+import React, { createContext, useContext, useCallback, useRef, useEffect, useMemo } from "react";
 import { useInput } from "ink";
 import type { Key as InkKey } from "ink";
 
@@ -33,16 +33,25 @@ interface KeypressContextValue {
 
 const KeypressCtx = createContext<KeypressContextValue | null>(null);
 
-let nextId = 0;
-
 export function KeypressProvider({ children }: { children: React.ReactNode }) {
   const registrationsRef = useRef<Registration[]>([]);
+  // 局部 ID 计数器，避免跨实例泄漏
+  const nextIdRef = useRef(0);
+  // 缓存已知的优先级集合，只在新优先级出现时重新排序
+  const knownPrioritiesRef = useRef<Set<KeypressPriority>>(new Set());
 
   const register = useCallback((priority: KeypressPriority, handler: KeypressHandler): number => {
-    const id = nextId++;
+    const id = nextIdRef.current++;
     registrationsRef.current.push({ id, priority, handler });
-    // 按优先级降序排列
-    registrationsRef.current.sort((a, b) => b.priority - a.priority);
+    // 只在新优先级出现时排序
+    if (!knownPrioritiesRef.current.has(priority)) {
+      knownPrioritiesRef.current.add(priority);
+      registrationsRef.current.sort((a, b) => b.priority - a.priority);
+    } else {
+      // 同优先级追加到末尾，已经是正确位置（stable sort 保证）
+      // 但如果有多个优先级，需要插入到正确位置
+      registrationsRef.current.sort((a, b) => b.priority - a.priority);
+    }
     return id;
   }, []);
 
@@ -59,8 +68,11 @@ export function KeypressProvider({ children }: { children: React.ReactNode }) {
     }
   });
 
+  // useMemo 包裹 context value，避免不必要的 consumer 重渲染
+  const contextValue = useMemo(() => ({ register, unregister }), [register, unregister]);
+
   return (
-    <KeypressCtx.Provider value={{ register, unregister }}>
+    <KeypressCtx.Provider value={contextValue}>
       {children}
     </KeypressCtx.Provider>
   );

@@ -13,6 +13,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.79.0",
     "@inkjs/ui": "^2.0.0",
+    "cli-truncate": "^5.2.0",
     "glob": "^13.0.6",
     "ink": "npm:@jrichman/ink@6.4.11",
     "lowlight": "^3.3.0",
@@ -20,12 +21,16 @@
     "minimatch": "^10.2.4",
     "react": "^19.2.4",
     "react-devtools-core": "^7.0.1",
+    "react-reconciler": "0.33.0",
+    "scheduler": "0.27.0",
     "string-width": "^7.0.0",
     "wrap-ansi": "^9.0.0",
     "yaml": "^2.8.2"
   },
   "overrides": {
-    "ink": "npm:@jrichman/ink@6.4.11"
+    "ink": "npm:@jrichman/ink@6.4.11",
+    "react-reconciler": "0.33.0",
+    "scheduler": "0.27.0"
   },
   "devDependencies": {
     "@types/bun": "latest",

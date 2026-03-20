@@ -145,20 +145,22 @@ interface CodeBlockProps {
 
 /** 代码块组件：带缩进和语法高亮 */
 export const CodeBlock = React.memo(function CodeBlock({ code, lang }: CodeBlockProps) {
-  const highlighted = highlightToReact(code, lang);
-  // 每行添加 2 空格缩进
-  const lines = code.split("\n");
-
+  // 先检查语言支持，避免无用的高亮计算
   if (!lang || !supportsLanguage(lang)) {
-    // 无高亮：直接缩进输出
-    const indented = lines.map(line => "  " + line).join("\n");
+    const indented = code.split("\n").map(line => "  " + line).join("\n");
     return <Text>{indented}</Text>;
   }
 
-  // 有高亮：逐行缩进
+  // 有高亮：逐行渲染，每行添加 2 空格缩进
+  const lines = code.split("\n");
   return (
     <Text>
-      {"  "}{highlighted}
+      {lines.map((line, i) => (
+        <React.Fragment key={i}>
+          {i > 0 ? "\n" : null}
+          {"  "}{highlightToReact(line, lang)}
+        </React.Fragment>
+      ))}
     </Text>
   );
 });

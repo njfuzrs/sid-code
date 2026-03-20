@@ -241,7 +241,7 @@ function drawTable(
 }
 
 /** 将 marked table token 渲染为终端友好的表格或 key-value 降级格式 */
-function renderTable(token: any): string {
+function renderTable(token: any, width?: number): string {
   const headers: string[] = token.header.map((cell: any) =>
     cell.tokens ? renderInline(cell.tokens) : (cell.text || ""),
   );
@@ -251,7 +251,7 @@ function renderTable(token: any): string {
     ),
   );
   const colCount = headers.length;
-  const termWidth = currentRenderWidth;
+  const termWidth = width ?? currentRenderWidth;
 
   // 总表格宽度 = Σ(contentWidth[i] + CELL_PADDING) + colCount + 1
   // contentBudget = termWidth - colCount * (CELL_PADDING + 1) - 1
@@ -599,6 +599,10 @@ export function renderMarkdown(text: string, maxWidth?: number): string {
 import React from "react";
 import { Text } from "ink";
 
+/** React 渲染缓存（与 ANSI 版本独立） */
+const reactRenderCache = new Map<string, React.ReactNode>();
+let lastReactWidth = 0;
+
 /** 递归渲染内联 token 为 React 元素 */
 function renderInlineToReact(tokens: any[]): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
@@ -678,8 +682,7 @@ function renderTokensToReact(tokens: any[], maxWidth: number): React.ReactNode[]
         break;
       }
       case "table": {
-        currentRenderWidth = maxWidth;
-        const tableText = renderTable(token);
+        const tableText = renderTable(token, maxWidth);
         blocks.push(React.createElement(Text, { key: i }, tableText));
         break;
       }
@@ -707,21 +710,48 @@ export function renderMarkdownToReact(text: string, maxWidth?: number): React.Re
   const w = getTermWidth();
   const effectiveWidth = Math.min(maxWidth ?? w, MAX_RENDER_WIDTH, w);
 
+  // 终端宽度变化时清空缓存
+  if (w !== lastReactWidth) {
+    reactRenderCache.clear();
+    lastReactWidth = w;
+  }
+
+  // 缓存 key 包含宽度
+  const cacheKey = `${effectiveWidth}:${text}`;
+  if (reactRenderCache.has(cacheKey)) {
+    return reactRenderCache.get(cacheKey)!;
+  }
+
   try {
     const tokens = marked.lexer(text);
     const blocks = renderTokensToReact(tokens, effectiveWidth);
 
-    if (blocks.length === 0) return null;
-    if (blocks.length === 1) return blocks[0];
-
-    // 块间用双换行分隔
-    const result: React.ReactNode[] = [];
-    for (let i = 0; i < blocks.length; i++) {
-      if (i > 0) result.push("\n\n");
-      result.push(blocks[i]);
+    let result: React.ReactNode;
+    if (blocks.length === 0) {
+      result = null;
+    } else if (blocks.length === 1) {
+      result = blocks[0];
+    } else {
+      // 块间用双换行分隔
+      const nodes: React.ReactNode[] = [];
+      for (let i = 0; i < blocks.length; i++) {
+        if (i > 0) nodes.push("\n\n");
+        nodes.push(blocks[i]);
+      }
+      result = React.createElement(Text, null, ...nodes);
     }
-    return React.createElement(Text, null, ...result);
+
+    // 缓存结果（LRU 淘汰）
+    if (reactRenderCache.size >= MAX_CACHE_SIZE) {
+      const firstKey = reactRenderCache.keys().next().value;
+      if (firstKey !== undefined) reactRenderCache.delete(firstKey);
+    }
+    reactRenderCache.set(cacheKey, result);
+
+    return result;
   } catch {
-    return React.createElement(Text, null, text);
+    const fallback = React.createElement(Text, null, text);
+    reactRenderCache.set(cacheKey, fallback);
+    return fallback;
   }
 }

@@ -22,7 +22,6 @@ export class RenderController {
   private stdout: NodeJS.WriteStream;
   private screenRenderer: ScreenRenderer;
   private rasterizer: Rasterizer;
-  private lastOutput = "";
   private lastWidth: number;
 
   constructor(stdout: NodeJS.WriteStream) {
@@ -78,7 +77,6 @@ export class RenderController {
     this.screenRenderer.flush();
 
     // 同步 Ink 内部状态
-    this.lastOutput = inkOutput;
     ink.lastOutput = inkOutput;
     ink.lastOutputHeight = inkOutputHeight;
     ink.fullStaticOutput = "";
@@ -99,12 +97,6 @@ export class RenderController {
     // 清屏 + 全量重绘
     this.screenRenderer.clearScreen();
     this.handleRender(ink);
-  }
-
-  /** 恢复输出 */
-  restoreOutput(): void {
-    if (!this.lastOutput) return;
-    this.screenRenderer.flush();
   }
 
   /** 清除 Live 区域 */
@@ -186,22 +178,17 @@ export function patchInk(stdout: NodeJS.WriteStream): RenderController {
     process.stderr.write(data);
   };
 
-  // 4. 安全替换 restoreLastOutput
-  if ('restoreLastOutput' in ink) {
-    ink.restoreLastOutput = () => controller.restoreOutput();
-  }
-
-  // 5. 替换 clear
+  // 4. 替换 clear
   ink.clear = () => {
     controller.clearLive();
   };
 
-  // 6. 替换 log 对象
+  // 5. 替换 log 对象
   ink.log = createNoopLog(stdout);
 
   log.info("TUI:RENDER", "已 patch Ink 渲染层 → RenderController（VirtualizedList 模式）");
 
-  // 7. 立即触发一次渲染
+  // 6. 立即触发一次渲染
   controller.handleRender(ink);
 
   return controller;

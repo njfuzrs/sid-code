@@ -62,9 +62,34 @@ export function VirtualizedList({ items, renderItem, height, streamingContent }:
     prevItemCountRef.current = items.length;
   }, [items.length]);
 
-  // 估算每项高度
+  // 增量计算每项高度：只计算新增 item，缓存已有结果
+  const heightCacheRef = useRef<number[]>([]);
+  const lastTermWidthRef = useRef(termWidth);
+
   const itemHeights = useMemo(() => {
-    return items.map(item => estimateItemHeight(item, termWidth));
+    const cache = heightCacheRef.current;
+    // 终端宽度变化时全量重算
+    if (lastTermWidthRef.current !== termWidth) {
+      lastTermWidthRef.current = termWidth;
+      const newHeights = items.map(item => estimateItemHeight(item, termWidth));
+      heightCacheRef.current = newHeights;
+      return newHeights;
+    }
+    // items 数组引用变化时（MessageDataStore 每次变更都创建新引用）
+    // 复用已有缓存，只计算新增部分
+    if (cache.length <= items.length) {
+      // 可能有新增项，补算
+      const newHeights = cache.slice(0, Math.min(cache.length, items.length));
+      for (let i = newHeights.length; i < items.length; i++) {
+        newHeights.push(estimateItemHeight(items[i], termWidth));
+      }
+      heightCacheRef.current = newHeights;
+      return newHeights;
+    }
+    // items 减少了（compact/clear），全量重算
+    const newHeights = items.map(item => estimateItemHeight(item, termWidth));
+    heightCacheRef.current = newHeights;
+    return newHeights;
   }, [items, termWidth]);
 
   const totalEstimatedLines = useMemo(() => {

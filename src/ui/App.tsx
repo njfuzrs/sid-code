@@ -228,8 +228,8 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
   const rows = stdout.rows || 24;
 
   // 渲染单个 DisplayItem
-  const renderItem = useCallback((item: DisplayItem, index: number, prevItem?: DisplayItem) => {
-    return <MessageItemRenderer item={item} index={index} prevItem={prevItem} />;
+  const renderItem = useCallback((item: DisplayItem, _index: number, prevItem?: DisplayItem) => {
+    return <MessageItemRenderer item={item} prevItem={prevItem} />;
   }, []);
 
   // 流式内容
