@@ -27,6 +27,22 @@ export interface AppContext {
   sendToLLM?: (text: string) => Promise<void>;
   /** 自定义命令列表（/help 显示用） */
   customCommands?: Array<{ name: string; description: string }>;
+  /** Shell 注入确认回调（自定义命令 !{cmd} 语法用），返回 true 表示用户确认 */
+  confirmShellCommands?: (commands: string[]) => Promise<boolean>;
+}
+
+/** 命令执行结果类型 */
+export type CommandResultKind =
+  | "message"        // 显示文本消息
+  | "submit_prompt"  // 将文本提交给 LLM
+  | "clear"          // 清空对话
+  | "quit"           // 退出程序
+  | "error";         // 错误信息
+
+export interface CommandResult {
+  kind: CommandResultKind;
+  message?: string;  // kind=message/error 时的文本
+  prompt?: string;   // kind=submit_prompt 时的提示词
 }
 
 /** 命令接口 - 所有斜杠命令必须实现 */
@@ -34,5 +50,5 @@ export interface Command {
   name(): string;
   aliases(): string[];
   description(): string;
-  execute(args: string, ctx: AppContext): Promise<void>;
+  execute(args: string, ctx: AppContext): Promise<CommandResult>;
 }

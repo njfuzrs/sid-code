@@ -2,19 +2,18 @@
  * 对话框管理器
  *
  * 权限确认对话框注册 Critical 优先级键盘处理器。
- * 当前仅支持权限确认对话框，由 prop 驱动渲染。
+ * 支持：权限确认对话框、Shell 命令确认对话框。
  */
 
 import React, { useRef } from "react";
 import { Box, Text } from "ink";
 import { useKeypress, KeypressPriority } from "../contexts/KeypressContext.tsx";
-import type { PermissionRequestInfo } from "../App.tsx";
+import type { PermissionRequestInfo, ShellConfirmRequestInfo } from "../App.tsx";
 import { getToolSummary } from "../ui-utils.ts";
 
 /** 权限确认对话框 */
 function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
   const detail = getToolSummary(request.toolName, request.toolInput);
-  // 防止双击：resolve 只执行一次
   const resolvedRef = useRef(false);
 
   useKeypress(KeypressPriority.Critical, (input, _key) => {
@@ -46,10 +45,49 @@ function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
   );
 }
 
-/** 对话框渲染器：渲染权限确认对话框 */
-export function DialogRenderer({ permissionRequest }: { permissionRequest: PermissionRequestInfo | null }) {
+/** Shell 命令确认对话框 */
+function ShellConfirmDialog({ request }: { request: ShellConfirmRequestInfo }) {
+  const resolvedRef = useRef(false);
+
+  useKeypress(KeypressPriority.Critical, (input, _key) => {
+    if (resolvedRef.current) return false;
+    const lower = input.toLowerCase();
+    if (lower === "y") { resolvedRef.current = true; request.resolve(true); return true; }
+    if (lower === "n") { resolvedRef.current = true; request.resolve(false); return true; }
+    return false;
+  });
+
+  return (
+    <Box flexDirection="column" borderStyle="single" borderColor="magenta" paddingX={1}>
+      <Text color="magenta" bold>Shell 命令确认</Text>
+      <Text dimColor>自定义命令将执行以下 Shell 命令：</Text>
+      {request.commands.map((cmd, i) => (
+        <Box key={i} marginLeft={2}>
+          <Text color="cyan">$ </Text>
+          <Text>{cmd}</Text>
+        </Box>
+      ))}
+      <Box marginTop={0}>
+        <Text color="green" bold> (y)</Text><Text>确认执行 </Text>
+        <Text color="red" bold> (n)</Text><Text>取消</Text>
+      </Box>
+    </Box>
+  );
+}
+
+/** 对话框渲染器：渲染权限确认或 Shell 确认对话框 */
+export function DialogRenderer({
+  permissionRequest,
+  shellConfirmRequest,
+}: {
+  permissionRequest: PermissionRequestInfo | null;
+  shellConfirmRequest: ShellConfirmRequestInfo | null;
+}) {
   if (permissionRequest) {
     return <PermissionDialog request={permissionRequest} />;
+  }
+  if (shellConfirmRequest) {
+    return <ShellConfirmDialog request={shellConfirmRequest} />;
   }
   return null;
 }

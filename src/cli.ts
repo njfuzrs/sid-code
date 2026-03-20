@@ -223,6 +223,8 @@ async function main(): Promise<void> {
     const { BashTool } = await import("./tool/bash.ts");
     const { GrepTool } = await import("./tool/grep.ts");
     const { GlobTool } = await import("./tool/glob.ts");
+    const { LsTool } = await import("./tool/ls.ts");
+    const { WebFetchTool } = await import("./tool/web-fetch.ts");
 
     toolRegistry.register(new ReadTool(fileReadTracker));
     toolRegistry.register(new WriteTool());
@@ -230,6 +232,8 @@ async function main(): Promise<void> {
     toolRegistry.register(new BashTool());
     toolRegistry.register(new GrepTool());
     toolRegistry.register(new GlobTool());
+    toolRegistry.register(new LsTool());
+    toolRegistry.register(new WebFetchTool());
 
     // 注册子代理工具
     const { SubAgentTool } = await import("./agent/tool.ts");
@@ -244,7 +248,7 @@ async function main(): Promise<void> {
     // 加载自定义命令
     const { CustomCommandLoader } = await import("./command/custom.ts");
     const customCmds = await new CustomCommandLoader().loadAll();
-    for (const cmd of customCmds) commandRegistry.register(cmd);
+    for (const { cmd, source } of customCmds) commandRegistry.register(cmd, source);
 
     // 加载 Skills（注册为工具，LLM 可自动调用）
     const { SkillLoader } = await import("./skill/loader.ts");

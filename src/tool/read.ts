@@ -9,6 +9,9 @@ import type { FileReadTracker } from "./file-read-tracker.ts";
 import { statSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
 
+/** 未指定 limit 时的默认最大行数，防止超大文件撑爆上下文 */
+const DEFAULT_MAX_LINES = 2000;
+
 export class ReadTool implements Tool {
   private tracker: FileReadTracker | null;
 
@@ -25,11 +28,12 @@ export class ReadTool implements Tool {
   }
 
   description(): string {
-    return "读取文件内容。支持指定行偏移和限制来读取大文件的部分内容。";
+    return "读取文件内容。支持指定行偏移和限制来读取大文件的部分内容。默认最多读取 2000 行，超出时会提示如何继续读取。";
   }
 
   usageGuide(): string {
     return `- 使用 read 而不是 bash cat/head/tail 来读取文件
+- 默认最多读取 2000 行，超出时输出末尾会有截断提示
 - 对于大文件，使用 offset 和 limit 参数只读取需要的部分
 - 修改文件前必须先用 read 读取，确保了解当前内容
 - file_path 必须是绝对路径`;
@@ -49,7 +53,7 @@ export class ReadTool implements Tool {
         },
         limit: {
           type: "number",
-          description: "读取的最大行数，默认读取全部",
+          description: `读取的最大行数，默认 ${DEFAULT_MAX_LINES} 行`,
         },
       },
       required: ["file_path"],
@@ -64,7 +68,7 @@ export class ReadTool implements Tool {
       return { output: "错误: 缺少 file_path 参数", isError: true };
     }
 
-    log.info("TOOL", `▶ 读取 ${params.file_path} offset=${params.offset ?? 1} limit=${params.limit ?? "全部"}`);
+    log.info("TOOL", `▶ 读取 ${params.file_path} offset=${params.offset ?? 1} limit=${params.limit ?? DEFAULT_MAX_LINES}`);
 
     try {
       const file = Bun.file(params.file_path);
@@ -75,12 +79,15 @@ export class ReadTool implements Tool {
 
       const content = await file.text();
       const lines = content.split("\n");
+      const totalLines = lines.length;
 
-      // 处理偏移和限制
+      // 处理偏移和限制（未指定 limit 时应用默认上限）
       const offset = Math.max(1, params.offset || 1);
       const startIdx = offset - 1;
-      const endIdx = params.limit ? startIdx + params.limit : lines.length;
+      const maxLines = params.limit ?? DEFAULT_MAX_LINES;
+      const endIdx = Math.min(startIdx + maxLines, totalLines);
       const selectedLines = lines.slice(startIdx, endIdx);
+      const isTruncated = endIdx < totalLines;
 
       // 记录文件已被读取
       if (this.tracker) {
@@ -89,11 +96,19 @@ export class ReadTool implements Tool {
       }
 
       // 格式化输出（带行号）
-      const output = selectedLines
+      let output = selectedLines
         .map((line, idx) => `${startIdx + idx + 1}→${line}`)
         .join("\n");
 
-      log.info("TOOL", `✓ 读取 ${params.file_path} ${selectedLines.length}行 ${output.length}字符`);
+      // 截断提示：告知 LLM 当前显示的行范围和总行数
+      if (isTruncated) {
+        const shownStart = offset;
+        const shownEnd = endIdx;
+        const nextOffset = endIdx + 1;
+        output += `\n\n[文件已截断：当前显示第 ${shownStart}-${shownEnd} 行，共 ${totalLines} 行。如需读取更多，请使用 offset=${nextOffset} 继续读取。]`;
+      }
+
+      log.info("TOOL", `✓ 读取 ${params.file_path} ${selectedLines.length}行 ${isTruncated ? `(截断，共${totalLines}行)` : ""}`);
 
       return { output };
     } catch (err: any) {

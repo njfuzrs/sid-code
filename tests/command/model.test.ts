@@ -7,7 +7,6 @@ import { ModelCommand } from "../../src/command/builtins.ts";
 import type { AppContext } from "../../src/command/types.ts";
 import type { Config, ModelConfig } from "../../src/config/config.ts";
 
-// 创建模拟的 AppContext
 function createMockContext(config: Partial<Config> = {}): AppContext {
   const fullConfig: Config = {
     provider: "openai",
@@ -49,12 +48,7 @@ function createMockContext(config: Partial<Config> = {}): AppContext {
       fullConfig.model = model;
     }),
     exitRequested: false,
-    totalUsage: {
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheCreationInputTokens: 0,
-      cacheReadInputTokens: 0,
-    },
+    sessionState: {} as any,
   };
 }
 
@@ -72,14 +66,9 @@ describe("ModelCommand", () => {
   test("无参数时显示当前模型", async () => {
     const cmd = new ModelCommand();
     const ctx = createMockContext();
-    const consoleSpy = mock(() => {});
-    const originalLog = console.log;
-    console.log = consoleSpy;
-
-    await cmd.execute("", ctx);
-
-    console.log = originalLog;
-    expect(consoleSpy).toHaveBeenCalled();
+    const result = await cmd.execute("", ctx);
+    expect(result.kind).toBe("message");
+    expect(result.message).toContain("qwen3.5-plus");
   });
 
   test("切换到有效模型", async () => {
@@ -96,22 +85,19 @@ describe("ModelCommand", () => {
     expect(ctx.config.model).toBe("qwen-plus");
   });
 
-  test("切换到无效模型时显示错误", async () => {
+  test("切换到无效模型时返回错误", async () => {
     const cmd = new ModelCommand();
     const availableModels: ModelConfig[] = [
       { name: "qwen-plus", provider: "openai" },
       { name: "qwen3.5-plus", provider: "openai" },
     ];
     const ctx = createMockContext({ availableModels });
-    const consoleSpy = mock(() => {});
-    const originalLog = console.log;
-    console.log = consoleSpy;
 
-    await cmd.execute("invalid-model", ctx);
+    const result = await cmd.execute("invalid-model", ctx);
 
-    console.log = originalLog;
+    expect(result.kind).toBe("error");
     expect(ctx.setModel).not.toHaveBeenCalled();
-    expect(ctx.config.model).toBe("qwen3.5-plus"); // 保持原模型
+    expect(ctx.config.model).toBe("qwen3.5-plus");
   });
 
   test("无可用模型列表时允许切换任意模型", async () => {
@@ -123,21 +109,18 @@ describe("ModelCommand", () => {
     expect(ctx.setModel).toHaveBeenCalledWith("any-model");
   });
 
-  test("/model list 显示可用模型列表", async () => {
+  test("/model list 返回可用模型列表", async () => {
     const cmd = new ModelCommand();
     const availableModels: ModelConfig[] = [
       { name: "qwen-plus", provider: "openai" },
       { name: "qwen3.5-plus", provider: "openai" },
     ];
     const ctx = createMockContext({ availableModels });
-    const consoleSpy = mock(() => {});
-    const originalLog = console.log;
-    console.log = consoleSpy;
 
-    await cmd.execute("list", ctx);
+    const result = await cmd.execute("list", ctx);
 
-    console.log = originalLog;
-    expect(consoleSpy).toHaveBeenCalled();
+    expect(result.kind).toBe("message");
+    expect(result.message).toContain("qwen-plus");
   });
 
   test("/model ls 是 list 的别名", async () => {
@@ -146,14 +129,11 @@ describe("ModelCommand", () => {
       { name: "qwen-plus", provider: "openai" },
     ];
     const ctx = createMockContext({ availableModels });
-    const consoleSpy = mock(() => {});
-    const originalLog = console.log;
-    console.log = consoleSpy;
 
-    await cmd.execute("ls", ctx);
+    const result = await cmd.execute("ls", ctx);
 
-    console.log = originalLog;
-    expect(consoleSpy).toHaveBeenCalled();
+    expect(result.kind).toBe("message");
+    expect(result.message).toContain("qwen-plus");
   });
 
   test("切换模型时同时更新 provider 和 baseURL", async () => {

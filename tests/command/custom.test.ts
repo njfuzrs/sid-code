@@ -24,47 +24,30 @@ describe("CustomCommand", () => {
 
   test("$1 $2 参数替换", async () => {
     const cmd = new CustomCommand("greet", "问候", "你好 $1，欢迎来到 $2");
-    let captured = "";
-    const ctx = {
-      sendToLLM: async (text: string) => { captured = text; },
-    } as any;
-
-    await cmd.execute("张三 北京", ctx);
-    expect(captured).toBe("你好 张三，欢迎来到 北京");
+    const result = await cmd.execute("张三 北京", {} as any);
+    expect(result.kind).toBe("submit_prompt");
+    expect(result.prompt).toBe("你好 张三，欢迎来到 北京");
   });
 
   test("$@ 替换为所有参数", async () => {
     const cmd = new CustomCommand("ask", "提问", "请回答: $@");
-    let captured = "";
-    const ctx = {
-      sendToLLM: async (text: string) => { captured = text; },
-    } as any;
-
-    await cmd.execute("什么是 TypeScript", ctx);
-    expect(captured).toBe("请回答: 什么是 TypeScript");
+    const result = await cmd.execute("什么是 TypeScript", {} as any);
+    expect(result.kind).toBe("submit_prompt");
+    expect(result.prompt).toBe("请回答: 什么是 TypeScript");
   });
 
-  test("无 sendToLLM 时降级输出", async () => {
-    const cmd = new CustomCommand("test", "", "内容");
-    const logs: string[] = [];
-    const origLog = console.log;
-    console.log = (...args: any[]) => logs.push(args.join(" "));
-
-    await cmd.execute("", {} as any);
-    console.log = origLog;
-
-    expect(logs).toContain("内容");
+  test("{{args}} 新语法替换", async () => {
+    const cmd = new CustomCommand("ask", "提问", "请回答: {{args}}");
+    const result = await cmd.execute("什么是 TypeScript", {} as any);
+    expect(result.kind).toBe("submit_prompt");
+    expect(result.prompt).toBe("请回答: 什么是 TypeScript");
   });
 
   test("缺少的参数替换为空字符串", async () => {
     const cmd = new CustomCommand("test", "", "参数1=$1 参数2=$2");
-    let captured = "";
-    const ctx = {
-      sendToLLM: async (text: string) => { captured = text; },
-    } as any;
-
-    await cmd.execute("只有一个", ctx);
-    expect(captured).toBe("参数1=只有一个 参数2=");
+    const result = await cmd.execute("只有一个", {} as any);
+    expect(result.kind).toBe("submit_prompt");
+    expect(result.prompt).toBe("参数1=只有一个 参数2=");
   });
 });
 
@@ -89,10 +72,11 @@ description: 代码审查
 请审查以下代码: $@`);
 
     const loader = new CustomCommandLoader(new ExtensionLoader());
-    const cmds = await loader.loadAll(testDir);
-    expect(cmds.length).toBe(1);
-    expect(cmds[0].name()).toBe("review");
-    expect(cmds[0].description()).toBe("代码审查");
+    const results = await loader.loadAll(testDir);
+    expect(results.length).toBe(1);
+    expect(results[0].cmd.name()).toBe("review");
+    expect(results[0].cmd.description()).toBe("代码审查");
+    expect(results[0].source).toBe("project");
   });
 
   test("过滤保护命令名", async () => {
@@ -103,9 +87,9 @@ description: 代码审查
     writeFileSync(join(cmdDir, "custom.md"), "自定义命令");
 
     const loader = new CustomCommandLoader(new ExtensionLoader());
-    const cmds = await loader.loadAll(testDir);
-    expect(cmds.length).toBe(1);
-    expect(cmds[0].name()).toBe("custom");
+    const results = await loader.loadAll(testDir);
+    expect(results.length).toBe(1);
+    expect(results[0].cmd.name()).toBe("custom");
   });
 
   test("HTML 注释作为描述（无 frontmatter）", async () => {
@@ -115,14 +99,14 @@ description: 代码审查
 执行部署流程 $@`);
 
     const loader = new CustomCommandLoader(new ExtensionLoader());
-    const cmds = await loader.loadAll(testDir);
-    expect(cmds.length).toBe(1);
-    expect(cmds[0].description()).toBe("部署到生产环境");
+    const results = await loader.loadAll(testDir);
+    expect(results.length).toBe(1);
+    expect(results[0].cmd.description()).toBe("部署到生产环境");
   });
 
   test("空目录返回空数组", async () => {
     const loader = new CustomCommandLoader(new ExtensionLoader());
-    const cmds = await loader.loadAll(testDir);
-    expect(cmds.length).toBe(0);
+    const results = await loader.loadAll(testDir);
+    expect(results.length).toBe(0);
   });
 });

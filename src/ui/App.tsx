@@ -62,6 +62,12 @@ export interface PermissionRequestInfo {
   resolve: (answer: "yes" | "no" | "always") => void;
 }
 
+/** Shell 命令确认请求信息 */
+export interface ShellConfirmRequestInfo {
+  commands: string[];
+  resolve: (confirmed: boolean) => void;
+}
+
 /** TUI 状态（由外部 App 驱动） */
 export interface TUIState {
   messages: Message[];
@@ -80,6 +86,7 @@ export interface TUIState {
   gitBranch: string;
   statusMessage: string;
   permissionRequest: PermissionRequestInfo | null;
+  shellConfirmRequest: ShellConfirmRequestInfo | null;
   debug: boolean;
   lastToolResult: { toolName: string; isError: boolean; elapsedMs: number } | null;
   /** 流式输出的完整文本 */
@@ -248,7 +255,7 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
   // 动态计算底部区域高度
   // StatusBar: 1 行, InputArea/DialogRenderer: 约 3 行（对话框可能 5 行）, ToolStatus: 1 行（有工具时）, statusMessage: 1 行（有消息时）
   const bottomHeight = 1 /* StatusBar */
-    + (state.permissionRequest ? 5 : 3) /* DialogRenderer 或 InputArea */
+    + (state.permissionRequest || state.shellConfirmRequest ? 5 : 3) /* DialogRenderer 或 InputArea */
     + (state.toolName || state.lastToolResult ? 1 : 0) /* ToolStatus */
     + (state.statusMessage ? 1 : 0); /* statusMessage */
 
@@ -288,9 +295,12 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
           lastResult={state.lastToolResult}
         />
 
-        {/* 权限确认对话框 或 输入区 */}
-        {state.permissionRequest ? (
-          <DialogRenderer permissionRequest={state.permissionRequest} />
+        {/* 权限确认对话框 或 Shell 确认对话框 或 输入区 */}
+        {(state.permissionRequest || state.shellConfirmRequest) ? (
+          <DialogRenderer
+            permissionRequest={state.permissionRequest}
+            shellConfirmRequest={state.shellConfirmRequest ?? null}
+          />
         ) : (
           <InputArea onSubmit={handleSubmit} isLoading={state.isLoading} />
         )}

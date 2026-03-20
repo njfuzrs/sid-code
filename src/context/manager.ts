@@ -245,6 +245,41 @@ export class Manager {
     return this.messages.length;
   }
 
+  /**
+   * 获取对话轮数（一轮 = 一个 user + 一个 assistant 消息对）
+   */
+  getTurnCount(): number {
+    let turns = 0;
+    for (const msg of this.messages) {
+      if (msg.role === "user") turns++;
+    }
+    return turns;
+  }
+
+  /**
+   * 回退最近 n 轮对话
+   * 一轮 = 一次用户输入 + 一次 AI 回复（含工具调用）
+   * 返回实际删除的轮数
+   */
+  rewindTurns(n: number): number {
+    let removed = 0;
+    while (removed < n && this.messages.length > 0) {
+      // 从末尾找到最后一个 user 消息的位置
+      let userIdx = -1;
+      for (let i = this.messages.length - 1; i >= 0; i--) {
+        if (this.messages[i].role === "user") {
+          userIdx = i;
+          break;
+        }
+      }
+      if (userIdx === -1) break;
+      // 删除从 userIdx 到末尾的所有消息（一轮）
+      this.messages.splice(userIdx);
+      removed++;
+    }
+    return removed;
+  }
+
   /** 用摘要替换历史消息（保留最近 N 条，对标 Claude Code 保留 10 条） */
   compactWithSummary(summary: string, keepRecent: number = 10): void {
     if (this.messages.length <= keepRecent) {

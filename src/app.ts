@@ -30,6 +30,34 @@ import type { AgentLoopCallbacks } from "./agent/loop.ts";
 import { HookRunner } from "./hook/runner.ts";
 import { resetStreamingFenceCounter } from "./ui/markdown-utils.ts";
 import { execSync } from "child_process";
+import { readFile } from "fs/promises";
+import { resolve, extname } from "path";
+
+/**
+ * 展开用户输入中的 @path 引用为文件内容
+ * 匹配 @path（不含空格，支持相对/绝对路径）
+ * 文件不存在时保留原文，不报错
+ */
+async function expandAtReferences(input: string): Promise<string> {
+  const AT_PATTERN = /@([\w./\-]+)/g;
+  const matches = [...input.matchAll(AT_PATTERN)];
+  if (matches.length === 0) return input;
+
+  let result = input;
+  for (const match of matches) {
+    const filePath = match[1];
+    try {
+      const absPath = resolve(process.cwd(), filePath);
+      const content = await readFile(absPath, "utf-8");
+      const ext = extname(filePath).slice(1);
+      const replacement = `以下是文件 \`${filePath}\` 的内容：\n\`\`\`${ext}\n${content}\n\`\`\``;
+      result = result.replace(match[0], replacement);
+    } catch {
+      // 文件不存在时保留原文
+    }
+  }
+  return result;
+}
 
 
 /** App 配置 */
@@ -856,6 +884,7 @@ export class App {
       gitBranch: (() => { try { return execSync("git rev-parse --abbrev-ref HEAD 2>/dev/null", { encoding: "utf-8" }).trim(); } catch { return ""; } })(),
       statusMessage: "",
       permissionRequest: null,
+      shellConfirmRequest: null,
       debug: !!this.config.debug,
       lastToolResult: null,
       streamingText: "",
@@ -1021,7 +1050,9 @@ export class App {
         log.debug("TUI:CB", `onUserInput 被调用: "${text.slice(0, 100)}"`);
         try {
           this.abortController = new AbortController();
-          await tuiAgentLoop(text);
+          // @ 文件注入：展开用户输入中的 @path 引用
+          const expanded = await expandAtReferences(text);
+          await tuiAgentLoop(expanded);
         } catch (err: any) {
           log.error("TUI:CB", `onUserInput 异常`, { error: err.message, stack: err.stack });
           updateState({ isLoading: false });
@@ -1031,6 +1062,8 @@ export class App {
       },
       onSlashCommand: async (cmd, args) => {
         log.info("TUI:CMD", `斜杠命令: /${cmd} ${args}`);
+
+        const commandInput = `/${cmd}${args ? " " + args : ""}`;
 
         // 构建命令上下文
         const cmdCtx: import("./command/types.ts").AppContext = {
@@ -1042,14 +1075,12 @@ export class App {
           setModel: (m) => {
             log.info("TUI:CMD", `切换模型: ${this.config.model} → ${m}`);
             this.config.model = m;
-            // 同步模型级 maxOutputTokens
             const { resolveModelMaxOutputTokens } = require("./config/config.ts");
             const modelMaxOutput = resolveModelMaxOutputTokens(this.config);
             if (modelMaxOutput) {
               this.config.maxTokens = modelMaxOutput;
               log.info("TUI:CMD", `maxTokens 已更新: ${modelMaxOutput}`);
             }
-            // Provider 重建（registry 模式）
             if (this.providerRegistry) {
               this.providerRegistry.clearCache();
               this.provider = this.providerRegistry.getProvider();
@@ -1061,63 +1092,77 @@ export class App {
           sessionState: this.sessionState,
           mcpManager: this.mcpManager,
           sendToLLM: async (text) => {
-            // TUI 模式下通过 onUserInput 触发 agentLoop
             await callbacks.onUserInput(text);
           },
           customCommands: this.getCustomCommandsSummary(),
+          confirmShellCommands: async (commands) => {
+            return new Promise<boolean>((resolve) => {
+              updateState({
+                shellConfirmRequest: { commands, resolve },
+              });
+            });
+          },
         };
 
-        // 特殊处理 clear（需要更新 TUI 状态 + 重置相关运行时状态）
-        if (cmd === "clear") {
-          log.info("TUI:CMD", "清空消息历史，重置上下文");
-          this.ctxMgr.clear();
-          clearPromptCache();
-          this.quotaManager?.resetAlertLevel();
-          this.fallback.reset();
-          lastSyncedCount = 0;
-          updateState({
-            messages: [],
-            displayItems: [],
-            contextPercent: 0,
-            statusMessage: "",
-            lastToolResult: null,
-            streamingText: "",
-            isStreaming: false,
-          });
+        const command = this.commandRegistry.get(cmd);
+        if (!command) {
+          log.warn("TUI:CMD", `未知命令: /${cmd}`);
+          appendCommandOutput(commandInput, `未知命令: /${cmd}，输入 /help 查看可用命令`);
           return;
         }
 
-        // 捕获命令输出
-        const outputs: string[] = [];
-        const originalLog = console.log;
-        console.log = (...args: any[]) => {
-          outputs.push(args.map(String).join(" "));
-        };
-
+        let result: import("./command/types.ts").CommandResult;
         try {
-          // 从命令注册表查找并执行
-          const command = this.commandRegistry.get(cmd);
-          if (command) {
-            log.debug("TUI:CMD", `执行命令: /${cmd}`);
-            await command.execute(args, cmdCtx);
-            // 同步模型状态到 TUI
-            updateState({ model: this.config.model, provider: this.config.provider });
-            log.debug("TUI:CMD", `命令执行完成，输出 ${outputs.length} 行`);
-          } else {
-            log.warn("TUI:CMD", `未知命令: /${cmd}`);
-            outputs.push(`未知命令: /${cmd}，输入 /help 查看可用命令`);
-          }
+          log.debug("TUI:CMD", `执行命令: /${cmd}`);
+          result = await command.execute(args, cmdCtx);
+          updateState({ model: this.config.model, provider: this.config.provider });
         } catch (err: any) {
           log.error("TUI:CMD", `命令执行失败: /${cmd}`, { error: err.message, stack: err.stack });
-          outputs.push(`命令执行失败: ${err.message}`);
-        } finally {
-          console.log = originalLog;
+          appendCommandOutput(commandInput, `命令执行失败: ${err.message}`);
+          return;
         }
 
-        // 将命令输出显示为命令消息（输入+输出分离，不进 ctxMgr，不发给 LLM）
-        const commandInput = `/${cmd}${args ? " " + args : ""}`;
-        const commandOutput = outputs.length > 0 ? outputs.join("\n") : null;
-        appendCommandOutput(commandInput, commandOutput);
+        // 处理结构化结果
+        switch (result.kind) {
+          case "clear":
+            log.info("TUI:CMD", "清空消息历史，重置上下文");
+            this.ctxMgr.clear();
+            clearPromptCache();
+            this.quotaManager?.resetAlertLevel();
+            this.fallback.reset();
+            lastSyncedCount = 0;
+            updateState({
+              messages: [],
+              displayItems: [],
+              contextPercent: 0,
+              statusMessage: "",
+              lastToolResult: null,
+              streamingText: "",
+              isStreaming: false,
+            });
+            break;
+
+          case "quit":
+            appendCommandOutput(commandInput, result.message ?? "再见！");
+            setTimeout(() => process.exit(0), 100);
+            break;
+
+          case "submit_prompt":
+            if (result.prompt) {
+              appendCommandOutput(commandInput, null);
+              await callbacks.onUserInput(result.prompt);
+            }
+            break;
+
+          case "error":
+            appendCommandOutput(commandInput, `错误: ${result.message ?? ""}`);
+            break;
+
+          case "message":
+          default:
+            appendCommandOutput(commandInput, result.message ?? null);
+            break;
+        }
       },
     };
 
