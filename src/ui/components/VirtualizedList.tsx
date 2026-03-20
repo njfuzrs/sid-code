@@ -1,330 +1,576 @@
 /**
- * 虚拟化列表组件
+ * 虚拟化列表组件（泛型版）
  *
- * 使用 Ink 原生 overflowY="scroll" + scrollTop 实现真正的滚动，
- * 同时保留虚拟化渲染（只渲染可见项 + 缓冲项）以保证性能。
- *
- * 参考 Gemini CLI 的 VirtualizedList 实现：
- * - 用 ResizeObserver 测量实际渲染高度
- * - anchor-based 定位 + sticky-to-bottom 粘底
- * - Ink 原生滚动条
- *
- * 坐标系：scrollTop = 从顶部向下偏移的行数（0 = 顶部）
+ * 对齐 gemini-cli 的 VirtualizedList 实现：
+ * - 泛型 <T> + keyExtractor + render props
+ * - 外部 estimatedItemHeight 回调
+ * - anchor-based 定位 + sticky-to-bottom
+ * - 双 ResizeObserver（容器 + 项目）
+ * - Ink fork 的 overflowY="scroll" + scrollTop + scrollbarThumbColor
+ * - useBatchedScroll 批量滚动
  */
 
-import React, { useState, useCallback, useRef, useEffect, useMemo } from "react";
-import { Box, ResizeObserver, useStdout, type DOMElement } from "ink";
-import { useScrollable } from "../contexts/ScrollProvider.tsx";
-import type { DisplayItem } from "../App.tsx";
+import {
+  useState,
+  useRef,
+  useLayoutEffect,
+  forwardRef,
+  useImperativeHandle,
+  useMemo,
+  useCallback,
+} from "react";
+import React from "react";
+import { type DOMElement, Box, ResizeObserver } from "ink";
+import { theme } from "../semantic-colors.ts";
+import { useBatchedScroll } from "../hooks/useBatchedScroll.ts";
 
-const SCROLL_TO_END = Number.MAX_SAFE_INTEGER;
+export const SCROLL_TO_ITEM_END = Number.MAX_SAFE_INTEGER;
 
-/** 估算单个 DisplayItem 的行数（用于未测量项的初始高度） */
-function estimateItemHeight(item: DisplayItem, termWidth: number): number {
-  if (item.kind === "system") return 1;
-  if (item.kind === "command") {
-    let lines = 2;
-    if (item.output) lines += item.output.split("\n").length;
-    return lines;
-  }
-  const msg = item.message;
-  let totalLines = 0;
-  const effectiveWidth = Math.max(1, termWidth - 12);
-  for (const block of msg.content) {
-    if (block.type === "text") {
-      const textLen = block.text.length;
-      totalLines += Math.max(1, Math.ceil((textLen * 1.3) / effectiveWidth));
-    } else if (block.type === "tool_use" || block.type === "tool_result") {
-      totalLines += 1;
+type VirtualizedListProps<T> = {
+  data: T[];
+  renderItem: (info: { item: T; index: number }) => React.ReactElement;
+  estimatedItemHeight: (index: number) => number;
+  keyExtractor: (item: T, index: number) => string;
+  initialScrollIndex?: number;
+  initialScrollOffsetInIndex?: number;
+  scrollbarThumbColor?: string;
+};
+
+export type VirtualizedListRef<T> = {
+  scrollBy: (delta: number) => void;
+  scrollTo: (offset: number) => void;
+  scrollToEnd: () => void;
+  scrollToIndex: (params: {
+    index: number;
+    viewOffset?: number;
+    viewPosition?: number;
+  }) => void;
+  scrollToItem: (params: {
+    item: T;
+    viewOffset?: number;
+    viewPosition?: number;
+  }) => void;
+  getScrollIndex: () => number;
+  getScrollState: () => {
+    scrollTop: number;
+    scrollHeight: number;
+    innerHeight: number;
+  };
+};
+
+function findLastIndex<T>(
+  array: T[],
+  predicate: (value: T, index: number, obj: T[]) => unknown,
+): number {
+  for (let i = array.length - 1; i >= 0; i--) {
+    if (predicate(array[i], i, array)) {
+      return i;
     }
   }
-  return Math.max(1, totalLines);
+  return -1;
 }
 
-/** 为 DisplayItem 生成稳定 key */
-function getItemKey(item: DisplayItem, index: number): string {
-  if (item.kind === "system") return `sys-${index}-${item.text.slice(0, 20)}`;
-  if (item.kind === "command") return `cmd-${index}-${item.input.slice(0, 20)}`;
-  const msg = item.message;
-  const first = msg.content[0];
-  if (first?.type === "text") return `msg-${index}-${msg.role}-${first.text.slice(0, 16)}`;
-  if (first?.type === "tool_use") return `msg-${index}-${msg.role}-tu-${first.id}`;
-  if (first?.type === "tool_result") return `msg-${index}-${msg.role}-tr-${first.tool_use_id}`;
-  return `msg-${index}-${msg.role}`;
-}
+function VirtualizedList<T>(
+  props: VirtualizedListProps<T>,
+  ref: React.Ref<VirtualizedListRef<T>>,
+) {
+  const {
+    data,
+    renderItem,
+    estimatedItemHeight,
+    keyExtractor,
+    initialScrollIndex,
+    initialScrollOffsetInIndex,
+  } = props;
 
-interface VirtualizedListProps {
-  items: readonly DisplayItem[];
-  renderItem: (item: DisplayItem, index: number, prevItem?: DisplayItem) => React.ReactNode;
-  /** 可用高度（行数） */
-  height: number;
-  /** 流式内容组件（渲染在列表最后） */
-  streamingContent?: React.ReactNode;
-  /** 流式文本（用于计算滚动高度） */
-  streamingText?: string;
-}
+  const dataRef = useRef(data);
+  useLayoutEffect(() => {
+    dataRef.current = data;
+  }, [data]);
 
-export function VirtualizedList({ items, renderItem, height, streamingContent, streamingText }: VirtualizedListProps) {
-  const { stdout } = useStdout();
-  const termWidth = stdout.columns || 80;
+  // ── 锚点系统 ──
+  const [scrollAnchor, setScrollAnchor] = useState(() => {
+    const scrollToEnd =
+      initialScrollIndex === SCROLL_TO_ITEM_END ||
+      (typeof initialScrollIndex === "number" &&
+        initialScrollIndex >= data.length - 1 &&
+        initialScrollOffsetInIndex === SCROLL_TO_ITEM_END);
 
-  // ── 实际高度测量 ──
-  // key → 实际渲染高度（行数）
-  const [measuredHeights, setMeasuredHeights] = useState<Record<string, number>>({});
-  const itemRefsMap = useRef<Map<string, DOMElement>>(new Map());
+    if (scrollToEnd) {
+      return {
+        index: data.length > 0 ? data.length - 1 : 0,
+        offset: SCROLL_TO_ITEM_END,
+      };
+    }
+
+    if (typeof initialScrollIndex === "number") {
+      return {
+        index: Math.max(0, Math.min(data.length - 1, initialScrollIndex)),
+        offset: initialScrollOffsetInIndex ?? 0,
+      };
+    }
+
+    return { index: 0, offset: 0 };
+  });
+
+  const [isStickingToBottom, setIsStickingToBottom] = useState(() => {
+    const scrollToEnd =
+      initialScrollIndex === SCROLL_TO_ITEM_END ||
+      (typeof initialScrollIndex === "number" &&
+        initialScrollIndex >= data.length - 1 &&
+        initialScrollOffsetInIndex === SCROLL_TO_ITEM_END);
+    return scrollToEnd;
+  });
+
+  // ── 容器高度测量 ──
+  const containerRef = useRef<DOMElement | null>(null);
+  const [containerHeight, setContainerHeight] = useState(0);
+  const itemRefs = useRef<Array<DOMElement | null>>([]);
+  const [heights, setHeights] = useState<Record<string, number>>({});
+  const isInitialScrollSet = useRef(false);
+
+  const containerObserverRef = useRef<ResizeObserver | null>(null);
   const nodeToKeyRef = useRef(new WeakMap<DOMElement, string>());
 
-  // ResizeObserver 测量每个渲染项的实际高度
+  const containerRefCallback = useCallback((node: DOMElement | null) => {
+    containerObserverRef.current?.disconnect();
+    containerRef.current = node;
+    if (node) {
+      const observer = new ResizeObserver((entries) => {
+        const entry = entries[0];
+        if (entry) {
+          setContainerHeight(Math.round(entry.contentRect.height));
+        }
+      });
+      observer.observe(node);
+      containerObserverRef.current = observer;
+    }
+  }, []);
+
+  // ── 项目高度测量 ──
   const itemsObserver = useMemo(
-    () => new ResizeObserver((entries) => {
-      setMeasuredHeights((prev) => {
-        let next: Record<string, number> | null = null;
-        for (const entry of entries) {
-          const key = nodeToKeyRef.current.get(entry.target);
-          if (key !== undefined) {
-            const h = Math.round(entry.contentRect.height);
-            if (prev[key] !== h) {
-              if (!next) next = { ...prev };
-              next[key] = h;
+    () =>
+      new ResizeObserver((entries) => {
+        setHeights((prev) => {
+          let next: Record<string, number> | null = null;
+          for (const entry of entries) {
+            const key = nodeToKeyRef.current.get(entry.target);
+            if (key !== undefined) {
+              const height = Math.round(entry.contentRect.height);
+              if (prev[key] !== height) {
+                if (!next) {
+                  next = { ...prev };
+                }
+                next[key] = height;
+              }
             }
           }
-        }
-        return next ?? prev;
-      });
-    }),
+          return next ?? prev;
+        });
+      }),
     [],
   );
 
-  useEffect(() => () => { itemsObserver.disconnect(); }, [itemsObserver]);
+  useLayoutEffect(
+    () => () => {
+      containerObserverRef.current?.disconnect();
+      itemsObserver.disconnect();
+    },
+    [itemsObserver],
+  );
 
-  // ── 高度计算（估算 + 实测混合） ──
-  const getItemHeight = useCallback((index: number): number => {
-    const item = items[index];
-    if (!item) return 1;
-    const key = getItemKey(item, index);
-    return measuredHeights[key] ?? estimateItemHeight(item, termWidth);
-  }, [items, measuredHeights, termWidth]);
-
-  // offsets[i] = items[0..i) 的累计高度，offsets[items.length] = totalHeight
-  const { offsets, totalItemsHeight } = useMemo(() => {
+  // ── 偏移量计算 ──
+  const { totalHeight, offsets } = useMemo(() => {
     const offsets: number[] = [0];
-    let total = 0;
-    for (let i = 0; i < items.length; i++) {
-      total += getItemHeight(i);
-      offsets.push(total);
+    let totalHeight = 0;
+    for (let i = 0; i < data.length; i++) {
+      const key = keyExtractor(data[i], i);
+      const height = heights[key] ?? estimatedItemHeight(i);
+      totalHeight += height;
+      offsets.push(totalHeight);
     }
-    return { offsets, totalItemsHeight: total };
-  }, [items, getItemHeight]);
+    return { totalHeight, offsets };
+  }, [heights, data, estimatedItemHeight, keyExtractor]);
 
-  // 流式内容估算高度
-  const streamingHeight = useMemo(() => {
-    if (!streamingText) return 0;
-    const effectiveWidth = Math.max(1, termWidth - 12);
-    return Math.max(1, Math.ceil(streamingText.length / effectiveWidth));
-  }, [streamingText, termWidth]);
+  const scrollableContainerHeight = containerHeight;
 
-  const totalHeight = totalItemsHeight + streamingHeight;
+  const getAnchorForScrollTop = useCallback(
+    (
+      scrollTop: number,
+      offsets: number[],
+    ): { index: number; offset: number } => {
+      const index = findLastIndex(offsets, (offset) => offset <= scrollTop);
+      if (index === -1) {
+        return { index: 0, offset: 0 };
+      }
+      return { index, offset: scrollTop - offsets[index] };
+    },
+    [],
+  );
 
-  // ── 滚动状态 ──
-  const [isStickingToBottom, setIsStickingToBottom] = useState(true);
-  // scrollTop: 从顶部偏移的行数
-  const [scrollTop, setScrollTop] = useState(SCROLL_TO_END);
-
-  // 追踪上一帧状态，用于粘底判断
-  const prevDataLenRef = useRef(items.length);
-  const prevTotalHeightRef = useRef(totalHeight);
-  const prevScrollTopRef = useRef(0);
-
-  // 实际 scrollTop（粘底时 = MAX）
+  // ── 实际 scrollTop 计算 ──
   const actualScrollTop = useMemo(() => {
-    if (isStickingToBottom) return SCROLL_TO_END;
-    const maxScroll = Math.max(0, totalHeight - height);
-    return Math.max(0, Math.min(scrollTop, maxScroll));
-  }, [isStickingToBottom, scrollTop, totalHeight, height]);
+    const offset = offsets[scrollAnchor.index];
+    if (typeof offset !== "number") {
+      return 0;
+    }
 
-  // 粘底逻辑：新内容到达 / 流式更新时自动跟随
-  useEffect(() => {
-    const maxScroll = Math.max(0, prevTotalHeightRef.current - height);
-    const wasAtBottom = prevTotalHeightRef.current <= height ||
-      prevScrollTopRef.current >= maxScroll - 1;
-    const listGrew = items.length > prevDataLenRef.current;
-    const contentGrew = totalHeight > prevTotalHeightRef.current;
+    if (scrollAnchor.offset === SCROLL_TO_ITEM_END) {
+      const item = data[scrollAnchor.index];
+      const key = item ? keyExtractor(item, scrollAnchor.index) : "";
+      const itemHeight = heights[key] ?? 0;
+      return offset + itemHeight - scrollableContainerHeight;
+    }
 
-    if ((listGrew || contentGrew) && (isStickingToBottom || wasAtBottom)) {
+    return offset + scrollAnchor.offset;
+  }, [
+    scrollAnchor,
+    offsets,
+    heights,
+    scrollableContainerHeight,
+    data,
+    keyExtractor,
+  ]);
+
+  const scrollTop = isStickingToBottom
+    ? Number.MAX_SAFE_INTEGER
+    : actualScrollTop;
+
+  // ── 粘底逻辑 ──
+  const prevDataLength = useRef(data.length);
+  const prevTotalHeight = useRef(totalHeight);
+  const prevScrollTop = useRef(actualScrollTop);
+  const prevContainerHeight = useRef(scrollableContainerHeight);
+
+  useLayoutEffect(() => {
+    const contentPreviouslyFit =
+      prevTotalHeight.current <= prevContainerHeight.current;
+    const wasScrolledToBottomPixels =
+      prevScrollTop.current >=
+      prevTotalHeight.current - prevContainerHeight.current - 1;
+    const wasAtBottom = contentPreviouslyFit || wasScrolledToBottomPixels;
+
+    if (wasAtBottom && actualScrollTop >= prevScrollTop.current) {
       setIsStickingToBottom(true);
-      setScrollTop(SCROLL_TO_END);
     }
 
-    prevDataLenRef.current = items.length;
-    prevTotalHeightRef.current = totalHeight;
-    if (!isStickingToBottom) {
-      prevScrollTopRef.current = Math.min(scrollTop, Math.max(0, totalHeight - height));
-    } else {
-      prevScrollTopRef.current = Math.max(0, totalHeight - height);
+    const listGrew = data.length > prevDataLength.current;
+    const containerChanged =
+      prevContainerHeight.current !== scrollableContainerHeight;
+
+    if (
+      (listGrew && (isStickingToBottom || wasAtBottom)) ||
+      (isStickingToBottom && containerChanged)
+    ) {
+      setScrollAnchor({
+        index: data.length > 0 ? data.length - 1 : 0,
+        offset: SCROLL_TO_ITEM_END,
+      });
+      if (!isStickingToBottom) {
+        setIsStickingToBottom(true);
+      }
+    } else if (
+      (scrollAnchor.index >= data.length ||
+        actualScrollTop > totalHeight - scrollableContainerHeight) &&
+      data.length > 0
+    ) {
+      const newScrollTop = Math.max(0, totalHeight - scrollableContainerHeight);
+      setScrollAnchor(getAnchorForScrollTop(newScrollTop, offsets));
+    } else if (data.length === 0) {
+      setScrollAnchor({ index: 0, offset: 0 });
     }
-  }, [items.length, totalHeight, height, isStickingToBottom, scrollTop]);
+
+    prevDataLength.current = data.length;
+    prevTotalHeight.current = totalHeight;
+    prevScrollTop.current = actualScrollTop;
+    prevContainerHeight.current = scrollableContainerHeight;
+  }, [
+    data.length,
+    totalHeight,
+    actualScrollTop,
+    scrollableContainerHeight,
+    scrollAnchor.index,
+    getAnchorForScrollTop,
+    offsets,
+    isStickingToBottom,
+  ]);
+
+  // ── 初始滚动位置 ──
+  useLayoutEffect(() => {
+    if (
+      isInitialScrollSet.current ||
+      offsets.length <= 1 ||
+      totalHeight <= 0 ||
+      containerHeight <= 0
+    ) {
+      return;
+    }
+
+    if (typeof initialScrollIndex === "number") {
+      const scrollToEnd =
+        initialScrollIndex === SCROLL_TO_ITEM_END ||
+        (initialScrollIndex >= data.length - 1 &&
+          initialScrollOffsetInIndex === SCROLL_TO_ITEM_END);
+
+      if (scrollToEnd) {
+        setScrollAnchor({
+          index: data.length - 1,
+          offset: SCROLL_TO_ITEM_END,
+        });
+        setIsStickingToBottom(true);
+        isInitialScrollSet.current = true;
+        return;
+      }
+
+      const index = Math.max(0, Math.min(data.length - 1, initialScrollIndex));
+      const offset = initialScrollOffsetInIndex ?? 0;
+      const newScrollTop = (offsets[index] ?? 0) + offset;
+
+      const clampedScrollTop = Math.max(
+        0,
+        Math.min(totalHeight - scrollableContainerHeight, newScrollTop),
+      );
+
+      setScrollAnchor(getAnchorForScrollTop(clampedScrollTop, offsets));
+      isInitialScrollSet.current = true;
+    }
+  }, [
+    initialScrollIndex,
+    initialScrollOffsetInIndex,
+    offsets,
+    totalHeight,
+    containerHeight,
+    getAnchorForScrollTop,
+    data.length,
+    heights,
+    scrollableContainerHeight,
+  ]);
 
   // ── 虚拟化：计算可见范围 ──
-  const resolvedScrollTop = isStickingToBottom
-    ? Math.max(0, totalHeight - height)
-    : Math.max(0, Math.min(scrollTop, totalHeight - height));
+  const startIndex = Math.max(
+    0,
+    findLastIndex(offsets, (offset) => offset <= actualScrollTop) - 1,
+  );
+  const endIndexOffset = offsets.findIndex(
+    (offset) => offset > actualScrollTop + scrollableContainerHeight,
+  );
+  const endIndex =
+    endIndexOffset === -1
+      ? data.length - 1
+      : Math.min(data.length - 1, endIndexOffset);
 
-  const { startIndex, endIndex, topSpacerHeight, bottomSpacerHeight } = useMemo(() => {
-    if (items.length === 0) {
-      return { startIndex: 0, endIndex: 0, topSpacerHeight: 0, bottomSpacerHeight: 0 };
-    }
+  const topSpacerHeight = offsets[startIndex] ?? 0;
+  const bottomSpacerHeight =
+    totalHeight - (offsets[endIndex + 1] ?? totalHeight);
 
-    // 找到第一个可见项（二分查找）
-    let lo = 0, hi = items.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >>> 1;
-      if (offsets[mid + 1]! <= resolvedScrollTop) lo = mid + 1;
-      else hi = mid;
-    }
-    const start = Math.max(0, lo - 1); // 1 个缓冲项
-
-    // 找到最后一个可见项
-    const viewBottom = resolvedScrollTop + height;
-    let end = start;
-    while (end < items.length && offsets[end]! < viewBottom) end++;
-    end = Math.min(items.length, end + 1); // 1 个缓冲项
-
-    const topH = offsets[start] ?? 0;
-    const bottomH = totalItemsHeight - (offsets[end] ?? totalItemsHeight);
-
-    return { startIndex: start, endIndex: end, topSpacerHeight: topH, bottomSpacerHeight: Math.max(0, bottomH) };
-  }, [items.length, offsets, resolvedScrollTop, height, totalItemsHeight]);
-
-  // ── ScrollProvider 注册 ──
-  const totalHeightRef = useRef(totalHeight);
-  totalHeightRef.current = totalHeight;
-  const heightRef = useRef(height);
-  heightRef.current = height;
-  const stickyRef = useRef(isStickingToBottom);
-  stickyRef.current = isStickingToBottom;
-
-  const scrollBy = useCallback((delta: number) => {
-    const maxScroll = Math.max(0, totalHeightRef.current - heightRef.current);
-    if (delta < 0) {
-      // 向上滚动
-      setIsStickingToBottom(false);
-      setScrollTop(prev => {
-        const current = prev >= SCROLL_TO_END ? maxScroll : Math.min(prev, maxScroll);
-        return Math.max(0, current + delta);
-      });
-    } else {
-      // 向下滚动
-      setScrollTop(prev => {
-        const current = stickyRef.current ? maxScroll : Math.min(prev, maxScroll);
-        const next = current + delta;
-        if (next >= maxScroll) {
-          setIsStickingToBottom(true);
-          return SCROLL_TO_END;
-        }
-        return next;
-      });
-    }
-  }, []);
-
-  const scrollToPos = useCallback((position: "top" | "bottom") => {
-    if (position === "bottom") {
-      setIsStickingToBottom(true);
-      setScrollTop(SCROLL_TO_END);
-    } else {
-      setIsStickingToBottom(false);
-      setScrollTop(0);
-    }
-  }, []);
-
-  const getScrollState = useCallback(() => {
-    const maxScroll = Math.max(0, totalHeight - height);
-    const current = isStickingToBottom ? maxScroll : Math.min(scrollTop, maxScroll);
-    return { scrollTop: current, scrollHeight: totalHeight, viewportHeight: height };
-  }, [scrollTop, totalHeight, height, isStickingToBottom]);
-
-  useScrollable("message-list", { getScrollState, scrollBy, scrollTo: scrollToPos });
-
-  // ── 渲染可见项 ──
-  const observedNodesRef = useRef<Set<DOMElement>>(new Set());
-
-  // 同步 observer：观察新节点，取消观察旧节点
-  useEffect(() => {
+  // ── 观察可见项 ──
+  const observedNodes = useRef<Set<DOMElement>>(new Set());
+  useLayoutEffect(() => {
     const currentNodes = new Set<DOMElement>();
-    for (let i = startIndex; i < endIndex; i++) {
-      const key = getItemKey(items[i], i);
-      const node = itemRefsMap.current.get(key);
-      if (node) {
+    for (let i = startIndex; i <= endIndex; i++) {
+      const node = itemRefs.current[i];
+      const item = data[i];
+      if (node && item) {
         currentNodes.add(node);
+        const key = keyExtractor(item, i);
         nodeToKeyRef.current.set(node, key);
-        if (!observedNodesRef.current.has(node)) {
+        if (!observedNodes.current.has(node)) {
           itemsObserver.observe(node);
         }
       }
     }
-    for (const node of observedNodesRef.current) {
+    for (const node of observedNodes.current) {
       if (!currentNodes.has(node)) {
         itemsObserver.unobserve(node);
         nodeToKeyRef.current.delete(node);
       }
     }
-    observedNodesRef.current = currentNodes;
+    observedNodes.current = currentNodes;
   });
 
-  const visibleItems: React.ReactNode[] = [];
-  for (let i = startIndex; i < endIndex; i++) {
-    const item = items[i];
-    const prevItem = i > 0 ? items[i - 1] : undefined;
-    const key = getItemKey(item, i);
-    visibleItems.push(
-      <Box
-        key={key}
-        flexDirection="column"
-        flexShrink={0}
-        width="100%"
-        ref={(el: DOMElement | null) => {
-          if (el) {
-            itemRefsMap.current.set(key, el);
-            nodeToKeyRef.current.set(el, key);
-            if (!observedNodesRef.current.has(el)) {
-              itemsObserver.observe(el);
-            }
-          }
-        }}
-      >
-        {renderItem(item, i, prevItem)}
-      </Box>
-    );
+  // ── 渲染可见项 ──
+  const renderedItems = [];
+  for (let i = startIndex; i <= endIndex; i++) {
+    const item = data[i];
+    if (item) {
+      renderedItems.push(
+        <Box
+          key={keyExtractor(item, i)}
+          width="100%"
+          flexDirection="column"
+          flexShrink={0}
+          ref={(el: DOMElement | null) => {
+            itemRefs.current[i] = el;
+          }}
+        >
+          {renderItem({ item, index: i })}
+        </Box>,
+      );
+    }
   }
 
-  // 空状态
-  if (items.length === 0 && !streamingContent) {
-    return <Box height={height} />;
-  }
+  // ── 批量滚动 ──
+  const { getScrollTop, setPendingScrollTop } = useBatchedScroll(scrollTop);
+
+  // ── 暴露 ref API ──
+  useImperativeHandle(
+    ref,
+    () => ({
+      scrollBy: (delta: number) => {
+        if (delta < 0) {
+          setIsStickingToBottom(false);
+        }
+        const currentScrollTop = getScrollTop();
+        const maxScroll = Math.max(0, totalHeight - scrollableContainerHeight);
+        const actualCurrent = Math.min(currentScrollTop, maxScroll);
+        let newScrollTop = Math.max(0, actualCurrent + delta);
+        if (newScrollTop >= maxScroll) {
+          setIsStickingToBottom(true);
+          newScrollTop = Number.MAX_SAFE_INTEGER;
+        }
+        setPendingScrollTop(newScrollTop);
+        setScrollAnchor(
+          getAnchorForScrollTop(Math.min(newScrollTop, maxScroll), offsets),
+        );
+      },
+      scrollTo: (offset: number) => {
+        const maxScroll = Math.max(0, totalHeight - scrollableContainerHeight);
+        if (offset >= maxScroll || offset === SCROLL_TO_ITEM_END) {
+          setIsStickingToBottom(true);
+          setPendingScrollTop(Number.MAX_SAFE_INTEGER);
+          if (data.length > 0) {
+            setScrollAnchor({
+              index: data.length - 1,
+              offset: SCROLL_TO_ITEM_END,
+            });
+          }
+        } else {
+          setIsStickingToBottom(false);
+          const newScrollTop = Math.max(0, offset);
+          setPendingScrollTop(newScrollTop);
+          setScrollAnchor(getAnchorForScrollTop(newScrollTop, offsets));
+        }
+      },
+      scrollToEnd: () => {
+        setIsStickingToBottom(true);
+        setPendingScrollTop(Number.MAX_SAFE_INTEGER);
+        if (data.length > 0) {
+          setScrollAnchor({
+            index: data.length - 1,
+            offset: SCROLL_TO_ITEM_END,
+          });
+        }
+      },
+      scrollToIndex: ({
+        index,
+        viewOffset = 0,
+        viewPosition = 0,
+      }: {
+        index: number;
+        viewOffset?: number;
+        viewPosition?: number;
+      }) => {
+        setIsStickingToBottom(false);
+        const offset = offsets[index];
+        if (offset !== undefined) {
+          const maxScroll = Math.max(
+            0,
+            totalHeight - scrollableContainerHeight,
+          );
+          const newScrollTop = Math.max(
+            0,
+            Math.min(
+              maxScroll,
+              offset - viewPosition * scrollableContainerHeight + viewOffset,
+            ),
+          );
+          setPendingScrollTop(newScrollTop);
+          setScrollAnchor(getAnchorForScrollTop(newScrollTop, offsets));
+        }
+      },
+      scrollToItem: ({
+        item,
+        viewOffset = 0,
+        viewPosition = 0,
+      }: {
+        item: T;
+        viewOffset?: number;
+        viewPosition?: number;
+      }) => {
+        setIsStickingToBottom(false);
+        const index = data.indexOf(item);
+        if (index !== -1) {
+          const offset = offsets[index];
+          if (offset !== undefined) {
+            const maxScroll = Math.max(
+              0,
+              totalHeight - scrollableContainerHeight,
+            );
+            const newScrollTop = Math.max(
+              0,
+              Math.min(
+                maxScroll,
+                offset - viewPosition * scrollableContainerHeight + viewOffset,
+              ),
+            );
+            setPendingScrollTop(newScrollTop);
+            setScrollAnchor(getAnchorForScrollTop(newScrollTop, offsets));
+          }
+        }
+      },
+      getScrollIndex: () => scrollAnchor.index,
+      getScrollState: () => {
+        const maxScroll = Math.max(0, totalHeight - containerHeight);
+        return {
+          scrollTop: Math.min(getScrollTop(), maxScroll),
+          scrollHeight: totalHeight,
+          innerHeight: containerHeight,
+        };
+      },
+    }),
+    [
+      offsets,
+      scrollAnchor,
+      totalHeight,
+      getAnchorForScrollTop,
+      data,
+      scrollableContainerHeight,
+      getScrollTop,
+      setPendingScrollTop,
+      containerHeight,
+    ],
+  );
 
   return (
     <Box
+      ref={containerRefCallback}
       overflowY="scroll"
       overflowX="hidden"
-      scrollTop={actualScrollTop}
-      scrollbarThumbColor="gray"
+      scrollTop={scrollTop}
+      scrollbarThumbColor={props.scrollbarThumbColor ?? theme.text.secondary}
       width="100%"
-      height={height}
+      height="100%"
       flexDirection="column"
       paddingRight={1}
     >
-      <Box flexShrink={0} width="100%" flexDirection="column">
-        {/* 顶部虚拟化占位 */}
-        {topSpacerHeight > 0 && <Box height={topSpacerHeight} flexShrink={0} />}
-
-        {/* 可见项 */}
-        {visibleItems}
-
-        {/* 底部虚拟化占位 */}
-        {bottomSpacerHeight > 0 && <Box height={bottomSpacerHeight} flexShrink={0} />}
-
-        {/* 流式内容 */}
-        {streamingContent}
+      <Box
+        flexShrink={0}
+        width="100%"
+        flexDirection="column"
+      >
+        <Box height={topSpacerHeight} flexShrink={0} />
+        {renderedItems}
+        <Box height={bottomSpacerHeight} flexShrink={0} />
       </Box>
     </Box>
   );
 }
+
+// forwardRef 泛型包装
+const VirtualizedListWithForwardRef = forwardRef(VirtualizedList) as <T>(
+  props: VirtualizedListProps<T> & { ref?: React.Ref<VirtualizedListRef<T>> },
+) => React.ReactElement;
+
+export { VirtualizedListWithForwardRef as VirtualizedList };
+
+VirtualizedList.displayName = "VirtualizedList";

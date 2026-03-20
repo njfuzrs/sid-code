@@ -10,7 +10,7 @@
  * 用户可用 PageUp/PageDown/Shift+↑↓/鼠标滚轮 滚动浏览消息历史
  */
 
-import React, { useState, useCallback, useEffect, useRef } from "react";
+import React, { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { Box, Text, useApp, useStdout } from "ink";
 import { InputArea } from "./InputArea.tsx";
 import { ToolStatus } from "./ToolStatus.tsx";
@@ -18,7 +18,8 @@ import { StatusBar } from "./StatusBar.tsx";
 import { KeypressProvider, useKeypress, KeypressPriority } from "./contexts/KeypressContext.tsx";
 import { ScrollProvider, useScrollState } from "./contexts/ScrollProvider.tsx";
 import { DialogRenderer } from "./components/DialogManager.tsx";
-import { VirtualizedList } from "./components/VirtualizedList.tsx";
+import { ScrollableList } from "./components/ScrollableList.tsx";
+import { SCROLL_TO_ITEM_END } from "./components/VirtualizedList.tsx";
 import { MessageItemRenderer } from "./components/MessageItemRenderer.tsx";
 import { StreamingMessage } from "./components/StreamingMessage.tsx";
 import { AlternateBufferQuittingDisplay } from "./components/AlternateBufferQuittingDisplay.tsx";
@@ -258,46 +259,96 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
     );
   }
 
-  // 渲染单个 DisplayItem
-  const renderItem = useCallback((item: DisplayItem, _index: number, prevItem?: DisplayItem) => {
-    return <MessageItemRenderer item={item} prevItem={prevItem} />;
+  // 流式内容作为数据数组末尾的虚拟项处理
+  // 构建包含流式内容的完整数据数组
+  const listData = useMemo(() => {
+    const items: DisplayItem[] = [...state.displayItems];
+    // 流式内容作为一个特殊的 system 类型项追加到末尾
+    if (state.isStreaming && state.streamingText) {
+      items.push({ kind: "system" as const, text: "__streaming__" });
+    }
+    return items;
+  }, [state.displayItems, state.isStreaming, state.streamingText]);
+
+  // 渲染项（包含流式内容的特殊处理）
+  const renderListItem = useCallback(({ item, index }: { item: DisplayItem; index: number }) => {
+    // 流式内容特殊项
+    if (item.kind === "system" && item.text === "__streaming__") {
+      return (
+        <StreamingMessage
+          fullText={state.streamingText}
+          isActive={state.isStreaming}
+          maxWidth={termWidth}
+        />
+      ) as React.ReactElement;
+    }
+    const prevItem = index > 0 ? listData[index - 1] : undefined;
+    return (<MessageItemRenderer item={item} prevItem={prevItem} />) as React.ReactElement;
+  }, [listData, state.streamingText, state.isStreaming, termWidth]);
+
+  // key 提取器
+  const keyExtractor = useCallback((item: DisplayItem, index: number): string => {
+    if (item.kind === "system" && item.text === "__streaming__") return "streaming-tail";
+    if (item.kind === "system") return `sys-${index}-${item.text.slice(0, 20)}`;
+    if (item.kind === "command") return `cmd-${index}-${item.input.slice(0, 20)}`;
+    const msg = item.message;
+    const first = msg.content[0];
+    if (first?.type === "text") return `msg-${index}-${msg.role}-${first.text.slice(0, 16)}`;
+    if (first?.type === "tool_use") return `msg-${index}-${msg.role}-tu-${first.id}`;
+    if (first?.type === "tool_result") return `msg-${index}-${msg.role}-tr-${first.tool_use_id}`;
+    return `msg-${index}-${msg.role}`;
   }, []);
 
-  // 流式内容
-  const streamingContent = state.isStreaming && state.streamingText ? (
-    <StreamingMessage
-      fullText={state.streamingText}
-      isActive={state.isStreaming}
-      maxWidth={termWidth}
-    />
-  ) : null;
+  // 高度估算
+  const estimatedItemHeight = useCallback((index: number): number => {
+    const item = listData[index];
+    if (!item) return 1;
+    if (item.kind === "system") {
+      if (item.text === "__streaming__") {
+        const effectiveWidth = Math.max(1, termWidth - 12);
+        return Math.max(1, Math.ceil((state.streamingText?.length || 0) / effectiveWidth));
+      }
+      return 1;
+    }
+    if (item.kind === "command") {
+      let lines = 2;
+      if (item.output) lines += item.output.split("\n").length;
+      return lines;
+    }
+    const msg = item.message;
+    let totalLines = 0;
+    const effectiveWidth = Math.max(1, termWidth - 12);
+    for (const block of msg.content) {
+      if (block.type === "text") {
+        totalLines += Math.max(1, Math.ceil((block.text.length * 1.3) / effectiveWidth));
+      } else {
+        totalLines += 1;
+      }
+    }
+    return Math.max(1, totalLines);
+  }, [listData, termWidth, state.streamingText]);
 
   // 获取滚动百分比（从 ScrollProvider）
   const scrollState = getScrollState();
   const scrollPercent = scrollState ? scrollState.percent : undefined;
 
-  // 动态计算底部区域高度
-  // StatusBar: 1 行, InputArea/DialogRenderer: 约 3 行（对话框可能 5 行）, ToolStatus: 1 行（有工具时）, statusMessage: 1 行（有消息时）
-  const bottomHeight = 1 /* StatusBar */
-    + (state.permissionRequest || state.shellConfirmRequest ? 5 : 3) /* DialogRenderer 或 InputArea */
-    + (state.toolName || state.lastToolResult ? 1 : 0) /* ToolStatus */
-    + (state.statusMessage ? 1 : 0); /* statusMessage */
-
   return (
     <Box flexDirection="column" height={rows}>
-      {/* ── 消息区域：VirtualizedList ── */}
+      {/* ── 消息区域：ScrollableList ── */}
       <Box flexGrow={1}>
         {isEmpty ? (
           <Box flexDirection="column" justifyContent="center" alignItems="center" width={termWidth}>
             <EmptyLogo termWidth={termWidth} />
           </Box>
         ) : (
-          <VirtualizedList
-            items={state.displayItems}
-            renderItem={renderItem}
-            height={Math.max(1, rows - bottomHeight)}
-            streamingContent={streamingContent}
-            streamingText={state.isStreaming ? state.streamingText : undefined}
+          <ScrollableList
+            data={listData}
+            renderItem={renderListItem}
+            estimatedItemHeight={estimatedItemHeight}
+            keyExtractor={keyExtractor}
+            initialScrollIndex={SCROLL_TO_ITEM_END}
+            initialScrollOffsetInIndex={SCROLL_TO_ITEM_END}
+            hasFocus={true}
           />
         )}
       </Box>
