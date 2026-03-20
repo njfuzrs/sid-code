@@ -896,6 +896,7 @@ export class App {
       streamingLine: "",
       isQuitting: false,
       useAlternateBuffer,
+      copyModeEnabled: false,
     });
 
     const updateState = (patch: Partial<import("./ui/App.tsx").TUIState>) => {

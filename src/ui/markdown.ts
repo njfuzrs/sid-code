@@ -83,14 +83,18 @@ const codeHighlightTheme: Record<string, (s: string) => string> = {
   default: chalk.white,
 };
 
-/** 代码块高亮：只在指定语言时启用，无语言时不做 auto-detect 避免误判 */
+/** 代码块高亮：指定语言时使用指定语言，未指定时尝试自动检测 */
 function highlightCode(code: string, lang?: string): string {
-  if (!lang || !supportsLanguage(lang)) {
-    return code;
-  }
   try {
+    if (lang && supportsLanguage(lang)) {
+      return cliHighlight(code, {
+        language: lang,
+        ignoreIllegals: true,
+        theme: codeHighlightTheme,
+      });
+    }
+    // 未指定语言时尝试自动检测
     return cliHighlight(code, {
-      language: lang,
       ignoreIllegals: true,
       theme: codeHighlightTheme,
     });
@@ -586,7 +590,7 @@ export function renderMarkdown(text: string, maxWidth?: number): string {
 
 import React from "react";
 import { Text, Box } from "ink";
-import { highlightToReact, supportsLanguage as lowlightSupportsLang } from "./components/CodeColorizer.tsx";
+import { colorizeCode } from "./components/CodeColorizer.tsx";
 import { theme } from "./semantic-colors.ts";
 
 /**
@@ -673,32 +677,18 @@ function renderTokensToReact(tokens: any[], maxWidth: number): React.ReactNode[]
         blocks.push(React.createElement(Text, { key: i }, ...renderInlineToReact(token.tokens)));
         break;
       case "code": {
-        // 代码块：使用 lowlight React 渲染（整块高亮后按行拆分）
-        const codeLines = token.text.split("\n");
-        const lang = token.lang;
-        if (lang && lowlightSupportsLang(lang)) {
-          // 整块高亮，保持多行语法上下文
-          const highlighted = highlightToReact(token.text, lang);
-          // highlightToReact 返回的是 React 元素数组，可能包含 \n
-          // 用 Box 包裹确保每行独立渲染
-          blocks.push(
-            React.createElement(Box, { key: i, flexDirection: "column" as const },
-              ...codeLines.map((_line: string, j: number) => {
-                // 逐行高亮以避免单个 <Text> 内含 \n
-                const lineHighlighted = highlightToReact(codeLines[j], lang);
-                return React.createElement(Text, { key: `${i}-${j}` }, TAB_INDENT, lineHighlighted);
-              })
-            )
-          );
-        } else {
-          blocks.push(
-            React.createElement(Box, { key: i, flexDirection: "column" as const },
-              ...codeLines.map((line: string, j: number) =>
-                React.createElement(Text, { key: `${i}-${j}` }, TAB_INDENT + line)
-              )
-            )
-          );
-        }
+        // 代码块：使用 colorizeCode 渲染（支持行号 + 自动语言检测）
+        const colorized = colorizeCode({
+          code: token.text,
+          language: token.lang || null,
+          maxWidth: maxWidth - 1,
+          showLineNumbers: true,
+        });
+        blocks.push(
+          React.createElement(Box, { key: i, paddingLeft: 1, flexDirection: "column" as const },
+            colorized,
+          )
+        );
         break;
       }
       case "blockquote": {

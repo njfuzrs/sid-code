@@ -21,6 +21,7 @@ import { MouseProvider } from "./contexts/MouseContext.tsx";
 import { DialogRenderer } from "./components/DialogManager.tsx";
 import { MainContent } from "./components/MainContent.tsx";
 import { AlternateBufferQuittingDisplay } from "./components/AlternateBufferQuittingDisplay.tsx";
+import { CopyModeWarning } from "./components/CopyModeWarning.tsx";
 import type { StateBridge } from "./state-bridge.ts";
 import type { Message, Usage } from "../llm/types.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -106,6 +107,8 @@ export interface TUIState {
   isQuitting: boolean;
   /** 是否使用 alternate buffer 模式（默认 true） */
   useAlternateBuffer: boolean;
+  /** Copy Mode：禁用鼠标事件，允许终端原生文本选择 */
+  copyModeEnabled: boolean;
 }
 
 interface AppProps {
@@ -206,6 +209,39 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
     }
     return false;
   });
+
+  // Copy Mode 切换（Ctrl+S 进入，任意非导航键退出）
+  useKeypress(KeypressPriority.High, (key: Key) => {
+    if (key.ctrl && key.name === "s") {
+      const next = !state.copyModeEnabled;
+      log.info("UI:APP", `Copy Mode ${next ? "启用" : "禁用"}`);
+      bridge.update({ copyModeEnabled: next });
+      return true;
+    }
+    // Copy Mode 下，非导航键退出
+    if (state.copyModeEnabled) {
+      const navKeys = new Set(["pageup", "pagedown", "up", "down", "home", "end"]);
+      if (!navKeys.has(key.name || "")) {
+        log.info("UI:APP", "Copy Mode 退出（非导航键）");
+        bridge.update({ copyModeEnabled: false });
+        // 不消费按键，让后续处理器处理
+        return false;
+      }
+    }
+    return false;
+  });
+
+  // Copy Mode：禁用/恢复鼠标捕获，允许终端原生文本选择
+  useEffect(() => {
+    if (!state.useAlternateBuffer) return;
+    if (state.copyModeEnabled) {
+      // 禁用鼠标捕获，让终端处理文本选择
+      process.stdout.write("\x1b[?1000l\x1b[?1002l\x1b[?1006l");
+    } else {
+      // 恢复鼠标捕获
+      process.stdout.write("\x1b[?1000h\x1b[?1002h\x1b[?1006h");
+    }
+  }, [state.copyModeEnabled, state.useAlternateBuffer]);
 
   // 注意：滚动快捷键（PageUp/PageDown/Shift+↑↓/Home/End）和鼠标滚轮
   // 已由 ScrollableList + ScrollProvider 内部处理，无需在此重复注册
@@ -340,6 +376,8 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
 
         {/* 底部固定区域 */}
         <Box flexDirection="column" flexShrink={0}>
+          <CopyModeWarning enabled={state.copyModeEnabled} />
+
           {state.statusMessage ? (
             <Box paddingX={1}>
               <Text color={theme.status.warning}>{state.statusMessage}</Text>

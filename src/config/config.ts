@@ -111,6 +111,8 @@ export interface Config {
   // UI 配置
   /** 是否使用 alternate buffer 模式（默认 true，--no-alternate-buffer 可切换为 false） */
   useAlternateBuffer: boolean;
+  /** 代码块是否显示行号（默认 true） */
+  showLineNumbers: boolean;
 }
 
 /** 默认配置 */
@@ -145,6 +147,7 @@ export function defaultConfig(): Config {
     hooks: {},
     mcpServers: {},
     useAlternateBuffer: true,
+    showLineNumbers: true,
   };
 }
 
@@ -186,6 +189,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     sub_agent_models: "subAgentModels",
     cost_limit: "costLimit",
     use_alternate_buffer: "useAlternateBuffer",
+    show_line_numbers: "showLineNumbers",
   };
 
   const result: any = {};
