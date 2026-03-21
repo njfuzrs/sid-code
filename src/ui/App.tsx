@@ -109,6 +109,10 @@ export interface TUIState {
   useAlternateBuffer: boolean;
   /** Copy Mode：禁用鼠标事件，允许终端原生文本选择 */
   copyModeEnabled: boolean;
+  /** 所有已注册命令（补全用） */
+  commands: Array<{ name: string; aliases: string[]; description: string }>;
+  /** 当前工作目录（@ 文件补全用） */
+  cwd: string;
 }
 
 interface AppProps {
@@ -397,7 +401,7 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
               shellConfirmRequest={state.shellConfirmRequest ?? null}
             />
           ) : (
-            <InputArea onSubmit={handleSubmit} isLoading={state.isLoading} />
+            <InputArea onSubmit={handleSubmit} isLoading={state.isLoading} commands={state.commands} cwd={state.cwd} />
           )}
 
           <StatusBar
@@ -458,7 +462,7 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
             shellConfirmRequest={state.shellConfirmRequest ?? null}
           />
         ) : (
-          <InputArea onSubmit={handleSubmit} isLoading={state.isLoading} />
+          <InputArea onSubmit={handleSubmit} isLoading={state.isLoading} commands={state.commands} cwd={state.cwd} />
         )}
 
         <StatusBar

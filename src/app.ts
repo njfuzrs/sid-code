@@ -897,6 +897,12 @@ export class App {
       isQuitting: false,
       useAlternateBuffer,
       copyModeEnabled: false,
+      commands: this.commandRegistry.all().map(cmd => ({
+        name: cmd.name(),
+        aliases: cmd.aliases(),
+        description: cmd.description(),
+      })),
+      cwd: process.cwd(),
     });
 
     const updateState = (patch: Partial<import("./ui/App.tsx").TUIState>) => {
