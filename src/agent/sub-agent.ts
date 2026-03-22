@@ -10,7 +10,7 @@ import type { ProviderRegistry } from "../llm/registry.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { getLogger } from "../debug/logger.ts";
-import type { HookRunner } from "../hook/runner.ts";
+import type { HookSystem } from "../hook/system.ts";
 import { LoopDetector, LOOP_RECOVERY_PROMPT } from "./loop-detection.ts";
 
 /** 子代理类型 */
@@ -88,7 +88,7 @@ export class SubAgent {
   private provider: Provider;
   private model: string;
   private toolRegistry: ToolRegistry;
-  private hookRunner?: HookRunner;
+  private hookSystem?: HookSystem;
   /** ProviderRegistry 引用（fromRegistry 创建时设置） */
   private registry?: ProviderRegistry;
   /** 模型覆盖（自定义 Agent/Skill 指定模型时使用） */
@@ -98,24 +98,24 @@ export class SubAgent {
   static depth = 0;
   static readonly MAX_DEPTH = 1;
 
-  constructor(provider: Provider, model: string, toolRegistry: ToolRegistry, hookRunner?: HookRunner) {
+  constructor(provider: Provider, model: string, toolRegistry: ToolRegistry, hookSystem?: HookSystem) {
     this.provider = provider;
     this.model = model;
     this.toolRegistry = toolRegistry;
-    this.hookRunner = hookRunner;
+    this.hookSystem = hookSystem;
   }
 
   /** 从 ProviderRegistry 创建（子代理类型决定 model/provider） */
   static fromRegistry(
     registry: ProviderRegistry,
     toolRegistry: ToolRegistry,
-    hookRunner?: HookRunner,
+    hookSystem?: HookSystem,
     modelOverride?: string,
   ): SubAgent {
     // 用主 provider/model 初始化（executeInner 中会动态替换）
     const provider = registry.getProvider();
     const model = modelOverride || registry.getCurrentModel();
-    const agent = new SubAgent(provider, model, toolRegistry, hookRunner);
+    const agent = new SubAgent(provider, model, toolRegistry, hookSystem);
     agent.registry = registry;
     agent.modelOverride = modelOverride;
     return agent;
@@ -143,7 +143,7 @@ export class SubAgent {
     } finally {
       SubAgent.depth--;
       // subagent_stop hook（非阻塞）
-      this.hookRunner?.run("subagent_stop", {
+      this.hookSystem?.fireSubagentStopEvent({
         toolName: `subagent:${task.type}`,
       }).catch(err => log.error("HOOK", `subagent_stop hook 失败: ${err.message}`));
     }
@@ -172,7 +172,7 @@ export class SubAgent {
     } finally {
       SubAgent.depth--;
       // subagent_stop hook（非阻塞）
-      this.hookRunner?.run("subagent_stop", {
+      this.hookSystem?.fireSubagentStopEvent({
         toolName: "subagent:custom",
       }).catch(err => log.error("HOOK", `subagent_stop hook 失败: ${err.message}`));
     }

@@ -63,8 +63,8 @@ const FILE_TOOLS = new Set(["read", "write", "edit"]);
 /** 写操作工具 */
 const WRITE_TOOLS = new Set(["write", "edit"]);
 
-/** 只读工具 */
-const READ_ONLY_TOOLS = new Set(["read", "grep", "glob"]);
+/** 只读工具（含低风险工具如 save_memory） */
+const READ_ONLY_TOOLS = new Set(["read", "grep", "glob", "save_memory"]);
 
 /** 会话记忆最大条目数 */
 const MAX_SESSION_MEMORY = 1000;

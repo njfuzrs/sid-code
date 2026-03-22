@@ -1,152 +1,169 @@
 /**
- * Hook 执行器
- * 支持 command/url 两种钩子类型、blocking 机制、matcher 匹配、stdin JSON 传递、返回值解析
+ * Hook 执行引擎
+ * 支持 command/url/runtime 三种类型、并行/串行执行、双阶段杀进程、退出码语义、环境变量清理
  */
 
-import type { HookConfig, HooksConfig } from "../config/config.ts";
 import { spawn } from "bun";
+import {
+  HookEventName,
+  HookType,
+  type HookConfig,
+  type CommandHookConfig,
+  type UrlHookConfig,
+  type RuntimeHookConfig,
+  type HookInput,
+  type HookOutput,
+  type HookExecutionResult,
+  type BeforeModelInput,
+  type PreToolUseInput,
+  type UserPromptSubmitInput,
+} from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
 
-/** Hook 事件类型（10 种） */
-export type HookEvent =
-  | "pre_tool_use"           // 工具执行前（可阻止）
-  | "post_tool_use"          // 工具执行后
-  | "post_tool_use_failure"  // 工具执行失败后
-  | "permission_request"     // 权限请求时
-  | "user_prompt_submit"     // 用户提交输入时（可拦截/修改）
-  | "session_start"          // 会话开始
-  | "session_end"            // 会话结束
-  | "pre_compact"            // 上下文压缩前（可阻止）
-  | "subagent_stop"          // 子代理停止
-  | "notification";          // 通知事件
+/** 默认超时 60 秒 */
+const DEFAULT_TIMEOUT = 60_000;
 
-/** Hook 执行上下文 */
-export interface HookContext {
-  sessionId?: string;
-  toolName?: string;
-  toolInput?: unknown;
-  toolOutput?: string;
-  isError?: boolean;
-  userInput?: string;
-  permissionRequest?: unknown;
-  error?: string;
-  [key: string]: unknown;
-}
+/** 退出码常量 */
+const EXIT_SUCCESS = 0;
+const EXIT_WARNING = 1;
+// 2+ = 阻塞
 
-/** Hook 执行结果 */
-export interface HookResult {
-  success: boolean;
-  blocked?: boolean;
-  reason?: string;
-  output?: string;
-  modifiedInput?: string;
-}
+/** 需要从环境变量中过滤的敏感 key 模式 */
+const SENSITIVE_ENV_PATTERNS = [
+  /api[_-]?key/i,
+  /secret/i,
+  /token/i,
+  /password/i,
+  /credential/i,
+  /auth/i,
+];
 
 export class HookRunner {
-  private hooks: HooksConfig;
+  /** 执行单个 hook */
+  async executeHook(
+    hookConfig: HookConfig,
+    eventName: HookEventName,
+    input: HookInput,
+  ): Promise<HookExecutionResult> {
+    const startTime = Date.now();
 
-  constructor(hooks: HooksConfig) {
-    this.hooks = hooks;
+    try {
+      switch (hookConfig.type) {
+        case "runtime":
+          return await this.executeRuntimeHook(hookConfig, eventName, input, startTime);
+        case "url":
+          return await this.executeUrlHook(hookConfig, eventName, input, startTime);
+        case "command":
+        default:
+          return await this.executeCommandHook(hookConfig, eventName, input, startTime);
+      }
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      const hookId = hookConfig.name || (hookConfig.type === "command" ? hookConfig.command : "") || "unknown";
+      const log = getLogger();
+      log.warn("HOOK", `Hook 执行异常 [${eventName}] (${hookId}): ${error}`);
+
+      return {
+        hookConfig,
+        eventName,
+        success: false,
+        error: error instanceof Error ? error : new Error(String(error)),
+        duration,
+      };
+    }
   }
 
-  /** 执行指定事件的所有 Hook，返回结果数组 */
-  async run(event: HookEvent, ctx: HookContext): Promise<HookResult[]> {
-    const hookList = this.hooks[event];
-    if (!hookList || hookList.length === 0) return [];
+  /** 并行执行多个 hook */
+  async executeHooksParallel(
+    hookConfigs: HookConfig[],
+    eventName: HookEventName,
+    input: HookInput,
+    onHookStart?: (config: HookConfig, index: number) => void,
+    onHookEnd?: (config: HookConfig, result: HookExecutionResult) => void,
+  ): Promise<HookExecutionResult[]> {
+    const promises = hookConfigs.map(async (config, index) => {
+      onHookStart?.(config, index);
+      const result = await this.executeHook(config, eventName, input);
+      onHookEnd?.(config, result);
+      return result;
+    });
+    return Promise.all(promises);
+  }
 
-    const log = getLogger();
-    const results: HookResult[] = [];
+  /** 串行执行多个 hook（链式传递：前一个输出修改后一个输入） */
+  async executeHooksSequential(
+    hookConfigs: HookConfig[],
+    eventName: HookEventName,
+    input: HookInput,
+    onHookStart?: (config: HookConfig, index: number) => void,
+    onHookEnd?: (config: HookConfig, result: HookExecutionResult) => void,
+  ): Promise<HookExecutionResult[]> {
+    const results: HookExecutionResult[] = [];
+    let currentInput = input;
 
-    for (const hook of hookList) {
-      // matcher 匹配检查
-      if (!this.matchesHook(hook, ctx)) continue;
+    for (let i = 0; i < hookConfigs.length; i++) {
+      const config = hookConfigs[i];
+      onHookStart?.(config, i);
+      const result = await this.executeHook(config, eventName, currentInput);
+      onHookEnd?.(config, result);
+      results.push(result);
 
-      try {
-        const type = hook.type || "command";
-        let result: HookResult;
-
-        if (type === "url") {
-          result = await this.executeUrlHook(hook, event, ctx);
-        } else {
-          result = await this.executeCommandHook(hook, event, ctx);
-        }
-
-        results.push(result);
-
-        // blocking 链：遇到 blocked 立即停止后续 hook
-        if (hook.blocking && result.blocked) {
-          log.info("HOOK", `Hook 阻止了 ${event}: ${result.reason || "无原因"}`);
-          break;
-        }
-      } catch (err: any) {
-        log.error("HOOK", `Hook 执行失败 [${event}]: ${err.message}`);
-        // 错误隔离：单个 hook 失败不影响其他
-        results.push({ success: false, output: err.message });
+      // 链式传递：成功的输出修改下一个 hook 的输入
+      if (result.success && result.output) {
+        currentInput = this.applyHookOutputToInput(currentInput, result.output, eventName);
       }
     }
 
     return results;
   }
 
-  /** 检查 hook 的 matcher 是否匹配当前上下文 */
-  private matchesHook(hook: HookConfig, ctx: HookContext): boolean {
-    if (!hook.matcher) return true; // 无 matcher 通配
-    if (!ctx.toolName) return true; // 无工具名时通配
+  // ============================================================
+  // 私有：各类型执行
+  // ============================================================
 
-    const matcher = hook.matcher;
-
-    // 正则匹配：/pattern/
-    if (matcher.startsWith("/") && matcher.endsWith("/") && matcher.length > 2) {
-      try {
-        const regex = new RegExp(matcher.slice(1, -1));
-        return regex.test(ctx.toolName);
-      } catch {
-        return false;
-      }
-    }
-
-    // 精确匹配（不区分大小写）
-    return ctx.toolName.toLowerCase() === matcher.toLowerCase();
-  }
-
-  /** 执行 command 类型 Hook */
+  /** 执行 command 类型 hook */
   private async executeCommandHook(
-    hook: HookConfig,
-    event: HookEvent,
-    ctx: HookContext,
-  ): Promise<HookResult> {
-    if (!hook.command) {
-      return { success: false, output: "缺少 command 字段" };
+    hookConfig: CommandHookConfig,
+    eventName: HookEventName,
+    input: HookInput,
+    startTime: number,
+  ): Promise<HookExecutionResult> {
+    if (!hookConfig.command) {
+      return {
+        hookConfig, eventName, success: false,
+        error: new Error("command hook 缺少 command 字段"),
+        duration: Date.now() - startTime,
+      };
     }
 
-    const timeout = (hook.timeout || 30) * 1000;
+    const timeout = (hookConfig.timeout ?? DEFAULT_TIMEOUT / 1000) * 1000;
 
-    // 环境变量
+    // 构建环境变量（清理敏感信息）
     const env: Record<string, string> = {
-      ...(process.env as Record<string, string>),
-      SID_CODE_HOOK_EVENT: event,
+      ...this.sanitizeEnvironment(process.env as Record<string, string>),
+      SID_CODE_HOOK_EVENT: eventName,
+      SID_CODE_PROJECT_DIR: input.cwd,
+      ...hookConfig.env,
     };
 
-    if (ctx.toolName) env.SID_CODE_TOOL_NAME = ctx.toolName;
-    if (ctx.toolInput !== undefined) env.SID_CODE_TOOL_INPUT = JSON.stringify(ctx.toolInput);
-    if (ctx.toolOutput !== undefined) env.SID_CODE_TOOL_OUTPUT = ctx.toolOutput;
-    if (ctx.isError !== undefined) env.SID_CODE_TOOL_IS_ERROR = String(ctx.isError);
-    if (ctx.sessionId) env.SID_CODE_SESSION_ID = ctx.sessionId;
-    if (ctx.userInput) env.SID_CODE_USER_INPUT = ctx.userInput;
-    if (ctx.error) env.SID_CODE_ERROR = ctx.error;
+    // 注入事件专属环境变量
+    this.injectEventEnvVars(env, input);
 
-    // 通过 stdin 传完整 JSON
-    const stdinData = JSON.stringify({ event, ...ctx });
+    // 展开命令中的变量
+    const command = this.expandCommand(hookConfig.command, input);
+
+    const stdinData = JSON.stringify(input);
 
     const proc = spawn({
-      cmd: ["sh", "-c", hook.command],
+      cmd: ["sh", "-c", command],
       env,
+      cwd: input.cwd,
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
     });
 
-    // 写入 stdin
+    // 写入 stdin（静默处理 EPIPE）
     try {
       proc.stdin.write(stdinData);
       proc.stdin.end();
@@ -154,79 +171,107 @@ export class HookRunner {
       // stdin 写入失败不影响执行
     }
 
+    // 双阶段超时杀进程：SIGTERM → 5s → SIGKILL
+    let timedOut = false;
     const timeoutId = setTimeout(() => {
-      proc.kill();
+      timedOut = true;
+      proc.kill("SIGTERM");
+      setTimeout(() => {
+        try { proc.kill("SIGKILL"); } catch { /* 进程可能已退出 */ }
+      }, 5000);
     }, timeout);
 
     try {
       const exitCode = await proc.exited;
       const stdout = await new Response(proc.stdout).text();
       const stderr = await new Response(proc.stderr).text();
+      const duration = Date.now() - startTime;
 
-      // 解析 stdout JSON 返回值
-      const result = this.parseHookOutput(stdout, hook.blocking || false);
-
-      // 非零退出码 + blocking = 阻止
-      if (hook.blocking && exitCode !== 0) {
+      if (timedOut) {
         return {
-          success: false,
-          blocked: true,
-          reason: stderr.trim() || stdout.trim() || `Hook 退出码 ${exitCode}`,
-          output: stdout,
+          hookConfig, eventName, success: false,
+          error: new Error(`Hook 超时 (${timeout / 1000}s)`),
+          stdout, stderr, duration,
         };
       }
 
-      return result;
+      // 解析输出
+      const output = this.parseCommandOutput(stdout, stderr, exitCode ?? 0);
+
+      return {
+        hookConfig, eventName,
+        success: exitCode === EXIT_SUCCESS,
+        output,
+        stdout, stderr,
+        exitCode: exitCode ?? 0,
+        duration,
+      };
     } finally {
       clearTimeout(timeoutId);
     }
   }
 
-  /** 执行 url 类型 Hook */
+  /** 执行 url 类型 hook */
   private async executeUrlHook(
-    hook: HookConfig,
-    event: HookEvent,
-    ctx: HookContext,
-  ): Promise<HookResult> {
-    if (!hook.url) {
-      return { success: false, output: "缺少 url 字段" };
+    hookConfig: UrlHookConfig,
+    eventName: HookEventName,
+    input: HookInput,
+    startTime: number,
+  ): Promise<HookExecutionResult> {
+    if (!hookConfig.url) {
+      return {
+        hookConfig, eventName, success: false,
+        error: new Error("url hook 缺少 url 字段"),
+        duration: Date.now() - startTime,
+      };
     }
 
-    const timeout = (hook.timeout || 30) * 1000;
-    const method = hook.method || "POST";
+    const timeout = (hookConfig.timeout ?? DEFAULT_TIMEOUT / 1000) * 1000;
+    const method = hookConfig.method || "POST";
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
 
     try {
-      const response = await fetch(hook.url, {
+      const response = await fetch(hookConfig.url, {
         method,
         headers: {
           "Content-Type": "application/json",
-          ...(hook.headers || {}),
+          ...(hookConfig.headers || {}),
         },
-        body: JSON.stringify({ event, ...ctx }),
+        body: JSON.stringify(input),
         signal: controller.signal,
       });
 
       const text = await response.text();
+      const duration = Date.now() - startTime;
 
       if (!response.ok) {
-        if (hook.blocking) {
-          return {
-            success: false,
-            blocked: true,
-            reason: `HTTP ${response.status}: ${text.slice(0, 200)}`,
-            output: text,
-          };
-        }
-        return { success: false, output: text };
+        return {
+          hookConfig, eventName,
+          success: false,
+          output: { decision: "deny", reason: `HTTP ${response.status}: ${text.slice(0, 200)}` },
+          stdout: text,
+          duration,
+        };
       }
 
-      return this.parseHookOutput(text, hook.blocking || false);
+      const output = this.parseJsonOutput(text);
+      return {
+        hookConfig, eventName,
+        success: true,
+        output,
+        stdout: text,
+        duration,
+      };
     } catch (err: any) {
+      const duration = Date.now() - startTime;
       if (err.name === "AbortError") {
-        return { success: false, output: `URL Hook 超时 (${hook.timeout || 30}s)` };
+        return {
+          hookConfig, eventName, success: false,
+          error: new Error(`URL Hook 超时 (${timeout / 1000}s)`),
+          duration,
+        };
       }
       throw err;
     } finally {
@@ -234,25 +279,187 @@ export class HookRunner {
     }
   }
 
-  /** 解析 hook 输出（尝试 JSON，否则纯文本） */
-  private parseHookOutput(output: string, isBlocking: boolean): HookResult {
-    const trimmed = output.trim();
-    if (!trimmed) {
-      return { success: true, output: "" };
-    }
+  /** 执行 runtime 类型 hook */
+  private async executeRuntimeHook(
+    hookConfig: RuntimeHookConfig,
+    eventName: HookEventName,
+    input: HookInput,
+    startTime: number,
+  ): Promise<HookExecutionResult> {
+    const timeout = hookConfig.timeout ?? DEFAULT_TIMEOUT;
+    const controller = new AbortController();
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
     try {
-      const parsed = JSON.parse(trimmed);
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutHandle = setTimeout(
+          () => reject(new Error(`Runtime hook 超时 (${timeout}ms)`)),
+          timeout,
+        );
+      });
+
+      const result = await Promise.race([
+        hookConfig.action(input, { signal: controller.signal }),
+        timeoutPromise,
+      ]);
+
       return {
-        success: parsed.success !== false,
-        blocked: isBlocking ? (parsed.blocked === true) : undefined,
-        reason: parsed.reason || parsed.message,
-        output: trimmed,
-        modifiedInput: parsed.modifiedInput,
+        hookConfig, eventName,
+        success: true,
+        output: result === null || result === undefined ? undefined : result,
+        duration: Date.now() - startTime,
       };
-    } catch {
-      // 非 JSON，作为纯文本
-      return { success: true, output: trimmed };
+    } catch (error) {
+      controller.abort();
+      return {
+        hookConfig, eventName,
+        success: false,
+        error: error instanceof Error ? error : new Error(String(error)),
+        duration: Date.now() - startTime,
+      };
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
     }
+  }
+
+  // ============================================================
+  // 私有：输出解析
+  // ============================================================
+
+  /** 解析 command hook 输出（退出码语义：0=成功, 1=警告, 2+=阻塞） */
+  private parseCommandOutput(stdout: string, stderr: string, exitCode: number): HookOutput {
+    const textToParse = stdout.trim() || stderr.trim();
+
+    if (textToParse) {
+      const jsonOutput = this.parseJsonOutput(textToParse);
+      if (jsonOutput) return jsonOutput;
+    }
+
+    // 非 JSON，根据退出码转换
+    if (exitCode === EXIT_SUCCESS) {
+      return { decision: "allow", systemMessage: textToParse || undefined };
+    } else if (exitCode === EXIT_WARNING) {
+      return { decision: "allow", systemMessage: textToParse ? `警告: ${textToParse}` : undefined };
+    } else {
+      // 2+ = 阻塞
+      return { decision: "deny", reason: textToParse || `Hook 退出码 ${exitCode}` };
+    }
+  }
+
+  /** 尝试解析 JSON 输出 */
+  private parseJsonOutput(text: string): HookOutput | undefined {
+    const trimmed = text.trim();
+    if (!trimmed) return undefined;
+
+    try {
+      let parsed = JSON.parse(trimmed);
+      // 双重 JSON 字符串
+      if (typeof parsed === "string") {
+        parsed = JSON.parse(parsed);
+      }
+      if (parsed && typeof parsed === "object") {
+        return parsed as HookOutput;
+      }
+    } catch {
+      // 非 JSON
+    }
+    return undefined;
+  }
+
+  // ============================================================
+  // 私有：环境变量 & 命令展开
+  // ============================================================
+
+  /** 清理环境变量（过滤敏感信息） */
+  private sanitizeEnvironment(env: Record<string, string>): Record<string, string> {
+    const result: Record<string, string> = {};
+    for (const [key, value] of Object.entries(env)) {
+      if (value === undefined) continue;
+      const isSensitive = SENSITIVE_ENV_PATTERNS.some(p => p.test(key));
+      if (!isSensitive) {
+        result[key] = value;
+      }
+    }
+    return result;
+  }
+
+  /** 注入事件专属环境变量 */
+  private injectEventEnvVars(env: Record<string, string>, input: HookInput): void {
+    if ("tool_name" in input) {
+      env.SID_CODE_TOOL_NAME = (input as any).tool_name;
+    }
+    if ("tool_input" in input) {
+      env.SID_CODE_TOOL_INPUT = JSON.stringify((input as any).tool_input);
+    }
+    if ("tool_response" in input) {
+      env.SID_CODE_TOOL_OUTPUT = JSON.stringify((input as any).tool_response);
+    }
+    if ("is_error" in input) {
+      env.SID_CODE_TOOL_IS_ERROR = String((input as any).is_error);
+    }
+    if ("prompt" in input) {
+      env.SID_CODE_USER_INPUT = (input as any).prompt;
+    }
+    if (input.session_id) {
+      env.SID_CODE_SESSION_ID = input.session_id;
+    }
+  }
+
+  /** 展开命令中的变量 */
+  private expandCommand(command: string, input: HookInput): string {
+    return command
+      .replace(/\$SID_CODE_PROJECT_DIR/g, input.cwd)
+      .replace(/\$SID_CODE_CWD/g, input.cwd);
+  }
+
+  /** 串行链式传递：将 hook 输出应用到下一个 hook 的输入 */
+  private applyHookOutputToInput(
+    originalInput: HookInput,
+    hookOutput: HookOutput,
+    eventName: HookEventName,
+  ): HookInput {
+    const modified = { ...originalInput };
+
+    if (!hookOutput.hookSpecificOutput) return modified;
+
+    switch (eventName) {
+      case HookEventName.UserPromptSubmit:
+        if ("additionalContext" in hookOutput.hookSpecificOutput) {
+          const ctx = hookOutput.hookSpecificOutput["additionalContext"];
+          if (typeof ctx === "string" && "prompt" in modified) {
+            (modified as any).prompt += "\n\n" + ctx;
+          }
+        }
+        break;
+
+      case HookEventName.PreToolUse:
+        if ("tool_input" in hookOutput.hookSpecificOutput) {
+          const newInput = hookOutput.hookSpecificOutput["tool_input"];
+          if (newInput && typeof newInput === "object" && "tool_input" in modified) {
+            (modified as any).tool_input = {
+              ...(modified as any).tool_input,
+              ...(newInput as Record<string, unknown>),
+            };
+          }
+        }
+        break;
+
+      case HookEventName.BeforeModel:
+        if ("llm_request" in hookOutput.hookSpecificOutput) {
+          const req = hookOutput.hookSpecificOutput["llm_request"];
+          if (req && typeof req === "object" && "llm_request" in modified) {
+            (modified as any).llm_request = {
+              ...(modified as any).llm_request,
+              ...(req as Record<string, unknown>),
+            };
+          }
+        }
+        break;
+
+      default:
+        break;
+    }
+
+    return modified;
   }
 }

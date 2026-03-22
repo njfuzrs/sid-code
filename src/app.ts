@@ -27,7 +27,7 @@ import { clearPromptCache } from "./config/system-prompt.ts";
 import { getLogger, getMemoryMonitor, getSessionMetrics } from "./debug/index.ts";
 import { AgentLoopRunner } from "./agent/loop.ts";
 import type { AgentLoopCallbacks } from "./agent/loop.ts";
-import { HookRunner } from "./hook/runner.ts";
+import { HookSystem } from "./hook/system.ts";
 import { JitContextManager } from "./config/jit-context.ts";
 import { resetStreamingFenceCounter } from "./ui/markdown-utils.ts";
 import { execSync } from "child_process";
@@ -88,7 +88,7 @@ export class App {
   private quotaManager?: QuotaManager;
   private abortController: AbortController | null = null;
   private loopRunner: AgentLoopRunner;
-  private hookRunner!: HookRunner;
+  private hookSystem!: HookSystem;
   private jitContextMgr: JitContextManager;
   /** TUI 模式下的权限确认回调（由 TUI 注入），返回 "yes" | "no" | "always" */
   private tuiConfirmCallback: ((toolName: string, toolInput: unknown, desc: string) => Promise<"yes" | "no" | "always">) | null = null;
@@ -127,8 +127,11 @@ export class App {
     // 初始化 JIT 上下文管理器
     this.jitContextMgr = new JitContextManager();
 
-    // 初始化 Hook 执行器
-    this.hookRunner = new HookRunner(this.config.hooks);
+    // 初始化 Hook 系统
+    this.hookSystem = new HookSystem();
+    this.hookSystem.initializeFromLegacy(this.config.hooks);
+    this.hookSystem.setSessionId(sessionId);
+    this.hookSystem.setCwd(process.cwd());
 
     // 初始化统一循环 Runner
     this.loopRunner = new AgentLoopRunner({
@@ -139,7 +142,7 @@ export class App {
       sessionState: this.sessionState,
       fallback: this.fallback,
       thinkingMgr: this.thinkingMgr,
-      hookRunner: this.hookRunner,
+      hookSystem: this.hookSystem,
       quotaManager: this.quotaManager,
       executeTools: (content) => this.executeTools(content),
       processStream: (stream, onText) => this.processStream(stream, onText),
@@ -207,12 +210,9 @@ export class App {
     }
 
     // pre_compact hook（blocking 时可阻止压缩）
-    const preResults = await this.hookRunner.run("pre_compact", {
-      sessionId: this.sessionState.sessionId,
-    });
-    const blocked = preResults.find(r => r.blocked);
-    if (blocked) {
-      log.info("HOOK", `压缩被 hook 阻止: ${blocked.reason || "无原因"}`);
+    const preCompactResult = await this.hookSystem.firePreCompactEvent("auto");
+    if (preCompactResult.finalOutput?.isBlockingDecision()) {
+      log.info("HOOK", `压缩被 hook 阻止: ${preCompactResult.finalOutput.getEffectiveReason()}`);
       return;
     }
 
@@ -368,9 +368,8 @@ export class App {
     });
 
     // session_start hook（非阻塞）
-    this.hookRunner.run("session_start", {
-      sessionId: this.sessionState.sessionId,
-    }).catch(err => log.error("HOOK", `session_start hook 失败: ${err.message}`));
+    this.hookSystem.fireSessionStartEvent("startup")
+      .catch(err => log.error("HOOK", `session_start hook 失败: ${err.message}`));
   }
 
   /**
@@ -785,6 +784,9 @@ export class App {
 
   /** JIT 上下文发现：根据工具访问的路径发现新的 CLAUDE.md */
   private async discoverJitContext(toolBlocks: ToolUseBlock[]): Promise<void> {
+    // 配置开关（默认开启）
+    if (this.config.jitContext === false) return;
+
     const log = getLogger();
     const projectRoot = process.cwd();
 
@@ -832,26 +834,35 @@ export class App {
     log.toolStart(block.name, block.input);
 
     // pre_tool_use hook（blocking 时可阻止工具执行）
-    const preResults = await this.hookRunner.run("pre_tool_use", {
-      toolName: block.name,
-      toolInput: block.input,
-      sessionId: this.sessionState.sessionId,
-    });
-    const blocked = preResults.find(r => r.blocked);
-    if (blocked) {
-      log.info("HOOK", `工具 ${block.name} 被 hook 阻止: ${blocked.reason || "无原因"}`);
+    const preToolResult = await this.hookSystem.firePreToolUseEvent(
+      block.name,
+      block.input as Record<string, unknown>,
+    );
+    if (preToolResult.finalOutput?.isBlockingDecision()) {
+      const reason = preToolResult.finalOutput.getEffectiveReason();
+      log.info("HOOK", `工具 ${block.name} 被 hook 阻止: ${reason}`);
       return {
         type: "tool_result",
         tool_use_id: block.id,
-        content: `Hook 阻止执行: ${blocked.reason || "被 pre_tool_use hook 阻止"}`,
+        content: `Hook 阻止执行: ${reason}`,
         is_error: true,
       };
+    }
+
+    // 检查 hook 是否修改了工具输入
+    let effectiveInput = block.input;
+    if (preToolResult.finalOutput && "getModifiedToolInput" in preToolResult.finalOutput) {
+      const modified = (preToolResult.finalOutput as any).getModifiedToolInput?.();
+      if (modified) {
+        log.info("HOOK", `工具 ${block.name} 输入被 hook 修改`);
+        effectiveInput = modified;
+      }
     }
 
     const startTime = Date.now();
 
     try {
-      const result = await tool.execute(block.input, this.abortController?.signal);
+      const result = await tool.execute(effectiveInput, this.abortController?.signal);
       const elapsed = Date.now() - startTime;
 
       // 记录工具耗时到 SessionState
@@ -862,19 +873,26 @@ export class App {
 
       log.toolEnd(block.name, result.output, !!result.isError, elapsed);
 
-      // post_tool_use hook（非阻塞）
-      this.hookRunner.run("post_tool_use", {
-        toolName: block.name,
-        toolInput: block.input,
-        toolOutput: truncatedOutput,
-        isError: result.isError,
-        sessionId: this.sessionState.sessionId,
-      }).catch(err => log.error("HOOK", `post_tool_use hook 失败: ${err.message}`));
+      // post_tool_use hook（增强：additionalContext 追加到结果、continue=false 停止循环）
+      const postResult = await this.hookSystem.firePostToolUseEvent(
+        block.name,
+        block.input as Record<string, unknown>,
+        { output: truncatedOutput, isError: result.isError },
+        result.isError,
+      );
+
+      // additionalContext 追加到工具输出
+      let finalOutput = truncatedOutput;
+      const additionalCtx = postResult.finalOutput?.getAdditionalContext();
+      if (additionalCtx) {
+        log.info("HOOK", `PostToolUse hook 追加上下文到 ${block.name} 结果`);
+        finalOutput = truncatedOutput + "\n\n[Hook 附加上下文]\n" + additionalCtx;
+      }
 
       return {
         type: "tool_result",
         tool_use_id: block.id,
-        content: truncatedOutput,
+        content: finalOutput,
         is_error: result.isError,
       };
     } catch (err: any) {
@@ -887,13 +905,11 @@ export class App {
       });
 
       // post_tool_use_failure hook（非阻塞）
-      this.hookRunner.run("post_tool_use_failure", {
-        toolName: block.name,
-        toolInput: block.input,
-        error: err.message,
-        isError: true,
-        sessionId: this.sessionState.sessionId,
-      }).catch(e => log.error("HOOK", `post_tool_use_failure hook 失败: ${e.message}`));
+      this.hookSystem.firePostToolUseFailureEvent(
+        block.name,
+        block.input as Record<string, unknown>,
+        err.message,
+      ).catch(e => log.error("HOOK", `post_tool_use_failure hook 失败: ${e.message}`));
 
       return {
         type: "tool_result",
@@ -939,7 +955,7 @@ export class App {
     }
 
     // session_end hook + 清理
-    await this.hookRunner.run("session_end", { sessionId: this.sessionState.sessionId });
+    await this.hookSystem.fireSessionEndEvent("exit");
     unwatchCLAUDEmd();
     this.mcpManager?.closeAll();
 
@@ -1261,6 +1277,7 @@ export class App {
               });
             });
           },
+          hookSystem: this.hookSystem,
         };
 
         const command = this.commandRegistry.get(cmd);
@@ -1348,7 +1365,7 @@ export class App {
     }
 
     await app.waitUntilExit();
-    await this.hookRunner.run("session_end", { sessionId: this.sessionState.sessionId });
+    await this.hookSystem.fireSessionEndEvent("exit");
     unwatchCLAUDEmd();
     this.mcpManager?.closeAll();
 

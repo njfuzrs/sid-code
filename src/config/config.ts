@@ -125,6 +125,10 @@ export interface Config {
   // Checkpoint 配置
   checkpoint?: CheckpointConfig;
 
+  // JIT 上下文发现
+  /** 是否启用 JIT 上下文发现（默认 true） */
+  jitContext?: boolean;
+
   // 环境变量清理
   /** 是否在 bash 工具执行时清理环境变量（默认 false） */
   sanitizeEnv?: boolean;
@@ -226,6 +230,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     disabled_skills: "disabledSkills",
     trust_project_extensions: "trustProjectExtensions",
     checkpoint: "checkpoint",
+    jit_context: "jitContext",
     sanitize_env: "sanitizeEnv",
   };
 

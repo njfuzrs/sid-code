@@ -37,11 +37,12 @@ export class HelpCommand implements Command {
       "  /undo [file]     - 撤销最近一次文件修改（可指定文件路径）",
       "  /checkpoints     - 查看快照历史",
       "  /restore <id>    - 恢复到指定快照点",
-      "  /memory          - 管理记忆 (set/get/delete/list/search)",
+      "  /memory          - 管理记忆 (set/get/delete/list/search/show/reload)",
       "  /mcp             - MCP 服务器管理 (list/add/remove/enable/disable)",
       "  /skills          - Skills 管理 (list/enable/disable)",
       "  /agents          - 自定义 Agents 管理 (list)",
       "  /commands        - 列出自定义命令",
+      "  /hooks           - Hook 管理 (list/enable/disable/enable-all/disable-all)",
       "  /init            - 初始化项目 .sid-code/ 配置目录",
       "  /exit            - 退出",
     ];
@@ -111,11 +112,14 @@ export class HelpCommand implements Command {
   /memory delete <key>       - 删除记忆
   /memory list               - 列出所有记忆
   /memory search <keyword>   - 搜索记忆
+  /memory show               - 显示当前注入系统提示词的记忆内容
+  /memory reload             - 重新加载记忆并刷新系统提示词
 
 示例:
   /memory set api_key sk-xxx --scope global
   /memory get api_key
-  /memory search api`,
+  /memory search api
+  /memory show`,
 
       "model": `模型管理
 
@@ -536,9 +540,9 @@ export class RestoreCommand implements Command {
 export class MemoryCommand implements Command {
   name() { return "memory"; }
   aliases() { return ["mem"]; }
-  description() { return "管理记忆（set/get/delete/list/search）"; }
+  description() { return "管理记忆（set/get/delete/list/search/show/reload）"; }
 
-  async execute(args: string, _ctx: AppContext): Promise<CommandResult> {
+  async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     const { MemoryStore } = await import("../memory/store.ts");
     const store = new MemoryStore(process.cwd());
     await store.load();
@@ -597,6 +601,52 @@ export class MemoryCommand implements Command {
           lines.push(`  [${entry.scope}] ${entry.key}: ${entry.value}`);
         }
         return { kind: "message", message: lines.join("\n") };
+      }
+
+      case "show": {
+        // 显示当前注入系统提示词的记忆内容
+        const summary = await store.generateSummary();
+        if (!summary) {
+          return { kind: "message", message: "当前没有记忆被注入系统提示词" };
+        }
+        const stats = await store.getStats();
+        const lines = [
+          `当前注入系统提示词的记忆 (全局 ${stats.globalCount} 条, 项目 ${stats.projectCount} 条):`,
+          "",
+          summary,
+        ];
+        return { kind: "message", message: lines.join("\n") };
+      }
+
+      case "reload": {
+        // 重新加载记忆并刷新系统提示词
+        const freshStore = new MemoryStore(process.cwd());
+        const freshSummary = await freshStore.generateSummary() || undefined;
+
+        if (freshSummary) {
+          // 重建系统提示词
+          const { buildSystemPrompt } = await import("../config/system-prompt.ts");
+          const { loadAllCLAUDEmd } = await import("../config/rules.ts");
+          const projectRules = await loadAllCLAUDEmd(process.cwd());
+
+          const newPrompt = buildSystemPrompt({
+            tools: ctx.registry.all(),
+            projectRules: projectRules?.rawContent || undefined,
+            projectRulesPath: projectRules?.sourcePath,
+            appendPrompt: ctx.config.appendSystemPrompt || undefined,
+            workingDir: process.cwd(),
+            permissionMode: ctx.config.permissionMode,
+            gitStatus: true,
+            memorySummary: freshSummary,
+            maxTokens: 180000,
+          });
+          ctx.ctxMgr.setSystemPrompt(newPrompt);
+          clearPromptCache();
+
+          return { kind: "message", message: `记忆已重新加载，系统提示词已刷新 (${newPrompt.length} 字符)` };
+        }
+
+        return { kind: "message", message: "记忆为空，无需刷新" };
       }
 
       case "list":
@@ -839,6 +889,66 @@ export class InitCommand implements Command {
   }
 }
 
+/** /hooks 命令 — Hook 管理 */
+export class HooksCommand implements Command {
+  name() { return "hooks"; }
+  aliases() { return []; }
+  description() { return "管理 Hook (list/enable/disable/enable-all/disable-all)"; }
+
+  async execute(args: string, ctx: AppContext): Promise<CommandResult> {
+    if (!ctx.hookSystem) {
+      return { kind: "error", message: "Hook 系统未初始化" };
+    }
+
+    const parts = args.trim().split(/\s+/);
+    const subCmd = parts[0] || "";
+    const hookName = parts.slice(1).join(" ");
+
+    switch (subCmd) {
+      case "":
+      case "list":
+        return this.listHooks(ctx);
+      case "enable":
+        if (!hookName) return { kind: "error", message: "用法: /hooks enable <name>" };
+        ctx.hookSystem.setHookEnabled(hookName, true);
+        return { kind: "message", message: `已启用 hook: ${hookName}` };
+      case "disable":
+        if (!hookName) return { kind: "error", message: "用法: /hooks disable <name>" };
+        ctx.hookSystem.setHookEnabled(hookName, false);
+        return { kind: "message", message: `已禁用 hook: ${hookName}` };
+      case "enable-all":
+        ctx.hookSystem.setAllEnabled(true);
+        return { kind: "message", message: "已启用所有 hook" };
+      case "disable-all":
+        ctx.hookSystem.setAllEnabled(false);
+        return { kind: "message", message: "已禁用所有 hook" };
+      default:
+        return { kind: "error", message: `未知子命令: ${subCmd}\n用法: /hooks [list|enable|disable|enable-all|disable-all]` };
+    }
+  }
+
+  private listHooks(ctx: AppContext): CommandResult {
+    const hooks = ctx.hookSystem!.getAllHooks();
+    if (hooks.length === 0) {
+      return { kind: "message", message: "没有已注册的 hook" };
+    }
+
+    const lines = ["已注册的 Hook:"];
+    for (const entry of hooks) {
+      const status = entry.enabled ? "✓" : "✗";
+      const name = entry.config.name
+        || (entry.config.type === "command" ? entry.config.command : "")
+        || (entry.config.type === "url" ? entry.config.url : "")
+        || "unknown";
+      const type = entry.config.type || "command";
+      const matcher = entry.matcher ? ` [${entry.matcher}]` : "";
+      const source = entry.source;
+      lines.push(`  ${status} [${entry.eventName}] ${name} (${type}, ${source})${matcher}`);
+    }
+    return { kind: "message", message: lines.join("\n") };
+  }
+}
+
 /** 注册所有内置命令 */
 export async function registerBuiltins(registry: import("./registry.ts").Registry): Promise<void> {
   registry.register(new HelpCommand());
@@ -866,4 +976,5 @@ export async function registerBuiltins(registry: import("./registry.ts").Registr
   registry.register(new RewindCommand());
   registry.register(new StatsCommand());
   registry.register(new InitCommand());
+  registry.register(new HooksCommand());
 }

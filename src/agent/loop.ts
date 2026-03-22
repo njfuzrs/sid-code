@@ -19,7 +19,7 @@ import { ModelFallback } from "../llm/fallback.ts";
 import { ThinkingManager } from "../llm/thinking.ts";
 import { SessionState } from "../session/state.ts";
 import { getLogger, getSessionMetrics, getPerfTimer } from "../debug/index.ts";
-import type { HookRunner } from "../hook/runner.ts";
+import type { HookSystem } from "../hook/system.ts";
 import { LoopDetector, LOOP_RECOVERY_PROMPT, LOOP_DETECTION_PROMPT } from "./loop-detection.ts";
 import type { LLMLoopCheckResult } from "./loop-detection.ts";
 
@@ -56,7 +56,7 @@ export interface AgentLoopDeps {
   sessionState: SessionState;
   fallback: ModelFallback;
   thinkingMgr: ThinkingManager;
-  hookRunner?: HookRunner;
+  hookSystem?: HookSystem;
   quotaManager?: QuotaManager;
   /** 执行工具调用（含权限检查） */
   executeTools: (content: ContentBlock[]) => Promise<ContentBlock[]>;
@@ -192,21 +192,23 @@ export class AgentLoopRunner {
 
     // user_prompt_submit hook：可拦截或修改用户输入
     let finalInput = userInput;
-    if (this.deps.hookRunner) {
-      const hookResults = await this.deps.hookRunner.run("user_prompt_submit", {
-        userInput,
-      });
+    if (this.deps.hookSystem) {
+      const hookResult = await this.deps.hookSystem.fireUserPromptSubmitEvent(userInput);
       // 检查是否被阻止
-      const blocked = hookResults.find(r => r.blocked);
-      if (blocked) {
-        log.info("HOOK", `用户输入被 hook 阻止: ${blocked.reason || "无原因"}`);
+      if (hookResult.finalOutput?.isBlockingDecision()) {
+        log.info("HOOK", `用户输入被 hook 阻止: ${hookResult.finalOutput.getEffectiveReason()}`);
         return;
       }
-      // 检查是否修改了输入
-      const modified = hookResults.find(r => r.modifiedInput);
-      if (modified?.modifiedInput) {
-        log.info("HOOK", `用户输入被 hook 修改`);
-        finalInput = modified.modifiedInput;
+      // 检查是否应停止执行
+      if (hookResult.finalOutput?.shouldStopExecution()) {
+        log.info("HOOK", `用户输入被 hook 停止: ${hookResult.finalOutput.getEffectiveReason()}`);
+        return;
+      }
+      // 检查 additionalContext（追加到输入）
+      const additionalCtx = hookResult.finalOutput?.getAdditionalContext();
+      if (additionalCtx) {
+        log.info("HOOK", `用户输入被 hook 追加上下文`);
+        finalInput = userInput + "\n\n" + additionalCtx;
       }
     }
 
@@ -288,6 +290,28 @@ export class AgentLoopRunner {
         thinking: turns === 1 ? thinking : undefined,
       };
 
+      // BeforeModel hook：可修改请求参数、合成响应、阻止请求
+      if (this.deps.hookSystem) {
+        const beforeModelResult = await this.deps.hookSystem.fireBeforeModelEvent({
+          model: sendParams.model,
+          messages: sendParams.messages.map(m => ({
+            role: m.role,
+            content: typeof m.content === "string" ? m.content : JSON.stringify(m.content),
+          })),
+          config: { maxTokens: sendParams.maxTokens },
+        });
+        if (beforeModelResult.finalOutput?.isBlockingDecision()) {
+          log.info("HOOK", `BeforeModel hook 阻止 LLM 请求: ${beforeModelResult.finalOutput.getEffectiveReason()}`);
+          callbacks.onComplete(turns);
+          break;
+        }
+        if (beforeModelResult.finalOutput?.shouldStopExecution()) {
+          log.info("HOOK", `BeforeModel hook 停止执行: ${beforeModelResult.finalOutput.getEffectiveReason()}`);
+          callbacks.onComplete(turns);
+          break;
+        }
+      }
+
       // 发送请求（含上下文溢出自动调整）
       let stream: AsyncIterable<StreamEvent>;
       const signal = this.deps.getAbortSignal();
@@ -356,6 +380,36 @@ export class AgentLoopRunner {
         log.llmResponseText(responseText);
       }
 
+      // AfterModel hook：可修改响应、阻止响应
+      if (this.deps.hookSystem) {
+        const afterModelResult = await this.deps.hookSystem.fireAfterModelEvent(
+          {
+            model: sendParams.model,
+            messages: sendParams.messages.map(m => ({
+              role: m.role,
+              content: typeof m.content === "string" ? m.content : JSON.stringify(m.content),
+            })),
+          },
+          {
+            text: responseText,
+            usage: {
+              inputTokens: response.usage.inputTokens,
+              outputTokens: response.usage.outputTokens,
+            },
+          },
+        );
+        if (afterModelResult.finalOutput?.isBlockingDecision()) {
+          log.info("HOOK", `AfterModel hook 阻止响应: ${afterModelResult.finalOutput.getEffectiveReason()}`);
+          callbacks.onComplete(turns);
+          break;
+        }
+        if (afterModelResult.finalOutput?.shouldStopExecution()) {
+          log.info("HOOK", `AfterModel hook 停止执行: ${afterModelResult.finalOutput.getEffectiveReason()}`);
+          callbacks.onComplete(turns);
+          break;
+        }
+      }
+
       // 添加助手消息到历史
       ctxMgr.addMessage({
         role: "assistant",
@@ -371,6 +425,20 @@ export class AgentLoopRunner {
 
       // 检查停止原因
       if (response.stopReason === "end_turn" || response.stopReason === "stop") {
+        // AfterAgent hook：响应验证、上下文清除
+        if (this.deps.hookSystem) {
+          const afterResult = await this.deps.hookSystem.fireAfterAgentEvent(cleanedInput, responseText);
+          // 检查是否需要清除上下文
+          if (afterResult.finalOutput?.shouldClearContext()) {
+            log.info("HOOK", "AfterAgent hook 请求清除上下文");
+            ctxMgr.clear();
+          }
+          // 检查是否应停止执行
+          if (afterResult.finalOutput?.shouldStopExecution()) {
+            log.info("HOOK", `AfterAgent hook 停止执行: ${afterResult.finalOutput.getEffectiveReason()}`);
+          }
+        }
+
         const totalUsage = sessionState.getTotalUsage();
         log.info("AGENT", `对话结束 (${response.stopReason})，共 ${turns} 轮，in=${totalUsage.inputTokens} out=${totalUsage.outputTokens}，累计费用 $${sessionState.totalCostUSD.toFixed(4)}`);
         callbacks.onComplete(turns);
