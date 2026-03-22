@@ -25,18 +25,27 @@ interface RuleMatch {
  * - "Read(src/**)" 只匹配 src 目录下的读取
  * - "Bash(npm *)" 匹配 npm 开头的命令
  * - "Edit(.env*)" 匹配 .env 开头的文件
+ * - "mcp__myserver__*" 匹配 myserver 的所有 MCP 工具（通配符支持）
+ * - "mcp__*" 匹配所有 MCP 工具
  */
 export function matchRule(rule: string, req: PermissionRequest): boolean {
-  const match = rule.match(/^(\w+)(?:\(([^)]+)\))?$/);
+  const match = rule.match(/^([*\w]+)(?:\(([^)]+)\))?$/);
   if (!match) return false;
 
   const [, toolName, pattern] = match;
 
-  // 工具名不匹配（大小写不敏感）
-  if (toolName.toLowerCase() !== req.toolName.toLowerCase()) return false;
-
-  // 无参数模式，匹配所有该工具的操作
-  if (!pattern) return true;
+  // 通配符匹配（支持 mcp__* 和 mcp__server__* 格式）
+  if (toolName.includes("*")) {
+    const wildcardMatched = minimatch(req.toolName.toLowerCase(), toolName.toLowerCase());
+    if (!wildcardMatched) return false;
+    // 通配符匹配成功，如果有参数模式则继续检查参数
+    if (!pattern) return true;
+  } else {
+    // 精确工具名匹配（大小写不敏感）
+    if (toolName.toLowerCase() !== req.toolName.toLowerCase()) return false;
+    // 无参数模式，匹配所有该工具的操作
+    if (!pattern) return true;
+  }
 
   // 提取关键参数（file_path 或 command）
   const input = req.input as any;

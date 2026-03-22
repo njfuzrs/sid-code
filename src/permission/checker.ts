@@ -1,7 +1,7 @@
 /**
  * 权限检查器
- * 12 层权限检查：会话记忆 → 危险命令 → 禁用工具 → 目录白名单/黑名单 → 路径安全 → 敏感文件 → 权限规则 → 模式检查(acceptEdits/plan/dontAsk) → 读操作 → 预授权 → deny-write/always-allow → 用户确认
- * 包含 25 种危险命令模式检测 + 路径遍历/系统目录保护 + 审计日志
+ * 14 层权限检查：会话记忆 → 危险命令(复合拆分+重定向) → 禁用工具 → 目录白名单/黑名单 → 路径安全(symlink解析+工作区边界) → 敏感文件 → 权限规则 → 模式检查(acceptEdits/plan/dontAsk) → 读操作 → 预授权 → deny-write/always-allow → 用户确认
+ * 包含 25 种危险命令模式检测 + 复合命令拆分 + 重定向检测 + 路径遍历/系统目录保护 + 审计日志
  */
 
 import type { Checker, Decision, PermissionRequest, PermissionRule } from "./types.ts";
@@ -9,7 +9,8 @@ import type { Config } from "../config/config.ts";
 import { checkRules } from "./rules.ts";
 import { AuditLogger } from "./audit.ts";
 import { getLogger } from "../debug/logger.ts";
-import * as readline from "readline";
+import { splitCompoundCommand, hasSensitiveRedirection } from "./shell-parser.ts";
+import { PathValidator } from "./path-validator.ts";
 import * as path from "node:path";
 
 /** 危险命令模式（对标 Claude Code 15 种） */
@@ -56,37 +57,11 @@ const DANGEROUS_PATTERNS: DangerousPattern[] = [
   { name: "修改 crontab", pattern: /crontab\s+(-e|-r|-l)/, severity: "medium" },
 ];
 
-/** 敏感文件模式 */
-const SENSITIVE_FILES = [
-  /\.env$/,
-  /\.env\..+/,
-  /credentials/i,
-  /\.pem$/,
-  /\.key$/,
-  /\.p12$/,
-  /\.pfx$/,
-  /id_rsa/,
-  /id_ed25519/,
-  /\.ssh\//,
-  /password/i,
-  /secret/i,
-  /\.aws\/config/,
-  /\.kube\/config/,
-  /token\.json/i,
-];
-
 /** 文件工具（需要路径校验） */
 const FILE_TOOLS = new Set(["read", "write", "edit"]);
 
-/** 系统目录保护（写入拦截） */
-const PROTECTED_WRITE_DIRS = [
-  "/etc/", "/usr/", "/bin/", "/sbin/", "/boot/",
-  "/proc/", "/sys/", "/dev/", "/var/log/",
-  "/System/", "/Library/",
-];
-
-/** 系统目录保护（读取拦截） */
-const PROTECTED_READ_DIRS = ["/proc/", "/sys/", "/dev/"];
+/** 写操作工具 */
+const WRITE_TOOLS = new Set(["write", "edit"]);
 
 /** 只读工具 */
 const READ_ONLY_TOOLS = new Set(["read", "grep", "glob"]);
@@ -103,11 +78,18 @@ export class PermissionChecker implements Checker {
   private rules: PermissionRule | null = null;
   /** 审计日志 */
   private auditLogger: AuditLogger;
+  /** 路径验证器（统一处理 symlink 解析 + 工作区边界 + 系统目录 + 敏感文件） */
+  private pathValidator: PathValidator;
 
-  constructor(config: Config, rules?: PermissionRule) {
+  constructor(config: Config, rules?: PermissionRule, workspacePath?: string) {
     this.config = config;
     this.rules = rules || null;
     this.auditLogger = new AuditLogger();
+    this.pathValidator = new PathValidator(
+      workspacePath || process.cwd(),
+      config.allowedDirectories || [],
+      config.blockedDirectories || [],
+    );
     // 加载预授权工具
     for (const tool of config.allowedTools) {
       this.preApproved.add(tool);
@@ -179,10 +161,15 @@ export class PermissionChecker implements Checker {
       return { allowed };
     }
 
-    // 第 1 层：危险命令拦截（25 种模式）
+    // 第 1 层：危险命令拦截（25 种模式 + 复合命令拆分 + 重定向检测）
     if (req.toolName === "bash") {
       const cmd = (req.input as any)?.command || "";
-      for (const dp of DANGEROUS_PATTERNS) {
+
+      // 1a. 先对整条命令检查跨管道的危险模式（这些模式包含 | 符号）
+      const pipelinePatterns = DANGEROUS_PATTERNS.filter(dp =>
+        dp.pattern.source.includes("\\|") || dp.name.includes("管道") || dp.name.includes("解码执行") || dp.name.includes("下载并执行")
+      );
+      for (const dp of pipelinePatterns) {
         if (dp.pattern.test(cmd)) {
           log.info("PERMISSION", `${req.toolName}(${cmd.slice(0, 80)}) → ${dp.severity === "critical" ? "拒绝" : "需确认"}(危险命令: ${dp.name})`);
           this.auditLogger.log({
@@ -209,6 +196,61 @@ export class PermissionChecker implements Checker {
           };
         }
       }
+
+      // 1b. 拆分复合命令，对每个子命令检查其他危险模式
+      const subCommands = splitCompoundCommand(cmd);
+      const nonPipelinePatterns = DANGEROUS_PATTERNS.filter(dp =>
+        !pipelinePatterns.includes(dp)
+      );
+      for (const subCmd of subCommands) {
+        for (const dp of nonPipelinePatterns) {
+          if (dp.pattern.test(subCmd)) {
+            log.info("PERMISSION", `${req.toolName}(${subCmd.slice(0, 80)}) → ${dp.severity === "critical" ? "拒绝" : "需确认"}(危险命令: ${dp.name})`);
+            this.auditLogger.log({
+              timestamp: new Date().toISOString(),
+              type: "tool_use",
+              tool: req.toolName,
+              resource: cmd.slice(0, 200),
+              decision: dp.severity === "critical" ? "deny" : "deny",
+              reason: `危险命令: ${dp.name} (子命令: ${subCmd.slice(0, 80)})`,
+              severity: dp.severity,
+            });
+
+            if (dp.severity === "critical") {
+              return {
+                allowed: false,
+                reason: `[${dp.severity}] 危险命令被拦截 (${dp.name}): ${subCmd.slice(0, 80)}`,
+              };
+            }
+
+            return {
+              allowed: false,
+              reason: `[${dp.severity}] 危险命令需要确认 (${dp.name}): ${subCmd.slice(0, 80)}`,
+              needsConfirmation: true,
+            };
+          }
+        }
+      }
+
+      // 1c. 重定向检测：检查是否重定向到敏感路径
+      const redirectCheck = hasSensitiveRedirection(cmd);
+      if (redirectCheck.sensitive) {
+        log.info("PERMISSION", `${req.toolName}(${cmd.slice(0, 80)}) → 需确认(敏感路径重定向: ${redirectCheck.targets.join(", ")})`);
+        this.auditLogger.log({
+          timestamp: new Date().toISOString(),
+          type: "tool_use",
+          tool: req.toolName,
+          resource: cmd.slice(0, 200),
+          decision: "deny",
+          reason: `重定向到敏感路径: ${redirectCheck.targets.join(", ")}`,
+          severity: "high",
+        });
+        return {
+          allowed: false,
+          reason: `重定向到敏感路径需要确认: ${redirectCheck.targets.join(", ")}`,
+          needsConfirmation: true,
+        };
+      }
     }
 
     // 第 2 层：禁用工具检查
@@ -228,60 +270,26 @@ export class PermissionChecker implements Checker {
       };
     }
 
-    // 第 3 层：目录白名单/黑名单检查
-    if (filePath) {
-      const dirDecision = this.checkDirectoryAccess(filePath);
-      if (dirDecision) {
-        log.info("PERMISSION", `${req.toolName}(${filePath.slice(0, 80)}) → ${dirDecision.allowed ? "允许" : "拒绝"}(目录检查: ${dirDecision.reason})`);
-        this.auditLogger.log({
-          timestamp: new Date().toISOString(),
-          type: "tool_use",
-          tool: req.toolName,
-          resource: filePath,
-          decision: dirDecision.allowed ? "allow" : "deny",
-          reason: dirDecision.reason,
-        });
-        return dirDecision;
-      }
-    }
-
-    // 第 4 层：文件路径安全校验（路径遍历 + 系统目录保护）
+    // 第 3 层：统一路径验证（目录黑白名单 + symlink 解析 + 工作区边界 + 系统目录 + 敏感文件）
     if (filePath && FILE_TOOLS.has(req.toolName)) {
-      const pathDecision = this.checkPathSecurity(filePath, req.toolName);
-      if (pathDecision) {
-        log.info("PERMISSION", `${req.toolName}(${filePath.slice(0, 80)}) → 拒绝(路径安全: ${pathDecision.reason})`);
+      const operation = WRITE_TOOLS.has(req.toolName) ? "write" as const : "read" as const;
+      const pathResult = this.pathValidator.validateAccess(filePath, operation);
+      if (!pathResult.allowed) {
+        log.info("PERMISSION", `${req.toolName}(${filePath.slice(0, 80)}) → ${pathResult.needsConfirmation ? "需确认" : "拒绝"}(路径验证: ${pathResult.reason})`);
         this.auditLogger.log({
           timestamp: new Date().toISOString(),
           type: "tool_use",
           tool: req.toolName,
-          resource: filePath,
+          resource: pathResult.resolvedPath,
           decision: "deny",
-          reason: pathDecision.reason,
+          reason: pathResult.reason,
+          severity: pathResult.needsConfirmation ? "high" : "critical",
         });
-        return pathDecision;
-      }
-    }
-
-    // 第 5 层：敏感文件检查
-    if (filePath) {
-      for (const pattern of SENSITIVE_FILES) {
-        if (pattern.test(filePath)) {
-          log.info("PERMISSION", `${req.toolName}(${filePath.slice(0, 80)}) → 需确认(敏感文件: ${pattern.source})`);
-          this.auditLogger.log({
-            timestamp: new Date().toISOString(),
-            type: "tool_use",
-            tool: req.toolName,
-            resource: filePath,
-            decision: "deny",
-            reason: `敏感文件: ${pattern.source}`,
-            severity: "high",
-          });
-          return {
-            allowed: false,
-            reason: `敏感文件被拦截: ${filePath}`,
-            needsConfirmation: true,
-          };
-        }
+        return {
+          allowed: false,
+          reason: pathResult.reason,
+          needsConfirmation: pathResult.needsConfirmation,
+        };
       }
     }
 
@@ -342,8 +350,8 @@ export class PermissionChecker implements Checker {
       // 工作目录内文件写入放行
       if (FILE_TOOLS.has(req.toolName) && filePath) {
         const resolved = path.resolve(filePath);
-        const cwd = process.cwd();
-        if (resolved.startsWith(cwd)) {
+        const workspace = this.pathValidator.isWithinWorkspace(resolved);
+        if (workspace) {
           log.info("PERMISSION", `${req.toolName}(${filePath.slice(0, 80)}) → 允许(dontAsk+工作目录)`);
           return { allowed: true };
         }
@@ -386,90 +394,36 @@ export class PermissionChecker implements Checker {
 
     // 第 14 层：需要用户确认
     log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 需确认(默认策略)`);
-    return {
+    const decision: Decision = {
       allowed: false,
       needsConfirmation: true,
       reason: `工具 "${req.toolName}" 需要用户确认`,
     };
-  }
 
-  /**
-   * 目录白名单/黑名单检查
-   * 黑名单优先于白名单
-   */
-  private checkDirectoryAccess(filePath: string): Decision | null {
-    const resolved = path.resolve(filePath);
-
-    // 黑名单优先
-    for (const blocked of this.config.blockedDirectories || []) {
-      const normalizedBlocked = path.resolve(blocked);
-      if (resolved.startsWith(normalizedBlocked)) {
-        return {
-          allowed: false,
-          reason: `目录被禁止访问: ${blocked}`,
-        };
-      }
-    }
-
-    // 白名单检查（如果配置了白名单）
-    const allowedDirs = this.config.allowedDirectories || [];
-    if (allowedDirs.length > 0) {
-      const allowed = allowedDirs.some(dir => {
-        const normalizedDir = path.resolve(dir);
-        return resolved.startsWith(normalizedDir);
+    // 非交互模式处理：ASK_USER 自动转为 DENY
+    if (this.isNonInteractive() && decision.needsConfirmation) {
+      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(非交互模式)`);
+      this.auditLogger.log({
+        timestamp: new Date().toISOString(),
+        type: "tool_use",
+        tool: req.toolName,
+        resource,
+        decision: "deny",
+        reason: `非交互模式下自动拒绝: ${decision.reason}`,
       });
-      if (!allowed) {
-        return {
-          allowed: false,
-          reason: "目录不在白名单中",
-        };
-      }
-    }
-
-    return null;
-  }
-
-  /**
-   * 文件路径安全校验
-   * 检测路径遍历和系统目录访问
-   */
-  private checkPathSecurity(filePath: string, toolName: string): Decision | null {
-    const resolved = path.resolve(filePath);
-    if (filePath.includes("..")) {
       return {
         allowed: false,
-        reason: `路径遍历被拦截: ${filePath}`,
-        needsConfirmation: true,
+        reason: `非交互模式下自动拒绝: ${decision.reason}`,
       };
     }
 
-    // 系统目录保护（写入）
-    if (toolName === "write" || toolName === "edit") {
-      for (const protectedDir of PROTECTED_WRITE_DIRS) {
-        if (resolved.startsWith(protectedDir)) {
-          return {
-            allowed: false,
-            reason: `系统目录写入被拦截: ${resolved}`,
-            needsConfirmation: true,
-          };
-        }
-      }
-    }
+    return decision;
+  }
 
-    // 系统目录保护（读取）
-    if (toolName === "read") {
-      for (const protectedDir of PROTECTED_READ_DIRS) {
-        if (resolved.startsWith(protectedDir)) {
-          return {
-            allowed: false,
-            reason: `系统目录读取被拦截: ${resolved}`,
-            needsConfirmation: true,
-          };
-        }
-      }
-    }
-
-    return null;
+  /** 检测是否处于非交互模式 */
+  private isNonInteractive(): boolean {
+    // print 模式（单次输出）或 maxTurns > 0（批处理模式）视为非交互
+    return this.config.print === true || (this.config.maxTurns !== undefined && this.config.maxTurns > 0);
   }
 
   /** 请求用户确认（用于 REPL 模式，支持 a=always allow） */
@@ -481,13 +435,14 @@ export class PermissionChecker implements Checker {
     const description = req.description || `${req.toolName}: ${JSON.stringify(req.input).slice(0, 100)}`;
     console.log(`\n[权限请求] ${description}`);
 
+    const readline = await import("readline");
     return new Promise((resolve) => {
       const rl = readline.createInterface({
         input: process.stdin,
         output: process.stdout,
       });
 
-      rl.question("允许执行？(y/n/a) [a=本次会话内始终允许] ", (answer) => {
+      rl.question("允许执行？(y/n/a) [a=本次会话内始终允许] ", (answer: string) => {
         rl.close();
         const lower = answer.toLowerCase();
         if (lower === "a" || lower === "always") {

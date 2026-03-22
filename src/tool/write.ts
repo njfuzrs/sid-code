@@ -8,6 +8,7 @@ import { dirname } from "path";
 import { mkdirSync, existsSync } from "fs";
 import { getCheckpointManager } from "../checkpoint/manager.ts";
 import { getLogger } from "../debug/logger.ts";
+import { detectOmissionPlaceholders } from "./omission-detector.ts";
 
 export class WriteTool implements Tool {
   name(): string {
@@ -52,6 +53,16 @@ export class WriteTool implements Tool {
 
     if (params.content === undefined) {
       return { output: "错误: 缺少 content 参数", isError: true };
+    }
+
+    // 省略占位符检测
+    const omissions = detectOmissionPlaceholders(params.content);
+    if (omissions.length > 0) {
+      const details = omissions.map(m => `  行 ${m.line}: ${m.text}`).join("\n");
+      return {
+        output: `错误: 检测到省略占位符，请提供完整代码而非省略标记:\n${details}\n\n请重新生成完整的文件内容。`,
+        isError: true,
+      };
     }
 
     log.info("TOOL", `▶ 写入 ${params.file_path} (${params.content.length}字符)`);

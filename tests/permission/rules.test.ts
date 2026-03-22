@@ -53,6 +53,52 @@ describe("matchRule", () => {
     expect(matchRule("", { toolName: "read", input: {} })).toBe(false);
     expect(matchRule("Read(", { toolName: "read", input: {} })).toBe(false);
   });
+
+  test("MCP 工具通配符 - mcp__* 匹配所有 MCP 工具", () => {
+    expect(matchRule("mcp__*", {
+      toolName: "mcp__myserver__read",
+      input: {},
+    })).toBe(true);
+
+    expect(matchRule("mcp__*", {
+      toolName: "mcp__otherserver__write",
+      input: {},
+    })).toBe(true);
+
+    expect(matchRule("mcp__*", {
+      toolName: "read",
+      input: {},
+    })).toBe(false);
+  });
+
+  test("MCP 工具通配符 - mcp__server__* 匹配特定 server 的所有工具", () => {
+    expect(matchRule("mcp__myserver__*", {
+      toolName: "mcp__myserver__read",
+      input: {},
+    })).toBe(true);
+
+    expect(matchRule("mcp__myserver__*", {
+      toolName: "mcp__myserver__write",
+      input: {},
+    })).toBe(true);
+
+    expect(matchRule("mcp__myserver__*", {
+      toolName: "mcp__otherserver__read",
+      input: {},
+    })).toBe(false);
+  });
+
+  test("MCP 工具通配符 + 参数模式", () => {
+    expect(matchRule("mcp__myserver__*(*.env)", {
+      toolName: "mcp__myserver__read",
+      input: { file_path: ".env" },
+    })).toBe(true);
+
+    expect(matchRule("mcp__myserver__*(*.env)", {
+      toolName: "mcp__myserver__read",
+      input: { file_path: "config.json" },
+    })).toBe(false);
+  });
 });
 
 describe("checkRules", () => {

@@ -9,6 +9,7 @@ import type { Tool, ToolResult } from "./types.ts";
 import type { FileReadTracker } from "./file-read-tracker.ts";
 import { getCheckpointManager } from "../checkpoint/manager.ts";
 import { getLogger } from "../debug/logger.ts";
+import { detectOmissionPlaceholders } from "./omission-detector.ts";
 import { mkdirSync, existsSync } from "fs";
 import { dirname } from "path";
 
@@ -372,6 +373,18 @@ export class EditTool implements Tool {
     const oldString = this.stripLineNumbers(params.old_string);
     const newString = params.new_string;
     const replaceAll = params.replace_all ?? false;
+
+    // 省略占位符检测（仅对较长的 new_string 检测，避免小编辑误报）
+    if (newString.split("\n").length > 5) {
+      const omissions = detectOmissionPlaceholders(newString);
+      if (omissions.length > 0) {
+        const details = omissions.map(m => `  行 ${m.line}: ${m.text}`).join("\n");
+        return {
+          output: `错误: new_string 中检测到省略占位符，请提供完整代码:\n${details}\n\n请重新生成完整的替换内容。`,
+          isError: true,
+        };
+      }
+    }
 
     try {
       const file = Bun.file(params.file_path);
