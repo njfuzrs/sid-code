@@ -11,6 +11,7 @@ import { Manager as ContextManager } from "../context/manager.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { getLogger } from "../debug/logger.ts";
 import type { HookRunner } from "../hook/runner.ts";
+import { LoopDetector, LOOP_RECOVERY_PROMPT } from "./loop-detection.ts";
 
 /** 子代理类型 */
 export type SubAgentType = "explore" | "task" | "summarize" | "plan";
@@ -215,6 +216,7 @@ export class SubAgent {
       const totalUsage: Usage = { inputTokens: 0, outputTokens: 0 };
       let turns = 0;
       let lastTextOutput = "";
+      const loopDetector = new LoopDetector();
 
       log.info("SUBAGENT", `[${task.type}] 可用工具: ${allowedNames?.join(", ") ?? "无"}, 超时: ${timeout / 1000}秒, 最大轮次: ${maxTurns}`);
 
@@ -262,6 +264,20 @@ export class SubAgent {
           content: response.content,
         });
 
+        // 内容循环检测
+        if (lastTextOutput && loopDetector.recordContent(lastTextOutput)) {
+          if (!loopDetector.tryRecover()) {
+            log.warn("SUBAGENT", `[${task.type}] 内容循环恢复次数耗尽，终止`);
+            break;
+          }
+          log.info("SUBAGENT", `[${task.type}] 检测到内容循环，注入恢复提示`);
+          ctxMgr.addMessage({
+            role: "user",
+            content: [{ type: "text", text: LOOP_RECOVERY_PROMPT }],
+          });
+          continue;
+        }
+
         // 检查停止原因
         if (response.stopReason === "end_turn" || response.stopReason === "stop") {
           log.info("SUBAGENT", `[${task.type}] 完成，共 ${turns} 轮`);
@@ -270,6 +286,29 @@ export class SubAgent {
 
         // 处理工具调用
         if (response.stopReason === "tool_use") {
+          // 工具调用循环检测
+          let loopDetected = false;
+          for (const block of response.content) {
+            if (block.type === "tool_use") {
+              if (loopDetector.recordToolCall(block.name, block.input)) {
+                loopDetected = true;
+                break;
+              }
+            }
+          }
+          if (loopDetected) {
+            if (!loopDetector.tryRecover()) {
+              log.warn("SUBAGENT", `[${task.type}] 工具循环恢复次数耗尽，终止`);
+              break;
+            }
+            log.info("SUBAGENT", `[${task.type}] 检测到工具循环，注入恢复提示`);
+            ctxMgr.addMessage({
+              role: "user",
+              content: [{ type: "text", text: LOOP_RECOVERY_PROMPT }],
+            });
+            continue;
+          }
+
           const toolResults = await this.executeTools(response.content, tools, mergedSignal);
           ctxMgr.addMessage({
             role: "user",
@@ -338,6 +377,7 @@ export class SubAgent {
       const totalUsage: Usage = { inputTokens: 0, outputTokens: 0 };
       let turns = 0;
       let lastTextOutput = "";
+      const loopDetector = new LoopDetector();
 
       log.info("SUBAGENT", `[custom] 可用工具: ${task.allowedTools.join(", ") || "无"}, 超时: ${timeout / 1000}秒, 最大轮次: ${maxTurns}`);
 
@@ -385,11 +425,48 @@ export class SubAgent {
           content: response.content,
         });
 
+        // 内容循环检测
+        if (lastTextOutput && loopDetector.recordContent(lastTextOutput)) {
+          if (!loopDetector.tryRecover()) {
+            log.warn("SUBAGENT", `[custom] 内容循环恢复次数耗尽，终止`);
+            break;
+          }
+          log.info("SUBAGENT", `[custom] 检测到内容循环，注入恢复提示`);
+          ctxMgr.addMessage({
+            role: "user",
+            content: [{ type: "text", text: LOOP_RECOVERY_PROMPT }],
+          });
+          continue;
+        }
+
         if (response.stopReason === "end_turn" || response.stopReason === "stop") {
           break;
         }
 
         if (response.stopReason === "tool_use") {
+          // 工具调用循环检测
+          let loopDetected = false;
+          for (const block of response.content) {
+            if (block.type === "tool_use") {
+              if (loopDetector.recordToolCall(block.name, block.input)) {
+                loopDetected = true;
+                break;
+              }
+            }
+          }
+          if (loopDetected) {
+            if (!loopDetector.tryRecover()) {
+              log.warn("SUBAGENT", `[custom] 工具循环恢复次数耗尽，终止`);
+              break;
+            }
+            log.info("SUBAGENT", `[custom] 检测到工具循环，注入恢复提示`);
+            ctxMgr.addMessage({
+              role: "user",
+              content: [{ type: "text", text: LOOP_RECOVERY_PROMPT }],
+            });
+            continue;
+          }
+
           const toolResults = await this.executeTools(response.content, tools, mergedSignal);
           ctxMgr.addMessage({
             role: "user",
@@ -498,50 +575,120 @@ export class SubAgent {
     return { content, stopReason, usage };
   }
 
-  /** 执行工具调用（子代理版本，无权限检查） */
+  /** 执行工具调用（子代理版本，无权限检查，支持并行执行） */
   private async executeTools(
     content: ContentBlock[],
     tools: ToolRegistry,
     signal?: AbortSignal,
   ): Promise<ContentBlock[]> {
     const log = getLogger();
-    const results: ContentBlock[] = [];
 
-    for (const block of content) {
-      if (block.type !== "tool_use") continue;
+    // 提取所有 tool_use 块，保留原始顺序索引
+    const toolBlocks = content
+      .map((block, idx) => ({ block, idx }))
+      .filter((item): item is { block: ContentBlock & { type: "tool_use" }; idx: number } =>
+        item.block.type === "tool_use"
+      );
 
-      const tool = tools.get(block.name);
+    if (toolBlocks.length === 0) return [];
+
+    // 分离只读和写入工具
+    const readOnlyBlocks: typeof toolBlocks = [];
+    const writingBlocks: typeof toolBlocks = [];
+    const notFoundBlocks: typeof toolBlocks = [];
+
+    for (const item of toolBlocks) {
+      const tool = tools.get(item.block.name);
       if (!tool) {
-        results.push({
-          type: "tool_result",
-          tool_use_id: block.id,
-          content: `工具 "${block.name}" 未找到`,
-          is_error: true,
-        });
+        notFoundBlocks.push(item);
         continue;
       }
-
-      try {
-        const result = await tool.execute(block.input, signal);
-        // 截断超大输出
-        const truncated = ContextManager.truncateToolOutput(result.output);
-        results.push({
-          type: "tool_result",
-          tool_use_id: block.id,
-          content: truncated,
-          is_error: result.isError,
-        });
-      } catch (err: any) {
-        log.error("SUBAGENT:TOOL", `工具执行异常: ${block.name}`, { error: err.message });
-        results.push({
-          type: "tool_result",
-          tool_use_id: block.id,
-          content: `工具执行异常: ${err.message}`,
-          is_error: true,
-        });
+      if (tool.readOnly?.() === true) {
+        readOnlyBlocks.push(item);
+      } else {
+        writingBlocks.push(item);
       }
     }
 
+    log.debug("SUBAGENT:TOOL", `工具分类: 只读 ${readOnlyBlocks.length} 个并行, 写入 ${writingBlocks.length} 个串行`);
+
+    // 结果收集（按原始顺序索引存储）
+    const resultMap = new Map<number, ContentBlock>();
+
+    // 未找到的工具直接返回错误
+    for (const { block, idx } of notFoundBlocks) {
+      resultMap.set(idx, {
+        type: "tool_result",
+        tool_use_id: block.id,
+        content: `工具 "${block.name}" 未找到`,
+        is_error: true,
+      });
+    }
+
+    // 只读工具并行执行
+    if (readOnlyBlocks.length > 0) {
+      const readResults = await Promise.all(
+        readOnlyBlocks.map(({ block, idx }) =>
+          this.executeSingleTool(block, tools, signal).then(r => ({ idx, result: r }))
+        )
+      );
+      for (const { idx, result } of readResults) {
+        resultMap.set(idx, result);
+      }
+    }
+
+    // 写入工具串行执行
+    for (const { block, idx } of writingBlocks) {
+      const result = await this.executeSingleTool(block, tools, signal);
+      resultMap.set(idx, result);
+    }
+
+    // 按原始顺序组装结果
+    const results: ContentBlock[] = [];
+    for (const { idx } of toolBlocks) {
+      const result = resultMap.get(idx);
+      if (result) results.push(result);
+    }
+
     return results;
+  }
+
+  /** 执行单个工具 */
+  private async executeSingleTool(
+    block: ContentBlock & { type: "tool_use" },
+    tools: ToolRegistry,
+    signal?: AbortSignal,
+  ): Promise<ContentBlock> {
+    const log = getLogger();
+    const tool = tools.get(block.name);
+
+    if (!tool) {
+      return {
+        type: "tool_result",
+        tool_use_id: block.id,
+        content: `工具 "${block.name}" 未找到`,
+        is_error: true,
+      };
+    }
+
+    try {
+      const result = await tool.execute(block.input, signal);
+      // 截断超大输出
+      const truncated = ContextManager.truncateToolOutput(result.output);
+      return {
+        type: "tool_result",
+        tool_use_id: block.id,
+        content: truncated,
+        is_error: result.isError,
+      };
+    } catch (err: any) {
+      log.error("SUBAGENT:TOOL", `工具执行异常: ${block.name}`, { error: err.message });
+      return {
+        type: "tool_result",
+        tool_use_id: block.id,
+        content: `工具执行异常: ${err.message}`,
+        is_error: true,
+      };
+    }
   }
 }

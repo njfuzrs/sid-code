@@ -20,6 +20,7 @@ import { ThinkingManager } from "../llm/thinking.ts";
 import { SessionState } from "../session/state.ts";
 import { getLogger } from "../debug/logger.ts";
 import type { HookRunner } from "../hook/runner.ts";
+import { LoopDetector, LOOP_RECOVERY_PROMPT } from "./loop-detection.ts";
 
 /** UI 回调接口，处理 REPL/TUI 的差异 */
 export interface AgentLoopCallbacks {
@@ -39,6 +40,10 @@ export interface AgentLoopCallbacks {
   onContextWarning?(remaining: number): void;
   /** 最大轮次警告 */
   onMaxTurns?(maxTurns: number): void;
+  /** 检测到循环 */
+  onLoopDetected?(detail: string): void;
+  /** 循环恢复尝试 */
+  onLoopRecovery?(attempt: number, maxAttempts: number): void;
 }
 
 /** AgentLoopRunner 依赖 */
@@ -69,9 +74,11 @@ export interface AgentLoopDeps {
 
 export class AgentLoopRunner {
   private deps: AgentLoopDeps;
+  private loopDetector: LoopDetector;
 
   constructor(deps: AgentLoopDeps) {
     this.deps = deps;
+    this.loopDetector = new LoopDetector();
   }
 
   /** 更新 Provider（模型切换时调用） */
@@ -83,6 +90,38 @@ export class AgentLoopRunner {
   private sendWithRetry(params: SendParams, signal?: AbortSignal): AsyncIterable<StreamEvent> {
     this.deps.fallback.reset();
     return this.deps.fallback.executeWithFallback(this.deps.provider, params, signal);
+  }
+
+  /** 循环恢复机制 */
+  private async recoverFromLoop(
+    ctxMgr: ContextManager,
+    callbacks: AgentLoopCallbacks,
+    detail: string,
+  ): Promise<boolean> {
+    const log = getLogger();
+
+    // 通知用户检测到循环
+    callbacks.onLoopDetected?.(detail);
+
+    // 尝试恢复
+    const canRecover = this.loopDetector.tryRecover();
+    if (!canRecover) {
+      log.warn("AGENT", "循环恢复次数耗尽，终止循环");
+      return false;
+    }
+
+    const attempt = this.loopDetector.getRecoveryAttempts();
+    const maxAttempts = this.loopDetector.getMaxRecoveryAttempts();
+    log.info("AGENT", `注入循环恢复提示 (${attempt}/${maxAttempts})`);
+    callbacks.onLoopRecovery?.(attempt, maxAttempts);
+
+    // 注入恢复提示让 LLM 自我纠正
+    ctxMgr.addMessage({
+      role: "user",
+      content: [{ type: "text", text: LOOP_RECOVERY_PROMPT }],
+    });
+
+    return true;
   }
 
   /** 运行 Agent 循环 */
@@ -124,6 +163,9 @@ export class AgentLoopRunner {
       content: [{ type: "text", text: cleanedInput }],
     });
     callbacks.onUserMessageAdded?.();
+
+    // 新输入重置循环检测
+    this.loopDetector.reset();
 
     let turns = 0;
     const maxTurns = config.maxTurns || 50;
@@ -230,6 +272,13 @@ export class AgentLoopRunner {
         content: response.content,
       });
 
+      // 内容循环检测
+      if (responseText && this.loopDetector.recordContent(responseText)) {
+        const recovered = await this.recoverFromLoop(ctxMgr, callbacks, "内容重复模式");
+        if (!recovered) break;
+        continue;
+      }
+
       // 检查停止原因
       if (response.stopReason === "end_turn" || response.stopReason === "stop") {
         const totalUsage = sessionState.getTotalUsage();
@@ -243,6 +292,22 @@ export class AgentLoopRunner {
         const toolBlocks = response.content.filter(b => b.type === "tool_use");
         const toolNames = toolBlocks.map(b => b.type === "tool_use" ? b.name : "").filter(Boolean);
         log.info("AGENT", `工具调用: ${toolNames.join(", ")}`);
+
+        // 工具调用循环检测
+        let loopDetected = false;
+        for (const b of toolBlocks) {
+          if (b.type === "tool_use") {
+            if (this.loopDetector.recordToolCall(b.name, b.input)) {
+              loopDetected = true;
+              break;
+            }
+          }
+        }
+        if (loopDetected) {
+          const recovered = await this.recoverFromLoop(ctxMgr, callbacks, "工具调用重复");
+          if (!recovered) break;
+          continue;
+        }
 
         for (const b of toolBlocks) {
           if (b.type === "tool_use") {

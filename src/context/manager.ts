@@ -6,16 +6,28 @@
 import type { Message } from "../llm/types.ts";
 import { MessageValidator } from "./validator.ts";
 import { getLogger } from "../debug/logger.ts";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 /** 持久化输出阈值（对标 Claude Code 30000 字符） */
 const OUTPUT_THRESHOLD = 30000;  // 30K 字符，超过此大小的工具输出会被截断
 const KEEP_RECENT_OUTPUTS = 3;   // 保留最近 N 个大输出，旧的清理掉
 const CLEARED_MARKER = "[旧的工具输出已清理]";
 
+/** 截断结果 */
+export interface TruncationResult {
+  /** 截断后的文本（用于上下文） */
+  truncated: string;
+  /** 完整输出保存的文件路径（null 表示未截断） */
+  savedPath: string | null;
+}
+
 /** 上下文管理器配置 */
 export interface ManagerOptions {
   maxTokens: number;        // 上下文窗口最大 token 数
   compactThreshold?: number; // 触发压缩的阈值比例（默认 0.7）
+  /** 项目临时目录（用于工具输出落盘） */
+  tempDir?: string;
 }
 
 export class Manager {
@@ -23,10 +35,12 @@ export class Manager {
   private systemPrompt: string = "";
   private maxTokens: number;
   private compactThreshold: number;
+  private tempDir?: string;
 
   constructor(opts: ManagerOptions) {
     this.maxTokens = opts.maxTokens;
     this.compactThreshold = opts.compactThreshold ?? 0.7;
+    this.tempDir = opts.tempDir;
   }
 
   /** 设置系统提示词 */
@@ -69,7 +83,8 @@ export class Manager {
       content: msg.content.map(block => {
         if (block.type === "tool_result" && block.content.length > OUTPUT_THRESHOLD) {
           log.debug("CONTEXT", `增量压缩 tool_result: ${block.content.length} → 截断`);
-          return { ...block, content: Manager.truncateToolOutput(block.content) };
+          const truncated = Manager.truncateToolOutput(block.content);
+          return { ...block, content: truncated };
         }
         return block;
       }),
@@ -199,6 +214,52 @@ export class Manager {
   }
 
   /**
+   * 增强版截断：支持工具输出落盘到临时文件
+   * 超大输出保存完整内容到文件，返回截断摘要 + 文件路径
+   */
+  static truncateToolOutputWithSave(
+    content: string,
+    toolName: string,
+    tempDir: string,
+    maxChars: number = OUTPUT_THRESHOLD,
+  ): TruncationResult {
+    if (content.length <= maxChars) {
+      return { truncated: content, savedPath: null };
+    }
+
+    // 保存完整输出到临时文件
+    let savedPath: string | null = null;
+    try {
+      const dir = path.join(tempDir, "tool-outputs");
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      const filename = `${toolName}-${Date.now()}.txt`;
+      savedPath = path.join(dir, filename);
+      fs.writeFileSync(savedPath, content, "utf-8");
+    } catch (err: any) {
+      const log = getLogger();
+      log.warn("CONTEXT", `工具输出落盘失败: ${err.message}`);
+      savedPath = null;
+    }
+
+    // 智能截断：前 20% + 后 80%（参考 gemini-cli 的比例，尾部更重要）
+    const headChars = Math.floor(maxChars * 0.2);
+    const tailChars = maxChars - headChars;
+    const head = content.slice(0, headChars);
+    const tail = content.slice(-tailChars);
+    const omitted = content.length - headChars - tailChars;
+
+    let truncated = `输出过大（${content.length} 字符），显示前 ${headChars} 和后 ${tailChars} 字符。`;
+    if (savedPath) {
+      truncated += `\n完整输出已保存到: ${savedPath}`;
+    }
+    truncated += `\n\n${head}\n\n... [省略 ${omitted} 字符] ...\n\n${tail}`;
+
+    return { truncated, savedPath };
+  }
+
+  /**
    * 估算当前 token 数（粗略：4 字符 ≈ 1 token）
    * 包含：系统提示词 + 消息内容 + 消息结构开销 + 工具定义开销
    */
@@ -297,5 +358,80 @@ export class Manager {
     };
 
     this.messages = [summaryMsg, ackMsg, ...kept];
+  }
+
+  /**
+   * 压缩前清理旧的大型工具输出（函数响应预算）
+   * 从最新消息向前遍历，优先保留最近的工具输出
+   * @param budgetChars 工具输出总字符预算（默认 200000）
+   */
+  applyFunctionResponseBudget(budgetChars: number = 200000): void {
+    const log = getLogger();
+    let usedChars = 0;
+    let cleanedCount = 0;
+
+    // 从最新消息向前遍历，优先保留最近的工具输出
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      const msg = this.messages[i];
+      if (msg.role !== "user") continue;
+
+      for (let j = 0; j < msg.content.length; j++) {
+        const block = msg.content[j];
+        if (block.type !== "tool_result") continue;
+
+        const chars = block.content.length;
+        if (usedChars + chars > budgetChars) {
+          // 超出预算，截断这个工具输出
+          msg.content[j] = {
+            ...block,
+            content: "[旧的工具输出已清理，超出函数响应预算]",
+          };
+          cleanedCount++;
+        }
+        usedChars += chars;
+      }
+    }
+
+    if (cleanedCount > 0) {
+      log.info("CONTEXT", `函数响应预算清理: 清理了 ${cleanedCount} 个旧工具输出`);
+    }
+  }
+
+  /**
+   * 清理工具输出临时文件
+   * @param maxAgeMs 最大保留时间（毫秒，默认 1 小时）
+   */
+  static cleanupToolOutputs(tempDir: string, maxAgeMs: number = 3600_000): void {
+    const log = getLogger();
+    const dir = path.join(tempDir, "tool-outputs");
+
+    if (!fs.existsSync(dir)) return;
+
+    try {
+      const files = fs.readdirSync(dir);
+      const now = Date.now();
+      let cleaned = 0;
+
+      for (const file of files) {
+        const filePath = path.join(dir, file);
+        const stat = fs.statSync(filePath);
+        if (now - stat.mtimeMs > maxAgeMs) {
+          fs.unlinkSync(filePath);
+          cleaned++;
+        }
+      }
+
+      if (cleaned > 0) {
+        log.info("CONTEXT", `清理了 ${cleaned} 个过期的工具输出临时文件`);
+      }
+
+      // 如果目录为空，删除目录
+      const remaining = fs.readdirSync(dir);
+      if (remaining.length === 0) {
+        fs.rmdirSync(dir);
+      }
+    } catch (err: any) {
+      log.warn("CONTEXT", `清理工具输出临时文件失败: ${err.message}`);
+    }
   }
 }
