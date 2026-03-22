@@ -132,6 +132,12 @@ export interface Config {
   // 环境变量清理
   /** 是否在 bash 工具执行时清理环境变量（默认 false） */
   sanitizeEnv?: boolean;
+
+  // 会话保留配置
+  sessionRetention?: SessionRetentionConfig;
+
+  // 项目哈希（用于多项目隔离）
+  projectHash?: string;
 }
 
 /** Checkpoint 配置 */
@@ -150,6 +156,18 @@ export interface CheckpointConfig {
   largeFileThresholdLines?: number;
   /** 超大文件阈值（行数，默认 10000，超过此值直接存 full） */
   hugeFileThresholdLines?: number;
+}
+
+/** 会话保留配置 */
+export interface SessionRetentionConfig {
+  /** 是否启用自动清理（默认 true） */
+  enabled?: boolean;
+  /** 最大保留时间（如 "30d"） */
+  maxAge?: string;
+  /** 最大保留数量 */
+  maxCount?: number;
+  /** 最小保留时间（防止误删，如 "1d"） */
+  minRetention?: string;
 }
 
 /** 默认配置 */

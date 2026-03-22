@@ -192,7 +192,64 @@ bun run src/skill/builtin/skill-creator/scripts/init_skill.ts code-review delega
 bun run src/skill/builtin/skill-creator/scripts/init_skill.ts pdf-processor activate
 ```
 
-## 8. Hook 系统
+## 8. Session 系统增强
+
+### 会话管理功能
+
+**命令行参数**：
+- `--list-sessions`：列出所有会话（文本模式）
+- `--browse-sessions`：打开 TUI 会话浏览器
+- `--resume <id|index>`：恢复指定会话（支持 ID 或索引）
+- `--delete-session <id>`：删除指定会话
+- `--cleanup-sessions`：手动触发会话清理
+
+**TUI 会话浏览器**（`src/session/browser.tsx`）：
+- 键盘导航：↑↓ 移动，Enter 恢复，x 删除，/ 搜索，s 排序，r 反转，q 退出
+- 搜索功能：按内容/标题/ID 搜索，高亮匹配片段
+- 排序方式：date（日期）/ messages（消息数）/ name（名称）
+- 分页显示：每页 20 条，支持 PageUp/PageDown
+- 当前会话保护：标记为 "(当前)"，禁止删除
+
+**会话自动清理**（`src/session/cleanup.ts`）：
+- 启动时后台静默执行
+- 配置项（`~/.sid-code/config.yaml`）：
+  ```yaml
+  session_retention:
+    enabled: true
+    max_age: "30d"        # 最大保留时间
+    max_count: 50         # 最大保留数量
+    min_retention: "1d"   # 最小保留时间（防止误删）
+  ```
+- 清理策略：基于时间 + 基于数量，保护当前会话
+- 关联资源清理：同时删除 logs / tool-outputs / session-dir
+
+**Turn 级别管理**（`src/session/turn.ts`）：
+- Turn 数据结构：用户输入 + LLM 响应 + 工具调用 + Token 用量
+- `/rewind [n]` 命令：回退最近 n 轮对话（默认 1 轮）
+- 统计信息：每轮耗时、token 用量、工具调用数
+- 支持序列化/反序列化
+
+**数据结构扩展**（向后兼容）：
+```typescript
+export interface SessionData {
+  // 现有字段
+  version: string;
+  id: string;
+  model: string;
+  provider: string;
+  messages: Message[];
+  createdAt: string;
+  updatedAt: string;
+
+  // 新增字段（可选）
+  kind?: "main" | "subagent";
+  projectHash?: string;
+  directories?: string[];
+  summary?: string;
+}
+```
+
+## 9. Hook 系统
 
 10 种事件：`pre_tool_use`(可阻止) / `post_tool_use` / `post_tool_use_failure` / `user_prompt_submit`(可阻止+修改输入) / `session_start` / `session_end` / `pre_compact`(可阻止) / `subagent_stop` / `permission_request`(预留) / `notification`(预留)
 

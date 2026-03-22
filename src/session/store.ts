@@ -26,6 +26,16 @@ export interface SessionData {
   messages: Message[];
   createdAt: string;
   updatedAt: string;
+
+  // 新增字段（可选，向后兼容）
+  /** 会话类型 */
+  kind?: "main" | "subagent";
+  /** 项目哈希（用于多项目隔离） */
+  projectHash?: string;
+  /** 工作区目录列表 */
+  directories?: string[];
+  /** AI 生成的摘要 */
+  summary?: string;
 }
 
 /** 会话摘要数据 */

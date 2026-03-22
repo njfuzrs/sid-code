@@ -34,6 +34,10 @@ function parseCLIArgs(): Partial<Config> & { prompt?: string } {
       // 会话配置
       continue: { type: "boolean", short: "c" },
       resume: { type: "string", short: "r" },
+      "list-sessions": { type: "boolean" },
+      "browse-sessions": { type: "boolean" },
+      "delete-session": { type: "string" },
+      "cleanup-sessions": { type: "boolean" },
       
       // 无头模式
       print: { type: "boolean", short: "p" },
@@ -72,7 +76,13 @@ function parseCLIArgs(): Partial<Config> & { prompt?: string } {
   }
 
   // 转换为 Config 格式
-  const cliConfig: Partial<Config> & { prompt?: string } = {
+  const cliConfig: Partial<Config> & {
+    prompt?: string;
+    "list-sessions"?: boolean;
+    "browse-sessions"?: boolean;
+    "delete-session"?: string;
+    "cleanup-sessions"?: boolean;
+  } = {
     provider: values.provider,
     model: values.model,
     maxTokens: values["max-tokens"] ? parseInt(values["max-tokens"]) : undefined,
@@ -91,6 +101,10 @@ function parseCLIArgs(): Partial<Config> & { prompt?: string } {
     debugLevel: values["debug-level"],
     debugLogFile: values["debug-log-file"],
     useAlternateBuffer: values["no-alternate-buffer"] ? false : undefined,
+    "list-sessions": values["list-sessions"],
+    "browse-sessions": values["browse-sessions"],
+    "delete-session": values["delete-session"],
+    "cleanup-sessions": values["cleanup-sessions"],
   };
 
   // 位置参数作为初始提示词
@@ -121,7 +135,11 @@ LLM 配置:
 
 会话配置:
   -c, --continue              继续最近一次会话
-  -r, --resume <id>           恢复指定会话
+  -r, --resume <id>           恢复指定会话（ID 或索引）
+  --list-sessions             列出所有会话（文本模式）
+  --browse-sessions           打开 TUI 会话浏览器
+  --delete-session <id>       删除指定会话
+  --cleanup-sessions          手动触发会话清理
 
 无头模式:
   -p, --print                 无头模式（非交互式）
@@ -155,6 +173,147 @@ UI:
 配置文件:
   ~/.sid-code/config.yaml     YAML 格式配置文件
 `);
+}
+
+/** 处理列出会话命令 */
+async function handleListSessions(): Promise<void> {
+  const { SessionSelector } = await import("./session/utils.ts");
+  const { homedir } = await import("os");
+  const { join } = await import("path");
+
+  const home = process.env.HOME || homedir();
+  const sessionDir = join(home, ".sid-code", "sessions");
+  const selector = new SessionSelector(sessionDir);
+
+  try {
+    const sessions = await selector.listSessions();
+
+    if (sessions.length === 0) {
+      console.log("未找到任何会话");
+      return;
+    }
+
+    console.log(`共 ${sessions.length} 个会话:\n`);
+    console.log("索引 | 消息数 | 时间 | 名称");
+    console.log("-----|--------|------|------");
+
+    for (const session of sessions) {
+      const { formatRelativeTime } = await import("./session/utils.ts");
+      const time = formatRelativeTime(session.lastUpdated, "short");
+      const name = session.displayName.slice(0, 50);
+      console.log(`#${session.index.toString().padStart(3)} | ${session.messageCount.toString().padStart(6)} | ${time.padEnd(4)} | ${name}`);
+    }
+  } catch (error: any) {
+    console.error(`错误: ${error.message}`);
+    process.exit(1);
+  }
+}
+
+/** 处理浏览会话命令 */
+async function handleBrowseSessions(config: Config): Promise<void> {
+  const React = await import("react");
+  const { render } = await import("ink");
+  const { SessionBrowser } = await import("./session/browser.tsx");
+  const { SessionStore } = await import("./session/store.ts");
+  const { homedir } = await import("os");
+  const { join } = await import("path");
+  const { unlinkSync, existsSync } = await import("fs");
+
+  const store = new SessionStore();
+  const home = process.env.HOME || homedir();
+  const sessionDir = join(home, ".sid-code", "sessions");
+
+  let selectedSession: any = null;
+
+  const { waitUntilExit } = render(
+    React.createElement(SessionBrowser, {
+      config,
+      currentSessionId: config.sessionId,
+      onResumeSession: (session: any) => {
+        selectedSession = session;
+      },
+      onDeleteSession: async (session: any) => {
+        const sessionPath = join(sessionDir, session.fileName);
+        if (existsSync(sessionPath)) {
+          unlinkSync(sessionPath);
+        }
+      },
+      onExit: () => {
+        process.exit(0);
+      },
+    })
+  );
+
+  await waitUntilExit();
+
+  if (selectedSession) {
+    console.log(`已选择会话: ${selectedSession.id}`);
+    console.log(`使用 --resume ${selectedSession.id} 恢复此会话`);
+  }
+}
+
+/** 处理删除会话命令 */
+async function handleDeleteSession(sessionId: string): Promise<void> {
+  const { SessionSelector } = await import("./session/utils.ts");
+  const { homedir } = await import("os");
+  const { join } = await import("path");
+  const { unlinkSync, existsSync } = await import("fs");
+
+  const home = process.env.HOME || homedir();
+  const sessionDir = join(home, ".sid-code", "sessions");
+  const selector = new SessionSelector(sessionDir);
+
+  try {
+    const session = await selector.findSession(sessionId);
+    const sessionPath = join(sessionDir, session.fileName);
+
+    if (existsSync(sessionPath)) {
+      unlinkSync(sessionPath);
+      console.log(`已删除会话: ${session.id} (${session.displayName})`);
+    } else {
+      console.error(`错误: 会话文件不存在: ${session.fileName}`);
+      process.exit(1);
+    }
+  } catch (error: any) {
+    console.error(`错误: ${error.message}`);
+    process.exit(1);
+  }
+}
+
+/** 处理清理会话命令 */
+async function handleCleanupSessions(config: Config): Promise<void> {
+  const { cleanupExpiredSessions, getRetentionSettings } = await import("./session/cleanup.ts");
+
+  try {
+    const retentionSettings = getRetentionSettings(config);
+    console.log("开始清理过期会话...");
+    console.log(`配置: maxAge=${retentionSettings.maxAge}, maxCount=${retentionSettings.maxCount}`);
+
+    const result = await cleanupExpiredSessions(config, retentionSettings, config.sessionId);
+
+    console.log(`\n清理完成:`);
+    console.log(`  扫描: ${result.scanned} 个`);
+    console.log(`  删除: ${result.deleted} 个`);
+    console.log(`  跳过: ${result.skipped} 个`);
+    console.log(`  失败: ${result.failed} 个`);
+
+    if (result.deletedIds.length > 0) {
+      console.log(`\n已删除会话 ID:`);
+      for (const id of result.deletedIds) {
+        console.log(`  - ${id}`);
+      }
+    }
+
+    if (result.failedIds.length > 0) {
+      console.log(`\n删除失败的会话 ID:`);
+      for (const id of result.failedIds) {
+        console.log(`  - ${id}`);
+      }
+    }
+  } catch (error: any) {
+    console.error(`错误: ${error.message}`);
+    process.exit(1);
+  }
 }
 
 /** 主函数 */
@@ -191,6 +350,24 @@ async function main(): Promise<void> {
         logFile: logger.getLogFilePath(),
       });
       logger.configLoaded("CLI", config);
+    }
+
+    // 处理会话管理命令（不需要 API Key）
+    if (cliArgs["list-sessions"]) {
+      await handleListSessions();
+      return;
+    }
+    if (cliArgs["browse-sessions"]) {
+      await handleBrowseSessions(config);
+      return;
+    }
+    if (cliArgs["delete-session"]) {
+      await handleDeleteSession(cliArgs["delete-session"]);
+      return;
+    }
+    if (cliArgs["cleanup-sessions"]) {
+      await handleCleanupSessions(config);
+      return;
     }
 
     // 验证 API Key
@@ -354,6 +531,25 @@ async function main(): Promise<void> {
     // 创建 App
     const { App } = await import("./app.ts");
     const app = new App({ config, provider, providerRegistry, toolRegistry, commandRegistry, permissionChecker, mcpManager });
+
+    // 启动时自动清理过期会话（后台静默执行）
+    if (!config.print) {
+      const { cleanupExpiredSessions, getRetentionSettings } = await import("./session/cleanup.ts");
+      const retentionSettings = getRetentionSettings(config);
+      if (retentionSettings.enabled) {
+        cleanupExpiredSessions(config, retentionSettings, config.sessionId)
+          .then((result) => {
+            if (result.deleted > 0 && config.debug) {
+              getLogger().info("CLEANUP", `自动清理: 删除 ${result.deleted} 个过期会话`);
+            }
+          })
+          .catch((err: any) => {
+            if (config.debug) {
+              getLogger().error("CLEANUP", `自动清理失败: ${err.message}`);
+            }
+          });
+      }
+    }
 
     // 会话恢复：--continue 或 --resume <id>
     if (config.continue || config.resume) {
