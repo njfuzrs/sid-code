@@ -21,10 +21,20 @@ export interface SkillDefinition {
   model?: string;
   /** 禁止 LLM 自动调用（仅手动触发） */
   disableModelInvocation?: boolean;
+  /** 执行模式：activate（上下文注入）或 delegate（子代理执行，默认） */
+  mode?: "activate" | "delegate";
+  /** 最大轮次（delegate 模式，默认 10，最大 50） */
+  maxTurns?: number;
+  /** 超时时间（分钟，delegate 模式，默认 2，最大 30） */
+  timeoutMins?: number;
   /** 提示词模板（markdown body） */
   prompt: string;
   /** 来源 */
   source: ExtensionSource;
   /** 文件路径 */
   filePath: string;
+  /** 是否禁用 */
+  disabled?: boolean;
+  /** 是否为内置 Skill */
+  isBuiltin?: boolean;
 }

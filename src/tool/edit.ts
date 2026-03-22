@@ -7,7 +7,6 @@
 
 import type { Tool, ToolResult } from "./types.ts";
 import type { FileReadTracker } from "./file-read-tracker.ts";
-import { getCheckpointManager } from "../checkpoint/manager.ts";
 import { getLogger } from "../debug/logger.ts";
 import { detectOmissionPlaceholders } from "./omission-detector.ts";
 import { mkdirSync, existsSync } from "fs";
@@ -398,11 +397,6 @@ export class EditTool implements Tool {
             isError: true,
           };
         }
-        // 创建 Checkpoint
-        try {
-          const cpMgr = await getCheckpointManager(process.env.SID_CODE_SESSION_ID || "default");
-          await cpMgr.createCheckpoint(params.file_path);
-        } catch { /* Checkpoint 失败不影响操作 */ }
 
         const dir = dirname(params.file_path);
         if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
@@ -415,12 +409,6 @@ export class EditTool implements Tool {
       if (!exists) {
         return { output: `错误: 文件不存在: ${params.file_path}`, isError: true };
       }
-
-      // 创建 Checkpoint
-      try {
-        const cpMgr = await getCheckpointManager(process.env.SID_CODE_SESSION_ID || "default");
-        await cpMgr.createCheckpoint(params.file_path);
-      } catch { /* Checkpoint 失败不影响操作 */ }
 
       const rawContent = await file.text();
       const lineEnding = detectLineEnding(rawContent);

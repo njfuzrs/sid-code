@@ -37,12 +37,15 @@ export type CommandResultKind =
   | "submit_prompt"  // 将文本提交给 LLM
   | "clear"          // 清空对话
   | "quit"           // 退出程序
+  | "confirm"        // 需要用户确认
   | "error";         // 错误信息
 
 export interface CommandResult {
   kind: CommandResultKind;
-  message?: string;  // kind=message/error 时的文本
+  message?: string;  // kind=message/error/confirm 时的文本
   prompt?: string;   // kind=submit_prompt 时的提示词
+  /** kind=confirm 时的确认回调 */
+  onConfirm?: () => Promise<CommandResult>;
 }
 
 /** 命令接口 - 所有斜杠命令必须实现 */

@@ -31,6 +31,28 @@ export class SkillLoader {
 
       const fm = file.frontmatter;
 
+      // 检查 disabled 字段
+      if (fm.disabled === true) {
+        log.debug("SKILL", `跳过已禁用的 Skill: ${file.name}`);
+        continue;
+      }
+
+      // 名称清理和验证
+      const rawName = (fm.name as string) || file.name;
+      const sanitizedName = this.sanitizeName(rawName);
+
+      if (!this.validateName(sanitizedName)) {
+        log.warn("SKILL", `跳过无效名称的 Skill: ${rawName}`);
+        continue;
+      }
+
+      // 验证 description 非空
+      const description = (fm.description as string) || "";
+      if (!description.trim()) {
+        log.warn("SKILL", `跳过缺少 description 的 Skill: ${sanitizedName}`);
+        continue;
+      }
+
       // 解析 allowed-tools（支持逗号分隔字符串或数组）
       let allowedTools: string[] | undefined;
       const rawTools = fm["allowed-tools"] ?? fm["allowedTools"] ?? fm["tools"];
@@ -40,14 +62,28 @@ export class SkillLoader {
         allowedTools = rawTools.map(String);
       }
 
+      // 解析 mode 字段
+      const rawMode = fm.mode as string;
+      const mode: "activate" | "delegate" | undefined =
+        rawMode === "activate" || rawMode === "delegate" ? rawMode : undefined;
+
+      // 解析 maxTurns 和 timeoutMins
+      const maxTurns = typeof fm["max-turns"] === "number" ? fm["max-turns"] :
+                       typeof fm["maxTurns"] === "number" ? fm["maxTurns"] : undefined;
+      const timeoutMins = typeof fm["timeout-mins"] === "number" ? fm["timeout-mins"] :
+                          typeof fm["timeoutMins"] === "number" ? fm["timeoutMins"] : undefined;
+
       const skill: SkillDefinition = {
-        name: (fm.name as string) || file.name,
-        description: (fm.description as string) || "",
+        name: sanitizedName,
+        description,
         allowedTools,
         whenToUse: fm["when-to-use"] as string ?? fm["whenToUse"] as string,
         argumentHint: fm["argument-hint"] as string ?? fm["argumentHint"] as string,
         model: fm.model as string,
         disableModelInvocation: fm["disable-model-invocation"] === true || fm["disableModelInvocation"] === true,
+        mode,
+        maxTurns,
+        timeoutMins,
         prompt: file.body,
         source: file.source,
         filePath: file.filePath,
@@ -63,5 +99,21 @@ export class SkillLoader {
     }
 
     return skills;
+  }
+
+  /**
+   * 清理 Skill 名称：替换非法字符为 -
+   */
+  private sanitizeName(name: string): string {
+    return name.replace(/[:\\/<>*?"|]/g, "-");
+  }
+
+  /**
+   * 验证 Skill 名称：非空、slug 格式
+   */
+  private validateName(name: string): boolean {
+    if (!name) return false;
+    // slug 格式：小写字母、数字、连字符、下划线，首字符必须是字母或数字
+    return /^[a-z0-9][a-z0-9-_]*$/i.test(name);
   }
 }

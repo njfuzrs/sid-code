@@ -113,6 +113,31 @@ export interface Config {
   useAlternateBuffer: boolean;
   /** 代码块是否显示行号（默认 true） */
   showLineNumbers: boolean;
+
+  // Skill 配置
+  /** 禁用的 Skill 名称列表 */
+  disabledSkills?: string[];
+
+  // Checkpoint 配置
+  checkpoint?: CheckpointConfig;
+}
+
+/** Checkpoint 配置 */
+export interface CheckpointConfig {
+  /** 是否启用（默认 true） */
+  enabled?: boolean;
+  /** 每文件最大快照数（默认 50） */
+  maxCheckpointsPerFile?: number;
+  /** 总存储上限（MB，默认 200） */
+  maxTotalSizeMb?: number;
+  /** 过期天数（默认 30） */
+  maxAgeDays?: number;
+  /** 压缩阈值（KB，默认 1） */
+  compressThresholdKb?: number;
+  /** 大文件阈值（行数，默认 1000，超过此值使用 Myers diff） */
+  largeFileThresholdLines?: number;
+  /** 超大文件阈值（行数，默认 10000，超过此值直接存 full） */
+  hugeFileThresholdLines?: number;
 }
 
 /** 默认配置 */
@@ -190,6 +215,8 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     cost_limit: "costLimit",
     use_alternate_buffer: "useAlternateBuffer",
     show_line_numbers: "showLineNumbers",
+    disabled_skills: "disabledSkills",
+    checkpoint: "checkpoint",
   };
 
   const result: any = {};
@@ -216,6 +243,17 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
         grouped[event].push(hook);
       }
       result[configKey] = grouped;
+    // 特殊处理 checkpoint：转换字段名
+    } else if (configKey === "checkpoint" && typeof value === "object") {
+      result[configKey] = {
+        enabled: value.enabled,
+        maxCheckpointsPerFile: value.max_checkpoints_per_file || value.maxCheckpointsPerFile,
+        maxTotalSizeMb: value.max_total_size_mb || value.maxTotalSizeMb,
+        maxAgeDays: value.max_age_days || value.maxAgeDays,
+        compressThresholdKb: value.compress_threshold_kb || value.compressThresholdKb,
+        largeFileThresholdLines: value.large_file_threshold_lines || value.largeFileThresholdLines,
+        hugeFileThresholdLines: value.huge_file_threshold_lines || value.hugeFileThresholdLines,
+      };
     } else {
       result[configKey] = value;
     }

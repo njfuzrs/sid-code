@@ -9,6 +9,8 @@ import type { Registry as ToolRegistry } from "../tool/registry.ts";
 import { SubAgent } from "../agent/sub-agent.ts";
 import { getLogger } from "../debug/logger.ts";
 import type { SkillDefinition } from "./types.ts";
+import { scanSkillResources } from "./resources.ts";
+import { dirname } from "node:path";
 
 export class SkillTool implements Tool {
   private skill: SkillDefinition;
@@ -56,11 +58,51 @@ export class SkillTool implements Tool {
   }
 
   async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
+    const mode = this.skill.mode || "delegate";
+
+    if (mode === "activate") {
+      return this.executeActivate(input);
+    }
+    return this.executeDelegate(input, signal);
+  }
+
+  /**
+   * 激活模式：将 Skill 指令和资源目录注入当前对话上下文
+   */
+  private async executeActivate(input: unknown): Promise<ToolResult> {
     const log = getLogger();
     const params = input as { input: string };
     const userInput = params.input || "";
 
-    log.info("SKILL", `执行 Skill: ${this.skill.name}`, { input: userInput.slice(0, 200) });
+    log.info("SKILL", `激活 Skill: ${this.skill.name}`, { mode: "activate" });
+
+    const skillDir = dirname(this.skill.filePath);
+    const folderStructure = await scanSkillResources(skillDir);
+
+    const output = `<activated_skill name="${this.skill.name}">
+  <instructions>
+${this.skill.prompt}
+  </instructions>
+${folderStructure ? `\n  <available_resources>\n${folderStructure}\n  </available_resources>` : ""}
+</activated_skill>
+
+Skill "${this.skill.name}" 已激活。${userInput ? `\n\n用户输入: ${userInput}` : ""}`;
+
+    return {
+      output,
+      isError: false,
+    };
+  }
+
+  /**
+   * 委托模式：通过 SubAgent 独立执行
+   */
+  private async executeDelegate(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
+    const log = getLogger();
+    const params = input as { input: string };
+    const userInput = params.input || "";
+
+    log.info("SKILL", `执行 Skill: ${this.skill.name}`, { mode: "delegate", input: userInput.slice(0, 200) });
 
     // 构建用户提示词：Skill 模板 + 用户输入
     const userPrompt = this.skill.prompt + (userInput ? `\n\n用户输入:\n${userInput}` : "");
@@ -73,12 +115,17 @@ export class SkillTool implements Tool {
       this.skill.model,
     );
 
+    // 使用配置的 maxTurns 和 timeout
+    const maxTurns = Math.min(this.skill.maxTurns || 10, 50);
+    const timeoutMins = Math.min(this.skill.timeoutMins || 2, 30);
+    const timeout = timeoutMins * 60_000;
+
     const result = await subAgent.executeCustom({
       systemPrompt: `你是一个专门执行 "${this.skill.name}" 任务的代理。${this.skill.description}`,
       userPrompt,
       allowedTools: this.skill.allowedTools || [],
-      maxTurns: 10,
-      timeout: 120_000,
+      maxTurns,
+      timeout,
     }, signal);
 
     log.info("SKILL", `Skill ${this.skill.name} 完成`, {

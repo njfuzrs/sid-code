@@ -263,10 +263,28 @@ async function main(): Promise<void> {
     const customCmds = await new CustomCommandLoader().loadAll();
     for (const { cmd, source } of customCmds) commandRegistry.register(cmd, source);
 
-    // 加载 Skills（注册为工具，LLM 可自动调用）
-    const { SkillLoader } = await import("./skill/loader.ts");
+    // 加载 Skills（通过 SkillManager 统一管理）
+    const { SkillManager } = await import("./skill/manager.ts");
     const { SkillTool } = await import("./skill/tool.ts");
-    const skills = await new SkillLoader().loadAll();
+    const skillManager = new SkillManager();
+    await skillManager.discover(process.cwd());
+
+    // 应用禁用列表
+    if (config.disabledSkills && config.disabledSkills.length > 0) {
+      skillManager.setDisabledSkills(config.disabledSkills);
+    }
+
+    // 展示加载错误（如果有）
+    const { ExtensionLoader } = await import("./extension/loader.ts");
+    const extensionLoader = new ExtensionLoader();
+    const skillErrors = extensionLoader.getErrors("skills", process.cwd());
+    if (skillErrors.length > 0 && config.debug) {
+      const log = getLogger();
+      log.warn("SKILL", `加载 Skills 时发现 ${skillErrors.length} 个错误，详见调试日志`);
+    }
+
+    // 注册为工具
+    const skills = skillManager.getSkills();
     for (const skill of skills) {
       if (!skill.disableModelInvocation) {
         toolRegistry.register(new SkillTool(skill, providerRegistry, toolRegistry));

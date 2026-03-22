@@ -3,7 +3,7 @@
  * 支持分级日志、文件输出、格式化输出
  */
 
-import { writeFileSync, appendFileSync, existsSync, mkdirSync } from 'node:fs';
+import { createWriteStream, existsSync, mkdirSync, renameSync, unlinkSync, type WriteStream } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { maskSensitiveData } from '../permission/sensitive.ts';
@@ -23,6 +23,10 @@ export interface LoggerOptions {
   fileOnly: boolean;
   /** 静默的日志分类（支持前缀匹配，如 "UI:MD" 会匹配 "UI:MD" 分类） */
   mutedCategories?: string[];
+  /** 是否同时输出 JSON Lines 格式的结构化日志 */
+  jsonLog?: boolean;
+  /** JSON Lines 日志文件路径（默认在 logFile 同目录下 .jsonl 后缀） */
+  jsonLogFile?: string;
 }
 
 // ANSI 颜色码

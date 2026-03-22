@@ -34,7 +34,9 @@ export class HelpCommand implements Command {
       "  /stats           - 显示会话统计",
       "  /sessions        - 列出历史会话",
       "  /config          - 显示当前配置",
-      "  /undo            - 撤销最近一次文件修改",
+      "  /undo [file]     - 撤销最近一次文件修改（可指定文件路径）",
+      "  /checkpoints     - 查看快照历史",
+      "  /restore <id>    - 恢复到指定快照点",
       "  /memory          - 管理记忆 (set/get/delete/list/search)",
       "  /mcp             - MCP 服务器管理 (list/add/remove/enable/disable)",
       "  /skills          - Skills 管理 (list/enable/disable)",
@@ -350,18 +352,183 @@ export class UndoCommand implements Command {
   aliases() { return []; }
   description() { return "撤销最近一次文件修改（回滚到上一个 checkpoint）"; }
 
-  async execute(_args: string, _ctx: AppContext): Promise<CommandResult> {
+  async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     const { getCheckpointManager } = await import("../checkpoint/manager.ts");
-    const cpMgr = await getCheckpointManager(process.env.SID_CODE_SESSION_ID || "default");
+    const cpMgr = await getCheckpointManager(
+      ctx.sessionState.sessionId,
+      ctx.config.checkpoint,
+    );
 
+    const trimmed = args.trim();
+
+    // 如果指定了文件路径，回滚单个文件
+    if (trimmed) {
+      const result = await cpMgr.undoFile(trimmed);
+      if (result) {
+        const fileActions = result.files.map(f =>
+          `  ${f.filePath}: ${f.action === "deleted" ? "已删除" : "已恢复"}`
+        ).join("\n");
+        return {
+          kind: "message",
+          message: `已撤销快照 ${result.snapshotId}:\n${fileActions}`,
+        };
+      }
+      return { kind: "message", message: `文件 ${trimmed} 没有可撤销的修改` };
+    }
+
+    // 回滚最近一次快照（可能包含多个文件）
     const result = await cpMgr.undo();
     if (result) {
+      const fileActions = result.files.map(f =>
+        `  ${f.filePath}: ${f.action === "deleted" ? "已删除" : "已恢复"}`
+      ).join("\n");
       return {
         kind: "message",
-        message: `已撤销: ${result.filePath}\n文件已回滚到上一个版本 (${result.restoredContent.length} 字符)`,
+        message: `已撤销快照 ${result.snapshotId}:\n${fileActions}`,
       };
     }
     return { kind: "message", message: "没有可撤销的修改" };
+  }
+}
+
+/** /checkpoints 命令 */
+export class CheckpointsCommand implements Command {
+  name() { return "checkpoints"; }
+  aliases() { return ["cp"]; }
+  description() { return "查看快照历史"; }
+
+  async execute(_args: string, ctx: AppContext): Promise<CommandResult> {
+    const { getCheckpointManager } = await import("../checkpoint/manager.ts");
+    const cpMgr = await getCheckpointManager(
+      ctx.sessionState.sessionId,
+      ctx.config.checkpoint,
+    );
+
+    const snapshots = cpMgr.listSnapshots();
+
+    if (snapshots.length === 0) {
+      return { kind: "message", message: "暂无快照历史" };
+    }
+
+    const lines = ["快照历史（最近 10 条）:", ""];
+
+    // 只显示最近 10 条
+    const recent = snapshots.slice(-10).reverse();
+
+    for (const s of recent) {
+      const time = new Date(s.timestamp);
+      const timeStr = this.formatTime(time);
+      const fileCountStr = `${s.fileCount} 个文件`;
+      lines.push(`  ${s.id}  ${timeStr}  ${s.toolName.padEnd(8)}  ${s.toolSummary.slice(0, 40)}  (${fileCountStr})`);
+    }
+
+    lines.push("");
+    lines.push("使用 /restore <ID> 恢复到指定快照点");
+    lines.push("使用 /undo 撤销最近一次变更");
+
+    return { kind: "message", message: lines.join("\n") };
+  }
+
+  private formatTime(date: Date): string {
+    const now = Date.now();
+    const diff = now - date.getTime();
+    const minutes = Math.floor(diff / 60000);
+    const hours = Math.floor(diff / 3600000);
+    const days = Math.floor(diff / 86400000);
+
+    if (minutes < 1) return "刚刚";
+    if (minutes < 60) return `${minutes} 分钟前`;
+    if (hours < 24) return `${hours} 小时前`;
+    return `${days} 天前`;
+  }
+}
+
+/** /restore 命令 */
+export class RestoreCommand implements Command {
+  name() { return "restore"; }
+  aliases() { return []; }
+  description() { return "恢复到指定快照点"; }
+
+  async execute(args: string, ctx: AppContext): Promise<CommandResult> {
+    const snapshotId = args.trim();
+
+    if (!snapshotId) {
+      return { kind: "error", message: "用法: /restore <快照ID>\n使用 /checkpoints 查看可用快照" };
+    }
+
+    const { getCheckpointManager } = await import("../checkpoint/manager.ts");
+    const cpMgr = await getCheckpointManager(
+      ctx.sessionState.sessionId,
+      ctx.config.checkpoint,
+    );
+
+    // 获取快照详情
+    const snapshot = cpMgr.getSnapshotDetail(snapshotId);
+    if (!snapshot) {
+      return { kind: "error", message: `快照不存在: ${snapshotId}` };
+    }
+
+    // 显示确认信息（需要用户确认）
+    const allSnapshots = cpMgr.listSnapshots();
+    const targetIndex = allSnapshots.findIndex(s => s.id === snapshotId);
+    const snapshotsToRollback = allSnapshots.slice(targetIndex + 1);
+
+    if (snapshotsToRollback.length === 0) {
+      return { kind: "message", message: `快照 ${snapshotId} 已经是最新状态，无需恢复` };
+    }
+
+    const lines = [
+      `将回滚以下 ${snapshotsToRollback.length} 个快照:`,
+      "",
+    ];
+
+    for (const s of snapshotsToRollback.reverse()) {
+      lines.push(`  ${s.id}: ${s.toolName} ${s.toolSummary.slice(0, 40)}`);
+    }
+
+    // 收集受影响的文件
+    const affectedFiles = new Set<string>();
+    for (const s of snapshotsToRollback) {
+      const detail = cpMgr.getSnapshotDetail(s.id);
+      if (detail) {
+        for (const f of detail.files) {
+          affectedFiles.add(f.filePath);
+        }
+      }
+    }
+
+    lines.push("");
+    lines.push(`涉及 ${affectedFiles.size} 个文件:`);
+    for (const file of Array.from(affectedFiles).slice(0, 10)) {
+      lines.push(`  ${file}`);
+    }
+    if (affectedFiles.size > 10) {
+      lines.push(`  ... 还有 ${affectedFiles.size - 10} 个文件`);
+    }
+
+    lines.push("");
+    lines.push("⚠️ 此操作将丢失这些快照之后的所有变更！");
+    lines.push("");
+    lines.push("确认恢复？请回复 'yes' 确认，或其他任意内容取消。");
+
+    // 返回需要确认的消息
+    return {
+      kind: "confirm",
+      message: lines.join("\n"),
+      onConfirm: async () => {
+        const result = await cpMgr.restoreToSnapshot(snapshotId);
+        if (result) {
+          const fileActions = result.files.map(f =>
+            `  ${f.filePath}: ${f.action === "deleted" ? "已删除" : "已恢复"}`
+          ).join("\n");
+          return {
+            kind: "message",
+            message: `已恢复到快照 ${result.targetSnapshotId}，回滚了 ${result.snapshotsRolledBack} 个快照:\n${fileActions}`,
+          };
+        }
+        return { kind: "error", message: "恢复失败" };
+      },
+    };
   }
 }
 
@@ -681,6 +848,8 @@ export async function registerBuiltins(registry: import("./registry.ts").Registr
   registry.register(new ClearCommand());
   registry.register(new ConfigCommand());
   registry.register(new UndoCommand());
+  registry.register(new CheckpointsCommand());
+  registry.register(new RestoreCommand());
   registry.register(new MemoryCommand());
 
   // 使用增强版 MCP 命令

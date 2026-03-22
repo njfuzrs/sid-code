@@ -56,8 +56,53 @@ export function parseFrontmatter(content: string): FrontmatterResult {
     }
     // YAML 为空或非对象，frontmatter 为空但 body 仍取正文部分
     return { frontmatter: {}, body };
-  } catch {
-    // YAML 解析失败，返回完整内容作为 body
+  } catch (error) {
+    // YAML 解析失败，回退到简单 key-value 解析
+    const simpleFrontmatter = parseSimpleFrontmatter(yamlStr);
+    if (simpleFrontmatter && Object.keys(simpleFrontmatter).length > 0) {
+      return { frontmatter: simpleFrontmatter, body };
+    }
+    // 简单解析也失败，返回完整内容作为 body
     return { frontmatter: {}, body: content };
   }
+}
+
+/**
+ * 简单 frontmatter 解析器（YAML 解析失败时的回退方案）
+ * 支持 key: value 格式，支持多行 description（缩进续行）
+ */
+function parseSimpleFrontmatter(content: string): Record<string, unknown> | null {
+  const result: Record<string, unknown> = {};
+  const lines = content.split(/\r?\n/);
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // 匹配 "key: value" 格式（key 可以包含字母、数字、连字符、下划线）
+    const match = line.match(/^\s*([\w-]+):\s*(.*)$/);
+    if (match) {
+      const [, key, firstLine] = match;
+      const valueLines = [firstLine.trim()];
+
+      // 检查缩进续行（多行值）
+      while (i + 1 < lines.length) {
+        const nextLine = lines[i + 1];
+        // 如果下一行以空格或制表符开头且不为空，则为续行
+        if (nextLine.match(/^[ \t]+\S/)) {
+          valueLines.push(nextLine.trim());
+          i++;
+        } else {
+          break;
+        }
+      }
+
+      // 合并多行值，过滤空行
+      result[key] = valueLines.filter(Boolean).join(" ");
+    }
+  }
+
+  if (Object.keys(result).length > 0) {
+    return result;
+  }
+  return null;
 }

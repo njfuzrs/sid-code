@@ -632,6 +632,25 @@ export class App {
 
     if (toolBlocks.length === 0) return [];
 
+    // 收集本次工具调用会修改的文件路径（用于创建快照）
+    const affectedFiles = this.getAffectedFiles(toolBlocks.map(t => t.block));
+
+    // 在工具执行前统一创建快照
+    if (affectedFiles.length > 0) {
+      try {
+        const { getCheckpointManager } = await import("./checkpoint/manager.ts");
+        const cpMgr = await getCheckpointManager(
+          this.sessionState.sessionId,
+          this.config.checkpoint,
+        );
+        const toolNames = toolBlocks.map(t => t.block.name).join(", ");
+        const toolSummary = affectedFiles.join(", ");
+        await cpMgr.createSnapshot(affectedFiles, toolNames, toolSummary);
+      } catch (err: any) {
+        log.warn("CHECKPOINT", `创建快照失败: ${err.message}`);
+      }
+    }
+
     // 权限预检：先对所有工具做权限检查，收集通过/拒绝结果
     const checkedTools: { block: ToolUseBlock; tool: import("./tool/types.ts").Tool; idx: number }[] = [];
     const rejectedResults: Map<number, ContentBlock> = new Map();
@@ -725,6 +744,26 @@ export class App {
     }
 
     return results;
+  }
+
+  /** 根据工具类型提取受影响的文件路径 */
+  private getAffectedFiles(toolBlocks: ToolUseBlock[]): string[] {
+    const files: string[] = [];
+    for (const block of toolBlocks) {
+      switch (block.name) {
+        case "write":
+        case "edit":
+          if ((block.input as any)?.file_path) {
+            files.push((block.input as any).file_path);
+          }
+          break;
+        // bash 工具无法预知修改了哪些文件，暂不处理
+        // 后续可考虑通过 inotify/fswatch 监控
+        default:
+          break;
+      }
+    }
+    return files;
   }
 
   /** 执行单个工具 */

@@ -138,8 +138,59 @@ src/
 三层扩展，共享 `src/extension/`（文件扫描 + frontmatter 解析 + 5 分钟 TTL 缓存）：
 
 - **自定义 Commands**：`.sid-code/commands/*.md`，文件名即命令名，支持 `$1`/`$@` 参数替换
-- **Skills**：`.sid-code/skills/*.md`，注册为工具 `skill__<name>`（最多 20 个），frontmatter: name/description/allowed-tools/when-to-use/model
+- **Skills**：`.sid-code/skills/*.md` 或 `.sid-code/skills/*/SKILL.md`，注册为工具 `skill__<name>`（最多 20 个）
 - **自定义 Agents**：`.sid-code/agents/*.md`，注册为工具 `agent__<name>`，frontmatter: name/description/tools
+
+### Skills 系统（增强版）
+
+**两种执行模式**：
+- `activate`（上下文注入）：将 Skill 指令 + 资源目录注入主对话，适合持续交互、访问资源文件
+- `delegate`（子代理执行）：通过 SubAgent 独立执行，适合一次性任务
+
+**两种文件格式**：
+- 扁平文件：`skills/my-skill.md`（适合 delegate 模式，无资源文件）
+- 子目录：`skills/my-skill/SKILL.md`（适合 activate 模式，可附带 scripts/references/assets）
+
+**资源类型约定**（activate 模式）：
+- `scripts/`：可执行脚本，LLM 通过 bash 工具执行
+- `references/`：参考文档，LLM 通过 read 工具按需读取
+- `assets/`：输出资源（模板、图片等），LLM 在生成输出时使用
+
+**frontmatter 字段**：
+```yaml
+name: skill-name              # 必填，slug 格式
+description: 简洁描述          # 必填
+when-to-use: 触发条件          # 可选，帮助 LLM 判断何时调用
+mode: activate|delegate       # 可选，默认 delegate
+# delegate 模式专用
+allowed-tools: read, write    # 可选，工具白名单
+max-turns: 10                 # 可选，最大轮次（默认 10，最大 50）
+timeout-mins: 2               # 可选，超时分钟（默认 2，最大 30）
+# 其他
+model: claude-opus-4          # 可选，指定模型
+disable-model-invocation: true # 可选，禁止 LLM 自动调用
+disabled: true                # 可选，禁用此 Skill
+```
+
+**管理机制**：
+- 加载优先级：builtin（最低）→ user → project（最高）
+- 同名覆盖时输出 warning
+- 名称清理：替换 `:\/<>*?"|` 为 `-`
+- 忽略 `_` 开头的文件（如 `_draft.md`）
+- 配置文件禁用：`config.yaml` 中 `disabled_skills: [name1, name2]`
+
+**内置 Skill**：
+- `skill-creator`：引导用户创建新 Skill，提供标准化流程和模板生成
+
+**创建 Skill**：
+```bash
+# 使用内置脚本
+bun run src/skill/builtin/skill-creator/scripts/init_skill.ts <name> [mode]
+
+# 示例
+bun run src/skill/builtin/skill-creator/scripts/init_skill.ts code-review delegate
+bun run src/skill/builtin/skill-creator/scripts/init_skill.ts pdf-processor activate
+```
 
 ## 8. Hook 系统
 

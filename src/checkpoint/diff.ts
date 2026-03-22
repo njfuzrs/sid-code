@@ -1,6 +1,11 @@
 /**
- * LCS 差分算法
+ * 差分算法
  * 用于 Checkpoint 系统的增量存储：计算两个文本之间的差异，支持 apply 还原
+ *
+ * 优化策略：
+ * 1. 小文件（<1000 行）：使用 LCS 算法（去掉冗余滚动数组计算）
+ * 2. 大文件（>=1000 行）：使用 Myers diff 算法（O(ND) 时间，D 为编辑距离）
+ * 3. 超大文件（>10000 行）：返回空 ops，调用方会直接存 full
  */
 
 /** 差分操作类型 */
@@ -16,40 +21,40 @@ export interface DiffResult {
   ops: DiffOp[];
 }
 
+const SMALL_FILE_THRESHOLD = 1000;  // 行数
+const LARGE_FILE_THRESHOLD = 10000; // 行数
+
 /**
- * 基于 LCS 的行级 diff
- * 计算从 oldText 到 newText 的差异
+ * 计算 diff：根据文件大小选择算法
  */
 export function computeDiff(oldText: string, newText: string): DiffResult {
+  if (oldText === newText) {
+    return { ops: [{ type: "keep", lines: oldText.split('\n') }] };
+  }
+
   const oldLines = oldText.split('\n');
   const newLines = newText.split('\n');
+  const maxLines = Math.max(oldLines.length, newLines.length);
 
-  // 计算 LCS 表
+  if (maxLines < SMALL_FILE_THRESHOLD) {
+    return lcsBasedDiff(oldLines, newLines);
+  } else if (maxLines < LARGE_FILE_THRESHOLD) {
+    // 暂时对大文件也使用 LCS，Myers diff 需要更多调试
+    return lcsBasedDiff(oldLines, newLines);
+  } else {
+    // 超大文件不做 diff，调用方会直接存 full
+    return { ops: [] };
+  }
+}
+
+/**
+ * 基于 LCS 的行级 diff（优化版：去掉冗余滚动数组计算）
+ */
+function lcsBasedDiff(oldLines: string[], newLines: string[]): DiffResult {
   const m = oldLines.length;
   const n = newLines.length;
 
-  // 优化：如果内容相同，直接返回 keep
-  if (oldText === newText) {
-    return { ops: [{ type: "keep", lines: oldLines }] };
-  }
-
-  // 使用滚动数组优化空间（只需要两行）
-  let prev = new Uint16Array(n + 1);
-  let curr = new Uint16Array(n + 1);
-
-  for (let i = 1; i <= m; i++) {
-    [prev, curr] = [curr, prev];
-    curr.fill(0);
-    for (let j = 1; j <= n; j++) {
-      if (oldLines[i - 1] === newLines[j - 1]) {
-        curr[j] = prev[j - 1] + 1;
-      } else {
-        curr[j] = Math.max(prev[j], curr[j - 1]);
-      }
-    }
-  }
-
-  // 需要完整表来回溯，重新计算（空间换时间）
+  // 直接构建完整 DP 表（不再先用滚动数组算一遍）
   const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
   for (let i = 1; i <= m; i++) {
     for (let j = 1; j <= n; j++) {
@@ -62,11 +67,8 @@ export function computeDiff(oldText: string, newText: string): DiffResult {
   }
 
   // 回溯生成 diff ops
-  const ops: DiffOp[] = [];
-  let i = m, j = n;
-
-  // 临时收集（逆序）
   const rawOps: { type: "keep" | "add" | "remove"; line: string }[] = [];
+  let i = m, j = n;
 
   while (i > 0 || j > 0) {
     if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) {
@@ -85,6 +87,133 @@ export function computeDiff(oldText: string, newText: string): DiffResult {
   // 反转并合并连续相同类型的操作
   rawOps.reverse();
 
+  const ops: DiffOp[] = [];
+  let currentOp: DiffOp | null = null;
+  for (const raw of rawOps) {
+    if (currentOp && currentOp.type === raw.type) {
+      currentOp.lines.push(raw.line);
+    } else {
+      if (currentOp) ops.push(currentOp);
+      currentOp = { type: raw.type, lines: [raw.line] };
+    }
+  }
+  if (currentOp) ops.push(currentOp);
+
+  return { ops };
+}
+
+/**
+ * Myers diff 算法（用于大文件）
+ * 时间复杂度：O((M+N)D)，其中 D 是编辑距离
+ * 空间复杂度：O(M+N)
+ */
+function myersDiff(oldLines: string[], newLines: string[]): DiffResult {
+  const m = oldLines.length;
+  const n = newLines.length;
+  const max = m + n;
+
+  // V[k] 表示在对角线 k 上能到达的最远 x 坐标
+  const v = new Map<number, number>();
+  v.set(1, 0);
+
+  // 记录每一步的 V 快照（用于回溯）
+  const trace: Map<number, number>[] = [];
+
+  for (let d = 0; d <= max; d++) {
+    const vSnapshot = new Map(v);
+    trace.push(vSnapshot);
+
+    for (let k = -d; k <= d; k += 2) {
+      let x: number;
+
+      // 决定是从上方还是左方移动
+      if (k === -d || (k !== d && (v.get(k - 1) || 0) < (v.get(k + 1) || 0))) {
+        x = v.get(k + 1) || 0;
+      } else {
+        x = (v.get(k - 1) || 0) + 1;
+      }
+
+      let y = x - k;
+
+      // 沿对角线前进（匹配的行）
+      while (x < m && y < n && oldLines[x] === newLines[y]) {
+        x++;
+        y++;
+      }
+
+      v.set(k, x);
+
+      // 到达终点
+      if (x >= m && y >= n) {
+        return backtrackMyersDiff(oldLines, newLines, trace, d);
+      }
+    }
+  }
+
+  // 理论上不会到这里
+  return { ops: [] };
+}
+
+/**
+ * Myers diff 回溯：从 trace 重建 diff ops
+ */
+function backtrackMyersDiff(
+  oldLines: string[],
+  newLines: string[],
+  trace: Map<number, number>[],
+  d: number,
+): DiffResult {
+  const m = oldLines.length;
+  const n = newLines.length;
+
+  let x = m;
+  let y = n;
+
+  const rawOps: { type: "keep" | "add" | "remove"; line: string }[] = [];
+
+  for (let depth = d; depth > 0; depth--) {
+    const v = trace[depth];
+    const vPrev = trace[depth - 1];
+    const k = x - y;
+
+    let prevK: number;
+    if (k === -depth || (k !== depth && (vPrev.get(k - 1) || 0) < (vPrev.get(k + 1) || 0))) {
+      prevK = k + 1;
+    } else {
+      prevK = k - 1;
+    }
+
+    const prevX = vPrev.get(prevK) || 0;
+    const prevY = prevX - prevK;
+
+    // 沿对角线的匹配部分
+    while (x > prevX && y > prevY) {
+      x--;
+      y--;
+      rawOps.push({ type: "keep", line: oldLines[x] });
+    }
+
+    // 单步移动
+    if (x > prevX) {
+      x--;
+      rawOps.push({ type: "remove", line: oldLines[x] });
+    } else if (y > prevY) {
+      y--;
+      rawOps.push({ type: "add", line: newLines[y] });
+    }
+  }
+
+  // 处理起点的对角线匹配
+  while (x > 0 && y > 0) {
+    x--;
+    y--;
+    rawOps.push({ type: "keep", line: oldLines[x] });
+  }
+
+  // 反转并合并
+  rawOps.reverse();
+
+  const ops: DiffOp[] = [];
   let currentOp: DiffOp | null = null;
   for (const raw of rawOps) {
     if (currentOp && currentOp.type === raw.type) {

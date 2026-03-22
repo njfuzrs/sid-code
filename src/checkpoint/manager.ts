@@ -11,63 +11,146 @@
 
 import { homedir } from "os";
 import { join } from "path";
-import { existsSync, mkdirSync, readdirSync, statSync, rmSync } from "fs";
+import { existsSync, mkdirSync, readdirSync, statSync, rmSync, unlinkSync } from "fs";
 import { computeDiff, type DiffResult } from "./diff.ts";
 import { getLogger } from "../debug/logger.ts";
+import type { CheckpointConfig } from "../config/config.ts";
 
-/** 单个 Checkpoint 条目 */
-interface CheckpointEntry {
+/** 快照组：一次工具调用产生的所有文件变更 */
+export interface Snapshot {
+  /** 快照 ID（自增短 ID，如 "s1", "s2"） */
+  id: string;
+  /** 创建时间 */
+  timestamp: number;
+  /** 触发快照的工具名称 */
+  toolName: string;
+  /** 触发快照的工具参数摘要（如文件路径） */
+  toolSummary: string;
+  /** 关联的消息 ID（可选，用于定位对话上下文） */
+  messageId?: string;
+  /** 包含的文件变更列表 */
+  files: SnapshotFile[];
+}
+
+/** 快照中的单个文件 */
+export interface SnapshotFile {
   /** 文件路径 */
   filePath: string;
-  /** 时间戳 */
-  timestamp: number;
-  /** 存储类型：full=完整内容, diff=增量差异 */
+  /** 文件在快照前是否存在（false 表示新创建的文件） */
+  existedBefore: boolean;
+  /** 存储类型 */
   type: "full" | "diff";
   /** 完整内容（type=full 时） */
   content?: string;
-  /** 是否 gzip 压缩（type=full 且内容 >1KB 时） */
+  /** 是否压缩 */
   compressed?: boolean;
   /** 增量差异（type=diff 时） */
   diff?: DiffResult;
 }
 
-/** 单个文件的 Checkpoint 历史 */
-interface FileCheckpoints {
-  filePath: string;
-  entries: CheckpointEntry[];
-}
-
-/** Checkpoint 索引文件格式 */
-interface CheckpointIndex {
+/** 索引文件格式（新版） */
+export interface CheckpointIndex {
   sessionId: string;
   createdAt: number;
-  files: Record<string, FileCheckpoints>;
+  /** 快照序列号计数器 */
+  nextId: number;
+  /** 按时间顺序排列的快照列表 */
+  snapshots: Snapshot[];
+  /** 文件路径 → 最新完整内容的快照 ID（加速查找） */
+  latestFullMap: Record<string, string>;
 }
 
-/** 限制常量 */
-const MAX_CHECKPOINTS_PER_FILE = 50;
-const MAX_TOTAL_SIZE_BYTES = 200 * 1024 * 1024; // 200MB
-const MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 天
-const COMPRESS_THRESHOLD = 1024; // 1KB 以上压缩
+/** 旧版索引格式（兼容） */
+interface LegacyCheckpointEntry {
+  filePath: string;
+  timestamp: number;
+  type: "full" | "diff";
+  content?: string;
+  compressed?: boolean;
+  diff?: DiffResult;
+}
+
+interface LegacyFileCheckpoints {
+  filePath: string;
+  entries: LegacyCheckpointEntry[];
+}
+
+interface LegacyCheckpointIndex {
+  sessionId: string;
+  createdAt: number;
+  files: Record<string, LegacyFileCheckpoints>;
+}
+
+/** Undo 结果 */
+export interface UndoResult {
+  /** 回滚的快照 ID */
+  snapshotId: string;
+  /** 回滚的文件列表 */
+  files: Array<{
+    filePath: string;
+    /** restored=恢复了内容, deleted=删除了新创建的文件 */
+    action: "restored" | "deleted";
+  }>;
+}
+
+/** Restore 结果 */
+export interface RestoreResult {
+  /** 恢复到的目标快照 ID */
+  targetSnapshotId: string;
+  /** 回滚了多少个快照 */
+  snapshotsRolledBack: number;
+  /** 受影响的文件列表 */
+  files: Array<{
+    filePath: string;
+    action: "restored" | "deleted";
+  }>;
+}
+
+/** 快照摘要 */
+export interface SnapshotSummary {
+  id: string;
+  timestamp: number;
+  toolName: string;
+  toolSummary: string;
+  fileCount: number;
+}
 
 export class CheckpointManager {
   private sessionId: string;
   private baseDir: string;
   private index: CheckpointIndex;
   private dirty: boolean = false;
+  private config: Required<CheckpointConfig>;
 
-  constructor(sessionId: string) {
+  constructor(sessionId: string, config?: CheckpointConfig) {
     this.sessionId = sessionId;
     this.baseDir = join(homedir(), ".sid-code", "checkpoints", sessionId);
     this.index = {
       sessionId,
       createdAt: Date.now(),
-      files: {},
+      nextId: 1,
+      snapshots: [],
+      latestFullMap: {},
+    };
+
+    // 合并默认配置
+    this.config = {
+      enabled: config?.enabled ?? true,
+      maxCheckpointsPerFile: config?.maxCheckpointsPerFile ?? 50,
+      maxTotalSizeMb: config?.maxTotalSizeMb ?? 200,
+      maxAgeDays: config?.maxAgeDays ?? 30,
+      compressThresholdKb: config?.compressThresholdKb ?? 1,
+      largeFileThresholdLines: config?.largeFileThresholdLines ?? 1000,
+      hugeFileThresholdLines: config?.hugeFileThresholdLines ?? 10000,
     };
   }
 
   /** 初始化：创建目录 + 加载索引 */
   async init(): Promise<void> {
+    if (!this.config.enabled) {
+      return;
+    }
+
     if (!existsSync(this.baseDir)) {
       mkdirSync(this.baseDir, { recursive: true });
     }
@@ -76,10 +159,24 @@ export class CheckpointManager {
     if (existsSync(indexPath)) {
       try {
         const data = await Bun.file(indexPath).text();
-        this.index = JSON.parse(data);
+        const parsed = JSON.parse(data);
+
+        // 检测是否为旧格式
+        if (parsed.files && !parsed.snapshots) {
+          this.index = this.migrateLegacyIndex(parsed as LegacyCheckpointIndex);
+          await this.saveIndex(); // 立即保存迁移后的索引
+        } else {
+          this.index = parsed;
+        }
       } catch {
         // 索引损坏，重新创建
-        this.index = { sessionId: this.sessionId, createdAt: Date.now(), files: {} };
+        this.index = {
+          sessionId: this.sessionId,
+          createdAt: Date.now(),
+          nextId: 1,
+          snapshots: [],
+          latestFullMap: {},
+        };
       }
     }
 
@@ -87,181 +184,448 @@ export class CheckpointManager {
     this.cleanupOldSessions();
   }
 
+  /** 迁移旧格式索引到新格式 */
+  private migrateLegacyIndex(legacy: LegacyCheckpointIndex): CheckpointIndex {
+    const log = getLogger();
+    log.info("CHECKPOINT", "检测到旧格式索引，正在迁移...");
+
+    const snapshots: Snapshot[] = [];
+    const latestFullMap: Record<string, string> = {};
+    let nextId = 1;
+
+    // 将每个文件的每个 entry 转换为独立的快照
+    for (const [filePath, fileCheckpoints] of Object.entries(legacy.files)) {
+      for (const entry of fileCheckpoints.entries) {
+        const snapshotId = `s${nextId++}`;
+        snapshots.push({
+          id: snapshotId,
+          timestamp: entry.timestamp,
+          toolName: "write", // 旧格式无法区分工具，默认 write
+          toolSummary: filePath,
+          files: [{
+            filePath: entry.filePath,
+            existedBefore: entry.type === "diff" || (entry.content !== ""), // diff 或非空内容表示已存在
+            type: entry.type,
+            content: entry.content,
+            compressed: entry.compressed,
+            diff: entry.diff,
+          }],
+        });
+
+        // 更新 latestFullMap
+        if (entry.type === "full") {
+          latestFullMap[filePath] = snapshotId;
+        }
+      }
+    }
+
+    // 按时间排序
+    snapshots.sort((a, b) => a.timestamp - b.timestamp);
+
+    log.info("CHECKPOINT", `迁移完成：${snapshots.length} 个快照`);
+
+    return {
+      sessionId: legacy.sessionId,
+      createdAt: legacy.createdAt,
+      nextId,
+      snapshots,
+      latestFullMap,
+    };
+  }
+
   /**
-   * 创建 Checkpoint：在文件被修改前调用
-   * 保存当前文件内容的快照
+   * 创建快照组：在工具执行前调用
+   * 一次调用可以保存多个文件的状态
+   */
+  async createSnapshot(
+    filePaths: string[],
+    toolName: string,
+    toolSummary: string,
+    messageId?: string,
+  ): Promise<string> {
+    if (!this.config.enabled) {
+      return "";
+    }
+
+    const log = getLogger();
+    const snapshotId = `s${this.index.nextId++}`;
+    const files: SnapshotFile[] = [];
+
+    try {
+      for (const filePath of filePaths) {
+        const file = Bun.file(filePath);
+        const existedBefore = await file.exists();
+
+        if (!existedBefore) {
+          // 新文件，记录为空内容
+          files.push({
+            filePath,
+            existedBefore: false,
+            type: "full",
+            content: "",
+            compressed: false,
+          });
+          continue;
+        }
+
+        const currentContent = await file.text();
+        const lastContent = await this.getLatestContentForFile(filePath);
+
+        if (lastContent === null) {
+          // 第一次：保存完整内容
+          const compressThreshold = this.config.compressThresholdKb * 1024;
+          const snapshotFile: SnapshotFile = {
+            filePath,
+            existedBefore: true,
+            type: "full",
+          };
+
+          if (currentContent.length > compressThreshold) {
+            // gzip 压缩 + base64
+            const compressed = Bun.gzipSync(Buffer.from(currentContent, "utf-8"));
+            snapshotFile.content = Buffer.from(compressed).toString("base64");
+            snapshotFile.compressed = true;
+          } else {
+            snapshotFile.content = currentContent;
+            snapshotFile.compressed = false;
+          }
+
+          files.push(snapshotFile);
+          this.index.latestFullMap[filePath] = snapshotId;
+        } else if (lastContent !== currentContent) {
+          // 后续：保存增量 diff
+          const diff = computeDiff(lastContent, currentContent);
+          files.push({
+            filePath,
+            existedBefore: true,
+            type: "diff",
+            diff,
+          });
+        }
+        // 内容没变，跳过
+      }
+
+      if (files.length > 0) {
+        this.index.snapshots.push({
+          id: snapshotId,
+          timestamp: Date.now(),
+          toolName,
+          toolSummary,
+          messageId,
+          files,
+        });
+
+        this.dirty = true;
+        await this.saveIndex();
+        log.debug("CHECKPOINT", `已创建快照 ${snapshotId}: ${files.length} 个文件`);
+      }
+
+      return snapshotId;
+    } catch (err: any) {
+      log.warn("CHECKPOINT", `创建快照失败: ${err.message}`);
+      return "";
+    }
+  }
+
+  /**
+   * 兼容旧 API：单文件快照
+   * @deprecated 使用 createSnapshot 替代
    */
   async createCheckpoint(filePath: string): Promise<void> {
+    await this.createSnapshot([filePath], "write", filePath);
+  }
+
+  /**
+   * 撤销最近一次快照（回滚整组文件变更）
+   * 如果快照中某文件是新创建的（existedBefore=false），则删除该文件
+   */
+  async undo(): Promise<UndoResult | null> {
+    if (!this.config.enabled) {
+      return null;
+    }
+
     const log = getLogger();
+    const lastSnapshot = this.getLastSnapshot();
+    if (!lastSnapshot) {
+      return null;
+    }
 
-    try {
-      // 读取当前文件内容
-      const file = Bun.file(filePath);
-      if (!(await file.exists())) {
-        // 新文件，记录为空内容
-        this.addEntry(filePath, {
-          filePath,
-          timestamp: Date.now(),
-          type: "full",
-          content: "",
-        });
-        await this.saveIndex();
-        return;
-      }
+    const results: UndoResult["files"] = [];
 
-      const currentContent = await file.text();
-      const fileCheckpoints = this.index.files[filePath];
-
-      if (!fileCheckpoints || fileCheckpoints.entries.length === 0) {
-        // 第一次：保存完整内容
-        const entry: CheckpointEntry = {
-          filePath,
-          timestamp: Date.now(),
-          type: "full",
-        };
-
-        if (currentContent.length > COMPRESS_THRESHOLD) {
-          // gzip 压缩 + base64
-          const compressed = Bun.gzipSync(Buffer.from(currentContent, "utf-8"));
-          entry.content = Buffer.from(compressed).toString("base64");
-          entry.compressed = true;
-        } else {
-          entry.content = currentContent;
-          entry.compressed = false;
+    for (const file of lastSnapshot.files) {
+      if (!file.existedBefore) {
+        // 新创建的文件：删除它
+        if (existsSync(file.filePath)) {
+          try {
+            unlinkSync(file.filePath);
+            results.push({ filePath: file.filePath, action: "deleted" });
+            log.info("CHECKPOINT", `已删除新文件: ${file.filePath}`);
+          } catch (err: any) {
+            log.warn("CHECKPOINT", `删除文件失败: ${file.filePath} - ${err.message}`);
+          }
         }
-
-        this.addEntry(filePath, entry);
       } else {
-        // 后续：保存增量 diff
-        const lastContent = await this.getLatestContent(filePath);
-        if (lastContent === null || lastContent === currentContent) {
-          // 内容没变，跳过
-          return;
+        // 已有文件：恢复到快照前的内容
+        const content = await this.rebuildContentBeforeSnapshot(file.filePath, lastSnapshot.id);
+        if (content !== null) {
+          try {
+            await Bun.write(file.filePath, content);
+            results.push({ filePath: file.filePath, action: "restored" });
+            log.info("CHECKPOINT", `已恢复文件: ${file.filePath}`);
+          } catch (err: any) {
+            log.warn("CHECKPOINT", `恢复文件失败: ${file.filePath} - ${err.message}`);
+          }
         }
-
-        const diff = computeDiff(lastContent, currentContent);
-        this.addEntry(filePath, {
-          filePath,
-          timestamp: Date.now(),
-          type: "diff",
-          diff,
-        });
       }
-
-      await this.saveIndex();
-      log.debug("CHECKPOINT", `已创建快照: ${filePath}`);
-    } catch (err: any) {
-      log.warn("CHECKPOINT", `创建快照失败: ${filePath} - ${err.message}`);
     }
+
+    // 移除该快照
+    this.removeLastSnapshot();
+    await this.saveIndex();
+
+    return { snapshotId: lastSnapshot.id, files: results };
   }
 
   /**
-   * 撤销最近一次修改：回滚到上一个 checkpoint
-   * 返回回滚的文件路径，null 表示无可回滚的 checkpoint
+   * 撤销指定文件的最近一次变更
    */
-  async undo(): Promise<{ filePath: string; restoredContent: string } | null> {
+  async undoFile(filePath: string): Promise<UndoResult | null> {
+    if (!this.config.enabled) {
+      return null;
+    }
+
     const log = getLogger();
 
-    // 找到最近被修改的文件（按最后 checkpoint 时间排序）
-    const allFiles = Object.entries(this.index.files)
-      .filter(([_, fc]) => fc.entries.length > 0)
-      .map(([path, fc]) => ({
-        path,
-        lastTimestamp: fc.entries[fc.entries.length - 1].timestamp,
-        entries: fc.entries,
-      }))
-      .sort((a, b) => b.lastTimestamp - a.lastTimestamp);
+    // 找到最近修改该文件的快照
+    for (let i = this.index.snapshots.length - 1; i >= 0; i--) {
+      const snapshot = this.index.snapshots[i];
+      const fileInSnapshot = snapshot.files.find(f => f.filePath === filePath);
 
-    if (allFiles.length === 0) {
-      return null;
-    }
+      if (fileInSnapshot) {
+        if (!fileInSnapshot.existedBefore) {
+          // 新创建的文件：删除它
+          if (existsSync(filePath)) {
+            try {
+              unlinkSync(filePath);
+              log.info("CHECKPOINT", `已删除新文件: ${filePath}`);
+            } catch (err: any) {
+              log.warn("CHECKPOINT", `删除文件失败: ${filePath} - ${err.message}`);
+              return null;
+            }
+          }
+        } else {
+          // 已有文件：恢复到快照前的内容
+          const content = await this.rebuildContentBeforeSnapshot(filePath, snapshot.id);
+          if (content !== null) {
+            try {
+              await Bun.write(filePath, content);
+              log.info("CHECKPOINT", `已恢复文件: ${filePath}`);
+            } catch (err: any) {
+              log.warn("CHECKPOINT", `恢复文件失败: ${filePath} - ${err.message}`);
+              return null;
+            }
+          } else {
+            return null;
+          }
+        }
 
-    // 取最近修改的文件
-    const target = allFiles[0];
-    const filePath = target.path;
+        // 从快照中移除该文件
+        snapshot.files = snapshot.files.filter(f => f.filePath !== filePath);
 
-    // 获取上一个版本的内容
-    const content = await this.getLatestContent(filePath);
-    if (content === null) {
-      return null;
-    }
+        // 如果快照为空，移除整个快照
+        if (snapshot.files.length === 0) {
+          this.index.snapshots.splice(i, 1);
+        }
 
-    // 写回文件
-    try {
-      await Bun.write(filePath, content);
+        await this.saveIndex();
 
-      // 移除最后一个 checkpoint
-      const fc = this.index.files[filePath];
-      fc.entries.pop();
-      if (fc.entries.length === 0) {
-        delete this.index.files[filePath];
+        return {
+          snapshotId: snapshot.id,
+          files: [{
+            filePath,
+            action: fileInSnapshot.existedBefore ? "restored" : "deleted",
+          }],
+        };
       }
-
-      await this.saveIndex();
-      log.info("CHECKPOINT", `已回滚: ${filePath}`);
-
-      return { filePath, restoredContent: content };
-    } catch (err: any) {
-      log.error("CHECKPOINT", `回滚失败: ${filePath} - ${err.message}`);
-      return null;
     }
+
+    return null;
   }
 
   /**
-   * 获取指定文件最新 checkpoint 的内容
-   * 从第一个 full checkpoint 开始，逐步 apply diff
+   * 恢复到指定快照点（回滚该快照之后的所有变更）
    */
-  private async getLatestContent(filePath: string): Promise<string | null> {
-    const fc = this.index.files[filePath];
-    if (!fc || fc.entries.length === 0) return null;
+  async restoreToSnapshot(snapshotId: string): Promise<RestoreResult | null> {
+    if (!this.config.enabled) {
+      return null;
+    }
 
-    // 找到最近的 full checkpoint
+    const log = getLogger();
+    const targetIndex = this.index.snapshots.findIndex(s => s.id === snapshotId);
+
+    if (targetIndex === -1) {
+      log.warn("CHECKPOINT", `快照不存在: ${snapshotId}`);
+      return null;
+    }
+
+    // 收集所有需要回滚的快照（从最新到目标快照之后）
+    const snapshotsToRollback = this.index.snapshots.slice(targetIndex + 1).reverse();
+    const affectedFiles = new Map<string, { action: "restored" | "deleted" }>();
+
+    for (const snapshot of snapshotsToRollback) {
+      for (const file of snapshot.files) {
+        // 只处理每个文件的第一次遇到（最新状态）
+        if (affectedFiles.has(file.filePath)) {
+          continue;
+        }
+
+        if (!file.existedBefore) {
+          // 新创建的文件：删除它
+          if (existsSync(file.filePath)) {
+            try {
+              unlinkSync(file.filePath);
+              affectedFiles.set(file.filePath, { action: "deleted" });
+              log.info("CHECKPOINT", `已删除新文件: ${file.filePath}`);
+            } catch (err: any) {
+              log.warn("CHECKPOINT", `删除文件失败: ${file.filePath} - ${err.message}`);
+            }
+          }
+        } else {
+          // 已有文件：恢复到目标快照时的内容
+          const content = await this.rebuildContentAtSnapshot(file.filePath, snapshotId);
+          if (content !== null) {
+            try {
+              await Bun.write(file.filePath, content);
+              affectedFiles.set(file.filePath, { action: "restored" });
+              log.info("CHECKPOINT", `已恢复文件: ${file.filePath}`);
+            } catch (err: any) {
+              log.warn("CHECKPOINT", `恢复文件失败: ${file.filePath} - ${err.message}`);
+            }
+          }
+        }
+      }
+    }
+
+    // 移除目标快照之后的所有快照
+    this.index.snapshots = this.index.snapshots.slice(0, targetIndex + 1);
+    await this.saveIndex();
+
+    return {
+      targetSnapshotId: snapshotId,
+      snapshotsRolledBack: snapshotsToRollback.length,
+      files: Array.from(affectedFiles.entries()).map(([filePath, { action }]) => ({
+        filePath,
+        action,
+      })),
+    };
+  }
+
+  /**
+   * 列出所有快照（用于 /checkpoints 命令）
+   */
+  listSnapshots(): SnapshotSummary[] {
+    return this.index.snapshots.map(s => ({
+      id: s.id,
+      timestamp: s.timestamp,
+      toolName: s.toolName,
+      toolSummary: s.toolSummary,
+      fileCount: s.files.length,
+    }));
+  }
+
+  /**
+   * 查看指定快照的详情
+   */
+  getSnapshotDetail(snapshotId: string): Snapshot | null {
+    return this.index.snapshots.find(s => s.id === snapshotId) || null;
+  }
+
+  /**
+   * 获取指定文件在最新快照时的内容
+   */
+  private async getLatestContentForFile(filePath: string): Promise<string | null> {
+    // 从最新快照往前找，找到第一个包含该文件的快照
+    for (let i = this.index.snapshots.length - 1; i >= 0; i--) {
+      const snapshot = this.index.snapshots[i];
+      const fileInSnapshot = snapshot.files.find(f => f.filePath === filePath);
+      if (fileInSnapshot) {
+        return this.rebuildContentAtSnapshot(filePath, snapshot.id);
+      }
+    }
+    return null;
+  }
+
+  /**
+   * 重建指定文件在指定快照时的内容
+   */
+  private async rebuildContentAtSnapshot(filePath: string, snapshotId: string): Promise<string | null> {
+    const targetIndex = this.index.snapshots.findIndex(s => s.id === snapshotId);
+    if (targetIndex === -1) return null;
+
+    // 找到最近的 full 快照
     let baseContent = "";
-    let startIdx = 0;
+    let baseSnapshotIndex = -1;
 
-    for (let i = fc.entries.length - 1; i >= 0; i--) {
-      if (fc.entries[i].type === "full") {
-        const entry = fc.entries[i];
-        if (entry.compressed && entry.content) {
-          const buf = Buffer.from(entry.content, "base64");
+    for (let i = targetIndex; i >= 0; i--) {
+      const snapshot = this.index.snapshots[i];
+      const fileInSnapshot = snapshot.files.find(f => f.filePath === filePath);
+
+      if (fileInSnapshot && fileInSnapshot.type === "full") {
+        if (fileInSnapshot.compressed && fileInSnapshot.content) {
+          const buf = Buffer.from(fileInSnapshot.content, "base64");
           const decompressed = Bun.gunzipSync(buf);
           baseContent = Buffer.from(decompressed).toString("utf-8");
         } else {
-          baseContent = entry.content || "";
+          baseContent = fileInSnapshot.content || "";
         }
-        startIdx = i + 1;
+        baseSnapshotIndex = i;
         break;
       }
+    }
+
+    if (baseSnapshotIndex === -1) {
+      return null;
     }
 
     // 逐步 apply diff
     let content = baseContent;
     const { applyDiff } = await import("./diff.ts");
-    for (let i = startIdx; i < fc.entries.length; i++) {
-      const entry = fc.entries[i];
-      if (entry.type === "diff" && entry.diff) {
-        content = applyDiff(content, entry.diff);
+
+    for (let i = baseSnapshotIndex + 1; i <= targetIndex; i++) {
+      const snapshot = this.index.snapshots[i];
+      const fileInSnapshot = snapshot.files.find(f => f.filePath === filePath);
+
+      if (fileInSnapshot && fileInSnapshot.type === "diff" && fileInSnapshot.diff) {
+        content = applyDiff(content, fileInSnapshot.diff);
       }
     }
 
     return content;
   }
 
-  /** 添加 checkpoint 条目（含数量限制） */
-  private addEntry(filePath: string, entry: CheckpointEntry): void {
-    if (!this.index.files[filePath]) {
-      this.index.files[filePath] = { filePath, entries: [] };
+  /**
+   * 重建指定文件在指定快照之前的内容（用于 undo）
+   */
+  private async rebuildContentBeforeSnapshot(filePath: string, snapshotId: string): Promise<string | null> {
+    const targetIndex = this.index.snapshots.findIndex(s => s.id === snapshotId);
+    if (targetIndex === -1 || targetIndex === 0) return null;
+
+    // 重建到前一个快照的内容
+    return this.rebuildContentAtSnapshot(filePath, this.index.snapshots[targetIndex - 1].id);
+  }
+
+  /** 获取最后一个快照 */
+  private getLastSnapshot(): Snapshot | null {
+    if (this.index.snapshots.length === 0) return null;
+    return this.index.snapshots[this.index.snapshots.length - 1];
+  }
+
+  /** 移除最后一个快照 */
+  private removeLastSnapshot(): void {
+    if (this.index.snapshots.length > 0) {
+      this.index.snapshots.pop();
+      this.dirty = true;
     }
-
-    const fc = this.index.files[filePath];
-    fc.entries.push(entry);
-
-    // 超过限制时，移除最旧的条目
-    while (fc.entries.length > MAX_CHECKPOINTS_PER_FILE) {
-      fc.entries.shift();
-    }
-
-    this.dirty = true;
   }
 
   /** 保存索引到磁盘 */
@@ -283,6 +647,8 @@ export class CheckpointManager {
 
       const sessions = readdirSync(parentDir);
       const now = Date.now();
+      const maxAgeMs = this.config.maxAgeDays * 24 * 60 * 60 * 1000;
+      const maxTotalBytes = this.config.maxTotalSizeMb * 1024 * 1024;
       let totalSize = 0;
 
       for (const session of sessions) {
@@ -294,7 +660,7 @@ export class CheckpointManager {
           if (!stat.isDirectory()) continue;
 
           // 检查是否过期
-          if (now - stat.mtimeMs > MAX_AGE_MS) {
+          if (now - stat.mtimeMs > maxAgeMs) {
             rmSync(sessionDir, { recursive: true, force: true });
             log.debug("CHECKPOINT", `清理过期会话: ${session}`);
             continue;
@@ -308,7 +674,7 @@ export class CheckpointManager {
       }
 
       // 如果总大小超限，清理最旧的会话
-      if (totalSize > MAX_TOTAL_SIZE_BYTES) {
+      if (totalSize > maxTotalBytes) {
         log.warn("CHECKPOINT", `Checkpoint 总大小超限 (${(totalSize / 1024 / 1024).toFixed(1)}MB)，清理旧会话`);
       }
     } catch {
@@ -336,10 +702,16 @@ export class CheckpointManager {
 
   /** 获取当前会话的 checkpoint 统计 */
   getStats(): { fileCount: number; totalCheckpoints: number } {
-    const files = Object.keys(this.index.files);
-    const totalCheckpoints = Object.values(this.index.files)
-      .reduce((sum, fc) => sum + fc.entries.length, 0);
-    return { fileCount: files.length, totalCheckpoints };
+    const uniqueFiles = new Set<string>();
+    for (const snapshot of this.index.snapshots) {
+      for (const file of snapshot.files) {
+        uniqueFiles.add(file.filePath);
+      }
+    }
+    return {
+      fileCount: uniqueFiles.size,
+      totalCheckpoints: this.index.snapshots.length,
+    };
   }
 }
 
@@ -347,9 +719,12 @@ export class CheckpointManager {
 let globalCheckpointManager: CheckpointManager | null = null;
 
 /** 获取或创建全局 CheckpointManager */
-export async function getCheckpointManager(sessionId: string): Promise<CheckpointManager> {
+export async function getCheckpointManager(
+  sessionId: string,
+  config?: CheckpointConfig,
+): Promise<CheckpointManager> {
   if (!globalCheckpointManager || (globalCheckpointManager as any).sessionId !== sessionId) {
-    globalCheckpointManager = new CheckpointManager(sessionId);
+    globalCheckpointManager = new CheckpointManager(sessionId, config);
     await globalCheckpointManager.init();
   }
   return globalCheckpointManager;
