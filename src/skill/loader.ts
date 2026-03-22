@@ -4,6 +4,7 @@
  */
 
 import { ExtensionLoader } from "../extension/loader.ts";
+import type { ScanOptions } from "../extension/types.ts";
 import { getLogger } from "../debug/logger.ts";
 import type { SkillDefinition } from "./types.ts";
 
@@ -18,9 +19,9 @@ export class SkillLoader {
   }
 
   /** 加载所有 Skill 定义 */
-  async loadAll(projectDir?: string): Promise<SkillDefinition[]> {
+  async loadAll(projectDir?: string, scanOptions?: ScanOptions): Promise<SkillDefinition[]> {
     const log = getLogger();
-    const files = await this.extensionLoader.scan("skills", projectDir ?? process.cwd());
+    const files = await this.extensionLoader.scan("skills", projectDir ?? process.cwd(), scanOptions);
     const skills: SkillDefinition[] = [];
 
     for (const file of files) {

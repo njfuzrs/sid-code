@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { getLogger } from "../debug/logger.ts";
 import type { SkillDefinition } from "./types.ts";
 import { SkillLoader } from "./loader.ts";
+import type { ScanOptions } from "../extension/types.ts";
 
 export class SkillManager {
   private skills: SkillDefinition[] = [];
@@ -22,7 +23,7 @@ export class SkillManager {
    * 发现并加载所有 Skill
    * 加载优先级：builtin（最低）→ user → project（最高）
    */
-  async discover(projectDir?: string): Promise<void> {
+  async discover(projectDir?: string, scanOptions?: ScanOptions): Promise<void> {
     this.clearSkills();
     const log = getLogger();
 
@@ -30,7 +31,7 @@ export class SkillManager {
     await this.discoverBuiltin();
 
     // 2. 加载用户和项目 Skill
-    const skills = await this.loader.loadAll(projectDir);
+    const skills = await this.loader.loadAll(projectDir, scanOptions);
     this.addSkillsWithPrecedence(skills);
 
     const enabledCount = this.getSkills().length;

@@ -260,29 +260,34 @@ async function main(): Promise<void> {
     const commandRegistry = new CommandRegistry();
     await registerBuiltins(commandRegistry);
 
-    // 加载自定义命令
+    // 加载自定义命令（带信任检查）
     const { CustomCommandLoader } = await import("./command/custom.ts");
-    const customCmds = await new CustomCommandLoader().loadAll();
+    const { TrustManager } = await import("./extension/trust.ts");
+    const trustManager = new TrustManager();
+    const scanOptions = {
+      trustManager,
+      trustProjectExtensions: config.trustProjectExtensions,
+      onUntrusted: async (files: any[]) => {
+        // 非交互模式下跳过未信任的扩展
+        if (config.print) return [];
+        const log = getLogger();
+        log.warn("TRUST", `发现 ${files.length} 个未信任的项目级扩展，已自动信任`);
+        // 首次使用自动信任（后续内容变更会重新检查）
+        return files;
+      },
+    };
+    const customCmds = await new CustomCommandLoader().loadAll(undefined, scanOptions);
     for (const { cmd, source } of customCmds) commandRegistry.register(cmd, source);
 
     // 加载 Skills（通过 SkillManager 统一管理）
     const { SkillManager } = await import("./skill/manager.ts");
     const { SkillTool } = await import("./skill/tool.ts");
     const skillManager = new SkillManager();
-    await skillManager.discover(process.cwd());
+    await skillManager.discover(process.cwd(), scanOptions);
 
     // 应用禁用列表
     if (config.disabledSkills && config.disabledSkills.length > 0) {
       skillManager.setDisabledSkills(config.disabledSkills);
-    }
-
-    // 展示加载错误（如果有）
-    const { ExtensionLoader } = await import("./extension/loader.ts");
-    const extensionLoader = new ExtensionLoader();
-    const skillErrors = extensionLoader.getErrors("skills", process.cwd());
-    if (skillErrors.length > 0 && config.debug) {
-      const log = getLogger();
-      log.warn("SKILL", `加载 Skills 时发现 ${skillErrors.length} 个错误，详见调试日志`);
     }
 
     // 注册为工具
@@ -295,7 +300,7 @@ async function main(): Promise<void> {
 
     // 加载自定义 Agents（注册为工具）
     const { CustomAgentLoader, CustomAgentTool } = await import("./agent/custom.ts");
-    const customAgents = await new CustomAgentLoader().loadAll();
+    const customAgents = await new CustomAgentLoader().loadAll(undefined, scanOptions);
     for (const def of customAgents) {
       toolRegistry.register(new CustomAgentTool(def, providerRegistry, toolRegistry));
     }

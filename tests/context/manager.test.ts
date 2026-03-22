@@ -95,19 +95,20 @@ describe("ContextManager", () => {
 
   test("compactWithSummary 用摘要替换历史", () => {
     const mgr = new Manager({ maxTokens: 100000 });
-    // 添加 6 条消息
-    for (let i = 0; i < 6; i++) {
+    // 添加 20 条消息（10 轮对话），确保有足够消息触发压缩
+    for (let i = 0; i < 20; i++) {
       mgr.addMessage({
         role: i % 2 === 0 ? "user" : "assistant",
-        content: [{ type: "text", text: `消息 ${i}` }],
+        content: [{ type: "text", text: `消息 ${i} ${"x".repeat(100)}` }],
       });
     }
 
-    expect(mgr.messageCount()).toBe(6);
-    mgr.compactWithSummary("这是之前对话的摘要", 2);
+    const before = mgr.messageCount();
+    expect(before).toBe(20);
+    mgr.compactWithSummary("这是之前对话的摘要");
 
-    // 摘要消息 + 确认消息 + 保留的 2 条 = 4 条
-    expect(mgr.messageCount()).toBe(4);
+    // 压缩后消息数应减少（摘要 + 确认 + 保留的近期消息）
+    expect(mgr.messageCount()).toBeLessThan(before);
     const msgs = mgr.getMessages();
     expect(msgs[0].content[0]).toHaveProperty("text");
     expect((msgs[0].content[0] as any).text).toContain("对话摘要");
@@ -137,20 +138,23 @@ describe("ContextManager", () => {
     expect(mgr.needsCompaction(0)).toBe(true);
   });
 
-  test("compactWithSummary 默认保留 10 条消息", () => {
+  test("compactWithSummary 使用安全分割点压缩", () => {
     const mgr = new Manager({ maxTokens: 100000 });
-    // 添加 14 条消息（7 轮对话）
-    for (let i = 0; i < 14; i++) {
+    // 添加 20 条消息（10 轮对话），确保有足够内容触发分割
+    for (let i = 0; i < 20; i++) {
       mgr.addMessage({
         role: i % 2 === 0 ? "user" : "assistant",
-        content: [{ type: "text", text: `消息 ${i}` }],
+        content: [{ type: "text", text: `消息 ${i} ${"x".repeat(100)}` }],
       });
     }
-    expect(mgr.messageCount()).toBe(14);
+    expect(mgr.messageCount()).toBe(20);
 
     mgr.compactWithSummary("摘要内容");
-    // 摘要 + 确认 + 保留 10 条 = 12 条
-    expect(mgr.messageCount()).toBe(12);
+    // 压缩后消息数应减少，且第一条是摘要
+    expect(mgr.messageCount()).toBeLessThan(20);
+    const msgs = mgr.getMessages();
+    expect((msgs[0].content[0] as any).text).toContain("对话摘要");
+    expect((msgs[1].content[0] as any).text).toContain("了解");
   });
 });
 

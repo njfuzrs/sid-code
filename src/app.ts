@@ -101,10 +101,10 @@ export class App {
     this.toolRegistry = opts.toolRegistry ?? new ToolRegistry();
     this.commandRegistry = opts.commandRegistry ?? new CommandRegistry();
     this.permissionChecker = opts.permissionChecker ?? null;
+    const sessionId = opts.config.sessionId || crypto.randomUUID().slice(0, 8);
     this.ctxMgr = new ContextManager({ maxTokens: 200000 });
-    this.sessionState = new SessionState(
-      opts.config.sessionId || crypto.randomUUID().slice(0, 8),
-    );
+    this.ctxMgr.setSessionId(sessionId);
+    this.sessionState = new SessionState(sessionId);
     // 成本配额管理
     if (opts.config.costLimit && opts.config.costLimit > 0) {
       this.quotaManager = new QuotaManager(opts.config.costLimit);

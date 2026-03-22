@@ -20,7 +20,8 @@ import { ThinkingManager } from "../llm/thinking.ts";
 import { SessionState } from "../session/state.ts";
 import { getLogger, getSessionMetrics, getPerfTimer } from "../debug/index.ts";
 import type { HookRunner } from "../hook/runner.ts";
-import { LoopDetector, LOOP_RECOVERY_PROMPT } from "./loop-detection.ts";
+import { LoopDetector, LOOP_RECOVERY_PROMPT, LOOP_DETECTION_PROMPT } from "./loop-detection.ts";
+import type { LLMLoopCheckResult } from "./loop-detection.ts";
 
 /** UI 回调接口，处理 REPL/TUI 的差异 */
 export interface AgentLoopCallbacks {
@@ -124,6 +125,56 @@ export class AgentLoopRunner {
     return true;
   }
 
+  /**
+   * LLM 认知循环检测
+   * 用轻量模型分析最近的工具调用模式，判断是否陷入非生产性循环
+   */
+  private async runLLMLoopCheck(
+    ctxMgr: ContextManager,
+    callbacks: AgentLoopCallbacks,
+  ): Promise<boolean> {
+    const log = getLogger();
+    log.info("AGENT", "启动 LLM 认知循环检测");
+
+    try {
+      // 取最近 20 条消息用于分析
+      const messages = ctxMgr.getMessages();
+      const recentMessages = messages.slice(-20);
+      const prompt = this.loopDetector.buildLLMCheckPrompt(recentMessages);
+
+      // 使用当前 provider 发送检测请求（短输出，低开销）
+      const stream = this.deps.provider.sendMessageStream(
+        {
+          model: this.deps.config.model,
+          messages: [{ role: "user", content: [{ type: "text", text: prompt }] }],
+          system: "你是一个对话模式分析器。只返回 JSON，不要其他内容。",
+          maxTokens: 200,
+        },
+        this.deps.getAbortSignal(),
+      );
+
+      let resultText = "";
+      for await (const event of stream) {
+        if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+          resultText += event.delta.text;
+        }
+      }
+
+      // 解析 JSON 结果
+      const jsonMatch = resultText.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        log.debug("AGENT", "LLM 认知检测返回非 JSON 格式，跳过");
+        return false;
+      }
+
+      const result: LLMLoopCheckResult = JSON.parse(jsonMatch[0]);
+      return this.loopDetector.processLLMResult(result);
+    } catch (err: any) {
+      log.warn("AGENT", `LLM 认知检测失败: ${err.message}`);
+      return false;
+    }
+  }
+
   /** 运行 Agent 循环 */
   async run(userInput: string, callbacks: AgentLoopCallbacks): Promise<void> {
     const log = getLogger();
@@ -178,8 +229,9 @@ export class AgentLoopRunner {
 
       // 记录轮次
       getSessionMetrics().recordTurn();
+      this.loopDetector.recordTurn();
 
-      // 上下文使用率监控（两段式触发，对标 Claude Code）
+      // 上下文使用率监控（分级压缩策略）
       const toolCount = toolRegistry.size();
       const currentTokens = ctxMgr.estimateTokens(toolCount);
       const contextMax = ctxMgr.getMaxTokens();
@@ -191,16 +243,28 @@ export class AgentLoopRunner {
 
       log.info("AGENT", `轮次 ${turns}/${maxTurns}，消息数 ${ctxMgr.getMessages().length}，上下文 ${usagePercent.toFixed(0)}%`);
 
-      if (remaining <= 0) {
-        log.warn("AGENT", "上下文已满，强制压缩");
-        await this.deps.autoCompact();
-        callbacks.onCompact();
-      } else if (remaining <= 6) {
+      const compactionLevel = ctxMgr.getCompactionLevel(toolCount);
+      switch (compactionLevel) {
+        case "emergency":
+          log.warn("AGENT", `上下文紧急 (${usagePercent.toFixed(0)}%)，强制截断`);
+          ctxMgr.emergencyTruncate();
+          callbacks.onCompact();
+          break;
+        case "hard":
+          log.warn("AGENT", `上下文接近上限 (${usagePercent.toFixed(0)}%)，触发摘要压缩`);
+          await this.deps.autoCompact();
+          callbacks.onCompact();
+          break;
+        case "soft":
+          // soft 级别：工具输出遮罩在 getCleanedMessages 中自动处理
+          log.info("AGENT", `上下文 ${usagePercent.toFixed(0)}%，启用工具输出遮罩`);
+          break;
+        case "none":
+          break;
+      }
+
+      if (remaining <= 6) {
         callbacks.onContextWarning?.(remaining);
-      } else if (ctxMgr.needsCompaction(toolCount)) {
-        log.warn("AGENT", `上下文接近上限 (${currentTokens} tokens, ${usagePercent.toFixed(0)}%)，触发自动压缩`);
-        await this.deps.autoCompact();
-        callbacks.onCompact();
       }
 
       // 构建请求参数
@@ -328,6 +392,16 @@ export class AgentLoopRunner {
           const recovered = await this.recoverFromLoop(ctxMgr, callbacks, "工具调用重复");
           if (!recovered) break;
           continue;
+        }
+
+        // LLM 认知循环检测（30 轮后每 10 轮检测一次）
+        if (this.loopDetector.shouldRunLLMCheck()) {
+          const llmLoopDetected = await this.runLLMLoopCheck(ctxMgr, callbacks);
+          if (llmLoopDetected) {
+            const recovered = await this.recoverFromLoop(ctxMgr, callbacks, "LLM 认知检测到循环模式");
+            if (!recovered) break;
+            continue;
+          }
         }
 
         for (const b of toolBlocks) {

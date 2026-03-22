@@ -6,6 +6,7 @@
 
 import { createHash } from "node:crypto";
 import { getLogger } from "../debug/logger.ts";
+import type { Message } from "../llm/types.ts";
 
 /** 循环检测配置 */
 export interface LoopDetectionConfig {
@@ -157,12 +158,35 @@ export class ContentLoopDetector {
   }
 }
 
+/** LLM 认知检测配置 */
+const LLM_CHECK_AFTER_TURNS = 30;
+const LLM_CHECK_INTERVAL = 10;
+const LLM_CONFIDENCE_THRESHOLD = 0.9;
+
+/** LLM 认知检测提示词 */
+export const LOOP_DETECTION_PROMPT = `你是一个对话模式分析器。判断 AI 助手是否陷入了非生产性循环。
+
+区分：
+- 生产性重复：跨文件批量操作（不同文件路径）、增量编辑 → 不是循环
+- 非生产性循环：语义等价的重复调用、反复尝试相同方案 → 是循环
+
+返回 JSON：{ "is_loop": boolean, "confidence": number, "reason": string }`;
+
+/** LLM 认知检测结果 */
+export interface LLMLoopCheckResult {
+  is_loop: boolean;
+  confidence: number;
+  reason: string;
+}
+
 /** 循环检测器（组合工具调用和内容检测） */
 export class LoopDetector {
   private config: LoopDetectionConfig;
   private toolCallDetector: ToolCallLoopDetector;
   private contentDetector: ContentLoopDetector;
   private recoveryAttempts = 0;
+  private turnCount = 0;
+  private lastLLMCheckTurn = 0;
 
   constructor(config: LoopDetectionConfig = DEFAULT_LOOP_CONFIG) {
     this.config = config;
@@ -180,11 +204,49 @@ export class LoopDetector {
     return this.contentDetector.record(text);
   }
 
+  /** 记录一轮对话 */
+  recordTurn(): void {
+    this.turnCount++;
+  }
+
+  /** 是否应该运行 LLM 认知检测 */
+  shouldRunLLMCheck(): boolean {
+    if (this.turnCount < LLM_CHECK_AFTER_TURNS) return false;
+    if (this.turnCount - this.lastLLMCheckTurn < LLM_CHECK_INTERVAL) return false;
+    this.lastLLMCheckTurn = this.turnCount;
+    return true;
+  }
+
+  /** 构建 LLM 认知检测提示词 */
+  buildLLMCheckPrompt(recentMessages: Message[]): string {
+    const toolCalls: string[] = [];
+    for (const msg of recentMessages) {
+      for (const block of msg.content) {
+        if (block.type === "tool_use") {
+          toolCalls.push(`${block.name}(${JSON.stringify(block.input).slice(0, 200)})`);
+        }
+      }
+    }
+    return `${LOOP_DETECTION_PROMPT}\n\n最近的工具调用序列：\n${toolCalls.join("\n")}`;
+  }
+
+  /** 处理 LLM 认知检测结果 */
+  processLLMResult(result: LLMLoopCheckResult): boolean {
+    const log = getLogger();
+    if (result.is_loop && result.confidence >= LLM_CONFIDENCE_THRESHOLD) {
+      log.warn("LOOP_DETECT", `LLM 认知检测: ${result.reason} (置信度: ${result.confidence})`);
+      return true;
+    }
+    return false;
+  }
+
   /** 重置所有检测状态（新的用户输入时） */
   reset(): void {
     this.toolCallDetector.reset();
     this.contentDetector.reset();
     this.recoveryAttempts = 0;
+    this.turnCount = 0;
+    this.lastLLMCheckTurn = 0;
   }
 
   /** 尝试恢复，返回是否可以继续（未超过最大恢复次数） */
@@ -214,5 +276,10 @@ export class LoopDetector {
   /** 获取最大恢复次数 */
   getMaxRecoveryAttempts(): number {
     return this.config.maxRecoveryAttempts;
+  }
+
+  /** 获取当前轮次数 */
+  getTurnCount(): number {
+    return this.turnCount;
   }
 }

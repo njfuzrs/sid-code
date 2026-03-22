@@ -8,6 +8,7 @@ import type { Tool, ToolResult } from "../tool/types.ts";
 import type { ProviderRegistry } from "../llm/registry.ts";
 import type { Registry as ToolRegistry } from "../tool/registry.ts";
 import { ExtensionLoader } from "../extension/loader.ts";
+import type { ScanOptions } from "../extension/types.ts";
 import { SubAgent } from "./sub-agent.ts";
 import { getLogger } from "../debug/logger.ts";
 import type { ExtensionSource } from "../extension/types.ts";
@@ -31,9 +32,9 @@ export class CustomAgentLoader {
   }
 
   /** 加载所有自定义 Agent 定义 */
-  async loadAll(projectDir?: string): Promise<CustomAgentDefinition[]> {
+  async loadAll(projectDir?: string, scanOptions?: ScanOptions): Promise<CustomAgentDefinition[]> {
     const log = getLogger();
-    const files = await this.extensionLoader.scan("agents", projectDir ?? process.cwd());
+    const files = await this.extensionLoader.scan("agents", projectDir ?? process.cwd(), scanOptions);
     const agents: CustomAgentDefinition[] = [];
 
     for (const file of files) {

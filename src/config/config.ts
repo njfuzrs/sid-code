@@ -118,6 +118,10 @@ export interface Config {
   /** 禁用的 Skill 名称列表 */
   disabledSkills?: string[];
 
+  // 扩展安全配置
+  /** 是否信任项目级扩展（跳过信任检查，默认 false） */
+  trustProjectExtensions?: boolean;
+
   // Checkpoint 配置
   checkpoint?: CheckpointConfig;
 
@@ -220,6 +224,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     use_alternate_buffer: "useAlternateBuffer",
     show_line_numbers: "showLineNumbers",
     disabled_skills: "disabledSkills",
+    trust_project_extensions: "trustProjectExtensions",
     checkpoint: "checkpoint",
     sanitize_env: "sanitizeEnv",
   };

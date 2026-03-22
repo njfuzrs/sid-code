@@ -6,6 +6,7 @@
 
 import type { Command, AppContext, CommandResult } from "./types.ts";
 import { ExtensionLoader } from "../extension/loader.ts";
+import type { ScanOptions } from "../extension/types.ts";
 import { getLogger } from "../debug/logger.ts";
 import { execSync } from "child_process";
 import { readFileSync } from "fs";
@@ -172,10 +173,11 @@ export class CustomCommandLoader {
   /**
    * 加载所有自定义命令
    * @param projectDir 项目目录（用于区分 user/project 来源）
+   * @param scanOptions 扫描选项（信任检查等）
    */
-  async loadAll(projectDir?: string): Promise<Array<{ cmd: CustomCommand; source: "user" | "project" }>> {
+  async loadAll(projectDir?: string, scanOptions?: ScanOptions): Promise<Array<{ cmd: CustomCommand; source: "user" | "project" }>> {
     const log = getLogger();
-    const files = await this.extensionLoader.scan("commands", projectDir ?? process.cwd());
+    const files = await this.extensionLoader.scan("commands", projectDir ?? process.cwd(), scanOptions);
     const results: Array<{ cmd: CustomCommand; source: "user" | "project" }> = [];
 
     for (const file of files) {

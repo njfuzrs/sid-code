@@ -5,6 +5,8 @@
 
 import type { Message } from "../llm/types.ts";
 import { MessageValidator } from "./validator.ts";
+import { estimateTextTokens } from "./token.ts";
+import { ToolOutputMaskingService } from "./tool-output-masking.ts";
 import { getLogger, getSessionMetrics } from "../debug/index.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -14,6 +16,11 @@ const OUTPUT_THRESHOLD = 30000;  // 30K 字符，超过此大小的工具输出�
 const KEEP_RECENT_OUTPUTS = 3;   // 保留最近 N 个大输出，旧的清理掉
 const CLEARED_MARKER = "[旧的工具输出已清理]";
 
+/** 压缩前的工具输出预算（token） */
+const COMPRESSION_TOOL_OUTPUT_BUDGET = 50_000;
+/** 保留最近对话的比例 */
+const COMPRESSION_PRESERVE_RATIO = 0.3;
+
 /** 截断结果 */
 export interface TruncationResult {
   /** 截断后的文本（用于上下文） */
@@ -21,6 +28,20 @@ export interface TruncationResult {
   /** 完整输出保存的文件路径（null 表示未截断） */
   savedPath: string | null;
 }
+
+/** 压缩级别 */
+export type CompactionLevel =
+  | "none"       // 不需要压缩
+  | "soft"       // 建议压缩（工具输出遮罩即可）
+  | "hard"       // 需要摘要压缩
+  | "emergency"; // 紧急：强制截断，防止 API 报错
+
+/** 压缩阈值配置 */
+const COMPACTION_THRESHOLDS = {
+  soft: 0.5,       // 50% — 触发工具输出遮罩
+  hard: 0.7,       // 70% — 触发 LLM 摘要压缩
+  emergency: 0.94, // 94% — 强制截断旧消息
+};
 
 /** 上下文管理器配置 */
 export interface ManagerOptions {
@@ -36,11 +57,17 @@ export class Manager {
   private maxTokens: number;
   private compactThreshold: number;
   private tempDir?: string;
+  private maskingService?: ToolOutputMaskingService;
 
   constructor(opts: ManagerOptions) {
     this.maxTokens = opts.maxTokens;
     this.compactThreshold = opts.compactThreshold ?? 0.7;
     this.tempDir = opts.tempDir;
+  }
+
+  /** 设置会话 ID（用于工具输出遮罩） */
+  setSessionId(sessionId: string): void {
+    this.maskingService = new ToolOutputMaskingService(sessionId);
   }
 
   /** 设置系统提示词 */
@@ -100,17 +127,28 @@ export class Manager {
 
   /**
    * 获取清理后的消息列表（发送给 LLM 前调用）
-   * 1. 清理旧的大输出，只保留最近 N 个
-   * 2. 验证消息格式
-   * 3. 返回深拷贝，不影响原始消息
+   * 1. 应用工具输出遮罩（soft 级别压缩）
+   * 2. 清理旧的大输出，只保留最近 N 个
+   * 3. 验证消息格式
+   * 4. 返回深拷贝，不影响原始消息
    */
   getCleanedMessages(): Message[] {
     const log = getLogger();
+
+    // 先应用工具输出遮罩（如果启用）
+    let cleaned = [...this.messages];
+    if (this.maskingService) {
+      const compactionLevel = this.getCompactionLevel();
+      if (compactionLevel === "soft" || compactionLevel === "hard" || compactionLevel === "emergency") {
+        cleaned = this.maskingService.mask(cleaned);
+      }
+    }
+
     // 找到所有大输出的位置（从后往前扫描）
     const largeOutputPositions: { msgIdx: number; blockIdx: number }[] = [];
 
-    for (let i = 0; i < this.messages.length; i++) {
-      const msg = this.messages[i];
+    for (let i = 0; i < cleaned.length; i++) {
+      const msg = cleaned[i];
       for (let j = 0; j < msg.content.length; j++) {
         const block = msg.content[j];
         if (block.type === "tool_result" && block.content.length > OUTPUT_THRESHOLD) {
@@ -121,7 +159,14 @@ export class Manager {
 
     // 如果大输出数量不超过保留数，直接返回
     if (largeOutputPositions.length <= KEEP_RECENT_OUTPUTS) {
-      return [...this.messages];
+      // 验证消息格式（仅警告，不阻塞）
+      const errors = MessageValidator.validate(cleaned);
+      if (errors.length > 0) {
+        log.warn("CONTEXT", `消息验证发现 ${errors.length} 个问题:`, {
+          errors: errors.map(e => `[${e.code}] ${e.message}`),
+        });
+      }
+      return cleaned;
     }
 
     // 需要清理的旧输出（保留最近 N 个）
@@ -129,7 +174,7 @@ export class Manager {
     const cleanSet = new Set(toClean.map(p => `${p.msgIdx}:${p.blockIdx}`));
 
     // 深拷贝并清理
-    const cleaned = this.messages.map((msg, msgIdx) => ({
+    const result = cleaned.map((msg, msgIdx) => ({
       role: msg.role,
       content: msg.content.map((block, blockIdx) => {
         if (cleanSet.has(`${msgIdx}:${blockIdx}`) && block.type === "tool_result") {
@@ -143,14 +188,14 @@ export class Manager {
     }));
 
     // 验证消息格式（仅警告，不阻塞）
-    const errors = MessageValidator.validate(cleaned);
+    const errors = MessageValidator.validate(result);
     if (errors.length > 0) {
       log.warn("CONTEXT", `消息验证发现 ${errors.length} 个问题:`, {
         errors: errors.map(e => `[${e.code}] ${e.message}`),
       });
     }
 
-    return cleaned;
+    return result;
   }
 
   /** 设置消息列表（用于恢复会话） */
@@ -260,12 +305,12 @@ export class Manager {
   }
 
   /**
-   * 估算当前 token 数（粗略：4 字符 ≈ 1 token）
+   * 估算当前 token 数（区分 ASCII/非 ASCII 字符）
    * 包含：系统提示词 + 消息内容 + 消息结构开销 + 工具定义开销
    */
   estimateTokens(toolCount: number = 0): number {
     // 系统提示词
-    let total = Math.ceil(this.systemPrompt.length / 4);
+    let total = estimateTextTokens(this.systemPrompt);
 
     // 工具定义开销（每个工具约 80 token）
     total += toolCount * 80;
@@ -277,13 +322,13 @@ export class Manager {
 
       for (const block of msg.content) {
         if (block.type === "text") {
-          total += Math.ceil(block.text.length / 4);
+          total += estimateTextTokens(block.text);
         } else if (block.type === "tool_use") {
           // tool_use 块：JSON 内容 + 结构开销（约 20 token）
-          total += Math.ceil(JSON.stringify(block.input).length / 4) + 20;
+          total += estimateTextTokens(JSON.stringify(block.input)) + 20;
         } else if (block.type === "tool_result") {
           // tool_result 块：内容 + 结构开销（约 10 token）
-          total += Math.ceil(block.content.length / 4) + 10;
+          total += estimateTextTokens(block.content) + 10;
         }
       }
     }
@@ -299,6 +344,39 @@ export class Manager {
   /** 是否需要压缩 */
   needsCompaction(toolCount: number = 0): boolean {
     return this.estimateTokens(toolCount) > this.maxTokens * this.compactThreshold;
+  }
+
+  /**
+   * 获取压缩级别
+   * 根据上下文使用率返回对应的压缩策略
+   */
+  getCompactionLevel(toolCount: number = 0): CompactionLevel {
+    const ratio = this.estimateTokens(toolCount) / this.maxTokens;
+    if (ratio >= COMPACTION_THRESHOLDS.emergency) return "emergency";
+    if (ratio >= COMPACTION_THRESHOLDS.hard) return "hard";
+    if (ratio >= COMPACTION_THRESHOLDS.soft) return "soft";
+    return "none";
+  }
+
+  /**
+   * 紧急截断：强制删除旧消息，防止上下文溢出
+   * 保留最近 30% 的消息
+   */
+  emergencyTruncate(): void {
+    const log = getLogger();
+    const before = this.messages.length;
+    const splitPoint = this.findCompressSplitPoint(0.3);
+
+    if (splitPoint > 0) {
+      const truncatedSummary = `[紧急压缩] 前 ${splitPoint} 条消息已被截断以防止上下文溢出`;
+      this.messages = [
+        { role: "user", content: [{ type: "text", text: truncatedSummary }] },
+        { role: "assistant", content: [{ type: "text", text: "了解，继续。" }] },
+        ...this.messages.slice(splitPoint),
+      ];
+    }
+
+    log.warn("CONTEXT", `紧急压缩: ${before} → ${this.messages.length} 条消息`);
   }
 
   /** 消息数量 */
@@ -341,13 +419,93 @@ export class Manager {
     return removed;
   }
 
-  /** 用摘要替换历史消息（保留最近 N 条，对标 Claude Code 保留 10 条） */
-  compactWithSummary(summary: string, keepRecent: number = 10): void {
-    if (this.messages.length <= keepRecent) {
-      return;
+  /**
+   * 找到安全的压缩分割点（只在 user 消息处分割）
+   * 确保不会在 tool_use/tool_result 对中间切割
+   */
+  findCompressSplitPoint(preserveRatio: number = COMPRESSION_PRESERVE_RATIO): number {
+    const totalChars = this.messages.reduce((sum, msg) => {
+      return sum + msg.content.reduce((s, b) => {
+        if (b.type === "text") return s + b.text.length;
+        if (b.type === "tool_result") return s + b.content.length;
+        if (b.type === "tool_use") return s + JSON.stringify(b.input).length;
+        return s;
+      }, 0);
+    }, 0);
+
+    const targetChars = totalChars * (1 - preserveRatio);
+    let cumulative = 0;
+    let lastSafePoint = 0;
+
+    for (let i = 0; i < this.messages.length; i++) {
+      const msg = this.messages[i];
+      // 只在 user 消息处标记安全分割点（且不包含 tool_result）
+      const hasToolResult = msg.content.some(b => b.type === "tool_result");
+      if (msg.role === "user" && !hasToolResult) {
+        lastSafePoint = i;
+      }
+
+      cumulative += msg.content.reduce((s, b) => {
+        if (b.type === "text") return s + b.text.length;
+        if (b.type === "tool_result") return s + b.content.length;
+        if (b.type === "tool_use") return s + JSON.stringify(b.input).length;
+        return s;
+      }, 0);
+
+      if (cumulative >= targetChars && lastSafePoint > 0) {
+        return lastSafePoint;
+      }
     }
 
-    const kept = this.messages.slice(-keepRecent);
+    return lastSafePoint;
+  }
+
+  /**
+   * 压缩前预处理：截断待压缩部分的工具输出到预算内
+   * 从最新消息向前遍历，优先保留近期工具输出
+   */
+  truncateForCompression(messages: Message[]): Message[] {
+    let tokenBudget = COMPRESSION_TOOL_OUTPUT_BUDGET;
+
+    // 从后向前遍历，优先保留近期输出
+    const result = [...messages];
+    for (let i = result.length - 1; i >= 0; i--) {
+      const msg = result[i];
+      result[i] = {
+        ...msg,
+        content: msg.content.map(block => {
+          if (block.type !== "tool_result") return block;
+          const tokens = estimateTextTokens(block.content);
+          if (tokenBudget >= tokens) {
+            tokenBudget -= tokens;
+            return block; // 预算充足，保留完整内容
+          }
+          // 预算不足，截断
+          tokenBudget = 0;
+          const lines = block.content.split("\n");
+          const kept = lines.slice(-30).join("\n"); // 保留最后 30 行
+          return { ...block, content: `[输出已截断，保留最后 30 行]\n${kept}` };
+        }),
+      };
+    }
+
+    return result;
+  }
+
+  /**
+   * 增强版摘要压缩（替代原 compactWithSummary）
+   * 1. 找到安全分割点
+   * 2. 预处理待压缩部分
+   * 3. 用摘要替换
+   * 4. 验证压缩效果
+   */
+  compactWithSummary(summary: string): void {
+    const splitPoint = this.findCompressSplitPoint();
+    if (splitPoint <= 0) return; // 没有安全分割点
+
+    const tokensBefore = this.estimateTokens();
+    const kept = this.messages.slice(splitPoint);
+
     const summaryMsg: Message = {
       role: "user",
       content: [{ type: "text", text: `[对话摘要]\n${summary}` }],
@@ -358,6 +516,16 @@ export class Manager {
     };
 
     this.messages = [summaryMsg, ackMsg, ...kept];
+
+    const tokensAfter = this.estimateTokens();
+    const log = getLogger();
+
+    // 验证：压缩后 token 数不应增加
+    if (tokensAfter >= tokensBefore) {
+      log.warn("CONTEXT", `压缩异常：压缩后 token 数 (${tokensAfter}) >= 压缩前 (${tokensBefore})`);
+    } else {
+      log.info("CONTEXT", `压缩完成: ${tokensBefore} → ${tokensAfter} tokens (节省 ${Math.round((1 - tokensAfter / tokensBefore) * 100)}%)`);
+    }
 
     // 记录压缩到会话指标
     getSessionMetrics().recordCompact();
