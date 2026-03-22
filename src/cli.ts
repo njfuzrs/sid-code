@@ -15,7 +15,7 @@ if (!process.env.FORCE_COLOR && !process.env.NO_COLOR) {
 import { parseArgs } from "node:util";
 import { loadConfig } from "./config/config.ts";
 import type { Config } from "./config/config.ts";
-import { initLogger, getLogger, LogLevel } from "./debug/logger.ts";
+import { initLogger, getLogger, LogLevel, getPerfTimer } from "./debug/index.ts";
 
 /** 解析命令行参数 */
 function parseCLIArgs(): Partial<Config> & { prompt?: string } {
@@ -159,6 +159,8 @@ UI:
 
 /** 主函数 */
 async function main(): Promise<void> {
+  const startupTimer = getPerfTimer().start('startup');
+
   try {
     const cliArgs = parseCLIArgs();
     const config = await loadConfig(cliArgs);
@@ -379,9 +381,14 @@ async function main(): Promise<void> {
         console.error("错误: 无头模式需要提供提示词");
         process.exit(1);
       }
+      startupTimer.end();
       await app.runHeadless(cliArgs.prompt);
     } else {
       // TUI 模式
+      const startupDuration = startupTimer.end();
+      if (config.debug) {
+        getLogger().info("CLI", `启动完成，耗时 ${startupDuration.toFixed(0)}ms`);
+      }
       await app.runTUI(cliArgs.prompt);
     }
   } catch (err) {

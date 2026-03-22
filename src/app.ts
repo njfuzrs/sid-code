@@ -24,10 +24,11 @@ import { QuotaManager } from "./llm/quota.ts";
 import { loadAllCLAUDEmd, watchCLAUDEmd, unwatchCLAUDEmd } from "./config/rules.ts";
 import type { ProjectRules } from "./config/rules.ts";
 import { clearPromptCache } from "./config/system-prompt.ts";
-import { getLogger } from "./debug/logger.ts";
+import { getLogger, getMemoryMonitor, getSessionMetrics } from "./debug/index.ts";
 import { AgentLoopRunner } from "./agent/loop.ts";
 import type { AgentLoopCallbacks } from "./agent/loop.ts";
 import { HookRunner } from "./hook/runner.ts";
+import { JitContextManager } from "./config/jit-context.ts";
 import { resetStreamingFenceCounter } from "./ui/markdown-utils.ts";
 import { execSync } from "child_process";
 import { readFile } from "fs/promises";
@@ -88,6 +89,7 @@ export class App {
   private abortController: AbortController | null = null;
   private loopRunner: AgentLoopRunner;
   private hookRunner!: HookRunner;
+  private jitContextMgr: JitContextManager;
   /** TUI 模式下的权限确认回调（由 TUI 注入），返回 "yes" | "no" | "always" */
   private tuiConfirmCallback: ((toolName: string, toolInput: unknown, desc: string) => Promise<"yes" | "no" | "always">) | null = null;
 
@@ -119,6 +121,9 @@ export class App {
         log.warn("FALLBACK", `降级到 ${model}，原因: ${reason}`);
       },
     });
+
+    // 初始化 JIT 上下文管理器
+    this.jitContextMgr = new JitContextManager();
 
     // 初始化 Hook 执行器
     this.hookRunner = new HookRunner(this.config.hooks);
@@ -258,6 +263,13 @@ export class App {
   async init(): Promise<void> {
     const log = getLogger();
     log.info("APP", "开始初始化...");
+
+    // 启动内存监控
+    getMemoryMonitor().start();
+
+    // 设置 bash 工具配置（用于环境变量清理）
+    const { setBashToolConfig } = await import("./tool/bash.ts");
+    setBashToolConfig(this.config);
 
     let systemPrompt = this.config.systemPrompt;
 
@@ -743,6 +755,9 @@ export class App {
       if (result) results.push(result);
     }
 
+    // JIT 上下文发现：检查工具访问的路径
+    await this.discoverJitContext(toolBlocks.map(t => t.block));
+
     return results;
   }
 
@@ -764,6 +779,48 @@ export class App {
       }
     }
     return files;
+  }
+
+  /** JIT 上下文发现：根据工具访问的路径发现新的 CLAUDE.md */
+  private async discoverJitContext(toolBlocks: ToolUseBlock[]): Promise<void> {
+    const log = getLogger();
+    const projectRoot = process.cwd();
+
+    // 收集工具访问的路径
+    const accessedPaths: string[] = [];
+    for (const block of toolBlocks) {
+      // 只处理文件操作工具
+      if (!["read", "write", "edit", "grep", "glob"].includes(block.name)) {
+        continue;
+      }
+
+      const input = block.input as any;
+      if (input?.file_path) {
+        accessedPaths.push(input.file_path);
+      } else if (input?.path) {
+        accessedPaths.push(input.path);
+      } else if (input?.pattern && block.name === "glob") {
+        // glob 工具访问的是当前目录
+        accessedPaths.push(input.path || projectRoot);
+      }
+    }
+
+    if (accessedPaths.length === 0) return;
+
+    // 对每个路径尝试发现上下文
+    for (const path of accessedPaths) {
+      try {
+        const newContext = await this.jitContextMgr.discoverContext(path, projectRoot);
+        if (newContext) {
+          // 将新上下文追加到系统提示词
+          const currentPrompt = this.ctxMgr.getSystemPrompt();
+          this.ctxMgr.setSystemPrompt(currentPrompt + "\n\n" + newContext);
+          log.info("JIT", `已加载 JIT 上下文 (${newContext.length} 字符)`);
+        }
+      } catch (err) {
+        log.warn("JIT", `JIT 上下文发现失败: ${path}`, err);
+      }
+    }
   }
 
   /** 执行单个工具 */
@@ -883,6 +940,18 @@ export class App {
     await this.hookRunner.run("session_end", { sessionId: this.sessionState.sessionId });
     unwatchCLAUDEmd();
     this.mcpManager?.closeAll();
+
+    // 停止内存监控并输出会话摘要
+    getMemoryMonitor().stop();
+    getLogger().close();
+
+    // 输出会话摘要到控制台
+    const summary = getSessionMetrics().getSummary();
+    console.log('\n' + '─'.repeat(60));
+    console.log('会话摘要');
+    console.log('─'.repeat(60));
+    console.log(summary);
+    console.log('─'.repeat(60) + '\n');
 
     return "";
   }
@@ -1280,6 +1349,19 @@ export class App {
     await this.hookRunner.run("session_end", { sessionId: this.sessionState.sessionId });
     unwatchCLAUDEmd();
     this.mcpManager?.closeAll();
+
+    // 停止内存监控并输出会话摘要
+    getMemoryMonitor().stop();
+    getLogger().close();
+
+    // 输出会话摘要到控制台
+    const summary = getSessionMetrics().getSummary();
+    console.log('\n' + '─'.repeat(60));
+    console.log('会话摘要');
+    console.log('─'.repeat(60));
+    console.log(summary);
+    console.log('─'.repeat(60) + '\n');
+
     log.info("TUI", "TUI 退出");
   }
 }

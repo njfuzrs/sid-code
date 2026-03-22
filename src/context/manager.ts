@@ -5,7 +5,7 @@
 
 import type { Message } from "../llm/types.ts";
 import { MessageValidator } from "./validator.ts";
-import { getLogger } from "../debug/logger.ts";
+import { getLogger, getSessionMetrics } from "../debug/index.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -358,6 +358,9 @@ export class Manager {
     };
 
     this.messages = [summaryMsg, ackMsg, ...kept];
+
+    // 记录压缩到会话指标
+    getSessionMetrics().recordCompact();
   }
 
   /**

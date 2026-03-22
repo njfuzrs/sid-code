@@ -60,9 +60,23 @@ const CAT_COLOR: Record<string, string> = {
   STREAM: C.gray,
 };
 
+// 结构化日志条目
+interface LogEntry {
+  ts: string;        // ISO 8601 时间戳
+  level: string;     // ERROR/WARN/INFO/DEBUG
+  cat: string;       // 分类
+  msg: string;       // 消息
+  data?: unknown;    // 附加数据（已脱敏）
+}
+
 class Logger {
   private options: LoggerOptions;
   private logFilePath?: string;
+  private logStream?: WriteStream;
+  private jsonLogPath?: string;
+  private jsonStream?: WriteStream;
+  private readonly maxLogSize = 10 * 1024 * 1024; // 10MB
+  private currentLogSize = 0;
 
   constructor(options: Partial<LoggerOptions> = {}) {
     this.options = {
@@ -72,6 +86,8 @@ class Logger {
       fileOnly: options.fileOnly ?? false,
       logFile: options.logFile,
       mutedCategories: options.mutedCategories,
+      jsonLog: options.jsonLog ?? false,
+      jsonLogFile: options.jsonLogFile,
     };
 
     if (this.options.enabled && this.options.logFile) {
@@ -85,9 +101,21 @@ class Logger {
         mkdirSync(logDir, { recursive: true });
       }
 
-      // 初始化日志文件（清空旧日志）
+      // 改用 WriteStream 异步写入
+      this.logStream = createWriteStream(this.logFilePath, { flags: 'w' });
+      this.logStream.on('error', () => {}); // 静默错误
+
+      // 写入头部
       const header = `${'─'.repeat(60)}\n SID-CODE DEBUG LOG  ${new Date().toLocaleString('zh-CN')}\n${'─'.repeat(60)}\n\n`;
-      writeFileSync(this.logFilePath, header, 'utf-8');
+      this.logStream.write(header);
+      this.currentLogSize = Buffer.byteLength(header);
+
+      // JSON Lines 输出
+      if (this.options.jsonLog) {
+        this.jsonLogPath = this.options.jsonLogFile ?? this.logFilePath.replace(/\.log$/, '.jsonl');
+        this.jsonStream = createWriteStream(this.jsonLogPath, { flags: 'w' });
+        this.jsonStream.on('error', () => {});
+      }
     }
   }
 
@@ -144,12 +172,50 @@ class Logger {
   }
 
   private writeToFile(message: string): void {
-    if (this.logFilePath) {
+    if (!this.logStream || this.logStream.destroyed) return;
+
+    const data = this.stripAnsi(message) + '\n';
+    this.currentLogSize += Buffer.byteLength(data);
+    this.logStream.write(data);
+
+    // 超过大小限制时轮转
+    if (this.currentLogSize >= this.maxLogSize) {
+      this.rotate();
+    }
+  }
+
+  private rotate(): void {
+    if (!this.logFilePath || !this.logStream) return;
+
+    // 关闭当前流
+    this.logStream.end();
+
+    // 重命名旧文件（只保留 1 个备份）
+    const backupPath = this.logFilePath + '.1';
+    try {
+      if (existsSync(backupPath)) unlinkSync(backupPath);
+      if (existsSync(this.logFilePath)) renameSync(this.logFilePath, backupPath);
+    } catch {}
+
+    // 创建新流
+    this.logStream = createWriteStream(this.logFilePath, { flags: 'w' });
+    this.logStream.on('error', () => {});
+    this.currentLogSize = 0;
+
+    const header = `${'─'.repeat(60)}\n SID-CODE DEBUG LOG (轮转) ${new Date().toLocaleString('zh-CN')}\n${'─'.repeat(60)}\n\n`;
+    this.logStream.write(header);
+    this.currentLogSize = Buffer.byteLength(header);
+
+    // JSON 日志也轮转
+    if (this.jsonStream && this.jsonLogPath) {
+      this.jsonStream.end();
+      const jsonBackup = this.jsonLogPath + '.1';
       try {
-        appendFileSync(this.logFilePath, this.stripAnsi(message) + '\n', 'utf-8');
-      } catch (err) {
-        // 静默失败，避免日志系统本身导致程序崩溃
-      }
+        if (existsSync(jsonBackup)) unlinkSync(jsonBackup);
+        if (existsSync(this.jsonLogPath)) renameSync(this.jsonLogPath, jsonBackup);
+      } catch {}
+      this.jsonStream = createWriteStream(this.jsonLogPath, { flags: 'w' });
+      this.jsonStream.on('error', () => {});
     }
   }
 
@@ -174,10 +240,30 @@ class Logger {
     // 文件始终写入所有级别，确保日志文件包含完整信息
     this.writeToFile(formatted);
 
+    // JSON Lines 输出
+    this.logJson(level, category, message, data);
+
     // 控制台输出受 level 过滤（fileOnly 模式下不输出到控制台）
     if (!this.options.fileOnly && level <= this.options.level) {
       this.writeToConsole(level, formatted);
     }
+  }
+
+  private logJson(level: LogLevel, category: string, message: string, data?: unknown): void {
+    if (!this.jsonStream || this.jsonStream.destroyed) return;
+
+    const entry: LogEntry = {
+      ts: new Date().toISOString(),
+      level: LogLevel[level],
+      cat: category,
+      msg: message,
+    };
+
+    if (data !== undefined) {
+      entry.data = JSON.parse(JSON.stringify(data, this.sensitiveReplacer));
+    }
+
+    this.jsonStream.write(JSON.stringify(entry) + '\n');
   }
 
   /** 检查分类是否被静默 */
@@ -266,6 +352,18 @@ class Logger {
   // 获取日志文件路径
   getLogFilePath(): string | undefined {
     return this.logFilePath;
+  }
+
+  /** 关闭日志流（进程退出时调用） */
+  close(): void {
+    if (this.logStream) {
+      this.logStream.end();
+      this.logStream = undefined;
+    }
+    if (this.jsonStream) {
+      this.jsonStream.end();
+      this.jsonStream = undefined;
+    }
   }
 }
 

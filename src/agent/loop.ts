@@ -18,7 +18,7 @@ import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { ModelFallback } from "../llm/fallback.ts";
 import { ThinkingManager } from "../llm/thinking.ts";
 import { SessionState } from "../session/state.ts";
-import { getLogger } from "../debug/logger.ts";
+import { getLogger, getSessionMetrics, getPerfTimer } from "../debug/index.ts";
 import type { HookRunner } from "../hook/runner.ts";
 import { LoopDetector, LOOP_RECOVERY_PROMPT } from "./loop-detection.ts";
 
@@ -131,6 +131,9 @@ export class AgentLoopRunner {
 
     log.info("AGENT", `用户输入: ${userInput.slice(0, 200)}${userInput.length > 200 ? "..." : ""}`);
 
+    // 记录用户提示
+    getSessionMetrics().recordPrompt();
+
     // user_prompt_submit hook：可拦截或修改用户输入
     let finalInput = userInput;
     if (this.deps.hookRunner) {
@@ -173,12 +176,18 @@ export class AgentLoopRunner {
     while (turns < maxTurns) {
       turns++;
 
+      // 记录轮次
+      getSessionMetrics().recordTurn();
+
       // 上下文使用率监控（两段式触发，对标 Claude Code）
       const toolCount = toolRegistry.size();
       const currentTokens = ctxMgr.estimateTokens(toolCount);
       const contextMax = ctxMgr.getMaxTokens();
       const usagePercent = (currentTokens / contextMax) * 100;
       const remaining = 100 - usagePercent;
+
+      // 更新峰值 token 数
+      getSessionMetrics().updatePeakTokens(currentTokens);
 
       log.info("AGENT", `轮次 ${turns}/${maxTurns}，消息数 ${ctxMgr.getMessages().length}，上下文 ${usagePercent.toFixed(0)}%`);
 
@@ -231,13 +240,25 @@ export class AgentLoopRunner {
 
       // 处理流式响应（记录 API 耗时）
       const apiStart = Date.now();
+      const perfHandle = getPerfTimer().start('llm_request');
       const response = await this.deps.processStream(stream, (text) => {
         callbacks.onStreamText(text);
       });
-      const apiDuration = Date.now() - apiStart;
+      const apiDuration = perfHandle.end({ model: config.model });
 
       // 更新 SessionState
       sessionState.updateUsage(config.model, response.usage, apiDuration);
+
+      // 记录 LLM 响应到会话指标
+      const costUSD = sessionState.totalCostUSD - (sessionState.getTotalUsage().inputTokens + sessionState.getTotalUsage().outputTokens > response.usage.inputTokens + response.usage.outputTokens ? sessionState.totalCostUSD : 0);
+      getSessionMetrics().recordLlmResponse(
+        config.model,
+        response.usage.inputTokens,
+        response.usage.outputTokens,
+        apiDuration,
+        costUSD,
+        false
+      );
 
       // 成本配额检查
       if (this.deps.quotaManager) {
@@ -316,14 +337,18 @@ export class AgentLoopRunner {
         }
 
         const toolStartTime = Date.now();
+        const perfHandle = getPerfTimer().start(`tool_${toolNames[0] || 'unknown'}`);
         const toolResults = await this.deps.executeTools(response.content);
-        const toolElapsed = Date.now() - toolStartTime;
+        const toolElapsed = perfHandle.end();
         ctxMgr.addMessage({ role: "user", content: toolResults });
 
         // 从结果中提取最后一个工具的 isError 状态
         const lastResult = toolResults[toolResults.length - 1];
         const lastIsError = lastResult && lastResult.type === "tool_result" ? !!lastResult.is_error : false;
         const lastName = toolNames[toolNames.length - 1] || "";
+
+        // 记录工具调用到会话指标
+        getSessionMetrics().recordToolCall(lastName, toolElapsed, !lastIsError);
 
         callbacks.onToolEnd(lastName, { isError: lastIsError, elapsedMs: toolElapsed });
         continue;

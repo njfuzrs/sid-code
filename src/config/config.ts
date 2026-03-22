@@ -120,6 +120,10 @@ export interface Config {
 
   // Checkpoint 配置
   checkpoint?: CheckpointConfig;
+
+  // 环境变量清理
+  /** 是否在 bash 工具执行时清理环境变量（默认 false） */
+  sanitizeEnv?: boolean;
 }
 
 /** Checkpoint 配置 */
@@ -217,6 +221,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     show_line_numbers: "showLineNumbers",
     disabled_skills: "disabledSkills",
     checkpoint: "checkpoint",
+    sanitize_env: "sanitizeEnv",
   };
 
   const result: any = {};
@@ -277,7 +282,12 @@ async function loadConfigFile(): Promise<Partial<Config>> {
     const file = Bun.file(configPath);
     const content = await file.text();
     const parsed = parseYAML(content);
-    const normalized = normalizeConfigKeys(parsed);
+
+    // 环境变量插值
+    const { resolveEnvVars } = await import("./env-interpolation.ts");
+    const interpolated = resolveEnvVars(parsed);
+
+    const normalized = normalizeConfigKeys(interpolated);
     log.configLoaded("配置文件", { path: configPath, keys: Object.keys(normalized) });
     return normalized;
   } catch (err) {
@@ -337,6 +347,7 @@ async function loadMCPJson(): Promise<Record<string, MCPServerConfig>> {
 
 /** 加载完整配置 */
 export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config> {
+  const log = getLogger();
   const defaults = defaultConfig();
   const fileConfig = await loadConfigFile();
   const envConfig = loadFromEnv();
@@ -361,6 +372,34 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
     const modelMaxOutput = resolveModelMaxOutputTokens(config);
     if (modelMaxOutput) {
       config.maxTokens = modelMaxOutput;
+    }
+  }
+
+  // 验证配置
+  const { validateConfig } = await import("./schema.ts");
+  const validation = validateConfig(config);
+
+  // 输出警告
+  if (validation.warnings.length > 0) {
+    log.warn("CONFIG", `配置验证发现 ${validation.warnings.length} 个警告:`);
+    for (const warning of validation.warnings) {
+      log.warn("CONFIG", `  ⚠ ${warning.path}: ${warning.message}`);
+    }
+  }
+
+  // 输出错误
+  if (validation.errors.length > 0) {
+    log.warn("CONFIG", `配置验证发现 ${validation.errors.length} 个错误:`);
+    for (const error of validation.errors) {
+      log.warn("CONFIG", `  ✗ ${error.path}: ${error.message}`);
+    }
+
+    // 致命错误：provider 无效时阻止启动
+    const hasFatalError = validation.errors.some(e =>
+      e.path === "provider" || e.path === "model"
+    );
+    if (hasFatalError) {
+      throw new Error("配置验证失败，存在致命错误，无法启动");
     }
   }
 

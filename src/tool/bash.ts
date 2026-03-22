@@ -7,6 +7,7 @@ import type { Tool, ToolResult } from "./types.ts";
 import { spawn } from "bun";
 import { platform } from "os";
 import { getLogger } from "../debug/logger.ts";
+import type { Config } from "../config/config.ts";
 
 /** Bash 输出截断阈值（对标 Claude Code 30000 字符） */
 const MAX_OUTPUT_LENGTH = 30000;
@@ -19,6 +20,14 @@ const BACKGROUND_DELAY_MS = 200;
 
 /** 后台进程 PID 跟踪 */
 const backgroundPids = new Set<number>();
+
+/** 全局配置（用于环境变量清理） */
+let globalConfig: Config | null = null;
+
+/** 设置全局配置 */
+export function setBashToolConfig(config: Config): void {
+  globalConfig = config;
+}
 
 /** 获取平台 shell 配置 */
 function getPlatformShell(): { shell: string; args: string[] } {
@@ -137,10 +146,19 @@ export class BashTool implements Tool {
     const cwd = params.cwd || process.cwd();
     const { shell, args } = getPlatformShell();
 
+    // 准备环境变量（如果启用了清理）
+    let env = process.env;
+    if (globalConfig && (globalConfig as any).sanitizeEnv) {
+      const { sanitizeEnv } = await import("../config/env-sanitizer.ts");
+      env = sanitizeEnv(process.env as Record<string, string>);
+      log.debug("BASH", `环境变量已清理，保留 ${Object.keys(env).length} 个变量`);
+    }
+
     try {
       const proc = spawn({
         cmd: [shell, ...args, params.command],
         cwd,
+        env,
         stdout: "pipe",
         stderr: "pipe",
       });
@@ -224,10 +242,19 @@ export class BashTool implements Tool {
     const cwd = params.cwd || process.cwd();
     const { shell, args } = getPlatformShell();
 
+    // 准备环境变量（如果启用了清理）
+    let env = process.env;
+    if (globalConfig && (globalConfig as any).sanitizeEnv) {
+      const { sanitizeEnv } = await import("../config/env-sanitizer.ts");
+      env = sanitizeEnv(process.env as Record<string, string>);
+      log.debug("BASH", `环境变量已清理，保留 ${Object.keys(env).length} 个变量`);
+    }
+
     try {
       const proc = spawn({
         cmd: [shell, ...args, params.command],
         cwd,
+        env,
         stdout: "pipe",
         stderr: "pipe",
       });

@@ -239,11 +239,17 @@ export function findGlobalCLAUDEmd(): string | null {
 }
 
 /** 加载单个 CLAUDE.md 文件并解析 */
-async function loadAndParse(filePath: string): Promise<ProjectRules | null> {
+async function loadAndParse(filePath: string, projectRoot?: string): Promise<ProjectRules | null> {
   const log = getLogger();
   try {
     const file = Bun.file(filePath);
-    const content = await file.text();
+    let content = await file.text();
+
+    // 处理 @import 指令
+    const { processImports } = await import("./import-processor.ts");
+    const allowedDirs = projectRoot ? [projectRoot, homedir()] : [homedir()];
+    content = await processImports(content, filePath, { allowedDirectories: allowedDirs });
+
     log.debug("RULES", `加载 CLAUDE.md: ${filePath} (${content.length} 字符)`);
     return parseClaudeMd(content, filePath);
   } catch (err) {
@@ -253,7 +259,80 @@ async function loadAndParse(filePath: string): Promise<ProjectRules | null> {
 }
 
 /**
- * 加载并合并所有 CLAUDE.md（全局 + 项目）
+ * 在项目根目录下递归搜索 CLAUDE.md 文件。
+ * - BFS 搜索，最大深度 3 层
+ * - 跳过 node_modules、.git、dist 等目录
+ * - 文件身份去重（处理大小写不敏感文件系统）
+ */
+async function findProjectCLAUDEmdFiles(projectRoot: string): Promise<string[]> {
+  const log = getLogger();
+  const found: string[] = [];
+  const visited = new Set<string>();
+  const maxDepth = 3;
+
+  // 需要跳过的目录
+  const skipDirs = new Set([
+    "node_modules",
+    ".git",
+    "dist",
+    "build",
+    "out",
+    ".next",
+    ".nuxt",
+    "coverage",
+    ".cache",
+    "tmp",
+    "temp",
+  ]);
+
+  async function searchDir(dir: string, depth: number): Promise<void> {
+    if (depth > maxDepth) return;
+
+    // 去重（处理大小写不敏感文件系统）
+    const normalizedDir = dir.toLowerCase();
+    if (visited.has(normalizedDir)) return;
+    visited.add(normalizedDir);
+
+    try {
+      const entries = await Array.fromAsync(
+        new Bun.Glob("*").scan({ cwd: dir, onlyFiles: false })
+      );
+
+      for (const entry of entries) {
+        const fullPath = join(dir, entry);
+
+        // 检查是否是 CLAUDE.md 文件
+        if (CLAUDE_MD_FILES.some(name => entry === name || fullPath.endsWith(name))) {
+          if (existsSync(fullPath)) {
+            found.push(fullPath);
+            log.debug("RULES", `发现子目录 CLAUDE.md: ${fullPath}`);
+          }
+          continue;
+        }
+
+        // 递归搜索子目录
+        if (!skipDirs.has(entry)) {
+          try {
+            const stat = await Bun.file(fullPath).stat();
+            if (stat.isDirectory()) {
+              await searchDir(fullPath, depth + 1);
+            }
+          } catch {
+            // 忽略无法访问的目录
+          }
+        }
+      }
+    } catch (err) {
+      log.debug("RULES", `搜索目录失败: ${dir}`, err);
+    }
+  }
+
+  await searchDir(projectRoot, 0);
+  return found;
+}
+
+/**
+ * 加载并合并所有 CLAUDE.md（全局 + 项目根 + 子目录）
  * 返回合并后的结构化规则
  */
 export async function loadAllCLAUDEmd(startDir: string): Promise<ProjectRules | null> {
@@ -269,23 +348,46 @@ export async function loadAllCLAUDEmd(startDir: string): Promise<ProjectRules | 
     }
   }
 
-  // 2. 加载项目 CLAUDE.md
+  // 2. 加载项目根 CLAUDE.md
   const projectPath = await findCLAUDEmd(startDir);
   let projectRules: ProjectRules | null = null;
   if (projectPath) {
-    projectRules = await loadAndParse(projectPath);
+    projectRules = await loadAndParse(projectPath, startDir);
     if (projectRules) {
       log.info("RULES", `加载项目规则: ${projectPath}`);
     }
   }
 
-  // 3. 合并（项目覆盖全局）
-  if (globalRules && projectRules) {
-    log.info("RULES", "合并全局 + 项目规则");
-    return mergeProjectRules(globalRules, projectRules);
+  // 3. 查找并加载子目录 CLAUDE.md
+  const projectRoot = projectPath ? dirname(projectPath) : startDir;
+  const subFiles = await findProjectCLAUDEmdFiles(projectRoot);
+
+  // 过滤掉已经加载的根文件
+  const subFilesFiltered = subFiles.filter(f => f !== projectPath && f !== globalPath);
+
+  let subRules: ProjectRules | null = null;
+  for (const subFile of subFilesFiltered) {
+    const rules = await loadAndParse(subFile, projectRoot);
+    if (rules) {
+      log.info("RULES", `加载子目录规则: ${subFile}`);
+      subRules = subRules ? mergeProjectRules(subRules, rules) : rules;
+    }
   }
 
-  return projectRules || globalRules;
+  // 4. 合并（全局 → 项目根 → 子目录）
+  let merged = globalRules;
+  if (projectRules) {
+    merged = merged ? mergeProjectRules(merged, projectRules) : projectRules;
+  }
+  if (subRules) {
+    merged = merged ? mergeProjectRules(merged, subRules) : subRules;
+  }
+
+  if (merged) {
+    log.info("RULES", "规则合并完成");
+  }
+
+  return merged;
 }
 
 /**
