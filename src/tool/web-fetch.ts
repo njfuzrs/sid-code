@@ -8,7 +8,41 @@ import type { Tool, ToolResult } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
 
 const FETCH_TIMEOUT_MS = 10000;
-const MAX_CONTENT_LENGTH = 50000;
+const MAX_CONTENT_LENGTH = 100000; // 从 50000 提升到 100000
+
+/** 每主机限流：每分钟最多 10 次请求 */
+const RATE_LIMIT_PER_HOST = 10;
+const RATE_LIMIT_WINDOW_MS = 60000;
+
+/** 重试配置 */
+const MAX_RETRIES = 2;
+const RETRY_DELAYS = [1000, 3000]; // 1s, 3s
+
+/** 主机请求历史记录 */
+const hostRequestHistory = new Map<string, number[]>();
+
+// ─── 限流检查 ─────────────────────────────────────────────────────────────────
+
+/** 检查主机是否超过限流 */
+function checkRateLimit(hostname: string): { allowed: boolean; waitTime?: number } {
+  const now = Date.now();
+  const history = hostRequestHistory.get(hostname) || [];
+
+  // 清理过期记录（超过 1 分钟）
+  const recentRequests = history.filter(time => now - time < RATE_LIMIT_WINDOW_MS);
+
+  if (recentRequests.length >= RATE_LIMIT_PER_HOST) {
+    const oldestRequest = recentRequests[0];
+    const waitTime = Math.ceil((oldestRequest + RATE_LIMIT_WINDOW_MS - now) / 1000);
+    return { allowed: false, waitTime };
+  }
+
+  // 记录本次请求
+  recentRequests.push(now);
+  hostRequestHistory.set(hostname, recentRequests);
+
+  return { allowed: true };
+}
 
 // ─── 安全检查 ─────────────────────────────────────────────────────────────────
 
@@ -146,8 +180,30 @@ export class WebFetchTool implements Tool {
     const fetchUrl = convertGithubUrl(params.url);
     const isConverted = fetchUrl !== params.url;
 
+    // 限流检查
+    const url = new URL(fetchUrl);
+    const rateCheck = checkRateLimit(url.hostname);
+    if (!rateCheck.allowed) {
+      return {
+        output: `错误: 主机 ${url.hostname} 请求过于频繁，请等待 ${rateCheck.waitTime} 秒后重试`,
+        isError: true,
+      };
+    }
+
     log.info("TOOL", `▶ 抓取 ${fetchUrl}${isConverted ? ` (转换自 ${params.url})` : ""}`);
 
+    // 带重试的抓取
+    return this.fetchWithRetry(fetchUrl, isConverted, signal, log);
+  }
+
+  /** 带重试的抓取 */
+  private async fetchWithRetry(
+    fetchUrl: string,
+    isConverted: boolean,
+    signal: AbortSignal | undefined,
+    log: ReturnType<typeof getLogger>,
+    retryCount = 0,
+  ): Promise<ToolResult> {
     try {
       // 超时控制
       const timeoutController = new AbortController();
@@ -207,10 +263,36 @@ export class WebFetchTool implements Tool {
 
       return { output: header + output };
     } catch (err: any) {
+      // 判断是否应该重试
+      const shouldRetry = this.shouldRetryError(err) && retryCount < MAX_RETRIES;
+
+      if (shouldRetry) {
+        const delay = RETRY_DELAYS[retryCount];
+        log.info("TOOL", `⚠ 抓取失败，${delay}ms 后重试 (${retryCount + 1}/${MAX_RETRIES})`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        return this.fetchWithRetry(fetchUrl, isConverted, signal, log, retryCount + 1);
+      }
+
       if (err?.name === "AbortError") {
         return { output: `错误: 请求超时（${FETCH_TIMEOUT_MS / 1000}秒）`, isError: true };
       }
       return { output: `抓取失败: ${err.message}`, isError: true };
     }
+  }
+
+  /** 判断错误是否应该重试 */
+  private shouldRetryError(err: any): boolean {
+    // 网络错误重试
+    if (err?.name === "NetworkError" || err?.code === "ECONNRESET" || err?.code === "ETIMEDOUT") {
+      return true;
+    }
+
+    // 5xx 服务器错误重试
+    if (err?.status && err.status >= 500 && err.status < 600) {
+      return true;
+    }
+
+    // 4xx 客户端错误不重试
+    return false;
   }
 }

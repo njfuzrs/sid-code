@@ -156,7 +156,7 @@ describe("WebFetchTool - 内容处理", () => {
   });
 
   test("超长内容截断并附提示", async () => {
-    const longContent = "x".repeat(60000);
+    const longContent = "x".repeat(120000); // 超过 100000 字符
     const originalFetch = globalThis.fetch;
     globalThis.fetch = mock(async () =>
       new Response(longContent, {
@@ -172,9 +172,9 @@ describe("WebFetchTool - 内容处理", () => {
 
     expect(result.isError).toBeFalsy();
     expect(result.output).toContain("内容已截断");
-    expect(result.output).toContain("50000 字符");
-    // 实际内容不超过 50000 + 提示文字
-    expect(result.output.length).toBeLessThan(51000);
+    expect(result.output).toContain("100000 字符");
+    // 实际内容不超过 100000 + 提示文字
+    expect(result.output.length).toBeLessThan(101000);
   });
 
   test("HTTP 错误状态码返回错误", async () => {

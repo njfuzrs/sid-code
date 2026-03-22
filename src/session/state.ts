@@ -50,11 +50,33 @@ export class SessionState {
   totalToolDuration: number = 0;
   /** 按模型分开的用量统计 */
   modelUsage: Record<string, ModelUsageStats> = {};
+  /** 会话级别的临时数据存储（用于命令间共享状态） */
+  private sessionData = new Map<string, any>();
 
   constructor(sessionId: string, cwd?: string) {
     this.sessionId = sessionId;
     this.cwd = cwd ?? process.cwd();
     this.startTime = Date.now();
+  }
+
+  /** 获取会话数据 */
+  get(key: string): any {
+    return this.sessionData.get(key);
+  }
+
+  /** 设置会话数据 */
+  set(key: string, value: any): void {
+    this.sessionData.set(key, value);
+  }
+
+  /** 删除会话数据 */
+  delete(key: string): boolean {
+    return this.sessionData.delete(key);
+  }
+
+  /** 检查会话数据是否存在 */
+  has(key: string): boolean {
+    return this.sessionData.has(key);
   }
 
   /** 更新 API 调用的用量统计 */

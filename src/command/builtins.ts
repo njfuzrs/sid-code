@@ -13,24 +13,35 @@ export class HelpCommand implements Command {
   aliases() { return ["h", "?"]; }
   description() { return "显示帮助信息"; }
 
-  async execute(_args: string, ctx: AppContext): Promise<CommandResult> {
+  async execute(args: string, ctx: AppContext): Promise<CommandResult> {
+    const trimmed = args.trim();
+
+    // 如果指定了命令名，显示该命令的详细帮助
+    if (trimmed) {
+      return this.showCommandHelp(trimmed, ctx);
+    }
+
+    // 显示所有命令列表
     const lines = [
       "可用命令:",
-      "  /help           - 显示帮助信息",
-      "  /model [name]   - 显示/切换模型",
-      "  /model list     - 显示所有可用模型",
-      "  /cost           - 显示 token 用量和费用",
-      "  /compact        - 压缩对话历史",
-      "  /clear          - 清空对话",
-      "  /rewind [n]     - 回退最近 n 轮对话（默认 1 轮）",
-      "  /stats          - 显示会话统计",
-      "  /sessions       - 列出历史会话",
-      "  /config         - 显示当前配置",
-      "  /undo           - 撤销最近一次文件修改",
-      "  /memory         - 管理记忆 (set/get/delete/list/search)",
-      "  /mcp            - 显示 MCP 服务器状态",
-      "  /init           - 初始化项目 .sid-code/ 配置目录",
-      "  /exit           - 退出",
+      "  /help [command]  - 显示帮助信息（可指定命令查看详情）",
+      "  /model [name]    - 显示/切换模型",
+      "  /model list      - 显示所有可用模型",
+      "  /cost            - 显示 token 用量和费用",
+      "  /compact         - 压缩对话历史",
+      "  /clear           - 清空对话",
+      "  /rewind [n]      - 回退最近 n 轮对话（默认 1 轮）",
+      "  /stats           - 显示会话统计",
+      "  /sessions        - 列出历史会话",
+      "  /config          - 显示当前配置",
+      "  /undo            - 撤销最近一次文件修改",
+      "  /memory          - 管理记忆 (set/get/delete/list/search)",
+      "  /mcp             - MCP 服务器管理 (list/add/remove/enable/disable)",
+      "  /skills          - Skills 管理 (list/enable/disable)",
+      "  /agents          - 自定义 Agents 管理 (list)",
+      "  /commands        - 列出自定义命令",
+      "  /init            - 初始化项目 .sid-code/ 配置目录",
+      "  /exit            - 退出",
     ];
 
     if (ctx.customCommands && ctx.customCommands.length > 0) {
@@ -41,7 +52,90 @@ export class HelpCommand implements Command {
       }
     }
 
+    lines.push("", "提示: 使用 /help <command> 查看命令详情（如 /help mcp）");
+
     return { kind: "message", message: lines.join("\n") };
+  }
+
+  private showCommandHelp(cmdName: string, ctx: AppContext): CommandResult {
+    // 这里需要访问 CommandRegistry，但当前 AppContext 没有暴露
+    // 简化实现：只显示已知命令的帮助
+    const helpTexts: Record<string, string> = {
+      "mcp": `MCP 服务器管理
+
+子命令:
+  /mcp list              - 列出所有 MCP 服务器状态
+  /mcp add <name> <cmd>  - 添加 MCP 服务器
+    --scope user|project   配置作用域（默认 project）
+    --transport stdio|http|sse  传输方式（默认 stdio）
+    --timeout <ms>         连接超时（毫秒）
+    --trust                信任服务器（跳过工具确认）
+  /mcp remove <name>     - 移除 MCP 服务器
+    --scope user|project   配置作用域
+  /mcp enable <name>     - 启用 MCP 服务器
+    --session              仅在当前会话启用
+  /mcp disable <name>    - 禁用 MCP 服务器
+    --session              仅在当前会话禁用
+  /mcp test <name>       - 测试 MCP 服务器连接
+  /mcp prompts           - 列出所有 MCP 提示词
+  /mcp resources         - 列出所有 MCP 资源
+
+示例:
+  /mcp add myserver npx -y @modelcontextprotocol/server-filesystem /tmp
+  /mcp add remote http://localhost:3000 --transport http
+  /mcp disable myserver --session`,
+
+      "skills": `Skills 管理
+
+子命令:
+  /skills list           - 列出所有 skills
+    --all                  显示所有（含内置）
+  /skills enable <name>  - 启用 skill
+    --scope user|project   配置作用域（默认 user）
+  /skills disable <name> - 禁用 skill
+    --scope user|project   配置作用域
+
+示例:
+  /skills list
+  /skills enable my-skill --scope project
+  /skills disable my-skill`,
+
+      "memory": `记忆管理
+
+子命令:
+  /memory set <key> <value>  - 设置记忆
+    --scope global|project     作用域（默认 project）
+  /memory get <key>          - 获取记忆
+  /memory delete <key>       - 删除记忆
+  /memory list               - 列出所有记忆
+  /memory search <keyword>   - 搜索记忆
+
+示例:
+  /memory set api_key sk-xxx --scope global
+  /memory get api_key
+  /memory search api`,
+
+      "model": `模型管理
+
+用法:
+  /model              - 显示当前模型
+  /model list         - 显示所有可用模型
+  /model <name>       - 切换到指定模型
+
+示例:
+  /model claude-opus-4-20250514
+  /model list`,
+    };
+
+    const helpText = helpTexts[cmdName];
+    if (helpText) {
+      return { kind: "message", message: helpText };
+    }
+
+    return {
+      kind: "message",
+      message: `未找到命令 "${cmdName}" 的帮助信息\n使用 /help 查看所有可用命令`,
+    };
   }
 }
 
@@ -579,7 +673,7 @@ export class InitCommand implements Command {
 }
 
 /** 注册所有内置命令 */
-export function registerBuiltins(registry: import("./registry.ts").Registry): void {
+export async function registerBuiltins(registry: import("./registry.ts").Registry): Promise<void> {
   registry.register(new HelpCommand());
   registry.register(new ModelCommand());
   registry.register(new CostCommand());
@@ -588,7 +682,17 @@ export function registerBuiltins(registry: import("./registry.ts").Registry): vo
   registry.register(new ConfigCommand());
   registry.register(new UndoCommand());
   registry.register(new MemoryCommand());
-  registry.register(new MCPCommand());
+
+  // 使用增强版 MCP 命令
+  const { MCPEnhancedCommand } = await import("./mcp-enhanced.ts");
+  registry.register(new MCPEnhancedCommand());
+
+  // 注册扩展管理命令
+  const { SkillsCommand, AgentsCommand, CommandsListCommand } = await import("./extensions.ts");
+  registry.register(new SkillsCommand());
+  registry.register(new AgentsCommand());
+  registry.register(new CommandsListCommand());
+
   registry.register(new ExitCommand());
   registry.register(new RewindCommand());
   registry.register(new StatsCommand());

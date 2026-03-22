@@ -50,5 +50,7 @@ export interface Command {
   name(): string;
   aliases(): string[];
   description(): string;
+  /** 子命令列表（可选） */
+  subCommands?(): Command[];
   execute(args: string, ctx: AppContext): Promise<CommandResult>;
 }

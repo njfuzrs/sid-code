@@ -48,9 +48,33 @@ export class Registry {
     }
   }
 
-  /** 根据名称或别名查找命令 */
+  /** 根据名称或别名查找命令，支持子命令路径（如 "mcp list"） */
   get(name: string): Command | undefined {
-    return this.commands.get(name) ?? this.aliasMap.get(name);
+    const parts = name.trim().split(/\s+/);
+
+    // 查找顶级命令
+    let current: Command | undefined = this.commands.get(parts[0]) ?? this.aliasMap.get(parts[0]);
+    if (!current) return undefined;
+
+    // 如果只有一个部分，直接返回
+    if (parts.length === 1) return current;
+
+    // 查找子命令
+    for (let i = 1; i < parts.length; i++) {
+      const subs: Command[] = current.subCommands?.() ?? [];
+      const found: Command | undefined = subs.find((c: Command) =>
+        c.name() === parts[i] || c.aliases().includes(parts[i])
+      );
+
+      if (!found) {
+        // 子命令不存在，返回父命令（让父命令处理参数）
+        return current;
+      }
+
+      current = found;
+    }
+
+    return current;
   }
 
   /** 返回所有已注册的命令（不含别名重复） */

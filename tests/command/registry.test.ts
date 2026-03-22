@@ -2,23 +2,27 @@
  * 命令注册表测试
  */
 
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, beforeEach } from "bun:test";
 import { Registry } from "../../src/command/registry.ts";
-import type { Command, AppContext } from "../../src/command/types.ts";
+import type { Command, AppContext, CommandResult } from "../../src/command/types.ts";
 
 /** 测试用的 mock 命令 */
 class MockCommand implements Command {
   constructor(
     private _name: string,
     private _aliases: string[] = [],
+    private _subCommands?: Command[],
   ) {}
   name() { return this._name; }
   aliases() { return this._aliases; }
   description() { return `Mock command: ${this._name}`; }
-  async execute() {}
+  subCommands() { return this._subCommands ?? []; }
+  async execute(_args: string, _ctx: AppContext): Promise<CommandResult> {
+    return { kind: "message", message: `${this._name} executed` };
+  }
 }
 
-describe("CommandRegistry", () => {
+describe("CommandRegistry - 基础功能", () => {
   test("注册和查找命令", () => {
     const reg = new Registry();
     const cmd = new MockCommand("help");
@@ -44,5 +48,100 @@ describe("CommandRegistry", () => {
     reg.register(new MockCommand("cost"));
 
     expect(reg.all().length).toBe(3);
+  });
+});
+
+describe("CommandRegistry - 子命令支持", () => {
+  let registry: Registry;
+
+  beforeEach(() => {
+    registry = new Registry();
+
+    // 创建带子命令的父命令
+    const sub1 = new MockCommand("sub1", ["s1"]);
+    const subsub = new MockCommand("subsub");
+    const sub2 = new MockCommand("sub2", [], [subsub]);
+    const parent = new MockCommand("parent", ["p"], [sub1, sub2]);
+
+    registry.register(parent);
+  });
+
+  test("查找顶级命令", () => {
+    const cmd = registry.get("parent");
+    expect(cmd).toBeDefined();
+    expect(cmd?.name()).toBe("parent");
+  });
+
+  test("通过别名查找顶级命令", () => {
+    const cmd = registry.get("p");
+    expect(cmd).toBeDefined();
+    expect(cmd?.name()).toBe("parent");
+  });
+
+  test("查找一级子命令", () => {
+    const cmd = registry.get("parent sub1");
+    expect(cmd).toBeDefined();
+    expect(cmd?.name()).toBe("sub1");
+  });
+
+  test("通过别名查找一级子命令", () => {
+    const cmd = registry.get("parent s1");
+    expect(cmd).toBeDefined();
+    expect(cmd?.name()).toBe("sub1");
+  });
+
+  test("查找二级子命令", () => {
+    const cmd = registry.get("parent sub2 subsub");
+    expect(cmd).toBeDefined();
+    expect(cmd?.name()).toBe("subsub");
+  });
+
+  test("子命令不存在时返回父命令", () => {
+    const cmd = registry.get("parent nonexistent");
+    expect(cmd).toBeDefined();
+    expect(cmd?.name()).toBe("parent");
+  });
+
+  test("多余空格不影响查找", () => {
+    const cmd = registry.get("  parent   sub1  ");
+    expect(cmd).toBeDefined();
+    expect(cmd?.name()).toBe("sub1");
+  });
+
+  test("all() 只返回顶级命令", () => {
+    const commands = registry.all();
+    expect(commands.length).toBe(1);
+    expect(commands[0].name()).toBe("parent");
+  });
+});
+
+describe("CommandRegistry - 命令冲突处理", () => {
+  test("内置命令不可被覆盖", () => {
+    const reg = new Registry();
+    const builtin = new MockCommand("builtin");
+    const user = new MockCommand("builtin");
+
+    reg.register(builtin, "builtin");
+    reg.register(user, "user");
+
+    // 用户命令被重命名为 user.builtin
+    const userCmd = reg.get("user.builtin");
+    expect(userCmd).toBeDefined();
+
+    // 内置命令仍然可用
+    const builtinCmd = reg.get("builtin");
+    expect(builtinCmd).toBe(builtin);
+  });
+
+  test("项目级命令覆盖用户级命令", () => {
+    const reg = new Registry();
+    const user = new MockCommand("custom");
+    const project = new MockCommand("custom");
+
+    reg.register(user, "user");
+    reg.register(project, "project");
+
+    const cmd = reg.get("custom");
+    expect(cmd).toBe(project);
   });
 });

@@ -11,6 +11,15 @@ import { getLogger } from "../debug/logger.ts";
 /** Bash 输出截断阈值（对标 Claude Code 30000 字符） */
 const MAX_OUTPUT_LENGTH = 30000;
 
+/** 空闲超时时间（60 秒无输出则终止） */
+const IDLE_TIMEOUT_MS = 60000;
+
+/** 后台进程延迟时间（200ms 后切换到后台） */
+const BACKGROUND_DELAY_MS = 200;
+
+/** 后台进程 PID 跟踪 */
+const backgroundPids = new Set<number>();
+
 /** 获取平台 shell 配置 */
 function getPlatformShell(): { shell: string; args: string[] } {
   if (platform() === "win32") {
@@ -31,6 +40,29 @@ function truncateOutput(output: string): string {
   return `${head}\n\n... [输出已截断: 省略了中间 ${omitted} 字符，共 ${output.length} 字符] ...\n\n${tail}`;
 }
 
+/** 检测二进制输出 */
+function isBinaryOutput(data: string): boolean {
+  if (data.length === 0) return false;
+
+  // 检查是否包含 null 字节
+  if (data.includes("\0")) return true;
+
+  // 检查不可打印字符比例
+  let nonPrintable = 0;
+  const sampleSize = Math.min(data.length, 1000);
+
+  for (let i = 0; i < sampleSize; i++) {
+    const code = data.charCodeAt(i);
+    // 不可打印字符（排除常见空白字符）
+    if (code < 32 && code !== 9 && code !== 10 && code !== 13) {
+      nonPrintable++;
+    }
+  }
+
+  // 如果超过 30% 是不可打印字符，视为二进制
+  return nonPrintable / sampleSize > 0.3;
+}
+
 export class BashTool implements Tool {
   name(): string {
     return "bash";
@@ -46,7 +78,8 @@ export class BashTool implements Tool {
 - 必须提供 description 参数，用自然语言描述命令意图
 - 设置合理的 timeout，默认 2 分钟，最长 10 分钟
 - 输出超过 30000 字符会被自动截断
-- 避免执行长时间运行的进程（如 dev server、watch 模式）`;
+- 长时间运行的进程（如 dev server）可设置 is_background=true 后台运行
+- 后台进程会返回 PID，可用于后续管理`;
   }
 
   inputSchema(): Record<string, unknown> {
@@ -69,6 +102,10 @@ export class BashTool implements Tool {
           type: "string",
           description: "工作目录，默认为当前目录",
         },
+        is_background: {
+          type: "boolean",
+          description: "是否后台运行（不等待命令完成，立即返回 PID）",
+        },
       },
       required: ["command"],
     };
@@ -81,6 +118,7 @@ export class BashTool implements Tool {
       description?: string;
       timeout?: number;
       cwd?: string;
+      is_background?: boolean;
     };
 
     if (!params.command) {
@@ -88,6 +126,11 @@ export class BashTool implements Tool {
     }
 
     log.info("TOOL", `▶ 执行: ${params.command.slice(0, 200)}${params.command.length > 200 ? "..." : ""}`);
+
+    // 后台模式
+    if (params.is_background) {
+      return this.executeBackground(params);
+    }
 
     // 超时限制：最短 1 秒，最长 10 分钟
     const timeout = Math.min(Math.max(params.timeout || 120000, 1000), 600000);
@@ -139,8 +182,14 @@ export class BashTool implements Tool {
       }
       if (!output) output = "(命令无输出)";
 
-      // 截断超长输出
-      output = truncateOutput(output);
+      // 二进制输出检测
+      if (isBinaryOutput(output)) {
+        const byteCount = new TextEncoder().encode(output).length;
+        output = `[检测到二进制输出，共 ${byteCount} 字节]`;
+      } else {
+        // 截断超长输出
+        output = truncateOutput(output);
+      }
 
       // 被终止的情况
       if (killed) {
@@ -163,6 +212,54 @@ export class BashTool implements Tool {
       return { output };
     } catch (err: any) {
       return { output: `执行命令失败: ${err.message}`, isError: true };
+    }
+  }
+
+  /** 后台执行命令 */
+  private async executeBackground(params: {
+    command: string;
+    cwd?: string;
+  }): Promise<ToolResult> {
+    const log = getLogger();
+    const cwd = params.cwd || process.cwd();
+    const { shell, args } = getPlatformShell();
+
+    try {
+      const proc = spawn({
+        cmd: [shell, ...args, params.command],
+        cwd,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+
+      // 等待一小段时间收集初始输出
+      await new Promise(resolve => setTimeout(resolve, BACKGROUND_DELAY_MS));
+
+      const pid = proc.pid;
+      backgroundPids.add(pid);
+
+      // 尝试读取初始输出（非阻塞）
+      let initialOutput = "";
+      try {
+        const stdout = await Promise.race([
+          new Response(proc.stdout).text(),
+          new Promise<string>(resolve => setTimeout(() => resolve(""), 100)),
+        ]);
+        if (stdout) initialOutput = stdout.slice(0, 500); // 只取前 500 字符
+      } catch {
+        // 忽略读取失败
+      }
+
+      log.info("TOOL", `✓ 命令已在后台运行 PID=${pid}`);
+
+      let output = `命令已在后台运行 (PID: ${pid})`;
+      if (initialOutput) {
+        output += `\n\n初始输出:\n${initialOutput}`;
+      }
+
+      return { output };
+    } catch (err: any) {
+      return { output: `后台执行失败: ${err.message}`, isError: true };
     }
   }
 }

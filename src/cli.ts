@@ -221,8 +221,10 @@ async function main(): Promise<void> {
     // 注册内置工具（共享 FileReadTracker 实例）
     const { Registry: ToolRegistry } = await import("./tool/registry.ts");
     const { FileReadTracker } = await import("./tool/file-read-tracker.ts");
+    const { MemoryStore } = await import("./memory/store.ts");
     const toolRegistry = new ToolRegistry();
     const fileReadTracker = new FileReadTracker();
+    const memoryStore = new MemoryStore(process.cwd());
 
     const { ReadTool } = await import("./tool/read.ts");
     const { WriteTool } = await import("./tool/write.ts");
@@ -232,6 +234,8 @@ async function main(): Promise<void> {
     const { GlobTool } = await import("./tool/glob.ts");
     const { LsTool } = await import("./tool/ls.ts");
     const { WebFetchTool } = await import("./tool/web-fetch.ts");
+    const { ReadManyTool } = await import("./tool/read-many.ts");
+    const { MemoryTool } = await import("./tool/memory.ts");
 
     toolRegistry.register(new ReadTool(fileReadTracker));
     toolRegistry.register(new WriteTool());
@@ -241,6 +245,8 @@ async function main(): Promise<void> {
     toolRegistry.register(new GlobTool());
     toolRegistry.register(new LsTool());
     toolRegistry.register(new WebFetchTool());
+    toolRegistry.register(new ReadManyTool(fileReadTracker));
+    toolRegistry.register(new MemoryTool(memoryStore));
 
     // 注册子代理工具
     const { SubAgentTool } = await import("./agent/tool.ts");
@@ -250,7 +256,7 @@ async function main(): Promise<void> {
     const { Registry: CommandRegistry } = await import("./command/registry.ts");
     const { registerBuiltins } = await import("./command/builtins.ts");
     const commandRegistry = new CommandRegistry();
-    registerBuiltins(commandRegistry);
+    await registerBuiltins(commandRegistry);
 
     // 加载自定义命令
     const { CustomCommandLoader } = await import("./command/custom.ts");

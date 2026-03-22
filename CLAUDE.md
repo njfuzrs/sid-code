@@ -155,6 +155,102 @@ src/
 - 配置：`~/.sid-code/config.yaml` 的 `mcp_servers` + 项目级 `.mcp.json`（覆盖同名）
 - 生命周期：启动时 `connectAll()` 并行连接，失败不阻止启动，退出时 `closeAll()`
 
+## 10. 命令系统
+
+### 内置命令
+
+**基础命令**:
+- `/help [command]` - 显示帮助信息，可指定命令查看详情
+- `/model [name]` - 显示/切换模型，`/model list` 显示所有可用模型
+- `/cost` - 显示 token 用量和费用
+- `/compact` - 压缩对话历史
+- `/clear` - 清空对话
+- `/rewind [n]` - 回退最近 n 轮对话（默认 1 轮）
+- `/stats` - 显示会话统计
+- `/config` - 显示当前配置
+- `/undo` - 撤销最近一次文件修改
+- `/init` - 初始化项目 .sid-code/ 配置目录
+- `/exit` - 退出
+
+**MCP 管理** (`/mcp`):
+- `/mcp list` - 列出所有 MCP 服务器状态
+- `/mcp add <name> <cmd|url> [args...]` - 添加 MCP 服务器
+  - `--scope user|project` - 配置作用域（默认 project）
+  - `--transport stdio|http|sse` - 传输方式（默认 stdio）
+  - `--env KEY=VALUE` - 环境变量（stdio）
+  - `--header KEY:VALUE` - HTTP 头（http/sse）
+  - `--timeout <ms>` - 连接超时
+  - `--trust` - 信任服务器（跳过工具确认）
+- `/mcp remove <name>` - 移除 MCP 服务器
+  - `--scope user|project`
+- `/mcp enable <name>` - 启用 MCP 服务器
+  - `--session` - 仅当前会话
+- `/mcp disable <name>` - 禁用 MCP 服务器
+  - `--session` - 仅当前会话
+- `/mcp test <name>` - 测试连接
+- `/mcp prompts` - 列出所有 MCP 提示词
+- `/mcp resources` - 列出所有 MCP 资源
+
+**Memory 管理** (`/memory`):
+- `/memory set <key> <value>` - 设置记忆
+  - `--scope global|project` - 作用域（默认 project）
+- `/memory get <key>` - 获取记忆
+- `/memory delete <key>` - 删除记忆
+- `/memory list` - 列出所有记忆
+- `/memory search <keyword>` - 搜索记忆
+
+**Skills 管理** (`/skills`):
+- `/skills list` - 列出所有 skills
+  - `--all` - 显示所有（含内置）
+- `/skills enable <name>` - 启用 skill
+  - `--scope user|project` - 配置作用域（默认 user）
+- `/skills disable <name>` - 禁用 skill
+  - `--scope user|project`
+
+**扩展管理**:
+- `/agents list` - 列出所有自定义 agents
+- `/commands list` - 列出所有自定义命令
+
+### 自定义命令
+
+在 `.sid-code/commands/` 或 `~/.sid-code/commands/` 目录创建 `.md` 文件，文件名即命令名。
+
+**参数替换**:
+- `$1`, `$2`, ... - 位置参数
+- `$@` 或 `{{args}}` - 所有参数
+- `@{path}` - 文件注入（读取文件内容）
+- `!{cmd}` - Shell 注入（执行命令并替换输出，需用户确认）
+
+**示例** (`.sid-code/commands/review.md`):
+```markdown
+<!-- 代码审查 -->
+请审查以下文件的代码质量：
+
+@{$1}
+
+重点关注：
+- 代码可读性
+- 潜在 bug
+- 性能问题
+```
+
+使用：`/review src/app.ts`
+
+### 命令参数解析
+
+支持现代 CLI 风格的参数：
+- 位置参数：`/mcp add myserver npx`
+- `--key=value`：`/mcp add server --scope=user`
+- `--key value`：`/mcp add server --scope user`
+- 布尔标志：`/skills list --all`
+
+### 子命令架构
+
+命令可以定义子命令，Registry 自动路由：
+- `/mcp list` → `MCPListCommand`
+- `/skills enable` → `SkillsEnableCommand`
+- `/help mcp` → 显示 MCP 命令详细帮助
+
 ## 文档维护规范
 
 - 发现本文件与实际代码不一致，请立即更新
