@@ -185,6 +185,11 @@ export class AgentLoopRunner {
     // 记录用户提示
     getSessionMetrics().recordPrompt();
 
+    // 新一轮对话开始，重置模型可用性的 retry_once 标记
+    if (this.deps.fallback) {
+      this.deps.fallback.getAvailability().resetTurn();
+    }
+
     // user_prompt_submit hook：可拦截或修改用户输入
     let finalInput = userInput;
     if (this.deps.hookRunner) {

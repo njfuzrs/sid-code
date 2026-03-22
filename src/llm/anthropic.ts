@@ -4,7 +4,7 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
-import type { Provider } from "./provider.ts";
+import type { Provider, ProviderCapabilities } from "./provider.ts";
 import type {
   SendParams,
   StreamEvent,
@@ -31,6 +31,17 @@ export class AnthropicProvider implements Provider {
 
   defaultModel(): string {
     return "claude-sonnet-4-20250514";
+  }
+
+  capabilities(): ProviderCapabilities {
+    return {
+      streaming: true,
+      tools: true,
+      thinking: true,        // Anthropic 支持 Extended Thinking
+      vision: true,          // Claude 支持图片
+      promptCaching: true,   // Anthropic 支持 Prompt Caching
+      parallelToolCalls: true,
+    };
   }
 
   async *sendMessageStream(
@@ -86,6 +97,9 @@ export class AnthropicProvider implements Provider {
 
     try {
       const log = getLogger();
+      const requestStartTime = Date.now();
+      let firstTokenTime: number | null = null;
+
       log.debug("LLM:ANTHROPIC", `发送请求（Prompt Caching 已启用）`, {
         model: params.model || this._model,
         messageCount: messages.length,
@@ -108,6 +122,8 @@ export class AnthropicProvider implements Provider {
         }),
       });
 
+      let accumulatedUsage: Usage = { inputTokens: 0, outputTokens: 0 };
+
       // 转换 Anthropic SDK 事件到统一格式
       for await (const event of stream) {
         if (signal?.aborted) {
@@ -116,10 +132,11 @@ export class AnthropicProvider implements Provider {
 
         switch (event.type) {
           case "message_start":
+            accumulatedUsage = this.convertUsage(event.message.usage);
             yield {
               type: "message_start",
               message: {
-                usage: this.convertUsage(event.message.usage),
+                usage: accumulatedUsage,
               },
             };
             break;
@@ -133,6 +150,12 @@ export class AnthropicProvider implements Provider {
             break;
 
           case "content_block_delta":
+            // 记录首 token 延迟（TTFT）
+            if (!firstTokenTime) {
+              firstTokenTime = Date.now();
+              log.debug("LLM:ANTHROPIC", `首 token 延迟: ${firstTokenTime - requestStartTime}ms`);
+            }
+
             if (event.delta.type === "text_delta") {
               yield {
                 type: "content_block_delta",
@@ -167,14 +190,22 @@ export class AnthropicProvider implements Provider {
             break;
 
           case "message_delta":
+            accumulatedUsage = {
+              ...accumulatedUsage,
+              outputTokens: accumulatedUsage.outputTokens + (event.usage.output_tokens || 0),
+            };
             yield {
               type: "message_delta",
               delta: { stop_reason: event.delta.stop_reason || null },
-              usage: this.convertUsage(event.usage),
+              usage: accumulatedUsage,
             };
             break;
 
           case "message_stop":
+            log.debug("LLM:ANTHROPIC", "请求完成", {
+              totalMs: Date.now() - requestStartTime,
+              usage: accumulatedUsage,
+            });
             yield { type: "message_stop" };
             break;
 

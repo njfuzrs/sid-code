@@ -111,7 +111,9 @@ export class App {
     }
     // Extended Thinking 仅 Anthropic 支持
     this.thinkingMgr = new ThinkingManager(opts.config.provider === "anthropic");
-    this.fallback = new ModelFallback({ maxRetries: 3 }, {
+    // 如果有 providerRegistry，从中获取 availability 服务
+    const availability = opts.providerRegistry?.availability;
+    this.fallback = new ModelFallback({ availability }, {
       onRetry: (attempt, error, delayMs) => {
         const log = getLogger();
         log.info("FALLBACK", `重试 ${attempt}，错误: ${error}，延迟 ${delayMs}ms`);

@@ -1,33 +1,34 @@
 /**
  * 模型回退机制
- * 遇到 rate_limit/overloaded 等错误时指数退避重试，
- * 重试失败后自动切换到 fallback 模型
+ * 分阶段重试：连接阶段快速重试，流式阶段谨慎重试
+ * 集成错误分类和模型可用性服务
  */
 
 import type { Provider } from "./provider.ts";
 import type { SendParams, StreamEvent } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
+import { classifyError, TerminalError, RetryableError, StreamValidationError } from "./errors.ts";
+import { ModelAvailabilityService } from "./availability.ts";
 
-/** 可重试的错误类型 */
-const RETRYABLE_ERRORS = [
-  "overloaded_error",
-  "rate_limit_error",
-  "api_error",
-  "timeout",
-  "ECONNRESET",
-  "capacity_exceeded",
-  "503",
-  "502",
-  "429",
-];
+/** 连接阶段重试配置（快速重试，次数多） */
+const CONNECTION_RETRY = {
+  maxRetries: 3,
+  initialDelayMs: 1000,
+  maxDelayMs: 30000,
+};
+
+/** 流式阶段重试配置（谨慎重试，次数少） */
+const STREAM_RETRY = {
+  maxRetries: 2,
+  initialDelayMs: 1000,
+  maxDelayMs: 10000,
+};
 
 /** 回退配置 */
 export interface FallbackConfig {
-  maxRetries: number;           // 最大重试次数（默认 3）
-  initialDelayMs: number;       // 初始延迟（默认 1000ms）
-  maxDelayMs: number;           // 最大延迟（默认 30000ms）
   fallbackProvider?: Provider;  // 降级 Provider
   fallbackModel?: string;       // 降级模型
+  availability?: ModelAvailabilityService; // 模型可用性服务
 }
 
 /** 回退事件监听器 */
@@ -40,22 +41,25 @@ export class ModelFallback {
   private config: FallbackConfig;
   private listener: FallbackListener | null;
   private hasFallenBack = false;
+  private availability: ModelAvailabilityService;
 
   constructor(config: Partial<FallbackConfig> = {}, listener?: FallbackListener) {
     this.config = {
-      maxRetries: config.maxRetries ?? 3,
-      initialDelayMs: config.initialDelayMs ?? 1000,
-      maxDelayMs: config.maxDelayMs ?? 30000,
       fallbackProvider: config.fallbackProvider,
       fallbackModel: config.fallbackModel,
     };
     this.listener = listener ?? null;
+    this.availability = config.availability ?? new ModelAvailabilityService();
+  }
+
+  /** 获取可用性服务（供外部访问） */
+  getAvailability(): ModelAvailabilityService {
+    return this.availability;
   }
 
   /**
    * 执行带回退的操作
-   * 1. 先用主 Provider 重试
-   * 2. 重试失败后切换到 fallback Provider（如果配置了）
+   * 分三个阶段：连接阶段重试 → 流式阶段重试 → Fallback Provider
    */
   async *executeWithFallback(
     primaryProvider: Provider,
@@ -64,61 +68,156 @@ export class ModelFallback {
   ): AsyncGenerator<StreamEvent> {
     const log = getLogger();
 
-    // 第一阶段：主 Provider 重试
-    for (let attempt = 0; attempt <= this.config.maxRetries; attempt++) {
+    // 检查模型可用性
+    const availCheck = this.availability.isAvailable(params.model);
+    if (!availCheck.available) {
+      log.warn("FALLBACK", `模型 ${params.model} 不可用: ${availCheck.reason}`);
+      // 直接跳到 fallback
+      yield* this.tryFallback(params, signal);
+      return;
+    }
+
+    // 阶段 1：连接（获取流对象）
+    let stream: AsyncIterable<StreamEvent> | null = null;
+    for (let attempt = 0; attempt <= CONNECTION_RETRY.maxRetries; attempt++) {
       try {
-        log.debug("FALLBACK", `尝试主 Provider (attempt ${attempt + 1}/${this.config.maxRetries + 1})`);
+        log.debug("FALLBACK", `连接阶段尝试 ${attempt + 1}/${CONNECTION_RETRY.maxRetries + 1}`);
+        stream = primaryProvider.sendMessageStream(params, signal);
+        break; // 连接成功
+      } catch (err) {
+        const classified = classifyError(err);
 
-        // 返回流式响应
-        for await (const event of primaryProvider.sendMessageStream(params, signal)) {
-          // 检查是否是错误事件
-          if (event.type === "error") {
-            const errorMsg = event.error.message;
-            if (this.isRetryableError(errorMsg) && attempt < this.config.maxRetries) {
-              // 可重试错误，跳出内层循环进行重试
-              log.warn("FALLBACK", `遇到可重试错误: ${errorMsg}`);
-              throw new Error(errorMsg);
-            }
-            // 不可重试或已达最大重试次数，直接抛出
-            yield event;
-            return;
-          }
-          yield event;
-        }
-        // 成功完成，直接返回
-        return;
-      } catch (err: any) {
-        const errorMsg = err.message || String(err);
-
-        if (!this.isRetryableError(errorMsg) || attempt >= this.config.maxRetries) {
-          // 不可重试或已达最大重试次数
-          if (attempt >= this.config.maxRetries) {
-            log.warn("FALLBACK", `主 Provider 重试 ${this.config.maxRetries} 次后仍失败`);
-          }
-          break; // 跳到 fallback 阶段
+        if (classified instanceof TerminalError) {
+          this.availability.markTerminal(params.model, classified.reason);
+          log.error("FALLBACK", `终端错误: ${classified.reason}`);
+          yield* this.tryFallback(params, signal);
+          return;
         }
 
-        // 优先使用 retry-after 头（如果错误信息中包含），否则指数退避 + jitter
-        const retryAfterMs = this.parseRetryAfter(errorMsg);
-        const delayMs = retryAfterMs ?? this.calculateDelay(attempt);
+        if (attempt >= CONNECTION_RETRY.maxRetries) {
+          log.warn("FALLBACK", `连接阶段重试 ${CONNECTION_RETRY.maxRetries} 次后仍失败`);
+          this.availability.markRetryOnce(params.model, "连接失败");
+          break; // 进入 fallback
+        }
 
-        log.info("FALLBACK", `重试 ${attempt + 1}/${this.config.maxRetries}，延迟 ${delayMs}ms${retryAfterMs ? ' (来自 retry-after)' : ' (指数退避)'}`);
-        this.listener?.onRetry?.(attempt + 1, errorMsg, delayMs);
+        // 可重试错误，计算延迟
+        const isRateLimit = classified instanceof RetryableError && classified.reason === "rate_limit";
+        const delayMs = classified instanceof RetryableError && classified.retryAfterMs
+          ? classified.retryAfterMs
+          : this.calculateDelay(attempt, CONNECTION_RETRY, isRateLimit);
 
-        // 等待后重试
+        log.info("FALLBACK", `连接重试 ${attempt + 1}，延迟 ${delayMs}ms`);
+        this.listener?.onRetry?.(attempt + 1, classified.message, delayMs);
         await this.sleep(delayMs);
       }
     }
 
-    // 第二阶段：Fallback Provider
+    if (!stream) {
+      yield* this.tryFallback(params, signal);
+      return;
+    }
+
+    // 阶段 2：流式消费
+    let hasYieldedContent = false;
+    for (let attempt = 0; attempt <= STREAM_RETRY.maxRetries; attempt++) {
+      try {
+        log.debug("FALLBACK", `流式阶段尝试 ${attempt + 1}/${STREAM_RETRY.maxRetries + 1}`);
+
+        for await (const event of stream) {
+          if (signal?.aborted) {
+            throw new Error("请求已中止");
+          }
+
+          if (event.type === "error") {
+            const classified = classifyError(new Error(event.error.message));
+
+            if (classified instanceof TerminalError) {
+              this.availability.markTerminal(params.model, classified.reason);
+              log.error("FALLBACK", `流式终端错误: ${classified.reason}`);
+              yield* this.tryFallback(params, signal);
+              return;
+            }
+
+            if (classified instanceof RetryableError && attempt < STREAM_RETRY.maxRetries) {
+              log.warn("FALLBACK", `流式错误，准备重试: ${event.error.message}`);
+              throw classified; // 触发流式重试
+            }
+
+            // 不可重试或已达最大重试次数，尝试 fallback
+            yield* this.tryFallback(params, signal);
+            return;
+          }
+
+          if (event.type === "content_block_delta") {
+            hasYieldedContent = true;
+          }
+
+          yield event;
+        }
+
+        // 验证流完整性
+        if (!hasYieldedContent) {
+          throw new StreamValidationError("响应为空", "empty_response");
+        }
+
+        // 成功完成，标记模型健康
+        this.availability.markHealthy(params.model);
+        return;
+
+      } catch (err) {
+        const classified = classifyError(err);
+
+        if (classified instanceof TerminalError) {
+          this.availability.markTerminal(params.model, classified.reason);
+          log.error("FALLBACK", `终端错误: ${classified.reason}`);
+          yield* this.tryFallback(params, signal);
+          return;
+        }
+
+        if (attempt >= STREAM_RETRY.maxRetries) {
+          log.warn("FALLBACK", `流式阶段重试 ${STREAM_RETRY.maxRetries} 次后仍失败`);
+          this.availability.markRetryOnce(params.model, "流式传输失败");
+          break;
+        }
+
+        // 流式重试：重新发起完整请求
+        const isRateLimit = classified instanceof RetryableError && classified.reason === "rate_limit";
+        const delayMs = classified instanceof RetryableError && classified.retryAfterMs
+          ? classified.retryAfterMs
+          : this.calculateDelay(attempt, STREAM_RETRY, isRateLimit);
+
+        log.info("FALLBACK", `流式重试 ${attempt + 1}，延迟 ${delayMs}ms`);
+        this.listener?.onRetry?.(attempt + 1, classified.message, delayMs);
+        await this.sleep(delayMs);
+
+        // 重新获取流
+        try {
+          stream = primaryProvider.sendMessageStream(params, signal);
+        } catch (reconnectErr) {
+          log.error("FALLBACK", `重连失败: ${reconnectErr}`);
+          break;
+        }
+      }
+    }
+
+    // 阶段 3：Fallback Provider
+    yield* this.tryFallback(params, signal);
+  }
+
+  /** 尝试使用 fallback Provider */
+  private async *tryFallback(
+    params: SendParams,
+    signal?: AbortSignal,
+  ): AsyncGenerator<StreamEvent> {
+    const log = getLogger();
+
     if (this.config.fallbackProvider && this.config.fallbackModel && !this.hasFallenBack) {
       this.hasFallenBack = true;
       const fallbackModel = this.config.fallbackModel;
 
       log.warn("FALLBACK", `切换到 fallback 模型: ${fallbackModel}`);
-      this.listener?.onFallback?.("主模型重试失败", fallbackModel);
+      this.listener?.onFallback?.("主模型失败", fallbackModel);
 
-      // 使用 fallback Provider
       const fallbackParams = { ...params, model: fallbackModel };
       for await (const event of this.config.fallbackProvider.sendMessageStream(fallbackParams, signal)) {
         yield event;
@@ -126,7 +225,7 @@ export class ModelFallback {
       return;
     }
 
-    // 没有 fallback 或已经用过 fallback，返回错误
+    // 没有 fallback 或已经用过 fallback
     log.error("FALLBACK", "主 Provider 失败且无可用 fallback");
     yield {
       type: "error",
@@ -134,34 +233,31 @@ export class ModelFallback {
     };
   }
 
-  /** 计算重试延迟（指数退避 + ±10% 随机抖动，避免惊群效应） */
-  private calculateDelay(attempt: number): number {
+  /**
+   * 计算重试延迟（指数退避 + 差异化 Jitter）
+   * - 限流错误：+20% 正向抖动（尊重服务器最小延迟）
+   * - 其他错误：±30% 双向抖动（避免惊群效应）
+   */
+  private calculateDelay(
+    attempt: number,
+    config: typeof CONNECTION_RETRY | typeof STREAM_RETRY,
+    isRateLimit = false,
+  ): number {
     let delay = Math.min(
-      this.config.initialDelayMs * Math.pow(2, attempt),
-      this.config.maxDelayMs,
+      config.initialDelayMs * Math.pow(2, attempt),
+      config.maxDelayMs,
     );
-    const jitter = delay * 0.1;
-    delay += Math.random() * jitter * 2 - jitter;
-    return Math.round(delay);
-  }
 
-  /** 检查错误是否可重试 */
-  private isRetryableError(errorMsg: string): boolean {
-    const lowerMsg = errorMsg.toLowerCase();
-    return RETRYABLE_ERRORS.some(pattern => lowerMsg.includes(pattern.toLowerCase()));
-  }
-
-  /** 从错误信息中解析 retry-after 值（秒），返回毫秒数；解析失败返回 null */
-  private parseRetryAfter(errorMsg: string): number | null {
-    // 匹配常见格式：retry-after: 30, retry_after: 30, "retry-after":"30"
-    const match = errorMsg.match(/retry[_-]after[:\s"]*(\d+)/i);
-    if (match) {
-      const seconds = parseInt(match[1], 10);
-      if (seconds > 0 && seconds <= 300) {
-        return seconds * 1000;
-      }
+    if (isRateLimit) {
+      // 限流错误：+20% 正向抖动
+      delay += delay * 0.2 * Math.random();
+    } else {
+      // 其他错误：±30% 双向抖动
+      const jitter = delay * 0.3;
+      delay += Math.random() * jitter * 2 - jitter;
     }
-    return null;
+
+    return Math.round(delay);
   }
 
   /** 异步睡眠 */

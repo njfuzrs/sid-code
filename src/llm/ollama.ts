@@ -4,6 +4,7 @@
  */
 
 import { OpenAIProvider } from "./openai.ts";
+import type { ProviderCapabilities } from "./provider.ts";
 
 export class OllamaProvider extends OpenAIProvider {
   constructor(model?: string, baseURL?: string) {
@@ -20,5 +21,16 @@ export class OllamaProvider extends OpenAIProvider {
 
   defaultModel(): string {
     return "llama3";
+  }
+
+  capabilities(): ProviderCapabilities {
+    return {
+      streaming: true,
+      tools: true,           // 部分模型支持
+      thinking: false,
+      vision: false,         // 取决于具体模型
+      promptCaching: false,
+      parallelToolCalls: false,
+    };
   }
 }

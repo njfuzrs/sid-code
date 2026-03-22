@@ -8,7 +8,7 @@
  * - 纯文本消息 → content 为字符串
  */
 
-import type { Provider } from "./provider.ts";
+import type { Provider, ProviderCapabilities } from "./provider.ts";
 import type {
   SendParams,
   StreamEvent,
@@ -42,6 +42,17 @@ export class OpenAIProvider implements Provider {
 
   defaultModel(): string {
     return "gpt-4o";
+  }
+
+  capabilities(): ProviderCapabilities {
+    return {
+      streaming: true,
+      tools: true,
+      thinking: false,       // OpenAI 的 o1/o3 有内置推理，但接口不同
+      vision: true,          // GPT-4o 支持图片
+      promptCaching: false,
+      parallelToolCalls: true,
+    };
   }
 
   /**
@@ -162,6 +173,9 @@ export class OpenAIProvider implements Provider {
 
     try {
       const log = getLogger();
+      const requestStartTime = Date.now();
+      let firstTokenTime: number | null = null;
+
       log.debug("LLM:OPENAI", `发送请求到 ${this.baseURL}/chat/completions`, {
         model: requestBody.model,
         messageCount: requestBody.messages.length,
@@ -190,8 +204,28 @@ export class OpenAIProvider implements Provider {
       }
 
       log.debug("LLM:OPENAI", `开始接收 SSE 流`);
+
       // 解析 SSE 流
-      yield* this.parseSSE(response.body!);
+      let accumulatedUsage: Usage = { inputTokens: 0, outputTokens: 0 };
+      for await (const event of this.parseSSE(response.body!)) {
+        // 记录首 token 延迟（TTFT）
+        if (event.type === "content_block_delta" && !firstTokenTime) {
+          firstTokenTime = Date.now();
+          log.debug("LLM:OPENAI", `首 token 延迟: ${firstTokenTime - requestStartTime}ms`);
+        }
+
+        // 累积 usage
+        if (event.type === "message_delta") {
+          accumulatedUsage = event.usage;
+        }
+
+        yield event;
+      }
+
+      log.debug("LLM:OPENAI", "请求完成", {
+        totalMs: Date.now() - requestStartTime,
+        usage: accumulatedUsage,
+      });
     } catch (err: any) {
       const log = getLogger();
       log.error("LLM:OPENAI", `请求异常`, { error: err.message, stack: err.stack });
@@ -215,10 +249,17 @@ export class OpenAIProvider implements Provider {
     // 多工具并行追踪：key 是 OpenAI 的 tool_call index
     const toolCalls = new Map<number, ToolCallState>();
     const usage: Usage = { inputTokens: 0, outputTokens: 0 };
+    const HEARTBEAT_TIMEOUT_MS = 30_000;
 
     try {
       while (true) {
-        const { done, value } = await reader.read();
+        // 带超时的 read
+        const readPromise = reader.read();
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("SSE 流超时：30 秒无数据")), HEARTBEAT_TIMEOUT_MS)
+        );
+
+        const { done, value } = await Promise.race([readPromise, timeoutPromise]);
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });

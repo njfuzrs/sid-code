@@ -6,6 +6,7 @@ import { describe, test, expect } from "bun:test";
 import { QuotaManager } from "../../src/llm/quota.ts";
 
 describe("QuotaManager", () => {
+  // === 原有成本配额测试 ===
   test("低于 50% 不触发告警", () => {
     const qm = new QuotaManager(10.0);
     expect(qm.check(4.0)).toBeNull();
@@ -95,5 +96,88 @@ describe("QuotaManager", () => {
     const result = qm.check(8.5);
     expect(result!.message).toContain("$8.5");
     expect(result!.message).toContain("$10.00");
+  });
+
+  // === 向后兼容 ===
+  test("数字参数向后兼容", () => {
+    const qm = new QuotaManager(10.0);
+    expect(qm.check(5.0)!.level).toBe("info");
+    expect(qm.isExceeded(10.0)).toBe(true);
+  });
+
+  test("QuotaConfig 对象参数", () => {
+    const qm = new QuotaManager({ costLimit: 10.0 });
+    expect(qm.check(5.0)!.level).toBe("info");
+    expect(qm.isExceeded(10.0)).toBe(true);
+  });
+
+  test("QuotaConfig 无 costLimit 时不触发成本告警", () => {
+    const qm = new QuotaManager({ requestsPerMinute: 60 });
+    expect(qm.check(100)).toBeNull();
+    expect(qm.isExceeded(100)).toBe(false);
+  });
+
+  // === 速率限制（RPM/TPM） ===
+  describe("速率限制", () => {
+    test("未配置 RPM/TPM 时 checkRateLimit 返回 0", () => {
+      const qm = new QuotaManager(10.0);
+      expect(qm.checkRateLimit()).toBe(0);
+    });
+
+    test("RPM 未达上限时返回 0", () => {
+      const qm = new QuotaManager({ requestsPerMinute: 10 });
+      qm.recordRequest(100);
+      qm.recordRequest(100);
+      expect(qm.checkRateLimit()).toBe(0);
+    });
+
+    test("RPM 达到上限时返回等待时间", () => {
+      const qm = new QuotaManager({ requestsPerMinute: 3 });
+      qm.recordRequest(100);
+      qm.recordRequest(100);
+      qm.recordRequest(100);
+      const wait = qm.checkRateLimit();
+      // 需要等到最早的请求过期（约 60 秒）
+      expect(wait).toBeGreaterThan(0);
+      expect(wait).toBeLessThanOrEqual(60_000);
+    });
+
+    test("TPM 未达上限时返回 0", () => {
+      const qm = new QuotaManager({ tokensPerMinute: 10000 });
+      qm.recordRequest(1000);
+      qm.recordRequest(2000);
+      expect(qm.checkRateLimit()).toBe(0);
+    });
+
+    test("TPM 达到上限时返回等待时间", () => {
+      const qm = new QuotaManager({ tokensPerMinute: 5000 });
+      qm.recordRequest(3000);
+      qm.recordRequest(3000); // 总计 6000 > 5000
+      const wait = qm.checkRateLimit();
+      expect(wait).toBeGreaterThan(0);
+      expect(wait).toBeLessThanOrEqual(60_000);
+    });
+
+    test("recordRequest 清理过期记录", () => {
+      const qm = new QuotaManager({ requestsPerMinute: 2 });
+
+      // 手动模拟：先记录两个请求
+      qm.recordRequest(100);
+      qm.recordRequest(100);
+      // 此时达到上限
+      expect(qm.checkRateLimit()).toBeGreaterThan(0);
+
+      // 注意：实际过期需要等 60 秒，这里只验证逻辑正确性
+      // recordRequest 内部会清理 60 秒前的记录
+    });
+
+    test("RPM 和 TPM 同时配置，任一达限即等待", () => {
+      const qm = new QuotaManager({ requestsPerMinute: 100, tokensPerMinute: 500 });
+      // RPM 未达限，但 TPM 达限
+      qm.recordRequest(300);
+      qm.recordRequest(300); // 总 token 600 > 500
+      const wait = qm.checkRateLimit();
+      expect(wait).toBeGreaterThan(0);
+    });
   });
 });

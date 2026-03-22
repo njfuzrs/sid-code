@@ -6,6 +6,7 @@
 import type { Provider } from "./provider.ts";
 import type { Config, ModelConfig } from "../config/config.ts";
 import { getLogger } from "../debug/logger.ts";
+import { ModelAvailabilityService } from "./availability.ts";
 
 /** 子代理模型映射 */
 export interface SubAgentModelMap {
@@ -20,10 +21,13 @@ export class ProviderRegistry {
   private subAgentModels: SubAgentModelMap;
   /** 缓存：key = "providerName:baseURL" */
   private cache = new Map<string, Provider>();
+  /** 模型可用性服务 */
+  public availability: ModelAvailabilityService;
 
   constructor(config: Config, subAgentModels?: SubAgentModelMap) {
     this.config = config;
     this.subAgentModels = subAgentModels ?? {};
+    this.availability = new ModelAvailabilityService();
   }
 
   /** 获取当前主 Provider（根据 config.provider + config.baseURL） */
