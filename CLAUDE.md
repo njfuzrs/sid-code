@@ -6,6 +6,7 @@
 - 每个 task 完成后运行 `make build` 和 `make test`
 - **遇到不熟悉的 API、库用法、报错信息时，主动使用联网工具（WebSearch / WebFetch / context7）查询最新文档和解决方案**，不要凭记忆猜测
 - **排查复杂 bug 时，主动在关键路径添加详细的调试日志**（console.log / debug 模块），帮助定位问题根因；修复确认后再清理调试日志
+- **禁止创建文档**：除非用户明确要求，否则不要创建任何 README、SUMMARY、总结、说明等文档文件。完成任务后简短回复即可，不要写一大堆文档
 
 ## 1. 项目概述
 
@@ -53,6 +54,7 @@ src/
 模块依赖：`cli` → `app` → `agent` / `llm` / `tool` / `context` / `permission` / `hook` / `session` / `command` / `mcp` / `ui` / `debug`
 
 ## 4. 编码约定
+
 - TypeScript strict 模式
 - 接口驱动设计：Provider, Tool, Checker, Command 均为接口
 - 错误处理：`new Error("xxx", { cause: err })` 或直接 throw
