@@ -425,7 +425,8 @@ function formatOrderedPrefix(num: number, depth: number): string {
 
 /** 渲染 OSC 8 终端超链接 */
 function renderLink(label: string, href: string): string {
-  const styledLabel = chalk.blue.underline(label);
+  // 使用主题配置的链接颜色，而不是 chalk 默认蓝色
+  const styledLabel = chalk.hex(theme.text.link).underline(label);
 
   // 关键修复：在非 TTY 环境下禁用 OSC 8 超链接，只保留颜色和下划线
   // 避免在表格等场景中显示裸露的转义码
@@ -780,13 +781,14 @@ function renderTokensToReact(tokens: any[], maxWidth: number): React.ReactNode[]
         break;
       }
       case "table": {
-        // 使用新的 TableRenderer 组件
+        // 传原始 markdown 文本给 TableRenderer，由其内部的 parseMarkdownToANSI 统一处理
+        // 避免双重处理：renderInline 生成 ANSI/OSC8 → parseMarkdownToANSI 再次解析 → 宽度计算不准
         const headers: string[] = token.header.map((cell: any) =>
-          cell.tokens ? renderInline(cell.tokens) : (cell.text || ""),
+          cell.text || "",
         );
         const rows: string[][] = token.rows.map((row: any[]) =>
           row.map((cell: any) =>
-            cell.tokens ? renderInline(cell.tokens) : (cell.text || ""),
+            cell.text || "",
           ),
         );
         blocks.push(

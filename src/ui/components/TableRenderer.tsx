@@ -156,13 +156,8 @@ export const TableRenderer: React.FC<TableRendererProps> = ({
     // 最终宽度 = 实际内容宽度 + padding
     const adjustedWidths = actualColumnWidths.map((w) => w + COLUMN_PADDING);
 
-    // 验证总宽度不超过终端宽度
-    const totalTableWidth = adjustedWidths.reduce((a, b) => a + b, 0) + fixedOverhead;
-    if (totalTableWidth > terminalWidth) {
-      // 表格过宽，返回空数组触发降级渲染
-      return { wrappedHeaders: [], wrappedRows: [], adjustedWidths: [] };
-    }
-
+    // 参考 gemini-cli：不做超宽降级，始终保持表格格式
+    // 超宽时通过列宽压缩 + 自动换行处理，保证流式渲染中格式不突变
     return { wrappedHeaders, wrappedRows, adjustedWidths };
   }, [styledHeaders, styledRows, terminalWidth]);
 
@@ -178,12 +173,12 @@ export const TableRenderer: React.FC<TableRendererProps> = ({
     const displayWidth = content.width;
     const paddingNeeded = Math.max(0, contentWidth - displayWidth);
 
+    // 注意：content.text 已经包含 ANSI 颜色码（由 parseMarkdownToANSI 生成）
+    // 不要在外层 <Text> 设置 color 属性，否则会覆盖内部颜色
     return (
       <Text>
         {isHeader ? (
-          <Text bold color={theme.text.link}>
-            {content.text}
-          </Text>
+          <Text bold>{content.text}</Text>
         ) : (
           <Text>{content.text}</Text>
         )}
@@ -258,29 +253,6 @@ export const TableRenderer: React.FC<TableRendererProps> = ({
   };
 
   // 4. 渲染完整表格
-  // 如果表格过宽，降级为 key-value 格式
-  if (adjustedWidths.length === 0) {
-    return (
-      <Box flexDirection="column" marginY={1}>
-        {rows.map((row, rowIndex) => (
-          <Box key={rowIndex} flexDirection="column">
-            {headers.map((header, colIndex) => (
-              <Box key={colIndex} flexDirection="row">
-                <Text bold color={theme.text.link}>{header}: </Text>
-                <Text>{row[colIndex] || ""}</Text>
-              </Box>
-            ))}
-            {rowIndex < rows.length - 1 && (
-              <Box height={1}>
-                <Text dimColor>{"─".repeat(Math.min(terminalWidth - 2, 40))}</Text>
-              </Box>
-            )}
-          </Box>
-        ))}
-      </Box>
-    );
-  }
-
   return (
     <Box flexDirection="column" marginY={1}>
       {/* 顶部边框 */}
@@ -292,8 +264,13 @@ export const TableRenderer: React.FC<TableRendererProps> = ({
       {/* 表头分隔线 */}
       {renderBorder("middle")}
 
-      {/* 数据行 */}
-      {wrappedRows.map((row, index) => renderDataRow(row, index))}
+      {/* 数据行（行间有分隔线） */}
+      {wrappedRows.map((row, index) => (
+        <React.Fragment key={`row-${index}`}>
+          {renderDataRow(row, index)}
+          {index < wrappedRows.length - 1 && renderBorder("middle")}
+        </React.Fragment>
+      ))}
 
       {/* 底部边框 */}
       {renderBorder("bottom")}

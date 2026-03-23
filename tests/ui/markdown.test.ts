@@ -115,10 +115,10 @@ describe("renderMarkdown", () => {
       expect(stripAnsi(result.replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, ""))).toContain("点击这里");
     });
 
-    test("链接文本有蓝色下划线", () => {
+    test("链接文本有主题颜色下划线", () => {
       const result = renderMarkdown("[link](https://example.com)");
-      // blue: \x1b[34m, underline: \x1b[4m
-      expect(result).toMatch(/\x1b\[34m/);
+      // 使用主题 hex 颜色（38;2;r;g;b 格式）而非 chalk 默认蓝色
+      expect(result).toMatch(/\x1b\[38;2;\d+;\d+;\d+m/);
       expect(result).toMatch(/\x1b\[4m/);
     });
   });
