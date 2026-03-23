@@ -34,6 +34,8 @@ type VirtualizedListProps<T> = {
   initialScrollIndex?: number;
   initialScrollOffsetInIndex?: number;
   scrollbarThumbColor?: string;
+  /** Copy Mode：禁用 Ink 滚动，改用 marginTop 偏移，让终端原生选择文本 */
+  copyModeEnabled?: boolean;
 };
 
 export type VirtualizedListRef<T> = {
@@ -541,22 +543,27 @@ function VirtualizedList<T>(
     ],
   );
 
+  // Copy Mode：禁用 Ink 滚动管理，改用 marginTop 偏移
+  // 这样终端可以原生选中文本（Ink 的 overflowY="scroll" 会接管渲染区域导致无法选中）
+  const copyMode = props.copyModeEnabled ?? false;
+
   return (
     <Box
       ref={containerRefCallback}
-      overflowY="scroll"
+      overflowY={copyMode ? "hidden" : "scroll"}
       overflowX="hidden"
-      scrollTop={scrollTop}
+      scrollTop={copyMode ? 0 : scrollTop}
       scrollbarThumbColor={props.scrollbarThumbColor ?? theme.text.secondary}
       width="100%"
       height="100%"
       flexDirection="column"
-      paddingRight={1}
+      paddingRight={copyMode ? 0 : 1}
     >
       <Box
         flexShrink={0}
         width="100%"
         flexDirection="column"
+        marginTop={copyMode ? -actualScrollTop : 0}
       >
         <Box height={topSpacerHeight} flexShrink={0} />
         {renderedItems}

@@ -40,11 +40,15 @@ type VirtualizedListProps<T> = {
   keyExtractor: (item: T, index: number) => string;
   initialScrollIndex?: number;
   initialScrollOffsetInIndex?: number;
+  /** Copy Mode：禁用 Ink 滚动，允许终端原生文本选择 */
+  copyModeEnabled?: boolean;
 };
 
 interface ScrollableListProps<T> extends VirtualizedListProps<T> {
   hasFocus: boolean;
   width?: string | number;
+  /** Copy Mode：禁用 Ink 滚动，允许终端原生文本选择 */
+  copyModeEnabled?: boolean;
 }
 
 export type ScrollableListRef<T> = VirtualizedListRef<T>;

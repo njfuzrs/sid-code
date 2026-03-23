@@ -235,17 +235,7 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
     return false;
   });
 
-  // Copy Mode：禁用/恢复鼠标捕获，允许终端原生文本选择
-  useEffect(() => {
-    if (!state.useAlternateBuffer) return;
-    if (state.copyModeEnabled) {
-      // 禁用鼠标捕获，让终端处理文本选择
-      process.stdout.write("\x1b[?1000l\x1b[?1002l\x1b[?1006l");
-    } else {
-      // 恢复鼠标捕获
-      process.stdout.write("\x1b[?1000h\x1b[?1002h\x1b[?1006h");
-    }
-  }, [state.copyModeEnabled, state.useAlternateBuffer]);
+  // Copy Mode 的鼠标事件控制已移至 MouseProvider 统一管理（通过 copyModeEnabled prop）
 
   // 注意：滚动快捷键（PageUp/PageDown/Shift+↑↓/Home/End）和鼠标滚轮
   // 已由 ScrollableList + ScrollProvider 内部处理，无需在此重复注册
@@ -351,7 +341,7 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
         flexDirection="column"
         width={termWidth}
         height={rows}
-        paddingBottom={1}
+        paddingBottom={state.copyModeEnabled ? 0 : 1}
         flexShrink={0}
         flexGrow={0}
         overflow="hidden"
@@ -374,6 +364,7 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
               hasFocus={true}
               estimatedItemHeight={estimatedItemHeight}
               keyExtractor={keyExtractor}
+              copyModeEnabled={state.copyModeEnabled}
             />
           )}
         </Box>
@@ -483,10 +474,46 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
 
 /** 顶层 TUI 组件：包裹 Provider 层 */
 export function TUIApp(props: AppProps) {
+  // 跟踪 copyModeEnabled 状态，供 MouseProvider 使用
+  const [copyModeEnabled, setCopyModeEnabled] = useState(props.initialState.copyModeEnabled);
+
+  // 监听 bridge 变化，同步 copyModeEnabled
+  useEffect(() => {
+    const onChange = (newState: TUIState) => {
+      setCopyModeEnabled(newState.copyModeEnabled);
+    };
+    props.bridge.on("change", onChange);
+    return () => { props.bridge.off("change", onChange); };
+  }, [props.bridge]);
+
+  // 拖拽选择警告：提示用户按 Ctrl+S 进入 Copy Mode（防抖）
+  const selectionWarningTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastSelectionWarning = useRef(0);
+  const handleSelectionWarning = useCallback(() => {
+    const now = Date.now();
+    // 2 秒内不重复提示
+    if (now - lastSelectionWarning.current < 2000) return;
+    lastSelectionWarning.current = now;
+
+    props.bridge.update({
+      statusMessage: "按 Ctrl+S 进入 Copy Mode 以选择和复制文本",
+    });
+    // 清除之前的定时器
+    if (selectionWarningTimer.current) clearTimeout(selectionWarningTimer.current);
+    // 3 秒后自动清除提示
+    selectionWarningTimer.current = setTimeout(() => {
+      props.bridge.update({ statusMessage: "" });
+      selectionWarningTimer.current = null;
+    }, 3000);
+  }, [props.bridge]);
+
   return (
     <TerminalProvider>
       <KeypressProvider>
-        <MouseProvider>
+        <MouseProvider
+          copyModeEnabled={copyModeEnabled}
+          onSelectionWarning={handleSelectionWarning}
+        >
           <ScrollProvider>
             <TUIAppInner {...props} />
           </ScrollProvider>

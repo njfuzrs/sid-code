@@ -38,6 +38,8 @@ interface MainContentProps {
   estimatedItemHeight: (index: number) => number;
   /** key 提取器 */
   keyExtractor: (item: DisplayItem, index: number) => string;
+  /** Copy Mode：禁用 Ink 滚动，允许终端原生文本选择 */
+  copyModeEnabled?: boolean;
 }
 
 /** Static 模式下的单条消息渲染 */
@@ -61,6 +63,7 @@ export const MainContent = memo(function MainContent({
   hasFocus,
   estimatedItemHeight,
   keyExtractor,
+  copyModeEnabled,
 }: MainContentProps) {
 
   // ── Alternate Buffer 模式：ScrollableList ──
@@ -88,6 +91,7 @@ export const MainContent = memo(function MainContent({
         initialScrollIndex={SCROLL_TO_ITEM_END}
         initialScrollOffsetInIndex={SCROLL_TO_ITEM_END}
         hasFocus={hasFocus}
+        copyModeEnabled={copyModeEnabled}
       />
     );
   }

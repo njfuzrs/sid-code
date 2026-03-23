@@ -20,7 +20,6 @@ import {
   type MouseEventName,
   type MouseHandler,
 } from "../utils/mouse.ts";
-import { getLogger } from "../../debug/logger.ts";
 
 export type { MouseEvent, MouseEventName, MouseHandler };
 
@@ -64,13 +63,27 @@ export function useMouse(handler: MouseHandler, { isActive = true } = {}) {
 export function MouseProvider({
   children,
   mouseEventsEnabled = true,
+  copyModeEnabled = false,
+  onSelectionWarning,
 }: {
   children: React.ReactNode;
   mouseEventsEnabled?: boolean;
+  /** Copy Mode 下禁用鼠标捕获，让终端原生处理文本选择 */
+  copyModeEnabled?: boolean;
+  /** 当用户尝试拖拽选择文本时触发（提示按 Ctrl+S 进入 Copy Mode） */
+  onSelectionWarning?: () => void;
 }) {
+  // Copy Mode 覆盖：copyMode 启用时强制禁用鼠标事件
+  const effectiveMouseEnabled = mouseEventsEnabled && !copyModeEnabled;
   const { stdin } = useStdin();
   const subscribers = useRef<Set<MouseHandler>>(new Set()).current;
   const lastClickRef = useRef<{ time: number; col: number; row: number } | null>(null);
+  const onSelectionWarningRef = useRef(onSelectionWarning);
+
+  // 保持 ref 同步
+  useEffect(() => {
+    onSelectionWarningRef.current = onSelectionWarning;
+  }, [onSelectionWarning]);
 
   const subscribe = useCallback((handler: MouseHandler) => {
     subscribers.add(handler);
@@ -82,21 +95,37 @@ export function MouseProvider({
 
   // 启用/禁用鼠标事件
   useEffect(() => {
-    if (!mouseEventsEnabled) return;
+    if (!effectiveMouseEnabled) return;
     process.stdout.write(ENABLE_MOUSE + ENABLE_MOUSE_MOVE);
     return () => {
       process.stdout.write(DISABLE_MOUSE + DISABLE_MOUSE_MOVE);
     };
-  }, [mouseEventsEnabled]);
+  }, [effectiveMouseEnabled]);
 
   useEffect(() => {
-    if (!mouseEventsEnabled) return;
+    if (!effectiveMouseEnabled) return;
 
     let mouseBuffer = '';
 
     const broadcast = (event: MouseEvent) => {
+      let handled = false;
       for (const handler of subscribers) {
-        if (handler(event) === true) break;
+        if (handler(event) === true) {
+          handled = true;
+        }
+      }
+
+      // 检测拖拽选择：move 事件 + left button + 未被处理 → 提示用户按 Ctrl+S
+      if (
+        !handled &&
+        event.name === 'move' &&
+        event.col >= 0 &&
+        event.row >= 0 &&
+        event.button === 'left'
+      ) {
+        // 终端应用只在鼠标按下时接收 move 事件，说明用户在拖拽
+        // 但因为我们捕获了鼠标事件，终端无法原生选择文本
+        onSelectionWarningRef.current?.();
       }
 
       // 双击检测
@@ -155,7 +184,7 @@ export function MouseProvider({
     return () => {
       stdin.removeListener('data', handleData);
     };
-  }, [stdin, mouseEventsEnabled, subscribers]);
+  }, [stdin, effectiveMouseEnabled, subscribers]);
 
   const contextValue = useMemo(
     () => ({ subscribe, unsubscribe }),
