@@ -19,6 +19,7 @@ import { UserMessage } from "./messages/UserMessage.tsx";
 import { AssistantMessage } from "./messages/AssistantMessage.tsx";
 import { ToolGroupMessage, type ToolCallDisplay } from "./messages/ToolGroupMessage.tsx";
 import { getToolSummary, getResultSummary } from "../ui-utils.ts";
+import { DEFAULT_TERM_WIDTH } from "../markdown.ts";
 
 /** 分隔线 */
 function Separator({ width }: { width: number }) {
@@ -92,7 +93,7 @@ export const MessageItemRenderer = React.memo(function MessageItemRenderer({
   prevItem,
 }: MessageItemRendererProps) {
   const { stdout } = useStdout();
-  const termWidth = stdout.columns || 80;
+  const termWidth = stdout.columns || DEFAULT_TERM_WIDTH;
 
   // ── 系统消息 ──
   if (item.kind === "system") {

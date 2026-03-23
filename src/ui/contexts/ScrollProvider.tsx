@@ -87,7 +87,10 @@ export const ScrollProvider: React.FC<{ children: React.ReactNode }> = ({
   );
 
   const register = useCallback((entry: ScrollableEntry) => {
-    setScrollables((prev) => new Map(prev).set(entry.id, entry));
+    setScrollables((prev) => {
+      const next = new Map(prev).set(entry.id, entry);
+      return next;
+    });
   }, []);
 
   const unregister = useCallback((id: string) => {
@@ -142,6 +145,7 @@ export const ScrollProvider: React.FC<{ children: React.ReactNode }> = ({
       scrollablesRef.current,
     );
 
+
     for (const candidate of candidates) {
       const { scrollTop, scrollHeight, innerHeight } =
         candidate.getScrollState();
@@ -152,6 +156,7 @@ export const ScrollProvider: React.FC<{ children: React.ReactNode }> = ({
       const canScrollUp = effectiveScrollTop > 0.001;
       const canScrollDown =
         effectiveScrollTop < scrollHeight - innerHeight - 0.001;
+
 
       if (direction === "up" && canScrollUp) {
         pendingScrollsRef.current.set(candidate.id, pendingDelta + delta);
@@ -323,7 +328,7 @@ export const ScrollProvider: React.FC<{ children: React.ReactNode }> = ({
 
   // 注册鼠标事件处理
   useMouse(
-    useCallback((event: MouseEvent) => {
+    (event: MouseEvent) => {
       if (event.name === "scroll-up") {
         return handleScroll("up", event);
       } else if (event.name === "scroll-down") {
@@ -336,7 +341,7 @@ export const ScrollProvider: React.FC<{ children: React.ReactNode }> = ({
         return handleLeftRelease();
       }
       return false;
-    }, []),
+    },
     { isActive: true },
   );
 
@@ -378,17 +383,26 @@ export const useScrollable = (
     throw new Error("useScrollable 必须在 ScrollProvider 内使用");
   }
 
-  const [id] = useState(() => `scrollable-${nextId++}`);
+  const [id] = useState(() => {
+    const newId = `scrollable-${nextId++}`;
+    return newId;
+  });
+
+  // 使用 ref 存储 entry，避免依赖数组包含对象导致频繁重新注册
+  const entryRef = useRef(entry);
+  useEffect(() => {
+    entryRef.current = entry;
+  }, [entry]);
 
   useEffect(() => {
     if (isActive) {
-      context.register({ ...entry, id });
+      context.register({ ...entryRef.current, id });
       return () => {
         context.unregister(id);
       };
     }
     return;
-  }, [context, entry, id, isActive]);
+  }, [context, id, isActive]);
 };
 
 /**

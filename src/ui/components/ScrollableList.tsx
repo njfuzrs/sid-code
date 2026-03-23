@@ -132,6 +132,7 @@ function ScrollableList<T>(
   const virtualizedListRef = useRef<VirtualizedListRef<T>>(null);
   const containerRef = useRef<DOMElement>(null);
 
+
   useImperativeHandle(
     ref,
     () => ({
@@ -316,14 +317,16 @@ function ScrollableList<T>(
   const hasFocusCallback = useCallback(() => hasFocus, [hasFocus]);
 
   const scrollableEntry = useMemo<ScrollableEntryWithoutId>(
-    () => ({
-      ref: containerRef as React.RefObject<DOMElement>,
-      getScrollState,
-      scrollBy: scrollByWithAnimation,
-      scrollTo: smoothScrollTo,
-      hasFocus: hasFocusCallback,
-      flashScrollbar,
-    }),
+    () => {
+      return {
+        ref: containerRef as React.RefObject<DOMElement>,
+        getScrollState,
+        scrollBy: scrollByWithAnimation,
+        scrollTo: smoothScrollTo,
+        hasFocus: hasFocusCallback,
+        flashScrollbar,
+      };
+    },
     [
       getScrollState,
       hasFocusCallback,

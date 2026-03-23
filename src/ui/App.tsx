@@ -26,6 +26,7 @@ import type { StateBridge } from "./state-bridge.ts";
 import type { Message, Usage } from "../llm/types.ts";
 import { getLogger } from "../debug/logger.ts";
 import { theme } from "./semantic-colors.ts";
+import { DEFAULT_TERM_WIDTH } from "./markdown.ts";
 
 /** 占位消息文本常量 */
 const PLACEHOLDER_TEXT = "[系统] 自动插入占位消息以保持角色交替";
@@ -74,10 +75,6 @@ export interface ShellConfirmRequestInfo {
 export interface TUIState {
   messages: Message[];
   displayItems: DisplayItem[];
-  /** 已确认的历史消息（Static 模式用：已完成的轮次） */
-  confirmedHistoryItems: DisplayItem[];
-  /** 当前轮次进行中的消息（Static 模式用：流式输出、工具执行中） */
-  pendingHistoryItems: DisplayItem[];
   isLoading: boolean;
   toolName: string | null;
   toolInput: unknown;
@@ -105,8 +102,6 @@ export interface TUIState {
   scrollPercent?: number;
   /** 是否正在退出（切换到退出回显模式） */
   isQuitting: boolean;
-  /** 是否使用 alternate buffer 模式（默认 true） */
-  useAlternateBuffer: boolean;
   /** Copy Mode：禁用鼠标事件，允许终端原生文本选择 */
   copyModeEnabled: boolean;
   /** 所有已注册命令（补全用） */
@@ -181,7 +176,7 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
   const { getScrollState } = useScrollState();
 
   useEffect(() => {
-    log.info("UI:APP", `TUIApp 组件已挂载（${state.useAlternateBuffer ? "Alternate Buffer" : "Static"} 模式）`);
+    log.info("UI:APP", "TUIApp 组件已挂载（Alternate Buffer 模式）");
     return () => { log.info("UI:APP", "TUIApp 组件已卸载"); };
   }, []);
 
@@ -267,7 +262,7 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
   }, [callbacks, exit]);
 
   const isEmpty = state.displayItems.length === 0 && !state.isStreaming;
-  const termWidth = stdout.columns || 80;
+  const termWidth = stdout.columns || DEFAULT_TERM_WIDTH;
   const rows = stdout.rows || 24;
 
   // 构建包含流式内容的完整数据数组（Alternate Buffer 模式用）
@@ -321,13 +316,12 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
     return Math.max(1, totalLines);
   }, [listData, termWidth, state.streamingText]);
 
-  // 获取滚动百分比（仅 alternate buffer 模式有意义）
-  const scrollState = state.useAlternateBuffer ? getScrollState() : null;
+  // 获取滚动百分比
+  const scrollState = getScrollState();
   const scrollPercent = scrollState ? scrollState.percent : undefined;
 
   // 退出回显模式：渲染完整对话历史到主缓冲区
-  // 仅 alternate buffer 模式需要（Static 模式历史已在主缓冲区）
-  if (state.isQuitting && state.useAlternateBuffer) {
+  if (state.isQuitting) {
     return (
       <AlternateBufferQuittingDisplay
         displayItems={state.displayItems}
@@ -336,45 +330,36 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
     );
   }
 
-  // Static 模式退出：直接退出即可，历史已在主缓冲区
-  if (state.isQuitting && !state.useAlternateBuffer) {
-    return null;
-  }
-
-  // ── Alternate Buffer 模式：固定高度布局 ──
-  if (state.useAlternateBuffer) {
-    return (
-      <Box
-        flexDirection="column"
-        width={termWidth}
-        height={rows}
-        paddingBottom={state.copyModeEnabled ? 0 : 1}
-        flexShrink={0}
-        flexGrow={0}
-        overflow="hidden"
-      >
-        {/* 消息区域 */}
-        <Box flexGrow={1}>
-          {isEmpty ? (
-            <Box flexDirection="column" justifyContent="center" alignItems="center" width={termWidth}>
-              <EmptyLogo termWidth={termWidth} />
-            </Box>
-          ) : (
-            <MainContent
-              useAlternateBuffer={true}
-              confirmedItems={state.confirmedHistoryItems}
-              pendingItems={state.pendingHistoryItems}
-              listData={listData}
-              streamingText={state.streamingText}
-              isStreaming={state.isStreaming}
-              termWidth={termWidth}
-              hasFocus={true}
-              estimatedItemHeight={estimatedItemHeight}
-              keyExtractor={keyExtractor}
-              copyModeEnabled={state.copyModeEnabled}
-            />
-          )}
-        </Box>
+  // ── 固定高度布局 ──
+  return (
+    <Box
+      flexDirection="column"
+      width={termWidth}
+      height={rows}
+      paddingBottom={state.copyModeEnabled ? 0 : 1}
+      flexShrink={0}
+      flexGrow={0}
+      overflow="hidden"
+    >
+      {/* 消息区域 */}
+      <Box flexGrow={1}>
+        {isEmpty ? (
+          <Box flexDirection="column" justifyContent="center" alignItems="center" width={termWidth}>
+            <EmptyLogo termWidth={termWidth} />
+          </Box>
+        ) : (
+          <MainContent
+            listData={listData}
+            streamingText={state.streamingText}
+            isStreaming={state.isStreaming}
+            termWidth={termWidth}
+            hasFocus={true}
+            estimatedItemHeight={estimatedItemHeight}
+            keyExtractor={keyExtractor}
+            copyModeEnabled={state.copyModeEnabled}
+          />
+        )}
+      </Box>
 
         {/* 底部固定区域 */}
         <Box flexDirection="column" flexShrink={0}>
@@ -418,66 +403,6 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
     );
   }
 
-  // ── Static 模式：无固定高度，Ink 自然流式输出 ──
-  return (
-    <Box flexDirection="column">
-      {/* 消息区域：Static 模式 */}
-      {isEmpty ? (
-        <EmptyLogo termWidth={termWidth} />
-      ) : (
-        <MainContent
-          useAlternateBuffer={false}
-          confirmedItems={state.confirmedHistoryItems}
-          pendingItems={state.pendingHistoryItems}
-          listData={listData}
-          streamingText={state.streamingText}
-          isStreaming={state.isStreaming}
-          termWidth={termWidth}
-          hasFocus={false}
-          estimatedItemHeight={estimatedItemHeight}
-          keyExtractor={keyExtractor}
-        />
-      )}
-
-      {/* 底部区域 */}
-      <Box flexDirection="column">
-        {state.statusMessage ? (
-          <Box paddingX={1}>
-            <Text color={theme.status.warning}>{state.statusMessage}</Text>
-          </Box>
-        ) : null}
-
-        <ToolStatus
-          toolName={state.toolName}
-          isExecuting={state.isToolExecuting}
-          toolInput={state.toolInput}
-          lastResult={state.lastToolResult}
-        />
-
-        {(state.permissionRequest || state.shellConfirmRequest) ? (
-          <DialogRenderer
-            permissionRequest={state.permissionRequest}
-            shellConfirmRequest={state.shellConfirmRequest ?? null}
-          />
-        ) : (
-          <InputArea onSubmit={handleSubmit} isLoading={state.isLoading} commands={state.commands} cwd={state.cwd} />
-        )}
-
-        <StatusBar
-          permissionMode={state.permissionMode}
-          gitBranch={state.gitBranch}
-          debug={state.debug}
-          usage={state.usage}
-          costUSD={state.costUSD}
-          costLimit={state.costLimit}
-          contextPercent={state.contextPercent}
-          model={state.model}
-          scrollPercent={scrollPercent}
-        />
-      </Box>
-    </Box>
-  );
-}
 
 /** 顶层 TUI 组件：包裹 Provider 层 */
 export function TUIApp(props: AppProps) {

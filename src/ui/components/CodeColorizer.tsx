@@ -92,11 +92,9 @@ function renderHastNode(
   inheritedColor?: string,
 ): React.ReactNode {
   if (node.type === "text") {
-    const color = inheritedColor || undefined;
-    if (color) {
-      return <Text key={key} color={color}>{(node as HastText).value}</Text>;
-    }
-    return (node as HastText).value;
+    // 关键修复：始终用 <Text> 包裹，确保颜色不泄漏到外层
+    const color = inheritedColor || theme.text.primary;
+    return <Text key={key} color={color}>{(node as HastText).value}</Text>;
   }
 
   if (node.type === "element") {

@@ -22,6 +22,7 @@ import { useTextBuffer, getVisualLines, getCursorVisualPosition } from "./text-b
 import { useSlashCompletion, type CommandInfo } from "./hooks/useSlashCompletion.ts";
 import { useAtCompletion } from "./hooks/useAtCompletion.ts";
 import { SuggestionsDisplay, type Suggestion } from "./components/SuggestionsDisplay.tsx";
+import { DEFAULT_TERM_WIDTH } from "./markdown.ts";
 
 interface InputAreaProps {
   onSubmit: (text: string) => void;
@@ -62,7 +63,7 @@ export function InputArea({ onSubmit, isLoading, commands, cwd }: InputAreaProps
   const log = getLogger();
   const prevLoadingRef = useRef(isLoading);
   const { stdout } = useStdout();
-  const termWidth = stdout.columns || 80;
+  const termWidth = stdout.columns || DEFAULT_TERM_WIDTH;
   const availableWidth = Math.max(10, termWidth - 2); // paddingX=1 左右各 1
 
   // TextBuffer

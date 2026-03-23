@@ -13,6 +13,7 @@ import { Box, Text, useStdout } from "ink";
 import type { DisplayItem } from "../App.tsx";
 import { QuittingDisplay } from "./QuittingDisplay.tsx";
 import { theme } from "../semantic-colors.ts";
+import { DEFAULT_TERM_WIDTH } from "../markdown.ts";
 
 interface AlternateBufferQuittingDisplayProps {
   /** 完整的对话历史 */
@@ -27,7 +28,7 @@ export const AlternateBufferQuittingDisplay = React.memo(
     streamingText,
   }: AlternateBufferQuittingDisplayProps) {
     const { stdout } = useStdout();
-    const termWidth = stdout.columns || 80;
+    const termWidth = stdout.columns || DEFAULT_TERM_WIDTH;
 
     // 简单的 Header
     const version = require("../../../package.json").version;

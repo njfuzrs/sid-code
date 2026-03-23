@@ -11,6 +11,7 @@ import React from "react";
 import { Box, useStdout } from "ink";
 import type { DisplayItem } from "../App.tsx";
 import { MessageItemRenderer } from "./MessageItemRenderer.tsx";
+import { DEFAULT_TERM_WIDTH } from "../markdown.ts";
 
 interface QuittingDisplayProps {
   /** 要渲染的所有 DisplayItem */
@@ -21,7 +22,7 @@ export const QuittingDisplay = React.memo(function QuittingDisplay({
   items,
 }: QuittingDisplayProps) {
   const { stdout } = useStdout();
-  const termWidth = stdout.columns || 80;
+  const termWidth = stdout.columns || DEFAULT_TERM_WIDTH;
 
   if (items.length === 0) {
     return null;

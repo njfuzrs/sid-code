@@ -54,9 +54,6 @@ function parseCLIArgs(): Partial<Config> & { prompt?: string } {
       "debug-level": { type: "string" },
       "debug-log-file": { type: "string" },
 
-      // UI
-      "alternate-buffer": { type: "boolean" },
-
       // 帮助
       help: { type: "boolean", short: "h" },
       version: { type: "boolean", short: "v" },
@@ -100,7 +97,6 @@ function parseCLIArgs(): Partial<Config> & { prompt?: string } {
     debug: values.debug,
     debugLevel: values["debug-level"],
     debugLogFile: values["debug-log-file"],
-    useAlternateBuffer: values["alternate-buffer"] ? true : undefined,
     "list-sessions": values["list-sessions"],
     "browse-sessions": values["browse-sessions"],
     "delete-session": values["delete-session"],

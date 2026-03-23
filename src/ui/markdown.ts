@@ -20,8 +20,9 @@ import stringWidth from "string-width";
 import { getLogger } from "../debug/logger.ts";
 
 // ── 常量 ────────────────────────────────────────────────────────
-const DEFAULT_TERM_WIDTH = 80;
-const MAX_RENDER_WIDTH = 120;
+// 终端宽度 fallback（仅在 process.stdout.columns 不可用时使用）
+export const DEFAULT_TERM_WIDTH = 80;
+// 移除 MAX_RENDER_WIDTH 硬编码限制，改为动态计算
 const TAB_SIZE = 2;
 const TAB_INDENT = " ".repeat(TAB_SIZE);
 const MAX_CACHE_SIZE = 100;
@@ -116,13 +117,15 @@ function visibleWidth(s: string): number {
 }
 
 // ── ANSI 转义码正则 ──────────────────────────────────────────────
-const ANSI_RE = /\x1b\[[\d;]*m/g;
+// 支持 SGR 转义码（\x1b[...m）和 OSC 8 超链接（\x1b]8;;...\x1b\\）
+const ANSI_RE = /\x1b\[[\d;]*m|\x1b\]8;;[^\x1b]*\x1b\\/g;
 
 /**
  * CJK 感知的文本换行
  * - 按 \n 分割后逐字符遍历，用 stringWidth 累计宽度
  * - CJK 字符可在任意字符边界换行
  * - 正确跳过 ANSI 转义码（不计入宽度）
+ * - 保护 OSC 8 超链接不被断开
  */
 function wrapText(text: string, maxWidth: number): string[] {
   if (maxWidth <= 0) return [text];
@@ -151,12 +154,54 @@ function wrapText(text: string, maxWidth: number): string[] {
       if (line) result.push(line);
     } else {
       // 慢速路径：需要跳过 ANSI 转义码
-      // TODO: 断行时未继承 ANSI 样式状态，跨行样式会丢失（当前场景影响极小，cell 内容通常不跨行）
+      // 关键修复：检测 OSC 8 超链接，作为整体处理，不允许断开
       let line = "";
       let lineWidth = 0;
       let i = 0;
+
       while (i < paragraph.length) {
-        // 尝试匹配 ANSI 转义码
+        // 检查是否是 OSC 8 超链接开始
+        if (paragraph.slice(i, i + 3) === '\x1b]8') {
+          // 查找完整的 OSC 8 超链接（从开始到结束）
+          const linkStart = i;
+          // 跳过 OSC 8 开始标记：\x1b]8;;....\x1b\\
+          const startEnd = paragraph.indexOf('\x1b\\', i);
+          if (startEnd === -1) {
+            // 格式错误，跳过
+            i++;
+            continue;
+          }
+
+          // 跳过开始标记
+          i = startEnd + 2;
+
+          // 查找链接文本和结束标记
+          const linkEnd = paragraph.indexOf('\x1b]8;;\x1b\\', i);
+          if (linkEnd === -1) {
+            // 格式错误，跳过
+            continue;
+          }
+
+          // 提取完整的超链接（包括开始标记、文本、结束标记）
+          const fullLink = paragraph.slice(linkStart, linkEnd + 7); // 7 = '\x1b]8;;\x1b\\'.length
+          const linkText = paragraph.slice(i, linkEnd);
+          const linkWidth = stringWidth(linkText);
+
+          // 检查是否需要换行
+          if (lineWidth + linkWidth > maxWidth && lineWidth > 0) {
+            result.push(line);
+            line = fullLink;
+            lineWidth = linkWidth;
+          } else {
+            line += fullLink;
+            lineWidth += linkWidth;
+          }
+
+          i = linkEnd + 7;
+          continue;
+        }
+
+        // 尝试匹配其他 ANSI 转义码
         ANSI_RE.lastIndex = i;
         const m = ANSI_RE.exec(paragraph);
         if (m && m.index === i) {
@@ -165,6 +210,7 @@ function wrapText(text: string, maxWidth: number): string[] {
           i += m[0].length;
           continue;
         }
+
         // 普通字符（可能是多字节）
         const cp = paragraph.codePointAt(i)!;
         const ch = String.fromCodePoint(cp);
@@ -205,13 +251,15 @@ function contentRows(cells: string[][], colWidths: number[], isBold: boolean): s
   const maxLines = Math.max(...cells.map(c => c.length), 1);
   const lines: string[] = [];
   for (let l = 0; l < maxLines; l++) {
-    let row = "│";
+    const cellParts: string[] = [];
     for (let c = 0; c < colWidths.length; c++) {
       const text = cells[c]?.[l] || "";
       const display = isBold ? chalk.bold(text) : text;
-      row += " " + padRight(display, colWidths[c]) + " │";
+      // 关键修复：先计算 padding，再拼接，确保右侧边框对齐
+      const padded = padRight(display, colWidths[c]);
+      cellParts.push(` ${padded} `);
     }
-    lines.push(row);
+    lines.push("│" + cellParts.join("│") + "│");
   }
   return lines;
 }
@@ -378,7 +426,18 @@ function formatOrderedPrefix(num: number, depth: number): string {
 /** 渲染 OSC 8 终端超链接 */
 function renderLink(label: string, href: string): string {
   const styledLabel = chalk.blue.underline(label);
-  return `\x1b]8;;${href}\x1b\\${styledLabel}\x1b]8;;\x1b\\`;
+
+  // 关键修复：在非 TTY 环境下禁用 OSC 8 超链接，只保留颜色和下划线
+  // 避免在表格等场景中显示裸露的转义码
+  const isTTY = process.stdout.isTTY;
+
+  if (isTTY) {
+    // TTY 环境：使用 OSC 8 超链接
+    return `\x1b]8;;${href}\x1b\\${styledLabel}\x1b]8;;\x1b\\`;
+  } else {
+    // 非 TTY 环境：只使用颜色和下划线，不使用 OSC 8
+    return styledLabel;
+  }
 }
 
 // ── 内联 token 递归渲染 ─────────────────────────────────────────
@@ -551,7 +610,12 @@ let lastWidth = 0;
 export function renderMarkdown(text: string, maxWidth?: number): string {
   // 终端宽度变化时清空缓存
   const w = getTermWidth();
-  const effectiveWidth = Math.min(maxWidth ?? w, MAX_RENDER_WIDTH, w);
+
+  // 关键修复：完全移除硬编码限制，使用动态计算
+  // 当 maxWidth 明确指定时，直接使用 maxWidth
+  // 否则使用终端实际宽度
+  const effectiveWidth = maxWidth ?? w;
+
   if (w !== lastWidth) {
     renderCache.clear();
     lastWidth = w;
@@ -741,7 +805,8 @@ function renderTokensToReact(tokens: any[], maxWidth: number): React.ReactNode[]
  */
 export function renderMarkdownToReact(text: string, maxWidth?: number): React.ReactNode {
   const w = getTermWidth();
-  const effectiveWidth = Math.min(maxWidth ?? w, MAX_RENDER_WIDTH, w);
+  // 关键修复：完全移除硬编码限制，使用动态计算
+  const effectiveWidth = maxWidth ?? w;
 
   // 终端宽度变化时清空缓存
   if (w !== lastReactWidth) {

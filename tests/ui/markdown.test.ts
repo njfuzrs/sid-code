@@ -102,10 +102,16 @@ describe("renderMarkdown", () => {
   // ── 链接 ──────────────────────────────────────────────────────
 
   describe("链接", () => {
-    test("含 OSC 8 转义序列", () => {
+    test("含 OSC 8 转义序列（仅在 TTY 环境）", () => {
       const result = renderMarkdown("[点击这里](https://example.com)");
-      expect(result).toContain("\x1b]8;;");
-      expect(result).toContain("https://example.com");
+
+      // 在非 TTY 环境下，OSC 8 会被禁用，只保留颜色和下划线
+      if (process.stdout.isTTY) {
+        expect(result).toContain("\x1b]8;;");
+        expect(result).toContain("https://example.com");
+      }
+
+      // 无论是否 TTY，都应该包含链接文本
       expect(stripAnsi(result.replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, ""))).toContain("点击这里");
     });
 

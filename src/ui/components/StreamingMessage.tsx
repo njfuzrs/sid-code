@@ -24,7 +24,9 @@ export const StreamingMessage = React.memo(function StreamingMessage({
 }: StreamingMessageProps) {
   if (!fullText) return null;
 
-  const effectiveWidth = (maxWidth || 80) - ASSISTANT_PADDING_RIGHT;
+  // 关键修复：移除硬编码的 80，使用动态计算
+  // 如果 maxWidth 未提供，renderMarkdownToReact 会自动使用 getTermWidth()
+  const effectiveWidth = maxWidth ? maxWidth - ASSISTANT_PADDING_RIGHT : undefined;
 
   // 直接渲染完整文本，不做 completed/pending 拆分
   const rendered = useMemo(
