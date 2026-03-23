@@ -15,8 +15,8 @@ import type {
   NewHooksConfig,
   ConfigSource,
   AggregatedHookResult,
-  HookRegistryEntry,
 } from "./types.ts";
+import type { HookRegistryEntry } from "./registry.ts";
 import { getLogger } from "../debug/logger.ts";
 
 export class HookSystem {
@@ -121,6 +121,21 @@ export class HookSystem {
 
   async fireAfterAgentEvent(prompt: string, promptResponse: string): Promise<AggregatedHookResult> {
     return this.eventHandler.fireAfterAgentEvent(prompt, promptResponse);
+  }
+
+  async fireBeforeModelEvent(llmRequest: {
+    model: string;
+    messages: Array<{ role: string; content: string }>;
+    config?: Record<string, unknown>;
+  }): Promise<AggregatedHookResult> {
+    return this.eventHandler.fireBeforeModelEvent(llmRequest);
+  }
+
+  async fireAfterModelEvent(
+    llmRequest: { model: string; messages: Array<{ role: string; content: string }> },
+    llmResponse: { text?: string; usage?: { inputTokens?: number; outputTokens?: number } },
+  ): Promise<AggregatedHookResult> {
+    return this.eventHandler.fireAfterModelEvent(llmRequest, llmResponse);
   }
 
   async fireSessionStartEvent(source: "startup" | "resume" | "clear" = "startup"): Promise<AggregatedHookResult> {
