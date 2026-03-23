@@ -2,7 +2,7 @@
  * 对话框管理器
  *
  * 权限确认对话框注册 Critical 优先级键盘处理器。
- * 支持：权限确认对话框、Shell 命令确认对话框。
+ * 支持：权限确认对话框、Shell 命令确认对话框、设置对话框、模型对话框、主题对话框。
  */
 
 import React, { useRef } from "react";
@@ -11,6 +11,9 @@ import { useKeypress, KeypressPriority } from "../contexts/KeypressContext.tsx";
 import type { PermissionRequestInfo, ShellConfirmRequestInfo } from "../App.tsx";
 import { getToolSummary } from "../ui-utils.ts";
 import { theme } from "../semantic-colors.ts";
+import { SettingsDialog } from "./SettingsDialog.tsx";
+import { ModelDialog } from "./ModelDialog.tsx";
+import { ThemeDialog } from "./ThemeDialog.tsx";
 
 /** 权限确认对话框 */
 function PermissionDialog({ request }: { request: PermissionRequestInfo }) {

@@ -33,6 +33,7 @@ interface InputAreaProps {
 
 const PLACEHOLDER = "输入消息或 /help 查看命令...";
 const PROMPT = "> ";
+const SHELL_PROMPT = "! ";
 /** InputArea 最大可见行数（超过时 viewport 滚动） */
 const MAX_INPUT_LINES = 8;
 
@@ -65,6 +66,9 @@ export function InputArea({ onSubmit, isLoading, commands, cwd }: InputAreaProps
   const { stdout } = useStdout();
   const termWidth = stdout.columns || DEFAULT_TERM_WIDTH;
   const availableWidth = Math.max(10, termWidth - 2); // paddingX=1 左右各 1
+
+  // Shell 模式状态（! 前缀直接执行 shell 命令）
+  const [shellModeActive, setShellModeActive] = useState(false);
 
   // TextBuffer
   const tb = useTextBuffer({
@@ -166,16 +170,43 @@ export function InputArea({ onSubmit, isLoading, commands, cwd }: InputAreaProps
       return;
     }
 
+    // Shell 模式：! 前缀直接执行 shell 命令
+    if (shellModeActive && text.startsWith("!")) {
+      const shellCmd = text.slice(1).trim();
+      if (shellCmd) {
+        log.info("UI:INPUT", `Shell 模式执行: "${shellCmd}"`);
+        onSubmit(`/bash ${shellCmd}`);
+      }
+      setShellModeActive(false);
+      lastSubmittedRef.current = text;
+      setTimeout(() => { lastSubmittedRef.current = ""; }, 1000);
+      return;
+    }
+
     log.info("UI:INPUT", `提交输入: "${text.slice(0, 100)}"${text.length > 100 ? "..." : ""}`);
     lastSubmittedRef.current = text;
     onSubmit(text);
 
     setTimeout(() => { lastSubmittedRef.current = ""; }, 1000);
-  }, [tb, onSubmit]);
+  }, [tb, onSubmit, shellModeActive]);
 
   // ── 核心键盘处理 ──────────────────────────────────────────────────
   useKeypress(KeypressPriority.Normal, (key) => {
     if (isLoading) return false;
+
+    // Shell 模式切换：! 在行首时进入 Shell 模式
+    if (key.insertable && key.sequence === "!" && tb.isEmpty()) {
+      setShellModeActive(true);
+      tb.insert("!");
+      return true;
+    }
+
+    // 退出 Shell 模式：删除 ! 后退出
+    if (shellModeActive && key.name === "backspace" && tb.state.lines[0] === "!") {
+      tb.deleteBackward();
+      setShellModeActive(false);
+      return true;
+    }
 
     // ── 粘贴事件 ──
     if (key.name === "paste") {
@@ -276,14 +307,17 @@ export function InputArea({ onSubmit, isLoading, commands, cwd }: InputAreaProps
   const isEmpty = tb.isEmpty();
 
   if (isEmpty) {
+    const currentPrompt = shellModeActive ? SHELL_PROMPT : PROMPT;
+    const currentPlaceholder = shellModeActive ? "输入 shell 命令..." : PLACEHOLDER;
+
     return (
       <Box flexDirection="column">
         <HorizontalRule color={theme.ui.active} width={termWidth} />
         <Box paddingX={1}>
           <Text>
-            <Text color={theme.ui.active} bold>{PROMPT}</Text>
+            <Text color={theme.ui.active} bold>{currentPrompt}</Text>
             <Text inverse> </Text>
-            <Text dimColor>{PLACEHOLDER}</Text>
+            <Text dimColor>{currentPlaceholder}</Text>
           </Text>
         </Box>
         <HorizontalRule color={theme.ui.active} width={termWidth} />
@@ -292,9 +326,10 @@ export function InputArea({ onSubmit, isLoading, commands, cwd }: InputAreaProps
   }
 
   // 构建带 PROMPT 前缀的显示行
-  // 第一逻辑行前面加 "> "，后续逻辑行前面加 "  "（对齐缩进）
+  // 第一逻辑行前面加 "> " 或 "! "（Shell 模式），后续逻辑行前面加 "  "（对齐缩进）
+  const currentPrompt = shellModeActive ? SHELL_PROMPT : PROMPT;
   const displayLines: string[] = tb.state.lines.map((line, i) =>
-    i === 0 ? PROMPT + line : "  " + line,
+    i === 0 ? currentPrompt + line : "  " + line,
   );
 
   // 计算 visual 行

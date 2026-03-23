@@ -19,10 +19,13 @@ import { ScrollProvider, useScrollState } from "./contexts/ScrollProvider.tsx";
 import { TerminalProvider } from "./contexts/TerminalContext.tsx";
 import { MouseProvider, enableMouseEvents, disableMouseEvents } from "./contexts/MouseContext.tsx";
 import { OverflowProvider } from "./contexts/OverflowContext.tsx";
+import { UIStateProvider, useUIActions } from "./contexts/UIStateContext.tsx";
 import { DialogRenderer } from "./components/DialogManager.tsx";
 import { MainContent } from "./components/MainContent.tsx";
 import { AlternateBufferQuittingDisplay } from "./components/AlternateBufferQuittingDisplay.tsx";
 import { CopyModeWarning } from "./components/CopyModeWarning.tsx";
+import { Notifications } from "./components/Notifications.tsx";
+import { ToastDisplay, shouldShowToast } from "./components/ToastDisplay.tsx";
 import type { StateBridge } from "./state-bridge.ts";
 import type { Message, Usage } from "../llm/types.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -175,6 +178,7 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
   const isSubmittingRef = useRef(false);
   const log = getLogger();
   const { getScrollState } = useScrollState();
+  const { toggleRenderMarkdown, setConstrainHeight, setShowIsExpandableHint } = useUIActions();
 
   useEffect(() => {
     log.info("UI:APP", "TUIApp 组件已挂载（Alternate Buffer 模式）");
@@ -236,6 +240,29 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
         // 不消费按键，让后续处理器处理
         return false;
       }
+    }
+    return false;
+  });
+
+  // Alt+M 切换 Markdown 渲染（参考 gemini-cli）
+  useKeypress(KeypressPriority.High, (key: Key) => {
+    if (key.alt && key.name === "m") {
+      log.info("UI:APP", "切换 Markdown 渲染模式");
+      toggleRenderMarkdown();
+      return true;
+    }
+    return false;
+  });
+
+  // Ctrl+O 切换高度限制（显示更多/折叠）
+  useKeypress(KeypressPriority.High, (key: Key) => {
+    if (key.ctrl && key.name === "o") {
+      log.info("UI:APP", "切换高度限制");
+      setConstrainHeight((prev: boolean) => !prev);
+      setShowIsExpandableHint(true);
+      // 3 秒后自动隐藏提示
+      setTimeout(() => setShowIsExpandableHint(false), 3000);
+      return true;
     }
     return false;
   });
@@ -366,6 +393,12 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
         <Box flexDirection="column" flexShrink={0}>
           <CopyModeWarning enabled={state.copyModeEnabled} />
 
+          {/* 通知系统 */}
+          <Notifications />
+
+          {/* Toast 提示 */}
+          <ToastDisplay />
+
           {state.statusMessage ? (
             <Box paddingX={1}>
               <Text color={theme.status.warning}>{state.statusMessage}</Text>
@@ -434,7 +467,9 @@ export function TUIApp(props: AppProps) {
         <MouseProvider onSelectionWarning={handleSelectionWarning}>
           <ScrollProvider>
             <OverflowProvider>
-              <TUIAppInner {...props} />
+              <UIStateProvider>
+                <TUIAppInner {...props} />
+              </UIStateProvider>
             </OverflowProvider>
           </ScrollProvider>
         </MouseProvider>

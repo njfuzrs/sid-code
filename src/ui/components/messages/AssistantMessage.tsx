@@ -9,6 +9,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import { MarkdownDisplay } from "../MarkdownDisplay.tsx";
 import { theme } from "../../semantic-colors.ts";
+import { useUIState } from "../../contexts/UIStateContext.tsx";
 
 interface AssistantMessageProps {
   text: string;
@@ -23,6 +24,7 @@ export const AssistantMessage: React.FC<AssistantMessageProps> = ({
   isPending = false,
   availableTerminalHeight,
 }) => {
+  const { renderMarkdown } = useUIState();
   const prefix = "✦ ";
   const prefixWidth = prefix.length;
 
@@ -41,7 +43,7 @@ export const AssistantMessage: React.FC<AssistantMessageProps> = ({
               : Math.max(availableTerminalHeight - 1, 1)
           }
           terminalWidth={Math.max(width - prefixWidth, 0)}
-          renderMarkdown={true}
+          renderMarkdown={renderMarkdown}
         />
       </Box>
     </Box>

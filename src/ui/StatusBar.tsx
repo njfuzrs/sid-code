@@ -7,6 +7,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import type { Usage } from "../llm/types.ts";
 import { theme } from "./semantic-colors.ts";
+import { useUIState } from "./contexts/UIStateContext.tsx";
 
 interface StatusBarProps {
   permissionMode: string;
@@ -23,6 +24,7 @@ interface StatusBarProps {
 
 export const StatusBar = React.memo(function StatusBar(props: StatusBarProps) {
   const { permissionMode, gitBranch, debug, usage, costUSD, costLimit, contextPercent, model, scrollPercent } = props;
+  const { renderMarkdown } = useUIState();
 
   const permColor = (() => {
     switch (permissionMode) {
@@ -54,6 +56,7 @@ export const StatusBar = React.memo(function StatusBar(props: StatusBarProps) {
         <Text color={permColor}>{permissionMode}</Text>
         {gitBranch ? <><Text dimColor> | </Text><Text color={theme.ui.active}>{gitBranch}</Text></> : null}
         {debug ? <><Text dimColor> | </Text><Text color={theme.status.warning}>DEBUG</Text></> : null}
+        {!renderMarkdown ? <><Text dimColor> | </Text><Text color={theme.status.warning}>RAW</Text></> : null}
         <Text dimColor> | </Text>
         <Text dimColor>{usage.inputTokens}↓ {usage.outputTokens}↑</Text>
         <Text dimColor> | </Text>
@@ -62,7 +65,7 @@ export const StatusBar = React.memo(function StatusBar(props: StatusBarProps) {
         {showScroll ? <><Text dimColor> | </Text><Text color={theme.status.warning}>↑ {scrollPercent}%</Text></> : null}
       </Text>
       <Text dimColor wrap="truncate">
-        {model} | Ctrl+C 退出
+        {model} | Alt+M 切换渲染 | Ctrl+C 退出
       </Text>
     </Box>
   );
