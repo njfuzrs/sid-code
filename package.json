@@ -11,6 +11,7 @@
     "lint": "echo 'TODO: add linter'"
   },
   "dependencies": {
+    "@alcalzone/ansi-tokenize": "^0.3.0",
     "@anthropic-ai/sdk": "^0.79.0",
     "@inkjs/ui": "^2.0.0",
     "cli-truncate": "^5.2.0",

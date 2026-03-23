@@ -656,6 +656,7 @@ import React from "react";
 import { Text, Box } from "ink";
 import { colorizeCode } from "./components/CodeColorizer.tsx";
 import { theme } from "./semantic-colors.ts";
+import { TableRenderer } from "./components/TableRenderer.tsx";
 
 /**
  * 将包含 \n 的多行字符串拆成 <Box flexDirection="column"> + 每行一个 <Text>。
@@ -779,8 +780,23 @@ function renderTokensToReact(tokens: any[], maxWidth: number): React.ReactNode[]
         break;
       }
       case "table": {
-        const tableText = renderTable(token, maxWidth);
-        blocks.push(multilineText(tableText, i));
+        // 使用新的 TableRenderer 组件
+        const headers: string[] = token.header.map((cell: any) =>
+          cell.tokens ? renderInline(cell.tokens) : (cell.text || ""),
+        );
+        const rows: string[][] = token.rows.map((row: any[]) =>
+          row.map((cell: any) =>
+            cell.tokens ? renderInline(cell.tokens) : (cell.text || ""),
+          ),
+        );
+        blocks.push(
+          React.createElement(TableRenderer, {
+            key: i,
+            headers,
+            rows,
+            terminalWidth: maxWidth,
+          })
+        );
         break;
       }
       case "hr":
