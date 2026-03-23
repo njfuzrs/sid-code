@@ -29,7 +29,6 @@ import { AgentLoopRunner } from "./agent/loop.ts";
 import type { AgentLoopCallbacks } from "./agent/loop.ts";
 import { HookSystem } from "./hook/system.ts";
 import { JitContextManager } from "./config/jit-context.ts";
-import { resetStreamingFenceCounter } from "./ui/markdown-utils.ts";
 import { execSync } from "child_process";
 import { readFile } from "fs/promises";
 import { resolve, extname } from "path";
@@ -1163,7 +1162,6 @@ export class App {
           // 工具开始前，结束当前流式输出
           streamingFullText = "";
           streamSynced = false;
-          resetStreamingFenceCounter();
           syncDisplay({ toolName: name, toolInput: input ?? null, isToolExecuting: true, streamingText: "", isStreaming: false, streamingLine: "" });
         },
         onToolEnd: (name, result) => {
@@ -1184,7 +1182,6 @@ export class App {
           const ctxPct = Math.round((ctxUsed / 200000) * 100);
           streamingFullText = "";
           streamSynced = false;
-          resetStreamingFenceCounter();
           syncDisplay({
             usage: { ...this.sessionState.getTotalUsage() },
             costUSD: this.sessionState.totalCostUSD,
@@ -1208,7 +1205,6 @@ export class App {
       } finally {
         // 兜底：确保异常路径也能正确清理
         streamingFullText = "";
-        resetStreamingFenceCounter();
       }
 
       syncDisplay({

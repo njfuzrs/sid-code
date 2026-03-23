@@ -70,14 +70,13 @@ export const MainContent = memo(function MainContent({
       return (
         <StreamingMessage
           fullText={streamingText}
-          isActive={isStreaming}
           maxWidth={termWidth}
         />
       ) as React.ReactElement;
     }
     const prevItem = index > 0 ? listData[index - 1] : undefined;
     return (<MemoizedMessageItemRenderer item={item} prevItem={prevItem} />) as React.ReactElement;
-  }, [listData, streamingText, isStreaming, termWidth]);
+  }, [listData, streamingText, termWidth]);
 
   if (useAlternateBuffer) {
     return (
@@ -133,7 +132,6 @@ export const MainContent = memo(function MainContent({
         {isStreaming && streamingText ? (
           <StreamingMessage
             fullText={streamingText}
-            isActive={isStreaming}
             maxWidth={termWidth}
           />
         ) : null}
