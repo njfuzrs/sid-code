@@ -25,14 +25,20 @@ export type { MouseEvent, MouseEventName, MouseHandler };
 
 const MAX_MOUSE_BUFFER_SIZE = 4096;
 
-/** 启用鼠标按钮事件 + SGR 编码 */
-const ENABLE_MOUSE = "\x1b[?1000h\x1b[?1006h";
-/** 禁用鼠标按钮事件 + SGR 编码 */
-const DISABLE_MOUSE = "\x1b[?1000l\x1b[?1006l";
-/** 启用鼠标移动事件（按下时） */
-const ENABLE_MOUSE_MOVE = "\x1b[?1002h";
-/** 禁用鼠标移动事件 */
-const DISABLE_MOUSE_MOVE = "\x1b[?1002l";
+/** 启用鼠标按钮事件 + 拖拽 + 滚轮（?1002h）+ SGR 编码（?1006h） */
+const ENABLE_MOUSE = "\x1b[?1002h\x1b[?1006h";
+/** 禁用鼠标事件 */
+const DISABLE_MOUSE = "\x1b[?1006l\x1b[?1002l";
+
+/** 导出函数：命令式启用鼠标事件（供 Copy Mode 切换使用） */
+export function enableMouseEvents() {
+  process.stdout.write(ENABLE_MOUSE);
+}
+
+/** 导出函数：命令式禁用鼠标事件（供 Copy Mode 切换使用） */
+export function disableMouseEvents() {
+  process.stdout.write(DISABLE_MOUSE);
+}
 
 interface MouseContextValue {
   subscribe: (handler: MouseHandler) => void;
@@ -63,18 +69,13 @@ export function useMouse(handler: MouseHandler, { isActive = true } = {}) {
 export function MouseProvider({
   children,
   mouseEventsEnabled = true,
-  copyModeEnabled = false,
   onSelectionWarning,
 }: {
   children: React.ReactNode;
   mouseEventsEnabled?: boolean;
-  /** Copy Mode 下禁用鼠标捕获，让终端原生处理文本选择 */
-  copyModeEnabled?: boolean;
   /** 当用户尝试拖拽选择文本时触发（提示按 Ctrl+S 进入 Copy Mode） */
   onSelectionWarning?: () => void;
 }) {
-  // Copy Mode 覆盖：copyMode 启用时强制禁用鼠标事件
-  const effectiveMouseEnabled = mouseEventsEnabled && !copyModeEnabled;
   const { stdin } = useStdin();
   const subscribers = useRef<Set<MouseHandler>>(new Set()).current;
   const lastClickRef = useRef<{ time: number; col: number; row: number } | null>(null);
@@ -93,17 +94,17 @@ export function MouseProvider({
     subscribers.delete(handler);
   }, [subscribers]);
 
-  // 启用/禁用鼠标事件
+  // 启用/禁用鼠标事件（仅初始化和清理，Copy Mode 切换由外部命令式调用）
   useEffect(() => {
-    if (!effectiveMouseEnabled) return;
-    process.stdout.write(ENABLE_MOUSE + ENABLE_MOUSE_MOVE);
+    if (!mouseEventsEnabled) return;
+    enableMouseEvents();
     return () => {
-      process.stdout.write(DISABLE_MOUSE + DISABLE_MOUSE_MOVE);
+      disableMouseEvents();
     };
-  }, [effectiveMouseEnabled]);
+  }, [mouseEventsEnabled]);
 
   useEffect(() => {
-    if (!effectiveMouseEnabled) return;
+    if (!mouseEventsEnabled) return;
 
     let mouseBuffer = '';
 
@@ -184,7 +185,7 @@ export function MouseProvider({
     return () => {
       stdin.removeListener('data', handleData);
     };
-  }, [stdin, effectiveMouseEnabled, subscribers]);
+  }, [stdin, mouseEventsEnabled, subscribers]);
 
   const contextValue = useMemo(
     () => ({ subscribe, unsubscribe }),

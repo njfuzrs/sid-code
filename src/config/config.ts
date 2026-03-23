@@ -109,7 +109,7 @@ export interface Config {
   mcpServers: Record<string, MCPServerConfig>;
 
   // UI 配置
-  /** 是否使用 alternate buffer 模式（默认 true，--no-alternate-buffer 可切换为 false） */
+  /** 是否使用 alternate buffer 模式（默认 false，--alternate-buffer 可切换为 true） */
   useAlternateBuffer: boolean;
   /** 代码块是否显示行号（默认 true） */
   showLineNumbers: boolean;
@@ -201,7 +201,7 @@ export function defaultConfig(): Config {
     debugLogFile: "~/.sid-code/debug.log",
     hooks: {},
     mcpServers: {},
-    useAlternateBuffer: true,
+    useAlternateBuffer: false,
     showLineNumbers: true,
   };
 }

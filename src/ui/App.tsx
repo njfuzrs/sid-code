@@ -17,7 +17,7 @@ import { StatusBar } from "./StatusBar.tsx";
 import { KeypressProvider, useKeypress, KeypressPriority, type Key } from "./contexts/KeypressContext.tsx";
 import { ScrollProvider, useScrollState } from "./contexts/ScrollProvider.tsx";
 import { TerminalProvider } from "./contexts/TerminalContext.tsx";
-import { MouseProvider } from "./contexts/MouseContext.tsx";
+import { MouseProvider, enableMouseEvents, disableMouseEvents } from "./contexts/MouseContext.tsx";
 import { DialogRenderer } from "./components/DialogManager.tsx";
 import { MainContent } from "./components/MainContent.tsx";
 import { AlternateBufferQuittingDisplay } from "./components/AlternateBufferQuittingDisplay.tsx";
@@ -215,11 +215,18 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
   });
 
   // Copy Mode 切换（Ctrl+S 进入，任意非导航键退出）
+  // 参考 Gemini CLI：命令式调用 enableMouseEvents/disableMouseEvents 以立即生效
   useKeypress(KeypressPriority.High, (key: Key) => {
     if (key.ctrl && key.name === "s") {
       const next = !state.copyModeEnabled;
       log.info("UI:APP", `Copy Mode ${next ? "启用" : "禁用"}`);
       bridge.update({ copyModeEnabled: next });
+      // 立即切换鼠标事件（不等 React 渲染）
+      if (next) {
+        disableMouseEvents();
+      } else {
+        enableMouseEvents();
+      }
       return true;
     }
     // Copy Mode 下，非导航键退出
@@ -228,14 +235,14 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
       if (!navKeys.has(key.name || "")) {
         log.info("UI:APP", "Copy Mode 退出（非导航键）");
         bridge.update({ copyModeEnabled: false });
+        // 立即恢复鼠标事件
+        enableMouseEvents();
         // 不消费按键，让后续处理器处理
         return false;
       }
     }
     return false;
   });
-
-  // Copy Mode 的鼠标事件控制已移至 MouseProvider 统一管理（通过 copyModeEnabled prop）
 
   // 注意：滚动快捷键（PageUp/PageDown/Shift+↑↓/Home/End）和鼠标滚轮
   // 已由 ScrollableList + ScrollProvider 内部处理，无需在此重复注册
@@ -474,18 +481,6 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
 
 /** 顶层 TUI 组件：包裹 Provider 层 */
 export function TUIApp(props: AppProps) {
-  // 跟踪 copyModeEnabled 状态，供 MouseProvider 使用
-  const [copyModeEnabled, setCopyModeEnabled] = useState(props.initialState.copyModeEnabled);
-
-  // 监听 bridge 变化，同步 copyModeEnabled
-  useEffect(() => {
-    const onChange = (newState: TUIState) => {
-      setCopyModeEnabled(newState.copyModeEnabled);
-    };
-    props.bridge.on("change", onChange);
-    return () => { props.bridge.off("change", onChange); };
-  }, [props.bridge]);
-
   // 拖拽选择警告：提示用户按 Ctrl+S 进入 Copy Mode（防抖）
   const selectionWarningTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSelectionWarning = useRef(0);
@@ -510,10 +505,7 @@ export function TUIApp(props: AppProps) {
   return (
     <TerminalProvider>
       <KeypressProvider>
-        <MouseProvider
-          copyModeEnabled={copyModeEnabled}
-          onSelectionWarning={handleSelectionWarning}
-        >
+        <MouseProvider onSelectionWarning={handleSelectionWarning}>
           <ScrollProvider>
             <TUIAppInner {...props} />
           </ScrollProvider>

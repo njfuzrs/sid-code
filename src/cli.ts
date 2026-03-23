@@ -55,7 +55,7 @@ function parseCLIArgs(): Partial<Config> & { prompt?: string } {
       "debug-log-file": { type: "string" },
 
       // UI
-      "no-alternate-buffer": { type: "boolean" },
+      "alternate-buffer": { type: "boolean" },
 
       // 帮助
       help: { type: "boolean", short: "h" },
@@ -100,7 +100,7 @@ function parseCLIArgs(): Partial<Config> & { prompt?: string } {
     debug: values.debug,
     debugLevel: values["debug-level"],
     debugLogFile: values["debug-log-file"],
-    useAlternateBuffer: values["no-alternate-buffer"] ? false : undefined,
+    useAlternateBuffer: values["alternate-buffer"] ? true : undefined,
     "list-sessions": values["list-sessions"],
     "browse-sessions": values["browse-sessions"],
     "delete-session": values["delete-session"],
@@ -157,7 +157,7 @@ LLM 配置:
   --debug-log-file <path>     自定义日志文件路径
 
 UI:
-  --no-alternate-buffer       禁用 alternate buffer 模式（使用 Static 模式，屏幕阅读器友好）
+  --alternate-buffer          启用 alternate buffer 模式（全屏 TUI，默认禁用以支持原生文本选择）
 
 其他:
   -h, --help                  显示帮助信息
