@@ -149,27 +149,26 @@ export function parseMarkdownToANSI(
   return result;
 }
 
-/** 应用颜色到文本 */
+/** 应用颜色到文本（使用 chalk ANSI 转义码） */
 function colorize(str: string, color: string | undefined): string {
   if (!color) return str;
 
-  // 支持 hex 颜色（RGB 格式）
+  // 支持 hex 颜色（#RRGGBB 或 #RGB）
   if (color.startsWith("#")) {
-    return chalk.hex(color)(str);
+    // 验证 hex 格式
+    if (/^#[0-9A-Fa-f]{3}([0-9A-Fa-f]{3})?$/.test(color)) {
+      return chalk.hex(color)(str);
+    }
+    return str;
   }
 
-  // 支持 RGB 格式：rgb(r, g, b)
-  const rgbMatch = color.match(/^rgb\((\d+),\s*(\d+),\s*(\d+)\)$/);
-  if (rgbMatch) {
-    const [, r, g, b] = rgbMatch;
-    return chalk.rgb(parseInt(r), parseInt(g), parseInt(b))(str);
-  }
-
-  // 支持 chalk 内置颜色名
-  const chalkColor = (chalk as any)[color];
+  // 支持 chalk 内置颜色名（black, red, green, yellow, blue, magenta, cyan, white, gray）
+  const lowerColor = color.toLowerCase();
+  const chalkColor = (chalk as any)[lowerColor];
   if (typeof chalkColor === "function") {
     return chalkColor(str);
   }
 
+  // 不支持的颜色格式，返回原文本
   return str;
 }

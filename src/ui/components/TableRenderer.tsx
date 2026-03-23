@@ -156,6 +156,13 @@ export const TableRenderer: React.FC<TableRendererProps> = ({
     // 最终宽度 = 实际内容宽度 + padding
     const adjustedWidths = actualColumnWidths.map((w) => w + COLUMN_PADDING);
 
+    // 验证总宽度不超过终端宽度
+    const totalTableWidth = adjustedWidths.reduce((a, b) => a + b, 0) + fixedOverhead;
+    if (totalTableWidth > terminalWidth) {
+      // 表格过宽，返回空数组触发降级渲染
+      return { wrappedHeaders: [], wrappedRows: [], adjustedWidths: [] };
+    }
+
     return { wrappedHeaders, wrappedRows, adjustedWidths };
   }, [styledHeaders, styledRows, terminalWidth]);
 
@@ -251,6 +258,29 @@ export const TableRenderer: React.FC<TableRendererProps> = ({
   };
 
   // 4. 渲染完整表格
+  // 如果表格过宽，降级为 key-value 格式
+  if (adjustedWidths.length === 0) {
+    return (
+      <Box flexDirection="column" marginY={1}>
+        {rows.map((row, rowIndex) => (
+          <Box key={rowIndex} flexDirection="column">
+            {headers.map((header, colIndex) => (
+              <Box key={colIndex} flexDirection="row">
+                <Text bold color={theme.text.link}>{header}: </Text>
+                <Text>{row[colIndex] || ""}</Text>
+              </Box>
+            ))}
+            {rowIndex < rows.length - 1 && (
+              <Box height={1}>
+                <Text dimColor>{"─".repeat(Math.min(terminalWidth - 2, 40))}</Text>
+              </Box>
+            )}
+          </Box>
+        ))}
+      </Box>
+    );
+  }
+
   return (
     <Box flexDirection="column" marginY={1}>
       {/* 顶部边框 */}
