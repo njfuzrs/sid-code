@@ -18,6 +18,7 @@ import { KeypressProvider, useKeypress, KeypressPriority, type Key } from "./con
 import { ScrollProvider, useScrollState } from "./contexts/ScrollProvider.tsx";
 import { TerminalProvider } from "./contexts/TerminalContext.tsx";
 import { MouseProvider, enableMouseEvents, disableMouseEvents } from "./contexts/MouseContext.tsx";
+import { OverflowProvider } from "./contexts/OverflowContext.tsx";
 import { DialogRenderer } from "./components/DialogManager.tsx";
 import { MainContent } from "./components/MainContent.tsx";
 import { AlternateBufferQuittingDisplay } from "./components/AlternateBufferQuittingDisplay.tsx";
@@ -432,7 +433,9 @@ export function TUIApp(props: AppProps) {
       <KeypressProvider>
         <MouseProvider onSelectionWarning={handleSelectionWarning}>
           <ScrollProvider>
-            <TUIAppInner {...props} />
+            <OverflowProvider>
+              <TUIAppInner {...props} />
+            </OverflowProvider>
           </ScrollProvider>
         </MouseProvider>
       </KeypressProvider>

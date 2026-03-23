@@ -5,7 +5,6 @@
 
 import React, { useEffect, useState } from "react";
 import { Box, Text } from "ink";
-import { Spinner } from "@inkjs/ui";
 import { getLogger } from "../debug/logger.ts";
 import { theme } from "./semantic-colors.ts";
 
@@ -79,19 +78,23 @@ export const ToolStatus = React.memo(function ToolStatus({ toolName, isExecuting
     setShowResult(false);
   }, [lastResult]);
 
-  // 执行中：cyan spinner
+  // 执行中：⟳ spinner（对齐 gemini-cli）
   if (isExecuting && toolName) {
     const label = toolInput ? getToolLabel(toolName, toolInput) : toolName;
     return (
       <Box>
-        <Spinner label={` ${label}`} />
+        <Text color={theme.ui.active}>⟳ </Text>
+        <Text>{label}</Text>
       </Box>
     );
   }
 
   // 刚完成：显示成功/失败状态 + 耗时
   if (showResult && lastResult) {
-    const icon = lastResult.isError ? "✗" : "✓";
+    // gemini-cli 状态图标：
+    // Success → ✓ (success green)
+    // Error → ✕ (error red)
+    const icon = lastResult.isError ? "✕" : "✓";
     const color = lastResult.isError ? theme.status.error : theme.status.success;
     return (
       <Box>

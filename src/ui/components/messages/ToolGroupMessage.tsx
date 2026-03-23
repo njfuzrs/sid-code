@@ -10,7 +10,7 @@ import { Box } from "ink";
 import { ToolMessage } from "./ToolMessage.tsx";
 import { getToolGroupBorderAppearance } from "../../utils/borderStyles.ts";
 import type { ToolCallStatus } from "./ToolShared.tsx";
-import { getToolSummary, getResultSummary } from "../../ui-utils.ts";
+import { getToolSummary, getResultSummary, isDiffContent, getFilenameFromInput } from "../../ui-utils.ts";
 export interface ToolCallDisplay {
   id: string;
   name: string;
@@ -46,20 +46,27 @@ export const ToolGroupMessage: React.FC<ToolGroupMessageProps> = ({
       width={terminalWidth}
       paddingRight={TOOL_MESSAGE_HORIZONTAL_MARGIN}
     >
-      {tools.map((tool, index) => (
-        <ToolMessage
-          key={tool.id}
-          name={tool.name}
-          description={getToolSummary(tool.name, tool.input)}
-          resultDisplay={tool.result ? getResultSummary(tool.name, tool.result, tool.isError) : undefined}
-          status={tool.status}
-          terminalWidth={contentWidth}
-          isFirst={index === 0}
-          borderColor={borderColor}
-          borderDimColor={borderDimColor}
-          isError={tool.isError}
-        />
-      ))}
+      {tools.map((tool, index) => {
+        const isDiff = tool.result ? isDiffContent(tool.name, tool.result) : false;
+        const filename = getFilenameFromInput(tool.name, tool.input);
+
+        return (
+          <ToolMessage
+            key={tool.id}
+            name={tool.name}
+            description={getToolSummary(tool.name, tool.input)}
+            resultDisplay={tool.result ? (isDiff ? tool.result : getResultSummary(tool.name, tool.result, tool.isError)) : undefined}
+            status={tool.status}
+            terminalWidth={contentWidth}
+            isFirst={index === 0}
+            borderColor={borderColor}
+            borderDimColor={borderDimColor}
+            isError={tool.isError}
+            isDiff={isDiff}
+            filename={filename}
+          />
+        );
+      })}
       {/* 底部边框 */}
       <Box
         height={0}

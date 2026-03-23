@@ -49,3 +49,24 @@ export function getResultSummary(name: string, content: string, isError?: boolea
   if (lower === "glob") return `${content.trim().split("\n").filter(l => l.length > 0).length} 个文件`;
   return `${content.length} 字符`;
 }
+
+/** 检测工具结果是否为 diff 格式 */
+export function isDiffContent(name: string, content: string): boolean {
+  const lower = name.toLowerCase();
+  // Edit 工具通常返回 diff 格式
+  if (lower === "edit") {
+    // 检查是否包含 diff 标记
+    return content.includes("@@") || content.includes("---") || content.includes("+++");
+  }
+  return false;
+}
+
+/** 从工具输入中提取文件名（用于 diff 语法高亮） */
+export function getFilenameFromInput(name: string, input: unknown): string | undefined {
+  const lower = name.toLowerCase();
+  if (lower === "edit" || lower === "write" || lower === "read") {
+    const inp = input as any;
+    return inp?.file_path || inp?.filePath;
+  }
+  return undefined;
+}

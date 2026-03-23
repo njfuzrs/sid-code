@@ -157,6 +157,13 @@ function highlightLine(line: string, lang: string | null): React.ReactNode {
   }
 }
 
+/**
+ * 高亮单行代码（导出版本，供 DiffRenderer 使用）
+ */
+export function colorizeLine(line: string, language: string | null): React.ReactNode {
+  return highlightLine(line, language);
+}
+
 /** 高亮代码并返回 React 元素（整块高亮，保持多行语法上下文） */
 export function highlightToReact(code: string, lang?: string): React.ReactNode {
   try {
