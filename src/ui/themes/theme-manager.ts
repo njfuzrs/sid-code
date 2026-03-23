@@ -1,49 +1,121 @@
-// 主题管理器
-// 参考 gemini-cli/packages/cli/src/ui/themes/theme-manager.ts（简化版）
+/**
+ * 主题管理器
+ *
+ * 管理内置主题和自定义主题，支持主题切换和终端背景色适配
+ * 参考 gemini-cli/packages/cli/src/ui/themes/theme-manager.ts
+ */
 
-import type { SemanticColors } from './semantic-tokens.js';
-import { darkSemanticColors, lightSemanticColors } from './semantic-tokens.js';
+import type { Theme } from './theme.ts';
+import { DefaultDark } from './builtin/dark/default-dark.ts';
+import { GitHubDark } from './builtin/dark/github-dark.ts';
+import { DefaultLight } from './builtin/light/default-light.ts';
+import { GitHubLight } from './builtin/light/github-light.ts';
+import { getThemeTypeFromBackgroundColor } from './color-utils.ts';
 
-export type ThemeType = 'dark' | 'light' | 'auto';
+export const DEFAULT_THEME: Theme = DefaultDark;
+
+export interface ThemeDisplay {
+  name: string;
+  type: string;
+  isCustom?: boolean;
+}
 
 class ThemeManager {
-  private activeTheme: ThemeType = 'dark';
+  private readonly availableThemes: Theme[];
+  private activeTheme: Theme;
   private terminalBackground: string | undefined;
 
-  setTheme(theme: ThemeType): void {
-    this.activeTheme = theme;
-  }
-
-  getTheme(): ThemeType {
-    return this.activeTheme;
+  constructor() {
+    this.availableThemes = [
+      DefaultDark,
+      DefaultLight,
+      GitHubDark,
+      GitHubLight,
+    ];
+    this.activeTheme = DEFAULT_THEME;
   }
 
   setTerminalBackground(color: string | undefined): void {
     this.terminalBackground = color;
   }
 
-  // 根据终端背景色判断深浅
-  private detectThemeFromBackground(): 'dark' | 'light' {
-    if (!this.terminalBackground) return 'dark';
-    // 简单亮度判断：解析 hex 颜色
-    const hex = this.terminalBackground.replace('#', '');
-    if (hex.length === 6) {
-      const r = parseInt(hex.slice(0, 2), 16);
-      const g = parseInt(hex.slice(2, 4), 16);
-      const b = parseInt(hex.slice(4, 6), 16);
-      // 相对亮度公式
-      const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
-      return luminance > 128 ? 'light' : 'dark';
-    }
-    return 'dark';
+  getTerminalBackground(): string | undefined {
+    return this.terminalBackground;
   }
 
-  getSemanticColors(): SemanticColors {
-    const resolved =
-      this.activeTheme === 'auto'
-        ? this.detectThemeFromBackground()
-        : this.activeTheme;
-    return resolved === 'light' ? lightSemanticColors : darkSemanticColors;
+  isDefaultTheme(themeName: string | undefined): boolean {
+    return (
+      themeName === undefined ||
+      themeName === DEFAULT_THEME.name ||
+      themeName === DefaultLight.name
+    );
+  }
+
+  setActiveTheme(themeName: string | undefined): boolean {
+    const theme = this.findThemeByName(themeName);
+    if (!theme) {
+      return false;
+    }
+    this.activeTheme = theme;
+    return true;
+  }
+
+  /**
+   * 获取当前活动主题
+   */
+  getActiveTheme(): Theme {
+    if (process.env['NO_COLOR']) {
+      // NO_COLOR 环境变量时使用默认主题
+      return DEFAULT_THEME;
+    }
+    return this.activeTheme;
+  }
+
+  /**
+   * 获取当前主题的语义颜色
+   */
+  getSemanticColors() {
+    return this.getActiveTheme().semanticColors;
+  }
+
+  /**
+   * 返回可用主题列表
+   */
+  getAvailableThemes(): ThemeDisplay[] {
+    return this.availableThemes.map((theme) => ({
+      name: theme.name,
+      type: theme.type,
+      isCustom: false,
+    }));
+  }
+
+  /**
+   * 根据名称查找主题
+   */
+  private findThemeByName(themeName: string | undefined): Theme | undefined {
+    if (!themeName) {
+      return DEFAULT_THEME;
+    }
+    return this.availableThemes.find((t) => t.name === themeName);
+  }
+
+  /**
+   * 检查主题是否与终端背景兼容
+   */
+  isThemeCompatible(
+    activeTheme: Theme,
+    terminalBackground: string | undefined,
+  ): boolean {
+    if (activeTheme.type === 'ansi') {
+      return true;
+    }
+
+    const backgroundType = getThemeTypeFromBackgroundColor(terminalBackground);
+    if (!backgroundType) {
+      return true;
+    }
+
+    return activeTheme.type === backgroundType;
   }
 }
 

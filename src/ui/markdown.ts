@@ -750,9 +750,18 @@ function renderTokensToReact(tokens: any[], maxWidth: number): React.ReactNode[]
           maxWidth: maxWidth - 1,
           showLineNumbers: true,
         });
+        const codeBlockElements: React.ReactNode[] = [];
+        // 语言标签（如果有）
+        if (token.lang) {
+          codeBlockElements.push(
+            React.createElement(Text, { key: `${i}-lang`, dimColor: true }, token.lang)
+          );
+        }
+        codeBlockElements.push(colorized);
+
         blocks.push(
           React.createElement(Box, { key: i, paddingLeft: 1, flexDirection: "column" as const },
-            colorized,
+            ...codeBlockElements,
           )
         );
         break;
