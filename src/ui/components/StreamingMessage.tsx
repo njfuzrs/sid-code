@@ -1,42 +1,53 @@
 /**
  * 流式消息组件
  *
- * 显示正在生成的助手消息。
- * 直接将完整累积文本传给 renderMarkdownToReact() 渲染，
- * 不做 completed/pending 拆分（对齐 gemini-cli 方案）。
+ * 显示正在生成的助手消息，使用 MarkdownDisplay 支持流式截断。
+ * 参考 gemini-cli 方案。
  */
 
-import React, { useMemo } from "react";
-import { Box } from "ink";
-import { renderMarkdownToReact } from "../markdown.ts";
-import { ASSISTANT_PADDING_RIGHT } from "../ui-utils.ts";
+import React from "react";
+import { Box, Text } from "ink";
+import { MarkdownDisplay } from "./MarkdownDisplay.tsx";
+import { theme } from "../semantic-colors.ts";
 
 interface StreamingMessageProps {
   /** 累积的全部流式文本 */
   fullText: string;
   /** 渲染宽度 */
   maxWidth?: number;
+  /** 可用终端高度（用于流式截断） */
+  availableTerminalHeight?: number;
 }
 
 export const StreamingMessage = React.memo(function StreamingMessage({
   fullText,
   maxWidth,
+  availableTerminalHeight,
 }: StreamingMessageProps) {
   if (!fullText) return null;
 
-  // 关键修复：移除硬编码的 80，使用动态计算
-  // 如果 maxWidth 未提供，renderMarkdownToReact 会自动使用 getTermWidth()
-  const effectiveWidth = maxWidth ? maxWidth - ASSISTANT_PADDING_RIGHT : undefined;
-
-  // 直接渲染完整文本，不做 completed/pending 拆分
-  const rendered = useMemo(
-    () => renderMarkdownToReact(fullText, effectiveWidth),
-    [fullText, effectiveWidth],
-  );
+  const prefix = "✦ ";
+  const prefixWidth = prefix.length;
+  const terminalWidth = maxWidth || 80;
 
   return (
-    <Box flexDirection="column" paddingRight={ASSISTANT_PADDING_RIGHT}>
-      {rendered}
+    <Box flexDirection="row">
+      <Box width={prefixWidth}>
+        <Text color={theme.text.accent}>{prefix}</Text>
+      </Box>
+      <Box flexGrow={1} flexDirection="column">
+        <MarkdownDisplay
+          text={fullText}
+          isPending={true}
+          availableTerminalHeight={
+            availableTerminalHeight === undefined
+              ? undefined
+              : Math.max(availableTerminalHeight - 1, 1)
+          }
+          terminalWidth={Math.max(terminalWidth - prefixWidth, 0)}
+          renderMarkdown={true}
+        />
+      </Box>
     </Box>
   );
 });

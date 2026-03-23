@@ -25,6 +25,8 @@
     "react-reconciler": "0.33.0",
     "scheduler": "0.27.0",
     "string-width": "^7.0.0",
+    "tinycolor2": "^1.6.0",
+    "tinygradient": "^2.0.1",
     "wrap-ansi": "^9.0.0",
     "yaml": "^2.8.2"
   },
@@ -37,7 +39,8 @@
     "@types/bun": "latest",
     "@types/minimatch": "^6.0.0",
     "@types/node": "^25.5.0",
-    "@types/react": "^19.2.14"
+    "@types/react": "^19.2.14",
+    "@types/tinycolor2": "^1.4.6"
   },
   "engines": {
     "bun": ">=1.0.0"
