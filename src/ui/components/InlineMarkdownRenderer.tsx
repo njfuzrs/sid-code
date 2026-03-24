@@ -7,7 +7,7 @@
 
 import React from "react";
 import { Text } from "ink";
-import { parseMarkdownToANSI } from "../../utils/markdownParsingUtils.ts";
+import { parseMarkdownToANSI, stripUnsafeCharacters } from "../../utils/markdownParsingUtils.ts";
 
 interface RenderInlineProps {
   text: string;
@@ -15,9 +15,10 @@ interface RenderInlineProps {
 }
 
 const RenderInlineInternal: React.FC<RenderInlineProps> = ({
-  text,
+  text: rawText,
   defaultColor,
 }) => {
+  const text = stripUnsafeCharacters(rawText);
   const ansiText = parseMarkdownToANSI(text, defaultColor);
 
   return <Text>{ansiText}</Text>;

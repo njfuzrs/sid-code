@@ -6,16 +6,24 @@
  *
  * P1 增强：
  * - 使用 StickyHeader 实现粘性头部
- * - 支持 DiffRenderer 渲染 diff 内容
+ * - 集成 ToolResultDisplay 统一结果渲染
+ * - 支持 MCP 进度指示器（从 ToolShared 导入）
+ * - TrailingIndicator 执行中箭头
  */
 
 import React from "react";
-import { Box, Text } from "ink";
-import { ToolStatusIndicator, ToolInfo, type ToolCallStatus, type TextEmphasis } from "./ToolShared.tsx";
-import { SlicingMaxSizedBox } from "../SlicingMaxSizedBox.tsx";
+import { Box } from "ink";
+import {
+  ToolStatusIndicator,
+  ToolInfo,
+  TrailingIndicator,
+  McpProgressIndicator,
+  FocusHint,
+  type ToolCallStatus,
+  type TextEmphasis,
+} from "./ToolShared.tsx";
+import { ToolResultDisplay } from "./ToolResultDisplay.tsx";
 import { StickyHeader } from "../StickyHeader.tsx";
-import { DiffRenderer } from "../DiffRenderer.tsx";
-import { theme } from "../../semantic-colors.ts";
 
 export interface ToolMessageProps {
   name: string;
@@ -32,6 +40,14 @@ export interface ToolMessageProps {
   isDiff?: boolean;
   /** 文件名（用于 diff 语法高亮） */
   filename?: string;
+  /** 是否渲染输出为 Markdown */
+  renderOutputAsMarkdown?: boolean;
+  /** MCP 进度消息 */
+  progressMessage?: string;
+  /** MCP 进度值 */
+  progress?: number;
+  /** MCP 进度总量 */
+  progressTotal?: number;
 }
 
 export const ToolMessage: React.FC<ToolMessageProps> = ({
@@ -47,9 +63,11 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
   isError,
   isDiff = false,
   filename,
+  renderOutputAsMarkdown = false,
+  progressMessage,
+  progress,
+  progressTotal,
 }) => {
-  const hasLongResult = resultDisplay && resultDisplay.length > 500 && !isError;
-
   // 工具头部内容
   const headerContent = (
     <>
@@ -59,9 +77,16 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
         description={description}
         status={status}
         emphasis={emphasis}
+        progressMessage={progressMessage}
       />
+      {emphasis === "high" && <TrailingIndicator />}
+      <FocusHint name={name} status={status} />
     </>
   );
+
+  // 是否有内容需要渲染（结果或进度）
+  const hasProgress = status === "executing" && progress !== undefined;
+  const hasContent = !!resultDisplay || hasProgress;
 
   return (
     <>
@@ -76,7 +101,7 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
       </StickyHeader>
 
       {/* 工具结果内容 */}
-      {resultDisplay && (
+      {hasContent && (
         <Box
           width={terminalWidth}
           borderStyle="round"
@@ -89,22 +114,26 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
           paddingX={1}
           flexDirection="column"
         >
-          {isDiff ? (
-            // Diff 内容使用 DiffRenderer
-            <DiffRenderer
-              diffContent={resultDisplay}
-              filename={filename}
-              terminalWidth={terminalWidth - 2}
+          {/* MCP 进度指示器 */}
+          {hasProgress && (
+            <McpProgressIndicator
+              progress={progress!}
+              total={progressTotal}
+              message={progressMessage}
+              barWidth={20}
             />
-          ) : hasLongResult ? (
-            // 长文本使用 SlicingMaxSizedBox 截断
-            <SlicingMaxSizedBox text={resultDisplay} maxLines={20} overflowDirection="top" />
-          ) : (
-            // 短文本直接显示
-            <Text color={isError ? theme.status.error : undefined} dimColor={!isError}>
-              {resultDisplay}
-            </Text>
           )}
+          {/* 工具结果 */}
+          <ToolResultDisplay
+            resultDisplay={resultDisplay}
+            terminalWidth={terminalWidth - 4}
+            isDiff={isDiff}
+            filename={filename}
+            isError={isError}
+            renderOutputAsMarkdown={renderOutputAsMarkdown}
+            maxLines={20}
+            overflowDirection="top"
+          />
         </Box>
       )}
     </>

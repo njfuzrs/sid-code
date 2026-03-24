@@ -196,3 +196,22 @@ export function parseMarkdownToANSI(
 
   return result;
 }
+
+/**
+ * 移除不安全的控制字符
+ *
+ * 参考 gemini-cli textUtils.ts stripUnsafeCharacters()
+ * 移除：C0 控制字符（保留 TAB/LF/CR）、C1 控制字符、BiDi 控制字符、零宽字符
+ * 保留：所有可打印 Unicode（含 emoji）、ZWJ、ZWNJ
+ */
+export function stripUnsafeCharacters(str: string): string {
+  // C0: 0x00-0x1F 除 0x09(TAB) 0x0A(LF) 0x0D(CR)
+  // C1: 0x80-0x9F
+  // BiDi: U+200E(LRM) U+200F(RLM) U+202A-U+202E U+2066-U+2069
+  // Zero-width: U+200B(ZWSP) U+FEFF(BOM)
+  // eslint-disable-next-line no-control-regex
+  return str.replace(
+    /[\x00-\x08\x0B\x0C\x0E-\x1F\x80-\x9F\u200E\u200F\u202A-\u202E\u2066-\u2069\u200B\uFEFF]/g,
+    "",
+  );
+}

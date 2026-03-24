@@ -69,7 +69,8 @@ export const ToolInfo: React.FC<{
   description: string;
   status: ToolCallStatus;
   emphasis?: TextEmphasis;
-}> = ({ name, description, status, emphasis = "medium" }) => {
+  progressMessage?: string;
+}> = ({ name, description, status, emphasis = "medium", progressMessage }) => {
   const nameColor = emphasis === "low" ? theme.text.secondary : theme.text.primary;
 
   return (
@@ -82,6 +83,87 @@ export const ToolInfo: React.FC<{
             <Text color={theme.text.secondary}>{description}</Text>
           </>
         ) : null}
+        {progressMessage && status === "executing" ? (
+          <>
+            {" "}
+            <Text color={theme.text.accent} italic>{progressMessage}</Text>
+          </>
+        ) : null}
+      </Text>
+    </Box>
+  );
+};
+
+/** 执行中尾部指示器（← 箭头） */
+export const TrailingIndicator: React.FC = () => (
+  <Text color={theme.text.primary} wrap="truncate">
+    {" "}←
+  </Text>
+);
+
+/** MCP 进度条指示器 */
+export const McpProgressIndicator: React.FC<{
+  progress: number;
+  total?: number;
+  message?: string;
+  barWidth: number;
+}> = ({ progress, total, message, barWidth }) => {
+  const percentage =
+    total && total > 0
+      ? Math.min(100, Math.round((progress / total) * 100))
+      : null;
+
+  let rawFilled: number;
+  if (total && total > 0) {
+    rawFilled = Math.round((progress / total) * barWidth);
+  } else {
+    rawFilled = Math.floor(progress) % (barWidth + 1);
+  }
+
+  const filled = Math.max(0, Math.min(Number.isFinite(rawFilled) ? rawFilled : 0, barWidth));
+  const empty = Math.max(0, barWidth - filled);
+  const progressBar = "\u2588".repeat(filled) + "\u2591".repeat(empty);
+
+  return (
+    <Box flexDirection="column">
+      <Box>
+        <Text color={theme.text.accent}>
+          {progressBar} {percentage !== null ? `${percentage}%` : `${progress}`}
+        </Text>
+      </Box>
+      {message && (
+        <Text color={theme.text.secondary} wrap="truncate">
+          {message}
+        </Text>
+      )}
+    </Box>
+  );
+};
+
+/** 判断是否为 Shell/Bash 工具 */
+export function isShellTool(name: string): boolean {
+  const lower = name.toLowerCase();
+  return lower === "bash" || lower === "shell" || lower === "execute_command";
+}
+
+/**
+ * Shell 工具焦点提示
+ *
+ * 当 Bash 工具正在执行时，显示提示信息。
+ * 参考 gemini-cli FocusHint 组件（简化版，sid-code 暂无嵌入式 Shell 焦点系统）
+ */
+export const FocusHint: React.FC<{
+  name: string;
+  status: ToolCallStatus;
+}> = ({ name, status }) => {
+  if (!isShellTool(name) || status !== "executing") {
+    return null;
+  }
+
+  return (
+    <Box marginLeft={1} flexShrink={0}>
+      <Text color={theme.ui.active} dimColor>
+        (执行中...)
       </Text>
     </Box>
   );

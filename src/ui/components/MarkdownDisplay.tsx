@@ -11,6 +11,7 @@ import { theme } from "../semantic-colors.ts";
 import { colorizeCode } from "./CodeColorizer.tsx";
 import { TableRenderer } from "./TableRenderer.tsx";
 import { RenderInline } from "./InlineMarkdownRenderer.tsx";
+import { useSettings } from "../contexts/SettingsContext.tsx";
 
 interface MarkdownDisplayProps {
   text: string;
@@ -33,6 +34,7 @@ const MarkdownDisplayInternal: React.FC<MarkdownDisplayProps> = ({
   terminalWidth,
   renderMarkdown = true,
 }) => {
+  const settings = useSettings();
   const responseColor = theme.text.response ?? theme.text.primary;
 
   if (!text) return <></>;
@@ -43,7 +45,7 @@ const MarkdownDisplayInternal: React.FC<MarkdownDisplayProps> = ({
       code: text,
       language: "markdown",
       maxWidth: terminalWidth - CODE_BLOCK_PREFIX_PADDING,
-      showLineNumbers: false,
+      hideLineNumbers: true,
     });
     return (
       <Box paddingLeft={CODE_BLOCK_PREFIX_PADDING} flexDirection="column">
@@ -320,8 +322,9 @@ const RenderCodeBlockInternal: React.FC<RenderCodeBlockProps> = ({
   availableTerminalHeight,
   terminalWidth,
 }) => {
-  const MIN_LINES_FOR_MESSAGE = 1; // 显示消息前的最小行数
-  const RESERVED_LINES = 2; // 为消息本身和潜在填充保留的行数
+  const settings = useSettings();
+  const MIN_LINES_FOR_MESSAGE = 1;
+  const RESERVED_LINES = 2;
 
   // 流式代码块截断：避免在非 alternate buffer 模式下触发闪烁
   if (isPending && availableTerminalHeight !== undefined) {
@@ -332,7 +335,6 @@ const RenderCodeBlockInternal: React.FC<RenderCodeBlockProps> = ({
 
     if (content.length > MAX_CODE_LINES_WHEN_PENDING) {
       if (MAX_CODE_LINES_WHEN_PENDING < MIN_LINES_FOR_MESSAGE) {
-        // 空间不足以有意义地显示消息
         return (
           <Box paddingLeft={CODE_BLOCK_PREFIX_PADDING}>
             <Text color={theme.text.secondary}>
@@ -345,12 +347,12 @@ const RenderCodeBlockInternal: React.FC<RenderCodeBlockProps> = ({
       const colorizedTruncatedCode = colorizeCode({
         code: truncatedContent.join("\n"),
         language: lang,
+        availableHeight: availableTerminalHeight,
         maxWidth: terminalWidth - CODE_BLOCK_PREFIX_PADDING,
-        showLineNumbers: true,
+        hideLineNumbers: settings.hideLineNumbers,
       });
       return (
         <Box paddingLeft={CODE_BLOCK_PREFIX_PADDING} flexDirection="column">
-          {lang && <Text dimColor>{lang}</Text>}
           {colorizedTruncatedCode}
           <Text color={theme.text.secondary}>... generating more ...</Text>
         </Box>
@@ -362,8 +364,9 @@ const RenderCodeBlockInternal: React.FC<RenderCodeBlockProps> = ({
   const colorizedCode = colorizeCode({
     code: fullContent,
     language: lang,
+    availableHeight: availableTerminalHeight,
     maxWidth: terminalWidth - CODE_BLOCK_PREFIX_PADDING,
-    showLineNumbers: true,
+    hideLineNumbers: settings.hideLineNumbers,
   });
 
   return (
@@ -373,7 +376,6 @@ const RenderCodeBlockInternal: React.FC<RenderCodeBlockProps> = ({
       width={terminalWidth}
       flexShrink={0}
     >
-      {lang && <Text dimColor>{lang}</Text>}
       {colorizedCode}
     </Box>
   );

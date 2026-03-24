@@ -114,8 +114,17 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
         status: mapToolCallStatus(t.status),
         result: t.resultDisplay?.content,
         isError: t.resultDisplay?.isError,
+        renderOutputAsMarkdown: t.renderOutputAsMarkdown,
+        progressMessage: t.progressMessage,
       }));
-      return <ToolGroupMessage tools={tools} terminalWidth={width} />;
+      return (
+        <ToolGroupMessage
+          tools={tools}
+          terminalWidth={width}
+          borderTop={item.borderTop}
+          borderBottom={item.borderBottom}
+        />
+      );
     }
 
     case "compression":

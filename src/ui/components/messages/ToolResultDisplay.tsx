@@ -1,0 +1,178 @@
+/**
+ * 工具结果展示组件
+ *
+ * 根据结果类型分发到不同的渲染方式：
+ * - Diff → DiffRenderer
+ * - 错误 → 红色文本
+ * - ANSI 输出 → AnsiOutputText
+ * - JSON → pretty-print
+ * - Markdown → MarkdownDisplay
+ * - 长文本 → SlicingMaxSizedBox 截断
+ * - 短文本 → 直接显示
+ *
+ * 参考 gemini-cli/packages/cli/src/ui/components/messages/ToolResultDisplay.tsx
+ */
+
+import React from 'react';
+import { DiffRenderer } from '../DiffRenderer.tsx';
+import { MarkdownDisplay } from '../MarkdownDisplay.tsx';
+import { AnsiOutputText } from '../AnsiOutput.tsx';
+import { SlicingMaxSizedBox } from '../SlicingMaxSizedBox.tsx';
+import { useUIState } from '../../contexts/UIStateContext.tsx';
+import type { AnsiOutput } from '../../types/ansi.ts';
+
+/** 最大结果字符数（超过此值预先截断，避免性能问题） */
+const MAXIMUM_RESULT_DISPLAY_CHARACTERS = 20_000;
+
+/** 默认最大行数 */
+const DEFAULT_MAX_LINES = 20;
+
+/** 尝试解析 JSON 字符串 */
+function tryParseJSON(str: string): object | null {
+  try {
+    const trimmed = str.trim();
+    if (
+      (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+      (trimmed.startsWith('[') && trimmed.endsWith(']'))
+    ) {
+      return JSON.parse(trimmed) as object;
+    }
+  } catch {
+    // 不是有效 JSON
+  }
+  return null;
+}
+
+/**
+ * 检测字符串是否包含 ANSI 转义序列
+ * 简单检测 ESC[ 序列
+ */
+function containsAnsiEscapes(str: string): boolean {
+  // eslint-disable-next-line no-control-regex
+  return /\x1b\[/.test(str);
+}
+
+/**
+ * 将包含 ANSI 转义码的字符串解析为 AnsiOutput 结构
+ * 简化版：按行分割，每行作为单个 token
+ */
+function parseAnsiString(str: string): AnsiOutput {
+  const lines = str.split(/\r?\n/);
+  return lines.map(line => [{
+    text: line,
+    bold: false,
+    italic: false,
+    underline: false,
+    dim: false,
+    inverse: false,
+    fg: '',
+    bg: '',
+  }]);
+}
+
+export interface ToolResultDisplayProps {
+  resultDisplay: string | undefined;
+  terminalWidth: number;
+  renderOutputAsMarkdown?: boolean;
+  maxLines?: number;
+  overflowDirection?: 'top' | 'bottom';
+  /** 是否为 diff 内容 */
+  isDiff?: boolean;
+  /** 文件名（用于 diff 语法高亮） */
+  filename?: string;
+  /** 是否为错误结果 */
+  isError?: boolean;
+}
+
+export const ToolResultDisplay: React.FC<ToolResultDisplayProps> = ({
+  resultDisplay,
+  terminalWidth,
+  renderOutputAsMarkdown = false,
+  maxLines = DEFAULT_MAX_LINES,
+  overflowDirection = 'top',
+  isDiff = false,
+  filename,
+  isError = false,
+}) => {
+  const { renderMarkdown } = useUIState();
+
+  if (!resultDisplay) return null;
+
+  // 0. 预先截断超长内容，避免性能问题
+  let content = resultDisplay;
+  if (content.length > MAXIMUM_RESULT_DISPLAY_CHARACTERS) {
+    if (overflowDirection === 'bottom') {
+      content = content.slice(0, MAXIMUM_RESULT_DISPLAY_CHARACTERS) + '...';
+    } else {
+      content = '...' + content.slice(-MAXIMUM_RESULT_DISPLAY_CHARACTERS);
+    }
+  }
+
+  // 1. Diff 内容 → DiffRenderer
+  if (isDiff) {
+    return (
+      <DiffRenderer
+        diffContent={content}
+        filename={filename}
+        terminalWidth={terminalWidth}
+      />
+    );
+  }
+
+  // 2. 错误结果 → 红色文本 + 截断
+  if (isError) {
+    return (
+      <SlicingMaxSizedBox
+        text={content}
+        maxLines={maxLines}
+        overflowDirection="bottom"
+      />
+    );
+  }
+
+  // 3. ANSI 输出 → AnsiOutputText
+  if (containsAnsiEscapes(content)) {
+    const ansiData = parseAnsiString(content);
+    return (
+      <AnsiOutputText
+        data={ansiData}
+        width={terminalWidth}
+        maxLines={maxLines}
+      />
+    );
+  }
+
+  // 4. JSON 字符串 → pretty-print
+  const prettyJSON = tryParseJSON(content);
+  if (prettyJSON) {
+    const formatted = JSON.stringify(prettyJSON, null, 2);
+    return (
+      <SlicingMaxSizedBox
+        text={formatted}
+        maxLines={maxLines}
+        overflowDirection={overflowDirection}
+      />
+    );
+  }
+
+  // 5. Markdown 渲染
+  if (renderOutputAsMarkdown) {
+    return (
+      <MarkdownDisplay
+        text={content}
+        terminalWidth={terminalWidth}
+        renderMarkdown={renderMarkdown}
+        isPending={false}
+      />
+    );
+  }
+
+  // 6. 普通文本 → SlicingMaxSizedBox 统一截断
+  return (
+    <SlicingMaxSizedBox
+      text={content}
+      maxLines={maxLines}
+      overflowDirection={overflowDirection}
+    />
+  );
+};
