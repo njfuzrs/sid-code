@@ -9,13 +9,13 @@
 
 import React from "react";
 import { Box, useStdout } from "ink";
-import type { DisplayItem } from "../App.tsx";
-import { MessageItemRenderer } from "./MessageItemRenderer.tsx";
+import type { HistoryItem } from "../types.ts";
+import { HistoryItemDisplay } from "./HistoryItemDisplay.tsx";
 import { DEFAULT_TERM_WIDTH } from "../markdown.ts";
 
 interface QuittingDisplayProps {
-  /** 要渲染的所有 DisplayItem */
-  items: DisplayItem[];
+  /** 要渲染的所有 HistoryItem */
+  items: HistoryItem[];
 }
 
 export const QuittingDisplay = React.memo(function QuittingDisplay({
@@ -31,10 +31,11 @@ export const QuittingDisplay = React.memo(function QuittingDisplay({
   return (
     <Box flexDirection="column" width={termWidth} marginBottom={1}>
       {items.map((item, index) => (
-        <MessageItemRenderer
-          key={index}
+        <HistoryItemDisplay
+          key={item.id}
           item={item}
           prevItem={index > 0 ? items[index - 1] : undefined}
+          terminalWidth={termWidth}
         />
       ))}
     </Box>

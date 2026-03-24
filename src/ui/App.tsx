@@ -10,50 +10,44 @@
  */
 
 import React, { useState, useCallback, useEffect, useRef, useMemo } from "react";
-import { Box, Text, useApp, useStdout } from "ink";
-import { InputArea } from "./InputArea.tsx";
-import { ToolStatus } from "./ToolStatus.tsx";
-import { StatusBar } from "./StatusBar.tsx";
+import { useApp, useStdout } from "ink";
 import { KeypressProvider, useKeypress, KeypressPriority, type Key } from "./contexts/KeypressContext.tsx";
 import { ScrollProvider, useScrollState } from "./contexts/ScrollProvider.tsx";
 import { TerminalProvider } from "./contexts/TerminalContext.tsx";
 import { MouseProvider, enableMouseEvents, disableMouseEvents } from "./contexts/MouseContext.tsx";
 import { OverflowProvider } from "./contexts/OverflowContext.tsx";
 import { UIStateProvider, useUIActions } from "./contexts/UIStateContext.tsx";
-import { DialogRenderer } from "./components/DialogManager.tsx";
-import { MainContent } from "./components/MainContent.tsx";
+import { StreamingProvider } from "./contexts/StreamingContext.tsx";
+import { ConfigProvider, type ConfigContextValue } from "./contexts/ConfigContext.tsx";
+import { SessionProvider, type SessionContextValue } from "./contexts/SessionContext.tsx";
+import { SettingsProvider } from "./contexts/SettingsContext.tsx";
 import { AlternateBufferQuittingDisplay } from "./components/AlternateBufferQuittingDisplay.tsx";
-import { CopyModeWarning } from "./components/CopyModeWarning.tsx";
-import { Notifications } from "./components/Notifications.tsx";
-import { ToastDisplay, shouldShowToast } from "./components/ToastDisplay.tsx";
+import { DefaultAppLayout } from "./components/DefaultAppLayout.tsx";
 import type { StateBridge } from "./state-bridge.ts";
 import type { Message, Usage } from "../llm/types.ts";
+import type { HistoryItem } from "./types.ts";
+import { StreamingState } from "./types.ts";
+import { messagesToHistoryItems, isPlaceholderMessage } from "./history-adapter.ts";
 import { getLogger } from "../debug/logger.ts";
-import { theme } from "./semantic-colors.ts";
 import { DEFAULT_TERM_WIDTH } from "./markdown.ts";
 
-/** 占位消息文本常量 */
-const PLACEHOLDER_TEXT = "[系统] 自动插入占位消息以保持角色交替";
+// ── 向后兼容导出（供 app.ts 过渡期使用） ──
 
-/** 渲染数据源联合类型 */
+/** @deprecated 使用 HistoryItem 替代 */
 export type DisplayItem =
   | { kind: "message"; message: Message }
   | { kind: "system"; text: string }
   | { kind: "command"; input: string; output: string | null };
 
-/** 判断是否为占位消息 */
-export function isPlaceholderMessage(msg: Message): boolean {
-  return msg.content.length === 1
-    && msg.content[0].type === "text"
-    && msg.content[0].text === PLACEHOLDER_TEXT;
-}
-
-/** 从消息数组构建 DisplayItem（过滤占位消息） */
+/** @deprecated 使用 messagesToHistoryItems 替代 */
 export function messagesToDisplayItems(msgs: Message[]): DisplayItem[] {
   return msgs
     .filter(m => !isPlaceholderMessage(m))
     .map(m => ({ kind: "message" as const, message: m }));
 }
+
+// 重新导出供外部使用
+export { isPlaceholderMessage, messagesToHistoryItems };
 
 /** TUI 回调接口 */
 export interface TUICallbacks {
@@ -78,7 +72,10 @@ export interface ShellConfirmRequestInfo {
 /** TUI 状态（由外部 App 驱动） */
 export interface TUIState {
   messages: Message[];
+  /** @deprecated 使用 historyItems 替代 */
   displayItems: DisplayItem[];
+  /** HistoryItem 渲染数据（新类型系统） */
+  historyItems: HistoryItem[];
   isLoading: boolean;
   toolName: string | null;
   toolInput: unknown;
@@ -120,55 +117,8 @@ interface AppProps {
   bridge: StateBridge;
 }
 
-/** 空状态 Logo 组件 */
-function EmptyLogo({ termWidth }: { termWidth: number }) {
-  const logoLines = [
-    "   _____ _     _     _____          _      ",
-    "  / ____(_)   | |   / ____|        | |     ",
-    " | (___  _  __| |  | |     ___   __| | ___ ",
-    "  \\___ \\| |/ _` |  | |    / _ \\ / _` |/ _ \\",
-    "  ____) | | (_| |  | |___| (_) | (_| |  __/",
-    " |_____/|_|\\__,_|   \\_____\\___/ \\__,_|\\___|",
-  ];
-  const margin = 2;
-  const boxInner = Math.max(47, termWidth - margin * 2 - 2);
-  const topLine = "╭" + "─".repeat(boxInner) + "╮";
-  const botLine = "╰" + "─".repeat(boxInner) + "╯";
-  const emptyLine = "│" + " ".repeat(boxInner) + "│";
-  const version = `v${require("../../package.json").version}  ·  AI-Powered Coding Assistant`;
-  const vLeft = Math.floor(Math.max(0, boxInner - version.length) / 2);
-  const vRight = Math.max(0, boxInner - version.length - vLeft);
-
-  return (
-    <Box flexDirection="column" paddingX={margin} paddingY={1}>
-      <Text color={theme.ui.active}>{topLine}</Text>
-      <Text color={theme.ui.active}>{emptyLine}</Text>
-      {logoLines.map((line, i) => {
-        const left = Math.floor(Math.max(0, boxInner - line.length) / 2);
-        const right = Math.max(0, boxInner - line.length - left);
-        return (
-          <Box key={`logo-${i}`}>
-            <Text color={theme.ui.active}>{"│"}</Text>
-            <Text>{" ".repeat(left)}</Text>
-            <Text color={theme.ui.active} bold>{line}</Text>
-            <Text>{" ".repeat(right)}</Text>
-            <Text color={theme.ui.active}>{"│"}</Text>
-          </Box>
-        );
-      })}
-      <Text color={theme.ui.active}>{emptyLine}</Text>
-      <Box>
-        <Text color={theme.ui.active}>{"│"}</Text>
-        <Text>{" ".repeat(vLeft)}</Text>
-        <Text dimColor>{version}</Text>
-        <Text>{" ".repeat(vRight)}</Text>
-        <Text color={theme.ui.active}>{"│"}</Text>
-      </Box>
-      <Text color={theme.ui.active}>{emptyLine}</Text>
-      <Text color={theme.ui.active}>{botLine}</Text>
-    </Box>
-  );
-}
+// ── 流式虚拟 HistoryItem（用于在列表末尾插入流式内容） ──
+const STREAMING_ITEM_ID = -1;
 
 /** 内部 App 组件（在 Provider 内部，可使用 useKeypress） */
 function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
@@ -215,13 +165,11 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
   });
 
   // Copy Mode 切换（Ctrl+S 进入，任意非导航键退出）
-  // 参考 Gemini CLI：命令式调用 enableMouseEvents/disableMouseEvents 以立即生效
   useKeypress(KeypressPriority.High, (key: Key) => {
     if (key.ctrl && key.name === "s") {
       const next = !state.copyModeEnabled;
       log.info("UI:APP", `Copy Mode ${next ? "启用" : "禁用"}`);
       bridge.update({ copyModeEnabled: next });
-      // 立即切换鼠标事件（不等 React 渲染）
       if (next) {
         disableMouseEvents();
       } else {
@@ -229,22 +177,19 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
       }
       return true;
     }
-    // Copy Mode 下，非导航键退出
     if (state.copyModeEnabled) {
       const navKeys = new Set(["pageup", "pagedown", "up", "down", "home", "end"]);
       if (!navKeys.has(key.name || "")) {
         log.info("UI:APP", "Copy Mode 退出（非导航键）");
         bridge.update({ copyModeEnabled: false });
-        // 立即恢复鼠标事件
         enableMouseEvents();
-        // 不消费按键，让后续处理器处理
         return false;
       }
     }
     return false;
   });
 
-  // Alt+M 切换 Markdown 渲染（参考 gemini-cli）
+  // Alt+M 切换 Markdown 渲染
   useKeypress(KeypressPriority.High, (key: Key) => {
     if (key.alt && key.name === "m") {
       log.info("UI:APP", "切换 Markdown 渲染模式");
@@ -254,21 +199,17 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
     return false;
   });
 
-  // Ctrl+O 切换高度限制（显示更多/折叠）
+  // Ctrl+O 切换高度限制
   useKeypress(KeypressPriority.High, (key: Key) => {
     if (key.ctrl && key.name === "o") {
       log.info("UI:APP", "切换高度限制");
       setConstrainHeight((prev: boolean) => !prev);
       setShowIsExpandableHint(true);
-      // 3 秒后自动隐藏提示
       setTimeout(() => setShowIsExpandableHint(false), 3000);
       return true;
     }
     return false;
   });
-
-  // 注意：滚动快捷键（PageUp/PageDown/Shift+↑↓/Home/End）和鼠标滚轮
-  // 已由 ScrollableList + ScrollProvider 内部处理，无需在此重复注册
 
   const handleSubmit = useCallback(async (text: string) => {
     log.info("UI:INPUT", `handleSubmit: "${text.slice(0, 100)}"`);
@@ -289,70 +230,93 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
     }
   }, [callbacks, exit]);
 
-  const isEmpty = state.displayItems.length === 0 && !state.isStreaming;
+  const isEmpty = state.historyItems.length === 0 && !state.isStreaming;
   const termWidth = stdout.columns || DEFAULT_TERM_WIDTH;
   const rows = stdout.rows || 24;
 
-  // 构建包含流式内容的完整数据数组（Alternate Buffer 模式用）
-  const listData = useMemo(() => {
-    const items: DisplayItem[] = [...state.displayItems];
+  // 从 TUIState 派生 StreamingState
+  const streamingState = useMemo((): StreamingState => {
+    if (state.permissionRequest || state.shellConfirmRequest) return StreamingState.WaitingForConfirmation;
+    if (state.isStreaming || state.isToolExecuting) return StreamingState.Responding;
+    return StreamingState.Idle;
+  }, [state.permissionRequest, state.shellConfirmRequest, state.isStreaming, state.isToolExecuting]);
+
+  // 派生 ConfigContext 值
+  const configValue = useMemo((): ConfigContextValue => ({
+    model: state.model,
+    provider: state.provider,
+    permissionMode: state.permissionMode,
+    gitBranch: state.gitBranch,
+    debug: state.debug,
+    cwd: state.cwd,
+    commands: state.commands,
+  }), [state.model, state.provider, state.permissionMode, state.gitBranch, state.debug, state.cwd, state.commands]);
+
+  // 派生 SessionContext 值
+  const sessionValue = useMemo((): SessionContextValue => ({
+    usage: state.usage,
+    costUSD: state.costUSD,
+    costLimit: state.costLimit,
+    contextPercent: state.contextPercent,
+  }), [state.usage, state.costUSD, state.costLimit, state.contextPercent]);
+
+  // 构建包含流式内容的完整 HistoryItem 数组
+  const listData = useMemo((): HistoryItem[] => {
+    const items: HistoryItem[] = [...state.historyItems];
     if (state.isStreaming && state.streamingText) {
-      items.push({ kind: "system" as const, text: "__streaming__" });
+      // 插入一个虚拟的流式 HistoryItem
+      items.push({
+        id: STREAMING_ITEM_ID,
+        type: "assistant",
+        text: "__streaming__",
+      });
     }
     return items;
-  }, [state.displayItems, state.isStreaming, state.streamingText]);
+  }, [state.historyItems, state.isStreaming, state.streamingText]);
 
   // key 提取器
-  const keyExtractor = useCallback((item: DisplayItem, index: number): string => {
-    if (item.kind === "system" && item.text === "__streaming__") return "streaming-tail";
-    if (item.kind === "system") return `sys-${index}-${item.text.slice(0, 20)}`;
-    if (item.kind === "command") return `cmd-${index}-${item.input.slice(0, 20)}`;
-    const msg = item.message;
-    const first = msg.content[0];
-    if (first?.type === "text") return `msg-${index}-${msg.role}-${first.text.slice(0, 16)}`;
-    if (first?.type === "tool_use") return `msg-${index}-${msg.role}-tu-${first.id}`;
-    if (first?.type === "tool_result") return `msg-${index}-${msg.role}-tr-${first.tool_use_id}`;
-    return `msg-${index}-${msg.role}`;
+  const keyExtractor = useCallback((item: HistoryItem, _index: number): string => {
+    if (item.id === STREAMING_ITEM_ID) return "streaming-tail";
+    return `hi-${item.id}-${item.type}`;
   }, []);
 
   // 高度估算
   const estimatedItemHeight = useCallback((index: number): number => {
     const item = listData[index];
     if (!item) return 1;
-    if (item.kind === "system") {
-      if (item.text === "__streaming__") {
+
+    if (item.id === STREAMING_ITEM_ID) {
+      const effectiveWidth = Math.max(1, termWidth - 12);
+      return Math.max(1, Math.ceil((state.streamingText?.length || 0) / effectiveWidth));
+    }
+
+    switch (item.type) {
+      case "user":
+      case "command":
+        return Math.max(1, Math.ceil((item.text?.length || 0) / Math.max(1, termWidth - 12)));
+      case "assistant":
+      case "assistant_content": {
         const effectiveWidth = Math.max(1, termWidth - 12);
-        return Math.max(1, Math.ceil((state.streamingText?.length || 0) / effectiveWidth));
+        return Math.max(1, Math.ceil(((item.text?.length || 0) * 1.3) / effectiveWidth));
       }
-      return 1;
+      case "tool_group":
+        return item.tools.length * 2;
+      case "thinking":
+        return Math.max(2, (item.thought.text?.split("\n").length || 0) + 1);
+      default:
+        return 1;
     }
-    if (item.kind === "command") {
-      let lines = 2;
-      if (item.output) lines += item.output.split("\n").length;
-      return lines;
-    }
-    const msg = item.message;
-    let totalLines = 0;
-    const effectiveWidth = Math.max(1, termWidth - 12);
-    for (const block of msg.content) {
-      if (block.type === "text") {
-        totalLines += Math.max(1, Math.ceil((block.text.length * 1.3) / effectiveWidth));
-      } else {
-        totalLines += 1;
-      }
-    }
-    return Math.max(1, totalLines);
   }, [listData, termWidth, state.streamingText]);
 
   // 获取滚动百分比
   const scrollState = getScrollState();
   const scrollPercent = scrollState ? scrollState.percent : undefined;
 
-  // 退出回显模式：渲染完整对话历史到主缓冲区
+  // 退出回显模式
   if (state.isQuitting) {
     return (
       <AlternateBufferQuittingDisplay
-        displayItems={state.displayItems}
+        historyItems={state.historyItems}
         streamingText={state.isStreaming ? state.streamingText : undefined}
       />
     );
@@ -360,101 +324,68 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
 
   // ── 固定高度布局 ──
   return (
-    <Box
-      flexDirection="column"
-      width={termWidth}
-      height={rows}
-      paddingBottom={state.copyModeEnabled ? 0 : 1}
-      flexShrink={0}
-      flexGrow={0}
-      overflow="hidden"
+    <ConfigProvider value={configValue}>
+    <SessionProvider value={sessionValue}>
+    <StreamingProvider
+      streamingState={streamingState}
+      streamingText={state.streamingText}
+      toolName={state.toolName}
+      toolInput={state.toolInput}
+      isToolExecuting={state.isToolExecuting}
+      lastToolResult={state.lastToolResult}
+      statusMessage={state.statusMessage}
     >
-      {/* 消息区域 */}
-      <Box flexGrow={1}>
-        {isEmpty ? (
-          <Box flexDirection="column" justifyContent="center" alignItems="center" width={termWidth}>
-            <EmptyLogo termWidth={termWidth} />
-          </Box>
-        ) : (
-          <MainContent
-            listData={listData}
-            streamingText={state.streamingText}
-            isStreaming={state.isStreaming}
-            termWidth={termWidth}
-            hasFocus={true}
-            estimatedItemHeight={estimatedItemHeight}
-            keyExtractor={keyExtractor}
-            copyModeEnabled={state.copyModeEnabled}
-          />
-        )}
-      </Box>
-
-        {/* 底部固定区域 */}
-        <Box flexDirection="column" flexShrink={0}>
-          <CopyModeWarning enabled={state.copyModeEnabled} />
-
-          {/* 通知系统 */}
-          <Notifications />
-
-          {/* Toast 提示 */}
-          <ToastDisplay />
-
-          {state.statusMessage ? (
-            <Box paddingX={1}>
-              <Text color={theme.status.warning}>{state.statusMessage}</Text>
-            </Box>
-          ) : null}
-
-          <ToolStatus
-            toolName={state.toolName}
-            isExecuting={state.isToolExecuting}
-            toolInput={state.toolInput}
-            lastResult={state.lastToolResult}
-          />
-
-          {(state.permissionRequest || state.shellConfirmRequest) ? (
-            <DialogRenderer
-              permissionRequest={state.permissionRequest}
-              shellConfirmRequest={state.shellConfirmRequest ?? null}
-            />
-          ) : (
-            <InputArea onSubmit={handleSubmit} isLoading={state.isLoading} commands={state.commands} cwd={state.cwd} />
-          )}
-
-          <StatusBar
-            permissionMode={state.permissionMode}
-            gitBranch={state.gitBranch}
-            debug={state.debug}
-            usage={state.usage}
-            costUSD={state.costUSD}
-            costLimit={state.costLimit}
-            contextPercent={state.contextPercent}
-            model={state.model}
-            scrollPercent={scrollPercent}
-          />
-        </Box>
-      </Box>
-    );
-  }
+      <DefaultAppLayout
+        listData={listData}
+        streamingText={state.streamingText}
+        isStreaming={state.isStreaming}
+        isEmpty={isEmpty}
+        termWidth={termWidth}
+        rows={rows}
+        estimatedItemHeight={estimatedItemHeight}
+        keyExtractor={keyExtractor}
+        copyModeEnabled={state.copyModeEnabled}
+        statusMessage={state.statusMessage}
+        toolName={state.toolName}
+        isToolExecuting={state.isToolExecuting}
+        toolInput={state.toolInput}
+        lastToolResult={state.lastToolResult}
+        permissionRequest={state.permissionRequest}
+        shellConfirmRequest={state.shellConfirmRequest}
+        isLoading={state.isLoading}
+        commands={state.commands}
+        cwd={state.cwd}
+        onSubmit={handleSubmit}
+        permissionMode={state.permissionMode}
+        gitBranch={state.gitBranch}
+        debug={state.debug}
+        usage={state.usage}
+        costUSD={state.costUSD}
+        costLimit={state.costLimit}
+        contextPercent={state.contextPercent}
+        model={state.model}
+        scrollPercent={scrollPercent}
+      />
+    </StreamingProvider>
+    </SessionProvider>
+    </ConfigProvider>
+  );
+}
 
 
 /** 顶层 TUI 组件：包裹 Provider 层 */
 export function TUIApp(props: AppProps) {
-  // 拖拽选择警告：提示用户按 Ctrl+S 进入 Copy Mode（防抖）
   const selectionWarningTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSelectionWarning = useRef(0);
   const handleSelectionWarning = useCallback(() => {
     const now = Date.now();
-    // 2 秒内不重复提示
     if (now - lastSelectionWarning.current < 2000) return;
     lastSelectionWarning.current = now;
 
     props.bridge.update({
       statusMessage: "按 Ctrl+S 进入 Copy Mode 以选择和复制文本",
     });
-    // 清除之前的定时器
     if (selectionWarningTimer.current) clearTimeout(selectionWarningTimer.current);
-    // 3 秒后自动清除提示
     selectionWarningTimer.current = setTimeout(() => {
       props.bridge.update({ statusMessage: "" });
       selectionWarningTimer.current = null;
@@ -467,9 +398,11 @@ export function TUIApp(props: AppProps) {
         <MouseProvider onSelectionWarning={handleSelectionWarning}>
           <ScrollProvider>
             <OverflowProvider>
-              <UIStateProvider>
-                <TUIAppInner {...props} />
-              </UIStateProvider>
+              <SettingsProvider>
+                <UIStateProvider>
+                  <TUIAppInner {...props} />
+                </UIStateProvider>
+              </SettingsProvider>
             </OverflowProvider>
           </ScrollProvider>
         </MouseProvider>

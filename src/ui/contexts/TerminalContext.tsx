@@ -7,17 +7,28 @@
  * 参考 gemini-cli/packages/cli/src/ui/contexts/TerminalContext.tsx
  */
 
-import React, { createContext, useContext, useCallback, useEffect, useRef, useMemo } from "react";
+import React, { createContext, useContext, useCallback, useEffect, useRef, useMemo, useState } from "react";
 import { useStdin, useStdout } from "ink";
 import { TerminalCapabilityManager } from "../utils/terminalCapabilityManager.ts";
+import { DEFAULT_TERM_WIDTH } from "../markdown.ts";
 
 export type TerminalEventHandler = (event: string) => void;
+
+/** 终端尺寸信息 */
+export interface TerminalDimensions {
+  /** 终端宽度（列数） */
+  width: number;
+  /** 终端高度（行数） */
+  height: number;
+}
 
 interface TerminalContextValue {
   subscribe: (handler: TerminalEventHandler) => void;
   unsubscribe: (handler: TerminalEventHandler) => void;
   /** 查询终端背景色（异步，100ms 超时） */
   queryTerminalBackground: () => Promise<void>;
+  /** 终端尺寸（响应式，窗口 resize 时自动更新） */
+  dimensions: TerminalDimensions;
 }
 
 const TerminalCtx = createContext<TerminalContextValue | undefined>(undefined);
@@ -28,6 +39,11 @@ export function useTerminalContext() {
     throw new Error("useTerminalContext 必须在 TerminalProvider 内使用");
   }
   return context;
+}
+
+/** 便捷 hook：获取终端尺寸 */
+export function useTerminalDimensions(): TerminalDimensions {
+  return useTerminalContext().dimensions;
 }
 
 export function TerminalProvider({ children }: { children: React.ReactNode }) {
@@ -89,9 +105,26 @@ export function TerminalProvider({ children }: { children: React.ReactNode }) {
     };
   }, [stdin, subscribers]);
 
+  // 终端尺寸响应式状态
+  const [dimensions, setDimensions] = useState<TerminalDimensions>({
+    width: stdout.columns || DEFAULT_TERM_WIDTH,
+    height: stdout.rows || 24,
+  });
+
+  useEffect(() => {
+    const handleResize = () => {
+      setDimensions({
+        width: stdout.columns || DEFAULT_TERM_WIDTH,
+        height: stdout.rows || 24,
+      });
+    };
+    stdout.on("resize", handleResize);
+    return () => { stdout.removeListener("resize", handleResize); };
+  }, [stdout]);
+
   const contextValue = useMemo(
-    () => ({ subscribe, unsubscribe, queryTerminalBackground }),
-    [subscribe, unsubscribe, queryTerminalBackground],
+    () => ({ subscribe, unsubscribe, queryTerminalBackground, dimensions }),
+    [subscribe, unsubscribe, queryTerminalBackground, dimensions],
   );
 
   return (

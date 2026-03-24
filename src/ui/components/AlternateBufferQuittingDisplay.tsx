@@ -10,21 +10,21 @@
 
 import React from "react";
 import { Box, Text, useStdout } from "ink";
-import type { DisplayItem } from "../App.tsx";
+import type { HistoryItem } from "../types.ts";
 import { QuittingDisplay } from "./QuittingDisplay.tsx";
 import { theme } from "../semantic-colors.ts";
 import { DEFAULT_TERM_WIDTH } from "../markdown.ts";
 
 interface AlternateBufferQuittingDisplayProps {
   /** 完整的对话历史 */
-  displayItems: DisplayItem[];
+  historyItems: HistoryItem[];
   /** 流式输出中的文本（如果退出时正在流式输出） */
   streamingText?: string;
 }
 
 export const AlternateBufferQuittingDisplay = React.memo(
   function AlternateBufferQuittingDisplay({
-    displayItems,
+    historyItems,
     streamingText,
   }: AlternateBufferQuittingDisplayProps) {
     const { stdout } = useStdout();
@@ -49,7 +49,7 @@ export const AlternateBufferQuittingDisplay = React.memo(
         </Box>
 
         {/* 完整对话历史 */}
-        <QuittingDisplay items={displayItems} />
+        <QuittingDisplay items={historyItems} />
 
         {/* 如果退出时正在流式输出，显示未完成的文本 */}
         {streamingText ? (

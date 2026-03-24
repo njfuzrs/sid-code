@@ -10,15 +10,15 @@
 import React, { useCallback, memo } from "react";
 import { ScrollableList } from "./ScrollableList.tsx";
 import { SCROLL_TO_ITEM_END } from "./VirtualizedList.tsx";
-import { MessageItemRenderer } from "./MessageItemRenderer.tsx";
+import { HistoryItemDisplay } from "./HistoryItemDisplay.tsx";
 import { StreamingMessage } from "./StreamingMessage.tsx";
-import type { DisplayItem } from "../App.tsx";
+import type { HistoryItem } from "../types.ts";
 
-const MemoizedMessageItemRenderer = memo(MessageItemRenderer);
+const STREAMING_ITEM_ID = -1;
 
 interface MainContentProps {
   /** 完整数据列表（含流式虚拟项） */
-  listData: DisplayItem[];
+  listData: HistoryItem[];
   /** 流式输出文本 */
   streamingText: string;
   /** 是否正在流式输出 */
@@ -30,7 +30,7 @@ interface MainContentProps {
   /** 高度估算回调 */
   estimatedItemHeight: (index: number) => number;
   /** key 提取器 */
-  keyExtractor: (item: DisplayItem, index: number) => string;
+  keyExtractor: (item: HistoryItem, index: number) => string;
   /** Copy Mode：禁用 Ink 滚动，允许终端原生文本选择 */
   copyModeEnabled?: boolean;
 }
@@ -45,9 +45,9 @@ export const MainContent = memo(function MainContent({
   copyModeEnabled,
 }: MainContentProps) {
 
-  const renderListItem = useCallback(({ item, index }: { item: DisplayItem; index: number }) => {
+  const renderListItem = useCallback(({ item, index }: { item: HistoryItem; index: number }) => {
     // 流式内容特殊项
-    if (item.kind === "system" && item.text === "__streaming__") {
+    if (item.id === STREAMING_ITEM_ID) {
       return (
         <StreamingMessage
           fullText={streamingText}
@@ -56,7 +56,13 @@ export const MainContent = memo(function MainContent({
       ) as React.ReactElement;
     }
     const prevItem = index > 0 ? listData[index - 1] : undefined;
-    return (<MemoizedMessageItemRenderer item={item} prevItem={prevItem} />) as React.ReactElement;
+    return (
+      <HistoryItemDisplay
+        item={item}
+        prevItem={prevItem}
+        terminalWidth={termWidth}
+      />
+    ) as React.ReactElement;
   }, [listData, streamingText, termWidth]);
 
   return (

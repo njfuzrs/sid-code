@@ -42,6 +42,8 @@ export interface UIState {
   ctrlDPressedOnce: boolean;
   /** 是否显示 Escape 提示 */
   showEscapePrompt: boolean;
+  /** 对话框是否可见（统一控制：对话框和输入区互斥） */
+  dialogsVisible: boolean;
 }
 
 /** UI 操作 */
@@ -56,6 +58,7 @@ export interface UIActions {
   setCtrlCPressedOnce: (value: boolean) => void;
   setCtrlDPressedOnce: (value: boolean) => void;
   setShowEscapePrompt: (value: boolean) => void;
+  setDialogsVisible: (value: boolean) => void;
 }
 
 const UIStateContext = createContext<UIState | undefined>(undefined);
@@ -90,6 +93,7 @@ export const UIStateProvider: React.FC<UIStateProviderProps> = ({ children }) =>
   const [ctrlCPressedOnce, setCtrlCPressedOnce] = useState(false);
   const [ctrlDPressedOnce, setCtrlDPressedOnce] = useState(false);
   const [showEscapePrompt, setShowEscapePrompt] = useState(false);
+  const [dialogsVisible, setDialogsVisible] = useState(false);
 
   const toggleRenderMarkdown = useCallback(() => {
     setRenderMarkdown(prev => !prev);
@@ -108,6 +112,7 @@ export const UIStateProvider: React.FC<UIStateProviderProps> = ({ children }) =>
     ctrlCPressedOnce,
     ctrlDPressedOnce,
     showEscapePrompt,
+    dialogsVisible,
   }), [
     renderMarkdown,
     transientMessage,
@@ -117,6 +122,7 @@ export const UIStateProvider: React.FC<UIStateProviderProps> = ({ children }) =>
     ctrlCPressedOnce,
     ctrlDPressedOnce,
     showEscapePrompt,
+    dialogsVisible,
   ]);
 
   const actions = useMemo<UIActions>(() => ({
@@ -136,6 +142,7 @@ export const UIStateProvider: React.FC<UIStateProviderProps> = ({ children }) =>
     setCtrlCPressedOnce,
     setCtrlDPressedOnce,
     setShowEscapePrompt,
+    setDialogsVisible,
   }), [toggleRenderMarkdown, showTransientMessage]);
 
   return (

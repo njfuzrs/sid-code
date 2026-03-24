@@ -995,6 +995,7 @@ export class App {
     const bridge = new StateBridge({
       messages: [],
       displayItems: [],
+      historyItems: [],
       isLoading: false,
       toolName: null,
       toolInput: null,
@@ -1036,39 +1037,67 @@ export class App {
       bridge.update(patch);
     };
 
-    // DisplayItem 增量同步：追踪上次同步的 ctxMgr 消息数
-    const { messagesToDisplayItems, isPlaceholderMessage } = await import("./ui/App.tsx");
+    // HistoryItem 同步：追踪上次同步的 ctxMgr 消息数
+    const { messagesToDisplayItems } = await import("./ui/App.tsx");
+    const { messagesToHistoryItems } = await import("./ui/history-adapter.ts");
     let lastSyncedCount = 0;
+    let historyIdCounter = 0;
 
+    /** 为 HistoryItemWithoutId[] 分配 id，返回 HistoryItem[] */
+    const assignIds = (items: import("./ui/types.ts").HistoryItemWithoutId[]): import("./ui/types.ts").HistoryItem[] => {
+      return items.map(item => {
+        historyIdCounter += 1;
+        return { ...item, id: historyIdCounter } as import("./ui/types.ts").HistoryItem;
+      });
+    };
 
-    /** 从 ctxMgr 增量同步新消息到 displayItems */
+    /** 从 ctxMgr 增量同步新消息到 historyItems */
     const syncDisplay = (extraPatch?: Partial<import("./ui/App.tsx").TUIState>) => {
       const allMsgs = this.ctxMgr.getMessages();
       const newCount = allMsgs.length - lastSyncedCount;
       if (newCount <= 0 && !extraPatch) return;
 
-      const prevItems = bridge.current.displayItems;
-      const newItems = newCount > 0 ? messagesToDisplayItems(allMsgs.slice(lastSyncedCount)) : [];
-      lastSyncedCount = allMsgs.length;
+      // 旧 DisplayItem 兼容
+      const prevDisplayItems = bridge.current.displayItems;
+      const newDisplayItems = newCount > 0 ? messagesToDisplayItems(allMsgs.slice(lastSyncedCount)) : [];
+      const displayItems = [...prevDisplayItems, ...newDisplayItems];
 
-      const items = [...prevItems, ...newItems];
-      updateState({ messages: allMsgs, displayItems: items, ...extraPatch });
+      // 新 HistoryItem
+      const prevHistoryItems = bridge.current.historyItems;
+      const newHistoryItems = newCount > 0 ? assignIds(messagesToHistoryItems(allMsgs.slice(lastSyncedCount))) : [];
+      const historyItems = [...prevHistoryItems, ...newHistoryItems];
+
+      lastSyncedCount = allMsgs.length;
+      updateState({ messages: allMsgs, displayItems, historyItems, ...extraPatch });
     };
 
-    /** 重建 displayItems（/compact 后消息被压缩，需要完整重建） */
+    /** 重建（/compact 后消息被压缩，需要完整重建） */
     const rebuildDisplay = (extraPatch?: Partial<import("./ui/App.tsx").TUIState>) => {
       const allMsgs = this.ctxMgr.getMessages();
       lastSyncedCount = allMsgs.length;
-      const items = messagesToDisplayItems(allMsgs);
-      updateState({ messages: allMsgs, displayItems: items, ...extraPatch });
+      historyIdCounter = 0;
+      const displayItems = messagesToDisplayItems(allMsgs);
+      const historyItems = assignIds(messagesToHistoryItems(allMsgs));
+      updateState({ messages: allMsgs, displayItems, historyItems, ...extraPatch });
     };
 
     /** 追加命令消息（输入+输出分离，不进 ctxMgr） */
     const appendCommandOutput = (input: string, output: string | null) => {
-      const item = { kind: "command" as const, input, output };
-      const prevItems = bridge.current.displayItems;
-      const items = [...prevItems, item];
-      updateState({ displayItems: items });
+      const displayItem = { kind: "command" as const, input, output };
+      const prevDisplayItems = bridge.current.displayItems;
+      const displayItems = [...prevDisplayItems, displayItem];
+
+      historyIdCounter += 1;
+      const historyItem: import("./ui/types.ts").HistoryItem = {
+        id: historyIdCounter,
+        type: "command",
+        input,
+        output,
+      };
+      const prevHistoryItems = bridge.current.historyItems;
+      const historyItems = [...prevHistoryItems, historyItem];
+
+      updateState({ displayItems, historyItems });
     };
 
     // 设置 TUI 权限确认回调
