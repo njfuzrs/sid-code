@@ -3,16 +3,15 @@
  *
  * 从 TUIAppInner 提取的布局结构，负责：
  * - 消息区域（上方）：MainContent / EmptyLogo
- * - 底部固定区域：通知 / 工具状态 / 对话框或输入框 / 状态栏
+ * - 底部固定区域：通知 / Composer 或 DialogRenderer / Footer
  *
  * 参考 gemini-cli DefaultAppLayout.tsx
  */
 
 import React from "react";
 import { Box, Text } from "ink";
-import { InputArea } from "../InputArea.tsx";
-import { ToolStatus } from "../ToolStatus.tsx";
-import { StatusBar } from "../StatusBar.tsx";
+import { Composer } from "./Composer.tsx";
+import { Footer } from "./Footer.tsx";
 import { DialogRenderer } from "./DialogManager.tsx";
 import { MainContent } from "./MainContent.tsx";
 import { CopyModeWarning } from "./CopyModeWarning.tsx";
@@ -38,10 +37,6 @@ interface DefaultAppLayoutProps {
 
   // 底部区域
   statusMessage: string;
-  toolName: string | null;
-  isToolExecuting: boolean;
-  toolInput: unknown;
-  lastToolResult: { toolName: string; isError: boolean; elapsedMs: number } | null;
   permissionRequest: PermissionRequestInfo | null;
   shellConfirmRequest: ShellConfirmRequestInfo | null;
   isLoading: boolean;
@@ -49,7 +44,7 @@ interface DefaultAppLayoutProps {
   cwd: string;
   onSubmit: (text: string) => void;
 
-  // 状态栏
+  // Footer
   permissionMode: string;
   gitBranch: string;
   debug: boolean;
@@ -72,10 +67,6 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
   keyExtractor,
   copyModeEnabled,
   statusMessage,
-  toolName,
-  isToolExecuting,
-  toolInput,
-  lastToolResult,
   permissionRequest,
   shellConfirmRequest,
   isLoading,
@@ -92,6 +83,8 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
   model,
   scrollPercent,
 }) => {
+  const hasDialog = !!(permissionRequest || shellConfirmRequest);
+
   return (
     <Box
       flexDirection="column"
@@ -134,23 +127,22 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
           </Box>
         ) : null}
 
-        <ToolStatus
-          toolName={toolName}
-          isExecuting={isToolExecuting}
-          toolInput={toolInput}
-          lastResult={lastToolResult}
-        />
-
-        {(permissionRequest || shellConfirmRequest) ? (
+        {/* Composer 和 DialogRenderer 互斥显示 */}
+        {hasDialog ? (
           <DialogRenderer
             permissionRequest={permissionRequest}
             shellConfirmRequest={shellConfirmRequest ?? null}
           />
         ) : (
-          <InputArea onSubmit={onSubmit} isLoading={isLoading} commands={commands} cwd={cwd} />
+          <Composer
+            onSubmit={onSubmit}
+            isLoading={isLoading}
+            commands={commands}
+            cwd={cwd}
+          />
         )}
 
-        <StatusBar
+        <Footer
           permissionMode={permissionMode}
           gitBranch={gitBranch}
           debug={debug}

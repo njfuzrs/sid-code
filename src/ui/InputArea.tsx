@@ -1,11 +1,14 @@
 /**
- * 输入区域组件（增强版 Composer）
+ * 输入区域组件（InputPrompt）
  *
  * 集成：
  * - TextBuffer：多行编辑、visual 行映射、viewport 滚动
  * - useSlashCompletion：/ 命令补全
  * - useAtCompletion：@ 文件路径补全
+ * - useReverseSearch：Ctrl+R 反向搜索历史
+ * - useInputHistoryStore：输入历史持久化
  * - SuggestionsDisplay：补全列表 UI
+ * - 输入语法高亮（/命令、@文件、!shell）
  *
  * 粘贴处理：
  * KeypressContext 的 bufferPaste 中间件已将 Bracketed Paste Mode 的
@@ -21,7 +24,10 @@ import { useKeypress, KeypressPriority } from "./contexts/KeypressContext.tsx";
 import { useTextBuffer, getVisualLines, getCursorVisualPosition } from "./text-buffer.ts";
 import { useSlashCompletion, type CommandInfo } from "./hooks/useSlashCompletion.ts";
 import { useAtCompletion } from "./hooks/useAtCompletion.ts";
+import { useReverseSearch } from "./hooks/useReverseSearch.ts";
+import { useInputHistoryStore } from "./hooks/useInputHistoryStore.ts";
 import { SuggestionsDisplay, type Suggestion } from "./components/SuggestionsDisplay.tsx";
+import { parseInputForHighlighting, renderHighlightedSegments } from "./utils/inputHighlight.tsx";
 import { DEFAULT_TERM_WIDTH } from "./markdown.ts";
 
 interface InputAreaProps {
@@ -57,6 +63,16 @@ const cleanPasteText = (raw: string): string =>
     // eslint-disable-next-line no-control-regex
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "");
 
+// ── 渲染辅助：带语法高亮的行内容 ──
+
+/** 渲染第一行内容（带语法高亮，去掉 PROMPT 前缀后高亮） */
+function renderFirstLineContent(lineText: string, promptLen: number): React.ReactNode {
+  const content = lineText.slice(promptLen);
+  if (!content) return null;
+  const segments = parseInputForHighlighting(content);
+  return <>{renderHighlightedSegments(segments)}</>;
+}
+
 // ── 组件 ──────────────────────────────────────────────────────────
 
 export function InputArea({ onSubmit, isLoading, commands, cwd }: InputAreaProps) {
@@ -70,10 +86,16 @@ export function InputArea({ onSubmit, isLoading, commands, cwd }: InputAreaProps
   // Shell 模式状态（! 前缀直接执行 shell 命令）
   const [shellModeActive, setShellModeActive] = useState(false);
 
+  // 输入历史持久化
+  const { history: persistedHistory, addEntry: addHistoryEntry } = useInputHistoryStore();
+
   // TextBuffer
   const tb = useTextBuffer({
     viewport: { height: MAX_INPUT_LINES, width: availableWidth - PROMPT.length },
   });
+
+  // 反向搜索
+  const reverseSearch = useReverseSearch({ history: persistedHistory });
 
   // 补全状态
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
@@ -170,6 +192,9 @@ export function InputArea({ onSubmit, isLoading, commands, cwd }: InputAreaProps
       return;
     }
 
+    // 持久化历史
+    addHistoryEntry(text);
+
     // Shell 模式：! 前缀直接执行 shell 命令
     if (shellModeActive && text.startsWith("!")) {
       const shellCmd = text.slice(1).trim();
@@ -188,11 +213,48 @@ export function InputArea({ onSubmit, isLoading, commands, cwd }: InputAreaProps
     onSubmit(text);
 
     setTimeout(() => { lastSubmittedRef.current = ""; }, 1000);
-  }, [tb, onSubmit, shellModeActive]);
+  }, [tb, onSubmit, shellModeActive, addHistoryEntry]);
 
   // ── 核心键盘处理 ──────────────────────────────────────────────────
   useKeypress(KeypressPriority.Normal, (key) => {
     if (isLoading) return false;
+
+    // ── 反向搜索模式 ──
+    if (reverseSearch.state.active) {
+      if (key.name === "escape") {
+        reverseSearch.deactivate();
+        return true;
+      }
+      if (key.name === "enter") {
+        // 选中当前匹配项
+        const match = reverseSearch.getMatch();
+        if (match) {
+          tb.setText(match);
+        }
+        reverseSearch.deactivate();
+        return true;
+      }
+      if (key.ctrl && key.name === "r") {
+        // 继续搜索下一个
+        reverseSearch.searchNext();
+        return true;
+      }
+      if (key.name === "backspace") {
+        reverseSearch.deleteQuery();
+        return true;
+      }
+      if (key.insertable && !key.ctrl && !key.alt) {
+        reverseSearch.appendQuery(key.sequence);
+        return true;
+      }
+      return false;
+    }
+
+    // Ctrl+R 激活反向搜索
+    if (key.ctrl && key.name === "r") {
+      reverseSearch.activate();
+      return true;
+    }
 
     // Shell 模式切换：! 在行首时进入 Shell 模式
     if (key.insertable && key.sequence === "!" && tb.isEmpty()) {
@@ -292,6 +354,34 @@ export function InputArea({ onSubmit, isLoading, commands, cwd }: InputAreaProps
 
   // ── 渲染 ──────────────────────────────────────────────────────────
 
+  // 反向搜索模式 UI
+  if (reverseSearch.state.active) {
+    const { query, match } = reverseSearch.state;
+    return (
+      <Box flexDirection="column">
+        <HorizontalRule color={theme.status.warning} width={termWidth} />
+        <Box paddingX={1} flexDirection="column">
+          <Box>
+            <Text color={theme.status.warning}>反向搜索: </Text>
+            <Text>{query}</Text>
+            <Text inverse> </Text>
+          </Box>
+          {match ? (
+            <Box>
+              <Text dimColor>匹配: </Text>
+              <Text>{match.length > termWidth - 10 ? match.slice(0, termWidth - 13) + "..." : match}</Text>
+            </Box>
+          ) : query ? (
+            <Box>
+              <Text color={theme.status.error}>无匹配</Text>
+            </Box>
+          ) : null}
+        </Box>
+        <HorizontalRule color={theme.status.warning} width={termWidth} />
+      </Box>
+    );
+  }
+
   if (isLoading) {
     return (
       <Box flexDirection="column">
@@ -326,7 +416,6 @@ export function InputArea({ onSubmit, isLoading, commands, cwd }: InputAreaProps
   }
 
   // 构建带 PROMPT 前缀的显示行
-  // 第一逻辑行前面加 "> " 或 "! "（Shell 模式），后续逻辑行前面加 "  "（对齐缩进）
   const currentPrompt = shellModeActive ? SHELL_PROMPT : PROMPT;
   const displayLines: string[] = tb.state.lines.map((line, i) =>
     i === 0 ? currentPrompt + line : "  " + line,
@@ -338,7 +427,7 @@ export function InputArea({ onSubmit, isLoading, commands, cwd }: InputAreaProps
   // 光标在 display 坐标中的位置
   const displayCursorCol = tb.state.cursorRow === 0
     ? PROMPT.length + tb.state.cursorCol
-    : 2 + tb.state.cursorCol; // "  " 缩进
+    : 2 + tb.state.cursorCol;
   const cursorPos = getCursorVisualPosition(displayLines, tb.state.cursorRow, displayCursorCol, availableWidth);
 
   // Viewport 滚动
@@ -360,11 +449,10 @@ export function InputArea({ onSubmit, isLoading, commands, cwd }: InputAreaProps
     if (visualIdx !== cursorPos.visualRow) {
       // 非光标行
       if (vl.logicalRow === 0 && vl.start === 0) {
-        // 第一逻辑行的第一个 visual 行：高亮 PROMPT
         return (
           <Text key={`vl-${visualIdx}`}>
-            <Text color={theme.ui.active} bold>{PROMPT}</Text>
-            {lineText.slice(PROMPT.length)}
+            <Text color={theme.ui.active} bold>{currentPrompt}</Text>
+            {renderFirstLineContent(lineText, currentPrompt.length)}
           </Text>
         );
       }
@@ -378,12 +466,18 @@ export function InputArea({ onSubmit, isLoading, commands, cwd }: InputAreaProps
     const after = colInLine < lineText.length ? lineText.slice(colInLine + 1) : "";
 
     if (vl.logicalRow === 0 && vl.start === 0) {
+      // 第一行带语法高亮 + 光标
+      const contentBefore = before.slice(currentPrompt.length);
+      const contentAfter = after;
+      const beforeSegments = parseInputForHighlighting(contentBefore);
+      const afterSegments = parseInputForHighlighting(contentAfter);
+
       return (
         <Text key={`vl-${visualIdx}`}>
-          <Text color={theme.ui.active} bold>{PROMPT}</Text>
-          {before.slice(PROMPT.length)}
+          <Text color={theme.ui.active} bold>{currentPrompt}</Text>
+          {renderHighlightedSegments(beforeSegments)}
           <Text inverse>{cursorChar}</Text>
-          {after}
+          {renderHighlightedSegments(afterSegments)}
         </Text>
       );
     }

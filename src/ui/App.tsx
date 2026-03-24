@@ -346,10 +346,6 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
         keyExtractor={keyExtractor}
         copyModeEnabled={state.copyModeEnabled}
         statusMessage={state.statusMessage}
-        toolName={state.toolName}
-        isToolExecuting={state.isToolExecuting}
-        toolInput={state.toolInput}
-        lastToolResult={state.lastToolResult}
         permissionRequest={state.permissionRequest}
         shellConfirmRequest={state.shellConfirmRequest}
         isLoading={state.isLoading}

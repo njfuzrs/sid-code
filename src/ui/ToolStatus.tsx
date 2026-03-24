@@ -1,6 +1,6 @@
 /**
- * 工具执行状态组件
- * 显示工具调用的 spinner、成功/失败状态和耗时
+ * @deprecated 工具状态已集成到 Composer 的 LoadingIndicator 和 ToolResultIndicator 中
+ * 保留向后兼容导出
  */
 
 import React, { useEffect, useState } from "react";
@@ -58,6 +58,7 @@ function formatElapsed(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
+/** @deprecated 使用 Composer 内置的 ToolResultIndicator 替代 */
 export const ToolStatus = React.memo(function ToolStatus({ toolName, isExecuting, toolInput, lastResult }: ToolStatusProps) {
   const log = getLogger();
   const [showResult, setShowResult] = useState(false);
@@ -68,7 +69,6 @@ export const ToolStatus = React.memo(function ToolStatus({ toolName, isExecuting
     }
   }, [toolName, isExecuting]);
 
-  // 工具完成后显示结果，1.5 秒后消失
   useEffect(() => {
     if (lastResult) {
       setShowResult(true);
@@ -78,7 +78,6 @@ export const ToolStatus = React.memo(function ToolStatus({ toolName, isExecuting
     setShowResult(false);
   }, [lastResult]);
 
-  // 执行中：⟳ spinner（对齐 gemini-cli）
   if (isExecuting && toolName) {
     const label = toolInput ? getToolLabel(toolName, toolInput) : toolName;
     return (
@@ -89,11 +88,7 @@ export const ToolStatus = React.memo(function ToolStatus({ toolName, isExecuting
     );
   }
 
-  // 刚完成：显示成功/失败状态 + 耗时
   if (showResult && lastResult) {
-    // gemini-cli 状态图标：
-    // Success → ✓ (success green)
-    // Error → ✕ (error red)
     const icon = lastResult.isError ? "✕" : "✓";
     const color = lastResult.isError ? theme.status.error : theme.status.success;
     return (
