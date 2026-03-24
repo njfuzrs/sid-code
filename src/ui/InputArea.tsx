@@ -26,6 +26,7 @@ import { useSlashCompletion, type CommandInfo } from "./hooks/useSlashCompletion
 import { useAtCompletion } from "./hooks/useAtCompletion.ts";
 import { useReverseSearch } from "./hooks/useReverseSearch.ts";
 import { useInputHistoryStore } from "./hooks/useInputHistoryStore.ts";
+import { useShellCompletion } from "./hooks/useShellCompletion.ts";
 import { SuggestionsDisplay, type Suggestion } from "./components/SuggestionsDisplay.tsx";
 import { parseInputForHighlighting, renderHighlightedSegments } from "./utils/inputHighlight.tsx";
 import { DEFAULT_TERM_WIDTH } from "./markdown.ts";
@@ -100,7 +101,7 @@ export function InputArea({ onSubmit, isLoading, commands, cwd }: InputAreaProps
   // 补全状态
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [activeIndex, setActiveIndex] = useState(0);
-  const completionModeRef = useRef<"none" | "slash" | "at">("none");
+  const completionModeRef = useRef<"none" | "slash" | "at" | "shell">("none");
 
   // 当前行文本和光标位置
   const currentLine = tb.state.lines[tb.state.cursorRow] ?? "";
@@ -146,16 +147,40 @@ export function InputArea({ onSubmit, isLoading, commands, cwd }: InputAreaProps
     setSuggestions: setAtSuggestions,
   });
 
+  // ! Shell 命令补全
+  const setShellSuggestions = useCallback((items: Suggestion[]) => {
+    if (items.length > 0) {
+      completionModeRef.current = "shell";
+      setSuggestions(items);
+      setActiveIndex(0);
+    } else if (completionModeRef.current === "shell") {
+      completionModeRef.current = "none";
+      setSuggestions([]);
+      setActiveIndex(0);
+    }
+  }, []);
+
+  useShellCompletion({
+    text: firstLine,
+    cursorCol: tb.state.cursorRow === 0 ? tb.state.cursorCol : firstLine.length,
+    shellMode: shellModeActive,
+    setSuggestions: setShellSuggestions,
+  });
+
   const hasSuggestions = suggestions.length > 0;
 
   // 应用补全：替换触发文本为选中的补全值
   const applyCompletion = useCallback((suggestion: Suggestion) => {
     const mode = completionModeRef.current;
-    if (mode === "slash") {
-      // 替换整行为命令
+    if (mode === "slash" || mode === "shell") {
+      // 替换整行为命令（shell 模式保留 ! 前缀）
       tb.moveCursor("home");
       tb.killLine();
-      tb.insert(suggestion.value);
+      if (mode === "shell") {
+        tb.insert("!" + suggestion.value);
+      } else {
+        tb.insert(suggestion.value);
+      }
     } else if (mode === "at") {
       // 找到 @ 的位置，替换 @ 后的 pattern
       const line = tb.state.lines[tb.state.cursorRow];

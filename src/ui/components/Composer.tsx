@@ -221,7 +221,16 @@ export const Composer: React.FC<ComposerProps> = ({
           alignItems="center"
           flexGrow={1}
         >
-          {showLoadingIndicator ? (
+          {/* 瞬态消息优先显示 */}
+          {uiState.transientMessage ? (
+            <Text color={
+              uiState.transientMessage.type === "warning" ? theme.status.warning
+              : uiState.transientMessage.type === "hint" ? theme.text.accent
+              : theme.text.primary
+            }>
+              {uiState.transientMessage.text}
+            </Text>
+          ) : showLoadingIndicator ? (
             <LoadingIndicator
               inline
               streamingState={streaming.streamingState}

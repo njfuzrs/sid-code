@@ -9,9 +9,25 @@
 
 import React from "react";
 import { Box, Text } from "ink";
+import { homedir } from "os";
 import type { Usage } from "../../llm/types.ts";
 import { theme } from "../semantic-colors.ts";
 import { useUIState } from "../contexts/UIStateContext.tsx";
+import { useConfig } from "../contexts/ConfigContext.tsx";
+import { useSettings } from "../contexts/SettingsContext.tsx";
+
+/** 缩短路径：~ 替换 home，超长时只保留最后两级 */
+function shortenPath(p: string, maxLen = 25): string {
+  const home = homedir();
+  let display = p.startsWith(home) ? "~" + p.slice(home.length) : p;
+  if (display.length > maxLen) {
+    const parts = display.split("/");
+    if (parts.length > 2) {
+      display = "…/" + parts.slice(-2).join("/");
+    }
+  }
+  return display;
+}
 
 // ── FooterRow 通用组件 ──
 
@@ -110,6 +126,8 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
     scrollPercent,
   } = props;
   const { renderMarkdown } = useUIState();
+  const config = useConfig();
+  const settings = useSettings();
 
   const itemColor = theme.ui.comment;
 
@@ -128,6 +146,10 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
 
   // 品牌
   addCol("brand", "", <Text bold color={theme.ui.active}>sid-code</Text>, 8, true);
+
+  // CWD（缩短路径：~ 替换 home，只显示最后两级）
+  const cwdDisplay = shortenPath(config.cwd);
+  addCol("cwd", "目录", <Text color={itemColor}>{cwdDisplay}</Text>, cwdDisplay.length);
 
   // 权限模式
   const permColor = (() => {
@@ -153,6 +175,11 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
   // RAW 模式
   if (!renderMarkdown) {
     addCol("raw", "", <Text color={theme.status.warning}>RAW</Text>, 3, true);
+  }
+
+  // Vim 模式
+  if (settings.vimMode) {
+    addCol("vim", "", <Text color={theme.text.accent}>VIM</Text>, 3, true);
   }
 
   // Token 统计
