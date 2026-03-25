@@ -16,6 +16,7 @@ import { AssistantMessage } from "./messages/AssistantMessage.tsx";
 import { ToolGroupMessage } from "./messages/ToolGroupMessage.tsx";
 import { ThinkingMessage } from "./messages/ThinkingMessage.tsx";
 import { ErrorMessage } from "./messages/ErrorMessage.tsx";
+import { AppHeader } from "./AppHeader.tsx";
 import { theme } from "../semantic-colors.ts";
 
 interface HistoryItemDisplayProps {
@@ -43,6 +44,9 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
   const width = terminalWidth;
 
   switch (item.type) {
+    case "app_header":
+      return <AppHeader version={item.version} />;
+
     case "user":
       return (
         <Box flexDirection="column">

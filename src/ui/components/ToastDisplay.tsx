@@ -11,9 +11,7 @@ import { TransientMessageType } from '../contexts/UIStateContext.tsx';
 
 export function shouldShowToast(uiState: ReturnType<typeof useUIState>): boolean {
   return (
-    uiState.ctrlCPressedOnce ||
     Boolean(uiState.transientMessage) ||
-    uiState.ctrlDPressedOnce ||
     uiState.showEscapePrompt ||
     uiState.showIsExpandableHint
   );
@@ -22,11 +20,7 @@ export function shouldShowToast(uiState: ReturnType<typeof useUIState>): boolean
 export const ToastDisplay: React.FC = () => {
   const uiState = useUIState();
 
-  if (uiState.ctrlCPressedOnce) {
-    return (
-      <Text color={theme.status.warning}>再次按 Ctrl+C 退出</Text>
-    );
-  }
+  // Ctrl+C/D 退出提示已由 ExitWarning 组件独立处理
 
   if (
     uiState.transientMessage?.type === TransientMessageType.Warning &&
@@ -34,12 +28,6 @@ export const ToastDisplay: React.FC = () => {
   ) {
     return (
       <Text color={theme.status.warning}>{uiState.transientMessage.text}</Text>
-    );
-  }
-
-  if (uiState.ctrlDPressedOnce) {
-    return (
-      <Text color={theme.status.warning}>再次按 Ctrl+D 退出</Text>
     );
   }
 

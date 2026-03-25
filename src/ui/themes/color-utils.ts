@@ -173,6 +173,30 @@ export function isValidColor(color: string): boolean {
 }
 
 /**
+ * 检测终端是否为低色深模式
+ * 低色深终端（如 8 色、16 色）不支持 24-bit 真彩色
+ */
+export function isLowColorDepth(): boolean {
+  // NO_COLOR 环境变量表示禁用颜色
+  if (process.env["NO_COLOR"]) return true;
+
+  // COLORTERM=truecolor 或 24bit 表示支持真彩色
+  const colorTerm = process.env["COLORTERM"]?.toLowerCase();
+  if (colorTerm === "truecolor" || colorTerm === "24bit") return false;
+
+  // TERM_PROGRAM 检测常见终端
+  const termProgram = process.env["TERM_PROGRAM"]?.toLowerCase();
+  if (termProgram === "iterm.app" || termProgram === "hyper" || termProgram === "wezterm") return false;
+
+  // TERM 检测
+  const term = process.env["TERM"]?.toLowerCase() || "";
+  if (term.includes("256color")) return false;
+
+  // 默认认为是低色深
+  return true;
+}
+
+/**
  * 为低色深终端返回安全的背景色
  */
 export function getSafeLowColorBackground(

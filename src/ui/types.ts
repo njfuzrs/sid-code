@@ -188,6 +188,12 @@ export type HistoryItemCommand = HistoryItemBase & {
   output: string | null;
 };
 
+/** AppHeader（消息列表顶部，随消息滚动） */
+export type HistoryItemAppHeader = HistoryItemBase & {
+  type: "app_header";
+  version: string;
+};
+
 // ── 联合类型 ──
 
 /** 不含 id 的 HistoryItem（用于创建时） */
@@ -207,7 +213,8 @@ export type HistoryItemWithoutId =
   | HistoryItemHelp
   | HistoryItemStats
   | HistoryItemQuit
-  | HistoryItemCommand;
+  | HistoryItemCommand
+  | HistoryItemAppHeader;
 
 /** 带 id 的 HistoryItem（渲染用） */
 export type HistoryItem = HistoryItemWithoutId & { id: number };

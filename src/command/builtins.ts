@@ -43,6 +43,7 @@ export class HelpCommand implements Command {
       "  /agents          - 自定义 Agents 管理 (list)",
       "  /commands        - 列出自定义命令",
       "  /hooks           - Hook 管理 (list/enable/disable/enable-all/disable-all)",
+      "  /theme           - 显示或切换主题",
       "  /init            - 初始化项目 .sid-code/ 配置目录",
       "  /exit            - 退出",
     ];
@@ -977,4 +978,8 @@ export async function registerBuiltins(registry: import("./registry.ts").Registr
   registry.register(new StatsCommand());
   registry.register(new InitCommand());
   registry.register(new HooksCommand());
+
+  // 主题切换命令
+  const { ThemeCommand } = await import("./theme.ts");
+  registry.register(new ThemeCommand());
 }

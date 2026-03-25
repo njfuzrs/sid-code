@@ -262,7 +262,19 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
 
   // 构建包含流式内容的完整 HistoryItem 数组
   const listData = useMemo((): HistoryItem[] => {
-    const items: HistoryItem[] = [...state.historyItems];
+    const items: HistoryItem[] = [];
+
+    // 插入 AppHeader 作为第一个 item（仅当有消息时显示）
+    if (state.historyItems.length > 0) {
+      items.push({
+        id: -2,
+        type: "app_header",
+        version: require("../../package.json").version,
+      });
+    }
+
+    items.push(...state.historyItems);
+
     if (state.isStreaming && state.streamingText) {
       // 插入一个虚拟的流式 HistoryItem
       items.push({
@@ -291,6 +303,8 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
     }
 
     switch (item.type) {
+      case "app_header":
+        return 10; // Logo + 版本 + Tip + margins
       case "user":
       case "command":
         return Math.max(1, Math.ceil((item.text?.length || 0) / Math.max(1, termWidth - 12)));

@@ -8,8 +8,8 @@
  * 参考 gemini-cli DefaultAppLayout.tsx
  */
 
-import React from "react";
-import { Box, Text } from "ink";
+import React, { useRef } from "react";
+import { Box, Text, type DOMElement } from "ink";
 import { Composer } from "./Composer.tsx";
 import { Footer } from "./Footer.tsx";
 import { DialogRenderer } from "./DialogManager.tsx";
@@ -17,11 +17,13 @@ import { MainContent } from "./MainContent.tsx";
 import { CopyModeWarning } from "./CopyModeWarning.tsx";
 import { Notifications } from "./Notifications.tsx";
 import { ToastDisplay } from "./ToastDisplay.tsx";
+import { ExitWarning } from "./ExitWarning.tsx";
 import { EmptyLogo } from "./EmptyLogo.tsx";
 import type { HistoryItem } from "../types.ts";
 import type { PermissionRequestInfo, ShellConfirmRequestInfo } from "../App.tsx";
 import type { Usage } from "../../llm/types.ts";
 import { theme } from "../semantic-colors.ts";
+import { useFlickerDetector } from "../hooks/useFlickerDetector.ts";
 
 interface DefaultAppLayoutProps {
   // 消息区域
@@ -84,9 +86,12 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
   scrollPercent,
 }) => {
   const hasDialog = !!(permissionRequest || shellConfirmRequest);
+  const rootRef = useRef<DOMElement>(null);
+  useFlickerDetector(rootRef, rows);
 
   return (
     <Box
+      ref={rootRef}
       flexDirection="column"
       width={termWidth}
       height={rows}
@@ -141,6 +146,8 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
             cwd={cwd}
           />
         )}
+
+        <ExitWarning />
 
         <Footer
           permissionMode={permissionMode}
