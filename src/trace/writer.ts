@@ -1,0 +1,174 @@
+/**
+ * 轨迹文件写入器
+ * 负责本地文件的创建、追加写入和目录管理。
+ * 输出三个文件：session.traj / raw.jsonl / events.jsonl
+ *
+ * 设计原则：
+ * - 所有写入操作 try-catch，失败时仅记录警告不抛异常（采集不影响正常使用）
+ * - session.traj 使用原子覆盖写入（每次 AfterModel 后重建）
+ * - raw.jsonl / events.jsonl 使用追加写入（崩溃安全）
+ */
+
+import { join } from "node:path";
+import { mkdirSync, appendFileSync, existsSync } from "node:fs";
+import { getLogger } from "../debug/logger.ts";
+
+/** hook 事件记录（写入 events.jsonl 的行格式） */
+export interface HookEvent {
+  /** 事件名称 */
+  event: string;
+  /** 会话 ID */
+  session_id: string;
+  /** 时间戳 */
+  timestamp: string;
+  /** 工作目录 */
+  cwd?: string;
+  /** 事件附加数据 */
+  data?: Record<string, unknown>;
+}
+
+/** raw.jsonl 中的请求/响应对（对齐 claude-trace proxy.py 的 _append_raw_jsonl） */
+export interface RawJsonlEntry {
+  /** 时间戳 */
+  timestamp: string;
+  /** 序号（从 1 开始） */
+  index: number;
+  /** 模型名称 */
+  model: string;
+  /** 请求侧数据 */
+  request: {
+    model: string;
+    /** system prompt（仅首行有值） */
+    system?: unknown;
+    /** 完整 messages（仅首行有值） */
+    messages?: unknown[];
+    /** 工具定义列表（仅首行有值） */
+    tools?: unknown[];
+    /** 增量 messages（非首行使用） */
+    new_messages?: unknown[];
+    /** 完整 messages 数量（非首行时记录，便于调试） */
+    _messages_count?: number;
+  };
+  /** 响应侧数据 */
+  response: {
+    content: unknown[];
+    stop_reason: string;
+    usage: {
+      input_tokens: number;
+      output_tokens: number;
+      cache_read_input_tokens: number;
+      cache_creation_input_tokens: number;
+    };
+  };
+  /** 顶层冗余：usage（便于 merger.py 快速读取） */
+  usage: {
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_input_tokens: number;
+    cache_creation_input_tokens: number;
+  };
+  /** 顶层冗余：stop_reason */
+  stop_reason: string;
+  /** 是否为不完整响应 */
+  is_partial: boolean;
+}
+
+export class TraceWriter {
+  private sessionDir: string;
+  private initialized = false;
+
+  constructor(baseDir: string, sessionId: string) {
+    this.sessionDir = join(baseDir, "sessions", sessionId);
+  }
+
+  /** 获取输出目录路径 */
+  getSessionDir(): string {
+    return this.sessionDir;
+  }
+
+  /** 确保输出目录存在 */
+  private ensureDir(): boolean {
+    if (this.initialized) return true;
+    try {
+      if (!existsSync(this.sessionDir)) {
+        mkdirSync(this.sessionDir, { recursive: true });
+      }
+      this.initialized = true;
+      return true;
+    } catch (err) {
+      getLogger().warn("TRACE", `创建输出目录失败: ${this.sessionDir} - ${err}`);
+      return false;
+    }
+  }
+
+  /**
+   * 写入/覆盖 session.traj
+   * 使用 Bun.write() 原子写入，每次 AfterModel 后重建
+   */
+  async writeSessionTraj(content: string): Promise<void> {
+    if (!this.ensureDir()) return;
+    try {
+      const filePath = join(this.sessionDir, "session.traj");
+      await Bun.write(filePath, content);
+    } catch (err) {
+      getLogger().warn("TRACE", `写入 session.traj 失败: ${err}`);
+    }
+  }
+
+  /**
+   * 追加一行到 raw.jsonl
+   * 每次 AfterModel 完成 pair 后调用
+   */
+  appendRawJsonl(line: string): void {
+    if (!this.ensureDir()) return;
+    try {
+      const filePath = join(this.sessionDir, "raw.jsonl");
+      appendFileSync(filePath, line.endsWith("\n") ? line : line + "\n");
+    } catch (err) {
+      getLogger().warn("TRACE", `追加 raw.jsonl 失败: ${err}`);
+    }
+  }
+
+  /**
+   * 追加一行到 events.jsonl
+   * 每个 hook 事件触发时调用
+   */
+  appendEventsJsonl(line: string): void {
+    if (!this.ensureDir()) return;
+    try {
+      const filePath = join(this.sessionDir, "events.jsonl");
+      appendFileSync(filePath, line.endsWith("\n") ? line : line + "\n");
+    } catch (err) {
+      getLogger().warn("TRACE", `追加 events.jsonl 失败: ${err}`);
+    }
+  }
+
+  // ─── 便捷方法：序列化 + 写入 ───
+
+  /**
+   * 序列化并写入 session.traj
+   * @param traj - 完整轨迹对象（包含 trajectory/history/info/metadata）
+   */
+  async writeTraj(traj: object): Promise<void> {
+    const content = JSON.stringify(traj, null, 2);
+    await this.writeSessionTraj(content);
+  }
+
+  /**
+   * 序列化并追加一行到 raw.jsonl
+   * @param entry - 请求/响应对数据
+   */
+  appendRaw(entry: RawJsonlEntry): void {
+    const line = JSON.stringify(entry);
+    this.appendRawJsonl(line);
+  }
+
+  /**
+   * 序列化并追加一行到 events.jsonl
+   * @param event - hook 事件数据
+   */
+  appendEvent(event: HookEvent): void {
+    const line = JSON.stringify(event);
+    this.appendEventsJsonl(line);
+  }
+}
