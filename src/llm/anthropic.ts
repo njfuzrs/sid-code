@@ -146,6 +146,8 @@ export class AnthropicProvider implements Provider {
               type: "content_block_start",
               index: event.index,
               content_block: this.convertContentBlock(event.content_block),
+              // 保留原始块数据（thinking 块采集用）
+              _raw_block: (event.content_block as any).type === "thinking" ? event.content_block : undefined,
             };
             break;
 

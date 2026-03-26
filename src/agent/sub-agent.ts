@@ -139,6 +139,12 @@ export class SubAgent {
     SubAgent.depth++;
     let result: SubAgentResult;
     try {
+      // SubagentStart hook
+      this.hookSystem?.fireSubagentStartEvent(
+        `subagent-${task.type}-${Date.now()}`,
+        task.type,
+      ).catch(err => log.error("HOOK", `subagent_start hook 失败: ${err.message}`));
+
       result = await this.executeInner(task, signal);
     } finally {
       SubAgent.depth--;
@@ -168,6 +174,12 @@ export class SubAgent {
     SubAgent.depth++;
     let result: SubAgentResult;
     try {
+      // SubagentStart hook
+      this.hookSystem?.fireSubagentStartEvent(
+        `subagent-custom-${Date.now()}`,
+        "custom",
+      ).catch(err => log.error("HOOK", `subagent_start hook 失败: ${err.message}`));
+
       result = await this.executeCustomInner(task, signal);
     } finally {
       SubAgent.depth--;

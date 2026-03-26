@@ -367,7 +367,7 @@ export class App {
     });
 
     // session_start hook（非阻塞）
-    this.hookSystem.fireSessionStartEvent("startup")
+    this.hookSystem.fireSessionStartEvent("startup", { model: this.config.model })
       .catch(err => log.error("HOOK", `session_start hook 失败: ${err.message}`));
   }
 
@@ -506,6 +506,10 @@ export class App {
 
     // 用于累积工具调用的 JSON 分片
     const jsonAccumulators = new Map<number, string>();
+    // 用于收集 thinking blocks（轨迹采集用）
+    const thinkingBlocks: unknown[] = [];
+    // 记录哪些 index 是 thinking 块（用于在 content_block_stop 时收集完整文本）
+    const thinkingIndexes = new Set<number>();
 
     // 心跳检测：30 秒无数据则认为流挂死
     const HEARTBEAT_TIMEOUT = 30_000;
@@ -534,6 +538,10 @@ export class App {
         case "content_block_start":
           if (event.content_block.type === "text") {
             response.content[event.index] = { type: "text", text: "" };
+            // 标记 thinking 块的 index（Anthropic provider 通过 _raw_block 传递原始数据）
+            if (event._raw_block && (event._raw_block as any).type === "thinking") {
+              thinkingIndexes.add(event.index);
+            }
           } else if (event.content_block.type === "tool_use") {
             response.content[event.index] = {
               type: "tool_use",
@@ -574,6 +582,14 @@ export class App {
             }
             jsonAccumulators.delete(event.index);
           }
+          // 收集 thinking 块完整文本（轨迹采集用）
+          if (thinkingIndexes.has(event.index)) {
+            const block = response.content[event.index];
+            if (block?.type === "text" && block.text) {
+              thinkingBlocks.push({ type: "thinking", thinking: block.text });
+            }
+            thinkingIndexes.delete(event.index);
+          }
           break;
         }
 
@@ -601,6 +617,11 @@ export class App {
       .reduce((sum, b) => sum + (b.type === "text" ? b.text.length : 0), 0);
     const toolCallCount = response.content.filter(b => b.type === "tool_use").length;
     log.info("STREAM", `流结束: 文本${totalTextLen}字符, 工具调用${toolCallCount}个, stop=${response.stopReason}, in=${response.usage.inputTokens} out=${response.usage.outputTokens}`);
+
+    // 挂载 thinking blocks 到 response（轨迹采集用，不影响正常流程）
+    if (thinkingBlocks.length > 0) {
+      (response as any)._thinkingBlocks = thinkingBlocks;
+    }
 
     return response;
   }
@@ -826,6 +847,22 @@ export class App {
     }
   }
 
+  /** 构建 SessionEnd 统计数据 */
+  private buildSessionEndStats() {
+    const totalUsage = this.sessionState.getTotalUsage();
+    const totalRequests = Object.values(this.sessionState.modelUsage).reduce((sum, s) => sum + s.requests, 0);
+    return {
+      model: this.config.model,
+      total_tokens_sent: totalUsage.inputTokens,
+      total_tokens_received: totalUsage.outputTokens,
+      total_cache_read_tokens: totalUsage.cacheReadInputTokens ?? 0,
+      total_cache_creation_tokens: totalUsage.cacheCreationInputTokens ?? 0,
+      total_cost_usd: this.sessionState.totalCostUSD,
+      total_api_calls: totalRequests,
+      duration_ms: this.sessionState.getElapsedMs(),
+    };
+  }
+
   /** 执行单个工具 */
   private async executeSingleTool(block: ToolUseBlock, tool: import("./tool/types.ts").Tool): Promise<ContentBlock> {
     const log = getLogger();
@@ -836,6 +873,7 @@ export class App {
     const preToolResult = await this.hookSystem.firePreToolUseEvent(
       block.name,
       block.input as Record<string, unknown>,
+      block.id,
     );
     if (preToolResult.finalOutput?.isBlockingDecision()) {
       const reason = preToolResult.finalOutput.getEffectiveReason();
@@ -878,6 +916,7 @@ export class App {
         block.input as Record<string, unknown>,
         { output: truncatedOutput, isError: result.isError },
         result.isError,
+        block.id,
       );
 
       // additionalContext 追加到工具输出
@@ -908,6 +947,7 @@ export class App {
         block.name,
         block.input as Record<string, unknown>,
         err.message,
+        block.id,
       ).catch(e => log.error("HOOK", `post_tool_use_failure hook 失败: ${e.message}`));
 
       return {
@@ -954,7 +994,7 @@ export class App {
     }
 
     // session_end hook + 清理
-    await this.hookSystem.fireSessionEndEvent("exit");
+    await this.hookSystem.fireSessionEndEvent("exit", this.buildSessionEndStats());
     unwatchCLAUDEmd();
     this.mcpManager?.closeAll();
 
@@ -1338,7 +1378,7 @@ export class App {
     }
 
     await app.waitUntilExit();
-    await this.hookSystem.fireSessionEndEvent("exit");
+    await this.hookSystem.fireSessionEndEvent("exit", this.buildSessionEndStats());
     unwatchCLAUDEmd();
     this.mcpManager?.closeAll();
 

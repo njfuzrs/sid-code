@@ -299,6 +299,9 @@ export class AgentLoopRunner {
             content: typeof m.content === "string" ? m.content : JSON.stringify(m.content),
           })),
           config: { maxTokens: sendParams.maxTokens },
+          raw_messages: sendParams.messages,
+          system: sendParams.system,
+          tools: sendParams.tools,
         });
         if (beforeModelResult.finalOutput?.isBlockingDecision()) {
           log.info("HOOK", `BeforeModel hook 阻止 LLM 请求: ${beforeModelResult.finalOutput.getEffectiveReason()}`);
@@ -389,12 +392,20 @@ export class AgentLoopRunner {
               role: m.role,
               content: typeof m.content === "string" ? m.content : JSON.stringify(m.content),
             })),
+            raw_messages: sendParams.messages,
+            system: sendParams.system,
+            tools: sendParams.tools,
           },
           {
             text: responseText,
+            content_blocks: response.content,
+            stop_reason: response.stopReason ?? undefined,
+            thinking_blocks: (response as any)._thinkingBlocks,
             usage: {
               inputTokens: response.usage.inputTokens,
               outputTokens: response.usage.outputTokens,
+              cacheReadInputTokens: (response.usage as any).cacheReadInputTokens,
+              cacheCreationInputTokens: (response.usage as any).cacheCreationInputTokens,
             },
           },
         );

@@ -60,7 +60,7 @@ export interface InputJsonDelta {
 /** 流式事件类型 */
 export type StreamEvent =
   | { type: "message_start"; message: { usage: Usage } }
-  | { type: "content_block_start"; index: number; content_block: ContentBlock }
+  | { type: "content_block_start"; index: number; content_block: ContentBlock; _raw_block?: unknown }
   | { type: "content_block_delta"; index: number; delta: TextDelta | InputJsonDelta }
   | { type: "content_block_stop"; index: number }
   | { type: "message_delta"; delta: { stop_reason: string | null }; usage: Usage }
