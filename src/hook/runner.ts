@@ -397,11 +397,31 @@ export class HookRunner {
     if ("is_error" in input) {
       env.SID_CODE_TOOL_IS_ERROR = String((input as any).is_error);
     }
+    if ("tool_use_id" in input && (input as any).tool_use_id) {
+      env.SID_CODE_TOOL_USE_ID = (input as any).tool_use_id;
+    }
     if ("prompt" in input) {
       env.SID_CODE_USER_INPUT = (input as any).prompt;
     }
     if (input.session_id) {
       env.SID_CODE_SESSION_ID = input.session_id;
+    }
+    // AfterModel / SessionStart: 模型名称
+    if ("llm_request" in input && (input as any).llm_request?.model) {
+      env.SID_CODE_MODEL = (input as any).llm_request.model;
+    } else if ("model" in input && (input as any).model) {
+      env.SID_CODE_MODEL = (input as any).model;
+    }
+    // AfterModel: stop_reason
+    if ("llm_response" in input && (input as any).llm_response?.stop_reason) {
+      env.SID_CODE_STOP_REASON = (input as any).llm_response.stop_reason;
+    }
+    // SubagentStart: agent_id / agent_type
+    if ("agent_id" in input) {
+      env.SID_CODE_AGENT_ID = (input as any).agent_id;
+    }
+    if ("agent_type" in input) {
+      env.SID_CODE_AGENT_TYPE = (input as any).agent_type;
     }
   }
 

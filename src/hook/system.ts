@@ -15,9 +15,12 @@ import type {
   NewHooksConfig,
   ConfigSource,
   AggregatedHookResult,
+  SessionStartInput,
+  SessionEndInput,
+  BeforeModelInput,
+  AfterModelInput,
 } from "./types.ts";
 import type { HookRegistryEntry } from "./registry.ts";
-import { getLogger } from "../debug/logger.ts";
 
 export class HookSystem {
   private readonly registry: HookRegistry;
@@ -72,6 +75,11 @@ export class HookSystem {
     this.eventHandler.setCwd(cwd);
   }
 
+  /** 设置当前权限模式 */
+  setPermissionMode(mode: string): void {
+    this.eventHandler.setPermissionMode(mode);
+  }
+
   /** 启用/禁用指定 hook */
   setHookEnabled(hookName: string, enabled: boolean): void {
     this.registry.setHookEnabled(hookName, enabled);
@@ -94,8 +102,9 @@ export class HookSystem {
   async firePreToolUseEvent(
     toolName: string,
     toolInput: Record<string, unknown>,
+    toolUseId?: string,
   ): Promise<AggregatedHookResult> {
-    return this.eventHandler.firePreToolUseEvent(toolName, toolInput);
+    return this.eventHandler.firePreToolUseEvent(toolName, toolInput, toolUseId);
   }
 
   async firePostToolUseEvent(
@@ -103,16 +112,18 @@ export class HookSystem {
     toolInput: Record<string, unknown>,
     toolResponse: Record<string, unknown>,
     isError?: boolean,
+    toolUseId?: string,
   ): Promise<AggregatedHookResult> {
-    return this.eventHandler.firePostToolUseEvent(toolName, toolInput, toolResponse, isError);
+    return this.eventHandler.firePostToolUseEvent(toolName, toolInput, toolResponse, isError, toolUseId);
   }
 
   async firePostToolUseFailureEvent(
     toolName: string,
     toolInput: Record<string, unknown>,
     error: string,
+    toolUseId?: string,
   ): Promise<AggregatedHookResult> {
-    return this.eventHandler.firePostToolUseFailureEvent(toolName, toolInput, error);
+    return this.eventHandler.firePostToolUseFailureEvent(toolName, toolInput, error, toolUseId);
   }
 
   async fireUserPromptSubmitEvent(prompt: string): Promise<AggregatedHookResult> {
@@ -123,31 +134,41 @@ export class HookSystem {
     return this.eventHandler.fireAfterAgentEvent(prompt, promptResponse);
   }
 
-  async fireBeforeModelEvent(llmRequest: {
-    model: string;
-    messages: Array<{ role: string; content: string }>;
-    config?: Record<string, unknown>;
-  }): Promise<AggregatedHookResult> {
+  async fireBeforeModelEvent(llmRequest: BeforeModelInput["llm_request"]): Promise<AggregatedHookResult> {
     return this.eventHandler.fireBeforeModelEvent(llmRequest);
   }
 
   async fireAfterModelEvent(
-    llmRequest: { model: string; messages: Array<{ role: string; content: string }> },
-    llmResponse: { text?: string; usage?: { inputTokens?: number; outputTokens?: number } },
+    llmRequest: AfterModelInput["llm_request"],
+    llmResponse: AfterModelInput["llm_response"],
   ): Promise<AggregatedHookResult> {
     return this.eventHandler.fireAfterModelEvent(llmRequest, llmResponse);
   }
 
-  async fireSessionStartEvent(source: "startup" | "resume" | "clear" = "startup"): Promise<AggregatedHookResult> {
-    return this.eventHandler.fireSessionStartEvent(source);
+  async fireSessionStartEvent(
+    source: SessionStartInput["source"] = "startup",
+    options?: { model?: string; systemPromptHash?: string },
+  ): Promise<AggregatedHookResult> {
+    return this.eventHandler.fireSessionStartEvent(source, options);
   }
 
-  async fireSessionEndEvent(reason: "exit" | "clear" | "other" = "exit"): Promise<AggregatedHookResult> {
-    return this.eventHandler.fireSessionEndEvent(reason);
+  async fireSessionEndEvent(
+    reason: SessionEndInput["reason"] = "exit",
+    stats?: SessionEndInput["stats"],
+  ): Promise<AggregatedHookResult> {
+    return this.eventHandler.fireSessionEndEvent(reason, stats);
   }
 
   async firePreCompactEvent(trigger: "manual" | "auto" = "auto"): Promise<AggregatedHookResult> {
     return this.eventHandler.firePreCompactEvent(trigger);
+  }
+
+  async fireSubagentStartEvent(
+    agentId: string,
+    agentType: string,
+    parentSessionId?: string,
+  ): Promise<AggregatedHookResult> {
+    return this.eventHandler.fireSubagentStartEvent(agentId, agentType, parentSessionId);
   }
 
   async fireSubagentStopEvent(details?: Record<string, unknown>): Promise<AggregatedHookResult> {

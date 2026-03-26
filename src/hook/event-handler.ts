@@ -19,6 +19,7 @@ import {
   type SessionEndInput,
   type PreCompactInput,
   type NotificationInput,
+  type SubagentStartInput,
   type AggregatedHookResult,
 } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -34,6 +35,7 @@ export class HookEventHandler {
   private readonly aggregator: HookAggregator;
   private sessionId: string;
   private cwd: string;
+  private permissionMode: string = "";
 
   constructor(
     planner: HookPlanner,
@@ -59,6 +61,11 @@ export class HookEventHandler {
     this.cwd = cwd;
   }
 
+  /** 设置当前权限模式 */
+  setPermissionMode(mode: string): void {
+    this.permissionMode = mode;
+  }
+
   // ============================================================
   // 事件触发方法
   // ============================================================
@@ -67,11 +74,13 @@ export class HookEventHandler {
   async firePreToolUseEvent(
     toolName: string,
     toolInput: Record<string, unknown>,
+    toolUseId?: string,
   ): Promise<AggregatedHookResult> {
     const input: PreToolUseInput = {
       ...this.createBaseInput(HookEventName.PreToolUse),
       tool_name: toolName,
       tool_input: toolInput,
+      tool_use_id: toolUseId,
     };
     return this.executeHooks(HookEventName.PreToolUse, input, { toolName });
   }
@@ -82,6 +91,7 @@ export class HookEventHandler {
     toolInput: Record<string, unknown>,
     toolResponse: Record<string, unknown>,
     isError?: boolean,
+    toolUseId?: string,
   ): Promise<AggregatedHookResult> {
     const input: PostToolUseInput = {
       ...this.createBaseInput(HookEventName.PostToolUse),
@@ -89,6 +99,7 @@ export class HookEventHandler {
       tool_input: toolInput,
       tool_response: toolResponse,
       is_error: isError,
+      tool_use_id: toolUseId,
     };
     return this.executeHooks(HookEventName.PostToolUse, input, { toolName });
   }
@@ -98,6 +109,7 @@ export class HookEventHandler {
     toolName: string,
     toolInput: Record<string, unknown>,
     error: string,
+    toolUseId?: string,
   ): Promise<AggregatedHookResult> {
     const input: PostToolUseInput = {
       ...this.createBaseInput(HookEventName.PostToolUseFailure),
@@ -105,6 +117,7 @@ export class HookEventHandler {
       tool_input: toolInput,
       tool_response: { error },
       is_error: true,
+      tool_use_id: toolUseId,
     };
     return this.executeHooks(HookEventName.PostToolUseFailure, input, { toolName });
   }
@@ -151,19 +164,28 @@ export class HookEventHandler {
   }
 
   /** SessionStart 事件 */
-  async fireSessionStartEvent(source: SessionStartInput["source"] = "startup"): Promise<AggregatedHookResult> {
+  async fireSessionStartEvent(
+    source: SessionStartInput["source"] = "startup",
+    options?: { model?: string; systemPromptHash?: string },
+  ): Promise<AggregatedHookResult> {
     const input: SessionStartInput = {
       ...this.createBaseInput(HookEventName.SessionStart),
       source,
+      model: options?.model,
+      system_prompt_hash: options?.systemPromptHash,
     };
     return this.executeHooks(HookEventName.SessionStart, input, { trigger: source });
   }
 
   /** SessionEnd 事件 */
-  async fireSessionEndEvent(reason: SessionEndInput["reason"] = "exit"): Promise<AggregatedHookResult> {
+  async fireSessionEndEvent(
+    reason: SessionEndInput["reason"] = "exit",
+    stats?: SessionEndInput["stats"],
+  ): Promise<AggregatedHookResult> {
     const input: SessionEndInput = {
       ...this.createBaseInput(HookEventName.SessionEnd),
       reason,
+      stats,
     };
     return this.executeHooks(HookEventName.SessionEnd, input, { trigger: reason });
   }
@@ -175,6 +197,21 @@ export class HookEventHandler {
       trigger,
     };
     return this.executeHooks(HookEventName.PreCompact, input, { trigger });
+  }
+
+  /** SubagentStart 事件 */
+  async fireSubagentStartEvent(
+    agentId: string,
+    agentType: string,
+    parentSessionId?: string,
+  ): Promise<AggregatedHookResult> {
+    const input: SubagentStartInput = {
+      ...this.createBaseInput(HookEventName.SubagentStart),
+      agent_id: agentId,
+      agent_type: agentType,
+      parent_session_id: parentSessionId,
+    };
+    return this.executeHooks(HookEventName.SubagentStart, input);
   }
 
   /** SubagentStop 事件 */
@@ -250,6 +287,7 @@ export class HookEventHandler {
       cwd: this.cwd,
       hook_event_name: eventName,
       timestamp: new Date().toISOString(),
+      permission_mode: this.permissionMode || undefined,
     };
   }
 

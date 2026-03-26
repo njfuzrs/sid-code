@@ -19,6 +19,7 @@ export enum HookEventName {
   SessionStart = "SessionStart",
   SessionEnd = "SessionEnd",
   PreCompact = "PreCompact",
+  SubagentStart = "SubagentStart",
   SubagentStop = "SubagentStop",
   Notification = "Notification",
 }
@@ -32,6 +33,7 @@ export const LEGACY_EVENT_MAP: Record<string, HookEventName> = {
   session_start: HookEventName.SessionStart,
   session_end: HookEventName.SessionEnd,
   pre_compact: HookEventName.PreCompact,
+  subagent_start: HookEventName.SubagentStart,
   subagent_stop: HookEventName.SubagentStop,
   notification: HookEventName.Notification,
   permission_request: HookEventName.Notification, // 旧事件映射到 Notification
@@ -119,12 +121,16 @@ export interface HookInput {
   cwd: string;
   hook_event_name: string;
   timestamp: string;
+  /** 当前权限模式（与 claude-trace collector.py 对齐） */
+  permission_mode?: string;
 }
 
 /** PreToolUse 输入 */
 export interface PreToolUseInput extends HookInput {
   tool_name: string;
   tool_input: Record<string, unknown>;
+  /** LLM 分配的工具调用 ID，用于关联 action↔observation */
+  tool_use_id?: string;
 }
 
 /** PostToolUse 输入 */
@@ -133,6 +139,8 @@ export interface PostToolUseInput extends HookInput {
   tool_input: Record<string, unknown>;
   tool_response: Record<string, unknown>;
   is_error?: boolean;
+  /** 与 PreToolUse 中的 tool_use_id 对应 */
+  tool_use_id?: string;
 }
 
 /** UserPromptSubmit 输入 */
@@ -152,28 +160,87 @@ export interface BeforeModelInput extends HookInput {
     model: string;
     messages: Array<{ role: string; content: string }>;
     config?: Record<string, unknown>;
+    /** 原始 content blocks 结构（不 stringify，采集器用） */
+    raw_messages?: unknown[];
+    /** system prompt（每次请求都有，但采集器只取首次） */
+    system?: unknown;
+    /** 工具定义列表（完整 tool schema） */
+    tools?: unknown[];
   };
 }
 
 /** AfterModel 输入 */
 export interface AfterModelInput extends HookInput {
-  llm_request: { model: string; messages: Array<{ role: string; content: string }> };
-  llm_response: { text?: string; usage?: { inputTokens?: number; outputTokens?: number } };
+  llm_request: {
+    model: string;
+    messages: Array<{ role: string; content: string }>;
+    config?: Record<string, unknown>;
+    /** 原始 content blocks 结构（不 stringify，采集器用） */
+    raw_messages?: unknown[];
+    /** system prompt（首次请求时有值） */
+    system?: unknown;
+    /** 工具定义列表 */
+    tools?: unknown[];
+  };
+  llm_response: {
+    text?: string;
+    usage?: {
+      inputTokens?: number;
+      outputTokens?: number;
+      /** 缓存读取 token 数 */
+      cacheReadInputTokens?: number;
+      /** 缓存创建 token 数 */
+      cacheCreationInputTokens?: number;
+    };
+    /** 完整的 assistant content blocks（含 tool_use） */
+    content_blocks?: unknown[];
+    /** end_turn / tool_use / max_tokens / stop */
+    stop_reason?: string;
+    /** 原始 thinking blocks（Anthropic 特有） */
+    thinking_blocks?: unknown[];
+  };
 }
 
 /** SessionStart 输入 */
 export interface SessionStartInput extends HookInput {
   source: "startup" | "resume" | "clear";
+  /** 当前使用的模型 */
+  model?: string;
+  /** system prompt 的 MD5 hash */
+  system_prompt_hash?: string;
 }
 
 /** SessionEnd 输入 */
 export interface SessionEndInput extends HookInput {
   reason: "exit" | "clear" | "other";
+  /** 会话统计汇总 */
+  stats?: {
+    model?: string;
+    total_tokens_sent?: number;
+    total_tokens_received?: number;
+    total_cache_read_tokens?: number;
+    total_cache_creation_tokens?: number;
+    total_cost_usd?: number;
+    total_api_calls?: number;
+    total_tool_calls?: number;
+    tools_used?: string[];
+    files_edited?: string[];
+    has_thinking?: boolean;
+    duration_ms?: number;
+  };
 }
 
 /** PreCompact 输入 */
 export interface PreCompactInput extends HookInput {
   trigger: "manual" | "auto";
+}
+
+/** SubagentStart 输入 */
+export interface SubagentStartInput extends HookInput {
+  agent_id: string;
+  /** explore / task / plan / summarize / custom */
+  agent_type: string;
+  parent_session_id?: string;
 }
 
 /** Notification 输入 */
