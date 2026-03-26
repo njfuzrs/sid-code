@@ -176,6 +176,7 @@ export class TraceCollector {
       subagent_spans: [],
       has_thinking: false,
       has_sub_agent: false,
+      start_source: input.source,
       total_tokens_sent: 0,
       total_tokens_received: 0,
       total_cache_read_tokens: 0,
@@ -488,6 +489,7 @@ export class TraceCollector {
     if (!this.initialized) return;
 
     this.metadata.end_time = input.timestamp;
+    this.metadata.end_source = input.reason;
 
     // 用 SessionState 统计值覆盖采集器自己累积的（SessionState 更准确）
     if (input.stats) {

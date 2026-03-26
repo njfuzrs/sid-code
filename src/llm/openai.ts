@@ -157,6 +157,7 @@ export class OpenAIProvider implements Provider {
       messages,
       max_tokens: params.maxTokens,
       stream: true,
+      stream_options: { include_usage: true },
     };
 
     if (params.system) {
@@ -250,6 +251,8 @@ export class OpenAIProvider implements Provider {
     const toolCalls = new Map<number, ToolCallState>();
     const usage: Usage = { inputTokens: 0, outputTokens: 0 };
     const HEARTBEAT_TIMEOUT_MS = 30_000;
+    /** 延迟 message_delta：finish_reason 和 usage 可能在不同 chunk 中 */
+    let pendingFinishReason: string | null = null;
 
     try {
       while (true) {
@@ -272,6 +275,22 @@ export class OpenAIProvider implements Provider {
 
           const data = line.slice(6);
           if (data === "[DONE]") {
+            // [DONE] 前 flush 延迟的 message_delta（此时 usage 已更新）
+            if (pendingFinishReason) {
+              yield {
+                type: "message_delta",
+                delta: {
+                  stop_reason:
+                    pendingFinishReason === "tool_calls"
+                      ? "tool_use"
+                      : pendingFinishReason === "length"
+                        ? "max_tokens"
+                        : "end_turn",
+                },
+                usage,
+              };
+              pendingFinishReason = null;
+            }
             yield { type: "message_stop" };
             continue;
           }
@@ -280,6 +299,12 @@ export class OpenAIProvider implements Provider {
             const chunk = JSON.parse(data);
             const delta = chunk.choices?.[0]?.delta;
             const finishReason = chunk.choices?.[0]?.finish_reason;
+
+            // Token 用量（可能在任何 chunk 中，包括 choices 为空的最终 chunk）
+            if (chunk.usage) {
+              usage.inputTokens = chunk.usage.prompt_tokens || 0;
+              usage.outputTokens = chunk.usage.completion_tokens || 0;
+            }
 
             if (!delta && !finishReason) continue;
 
@@ -363,7 +388,7 @@ export class OpenAIProvider implements Provider {
               }
             }
 
-            // 完成
+            // 完成：延迟 message_delta，等 usage chunk 到达后再 yield
             if (finishReason) {
               // 关闭文本块（如果还没关闭）
               if (textBlockStarted && nextContentIndex === 0) {
@@ -376,24 +401,7 @@ export class OpenAIProvider implements Provider {
                 yield { type: "content_block_stop", index: state.contentIndex };
               }
 
-              yield {
-                type: "message_delta",
-                delta: {
-                  stop_reason:
-                    finishReason === "tool_calls"
-                      ? "tool_use"
-                      : finishReason === "length"
-                        ? "max_tokens"
-                        : "end_turn",
-                },
-                usage,
-              };
-            }
-
-            // Token 用量
-            if (chunk.usage) {
-              usage.inputTokens = chunk.usage.prompt_tokens || 0;
-              usage.outputTokens = chunk.usage.completion_tokens || 0;
+              pendingFinishReason = finishReason;
             }
           } catch (parseErr) {
             // 跳过无法解析的行

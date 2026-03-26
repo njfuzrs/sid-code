@@ -366,6 +366,42 @@ export class App {
       }
     });
 
+    // 轨迹采集初始化（默认启用）
+    if (this.config.trace?.enabled) {
+      try {
+        const { TraceCollector } = await import("./trace/collector.ts");
+        const traceConfig = this.config.trace;
+        let uploader: import("./trace/collector.ts").TraceUploaderInterface | null = null;
+
+        if (traceConfig.upload?.url && traceConfig.upload?.token) {
+          const { UploadManager } = await import("./trace/uploader.ts");
+          const uploadMgr = new UploadManager({
+            baseUrl: traceConfig.upload.url,
+            token: traceConfig.upload.token,
+            toolSource: traceConfig.upload.toolSource ?? "sid-code",
+            userId: traceConfig.upload.userId,
+            deviceId: traceConfig.upload.deviceId,
+            maxRetries: traceConfig.upload.maxRetries ?? 5,
+            retryBaseMs: traceConfig.upload.retryBaseMs ?? 2000,
+            compress: traceConfig.upload.compress ?? true,
+            outputDir: traceConfig.outputDir,
+          });
+          uploadMgr.startHealthCheck(traceConfig.upload.healthCheckIntervalMs ?? 60_000);
+          uploader = uploadMgr;
+          log.info("TRACE", `上传已启用: ${traceConfig.upload.url}`);
+        }
+
+        const collector = new TraceCollector(
+          { outputDir: traceConfig.outputDir, maxSessionsRetained: traceConfig.maxSessionsRetained },
+          uploader,
+        );
+        collector.registerHooks(this.hookSystem);
+        log.info("TRACE", "轨迹采集已启用");
+      } catch (err: any) {
+        log.warn("TRACE", `轨迹采集初始化失败: ${err.message}`);
+      }
+    }
+
     // session_start hook（非阻塞）
     this.hookSystem.fireSessionStartEvent("startup", { model: this.config.model })
       .catch(err => log.error("HOOK", `session_start hook 失败: ${err.message}`));
@@ -595,6 +631,7 @@ export class App {
 
         case "message_delta":
           response.stopReason = event.delta.stop_reason;
+          response.usage.inputTokens += event.usage.inputTokens ?? 0;
           response.usage.outputTokens += event.usage.outputTokens;
           break;
 

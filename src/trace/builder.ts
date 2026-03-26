@@ -77,6 +77,8 @@ export interface TraceMetadata {
   total_cost_usd: number;
   total_api_calls: number;
   exit_status?: string;
+  start_source?: string;
+  end_source?: string;
 }
 
 // ─── 输出类型 ───
@@ -183,6 +185,8 @@ export interface TrajectoryMetaOutput {
   compactions: Array<{ trigger: string; timestamp: string }>;
   subagent_spans: Array<{ agent_id: string; agent_type: string; start: string; end?: string }>;
   tool_source: "sid-code";
+  start_source?: string;
+  end_source?: string;
   claude_md_hash?: string;
 }
 
@@ -596,6 +600,8 @@ export function buildTrajectory(
     compactions: metadata.compactions,
     subagent_spans: metadata.subagent_spans,
     tool_source: "sid-code",
+    ...(metadata.start_source ? { start_source: metadata.start_source } : {}),
+    ...(metadata.end_source ? { end_source: metadata.end_source } : {}),
     ...(claudeMdHash ? { claude_md_hash: claudeMdHash } : {}),
   };
 
