@@ -394,6 +394,48 @@ export function validateConfig(config: Config): ValidationResult {
     }
   }
 
+  // 验证 trace 配置
+  if (config.trace) {
+    if (config.trace.enabled && config.trace.upload) {
+      const upload = config.trace.upload;
+      if (!upload.url) {
+        errors.push({
+          path: "trace.upload.url",
+          message: "上传 URL 不能为空",
+          value: upload.url,
+        });
+      }
+      if (!upload.token) {
+        errors.push({
+          path: "trace.upload.token",
+          message: "上传 token 不能为空",
+          value: upload.token,
+        });
+      }
+      if (upload.url && !upload.url.startsWith("http")) {
+        warnings.push({
+          path: "trace.upload.url",
+          message: "URL 应以 http:// 或 https:// 开头",
+        });
+      }
+      if (upload.maxRetries !== undefined && (upload.maxRetries < 1 || upload.maxRetries > 20)) {
+        warnings.push({
+          path: "trace.upload.maxRetries",
+          message: "建议重试次数在 1-20 之间",
+        });
+      }
+    }
+    if (config.trace.maxSessionsRetained !== undefined) {
+      if (typeof config.trace.maxSessionsRetained !== "number" || config.trace.maxSessionsRetained <= 0) {
+        errors.push({
+          path: "trace.maxSessionsRetained",
+          message: "必须是正整数",
+          value: config.trace.maxSessionsRetained,
+        });
+      }
+    }
+  }
+
   return {
     valid: errors.length === 0,
     errors,

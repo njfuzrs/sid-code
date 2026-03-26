@@ -57,6 +57,14 @@ function parseCLIArgs(): Partial<Config> & { prompt?: string } {
       // 帮助
       help: { type: "boolean", short: "h" },
       version: { type: "boolean", short: "v" },
+
+      // 轨迹采集
+      trace: { type: "boolean" },
+      "trace-upload-url": { type: "string" },
+      "trace-upload-token": { type: "string" },
+      "trace-user-id": { type: "string" },
+      "trace-device-id": { type: "string" },
+      "upload-traces": { type: "boolean" },
     },
     allowPositionals: true,
   });
@@ -79,6 +87,7 @@ function parseCLIArgs(): Partial<Config> & { prompt?: string } {
     "browse-sessions"?: boolean;
     "delete-session"?: string;
     "cleanup-sessions"?: boolean;
+    "upload-traces"?: boolean;
   } = {
     provider: values.provider,
     model: values.model,
@@ -101,6 +110,21 @@ function parseCLIArgs(): Partial<Config> & { prompt?: string } {
     "browse-sessions": values["browse-sessions"],
     "delete-session": values["delete-session"],
     "cleanup-sessions": values["cleanup-sessions"],
+    "upload-traces": values["upload-traces"],
+    // 轨迹采集配置
+    ...(values.trace ? {
+      trace: {
+        enabled: true,
+        ...(values["trace-upload-url"] && values["trace-upload-token"] ? {
+          upload: {
+            url: values["trace-upload-url"],
+            token: values["trace-upload-token"],
+            userId: values["trace-user-id"],
+            deviceId: values["trace-device-id"],
+          },
+        } : {}),
+      },
+    } : {}),
   };
 
   // 位置参数作为初始提示词
@@ -152,6 +176,14 @@ LLM 配置:
   --debug-level <level>       日志级别 (ERROR/WARN/INFO/DEBUG，默认 DEBUG)
   --debug-log-file <path>     自定义日志文件路径
 
+轨迹采集:
+  --trace                     启用轨迹采集（本地保存到 ~/.sid-code/trajectories/）
+  --trace-upload-url <url>    轨迹上传平台地址（如 http://xxx/traj）
+  --trace-upload-token <tok>  上传认证 token（X-Upload-Token）
+  --trace-user-id <id>        用户标识（多用户场景）
+  --trace-device-id <id>      设备标识
+  --upload-traces             手动触发重试队列补传（处理之前失败的上传）
+
 UI:
   --alternate-buffer          启用 alternate buffer 模式（全屏 TUI，默认禁用以支持原生文本选择）
 
@@ -165,6 +197,12 @@ UI:
   LLM_PROVIDER                LLM 提供商
   LLM_MODEL                   模型名称
   LLM_BASE_URL                自定义 API 基础 URL
+  SID_CODE_TRACE              设为 1 或 true 启用轨迹采集
+  SID_CODE_TRACE_OUTPUT_DIR   自定义轨迹输出目录
+  SID_CODE_TRACE_UPLOAD_URL   轨迹上传平台地址
+  SID_CODE_TRACE_UPLOAD_TOKEN 上传认证 token
+  SID_CODE_TRACE_USER_ID      用户标识
+  SID_CODE_TRACE_DEVICE_ID    设备标识
 
 配置文件:
   ~/.sid-code/config.yaml     YAML 格式配置文件
@@ -312,6 +350,41 @@ async function handleCleanupSessions(config: Config): Promise<void> {
   }
 }
 
+/** 处理手动触发重试队列补传 */
+async function handleUploadTraces(config: Config): Promise<void> {
+  const traceUpload = config.trace?.upload;
+  if (!traceUpload?.url || !traceUpload?.token) {
+    console.error("错误: 未配置上传地址或 token，请在配置文件或通过 --trace-upload-url / --trace-upload-token 参数指定");
+    process.exit(1);
+  }
+
+  const { UploadManager } = await import("./trace/uploader.ts");
+  const { homedir } = await import("os");
+  const { join } = await import("path");
+
+  const outputDir = config.trace?.outputDir ?? join(homedir(), ".sid-code", "trajectories");
+  const mgr = new UploadManager({
+    baseUrl: traceUpload.url,
+    token: traceUpload.token,
+    toolSource: traceUpload.toolSource,
+    userId: traceUpload.userId,
+    deviceId: traceUpload.deviceId,
+    maxRetries: traceUpload.maxRetries,
+    retryBaseMs: traceUpload.retryBaseMs,
+    compress: traceUpload.compress,
+    outputDir,
+  });
+
+  console.log("正在处理待上传队列...");
+  try {
+    await mgr.processRetryQueue();
+    console.log("处理完成");
+  } catch (err: any) {
+    console.error(`处理失败: ${err.message}`);
+    process.exit(1);
+  }
+}
+
 /** 主函数 */
 async function main(): Promise<void> {
   const startupTimer = getPerfTimer().start('startup');
@@ -363,6 +436,12 @@ async function main(): Promise<void> {
     }
     if (cliArgs["cleanup-sessions"]) {
       await handleCleanupSessions(config);
+      return;
+    }
+
+    // 手动触发重试队列（补传之前失败的上传）
+    if (cliArgs["upload-traces"]) {
+      await handleUploadTraces(config);
       return;
     }
 

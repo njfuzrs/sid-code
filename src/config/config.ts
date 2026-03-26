@@ -136,6 +136,49 @@ export interface Config {
 
   // 项目哈希（用于多项目隔离）
   projectHash?: string;
+
+  // 轨迹采集配置
+  trace?: TraceConfig;
+}
+
+/** 轨迹上传配置 */
+export interface TraceUploadConfig {
+  /** trajectory-platform URL，含路径前缀，如 http://121.196.144.227/traj */
+  url: string;
+  /** X-Upload-Token 认证 token */
+  token: string;
+  /** 是否自动上传（默认 true，false 则仅本地保存） */
+  autoUpload?: boolean;
+  /** 用户标识（多用户场景区分来源） */
+  userId?: string;
+  /** 设备标识 */
+  deviceId?: string;
+  /** 工具来源标识（默认 "sid-code"） */
+  toolSource?: string;
+  /** 单文件最大重试次数（默认 5） */
+  maxRetries?: number;
+  /** 指数退避基数毫秒（默认 2000，即 2s→4s→8s→16s→32s） */
+  retryBaseMs?: number;
+  /** 是否 gzip 压缩后上传（默认 true） */
+  compress?: boolean;
+  /** 心跳检测间隔毫秒（默认 60000） */
+  healthCheckIntervalMs?: number;
+  /** 持久化重试队列最大重试次数（默认 50，覆盖约 24 小时） */
+  maxQueueRetries?: number;
+  /** 重试队列扫描间隔毫秒（默认 300000，即 5 分钟） */
+  queueScanIntervalMs?: number;
+}
+
+/** 轨迹采集配置 */
+export interface TraceConfig {
+  /** 是否启用采集（默认 false） */
+  enabled?: boolean;
+  /** 本地输出目录（默认 ~/.sid-code/trajectories） */
+  outputDir?: string;
+  /** 本地最大保留会话数（默认 100，超过自动清理最旧的） */
+  maxSessionsRetained?: number;
+  /** 上传配置 */
+  upload?: TraceUploadConfig;
 }
 
 /** Checkpoint 配置 */
@@ -246,6 +289,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     checkpoint: "checkpoint",
     jit_context: "jitContext",
     sanitize_env: "sanitizeEnv",
+    trace: "trace",
   };
 
   const result: any = {};
@@ -282,6 +326,28 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
         compressThresholdKb: value.compress_threshold_kb || value.compressThresholdKb,
         largeFileThresholdLines: value.large_file_threshold_lines || value.largeFileThresholdLines,
         hugeFileThresholdLines: value.huge_file_threshold_lines || value.hugeFileThresholdLines,
+      };
+    // 特殊处理 trace：转换字段名（snake_case → camelCase）
+    } else if (configKey === "trace" && typeof value === "object" && value !== null) {
+      const upload = value.upload;
+      result[configKey] = {
+        enabled: value.enabled,
+        outputDir: value.output_dir || value.outputDir,
+        maxSessionsRetained: value.max_sessions_retained || value.maxSessionsRetained,
+        upload: upload && typeof upload === "object" ? {
+          url: upload.url,
+          token: upload.token,
+          autoUpload: upload.auto_upload ?? upload.autoUpload,
+          userId: upload.user_id || upload.userId,
+          deviceId: upload.device_id || upload.deviceId,
+          toolSource: upload.tool_source || upload.toolSource,
+          maxRetries: upload.max_retries || upload.maxRetries,
+          retryBaseMs: upload.retry_base_ms || upload.retryBaseMs,
+          compress: upload.compress,
+          healthCheckIntervalMs: upload.health_check_interval_ms || upload.healthCheckIntervalMs,
+          maxQueueRetries: upload.max_queue_retries || upload.maxQueueRetries,
+          queueScanIntervalMs: upload.queue_scan_interval_ms || upload.queueScanIntervalMs,
+        } : undefined,
       };
     } else {
       result[configKey] = value;
@@ -323,13 +389,32 @@ async function loadConfigFile(): Promise<Partial<Config>> {
 /** 从环境变量加载配置 */
 function loadFromEnv(): Partial<Config> {
   const env = process.env;
-  return {
+  const base: Partial<Config> = {
     provider: env.LLM_PROVIDER,
     model: env.LLM_MODEL,
     baseURL: env.LLM_BASE_URL,
     anthropicKey: env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN,
     openaiKey: env.OPENAI_API_KEY || env.LLM_API_KEY,
   };
+
+  // trace 环境变量
+  if (env.SID_CODE_TRACE === "1" || env.SID_CODE_TRACE === "true") {
+    const traceConfig: TraceConfig = {
+      enabled: true,
+      outputDir: env.SID_CODE_TRACE_OUTPUT_DIR,
+    };
+    if (env.SID_CODE_TRACE_UPLOAD_URL && env.SID_CODE_TRACE_UPLOAD_TOKEN) {
+      traceConfig.upload = {
+        url: env.SID_CODE_TRACE_UPLOAD_URL,
+        token: env.SID_CODE_TRACE_UPLOAD_TOKEN,
+        userId: env.SID_CODE_TRACE_USER_ID,
+        deviceId: env.SID_CODE_TRACE_DEVICE_ID,
+      };
+    }
+    base.trace = traceConfig;
+  }
+
+  return base;
 }
 
 /** 合并配置（后者覆盖前者） */
