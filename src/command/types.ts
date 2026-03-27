@@ -34,6 +34,9 @@ export interface AppContext {
   hookSystem?: HookSystem;
 }
 
+/** 支持的对话框类型 */
+export type DialogType = "model" | "theme" | "settings";
+
 /** 命令执行结果类型 */
 export type CommandResultKind =
   | "message"        // 显示文本消息
@@ -41,6 +44,7 @@ export type CommandResultKind =
   | "clear"          // 清空对话
   | "quit"           // 退出程序
   | "confirm"        // 需要用户确认
+  | "dialog"         // 打开交互式对话框
   | "error";         // 错误信息
 
 export interface CommandResult {
@@ -49,6 +53,8 @@ export interface CommandResult {
   prompt?: string;   // kind=submit_prompt 时的提示词
   /** kind=confirm 时的确认回调 */
   onConfirm?: () => Promise<CommandResult>;
+  /** kind=dialog 时指定打开哪个对话框 */
+  dialog?: DialogType;
 }
 
 /** 命令接口 - 所有斜杠命令必须实现 */

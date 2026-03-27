@@ -163,6 +163,11 @@ export class ModelCommand implements Command {
       return this.switchModel(trimmedArgs, ctx);
     }
 
+    // 无参数且有可用模型时，打开交互式选择对话框
+    if (ctx.config.availableModels.length > 0) {
+      return { kind: "dialog", dialog: "model" };
+    }
+
     return { kind: "message", message: this.buildCurrentModel(ctx) };
   }
 

@@ -20,9 +20,12 @@ import { ToastDisplay } from "./ToastDisplay.tsx";
 import { ExitWarning } from "./ExitWarning.tsx";
 import { EmptyLogo } from "./EmptyLogo.tsx";
 import { ToolConfirmationQueue } from "./messages/ToolConfirmationQueue.tsx";
+import { ModelDialog } from "./ModelDialog.tsx";
+import { ThemeDialog } from "./ThemeDialog.tsx";
 import { useConfirmingTool } from "../hooks/useConfirmingTool.ts";
 import type { HistoryItem } from "../types.ts";
 import type { PermissionRequestInfo, ShellConfirmRequestInfo } from "../App.tsx";
+import type { DialogType } from "../../command/types.ts";
 import type { Usage } from "../../llm/types.ts";
 import { theme } from "../semantic-colors.ts";
 import { useFlickerDetector } from "../hooks/useFlickerDetector.ts";
@@ -58,6 +61,15 @@ interface DefaultAppLayoutProps {
   contextPercent: number;
   model: string;
   scrollPercent?: number;
+
+  // 通用对话框系统
+  activeDialog: DialogType | null;
+  onDialogClose: () => void;
+  availableModels: Array<{ name: string; provider: string; description?: string }>;
+  onModelSelect: (modelName: string) => void;
+  availableThemes: Array<{ name: string; type: "light" | "dark"; description?: string }>;
+  currentTheme: string;
+  onThemeSelect: (themeName: string) => void;
 }
 
 export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
@@ -86,8 +98,15 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
   contextPercent,
   model,
   scrollPercent,
+  activeDialog,
+  onDialogClose,
+  availableModels,
+  onModelSelect,
+  availableThemes,
+  currentTheme,
+  onThemeSelect,
 }) => {
-  const hasDialog = !!(permissionRequest || shellConfirmRequest);
+  const hasDialog = !!(permissionRequest || shellConfirmRequest || activeDialog);
   const rootRef = useRef<DOMElement>(null);
   useFlickerDetector(rootRef, rows);
   const confirmingTool = useConfirmingTool(listData);
@@ -141,11 +160,25 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
           />
         )}
 
-        {/* Composer 和 DialogRenderer 互斥显示 */}
-        {hasDialog ? (
+        {/* Composer / 权限对话框 / 交互式对话框 互斥显示 */}
+        {permissionRequest || shellConfirmRequest ? (
           <DialogRenderer
             permissionRequest={permissionRequest}
             shellConfirmRequest={shellConfirmRequest ?? null}
+          />
+        ) : activeDialog === "model" ? (
+          <ModelDialog
+            onClose={onDialogClose}
+            currentModel={model}
+            availableModels={availableModels}
+            onModelSelect={onModelSelect}
+          />
+        ) : activeDialog === "theme" ? (
+          <ThemeDialog
+            onClose={onDialogClose}
+            currentTheme={currentTheme}
+            availableThemes={availableThemes}
+            onThemeSelect={onThemeSelect}
           />
         ) : (
           <Composer

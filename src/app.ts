@@ -1101,6 +1101,12 @@ export class App {
         description: cmd.description(),
       })),
       cwd: process.cwd(),
+      activeDialog: null,
+      availableModels: this.config.availableModels.map(m => ({
+        name: m.name,
+        provider: m.provider || this.config.provider,
+        description: m.baseUrl ? `${m.provider || this.config.provider} (${m.baseUrl})` : undefined,
+      })),
     });
 
     const updateState = (patch: Partial<import("./ui/App.tsx").TUIState>) => {
@@ -1384,6 +1390,14 @@ export class App {
 
           case "error":
             appendCommandOutput(commandInput, `错误: ${result.message ?? ""}`);
+            break;
+
+          case "dialog":
+            // 打开交互式对话框（不输出命令文本）
+            if (result.dialog) {
+              log.info("TUI:CMD", `打开对话框: ${result.dialog}`);
+              updateState({ activeDialog: result.dialog });
+            }
             break;
 
           case "message":

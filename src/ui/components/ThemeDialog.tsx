@@ -48,7 +48,7 @@ export const ThemeDialog: React.FC<ThemeDialogProps> = ({
 
   const handleSelect = (themeName: string) => {
     onThemeSelect(themeName);
-    onClose();
+    // 关闭由外部 onThemeSelect 回调统一处理
   };
 
   return (

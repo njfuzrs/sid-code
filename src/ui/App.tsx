@@ -109,6 +109,10 @@ export interface TUIState {
   commands: Array<{ name: string; aliases: string[]; description: string }>;
   /** 当前工作目录（@ 文件补全用） */
   cwd: string;
+  /** 当前打开的对话框类型，null 表示无对话框 */
+  activeDialog: import("../command/types.ts").DialogType | null;
+  /** 可用模型列表（对话框用） */
+  availableModels: Array<{ name: string; provider: string; description?: string }>;
 }
 
 interface AppProps {
@@ -325,6 +329,50 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
   const scrollState = getScrollState();
   const scrollPercent = scrollState ? scrollState.percent : undefined;
 
+  // ── 对话框回调 ──
+  const handleDialogClose = useCallback(() => {
+    bridge.update({ activeDialog: null });
+  }, [bridge]);
+
+  const handleModelSelect = useCallback((modelName: string) => {
+    // 通过斜杠命令切换模型（复用已有逻辑）
+    callbacks.onSlashCommand("model", modelName);
+    bridge.update({ activeDialog: null });
+  }, [callbacks, bridge]);
+
+  const handleThemeSelect = useCallback((themeName: string) => {
+    callbacks.onSlashCommand("theme", themeName);
+    bridge.update({ activeDialog: null });
+  }, [callbacks, bridge]);
+
+  // 可用模型列表（从 config 中获取）
+  const availableModels = useMemo(() => {
+    return state.availableModels ?? [];
+  }, [state.availableModels]);
+
+  // 可用主题列表
+  const availableThemes = useMemo(() => {
+    try {
+      const { themeManager } = require("../ui/themes/theme-manager.ts");
+      return themeManager.getAvailableThemes().map((t: any) => ({
+        name: t.name,
+        type: t.type as "light" | "dark",
+        description: t.description,
+      }));
+    } catch {
+      return [];
+    }
+  }, []);
+
+  const currentTheme = useMemo(() => {
+    try {
+      const { themeManager } = require("../ui/themes/theme-manager.ts");
+      return themeManager.getActiveTheme().name;
+    } catch {
+      return "";
+    }
+  }, []);
+
   // 退出回显模式
   if (state.isQuitting) {
     return (
@@ -374,6 +422,13 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
         contextPercent={state.contextPercent}
         model={state.model}
         scrollPercent={scrollPercent}
+        activeDialog={state.activeDialog}
+        onDialogClose={handleDialogClose}
+        availableModels={availableModels}
+        onModelSelect={handleModelSelect}
+        availableThemes={availableThemes}
+        currentTheme={currentTheme}
+        onThemeSelect={handleThemeSelect}
       />
     </StreamingProvider>
     </SessionProvider>

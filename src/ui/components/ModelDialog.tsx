@@ -48,7 +48,7 @@ export const ModelDialog: React.FC<ModelDialogProps> = ({
 
   const handleSelect = (modelName: string) => {
     onModelSelect(modelName);
-    onClose();
+    // 关闭由外部 onModelSelect 回调统一处理，不再重复调用 onClose
   };
 
   return (

@@ -18,7 +18,8 @@ export class ThemeCommand implements Command {
     const trimmed = args.trim();
 
     if (!trimmed) {
-      return this.showThemes();
+      // 无参数时打开交互式主题选择对话框
+      return { kind: "dialog", dialog: "theme" };
     }
 
     return this.switchTheme(trimmed);
