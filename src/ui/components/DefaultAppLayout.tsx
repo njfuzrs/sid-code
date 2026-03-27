@@ -19,6 +19,8 @@ import { Notifications } from "./Notifications.tsx";
 import { ToastDisplay } from "./ToastDisplay.tsx";
 import { ExitWarning } from "./ExitWarning.tsx";
 import { EmptyLogo } from "./EmptyLogo.tsx";
+import { ToolConfirmationQueue } from "./messages/ToolConfirmationQueue.tsx";
+import { useConfirmingTool } from "../hooks/useConfirmingTool.ts";
 import type { HistoryItem } from "../types.ts";
 import type { PermissionRequestInfo, ShellConfirmRequestInfo } from "../App.tsx";
 import type { Usage } from "../../llm/types.ts";
@@ -88,6 +90,7 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
   const hasDialog = !!(permissionRequest || shellConfirmRequest);
   const rootRef = useRef<DOMElement>(null);
   useFlickerDetector(rootRef, rows);
+  const confirmingTool = useConfirmingTool(listData);
 
   return (
     <Box
@@ -100,28 +103,26 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
       flexGrow={0}
       overflow="hidden"
     >
-      {/* 消息区域 */}
-      <Box flexGrow={1}>
-        {isEmpty ? (
-          <Box flexDirection="column" justifyContent="center" alignItems="center" width={termWidth}>
-            <EmptyLogo termWidth={termWidth} />
-          </Box>
-        ) : (
-          <MainContent
-            listData={listData}
-            streamingText={streamingText}
-            isStreaming={isStreaming}
-            termWidth={termWidth}
-            hasFocus={true}
-            estimatedItemHeight={estimatedItemHeight}
-            keyExtractor={keyExtractor}
-            copyModeEnabled={copyModeEnabled}
-          />
-        )}
-      </Box>
+      {/* 消息区域：直接作为根 Box 子元素，ScrollableList 自身 flexGrow=1 会填充剩余空间 */}
+      {isEmpty ? (
+        <Box flexGrow={1} flexDirection="column" justifyContent="center" alignItems="center" width={termWidth}>
+          <EmptyLogo termWidth={termWidth} />
+        </Box>
+      ) : (
+        <MainContent
+          listData={listData}
+          streamingText={streamingText}
+          isStreaming={isStreaming}
+          termWidth={termWidth}
+          hasFocus={true}
+          estimatedItemHeight={estimatedItemHeight}
+          keyExtractor={keyExtractor}
+          copyModeEnabled={copyModeEnabled}
+        />
+      )}
 
-      {/* 底部固定区域 */}
-      <Box flexDirection="column" flexShrink={0}>
+      {/* 底部固定区域：与 gemini-cli mainControlsRef 对齐 */}
+      <Box flexDirection="column" flexShrink={0} flexGrow={0} width={termWidth}>
         <CopyModeWarning enabled={copyModeEnabled} />
         <Notifications />
         <ToastDisplay />
@@ -131,6 +132,14 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
             <Text color={theme.status.warning}>{statusMessage}</Text>
           </Box>
         ) : null}
+
+        {/* 工具确认队列 */}
+        {confirmingTool && (
+          <ToolConfirmationQueue
+            confirmingTool={confirmingTool}
+            terminalWidth={termWidth}
+          />
+        )}
 
         {/* Composer 和 DialogRenderer 互斥显示 */}
         {hasDialog ? (

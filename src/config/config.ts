@@ -484,6 +484,13 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
     }
   }
 
+  // skipPermissions / yesMode 同步到 permissionMode（状态栏显示用）
+  if (config.skipPermissions) {
+    config.permissionMode = "dangerously-skip-permissions";
+  } else if (config.yesMode && config.permissionMode === "default") {
+    config.permissionMode = "always-allow";
+  }
+
   // 验证配置
   const { validateConfig } = await import("./schema.ts");
   const validation = validateConfig(config);

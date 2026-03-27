@@ -19,56 +19,71 @@ import { initLogger, getLogger, LogLevel, getPerfTimer } from "./debug/index.ts"
 
 /** 解析命令行参数 */
 function parseCLIArgs(): Partial<Config> & { prompt?: string } {
-  const { values, positionals } = parseArgs({
-    options: {
-      // LLM 配置
-      provider: { type: "string" },
-      model: { type: "string", short: "m" },
-      "max-tokens": { type: "string" },
-      
-      // 权限配置
-      "permission-mode": { type: "string" },
-      "dangerously-skip-permissions": { type: "boolean" },
-      yes: { type: "boolean", short: "y" },
-      
-      // 会话配置
-      continue: { type: "boolean", short: "c" },
-      resume: { type: "string", short: "r" },
-      "list-sessions": { type: "boolean" },
-      "browse-sessions": { type: "boolean" },
-      "delete-session": { type: "string" },
-      "cleanup-sessions": { type: "boolean" },
-      
-      // 无头模式
-      print: { type: "boolean", short: "p" },
-      "output-format": { type: "string" },
-      "max-turns": { type: "string" },
-      
-      // 系统提示词
-      "system-prompt": { type: "string" },
-      "append-system-prompt": { type: "string" },
-      "system-prompt-file": { type: "string" },
-      
-      // 调试
-      debug: { type: "boolean", short: "d" },
-      "debug-level": { type: "string" },
-      "debug-log-file": { type: "string" },
+  let values: Record<string, any>;
+  let positionals: string[];
+  try {
+    const result = parseArgs({
+      options: {
+        // LLM 配置
+        provider: { type: "string" },
+        model: { type: "string", short: "m" },
+        "max-tokens": { type: "string" },
 
-      // 帮助
-      help: { type: "boolean", short: "h" },
-      version: { type: "boolean", short: "v" },
+        // 权限配置
+        "permission-mode": { type: "string" },
+        "dangerously-skip-permissions": { type: "boolean" },
+        yes: { type: "boolean", short: "y" },
 
-      // 轨迹采集
-      trace: { type: "boolean" },
-      "trace-upload-url": { type: "string" },
-      "trace-upload-token": { type: "string" },
-      "trace-user-id": { type: "string" },
-      "trace-device-id": { type: "string" },
-      "upload-traces": { type: "boolean" },
-    },
-    allowPositionals: true,
-    allowNegative: true,
-  });
+        // 会话配置
+        continue: { type: "boolean", short: "c" },
+        resume: { type: "string", short: "r" },
+        "list-sessions": { type: "boolean" },
+        "browse-sessions": { type: "boolean" },
+        "delete-session": { type: "string" },
+        "cleanup-sessions": { type: "boolean" },
+
+        // 无头模式
+        print: { type: "boolean", short: "p" },
+        "output-format": { type: "string" },
+        "max-turns": { type: "string" },
+
+        // 系统提示词
+        "system-prompt": { type: "string" },
+        "append-system-prompt": { type: "string" },
+        "system-prompt-file": { type: "string" },
+
+        // 调试
+        debug: { type: "boolean", short: "d" },
+        "debug-level": { type: "string" },
+        "debug-log-file": { type: "string" },
+
+        // 帮助
+        help: { type: "boolean", short: "h" },
+        version: { type: "boolean", short: "v" },
+
+        // 轨迹采集
+        trace: { type: "boolean" },
+        "trace-upload-url": { type: "string" },
+        "trace-upload-token": { type: "string" },
+        "trace-user-id": { type: "string" },
+        "trace-device-id": { type: "string" },
+        "upload-traces": { type: "boolean" },
+      },
+      allowPositionals: true,
+      allowNegative: true,
+    });
+    values = result.values;
+    positionals = result.positionals;
+  } catch (err: any) {
+    // 提取未知选项名（如 "Unknown option '-f'"）
+    const match = err.message?.match(/Unknown option '([^']+)'/);
+    if (match) {
+      console.error(`错误: 未知选项 '${match[1]}'，使用 --help 查看可用选项`);
+    } else {
+      console.error(`错误: ${err.message}\n使用 --help 查看可用选项`);
+    }
+    process.exit(1);
+  }
 
   // 处理帮助和版本
   if (values.help) {

@@ -10,6 +10,16 @@ import { render } from "ink";
 import type { ReactElement } from "react";
 import { getLogger } from "../debug/logger.ts";
 
+/** 禁用终端行自动换行（防止长行折行导致布局溢出） */
+function disableLineWrapping() {
+  process.stdout.write("\x1b[?7l");
+}
+
+/** 恢复终端行自动换行 */
+function enableLineWrapping() {
+  process.stdout.write("\x1b[?7h");
+}
+
 export interface FullScreenInstance {
   instance: ReturnType<typeof render>;
   start: () => Promise<void>;
@@ -42,10 +52,15 @@ export function createFullScreen(
 
       instance = render(node, options);
 
+      // 与 gemini-cli 一致：alternate buffer 模式下禁用行自动换行
+      disableLineWrapping();
+
       log.info("TUI:RENDER", "ink 实例已创建（Alternate Buffer 模式）");
 
       exitPromise = (async () => {
         await instance.waitUntilExit();
+        // 退出时恢复行自动换行
+        enableLineWrapping();
         log.info("TUI:RENDER", "ink 实例已退出");
       })();
     },

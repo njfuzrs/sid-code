@@ -12,8 +12,6 @@ import { ScrollableList } from "./ScrollableList.tsx";
 import { SCROLL_TO_ITEM_END } from "./VirtualizedList.tsx";
 import { HistoryItemDisplay } from "./HistoryItemDisplay.tsx";
 import { StreamingMessage } from "./StreamingMessage.tsx";
-import { ToolConfirmationQueue } from "./messages/ToolConfirmationQueue.tsx";
-import { useConfirmingTool } from "../hooks/useConfirmingTool.ts";
 import type { HistoryItem } from "../types.ts";
 
 const STREAMING_ITEM_ID = -1;
@@ -46,9 +44,6 @@ export const MainContent = memo(function MainContent({
   keyExtractor,
   copyModeEnabled,
 }: MainContentProps) {
-  // 检测确认队列
-  const confirmingTool = useConfirmingTool(listData);
-
   const renderListItem = useCallback(({ item, index }: { item: HistoryItem; index: number }) => {
     // 流式内容特殊项
     if (item.id === STREAMING_ITEM_ID) {
@@ -69,25 +64,19 @@ export const MainContent = memo(function MainContent({
     ) as React.ReactElement;
   }, [listData, streamingText, termWidth]);
 
+  // 与 gemini-cli 一致：alternate buffer 模式下直接返回 ScrollableList
+  // ScrollableList 自身容器 Box 有 flexGrow=1，会填充剩余空间
   return (
-    <>
-      <ScrollableList
-        data={listData}
-        renderItem={renderListItem}
-        estimatedItemHeight={estimatedItemHeight}
-        keyExtractor={keyExtractor}
-        initialScrollIndex={SCROLL_TO_ITEM_END}
-        initialScrollOffsetInIndex={SCROLL_TO_ITEM_END}
-        hasFocus={hasFocus}
-        copyModeEnabled={copyModeEnabled}
-      />
-      {/* 工具确认队列嵌入消息流末尾 */}
-      {confirmingTool && (
-        <ToolConfirmationQueue
-          confirmingTool={confirmingTool}
-          terminalWidth={termWidth}
-        />
-      )}
-    </>
+    <ScrollableList
+      data={listData}
+      renderItem={renderListItem}
+      estimatedItemHeight={estimatedItemHeight}
+      keyExtractor={keyExtractor}
+      initialScrollIndex={SCROLL_TO_ITEM_END}
+      initialScrollOffsetInIndex={SCROLL_TO_ITEM_END}
+      hasFocus={hasFocus}
+      copyModeEnabled={copyModeEnabled}
+      width={termWidth}
+    />
   );
 });

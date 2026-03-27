@@ -156,11 +156,12 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
     switch (permissionMode) {
       case "plan": return theme.ui.active;
       case "deny-write": return theme.status.error;
-      case "always-allow": case "dontAsk": return theme.status.warning;
+      case "always-allow": case "dontAsk": case "dangerously-skip-permissions": return theme.status.warning;
       default: return theme.status.success;
     }
   })();
-  addCol("mode", "模式", <Text color={permColor}>{permissionMode}</Text>, permissionMode.length);
+  const permDisplay = permissionMode === "dangerously-skip-permissions" ? "skip-perms" : permissionMode;
+  addCol("mode", "模式", <Text color={permColor}>{permDisplay}</Text>, permDisplay.length);
 
   // Git 分支
   if (gitBranch) {

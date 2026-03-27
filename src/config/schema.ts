@@ -36,6 +36,7 @@ const VALID_PERMISSION_MODES = new Set([
   "acceptEdits",
   "plan",
   "dontAsk",
+  "dangerously-skip-permissions",
 ]);
 
 /** 有效的 Hook 事件名 */

@@ -10,10 +10,10 @@
  */
 
 import React, { useState, useCallback, useEffect, useRef, useMemo } from "react";
-import { useApp, useStdout } from "ink";
+import { useApp } from "ink";
 import { KeypressProvider, useKeypress, KeypressPriority, type Key } from "./contexts/KeypressContext.tsx";
 import { ScrollProvider, useScrollState } from "./contexts/ScrollProvider.tsx";
-import { TerminalProvider } from "./contexts/TerminalContext.tsx";
+import { TerminalProvider, useTerminalDimensions } from "./contexts/TerminalContext.tsx";
 import { MouseProvider, enableMouseEvents, disableMouseEvents } from "./contexts/MouseContext.tsx";
 import { OverflowProvider } from "./contexts/OverflowContext.tsx";
 import { UIStateProvider, useUIActions } from "./contexts/UIStateContext.tsx";
@@ -123,7 +123,6 @@ const STREAMING_ITEM_ID = -1;
 /** 内部 App 组件（在 Provider 内部，可使用 useKeypress） */
 function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
   const { exit } = useApp();
-  const { stdout } = useStdout();
   const [state, setState] = useState<TUIState>(initialState);
   const isSubmittingRef = useRef(false);
   const log = getLogger();
@@ -231,8 +230,8 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
   }, [callbacks, exit]);
 
   const isEmpty = state.historyItems.length === 0 && !state.isStreaming;
-  const termWidth = stdout.columns || DEFAULT_TERM_WIDTH;
-  const rows = stdout.rows || 24;
+  // 使用响应式终端尺寸（resize 时自动触发重渲染）
+  const { width: termWidth, height: rows } = useTerminalDimensions();
 
   // 从 TUIState 派生 StreamingState
   const streamingState = useMemo((): StreamingState => {
