@@ -16,6 +16,7 @@ import { AssistantMessage } from "./messages/AssistantMessage.tsx";
 import { ToolGroupMessage } from "./messages/ToolGroupMessage.tsx";
 import { ThinkingMessage } from "./messages/ThinkingMessage.tsx";
 import { ErrorMessage } from "./messages/ErrorMessage.tsx";
+import { PlanReviewMessage } from "./messages/PlanReviewMessage.tsx";
 import { AppHeader } from "./AppHeader.tsx";
 import { theme } from "../semantic-colors.ts";
 
@@ -207,6 +208,15 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
             </Box>
           ) : null}
         </Box>
+      );
+
+    case "plan_review":
+      return (
+        <PlanReviewMessage
+          planContent={item.planContent}
+          planFilePath={item.planFilePath}
+          terminalWidth={width}
+        />
       );
 
     default:

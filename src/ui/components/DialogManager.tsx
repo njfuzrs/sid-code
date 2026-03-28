@@ -14,7 +14,6 @@ import { theme } from "../semantic-colors.ts";
 import { SettingsDialog } from "./SettingsDialog.tsx";
 import { ModelDialog } from "./ModelDialog.tsx";
 import { ThemeDialog } from "./ThemeDialog.tsx";
-import { MarkdownDisplay } from "./MarkdownDisplay.tsx";
 
 /** 权限确认对话框 */
 function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
@@ -82,7 +81,7 @@ function ShellConfirmDialog({ request }: { request: ShellConfirmRequestInfo }) {
   );
 }
 
-/** Plan Mode 审批对话框 */
+/** Plan Mode 审批对话框（轻量版：计划内容已在上方消息区域渲染，底部只显示操作栏） */
 function PlanApprovalDialog({ request }: { request: PlanApprovalRequestInfo }) {
   const resolvedRef = useRef(false);
 
@@ -95,22 +94,14 @@ function PlanApprovalDialog({ request }: { request: PlanApprovalRequestInfo }) {
     return false;
   });
 
-  // 截断过长的计划内容（TUI 空间有限）
-  const maxLines = 30;
-  const lines = request.planContent.split("\n");
-  const truncated = lines.length > maxLines;
-  const displayContent = truncated
-    ? lines.slice(0, maxLines).join("\n") + `\n\n... (共 ${lines.length} 行，已截断，完整内容见 ${request.planFilePath})`
-    : request.planContent;
+  const lineCount = request.planContent.split("\n").length;
 
   return (
     <Box flexDirection="column" borderStyle="single" borderColor={theme.text.accent} paddingX={1}>
       <Text color={theme.text.accent} bold>📋 计划审批</Text>
-      <Text dimColor>文件: {request.planFilePath}</Text>
-      <Box marginTop={1} flexDirection="column">
-        <MarkdownDisplay content={displayContent} renderMarkdown={true} />
-      </Box>
-      <Box marginTop={1}>
+      <Text dimColor>文件: {request.planFilePath} ({lineCount} 行)</Text>
+      <Text dimColor>计划内容已显示在上方消息区域，可滚动查看</Text>
+      <Box marginTop={0}>
         <Text color={theme.status.success} bold> (y)</Text><Text>批准并执行 </Text>
         <Text color={theme.status.error} bold> (n)</Text><Text>拒绝并修改</Text>
       </Box>

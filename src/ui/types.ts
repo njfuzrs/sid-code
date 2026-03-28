@@ -196,6 +196,13 @@ export type HistoryItemAppHeader = HistoryItemBase & {
   version: string;
 };
 
+/** 计划审阅（带边框高亮的计划内容展示） */
+export type HistoryItemPlanReview = HistoryItemBase & {
+  type: "plan_review";
+  planContent: string;
+  planFilePath: string;
+};
+
 // ── 联合类型 ──
 
 /** 不含 id 的 HistoryItem（用于创建时） */
@@ -216,7 +223,8 @@ export type HistoryItemWithoutId =
   | HistoryItemStats
   | HistoryItemQuit
   | HistoryItemCommand
-  | HistoryItemAppHeader;
+  | HistoryItemAppHeader
+  | HistoryItemPlanReview;
 
 /** 带 id 的 HistoryItem（渲染用） */
 export type HistoryItem = HistoryItemWithoutId & { id: number };

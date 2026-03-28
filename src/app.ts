@@ -1417,6 +1417,18 @@ export class App {
         } catch (err: any) {
           planContent = `(无法读取计划文件: ${err.message})`;
         }
+
+        // 把计划内容注入到消息滚动区域（用户可滚动查看完整计划）
+        historyIdCounter += 1;
+        const planHistoryItem: import("./ui/types.ts").HistoryItem = {
+          id: historyIdCounter,
+          type: "plan_review",
+          planContent,
+          planFilePath,
+        };
+        const prevHistoryItems = bridge.current.historyItems;
+        updateState({ historyItems: [...prevHistoryItems, planHistoryItem] });
+
         const wrappedResolve = (decision: "approve" | "reject") => {
           log.info("TUI:PLAN", `Plan 审批响应: ${decision}`);
           updateState({ planApprovalRequest: null });
