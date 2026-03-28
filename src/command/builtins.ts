@@ -43,6 +43,7 @@ export class HelpCommand implements Command {
       "  /agents          - 自定义 Agents 管理 (list)",
       "  /commands        - 列出自定义命令",
       "  /hooks           - Hook 管理 (list/enable/disable/enable-all/disable-all)",
+      "  /plan            - 进入计划模式（先规划后执行）",
       "  /theme           - 显示或切换主题",
       "  /init            - 初始化项目 .sid-code/ 配置目录",
       "  /exit            - 退出",
@@ -955,6 +956,43 @@ export class HooksCommand implements Command {
   }
 }
 
+/** /plan 命令 — 进入/退出计划模式 */
+export class PlanCommand implements Command {
+  name() { return "plan"; }
+  aliases() { return []; }
+  description() { return "进入计划模式（先规划后执行）"; }
+
+  async execute(args: string, ctx: AppContext): Promise<CommandResult> {
+    const { PlanModeManager } = await import("../plan/state.ts");
+
+    // 从 App 获取 planManager（通过 sendToLLM 间接触发）
+    // /plan 命令的实现方式：注入提示词让 LLM 调用 enter_plan_mode 工具
+    const trimmed = args.trim();
+
+    if (trimmed === "exit" || trimmed === "quit") {
+      return {
+        kind: "submit_prompt",
+        prompt: "请退出计划模式。如果你有未完成的计划，先保存到计划文件，然后调用 exit_plan_mode 工具提交审批。",
+      };
+    }
+
+    if (trimmed === "status") {
+      const mode = ctx.config.permissionMode;
+      if (mode === "plan") {
+        return { kind: "message", message: "当前处于计划模式" };
+      }
+      return { kind: "message", message: "当前不在计划模式" };
+    }
+
+    // 默认：进入计划模式
+    const taskDesc = trimmed ? `\n\n用户的任务描述: ${trimmed}` : "";
+    return {
+      kind: "submit_prompt",
+      prompt: `请调用 enter_plan_mode 工具进入计划模式，然后开始分析代码库并制定实现方案。${taskDesc}`,
+    };
+  }
+}
+
 /** 注册所有内置命令 */
 export async function registerBuiltins(registry: import("./registry.ts").Registry): Promise<void> {
   registry.register(new HelpCommand());
@@ -983,6 +1021,7 @@ export async function registerBuiltins(registry: import("./registry.ts").Registr
   registry.register(new StatsCommand());
   registry.register(new InitCommand());
   registry.register(new HooksCommand());
+  registry.register(new PlanCommand());
 
   // 主题切换命令
   const { ThemeCommand } = await import("./theme.ts");

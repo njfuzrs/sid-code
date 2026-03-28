@@ -140,7 +140,7 @@ describe("buildSystemPrompt", () => {
       tools: [],
       permissionMode: "plan",
     });
-    expect(prompt).toContain("规划");
+    expect(prompt).toContain("计划模式已激活");
   });
 
   test("默认权限模式不注入附件", () => {

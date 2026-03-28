@@ -76,8 +76,8 @@ describe("generatePermissionModeAttachment", () => {
 
   test("plan 模式", () => {
     const attachment = generatePermissionModeAttachment("plan");
-    expect(attachment.content).toContain("规划");
-    expect(attachment.content).toContain("不要写入或编辑文件");
+    expect(attachment.content).toContain("计划模式已激活");
+    expect(attachment.content).toContain("绝对不能");
   });
 
   test("未知模式回退到默认", () => {

@@ -520,6 +520,14 @@ async function main(): Promise<void> {
     toolRegistry.register(new ReadManyTool(fileReadTracker));
     toolRegistry.register(new MemoryTool(memoryStore));
 
+    // 创建 Plan Mode 管理器 + 注册 Plan Mode 工具
+    const { PlanModeManager } = await import("./plan/state.ts");
+    const { EnterPlanModeTool } = await import("./tool/enter-plan-mode.ts");
+    const { ExitPlanModeTool } = await import("./tool/exit-plan-mode.ts");
+    const planManager = new PlanModeManager();
+    toolRegistry.register(new EnterPlanModeTool(planManager));
+    toolRegistry.register(new ExitPlanModeTool(planManager));
+
     // 注册子代理工具
     const { SubAgentTool } = await import("./agent/tool.ts");
     toolRegistry.register(new SubAgentTool(providerRegistry, toolRegistry));
@@ -611,6 +619,7 @@ async function main(): Promise<void> {
     const { loadPermissionRules } = await import("./config/config.ts");
     const permissionRules = await loadPermissionRules();
     const permissionChecker = new PermissionChecker(config, permissionRules);
+    permissionChecker.setPlanManager(planManager);
 
     // 记录权限规则
     if (config.debug && permissionRules) {
@@ -623,7 +632,7 @@ async function main(): Promise<void> {
 
     // 创建 App
     const { App } = await import("./app.ts");
-    const app = new App({ config, provider, providerRegistry, toolRegistry, commandRegistry, permissionChecker, mcpManager });
+    const app = new App({ config, provider, providerRegistry, toolRegistry, commandRegistry, permissionChecker, mcpManager, planManager });
 
     // 启动时自动清理过期会话（后台静默执行）
     if (!config.print) {

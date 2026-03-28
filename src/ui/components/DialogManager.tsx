@@ -8,12 +8,13 @@
 import React, { useRef } from "react";
 import { Box, Text } from "ink";
 import { useKeypress, KeypressPriority } from "../contexts/KeypressContext.tsx";
-import type { PermissionRequestInfo, ShellConfirmRequestInfo } from "../App.tsx";
+import type { PermissionRequestInfo, ShellConfirmRequestInfo, PlanApprovalRequestInfo } from "../App.tsx";
 import { getToolSummary } from "../ui-utils.ts";
 import { theme } from "../semantic-colors.ts";
 import { SettingsDialog } from "./SettingsDialog.tsx";
 import { ModelDialog } from "./ModelDialog.tsx";
 import { ThemeDialog } from "./ThemeDialog.tsx";
+import { MarkdownDisplay } from "./MarkdownDisplay.tsx";
 
 /** 权限确认对话框 */
 function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
@@ -81,19 +82,60 @@ function ShellConfirmDialog({ request }: { request: ShellConfirmRequestInfo }) {
   );
 }
 
-/** 对话框渲染器：渲染权限确认或 Shell 确认对话框 */
+/** Plan Mode 审批对话框 */
+function PlanApprovalDialog({ request }: { request: PlanApprovalRequestInfo }) {
+  const resolvedRef = useRef(false);
+
+  useKeypress(KeypressPriority.Critical, (key) => {
+    if (resolvedRef.current) return false;
+    if (!key.insertable) return false;
+    const lower = key.name;
+    if (lower === "y") { resolvedRef.current = true; request.resolve("approve"); return true; }
+    if (lower === "n") { resolvedRef.current = true; request.resolve("reject"); return true; }
+    return false;
+  });
+
+  // 截断过长的计划内容（TUI 空间有限）
+  const maxLines = 30;
+  const lines = request.planContent.split("\n");
+  const truncated = lines.length > maxLines;
+  const displayContent = truncated
+    ? lines.slice(0, maxLines).join("\n") + `\n\n... (共 ${lines.length} 行，已截断，完整内容见 ${request.planFilePath})`
+    : request.planContent;
+
+  return (
+    <Box flexDirection="column" borderStyle="single" borderColor={theme.text.accent} paddingX={1}>
+      <Text color={theme.text.accent} bold>📋 计划审批</Text>
+      <Text dimColor>文件: {request.planFilePath}</Text>
+      <Box marginTop={1} flexDirection="column">
+        <MarkdownDisplay content={displayContent} renderMarkdown={true} />
+      </Box>
+      <Box marginTop={1}>
+        <Text color={theme.status.success} bold> (y)</Text><Text>批准并执行 </Text>
+        <Text color={theme.status.error} bold> (n)</Text><Text>拒绝并修改</Text>
+      </Box>
+    </Box>
+  );
+}
+
+/** 对话框渲染器：渲染权限确认、Shell 确认或 Plan 审批对话框 */
 export function DialogRenderer({
   permissionRequest,
   shellConfirmRequest,
+  planApprovalRequest,
 }: {
   permissionRequest: PermissionRequestInfo | null;
   shellConfirmRequest: ShellConfirmRequestInfo | null;
+  planApprovalRequest: PlanApprovalRequestInfo | null;
 }) {
   if (permissionRequest) {
     return <PermissionDialog request={permissionRequest} />;
   }
   if (shellConfirmRequest) {
     return <ShellConfirmDialog request={shellConfirmRequest} />;
+  }
+  if (planApprovalRequest) {
+    return <PlanApprovalDialog request={planApprovalRequest} />;
   }
   return null;
 }

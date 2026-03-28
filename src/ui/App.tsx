@@ -70,6 +70,13 @@ export interface ShellConfirmRequestInfo {
   resolve: (confirmed: boolean) => void;
 }
 
+/** Plan Mode 审批请求信息 */
+export interface PlanApprovalRequestInfo {
+  planFilePath: string;
+  planContent: string;
+  resolve: (decision: "approve" | "reject") => void;
+}
+
 /** TUI 状态（由外部 App 驱动） */
 export interface TUIState {
   messages: Message[];
@@ -92,6 +99,7 @@ export interface TUIState {
   statusMessage: string;
   permissionRequest: PermissionRequestInfo | null;
   shellConfirmRequest: ShellConfirmRequestInfo | null;
+  planApprovalRequest: PlanApprovalRequestInfo | null;
   debug: boolean;
   lastToolResult: { toolName: string; isError: boolean; elapsedMs: number } | null;
   /** 流式输出的完整文本 */
@@ -256,10 +264,10 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
 
   // 从 TUIState 派生 StreamingState
   const streamingState = useMemo((): StreamingState => {
-    if (state.permissionRequest || state.shellConfirmRequest) return StreamingState.WaitingForConfirmation;
+    if (state.permissionRequest || state.shellConfirmRequest || state.planApprovalRequest) return StreamingState.WaitingForConfirmation;
     if (state.isStreaming || state.isToolExecuting) return StreamingState.Responding;
     return StreamingState.Idle;
-  }, [state.permissionRequest, state.shellConfirmRequest, state.isStreaming, state.isToolExecuting]);
+  }, [state.permissionRequest, state.shellConfirmRequest, state.planApprovalRequest, state.isStreaming, state.isToolExecuting]);
 
   // 派生 ConfigContext 值
   const configValue = useMemo((): ConfigContextValue => ({
@@ -426,6 +434,7 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
         statusMessage={state.statusMessage}
         permissionRequest={state.permissionRequest}
         shellConfirmRequest={state.shellConfirmRequest}
+        planApprovalRequest={state.planApprovalRequest}
         isLoading={state.isLoading}
         commands={state.commands}
         cwd={state.cwd}
