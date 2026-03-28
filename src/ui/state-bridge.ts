@@ -20,3 +20,24 @@ export class StateBridge extends EventEmitter {
     this.emit("change", this.current);
   }
 }
+
+/** /clear 后用于恢复空白会话视图的状态补丁 */
+export function getConversationClearedPatch(): Partial<TUIState> {
+  return {
+    messages: [],
+    displayItems: [],
+    historyItems: [],
+    toolName: null,
+    toolInput: null,
+    isToolExecuting: false,
+    contextPercent: 0,
+    statusMessage: "",
+    lastToolResult: null,
+    streamingText: "",
+    isStreaming: false,
+    streamingLine: "",
+    permissionRequest: null,
+    shellConfirmRequest: null,
+    activeDialog: null,
+  };
+}

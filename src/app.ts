@@ -1064,7 +1064,7 @@ export class App {
     const { createFullScreen } = await import("./ui/fullscreen.ts");
     const { TUIApp } = await import("./ui/App.tsx");
 
-    const { StateBridge } = await import("./ui/state-bridge.ts");
+    const { StateBridge, getConversationClearedPatch } = await import("./ui/state-bridge.ts");
 
     // 流式文本累积器（状态驱动）
     let streamingFullText = "";
@@ -1397,15 +1397,8 @@ export class App {
             this.quotaManager?.resetAlertLevel();
             this.fallback.reset();
             lastSyncedCount = 0;
-            updateState({
-              messages: [],
-              displayItems: [],
-              contextPercent: 0,
-              statusMessage: "",
-              lastToolResult: null,
-              streamingText: "",
-              isStreaming: false,
-            });
+            historyIdCounter = 0;
+            updateState(getConversationClearedPatch());
             break;
 
           case "quit":
