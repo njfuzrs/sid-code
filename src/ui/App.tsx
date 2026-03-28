@@ -53,6 +53,7 @@ export { isPlaceholderMessage, messagesToHistoryItems };
 export interface TUICallbacks {
   onUserInput: (text: string) => Promise<void>;
   onSlashCommand: (cmd: string, args: string) => Promise<void>;
+  onInterrupt: () => void;
 }
 
 /** 权限请求信息 */
@@ -212,6 +213,22 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
       return true;
     }
     return false;
+  });
+
+  // Esc 中断当前流式响应/工具执行
+  useKeypress(KeypressPriority.High, (key: Key) => {
+    const isInterruptible =
+      (state.isLoading || state.isStreaming || state.isToolExecuting) &&
+      !state.permissionRequest &&
+      !state.shellConfirmRequest &&
+      !state.activeDialog;
+
+    if (!isInterruptible) return false;
+    if (key.name !== "escape") return false;
+
+    log.info("UI:APP", "用户按下 Esc，请求中断当前操作");
+    callbacks.onInterrupt();
+    return true;
   });
 
   const handleSubmit = useCallback(async (text: string) => {

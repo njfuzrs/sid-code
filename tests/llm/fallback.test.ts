@@ -6,7 +6,7 @@
 import { describe, test, expect } from "bun:test";
 import { ModelFallback } from "../../src/llm/fallback.ts";
 import { ModelAvailabilityService } from "../../src/llm/availability.ts";
-import { TerminalError, RetryableError } from "../../src/llm/errors.ts";
+import { RequestAbortedError } from "../../src/llm/errors.ts";
 import type { Provider } from "../../src/llm/provider.ts";
 import type { SendParams, StreamEvent } from "../../src/llm/types.ts";
 
@@ -220,6 +220,33 @@ describe("ModelFallback", () => {
 
     expect(fallbackModel).toBe("backup-model");
     expect(fallbackReason).toBeTruthy();
+  });
+
+  test("用户中断时不重试也不 fallback", async () => {
+    let fallbackCalled = false;
+    const fallbackProv: Provider = {
+      name: () => "fallback",
+      defaultModel: () => "backup-model",
+      async *sendMessageStream(): AsyncIterable<StreamEvent> {
+        fallbackCalled = true;
+        yield* successProvider().sendMessageStream(defaultParams);
+      },
+    };
+
+    const fallback = new ModelFallback(
+      { fallbackProvider: fallbackProv, fallbackModel: "backup-model" },
+    );
+
+    await expect(
+      collectEvents(
+        fallback.executeWithFallback(
+          errorEventProvider("Request aborted"),
+          defaultParams,
+        ),
+      ),
+    ).rejects.toBeInstanceOf(RequestAbortedError);
+
+    expect(fallbackCalled).toBe(false);
   });
 
   // === reset ===

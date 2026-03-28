@@ -29,6 +29,7 @@ import { AgentLoopRunner } from "./agent/loop.ts";
 import type { AgentLoopCallbacks } from "./agent/loop.ts";
 import { HookSystem } from "./hook/system.ts";
 import { JitContextManager } from "./config/jit-context.ts";
+import { isAbortError } from "./llm/errors.ts";
 import { execSync } from "child_process";
 import { readFile } from "fs/promises";
 import { resolve, extname } from "path";
@@ -1120,6 +1121,14 @@ export class App {
       bridge.update(patch);
     };
 
+    const scheduleStatusMessageClear = (message: string, delayMs = 1500) => {
+      setTimeout(() => {
+        if (bridge.current.statusMessage === message) {
+          updateState({ statusMessage: "" });
+        }
+      }, delayMs);
+    };
+
     // HistoryItem 同步：追踪上次同步的 ctxMgr 消息数
     const { messagesToDisplayItems } = await import("./ui/App.tsx");
     const { messagesToHistoryItems } = await import("./ui/history-adapter.ts");
@@ -1287,8 +1296,31 @@ export class App {
           const expanded = await expandAtReferences(text);
           await tuiAgentLoop(expanded);
         } catch (err: any) {
-          log.error("TUI:CB", `onUserInput 异常`, { error: err.message, stack: err.stack });
-          updateState({ isLoading: false });
+          const aborted = isAbortError(err);
+          if (aborted) {
+            log.info("TUI:CB", "当前响应已被用户中断");
+          } else {
+            log.error("TUI:CB", `onUserInput 异常`, { error: err.message, stack: err.stack });
+          }
+
+          const message = aborted ? "已取消当前响应" : `错误: ${err.message ?? String(err)}`;
+          updateState({
+            isLoading: false,
+            isStreaming: false,
+            streamingText: "",
+            streamingLine: "",
+            toolName: null,
+            toolInput: null,
+            isToolExecuting: false,
+            usage: { ...this.sessionState.getTotalUsage() },
+            costUSD: this.sessionState.totalCostUSD,
+            contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / 200000) * 100),
+            statusMessage: message,
+          });
+
+          if (aborted) {
+            scheduleStatusMessageClear(message);
+          }
         } finally {
           this.abortController = null;
         }
@@ -1405,6 +1437,15 @@ export class App {
             appendCommandOutput(commandInput, result.message ?? null);
             break;
         }
+      },
+      onInterrupt: () => {
+        if (!this.abortController || this.abortController.signal.aborted) {
+          return;
+        }
+
+        log.info("TUI:CB", "收到中断请求，取消当前响应");
+        updateState({ statusMessage: "正在取消当前响应..." });
+        this.abortController.abort();
       },
     };
 

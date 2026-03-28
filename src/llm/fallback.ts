@@ -7,7 +7,15 @@
 import type { Provider } from "./provider.ts";
 import type { SendParams, StreamEvent } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
-import { classifyError, TerminalError, RetryableError, StreamValidationError } from "./errors.ts";
+import {
+  classifyError,
+  TerminalError,
+  RetryableError,
+  StreamValidationError,
+  isAbortError,
+  toAbortError,
+  RequestAbortedError,
+} from "./errors.ts";
 import { ModelAvailabilityService } from "./availability.ts";
 
 /** 连接阶段重试配置（快速重试，次数多） */
@@ -68,6 +76,10 @@ export class ModelFallback {
   ): AsyncGenerator<StreamEvent> {
     const log = getLogger();
 
+    if (signal?.aborted) {
+      throw new RequestAbortedError("Request aborted");
+    }
+
     // 检查模型可用性
     const availCheck = this.availability.isAvailable(params.model);
     if (!availCheck.available) {
@@ -85,6 +97,10 @@ export class ModelFallback {
         stream = primaryProvider.sendMessageStream(params, signal);
         break; // 连接成功
       } catch (err) {
+        if (signal?.aborted || isAbortError(err)) {
+          throw toAbortError(err);
+        }
+
         const classified = classifyError(err);
 
         if (classified instanceof TerminalError) {
@@ -108,7 +124,7 @@ export class ModelFallback {
 
         log.info("FALLBACK", `连接重试 ${attempt + 1}，延迟 ${delayMs}ms`);
         this.listener?.onRetry?.(attempt + 1, classified.message, delayMs);
-        await this.sleep(delayMs);
+        await this.sleep(delayMs, signal);
       }
     }
 
@@ -125,10 +141,14 @@ export class ModelFallback {
 
         for await (const event of stream) {
           if (signal?.aborted) {
-            throw new Error("请求已中止");
+            throw new RequestAbortedError("请求已中止");
           }
 
           if (event.type === "error") {
+            if (isAbortError(event.error.message)) {
+              throw toAbortError(event.error.message);
+            }
+
             const classified = classifyError(new Error(event.error.message));
 
             if (classified instanceof TerminalError) {
@@ -165,6 +185,10 @@ export class ModelFallback {
         return;
 
       } catch (err) {
+        if (signal?.aborted || isAbortError(err)) {
+          throw toAbortError(err);
+        }
+
         const classified = classifyError(err);
 
         if (classified instanceof TerminalError) {
@@ -188,12 +212,15 @@ export class ModelFallback {
 
         log.info("FALLBACK", `流式重试 ${attempt + 1}，延迟 ${delayMs}ms`);
         this.listener?.onRetry?.(attempt + 1, classified.message, delayMs);
-        await this.sleep(delayMs);
+        await this.sleep(delayMs, signal);
 
         // 重新获取流
         try {
           stream = primaryProvider.sendMessageStream(params, signal);
         } catch (reconnectErr) {
+          if (signal?.aborted || isAbortError(reconnectErr)) {
+            throw toAbortError(reconnectErr);
+          }
           log.error("FALLBACK", `重连失败: ${reconnectErr}`);
           break;
         }
@@ -210,6 +237,10 @@ export class ModelFallback {
     signal?: AbortSignal,
   ): AsyncGenerator<StreamEvent> {
     const log = getLogger();
+
+    if (signal?.aborted) {
+      throw new RequestAbortedError("Request aborted");
+    }
 
     if (this.config.fallbackProvider && this.config.fallbackModel && !this.hasFallenBack) {
       this.hasFallenBack = true;
@@ -261,8 +292,25 @@ export class ModelFallback {
   }
 
   /** 异步睡眠 */
-  private sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+  private sleep(ms: number, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) {
+      return Promise.reject(new RequestAbortedError("Request aborted"));
+    }
+
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      }, ms);
+
+      const onAbort = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+        reject(new RequestAbortedError("Request aborted"));
+      };
+
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
   }
 
   /** 重置回退状态（用于新的请求） */

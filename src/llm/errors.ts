@@ -53,6 +53,14 @@ export type StreamValidationReason =
   | "malformed_tool_call"      // 工具调用 JSON 解析失败
   | "empty_response";          // 响应为空
 
+/** 用户或系统主动中断请求 */
+export class RequestAbortedError extends Error {
+  constructor(message = "Request aborted") {
+    super(message);
+    this.name = "RequestAbortedError";
+  }
+}
+
 /** 可重试的网络错误码 */
 const RETRYABLE_NETWORK_CODES = [
   "ECONNRESET", "ETIMEDOUT", "EPIPE", "ENOTFOUND",
@@ -69,6 +77,41 @@ export function getNetworkErrorCode(error: unknown): string | undefined {
     current = current.cause;
   }
   return undefined;
+}
+
+/** 判断错误是否由 abort/signal 中断引起 */
+export function isAbortError(error: unknown): boolean {
+  if (error instanceof RequestAbortedError) return true;
+  if (error instanceof DOMException && error.name === "AbortError") return true;
+
+  if (error && typeof error === "object" && "name" in error) {
+    const name = String((error as { name?: unknown }).name ?? "");
+    if (name === "AbortError") return true;
+  }
+
+  const msg = error instanceof Error ? error.message : String(error ?? "");
+  const lowerMsg = msg.toLowerCase();
+
+  return [
+    "request aborted",
+    "请求已中止",
+    "请求已取消",
+    "operation was aborted",
+    "this operation was aborted",
+    "signal is aborted",
+    "aborterror",
+  ].some(fragment => lowerMsg.includes(fragment));
+}
+
+/** 将原始中断错误标准化为 RequestAbortedError */
+export function toAbortError(error?: unknown): RequestAbortedError {
+  if (error instanceof RequestAbortedError) return error;
+  const message = error instanceof Error
+    ? error.message
+    : typeof error === "string"
+      ? error
+      : "Request aborted";
+  return new RequestAbortedError(message);
 }
 
 /**

@@ -10,6 +10,8 @@ import {
   RetryableError,
   StreamValidationError,
   getNetworkErrorCode,
+  isAbortError,
+  RequestAbortedError,
 } from "../../src/llm/errors.ts";
 
 describe("classifyError", () => {
@@ -238,5 +240,24 @@ describe("StreamValidationError", () => {
   test("创建 malformed_tool_call 错误", () => {
     const err = new StreamValidationError("工具调用 JSON 解析失败", "malformed_tool_call");
     expect(err.reason).toBe("malformed_tool_call");
+  });
+});
+
+describe("isAbortError", () => {
+  test("识别 RequestAbortedError", () => {
+    expect(isAbortError(new RequestAbortedError("Request aborted"))).toBe(true);
+  });
+
+  test("识别 DOM AbortError", () => {
+    expect(isAbortError(new DOMException("The operation was aborted.", "AbortError"))).toBe(true);
+  });
+
+  test("识别常见 abort 文本", () => {
+    expect(isAbortError(new Error("Request aborted"))).toBe(true);
+    expect(isAbortError(new Error("请求已中止"))).toBe(true);
+  });
+
+  test("非 abort 错误返回 false", () => {
+    expect(isAbortError(new Error("503 Service Unavailable"))).toBe(false);
   });
 });
