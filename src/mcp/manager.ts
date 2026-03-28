@@ -70,11 +70,12 @@ class MCPToolAdapter implements Tool {
     return this.def.inputSchema;
   }
 
-  async execute(input: unknown): Promise<ToolResult> {
+  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
     try {
       const result = await this.client.callTool(
         this.def.name,
         input as Record<string, unknown>,
+        signal,
       );
 
       const text = result.content

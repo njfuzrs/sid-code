@@ -96,6 +96,7 @@ export function isAbortError(error: unknown): boolean {
     "request aborted",
     "请求已中止",
     "请求已取消",
+    "用户取消",
     "operation was aborted",
     "this operation was aborted",
     "signal is aborted",

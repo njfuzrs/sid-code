@@ -15,7 +15,7 @@ export interface JsonRpcNotification {
 
 /** 传输接口 */
 export interface Transport {
-  send(request: JsonRpcRequest): Promise<JsonRpcResponse>;
+  send(request: JsonRpcRequest, signal?: AbortSignal): Promise<JsonRpcResponse>;
   /** 发送通知（无 id，不等响应） */
   sendNotification?(notification: JsonRpcNotification): void;
   /** 通知回调（处理无 id 的 JSON-RPC 消息） */
@@ -113,13 +113,29 @@ export class StdioTransport implements Transport {
     }
   }
 
-  async send(request: JsonRpcRequest): Promise<JsonRpcResponse> {
+  async send(request: JsonRpcRequest, signal?: AbortSignal): Promise<JsonRpcResponse> {
     if (this.closed) {
       throw new Error("传输已关闭");
     }
 
     return new Promise((resolve, reject) => {
       this.pendingRequests.set(request.id, { resolve, reject });
+
+      // 外部取消信号
+      if (signal) {
+        if (signal.aborted) {
+          this.pendingRequests.delete(request.id);
+          reject(new Error("用户取消"));
+          return;
+        }
+        const onAbort = () => {
+          if (this.pendingRequests.has(request.id)) {
+            this.pendingRequests.delete(request.id);
+            reject(new Error("用户取消"));
+          }
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
 
       const data = JSON.stringify(request) + "\n";
       this.proc.stdin.write(data);
@@ -165,7 +181,11 @@ export class HTTPTransport implements Transport {
     this.timeout = timeout ?? 30000;
   }
 
-  async send(request: JsonRpcRequest): Promise<JsonRpcResponse> {
+  async send(request: JsonRpcRequest, signal?: AbortSignal): Promise<JsonRpcResponse> {
+    const signals: AbortSignal[] = [AbortSignal.timeout(this.timeout)];
+    if (signal) signals.push(signal);
+    const combinedSignal = signals.length === 1 ? signals[0] : AbortSignal.any(signals);
+
     const response = await fetch(this.url, {
       method: "POST",
       headers: {
@@ -173,7 +193,7 @@ export class HTTPTransport implements Transport {
         ...this.headers,
       },
       body: JSON.stringify(request),
-      signal: AbortSignal.timeout(this.timeout),
+      signal: combinedSignal,
     });
 
     if (!response.ok) {
@@ -318,7 +338,7 @@ export class SSETransport implements Transport {
     }
   }
 
-  async send(request: JsonRpcRequest): Promise<JsonRpcResponse> {
+  async send(request: JsonRpcRequest, signal?: AbortSignal): Promise<JsonRpcResponse> {
     if (this.closed) {
       throw new Error("传输已关闭");
     }
@@ -331,7 +351,27 @@ export class SSETransport implements Transport {
     return new Promise((resolve, reject) => {
       this.pendingRequests.set(request.id, { resolve, reject });
 
+      // 外部取消信号
+      if (signal) {
+        if (signal.aborted) {
+          this.pendingRequests.delete(request.id);
+          reject(new Error("用户取消"));
+          return;
+        }
+        const onAbort = () => {
+          if (this.pendingRequests.has(request.id)) {
+            this.pendingRequests.delete(request.id);
+            reject(new Error("用户取消"));
+          }
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+
       // POST 发送请求
+      const signals: AbortSignal[] = [AbortSignal.timeout(this.timeout)];
+      if (signal) signals.push(signal);
+      const combinedSignal = signals.length === 1 ? signals[0] : AbortSignal.any(signals);
+
       fetch(endpoint, {
         method: "POST",
         headers: {
@@ -339,7 +379,7 @@ export class SSETransport implements Transport {
           ...this.headers,
         },
         body: JSON.stringify(request),
-        signal: AbortSignal.timeout(this.timeout),
+        signal: combinedSignal,
       }).catch((err) => {
         if (this.pendingRequests.has(request.id)) {
           this.pendingRequests.delete(request.id);

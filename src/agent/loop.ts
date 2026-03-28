@@ -22,6 +22,7 @@ import { getLogger, getSessionMetrics, getPerfTimer } from "../debug/index.ts";
 import type { HookSystem } from "../hook/system.ts";
 import { LoopDetector, LOOP_RECOVERY_PROMPT, LOOP_DETECTION_PROMPT } from "./loop-detection.ts";
 import type { LLMLoopCheckResult } from "./loop-detection.ts";
+import { isAbortError } from "../llm/errors.ts";
 
 /** UI 回调接口，处理 REPL/TUI 的差异 */
 export interface AgentLoopCallbacks {
@@ -496,7 +497,26 @@ export class AgentLoopRunner {
 
         const toolStartTime = Date.now();
         const perfHandle = getPerfTimer().start(`tool_${toolNames[0] || 'unknown'}`);
-        const toolResults = await this.deps.executeTools(response.content);
+        let toolResults: ContentBlock[];
+        try {
+          toolResults = await this.deps.executeTools(response.content);
+        } catch (err: any) {
+          perfHandle.end();
+          // 用户取消：为悬空的 tool_use 补上取消的 tool_result，保持上下文一致性
+          if (isAbortError(err)) {
+            const cancelResults: ContentBlock[] = toolBlocks
+              .filter((b): b is typeof b & { type: "tool_use" } => b.type === "tool_use")
+              .map(b => ({
+                type: "tool_result" as const,
+                tool_use_id: b.id,
+                content: "用户取消了此工具调用",
+                is_error: true,
+              }));
+            ctxMgr.addMessage({ role: "user", content: cancelResults });
+            log.info("AGENT", "工具执行被用户取消，已补充取消的 tool_result");
+          }
+          throw err;
+        }
         const toolElapsed = perfHandle.end();
         ctxMgr.addMessage({ role: "user", content: toolResults });
 

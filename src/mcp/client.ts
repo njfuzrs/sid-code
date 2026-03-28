@@ -125,7 +125,7 @@ export class MCPClient {
   }
 
   /** 调用工具 */
-  async callTool(name: string, args: Record<string, unknown>): Promise<CallToolResult> {
+  async callTool(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<CallToolResult> {
     if (!this.initialized) {
       await this.initialize();
     }
@@ -133,7 +133,7 @@ export class MCPClient {
     const response = await this.sendWithRetry(this.makeRequest("tools/call", {
       name,
       arguments: args,
-    }));
+    }), signal);
 
     if (response.error) {
       throw new Error(`调用工具失败: ${response.error.message}`);
@@ -237,13 +237,22 @@ export class MCPClient {
   }
 
   /** 带重试的发送：指数退避 + ±30% 随机抖动 */
-  private async sendWithRetry(request: JsonRpcRequest): Promise<JsonRpcResponse> {
+  private async sendWithRetry(request: JsonRpcRequest, signal?: AbortSignal): Promise<JsonRpcResponse> {
     let lastError: Error | null = null;
 
     for (let attempt = 0; attempt <= this.retries; attempt++) {
+      // 检查是否已取消
+      if (signal?.aborted) {
+        throw new Error("用户取消");
+      }
+
       try {
-        return await this.transport.send(request);
+        return await this.transport.send(request, signal);
       } catch (err: any) {
+        // 用户取消不重试
+        if (signal?.aborted) {
+          throw new Error("用户取消");
+        }
         lastError = err;
         if (attempt < this.retries) {
           const baseDelay = 1000 * Math.pow(2, attempt); // 1s, 2s, 4s...

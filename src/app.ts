@@ -793,15 +793,23 @@ export class App {
 
     // 只读工具并行执行
     if (readOnlyTools.length > 0) {
-      const readResults = await Promise.all(
+      const readResults = await Promise.allSettled(
         readOnlyTools.map(({ block, tool, idx }) => this.executeSingleTool(block, tool).then(r => ({ idx, result: r })))
       );
-      for (const { idx, result } of readResults) {
-        resultMap.set(idx, result);
+      // 检查是否有 abort 异常（优先抛出）
+      for (const r of readResults) {
+        if (r.status === "rejected" && isAbortError(r.reason)) {
+          throw r.reason;
+        }
+      }
+      for (const r of readResults) {
+        if (r.status === "fulfilled") {
+          resultMap.set(r.value.idx, r.value.result);
+        }
       }
     }
 
-    // 写入工具串行执行
+    // 写入工具串行执行（abort 时提前退出）
     for (const { block, tool, idx } of writingTools) {
       const result = await this.executeSingleTool(block, tool);
       resultMap.set(idx, result);
@@ -975,6 +983,13 @@ export class App {
       const elapsed = Date.now() - startTime;
       // 异常时也记录工具耗时
       this.sessionState.addToolDuration(elapsed);
+
+      // 用户取消：向上抛出，避免不完整的 tool_result 污染上下文
+      if (isAbortError(err)) {
+        log.info("TOOL", `工具 ${block.name} 被用户取消 (${elapsed}ms)`);
+        throw err;
+      }
+
       log.error("TOOL", `执行异常: ${block.name} (${elapsed}ms)`, {
         error: err.message,
         stack: err.stack,
