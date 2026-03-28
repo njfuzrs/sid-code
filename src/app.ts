@@ -1164,15 +1164,15 @@ export class App {
       const newCount = allMsgs.length - lastSyncedCount;
       if (newCount <= 0 && !extraPatch) return;
 
-      // 旧 DisplayItem 兼容
+      // 旧 DisplayItem 兼容（增量）
       const prevDisplayItems = bridge.current.displayItems;
       const newDisplayItems = newCount > 0 ? messagesToDisplayItems(allMsgs.slice(lastSyncedCount)) : [];
       const displayItems = [...prevDisplayItems, ...newDisplayItems];
 
-      // 新 HistoryItem
-      const prevHistoryItems = bridge.current.historyItems;
-      const newHistoryItems = newCount > 0 ? assignIds(messagesToHistoryItems(allMsgs.slice(lastSyncedCount))) : [];
-      const historyItems = [...prevHistoryItems, ...newHistoryItems];
+      // 新 HistoryItem：始终从完整消息列表重建
+      // 这样 tool_use 和 tool_result 能正确合并，description/input 不会丢失
+      historyIdCounter = 0;
+      const historyItems = assignIds(messagesToHistoryItems(allMsgs));
 
       lastSyncedCount = allMsgs.length;
       updateState({ messages: allMsgs, displayItems, historyItems, ...extraPatch });

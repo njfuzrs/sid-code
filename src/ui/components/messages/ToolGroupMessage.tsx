@@ -4,11 +4,7 @@
  * 将多个工具调用渲染在一个圆角边框内，边框颜色随执行状态变化。
  * 参考 gemini-cli ToolGroupMessage.tsx
  *
- * P1 增强：
- * - 支持 borderTop/borderBottom 覆盖
- * - 支持 renderOutputAsMarkdown
- * - 支持 MCP 进度指示器
- * - 过滤 Confirming 状态的工具（在确认队列中渲染）
+ * 紧凑模式：成功结果只显示一行，整组共享一个边框
  */
 
 import React, { useMemo } from "react";
@@ -27,6 +23,8 @@ export interface ToolCallDisplay {
   status: ToolCallStatus;
   result?: string;
   isError?: boolean;
+  /** 工具描述（参数摘要，如文件路径、命令等） */
+  description?: string;
   /** 是否渲染输出为 Markdown */
   renderOutputAsMarkdown?: boolean;
   /** MCP 进度消息 */
@@ -35,6 +33,8 @@ export interface ToolCallDisplay {
   progress?: number;
   /** MCP 进度总量 */
   progressTotal?: number;
+  /** 结果摘要（一行文字） */
+  resultSummary?: string;
 }
 
 interface ToolGroupMessageProps {
@@ -81,9 +81,6 @@ export const ToolGroupMessage: React.FC<ToolGroupMessageProps> = ({
 
   const contentWidth = terminalWidth - TOOL_MESSAGE_HORIZONTAL_MARGIN;
 
-  // 是否显示底部边框
-  const showBottomBorder = borderBottomOverride !== false;
-
   return (
     <Box
       flexDirection="column"
@@ -94,20 +91,23 @@ export const ToolGroupMessage: React.FC<ToolGroupMessageProps> = ({
         const isDiff = tool.result ? isDiffContent(tool.name, tool.result) : false;
         const filename = getFilenameFromInput(tool.name, tool.input);
         const isFirst = index === 0;
+        const isLast = index === visibleTools.length - 1;
         const resolvedIsFirst =
           borderTopOverride !== undefined
             ? borderTopOverride && isFirst
             : isFirst;
+        const resolvedIsLast = borderBottomOverride !== false && isLast;
 
         return (
           <ToolMessage
             key={tool.id}
             name={tool.name}
-            description={getToolSummary(tool.name, tool.input)}
-            resultDisplay={tool.result ? (isDiff ? tool.result : getResultSummary(tool.name, tool.result, tool.isError)) : undefined}
+            description={tool.description || getToolSummary(tool.name, tool.input)}
+            resultDisplay={tool.result ? (isDiff ? tool.result : (tool.isError ? tool.result : undefined)) : undefined}
             status={tool.status}
             terminalWidth={contentWidth}
             isFirst={resolvedIsFirst}
+            isLast={resolvedIsLast}
             borderColor={borderColor}
             borderDimColor={borderDimColor}
             isError={tool.isError}
@@ -117,23 +117,10 @@ export const ToolGroupMessage: React.FC<ToolGroupMessageProps> = ({
             progressMessage={tool.progressMessage}
             progress={tool.progress}
             progressTotal={tool.progressTotal}
+            resultSummary={tool.resultSummary || (tool.result ? getResultSummary(tool.name, tool.result, tool.isError) : undefined)}
           />
         );
       })}
-      {/* 底部边框 + 可选展开提示 */}
-      {showBottomBorder && (
-        <Box
-          height={0}
-          width={contentWidth}
-          borderLeft={true}
-          borderRight={true}
-          borderTop={false}
-          borderBottom={true}
-          borderColor={borderColor}
-          borderDimColor={borderDimColor}
-          borderStyle="round"
-        />
-      )}
       {showExpandHint && (
         <Box paddingLeft={2}>
           <Text dimColor color={theme.text.secondary}>

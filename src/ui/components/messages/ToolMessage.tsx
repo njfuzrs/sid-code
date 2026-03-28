@@ -4,11 +4,11 @@
  * 渲染单个工具调用/结果，带状态指示器和描述。
  * 参考 gemini-cli ToolMessage.tsx
  *
- * P1 增强：
- * - 使用 StickyHeader 实现粘性头部
- * - 集成 ToolResultDisplay 统一结果渲染
- * - 支持 MCP 进度指示器（从 ToolShared 导入）
- * - TrailingIndicator 执行中箭头
+ * 紧凑模式：
+ * - 成功结果只显示一行 header（name + description + 摘要）
+ * - 错误结果展开显示错误信息
+ * - diff 结果展开显示 diff
+ * - 执行中显示进度
  */
 
 import React from "react";
@@ -23,7 +23,6 @@ import {
   type TextEmphasis,
 } from "./ToolShared.tsx";
 import { ToolResultDisplay } from "./ToolResultDisplay.tsx";
-import { StickyHeader } from "../StickyHeader.tsx";
 
 export interface ToolMessageProps {
   name: string;
@@ -33,21 +32,18 @@ export interface ToolMessageProps {
   terminalWidth: number;
   emphasis?: TextEmphasis;
   isFirst: boolean;
+  /** 是否为组内最后一个工具（控制底部边框） */
+  isLast: boolean;
   borderColor: string;
   borderDimColor: boolean;
   isError?: boolean;
-  /** 是否为 diff 内容（用于 Edit 工具） */
   isDiff?: boolean;
-  /** 文件名（用于 diff 语法高亮） */
   filename?: string;
-  /** 是否渲染输出为 Markdown */
   renderOutputAsMarkdown?: boolean;
-  /** MCP 进度消息 */
   progressMessage?: string;
-  /** MCP 进度值 */
   progress?: number;
-  /** MCP 进度总量 */
   progressTotal?: number;
+  resultSummary?: string;
 }
 
 export const ToolMessage: React.FC<ToolMessageProps> = ({
@@ -58,6 +54,7 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
   terminalWidth,
   emphasis = "medium",
   isFirst,
+  isLast,
   borderColor,
   borderDimColor,
   isError,
@@ -67,75 +64,97 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
   progressMessage,
   progress,
   progressTotal,
+  resultSummary,
 }) => {
-  // 工具头部内容
-  const headerContent = (
-    <>
-      <ToolStatusIndicator status={status} />
-      <ToolInfo
-        name={name}
-        description={description}
-        status={status}
-        emphasis={emphasis}
-        progressMessage={progressMessage}
-      />
-      {emphasis === "high" && <TrailingIndicator />}
-      <FocusHint name={name} status={status} />
-    </>
-  );
-
-  // 是否有内容需要渲染（结果或进度）
   const hasProgress = status === "executing" && progress !== undefined;
-  const hasContent = !!resultDisplay || hasProgress;
+  const shouldExpandContent = (isError && !!resultDisplay) || (isDiff && !!resultDisplay) || hasProgress;
 
-  return (
-    <>
-      {/* 工具头部：使用 StickyHeader 实现粘性效果 */}
-      <StickyHeader
+  // 紧凑模式（无展开内容）：header 自带底部边框
+  if (!shouldExpandContent) {
+    return (
+      <Box
         width={terminalWidth}
-        isFirst={isFirst}
+        borderStyle="round"
         borderColor={borderColor}
         borderDimColor={borderDimColor}
+        borderTop={isFirst}
+        borderBottom={isLast}
+        borderLeft={true}
+        borderRight={true}
+        paddingX={1}
       >
-        {headerContent}
-      </StickyHeader>
+        <ToolStatusIndicator status={status} />
+        <ToolInfo
+          name={name}
+          description={description}
+          status={status}
+          emphasis={emphasis}
+          progressMessage={progressMessage}
+          resultSummary={resultSummary}
+        />
+        {emphasis === "high" && <TrailingIndicator />}
+        <FocusHint name={name} status={status} />
+      </Box>
+    );
+  }
 
-      {/* 工具结果内容 */}
-      {hasContent && (
-        <Box
-          width={terminalWidth}
-          borderStyle="round"
-          borderColor={borderColor}
-          borderDimColor={borderDimColor}
-          borderTop={false}
-          borderBottom={false}
-          borderLeft={true}
-          borderRight={true}
-          paddingX={1}
-          flexDirection="column"
-        >
-          {/* MCP 进度指示器 */}
-          {hasProgress && (
-            <McpProgressIndicator
-              progress={progress!}
-              total={progressTotal}
-              message={progressMessage}
-              barWidth={20}
-            />
-          )}
-          {/* 工具结果 */}
-          <ToolResultDisplay
-            resultDisplay={resultDisplay}
-            terminalWidth={terminalWidth - 4}
-            isDiff={isDiff}
-            filename={filename}
-            isError={isError}
-            renderOutputAsMarkdown={renderOutputAsMarkdown}
-            maxLines={20}
-            overflowDirection="top"
+  // 展开模式（错误/diff/进度）：header + 内容区
+  return (
+    <>
+      <Box
+        width={terminalWidth}
+        borderStyle="round"
+        borderColor={borderColor}
+        borderDimColor={borderDimColor}
+        borderTop={isFirst}
+        borderBottom={false}
+        borderLeft={true}
+        borderRight={true}
+        paddingX={1}
+      >
+        <ToolStatusIndicator status={status} />
+        <ToolInfo
+          name={name}
+          description={description}
+          status={status}
+          emphasis={emphasis}
+          progressMessage={progressMessage}
+          resultSummary={resultSummary}
+        />
+        {emphasis === "high" && <TrailingIndicator />}
+        <FocusHint name={name} status={status} />
+      </Box>
+      <Box
+        width={terminalWidth}
+        borderStyle="round"
+        borderColor={borderColor}
+        borderDimColor={borderDimColor}
+        borderTop={false}
+        borderBottom={isLast}
+        borderLeft={true}
+        borderRight={true}
+        paddingX={1}
+        flexDirection="column"
+      >
+        {hasProgress && (
+          <McpProgressIndicator
+            progress={progress!}
+            total={progressTotal}
+            message={progressMessage}
+            barWidth={20}
           />
-        </Box>
-      )}
+        )}
+        <ToolResultDisplay
+          resultDisplay={resultDisplay}
+          terminalWidth={terminalWidth - 4}
+          isDiff={isDiff}
+          filename={filename}
+          isError={isError}
+          renderOutputAsMarkdown={renderOutputAsMarkdown}
+          maxLines={20}
+          overflowDirection="top"
+        />
+      </Box>
     </>
   );
 };

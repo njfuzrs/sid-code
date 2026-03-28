@@ -115,11 +115,13 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
         id: t.callId,
         name: t.name,
         input: t.input,
+        description: t.description,
         status: mapToolCallStatus(t.status),
         result: t.resultDisplay?.content,
         isError: t.resultDisplay?.isError,
         renderOutputAsMarkdown: t.renderOutputAsMarkdown,
         progressMessage: t.progressMessage,
+        resultSummary: t.resultSummary,
       }));
       return (
         <ToolGroupMessage

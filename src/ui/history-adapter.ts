@@ -3,6 +3,10 @@
  *
  * 在 agent loop 产出消息时将 LLM Message 转换为 HistoryItem，
  * 而非在渲染时解析。这样 UI 层只需按 type 字段 switch 分发即可。
+ *
+ * 核心设计：
+ * - tool_use（assistant）和 tool_result（user）合并为单条 ToolGroup 记录
+ * - 维护全局 toolNameMap 解决增量同步时 "unknown" 工具名问题
  */
 
 import {
@@ -30,46 +34,65 @@ export function isPlaceholderMessage(msg: Message): boolean {
 }
 
 /**
- * 将单条 LLM Message 转换为一组 HistoryItemWithoutId
- *
- * 一条 Message 可能产出多个 HistoryItem：
- * - assistant 消息中的文本 → HistoryItemAssistant
- * - assistant 消息中的 tool_use → 收集到 HistoryItemToolGroup
- * - user 消息中的纯文本 → HistoryItemUser
- * - user 消息中的 tool_result → 更新对应 ToolGroup 的结果
+ * 从消息数组中构建 tool_use_id → toolName 映射
+ * 用于增量同步时传入完整的映射关系
  */
-export function messageToHistoryItems(
-  msg: Message,
-  toolNameMap: Map<string, string>,
-): HistoryItemWithoutId[] {
-  if (isPlaceholderMessage(msg)) return [];
-
-  if (msg.role === "user") {
-    return convertUserMessage(msg, toolNameMap);
+export function buildToolNameMapFromMessages(msgs: Message[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const msg of msgs) {
+    for (const block of msg.content) {
+      if (block.type === "tool_use") {
+        map.set(block.id, block.name);
+      }
+    }
   }
-  return convertAssistantMessage(msg);
+  return map;
 }
 
 /**
  * 将完整消息数组转换为 HistoryItem 序列
  *
- * 处理跨消息的 tool_use → tool_result 关联：
- * assistant 消息中的 tool_use 产出 ToolGroup（status=executing），
- * 紧随其后的 user 消息中的 tool_result 产出 ToolGroup（status=success/error）。
+ * 核心改进：合并 tool_use + tool_result 为单条记录
+ * - assistant 消息中的 tool_use → 暂存到 pendingToolCalls
+ * - user 消息中的 tool_result → 与 pending 合并，输出完整的 ToolGroup
  */
 export function messagesToHistoryItems(msgs: Message[]): HistoryItemWithoutId[] {
+  const toolNameMap = buildToolNameMapFromMessages(msgs);
+  return messagesToHistoryItemsWithMap(msgs, toolNameMap);
+}
+
+/**
+ * 带外部 toolNameMap 的转换（用于增量同步）
+ */
+export function messagesToHistoryItemsWithMap(
+  msgs: Message[],
+  toolNameMap: Map<string, string>,
+): HistoryItemWithoutId[] {
   const items: HistoryItemWithoutId[] = [];
-  // 全局 tool_use_id → toolName 映射
-  const toolNameMap = new Map<string, string>();
+  // 暂存 assistant 消息中的 tool_use，等待 tool_result 合并
+  const pendingToolCalls = new Map<string, IndividualToolCallDisplay>();
 
   for (const msg of msgs) {
-    // 先收集 tool_use 名称映射
+    if (isPlaceholderMessage(msg)) continue;
+
+    // 收集 tool_use 名称映射
     for (const block of msg.content) {
       if (block.type === "tool_use") {
         toolNameMap.set(block.id, block.name);
       }
     }
-    items.push(...messageToHistoryItems(msg, toolNameMap));
+
+    if (msg.role === "assistant") {
+      items.push(...convertAssistantMessage(msg, pendingToolCalls));
+    } else {
+      items.push(...convertUserMessage(msg, toolNameMap, pendingToolCalls));
+    }
+  }
+
+  // 如果还有未匹配的 pending tool_use（流式中断等场景），输出为 executing 状态
+  if (pendingToolCalls.size > 0) {
+    items.push({ type: "tool_group", tools: Array.from(pendingToolCalls.values()) });
+    pendingToolCalls.clear();
   }
 
   return items;
@@ -80,10 +103,11 @@ export function messagesToHistoryItems(msgs: Message[]): HistoryItemWithoutId[] 
 function convertUserMessage(
   msg: Message,
   toolNameMap: Map<string, string>,
+  pendingToolCalls: Map<string, IndividualToolCallDisplay>,
 ): HistoryItemWithoutId[] {
   const items: HistoryItemWithoutId[] = [];
   const textBlocks: string[] = [];
-  const toolResults: IndividualToolCallDisplay[] = [];
+  const mergedTools: IndividualToolCallDisplay[] = [];
 
   for (const block of msg.content) {
     if (block.type === "text") {
@@ -91,26 +115,28 @@ function convertUserMessage(
     } else if (block.type === "tool_result") {
       const toolName = toolNameMap.get(block.tool_use_id) || "unknown";
       const isError = !!block.is_error;
-      const isDiff = isDiffContent(toolName, block.content);
-      const filename = getFilenameFromInput(toolName, {});
+      const pending = pendingToolCalls.get(block.tool_use_id);
 
       const resultDisplay: ToolResultDisplay = {
         content: block.content,
         isError,
-        isDiff,
-        filename,
+        isDiff: isDiffContent(toolName, block.content),
+        filename: getFilenameFromInput(toolName, pending?.input ?? {}),
       };
 
-      toolResults.push({
+      // 合并 pending tool_use + tool_result
+      mergedTools.push({
         callId: block.tool_use_id,
-        name: toolName,
-        description: isError
-          ? getResultSummary(toolName, block.content, true)
-          : getResultSummary(toolName, block.content),
-        input: {},
+        name: pending?.name ?? toolName,
+        description: pending?.description ?? getToolSummary(toolName, {}),
+        input: pending?.input ?? {},
         status: isError ? ToolCallStatus.Error : ToolCallStatus.Success,
         resultDisplay,
+        resultSummary: getResultSummary(toolName, block.content, isError),
       });
+
+      // 已合并，从 pending 中移除
+      pendingToolCalls.delete(block.tool_use_id);
     }
   }
 
@@ -120,17 +146,19 @@ function convertUserMessage(
     items.push({ type: "user", text });
   }
 
-  // 工具结果 → HistoryItemToolGroup
-  if (toolResults.length > 0) {
-    items.push({ type: "tool_group", tools: toolResults });
+  // 合并后的工具结果 → HistoryItemToolGroup
+  if (mergedTools.length > 0) {
+    items.push({ type: "tool_group", tools: mergedTools });
   }
 
   return items;
 }
 
-function convertAssistantMessage(msg: Message): HistoryItemWithoutId[] {
+function convertAssistantMessage(
+  msg: Message,
+  pendingToolCalls: Map<string, IndividualToolCallDisplay>,
+): HistoryItemWithoutId[] {
   const items: HistoryItemWithoutId[] = [];
-  let pendingToolCalls: IndividualToolCallDisplay[] = [];
   let textAccum = "";
 
   const flushText = () => {
@@ -140,22 +168,14 @@ function convertAssistantMessage(msg: Message): HistoryItemWithoutId[] {
     }
   };
 
-  const flushTools = () => {
-    if (pendingToolCalls.length > 0) {
-      items.push({ type: "tool_group", tools: pendingToolCalls });
-      pendingToolCalls = [];
-    }
-  };
-
   for (const block of msg.content) {
     if (block.type === "text") {
-      // 遇到文本，先 flush 待输出的工具调用
-      flushTools();
+      flushText(); // 先 flush 前面的文本（如果有的话）
       textAccum += (textAccum ? "\n" : "") + block.text;
     } else if (block.type === "tool_use") {
-      // 遇到 tool_use，先 flush 累积的文本
       flushText();
-      pendingToolCalls.push({
+      // 暂存到 pendingToolCalls，等待 tool_result 合并
+      pendingToolCalls.set(block.id, {
         callId: block.id,
         name: block.name,
         description: getToolSummary(block.name, block.input),
@@ -165,10 +185,11 @@ function convertAssistantMessage(msg: Message): HistoryItemWithoutId[] {
     }
   }
 
-  // flush 剩余
+  // flush 剩余文本
   flushText();
-  flushTools();
+
+  // 注意：不在这里输出 tool_use 的 ToolGroup
+  // 它们会在 convertUserMessage 中与 tool_result 合并后输出
 
   return items;
 }
-

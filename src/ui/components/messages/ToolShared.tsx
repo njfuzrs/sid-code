@@ -70,7 +70,9 @@ export const ToolInfo: React.FC<{
   status: ToolCallStatus;
   emphasis?: TextEmphasis;
   progressMessage?: string;
-}> = ({ name, description, status, emphasis = "medium", progressMessage }) => {
+  /** 结果摘要（成功时显示在 description 后面） */
+  resultSummary?: string;
+}> = ({ name, description, status, emphasis = "medium", progressMessage, resultSummary }) => {
   const nameColor = emphasis === "low" ? theme.text.secondary : theme.text.primary;
 
   return (
@@ -81,6 +83,12 @@ export const ToolInfo: React.FC<{
           <>
             {" "}
             <Text color={theme.text.secondary}>{description}</Text>
+          </>
+        ) : null}
+        {resultSummary && (status === "success" || status === "error") ? (
+          <>
+            <Text dimColor>{" — "}</Text>
+            <Text dimColor>{resultSummary}</Text>
           </>
         ) : null}
         {progressMessage && status === "executing" ? (

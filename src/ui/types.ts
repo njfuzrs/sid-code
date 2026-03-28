@@ -70,6 +70,8 @@ export interface IndividualToolCallDisplay {
   renderOutputAsMarkdown?: boolean;
   /** 进度消息（MCP 工具） */
   progressMessage?: string;
+  /** 结果摘要（一行文字，如 "862 字符"、"替换完成"） */
+  resultSummary?: string;
 }
 
 // ── HistoryItem 基础 ──

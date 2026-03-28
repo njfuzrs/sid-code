@@ -87,12 +87,11 @@ export function useHistoryManager(): UseHistoryManagerReturn {
     const newCount = msgs.length - lastSyncedCount;
     if (newCount <= 0) return lastSyncedCount;
 
-    const newMsgs = msgs.slice(lastSyncedCount);
-    const newItemsWithoutId = messagesToHistoryItems(newMsgs);
-    if (newItemsWithoutId.length > 0) {
-      const newItems = newItemsWithoutId.map(assignId);
-      setHistory(prev => [...prev, ...newItems]);
-    }
+    // 始终从完整消息列表重建，确保 tool_use + tool_result 正确合并
+    idCounterRef.current = 0;
+    const itemsWithoutId = messagesToHistoryItems(msgs);
+    const items = itemsWithoutId.map(assignId);
+    setHistory(items);
     return msgs.length;
   }, [assignId]);
 
