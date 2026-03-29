@@ -520,6 +520,12 @@ async function main(): Promise<void> {
     toolRegistry.register(new ReadManyTool(fileReadTracker));
     toolRegistry.register(new MemoryTool(memoryStore));
 
+    // 注册 web_search 工具（始终可用，DuckDuckGo 兜底）
+    const { createSearchBackend } = await import("./tool/search-backends/factory.ts");
+    const { WebSearchTool } = await import("./tool/web-search.ts");
+    const searchBackend = createSearchBackend(config.search);
+    toolRegistry.register(new WebSearchTool(searchBackend));
+
     // 创建 Plan Mode 管理器 + 注册 Plan Mode 工具
     const { PlanModeManager } = await import("./plan/state.ts");
     const { EnterPlanModeTool } = await import("./tool/enter-plan-mode.ts");

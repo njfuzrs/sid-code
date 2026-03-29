@@ -137,6 +137,9 @@ export interface Config {
   // 项目哈希（用于多项目隔离）
   projectHash?: string;
 
+  // 搜索配置
+  search?: SearchConfig;
+
   // 轨迹采集配置
   trace?: TraceConfig;
 }
@@ -167,6 +170,18 @@ export interface TraceUploadConfig {
   maxQueueRetries?: number;
   /** 重试队列扫描间隔毫秒（默认 300000，即 5 分钟） */
   queueScanIntervalMs?: number;
+}
+
+/** 搜索配置 */
+export interface SearchConfig {
+  /** 搜索后端: searxng | brave | tavily | duckduckgo */
+  backend?: string;
+  /** SearXNG 实例地址 */
+  searxngUrl?: string;
+  /** Brave Search API Key */
+  braveApiKey?: string;
+  /** Tavily API Key */
+  tavilyApiKey?: string;
 }
 
 /** 轨迹采集配置 */
@@ -290,6 +305,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     jit_context: "jitContext",
     sanitize_env: "sanitizeEnv",
     trace: "trace",
+    search: "search",
   };
 
   const result: any = {};
@@ -326,6 +342,14 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
         compressThresholdKb: value.compress_threshold_kb || value.compressThresholdKb,
         largeFileThresholdLines: value.large_file_threshold_lines || value.largeFileThresholdLines,
         hugeFileThresholdLines: value.huge_file_threshold_lines || value.hugeFileThresholdLines,
+      };
+    // 特殊处理 search：转换字段名（snake_case → camelCase）
+    } else if (configKey === "search" && typeof value === "object" && value !== null) {
+      result[configKey] = {
+        backend: value.backend,
+        searxngUrl: value.searxng_url || value.searxngUrl,
+        braveApiKey: value.brave_api_key || value.braveApiKey,
+        tavilyApiKey: value.tavily_api_key || value.tavilyApiKey,
       };
     // 特殊处理 trace：转换字段名（snake_case → camelCase）
     } else if (configKey === "trace" && typeof value === "object" && value !== null) {
