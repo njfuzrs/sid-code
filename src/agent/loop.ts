@@ -19,8 +19,9 @@ import { ModelFallback } from "../llm/fallback.ts";
 import { ThinkingManager } from "../llm/thinking.ts";
 import { SessionState } from "../session/state.ts";
 import { getLogger, getSessionMetrics, getPerfTimer } from "../debug/index.ts";
+import { getTelemetryBus, ATTR } from "../telemetry/index.ts";
 import type { HookSystem } from "../hook/system.ts";
-import { LoopDetector, LOOP_RECOVERY_PROMPT, LOOP_DETECTION_PROMPT } from "./loop-detection.ts";
+import { LoopDetector, LOOP_RECOVERY_PROMPT } from "./loop-detection.ts";
 import type { LLMLoopCheckResult } from "./loop-detection.ts";
 import { isAbortError } from "../llm/errors.ts";
 
@@ -132,7 +133,7 @@ export class AgentLoopRunner {
    */
   private async runLLMLoopCheck(
     ctxMgr: ContextManager,
-    callbacks: AgentLoopCallbacks,
+    _callbacks: AgentLoopCallbacks,
   ): Promise<boolean> {
     const log = getLogger();
     log.info("AGENT", "启动 LLM 认知循环检测");
@@ -180,11 +181,25 @@ export class AgentLoopRunner {
   async run(userInput: string, callbacks: AgentLoopCallbacks): Promise<void> {
     const log = getLogger();
     const { config, ctxMgr, toolRegistry, sessionState } = this.deps;
+    const telemetry = getTelemetryBus();
 
     log.info("AGENT", `用户输入: ${userInput.slice(0, 200)}${userInput.length > 200 ? "..." : ""}`);
 
     // 记录用户提示
     getSessionMetrics().recordPrompt();
+
+    // 开始 Agent Trace（invoke_agent span）
+    if (telemetry.isEnabled()) telemetry.startTrace();
+    const agentSpan = telemetry.isEnabled()
+      ? telemetry.startSpan("invoke_agent", `invoke_agent ${config.model}`, {
+          [ATTR.OPERATION_NAME]: "invoke_agent",
+          [ATTR.AGENT_NAME]: "sid-code",
+          [ATTR.CONVERSATION_ID]: sessionState.sessionId,
+          [ATTR.REQUEST_MODEL]: config.model,
+          [ATTR.CWD]: sessionState.cwd,
+          [ATTR.USER_PROMPT]: userInput.slice(0, 500),
+        })
+      : undefined;
 
     // 新一轮对话开始，重置模型可用性的 retry_once 标记
     if (this.deps.fallback) {
@@ -336,26 +351,71 @@ export class AgentLoopRunner {
       }
 
       // 处理流式响应（记录 API 耗时）
-      const apiStart = Date.now();
-      const perfHandle = getPerfTimer().start('llm_request');
-      const response = await this.deps.processStream(stream, (text) => {
-        callbacks.onStreamText(text);
-      });
+      // Bug #7 修复：删除未使用的 apiStart 变量，统一用 perfHandle
+      const perfHandle = getPerfTimer().start(`llm_request_${turns}`);
+      // 遥测：LLM chat span
+      const llmSpan = telemetry.isEnabled()
+        ? telemetry.startSpan("chat", `chat ${config.model}`, {
+            [ATTR.OPERATION_NAME]: "chat",
+            [ATTR.PROVIDER_NAME]: config.provider,
+            [ATTR.REQUEST_MODEL]: config.model,
+            [ATTR.TURN_NUMBER]: turns,
+          })
+        : undefined;
+      let firstTokenRecorded = false;
+
+      let response: AccumulatedResponse;
+      try {
+        response = await this.deps.processStream(stream, (text) => {
+          // 记录 TTFT（首 token 延迟）
+          if (!firstTokenRecorded && llmSpan) {
+            llmSpan.addEvent("gen_ai.first_token", { ttft_ms: llmSpan.elapsed() });
+            firstTokenRecorded = true;
+          }
+          callbacks.onStreamText(text);
+        });
+      } catch (err: any) {
+        perfHandle.end({ model: config.model });
+        // Bug #5 修复：LLM 错误路径记录到 SessionMetrics
+        getSessionMetrics().recordLlmResponse(config.model, 0, 0, 0, 0, true);
+        llmSpan?.recordError(err);
+        llmSpan?.end();
+        throw err;
+      }
       const apiDuration = perfHandle.end({ model: config.model });
 
       // 更新 SessionState
       sessionState.updateUsage(config.model, response.usage, apiDuration);
 
+      // 计算本次调用成本
+      const thisCost = sessionState.calculateCost(config.model, response.usage);
+
       // 记录 LLM 响应到会话指标
-      const costUSD = sessionState.totalCostUSD - (sessionState.getTotalUsage().inputTokens + sessionState.getTotalUsage().outputTokens > response.usage.inputTokens + response.usage.outputTokens ? sessionState.totalCostUSD : 0);
       getSessionMetrics().recordLlmResponse(
         config.model,
         response.usage.inputTokens,
         response.usage.outputTokens,
         apiDuration,
-        costUSD,
+        thisCost,
         false
       );
+
+      // Bug #4 修复：调用 quotaManager.recordRequest() 使 RPM/TPM 限速生效
+      if (this.deps.quotaManager) {
+        this.deps.quotaManager.recordRequest(
+          response.usage.inputTokens + response.usage.outputTokens
+        );
+      }
+
+      // 结束 LLM span
+      llmSpan?.setAttributes({
+        [ATTR.INPUT_TOKENS]: response.usage.inputTokens,
+        [ATTR.OUTPUT_TOKENS]: response.usage.outputTokens,
+        [ATTR.CACHE_READ_TOKENS]: (response.usage as any).cacheReadInputTokens ?? 0,
+        [ATTR.CACHE_CREATION_TOKENS]: (response.usage as any).cacheCreationInputTokens ?? 0,
+        [ATTR.FINISH_REASONS]: response.stopReason ?? "unknown",
+      });
+      llmSpan?.end();
 
       // 成本配额检查
       if (this.deps.quotaManager) {
@@ -453,6 +513,14 @@ export class AgentLoopRunner {
 
         const totalUsage = sessionState.getTotalUsage();
         log.info("AGENT", `对话结束 (${response.stopReason})，共 ${turns} 轮，in=${totalUsage.inputTokens} out=${totalUsage.outputTokens}，累计费用 $${sessionState.totalCostUSD.toFixed(4)}`);
+        // 结束 Agent span
+        agentSpan?.setAttributes({
+          [ATTR.TOTAL_TURNS]: turns,
+          [ATTR.TOTAL_COST_USD]: sessionState.totalCostUSD,
+          [ATTR.INPUT_TOKENS]: totalUsage.inputTokens,
+          [ATTR.OUTPUT_TOKENS]: totalUsage.outputTokens,
+        });
+        agentSpan?.end();
         callbacks.onComplete(turns);
         break;
       }
@@ -475,7 +543,11 @@ export class AgentLoopRunner {
         }
         if (loopDetected) {
           const recovered = await this.recoverFromLoop(ctxMgr, callbacks, "工具调用重复");
-          if (!recovered) break;
+          if (!recovered) {
+            agentSpan?.addEvent("loop_detected_unrecoverable", { detail: "工具调用重复" });
+            agentSpan?.end();
+            break;
+          }
           continue;
         }
 
@@ -484,7 +556,11 @@ export class AgentLoopRunner {
           const llmLoopDetected = await this.runLLMLoopCheck(ctxMgr, callbacks);
           if (llmLoopDetected) {
             const recovered = await this.recoverFromLoop(ctxMgr, callbacks, "LLM 认知检测到循环模式");
-            if (!recovered) break;
+            if (!recovered) {
+              agentSpan?.addEvent("loop_detected_unrecoverable", { detail: "LLM 认知检测" });
+              agentSpan?.end();
+              break;
+            }
             continue;
           }
         }
@@ -495,13 +571,13 @@ export class AgentLoopRunner {
           }
         }
 
-        const toolStartTime = Date.now();
-        const perfHandle = getPerfTimer().start(`tool_${toolNames[0] || 'unknown'}`);
+        // Bug #6 修复：PerfTimer 使用带序号的名称，避免同名覆盖
+        const toolPerfHandle = getPerfTimer().start(`tool_batch_${turns}`);
         let toolResults: ContentBlock[];
         try {
           toolResults = await this.deps.executeTools(response.content);
         } catch (err: any) {
-          perfHandle.end();
+          toolPerfHandle.end();
           // 用户取消：为悬空的 tool_use 补上取消的 tool_result，保持上下文一致性
           if (isAbortError(err)) {
             const cancelResults: ContentBlock[] = toolBlocks
@@ -517,18 +593,54 @@ export class AgentLoopRunner {
           }
           throw err;
         }
-        const toolElapsed = perfHandle.end();
+        const toolBatchElapsed = toolPerfHandle.end();
         ctxMgr.addMessage({ role: "user", content: toolResults });
 
-        // 从结果中提取最后一个工具的 isError 状态
-        const lastResult = toolResults[toolResults.length - 1];
-        const lastIsError = lastResult && lastResult.type === "tool_result" ? !!lastResult.is_error : false;
-        const lastName = toolNames[toolNames.length - 1] || "";
+        // Bug #2 修复：调用 SessionState.addToolDuration()
+        sessionState.addToolDuration(toolBatchElapsed);
 
-        // 记录工具调用到会话指标
-        getSessionMetrics().recordToolCall(lastName, toolElapsed, !lastIsError);
+        // Bug #1 修复：循环记录每个工具的指标（而非只记录最后一个）
+        // 将 toolResults 按 tool_use_id 与 toolBlocks 配对
+        const resultMap = new Map<string, ContentBlock>();
+        for (const r of toolResults) {
+          if (r.type === "tool_result") resultMap.set(r.tool_use_id, r);
+        }
+        const perToolDuration = toolBlocks.length > 0
+          ? toolBatchElapsed / toolBlocks.length
+          : toolBatchElapsed;
 
-        callbacks.onToolEnd(lastName, { isError: lastIsError, elapsedMs: toolElapsed });
+        for (const b of toolBlocks) {
+          if (b.type !== "tool_use") continue;
+          const result = resultMap.get(b.id);
+          const isError = result && result.type === "tool_result" ? !!result.is_error : false;
+          const success = !isError;
+
+          // 记录到 SessionMetrics（每个工具独立记录）
+          getSessionMetrics().recordToolCall(b.name, perToolDuration, success);
+
+          // 遥测：execute_tool span
+          if (telemetry.isEnabled()) {
+            const toolSpan = telemetry.startSpan("execute_tool", `execute_tool ${b.name}`, {
+              [ATTR.OPERATION_NAME]: "execute_tool",
+              [ATTR.TOOL_NAME]: b.name,
+              [ATTR.TOOL_CALL_ID]: b.id,
+              [ATTR.TURN_NUMBER]: turns,
+              [ATTR.TOOL_ARGS_SUMMARY]: summarizeToolArgs(b.name, b.input),
+              [ATTR.SUCCESS]: success,
+            });
+            if (result && result.type === "tool_result") {
+              toolSpan.setAttribute(ATTR.TOOL_RESULT_SIZE, result.content.length);
+            }
+            if (isError) {
+              toolSpan.recordError(new Error(
+                result && result.type === "tool_result" ? result.content.slice(0, 200) : "unknown"
+              ));
+            }
+            toolSpan.end();
+          }
+
+          callbacks.onToolEnd(b.name, { isError, elapsedMs: perToolDuration });
+        }
         continue;
       }
 
@@ -540,13 +652,36 @@ export class AgentLoopRunner {
 
       // 其他停止原因
       log.warn("AGENT", `未知停止原因: ${response.stopReason}，in=${response.usage.inputTokens} out=${response.usage.outputTokens}`);
+      agentSpan?.end();
       callbacks.onComplete(turns);
       break;
     }
 
     if (turns >= maxTurns) {
       log.warn("AGENT", `达到最大轮次限制: ${maxTurns}`);
+      agentSpan?.addEvent("max_turns_reached", { maxTurns });
+      agentSpan?.end();
       callbacks.onMaxTurns?.(maxTurns);
     }
+  }
+}
+
+/** 提取工具参数摘要（用于遥测，避免记录完整参数） */
+function summarizeToolArgs(toolName: string, input: unknown): string {
+  if (!input || typeof input !== "object") return "";
+  const obj = input as Record<string, unknown>;
+  switch (toolName) {
+    case "read":
+    case "write":
+    case "edit":
+      return String(obj.file_path ?? obj.path ?? "").slice(0, 200);
+    case "bash":
+      return String(obj.command ?? "").slice(0, 200);
+    case "grep":
+      return `pattern=${String(obj.pattern ?? "").slice(0, 100)}`;
+    case "glob":
+      return `pattern=${String(obj.pattern ?? "").slice(0, 100)}`;
+    default:
+      return JSON.stringify(input).slice(0, 200);
   }
 }

@@ -142,6 +142,9 @@ export interface Config {
 
   // 轨迹采集配置
   trace?: TraceConfig;
+
+  // 遥测配置（OTel 兼容的结构化 Trace）
+  telemetry?: TelemetryConfig;
 }
 
 /** 轨迹上传配置 */
@@ -194,6 +197,26 @@ export interface TraceConfig {
   maxSessionsRetained?: number;
   /** 上传配置 */
   upload?: TraceUploadConfig;
+}
+
+/** 遥测导出器配置 */
+export interface TelemetryExporterConfig {
+  type: "console" | "jsonl";
+  options?: Record<string, unknown>;
+}
+
+/** 遥测配置 */
+export interface TelemetryConfig {
+  /** 是否启用（默认 false） */
+  enabled: boolean;
+  /** 导出器列表 */
+  exporters: TelemetryExporterConfig[];
+  /** 批量导出大小（默认 512） */
+  batchSize?: number;
+  /** 刷新间隔毫秒（默认 5000） */
+  flushIntervalMs?: number;
+  /** 最大队列大小（默认 2048） */
+  maxQueueSize?: number;
 }
 
 /** Checkpoint 配置 */
@@ -306,6 +329,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     sanitize_env: "sanitizeEnv",
     trace: "trace",
     search: "search",
+    telemetry: "telemetry",
   };
 
   const result: any = {};
@@ -372,6 +396,16 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
           maxQueueRetries: upload.max_queue_retries || upload.maxQueueRetries,
           queueScanIntervalMs: upload.queue_scan_interval_ms || upload.queueScanIntervalMs,
         } : undefined,
+      };
+    // 特殊处理 telemetry：转换字段名
+    } else if (configKey === "telemetry" && typeof value === "object" && value !== null) {
+      const v = value as any;
+      result[configKey] = {
+        enabled: v.enabled ?? false,
+        exporters: Array.isArray(v.exporters) ? v.exporters : [],
+        batchSize: v.batch_size || v.batchSize,
+        flushIntervalMs: v.flush_interval_ms || v.flushIntervalMs,
+        maxQueueSize: v.max_queue_size || v.maxQueueSize,
       };
     } else {
       result[configKey] = value;

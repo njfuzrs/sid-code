@@ -413,6 +413,18 @@ export class App {
     // session_start hook（非阻塞）
     this.hookSystem.fireSessionStartEvent("startup", { model: this.config.model })
       .catch(err => log.error("HOOK", `session_start hook 失败: ${err.message}`));
+
+    // 遥测系统初始化（独立于轨迹采集）
+    try {
+      const { initTelemetry } = await import("./telemetry/index.ts");
+      const telemetryConfig = this.config.telemetry;
+      if (telemetryConfig?.enabled) {
+        initTelemetry(telemetryConfig);
+        log.info("TELEMETRY", `遥测已启用，导出器: ${telemetryConfig.exporters?.map((e: any) => e.type).join(", ") ?? "无"}`);
+      }
+    } catch (err: any) {
+      log.warn("TELEMETRY", `遥测初始化失败: ${err.message}`);
+    }
   }
 
   /**

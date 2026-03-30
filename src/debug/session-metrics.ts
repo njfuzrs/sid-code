@@ -121,6 +121,11 @@ export class SessionMetricsCollector {
     this.metrics.context.compactCount++;
   }
 
+  /** 记录上下文截断（Bug #3 修复） */
+  recordTruncation(): void {
+    this.metrics.context.totalTruncated++;
+  }
+
   /** 更新峰值 token 数 */
   updatePeakTokens(tokens: number): void {
     if (tokens > this.metrics.context.peakTokens) {

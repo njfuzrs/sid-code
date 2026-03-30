@@ -374,6 +374,8 @@ export class Manager {
         { role: "assistant", content: [{ type: "text", text: "了解，继续。" }] },
         ...this.messages.slice(splitPoint),
       ];
+      // Bug #3 修复：记录截断次数到 SessionMetrics
+      getSessionMetrics().recordTruncation();
     }
 
     log.warn("CONTEXT", `紧急压缩: ${before} → ${this.messages.length} 条消息`);
