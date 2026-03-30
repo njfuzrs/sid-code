@@ -81,14 +81,14 @@ describe("权限系统增强功能", () => {
         input: { file_path: "/tmp/test.txt" },
       });
       expect(writeResult.allowed).toBe(false);
-      expect(writeResult.reason).toContain("plan 模式");
+      expect(writeResult.reason).toContain("计划模式");
 
       const bashResult = await checker.check({
         toolName: "bash",
         input: { command: "ls" },
       });
       expect(bashResult.allowed).toBe(false);
-      expect(bashResult.reason).toContain("plan 模式");
+      expect(bashResult.reason).toContain("计划模式");
     });
   });
 

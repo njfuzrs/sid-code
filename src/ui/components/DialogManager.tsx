@@ -8,7 +8,7 @@
 import React, { useRef } from "react";
 import { Box, Text } from "ink";
 import { useKeypress, KeypressPriority } from "../contexts/KeypressContext.tsx";
-import type { PermissionRequestInfo, ShellConfirmRequestInfo } from "../App.tsx";
+import type { PermissionRequestInfo, ShellConfirmRequestInfo, PlanApprovalRequestInfo } from "../App.tsx";
 import { getToolSummary } from "../ui-utils.ts";
 import { theme } from "../semantic-colors.ts";
 import { SettingsDialog } from "./SettingsDialog.tsx";
@@ -81,19 +81,52 @@ function ShellConfirmDialog({ request }: { request: ShellConfirmRequestInfo }) {
   );
 }
 
-/** 对话框渲染器：渲染权限确认或 Shell 确认对话框 */
+/** Plan Mode 审批对话框（轻量版：计划内容已在上方消息区域渲染，底部只显示操作栏） */
+function PlanApprovalDialog({ request }: { request: PlanApprovalRequestInfo }) {
+  const resolvedRef = useRef(false);
+
+  useKeypress(KeypressPriority.Critical, (key) => {
+    if (resolvedRef.current) return false;
+    if (!key.insertable) return false;
+    const lower = key.name;
+    if (lower === "y") { resolvedRef.current = true; request.resolve("approve"); return true; }
+    if (lower === "n") { resolvedRef.current = true; request.resolve("reject"); return true; }
+    return false;
+  });
+
+  const lineCount = request.planContent.split("\n").length;
+
+  return (
+    <Box flexDirection="column" borderStyle="single" borderColor={theme.text.accent} paddingX={1}>
+      <Text color={theme.text.accent} bold>📋 计划审批</Text>
+      <Text dimColor>文件: {request.planFilePath} ({lineCount} 行)</Text>
+      <Text dimColor>计划内容已显示在上方消息区域，可滚动查看</Text>
+      <Box marginTop={0}>
+        <Text color={theme.status.success} bold> (y)</Text><Text>批准并执行 </Text>
+        <Text color={theme.status.error} bold> (n)</Text><Text>拒绝并修改</Text>
+      </Box>
+    </Box>
+  );
+}
+
+/** 对话框渲染器：渲染权限确认、Shell 确认或 Plan 审批对话框 */
 export function DialogRenderer({
   permissionRequest,
   shellConfirmRequest,
+  planApprovalRequest,
 }: {
   permissionRequest: PermissionRequestInfo | null;
   shellConfirmRequest: ShellConfirmRequestInfo | null;
+  planApprovalRequest: PlanApprovalRequestInfo | null;
 }) {
   if (permissionRequest) {
     return <PermissionDialog request={permissionRequest} />;
   }
   if (shellConfirmRequest) {
     return <ShellConfirmDialog request={shellConfirmRequest} />;
+  }
+  if (planApprovalRequest) {
+    return <PlanApprovalDialog request={planApprovalRequest} />;
   }
   return null;
 }

@@ -24,7 +24,7 @@ import { ModelDialog } from "./ModelDialog.tsx";
 import { ThemeDialog } from "./ThemeDialog.tsx";
 import { useConfirmingTool } from "../hooks/useConfirmingTool.ts";
 import type { HistoryItem } from "../types.ts";
-import type { PermissionRequestInfo, ShellConfirmRequestInfo } from "../App.tsx";
+import type { PermissionRequestInfo, ShellConfirmRequestInfo, PlanApprovalRequestInfo } from "../App.tsx";
 import type { DialogType } from "../../command/types.ts";
 import type { Usage } from "../../llm/types.ts";
 import { theme } from "../semantic-colors.ts";
@@ -46,6 +46,7 @@ interface DefaultAppLayoutProps {
   statusMessage: string;
   permissionRequest: PermissionRequestInfo | null;
   shellConfirmRequest: ShellConfirmRequestInfo | null;
+  planApprovalRequest: PlanApprovalRequestInfo | null;
   isLoading: boolean;
   commands: Array<{ name: string; aliases: string[]; description: string }>;
   cwd: string;
@@ -85,6 +86,7 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
   statusMessage,
   permissionRequest,
   shellConfirmRequest,
+  planApprovalRequest,
   isLoading,
   commands,
   cwd,
@@ -106,7 +108,7 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
   currentTheme,
   onThemeSelect,
 }) => {
-  const hasDialog = !!(permissionRequest || shellConfirmRequest || activeDialog);
+  const hasDialog = !!(permissionRequest || shellConfirmRequest || planApprovalRequest || activeDialog);
   const rootRef = useRef<DOMElement>(null);
   useFlickerDetector(rootRef, rows);
   const confirmingTool = useConfirmingTool(listData);
@@ -160,11 +162,18 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
           />
         )}
 
-        {/* Composer / 权限对话框 / 交互式对话框 互斥显示 */}
+        {/* Composer / 权限对话框 / Plan 审批对话框 / 交互式对话框 互斥显示 */}
         {permissionRequest || shellConfirmRequest ? (
           <DialogRenderer
             permissionRequest={permissionRequest}
             shellConfirmRequest={shellConfirmRequest ?? null}
+            planApprovalRequest={null}
+          />
+        ) : planApprovalRequest ? (
+          <DialogRenderer
+            permissionRequest={null}
+            shellConfirmRequest={null}
+            planApprovalRequest={planApprovalRequest}
           />
         ) : activeDialog === "model" ? (
           <ModelDialog

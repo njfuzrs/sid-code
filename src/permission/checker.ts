@@ -6,6 +6,7 @@
 
 import type { Checker, Decision, PermissionRequest, PermissionRule } from "./types.ts";
 import type { Config } from "../config/config.ts";
+import type { PlanModeManager } from "../plan/state.ts";
 import { checkRules } from "./rules.ts";
 import { AuditLogger } from "./audit.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -64,10 +65,17 @@ const FILE_TOOLS = new Set(["read", "write", "edit"]);
 const WRITE_TOOLS = new Set(["write", "edit"]);
 
 /** 只读工具（含低风险工具如 save_memory） */
-const READ_ONLY_TOOLS = new Set(["read", "grep", "glob", "save_memory"]);
+const READ_ONLY_TOOLS = new Set(["read", "grep", "glob", "ls", "read_many", "web_fetch", "save_memory"]);
 
 /** 会话记忆最大条目数 */
 const MAX_SESSION_MEMORY = 1000;
+
+/** Plan Mode 下额外允许的工具（在 READ_ONLY_TOOLS 基础上） */
+const PLAN_MODE_EXTRA_TOOLS = new Set([
+  "enter_plan_mode",
+  "exit_plan_mode",
+  "sub_agent",
+]);
 
 export class PermissionChecker implements Checker {
   private config: Config;
@@ -80,6 +88,13 @@ export class PermissionChecker implements Checker {
   private auditLogger: AuditLogger;
   /** 路径验证器（统一处理 symlink 解析 + 工作区边界 + 系统目录 + 敏感文件） */
   private pathValidator: PathValidator;
+  /** Plan Mode 管理器（可选，运行时注入） */
+  private planManager: PlanModeManager | null = null;
+
+  /** 设置 Plan Mode 管理器 */
+  setPlanManager(manager: PlanModeManager): void {
+    this.planManager = manager;
+  }
 
   constructor(config: Config, rules?: PermissionRule, workspacePath?: string) {
     this.config = config;
@@ -310,12 +325,39 @@ export class PermissionChecker implements Checker {
       }
     }
 
-    // 第 7 层：plan 模式（只读，拒绝所有写入和 bash）
+    // 第 7 层：plan 模式（代码级强制只读，计划文件例外）
     if (this.config.permissionMode === "plan") {
+      // 只读工具直接放行
       if (READ_ONLY_TOOLS.has(req.toolName)) {
         log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(plan模式+只读工具)`);
         return { allowed: true };
       }
+
+      // Plan Mode 专用工具放行
+      if (PLAN_MODE_EXTRA_TOOLS.has(req.toolName)) {
+        // sub_agent 只允许 explore 类型
+        if (req.toolName === "sub_agent") {
+          const subType = (req.input as any)?.type;
+          if (subType && subType !== "explore") {
+            log.info("PERMISSION", `${req.toolName}(type=${subType}) → 拒绝(plan模式只允许explore子代理)`);
+            return {
+              allowed: false,
+              reason: "计划模式下只允许 explore 类型的子代理",
+            };
+          }
+        }
+        log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(plan模式+专用工具)`);
+        return { allowed: true };
+      }
+
+      // 特殊处理：允许 write/edit 操作计划文件
+      if ((req.toolName === "write" || req.toolName === "edit") && filePath && this.planManager) {
+        if (this.planManager.isPlanFile(filePath)) {
+          log.info("PERMISSION", `${req.toolName}(${filePath.slice(0, 80)}) → 允许(plan模式+计划文件)`);
+          return { allowed: true };
+        }
+      }
+
       log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(plan模式)`);
       this.auditLogger.log({
         timestamp: new Date().toISOString(),
@@ -327,7 +369,7 @@ export class PermissionChecker implements Checker {
       });
       return {
         allowed: false,
-        reason: "plan 模式下只允许只读操作",
+        reason: "计划模式下只允许只读操作",
       };
     }
 

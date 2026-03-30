@@ -14,6 +14,7 @@ import type { Config } from "./config/config.ts";
 import type { Checker } from "./permission/types.ts";
 import type { ProviderRegistry } from "./llm/registry.ts";
 import type { MCPManager } from "./mcp/manager.ts";
+import type { PlanModeManager } from "./plan/state.ts";
 import { Manager as ContextManager } from "./context/manager.ts";
 import { Registry as ToolRegistry } from "./tool/registry.ts";
 import { Registry as CommandRegistry } from "./command/registry.ts";
@@ -71,6 +72,7 @@ export interface AppOptions {
   permissionChecker?: Checker;
   initialPrompt?: string;
   mcpManager?: MCPManager;
+  planManager?: PlanModeManager;
 }
 
 export class App {
@@ -90,8 +92,12 @@ export class App {
   private loopRunner: AgentLoopRunner;
   private hookSystem!: HookSystem;
   private jitContextMgr: JitContextManager;
+  /** Plan Mode 管理器 */
+  private planManager: PlanModeManager | null = null;
   /** TUI 模式下的权限确认回调（由 TUI 注入），返回 "yes" | "no" | "always" */
   private tuiConfirmCallback: ((toolName: string, toolInput: unknown, desc: string) => Promise<"yes" | "no" | "always">) | null = null;
+  /** TUI 状态更新回调（由 TUI 注入，用于同步 permissionMode 等状态） */
+  private tuiStateUpdater: ((patch: Record<string, unknown>) => void) | null = null;
 
   constructor(opts: AppOptions) {
     this.config = opts.config;
@@ -101,6 +107,7 @@ export class App {
     this.toolRegistry = opts.toolRegistry ?? new ToolRegistry();
     this.commandRegistry = opts.commandRegistry ?? new CommandRegistry();
     this.permissionChecker = opts.permissionChecker ?? null;
+    this.planManager = opts.planManager ?? null;
     const sessionId = opts.config.sessionId || crypto.randomUUID().slice(0, 8);
     this.ctxMgr = new ContextManager({ maxTokens: 200000 });
     this.ctxMgr.setSessionId(sessionId);
@@ -822,6 +829,18 @@ export class App {
       if (result) results.push(result);
     }
 
+    // Plan Mode 状态转换处理（使用 resultMap 避免索引错位）
+    await this.handlePlanModeTransitions(toolBlocks, resultMap);
+
+    // Plan Mode 系统提醒：在工具结果末尾附加提醒，防止 LLM 遗忘只读约束
+    if (this.planManager?.isPlanning() && results.length > 0) {
+      const { buildPlanModeReminder } = await import("./plan/prompt.ts");
+      const lastResult = results[results.length - 1];
+      if (lastResult.type === "tool_result" && typeof lastResult.content === "string") {
+        (lastResult as any).content = lastResult.content + "\n\n" + buildPlanModeReminder();
+      }
+    }
+
     // JIT 上下文发现：检查工具访问的路径
     await this.discoverJitContext(toolBlocks.map(t => t.block));
 
@@ -839,13 +858,173 @@ export class App {
             files.push((block.input as any).file_path);
           }
           break;
-        // bash 工具无法预知修改了哪些文件，暂不处理
-        // 后续可考虑通过 inotify/fswatch 监控
         default:
           break;
       }
     }
     return files;
+  }
+
+  /**
+   * Plan Mode 状态转换处理
+   * 在工具执行完成后，检查是否有 enter/exit_plan_mode 调用，执行相应的状态转换
+   * 使用 resultMap（按原始索引存储）避免数组错位
+   */
+  private async handlePlanModeTransitions(
+    toolBlocks: Array<{ block: ToolUseBlock; idx: number }>,
+    resultMap: Map<number, ContentBlock>,
+  ): Promise<void> {
+    if (!this.planManager) return;
+    const log = getLogger();
+
+    for (const { block, idx } of toolBlocks) {
+      const result = resultMap.get(idx);
+      // 跳过执行失败的工具
+      if (result && result.type === "tool_result" && result.is_error) continue;
+
+      if (block.name === "enter_plan_mode" && this.planManager.isPlanning()) {
+        await this.activatePlanMode();
+      }
+
+      if (block.name === "exit_plan_mode" && this.planManager.isAwaitingApproval()) {
+        await this.handlePlanApproval();
+      }
+    }
+  }
+
+  /** 激活 Plan Mode：切换权限模式 + 注入 Plan Mode 系统提示词 */
+  private async activatePlanMode(): Promise<void> {
+    const log = getLogger();
+    log.info("PLAN", "激活 Plan Mode");
+
+    // 保存原始权限模式（退出时恢复）
+    if (!this._originalPermissionMode) {
+      this._originalPermissionMode = this.config.permissionMode;
+    }
+    this.config.permissionMode = "plan";
+
+    // 同步 TUI 状态
+    this.tuiStateUpdater?.({ permissionMode: "plan" });
+
+    // 重建系统提示词（注入 Plan Mode 提示词）
+    await this.rebuildSystemPromptForPlanMode();
+  }
+
+  /** 退出 Plan Mode：恢复权限模式 + 重建系统提示词 */
+  private async deactivatePlanMode(): Promise<void> {
+    const log = getLogger();
+    log.info("PLAN", "退出 Plan Mode");
+
+    // 恢复原始权限模式
+    const restored = this._originalPermissionMode || "default";
+    this.config.permissionMode = restored;
+    this._originalPermissionMode = null;
+
+    // 同步 TUI 状态
+    this.tuiStateUpdater?.({ permissionMode: restored });
+
+    // 重建系统提示词（移除 Plan Mode 提示词）
+    await this.rebuildSystemPrompt();
+  }
+
+  /** 处理 Plan Mode 审批流程 */
+  private async handlePlanApproval(): Promise<void> {
+    if (!this.planManager) return;
+    const log = getLogger();
+
+    // 审批结果由 TUI 层或 REPL 层处理
+    // 这里通过 tuiPlanApprovalCallback 获取用户决策
+    if (this.tuiPlanApprovalCallback) {
+      const planPath = this.planManager.getPlanFilePath();
+      const decision = await this.tuiPlanApprovalCallback(planPath || "");
+
+      if (decision === "approve") {
+        this.planManager.approve();
+        await this.deactivatePlanMode();
+        log.info("PLAN", "用户批准计划，退出 Plan Mode");
+        // 注入批准反馈，让 LLM 知道可以开始执行
+        this.ctxMgr.addMessage({
+          role: "user",
+          content: [{ type: "text", text: "用户已批准你的计划。你现在可以开始按计划编写代码了。" }],
+        });
+      } else {
+        const canContinue = this.planManager.reject();
+        if (canContinue) {
+          const count = this.planManager.getRejectionCount();
+          log.info("PLAN", `用户拒绝计划 (${count}/5)，继续修改`);
+          // 注入拒绝反馈，让 LLM 知道需要修改计划
+          this.ctxMgr.addMessage({
+            role: "user",
+            content: [{ type: "text", text: `用户拒绝了你的计划（第 ${count} 次）。请根据用户反馈修改计划文件，然后再次调用 exit_plan_mode 提交审批。` }],
+          });
+        } else {
+          await this.deactivatePlanMode();
+          log.info("PLAN", "拒绝次数超限，强制退出 Plan Mode");
+        }
+      }
+    } else {
+      // 非 TUI 模式（headless）：自动批准
+      this.planManager.approve();
+      await this.deactivatePlanMode();
+      log.info("PLAN", "非交互模式，自动批准计划");
+    }
+  }
+
+  /** 重建系统提示词（Plan Mode 专用，注入 Plan Mode 提示词片段） */
+  private async rebuildSystemPromptForPlanMode(): Promise<void> {
+    const { buildPlanModePrompt } = await import("./plan/prompt.ts");
+    const { existsSync } = await import("fs");
+
+    const planPath = this.planManager?.getPlanFilePath() || "";
+    const planExists = planPath ? existsSync(planPath) : false;
+    const planModePrompt = buildPlanModePrompt(planPath, planExists);
+
+    // 在现有系统提示词末尾追加 Plan Mode 提示词
+    const currentPrompt = this.ctxMgr.getSystemPrompt();
+    this.ctxMgr.setSystemPrompt(currentPrompt + "\n\n" + planModePrompt);
+    clearPromptCache();
+  }
+
+  /** 重建系统提示词（恢复正常模式） */
+  private async rebuildSystemPrompt(): Promise<void> {
+    const projectRules = await loadAllCLAUDEmd(process.cwd());
+    let memorySummary: string | undefined;
+    try {
+      const { MemoryStore } = await import("./memory/store.ts");
+      const memStore = new MemoryStore(process.cwd());
+      memorySummary = await memStore.generateSummary() || undefined;
+    } catch { /* 忽略 */ }
+
+    const { buildSystemPrompt } = await import("./config/system-prompt.ts");
+    const newPrompt = buildSystemPrompt({
+      tools: this.toolRegistry.all(),
+      projectRules: projectRules?.rawContent || undefined,
+      projectRulesPath: projectRules?.sourcePath,
+      appendPrompt: this.config.appendSystemPrompt || undefined,
+      workingDir: process.cwd(),
+      permissionMode: this.config.permissionMode,
+      gitStatus: true,
+      memorySummary,
+      maxTokens: 180000,
+    });
+    this.ctxMgr.setSystemPrompt(newPrompt);
+    clearPromptCache();
+  }
+
+  /** 原始权限模式（Plan Mode 退出时恢复） */
+  private _originalPermissionMode: string | null = null;
+
+  /** TUI 模式下的 Plan Mode 审批回调，返回 "approve" | "reject" */
+  private tuiPlanApprovalCallback: ((planFilePath: string) => Promise<"approve" | "reject">) | null = null;
+
+  /** 设置 Plan Mode 审批回调（由 TUI 注入） */
+  setPlanApprovalCallback(cb: (planFilePath: string) => Promise<"approve" | "reject">): void {
+    this.tuiPlanApprovalCallback = cb;
+  }
+
+  /** 获取 Plan Mode 管理器（供 TUI/命令使用） */
+  getPlanManager(): PlanModeManager | null {
+    return this.planManager;
   }
 
   /** JIT 上下文发现：根据工具访问的路径发现新的 CLAUDE.md */
@@ -1104,6 +1283,7 @@ export class App {
       statusMessage: "",
       permissionRequest: null,
       shellConfirmRequest: null,
+      planApprovalRequest: null,
       debug: !!this.config.debug,
       lastToolResult: null,
       streamingText: "",
@@ -1135,6 +1315,9 @@ export class App {
       });
       bridge.update(patch);
     };
+
+    // 注入 TUI 状态更新器（供 activatePlanMode/deactivatePlanMode 同步 permissionMode）
+    this.tuiStateUpdater = (patch) => updateState(patch as any);
 
     const scheduleStatusMessageClear = (message: string, delayMs = 1500) => {
       setTimeout(() => {
@@ -1218,6 +1401,41 @@ export class App {
         };
         updateState({
           permissionRequest: { toolName, toolInput, description: desc, resolve: wrappedResolve },
+        });
+      });
+    });
+
+    // 设置 TUI Plan Mode 审批回调
+    this.setPlanApprovalCallback(async (planFilePath) => {
+      return new Promise<"approve" | "reject">((resolve) => {
+        log.info("TUI:PLAN", `显示 Plan 审批对话框: ${planFilePath}`);
+        // 读取计划文件内容
+        let planContent = "";
+        try {
+          const { readFileSync } = require("fs");
+          planContent = readFileSync(planFilePath, "utf-8");
+        } catch (err: any) {
+          planContent = `(无法读取计划文件: ${err.message})`;
+        }
+
+        // 把计划内容注入到消息滚动区域（用户可滚动查看完整计划）
+        historyIdCounter += 1;
+        const planHistoryItem: import("./ui/types.ts").HistoryItem = {
+          id: historyIdCounter,
+          type: "plan_review",
+          planContent,
+          planFilePath,
+        };
+        const prevHistoryItems = bridge.current.historyItems;
+        updateState({ historyItems: [...prevHistoryItems, planHistoryItem] });
+
+        const wrappedResolve = (decision: "approve" | "reject") => {
+          log.info("TUI:PLAN", `Plan 审批响应: ${decision}`);
+          updateState({ planApprovalRequest: null });
+          resolve(decision);
+        };
+        updateState({
+          planApprovalRequest: { planFilePath, planContent, resolve: wrappedResolve },
         });
       });
     });
