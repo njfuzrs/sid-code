@@ -104,6 +104,9 @@ export interface Config {
   // 成本配额（美元）
   costLimit?: number;
 
+  // 配额管控（增强版，向后兼容 costLimit）
+  quota?: QuotaFullConfig;
+
   // Hook 和 MCP
   hooks: HooksConfig;
   mcpServers: Record<string, MCPServerConfig>;
@@ -249,6 +252,29 @@ export interface SessionRetentionConfig {
   minRetention?: string;
 }
 
+/** 预算规则配置（YAML 格式） */
+export interface BudgetRuleConfig {
+  id: string;
+  name: string;
+  period: "session" | "hourly" | "daily" | "weekly" | "monthly";
+  limit_usd: number;
+  scope?: { model?: string };
+  thresholds?: { warning?: number; critical?: number; exceeded?: number };
+  action?: "alert" | "downgrade" | "block";
+}
+
+/** 完整配额配置 */
+export interface QuotaFullConfig {
+  /** 会话成本上限（USD），向后兼容 costLimit */
+  costLimit?: number;
+  /** 每分钟请求数上限 */
+  requestsPerMinute?: number;
+  /** 每分钟 token 数上限 */
+  tokensPerMinute?: number;
+  /** 多维度预算规则 */
+  budgetRules?: BudgetRuleConfig[];
+}
+
 /** 默认配置 */
 export function defaultConfig(): Config {
   return {
@@ -322,6 +348,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     sub_agent_models: "subAgentModels",
     cost_limit: "costLimit",
     show_line_numbers: "showLineNumbers",
+    quota: "quota",
     disabled_skills: "disabledSkills",
     trust_project_extensions: "trustProjectExtensions",
     checkpoint: "checkpoint",
@@ -406,6 +433,25 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
         batchSize: v.batch_size || v.batchSize,
         flushIntervalMs: v.flush_interval_ms || v.flushIntervalMs,
         maxQueueSize: v.max_queue_size || v.maxQueueSize,
+      };
+    // 特殊处理 quota：转换字段名
+    } else if (configKey === "quota" && typeof value === "object" && value !== null) {
+      const v = value as any;
+      result[configKey] = {
+        costLimit: v.cost_limit || v.costLimit,
+        requestsPerMinute: v.requests_per_minute || v.requestsPerMinute,
+        tokensPerMinute: v.tokens_per_minute || v.tokensPerMinute,
+        budgetRules: Array.isArray(v.budget_rules || v.budgetRules)
+          ? (v.budget_rules || v.budgetRules).map((r: any) => ({
+              id: r.id,
+              name: r.name,
+              period: r.period,
+              limit_usd: r.limit_usd || r.limitUSD,
+              scope: r.scope,
+              thresholds: r.thresholds,
+              action: r.action ?? "alert",
+            }))
+          : undefined,
       };
     } else {
       result[configKey] = value;

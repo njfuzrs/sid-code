@@ -109,4 +109,11 @@ export const ATTR = {
   TOOL_RESULT_SIZE: "sidcode.tool.result_size_bytes",
   TOOL_FILE_PATH: "sidcode.tool.file_path",
   TOOL_COMMAND: "sidcode.tool.command",
+  // 成本归因
+  COST_USD: "sidcode.cost.usd",
+  CACHE_SAVINGS_USD: "sidcode.cost.cache_savings_usd",
+  // 预算管控
+  BUDGET_REMAINING_USD: "sidcode.budget.remaining_usd",
+  BUDGET_USAGE_PERCENT: "sidcode.budget.usage_percent",
+  BUDGET_ALERT_LEVEL: "sidcode.budget.alert_level",
 } as const;

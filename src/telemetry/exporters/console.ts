@@ -76,6 +76,15 @@ export class ConsoleExporter implements TelemetryExporter {
       const inTok = span.attributes["gen_ai.usage.input_tokens"] ?? "?";
       const outTok = span.attributes["gen_ai.usage.output_tokens"] ?? "?";
       extra = ` | in:${inTok} out:${outTok}`;
+      // 成本
+      const cost = span.attributes["sidcode.cost.usd"];
+      if (typeof cost === "number") {
+        extra += ` | $${cost.toFixed(4)}`;
+        const savings = span.attributes["sidcode.cost.cache_savings_usd"];
+        if (typeof savings === "number" && savings > 0) {
+          extra += ` (cache saved $${savings.toFixed(4)})`;
+        }
+      }
       // TTFT
       const ttftEvent = span.events.find(e => e.name === "gen_ai.first_token");
       if (ttftEvent?.attributes?.ttft_ms) {
@@ -83,6 +92,15 @@ export class ConsoleExporter implements TelemetryExporter {
       }
       const finish = span.attributes["gen_ai.response.finish_reasons"];
       if (finish) extra += ` | finish:${finish}`;
+    } else if (span.kind === "invoke_agent") {
+      const totalCost = span.attributes["sidcode.total_cost_usd"];
+      if (typeof totalCost === "number") {
+        extra = ` | total:$${totalCost.toFixed(4)}`;
+        const budgetPct = span.attributes["sidcode.budget.usage_percent"];
+        if (typeof budgetPct === "number") {
+          extra += ` | budget:${budgetPct.toFixed(0)}%`;
+        }
+      }
     } else if (span.kind === "execute_tool") {
       const summary = span.attributes["sidcode.tool.args_summary"] ?? "";
       if (summary) extra = ` | ${summary}`;

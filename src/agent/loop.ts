@@ -13,6 +13,8 @@ import type {
 } from "../llm/types.ts";
 import type { Config } from "../config/config.ts";
 import type { QuotaManager } from "../llm/quota.ts";
+import type { TokenMeter } from "../telemetry/metrics/token-meter.ts";
+import type { BudgetTracker } from "../telemetry/metrics/budget-tracker.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { ModelFallback } from "../llm/fallback.ts";
@@ -60,6 +62,8 @@ export interface AgentLoopDeps {
   thinkingMgr: ThinkingManager;
   hookSystem?: HookSystem;
   quotaManager?: QuotaManager;
+  tokenMeter?: TokenMeter;
+  budgetTracker?: BudgetTracker;
   /** 执行工具调用（含权限检查） */
   executeTools: (content: ContentBlock[]) => Promise<ContentBlock[]>;
   /** 处理流式响应 */
@@ -390,6 +394,19 @@ export class AgentLoopRunner {
       // 计算本次调用成本
       const thisCost = sessionState.calculateCost(config.model, response.usage);
 
+      // Token 计量器记录（成本归因 + OTel metric）
+      let cacheSavingsUSD = 0;
+      if (this.deps.tokenMeter) {
+        const meterResult = this.deps.tokenMeter.record({
+          model: config.model,
+          provider: config.provider,
+          usage: response.usage,
+          costUSD: thisCost,
+          sessionId: sessionState.sessionId,
+        });
+        cacheSavingsUSD = meterResult.cacheSavingsUSD;
+      }
+
       // 记录 LLM 响应到会话指标
       getSessionMetrics().recordLlmResponse(
         config.model,
@@ -407,15 +424,39 @@ export class AgentLoopRunner {
         );
       }
 
-      // 结束 LLM span
+      // 结束 LLM span（含成本归因属性）
       llmSpan?.setAttributes({
         [ATTR.INPUT_TOKENS]: response.usage.inputTokens,
         [ATTR.OUTPUT_TOKENS]: response.usage.outputTokens,
         [ATTR.CACHE_READ_TOKENS]: (response.usage as any).cacheReadInputTokens ?? 0,
         [ATTR.CACHE_CREATION_TOKENS]: (response.usage as any).cacheCreationInputTokens ?? 0,
         [ATTR.FINISH_REASONS]: response.stopReason ?? "unknown",
+        [ATTR.COST_USD]: thisCost,
+        [ATTR.CACHE_SAVINGS_USD]: cacheSavingsUSD,
       });
       llmSpan?.end();
+
+      // 预算追踪器检查（多维度规则）
+      if (this.deps.budgetTracker) {
+        const budgetAlert = this.deps.budgetTracker.recordCost(thisCost, {
+          model: config.model,
+        });
+        if (budgetAlert) {
+          if (budgetAlert.level === "exceeded" && budgetAlert.action === "block") {
+            callbacks.onStreamText(`\n⚠️ 预算规则 "${budgetAlert.ruleName}" 已超限（$${budgetAlert.currentUSD.toFixed(4)} / $${budgetAlert.limitUSD.toFixed(2)}），自动停止\n`);
+            callbacks.onComplete(turns);
+            agentSpan?.setAttributes({
+              [ATTR.BUDGET_ALERT_LEVEL]: budgetAlert.level,
+              [ATTR.BUDGET_USAGE_PERCENT]: budgetAlert.percentage * 100,
+            });
+            agentSpan?.end();
+            return;
+          } else if (budgetAlert.level === "critical" || budgetAlert.level === "warning") {
+            const pct = (budgetAlert.percentage * 100).toFixed(0);
+            callbacks.onStreamText(`\n⚠️ 预算规则 "${budgetAlert.ruleName}" 已达 ${pct}%（$${budgetAlert.currentUSD.toFixed(4)} / $${budgetAlert.limitUSD.toFixed(2)}）\n`);
+          }
+        }
+      }
 
       // 成本配额检查
       if (this.deps.quotaManager) {
@@ -513,13 +554,21 @@ export class AgentLoopRunner {
 
         const totalUsage = sessionState.getTotalUsage();
         log.info("AGENT", `对话结束 (${response.stopReason})，共 ${turns} 轮，in=${totalUsage.inputTokens} out=${totalUsage.outputTokens}，累计费用 $${sessionState.totalCostUSD.toFixed(4)}`);
-        // 结束 Agent span
-        agentSpan?.setAttributes({
+        // 结束 Agent span（含成本归因汇总）
+        const agentEndAttrs: Record<string, any> = {
           [ATTR.TOTAL_TURNS]: turns,
           [ATTR.TOTAL_COST_USD]: sessionState.totalCostUSD,
           [ATTR.INPUT_TOKENS]: totalUsage.inputTokens,
           [ATTR.OUTPUT_TOKENS]: totalUsage.outputTokens,
-        });
+        };
+        if (this.deps.tokenMeter) {
+          agentEndAttrs[ATTR.CACHE_SAVINGS_USD] = this.deps.tokenMeter.getTotalCacheSavings();
+        }
+        if (this.deps.quotaManager && this.deps.config.costLimit) {
+          agentEndAttrs[ATTR.BUDGET_REMAINING_USD] = Math.max(0, this.deps.config.costLimit - sessionState.totalCostUSD);
+          agentEndAttrs[ATTR.BUDGET_USAGE_PERCENT] = (sessionState.totalCostUSD / this.deps.config.costLimit) * 100;
+        }
+        agentSpan?.setAttributes(agentEndAttrs);
         agentSpan?.end();
         callbacks.onComplete(turns);
         break;

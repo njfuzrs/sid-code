@@ -22,6 +22,10 @@ import { ModelFallback } from "./llm/fallback.ts";
 import { ThinkingManager } from "./llm/thinking.ts";
 import { SessionState } from "./session/state.ts";
 import { QuotaManager } from "./llm/quota.ts";
+import { TokenMeter } from "./telemetry/metrics/token-meter.ts";
+import { BudgetTracker } from "./telemetry/metrics/budget-tracker.ts";
+import type { BudgetRule } from "./telemetry/metrics/budget-tracker.ts";
+import type { BudgetRuleConfig } from "./config/config.ts";
 import { loadAllCLAUDEmd, watchCLAUDEmd, unwatchCLAUDEmd } from "./config/rules.ts";
 import type { ProjectRules } from "./config/rules.ts";
 import { clearPromptCache } from "./config/system-prompt.ts";
@@ -88,6 +92,8 @@ export class App {
   private thinkingMgr: ThinkingManager;
   private sessionState: SessionState;
   private quotaManager?: QuotaManager;
+  private tokenMeter?: TokenMeter;
+  private budgetTracker?: BudgetTracker;
   private abortController: AbortController | null = null;
   private loopRunner: AgentLoopRunner;
   private hookSystem!: HookSystem;
@@ -112,9 +118,42 @@ export class App {
     this.ctxMgr = new ContextManager({ maxTokens: 200000 });
     this.ctxMgr.setSessionId(sessionId);
     this.sessionState = new SessionState(sessionId);
-    // 成本配额管理
-    if (opts.config.costLimit && opts.config.costLimit > 0) {
-      this.quotaManager = new QuotaManager(opts.config.costLimit);
+    // 成本配额管理（合并 costLimit 和 quota 配置）
+    const quotaConfig = opts.config.quota;
+    const effectiveCostLimit = quotaConfig?.costLimit ?? opts.config.costLimit;
+    if (effectiveCostLimit && effectiveCostLimit > 0) {
+      this.quotaManager = new QuotaManager({
+        costLimit: effectiveCostLimit,
+        requestsPerMinute: quotaConfig?.requestsPerMinute,
+        tokensPerMinute: quotaConfig?.tokensPerMinute,
+      });
+    }
+
+    // Token 计量器（依赖 telemetry bus，延迟到 init() 中创建）
+    // 先用 null bus 创建，init() 中 telemetry 启用后会重建
+    this.tokenMeter = new TokenMeter(
+      null,
+      (model, usage) => this.sessionState.calculateCost(model, usage),
+    );
+
+    // 预算追踪器（如果配置了 budgetRules）
+    if (quotaConfig?.budgetRules?.length) {
+      const rules: BudgetRule[] = quotaConfig.budgetRules.map((r: BudgetRuleConfig) => ({
+        id: r.id,
+        name: r.name,
+        period: r.period,
+        limitUSD: r.limit_usd,
+        scope: r.scope,
+        thresholds: {
+          warning: r.thresholds?.warning ?? 0.5,
+          critical: r.thresholds?.critical ?? 0.8,
+          exceeded: r.thresholds?.exceeded ?? 1.0,
+        },
+        action: r.action ?? "alert",
+      }));
+      this.budgetTracker = new BudgetTracker(rules, (alert) => {
+        getLogger().warn("BUDGET", `${alert.ruleName}: ${alert.level} (${(alert.percentage * 100).toFixed(0)}%)`);
+      });
     }
     // Extended Thinking 仅 Anthropic 支持
     this.thinkingMgr = new ThinkingManager(opts.config.provider === "anthropic");
@@ -151,6 +190,8 @@ export class App {
       thinkingMgr: this.thinkingMgr,
       hookSystem: this.hookSystem,
       quotaManager: this.quotaManager,
+      tokenMeter: this.tokenMeter,
+      budgetTracker: this.budgetTracker,
       executeTools: (content) => this.executeTools(content),
       processStream: (stream, onText) => this.processStream(stream, onText),
       autoCompact: () => this.autoCompact(),
@@ -416,10 +457,17 @@ export class App {
 
     // 遥测系统初始化（独立于轨迹采集）
     try {
-      const { initTelemetry } = await import("./telemetry/index.ts");
+      const { initTelemetry, getTelemetryBus } = await import("./telemetry/index.ts");
       const telemetryConfig = this.config.telemetry;
       if (telemetryConfig?.enabled) {
         initTelemetry(telemetryConfig);
+        // 用启用后的 bus 重建 TokenMeter
+        this.tokenMeter = new TokenMeter(
+          getTelemetryBus(),
+          (model, usage) => this.sessionState.calculateCost(model, usage),
+        );
+        // 同步到 loopRunner
+        (this.loopRunner as any).deps.tokenMeter = this.tokenMeter;
         log.info("TELEMETRY", `遥测已启用，导出器: ${telemetryConfig.exporters?.map((e: any) => e.type).join(", ") ?? "无"}`);
       }
     } catch (err: any) {

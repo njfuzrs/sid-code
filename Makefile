@@ -20,3 +20,6 @@ deps:
 
 lint:
 	$(BUN) run lint
+
+check-tavily:
+	bun run scripts/check-tavily.ts

@@ -7,6 +7,10 @@ export { TelemetryBus, SpanHandle } from "./bus.ts";
 export { TraceContext, generateTraceId, generateSpanId } from "./context.ts";
 export { ConsoleExporter } from "./exporters/console.ts";
 export { JsonlExporter } from "./exporters/jsonl.ts";
+export { TokenMeter } from "./metrics/token-meter.ts";
+export type { TokenUsageRecord, TokenRecordParams, CostCalculator } from "./metrics/token-meter.ts";
+export { BudgetTracker } from "./metrics/budget-tracker.ts";
+export type { BudgetRule, BudgetAlert, BudgetRuleStatus } from "./metrics/budget-tracker.ts";
 export type {
   SpanData, SpanEvent, SpanKind, SpanStatus,
   Attributes, AttributeValue, MetricPoint,
