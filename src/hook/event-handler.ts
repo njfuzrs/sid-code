@@ -152,10 +152,14 @@ export class HookEventHandler {
   }
 
   /** BeforeModel 事件 */
-  async fireBeforeModelEvent(llmRequest: BeforeModelInput["llm_request"]): Promise<AggregatedHookResult> {
+  async fireBeforeModelEvent(
+    llmRequest: BeforeModelInput["llm_request"],
+    options?: { harness_context?: import("./types.ts").HarnessHookContext },
+  ): Promise<AggregatedHookResult> {
     const input: BeforeModelInput = {
       ...this.createBaseInput(HookEventName.BeforeModel),
       llm_request: llmRequest,
+      harness_context: options?.harness_context,
     };
     return this.executeHooks(HookEventName.BeforeModel, input);
   }
@@ -164,11 +168,13 @@ export class HookEventHandler {
   async fireAfterModelEvent(
     llmRequest: AfterModelInput["llm_request"],
     llmResponse: AfterModelInput["llm_response"],
+    options?: { harness_context?: import("./types.ts").HarnessHookContext },
   ): Promise<AggregatedHookResult> {
     const input: AfterModelInput = {
       ...this.createBaseInput(HookEventName.AfterModel),
       llm_request: llmRequest,
       llm_response: llmResponse,
+      harness_context: options?.harness_context,
     };
     return this.executeHooks(HookEventName.AfterModel, input);
   }

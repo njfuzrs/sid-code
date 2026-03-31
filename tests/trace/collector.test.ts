@@ -558,4 +558,180 @@ describe("TraceCollector", () => {
     expect(uploadCalled).toBe(true);
     expect(uploadedSessionId).toBe("upload-sess");
   });
+
+  // ─── Harness 数据消费 ───
+
+  test("handleAfterModel 在 input.harness_context 有值时存入 currentPair.harness_turn_context", async () => {
+    await fireSessionStart(hookSystem);
+
+    // 先触发 BeforeModel
+    await hookSystem.fireBeforeModelEvent({
+      model: "claude-test",
+      messages: [{ role: "user", content: "hello" }],
+      raw_messages: [{ role: "user", content: "hello" }],
+    });
+
+    // 通过 hook system 传递 harness_context
+    await hookSystem.fireAfterModelEvent(
+      {
+        model: "claude-test",
+        messages: [],
+        raw_messages: [{ role: "user", content: "hello" }],
+      },
+      {
+        content_blocks: [{ type: "text", text: "回答" }],
+        stop_reason: "end_turn",
+        usage: { inputTokens: 100, outputTokens: 50 },
+      },
+      {
+        harness_context: {
+          tool_subset: ["read", "write"],
+          context_actions: [{ action: "trim", reason: "token_limit" }],
+          runtime_mode: "local-inline",
+          extra: { edit_protocol: "hashline" },
+        },
+      },
+    );
+
+    const pairs = collector.getPairs();
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0].harness_turn_context).toBeDefined();
+    expect(pairs[0].harness_turn_context?.tool_subset).toEqual(["read", "write"]);
+    expect(pairs[0].harness_turn_context?.context_actions).toHaveLength(1);
+    expect(pairs[0].harness_turn_context?.runtime_mode).toBe("local-inline");
+    expect(pairs[0].harness_turn_context?.edit_protocol).toBe("hashline");
+  });
+
+  test("handlePostToolUse 在 input.edit_meta 有值时累积编辑统计", async () => {
+    await fireSessionStart(hookSystem);
+
+    // 第一次编辑：首轮成功
+    await hookSystem.firePostToolUseEvent(
+      "edit",
+      { file_path: "src/app.ts", old_string: "a", new_string: "b" },
+      { edited: true },
+      false,
+      "toolu_001",
+      {
+        edit_meta: {
+          protocol: "replace",
+          first_pass_success: true,
+          retry_count: 0,
+        },
+      },
+    );
+
+    // 第二次编辑：需要重试
+    await hookSystem.firePostToolUseEvent(
+      "edit",
+      { file_path: "src/hook/types.ts", old_string: "x", new_string: "y" },
+      { edited: true },
+      false,
+      "toolu_002",
+      {
+        edit_meta: {
+          protocol: "hashline",
+          first_pass_success: false,
+          retry_count: 2,
+        },
+      },
+    );
+
+    // 第三次编辑：首轮成功
+    await hookSystem.firePostToolUseEvent(
+      "write",
+      { file_path: "src/new.ts", content: "code" },
+      { written: true },
+      false,
+      "toolu_003",
+      {
+        edit_meta: {
+          protocol: "replace",
+          first_pass_success: true,
+          retry_count: 0,
+        },
+      },
+    );
+
+    // SessionEnd 时应该写入 harness 统计
+    await hookSystem.fireSessionEndEvent("exit");
+
+    const meta = collector.getMetadata()!;
+    expect(meta.harness).toBeDefined();
+    expect(meta.harness?.edit_stats?.total_edits).toBe(3);
+    expect(meta.harness?.edit_stats?.first_pass_success).toBe(2);
+    expect(meta.harness?.edit_stats?.protocols_used).toEqual({ replace: 2, hashline: 1 });
+  });
+
+  test("handleSessionEnd 在 input.harness_summary 有值时写入 metadata.harness", async () => {
+    await fireSessionStart(hookSystem);
+    await fireModelRound(hookSystem);
+
+    await hookSystem.fireSessionEndEvent("exit", undefined, {
+      harness_summary: {
+        task_profile: { task_type: "multi_file_edit", risk_level: "high" },
+        edit_stats: {
+          total_edits: 10,
+          first_pass_success: 8,
+          retry_count: 2,
+          protocols_used: { replace: 6, hashline: 4 },
+        },
+        verify_stats: {
+          total_runs: 5,
+          pass_count: 4,
+          auto_repair_success: 1,
+          commands_used: ["make test", "npm run lint"],
+        },
+        context_stats: {
+          trimmed_tokens: 1000,
+          expired_items: 3,
+          tool_subset_sizes: [10, 8, 6],
+          compression_actions: 2,
+        },
+        runtime_mode: "managed-worktree",
+        candidate_stats: {
+          spawned: 3,
+          selected: 1,
+          selector_reason: "lowest_cost",
+        },
+      },
+    });
+
+    const meta = collector.getMetadata()!;
+    expect(meta.harness).toBeDefined();
+    expect(meta.harness?.task_profile).toEqual({ task_type: "multi_file_edit", risk_level: "high" });
+    expect(meta.harness?.edit_stats?.total_edits).toBe(10);
+    expect(meta.harness?.verify_stats?.total_runs).toBe(5);
+    expect(meta.harness?.context_stats?.trimmed_tokens).toBe(1000);
+    expect(meta.harness?.runtime_mode).toBe("managed-worktree");
+    expect(meta.harness?.candidate_stats?.spawned).toBe(3);
+  });
+
+  test("所有 Harness 字段为空时行为与整合前完全一致（回归测试）", async () => {
+    await fireSessionStart(hookSystem);
+
+    // 不传任何 harness 字段
+    await fireModelRound(hookSystem);
+    await hookSystem.firePostToolUseEvent("bash", { command: "ls" }, { output: "a.ts" }, false);
+    await hookSystem.fireSessionEndEvent("exit");
+
+    const meta = collector.getMetadata()!;
+    const pairs = collector.getPairs();
+
+    // 基础功能应该正常工作
+    expect(pairs).toHaveLength(1);
+    expect(meta.tools_used.has("bash")).toBe(true);
+    expect(meta.exit_status).toBe("end_turn");
+
+    // harness 字段应该不存在或为空
+    expect(pairs[0].harness_turn_context).toBeUndefined();
+    expect(meta.harness).toBeUndefined();
+
+    // session.traj 应该正常生成
+    const trajPath = join(testDir, "sessions", "sess-001", "session.traj");
+    expect(existsSync(trajPath)).toBe(true);
+    const traj = JSON.parse(readFileSync(trajPath, "utf-8"));
+    expect(traj.metadata.tool_source).toBe("sid-code");
+    expect(traj.metadata.harness).toBeUndefined();
+  });
 });

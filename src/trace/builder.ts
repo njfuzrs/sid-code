@@ -51,6 +51,74 @@ export interface RequestResponsePair {
   is_partial: boolean;
   /** thinking blocks（从 AfterModel hook 的 _thinkingBlocks 获取） */
   thinking_blocks?: Array<{ type: "thinking"; thinking: string }>;
+
+  // ── Harness 扩展（可选，Harness Phase 0+ 时填充） ──
+  harness_turn_context?: HarnessTurnContext;
+}
+
+/** Harness 每轮上下文——记录在每个 RequestResponsePair 中 */
+export interface HarnessTurnContext {
+  /** 本轮暴露给模型的工具列表 */
+  tool_subset?: string[];
+  /** 本轮上下文动作（trim/summarize/expire） */
+  context_actions?: Array<{ action: string; reason: string }>;
+  /** 本轮验证结果 */
+  verify_results?: Array<{
+    command: string;
+    passed: boolean;
+    duration_ms: number;
+    summary?: string;
+  }>;
+  /** 本轮编辑协议 */
+  edit_protocol?: string;
+  /** 本轮运行时模式 */
+  runtime_mode?: string;
+  /** 通用扩展 */
+  extra?: Record<string, unknown>;
+}
+
+/** Harness 会话级轨迹元数据 */
+export interface HarnessTraceMetadata {
+  /** Phase 0: 任务画像 */
+  task_profile?: {
+    task_type?: string;
+    risk_level?: string;
+    estimated_files?: number;
+    needs_verification?: boolean;
+    preferred_edit_protocol?: string;
+    preferred_verify_depth?: string;
+    preferred_runtime?: string;
+  };
+  /** Phase 1: 编辑统计 */
+  edit_stats?: {
+    total_edits: number;
+    first_pass_success: number;
+    retry_count: number;
+    protocols_used: Record<string, number>;
+  };
+  /** Phase 1: 验证统计 */
+  verify_stats?: {
+    total_runs: number;
+    pass_count: number;
+    auto_repair_success: number;
+    commands_used: string[];
+  };
+  /** Phase 2: 上下文统计 */
+  context_stats?: {
+    trimmed_tokens: number;
+    expired_items: number;
+    tool_subset_sizes: number[];
+    compression_actions: number;
+  };
+  /** Phase 3: 运行时 */
+  runtime_mode?: string;
+  worktree_id?: string;
+  /** Phase 4: 候选并行 */
+  candidate_stats?: {
+    spawned: number;
+    selected: number;
+    selector_reason?: string;
+  };
 }
 
 /** 会话元数据 */
@@ -79,6 +147,9 @@ export interface TraceMetadata {
   exit_status?: string;
   start_source?: string;
   end_source?: string;
+
+  // ── Harness 扩展（可选，当前不填） ──
+  harness?: HarnessTraceMetadata;
 }
 
 // ─── 输出类型 ───
@@ -188,6 +259,9 @@ export interface TrajectoryMetaOutput {
   start_source?: string;
   end_source?: string;
   claude_md_hash?: string;
+
+  // ── Harness 扩展 ──
+  harness?: HarnessTraceMetadata;
 }
 
 /** .traj 文件的完整结构 */
@@ -603,6 +677,7 @@ export function buildTrajectory(
     ...(metadata.start_source ? { start_source: metadata.start_source } : {}),
     ...(metadata.end_source ? { end_source: metadata.end_source } : {}),
     ...(claudeMdHash ? { claude_md_hash: claudeMdHash } : {}),
+    ...(metadata.harness ? { harness: metadata.harness } : {}),
   };
 
   return {

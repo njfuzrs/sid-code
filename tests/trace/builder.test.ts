@@ -606,4 +606,61 @@ describe("buildTrajectory", () => {
     expect(result.info.model_stats.cache_read_tokens).toBe(30);
     expect(result.info.model_stats.cache_creation_tokens).toBe(5);
   });
+
+  // ─── Harness 字段传递 ───
+
+  test("metadata.harness 有值时正确输出到 TrajectoryMetaOutput.harness", () => {
+    const metadata = makeMetadata({
+      harness: {
+        task_profile: {
+          task_type: "multi_file_edit",
+          risk_level: "medium",
+          estimated_files: 3,
+        },
+        edit_stats: {
+          total_edits: 5,
+          first_pass_success: 4,
+          retry_count: 1,
+          protocols_used: { replace: 3, hashline: 2 },
+        },
+        runtime_mode: "local-inline",
+      },
+    });
+
+    const result = buildTrajectory([], metadata);
+
+    expect(result.metadata.harness).toBeDefined();
+    expect(result.metadata.harness?.task_profile?.task_type).toBe("multi_file_edit");
+    expect(result.metadata.harness?.edit_stats?.total_edits).toBe(5);
+    expect(result.metadata.harness?.edit_stats?.first_pass_success).toBe(4);
+    expect(result.metadata.harness?.runtime_mode).toBe("local-inline");
+  });
+
+  test("metadata.harness 为 undefined 时输出不含 harness 字段", () => {
+    const metadata = makeMetadata({ harness: undefined });
+    const result = buildTrajectory([], metadata);
+
+    expect(result.metadata.harness).toBeUndefined();
+  });
+
+  test("RequestResponsePair.harness_turn_context 有值时不影响 trajectory/history 生成", () => {
+    const pair = makePair({
+      harness_turn_context: {
+        tool_subset: ["read", "write", "bash"],
+        context_actions: [{ action: "trim", reason: "token_limit" }],
+        edit_protocol: "hashline",
+        runtime_mode: "local-inline",
+      },
+    });
+
+    const result = buildTrajectory([pair], makeMetadata());
+
+    // trajectory 和 history 应该正常生成
+    expect(result.trajectory.length).toBeGreaterThan(0);
+    expect(result.history.length).toBeGreaterThan(0);
+
+    // harness_turn_context 不影响输出结构
+    const finalAnswer = result.trajectory.find(s => (s as any).action === "final_answer");
+    expect(finalAnswer).toBeDefined();
+  });
 });

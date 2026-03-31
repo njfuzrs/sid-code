@@ -70,6 +70,11 @@ export class TraceCollector {
   private readonly outputDir: string;
   private initialized = false;
 
+  // ── Harness 编辑统计内部计数器 ──
+  private harnessEditCount = 0;
+  private harnessEditFirstPass = 0;
+  private harnessProtocols: Record<string, number> = {};
+
   constructor(options: CollectorOptions = {}, uploader: TraceUploaderInterface | null = null) {
     this.outputDir = options.outputDir
       ?? join(homedir(), ".sid-code", "trajectories");
@@ -310,6 +315,17 @@ export class TraceCollector {
       ...(thinkingBlocks && thinkingBlocks.length > 0 ? { thinking_blocks: thinkingBlocks } : {}),
     };
 
+    // 如果 Hook 载荷中有 harness_context，存入当前 pair
+    if (input.harness_context) {
+      pair.harness_turn_context = {
+        tool_subset: input.harness_context.tool_subset,
+        context_actions: input.harness_context.context_actions,
+        runtime_mode: input.harness_context.runtime_mode,
+        edit_protocol: input.harness_context.extra?.edit_protocol as string | undefined,
+        extra: input.harness_context.extra,
+      };
+    }
+
     this.pairs.push(pair);
     this.currentPair = null;
 
@@ -361,6 +377,16 @@ export class TraceCollector {
       const filePath = input.tool_input?.file_path;
       if (typeof filePath === "string") {
         this.metadata.files_edited.add(filePath);
+      }
+    }
+
+    // 如果有 edit_meta，累积 Harness 编辑统计
+    if (input.edit_meta) {
+      this.harnessEditCount++;
+      if (input.edit_meta.first_pass_success) this.harnessEditFirstPass++;
+      if (input.edit_meta.protocol) {
+        this.harnessProtocols[input.edit_meta.protocol] =
+          (this.harnessProtocols[input.edit_meta.protocol] ?? 0) + 1;
       }
     }
 
@@ -514,6 +540,21 @@ export class TraceCollector {
         : "user_interrupt";
     } else {
       this.metadata.exit_status = input.reason;
+    }
+
+    // 把 Harness 汇总写入 metadata
+    if (input.harness_summary) {
+      this.metadata.harness = input.harness_summary;
+    } else if (this.harnessEditCount > 0) {
+      // 即使没有外部汇总，也把 collector 自己累积的编辑统计写入
+      this.metadata.harness = {
+        edit_stats: {
+          total_edits: this.harnessEditCount,
+          first_pass_success: this.harnessEditFirstPass,
+          retry_count: 0,
+          protocols_used: this.harnessProtocols,
+        },
+      };
     }
 
     // 最终写入 events.jsonl

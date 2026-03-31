@@ -140,15 +140,19 @@ export class HookSystem {
     return this.eventHandler.fireAfterAgentEvent(prompt, promptResponse);
   }
 
-  async fireBeforeModelEvent(llmRequest: BeforeModelInput["llm_request"]): Promise<AggregatedHookResult> {
-    return this.eventHandler.fireBeforeModelEvent(llmRequest);
+  async fireBeforeModelEvent(
+    llmRequest: BeforeModelInput["llm_request"],
+    options?: { harness_context?: import("./types.ts").HarnessHookContext },
+  ): Promise<AggregatedHookResult> {
+    return this.eventHandler.fireBeforeModelEvent(llmRequest, options);
   }
 
   async fireAfterModelEvent(
     llmRequest: AfterModelInput["llm_request"],
     llmResponse: AfterModelInput["llm_response"],
+    options?: { harness_context?: import("./types.ts").HarnessHookContext },
   ): Promise<AggregatedHookResult> {
-    return this.eventHandler.fireAfterModelEvent(llmRequest, llmResponse);
+    return this.eventHandler.fireAfterModelEvent(llmRequest, llmResponse, options);
   }
 
   async fireSessionStartEvent(
