@@ -509,6 +509,10 @@ export class AgentLoopRunner {
               cacheReadInputTokens: (response.usage as any).cacheReadInputTokens,
               cacheCreationInputTokens: (response.usage as any).cacheCreationInputTokens,
             },
+            // 整合新增：成本与耗时（供 Hook 消费者使用）
+            cost_usd: thisCost,
+            api_duration_ms: apiDuration,
+            cache_savings_usd: cacheSavingsUSD,
           },
         );
         if (afterModelResult.finalOutput?.isBlockingDecision()) {

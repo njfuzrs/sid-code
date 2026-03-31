@@ -1202,6 +1202,7 @@ export class App {
         { output: truncatedOutput, isError: result.isError },
         result.isError,
         block.id,
+        { duration_ms: elapsed },
       );
 
       // additionalContext 追加到工具输出

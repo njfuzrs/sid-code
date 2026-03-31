@@ -141,6 +141,18 @@ export interface PostToolUseInput extends HookInput {
   is_error?: boolean;
   /** 与 PreToolUse 中的 tool_use_id 对应 */
   tool_use_id?: string;
+
+  // ── 整合新增：工具执行耗时 ──
+  /** 工具执行耗时（毫秒） */
+  duration_ms?: number;
+
+  // ── Harness 扩展点 ──
+  /** 编辑元数据（仅 edit/write 工具） */
+  edit_meta?: HarnessEditMeta;
+  /** 是否触发了自动验证 */
+  verify_triggered?: boolean;
+  /** Harness 每轮上下文 */
+  harness_context?: HarnessHookContext;
 }
 
 /** UserPromptSubmit 输入 */
@@ -167,6 +179,10 @@ export interface BeforeModelInput extends HookInput {
     /** 工具定义列表（完整 tool schema） */
     tools?: unknown[];
   };
+
+  // ── Harness 扩展点 ──
+  /** Harness 每轮上下文 */
+  harness_context?: HarnessHookContext;
 }
 
 /** AfterModel 输入 */
@@ -198,7 +214,21 @@ export interface AfterModelInput extends HookInput {
     stop_reason?: string;
     /** 原始 thinking blocks（Anthropic 特有） */
     thinking_blocks?: unknown[];
+
+    // ── 整合新增：成本与耗时 ──
+    /** 本次 LLM 调用成本（美元） */
+    cost_usd?: number;
+    /** 本次 LLM 调用耗时（毫秒） */
+    api_duration_ms?: number;
+    /** 缓存节省金额（美元） */
+    cache_savings_usd?: number;
+    /** 首 token 延迟（毫秒），供 telemetry probe 消费 */
+    ttft_ms?: number;
   };
+
+  // ── Harness 扩展点 ──
+  /** Harness 每轮上下文 */
+  harness_context?: HarnessHookContext;
 }
 
 /** SessionStart 输入 */
@@ -228,6 +258,10 @@ export interface SessionEndInput extends HookInput {
     has_thinking?: boolean;
     duration_ms?: number;
   };
+
+  // ── Harness 扩展点 ──
+  /** Harness 会话级汇总 */
+  harness_summary?: HarnessSessionSummary;
 }
 
 /** PreCompact 输入 */
@@ -449,4 +483,73 @@ export interface AggregatedHookResult {
   allOutputs: HookOutput[];
   errors: Error[];
   totalDuration: number;
+}
+
+// ============================================================
+// Harness 扩展类型（当前只定义不填充，Harness Phase 0+ 时填值）
+// ============================================================
+
+/** Harness 每轮上下文——附加在 BeforeModel / AfterModel / PostToolUse 载荷上 */
+export interface HarnessHookContext {
+  /** Phase 0: 任务画像 */
+  task_profile?: {
+    task_type?: string;       // "read_only" | "single_file_edit" | "multi_file_edit" | ...
+    risk_level?: string;      // "low" | "medium" | "high" | "critical"
+    estimated_files?: number;
+    needs_verification?: boolean;
+  };
+  /** Phase 2: 本轮暴露给模型的工具列表 */
+  tool_subset?: string[];
+  /** Phase 2: 工具搜索查询 */
+  tool_search_queries?: string[];
+  /** Phase 2: 当前上下文压力百分比 */
+  context_pressure_percent?: number;
+  /** Phase 2: 本轮上下文动作 */
+  context_actions?: Array<{ action: string; reason: string }>;
+  /** Phase 3: 运行时模式 */
+  runtime_mode?: string;      // "local-inline" | "managed-worktree" | "sandbox-remote"
+  runtime_id?: string;        // worktree/sandbox 实例 ID
+  /** Phase 4: 候选并行 */
+  candidate_id?: string;
+  candidate_total?: number;
+  /** 通用扩展 */
+  extra?: Record<string, unknown>;
+}
+
+/** Harness 编辑元数据——附加在 PostToolUseInput 上（仅 edit/write 工具） */
+export interface HarnessEditMeta {
+  protocol?: string;            // "replace" | "hashline" | "hybrid"
+  first_pass_success?: boolean;
+  retry_count?: number;
+  match_strategy?: string;      // "exact" | "flexible" | "regex" | "fuzzy"
+  hashline_address?: string;    // hashline 地址（如 "42:k9f2"）
+}
+
+/** Harness 会话级汇总——附加在 SessionEndInput 上 */
+export interface HarnessSessionSummary {
+  task_profile?: Record<string, unknown>;
+  edit_stats?: {
+    total_edits: number;
+    first_pass_success: number;
+    retry_count: number;
+    protocols_used: Record<string, number>;
+  };
+  verify_stats?: {
+    total_runs: number;
+    pass_count: number;
+    auto_repair_success: number;
+    commands_used: string[];
+  };
+  context_stats?: {
+    trimmed_tokens: number;
+    expired_items: number;
+    tool_subset_sizes: number[];
+    compression_actions: number;
+  };
+  runtime_mode?: string;
+  candidate_stats?: {
+    spawned: number;
+    selected: number;
+    selector_reason?: string;
+  };
 }

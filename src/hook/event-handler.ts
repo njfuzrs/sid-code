@@ -92,6 +92,12 @@ export class HookEventHandler {
     toolResponse: Record<string, unknown>,
     isError?: boolean,
     toolUseId?: string,
+    options?: {
+      duration_ms?: number;
+      edit_meta?: import("./types.ts").HarnessEditMeta;
+      verify_triggered?: boolean;
+      harness_context?: import("./types.ts").HarnessHookContext;
+    },
   ): Promise<AggregatedHookResult> {
     const input: PostToolUseInput = {
       ...this.createBaseInput(HookEventName.PostToolUse),
@@ -100,6 +106,10 @@ export class HookEventHandler {
       tool_response: toolResponse,
       is_error: isError,
       tool_use_id: toolUseId,
+      duration_ms: options?.duration_ms,
+      edit_meta: options?.edit_meta,
+      verify_triggered: options?.verify_triggered,
+      harness_context: options?.harness_context,
     };
     return this.executeHooks(HookEventName.PostToolUse, input, { toolName });
   }
@@ -181,11 +191,13 @@ export class HookEventHandler {
   async fireSessionEndEvent(
     reason: SessionEndInput["reason"] = "exit",
     stats?: SessionEndInput["stats"],
+    options?: { harness_summary?: import("./types.ts").HarnessSessionSummary },
   ): Promise<AggregatedHookResult> {
     const input: SessionEndInput = {
       ...this.createBaseInput(HookEventName.SessionEnd),
       reason,
       stats,
+      harness_summary: options?.harness_summary,
     };
     return this.executeHooks(HookEventName.SessionEnd, input, { trigger: reason });
   }

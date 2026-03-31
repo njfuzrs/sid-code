@@ -113,8 +113,14 @@ export class HookSystem {
     toolResponse: Record<string, unknown>,
     isError?: boolean,
     toolUseId?: string,
+    options?: {
+      duration_ms?: number;
+      edit_meta?: import("./types.ts").HarnessEditMeta;
+      verify_triggered?: boolean;
+      harness_context?: import("./types.ts").HarnessHookContext;
+    },
   ): Promise<AggregatedHookResult> {
-    return this.eventHandler.firePostToolUseEvent(toolName, toolInput, toolResponse, isError, toolUseId);
+    return this.eventHandler.firePostToolUseEvent(toolName, toolInput, toolResponse, isError, toolUseId, options);
   }
 
   async firePostToolUseFailureEvent(
@@ -155,8 +161,9 @@ export class HookSystem {
   async fireSessionEndEvent(
     reason: SessionEndInput["reason"] = "exit",
     stats?: SessionEndInput["stats"],
+    options?: { harness_summary?: import("./types.ts").HarnessSessionSummary },
   ): Promise<AggregatedHookResult> {
-    return this.eventHandler.fireSessionEndEvent(reason, stats);
+    return this.eventHandler.fireSessionEndEvent(reason, stats, options);
   }
 
   async firePreCompactEvent(trigger: "manual" | "auto" = "auto"): Promise<AggregatedHookResult> {
