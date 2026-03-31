@@ -1018,33 +1018,10 @@ export class TelemetryCommand implements Command {
 
     const lines: string[] = ["遥测摘要", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"];
 
-    // === Span 树 ===
-    if (spans.length > 0) {
-      lines.push("", "Span 树:");
-      const tree = buildSpanTree(spans);
-      for (const node of tree) {
-        renderSpanNode(node, lines, "  ", ATTR);
-      }
-    }
-
-    // === Metric 汇总 ===
-    if (metrics.length > 0) {
-      lines.push("", "Metrics:");
-      const agg = aggregateMetrics(metrics);
-      for (const [name, info] of Object.entries(agg)) {
-        if (info.type === "counter") {
-          lines.push(`  ${name}: ${fmtNum(info.sum)}`);
-        } else if (info.type === "gauge") {
-          lines.push(`  ${name}: ${fmtNum(info.last)} (最新值)`);
-        } else {
-          lines.push(`  ${name}: count=${info.count}, avg=${fmtNum(info.sum / info.count)}, max=${fmtNum(info.max)}`);
-        }
-      }
-    }
-
-    // === 总览统计 ===
     const chatSpans = spans.filter(s => s.kind === "chat");
     const toolSpans = spans.filter(s => s.kind === "execute_tool");
+
+    // === 总览（最重要的信息放最前面）===
     if (chatSpans.length > 0) {
       let totalIn = 0, totalOut = 0, totalCost = 0, totalCacheSavings = 0;
       const ttfts: number[] = [];
@@ -1057,28 +1034,62 @@ export class TelemetryCommand implements Command {
         if (ttft) ttfts.push(ttft);
       }
 
-      lines.push("", "总览:");
-      lines.push(`  总 token: ${fmtNum(totalIn + totalOut)} (in=${fmtNum(totalIn)} out=${fmtNum(totalOut)})`);
-      lines.push(`  总成本: $${totalCost.toFixed(4)}`);
+      // 按工具名统计
+      const toolCounts = new Map<string, number>();
+      for (const s of toolSpans) {
+        const name = (s.attributes[ATTR.TOOL_NAME] as string) || "unknown";
+        toolCounts.set(name, (toolCounts.get(name) || 0) + 1);
+      }
+
+      lines.push("");
+      lines.push(`  LLM 调用: ${chatSpans.length} 轮`);
+      lines.push(`  Token 消耗: ${fmtNum(totalIn + totalOut)} (输入 ${fmtNum(totalIn)} / 输出 ${fmtNum(totalOut)})`);
+      if (totalCost > 0) {
+        lines.push(`  费用: $${totalCost.toFixed(4)}`);
+      }
       if (totalCacheSavings > 0) {
         lines.push(`  缓存节省: $${totalCacheSavings.toFixed(4)}`);
       }
-      lines.push(`  API 调用: ${chatSpans.length} 次`);
       if (ttfts.length > 0) {
         const avgTtft = ttfts.reduce((a, b) => a + b, 0) / ttfts.length;
-        lines.push(`  平均 TTFT: ${Math.round(avgTtft)}ms`);
+        lines.push(`  首 Token 延迟 (TTFT): 平均 ${Math.round(avgTtft)}ms`);
       }
       if (toolSpans.length > 0) {
-        // 按工具名统计
-        const toolCounts = new Map<string, number>();
-        for (const s of toolSpans) {
-          const name = (s.attributes[ATTR.TOOL_NAME] as string) || "unknown";
-          toolCounts.set(name, (toolCounts.get(name) || 0) + 1);
-        }
         const toolSummary = Array.from(toolCounts.entries())
           .map(([n, c]) => `${n}×${c}`)
           .join(", ");
         lines.push(`  工具调用: ${toolSpans.length} 次 (${toolSummary})`);
+      }
+    }
+
+    // === 调用时间线 ===
+    if (spans.length > 0) {
+      lines.push("", "调用时间线:");
+      const tree = buildSpanTree(spans);
+      for (let i = 0; i < tree.length; i++) {
+        renderSpanNode(tree[i], lines, "  ", ATTR, i + 1);
+      }
+    }
+
+    // === Metric 明细（仅在有非 token/cost 的额外指标时展示）===
+    if (metrics.length > 0) {
+      const agg = aggregateMetrics(metrics);
+      // 过滤掉已在总览中展示的指标
+      const extraMetrics = Object.entries(agg).filter(([name]) =>
+        name !== "gen_ai.client.token.usage" && name !== "sidcode.cost.usd"
+      );
+      if (extraMetrics.length > 0) {
+        lines.push("", "其他指标:");
+        for (const [name, info] of extraMetrics) {
+          const label = METRIC_LABELS[name] || name;
+          if (info.type === "counter") {
+            lines.push(`  ${label}: ${fmtNum(info.sum)}`);
+          } else if (info.type === "gauge") {
+            lines.push(`  ${label}: ${fmtNum(info.last)}`);
+          } else {
+            lines.push(`  ${label}: ${info.count} 次, 平均 ${fmtNum(info.sum / info.count)}, 最大 ${fmtNum(info.max)}`);
+          }
+        }
       }
     }
 
@@ -1087,6 +1098,15 @@ export class TelemetryCommand implements Command {
 }
 
 // --- TelemetryCommand 辅助函数 ---
+
+/** Metric 名称 → 中文标签映射 */
+const METRIC_LABELS: Record<string, string> = {
+  "gen_ai.client.token.usage": "Token 消耗",
+  "sidcode.cost.usd": "费用 (USD)",
+  "sidcode.cost.cache_savings_usd": "缓存节省 (USD)",
+  "sidcode.budget.remaining_usd": "预算剩余 (USD)",
+  "sidcode.budget.usage_percent": "预算使用率 (%)",
+};
 
 interface SpanTreeNode {
   span: import("../telemetry/types.ts").SpanData;
@@ -1116,37 +1136,49 @@ function buildSpanTree(spans: readonly import("../telemetry/types.ts").SpanData[
   return roots;
 }
 
+/** Span kind → 中文标签 */
+const SPAN_KIND_LABELS: Record<string, string> = {
+  invoke_agent: "Agent",
+  chat: "LLM 调用",
+  execute_tool: "工具",
+};
+
 /** 递归渲染 span 树节点 */
 function renderSpanNode(
   node: SpanTreeNode,
   lines: string[],
   prefix: string,
   ATTR: typeof import("../telemetry/types.ts").ATTR,
+  index?: number,
 ): void {
   const s = node.span;
   const dur = fmtDuration(s.durationMs);
-  const status = s.status === "error" ? " ✗" : "";
+  const statusMark = s.status === "error" ? " ✗" : "";
+  const kindLabel = SPAN_KIND_LABELS[s.kind] || s.kind;
+  const indexStr = index !== undefined ? `#${index} ` : "";
 
   let detail = "";
   if (s.kind === "chat") {
-    const model = (s.attributes[ATTR.REQUEST_MODEL] as string) || "";
+    const model = (s.attributes[ATTR.REQUEST_MODEL] as string) || "?";
     const shortModel = model.split("/").pop() || model;
     const ttft = s.attributes["sidcode.ttft_ms"] as number;
     const inTok = (s.attributes[ATTR.INPUT_TOKENS] as number) || 0;
     const outTok = (s.attributes[ATTR.OUTPUT_TOKENS] as number) || 0;
     const cost = (s.attributes[ATTR.COST_USD] as number) || 0;
-    detail = ` ${shortModel} (${dur}`;
-    if (ttft) detail += `, TTFT ${Math.round(ttft)}ms`;
-    detail += `, in=${fmtNum(inTok)} out=${fmtNum(outTok)}, $${cost.toFixed(4)})`;
+    const parts = [dur];
+    if (ttft) parts.push(`TTFT ${Math.round(ttft)}ms`);
+    parts.push(`输入 ${fmtNum(inTok)} / 输出 ${fmtNum(outTok)}`);
+    if (cost > 0) parts.push(`$${cost.toFixed(4)}`);
+    detail = ` ${shortModel} — ${parts.join(", ")}`;
   } else if (s.kind === "execute_tool") {
-    const toolName = (s.attributes[ATTR.TOOL_NAME] as string) || "";
+    const toolName = (s.attributes[ATTR.TOOL_NAME] as string) || "?";
     const toolDur = s.attributes["sidcode.tool.duration_ms"] as number;
-    detail = ` ${toolName} (${toolDur ? fmtDuration(toolDur) : dur})`;
+    detail = ` ${toolName} — ${toolDur ? fmtDuration(toolDur) : dur}`;
   } else {
-    detail = ` (${dur})`;
+    detail = ` — ${dur}`;
   }
 
-  lines.push(`${prefix}${s.kind}${detail}${status}`);
+  lines.push(`${prefix}${indexStr}${kindLabel}${detail}${statusMark}`);
 
   for (let i = 0; i < node.children.length; i++) {
     const isLast = i === node.children.length - 1;
@@ -1154,7 +1186,6 @@ function renderSpanNode(
     const childPrefix = prefix + (isLast ? "   " : "│  ");
     const childLines: string[] = [];
     renderSpanNode(node.children[i], childLines, childPrefix, ATTR);
-    // 第一行用 connector
     if (childLines.length > 0) {
       lines.push(`${prefix}${connector}${childLines[0].trimStart()}`);
       for (let j = 1; j < childLines.length; j++) {
