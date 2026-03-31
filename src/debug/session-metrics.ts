@@ -3,6 +3,10 @@
  * 实时统计当前会话的关键指标，供 UI 展示和会话结束时汇总
  */
 
+import type { HookSystem } from "../hook/system.ts";
+import { HookEventName } from "../hook/types.ts";
+import type { HookInput, AfterModelInput, PostToolUseInput } from "../hook/types.ts";
+
 export interface SessionMetrics {
   /** 会话开始时间 */
   startTime: number;
@@ -56,6 +60,10 @@ export interface SessionMetrics {
 
 export class SessionMetricsCollector {
   private metrics: SessionMetrics;
+
+  // ── Harness 扩展：通用计数器/仪表 ──
+  private customCounters = new Map<string, number>();
+  private customGauges = new Map<string, number>();
 
   constructor() {
     this.metrics = this.createInitial();
@@ -148,6 +156,91 @@ export class SessionMetricsCollector {
     this.metrics.interaction.subAgentCount++;
   }
 
+  /** 注册为 Hook 消费者，通过 Hook 事件驱动指标采集 */
+  registerHooks(hookSystem: HookSystem): void {
+    // AfterModel → 记录 LLM 响应
+    hookSystem.registerHook(
+      {
+        type: "runtime",
+        name: "session-metrics-after-model",
+        action: async (input: HookInput) => {
+          const afterModel = input as AfterModelInput;
+          const usage = afterModel.llm_response.usage;
+          if (!usage) return;
+          this.recordLlmResponse(
+            afterModel.llm_request.model,
+            usage.inputTokens ?? 0,
+            usage.outputTokens ?? 0,
+            afterModel.llm_response.api_duration_ms ?? 0,
+            afterModel.llm_response.cost_usd ?? 0,
+            false,
+          );
+        },
+      },
+      HookEventName.AfterModel,
+      { source: "runtime" as any },
+    );
+
+    // PostToolUse → 记录工具调用
+    hookSystem.registerHook(
+      {
+        type: "runtime",
+        name: "session-metrics-post-tool",
+        action: async (input: HookInput) => {
+          const postTool = input as PostToolUseInput;
+          this.recordToolCall(
+            postTool.tool_name,
+            postTool.duration_ms ?? 0,
+            !postTool.is_error,
+          );
+        },
+      },
+      HookEventName.PostToolUse,
+      { source: "runtime" as any },
+    );
+
+    // BeforeModel → 记录轮次
+    hookSystem.registerHook(
+      {
+        type: "runtime",
+        name: "session-metrics-before-model",
+        action: async (_input: HookInput) => {
+          this.recordTurn();
+        },
+      },
+      HookEventName.BeforeModel,
+      { source: "runtime" as any },
+    );
+  }
+
+  /** 递增计数器（Harness 模块调用） */
+  incrementCounter(name: string, delta = 1): void {
+    this.customCounters.set(name, (this.customCounters.get(name) ?? 0) + delta);
+  }
+
+  /** 设置仪表值（Harness 模块调用） */
+  setGauge(name: string, value: number): void {
+    this.customGauges.set(name, value);
+  }
+
+  /** 获取计数器值 */
+  getCounter(name: string): number {
+    return this.customCounters.get(name) ?? 0;
+  }
+
+  /** 获取仪表值 */
+  getGauge(name: string): number | undefined {
+    return this.customGauges.get(name);
+  }
+
+  /** 获取所有自定义指标（用于会话摘要输出） */
+  getCustomMetrics(): { counters: Record<string, number>; gauges: Record<string, number> } {
+    return {
+      counters: Object.fromEntries(this.customCounters),
+      gauges: Object.fromEntries(this.customGauges),
+    };
+  }
+
   /** 获取当前指标快照 */
   getMetrics(): SessionMetrics {
     return { ...this.metrics };
@@ -182,12 +275,22 @@ export class SessionMetricsCollector {
       }
     }
 
+    // 追加 Harness 自定义指标
+    if (this.customCounters.size > 0) {
+      lines.push(`── Harness 指标 ──`);
+      for (const [name, value] of this.customCounters) {
+        lines.push(`  ${name}: ${value}`);
+      }
+    }
+
     return lines.join('\n');
   }
 
   /** 重置指标 */
   reset(): void {
     this.metrics = this.createInitial();
+    this.customCounters.clear();
+    this.customGauges.clear();
   }
 }
 

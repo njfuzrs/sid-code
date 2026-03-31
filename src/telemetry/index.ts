@@ -11,6 +11,8 @@ export { TokenMeter } from "./metrics/token-meter.ts";
 export type { TokenUsageRecord, TokenRecordParams, CostCalculator } from "./metrics/token-meter.ts";
 export { BudgetTracker } from "./metrics/budget-tracker.ts";
 export type { BudgetRule, BudgetAlert, BudgetRuleStatus } from "./metrics/budget-tracker.ts";
+export { TelemetryHookProbe } from "./hook-probe.ts";
+export type { SpanEnricher } from "./hook-probe.ts";
 export type {
   SpanData, SpanEvent, SpanKind, SpanStatus,
   Attributes, AttributeValue, MetricPoint,

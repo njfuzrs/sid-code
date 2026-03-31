@@ -98,6 +98,8 @@ export class App {
   private loopRunner: AgentLoopRunner;
   private hookSystem!: HookSystem;
   private jitContextMgr: JitContextManager;
+  /** TelemetryHookProbe 引用（供 Harness 注册 enricher） */
+  private telemetryProbe?: import("./telemetry/hook-probe.ts").TelemetryHookProbe;
   /** Plan Mode 管理器 */
   private planManager: PlanModeManager | null = null;
   /** TUI 模式下的权限确认回调（由 TUI 注入），返回 "yes" | "no" | "always" */
@@ -469,10 +471,24 @@ export class App {
         // 同步到 loopRunner
         (this.loopRunner as any).deps.tokenMeter = this.tokenMeter;
         log.info("TELEMETRY", `遥测已启用，导出器: ${telemetryConfig.exporters?.map((e: any) => e.type).join(", ") ?? "无"}`);
+
+        // TelemetryHookProbe：通过 Hook 事件驱动 span 创建（与 loop.ts 中的旧代码并行运行）
+        const { TelemetryHookProbe } = await import("./telemetry/hook-probe.ts");
+        const probe = new TelemetryHookProbe(getTelemetryBus(), this.tokenMeter, {
+          model: this.config.model,
+          provider: this.config.provider,
+          sessionId: this.sessionState.sessionId,
+        });
+        probe.registerHooks(this.hookSystem);
+        this.telemetryProbe = probe;
+        log.info("TELEMETRY", "TelemetryHookProbe 已注册");
       }
     } catch (err: any) {
       log.warn("TELEMETRY", `遥测初始化失败: ${err.message}`);
     }
+
+    // SessionMetrics Hook 注册（与 loop.ts 中的旧直接调用并行运行）
+    getSessionMetrics().registerHooks(this.hookSystem);
   }
 
   /**
