@@ -360,6 +360,11 @@ export class AgentLoopRunner {
       sessionState.updateUsage(config.model, response.usage, apiDuration);
       const thisCost = sessionState.calculateCost(config.model, response.usage);
 
+      // 计算缓存节省金额（供 AfterModel Hook 载荷传递）
+      const cacheSavingsUSD = this.deps.tokenMeter
+        ? this.deps.tokenMeter.calculateCacheSavings(config.model, response.usage)
+        : 0;
+
       // Bug #4 修复：调用 quotaManager.recordRequest() 使 RPM/TPM 限速生效
       if (this.deps.quotaManager) {
         this.deps.quotaManager.recordRequest(
@@ -438,6 +443,7 @@ export class AgentLoopRunner {
             // 整合新增：成本与耗时（供 Hook 消费者使用）
             cost_usd: thisCost,
             api_duration_ms: apiDuration,
+            cache_savings_usd: cacheSavingsUSD,
             ttft_ms: ttftMs,
           },
         );
@@ -555,8 +561,7 @@ export class AgentLoopRunner {
         const toolBatchElapsed = toolPerfHandle.end();
         ctxMgr.addMessage({ role: "user", content: toolResults });
 
-        // Bug #2 修复：调用 SessionState.addToolDuration()
-        sessionState.addToolDuration(toolBatchElapsed);
+        // 注意：addToolDuration 已在 app.ts executeSingleTool 中逐工具调用，此处不再重复
 
         // Bug #1 修复：循环记录每个工具的指标（而非只记录最后一个）
         // 将 toolResults 按 tool_use_id 与 toolBlocks 配对

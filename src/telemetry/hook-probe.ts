@@ -80,7 +80,7 @@ export class TelemetryHookProbe {
           type: "runtime",
           name: `telemetry-probe-${eventName}`,
           action: async (input: HookInput) => {
-            this.handleEvent(input);
+            await this.handleEvent(input);
           },
         },
         eventName,
@@ -89,7 +89,7 @@ export class TelemetryHookProbe {
     }
   }
 
-  private handleEvent(input: HookInput): void {
+  private async handleEvent(input: HookInput): Promise<void> {
     if (!this.bus.isEnabled()) return;
     switch (input.hook_event_name) {
       case HookEventName.SessionStart:
@@ -178,6 +178,8 @@ export class TelemetryHookProbe {
   }
 
   private handlePostToolUse(input: PostToolUseInput): void {
+    // 注意：此 span 在 PostToolUse 事件中创建并立即结束，span.durationMs ≈ 0，
+    // 不反映工具的真实执行耗时。真实耗时通过 sidcode.tool.duration_ms 属性记录。
     const enriched = this.collectEnrichedAttributes("execute_tool", input);
     const toolSpan = this.bus.startSpan("execute_tool", `execute_tool ${input.tool_name}`, {
       [ATTR.OPERATION_NAME]: "execute_tool",

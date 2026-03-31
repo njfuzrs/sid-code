@@ -1,7 +1,7 @@
 /**
  * 内置斜杠命令
  * 提供 /help, /model, /cost, /compact, /clear, /exit, /sessions, /resume, /config
- * /rewind, /stats, /init
+ * /rewind, /stats, /telemetry, /init
  */
 
 import type { Command, AppContext, CommandResult } from "./types.ts";
@@ -32,6 +32,7 @@ export class HelpCommand implements Command {
       "  /clear           - 清空对话",
       "  /rewind [n]      - 回退最近 n 轮对话（默认 1 轮）",
       "  /stats           - 显示会话统计",
+      "  /telemetry       - 显示遥测摘要（Span 树 + Metric 汇总）",
       "  /sessions        - 列出历史会话",
       "  /config          - 显示当前配置",
       "  /undo [file]     - 撤销最近一次文件修改（可指定文件路径）",
@@ -993,6 +994,209 @@ export class PlanCommand implements Command {
   }
 }
 
+/** /telemetry 命令 — 展示当前会话的 Span 树和 Metric 汇总 */
+export class TelemetryCommand implements Command {
+  name() { return "telemetry"; }
+  aliases() { return ["tele"]; }
+  description() { return "显示当前会话遥测摘要（Span 树 + Metric 汇总）"; }
+
+  async execute(_args: string, _ctx: AppContext): Promise<CommandResult> {
+    const { getTelemetryBus } = await import("../telemetry/index.ts");
+    const { ATTR } = await import("../telemetry/types.ts");
+    const bus = getTelemetryBus();
+
+    if (!bus.isEnabled()) {
+      return { kind: "message", message: "遥测未启用。在 ~/.sid-code/config.yaml 中设置 telemetry.enabled: true" };
+    }
+
+    const spans = bus.getCompletedSpans();
+    const metrics = bus.getCompletedMetrics();
+
+    if (spans.length === 0 && metrics.length === 0) {
+      return { kind: "message", message: "当前会话暂无遥测数据" };
+    }
+
+    const lines: string[] = ["遥测摘要", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"];
+
+    // === Span 树 ===
+    if (spans.length > 0) {
+      lines.push("", "Span 树:");
+      const tree = buildSpanTree(spans);
+      for (const node of tree) {
+        renderSpanNode(node, lines, "  ", ATTR);
+      }
+    }
+
+    // === Metric 汇总 ===
+    if (metrics.length > 0) {
+      lines.push("", "Metrics:");
+      const agg = aggregateMetrics(metrics);
+      for (const [name, info] of Object.entries(agg)) {
+        if (info.type === "counter") {
+          lines.push(`  ${name}: ${fmtNum(info.sum)}`);
+        } else if (info.type === "gauge") {
+          lines.push(`  ${name}: ${fmtNum(info.last)} (最新值)`);
+        } else {
+          lines.push(`  ${name}: count=${info.count}, avg=${fmtNum(info.sum / info.count)}, max=${fmtNum(info.max)}`);
+        }
+      }
+    }
+
+    // === 总览统计 ===
+    const chatSpans = spans.filter(s => s.kind === "chat");
+    const toolSpans = spans.filter(s => s.kind === "execute_tool");
+    if (chatSpans.length > 0) {
+      let totalIn = 0, totalOut = 0, totalCost = 0, totalCacheSavings = 0;
+      const ttfts: number[] = [];
+      for (const s of chatSpans) {
+        totalIn += (s.attributes[ATTR.INPUT_TOKENS] as number) || 0;
+        totalOut += (s.attributes[ATTR.OUTPUT_TOKENS] as number) || 0;
+        totalCost += (s.attributes[ATTR.COST_USD] as number) || 0;
+        totalCacheSavings += (s.attributes[ATTR.CACHE_SAVINGS_USD] as number) || 0;
+        const ttft = s.attributes["sidcode.ttft_ms"] as number;
+        if (ttft) ttfts.push(ttft);
+      }
+
+      lines.push("", "总览:");
+      lines.push(`  总 token: ${fmtNum(totalIn + totalOut)} (in=${fmtNum(totalIn)} out=${fmtNum(totalOut)})`);
+      lines.push(`  总成本: $${totalCost.toFixed(4)}`);
+      if (totalCacheSavings > 0) {
+        lines.push(`  缓存节省: $${totalCacheSavings.toFixed(4)}`);
+      }
+      lines.push(`  API 调用: ${chatSpans.length} 次`);
+      if (ttfts.length > 0) {
+        const avgTtft = ttfts.reduce((a, b) => a + b, 0) / ttfts.length;
+        lines.push(`  平均 TTFT: ${Math.round(avgTtft)}ms`);
+      }
+      if (toolSpans.length > 0) {
+        // 按工具名统计
+        const toolCounts = new Map<string, number>();
+        for (const s of toolSpans) {
+          const name = (s.attributes[ATTR.TOOL_NAME] as string) || "unknown";
+          toolCounts.set(name, (toolCounts.get(name) || 0) + 1);
+        }
+        const toolSummary = Array.from(toolCounts.entries())
+          .map(([n, c]) => `${n}×${c}`)
+          .join(", ");
+        lines.push(`  工具调用: ${toolSpans.length} 次 (${toolSummary})`);
+      }
+    }
+
+    return { kind: "message", message: lines.join("\n") };
+  }
+}
+
+// --- TelemetryCommand 辅助函数 ---
+
+interface SpanTreeNode {
+  span: import("../telemetry/types.ts").SpanData;
+  children: SpanTreeNode[];
+}
+
+/** 将扁平 span 列表构建为树 */
+function buildSpanTree(spans: readonly import("../telemetry/types.ts").SpanData[]): SpanTreeNode[] {
+  const nodeMap = new Map<string, SpanTreeNode>();
+  const roots: SpanTreeNode[] = [];
+
+  // 创建所有节点
+  for (const span of spans) {
+    nodeMap.set(span.spanId, { span, children: [] });
+  }
+
+  // 建立父子关系
+  for (const span of spans) {
+    const node = nodeMap.get(span.spanId)!;
+    if (span.parentSpanId && nodeMap.has(span.parentSpanId)) {
+      nodeMap.get(span.parentSpanId)!.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+
+  return roots;
+}
+
+/** 递归渲染 span 树节点 */
+function renderSpanNode(
+  node: SpanTreeNode,
+  lines: string[],
+  prefix: string,
+  ATTR: typeof import("../telemetry/types.ts").ATTR,
+): void {
+  const s = node.span;
+  const dur = fmtDuration(s.durationMs);
+  const status = s.status === "error" ? " ✗" : "";
+
+  let detail = "";
+  if (s.kind === "chat") {
+    const model = (s.attributes[ATTR.REQUEST_MODEL] as string) || "";
+    const shortModel = model.split("/").pop() || model;
+    const ttft = s.attributes["sidcode.ttft_ms"] as number;
+    const inTok = (s.attributes[ATTR.INPUT_TOKENS] as number) || 0;
+    const outTok = (s.attributes[ATTR.OUTPUT_TOKENS] as number) || 0;
+    const cost = (s.attributes[ATTR.COST_USD] as number) || 0;
+    detail = ` ${shortModel} (${dur}`;
+    if (ttft) detail += `, TTFT ${Math.round(ttft)}ms`;
+    detail += `, in=${fmtNum(inTok)} out=${fmtNum(outTok)}, $${cost.toFixed(4)})`;
+  } else if (s.kind === "execute_tool") {
+    const toolName = (s.attributes[ATTR.TOOL_NAME] as string) || "";
+    const toolDur = s.attributes["sidcode.tool.duration_ms"] as number;
+    detail = ` ${toolName} (${toolDur ? fmtDuration(toolDur) : dur})`;
+  } else {
+    detail = ` (${dur})`;
+  }
+
+  lines.push(`${prefix}${s.kind}${detail}${status}`);
+
+  for (let i = 0; i < node.children.length; i++) {
+    const isLast = i === node.children.length - 1;
+    const connector = isLast ? "└─ " : "├─ ";
+    const childPrefix = prefix + (isLast ? "   " : "│  ");
+    const childLines: string[] = [];
+    renderSpanNode(node.children[i], childLines, childPrefix, ATTR);
+    // 第一行用 connector
+    if (childLines.length > 0) {
+      lines.push(`${prefix}${connector}${childLines[0].trimStart()}`);
+      for (let j = 1; j < childLines.length; j++) {
+        lines.push(childLines[j]);
+      }
+    }
+  }
+}
+
+/** 聚合 metric 数据 */
+function aggregateMetrics(metrics: readonly import("../telemetry/types.ts").MetricPoint[]): Record<string, {
+  type: string; sum: number; count: number; max: number; last: number;
+}> {
+  const agg: Record<string, { type: string; sum: number; count: number; max: number; last: number }> = {};
+  for (const m of metrics) {
+    if (!agg[m.name]) {
+      agg[m.name] = { type: m.type, sum: 0, count: 0, max: -Infinity, last: 0 };
+    }
+    const a = agg[m.name];
+    a.sum += m.value;
+    a.count++;
+    if (m.value > a.max) a.max = m.value;
+    a.last = m.value;
+  }
+  return agg;
+}
+
+/** 格式化数字（千分位） */
+function fmtNum(n: number): string {
+  if (Number.isInteger(n)) return n.toLocaleString("en-US");
+  return n.toFixed(2);
+}
+
+/** 格式化毫秒为可读时长 */
+function fmtDuration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+  const min = Math.floor(ms / 60000);
+  const sec = ((ms % 60000) / 1000).toFixed(0);
+  return `${min}m${sec}s`;
+}
+
 /** 注册所有内置命令 */
 export async function registerBuiltins(registry: import("./registry.ts").Registry): Promise<void> {
   registry.register(new HelpCommand());
@@ -1019,6 +1223,7 @@ export async function registerBuiltins(registry: import("./registry.ts").Registr
   registry.register(new ExitCommand());
   registry.register(new RewindCommand());
   registry.register(new StatsCommand());
+  registry.register(new TelemetryCommand());
   registry.register(new InitCommand());
   registry.register(new HooksCommand());
   registry.register(new PlanCommand());

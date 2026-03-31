@@ -105,6 +105,10 @@ const DEFAULT_CONFIG: TelemetryConfig = {
   maxQueueSize: 2048,
 };
 
+/** 会话内 span/metric 历史上限（防止长会话内存膨胀） */
+const MAX_HISTORY_SPANS = 500;
+const MAX_HISTORY_METRICS = 2000;
+
 /** 遥测总线 */
 export class TelemetryBus {
   private spanQueue: SpanData[] = [];
@@ -114,6 +118,11 @@ export class TelemetryBus {
   private config: TelemetryConfig;
   private traceContext?: TraceContext;
   private _shutdownRegistered = false;
+
+  /** 会话内已完成的 span 历史（供 /telemetry 命令查询） */
+  private spanHistory: SpanData[] = [];
+  /** 会话内已记录的 metric 历史（供 /telemetry 命令查询） */
+  private metricHistory: MetricPoint[] = [];
 
   constructor(config?: Partial<TelemetryConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -174,6 +183,13 @@ export class TelemetryBus {
   /** 记录 Metric 数据点 */
   recordMetric(point: MetricPoint): void {
     if (!this.config.enabled) return;
+
+    // 保留到历史（供 /telemetry 命令查询）
+    this.metricHistory.push(point);
+    if (this.metricHistory.length > MAX_HISTORY_METRICS) {
+      this.metricHistory.splice(0, this.metricHistory.length - MAX_HISTORY_METRICS);
+    }
+
     this.metricQueue.push(point);
     if (this.metricQueue.length >= this.config.batchSize) {
       this.flushMetrics().catch(() => {});
@@ -183,6 +199,13 @@ export class TelemetryBus {
   /** 将完成的 Span 加入队列（由 SpanHandle.end() 调用） */
   enqueueSpan(span: SpanData): void {
     if (!this.config.enabled) return;
+
+    // 保留到历史（供 /telemetry 命令查询）
+    this.spanHistory.push(span);
+    if (this.spanHistory.length > MAX_HISTORY_SPANS) {
+      this.spanHistory.splice(0, this.spanHistory.length - MAX_HISTORY_SPANS);
+    }
+
     // 队列溢出：丢弃最旧的 10%
     if (this.spanQueue.length >= this.config.maxQueueSize) {
       const evictCount = Math.ceil(this.config.maxQueueSize * 0.1);
@@ -233,5 +256,15 @@ export class TelemetryBus {
     }
     await this.flush();
     await Promise.allSettled(this.exporters.map(e => e.shutdown()));
+  }
+
+  /** 获取会话内所有已完成的 span（供 /telemetry 命令使用） */
+  getCompletedSpans(): readonly SpanData[] {
+    return this.spanHistory;
+  }
+
+  /** 获取会话内所有已记录的 metric（供 /telemetry 命令使用） */
+  getCompletedMetrics(): readonly MetricPoint[] {
+    return this.metricHistory;
   }
 }
