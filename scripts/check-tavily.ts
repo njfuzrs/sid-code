@@ -1,25 +1,24 @@
 #!/usr/bin/env bun
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { homedir } from 'os';
 import { exit } from 'process';
 
-// 读取 .env
-const envPath = join(process.cwd(), '.env');
-let envContent: string;
+// 从 ~/.claude/settings.json 读取 TAVILY_API_KEY
+const settingsPath = join(homedir(), '.claude', 'settings.json');
+let settings: { env?: Record<string, string> };
 try {
-  envContent = readFileSync(envPath, 'utf8');
+  settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
 } catch (e) {
-  console.error('❌ Error: .env file not found at', envPath);
+  console.error('❌ Error: 无法读取', settingsPath);
   exit(1);
 }
 
-const keyMatch = envContent.match(/^TAVILY_API_KEY\s*=\s*(.*)$/m);
-if (!keyMatch || !keyMatch[1].trim()) {
-  console.error('❌ Error: TAVILY_API_KEY not found or empty in .env');
+const apiKey = settings.env?.TAVILY_API_KEY;
+if (!apiKey) {
+  console.error('❌ Error: ~/.claude/settings.json 中未找到 env.TAVILY_API_KEY');
   exit(1);
 }
-
-const apiKey = keyMatch[1].trim();
 
 // 请求 usage API
 async function checkUsage() {
