@@ -1,13 +1,17 @@
 /**
- * CLI 入口
- * 使用 Node.js 内置 parseArgs 解析命令行参数，路由到不同模式
+ * CLI 完整入口（Stage 2）
+ * 由 bootstrap.ts 动态导入，负责完整的参数解析、初始化和路由
  */
 
-// 强制启用终端颜色（必须在所有 import 之前）
-// sid-code 是 TUI 应用，始终需要颜色支持（加粗/斜体/代码高亮等）。
-// chalk / cli-highlight 在模块加载时读取此变量创建 theme，
-// 如果不设置，Ink 接管 stdout 后 chalk 检测不到 TTY 会禁用所有样式。
-// 尊重用户显式设置的 NO_COLOR / FORCE_COLOR。
+// ⚠️ 启动性能打点必须在所有其他 import 之前
+import { profileCheckpoint } from "./utils/startup-profiler.ts";
+profileCheckpoint("full_cli_entry");
+
+// ⚠️ 副作用前置：配置文件预加载，与后续模块加载并行执行
+import { startConfigPreload } from "./config/preload.ts";
+startConfigPreload();
+
+// 强制启用终端颜色（必须在业务 import 之前）
 if (!process.env.FORCE_COLOR && !process.env.NO_COLOR) {
   process.env.FORCE_COLOR = "3";
 }
@@ -16,9 +20,23 @@ import { parseArgs } from "node:util";
 import { loadConfig } from "./config/config.ts";
 import type { Config } from "./config/config.ts";
 import { initLogger, getLogger, LogLevel, getPerfTimer } from "./debug/index.ts";
+import { printHelp } from "./help.ts";
+import { runMigrations } from "./migrations/runner.ts";
+
+profileCheckpoint("full_cli_imports_loaded");
+
+/** CLI 参数扩展类型 */
+type CLIArgs = Partial<Config> & {
+  prompt?: string;
+  "list-sessions"?: boolean;
+  "browse-sessions"?: boolean;
+  "delete-session"?: string;
+  "cleanup-sessions"?: boolean;
+  "upload-traces"?: boolean;
+};
 
 /** 解析命令行参数 */
-function parseCLIArgs(): Partial<Config> & { prompt?: string } {
+function parseCLIArgs(): CLIArgs {
   let values: Record<string, any>;
   let positionals: string[];
   try {
@@ -75,7 +93,6 @@ function parseCLIArgs(): Partial<Config> & { prompt?: string } {
     values = result.values;
     positionals = result.positionals;
   } catch (err: any) {
-    // 提取未知选项名（如 "Unknown option '-f'"）
     const match = err.message?.match(/Unknown option '([^']+)'/);
     if (match) {
       console.error(`错误: 未知选项 '${match[1]}'，使用 --help 查看可用选项`);
@@ -85,7 +102,7 @@ function parseCLIArgs(): Partial<Config> & { prompt?: string } {
     process.exit(1);
   }
 
-  // 处理帮助和版本
+  // 处理帮助和版本（兜底：bootstrap 未拦截时仍能处理）
   if (values.help) {
     printHelp();
     process.exit(0);
@@ -97,14 +114,7 @@ function parseCLIArgs(): Partial<Config> & { prompt?: string } {
   }
 
   // 转换为 Config 格式
-  const cliConfig: Partial<Config> & {
-    prompt?: string;
-    "list-sessions"?: boolean;
-    "browse-sessions"?: boolean;
-    "delete-session"?: string;
-    "cleanup-sessions"?: boolean;
-    "upload-traces"?: boolean;
-  } = {
+  const cliConfig: CLIArgs = {
     provider: values.provider,
     model: values.model,
     maxTokens: values["max-tokens"] ? parseInt(values["max-tokens"]) : undefined,
@@ -130,7 +140,6 @@ function parseCLIArgs(): Partial<Config> & { prompt?: string } {
     // 轨迹采集配置（默认启用，--no-trace 关闭）
     trace: {
       enabled: values.trace !== false,
-      // 默认上传配置（指向部署的 trajectory-platform）
       upload: {
         url: values["trace-upload-url"] || "http://121.196.144.227/traj",
         token: values["trace-upload-token"] || "traj-upload-secret-token",
@@ -151,114 +160,6 @@ function parseCLIArgs(): Partial<Config> & { prompt?: string } {
   }
 
   return cliConfig;
-}
-
-/** 打印帮助信息 */
-function printHelp(): void {
-  console.log(`
-sid-code - AI 编程 CLI 工具
-
-用法:
-  sid-code [选项] [提示词]
-
-LLM 配置:
-  --provider <name>           LLM 提供商 (anthropic/openai/ollama)
-  -m, --model <name>          模型名称
-  --max-tokens <n>            响应最大 token 数
-
-权限配置:
-  --permission-mode <mode>    权限模式 (default/always-allow/deny-write)
-  --dangerously-skip-permissions  跳过所有权限检查
-  -y, --yes                   自动批准所有权限请求
-
-会话配置:
-  -c, --continue              继续最近一次会话
-  -r, --resume <id>           恢复指定会话（ID 或索引）
-  --list-sessions             列出所有会话（文本模式）
-  --browse-sessions           打开 TUI 会话浏览器
-  --delete-session <id>       删除指定会话
-  --cleanup-sessions          手动触发会话清理
-
-无头模式:
-  -p, --print                 无头模式（非交互式）
-  --output-format <fmt>       输出格式 (text/json)
-  --max-turns <n>             Agent 循环最大轮次
-
-系统提示词:
-  --system-prompt <text>      覆盖系统提示词
-  --append-system-prompt <text>  追加到系统提示词
-  --system-prompt-file <path>    从文件加载系统提示词
-
-调试:
-  -d, --debug                 启用调试模式（日志输出到 ~/.sid-code/debug.log）
-  --debug-level <level>       日志级别 (ERROR/WARN/INFO/DEBUG，默认 DEBUG)
-  --debug-log-file <path>     自定义日志文件路径
-
-轨迹采集:
-  --trace / --no-trace        启用/禁用轨迹采集（默认启用，本地保存到 ~/.sid-code/trajectories/）
-  --trace-upload-url <url>    轨迹上传平台地址（如 http://xxx/traj）
-  --trace-upload-token <tok>  上传认证 token（X-Upload-Token）
-  --trace-user-id <id>        用户标识（多用户场景）
-  --trace-device-id <id>      设备标识
-  --upload-traces             手动触发重试队列补传（处理之前失败的上传）
-
-UI:
-  --alternate-buffer          启用 alternate buffer 模式（全屏 TUI，默认禁用以支持原生文本选择）
-
-其他:
-  -h, --help                  显示帮助信息
-  -v, --version               显示版本信息
-
-环境变量:
-  ANTHROPIC_API_KEY           Anthropic API 密钥
-  OPENAI_API_KEY              OpenAI API 密钥
-  LLM_PROVIDER                LLM 提供商
-  LLM_MODEL                   模型名称
-  LLM_BASE_URL                自定义 API 基础 URL
-  SID_CODE_TRACE              设为 1 或 true 启用轨迹采集
-  SID_CODE_TRACE_OUTPUT_DIR   自定义轨迹输出目录
-  SID_CODE_TRACE_UPLOAD_URL   轨迹上传平台地址
-  SID_CODE_TRACE_UPLOAD_TOKEN 上传认证 token
-  SID_CODE_TRACE_USER_ID      用户标识
-  SID_CODE_TRACE_DEVICE_ID    设备标识
-
-配置文件:
-  ~/.sid-code/config.yaml     YAML 格式配置文件
-`);
-}
-
-/** 处理列出会话命令 */
-async function handleListSessions(): Promise<void> {
-  const { SessionSelector } = await import("./session/utils.ts");
-  const { homedir } = await import("os");
-  const { join } = await import("path");
-
-  const home = process.env.HOME || homedir();
-  const sessionDir = join(home, ".sid-code", "sessions");
-  const selector = new SessionSelector(sessionDir);
-
-  try {
-    const sessions = await selector.listSessions();
-
-    if (sessions.length === 0) {
-      console.log("未找到任何会话");
-      return;
-    }
-
-    console.log(`共 ${sessions.length} 个会话:\n`);
-    console.log("索引 | 消息数 | 时间 | 名称");
-    console.log("-----|--------|------|------");
-
-    for (const session of sessions) {
-      const { formatRelativeTime } = await import("./session/utils.ts");
-      const time = formatRelativeTime(session.lastUpdated, "short");
-      const name = session.displayName.slice(0, 50);
-      console.log(`#${session.index.toString().padStart(3)} | ${session.messageCount.toString().padStart(6)} | ${time.padEnd(4)} | ${name}`);
-    }
-  } catch (error: any) {
-    console.error(`错误: ${error.message}`);
-    process.exit(1);
-  }
 }
 
 /** 处理浏览会话命令 */
@@ -301,34 +202,6 @@ async function handleBrowseSessions(config: Config): Promise<void> {
   if (selectedSession) {
     console.log(`已选择会话: ${selectedSession.id}`);
     console.log(`使用 --resume ${selectedSession.id} 恢复此会话`);
-  }
-}
-
-/** 处理删除会话命令 */
-async function handleDeleteSession(sessionId: string): Promise<void> {
-  const { SessionSelector } = await import("./session/utils.ts");
-  const { homedir } = await import("os");
-  const { join } = await import("path");
-  const { unlinkSync, existsSync } = await import("fs");
-
-  const home = process.env.HOME || homedir();
-  const sessionDir = join(home, ".sid-code", "sessions");
-  const selector = new SessionSelector(sessionDir);
-
-  try {
-    const session = await selector.findSession(sessionId);
-    const sessionPath = join(sessionDir, session.fileName);
-
-    if (existsSync(sessionPath)) {
-      unlinkSync(sessionPath);
-      console.log(`已删除会话: ${session.id} (${session.displayName})`);
-    } else {
-      console.error(`错误: 会话文件不存在: ${session.fileName}`);
-      process.exit(1);
-    }
-  } catch (error: any) {
-    console.error(`错误: ${error.message}`);
-    process.exit(1);
   }
 }
 
@@ -403,13 +276,21 @@ async function handleUploadTraces(config: Config): Promise<void> {
   }
 }
 
-/** 主函数 */
-async function main(): Promise<void> {
+/** 主函数（由 bootstrap.ts 调用） */
+export async function main(): Promise<void> {
   const startupTimer = getPerfTimer().start('startup');
 
   try {
     const cliArgs = parseCLIArgs();
+
+    // 执行数据迁移（幂等，失败不阻塞）
+    profileCheckpoint("migrations_start");
+    runMigrations();
+    profileCheckpoint("migrations_end");
+
+    profileCheckpoint("config_load_start");
     const config = await loadConfig(cliArgs);
+    profileCheckpoint("config_load_end");
 
     // 初始化调试日志
     if (config.debug) {
@@ -421,7 +302,6 @@ async function main(): Promise<void> {
       };
       const level = levelMap[config.debugLevel?.toUpperCase() || "DEBUG"] ?? LogLevel.DEBUG;
 
-      // TUI 模式下日志只写文件，不输出到控制台（避免启动时一闪而过的调试信息）
       const isTUI = !config.print;
       const logger = initLogger({
         enabled: true,
@@ -441,6 +321,7 @@ async function main(): Promise<void> {
 
     // 处理会话管理命令（不需要 API Key）
     if (cliArgs["list-sessions"]) {
+      const { handleListSessions } = await import("./session/commands.ts");
       await handleListSessions();
       return;
     }
@@ -449,6 +330,7 @@ async function main(): Promise<void> {
       return;
     }
     if (cliArgs["delete-session"]) {
+      const { handleDeleteSession } = await import("./session/commands.ts");
       await handleDeleteSession(cliArgs["delete-session"]);
       return;
     }
@@ -473,6 +355,8 @@ async function main(): Promise<void> {
       process.exit(1);
     }
 
+    profileCheckpoint("init_start");
+
     // 创建 ProviderRegistry（Provider 工厂 + 缓存 + 子代理模型映射）
     const { ProviderRegistry } = await import("./llm/registry.ts");
     const providerRegistry = new ProviderRegistry(config, config.subAgentModels);
@@ -491,6 +375,7 @@ async function main(): Promise<void> {
     }
 
     // 注册内置工具（共享 FileReadTracker 实例）
+    profileCheckpoint("tool_reg_start");
     const { Registry: ToolRegistry } = await import("./tool/registry.ts");
     const { FileReadTracker } = await import("./tool/file-read-tracker.ts");
     const { MemoryStore } = await import("./memory/store.ts");
@@ -552,11 +437,9 @@ async function main(): Promise<void> {
       trustManager,
       trustProjectExtensions: config.trustProjectExtensions,
       onUntrusted: async (files: any[]) => {
-        // 非交互模式下跳过未信任的扩展
         if (config.print) return [];
         const log = getLogger();
         log.warn("TRUST", `发现 ${files.length} 个未信任的项目级扩展，已自动信任`);
-        // 首次使用自动信任（后续内容变更会重新检查）
         return files;
       },
     };
@@ -569,12 +452,10 @@ async function main(): Promise<void> {
     const skillManager = new SkillManager();
     await skillManager.discover(process.cwd(), scanOptions);
 
-    // 应用禁用列表
     if (config.disabledSkills && config.disabledSkills.length > 0) {
       skillManager.setDisabledSkills(config.disabledSkills);
     }
 
-    // 注册为工具
     const skills = skillManager.getSkills();
     for (const skill of skills) {
       if (!skill.disableModelInvocation) {
@@ -589,20 +470,20 @@ async function main(): Promise<void> {
       toolRegistry.register(new CustomAgentTool(def, providerRegistry, toolRegistry));
     }
 
+    profileCheckpoint("tool_reg_end");
+
     // 初始化 MCP 服务器（后台连接，不阻塞启动）
     let mcpManager: import("./mcp/manager.ts").MCPManager | undefined;
     if (config.mcpServers && Object.keys(config.mcpServers).length > 0) {
       const { MCPManager } = await import("./mcp/manager.ts");
       mcpManager = new MCPManager();
 
-      // 工具变更回调：刷新工具注册表
       mcpManager.onToolsRefresh = (serverName, tools) => {
         const prefix = `mcp__${serverName}__`;
         toolRegistry.removeByPrefix(prefix);
         for (const tool of tools) toolRegistry.register(tool);
       };
 
-      // 后台连接，不 await
       mcpManager.connectAll(config.mcpServers).then((mcpTools) => {
         for (const tool of mcpTools) toolRegistry.register(tool);
         if (mcpTools.length > 0) {
@@ -627,7 +508,6 @@ async function main(): Promise<void> {
     const permissionChecker = new PermissionChecker(config, permissionRules);
     permissionChecker.setPlanManager(planManager);
 
-    // 记录权限规则
     if (config.debug && permissionRules) {
       const { getLogger } = await import("./debug/logger.ts");
       const allowCount = permissionRules.allow?.length ?? 0;
@@ -635,6 +515,8 @@ async function main(): Promise<void> {
       const askCount = permissionRules.ask?.length ?? 0;
       getLogger().info("CONFIG", `权限规则: ${allowCount}条 allow, ${denyCount}条 deny, ${askCount}条 ask`);
     }
+
+    profileCheckpoint("init_end");
 
     // 创建 App
     const { App } = await import("./app.ts");
@@ -685,7 +567,6 @@ async function main(): Promise<void> {
 
     // 根据模式路由
     if (config.print) {
-      // 无头模式
       if (!cliArgs.prompt) {
         console.error("错误: 无头模式需要提供提示词");
         process.exit(1);
@@ -693,7 +574,7 @@ async function main(): Promise<void> {
       startupTimer.end();
       await app.runHeadless(cliArgs.prompt);
     } else {
-      // TUI 模式
+      profileCheckpoint("render_start");
       const startupDuration = startupTimer.end();
       if (config.debug) {
         getLogger().info("CLI", `启动完成，耗时 ${startupDuration.toFixed(0)}ms`);
@@ -705,6 +586,3 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 }
-
-// 运行主函数
-main();

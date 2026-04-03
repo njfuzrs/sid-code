@@ -3,10 +3,10 @@
   "version": "0.1.0",
   "description": "AI 编程 CLI 工具 (TypeScript + Bun + Ink)",
   "type": "module",
-  "main": "src/cli.ts",
+  "main": "src/entrypoints/bootstrap.ts",
   "scripts": {
-    "dev": "bun run src/cli.ts",
-    "build": "bun build --compile --outfile sid-code src/cli.ts",
+    "dev": "bun run src/entrypoints/bootstrap.ts",
+    "build": "bun build --compile --outfile sid-code src/entrypoints/bootstrap.ts",
     "test": "bun test",
     "lint": "echo 'TODO: add linter'"
   },

@@ -95,6 +95,19 @@ export function InputArea({ onSubmit, isLoading, commands, cwd }: InputAreaProps
     viewport: { height: MAX_INPUT_LINES, width: availableWidth - PROMPT.length },
   });
 
+  // 挂载时消费早期输入缓冲（启动期间用户按键）
+  const earlyInputConsumed = useRef(false);
+  useEffect(() => {
+    if (earlyInputConsumed.current) return;
+    earlyInputConsumed.current = true;
+    import("./early-input.ts").then(({ consumeEarlyInput }) => {
+      const earlyText = consumeEarlyInput();
+      if (earlyText) {
+        tb.setText(earlyText);
+      }
+    }).catch(() => { /* 静默失败 */ });
+  }, []);
+
   // 反向搜索
   const reverseSearch = useReverseSearch({ history: persistedHistory });
 

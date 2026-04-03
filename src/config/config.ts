@@ -461,7 +461,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
   return result;
 }
 
-/** 加载配置文件 */
+/** 加载配置文件（优先消费预加载结果） */
 async function loadConfigFile(): Promise<Partial<Config>> {
   const log = getLogger();
   const configDir = join(homedir(), ".sid-code");
@@ -473,8 +473,14 @@ async function loadConfigFile(): Promise<Partial<Config>> {
   }
 
   try {
-    const file = Bun.file(configPath);
-    const content = await file.text();
+    // 优先消费预加载结果（与模块加载并行读取的）
+    const { getPreloadedConfig } = await import("./preload.ts");
+    let content = await getPreloadedConfig();
+    if (!content) {
+      // 预加载未命中，回退到同步读取
+      const file = Bun.file(configPath);
+      content = await file.text();
+    }
     const parsed = parseYAML(content);
 
     // 环境变量插值

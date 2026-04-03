@@ -144,6 +144,17 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
 
   useEffect(() => {
     log.info("UI:APP", "TUIApp 组件已挂载（Alternate Buffer 模式）");
+
+    // 启动延迟预取（首屏渲染完成后后台预热）
+    import("../entrypoints/deferred-prefetch.ts").then(({ startDeferredPrefetches }) => {
+      startDeferredPrefetches(true);
+    }).catch(() => { /* 静默失败 */ });
+
+    // 标记首屏渲染完成
+    import("../utils/startup-profiler.ts").then(({ profileCheckpoint }) => {
+      profileCheckpoint("render_complete");
+    }).catch(() => { /* 静默失败 */ });
+
     return () => { log.info("UI:APP", "TUIApp 组件已卸载"); };
   }, []);
 
