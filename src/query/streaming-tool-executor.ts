@@ -11,7 +11,7 @@
  */
 
 import type { ContentBlock, ToolUseBlock } from "../llm/types.ts";
-import type { Tool } from "../tool/types.ts";
+import type { LegacyTool as Tool } from "../tool/types.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { getLogger } from "../debug/index.ts";
 

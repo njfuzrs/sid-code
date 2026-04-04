@@ -3,7 +3,7 @@
  * AI 完成计划编写后调用，提交计划等待用户审批
  */
 
-import type { Tool, ToolResult } from "./types.ts";
+import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
 import type { PlanModeManager } from "../plan/state.ts";
 import { existsSync, readFileSync } from "fs";
 

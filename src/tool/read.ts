@@ -4,7 +4,7 @@
  * 读取后会记录到 FileReadTracker，供 Edit 工具校验
  */
 
-import type { Tool, ToolResult } from "./types.ts";
+import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
 import type { FileReadTracker } from "./file-read-tracker.ts";
 import { statSync } from "fs";
 import { getLogger } from "../debug/logger.ts";

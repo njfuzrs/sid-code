@@ -3,7 +3,7 @@
  * 让主代理可以 spawn 子代理执行子任务，子代理有独立的短上下文
  */
 
-import type { Tool, ToolResult } from "../tool/types.ts";
+import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "../tool/types.ts";
 import type { ProviderRegistry } from "../llm/registry.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { SubAgent } from "./sub-agent.ts";

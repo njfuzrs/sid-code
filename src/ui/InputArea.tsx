@@ -36,6 +36,8 @@ interface InputAreaProps {
   isLoading: boolean;
   commands: CommandInfo[];
   cwd: string;
+  /** Shift+Tab 权限模式切换回调（可选） */
+  onPermissionModeSwitch?: () => void;
 }
 
 const PLACEHOLDER = "输入消息或 /help 查看命令...";
@@ -76,7 +78,7 @@ function renderFirstLineContent(lineText: string, promptLen: number): React.Reac
 
 // ── 组件 ──────────────────────────────────────────────────────────
 
-export function InputArea({ onSubmit, isLoading, commands, cwd }: InputAreaProps) {
+export function InputArea({ onSubmit, isLoading, commands, cwd, onPermissionModeSwitch }: InputAreaProps) {
   const lastSubmittedRef = useRef<string>("");
   const log = getLogger();
   const prevLoadingRef = useRef(isLoading);
@@ -309,6 +311,14 @@ export function InputArea({ onSubmit, isLoading, commands, cwd }: InputAreaProps
     }
 
     // ── 粘贴事件 ──
+    // Shift+Tab：权限模式切换
+    if (key.shift && key.name === "tab") {
+      if (onPermissionModeSwitch) {
+        onPermissionModeSwitch();
+      }
+      return true;
+    }
+
     if (key.name === "paste") {
       const cleaned = cleanPasteText(key.sequence);
       if (cleaned.length > 0) {

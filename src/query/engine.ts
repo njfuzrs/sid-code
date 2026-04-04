@@ -158,6 +158,8 @@ export class QueryEngine {
       handleContextOverflow: this.deps.handleContextOverflow,
       getAbortSignal: this.deps.getAbortSignal,
       uuid: () => crypto.randomUUID(),
+      checkFallbackOccurred: () => this.deps.fallback.checkFallbackOccurred(),
+      resetFallbackFlag: () => this.deps.fallback.reset(),
     };
 
     // ─── 启动 queryLoop ───

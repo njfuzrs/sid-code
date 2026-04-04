@@ -3,7 +3,7 @@
  * AI 可主动调用进入 Plan Mode，也可由用户通过 /plan 命令触发
  */
 
-import type { Tool, ToolResult } from "./types.ts";
+import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
 import type { PlanModeManager } from "../plan/state.ts";
 
 export class EnterPlanModeTool implements Tool {

@@ -3,7 +3,7 @@
  * 将 SkillDefinition 包装为 Tool 接口，LLM 可自动调用
  */
 
-import type { Tool, ToolResult } from "../tool/types.ts";
+import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "../tool/types.ts";
 import type { ProviderRegistry } from "../llm/registry.ts";
 import type { Registry as ToolRegistry } from "../tool/registry.ts";
 import { SubAgent } from "../agent/sub-agent.ts";

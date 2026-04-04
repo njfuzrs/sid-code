@@ -3,11 +3,12 @@
  * 对标 Claude Code：description 参数、输出截断、AbortSignal 集成、跨平台适配
  */
 
-import type { Tool, ToolResult } from "./types.ts";
+import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
 import { spawn } from "bun";
 import { platform } from "os";
 import { getLogger } from "../debug/logger.ts";
 import type { Config } from "../config/config.ts";
+import { isReadOnlyCommand, isDestructiveCommand } from "./bash/read-only-validation.ts";
 
 /** Bash 输出截断阈值（对标 Claude Code 30000 字符） */
 const MAX_OUTPUT_LENGTH = 30000;
@@ -120,41 +121,16 @@ export class BashTool implements Tool {
     };
   }
 
-  /** 基于命令内容判断是否并发安全 */
+  /** 基于命令内容判断是否只读（输入感知） */
+  readOnly(): boolean {
+    return false; // 默认非只读，实际判断在 isConcurrencySafe 中
+  }
+
+  /** 基于命令内容判断是否并发安全（输入感知） */
   isConcurrencySafe(input: unknown): boolean {
     const command = (input as any)?.command;
     if (!command || typeof command !== "string") return false;
-
-    // 提取第一个命令词（忽略 env 变量赋值和管道前的部分）
-    const trimmed = command.trim();
-    const firstCmd = trimmed.split(/[|;&]/)[0].trim().split(/\s+/).pop() || "";
-    const base = firstCmd.replace(/^.*\//, ""); // 去掉路径前缀
-
-    // 只读命令白名单
-    const SAFE_COMMANDS = new Set([
-      "ls", "cat", "head", "tail", "wc", "file", "stat", "du", "df",
-      "echo", "printf", "date", "whoami", "hostname", "uname", "env", "printenv",
-      "git", "grep", "rg", "find", "fd", "which", "type", "command",
-      "node", "bun", "deno", "python", "python3", "ruby", "go", "cargo",
-      "npm", "npx", "yarn", "pnpm", "bunx",
-      "jq", "yq", "curl", "wget",
-      "diff", "md5sum", "sha256sum", "base64",
-    ]);
-
-    // git 子命令：只有只读子命令才安全
-    if (base === "git") {
-      const GIT_SAFE_SUBCMDS = new Set([
-        "status", "log", "diff", "show", "branch", "tag", "remote",
-        "rev-parse", "describe", "ls-files", "ls-tree", "cat-file",
-        "blame", "shortlog", "stash list",
-      ]);
-      const parts = trimmed.split(/\s+/);
-      const gitIdx = parts.findIndex(p => p === "git" || p.endsWith("/git"));
-      const subcmd = gitIdx >= 0 ? parts[gitIdx + 1] : undefined;
-      return subcmd ? GIT_SAFE_SUBCMDS.has(subcmd) : false;
-    }
-
-    return SAFE_COMMANDS.has(base);
+    return isReadOnlyCommand(command);
   }
 
   async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
@@ -203,11 +179,15 @@ export class BashTool implements Tool {
       // 超时控制 + AbortSignal 集成
       let killed = false;
       let killReason = "";
+      let backgrounded = false;
 
       const timeoutId = setTimeout(() => {
-        killed = true;
-        killReason = `命令超时（${timeout / 1000}秒）`;
-        proc.kill();
+        // 超时自动后台化：不终止进程，而是转为后台任务
+        backgrounded = true;
+        killReason = `命令超时（${timeout / 1000}秒），已自动转为后台运行`;
+        const pid = proc.pid;
+        if (pid) backgroundPids.add(pid);
+        log.info("BASH", `命令超时，PID ${pid} 自动转为后台运行`);
       }, timeout);
 
       // AbortSignal 监听
@@ -218,53 +198,82 @@ export class BashTool implements Tool {
       };
       signal?.addEventListener("abort", abortHandler);
 
-      const [stdout, stderr] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
+      // 使用 Promise.race 实现超时后台化：超时时立即返回，进程继续后台运行
+      const outputPromise = (async () => {
+        const [stdout, stderr] = await Promise.all([
+          new Response(proc.stdout).text(),
+          new Response(proc.stderr).text(),
+        ]);
+
+        clearTimeout(timeoutId);
+        signal?.removeEventListener("abort", abortHandler);
+
+        const exitCode = await proc.exited;
+
+        // 合并输出
+        let output = "";
+        if (stdout) output += stdout;
+        if (stderr) {
+          if (output && !output.endsWith("\n")) output += "\n";
+          if (stderr) output += stderr;
+        }
+        if (!output) output = "(命令无输出)";
+
+        // 二进制输出检测
+        if (isBinaryOutput(output)) {
+          const byteCount = new TextEncoder().encode(output).length;
+          output = `[检测到二进制输出，共 ${byteCount} 字节]`;
+        } else {
+          output = truncateOutput(output);
+        }
+
+        if (killed) {
+          return {
+            output: `${killReason}，已终止命令。\n部分输出:\n${output}`,
+            isError: true,
+          };
+        }
+
+        if (exitCode !== 0) {
+          log.info("TOOL", `✓ 命令完成 code=${exitCode} stdout=${stdout.length}字符 stderr=${stderr.length}字符`);
+          return {
+            output: `命令执行失败（退出码 ${exitCode}）:\n${output}`,
+            isError: true,
+          };
+        }
+
+        log.info("TOOL", `✓ 命令完成 code=0 stdout=${stdout.length}字符 stderr=${stderr.length}字符`);
+        return { output };
+      })();
+
+      const timeoutPromise = new Promise<ToolResult | null>((resolve) => {
+        setTimeout(() => {
+          if (!killed && !backgrounded) {
+            backgrounded = true;
+            resolve(null); // 触发后台化
+          }
+        }, timeout);
+      });
+
+      // 正常完成 vs 超时后台化
+      const raceResult = await Promise.race([
+        outputPromise.then(r => ({ type: "done" as const, result: r })),
+        timeoutPromise.then(() => ({ type: "timeout" as const, result: null })),
       ]);
 
-      clearTimeout(timeoutId);
-      signal?.removeEventListener("abort", abortHandler);
-
-      const exitCode = await proc.exited;
-
-      // 合并输出
-      let output = "";
-      if (stdout) output += stdout;
-      if (stderr) {
-        if (output && !output.endsWith("\n")) output += "\n";
-        if (stderr) output += stderr;
-      }
-      if (!output) output = "(命令无输出)";
-
-      // 二进制输出检测
-      if (isBinaryOutput(output)) {
-        const byteCount = new TextEncoder().encode(output).length;
-        output = `[检测到二进制输出，共 ${byteCount} 字节]`;
-      } else {
-        // 截断超长输出
-        output = truncateOutput(output);
-      }
-
-      // 被终止的情况
-      if (killed) {
+      if (raceResult.type === "timeout") {
+        const pid = proc.pid;
+        if (pid) backgroundPids.add(pid);
+        clearTimeout(timeoutId);
+        signal?.removeEventListener("abort", abortHandler);
+        log.info("BASH", `命令超时（${timeout / 1000}秒），PID ${pid} 自动转为后台运行`);
         return {
-          output: `${killReason}，已终止命令。\n部分输出:\n${output}`,
-          isError: true,
+          output: `命令执行超过 ${timeout / 1000} 秒，已自动转为后台运行。PID: ${pid}\n可使用 \`kill ${pid}\` 终止进程。`,
+          isError: false,
         };
       }
 
-      if (exitCode !== 0) {
-        log.info("TOOL", `✓ 命令完成 code=${exitCode} stdout=${stdout.length}字符 stderr=${stderr.length}字符`);
-        return {
-          output: `命令执行失败（退出码 ${exitCode}）:\n${output}`,
-          isError: true,
-        };
-      }
-
-      log.info("TOOL", `✓ 命令完成 code=0 stdout=${stdout.length}字符 stderr=${stderr.length}字符`);
-
-      return { output };
+      return raceResult.result;
     } catch (err: any) {
       return { output: `执行命令失败: ${err.message}`, isError: true };
     }

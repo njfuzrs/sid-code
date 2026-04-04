@@ -90,10 +90,23 @@ export class AnthropicProvider implements Provider {
       input_schema: t.input_schema,
     }));
 
-    // system prompt 也标记缓存
-    const system = params.system
-      ? [{ type: "text" as const, text: params.system, cache_control: { type: "ephemeral" as const } }]
-      : undefined;
+    // system prompt 分区缓存：按 DYNAMIC_BOUNDARY 拆分为静态区和动态区
+    // 静态区跨会话可缓存，动态区会话内缓存，分别标记 cache_control
+    const DYNAMIC_BOUNDARY = "\n\n<!-- DYNAMIC_BOUNDARY -->\n\n";
+    let system: Array<{ type: "text"; text: string; cache_control?: { type: "ephemeral" } }> | undefined;
+    if (params.system) {
+      const boundaryIdx = params.system.indexOf(DYNAMIC_BOUNDARY);
+      if (boundaryIdx !== -1) {
+        const staticPart = params.system.slice(0, boundaryIdx);
+        const dynamicPart = params.system.slice(boundaryIdx + DYNAMIC_BOUNDARY.length);
+        system = [
+          { type: "text" as const, text: staticPart, cache_control: { type: "ephemeral" as const } },
+          { type: "text" as const, text: dynamicPart, cache_control: { type: "ephemeral" as const } },
+        ];
+      } else {
+        system = [{ type: "text" as const, text: params.system, cache_control: { type: "ephemeral" as const } }];
+      }
+    }
 
     try {
       const log = getLogger();

@@ -25,6 +25,7 @@ import type { HookSystem } from "../hook/system.ts";
 import { LoopDetector, LOOP_RECOVERY_PROMPT } from "./loop-detection.ts";
 import type { LLMLoopCheckResult } from "./loop-detection.ts";
 import { isAbortError } from "../llm/errors.ts";
+import { yieldMissingToolResults, collectToolResultIdsFromBlocks } from "./tool-result-guard.ts";
 
 /** UI 回调接口，处理 REPL/TUI 的差异 */
 export interface AgentLoopCallbacks {
@@ -543,18 +544,18 @@ export class AgentLoopRunner {
           toolResults = await this.deps.executeTools(response.content);
         } catch (err: any) {
           toolPerfHandle.end();
-          // 用户取消：为悬空的 tool_use 补上取消的 tool_result，保持上下文一致性
-          if (isAbortError(err)) {
-            const cancelResults: ContentBlock[] = toolBlocks
-              .filter((b): b is typeof b & { type: "tool_use" } => b.type === "tool_use")
-              .map(b => ({
-                type: "tool_result" as const,
-                tool_use_id: b.id,
-                content: "用户取消了此工具调用",
-                is_error: true,
-              }));
-            ctxMgr.addMessage({ role: "user", content: cancelResults });
-            log.info("AGENT", "工具执行被用户取消，已补充取消的 tool_result");
+          // 全局 tool_result 兜底：无论什么原因导致的异常，都保证 tool_result 完整性
+          const existingIds = collectToolResultIdsFromBlocks(
+            ctxMgr.getMessages().flatMap(m => m.content)
+          );
+          const missing = [...yieldMissingToolResults(
+            [{ role: "assistant", content: response.content }],
+            existingIds,
+            isAbortError(err) ? "用户取消了此工具调用" : `执行异常: ${err.message}`,
+          )];
+          if (missing.length > 0) {
+            ctxMgr.addMessage({ role: "user", content: missing });
+            log.info("AGENT", `已补充 ${missing.length} 个缺失的 tool_result`);
           }
           throw err;
         }

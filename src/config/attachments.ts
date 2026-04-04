@@ -109,12 +109,30 @@ ${content}
   };
 }
 
+/** Git 状态缓存（TTL 30 秒，覆盖用户输入期间的预取窗口） */
+let gitStatusCache: { result: Attachment | null; timestamp: number; workingDir: string } | null = null;
+const GIT_STATUS_CACHE_TTL = 30_000;
+
+/** 清除 Git 状态缓存（供外部调用，如 CLAUDE.md 变更时） */
+export function clearGitStatusCache(): void {
+  gitStatusCache = null;
+}
+
 /**
  * 生成 Git 状态附件
  * 执行 git status --short 获取当前仓库状态
+ * 带模块级缓存，预取和正式调用共享结果
  */
 export function generateGitStatusAttachment(workingDir: string): Attachment | null {
   const log = getLogger();
+
+  // 命中缓存
+  if (gitStatusCache
+    && gitStatusCache.workingDir === workingDir
+    && Date.now() - gitStatusCache.timestamp < GIT_STATUS_CACHE_TTL) {
+    log.debug("ATTACHMENT", "Git 状态命中缓存");
+    return gitStatusCache.result;
+  }
 
   try {
     // 检查是否是 Git 仓库
@@ -165,15 +183,21 @@ export function generateGitStatusAttachment(workingDir: string): Attachment | nu
       parts.push(`\n最近提交:\n${recentCommits}`);
     }
 
-    return {
+    const result: Attachment = {
       type: "gitStatus",
       label: `Git 状态 (${branch})`,
       content: `<git-status>\n${parts.join("\n")}\n</git-status>`,
       priority: PRIORITY.GIT_STATUS,
     };
+
+    // 写入缓存
+    gitStatusCache = { result, timestamp: Date.now(), workingDir };
+    return result;
   } catch {
     log.debug("ATTACHMENT", "非 Git 仓库或 git 命令不可用，跳过 Git 状态附件");
-    return null;
+    const result = null;
+    gitStatusCache = { result, timestamp: Date.now(), workingDir };
+    return result;
   }
 }
 

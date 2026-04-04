@@ -7,10 +7,6 @@
 import { profileCheckpoint } from "./utils/startup-profiler.ts";
 profileCheckpoint("full_cli_entry");
 
-// ⚠️ 副作用前置：配置文件预加载，与后续模块加载并行执行
-import { startConfigPreload } from "./config/preload.ts";
-startConfigPreload();
-
 // 强制启用终端颜色（必须在业务 import 之前）
 if (!process.env.FORCE_COLOR && !process.env.NO_COLOR) {
   process.env.FORCE_COLOR = "3";
@@ -22,6 +18,7 @@ import type { Config } from "./config/config.ts";
 import { initLogger, getLogger, LogLevel, getPerfTimer } from "./debug/index.ts";
 import { printHelp } from "./help.ts";
 import { runMigrations } from "./migrations/runner.ts";
+import { getVersion } from "./version.ts";
 
 profileCheckpoint("full_cli_imports_loaded");
 
@@ -109,7 +106,7 @@ function parseCLIArgs(): CLIArgs {
   }
 
   if (values.version) {
-    console.log("sid-code v0.1.0 (TypeScript)");
+    console.log(getVersion());
     process.exit(0);
   }
 

@@ -26,6 +26,7 @@ import { LoopDetector, LOOP_RECOVERY_PROMPT } from "../agent/loop-detection.ts";
 import type { LLMLoopCheckResult } from "../agent/loop-detection.ts";
 import { isAbortError } from "../llm/errors.ts";
 import { isPromptTooLongError, reactiveCompact, DiminishingReturnsDetector } from "./reactive-compact.ts";
+import { runCompactPipeline } from "./compact/index.ts";
 import type {
   QueryLoopYield,
   QueryDeps,
@@ -93,11 +94,28 @@ export async function* queryLoop(
         ctxMgr.emergencyTruncate();
         yield { kind: "compact" };
         break;
-      case "hard":
-        log.warn("QUERY_LOOP", `上下文接近上限 (${usagePercent.toFixed(0)}%)，触发摘要压缩`);
-        await deps.autoCompact();
+      case "hard": {
+        log.warn("QUERY_LOOP", `上下文接近上限 (${usagePercent.toFixed(0)}%)，启动渐进式压缩管道`);
+        const pipelineResult = runCompactPipeline(ctxMgr.getMessages(), {
+          currentUsageRatio: usagePercent / 100,
+          maxTokens: contextMax,
+          toolCount,
+        });
+
+        if (pipelineResult.steps.length > 0) {
+          ctxMgr.setMessages(pipelineResult.messages);
+          log.info("QUERY_LOOP", `渐进式压缩: ${pipelineResult.steps.join(" → ")}，节省 ${pipelineResult.totalSavedChars} 字符`);
+          yield { kind: "system", level: "info", text: `渐进式压缩: ${pipelineResult.steps.join(" → ")}` };
+        }
+
+        if (pipelineResult.needsAutoCompact) {
+          log.warn("QUERY_LOOP", "轻量压缩不足，触发 LLM 摘要压缩");
+          await deps.autoCompact();
+        }
+
         yield { kind: "compact" };
         break;
+      }
       case "soft":
         log.info("QUERY_LOOP", `上下文 ${usagePercent.toFixed(0)}%，启用工具输出遮罩`);
         break;
@@ -196,6 +214,29 @@ export async function* queryLoop(
       });
     } catch (err: any) {
       perfHandle.end({ model: config.model });
+
+      // 流式阶段的 prompt-too-long 错误恢复（与连接阶段逻辑一致）
+      if (isPromptTooLongError(err) && !state.hasAttemptedReactiveCompact) {
+        log.warn("QUERY_LOOP", "流式阶段检测到 prompt-too-long 错误，触发响应式压缩");
+        const compactResult = reactiveCompact(ctxMgr);
+        if (compactResult.success) {
+          state.hasAttemptedReactiveCompact = true;
+          state.transition = { type: "reactive_compact" };
+          yield { kind: "compact" };
+          yield { kind: "system", level: "info", text: `响应式压缩: ${compactResult.messageCountBefore} → ${compactResult.messageCountAfter} 条消息` };
+          continue;
+        }
+        log.warn("QUERY_LOOP", "响应式压缩失败，尝试 autoCompact");
+      }
+
+      // prompt-too-long 兜底：autoCompact 后重试
+      if (isPromptTooLongError(err)) {
+        await deps.autoCompact();
+        yield { kind: "compact" };
+        state.transition = { type: "context_overflow_retry" };
+        continue;
+      }
+
       throw err;
     }
     const apiDuration = perfHandle.end({ model: config.model });

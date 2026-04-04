@@ -3,7 +3,7 @@
  * 返回结构化的搜索结果（标题、URL、摘要），与 web_fetch 形成互补
  */
 
-import type { Tool, ToolResult } from "./types.ts";
+import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
 import type { SearchBackend, SearchResponse } from "./search-backends/types.ts";
 import { getLogger } from "../debug/logger.ts";
 

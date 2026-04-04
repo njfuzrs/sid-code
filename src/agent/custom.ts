@@ -4,7 +4,7 @@
  * 每个 Agent 包装为 Tool，LLM 可自动调用
  */
 
-import type { Tool, ToolResult } from "../tool/types.ts";
+import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "../tool/types.ts";
 import type { ProviderRegistry } from "../llm/registry.ts";
 import type { Registry as ToolRegistry } from "../tool/registry.ts";
 import { ExtensionLoader } from "../extension/loader.ts";

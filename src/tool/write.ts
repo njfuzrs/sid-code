@@ -3,7 +3,7 @@
  * 自动创建目录，覆盖已存在的文件
  */
 
-import type { Tool, ToolResult } from "./types.ts";
+import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
 import { dirname } from "path";
 import { mkdirSync, existsSync } from "fs";
 import { getLogger } from "../debug/logger.ts";

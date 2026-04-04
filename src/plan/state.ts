@@ -28,13 +28,21 @@ export class PlanModeManager {
   private rejectionCount = 0;
   private readonly maxRejections = 5;
   private listeners: PlanModeListener[] = [];
+  /** 进入 plan 模式前的权限模式（退出时恢复） */
+  private prePlanMode: string | null = null;
+
+  /** 获取进入 plan 前的权限模式 */
+  getPrePlanMode(): string | null {
+    return this.prePlanMode;
+  }
 
   /** 进入 Plan Mode */
-  enter(): boolean {
+  enter(currentPermissionMode?: string): boolean {
     if (this.state !== "inactive") return false;
     const from = this.state;
     this.state = "planning";
     this.rejectionCount = 0;
+    this.prePlanMode = currentPermissionMode || null;
     this.planFilePath = this.generatePlanFilePath();
     this.ensurePlanDir();
     this.emit({ from, to: this.state, planFilePath: this.planFilePath });

@@ -30,6 +30,7 @@ const SHORTCUTS: ShortcutItem[] = [
   { key: "Ctrl+R", description: "反向搜索历史" },
   { key: "Ctrl+C", description: "退出" },
   { key: "Esc", description: "取消当前操作" },
+  { key: "Shift+Tab", description: "切换权限模式" },
 ];
 
 // ── ShortcutsHint（简要提示） ──

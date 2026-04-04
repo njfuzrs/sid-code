@@ -3,7 +3,7 @@
  * 当前只有 /memory 斜杠命令能写记忆，此工具让 LLM 在对话中主动保存
  */
 
-import type { Tool, ToolResult } from "./types.ts";
+import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
 import type { MemoryStore } from "../memory/store.ts";
 import { getLogger } from "../debug/logger.ts";
 

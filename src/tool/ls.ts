@@ -3,7 +3,7 @@
  * 列举指定目录的直接子项（非递归），目录优先，显示文件大小
  */
 
-import type { Tool, ToolResult } from "./types.ts";
+import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
 import { readdirSync, statSync } from "fs";
 import { join, isAbsolute } from "path";
 import { getLogger } from "../debug/logger.ts";

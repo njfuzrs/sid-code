@@ -3,7 +3,7 @@
  * 对标 Claude Code 的 11 部分动态拼接：固定模板 + 动态附件 + 优先级排序 + Token 截断 + 缓存
  */
 
-import type { Tool } from "../tool/types.ts";
+import type { LegacyTool as Tool } from "../tool/types.ts";
 import type { Attachment } from "./attachments.ts";
 import { platform, homedir } from "os";
 import { cwd } from "process";

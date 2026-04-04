@@ -93,7 +93,7 @@ describe("权限系统增强功能", () => {
   });
 
   describe("dontAsk 模式", () => {
-    test("工作目录内文件写入放行", async () => {
+    test("dontAsk 模式下 ask 转为 deny（绝不弹窗）", async () => {
       const config = { ...defaultConfig(), permissionMode: "dontAsk" };
       // 使用 process.cwd() 作为工作区，确保测试文件在工作区内
       const checker = new PermissionChecker(config, undefined, process.cwd());
@@ -102,10 +102,12 @@ describe("权限系统增强功能", () => {
         toolName: "write",
         input: { file_path: `${process.cwd()}/test.txt` },
       });
-      expect(result.allowed).toBe(true);
+      // 新语义：dontAsk 模式下 ask→deny，不再自动允许
+      expect(result.allowed).toBe(false);
+      expect(result.needsConfirmation).toBeUndefined();
     });
 
-    test("非危险 bash 命令放行", async () => {
+    test("dontAsk 模式下 bash 命令也被拒绝（ask→deny）", async () => {
       const config = { ...defaultConfig(), permissionMode: "dontAsk" };
       const checker = new PermissionChecker(config, undefined, "/tmp");
 
@@ -113,7 +115,8 @@ describe("权限系统增强功能", () => {
         toolName: "bash",
         input: { command: "ls -la" },
       });
-      expect(result.allowed).toBe(true);
+      // 新语义：dontAsk 模式下 ask→deny
+      expect(result.allowed).toBe(false);
     });
 
     test("危险命令仍被拦截", async () => {

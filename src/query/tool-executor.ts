@@ -4,15 +4,15 @@
  */
 
 import type { ContentBlock, ToolUseBlock } from "../llm/types.ts";
-import type { Tool } from "../tool/types.ts";
+import type { LegacyTool as Tool } from "../tool/types.ts";
 import type { Checker, PermissionRequest } from "../permission/types.ts";
 import type { HookSystem } from "../hook/system.ts";
 import type { SessionState } from "../session/state.ts";
 import type { Config } from "../config/config.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
-import { Manager as ContextManager } from "../context/manager.ts";
 import { getLogger } from "../debug/index.ts";
 import { isAbortError } from "../llm/errors.ts";
+import { processToolResult } from "../tool/result-storage.ts";
 
 /** 工具执行器依赖 */
 export interface ToolExecutorDeps {
@@ -128,19 +128,33 @@ export async function executeTools(
     checkedTools.push({ block, tool, idx });
   }
 
-  // 分离只读和写入工具
-  const readOnlyTools = checkedTools.filter(({ tool }) => tool.readOnly?.() === true);
-  const writingTools = checkedTools.filter(({ tool }) => tool.readOnly?.() !== true);
+  // 分区并发策略：基于 isConcurrencySafe(input) 输入感知分区
+  // 并发安全的工具全部并行，非并发安全的工具串行执行
+  const concurrent: typeof checkedTools = [];
+  const sequential: typeof checkedTools = [];
 
-  log.debug("TOOL", `工具分类: 只读 ${readOnlyTools.length} 个并行执行, 写入 ${writingTools.length} 个串行执行`);
+  for (const item of checkedTools) {
+    const { tool, block } = item;
+    // 优先使用细粒度的 isConcurrencySafe(input)，回退到 readOnly()
+    const isSafe = tool.isConcurrencySafe
+      ? tool.isConcurrencySafe(block.input)
+      : (tool.readOnly?.() ?? false);
+    if (isSafe) {
+      concurrent.push(item);
+    } else {
+      sequential.push(item);
+    }
+  }
+
+  log.debug("TOOL", `分区并发: 并行 ${concurrent.length} 个, 串行 ${sequential.length} 个`);
 
   // 结果收集（按原始顺序索引存储）
   const resultMap: Map<number, ContentBlock> = new Map(rejectedResults);
 
-  // 只读工具并行执行
-  if (readOnlyTools.length > 0) {
+  // 并发安全的工具：并行执行
+  if (concurrent.length > 0) {
     const readResults = await Promise.allSettled(
-      readOnlyTools.map(({ block, tool, idx }) =>
+      concurrent.map(({ block, tool, idx }) =>
         executeSingleTool(block, tool, deps).then(r => ({ idx, result: r }))
       ),
     );
@@ -156,8 +170,8 @@ export async function executeTools(
     }
   }
 
-  // 写入工具串行执行
-  for (const { block, tool, idx } of writingTools) {
+  // 非并发安全的工具：串行执行（等待并行工具完成后才开始）
+  for (const { block, tool, idx } of sequential) {
     const result = await executeSingleTool(block, tool, deps);
     resultMap.set(idx, result);
   }
@@ -238,7 +252,7 @@ export async function executeSingleTool(
 
     deps.sessionState.addToolDuration(elapsed);
 
-    const truncatedOutput = ContextManager.truncateToolOutput(result.output);
+    const truncatedOutput = processToolResult(block.name, block.id, result.output);
 
     log.toolEnd(block.name, result.output, !!result.isError, elapsed);
 

@@ -105,6 +105,8 @@ export class App {
   private tuiConfirmCallback: ((toolName: string, toolInput: unknown, desc: string) => Promise<"yes" | "no" | "always">) | null = null;
   /** TUI 状态更新回调（由 TUI 注入，用于同步 permissionMode 等状态） */
   private tuiStateUpdater: ((patch: Record<string, unknown>) => void) | null = null;
+  /** 幂等保护：init() 只执行一次 */
+  private initPromise: Promise<void> | null = null;
 
   constructor(opts: AppOptions) {
     this.config = opts.config;
@@ -229,8 +231,15 @@ export class App {
     });
   }
 
-  /** 初始化：加载系统提示词 */
+  /** 初始化：加载系统提示词（幂等，多次调用只执行一次） */
   async init(): Promise<void> {
+    if (this.initPromise) return this.initPromise;
+    this.initPromise = this.doInit();
+    return this.initPromise;
+  }
+
+  /** 实际初始化逻辑 */
+  private async doInit(): Promise<void> {
     const log = getLogger();
     log.info("APP", "开始初始化...");
 
@@ -240,6 +249,25 @@ export class App {
     // 设置 bash 工具配置（用于环境变量清理）
     const { setBashToolConfig } = await import("./tool/bash.ts");
     setBashToolConfig(this.config);
+
+    // 工作区信任检查（在加载项目级配置之前）
+    if (!this.config.skipPermissions && !this.config.yesMode) {
+      const { TrustManager } = await import("./permission/trust.ts");
+      const trustMgr = new TrustManager(process.cwd());
+      const dangerousItems = await trustMgr.scanDangerousConfigs();
+      if (dangerousItems.length > 0 && !(await trustMgr.isTrusted())) {
+        log.warn("APP", `检测到 ${dangerousItems.length} 项危险配置，需要用户信任确认`);
+        // 在非交互模式下自动拒绝
+        if (this.config.print || (this.config.maxTurns !== undefined && this.config.maxTurns > 0)) {
+          log.warn("APP", "非交互模式下跳过信任检查，项目级危险配置不会被加载");
+        } else {
+          // 交互模式：自动信任（后续可替换为 TUI 对话框）
+          // TODO: 实现 TUI TrustDialog 组件
+          await trustMgr.trust();
+          log.info("APP", "工作区已信任");
+        }
+      }
+    }
 
     let systemPrompt = this.config.systemPrompt;
 
@@ -254,6 +282,12 @@ export class App {
       // 构建系统提示词（委托给 init-helpers）
       const { buildInitialSystemPrompt } = await import("./query/init-helpers.ts");
       systemPrompt = await buildInitialSystemPrompt(this.config, this.toolRegistry.all());
+    }
+
+    // 多来源规则加载（settings.json 文件）
+    if (this.permissionChecker && "initRules" in this.permissionChecker) {
+      await (this.permissionChecker as any).initRules();
+      log.info("APP", "多来源权限规则加载完成");
     }
 
     this.ctxMgr.setSystemPrompt(systemPrompt);
@@ -1021,6 +1055,13 @@ export class App {
               if (event.level === "warning") {
                 updateState({ statusMessage: `⚠️ ${event.text}` });
               }
+              break;
+            case "tombstone":
+              // 模型降级：清理流式文本残留，重建显示
+              streamingFullText = "";
+              streamSynced = false;
+              rebuildDisplay({ statusMessage: "模型降级，正在使用备用模型重试..." });
+              setTimeout(() => updateState({ statusMessage: "" }), 3000);
               break;
             case "done": {
               const ctxUsed = this.ctxMgr.estimateTokens(this.toolRegistry.size());

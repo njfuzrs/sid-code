@@ -3,7 +3,7 @@
  * 通过 glob 模式一次性读取多个文件，大幅减少 LLM 轮次
  */
 
-import type { Tool, ToolResult } from "./types.ts";
+import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
 import type { FileReadTracker } from "./file-read-tracker.ts";
 import { glob } from "glob";
 import { getLogger } from "../debug/logger.ts";

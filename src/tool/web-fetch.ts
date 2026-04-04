@@ -4,7 +4,7 @@
  * 安全限制：拒绝私有 IP 和 localhost
  */
 
-import type { Tool, ToolResult } from "./types.ts";
+import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
 
 const FETCH_TIMEOUT_MS = 10000;

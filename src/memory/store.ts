@@ -33,6 +33,15 @@ const MAX_ENTRIES_PER_SCOPE = 200;
 const MAX_VALUE_LENGTH = 10000;
 const MEMORY_FILE = "memories.json";
 
+/** 模块级摘要缓存（预取和正式调用共享） */
+let summaryCacheEntry: { summary: string | null; timestamp: number; projectRoot: string } | null = null;
+const SUMMARY_CACHE_TTL = 30_000; // 30 秒
+
+/** 清除摘要缓存（写入记忆后调用） */
+export function clearMemorySummaryCache(): void {
+  summaryCacheEntry = null;
+}
+
 export class MemoryStore {
   private globalDir: string;
   private projectDir: string | null;
@@ -91,6 +100,7 @@ export class MemoryStore {
     }
 
     await this.saveData(scope);
+    clearMemorySummaryCache(); // 写入后清除摘要缓存
     log.debug("MEMORY", `记忆已保存: [${scope}] ${key}`);
   }
 
@@ -127,6 +137,7 @@ export class MemoryStore {
         deleted = true;
       }
     }
+    if (deleted) clearMemorySummaryCache();
     return deleted;
   }
 
@@ -161,10 +172,22 @@ export class MemoryStore {
   /**
    * 生成记忆摘要（用于注入系统提示词）
    * 返回格式化的记忆内容，按更新时间排序
+   * 带模块级缓存，预取和正式调用共享结果
    */
   async generateSummary(maxLength: number = 5000): Promise<string | null> {
+    // 命中缓存
+    const projectRoot = this.projectDir ? this.projectDir.replace(/\/.sid-code\/memory$/, "") : "";
+    if (summaryCacheEntry
+      && summaryCacheEntry.projectRoot === projectRoot
+      && Date.now() - summaryCacheEntry.timestamp < SUMMARY_CACHE_TTL) {
+      return summaryCacheEntry.summary;
+    }
+
     const entries = await this.list();
-    if (entries.length === 0) return null;
+    if (entries.length === 0) {
+      summaryCacheEntry = { summary: null, timestamp: Date.now(), projectRoot };
+      return null;
+    }
 
     const lines: string[] = [];
     let totalLen = 0;
@@ -178,7 +201,9 @@ export class MemoryStore {
       totalLen += line.length;
     }
 
-    return lines.join("\n");
+    const summary = lines.join("\n");
+    summaryCacheEntry = { summary, timestamp: Date.now(), projectRoot };
+    return summary;
   }
 
   /** 从文件加载记忆数据 */

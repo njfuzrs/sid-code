@@ -24,8 +24,10 @@ interface RuleMatch {
  * - "Read" 匹配所有 read 操作
  * - "Read(src/**)" 只匹配 src 目录下的读取
  * - "Bash(npm *)" 匹配 npm 开头的命令
+ * - "Bash(prefix:git )" 前缀匹配（git 开头的命令）
  * - "Edit(.env*)" 匹配 .env 开头的文件
  * - "mcp__myserver__*" 匹配 myserver 的所有 MCP 工具（通配符支持）
+ * - "mcp__myserver" 匹配 myserver 的所有 MCP 工具（服务器级匹配）
  * - "mcp__*" 匹配所有 MCP 工具
  */
 export function matchRule(rule: string, req: PermissionRequest): boolean {
@@ -41,10 +43,21 @@ export function matchRule(rule: string, req: PermissionRequest): boolean {
     // 通配符匹配成功，如果有参数模式则继续检查参数
     if (!pattern) return true;
   } else {
-    // 精确工具名匹配（大小写不敏感）
-    if (toolName.toLowerCase() !== req.toolName.toLowerCase()) return false;
-    // 无参数模式，匹配所有该工具的操作
-    if (!pattern) return true;
+    // MCP 服务器级匹配：规则 "mcp__server1" 匹配 "mcp__server1__tool1"
+    const reqLower = req.toolName.toLowerCase();
+    const ruleLower = toolName.toLowerCase();
+    if (reqLower !== ruleLower) {
+      // 检查是否为 MCP 服务器级匹配
+      if (ruleLower.startsWith("mcp__") && reqLower.startsWith(ruleLower + "__")) {
+        // 服务器级匹配成功
+        if (!pattern) return true;
+      } else {
+        return false;
+      }
+    } else {
+      // 精确匹配成功
+      if (!pattern) return true;
+    }
   }
 
   // 提取关键参数（file_path 或 command）
@@ -52,6 +65,12 @@ export function matchRule(rule: string, req: PermissionRequest): boolean {
   const value = input?.file_path || input?.command || input?.pattern || "";
 
   if (!value) return false;
+
+  // prefix: 前缀匹配
+  if (pattern.startsWith("prefix:")) {
+    const prefix = pattern.slice(7); // 去掉 "prefix:"
+    return value.startsWith(prefix);
+  }
 
   // glob 匹配
   return minimatch(value, pattern, { dot: true });

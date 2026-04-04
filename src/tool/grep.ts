@@ -3,7 +3,7 @@
  * 对标 Claude Code：基于 ripgrep 构建，支持 output_mode、上下文行数、文件类型过滤
  */
 
-import type { Tool, ToolResult } from "./types.ts";
+import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
 import { spawn } from "bun";
 import { getLogger } from "../debug/logger.ts";
 

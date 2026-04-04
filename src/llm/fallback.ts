@@ -313,6 +313,11 @@ export class ModelFallback {
     });
   }
 
+  /** 检查是否发生了模型降级 */
+  checkFallbackOccurred(): boolean {
+    return this.hasFallenBack;
+  }
+
   /** 重置回退状态（用于新的请求） */
   reset(): void {
     this.hasFallenBack = false;

@@ -18,10 +18,11 @@ if (isProfilingEnabled()) {
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
 
-  // 快速路径 1: --version — 零模块加载
+  // 快速路径 1: --version — 从 package.json 读取版本号
   if (args.length === 1 && (args[0] === "--version" || args[0] === "-v")) {
     profileCheckpoint("bootstrap_route_resolved");
-    console.log("sid-code v0.1.0 (TypeScript)");
+    const { getVersion } = await import("../version.ts");
+    console.log(getVersion());
     return;
   }
 
@@ -56,6 +57,10 @@ async function main(): Promise<void> {
   // 在加载完整 CLI 之前启动早期输入捕获（缓冲用户按键）
   const { startCapturingEarlyInput } = await import("../ui/early-input.ts");
   startCapturingEarlyInput();
+
+  // ⚠️ 配置文件预加载：在 cli.ts 模块加载之前启动异步读取，与模块求值并行
+  const { startConfigPreload } = await import("../config/preload.ts");
+  startConfigPreload();
 
   const { main: cliMain } = await import("../cli.ts");
   await cliMain();

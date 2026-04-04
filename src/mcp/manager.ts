@@ -5,7 +5,7 @@
  */
 
 import type { MCPServerConfig } from "../config/config.ts";
-import type { Tool, ToolResult } from "../tool/types.ts";
+import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "../tool/types.ts";
 import type { MCPToolDefinition, MCPResource, MCPPrompt } from "./types.ts";
 import { MCPConnectionStatus } from "./types.ts";
 import { MCPClient } from "./client.ts";

@@ -1,17 +1,34 @@
 /**
- * 权限检查器
- * 14 层权限检查：会话记忆 → 危险命令(复合拆分+重定向) → 禁用工具 → 目录白名单/黑名单 → 路径安全(symlink解析+工作区边界) → 敏感文件 → 权限规则 → 模式检查(acceptEdits/plan/dontAsk) → 读操作 → 预授权 → deny-write/always-allow → 用户确认
- * 包含 25 种危险命令模式检测 + 复合命令拆分 + 重定向检测 + 路径遍历/系统目录保护 + 审计日志
+ * 权限检查器（三阶段架构）
+ *
+ * 阶段 1：hasPermissionsInner — 纯规则检查（无副作用）
+ *   deny规则 → 危险命令 → 禁用工具 → 路径验证 → ask规则 → safetyCheck(bypass-immune)
+ *   → bypass/always-allow模式 → allow规则 → plan/acceptEdits/读操作 → passthrough→ask
+ *
+ * 阶段 2：check — 后处理（含副作用）
+ *   会话记忆快速路径 → 运行内部检查 → denial tracking → dontAsk→deny → 非交互→deny → 熔断检查
+ *
+ * 阶段 3：resolvePermission — 交互式决策（由上层 agent loop 处理）
  */
 
-import type { Checker, Decision, PermissionRequest, PermissionRule } from "./types.ts";
+import type { Checker, Decision, PermissionRequest, PermissionRule, PermissionDecisionReason } from "./types.ts";
 import type { Config } from "../config/config.ts";
 import type { PlanModeManager } from "../plan/state.ts";
+import type { Tool, PermissionResult, ToolUseContext } from "../tool/types.ts";
 import { checkRules } from "./rules.ts";
 import { AuditLogger } from "./audit.ts";
 import { getLogger } from "../debug/logger.ts";
 import { splitCompoundCommand, hasSensitiveRedirection } from "./shell-parser.ts";
 import { PathValidator } from "./path-validator.ts";
+import {
+  type DenialTrackingState,
+  createDenialTrackingState,
+  recordDenial,
+  recordSuccess,
+  shouldFuse,
+} from "./denial-tracking.ts";
+import { RuleLoader } from "./rule-loader.ts";
+import type { SandboxManager } from "./sandbox.ts";
 import * as path from "node:path";
 
 /** 危险命令模式（对标 Claude Code 15 种） */
@@ -58,6 +75,30 @@ const DANGEROUS_PATTERNS: DangerousPattern[] = [
   { name: "修改 crontab", pattern: /crontab\s+(-e|-r|-l)/, severity: "medium" },
 ];
 
+/** safetyCheck 受保护路径（bypass-immune，即使 always-allow 也不可绕过） */
+interface SafetyProtectedPath {
+  pattern: string;
+  /** 是否允许自动模式的分类器审批（false = 绝对禁止） */
+  classifierApprovable: boolean;
+  reason: string;
+}
+
+const SAFETY_PROTECTED_PATHS: SafetyProtectedPath[] = [
+  // classifierApprovable: true（分类器可根据上下文判断）
+  { pattern: ".git/", classifierApprovable: true, reason: "Git 仓库内部文件" },
+  { pattern: ".sid-code/", classifierApprovable: true, reason: "sid-code 配置目录" },
+  { pattern: ".claude/", classifierApprovable: true, reason: "Claude 配置目录" },
+  { pattern: ".vscode/", classifierApprovable: true, reason: "VS Code 配置目录" },
+  { pattern: ".bashrc", classifierApprovable: true, reason: "Shell 配置文件" },
+  { pattern: ".zshrc", classifierApprovable: true, reason: "Shell 配置文件" },
+  { pattern: ".profile", classifierApprovable: true, reason: "Shell 配置文件" },
+  { pattern: ".bash_profile", classifierApprovable: true, reason: "Shell 配置文件" },
+  { pattern: ".ssh/", classifierApprovable: true, reason: "SSH 配置目录" },
+  // classifierApprovable: false（绝对禁止，不可自动审批）
+  { pattern: ".git/hooks/", classifierApprovable: false, reason: "Git hooks 可执行任意代码" },
+  { pattern: ".husky/", classifierApprovable: false, reason: "Husky hooks 可执行任意代码" },
+];
+
 /** 文件工具（需要路径校验） */
 const FILE_TOOLS = new Set(["read", "write", "edit"]);
 
@@ -90,10 +131,48 @@ export class PermissionChecker implements Checker {
   private pathValidator: PathValidator;
   /** Plan Mode 管理器（可选，运行时注入） */
   private planManager: PlanModeManager | null = null;
+  /** Denial Tracking 熔断状态 */
+  private denialTracking: DenialTrackingState = createDenialTrackingState();
+  /** 多来源规则加载器 */
+  private ruleLoader: RuleLoader;
+  /** 进入 plan 模式前的权限模式（退出时恢复） */
+  private prePlanMode: string | null = null;
+  /** 沙箱管理器（可选） */
+  private sandboxManager: SandboxManager | null = null;
 
   /** 设置 Plan Mode 管理器 */
   setPlanManager(manager: PlanModeManager): void {
     this.planManager = manager;
+  }
+
+  /** 记录进入 plan 前的模式（供 plan 继承 bypass 使用） */
+  setPrePlanMode(mode: string): void {
+    this.prePlanMode = mode;
+  }
+
+  /** 清除 prePlanMode（退出 plan 时调用） */
+  clearPrePlanMode(): void {
+    this.prePlanMode = null;
+  }
+
+  /** 设置沙箱管理器 */
+  setSandboxManager(manager: SandboxManager): void {
+    this.sandboxManager = manager;
+  }
+
+  /** 获取沙箱管理器 */
+  getSandboxManager(): SandboxManager | null {
+    return this.sandboxManager;
+  }
+
+  /** 获取 denial tracking 状态（供 agent loop 读取） */
+  getDenialTracking(): DenialTrackingState {
+    return this.denialTracking;
+  }
+
+  /** 重置 denial tracking（新一轮对话时调用） */
+  resetDenialTracking(): void {
+    this.denialTracking = createDenialTrackingState();
   }
 
   constructor(config: Config, rules?: PermissionRule, workspacePath?: string) {
@@ -105,15 +184,35 @@ export class PermissionChecker implements Checker {
       config.allowedDirectories || [],
       config.blockedDirectories || [],
     );
+    this.ruleLoader = new RuleLoader(workspacePath);
     // 加载预授权工具
     for (const tool of config.allowedTools) {
       this.preApproved.add(tool);
     }
+    // 如果传入了旧版规则，导入到 ruleLoader 中
+    if (rules) {
+      this.ruleLoader.importFromPermissionRule(rules, "projectSettings");
+    }
   }
 
-  /** 设置权限规则（支持运行时更新） */
+  /** 获取多来源规则加载器（供外部集成） */
+  getRuleLoader(): RuleLoader {
+    return this.ruleLoader;
+  }
+
+  /** 异步初始化：加载设置文件中的规则 */
+  async initRules(): Promise<void> {
+    await this.ruleLoader.loadAll();
+    // 同步到旧版 rules 字段（兼容）
+    this.rules = this.ruleLoader.toPermissionRule();
+  }
+
+  /** 设置权限规则（支持运行时更新，同步到 ruleLoader） */
   setRules(rules: PermissionRule): void {
     this.rules = rules;
+    // 同步到 ruleLoader（作为 projectSettings 来源）
+    this.ruleLoader.clearSource("projectSettings");
+    this.ruleLoader.importFromPermissionRule(rules, "projectSettings");
   }
 
   /** 生成会话记忆 key */
@@ -141,10 +240,183 @@ export class PermissionChecker implements Checker {
     this.sessionMemory.clear();
   }
 
-  async check(req: PermissionRequest): Promise<Decision> {
+  /**
+   * 阶段 1：内部规则检查（纯逻辑，无副作用）
+   * 检查顺序对齐 Claude Code：
+   *   deny规则 → 危险命令 → 禁用工具 → 路径验证 → ask规则
+   *   → safetyCheck(bypass-immune) → bypass/always-allow模式
+   *   → allow规则 → plan/acceptEdits/读操作 → passthrough→ask
+   */
+  private async hasPermissionsInner(req: PermissionRequest, tool?: Tool, toolContext?: ToolUseContext): Promise<Decision> {
     const log = getLogger();
     const filePath = (req.input as any)?.file_path || "";
     const resource = filePath || (req.input as any)?.command || "";
+
+    // Step 1: deny 规则（工具级）
+    if (this.rules) {
+      const ruleDecision = checkRules({ deny: this.rules.deny, allow: [], ask: [] }, req);
+      if (ruleDecision && !ruleDecision.allowed) {
+        log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(deny规则: ${ruleDecision.reason})`);
+        return { ...ruleDecision, decisionReason: { type: "rule", rule: ruleDecision.reason || "", behavior: "deny" } };
+      }
+    }
+
+    // Step 2: 危险命令拦截（25 种模式 + 复合命令拆分 + 重定向检测）
+    if (req.toolName === "bash") {
+      const dangerResult = this.checkDangerousCommand(req);
+      if (dangerResult) return dangerResult;
+    }
+
+    // Step 3: 禁用工具检查
+    if (this.config.disallowedTools.includes(req.toolName)) {
+      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(工具已禁用)`);
+      return {
+        allowed: false,
+        reason: `工具 "${req.toolName}" 已被禁用`,
+        decisionReason: { type: "other", reason: "工具已被禁用" },
+      };
+    }
+
+    // Step 4: 统一路径验证（目录黑白名单 + symlink 解析 + 工作区边界 + 系统目录 + 敏感文件）
+    if (filePath && FILE_TOOLS.has(req.toolName)) {
+      const operation = WRITE_TOOLS.has(req.toolName) ? "write" as const : "read" as const;
+      const pathResult = this.pathValidator.validateAccess(filePath, operation);
+      if (!pathResult.allowed) {
+        log.info("PERMISSION", `${req.toolName}(${filePath.slice(0, 80)}) → ${pathResult.needsConfirmation ? "需确认" : "拒绝"}(路径验证: ${pathResult.reason})`);
+        return {
+          allowed: false,
+          reason: pathResult.reason,
+          needsConfirmation: pathResult.needsConfirmation,
+          decisionReason: { type: "pathValidation", reason: pathResult.reason || "" },
+        };
+      }
+    }
+
+    // Step 5: ask 规则（工具级）
+    if (this.rules) {
+      const askDecision = checkRules({ deny: [], allow: [], ask: this.rules.ask }, req);
+      if (askDecision && !askDecision.allowed && askDecision.needsConfirmation) {
+        log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 需确认(ask规则: ${askDecision.reason})`);
+        return { ...askDecision, decisionReason: { type: "rule", rule: askDecision.reason || "", behavior: "ask" } };
+      }
+    }
+
+    // Step 5.5: 工具级 checkPermissions（passthrough 语义）
+    if (tool?.checkPermissions) {
+      const toolPermResult = await tool.checkPermissions(req.input, toolContext!);
+      if (toolPermResult.behavior === "deny") {
+        log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(工具级checkPermissions: ${toolPermResult.message})`);
+        return {
+          allowed: false,
+          reason: `工具拒绝: ${toolPermResult.message}`,
+          decisionReason: { type: "other", reason: `工具级checkPermissions: ${toolPermResult.message}` },
+        };
+      }
+      if (toolPermResult.behavior === "ask") {
+        log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 需确认(工具级checkPermissions: ${toolPermResult.message})`);
+        return {
+          allowed: false,
+          needsConfirmation: true,
+          reason: `工具要求确认: ${toolPermResult.message}`,
+        };
+      }
+      if (toolPermResult.behavior === "allow") {
+        log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(工具级checkPermissions)`);
+        return { allowed: true };
+      }
+      // passthrough: 工具没有意见，继续后续检查
+    }
+
+    // Step 6: safetyCheck（bypass-immune，即使 always-allow 也不可绕过）
+    if (WRITE_TOOLS.has(req.toolName) && filePath) {
+      const safetyResult = this.safetyCheck(filePath);
+      if (!safetyResult.safe) {
+        log.info("PERMISSION", `${req.toolName}(${filePath.slice(0, 80)}) → 需确认(safetyCheck: ${safetyResult.reason})`);
+        return {
+          allowed: false,
+          needsConfirmation: true,
+          reason: `[安全检查] ${safetyResult.reason}`,
+          decisionReason: { type: "safetyCheck", reason: safetyResult.reason!, classifierApprovable: safetyResult.classifierApprovable },
+          metadata: { classifierApprovable: safetyResult.classifierApprovable },
+        };
+      }
+    }
+
+    // Step 7: 沙箱自动放行（沙箱启用时 bash 命令可自动放行，减少弹窗）
+    if (
+      req.toolName === "bash" &&
+      this.sandboxManager?.shouldAutoAllowBash()
+    ) {
+      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(沙箱保护下自动放行)`);
+      return { allowed: true, decisionReason: { type: "other", reason: "沙箱保护下自动放行" } };
+    }
+
+    // Step 8: bypass/always-allow 模式（safetyCheck 之后才检查，确保关键路径不被绕过）
+    if (this.config.permissionMode === "always-allow") {
+      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(always-allow模式)`);
+      return { allowed: true, decisionReason: { type: "mode", mode: "always-allow" } };
+    }
+
+    // Step 8: allow 规则（工具级）
+    if (this.rules) {
+      const allowDecision = checkRules({ deny: [], allow: this.rules.allow, ask: [] }, req);
+      if (allowDecision && allowDecision.allowed) {
+        log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(allow规则)`);
+        return { ...allowDecision, decisionReason: { type: "rule", rule: "allow", behavior: "allow" } };
+      }
+    }
+
+    // Step 9: plan 模式（代码级强制只读，计划文件例外）
+    if (this.config.permissionMode === "plan") {
+      return this.checkPlanMode(req, filePath, resource);
+    }
+
+    // Step 10: 读操作自动放行
+    if (READ_ONLY_TOOLS.has(req.toolName)) {
+      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(只读工具)`);
+      return { allowed: true };
+    }
+
+    // Step 11: acceptEdits 模式（自动接受文件操作，其他仍需检查）
+    if (this.config.permissionMode === "acceptEdits") {
+      if (FILE_TOOLS.has(req.toolName)) {
+        log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(acceptEdits模式)`);
+        return { allowed: true, decisionReason: { type: "mode", mode: "acceptEdits" } };
+      }
+    }
+
+    // Step 12: 预授权工具放行
+    if (this.preApproved.has(req.toolName)) {
+      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(预授权)`);
+      return { allowed: true };
+    }
+
+    // Step 13: deny-write 模式
+    if (this.config.permissionMode === "deny-write") {
+      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(deny-write模式)`);
+      return {
+        allowed: false,
+        reason: "deny-write 模式下不允许写操作",
+        decisionReason: { type: "mode", mode: "deny-write" },
+      };
+    }
+
+    // Step 14: passthrough → ask（默认需要用户确认）
+    log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 需确认(默认策略)`);
+    return {
+      allowed: false,
+      needsConfirmation: true,
+      reason: `工具 "${req.toolName}" 需要用户确认`,
+    };
+  }
+
+  /**
+   * 阶段 2：后处理（含副作用：会话记忆、denial tracking、模式后处理）
+   * 这是对外暴露的 check() 方法
+   */
+  async check(req: PermissionRequest, tool?: Tool, toolContext?: ToolUseContext): Promise<Decision> {
+    const log = getLogger();
+    const resource = (req.input as any)?.file_path || (req.input as any)?.command || "";
 
     // 跳过权限检查模式
     if (this.config.skipPermissions || this.config.yesMode) {
@@ -160,306 +432,261 @@ export class PermissionChecker implements Checker {
       return { allowed: true };
     }
 
-    // 第 0 层：会话记忆检查（最高优先级）
+    // 会话记忆快速路径
     const memKey = this.getMemoryKey(req);
     if (this.sessionMemory.has(memKey)) {
       const allowed = this.sessionMemory.get(memKey)!;
       log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → ${allowed ? "允许" : "拒绝"}(会话记忆)`);
+      return { allowed, decisionReason: { type: "sessionMemory" } };
+    }
+
+    // 运行阶段 1 内部检查
+    const result = await this.hasPermissionsInner(req, tool, toolContext);
+
+    // allow → 重置 denial tracking
+    if (result.allowed) {
+      this.denialTracking = recordSuccess(this.denialTracking);
       this.auditLogger.log({
         timestamp: new Date().toISOString(),
         type: "tool_use",
         tool: req.toolName,
         resource,
-        decision: allowed ? "allow" : "deny",
-        reason: "会话记忆",
+        decision: "allow",
+        reason: result.reason,
+        decisionReason: result.decisionReason,
       });
-      return { allowed };
+      return result;
     }
 
-    // 第 1 层：危险命令拦截（25 种模式 + 复合命令拆分 + 重定向检测）
-    if (req.toolName === "bash") {
-      const cmd = (req.input as any)?.command || "";
+    // deny（非 ask）→ 记录 denial tracking
+    if (!result.needsConfirmation) {
+      this.denialTracking = recordDenial(this.denialTracking, req.toolName, result.reason || "");
+      this.auditLogger.log({
+        timestamp: new Date().toISOString(),
+        type: "tool_use",
+        tool: req.toolName,
+        resource,
+        decision: "deny",
+        reason: result.reason,
+        decisionReason: result.decisionReason,
+      });
+      return result;
+    }
 
-      // 1a. 先对整条命令检查跨管道的危险模式（这些模式包含 | 符号）
-      const pipelinePatterns = DANGEROUS_PATTERNS.filter(dp =>
-        dp.pattern.source.includes("\\|") || dp.name.includes("管道") || dp.name.includes("解码执行") || dp.name.includes("下载并执行")
-      );
-      for (const dp of pipelinePatterns) {
-        if (dp.pattern.test(cmd)) {
-          log.info("PERMISSION", `${req.toolName}(${cmd.slice(0, 80)}) → ${dp.severity === "critical" ? "拒绝" : "需确认"}(危险命令: ${dp.name})`);
-          this.auditLogger.log({
-            timestamp: new Date().toISOString(),
-            type: "tool_use",
-            tool: req.toolName,
-            resource: cmd.slice(0, 200),
-            decision: dp.severity === "critical" ? "deny" : "deny",
-            reason: `危险命令: ${dp.name}`,
-            severity: dp.severity,
-          });
+    // ask → 模式后处理
 
+    // dontAsk 模式：ask → deny（绝不弹窗，对齐 Claude Code 语义）
+    if (this.config.permissionMode === "dontAsk") {
+      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(dontAsk模式下ask→deny)`);
+      this.denialTracking = recordDenial(this.denialTracking, req.toolName, result.reason || "");
+      const dontAskDecision: Decision = {
+        allowed: false,
+        reason: `dontAsk 模式下自动拒绝: ${result.reason}`,
+        decisionReason: { type: "mode", mode: "dontAsk" },
+      };
+      this.auditLogger.log({
+        timestamp: new Date().toISOString(),
+        type: "tool_use",
+        tool: req.toolName,
+        resource,
+        decision: "deny",
+        reason: dontAskDecision.reason,
+        decisionReason: dontAskDecision.decisionReason,
+      });
+      return dontAskDecision;
+    }
+
+    // 非交互模式：ask → deny
+    if (this.isNonInteractive()) {
+      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(非交互模式)`);
+      this.denialTracking = recordDenial(this.denialTracking, req.toolName, result.reason || "");
+      const nonInteractiveDecision: Decision = {
+        allowed: false,
+        reason: `非交互模式下自动拒绝: ${result.reason}`,
+        decisionReason: { type: "other", reason: "非交互模式" },
+      };
+      this.auditLogger.log({
+        timestamp: new Date().toISOString(),
+        type: "tool_use",
+        tool: req.toolName,
+        resource,
+        decision: "deny",
+        reason: nonInteractiveDecision.reason,
+        decisionReason: nonInteractiveDecision.decisionReason,
+      });
+      return nonInteractiveDecision;
+    }
+
+    // denial tracking 熔断检查
+    if (shouldFuse(this.denialTracking)) {
+      log.warn("PERMISSION", `连续 ${this.denialTracking.consecutiveDenials} 次被拒绝，触发熔断`);
+      const fuseDecision: Decision = {
+        allowed: false,
+        reason: `连续 ${this.denialTracking.consecutiveDenials} 次被拒绝，请换一种方式完成任务`,
+        metadata: { denialTrackingTriggered: true },
+        decisionReason: {
+          type: "denialTracking",
+          consecutiveDenials: this.denialTracking.consecutiveDenials,
+          totalDenials: this.denialTracking.totalDenials,
+        },
+      };
+      this.auditLogger.log({
+        timestamp: new Date().toISOString(),
+        type: "tool_use",
+        tool: req.toolName,
+        resource,
+        decision: "deny",
+        reason: fuseDecision.reason,
+        decisionReason: fuseDecision.decisionReason,
+      });
+      return fuseDecision;
+    }
+
+    return result;
+  }
+
+  /**
+   * safetyCheck：bypass-immune 的关键路径保护
+   * 即使在 always-allow 模式下也不可绕过
+   */
+  private safetyCheck(filePath: string): { safe: boolean; reason?: string; classifierApprovable: boolean } {
+    const resolved = path.resolve(filePath);
+    const basename = path.basename(resolved);
+    const relativePath = resolved; // 用绝对路径匹配
+
+    for (const sp of SAFETY_PROTECTED_PATHS) {
+      // 目录模式：检查路径是否包含该目录
+      if (sp.pattern.endsWith("/")) {
+        const dirName = sp.pattern.slice(0, -1); // 去掉尾部 /
+        if (relativePath.includes(`/${dirName}/`) || relativePath.includes(`${path.sep}${dirName}${path.sep}`)) {
+          return { safe: false, reason: sp.reason, classifierApprovable: sp.classifierApprovable };
+        }
+      } else {
+        // 文件模式：检查文件名
+        if (basename === sp.pattern || relativePath.endsWith(`/${sp.pattern}`)) {
+          return { safe: false, reason: sp.reason, classifierApprovable: sp.classifierApprovable };
+        }
+      }
+    }
+
+    return { safe: true, classifierApprovable: true };
+  }
+
+  /**
+   * 危险命令检查（从 check 中提取）
+   * 25 种模式 + 复合命令拆分 + 重定向检测
+   */
+  private checkDangerousCommand(req: PermissionRequest): Decision | null {
+    const log = getLogger();
+    const cmd = (req.input as any)?.command || "";
+
+    // 1a. 先对整条命令检查跨管道的危险模式
+    const pipelinePatterns = DANGEROUS_PATTERNS.filter(dp =>
+      dp.pattern.source.includes("\\|") || dp.name.includes("管道") || dp.name.includes("解码执行") || dp.name.includes("下载并执行")
+    );
+    for (const dp of pipelinePatterns) {
+      if (dp.pattern.test(cmd)) {
+        log.info("PERMISSION", `${req.toolName}(${cmd.slice(0, 80)}) → ${dp.severity === "critical" ? "拒绝" : "需确认"}(危险命令: ${dp.name})`);
+        if (dp.severity === "critical") {
+          return {
+            allowed: false,
+            reason: `[${dp.severity}] 危险命令被拦截 (${dp.name}): ${cmd.slice(0, 80)}`,
+            decisionReason: { type: "dangerousCommand", pattern: dp.name, severity: dp.severity },
+          };
+        }
+        return {
+          allowed: false,
+          reason: `[${dp.severity}] 危险命令需要确认 (${dp.name}): ${cmd.slice(0, 80)}`,
+          needsConfirmation: true,
+          decisionReason: { type: "dangerousCommand", pattern: dp.name, severity: dp.severity },
+        };
+      }
+    }
+
+    // 1b. 拆分复合命令，对每个子命令检查其他危险模式
+    const subCommands = splitCompoundCommand(cmd);
+    const nonPipelinePatterns = DANGEROUS_PATTERNS.filter(dp => !pipelinePatterns.includes(dp));
+    for (const subCmd of subCommands) {
+      for (const dp of nonPipelinePatterns) {
+        if (dp.pattern.test(subCmd)) {
+          log.info("PERMISSION", `${req.toolName}(${subCmd.slice(0, 80)}) → ${dp.severity === "critical" ? "拒绝" : "需确认"}(危险命令: ${dp.name})`);
           if (dp.severity === "critical") {
             return {
               allowed: false,
-              reason: `[${dp.severity}] 危险命令被拦截 (${dp.name}): ${cmd.slice(0, 80)}`,
+              reason: `[${dp.severity}] 危险命令被拦截 (${dp.name}): ${subCmd.slice(0, 80)}`,
+              decisionReason: { type: "dangerousCommand", pattern: dp.name, severity: dp.severity },
             };
           }
-
           return {
             allowed: false,
-            reason: `[${dp.severity}] 危险命令需要确认 (${dp.name}): ${cmd.slice(0, 80)}`,
+            reason: `[${dp.severity}] 危险命令需要确认 (${dp.name}): ${subCmd.slice(0, 80)}`,
             needsConfirmation: true,
+            decisionReason: { type: "dangerousCommand", pattern: dp.name, severity: dp.severity },
           };
         }
       }
-
-      // 1b. 拆分复合命令，对每个子命令检查其他危险模式
-      const subCommands = splitCompoundCommand(cmd);
-      const nonPipelinePatterns = DANGEROUS_PATTERNS.filter(dp =>
-        !pipelinePatterns.includes(dp)
-      );
-      for (const subCmd of subCommands) {
-        for (const dp of nonPipelinePatterns) {
-          if (dp.pattern.test(subCmd)) {
-            log.info("PERMISSION", `${req.toolName}(${subCmd.slice(0, 80)}) → ${dp.severity === "critical" ? "拒绝" : "需确认"}(危险命令: ${dp.name})`);
-            this.auditLogger.log({
-              timestamp: new Date().toISOString(),
-              type: "tool_use",
-              tool: req.toolName,
-              resource: cmd.slice(0, 200),
-              decision: dp.severity === "critical" ? "deny" : "deny",
-              reason: `危险命令: ${dp.name} (子命令: ${subCmd.slice(0, 80)})`,
-              severity: dp.severity,
-            });
-
-            if (dp.severity === "critical") {
-              return {
-                allowed: false,
-                reason: `[${dp.severity}] 危险命令被拦截 (${dp.name}): ${subCmd.slice(0, 80)}`,
-              };
-            }
-
-            return {
-              allowed: false,
-              reason: `[${dp.severity}] 危险命令需要确认 (${dp.name}): ${subCmd.slice(0, 80)}`,
-              needsConfirmation: true,
-            };
-          }
-        }
-      }
-
-      // 1c. 重定向检测：检查是否重定向到敏感路径
-      const redirectCheck = hasSensitiveRedirection(cmd);
-      if (redirectCheck.sensitive) {
-        log.info("PERMISSION", `${req.toolName}(${cmd.slice(0, 80)}) → 需确认(敏感路径重定向: ${redirectCheck.targets.join(", ")})`);
-        this.auditLogger.log({
-          timestamp: new Date().toISOString(),
-          type: "tool_use",
-          tool: req.toolName,
-          resource: cmd.slice(0, 200),
-          decision: "deny",
-          reason: `重定向到敏感路径: ${redirectCheck.targets.join(", ")}`,
-          severity: "high",
-        });
-        return {
-          allowed: false,
-          reason: `重定向到敏感路径需要确认: ${redirectCheck.targets.join(", ")}`,
-          needsConfirmation: true,
-        };
-      }
     }
 
-    // 第 2 层：禁用工具检查
-    if (this.config.disallowedTools.includes(req.toolName)) {
-      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(工具已禁用)`);
-      this.auditLogger.log({
-        timestamp: new Date().toISOString(),
-        type: "tool_use",
-        tool: req.toolName,
-        resource,
-        decision: "deny",
-        reason: "工具已被禁用",
-      });
+    // 1c. 重定向检测
+    const redirectCheck = hasSensitiveRedirection(cmd);
+    if (redirectCheck.sensitive) {
+      log.info("PERMISSION", `${req.toolName}(${cmd.slice(0, 80)}) → 需确认(敏感路径重定向: ${redirectCheck.targets.join(", ")})`);
       return {
         allowed: false,
-        reason: `工具 "${req.toolName}" 已被禁用`,
+        reason: `重定向到敏感路径需要确认: ${redirectCheck.targets.join(", ")}`,
+        needsConfirmation: true,
       };
     }
 
-    // 第 3 层：统一路径验证（目录黑白名单 + symlink 解析 + 工作区边界 + 系统目录 + 敏感文件）
-    if (filePath && FILE_TOOLS.has(req.toolName)) {
-      const operation = WRITE_TOOLS.has(req.toolName) ? "write" as const : "read" as const;
-      const pathResult = this.pathValidator.validateAccess(filePath, operation);
-      if (!pathResult.allowed) {
-        log.info("PERMISSION", `${req.toolName}(${filePath.slice(0, 80)}) → ${pathResult.needsConfirmation ? "需确认" : "拒绝"}(路径验证: ${pathResult.reason})`);
-        this.auditLogger.log({
-          timestamp: new Date().toISOString(),
-          type: "tool_use",
-          tool: req.toolName,
-          resource: pathResult.resolvedPath,
-          decision: "deny",
-          reason: pathResult.reason,
-          severity: pathResult.needsConfirmation ? "high" : "critical",
-        });
-        return {
-          allowed: false,
-          reason: pathResult.reason,
-          needsConfirmation: pathResult.needsConfirmation,
-        };
-      }
+    return null; // 无危险
+  }
+
+  /**
+   * Plan 模式检查（从 check 中提取）
+   * 支持 plan 继承 bypass：如果进入 plan 前是 always-allow，则 plan 模式下也自动放行
+   */
+  private checkPlanMode(req: PermissionRequest, filePath: string, resource: string): Decision {
+    const log = getLogger();
+
+    // plan 继承 bypass：如果 prePlanMode 是 always-allow，则自动放行（safetyCheck 已在上层拦截）
+    if (this.prePlanMode === "always-allow") {
+      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(plan继承always-allow)`);
+      return { allowed: true, decisionReason: { type: "mode", mode: "plan+bypass" } };
     }
 
-    // 第 6 层：权限规则检查（来自配置文件）
-    if (this.rules) {
-      const ruleDecision = checkRules(this.rules, req);
-      if (ruleDecision) {
-        log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → ${ruleDecision.allowed ? "允许" : "拒绝"}(规则匹配: ${ruleDecision.reason})`);
-        this.auditLogger.log({
-          timestamp: new Date().toISOString(),
-          type: "tool_use",
-          tool: req.toolName,
-          resource,
-          decision: ruleDecision.allowed ? "allow" : "deny",
-          reason: ruleDecision.reason,
-        });
-        return ruleDecision;
-      }
-    }
-
-    // 第 7 层：plan 模式（代码级强制只读，计划文件例外）
-    if (this.config.permissionMode === "plan") {
-      // 只读工具直接放行
-      if (READ_ONLY_TOOLS.has(req.toolName)) {
-        log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(plan模式+只读工具)`);
-        return { allowed: true };
-      }
-
-      // Plan Mode 专用工具放行
-      if (PLAN_MODE_EXTRA_TOOLS.has(req.toolName)) {
-        // sub_agent 只允许 explore 类型
-        if (req.toolName === "sub_agent") {
-          const subType = (req.input as any)?.type;
-          if (subType && subType !== "explore") {
-            log.info("PERMISSION", `${req.toolName}(type=${subType}) → 拒绝(plan模式只允许explore子代理)`);
-            return {
-              allowed: false,
-              reason: "计划模式下只允许 explore 类型的子代理",
-            };
-          }
-        }
-        log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(plan模式+专用工具)`);
-        return { allowed: true };
-      }
-
-      // 特殊处理：允许 write/edit 操作计划文件
-      if ((req.toolName === "write" || req.toolName === "edit") && filePath && this.planManager) {
-        if (this.planManager.isPlanFile(filePath)) {
-          log.info("PERMISSION", `${req.toolName}(${filePath.slice(0, 80)}) → 允许(plan模式+计划文件)`);
-          return { allowed: true };
-        }
-      }
-
-      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(plan模式)`);
-      this.auditLogger.log({
-        timestamp: new Date().toISOString(),
-        type: "tool_use",
-        tool: req.toolName,
-        resource,
-        decision: "deny",
-        reason: "plan 模式",
-      });
-      return {
-        allowed: false,
-        reason: "计划模式下只允许只读操作",
-      };
-    }
-
-    // 第 8 层：读操作自动放行
+    // 只读工具直接放行
     if (READ_ONLY_TOOLS.has(req.toolName)) {
-      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(只读工具)`);
+      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(plan模式+只读工具)`);
       return { allowed: true };
     }
 
-    // 第 9 层：acceptEdits 模式（自动接受文件操作，其他仍需检查）
-    if (this.config.permissionMode === "acceptEdits") {
-      if (FILE_TOOLS.has(req.toolName)) {
-        log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(acceptEdits模式)`);
-        return { allowed: true };
-      }
-    }
-
-    // 第 10 层：dontAsk 模式（智能自动决策）
-    if (this.config.permissionMode === "dontAsk") {
-      // 工作目录内文件写入放行
-      if (FILE_TOOLS.has(req.toolName) && filePath) {
-        const resolved = path.resolve(filePath);
-        const workspace = this.pathValidator.isWithinWorkspace(resolved);
-        if (workspace) {
-          log.info("PERMISSION", `${req.toolName}(${filePath.slice(0, 80)}) → 允许(dontAsk+工作目录)`);
-          return { allowed: true };
+    // Plan Mode 专用工具放行
+    if (PLAN_MODE_EXTRA_TOOLS.has(req.toolName)) {
+      if (req.toolName === "sub_agent") {
+        const subType = (req.input as any)?.type;
+        if (subType && subType !== "explore") {
+          log.info("PERMISSION", `${req.toolName}(type=${subType}) → 拒绝(plan模式只允许explore子代理)`);
+          return { allowed: false, reason: "计划模式下只允许 explore 类型的子代理" };
         }
       }
-      // 非危险的 bash 命令放行（危险操作已在第 1 层拦截）
-      if (req.toolName === "bash") {
-        log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(dontAsk+bash)`);
+      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(plan模式+专用工具)`);
+      return { allowed: true };
+    }
+
+    // 允许 write/edit 操作计划文件
+    if ((req.toolName === "write" || req.toolName === "edit") && filePath && this.planManager) {
+      if (this.planManager.isPlanFile(filePath)) {
+        log.info("PERMISSION", `${req.toolName}(${filePath.slice(0, 80)}) → 允许(plan模式+计划文件)`);
         return { allowed: true };
       }
     }
 
-    // 第 11 层：预授权工具放行
-    if (this.preApproved.has(req.toolName)) {
-      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(预授权)`);
-      return { allowed: true };
-    }
-
-    // 第 12 层：deny-write 模式
-    if (this.config.permissionMode === "deny-write") {
-      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(deny-write模式)`);
-      this.auditLogger.log({
-        timestamp: new Date().toISOString(),
-        type: "tool_use",
-        tool: req.toolName,
-        resource,
-        decision: "deny",
-        reason: "deny-write 模式",
-      });
-      return {
-        allowed: false,
-        reason: "deny-write 模式下不允许写操作",
-      };
-    }
-
-    // 第 13 层：always-allow 模式
-    if (this.config.permissionMode === "always-allow") {
-      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(always-allow模式)`);
-      return { allowed: true };
-    }
-
-    // 第 14 层：需要用户确认
-    log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 需确认(默认策略)`);
-    const decision: Decision = {
+    log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(plan模式)`);
+    return {
       allowed: false,
-      needsConfirmation: true,
-      reason: `工具 "${req.toolName}" 需要用户确认`,
+      reason: "计划模式下只允许只读操作",
+      decisionReason: { type: "mode", mode: "plan" },
     };
-
-    // 非交互模式处理：ASK_USER 自动转为 DENY
-    if (this.isNonInteractive() && decision.needsConfirmation) {
-      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(非交互模式)`);
-      this.auditLogger.log({
-        timestamp: new Date().toISOString(),
-        type: "tool_use",
-        tool: req.toolName,
-        resource,
-        decision: "deny",
-        reason: `非交互模式下自动拒绝: ${decision.reason}`,
-      });
-      return {
-        allowed: false,
-        reason: `非交互模式下自动拒绝: ${decision.reason}`,
-      };
-    }
-
-    return decision;
   }
 
   /** 检测是否处于非交互模式 */

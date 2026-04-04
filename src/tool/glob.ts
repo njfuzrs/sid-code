@@ -3,7 +3,7 @@
  * 对标 Claude Code：按修改时间降序排列，最近编辑的在前面
  */
 
-import type { Tool, ToolResult } from "./types.ts";
+import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
 import { glob } from "glob";
 import { statSync } from "fs";
 import { join } from "path";

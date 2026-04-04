@@ -12,6 +12,7 @@ import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { getLogger } from "../debug/logger.ts";
 import type { HookSystem } from "../hook/system.ts";
 import { LoopDetector, LOOP_RECOVERY_PROMPT } from "./loop-detection.ts";
+import { filterToolsForAgent } from "./tool-filter.ts";
 
 /** 子代理类型 */
 export type SubAgentType = "explore" | "task" | "summarize" | "plan";
@@ -64,14 +65,6 @@ const SYSTEM_PROMPTS: Record<SubAgentType, string> = {
 - 使用 grep、glob、read 工具搜索和阅读代码
 - 输出包含：问题分析、方案设计、涉及文件、实现步骤
 - 不要修改任何文件，保持输出简洁可操作`,
-};
-
-/** 子代理工具白名单：null 表示不需要工具 */
-const ALLOWED_TOOLS: Record<SubAgentType, string[] | null> = {
-  explore: ["read", "grep", "glob"],
-  task: ["read", "write", "edit", "bash", "grep", "glob"],
-  plan: ["read", "grep", "glob"],
-  summarize: null,
 };
 
 /** 自定义子代理任务（Skills/Agents 用） */
@@ -220,17 +213,22 @@ export class SubAgent {
         content: [{ type: "text", text: task.prompt }],
       });
 
-      const allowedNames = ALLOWED_TOOLS[task.type];
-      const tools = allowedNames
-        ? (task.tools ?? this.toolRegistry).filter(allowedNames)
-        : new ToolRegistry();
+      const sourceRegistry = task.tools ?? this.toolRegistry;
+      const allTools = sourceRegistry.all();
+      const filteredTools = filterToolsForAgent(allTools, {
+        isBuiltIn: true,
+        builtInType: task.type,
+      });
+      const tools = new ToolRegistry();
+      for (const t of filteredTools) tools.register(t);
       const maxTurns = task.maxTurns ?? 10;
       const totalUsage: Usage = { inputTokens: 0, outputTokens: 0 };
       let turns = 0;
       let lastTextOutput = "";
       const loopDetector = new LoopDetector();
 
-      log.info("SUBAGENT", `[${task.type}] 可用工具: ${allowedNames?.join(", ") ?? "无"}, 超时: ${timeout / 1000}秒, 最大轮次: ${maxTurns}`);
+      const toolNames = filteredTools.map(t => t.name());
+      log.info("SUBAGENT", `[${task.type}] 可用工具: ${toolNames.join(", ") || "无"}, 超时: ${timeout / 1000}秒, 最大轮次: ${maxTurns}`);
 
       while (turns < maxTurns) {
         turns++;

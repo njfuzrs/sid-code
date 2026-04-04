@@ -1262,4 +1262,10 @@ export async function registerBuiltins(registry: import("./registry.ts").Registr
   // 主题切换命令
   const { ThemeCommand } = await import("./theme.ts");
   registry.register(new ThemeCommand());
+
+  // 权限管理命令
+  const { AllowCommand, DenyCommand, PermissionsCommand } = await import("./permissions.ts");
+  registry.register(new AllowCommand());
+  registry.register(new DenyCommand());
+  registry.register(new PermissionsCommand());
 }

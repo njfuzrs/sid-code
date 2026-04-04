@@ -5,7 +5,7 @@
  * 要求：必须先用 Read 工具读取文件后才能编辑（先读后改）
  */
 
-import type { Tool, ToolResult } from "./types.ts";
+import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
 import type { FileReadTracker } from "./file-read-tracker.ts";
 import { getLogger } from "../debug/logger.ts";
 import { detectOmissionPlaceholders } from "./omission-detector.ts";
@@ -266,6 +266,32 @@ function tryFuzzyMatch(
   };
 }
 
+// ─── 引号规范化 ─────────────────────────────────────────────────────────────
+
+/** 将弯引号规范化为直引号（LLM 常见行为） */
+function normalizeQuotes(str: string): string {
+  return str
+    .replace(/[\u201C\u201D]/g, '"')   // "" → "
+    .replace(/[\u2018\u2019]/g, "'")   // '' → '
+    .replace(/\u2014/g, "--")          // — → --
+    .replace(/\u2013/g, "-")           // – → -
+    .replace(/\u2026/g, "...");        // … → ...
+}
+
+// ─── 设置文件保护 ─────────────────────────────────────────────────────────────
+
+/** 受保护的设置文件模式 */
+const PROTECTED_SETTINGS_PATTERNS = [
+  /\.sid-code\/settings\.json$/,
+  /\.sid-code\/config\.json$/,
+  /\.claude\/settings\.json$/,
+];
+
+/** 检查是否为受保护的设置文件 */
+function isProtectedSettingsFile(filePath: string): boolean {
+  return PROTECTED_SETTINGS_PATTERNS.some(p => p.test(filePath));
+}
+
 // ─── 主替换函数 ───────────────────────────────────────────────────────────────
 
 function calculateReplacement(
@@ -281,6 +307,23 @@ function calculateReplacement(
 
   const exact = tryExactMatch(normalizedContent, normalizedSearch, normalizedReplace, replaceAll);
   if (exact) return exact;
+
+  // 引号规范化后重试精确匹配（LLM 常将直引号替换为弯引号）
+  const quotedSearch = normalizeQuotes(normalizedSearch);
+  const quotedContent = normalizeQuotes(normalizedContent);
+  if (quotedSearch !== normalizedSearch || quotedContent !== normalizedContent) {
+    const quotedExact = tryExactMatch(quotedContent, quotedSearch, normalizedReplace, replaceAll);
+    if (quotedExact) {
+      // 在原始内容上用规范化后的匹配位置做替换
+      const origExact = tryExactMatch(normalizedContent, normalizedContent.slice(
+        quotedContent.indexOf(quotedSearch),
+        quotedContent.indexOf(quotedSearch) + quotedSearch.length,
+      ), normalizedReplace, replaceAll);
+      if (origExact && origExact.occurrences > 0) return origExact;
+      // 回退：直接在规范化内容上替换
+      return quotedExact;
+    }
+  }
 
   const flexible = tryFlexibleMatch(normalizedContent, normalizedSearch, normalizedReplace, replaceAll);
   if (flexible) return flexible;
@@ -359,6 +402,14 @@ export class EditTool implements Tool {
     }
 
     log.info("TOOL", `▶ 编辑 ${params.file_path}`);
+
+    // 设置文件保护：禁止编辑 sid-code 自身的配置文件
+    if (isProtectedSettingsFile(params.file_path)) {
+      return {
+        output: `错误: ${params.file_path} 是受保护的设置文件，不允许通过 edit 工具修改。请使用 /config 命令或手动编辑。`,
+        isError: true,
+      };
+    }
 
     // 先读后改校验
     if (this.tracker) {
