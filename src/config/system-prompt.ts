@@ -215,9 +215,18 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
     log.info("PROMPT", `附件: ${displayName}(${(attTokens / 1000).toFixed(1)}K tok, priority=${att.priority})`);
   }
 
-  // 4. 拼接所有部分
-  const allParts = [...coreParts, ...attachments.map((a) => a.content)];
-  let content = allParts.join("\n\n");
+  // 4. 拼接所有部分（静态区 + DYNAMIC_BOUNDARY + 动态区）
+  const staticContent = coreParts.join("\n\n");
+  const dynamicParts = attachments.map((a) => a.content);
+
+  // 插入 DYNAMIC_BOUNDARY 标记（提示 LLM provider 在此处设置 cache_control: ephemeral）
+  const DYNAMIC_BOUNDARY = "\n\n<!-- DYNAMIC_BOUNDARY -->\n\n";
+  let content: string;
+  if (dynamicParts.length > 0) {
+    content = staticContent + DYNAMIC_BOUNDARY + dynamicParts.join("\n\n");
+  } else {
+    content = staticContent;
+  }
 
   // 5. Token 估算和截断
   const maxTokens = ctx.maxTokens || 180000;

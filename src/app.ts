@@ -30,8 +30,7 @@ import { loadAllCLAUDEmd, watchCLAUDEmd, unwatchCLAUDEmd } from "./config/rules.
 import type { ProjectRules } from "./config/rules.ts";
 import { clearPromptCache } from "./config/system-prompt.ts";
 import { getLogger, getMemoryMonitor, getSessionMetrics } from "./debug/index.ts";
-import { AgentLoopRunner } from "./agent/loop.ts";
-import type { AgentLoopCallbacks } from "./agent/loop.ts";
+import { QueryEngine } from "./query/engine.ts";
 import { HookSystem } from "./hook/system.ts";
 import { JitContextManager } from "./config/jit-context.ts";
 import { isAbortError } from "./llm/errors.ts";
@@ -95,7 +94,7 @@ export class App {
   private tokenMeter?: TokenMeter;
   private budgetTracker?: BudgetTracker;
   private abortController: AbortController | null = null;
-  private loopRunner: AgentLoopRunner;
+  private queryEngine: QueryEngine;
   private hookSystem!: HookSystem;
   private jitContextMgr: JitContextManager;
   /** TelemetryHookProbe 引用（供 Harness 注册 enricher） */
@@ -181,8 +180,8 @@ export class App {
     this.hookSystem.setSessionId(sessionId);
     this.hookSystem.setCwd(process.cwd());
 
-    // 初始化统一循环 Runner
-    this.loopRunner = new AgentLoopRunner({
+    // 初始化 QueryEngine（两层架构：QueryEngine → queryLoop）
+    this.queryEngine = new QueryEngine({
       config: this.config,
       provider: this.provider,
       ctxMgr: this.ctxMgr,
@@ -212,103 +211,22 @@ export class App {
       .map(cmd => ({ name: cmd.name(), description: cmd.description() }));
   }
 
-  /**
-   * 处理上下文溢出错误，尝试自动缩小 max_tokens
-   * 返回调整后的 maxTokens，无法恢复时返回 null
-   */
-  private handleContextOverflow(err: any, _currentMaxTokens: number): number | null {
-    const msg = err.message || String(err);
-    // 匹配常见的上下文溢出错误格式
-    const overflowMatch = msg.match(/(\d+)\s*\+\s*(\d+)\s*>\s*(\d+)/);
-    if (!overflowMatch && !msg.toLowerCase().includes("context") && !msg.toLowerCase().includes("token")) {
-      return null; // 不是上下文溢出错误
-    }
-
-    let contextLimit = 200000; // 默认上下文窗口
-    let inputTokens = 0;
-
-    if (overflowMatch) {
-      inputTokens = parseInt(overflowMatch[1], 10);
-      contextLimit = parseInt(overflowMatch[3], 10);
-    } else {
-      // 用估算值
-      inputTokens = this.ctxMgr.estimateTokens(this.toolRegistry.size());
-    }
-
-    // 留 1000 token buffer
-    const available = Math.max(0, contextLimit - inputTokens - 1000);
-
-    // 至少需要 3000 tokens 输出空间，否则没意义
-    if (available < 3000) {
-      return null;
-    }
-
-    return available;
+  /** 处理上下文溢出错误，委托给 auto-compact 模块 */
+  private handleContextOverflow(err: any, currentMaxTokens: number): number | null {
+    const { handleContextOverflow: impl } = require("./query/auto-compact.ts");
+    return impl(err, currentMaxTokens, this.ctxMgr, this.toolRegistry.size());
   }
 
-  /**
-   * 自动压缩：上下文接近上限时，用 LLM 生成摘要并压缩消息历史
-   * 如果 LLM 不可用，则使用简单截断策略
-   */
+  /** 自动压缩，委托给 auto-compact 模块 */
   private async autoCompact(): Promise<void> {
-    const log = getLogger();
-    const messages = this.ctxMgr.getMessages();
-
-    if (messages.length <= 4) {
-      log.debug("AGENT", "消息太少，跳过压缩");
-      return;
-    }
-
-    // pre_compact hook（blocking 时可阻止压缩）
-    const preCompactResult = await this.hookSystem.firePreCompactEvent("auto");
-    if (preCompactResult.finalOutput?.isBlockingDecision()) {
-      log.info("HOOK", `压缩被 hook 阻止: ${preCompactResult.finalOutput.getEffectiveReason()}`);
-      return;
-    }
-
-    try {
-      // 尝试用 LLM 生成摘要
-      const toSummarize = messages.slice(0, -4);
-      const summaryPrompt = `请用中文简洁地总结以下对话内容，保留关键信息（文件路径、代码修改、决策、待办事项）：\n\n${
-        toSummarize.map(m => {
-          const texts = m.content
-            .filter(b => b.type === "text")
-            .map(b => b.type === "text" ? b.text : "")
-            .join("\n");
-          return `[${m.role}] ${texts.slice(0, 500)}`;
-        }).join("\n\n")
-      }`;
-
-      const stream = this.provider.sendMessageStream(
-        {
-          model: this.config.model,
-          messages: [{ role: "user", content: [{ type: "text", text: summaryPrompt }] }],
-          system: "你是一个对话摘要助手。请简洁准确地总结对话内容。",
-          maxTokens: 2000,
-        },
-        this.abortController?.signal,
-      );
-
-      let summary = "";
-      for await (const event of stream) {
-        if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
-          summary += event.delta.text;
-        }
-      }
-
-      if (summary) {
-        this.ctxMgr.compactWithSummary(summary);
-        log.info("AGENT", `自动压缩完成，摘要 ${summary.length} 字符，剩余 ${this.ctxMgr.messageCount()} 条消息`);
-        return;
-      }
-    } catch (err: any) {
-      log.warn("AGENT", `LLM 摘要失败，使用简单截断: ${err.message}`);
-    }
-
-    // 降级：简单截断（保留最近消息，丢弃旧消息）
-    const simpleSummary = `[自动截断] 之前有 ${messages.length - 4} 条消息被截断以释放上下文空间。`;
-    this.ctxMgr.compactWithSummary(simpleSummary);
-    log.info("AGENT", `简单截断完成，剩余 ${this.ctxMgr.messageCount()} 条消息`);
+    const { autoCompact: impl } = await import("./query/auto-compact.ts");
+    return impl({
+      provider: this.provider,
+      config: this.config,
+      ctxMgr: this.ctxMgr,
+      hookSystem: this.hookSystem,
+      getAbortSignal: () => this.abortController?.signal,
+    });
   }
 
   /** 初始化：加载系统提示词 */
@@ -326,59 +244,16 @@ export class App {
     let systemPrompt = this.config.systemPrompt;
 
     if (!systemPrompt) {
-      // 加载并解析 CLAUDE.md 规则（全局 + 项目合并）
+      // 加载并解析 CLAUDE.md 规则
       const projectRules = await loadAllCLAUDEmd(process.cwd());
       if (projectRules) {
-        log.debug("APP", `加载 CLAUDE.md 规则 (${projectRules.rawContent.length} 字符, 来源: ${projectRules.sourcePath})`);
-
-        // 应用结构化规则到配置（CLAUDE.md 中的规则覆盖默认配置）
+        log.debug("APP", `加载 CLAUDE.md 规则 (${projectRules.rawContent.length} 字符)`);
         this.applyProjectRules(projectRules);
       }
 
-      // 从文件加载系统提示词
-      let filePrompt: string | undefined;
-      if (this.config.systemPromptFile) {
-        try {
-          const content = await Bun.file(this.config.systemPromptFile).text();
-          filePrompt = content;
-          log.debug("APP", `加载系统提示词文件: ${this.config.systemPromptFile}`);
-        } catch (err) {
-          log.error("APP", `加载系统提示词文件失败: ${err}`);
-        }
-      }
-
-      // 加载记忆（全局/项目双层）
-      let memorySummary: string | undefined;
-      try {
-        const { MemoryStore } = await import("./memory/store.ts");
-        const memStore = new MemoryStore(process.cwd());
-        memorySummary = await memStore.generateSummary() || undefined;
-        if (memorySummary) {
-          log.debug("APP", `加载记忆摘要 (${memorySummary.length} 字符)`);
-        }
-      } catch (err) {
-        log.warn("APP", `加载记忆失败: ${err}`);
-      }
-
-      // 使用增强的系统提示词构建模块（动态附件 + 优先级 + 缓存）
-      const { buildSystemPrompt } = await import("./config/system-prompt.ts");
-      systemPrompt = buildSystemPrompt({
-        // 基础
-        tools: this.toolRegistry.all(),
-        projectRules: projectRules?.rawContent || undefined,
-        projectRulesPath: projectRules?.sourcePath,
-        appendPrompt: this.config.appendSystemPrompt || undefined,
-        filePrompt,
-
-        // 动态上下文
-        workingDir: process.cwd(),
-        permissionMode: this.config.permissionMode,
-        gitStatus: true,
-        memorySummary,
-
-        // 限制
-        maxTokens: 180000,
-      });
+      // 构建系统提示词（委托给 init-helpers）
+      const { buildInitialSystemPrompt } = await import("./query/init-helpers.ts");
+      systemPrompt = await buildInitialSystemPrompt(this.config, this.toolRegistry.all());
     }
 
     this.ctxMgr.setSystemPrompt(systemPrompt);
@@ -417,78 +292,25 @@ export class App {
       }
     });
 
-    // 轨迹采集初始化（默认启用）
-    if (this.config.trace?.enabled) {
-      try {
-        const { TraceCollector } = await import("./trace/collector.ts");
-        const traceConfig = this.config.trace;
-        let uploader: import("./trace/collector.ts").TraceUploaderInterface | null = null;
-
-        if (traceConfig.upload?.url && traceConfig.upload?.token) {
-          const { UploadManager } = await import("./trace/uploader.ts");
-          const uploadMgr = new UploadManager({
-            baseUrl: traceConfig.upload.url,
-            token: traceConfig.upload.token,
-            toolSource: traceConfig.upload.toolSource ?? "sid-code",
-            userId: traceConfig.upload.userId,
-            deviceId: traceConfig.upload.deviceId,
-            maxRetries: traceConfig.upload.maxRetries ?? 5,
-            retryBaseMs: traceConfig.upload.retryBaseMs ?? 2000,
-            compress: traceConfig.upload.compress ?? true,
-            outputDir: traceConfig.outputDir,
-          });
-          uploadMgr.startHealthCheck(traceConfig.upload.healthCheckIntervalMs ?? 60_000);
-          uploader = uploadMgr;
-          log.info("TRACE", `上传已启用: ${traceConfig.upload.url}`);
-        }
-
-        const collector = new TraceCollector(
-          { outputDir: traceConfig.outputDir, maxSessionsRetained: traceConfig.maxSessionsRetained },
-          uploader,
-        );
-        collector.registerHooks(this.hookSystem);
-        log.info("TRACE", "轨迹采集已启用");
-      } catch (err: any) {
-        log.warn("TRACE", `轨迹采集初始化失败: ${err.message}`);
-      }
-    }
+    // 轨迹采集初始化（委托给 init-helpers）
+    const { initTraceCollector, initTelemetrySystem } = await import("./query/init-helpers.ts");
+    await initTraceCollector(this.config, this.hookSystem);
 
     // session_start hook（非阻塞）
     this.hookSystem.fireSessionStartEvent("startup", { model: this.config.model })
       .catch(err => log.error("HOOK", `session_start hook 失败: ${err.message}`));
 
-    // 遥测系统初始化（独立于轨迹采集）
-    try {
-      const { initTelemetry, getTelemetryBus } = await import("./telemetry/index.ts");
-      const telemetryConfig = this.config.telemetry;
-      if (telemetryConfig?.enabled) {
-        initTelemetry(telemetryConfig);
-        // 用启用后的 bus 重建 TokenMeter
-        this.tokenMeter = new TokenMeter(
-          getTelemetryBus(),
-          (model, usage) => this.sessionState.calculateCost(model, usage),
-        );
-        // 同步到 loopRunner
-        (this.loopRunner as any).deps.tokenMeter = this.tokenMeter;
-        log.info("TELEMETRY", `遥测已启用，导出器: ${telemetryConfig.exporters?.map((e: any) => e.type).join(", ") ?? "无"}`);
-
-        // TelemetryHookProbe：通过 Hook 事件驱动 span 创建（与 loop.ts 中的旧代码并行运行）
-        const { TelemetryHookProbe } = await import("./telemetry/hook-probe.ts");
-        const probe = new TelemetryHookProbe(getTelemetryBus(), this.tokenMeter, {
-          model: this.config.model,
-          provider: this.config.provider,
-          sessionId: this.sessionState.sessionId,
-        });
-        probe.registerHooks(this.hookSystem);
-        this.telemetryProbe = probe;
-        log.info("TELEMETRY", "TelemetryHookProbe 已注册");
-      }
-    } catch (err: any) {
-      log.warn("TELEMETRY", `遥测初始化失败: ${err.message}`);
+    // 遥测系统初始化（委托给 init-helpers）
+    const telemetryResult = await initTelemetrySystem(
+      this.config, this.hookSystem, this.sessionState, this.tokenMeter,
+    );
+    if (telemetryResult.tokenMeter) {
+      this.tokenMeter = telemetryResult.tokenMeter;
+      this.queryEngine.updateTokenMeter(this.tokenMeter);
     }
-
-    // SessionMetrics Hook 注册（与 loop.ts 中的旧直接调用并行运行）
-    getSessionMetrics().registerHooks(this.hookSystem);
+    if (telemetryResult.telemetryProbe) {
+      this.telemetryProbe = telemetryResult.telemetryProbe;
+    }
   }
 
   /**
@@ -611,140 +433,15 @@ export class App {
     }
   }
 
-  /** 处理流式响应，累积内容块（含心跳检测） */
+  /** 处理流式响应，委托给 stream-processor */
   async processStream(
     stream: AsyncIterable<StreamEvent>,
     onText?: (text: string) => void,
   ): Promise<AccumulatedResponse> {
-    const log = getLogger();
-    const response: AccumulatedResponse = {
-      role: "assistant",
-      content: [],
-      stopReason: null,
-      usage: { inputTokens: 0, outputTokens: 0 },
-    };
-
-    // 用于累积工具调用的 JSON 分片
-    const jsonAccumulators = new Map<number, string>();
-    // 用于收集 thinking blocks（轨迹采集用）
-    const thinkingBlocks: unknown[] = [];
-    // 记录哪些 index 是 thinking 块（用于在 content_block_stop 时收集完整文本）
-    const thinkingIndexes = new Set<number>();
-
-    // 心跳检测：30 秒无数据则认为流挂死
-    const HEARTBEAT_TIMEOUT = 30_000;
-    const HEARTBEAT_CHECK_INTERVAL = 5_000;
-    let lastActivityTime = Date.now();
-    let heartbeatError: Error | null = null;
-
-    const heartbeatTimer = setInterval(() => {
-      if (Date.now() - lastActivityTime > HEARTBEAT_TIMEOUT) {
-        heartbeatError = new Error("Stream heartbeat timeout: 30 秒无数据");
-        log.warn("STREAM", "心跳超时，30 秒未收到任何事件");
-        // 通过 abort 中断流
-        this.abortController?.abort();
-      }
-    }, HEARTBEAT_CHECK_INTERVAL);
-
-    try {
-    for await (const event of stream) {
-      lastActivityTime = Date.now();
-      switch (event.type) {
-        case "message_start":
-          response.usage.inputTokens += event.message.usage.inputTokens;
-          response.usage.outputTokens += event.message.usage.outputTokens;
-          break;
-
-        case "content_block_start":
-          if (event.content_block.type === "text") {
-            response.content[event.index] = { type: "text", text: "" };
-            // 标记 thinking 块的 index（Anthropic provider 通过 _raw_block 传递原始数据）
-            if (event._raw_block && (event._raw_block as any).type === "thinking") {
-              thinkingIndexes.add(event.index);
-            }
-          } else if (event.content_block.type === "tool_use") {
-            response.content[event.index] = {
-              type: "tool_use",
-              id: event.content_block.id,
-              name: event.content_block.name,
-              input: {},
-            };
-            jsonAccumulators.set(event.index, "");
-          }
-          break;
-
-        case "content_block_delta": {
-          const delta = event.delta;
-          if (delta.type === "text_delta") {
-            const block = response.content[event.index];
-            if (block?.type === "text") {
-              block.text += delta.text;
-              onText?.(delta.text);
-            }
-          } else if (delta.type === "input_json_delta") {
-            const acc = jsonAccumulators.get(event.index) ?? "";
-            jsonAccumulators.set(event.index, acc + delta.partial_json);
-          }
-          break;
-        }
-
-        case "content_block_stop": {
-          // 解析累积的 JSON
-          const jsonStr = jsonAccumulators.get(event.index);
-          if (jsonStr !== undefined) {
-            const block = response.content[event.index];
-            if (block?.type === "tool_use") {
-              try {
-                block.input = jsonStr ? JSON.parse(jsonStr) : {};
-              } catch {
-                block.input = {};
-              }
-            }
-            jsonAccumulators.delete(event.index);
-          }
-          // 收集 thinking 块完整文本（轨迹采集用）
-          if (thinkingIndexes.has(event.index)) {
-            const block = response.content[event.index];
-            if (block?.type === "text" && block.text) {
-              thinkingBlocks.push({ type: "thinking", thinking: block.text });
-            }
-            thinkingIndexes.delete(event.index);
-          }
-          break;
-        }
-
-        case "message_delta":
-          response.stopReason = event.delta.stop_reason;
-          response.usage.inputTokens += event.usage.inputTokens ?? 0;
-          response.usage.outputTokens += event.usage.outputTokens;
-          break;
-
-        case "error":
-          throw new Error(`LLM 错误: ${event.error.message}`);
-      }
-    }
-    } finally {
-      clearInterval(heartbeatTimer);
-    }
-
-    // 如果是心跳超时导致的中断，抛出心跳错误（触发重试）
-    if (heartbeatError) {
-      throw heartbeatError;
-    }
-
-    // 流结束日志：统计文本长度和工具调用数
-    const totalTextLen = response.content
-      .filter(b => b.type === "text")
-      .reduce((sum, b) => sum + (b.type === "text" ? b.text.length : 0), 0);
-    const toolCallCount = response.content.filter(b => b.type === "tool_use").length;
-    log.info("STREAM", `流结束: 文本${totalTextLen}字符, 工具调用${toolCallCount}个, stop=${response.stopReason}, in=${response.usage.inputTokens} out=${response.usage.outputTokens}`);
-
-    // 挂载 thinking blocks 到 response（轨迹采集用，不影响正常流程）
-    if (thinkingBlocks.length > 0) {
-      (response as any)._thinkingBlocks = thinkingBlocks;
-    }
-
-    return response;
+    const { processStream: processStreamImpl } = await import("./query/stream-processor.ts");
+    return processStreamImpl(stream, onText, {
+      getAbortController: () => this.abortController,
+    });
   }
 
   /** 设置 TUI 模式下的权限确认回调 */
@@ -775,170 +472,27 @@ export class App {
     return this.config.permissionMode === "always-allow";
   }
 
-  /** 执行工具调用（含权限检查，只读工具并行、写入工具串行） */
+  /** 执行工具调用，委托给 tool-executor */
   async executeTools(content: ContentBlock[]): Promise<ContentBlock[]> {
-    const log = getLogger();
-
-    // 提取所有 tool_use 块，保留原始顺序索引
-    const toolBlocks = content
-      .map((block, idx) => ({ block, idx }))
-      .filter((item): item is { block: ToolUseBlock; idx: number } => item.block.type === "tool_use");
-
-    if (toolBlocks.length === 0) return [];
-
-    // 收集本次工具调用会修改的文件路径（用于创建快照）
-    const affectedFiles = this.getAffectedFiles(toolBlocks.map(t => t.block));
-
-    // 在工具执行前统一创建快照
-    if (affectedFiles.length > 0) {
-      try {
-        const { getCheckpointManager } = await import("./checkpoint/manager.ts");
-        const cpMgr = await getCheckpointManager(
-          this.sessionState.sessionId,
-          this.config.checkpoint,
-        );
-        const toolNames = toolBlocks.map(t => t.block.name).join(", ");
-        const toolSummary = affectedFiles.join(", ");
-        await cpMgr.createSnapshot(affectedFiles, toolNames, toolSummary);
-      } catch (err: any) {
-        log.warn("CHECKPOINT", `创建快照失败: ${err.message}`);
-      }
-    }
-
-    // 权限预检：先对所有工具做权限检查，收集通过/拒绝结果
-    const checkedTools: { block: ToolUseBlock; tool: import("./tool/types.ts").Tool; idx: number }[] = [];
-    const rejectedResults: Map<number, ContentBlock> = new Map();
-
-    for (const { block, idx } of toolBlocks) {
-      const tool = this.toolRegistry.get(block.name);
-      if (!tool) {
-        log.error("TOOL", `工具未找到: ${block.name}`);
-        rejectedResults.set(idx, {
-          type: "tool_result",
-          tool_use_id: block.id,
-          content: `工具 "${block.name}" 未找到`,
-          is_error: true,
-        });
-        continue;
-      }
-
-      // 权限检查
-      if (this.permissionChecker) {
-        const permReq: import("./permission/types.ts").PermissionRequest = {
-          toolName: block.name,
-          input: block.input,
-          description: (block.input as any)?.description
-            ? `${block.name}: ${(block.input as any).description}`
-            : `${block.name}: ${JSON.stringify(block.input).slice(0, 120)}`,
-        };
-        const decision = await this.permissionChecker.check(permReq);
-
-        if (!decision.allowed) {
-          if (decision.needsConfirmation) {
-            const desc = decision.reason || `工具 "${block.name}" 需要用户确认`;
-            log.info("PERMISSION", `请求用户确认: ${desc}`);
-            const confirmed = await this.requestUserConfirmation(desc, permReq, block.name, block.input);
-            if (!confirmed) {
-              log.info("PERMISSION", `用户拒绝: ${block.name}`);
-              rejectedResults.set(idx, {
-                type: "tool_result",
-                tool_use_id: block.id,
-                content: `用户拒绝执行工具 "${block.name}"`,
-                is_error: true,
-              });
-              continue;
-            }
-            log.info("PERMISSION", `用户批准: ${block.name}`);
-          } else {
-            log.warn("PERMISSION", `权限拒绝: ${block.name} - ${decision.reason}`);
-            rejectedResults.set(idx, {
-              type: "tool_result",
-              tool_use_id: block.id,
-              content: `权限拒绝: ${decision.reason}`,
-              is_error: true,
-            });
-            continue;
-          }
-        }
-      }
-
-      checkedTools.push({ block, tool, idx });
-    }
-
-    // 分离只读和写入工具
-    const readOnlyTools = checkedTools.filter(({ tool }) => tool.readOnly?.() === true);
-    const writingTools = checkedTools.filter(({ tool }) => tool.readOnly?.() !== true);
-
-    log.debug("TOOL", `工具分类: 只读 ${readOnlyTools.length} 个并行执行, 写入 ${writingTools.length} 个串行执行`);
-
-    // 结果收集（按原始顺序索引存储）
-    const resultMap: Map<number, ContentBlock> = new Map(rejectedResults);
-
-    // 只读工具并行执行
-    if (readOnlyTools.length > 0) {
-      const readResults = await Promise.allSettled(
-        readOnlyTools.map(({ block, tool, idx }) => this.executeSingleTool(block, tool).then(r => ({ idx, result: r })))
-      );
-      // 检查是否有 abort 异常（优先抛出）
-      for (const r of readResults) {
-        if (r.status === "rejected" && isAbortError(r.reason)) {
-          throw r.reason;
-        }
-      }
-      for (const r of readResults) {
-        if (r.status === "fulfilled") {
-          resultMap.set(r.value.idx, r.value.result);
-        }
-      }
-    }
-
-    // 写入工具串行执行（abort 时提前退出）
-    for (const { block, tool, idx } of writingTools) {
-      const result = await this.executeSingleTool(block, tool);
-      resultMap.set(idx, result);
-    }
-
-    // 按原始顺序组装结果
-    const results: ContentBlock[] = [];
-    for (const { idx } of toolBlocks) {
-      const result = resultMap.get(idx);
-      if (result) results.push(result);
-    }
-
-    // Plan Mode 状态转换处理（使用 resultMap 避免索引错位）
-    await this.handlePlanModeTransitions(toolBlocks, resultMap);
-
-    // Plan Mode 系统提醒：在工具结果末尾附加提醒，防止 LLM 遗忘只读约束
-    if (this.planManager?.isPlanning() && results.length > 0) {
-      const { buildPlanModeReminder } = await import("./plan/prompt.ts");
-      const lastResult = results[results.length - 1];
-      if (lastResult.type === "tool_result" && typeof lastResult.content === "string") {
-        (lastResult as any).content = lastResult.content + "\n\n" + buildPlanModeReminder();
-      }
-    }
-
-    // JIT 上下文发现：检查工具访问的路径
-    await this.discoverJitContext(toolBlocks.map(t => t.block));
-
-    return results;
-  }
-
-  /** 根据工具类型提取受影响的文件路径 */
-  private getAffectedFiles(toolBlocks: ToolUseBlock[]): string[] {
-    const files: string[] = [];
-    for (const block of toolBlocks) {
-      switch (block.name) {
-        case "write":
-        case "edit":
-          if ((block.input as any)?.file_path) {
-            files.push((block.input as any).file_path);
-          }
-          break;
-        default:
-          break;
-      }
-    }
-    return files;
+    const { executeTools: executeToolsImpl } = await import("./query/tool-executor.ts");
+    return executeToolsImpl(content, {
+      config: this.config,
+      toolRegistry: this.toolRegistry,
+      sessionState: this.sessionState,
+      hookSystem: this.hookSystem,
+      permissionChecker: this.permissionChecker,
+      getAbortSignal: () => this.abortController?.signal,
+      requestUserConfirmation: (desc, permReq, toolName, toolInput) =>
+        this.requestUserConfirmation(desc, permReq, toolName, toolInput),
+      handlePlanModeTransitions: (toolBlocks, resultMap) =>
+        this.handlePlanModeTransitions(toolBlocks, resultMap),
+      getPlanModeReminder: async () => {
+        if (!this.planManager?.isPlanning()) return null;
+        const { buildPlanModeReminder } = await import("./plan/prompt.ts");
+        return buildPlanModeReminder();
+      },
+      discoverJitContext: (toolBlocks) => this.discoverJitContext(toolBlocks),
+    });
   }
 
   /**
@@ -1164,128 +718,25 @@ export class App {
     };
   }
 
-  /** 执行单个工具 */
-  private async executeSingleTool(block: ToolUseBlock, tool: import("./tool/types.ts").Tool): Promise<ContentBlock> {
-    const log = getLogger();
-
-    log.toolStart(block.name, block.input);
-
-    // pre_tool_use hook（blocking 时可阻止工具执行）
-    const preToolResult = await this.hookSystem.firePreToolUseEvent(
-      block.name,
-      block.input as Record<string, unknown>,
-      block.id,
-    );
-    if (preToolResult.finalOutput?.isBlockingDecision()) {
-      const reason = preToolResult.finalOutput.getEffectiveReason();
-      log.info("HOOK", `工具 ${block.name} 被 hook 阻止: ${reason}`);
-      return {
-        type: "tool_result",
-        tool_use_id: block.id,
-        content: `Hook 阻止执行: ${reason}`,
-        is_error: true,
-      };
-    }
-
-    // 检查 hook 是否修改了工具输入
-    let effectiveInput = block.input;
-    if (preToolResult.finalOutput && "getModifiedToolInput" in preToolResult.finalOutput) {
-      const modified = (preToolResult.finalOutput as any).getModifiedToolInput?.();
-      if (modified) {
-        log.info("HOOK", `工具 ${block.name} 输入被 hook 修改`);
-        effectiveInput = modified;
-      }
-    }
-
-    const startTime = Date.now();
-
-    try {
-      const result = await tool.execute(effectiveInput, this.abortController?.signal);
-      const elapsed = Date.now() - startTime;
-
-      // 记录工具耗时到 SessionState
-      this.sessionState.addToolDuration(elapsed);
-
-      // 截断超大输出，防止上下文爆炸
-      const truncatedOutput = ContextManager.truncateToolOutput(result.output);
-
-      log.toolEnd(block.name, result.output, !!result.isError, elapsed);
-
-      // post_tool_use hook（增强：additionalContext 追加到结果、continue=false 停止循环）
-      const postResult = await this.hookSystem.firePostToolUseEvent(
-        block.name,
-        block.input as Record<string, unknown>,
-        { output: truncatedOutput, isError: result.isError },
-        result.isError,
-        block.id,
-        { duration_ms: elapsed },
-      );
-
-      // additionalContext 追加到工具输出
-      let finalOutput = truncatedOutput;
-      const additionalCtx = postResult.finalOutput?.getAdditionalContext();
-      if (additionalCtx) {
-        log.info("HOOK", `PostToolUse hook 追加上下文到 ${block.name} 结果`);
-        finalOutput = truncatedOutput + "\n\n[Hook 附加上下文]\n" + additionalCtx;
-      }
-
-      return {
-        type: "tool_result",
-        tool_use_id: block.id,
-        content: finalOutput,
-        is_error: result.isError,
-      };
-    } catch (err: any) {
-      const elapsed = Date.now() - startTime;
-      // 异常时也记录工具耗时
-      this.sessionState.addToolDuration(elapsed);
-
-      // 用户取消：向上抛出，避免不完整的 tool_result 污染上下文
-      if (isAbortError(err)) {
-        log.info("TOOL", `工具 ${block.name} 被用户取消 (${elapsed}ms)`);
-        throw err;
-      }
-
-      log.error("TOOL", `执行异常: ${block.name} (${elapsed}ms)`, {
-        error: err.message,
-        stack: err.stack,
-      });
-
-      // post_tool_use_failure hook（非阻塞）
-      this.hookSystem.firePostToolUseFailureEvent(
-        block.name,
-        block.input as Record<string, unknown>,
-        err.message,
-        block.id,
-      ).catch(e => log.error("HOOK", `post_tool_use_failure hook 失败: ${e.message}`));
-
-      return {
-        type: "tool_result",
-        tool_use_id: block.id,
-        content: `工具执行异常: ${err.message}`,
-        is_error: true,
-      };
-    }
-  }
-
-  /** 无头模式：直接用 AgentLoopRunner + 最小回调，不依赖任何 renderer */
+  /** 无头模式：消费 QueryEngine async generator，不依赖任何 renderer */
   async runHeadless(input: string): Promise<string> {
     await this.init();
 
     let streamBuffer = "";
-    const callbacks: AgentLoopCallbacks = {
-      onStreamText: (text) => { streamBuffer += text; },
-      onToolStart: () => {},
-      onToolEnd: () => {},
-      onCompact: () => {},
-      onComplete: () => {},
-    };
+    this.queryEngine.setStreamTextCallback((text) => { streamBuffer += text; });
 
     this.abortController = new AbortController();
     try {
-      await this.loopRunner.run(input, callbacks);
+      for await (const event of this.queryEngine.submitMessage(input)) {
+        // 无头模式只关心 done 和 system 消息
+        if (event.kind === "done") break;
+        if (event.kind === "system" && event.level === "warning") {
+          streamBuffer += `\n⚠️ ${event.text}\n`;
+        }
+      }
     } finally {
       this.abortController = null;
+      this.queryEngine.setStreamTextCallback(null);
     }
 
     // 输出结果
@@ -1517,7 +968,7 @@ export class App {
       });
     });
 
-    // TUI 版本的 agentLoop（使用统一 Runner）
+    // TUI 版本的 agentLoop（消费 QueryEngine async generator）
     const tuiAgentLoop = async (userInput: string) => {
       updateState({
         isLoading: true,
@@ -1525,67 +976,74 @@ export class App {
 
       let streamSynced = false;
 
-      const tuiCallbacks: AgentLoopCallbacks = {
-        onUserMessageAdded: () => {
+      // 设置流式文本回调（桥接 processStream 内部的 onText）
+      this.queryEngine.setStreamTextCallback((text: string) => {
+        if (!streamSynced) {
+          streamSynced = true;
           syncDisplay();
-        },
-        onStreamText: (text) => {
-          // 状态驱动的流式输出
-          if (!streamSynced) {
-            streamSynced = true;
-            syncDisplay();
-            streamingFullText = "";
-          }
-          streamingFullText += text;
-          updateState({ streamingText: streamingFullText, isStreaming: true });
-        },
-        onToolStart: (name, input) => {
-          // 工具开始前，结束当前流式输出
           streamingFullText = "";
-          streamSynced = false;
-          syncDisplay({ toolName: name, toolInput: input ?? null, isToolExecuting: true, streamingText: "", isStreaming: false, streamingLine: "" });
-        },
-        onToolEnd: (name, result) => {
-          syncDisplay({
-            toolName: null,
-            toolInput: null,
-            isToolExecuting: false,
-            lastToolResult: result ? { toolName: name, isError: !!result.isError, elapsedMs: result.elapsedMs ?? 0 } : null,
-          });
-        },
-        onCompact: () => {
-          rebuildDisplay({ statusMessage: "上下文已自动压缩" });
-          // 3 秒后清除状态消息
-          setTimeout(() => updateState({ statusMessage: "" }), 3000);
-        },
-        onComplete: () => {
-          const ctxUsed = this.ctxMgr.estimateTokens(this.toolRegistry.size());
-          const ctxPct = Math.round((ctxUsed / 200000) * 100);
-          streamingFullText = "";
-          streamSynced = false;
-          syncDisplay({
-            usage: { ...this.sessionState.getTotalUsage() },
-            costUSD: this.sessionState.totalCostUSD,
-            contextPercent: ctxPct,
-            statusMessage: "",
-            streamingText: "",
-            isStreaming: false,
-            streamingLine: "",
-          });
-        },
-        onContextWarning: (remaining) => {
-          updateState({ statusMessage: `⚠ 上下文剩余 ${remaining.toFixed(0)}%，即将自动压缩` });
-        },
-        onMaxTurns: (max) => {
-          updateState({ statusMessage: `达到最大轮次限制: ${max}` });
-        },
-      };
+        }
+        streamingFullText += text;
+        updateState({ streamingText: streamingFullText, isStreaming: true });
+      });
 
       try {
-        await this.loopRunner.run(userInput, tuiCallbacks);
+        for await (const event of this.queryEngine.submitMessage(userInput)) {
+          switch (event.kind) {
+            case "user_message_added":
+              syncDisplay();
+              break;
+            case "tool_start":
+              // 工具开始前，结束当前流式输出
+              streamingFullText = "";
+              streamSynced = false;
+              syncDisplay({ toolName: event.toolName, toolInput: event.toolInput ?? null, isToolExecuting: true, streamingText: "", isStreaming: false, streamingLine: "" });
+              break;
+            case "tool_end":
+              syncDisplay({
+                toolName: null,
+                toolInput: null,
+                isToolExecuting: false,
+                lastToolResult: event.result ? { toolName: event.toolName, isError: !!event.result.isError, elapsedMs: event.result.elapsedMs ?? 0 } : null,
+              });
+              break;
+            case "compact":
+              rebuildDisplay({ statusMessage: "上下文已自动压缩" });
+              setTimeout(() => updateState({ statusMessage: "" }), 3000);
+              break;
+            case "context_warning":
+              updateState({ statusMessage: `⚠ 上下文剩余 ${event.remaining.toFixed(0)}%，即将自动压缩` });
+              break;
+            case "max_turns":
+              updateState({ statusMessage: `达到最大轮次限制: ${event.maxTurns}` });
+              break;
+            case "system":
+              if (event.level === "warning") {
+                updateState({ statusMessage: `⚠️ ${event.text}` });
+              }
+              break;
+            case "done": {
+              const ctxUsed = this.ctxMgr.estimateTokens(this.toolRegistry.size());
+              const ctxPct = Math.round((ctxUsed / 200000) * 100);
+              streamingFullText = "";
+              streamSynced = false;
+              syncDisplay({
+                usage: { ...this.sessionState.getTotalUsage() },
+                costUSD: this.sessionState.totalCostUSD,
+                contextPercent: ctxPct,
+                statusMessage: "",
+                streamingText: "",
+                isStreaming: false,
+                streamingLine: "",
+              });
+              break;
+            }
+          }
+        }
       } finally {
         // 兜底：确保异常路径也能正确清理
         streamingFullText = "";
+        this.queryEngine.setStreamTextCallback(null);
       }
 
       syncDisplay({
@@ -1659,7 +1117,7 @@ export class App {
             if (this.providerRegistry) {
               this.providerRegistry.clearCache();
               this.provider = this.providerRegistry.getProvider();
-              this.loopRunner.updateProvider(this.provider);
+              this.queryEngine.updateProvider(this.provider);
             }
             updateState({ model: m });
           },

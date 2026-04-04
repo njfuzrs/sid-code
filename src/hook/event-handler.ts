@@ -20,6 +20,7 @@ import {
   type PreCompactInput,
   type NotificationInput,
   type SubagentStartInput,
+  type StopInput,
   type AggregatedHookResult,
 } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -254,6 +255,15 @@ export class HookEventHandler {
       details,
     };
     return this.executeHooks(HookEventName.Notification, input);
+  }
+
+  /** Stop 事件：模型 end_turn 后执行检查 */
+  async fireStopEvent(assistantResponse: string): Promise<AggregatedHookResult> {
+    const input: StopInput = {
+      ...this.createBaseInput(HookEventName.Stop),
+      assistant_response: assistantResponse,
+    };
+    return this.executeHooks(HookEventName.Stop, input);
   }
 
   // ============================================================

@@ -120,6 +120,43 @@ export class BashTool implements Tool {
     };
   }
 
+  /** 基于命令内容判断是否并发安全 */
+  isConcurrencySafe(input: unknown): boolean {
+    const command = (input as any)?.command;
+    if (!command || typeof command !== "string") return false;
+
+    // 提取第一个命令词（忽略 env 变量赋值和管道前的部分）
+    const trimmed = command.trim();
+    const firstCmd = trimmed.split(/[|;&]/)[0].trim().split(/\s+/).pop() || "";
+    const base = firstCmd.replace(/^.*\//, ""); // 去掉路径前缀
+
+    // 只读命令白名单
+    const SAFE_COMMANDS = new Set([
+      "ls", "cat", "head", "tail", "wc", "file", "stat", "du", "df",
+      "echo", "printf", "date", "whoami", "hostname", "uname", "env", "printenv",
+      "git", "grep", "rg", "find", "fd", "which", "type", "command",
+      "node", "bun", "deno", "python", "python3", "ruby", "go", "cargo",
+      "npm", "npx", "yarn", "pnpm", "bunx",
+      "jq", "yq", "curl", "wget",
+      "diff", "md5sum", "sha256sum", "base64",
+    ]);
+
+    // git 子命令：只有只读子命令才安全
+    if (base === "git") {
+      const GIT_SAFE_SUBCMDS = new Set([
+        "status", "log", "diff", "show", "branch", "tag", "remote",
+        "rev-parse", "describe", "ls-files", "ls-tree", "cat-file",
+        "blame", "shortlog", "stash list",
+      ]);
+      const parts = trimmed.split(/\s+/);
+      const gitIdx = parts.findIndex(p => p === "git" || p.endsWith("/git"));
+      const subcmd = gitIdx >= 0 ? parts[gitIdx + 1] : undefined;
+      return subcmd ? GIT_SAFE_SUBCMDS.has(subcmd) : false;
+    }
+
+    return SAFE_COMMANDS.has(base);
+  }
+
   async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
     const log = getLogger();
     const params = input as {

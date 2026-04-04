@@ -26,6 +26,14 @@ export interface Tool {
   /** 是否为只读工具（只读工具可以并行执行） */
   readOnly?(): boolean;
 
+  /**
+   * 基于输入参数判断是否并发安全（P1-2）
+   * 比 readOnly() 更细粒度：同一个工具在不同输入下可能有不同的并发安全性
+   * 例如 BashTool：ls/cat 是安全的，rm/mv 不安全
+   * 默认回退到 readOnly()
+   */
+  isConcurrencySafe?(input: unknown): boolean;
+
   /** 工具使用指南（告诉 AI 何时以及如何使用此工具） */
   usageGuide?(): string;
 }

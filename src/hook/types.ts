@@ -22,6 +22,7 @@ export enum HookEventName {
   SubagentStart = "SubagentStart",
   SubagentStop = "SubagentStop",
   Notification = "Notification",
+  Stop = "Stop",
 }
 
 /** 旧 snake_case → 新 PascalCase 映射（向后兼容） */
@@ -37,6 +38,7 @@ export const LEGACY_EVENT_MAP: Record<string, HookEventName> = {
   subagent_stop: HookEventName.SubagentStop,
   notification: HookEventName.Notification,
   permission_request: HookEventName.Notification, // 旧事件映射到 Notification
+  stop: HookEventName.Stop,
 };
 
 /** 配置来源（优先级从高到低） */
@@ -282,6 +284,12 @@ export interface NotificationInput extends HookInput {
   notification_type: string;
   message: string;
   details: Record<string, unknown>;
+}
+
+/** Stop 事件输入（模型 end_turn 后执行检查） */
+export interface StopInput extends HookInput {
+  /** 模型最后一次回复的文本 */
+  assistant_response: string;
 }
 
 // ============================================================

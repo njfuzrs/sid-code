@@ -193,4 +193,9 @@ export class HookSystem {
   ): Promise<AggregatedHookResult> {
     return this.eventHandler.fireNotificationEvent(notificationType, message, details);
   }
+
+  /** Stop 事件：模型 end_turn 后执行检查 */
+  async fireStopEvent(assistantResponse: string): Promise<AggregatedHookResult> {
+    return this.eventHandler.fireStopEvent(assistantResponse);
+  }
 }
