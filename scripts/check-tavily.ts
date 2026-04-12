@@ -1,21 +1,9 @@
 #!/usr/bin/env bun
-import { readFileSync } from 'fs';
-import { join } from 'path';
 import { exit } from 'process';
 
-// 从项目 .mcp.json 读取 TAVILY_API_KEY（唯一维护点）
-const mcpPath = join(process.cwd(), '.mcp.json');
-let mcpConfig: { mcpServers?: { tavily?: { env?: Record<string, string> } } };
-try {
-  mcpConfig = JSON.parse(readFileSync(mcpPath, 'utf8'));
-} catch (e) {
-  console.error('❌ Error: 无法读取', mcpPath);
-  exit(1);
-}
-
-const apiKey = mcpConfig.mcpServers?.tavily?.env?.TAVILY_API_KEY;
+const apiKey = process.env.TAVILY_API_KEY;
 if (!apiKey) {
-  console.error('❌ Error: .mcp.json 中未找到 mcpServers.tavily.env.TAVILY_API_KEY');
+  console.error('❌ Error: 环境变量 TAVILY_API_KEY 未设置');
   exit(1);
 }
 

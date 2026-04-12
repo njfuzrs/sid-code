@@ -29,3 +29,6 @@ Thumbs.db
 # 会话和配置（用户数据）
 .sid-code/sessions/
 .sid-code/config.yaml
+
+# MCP config (contains API keys)
+.mcp.json
