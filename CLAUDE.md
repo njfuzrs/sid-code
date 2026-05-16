@@ -8,6 +8,20 @@
 - **排查复杂 bug 时，主动在关键路径添加详细的调试日志**（console.log / debug 模块），帮助定位问题根因；修复确认后再清理调试日志
 - **禁止创建文档**：除非用户明确要求，否则不要创建任何 README、SUMMARY、总结、说明等文档文件。完成任务后简短回复即可，不要写一大堆文档
 
+## 0.5. 评测体系入口（EDD 主轴）
+
+sid-code 从 2026-05-15 起建立 9 周 5 阶段评测体系。**改动 src/ 之前先看评测分数走向**。
+
+- 总入口：`docs/eval/07-执行顺序速查.md`（导航 + 进度表）
+- 当前阶段状态：`docs/eval-status.md`（5 段框架，每周五更新）
+- ADR 决策记录：`docs/adr/`（必须有 rejected alternatives）
+- 周报：`docs/weekly-eval-report/week-NN.md`
+- case 仓库：`evals/p0-core/` `evals/p1-common/` `evals/p2-edge/` `evals/holdout/`
+- 跑分命令：`bun run eval:list` / `bun run eval:baseline -- --skip-holdout` / `bun run eval:tally -- --week N`
+
+7 条铁律不变量（违反 = 销毁证据）见 `docs/eval/06-风险预案与启动清单.md §9.5`。
+
+
 ## 1. 项目概述
 
 TypeScript + Bun + Ink 实现的 AI 编程 CLI 工具，类似 Claude Code。核心架构为 Agentic While-Loop：用户输入 → LLM 流式响应 → stop_reason 为 tool_use 时执行工具并继续循环，end_turn 时结束。

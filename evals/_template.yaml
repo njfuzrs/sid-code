@@ -1,0 +1,110 @@
+# case YAML 模板 v0.1（W1 适用）
+# 来源：methodology §8.1 + sid-code 实际改写（00-总方案.md §3.3）
+# 用法：cp _template.yaml p0-core/case_NNN.yaml 后填字段；空字段不要删，置 null 或 [] 表示"暂无"
+
+# ============================================================
+# 1. 基础元信息
+# ============================================================
+id: case_NNN                    # case 唯一 ID，与文件名一致（不含 .yaml）
+category: ""                    # 代码理解 | bug修复 | 新功能实现 | 文档生成 | 重构 | 多文件协调
+                                # | 测试编写 | 依赖管理 | MCP工具调用 | 跨语言 | 歧义查询
+                                # | 对抗性prompt | 超长上下文 | 诚实兜底
+priority: P0                    # P0 必过 | P1 应过 | P2 加分
+created_date: 2026-MM-DD
+
+# ============================================================
+# 2. EDD 类型字段（methodology §1.3 强制）
+# ============================================================
+eval_type: capability           # W1 全部填 capability；连续 3 周 ≥ target 后改为 regression
+target_score: 4.0               # 1-5 锚点制；P0 默认 4.0，P1 默认 3.5，P2 默认 3.0
+graduated_at: null              # 毕业为 regression 的日期，未毕业留 null
+holdout: false                  # 5 条 holdout 设 true（永不参与日常调优）
+holdout_reason: null            # 为什么这条放 holdout（必填，若 holdout=true）
+
+# ============================================================
+# 3. 输入
+# ============================================================
+input:
+  user_query: ""                # 用户原话（脱敏后），必须真实场景
+  repo: sid-code                # 评测靶子项目，默认 sid-code 自身
+  repo_commit: ""               # git 短 hash，锁定可复现（W1 baseline 用 master HEAD）
+  attachments: []               # 可选附件路径（相对 repo 根）
+
+# ============================================================
+# 4. 期望输出（多种正确答案，反 §9.1 反 3）
+# ============================================================
+expected:
+  outcome: ""                   # 一句话描述"成功 = 什么"（locate_function / fix_bug / etc）
+
+  # 锚点：W1 主要靠这些自动判分
+  must_include_any_of: []       # 输出/工具调用任意命中其一即算覆盖（不是全部命中！）
+  must_not_include: []          # 输出绝对不能包含的内容
+
+  must_call_tools: []           # 必须调过的工具（不卡顺序，反 §9.1 反 6.2）
+  must_not_call_tools: []       # 反向卡禁区，比正向卡稳健
+
+  must_modify_files_in: []      # 必须改过的文件路径（前缀匹配）
+  must_not_modify_files: []     # 绝对不能动的文件
+  max_steps: 15                 # turns 上限；hard task 用 4 个 trajectory 最大 turns × 1.5
+
+  reference_answer: |           # 完美答案的描述性版本（不是唯一答案，仅供 Judge 参考）
+
+
+# ============================================================
+# 5. Rubric（rubric 是给人看的判分维度，W1 不接 LLM Judge 但写好留 Phase 3 用）
+# ============================================================
+rubric:
+  completeness: ""              # 是否完成了核心目标
+  precision: ""                 # 是否返回了无关结果
+  helpfulness: ""               # 是否帮助用户继续往前走
+
+# ============================================================
+# 6. Grader（W1 只用 type=assert，Phase 3 加 type=llm_judge）
+# ============================================================
+grader:
+  - type: assert
+    check: ""                   # 描述这一条 assert 是什么（must_include_any_of 命中 ≥ 1 等）
+    weight: 1.0
+  # Phase 3 起追加：
+  # - type: llm_judge
+  #   prompt_version: v1
+  #   weight: 0.6
+
+# ============================================================
+# 7. Baseline 三档（Phase 0 W1 只填 sid_code_w0；Phase 3 起补 claude_code / codex）
+# ============================================================
+baseline_scores:
+  sid_code_w0:
+    score: null                 # 1-5 锚点分；error 时留 null + run_status: error
+    run_status: pending         # pending | success | error | timeout
+    tested_at: null             # ISO8601 字符串
+    tested_by: manual           # manual | llm_judge_v1 | hybrid
+    transcript_path: null       # evals/raw-outputs/<case>_<ts>.jsonl
+    notes: ""
+
+  claude_code:
+    score: null
+    run_status: pending
+    tested_at: null
+    tested_by: manual
+    transcript_path: null
+    notes: ""
+
+  codex:
+    score: null
+    run_status: pending
+    tested_at: null
+    tested_by: manual
+    transcript_path: null
+    notes: ""
+
+# ============================================================
+# 8. 元数据（必填，未来根因诊断要查）
+# ============================================================
+source: ""                      # personal_exploration_<date> | trajectory_session_<id> | synthetic_edge
+notes: |                        # 这条 case 的来历、特殊约束、已知坑
+
+related_subsystem: []           # Phase 4 用：关联子系统标签
+                                # 可选：agent | plan | memory | context | permission | tool/read
+                                # | tool/edit | tool/bash | tool/grep | tool/glob | tool/write
+                                # | mcp | checkpoint | llm/router | llm/quota

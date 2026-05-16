@@ -8,7 +8,11 @@
     "dev": "bun run src/entrypoints/bootstrap.ts",
     "build": "bun build --compile --outfile sid-code src/entrypoints/bootstrap.ts",
     "test": "bun test",
-    "lint": "echo 'TODO: add linter'"
+    "lint": "echo 'TODO: add linter'",
+    "eval:list": "bun run scripts/eval/list-evals.ts",
+    "eval:baseline": "bun run scripts/eval/run-eval-baseline.ts",
+    "eval:tally": "bun run scripts/eval/tally-baseline.ts",
+    "eval:new-case": "bun run scripts/eval/new-case.ts"
   },
   "dependencies": {
     "@alcalzone/ansi-tokenize": "^0.3.0",

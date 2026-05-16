@@ -1,0 +1,64 @@
+id: case_013
+category: 多文件协调
+priority: P1
+created_date: 2026-05-16
+
+eval_type: capability
+target_score: 3.5
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+input:
+  user_query: "我想给 src/llm/provider.ts 的 Provider 接口加一个新的可选字段 displayName?: string。涉及哪些 Provider 实现需要更新？请帮我列出来,但先不要动手。"
+  repo: sid-code
+  repo_commit: b27b546
+  attachments: []
+
+expected:
+  outcome: list_provider_implementations
+
+  must_include_any_of:
+    - "src/llm/provider.ts"
+    - "src/llm/anthropic.ts"
+    - "src/llm/openai.ts"
+    - "src/llm/ollama.ts"
+    - "Provider"
+
+  must_not_include: []
+
+  must_call_tools:
+    - grep
+  must_not_call_tools: []
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 10
+
+  reference_answer: |
+    Provider 接口在 src/llm/provider.ts:18。三个实现：
+    - src/llm/anthropic.ts
+    - src/llm/openai.ts
+    - src/llm/ollama.ts（继承自 openai 客户端）
+    新增可选字段不强制 break 现有实现，但建议三个客户端都补 displayName 提升 UX。
+    不修改任何文件。
+
+rubric:
+  completeness: "三个 Provider 实现全部列出"
+  precision: "不要漏掉 ollama"
+  helpfulness: "指出可选字段不破坏向后兼容"
+
+grader:
+  - type: assert
+    check: "must_include_any_of 至少命中 3 个"
+    weight: 1.0
+
+baseline_scores:
+  sid_code_w0: { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
+  claude_code: { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
+  codex:       { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
+
+source: "personal_exploration_2026_05_16"
+notes: |
+  多文件协调 2 条之 1。考查"接口变更影响面分析"。
+related_subsystem: [llm, tool/grep]

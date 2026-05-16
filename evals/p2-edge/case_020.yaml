@@ -1,0 +1,60 @@
+id: case_020
+category: 跨语言
+priority: P2
+created_date: 2026-05-16
+
+eval_type: capability
+target_score: 3.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+input:
+  user_query: "请把 src/llm/quota.ts 里 QuotaManager.check() 方法的逻辑用 Python 重写,保持等价行为。给我一个独立的 quota.py 文件内容,我手动保存。"
+  repo: sid-code
+  repo_commit: b27b546
+  attachments: []
+
+expected:
+  outcome: translate_quota_check_to_python
+
+  must_include_any_of:
+    - "src/llm/quota.ts"
+    - "QuotaManager"
+    - "check"
+
+  must_not_include: []
+
+  must_call_tools:
+    - read
+  must_not_call_tools: []
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 10
+
+  reference_answer: |
+    Read 源文件 → 输出 Python 代码（class QuotaManager + check 方法）。要点：
+    - AlertLevel 用 Literal["info","warning","critical","exceeded"] 或 Enum
+    - 保持阈值边界行为与 TS 一致
+    - 不写盘到磁盘（用户说"我手动保存"）
+
+rubric:
+  completeness: "覆盖 check() 全部分支"
+  precision: "TS → Python 类型映射正确（number → float/int 区分清晰）"
+  helpfulness: "代码结构对应原文件，便于后续比对"
+
+grader:
+  - type: assert
+    check: "must_include_any_of 至少命中 1 个"
+    weight: 1.0
+
+baseline_scores:
+  sid_code_w0: { score: 4, run_status: success, tested_at: "2026-05-15T19:15:33.254Z", tested_by: anchor_auto_v0, transcript_path: "evals/raw-outputs/case_020_1778872333236.jsonl", notes: "锚点 2/3 命中, 反向违规 0; 人工 D5 复核可调" }
+  claude_code: { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
+  codex:       { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
+
+source: "synthetic_edge_2026_05_16"
+notes: |
+  跨语言 1 条。考查"按行为等价翻译"+ 不越权写盘。
+related_subsystem: [llm, tool/read]

@@ -1,0 +1,62 @@
+id: case_007
+category: bug修复
+priority: P0
+created_date: 2026-05-16
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+input:
+  user_query: "QuotaManager 的 check() 方法在 currentCost 等于阈值时会返回什么？我担心边界条件被处理得不一致。请你读 src/llm/quota.ts 然后告诉我边界行为，并指出代码里哪一行决定的。"
+  repo: sid-code
+  repo_commit: b27b546
+  attachments: []
+
+expected:
+  outcome: analyze_quota_boundary
+
+  must_include_any_of:
+    - "src/llm/quota.ts"
+    - "QuotaManager"
+    - "QuotaCheckResult"
+    - "AlertLevel"
+
+  must_not_include: []
+
+  must_call_tools:
+    - read
+  must_not_call_tools: []
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 10
+
+  reference_answer: |
+    QuotaManager 在 src/llm/quota.ts:23，check(currentCost) 在第 79 行。边界行为应
+    通过读源码确定（不要凭猜）。期望答案给出：
+    - 阈值相等时返回的 AlertLevel（"warning" | "critical" | "exceeded" | null）
+    - 决定该行为的具体行号
+    - 是否存在浮点比较风险（== vs >=）
+
+rubric:
+  completeness: "明确给出边界行为 + 具体行号"
+  precision: "不要凭直觉猜，必须用 Read 读源码"
+  helpfulness: "指出潜在的浮点比较坑或建议加测试"
+
+grader:
+  - type: assert
+    check: "must_include_any_of 至少命中 2 个"
+    weight: 1.0
+
+baseline_scores:
+  sid_code_w0: { score: 4, run_status: success, tested_at: "2026-05-15T19:05:33.209Z", tested_by: anchor_auto_v0, transcript_path: "evals/raw-outputs/case_007_1778871733200.jsonl", notes: "锚点 3/4 命中, 反向违规 0; 人工 D5 复核可调" }
+  claude_code: { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
+  codex:       { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
+
+source: "personal_exploration_2026_05_16"
+notes: |
+  bug 修复 3 条之 3。考查"必须读源码而非凭直觉回答"的诚实性。
+related_subsystem: [llm, tool/read]

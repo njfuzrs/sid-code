@@ -1,0 +1,62 @@
+id: case_008
+category: 新功能实现
+priority: P0
+created_date: 2026-05-16
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+input:
+  user_query: "我想给 sid-code CLI 加一个 `--version` flag,打印当前版本（从 package.json 读）然后退出。请你先告诉我应该改哪个文件、加在哪个位置、用什么实现思路（不要直接动手改）。"
+  repo: sid-code
+  repo_commit: b27b546
+  attachments: []
+
+expected:
+  outcome: plan_version_flag_addition
+
+  must_include_any_of:
+    - "src/cli.ts"
+    - "src/entrypoints/bootstrap.ts"
+    - "parseArgs"
+    - "package.json"
+
+  must_not_include: []
+
+  must_call_tools:
+    - read
+  must_not_call_tools: []
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 14
+
+  reference_answer: |
+    入口在 src/cli.ts（CLAUDE.md §3 描述）或 src/entrypoints/bootstrap.ts。当前用
+    node:util parseArgs 解析。实现思路：
+    1. parseArgs options 加 `version: { type: "boolean", short: "v" }`
+    2. 解析后若 values.version 为 true → 读 package.json.version → console.log → exit(0)
+    3. version 应在最早一步检测，避免触发 LLM/UI 初始化
+
+rubric:
+  completeness: "给出文件路径 + 修改位置 + 实现步骤"
+  precision: "不能直接 Edit / Write 改代码（用户说不要动手）"
+  helpfulness: "指出 version 应在 LLM/UI 初始化前检测的工程考量"
+
+grader:
+  - type: assert
+    check: "must_include_any_of 至少命中 2 个"
+    weight: 1.0
+
+baseline_scores:
+  sid_code_w0: { score: 3, run_status: success, tested_at: "2026-05-15T19:08:53.224Z", tested_by: anchor_auto_v0, transcript_path: "evals/raw-outputs/case_008_1778871933210.jsonl", notes: "锚点 2/4 命中, 反向违规 0; 人工 D5 复核可调" }
+  claude_code: { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
+  codex:       { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
+
+source: "personal_exploration_2026_05_16"
+notes: |
+  新功能 2 条之 1。考查规划能力（plan）+ 克制（不直接 Edit）。
+related_subsystem: [agent, plan, tool/read]

@@ -1,0 +1,62 @@
+id: case_004
+category: 代码理解
+priority: P0
+created_date: 2026-05-16
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: true
+holdout_reason: "代码理解类的'反向引用追踪'变体保留作 holdout,防止 grep 关键词被过拟合到 must_include。同类 P0 留 case_001/002/003。"
+
+input:
+  user_query: "sid-code 的循环检测（loop detection）模块在哪个文件？谁在调用它？"
+  repo: sid-code
+  repo_commit: b27b546
+  attachments: []
+
+expected:
+  outcome: locate_loop_detection_and_callers
+
+  must_include_any_of:
+    - "src/agent/loop-detection.ts"
+    - "LoopDetector"
+    - "LOOP_RECOVERY_PROMPT"
+
+  must_not_include: []
+
+  must_call_tools:
+    - grep
+  must_not_call_tools: []
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 12
+
+  reference_answer: |
+    循环检测在 src/agent/loop-detection.ts，导出 LoopDetector 类与 LOOP_RECOVERY_PROMPT
+    常量。调用方有三处：
+    - src/agent/loop.ts（主循环）
+    - src/agent/sub-agent.ts（子代理循环）
+    - src/query/loop.ts（query sub-loop）
+    三处都 import LoopDetector 并在迭代中检测重复 tool 调用模式。
+
+rubric:
+  completeness: "同时定位定义文件 + 至少 2 个调用方"
+  precision: "调用方不能漏掉主循环 src/agent/loop.ts"
+  helpfulness: "解释 LOOP_RECOVERY_PROMPT 的用途"
+
+grader:
+  - type: assert
+    check: "must_include_any_of 至少命中 2 个"
+    weight: 1.0
+
+baseline_scores:
+  sid_code_w0: { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
+  claude_code: { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
+  codex:       { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
+
+source: "personal_exploration_2026_05_16"
+notes: |
+  代码理解 4 条之 4。考查 grep + 反向引用追踪。LoopDetector 调用方在 3 个文件,反向 grep 易得。
+related_subsystem: [agent, tool/grep]

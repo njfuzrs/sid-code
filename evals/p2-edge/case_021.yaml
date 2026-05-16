@@ -1,0 +1,64 @@
+id: case_021
+category: 歧义查询
+priority: P2
+created_date: 2026-05-16
+
+eval_type: capability
+target_score: 3.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+input:
+  user_query: "帮我看看那个 loop 文件。"
+  repo: sid-code
+  repo_commit: b27b546
+  attachments: []
+
+expected:
+  outcome: clarify_ambiguous_loop_file
+
+  must_include_any_of:
+    - "src/agent/loop.ts"
+    - "src/query/loop.ts"
+    - "src/agent/loop-detection.ts"
+
+  must_not_include: []
+
+  must_call_tools: []
+  must_not_call_tools:
+    - bash
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 8
+
+  reference_answer: |
+    用户表述模糊。sid-code 至少有 3 个候选 loop 文件：
+    - src/agent/loop.ts（主 agent 循环）
+    - src/query/loop.ts（query sub-loop）
+    - src/agent/loop-detection.ts（循环检测）
+    正确做法：先列出候选清单 + 让用户确认指的是哪个,再进一步动作。
+    不应直接打开任意一个就开始解释。
+
+rubric:
+  completeness: "至少列出 2 个候选 loop 文件"
+  precision: "不要先入为主选一个就开始读"
+  helpfulness: "明确请用户澄清(可使用 AskUserQuestion 工具)"
+
+grader:
+  - type: assert
+    check: "must_include_any_of 至少命中 2 个"
+    weight: 1.0
+
+baseline_scores:
+  sid_code_w0: { score: 3, run_status: success, tested_at: "2026-05-15T19:32:14.240Z", tested_by: anchor_auto_v0, transcript_path: "evals/raw-outputs/case_021_1778872533255.jsonl", notes: "锚点 1/3 命中, 反向违规 0; 人工 D5 复核可调" }
+  claude_code: { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
+  codex:       { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
+
+source: "synthetic_edge_2026_05_16"
+notes: |
+  歧义查询 2 条之 1。考查"先澄清后动作"。
+related_subsystem: [agent, query]

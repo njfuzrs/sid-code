@@ -1,0 +1,67 @@
+id: case_002
+category: 代码理解
+priority: P0
+created_date: 2026-05-16
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+input:
+  user_query: "sid-code 实现了哪 6 个内置工具？请列出每个工具对应的源文件路径，并用一句话说明各自职责。"
+  repo: sid-code
+  repo_commit: b27b546
+  attachments: []
+
+expected:
+  outcome: enumerate_six_builtin_tools
+
+  must_include_any_of:
+    - "src/tool/read.ts"
+    - "src/tool/write.ts"
+    - "src/tool/edit.ts"
+    - "src/tool/bash.ts"
+    - "src/tool/grep.ts"
+    - "src/tool/glob.ts"
+
+  must_not_include: []
+
+  must_call_tools:
+    - glob
+  must_not_call_tools: []
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 10
+
+  reference_answer: |
+    sid-code 6 个内置工具（CLAUDE.md §3 与 src/tool/ 实读一致）：
+    1. src/tool/read.ts  — 读文件，含 image / pdf / notebook 支持
+    2. src/tool/write.ts — 写文件（必须先 Read 才能 Write 同一文件）
+    3. src/tool/edit.ts  — old_string → new_string 精确替换
+    4. src/tool/bash.ts  — 执行 shell 命令（受 permission 约束）
+    5. src/tool/grep.ts  — 内容搜索（基于 ripgrep / search-backends）
+    6. src/tool/glob.ts  — 文件名 pattern 匹配
+
+rubric:
+  completeness: "6 个工具全部列出"
+  precision: "不要把 read-many.ts / web-fetch.ts / memory.ts 等 'extra' 工具混进 6 个核心列表"
+  helpfulness: "每个工具有一句话职责说明"
+
+grader:
+  - type: assert
+    check: "must_include_any_of 至少命中 4 个（6 选 4）"
+    weight: 1.0
+
+baseline_scores:
+  sid_code_w0: { score: 5, run_status: success, tested_at: "2026-05-15T18:52:13.166Z", tested_by: anchor_auto_v0, transcript_path: "evals/raw-outputs/case_002_1778870933153.jsonl", notes: "锚点 6/6 命中, 反向违规 0; 人工 D5 复核可调" }
+  claude_code: { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
+  codex:       { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
+
+source: "personal_exploration_2026_05_16"
+notes: |
+  代码理解 4 条之 2。must_include_any_of 用 6 选 4 而非全命中，避免要求过严。
+  注意 sid-code 实际有 19 个 .ts 文件在 src/tool/，但"内置工具"按 CLAUDE.md 是这 6 个。
+related_subsystem: [tool/read, tool/write, tool/edit, tool/bash, tool/grep, tool/glob]

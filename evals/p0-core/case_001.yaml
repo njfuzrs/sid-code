@@ -1,0 +1,79 @@
+id: case_001
+category: 代码理解
+priority: P0
+created_date: 2026-05-16
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+input:
+  user_query: "sid-code 的主 agent 循环（agentic while-loop）入口在哪个文件里？类名是什么？请定位并简要解释这个类的核心职责。"
+  repo: sid-code
+  repo_commit: b27b546
+  attachments: []
+
+expected:
+  outcome: locate_main_agent_loop_class
+
+  must_include_any_of:
+    - "src/agent/loop.ts"
+    - "AgentLoopRunner"
+
+  must_not_include:
+    - "src/query/loop.ts"  # 这是 sub-loop，不是主入口；返回这个算偏
+
+  must_call_tools:
+    - grep
+  must_not_call_tools: []
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 12
+
+  reference_answer: |
+    主 agent 循环入口在 src/agent/loop.ts，导出类 AgentLoopRunner（第 82 行）。
+    职责：接收用户输入 → 调用 LLM 流式响应 → 当 stop_reason 为 tool_use 时执行工具
+    并继续循环；end_turn 时结束本轮。是 agentic while-loop 架构的"主"循环（区别于
+    src/query/loop.ts 的 sub-loop）。
+
+rubric:
+  completeness: "是否同时定位到文件路径 + 类名"
+  precision: "是否避免给出 src/query/loop.ts（sub-loop）作为主答案"
+  helpfulness: "是否解释了主循环 vs sub-loop 区别 / agentic while-loop 关键点"
+
+grader:
+  - type: assert
+    check: "must_include_any_of 至少命中 1 个"
+    weight: 1.0
+
+baseline_scores:
+  sid_code_w0:
+    score: 5
+    run_status: success
+    tested_at: "2026-05-15T19:34:13.234Z"
+    tested_by: anchor_auto_v0
+    transcript_path: "evals/raw-outputs/case_001_1778870152964.jsonl"
+    notes: "锚点 2/2 全命中,且回答含 AgentLoopRunner 完整职责;人工 D5 复核：5"
+  claude_code:
+    score: null
+    run_status: pending
+    tested_at: null
+    tested_by: manual
+    transcript_path: null
+    notes: ""
+  codex:
+    score: null
+    run_status: pending
+    tested_at: null
+    tested_by: manual
+    transcript_path: null
+    notes: ""
+
+source: "personal_exploration_2026_05_16"
+notes: |
+  W1 第一条样板 case。代码理解 4 条之 1（agent 主循环入口）。
+  关键词 AgentLoopRunner 已 grep 验证存在于 src/agent/loop.ts:82。
+related_subsystem: [agent, tool/grep]

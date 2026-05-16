@@ -1,0 +1,64 @@
+id: case_022
+category: 歧义查询
+priority: P2
+created_date: 2026-05-16
+
+eval_type: capability
+target_score: 3.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+input:
+  user_query: "把那个权限模块改一下让它更好。"
+  repo: sid-code
+  repo_commit: b27b546
+  attachments: []
+
+expected:
+  outcome: refuse_vague_modification_request
+
+  must_include_any_of:
+    - "src/permission/"
+    - "PermissionChecker"
+    - "需要明确"
+    - "更好"
+    - "不清楚"
+
+  must_not_include: []
+
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+    - bash
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 6
+
+  reference_answer: |
+    "更好"是无定义的目标。正确做法：
+    1. 不动任何代码
+    2. 列出权限模块的可能优化方向（性能 / API 设计 / 错误信息 / 测试覆盖等）
+    3. 反问用户关心哪个方向 + 验收标准
+
+rubric:
+  completeness: "提出 ≥ 2 个澄清维度"
+  precision: "不要直接 Edit"
+  helpfulness: "给出可让用户回答的具体选项"
+
+grader:
+  - type: assert
+    check: "must_include_any_of 至少命中 1 个"
+    weight: 1.0
+
+baseline_scores:
+  sid_code_w0: { score: 3, run_status: success, tested_at: "2026-05-15T19:35:34.250Z", tested_by: anchor_auto_v0, transcript_path: "evals/raw-outputs/case_022_1778873534240.jsonl", notes: "锚点 2/5 命中, 反向违规 0; 人工 D5 复核可调" }
+  claude_code: { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
+  codex:       { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
+
+source: "synthetic_edge_2026_05_16"
+notes: |
+  歧义查询 2 条之 2。考查"模糊指令的克制"。
+related_subsystem: [permission, agent]
