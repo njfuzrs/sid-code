@@ -44,6 +44,7 @@ export interface TaskResult {
   details: {
     outcome: Record<string, boolean | number>;
     trajectory: Record<string, boolean | number>;
+    process: Record<string, boolean | number | string>;
   };
   reasoning: string;
   agentSnapshot: {
@@ -144,7 +145,16 @@ async function runSingleTask(
   }
 
   // Layer 1
-  const outcomeResult = gradeOutcome(expected, output);
+  // W10.D2: bench v0.1 全量 task.max_steps 硬编码 45（数据 bug，详见 docs/eval/investigations/within-max-steps-w10.md）
+  // fallback：当 yaml max_steps == 45 且 estimated_turns > 45 时，用 estimated_turns × 1.5（与 auto-extract.py 原始公式对齐）
+  const effectiveMaxSteps = computeEffectiveMaxSteps({
+    yamlMaxSteps: expected.max_steps,
+    estimatedTurns: task.estimated_turns as number | undefined,
+  });
+  const outcomeResult = gradeOutcome(
+    { ...expected, max_steps: effectiveMaxSteps },
+    output,
+  );
 
   // Layer 2
   const trajectoryResult = gradeTrajectory(metrics, {
@@ -186,6 +196,7 @@ async function runSingleTask(
     details: {
       outcome: outcomeResult.details,
       trajectory: trajectoryResult.details,
+      process: processResult.details,
     },
     reasoning: `L1:${outcomeResult.reasoning} | L2:${trajectoryResult.reasoning} | L3:${processResult.reasoning}`,
     agentSnapshot: {
@@ -261,4 +272,29 @@ export async function runBench(config: RunConfig): Promise<TaskResult[]> {
   console.log(`\n  Results written to: ${outputPath}`);
 
   return results;
+}
+
+/**
+ * 计算 effective max_steps（处理 bench v0.1 数据 bug）
+ * 详见 docs/eval/investigations/within-max-steps-w10.md
+ *
+ * - 当 yaml max_steps == FROZEN_BAD_VALUE (45) 且 estimated_turns > 45 时，
+ *   用 estimated_turns × 1.5（与 trajectory-platform/scripts/phase2/auto-extract.py 公式对齐）
+ * - 其他情况：返回 yaml 值或默认 30
+ *
+ * 暴露给单元测试用
+ */
+export function computeEffectiveMaxSteps(o: {
+  yamlMaxSteps?: number;
+  estimatedTurns?: number;
+}): number {
+  const FROZEN_BAD_VALUE = 45;
+  if (
+    o.yamlMaxSteps === FROZEN_BAD_VALUE &&
+    o.estimatedTurns &&
+    o.estimatedTurns > FROZEN_BAD_VALUE
+  ) {
+    return Math.min(Math.ceil(o.estimatedTurns * 1.5), 500);
+  }
+  return o.yamlMaxSteps ?? 30;
 }

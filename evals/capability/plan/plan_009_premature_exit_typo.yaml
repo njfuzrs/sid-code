@@ -1,0 +1,60 @@
+# plan_009 — plan_premature_exit 维度：简单 1 步任务下不该过度规划
+# 测假设：1-2 步可解的任务，plan 步骤数应 ≤ 3（反向断言，防止"什么都过度 plan"）
+
+id: plan_009
+subsystem: plan
+dimension: plan_premature_exit
+priority: P0
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: |
+    src/cli.ts 第 20 行有个 typo："recevied" 应为 "received"。请改了。
+  trigger_plan_mode: true
+
+expected:
+  plan_min_steps: 1
+  plan_max_steps: 3
+  plan_must_cover_any_of:
+    - "改 cli.ts"
+    - "Edit"
+    - "typo"
+  plan_must_not_have:
+    - "新增测试"
+    - "全仓 grep"
+    - "重构"
+  execution_must_call_tools_any_of: [edit, exit_plan_mode]
+  max_steps: 8
+
+  # premature_exit 维度核心断言
+  premature_exit_max_plan_steps: 3
+
+rubric:
+  premature_exit_concise: "plan 是否克制（≤ 3 步），不为简单 typo 写 5+ 步流程"
+  premature_exit_no_scope_creep: "是否避免 hallucinate 出额外需求（新增测试 / 全仓 typo 排查 / 重构）"
+  premature_exit_direct_action: "plan 是否直接指向 Edit 操作而非 'understand → analyze → fix'"
+
+grader:
+  - type: assert
+    check: premature_exit_max_plan_steps
+    weight: 0.40
+  - type: assert
+    check: plan_must_not_have_zero_match
+    weight: 0.20
+  - type: assert
+    check: execution_must_call_tools_any_of_hit
+    weight: 0.10
+  - type: llm_judge
+    weight: 0.30
+    rubric_ref:
+      - premature_exit_concise
+      - premature_exit_no_scope_creep
+      - premature_exit_direct_action
+
+source: synthetic_capability_2026_05_18_W10
+related_subsystem: [plan]
+related_adr: [ADR-013]

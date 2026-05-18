@@ -1,0 +1,67 @@
+# plan_004 — plan_generation 维度：debug 类任务（理解 + 修复）
+# 测假设：sid-code 在"debug 类不明确任务"下能先 plan 出"诊断步骤"再"修复步骤"
+
+id: plan_004
+subsystem: plan
+dimension: plan_generation
+priority: P1
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: |
+    最近用户反馈：sid-code 在长对话下偶尔会出现 "API 400: tool_use without tool_result" 错误，
+    复现概率约 5%。看起来是 src/context/ 压缩时把 tool_use 切掉了但 tool_result 还在。
+    请定位根因并修复。
+  trigger_plan_mode: true
+
+expected:
+  plan_min_steps: 5
+  plan_max_steps: 12
+  plan_must_cover_any_of:
+    - "读 src/context"
+    - "复现"
+    - "断点"
+    - "tool_use"
+    - "tool_result"
+    - "压缩逻辑"
+    - "orphan"
+    - "测试用例"
+    - "回归"
+  plan_must_not_have:
+    - "直接重写 context"
+    - "删除压缩功能"
+  execution_must_call_tools_any_of: [read, grep, edit, exit_plan_mode]
+  max_steps: 50
+
+rubric:
+  plan_completeness: "plan 是否同时含 '诊断' + '修复' + '验证' 三个阶段"
+  plan_diagnostic_first: "诊断步骤是否在修复步骤之前"
+  plan_test_inclusion: "是否包含回归测试 / 单测"
+
+grader:
+  - type: assert
+    check: plan_min_steps
+    weight: 0.20
+  - type: assert
+    check: plan_must_cover_any_of_hit_ge_4
+    weight: 0.25
+  - type: assert
+    check: plan_must_not_have_zero_match
+    weight: 0.10
+  - type: assert
+    check: execution_must_call_tools_any_of_hit
+    weight: 0.10
+  - type: llm_judge
+    weight: 0.35
+    rubric_ref:
+      - plan_completeness
+      - plan_diagnostic_first
+      - plan_test_inclusion
+
+source: synthetic_capability_2026_05_18_W10
+related_subsystem: [plan]
+related_adr: [ADR-013]

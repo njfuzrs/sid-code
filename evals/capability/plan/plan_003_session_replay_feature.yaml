@@ -1,0 +1,68 @@
+# plan_003 — plan_generation 维度：架构设计任务（无现有代码参照）
+# 测假设：sid-code 能在"全新模块设计"场景下输出合理多步 plan
+
+id: plan_003
+subsystem: plan
+dimension: plan_generation
+priority: P0
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: |
+    sid-code 当前没有"会话回放"功能。请设计并实现：用户输入 `/replay <session_id>`，
+    sid-code 把该 session 的所有消息+工具调用按时间顺序在 TUI 中重放出来，
+    支持暂停/继续/单步前进。
+    要求：复用现有 src/session/store.ts 的持久化；UI 走 src/ui/。
+  trigger_plan_mode: true
+
+expected:
+  plan_min_steps: 6
+  plan_max_steps: 15
+  plan_must_cover_any_of:
+    - "读 session/store"
+    - "session 数据结构"
+    - "Replay 状态机"
+    - "TUI 组件"
+    - "暂停/继续"
+    - "单步"
+    - "斜杠命令"
+    - "/replay 注册"
+    - "单测"
+  plan_must_not_have:
+    - "改 LLM provider"
+    - "改 trajectory-platform"
+  execution_must_call_tools_any_of: [read, write, edit, exit_plan_mode]
+  max_steps: 60
+
+rubric:
+  plan_completeness: "plan 是否覆盖数据/状态机/UI/命令/测试 5 个层面"
+  plan_step_independence: "每步是否独立可验证"
+  plan_step_ordering: "顺序是否合理（应该先设计数据/状态，再做 UI）"
+
+grader:
+  - type: assert
+    check: plan_min_steps
+    weight: 0.20
+  - type: assert
+    check: plan_must_cover_any_of_hit_ge_5
+    weight: 0.25
+  - type: assert
+    check: plan_must_not_have_zero_match
+    weight: 0.10
+  - type: assert
+    check: execution_must_call_tools_any_of_hit
+    weight: 0.10
+  - type: llm_judge
+    weight: 0.35
+    rubric_ref:
+      - plan_completeness
+      - plan_step_independence
+      - plan_step_ordering
+
+source: synthetic_capability_2026_05_18_W10
+related_subsystem: [plan]
+related_adr: [ADR-013]

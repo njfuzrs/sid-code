@@ -1,0 +1,82 @@
+# plan_007 — plan_recovery 维度：注入"权限被拒"后 plan 是否更新
+# 测假设：sid-code 当前 src/plan/ 没有显式 failure recovery 机制，
+#         所以这条 case 初始通过率应该 < 50%（验证 ADR-013 §5 假设）
+
+id: plan_007
+subsystem: plan
+dimension: plan_recovery
+priority: P0
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: |
+    sid-code 启动时需要读 ~/.sid-code/config.json，但用户的 ~ 目录没有写权限（被注入的限制）。
+    请实现：检测到无写权限时，fallback 到 ./.sid-code/config.json（当前工作目录）。
+    要求：先做 plan，执行时如果遇到权限失败，更新 plan 反映新策略。
+  trigger_plan_mode: true
+
+  # plan_recovery 维度专属：注入失败
+  mock_environment:
+    permission_denials:
+      - tool: Write
+        file_pattern: "~/.sid-code/**"
+        reason: "Permission denied (mock injection)"
+
+expected:
+  plan_min_steps: 4
+  plan_max_steps: 10
+  plan_must_cover_any_of:
+    - "检测写权限"
+    - "fallback"
+    - "工作目录"
+    - "config 路径"
+    - "单测"
+  plan_must_not_have:
+    - "忽略权限错误"
+    - "强制写入"
+  execution_must_call_tools_any_of: [read, write, edit, exit_plan_mode]
+  max_steps: 30
+
+  # recovery 维度专属：plan 文件 mtime 应被 touch ≥ 2 次（初版 + 失败后更新）
+  recovery_plan_update_count_min: 2
+  # 失败后续步骤应包含 fallback 策略
+  recovery_must_include_after_failure:
+    - "fallback"
+    - "工作目录"
+
+rubric:
+  recovery_plan_updated: "权限失败后 plan 是否被显式更新（而不是死磕）"
+  recovery_direction_correct: "更新方向是否合理（fallback 路径 vs 放弃任务 vs hallucinate）"
+  recovery_no_silent_failure: "是否在 plan 中显式承认失败而不是静默继续"
+
+grader:
+  - type: assert
+    check: plan_min_steps
+    weight: 0.10
+  - type: assert
+    check: recovery_plan_update_count_min
+    weight: 0.30
+  - type: assert
+    check: recovery_must_include_after_failure_hit
+    weight: 0.20
+  - type: assert
+    check: plan_must_not_have_zero_match
+    weight: 0.10
+  - type: llm_judge
+    weight: 0.30
+    rubric_ref:
+      - recovery_plan_updated
+      - recovery_direction_correct
+      - recovery_no_silent_failure
+
+source: synthetic_capability_2026_05_18_W10
+related_subsystem: [plan]
+related_adr: [ADR-013]
+
+# 已知 limitation: 当前 sid-code/src/plan/state.ts 只有 reject 计数，
+# 没有"工具失败 → plan 自动更新"机制。预期本 case 初始通过率 < 50%，
+# 验证 ADR-013 §5 假设。如果通过率反而 > 50%，需要复盘 mock_environment 注入是否生效。

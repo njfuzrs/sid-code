@@ -1,0 +1,61 @@
+# plan_010 — plan_premature_exit 维度：简单 2 步任务的克制
+# 测假设：明确 2 步任务（读 + 改 1 处），plan 应 ≤ 3 步
+
+id: plan_010
+subsystem: plan
+dimension: plan_premature_exit
+priority: P1
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: |
+    package.json 里 "version" 字段从 "0.1.0" 改成 "0.2.0"。然后跑 bun run build 验证。
+  trigger_plan_mode: true
+
+expected:
+  plan_min_steps: 1
+  plan_max_steps: 3
+  plan_must_cover_any_of:
+    - "改 package.json"
+    - "version"
+    - "bun run build"
+    - "验证"
+  plan_must_not_have:
+    - "新增测试"
+    - "更新 CHANGELOG"
+    - "git tag"
+    - "git commit"
+  execution_must_call_tools_any_of: [edit, bash, exit_plan_mode]
+  max_steps: 8
+
+  premature_exit_max_plan_steps: 3
+
+rubric:
+  premature_exit_concise: "plan 是否克制（≤ 3 步），不为 version bump 拉出 release 流程"
+  premature_exit_no_scope_creep: "是否避免 hallucinate（CHANGELOG / tag / commit / NPM publish）"
+  premature_exit_direct_action: "plan 是否直接 Edit + Bash"
+
+grader:
+  - type: assert
+    check: premature_exit_max_plan_steps
+    weight: 0.40
+  - type: assert
+    check: plan_must_not_have_zero_match
+    weight: 0.20
+  - type: assert
+    check: execution_must_call_tools_any_of_hit
+    weight: 0.10
+  - type: llm_judge
+    weight: 0.30
+    rubric_ref:
+      - premature_exit_concise
+      - premature_exit_no_scope_creep
+      - premature_exit_direct_action
+
+source: synthetic_capability_2026_05_18_W10
+related_subsystem: [plan]
+related_adr: [ADR-013]

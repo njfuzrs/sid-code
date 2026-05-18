@@ -1,0 +1,71 @@
+# plan_008 — plan_recovery 维度：注入"文件不存在"后 plan 是否调整路径
+# 测假设：同 plan_007，验证 sid-code 在文件级失败下的恢复能力
+
+id: plan_008
+subsystem: plan
+dimension: plan_recovery
+priority: P1
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: |
+    请把 src/legacy/old-context.ts 的逻辑迁移到 src/context/manager.ts，然后删除 src/legacy/。
+    要求：先做 plan，执行时如果发现源文件不存在，更新 plan 反映新策略。
+
+  mock_environment:
+    file_not_found:
+      - "src/legacy/old-context.ts"
+      - "src/legacy/"
+
+expected:
+  plan_min_steps: 3
+  plan_max_steps: 8
+  plan_must_cover_any_of:
+    - "读 src/legacy"
+    - "迁移逻辑"
+    - "改 manager.ts"
+    - "删除目录"
+    - "单测"
+  plan_must_not_have:
+    - "强制创建 legacy"
+    - "忽略文件不存在"
+  execution_must_call_tools_any_of: [read, edit, exit_plan_mode]
+  max_steps: 25
+
+  recovery_plan_update_count_min: 2
+  recovery_must_include_after_failure:
+    - "不存在"
+    - "已迁移"
+
+rubric:
+  recovery_plan_updated: "文件不存在后 plan 是否被更新"
+  recovery_direction_correct: "更新方向是否合理（确认无需迁移 vs hallucinate 创建 legacy）"
+  recovery_no_silent_failure: "是否在 plan 中显式承认源文件已不存在"
+
+grader:
+  - type: assert
+    check: plan_min_steps
+    weight: 0.10
+  - type: assert
+    check: recovery_plan_update_count_min
+    weight: 0.30
+  - type: assert
+    check: recovery_must_include_after_failure_hit
+    weight: 0.20
+  - type: assert
+    check: plan_must_not_have_zero_match
+    weight: 0.10
+  - type: llm_judge
+    weight: 0.30
+    rubric_ref:
+      - recovery_plan_updated
+      - recovery_direction_correct
+      - recovery_no_silent_failure
+
+source: synthetic_capability_2026_05_18_W10
+related_subsystem: [plan]
+related_adr: [ADR-013]

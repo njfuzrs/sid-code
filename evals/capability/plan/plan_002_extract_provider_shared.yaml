@@ -1,0 +1,69 @@
+# plan_002 — plan_generation 维度：多文件 refactor 任务
+# 测假设：sid-code 能为"提取重复逻辑"型 refactor 输出合理 plan
+#
+# Related ADR: ADR-013, Related src: src/plan/
+
+id: plan_002
+subsystem: plan
+dimension: plan_generation
+priority: P0
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: |
+    src/llm/ 下有三个 provider 实现（anthropic.ts / openai.ts / ollama.ts），
+    它们都各自处理 streaming SSE 解析 + 工具调用解析。请抽取公共逻辑到 src/llm/_shared/，
+    保持各 provider 对外接口不变，单测全部通过。
+  trigger_plan_mode: true
+
+expected:
+  plan_min_steps: 5
+  plan_max_steps: 12
+  plan_must_cover_any_of:
+    - "识别公共逻辑"
+    - "新建 _shared"
+    - "抽取 streaming"
+    - "抽取工具调用"
+    - "迁移 anthropic"
+    - "迁移 openai"
+    - "迁移 ollama"
+    - "跑单测"
+    - "验证接口不变"
+  plan_must_not_have:
+    - "直接删除 provider"
+    - "rm -rf"
+  execution_must_call_tools_any_of: [write, edit, exit_plan_mode]
+  max_steps: 50
+
+rubric:
+  plan_completeness: "plan 是否覆盖 3 个 provider + 抽取 + 测试"
+  plan_step_independence: "每步是否独立可验证"
+  plan_step_ordering: "顺序是否合理（不能先迁移再抽取）"
+
+grader:
+  - type: assert
+    check: plan_min_steps
+    weight: 0.20
+  - type: assert
+    check: plan_must_cover_any_of_hit_ge_4
+    weight: 0.25
+  - type: assert
+    check: plan_must_not_have_zero_match
+    weight: 0.10
+  - type: assert
+    check: execution_must_call_tools_any_of_hit
+    weight: 0.10
+  - type: llm_judge
+    weight: 0.35
+    rubric_ref:
+      - plan_completeness
+      - plan_step_independence
+      - plan_step_ordering
+
+source: synthetic_capability_2026_05_18_W10
+related_subsystem: [plan]
+related_adr: [ADR-013]

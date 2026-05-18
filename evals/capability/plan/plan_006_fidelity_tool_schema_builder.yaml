@@ -1,0 +1,70 @@
+# plan_006 — plan_execution_fidelity 维度：复杂任务的 fidelity
+# 测假设：复杂任务下 actual / plan ratio 不应过度偏离（防止"plan 写完无视 plan 自由发挥"）
+
+id: plan_006
+subsystem: plan
+dimension: plan_execution_fidelity
+priority: P0
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: |
+    src/tool/ 下 6 个内置工具（read/write/edit/bash/grep/glob）的 schema 当前各自定义。
+    请抽取一个统一的 ToolSchemaBuilder（src/tool/schema-builder.ts），让 6 个工具复用它。
+    要求：不改变工具对外行为；为 builder 写单测。
+  trigger_plan_mode: true
+
+expected:
+  plan_min_steps: 6
+  plan_max_steps: 12
+  plan_must_cover_any_of:
+    - "schema-builder"
+    - "提炼公共结构"
+    - "迁移 read"
+    - "迁移 write"
+    - "迁移 edit"
+    - "迁移 bash"
+    - "迁移 grep"
+    - "迁移 glob"
+    - "单测"
+  plan_must_not_have:
+    - "改工具行为"
+    - "删除工具"
+  execution_must_call_tools_any_of: [read, write, edit, exit_plan_mode]
+  max_steps: 60
+
+  fidelity_step_ratio_min: 0.8
+  fidelity_step_ratio_max: 2.0
+
+rubric:
+  fidelity_actual_vs_plan: "actual 调用序列是否对应 plan 中的 step（builder + 6 个迁移 + 测试）"
+  fidelity_no_off_plan: "是否有 plan 没提及的额外步骤（比如 hallucinate 新增工具）"
+  fidelity_step_count: "actual 步数应在 plan 步数的 0.8-2.0 倍"
+
+grader:
+  - type: assert
+    check: plan_min_steps
+    weight: 0.10
+  - type: assert
+    check: plan_must_cover_any_of_hit_ge_5
+    weight: 0.15
+  - type: assert
+    check: fidelity_step_ratio_in_range
+    weight: 0.30
+  - type: assert
+    check: execution_must_call_tools_any_of_hit
+    weight: 0.10
+  - type: llm_judge
+    weight: 0.35
+    rubric_ref:
+      - fidelity_actual_vs_plan
+      - fidelity_no_off_plan
+      - fidelity_step_count
+
+source: synthetic_capability_2026_05_18_W10
+related_subsystem: [plan]
+related_adr: [ADR-013]

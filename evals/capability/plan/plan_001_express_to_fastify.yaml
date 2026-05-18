@@ -1,0 +1,96 @@
+# Plan capability eval — 样板 case
+# 维度: plan_generation
+# 目的: 验证 sid-code 在"复杂多步迁移任务"下能否产出 ≥ 5 步合理 plan
+#
+# Related ADR: ADR-013 (Plan 子系统 capability eval 设计)
+# Related src: src/plan/state.ts (PlanModeManager), src/plan/prompt.ts (buildPlanModePrompt)
+
+id: plan_001
+subsystem: plan
+dimension: plan_generation
+priority: P0
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: |
+    我需要把现有的 Express 后端迁移到 Fastify。
+    要求:
+    1) 保持所有 API 兼容
+    2) 不改动数据库层
+    3) 测试覆盖率 > 80%
+    4) 渐进迁移，不要一次性切换
+
+    repo_hint: 假设这是一个有 ~30 个路由、5 个中间件、JWT 鉴权、PostgreSQL 数据库的 Express 应用
+  trigger_plan_mode: true
+
+expected:
+  # plan 步骤数范围（plan_generation 核心断言）
+  plan_min_steps: 5
+  plan_max_steps: 15
+
+  # plan 必须覆盖的关键节点（命中 4/5 即通过）
+  plan_must_cover_any_of:
+    - "fastify 安装"
+    - "依赖迁移"
+    - "路由迁移"
+    - "中间件适配"
+    - "JWT 适配"
+    - "测试覆盖"
+    - "灰度切换"
+    - "回滚方案"
+
+  # 反向断言（plan 不应包含的"危险"做法）
+  plan_must_not_have:
+    - "一次性删除 express"
+    - "rm -rf"
+
+  # 仅做存在性检查，不限定顺序
+  execution_must_call_tools_any_of:
+    - write   # 写 plan 文件
+    - edit    # 修改 plan 文件
+    - exit_plan_mode
+
+  # max_steps 由 W10 周二的 within_max_steps 排查决定最终公式，
+  # 临时按 plan_max_steps × 3 + 缓冲 = 50
+  max_steps: 50
+
+rubric:
+  plan_completeness: "plan 是否覆盖关键迁移要点（依赖 / 路由 / 中间件 / 测试 / 灰度）"
+  plan_step_independence: "plan 中每一步是否独立可验证（避免 '完成迁移' 这种笼统步骤）"
+  plan_step_ordering: "步骤顺序是否合理（不能先做灰度切换再做依赖迁移）"
+
+grader:
+  - type: assert
+    check: plan_min_steps
+    weight: 0.20
+  - type: assert
+    check: plan_max_steps
+    weight: 0.05
+  - type: assert
+    check: plan_must_cover_any_of_hit_ge_4
+    weight: 0.25
+  - type: assert
+    check: plan_must_not_have_zero_match
+    weight: 0.10
+  - type: assert
+    check: execution_must_call_tools_any_of_hit
+    weight: 0.10
+  - type: llm_judge
+    weight: 0.30
+    rubric_ref:
+      - plan_completeness
+      - plan_step_independence
+      - plan_step_ordering
+
+source: synthetic_capability_2026_05_18_W10
+related_subsystem: [plan]
+related_adr: [ADR-013]
+
+# 注: 本 case 是 ADR-013 §2.4 周一交付的"样板 case"，
+# 作为后续 plan_002 ~ plan_010 的命名/字段/grader 公式参考。
+# W10 周二的 within_max_steps 排查可能调整 max_steps 的计算公式，
+# 调整后本 case 需同步。
