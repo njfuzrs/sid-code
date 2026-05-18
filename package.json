@@ -12,7 +12,9 @@
     "eval:list": "bun run scripts/eval/list-evals.ts",
     "eval:baseline": "bun run scripts/eval/run-eval-baseline.ts",
     "eval:tally": "bun run scripts/eval/tally-baseline.ts",
-    "eval:new-case": "bun run scripts/eval/new-case.ts"
+    "eval:new-case": "bun run scripts/eval/new-case.ts",
+    "eval:bench": "bun run scripts/eval/run-bench.ts",
+    "eval:bench-report": "bun run scripts/eval/bench-report.ts"
   },
   "dependencies": {
     "@alcalzone/ansi-tokenize": "^0.3.0",

@@ -1,14 +1,24 @@
 /**
- * Phase 3 W7: bench-runner 主入口
+ * Phase 3 W7 / Phase 4 W9: bench-runner 主入口
  * 协调三层 Grader，跑 bench task 并输出评分
+ *
+ * W9 改动：runSingleTask 默认接 adapters/sid-code（离线模式），不再用 simulate。
  */
 
-import { gradeOutcome, type TaskExpected, type AgentOutput } from "./outcome-grader.ts";
+import {
+  gradeOutcome,
+  type TaskExpected,
+  type AgentOutput,
+  type GradeResult,
+} from "./outcome-grader.ts";
 import { gradeTrajectory, type TrajectoryMetrics } from "./trajectory-grader.ts";
 import { gradeProcess, aggregateScores, type JudgeConfig, type JudgeInput } from "./process-grader.ts";
+import { extractAgentOutput, type AdapterConfig } from "./adapters/sid-code.ts";
 import { parse as parseYaml } from "yaml";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
+
+export type AdapterName = "sid-code-offline" | "sid-code-live" | "claude-code" | "codex" | "simulate";
 
 export interface RunConfig {
   benchDir: string; // bench/tasks/ 目录
@@ -16,11 +26,15 @@ export interface RunConfig {
   judgeConfig: JudgeConfig;
   outputDir: string;
   skipLlmJudge?: boolean; // 跳过 Layer 3（省钱模式）
+  adapter?: AdapterName; // 默认 sid-code-offline
+  adapterConfig?: AdapterConfig; // 离线 adapter 需要 trajectoryDir / metaFile
 }
 
 export interface TaskResult {
   taskId: string;
   difficulty: string;
+  tags: string[];
+  primaryModel: string;
   scores: {
     outcome: number;
     trajectory: number;
@@ -32,11 +46,14 @@ export interface TaskResult {
     trajectory: Record<string, boolean | number>;
   };
   reasoning: string;
+  agentSnapshot: {
+    tools_called: string[];
+    files_modified: string[];
+    steps: number;
+    exit_status: string;
+  };
 }
 
-/**
- * 加载 split 文件中的 task_id 列表
- */
 async function loadSplit(splitFile: string): Promise<string[]> {
   const content = await Bun.file(splitFile).text();
   return content
@@ -45,9 +62,6 @@ async function loadSplit(splitFile: string): Promise<string[]> {
     .filter((l) => l.length > 0);
 }
 
-/**
- * 加载单个 task.yaml
- */
 async function loadTask(taskDir: string): Promise<Record<string, unknown> | null> {
   const yamlPath = join(taskDir, "task.yaml");
   try {
@@ -59,65 +73,87 @@ async function loadTask(taskDir: string): Promise<Record<string, unknown> | null
 }
 
 /**
- * 模拟 agent 输出（从已有 trajectory 提取）
- * 实际使用时会被 adapter 替换
+ * 回退路径：当 adapter 抽不到任何信号时（缺 meta / 缺 trajectory），
+ * 用 task.yaml 的 expected 占位，保留可观测但不会反向污染评分。
  */
-function simulateAgentOutput(task: Record<string, unknown>): AgentOutput {
-  const expected = (task.expected || {}) as TaskExpected;
+function fallbackAgentOutput(task: Record<string, unknown>): AgentOutput {
   const source = (task.source || {}) as Record<string, unknown>;
   const trajectories = (source.trajectory_sids || []) as Array<Record<string, unknown>>;
   const primary = trajectories.find((t) => t.role === "primary") || trajectories[0];
 
   return {
-    tools_called: expected.must_call_tools || [],
-    files_modified: expected.must_modify_files_in || [],
-    files_created: expected.must_create_files || [],
-    steps: (primary?.steps as number) || (task.estimated_turns as number) || 10,
-    final_response: ((task.instruction as Record<string, string>)?.text || "").slice(0, 500),
-    exit_status: "end_turn",
+    tools_called: [],
+    files_modified: [],
+    files_created: [],
+    steps: (primary?.steps as number) || (task.estimated_turns as number) || 0,
+    final_response: "",
+    exit_status: "fallback_missing_trajectory",
   };
 }
 
-/**
- * 从 task 数据构造 trajectory metrics
- */
-function extractTrajectoryMetrics(task: Record<string, unknown>, output: AgentOutput): TrajectoryMetrics {
-  return {
-    steps: output.steps,
-    tool_calls: output.tools_called.length,
-    unique_tools: [...new Set(output.tools_called)],
-    error_count: 0,
-    retry_count: 0,
-    backtrack_count: 0,
-  };
-}
-
-/**
- * 跑单条 task 的三层评分
- */
 async function runSingleTask(
   task: Record<string, unknown>,
   config: RunConfig,
 ): Promise<TaskResult> {
   const taskId = task.task_id as string;
   const difficulty = (task.difficulty as string) || "medium";
+  const tags = (task.tags as string[]) || [];
   const expected = (task.expected || {}) as TaskExpected;
+  const source = (task.source || {}) as Record<string, unknown>;
+  const trajectorySids = (source.trajectory_sids || []) as Array<{
+    sid: string;
+    role: string;
+    model?: string;
+  }>;
+  const primaryEntry =
+    trajectorySids.find((t) => t.role === "primary") || trajectorySids[0];
+  const primaryModel = primaryEntry?.model || "unknown";
 
-  // 模拟 agent 输出（后续会被真实 adapter 替换）
-  const output = simulateAgentOutput(task);
+  // ── Adapter 抽取 agent output ──
+  let output: AgentOutput;
+  let metrics: TrajectoryMetrics;
 
-  // Layer 1: Outcome
+  const adapter = config.adapter || "sid-code-offline";
+  if (adapter === "sid-code-offline" && config.adapterConfig) {
+    const r = await extractAgentOutput(trajectorySids, config.adapterConfig);
+    output = r.output;
+    metrics = r.metrics;
+    // 离线 adapter 拿不到信号时退化到 fallback（exit_status="unknown" + steps=0）
+    if (output.steps === 0 && output.tools_called.length === 0) {
+      output = fallbackAgentOutput(task);
+      metrics = {
+        steps: output.steps,
+        tool_calls: 0,
+        unique_tools: [],
+        error_count: 0,
+        retry_count: 0,
+        backtrack_count: 0,
+      };
+    }
+  } else {
+    // 占位：simulate 模式（仅本地 debug 用，正式 baseline 不应走这里）
+    output = fallbackAgentOutput(task);
+    metrics = {
+      steps: output.steps,
+      tool_calls: 0,
+      unique_tools: [],
+      error_count: 0,
+      retry_count: 0,
+      backtrack_count: 0,
+    };
+  }
+
+  // Layer 1
   const outcomeResult = gradeOutcome(expected, output);
 
-  // Layer 2: Trajectory
-  const metrics = extractTrajectoryMetrics(task, output);
+  // Layer 2
   const trajectoryResult = gradeTrajectory(metrics, {
     max_steps: expected.max_steps,
     estimated_turns: task.estimated_turns as number,
   });
 
-  // Layer 3: Process (LLM Judge)
-  let processResult;
+  // Layer 3
+  let processResult: GradeResult;
   if (config.skipLlmJudge) {
     processResult = {
       score: 3,
@@ -134,12 +170,13 @@ async function runSingleTask(
     processResult = await gradeProcess(judgeInput, config.judgeConfig);
   }
 
-  // 聚合
-  const { finalScore, breakdown } = aggregateScores(outcomeResult, trajectoryResult, processResult);
+  const { finalScore } = aggregateScores(outcomeResult, trajectoryResult, processResult);
 
   return {
     taskId,
     difficulty,
+    tags,
+    primaryModel,
     scores: {
       outcome: outcomeResult.score,
       trajectory: trajectoryResult.score,
@@ -151,14 +188,16 @@ async function runSingleTask(
       trajectory: trajectoryResult.details,
     },
     reasoning: `L1:${outcomeResult.reasoning} | L2:${trajectoryResult.reasoning} | L3:${processResult.reasoning}`,
+    agentSnapshot: {
+      tools_called: output.tools_called,
+      files_modified: output.files_modified,
+      steps: output.steps,
+      exit_status: output.exit_status,
+    },
   };
 }
 
-/**
- * 主入口：跑 bench
- */
 export async function runBench(config: RunConfig): Promise<TaskResult[]> {
-  // 确定要跑的 task 列表
   let taskIds: string[];
   if (config.splitFile) {
     taskIds = await loadSplit(config.splitFile);
@@ -167,7 +206,7 @@ export async function runBench(config: RunConfig): Promise<TaskResult[]> {
     taskIds = entries.filter((e) => e.startsWith("T"));
   }
 
-  console.log(`Running bench: ${taskIds.length} tasks`);
+  console.log(`Running bench: ${taskIds.length} tasks (adapter=${config.adapter || "sid-code-offline"})`);
   const results: TaskResult[] = [];
 
   for (let i = 0; i < taskIds.length; i++) {
@@ -189,11 +228,13 @@ export async function runBench(config: RunConfig): Promise<TaskResult[]> {
     }
   }
 
-  // 输出汇总
-  const avgFinal = results.reduce((s, r) => s + r.scores.final, 0) / results.length;
-  const avgOutcome = results.reduce((s, r) => s + r.scores.outcome, 0) / results.length;
-  const avgTrajectory = results.reduce((s, r) => s + r.scores.trajectory, 0) / results.length;
-  const avgProcess = results.reduce((s, r) => s + r.scores.process, 0) / results.length;
+  const avg = (fn: (r: TaskResult) => number) =>
+    results.reduce((s, r) => s + fn(r), 0) / Math.max(results.length, 1);
+
+  const avgFinal = avg((r) => r.scores.final);
+  const avgOutcome = avg((r) => r.scores.outcome);
+  const avgTrajectory = avg((r) => r.scores.trajectory);
+  const avgProcess = avg((r) => r.scores.process);
 
   console.log(`\n${"=".repeat(50)}`);
   console.log(`Bench Results: ${results.length} tasks`);
@@ -203,7 +244,6 @@ export async function runBench(config: RunConfig): Promise<TaskResult[]> {
   console.log(`  L2 Trajectory: ${avgTrajectory.toFixed(2)}/5.0`);
   console.log(`  L3 Process:  ${avgProcess.toFixed(2)}/5.0`);
 
-  // 按难度分桶
   const byDifficulty: Record<string, TaskResult[]> = {};
   for (const r of results) {
     if (!byDifficulty[r.difficulty]) byDifficulty[r.difficulty] = [];
@@ -211,11 +251,10 @@ export async function runBench(config: RunConfig): Promise<TaskResult[]> {
   }
   console.log(`\n  By difficulty:`);
   for (const [diff, tasks] of Object.entries(byDifficulty)) {
-    const avg = tasks.reduce((s, r) => s + r.scores.final, 0) / tasks.length;
-    console.log(`    ${diff}: ${avg.toFixed(2)} (n=${tasks.length})`);
+    const a = tasks.reduce((s, r) => s + r.scores.final, 0) / tasks.length;
+    console.log(`    ${diff}: ${a.toFixed(2)} (n=${tasks.length})`);
   }
 
-  // 写结果文件
   const outputPath = join(config.outputDir, `bench-results-${Date.now()}.jsonl`);
   const outputContent = results.map((r) => JSON.stringify(r)).join("\n") + "\n";
   await Bun.write(outputPath, outputContent);
