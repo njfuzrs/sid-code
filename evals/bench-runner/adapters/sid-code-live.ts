@@ -205,6 +205,97 @@ export function findLatestPlanFile(opts: {
 }
 
 /**
+ * 流式读 stdout，检测到 sid-code headless 完成标志（"会话摘要" + 闭合分隔线）后立即返回
+ *
+ * sid-code headless 模式 stdout 时序：
+ * - tool loop 期间 process.stdout 不写任何数据（参考 src/app.ts:786 — 整个 streamBuffer 在 done 后一次性写）
+ * - done 后输出 JSON / text + "会话摘要" 段（src/app.ts:802）
+ * - 所以 idle 不能用来判定完成（30s idle 不代表结束），必须靠 isDone 标志 + maxBytes 兜底
+ *
+ * 退出条件：
+ * - stream EOF（子进程退出 / 被 kill）
+ * - 检测到完成标志（"会话摘要" + 闭合分隔线）
+ * - maxBytes 超限（防御性）
+ *
+ * 暴露给单测用
+ */
+export async function readStreamUntilDone(
+  stream: ReadableStream<Uint8Array> | undefined | null,
+  opts: { maxBytes?: number } = {},
+): Promise<string> {
+  if (!stream) return "";
+  const maxBytes = opts.maxBytes ?? 5_000_000;
+  const decoder = new TextDecoder();
+  const reader = stream.getReader();
+  let buf = "";
+
+  // 检测完成标志：含 "会话摘要" + 之后出现 2 个 20+ 长的 ── 分隔线（box-drawing 字符）
+  const isDone = (s: string): boolean => {
+    const idx = s.indexOf("会话摘要");
+    if (idx < 0) return false;
+    const after = s.slice(idx);
+    return /─{20,}[\s\S]{50,}─{20,}/.test(after);
+  };
+
+  try {
+    while (buf.length < maxBytes) {
+      const result = await reader.read();
+      if (result.done) break;
+      if (result.value) {
+        buf += decoder.decode(result.value, { stream: true });
+      }
+      if (isDone(buf)) break;
+    }
+  } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      // ignore
+    }
+  }
+  return buf;
+}
+
+/**
+ * 限时读取 stream（最多 timeoutMs），到 EOF 或超时即返回当前 buffer
+ *
+ * 暴露给单测用
+ */
+export async function readStreamWithTimeout(
+  stream: ReadableStream<Uint8Array> | undefined | null,
+  timeoutMs: number,
+): Promise<string> {
+  if (!stream) return "";
+  const decoder = new TextDecoder();
+  const reader = stream.getReader();
+  let buf = "";
+  const deadline = Date.now() + timeoutMs;
+
+  try {
+    while (Date.now() < deadline) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      const result = await Promise.race([
+        reader.read(),
+        new Promise<{ timeout: true }>((resolve) =>
+          setTimeout(() => resolve({ timeout: true }), remaining),
+        ),
+      ]);
+      if ("timeout" in result) break;
+      if (result.done) break;
+      if (result.value) buf += decoder.decode(result.value, { stream: true });
+    }
+  } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      // ignore
+    }
+  }
+  return buf;
+}
+
+/**
  * 跑 sid-code CLI 单次任务
  */
 export async function runSidCodeLive(
@@ -314,28 +405,35 @@ export async function runSidCodeLive(
   let stdout = "";
   let stderr = "";
   try {
-    // 先 race 读 stdout/stderr 到 EOF（子进程可能因 trace upload 等后台任务未主动退出，
-    // 但 stdout 已经写完关闭 — adapter 不需等 process.exited，只要 stdout EOF 即可拿数据）
-    const stdoutPromise = proc.stdout ? new Response(proc.stdout).text() : Promise.resolve("");
-    const stderrPromise = proc.stderr ? new Response(proc.stderr).text() : Promise.resolve("");
+    // 流式读 stdout，检测到 sid-code headless 完成标志后主动 kill 子进程
+    // （sid-code 后台 trace upload / fetch keep-alive 等会让 proc.exited 永不返回；
+    //  但只要 "会话摘要" 段已打印 + 出现闭合分隔线，业务逻辑就已结束，可以提前 kill）
+    stdout = await readStreamUntilDone(proc.stdout);
 
-    const [outRes, errRes] = await Promise.all([stdoutPromise, stderrPromise]);
-    stdout = outRes;
-    stderr = errRes;
+    // stderr 独立读到 EOF 或 kill
+    stderr = await readStreamWithTimeout(proc.stderr, 2000);
 
-    // stdout EOF 后，给子进程 3s 自己退出；否则主动 kill（处理 trace uploader 后台未 close 的情况）
-    const softExitMs = 3000;
-    const exitCode = await Promise.race([
-      proc.exited,
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), softExitMs)),
-    ]);
-    if (exitCode === null) {
+    // 主动 kill 子进程（防止后台 handle 持续 keep-alive）
+    if (!timedOut) {
       try {
         proc.kill();
+        setTimeout(() => {
+          try {
+            proc.kill("SIGKILL");
+          } catch {
+            // ignore
+          }
+        }, 1000);
       } catch {
         // ignore
       }
     }
+
+    // 等子进程实际退出（最多 3s，超时仍返回数据）
+    const exitCode = await Promise.race([
+      proc.exited,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
+    ]);
     clearTimeout(hardTimer);
     return buildResult({
       instruction,
