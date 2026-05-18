@@ -1,0 +1,74 @@
+id: case_003
+category: 代码理解
+priority: P0
+created_date: 2026-05-16
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+input:
+  user_query: sid-code 的权限检查器（PermissionChecker）类定义在哪里？它实现的接口叫什么？
+  repo: sid-code
+  repo_commit: b27b546
+  attachments: []
+expected:
+  outcome: locate_permission_checker
+  must_include_any_of:
+  - src/permission/checker.ts
+  - PermissionChecker
+  - Checker
+  must_not_include: []
+  must_call_tools:
+  - grep
+  must_not_call_tools: []
+  must_modify_files_in: []
+  must_not_modify_files:
+  - src/
+  max_steps: 8
+  reference_answer: 'PermissionChecker 类定义在 src/permission/checker.ts:121，实现 src/permission/types.ts:36
+
+    导出的 Checker 接口。这是 sid-code 三阶段权限系统的核心入口。
+
+    '
+rubric:
+  completeness: 同时给出文件路径 + 类名 + 接口名
+  precision: 不要给 src/permission/audit.ts 这种相邻文件作为答案
+  helpfulness: 解释 Checker 接口如何与 6 种 permission mode 配合
+grader:
+- type: assert
+  check: must_include_any_of 至少命中 2 个
+  weight: 1.0
+baseline_scores:
+  sid_code_w0:
+    score: 5
+    run_status: success
+    tested_at: '2026-05-15T18:55:33.175Z'
+    tested_by: anchor_auto_v0
+    transcript_path: evals/raw-outputs/case_003_1778871133167.jsonl
+    notes: 锚点 3/3 命中, 反向违规 0; 人工 D5 复核可调
+  claude_code:
+    score: null
+    run_status: pending
+    tested_at: null
+    tested_by: manual
+    transcript_path: null
+    notes: ''
+  codex:
+    score: null
+    run_status: pending
+    tested_at: null
+    tested_by: manual
+    transcript_path: null
+    notes: ''
+source: personal_exploration_2026_05_16
+notes: '代码理解 4 条之 3。trajectory session=1c530950 给的灵感（用户阅读 spec 04-permission）。
+
+  '
+related_subsystem:
+- permission
+- tool/grep
+gold_annotation:
+  author_score: 5
+  author_reason: 准确识别 tool dispatch 机制，含代码引用
+  annotated_at: '2026-05-18'
