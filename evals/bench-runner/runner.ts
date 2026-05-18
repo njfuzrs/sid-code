@@ -14,6 +14,7 @@ import {
 import { gradeTrajectory, type TrajectoryMetrics } from "./trajectory-grader.ts";
 import { gradeProcess, aggregateScores, type JudgeConfig, type JudgeInput } from "./process-grader.ts";
 import { extractAgentOutput, type AdapterConfig } from "./adapters/sid-code.ts";
+import { runSidCodeLive, type SidCodeLiveConfig } from "./adapters/sid-code-live.ts";
 import { parse as parseYaml } from "yaml";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -28,6 +29,7 @@ export interface RunConfig {
   skipLlmJudge?: boolean; // 跳过 Layer 3（省钱模式）
   adapter?: AdapterName; // 默认 sid-code-offline
   adapterConfig?: AdapterConfig; // 离线 adapter 需要 trajectoryDir / metaFile
+  liveAdapterConfig?: SidCodeLiveConfig; // sid-code-live adapter 配置
 }
 
 export interface TaskResult {
@@ -131,6 +133,13 @@ async function runSingleTask(
         backtrack_count: 0,
       };
     }
+  } else if (adapter === "sid-code-live" && config.liveAdapterConfig) {
+    const instructionText = ((task.instruction as Record<string, string>)?.text ||
+      (task.instruction as unknown as string) ||
+      "").slice(0, 4000);
+    const r = await runSidCodeLive(instructionText, config.liveAdapterConfig);
+    output = r.output;
+    metrics = r.metrics;
   } else {
     // 占位：simulate 模式（仅本地 debug 用，正式 baseline 不应走这里）
     output = fallbackAgentOutput(task);

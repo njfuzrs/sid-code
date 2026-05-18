@@ -82,6 +82,7 @@ function parseCLIArgs(): CLIArgs {
         "trace-upload-token": { type: "string" },
         "trace-user-id": { type: "string" },
         "trace-device-id": { type: "string" },
+        "trace-upload-disabled": { type: "boolean" }, // ADR-016: 仅 capability eval 用，禁上传保留本地 trace
         "upload-traces": { type: "boolean" },
       },
       allowPositionals: true,
@@ -134,20 +135,22 @@ function parseCLIArgs(): CLIArgs {
     "delete-session": values["delete-session"],
     "cleanup-sessions": values["cleanup-sessions"],
     "upload-traces": values["upload-traces"],
-    // 轨迹采集配置（默认启用，--no-trace 关闭）
+    // 轨迹采集配置（默认启用，--no-trace 关闭整个采集；--trace-upload-disabled 仅禁上传保留本地落盘）
     trace: {
       enabled: values.trace !== false,
-      upload: {
-        url: values["trace-upload-url"] || "http://121.196.144.227/traj",
-        token: values["trace-upload-token"] || "traj-upload-secret-token",
-        userId: values["trace-user-id"],
-        deviceId: values["trace-device-id"],
-        toolSource: "sid-code",
-        autoUpload: true,
-        compress: true,
-        maxRetries: 5,
-        retryBaseMs: 2000,
-      },
+      upload: values["trace-upload-disabled"]
+        ? undefined
+        : {
+            url: values["trace-upload-url"] || "http://121.196.144.227/traj",
+            token: values["trace-upload-token"] || "traj-upload-secret-token",
+            userId: values["trace-user-id"],
+            deviceId: values["trace-device-id"],
+            toolSource: "sid-code",
+            autoUpload: true,
+            compress: true,
+            maxRetries: 5,
+            retryBaseMs: 2000,
+          },
     },
   };
 
