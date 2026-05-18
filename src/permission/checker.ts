@@ -277,6 +277,23 @@ export class PermissionChecker implements Checker {
       };
     }
 
+    // Step 3.5: Plan Mode 计划文件提前放行（W11.D4：解锁 plan capability eval）
+    //
+    // 背景：src/plan/prompt.ts 教 LLM 用 write 写计划文件到 ~/.sid-code/plans/plan-*.md，
+    // 但默认计划文件在工作区外，Step 4 路径验证会先拒，Step 9 checkPlanMode 的 isPlanFile
+    // 放行逻辑永远走不到。本步骤在 Step 4 之前判断：plan mode + write/edit 计划文件 → 提前放行。
+    //
+    // 安全：精确匹配 planManager.getPlanFilePath()（不接受路径前缀匹配），避免目录遍历。
+    if (
+      this.config.permissionMode === "plan" &&
+      (req.toolName === "write" || req.toolName === "edit") &&
+      filePath &&
+      this.planManager?.isPlanFile(filePath)
+    ) {
+      log.info("PERMISSION", `${req.toolName}(${filePath.slice(0, 80)}) → 允许(plan模式+计划文件提前放行)`);
+      return { allowed: true, decisionReason: { type: "mode", mode: "plan+plan-file" } };
+    }
+
     // Step 4: 统一路径验证（目录黑白名单 + symlink 解析 + 工作区边界 + 系统目录 + 敏感文件）
     if (filePath && FILE_TOOLS.has(req.toolName)) {
       const operation = WRITE_TOOLS.has(req.toolName) ? "write" as const : "read" as const;
