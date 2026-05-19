@@ -32,7 +32,7 @@ describe("countPlanSteps", () => {
     expect(countPlanSteps("1. 第一\n2. 第二\n3. 第三\n4. 第四")).toBe(4);
   });
 
-  test("混合列表与标题", () => {
+  test("混合列表与标题（W12.D3 修订：有 Step header 时只数 header）", () => {
     const md = `# 计划
 
 ## Step 1: 准备
@@ -43,8 +43,28 @@ describe("countPlanSteps", () => {
 1. 跑测试
 2. 提 PR
 `;
-    // ## Step 1 / ## Step 2 = 2 + "- 装依赖" + "- 改 config" + "1. 跑测试" + "2. 提 PR" = 6
-    expect(countPlanSteps(md)).toBe(6);
+    // W12.D3 修订：发现 "## Step N" header → 只数 header（避免子项重复）
+    // 原逻辑会算 2 + 2 + 2 = 6，新逻辑只数 2 个 step header
+    expect(countPlanSteps(md)).toBe(2);
+  });
+
+  test("无 Step header 但有有序列表 → 数有序列表（W12.D3）", () => {
+    const md = `# 计划
+1. 第一步
+2. 第二步
+- 子项 a
+- 子项 b
+`;
+    expect(countPlanSteps(md)).toBe(2);
+  });
+
+  test("无 Step header 无有序列表 → 退化到无序列表（W12.D3）", () => {
+    const md = `# 计划
+- A
+- B
+- C
+`;
+    expect(countPlanSteps(md)).toBe(3);
   });
 
   test("过滤掉 # H1 一级标题（不是 step）", () => {

@@ -66,3 +66,21 @@ export function buildPlanModeReminder(): string {
 执行计划时遇到工具失败，先用 edit 工具更新计划文件再继续执行。
 </system-reminder>`;
 }
+
+/**
+ * 生成"用户已批准计划"消息（W12.D2 / ADR-017）
+ * 嵌入失败更新执行守则 — 因为 deactivatePlanMode 后系统提示词的 plan prompt
+ * （含阶段 5）会被移除，批准消息是 LLM 进入执行阶段唯一保留的"plan 上下文锚点"
+ *
+ * 用于：TUI 用户批准路径 + headless 自动批准路径（W12.D3 补丁）
+ */
+export function buildPlanApprovedMessage(planFilePath: string): string {
+  return `用户已批准你的计划（位于 ${planFilePath}）。请按计划开始编写代码。
+
+执行守则：如果在执行过程中遇到工具失败（权限拒绝、文件不存在、命令报错等）、发现实际环境与计划假设不一致、或发现计划遗漏关键步骤，**你必须先用 edit 工具更新计划文件 ${planFilePath} 再继续执行**：
+1. 在计划中标注失败步骤（[FAILED] 或 [BLOCKED]）+ 原因
+2. 写出新策略（fallback / 跳过 / 求澄清）
+3. 然后按更新后的计划继续
+
+这是为了让计划反映真实执行过程，不停留在初版乐观估计。`;
+}

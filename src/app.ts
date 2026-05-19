@@ -626,18 +626,12 @@ export class App {
         // W12.D2 / ADR-017：批准消息嵌入失败更新执行守则
         // 因为 deactivatePlanMode 后系统提示词的 plan prompt（含阶段 5）会被移除，
         // 批准消息是 LLM 进入执行阶段唯一保留的"plan 上下文锚点"
+        const { buildPlanApprovedMessage } = await import("./plan/prompt.ts");
         this.ctxMgr.addMessage({
           role: "user",
           content: [{
             type: "text",
-            text: `用户已批准你的计划（位于 ${planPath}）。请按计划开始编写代码。
-
-执行守则：如果在执行过程中遇到工具失败（权限拒绝、文件不存在、命令报错等）、发现实际环境与计划假设不一致、或发现计划遗漏关键步骤，**你必须先用 edit 工具更新计划文件 ${planPath} 再继续执行**：
-1. 在计划中标注失败步骤（[FAILED] 或 [BLOCKED]）+ 原因
-2. 写出新策略（fallback / 跳过 / 求澄清）
-3. 然后按更新后的计划继续
-
-这是为了让计划反映真实执行过程，不停留在初版乐观估计。`,
+            text: buildPlanApprovedMessage(planPath || ""),
           }],
         });
       } else {
@@ -657,9 +651,19 @@ export class App {
       }
     } else {
       // 非 TUI 模式（headless）：自动批准
+      // W12.D3 修正：headless 也注入执行守则（否则 plan_recovery capability eval 永远拿不到指令）
+      const planPath = this.planManager.getPlanFilePath();
       this.planManager.approve();
       await this.deactivatePlanMode();
       log.info("PLAN", "非交互模式，自动批准计划");
+      const { buildPlanApprovedMessage } = await import("./plan/prompt.ts");
+      this.ctxMgr.addMessage({
+        role: "user",
+        content: [{
+          type: "text",
+          text: buildPlanApprovedMessage(planPath || ""),
+        }],
+      });
     }
   }
 

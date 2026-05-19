@@ -13,6 +13,7 @@ import {
   parseFinalResponseFromStdout,
   readTrajectoryFile,
   findLatestPlanFile,
+  countPlanFileUpdates,
 } from "../../evals/bench-runner/adapters/sid-code-live.ts";
 import { mkdirSync, rmSync, writeFileSync, utimesSync } from "node:fs";
 import { join } from "node:path";
@@ -197,5 +198,73 @@ describe("findLatestPlanFile", () => {
     utimesSync(join(dir, "plan-old.md"), oldTime, oldTime);
     const r = findLatestPlanFile({ plansDir: dir, sinceTimestamp: Date.now() - 60_000 });
     expect(r).toBeNull();
+  });
+});
+
+describe("countPlanFileUpdates — plan 文件 write/edit 真命中（W12.D3）", () => {
+  const planPath = "/tmp/plan-test-w12.md";
+
+  test("trajectory 为空 → 0", () => {
+    expect(countPlanFileUpdates({ trajectory: [], planFilePath: planPath })).toBe(0);
+    expect(countPlanFileUpdates({ trajectory: undefined, planFilePath: planPath })).toBe(0);
+  });
+
+  test("planFilePath 为空 → 0", () => {
+    expect(countPlanFileUpdates({ trajectory: [{ message_type: "action", tool_name: "write" }], planFilePath: null })).toBe(0);
+  });
+
+  test("write 命中 plan 文件 → 1", () => {
+    const traj = [
+      { message_type: "action", tool_name: "write", tool_input: { file_path: planPath, content: "# v1" } },
+    ];
+    expect(countPlanFileUpdates({ trajectory: traj, planFilePath: planPath })).toBe(1);
+  });
+
+  test("write + edit 各 1 次命中 plan → 2", () => {
+    const traj = [
+      { message_type: "action", tool_name: "write", tool_input: { file_path: planPath, content: "# v1" } },
+      { message_type: "observation", role: "user" },
+      { message_type: "action", tool_name: "edit", tool_input: { file_path: planPath, content: "# v2" } },
+    ];
+    expect(countPlanFileUpdates({ trajectory: traj, planFilePath: planPath })).toBe(2);
+  });
+
+  test("write 命中其他文件 → 0（非 plan 文件不算）", () => {
+    const traj = [
+      { message_type: "action", tool_name: "write", tool_input: { file_path: "/tmp/other.ts", content: "x" } },
+      { message_type: "action", tool_name: "edit", tool_input: { file_path: "/tmp/other.ts", content: "y" } },
+    ];
+    expect(countPlanFileUpdates({ trajectory: traj, planFilePath: planPath })).toBe(0);
+  });
+
+  test("非 write/edit 工具（read/grep/bash） → 0", () => {
+    const traj = [
+      { message_type: "action", tool_name: "read", tool_input: { file_path: planPath } },
+      { message_type: "action", tool_name: "grep", tool_input: { pattern: "x" } },
+      { message_type: "action", tool_name: "bash", tool_input: { command: "ls" } },
+    ];
+    expect(countPlanFileUpdates({ trajectory: traj, planFilePath: planPath })).toBe(0);
+  });
+
+  test("file_path 缺失 → 跳过该步", () => {
+    const traj = [
+      { message_type: "action", tool_name: "write", tool_input: {} },
+      { message_type: "action", tool_name: "write", tool_input: { file_path: planPath, content: "v1" } },
+    ];
+    expect(countPlanFileUpdates({ trajectory: traj, planFilePath: planPath })).toBe(1);
+  });
+
+  test("路径含 ./ 或 ../ → resolve 后比较仍能匹配", () => {
+    const traj = [
+      { message_type: "action", tool_name: "write", tool_input: { file_path: "/tmp/./plan-test-w12.md", content: "v1" } },
+    ];
+    expect(countPlanFileUpdates({ trajectory: traj, planFilePath: planPath })).toBe(1);
+  });
+
+  test("observation 类型的 step 不计入（防御）", () => {
+    const traj = [
+      { message_type: "observation", role: "user", content: "result", tool_name: "write" },
+    ];
+    expect(countPlanFileUpdates({ trajectory: traj, planFilePath: planPath })).toBe(0);
   });
 });

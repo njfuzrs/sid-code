@@ -116,23 +116,19 @@ function buildInstruction(c: CapabilityCase): { instruction: string; appendSyste
   return { instruction, appendSystemPrompt };
 }
 
-/** 推算 plan 文件 update 次数（recovery 维度专属） */
-function estimatePlanUpdateCount(
-  liveResult: SidCodeLiveResult,
-  planFilePath: string | null,
-): number {
-  if (!planFilePath) return 0;
-  // 起码 1 次（plan 文件存在）
-  // 看 tools_called 序列里对 plan 文件的 Edit 次数（间接估算）
-  let editCount = 0;
-  for (const tool of liveResult.output.tools_called) {
-    if (tool.toLowerCase() === "edit" || tool.toLowerCase() === "write") {
-      editCount++;
-    }
-  }
-  // 保守估计：第一次 Write 是创建 plan，后续 Edit 是更新
-  // 这里没有逐次匹配 file_path 是 plan 文件，只能粗估
-  return Math.min(Math.max(1, editCount), 5);
+/**
+ * 推算 plan 文件 update 次数（recovery 维度专属）
+ *
+ * W12.D3 改动：从 adapter 暴露的 planFileUpdateCount（trajectory 真命中）取真值
+ * 旧版（W11.D2 粗估）：数 tools_called 内的所有 write/edit，无法区分写的是不是 plan 文件
+ *
+ * 兜底：如果 trajectory 缺失（adapter 未读到 session.traj）但 planFilePath 存在
+ *      （plan 文件已落盘但 trace 失败），按 1 算（plan 文件确实被写过 1 次）
+ */
+function planUpdateCountFromAdapter(liveResult: SidCodeLiveResult): number {
+  if (liveResult.planFileUpdateCount > 0) return liveResult.planFileUpdateCount;
+  // tracker miss 兜底：plan 文件存在则至少有过一次 write
+  return liveResult.planFilePath ? 1 : 0;
 }
 
 const judgeConfig: JudgeConfig = {
@@ -213,7 +209,7 @@ for (let i = 0; i < cases.length; i++) {
     }
   }
 
-  const planUpdateCount = estimatePlanUpdateCount(live, live.planFilePath);
+  const planUpdateCount = planUpdateCountFromAdapter(live);
 
   const graderInput: CapabilityGraderInput = {
     expected: c.expected,

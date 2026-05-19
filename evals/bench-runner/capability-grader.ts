@@ -51,36 +51,66 @@ export interface GraderRule {
 }
 
 /**
- * 数 plan 文件的步骤数
+ * 数 plan 文件的步骤数（用于 plan_min_steps / plan_max_steps / premature_exit_max_plan_steps）
  *
- * 启发式：把以下 markdown 行视为"plan step"：
- * - "- " 列表项（top-level，不计算嵌套子项）
- * - "1. " "2. " 等有序列表项
- * - "## Step" / "### Step" / "## Phase" 等小标题
+ * 启发式（W12.D3 修订）：
+ * - 优先匹配 `### 步骤 N` / `### Step N` / `## Phase N` 等显式 step header
+ *   - 如果文档里有 ≥ 1 个这种 header，**只数这些 header**，不再算 bullet（避免子项重复计数）
+ * - 其次匹配 `1. ` `2. ` 等有序列表项
+ *   - 如果有有序列表，按它数
+ * - 最后才退化到 `- ` `* ` 无序列表（无 header 无有序列表时）
+ *
+ * 修订原因（W12.D3 数据）：plan_010 真实 2 步（### 步骤 1 / ### 步骤 2），但 5 个 bullet
+ *   描述子项被当成 step 算成 11 步 → premature_exit 反向断言全 fail，是 grader 噪声。
  *
  * 暴露给单测用
  */
 export function countPlanSteps(planContent: string): number {
   if (!planContent) return 0;
-  const lines = planContent.split("\n");
+  const lines = planContent.split("\n").map((raw) => raw.replace(/\r$/, ""));
+
+  // Layer 1: 显式 step header（### 步骤 N / ## Phase N 等）
+  const stepHeaderRegex = /^#{2,4}\s+(Step|Phase|阶段|步骤|步)/i;
+  let stepHeaderCount = 0;
+  for (const line of lines) {
+    if (stepHeaderRegex.test(line)) stepHeaderCount++;
+  }
+  if (stepHeaderCount > 0) return stepHeaderCount;
+
+  // Layer 2: 有序列表 "1. " / "2. "
+  let orderedCount = 0;
+  for (const line of lines) {
+    if (/^\d+\.\s+\S/.test(line)) orderedCount++;
+  }
+  if (orderedCount > 0) return orderedCount;
+
+  // Layer 3: 无序列表 "- " / "* "（退化路径）
+  let bulletCount = 0;
+  for (const line of lines) {
+    if (/^[-*]\s+\S/.test(line)) bulletCount++;
+  }
+  return bulletCount;
+}
+
+/**
+ * 数 plan 文件所有"行级条目"总和（用于 fidelity_step_ratio 分母）
+ * 旧版 countPlanSteps 的语义保留 — bullet + ordered + step header 全加
+ *
+ * 为什么 fidelity 不用新 countPlanSteps：fidelity 衡量"plan 颗粒度 vs 实际执行步数"，
+ * 用 step header 粗粒度分母会让 ratio 过敏（e.g. 4 个 step header 对应 47 个 actual steps
+ * 算 11.75 远超 2.0 上限，但 plan 本身是合理的 — header 之下还有 28 行 bullet 描述）。
+ * 用"行级条目"作分母更符合"plan 描述了多少粒度操作"的语义。
+ *
+ * 暴露给单测用
+ */
+export function countPlanLineItems(planContent: string): number {
+  if (!planContent) return 0;
+  const lines = planContent.split("\n").map((raw) => raw.replace(/\r$/, ""));
   let count = 0;
-  for (const raw of lines) {
-    const line = raw.replace(/\r$/, "");
-    // top-level 列表项（行首非空白后是 "- " 或 "* "）
-    if (/^[-*]\s+\S/.test(line)) {
-      count++;
-      continue;
-    }
-    // 有序列表 "1. "
-    if (/^\d+\.\s+\S/.test(line)) {
-      count++;
-      continue;
-    }
-    // ## Step / ### Phase 等
-    if (/^#{2,4}\s+(Step|Phase|阶段|步骤|步)/i.test(line)) {
-      count++;
-      continue;
-    }
+  for (const line of lines) {
+    if (/^[-*]\s+\S/.test(line)) count++;
+    else if (/^\d+\.\s+\S/.test(line)) count++;
+    else if (/^#{2,4}\s+(Step|Phase|阶段|步骤|步)/i.test(line)) count++;
   }
   return count;
 }
@@ -144,9 +174,11 @@ export function runCheck(
     case "fidelity_step_ratio_in_range": {
       const min = input.expected.fidelity_step_ratio_min ?? 0;
       const max = input.expected.fidelity_step_ratio_max ?? 999;
-      const ratio = planSteps > 0 ? input.steps / planSteps : 0;
+      // W12.D3：fidelity 用 line items（细粒度）做分母，避免 step header 粗粒度让 ratio 过敏
+      const planLineItems = countPlanLineItems(input.planContent);
+      const ratio = planLineItems > 0 ? input.steps / planLineItems : 0;
       const ok = ratio >= min && ratio <= max;
-      return { check, passed: ok, weight: rule.weight, reason: `actual_steps/plan_steps=${ratio.toFixed(2)} 范围[${min}, ${max}]` };
+      return { check, passed: ok, weight: rule.weight, reason: `actual_steps/plan_line_items=${ratio.toFixed(2)} 范围[${min}, ${max}]` };
     }
     case "premature_exit_max_plan_steps": {
       const max = input.expected.premature_exit_max_plan_steps ?? 3;

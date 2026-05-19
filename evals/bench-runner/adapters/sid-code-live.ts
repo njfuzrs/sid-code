@@ -13,7 +13,7 @@
 import type { AgentOutput } from "../outcome-grader.ts";
 import type { TrajectoryMetrics } from "../trajectory-grader.ts";
 import { analyzeTrajectorySignals } from "./sid-code.ts";
-import { join } from "node:path";
+import { join, resolve as resolvePath } from "node:path";
 import { homedir } from "node:os";
 import { existsSync, readdirSync, statSync, readFileSync } from "node:fs";
 
@@ -49,6 +49,8 @@ export interface SidCodeLiveResult {
   metrics: TrajectoryMetrics;
   sessionDir: string | null;
   planFilePath: string | null;
+  /** plan 文件被 write/edit 成功的次数（从 trajectory 真命中解析；plan_recovery capability 用） */
+  planFileUpdateCount: number;
   /** 子进程 stdout（JSON 模式下含 final assistant content） */
   stdout: string;
   /** 子进程 stderr（debug 用） */
@@ -202,6 +204,46 @@ export function findLatestPlanFile(opts: {
     }
   }
   return bestPath;
+}
+
+/**
+ * 从 trajectory 数 plan 文件被 write/edit 成功的真命中次数
+ * （W12.D3 / ADR-017 §2.5：替代 run-plan-capability.ts 的粗估实现）
+ *
+ * 规则：
+ * - 只数 message_type === "action" 且 tool_name in {"write","edit"} 的步骤
+ * - 必须 tool_input.file_path 与 planFilePath 精确匹配（resolve 后比较）
+ * - 后跟一个 message_type === "observation" 的 step 且 role === "user"
+ *   （observation 通常是工具结果；is_error 字段在 sid-code trace builder 中可能未透传，
+ *    保守起见：只要 observation 出现就视为"工具完成"，不区分错误 — 大部分错误情况下
+ *    sid-code permission 拒绝是 trace 里的 tool_result.is_error=true 也会落 observation；
+ *    实际命中误差由 trace builder 决定，这里采取"宽松计数 + LLM Judge 把关"策略）
+ * - 退化：如果没有 observation 或下一步未知，仍计入（trajectory 末尾的工具调用）
+ *
+ * 暴露给单测用
+ */
+export function countPlanFileUpdates(opts: {
+  trajectory: Array<Record<string, unknown>> | undefined;
+  planFilePath: string | null;
+}): number {
+  if (!opts.planFilePath || !opts.trajectory?.length) return 0;
+  const planResolved = resolvePath(opts.planFilePath);
+
+  let count = 0;
+  for (const step of opts.trajectory) {
+    if (step.message_type !== "action") continue;
+    const tool = (step.tool_name ?? "").toString().toLowerCase();
+    if (tool !== "write" && tool !== "edit") continue;
+    const input = step.tool_input as Record<string, unknown> | undefined;
+    const fp = input?.file_path;
+    if (typeof fp !== "string" || !fp) continue;
+    try {
+      if (resolvePath(fp) === planResolved) count++;
+    } catch {
+      // ignore unresolvable paths
+    }
+  }
+  return count;
 }
 
 /**
@@ -489,6 +531,12 @@ function buildResult(opts: {
     ? analyzeTrajectorySignals(trajectory)
     : { error_count: 0, retry_count: 0, backtrack_count: 0 };
 
+  // W12.D3：从 trajectory 解析 plan 文件真命中次数
+  const planFileUpdateCount = countPlanFileUpdates({
+    trajectory: trajectory as Array<Record<string, unknown>>,
+    planFilePath,
+  });
+
   const finalResponse = parseFinalResponseFromStdout(opts.stdout);
 
   let exitStatus = meta.exit_status || "unknown";
@@ -520,6 +568,7 @@ function buildResult(opts: {
     metrics,
     sessionDir,
     planFilePath,
+    planFileUpdateCount,
     stdout: opts.stdout,
     stderr: opts.stderr,
     exitCode: opts.exitCode,
