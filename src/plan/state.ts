@@ -30,6 +30,8 @@ export class PlanModeManager {
   private listeners: PlanModeListener[] = [];
   /** 进入 plan 模式前的权限模式（退出时恢复） */
   private prePlanMode: string | null = null;
+  /** Plan 文件被 write/edit 成功的时间戳序列（plan_recovery capability 用） */
+  private planFileUpdates: number[] = [];
 
   /** 获取进入 plan 前的权限模式 */
   getPrePlanMode(): string | null {
@@ -91,6 +93,7 @@ export class PlanModeManager {
     const from = this.state;
     this.state = "inactive";
     this.rejectionCount = 0;
+    this.planFileUpdates = [];
     this.emit({ from, to: this.state, planFilePath: this.planFilePath });
   }
 
@@ -107,6 +110,29 @@ export class PlanModeManager {
   isPlanFile(filePath: string): boolean {
     if (!this.planFilePath) return false;
     return resolve(filePath) === resolve(this.planFilePath);
+  }
+
+  // ── plan_recovery capability 用 ──
+
+  /**
+   * 记录一次 plan 文件 write/edit 成功
+   * 仅当 plan mode active（planning / awaiting_approval）时记录，inactive 拒绝
+   * 由 app.ts:handlePlanModeTransitions 在工具执行成功后调用
+   */
+  recordPlanFileWrite(timestamp: number = Date.now()): boolean {
+    if (this.state === "inactive") return false;
+    this.planFileUpdates.push(timestamp);
+    return true;
+  }
+
+  /** 获取 plan 文件被 write/edit 的总次数（含初次 write） */
+  getPlanFileUpdateCount(): number {
+    return this.planFileUpdates.length;
+  }
+
+  /** 获取 plan 文件更新时间戳序列（capability runner 透传给 grader 用） */
+  getPlanFileUpdateHistory(): readonly number[] {
+    return this.planFileUpdates;
   }
 
   // ── 事件监听 ──

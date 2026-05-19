@@ -553,6 +553,22 @@ export class App {
       if (block.name === "exit_plan_mode" && this.planManager.isAwaitingApproval()) {
         await this.handlePlanApproval();
       }
+
+      // plan 文件 write/edit 成功 → 记录 update 计数（plan_recovery capability 用）
+      // W12.D2 / ADR-017：让 grader 能拿到真"plan 更新次数"，而不是粗估 tools_called 数量
+      if (
+        (block.name === "write" || block.name === "edit") &&
+        result &&
+        result.type === "tool_result" &&
+        !result.is_error
+      ) {
+        const input = block.input as { file_path?: string } | undefined;
+        const fp = input?.file_path;
+        if (fp && this.planManager.isPlanFile(fp)) {
+          this.planManager.recordPlanFileWrite(Date.now());
+          log.info("PLAN", `plan 文件 ${block.name} 成功 → update_count=${this.planManager.getPlanFileUpdateCount()}`);
+        }
+      }
     }
   }
 
@@ -607,9 +623,22 @@ export class App {
         await this.deactivatePlanMode();
         log.info("PLAN", "用户批准计划，退出 Plan Mode");
         // 注入批准反馈，让 LLM 知道可以开始执行
+        // W12.D2 / ADR-017：批准消息嵌入失败更新执行守则
+        // 因为 deactivatePlanMode 后系统提示词的 plan prompt（含阶段 5）会被移除，
+        // 批准消息是 LLM 进入执行阶段唯一保留的"plan 上下文锚点"
         this.ctxMgr.addMessage({
           role: "user",
-          content: [{ type: "text", text: "用户已批准你的计划。你现在可以开始按计划编写代码了。" }],
+          content: [{
+            type: "text",
+            text: `用户已批准你的计划（位于 ${planPath}）。请按计划开始编写代码。
+
+执行守则：如果在执行过程中遇到工具失败（权限拒绝、文件不存在、命令报错等）、发现实际环境与计划假设不一致、或发现计划遗漏关键步骤，**你必须先用 edit 工具更新计划文件 ${planPath} 再继续执行**：
+1. 在计划中标注失败步骤（[FAILED] 或 [BLOCKED]）+ 原因
+2. 写出新策略（fallback / 跳过 / 求澄清）
+3. 然后按更新后的计划继续
+
+这是为了让计划反映真实执行过程，不停留在初版乐观估计。`,
+          }],
         });
       } else {
         const canContinue = this.planManager.reject();
