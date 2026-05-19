@@ -14,6 +14,7 @@ import {
   readTrajectoryFile,
   findLatestPlanFile,
   countPlanFileUpdates,
+  readStreamUntilDone,
 } from "../../evals/bench-runner/adapters/sid-code-live.ts";
 import { mkdirSync, rmSync, writeFileSync, utimesSync } from "node:fs";
 import { join } from "node:path";
@@ -266,5 +267,59 @@ describe("countPlanFileUpdates — plan 文件 write/edit 真命中（W12.D3）"
       { message_type: "observation", role: "user", content: "result", tool_name: "write" },
     ];
     expect(countPlanFileUpdates({ trajectory: traj, planFilePath: planPath })).toBe(0);
+  });
+});
+
+describe("readStreamUntilDone — deadline 行为（W12.D4 hotfix）", () => {
+  function makeStream(chunks: string[], intervalMs: number): ReadableStream<Uint8Array> {
+    const encoder = new TextEncoder();
+    let i = 0;
+    return new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        if (i >= chunks.length) {
+          controller.close();
+          return;
+        }
+        await new Promise((r) => setTimeout(r, intervalMs));
+        controller.enqueue(encoder.encode(chunks[i]));
+        i++;
+      },
+    });
+  }
+
+  test("无 deadline 时 stream 自然 EOF → timedOut=false", async () => {
+    const stream = makeStream(["hello", " world"], 10);
+    const { buf, timedOut } = await readStreamUntilDone(stream);
+    expect(timedOut).toBe(false);
+    expect(buf).toBe("hello world");
+  });
+
+  test("deadline 触发立即返回 → timedOut=true", async () => {
+    // 每 200ms 一个 chunk，deadline 50ms → 应在第一个 chunk 之前或之后立即退出
+    const stream = makeStream(["a", "b", "c", "d", "e"], 200);
+    const start = Date.now();
+    const { timedOut } = await readStreamUntilDone(stream, { deadlineMs: 50 });
+    const elapsed = Date.now() - start;
+    expect(timedOut).toBe(true);
+    expect(elapsed).toBeLessThan(300);
+  });
+
+  test("deadline 触发后保留已读 buf", async () => {
+    // 每 30ms 一个 chunk，deadline 100ms → 应读到 2-3 个 chunk
+    const stream = makeStream(["aa", "bb", "cc", "dd", "ee"], 30);
+    const { buf, timedOut } = await readStreamUntilDone(stream, { deadlineMs: 100 });
+    expect(timedOut).toBe(true);
+    expect(buf.length).toBeGreaterThan(0);
+    expect(buf).toContain("aa");
+  });
+
+  test("isDone 在 deadline 之前触发 → timedOut=false", async () => {
+    // 构造含"会话摘要"完成标志的 stream
+    const doneChunk = "────────────────────────────────────────\n会话摘要\n────────────────────────────────────────\n" +
+      "x".repeat(60) + "\n────────────────────────────────────────\n";
+    const stream = makeStream(["prefix ", doneChunk], 10);
+    const { buf, timedOut } = await readStreamUntilDone(stream, { deadlineMs: 5000 });
+    expect(timedOut).toBe(false);
+    expect(buf).toContain("会话摘要");
   });
 });

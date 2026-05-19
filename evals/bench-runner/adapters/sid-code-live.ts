@@ -257,19 +257,26 @@ export function countPlanFileUpdates(opts: {
  * 退出条件：
  * - stream EOF（子进程退出 / 被 kill）
  * - 检测到完成标志（"会话摘要" + 闭合分隔线）
+ * - deadlineMs 触发（W12.D4 hotfix：防 Bun.spawn timeout SIGKILL 后 reader 仍卡住 await read）
  * - maxBytes 超限（防御性）
+ *
+ * W12.D4 hotfix（spec: docs/specs/active/W12-adapter-stability-hotfix.md）：
+ * 之前没有 deadlineMs 时，hardTimer 触发 proc.kill 后 await reader.read() 仍 block —
+ * 子进程被 SIGTERM 后仍可能继续写完当前 chunk，reader loop 永不退出（实测 plan_007 跑 1273s vs 360s timeout）。
  *
  * 暴露给单测用
  */
 export async function readStreamUntilDone(
   stream: ReadableStream<Uint8Array> | undefined | null,
-  opts: { maxBytes?: number } = {},
-): Promise<string> {
-  if (!stream) return "";
+  opts: { maxBytes?: number; deadlineMs?: number } = {},
+): Promise<{ buf: string; timedOut: boolean }> {
+  if (!stream) return { buf: "", timedOut: false };
   const maxBytes = opts.maxBytes ?? 5_000_000;
+  const deadline = opts.deadlineMs != null ? Date.now() + opts.deadlineMs : null;
   const decoder = new TextDecoder();
   const reader = stream.getReader();
   let buf = "";
+  let timedOut = false;
 
   // 检测完成标志：含 "会话摘要" + 之后出现 2 个 20+ 长的 ── 分隔线（box-drawing 字符）
   const isDone = (s: string): boolean => {
@@ -281,11 +288,42 @@ export async function readStreamUntilDone(
 
   try {
     while (buf.length < maxBytes) {
-      const result = await reader.read();
-      if (result.done) break;
-      if (result.value) {
-        buf += decoder.decode(result.value, { stream: true });
+      if (deadline != null && Date.now() >= deadline) {
+        timedOut = true;
+        break;
       }
+
+      let done = false;
+      if (deadline != null) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+          timedOut = true;
+          break;
+        }
+        // race 模式：read() vs deadline 超时
+        const race = await Promise.race([
+          reader.read().then((r) => ({ ...r, __timeout: false as const })),
+          new Promise<{ __timeout: true; done: true; value: undefined }>((resolve) =>
+            setTimeout(() => resolve({ __timeout: true, done: true, value: undefined }), remaining),
+          ),
+        ]);
+        if (race.__timeout) {
+          timedOut = true;
+          break;
+        }
+        done = race.done;
+        if (race.value) {
+          buf += decoder.decode(race.value, { stream: true });
+        }
+      } else {
+        const result = await reader.read();
+        done = result.done;
+        if (result.value) {
+          buf += decoder.decode(result.value, { stream: true });
+        }
+      }
+
+      if (done) break;
       if (isDone(buf)) break;
     }
   } finally {
@@ -295,7 +333,7 @@ export async function readStreamUntilDone(
       // ignore
     }
   }
-  return buf;
+  return { buf, timedOut };
 }
 
 /**
@@ -424,51 +462,31 @@ export async function runSidCodeLive(
     stdout: "pipe",
     stderr: "pipe",
     stdin: "ignore",
+    timeout: timeoutMs,
+    killSignal: "SIGKILL",
   });
 
-  let timedOut = false;
-  const hardTimer = setTimeout(() => {
-    timedOut = true;
-    try {
-      // 先 SIGTERM 给子进程清理机会，1.5s 后还活着就 SIGKILL
-      proc.kill();
-      setTimeout(() => {
-        try {
-          proc.kill("SIGKILL");
-        } catch {
-          // ignore
-        }
-      }, 1500);
-    } catch {
-      // ignore
-    }
-  }, timeoutMs);
+  // W12.D4 hotfix: readStreamUntilDone deadline = spawn timeout + 5s 兜底
+  // Bun.spawn 内置 timeout 会在 timeoutMs 后发 SIGKILL，reader deadline 是二级保险
+  const readerDeadlineMs = timeoutMs + 5_000;
 
   let stdout = "";
   let stderr = "";
   try {
-    // 流式读 stdout，检测到 sid-code headless 完成标志后主动 kill 子进程
-    // （sid-code 后台 trace upload / fetch keep-alive 等会让 proc.exited 永不返回；
-    //  但只要 "会话摘要" 段已打印 + 出现闭合分隔线，业务逻辑就已结束，可以提前 kill）
-    stdout = await readStreamUntilDone(proc.stdout);
+    const { buf, timedOut: streamTimedOut } = await readStreamUntilDone(
+      proc.stdout,
+      { deadlineMs: readerDeadlineMs },
+    );
+    stdout = buf;
 
     // stderr 独立读到 EOF 或 kill
     stderr = await readStreamWithTimeout(proc.stderr, 2000);
 
     // 主动 kill 子进程（防止后台 handle 持续 keep-alive）
-    if (!timedOut) {
-      try {
-        proc.kill();
-        setTimeout(() => {
-          try {
-            proc.kill("SIGKILL");
-          } catch {
-            // ignore
-          }
-        }, 1000);
-      } catch {
-        // ignore
-      }
+    try {
+      proc.kill("SIGKILL");
+    } catch {
+      // ignore — 可能已被 Bun timeout 杀掉
     }
 
     // 等子进程实际退出（最多 3s，超时仍返回数据）
@@ -476,25 +494,28 @@ export async function runSidCodeLive(
       proc.exited,
       new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
     ]);
-    clearTimeout(hardTimer);
+
+    // 判定超时：Bun spawn timeout 触发（signalCode=SIGKILL）或 reader deadline 触发
+    const spawnTimedOut = proc.signalCode === "SIGKILL" && (Date.now() - startTs) >= timeoutMs * 0.9;
+    const timedOut = spawnTimedOut || streamTimedOut;
+
     return buildResult({
       instruction,
       stdout,
       stderr,
-      exitCode: exitCode === null ? 0 : exitCode, // 后台 keep-alive 不算 spawn 失败
+      exitCode: exitCode === null ? 0 : exitCode,
       timedOut,
       startTs,
       trajectoriesDir,
       plansDir: join(home, ".sid-code", "plans"),
     });
   } catch (err) {
-    clearTimeout(hardTimer);
     return buildResult({
       instruction,
       stdout,
       stderr: stderr + `\n[adapter] spawn error: ${String(err).slice(0, 500)}`,
       exitCode: null,
-      timedOut,
+      timedOut: (Date.now() - startTs) >= timeoutMs * 0.9,
       startTs,
       trajectoriesDir,
       plansDir: join(home, ".sid-code", "plans"),
