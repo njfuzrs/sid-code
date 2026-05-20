@@ -1,0 +1,68 @@
+id: case_027
+category: bug修复
+priority: P0
+created_date: 2026-05-20
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: "src/context/manager.ts 里有个 getCompactionLevel 方法，它根据什么条件决定压缩级别？如果 toolCount 为 0 时会返回什么级别？帮我分析一下这个方法的边界行为"
+  repo: sid-code
+  repo_commit: 764e7b9
+
+expected:
+  outcome: analyze_compaction_level_boundary
+  must_include_any_of:
+    - "CompactionLevel"
+    - "getCompactionLevel"
+    - "src/context/manager.ts"
+  must_not_include: []
+  must_call_tools:
+    - read
+  must_not_call_tools: []
+  must_modify_files_in: []
+  must_not_modify_files: []
+  max_steps: 12
+  reference_answer: |
+    getCompactionLevel 方法根据 toolCount 参数决定压缩级别。
+    当 toolCount 为 0 时，返回最低压缩级别（不压缩或轻量压缩）。
+    边界行为：toolCount 越大，压缩越激进。
+
+rubric:
+  completeness: "是否准确描述了 getCompactionLevel 的判断逻辑"
+  precision: "是否正确回答了 toolCount=0 时的返回值"
+  helpfulness: "是否分析了边界条件和各级别的触发阈值"
+
+grader:
+  - type: assert
+    check: "must_include_any_of 至少命中 2 个"
+    weight: 0.5
+  - type: assert
+    check: "must_call_tools 命中 read"
+    weight: 0.5
+
+baseline_scores:
+  sid_code_w0:
+    score: null
+    run_status: pending
+    tested_at: null
+    tested_by: manual
+    transcript_path: null
+    notes: ""
+  claude_code:
+    score: null
+    tested_at: null
+    tested_by: manual
+  codex:
+    score: null
+    tested_at: null
+    tested_by: manual
+
+source: "manual_design_2026_05_20_coverage_gap_context子系统"
+notes: |
+  补充 P0 bug修复类 case，聚焦 context 子系统的边界行为分析。
+  考查 agent 读代码 → 分析边界条件的能力。
+related_subsystem: [context, tool/read]
