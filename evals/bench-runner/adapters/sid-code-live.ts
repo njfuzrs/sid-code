@@ -414,7 +414,7 @@ export async function runSidCodeLive(
   // instruction 必须放在所有 flag 之后，作为 positional 参数被 prompt 接住
   args.push(instruction);
 
-  // 不全量透传 process.env，避免 LLM_MODEL / LLM_BASE_URL 等覆盖用户 ~/.sid-code/config.yaml 的默认值
+  // 不全量透传 process.env，避免 SID_CODE_LLM_MODEL / SID_CODE_LLM_BASE_URL 等覆盖用户 ~/.sid-code/config.yaml 的默认值
   // 只传必要的系统 env，让 sid-code 子进程严格按 config 文件运行
   const baseEnv: Record<string, string> = {};
   const passThroughKeys = [
@@ -443,7 +443,7 @@ export async function runSidCodeLive(
     // 如果调用方显式传了 model/baseUrl/apiKey 才注入对应 env；否则让 sid-code 走 config 默认
     ...(config.apiKey ? { ANTHROPIC_API_KEY: config.apiKey } : {}),
     ...(config.baseUrl
-      ? { LLM_BASE_URL: config.baseUrl, ANTHROPIC_BASE_URL: config.baseUrl }
+      ? { SID_CODE_LLM_BASE_URL: config.baseUrl, ANTHROPIC_BASE_URL: config.baseUrl }
       : {}),
     ...(config.env || {}),
   };

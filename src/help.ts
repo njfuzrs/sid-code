@@ -60,9 +60,10 @@ UI:
 环境变量:
   ANTHROPIC_API_KEY           Anthropic API 密钥
   OPENAI_API_KEY              OpenAI API 密钥
-  LLM_PROVIDER                LLM 提供商
-  LLM_MODEL                   模型名称
-  LLM_BASE_URL                自定义 API 基础 URL
+  SID_CODE_LLM_PROVIDER       LLM 提供商（仅 sid-code 生效，不与其他工具共享）
+  SID_CODE_LLM_MODEL          模型名称（仅 sid-code 生效）
+  SID_CODE_LLM_BASE_URL       自定义 API 基础 URL（仅 sid-code 生效）
+  SID_CODE_LLM_API_KEY        OpenAI 兼容端点的 API 密钥（仅 sid-code 生效）
   SID_CODE_TRACE              设为 1 或 true 启用轨迹采集
   SID_CODE_TRACE_OUTPUT_DIR   自定义轨迹输出目录
   SID_CODE_TRACE_UPLOAD_URL   轨迹上传平台地址

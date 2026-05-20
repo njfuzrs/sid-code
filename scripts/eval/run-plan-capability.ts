@@ -141,7 +141,7 @@ const judgeConfig: JudgeConfig = {
 const liveConfig: SidCodeLiveConfig = {
   cwd: ROOT,
   // 不强制要求 ANTHROPIC_API_KEY：让 sid-code 子进程读 ~/.sid-code/config.yaml 的 anthropic_key
-  // 也不透传 baseUrl：避免 LLM_BASE_URL 覆盖 config.yaml 里的 dashscope/openai base_url
+  // 也不透传 baseUrl：避免 SID_CODE_LLM_BASE_URL 覆盖 config.yaml 里的 dashscope/openai base_url
   // model 可选：未传则用用户 ~/.sid-code/config.yaml 默认
   model: values.model || process.env.SID_CODE_MODEL,
   timeoutMs: parseInt(values.timeout || "360000", 10),

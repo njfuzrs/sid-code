@@ -500,11 +500,11 @@ async function loadConfigFile(): Promise<Partial<Config>> {
 function loadFromEnv(): Partial<Config> {
   const env = process.env;
   const base: Partial<Config> = {
-    provider: env.LLM_PROVIDER,
-    model: env.LLM_MODEL,
-    baseURL: env.LLM_BASE_URL,
+    provider: env.SID_CODE_LLM_PROVIDER,
+    model: env.SID_CODE_LLM_MODEL,
+    baseURL: env.SID_CODE_LLM_BASE_URL,
     anthropicKey: env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN,
-    openaiKey: env.OPENAI_API_KEY || env.LLM_API_KEY,
+    openaiKey: env.OPENAI_API_KEY || env.SID_CODE_LLM_API_KEY,
   };
 
   // trace 环境变量
