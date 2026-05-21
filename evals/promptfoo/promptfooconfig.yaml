@@ -1,0 +1,65 @@
+# yaml-language-server: $schema=https://promptfoo.dev/config-schema.json
+#
+# Phase 6.1 Promptfoo Spike — 横向对比可视化主入口
+# 决策依据: docs/eval/investigations/eval-viz-framework-selection.md
+#
+# 跑法:
+#   1. 生成 tests
+#      bun run evals/promptfoo/lib/yaml-to-tests.ts
+#
+#   2. 跑 eval(默认 case_001 + case_002 + case_005 × sid-code-live + claude-code)
+#      cd evals/promptfoo && bunx promptfoo eval
+#
+#   3. 浏览器矩阵
+#      cd evals/promptfoo && bunx promptfoo view
+#
+# 说明:
+#   - prompts 直接透传 user_query(不二次包装),保持与 sid-code/claude CLI 输入一致
+#   - providers 用 exec: 包装 CLI,详见 providers/*.ts
+#   - tests 由 lib/yaml-to-tests.ts 从 evals/p0-core/case_*.yaml 生成(gitignore)
+#   - llm-rubric 默认 grader 用环境里现成的 Anthropic / OpenAI key,详见
+#     https://www.promptfoo.dev/docs/configuration/expected-outputs/model-graded/llm-rubric
+
+description: "sid-code 横向对比 v2 — Promptfoo 驱动(3 case × 2 provider spike)"
+
+prompts:
+  - "{{user_query}}"
+
+providers:
+  - id: "exec: bun run providers/sid-code-live.ts"
+    label: sid-code-live
+    config:
+      timeoutMs: 360000
+      maxTurns: 30
+      # model: claude-opus-4-7  # 留空 = 用 ~/.sid-code/config.yaml 默认
+
+  - id: "exec: bun run providers/claude-code.ts"
+    label: claude-code
+    config:
+      timeoutMs: 360000
+      maxTurns: 30
+      skipPermissions: true
+      # model: claude-opus-4-7  # 留空 = 用 claude CLI 默认
+
+# 默认 LLM-as-judge 用 Anthropic 的 sonnet(与现有 calibration-v3 校准基线一致)
+# 如果环境只有 OPENAI_API_KEY,会回退到 gpt-5
+defaultTest:
+  options:
+    provider:
+      id: anthropic:messages:claude-sonnet-4-5-20250929
+      config:
+        temperature: 0
+        max_tokens: 1024
+
+# tests 由 yaml-to-tests.ts 生成(独立文件,方便差量更新 / gitignore)
+tests: tests/generated-tests.yaml
+
+# 输出
+outputPath:
+  - ../_reports/promptfoo-latest.json
+  - ../_reports/promptfoo-latest.csv
+
+# 并发:本地 CLI 包装 IO 重,2 并发足够
+evaluateOptions:
+  maxConcurrency: 2
+  repeat: 1

@@ -1,0 +1,10 @@
+# promptfoo 本地缓存与运行产物
+.promptfoo/
+output/
+*.cache.json
+
+# 由 lib/yaml-to-tests.ts 生成,不入库
+tests/generated-tests.yaml
+
+# Bun spawn 临时日志
+*.log

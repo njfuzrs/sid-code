@@ -1,0 +1,111 @@
+Description,user_query,case_id,category,[sid-code-live] {{user_query}},Status,Score,Named Scores,Grader Reason,Comment,[claude-code] {{user_query}},Status,Score,Named Scores,Grader Reason,Comment
+[case_001] 代码理解 — sid-code 的主 agent 循环（agentic while-loop）入口在哪个文件里？类名是什么？请定位并简...,sid-code 的主 agent 循环（agentic while-loop）入口在哪个文件里？类名是什么？请定位并简要解释这个类的核心职责。,case_001,代码理解,[ERROR] sid-code-live TIMEOUT after 360000ms,FAIL,0.29,"{""anchor_hit"":0,""anchor_violation"":1,""rubric_score"":0}","Output is an error message indicating a timeout, not an answer to the question. Does not contain any of the required keywords (src/agent/loop.ts, AgentLoopRunner) and provides no information about the agent loop entry point or class responsibilities.",,"# Agentic While-Loop 入口定位
+
+sid-code 的主 agent 循环采用**三层架构**，不是单一 class 包揽：
+
+## 入口 class：`App`（`src/app.ts:81`）
+
+最上层入口，由 `cli.ts` 实例化并调用 `runHeadless()` / `runTUI()`。核心职责：
+
+- **依赖装配**：在构造函数里组装 `Provider` / `ContextManager` / `ToolRegistry` / `SessionState` / `HookSystem` / `QuotaManager` / `TokenMeter` / `BudgetTracker` / `ModelFallback` / `ThinkingManager` 等所有单例
+- **生命周期管理**：`init()`（幂等加载系统提示词 + CLAUDE.md 监听 + telemetry）、`runHeadless()`、`runTUI()`、`restoreSession()`
+- **横切关注点**：权限确认回调（TUI/headless 分支）、Plan Mode 状态机（`activatePlanMode` / `deactivatePlanMode` / `handlePlanApproval`）、JIT 上下文发现、`@path` 引用展开、`watchCLAUDEmd` 热更新
+- **委托而非实现循环**：构造 `QueryEngine` 时把 `executeTools` / `processStream` / `autoCompact` / `handleContextOverflow` 作为回调注入（`src/app.ts:186-203`）
+
+## 中间层 class：`QueryEngine`（`src/query/engine.ts:62`）
+
+会话层。`submitMessage()` 返回 `AsyncGenerator<QueryEngineEvent>`，负责用户输入预处理（hook 拦截、thinking hint）、流式文本回调桥接，然后转交给真正的循环。
+
+## 真正的 while-loop：`queryLoop`（`src/query/loop.ts:57`）
+
+不是 class，是 async generator 函数：
+
+```text
+while (state.turnCount < state.maxTurns)   // 第 74 行
+  ├─ stop_reason === ""end_turn"" → break    // 第 382 行
+  └─ stop_reason === ""tool_use"" → 执行工具，注入 tool_result，继续 // 第 428 行
+```
+
+## 简短结论
+
+- 用户视角的""入口类""：**`App`**（`src/app.ts`）
+- 真正跑 while-loop 的地方：`queryLoop` 函数（`src/query/loop.ts:74`），由 `QueryEngine` 消费
+
+`CLAUDE.md` 中说的 ""主循环（委托 AgentLoopRunner）"" 与当前实现已经不一致——实际是 `App → QueryEngine → queryLoop` 三层，没有 `AgentLoopRunner` 这个名字了。",FAIL,0.29,"{""anchor_hit"":1,""anchor_violation"":0,""rubric_score"":0}","Output identifies src/query/loop.ts as the main agentic while-loop, which is explicitly prohibited. The reference answer requires src/agent/loop.ts and AgentLoopRunner class. Output contains none of the required keywords and presents the wrong file as the answer.",
+[case_002] 代码理解 — sid-code 实现了哪 6 个内置工具？请列出每个工具对应的源文件路径，并用一句话说明各自职责。,sid-code 实现了哪 6 个内置工具？请列出每个工具对应的源文件路径，并用一句话说明各自职责。,case_002,代码理解,[ERROR] sid-code-live TIMEOUT after 360000ms,FAIL,0.00,"{""anchor_hit"":0,""rubric_score"":0}",输出仅包含错误信息 'TIMEOUT after 360000ms'，未回答用户问题，完全没有列出 sid-code 的 6 个内置工具及其源文件路径，也没有命中任何必须关键词（read.ts/write.ts/edit.ts/bash.ts/grep.ts/glob.ts），完全偏题,,"sid-code 的 6 个内置工具如下（均位于 `src/tool/` 下）：
+
+| 工具 | 源文件 | 职责 |
+|---|---|---|
+| **read** | `src/tool/read.ts` | 读取文件内容，支持行偏移与限制；读取后会登记到 `FileReadTracker`，供 Edit 工具校验""先读后改""约束。 |
+| **write** | `src/tool/write.ts` | 写入/覆盖文件，自动创建父目录；带省略占位符检测以防 LLM 输出 `// ...` 之类的截断内容。 |
+| **edit** | `src/tool/edit.ts` | 基于字符串查找替换修改文件，支持精确/灵活/正则/模糊四级降级匹配，要求文件必须先被 Read。 |
+| **bash** | `src/tool/bash.ts` | 执行 shell 命令，含 30000 字符输出截断、60s 空闲超时、AbortSignal、后台进程跟踪和只读/破坏性命令识别。 |
+| **grep** | `src/tool/grep.ts` | 基于 ripgrep 的内容搜索，支持 output_mode、上下文行数、文件类型过滤。 |
+| **glob** | `src/tool/glob.ts` | 按 glob 模式匹配文件名，结果按 mtime 降序（最近编辑优先），默认忽略 `node_modules`/`.git`/`dist`。 |
+
+注：`src/tool/` 下还有 `ls`、`read_many`、`web_fetch`、`web_search`、`memory`、`enter_plan_mode`/`exit_plan_mode` 等扩展工具，但 CLAUDE.md 定义的""6 个内置工具""特指上述 read/write/edit/bash/grep/glob。",PASS,1.00,"{""anchor_hit"":1,""rubric_score"":1}",All assertions passed,
+[case_005] bug修复 — 我在跑测试时遇到报错：`TypeError: Cannot read properties of undefined (...,"我在跑测试时遇到报错：`TypeError: Cannot read properties of undefined (reading 'undo')`，发生在我执行 /undo 命令的时候。请你定位 /undo 命令的实现并解释这个错误最可能的根因（不要改代码,我先了解情况）。",case_005,bug修复,[ERROR] sid-code-live TIMEOUT after 360000ms,FAIL,0.00,"{""anchor_hit"":0,""rubric_score"":0}","Output is an error timeout message, not a diagnostic response about the undo command bug. Contains none of the required keywords (src/command/builtins.ts, UndoCommand, CheckpointManager, cpMgr) and provides no analysis of the TypeError root cause or troubleshooting steps.",,"已定位到 `/undo` 命令实现，下面给出根因分析。
+
+## 调用链
+
+`/undo` 输入 → `app.ts:1225` 命令分发 → `UndoCommand.execute` (`src/command/builtins.ts:367-403`) → 关键三行：
+
+```ts
+// builtins.ts:368-372
+const { getCheckpointManager } = await import(""../checkpoint/manager.ts"");
+const cpMgr = await getCheckpointManager(
+  ctx.sessionState.sessionId,
+  ctx.config.checkpoint,
+);
+// ...
+const result = await cpMgr.undo();   // ← 报错最可能在这一行
+```
+
+`getCheckpointManager` 工厂在 `src/checkpoint/manager.ts:722-731`：
+
+```ts
+let globalCheckpointManager: CheckpointManager | null = null;
+
+export async function getCheckpointManager(sessionId, config?) {
+  if (!globalCheckpointManager || (globalCheckpointManager as any).sessionId !== sessionId) {
+    globalCheckpointManager = new CheckpointManager(sessionId, config);
+    await globalCheckpointManager.init();
+  }
+  return globalCheckpointManager;
+}
+```
+
+## 错误根因解读
+
+`TypeError: Cannot read properties of undefined (reading 'undo')` 中 `'undo'` 是被访问的属性名，所以**点号左边那个对象是 `undefined`**。结合调用链，候选只有一个：
+
+**`cpMgr` 在执行到 `cpMgr.undo()` / `cpMgr.undoFile(...)` 时是 `undefined`**。
+
+但生产路径下 `getCheckpointManager` 一定返回 `CheckpointManager` 实例（要么 `new` 出来，要么命中缓存）。它不会返回 `undefined`，最多在 `init()` 里抛错。所以**生产代码本身不会触发这个错误**，问题几乎一定来自测试侧。
+
+最可能的三种测试场景（按可能性排序）：
+
+1. **测试 mock 掉了模块，但 mock 返回值不对**。例如：
+   ```ts
+   mock.module(""../checkpoint/manager.ts"", () => ({
+     getCheckpointManager: async () => undefined,        // 或漏写 return
+     // 或：getCheckpointManager: () => ({}),  也会 .undo 是 undefined
+   }));
+   ```
+   `await import(...)` 拿到 mock 后，`cpMgr` 直接是 `undefined`。
+
+2. **测试只 mock 了部分 export，键名拼错**。比如 mock 里写成 `getCheckpointmanager`（小写 m）或 `getCheckpointMgr`，解构出的 `getCheckpointManager` 就是 `undefined`，调用它会先抛 `is not a function`——所以这条路其实更可能命中的是另一种错。如果错误确实是 `reading 'undo'`，则应排除此项，看回 1。
+
+3. **测试直接 stub 了 `getCheckpointManager` 实现**（比如 spy 时 `mockImplementation(() => undefined)` / `mockResolvedValue(undefined)`）。
+
+排除的可能性：
+- `ctx.sessionState` / `ctx.config` 为 `undefined`：会先抛 `reading 'sessionId'` 或 `reading 'checkpoint'`，不会是 `'undo'`。
+- `config.checkpoint.enabled = false`：`undo()` 内部会走 `if (!this.config.enabled) return null`，命令拿到 `null` 然后返回 `""没有可撤销的修改""`，不会抛错。
+- 模块导出名变了：会是 `getCheckpointManager is not a function`，不是 `'undo'`。
+
+## 建议你确认两点
+
+1. **完整堆栈**：报错堆栈第一行是 `builtins.ts:392`（`cpMgr.undo()`）还是 `builtins.ts:378`（`cpMgr.undoFile()`）？两者都说明 `cpMgr` 是 `undefined`，但能确认是哪条分支命中。
+2. **测试文件里 mock 了什么**：搜测试文件中 `mock.module`、`spyOn`、`vi.mock` 之类，看是不是 mock 了 `checkpoint/manager.ts` 但返回值/键名不对。
+
+如果你贴一下报错完整堆栈和对应的测试文件，我可以进一步精确定位。",PASS,1.00,"{""anchor_hit"":1,""rubric_score"":1}",All assertions passed,
