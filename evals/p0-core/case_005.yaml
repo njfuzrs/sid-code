@@ -65,7 +65,7 @@ baseline_scores:
   claude_code:
     score: 5
     run_status: success
-    tested_at: 2026-05-21T16:44:35.682Z
+    tested_at: 2026-05-21T16:57:24.606Z
     tested_by: promptfoo
     transcript_path: null
     notes: ""
@@ -81,7 +81,7 @@ baseline_scores:
   sid_code_live:
     score: 5
     run_status: success
-    tested_at: 2026-05-21T16:44:35.682Z
+    tested_at: 2026-05-21T16:57:24.606Z
     tested_by: promptfoo
     transcript_path: null
     notes: ""

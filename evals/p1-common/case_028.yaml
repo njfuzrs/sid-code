@@ -9,7 +9,8 @@ graduated_at: null
 holdout: false
 
 input:
-  user_query: "帮我追踪 MemoryStore 的完整调用链：从 src/cli.ts 入口到 src/app.ts 再到 src/memory/store.ts，列出每个文件中 MemoryStore 被 import 和实例化的具体行号，以及数据流向（哪里读、哪里写）"
+  user_query: "帮我追踪 MemoryStore 的完整调用链：从 src/cli.ts 入口到 src/app.ts 再到
+    src/memory/store.ts，列出每个文件中 MemoryStore 被 import 和实例化的具体行号，以及数据流向（哪里读、哪里写）"
   repo: sid-code
   repo_commit: 764e7b9
 
@@ -57,16 +58,26 @@ baseline_scores:
     transcript_path: null
     notes: ""
   claude_code:
-    score: null
-    tested_at: null
-    tested_by: manual
+    score: 5
+    run_status: success
+    tested_at: 2026-05-21T16:57:24.606Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: ""
   codex:
     score: null
     tested_at: null
     tested_by: manual
+  sid_code_live:
+    score: 5
+    run_status: success
+    tested_at: 2026-05-21T16:57:24.606Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: ""
 
 source: "manual_design_2026_05_20_coverage_gap_多文件协调"
 notes: |
   补充 P1 多文件协调类 case。考查 agent 跨文件追踪调用链的能力。
   涉及 3 个文件的 import/实例化关系追踪。
-related_subsystem: [memory, agent]
+related_subsystem: [ memory, agent ]

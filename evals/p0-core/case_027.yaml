@@ -9,7 +9,8 @@ graduated_at: null
 holdout: false
 
 input:
-  user_query: "src/context/manager.ts 里有个 getCompactionLevel 方法，它根据什么条件决定压缩级别？如果 toolCount 为 0 时会返回什么级别？帮我分析一下这个方法的边界行为"
+  user_query: "src/context/manager.ts 里有个 getCompactionLevel 方法，它根据什么条件决定压缩级别？如果
+    toolCount 为 0 时会返回什么级别？帮我分析一下这个方法的边界行为"
   repo: sid-code
   repo_commit: 764e7b9
 
@@ -53,16 +54,26 @@ baseline_scores:
     transcript_path: null
     notes: ""
   claude_code:
-    score: null
-    tested_at: null
-    tested_by: manual
+    score: 4.9
+    run_status: success
+    tested_at: 2026-05-21T16:57:24.606Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: ""
   codex:
     score: null
     tested_at: null
     tested_by: manual
+  sid_code_live:
+    score: 5
+    run_status: success
+    tested_at: 2026-05-21T16:57:24.606Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: ""
 
 source: "manual_design_2026_05_20_coverage_gap_context子系统"
 notes: |
   补充 P0 bug修复类 case，聚焦 context 子系统的边界行为分析。
   考查 agent 读代码 → 分析边界条件的能力。
-related_subsystem: [context, tool/read]
+related_subsystem: [ context, tool/read ]

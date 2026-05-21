@@ -10,7 +10,8 @@ holdout: false
 holdout_reason: null
 
 input:
-  user_query: "如果某个 MCP server 启动失败（比如配置错误 / 进程启动超时），sid-code 的 MCPManager 会怎么处理?是会让整个 sid-code 启动失败,还是降级继续?请定位错误处理代码。"
+  user_query: "如果某个 MCP server 启动失败（比如配置错误 / 进程启动超时），sid-code 的 MCPManager
+    会怎么处理?是会让整个 sid-code 启动失败,还是降级继续?请定位错误处理代码。"
   repo: sid-code
   repo_commit: b27b546
   attachments: []
@@ -50,11 +51,40 @@ grader:
     weight: 1.0
 
 baseline_scores:
-  sid_code_w0: { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
-  claude_code: { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
-  codex:       { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
+  sid_code_w0:
+    {
+      score: null,
+      run_status: pending,
+      tested_at: null,
+      tested_by: manual,
+      transcript_path: null,
+      notes: ""
+    }
+  claude_code:
+    score: 4.9
+    run_status: success
+    tested_at: 2026-05-21T16:57:24.606Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: ""
+  codex:
+    {
+      score: null,
+      run_status: pending,
+      tested_at: null,
+      tested_by: manual,
+      transcript_path: null,
+      notes: ""
+    }
+  sid_code_live:
+    score: 5
+    run_status: success
+    tested_at: 2026-05-21T16:57:24.606Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: ""
 
 source: "personal_exploration_2026_05_16"
 notes: |
   MCP 工具调用 2 条之 2。容错路径理解。
-related_subsystem: [mcp, tool/grep]
+related_subsystem: [ mcp, tool/grep ]

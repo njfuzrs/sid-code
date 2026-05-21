@@ -10,7 +10,9 @@ holdout: false
 holdout_reason: null
 
 input:
-  user_query: "请你给 src/llm/quota.ts 的 QuotaManager.check() 方法补一条边界测试:当 currentCost 恰好等于阈值时,断言返回值符合实际行为。先看 tests/llm/quota.test.ts 现有测试结构,然后给我新增的 it() 块代码,我自己去贴。"
+  user_query: "请你给 src/llm/quota.ts 的 QuotaManager.check() 方法补一条边界测试:当 currentCost
+    恰好等于阈值时,断言返回值符合实际行为。先看 tests/llm/quota.test.ts 现有测试结构,然后给我新增的 it()
+    块代码,我自己去贴。"
   repo: sid-code
   repo_commit: b27b546
   attachments: []
@@ -54,11 +56,40 @@ grader:
     weight: 1.0
 
 baseline_scores:
-  sid_code_w0: { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
-  claude_code: { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
-  codex:       { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
+  sid_code_w0:
+    {
+      score: null,
+      run_status: pending,
+      tested_at: null,
+      tested_by: manual,
+      transcript_path: null,
+      notes: ""
+    }
+  claude_code:
+    score: 5
+    run_status: success
+    tested_at: 2026-05-21T16:57:24.606Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: ""
+  codex:
+    {
+      score: null,
+      run_status: pending,
+      tested_at: null,
+      tested_by: manual,
+      transcript_path: null,
+      notes: ""
+    }
+  sid_code_live:
+    score: 5
+    run_status: success
+    tested_at: 2026-05-21T16:57:24.606Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: ""
 
 source: "personal_exploration_2026_05_16"
 notes: |
   测试编写 2 条之 1。与 case_007 配对（先诊断,后补测试）。
-related_subsystem: [llm, tool/read]
+related_subsystem: [ llm, tool/read ]

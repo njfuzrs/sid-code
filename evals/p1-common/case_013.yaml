@@ -10,7 +10,8 @@ holdout: false
 holdout_reason: null
 
 input:
-  user_query: "我想给 src/llm/provider.ts 的 Provider 接口加一个新的可选字段 displayName?: string。涉及哪些 Provider 实现需要更新？请帮我列出来,但先不要动手。"
+  user_query: "我想给 src/llm/provider.ts 的 Provider 接口加一个新的可选字段 displayName?:
+    string。涉及哪些 Provider 实现需要更新？请帮我列出来,但先不要动手。"
   repo: sid-code
   repo_commit: b27b546
   attachments: []
@@ -54,11 +55,40 @@ grader:
     weight: 1.0
 
 baseline_scores:
-  sid_code_w0: { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
-  claude_code: { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
-  codex:       { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
+  sid_code_w0:
+    {
+      score: null,
+      run_status: pending,
+      tested_at: null,
+      tested_by: manual,
+      transcript_path: null,
+      notes: ""
+    }
+  claude_code:
+    score: 4.7
+    run_status: success
+    tested_at: 2026-05-21T16:57:24.606Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: ""
+  codex:
+    {
+      score: null,
+      run_status: pending,
+      tested_at: null,
+      tested_by: manual,
+      transcript_path: null,
+      notes: ""
+    }
+  sid_code_live:
+    score: 5
+    run_status: success
+    tested_at: 2026-05-21T16:57:24.606Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: ""
 
 source: "personal_exploration_2026_05_16"
 notes: |
   多文件协调 2 条之 1。考查"接口变更影响面分析"。
-related_subsystem: [llm, tool/grep]
+related_subsystem: [ llm, tool/grep ]

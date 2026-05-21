@@ -9,7 +9,9 @@ graduated_at: null
 holdout: false
 
 input:
-  user_query: "帮我看一下 src/memory/store.ts 的 MemoryStore 类，列出它的所有公开方法（load/set/get/delete/list），每个方法的参数和返回值是什么，以及这个类在 src/app.ts 和 src/cli.ts 中是怎么被使用的"
+  user_query: "帮我看一下 src/memory/store.ts 的 MemoryStore
+    类，列出它的所有公开方法（load/set/get/delete/list），每个方法的参数和返回值是什么，以及这个类在 src/app.ts 和
+    src/cli.ts 中是怎么被使用的"
   repo: sid-code
   repo_commit: 764e7b9
 
@@ -61,16 +63,26 @@ baseline_scores:
     transcript_path: null
     notes: ""
   claude_code:
-    score: null
-    tested_at: null
-    tested_by: manual
+    score: 5
+    run_status: success
+    tested_at: 2026-05-21T16:57:24.606Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: ""
   codex:
     score: null
     tested_at: null
     tested_by: manual
+  sid_code_live:
+    score: 5
+    run_status: success
+    tested_at: 2026-05-21T16:57:24.606Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: ""
 
 source: "manual_design_2026_05_20_coverage_gap_文档生成"
 notes: |
   补充 category=文档生成 的覆盖（原 25 条中缺失此类别）。
   考查 agent 读代码 → 生成结构化 API 文档的能力。
-related_subsystem: [memory, tool/read]
+related_subsystem: [ memory, tool/read ]

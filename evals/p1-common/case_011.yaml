@@ -10,7 +10,8 @@ holdout: false
 holdout_reason: null
 
 input:
-  user_query: "我想把 src/llm/quota.ts 里 QuotaConfig 接口的字段 alertLevels 重命名为 alertThresholds（仅这个字段，其他不动）。请你不要直接改，先告诉我需要改哪些文件、有多少处引用。"
+  user_query: "我想把 src/llm/quota.ts 里 QuotaConfig 接口的字段 alertLevels 重命名为
+    alertThresholds（仅这个字段，其他不动）。请你不要直接改，先告诉我需要改哪些文件、有多少处引用。"
   repo: sid-code
   repo_commit: b27b546
   attachments: []
@@ -49,11 +50,40 @@ grader:
     weight: 1.0
 
 baseline_scores:
-  sid_code_w0: { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
-  claude_code: { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
-  codex:       { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
+  sid_code_w0:
+    {
+      score: null,
+      run_status: pending,
+      tested_at: null,
+      tested_by: manual,
+      transcript_path: null,
+      notes: ""
+    }
+  claude_code:
+    score: 2
+    run_status: success
+    tested_at: 2026-05-21T16:57:24.606Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: ""
+  codex:
+    {
+      score: null,
+      run_status: pending,
+      tested_at: null,
+      tested_by: manual,
+      transcript_path: null,
+      notes: ""
+    }
+  sid_code_live:
+    score: 4.7
+    run_status: success
+    tested_at: 2026-05-21T16:57:24.606Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: ""
 
 source: "personal_exploration_2026_05_16"
 notes: |
   重构 2 条之 1。考查"先评估影响再改"的顺序。
-related_subsystem: [llm, tool/grep]
+related_subsystem: [ llm, tool/grep ]

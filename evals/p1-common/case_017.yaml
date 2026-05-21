@@ -10,7 +10,8 @@ holdout: false
 holdout_reason: null
 
 input:
-  user_query: "我想把 package.json 里 yaml 包从 ^2.8.2 升到最新稳定版,有什么风险?会不会影响现在 evals/_template.yaml 的解析?请先 grep 一下 yaml 包在 src/ 和 scripts/ 的使用点,再给我评估。"
+  user_query: "我想把 package.json 里 yaml 包从 ^2.8.2 升到最新稳定版,有什么风险?会不会影响现在
+    evals/_template.yaml 的解析?请先 grep 一下 yaml 包在 src/ 和 scripts/ 的使用点,再给我评估。"
   repo: sid-code
   repo_commit: b27b546
   attachments: []
@@ -49,11 +50,40 @@ grader:
     weight: 1.0
 
 baseline_scores:
-  sid_code_w0: { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
-  claude_code: { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
-  codex:       { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
+  sid_code_w0:
+    {
+      score: null,
+      run_status: pending,
+      tested_at: null,
+      tested_by: manual,
+      transcript_path: null,
+      notes: ""
+    }
+  claude_code:
+    score: 5
+    run_status: success
+    tested_at: 2026-05-21T16:57:24.606Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: ""
+  codex:
+    {
+      score: null,
+      run_status: pending,
+      tested_at: null,
+      tested_by: manual,
+      transcript_path: null,
+      notes: ""
+    }
+  sid_code_live:
+    score: 4.6
+    run_status: success
+    tested_at: 2026-05-21T16:57:24.606Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: ""
 
 source: "personal_exploration_2026_05_16"
 notes: |
   依赖管理 1 条。yaml 包对评测体系本身重要,选这个有两层意义。
-related_subsystem: [tool/grep]
+related_subsystem: [ tool/grep ]
