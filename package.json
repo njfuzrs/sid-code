@@ -15,7 +15,8 @@
     "eval:new-case": "bun run scripts/eval/new-case.ts",
     "eval:bench": "bun run scripts/eval/run-bench.ts",
     "eval:bench-report": "bun run scripts/eval/bench-report.ts",
-    "eval:plan-capability": "bun run scripts/eval/run-plan-capability.ts"
+    "eval:plan-capability": "bun run scripts/eval/run-plan-capability.ts",
+    "eval:dashboard": "bun run scripts/eval/dashboard.ts"
   },
   "dependencies": {
     "@alcalzone/ansi-tokenize": "^0.3.0",
