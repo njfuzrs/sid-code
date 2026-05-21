@@ -101,7 +101,7 @@ function main() {
   if (dryRun) console.log("  (dry-run 模式，不写入文件)");
   console.log("");
 
-  const updates: Array<{ caseId: string; provider: string; score: number | null; status: string }> = [];
+  const updates: Array<{ caseId: string; provider: string; score: number | null; status: string; namedScores?: Record<string, number> }> = [];
 
   for (const r of results) {
     const caseId = r.vars?.case_id as string | undefined;
@@ -133,7 +133,7 @@ function main() {
       runStatus = "success";
     }
 
-    updates.push({ caseId, provider: providerKey, score, status: runStatus });
+    updates.push({ caseId, provider: providerKey, score, status: runStatus, namedScores: r.namedScores });
   }
 
   // 按 case 分组写入
@@ -169,6 +169,13 @@ function main() {
         tested_by: "promptfoo",
         transcript_path: null,
         notes: u.status === "timeout" ? "promptfoo exec provider 360s 超时" : "",
+        dimensions: {
+          anchor_hit: u.namedScores?.anchor_hit ?? null,
+          rubric_score: u.namedScores?.rubric_score ?? null,
+          tool_compliance: u.namedScores?.tool_compliance ?? null,
+          efficiency: u.namedScores?.efficiency ?? null,
+          cost: u.namedScores?.cost ?? null,
+        },
       };
 
       baselineNode.set(u.provider, doc.createNode(entry));

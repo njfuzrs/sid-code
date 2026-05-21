@@ -32,6 +32,7 @@ providers:
       timeoutMs: 360000
       maxTurns: 30
       model: claude-opus-4-7
+      providerKey: sid-code-opus47
 
   - id: "exec: bun run providers/claude-code.ts"
     label: claude-code-opus47
@@ -39,6 +40,7 @@ providers:
       timeoutMs: 360000
       maxTurns: 30
       skipPermissions: true
+      providerKey: claude-code-opus47
       # model 留空 = claude CLI 默认 (claude-opus-4-7)
 
 # 默认 LLM-as-judge 用 Anthropic 的 sonnet(与现有 calibration-v3 校准基线一致)

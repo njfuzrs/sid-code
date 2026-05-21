@@ -9,9 +9,9 @@
  *   reference_answer          → vars.reference_answer(供 rubric 模板插值)
  *   id / category / priority  → metadata(promptfoo filter / dashboard 用)
  *
- * 权重分配:
- *   anchor_hit(1.5) + rubric_score(4.0)，总 5.5
- *   anchor 占 27%，rubric 占 73%
+ * 权重分配(5 维):
+ *   anchor_hit(1.5) + rubric_score(4.0) + tool_compliance(1.5) + efficiency(1.0) + cost(0.5)
+ *   总 8.5，其中过程维度占 35%(3.0/8.5)
  *
  * 用法:
  *   bun run evals/promptfoo/lib/yaml-to-tests.ts \
@@ -41,6 +41,7 @@ interface CaseYaml {
     must_not_include?: string[];
     must_call_tools?: string[];
     must_not_call_tools?: string[];
+    must_not_modify_files?: string[];
     max_steps?: number;
     reference_answer?: string;
   };
@@ -155,13 +156,154 @@ function buildRubricValue(c: CaseYaml, minHits: number): string {
   ].join("\n");
 }
 
+// ─── sideband metadata 路径（provider 写入，断言读取） ───
+
+const METADATA_DIR_ABS = resolve(import.meta.dir, "../.eval-metadata");
+
+function metaReaderSnippet(): string {
+  return `
+    const _fs = process.mainModule.require("fs");
+    const _path = process.mainModule.require("path");
+    const _metaDir = ${JSON.stringify(METADATA_DIR_ABS)};
+    const _caseId = context.vars?.case_id || "unknown";
+    const _providerLabel = (context.provider?.label || context.provider?.id?.() || "").replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_|_$/g, "");
+
+    function _readMeta() {
+      try {
+        const files = _fs.readdirSync(_metaDir).filter(function(f) { return f.startsWith(_caseId + "__"); });
+        if (_providerLabel) {
+          const exact = files.find(function(f) { return f.includes(_providerLabel); });
+          if (exact) return JSON.parse(_fs.readFileSync(_path.join(_metaDir, exact), "utf-8"));
+        }
+        if (files.length > 0) {
+          var newest = files[0], newestMtime = 0;
+          for (var i = 0; i < files.length; i++) {
+            var mt = _fs.statSync(_path.join(_metaDir, files[i])).mtimeMs;
+            if (mt > newestMtime) { newestMtime = mt; newest = files[i]; }
+          }
+          return JSON.parse(_fs.readFileSync(_path.join(_metaDir, newest), "utf-8"));
+        }
+      } catch(e) {}
+      return {};
+    }
+    const meta = _readMeta();
+  `;
+}
+
+// ─── 过程维度断言生成函数 ───
+
+function buildToolComplianceAssertion(
+  mustCall: string[], mustNotCall: string[], mustNotModify: string[]
+): string {
+  return `
+    ${metaReaderSnippet()}
+    const toolsUsed = meta.tools_used || [];
+    const filesEdited = meta.files_edited || [];
+    const mustCallTools = ${JSON.stringify(mustCall)};
+    const mustNotCallTools = ${JSON.stringify(mustNotCall)};
+    const mustNotModifyFiles = ${JSON.stringify(mustNotModify)};
+
+    let score = 1.0;
+    const reasons = [];
+
+    if (mustCallTools.length > 0) {
+      const hits = mustCallTools.filter(t => toolsUsed.includes(t));
+      if (hits.length < mustCallTools.length) {
+        score -= 0.4 * (1 - hits.length / mustCallTools.length);
+        reasons.push("未使用要求的工具: " + mustCallTools.filter(t => !toolsUsed.includes(t)).join(", "));
+      }
+    }
+
+    for (const t of mustNotCallTools) {
+      if (toolsUsed.includes(t)) {
+        score -= 0.3;
+        reasons.push("使用了禁止的工具: " + t);
+      }
+    }
+
+    for (const pattern of mustNotModifyFiles) {
+      const violations = filesEdited.filter(f => f.startsWith(pattern) || f === pattern);
+      if (violations.length > 0) {
+        score -= 0.5;
+        reasons.push("修改了禁止的文件: " + violations.join(", "));
+      }
+    }
+
+    score = Math.max(0, score);
+    return {
+      pass: score >= 0.6,
+      score,
+      reason: reasons.length > 0 ? reasons.join("; ") : "工具使用合规",
+    };
+  `;
+}
+
+function buildEfficiencyAssertion(maxSteps: number): string {
+  return `
+    ${metaReaderSnippet()}
+    const totalSteps = meta.total_steps || 0;
+    const expectedMax = ${maxSteps};
+
+    if (totalSteps === 0) return { pass: true, score: 1.0, reason: "无轨迹数据，跳过效率评估" };
+
+    const ratio = totalSteps / expectedMax;
+    let score = 1.0;
+    let reason = "";
+
+    if (ratio <= 1.0) {
+      score = 1.0;
+      reason = "步数 " + totalSteps + "/" + expectedMax + " 在预期内";
+    } else if (ratio <= 1.5) {
+      score = 0.7;
+      reason = "步数偏多 " + totalSteps + "/" + expectedMax + " (" + ratio.toFixed(1) + "x)";
+    } else if (ratio <= 2.0) {
+      score = 0.4;
+      reason = "步数超标 " + totalSteps + "/" + expectedMax + " (" + ratio.toFixed(1) + "x)";
+    } else {
+      score = 0.1;
+      reason = "步数严重超标 " + totalSteps + "/" + expectedMax + " (" + ratio.toFixed(1) + "x)";
+    }
+
+    return { pass: score >= 0.6, score, reason };
+  `;
+}
+
+function buildCostAssertion(): string {
+  return `
+    ${metaReaderSnippet()}
+    const totalTokens = meta.total_tokens || 0;
+
+    if (totalTokens === 0) return { pass: true, score: 1.0, reason: "无 token 数据，跳过成本评估" };
+
+    let score = 1.0;
+    let reason = "";
+
+    if (totalTokens <= 200000) {
+      score = 1.0;
+      reason = "token 使用 " + (totalTokens/1000).toFixed(0) + "k，低消耗";
+    } else if (totalTokens <= 500000) {
+      score = 0.7;
+      reason = "token 使用 " + (totalTokens/1000).toFixed(0) + "k，中等";
+    } else if (totalTokens <= 1000000) {
+      score = 0.4;
+      reason = "token 使用 " + (totalTokens/1000).toFixed(0) + "k，偏高";
+    } else {
+      score = 0.2;
+      reason = "token 使用 " + (totalTokens/1000).toFixed(0) + "k，严重超标";
+    }
+
+    return { pass: score >= 0.6, score, reason };
+  `;
+}
+
+// ─── 主构建逻辑 ───
+
 function buildTest(c: CaseYaml, minHits: number): PromptfooTest {
   const must = c.expected.must_include_any_of || [];
 
   const asserts: PromptfooAssert[] = [];
 
   // 1. 确定性断言: must_include_any_of(锚点命中)
-  //    权重降至 1.5，减少 false negative 对总分的影响
   if (must.length > 0) {
     asserts.push({
       type: "contains-any",
@@ -171,16 +313,48 @@ function buildTest(c: CaseYaml, minHits: number): PromptfooTest {
     });
   }
 
-  // 2. must_not_include 不再作为确定性断言(not-contains-any)
-  //    已融入 rubric prompt，由 LLM judge 做语义判断，避免"提及即违规"的误判
+  // 2. must_not_include 融入 rubric prompt，由 LLM judge 做语义判断
 
-  // 3. 模型评判: 综合 rubric（权重提升至 4.0，占总权重 73%）
+  // 3. 模型评判: 综合 rubric
   asserts.push({
     type: "llm-rubric",
     value: buildRubricValue(c, minHits),
     weight: 4.0,
     metric: "rubric_score",
     threshold: 0.6,
+  });
+
+  // 4. 过程断言: tool_compliance（工具使用合规性）
+  const mustCallTools = c.expected.must_call_tools || [];
+  const mustNotCallTools = c.expected.must_not_call_tools || [];
+  const mustNotModifyFiles = c.expected.must_not_modify_files || [];
+
+  if (mustCallTools.length > 0 || mustNotCallTools.length > 0 || mustNotModifyFiles.length > 0) {
+    asserts.push({
+      type: "javascript",
+      value: buildToolComplianceAssertion(mustCallTools, mustNotCallTools, mustNotModifyFiles),
+      weight: 1.5,
+      metric: "tool_compliance",
+    });
+  }
+
+  // 5. 过程断言: efficiency（效率）
+  const maxSteps = c.expected.max_steps;
+  if (maxSteps) {
+    asserts.push({
+      type: "javascript",
+      value: buildEfficiencyAssertion(maxSteps),
+      weight: 1.0,
+      metric: "efficiency",
+    });
+  }
+
+  // 6. 过程断言: cost（成本合理性）
+  asserts.push({
+    type: "javascript",
+    value: buildCostAssertion(),
+    weight: 0.5,
+    metric: "cost",
   });
 
   return {

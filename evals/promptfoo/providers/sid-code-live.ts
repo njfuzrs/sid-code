@@ -16,30 +16,41 @@
  *   $3 = JSON.stringify(context)  // 含 vars / test metadata
  *
  * 输出: 纯文本到 stdout(promptfoo 把整段 stdout 当成 model output)
- *      在 stderr 输出诊断信息(promptfoo 默认不展示,debug 时看)
+ *       metadata 通过 sideband 文件传递给 javascript 断言
  */
 
 import { spawn } from "node:child_process";
 import { join, resolve } from "node:path";
-import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, statSync, writeFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 
 const REPO_ROOT = resolve(import.meta.dir, "../../..");
 const ENTRYPOINT = join(REPO_ROOT, "src/entrypoints/bootstrap.ts");
 const TRAJ_DIR = process.env.SID_CODE_TRAJECTORIES_DIR
   || join(homedir(), ".sid-code/trajectories");
+const METADATA_DIR = join(import.meta.dir, "../.eval-metadata");
 
 interface ProviderConfig {
   model?: string;
   timeoutMs?: number;
   maxTurns?: number;
   permissionMode?: string;
+  providerKey?: string;
 }
 
 function parseConfig(raw: string | undefined): ProviderConfig {
   if (!raw) return {};
   try {
     return JSON.parse(raw) as ProviderConfig;
+  } catch {
+    return {};
+  }
+}
+
+function parseContext(raw: string | undefined): { vars?: Record<string, unknown> } {
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw);
   } catch {
     return {};
   }
@@ -105,14 +116,13 @@ function readTrajectoryMeta(sessionDir: string | null): {
   filesEdited: string[];
   totalSteps: number;
   exitStatus: string | null;
+  totalCostUsd: number;
+  totalTokens: number;
 } {
-  if (!sessionDir) {
-    return { toolsUsed: [], filesEdited: [], totalSteps: 0, exitStatus: null };
-  }
+  const empty = { toolsUsed: [], filesEdited: [], totalSteps: 0, exitStatus: null, totalCostUsd: 0, totalTokens: 0 };
+  if (!sessionDir) return empty;
   const trajPath = join(sessionDir, "session.traj");
-  if (!existsSync(trajPath)) {
-    return { toolsUsed: [], filesEdited: [], totalSteps: 0, exitStatus: null };
-  }
+  if (!existsSync(trajPath)) return empty;
   try {
     const content = readFileSync(trajPath, "utf-8");
     const obj = JSON.parse(content);
@@ -122,16 +132,88 @@ function readTrajectoryMeta(sessionDir: string | null): {
       filesEdited: md.files_edited || [],
       totalSteps: md.total_steps || 0,
       exitStatus: md.exit_status || null,
+      totalCostUsd: md.total_cost_usd || 0,
+      totalTokens: md.total_tokens || 0,
     };
   } catch {
-    return { toolsUsed: [], filesEdited: [], totalSteps: 0, exitStatus: null };
+    return empty;
+  }
+}
+
+function readRawMeta(sessionDir: string | null): { totalTokens: number; totalCost: number } {
+  if (!sessionDir) return { totalTokens: 0, totalCost: 0 };
+  const rawPath = join(sessionDir, "raw.jsonl");
+  if (!existsSync(rawPath)) return { totalTokens: 0, totalCost: 0 };
+  try {
+    const lines = readFileSync(rawPath, "utf-8").trim().split("\n");
+    let tokens = 0;
+    for (const line of lines) {
+      const entry = JSON.parse(line);
+      const usage = entry.response?.usage;
+      if (usage) {
+        tokens += (usage.input_tokens || 0) + (usage.output_tokens || 0);
+      }
+    }
+    return { totalTokens: tokens, totalCost: 0 };
+  } catch {
+    return { totalTokens: 0, totalCost: 0 };
+  }
+}
+
+function analyzeTrajectorySignals(sessionDir: string | null): {
+  errorCount: number; retryCount: number; backtrackCount: number;
+} {
+  const empty = { errorCount: 0, retryCount: 0, backtrackCount: 0 };
+  if (!sessionDir) return empty;
+  const trajPath = join(sessionDir, "session.traj");
+  if (!existsSync(trajPath)) return empty;
+  try {
+    const traj = JSON.parse(readFileSync(trajPath, "utf-8"));
+    const steps = traj.trajectory || [];
+    let errorCount = 0, retryCount = 0, backtrackCount = 0;
+    const editedFiles = new Map<string, number>();
+    let prevToolName = "";
+    let prevToolInput = "";
+
+    for (const step of steps) {
+      if (step.is_error) errorCount++;
+
+      const toolInput = JSON.stringify(step.tool_input || {});
+      if (step.tool_name === prevToolName && toolInput === prevToolInput) {
+        retryCount++;
+      }
+      prevToolName = step.tool_name || "";
+      prevToolInput = toolInput;
+
+      if (step.tool_name === "write" || step.tool_name === "edit") {
+        const file = step.tool_input?.file_path || step.tool_input?.path || "";
+        if (file) {
+          const count = (editedFiles.get(file) || 0) + 1;
+          editedFiles.set(file, count);
+          if (count > 1) backtrackCount++;
+        }
+      }
+    }
+    return { errorCount, retryCount, backtrackCount };
+  } catch {
+    return empty;
+  }
+}
+
+function writeMetadataSideband(caseId: string, providerLabel: string, metadata: Record<string, unknown>) {
+  try {
+    mkdirSync(METADATA_DIR, { recursive: true });
+    // 标准化 label：与 promptfoo 断言中 context.provider.label 的 normalize 逻辑一致
+    const normalizedLabel = providerLabel.replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_|_$/g, "");
+    const filename = `${caseId}__${normalizedLabel}.json`;
+    writeFileSync(join(METADATA_DIR, filename), JSON.stringify(metadata, null, 2));
+  } catch (err) {
+    process.stderr.write(`[sid-code-live] failed to write metadata sideband: ${err}\n`);
   }
 }
 
 /**
  * 尝试从 stdout buffer 中提取完整 JSON 对象。
- * sid-code --output-format json 输出一个完整 JSON 对象后 process.exit(0)。
- * 如果进程因某种原因没退出但 JSON 已完整，提前收割结果。
  */
 function tryExtractCompleteJson(buf: string): boolean {
   const trimmed = buf.trim();
@@ -147,7 +229,10 @@ function tryExtractCompleteJson(buf: string): boolean {
 async function main() {
   const prompt = process.argv[2] || "";
   const configRaw = process.argv[3];
+  const contextRaw = process.argv[4];
   const config = parseConfig(configRaw);
+  const ctx = parseContext(contextRaw);
+  const caseId = (ctx.vars?.case_id as string) || "unknown";
 
   if (!prompt) {
     console.error("[sid-code-live] empty prompt, exit 1");
@@ -162,7 +247,7 @@ async function main() {
   args.push(prompt);
 
   const startedAt = Date.now();
-  process.stderr.write(`[sid-code-live] spawn: bun ${args.slice(0, 5).join(" ")} ... (prompt ${prompt.length} chars)\n`);
+  process.stderr.write(`[sid-code-live] spawn: bun ${args.slice(0, 5).join(" ")} ... (prompt ${prompt.length} chars, case=${caseId})\n`);
 
   const child = spawn("bun", args, {
     cwd: REPO_ROOT,
@@ -179,7 +264,6 @@ async function main() {
 
   child.stdout?.on("data", (chunk) => {
     stdoutBuf += chunk.toString();
-    // 检测 stdout 是否已收到完整 JSON — 如果是，给一个短延时后主动 kill
     if (!resolved && tryExtractCompleteJson(stdoutBuf)) {
       resolved = true;
       process.stderr.write(`[sid-code-live] stdout JSON complete (${stdoutBuf.length}B), waiting 2s for graceful exit...\n`);
@@ -213,12 +297,35 @@ async function main() {
   const elapsedMs = Date.now() - startedAt;
   const sessionDir = findLatestSessionDir(startedAt);
   const meta = readTrajectoryMeta(sessionDir);
+  const rawMeta = readRawMeta(sessionDir);
+  const trajSignals = analyzeTrajectorySignals(sessionDir);
+
+  // token 优先从 raw.jsonl 取（更精确），fallback 到 session.traj metadata
+  const totalTokens = rawMeta.totalTokens || meta.totalTokens;
+
+  const metadata = {
+    session_id: sessionDir?.split("/").pop() || null,
+    total_steps: meta.totalSteps,
+    tools_used: meta.toolsUsed,
+    files_edited: meta.filesEdited,
+    exit_status: meta.exitStatus,
+    elapsed_ms: elapsedMs,
+    total_tokens: totalTokens,
+    total_cost_usd: meta.totalCostUsd,
+    error_count: trajSignals.errorCount,
+    retry_count: trajSignals.retryCount,
+    backtrack_count: trajSignals.backtrackCount,
+  };
+
+  // 写入 sideband 文件供 javascript 断言读取
+  writeMetadataSideband(caseId, config.providerKey || "sid_code_live", metadata);
 
   process.stderr.write(
     `[sid-code-live] exit=${exitCode} timedOut=${timedOut} elapsed=${elapsedMs}ms `
     + `stdout=${stdoutBuf.length}B stderr=${stderrBuf.length}B `
     + `session=${sessionDir ? sessionDir.split("/").pop() : "none"} `
-    + `tools=${meta.toolsUsed.join(",")} steps=${meta.totalSteps}\n`
+    + `tools=${meta.toolsUsed.join(",")} steps=${meta.totalSteps} `
+    + `tokens=${totalTokens} errors=${trajSignals.errorCount}\n`
   );
 
   // 即使超时/非零退出，如果已经拿到完整 JSON 输出，仍然提取结果

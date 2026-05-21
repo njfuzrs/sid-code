@@ -15,9 +15,16 @@
  *   $1 = 已渲染的 prompt 字符串
  *   $2 = JSON.stringify(providerConfig)
  *   $3 = JSON.stringify(context)
+ *
+ * 输出: 纯文本到 stdout
+ *       metadata 通过 sideband 文件传递给 javascript 断言
  */
 
 import { spawn } from "node:child_process";
+import { join } from "node:path";
+import { writeFileSync, mkdirSync } from "node:fs";
+
+const METADATA_DIR = join(import.meta.dir, "../.eval-metadata");
 
 interface ProviderConfig {
   cliPath?: string;
@@ -25,12 +32,22 @@ interface ProviderConfig {
   timeoutMs?: number;
   maxTurns?: number;
   skipPermissions?: boolean;
+  providerKey?: string;
 }
 
 function parseConfig(raw: string | undefined): ProviderConfig {
   if (!raw) return {};
   try {
     return JSON.parse(raw) as ProviderConfig;
+  } catch {
+    return {};
+  }
+}
+
+function parseContext(raw: string | undefined): { vars?: Record<string, unknown> } {
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw);
   } catch {
     return {};
   }
@@ -76,9 +93,22 @@ function parseFinal(stdout: string): { text: string; meta: Record<string, unknow
   return { text: trimmed, meta: { parse_fallback: true } };
 }
 
+function writeMetadataSideband(caseId: string, providerLabel: string, metadata: Record<string, unknown>) {
+  try {
+    mkdirSync(METADATA_DIR, { recursive: true });
+    const normalizedLabel = providerLabel.replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_|_$/g, "");
+    const filename = `${caseId}__${normalizedLabel}.json`;
+    writeFileSync(join(METADATA_DIR, filename), JSON.stringify(metadata, null, 2));
+  } catch (err) {
+    process.stderr.write(`[claude-code] failed to write metadata sideband: ${err}\n`);
+  }
+}
+
 async function main() {
   const prompt = process.argv[2] || "";
   const config = parseConfig(process.argv[3]);
+  const ctx = parseContext(process.argv[4]);
+  const caseId = (ctx.vars?.case_id as string) || "unknown";
 
   if (!prompt) {
     console.error("[claude-code] empty prompt, exit 1");
@@ -96,7 +126,7 @@ async function main() {
   args.push(prompt);
 
   const startedAt = Date.now();
-  process.stderr.write(`[claude-code] spawn: ${cliPath} ${args.slice(0, 5).join(" ")} ... (prompt ${prompt.length} chars)\n`);
+  process.stderr.write(`[claude-code] spawn: ${cliPath} ${args.slice(0, 5).join(" ")} ... (prompt ${prompt.length} chars, case=${caseId})\n`);
 
   const child = spawn(cliPath, args, {
     env: {
@@ -129,6 +159,19 @@ async function main() {
 
   const elapsedMs = Date.now() - startedAt;
   const { text, meta } = parseFinal(stdoutBuf);
+
+  // 写入 sideband metadata
+  writeMetadataSideband(caseId, config.providerKey || "claude_code", {
+    total_steps: (meta.num_turns as number) || 0,
+    total_cost_usd: (meta.total_cost_usd as number) || 0,
+    elapsed_ms: elapsedMs,
+    tools_used: [],
+    files_edited: [],
+    error_count: 0,
+    retry_count: 0,
+    backtrack_count: 0,
+    total_tokens: 0,
+  });
 
   process.stderr.write(
     `[claude-code] exit=${exitCode} timedOut=${timedOut} elapsed=${elapsedMs}ms `
