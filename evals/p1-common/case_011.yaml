@@ -38,9 +38,10 @@ expected:
     通过 grep "alertLevels" 列出所有引用点（包括类型定义、构造、消费）。
     预期答案：定义在 src/llm/quota.ts 的 QuotaConfig；其他引用文件 + 行号通过 grep
     枚举。明确说明"未做修改，只列影响范围"。
+    注意：如果 grep 搜索后发现 alertLevels 字段不存在于 QuotaConfig 接口中，正确做法是如实告知用户该字段不存在，不需要重命名，0 处真实引用。这也是正确答案。
 
 rubric:
-  completeness: "枚举所有引用文件 + 行号"
+  completeness: "枚举所有引用文件 + 行号；如果字段不存在则明确告知用户并给出实际的 QuotaConfig 字段列表"
   precision: "不要写到磁盘 / 不要 Edit"
   helpfulness: "提示用户改完后跑 bun test 验证"
 

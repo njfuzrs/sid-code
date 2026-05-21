@@ -27,19 +27,26 @@ prompts:
 
 providers:
   - id: "exec: bun run providers/sid-code-live.ts"
-    label: sid-code-live
+    label: sid-code-gpt54
     config:
       timeoutMs: 360000
       maxTurns: 30
-      # model: claude-opus-4-7  # 留空 = 用 ~/.sid-code/config.yaml 默认
+      # model 留空 = 用 ~/.sid-code/config.yaml 默认 (gpt-5.4)
+
+  - id: "exec: bun run providers/sid-code-live.ts"
+    label: sid-code-opus47
+    config:
+      timeoutMs: 360000
+      maxTurns: 30
+      model: claude-opus-4-7
 
   - id: "exec: bun run providers/claude-code.ts"
-    label: claude-code
+    label: claude-code-opus47
     config:
       timeoutMs: 360000
       maxTurns: 30
       skipPermissions: true
-      # model: claude-opus-4-7  # 留空 = 用 claude CLI 默认
+      # model 留空 = claude CLI 默认 (claude-opus-4-7)
 
 # 默认 LLM-as-judge 用 Anthropic 的 sonnet(与现有 calibration-v3 校准基线一致)
 # 如果环境只有 OPENAI_API_KEY,会回退到 gpt-5

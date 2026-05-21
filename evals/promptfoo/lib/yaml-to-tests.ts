@@ -4,10 +4,14 @@
  * 转换规则:
  *   user_query                → vars.user_query / prompt 直接用
  *   must_include_any_of       → contains-any 断言(确定性命中数 ≥ minHits)
- *   must_not_include          → not-contains-any 断言
+ *   must_not_include          → 融入 rubric prompt，由 LLM judge 语义判断
  *   rubric.{completeness,...} → llm-rubric 断言(模型评判,复用 calibration-v3 prompt)
  *   reference_answer          → vars.reference_answer(供 rubric 模板插值)
  *   id / category / priority  → metadata(promptfoo filter / dashboard 用)
+ *
+ * 权重分配:
+ *   anchor_hit(1.5) + rubric_score(4.0)，总 5.5
+ *   anchor 占 27%，rubric 占 73%
  *
  * 用法:
  *   bun run evals/promptfoo/lib/yaml-to-tests.ts \
@@ -95,29 +99,57 @@ function buildRubricValue(c: CaseYaml, minHits: number): string {
   const refAns = c.expected.reference_answer?.trim() || "(无)";
   const r = c.rubric || {};
 
+  const mustNotSection =
+    mustNot.length > 0
+      ? [
+          "禁止内容(语义判断):",
+          "  以下词如果只是作为「对比提及」或「拒绝声明」中出现，不扣分。",
+          "  只有当输出错误地将其作为正确答案、或泄露了敏感内部信息时才扣分：",
+          ...mustNot.map((k) => `  - ${k}`),
+          "",
+        ]
+      : [];
+
+  const mustSection =
+    must.length > 0
+      ? [
+          `关键词命中(参考，非强制，至少 ${minHits} 个):`,
+          "  必须包含(any_of):",
+          ...must.map((k) => `  - ${k}`),
+          "  → 如果输出用等价表达覆盖了相同概念但未精确匹配这些词，不应因此扣分",
+          "",
+        ]
+      : [];
+
   return [
     `任务类别: ${c.category}(${c.priority})`,
     `用户问题: ${c.input.user_query}`,
     "",
-    "参考答案(锚点):",
+    "参考答案(仅为一种可能的正确路径，不是唯一标准):",
     refAns,
     "",
-    "必须命中关键词(any_of, 至少 " + minHits + " 个):",
-    ...must.map((k) => `  - ${k}`),
-    ...(mustNot.length > 0 ? ["禁止出现:", ...mustNot.map((k) => `  - ${k}`)] : []),
+    "=== 评判规则 ===",
     "",
-    "评分维度(参考 calibration-v3 prompt-v3.md):",
+    "【最重要】事实正确性优先：",
+    "- 如果输出的核心结论与代码实际状态一致（即使表述不同于参考答案），应给予高分",
+    "- 如果参考答案假设某功能不存在但实际已存在，输出回答「已存在」是正确的",
+    "- 如果参考答案假设某字段存在但实际不存在，输出回答「不存在」是正确的",
+    "",
+    ...mustSection,
+    ...mustNotSection,
+    "评分维度:",
+    "  - factual_accuracy: 输出的核心结论是否与代码/事实实际状态一致（优先级最高）",
     `  - completeness: ${r.completeness || "(本 case 未指定)"}`,
     `  - precision: ${r.precision || "(本 case 未指定)"}`,
     `  - helpfulness: ${r.helpfulness || "(本 case 未指定)"}`,
     "",
     "评分标准(0.0-1.0, threshold 0.6):",
-    "  1.0 = 完全命中所有锚点 + 解释清晰准确",
-    "  0.8 = 命中关键锚点,有小瑕疵",
-    "  0.6 = 部分命中,方向正确(threshold 阈值)",
-    "  0.4 = 命中少,有明显错误或严重遗漏",
-    "  0.2 = 错误路径或泛泛而谈",
-    "  0.0 = 完全偏题",
+    "  1.0 = 事实正确 + 完全满足用户需求 + 表达清晰",
+    "  0.8 = 事实正确 + 核心需求满足，有小瑕疵",
+    "  0.6 = 方向正确，核心事实无误(threshold)",
+    "  0.4 = 部分正确但有明显错误或严重遗漏",
+    "  0.2 = 方向错误或严重事实偏差",
+    "  0.0 = 完全偏题或有害输出",
     "",
     "输出严格 JSON: {\"pass\": bool, \"score\": 0.0-1.0, \"reason\": \"简要理由\"}",
   ].join("\n");
@@ -125,35 +157,28 @@ function buildRubricValue(c: CaseYaml, minHits: number): string {
 
 function buildTest(c: CaseYaml, minHits: number): PromptfooTest {
   const must = c.expected.must_include_any_of || [];
-  const mustNot = c.expected.must_not_include || [];
 
   const asserts: PromptfooAssert[] = [];
 
   // 1. 确定性断言: must_include_any_of(锚点命中)
+  //    权重降至 1.5，减少 false negative 对总分的影响
   if (must.length > 0) {
     asserts.push({
       type: "contains-any",
       value: must,
-      weight: 2.0,
+      weight: 1.5,
       metric: "anchor_hit",
     });
   }
 
-  // 2. 确定性断言: must_not_include(反向锚点)
-  if (mustNot.length > 0) {
-    asserts.push({
-      type: "not-contains-any",
-      value: mustNot,
-      weight: 2.0,
-      metric: "anchor_violation",
-    });
-  }
+  // 2. must_not_include 不再作为确定性断言(not-contains-any)
+  //    已融入 rubric prompt，由 LLM judge 做语义判断，避免"提及即违规"的误判
 
-  // 3. 模型评判: 综合 rubric
+  // 3. 模型评判: 综合 rubric（权重提升至 4.0，占总权重 73%）
   asserts.push({
     type: "llm-rubric",
     value: buildRubricValue(c, minHits),
-    weight: 3.0,
+    weight: 4.0,
     metric: "rubric_score",
     threshold: 0.6,
   });

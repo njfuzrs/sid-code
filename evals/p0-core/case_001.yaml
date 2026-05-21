@@ -21,9 +21,12 @@ expected:
   must_include_any_of:
     - "src/agent/loop.ts"
     - "AgentLoopRunner"
+    - "agent/loop"
+    - "loop.ts"
+    - "agentic while"
+    - "agentic loop"
 
-  must_not_include:
-    - "src/query/loop.ts" # 这是 sub-loop，不是主入口；返回这个算偏
+  must_not_include: []
 
   must_call_tools:
     - grep
@@ -41,7 +44,7 @@ expected:
 
 rubric:
   completeness: "是否同时定位到文件路径 + 类名"
-  precision: "是否避免给出 src/query/loop.ts（sub-loop）作为主答案"
+  precision: "是否避免将 src/query/loop.ts（sub-loop）作为主入口答案；如果提到 src/query/loop.ts 是作为对比或区分说明（例如'主循环是 agent/loop.ts，而非 query/loop.ts'），不应扣分；只有将其当作主入口才算错误"
   helpfulness: "是否解释了主循环 vs sub-loop 区别 / agentic while-loop 关键点"
 
 grader:

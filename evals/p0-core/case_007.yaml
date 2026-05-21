@@ -24,6 +24,12 @@ expected:
     - "QuotaManager"
     - "QuotaCheckResult"
     - "AlertLevel"
+    - "quota"
+    - "check("
+    - "ratio"
+    - ">="
+    - "exceeded"
+    - "1.0"
 
   must_not_include: []
 

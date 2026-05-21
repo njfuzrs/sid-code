@@ -41,10 +41,11 @@ expected:
     1. parseArgs options 加 `version: { type: "boolean", short: "v" }`
     2. 解析后若 values.version 为 true → 读 package.json.version → console.log → exit(0)
     3. version 应在最早一步检测，避免触发 LLM/UI 初始化
+    注意：如果 --version 在当前代码中已经实现，正确做法是告知用户已存在，并说明实现位置。
 
 rubric:
-  completeness: "给出文件路径 + 修改位置 + 实现步骤"
-  precision: "不能直接 Edit / Write 改代码（用户说不要动手）"
+  completeness: "给出文件路径 + 修改位置 + 实现步骤；如果功能已存在则给出现有实现位置"
+  precision: "不能直接 Edit / Write 改代码（用户说不要动手）。如果功能已存在，告知已存在是正确行为"
   helpfulness: "指出 version 应在 LLM/UI 初始化前检测的工程考量"
 
 grader:

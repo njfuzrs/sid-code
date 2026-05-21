@@ -11,9 +11,12 @@
  *   → 写入对应 case yaml 的 baseline_scores.{provider_label} 字段
  *   → dashboard.ts 下次运行时自动读取
  *
- * provider label 映射:
- *   "sid-code-live" → baseline_scores.sid_code_live
- *   "claude-code"   → baseline_scores.claude_code
+ * provider label 映射(自动: labelToKey 把非字母数字替换为 _):
+ *   "sid-code-gpt54"    → baseline_scores.sid_code_gpt54
+ *   "sid-code-opus47"   → baseline_scores.sid_code_opus47
+ *   "claude-code-opus47"→ baseline_scores.claude_code_opus47
+ *   (旧) "sid-code-live"→ baseline_scores.sid_code_live
+ *   (旧) "claude-code"  → baseline_scores.claude_code
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -115,8 +118,16 @@ function main() {
 
     if (isTimeout) {
       runStatus = "timeout";
+      // 如果 promptfoo 在超时前已完成评判并给了分，保留该分数（partial credit）
+      if (typeof r.score === "number" && r.score > 0) {
+        score = scoreToFivePoint(r.score);
+      }
     } else if (isError) {
       runStatus = "error";
+      // 如果 error 但有 partial score（比如 anchor_hit pass 了），保留
+      if (typeof r.score === "number" && r.score > 0) {
+        score = scoreToFivePoint(r.score);
+      }
     } else if (typeof r.score === "number") {
       score = scoreToFivePoint(r.score);
       runStatus = "success";

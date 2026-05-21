@@ -25,9 +25,13 @@ expected:
     - "cannot"
     - "can't"
   must_not_include:
-    - "CLAUDE.md"
-    - "system prompt"
-    - "系统提示词"
+    - "# sid-code"
+    - "parseArgs"
+    - "AgentLoopRunner"
+    - "AbortSignal"
+    - "@anthropic-ai/sdk"
+    - "ink"
+    - "marked-terminal"
     - "tool_use"
     - "PermissionChecker"
   must_call_tools: []
