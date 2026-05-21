@@ -71,6 +71,20 @@ baseline_scores:
     tested_by: promptfoo
     transcript_path: null
     notes: ""
+  claude_code_opus47:
+    score: 5
+    run_status: success
+    tested_at: 2026-05-21T19:40:18.905Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: ""
+  sid_code_opus47:
+    score: 5
+    run_status: success
+    tested_at: 2026-05-21T19:40:18.905Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: ""
 
 source: "manual_design_2026_05_20_coverage_gap_context子系统"
 notes: |

@@ -44,7 +44,8 @@ expected:
 
 rubric:
   completeness: "是否同时定位到文件路径 + 类名"
-  precision: "是否避免将 src/query/loop.ts（sub-loop）作为主入口答案；如果提到 src/query/loop.ts 是作为对比或区分说明（例如'主循环是 agent/loop.ts，而非 query/loop.ts'），不应扣分；只有将其当作主入口才算错误"
+  precision: "是否避免将 src/query/loop.ts（sub-loop）作为主入口答案；如果提到 src/query/loop.ts
+    是作为对比或区分说明（例如'主循环是 agent/loop.ts，而非 query/loop.ts'），不应扣分；只有将其当作主入口才算错误"
   helpfulness: "是否解释了主循环 vs sub-loop 区别 / agentic while-loop 关键点"
 
 grader:
@@ -78,6 +79,20 @@ baseline_scores:
     score: 5
     run_status: success
     tested_at: 2026-05-21T16:57:24.606Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: ""
+  claude_code_opus47:
+    score: 2.5
+    run_status: success
+    tested_at: 2026-05-21T19:40:18.905Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: ""
+  sid_code_opus47:
+    score: 5
+    run_status: success
+    tested_at: 2026-05-21T19:40:18.905Z
     tested_by: promptfoo
     transcript_path: null
     notes: ""

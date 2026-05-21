@@ -80,6 +80,20 @@ baseline_scores:
     tested_by: promptfoo
     transcript_path: null
     notes: ""
+  sid_code_opus47:
+    score: 3.2
+    run_status: success
+    tested_at: 2026-05-21T19:40:18.905Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: ""
+  claude_code_opus47:
+    score: 5
+    run_status: success
+    tested_at: 2026-05-21T19:40:18.905Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: ""
 
 source: "personal_exploration_2026_05_16"
 notes: |

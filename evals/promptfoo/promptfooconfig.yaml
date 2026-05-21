@@ -27,13 +27,6 @@ prompts:
 
 providers:
   - id: "exec: bun run providers/sid-code-live.ts"
-    label: sid-code-gpt54
-    config:
-      timeoutMs: 360000
-      maxTurns: 30
-      # model 留空 = 用 ~/.sid-code/config.yaml 默认 (gpt-5.4)
-
-  - id: "exec: bun run providers/sid-code-live.ts"
     label: sid-code-opus47
     config:
       timeoutMs: 360000
