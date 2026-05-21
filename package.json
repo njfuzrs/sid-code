@@ -19,7 +19,8 @@
     "eval:dashboard": "bun run scripts/eval/dashboard.ts",
     "eval:horizontal-gen": "bun run evals/promptfoo/lib/yaml-to-tests.ts",
     "eval:horizontal-run": "cd evals/promptfoo && bunx promptfoo@latest eval",
-    "eval:horizontal-view": "cd evals/promptfoo && bunx promptfoo@latest view"
+    "eval:horizontal-view": "cd evals/promptfoo && bunx promptfoo@latest view",
+    "eval:horizontal-sync": "bun run scripts/eval/promptfoo-sync.ts"
   },
   "dependencies": {
     "@alcalzone/ansi-tokenize": "^0.3.0",

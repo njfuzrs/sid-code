@@ -825,19 +825,20 @@ export class App {
     unwatchCLAUDEmd();
     this.mcpManager?.closeAll();
 
-    // 停止内存监控并输出会话摘要
+    // 停止内存监控
     getMemoryMonitor().stop();
     getLogger().close();
 
-    // 输出会话摘要到控制台
+    // 会话摘要输出到 stderr（避免污染 JSON stdout）
     const summary = getSessionMetrics().getSummary();
-    console.log('\n' + '─'.repeat(60));
-    console.log('会话摘要');
-    console.log('─'.repeat(60));
-    console.log(summary);
-    console.log('─'.repeat(60) + '\n');
+    process.stderr.write('\n' + '─'.repeat(60) + '\n');
+    process.stderr.write('会话摘要\n');
+    process.stderr.write('─'.repeat(60) + '\n');
+    process.stderr.write(summary + '\n');
+    process.stderr.write('─'.repeat(60) + '\n\n');
 
-    return "";
+    // headless 模式强制退出：init() 启动的 watcher/interval/telemetry 不会自行排空事件循环
+    process.exit(0);
   }
 
   /** TUI 模式 */

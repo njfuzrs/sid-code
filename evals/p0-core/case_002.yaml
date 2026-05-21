@@ -56,12 +56,41 @@ grader:
     weight: 1.0
 
 baseline_scores:
-  sid_code_w0: { score: 5, run_status: success, tested_at: "2026-05-15T18:52:13.166Z", tested_by: anchor_auto_v0, transcript_path: "evals/raw-outputs/case_002_1778870933153.jsonl", notes: "锚点 6/6 命中, 反向违规 0; 人工 D5 复核可调" }
-  claude_code: { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
-  codex:       { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
+  sid_code_w0:
+    {
+      score: 5,
+      run_status: success,
+      tested_at: "2026-05-15T18:52:13.166Z",
+      tested_by: anchor_auto_v0,
+      transcript_path: "evals/raw-outputs/case_002_1778870933153.jsonl",
+      notes: "锚点 6/6 命中, 反向违规 0; 人工 D5 复核可调"
+    }
+  claude_code:
+    score: 5
+    run_status: success
+    tested_at: 2026-05-21T16:44:35.682Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: ""
+  codex:
+    {
+      score: null,
+      run_status: pending,
+      tested_at: null,
+      tested_by: manual,
+      transcript_path: null,
+      notes: ""
+    }
+  sid_code_live:
+    score: 5
+    run_status: success
+    tested_at: 2026-05-21T16:44:35.682Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: ""
 
 source: "personal_exploration_2026_05_16"
 notes: |
   代码理解 4 条之 2。must_include_any_of 用 6 选 4 而非全命中，避免要求过严。
   注意 sid-code 实际有 19 个 .ts 文件在 src/tool/，但"内置工具"按 CLAUDE.md 是这 6 个。
-related_subsystem: [tool/read, tool/write, tool/edit, tool/bash, tool/grep, tool/glob]
+related_subsystem: [ tool/read, tool/write, tool/edit, tool/bash, tool/grep, tool/glob ]

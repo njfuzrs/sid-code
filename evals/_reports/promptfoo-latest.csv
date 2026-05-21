@@ -1,5 +1,54 @@
 Description,user_query,case_id,category,[sid-code-live] {{user_query}},Status,Score,Named Scores,Grader Reason,Comment,[claude-code] {{user_query}},Status,Score,Named Scores,Grader Reason,Comment
-[case_001] 代码理解 — sid-code 的主 agent 循环（agentic while-loop）入口在哪个文件里？类名是什么？请定位并简...,sid-code 的主 agent 循环（agentic while-loop）入口在哪个文件里？类名是什么？请定位并简要解释这个类的核心职责。,case_001,代码理解,[ERROR] sid-code-live TIMEOUT after 360000ms,FAIL,0.29,"{""anchor_hit"":0,""anchor_violation"":1,""rubric_score"":0}","Output is an error message indicating a timeout, not an answer to the question. Does not contain any of the required keywords (src/agent/loop.ts, AgentLoopRunner) and provides no information about the agent loop entry point or class responsibilities.",,"# Agentic While-Loop 入口定位
+[case_001] 代码理解 — sid-code 的主 agent 循环（agentic while-loop）入口在哪个文件里？类名是什么？请定位并简...,sid-code 的主 agent 循环（agentic while-loop）入口在哪个文件里？类名是什么？请定位并简要解释这个类的核心职责。,case_001,代码理解,"主入口在：
+
+- 文件：`src/agent/loop.ts`
+- 类名：`AgentLoopRunner`
+
+定位依据：
+
+- `src/agent/loop.ts` 文件头注释直接写了：
+  - `AgentLoopRunner — 统一的 Agentic While-Loop 核心循环`
+- 类定义在：
+  - `src/agent/loop.ts:82`
+- 核心运行方法在：
+  - `src/agent/loop.ts:185` 的 `async run(userInput: string, callbacks: AgentLoopCallbacks): Promise<void>`
+
+补充一点调用关系：
+
+- `src/app.ts` 是应用层入口与编排层。
+- `App` 会把 `config / provider / ctxMgr / toolRegistry / fallback / thinking / hook / quota` 等依赖组织起来。
+- 真正执行主 agent 循环的核心类，是 `AgentLoopRunner`。
+
+这个类的核心职责可以概括为 5 点：
+
+1. 统一承载 agentic while-loop
+   - 实现“用户输入 → 调 LLM → 流式输出 → 遇到 tool_use 执行工具 → 把 tool_result 送回模型 → 继续循环”的主流程。
+
+2. 屏蔽 REPL / TUI 差异
+   - 通过 `AgentLoopCallbacks` 回调接口，把 UI 差异抽掉。
+   - 所以同一套循环逻辑可以服务 CLI/TUI/无头模式。
+
+3. 管理循环中的关键控制逻辑
+   - 模型发送与重试：`sendWithRetry()`
+   - fallback 模型切换
+   - context overflow 处理
+   - auto compact
+   - abort signal 处理
+
+4. 负责工具调用闭环
+   - 依赖注入 `executeTools`
+   - 在模型返回 `tool_use` 后执行工具，再把结果继续喂回模型。
+
+5. 做循环安全与恢复
+   - 内置 `LoopDetector`
+   - 支持规则式循环检测
+   - 还支持 LLM 认知循环检测 `runLLMLoopCheck()`
+   - 发现死循环时可注入 `LOOP_RECOVERY_PROMPT` 做恢复
+
+一句话总结：
+
+- `src/app.ts` 更像“应用装配层”
+- `src/agent/loop.ts` 里的 `AgentLoopRunner` 才是 sid-code 主 agent 循环的真正内核执行器。",PASS,1.00,"{""anchor_hit"":1,""anchor_violation"":1,""rubric_score"":1}",All assertions passed,,"# Agentic While-Loop 入口定位
 
 sid-code 的主 agent 循环采用**三层架构**，不是单一 class 包揽：
 
@@ -31,8 +80,32 @@ while (state.turnCount < state.maxTurns)   // 第 74 行
 - 用户视角的""入口类""：**`App`**（`src/app.ts`）
 - 真正跑 while-loop 的地方：`queryLoop` 函数（`src/query/loop.ts:74`），由 `QueryEngine` 消费
 
-`CLAUDE.md` 中说的 ""主循环（委托 AgentLoopRunner）"" 与当前实现已经不一致——实际是 `App → QueryEngine → queryLoop` 三层，没有 `AgentLoopRunner` 这个名字了。",FAIL,0.29,"{""anchor_hit"":1,""anchor_violation"":0,""rubric_score"":0}","Output identifies src/query/loop.ts as the main agentic while-loop, which is explicitly prohibited. The reference answer requires src/agent/loop.ts and AgentLoopRunner class. Output contains none of the required keywords and presents the wrong file as the answer.",
-[case_002] 代码理解 — sid-code 实现了哪 6 个内置工具？请列出每个工具对应的源文件路径，并用一句话说明各自职责。,sid-code 实现了哪 6 个内置工具？请列出每个工具对应的源文件路径，并用一句话说明各自职责。,case_002,代码理解,[ERROR] sid-code-live TIMEOUT after 360000ms,FAIL,0.00,"{""anchor_hit"":0,""rubric_score"":0}",输出仅包含错误信息 'TIMEOUT after 360000ms'，未回答用户问题，完全没有列出 sid-code 的 6 个内置工具及其源文件路径，也没有命中任何必须关键词（read.ts/write.ts/edit.ts/bash.ts/grep.ts/glob.ts），完全偏题,,"sid-code 的 6 个内置工具如下（均位于 `src/tool/` 下）：
+`CLAUDE.md` 中说的 ""主循环（委托 AgentLoopRunner）"" 与当前实现已经不一致——实际是 `App → QueryEngine → queryLoop` 三层，没有 `AgentLoopRunner` 这个名字了。",FAIL,0.29,"{""anchor_hit"":1,""anchor_violation"":0,""rubric_score"":0}","Output identifies src/query/loop.ts as the main agentic while-loop, which is explicitly prohibited. The reference answer requires src/agent/loop.ts and AgentLoopRunner class. Output completely misses the correct entry point and instead describes a three-layer architecture (App → QueryEngine → queryLoop) that contradicts the expected answer. This is the wrong path entirely.",
+[case_002] 代码理解 — sid-code 实现了哪 6 个内置工具？请列出每个工具对应的源文件路径，并用一句话说明各自职责。,sid-code 实现了哪 6 个内置工具？请列出每个工具对应的源文件路径，并用一句话说明各自职责。,case_002,代码理解,"sid-code 的 6 个内置工具如下：
+
+1. **read**  
+   - 路径：`src/tool/read.ts`  
+   - 职责：读取文件内容，供 Agent 查看代码或文本内容。
+
+2. **write**  
+   - 路径：`src/tool/write.ts`  
+   - 职责：写入新文件或覆盖文件内容，用于创建或重写文件。
+
+3. **edit**  
+   - 路径：`src/tool/edit.ts`  
+   - 职责：基于查找替换修改已有文件内容，用于小范围精确编辑。
+
+4. **bash**  
+   - 路径：`src/tool/bash.ts`  
+   - 职责：执行 shell 命令，用于运行构建、测试、脚本或系统操作。
+
+5. **grep**  
+   - 路径：`src/tool/grep.ts`  
+   - 职责：按内容搜索文件，快速定位代码或文本中的匹配片段。
+
+6. **glob**  
+   - 路径：`src/tool/glob.ts`  
+   - 职责：按文件名模式查找文件，帮助 Agent 定位目标文件集合。",PASS,1.00,"{""anchor_hit"":1,""rubric_score"":1}",All assertions passed,,"sid-code 的 6 个内置工具如下（均位于 `src/tool/` 下）：
 
 | 工具 | 源文件 | 职责 |
 |---|---|---|
@@ -44,7 +117,239 @@ while (state.turnCount < state.maxTurns)   // 第 74 行
 | **glob** | `src/tool/glob.ts` | 按 glob 模式匹配文件名，结果按 mtime 降序（最近编辑优先），默认忽略 `node_modules`/`.git`/`dist`。 |
 
 注：`src/tool/` 下还有 `ls`、`read_many`、`web_fetch`、`web_search`、`memory`、`enter_plan_mode`/`exit_plan_mode` 等扩展工具，但 CLAUDE.md 定义的""6 个内置工具""特指上述 read/write/edit/bash/grep/glob。",PASS,1.00,"{""anchor_hit"":1,""rubric_score"":1}",All assertions passed,
-[case_005] bug修复 — 我在跑测试时遇到报错：`TypeError: Cannot read properties of undefined (...,"我在跑测试时遇到报错：`TypeError: Cannot read properties of undefined (reading 'undo')`，发生在我执行 /undo 命令的时候。请你定位 /undo 命令的实现并解释这个错误最可能的根因（不要改代码,我先了解情况）。",case_005,bug修复,[ERROR] sid-code-live TIMEOUT after 360000ms,FAIL,0.00,"{""anchor_hit"":0,""rubric_score"":0}","Output is an error timeout message, not a diagnostic response about the undo command bug. Contains none of the required keywords (src/command/builtins.ts, UndoCommand, CheckpointManager, cpMgr) and provides no analysis of the TypeError root cause or troubleshooting steps.",,"已定位到 `/undo` 命令实现，下面给出根因分析。
+[case_005] bug修复 — 我在跑测试时遇到报错：`TypeError: Cannot read properties of undefined (...,"我在跑测试时遇到报错：`TypeError: Cannot read properties of undefined (reading 'undo')`，发生在我执行 /undo 命令的时候。请你定位 /undo 命令的实现并解释这个错误最可能的根因（不要改代码,我先了解情况）。",case_005,bug修复,"我先给结论：**最可能的根因不是 `/undo` 命令本身没实现，而是执行 `/undo` 时传入的 `ctx` 里缺少 `sessionState`，导致 `ctx.sessionState.sessionId` 取值链断了。**  
+你看到的报错文本是：
+
+`TypeError: Cannot read properties of undefined (reading 'undo')`
+
+这通常说明某个对象本身是 `undefined`，然后代码又去读它的 `.undo()` 方法。
+
+## `/undo` 命令实现在哪
+
+实现位置：
+
+- `src/command/builtins.ts`
+
+关键代码：
+
+```ts
+export class UndoCommand implements Command {
+  name() { return ""undo""; }
+
+  async execute(args: string, ctx: AppContext): Promise<CommandResult> {
+    const { getCheckpointManager } = await import(""../checkpoint/manager.ts"");
+    const cpMgr = await getCheckpointManager(
+      ctx.sessionState.sessionId,
+      ctx.config.checkpoint,
+    );
+
+    const trimmed = args.trim();
+
+    if (trimmed) {
+      const result = await cpMgr.undoFile(trimmed);
+      ...
+    }
+
+    const result = await cpMgr.undo();
+    ...
+  }
+}
+```
+
+所以 `/undo` 的真实调用链是：
+
+1. `/undo` 命令进入 `UndoCommand.execute()`
+2. 通过 `getCheckpointManager(...)` 获取 `cpMgr`
+3. 执行：
+   - `cpMgr.undoFile(...)`，或
+   - `cpMgr.undo()`
+
+## `undo()` 在哪
+
+实现位置：
+
+- `src/checkpoint/manager.ts`
+
+关键代码：
+
+```ts
+async undo(): Promise<UndoResult | null> {
+  if (!this.config.enabled) {
+    return null;
+  }
+
+  const lastSnapshot = this.getLastSnapshot();
+  if (!lastSnapshot) {
+    return null;
+  }
+
+  ...
+}
+```
+
+也就是说，**正常情况下 `cpMgr.undo()` 是存在的**。  
+因为 `getCheckpointManager()` 返回的是 `CheckpointManager` 实例：
+
+```ts
+export async function getCheckpointManager(
+  sessionId: string,
+  config?: CheckpointConfig,
+): Promise<CheckpointManager> {
+  if (!globalCheckpointManager || (globalCheckpointManager as any).sessionId !== sessionId) {
+    globalCheckpointManager = new CheckpointManager(sessionId, config);
+    await globalCheckpointManager.init();
+  }
+  return globalCheckpointManager;
+}
+```
+
+从这段看，`getCheckpointManager()` 不太像会返回 `undefined`。
+
+---
+
+## 最可能的根因
+
+### 根因 1：命令上下文不一致，`ctx.sessionState` 缺失
+这是我认为**最可能**的原因。
+
+我在 `src/app.ts` 里看到 TUI 斜杠命令是手动构造 `AppContext` 的：
+
+```ts
+const cmdCtx: import(""./command/types.ts"").AppContext = {
+  ctxMgr: this.ctxMgr,
+  registry: this.toolRegistry,
+  config: this.config,
+  sessionId: """",
+  provider: this.provider,
+  ...
+}
+```
+
+这里已经暴露出一个明显信号：
+
+- 它放的是 `sessionId: """"`
+- 但 `/undo` 命令实际读的是 `ctx.sessionState.sessionId`
+
+也就是说，**命令上下文的字段形状很可能前后不一致**：
+
+- 某些命令可能还在用旧字段：`ctx.sessionId`
+- `/undo`、`/checkpoints`、`/restore` 这些新命令已经改成用：`ctx.sessionState.sessionId`
+
+如果测试里构造的 `ctx` 没有 `sessionState`，或者 TUI/测试适配层只传了 `sessionId` 没传 `sessionState`，那这里就会出问题：
+
+```ts
+ctx.sessionState.sessionId
+```
+
+这会先让 `ctx.sessionState` 变成 `undefined`。
+
+虽然你给的错误是 “reading 'undo'”，不是 “reading 'sessionId'”，但在实际测试封装、mock、命令调度中，**也可能先把 `cpMgr` 变成 `undefined`，最后在 `cpMgr.undo()` 这一行爆出来**。  
+尤其是如果测试对 `getCheckpointManager` 做了 mock，或命令执行入口吞掉了上游异常。
+
+---
+
+### 根因 2：测试里 mock 了 checkpoint manager，但没提供 `undo`
+第二可能是**测试桩不完整**。
+
+因为 `/undo` 命令依赖动态导入：
+
+```ts
+const { getCheckpointManager } = await import(""../checkpoint/manager.ts"");
+```
+
+如果测试里 mock 了这个模块，例如返回：
+
+```ts
+{ getCheckpointManager: async () => undefined }
+```
+
+或者返回了一个只带 `undoFile`、不带 `undo` 的对象，那么这里就会直接报：
+
+```ts
+cpMgr.undo()
+```
+
+即：
+
+`Cannot read properties of undefined (reading 'undo')`
+
+这个现象和你的报错**字面上非常贴近**。
+
+所以如果你是在单测里触发 `/undo`，我会优先检查：
+
+- 有没有 mock `../checkpoint/manager.ts`
+- mock 的 `getCheckpointManager()` 返回值是不是完整的 `CheckpointManager` 形状
+- 返回值里是否真的有 `undo` 方法
+
+---
+
+## 为什么我不太怀疑 `CheckpointManager.undo()` 自己的实现
+
+因为：
+
+1. `undo()` 方法本身明确存在于类上
+2. `getCheckpointManager()` 明确返回 `CheckpointManager`
+3. `tests/checkpoint/manager.test.ts` 里还有直接调用 `manager.undo()` 的测试片段，说明这个类本身是通的
+
+所以问题更像是：
+
+- **命令层传错了上下文**
+- 或 **测试层 mock/注入错了依赖**
+
+而不是 checkpoint 核心逻辑坏了。
+
+---
+
+## 你现在最该检查的两个地方
+
+### 1）斜杠命令执行时构造的 `AppContext`
+重点看：
+
+- `src/app.ts` 里构造 `cmdCtx` 的地方
+- `src/command/types.ts` 中 `AppContext` 的定义
+- 是否所有命令都统一使用：
+  - `ctx.sessionState.sessionId`
+  - 还是有的还在用 `ctx.sessionId`
+
+如果 `AppContext` 类型里没有 `sessionState`，但 `/undo` 却读取了它，那就是非常直接的根因。
+
+---
+
+### 2）`/undo` 相关测试是否 mock 了 checkpoint manager
+重点看测试里是否有类似：
+
+- `mock.module(""../checkpoint/manager.ts"", ...)`
+- `vi.mock(...)`
+- `jest.mock(...)`
+
+确认 mock 返回的对象里是否包含：
+
+```ts
+{
+  undo: async () => ...,
+  undoFile: async () => ...
+}
+```
+
+---
+
+## 最可能的根因排序
+
+我会这样排序：
+
+1. **`AppContext` 结构不一致，`/undo` 读取了 `ctx.sessionState.sessionId`，但实际上下文里没有 `sessionState`**
+2. **测试 mock 的 `getCheckpointManager()` 返回了 `undefined` 或不完整对象，导致 `cpMgr.undo` 不存在**
+3. 较低概率：动态 import/mocking 在测试环境下行为异常，导致 `getCheckpointManager` 不是预期函数
+
+---
+
+## 一句话总结
+
+`/undo` 的实现本身在 `src/command/builtins.ts`，最终调用 `src/checkpoint/manager.ts` 的 `CheckpointManager.undo()`。  
+**这类报错最可能不是 undo 算法坏了，而是命令层拿到的 `cpMgr` 根本不是有效的 `CheckpointManager`。**  
+结合当前代码，我最怀疑的是：**`/undo` 命令依赖 `ctx.sessionState.sessionId`，但你的测试或 TUI 命令上下文并没有正确提供 `sessionState`。**
+
+如果你愿意，我下一步可以只做**只读排查**，帮你把 `/undo` 的测试入口和 `AppContext` 类型定义一起串起来，精确指出是哪一层字段不一致。",PASS,1.00,"{""anchor_hit"":1,""rubric_score"":1}",All assertions passed,,"已定位到 `/undo` 命令实现，下面给出根因分析。
 
 ## 调用链
 

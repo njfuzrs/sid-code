@@ -128,6 +128,22 @@ function readTrajectoryMeta(sessionDir: string | null): {
   }
 }
 
+/**
+ * 尝试从 stdout buffer 中提取完整 JSON 对象。
+ * sid-code --output-format json 输出一个完整 JSON 对象后 process.exit(0)。
+ * 如果进程因某种原因没退出但 JSON 已完整，提前收割结果。
+ */
+function tryExtractCompleteJson(buf: string): boolean {
+  const trimmed = buf.trim();
+  if (!trimmed.startsWith("{")) return false;
+  try {
+    JSON.parse(trimmed);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function main() {
   const prompt = process.argv[2] || "";
   const configRaw = process.argv[3];
@@ -150,9 +166,33 @@ async function main() {
 
   const child = spawn("bun", args, {
     cwd: REPO_ROOT,
-    env: { ...process.env },
+    env: { ...process.env, SID_CODE_HEADLESS: "1" },
     stdio: ["ignore", "pipe", "pipe"],
   });
+
+  let stdoutBuf = "";
+  let stderrBuf = "";
+  let resolved = false;
+  let resolveMain: (code: number | null) => void;
+
+  const exitPromise = new Promise<number | null>((res) => { resolveMain = res; });
+
+  child.stdout?.on("data", (chunk) => {
+    stdoutBuf += chunk.toString();
+    // 检测 stdout 是否已收到完整 JSON — 如果是，给一个短延时后主动 kill
+    if (!resolved && tryExtractCompleteJson(stdoutBuf)) {
+      resolved = true;
+      process.stderr.write(`[sid-code-live] stdout JSON complete (${stdoutBuf.length}B), waiting 2s for graceful exit...\n`);
+      setTimeout(() => {
+        if (!child.killed) {
+          process.stderr.write(`[sid-code-live] force kill after JSON received\n`);
+          child.kill("SIGTERM");
+          setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, 2000);
+        }
+      }, 2000);
+    }
+  });
+  child.stderr?.on("data", (chunk) => { stderrBuf += chunk.toString(); });
 
   let timedOut = false;
   const timer = setTimeout(() => {
@@ -164,15 +204,10 @@ async function main() {
     }, 3000);
   }, timeoutMs);
 
-  let stdoutBuf = "";
-  let stderrBuf = "";
-  child.stdout?.on("data", (chunk) => { stdoutBuf += chunk.toString(); });
-  child.stderr?.on("data", (chunk) => { stderrBuf += chunk.toString(); });
+  child.on("close", (code) => resolveMain(code));
+  child.on("error", () => resolveMain(null));
 
-  const exitCode: number | null = await new Promise((resolveExit) => {
-    child.on("close", (code) => resolveExit(code));
-    child.on("error", () => resolveExit(null));
-  });
+  const exitCode = await exitPromise;
   clearTimeout(timer);
 
   const elapsedMs = Date.now() - startedAt;
@@ -186,17 +221,26 @@ async function main() {
     + `tools=${meta.toolsUsed.join(",")} steps=${meta.totalSteps}\n`
   );
 
+  // 即使超时/非零退出，如果已经拿到完整 JSON 输出，仍然提取结果
+  if (tryExtractCompleteJson(stdoutBuf)) {
+    const text = parseFinalText(stdoutBuf);
+    if (text) {
+      process.stdout.write(text);
+      process.exit(0);
+    }
+  }
+
   if (timedOut) {
     console.log(`[ERROR] sid-code-live TIMEOUT after ${timeoutMs}ms`);
     process.exit(0);
   }
-  if (exitCode !== 0) {
+  if (exitCode !== 0 && exitCode !== null) {
     console.log(`[ERROR] sid-code-live exit=${exitCode}\nstderr tail:\n${stderrBuf.slice(-800)}`);
     process.exit(0);
   }
 
   const text = parseFinalText(stdoutBuf);
-  process.stdout.write(text);
+  process.stdout.write(text || "[ERROR] empty output from sid-code-live");
 }
 
 main().catch((err) => {

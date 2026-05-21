@@ -10,7 +10,8 @@ holdout: false
 holdout_reason: null
 
 input:
-  user_query: "我在跑测试时遇到报错：`TypeError: Cannot read properties of undefined (reading 'undo')`，发生在我执行 /undo 命令的时候。请你定位 /undo 命令的实现并解释这个错误最可能的根因（不要改代码,我先了解情况）。"
+  user_query: "我在跑测试时遇到报错：`TypeError: Cannot read properties of undefined (reading
+    'undo')`，发生在我执行 /undo 命令的时候。请你定位 /undo 命令的实现并解释这个错误最可能的根因（不要改代码,我先了解情况）。"
   repo: sid-code
   repo_commit: b27b546
   attachments: []
@@ -52,12 +53,41 @@ grader:
     weight: 1.0
 
 baseline_scores:
-  sid_code_w0: { score: 1, run_status: success, tested_at: "2026-05-15T18:58:53.186Z", tested_by: anchor_auto_v0, transcript_path: "evals/raw-outputs/case_005_1778871333176.jsonl", notes: "锚点 0/4 命中, 反向违规 0; 人工 D5 复核可调" }
-  claude_code: { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
-  codex:       { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
+  sid_code_w0:
+    {
+      score: 1,
+      run_status: success,
+      tested_at: "2026-05-15T18:58:53.186Z",
+      tested_by: anchor_auto_v0,
+      transcript_path: "evals/raw-outputs/case_005_1778871333176.jsonl",
+      notes: "锚点 0/4 命中, 反向违规 0; 人工 D5 复核可调"
+    }
+  claude_code:
+    score: 5
+    run_status: success
+    tested_at: 2026-05-21T16:44:35.682Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: ""
+  codex:
+    {
+      score: null,
+      run_status: pending,
+      tested_at: null,
+      tested_by: manual,
+      transcript_path: null,
+      notes: ""
+    }
+  sid_code_live:
+    score: 5
+    run_status: success
+    tested_at: 2026-05-21T16:44:35.682Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: ""
 
 source: "personal_exploration_2026_05_16"
 notes: |
   bug 修复 3 条之 1。考查"诊断 vs 修复"的克制（用户明确说不要改）。
   must_not_modify_files=src/ 兜底防止 agent 自作主张写代码。
-related_subsystem: [command, checkpoint, tool/grep]
+related_subsystem: [ command, checkpoint, tool/grep ]

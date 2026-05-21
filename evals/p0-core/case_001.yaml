@@ -23,7 +23,7 @@ expected:
     - "AgentLoopRunner"
 
   must_not_include:
-    - "src/query/loop.ts"  # 这是 sub-loop，不是主入口；返回这个算偏
+    - "src/query/loop.ts" # 这是 sub-loop，不是主入口；返回这个算偏
 
   must_call_tools:
     - grep
@@ -58,10 +58,10 @@ baseline_scores:
     transcript_path: "evals/raw-outputs/case_001_1778870152964.jsonl"
     notes: "锚点 2/2 全命中,且回答含 AgentLoopRunner 完整职责;人工 D5 复核：5"
   claude_code:
-    score: null
-    run_status: pending
-    tested_at: null
-    tested_by: manual
+    score: 1.4
+    run_status: success
+    tested_at: 2026-05-21T16:44:35.682Z
+    tested_by: promptfoo
     transcript_path: null
     notes: ""
   codex:
@@ -71,9 +71,16 @@ baseline_scores:
     tested_by: manual
     transcript_path: null
     notes: ""
+  sid_code_live:
+    score: 5
+    run_status: success
+    tested_at: 2026-05-21T16:44:35.682Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: ""
 
 source: "personal_exploration_2026_05_16"
 notes: |
   W1 第一条样板 case。代码理解 4 条之 1（agent 主循环入口）。
   关键词 AgentLoopRunner 已 grep 验证存在于 src/agent/loop.ts:82。
-related_subsystem: [agent, tool/grep]
+related_subsystem: [ agent, tool/grep ]
