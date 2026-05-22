@@ -38,7 +38,11 @@ interface ProviderConfig {
 function parseConfig(raw: string | undefined): ProviderConfig {
   if (!raw) return {};
   try {
-    return JSON.parse(raw) as ProviderConfig;
+    const parsed = JSON.parse(raw);
+    if (parsed.config && typeof parsed.config === "object") {
+      return parsed.config as ProviderConfig;
+    }
+    return parsed as ProviderConfig;
   } catch {
     return {};
   }

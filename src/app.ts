@@ -1183,12 +1183,8 @@ export class App {
           setModel: (m) => {
             log.info("TUI:CMD", `切换模型: ${this.config.model} → ${m}`);
             this.config.model = m;
-            const { resolveModelMaxOutputTokens } = require("./config/config.ts");
-            const modelMaxOutput = resolveModelMaxOutputTokens(this.config);
-            if (modelMaxOutput) {
-              this.config.maxTokens = modelMaxOutput;
-              log.info("TUI:CMD", `maxTokens 已更新: ${modelMaxOutput}`);
-            }
+            const { resolveCurrentModelConfig } = require("./config/config.ts");
+            resolveCurrentModelConfig(this.config);
             if (this.providerRegistry) {
               this.providerRegistry.clearCache();
               this.provider = this.providerRegistry.getProvider();

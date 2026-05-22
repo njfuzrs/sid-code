@@ -215,31 +215,6 @@ export class ModelCommand implements Command {
           message: `模型 "${modelName}" 不在可用模型列表中\n\n可用模型:\n${available}\n\n使用 /model list 查看详细信息`,
         };
       }
-
-      const notices: string[] = [];
-      if (modelConfig.provider && modelConfig.provider !== ctx.config.provider) {
-        ctx.config.provider = modelConfig.provider;
-        notices.push(`提供商已切换为: ${modelConfig.provider}`);
-      }
-      if (modelConfig.baseURL && modelConfig.baseURL !== ctx.config.baseURL) {
-        ctx.config.baseURL = modelConfig.baseURL;
-        notices.push(`API 地址已更新: ${modelConfig.baseURL}`);
-      }
-      if (modelConfig.apiKey) {
-        const provider = modelConfig.provider || ctx.config.provider;
-        if (provider === "anthropic") {
-          ctx.config.anthropicKey = modelConfig.apiKey;
-        } else {
-          ctx.config.openaiKey = modelConfig.apiKey;
-        }
-      }
-      if (modelConfig.maxOutputTokens) {
-        ctx.config.maxTokens = modelConfig.maxOutputTokens;
-        notices.push(`最大输出 tokens 已更新: ${modelConfig.maxOutputTokens}`);
-      }
-      if (notices.length > 0) {
-        // 通知会附在切换消息后
-      }
     }
 
     ctx.setModel(modelName);

@@ -6,6 +6,7 @@ import { describe, test, expect, mock } from "bun:test";
 import { ModelCommand } from "../../src/command/builtins.ts";
 import type { AppContext } from "../../src/command/types.ts";
 import type { Config, ModelConfig } from "../../src/config/config.ts";
+import { resolveCurrentModelConfig } from "../../src/config/config.ts";
 
 function createMockContext(config: Partial<Config> = {}): AppContext {
   const fullConfig: Config = {
@@ -46,6 +47,7 @@ function createMockContext(config: Partial<Config> = {}): AppContext {
     provider: {} as any,
     setModel: mock((model: string) => {
       fullConfig.model = model;
+      resolveCurrentModelConfig(fullConfig);
     }),
     exitRequested: false,
     sessionState: {} as any,

@@ -100,12 +100,13 @@ export class ProviderRegistry {
     return this.config.availableModels?.find(m => m.name === modelName);
   }
 
-  /** 根据 provider 名称获取对应的 API Key */
+  /** 根据 provider 名称获取对应的 API Key（优先从当前模型配置取） */
   private getApiKey(providerName: string): string {
+    const mc = this.findModelConfig(this.config.model);
+    if (mc?.apiKey) return mc.apiKey;
     if (providerName === "anthropic") return this.config.anthropicKey;
     if (providerName === "openai") return this.config.openaiKey;
     if (providerName === "ollama") return "ollama";
-    // 默认尝试 openai key（兼容 OpenAI 兼容接口）
     return this.config.openaiKey;
   }
 

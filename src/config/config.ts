@@ -585,6 +585,9 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
 
   const config = merged as Config;
 
+  // 从 availableModels 解析当前模型的连接信息，回填顶层字段
+  resolveCurrentModelConfig(config);
+
   // 如果用户未显式配置 maxTokens，从当前模型的 maxOutputTokens 自动推导
   const userExplicitMaxTokens = cliArgs.maxTokens || (fileConfig as any).maxTokens || (envConfig as any).maxTokens;
   if (!userExplicitMaxTokens) {
@@ -630,6 +633,28 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
   }
 
   return config;
+}
+
+/**
+ * 从 availableModels 解析当前模型的完整连接信息，回填到顶层字段。
+ * 这样 registry / cli / schema 等消费方无需关心 "信息在模型还是顶层"。
+ * 如果当前模型不在 availableModels 中，保持顶层字段不变（向后兼容）。
+ */
+export function resolveCurrentModelConfig(config: Config): void {
+  if (!config.availableModels?.length) return;
+  const mc = config.availableModels.find(m => m.name === config.model);
+  if (!mc) return;
+
+  if (mc.provider) config.provider = mc.provider;
+  if (mc.baseURL) config.baseURL = mc.baseURL;
+  if (mc.apiKey) {
+    if (config.provider === "anthropic") {
+      config.anthropicKey = mc.apiKey;
+    } else {
+      config.openaiKey = mc.apiKey;
+    }
+  }
+  if (mc.maxOutputTokens) config.maxTokens = mc.maxOutputTokens;
 }
 
 /** 从 availableModels 中查找当前模型的 maxOutputTokens */

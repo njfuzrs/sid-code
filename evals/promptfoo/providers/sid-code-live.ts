@@ -41,7 +41,13 @@ interface ProviderConfig {
 function parseConfig(raw: string | undefined): ProviderConfig {
   if (!raw) return {};
   try {
-    return JSON.parse(raw) as ProviderConfig;
+    const parsed = JSON.parse(raw);
+    // promptfoo exec provider 传入的 $2 是 { id, config: {...}, env: {} }
+    // 实际 config 字段在 parsed.config 中
+    if (parsed.config && typeof parsed.config === "object") {
+      return parsed.config as ProviderConfig;
+    }
+    return parsed as ProviderConfig;
   } catch {
     return {};
   }
