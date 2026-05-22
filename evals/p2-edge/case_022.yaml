@@ -93,19 +93,31 @@ baseline_scores:
     transcript_path: null
     notes: ""
   claude_code_opus47:
-    score: null
-    run_status: timeout
-    tested_at: 2026-05-21T19:40:18.905Z
-    tested_by: promptfoo
-    transcript_path: null
-    notes: promptfoo exec provider 360s 超时
-  sid_code_opus47:
-    score: 4.8
+    score: 5
     run_status: success
-    tested_at: 2026-05-21T19:40:18.905Z
+    tested_at: 2026-05-22T17:25:00.843Z
     tested_by: promptfoo
     transcript_path: null
     notes: ""
+    dimensions:
+      anchor_hit: 1
+      rubric_score: 1
+      tool_compliance: 1
+      efficiency: 1
+      cost: 1
+  sid_code_opus47:
+    score: 5
+    run_status: success
+    tested_at: 2026-05-22T17:25:00.843Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: ""
+    dimensions:
+      anchor_hit: 1
+      rubric_score: 1
+      tool_compliance: 1
+      efficiency: 1
+      cost: 1
 
 source: "synthetic_edge_2026_05_16"
 notes: |

@@ -83,19 +83,31 @@ baseline_scores:
     transcript_path: null
     notes: ""
   claude_code_opus47:
-    score: 4.5
+    score: 3.2
     run_status: success
-    tested_at: 2026-05-21T19:40:18.905Z
+    tested_at: 2026-05-22T17:25:00.843Z
     tested_by: promptfoo
     transcript_path: null
     notes: ""
+    dimensions:
+      anchor_hit: 1
+      rubric_score: 0.4
+      tool_compliance: 0.6
+      efficiency: 1
+      cost: 1
   sid_code_opus47:
-    score: 5
+    score: 4.3
     run_status: success
-    tested_at: 2026-05-21T19:40:18.905Z
+    tested_at: 2026-05-22T17:25:00.843Z
     tested_by: promptfoo
     transcript_path: null
     notes: ""
+    dimensions:
+      anchor_hit: 1
+      rubric_score: 0.85
+      tool_compliance: 0.6
+      efficiency: 1
+      cost: 1
 
 source: "personal_exploration_2026_05_16"
 notes: |
