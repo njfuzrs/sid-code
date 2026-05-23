@@ -1,6 +1,6 @@
 # Evals Dashboard — sid-code
 
-> 自动生成,请勿手动编辑。生成时间: `2026-05-23T08:00:26.317Z`
+> 自动生成,请勿手动编辑。生成时间: `2026-05-23T08:05:40.416Z`
 > 数据源: `evals/p*-*/` + `evals/_scores/` + `evals/_reports/`
 > 触发: 手动 `bun run eval:dashboard` / git pre-push hook 自动刷新
 
