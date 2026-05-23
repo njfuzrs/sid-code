@@ -95,4 +95,5 @@ export interface AccumulatedResponse {
   content: ContentBlock[];
   stopReason: string | null;
   usage: Usage;
+  _meta?: Record<string, unknown>;
 }

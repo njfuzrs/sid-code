@@ -41,6 +41,10 @@ export async function processStream(
   const thinkingBlocks: unknown[] = [];
   // 记录哪些 index 是 thinking 块
   const thinkingIndexes = new Set<number>();
+  // 记录已完成的 thinking 块索引（用于最后从 content 中移除）
+  const removedThinkingIndexes = new Set<number>();
+  // 累积 reasoning 文本（DeepSeek reasoning_content 回传用）
+  let accumulatedReasoning = "";
 
   // 心跳检测
   const HEARTBEAT_TIMEOUT = options?.heartbeatTimeoutMs ?? 30_000;
@@ -114,7 +118,9 @@ export async function processStream(
             const block = response.content[event.index];
             if (block?.type === "text" && block.text) {
               thinkingBlocks.push({ type: "thinking", thinking: block.text });
+              accumulatedReasoning += block.text;
             }
+            removedThinkingIndexes.add(event.index);
             thinkingIndexes.delete(event.index);
           }
           break;
@@ -147,6 +153,16 @@ export async function processStream(
 
   if (thinkingBlocks.length > 0) {
     (response as any)._thinkingBlocks = thinkingBlocks;
+  }
+
+  // DeepSeek reasoning_content: 存到 _meta 供 convertMessages 回传
+  if (accumulatedReasoning) {
+    response._meta = { ...response._meta, reasoning_content: accumulatedReasoning };
+  }
+
+  // 从 content 中移除 thinking 块（防止 convertMessages 把 thinking 文本混入 content）
+  if (removedThinkingIndexes.size > 0) {
+    response.content = response.content.filter((_, i) => !removedThinkingIndexes.has(i));
   }
 
   return response;

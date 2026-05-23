@@ -92,6 +92,11 @@ export class OpenAIProvider implements Provider {
           content: textParts.join("") || null,
         };
 
+        // DeepSeek: 回传 reasoning_content
+        if (msg._meta?.reasoning_content) {
+          assistantMsg.reasoning_content = msg._meta.reasoning_content;
+        }
+
         if (toolCalls.length > 0) {
           assistantMsg.tool_calls = toolCalls;
         }
@@ -247,6 +252,7 @@ export class OpenAIProvider implements Provider {
     let buffer = "";
     let nextContentIndex = 0;
     let textBlockStarted = false;
+    let textBlockIndex = -1;
     // 多工具并行追踪：key 是 OpenAI 的 tool_call index
     const toolCalls = new Map<number, ToolCallState>();
     const usage: Usage = { inputTokens: 0, outputTokens: 0 };
@@ -339,36 +345,40 @@ export class OpenAIProvider implements Provider {
               }
               if (!textBlockStarted) {
                 textBlockStarted = true;
+                textBlockIndex = nextContentIndex;
                 yield {
                   type: "content_block_start",
                   index: nextContentIndex,
                   content_block: { type: "text", text: "" },
                 };
+                nextContentIndex++;
               }
               yield {
                 type: "content_block_delta",
-                index: 0, // 文本块始终是 index 0
+                index: textBlockIndex,
                 delta: { type: "text_delta", text: delta.content },
               };
             }
 
             // 工具调用（支持多个并行）
             if (delta?.tool_calls) {
+              // 如果 reasoning 块还开着（没有 content 的情况下直接到 tool_calls），先关闭
+              if (reasoningBlockStarted) {
+                yield { type: "content_block_stop", index: nextContentIndex - 1 };
+                reasoningBlockStarted = false;
+              }
               for (const tc of delta.tool_calls) {
                 const tcIndex = tc.index ?? 0;
 
                 if (!toolCalls.has(tcIndex)) {
                   // 新工具调用开始
                   // 如果文本块已开始，先关闭它
-                  if (textBlockStarted && nextContentIndex === 0) {
-                    yield { type: "content_block_stop", index: 0 };
-                    nextContentIndex = 1;
-                  }
-                  if (!textBlockStarted && nextContentIndex === 0) {
-                    nextContentIndex = 0;
+                  if (textBlockStarted) {
+                    yield { type: "content_block_stop", index: textBlockIndex };
+                    textBlockStarted = false;
                   }
 
-                  const contentIdx = textBlockStarted ? nextContentIndex : nextContentIndex;
+                  const contentIdx = nextContentIndex;
                   const state: ToolCallState = {
                     id: tc.id || "",
                     name: tc.function?.name || "",
@@ -424,9 +434,9 @@ export class OpenAIProvider implements Provider {
               }
 
               // 关闭文本块（如果还没关闭）
-              if (textBlockStarted && nextContentIndex === 0) {
-                yield { type: "content_block_stop", index: 0 };
-                nextContentIndex = 1;
+              if (textBlockStarted) {
+                yield { type: "content_block_stop", index: textBlockIndex };
+                textBlockStarted = false;
               }
 
               // 关闭所有工具调用块

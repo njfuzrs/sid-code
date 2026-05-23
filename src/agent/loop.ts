@@ -464,6 +464,7 @@ export class AgentLoopRunner {
       ctxMgr.addMessage({
         role: "assistant",
         content: response.content,
+        ...(response._meta ? { _meta: response._meta } : {}),
       });
 
       // 内容循环检测

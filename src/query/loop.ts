@@ -361,6 +361,7 @@ export async function* queryLoop(
     ctxMgr.addMessage({
       role: "assistant",
       content: response.content,
+      ...(response._meta ? { _meta: response._meta } : {}),
     });
 
     yield { kind: "assistant_message", message: { role: "assistant", content: response.content } };
