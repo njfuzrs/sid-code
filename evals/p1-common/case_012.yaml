@@ -108,6 +108,19 @@ baseline_scores:
       tool_compliance: 0.6
       efficiency: 1
       cost: 1
+  sid_code_deepseek_v4_pro:
+    score: 1.41
+    run_status: timeout
+    tested_at: 2026-05-23T04:37:29.980Z
+    tested_by: eval-runner
+    transcript_path: null
+    notes: eval-runner 超时
+    dimensions:
+      anchor_hit: 0
+      rubric_score: 0
+      tool_compliance: 0.6
+      efficiency: 1
+      cost: 1
 
 source: "personal_exploration_2026_05_16"
 notes: |

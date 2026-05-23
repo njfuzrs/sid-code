@@ -443,10 +443,34 @@ async function main() {
   console.log(`  输出: ${outputPath}`);
   const avgScore = results.reduce((s, r) => s + r.score, 0) / results.length;
   console.log(`  平均分: ${avgScore.toFixed(2)}/5`);
+
+  await refreshReports();
+}
+
+async function refreshReports() {
   console.log("");
-  console.log("下一步:");
-  console.log("  bun run eval:dashboard         # 刷新 DASHBOARD.md（含趋势图）");
-  console.log("  bun run evals/gen-cases-md.ts   # 刷新 CASES.md（含详情）");
+  console.log("[eval-runner] 自动刷新报告...");
+  const projectRoot = resolve(ROOT, "..");
+
+  const dashboardProc = spawn("bun", ["run", "eval:dashboard"], {
+    cwd: projectRoot,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const casesProc = spawn("bun", ["run", join(ROOT, "gen-cases-md.ts")], {
+    cwd: projectRoot,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  const wait = (p: ReturnType<typeof spawn>) => new Promise<number | null>((res) => {
+    p.on("close", (code) => res(code));
+    p.on("error", () => res(null));
+  });
+
+  const [dashCode, casesCode] = await Promise.all([wait(dashboardProc), wait(casesProc)]);
+  if (dashCode === 0) console.log("  ✅ DASHBOARD.md 已刷新");
+  else console.log(`  ❌ DASHBOARD.md 刷新失败 (exit=${dashCode})`);
+  if (casesCode === 0) console.log("  ✅ CASES.md 已刷新");
+  else console.log(`  ❌ CASES.md 刷新失败 (exit=${casesCode})`);
 }
 
 main().catch((err) => {

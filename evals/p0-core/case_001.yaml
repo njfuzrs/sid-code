@@ -109,14 +109,14 @@ baseline_scores:
       efficiency: 1
       cost: 1
   sid_code_deepseek_v4_pro:
-    score: 3.76
-    run_status: error
-    tested_at: 2026-05-23T02:43:06.183Z
+    score: 4.35
+    run_status: success
+    tested_at: 2026-05-23T04:37:29.980Z
     tested_by: eval-runner
     transcript_path: null
     notes: ""
     dimensions:
-      anchor_hit: 0
+      anchor_hit: 0.6666666666666666
       rubric_score: 1
       tool_compliance: 0.6
       efficiency: 1
