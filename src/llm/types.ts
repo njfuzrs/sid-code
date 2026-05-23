@@ -35,6 +35,7 @@ export type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock;
 export interface Message {
   role: Role;
   content: ContentBlock[];
+  _meta?: Record<string, unknown>;
 }
 
 /** Token 用量统计 */

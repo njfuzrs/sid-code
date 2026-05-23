@@ -1,0 +1,193 @@
+{
+  "version": 2,
+  "timestamp": "2026-05-23T02:43:06.180Z",
+  "config": {
+    "cases": [
+      "case_001",
+      "case_002"
+    ],
+    "providers": [
+      "sid_code_deepseek_v4_pro"
+    ],
+    "model": "deepseek-v4-pro",
+    "concurrency": 2,
+    "week": 21
+  },
+  "results": {
+    "timestamp": "2026-05-23T02:43:06.180Z",
+    "results": [
+      {
+        "cost": 0,
+        "latencyMs": 8939,
+        "provider": {
+          "id": "sid_code_deepseek_v4_pro",
+          "label": "sid_code_deepseek_v4_pro"
+        },
+        "response": {
+          "output": "[ERROR] sid-code-live exit=1\nstderr tail:\n错误: 125 |           response.usage.inputTokens += event.usage.inputTokens ?? 0;\n126 |           response.usage.outputTokens += event.usage.outputTokens;\n127 |           break;\n128 | \n129 |         case \"error\":\n130 |           throw new Error(`LLM 错误: ${event.error.message}`);\n                          ^\nerror: LLM 错误: 模型请求失败，已达最大重试次数且无可用 fallback\n      at processStream (/Users/dev/Code/person/sid-code/src/query/stream-processor.ts:130:21)\n\n"
+        },
+        "score": 0.752,
+        "success": false,
+        "namedScores": {
+          "anchor_hit": 0,
+          "rubric_score": 1,
+          "tool_compliance": 0.6,
+          "efficiency": 1,
+          "cost": 1
+        },
+        "testCase": {
+          "vars": {
+            "case_id": "case_001"
+          },
+          "description": "case_001"
+        },
+        "gradingResult": {
+          "pass": true,
+          "score": 0.752,
+          "namedScores": {
+            "anchor_hit": 0,
+            "rubric_score": 1,
+            "tool_compliance": 0.6,
+            "efficiency": 1,
+            "cost": 1
+          },
+          "componentResults": [
+            {
+              "assertion": {
+                "type": "custom",
+                "metric": "anchor_hit"
+              },
+              "pass": false,
+              "score": 0,
+              "reason": "未命中任何锚点: src/agent/loop.ts, AgentLoopRunner, agent/loop, loop.ts, agentic while, agentic loop"
+            },
+            {
+              "assertion": {
+                "type": "custom",
+                "metric": "rubric_score"
+              },
+              "pass": true,
+              "score": 1,
+              "reason": "跳过 LLM judge"
+            },
+            {
+              "assertion": {
+                "type": "custom",
+                "metric": "tool_compliance"
+              },
+              "pass": true,
+              "score": 0.6,
+              "reason": "未使用要求的工具: grep"
+            },
+            {
+              "assertion": {
+                "type": "custom",
+                "metric": "efficiency"
+              },
+              "pass": true,
+              "score": 1,
+              "reason": "步数 2/12 在预期内"
+            },
+            {
+              "assertion": {
+                "type": "custom",
+                "metric": "cost"
+              },
+              "pass": true,
+              "score": 1,
+              "reason": "token 使用 75k，低消耗"
+            }
+          ]
+        }
+      },
+      {
+        "cost": 0,
+        "latencyMs": 9921,
+        "provider": {
+          "id": "sid_code_deepseek_v4_pro",
+          "label": "sid_code_deepseek_v4_pro"
+        },
+        "response": {
+          "output": "[ERROR] sid-code-live exit=1\nstderr tail:\n错误: 125 |           response.usage.inputTokens += event.usage.inputTokens ?? 0;\n126 |           response.usage.outputTokens += event.usage.outputTokens;\n127 |           break;\n128 | \n129 |         case \"error\":\n130 |           throw new Error(`LLM 错误: ${event.error.message}`);\n                          ^\nerror: LLM 错误: 模型请求失败，已达最大重试次数且无可用 fallback\n      at processStream (/Users/dev/Code/person/sid-code/src/query/stream-processor.ts:130:21)\n\n"
+        },
+        "score": 0.752,
+        "success": false,
+        "namedScores": {
+          "anchor_hit": 0,
+          "rubric_score": 1,
+          "tool_compliance": 0.6,
+          "efficiency": 1,
+          "cost": 1
+        },
+        "testCase": {
+          "vars": {
+            "case_id": "case_002"
+          },
+          "description": "case_002"
+        },
+        "gradingResult": {
+          "pass": true,
+          "score": 0.752,
+          "namedScores": {
+            "anchor_hit": 0,
+            "rubric_score": 1,
+            "tool_compliance": 0.6,
+            "efficiency": 1,
+            "cost": 1
+          },
+          "componentResults": [
+            {
+              "assertion": {
+                "type": "custom",
+                "metric": "anchor_hit"
+              },
+              "pass": false,
+              "score": 0,
+              "reason": "未命中任何锚点: src/tool/read.ts, src/tool/write.ts, src/tool/edit.ts, src/tool/bash.ts, src/tool/grep.ts, src/tool/glob.ts"
+            },
+            {
+              "assertion": {
+                "type": "custom",
+                "metric": "rubric_score"
+              },
+              "pass": true,
+              "score": 1,
+              "reason": "跳过 LLM judge"
+            },
+            {
+              "assertion": {
+                "type": "custom",
+                "metric": "tool_compliance"
+              },
+              "pass": true,
+              "score": 0.6,
+              "reason": "未使用要求的工具: glob"
+            },
+            {
+              "assertion": {
+                "type": "custom",
+                "metric": "efficiency"
+              },
+              "pass": true,
+              "score": 1,
+              "reason": "步数 2/10 在预期内"
+            },
+            {
+              "assertion": {
+                "type": "custom",
+                "metric": "cost"
+              },
+              "pass": true,
+              "score": 1,
+              "reason": "token 使用 75k，低消耗"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "stats": {
+    "totalMs": 9946,
+    "count": 2
+  }
+}

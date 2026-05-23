@@ -17,6 +17,7 @@ const CASE_DIRS = [
 ];
 
 const PROMPTFOO_REPORT = join(ROOT, "_reports/promptfoo-latest.json");
+const EVAL_REPORT = join(ROOT, "_reports/eval-latest.json");
 
 interface CaseYaml {
   id: string;
@@ -120,18 +121,22 @@ function formatDuration(ms: number): string {
 
 async function loadPromptfooResults(): Promise<Map<string, PromptfooResult[]>> {
   const map = new Map<string, PromptfooResult[]>();
-  try {
-    const raw = await Bun.file(PROMPTFOO_REPORT).text();
-    const data = JSON.parse(raw);
-    const results: PromptfooResult[] = data?.results?.results || [];
-    for (const r of results) {
-      const caseId = r.testCase?.vars?.case_id;
-      if (!caseId) continue;
-      if (!map.has(caseId)) map.set(caseId, []);
-      map.get(caseId)!.push(r);
+
+  for (const reportPath of [EVAL_REPORT, PROMPTFOO_REPORT]) {
+    try {
+      const raw = await Bun.file(reportPath).text();
+      const data = JSON.parse(raw);
+      const results: PromptfooResult[] = data?.results?.results || [];
+      for (const r of results) {
+        const caseId = r.testCase?.vars?.case_id;
+        if (!caseId) continue;
+        if (!map.has(caseId)) map.set(caseId, []);
+        map.get(caseId)!.push(r);
+      }
+      if (results.length > 0) break;
+    } catch {
+      // 文件不存在时静默跳过，尝试下一个
     }
-  } catch {
-    // promptfoo report 不存在时静默跳过
   }
   return map;
 }

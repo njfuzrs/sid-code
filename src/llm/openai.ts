@@ -253,6 +253,9 @@ export class OpenAIProvider implements Provider {
     const HEARTBEAT_TIMEOUT_MS = 30_000;
     /** 延迟 message_delta：finish_reason 和 usage 可能在不同 chunk 中 */
     let pendingFinishReason: string | null = null;
+    // DeepSeek reasoning_content 追踪
+    let reasoningBlockStarted = false;
+    let reasoningContent = "";
 
     try {
       while (true) {
@@ -308,8 +311,32 @@ export class OpenAIProvider implements Provider {
 
             if (!delta && !finishReason) continue;
 
+            // DeepSeek reasoning_content（思考链）
+            if (delta?.reasoning_content) {
+              if (!reasoningBlockStarted) {
+                reasoningBlockStarted = true;
+                yield {
+                  type: "content_block_start",
+                  index: nextContentIndex,
+                  content_block: { type: "text", text: "" },
+                  _raw_block: { type: "thinking" },
+                };
+                nextContentIndex++;
+              }
+              reasoningContent += delta.reasoning_content;
+              yield {
+                type: "content_block_delta",
+                index: nextContentIndex - 1,
+                delta: { type: "text_delta", text: delta.reasoning_content },
+              };
+            }
+
             // 文本内容
             if (delta?.content) {
+              if (reasoningBlockStarted && !textBlockStarted) {
+                yield { type: "content_block_stop", index: nextContentIndex - 1 };
+                reasoningBlockStarted = false;
+              }
               if (!textBlockStarted) {
                 textBlockStarted = true;
                 yield {
@@ -390,6 +417,12 @@ export class OpenAIProvider implements Provider {
 
             // 完成：延迟 message_delta，等 usage chunk 到达后再 yield
             if (finishReason) {
+              // 关闭 reasoning 块（如果还没关闭）
+              if (reasoningBlockStarted) {
+                yield { type: "content_block_stop", index: nextContentIndex - 1 };
+                reasoningBlockStarted = false;
+              }
+
               // 关闭文本块（如果还没关闭）
               if (textBlockStarted && nextContentIndex === 0) {
                 yield { type: "content_block_stop", index: 0 };

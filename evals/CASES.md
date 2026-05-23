@@ -1,7 +1,7 @@
 # Eval Cases 详情手册
 
 > 自动生成，请勿手动编辑。运行 `bun run evals/gen-cases-md.ts` 刷新。
-> 生成时间: 2026-05-23T01:46:45.443Z
+> 生成时间: 2026-05-23T02:17:39.914Z
 > 数据源: case YAML + `_reports/promptfoo-latest.json`
 
 ## 总览
