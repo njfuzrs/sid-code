@@ -533,6 +533,11 @@ export class TraceCollector {
     }
 
     // 推断 exit_status
+    // reason 语义：
+    //   exit/other → 看最后一次 stop_reason，end_turn 即正常结束，否则视为 user_interrupt
+    //   clear → /clear 上下文清除
+    //   abort → 用户主动 Ctrl-C 或外部 SIGTERM
+    //   error → runtime 抛出异常（流式中断 / API 错误 / 上下文溢出兜底失败）
     const lastPair = this.pairs[this.pairs.length - 1];
     if (input.reason === "exit" || input.reason === "other") {
       this.metadata.exit_status = lastPair?.stop_reason === "end_turn"
@@ -540,6 +545,14 @@ export class TraceCollector {
         : "user_interrupt";
     } else {
       this.metadata.exit_status = input.reason;
+    }
+
+    // 错误退出时把错误信息也写入 metadata，便于 trajectory 诊断
+    if (input.reason === "error" && input.error) {
+      this.metadata.error = {
+        message: input.error.message,
+        name: input.error.name,
+      };
     }
 
     // 把 Harness 汇总写入 metadata

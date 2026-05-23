@@ -147,6 +147,8 @@ export interface TraceMetadata {
   exit_status?: string;
   start_source?: string;
   end_source?: string;
+  /** 错误退出时的简要错误信息（reason="error"） */
+  error?: { message: string; name?: string };
 
   // ── Harness 扩展（可选，当前不填） ──
   harness?: HarnessTraceMetadata;
@@ -259,6 +261,8 @@ export interface TrajectoryMetaOutput {
   start_source?: string;
   end_source?: string;
   claude_md_hash?: string;
+  /** 错误退出时的简要错误信息（reason="error"） */
+  error?: { message: string; name?: string };
 
   // ── Harness 扩展 ──
   harness?: HarnessTraceMetadata;
@@ -677,6 +681,7 @@ export function buildTrajectory(
     ...(metadata.start_source ? { start_source: metadata.start_source } : {}),
     ...(metadata.end_source ? { end_source: metadata.end_source } : {}),
     ...(claudeMdHash ? { claude_md_hash: claudeMdHash } : {}),
+    ...(metadata.error ? { error: metadata.error } : {}),
     ...(metadata.harness ? { harness: metadata.harness } : {}),
   };
 

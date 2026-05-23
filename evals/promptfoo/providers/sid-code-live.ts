@@ -85,6 +85,54 @@ function findLatestSessionDir(sinceMs: number): string | null {
   return bestPath;
 }
 
+/** 优先从 stdout JSON 里拿 session_id 解析路径，避免并发时按 mtime 找错目录 */
+function extractSessionIdFromStdout(stdout: string): string | null {
+  const trimmed = stdout.trim();
+  if (!trimmed.startsWith("{")) return null;
+  try {
+    const obj = JSON.parse(trimmed);
+    const sid = obj?.session_id;
+    return typeof sid === "string" && sid ? sid : null;
+  } catch {
+    // stdout 可能含其他文本，尝试从最后一个 JSON 对象抽取
+    const m = trimmed.match(/\{[\s\S]*\}\s*$/);
+    if (m) {
+      try {
+        const obj = JSON.parse(m[0]);
+        const sid = obj?.session_id;
+        return typeof sid === "string" && sid ? sid : null;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+}
+
+/** 等 session.traj 写入完成（最多等 maxWaitMs），避免 wrapper 提前 SIGTERM 后读到空文件 */
+function waitForTrajWritten(sessionDir: string | null, maxWaitMs: number): void {
+  if (!sessionDir) return;
+  const trajPath = join(sessionDir, "session.traj");
+  const deadline = Date.now() + maxWaitMs;
+  while (Date.now() < deadline) {
+    if (existsSync(trajPath)) {
+      try {
+        const content = readFileSync(trajPath, "utf-8");
+        const obj = JSON.parse(content);
+        // 检查 metadata 是否已写入（exit_status 在 SessionEnd 时设置）
+        if (obj?.metadata?.exit_status || (obj?.metadata?.total_steps ?? 0) > 0) {
+          return;
+        }
+      } catch {
+        // 写入中可能 JSON 不完整，继续等
+      }
+    }
+    // busy-wait 50ms
+    const start = Date.now();
+    while (Date.now() - start < 50) { /* spin */ }
+  }
+}
+
 function parseFinalText(stdout: string): string {
   const trimmed = stdout.trim();
   if (!trimmed) return "";
@@ -127,6 +175,24 @@ function readTrajectoryMeta(sessionDir: string | null): {
 } {
   const empty = { toolsUsed: [], filesEdited: [], totalSteps: 0, exitStatus: null, totalCostUsd: 0, totalTokens: 0 };
   if (!sessionDir) return empty;
+
+  // 优先读 metadata.json（uploader cleanup 后留下的精简 snapshot）
+  // 再 fallback 到 session.traj（cleanup 前 / 未启用 uploader 时）
+  const metaSnapshot = join(sessionDir, "metadata.json");
+  if (existsSync(metaSnapshot)) {
+    try {
+      const md = JSON.parse(readFileSync(metaSnapshot, "utf-8"));
+      return {
+        toolsUsed: md.tools_used || [],
+        filesEdited: md.files_edited || [],
+        totalSteps: md.total_steps || 0,
+        exitStatus: md.exit_status || null,
+        totalCostUsd: md.total_cost_usd || 0,
+        totalTokens: md.total_tokens || 0,
+      };
+    } catch { /* fallthrough to session.traj */ }
+  }
+
   const trajPath = join(sessionDir, "session.traj");
   if (!existsSync(trajPath)) return empty;
   try {
@@ -272,14 +338,16 @@ async function main() {
     stdoutBuf += chunk.toString();
     if (!resolved && tryExtractCompleteJson(stdoutBuf)) {
       resolved = true;
-      process.stderr.write(`[sid-code-live] stdout JSON complete (${stdoutBuf.length}B), waiting 2s for graceful exit...\n`);
+      // stdout JSON 完整后等 5s graceful exit：给 SessionEnd hook + trajectory 重建留够时间
+      // 之前 2s 不够 → trace 写一半被 kill → sideband metadata 为空 → tool_compliance 卡 0.6
+      process.stderr.write(`[sid-code-live] stdout JSON complete (${stdoutBuf.length}B), waiting 5s for graceful exit...\n`);
       setTimeout(() => {
         if (!child.killed) {
           process.stderr.write(`[sid-code-live] force kill after JSON received\n`);
           child.kill("SIGTERM");
           setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, 2000);
         }
-      }, 2000);
+      }, 5000);
     }
   });
   child.stderr?.on("data", (chunk) => { stderrBuf += chunk.toString(); });
@@ -301,7 +369,21 @@ async function main() {
   clearTimeout(timer);
 
   const elapsedMs = Date.now() - startedAt;
-  const sessionDir = findLatestSessionDir(startedAt);
+  // 优先用 stdout JSON 里的 session_id 定位 trajectory（精确，不依赖 mtime）
+  // fallback 才用 mtime 扫描——主要给极端异常情况（stdout 没出 JSON）兜底
+  const sessionIdFromStdout = extractSessionIdFromStdout(stdoutBuf);
+  let sessionDir: string | null = null;
+  if (sessionIdFromStdout) {
+    const candidate = join(TRAJ_DIR, "sessions", sessionIdFromStdout);
+    if (existsSync(candidate)) sessionDir = candidate;
+  }
+  if (!sessionDir) {
+    sessionDir = findLatestSessionDir(startedAt);
+  }
+  // 等 SessionEnd hook 把 metadata 落盘（避免读到 partial trajectory，导致 tools_used=[] 误扣分）
+  // 这是 case_002/005 等评分卡在 0.6 的根因之一：sideband 读到的 metadata 是空的
+  waitForTrajWritten(sessionDir, 5_000);
+
   const meta = readTrajectoryMeta(sessionDir);
   const rawMeta = readRawMeta(sessionDir);
   const trajSignals = analyzeTrajectorySignals(sessionDir);

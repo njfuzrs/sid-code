@@ -165,7 +165,10 @@ export class HookSystem {
   async fireSessionEndEvent(
     reason: SessionEndInput["reason"] = "exit",
     stats?: SessionEndInput["stats"],
-    options?: { harness_summary?: import("./types.ts").HarnessSessionSummary },
+    options?: {
+      harness_summary?: import("./types.ts").HarnessSessionSummary;
+      error?: { message: string; name?: string; stack?: string };
+    },
   ): Promise<AggregatedHookResult> {
     return this.eventHandler.fireSessionEndEvent(reason, stats, options);
   }

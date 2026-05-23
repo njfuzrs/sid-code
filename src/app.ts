@@ -364,6 +364,39 @@ export class App {
     if (telemetryResult.telemetryProbe) {
       this.telemetryProbe = telemetryResult.telemetryProbe;
     }
+
+    // 信号兜底：SIGINT / SIGTERM 时强制落地 SessionEnd（reason=abort），避免 trajectory 残留 unknown
+    // 这是 25% session 卡在 exit_status=unknown 的另一个根因——promptfoo timeout 时 SIGTERM 杀进程
+    this.registerSignalHandlers();
+  }
+
+  /** 注册信号处理：SIGINT/SIGTERM 时同步触发 SessionEnd，避免 trajectory 丢失 */
+  private signalHandlersRegistered = false;
+  private registerSignalHandlers(): void {
+    if (this.signalHandlersRegistered) return;
+    this.signalHandlersRegistered = true;
+
+    const log = getLogger();
+    const onSignal = async (signal: "SIGINT" | "SIGTERM") => {
+      log.warn("APP", `收到 ${signal}，触发 SessionEnd(reason=abort) 后退出`);
+      // 触发 abort 让 LLM 流式请求/工具调用尽快停下
+      try { this.abortController?.abort(); } catch { /* ignore */ }
+      try {
+        await this.hookSystem.fireSessionEndEvent(
+          "abort",
+          this.buildSessionEndStats(),
+          { error: { message: `process received ${signal}`, name: signal } },
+        );
+      } catch (err: any) {
+        process.stderr.write(`[signal] SessionEnd hook 失败: ${err?.message ?? err}\n`);
+      }
+      // 给 trajectory 写入一点时间，再强制退出
+      setTimeout(() => process.exit(signal === "SIGINT" ? 130 : 143), 200);
+    };
+
+    // 用 once 防止 SIGTERM 风暴下重入；fire-and-forget 让 process.on 不卡死
+    process.once("SIGINT", () => { void onSignal("SIGINT"); });
+    process.once("SIGTERM", () => { void onSignal("SIGTERM"); });
   }
 
   /**
@@ -812,6 +845,8 @@ export class App {
     this.queryEngine.setStreamTextCallback((text) => { streamBuffer += text; });
 
     this.abortController = new AbortController();
+    let runError: Error | null = null;
+    let aborted = false;
     try {
       for await (const event of this.queryEngine.submitMessage(input)) {
         // 无头模式只关心 done 和 system 消息
@@ -820,31 +855,56 @@ export class App {
           streamBuffer += `\n⚠️ ${event.text}\n`;
         }
       }
+    } catch (err: any) {
+      runError = err instanceof Error ? err : new Error(String(err));
+      aborted = (err && (err.name === "AbortError" || /abort/i.test(err.message ?? ""))) === true;
+      // stderr 输出错误，但不抛出——必须让 SessionEnd hook 落地后再退出
+      process.stderr.write(`\n[runHeadless] 异常: ${runError.message}\n${runError.stack ?? ""}\n`);
     } finally {
       this.abortController = null;
       this.queryEngine.setStreamTextCallback(null);
     }
 
-    // session_end hook 先于 stdout 输出，确保 trajectory 完整落盘
-    // 这样外部 wrapper 看到 stdout JSON 完整时可立即终止进程而不丢数据
-    await this.hookSystem.fireSessionEndEvent("exit", this.buildSessionEndStats());
+    // session_end hook 必须触发——无论正常结束还是异常，否则 trajectory 永远是 unknown
+    // reason 三态：abort（用户取消）/ error（运行时异常）/ exit（正常）
+    const endReason: "exit" | "error" | "abort" = aborted
+      ? "abort"
+      : runError
+      ? "error"
+      : "exit";
+    try {
+      await this.hookSystem.fireSessionEndEvent(
+        endReason,
+        this.buildSessionEndStats(),
+        runError ? { error: { message: runError.message, name: runError.name, stack: runError.stack } } : undefined,
+      );
+    } catch (hookErr: any) {
+      // SessionEnd hook 自身报错也不能阻塞退出，否则 trajectory 反而丢失
+      process.stderr.write(`[runHeadless] SessionEnd hook 失败: ${hookErr?.message ?? hookErr}\n`);
+    }
 
-    // 输出结果
+    // 输出结果（即使出错也输出已收到的内容，便于诊断）
     if (this.config.outputFormat === "json") {
       const messages = this.ctxMgr.getMessages();
       const lastAssistant = messages.filter((m) => m.role === "assistant").pop();
       const traceOutputDir = this.config.trace?.outputDir
         ?? join(homedir(), ".sid-code", "trajectories");
-      const result = {
+      const result: Record<string, unknown> = {
         session_id: this.sessionState.sessionId,
         trajectory_path: join(traceOutputDir, "sessions", this.sessionState.sessionId, "session.traj"),
         role: "assistant",
         content: lastAssistant?.content || [],
         usage: this.sessionState.getTotalUsage(),
       };
+      if (runError) {
+        result.error = { message: runError.message, name: runError.name, aborted };
+      }
       console.log(JSON.stringify(result, null, 2));
     } else {
       process.stdout.write(streamBuffer);
+      if (runError) {
+        process.stderr.write(`\n[error] ${runError.message}\n`);
+      }
     }
 
     // 清理
@@ -864,7 +924,8 @@ export class App {
     process.stderr.write('─'.repeat(60) + '\n\n');
 
     // headless 模式强制退出：init() 启动的 watcher/interval/telemetry 不会自行排空事件循环
-    process.exit(0);
+    // 出错时 exit code 非 0，方便 wrapper 区分；trajectory 已在上面正确落盘
+    process.exit(runError ? 1 : 0);
   }
 
   /** TUI 模式 */

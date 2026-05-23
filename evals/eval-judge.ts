@@ -21,19 +21,47 @@ const DEFAULT_WEIGHTS: Record<string, number> = {
   cost: 0.5,
 };
 
+/**
+ * 锚点命中评分。
+ *
+ * 设计原则（修复 case_007 / case_028 类问题）:
+ * - must_include_any_of 的语义是"命中任一即可合格"，不应该因为锚点表写得多而降低 score
+ * - 但如果一个锚点都没命中，明显是答非所问，给低分
+ * - 渐进满分：命中 1 个 = 0.5，达到 max(2, 50%) 个 = 1.0（既奖励多命中，又不让长锚点表惩罚正确答案）
+ */
 export function gradeAnchorHit(output: string, anchors: string[]): DimScore {
   if (anchors.length === 0) {
     return { pass: true, score: 1.0, reason: "无锚点，跳过" };
   }
   const hits = anchors.filter((a) => output.includes(a));
-  const score = hits.length / anchors.length;
-  const pass = hits.length >= 1;
+  const hitCount = hits.length;
+  const total = anchors.length;
+
+  // 满分阈值：max(2, 50%)。锚点表越长，达到满分的门槛越宽松（避免长表惩罚）。
+  const fullScoreThreshold = Math.max(2, Math.ceil(total * 0.5));
+  let score: number;
+  if (hitCount === 0) {
+    score = 0;
+  } else if (hitCount === 1) {
+    score = 0.5;  // 命中任一即合格的基础分
+  } else if (hitCount >= fullScoreThreshold) {
+    score = 1.0;
+  } else {
+    // 1 < hitCount < fullScoreThreshold：在 0.5 ~ 1.0 间线性插值
+    const ratio = (hitCount - 1) / (fullScoreThreshold - 1);
+    score = 0.5 + 0.5 * ratio;
+  }
+
+  const pass = hitCount >= 1;
+  const missing = anchors.filter((a) => !output.includes(a));
   const reason =
-    hits.length === anchors.length
-      ? `全部命中: ${anchors.join(", ")}`
-      : hits.length > 0
-        ? `命中 ${hits.length}/${anchors.length}: ${hits.join(", ")}; 未命中: ${anchors.filter((a) => !output.includes(a)).join(", ")}`
-        : `未命中任何锚点: ${anchors.join(", ")}`;
+    hitCount === total
+      ? `全部命中: ${hits.join(", ")}`
+      : hitCount >= fullScoreThreshold
+        ? `命中 ${hitCount}/${total}（达到满分阈值 ${fullScoreThreshold}）: ${hits.join(", ")}`
+        : hitCount > 0
+          ? `命中 ${hitCount}/${total}（满分阈值 ${fullScoreThreshold}）: ${hits.join(", ")}; 未命中: ${missing.join(", ")}`
+          : `未命中任何锚点: ${anchors.join(", ")}`;
   return { pass, score, reason };
 }
 
@@ -93,25 +121,51 @@ export function gradeToolCompliance(
   meta: AgentMeta,
   expected: {
     mustCallTools?: string[];
+    /** 工具调用模式：all_of(默认，所有都必须用) | any_of(任一即可) */
+    mustCallMode?: "all_of" | "any_of";
     mustNotCallTools?: string[];
     mustNotModifyFiles?: string[];
   }
 ): DimScore {
-  const { tools_used, files_edited } = meta;
+  const { tools_used, files_edited, total_steps } = meta;
   const mustCallTools = expected.mustCallTools ?? [];
+  const mustCallMode = expected.mustCallMode ?? "all_of";
   const mustNotCallTools = expected.mustNotCallTools ?? [];
   const mustNotModifyFiles = expected.mustNotModifyFiles ?? [];
+
+  // sideband metadata 缺失兜底（修复 case_002/005 等卡 0.6 的系统性偏差）
+  // 当 wrapper 没读到 trajectory 时，所有合规维度数据都是空的——这是评测体系问题，不应扣模型的分
+  if (
+    tools_used.length === 0 &&
+    files_edited.length === 0 &&
+    (total_steps ?? 0) === 0
+  ) {
+    return {
+      pass: true,
+      score: 1.0,
+      reason: "sideband metadata 缺失（trajectory 未落盘或读取失败），跳过工具合规检查",
+    };
+  }
 
   let score = 1.0;
   const reasons: string[] = [];
 
   if (mustCallTools.length > 0) {
     const hits = mustCallTools.filter((t) => tools_used.includes(t));
-    if (hits.length < mustCallTools.length) {
-      score -= 0.4 * (1 - hits.length / mustCallTools.length);
-      reasons.push(
-        "未使用要求的工具: " + mustCallTools.filter((t) => !tools_used.includes(t)).join(", ")
-      );
+    if (mustCallMode === "any_of") {
+      // any_of：命中任一即满分
+      if (hits.length === 0) {
+        score -= 0.4;
+        reasons.push("未使用任何要求的工具(any_of): " + mustCallTools.join("|"));
+      }
+    } else {
+      // all_of（默认）：按命中比例扣分
+      if (hits.length < mustCallTools.length) {
+        score -= 0.4 * (1 - hits.length / mustCallTools.length);
+        reasons.push(
+          "未使用要求的工具: " + mustCallTools.filter((t) => !tools_used.includes(t)).join(", ")
+        );
+      }
     }
   }
 

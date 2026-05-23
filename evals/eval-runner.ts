@@ -34,6 +34,8 @@ interface CaseYaml {
     must_include_any_of?: string[];
     must_not_include?: string[];
     must_call_tools?: string[];
+    /** 工具检查模式：all_of(默认) | any_of(任一即可) */
+    must_call_tools_mode?: "all_of" | "any_of";
     must_not_call_tools?: string[];
     must_not_modify_files?: string[];
     max_steps?: number;
@@ -198,6 +200,7 @@ async function gradeCase(c: CaseYaml, result: ProviderResult, skipLlmJudge: bool
   }
   dims.tool_compliance = gradeToolCompliance(meta, {
     mustCallTools: c.expected.must_call_tools,
+    mustCallMode: c.expected.must_call_tools_mode,
     mustNotCallTools: c.expected.must_not_call_tools,
     mustNotModifyFiles: c.expected.must_not_modify_files,
   });

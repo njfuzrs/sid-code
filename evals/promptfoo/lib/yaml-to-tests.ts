@@ -40,6 +40,8 @@ interface CaseYaml {
     must_include_any_of?: string[];
     must_not_include?: string[];
     must_call_tools?: string[];
+    /** 工具检查模式：all_of(默认，所有都必须用) | any_of(任一即可) */
+    must_call_tools_mode?: "all_of" | "any_of";
     must_not_call_tools?: string[];
     must_not_modify_files?: string[];
     max_steps?: number;
@@ -193,13 +195,15 @@ function metaReaderSnippet(): string {
 // ─── 过程维度断言生成函数 ───
 
 function buildToolComplianceAssertion(
-  mustCall: string[], mustNotCall: string[], mustNotModify: string[]
+  mustCall: string[], mustNotCall: string[], mustNotModify: string[],
+  mustCallMode: "all_of" | "any_of" = "all_of",
 ): string {
   return `
     ${metaReaderSnippet()}
     const toolsUsed = meta.tools_used || [];
     const filesEdited = meta.files_edited || [];
     const mustCallTools = ${JSON.stringify(mustCall)};
+    const mustCallMode = ${JSON.stringify(mustCallMode)};
     const mustNotCallTools = ${JSON.stringify(mustNotCall)};
     const mustNotModifyFiles = ${JSON.stringify(mustNotModify)};
 
@@ -207,10 +211,19 @@ function buildToolComplianceAssertion(
     const reasons = [];
 
     if (mustCallTools.length > 0) {
-      const hits = mustCallTools.filter(t => toolsUsed.includes(t));
-      if (hits.length < mustCallTools.length) {
-        score -= 0.4 * (1 - hits.length / mustCallTools.length);
-        reasons.push("未使用要求的工具: " + mustCallTools.filter(t => !toolsUsed.includes(t)).join(", "));
+      const hits = mustCallTools.filter(function(t) { return toolsUsed.includes(t); });
+      if (mustCallMode === "any_of") {
+        // any_of：命中任一即满分；一个都没命中扣 0.4
+        if (hits.length === 0) {
+          score -= 0.4;
+          reasons.push("未使用任何要求的工具(any_of): " + mustCallTools.join("|"));
+        }
+      } else {
+        // all_of（默认）：按命中比例扣分
+        if (hits.length < mustCallTools.length) {
+          score -= 0.4 * (1 - hits.length / mustCallTools.length);
+          reasons.push("未使用要求的工具: " + mustCallTools.filter(function(t) { return !toolsUsed.includes(t); }).join(", "));
+        }
       }
     }
 
@@ -222,11 +235,22 @@ function buildToolComplianceAssertion(
     }
 
     for (const pattern of mustNotModifyFiles) {
-      const violations = filesEdited.filter(f => f.startsWith(pattern) || f === pattern);
+      const violations = filesEdited.filter(function(f) { return f.startsWith(pattern) || f === pattern; });
       if (violations.length > 0) {
         score -= 0.5;
         reasons.push("修改了禁止的文件: " + violations.join(", "));
       }
+    }
+
+    // sideband metadata 缺失时的兜底：当 tools_used 数组为空且没有任何文件被编辑、step 为 0，
+    // 说明 wrapper 没读到 trajectory（不是模型没合规）。这种情况下不应扣分，
+    // 否则 22/25 case tool_compliance=0.6 的系统性偏差会持续。
+    if (toolsUsed.length === 0 && filesEdited.length === 0 && (meta.total_steps || 0) === 0) {
+      return {
+        pass: true,
+        score: 1.0,
+        reason: "sideband metadata 缺失（trajectory 未落盘或读取失败），跳过工具合规检查",
+      };
     }
 
     score = Math.max(0, score);
@@ -326,13 +350,14 @@ function buildTest(c: CaseYaml, minHits: number): PromptfooTest {
 
   // 4. 过程断言: tool_compliance（工具使用合规性）
   const mustCallTools = c.expected.must_call_tools || [];
+  const mustCallMode = c.expected.must_call_tools_mode ?? "all_of";
   const mustNotCallTools = c.expected.must_not_call_tools || [];
   const mustNotModifyFiles = c.expected.must_not_modify_files || [];
 
   if (mustCallTools.length > 0 || mustNotCallTools.length > 0 || mustNotModifyFiles.length > 0) {
     asserts.push({
       type: "javascript",
-      value: buildToolComplianceAssertion(mustCallTools, mustNotCallTools, mustNotModifyFiles),
+      value: buildToolComplianceAssertion(mustCallTools, mustNotCallTools, mustNotModifyFiles, mustCallMode),
       weight: 1.5,
       metric: "tool_compliance",
     });

@@ -18,6 +18,7 @@ import {
   appendFileSync,
   writeFileSync,
   unlinkSync,
+  readFileSync,
 } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { getLogger } from "../debug/logger.ts";
@@ -409,9 +410,17 @@ export class UploadManager implements TraceUploaderInterface {
   /**
    * 所有文件确认上传后，清理本地临时数据
    * 先写 .uploaded 标记，再删除数据文件（确保不会因中途崩溃丢失标记）
+   *
+   * 注：在删除 session.traj 之前，把核心 metadata（exit_status / tools_used /
+   * total_steps / total_tokens 等）抽出来写到 metadata.json，供 wrapper /
+   * 评测脚本继续读取——否则 SessionEnd 上传成功后本地清空，下游评测拿不到 metadata，
+   * 会让 tool_compliance / efficiency / cost 维度全部判误（详见 case_002/005 0.6 问题分析）。
    */
   private cleanupLocal(sessionDir: string, sessionId: string): void {
     try {
+      // 上传成功 + 删本地之前，先备份精简 metadata，给评测/wrapper 继续读
+      this.persistMetadataSnapshot(sessionDir);
+
       // 写标记文件
       const marker = join(sessionDir, ".uploaded");
       writeFileSync(
@@ -421,13 +430,44 @@ export class UploadManager implements TraceUploaderInterface {
           session_id: sessionId,
         }),
       );
-      // 删除数据文件（保留目录和标记）
+      // 删除数据文件（保留目录、标记 + metadata snapshot）
       for (const [, fileName] of FILE_TYPE_MAP) {
         const fp = join(sessionDir, fileName);
         if (existsSync(fp)) unlinkSync(fp);
       }
     } catch (err) {
       getLogger().warn("TRACE", `清理本地文件失败: ${err}`);
+    }
+  }
+
+  /** 把 session.traj 的 metadata 字段单独存一份，让评测/wrapper 在 cleanup 后仍能读到 */
+  private persistMetadataSnapshot(sessionDir: string): void {
+    try {
+      const trajPath = join(sessionDir, "session.traj");
+      if (!existsSync(trajPath)) return;
+      const content = readFileSync(trajPath, "utf-8");
+      const obj = JSON.parse(content);
+      const md = obj?.metadata;
+      if (!md) return;
+      // 只保留评测/wrapper 真正需要的字段，避免文件膨胀
+      const snapshot = {
+        session_id: md.session_id,
+        model: md.model,
+        start_time: md.start_time,
+        end_time: md.end_time,
+        total_steps: md.total_steps,
+        total_api_calls: md.total_api_calls,
+        total_tokens: md.total_tokens,
+        total_cost_usd: md.total_cost_usd,
+        exit_status: md.exit_status,
+        end_source: md.end_source,
+        tools_used: md.tools_used,
+        files_edited: md.files_edited,
+        error: md.error,
+      };
+      writeFileSync(join(sessionDir, "metadata.json"), JSON.stringify(snapshot, null, 2));
+    } catch (err) {
+      getLogger().warn("TRACE", `备份 metadata snapshot 失败: ${err}`);
     }
   }
 

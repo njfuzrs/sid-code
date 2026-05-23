@@ -244,7 +244,9 @@ export interface SessionStartInput extends HookInput {
 
 /** SessionEnd 输入 */
 export interface SessionEndInput extends HookInput {
-  reason: "exit" | "clear" | "other";
+  reason: "exit" | "clear" | "other" | "error" | "abort";
+  /** 当 reason=error 时，可携带错误信息用于 trajectory 诊断 */
+  error?: { message: string; name?: string; stack?: string };
   /** 会话统计汇总 */
   stats?: {
     model?: string;

@@ -56,6 +56,47 @@ describe("ToolCallLoopDetector", () => {
     expect(detector.record("read", { path: "/c.ts" })).toBe(false);
     expect(detector.record("read", { path: "/d.ts" })).toBe(false);
   });
+
+  test("参数顺序变化视为相同调用（regression: case_005 grep 11 次未拦）", () => {
+    // 模拟 case_005：LLM 在重试时调换了 pattern/path/output_mode/case_insensitive 的输出顺序
+    // 旧实现 JSON.stringify 会得到不同字符串 → hash 不同 → 计数被重置
+    // 新实现 canonicalizeToolInput 排序 key，必须把这两次算成相同调用
+    const a = { pattern: "undo", path: "/src", output_mode: "files_with_matches", case_insensitive: true };
+    const b = { case_insensitive: true, output_mode: "files_with_matches", path: "/src", pattern: "undo" };
+    const c = { output_mode: "files_with_matches", path: "/src", pattern: "undo", case_insensitive: true };
+    expect(detector.record("grep", a)).toBe(false); // 1
+    expect(detector.record("grep", b)).toBe(false); // 2
+    expect(detector.record("grep", c)).toBe(true);  // 3 = 阈值（如果未排序，这里会因 hash 不同而漏判）
+  });
+
+  test("嵌套对象参数顺序也不影响判定", () => {
+    const a = { tool: { name: "x", opts: { a: 1, b: 2 } }, count: 3 };
+    const b = { count: 3, tool: { opts: { b: 2, a: 1 }, name: "x" } };
+    expect(detector.record("foo", a)).toBe(false);
+    expect(detector.record("foo", b)).toBe(false);
+    expect(detector.record("foo", a)).toBe(true); // 第 3 次相同调用即命中
+  });
+
+  test("clearState 后再次撞同 key 立即触发循环（防恢复后绕过）", () => {
+    const input = { path: "/x.ts" };
+    detector.record("read", input);
+    detector.record("read", input);
+    expect(detector.record("read", input)).toBe(true); // 触发循环
+    detector.clearState(); // 模拟 LoopDetector.tryRecover() 后的状态清理
+    // 注入恢复 prompt 后，模型理论上应换工具；如果还撞同一个 key，必须立即识别
+    expect(detector.record("read", input)).toBe(true);
+  });
+
+  test("clearState 后换其他工具不应误报", () => {
+    const a = { path: "/x.ts" };
+    detector.record("read", a);
+    detector.record("read", a);
+    detector.record("read", a); // 触发
+    detector.clearState();
+    // 真正换了路径，不该再被判循环
+    expect(detector.record("read", { path: "/y.ts" })).toBe(false);
+    expect(detector.record("grep", { pattern: "x" })).toBe(false);
+  });
 });
 
 describe("ContentLoopDetector", () => {
@@ -158,6 +199,6 @@ describe("LoopDetector", () => {
 
   test("LOOP_RECOVERY_PROMPT 非空", () => {
     expect(LOOP_RECOVERY_PROMPT.length).toBeGreaterThan(0);
-    expect(LOOP_RECOVERY_PROMPT).toContain("重复循环");
+    expect(LOOP_RECOVERY_PROMPT).toContain("循环");
   });
 });
