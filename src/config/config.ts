@@ -60,6 +60,8 @@ export interface Config {
   // LLM 配置
   provider: string;
   model: string;
+  /** 主模型失败时的降级模型（必须在 availableModels 中存在），为空字符串则不降级 */
+  fallbackModel: string;
   anthropicKey: string;
   openaiKey: string;
   baseURL: string;
@@ -280,6 +282,7 @@ export function defaultConfig(): Config {
   return {
     provider: "anthropic",
     model: "claude-sonnet-4-20250514",
+    fallbackModel: "",
     anthropicKey: "",
     openaiKey: "",
     baseURL: "",
@@ -319,6 +322,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
   const keyMap: Record<string, keyof Config> = {
     provider: "provider",
     model: "model",
+    fallback_model: "fallbackModel",
     anthropic_key: "anthropicKey",
     openai_api_key: "openaiKey",
     base_url: "baseURL",

@@ -36,7 +36,8 @@ import { JitContextManager } from "./config/jit-context.ts";
 import { isAbortError } from "./llm/errors.ts";
 import { execSync } from "child_process";
 import { readFile } from "fs/promises";
-import { resolve, extname } from "path";
+import { resolve, extname, join } from "path";
+import { homedir } from "node:os";
 
 /**
  * 展开用户输入中的 @path 引用为文件内容
@@ -162,7 +163,25 @@ export class App {
     this.thinkingMgr = new ThinkingManager(opts.config.provider === "anthropic");
     // 如果有 providerRegistry，从中获取 availability 服务
     const availability = opts.providerRegistry?.availability;
-    this.fallback = new ModelFallback({ availability }, {
+
+    // 配置 fallback：从 config.fallbackModel 查找 availableModels 中的条目，构建对应 provider
+    let fallbackProvider: Provider | undefined;
+    let fallbackModel: string | undefined;
+    if (opts.config.fallbackModel && opts.providerRegistry) {
+      const fbModelConfig = opts.config.availableModels.find(m => m.name === opts.config.fallbackModel);
+      if (fbModelConfig && fbModelConfig.provider) {
+        fallbackModel = fbModelConfig.name;
+        fallbackProvider = opts.providerRegistry.getProviderFor(
+          fbModelConfig.provider,
+          fbModelConfig.apiKey || "",
+          fbModelConfig.baseURL,
+        );
+      } else {
+        getLogger().warn("FALLBACK", `fallback_model "${opts.config.fallbackModel}" 不在 available_models 中或缺少 provider，已忽略`);
+      }
+    }
+
+    this.fallback = new ModelFallback({ availability, fallbackProvider, fallbackModel }, {
       onRetry: (attempt, error, delayMs) => {
         const log = getLogger();
         log.info("FALLBACK", `重试 ${attempt}，错误: ${error}，延迟 ${delayMs}ms`);
@@ -806,11 +825,19 @@ export class App {
       this.queryEngine.setStreamTextCallback(null);
     }
 
+    // session_end hook 先于 stdout 输出，确保 trajectory 完整落盘
+    // 这样外部 wrapper 看到 stdout JSON 完整时可立即终止进程而不丢数据
+    await this.hookSystem.fireSessionEndEvent("exit", this.buildSessionEndStats());
+
     // 输出结果
     if (this.config.outputFormat === "json") {
       const messages = this.ctxMgr.getMessages();
       const lastAssistant = messages.filter((m) => m.role === "assistant").pop();
+      const traceOutputDir = this.config.trace?.outputDir
+        ?? join(homedir(), ".sid-code", "trajectories");
       const result = {
+        session_id: this.sessionState.sessionId,
+        trajectory_path: join(traceOutputDir, "sessions", this.sessionState.sessionId, "session.traj"),
         role: "assistant",
         content: lastAssistant?.content || [],
         usage: this.sessionState.getTotalUsage(),
@@ -820,8 +847,7 @@ export class App {
       process.stdout.write(streamBuffer);
     }
 
-    // session_end hook + 清理
-    await this.hookSystem.fireSessionEndEvent("exit", this.buildSessionEndStats());
+    // 清理
     unwatchCLAUDEmd();
     this.mcpManager?.closeAll();
 

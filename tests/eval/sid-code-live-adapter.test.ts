@@ -87,8 +87,8 @@ describe("findLatestSessionDir", () => {
 
 describe("parseFinalResponseFromStdout", () => {
   test("空 stdout → 空字符串", () => {
-    expect(parseFinalResponseFromStdout("")).toBe("");
-    expect(parseFinalResponseFromStdout("   \n  ")).toBe("");
+    expect(parseFinalResponseFromStdout("").text).toBe("");
+    expect(parseFinalResponseFromStdout("   \n  ").text).toBe("");
   });
 
   test("JSON 模式标准输出", () => {
@@ -97,7 +97,7 @@ describe("parseFinalResponseFromStdout", () => {
       content: [{ type: "text", text: "Hello world" }],
       usage: { input_tokens: 10 },
     });
-    expect(parseFinalResponseFromStdout(json)).toBe("Hello world");
+    expect(parseFinalResponseFromStdout(json).text).toBe("Hello world");
   });
 
   test("content 是字符串而不是数组", () => {
@@ -105,7 +105,7 @@ describe("parseFinalResponseFromStdout", () => {
       role: "assistant",
       content: "Plain string response",
     });
-    expect(parseFinalResponseFromStdout(json)).toBe("Plain string response");
+    expect(parseFinalResponseFromStdout(json).text).toBe("Plain string response");
   });
 
   test("多个 text block 拼接", () => {
@@ -117,12 +117,12 @@ describe("parseFinalResponseFromStdout", () => {
         { type: "text", text: "Part 2" },
       ],
     });
-    expect(parseFinalResponseFromStdout(json)).toBe("Part 1\nPart 2");
+    expect(parseFinalResponseFromStdout(json).text).toBe("Part 1\nPart 2");
   });
 
   test("非 JSON stdout → 退化为原文", () => {
     const r = parseFinalResponseFromStdout("just plain text\nno json");
-    expect(r).toContain("just plain text");
+    expect(r.text).toContain("just plain text");
   });
 
   test("前缀有非 JSON 但末尾是 JSON 对象", () => {
@@ -130,7 +130,7 @@ describe("parseFinalResponseFromStdout", () => {
       role: "assistant",
       content: [{ type: "text", text: "Recovered output" }],
     })}`;
-    expect(parseFinalResponseFromStdout(stdout)).toBe("Recovered output");
+    expect(parseFinalResponseFromStdout(stdout).text).toBe("Recovered output");
   });
 
   test("超长 response 被截断到 3000 字符", () => {
@@ -139,7 +139,30 @@ describe("parseFinalResponseFromStdout", () => {
       role: "assistant",
       content: [{ type: "text", text: longText }],
     });
-    expect(parseFinalResponseFromStdout(json).length).toBe(3000);
+    expect(parseFinalResponseFromStdout(json).text.length).toBe(3000);
+  });
+
+  test("提取 session_id 和 trajectory_path", () => {
+    const json = JSON.stringify({
+      session_id: "abc12345",
+      trajectory_path: "/tmp/sessions/abc12345/session.traj",
+      role: "assistant",
+      content: [{ type: "text", text: "ok" }],
+    });
+    const r = parseFinalResponseFromStdout(json);
+    expect(r.sessionId).toBe("abc12345");
+    expect(r.trajectoryPath).toBe("/tmp/sessions/abc12345/session.traj");
+    expect(r.text).toBe("ok");
+  });
+
+  test("没有 session_id 字段时 sessionId 为 null", () => {
+    const json = JSON.stringify({
+      role: "assistant",
+      content: [{ type: "text", text: "ok" }],
+    });
+    const r = parseFinalResponseFromStdout(json);
+    expect(r.sessionId).toBeNull();
+    expect(r.trajectoryPath).toBeNull();
   });
 });
 

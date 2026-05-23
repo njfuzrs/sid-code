@@ -116,43 +116,43 @@ export function findLatestSessionDir(opts: {
 
 /**
  * 从 stdout 解析 final_response
- * JSON 模式输出 {role, content, usage}，content 是 ContentBlock 数组
+ * JSON 模式输出 {session_id, trajectory_path, role, content, usage}，content 是 ContentBlock 数组
  *
  * 暴露给单测用
  */
-export function parseFinalResponseFromStdout(stdout: string): string {
+export function parseFinalResponseFromStdout(stdout: string): {
+  text: string;
+  sessionId: string | null;
+  trajectoryPath: string | null;
+} {
   const trimmed = stdout.trim();
-  if (!trimmed) return "";
-  // JSON 模式：取最后一个 JSON 对象（前面可能有非 JSON 输出，比如 "恢复会话" 提示）
-  // 反向搜 "{\n" 起始
-  let parsed: { content?: unknown } | null = null;
+  const empty = { text: "", sessionId: null, trajectoryPath: null };
+  if (!trimmed) return empty;
+  let parsed: Record<string, unknown> | null = null;
   try {
     parsed = JSON.parse(trimmed);
   } catch {
-    // 尝试找最后一段 {...}
     const m = trimmed.match(/\{[\s\S]*\}\s*$/);
     if (m) {
-      try {
-        parsed = JSON.parse(m[0]);
-      } catch {
-        // 不是 JSON，退化为整段 stdout
-      }
+      try { parsed = JSON.parse(m[0]); } catch {}
     }
   }
-  if (!parsed) return trimmed.slice(0, 3000);
+  if (!parsed) return { ...empty, text: trimmed.slice(0, 3000) };
+
+  const sessionId = typeof parsed.session_id === "string" ? parsed.session_id : null;
+  const trajectoryPath = typeof parsed.trajectory_path === "string" ? parsed.trajectory_path : null;
+
+  let text = "";
   const content = parsed.content;
   if (Array.isArray(content)) {
-    const parts: string[] = [];
     for (const block of content) {
       const b = block as Record<string, unknown>;
-      if (b.type === "text" && typeof b.text === "string") {
-        parts.push(b.text);
-      }
+      if (b.type === "text" && typeof b.text === "string") text += (text ? "\n" : "") + b.text;
     }
-    return parts.join("\n").slice(0, 3000);
+  } else if (typeof content === "string") {
+    text = content;
   }
-  if (typeof content === "string") return content.slice(0, 3000);
-  return "";
+  return { text: text.slice(0, 3000), sessionId, trajectoryPath };
 }
 
 /**
@@ -533,10 +533,18 @@ function buildResult(opts: {
   trajectoriesDir: string;
   plansDir: string;
 }): SidCodeLiveResult {
-  const sessionDir = findLatestSessionDir({
-    trajectoriesDir: opts.trajectoriesDir,
-    sinceTimestamp: opts.startTs,
-  });
+  // 优先从 stdout JSON 解析 trajectory_path（sid-code --output-format json 暴露）
+  // 失败时退回 mtime 反查作为兼容路径
+  const parsed = parseFinalResponseFromStdout(opts.stdout);
+  let sessionDir: string | null = null;
+  if (parsed.trajectoryPath) {
+    sessionDir = join(parsed.trajectoryPath, "..");
+  } else {
+    sessionDir = findLatestSessionDir({
+      trajectoriesDir: opts.trajectoriesDir,
+      sinceTimestamp: opts.startTs,
+    });
+  }
   const planFilePath = findLatestPlanFile({
     plansDir: opts.plansDir,
     sinceTimestamp: opts.startTs,
@@ -558,7 +566,7 @@ function buildResult(opts: {
     planFilePath,
   });
 
-  const finalResponse = parseFinalResponseFromStdout(opts.stdout);
+  const finalResponse = parsed.text;
 
   let exitStatus = meta.exit_status || "unknown";
   if (opts.timedOut) exitStatus = "timeout";

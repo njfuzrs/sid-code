@@ -2,13 +2,10 @@
 
 import { spawn } from "node:child_process";
 import { join, resolve } from "node:path";
-import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
-import { homedir } from "node:os";
+import { readFileSync, existsSync } from "node:fs";
 
 const REPO_ROOT = resolve(import.meta.dir, "../..");
 const ENTRYPOINT = join(REPO_ROOT, "src/entrypoints/bootstrap.ts");
-const TRAJ_DIR = process.env.SID_CODE_TRAJECTORIES_DIR
-  || join(homedir(), ".sid-code/trajectories");
 
 function parseArgs(): { prompt: string; caseId: string; model: string | null; timeoutMs: number; maxTurns: number | null; permissionMode: string | null } {
   const argv = process.argv.slice(2);
@@ -31,76 +28,57 @@ function parseArgs(): { prompt: string; caseId: string; model: string | null; ti
   return { prompt, caseId, model, timeoutMs, maxTurns, permissionMode };
 }
 
-function findLatestSessionDir(sinceMs: number): string | null {
-  const sessionsRoot = join(TRAJ_DIR, "sessions");
-  if (!existsSync(sessionsRoot)) return null;
-  let bestPath: string | null = null;
-  let bestMtime = 0;
-  for (const name of readdirSync(sessionsRoot)) {
-    const dir = join(sessionsRoot, name);
-    try {
-      const s = statSync(dir);
-      if (!s.isDirectory()) continue;
-      const mtime = s.mtimeMs;
-      if (mtime < sinceMs - 1000) continue;
-      if (mtime > bestMtime) {
-        bestMtime = mtime;
-        bestPath = dir;
-      }
-    } catch {
-      continue;
-    }
-  }
-  return bestPath;
+interface ParsedStdout {
+  text: string;
+  sessionId: string | null;
+  trajectoryPath: string | null;
 }
 
-function parseFinalText(stdout: string): string {
+function parseStdoutJson(stdout: string): ParsedStdout {
   const trimmed = stdout.trim();
-  if (!trimmed) return "";
-  let parsed: { content?: unknown } | null = null;
+  const empty: ParsedStdout = { text: "", sessionId: null, trajectoryPath: null };
+  if (!trimmed) return empty;
+  let parsed: Record<string, unknown> | null = null;
   try {
     parsed = JSON.parse(trimmed);
   } catch {
     const m = trimmed.match(/\{[\s\S]*\}\s*$/);
     if (m) {
-      try {
-        parsed = JSON.parse(m[0]);
-      } catch {
-        return trimmed;
-      }
+      try { parsed = JSON.parse(m[0]); } catch { return { ...empty, text: trimmed }; }
     }
   }
-  if (!parsed) return trimmed;
+  if (!parsed) return { ...empty, text: trimmed };
+
+  const sessionId = typeof parsed.session_id === "string" ? parsed.session_id : null;
+  const trajectoryPath = typeof parsed.trajectory_path === "string" ? parsed.trajectory_path : null;
+
+  let text = "";
   const content = parsed.content;
   if (Array.isArray(content)) {
-    const parts: string[] = [];
     for (const block of content) {
       const b = block as Record<string, unknown>;
-      if (b.type === "text" && typeof b.text === "string") {
-        parts.push(b.text);
-      }
+      if (b.type === "text" && typeof b.text === "string") text += (text ? "\n" : "") + b.text;
     }
-    return parts.join("\n");
+  } else if (typeof content === "string") {
+    text = content;
   }
-  if (typeof content === "string") return content;
-  return trimmed;
+  return { text: text || trimmed, sessionId, trajectoryPath };
 }
 
-function readTrajectoryMeta(sessionDir: string | null): {
+interface TrajMeta {
   toolsUsed: string[];
   filesEdited: string[];
   totalSteps: number;
   exitStatus: string | null;
   totalCostUsd: number;
   totalTokens: number;
-} {
-  const empty = { toolsUsed: [], filesEdited: [], totalSteps: 0, exitStatus: null, totalCostUsd: 0, totalTokens: 0 };
-  if (!sessionDir) return empty;
-  const trajPath = join(sessionDir, "session.traj");
-  if (!existsSync(trajPath)) return empty;
+}
+
+function readTrajectoryMeta(trajPath: string | null): TrajMeta {
+  const empty: TrajMeta = { toolsUsed: [], filesEdited: [], totalSteps: 0, exitStatus: null, totalCostUsd: 0, totalTokens: 0 };
+  if (!trajPath || !existsSync(trajPath)) return empty;
   try {
-    const content = readFileSync(trajPath, "utf-8");
-    const obj = JSON.parse(content);
+    const obj = JSON.parse(readFileSync(trajPath, "utf-8"));
     const md = obj?.metadata || {};
     return {
       toolsUsed: md.tools_used || [],
@@ -115,33 +93,28 @@ function readTrajectoryMeta(sessionDir: string | null): {
   }
 }
 
-function readRawMeta(sessionDir: string | null): { totalTokens: number } {
-  if (!sessionDir) return { totalTokens: 0 };
-  const rawPath = join(sessionDir, "raw.jsonl");
-  if (!existsSync(rawPath)) return { totalTokens: 0 };
+function readRawTokens(trajPath: string | null): number {
+  if (!trajPath) return 0;
+  const rawPath = join(trajPath, "..", "raw.jsonl");
+  if (!existsSync(rawPath)) return 0;
   try {
     const lines = readFileSync(rawPath, "utf-8").trim().split("\n");
     let tokens = 0;
     for (const line of lines) {
-      const entry = JSON.parse(line);
-      const usage = entry.response?.usage;
-      if (usage) {
-        tokens += (usage.input_tokens || 0) + (usage.output_tokens || 0);
-      }
+      const usage = JSON.parse(line)?.response?.usage;
+      if (usage) tokens += (usage.input_tokens || 0) + (usage.output_tokens || 0);
     }
-    return { totalTokens: tokens };
+    return tokens;
   } catch {
-    return { totalTokens: 0 };
+    return 0;
   }
 }
 
-function analyzeTrajectorySignals(sessionDir: string | null): {
+function analyzeTrajectorySignals(trajPath: string | null): {
   errorCount: number; retryCount: number; backtrackCount: number;
 } {
   const empty = { errorCount: 0, retryCount: 0, backtrackCount: 0 };
-  if (!sessionDir) return empty;
-  const trajPath = join(sessionDir, "session.traj");
-  if (!existsSync(trajPath)) return empty;
+  if (!trajPath || !existsSync(trajPath)) return empty;
   try {
     const traj = JSON.parse(readFileSync(trajPath, "utf-8"));
     const steps = traj.trajectory || [];
@@ -152,11 +125,8 @@ function analyzeTrajectorySignals(sessionDir: string | null): {
 
     for (const step of steps) {
       if (step.is_error) errorCount++;
-
       const toolInput = JSON.stringify(step.tool_input || {});
-      if (step.tool_name === prevToolName && toolInput === prevToolInput) {
-        retryCount++;
-      }
+      if (step.tool_name === prevToolName && toolInput === prevToolInput) retryCount++;
       prevToolName = step.tool_name || "";
       prevToolInput = toolInput;
 
@@ -194,7 +164,7 @@ async function main() {
     process.exit(1);
   }
 
-  const args = ["run", ENTRYPOINT, "-p", "--output-format", "json"];
+  const args = ["run", ENTRYPOINT, "-p", "--output-format", "json", "--trace-upload-disabled"];
   if (model) args.push("--model", model);
   if (maxTurns) args.push("--max-turns", String(maxTurns));
   if (permissionMode) args.push("--permission-mode", permissionMode);
@@ -205,7 +175,7 @@ async function main() {
 
   const child = spawn("bun", args, {
     cwd: REPO_ROOT,
-    env: { ...process.env, SID_CODE_HEADLESS: "1" },
+    env: { ...process.env },
     stdio: ["ignore", "pipe", "pipe"],
   });
 
@@ -220,14 +190,16 @@ async function main() {
     stdoutBuf += chunk.toString();
     if (!resolved && tryExtractCompleteJson(stdoutBuf)) {
       resolved = true;
-      process.stderr.write(`[sid-code-live] stdout JSON complete (${stdoutBuf.length}B), waiting 2s for graceful exit...\n`);
+      process.stderr.write(`[sid-code-live] stdout JSON complete (${stdoutBuf.length}B), trajectory已落盘 (SessionEnd 先于 stdout)\n`);
+      // app.ts 已经在打印 stdout 之前 await 完 SessionEnd，trajectory 已完整落盘。
+      // 这里给 1s 让进程自然退出，否则强杀。不会丢 trajectory 数据。
       setTimeout(() => {
         if (!child.killed) {
-          process.stderr.write(`[sid-code-live] force kill after JSON received\n`);
+          process.stderr.write(`[sid-code-live] kill child after JSON received\n`);
           child.kill("SIGTERM");
           setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, 2000);
         }
-      }, 2000);
+      }, 1000);
     }
   });
   child.stderr?.on("data", (chunk) => { stderrBuf += chunk.toString(); });
@@ -237,9 +209,7 @@ async function main() {
     timedOut = true;
     process.stderr.write(`[sid-code-live] TIMEOUT after ${timeoutMs}ms, SIGTERM\n`);
     child.kill("SIGTERM");
-    setTimeout(() => {
-      try { child.kill("SIGKILL"); } catch {}
-    }, 3000);
+    setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, 3000);
   }, timeoutMs);
 
   child.on("close", (code) => resolveMain(code));
@@ -249,12 +219,13 @@ async function main() {
   clearTimeout(timer);
 
   const elapsedMs = Date.now() - startedAt;
-  const sessionDir = findLatestSessionDir(startedAt);
-  const meta = readTrajectoryMeta(sessionDir);
-  const rawMeta = readRawMeta(sessionDir);
-  const trajSignals = analyzeTrajectorySignals(sessionDir);
+  const parsed = parseStdoutJson(stdoutBuf);
+  const trajPath = parsed.trajectoryPath;
+  const meta = readTrajectoryMeta(trajPath);
+  const rawTokens = readRawTokens(trajPath);
+  const trajSignals = analyzeTrajectorySignals(trajPath);
 
-  const totalTokens = rawMeta.totalTokens || meta.totalTokens;
+  const totalTokens = rawTokens || meta.totalTokens;
 
   const metaOut = {
     tools_used: meta.toolsUsed,
@@ -266,22 +237,20 @@ async function main() {
     error_count: trajSignals.errorCount,
     retry_count: trajSignals.retryCount,
     backtrack_count: trajSignals.backtrackCount,
+    session_id: parsed.sessionId,
   };
 
   process.stderr.write(
     `[sid-code-live] exit=${exitCode} timedOut=${timedOut} elapsed=${elapsedMs}ms `
     + `stdout=${stdoutBuf.length}B stderr=${stderrBuf.length}B `
-    + `session=${sessionDir ? sessionDir.split("/").pop() : "none"} `
+    + `session=${parsed.sessionId || "missing"} `
     + `tools=${meta.toolsUsed.join(",")} steps=${meta.totalSteps} `
     + `tokens=${totalTokens} errors=${trajSignals.errorCount}\n`
   );
 
-  if (tryExtractCompleteJson(stdoutBuf)) {
-    const text = parseFinalText(stdoutBuf);
-    if (text) {
-      process.stdout.write(JSON.stringify({ output: text, meta: metaOut }) + "\n");
-      process.exit(0);
-    }
+  if (parsed.text) {
+    process.stdout.write(JSON.stringify({ output: parsed.text, meta: metaOut }) + "\n");
+    process.exit(0);
   }
 
   if (timedOut) {
@@ -293,8 +262,7 @@ async function main() {
     process.exit(0);
   }
 
-  const text = parseFinalText(stdoutBuf);
-  process.stdout.write(JSON.stringify({ output: text || "[ERROR] empty output from sid-code-live", meta: metaOut, error: !text }) + "\n");
+  process.stdout.write(JSON.stringify({ output: "[ERROR] empty output from sid-code-live", meta: metaOut, error: true }) + "\n");
 }
 
 main().catch((err) => {

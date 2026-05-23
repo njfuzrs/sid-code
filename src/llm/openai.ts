@@ -257,6 +257,9 @@ export class OpenAIProvider implements Provider {
     const toolCalls = new Map<number, ToolCallState>();
     const usage: Usage = { inputTokens: 0, outputTokens: 0 };
     const HEARTBEAT_TIMEOUT_MS = 30_000;
+    /** 内容进度超时：60s 没拿到任何有效 chunk（content/tool_calls/finishReason）就视为半连接死锁 */
+    const CONTENT_PROGRESS_TIMEOUT_MS = 60_000;
+    let lastContentProgressAt = Date.now();
     /** 延迟 message_delta：finish_reason 和 usage 可能在不同 chunk 中 */
     let pendingFinishReason: string | null = null;
     // DeepSeek reasoning_content 追踪
@@ -265,13 +268,23 @@ export class OpenAIProvider implements Provider {
 
     try {
       while (true) {
-        // 带超时的 read
+        // 带超时的 read：30s 无字节（heartbeat）或 60s 无有效内容（content-progress）都视为死锁
         const readPromise = reader.read();
-        const timeoutPromise = new Promise<never>((_, reject) =>
+        const heartbeatTimeout = new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error("SSE 流超时：30 秒无数据")), HEARTBEAT_TIMEOUT_MS)
         );
+        const contentProgressTimeout = new Promise<never>((_, reject) => {
+          const remainingMs = Math.max(
+            1,
+            CONTENT_PROGRESS_TIMEOUT_MS - (Date.now() - lastContentProgressAt),
+          );
+          setTimeout(
+            () => reject(new Error(`SSE 流内容进度超时：${CONTENT_PROGRESS_TIMEOUT_MS / 1000} 秒无有效内容`)),
+            remainingMs,
+          );
+        });
 
-        const { done, value } = await Promise.race([readPromise, timeoutPromise]);
+        const { done, value } = await Promise.race([readPromise, heartbeatTimeout, contentProgressTimeout]);
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
@@ -284,6 +297,7 @@ export class OpenAIProvider implements Provider {
 
           const data = line.slice(6);
           if (data === "[DONE]") {
+            lastContentProgressAt = Date.now();
             // [DONE] 前 flush 延迟的 message_delta（此时 usage 已更新）
             if (pendingFinishReason) {
               yield {
@@ -316,6 +330,15 @@ export class OpenAIProvider implements Provider {
             }
 
             if (!delta && !finishReason) continue;
+
+            // 任何有效 chunk（非空 content / tool_calls / finishReason）都重置内容进度计时器
+            // 注意：deepseek 死锁时持续发送 delta={} 或空字符串 content/reasoning_content，必须排除
+            const hasContent = typeof delta?.content === "string" && delta.content.length > 0;
+            const hasReasoning = typeof delta?.reasoning_content === "string" && delta.reasoning_content.length > 0;
+            const hasToolCalls = Array.isArray(delta?.tool_calls) && delta.tool_calls.length > 0;
+            if (hasContent || hasReasoning || hasToolCalls || finishReason) {
+              lastContentProgressAt = Date.now();
+            }
 
             // DeepSeek reasoning_content（思考链）
             if (delta?.reasoning_content) {

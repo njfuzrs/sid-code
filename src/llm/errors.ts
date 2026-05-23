@@ -148,7 +148,7 @@ export function classifyError(error: unknown): TerminalError | RetryableError | 
   if (lowerMsg.includes("502") || lowerMsg.includes("500") || lowerMsg.includes("server_error")) {
     return new RetryableError(msg, "server_error");
   }
-  if (lowerMsg.includes("timeout") || lowerMsg.includes("etimedout")) {
+  if (lowerMsg.includes("timeout") || lowerMsg.includes("etimedout") || msg.includes("超时")) {
     return new RetryableError(msg, "timeout");
   }
 
