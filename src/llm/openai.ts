@@ -256,10 +256,24 @@ export class OpenAIProvider implements Provider {
     // 多工具并行追踪：key 是 OpenAI 的 tool_call index
     const toolCalls = new Map<number, ToolCallState>();
     const usage: Usage = { inputTokens: 0, outputTokens: 0 };
+    /** 30s 内 reader 一个字节都没拿到 → 网络层断连 */
     const HEARTBEAT_TIMEOUT_MS = 30_000;
-    /** 内容进度超时：60s 没拿到任何有效 chunk（content/tool_calls/finishReason）就视为半连接死锁 */
-    const CONTENT_PROGRESS_TIMEOUT_MS = 60_000;
+    /** 90s 内没拿到任何 content/tool_calls/finish_reason → 进入"思考但不出活"状态（reasoning 不算） */
+    const CONTENT_PROGRESS_TIMEOUT_MS = 90_000;
+    /** 180s 内连 reasoning_content 也不增长 → 完全死锁 */
+    const REASONING_PROGRESS_TIMEOUT_MS = 180_000;
+    /** 240s 单次请求总时长上限 → 防止 reasoning 一直续命 */
+    const TOTAL_DEADLINE_MS = 240_000;
+    const requestStartAt = Date.now();
     let lastContentProgressAt = Date.now();
+    let lastReasoningProgressAt = Date.now();
+    /** 诊断日志：SID_CODE_DEBUG_SSE=1 启用，打印关键事件到 stderr */
+    const debugSse = process.env.SID_CODE_DEBUG_SSE === "1";
+    const dbg = (msg: string) => {
+      if (debugSse) process.stderr.write(`[SSE] ${msg}\n`);
+    };
+    let totalChunks = 0;
+    let emptyChunks = 0;
     /** 延迟 message_delta：finish_reason 和 usage 可能在不同 chunk 中 */
     let pendingFinishReason: string | null = null;
     // DeepSeek reasoning_content 追踪
@@ -268,23 +282,34 @@ export class OpenAIProvider implements Provider {
 
     try {
       while (true) {
-        // 带超时的 read：30s 无字节（heartbeat）或 60s 无有效内容（content-progress）都视为死锁
+        // 4 重死锁检测 race：网络断连 / 思考停滞 / reasoning 停滞 / 总超时
         const readPromise = reader.read();
         const heartbeatTimeout = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("SSE 流超时：30 秒无数据")), HEARTBEAT_TIMEOUT_MS)
+          setTimeout(() => reject(new Error(`SSE 流超时：${HEARTBEAT_TIMEOUT_MS / 1000} 秒无字节(heartbeat)`)), HEARTBEAT_TIMEOUT_MS)
         );
         const contentProgressTimeout = new Promise<never>((_, reject) => {
-          const remainingMs = Math.max(
-            1,
-            CONTENT_PROGRESS_TIMEOUT_MS - (Date.now() - lastContentProgressAt),
-          );
+          const remainingMs = Math.max(1, CONTENT_PROGRESS_TIMEOUT_MS - (Date.now() - lastContentProgressAt));
           setTimeout(
-            () => reject(new Error(`SSE 流内容进度超时：${CONTENT_PROGRESS_TIMEOUT_MS / 1000} 秒无有效内容`)),
+            () => reject(new Error(`SSE 流超时：${CONTENT_PROGRESS_TIMEOUT_MS / 1000} 秒无有效内容(content_progress) chunks=${totalChunks} empty=${emptyChunks}`)),
+            remainingMs,
+          );
+        });
+        const reasoningProgressTimeout = new Promise<never>((_, reject) => {
+          const remainingMs = Math.max(1, REASONING_PROGRESS_TIMEOUT_MS - (Date.now() - lastReasoningProgressAt));
+          setTimeout(
+            () => reject(new Error(`SSE 流超时：${REASONING_PROGRESS_TIMEOUT_MS / 1000} 秒 reasoning 无进展(reasoning_progress)`)),
+            remainingMs,
+          );
+        });
+        const totalDeadline = new Promise<never>((_, reject) => {
+          const remainingMs = Math.max(1, TOTAL_DEADLINE_MS - (Date.now() - requestStartAt));
+          setTimeout(
+            () => reject(new Error(`SSE 流超时：单次请求超过 ${TOTAL_DEADLINE_MS / 1000}s(total_deadline) chunks=${totalChunks}`)),
             remainingMs,
           );
         });
 
-        const { done, value } = await Promise.race([readPromise, heartbeatTimeout, contentProgressTimeout]);
+        const { done, value } = await Promise.race([readPromise, heartbeatTimeout, contentProgressTimeout, reasoningProgressTimeout, totalDeadline]);
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
@@ -298,6 +323,8 @@ export class OpenAIProvider implements Provider {
           const data = line.slice(6);
           if (data === "[DONE]") {
             lastContentProgressAt = Date.now();
+            lastReasoningProgressAt = Date.now();
+            dbg(`[DONE] received after ${Date.now() - requestStartAt}ms chunks=${totalChunks} empty=${emptyChunks}`);
             // [DONE] 前 flush 延迟的 message_delta（此时 usage 已更新）
             if (pendingFinishReason) {
               yield {
@@ -322,6 +349,7 @@ export class OpenAIProvider implements Provider {
             const chunk = JSON.parse(data);
             const delta = chunk.choices?.[0]?.delta;
             const finishReason = chunk.choices?.[0]?.finish_reason;
+            totalChunks++;
 
             // Token 用量（可能在任何 chunk 中，包括 choices 为空的最终 chunk）
             if (chunk.usage) {
@@ -331,13 +359,18 @@ export class OpenAIProvider implements Provider {
 
             if (!delta && !finishReason) continue;
 
-            // 任何有效 chunk（非空 content / tool_calls / finishReason）都重置内容进度计时器
-            // 注意：deepseek 死锁时持续发送 delta={} 或空字符串 content/reasoning_content，必须排除
+            // 区分两类进度：content_progress 只看真产出（reasoning 不算）；reasoning_progress 单独跟踪
+            // 防止 deepseek 持续吐 reasoning 但永不出 content/tool 的"思考续命"死锁
             const hasContent = typeof delta?.content === "string" && delta.content.length > 0;
             const hasReasoning = typeof delta?.reasoning_content === "string" && delta.reasoning_content.length > 0;
             const hasToolCalls = Array.isArray(delta?.tool_calls) && delta.tool_calls.length > 0;
-            if (hasContent || hasReasoning || hasToolCalls || finishReason) {
+            if (hasContent || hasToolCalls || finishReason) {
               lastContentProgressAt = Date.now();
+              lastReasoningProgressAt = Date.now();
+            } else if (hasReasoning) {
+              lastReasoningProgressAt = Date.now();
+            } else {
+              emptyChunks++;
             }
 
             // DeepSeek reasoning_content（思考链）

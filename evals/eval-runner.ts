@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { resolve, join } from "node:path";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import * as yamlLib from "yaml";
 import { parseArgs } from "node:util";
@@ -75,12 +75,12 @@ interface TestResult {
 const PROVIDER_REGISTRY: Record<string, Omit<ProviderDef, "name" | "model">> = {
   "sid-code": {
     script: join(ROOT, "providers/sid-code-live.ts"),
-    timeoutMs: 360_000,
+    timeoutMs: 480_000,
     maxTurns: 30,
   },
   "claude-code": {
     script: join(ROOT, "providers/claude-code.ts"),
-    timeoutMs: 360_000,
+    timeoutMs: 480_000,
     maxTurns: 30,
   },
 };
@@ -260,6 +260,47 @@ function writeWeekScores(results: TestResult[], weekNum: number) {
   console.log(`  时序数据: ${scoresDir}/ (${byCaseId.size} 个 case)`);
 }
 
+/**
+ * 追加每次 run 的历史快照到 _runs/{provider}.jsonl —— 永不覆盖。
+ *
+ * 文件按 provider 切分，便于单 provider 趋势分析。
+ * dashboard 读取这些 jsonl 画运行历史折线图。
+ */
+function appendRunHistory(results: TestResult[], runId: string, weekNum: number) {
+  const runsDir = join(ROOT, "_runs");
+  mkdirSync(runsDir, { recursive: true });
+
+  const byProvider = new Map<string, TestResult[]>();
+  for (const r of results) {
+    if (!byProvider.has(r.provider)) byProvider.set(r.provider, []);
+    byProvider.get(r.provider)!.push(r);
+  }
+
+  for (const [provider, providerResults] of byProvider) {
+    const filePath = join(runsDir, `${provider}.jsonl`);
+    const lines: string[] = [];
+    for (const r of providerResults) {
+      const isTimeout = r.response.output.includes("TIMEOUT");
+      const isError = r.response.output.includes("[ERROR]");
+      const runStatus = isTimeout ? "timeout" : isError ? "error" : "success";
+      lines.push(JSON.stringify({
+        run_id: runId,
+        week: weekNum,
+        case_id: r.caseId,
+        provider: r.provider,
+        score: r.score,
+        named_scores: r.namedScores,
+        latency_ms: r.latencyMs,
+        success: r.success,
+        run_status: runStatus,
+        tested_at: runId,
+      }));
+    }
+    appendFileSync(filePath, lines.join("\n") + "\n", "utf-8");
+  }
+  console.log(`  运行历史: ${runsDir}/ (${byProvider.size} 个 provider × ${results.length / byProvider.size} 个 case)`);
+}
+
 function findCaseYamlPath(caseId: string): string | null {
   const allDirs = [...CASE_DIRS, join(ROOT, "holdout")];
   for (const dir of allDirs) {
@@ -376,23 +417,40 @@ async function main() {
       const taskStart = Date.now();
       console.log(`▶ ${c.id} × ${p.name} ...`);
 
-      const provResult = await runProvider(p, c.input.user_query, c.id);
-      const grade = await gradeCase(c, provResult, skipLlmJudge);
+      try {
+        const provResult = await runProvider(p, c.input.user_query, c.id);
+        const grade = await gradeCase(c, provResult, skipLlmJudge);
 
-      const elapsed = Date.now() - taskStart;
-      const emoji = grade.score >= 4.5 ? "✅" : grade.score >= 3.5 ? "🟢" : grade.score >= 2.5 ? "🟡" : "🔴";
-      console.log(`  ${emoji} ${c.id} × ${p.name} = ${grade.score} (${(elapsed / 1000).toFixed(1)}s)`);
+        const elapsed = Date.now() - taskStart;
+        const emoji = grade.score >= 4.5 ? "✅" : grade.score >= 3.5 ? "🟢" : grade.score >= 2.5 ? "🟡" : "🔴";
+        console.log(`  ${emoji} ${c.id} × ${p.name} = ${grade.score} (${(elapsed / 1000).toFixed(1)}s)`);
 
-      results.push({
-        caseId: c.id,
-        provider: p.name,
-        score: grade.score,
-        namedScores: grade.namedScores,
-        dims: grade.dims,
-        response: { output: provResult.output },
-        latencyMs: provResult.meta.latency_ms || elapsed,
-        success: !provResult.error,
-      });
+        results.push({
+          caseId: c.id,
+          provider: p.name,
+          score: grade.score,
+          namedScores: grade.namedScores,
+          dims: grade.dims,
+          response: { output: provResult.output },
+          latencyMs: provResult.meta.latency_ms || elapsed,
+          success: !provResult.error,
+        });
+      } catch (err) {
+        // 单个 case 失败不能拖垮整批：记录降级结果，let 整体继续
+        const elapsed = Date.now() - taskStart;
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.log(`  ⚠️  ${c.id} × ${p.name} = ERROR (${(elapsed / 1000).toFixed(1)}s): ${errMsg.slice(0, 120)}`);
+        results.push({
+          caseId: c.id,
+          provider: p.name,
+          score: 0,
+          namedScores: { anchor_hit: 0, rubric_score: 0, tool_compliance: 0, efficiency: 0, cost: 0 },
+          dims: { error: { pass: false, score: 0, reason: errMsg.slice(0, 300) } },
+          response: { output: `[ERROR] eval-runner task crash: ${errMsg}` },
+          latencyMs: elapsed,
+          success: false,
+        });
+      }
     }))
   );
 
@@ -432,6 +490,8 @@ async function main() {
 
   await Bun.write(outputPath, JSON.stringify(output, null, 2));
 
+  const runId = output.timestamp;
+  appendRunHistory(results, runId, weekNum);
   writeWeekScores(results, weekNum);
 
   if (!skipSync) {

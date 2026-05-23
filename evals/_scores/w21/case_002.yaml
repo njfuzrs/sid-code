@@ -1,6 +1,6 @@
-tested_at: 2026-05-23T10:35:04.318Z
+tested_at: 2026-05-23T17:45:57.938Z
 sid_code_deepseek_v4_pro:
-  score: 4.56
+  score: 5
   anchor:
     score: 1
   llm:
@@ -8,6 +8,6 @@ sid_code_deepseek_v4_pro:
     dimensions:
       anchor_hit: 1
       rubric_score: 1
-      tool_compliance: 0.6
+      tool_compliance: 1
       efficiency: 1
-      cost: 0.7
+      cost: 1

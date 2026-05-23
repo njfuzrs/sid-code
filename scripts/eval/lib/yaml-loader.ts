@@ -208,6 +208,64 @@ export function readBaseline(c: CaseDoc, tool: string): BaselineSnapshot {
   };
 }
 
+export interface RunRecord {
+  runId: string;
+  testedAt: string;
+  week: number;
+  caseId: string;
+  provider: string;
+  score: number;
+  namedScores: Record<string, number>;
+  latencyMs: number;
+  success: boolean;
+  runStatus: string;
+}
+
+/**
+ * 读 evals/_runs/{provider}.jsonl —— 追加式运行历史。
+ * 返回 provider → 该 provider 的所有运行记录（按 runId 排序）。
+ */
+export function loadRunHistory(evalsDir: string): Map<string, RunRecord[]> {
+  const runsDir = join(evalsDir, "_runs");
+  const byProvider = new Map<string, RunRecord[]>();
+  if (!existsSync(runsDir)) return byProvider;
+
+  for (const file of readdirSync(runsDir)) {
+    if (!file.endsWith(".jsonl")) continue;
+    const provider = file.slice(0, -".jsonl".length);
+    const fullPath = join(runsDir, file);
+    try {
+      const content = readFileSync(fullPath, "utf-8");
+      const lines = content.split("\n").filter((l) => l.trim());
+      const records: RunRecord[] = [];
+      for (const line of lines) {
+        try {
+          const j = JSON.parse(line);
+          records.push({
+            runId: String(j.run_id),
+            testedAt: String(j.tested_at || j.run_id),
+            week: Number(j.week ?? 0),
+            caseId: String(j.case_id),
+            provider: String(j.provider),
+            score: Number(j.score),
+            namedScores: (j.named_scores ?? {}) as Record<string, number>,
+            latencyMs: Number(j.latency_ms ?? 0),
+            success: Boolean(j.success),
+            runStatus: String(j.run_status ?? "unknown"),
+          });
+        } catch {
+          // 跳过损坏的行
+        }
+      }
+      records.sort((a, b) => a.testedAt.localeCompare(b.testedAt));
+      byProvider.set(provider, records);
+    } catch {
+      // 跳过读取失败的文件
+    }
+  }
+  return byProvider;
+}
+
 export interface ProjectSnapshot {
   projectName: string;
   evalsDir: string;
@@ -215,6 +273,8 @@ export interface ProjectSnapshot {
   tools: string[];
   weeksByCase: Map<string, WeekScore[]>;
   allWeeks: number[];
+  /** 每个 provider 的运行历史（追加式 jsonl），用于画 run-level 趋势 */
+  runHistory: Map<string, RunRecord[]>;
 }
 
 export function buildProjectSnapshot(evalsDir: string, projectName: string): ProjectSnapshot {
@@ -228,5 +288,6 @@ export function buildProjectSnapshot(evalsDir: string, projectName: string): Pro
     for (const w of weeks) weekSet.add(w.week);
   }
   const allWeeks = [...weekSet].sort((a, b) => a - b);
-  return { projectName, evalsDir, cases, tools, weeksByCase, allWeeks };
+  const runHistory = loadRunHistory(evalsDir);
+  return { projectName, evalsDir, cases, tools, weeksByCase, allWeeks, runHistory };
 }

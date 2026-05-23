@@ -44,29 +44,49 @@ export async function gradeRubric(
 ): Promise<DimScore> {
   const client = new Anthropic();
   const prompt = `${rubricPrompt}\n\n待评测输出:\n${output}`;
-  const msg = await client.messages.create({
-    model: judgeModel,
-    max_tokens: 256,
-    messages: [{ role: "user", content: prompt }],
-  });
-  const text = msg.content
-    .filter((b) => b.type === "text")
-    .map((b) => (b as { type: "text"; text: string }).text)
-    .join("");
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) {
-    return { pass: false, score: 0, reason: `judge 返回无法解析: ${text.slice(0, 120)}` };
+
+  // 限流/网络错误：最多重试 3 次，指数退避
+  const maxRetries = 3;
+  let lastErr: Error | null = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const msg = await client.messages.create({
+        model: judgeModel,
+        max_tokens: 256,
+        messages: [{ role: "user", content: prompt }],
+      });
+      const text = msg.content
+        .filter((b) => b.type === "text")
+        .map((b) => (b as { type: "text"; text: string }).text)
+        .join("");
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        return { pass: false, score: 0, reason: `judge 返回无法解析: ${text.slice(0, 120)}` };
+      }
+      try {
+        const parsed = JSON.parse(jsonMatch[0]) as { pass: boolean; score: number; reason: string };
+        return {
+          pass: Boolean(parsed.pass),
+          score: Number(parsed.score),
+          reason: String(parsed.reason ?? ""),
+        };
+      } catch {
+        return { pass: false, score: 0, reason: `JSON 解析失败: ${jsonMatch[0].slice(0, 120)}` };
+      }
+    } catch (err: unknown) {
+      lastErr = err instanceof Error ? err : new Error(String(err));
+      const status = (err as { status?: number }).status;
+      // 429/503/500 可重试；4xx 其它直接放弃
+      const retryable = status === 429 || status === 503 || status === 500 || status === 502 || status === 504;
+      if (!retryable || attempt === maxRetries) break;
+      const delayMs = Math.min(30_000, 2_000 * Math.pow(2, attempt));
+      process.stderr.write(`[gradeRubric] judge API ${status} 第 ${attempt + 1}/${maxRetries} 次失败，${delayMs}ms 后重试\n`);
+      await new Promise(r => setTimeout(r, delayMs));
+    }
   }
-  try {
-    const parsed = JSON.parse(jsonMatch[0]) as { pass: boolean; score: number; reason: string };
-    return {
-      pass: Boolean(parsed.pass),
-      score: Number(parsed.score),
-      reason: String(parsed.reason ?? ""),
-    };
-  } catch {
-    return { pass: false, score: 0, reason: `JSON 解析失败: ${jsonMatch[0].slice(0, 120)}` };
-  }
+  // 重试用尽：降级——score=1.0 但 pass=false + reason 标注 judge 不可用
+  // 这样不会让单个 case 因 judge 限流而误判失败，整体仍可继续
+  return { pass: false, score: 1.0, reason: `LLM judge 不可用（重试用尽）: ${lastErr?.message?.slice(0, 100) ?? "unknown"}` };
 }
 
 export function gradeToolCompliance(

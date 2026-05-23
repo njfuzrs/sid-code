@@ -5,7 +5,7 @@
  * VS Code / GitHub Web / Obsidian 均原生渲染 mermaid。
  */
 
-import type { CaseDoc, ProjectSnapshot, WeekScore } from "./yaml-loader";
+import type { CaseDoc, ProjectSnapshot, WeekScore, RunRecord } from "./yaml-loader";
 import { readBaseline } from "./yaml-loader";
 
 const STATUS_ICON = {
@@ -49,6 +49,8 @@ export function renderDashboard(snapshot: ProjectSnapshot): string {
   lines.push(...renderCaseToolMatrix(snapshot));
   lines.push("");
   lines.push(...renderWeeklyTrends(snapshot));
+  lines.push("");
+  lines.push(...renderRunHistoryTrends(snapshot));
   lines.push("");
   lines.push(...renderPending(snapshot));
   lines.push("");
@@ -292,7 +294,7 @@ function mermaidLineChart(spec: LineChartSpec): string {
 
 function renderPending(snap: ProjectSnapshot): string[] {
   const out: string[] = [];
-  out.push("## 4. 评分进度 / Pending 列表");
+  out.push("## 5. 评分进度 / Pending 列表");
   out.push("");
 
   const pendingByTool = new Map<string, CaseDoc[]>();
@@ -332,7 +334,7 @@ function renderPending(snap: ProjectSnapshot): string[] {
 
 function renderAnomalies(snap: ProjectSnapshot): string[] {
   const out: string[] = [];
-  out.push("## 5. 异常 / 高方差 case");
+  out.push("## 6. 异常 / 高方差 case");
   out.push("");
   const concerns: string[] = [];
 
@@ -375,7 +377,7 @@ function renderAnomalies(snap: ProjectSnapshot): string[] {
 
 function renderDataSources(snap: ProjectSnapshot): string[] {
   const out: string[] = [];
-  out.push("## 6. 数据源");
+  out.push("## 7. 数据源");
   out.push("");
   const byBucket = new Map<string, number>();
   for (const c of snap.cases) byBucket.set(c.bucket, (byBucket.get(c.bucket) ?? 0) + 1);
@@ -392,7 +394,7 @@ function renderDataSources(snap: ProjectSnapshot): string[] {
 
 function renderJumpLinks(snap: ProjectSnapshot): string[] {
   const out: string[] = [];
-  out.push("## 7. 跳转入口");
+  out.push("## 8. 跳转入口");
   out.push("");
   out.push(`- [完整周报目录](_reports/) — 含 baseline / regression / horizontal-comparison`);
   out.push(`- [所有 case yaml](p0-core/) · [P1](p1-common/) · [P2](p2-edge/) · [holdout](holdout/)`);
@@ -400,5 +402,128 @@ function renderJumpLinks(snap: ProjectSnapshot): string[] {
     const latest = snap.allWeeks[snap.allWeeks.length - 1];
     out.push(`- [最新一周分数 w${latest}](_scores/w${latest}/)`);
   }
+  if (snap.runHistory.size > 0) {
+    out.push(`- [运行历史 jsonl](_runs/) — 每次跑分追加，可用于绘制曲线`);
+  }
   return out;
+}
+
+/**
+ * 渲染"运行历史趋势"章节 —— 读 _runs/{provider}.jsonl，按 run 时间轴画分数变化。
+ *
+ * 每次跑 eval-runner 都会追加一行，因此曲线粒度比 _scores/wNN/ 更细（精确到每次 run）。
+ */
+function renderRunHistoryTrends(snap: ProjectSnapshot): string[] {
+  const out: string[] = [];
+  out.push("## 4. 运行历史趋势 (per-run)");
+  out.push("");
+  if (snap.runHistory.size === 0) {
+    out.push("> 当前 `evals/_runs/` 无追加历史。第一次跑 `bun run evals/eval-runner.ts ...` 后会自动创建。");
+    return out;
+  }
+
+  out.push("数据源: `evals/_runs/{provider}.jsonl`（每次 eval-runner 完成自动追加）");
+  out.push("");
+
+  for (const [provider, records] of snap.runHistory) {
+    const runIds = uniqueSorted(records.map((r) => r.runId));
+    out.push(`### 4.${[...snap.runHistory.keys()].indexOf(provider) + 1} ${provider}`);
+    out.push("");
+    out.push(`总计: ${runIds.length} 次 run × ${new Set(records.map((r) => r.caseId)).size} 个 case = ${records.length} 条记录`);
+    out.push("");
+
+    // 4.x.1 每次 run 的均分曲线
+    const summaries = runIds.map((rid) => summarizeRun(records, rid));
+    out.push("**4.x.1 每次 run 的均分趋势**");
+    out.push("");
+    out.push(renderRunSummaryTable(summaries));
+    out.push("");
+    out.push(renderRunMeanChart(provider, summaries));
+    out.push("");
+
+    // 4.x.2 单 case 的多次 run 折线（仅展示有 ≥2 次 run 的 case）
+    const byCase = new Map<string, RunRecord[]>();
+    for (const r of records) {
+      if (!byCase.has(r.caseId)) byCase.set(r.caseId, []);
+      byCase.get(r.caseId)!.push(r);
+    }
+    const eligibleCases = [...byCase.entries()].filter(([, rs]) => rs.length >= 2);
+    if (eligibleCases.length === 0) {
+      out.push("**4.x.2 单 case 多次 run 折线**: 暂无 case 有 ≥2 次 run，跳过");
+      out.push("");
+      out.push("> 持续跑分后此图会自动出现。");
+      out.push("");
+      continue;
+    }
+    out.push("**4.x.2 单 case 多次 run 折线** (仅展示 ≥2 次 run 的 case)");
+    out.push("");
+    for (const [caseId, runs] of eligibleCases.sort()) {
+      const sorted = runs.sort((a, b) => a.testedAt.localeCompare(b.testedAt));
+      const trend = sorted.map((r) => r.score.toFixed(2)).join(" → ");
+      const delta = sorted[sorted.length - 1].score - sorted[0].score;
+      const deltaStr = delta > 0 ? `+${delta.toFixed(2)}` : delta.toFixed(2);
+      out.push(`<details><summary><code>${caseId}</code> · ${sorted.length} 次 · ${trend} (Δ ${deltaStr})</summary>`);
+      out.push("");
+      out.push(renderCaseRunChart(caseId, sorted));
+      out.push("");
+      out.push("</details>");
+      out.push("");
+    }
+  }
+
+  return out;
+}
+
+interface RunSummary {
+  runId: string;
+  count: number;
+  avgScore: number;
+  passCount: number;
+  failCount: number;
+  errorCount: number;
+}
+
+function summarizeRun(records: RunRecord[], runId: string): RunSummary {
+  const subset = records.filter((r) => r.runId === runId);
+  const avg = subset.reduce((s, r) => s + r.score, 0) / Math.max(1, subset.length);
+  const pass = subset.filter((r) => r.score >= 3.0).length;
+  const fail = subset.filter((r) => r.score < 3.0 && r.runStatus === "success").length;
+  const err = subset.filter((r) => r.runStatus !== "success").length;
+  return { runId, count: subset.length, avgScore: avg, passCount: pass, failCount: fail, errorCount: err };
+}
+
+function renderRunSummaryTable(summaries: RunSummary[]): string {
+  const lines: string[] = [];
+  lines.push(`| run_id (UTC) | cases | avg | pass≥3 | fail<3 | error/timeout |`);
+  lines.push(`| --- | --- | --- | --- | --- | --- |`);
+  for (const s of summaries) {
+    const shortId = s.runId.replace(/\.\d+Z$/, "Z").replace("T", " ").slice(0, 19);
+    lines.push(`| \`${shortId}\` | ${s.count} | **${s.avgScore.toFixed(2)}** | ${s.passCount} | ${s.failCount} | ${s.errorCount} |`);
+  }
+  return lines.join("\n");
+}
+
+function renderRunMeanChart(provider: string, summaries: RunSummary[]): string {
+  if (summaries.length === 0) return "> (无 run 数据)";
+  const xLabels = summaries.map((_, i) => `r${i + 1}`);
+  const avgs = summaries.map((s) => s.avgScore);
+  return mermaidLineChart({
+    title: `${provider} 历次 run 均分`,
+    xLabels,
+    series: [{ name: "avg", values: avgs }],
+  });
+}
+
+function renderCaseRunChart(caseId: string, runs: RunRecord[]): string {
+  const xLabels = runs.map((_, i) => `r${i + 1}`);
+  const scores = runs.map((r) => r.score);
+  return mermaidLineChart({
+    title: `${caseId} 历次 run 分数`,
+    xLabels,
+    series: [{ name: "score", values: scores }],
+  });
+}
+
+function uniqueSorted(arr: string[]): string[] {
+  return [...new Set(arr)].sort();
 }

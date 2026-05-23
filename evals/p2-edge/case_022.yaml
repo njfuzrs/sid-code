@@ -119,18 +119,18 @@ baseline_scores:
       efficiency: 1
       cost: 1
   sid_code_deepseek_v4_pro:
-    score: 1.93
+    score: 1.95
     run_status: success
-    tested_at: 2026-05-23T10:35:04.335Z
+    tested_at: 2026-05-23T17:25:14.649Z
     tested_by: eval-runner
     transcript_path: null
     notes: ""
     dimensions:
-      anchor_hit: 0.18181818181818182
+      anchor_hit: 0.2727272727272727
       rubric_score: 0.3
       tool_compliance: 1
       efficiency: 0.1
-      cost: 0.4
+      cost: 0.2
 
 source: "synthetic_edge_2026_05_16"
 notes: |

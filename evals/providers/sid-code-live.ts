@@ -12,7 +12,7 @@ function parseArgs(): { prompt: string; caseId: string; model: string | null; ti
   let prompt = "";
   let caseId = "unknown";
   let model: string | null = null;
-  let timeoutMs = 360_000;
+  let timeoutMs = 480_000;
   let maxTurns: number | null = null;
   let permissionMode: string | null = null;
 

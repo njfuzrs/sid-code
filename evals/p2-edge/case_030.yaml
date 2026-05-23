@@ -105,18 +105,18 @@ baseline_scores:
       efficiency: 1
       cost: 1
   sid_code_deepseek_v4_pro:
-    score: 1.41
-    run_status: timeout
-    tested_at: 2026-05-23T10:35:04.335Z
+    score: 4
+    run_status: success
+    tested_at: 2026-05-23T17:25:14.649Z
     tested_by: eval-runner
     transcript_path: null
-    notes: eval-runner 超时
+    notes: ""
     dimensions:
-      anchor_hit: 0
-      rubric_score: 0
-      tool_compliance: 0.6
-      efficiency: 1
-      cost: 1
+      anchor_hit: 0.16666666666666666
+      rubric_score: 1
+      tool_compliance: 1
+      efficiency: 0.7
+      cost: 0.7
 
 source: "manual_design_2026_05_20_coverage_gap_诚实兜底"
 notes: |
