@@ -138,17 +138,17 @@ baseline_scores:
     _formula_version:
       cost: legacy_v1
   sid_code_deepseek_v4_pro:
-    score: 4.79
+    score: 4.71
     run_status: success
-    tested_at: 2026-05-24T16:52:01.337Z
+    tested_at: 2026-05-24T17:29:26.778Z
     tested_by: eval-runner
     transcript_path: null
     notes: ""
     dimensions:
-      anchor_hit: 0.9
+      anchor_hit: 1
       rubric_score: 0.95
       tool_compliance: 1
-      efficiency: 1
+      efficiency: 0.7
       cost: 1
     _formula_version:
       cost: v3
@@ -171,16 +171,16 @@ baseline_scores:
     _formula_version:
       cost: legacy_v1
   claude_code_claude_opus_4_7:
-    score: 3.38
+    score: 4.21
     run_status: success
-    tested_at: 2026-05-24T16:52:58.250Z
+    tested_at: 2026-05-24T17:29:45.470Z
     tested_by: eval-runner
     transcript_path: null
     notes: ""
     dimensions:
-      anchor_hit: 0.5
-      rubric_score: 0.5
-      tool_compliance: 1
+      anchor_hit: 0.8
+      rubric_score: 0.85
+      tool_compliance: 0.7
       efficiency: 1
       cost: 1
     _formula_version:

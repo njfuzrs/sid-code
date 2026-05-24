@@ -31,9 +31,9 @@ describe("gradeAnchorHit", () => {
     expect(r.pass).toBe(false);
   });
 
-  test("命中 1/2 得 0.5（基础合格分）", () => {
+  test("命中 1/2 得 0.8（基础合格分）", () => {
     const r = gradeAnchorHit("foo", ["foo", "bar"]);
-    expect(r.score).toBe(0.5);
+    expect(r.score).toBe(0.8);
     expect(r.pass).toBe(true);
   });
 
@@ -59,8 +59,24 @@ describe("gradeAnchorHit", () => {
     const output = "MemoryStore 在 cli.ts 和 app.ts 中被多处使用";
     const r = gradeAnchorHit(output, anchors);
     expect(r.pass).toBe(true);
-    expect(r.score).not.toBeNull();
-    expect(r.score!).toBeGreaterThanOrEqual(0.5);
+    // v2 单 hit = 0.8（从 v1 的 0.5 调整）
+    expect(r.score).toBe(0.8);
+  });
+
+  test("regression case_030: 12 个长 any_of 表 → 单 hit 给 0.8（v1 是 0.5 过严）", () => {
+    // case_030 诚实兜底，锚点是各种"不存在"近义词
+    // v1: 单 hit = 0.5 → 与 LLM judge 实测 1.0 严重不一致
+    // v2: 单 hit = 0.8 → 满足"any_of 任一命中即合格"语义
+    const anchors = [
+      "不存在", "没有找到", "找不到", "does not exist", "not found",
+      "没有这个文件", "未发现", "查无", "auto-retry.ts", "deny-this",
+      "实际存在", "无法回答",
+    ];
+    // 输出只命中 "auto-retry.ts" 1 个
+    const output = "auto-retry.ts 这个文件 there is none here.";
+    const r = gradeAnchorHit(output, anchors);
+    expect(r.score).toBe(0.8);
+    expect(r.pass).toBe(true);
   });
 
   test("命中数达到满分阈值即给 1.0", () => {
@@ -69,10 +85,9 @@ describe("gradeAnchorHit", () => {
     expect(r.score).toBe(1.0);
   });
 
-  test("锚点表只有 1 项，命中即得 0.5（保留单锚点的鉴别度）", () => {
+  test("锚点表只有 1 项，命中即得 0.8（v2 与多 anchor 单 hit 一致）", () => {
     const r = gradeAnchorHit("foo", ["foo"]);
-    expect(r.score).not.toBeNull();
-    expect(r.score!).toBeGreaterThanOrEqual(0.5);
+    expect(r.score).toBe(0.8);
     expect(r.pass).toBe(true);
   });
 });
@@ -136,6 +151,27 @@ describe("gradeToolCompliance", () => {
       mustNotModifyFiles: ["src/"],
     });
     expect(r.score).toBe(0.5);
+  });
+
+  test("regression Bug B: claude-code PascalCase 工具名 vs case yaml 小写 → 应大小写不敏感", () => {
+    // claude-code wrapper 报 Read/Grep/Glob（PascalCase），case yaml 是小写
+    const meta = { tools_used: ["Read", "Grep", "Glob"], files_edited: [], total_steps: 5, total_tokens: 1000 };
+    const r = gradeToolCompliance(meta, {
+      mustCallTools: ["grep", "glob", "ls", "read"],
+      mustCallMode: "any_of",
+    });
+    expect(r.score).toBe(1.0); // 旧实现因大小写不匹配会给 0.6
+  });
+
+  test("regression Bug B: 禁止的工具大小写不敏感", () => {
+    const meta = { tools_used: ["Bash"], files_edited: [], total_steps: 3, total_tokens: 500 };
+    const r = gradeToolCompliance(meta, {
+      mustCallTools: ["read"],
+      mustNotCallTools: ["bash"],
+    });
+    // 没用 read（-0.4），用了 Bash 应当被识别为禁用 bash（-0.3）→ 1 - 0.4 - 0.3 = 0.3
+    expect(r.score).not.toBeNull();
+    expect(r.score!).toBeCloseTo(0.3, 5);
   });
 });
 

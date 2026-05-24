@@ -1,5 +1,5 @@
-tested_at: 2026-05-24T16:37:47.022Z
-sid_code_deepseek_v4_pro:
+tested_at: 2026-05-24T17:15:00.977Z
+claude_code_claude_opus_4_7:
   score: 4.65
   anchor:
     score: 1
@@ -11,7 +11,7 @@ sid_code_deepseek_v4_pro:
       tool_compliance: 0.6
       efficiency: 1
       cost: 1
-claude_code_claude_opus_4_7:
+sid_code_deepseek_v4_pro:
   score: 4.65
   anchor:
     score: 1

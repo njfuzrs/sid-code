@@ -32,11 +32,20 @@ interface ParsedStdout {
   text: string;
   sessionId: string | null;
   trajectoryPath: string | null;
+  /**
+   * abort/error 标记：parseStdoutJson 检测到 stdout JSON 结构异常时置 true。
+   * 异常包含但不限于：content 仅含 tool_use 而无 text block、error.aborted=true、
+   * RequestAbortedError、被 SIGTERM 后子进程 dump 的部分状态。
+   * wrapper 主流程看到 abnormal=true 时返回 error，避免把"工具调用中间态 JSON"
+   * 作为最终答案丢给评测层（会触发 anchor 偶然命中、rubric 给 0 等假数据）。
+   */
+  abnormal: boolean;
+  abnormalReason?: string;
 }
 
 function parseStdoutJson(stdout: string): ParsedStdout {
   const trimmed = stdout.trim();
-  const empty: ParsedStdout = { text: "", sessionId: null, trajectoryPath: null };
+  const empty: ParsedStdout = { text: "", sessionId: null, trajectoryPath: null, abnormal: false };
   if (!trimmed) return empty;
   let parsed: Record<string, unknown> | null = null;
   try {
@@ -44,25 +53,69 @@ function parseStdoutJson(stdout: string): ParsedStdout {
   } catch {
     const m = trimmed.match(/\{[\s\S]*\}\s*$/);
     if (m) {
-      try { parsed = JSON.parse(m[0]); } catch { return { ...empty, text: trimmed }; }
+      try { parsed = JSON.parse(m[0]); } catch {
+        // 整段都不是合法 JSON：直接当 abnormal（不再 fallback "把字符串当 text"，
+        // 那会让 anchor_hit 偶然命中关键字给假高分）
+        return { ...empty, abnormal: true, abnormalReason: "stdout 非合法 JSON" };
+      }
     }
   }
-  if (!parsed) return { ...empty, text: trimmed };
+  if (!parsed) return { ...empty, abnormal: true, abnormalReason: "stdout 解析失败" };
 
   const sessionId = typeof parsed.session_id === "string" ? parsed.session_id : null;
   const trajectoryPath = typeof parsed.trajectory_path === "string" ? parsed.trajectory_path : null;
 
+  // 检测 error 字段（abort / RequestAborted / 子进程被 SIGTERM 时 sid-code 会把
+  // 部分 turn 状态写到 stdout，里面带 error 块）。这种情况 content 里通常只有
+  // tool_use 而没有最终 text block，绝对不能当成功输出。
+  const errBlock = parsed.error;
+  if (errBlock && typeof errBlock === "object") {
+    const msg = (errBlock as Record<string, unknown>).message;
+    return {
+      text: "",
+      sessionId,
+      trajectoryPath,
+      abnormal: true,
+      abnormalReason: `stdout JSON 含 error: ${typeof msg === "string" ? msg.slice(0, 100) : JSON.stringify(errBlock).slice(0, 100)}`,
+    };
+  }
+
   let text = "";
+  let hasToolUse = false;
   const content = parsed.content;
   if (Array.isArray(content)) {
     for (const block of content) {
       const b = block as Record<string, unknown>;
       if (b.type === "text" && typeof b.text === "string") text += (text ? "\n" : "") + b.text;
+      else if (b.type === "tool_use") hasToolUse = true;
     }
   } else if (typeof content === "string") {
     text = content;
   }
-  return { text: text || trimmed, sessionId, trajectoryPath };
+
+  // content 里只有 tool_use 没有 text → 子进程在工具调用中途被 abort。abnormal=true。
+  if (hasToolUse && !text) {
+    return {
+      text: "",
+      sessionId,
+      trajectoryPath,
+      abnormal: true,
+      abnormalReason: "stdout 仅含 tool_use 块，无最终 text 输出（子进程在工具调用中途 abort）",
+    };
+  }
+
+  // 没有 text 也没有 content → 不正常（不再 fallback 用 trimmed 充当 text）
+  if (!text) {
+    return {
+      text: "",
+      sessionId,
+      trajectoryPath,
+      abnormal: true,
+      abnormalReason: "stdout JSON 无 text 内容",
+    };
+  }
+
+  return { text, sessionId, trajectoryPath, abnormal: false };
 }
 
 export interface TrajMeta {
@@ -169,15 +222,44 @@ function analyzeTrajectorySignals(trajPath: string | null): {
   }
 }
 
+/**
+ * 判断 stdout 是否已收到"最终答案 JSON"（不是中间态）。
+ *
+ * sid-code 在 -p json 模式下，工具调用 abort 时也可能把"部分 turn 状态" JSON dump 到 stdout，
+ * 那段 JSON 里 content 数组只有 tool_use、没有 text block，并且通常带 error 字段。
+ * 旧实现"只要是 valid JSON 就 SIGTERM 子进程"会让中间态被错误地视为最终答案
+ * （case_027 实测：abort 后 666B JSON 被当成功，wrapper 把整段 JSON 当 text 返回 →
+ *  anchor 偶然命中关键字给假高分）。
+ *
+ * 改成要求 JSON 里有 content[*].type==='text' && text 非空才认完整。
+ * 注意：error 字段也是终止信号（已 abort），但不应判为"成功完整"。
+ */
 function tryExtractCompleteJson(buf: string): boolean {
   const trimmed = buf.trim();
   if (!trimmed.startsWith("{")) return false;
+  let parsed: unknown;
   try {
-    JSON.parse(trimmed);
-    return true;
+    parsed = JSON.parse(trimmed);
   } catch {
     return false;
   }
+  if (!parsed || typeof parsed !== "object") return false;
+  const obj = parsed as Record<string, unknown>;
+
+  // 含 error → 已 abort，不算"成功完整"（让 timer / 子进程自然退出兜底）
+  if (obj.error && typeof obj.error === "object") return false;
+
+  const content = obj.content;
+  if (typeof content === "string" && content.length > 0) return true;
+  if (Array.isArray(content)) {
+    for (const block of content) {
+      const b = block as Record<string, unknown>;
+      if (b.type === "text" && typeof b.text === "string" && b.text.trim().length > 0) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 async function main() {
@@ -288,6 +370,17 @@ async function main() {
       + `cc=${rawTokensInfo.breakdown.cache_creation} cr=${rawTokensInfo.breakdown.cache_read} `
       + `4sum=${rawTokens}\n`
     );
+  }
+
+  // abnormal 优先：stdout JSON 结构异常（abort / 仅 tool_use / 解析失败）
+  // 立即返回 error，不再继续 anchor / rubric 流程（避免假数据）
+  if (parsed.abnormal) {
+    process.stdout.write(JSON.stringify({
+      output: `[ERROR] sid-code-live stdout abnormal: ${parsed.abnormalReason ?? "unknown"}`,
+      meta: { ...metaOut, exit_status: "abnormal_stdout" },
+      error: true,
+    }) + "\n");
+    process.exit(0);
   }
 
   if (parsed.text) {

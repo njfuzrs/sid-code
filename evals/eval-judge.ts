@@ -31,10 +31,24 @@ const DEFAULT_WEIGHTS: Record<string, number> = {
 /**
  * 锚点命中评分。
  *
- * 设计原则（修复 case_007 / case_028 类问题）:
- * - must_include_any_of 的语义是"命中任一即可合格"，不应该因为锚点表写得多而降低 score
+ * 设计原则（修复 case_007 / case_028 / case_030 类问题）:
+ * - must_include_any_of 的语义是"命中任一即可合格"，不应该因为锚点表写得长就降低 score
  * - 但如果一个锚点都没命中，明显是答非所问，给低分
- * - 渐进满分：命中 1 个 = 0.5，达到 max(2, 50%) 个 = 1.0（既奖励多命中，又不让长锚点表惩罚正确答案）
+ *
+ * 评分规则（v2，2026-05-25 调整后）:
+ *   hitCount == 0:  0.0（答非所问）
+ *   hitCount == 1:  0.8（any_of 任一命中的基础合格分）
+ *   hitCount >= max(2, ceil(total*0.3)): 1.0（满分阈值放宽到 30%）
+ *   中间区间在 0.8 ~ 1.0 间线性插值
+ *
+ * 与旧规则（v1）对比：
+ *   - v1 单 hit = 0.5（过严，导致 case_030 anchor=0 但 rubric=1 严重不一致）
+ *   - v1 满分阈值 50%（长锚点表如 12 项需要命中 6 个才能满分，与"any_of"语义矛盾）
+ *
+ * 实测影响（2026-05-25 full sync）：
+ *   case_030 sid-code: hits=0/12 → 旧 0.0 / 新 0.0（一致，因为命中数为 0）
+ *   case_030 claude-code: hits=1/12 → 旧 0.5 / 新 0.8（修复 anchor/rubric=1 严重不一致）
+ *   case_007 长 case: 命中 4/10 → 旧 0.875 / 新 ≈1.0（达到 30% 阈值）
  */
 export function gradeAnchorHit(output: string, anchors: string[]): DimScore {
   if (anchors.length === 0) {
@@ -44,19 +58,20 @@ export function gradeAnchorHit(output: string, anchors: string[]): DimScore {
   const hitCount = hits.length;
   const total = anchors.length;
 
-  // 满分阈值：max(2, 50%)。锚点表越长，达到满分的门槛越宽松（避免长表惩罚）。
-  const fullScoreThreshold = Math.max(2, Math.ceil(total * 0.5));
+  // 满分阈值：max(2, ceil(total*0.3))。锚点表越长，满分阈值百分比越宽松。
+  const fullScoreThreshold = Math.max(2, Math.ceil(total * 0.3));
+  const BASE_SCORE = 0.8;  // any_of 任一命中的基础合格分（v1 是 0.5，过严）
   let score: number;
   if (hitCount === 0) {
     score = 0;
   } else if (hitCount === 1) {
-    score = 0.5;  // 命中任一即合格的基础分
+    score = BASE_SCORE;
   } else if (hitCount >= fullScoreThreshold) {
     score = 1.0;
   } else {
-    // 1 < hitCount < fullScoreThreshold：在 0.5 ~ 1.0 间线性插值
+    // 1 < hitCount < fullScoreThreshold：在 BASE_SCORE ~ 1.0 间线性插值
     const ratio = (hitCount - 1) / (fullScoreThreshold - 1);
-    score = 0.5 + 0.5 * ratio;
+    score = BASE_SCORE + (1.0 - BASE_SCORE) * ratio;
   }
 
   const pass = hitCount >= 1;
@@ -135,9 +150,13 @@ export function gradeToolCompliance(
   }
 ): DimScore {
   const { tools_used, files_edited, total_steps } = meta;
-  const mustCallTools = expected.mustCallTools ?? [];
+  // 工具名归一化：claude-code wrapper 报 PascalCase（Read/Grep/Glob），
+  // sid-code wrapper 报小写（read/grep/glob），case yaml 一律小写。
+  // 不归一化会让 claude-code 的 any_of 永远失败（实测 case_030 命中 any_of=0.6）。
+  const toolsUsedLower = tools_used.map((t) => t.toLowerCase());
+  const mustCallTools = (expected.mustCallTools ?? []).map((t) => t.toLowerCase());
   const mustCallMode = expected.mustCallMode ?? "all_of";
-  const mustNotCallTools = expected.mustNotCallTools ?? [];
+  const mustNotCallTools = (expected.mustNotCallTools ?? []).map((t) => t.toLowerCase());
   const mustNotModifyFiles = expected.mustNotModifyFiles ?? [];
 
   // sideband metadata 全空：trajectory 没落盘 / wrapper 失败 / case 真的没用工具。
@@ -159,7 +178,7 @@ export function gradeToolCompliance(
   const reasons: string[] = [];
 
   if (mustCallTools.length > 0) {
-    const hits = mustCallTools.filter((t) => tools_used.includes(t));
+    const hits = mustCallTools.filter((t) => toolsUsedLower.includes(t));
     if (mustCallMode === "any_of") {
       // any_of：命中任一即满分
       if (hits.length === 0) {
@@ -171,14 +190,14 @@ export function gradeToolCompliance(
       if (hits.length < mustCallTools.length) {
         score -= 0.4 * (1 - hits.length / mustCallTools.length);
         reasons.push(
-          "未使用要求的工具: " + mustCallTools.filter((t) => !tools_used.includes(t)).join(", ")
+          "未使用要求的工具: " + mustCallTools.filter((t) => !toolsUsedLower.includes(t)).join(", ")
         );
       }
     }
   }
 
   for (const t of mustNotCallTools) {
-    if (tools_used.includes(t)) {
+    if (toolsUsedLower.includes(t)) {
       score -= 0.3;
       reasons.push("使用了禁止的工具: " + t);
     }

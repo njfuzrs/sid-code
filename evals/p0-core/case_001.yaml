@@ -136,7 +136,7 @@ baseline_scores:
   sid_code_deepseek_v4_pro:
     score: 4.65
     run_status: success
-    tested_at: 2026-05-24T16:37:41.911Z
+    tested_at: 2026-05-24T17:15:00.977Z
     tested_by: eval-runner
     transcript_path: null
     notes: ""
@@ -169,7 +169,7 @@ baseline_scores:
   claude_code_claude_opus_4_7:
     score: 4.65
     run_status: success
-    tested_at: 2026-05-24T16:37:47.022Z
+    tested_at: 2026-05-24T17:14:55.732Z
     tested_by: eval-runner
     transcript_path: null
     notes: ""
