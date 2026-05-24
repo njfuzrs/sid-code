@@ -20,6 +20,30 @@ export interface AgentMeta {
   total_tokens: number;
 }
 
+/**
+ * 判断一个锚点是否属于"代码标识符 / 路径 / 类型"(应排除 echo 检查)。
+ *
+ * 设计：代码层面的标识符即便用户在 query 中提到，agent 在回答里引用也是真实命中——
+ * 用户提供路径是"指引"，agent 引用是"定位"，两者本就该重合。
+ *
+ * 排除 echo 检查的判定（满足任一即认为是"代码标识符"）：
+ *   - 含路径分隔符 `/` 或 `.` 跟随小写字母（文件路径如 src/foo.ts, foo.bar）
+ *   - 全英文 + 至少 1 个大写字母（驼峰类名/标识符 QuotaManager / AgentLoopRunner）
+ *   - 含括号 `(` 或 `)`（函数调用如 it( / check()）
+ *   - 含特殊字符 `:` `<` `>` `=`（运算符/类型注解如 >= / ratio:）
+ *   - 全英文小写字母 + 数字组合但含分隔符如 `bun:test` / `auto-retry`
+ *
+ * 不排除（即应用 echo 检查）：自然语言短语（"更好" / "哪方面" / "请确认"等）
+ */
+function isCodeIdentifier(anchor: string): boolean {
+  if (/[\/.]/.test(anchor) && /[a-zA-Z]/.test(anchor)) return true;
+  if (/[()]/.test(anchor)) return true;
+  if (/[:<>=]/.test(anchor)) return true;
+  if (anchor.length >= 4 && /^[A-Za-z]+$/.test(anchor) && /[A-Z]/.test(anchor)) return true;
+  if (/-/.test(anchor) && /[a-zA-Z]/.test(anchor)) return true;
+  return false;
+}
+
 const DEFAULT_WEIGHTS: Record<string, number> = {
   anchor_hit: 1.5,
   rubric_score: 4.0,
@@ -35,32 +59,64 @@ const DEFAULT_WEIGHTS: Record<string, number> = {
  * - must_include_any_of 的语义是"命中任一即可合格"，不应该因为锚点表写得长就降低 score
  * - 但如果一个锚点都没命中，明显是答非所问，给低分
  *
- * 评分规则（v2，2026-05-25 调整后）:
+ * 评分规则（v3，2026-05-25 调整后）:
  *   hitCount == 0:  0.0（答非所问）
- *   hitCount == 1:  0.8（any_of 任一命中的基础合格分）
+ *   hitCount == 1:  0.5（any_of 任一命中的基础合格分，回归 v1 拉鉴别度）
  *   hitCount >= max(2, ceil(total*0.3)): 1.0（满分阈值放宽到 30%）
- *   中间区间在 0.8 ~ 1.0 间线性插值
+ *   中间区间在 0.5 ~ 1.0 间线性插值
  *
- * 与旧规则（v1）对比：
- *   - v1 单 hit = 0.5（过严，导致 case_030 anchor=0 但 rubric=1 严重不一致）
- *   - v1 满分阈值 50%（长锚点表如 12 项需要命中 6 个才能满分，与"any_of"语义矛盾）
+ * 与 v2（地板 0.8）的对比：
+ *   - v2: 单 hit = 0.8 → 90% 的 case anchor 都 ≥ 0.8 鉴别度严重不足（天花板效应）
+ *   - v3: 单 hit = 0.5 → 把 anchor 维度的鉴别区间还回来，case_030 类靠 must_call_tools_mode=any_of 单独豁免
  *
- * 实测影响（2026-05-25 full sync）：
- *   case_030 sid-code: hits=0/12 → 旧 0.0 / 新 0.0（一致，因为命中数为 0）
- *   case_030 claude-code: hits=1/12 → 旧 0.5 / 新 0.8（修复 anchor/rubric=1 严重不一致）
- *   case_007 长 case: 命中 4/10 → 旧 0.875 / 新 ≈1.0（达到 30% 阈值）
+ * Echo 排除（2026-05-25 新增）:
+ *   userQuery 里出现的锚点不计入命中（防止"复读用户问题"被算成答对）。
+ *   例：case_022 锚点"更好"恰好是用户原话"把那个权限模块改一下让它更好"中的词，
+ *   agent 只要 echo 用户问题就 100% 命中——必须排除。
+ *
+ *   ⚠️ Echo 排除仅对"自然语言短语"生效；代码标识符 / 路径 / 类名（详见 isCodeIdentifier）
+ *      即便在 query 里提到也不排除——用户给路径是"指引"，agent 引用是"定位"，
+ *      两者本就应当重合。这避免了 case_015 类副作用：用户 query 提供 path 锚点，
+ *      被全部 echo 排除后只剩自然词，导致 agent 真实回答路径仍判 0 分。
  */
-export function gradeAnchorHit(output: string, anchors: string[]): DimScore {
+export function gradeAnchorHit(
+  output: string,
+  anchors: string[],
+  userQuery?: string,
+): DimScore {
   if (anchors.length === 0) {
     return { pass: true, score: 1.0, reason: "无锚点，跳过" };
   }
-  const hits = anchors.filter((a) => output.includes(a));
+  // Echo 排除：仅对"自然语言短语"生效（短中文短词 / 短英文）；
+  // 代码标识符/路径/类名跳过 echo 检查（用户提及 ≠ 复读获分）
+  const echoExcluded: string[] = [];
+  const effective = userQuery
+    ? anchors.filter((a) => {
+        if (isCodeIdentifier(a)) return true; // 代码标识符不排除
+        if (userQuery.includes(a)) {
+          echoExcluded.push(a);
+          return false;
+        }
+        return true;
+      })
+    : anchors;
+
+  // 全部锚点都被 echo 排除：当作"无可评锚点"，不当作 0 分（避免冤枉）
+  if (effective.length === 0) {
+    return {
+      pass: true,
+      score: 1.0,
+      reason: `所有锚点（${anchors.length}）均出现在用户 query 中，echo 排除后无可评锚点`,
+    };
+  }
+
+  const hits = effective.filter((a) => output.includes(a));
   const hitCount = hits.length;
-  const total = anchors.length;
+  const total = effective.length;
 
   // 满分阈值：max(2, ceil(total*0.3))。锚点表越长，满分阈值百分比越宽松。
   const fullScoreThreshold = Math.max(2, Math.ceil(total * 0.3));
-  const BASE_SCORE = 0.8;  // any_of 任一命中的基础合格分（v1 是 0.5，过严）
+  const BASE_SCORE = 0.5; // v3 单 hit 基础分（v2 是 0.8 → 天花板效应）
   let score: number;
   if (hitCount === 0) {
     score = 0;
@@ -69,74 +125,248 @@ export function gradeAnchorHit(output: string, anchors: string[]): DimScore {
   } else if (hitCount >= fullScoreThreshold) {
     score = 1.0;
   } else {
-    // 1 < hitCount < fullScoreThreshold：在 BASE_SCORE ~ 1.0 间线性插值
     const ratio = (hitCount - 1) / (fullScoreThreshold - 1);
     score = BASE_SCORE + (1.0 - BASE_SCORE) * ratio;
   }
 
   const pass = hitCount >= 1;
-  const missing = anchors.filter((a) => !output.includes(a));
+  const missing = effective.filter((a) => !output.includes(a));
+  const echoNote = echoExcluded.length > 0 ? `；echo 排除 ${echoExcluded.length} 项: ${echoExcluded.join(", ")}` : "";
   const reason =
     hitCount === total
-      ? `全部命中: ${hits.join(", ")}`
+      ? `全部命中: ${hits.join(", ")}${echoNote}`
       : hitCount >= fullScoreThreshold
-        ? `命中 ${hitCount}/${total}（达到满分阈值 ${fullScoreThreshold}）: ${hits.join(", ")}`
+        ? `命中 ${hitCount}/${total}（达到满分阈值 ${fullScoreThreshold}）: ${hits.join(", ")}${echoNote}`
         : hitCount > 0
-          ? `命中 ${hitCount}/${total}（满分阈值 ${fullScoreThreshold}）: ${hits.join(", ")}; 未命中: ${missing.join(", ")}`
-          : `未命中任何锚点: ${anchors.join(", ")}`;
+          ? `命中 ${hitCount}/${total}（满分阈值 ${fullScoreThreshold}）: ${hits.join(", ")}; 未命中: ${missing.join(", ")}${echoNote}`
+          : `未命中任何锚点: ${effective.join(", ")}${echoNote}`;
   return { pass, score, reason };
 }
 
-export async function gradeRubric(
-  output: string,
-  rubricPrompt: string,
-  judgeModel = "claude-sonnet-4-5-20250929"
-): Promise<DimScore> {
-  const client = new Anthropic();
-  const prompt = `${rubricPrompt}\n\n待评测输出:\n${output}`;
+/**
+ * 从 LLM 输出中稳健抽取 JSON 对象。
+ *
+ * 旧实现：text.match(/\{[\s\S]*\}/) 贪婪匹配
+ *   - 如果 judge 在思考段写了 `{ "示例": ... }` 然后写最终 JSON，
+ *     正则会从第一个 { 抓到最后一个 }，整段不是合法 JSON → JSON.parse 失败 → 兜底 0 分
+ *   - 这是 case_022/028 跨次方差大的根因之一
+ *
+ * 新实现：从字符串末尾向前找最后一个完整 JSON 对象（带括号计数）。
+ *   - 能正确处理"思考段含示例 JSON + 末尾真正答案 JSON"
+ *   - 能处理 ```json ... ``` 代码块包裹
+ *   - 能处理首尾空白、markdown
+ */
+export function extractJsonObject(text: string): { json: string; ok: true } | { json: null; ok: false; reason: string } {
+  if (!text || typeof text !== "string") return { json: null, ok: false, reason: "empty" };
+  const trimmed = text.trim();
 
-  // 限流/网络错误：最多重试 3 次，指数退避
+  // 路径 1：整段就是合法 JSON
+  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+    try {
+      JSON.parse(trimmed);
+      return { json: trimmed, ok: true };
+    } catch { /* 进入路径 2 */ }
+  }
+
+  // 路径 2：剥离 markdown 代码块包裹
+  const fenceMatch = trimmed.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+  if (fenceMatch) {
+    const inside = fenceMatch[1].trim();
+    try {
+      JSON.parse(inside);
+      return { json: inside, ok: true };
+    } catch { /* 进入路径 3 */ }
+  }
+
+  // 路径 3：从末尾向前找最后一个完整的 JSON 对象
+  // 用括号计数法，跳过字符串内的 { }
+  for (let endIdx = trimmed.length - 1; endIdx >= 0; endIdx--) {
+    if (trimmed[endIdx] !== "}") continue;
+    // 从 endIdx 向前找匹配的 {
+    let depth = 0;
+    let inStr = false;
+    let escape = false;
+    for (let i = endIdx; i >= 0; i--) {
+      const ch = trimmed[i];
+      if (escape) { escape = false; continue; }
+      if (ch === "\\") { escape = true; continue; }
+      if (ch === '"' && !escape) { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (ch === "}") depth++;
+      else if (ch === "{") {
+        depth--;
+        if (depth === 0) {
+          const candidate = trimmed.slice(i, endIdx + 1);
+          try {
+            JSON.parse(candidate);
+            return { json: candidate, ok: true };
+          } catch { break; } // 这个区间不是合法 JSON，跳到下一个 endIdx
+        }
+      }
+    }
+  }
+
+  return { json: null, ok: false, reason: `无法从输出中抽取合法 JSON: ${trimmed.slice(0, 200)}` };
+}
+
+interface JudgeResult {
+  pass: boolean;
+  score: number;
+  reason: string;
+}
+
+async function callJudgeOnce(
+  client: Anthropic,
+  judgeModel: string,
+  systemPrompt: string,
+  userPrompt: string,
+): Promise<JudgeResult | { error: string; status?: number }> {
   const maxRetries = 3;
-  let lastErr: Error | null = null;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       const msg = await client.messages.create({
         model: judgeModel,
-        max_tokens: 256,
-        messages: [{ role: "user", content: prompt }],
+        max_tokens: 2048, // v3: 从 256 提升到 2048。reason p90=285 字符（中文 ~570 token），256 会截断
+        temperature: 0, // v3: 确定性输出，消除随机性带来的方差（旧实现默认 1.0 → 同输入跨次差 1.5 分）
+        system: [
+          {
+            type: "text",
+            text: systemPrompt,
+            cache_control: { type: "ephemeral" }, // 缓存系统提示词，多 case 共享判分规则部分
+          },
+        ],
+        messages: [{ role: "user", content: userPrompt }],
       });
       const text = msg.content
         .filter((b) => b.type === "text")
         .map((b) => (b as { type: "text"; text: string }).text)
         .join("");
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) {
-        return { pass: false, score: 0, reason: `judge 返回无法解析: ${text.slice(0, 120)}` };
+      const extracted = extractJsonObject(text);
+      if (!extracted.ok) {
+        return { error: `judge 返回无法解析: ${text.slice(0, 200)}` };
       }
       try {
-        const parsed = JSON.parse(jsonMatch[0]) as { pass: boolean; score: number; reason: string };
+        const parsed = JSON.parse(extracted.json) as { pass: boolean; score: number; reason: string };
+        const score = Number(parsed.score);
+        if (!Number.isFinite(score)) {
+          return { error: `judge score 非数值: ${extracted.json.slice(0, 120)}` };
+        }
         return {
           pass: Boolean(parsed.pass),
-          score: Number(parsed.score),
+          score,
           reason: String(parsed.reason ?? ""),
         };
       } catch {
-        return { pass: false, score: 0, reason: `JSON 解析失败: ${jsonMatch[0].slice(0, 120)}` };
+        return { error: `JSON.parse 失败: ${extracted.json.slice(0, 120)}` };
       }
     } catch (err: unknown) {
-      lastErr = err instanceof Error ? err : new Error(String(err));
       const status = (err as { status?: number }).status;
-      // 429/503/500 可重试；4xx 其它直接放弃
       const retryable = status === 429 || status === 503 || status === 500 || status === 502 || status === 504;
-      if (!retryable || attempt === maxRetries) break;
+      if (!retryable || attempt === maxRetries) {
+        return {
+          error: err instanceof Error ? err.message : String(err),
+          status,
+        };
+      }
       const delayMs = Math.min(30_000, 2_000 * Math.pow(2, attempt));
       process.stderr.write(`[gradeRubric] judge API ${status} 第 ${attempt + 1}/${maxRetries} 次失败，${delayMs}ms 后重试\n`);
       await new Promise(r => setTimeout(r, delayMs));
     }
   }
-  // 重试用尽：score=null，aggregate 会跳过该维度（不当 0、也不当 1）。
-  // 旧实现给 1.0 是误判方向：误判失败是 false negative，误判成功（限流→满分）才会污染 baseline。
-  return { pass: false, score: null, reason: `LLM judge 不可用（重试用尽）: ${lastErr?.message?.slice(0, 100) ?? "unknown"}` };
+  return { error: "重试用尽" };
+}
+
+/**
+ * 把 buildRubricPrompt 的输出拆成 system / user 两部分。
+ *
+ * 拆分规则：
+ *   system = 静态判分规则（评判规则 / 评分维度定义 / 评分标准 / 输出格式）
+ *   user = case 特定信息（任务类别 / 用户问题 / 参考答案 / must_include 等 + agent 输出）
+ *
+ * 这样：
+ *   - system 可以走 prompt cache（多 case 共享）→ 降低 judge 成本约 60%
+ *   - 把"硬扣分规则"放在 system 显著位置，judge 更不容易忽略
+ *
+ * rubric-template.ts 现在直接返回 { system, user } 结构。
+ * 但为了向后兼容（其他地方可能还传整段 prompt），这里做兼容拆分：
+ * 如果传入是字符串（旧格式），就把整段塞进 user，system 用通用兜底。
+ */
+function splitRubricPrompt(rubricPrompt: string | { system: string; user: string }): { system: string; user: string } {
+  if (typeof rubricPrompt === "object" && rubricPrompt.system && rubricPrompt.user) {
+    return rubricPrompt;
+  }
+  // 兼容旧字符串格式：整段当 user，system 用最小兜底
+  return {
+    system: '你是一个 coding agent 评测裁判。请基于提供的 case 信息和 agent 输出严格打分。\n输出格式: {"pass": bool, "score": 0.0-1.0, "reason": "简要理由"}',
+    user: rubricPrompt as string,
+  };
+}
+
+/**
+ * Self-consistency: 多次采样取中位数。
+ *
+ * 旧实现：单次采样 + temperature 默认 1.0 → 跨次方差 1.5+ 分
+ * 新实现：
+ *   - temperature=0 单次足够稳定（确定性输出，同输入同输出）
+ *   - 但 LLM 在边界 case 上仍会因 prompt 微调跳变（0.85 vs 0.95）
+ *   - 显式传 samples > 1 时，跑多次取 score 中位数 + 选 score 最接近中位数那次的 reason
+ *
+ * 默认 samples=1（temperature=0 已经够稳，不浪费 quota）
+ */
+export async function gradeRubric(
+  output: string,
+  rubricPrompt: string | { system: string; user: string },
+  judgeModel = "claude-sonnet-4-5-20250929",
+  samples = 1,
+): Promise<DimScore> {
+  const client = new Anthropic();
+  const { system, user } = splitRubricPrompt(rubricPrompt);
+  const fullUser = `${user}\n\n=== 待评测的 Agent 输出 ===\n${output}`;
+
+  const results: JudgeResult[] = [];
+  const errors: string[] = [];
+  for (let i = 0; i < Math.max(1, samples); i++) {
+    const r = await callJudgeOnce(client, judgeModel, system, fullUser);
+    if ("error" in r) {
+      errors.push(r.error);
+      continue;
+    }
+    results.push(r);
+  }
+
+  if (results.length === 0) {
+    // 所有采样都失败：score=null 让 aggregate 跳过该维度
+    return {
+      pass: false,
+      score: null,
+      reason: `LLM judge 不可用（${errors.length} 次全失败）: ${errors[0]?.slice(0, 100) ?? "unknown"}`,
+    };
+  }
+
+  if (results.length === 1) {
+    return { pass: results[0].pass, score: results[0].score, reason: results[0].reason };
+  }
+
+  // 多次采样：score 取中位数；reason 取与中位数最接近那次（便于追溯）
+  const sortedScores = results.map(r => r.score).sort((a, b) => a - b);
+  const mid = Math.floor(sortedScores.length / 2);
+  const medianScore = sortedScores.length % 2 === 0
+    ? (sortedScores[mid - 1] + sortedScores[mid]) / 2
+    : sortedScores[mid];
+  // 选 reason：取离中位数最近的一次，避免均值影响 reason 文本
+  let bestReason = results[0];
+  let bestDist = Infinity;
+  for (const r of results) {
+    const d = Math.abs(r.score - medianScore);
+    if (d < bestDist) { bestDist = d; bestReason = r; }
+  }
+  const passCount = results.filter(r => r.pass).length;
+  const allScores = results.map(r => r.score.toFixed(2)).join("/");
+  return {
+    pass: passCount > results.length / 2,
+    score: medianScore,
+    reason: `[median of ${results.length} samples: ${allScores}] ${bestReason.reason}`,
+  };
 }
 
 export function gradeToolCompliance(
@@ -254,41 +484,32 @@ export function gradeEfficiency(meta: AgentMeta, maxSteps: number): DimScore {
  *
  * ─── 公式与阈值版本 ───
  *
- * 当前公式 v3（2026-05-25 起）:
+ * 当前公式 v4（2026-05-25 起，基于实测分布重校准）:
  *   total_tokens 口径: input（取 last, 含全历史）+ output + cache_creation + cache_read 累加
- *   阈值: 200k / 500k / 1.5M（基于校准实测调整：case_028 sid-code 94k / claude-code 170k）
+ *   阈值: 50k / 150k / 500k（按 P50/P75 校准，让 cost 维度真正有鉴别度）
+ *
+ * 公式 v3（2026-05-25，已废弃，过松）:
+ *   阈值 200k / 500k / 1.5M → 90% case 都给 1.0，cost 维度无鉴别度
  *
  * 公式 v2（2026-05-24 ~ 2026-05-25，已废弃）:
  *   口径: 4 项全部累加（错误：input N² 过计数）
- *   阈值: 500k / 1.5M / 3M（建立在错误口径之上，过松，cost 维度无鉴别度）
  *
  * 公式 v1（2026-05-24 之前，已废弃）:
  *   口径: input + output 累加（同样 N² 过计数，且不含 cache）
- *   阈值: 200k / 500k / 1M
  *
  * ⚠️ 跨版本不可直接比较 cost 维度数值，详见 baseline_scores 的 _formula_version 字段。
  *
  * ─── 校准记录（2026-05-25）───
  *
- * 1. claude CLI result.usage 语义：input 取最后一次 API 调用（含全部历史），
- *    output / cache_creation / cache_read 是各 turn 累加。stream-json 模式下 assistant event
- *    的 usage 是 message_delta 累积快照，累加会重复计数（不要用）。
+ * 实测分布（从 _runs/sid_code_deepseek_v4_pro.jsonl 25 case × 多 run）：
+ *   P50 ≈ 50k，P75 ≈ 120k，P90 ≈ 250k，max ≈ 437k
+ *   v3 阈值 200k 太松导致 90% case cost=1.0，鉴别度归零
  *
- * 2. sid-code raw.jsonl response.usage 同语义。旧 sid-code-live.ts 直接 sum() 是错的
- *    （case_028 实测累加 1.5M / 实际 94k，15 倍虚高）。已修复为"input 取 last，其它累加"。
- *    源码层 src/trace/collector.ts handleAfterModel 同样 bug 也已修。
- *
- * 3. 横向对比 case_028 实测（修复后）：
- *    - sid-code (deepseek): 94k tokens
- *    - claude-code (opus-4-7): 170k tokens（含大量 cache_read，opus 默认开启 cache）
- *    新阈值 200k / 500k / 1.5M：两者都拿 1.0（合理，因为 case_028 用工具次数少）
- *
- * 调整阈值时记得同步：
- *   - 跑 `bun run evals/eval-runner.ts --provider sid-code,claude-code --sync` 全量刷新 baseline_scores
- *   - bump COST_FORMULA_VERSION 字符串（让旧 baseline 自动标 legacy）
- *   - evals/scripts/migrate-cost-formula.ts 可重跑标记旧版本（v2/v1）的旧 entries
+ * cache_read 折扣：opus 默认开 cache，cache_read 是缓存复用、并非真实新 token，
+ *   按 0.1x 折算后 sid-code (deepseek，无 cache) 与 claude-code (opus，重 cache) 对齐：
+ *   case_028 sid 94k vs claude 170k → 折算后 94k vs ~50k，cost 维度才能反映真实成本。
  */
-export const COST_FORMULA_VERSION = "v3";
+export const COST_FORMULA_VERSION = "v4";
 
 export function gradeCost(meta: AgentMeta): DimScore {
   const { total_tokens } = meta;
@@ -303,14 +524,14 @@ export function gradeCost(meta: AgentMeta): DimScore {
   let score: number;
   let level: string;
 
-  // v3 阈值（2026-05-25 校准后）：200k / 500k / 1.5M
-  if (total_tokens <= 200_000) {
+  // v4 阈值（2026-05-25 校准后，基于 P50/P75/P90 实测分布）：50k / 150k / 500k
+  if (total_tokens <= 50_000) {
     score = 1.0;
     level = "低消耗";
-  } else if (total_tokens <= 500_000) {
+  } else if (total_tokens <= 150_000) {
     score = 0.7;
     level = "中等";
-  } else if (total_tokens <= 1_500_000) {
+  } else if (total_tokens <= 500_000) {
     score = 0.4;
     level = "偏高";
   } else {

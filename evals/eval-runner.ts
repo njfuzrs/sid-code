@@ -343,15 +343,16 @@ function stripStderr(r: ProviderResult & { stderrTail?: string }): ProviderResul
   return rest;
 }
 
-async function gradeCase(c: CaseYaml, result: ProviderResult, skipLlmJudge: boolean): Promise<{ score: number | null; namedScores: Record<string, number | null>; dims: Record<string, DimScore> }> {
+async function gradeCase(c: CaseYaml, result: ProviderResult, skipLlmJudge: boolean, judgeSamples: number): Promise<{ score: number | null; namedScores: Record<string, number | null>; dims: Record<string, DimScore> }> {
   const { output, meta } = result;
   const dims: Record<string, DimScore> = {};
 
-  dims.anchor_hit = gradeAnchorHit(output, c.expected.must_include_any_of || []);
+  // 传 user_query 给 anchor 检查器，用于 echo 排除（防止 agent 复读用户问题被算成命中）
+  dims.anchor_hit = gradeAnchorHit(output, c.expected.must_include_any_of || [], c.input.user_query);
   if (skipLlmJudge) {
     dims.rubric_score = { pass: true, score: 1.0, reason: "跳过 LLM judge" };
   } else {
-    dims.rubric_score = await gradeRubric(output, buildRubricPrompt(c));
+    dims.rubric_score = await gradeRubric(output, buildRubricPrompt(c), undefined, judgeSamples);
   }
   dims.tool_compliance = gradeToolCompliance(meta, {
     mustCallTools: c.expected.must_call_tools,
@@ -548,6 +549,9 @@ async function main() {
       "skip-holdout": { type: "boolean", default: true },
       "include-holdout": { type: "boolean", default: false },
       "skip-llm-judge": { type: "boolean", default: false },
+      // judge-samples: LLM judge 同输出多次采样取中位数，用于在仍想覆盖 prompt 微扰时降方差。
+      // temperature=0 已经足够稳，默认 1。如怀疑判分边界跳变（0.85↔0.95），设 3 跑 self-consistency。
+      "judge-samples": { type: "string", default: "1" },
       // sync 默认 off：避免调试单 case 时污染 case yaml 的 baseline_scores（diff 噪声 + git 历史污染）。
       // 跑正式 baseline / 横向对比时，显式加 --sync 才回写。
       "sync": { type: "boolean", default: false },
@@ -563,6 +567,7 @@ async function main() {
   const caseFilter = values.cases ? (values.cases as string).split(",").map(s => s.trim()) : undefined;
   const concurrency = parseInt(values.concurrency as string, 10) || 2;
   const skipLlmJudge = values["skip-llm-judge"] as boolean;
+  const judgeSamples = parseInt((values["judge-samples"] as string) || "1", 10) || 1;
   const doSync = values["sync"] as boolean;
   const dryRun = values["dry-run"] as boolean;
   const outputPath = resolve(ROOT, "..", values.output as string);
@@ -580,7 +585,7 @@ async function main() {
 
   console.log(`[eval-runner] ${cases.length} cases × ${providers.length} providers = ${cases.length * providers.length} 组合`);
   console.log(`  provider: ${providers.map(p => `${p.name}(model=${p.model})`).join(", ")}`);
-  console.log(`  并发: ${concurrency} | LLM judge: ${skipLlmJudge ? "跳过" : "启用"} | week: w${weekNum}`);
+  console.log(`  并发: ${concurrency} | LLM judge: ${skipLlmJudge ? "跳过" : `启用(samples=${judgeSamples})`} | week: w${weekNum}`);
 
   // 时长预估：单 case 最坏 = (DEFAULT_MAX_RETRIES+1) × timeoutMs + totalBackoff
   // 全批最坏 = ceil(总组合数 / 并发) × 单 case 最坏
@@ -621,7 +626,7 @@ async function main() {
 
       try {
         const provResult = await runProvider(p, c.input.user_query, c.id);
-        const grade = await gradeCase(c, provResult, skipLlmJudge);
+        const grade = await gradeCase(c, provResult, skipLlmJudge, judgeSamples);
 
         const elapsed = Date.now() - taskStart;
         const completedAt = new Date().toISOString();
