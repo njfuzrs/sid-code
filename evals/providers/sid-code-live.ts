@@ -65,7 +65,7 @@ function parseStdoutJson(stdout: string): ParsedStdout {
   return { text: text || trimmed, sessionId, trajectoryPath };
 }
 
-interface TrajMeta {
+export interface TrajMeta {
   toolsUsed: string[];
   filesEdited: string[];
   totalSteps: number;
@@ -74,7 +74,7 @@ interface TrajMeta {
   totalTokens: number;
 }
 
-function readTrajectoryMeta(trajPath: string | null): TrajMeta {
+export function readTrajectoryMeta(trajPath: string | null): TrajMeta {
   const empty: TrajMeta = { toolsUsed: [], filesEdited: [], totalSteps: 0, exitStatus: null, totalCostUsd: 0, totalTokens: 0 };
   if (!trajPath || !existsSync(trajPath)) return empty;
   try {
@@ -83,7 +83,9 @@ function readTrajectoryMeta(trajPath: string | null): TrajMeta {
     return {
       toolsUsed: md.tools_used || [],
       filesEdited: md.files_edited || [],
-      totalSteps: md.total_steps || 0,
+      // total_steps = trajectory.length（含 observation），多工具 case 会翻倍。
+      // 改用 total_api_calls（= LLM turn 数），与 claude-code wrapper 的 num_turns 语义对齐。
+      totalSteps: md.total_api_calls ?? md.total_steps ?? 0,
       exitStatus: md.exit_status || null,
       totalCostUsd: md.total_cost_usd || 0,
       totalTokens: md.total_tokens || 0,
@@ -265,7 +267,9 @@ async function main() {
   process.stdout.write(JSON.stringify({ output: "[ERROR] empty output from sid-code-live", meta: metaOut, error: true }) + "\n");
 }
 
-main().catch((err) => {
-  process.stdout.write(JSON.stringify({ output: `[ERROR] sid-code-live wrapper crash: ${err?.message || err}`, meta: {}, error: true }) + "\n");
-  process.exit(0);
-});
+if (import.meta.main) {
+  main().catch((err) => {
+    process.stdout.write(JSON.stringify({ output: `[ERROR] sid-code-live wrapper crash: ${err?.message || err}`, meta: {}, error: true }) + "\n");
+    process.exit(0);
+  });
+}

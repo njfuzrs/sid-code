@@ -119,6 +119,19 @@ baseline_scores:
       tool_compliance: 1
       efficiency: 0.4
       cost: 0.7
+  sid_code_claude_opus_4_7:
+    score: 5
+    run_status: success
+    tested_at: 2026-05-24T03:23:14.222Z
+    tested_by: eval-runner
+    transcript_path: null
+    notes: ""
+    dimensions:
+      anchor_hit: 1
+      rubric_score: 1
+      tool_compliance: 1
+      efficiency: 1
+      cost: 1
 
 source: "manual_design_2026_05_20_coverage_gap_文档生成"
 notes: |

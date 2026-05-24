@@ -13,13 +13,52 @@
 sid-code 从 2026-05-15 起建立 9 周 5 阶段评测体系。**改动 src/ 之前先看评测分数走向**。
 
 - 总入口：`docs/eval/07-执行顺序速查.md`（导航 + 进度表）
+- 架构分析：`docs/eval/10-eval-architecture-analysis.md`（各层分工 + Promptfoo 角色）
 - 当前阶段状态：`docs/eval-status.md`（5 段框架，每周五更新）
 - ADR 决策记录：`docs/adr/`（必须有 rejected alternatives）
 - 周报：`docs/weekly-eval-report/week-NN.md`
 - case 仓库：`evals/p0-core/` `evals/p1-common/` `evals/p2-edge/` `evals/holdout/`
-- 跑分命令：`bun run eval:list` / `bun run eval:baseline -- --skip-holdout` / `bun run eval:tally -- --week N`
 
 7 条铁律不变量（违反 = 销毁证据）见 `docs/eval/06-风险预案与启动清单.md §9.5`。
+
+### 跑评测的正确入口（**不要绕道**）
+
+**默认主入口：`evals/eval-runner.ts`**（自研 runner，2026-05-23 起替代 promptfoo 执行/评判层）。
+跑分、回归、横向对比都走它：
+
+```bash
+# 单 case 调试
+bun run evals/eval-runner.ts --cases case_002 --provider sid-code --model claude-opus-4-7 --week N
+
+# 多 case + 多 provider
+bun run evals/eval-runner.ts --cases case_002,case_005 --provider sid-code,claude-code --model claude-opus-4-7 --week N
+
+# 全量回归（去掉 --cases 即跑全 25 个非 holdout）
+bun run evals/eval-runner.ts --provider sid-code --model claude-opus-4-7 --week N
+```
+
+输出位置：
+- `evals/_reports/eval-latest.json`（兼容历史 promptfoo-latest.json schema）
+- `evals/_runs/<provider>.jsonl`（追加式时序数据）
+- `evals/_scores/wNN/case_NNN.yaml`（按周快照）
+- 自动刷新 `evals/DASHBOARD.md` + `evals/CASES.md`
+
+### Promptfoo 现状（**保留备用，默认不用**）
+
+`evals/promptfoo/` 是 2026-05-21 引入的旧执行/评判层，已被 `eval-runner.ts` 替代（详见
+`docs/eval/10-eval-architecture-analysis.md §5.4`）。**保留目的仅为可追溯历史数据 +
+紧急回滚**，不要主动调用，原因：
+1. 黑盒并发/重试不可控，遇 LLM 中转商 429 会跑空 5h+
+2. 评分公式重复维护（同一公式分布在 `yaml-to-tests.ts` 字符串 + `eval-judge.ts`）
+3. 用户已多次明确指示用自研 runner
+
+**禁止行为**（除非用户显式指示）：
+- ❌ 跑 `bunx promptfoo eval` / `bun run eval:horizontal-run`
+- ❌ 改 `evals/promptfoo/promptfooconfig.yaml`、`evals/promptfoo/lib/yaml-to-tests.ts`
+- ❌ 把 `_reports/promptfoo-latest.json` 当作"最新分数"来源（应该用 `_reports/eval-latest.json` 或 `_runs/<provider>.jsonl`）
+
+**唯一允许复用**：`evals/promptfoo/providers/sid-code-live.ts` 和 `claude-code.ts`——eval-runner
+直接 spawn 这两个 wrapper（详见 `evals/eval-runner.ts:77 PROVIDER_REGISTRY`）。
 
 
 ## 1. 项目概述

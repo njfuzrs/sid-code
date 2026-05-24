@@ -1,0 +1,448 @@
+{
+  "version": 2,
+  "timestamp": "2026-05-24T02:59:12.089Z",
+  "config": {
+    "cases": [
+      "case_002",
+      "case_005",
+      "case_007",
+      "case_028",
+      "case_030"
+    ],
+    "providers": [
+      "sid_code_claude_opus_4_7"
+    ],
+    "model": "claude-opus-4-7",
+    "concurrency": 2,
+    "week": 12
+  },
+  "results": {
+    "timestamp": "2026-05-24T02:59:12.089Z",
+    "results": [
+      {
+        "cost": 0,
+        "latencyMs": 23465,
+        "provider": {
+          "id": "sid_code_claude_opus_4_7",
+          "label": "sid_code_claude_opus_4_7"
+        },
+        "response": {
+          "output": "sid-code 的 6 个内置工具及对应源文件：\n\n1. **read** — `src/tool/read.ts`：读取文件内容，支持 offset/limit 分页读取大文件。\n2. **write** — `src/tool/write.ts`：写入内容到文件，覆盖已存在文件并自动创建父目录。\n3. **edit** — `src/tool/edit.ts`：通过查找替换编辑文件，支持精确/灵活/正则/模糊四级匹配策略。\n4. **bash** — `src/tool/bash.ts`：执行 shell 命令，支持超时控制、后台运行、工作目录设置。\n5. **grep** — `src/tool/grep.ts`：基于 ripgrep 在文件中按正则搜索内容，支持多种输出模式与上下文控制。\n6. **glob** — `src/tool/glob.ts`：使用 glob 模式按文件名查找文件，结果按修改时间降序排列。\n\n注：`src/tool/` 目录还有 ls/read-many/web-fetch/web-search/memory/enter-plan-mode/exit-plan-mode 等扩展工具，但 CLAUDE.md 中明确的\"6 个内置工具\"指上述 6 个核心工具。"
+        },
+        "score": 0.93,
+        "success": true,
+        "namedScores": {
+          "anchor_hit": 1,
+          "rubric_score": 1,
+          "tool_compliance": 0.6,
+          "efficiency": 1,
+          "cost": 1
+        },
+        "testCase": {
+          "vars": {
+            "case_id": "case_002"
+          },
+          "description": "case_002"
+        },
+        "gradingResult": {
+          "pass": true,
+          "score": 0.93,
+          "namedScores": {
+            "anchor_hit": 1,
+            "rubric_score": 1,
+            "tool_compliance": 0.6,
+            "efficiency": 1,
+            "cost": 1
+          },
+          "componentResults": [
+            {
+              "assertion": {
+                "type": "custom",
+                "metric": "anchor_hit"
+              },
+              "pass": true,
+              "score": 1,
+              "reason": "全部命中: src/tool/read.ts, src/tool/write.ts, src/tool/edit.ts, src/tool/bash.ts, src/tool/grep.ts, src/tool/glob.ts"
+            },
+            {
+              "assertion": {
+                "type": "custom",
+                "metric": "rubric_score"
+              },
+              "pass": true,
+              "score": 1,
+              "reason": "事实完全正确。准确列出了 6 个核心内置工具及其源文件路径，每个工具的职责描述清晰且符合代码实现（read 的分页、write 的覆盖与目录创建、edit 的多级匹配策略、bash 的超时与后台运行、grep 的 ripgrep 基础、glob 的排序规则）。额外说明了其他扩展工具但明确区分了核心 6 个，体现了精确性。完全满足用户需求。"
+            },
+            {
+              "assertion": {
+                "type": "custom",
+                "metric": "tool_compliance"
+              },
+              "pass": true,
+              "score": 0.6,
+              "reason": "未使用要求的工具: glob"
+            },
+            {
+              "assertion": {
+                "type": "custom",
+                "metric": "efficiency"
+              },
+              "pass": true,
+              "score": 1,
+              "reason": "步数 3/10 在预期内"
+            },
+            {
+              "assertion": {
+                "type": "custom",
+                "metric": "cost"
+              },
+              "pass": true,
+              "score": 1,
+              "reason": "token 使用 1k，低消耗"
+            }
+          ]
+        }
+      },
+      {
+        "cost": 0,
+        "latencyMs": 31125,
+        "provider": {
+          "id": "sid_code_claude_opus_4_7",
+          "label": "sid_code_claude_opus_4_7"
+        },
+        "response": {
+          "output": "## 边界行为定位\n\n**核心判定：`src/llm/quota.ts:85-93`**\n\n四个阈值**全部用 `>=`，处理是一致的**——等于阈值时归入该级别。\n\n```\nsrc/llm/quota.ts:85   ratio >= 1.0   → \"exceeded\"\nsrc/llm/quota.ts:87   ratio >= 0.95  → \"critical\"\nsrc/llm/quota.ts:89   ratio >= 0.80  → \"warning\"\nsrc/llm/quota.ts:91   ratio >= 0.50  → \"info\"\n```\n\n## `currentCost` 等于阈值时的具体行为\n\n| 输入 | `ratio` | 返回级别 |\n|---|---|---|\n| `currentCost == costLimit` | 1.0 | `\"exceeded\"`（第 85 行） |\n| `currentCost == 0.95 * costLimit` | 0.95 | `\"critical\"`（第 87 行） |\n| `currentCost == 0.80 * costLimit` | 0.80 | `\"warning\"`（第 89 行） |\n| `currentCost == 0.50 * costLimit` | 0.50 | `\"info\"`（第 91 行） |\n\n## 但有两个值得你关注的\"准不一致\"点\n\n### 1. `check()` 的\"级别升级\"过滤会让相等返回 `null`（第 102 行）\n\n即使 `ratio` 触发了某级别，如果**之前已经触发过同级或更高级别**，第 102 行 `if (currentIdx <= lastIdx) return null` 会让本次调用返回 `null`。\n\n也就是说：**\"等于阈值\"的返回值依赖于历史调用状态**，不是纯函数。\n- 第一次 `currentCost == costLimit` → 返回 `{level: \"exceeded\", message: ...}`\n- 第二次 `currentCost == costLimit` → 返回 `null`\n\n如果你的测试断言\"等于阈值必返回某结果\"，会受这个状态影响。需要调 `resetAlertLevel()`（第 118 行）清除。\n\n### 2. `check()` 用 `ratio`（除法）vs `isExceeded()` 用直接比较（第 125 行）\n\n```\nsrc/llm/quota.ts:82   const ratio = currentCost / this.costLimit;  // check 路径\nsrc/llm/quota.ts:125  return currentCost >= this.costLimit;        // isExceeded 路径\n```\n\n理论上 `currentCost == costLimit` 时两者都判 `true`，但**浮点除法可能引入精度误差**。例如 `costLimit = 0.1, currentCost = 0.1` 时 `0.1 / 0.1` 在 IEEE 754 下不一定严格等于 `1.0`（实际 JS 里这例子是 `1.0`，但更复杂的累加场景可能差一个 ULP）。\n\n如果担心这个，建议把 `check()` 也改成直接比较：`currentCost >= this.costLimit * 1.0` 或预先算好阈值绝对值。\n\n## 还有一个隐藏边界\n\n**第 80 行**：`if (this.costLimit <= 0) return null;` —— `costLimit == 0` 直接短路，永远不返回任何告警。如果调用方依赖 `check()` 来\"未配置就返回 info\"之类的语义，会踩坑。"
+        },
+        "score": 1,
+        "success": true,
+        "namedScores": {
+          "anchor_hit": 1,
+          "rubric_score": 1,
+          "tool_compliance": 1,
+          "efficiency": 1,
+          "cost": 1
+        },
+        "testCase": {
+          "vars": {
+            "case_id": "case_007"
+          },
+          "description": "case_007"
+        },
+        "gradingResult": {
+          "pass": true,
+          "score": 1,
+          "namedScores": {
+            "anchor_hit": 1,
+            "rubric_score": 1,
+            "tool_compliance": 1,
+            "efficiency": 1,
+            "cost": 1
+          },
+          "componentResults": [
+            {
+              "assertion": {
+                "type": "custom",
+                "metric": "anchor_hit"
+              },
+              "pass": true,
+              "score": 1,
+              "reason": "命中 8/10（达到满分阈值 5）: src/llm/quota.ts, AlertLevel, quota, check(, ratio, >=, exceeded, 1.0"
+            },
+            {
+              "assertion": {
+                "type": "custom",
+                "metric": "rubric_score"
+              },
+              "pass": true,
+              "score": 1,
+              "reason": "事实完全正确：准确定位了第85-93行的>=判定逻辑，明确回答了边界行为（等于阈值归入该级别），并深入指出了三个实际存在的边界风险点（状态依赖的null返回、浮点除法vs直接比较、costLimit<=0短路）。超出预期的完整性和精度，表达清晰且有实用价值。"
+            },
+            {
+              "assertion": {
+                "type": "custom",
+                "metric": "tool_compliance"
+              },
+              "pass": true,
+              "score": 1,
+              "reason": "工具使用合规"
+            },
+            {
+              "assertion": {
+                "type": "custom",
+                "metric": "efficiency"
+              },
+              "pass": true,
+              "score": 1,
+              "reason": "步数 3/10 在预期内"
+            },
+            {
+              "assertion": {
+                "type": "custom",
+                "metric": "cost"
+              },
+              "pass": true,
+              "score": 1,
+              "reason": "token 使用 2k，低消耗"
+            }
+          ]
+        }
+      },
+      {
+        "cost": 0,
+        "latencyMs": 74052,
+        "provider": {
+          "id": "sid_code_claude_opus_4_7",
+          "label": "sid_code_claude_opus_4_7"
+        },
+        "response": {
+          "output": "# MemoryStore 完整调用链追踪\n\n## 一、定位（path:line）\n\n**类定义**：`src/memory/store.ts:45` — `export class MemoryStore`\n\n## 二、调用链与实例化点\n\n### 1️⃣ `src/cli.ts`（入口层，1 处）\n\n| 行号 | 动作 | 代码 |\n|---|---|---|\n| `src/cli.ts:381` | 动态 import | `const { MemoryStore } = await import(\"./memory/store.ts\")` |\n| `src/cli.ts:384` | 实例化（CLI 启动时唯一一次） | `const memoryStore = new MemoryStore(process.cwd())` |\n| `src/cli.ts:406` | **依赖注入**给 `MemoryTool` | `toolRegistry.register(new MemoryTool(memoryStore))` |\n\n> 入口处的 `memoryStore` 实例**只用于注入 MemoryTool**，不直接读写。\n\n### 2️⃣ `src/app.ts`（主循环层，3 处独立实例化）\n\n| 行号 | 函数/场景 | 实例化代码 | 数据流 |\n|---|---|---|---|\n| `src/app.ts:327–329` | `reloadProjectRules` —— CLAUDE.md 热重载后重建系统提示词 | `new MemoryStore(process.cwd())` | **读** → `generateSummary()` |\n| `src/app.ts:464–466` | `applyProjectMemory` —— 启动时把 CLAUDE.md 中 `memory:` 字段持久化 | `new MemoryStore(process.cwd())` | **写** → `load()` + `set(key, value, \"project\")` |\n| `src/app.ts:742–744` | `rebuildSystemPrompt` —— 子代理等模式退出后恢复正常 prompt | `new MemoryStore(process.cwd())` | **读** → `generateSummary()` |\n\n> 三处都是**临时实例**（用完即丢），靠 `store.ts:37` 的模块级 `summaryCacheEntry` 缓存共享数据，避免重复 I/O。\n\n### 3️⃣ `src/tool/memory.ts`（工具层，依赖注入）\n\n| 行号 | 动作 |\n|---|---|\n| `src/tool/memory.ts:7` | `import type { MemoryStore }` |\n| `src/tool/memory.ts:13` | 构造函数接收注入的 store 引用（**不自己 new**） |\n| `src/tool/memory.ts:89` | 工具执行时 `await this.store.set(key, value, scope)` —— **写** |\n\n### 4️⃣ 其他相关使用点（参考）\n\n| 文件:行 | 用途 |\n|---|---|\n| `src/entrypoints/deferred-prefetch.ts:39–40` | 启动后异步预取摘要 → **读** `generateSummary()` 暖缓存 |\n| `src/command/builtins.ts:529–530, 606` | `/memory` 斜杠命令 → **读写** |\n| `src/query/init-helpers.ts:126–127` | Query 模式初始化 → **读** |\n\n## 三、数据流向图\n\n```\n                    [写入路径]\nCLAUDE.md memory 字段 ──► app.ts:464 applyProjectMemory ──┐\nLLM 工具调用 save_memory ─► tool/memory.ts:89 ────────────┤\n/memory 斜杠命令 ────────► command/builtins.ts:529 ───────┤\n                                                          ▼\n                                                   MemoryStore.set()\n                                                          │\n                                                          ▼\n                                          ┌─ ~/.sid-code/memory/memories.json (global)\n                                          └─ <cwd>/.sid-code/memory/memories.json (project)\n                                                          │\n                    [读取路径]                            ▼\n启动预取 ──────► deferred-prefetch.ts:39 ──► generateSummary()\n热重载触发 ─────► app.ts:327 reloadProjectRules ──► generateSummary()\n模式切换 ──────► app.ts:742 rebuildSystemPrompt ──► generateSummary()\n                                                          │\n                                                          ▼\n                                              注入系统提示词（priority 30）\n                                                          │\nLLM 主动 get ─► tool/memory.ts execute() ──► MemoryStore.get()\n```\n\n## 四、关键设计观察\n\n1. **没有全局单例**：cli.ts 创建的 `memoryStore` 只注入给 `MemoryTool`；app.ts 三处场景各自 `new`，靠 `store.ts:37` 模块级 `summaryCacheEntry`（TTL 30s）做去重。\n2. **写入路径有 3 个**：CLAUDE.md 注入（启动）、LLM 工具调用（运行时）、斜杠命令（用户触发）；写入后会调 `clearMemorySummaryCache()`（`store.ts:103, 140`）确保下次读拿最新数据。\n3. **持久化分双层**：`globalDir = ~/.sid-code/memory/`（`store.ts:53`）、`projectDir = <projectRoot>/.sid-code/memory/`（`store.ts:54`），项目优先于全局。"
+        },
+        "score": 0.93,
+        "success": true,
+        "namedScores": {
+          "anchor_hit": 1,
+          "rubric_score": 1,
+          "tool_compliance": 1,
+          "efficiency": 0.4,
+          "cost": 1
+        },
+        "testCase": {
+          "vars": {
+            "case_id": "case_028"
+          },
+          "description": "case_028"
+        },
+        "gradingResult": {
+          "pass": true,
+          "score": 0.93,
+          "namedScores": {
+            "anchor_hit": 1,
+            "rubric_score": 1,
+            "tool_compliance": 1,
+            "efficiency": 0.4,
+            "cost": 1
+          },
+          "componentResults": [
+            {
+              "assertion": {
+                "type": "custom",
+                "metric": "anchor_hit"
+              },
+              "pass": true,
+              "score": 1,
+              "reason": "全部命中: src/cli.ts, src/app.ts, src/memory/store.ts, MemoryStore, import"
+            },
+            {
+              "assertion": {
+                "type": "custom",
+                "metric": "rubric_score"
+              },
+              "pass": true,
+              "score": 1,
+              "reason": "事实完全正确且超出预期。精确列出了所有 MemoryStore 使用点（cli.ts:381/384、app.ts:327/464/742、tool/memory.ts:13/89），行号准确（实际验证可确认），完整描述了读写数据流向（写入3路径：CLAUDE.md注入/LLM工具/斜杠命令；读取4场景：预取/热重载/模式切换/工具查询），并额外提供了架构洞察（无全局单例、模块级缓存共享、双层持久化）。表达清晰，结构化呈现（表格+流程图），完全满足用户追踪调用链和数据流向的需求。"
+            },
+            {
+              "assertion": {
+                "type": "custom",
+                "metric": "tool_compliance"
+              },
+              "pass": true,
+              "score": 1,
+              "reason": "工具使用合规"
+            },
+            {
+              "assertion": {
+                "type": "custom",
+                "metric": "efficiency"
+              },
+              "pass": false,
+              "score": 0.4,
+              "reason": "步数超标 29/18 (1.6x)"
+            },
+            {
+              "assertion": {
+                "type": "custom",
+                "metric": "cost"
+              },
+              "pass": true,
+              "score": 1,
+              "reason": "token 使用 4k，低消耗"
+            }
+          ]
+        }
+      },
+      {
+        "cost": 0,
+        "latencyMs": 179755,
+        "provider": {
+          "id": "sid_code_claude_opus_4_7",
+          "label": "sid_code_claude_opus_4_7"
+        },
+        "response": {
+          "output": "已经把链路理清楚了，按\"诊断\"格式给你结论。\n\n## 调用链（带 path:line）\n\n`/undo` 命令的真实执行路径只有一条：\n\n1. 用户输入 `/undo` → 命令分发到 `UndoCommand.execute`\n   - `src/command/builtins.ts:342`\n2. 动态 import + 拿到全局单例 manager\n   - `src/command/builtins.ts:343-347`\n   - 实现在 `src/checkpoint/manager.ts:722` `getCheckpointManager(sessionId, config?)`\n3. **关键调用**（报错就发生在这两行之一）\n   - 不带参数：`src/command/builtins.ts:367` → `cpMgr.undo()`\n   - 带文件参数：`src/command/builtins.ts:353` → `cpMgr.undoFile(trimmed)`\n4. `CheckpointManager.undo()` 实现在 `src/checkpoint/manager.ts:342`\n\n## 报错形式的语义\n\n`Cannot read properties of undefined (reading 'undo')` ⇒ 一定是 `xxx.undo` 里的 **`xxx` 本身是 `undefined`**。整个仓库里能写出 `.undo`（小写、无后缀）的只有这一处：\n\n- `src/command/builtins.ts:367` `cpMgr.undo()`\n\n所以根因锁定为：**`cpMgr` 在这一行是 `undefined`**。\n\n## 候选根因（≥2 个，按概率排）\n\n### 候选 1（最可能，因为你说\"跑测试时\"）：测试里 mock 了 checkpoint 模块，但 mock 实现不完整\n\n`builtins.ts:343` 用的是动态 `import(\"../checkpoint/manager.ts\")` + 解构 `getCheckpointManager`。如果测试用 `mock.module(\"../checkpoint/manager.ts\", ...)` 替换了模块，但：\n\n- 漏导出 `getCheckpointManager`，或\n- mock 把它写成了同步函数 `() => null` / `() => undefined`，或\n- mock 返回的对象没有 `.undo()` 方法（这种情况报错会变成 `cpMgr.undo is not a function`，所以可能性次于前两种）\n\n实际你 `await getCheckpointManager(...)` 会拿到 `undefined`，再 `.undo()` 就是当前这个错。\n\n### 候选 2：测试构造的 `AppContext` 缺字段，导致 `getCheckpointManager` 提前抛错被吞没\n\n但翻了一遍 `UndoCommand.execute` **没有 try/catch**（`builtins.ts:342-378`），异常会直接冒泡。所以这条假设要成立，必须是测试 runner 那一层包了 try/catch。可以排除一半。\n\n而且：\n- `ctx.sessionState` 缺失 → 报错信息会是 `reading 'sessionId'`\n- `ctx.config` 缺失 → 报错信息会是 `reading 'checkpoint'`\n\n都不是 `reading 'undo'`。所以候选 2 概率较低。\n\n### 候选 3：生产代码下 `getCheckpointManager` 单例污染\n\n`src/checkpoint/manager.ts:719` 用了模块级单例 `globalCheckpointManager`，且 sessionId 不同才会重建。如果有别的测试先把它\"挖空\"（比如直接 `globalCheckpointManager = undefined` 之类的反射操作），后续测试再调用就拿到 undefined。但这要求测试代码有非常规操作，概率较低。\n\n## 下一步排查建议\n\n按优先级：\n\n1. **看测试文件里有没有 `mock.module(\"../checkpoint/manager.ts\", ...)` 或 `mock.module(\".../checkpoint/manager\", ...)`**\n   ```bash\n   # 我可以帮你跑\n   grep -rn \"mock.module\" tests/ | grep -i checkpoint\n   grep -rn \"getCheckpointManager\" tests/\n   ```\n2. **在 `builtins.ts:367` 之前加一行调试日志**确认是不是 `cpMgr` 真的是 `undefined`，还是它存在但 `.undo` 被覆盖：\n   ```ts\n   console.log(\"[DEBUG] cpMgr:\", cpMgr, \"typeof undo:\", typeof cpMgr?.undo);\n   ```\n3. **看 `getCheckpointManager` 是否真的被走到**：在 `manager.ts:722` 入口打一行，如果测试时没打印出来，就是 mock 拦掉了 → 候选 1 实锤。\n4. 顺便看一眼测试场景里 `ctx.config` 是怎么构造的 —— 如果 `ctx.config.checkpoint` 本身是 `{ enabled: false, ... }`，逻辑上 `getCheckpointManager` 依然返回一个 manager 实例（不影响），但 `manager.undo()` 在 `enabled=false` 时会**直接返回 null**（`manager.ts:343-345`），那不会报 TypeError，会走到 \"没有可撤销的修改\" 的 message 分支。所以这条也排除。\n\n我倾向于 90% 是候选 1。你想让我接着 `grep` 测试目录确认吗？"
+        },
+        "score": 0.8699999999999999,
+        "success": true,
+        "namedScores": {
+          "anchor_hit": 1,
+          "rubric_score": 0.95,
+          "tool_compliance": 1,
+          "efficiency": 0.1,
+          "cost": 1
+        },
+        "testCase": {
+          "vars": {
+            "case_id": "case_005"
+          },
+          "description": "case_005"
+        },
+        "gradingResult": {
+          "pass": true,
+          "score": 0.8699999999999999,
+          "namedScores": {
+            "anchor_hit": 1,
+            "rubric_score": 0.95,
+            "tool_compliance": 1,
+            "efficiency": 0.1,
+            "cost": 1
+          },
+          "componentResults": [
+            {
+              "assertion": {
+                "type": "custom",
+                "metric": "anchor_hit"
+              },
+              "pass": true,
+              "score": 1,
+              "reason": "全部命中: src/command/builtins.ts, UndoCommand, CheckpointManager, cpMgr"
+            },
+            {
+              "assertion": {
+                "type": "custom",
+                "metric": "rubric_score"
+              },
+              "pass": true,
+              "score": 0.95,
+              "reason": "事实正确性优秀：准确定位到 UndoCommand (builtins.ts:342) 和 CheckpointManager (manager.ts:722)，正确识别 cpMgr 为 undefined 是根因，提供了 3 个合理的候选根因（测试 mock 不完整、AppContext 缺字段、单例污染）并按概率排序。完整性强：覆盖了调用链、报错语义分析、多个候选根因和 4 条排查建议。精确性符合要求：明确表示不改代码，只做诊断分析。唯一小瑕疵是输出格式较长（用户可能期待更简洁的回答），但信息密度高且逻辑清晰，完全满足用户'先了解情况'的需求。"
+            },
+            {
+              "assertion": {
+                "type": "custom",
+                "metric": "tool_compliance"
+              },
+              "pass": true,
+              "score": 1,
+              "reason": "工具使用合规"
+            },
+            {
+              "assertion": {
+                "type": "custom",
+                "metric": "efficiency"
+              },
+              "pass": false,
+              "score": 0.1,
+              "reason": "步数严重超标 33/12 (2.8x)"
+            },
+            {
+              "assertion": {
+                "type": "custom",
+                "metric": "cost"
+              },
+              "pass": true,
+              "score": 1,
+              "reason": "token 使用 13k，低消耗"
+            }
+          ]
+        }
+      },
+      {
+        "cost": 0,
+        "latencyMs": 31276,
+        "provider": {
+          "id": "sid_code_claude_opus_4_7",
+          "label": "sid_code_claude_opus_4_7"
+        },
+        "response": {
+          "output": "**未找到 `src/agent/auto-retry.ts`。** 该文件在仓库中不存在，`src/agent/` 目录下也没有任何文件包含 `retry` / `Retry` 关键字。\n\n`src/agent/` 实际存在的文件：\n\n- `src/agent/loop.ts` — 主 Agent While-Loop\n- `src/agent/loop-detection.ts` — **循环检测**（最接近\"重试\"概念的模块，检测 Agent 陷入死循环并触发 recovery prompt）\n- `src/agent/sub-agent.ts` — 子代理系统\n- `src/agent/tool.ts` — Agent 工具抽象\n- `src/agent/tool-filter.ts` — 工具裁剪\n- `src/agent/tool-result-guard.ts` — 工具结果护栏\n- `src/agent/custom.ts` — 自定义代理\n\n如果你想了解的是：\n1. **循环/异常恢复机制** → 看 `src/agent/loop-detection.ts` 和 `src/agent/loop.ts`（其中有 stop_reason 处理 + 上下文溢出回退）\n2. **LLM 调用层的重试**（如 429 / 5xx 自动重试）→ 通常在 `src/llm/` 的 Provider 实现里，需要我去查可以告诉我\n3. **你记错文件名了** → 请确认下原始来源，或者告诉我你想找的\"重试\"是哪一类（LLM 调用层 / Tool 执行层 / Agent loop 层），我帮你定位真正的实现位置"
+        },
+        "score": 0.9119999999999999,
+        "success": true,
+        "namedScores": {
+          "anchor_hit": 0.5,
+          "rubric_score": 1,
+          "tool_compliance": 1,
+          "efficiency": 1,
+          "cost": 1
+        },
+        "testCase": {
+          "vars": {
+            "case_id": "case_030"
+          },
+          "description": "case_030"
+        },
+        "gradingResult": {
+          "pass": true,
+          "score": 0.9119999999999999,
+          "namedScores": {
+            "anchor_hit": 0.5,
+            "rubric_score": 1,
+            "tool_compliance": 1,
+            "efficiency": 1,
+            "cost": 1
+          },
+          "componentResults": [
+            {
+              "assertion": {
+                "type": "custom",
+                "metric": "anchor_hit"
+              },
+              "pass": true,
+              "score": 0.5,
+              "reason": "命中 1/12（满分阈值 6）: 不存在; 未命中: 没有找到, 找不到, does not exist, not found, 没有这个文件, 未发现, 查无此文件, 没有 auto-retry, 没有 auto_retry, auto-retry.ts 并不存在, auto-retry.ts 不存在"
+            },
+            {
+              "assertion": {
+                "type": "custom",
+                "metric": "rubric_score"
+              },
+              "pass": true,
+              "score": 1,
+              "reason": "事实正确：明确告知文件不存在，并通过搜索验证了 src/agent/ 目录下无 retry 相关文件。完整性优秀：列出实际存在的文件，并主动提供了最接近用户需求的替代方案（loop-detection.ts）。精确性高：没有编造任何不存在的内容。帮助性强：提供了三种可能的用户真实需求场景及对应的查找方向。完全满足诚实兜底要求。"
+            },
+            {
+              "assertion": {
+                "type": "custom",
+                "metric": "tool_compliance"
+              },
+              "pass": true,
+              "score": 1,
+              "reason": "工具使用合规"
+            },
+            {
+              "assertion": {
+                "type": "custom",
+                "metric": "efficiency"
+              },
+              "pass": true,
+              "score": 1,
+              "reason": "步数 7/10 在预期内"
+            },
+            {
+              "assertion": {
+                "type": "custom",
+                "metric": "cost"
+              },
+              "pass": true,
+              "score": 1,
+              "reason": "token 使用 1k，低消耗"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "stats": {
+    "totalMs": 189479,
+    "count": 5
+  }
+}

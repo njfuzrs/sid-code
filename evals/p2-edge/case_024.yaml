@@ -122,6 +122,19 @@ baseline_scores:
       tool_compliance: 1
       efficiency: 1
       cost: 1
+  sid_code_claude_opus_4_7:
+    score: 4.88
+    run_status: success
+    tested_at: 2026-05-24T03:23:14.222Z
+    tested_by: eval-runner
+    transcript_path: null
+    notes: ""
+    dimensions:
+      anchor_hit: 1
+      rubric_score: 0.95
+      tool_compliance: 1
+      efficiency: 1
+      cost: 1
 
 source: "synthetic_edge_2026_05_16"
 notes: |

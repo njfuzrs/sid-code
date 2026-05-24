@@ -176,8 +176,10 @@ function readTrajectoryMeta(sessionDir: string | null): {
   const empty = { toolsUsed: [], filesEdited: [], totalSteps: 0, exitStatus: null, totalCostUsd: 0, totalTokens: 0 };
   if (!sessionDir) return empty;
 
-  // 优先读 metadata.json（uploader cleanup 后留下的精简 snapshot）
-  // 再 fallback 到 session.traj（cleanup 前 / 未启用 uploader 时）
+  // efficiency 维度按"LLM turn 数"打分（与 claude-code wrapper num_turns 语义对齐）。
+  // session.traj 的 total_steps = trajectory.length（action + observation 总和），
+  // 在多工具循环 case 会翻倍膨胀（如 case_005 一次循环 33 步实际只有 ~16 个 turn）。
+  // 必须用 total_api_calls（= turn 数）才能让 gradeEfficiency 公平判分。
   const metaSnapshot = join(sessionDir, "metadata.json");
   if (existsSync(metaSnapshot)) {
     try {
@@ -185,7 +187,7 @@ function readTrajectoryMeta(sessionDir: string | null): {
       return {
         toolsUsed: md.tools_used || [],
         filesEdited: md.files_edited || [],
-        totalSteps: md.total_steps || 0,
+        totalSteps: md.total_api_calls ?? md.total_steps ?? 0,
         exitStatus: md.exit_status || null,
         totalCostUsd: md.total_cost_usd || 0,
         totalTokens: md.total_tokens || 0,
@@ -202,7 +204,7 @@ function readTrajectoryMeta(sessionDir: string | null): {
     return {
       toolsUsed: md.tools_used || [],
       filesEdited: md.files_edited || [],
-      totalSteps: md.total_steps || 0,
+      totalSteps: md.total_api_calls ?? md.total_steps ?? 0,
       exitStatus: md.exit_status || null,
       totalCostUsd: md.total_cost_usd || 0,
       totalTokens: md.total_tokens || 0,
