@@ -584,7 +584,7 @@ describe("buildTrajectory", () => {
 
   // ─── token 统计从 pairs 累加 ───
 
-  test("metadata 统计为 0 时从 pairs 累加 token", () => {
+  test("metadata 统计为 0 时从 pairs 计算: tokens_sent 取最后一次，其它累加", () => {
     const pair1 = makePair({
       usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 10, cache_creation_input_tokens: 5 },
     });
@@ -594,14 +594,15 @@ describe("buildTrajectory", () => {
     });
 
     const metadata = makeMetadata({
-      total_tokens_sent: 0,  // 触发从 pairs 累加
+      total_tokens_sent: 0,  // 触发从 pairs 计算
       total_tokens_received: 0,
       total_cache_read_tokens: 0,
       total_cache_creation_tokens: 0,
     });
 
     const result = buildTrajectory([pair1, pair2], metadata);
-    expect(result.info.model_stats.tokens_sent).toBe(300);
+    // input_tokens 含整段历史，取 last（200）；其它是每 turn 增量，累加
+    expect(result.info.model_stats.tokens_sent).toBe(200);
     expect(result.info.model_stats.tokens_received).toBe(130);
     expect(result.info.model_stats.cache_read_tokens).toBe(30);
     expect(result.info.model_stats.cache_creation_tokens).toBe(5);

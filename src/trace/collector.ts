@@ -286,7 +286,11 @@ export class TraceCollector {
     }
 
     // 更新统计
-    this.metadata.total_tokens_sent += inputTokens;
+    // ⚠️ inputTokens 是"本次 API 调用的 prompt 总长度"，每次调用都包含整段历史 prompt。
+    // 直接累加会 N² 过计数（case_028 实测：29 次调用累加 = 3.65M，实际只有 167k）。
+    // 正确口径：input 取最后一次（已含全部历史），output/cache 累加。
+    // 校准记录见 evals/eval-judge.ts gradeCost 注释 + 2026-05-25 横向对比实验。
+    this.metadata.total_tokens_sent = inputTokens;
     this.metadata.total_tokens_received += outputTokens;
     this.metadata.total_cache_read_tokens += cacheRead;
     this.metadata.total_cache_creation_tokens += cacheCreate;

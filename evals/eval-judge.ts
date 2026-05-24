@@ -235,32 +235,41 @@ export function gradeEfficiency(meta: AgentMeta, maxSteps: number): DimScore {
  *
  * ─── 公式与阈值版本 ───
  *
- * 当前公式 v2（2026-05-24 起）:
- *   total_tokens = input + output + cache_creation + cache_read（4 项全加）
- *   阈值: 500k / 1.5M / 3M（含 cache，cache_read 累计常翻 3-5 倍）
+ * 当前公式 v3（2026-05-25 起）:
+ *   total_tokens 口径: input（取 last, 含全历史）+ output + cache_creation + cache_read 累加
+ *   阈值: 200k / 500k / 1.5M（基于校准实测调整：case_028 sid-code 94k / claude-code 170k）
  *
- * 旧公式 v1（已废弃）:
- *   total_tokens = input + output（不含 cache）
+ * 公式 v2（2026-05-24 ~ 2026-05-25，已废弃）:
+ *   口径: 4 项全部累加（错误：input N² 过计数）
+ *   阈值: 500k / 1.5M / 3M（建立在错误口径之上，过松，cost 维度无鉴别度）
+ *
+ * 公式 v1（2026-05-24 之前，已废弃）:
+ *   口径: input + output 累加（同样 N² 过计数，且不含 cache）
  *   阈值: 200k / 500k / 1M
  *
- * ⚠️ 旧 baseline_scores 是按 v1 阈值打的。直接重跑同一 case 同一模型时，
- *    namedScores.cost 可能从 1.0 → 0.7（看起来像退化），实际是公式变更。
- *    判断方式：reason 里的版本标记（"v2"）或 baseline_scores 的 _formula_version 字段。
+ * ⚠️ 跨版本不可直接比较 cost 维度数值，详见 baseline_scores 的 _formula_version 字段。
  *
- * ⚠️ 阈值未在跨 provider 上校准（2026-05-24）：
- *    - sid-code 累加 raw.jsonl 每 turn 的 usage，4 项相加 → 累计语义
- *    - claude-code wrapper 读 result.usage 的 4 字段，语义未官方文档化
- *    - 当前观察：sid-code 历史 30 次 cost 维度全部 1.0（≤500k）—— 要么阈值过松，
- *      要么 claude CLI 的 usage 不是累计（→ sid-code 系统性偏大）
- *    - 校准方法：claude API 可用时跑 case_028 等长 case，对比两个 wrapper 的
- *      [calibration] stderr 日志，确认 result.usage 语义后再调阈值
- *    - 在没校准之前，**横向对比的 cost 维度只能给定性参考，不能作为定量结论**
+ * ─── 校准记录（2026-05-25）───
+ *
+ * 1. claude CLI result.usage 语义：input 取最后一次 API 调用（含全部历史），
+ *    output / cache_creation / cache_read 是各 turn 累加。stream-json 模式下 assistant event
+ *    的 usage 是 message_delta 累积快照，累加会重复计数（不要用）。
+ *
+ * 2. sid-code raw.jsonl response.usage 同语义。旧 sid-code-live.ts 直接 sum() 是错的
+ *    （case_028 实测累加 1.5M / 实际 94k，15 倍虚高）。已修复为"input 取 last，其它累加"。
+ *    源码层 src/trace/collector.ts handleAfterModel 同样 bug 也已修。
+ *
+ * 3. 横向对比 case_028 实测（修复后）：
+ *    - sid-code (deepseek): 94k tokens
+ *    - claude-code (opus-4-7): 170k tokens（含大量 cache_read，opus 默认开启 cache）
+ *    新阈值 200k / 500k / 1.5M：两者都拿 1.0（合理，因为 case_028 用工具次数少）
  *
  * 调整阈值时记得同步：
- *   - evals/_runs 下 jsonl 历史数据有 cost 字段，无法回填，只能用 reason 区分
- *   - evals 下 p0/p1/p2 的 case yaml 的 baseline_scores 需要重跑 + --sync 才会刷新
+ *   - 跑 `bun run evals/eval-runner.ts --provider sid-code,claude-code --sync` 全量刷新 baseline_scores
+ *   - bump COST_FORMULA_VERSION 字符串（让旧 baseline 自动标 legacy）
+ *   - evals/scripts/migrate-cost-formula.ts 可重跑标记旧版本（v2/v1）的旧 entries
  */
-export const COST_FORMULA_VERSION = "v2";
+export const COST_FORMULA_VERSION = "v3";
 
 export function gradeCost(meta: AgentMeta): DimScore {
   const { total_tokens } = meta;
@@ -275,14 +284,14 @@ export function gradeCost(meta: AgentMeta): DimScore {
   let score: number;
   let level: string;
 
-  // v2 阈值：含 cache 的 4 项 token 合计
-  if (total_tokens <= 500_000) {
+  // v3 阈值（2026-05-25 校准后）：200k / 500k / 1.5M
+  if (total_tokens <= 200_000) {
     score = 1.0;
     level = "低消耗";
-  } else if (total_tokens <= 1_500_000) {
+  } else if (total_tokens <= 500_000) {
     score = 0.7;
     level = "中等";
-  } else if (total_tokens <= 3_000_000) {
+  } else if (total_tokens <= 1_500_000) {
     score = 0.4;
     level = "偏高";
   } else {

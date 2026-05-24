@@ -2,22 +2,19 @@
 /**
  * baseline cost 公式版本回填工具。
  *
- * 背景：2026-05-24 起 token 公式从 input+output → input+output+cache_creation+cache_read（4 项）
- * 同步把 cost 阈值从 200k/500k/1M 提到 500k/1.5M/3M。旧 baseline_scores 是按 v1 公式打的，
- * 直接重跑会让分数跳变（看起来像模型退化）。本脚本不重跑、不改分，只做：
+ * 版本演进：
+ *   v1（~2026-05-24）: input+output 累加，阈值 200k/500k/1M
+ *   v2（2026-05-24~25）: 4 项全累加，阈值 500k/1.5M/3M（input 仍是 N² 过计数）
+ *   v3（2026-05-25 起）: input 取 last，其它累加，阈值 200k/500k/1.5M（实测校准）
  *
- *   - 扫描所有 case yaml 的 baseline_scores
- *   - 为没有 _formula_version 字段的条目，写入 _formula_version: { cost: legacy_v1 }
- *   - 在 notes 顶部插入显眼警告："⚠️ legacy_v1：score 字段也是旧公式产物..."
+ * 本脚本：扫描所有 case yaml 的 baseline_scores，给所有非 v3 的 entry：
+ *   - 写入 _formula_version: { cost: legacy }（保留原有 v1/v2 标记）
+ *   - 在 notes 顶部插入显眼警告
  *
- * 本脚本"诚实"原则：
- *   - 不计算新公式的 score（那是 --sync 重跑的事，不是 migrate 的事）
+ * 诚实原则：
+ *   - 不计算新公式的 score（那是 --sync 重跑的事）
  *   - 不删除旧 score（保留历史，便于追溯）
- *   - 但要让旧 score 不可被误读为 v2：通过明显的版本标记 + notes 警告
- *
- * 配套：
- *   - eval-runner.ts 的 syncBaselineScores 会在 --sync 重跑时把 _formula_version 刷为 v2
- *   - 横向对比工具（dashboard 等）应过滤 legacy_v1 entry 或单独标注
+ *   - 但要让旧 score 不可被误读为 v3：通过明显的版本标记 + notes 警告
  *
  * 用法：
  *   bun run evals/scripts/migrate-cost-formula.ts        # 干跑（默认）
@@ -33,9 +30,8 @@ const CASE_DIRS = ["p0-core", "p1-common", "p2-edge", "holdout"];
 
 const apply = process.argv.includes("--apply");
 
-// 显眼版本警告：贴在 notes 最前面，确保即便快速浏览也能看到
-const LEGACY_WARNING = "⚠️ legacy_v1: score/cost 字段为 v1 公式（不含 cache, 阈值 200k/500k/1M）产物, 与 v2 (含 cache, 500k/1.5M/3M) 不可直接比较; --sync 重跑后会刷成 v2 真实值";
-const COST_FORMULA_V2 = "v2";
+const LEGACY_WARNING = "⚠️ legacy cost 公式: score/cost 字段为旧公式（v1: input+output 累加 / v2: 4 项累加 input 含 N² 过计数, 阈值 500k 系列）产物, 与 v3 (input 取 last + 其它累加, 阈值 200k/500k/1.5M, 已校准) 不可直接比较; --sync 重跑后会刷成 v3 真实值";
+const CURRENT_FORMULA_VERSION = "v3";
 
 interface MigrationResult {
   caseId: string;
@@ -78,26 +74,30 @@ async function main() {
             ? String(formulaVer.get("cost") ?? "")
             : "";
 
-        // v2 entry 跳过（新公式产物，无需打警告）
-        if (existingCostVer === "v2" || existingCostVer === COST_FORMULA_V2) continue;
+        // 当前公式版本的 entry 跳过
+        if (existingCostVer === CURRENT_FORMULA_VERSION) continue;
 
         const oldNotes = entry.get("notes");
         const oldStr = typeof oldNotes === "string" ? oldNotes : "";
         const alreadyHasNewWarning = oldStr.startsWith(LEGACY_WARNING);
-        const alreadyMarkedLegacy = existingCostVer === "legacy_v1";
+        const alreadyMarkedLegacy = existingCostVer === "legacy_v1" || existingCostVer === "legacy_v2";
 
         // 已经完整迁移过（标记 + 新警告齐全）：跳过
         if (alreadyMarkedLegacy && alreadyHasNewWarning) continue;
 
-        // 写入/覆盖 _formula_version
+        // 写入/覆盖 _formula_version（保留具体旧版本号便于追溯）
         if (!alreadyMarkedLegacy) {
-          const newFormulaVer = doc.createNode({ cost: "legacy_v1" }) as yamlLib.YAMLMap;
+          const legacyTag = existingCostVer === "v2" ? "legacy_v2" : "legacy_v1";
+          const newFormulaVer = doc.createNode({ cost: legacyTag }) as yamlLib.YAMLMap;
           entry.set("_formula_version", newFormulaVer);
         }
 
         // notes：清理旧风格的 [cost-formula] 标记残留，把新警告放最前面
         if (!alreadyHasNewWarning) {
-          const cleaned = oldStr.replace(/;?\s*\[cost-formula\][^;]*/g, "").trim();
+          const cleaned = oldStr
+            .replace(/;?\s*\[cost-formula\][^;]*/g, "")
+            .replace(/⚠️ legacy_v1:[^;]*;?\s*/g, "")
+            .trim();
           const newNotes = cleaned ? `${LEGACY_WARNING}; ${cleaned}` : LEGACY_WARNING;
           entry.set("notes", newNotes);
         }
@@ -123,7 +123,7 @@ async function main() {
   console.log("");
   console.log(apply
     ? `✅ 已写入 ${results.length} 个 case yaml 的 _formula_version 标记 + notes 头部警告`
-    : `干跑模式：未写入。加 --apply 实际执行；下一步建议用 --sync 重跑后真实刷新分数`);
+    : `干跑模式：未写入。加 --apply 实际执行；下一步用 --sync 重跑后真实刷新分数`);
 }
 
 if (import.meta.main) {

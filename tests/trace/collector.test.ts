@@ -400,14 +400,16 @@ describe("TraceCollector", () => {
 
   // ─── Token 统计累积 ───
 
-  test("多轮 model 后 token 累积到 metadata", async () => {
+  test("多轮 model 后 token: input 取最后一次（含全历史），output/cache 累加", async () => {
     await fireSessionStart(hookSystem);
 
     await fireModelRound(hookSystem, { inputTokens: 100, outputTokens: 50, cacheRead: 10, cacheCreate: 5 });
     await fireModelRound(hookSystem, { inputTokens: 200, outputTokens: 80, cacheRead: 20, cacheCreate: 0 });
 
     const meta = collector.getMetadata()!;
-    expect(meta.total_tokens_sent).toBe(300);
+    // input_tokens 是"本次 API 调用的 prompt 总长度"，每次都含全部历史 → 取 last（200）
+    // 累加会 N² 过计数（case_028 实测：29 次累加 3.65M / 实际 167k）
+    expect(meta.total_tokens_sent).toBe(200);
     expect(meta.total_tokens_received).toBe(130);
     expect(meta.total_cache_read_tokens).toBe(30);
     expect(meta.total_cache_creation_tokens).toBe(5);

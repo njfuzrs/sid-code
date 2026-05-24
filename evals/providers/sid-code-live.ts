@@ -102,27 +102,32 @@ function readRawTokens(trajPath: string | null): { total: number; breakdown: { i
   if (!existsSync(rawPath)) return empty;
   try {
     const lines = readFileSync(rawPath, "utf-8").trim().split("\n");
-    let input = 0, output = 0, cc = 0, cr = 0;
+    // 每条 response.usage.input_tokens 是"本次 API 调用时的 prompt 总长度"（含整段历史），
+    // 不是"本 turn 新增 input"。直接累加会 N² 级过计数（case_028 实测：
+    // 29 条 record 累加 = 3.65M，但实际只是 167k → 22 倍虚高）。
+    //
+    // 正确口径：取最后一条 record 的 usage 作为最终累计快照。
+    //   - input_tokens: 最后一次调用时 = 全部历史 prompt 总长度（已含所有累积）
+    //   - output_tokens: 每次只是该 turn 的输出，需要累加
+    //   - cache_creation / cache_read: 同 output，每次新增，需要累加
+    //
+    // 校准已确认（2026-05-25）：与 claude CLI 的 result.usage 口径一致。
+    // 实验：case_028 用 claude-opus-4-7 跑出 result.usage = i:3053 o:6828 cc:173k cr:233k
+    //   — i 是最后一次 API 调用的输入总量；o/cc/cr 是所有 turn 的累加。
+    let lastInput = 0;
+    let output = 0, cc = 0, cr = 0;
     for (const line of lines) {
       const usage = JSON.parse(line)?.response?.usage;
       if (usage) {
-        // 与 claude-code wrapper 对齐：4 项全加（input + output + cache_creation + cache_read）
-        // Anthropic 计费里 cache 部分单独计算，但作为 token 总消耗都应纳入 cost 维度。
-        // 不加 cache 会让 sid-code 的 total_tokens 系统性比 claude-code 小，cost 维度横向不公平。
-        //
-        // ⚠️ 校准未决（2026-05-24）：此处累加是"所有 turn 的 sum"。
-        // claude-code wrapper 读 result.usage 是否也是累计语义未确认（claude API 当前 503 不可用，
-        // 无法做活体对照）。若 claude CLI 给"最后一次"语义，本数值会比 claude-code 大几倍，
-        // cost 阈值需要重新校准。校准方法见 claude-code.ts:117-124 的注释。
-        input += usage.input_tokens || 0;
+        lastInput = usage.input_tokens || 0; // 覆盖：取最后一次即可
         output += usage.output_tokens || 0;
         cc += usage.cache_creation_input_tokens || 0;
         cr += usage.cache_read_input_tokens || 0;
       }
     }
     return {
-      total: input + output + cc + cr,
-      breakdown: { input, output, cache_creation: cc, cache_read: cr },
+      total: lastInput + output + cc + cr,
+      breakdown: { input: lastInput, output, cache_creation: cc, cache_read: cr },
     };
   } catch {
     return empty;
@@ -273,11 +278,12 @@ async function main() {
     + `tokens=${totalTokens} errors=${trajSignals.errorCount}\n`
   );
 
-  // 校准诊断（2026-05-24，配对 claude-code wrapper 同名日志）：
-  // 输出 token 各项明细，便于事后与 claude CLI result.usage 对照确认语义。
+  // 校准诊断（2026-05-25 起，配对 claude-code wrapper 同名日志）：
+  // input 是最后一次 API 调用的 prompt 总长度（含历史），output/cc/cr 是各 turn 累加。
+  // 与 claude CLI result.usage 同语义。
   if (rawTokens > 0) {
     process.stderr.write(
-      `[sid-code-live calibration] raw.jsonl 累加（${meta.totalSteps} turn）: `
+      `[sid-code-live calibration] raw.jsonl 末次 i（含全历史）+ 累加 o/cc/cr（${meta.totalSteps} turn）: `
       + `i=${rawTokensInfo.breakdown.input} o=${rawTokensInfo.breakdown.output} `
       + `cc=${rawTokensInfo.breakdown.cache_creation} cr=${rawTokensInfo.breakdown.cache_read} `
       + `4sum=${rawTokens}\n`

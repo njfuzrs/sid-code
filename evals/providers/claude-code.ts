@@ -117,6 +117,14 @@ export class StreamJsonParser {
           }
         }
       }
+      // 累加 turn-level usage 用于 stderr 校准诊断（不进 totalTokens，避免与 result.usage 双倍）
+      const u = msg.usage as Record<string, number> | undefined;
+      if (u) {
+        this.meta.assistantUsageSum.input_tokens += u.input_tokens || 0;
+        this.meta.assistantUsageSum.output_tokens += u.output_tokens || 0;
+        this.meta.assistantUsageSum.cache_creation_input_tokens += u.cache_creation_input_tokens || 0;
+        this.meta.assistantUsageSum.cache_read_input_tokens += u.cache_read_input_tokens || 0;
+      }
     } else if (evt.type === "user" && evt.message && typeof evt.message === "object") {
       const msg = evt.message as Record<string, unknown>;
       const content = msg.content;
@@ -133,16 +141,16 @@ export class StreamJsonParser {
       this.meta.totalCostUsd = (evt.total_cost_usd as number) || 0;
       const usage = evt.usage as Record<string, number> | undefined;
       if (usage) {
-        // ⚠️ 校准未决（2026-05-24）：claude CLI 的 result.usage 语义未官方文档化。
-        // 已知：sid-code 用 raw.jsonl 累加各 turn 的 response.usage（4 项相加）。
-        // 待确认：claude CLI 是给"累计 sum"还是"最后一次 assistant 响应的 usage"。
-        // 若是后者，sid-code 的 cost 维度会系统性偏大几倍 → 横向对比不公平。
-        // 临时保持"4 项相加"以维持对称形式，但实际值可能口径不同。
-        // 校准方法（待 claude API 可用时执行）：
-        //   1. 跑同一 case 同时落 sid-code raw.jsonl 与 claude CLI stream-json
-        //   2. 对比 result.usage vs 累加 assistant 事件 usage 的差值
-        //   3. 若一致 → 累计；若 result 远小于累加 → "最后一次"
-        // 诊断日志：把 result.usage 原始值打到 stderr 便于事后分析
+        // 校准已确认（2026-05-25）：claude CLI 的 result.usage 是真实累计：
+        //   - input_tokens = 最后一次 API 调用的 prompt 总长度（含全部历史 + cache 复用）
+        //   - output_tokens / cache_creation / cache_read = 所有 turn 累加
+        // 4 项相加 ≈ "整个 session 的总 token 流量"（含 cache 复用倍数）。
+        //
+        // ⚠️ 不要把 assistant 事件的 usage 累加当作 totalTokens：
+        //   stream-json 模式下，assistant event 是流式 message_delta 片段，
+        //   每个片段的 usage 是该响应到当前时点的累积快照（同一 turn 出现多次），
+        //   累加会双倍计数。case_028 实测：assistant 累加 4sum=1.5M / result.usage 4sum=417k。
+        //   assistantUsageSum 字段仅用于 stderr 诊断，不进 totalTokens。
         this.meta.rawResultUsage = { ...usage };
         this.meta.totalTokens = (usage.input_tokens || 0)
           + (usage.output_tokens || 0)
@@ -151,17 +159,6 @@ export class StreamJsonParser {
       }
       if (evt.is_error === true || evt.subtype === "error") this.meta.exitStatus = "error";
       else if (evt.subtype === "success") this.meta.exitStatus = "success";
-    } else if (evt.type === "assistant" && evt.message && typeof evt.message === "object") {
-      // 同步在 assistant 分支累加 turn-level usage，便于事后与 result.usage 对照。
-      // 这段累加只用于诊断 stderr，不进 totalTokens（避免双倍）。
-      const msg = evt.message as Record<string, unknown>;
-      const u = msg.usage as Record<string, number> | undefined;
-      if (u) {
-        this.meta.assistantUsageSum.input_tokens += u.input_tokens || 0;
-        this.meta.assistantUsageSum.output_tokens += u.output_tokens || 0;
-        this.meta.assistantUsageSum.cache_creation_input_tokens += u.cache_creation_input_tokens || 0;
-        this.meta.assistantUsageSum.cache_read_input_tokens += u.cache_read_input_tokens || 0;
-      }
     }
   }
 
@@ -259,23 +256,20 @@ async function main() {
     + `turns=${parsed.numTurns} tools=${parsed.toolsUsed.join(",")} errors=${parsed.errorCount}\n`
   );
 
-  // 校准诊断日志：对比 result.usage 与 assistant turn 累加 sum
-  // 用于事后判断 claude CLI 的 result.usage 语义。
-  // 当 result_4sum ≈ assistant_4sum：累计语义（与 sid-code 累加 raw.jsonl 对齐）
-  // 当 result_4sum << assistant_4sum：单次/最后一次语义（cost 阈值需重新校准）
+  // 校准诊断（2026-05-25 修订）：
+  // result.usage 是真实累计；assistantUsageSum 是 streaming message_delta 累加（含双倍计数），
+  // 仅用于事后诊断 streaming 协议变更。两者比值应远 >1（重复计数证据），不再作为"语义判断"。
   if (parsed.rawResultUsage) {
     const r4 = (parsed.rawResultUsage.input_tokens || 0)
       + (parsed.rawResultUsage.output_tokens || 0)
       + (parsed.rawResultUsage.cache_creation_input_tokens || 0)
       + (parsed.rawResultUsage.cache_read_input_tokens || 0);
-    const a4 = parsed.assistantUsageSum.input_tokens
-      + parsed.assistantUsageSum.output_tokens
-      + parsed.assistantUsageSum.cache_creation_input_tokens
-      + parsed.assistantUsageSum.cache_read_input_tokens;
     process.stderr.write(
-      `[claude-code calibration] result.usage 4sum=${r4} | assistant累加 4sum=${a4} | `
-      + `比例=${a4 > 0 ? (a4 / Math.max(1, r4)).toFixed(2) : "N/A"} `
-      + `(<1.5≈累计 / >1.5≈单次)\n`
+      `[claude-code calibration] result.usage: i=${parsed.rawResultUsage.input_tokens || 0} `
+      + `o=${parsed.rawResultUsage.output_tokens || 0} `
+      + `cc=${parsed.rawResultUsage.cache_creation_input_tokens || 0} `
+      + `cr=${parsed.rawResultUsage.cache_read_input_tokens || 0} 4sum=${r4} `
+      + `(num_turns=${parsed.numTurns})\n`
     );
   }
 

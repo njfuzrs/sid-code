@@ -626,12 +626,14 @@ export function buildTrajectory(
 
   // 如果 metadata 中的统计为 0，从 pairs 中累加
   if (tokensSent === 0 && pairs.length > 0) {
+    // input_tokens 取最后一次（已含全部历史），output/cache 累加。
+    // 见 collector.ts handleAfterModel 注释。
     for (const pair of pairs) {
-      tokensSent += pair.usage.input_tokens;
       tokensReceived += pair.usage.output_tokens;
       cacheReadTokens += pair.usage.cache_read_input_tokens;
       cacheCreationTokens += pair.usage.cache_creation_input_tokens;
     }
+    tokensSent = pairs[pairs.length - 1].usage.input_tokens;
   }
 
   // 推断 exit_status

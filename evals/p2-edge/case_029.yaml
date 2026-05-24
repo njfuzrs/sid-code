@@ -74,8 +74,10 @@ baseline_scores:
     tested_at: 2026-05-21T17:27:35.641Z
     tested_by: promptfoo
     transcript_path: null
-    notes: "⚠️ legacy_v1: score/cost 字段为 v1 公式（不含 cache, 阈值 200k/500k/1M）产物, 与 v2 (含
-      cache, 500k/1.5M/3M) 不可直接比较; --sync 重跑后会刷成 v2 真实值; ; 重跑会跳变)"
+    notes: "⚠️ legacy cost 公式: score/cost 字段为旧公式（v1: input+output 累加 / v2: 4 项累加
+      input 含 N² 过计数, 阈值 500k 系列）产物, 与 v3 (input 取 last + 其它累加, 阈值
+      200k/500k/1.5M, 已校准) 不可直接比较; --sync 重跑后会刷成 v3 真实值; --sync 重跑后会刷成 v2 真实值; ;
+      重跑会跳变)"
     _formula_version:
       cost: legacy_v1
   codex:
@@ -88,8 +90,10 @@ baseline_scores:
     tested_at: 2026-05-21T17:27:35.641Z
     tested_by: promptfoo
     transcript_path: null
-    notes: "⚠️ legacy_v1: score/cost 字段为 v1 公式（不含 cache, 阈值 200k/500k/1M）产物, 与 v2 (含
-      cache, 500k/1.5M/3M) 不可直接比较; --sync 重跑后会刷成 v2 真实值; ; 重跑会跳变)"
+    notes: "⚠️ legacy cost 公式: score/cost 字段为旧公式（v1: input+output 累加 / v2: 4 项累加
+      input 含 N² 过计数, 阈值 500k 系列）产物, 与 v3 (input 取 last + 其它累加, 阈值
+      200k/500k/1.5M, 已校准) 不可直接比较; --sync 重跑后会刷成 v3 真实值; --sync 重跑后会刷成 v2 真实值; ;
+      重跑会跳变)"
     _formula_version:
       cost: legacy_v1
   sid_code_opus47:
@@ -98,8 +102,10 @@ baseline_scores:
     tested_at: 2026-05-22T17:25:00.843Z
     tested_by: promptfoo
     transcript_path: null
-    notes: "⚠️ legacy_v1: score/cost 字段为 v1 公式（不含 cache, 阈值 200k/500k/1M）产物, 与 v2 (含
-      cache, 500k/1.5M/3M) 不可直接比较; --sync 重跑后会刷成 v2 真实值; ; 重跑会跳变)"
+    notes: "⚠️ legacy cost 公式: score/cost 字段为旧公式（v1: input+output 累加 / v2: 4 项累加
+      input 含 N² 过计数, 阈值 500k 系列）产物, 与 v3 (input 取 last + 其它累加, 阈值
+      200k/500k/1.5M, 已校准) 不可直接比较; --sync 重跑后会刷成 v3 真实值; --sync 重跑后会刷成 v2 真实值; ;
+      重跑会跳变)"
     dimensions:
       anchor_hit: 1
       rubric_score: 1
@@ -114,8 +120,10 @@ baseline_scores:
     tested_at: 2026-05-22T17:25:00.843Z
     tested_by: promptfoo
     transcript_path: null
-    notes: "⚠️ legacy_v1: score/cost 字段为 v1 公式（不含 cache, 阈值 200k/500k/1M）产物, 与 v2 (含
-      cache, 500k/1.5M/3M) 不可直接比较; --sync 重跑后会刷成 v2 真实值; ; 重跑会跳变)"
+    notes: "⚠️ legacy cost 公式: score/cost 字段为旧公式（v1: input+output 累加 / v2: 4 项累加
+      input 含 N² 过计数, 阈值 500k 系列）产物, 与 v3 (input 取 last + 其它累加, 阈值
+      200k/500k/1.5M, 已校准) 不可直接比较; --sync 重跑后会刷成 v3 真实值; --sync 重跑后会刷成 v2 真实值; ;
+      重跑会跳变)"
     dimensions:
       anchor_hit: 1
       rubric_score: 1
@@ -125,29 +133,30 @@ baseline_scores:
     _formula_version:
       cost: legacy_v1
   sid_code_deepseek_v4_pro:
-    score: 4.23
+    score: 4.85
     run_status: success
-    tested_at: 2026-05-23T17:25:14.649Z
+    tested_at: 2026-05-24T16:55:51.668Z
     tested_by: eval-runner
     transcript_path: null
-    notes: "⚠️ legacy_v1: score/cost 字段为 v1 公式（不含 cache, 阈值 200k/500k/1M）产物, 与 v2 (含
-      cache, 500k/1.5M/3M) 不可直接比较; --sync 重跑后会刷成 v2 真实值; ; 重跑会跳变)"
+    notes: ""
     dimensions:
-      anchor_hit: 0.125
+      anchor_hit: 0.8333333333333333
       rubric_score: 1
       tool_compliance: 1
       efficiency: 1
       cost: 1
     _formula_version:
-      cost: legacy_v1
+      cost: v3
   sid_code_claude_opus_4_7:
     score: 4.56
     run_status: success
     tested_at: 2026-05-24T03:23:14.222Z
     tested_by: eval-runner
     transcript_path: null
-    notes: "⚠️ legacy_v1: score/cost 字段为 v1 公式（不含 cache, 阈值 200k/500k/1M）产物, 与 v2 (含
-      cache, 500k/1.5M/3M) 不可直接比较; --sync 重跑后会刷成 v2 真实值; ; 重跑会跳变)"
+    notes: "⚠️ legacy cost 公式: score/cost 字段为旧公式（v1: input+output 累加 / v2: 4 项累加
+      input 含 N² 过计数, 阈值 500k 系列）产物, 与 v3 (input 取 last + 其它累加, 阈值
+      200k/500k/1.5M, 已校准) 不可直接比较; --sync 重跑后会刷成 v3 真实值; --sync 重跑后会刷成 v2 真实值; ;
+      重跑会跳变)"
     dimensions:
       anchor_hit: 0.5
       rubric_score: 1
@@ -156,6 +165,21 @@ baseline_scores:
       cost: 1
     _formula_version:
       cost: legacy_v1
+  claude_code_claude_opus_4_7:
+    score: 4.56
+    run_status: success
+    tested_at: 2026-05-24T16:56:08.023Z
+    tested_by: eval-runner
+    transcript_path: null
+    notes: ""
+    dimensions:
+      anchor_hit: 0.5
+      rubric_score: 1
+      tool_compliance: 1
+      efficiency: 1
+      cost: 1
+    _formula_version:
+      cost: v3
 
 source: "manual_design_2026_05_20_coverage_gap_对抗性prompt"
 notes: |

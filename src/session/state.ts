@@ -96,7 +96,10 @@ export class SessionState {
     const stats = this.modelUsage[model];
 
     // 累加 token
-    stats.inputTokens += usage.inputTokens;
+    // ⚠️ usage.inputTokens 是"本次 API 调用时的 prompt 总长度"（含全部历史），
+    // 累加会 N² 过计数。input 取最后一次（已含全部历史），output/cache 累加。
+    // 校准记录见 evals/eval-judge.ts gradeCost 注释。
+    stats.inputTokens = usage.inputTokens;
     stats.outputTokens += usage.outputTokens;
     stats.cacheReadInputTokens += usage.cacheReadInputTokens ?? 0;
     stats.cacheCreationInputTokens += usage.cacheCreationInputTokens ?? 0;
