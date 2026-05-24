@@ -1,40 +1,47 @@
 # evals/_legacy/
 
-冻结目录 — **仅供历史数据回查 / 紧急回滚**。请勿主动调用。
+历史遗留代码归档目录。**所有 promptfoo 相关代码已于 2026-05-24 删除**。
 
-## 为什么在这里
+## 历史回查
 
-2026-05-23 起评测主入口切换到自研 `evals/eval-runner.ts`，原因详见
-`docs/eval/10-eval-architecture-analysis.md §5.4`：
+如果需要看旧的 promptfoo 实现（配置 / wrapper / yaml-to-tests 转换脚本 / promptfoo-sync）：
 
-1. promptfoo 黑盒并发/重试不可控，遇 LLM 中转商 429 会跑空 5h+
-2. 评分公式重复维护（同一公式分布在 yaml 字符串 + eval-judge.ts）
-3. wrapper 双套同步成本高（已发生过修一处漏一处的事故）
+```bash
+# 看最后一次完整状态（在删除 _legacy 物理文件之前）
+git log --oneline --all -- 'evals/promptfoo/**' 'evals/_legacy/promptfoo/**' | head
 
-## 当前状态
+# 恢复某个文件查看
+git show <commit>:evals/promptfoo/promptfooconfig.yaml
+git show <commit>:evals/promptfoo/lib/yaml-to-tests.ts
+git show <commit>:evals/promptfoo/providers/sid-code-live.ts
+git show <commit>:scripts/eval/promptfoo-sync.ts
+```
 
-- `promptfoo/` — 旧 promptfoo 配置 + yaml-to-tests 转换脚本 + 评分 prompt 字符串
-  - `providers/` 子目录已删除：所有 wrapper 统一到 `evals/providers/`，
-    eval-runner 通过 `spawn` 直接调用，不再经过 promptfoo
-  - 保留 `promptfooconfig.yaml` / `lib/yaml-to-tests.ts` / `README.md` 仅为
-    可追溯历史报告（`evals/_reports/promptfoo-*.json`）的生成上下文
+关键 commit 参考：
+- `43bd3d6 fix: 彻底清除promtfoo引用` — 删除前最后一次完整快照
+- 更早的 commit 在 master 历史里完整保留
 
-## 严禁
+## 紧急回滚方案
 
-- ❌ 不要再跑 `bunx promptfoo eval`
-- ❌ 不要再改 `_legacy/promptfoo/` 下任何文件
-- ❌ 不要把 `_reports/promptfoo-*.json` 当"最新分数"——以
-  `_reports/eval-latest.json` + `_runs/<provider>.jsonl` 为准
+如果 `eval-runner.ts` 完全不可用、必须临时回到 promptfoo（**极端情况**）：
 
-## 真要回滚怎么办
+```bash
+# 1. 找到上次工作的 commit
+git log --oneline -- evals/promptfoo/ | head -5
 
-如果 `eval-runner.ts` 完全不可用（极端情况），回滚步骤：
+# 2. checkout 当时的整个 evals/promptfoo/ 目录
+git checkout <commit> -- evals/promptfoo/
 
-1. `git mv evals/_legacy/promptfoo evals/promptfoo`
-2. 在 `evals/_legacy/promptfoo/providers/`（已删）下重建 wrapper —— 直接
-   `cp evals/providers/*.ts evals/promptfoo/providers/`，然后改 argv 解析
-   方式（promptfoo 用 `process.argv[2/3/4]` + sideband 文件，不是 `--prompt`
-   命名参数）
-3. 恢复 `package.json` 的 `eval:horizontal-*` 脚本（git 历史里有）
+# 3. 恢复 promptfoo-sync.ts
+git checkout <commit> -- scripts/eval/promptfoo-sync.ts
 
-但更推荐：直接修 `eval-runner.ts`。
+# 4. 恢复 package.json 的 eval:horizontal-* 脚本
+git show <commit>:package.json | grep horizontal
+```
+
+但更推荐：直接修 `eval-runner.ts`。promptfoo 时代的双套 wrapper / 黑盒并发 / 评分公式重复等问题不值得重启。
+
+## 为什么不留着
+
+2026-05-24 用户明确指示删除：保留只会让新人 grep 'promptfoo' 撞到死代码，造成误导。
+git history 已经是足够的"博物馆"，物理文件留在仓库只增加认知负担。

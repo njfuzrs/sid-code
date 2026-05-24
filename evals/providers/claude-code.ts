@@ -37,38 +37,38 @@ interface StreamMeta {
   retryCount: number;
   backtrackCount: number;
   exitStatus: string | null;
+  /** 是否收到 type=result 事件（健康检查：没收到说明输出被截断） */
+  sawResult: boolean;
+  /** 解析到的总事件数（用于诊断） */
+  eventCount: number;
 }
 
-// Edit / Write / NotebookEdit 等会修改文件的工具列表，files_edited 取这些工具的 file_path
 const FILE_WRITE_TOOLS = new Set(["Write", "Edit", "NotebookEdit", "MultiEdit"]);
 
-function parseStreamJson(stdout: string): StreamMeta {
-  const empty: StreamMeta = {
+/**
+ * 流式 stream-json 解析器：增量消费，避免单 stdout string 累加。
+ * 状态机内部，每次喂一行 JSON 就更新内部状态。
+ */
+class StreamJsonParser {
+  meta: StreamMeta = {
     text: "", toolsUsed: [], filesEdited: [], numTurns: 0, totalCostUsd: 0,
-    totalTokens: 0, errorCount: 0, retryCount: 0, backtrackCount: 0, exitStatus: null,
+    totalTokens: 0, errorCount: 0, retryCount: 0, backtrackCount: 0,
+    exitStatus: null, sawResult: false, eventCount: 0,
   };
-  if (!stdout.trim()) return empty;
+  private toolsSeen = new Set<string>();
+  private filesEdited = new Set<string>();
+  private editCount = new Map<string, number>();
+  private finalTextParts: string[] = [];
+  private lastTool = "";
+  private lastInput = "";
 
-  // stream-json 每行一个 JSON 对象
-  const lines = stdout.split("\n").filter(l => l.trim().startsWith("{"));
-  const toolsSeen = new Set<string>();
-  const filesEdited = new Set<string>();
-  const editCount = new Map<string, number>();
-  let lastTool = "";
-  let lastInput = "";
-  let retryCount = 0;
-  let backtrackCount = 0;
-  let errorCount = 0;
-  let text = "";
-  let numTurns = 0;
-  let totalCostUsd = 0;
-  let totalTokens = 0;
-  let exitStatus: string | null = null;
-  const finalTextParts: string[] = [];
-
-  for (const line of lines) {
+  feed(line: string): void {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{")) return;
     let evt: Record<string, unknown>;
-    try { evt = JSON.parse(line); } catch { continue; }
+    try { evt = JSON.parse(trimmed); } catch { return; }
+
+    this.meta.eventCount++;
 
     if (evt.type === "assistant" && evt.message && typeof evt.message === "object") {
       const msg = evt.message as Record<string, unknown>;
@@ -77,22 +77,22 @@ function parseStreamJson(stdout: string): StreamMeta {
         for (const block of content) {
           const b = block as Record<string, unknown>;
           if (b.type === "text" && typeof b.text === "string") {
-            finalTextParts.push(b.text);
+            this.finalTextParts.push(b.text);
           } else if (b.type === "tool_use" && typeof b.name === "string") {
-            toolsSeen.add(b.name);
+            this.toolsSeen.add(b.name);
             const inp = (b.input as Record<string, unknown>) || {};
             const inpStr = JSON.stringify(inp);
-            if (b.name === lastTool && inpStr === lastInput) retryCount++;
-            lastTool = b.name;
-            lastInput = inpStr;
+            if (b.name === this.lastTool && inpStr === this.lastInput) this.meta.retryCount++;
+            this.lastTool = b.name;
+            this.lastInput = inpStr;
 
             if (FILE_WRITE_TOOLS.has(b.name)) {
               const fp = (inp.file_path || inp.notebook_path || inp.path) as string | undefined;
               if (fp) {
-                filesEdited.add(fp);
-                const n = (editCount.get(fp) || 0) + 1;
-                editCount.set(fp, n);
-                if (n > 1) backtrackCount++;
+                this.filesEdited.add(fp);
+                const n = (this.editCount.get(fp) || 0) + 1;
+                this.editCount.set(fp, n);
+                if (n > 1) this.meta.backtrackCount++;
               }
             }
           }
@@ -104,38 +104,32 @@ function parseStreamJson(stdout: string): StreamMeta {
       if (Array.isArray(content)) {
         for (const block of content) {
           const b = block as Record<string, unknown>;
-          if (b.type === "tool_result" && b.is_error === true) errorCount++;
+          if (b.type === "tool_result" && b.is_error === true) this.meta.errorCount++;
         }
       }
     } else if (evt.type === "result") {
-      // 最后一行 result 包含完整 metadata
-      if (typeof evt.result === "string") text = evt.result;
-      numTurns = (evt.num_turns as number) || 0;
-      totalCostUsd = (evt.total_cost_usd as number) || 0;
+      this.meta.sawResult = true;
+      if (typeof evt.result === "string") this.meta.text = evt.result;
+      this.meta.numTurns = (evt.num_turns as number) || 0;
+      this.meta.totalCostUsd = (evt.total_cost_usd as number) || 0;
       const usage = evt.usage as Record<string, number> | undefined;
       if (usage) {
-        totalTokens = (usage.input_tokens || 0)
+        this.meta.totalTokens = (usage.input_tokens || 0)
           + (usage.output_tokens || 0)
           + (usage.cache_creation_input_tokens || 0)
           + (usage.cache_read_input_tokens || 0);
       }
-      if (evt.is_error === true || evt.subtype === "error") exitStatus = "error";
-      else if (evt.subtype === "success") exitStatus = "success";
+      if (evt.is_error === true || evt.subtype === "error") this.meta.exitStatus = "error";
+      else if (evt.subtype === "success") this.meta.exitStatus = "success";
     }
   }
 
-  return {
-    text: text || finalTextParts.join("\n"),
-    toolsUsed: [...toolsSeen],
-    filesEdited: [...filesEdited],
-    numTurns,
-    totalCostUsd,
-    totalTokens,
-    errorCount,
-    retryCount,
-    backtrackCount,
-    exitStatus,
-  };
+  finalize(): StreamMeta {
+    this.meta.toolsUsed = [...this.toolsSeen];
+    this.meta.filesEdited = [...this.filesEdited];
+    if (!this.meta.text) this.meta.text = this.finalTextParts.join("\n");
+    return this.meta;
+  }
 }
 
 async function main() {
@@ -146,8 +140,8 @@ async function main() {
     process.exit(1);
   }
 
-  // 用 stream-json 才能拿到 tools_used / files_edited / errors（关键修复）
-  // text/json 单结果输出格式丢失了所有中间事件
+  // --verbose 是 claude CLI 强制要求（"--print + --output-format=stream-json requires --verbose"）
+  // stream-json 模式才能拿到 tool_use 事件、files_edited、usage 等 trajectory metadata
   const args: string[] = ["-p", "--output-format", "stream-json", "--verbose"];
   if (model) args.push("--model", model);
   if (skipPermissions) args.push("--dangerously-skip-permissions");
@@ -175,9 +169,22 @@ async function main() {
     }, 3000);
   }, timeoutMs);
 
-  let stdoutBuf = "";
+  // 增量行解析：避免 stdout 累加成单个超长 string（高 max-turns case 输出会到几 MB）
+  const parser = new StreamJsonParser();
+  let stdoutPartial = "";
+  let stdoutBytes = 0;
+  child.stdout?.on("data", (chunk: Buffer) => {
+    stdoutBytes += chunk.length;
+    stdoutPartial += chunk.toString();
+    let nl = stdoutPartial.indexOf("\n");
+    while (nl !== -1) {
+      parser.feed(stdoutPartial.slice(0, nl));
+      stdoutPartial = stdoutPartial.slice(nl + 1);
+      nl = stdoutPartial.indexOf("\n");
+    }
+  });
+  // stderr 体积一般很小，保留累加以便 ERROR 时回显
   let stderrBuf = "";
-  child.stdout?.on("data", (c) => { stdoutBuf += c.toString(); });
   child.stderr?.on("data", (c) => { stderrBuf += c.toString(); });
 
   const exitCode: number | null = await new Promise((res) => {
@@ -186,8 +193,11 @@ async function main() {
   });
   clearTimeout(timer);
 
+  // 喂剩余的最后一行（如果没有 trailing newline）
+  if (stdoutPartial.trim()) parser.feed(stdoutPartial);
+  const parsed = parser.finalize();
+
   const elapsedMs = Date.now() - startedAt;
-  const parsed = parseStreamJson(stdoutBuf);
 
   const metaOut = {
     tools_used: parsed.toolsUsed,
@@ -204,9 +214,19 @@ async function main() {
 
   process.stderr.write(
     `[claude-code] exit=${exitCode} timedOut=${timedOut} elapsed=${elapsedMs}ms `
-    + `stdout=${stdoutBuf.length}B turns=${parsed.numTurns} `
-    + `tools=${parsed.toolsUsed.join(",")} errors=${parsed.errorCount}\n`
+    + `stdout=${stdoutBytes}B events=${parsed.eventCount} sawResult=${parsed.sawResult} `
+    + `turns=${parsed.numTurns} tools=${parsed.toolsUsed.join(",")} errors=${parsed.errorCount}\n`
   );
+
+  // 健康检查：exit=0 但没有 result 事件 → 说明输出在中途被截断/丢失，应当标 error
+  if (!timedOut && exitCode === 0 && !parsed.sawResult) {
+    process.stdout.write(JSON.stringify({
+      output: `[ERROR] claude-code stream-json incomplete: no result event (events=${parsed.eventCount}, stdout=${stdoutBytes}B)`,
+      meta: metaOut,
+      error: true,
+    }) + "\n");
+    process.exit(0);
+  }
 
   if (timedOut) {
     process.stdout.write(JSON.stringify({ output: `[ERROR] claude-code TIMEOUT after ${timeoutMs}ms`, meta: metaOut, error: true }) + "\n");

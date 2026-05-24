@@ -65,7 +65,7 @@ interface ProviderResult {
   error?: boolean;
 }
 
-interface TestResult {
+export interface TestResult {
   caseId: string;
   provider: string;
   score: number;
@@ -144,7 +144,7 @@ function hasHoldoutId(want: Set<string>): boolean {
  * 判定 provider 输出/stderr 是否为可重试的瞬时网络错误。
  * 只在网络错误时重试，业务错误（空输出 / parse_error / 模型拒绝）不重试避免污染数据。
  */
-function isRetryableError(output: string, stderr: string): boolean {
+export function isRetryableError(output: string, stderr: string): boolean {
   const combined = `${output}\n${stderr}`;
   const retryablePatterns = [
     "ECONNRESET",
@@ -311,8 +311,8 @@ function currentWeekNumber(): number {
   return Math.ceil((now.getTime() - start.getTime()) / (7 * 24 * 60 * 60 * 1000));
 }
 
-function writeWeekScores(results: TestResult[], weekNum: number) {
-  const scoresDir = join(ROOT, "_scores", `w${weekNum}`);
+export function writeWeekScores(results: TestResult[], weekNum: number, baseDir: string = ROOT) {
+  const scoresDir = join(baseDir, "_scores", `w${weekNum}`);
   mkdirSync(scoresDir, { recursive: true });
 
   const byCaseId = new Map<string, TestResult[]>();
@@ -350,8 +350,8 @@ function writeWeekScores(results: TestResult[], weekNum: number) {
  * 文件按 provider 切分，便于单 provider 趋势分析。
  * dashboard 读取这些 jsonl 画运行历史折线图。
  */
-function appendRunHistory(results: TestResult[], runId: string, weekNum: number) {
-  const runsDir = join(ROOT, "_runs");
+export function appendRunHistory(results: TestResult[], runId: string, weekNum: number, baseDir: string = ROOT) {
+  const runsDir = join(baseDir, "_runs");
   mkdirSync(runsDir, { recursive: true });
 
   const byProvider = new Map<string, TestResult[]>();
@@ -386,16 +386,21 @@ function appendRunHistory(results: TestResult[], runId: string, weekNum: number)
   console.log(`  运行历史: ${runsDir}/ (${byProvider.size} 个 provider × ${results.length / byProvider.size} 个 case)`);
 }
 
-function findCaseYamlPath(caseId: string): string | null {
-  const allDirs = [...CASE_DIRS, HOLDOUT_DIR];
-  for (const dir of allDirs) {
+function findCaseYamlPath(caseId: string, baseDir: string = ROOT): string | null {
+  const dirs = [
+    join(baseDir, "p0-core"),
+    join(baseDir, "p1-common"),
+    join(baseDir, "p2-edge"),
+    join(baseDir, "holdout"),
+  ];
+  for (const dir of dirs) {
     const p = join(dir, `${caseId}.yaml`);
     if (existsSync(p)) return p;
   }
   return null;
 }
 
-function syncBaselineScores(results: TestResult[]) {
+export function syncBaselineScores(results: TestResult[], baseDir: string = ROOT) {
   const byCaseId = new Map<string, TestResult[]>();
   for (const r of results) {
     if (!byCaseId.has(r.caseId)) byCaseId.set(r.caseId, []);
@@ -404,7 +409,7 @@ function syncBaselineScores(results: TestResult[]) {
 
   let updated = 0;
   for (const [caseId, caseResults] of byCaseId) {
-    const yamlPath = findCaseYamlPath(caseId);
+    const yamlPath = findCaseYamlPath(caseId, baseDir);
     if (!yamlPath) continue;
 
     const content = readFileSync(yamlPath, "utf-8");
@@ -628,7 +633,9 @@ async function refreshReports() {
   else console.log(`  ❌ CASES.md 刷新失败 (exit=${casesCode})`);
 }
 
-main().catch((err) => {
-  console.error("[eval-runner] fatal:", err);
-  process.exit(1);
-});
+if (import.meta.main) {
+  main().catch((err) => {
+    console.error("[eval-runner] fatal:", err);
+    process.exit(1);
+  });
+}
