@@ -66,7 +66,9 @@ baseline_scores:
       tested_at: "2026-05-15T19:32:14.240Z",
       tested_by: anchor_auto_v0,
       transcript_path: "evals/raw-outputs/case_021_1778872533255.jsonl",
-      notes: "锚点 1/3 命中, 反向违规 0; 人工 D5 复核可调; [cost-formula] v1 (旧公式: 不含 cache; 重跑会跳变)",
+      notes: "⚠️ legacy_v1: score/cost 字段为 v1 公式（不含 cache, 阈值 200k/500k/1M）产物, 与 v2 (含
+        cache, 500k/1.5M/3M) 不可直接比较; --sync 重跑后会刷成 v2 真实值; 锚点 1/3 命中, 反向违规 0; 人工
+        D5 复核可调; 重跑会跳变)",
       _formula_version: { cost: legacy_v1 }
     }
   claude_code:
@@ -75,7 +77,8 @@ baseline_scores:
     tested_at: 2026-05-21T16:57:24.606Z
     tested_by: promptfoo
     transcript_path: null
-    notes: "[cost-formula] v1 (旧公式: 不含 cache; 重跑会跳变)"
+    notes: "⚠️ legacy_v1: score/cost 字段为 v1 公式（不含 cache, 阈值 200k/500k/1M）产物, 与 v2 (含
+      cache, 500k/1.5M/3M) 不可直接比较; --sync 重跑后会刷成 v2 真实值; ; 重跑会跳变)"
     _formula_version:
       cost: legacy_v1
   codex:
@@ -93,7 +96,8 @@ baseline_scores:
     tested_at: 2026-05-21T16:57:24.606Z
     tested_by: promptfoo
     transcript_path: null
-    notes: "[cost-formula] v1 (旧公式: 不含 cache; 重跑会跳变)"
+    notes: "⚠️ legacy_v1: score/cost 字段为 v1 公式（不含 cache, 阈值 200k/500k/1M）产物, 与 v2 (含
+      cache, 500k/1.5M/3M) 不可直接比较; --sync 重跑后会刷成 v2 真实值; ; 重跑会跳变)"
     _formula_version:
       cost: legacy_v1
   claude_code_opus47:
@@ -102,7 +106,8 @@ baseline_scores:
     tested_at: 2026-05-22T17:25:00.843Z
     tested_by: promptfoo
     transcript_path: null
-    notes: "[cost-formula] v1 (旧公式: 不含 cache; 重跑会跳变)"
+    notes: "⚠️ legacy_v1: score/cost 字段为 v1 公式（不含 cache, 阈值 200k/500k/1M）产物, 与 v2 (含
+      cache, 500k/1.5M/3M) 不可直接比较; --sync 重跑后会刷成 v2 真实值; ; 重跑会跳变)"
     dimensions:
       anchor_hit: 1
       rubric_score: 0.2
@@ -117,7 +122,8 @@ baseline_scores:
     tested_at: 2026-05-22T17:25:00.843Z
     tested_by: promptfoo
     transcript_path: null
-    notes: "[cost-formula] v1 (旧公式: 不含 cache; 重跑会跳变)"
+    notes: "⚠️ legacy_v1: score/cost 字段为 v1 公式（不含 cache, 阈值 200k/500k/1M）产物, 与 v2 (含
+      cache, 500k/1.5M/3M) 不可直接比较; --sync 重跑后会刷成 v2 真实值; ; 重跑会跳变)"
     dimensions:
       anchor_hit: 1
       rubric_score: 0.2
@@ -132,7 +138,8 @@ baseline_scores:
     tested_at: 2026-05-23T17:25:14.649Z
     tested_by: eval-runner
     transcript_path: null
-    notes: "[cost-formula] v1 (旧公式: 不含 cache; 重跑会跳变)"
+    notes: "⚠️ legacy_v1: score/cost 字段为 v1 公式（不含 cache, 阈值 200k/500k/1M）产物, 与 v2 (含
+      cache, 500k/1.5M/3M) 不可直接比较; --sync 重跑后会刷成 v2 真实值; ; 重跑会跳变)"
     dimensions:
       anchor_hit: 0.125
       rubric_score: 0.2
@@ -147,7 +154,8 @@ baseline_scores:
     tested_at: 2026-05-24T03:23:14.222Z
     tested_by: eval-runner
     transcript_path: null
-    notes: "[cost-formula] v1 (旧公式: 不含 cache; 重跑会跳变)"
+    notes: "⚠️ legacy_v1: score/cost 字段为 v1 公式（不含 cache, 阈值 200k/500k/1M）产物, 与 v2 (含
+      cache, 500k/1.5M/3M) 不可直接比较; --sync 重跑后会刷成 v2 真实值; ; 重跑会跳变)"
     dimensions:
       anchor_hit: 1
       rubric_score: 1

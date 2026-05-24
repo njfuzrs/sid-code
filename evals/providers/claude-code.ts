@@ -41,6 +41,18 @@ export interface StreamMeta {
   sawResult: boolean;
   /** 解析到的总事件数（用于诊断） */
   eventCount: number;
+  /**
+   * 校准诊断（2026-05-24）：result 事件的原始 usage 与各 assistant turn usage 累加值。
+   * 用于事后对比 claude CLI 的 result.usage 是"累计"还是"最后一次"语义。
+   * 仅 stderr 输出，不写入 metaOut。
+   */
+  rawResultUsage: Record<string, number> | null;
+  assistantUsageSum: {
+    input_tokens: number;
+    output_tokens: number;
+    cache_creation_input_tokens: number;
+    cache_read_input_tokens: number;
+  };
 }
 
 const FILE_WRITE_TOOLS = new Set(["Write", "Edit", "NotebookEdit", "MultiEdit"]);
@@ -56,6 +68,11 @@ export class StreamJsonParser {
     text: "", toolsUsed: [], filesEdited: [], numTurns: 0, totalCostUsd: 0,
     totalTokens: 0, errorCount: 0, retryCount: 0, backtrackCount: 0,
     exitStatus: null, sawResult: false, eventCount: 0,
+    rawResultUsage: null,
+    assistantUsageSum: {
+      input_tokens: 0, output_tokens: 0,
+      cache_creation_input_tokens: 0, cache_read_input_tokens: 0,
+    },
   };
   private toolsSeen = new Set<string>();
   private filesEdited = new Set<string>();
@@ -116,6 +133,17 @@ export class StreamJsonParser {
       this.meta.totalCostUsd = (evt.total_cost_usd as number) || 0;
       const usage = evt.usage as Record<string, number> | undefined;
       if (usage) {
+        // ⚠️ 校准未决（2026-05-24）：claude CLI 的 result.usage 语义未官方文档化。
+        // 已知：sid-code 用 raw.jsonl 累加各 turn 的 response.usage（4 项相加）。
+        // 待确认：claude CLI 是给"累计 sum"还是"最后一次 assistant 响应的 usage"。
+        // 若是后者，sid-code 的 cost 维度会系统性偏大几倍 → 横向对比不公平。
+        // 临时保持"4 项相加"以维持对称形式，但实际值可能口径不同。
+        // 校准方法（待 claude API 可用时执行）：
+        //   1. 跑同一 case 同时落 sid-code raw.jsonl 与 claude CLI stream-json
+        //   2. 对比 result.usage vs 累加 assistant 事件 usage 的差值
+        //   3. 若一致 → 累计；若 result 远小于累加 → "最后一次"
+        // 诊断日志：把 result.usage 原始值打到 stderr 便于事后分析
+        this.meta.rawResultUsage = { ...usage };
         this.meta.totalTokens = (usage.input_tokens || 0)
           + (usage.output_tokens || 0)
           + (usage.cache_creation_input_tokens || 0)
@@ -123,6 +151,17 @@ export class StreamJsonParser {
       }
       if (evt.is_error === true || evt.subtype === "error") this.meta.exitStatus = "error";
       else if (evt.subtype === "success") this.meta.exitStatus = "success";
+    } else if (evt.type === "assistant" && evt.message && typeof evt.message === "object") {
+      // 同步在 assistant 分支累加 turn-level usage，便于事后与 result.usage 对照。
+      // 这段累加只用于诊断 stderr，不进 totalTokens（避免双倍）。
+      const msg = evt.message as Record<string, unknown>;
+      const u = msg.usage as Record<string, number> | undefined;
+      if (u) {
+        this.meta.assistantUsageSum.input_tokens += u.input_tokens || 0;
+        this.meta.assistantUsageSum.output_tokens += u.output_tokens || 0;
+        this.meta.assistantUsageSum.cache_creation_input_tokens += u.cache_creation_input_tokens || 0;
+        this.meta.assistantUsageSum.cache_read_input_tokens += u.cache_read_input_tokens || 0;
+      }
     }
   }
 
@@ -219,6 +258,26 @@ async function main() {
     + `stdout=${stdoutBytes}B events=${parsed.eventCount} sawResult=${parsed.sawResult} `
     + `turns=${parsed.numTurns} tools=${parsed.toolsUsed.join(",")} errors=${parsed.errorCount}\n`
   );
+
+  // 校准诊断日志：对比 result.usage 与 assistant turn 累加 sum
+  // 用于事后判断 claude CLI 的 result.usage 语义。
+  // 当 result_4sum ≈ assistant_4sum：累计语义（与 sid-code 累加 raw.jsonl 对齐）
+  // 当 result_4sum << assistant_4sum：单次/最后一次语义（cost 阈值需重新校准）
+  if (parsed.rawResultUsage) {
+    const r4 = (parsed.rawResultUsage.input_tokens || 0)
+      + (parsed.rawResultUsage.output_tokens || 0)
+      + (parsed.rawResultUsage.cache_creation_input_tokens || 0)
+      + (parsed.rawResultUsage.cache_read_input_tokens || 0);
+    const a4 = parsed.assistantUsageSum.input_tokens
+      + parsed.assistantUsageSum.output_tokens
+      + parsed.assistantUsageSum.cache_creation_input_tokens
+      + parsed.assistantUsageSum.cache_read_input_tokens;
+    process.stderr.write(
+      `[claude-code calibration] result.usage 4sum=${r4} | assistant累加 4sum=${a4} | `
+      + `比例=${a4 > 0 ? (a4 / Math.max(1, r4)).toFixed(2) : "N/A"} `
+      + `(<1.5≈累计 / >1.5≈单次)\n`
+    );
+  }
 
   // 健康检查：exit=0 但没有 result 事件 → 说明输出在中途被截断/丢失，应当标 error
   if (!timedOut && exitCode === 0 && !parsed.sawResult) {

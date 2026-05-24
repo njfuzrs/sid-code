@@ -95,28 +95,37 @@ export function readTrajectoryMeta(trajPath: string | null): TrajMeta {
   }
 }
 
-function readRawTokens(trajPath: string | null): number {
-  if (!trajPath) return 0;
+function readRawTokens(trajPath: string | null): { total: number; breakdown: { input: number; output: number; cache_creation: number; cache_read: number } } {
+  const empty = { total: 0, breakdown: { input: 0, output: 0, cache_creation: 0, cache_read: 0 } };
+  if (!trajPath) return empty;
   const rawPath = join(trajPath, "..", "raw.jsonl");
-  if (!existsSync(rawPath)) return 0;
+  if (!existsSync(rawPath)) return empty;
   try {
     const lines = readFileSync(rawPath, "utf-8").trim().split("\n");
-    let tokens = 0;
+    let input = 0, output = 0, cc = 0, cr = 0;
     for (const line of lines) {
       const usage = JSON.parse(line)?.response?.usage;
       if (usage) {
         // 与 claude-code wrapper 对齐：4 项全加（input + output + cache_creation + cache_read）
         // Anthropic 计费里 cache 部分单独计算，但作为 token 总消耗都应纳入 cost 维度。
         // 不加 cache 会让 sid-code 的 total_tokens 系统性比 claude-code 小，cost 维度横向不公平。
-        tokens += (usage.input_tokens || 0)
-          + (usage.output_tokens || 0)
-          + (usage.cache_creation_input_tokens || 0)
-          + (usage.cache_read_input_tokens || 0);
+        //
+        // ⚠️ 校准未决（2026-05-24）：此处累加是"所有 turn 的 sum"。
+        // claude-code wrapper 读 result.usage 是否也是累计语义未确认（claude API 当前 503 不可用，
+        // 无法做活体对照）。若 claude CLI 给"最后一次"语义，本数值会比 claude-code 大几倍，
+        // cost 阈值需要重新校准。校准方法见 claude-code.ts:117-124 的注释。
+        input += usage.input_tokens || 0;
+        output += usage.output_tokens || 0;
+        cc += usage.cache_creation_input_tokens || 0;
+        cr += usage.cache_read_input_tokens || 0;
       }
     }
-    return tokens;
+    return {
+      total: input + output + cc + cr,
+      breakdown: { input, output, cache_creation: cc, cache_read: cr },
+    };
   } catch {
-    return 0;
+    return empty;
   }
 }
 
@@ -237,7 +246,8 @@ async function main() {
   // trajectory_path 由本次进程显式写在 stdout JSON 里，丢失就是真的丢失，应作 error 处理而非猜。
   const trajPath = parsed.trajectoryPath;
   const meta = readTrajectoryMeta(trajPath);
-  const rawTokens = readRawTokens(trajPath);
+  const rawTokensInfo = readRawTokens(trajPath);
+  const rawTokens = rawTokensInfo.total;
   const trajSignals = analyzeTrajectorySignals(trajPath);
 
   const totalTokens = rawTokens || meta.totalTokens;
@@ -262,6 +272,17 @@ async function main() {
     + `tools=${meta.toolsUsed.join(",")} steps=${meta.totalSteps} `
     + `tokens=${totalTokens} errors=${trajSignals.errorCount}\n`
   );
+
+  // 校准诊断（2026-05-24，配对 claude-code wrapper 同名日志）：
+  // 输出 token 各项明细，便于事后与 claude CLI result.usage 对照确认语义。
+  if (rawTokens > 0) {
+    process.stderr.write(
+      `[sid-code-live calibration] raw.jsonl 累加（${meta.totalSteps} turn）: `
+      + `i=${rawTokensInfo.breakdown.input} o=${rawTokensInfo.breakdown.output} `
+      + `cc=${rawTokensInfo.breakdown.cache_creation} cr=${rawTokensInfo.breakdown.cache_read} `
+      + `4sum=${rawTokens}\n`
+    );
+  }
 
   if (parsed.text) {
     // 健康检查：拿到 sessionId 但 trajectory_path 缺失/不存在 → 视为 error，避免上层用空 metadata 评分

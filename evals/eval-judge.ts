@@ -2,7 +2,14 @@ import Anthropic from "@anthropic-ai/sdk";
 
 export interface DimScore {
   pass: boolean;
-  score: number;
+  /**
+   * null 表示该维度"无可评分数据"（数据缺失 / judge 不可用），应在 aggregate 中跳过、
+   * 不当作 0 也不当作 1。区别于 0（实测为 0）—— null 是"没法测"，0 是"测了但全错"。
+   *
+   * 旧实现把缺数据兜底给 1.0，会让挂掉的 case 在 tool/efficiency/cost 三个维度白拿满分，
+   * 总分 ~2.5，污染均值（17% 错误率均分仍能稳在 4.1 看起来"还行"）。
+   */
+  score: number | null;
   reason: string;
 }
 
@@ -112,9 +119,9 @@ export async function gradeRubric(
       await new Promise(r => setTimeout(r, delayMs));
     }
   }
-  // 重试用尽：降级——score=1.0 但 pass=false + reason 标注 judge 不可用
-  // 这样不会让单个 case 因 judge 限流而误判失败，整体仍可继续
-  return { pass: false, score: 1.0, reason: `LLM judge 不可用（重试用尽）: ${lastErr?.message?.slice(0, 100) ?? "unknown"}` };
+  // 重试用尽：score=null，aggregate 会跳过该维度（不当 0、也不当 1）。
+  // 旧实现给 1.0 是误判方向：误判失败是 false negative，误判成功（限流→满分）才会污染 baseline。
+  return { pass: false, score: null, reason: `LLM judge 不可用（重试用尽）: ${lastErr?.message?.slice(0, 100) ?? "unknown"}` };
 }
 
 export function gradeToolCompliance(
@@ -133,17 +140,18 @@ export function gradeToolCompliance(
   const mustNotCallTools = expected.mustNotCallTools ?? [];
   const mustNotModifyFiles = expected.mustNotModifyFiles ?? [];
 
-  // sideband metadata 缺失兜底（修复 case_002/005 等卡 0.6 的系统性偏差）
-  // 当 wrapper 没读到 trajectory 时，所有合规维度数据都是空的——这是评测体系问题，不应扣模型的分
+  // sideband metadata 全空：trajectory 没落盘 / wrapper 失败 / case 真的没用工具。
+  // 无法区分"用了但读不到"和"压根没用"，给 null 让 aggregate 跳过——
+  // 旧实现给 1.0 会让挂掉的 case 在 tool 维度白拿满分。
   if (
     tools_used.length === 0 &&
     files_edited.length === 0 &&
     (total_steps ?? 0) === 0
   ) {
     return {
-      pass: true,
-      score: 1.0,
-      reason: "sideband metadata 缺失（trajectory 未落盘或读取失败），跳过工具合规检查",
+      pass: false,
+      score: null,
+      reason: "sideband metadata 缺失（trajectory 未落盘或 wrapper 失败），跳过工具合规检查",
     };
   }
 
@@ -195,8 +203,10 @@ export function gradeToolCompliance(
 export function gradeEfficiency(meta: AgentMeta, maxSteps: number): DimScore {
   const { total_steps } = meta;
 
+  // 无轨迹数据：给 null 而非 1.0。挂掉的 case 在 efficiency 维度本应"无可评"，
+  // 不是"高效"——这是当前评测体系无法测量的，不能记账成正面信号。
   if (total_steps === 0) {
-    return { pass: true, score: 1.0, reason: "无轨迹数据，跳过效率评估" };
+    return { pass: false, score: null, reason: "无轨迹数据，跳过效率评估" };
   }
 
   const ratio = total_steps / maxSteps;
@@ -237,6 +247,15 @@ export function gradeEfficiency(meta: AgentMeta, maxSteps: number): DimScore {
  *    namedScores.cost 可能从 1.0 → 0.7（看起来像退化），实际是公式变更。
  *    判断方式：reason 里的版本标记（"v2"）或 baseline_scores 的 _formula_version 字段。
  *
+ * ⚠️ 阈值未在跨 provider 上校准（2026-05-24）：
+ *    - sid-code 累加 raw.jsonl 每 turn 的 usage，4 项相加 → 累计语义
+ *    - claude-code wrapper 读 result.usage 的 4 字段，语义未官方文档化
+ *    - 当前观察：sid-code 历史 30 次 cost 维度全部 1.0（≤500k）—— 要么阈值过松，
+ *      要么 claude CLI 的 usage 不是累计（→ sid-code 系统性偏大）
+ *    - 校准方法：claude API 可用时跑 case_028 等长 case，对比两个 wrapper 的
+ *      [calibration] stderr 日志，确认 result.usage 语义后再调阈值
+ *    - 在没校准之前，**横向对比的 cost 维度只能给定性参考，不能作为定量结论**
+ *
  * 调整阈值时记得同步：
  *   - evals/_runs 下 jsonl 历史数据有 cost 字段，无法回填，只能用 reason 区分
  *   - evals 下 p0/p1/p2 的 case yaml 的 baseline_scores 需要重跑 + --sync 才会刷新
@@ -246,8 +265,11 @@ export const COST_FORMULA_VERSION = "v2";
 export function gradeCost(meta: AgentMeta): DimScore {
   const { total_tokens } = meta;
 
+  // 无 token 数据：给 null 而非 1.0。原因同 efficiency——
+  // wrapper 没读到 trajectory 时 total_tokens=0，旧实现兜底 1.0
+  // 会让挂掉的 case 白拿"低消耗"的满分。
   if (total_tokens === 0) {
-    return { pass: true, score: 1.0, reason: "无 token 数据，跳过成本评估" };
+    return { pass: false, score: null, reason: "无 token 数据，跳过成本评估" };
   }
 
   let score: number;
@@ -272,22 +294,33 @@ export function gradeCost(meta: AgentMeta): DimScore {
   return { pass: score >= 0.6, score, reason };
 }
 
+/**
+ * 加权聚合：跳过 score === null 的维度，按剩余权重归一化。
+ *
+ * 例：anchor=0, rubric=null（限流）, tool=null（无 traj）, eff=null, cost=null
+ *   → 只有 anchor 一维有效，归一化后总分 = 0 / 1.5 × 5 = 0.0
+ *   旧实现：anchor=0 + rubric=0(judge 0) + tool=1 + eff=1 + cost=1 → ~2.5（白拿 3 维）
+ *
+ * 全部维度 null 的极端 case → 返回 score: null（无法评分），调用方决定写入策略。
+ */
 export function aggregate(
   dims: Record<string, DimScore>,
   weights?: Record<string, number>
-): { score: number; namedScores: Record<string, number> } {
+): { score: number | null; namedScores: Record<string, number | null> } {
   const w = { ...DEFAULT_WEIGHTS, ...weights };
   let weightedSum = 0;
   let totalWeight = 0;
-  const namedScores: Record<string, number> = {};
+  const namedScores: Record<string, number | null> = {};
 
   for (const [name, dim] of Object.entries(dims)) {
+    namedScores[name] = dim.score;
+    if (dim.score === null) continue; // 跳过：不计入加权
     const weight = w[name] ?? 1.0;
     weightedSum += dim.score * weight;
     totalWeight += weight;
-    namedScores[name] = dim.score;
   }
 
-  const normalized = totalWeight > 0 ? (weightedSum / totalWeight) * 5 : 0;
+  if (totalWeight === 0) return { score: null, namedScores };
+  const normalized = (weightedSum / totalWeight) * 5;
   return { score: Math.round(normalized * 100) / 100, namedScores };
 }

@@ -1,6 +1,6 @@
 # Evals Dashboard — sid-code
 
-> 自动生成,请勿手动编辑。生成时间: `2026-05-24T09:13:37.199Z`
+> 自动生成,请勿手动编辑。生成时间: `2026-05-24T13:20:14.263Z`
 > 数据源: `evals/p*-*/` + `evals/_scores/` + `evals/_reports/`
 > 触发: 手动 `bun run eval:dashboard` / git pre-push hook 自动刷新
 
@@ -193,7 +193,7 @@ xychart-beta
 
 ### 4.2 sid_code_deepseek_v4_pro
 
-总计: 2 次 run × 25 个 case = 28 条记录
+总计: 4 次 run × 25 个 case = 30 条记录
 
 **4.x.1 每次 run 的均分趋势**
 
@@ -201,20 +201,22 @@ xychart-beta
 | --- | --- | --- | --- | --- | --- |
 | `2026-05-23 17:25:14` | 25 | **4.25** | 23 | 2 | 0 |
 | `2026-05-23 17:45:57` | 3 | **4.82** | 3 | 0 | 0 |
+| `2026-05-24 13:00:00` | 1 | **4.91** | 1 | 0 | 0 |
+| `2026-05-24 13:16:20` | 1 | **4.91** | 1 | 0 | 0 |
 
 ```mermaid
 xychart-beta
     title "sid_code_deepseek_v4_pro 历次 run 均分"
-    x-axis [r1, r2]
+    x-axis [r1, r2, r3, r4]
     y-axis "Score" 0 --> 5
-    line [4.25, 4.82]
+    line [4.25, 4.82, 4.91, 4.91]
 ```
 
 <sub>fallback 表格 — sid_code_deepseek_v4_pro 历次 run 均分</sub>
 
-| 系列 | r1 | r2 |
-| --- | --- | --- |
-| avg | 4.25 | 4.82 |
+| 系列 | r1 | r2 | r3 | r4 |
+| --- | --- | --- | --- | --- |
+| avg | 4.25 | 4.82 | 4.91 | 4.91 |
 
 **4.x.2 单 case 多次 run 折线** (仅展示 ≥2 次 run 的 case)
 
@@ -269,6 +271,71 @@ xychart-beta
 | 系列 | r1 | r2 |
 | --- | --- | --- |
 | score | 4.91 | 5.00 |
+
+</details>
+
+<details><summary><code>case_028</code> · 3 次 · 4.29 → 4.91 → 4.91 (Δ +0.62)</summary>
+
+```mermaid
+xychart-beta
+    title "case_028 历次 run 分数"
+    x-axis [r1, r2, r3]
+    y-axis "Score" 0 --> 5
+    line [4.29, 4.91, 4.91]
+```
+
+<sub>fallback 表格 — case_028 历次 run 分数</sub>
+
+| 系列 | r1 | r2 | r3 |
+| --- | --- | --- | --- |
+| score | 4.29 | 4.91 | 4.91 |
+
+</details>
+
+### 4.3 claude_code_claude_opus_4_7
+
+总计: 4 次 run × 1 个 case = 4 条记录
+
+**4.x.1 每次 run 的均分趋势**
+
+| run_id (UTC) | cases | avg | pass≥3 | fail<3 | error/timeout |
+| --- | --- | --- | --- | --- | --- |
+| `2026-05-24 13:00:00` | 1 | **4.65** | 1 | 0 | 0 |
+| `2026-05-24 13:16:20` | 1 | **3.64** | 1 | 0 | 1 |
+| `2026-05-24 13:20:04` | 1 | **4.65** | 1 | 0 | 0 |
+| `2026-05-24 13:20:14` | 1 | **4.65** | 1 | 0 | 0 |
+
+```mermaid
+xychart-beta
+    title "claude_code_claude_opus_4_7 历次 run 均分"
+    x-axis [r1, r2, r3, r4]
+    y-axis "Score" 0 --> 5
+    line [4.65, 3.64, 4.65, 4.65]
+```
+
+<sub>fallback 表格 — claude_code_claude_opus_4_7 历次 run 均分</sub>
+
+| 系列 | r1 | r2 | r3 | r4 |
+| --- | --- | --- | --- | --- |
+| avg | 4.65 | 3.64 | 4.65 | 4.65 |
+
+**4.x.2 单 case 多次 run 折线** (仅展示 ≥2 次 run 的 case)
+
+<details><summary><code>case_028</code> · 4 次 · 4.65 → 3.64 → 4.65 → 4.65 (Δ 0.00)</summary>
+
+```mermaid
+xychart-beta
+    title "case_028 历次 run 分数"
+    x-axis [r1, r2, r3, r4]
+    y-axis "Score" 0 --> 5
+    line [4.65, 3.64, 4.65, 4.65]
+```
+
+<sub>fallback 表格 — case_028 历次 run 分数</sub>
+
+| 系列 | r1 | r2 | r3 | r4 |
+| --- | --- | --- | --- | --- |
+| score | 4.65 | 3.64 | 4.65 | 4.65 |
 
 </details>
 
