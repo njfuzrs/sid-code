@@ -8,6 +8,7 @@
     "dev": "bun run src/entrypoints/bootstrap.ts",
     "build": "bun build --compile --outfile sid-code src/entrypoints/bootstrap.ts",
     "test": "bun test",
+    "install-hooks": "sh scripts/install-git-hooks.sh",
     "lint": "echo 'TODO: add linter'",
     "eval:run": "bun run evals/eval-runner.ts",
     "eval:list": "bun run scripts/eval/list-evals.ts",

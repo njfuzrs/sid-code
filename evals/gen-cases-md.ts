@@ -19,50 +19,7 @@ const CASE_DIRS = [
 const PROMPTFOO_REPORT = join(ROOT, "_reports/promptfoo-latest.json");
 const EVAL_REPORT = join(ROOT, "_reports/eval-latest.json");
 
-interface CaseYaml {
-  id: string;
-  category: string;
-  priority: string;
-  created_date: string;
-  eval_type: string;
-  target_score: number;
-  graduated_at: string | null;
-  holdout: boolean;
-  holdout_reason: string | null;
-  input: {
-    user_query: string;
-    repo: string;
-    repo_commit: string;
-  };
-  expected: {
-    outcome: string;
-    must_include_any_of?: string[];
-    must_not_include?: string[];
-    must_call_tools?: string[];
-    must_not_call_tools?: string[];
-    must_modify_files_in?: string[];
-    must_not_modify_files?: string[];
-    max_steps?: number;
-    reference_answer?: string;
-  };
-  rubric?: {
-    completeness?: string;
-    precision?: string;
-    helpfulness?: string;
-  };
-  baseline_scores?: Record<string, {
-    score: number | null;
-    run_status: string;
-    tested_at?: string | null;
-    tested_by?: string;
-    notes?: string;
-    transcript_path?: string | null;
-    dimensions?: Record<string, number>;
-  }>;
-  source?: string;
-  notes?: string;
-  related_subsystem?: string[];
-}
+import type { CaseYaml, CaseBaselineEntry } from "./_types.ts";
 
 interface PromptfooResult {
   provider: { label?: string; id?: string };
@@ -143,7 +100,7 @@ async function loadPromptfooResults(): Promise<Map<string, PromptfooResult[]>> {
 
 function renderProviderDetail(
   name: string,
-  baseline: CaseYaml["baseline_scores"] extends Record<string, infer V> ? V : never,
+  baseline: CaseBaselineEntry,
   pfResult?: PromptfooResult,
 ): string[] {
   const lines: string[] = [];

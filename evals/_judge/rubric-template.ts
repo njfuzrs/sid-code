@@ -25,22 +25,7 @@
  * 验证至少 2 条 case 不会因 prompt 变动而打分剧变。
  */
 
-interface CaseYaml {
-  id: string;
-  category: string;
-  priority: string;
-  input: { user_query: string };
-  expected: {
-    must_include_any_of?: string[];
-    must_not_include?: string[];
-    reference_answer?: string;
-  };
-  rubric?: {
-    completeness?: string;
-    precision?: string;
-    helpfulness?: string;
-  };
-}
+import type { CaseYaml } from "../_types.ts";
 
 export function buildRubricPrompt(c: CaseYaml): string {
   const must = c.expected.must_include_any_of || [];

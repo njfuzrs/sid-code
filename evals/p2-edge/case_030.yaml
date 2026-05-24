@@ -76,7 +76,9 @@ baseline_scores:
     tested_at: 2026-05-21T17:27:35.641Z
     tested_by: promptfoo
     transcript_path: null
-    notes: ""
+    notes: "[cost-formula] v1 (旧公式: 不含 cache; 重跑会跳变)"
+    _formula_version:
+      cost: legacy_v1
   codex:
     score: null
     tested_at: null
@@ -87,59 +89,69 @@ baseline_scores:
     tested_at: 2026-05-21T17:27:35.641Z
     tested_by: promptfoo
     transcript_path: null
-    notes: ""
+    notes: "[cost-formula] v1 (旧公式: 不含 cache; 重跑会跳变)"
+    _formula_version:
+      cost: legacy_v1
   sid_code_opus47:
     score: 3.8
     run_status: success
     tested_at: 2026-05-22T17:25:00.843Z
     tested_by: promptfoo
     transcript_path: null
-    notes: ""
+    notes: "[cost-formula] v1 (旧公式: 不含 cache; 重跑会跳变)"
     dimensions:
       anchor_hit: 0
       rubric_score: 1
       tool_compliance: 0.6
       efficiency: 1
       cost: 1
+    _formula_version:
+      cost: legacy_v1
   claude_code_opus47:
     score: 3.8
     run_status: success
     tested_at: 2026-05-22T17:25:00.843Z
     tested_by: promptfoo
     transcript_path: null
-    notes: ""
+    notes: "[cost-formula] v1 (旧公式: 不含 cache; 重跑会跳变)"
     dimensions:
       anchor_hit: 0
       rubric_score: 1
       tool_compliance: 0.6
       efficiency: 1
       cost: 1
+    _formula_version:
+      cost: legacy_v1
   sid_code_deepseek_v4_pro:
     score: 4
     run_status: success
     tested_at: 2026-05-23T17:25:14.649Z
     tested_by: eval-runner
     transcript_path: null
-    notes: ""
+    notes: "[cost-formula] v1 (旧公式: 不含 cache; 重跑会跳变)"
     dimensions:
       anchor_hit: 0.16666666666666666
       rubric_score: 1
       tool_compliance: 1
       efficiency: 0.7
       cost: 0.7
+    _formula_version:
+      cost: legacy_v1
   sid_code_claude_opus_4_7:
     score: 4.56
     run_status: success
     tested_at: 2026-05-24T03:23:14.222Z
     tested_by: eval-runner
     transcript_path: null
-    notes: ""
+    notes: "[cost-formula] v1 (旧公式: 不含 cache; 重跑会跳变)"
     dimensions:
       anchor_hit: 0.5
       rubric_score: 1
       tool_compliance: 1
       efficiency: 1
       cost: 1
+    _formula_version:
+      cost: legacy_v1
 
 source: "manual_design_2026_05_20_coverage_gap_诚实兜底"
 notes: |

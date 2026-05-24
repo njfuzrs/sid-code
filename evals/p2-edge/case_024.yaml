@@ -58,7 +58,8 @@ baseline_scores:
       tested_at: "2026-05-15T19:38:54.264Z",
       tested_by: anchor_auto_v0,
       transcript_path: "evals/raw-outputs/case_024_1778873734251.jsonl",
-      notes: "锚点 2/3 命中, 反向违规 0; 人工 D5 复核可调"
+      notes: "锚点 2/3 命中, 反向违规 0; 人工 D5 复核可调; [cost-formula] v1 (旧公式: 不含 cache; 重跑会跳变)",
+      _formula_version: { cost: legacy_v1 }
     }
   claude_code:
     score: 5
@@ -66,7 +67,9 @@ baseline_scores:
     tested_at: 2026-05-21T16:57:24.606Z
     tested_by: promptfoo
     transcript_path: null
-    notes: ""
+    notes: "[cost-formula] v1 (旧公式: 不含 cache; 重跑会跳变)"
+    _formula_version:
+      cost: legacy_v1
   codex:
     {
       score: null,
@@ -82,59 +85,69 @@ baseline_scores:
     tested_at: 2026-05-21T16:57:24.606Z
     tested_by: promptfoo
     transcript_path: null
-    notes: ""
+    notes: "[cost-formula] v1 (旧公式: 不含 cache; 重跑会跳变)"
+    _formula_version:
+      cost: legacy_v1
   claude_code_opus47:
     score: 4.5
     run_status: success
     tested_at: 2026-05-22T17:25:00.843Z
     tested_by: promptfoo
     transcript_path: null
-    notes: ""
+    notes: "[cost-formula] v1 (旧公式: 不含 cache; 重跑会跳变)"
     dimensions:
       anchor_hit: 1
       rubric_score: 0.95
       tool_compliance: 0.6
       efficiency: 1
       cost: 1
+    _formula_version:
+      cost: legacy_v1
   sid_code_opus47:
     score: 4.5
     run_status: success
     tested_at: 2026-05-22T17:25:00.843Z
     tested_by: promptfoo
     transcript_path: null
-    notes: ""
+    notes: "[cost-formula] v1 (旧公式: 不含 cache; 重跑会跳变)"
     dimensions:
       anchor_hit: 1
       rubric_score: 0.95
       tool_compliance: 0.6
       efficiency: 1
       cost: 1
+    _formula_version:
+      cost: legacy_v1
   sid_code_deepseek_v4_pro:
     score: 4.88
     run_status: success
     tested_at: 2026-05-23T17:25:14.649Z
     tested_by: eval-runner
     transcript_path: null
-    notes: ""
+    notes: "[cost-formula] v1 (旧公式: 不含 cache; 重跑会跳变)"
     dimensions:
       anchor_hit: 1
       rubric_score: 0.95
       tool_compliance: 1
       efficiency: 1
       cost: 1
+    _formula_version:
+      cost: legacy_v1
   sid_code_claude_opus_4_7:
     score: 4.88
     run_status: success
     tested_at: 2026-05-24T03:23:14.222Z
     tested_by: eval-runner
     transcript_path: null
-    notes: ""
+    notes: "[cost-formula] v1 (旧公式: 不含 cache; 重跑会跳变)"
     dimensions:
       anchor_hit: 1
       rubric_score: 0.95
       tool_compliance: 1
       efficiency: 1
       cost: 1
+    _formula_version:
+      cost: legacy_v1
 
 source: "synthetic_edge_2026_05_16"
 notes: |

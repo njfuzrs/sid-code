@@ -26,7 +26,7 @@ function parseArgs(): { prompt: string; caseId: string; model: string | null; ti
   return { prompt, caseId, model, timeoutMs, maxTurns, skipPermissions, cliPath };
 }
 
-interface StreamMeta {
+export interface StreamMeta {
   text: string;
   toolsUsed: string[];
   filesEdited: string[];
@@ -48,8 +48,10 @@ const FILE_WRITE_TOOLS = new Set(["Write", "Edit", "NotebookEdit", "MultiEdit"])
 /**
  * 流式 stream-json 解析器：增量消费，避免单 stdout string 累加。
  * 状态机内部，每次喂一行 JSON 就更新内部状态。
+ *
+ * 单测见 evals/providers/claude-code.test.ts。改解析逻辑前先跑测试。
  */
-class StreamJsonParser {
+export class StreamJsonParser {
   meta: StreamMeta = {
     text: "", toolsUsed: [], filesEdited: [], numTurns: 0, totalCostUsd: 0,
     totalTokens: 0, errorCount: 0, retryCount: 0, backtrackCount: 0,
@@ -240,7 +242,9 @@ async function main() {
   process.stdout.write(JSON.stringify({ output: parsed.text || "[ERROR] empty output from claude-code", meta: metaOut, error: !parsed.text }) + "\n");
 }
 
-main().catch((err) => {
-  process.stdout.write(JSON.stringify({ output: `[ERROR] claude-code wrapper crash: ${err?.message || err}`, meta: {}, error: true }) + "\n");
-  process.exit(0);
-});
+if (import.meta.main) {
+  main().catch((err) => {
+    process.stdout.write(JSON.stringify({ output: `[ERROR] claude-code wrapper crash: ${err?.message || err}`, meta: {}, error: true }) + "\n");
+    process.exit(0);
+  });
+}

@@ -13,10 +13,12 @@ import {
   gradeEfficiency,
   gradeCost,
   aggregate,
+  COST_FORMULA_VERSION,
   type DimScore,
   type AgentMeta,
 } from "./eval-judge.ts";
 import { buildRubricPrompt } from "./_judge/rubric-template.ts";
+import type { CaseYaml } from "./_types.ts";
 
 const ROOT = resolve(import.meta.dir);
 const CASE_DIRS = [
@@ -26,31 +28,7 @@ const CASE_DIRS = [
 ];
 const HOLDOUT_DIR = join(ROOT, "holdout");
 
-interface CaseYaml {
-  id: string;
-  category: string;
-  priority: string;
-  holdout?: boolean;
-  input: { user_query: string };
-  expected: {
-    must_include_any_of?: string[];
-    must_not_include?: string[];
-    must_call_tools?: string[];
-    /** 工具检查模式：all_of(默认) | any_of(任一即可) */
-    must_call_tools_mode?: "all_of" | "any_of";
-    must_not_call_tools?: string[];
-    must_not_modify_files?: string[];
-    max_steps?: number;
-    reference_answer?: string;
-  };
-  rubric?: {
-    completeness?: string;
-    precision?: string;
-    helpfulness?: string;
-  };
-}
-
-interface ProviderDef {
+export interface ProviderDef {
   name: string;
   script: string;
   model?: string;
@@ -59,7 +37,7 @@ interface ProviderDef {
   extraArgs?: string[];
 }
 
-interface ProviderResult {
+export interface ProviderResult {
   output: string;
   meta: AgentMeta & { latency_ms: number; exit_status: string; error_count: number; retry_count: number; backtrack_count: number };
   error?: boolean;
@@ -78,24 +56,55 @@ export interface TestResult {
   testedAt: string;
 }
 
-const PROVIDER_REGISTRY: Record<string, Omit<ProviderDef, "name" | "model">> = {
+const PROVIDER_REGISTRY: Record<string, Omit<ProviderDef, "name" | "model"> & { defaultModel: string }> = {
   "sid-code": {
     script: join(ROOT, "providers/sid-code-live.ts"),
     timeoutMs: 480_000,
     maxTurns: 30,
+    defaultModel: "deepseek-v4-pro",
   },
   "claude-code": {
     script: join(ROOT, "providers/claude-code.ts"),
     timeoutMs: 480_000,
     maxTurns: 30,
+    // claude CLI 只认 anthropic 模型 slug（claude-opus-4-7 / claude-sonnet-4-6 / claude-haiku-4-5）。
+    // 传 deepseek-v4-pro 会让 claude 立刻报错退出 → 横向对比全部跑挂。
+    defaultModel: "claude-opus-4-7",
   },
 };
 
-function buildProvider(type: string, model: string): ProviderDef {
+/**
+ * 用户传单个 model（旧用法）想横向对比时，常见的不兼容映射。
+ * 当某 provider 不接受当前传入的 model slug 时，自动回退到其 defaultModel
+ * 并给出一行 warning，避免静默跑出垃圾数据。
+ *
+ * 规则朴素：
+ *  - claude-code 只接受 claude-* 前缀
+ *  - sid-code 不限制（quota.ts 走 provider 注册表，未知 slug 会自己报错）
+ */
+function reconcileModelForProvider(providerType: string, model: string): { model: string; warned: boolean } {
+  const reg = PROVIDER_REGISTRY[providerType];
+  if (!reg) return { model, warned: false };
+  if (providerType === "claude-code" && !model.startsWith("claude-")) {
+    return { model: reg.defaultModel, warned: true };
+  }
+  return { model, warned: false };
+}
+
+function buildProvider(type: string, model: string | undefined): ProviderDef {
   const reg = PROVIDER_REGISTRY[type];
   if (!reg) throw new Error(`未知 provider 类型: ${type}，可选: ${Object.keys(PROVIDER_REGISTRY).join(", ")}`);
-  const modelSlug = model.replace(/[^a-zA-Z0-9]/g, "_");
-  return { ...reg, name: `${type.replace(/-/g, "_")}_${modelSlug}`, model };
+  const requested = model ?? reg.defaultModel;
+  const { model: resolved, warned } = reconcileModelForProvider(type, requested);
+  if (warned) {
+    process.stderr.write(
+      `[eval-runner] ⚠️  provider=${type} 不兼容 model=${requested}，回退到 ${resolved}。`
+      + `如要强制使用 ${requested}，请改为只指定单一 provider 跑。\n`
+    );
+  }
+  const modelSlug = resolved.replace(/[^a-zA-Z0-9]/g, "_");
+  const { defaultModel: _ignored, ...rest } = reg;
+  return { ...rest, name: `${type.replace(/-/g, "_")}_${modelSlug}`, model: resolved };
 }
 
 async function loadCases(
@@ -143,6 +152,12 @@ function hasHoldoutId(want: Set<string>): boolean {
 /**
  * 判定 provider 输出/stderr 是否为可重试的瞬时网络错误。
  * 只在网络错误时重试，业务错误（空输出 / parse_error / 模型拒绝）不重试避免污染数据。
+ *
+ * ⚠️ 已知边界：substring 匹配会有 false positive。
+ *   - 模型输出里出现 "HTTP 502 是什么" / "issue #429" + wrapper 因其它原因 error → 会被误判可重试
+ *   - 选型理由：宁可多 retry 不可漏 retry——多 retry 浪费几分钟，漏 retry 直接污染 baseline
+ *   - 如要更严格，应该改为只检查 stderr（stderr 几乎只包含 wrapper 自身日志 + 子进程 stderr）
+ *     当前仍检查 output 是因为部分 provider 把 HTTP 错误写到 stdout 的 [ERROR] 块里。
  */
 export function isRetryableError(output: string, stderr: string): boolean {
   const combined = `${output}\n${stderr}`;
@@ -167,7 +182,7 @@ export function isRetryableError(output: string, stderr: string): boolean {
   return retryablePatterns.some(p => combined.includes(p));
 }
 
-async function runProviderOnce(provider: ProviderDef, prompt: string, caseId: string): Promise<ProviderResult & { stderrTail: string }> {
+export async function runProviderOnce(provider: ProviderDef, prompt: string, caseId: string): Promise<ProviderResult & { stderrTail: string }> {
   const args = [
     "run", provider.script,
     "--prompt", prompt,
@@ -184,9 +199,21 @@ async function runProviderOnce(provider: ProviderDef, prompt: string, caseId: st
     stdio: ["ignore", "pipe", "pipe"],
   });
 
+  // stdout 上限：50MB。wrapper bug 或 LLM 输出失控时（曾观察到 ~MB 级 stream-json）
+  // 防止 eval-runner 自身被拖到 OOM。超出立即 SIGKILL + 标记 error。
+  const STDOUT_MAX = 50 * 1024 * 1024;
   let stdoutBuf = "";
   let stderrBuf = "";
-  proc.stdout?.on("data", (c) => { stdoutBuf += c.toString(); });
+  let stdoutOverflow = false;
+  proc.stdout?.on("data", (c) => {
+    if (stdoutOverflow) return;
+    stdoutBuf += c.toString();
+    if (stdoutBuf.length > STDOUT_MAX) {
+      stdoutOverflow = true;
+      process.stderr.write(`[eval-runner] stdout overflow >${STDOUT_MAX}B for ${caseId} × ${provider.name}, SIGKILL\n`);
+      try { proc.kill("SIGKILL"); } catch { /* already exited */ }
+    }
+  });
   proc.stderr?.on("data", (c) => { stderrBuf += c.toString(); });
 
   // 外层 timeout 兜底：wrapper 自己有 timer，但如果 wrapper 在 spawn 之前
@@ -219,6 +246,15 @@ async function runProviderOnce(provider: ProviderDef, prompt: string, caseId: st
     };
   }
 
+  if (stdoutOverflow) {
+    return {
+      output: `[ERROR] eval-runner stdout overflow >${STDOUT_MAX}B`,
+      meta: { tools_used: [], files_edited: [], total_steps: 0, total_tokens: 0, latency_ms: 0, exit_status: "stdout_overflow", error_count: 0, retry_count: 0, backtrack_count: 0 },
+      error: true,
+      stderrTail,
+    };
+  }
+
   try {
     const result = JSON.parse(stdoutBuf.trim()) as ProviderResult;
     return { ...result, stderrTail };
@@ -232,7 +268,25 @@ async function runProviderOnce(provider: ProviderDef, prompt: string, caseId: st
   }
 }
 
-async function runProvider(provider: ProviderDef, prompt: string, caseId: string, maxRetries = 2): Promise<ProviderResult> {
+/**
+ * Retry 与退避策略。
+ * 改这两个常量时记得：
+ * - main() 中预估耗时使用同一份计算
+ * - 单 case 最坏耗时 = (DEFAULT_MAX_RETRIES + 1) × timeoutMs + 退避总和
+ */
+export const DEFAULT_MAX_RETRIES = 2;
+function retryBackoffMs(attempt: number): number {
+  // 指数退避基数 2s，倍数 4：2s → 8s → 32s
+  return 2_000 * Math.pow(4, attempt);
+}
+/** 退避总和（用于耗时预估），与 retryBackoffMs 的实际触发次数一致 = DEFAULT_MAX_RETRIES 次 */
+function totalBackoffMs(maxRetries: number): number {
+  let total = 0;
+  for (let i = 0; i < maxRetries; i++) total += retryBackoffMs(i);
+  return total;
+}
+
+export async function runProvider(provider: ProviderDef, prompt: string, caseId: string, maxRetries = DEFAULT_MAX_RETRIES): Promise<ProviderResult> {
   let lastResult: ProviderResult & { stderrTail: string } | null = null;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const result = await runProviderOnce(provider, prompt, caseId);
@@ -250,8 +304,7 @@ async function runProvider(provider: ProviderDef, prompt: string, caseId: string
       return stripStderr(result);
     }
 
-    // 指数退避：2s, 8s, 32s
-    const delayMs = 2_000 * Math.pow(4, attempt);
+    const delayMs = retryBackoffMs(attempt);
     process.stderr.write(`[eval-runner] ${caseId} × ${provider.name} 第 ${attempt + 1}/${maxRetries + 1} 次失败（网络错误），${delayMs}ms 后重试\n`);
     await new Promise(r => setTimeout(r, delayMs));
   }
@@ -435,6 +488,9 @@ export function syncBaselineScores(results: TestResult[], baseDir: string = ROOT
         transcript_path: null,
         notes: isTimeout ? "eval-runner 超时" : "",
         dimensions: r.namedScores,
+        // 公式版本：让后续工具/人能一眼区分新旧 baseline
+        // 同一 case 同一 provider 的 cost 维度跨版本不可直接比较
+        _formula_version: { cost: COST_FORMULA_VERSION },
       };
       baselineNode.set(r.provider, doc.createNode(entry));
     }
@@ -451,7 +507,10 @@ async function main() {
     options: {
       cases: { type: "string" },
       provider: { type: "string", default: "sid-code" },
-      model: { type: "string", default: "deepseek-v4-pro" },
+      // model 默认 undefined → buildProvider 用 provider 各自的 defaultModel
+      // （sid-code → deepseek-v4-pro，claude-code → claude-opus-4-7）。
+      // 显式指定 --model 会传给全部 provider；若与某 provider 不兼容会自动回退并 warning。
+      model: { type: "string" },
       concurrency: { type: "string", default: "2" },
       output: { type: "string", default: "evals/_reports/eval-latest.json" },
       week: { type: "string" },
@@ -467,7 +526,7 @@ async function main() {
   });
 
   const providerTypes = (values.provider as string).split(",").map(s => s.trim());
-  const model = values.model as string;
+  const model = values.model as string | undefined;
   const providers = providerTypes.map(t => buildProvider(t, model));
 
   const caseFilter = values.cases ? (values.cases as string).split(",").map(s => s.trim()) : undefined;
@@ -489,8 +548,25 @@ async function main() {
   }
 
   console.log(`[eval-runner] ${cases.length} cases × ${providers.length} providers = ${cases.length * providers.length} 组合`);
-  console.log(`  provider: ${providers.map(p => p.name).join(", ")}`);
-  console.log(`  model: ${model} | 并发: ${concurrency} | LLM judge: ${skipLlmJudge ? "跳过" : "启用"} | week: w${weekNum}`);
+  console.log(`  provider: ${providers.map(p => `${p.name}(model=${p.model})`).join(", ")}`);
+  console.log(`  并发: ${concurrency} | LLM judge: ${skipLlmJudge ? "跳过" : "启用"} | week: w${weekNum}`);
+
+  // 时长预估：单 case 最坏 = (DEFAULT_MAX_RETRIES+1) × timeoutMs + totalBackoff
+  // 全批最坏 = ceil(总组合数 / 并发) × 单 case 最坏
+  // 一旦超过 2h，cron 任务（如 trajectory-dashboard 的 0 4 * * *）会被截断 → 直接告警
+  const PER_CASE_TIMEOUT_MS = providers[0]?.timeoutMs ?? 480_000;
+  const worstSingleMs = (DEFAULT_MAX_RETRIES + 1) * PER_CASE_TIMEOUT_MS + totalBackoffMs(DEFAULT_MAX_RETRIES);
+  const totalCombos = cases.length * providers.length;
+  const worstTotalMs = Math.ceil(totalCombos / concurrency) * worstSingleMs;
+  const worstHours = (worstTotalMs / 3_600_000).toFixed(1);
+  const expectedHours = (worstTotalMs / 3_600_000 / 3).toFixed(1); // 假设平均 1/3 最坏
+  console.log(`  预估耗时: ~${expectedHours}h 正常 / ${worstHours}h 最坏（全部 retry 用尽 + 全 timeout）`);
+  if (worstTotalMs > 2 * 3_600_000) {
+    console.log(`  ⚠️  最坏耗时 ${worstHours}h > 2h，可能超过 cron 窗口。考虑：`);
+    console.log(`     - 提高并发: --concurrency ${Math.min(8, concurrency * 2)}`);
+    console.log(`     - 拆分批次: 用 --cases 分多次跑`);
+    console.log(`     - 减少 case: 加 --skip-holdout（默认已开）`);
+  }
   console.log("");
 
   if (dryRun) {
@@ -558,7 +634,14 @@ async function main() {
   const output = {
     version: 2,
     timestamp: new Date().toISOString(),
-    config: { cases: cases.map(c => c.id), providers: providers.map(p => p.name), model, concurrency, week: weekNum },
+    config: {
+      cases: cases.map(c => c.id),
+      providers: providers.map(p => ({ name: p.name, model: p.model })),
+      // model 字段保留为兼容性占位（旧 dashboard 读这个）。多 provider 不同 model 时取第一个。
+      model: providers[0]?.model ?? null,
+      concurrency,
+      week: weekNum,
+    },
     results: {
       timestamp: new Date().toISOString(),
       results: results.map(r => ({

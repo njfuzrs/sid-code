@@ -230,6 +230,11 @@ async function main() {
 
   const elapsedMs = Date.now() - startedAt;
   const parsed = parseStdoutJson(stdoutBuf);
+  // ⚠️ trajectory 必须从 stdout JSON 的 trajectory_path 字段拿到——
+  // 严禁回退到 mtime / 文件系统扫描（如 bench-runner/adapters 里的 findLatestSessionDir）。
+  // 原因：retry 场景下 mtime 会拿到上一次失败 attempt 留下的 session 目录，污染 trajectory metadata。
+  // 当前路径下不可能复用旧 session：sid-code 每次 spawn 都新建 session id，
+  // trajectory_path 由本次进程显式写在 stdout JSON 里，丢失就是真的丢失，应作 error 处理而非猜。
   const trajPath = parsed.trajectoryPath;
   const meta = readTrajectoryMeta(trajPath);
   const rawTokens = readRawTokens(trajPath);
@@ -259,6 +264,17 @@ async function main() {
   );
 
   if (parsed.text) {
+    // 健康检查：拿到 sessionId 但 trajectory_path 缺失/不存在 → 视为 error，避免上层用空 metadata 评分
+    // （这也是 retry 隔离的最后一道防线：本次 attempt 的 trajectory 必须由本次 spawn 写出，
+    //  缺失就让 runner 看到 error，不要 silent fallback）
+    if (parsed.sessionId && (!trajPath || !existsSync(trajPath))) {
+      process.stdout.write(JSON.stringify({
+        output: `[ERROR] sid-code-live trajectory_path missing or not exist: session=${parsed.sessionId} path=${trajPath ?? "null"}`,
+        meta: metaOut,
+        error: true,
+      }) + "\n");
+      process.exit(0);
+    }
     process.stdout.write(JSON.stringify({ output: parsed.text, meta: metaOut }) + "\n");
     process.exit(0);
   }

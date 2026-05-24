@@ -220,6 +220,29 @@ export function gradeEfficiency(meta: AgentMeta, maxSteps: number): DimScore {
   return { pass: score >= 0.6, score, reason };
 }
 
+/**
+ * Token 成本评分。
+ *
+ * ─── 公式与阈值版本 ───
+ *
+ * 当前公式 v2（2026-05-24 起）:
+ *   total_tokens = input + output + cache_creation + cache_read（4 项全加）
+ *   阈值: 500k / 1.5M / 3M（含 cache，cache_read 累计常翻 3-5 倍）
+ *
+ * 旧公式 v1（已废弃）:
+ *   total_tokens = input + output（不含 cache）
+ *   阈值: 200k / 500k / 1M
+ *
+ * ⚠️ 旧 baseline_scores 是按 v1 阈值打的。直接重跑同一 case 同一模型时，
+ *    namedScores.cost 可能从 1.0 → 0.7（看起来像退化），实际是公式变更。
+ *    判断方式：reason 里的版本标记（"v2"）或 baseline_scores 的 _formula_version 字段。
+ *
+ * 调整阈值时记得同步：
+ *   - evals/_runs 下 jsonl 历史数据有 cost 字段，无法回填，只能用 reason 区分
+ *   - evals 下 p0/p1/p2 的 case yaml 的 baseline_scores 需要重跑 + --sync 才会刷新
+ */
+export const COST_FORMULA_VERSION = "v2";
+
 export function gradeCost(meta: AgentMeta): DimScore {
   const { total_tokens } = meta;
 
@@ -228,22 +251,24 @@ export function gradeCost(meta: AgentMeta): DimScore {
   }
 
   let score: number;
-  let reason: string;
+  let level: string;
 
-  if (total_tokens <= 200_000) {
+  // v2 阈值：含 cache 的 4 项 token 合计
+  if (total_tokens <= 500_000) {
     score = 1.0;
-    reason = `token 使用 ${(total_tokens / 1000).toFixed(0)}k，低消耗`;
-  } else if (total_tokens <= 500_000) {
+    level = "低消耗";
+  } else if (total_tokens <= 1_500_000) {
     score = 0.7;
-    reason = `token 使用 ${(total_tokens / 1000).toFixed(0)}k，中等`;
-  } else if (total_tokens <= 1_000_000) {
+    level = "中等";
+  } else if (total_tokens <= 3_000_000) {
     score = 0.4;
-    reason = `token 使用 ${(total_tokens / 1000).toFixed(0)}k，偏高`;
+    level = "偏高";
   } else {
     score = 0.2;
-    reason = `token 使用 ${(total_tokens / 1000).toFixed(0)}k，严重超标`;
+    level = "严重超标";
   }
 
+  const reason = `[cost-${COST_FORMULA_VERSION}] token ${(total_tokens / 1000).toFixed(0)}k(含cache) ${level}`;
   return { pass: score >= 0.6, score, reason };
 }
 
