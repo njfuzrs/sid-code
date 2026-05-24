@@ -43,22 +43,26 @@ bun run evals/eval-runner.ts --provider sid-code --model claude-opus-4-7 --week 
 - `evals/_scores/wNN/case_NNN.yaml`（按周快照）
 - 自动刷新 `evals/DASHBOARD.md` + `evals/CASES.md`
 
-### Promptfoo 现状（**保留备用，默认不用**）
+### Promptfoo 现状（**已冻结，禁止使用**）
 
-`evals/promptfoo/` 是 2026-05-21 引入的旧执行/评判层，已被 `eval-runner.ts` 替代（详见
-`docs/eval/10-eval-architecture-analysis.md §5.4`）。**保留目的仅为可追溯历史数据 +
-紧急回滚**，不要主动调用，原因：
+2026-05-23 起评测层切换到自研 `eval-runner.ts`。原 `evals/promptfoo/` 已物理移到
+`evals/_legacy/promptfoo/`，wrapper 收敛到唯一一份在 `evals/providers/`（详见
+`docs/eval/10-eval-architecture-analysis.md §5.4`）。**保留 _legacy 仅为可追溯历史
+数据 + 紧急回滚**，不要主动调用，原因：
 1. 黑盒并发/重试不可控，遇 LLM 中转商 429 会跑空 5h+
 2. 评分公式重复维护（同一公式分布在 `yaml-to-tests.ts` 字符串 + `eval-judge.ts`）
 3. 用户已多次明确指示用自研 runner
+4. wrapper 双套同步成本高（已发生过修一处漏一处的事故，2026-05-24 收敛）
 
 **禁止行为**（除非用户显式指示）：
-- ❌ 跑 `bunx promptfoo eval` / `bun run eval:horizontal-run`
-- ❌ 改 `evals/promptfoo/promptfooconfig.yaml`、`evals/promptfoo/lib/yaml-to-tests.ts`
-- ❌ 把 `_reports/promptfoo-latest.json` 当作"最新分数"来源（应该用 `_reports/eval-latest.json` 或 `_runs/<provider>.jsonl`）
+- ❌ 跑 `bunx promptfoo eval`（npm script `eval:horizontal-*` 已删除）
+- ❌ 改 `evals/_legacy/promptfoo/` 下任何文件
+- ❌ 把 `_reports/promptfoo-*.json` 当作"最新分数"来源（应该用
+  `_reports/eval-latest.json` 或 `_runs/<provider>.jsonl`）
 
-**唯一允许复用**：`evals/promptfoo/providers/sid-code-live.ts` 和 `claude-code.ts`——eval-runner
-直接 spawn 这两个 wrapper（详见 `evals/eval-runner.ts:77 PROVIDER_REGISTRY`）。
+**唯一 wrapper 入口**：`evals/providers/sid-code-live.ts` 和
+`evals/providers/claude-code.ts`——eval-runner 直接 spawn（详见
+`evals/eval-runner.ts:77 PROVIDER_REGISTRY`）。
 
 
 ## 1. 项目概述

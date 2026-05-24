@@ -23,6 +23,7 @@ const CASE_DIRS = [
   join(ROOT, "p1-common"),
   join(ROOT, "p2-edge"),
 ];
+const HOLDOUT_DIR = join(ROOT, "holdout");
 
 interface CaseYaml {
   id: string;
@@ -94,20 +95,46 @@ function buildProvider(type: string, model: string): ProviderDef {
   return { ...reg, name: `${type.replace(/-/g, "_")}_${modelSlug}`, model };
 }
 
-async function loadCases(caseFilter?: string[], skipHoldout = true): Promise<CaseYaml[]> {
+async function loadCases(
+  caseFilter?: string[],
+  opts: { skipHoldout?: boolean; includeHoldout?: boolean } = {},
+): Promise<CaseYaml[]> {
+  const { skipHoldout = true, includeHoldout = false } = opts;
   const wantSet = caseFilter ? new Set(caseFilter) : null;
   const cases: CaseYaml[] = [];
-  for (const dir of CASE_DIRS) {
+
+  // 默认行为：扫描 P0/P1/P2 + 过滤 holdout=true 标记。
+  // includeHoldout=true 时，额外扫描 evals/holdout/ 目录，且不再过滤 holdout 标记。
+  // 注意：单独传 --cases case_004（在 holdout 目录里）的情况，
+  // 会通过下面的 holdout 目录扫描分支拿到（即便 includeHoldout=false 也允许显式指定）。
+  const dirsToScan = [...CASE_DIRS];
+  const explicitlyAskedHoldoutId = wantSet ? hasHoldoutId(wantSet) : false;
+  if (includeHoldout || explicitlyAskedHoldoutId) {
+    dirsToScan.push(HOLDOUT_DIR);
+  }
+
+  for (const dir of dirsToScan) {
+    if (!existsSync(dir)) continue;
     const files = await Array.fromAsync(new Bun.Glob("*.yaml").scan(dir));
     for (const f of files) {
       const content = await Bun.file(join(dir, f)).text();
       const c = parseYaml(content) as CaseYaml;
-      if (skipHoldout && c.holdout) continue;
+      // case 在 holdout 目录或带 holdout=true 标记 → 视为 holdout
+      const isHoldout = dir === HOLDOUT_DIR || c.holdout === true;
+      if (isHoldout && skipHoldout && !includeHoldout && !(wantSet && wantSet.has(c.id))) continue;
       if (wantSet && !wantSet.has(c.id)) continue;
       cases.push(c);
     }
   }
   return cases.sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function hasHoldoutId(want: Set<string>): boolean {
+  if (!existsSync(HOLDOUT_DIR)) return false;
+  for (const id of want) {
+    if (existsSync(join(HOLDOUT_DIR, `${id}.yaml`))) return true;
+  }
+  return false;
 }
 
 async function runProvider(provider: ProviderDef, prompt: string, caseId: string): Promise<ProviderResult> {
@@ -305,7 +332,7 @@ function appendRunHistory(results: TestResult[], runId: string, weekNum: number)
 }
 
 function findCaseYamlPath(caseId: string): string | null {
-  const allDirs = [...CASE_DIRS, join(ROOT, "holdout")];
+  const allDirs = [...CASE_DIRS, HOLDOUT_DIR];
   for (const dir of allDirs) {
     const p = join(dir, `${caseId}.yaml`);
     if (existsSync(p)) return p;
@@ -370,6 +397,7 @@ async function main() {
       output: { type: "string", default: "evals/_reports/eval-latest.json" },
       week: { type: "string" },
       "skip-holdout": { type: "boolean", default: true },
+      "include-holdout": { type: "boolean", default: false },
       "skip-llm-judge": { type: "boolean", default: false },
       "skip-sync": { type: "boolean", default: false },
       "dry-run": { type: "boolean", default: false },
@@ -389,7 +417,10 @@ async function main() {
   const outputPath = resolve(ROOT, "..", values.output as string);
   const weekNum = values.week ? parseInt(values.week as string, 10) : currentWeekNumber();
 
-  const cases = await loadCases(caseFilter, values["skip-holdout"] as boolean);
+  const cases = await loadCases(caseFilter, {
+    skipHoldout: values["skip-holdout"] as boolean,
+    includeHoldout: values["include-holdout"] as boolean,
+  });
 
   if (cases.length === 0) {
     console.error("未找到匹配的 case");

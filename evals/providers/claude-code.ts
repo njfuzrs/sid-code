@@ -26,42 +26,116 @@ function parseArgs(): { prompt: string; caseId: string; model: string | null; ti
   return { prompt, caseId, model, timeoutMs, maxTurns, skipPermissions, cliPath };
 }
 
-function extractResult(obj: Record<string, unknown> | null): string {
-  if (!obj) return "";
-  if (typeof obj.result === "string") return obj.result;
-  if (Array.isArray(obj.content)) {
-    return (obj.content as Array<{ type?: string; text?: string }>)
-      .filter((c) => c.type === "text")
-      .map((c) => c.text || "")
-      .join("\n");
-  }
-  return "";
+interface StreamMeta {
+  text: string;
+  toolsUsed: string[];
+  filesEdited: string[];
+  numTurns: number;
+  totalCostUsd: number;
+  totalTokens: number;
+  errorCount: number;
+  retryCount: number;
+  backtrackCount: number;
+  exitStatus: string | null;
 }
 
-function parseFinal(stdout: string): { text: string; numTurns: number; totalCostUsd: number } {
-  const trimmed = stdout.trim();
-  if (!trimmed) return { text: "", numTurns: 0, totalCostUsd: 0 };
-  try {
-    if (trimmed.startsWith("{")) {
-      const obj = JSON.parse(trimmed) as Record<string, unknown>;
-      return {
-        text: extractResult(obj),
-        numTurns: (obj.num_turns as number) || 0,
-        totalCostUsd: (obj.total_cost_usd as number) || 0,
-      };
+// Edit / Write / NotebookEdit 等会修改文件的工具列表，files_edited 取这些工具的 file_path
+const FILE_WRITE_TOOLS = new Set(["Write", "Edit", "NotebookEdit", "MultiEdit"]);
+
+function parseStreamJson(stdout: string): StreamMeta {
+  const empty: StreamMeta = {
+    text: "", toolsUsed: [], filesEdited: [], numTurns: 0, totalCostUsd: 0,
+    totalTokens: 0, errorCount: 0, retryCount: 0, backtrackCount: 0, exitStatus: null,
+  };
+  if (!stdout.trim()) return empty;
+
+  // stream-json 每行一个 JSON 对象
+  const lines = stdout.split("\n").filter(l => l.trim().startsWith("{"));
+  const toolsSeen = new Set<string>();
+  const filesEdited = new Set<string>();
+  const editCount = new Map<string, number>();
+  let lastTool = "";
+  let lastInput = "";
+  let retryCount = 0;
+  let backtrackCount = 0;
+  let errorCount = 0;
+  let text = "";
+  let numTurns = 0;
+  let totalCostUsd = 0;
+  let totalTokens = 0;
+  let exitStatus: string | null = null;
+  const finalTextParts: string[] = [];
+
+  for (const line of lines) {
+    let evt: Record<string, unknown>;
+    try { evt = JSON.parse(line); } catch { continue; }
+
+    if (evt.type === "assistant" && evt.message && typeof evt.message === "object") {
+      const msg = evt.message as Record<string, unknown>;
+      const content = msg.content;
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          const b = block as Record<string, unknown>;
+          if (b.type === "text" && typeof b.text === "string") {
+            finalTextParts.push(b.text);
+          } else if (b.type === "tool_use" && typeof b.name === "string") {
+            toolsSeen.add(b.name);
+            const inp = (b.input as Record<string, unknown>) || {};
+            const inpStr = JSON.stringify(inp);
+            if (b.name === lastTool && inpStr === lastInput) retryCount++;
+            lastTool = b.name;
+            lastInput = inpStr;
+
+            if (FILE_WRITE_TOOLS.has(b.name)) {
+              const fp = (inp.file_path || inp.notebook_path || inp.path) as string | undefined;
+              if (fp) {
+                filesEdited.add(fp);
+                const n = (editCount.get(fp) || 0) + 1;
+                editCount.set(fp, n);
+                if (n > 1) backtrackCount++;
+              }
+            }
+          }
+        }
+      }
+    } else if (evt.type === "user" && evt.message && typeof evt.message === "object") {
+      const msg = evt.message as Record<string, unknown>;
+      const content = msg.content;
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          const b = block as Record<string, unknown>;
+          if (b.type === "tool_result" && b.is_error === true) errorCount++;
+        }
+      }
+    } else if (evt.type === "result") {
+      // 最后一行 result 包含完整 metadata
+      if (typeof evt.result === "string") text = evt.result;
+      numTurns = (evt.num_turns as number) || 0;
+      totalCostUsd = (evt.total_cost_usd as number) || 0;
+      const usage = evt.usage as Record<string, number> | undefined;
+      if (usage) {
+        totalTokens = (usage.input_tokens || 0)
+          + (usage.output_tokens || 0)
+          + (usage.cache_creation_input_tokens || 0)
+          + (usage.cache_read_input_tokens || 0);
+      }
+      if (evt.is_error === true || evt.subtype === "error") exitStatus = "error";
+      else if (evt.subtype === "success") exitStatus = "success";
     }
-    if (trimmed.startsWith("[")) {
-      const arr = JSON.parse(trimmed) as Array<Record<string, unknown>>;
-      return {
-        text: arr.map(extractResult).filter(Boolean).join("\n"),
-        numTurns: arr.length,
-        totalCostUsd: 0,
-      };
-    }
-  } catch {
-    // fall through
   }
-  return { text: trimmed, numTurns: 0, totalCostUsd: 0 };
+
+  return {
+    text: text || finalTextParts.join("\n"),
+    toolsUsed: [...toolsSeen],
+    filesEdited: [...filesEdited],
+    numTurns,
+    totalCostUsd,
+    totalTokens,
+    errorCount,
+    retryCount,
+    backtrackCount,
+    exitStatus,
+  };
 }
 
 async function main() {
@@ -72,7 +146,9 @@ async function main() {
     process.exit(1);
   }
 
-  const args: string[] = ["-p", "--output-format", "json"];
+  // 用 stream-json 才能拿到 tools_used / files_edited / errors（关键修复）
+  // text/json 单结果输出格式丢失了所有中间事件
+  const args: string[] = ["-p", "--output-format", "stream-json", "--verbose"];
   if (model) args.push("--model", model);
   if (skipPermissions) args.push("--dangerously-skip-permissions");
   if (maxTurns) args.push("--max-turns", String(maxTurns));
@@ -111,24 +187,25 @@ async function main() {
   clearTimeout(timer);
 
   const elapsedMs = Date.now() - startedAt;
-  const { text, numTurns, totalCostUsd } = parseFinal(stdoutBuf);
+  const parsed = parseStreamJson(stdoutBuf);
 
   const metaOut = {
-    tools_used: [],
-    files_edited: [],
-    total_steps: numTurns,
-    total_tokens: 0,
+    tools_used: parsed.toolsUsed,
+    files_edited: parsed.filesEdited,
+    total_steps: parsed.numTurns,
+    total_tokens: parsed.totalTokens,
     latency_ms: elapsedMs,
-    exit_status: timedOut ? "timeout" : exitCode === 0 ? "success" : "error",
-    error_count: 0,
-    retry_count: 0,
-    backtrack_count: 0,
-    total_cost_usd: totalCostUsd,
+    exit_status: timedOut ? "timeout" : (parsed.exitStatus || (exitCode === 0 ? "success" : "error")),
+    error_count: parsed.errorCount,
+    retry_count: parsed.retryCount,
+    backtrack_count: parsed.backtrackCount,
+    total_cost_usd: parsed.totalCostUsd,
   };
 
   process.stderr.write(
     `[claude-code] exit=${exitCode} timedOut=${timedOut} elapsed=${elapsedMs}ms `
-    + `stdout=${stdoutBuf.length}B numTurns=${numTurns}\n`
+    + `stdout=${stdoutBuf.length}B turns=${parsed.numTurns} `
+    + `tools=${parsed.toolsUsed.join(",")} errors=${parsed.errorCount}\n`
   );
 
   if (timedOut) {
@@ -140,7 +217,7 @@ async function main() {
     process.exit(0);
   }
 
-  process.stdout.write(JSON.stringify({ output: text || "[ERROR] empty output from claude-code", meta: metaOut, error: !text }) + "\n");
+  process.stdout.write(JSON.stringify({ output: parsed.text || "[ERROR] empty output from claude-code", meta: metaOut, error: !parsed.text }) + "\n");
 }
 
 main().catch((err) => {
