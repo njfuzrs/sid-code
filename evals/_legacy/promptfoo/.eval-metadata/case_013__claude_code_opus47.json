@@ -1,0 +1,11 @@
+{
+  "total_steps": 11,
+  "total_cost_usd": 0.8788512500000001,
+  "elapsed_ms": 50913,
+  "tools_used": [],
+  "files_edited": [],
+  "error_count": 0,
+  "retry_count": 0,
+  "backtrack_count": 0,
+  "total_tokens": 0
+}

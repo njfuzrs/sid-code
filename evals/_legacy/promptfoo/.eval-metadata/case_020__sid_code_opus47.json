@@ -1,0 +1,15 @@
+{
+  "session_id": "4d1c87f3",
+  "total_steps": 2,
+  "tools_used": [
+    "read"
+  ],
+  "files_edited": [],
+  "exit_status": "abort",
+  "elapsed_ms": 948558,
+  "total_tokens": 208,
+  "total_cost_usd": 0,
+  "error_count": 0,
+  "retry_count": 0,
+  "backtrack_count": 0
+}

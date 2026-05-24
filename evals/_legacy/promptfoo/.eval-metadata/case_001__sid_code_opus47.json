@@ -1,0 +1,16 @@
+{
+  "session_id": "3c081c48",
+  "total_steps": 17,
+  "tools_used": [
+    "read",
+    "grep"
+  ],
+  "files_edited": [],
+  "exit_status": "end_turn",
+  "elapsed_ms": 71894,
+  "total_tokens": 3279,
+  "total_cost_usd": 0,
+  "error_count": 0,
+  "retry_count": 0,
+  "backtrack_count": 0
+}

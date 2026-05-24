@@ -1,0 +1,15 @@
+{
+  "session_id": "13f7e97e",
+  "total_steps": 3,
+  "tools_used": [
+    "read"
+  ],
+  "files_edited": [],
+  "exit_status": "end_turn",
+  "elapsed_ms": 27548,
+  "total_tokens": 1837,
+  "total_cost_usd": 0,
+  "error_count": 0,
+  "retry_count": 0,
+  "backtrack_count": 0
+}

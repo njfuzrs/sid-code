@@ -1,0 +1,16 @@
+{
+  "session_id": "c43805b8",
+  "total_steps": 13,
+  "tools_used": [
+    "read",
+    "ls"
+  ],
+  "files_edited": [],
+  "exit_status": "end_turn",
+  "elapsed_ms": 47909,
+  "total_tokens": 2345,
+  "total_cost_usd": 0,
+  "error_count": 0,
+  "retry_count": 0,
+  "backtrack_count": 0
+}

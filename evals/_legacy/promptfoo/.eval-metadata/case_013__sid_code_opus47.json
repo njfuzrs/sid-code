@@ -1,0 +1,13 @@
+{
+  "session_id": "79f69e8a",
+  "total_steps": 0,
+  "tools_used": [],
+  "files_edited": [],
+  "exit_status": "abort",
+  "elapsed_ms": 973832,
+  "total_tokens": 0,
+  "total_cost_usd": 0,
+  "error_count": 0,
+  "retry_count": 0,
+  "backtrack_count": 0
+}

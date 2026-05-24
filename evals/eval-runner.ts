@@ -16,6 +16,7 @@ import {
   type DimScore,
   type AgentMeta,
 } from "./eval-judge.ts";
+import { buildRubricPrompt } from "./_judge/rubric-template.ts";
 
 const ROOT = resolve(import.meta.dir);
 const CASE_DIRS = [
@@ -73,6 +74,8 @@ interface TestResult {
   response: { output: string };
   latencyMs: number;
   success: boolean;
+  /** 单 case 实际跑完时间（ISO 字符串）—— 与整批 runId 不同，趋势图按这个画 */
+  testedAt: string;
 }
 
 const PROVIDER_REGISTRY: Record<string, Omit<ProviderDef, "name" | "model">> = {
@@ -137,7 +140,34 @@ function hasHoldoutId(want: Set<string>): boolean {
   return false;
 }
 
-async function runProvider(provider: ProviderDef, prompt: string, caseId: string): Promise<ProviderResult> {
+/**
+ * 判定 provider 输出/stderr 是否为可重试的瞬时网络错误。
+ * 只在网络错误时重试，业务错误（空输出 / parse_error / 模型拒绝）不重试避免污染数据。
+ */
+function isRetryableError(output: string, stderr: string): boolean {
+  const combined = `${output}\n${stderr}`;
+  const retryablePatterns = [
+    "ECONNRESET",
+    "ETIMEDOUT",
+    "ECONNREFUSED",
+    "ENOTFOUND",
+    "EAI_AGAIN",
+    "socket hang up",
+    "fetch failed",
+    "429",
+    "503",
+    "502",
+    "504",
+    "Internal Server Error",
+    "Bad Gateway",
+    "Service Unavailable",
+    "Gateway Timeout",
+    "Too Many Requests",
+  ];
+  return retryablePatterns.some(p => combined.includes(p));
+}
+
+async function runProviderOnce(provider: ProviderDef, prompt: string, caseId: string): Promise<ProviderResult & { stderrTail: string }> {
   const args = [
     "run", provider.script,
     "--prompt", prompt,
@@ -159,60 +189,79 @@ async function runProvider(provider: ProviderDef, prompt: string, caseId: string
   proc.stdout?.on("data", (c) => { stdoutBuf += c.toString(); });
   proc.stderr?.on("data", (c) => { stderrBuf += c.toString(); });
 
+  // 外层 timeout 兜底：wrapper 自己有 timer，但如果 wrapper 在 spawn 之前
+  // 就 hang（bun runtime 异常 / OOM 等），上面那个 Promise 永远不 resolve。
+  // 外层加 timeoutMs + 30s buffer，强制 kill。
+  const outerTimeoutMs = (provider.timeoutMs ?? 480_000) + 30_000;
+  let outerTimedOut = false;
+  const outerTimer = setTimeout(() => {
+    outerTimedOut = true;
+    process.stderr.write(`[eval-runner] OUTER TIMEOUT after ${outerTimeoutMs}ms for ${caseId} × ${provider.name}, SIGKILL\n`);
+    try { proc.kill("SIGKILL"); } catch { /* already exited */ }
+  }, outerTimeoutMs);
+
   const exitCode: number | null = await new Promise((res) => {
     proc.on("close", (code) => res(code));
     proc.on("error", () => res(null));
   });
+  clearTimeout(outerTimer);
 
   if (stderrBuf) process.stderr.write(stderrBuf);
 
+  const stderrTail = stderrBuf.slice(-2000);
+
+  if (outerTimedOut) {
+    return {
+      output: `[ERROR] eval-runner OUTER TIMEOUT after ${outerTimeoutMs}ms`,
+      meta: { tools_used: [], files_edited: [], total_steps: 0, total_tokens: 0, latency_ms: outerTimeoutMs, exit_status: "outer_timeout", error_count: 0, retry_count: 0, backtrack_count: 0 },
+      error: true,
+      stderrTail,
+    };
+  }
+
   try {
-    return JSON.parse(stdoutBuf.trim()) as ProviderResult;
+    const result = JSON.parse(stdoutBuf.trim()) as ProviderResult;
+    return { ...result, stderrTail };
   } catch {
     return {
       output: stdoutBuf || `[ERROR] provider exit=${exitCode}`,
       meta: { tools_used: [], files_edited: [], total_steps: 0, total_tokens: 0, latency_ms: 0, exit_status: "parse_error", error_count: 0, retry_count: 0, backtrack_count: 0 },
       error: true,
+      stderrTail,
     };
   }
 }
 
-function buildRubricPrompt(c: CaseYaml): string {
-  const must = c.expected.must_include_any_of || [];
-  const mustNot = c.expected.must_not_include || [];
-  const refAns = c.expected.reference_answer?.trim() || "(无)";
-  const r = c.rubric || {};
+async function runProvider(provider: ProviderDef, prompt: string, caseId: string, maxRetries = 2): Promise<ProviderResult> {
+  let lastResult: ProviderResult & { stderrTail: string } | null = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const result = await runProviderOnce(provider, prompt, caseId);
+    lastResult = result;
 
-  const mustNotSection = mustNot.length > 0
-    ? ["禁止内容(语义判断):", "  以下词如果只是作为「对比提及」或「拒绝声明」中出现，不扣分。", "  只有当输出错误地将其作为正确答案、或泄露了敏感内部信息时才扣分：", ...mustNot.map((k) => `  - ${k}`), ""]
-    : [];
-  const mustSection = must.length > 0
-    ? ["关键词命中(参考，非强制，至少 1 个):", "  必须包含(any_of):", ...must.map((k) => `  - ${k}`), "  → 如果输出用等价表达覆盖了相同概念但未精确匹配这些词，不应因此扣分", ""]
-    : [];
+    // 成功：直接返回
+    if (!result.error) return stripStderr(result);
 
-  return [
-    `任务类别: ${c.category}(${c.priority})`, `用户问题: ${c.input.user_query}`, "",
-    "参考答案(仅为一种可能的正确路径，不是唯一标准):", refAns, "",
-    "=== 评判规则 ===", "",
-    "【最重要】事实正确性优先：",
-    "- 如果输出的核心结论与代码实际状态一致（即使表述不同于参考答案），应给予高分",
-    "- 如果参考答案假设某功能不存在但实际已存在，输出回答「已存在」是正确的",
-    "- 如果参考答案假设某字段存在但实际不存在，输出回答「不存在」是正确的", "",
-    ...mustSection, ...mustNotSection,
-    "评分维度:",
-    "  - factual_accuracy: 输出的核心结论是否与代码/事实实际状态一致（优先级最高）",
-    `  - completeness: ${r.completeness || "(本 case 未指定)"}`,
-    `  - precision: ${r.precision || "(本 case 未指定)"}`,
-    `  - helpfulness: ${r.helpfulness || "(本 case 未指定)"}`, "",
-    "评分标准(0.0-1.0, threshold 0.6):",
-    "  1.0 = 事实正确 + 完全满足用户需求 + 表达清晰",
-    "  0.8 = 事实正确 + 核心需求满足，有小瑕疵",
-    "  0.6 = 方向正确，核心事实无误(threshold)",
-    "  0.4 = 部分正确但有明显错误或严重遗漏",
-    "  0.2 = 方向错误或严重事实偏差",
-    "  0.0 = 完全偏题或有害输出", "",
-    '输出严格 JSON: {"pass": bool, "score": 0.0-1.0, "reason": "简要理由"}',
-  ].join("\n");
+    // 不可重试错误：直接返回
+    if (!isRetryableError(result.output, result.stderrTail)) return stripStderr(result);
+
+    // 重试用尽：返回最后结果
+    if (attempt === maxRetries) {
+      process.stderr.write(`[eval-runner] ${caseId} × ${provider.name} retry exhausted (${attempt + 1}/${maxRetries + 1})\n`);
+      return stripStderr(result);
+    }
+
+    // 指数退避：2s, 8s, 32s
+    const delayMs = 2_000 * Math.pow(4, attempt);
+    process.stderr.write(`[eval-runner] ${caseId} × ${provider.name} 第 ${attempt + 1}/${maxRetries + 1} 次失败（网络错误），${delayMs}ms 后重试\n`);
+    await new Promise(r => setTimeout(r, delayMs));
+  }
+  // 不会到这里
+  return stripStderr(lastResult!);
+}
+
+function stripStderr(r: ProviderResult & { stderrTail?: string }): ProviderResult {
+  const { stderrTail: _ignore, ...rest } = r;
+  return rest;
 }
 
 async function gradeCase(c: CaseYaml, result: ProviderResult, skipLlmJudge: boolean): Promise<{ score: number; namedScores: Record<string, number>; dims: Record<string, DimScore> }> {
@@ -273,7 +322,12 @@ function writeWeekScores(results: TestResult[], weekNum: number) {
   }
 
   for (const [caseId, caseResults] of byCaseId) {
-    const doc: Record<string, unknown> = { tested_at: new Date().toISOString() };
+    // 用 case 实际完成时间（多 provider 同 case 时取最晚的，避免误导）
+    const latestTested = caseResults.reduce(
+      (acc, r) => (r.testedAt > acc ? r.testedAt : acc),
+      caseResults[0]?.testedAt ?? new Date().toISOString(),
+    );
+    const doc: Record<string, unknown> = { tested_at: latestTested };
     for (const r of caseResults) {
       doc[r.provider] = {
         score: r.score,
@@ -323,7 +377,8 @@ function appendRunHistory(results: TestResult[], runId: string, weekNum: number)
         latency_ms: r.latencyMs,
         success: r.success,
         run_status: runStatus,
-        tested_at: runId,
+        // 单 case 实际完成时间，与整批 run_id 分开。趋势图按 tested_at 画。
+        tested_at: r.testedAt,
       }));
     }
     appendFileSync(filePath, lines.join("\n") + "\n", "utf-8");
@@ -341,7 +396,6 @@ function findCaseYamlPath(caseId: string): string | null {
 }
 
 function syncBaselineScores(results: TestResult[]) {
-  const timestamp = new Date().toISOString();
   const byCaseId = new Map<string, TestResult[]>();
   for (const r of results) {
     if (!byCaseId.has(r.caseId)) byCaseId.set(r.caseId, []);
@@ -371,7 +425,7 @@ function syncBaselineScores(results: TestResult[]) {
       const entry: Record<string, unknown> = {
         score: r.score,
         run_status: runStatus,
-        tested_at: timestamp,
+        tested_at: r.testedAt,
         tested_by: "eval-runner",
         transcript_path: null,
         notes: isTimeout ? "eval-runner 超时" : "",
@@ -399,7 +453,9 @@ async function main() {
       "skip-holdout": { type: "boolean", default: true },
       "include-holdout": { type: "boolean", default: false },
       "skip-llm-judge": { type: "boolean", default: false },
-      "skip-sync": { type: "boolean", default: false },
+      // sync 默认 off：避免调试单 case 时污染 case yaml 的 baseline_scores（diff 噪声 + git 历史污染）。
+      // 跑正式 baseline / 横向对比时，显式加 --sync 才回写。
+      "sync": { type: "boolean", default: false },
       "dry-run": { type: "boolean", default: false },
     },
     strict: false,
@@ -412,7 +468,7 @@ async function main() {
   const caseFilter = values.cases ? (values.cases as string).split(",").map(s => s.trim()) : undefined;
   const concurrency = parseInt(values.concurrency as string, 10) || 2;
   const skipLlmJudge = values["skip-llm-judge"] as boolean;
-  const skipSync = values["skip-sync"] as boolean;
+  const doSync = values["sync"] as boolean;
   const dryRun = values["dry-run"] as boolean;
   const outputPath = resolve(ROOT, "..", values.output as string);
   const weekNum = values.week ? parseInt(values.week as string, 10) : currentWeekNumber();
@@ -456,6 +512,7 @@ async function main() {
         const grade = await gradeCase(c, provResult, skipLlmJudge);
 
         const elapsed = Date.now() - taskStart;
+        const completedAt = new Date().toISOString();
         const emoji = grade.score >= 4.5 ? "✅" : grade.score >= 3.5 ? "🟢" : grade.score >= 2.5 ? "🟡" : "🔴";
         console.log(`  ${emoji} ${c.id} × ${p.name} = ${grade.score} (${(elapsed / 1000).toFixed(1)}s)`);
 
@@ -468,6 +525,7 @@ async function main() {
           response: { output: provResult.output },
           latencyMs: provResult.meta.latency_ms || elapsed,
           success: !provResult.error,
+          testedAt: completedAt,
         });
       } catch (err) {
         // 单个 case 失败不能拖垮整批：记录降级结果，let 整体继续
@@ -483,6 +541,7 @@ async function main() {
           response: { output: `[ERROR] eval-runner task crash: ${errMsg}` },
           latencyMs: elapsed,
           success: false,
+          testedAt: new Date().toISOString(),
         });
       }
     }))
@@ -528,8 +587,10 @@ async function main() {
   appendRunHistory(results, runId, weekNum);
   writeWeekScores(results, weekNum);
 
-  if (!skipSync) {
+  if (doSync) {
     syncBaselineScores(results);
+  } else {
+    console.log("  跳过 baseline_scores 回写（默认行为；加 --sync 显式开启）");
   }
 
   console.log("");

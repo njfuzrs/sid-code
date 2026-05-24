@@ -1,0 +1,13 @@
+{
+  "session_id": "429761c5",
+  "total_steps": 1,
+  "tools_used": [],
+  "files_edited": [],
+  "exit_status": "end_turn",
+  "elapsed_ms": 9086,
+  "total_tokens": 307,
+  "total_cost_usd": 0,
+  "error_count": 0,
+  "retry_count": 0,
+  "backtrack_count": 0
+}

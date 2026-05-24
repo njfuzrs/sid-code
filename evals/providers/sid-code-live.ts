@@ -104,7 +104,15 @@ function readRawTokens(trajPath: string | null): number {
     let tokens = 0;
     for (const line of lines) {
       const usage = JSON.parse(line)?.response?.usage;
-      if (usage) tokens += (usage.input_tokens || 0) + (usage.output_tokens || 0);
+      if (usage) {
+        // 与 claude-code wrapper 对齐：4 项全加（input + output + cache_creation + cache_read）
+        // Anthropic 计费里 cache 部分单独计算，但作为 token 总消耗都应纳入 cost 维度。
+        // 不加 cache 会让 sid-code 的 total_tokens 系统性比 claude-code 小，cost 维度横向不公平。
+        tokens += (usage.input_tokens || 0)
+          + (usage.output_tokens || 0)
+          + (usage.cache_creation_input_tokens || 0)
+          + (usage.cache_read_input_tokens || 0);
+      }
     }
     return tokens;
   } catch {

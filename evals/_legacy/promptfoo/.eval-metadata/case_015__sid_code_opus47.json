@@ -1,0 +1,15 @@
+{
+  "session_id": "6be241c1",
+  "total_steps": 5,
+  "tools_used": [
+    "read"
+  ],
+  "files_edited": [],
+  "exit_status": "end_turn",
+  "elapsed_ms": 57193,
+  "total_tokens": 3154,
+  "total_cost_usd": 0,
+  "error_count": 0,
+  "retry_count": 0,
+  "backtrack_count": 0
+}

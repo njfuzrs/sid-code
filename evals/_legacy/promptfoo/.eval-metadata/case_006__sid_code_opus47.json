@@ -1,0 +1,17 @@
+{
+  "session_id": "62a91f22",
+  "total_steps": 13,
+  "tools_used": [
+    "glob",
+    "read",
+    "grep"
+  ],
+  "files_edited": [],
+  "exit_status": "end_turn",
+  "elapsed_ms": 81606,
+  "total_tokens": 7545,
+  "total_cost_usd": 0,
+  "error_count": 0,
+  "retry_count": 0,
+  "backtrack_count": 0
+}
