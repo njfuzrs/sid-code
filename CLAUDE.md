@@ -20,7 +20,7 @@ sid-code **不是**"又一个 Coding CLI"——从 2026-05 起向"对外可交�
 
 ### 五层洋葱架构（任何改动前先确认改的是哪一层）
 
-```
+```text
 第 5 层 用户触点  CLI / SDK / Daemon / MCP Server / IDE Plugin（五形态共存，同一内核）
 第 4 层 Skill 集  变现层：写 Markdown 而非代码；agentskills.io 标准
 第 3 层 Context   护城河：代码图谱 / LST / 调用链 / Memory / ADR（必建，无供应商）
@@ -44,8 +44,8 @@ sid-code **不是**"又一个 Coding CLI"——从 2026-05 起向"对外可交�
 | --- | --- |
 | **架构骨架** | ✅ 命中范式 C 约 80%——Runtime + Tools + Skill 系统 + MCP 全部就位 |
 | **行业稀缺资产** | ⭐⭐⭐⭐⭐ EDD 评测主轴（30 case 含 5 holdout + 5 维 Grader + 7 铁律） |
-| **三块短板** | ① Skill 仓库为空（最致命）② 入口只能被主动调用（缺事件驱动）③ 缺服务化与多租户 |
-| **代码体量** | ~5.1 万行 / 269 TS 文件 / 1078 单测 / Permission 7 模式 / 30 case（含 5 holdout） |
+| **三块短板** | ① Skill 仓库仅含 skill-creator 元 Skill（PR-to-Prod 5 个业务 Skill 待建，最致命）② 入口只能被主动调用（缺事件驱动）③ 缺服务化与多租户 |
+| **代码体量** | ~5.2 万行 / 269 TS 文件 / 1137 单测 / Permission 7 模式 / 30 case（含 5 holdout） |
 
 ## 0.2 执行入口（唯一）
 
@@ -97,8 +97,9 @@ sid-code **不是**"又一个 Coding CLI"——从 2026-05 起向"对外可交�
 | `new_module` | 新增 src/ 子目录或 capability/ 类别 | **L≥3 spec→ADR→骨架PR→单测→eval case 同步就位**（缺一不可） |
 
 补充约束：
+
 - **底座加固 ADR 必须标注"垂直场景需求来源"**（E-01 / E-02 lint）—— 不是"Context Engine 应该支持 LST 解析"，而是"Code Review Skill 处理 1000+ 行 PR 时上下文超限，需要 LST 解析"
-- **不要重写**——5.1 万行重写至少 6 个月，得不偿失。沿现有架构加层，不要"内核解耦"
+- **不要重写**——5.2 万行重写至少 6 个月，得不偿失。沿现有架构加层，不要"内核解耦"
 
 ## 0.4 三轴权重迁移（08 §14）
 
@@ -115,14 +116,14 @@ sid-code 用 **SDD + EDD + TDD 三轴螺旋**，权重随阶段迁移：
 | 轴 | 内化产物（当前） | 外化形态（目标） |
 | --- | --- | --- |
 | **SDD** | 内部 Spec + failure-modes.md | 公开 RFC + API Contract + Known Limitations + Changelog |
-| **TDD** | 1078 单测 | 单测 + 契约 + 集成 + 混沌 + 性能基准 |
+| **TDD** | 1137 单测 | 单测 + 契约 + 集成 + 混沌 + 性能基准 |
 | **EDD** | 30 case + 三层 Grader | 公开 Benchmark + 客户 POC 报告 + Skill 级 SLA |
 
 外化 Checkpoint：M3 首个 Skill RFC 外发 / M6 公开 Benchmark 面板 / M9 Skill Marketplace。
 
 ### 单 Skill 三轴螺旋（强制 8 步，08 §12.2）
 
-```
+```text
 Step 1  SDD: RFC → SKILL.md → Known Limitations 初稿
 Step 2  EDD: 定义 baseline ≥ 10 条 case → 跑分 → 设 SLA 阈值
 Step 3  TDD: 写集成 + 契约测试 → CI 绿
@@ -173,29 +174,25 @@ bun run eval:run --provider sid-code --model deepseek-v4-pro
 ```
 
 输出位置：
+
 - `evals/_reports/eval-latest.json`（兼容历史 promptfoo-latest.json schema）
 - `evals/_runs/<provider>.jsonl`（追加式时序数据）
 - `evals/_scores/wNN/case_NNN.yaml`（按周快照）
 - 自动刷新 `evals/DASHBOARD.md` + `evals/CASES.md`
 
-### Promptfoo 现状（**已冻结，禁止使用**）
+### Promptfoo 现状（**已废弃，禁止使用**）
 
-2026-05-23 起评测层切换到自研 `eval-runner.ts`。原 `evals/promptfoo/` 实现已废弃，仅保留 `evals/_legacy/README.md` 作为决策档案（不再保留代码副本，紧急回滚靠 git history）。原 `evals/promptfoo/` 的 wrapper 收敛到唯一一份在 `evals/providers/`（详见
-`docs/eval/10-eval-architecture-analysis.md §5.4`），不要主动调用，原因：
-1. 黑盒并发/重试不可控，遇 LLM 中转商 429 会跑空 5h+
-2. 评分公式重复维护（同一公式分布在 `yaml-to-tests.ts` 字符串 + `eval-judge.ts`）
-3. 用户已多次明确指示用自研 runner
-4. wrapper 双套同步成本高（已发生过修一处漏一处的事故，2026-05-24 收敛）
+2026-05-23 起评测层切换到自研 `eval-runner.ts`。原 `evals/promptfoo/` 实现已废弃，仅保留 `evals/_legacy/README.md` 作为决策档案（不再保留代码副本，紧急回滚靠 git history）。决策详情见 `docs/eval/10-eval-architecture-analysis.md §3 / §5`。
 
 **禁止行为**（除非用户显式指示）：
-- ❌ 跑 `bunx promptfoo eval`（npm script `eval:horizontal-*` 已删除）
+
+- ❌ 跑 `bunx promptfoo eval`（package.json 已无 `eval:horizontal-*` 脚本）
 - ❌ 改 `evals/_legacy/` 下任何文件
-- ❌ 把 `_reports/promptfoo-*.json` 当作"最新分数"来源（应该用
-  `_reports/eval-latest.json` 或 `_runs/<provider>.jsonl`）
+- ❌ 把 `_reports/promptfoo-*.json` 当作"最新分数"来源（属历史产物；最新分数走 `_reports/eval-latest.json` 或 `_runs/<provider>.jsonl`）
 
 **唯一 wrapper 入口**：`evals/providers/sid-code-live.ts` 和
 `evals/providers/claude-code.ts`——eval-runner 直接 spawn（详见
-`evals/eval-runner.ts:77 PROVIDER_REGISTRY`）。
+`evals/eval-runner.ts` PROVIDER_REGISTRY）。
 
 > **注意**：sid-code-live wrapper 调用的不是 `src/cli.ts`，而是 `src/entrypoints/bootstrap.ts`（评估模式下无头启动 sid-code 的统一入口）。
 
@@ -250,8 +247,9 @@ bun run eval:dashboard        # 刷新仪表盘 → scripts/eval/dashboard.ts
 | Cursor / Augment 开源 Context Engine | 直接用，退守"Skill 集 + 评测 + 中文一等公民"差异化 |
 
 **禁止做的事**：
+
 - ❌ 暂停所有场景开发花半年做完美底座（会做出无人使用的玩具）
-- ❌ 内核解耦重构（5.1 万行重写至少 6 个月，得不偿失）
+- ❌ 内核解耦重构（5.2 万行重写至少 6 个月，得不偿失）
 - ❌ 跑去和 Anthropic Managed Agents / AWS AgentCore 竞争 Runtime（"水电煤"，应该 Buy）
 - ❌ 引入 LangChain / CrewAI 作为编排核心（sid-code Agent Loop + Sub-agent 已是等价物）
 
@@ -276,6 +274,7 @@ make deps     # bun install
 src/
 ├── cli.ts              # 入口：parseArgs + 模式路由
 ├── app.ts              # 主循环（委托 AgentLoopRunner）
+├── entrypoints/        # 无头入口：bootstrap.ts（评估模式 spawn 入口）+ deferred-prefetch.ts
 ├── agent/              # 第 1 层 Runtime：子代理（loop.ts / sub-agent.ts / tool.ts / custom.ts）
 ├── llm/                # 第 1 层 Runtime：Provider 接口 + anthropic/openai/ollama + registry + quota（A 档可拔插）
 ├── tool/               # 第 2 层 工具：6 个内置工具（read/write/edit/bash/grep/glob）+ registry（A 档）
@@ -289,16 +288,19 @@ src/
 ├── context/            # 第 3 层 Context：上下文管理 + 智能截断 + 增量压缩（B 档单实现）
 ├── checkpoint/         # 文件快照系统（LCS diff + gzip + /undo 回滚）
 ├── memory/             # 第 3 层 Context：双层记忆系统（全局/项目 + 注入系统提示词）（B 档）
+├── plan/               # Plan Mode 状态机（inactive → planning → awaiting_approval；prompt + state）
 ├── debug/              # 调试日志系统
 ├── permission/         # 第 1 层 Runtime：6 模式 + 1 unsafe + 规则 + 审计（B 档）
 ├── hook/               # 第 1 层 Runtime：14 种事件 + command/url + blocking（B 档）
 ├── session/            # 会话持久化（store.ts）+ 状态管理（state.ts）
 ├── command/            # 斜杠命令系统 + 自定义命令
-├── skill/              # 第 4 层 Skills 系统（提示词模板注册为工具）（A 档；builtin 仓库当前为空）
+├── trace/              # 轨迹采集 + .traj 构建 + 上传（builder/collector/uploader/writer）
+├── telemetry/          # 事件总线 + 指标 + 上下文（bus/exporters/metrics/hook-probe）
+├── skill/              # 第 4 层 Skills 系统（提示词模板注册为工具）（A 档；builtin 仅含 skill-creator 元 Skill）
 └── extension/          # 三层扩展共享基础设施（扫描 + frontmatter + 缓存）
 ```
 
-模块依赖：`cli` → `app` → `agent` / `llm` / `tool` / `context` / `permission` / `hook` / `session` / `command` / `mcp` / `ui` / `debug`
+模块依赖：`cli` → `app` → `agent` / `llm` / `tool` / `context` / `permission` / `hook` / `session` / `command` / `mcp` / `ui` / `plan` / `trace` / `telemetry` / `debug`
 
 ## 4. 编码约定
 
