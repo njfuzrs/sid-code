@@ -43,9 +43,9 @@ sid-code **不是**"又一个 Coding CLI"——从 W14 起向"对外可交付的
 | 维度 | 状态 |
 | --- | --- |
 | **架构骨架** | ✅ 命中范式 C 约 80%——Runtime + Tools + Skill 系统 + MCP 全部就位 |
-| **行业稀缺资产** | ⭐⭐⭐⭐⭐ EDD 评测主轴（25 case + 5 holdout + 三层 Grader + 7 铁律） |
+| **行业稀缺资产** | ⭐⭐⭐⭐⭐ EDD 评测主轴（30 case 含 5 holdout + 5 维 Grader + 7 铁律） |
 | **三块短板** | ① Skill 仓库为空（最致命）② 入口只能被主动调用（缺事件驱动）③ 缺服务化与多租户 |
-| **代码体量** | ~5.1 万行 / 269 TS 文件 / 1078 单测 / Permission 7 模式 / 30 case + 5 holdout |
+| **代码体量** | ~5.1 万行 / 269 TS 文件 / 1078 单测 / Permission 7 模式 / 30 case（含 5 holdout） |
 
 ## 0.2 执行入口（唯一）
 
@@ -89,7 +89,7 @@ sid-code **不是**"又一个 Coding CLI"——从 W14 起向"对外可交付的
 
 | fix_type | 改的对象 | 审批层级 |
 | --- | --- | --- |
-| `case_design` | 改 case yaml 的断言/rubric | L1 自动执行（**禁止删 `must_not_flag`** 反例字段） |
+| `case_design` | 改 case yaml 的断言/rubric | L1 自动执行（**禁止删 `must_not_include`** 反例字段） |
 | `skill_prompt` | 改 SKILL.md Markdown | L1 自动执行 |
 | `infra_bug` | 改 evals/ 脚本 | L1 自动执行 |
 | `entry_code` | 改 src/cli.ts / src/ui/ 等入口 | L2 展示 diff 后默认批准 |
@@ -150,9 +150,10 @@ sid-code 从 2026-05-15 起建立 9 周 5 阶段评测体系。**改动 src/ 之
 - **架构分析**：`docs/eval/10-eval-architecture-analysis.md`（各层分工 + Promptfoo 角色）
 - **ADR**：`docs/adr/`（必须有 rejected alternatives）
 - **周报**：`docs/weekly-eval-report/week-NN.md`
-- **case 仓库**：
-  - 现有：`evals/general/p0-core/` `evals/general/p1-common/` `evals/general/p2-edge/` `evals/holdout/general/` `evals/capability/{plan,memory,context,router,harness}/`
-  - W14 起新增：`evals/architecture/{redline,form,pluggable,kernel,platform,discipline,context-engine,orchestration,chinese,durable-exec,notification,ux,nonfunctional,outcome,meta,milestone}/` + `evals/holdout/architecture/`
+- **case 仓库**（2026-05-25 实际盘点，与 `docs/eval/TODO.md` 保持一致）：
+  - 现有：`evals/p0-core/`（10 条）+ `evals/p1-common/`（9 条）+ `evals/p2-edge/`（6 条）+ `evals/holdout/`（5 条）= 30 条
+  - capability：`evals/capability/{plan,memory,context,router,harness}/`（**仅 plan 有 10 条 case + runner**，其余 4 个子系统仅 .gitkeep，待 S0 补齐）
+  - W14 起新增（与 p0-core 平级）：`evals/architecture/{redline,form,pluggable,kernel,platform,discipline,context-engine,orchestration,chinese,durable-exec,notification,ux,nonfunctional,outcome,meta,milestone}/` + `evals/holdout/architecture/`
 
 ### 跑评测的正确入口（**不要绕道**）
 
@@ -160,14 +161,14 @@ sid-code 从 2026-05-15 起建立 9 周 5 阶段评测体系。**改动 src/ 之
 跑分、回归、横向对比都走它：
 
 ```bash
-# 单 case 调试
-bun run evals/eval-runner.ts --cases case_002 --provider sid-code --model claude-opus-4-7 --week N
+# 单 case 调试（推荐用 package.json 脚本别名）
+bun run eval:run --cases case_002 --provider sid-code --model deepseek-v4-pro --week N
 
-# 多 case + 多 provider
-bun run evals/eval-runner.ts --cases case_002,case_005 --provider sid-code,claude-code --model claude-opus-4-7 --week N
+# 多 case + 多 provider（claude-code 只认 claude-* 前缀 model）
+bun run eval:run --cases case_002,case_005 --provider sid-code,claude-code --week N
 
-# 全量回归（去掉 --cases 即跑全 25 个非 holdout）
-bun run evals/eval-runner.ts --provider sid-code --model claude-opus-4-7 --week N
+# 全量回归（去掉 --cases 即跑全 25 条非 holdout；holdout 单独 --include-holdout）
+bun run eval:run --provider sid-code --model deepseek-v4-pro --week N
 ```
 
 输出位置：
@@ -196,6 +197,46 @@ bun run evals/eval-runner.ts --provider sid-code --model claude-opus-4-7 --week 
 **唯一 wrapper 入口**：`evals/providers/sid-code-live.ts` 和
 `evals/providers/claude-code.ts`——eval-runner 直接 spawn（详见
 `evals/eval-runner.ts:77 PROVIDER_REGISTRY`）。
+
+> **注意**：sid-code-live wrapper 调用的不是 `src/cli.ts`，而是 `src/entrypoints/bootstrap.ts`（评估模式下无头启动 sid-code 的统一入口）。
+
+### 评测系统核心组件（勿绕道，勿引用旧实现）
+
+| 组件 | 文件 | 说明 |
+| --- | --- | --- |
+| **主入口** | `evals/eval-runner.ts` (883 行) | 自研 runner，CASE_DIRS = p0-core/p1-common/p2-edge |
+| **5 维 Grader** | `evals/eval-judge.ts` (755 行) | anchor_hit(1.5) + rubric_score(4.0) + tool_compliance(1.5) + efficiency(0.3) + cost(0.5) |
+| **case 模板** | `evals/_template.yaml` (111 行) | 8 段：元信息/EDD类型/输入/期望/Rubric/Grader/Baseline/元数据 |
+| **类型定义** | `evals/_types.ts` | CaseYaml 单一来源（之前在三处漂移过） |
+| **rubric prompt** | `evals/_judge/rubric-template.ts` | 线上 rubric 评分 prompt 模板 |
+| **calibration** | `evals/_judge/prompt-v3.md` | κ=0.921，temperature=0，max_tokens=2048 |
+
+**关键设计原则**（写/改 case 时必须遵守）：
+
+1. **null vs 0 严格区分**：null = 数据缺失/judge 不可用（aggregate 跳过），0 = 测了但全错。
+2. **echo 排除**：userQuery 中出现的自然语言锚点不计入命中（防复读得分）；代码标识符/路径豁免。
+3. **Cost 公式 v5**：`billable = input + output + cache_creation + cache_read × 0.1`，阈值 50k/150k/500k。
+4. **--sync 默认 off**：调试单 case 不污染 baseline_scores。
+
+**package.json 脚本**（≈ eval:run 等 6 个有效入口）：
+
+```bash
+bun run eval:run              # 主入口 → evals/eval-runner.ts
+bun run eval:list             # 列 case → scripts/eval/list-evals.ts
+bun run eval:tally            # 统计基线 → scripts/eval/tally-baseline.ts
+bun run eval:new-case         # 新建 case → scripts/eval/new-case.ts
+bun run eval:plan-capability  # plan capability → scripts/eval/run-plan-capability.ts
+bun run eval:dashboard        # 刷新仪表盘 → scripts/eval/dashboard.ts
+```
+
+**Provider 注册**（`eval-runner.ts:67`）：
+
+| provider | defaultModel | wrapper |
+| --- | --- | --- |
+| `sid-code` | `deepseek-v4-pro` | `evals/providers/sid-code-live.ts` |
+| `claude-code` | `claude-opus-4-7` | `evals/providers/claude-code.ts` |
+
+⚠️ **重要约束**：claude-code provider 只认 `claude-*` 前缀 model，传其他 model 会直接抛错（不静默 fallback）。
 
 ## 0.6 关键反向检验（如果走不下去怎么办）
 
@@ -267,7 +308,7 @@ src/
 - 测试：`tests/` 目录，`bun:test`
 - **禁止做的事**（违反 §0 / §0.3 / §0.6）：
   - ❌ 在 src/ 内核层（agent / tool / llm）做"顺手"改动——必须走 L3 审批
-  - ❌ 删 case yaml 的 `must_not_flag` 反例字段
+  - ❌ 删 case yaml 的 `must_not_include` 反例字段
   - ❌ 让 Skill 绕过 Permission（OpenClaw 7+ CVE 教训）
   - ❌ 让 Agent 在运行时修改自身 SKILL.md（RL-008 禁止 Skill 自演化）
   - ❌ 单一 LLM Provider 锁定（RL-011 必须 ≥ 3 家）
