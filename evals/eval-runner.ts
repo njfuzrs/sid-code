@@ -7,22 +7,17 @@ import * as yamlLib from "yaml";
 import { parseArgs } from "node:util";
 import { spawn } from "node:child_process";
 import {
-  gradeAnchorHit,
-  gradeRubric,
-  gradeToolCompliance,
-  gradeEfficiency,
-  gradeCost,
-  gradeNegativeAnchors,
   aggregate,
   makeErrorDims,
   calcBillable,
   COST_FORMULA_VERSION,
+  GRADER_VERSION,
   type DimScore,
   type AgentMeta,
   type TokenBreakdown,
 } from "./eval-judge.ts";
-import { buildRubricPrompt } from "./_judge/rubric-template.ts";
 import type { CaseYaml } from "./_types.ts";
+import { getGrader } from "./_graders/index.ts";
 
 const ROOT = resolve(import.meta.dir);
 const CASE_DIRS = [
@@ -416,42 +411,32 @@ async function gradeCase(
   result: ProviderResult,
   skipLlmJudge: boolean,
   judgeSamples: number,
-): Promise<{ score: number | null; namedScores: Record<string, number | null>; dims: Record<string, DimScore> }> {
-  // 入口短路：wrapper 标了 error / output 是 [ERROR]/[TIMEOUT] 信号
-  // → 所有维度强制 null，跳过 LLM judge（不浪费 quota 评 ERROR 字符串）
-  // 修复审查 #1 + #14：避免 partial trajectory 让 eff=1, cost=0.7 给假分数
-  const failure = isCompleteFailure(result);
-  if (failure.failed) {
-    const dims = makeErrorDims(`wrapper 失败，跳过所有维度评分：${failure.reason}`);
-    const { score, namedScores } = aggregate(dims);
-    return { score, namedScores, dims };
-  }
-
-  const { output, meta } = result;
-  const dims: Record<string, DimScore> = {};
-
-  // 传 user_query 给 anchor 检查器，用于 echo 排除（防止 agent 复读用户问题被算成命中）
-  dims.anchor_hit = gradeAnchorHit(output, c.expected.must_include_any_of || [], c.input.user_query);
-  // 反例硬检查（must_not_include 命中即视为违反禁令，与 LLM judge 互补）
-  dims.negative_anchor = gradeNegativeAnchors(output, c.expected.must_not_include || []);
-  if (skipLlmJudge) {
-    dims.rubric_score = { pass: true, score: 1.0, reason: "跳过 LLM judge" };
-  } else {
-    dims.rubric_score = await gradeRubric(output, buildRubricPrompt(c), undefined, judgeSamples);
-  }
-  dims.tool_compliance = gradeToolCompliance(meta, {
-    mustCallTools: c.expected.must_call_tools,
-    mustCallMode: c.expected.must_call_tools_mode,
-    mustNotCallTools: c.expected.must_not_call_tools,
-    mustModifyFilesIn: c.expected.must_modify_files_in,
-    mustNotModifyFiles: c.expected.must_not_modify_files,
+): Promise<{
+  score: number | null;
+  namedScores: Record<string, number | null>;
+  dims: Record<string, DimScore>;
+  graderType: string;
+  mandatoryPass: boolean;
+}> {
+  // T-10: 通过注册表调度 grader（默认 rubric_5d，向后兼容）。
+  // case yaml 的 grader_type 字段决定使用哪个 Grader 实例：
+  //   - 缺失 → rubric_5d（现有 30 条 general case 行为不变）
+  //   - "binary_redline" → 红线一票否决
+  //   - "structured_arch" → 架构断言（纯文件系统检查）
+  const grader = getGrader(c.grader_type);
+  const r = await grader.grade({
+    caseYaml: c,
+    providerResult: result,
+    skipLlmJudge,
+    judgeSamples,
   });
-  // efficiency 接收 rubric 分数：rubric 高时步数偏多不扣分（审查 #7）
-  dims.efficiency = gradeEfficiency(meta, c.expected.max_steps || 15, dims.rubric_score.score);
-  dims.cost = gradeCost(meta);
-
-  const { score, namedScores } = aggregate(dims);
-  return { score, namedScores, dims };
+  return {
+    score: r.score,
+    namedScores: r.namedScores,
+    dims: r.dims,
+    graderType: r.graderType,
+    mandatoryPass: r.mandatoryPass,
+  };
 }
 
 /**
@@ -746,7 +731,9 @@ export function syncBaselineScores(results: TestResult[], baseDir: string = ROOT
         dimensions: r.namedScores,
         // 公式版本：让后续工具/人能一眼区分新旧 baseline
         // 同一 case 同一 provider 的 cost 维度跨版本不可直接比较
-        _formula_version: { cost: COST_FORMULA_VERSION },
+        // grader 字段标识整体 5 维加权方案的版本（见 eval-judge.ts GRADER_VERSION docstring）
+        // 跨 grader 版本的"总分 score"也不可直接比较——dashboard / 跨周对比要按此过滤
+        _formula_version: { cost: COST_FORMULA_VERSION, grader: GRADER_VERSION },
       };
       baselineNode.set(r.provider, doc.createNode(entry));
     }
@@ -979,6 +966,7 @@ async function main() {
       concurrency,
       week: weekNum,
       cost_formula_version: COST_FORMULA_VERSION,
+      grader_version: GRADER_VERSION,
     },
     results: {
       timestamp: new Date().toISOString(),

@@ -1,0 +1,76 @@
+# Weekly Full Eval (T-17 §6.4)
+#
+# 触发：每周一 UTC 16:00（北京时间周二 0:00）；可手动触发。
+# 设计：跑全量 25 case × sid-code-deepseek + claude-code，--sync 写回 baseline。
+#
+# 业界对应：SWE-bench Leaderboard 周更新；Artificial Analysis trend over time。
+
+name: Weekly Full Eval
+
+on:
+  schedule:
+    # 每周一 16:00 UTC（北京时间周二 00:00）
+    - cron: "0 16 * * 1"
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: "Provider to run (default: sid-code,claude-code)"
+        default: "sid-code,claude-code"
+        required: false
+
+jobs:
+  full-eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install deps
+        run: bun install --frozen-lockfile
+
+      - name: Build
+        run: bun run build
+
+      - name: Run full eval (25 case × multi-provider, --sync)
+        run: |
+          bun run eval:run \
+            --provider "${{ github.event.inputs.provider || 'sid-code,claude-code' }}" \
+            --concurrency 3 \
+            --sync
+
+      - name: Generate dashboard
+        run: bun run eval:dashboard
+
+      - name: Commit baseline updates
+        run: |
+          git config user.name "eval-bot"
+          git config user.email "eval-bot@users.noreply.github.com"
+          git add evals/p*-*/case_*.yaml evals/_runs/*.jsonl evals/_scores/ evals/DASHBOARD.md
+          if git diff --cached --quiet; then
+            echo "no changes to commit"
+          else
+            git commit -m "ci(eval): refresh baseline $(date -u +%FT%TZ)"
+            git push
+          fi
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-eval-reports
+          path: |
+            evals/_reports/
+            evals/_runs/

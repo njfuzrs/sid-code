@@ -1,0 +1,12 @@
+# Smoke 评测 case 列表（T-17 §6.4）
+#
+# 用途：PR CI smoke 跑这 5 条 case 守护核心能力不回归
+# 选取标准：P0 + 已 GA + 跑分稳定（已用过 calibration）
+# 目标耗时：< 5 分钟（CI 友好）
+
+smoke_cases:
+  - case_001  # 代码理解 — Agent 主循环位置（最稳定 anchor case）
+  - case_002  # 代码理解 — list-tools 列举
+  - case_003  # 代码理解 — PermissionChecker 类位置
+  - case_006  # bug 修复 — getCheckpointManager
+  - case_007  # bug 修复 — agent loop 修改

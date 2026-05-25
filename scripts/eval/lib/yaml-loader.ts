@@ -42,6 +42,12 @@ export interface BaselineScore {
   tested_by?: string;
   transcript_path?: string | null;
   notes?: string;
+  /**
+   * 公式/Grader 版本号，由 eval-runner.syncBaselineScores 写入。
+   * 形如 { cost: "v6", grader: "5d-v2" }——legacy 数据可能只有 { cost: "legacy_v1" } 或缺失。
+   * dashboard 默认按 grader 版本过滤显示，跨版本数据不可直接比较。
+   */
+  _formula_version?: { cost?: string; grader?: string };
 }
 
 export interface WeekScore {
@@ -182,6 +188,10 @@ export interface BaselineSnapshot {
   status: "tested" | "pending" | "error" | "timeout";
   testedAt?: string;
   notes?: string;
+  /** Grader 版本号（如 "5d-v2"）；undefined 表示 legacy 数据（无版本标记） */
+  graderVersion?: string;
+  /** Cost 公式版本号（如 "v6" / "legacy_v1"） */
+  costVersion?: string;
 }
 
 export function readBaseline(c: CaseDoc, tool: string): BaselineSnapshot {
@@ -205,8 +215,21 @@ export function readBaseline(c: CaseDoc, tool: string): BaselineSnapshot {
     status,
     testedAt: raw.tested_at ?? undefined,
     notes: raw.notes,
+    graderVersion: raw._formula_version?.grader,
+    costVersion: raw._formula_version?.cost,
   };
 }
+
+/**
+ * 当前 dashboard 默认显示的 grader 版本（与 eval-judge.ts GRADER_VERSION 同步）。
+ *
+ * 设计：跨 grader 版本的总分不可直接比较——5d-v1 efficiency 权重 0.3 与 5d-v2 efficiency 权重 0
+ * 同一 case 同一 agent 的总分会偏移 0.05~0.15。dashboard 主表默认只显示 LATEST_GRADER_VERSION 数据，
+ * 旧版本走 includeLegacy 开关（renderCaseToolMatrix 在脚注列出过滤的 legacy 条目数）。
+ *
+ * 升级时机：eval-judge.ts 的 GRADER_VERSION bump 后，**同步**改本常量；不允许两边漂移。
+ */
+export const LATEST_GRADER_VERSION = "5d-v3";
 
 export interface RunRecord {
   runId: string;

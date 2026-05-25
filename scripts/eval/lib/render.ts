@@ -3,10 +3,34 @@
  *
  * 输出 GitHub-flavored markdown,含 mermaid xychart-beta 折线图与 emoji 状态映射。
  * VS Code / GitHub Web / Obsidian 均原生渲染 mermaid。
+ *
+ * Grader 版本过滤（2026-05-26 起）：
+ *   默认按 LATEST_GRADER_VERSION 过滤 baseline 显示——跨 grader 版本（如 5d-v1 → 5d-v2，
+ *   efficiency 权重 0.3 → 0）的总分不可直接比较。Legacy 数据（无版本号或非 LATEST 版本）
+ *   走 includeLegacy=true 开关展示，并在脚注列出被过滤的条目数。
  */
 
-import type { CaseDoc, ProjectSnapshot, WeekScore, RunRecord } from "./yaml-loader";
-import { readBaseline } from "./yaml-loader";
+import type { CaseDoc, ProjectSnapshot, WeekScore, RunRecord, BaselineSnapshot } from "./yaml-loader";
+import { readBaseline, LATEST_GRADER_VERSION } from "./yaml-loader";
+
+export interface DashboardOptions {
+  /** true = 一并展示旧 grader 版本 baseline；默认 false（仅展示 LATEST_GRADER_VERSION 数据） */
+  includeLegacy?: boolean;
+}
+
+/**
+ * 判断 baseline 是否属于"当前 grader 版本"。
+ *
+ * 规则：
+ *   - graderVersion === LATEST_GRADER_VERSION → 当前版本（保留）
+ *   - graderVersion === undefined → legacy 数据（promptfoo 时代或 5d-v1 之前），按 includeLegacy 过滤
+ *   - graderVersion 为其它值（如未来 5d-v3 跑出来的）→ 不属于当前版本，按 includeLegacy 过滤
+ *   - status === "pending"（无 baseline 数据）→ 始终保留（用于显示"待评测"状态）
+ */
+function isLatestGrader(b: BaselineSnapshot): boolean {
+  if (b.status === "pending") return true;
+  return b.graderVersion === LATEST_GRADER_VERSION;
+}
 
 const STATUS_ICON = {
   excellent: "✅",
@@ -33,28 +57,32 @@ function fmt(score: number | null, digits = 1): string {
   return score.toFixed(digits);
 }
 
-export function renderDashboard(snapshot: ProjectSnapshot): string {
+export function renderDashboard(snapshot: ProjectSnapshot, options: DashboardOptions = {}): string {
+  const includeLegacy = options.includeLegacy ?? false;
   const lines: string[] = [];
   lines.push(`# Evals Dashboard — ${snapshot.projectName}`);
   lines.push("");
   lines.push(`> 自动生成,请勿手动编辑。生成时间: \`${new Date().toISOString()}\``);
   lines.push(`> 数据源: \`evals/p*-*/\` + \`evals/_scores/\` + \`evals/_reports/\``);
   lines.push(`> 触发: 手动 \`bun run eval:dashboard\` / git pre-push hook 自动刷新`);
+  lines.push(
+    `> Grader 过滤: ${includeLegacy ? "**包含 legacy 数据**" : `**仅 \`${LATEST_GRADER_VERSION}\`**`}（跨 grader 版本总分不可直接比较；切换：\`--include-legacy\`）`,
+  );
   lines.push("");
   lines.push("---");
   lines.push("");
 
-  lines.push(...renderOverview(snapshot));
+  lines.push(...renderOverview(snapshot, includeLegacy));
   lines.push("");
-  lines.push(...renderCaseToolMatrix(snapshot));
+  lines.push(...renderCaseToolMatrix(snapshot, includeLegacy));
   lines.push("");
   lines.push(...renderWeeklyTrends(snapshot));
   lines.push("");
   lines.push(...renderRunHistoryTrends(snapshot));
   lines.push("");
-  lines.push(...renderPending(snapshot));
+  lines.push(...renderPending(snapshot, includeLegacy));
   lines.push("");
-  lines.push(...renderAnomalies(snapshot));
+  lines.push(...renderAnomalies(snapshot, includeLegacy));
   lines.push("");
   lines.push(...renderDataSources(snapshot));
   lines.push("");
@@ -64,7 +92,7 @@ export function renderDashboard(snapshot: ProjectSnapshot): string {
   return lines.join("\n");
 }
 
-function renderOverview(snap: ProjectSnapshot): string[] {
+function renderOverview(snap: ProjectSnapshot, includeLegacy: boolean): string[] {
   const out: string[] = [];
   const total = snap.cases.length;
   const byPriority = new Map<string, number>();
@@ -85,15 +113,29 @@ function renderOverview(snap: ProjectSnapshot): string[] {
   if (holdoutCount > 0) prioBits.push(`holdout=${holdoutCount}`);
   out.push(`- **优先级分布**: ${prioBits.join(" / ")}`);
 
+  let legacyFiltered = 0;
   for (const tool of snap.tools) {
     let tested = 0;
     let pending = 0;
+    let legacy = 0;
     for (const c of snap.cases) {
       const b = readBaseline(c, tool);
+      const isLatest = isLatestGrader(b);
+      if (!isLatest && !includeLegacy) {
+        legacy++;
+        continue;
+      }
       if (b.status === "tested") tested++;
       else if (b.status === "pending") pending++;
     }
-    out.push(`- **${tool}** 评分进度: ${tested}/${total} 已评分 (${pending} pending)`);
+    legacyFiltered += legacy;
+    const legacyHint = legacy > 0 && !includeLegacy ? `, ${legacy} legacy 隐藏` : "";
+    out.push(`- **${tool}** 评分进度: ${tested}/${total} 已评分 (${pending} pending${legacyHint})`);
+  }
+  if (legacyFiltered > 0 && !includeLegacy) {
+    out.push(
+      `- ⚠️ 共隐藏 **${legacyFiltered}** 条 legacy baseline（非 \`${LATEST_GRADER_VERSION}\`）；查看用 \`--include-legacy\``,
+    );
   }
 
   if (snap.allWeeks.length > 0) {
@@ -123,11 +165,11 @@ function renderOverview(snap: ProjectSnapshot): string[] {
   return out;
 }
 
-function renderCaseToolMatrix(snap: ProjectSnapshot): string[] {
+function renderCaseToolMatrix(snap: ProjectSnapshot, includeLegacy: boolean): string[] {
   const out: string[] = [];
   out.push("## 2. Case × Tool 矩阵");
   out.push("");
-  out.push(`图例: ✅ ≥4.5 / 🟢 3.5-4.4 / 🟡 2.5-3.4 / 🟠 1.5-2.4 / 🔴 <1.5 / – pending / ❌ error / ⏱️ timeout`);
+  out.push(`图例: ✅ ≥4.5 / 🟢 3.5-4.4 / 🟡 2.5-3.4 / 🟠 1.5-2.4 / 🔴 <1.5 / – pending / ❌ error / ⏱️ timeout / 🕰️ legacy(已过滤)`);
   out.push("");
 
   const latestWeek = snap.allWeeks.length > 0 ? snap.allWeeks[snap.allWeeks.length - 1] : null;
@@ -138,6 +180,7 @@ function renderCaseToolMatrix(snap: ProjectSnapshot): string[] {
   out.push(`| ${headerCols.join(" | ")} |`);
   out.push(`| ${headerCols.map(() => "---").join(" | ")} |`);
 
+  let legacyHidden = 0;
   for (const c of snap.cases) {
     const cells: string[] = [];
     cells.push(c.id + (c.holdout ? " 🔒" : ""));
@@ -145,6 +188,12 @@ function renderCaseToolMatrix(snap: ProjectSnapshot): string[] {
     cells.push((c.category ?? "?").slice(0, 18));
     for (const tool of snap.tools) {
       const b = readBaseline(c, tool);
+      const isLatest = isLatestGrader(b);
+      if (!isLatest && !includeLegacy) {
+        legacyHidden++;
+        cells.push("🕰️");
+        continue;
+      }
       if (b.status === "error") cells.push(STATUS_ICON.error);
       else if (b.status === "timeout") cells.push(STATUS_ICON.timeout);
       else if (b.score == null) cells.push(STATUS_ICON.pending);
@@ -161,6 +210,13 @@ function renderCaseToolMatrix(snap: ProjectSnapshot): string[] {
       }
     }
     out.push(`| ${cells.join(" | ")} |`);
+  }
+
+  if (legacyHidden > 0) {
+    out.push("");
+    out.push(
+      `> 🕰️ 共 **${legacyHidden}** 格 legacy baseline 被隐藏（grader 版本 ≠ \`${LATEST_GRADER_VERSION}\`，跨版本总分不可直接比较）。查看用 \`--include-legacy\`。`,
+    );
   }
 
   return out;
@@ -180,6 +236,22 @@ function renderWeeklyTrends(snap: ProjectSnapshot): string[] {
 
   out.push(`覆盖周次: w${snap.allWeeks[0]} ~ w${snap.allWeeks[snap.allWeeks.length - 1]} (共 ${snap.allWeeks.length} 周)`);
   out.push("");
+
+  // T-16: 趋势告警——下降 > 0.3 的 case 自动 flag
+  const regressions = detectRegressions(snap, 0.3);
+  if (regressions.length > 0) {
+    out.push("### ⚠️ 趋势告警（连续 / 显著下降）");
+    out.push("");
+    out.push("| case | 趋势 | Δ（最新-前次） | 类型 |");
+    out.push("|---|---|---|---|");
+    for (const r of regressions) {
+      out.push(`| \`${r.caseId}\` | ${r.trend} | ${r.delta.toFixed(2)} | ${r.type} |`);
+    }
+    out.push("");
+    out.push(`> 阈值：单周下降 > 0.3 或连续 3 周下降。详见 docs/eval/investigations/eval-rubric-industry-survey.md §6.4 T-16`);
+    out.push("");
+  }
+
   out.push("### 3.1 综合趋势(全 case 均分)");
   out.push("");
   out.push(renderAggregateTrendChart(snap));
@@ -204,6 +276,55 @@ function renderWeeklyTrends(snap: ProjectSnapshot): string[] {
     out.push("> 无 case 满足 ≥3 周数据条件,跳过单 case 折线。");
   }
 
+  return out;
+}
+
+/**
+ * T-16 趋势告警检测：
+ *   - "single_drop"：最新一周比前一周下降 > threshold
+ *   - "sustained_drop"：连续 3 周分数严格递减
+ */
+interface RegressionInfo {
+  caseId: string;
+  trend: string;
+  delta: number;
+  type: "single_drop" | "sustained_drop";
+}
+
+function detectRegressions(snap: ProjectSnapshot, threshold: number): RegressionInfo[] {
+  const out: RegressionInfo[] = [];
+  for (const c of snap.cases) {
+    const ws = snap.weeksByCase.get(c.id) ?? [];
+    const valid = ws.filter((w) => typeof w.llm === "number") as Array<{ week: number; llm: number }>;
+    if (valid.length < 2) continue;
+    const sorted = [...valid].sort((a, b) => a.week - b.week);
+
+    // single_drop
+    const last = sorted[sorted.length - 1];
+    const prev = sorted[sorted.length - 2];
+    if (prev.llm - last.llm > threshold) {
+      out.push({
+        caseId: c.id,
+        trend: `w${prev.week}=${prev.llm.toFixed(2)} → w${last.week}=${last.llm.toFixed(2)}`,
+        delta: last.llm - prev.llm,
+        type: "single_drop",
+      });
+      continue;
+    }
+
+    // sustained_drop（连续 3 周严格下降）
+    if (sorted.length >= 3) {
+      const [a, b, c2] = sorted.slice(-3);
+      if (a.llm > b.llm && b.llm > c2.llm) {
+        out.push({
+          caseId: c.id,
+          trend: `w${a.week}=${a.llm.toFixed(2)} → w${b.week}=${b.llm.toFixed(2)} → w${c2.week}=${c2.llm.toFixed(2)}`,
+          delta: c2.llm - a.llm,
+          type: "sustained_drop",
+        });
+      }
+    }
+  }
   return out;
 }
 
@@ -292,39 +413,59 @@ function mermaidLineChart(spec: LineChartSpec): string {
   return lines.join("\n");
 }
 
-function renderPending(snap: ProjectSnapshot): string[] {
+function renderPending(snap: ProjectSnapshot, includeLegacy: boolean): string[] {
   const out: string[] = [];
   out.push("## 5. 评分进度 / Pending 列表");
   out.push("");
 
   const pendingByTool = new Map<string, CaseDoc[]>();
+  const legacyByTool = new Map<string, CaseDoc[]>();
   for (const tool of snap.tools) {
     const list: CaseDoc[] = [];
+    const legacyList: CaseDoc[] = [];
     for (const c of snap.cases) {
       const b = readBaseline(c, tool);
-      if (b.status === "pending") list.push(c);
+      const isLatest = isLatestGrader(b);
+      if (b.status === "pending") {
+        list.push(c);
+      } else if (!isLatest && !includeLegacy) {
+        // legacy baseline 视作"待用当前 grader 重跑"——不进 pending 但单独列出
+        legacyList.push(c);
+      }
     }
     pendingByTool.set(tool, list);
+    legacyByTool.set(tool, legacyList);
   }
 
   for (const [tool, list] of pendingByTool) {
-    if (list.length === 0) {
-      out.push(`### ${tool}: ✅ 全部已评分`);
+    const legacyList = legacyByTool.get(tool) ?? [];
+    if (list.length === 0 && legacyList.length === 0) {
+      out.push(`### ${tool}: ✅ 全部已评分（grader=\`${LATEST_GRADER_VERSION}\`）`);
       out.push("");
       continue;
     }
-    out.push(`### ${tool}: ${list.length} 条 pending`);
+    out.push(`### ${tool}: ${list.length} 条 pending${legacyList.length > 0 ? ` + ${legacyList.length} 条 legacy 待重跑` : ""}`);
     out.push("");
-    const byPrio = new Map<string, CaseDoc[]>();
-    for (const c of list) {
-      const p = c.priority ?? "?";
-      if (!byPrio.has(p)) byPrio.set(p, []);
-      byPrio.get(p)!.push(c);
+    if (list.length > 0) {
+      const byPrio = new Map<string, CaseDoc[]>();
+      for (const c of list) {
+        const p = c.priority ?? "?";
+        if (!byPrio.has(p)) byPrio.set(p, []);
+        byPrio.get(p)!.push(c);
+      }
+      for (const p of ["P0", "P1", "P2"]) {
+        const arr = byPrio.get(p);
+        if (!arr || arr.length === 0) continue;
+        out.push(`- **${p}** (${arr.length}): ${arr.map((c) => `\`${c.id}\``).join(", ")}`);
+      }
     }
-    for (const p of ["P0", "P1", "P2"]) {
-      const arr = byPrio.get(p);
-      if (!arr || arr.length === 0) continue;
-      out.push(`- **${p}** (${arr.length}): ${arr.map((c) => `\`${c.id}\``).join(", ")}`);
+    if (legacyList.length > 0) {
+      out.push(
+        `- 🕰️ **legacy** (${legacyList.length}, 非 \`${LATEST_GRADER_VERSION}\`): ${legacyList
+          .slice(0, 8)
+          .map((c) => `\`${c.id}\``)
+          .join(", ")}${legacyList.length > 8 ? " …" : ""}`,
+      );
     }
     out.push("");
   }
@@ -332,7 +473,7 @@ function renderPending(snap: ProjectSnapshot): string[] {
   return out;
 }
 
-function renderAnomalies(snap: ProjectSnapshot): string[] {
+function renderAnomalies(snap: ProjectSnapshot, includeLegacy: boolean): string[] {
   const out: string[] = [];
   out.push("## 6. 异常 / 高方差 case");
   out.push("");
@@ -360,6 +501,8 @@ function renderAnomalies(snap: ProjectSnapshot): string[] {
     const lows: CaseDoc[] = [];
     for (const c of snap.cases) {
       const b = readBaseline(c, tool);
+      // 默认只在当前 grader 数据里找异常；legacy 数据另外报告
+      if (!isLatestGrader(b) && !includeLegacy) continue;
       if (b.score != null && b.score < 2) lows.push(c);
     }
     if (lows.length > 0) {

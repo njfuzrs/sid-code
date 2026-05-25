@@ -18,10 +18,12 @@ import {
   gradeEfficiency,
   gradeCost,
   gradeNegativeAnchors,
+  gradeRubricEnsemble,
   aggregate,
   extractJsonObject,
   makeErrorDims,
   type DimScore,
+  type JudgeProvider,
 } from "./eval-judge.ts";
 
 describe("gradeAnchorHit", () => {
@@ -422,6 +424,9 @@ describe("aggregate - null 维度跳过", () => {
   });
 
   test("rubric=null（限流）但其它正常 → 不污染总分（与旧版兜底 1.0 不同）", () => {
+    // 5d-v2（2026-05-26）下 efficiency / cost 权重均为 0，dims 不传 negative_anchor →
+    // 实际进权重的只有 anchor (1.5) + tool (1.5) = 总权 3.0。
+    // weightedSum = 1.0×1.5 + 0.8×1.5 = 2.7 → normalized = 2.7/3.0 × 5 = 4.5
     const dims: Record<string, DimScore> = {
       anchor_hit: { pass: true, score: 1.0, reason: "" },
       rubric_score: { pass: false, score: null, reason: "judge 不可用" },
@@ -431,8 +436,7 @@ describe("aggregate - null 维度跳过", () => {
     };
     const { score } = aggregate(dims);
     expect(score).not.toBeNull();
-    expect(score!).toBeGreaterThan(4.5);
-    expect(score!).toBeLessThan(4.8);
+    expect(score!).toBe(4.5);
   });
 
   test("cost 权重 0：cost 维度有效但不进总分（诊断模式）", () => {
@@ -449,6 +453,23 @@ describe("aggregate - null 维度跳过", () => {
     const { score, namedScores } = aggregate(dims);
     expect(score).toBe(5.0); // cost 不进权重 → 其它满分时总分仍 5.0
     expect(namedScores.cost).toBe(0.2); // 但 namedScores 保留诊断
+  });
+
+  test("efficiency 权重 0（5d-v2）：efficiency 维度有效但不进总分（诊断模式）", () => {
+    // 2026-05-26 / 5d-v2 起 efficiency 权重降为 0：低分 efficiency 不应再扣总分。
+    // namedScores 仍保留 efficiency 分数供事后诊断脚本读取。
+    // 这与 cost 同处理；理由见 eval-judge.ts DEFAULT_WEIGHTS docstring。
+    const dims: Record<string, DimScore> = {
+      anchor_hit: { pass: true, score: 1.0, reason: "" },
+      rubric_score: { pass: true, score: 1.0, reason: "" },
+      tool_compliance: { pass: true, score: 1.0, reason: "" },
+      negative_anchor: { pass: true, score: 1.0, reason: "" },
+      efficiency: { pass: false, score: 0.1, reason: "步数严重超标 30/10 (3.0x)" },
+      cost: { pass: true, score: 1.0, reason: "" },
+    };
+    const { score, namedScores } = aggregate(dims);
+    expect(score).toBe(5.0); // efficiency 不进权重 → 其它满分时总分仍 5.0
+    expect(namedScores.efficiency).toBe(0.1); // 但 namedScores 保留诊断
   });
 });
 
@@ -654,6 +675,21 @@ describe("审查 #13 regression: extractJsonObject 复杂度保护", () => {
     const r = extractJsonObject(text);
     expect(r.ok).toBe(true);
     if (r.ok) expect(JSON.parse(r.json).score).toBe(0.6);
+  });
+});
+
+describe("T-12 gradeRubricEnsemble (judge ensemble 框架)", () => {
+  test("空 judges 数组 → score=null + 错误说明", async () => {
+    const r = await gradeRubricEnsemble("agent output", "rubric prompt", []);
+    expect(r.score).toBeNull();
+    expect(r.pass).toBe(false);
+    expect(r.reason).toContain("≥1 个 judge provider");
+  });
+
+  test("JudgeProvider 类型签名要求 name + model", () => {
+    const j: JudgeProvider = { name: "claude-sonnet", model: "claude-sonnet-4-5-20250929" };
+    expect(j.name).toBe("claude-sonnet");
+    expect(j.model).toContain("claude-sonnet");
   });
 });
 

@@ -101,6 +101,27 @@ sid-code **不是**"又一个 Coding CLI"——从 2026-05 起向"对外可交�
 - **不要重写**——5.2 万行重写至少 6 个月，得不偿失。沿现有架构加层，不要"内核解耦"
 - **src 子目录归属（哪个目录对应五层洋葱哪一层）**：Agent 用 `ls src/` 自查；五层归属规则见 §0.1 + `docs/eval/演进路线/智能研发基座-final.md §4`，**不在 CLAUDE.md 维护静态目录树**（避免与代码漂移）
 
+## 0.3.1 Grader 冻结期约束（2026-05-26 起，到 S1 解冻）
+
+> 触发原因：12 个月 11 次 grader 改动（cost v1→v6、权重反复调）证明"在错的架构里做局部补丁"是病根。
+> 完整诊断：`docs/eval/investigations/eval-rubric-industry-survey.md`。
+> 与 §0.3 fix_type 审批层级**同级**——以下任一改动**直接打回**，不走任何审批流程：
+
+- `evals/eval-judge.ts` 的 `DEFAULT_WEIGHTS`（anchor / rubric / tool / negative_anchor / efficiency / cost 权重）
+- `evals/eval-judge.ts` 的 `gradeCost` / `gradeEfficiency` / `gradeAnchorHit` / `gradeRubric` / `gradeToolCompliance` 阈值常量与公式
+- `evals/eval-judge.ts` 的 `aggregate` 加权逻辑（含 weight=0 / score=null 跳过判定）
+
+**不限范围（冻结期内仍可正常动）**：
+
+- `evals/capability/<sub>/` 独立 runner（plan/memory/context/router/harness 不走 5 维 grader）
+- case yaml 内容（must_include / must_not_include / max_steps / baseline_scores）
+- 新增 case
+- 修 wrapper bug（不影响 grader 语义）
+
+**解冻条件**：S1 引入第一条红线 case 或架构 case 时——按 task-specific scorer 架构整体升级（`docs/eval/investigations/eval-rubric-industry-survey.md §3.2 / §6.3 T-10`），并 bump `GRADER_VERSION`（如 `5d-v2` → `5d-v3` 或 `task-specific-v1`）。**不允许**单独再调 5 维权重或阈值。
+
+**违反代价**：当前 sprint baseline 失效（`evals/_runs/*.jsonl` + `_scores/wNN/` 的数据视为不可信），sprint 报告作废，必须重跑全量。已 sync 到 case yaml 的 baseline_scores 须按 `_formula_version` 字段回滚。
+
 ## 0.4 评测体系入口（EDD 主轴）
 
 sid-code 从 2026-05-15 起建立评测体系，当前进入 Sprint S0。**改动 src/ 之前先看评测分数走向**。

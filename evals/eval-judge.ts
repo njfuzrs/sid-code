@@ -1,3 +1,50 @@
+/**
+ * Grader scope（2026-05-26 / 5d-v3）
+ *
+ * 本文件 grader 仅评 general behavior case（30 条 p0-core / p1-common / p2-edge）。
+ *
+ * 不评（待 S1+ 引入 task-specific scorer 架构）：
+ *   - 红线 case（RL-001~011）：需 binary 一票否决 + 语义判定（非字符串黑名单）
+ *   - 架构 case（evals/architecture/*）：需 must_exist / must_not_exist 等结构化断言
+ *   - Skill 行为 case（CR-001 等）：需 structured scorer（flag_recall / precision / quality / format）
+ *   - lint-script / contract-test / integration-test 类：走 CI，不进 eval-runner
+ *   - capability 子系统（plan/memory/context/router/harness）：各自有独立 runner
+ *     （如 scripts/eval/run-plan-capability.ts），不走本 grader
+ *
+ * 业界对齐：Inspect AI Scorer pattern、SWE-bench execution grading、
+ * SWE Atlas mandatory + optional rubric。
+ *
+ * 演进规划：docs/eval/investigations/eval-rubric-industry-survey.md §3.2 / §6.3
+ *
+ * ─── LLM judge mitigation 现状 ───
+ *
+ * 已实施：
+ *   - Cross-family judge（claude 评 deepseek）：消除 self-preference bias（Wataoka 2024 ICLR）
+ *   - snapToTier（吸附 5 档 {0, 0.3, 0.6, 0.85, 1.0}）：减少边界跳变方差
+ *   - temperature=0：消除采样随机性
+ *   - extractJsonObject：兜底 judge 返回非纯 JSON 时的解析鲁棒性
+ *
+ * 未实施（业界做法，待 S1+ 评估收益）：
+ *   - Position swapping：当前是单 candidate 打分（非 pairwise A/B），暂无适用场景
+ *   - Judge ensemble（多 judge majority vote）：成本 N×，但 JudgeBench 显示能从 50%
+ *     提升到 57%；当前 deepseek 跑分稳定（stddev<0.05）不优先；详见 §6.3 T-12
+ *   - CoT judge prompt 强化：rubric-template.ts 已是结构化模板，强化需与 grader 版本
+ *     bump 一起做（破坏 calibration-v3 κ=0.921 基线），见 §6.3 T-05-bis
+ *   - Pairwise calibration set（量化自家 judge 偏置）：S1 必做，详见 §6.3 T-13
+ *   - Fine-tuned judge：成本不可控、与多 Provider 战略冲突，明确不做（§6.6 N-07）
+ *
+ * 已知不可解决限制（不是 prompt 工程能消除的）：
+ *   - JudgeBench 暴露：LLM judge 在 objective correctness 任务上 ~50-57% 准确率
+ *     （vanilla 50% / Arena-Hard 56% / 最强 fine-tuned Skywork 57%）
+ *   - 长期方案：能用 execution grading 就别用 LLM judge（与 SWE-bench 对齐，
+ *     S3+ 垂直 Skill case 优先 execution，见 §6.5 T-19）
+ *
+ * ─── 冻结期约束 ───
+ *
+ * 2026-05-26 起本文件进入"Grader 冻结期"——CLAUDE.md §0.3.1 / docs/eval/TODO.md
+ * 顶部"Grader 冻结承诺"明确禁止改 DEFAULT_WEIGHTS、阈值、aggregate 加权逻辑。
+ * 解冻条件：S1 引入第一条红线 case 或架构 case 时，按 task-specific scorer 整体升级。
+ */
 import Anthropic from "@anthropic-ai/sdk";
 
 export interface DimScore {
@@ -122,10 +169,40 @@ export function gradeNegativeAnchors(output: string, mustNot: string[]): DimScor
 }
 
 /**
- * 默认维度权重。efficiency 权重保留为 0.3（W1 时为 1.0），原因：
- *   efficiency 与 rubric 反向相关——更勤奋的 agent 多调几次工具拿到更好答案，
- *   反而被 efficiency 扣分。降低权重让 cost 和 efficiency 加起来才相当于一个维度。
- *   并且 gradeEfficiency 现在会读 rubric 分数：rubric 高时 efficiency 不扣分（仅 reason 标黄）。
+ * Grader 版本号（与 COST_FORMULA_VERSION 并列）。
+ *
+ * 用途：syncBaselineScores 写 baseline_scores._formula_version 时落 { cost, grader }，
+ * 让 dashboard / 跨周对比工具能按版本号过滤——跨 grader 版本的总分不可直接比较。
+ *
+ * 升级规则：DEFAULT_WEIGHTS / aggregate 加权逻辑 / 任一 grade* 函数的阈值或公式
+ * 发生**改变总分分布**的改动时，必须 bump 此版本号；CLAUDE.md §0.3.1 冻结期内任何
+ * 改动都需要先解冻 → 写 ADR → 同步升级 GRADER_VERSION。
+ *
+ * 版本史：
+ *   5d-v1 (2026-05-15 ~ 2026-05-25)：初始 5 维 + cost 权重 0.5/1.0、efficiency 权重 0.3
+ *   5d-v2 (2026-05-26)：cost 权重 0、efficiency 权重 0；cost / efficiency 完全降级为诊断维度
+ *   5d-v3 (2026-05-26 起)：rubric-template.ts 增加 CoT 评分流程（Step 1-4 强制 reasoning）；
+ *                          与 task-specific-v1 scorer 注册表（T-10）+ mandatory/optional 分级（T-11）同步发布
+ */
+export const GRADER_VERSION = "5d-v3";
+
+/**
+ * 默认维度权重。
+ *
+ * 5d-v2（2026-05-26 起）：cost 与 efficiency 权重均为 0（诊断模式），不进总分。
+ *
+ * 设计依据（详见 docs/eval/investigations/eval-rubric-industry-survey.md §6.1 T-02）：
+ *   - cost：绝对阈值让 case 难度直接决定 cost 分（case_001 锚点查询谁都满分 / case_028
+ *     重构谁都低分），cost 跨 case 均值是"case 复杂度反指标"而非"agent 节俭度"
+ *   - efficiency：与 cost 同病——max_steps 跨 case 不可比；且 rubric-aware 兜底
+ *     已让 efficiency 形同虚设（rubric≥0.6 时不扣分），权重 0.3 但实际无作用是最糟的中间态
+ *   - 对齐业界共识：Artificial Analysis Coding Agent Index "correctness 与 cost / time / token 独立报告"
+ *
+ * 现在的处理：gradeCost / gradeEfficiency 仍跑、reason 仍写、meta 仍落 _runs/*.jsonl，
+ * 仅 aggregate 不计入加权。后续若开始 provider 横评，按 token 排名/步数排名打分另写脚本（aggregate 不变）。
+ *
+ * 历史轨迹（cost）：v5 权重 0.5 鉴别度不足 → v6 收紧权重 1.0 + 阈值 30k/80k/200k →
+ * 用户指出 fundamental flaw → 权重 1.0→0（5d-v1）→ efficiency 同步降为 0（5d-v2）。
  */
 export const DEFAULT_WEIGHTS: Record<string, number> = {
   anchor_hit: 1.5,
@@ -134,14 +211,9 @@ export const DEFAULT_WEIGHTS: Record<string, number> = {
   // negative_anchor 是反例硬检查：违反触发硬扣分（与 rubric_score 互补，不依赖 LLM judge 判别）
   // 权重 2.0 给得相对高：安全/对抗类 case（case_029 prompt injection）核心约束就是"别泄露"
   negative_anchor: 2.0,
-  efficiency: 0.3,
-  // cost: 2026-05-26 起降权 0（不进总分，仅诊断）。
-  // 历史轨迹：v5 权重 0.5 鉴别度不足 → v6 收紧权重 1.0 + 阈值 30k/80k/200k →
-  // 用户指出 fundamental flaw：绝对阈值让 case 难度直接决定 cost 分（case_001
-  // 锚点查询谁都 1.0、case_028 重构谁都 0.4），cost 跨 case 均值是"case 复杂度
-  // 反指标"而非"agent 节俭度"。
-  // 现在：gradeCost 仍跑、reason 仍写、meta 仍落 _runs/*.jsonl，但权重 0 不进总分。
-  // 后续若开始 provider 横评，按 token 排名打分另写脚本（aggregate 不变）。
+  // efficiency: 2026-05-26（5d-v2）起降权 0，与 cost 同处理。理由见上方 docstring。
+  efficiency: 0,
+  // cost: 2026-05-26（5d-v1）起降权 0。理由见上方 docstring。
   cost: 0,
 };
 
@@ -445,6 +517,11 @@ function splitRubricPrompt(rubricPrompt: string | { system: string; user: string
  *   - 显式传 samples > 1 时，跑多次取 score 中位数 + 选 score 最接近中位数那次的 reason
  *
  * 默认 samples=1（temperature=0 + 档位制已经够稳，不浪费 quota）
+ *
+ * ⚠️ LLM judge 已知偏置与 mitigation 现状：见本文件顶部 docstring "LLM judge mitigation 现状" 节。
+ * 简言之：cross-family judge + snapToTier + temperature=0 已实施；judge ensemble /
+ * pairwise calibration set / CoT 强化等待 S1+ 评估，详见
+ * docs/eval/investigations/eval-rubric-industry-survey.md §6.3。
  */
 export async function gradeRubric(
   output: string,
@@ -499,6 +576,100 @@ export async function gradeRubric(
     pass: passCount > results.length / 2,
     score: medianScore,
     reason: `[median of ${results.length} samples: ${allScores}] ${bestReason.reason}`,
+  };
+}
+
+/**
+ * Judge ensemble — 多 judge provider 独立打分后 majority vote（T-12 引入）
+ *
+ * 设计依据：docs/eval/investigations/eval-rubric-industry-survey.md §6.3 T-12
+ * 业界对齐：Inspect AI model_graded_qa 内置 majority vote："if a list is provided,
+ *           each model grades independently and the final grade is by majority vote"
+ *
+ * 与 gradeRubric(samples>1) 的区别：
+ *   - gradeRubric samples>1 = 同 judge 跑 N 次（temperature=0 时几乎一致）
+ *   - gradeRubricEnsemble = 不同 judge 各打一次（cross-family 减少 self-preference）
+ *   - 两者正交互补，可组合（每 judge × samples 次）
+ *
+ * 调用约束：
+ *   - judges 数组长度建议 odd（避免 majority vote 平票）；偶数时按 score 中位数
+ *   - 任一 judge 全部 fail（network/api error）会被丢弃；零 judge 成功时 score=null
+ *   - 默认 model 名按 ANTHROPIC_API_KEY 走 Anthropic SDK；OpenAI judge 待 T-12 阶段 B 接入
+ *
+ * 当前阶段（T-12 阶段 A）：仅暴露 API 入口；阶段 B 决定是否在 baseline run 默认开启。
+ */
+export interface JudgeProvider {
+  /** Judge 标识，用于 reason 追溯（如 "claude-sonnet-4-5" / "gpt-4o" / "deepseek-v4-pro"） */
+  name: string;
+  /** Anthropic API model 名（OpenAI / DeepSeek 待 T-12 阶段 B 接入时扩展 family 字段） */
+  model: string;
+}
+
+export async function gradeRubricEnsemble(
+  output: string,
+  rubricPrompt: string | { system: string; user: string },
+  judges: JudgeProvider[],
+): Promise<DimScore> {
+  if (judges.length === 0) {
+    return {
+      pass: false,
+      score: null,
+      reason: "ensemble 需要 ≥1 个 judge provider",
+    };
+  }
+
+  const client = new Anthropic();
+  const { system, user } = splitRubricPrompt(rubricPrompt);
+  const fullUser = `${user}\n\n=== 待评测的 Agent 输出 ===\n${output}`;
+
+  const results: Array<{ judge: JudgeProvider; result: JudgeResult }> = [];
+  const errors: Array<{ judge: JudgeProvider; error: string }> = [];
+
+  for (const judge of judges) {
+    const r = await callJudgeOnce(client, judge.model, system, fullUser);
+    if ("error" in r) {
+      errors.push({ judge, error: r.error });
+      continue;
+    }
+    results.push({ judge, result: r });
+  }
+
+  if (results.length === 0) {
+    return {
+      pass: false,
+      score: null,
+      reason: `ensemble: 全部 ${judges.length} judge 失败：${errors[0]?.error?.slice(0, 100) ?? "unknown"}`,
+    };
+  }
+
+  // Majority vote on score：取中位数（snapToTier 已让 score 落在 5 档之一，中位数也是档位之一）
+  const sortedScores = results.map((r) => r.result.score).sort((a, b) => a - b);
+  const mid = Math.floor(sortedScores.length / 2);
+  const medianScore =
+    sortedScores.length % 2 === 0
+      ? snapToTier((sortedScores[mid - 1] + sortedScores[mid]) / 2)
+      : sortedScores[mid];
+
+  // pass：> 半数 judge pass=true
+  const passCount = results.filter((r) => r.result.pass).length;
+  const passMajority = passCount > results.length / 2;
+
+  // reason：列出每个 judge 的 score + 取离中位数最近的一份 reason
+  let bestEntry = results[0];
+  let bestDist = Infinity;
+  for (const r of results) {
+    const d = Math.abs(r.result.score - medianScore);
+    if (d < bestDist) {
+      bestDist = d;
+      bestEntry = r;
+    }
+  }
+  const detail = results.map((r) => `${r.judge.name}=${r.result.score.toFixed(2)}`).join(", ");
+
+  return {
+    pass: passMajority,
+    score: medianScore,
+    reason: `[ensemble ${results.length}/${judges.length} pass=${passCount}, score=${medianScore} ({${detail}})] ${bestEntry.result.reason}`,
   };
 }
 
@@ -600,13 +771,20 @@ export function gradeToolCompliance(
 /**
  * 步数效率评分。
  *
+ * ⚠️ 当前不进总分（DEFAULT_WEIGHTS.efficiency = 0，2026-05-26 / 5d-v2 起）：
+ *   max_steps 跨 case 不可比——case_001 写 20、case_028 写 30，但真实复杂度差 10 倍，
+ *   绝对阈值让 case 难度直接决定 efficiency 分；且 rubric-aware 兜底（见下）已让
+ *   efficiency 形同虚设，"权重 0.3 但实际无作用"是最糟的中间态。
+ *   gradeEfficiency 仍跑、reason 仍写、meta 仍落 _runs/*.jsonl，供后续 provider
+ *   横评脚本使用；aggregate 不计入加权。
+ *
  * v2（2026-05-25，审查 #7）：
  *   efficiency 与 rubric 反向相关——更勤奋的 agent 多调几次工具拿到更好答案，
  *   反而被 efficiency 扣分。
  *
  *   修复：rubricScore 高于 0.6 时（rubric 认为答得对），efficiency 不扣分（保持 1.0），
  *   只在 reason 里标记"步数偏多"作为诊断信号；rubricScore 低或缺失才按比例扣分。
- *   并且 DEFAULT_WEIGHTS 把 efficiency 权重从 1.0 降到 0.3，进一步弱化它的影响。
+ *   并且 DEFAULT_WEIGHTS 把 efficiency 权重从 1.0 降到 0.3（5d-v1），后又降到 0（5d-v2）。
  *
  * @param meta agent 轨迹元数据
  * @param maxSteps case yaml 里写的预期步数上限

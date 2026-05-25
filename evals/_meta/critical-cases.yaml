@@ -1,0 +1,44 @@
+# 关键 case 列表（T-15 Pass@1 / Pass@3 / Pass^3 三层指标）
+#
+# 用途：critical case 必须跑 --samples=3 计算稳定性指标
+#   Pass@1 = 3 次平均（期望表现）
+#   Pass@3 = 3 次至少 1 次 pass（能力上限）
+#   Pass^3 = 3 次都 pass（稳定性）
+#
+# 业界对应：SWE Atlas "Pass@3 (capability), Pass@1 (expected), Pass^3 (consistency).
+#           The spread between them is directly interpretable."
+#
+# 维护规则：
+#   - 不超过 10 条（成本 ×3，过多会让 baseline 跑超时）
+#   - 必须是 P0 + 已 GA 的 case（≥ 3.5 锚点分），保证不是 case 设计问题
+#   - 出现稳定性下降（Pass^3/Pass@3 < 0.7）时优先排查
+#
+# 选取标准：
+#   - 5 个核心代码理解 / bug 修复 / 新功能 / 重构 / 多文件协调 各 1 条
+#   - 最有"信息量"（能稳定区分 sid-code vs claude-code）
+
+critical_cases:
+  - id: case_001
+    category: 代码理解
+    rationale: "查 sid-code Agent 主循环——业界最稳定的 baseline 锚定 case"
+  - id: case_005
+    category: bug修复
+    rationale: "现有数据：sid 3.0 / claude 4.5——分差最大，稳定性敏感"
+  - id: case_008
+    category: 新功能实现
+    rationale: "覆盖 entry_code 改动，有 wrapper TIMEOUT 历史"
+  - id: case_013
+    category: 多文件协调
+    rationale: "Provider 接口改动需要枚举调用点，覆盖 grep + 跨文件推理"
+  - id: case_028
+    category: 重构
+    rationale: "重构类 case 历史方差最大，最适合稳定性度量"
+
+# 跑 critical case 命令：
+#   bun run eval:run --cases case_001,case_005,case_008,case_013,case_028 --provider sid-code --samples 3
+#
+# 输出 _runs/{provider}.jsonl 每条 critical case 写 4 行：
+#   - 1 行 is_median=true（中位数聚合）
+#   - 3 行 is_median=false（sample_index 0/1/2 raw）
+#
+# Pass@1/@3/^3 计算：scripts/eval/pass-at-k.ts（消费 raw samples）

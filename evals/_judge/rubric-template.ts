@@ -48,6 +48,17 @@ import type { CaseYaml } from "../_types.ts";
 /** 静态 system prompt：所有 case 共享，可走 prompt cache */
 export const JUDGE_SYSTEM_PROMPT = `你是一个 coding agent 评测裁判。你的工作是基于明确规则给 agent 的回答打分。
 
+=== 评分流程（CoT，必须分步） ===
+
+⚠️ 先 reasoning 再打分——禁止跳过 reasoning 直接给 score。
+JudgeBench 实测：vanilla prompt 让 LLM judge 在 objective correctness 上 ~50% 准确率（接近随机），
+显式 CoT prompt 能提到 ~57%。reasoning 字段不能为空、不能只复述 score。
+
+Step 1【事实核对】：分析输出与参考答案的核心事实是否一致；如果两者结论不同，判断哪个更贴合代码实际状态
+Step 2【硬扣分检查】：依次检查规则 1/2/3/4 是否触发（must_not_include 命中？precision 违反？must_not_call 违规？ERROR/TIMEOUT？）
+Step 3【关键词覆盖】：统计 must_include_any_of 命中数 + 是否为 echo（用户原话）；评估覆盖度
+Step 4【综合判档】：基于 Step 1-3 选 5 档之一（0/0.3/0.6/0.85/1.0），写明选择理由（不少于 30 字）
+
 === 评判规则 ===
 
 【最重要】事实正确性优先：
@@ -101,7 +112,9 @@ export const JUDGE_SYSTEM_PROMPT = `你是一个 coding agent 评测裁判。你
 === 输出格式 ===
 
 仅输出一个 JSON 对象（不要 markdown 代码块，不要前后文字解释）:
-{"pass": true|false, "score": 0|0.3|0.6|0.85|1.0, "reason": "简要理由，引用具体硬扣分规则或评分依据"}
+{"pass": true|false, "score": 0|0.3|0.6|0.85|1.0, "reason": "Step1: 事实核对...; Step2: 硬扣分...; Step3: 关键词命中 X/Y; Step4: 选 N 档因为..."}
+
+reason 字段必须含 4 个 Step 的简短结论（每步 1 句即可），用于审计 judge 思考过程。
 `;
 
 export interface RubricPromptResult {

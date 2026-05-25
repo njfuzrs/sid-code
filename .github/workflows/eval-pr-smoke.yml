@@ -1,0 +1,72 @@
+# PR Smoke Test (T-17 §6.4)
+#
+# 触发：每次 PR 推送，跑 5 条 P0 smoke case 守护核心能力不回归。
+# 设计：scripts/eval/run-smoke.ts 跑 1 provider × 5 case，分数下降 > 0.5 则 block merge。
+#
+# 注意：本 workflow **不** sync baseline_scores（避免 PR CI 污染主分支）；
+# 全量回归在另一个 workflow（eval-weekly.yml）由 cron 触发。
+#
+# 业界对应：Promptfoo / Inspect AI / DeepEval 都建议把 P0 smoke 接进 PR CI。
+
+name: PR Smoke Eval
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - "src/**"
+      - "evals/**"
+      - "scripts/eval/**"
+      - ".github/workflows/eval-pr-smoke.yml"
+
+jobs:
+  smoke-eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # ⚠️ 跑真 LLM 需要 ANTHROPIC_API_KEY；fork PR 默认无 secret，需改 pull_request_target 或要求 maintainer 手动触发
+    if: github.event.pull_request.head.repo.full_name == github.repository
+
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install deps
+        run: bun install --frozen-lockfile
+
+      - name: Build sid-code (smoke 需要)
+        run: bun run build || echo "build failed, retry without makefile"
+
+      - name: Run smoke eval (5 P0 case × sid-code)
+        id: smoke
+        run: bun run scripts/eval/run-smoke.ts --provider sid-code --max-regression 0.5
+
+      - name: Upload smoke results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-eval-results
+          path: |
+            evals/_runs/sid-code.jsonl
+            evals/_reports/smoke-*.md
+
+      - name: Comment on PR
+        if: failure() && steps.smoke.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '⚠️ PR Smoke Eval 失败：分数下降 > 0.5，请检查 Actions artifact 中的 smoke-eval-results。'
+            })

@@ -136,8 +136,10 @@ function renderProviderDetail(
       anchor_hit: 1.5,
       rubric_score: 4.0,
       tool_compliance: 1.5,
-      efficiency: 1.0,
-      cost: 0.5,
+      negative_anchor: 2.0,
+      // 5d-v2 起 efficiency / cost 权重为 0（诊断维度，不进总分）
+      efficiency: 0,
+      cost: 0,
     };
 
     // 从 promptfoo componentResults 提取各维度的 reason
@@ -288,7 +290,7 @@ function renderCase(c: CaseYaml, dir: string, pfResults: PromptfooResult[]): str
   // 评分权重说明
   lines.push(`**⚖️ 评分公式**`);
   lines.push("");
-  lines.push(`\`anchor_hit(×1.5) + rubric_score(×4.0) + tool_compliance(×1.5) + efficiency(×1.0) + cost(×0.5) = 总权8.5 → 归一化5分\``);
+  lines.push(`\`anchor_hit(×1.5) + rubric_score(×4.0) + tool_compliance(×1.5) + negative_anchor(×2.0) + efficiency(×0) + cost(×0) = 总权 9.0 → 归一化 5 分\` (grader 5d-v2)`);
   lines.push("");
 
   // 各 Provider 详细得分
