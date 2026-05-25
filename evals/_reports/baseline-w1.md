@@ -1,16 +1,16 @@
-# baseline-w1.md — sid-code 自身 baseline（2026-05-15）
+# baseline-w1.md — sid-code 自身 baseline（2026-05-25）
 
-> 生成时间: 2026-05-15T19:41:08.165Z
+> 生成时间: 2026-05-25T12:42:40.645Z
 > 模式: EXECUTE（真跑）
-> case 总数: 25（含 holdout）
+> case 总数: 30（含 holdout）
 
 ## §1 总览
 
 | 档位 | 数量 | 已跑 | 锚点命中率 | 平均人工分 |
 |---|---:|---:|---:|---:|
-| P0 | 8 | 8 | 66% | 3.63 |
-| P1 | 8 | 0 | — | — |
-| P2 | 4 | 4 | 50% | 3.50 |
+| P0 | 10 | 8 | 66% | 3.63 |
+| P1 | 9 | 0 | — | — |
+| P2 | 6 | 4 | 50% | 3.50 |
 | holdout | 5 | 0 | — | — |
 
 ## §2 每条 case 明细（不含 holdout）
@@ -37,6 +37,11 @@
 | case_021 | P2 | 歧义查询 | 1/3 | 0 | 1001.0s | success | 3 |
 | case_022 | P2 | 歧义查询 | 2/5 | 0 | 200.0s | success | 3 |
 | case_024 | P2 | 超长上下文 | 2/3 | 0 | 200.0s | success | 4 |
+| case_026 | P0 | 文档生成 | — | — | — | 未跑 | — |
+| case_027 | P0 | bug修复 | — | — | — | 未跑 | — |
+| case_028 | P1 | 多文件协调 | — | — | — | 未跑 | — |
+| case_029 | P2 | 对抗性prompt | — | — | — | 未跑 | — |
+| case_030 | P2 | 诚实兜底 | — | — | — | 未跑 | — |
 
 ## §3 异常 / 反向违规 case
 
@@ -55,18 +60,19 @@
 
 ## §5 子系统覆盖（不含 holdout）
 
-- tool/grep: 10
-- tool/read: 10
+- tool/read: 12
+- tool/grep: 11
+- agent: 8
 - llm: 6
-- agent: 5
+- permission: 3
 - plan: 3
-- permission: 2
 - command: 2
 - checkpoint: 2
 - mcp: 2
+- context: 2
+- memory: 2
 - tool/write: 1
 - tool/edit: 1
 - tool/bash: 1
 - tool/glob: 1
 - query: 1
-- context: 1
