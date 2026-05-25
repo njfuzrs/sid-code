@@ -1,16 +1,19 @@
-tested_at: 2026-05-24T18:42:06.667Z
+tested_at: 2026-05-25T20:52:16.223Z
 sid_code_deepseek_v4_pro:
-  score: 4.25
+  score: 2.46
+  run_status: success
+  tested_at: 2026-05-25T20:52:16.223Z
   anchor:
-    score: 1
+    score: 0.5
   llm:
-    score: 0.72
+    score: 0.3
     dimensions:
-      anchor_hit: 1
-      rubric_score: 0.72
+      anchor_hit: 0.5
+      negative_anchor: null
+      rubric_score: 0.3
       tool_compliance: 1
       efficiency: 1
-      cost: 0.7
+      cost: 1
 claude_code_claude_opus_4_7:
   score: 4.63
   anchor:
