@@ -236,6 +236,8 @@ bun run eval:dashboard        # 刷新仪表盘 → scripts/eval/dashboard.ts
 
 ⚠️ **重要约束**：claude-code provider 只认 `claude-*` 前缀 model，传其他 model 会直接抛错（不静默 fallback）。
 
+> **数据保留与清理时机**：见 `evals/README.md` "数据资产分层与生命周期" 节。默认什么都不删——`_runs/` `_scores/` `_reports/` 是 EDD 闭环的证据链与 baseline 锚点，不是跑完即弃的临时产物。
+
 ## 0.6 关键反向检验（如果走不下去怎么办）
 
 战略不是只能赢——以下三种情况已有退路（final §5.6 / 08 §11）：
