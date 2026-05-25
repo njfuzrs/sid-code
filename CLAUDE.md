@@ -149,7 +149,7 @@ bun run eval:run --provider sid-code,claude-code
 
 1. **null vs 0 严格区分**：null = 数据缺失/judge 不可用（aggregate 跳过），0 = 测了但全错
 2. **echo 排除**：userQuery 中出现的自然语言锚点不计入命中（防复读得分）；代码标识符/路径豁免
-3. **Cost 公式 v5**：`billable = input + output + cache_creation + cache_read × 0.1`，阈值 50k/150k/500k
+3. **Cost 维度降权为诊断**（2026-05-26 起）：不进总分（DEFAULT_WEIGHTS.cost = 0），仅 reason / meta 落 jsonl 供事后分析。理由：绝对阈值让 case 难度直接决定 cost 分（case_001 类锚点查询谁都满分 / case_028 类重构谁都低分），cost 跨 case 均值是"复杂度反指标"而非"agent 节俭度"。公式 v6（billable = input + output + cache_creation + cache_read × 0.1，阈值 30k/80k/200k）保留——若后续做 provider 横评，按此公式排名打分另写脚本
 4. **--sync 默认 off**：调试单 case 不污染 baseline_scores
 
 ### 评测数据保留

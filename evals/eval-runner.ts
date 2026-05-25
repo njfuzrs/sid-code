@@ -15,9 +15,11 @@ import {
   gradeNegativeAnchors,
   aggregate,
   makeErrorDims,
+  calcBillable,
   COST_FORMULA_VERSION,
   type DimScore,
   type AgentMeta,
+  type TokenBreakdown,
 } from "./eval-judge.ts";
 import { buildRubricPrompt } from "./_judge/rubric-template.ts";
 import type { CaseYaml } from "./_types.ts";
@@ -63,6 +65,20 @@ export interface TestResult {
   runStatus: string;
   /** 单 case 实际跑完时间（ISO 字符串）—— 与整批 runId 不同，趋势图按这个画 */
   testedAt: string;
+  /**
+   * 原始 token / step 元数据（来自 wrapper meta）。可选——error / timeout 时缺失。
+   * 落 _runs/*.jsonl，便于事后做"provider 在 case_X 上的 median token 消耗"等分析，
+   * 不再只能 grep dims.cost.reason 字符串提取（脆弱）。
+   *
+   * 注意：billable_tokens 是经 cache_read 折算后的等价 input token（与 gradeCost 同口径），
+   * total_tokens 是 wrapper 上报的原始 sum（不折算），两者按需取用。
+   */
+  meta?: {
+    total_tokens: number;
+    total_steps: number;
+    billable_tokens: number | null;
+    token_breakdown?: TokenBreakdown;
+  };
 }
 
 const PROVIDER_REGISTRY: Record<string, Omit<ProviderDef, "name" | "model"> & { defaultModel: string }> = {
@@ -570,6 +586,24 @@ export function writeWeekScores(results: TestResult[], weekNum: number, baseDir:
 }
 
 /**
+ * 从 wrapper ProviderResult.meta 提取需要落 _runs/*.jsonl 的字段。
+ *
+ * 落地原因：旧实现只存归一化后的 named_scores.cost（0~1），事后做"deepseek 在所有 case 上的 median
+ * token 消耗"只能 grep dims.cost.reason 字符串，脆弱且不可靠。
+ *
+ * billable_tokens 复用 gradeCost 同口径的 calcBillable（应用 cache_read 折算），
+ * 而 total_tokens 保留 wrapper 上报的原始 sum，两者按需取用。
+ */
+function extractMeta(meta: ProviderResult["meta"]): NonNullable<TestResult["meta"]> {
+  return {
+    total_tokens: meta.total_tokens,
+    total_steps: meta.total_steps,
+    billable_tokens: calcBillable(meta),
+    token_breakdown: meta.token_breakdown,
+  };
+}
+
+/**
  * 追加每次 run 的历史快照到 _runs/{provider}.jsonl —— 永不覆盖。
  *
  * 文件按 provider 切分，便于单 provider 趋势分析。
@@ -623,6 +657,8 @@ export function appendRunHistory(
         run_status: r.runStatus,
         // 单 case 实际完成时间，与整批 run_id 分开。趋势图按 tested_at 画。
         tested_at: r.testedAt,
+        // meta：原始 token / step 计数，事后分析用（不再依赖 grep dims.cost.reason）
+        ...(r.meta ? { meta: r.meta } : {}),
         // is_median=true 当本批跑了 --samples > 1 后的中位数聚合；
         // dashboard 默认只读 is_median=true 或字段缺失（向后兼容单次跑）的行
         ...(rawSamples ? { is_median: true } : {}),
@@ -642,6 +678,7 @@ export function appendRunHistory(
         success: r.success,
         run_status: r.runStatus,
         tested_at: r.testedAt,
+        ...(r.meta ? { meta: r.meta } : {}),
         sample_index: r.sampleIndex,
         is_median: false,
       }));
@@ -854,6 +891,7 @@ async function main() {
               success: !provResult.error,
               runStatus,
               testedAt: perSample[i].completedAt,
+              meta: extractMeta(provResult.meta),
               sampleIndex: i,
               isMedian: false,
             });
@@ -895,6 +933,9 @@ async function main() {
           success: majorityRunStatus === "success",
           runStatus: majorityRunStatus,
           testedAt: completedAt,
+          // samples > 1 时取最后一次的 meta（与 output / latency 同源；中位数维度已聚合在 dims 里）
+          // 注意：billable/total_tokens 不是中位数，事后做精细分析用 sampleResults 里的 raw 行
+          meta: extractMeta(lastSample.provResult.meta),
         };
         results.push(finalResult);
         if (samples > 1) {

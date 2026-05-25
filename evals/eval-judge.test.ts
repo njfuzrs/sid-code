@@ -355,30 +355,30 @@ describe("gradeNegativeAnchors（must_not_include 反例硬检查）", () => {
   });
 });
 
-describe("gradeCost (v4 阈值)", () => {
+describe("gradeCost (v6 阈值)", () => {
   test("无 token 数据 → score: null（不再兜底 1.0）", () => {
     const r = gradeCost({ tools_used: [], files_edited: [], total_steps: 0, total_tokens: 0 });
     expect(r.score).toBeNull();
     expect(r.pass).toBe(false);
   });
 
-  test("v4 低消耗（≤50k）满分", () => {
-    const r = gradeCost({ tools_used: [], files_edited: [], total_steps: 5, total_tokens: 30_000 });
+  test("v6 低消耗（≤30k）满分", () => {
+    const r = gradeCost({ tools_used: [], files_edited: [], total_steps: 5, total_tokens: 20_000 });
     expect(r.score).toBe(1.0);
   });
 
-  test("v4 中等（50k~150k）= 0.7", () => {
-    const r = gradeCost({ tools_used: [], files_edited: [], total_steps: 5, total_tokens: 100_000 });
+  test("v6 中等（30k~80k）= 0.7", () => {
+    const r = gradeCost({ tools_used: [], files_edited: [], total_steps: 5, total_tokens: 60_000 });
     expect(r.score).toBe(0.7);
   });
 
-  test("v4 偏高（150k~500k）= 0.4", () => {
-    const r = gradeCost({ tools_used: [], files_edited: [], total_steps: 5, total_tokens: 300_000 });
+  test("v6 偏高（80k~200k）= 0.4", () => {
+    const r = gradeCost({ tools_used: [], files_edited: [], total_steps: 5, total_tokens: 150_000 });
     expect(r.score).toBe(0.4);
   });
 
-  test("v4 严重超标（>500k）= 0.2", () => {
-    const r = gradeCost({ tools_used: [], files_edited: [], total_steps: 5, total_tokens: 800_000 });
+  test("v6 严重超标（>200k）= 0.2", () => {
+    const r = gradeCost({ tools_used: [], files_edited: [], total_steps: 5, total_tokens: 300_000 });
     expect(r.score).toBe(0.2);
   });
 });
@@ -433,6 +433,22 @@ describe("aggregate - null 维度跳过", () => {
     expect(score).not.toBeNull();
     expect(score!).toBeGreaterThan(4.5);
     expect(score!).toBeLessThan(4.8);
+  });
+
+  test("cost 权重 0：cost 维度有效但不进总分（诊断模式）", () => {
+    // 2026-05-26 起 cost 权重降为 0：低分 cost 不应再扣总分。
+    // namedScores 仍保留 cost 分数供事后横评脚本读取。
+    const dims: Record<string, DimScore> = {
+      anchor_hit: { pass: true, score: 1.0, reason: "" },
+      rubric_score: { pass: true, score: 1.0, reason: "" },
+      tool_compliance: { pass: true, score: 1.0, reason: "" },
+      negative_anchor: { pass: true, score: 1.0, reason: "" },
+      efficiency: { pass: true, score: 1.0, reason: "" },
+      cost: { pass: false, score: 0.2, reason: "[cost-v6] billable 250k 严重超标" },
+    };
+    const { score, namedScores } = aggregate(dims);
+    expect(score).toBe(5.0); // cost 不进权重 → 其它满分时总分仍 5.0
+    expect(namedScores.cost).toBe(0.2); // 但 namedScores 保留诊断
   });
 });
 
@@ -501,7 +517,7 @@ describe("审查 #5 regression: gradeCost cache_read 折算", () => {
   test("有 breakdown：cache_read 按 0.1x 折算", () => {
     // 模拟 claude-code case_028: i=3053 o=6828 cc=173k cr=233k
     // billable = 3053 + 6828 + 173000 + 233000*0.1 = 3053 + 6828 + 173000 + 23300 = 206181
-    // 阈值 >150k → 0.4
+    // v6 阈值 >200k → 0.2（v5 时 >150k → 0.4）
     const r = gradeCost({
       tools_used: ["read"],
       files_edited: [],
@@ -509,23 +525,25 @@ describe("审查 #5 regression: gradeCost cache_read 折算", () => {
       total_tokens: 416000, // 不折算 4sum
       token_breakdown: { input: 3053, output: 6828, cache_creation: 173000, cache_read: 233000 },
     });
-    expect(r.score).toBe(0.4);
+    expect(r.score).toBe(0.2);
     expect(r.reason).toContain("billable 206k");
   });
 
   test("无 breakdown 退化为按 total_tokens 评分（向后兼容）", () => {
+    // v6 阈值：100k 在 80k~200k → 0.4
     const r = gradeCost({
       tools_used: ["read"],
       files_edited: [],
       total_steps: 10,
       total_tokens: 100_000,
     });
-    expect(r.score).toBe(0.7);
+    expect(r.score).toBe(0.4);
     expect(r.reason).toContain("no breakdown");
   });
 
   test("deepseek (无 cache) breakdown: cache_read=0 → 折算无影响", () => {
     // sid-code case_002 实测 ~89k，全是 input+output，cc=cr=0
+    // v6 阈值：89k 在 80k~200k → 0.4（v5 时为 0.7）
     const r = gradeCost({
       tools_used: ["read"],
       files_edited: [],
@@ -533,7 +551,7 @@ describe("审查 #5 regression: gradeCost cache_read 折算", () => {
       total_tokens: 89_000,
       token_breakdown: { input: 70_000, output: 19_000, cache_creation: 0, cache_read: 0 },
     });
-    expect(r.score).toBe(0.7); // 89k 在 50k~150k 区间
+    expect(r.score).toBe(0.4);
   });
 
   test("cache 重度复用：claude 比 sid 真实 billable 反而低", () => {
@@ -548,9 +566,10 @@ describe("审查 #5 regression: gradeCost cache_read 折算", () => {
       tools_used: ["read"], files_edited: [], total_steps: 10, total_tokens: 95_000,
       token_breakdown: { input: 80_000, output: 15_000, cache_creation: 0, cache_read: 0 },
     });
-    // 折算后 claude billable=105k < sid billable=95k？等差不多，关键是不再因 raw 285k 被冤打 0.4
-    expect(claude.score).toBe(0.7);
-    expect(sid.score).toBe(0.7);
+    // v6 阈值：两者 billable 均落在 80k~200k 区间 → 都是 0.4
+    // 关键是不再因 raw 285k 被冤打更低分（与 v5 同样目的，新阈值下都是 0.4）
+    expect(claude.score).toBe(0.4);
+    expect(sid.score).toBe(0.4);
   });
 });
 

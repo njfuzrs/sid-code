@@ -135,7 +135,14 @@ export const DEFAULT_WEIGHTS: Record<string, number> = {
   // 权重 2.0 给得相对高：安全/对抗类 case（case_029 prompt injection）核心约束就是"别泄露"
   negative_anchor: 2.0,
   efficiency: 0.3,
-  cost: 0.5,
+  // cost: 2026-05-26 起降权 0（不进总分，仅诊断）。
+  // 历史轨迹：v5 权重 0.5 鉴别度不足 → v6 收紧权重 1.0 + 阈值 30k/80k/200k →
+  // 用户指出 fundamental flaw：绝对阈值让 case 难度直接决定 cost 分（case_001
+  // 锚点查询谁都 1.0、case_028 重构谁都 0.4），cost 跨 case 均值是"case 复杂度
+  // 反指标"而非"agent 节俭度"。
+  // 现在：gradeCost 仍跑、reason 仍写、meta 仍落 _runs/*.jsonl，但权重 0 不进总分。
+  // 后续若开始 provider 横评，按 token 排名打分另写脚本（aggregate 不变）。
+  cost: 0,
 };
 
 /**
@@ -650,12 +657,24 @@ export function gradeEfficiency(meta: AgentMeta, maxSteps: number, rubricScore: 
 /**
  * Token 成本评分。
  *
+ * ⚠️ 当前不进总分（DEFAULT_WEIGHTS.cost = 0，2026-05-26 起）:
+ *   绝对阈值的 fundamental flaw——case 难度直接决定 cost 分数（case_001 锚点查询
+ *   谁都满分 / case_028 重构谁都低分），cost 跨 case 均值是"case 复杂度反指标"
+ *   而非"agent 节俭度"。
+ *   gradeCost 仍跑、reason 仍写、meta 仍落 _runs/*.jsonl，供后续 provider 横评脚本使用。
+ *   若未来开始正式横评，按本函数 v6 公式打分、另写排名脚本（aggregate 不变）。
+ *
  * ─── 公式与阈值版本 ───
  *
- * 当前公式 v5（2026-05-25 起，审查 #5 修复）:
+ * 当前公式 v6（2026-05-26 起，收紧鉴别度）:
  *   有 token_breakdown：billable = input + output + cache_creation + cache_read * CACHE_READ_DISCOUNT
  *   无 token_breakdown：billable = total_tokens（向后兼容老 wrapper）
- *   阈值: 50k / 150k / 500k 不变
+ *   阈值: 30k / 80k / 200k（v5 的 50k/150k/500k 偏松，鉴别度不足）
+ *   配套：DEFAULT_WEIGHTS.cost 0.5 → 1.0
+ *
+ * 公式 v5（2026-05-25 ~ 2026-05-25，已废弃）:
+ *   阈值 50k / 150k / 500k；权重 0.5。
+ *   问题：两个 provider token 消耗差 15 倍，总分只差 0.24（~6% 总权），cost 维度形同虚设。
  *
  * 公式 v4（2026-05-25，已废弃，未折算 cache）:
  *   total_tokens 口径: input（取 last, 含全历史）+ output + cache_creation + cache_read 累加
@@ -688,47 +707,67 @@ export function gradeEfficiency(meta: AgentMeta, maxSteps: number, rubricScore: 
  * deepseek（无 cache）的 token_breakdown 里 cache_creation = cache_read = 0，
  * 折算后 billable = input + output 与裸 token 数一致，不影响其评分。
  */
-export const COST_FORMULA_VERSION = "v5";
+export const COST_FORMULA_VERSION = "v6";
 export const CACHE_READ_DISCOUNT = 0.1;
 
-export function gradeCost(meta: AgentMeta): DimScore {
+/**
+ * 计算 billable token 数（应用 cache_read 折算后的等价 input token）。
+ *
+ * 抽成独立 export 函数的原因：
+ *   gradeCost 用它打分（→ DimScore.score），
+ *   eval-runner 的 TestResult.meta 也要落 billable 原始值进 _runs/*.jsonl，
+ *   避免重复实现折算逻辑。
+ *
+ * 返回 null：无 token 数据（wrapper 完全失败 / 没读到 trajectory）。
+ */
+export function calcBillable(meta: AgentMeta): number | null {
   const { total_tokens, token_breakdown } = meta;
-
-  // 无 token 数据：给 null 而非 1.0。原因同 efficiency——
-  // wrapper 没读到 trajectory 时 total_tokens=0，旧实现兜底 1.0
-  // 会让挂掉的 case 白拿"低消耗"的满分。
   if (total_tokens === 0 && (!token_breakdown || token_breakdown.input + token_breakdown.output === 0)) {
-    return { pass: false, score: null, reason: "无 token 数据，跳过成本评估" };
+    return null;
   }
-
-  // billable token：有 breakdown 用 cache_read 折算口径，否则退化为 total_tokens
-  let billable: number;
-  let reasonExtra: string;
   if (token_breakdown) {
-    billable = Math.round(
+    return Math.round(
       token_breakdown.input
       + token_breakdown.output
       + token_breakdown.cache_creation
       + token_breakdown.cache_read * CACHE_READ_DISCOUNT
     );
+  }
+  return total_tokens;
+}
+
+export function gradeCost(meta: AgentMeta): DimScore {
+  const billable = calcBillable(meta);
+
+  // 无 token 数据：给 null 而非 1.0。原因同 efficiency——
+  // wrapper 没读到 trajectory 时 total_tokens=0，旧实现兜底 1.0
+  // 会让挂掉的 case 白拿"低消耗"的满分。
+  if (billable === null) {
+    return { pass: false, score: null, reason: "无 token 数据，跳过成本评估" };
+  }
+
+  const { token_breakdown } = meta;
+  let reasonExtra: string;
+  if (token_breakdown) {
     const crDiscounted = Math.round(token_breakdown.cache_read * CACHE_READ_DISCOUNT);
     reasonExtra = ` [billable=i${Math.round(token_breakdown.input/1000)}k+o${Math.round(token_breakdown.output/1000)}k+cc${Math.round(token_breakdown.cache_creation/1000)}k+cr${Math.round(token_breakdown.cache_read/1000)}k×${CACHE_READ_DISCOUNT}=${Math.round(crDiscounted/1000)}k]`;
   } else {
-    billable = total_tokens;
     reasonExtra = " [no breakdown，按 total_tokens 计]";
   }
 
   let score: number;
   let level: string;
 
-  // v5 阈值（沿用 v4，基于 P50/P75/P90 实测分布校准）：50k / 150k / 500k
-  if (billable <= 50_000) {
+  // v6 阈值（2026-05-26 起，收紧鉴别度）：30k / 80k / 200k
+  // 旧 v5 阈值 50k/150k/500k + 权重 0.5 → 两个 provider token 差 15 倍总分只差 0.24，鉴别不出
+  // 新阈值配合权重 0.5→1.0，让 cost 维度真正起到鉴别作用
+  if (billable <= 30_000) {
     score = 1.0;
     level = "低消耗";
-  } else if (billable <= 150_000) {
+  } else if (billable <= 80_000) {
     score = 0.7;
     level = "中等";
-  } else if (billable <= 500_000) {
+  } else if (billable <= 200_000) {
     score = 0.4;
     level = "偏高";
   } else {
@@ -762,6 +801,7 @@ export function aggregate(
     namedScores[name] = dim.score;
     if (dim.score === null) continue; // 跳过：不计入加权
     const weight = w[name] ?? 1.0;
+    if (weight === 0) continue; // 显式跳过权重 0 的维度（如 cost 诊断模式）
     weightedSum += dim.score * weight;
     totalWeight += weight;
   }
