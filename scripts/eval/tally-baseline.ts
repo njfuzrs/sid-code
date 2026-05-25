@@ -1,7 +1,7 @@
 /**
  * eval:tally — 把 baseline-w<N>-raw.json + 各 case yaml 的 baseline_scores 汇总成 markdown 报告。
  *
- * 来源: docs/eval/00-总方案.md §3.5 + 07-执行顺序速查.md §2.4
+ * 来源: docs/eval/_archive/00-总方案.md §3.5 + _archive/07-执行顺序速查.md §2.4
  *
  * 用法:
  *   bun run eval:tally                # 默认 week=1

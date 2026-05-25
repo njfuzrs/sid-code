@@ -291,7 +291,7 @@ ${l1FailTop.length === 0
 
 ### 9.3 W10 capability eval 优先级
 
-按 \`docs/eval/07-执行顺序速查.md §6.2\`，W9-W10 第一个子系统是 **Plan (\`src/plan/\`)**。下周开始写 plan 子系统的 4 维度 capability case（20-40 条），同时继续每周五跑 smoke。
+按 \`docs/eval/_archive/07-执行顺序速查.md §6.2\`，W9-W10 第一个子系统是 **Plan (\`src/plan/\`)**。下周开始写 plan 子系统的 4 维度 capability case（20-40 条），同时继续每周五跑 smoke。
 
 ---
 

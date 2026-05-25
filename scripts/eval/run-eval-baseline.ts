@@ -1,7 +1,7 @@
 /**
  * eval:baseline — 跑 sid-code 自身 baseline（W1 默认 dry-run，需 --execute 才真跑）。
  *
- * 来源: docs/eval/00-总方案.md §3.5 + 07-执行顺序速查.md §2.4
+ * 来源: docs/eval/_archive/00-总方案.md §3.5 + _archive/07-执行顺序速查.md §2.4
  *
  * 模式:
  *   默认 dry-run        : 列出每条 case 的计划（不调用 LLM）

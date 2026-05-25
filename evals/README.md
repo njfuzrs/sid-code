@@ -1,8 +1,8 @@
 # sid-code 评测体系（evals/）
 
-> 本目录是 sid-code 评测主战场。导航总入口见 `docs/eval/07-执行顺序速查.md`。
+> 本目录是 sid-code 评测主战场。导航总入口见 `docs/eval/TODO.md`（Sprint S0–S4 执行清单）。
 >
-> **W1 不动 sid-code 任何 src/ 文件**（铁律，见 ADR-001）。
+> 历史 W1 启动期铁律 ADR-001 仍生效（W1 不动 sid-code 任何 src/ 文件，已闭环）。
 
 ## 目录约定
 
@@ -23,7 +23,7 @@ evals/
 
 ## 关键铁律（违反 = 销毁证据）
 
-来自 `docs/eval/06-风险预案与启动清单.md §9.5`：
+来自 `docs/eval/_archive/06-风险预案与启动清单.md §9.5`：
 
 1. **Transcript 必落盘** — 任何 eval 跑分都要落 `raw-outputs/`，分数变化无法根因诊断 = 销毁证据
 2. **holdout 永不参与日常调优** — `run-eval-baseline.ts --skip-holdout` 默认开
@@ -42,7 +42,7 @@ bun run eval:new-case -- --priority P0     # 用模板新建 case
 
 ## case 写作规范
 
-详见 `docs/eval/00-总方案.md §3.3` 与 `_template.yaml` 内联注释。**5 个最容易踩的坑**：
+详见 `docs/eval/_archive/00-总方案.md §3.3` 与 `_template.yaml` 内联注释。**5 个最容易踩的坑**：
 
 1. ❌ `must_include_any_of` 关键词没 grep 验证 → case_001 教训
 2. ❌ 写 `must_call_tools_in_order`（agent 找替代序列就 fail，反 §9.1 反 6.2）

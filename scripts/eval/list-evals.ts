@@ -1,7 +1,7 @@
 /**
  * eval:list — 列出 evals/ 下所有 case，确认能被识别。
  *
- * 来源: docs/eval/00-总方案.md §3.5 + 07-执行顺序速查.md §2.4
+ * 来源: docs/eval/_archive/00-总方案.md §3.5 + _archive/07-执行顺序速查.md §2.4
  *
  * 用法:
  *   bun run eval:list                       # 全部（含 holdout）

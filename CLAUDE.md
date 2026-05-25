@@ -147,7 +147,7 @@ sid-code 从 2026-05-15 起建立评测体系，当前进入 Sprint S0。**改�
 - **eval 详细清单**：`docs/eval/09-研发智能基座-eval详细清单.md`（每条 case 的 ID + grader + 前置能力 + 模板）
 - **EDD 迭代手册**：`docs/eval/edd-iteration-playbook.md`（5 步：MEASURE → DIAGNOSE → PLAN → FIX → VERIFY）
 - **当前阶段状态**：`docs/eval-status.md`（每周五更新）
-- **历史档案**：`docs/eval/07-执行顺序速查.md`（W1–W12 路线图，已封存，不再维护）
+- **历史档案**：`docs/eval/_archive/07-执行顺序速查.md`（W1–W12 路线图，已封存，不再维护）
 - **架构分析**：`docs/eval/10-eval-architecture-analysis.md`（各层分工 + Promptfoo 角色）
 - **ADR**：`docs/adr/`（必须有 rejected alternatives）
 - **Sprint 报告**：`docs/weekly-eval-report/sprint-SN.md`（旧 week-NN.md 为历史档案）
