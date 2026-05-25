@@ -214,8 +214,12 @@ export interface RunRecord {
   week: number;
   caseId: string;
   provider: string;
-  score: number;
-  namedScores: Record<string, number>;
+  /**
+   * null = 该 case 无可评分数据（wrapper error/timeout/abnormal，所有维度跳过）。
+   * 旧 _runs/*.jsonl 里 Number(null) === 0 会拉低均值；消费者必须显式 filter null 后再聚合。
+   */
+  score: number | null;
+  namedScores: Record<string, number | null>;
   latencyMs: number;
   success: boolean;
   runStatus: string;
@@ -241,14 +245,19 @@ export function loadRunHistory(evalsDir: string): Map<string, RunRecord[]> {
       for (const line of lines) {
         try {
           const j = JSON.parse(line);
+          // 过滤 raw samples（is_median=false）：dashboard 只展示中位数聚合行或旧格式行（无 is_median 字段）
+          // 旧 _runs 没有 is_median 字段 → 视为有效行（向后兼容）
+          // --samples > 1 时会写 is_median=true（中位数）+ is_median=false（raw），只取前者
+          if (j.is_median === false) continue;
           records.push({
             runId: String(j.run_id),
             testedAt: String(j.tested_at || j.run_id),
             week: Number(j.week ?? 0),
             caseId: String(j.case_id),
             provider: String(j.provider),
-            score: Number(j.score),
-            namedScores: (j.named_scores ?? {}) as Record<string, number>,
+            // 显式区分 null（无可评数据）和 0（实测为 0），不要走 Number(null)=0 通道
+            score: j.score === null || j.score === undefined ? null : Number(j.score),
+            namedScores: (j.named_scores ?? {}) as Record<string, number | null>,
             latencyMs: Number(j.latency_ms ?? 0),
             success: Boolean(j.success),
             runStatus: String(j.run_status ?? "unknown"),

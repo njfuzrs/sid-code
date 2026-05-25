@@ -47,11 +47,6 @@ rubric:
   precision: "不能直接给出修复 patch（用户明确说不要改）"
   helpfulness: "提出 ≥ 2 个可能根因 + 下一步排查建议"
 
-grader:
-  - type: assert
-    check: "must_include_any_of 至少命中 2 个"
-    weight: 1.0
-
 baseline_scores:
   sid_code_w0:
     {

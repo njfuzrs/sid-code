@@ -47,11 +47,6 @@ rubric:
   precision: "不能修改 fallback.ts；只做审计"
   helpfulness: "明确给出'有/没有漏发'结论 + 漏点行号"
 
-grader:
-  - type: assert
-    check: "must_include_any_of 至少命中 2 个"
-    weight: 1.0
-
 baseline_scores:
   sid_code_w0:
     {

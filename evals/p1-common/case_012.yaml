@@ -44,11 +44,6 @@ rubric:
   precision: "不要 Edit；只给设计"
   helpfulness: "提到测试覆盖应保持 / 抽方法后断言 public 行为不变"
 
-grader:
-  - type: assert
-    check: "must_include_any_of 至少命中 2 个"
-    weight: 1.0
-
 baseline_scores:
   sid_code_w0:
     {

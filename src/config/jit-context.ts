@@ -38,6 +38,12 @@ export class JitContextManager {
   async discoverContext(accessedPath: string, projectRoot: string): Promise<string | null> {
     const log = getLogger();
 
+    // 评测隔离：SID_CODE_DISABLE_PROJECT_RULES=1 时禁用 JIT CLAUDE.md 发现
+    // 否则 agent grep src/ 时仍可能触发同目录 CLAUDE.md 加载，泄露 case 锚点
+    if (process.env.SID_CODE_DISABLE_PROJECT_RULES === "1") {
+      return null;
+    }
+
     // 获取文件所在目录
     let targetDir: string;
     try {

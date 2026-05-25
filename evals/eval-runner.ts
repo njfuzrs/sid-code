@@ -12,6 +12,7 @@ import {
   gradeToolCompliance,
   gradeEfficiency,
   gradeCost,
+  gradeNegativeAnchors,
   aggregate,
   makeErrorDims,
   COST_FORMULA_VERSION,
@@ -415,6 +416,8 @@ async function gradeCase(
 
   // 传 user_query 给 anchor 检查器，用于 echo 排除（防止 agent 复读用户问题被算成命中）
   dims.anchor_hit = gradeAnchorHit(output, c.expected.must_include_any_of || [], c.input.user_query);
+  // 反例硬检查（must_not_include 命中即视为违反禁令，与 LLM judge 互补）
+  dims.negative_anchor = gradeNegativeAnchors(output, c.expected.must_not_include || []);
   if (skipLlmJudge) {
     dims.rubric_score = { pass: true, score: 1.0, reason: "跳过 LLM judge" };
   } else {
@@ -433,6 +436,62 @@ async function gradeCase(
 
   const { score, namedScores } = aggregate(dims);
   return { score, namedScores, dims };
+}
+
+/**
+ * 单 (case, provider) 多次采样后的中位数聚合。
+ *
+ * 设计决策：
+ *   - **每维度独立取中位数**，而不是直接对总分取中位数。
+ *     原因：rubric 跨次跳变（0↔1）只影响 rubric 维度，不应该污染 anchor/tool/cost。
+ *     对每维度独立取中位数后再 aggregate，能保留各维度真实分布信息。
+ *   - 中位数偶数项时取下中位数（lower median），不平均——保证最终 score 仍是档位制可观测值。
+ *     例：rubric 4 次采样 [0, 0.85, 0.95, 1.0] → 中位数取下中位 0.85（不是均值 0.7）
+ *   - score===null 的样本（wrapper 失败）从中位数集合中剔除；
+ *     若 ≥半数样本 null，该维度判定为 null（"该维度多数次没法测"）；否则用剩余样本的中位数。
+ *   - reason 取被选中那次（中位数对应的 sample index）的 reason，便于追溯。
+ *
+ * @param sampleDims N 次采样的 dims 数组，长度 = samples
+ * @returns 聚合后的单次 dims（结构与单次跑结果相同）
+ */
+export function aggregateSamples(sampleDims: Array<Record<string, DimScore>>): Record<string, DimScore> {
+  if (sampleDims.length === 0) return {};
+  if (sampleDims.length === 1) return sampleDims[0];
+
+  // 收集所有维度名（任何一个 sample 出现过的）
+  const allDimNames = new Set<string>();
+  for (const dims of sampleDims) {
+    for (const k of Object.keys(dims)) allDimNames.add(k);
+  }
+
+  const merged: Record<string, DimScore> = {};
+  for (const name of allDimNames) {
+    const samples = sampleDims.map((d) => d[name]).filter((d) => d !== undefined);
+    if (samples.length === 0) continue;
+
+    const validSamples = samples.filter((s) => s.score !== null);
+    // 多数样本无可评 → 该维度判定 null（不能用少数样本伪装合格）
+    if (validSamples.length < Math.ceil(samples.length / 2)) {
+      merged[name] = {
+        pass: false,
+        score: null,
+        reason: `多数样本无可评数据（${samples.length - validSamples.length}/${samples.length} 为 null）`,
+      };
+      continue;
+    }
+
+    // 取下中位数：sort 升序后 idx = floor((n-1)/2)
+    const sortedByScore = [...validSamples].sort((a, b) => (a.score as number) - (b.score as number));
+    const medianIdx = Math.floor((sortedByScore.length - 1) / 2);
+    const chosen = sortedByScore[medianIdx];
+    const allScores = validSamples.map((s) => (s.score as number).toFixed(2)).join("/");
+    merged[name] = {
+      pass: chosen.pass,
+      score: chosen.score,
+      reason: `[median ${validSamples.length} samples: ${allScores}] ${chosen.reason}`,
+    };
+  }
+  return merged;
 }
 
 function pLimit(concurrency: number) {
@@ -470,14 +529,28 @@ export function writeWeekScores(results: TestResult[], weekNum: number, baseDir:
   }
 
   for (const [caseId, caseResults] of byCaseId) {
-    // 用 case 实际完成时间（多 provider 同 case 时取最晚的，外层作为"该 case 文件最后写入时间"）
-    // 修复审查 #11：每个 provider 字段下也写自己的 tested_at + run_status，
-    // 让消费者能精确追溯"sid 跑了什么时候，claude 跑了什么时候"。
+    const filePath = join(scoresDir, `${caseId}.yaml`);
+
+    // 修复：先读旧文件再 merge —— 单 provider 跑分时不能覆盖掉其它 provider 的旧快照。
+    // 旧实现：writeFileSync 直接覆盖 → 跑 --provider sid-code 会让 claude_code_xxx 的数据消失。
+    // 现在：保留磁盘上已有的其它 provider 字段，只覆盖本次 results 涉及的 provider。
+    let existing: Record<string, unknown> = {};
+    if (existsSync(filePath)) {
+      try {
+        const parsed = yamlLib.parse(readFileSync(filePath, "utf-8")) as Record<string, unknown> | null;
+        if (parsed && typeof parsed === "object") existing = parsed;
+      } catch {
+        // 旧文件损坏：忽略，按从头写处理（不阻断 eval 流程）
+      }
+    }
+
+    // 用本次跑的最晚 tested_at 覆盖外层 tested_at —— 表示"此文件最后写入时间"
     const latestTested = caseResults.reduce(
       (acc, r) => (r.testedAt > acc ? r.testedAt : acc),
       caseResults[0]?.testedAt ?? new Date().toISOString(),
     );
-    const doc: Record<string, unknown> = { tested_at: latestTested };
+
+    const doc: Record<string, unknown> = { ...existing, tested_at: latestTested };
     for (const r of caseResults) {
       doc[r.provider] = {
         // error/timeout 的 score 写 null（与 baseline 一致），dashboard 用 run_status 过滤
@@ -491,7 +564,6 @@ export function writeWeekScores(results: TestResult[], weekNum: number, baseDir:
         },
       };
     }
-    const filePath = join(scoresDir, `${caseId}.yaml`);
     writeFileSync(filePath, yamlLib.stringify(doc));
   }
   console.log(`  时序数据: ${scoresDir}/ (${byCaseId.size} 个 case)`);
@@ -506,7 +578,14 @@ export function writeWeekScores(results: TestResult[], weekNum: number, baseDir:
  * v2（审查 #1 + #10）：error/timeout/abnormal case 的 score 写 null（与 baseline 一致），
  * 不再写虚假的 1.07/3.17 数值。dashboard 用 run_status 过滤即可。
  */
-export function appendRunHistory(results: TestResult[], runId: string, weekNum: number, baseDir: string = ROOT) {
+export function appendRunHistory(
+  results: TestResult[],
+  runId: string,
+  weekNum: number,
+  baseDir: string = ROOT,
+  /** 可选：raw samples（每次采样的原始记录），用 sample_index 标识，is_median=false */
+  rawSamples?: Array<TestResult & { sampleIndex: number; isMedian: boolean }>,
+) {
   const runsDir = join(baseDir, "_runs");
   mkdirSync(runsDir, { recursive: true });
 
@@ -516,9 +595,20 @@ export function appendRunHistory(results: TestResult[], runId: string, weekNum: 
     byProvider.get(r.provider)!.push(r);
   }
 
+  // 把 rawSamples 也按 provider 分组（每条带 is_median=false 标识）
+  const rawByProvider = new Map<string, typeof rawSamples>();
+  if (rawSamples) {
+    for (const r of rawSamples) {
+      if (r.isMedian) continue; // median 已通过 results 写入
+      if (!rawByProvider.has(r.provider)) rawByProvider.set(r.provider, []);
+      rawByProvider.get(r.provider)!.push(r);
+    }
+  }
+
   for (const [provider, providerResults] of byProvider) {
     const filePath = join(runsDir, `${provider}.jsonl`);
     const lines: string[] = [];
+    // 写 median / 单次 result（is_median: results 长度 = 1 单次跑则不显式标）
     for (const r of providerResults) {
       lines.push(JSON.stringify({
         run_id: runId,
@@ -533,6 +623,27 @@ export function appendRunHistory(results: TestResult[], runId: string, weekNum: 
         run_status: r.runStatus,
         // 单 case 实际完成时间，与整批 run_id 分开。趋势图按 tested_at 画。
         tested_at: r.testedAt,
+        // is_median=true 当本批跑了 --samples > 1 后的中位数聚合；
+        // dashboard 默认只读 is_median=true 或字段缺失（向后兼容单次跑）的行
+        ...(rawSamples ? { is_median: true } : {}),
+      }));
+    }
+    // 追加 raw samples（带 sample_index，is_median=false）
+    const rawList = rawByProvider.get(provider) ?? [];
+    for (const r of rawList) {
+      lines.push(JSON.stringify({
+        run_id: runId,
+        week: weekNum,
+        case_id: r.caseId,
+        provider: r.provider,
+        score: r.runStatus === "success" ? r.score : null,
+        named_scores: r.namedScores,
+        latency_ms: r.latencyMs,
+        success: r.success,
+        run_status: r.runStatus,
+        tested_at: r.testedAt,
+        sample_index: r.sampleIndex,
+        is_median: false,
       }));
     }
     appendFileSync(filePath, lines.join("\n") + "\n", "utf-8");
@@ -629,6 +740,12 @@ async function main() {
       // temperature=0 + 档位制（rubric v3）已经足够稳，默认 1。
       // 跑 baseline / 横向对比时建议 --judge-samples=3，保险起见。
       "judge-samples": { type: "string", default: "1" },
+      // samples: agent 自身跑 N 次取每维度中位数。
+      // 与 judge-samples 区别：
+      //   judge-samples 是"同一份 agent 输出 × N 次 judge"——只能对冲 judge 自身方差（已验证 stddev<0.05，意义不大）
+      //   samples 是"同一份 case × N 次 agent"——对冲 agent 跨次输出波动（temperature>0 时同一 case 不同回答）
+      // 默认 1 保持向后兼容；跑权威 baseline 建议 --samples=3 取中位数。
+      "samples": { type: "string", default: "1" },
       // sync 默认 off：避免调试单 case 时污染 case yaml 的 baseline_scores（diff 噪声 + git 历史污染）。
       // 跑正式 baseline / 横向对比时，显式加 --sync 才回写。
       "sync": { type: "boolean", default: false },
@@ -647,6 +764,7 @@ async function main() {
   const concurrency = parseInt(values.concurrency as string, 10) || 2;
   const skipLlmJudge = values["skip-llm-judge"] as boolean;
   const judgeSamples = parseInt((values["judge-samples"] as string) || "1", 10) || 1;
+  const samples = Math.max(1, parseInt((values["samples"] as string) || "1", 10) || 1);
   const doSync = values["sync"] as boolean;
   const dryRun = values["dry-run"] as boolean;
   const strictRefresh = values["strict-refresh"] as boolean;
@@ -663,15 +781,15 @@ async function main() {
     process.exit(1);
   }
 
-  console.log(`[eval-runner] ${cases.length} cases × ${providers.length} providers = ${cases.length * providers.length} 组合`);
+  console.log(`[eval-runner] ${cases.length} cases × ${providers.length} providers${samples > 1 ? ` × ${samples} samples` : ""} = ${cases.length * providers.length * samples} 次跑`);
   console.log(`  provider: ${providers.map(p => `${p.name}(model=${p.model})`).join(", ")}`);
-  console.log(`  并发: ${concurrency} | LLM judge: ${skipLlmJudge ? "跳过" : `启用(samples=${judgeSamples})`} | week: w${weekNum}`);
+  console.log(`  并发: ${concurrency} | LLM judge: ${skipLlmJudge ? "跳过" : `启用(judge-samples=${judgeSamples})`} | agent samples: ${samples}${samples > 1 ? "（每维度取中位数）" : ""} | week: w${weekNum}`);
 
-  // 时长预估：单 case 最坏 = (DEFAULT_MAX_RETRIES+1) × timeoutMs + totalBackoff
-  // 全批最坏 = ceil(总组合数 / 并发) × 单 case 最坏
+  // 时长预估：单 case 最坏 = (DEFAULT_MAX_RETRIES+1) × timeoutMs + totalBackoff × samples
+  // 全批最坏 = ceil(总组合数 / 并发) × 单 case 最坏 × samples
   // 一旦超过 2h，cron 任务（如 trajectory-dashboard 的 0 4 * * *）会被截断 → 直接告警
   const PER_CASE_TIMEOUT_MS = providers[0]?.timeoutMs ?? 480_000;
-  const worstSingleMs = (DEFAULT_MAX_RETRIES + 1) * PER_CASE_TIMEOUT_MS + totalBackoffMs(DEFAULT_MAX_RETRIES);
+  const worstSingleMs = ((DEFAULT_MAX_RETRIES + 1) * PER_CASE_TIMEOUT_MS + totalBackoffMs(DEFAULT_MAX_RETRIES)) * samples;
   const totalCombos = cases.length * providers.length;
   const worstTotalMs = Math.ceil(totalCombos / concurrency) * worstSingleMs;
   const worstHours = (worstTotalMs / 3_600_000).toFixed(1);
@@ -697,43 +815,91 @@ async function main() {
 
   const limit = pLimit(concurrency);
   const results: TestResult[] = [];
+  /** sampleResults：保留每次采样的中间数据，用于 --samples > 1 时写入 _runs（raw + median 都落盘）*/
+  const sampleResults: Array<TestResult & { sampleIndex: number; isMedian: boolean }> = [];
   const startTime = Date.now();
 
   const tasks = cases.flatMap(c =>
     providers.map(p => limit(async () => {
       const taskStart = Date.now();
-      console.log(`▶ ${c.id} × ${p.name} ...`);
+      const label = samples > 1 ? `${c.id} × ${p.name} (×${samples} samples)` : `${c.id} × ${p.name}`;
+      console.log(`▶ ${label} ...`);
 
       try {
-        const provResult = await runProvider(p, c.input.user_query, c.id);
-        const grade = await gradeCase(c, provResult, skipLlmJudge, judgeSamples);
-        const failure = isCompleteFailure(provResult);
-        const runStatus = classifyRunStatus(provResult, failure);
+        // 多次采样：每次都跑一遍完整的 (provider, grade) 流程，收集 dims + 元数据
+        const perSample: Array<{
+          dims: Record<string, DimScore>;
+          provResult: ProviderResult;
+          runStatus: string;
+          completedAt: string;
+        }> = [];
+        for (let i = 0; i < samples; i++) {
+          const provResult = await runProvider(p, c.input.user_query, c.id);
+          const grade = await gradeCase(c, provResult, skipLlmJudge, judgeSamples);
+          const failure = isCompleteFailure(provResult);
+          const runStatus = classifyRunStatus(provResult, failure);
+          perSample.push({ dims: grade.dims, provResult, runStatus, completedAt: new Date().toISOString() });
+          if (samples > 1) {
+            const sScoreStr = grade.score === null ? `null（${runStatus}）` : String(grade.score);
+            console.log(`  · sample ${i + 1}/${samples} = ${sScoreStr}`);
+            // 把每次 sample 也加入 sampleResults（is_median=false），便于事后追溯单次表现
+            sampleResults.push({
+              caseId: c.id,
+              provider: p.name,
+              score: grade.score,
+              namedScores: grade.namedScores,
+              dims: grade.dims,
+              response: { output: provResult.output },
+              latencyMs: provResult.meta.latency_ms || (Date.now() - taskStart),
+              success: !provResult.error,
+              runStatus,
+              testedAt: perSample[i].completedAt,
+              sampleIndex: i,
+              isMedian: false,
+            });
+          }
+        }
+
+        // 聚合：samples=1 → 直接用唯一一次的 dims；samples>1 → 每维度独立取中位数
+        const mergedDims = samples > 1
+          ? aggregateSamples(perSample.map((s) => s.dims))
+          : perSample[0].dims;
+        const { score, namedScores } = aggregate(mergedDims);
+
+        // runStatus 用"多数派"：多次跑都失败才算 error；只要 ≥半数成功就算 success
+        const successCount = perSample.filter((s) => s.runStatus === "success").length;
+        const majorityRunStatus = successCount >= Math.ceil(samples / 2) ? "success" : perSample[perSample.length - 1].runStatus;
+        // output / latency 取最后一次的（用于 _reports 展示，中位数维度已在 dims 里）
+        const lastSample = perSample[perSample.length - 1];
 
         const elapsed = Date.now() - taskStart;
         const completedAt = new Date().toISOString();
-        // score === null（所有维度跳过）显示 ⚪；否则按分档显示
         const emoji =
-          grade.score === null ? "⚪"
-          : grade.score >= 4.5 ? "✅"
-          : grade.score >= 3.5 ? "🟢"
-          : grade.score >= 2.5 ? "🟡"
+          score === null ? "⚪"
+          : score >= 4.5 ? "✅"
+          : score >= 3.5 ? "🟢"
+          : score >= 2.5 ? "🟡"
           : "🔴";
-        const scoreStr = grade.score === null ? `null（${runStatus}）` : String(grade.score);
-        console.log(`  ${emoji} ${c.id} × ${p.name} = ${scoreStr} (${(elapsed / 1000).toFixed(1)}s)`);
+        const scoreStr = score === null ? `null（${majorityRunStatus}）` : String(score);
+        const sampleNote = samples > 1 ? ` [中位数 of ${samples}]` : "";
+        console.log(`  ${emoji} ${c.id} × ${p.name} = ${scoreStr}${sampleNote} (${(elapsed / 1000).toFixed(1)}s)`);
 
-        results.push({
+        const finalResult: TestResult = {
           caseId: c.id,
           provider: p.name,
-          score: grade.score,
-          namedScores: grade.namedScores,
-          dims: grade.dims,
-          response: { output: provResult.output },
-          latencyMs: provResult.meta.latency_ms || elapsed,
-          success: !provResult.error,
-          runStatus,
+          score,
+          namedScores,
+          dims: mergedDims,
+          response: { output: lastSample.provResult.output },
+          latencyMs: lastSample.provResult.meta.latency_ms || elapsed,
+          success: majorityRunStatus === "success",
+          runStatus: majorityRunStatus,
           testedAt: completedAt,
-        });
+        };
+        results.push(finalResult);
+        if (samples > 1) {
+          sampleResults.push({ ...finalResult, sampleIndex: -1, isMedian: true });
+        }
       } catch (err) {
         // 单个 case 失败不能拖垮整批：记录降级结果，let 整体继续。
         // crash 时 score 写 null（不是 0）—— 区别"测了但 0 分"与"压根没测".
@@ -810,7 +976,7 @@ async function main() {
   await Bun.write(outputPath, JSON.stringify(output, null, 2));
 
   const runId = output.timestamp;
-  appendRunHistory(results, runId, weekNum);
+  appendRunHistory(results, runId, weekNum, ROOT, samples > 1 ? sampleResults : undefined);
   writeWeekScores(results, weekNum);
 
   if (doSync) {

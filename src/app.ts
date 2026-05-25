@@ -290,12 +290,22 @@ export class App {
 
     let systemPrompt = this.config.systemPrompt;
 
+    // 评测隔离开关：SID_CODE_DISABLE_PROJECT_RULES=1 时跳过 CLAUDE.md 加载，
+    // 避免项目 CLAUDE.md 里的目录结构（如 "AgentLoopRunner / src/agent/loop.ts"）
+    // 直接作为 case 锚点泄露给 agent，造成 anchor_hit 虚高。
+    // 仅供 evals/providers/* wrapper 使用，正常用户路径不应该设这个环境变量。
+    const disableProjectRules = process.env.SID_CODE_DISABLE_PROJECT_RULES === "1";
+
     if (!systemPrompt) {
-      // 加载并解析 CLAUDE.md 规则
-      const projectRules = await loadAllCLAUDEmd(process.cwd());
-      if (projectRules) {
-        log.debug("APP", `加载 CLAUDE.md 规则 (${projectRules.rawContent.length} 字符)`);
-        this.applyProjectRules(projectRules);
+      if (disableProjectRules) {
+        log.info("APP", "SID_CODE_DISABLE_PROJECT_RULES=1，跳过 CLAUDE.md 规则加载（评测隔离模式）");
+      } else {
+        // 加载并解析 CLAUDE.md 规则
+        const projectRules = await loadAllCLAUDEmd(process.cwd());
+        if (projectRules) {
+          log.debug("APP", `加载 CLAUDE.md 规则 (${projectRules.rawContent.length} 字符)`);
+          this.applyProjectRules(projectRules);
+        }
       }
 
       // 构建系统提示词（委托给 init-helpers）

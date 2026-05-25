@@ -49,11 +49,6 @@ rubric:
   precision: "适配方向正确（MCP → Tool,不是反过来）"
   helpfulness: "解释为什么要 Adapter 模式"
 
-grader:
-  - type: assert
-    check: "must_include_any_of 至少命中 2 个"
-    weight: 1.0
-
 baseline_scores:
   sid_code_w0:
     {

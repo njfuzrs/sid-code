@@ -459,9 +459,16 @@ function renderRunHistoryTrends(snap: ProjectSnapshot): string[] {
     out.push("");
     for (const [caseId, runs] of eligibleCases.sort()) {
       const sorted = runs.sort((a, b) => a.testedAt.localeCompare(b.testedAt));
-      const trend = sorted.map((r) => r.score.toFixed(2)).join(" → ");
-      const delta = sorted[sorted.length - 1].score - sorted[0].score;
-      const deltaStr = delta > 0 ? `+${delta.toFixed(2)}` : delta.toFixed(2);
+      // null score（error/timeout）显示为 "–"，不混入 trend 字符串里的数字
+      const trend = sorted.map((r) => (r.score === null ? "–" : r.score.toFixed(2))).join(" → ");
+      // delta 仅基于"首末两次有效 run"，避免拿 null - number 算 NaN
+      const validSorted = sorted.filter((r) => r.score !== null);
+      const deltaStr = validSorted.length >= 2
+        ? (() => {
+            const d = (validSorted[validSorted.length - 1].score as number) - (validSorted[0].score as number);
+            return d > 0 ? `+${d.toFixed(2)}` : d.toFixed(2);
+          })()
+        : "–";
       out.push(`<details><summary><code>${caseId}</code> · ${sorted.length} 次 · ${trend} (Δ ${deltaStr})</summary>`);
       out.push("");
       out.push(renderCaseRunChart(caseId, sorted));
@@ -485,9 +492,12 @@ interface RunSummary {
 
 function summarizeRun(records: RunRecord[], runId: string): RunSummary {
   const subset = records.filter((r) => r.runId === runId);
-  const avg = subset.reduce((s, r) => s + r.score, 0) / Math.max(1, subset.length);
-  const pass = subset.filter((r) => r.score >= 3.0).length;
-  const fail = subset.filter((r) => r.score < 3.0 && r.runStatus === "success").length;
+  // 均值与 pass/fail 仅统计 score !== null 且 runStatus === "success" 的 case；
+  // error/timeout/abnormal 不计入均值（旧实现 Number(null)=0 会拉低均值 -0.1~-0.2）。
+  const valid = subset.filter((r) => r.runStatus === "success" && r.score !== null);
+  const avg = valid.length > 0 ? valid.reduce((s, r) => s + (r.score as number), 0) / valid.length : 0;
+  const pass = valid.filter((r) => (r.score as number) >= 3.0).length;
+  const fail = valid.filter((r) => (r.score as number) < 3.0).length;
   const err = subset.filter((r) => r.runStatus !== "success").length;
   return { runId, count: subset.length, avgScore: avg, passCount: pass, failCount: fail, errorCount: err };
 }

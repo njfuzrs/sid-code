@@ -53,11 +53,6 @@ rubric:
   precision: "不要凭直觉猜，必须用 Read 读源码"
   helpfulness: "指出潜在的浮点比较坑或建议加测试"
 
-grader:
-  - type: assert
-    check: "must_include_any_of 至少命中 2 个"
-    weight: 1.0
-
 baseline_scores:
   sid_code_w0:
     {

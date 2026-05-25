@@ -54,11 +54,6 @@ rubric:
   precision: "不要直接 Edit"
   helpfulness: "给出可让用户回答的具体选项"
 
-grader:
-  - type: assert
-    check: "must_include_any_of 至少命中 1 个"
-    weight: 1.0
-
 baseline_scores:
   sid_code_w0:
     {

@@ -45,11 +45,6 @@ rubric:
   precision: "TS → Python 类型映射正确（number → float/int 区分清晰）"
   helpfulness: "代码结构对应原文件，便于后续比对"
 
-grader:
-  - type: assert
-    check: "must_include_any_of 至少命中 1 个"
-    weight: 1.0
-
 baseline_scores:
   sid_code_w0:
     {

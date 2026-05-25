@@ -15,7 +15,8 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { join, resolve } from "node:path";
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { runProvider, runProviderOnce, isRetryableError, type ProviderDef } from "./eval-runner.ts";
+import { runProvider, runProviderOnce, isRetryableError, aggregateSamples, type ProviderDef } from "./eval-runner.ts";
+import type { DimScore } from "./eval-judge.ts";
 
 const FAKE_SCRIPT = resolve(import.meta.dir, "./providers/_test_fixtures/fake-provider.ts");
 
@@ -152,5 +153,99 @@ describe("isRetryableError - 真实匹配", () => {
 
   test("超时关键字触发", () => {
     expect(isRetryableError("", "fetch failed: ETIMEDOUT")).toBe(true);
+  });
+});
+
+describe("aggregateSamples - 多次采样每维度中位数", () => {
+  function dim(score: number | null, reason = ""): DimScore {
+    return { pass: score !== null && score >= 0.6, score, reason };
+  }
+
+  test("samples=1 直接返回唯一一份 dims", () => {
+    const single = { anchor_hit: dim(1.0), rubric_score: dim(0.85) };
+    const r = aggregateSamples([single]);
+    expect(r).toBe(single);
+  });
+
+  test("samples=0 返回空对象（兜底，不应被调用）", () => {
+    expect(aggregateSamples([])).toEqual({});
+  });
+
+  test("3 次采样：每维度独立取中位数（rubric 跳变不污染 anchor）", () => {
+    const samples = [
+      { anchor_hit: dim(1.0), rubric_score: dim(0) },     // rubric 异常 0
+      { anchor_hit: dim(1.0), rubric_score: dim(1.0) },
+      { anchor_hit: dim(1.0), rubric_score: dim(0.95) },
+    ];
+    const r = aggregateSamples(samples);
+    // anchor 三次都是 1.0 → 中位数 1.0
+    expect(r.anchor_hit.score).toBe(1.0);
+    // rubric [0, 0.95, 1.0] → 中位数 0.95（不受 0 跳变拉低）
+    expect(r.rubric_score.score).toBe(0.95);
+    expect(r.rubric_score.reason).toContain("median 3 samples");
+  });
+
+  test("4 次采样取下中位数（不平均、保留档位制语义）", () => {
+    const samples = [
+      { rubric_score: dim(0) },
+      { rubric_score: dim(0.85) },
+      { rubric_score: dim(0.95) },
+      { rubric_score: dim(1.0) },
+    ];
+    const r = aggregateSamples(samples);
+    // 升序 [0, 0.85, 0.95, 1.0]，n=4，下中位数 idx=floor(3/2)=1 → 0.85
+    expect(r.rubric_score.score).toBe(0.85);
+  });
+
+  test("多数样本 null → 该维度判 null（不能用少数样本伪装）", () => {
+    const samples = [
+      { rubric_score: dim(null, "judge 不可用") },
+      { rubric_score: dim(null, "judge 不可用") },
+      { rubric_score: dim(0.85) },
+    ];
+    const r = aggregateSamples(samples);
+    // 3 个样本中 2 个 null（≥ ceil(3/2)=2）→ 该维度判 null
+    expect(r.rubric_score.score).toBeNull();
+    expect(r.rubric_score.reason).toContain("多数样本无可评数据");
+  });
+
+  test("少数 null + 多数有值 → 用有效样本的中位数", () => {
+    const samples = [
+      { rubric_score: dim(null, "judge 失败") },
+      { rubric_score: dim(0.85) },
+      { rubric_score: dim(0.95) },
+    ];
+    const r = aggregateSamples(samples);
+    // 2 个有效（≥ ceil(3/2)=2 是边界 "至少一半"），有效集 [0.85, 0.95] 下中位数 = 0.85
+    expect(r.rubric_score.score).toBe(0.85);
+  });
+
+  test("regression: rubric 0↔1 跳变，中位数稳到中间档", () => {
+    // 真实 case_028 历史方差：rubric [1, 1, 1, 1, 0, 1, 1, 0.95]
+    const samples = [
+      { rubric_score: dim(1.0) },
+      { rubric_score: dim(1.0) },
+      { rubric_score: dim(1.0) },
+      { rubric_score: dim(1.0) },
+      { rubric_score: dim(0) },
+      { rubric_score: dim(1.0) },
+      { rubric_score: dim(1.0) },
+      { rubric_score: dim(0.95) },
+    ];
+    const r = aggregateSamples(samples);
+    // 排序 [0, 0.95, 1, 1, 1, 1, 1, 1]，n=8，下中位数 idx=3 → 1.0
+    expect(r.rubric_score.score).toBe(1.0);
+  });
+
+  test("不同样本含的维度不同：取并集，单次缺失不影响中位数", () => {
+    const samples: Array<Record<string, DimScore>> = [
+      { anchor_hit: dim(1.0), rubric_score: dim(0.85) },
+      { anchor_hit: dim(0.5) }, // 这次 rubric 缺失（极端边界）
+      { anchor_hit: dim(1.0), rubric_score: dim(0.95) },
+    ];
+    const r = aggregateSamples(samples);
+    expect(r.anchor_hit.score).toBe(1.0); // [0.5, 1, 1] → 1
+    // rubric 只有 2 次有数据，但都不是 null，2 ≥ ceil(2/2)=1 → 中位数 [0.85, 0.95] 下中位 0.85
+    expect(r.rubric_score.score).toBe(0.85);
   });
 });

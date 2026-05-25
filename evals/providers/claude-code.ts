@@ -181,6 +181,11 @@ async function main() {
   // --verbose 是 claude CLI 强制要求（"--print + --output-format=stream-json requires --verbose"）
   // stream-json 模式才能拿到 tool_use 事件、files_edited、usage 等 trajectory metadata
   const args: string[] = ["-p", "--output-format", "stream-json", "--verbose"];
+  // 评测隔离：--bare 跳过 CLAUDE.md auto-discovery（与 sid-code 的 SID_CODE_DISABLE_PROJECT_RULES 对齐）
+  // 否则 claude 会读项目根 CLAUDE.md 里的目录结构（如 "AgentLoopRunner / src/agent/loop.ts"），
+  // 让 case_001 类锚点查询的 anchor 维度虚高。
+  // --bare 同时跳过 hooks/LSP/plugin/auto-memory，对评测来说反而是干净的中性环境。
+  args.push("--bare");
   if (model) args.push("--model", model);
   if (skipPermissions) args.push("--dangerously-skip-permissions");
   if (maxTurns) args.push("--max-turns", String(maxTurns));

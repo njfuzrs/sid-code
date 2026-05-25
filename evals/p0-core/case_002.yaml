@@ -50,11 +50,6 @@ rubric:
   precision: "不要把 read-many.ts / web-fetch.ts / memory.ts 等 'extra' 工具混进 6 个核心列表"
   helpfulness: "每个工具有一句话职责说明"
 
-grader:
-  - type: assert
-    check: "must_include_any_of 至少命中 4 个（6 选 4）"
-    weight: 1.0
-
 baseline_scores:
   sid_code_w0:
     {

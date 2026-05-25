@@ -49,11 +49,6 @@ rubric:
   precision: "不要漏掉 ollama"
   helpfulness: "指出可选字段不破坏向后兼容"
 
-grader:
-  - type: assert
-    check: "must_include_any_of 至少命中 3 个"
-    weight: 1.0
-
 baseline_scores:
   sid_code_w0:
     {

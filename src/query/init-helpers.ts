@@ -107,8 +107,13 @@ export async function buildInitialSystemPrompt(config: Config, tools: import("..
     return config.systemPrompt;
   }
 
-  const { loadAllCLAUDEmd } = await import("../config/rules.ts");
-  const projectRules = await loadAllCLAUDEmd(process.cwd());
+  // 评测隔离：SID_CODE_DISABLE_PROJECT_RULES=1 时不加载 CLAUDE.md（与 app.ts 同步）
+  // 防止项目 CLAUDE.md 里的目录结构泄露成 case 锚点答案
+  const disableProjectRules = process.env.SID_CODE_DISABLE_PROJECT_RULES === "1";
+  const projectRules = disableProjectRules ? null : await (async () => {
+    const { loadAllCLAUDEmd } = await import("../config/rules.ts");
+    return loadAllCLAUDEmd(process.cwd());
+  })();
 
   let filePrompt: string | undefined;
   if (config.systemPromptFile) {

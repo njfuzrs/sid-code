@@ -41,14 +41,6 @@ rubric:
   precision: "行号是否准确（允许 ±5 行误差）"
   helpfulness: "是否清晰描述了数据流向（读/写方向）"
 
-grader:
-  - type: assert
-    check: "must_include_any_of 至少命中 4 个"
-    weight: 0.5
-  - type: assert
-    check: "must_call_tools 命中 grep"
-    weight: 0.5
-
 baseline_scores:
   sid_code_w0:
     score: null

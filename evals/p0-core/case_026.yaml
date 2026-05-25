@@ -46,14 +46,6 @@ rubric:
   precision: "参数和返回值描述是否准确"
   helpfulness: "是否说明了在 app.ts/cli.ts 中的使用方式"
 
-grader:
-  - type: assert
-    check: "must_include_any_of 至少命中 5 个"
-    weight: 0.6
-  - type: assert
-    check: "must_call_tools 命中 read"
-    weight: 0.4
-
 baseline_scores:
   sid_code_w0:
     score: null

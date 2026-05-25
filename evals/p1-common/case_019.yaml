@@ -45,11 +45,6 @@ rubric:
   precision: "结论必须是从源码读出来的(不是猜测)"
   helpfulness: "如有死锁/资源泄漏隐患,指出"
 
-grader:
-  - type: assert
-    check: "must_include_any_of 至少命中 2 个"
-    weight: 1.0
-
 baseline_scores:
   sid_code_w0:
     {

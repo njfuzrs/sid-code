@@ -37,14 +37,6 @@ rubric:
   precision: "是否正确回答了 toolCount=0 时的返回值"
   helpfulness: "是否分析了边界条件和各级别的触发阈值"
 
-grader:
-  - type: assert
-    check: "must_include_any_of 至少命中 2 个"
-    weight: 0.5
-  - type: assert
-    check: "must_call_tools 命中 read"
-    weight: 0.5
-
 baseline_scores:
   sid_code_w0:
     score: null

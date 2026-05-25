@@ -281,7 +281,12 @@ async function main() {
 
   const child = spawn("bun", args, {
     cwd: REPO_ROOT,
-    env: { ...process.env },
+    env: {
+      ...process.env,
+      // 评测隔离：禁用项目 CLAUDE.md 加载（含 JIT 发现），避免目录结构描述泄露成 case 锚点答案
+      // 例：CLAUDE.md 第 277 行写 "AgentLoopRunner"，不隔离会让 case_001 的 anchor 虚高
+      SID_CODE_DISABLE_PROJECT_RULES: "1",
+    },
     stdio: ["ignore", "pipe", "pipe"],
   });
 

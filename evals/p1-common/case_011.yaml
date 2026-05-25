@@ -45,11 +45,6 @@ rubric:
   precision: "不要写到磁盘 / 不要 Edit"
   helpfulness: "提示用户改完后跑 bun test 验证"
 
-grader:
-  - type: assert
-    check: "must_include_any_of 至少命中 2 个"
-    weight: 1.0
-
 baseline_scores:
   sid_code_w0:
     {

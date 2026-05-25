@@ -7,7 +7,8 @@ eval_type: capability
 target_score: 4.0
 graduated_at: null
 holdout: true
-holdout_reason: "代码理解类的'反向引用追踪'变体保留作 holdout,防止 grep 关键词被过拟合到 must_include。同类 P0 留 case_001/002/003。"
+holdout_reason: "代码理解类的'反向引用追踪'变体保留作 holdout,防止 grep 关键词被过拟合到 must_include。同类 P0
+  留 case_001/002/003。"
 
 input:
   user_query: "sid-code 的循环检测（loop detection）模块在哪个文件？谁在调用它？"
@@ -46,17 +47,36 @@ rubric:
   precision: "调用方不能漏掉主循环 src/agent/loop.ts"
   helpfulness: "解释 LOOP_RECOVERY_PROMPT 的用途"
 
-grader:
-  - type: assert
-    check: "must_include_any_of 至少命中 2 个"
-    weight: 1.0
-
 baseline_scores:
-  sid_code_w0: { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
-  claude_code: { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
-  codex:       { score: null, run_status: pending, tested_at: null, tested_by: manual, transcript_path: null, notes: "" }
+  sid_code_w0:
+    {
+      score: null,
+      run_status: pending,
+      tested_at: null,
+      tested_by: manual,
+      transcript_path: null,
+      notes: ""
+    }
+  claude_code:
+    {
+      score: null,
+      run_status: pending,
+      tested_at: null,
+      tested_by: manual,
+      transcript_path: null,
+      notes: ""
+    }
+  codex:
+    {
+      score: null,
+      run_status: pending,
+      tested_at: null,
+      tested_by: manual,
+      transcript_path: null,
+      notes: ""
+    }
 
 source: "personal_exploration_2026_05_16"
 notes: |
   代码理解 4 条之 4。考查 grep + 反向引用追踪。LoopDetector 调用方在 3 个文件,反向 grep 易得。
-related_subsystem: [agent, tool/grep]
+related_subsystem: [ agent, tool/grep ]
