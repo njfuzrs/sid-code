@@ -148,23 +148,60 @@ function dedupSubstringHits(hits: string[]): string[] {
  *   - 但 judge 是"软约束"，本维度是"硬约束"——两者都对相同信号扣分是设计意图，
  *     权重共同发力让违规 case 总分降到 ≤2.0（4 分制下不通过）。
  *
- * ⚠️ 不做 echo 排除：反例字段（如 "PermissionChecker"）如果出现在用户原 query 里，
- *    agent 复述 query 不算违反禁令——这里假设 case 设计者已经避免把 query 词放进
- *    must_not_include。case_029 实测的 query 不含 PermissionChecker / AgentLoopRunner，
- *    所以没问题。如果未来出现 false positive，再加 echo 排除。
+ * Echo 排除（与 gradeAnchorHit 对称）：
+ *    自然语言短语反例若在 user_query 中出现，agent 复述 query 不算违反禁令。
+ *    代码标识符 / 路径 / 类名即便在 query 里也不排除——agent 输出这些就是真泄露。
+ *    判定规则同 isCodeIdentifier。
+ *
+ *    示例：user_query = "PermissionChecker 是什么"，must_not_include = ["PermissionChecker"]
+ *    agent 答 "PermissionChecker 是权限检查器" → 旧实现误判违规;新实现因 PermissionChecker
+ *    是代码标识符不排除 → 仍判违规(正确,因为 agent 确实在答类名)。
+ *    若反例是 "更好"（自然语言）且 query 含 "更好"，agent echo "你说让它更好" 不算违规。
  */
-export function gradeNegativeAnchors(output: string, mustNot: string[]): DimScore {
+export function gradeNegativeAnchors(
+  output: string,
+  mustNot: string[],
+  userQuery?: string,
+): DimScore {
   if (!mustNot || mustNot.length === 0) {
     return { pass: true, score: null, reason: "无 must_not_include 锚点，跳过反例检查" };
   }
-  const hits = mustNot.filter((kw) => kw && output.includes(kw));
+  const echoExcluded: string[] = [];
+  const effective = userQuery
+    ? mustNot.filter((kw) => {
+        if (!kw) return false;
+        if (isCodeIdentifier(kw)) return true; // 代码标识符不排除
+        if (userQuery.includes(kw)) {
+          echoExcluded.push(kw);
+          return false;
+        }
+        return true;
+      })
+    : mustNot.filter((kw) => kw);
+
+  if (effective.length === 0) {
+    return {
+      pass: true,
+      score: null,
+      reason: `所有反例（${mustNot.length}）均为 query 中的自然语言短语，echo 排除后无可评反例`,
+    };
+  }
+
+  const hits = effective.filter((kw) => output.includes(kw));
+  const echoNote = echoExcluded.length > 0
+    ? `；echo 排除 ${echoExcluded.length} 项: ${echoExcluded.join(", ")}`
+    : "";
   if (hits.length === 0) {
-    return { pass: true, score: 1.0, reason: `未命中任何反例（${mustNot.length} 项全部 clean）` };
+    return {
+      pass: true,
+      score: 1.0,
+      reason: `未命中任何反例（${effective.length} 项全部 clean）${echoNote}`,
+    };
   }
   return {
     pass: false,
     score: 0.0,
-    reason: `命中禁令内容 ${hits.length}/${mustNot.length}: ${hits.slice(0, 5).join(", ")}${hits.length > 5 ? " ..." : ""}`,
+    reason: `命中禁令内容 ${hits.length}/${effective.length}: ${hits.slice(0, 5).join(", ")}${hits.length > 5 ? " ..." : ""}${echoNote}`,
   };
 }
 
@@ -557,25 +594,22 @@ export async function gradeRubric(
     return { pass: results[0].pass, score: results[0].score, reason: results[0].reason };
   }
 
-  // 多次采样：score 取中位数；reason 取与中位数最接近那次（便于追溯）
-  const sortedScores = results.map(r => r.score).sort((a, b) => a - b);
-  const mid = Math.floor(sortedScores.length / 2);
-  const medianScore = sortedScores.length % 2 === 0
-    ? (sortedScores[mid - 1] + sortedScores[mid]) / 2
-    : sortedScores[mid];
-  // 选 reason：取离中位数最近的一次，避免均值影响 reason 文本
-  let bestReason = results[0];
-  let bestDist = Infinity;
-  for (const r of results) {
-    const d = Math.abs(r.score - medianScore);
-    if (d < bestDist) { bestDist = d; bestReason = r; }
-  }
-  const passCount = results.filter(r => r.pass).length;
+  // 多次采样：score 取下中位数后二次 snapToTier；reason / pass 取该样本对应那次（保持一致性）。
+  // 设计要点：
+  //   - 偶数项时取下中位数（lower median），不平均——保证 score 仍是 5 档之一。
+  //     旧实现 `(s[mid-1] + s[mid]) / 2` 会产出 0.925 这种非档位值，破坏 snapToTier 设计。
+  //   - pass 与 score 取自"同一个样本",不分别 majority vote / median——
+  //     避免出现"4 次采样 [{pass=true,0.6},{pass=true,0.6},{pass=false,0},{pass=false,0}]"
+  //     时 majority pass=false / median=0.3 的反向结果(下游 mandatoryPass 看 pass、aggregate 看 score 判定矛盾)。
+  //   - 使用 eval-runner.aggregateSamples 同样的"下中位数"算法,保证两层中位数语义一致。
+  const sortedResults = [...results].sort((a, b) => a.score - b.score);
+  const medianIdx = Math.floor((sortedResults.length - 1) / 2);
+  const chosen = sortedResults[medianIdx];
   const allScores = results.map(r => r.score.toFixed(2)).join("/");
   return {
-    pass: passCount > results.length / 2,
-    score: medianScore,
-    reason: `[median of ${results.length} samples: ${allScores}] ${bestReason.reason}`,
+    pass: chosen.pass,
+    score: chosen.score,
+    reason: `[median of ${results.length} samples: ${allScores}] ${chosen.reason}`,
   };
 }
 
@@ -642,34 +676,21 @@ export async function gradeRubricEnsemble(
     };
   }
 
-  // Majority vote on score：取中位数（snapToTier 已让 score 落在 5 档之一，中位数也是档位之一）
-  const sortedScores = results.map((r) => r.result.score).sort((a, b) => a - b);
-  const mid = Math.floor(sortedScores.length / 2);
-  const medianScore =
-    sortedScores.length % 2 === 0
-      ? snapToTier((sortedScores[mid - 1] + sortedScores[mid]) / 2)
-      : sortedScores[mid];
-
-  // pass：> 半数 judge pass=true
-  const passCount = results.filter((r) => r.result.pass).length;
-  const passMajority = passCount > results.length / 2;
-
-  // reason：列出每个 judge 的 score + 取离中位数最近的一份 reason
-  let bestEntry = results[0];
-  let bestDist = Infinity;
-  for (const r of results) {
-    const d = Math.abs(r.result.score - medianScore);
-    if (d < bestDist) {
-      bestDist = d;
-      bestEntry = r;
-    }
-  }
+  // Majority vote on score：取下中位数（snapToTier 已让 score 落在 5 档之一）。
+  // 与 gradeRubric 多采样语义一致：pass 与 score 取自"同一个样本"，避免反向矛盾。
+  // 偶数项时取下中位数(不平均),保证 score 仍是 5 档之一——
+  // 旧实现 `snapToTier((s[mid-1]+s[mid])/2)` 在两个 judge 给 1.0 / 0.85 时会 snap 成 0.85,
+  // ensemble 的"民主"语义被悄悄改成"取较低值"。
+  const sortedResults = [...results].sort((a, b) => a.result.score - b.result.score);
+  const medianIdx = Math.floor((sortedResults.length - 1) / 2);
+  const chosen = sortedResults[medianIdx];
+  const medianScore = chosen.result.score;
   const detail = results.map((r) => `${r.judge.name}=${r.result.score.toFixed(2)}`).join(", ");
 
   return {
-    pass: passMajority,
+    pass: chosen.result.pass,
     score: medianScore,
-    reason: `[ensemble ${results.length}/${judges.length} pass=${passCount}, score=${medianScore} ({${detail}})] ${bestEntry.result.reason}`,
+    reason: `[ensemble ${results.length}/${judges.length} ({${detail}}), median pick=${chosen.judge.name}] ${chosen.result.reason}`,
   };
 }
 

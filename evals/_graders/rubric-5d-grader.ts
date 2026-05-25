@@ -59,7 +59,11 @@ export class Rubric5dGrader implements Grader {
       caseYaml.expected.must_include_any_of || [],
       caseYaml.input.user_query,
     );
-    dims.negative_anchor = gradeNegativeAnchors(output, caseYaml.expected.must_not_include || []);
+    dims.negative_anchor = gradeNegativeAnchors(
+      output,
+      caseYaml.expected.must_not_include || [],
+      caseYaml.input.user_query,
+    );
 
     if (skipLlmJudge) {
       dims.rubric_score = { pass: true, score: 1.0, reason: "跳过 LLM judge" };

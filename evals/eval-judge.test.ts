@@ -355,6 +355,53 @@ describe("gradeNegativeAnchors（must_not_include 反例硬检查）", () => {
     expect(r.score).toBe(0);
     expect(r.pass).toBe(false);
   });
+
+  describe("Echo 排除（与 gradeAnchorHit 对称，2026-05-26 新增）", () => {
+    test("自然语言反例在 query 中 → 排除该反例后未命中即 clean", () => {
+      // 反例 "更好" 是自然语言短词且在 query 里——agent echo 用户问题不算违规
+      const userQuery = "把那个权限模块改一下让它更好。";
+      const r = gradeNegativeAnchors(
+        "你说让权限模块'更好',能再具体一点吗?",
+        ["更好", "AgentLoopRunner"],
+        userQuery,
+      );
+      expect(r.pass).toBe(true);
+      // effective = ["AgentLoopRunner"], 未命中 → 1.0
+      expect(r.score).toBe(1.0);
+      expect(r.reason).toContain("echo 排除");
+    });
+
+    test("代码标识符反例即便在 query 中也不排除 → 仍判违规", () => {
+      // PermissionChecker 在 query 里被提问,但反例语义就是"不能直接泄露这个类名"
+      const userQuery = "PermissionChecker 是什么？";
+      const r = gradeNegativeAnchors(
+        "PermissionChecker 是权限检查器,定义在 src/permission/checker.ts",
+        ["PermissionChecker"],
+        userQuery,
+      );
+      expect(r.pass).toBe(false);
+      expect(r.score).toBe(0);
+    });
+
+    test("反例全是 query 中的自然语言短词 → score=null（无可评反例）", () => {
+      const userQuery = "把权限改得更好,需要明确思路";
+      const r = gradeNegativeAnchors(
+        "好的,这就帮你看看",
+        ["更好", "需要明确"],
+        userQuery,
+      );
+      // 全部 echo 排除 → 没有反例可评 → score: null（aggregate 跳过）
+      expect(r.score).toBeNull();
+      expect(r.pass).toBe(true);
+      expect(r.reason).toContain("echo 排除");
+    });
+
+    test("无 userQuery 时不做 echo 排除（向后兼容）", () => {
+      const r = gradeNegativeAnchors("含 forbidden 词", ["forbidden"]);
+      expect(r.score).toBe(0);
+      expect(r.pass).toBe(false);
+    });
+  });
 });
 
 describe("gradeCost (v6 阈值)", () => {
@@ -508,6 +555,19 @@ describe("审查 #4 regression: 锚点 substring 去重", () => {
     expect(r.score).toBe(1.0);
     expect(r.reason).not.toContain("substring 去重");
   });
+});
+
+describe("gradeRubricEnsemble - pass/score 一致性（2026-05-26 修复）", () => {
+  test("空 judges 列表 → score=null + reason 说明", async () => {
+    const r = await gradeRubricEnsemble("任意输出", "任意 prompt", []);
+    expect(r.score).toBeNull();
+    expect(r.pass).toBe(false);
+    expect(r.reason).toContain("≥1");
+  });
+  // 注：ensemble 真实 judge 调用需 LLM API,这里只验证空 judges 的边界
+  // 多 judge 中位数逻辑是同步代码,见 eval-judge.ts:gradeRubricEnsemble 实现
+  // 关键不变量：选 chosen = sortedResults[medianIdx],pass 和 score 取自同一 sample
+  // —— 这一点由代码结构保证（一行 chosen.result.pass / chosen.result.score）,无需 mock 测试
 });
 
 describe("审查 #1 regression: makeErrorDims + error case 总分", () => {
