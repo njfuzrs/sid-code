@@ -10,7 +10,7 @@
 
 ## 0.1 战略定位（2026-05 起，长期不变）
 
-sid-code **不是**"又一个 Coding CLI"——从 W14 起向"对外可交付的研发智能基座"（档位 B）演进。这是后续 9 个月 / 15 人月所有 task 的根背景。
+sid-code **不是**"又一个 Coding CLI"——从 2026-05 起向"对外可交付的研发智能基座"（档位 B）演进，路线按 Sprint S0–S4 / 里程碑 M0–M3 推进（详见 docs/eval/TODO.md）。这是后续全部 task 的根背景。
 
 - **完整战略**：`docs/eval/演进路线/智能研发基座-final.md`（DeepSeek + Claude 对比融合的最终采纳方案）
 - **档位选择**：B（对外可交付的研发智能基座）；**不追求** C（跨行业平台，那是 Port/Backstage 赛道，护城河在企业销售关系而非技术）
@@ -52,7 +52,7 @@ sid-code **不是**"又一个 Coding CLI"——从 W14 起向"对外可交付的
 **`docs/eval/TODO.md`** —— 唯一的 task 清单。任何时候问"现在该做什么"都回到这里。
 
 - 5 阶段：S0 capability 夯实 → S1 M0 P0-tier1（30 条）→ S2 M1 P0-tier2（25 条）→ S3 M2 P1 + code-review Skill → S4 M3 Go/No-Go
-- 当前：**S0（W13）**——继续 capability 毕业（plan/memory/context/router/harness 全部 ≥ GA 0.70）
+- 当前：**Sprint S0 启动中**——补齐 memory/context/router/harness capability 子系统 + 跑五子系统 baseline，全部 ≥ GA (0.70)
 - 铁律：上一阶段任一 task 未完成 = 不开下一阶段；30 条 general case 全程守护，任何 src/ 改动后不允许回归
 
 ### 三组不变量（语义已统一，08 §1）
@@ -106,9 +106,9 @@ sid-code 用 **SDD + EDD + TDD 三轴螺旋**，权重随阶段迁移：
 
 | 期 | SDD | TDD | EDD |
 | --- | --- | --- | --- |
-| 内核期（W1–W12） | 50% | 30% | 20% |
-| 过渡期（M0–M3，**当前**） | 30% | 30% | 40% |
-| 平台期（M4–M6） | 20% | 30% | 50% |
+| **内核期**（已完成，2026-05-15 ~ 2026-05-23） | 50% | 30% | 20% |
+| **过渡期**（M0–M3，**当前**） | 30% | 30% | 40% |
+| **平台期**（M4–M6） | 20% | 30% | 50% |
 
 ### 每轴"内化 → 外化"翻转
 
@@ -138,7 +138,7 @@ Step 8  发布: 附带 SLA + baseline 分数 + Known Limitations
 
 ## 0.5 评测体系入口（EDD 主轴）
 
-sid-code 从 2026-05-15 起建立 9 周 5 阶段评测体系。**改动 src/ 之前先看评测分数走向**。
+sid-code 从 2026-05-15 起建立评测体系，当前进入 Sprint S0。**改动 src/ 之前先看评测分数走向**。
 
 - **执行 TODO**：`docs/eval/TODO.md`（唯一执行入口，详见 §0.2）
 - **战略蓝本**：`docs/eval/演进路线/智能研发基座-final.md`（详见 §0.1）
@@ -146,14 +146,14 @@ sid-code 从 2026-05-15 起建立 9 周 5 阶段评测体系。**改动 src/ 之
 - **eval 详细清单**：`docs/eval/09-研发智能基座-eval详细清单.md`（每条 case 的 ID + grader + 前置能力 + 模板）
 - **EDD 迭代手册**：`docs/eval/edd-iteration-playbook.md`（5 步：MEASURE → DIAGNOSE → PLAN → FIX → VERIFY）
 - **当前阶段状态**：`docs/eval-status.md`（每周五更新）
-- **导航 + 进度表**：`docs/eval/07-执行顺序速查.md`（W1–W12 历史进度）
+- **历史档案**：`docs/eval/07-执行顺序速查.md`（W1–W12 路线图，已封存，不再维护）
 - **架构分析**：`docs/eval/10-eval-architecture-analysis.md`（各层分工 + Promptfoo 角色）
 - **ADR**：`docs/adr/`（必须有 rejected alternatives）
-- **周报**：`docs/weekly-eval-report/week-NN.md`
+- **Sprint 报告**：`docs/weekly-eval-report/sprint-SN.md`（旧 week-NN.md 为历史档案）
 - **case 仓库**（2026-05-25 实际盘点，与 `docs/eval/TODO.md` 保持一致）：
   - 现有：`evals/p0-core/`（10 条）+ `evals/p1-common/`（9 条）+ `evals/p2-edge/`（6 条）+ `evals/holdout/`（5 条）= 30 条
   - capability：`evals/capability/{plan,memory,context,router,harness}/`（**仅 plan 有 10 条 case + runner**，其余 4 个子系统仅 .gitkeep，待 S0 补齐）
-  - W14 起新增（与 p0-core 平级）：`evals/architecture/{redline,form,pluggable,kernel,platform,discipline,context-engine,orchestration,chinese,durable-exec,notification,ux,nonfunctional,outcome,meta,milestone}/` + `evals/holdout/architecture/`
+  - S0 起新增（与 p0-core 平级）：`evals/architecture/{redline,form,pluggable,kernel,platform,discipline,context-engine,orchestration,chinese,durable-exec,notification,ux,nonfunctional,outcome,meta,milestone}/` + `evals/holdout/architecture/`
 
 ### 跑评测的正确入口（**不要绕道**）
 
@@ -162,13 +162,14 @@ sid-code 从 2026-05-15 起建立 9 周 5 阶段评测体系。**改动 src/ 之
 
 ```bash
 # 单 case 调试（推荐用 package.json 脚本别名）
-bun run eval:run --cases case_002 --provider sid-code --model deepseek-v4-pro --week N
+# runner 默认按 ISO 日历周自动写 _runs / _scores，不需要手动传 --week
+bun run eval:run --cases case_002 --provider sid-code --model deepseek-v4-pro
 
 # 多 case + 多 provider（claude-code 只认 claude-* 前缀 model）
-bun run eval:run --cases case_002,case_005 --provider sid-code,claude-code --week N
+bun run eval:run --cases case_002,case_005 --provider sid-code,claude-code
 
 # 全量回归（去掉 --cases 即跑全 25 条非 holdout；holdout 单独 --include-holdout）
-bun run eval:run --provider sid-code --model deepseek-v4-pro --week N
+bun run eval:run --provider sid-code --model deepseek-v4-pro
 ```
 
 输出位置：
@@ -179,10 +180,8 @@ bun run eval:run --provider sid-code --model deepseek-v4-pro --week N
 
 ### Promptfoo 现状（**已冻结，禁止使用**）
 
-2026-05-23 起评测层切换到自研 `eval-runner.ts`。原 `evals/promptfoo/` 已物理移到
-`evals/_legacy/promptfoo/`，wrapper 收敛到唯一一份在 `evals/providers/`（详见
-`docs/eval/10-eval-architecture-analysis.md §5.4`）。**保留 _legacy 仅为可追溯历史
-数据 + 紧急回滚**，不要主动调用，原因：
+2026-05-23 起评测层切换到自研 `eval-runner.ts`。原 `evals/promptfoo/` 实现已废弃，仅保留 `evals/_legacy/README.md` 作为决策档案（不再保留代码副本，紧急回滚靠 git history）。原 `evals/promptfoo/` 的 wrapper 收敛到唯一一份在 `evals/providers/`（详见
+`docs/eval/10-eval-architecture-analysis.md §5.4`），不要主动调用，原因：
 1. 黑盒并发/重试不可控，遇 LLM 中转商 429 会跑空 5h+
 2. 评分公式重复维护（同一公式分布在 `yaml-to-tests.ts` 字符串 + `eval-judge.ts`）
 3. 用户已多次明确指示用自研 runner
@@ -190,7 +189,7 @@ bun run eval:run --provider sid-code --model deepseek-v4-pro --week N
 
 **禁止行为**（除非用户显式指示）：
 - ❌ 跑 `bunx promptfoo eval`（npm script `eval:horizontal-*` 已删除）
-- ❌ 改 `evals/_legacy/promptfoo/` 下任何文件
+- ❌ 改 `evals/_legacy/` 下任何文件
 - ❌ 把 `_reports/promptfoo-*.json` 当作"最新分数"来源（应该用
   `_reports/eval-latest.json` 或 `_runs/<provider>.jsonl`）
 
@@ -204,9 +203,9 @@ bun run eval:run --provider sid-code --model deepseek-v4-pro --week N
 
 | 组件 | 文件 | 说明 |
 | --- | --- | --- |
-| **主入口** | `evals/eval-runner.ts` (883 行) | 自研 runner，CASE_DIRS = p0-core/p1-common/p2-edge |
-| **5 维 Grader** | `evals/eval-judge.ts` (755 行) | anchor_hit(1.5) + rubric_score(4.0) + tool_compliance(1.5) + efficiency(0.3) + cost(0.5) |
-| **case 模板** | `evals/_template.yaml` (111 行) | 8 段：元信息/EDD类型/输入/期望/Rubric/Grader/Baseline/元数据 |
+| **主入口** | `evals/eval-runner.ts` (~1050 行) | 自研 runner，CASE_DIRS = p0-core/p1-common/p2-edge |
+| **5 维 Grader** | `evals/eval-judge.ts` (~800 行) | anchor_hit(1.5) + rubric_score(4.0) + tool_compliance(1.5) + efficiency(0.3) + cost(0.5) |
+| **case 模板** | `evals/_template.yaml` (~110 行) | 8 段：元信息/EDD类型/输入/期望/Rubric/Grader/Baseline/元数据 |
 | **类型定义** | `evals/_types.ts` | CaseYaml 单一来源（之前在三处漂移过） |
 | **rubric prompt** | `evals/_judge/rubric-template.ts` | 线上 rubric 评分 prompt 模板 |
 | **calibration** | `evals/_judge/prompt-v3.md` | κ=0.921，temperature=0，max_tokens=2048 |
@@ -218,18 +217,20 @@ bun run eval:run --provider sid-code --model deepseek-v4-pro --week N
 3. **Cost 公式 v5**：`billable = input + output + cache_creation + cache_read × 0.1`，阈值 50k/150k/500k。
 4. **--sync 默认 off**：调试单 case 不污染 baseline_scores。
 
-**package.json 脚本**（≈ eval:run 等 6 个有效入口）：
+**package.json 脚本**（≈ eval:run 等 8 个有效入口）：
 
 ```bash
 bun run eval:run              # 主入口 → evals/eval-runner.ts
 bun run eval:list             # 列 case → scripts/eval/list-evals.ts
 bun run eval:tally            # 统计基线 → scripts/eval/tally-baseline.ts
 bun run eval:new-case         # 新建 case → scripts/eval/new-case.ts
+bun run eval:bench            # bench 跑分 → scripts/eval/run-bench.ts
+bun run eval:bench-report     # bench 报告 → scripts/eval/bench-report.ts
 bun run eval:plan-capability  # plan capability → scripts/eval/run-plan-capability.ts
 bun run eval:dashboard        # 刷新仪表盘 → scripts/eval/dashboard.ts
 ```
 
-**Provider 注册**（`eval-runner.ts:67`）：
+**Provider 注册**（`eval-runner.ts` PROVIDER_REGISTRY）：
 
 | provider | defaultModel | wrapper |
 | --- | --- | --- |
