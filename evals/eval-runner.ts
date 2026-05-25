@@ -13,6 +13,7 @@ import {
   gradeEfficiency,
   gradeCost,
   aggregate,
+  makeErrorDims,
   COST_FORMULA_VERSION,
   type DimScore,
   type AgentMeta,
@@ -57,6 +58,8 @@ export interface TestResult {
   response: { output: string };
   latencyMs: number;
   success: boolean;
+  /** run_status：success / error / timeout / abnormal —— 与 _runs 和 baseline 共用 */
+  runStatus: string;
   /** 单 case 实际跑完时间（ISO 字符串）—— 与整批 runId 不同，趋势图按这个画 */
   testedAt: string;
 }
@@ -155,16 +158,15 @@ function hasHoldoutId(want: Set<string>): boolean {
 
 /**
  * 判定 provider 输出/stderr 是否为可重试的瞬时网络错误。
- * 只在网络错误时重试，业务错误（空输出 / parse_error / 模型拒绝）不重试避免污染数据。
  *
- * ⚠️ 已知边界：substring 匹配会有 false positive。
- *   - 模型输出里出现 "HTTP 502 是什么" / "issue #429" + wrapper 因其它原因 error → 会被误判可重试
- *   - 选型理由：宁可多 retry 不可漏 retry——多 retry 浪费几分钟，漏 retry 直接污染 baseline
- *   - 如要更严格，应该改为只检查 stderr（stderr 几乎只包含 wrapper 自身日志 + 子进程 stderr）
- *     当前仍检查 output 是因为部分 provider 把 HTTP 错误写到 stdout 的 [ERROR] 块里。
+ * v2（审查 #9）：只检查 stderr 不扫 stdout。
+ * 旧实现扫 stdout 会把 agent 输出里出现 "HTTP 502 是什么" / "issue #429" 的回答
+ * 误判为可重试，触发无声重试，最终用另一次 attempt 的结果污染数据。
+ * wrapper 自己已经把 HTTP 错误写到 stderr 和 [ERROR] 块，stdout 主要是 agent 答案文本。
+ *
+ * 同时检查 output 但只看 [ERROR] 前缀（不扫整段）—— wrapper 的错误标记格式固定，安全。
  */
 export function isRetryableError(output: string, stderr: string): boolean {
-  const combined = `${output}\n${stderr}`;
   const retryablePatterns = [
     "ECONNRESET",
     "ETIMEDOUT",
@@ -183,7 +185,11 @@ export function isRetryableError(output: string, stderr: string): boolean {
     "Gateway Timeout",
     "Too Many Requests",
   ];
-  return retryablePatterns.some(p => combined.includes(p));
+  // 只扫 stderr 和 output 的 [ERROR]/[TIMEOUT] 前缀块（前 500 字符），避免 agent 长输出里
+  // 的关键字误命中。wrapper 的错误信号都在 [ERROR] 块的开头。
+  const errorPrefix = output.startsWith("[ERROR]") || output.startsWith("[TIMEOUT]") ? output.slice(0, 500) : "";
+  const haystack = `${errorPrefix}\n${stderr}`;
+  return retryablePatterns.some(p => haystack.includes(p));
 }
 
 export async function runProviderOnce(provider: ProviderDef, prompt: string, caseId: string): Promise<ProviderResult & { stderrTail: string }> {
@@ -343,7 +349,67 @@ function stripStderr(r: ProviderResult & { stderrTail?: string }): ProviderResul
   return rest;
 }
 
-async function gradeCase(c: CaseYaml, result: ProviderResult, skipLlmJudge: boolean, judgeSamples: number): Promise<{ score: number | null; namedScores: Record<string, number | null>; dims: Record<string, DimScore> }> {
+/**
+ * 判定一次跑分是否属于"完全失败"——直接走 null 评分，跳过所有维度。
+ *
+ * 修复审查 #1 + #14：
+ *   旧实现：error/timeout case 仍走 gradeCase，partial trajectory 让 eff=1, cost=0.7，
+ *   total_tokens=0 + mustCallTools 为空时 tool 兜底给 1.0 → 总分能虚高到 1.07~3.64。
+ *
+ *   新实现：检测三种"完全失败"信号，命中任一就强制所有维度 null：
+ *   1. result.error === true（wrapper 自己标了 error）
+ *   2. output 以 [ERROR] 或 [TIMEOUT] 开头（wrapper 错误信号）
+ *   3. exit_status ∈ {timeout, error, abnormal_stdout, parse_error, stdout_overflow, stderr_overflow, outer_timeout}
+ */
+const FAILED_EXIT_STATUSES = new Set([
+  "timeout",
+  "error",
+  "abnormal_stdout",
+  "parse_error",
+  "stdout_overflow",
+  "stderr_overflow",
+  "outer_timeout",
+]);
+
+export function isCompleteFailure(result: ProviderResult): { failed: boolean; reason: string } {
+  if (result.error === true) return { failed: true, reason: `wrapper error=true (exit_status=${result.meta.exit_status})` };
+  const out = result.output ?? "";
+  if (out.startsWith("[ERROR]")) return { failed: true, reason: `output 以 [ERROR] 开头: ${out.slice(0, 100)}` };
+  if (out.startsWith("[TIMEOUT]")) return { failed: true, reason: `output 以 [TIMEOUT] 开头: ${out.slice(0, 100)}` };
+  if (FAILED_EXIT_STATUSES.has(result.meta.exit_status)) {
+    return { failed: true, reason: `exit_status=${result.meta.exit_status}` };
+  }
+  return { failed: false, reason: "" };
+}
+
+/**
+ * 把 ProviderResult 的 status 归一化为 _runs / baseline 共用的 runStatus 字符串。
+ * 与 isCompleteFailure 配套，确保 score / runStatus 一致。
+ */
+export function classifyRunStatus(result: ProviderResult, failure: { failed: boolean }): string {
+  if (!failure.failed) return "success";
+  const status = result.meta.exit_status;
+  if (status === "timeout" || status === "outer_timeout") return "timeout";
+  if (status === "abnormal_stdout" || status === "parse_error") return "abnormal";
+  return "error";
+}
+
+async function gradeCase(
+  c: CaseYaml,
+  result: ProviderResult,
+  skipLlmJudge: boolean,
+  judgeSamples: number,
+): Promise<{ score: number | null; namedScores: Record<string, number | null>; dims: Record<string, DimScore> }> {
+  // 入口短路：wrapper 标了 error / output 是 [ERROR]/[TIMEOUT] 信号
+  // → 所有维度强制 null，跳过 LLM judge（不浪费 quota 评 ERROR 字符串）
+  // 修复审查 #1 + #14：避免 partial trajectory 让 eff=1, cost=0.7 给假分数
+  const failure = isCompleteFailure(result);
+  if (failure.failed) {
+    const dims = makeErrorDims(`wrapper 失败，跳过所有维度评分：${failure.reason}`);
+    const { score, namedScores } = aggregate(dims);
+    return { score, namedScores, dims };
+  }
+
   const { output, meta } = result;
   const dims: Record<string, DimScore> = {};
 
@@ -358,9 +424,11 @@ async function gradeCase(c: CaseYaml, result: ProviderResult, skipLlmJudge: bool
     mustCallTools: c.expected.must_call_tools,
     mustCallMode: c.expected.must_call_tools_mode,
     mustNotCallTools: c.expected.must_not_call_tools,
+    mustModifyFilesIn: c.expected.must_modify_files_in,
     mustNotModifyFiles: c.expected.must_not_modify_files,
   });
-  dims.efficiency = gradeEfficiency(meta, c.expected.max_steps || 15);
+  // efficiency 接收 rubric 分数：rubric 高时步数偏多不扣分（审查 #7）
+  dims.efficiency = gradeEfficiency(meta, c.expected.max_steps || 15, dims.rubric_score.score);
   dims.cost = gradeCost(meta);
 
   const { score, namedScores } = aggregate(dims);
@@ -402,7 +470,9 @@ export function writeWeekScores(results: TestResult[], weekNum: number, baseDir:
   }
 
   for (const [caseId, caseResults] of byCaseId) {
-    // 用 case 实际完成时间（多 provider 同 case 时取最晚的，避免误导）
+    // 用 case 实际完成时间（多 provider 同 case 时取最晚的，外层作为"该 case 文件最后写入时间"）
+    // 修复审查 #11：每个 provider 字段下也写自己的 tested_at + run_status，
+    // 让消费者能精确追溯"sid 跑了什么时候，claude 跑了什么时候"。
     const latestTested = caseResults.reduce(
       (acc, r) => (r.testedAt > acc ? r.testedAt : acc),
       caseResults[0]?.testedAt ?? new Date().toISOString(),
@@ -410,7 +480,10 @@ export function writeWeekScores(results: TestResult[], weekNum: number, baseDir:
     const doc: Record<string, unknown> = { tested_at: latestTested };
     for (const r of caseResults) {
       doc[r.provider] = {
-        score: r.score,
+        // error/timeout 的 score 写 null（与 baseline 一致），dashboard 用 run_status 过滤
+        score: r.runStatus === "success" ? r.score : null,
+        run_status: r.runStatus,
+        tested_at: r.testedAt,
         anchor: { score: r.namedScores.anchor_hit ?? null },
         llm: {
           score: r.namedScores.rubric_score ?? null,
@@ -429,6 +502,9 @@ export function writeWeekScores(results: TestResult[], weekNum: number, baseDir:
  *
  * 文件按 provider 切分，便于单 provider 趋势分析。
  * dashboard 读取这些 jsonl 画运行历史折线图。
+ *
+ * v2（审查 #1 + #10）：error/timeout/abnormal case 的 score 写 null（与 baseline 一致），
+ * 不再写虚假的 1.07/3.17 数值。dashboard 用 run_status 过滤即可。
  */
 export function appendRunHistory(results: TestResult[], runId: string, weekNum: number, baseDir: string = ROOT) {
   const runsDir = join(baseDir, "_runs");
@@ -444,19 +520,17 @@ export function appendRunHistory(results: TestResult[], runId: string, weekNum: 
     const filePath = join(runsDir, `${provider}.jsonl`);
     const lines: string[] = [];
     for (const r of providerResults) {
-      const isTimeout = r.response.output.includes("TIMEOUT");
-      const isError = r.response.output.includes("[ERROR]");
-      const runStatus = isTimeout ? "timeout" : isError ? "error" : "success";
       lines.push(JSON.stringify({
         run_id: runId,
         week: weekNum,
         case_id: r.caseId,
         provider: r.provider,
-        score: r.score,
+        // 与 baseline 一致：runStatus !== "success" 时 score 写 null
+        score: r.runStatus === "success" ? r.score : null,
         named_scores: r.namedScores,
         latency_ms: r.latencyMs,
         success: r.success,
-        run_status: runStatus,
+        run_status: r.runStatus,
         // 单 case 实际完成时间，与整批 run_id 分开。趋势图按 tested_at 画。
         tested_at: r.testedAt,
       }));
@@ -503,22 +577,24 @@ export function syncBaselineScores(results: TestResult[], baseDir: string = ROOT
     }
 
     for (const r of caseResults) {
-      const isTimeout = r.response.output.includes("TIMEOUT");
-      const isError = r.response.output.includes("[ERROR]");
-      const runStatus = isTimeout ? "timeout" : isError ? "error" : "success";
-
       // error / timeout 的 baseline score 写 null（不是数值 0、不是 ~2.5）。
       // 旧实现：error case 因为 3 个维度兜底 1.0、rubric 0、anchor 0 → 总分 ~2.5 落入 baseline，
       // dashboard 取均值时会把这 2.5 算进去，污染横向对比。
       // 现在：score=null + run_status=error，下游消费者用 run_status 过滤、score 仅对 success 有效。
-      const safeScore = runStatus === "success" ? r.score : null;
+      const safeScore = r.runStatus === "success" ? r.score : null;
+      const isTimeout = r.runStatus === "timeout";
+      const isError = r.runStatus === "error" || r.runStatus === "abnormal";
       const entry: Record<string, unknown> = {
         score: safeScore,
-        run_status: runStatus,
+        run_status: r.runStatus,
         tested_at: r.testedAt,
         tested_by: "eval-runner",
         transcript_path: null,
-        notes: isTimeout ? "eval-runner 超时" : isError ? "eval-runner error（score 写 null，仅 run_status 有效）" : "",
+        notes: isTimeout
+          ? "eval-runner 超时（score=null）"
+          : isError
+            ? "eval-runner error（score=null，仅 run_status 有效）"
+            : "",
         dimensions: r.namedScores,
         // 公式版本：让后续工具/人能一眼区分新旧 baseline
         // 同一 case 同一 provider 的 cost 维度跨版本不可直接比较
@@ -550,12 +626,15 @@ async function main() {
       "include-holdout": { type: "boolean", default: false },
       "skip-llm-judge": { type: "boolean", default: false },
       // judge-samples: LLM judge 同输出多次采样取中位数，用于在仍想覆盖 prompt 微扰时降方差。
-      // temperature=0 已经足够稳，默认 1。如怀疑判分边界跳变（0.85↔0.95），设 3 跑 self-consistency。
+      // temperature=0 + 档位制（rubric v3）已经足够稳，默认 1。
+      // 跑 baseline / 横向对比时建议 --judge-samples=3，保险起见。
       "judge-samples": { type: "string", default: "1" },
       // sync 默认 off：避免调试单 case 时污染 case yaml 的 baseline_scores（diff 噪声 + git 历史污染）。
       // 跑正式 baseline / 横向对比时，显式加 --sync 才回写。
       "sync": { type: "boolean", default: false },
       "dry-run": { type: "boolean", default: false },
+      // 控制 refreshReports 失败是否让 eval-runner exit 非 0（CI 用）
+      "strict-refresh": { type: "boolean", default: false },
     },
     strict: false,
   });
@@ -570,6 +649,7 @@ async function main() {
   const judgeSamples = parseInt((values["judge-samples"] as string) || "1", 10) || 1;
   const doSync = values["sync"] as boolean;
   const dryRun = values["dry-run"] as boolean;
+  const strictRefresh = values["strict-refresh"] as boolean;
   const outputPath = resolve(ROOT, "..", values.output as string);
   const weekNum = values.week ? parseInt(values.week as string, 10) : currentWeekNumber();
 
@@ -627,6 +707,8 @@ async function main() {
       try {
         const provResult = await runProvider(p, c.input.user_query, c.id);
         const grade = await gradeCase(c, provResult, skipLlmJudge, judgeSamples);
+        const failure = isCompleteFailure(provResult);
+        const runStatus = classifyRunStatus(provResult, failure);
 
         const elapsed = Date.now() - taskStart;
         const completedAt = new Date().toISOString();
@@ -637,7 +719,7 @@ async function main() {
           : grade.score >= 3.5 ? "🟢"
           : grade.score >= 2.5 ? "🟡"
           : "🔴";
-        const scoreStr = grade.score === null ? "null（无可评维度）" : String(grade.score);
+        const scoreStr = grade.score === null ? `null（${runStatus}）` : String(grade.score);
         console.log(`  ${emoji} ${c.id} × ${p.name} = ${scoreStr} (${(elapsed / 1000).toFixed(1)}s)`);
 
         results.push({
@@ -649,6 +731,7 @@ async function main() {
           response: { output: provResult.output },
           latencyMs: provResult.meta.latency_ms || elapsed,
           success: !provResult.error,
+          runStatus,
           testedAt: completedAt,
         });
       } catch (err) {
@@ -657,15 +740,18 @@ async function main() {
         const elapsed = Date.now() - taskStart;
         const errMsg = err instanceof Error ? err.message : String(err);
         console.log(`  ⚠️  ${c.id} × ${p.name} = ERROR (${(elapsed / 1000).toFixed(1)}s): ${errMsg.slice(0, 120)}`);
+        const dims = makeErrorDims(`eval-runner task crash: ${errMsg.slice(0, 200)}`);
+        const { score, namedScores } = aggregate(dims);
         results.push({
           caseId: c.id,
           provider: p.name,
-          score: null,
-          namedScores: { anchor_hit: null, rubric_score: null, tool_compliance: null, efficiency: null, cost: null },
-          dims: { error: { pass: false, score: null, reason: errMsg.slice(0, 300) } },
+          score,
+          namedScores,
+          dims,
           response: { output: `[ERROR] eval-runner task crash: ${errMsg}` },
           latencyMs: elapsed,
           success: false,
+          runStatus: "error",
           testedAt: new Date().toISOString(),
         });
       }
@@ -685,6 +771,7 @@ async function main() {
       model: providers[0]?.model ?? null,
       concurrency,
       week: weekNum,
+      cost_formula_version: COST_FORMULA_VERSION,
     },
     results: {
       timestamp: new Date().toISOString(),
@@ -700,6 +787,7 @@ async function main() {
           response: r.response,
           score: reportedScore,
           success: r.success,
+          runStatus: r.runStatus,
           namedScores: r.namedScores,
           testCase: { vars: { case_id: r.caseId }, description: r.caseId },
           gradingResult: {
@@ -745,10 +833,20 @@ async function main() {
     console.log(`  平均分: N/A（全部 ${results.length} 个 case 无可评分数据）`);
   }
 
-  await refreshReports();
+  const refreshOk = await refreshReports();
+  if (!refreshOk && strictRefresh) {
+    console.error("[eval-runner] dashboard/cases 刷新失败，--strict-refresh 模式下 exit 1");
+    process.exit(1);
+  }
 }
 
-async function refreshReports() {
+/**
+ * 自动刷新 DASHBOARD.md / CASES.md。
+ *
+ * v2（审查 #12）：返回 boolean 标识成功，失败时调用方决定是否 exit 非 0。
+ * 旧实现失败只打 ❌ 然后正常退出，CI 看不到错误。
+ */
+async function refreshReports(): Promise<boolean> {
   console.log("");
   console.log("[eval-runner] 自动刷新报告...");
   const projectRoot = resolve(ROOT, "..");
@@ -772,6 +870,8 @@ async function refreshReports() {
   else console.log(`  ❌ DASHBOARD.md 刷新失败 (exit=${dashCode})`);
   if (casesCode === 0) console.log("  ✅ CASES.md 已刷新");
   else console.log(`  ❌ CASES.md 刷新失败 (exit=${casesCode})`);
+
+  return dashCode === 0 && casesCode === 0;
 }
 
 if (import.meta.main) {

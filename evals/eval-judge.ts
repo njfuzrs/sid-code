@@ -13,11 +13,28 @@ export interface DimScore {
   reason: string;
 }
 
+/**
+ * Token 用量分项（来自 wrapper 上报）。
+ * 用于 gradeCost 折算 cache_read（cache 复用计费 ~0.1x，不应按 raw token 全价计入）。
+ */
+export interface TokenBreakdown {
+  input: number;
+  output: number;
+  cache_creation: number;
+  cache_read: number;
+}
+
 export interface AgentMeta {
   tools_used: string[];
   files_edited: string[];
   total_steps: number;
   total_tokens: number;
+  /**
+   * 可选 token 分项；若 wrapper 未上报则 gradeCost 退化为按 total_tokens 评分（不折算 cache）。
+   * 上报后 gradeCost 会按 input + output + cache_creation + cache_read * 0.1 折算，
+   * 让 sid-code（无 cache）和 claude-code（重 cache）在 cost 维度可比。
+   */
+  token_breakdown?: TokenBreakdown;
 }
 
 /**
@@ -44,11 +61,37 @@ function isCodeIdentifier(anchor: string): boolean {
   return false;
 }
 
-const DEFAULT_WEIGHTS: Record<string, number> = {
+/**
+ * 锚点 substring 去重：如果 A 是 B 的真子串且都被 output 命中，A 就不算独立命中。
+ *
+ * 修复历史 bug（审查 #4）：
+ *   case_001 锚点 [src/agent/loop.ts, agent/loop, loop.ts] 互相 substring，
+ *   一个错答 "src/query/loop.ts" 命中 "loop.ts" → score=0.5（误命中）；
+ *   一个对答 "src/agent/loop.ts" 命中 3 个锚点 → 满分阈值轻易达到，鉴别度也虚高。
+ *
+ * 规则：保留最长锚点，丢弃被它包含的更短锚点（仅在双方都命中时去重，未命中的短锚点保留以保证未命中分支语义不变）。
+ */
+function dedupSubstringHits(hits: string[]): string[] {
+  const sorted = [...hits].sort((a, b) => b.length - a.length); // 长在前
+  const kept: string[] = [];
+  for (const h of sorted) {
+    const isSubstrOfKept = kept.some((k) => k !== h && k.includes(h));
+    if (!isSubstrOfKept) kept.push(h);
+  }
+  return kept;
+}
+
+/**
+ * 默认维度权重。efficiency 权重保留为 0.3（W1 时为 1.0），原因：
+ *   efficiency 与 rubric 反向相关——更勤奋的 agent 多调几次工具拿到更好答案，
+ *   反而被 efficiency 扣分。降低权重让 cost 和 efficiency 加起来才相当于一个维度。
+ *   并且 gradeEfficiency 现在会读 rubric 分数：rubric 高时 efficiency 不扣分（仅 reason 标黄）。
+ */
+export const DEFAULT_WEIGHTS: Record<string, number> = {
   anchor_hit: 1.5,
   rubric_score: 4.0,
   tool_compliance: 1.5,
-  efficiency: 1.0,
+  efficiency: 0.3,
   cost: 0.5,
 };
 
@@ -68,6 +111,11 @@ const DEFAULT_WEIGHTS: Record<string, number> = {
  * 与 v2（地板 0.8）的对比：
  *   - v2: 单 hit = 0.8 → 90% 的 case anchor 都 ≥ 0.8 鉴别度严重不足（天花板效应）
  *   - v3: 单 hit = 0.5 → 把 anchor 维度的鉴别区间还回来，case_030 类靠 must_call_tools_mode=any_of 单独豁免
+ *
+ * Substring 去重（v4，2026-05-25 新增，审查 #4）:
+ *   命中集去重：长锚点命中后，被其包含的短锚点不再独立计入命中数。
+ *   防止 case_001 类锚点表里 [src/agent/loop.ts, agent/loop, loop.ts]
+ *   一个对答命中 3 项虚高，或一个错答 "src/query/loop.ts" 命中 loop.ts 误得 0.5。
  *
  * Echo 排除（2026-05-25 新增）:
  *   userQuery 里出现的锚点不计入命中（防止"复读用户问题"被算成答对）。
@@ -110,7 +158,10 @@ export function gradeAnchorHit(
     };
   }
 
-  const hits = effective.filter((a) => output.includes(a));
+  const rawHits = effective.filter((a) => output.includes(a));
+  // Substring 去重：消除"长锚点和它的子串短锚点同时命中算 2 个"的虚高
+  const hits = dedupSubstringHits(rawHits);
+  const dedupedCount = rawHits.length - hits.length;
   const hitCount = hits.length;
   const total = effective.length;
 
@@ -132,13 +183,14 @@ export function gradeAnchorHit(
   const pass = hitCount >= 1;
   const missing = effective.filter((a) => !output.includes(a));
   const echoNote = echoExcluded.length > 0 ? `；echo 排除 ${echoExcluded.length} 项: ${echoExcluded.join(", ")}` : "";
+  const dedupNote = dedupedCount > 0 ? `；substring 去重 ${dedupedCount} 项` : "";
   const reason =
     hitCount === total
-      ? `全部命中: ${hits.join(", ")}${echoNote}`
+      ? `全部命中: ${hits.join(", ")}${echoNote}${dedupNote}`
       : hitCount >= fullScoreThreshold
-        ? `命中 ${hitCount}/${total}（达到满分阈值 ${fullScoreThreshold}）: ${hits.join(", ")}${echoNote}`
+        ? `命中 ${hitCount}/${total}（达到满分阈值 ${fullScoreThreshold}）: ${hits.join(", ")}${echoNote}${dedupNote}`
         : hitCount > 0
-          ? `命中 ${hitCount}/${total}（满分阈值 ${fullScoreThreshold}）: ${hits.join(", ")}; 未命中: ${missing.join(", ")}${echoNote}`
+          ? `命中 ${hitCount}/${total}（满分阈值 ${fullScoreThreshold}）: ${hits.join(", ")}; 未命中: ${missing.join(", ")}${echoNote}${dedupNote}`
           : `未命中任何锚点: ${effective.join(", ")}${echoNote}`;
   return { pass, score, reason };
 }
@@ -155,7 +207,13 @@ export function gradeAnchorHit(
  *   - 能正确处理"思考段含示例 JSON + 末尾真正答案 JSON"
  *   - 能处理 ```json ... ``` 代码块包裹
  *   - 能处理首尾空白、markdown
+ *
+ * 复杂度保护（v2，审查 #13）：
+ *   末尾扫描限制在最后 SCAN_TAIL_BYTES 字节内，避免 100KB+ markdown 输出触发 O(n²) 退化。
+ *   judge 的最终 JSON 不可能在前 N-4KB 处（max_tokens 2048 ≈ 4KB），保留这个上限。
  */
+const SCAN_TAIL_BYTES = 4096;
+
 export function extractJsonObject(text: string): { json: string; ok: true } | { json: null; ok: false; reason: string } {
   if (!text || typeof text !== "string") return { json: null, ok: false, reason: "empty" };
   const trimmed = text.trim();
@@ -168,26 +226,29 @@ export function extractJsonObject(text: string): { json: string; ok: true } | { 
     } catch { /* 进入路径 2 */ }
   }
 
-  // 路径 2：剥离 markdown 代码块包裹
-  const fenceMatch = trimmed.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
-  if (fenceMatch) {
-    const inside = fenceMatch[1].trim();
-    try {
-      JSON.parse(inside);
-      return { json: inside, ok: true };
-    } catch { /* 进入路径 3 */ }
+  // 路径 2：剥离 markdown 代码块包裹（取最后一个 ```json``` 块，judge 答案通常在最末）
+  const fenceMatches = [...trimmed.matchAll(/```(?:json)?\s*\n?([\s\S]*?)\n?```/g)];
+  if (fenceMatches.length > 0) {
+    // 倒序尝试，judge 最终 JSON 通常在最后一个 code block
+    for (let i = fenceMatches.length - 1; i >= 0; i--) {
+      const inside = fenceMatches[i][1].trim();
+      try {
+        JSON.parse(inside);
+        return { json: inside, ok: true };
+      } catch { continue; }
+    }
   }
 
-  // 路径 3：从末尾向前找最后一个完整的 JSON 对象
-  // 用括号计数法，跳过字符串内的 { }
-  for (let endIdx = trimmed.length - 1; endIdx >= 0; endIdx--) {
-    if (trimmed[endIdx] !== "}") continue;
-    // 从 endIdx 向前找匹配的 {
+  // 路径 3：从末尾向前找最后一个完整的 JSON 对象（限制扫描范围避免 O(n²)）
+  const scanStart = Math.max(0, trimmed.length - SCAN_TAIL_BYTES);
+  const tail = trimmed.slice(scanStart);
+  for (let endIdx = tail.length - 1; endIdx >= 0; endIdx--) {
+    if (tail[endIdx] !== "}") continue;
     let depth = 0;
     let inStr = false;
     let escape = false;
     for (let i = endIdx; i >= 0; i--) {
-      const ch = trimmed[i];
+      const ch = tail[i];
       if (escape) { escape = false; continue; }
       if (ch === "\\") { escape = true; continue; }
       if (ch === '"' && !escape) { inStr = !inStr; continue; }
@@ -196,7 +257,7 @@ export function extractJsonObject(text: string): { json: string; ok: true } | { 
       else if (ch === "{") {
         depth--;
         if (depth === 0) {
-          const candidate = trimmed.slice(i, endIdx + 1);
+          const candidate = tail.slice(i, endIdx + 1);
           try {
             JSON.parse(candidate);
             return { json: candidate, ok: true };
@@ -213,6 +274,24 @@ interface JudgeResult {
   pass: boolean;
   score: number;
   reason: string;
+}
+
+/**
+ * Rubric 档位制（v5，2026-05-25，审查 #8）：
+ *   judge 的 score 必须落到 {0, 0.3, 0.6, 0.85, 1.0} 之一。
+ *   边界值（如 0.27 / 0.95）会被吸附到最近档位，减少 LLM 浮点判断的方差。
+ *   档位语义在 prompt 里强化（参见 _judge/rubric-template.ts）。
+ */
+const RUBRIC_TIERS: readonly number[] = [0, 0.3, 0.6, 0.85, 1.0];
+
+function snapToTier(score: number): number {
+  let best = RUBRIC_TIERS[0];
+  let bestDist = Infinity;
+  for (const t of RUBRIC_TIERS) {
+    const d = Math.abs(score - t);
+    if (d < bestDist) { bestDist = d; best = t; }
+  }
+  return best;
 }
 
 async function callJudgeOnce(
@@ -247,14 +326,18 @@ async function callJudgeOnce(
       }
       try {
         const parsed = JSON.parse(extracted.json) as { pass: boolean; score: number; reason: string };
-        const score = Number(parsed.score);
-        if (!Number.isFinite(score)) {
+        const rawScore = Number(parsed.score);
+        if (!Number.isFinite(rawScore)) {
           return { error: `judge score 非数值: ${extracted.json.slice(0, 120)}` };
         }
+        // 吸附到档位（v5），减少边界跳变方差
+        const score = snapToTier(rawScore);
         return {
           pass: Boolean(parsed.pass),
           score,
-          reason: String(parsed.reason ?? ""),
+          reason: rawScore !== score
+            ? `${String(parsed.reason ?? "")} [snap ${rawScore.toFixed(2)}→${score}]`
+            : String(parsed.reason ?? ""),
         };
       } catch {
         return { error: `JSON.parse 失败: ${extracted.json.slice(0, 120)}` };
@@ -311,7 +394,7 @@ function splitRubricPrompt(rubricPrompt: string | { system: string; user: string
  *   - 但 LLM 在边界 case 上仍会因 prompt 微调跳变（0.85 vs 0.95）
  *   - 显式传 samples > 1 时，跑多次取 score 中位数 + 选 score 最接近中位数那次的 reason
  *
- * 默认 samples=1（temperature=0 已经够稳，不浪费 quota）
+ * 默认 samples=1（temperature=0 + 档位制已经够稳，不浪费 quota）
  */
 export async function gradeRubric(
   output: string,
@@ -376,6 +459,8 @@ export function gradeToolCompliance(
     /** 工具调用模式：all_of(默认，所有都必须用) | any_of(任一即可) */
     mustCallMode?: "all_of" | "any_of";
     mustNotCallTools?: string[];
+    /** 修改文件白名单：files_edited 必须全部以这些前缀之一开头（等于"必须只改这里面的"） */
+    mustModifyFilesIn?: string[];
     mustNotModifyFiles?: string[];
   }
 ): DimScore {
@@ -387,6 +472,7 @@ export function gradeToolCompliance(
   const mustCallTools = (expected.mustCallTools ?? []).map((t) => t.toLowerCase());
   const mustCallMode = expected.mustCallMode ?? "all_of";
   const mustNotCallTools = (expected.mustNotCallTools ?? []).map((t) => t.toLowerCase());
+  const mustModifyFilesIn = expected.mustModifyFilesIn ?? [];
   const mustNotModifyFiles = expected.mustNotModifyFiles ?? [];
 
   // sideband metadata 全空：trajectory 没落盘 / wrapper 失败 / case 真的没用工具。
@@ -433,6 +519,18 @@ export function gradeToolCompliance(
     }
   }
 
+  // mustModifyFilesIn：files_edited 必须全部以白名单前缀之一开头。
+  // 只在 must_modify_files_in 非空时检查（空数组语义 = 不限制，避免误伤无修改的 case）。
+  if (mustModifyFilesIn.length > 0 && files_edited.length > 0) {
+    const violations = files_edited.filter(
+      (f) => !mustModifyFilesIn.some((p) => f.startsWith(p) || f === p)
+    );
+    if (violations.length > 0) {
+      score -= 0.4;
+      reasons.push("修改了白名单外的文件: " + violations.slice(0, 3).join(", "));
+    }
+  }
+
   for (const pattern of mustNotModifyFiles) {
     const violations = files_edited.filter((f) => f.startsWith(pattern) || f === pattern);
     if (violations.length > 0) {
@@ -449,7 +547,22 @@ export function gradeToolCompliance(
   };
 }
 
-export function gradeEfficiency(meta: AgentMeta, maxSteps: number): DimScore {
+/**
+ * 步数效率评分。
+ *
+ * v2（2026-05-25，审查 #7）：
+ *   efficiency 与 rubric 反向相关——更勤奋的 agent 多调几次工具拿到更好答案，
+ *   反而被 efficiency 扣分。
+ *
+ *   修复：rubricScore 高于 0.6 时（rubric 认为答得对），efficiency 不扣分（保持 1.0），
+ *   只在 reason 里标记"步数偏多"作为诊断信号；rubricScore 低或缺失才按比例扣分。
+ *   并且 DEFAULT_WEIGHTS 把 efficiency 权重从 1.0 降到 0.3，进一步弱化它的影响。
+ *
+ * @param meta agent 轨迹元数据
+ * @param maxSteps case yaml 里写的预期步数上限
+ * @param rubricScore 可选；rubric 维度的分数（已抓 snapToTier，0~1.0），用于"答对就不罚步数"
+ */
+export function gradeEfficiency(meta: AgentMeta, maxSteps: number, rubricScore: number | null = null): DimScore {
   const { total_steps } = meta;
 
   // 无轨迹数据：给 null 而非 1.0。挂掉的 case 在 efficiency 维度本应"无可评"，
@@ -459,6 +572,18 @@ export function gradeEfficiency(meta: AgentMeta, maxSteps: number): DimScore {
   }
 
   const ratio = total_steps / maxSteps;
+  const ratioStr = ratio.toFixed(1);
+
+  // rubric 高（≥0.6）→ 答对了，efficiency 仅做诊断不扣分
+  const rubricOk = rubricScore !== null && rubricScore >= 0.6;
+  if (rubricOk && ratio > 1.0) {
+    return {
+      pass: true,
+      score: 1.0,
+      reason: `步数 ${total_steps}/${maxSteps} (${ratioStr}x) 偏多但 rubric 已合格，仅诊断不扣分`,
+    };
+  }
+
   let score: number;
   let reason: string;
 
@@ -467,13 +592,13 @@ export function gradeEfficiency(meta: AgentMeta, maxSteps: number): DimScore {
     reason = `步数 ${total_steps}/${maxSteps} 在预期内`;
   } else if (ratio <= 1.5) {
     score = 0.7;
-    reason = `步数偏多 ${total_steps}/${maxSteps} (${ratio.toFixed(1)}x)`;
+    reason = `步数偏多 ${total_steps}/${maxSteps} (${ratioStr}x)`;
   } else if (ratio <= 2.0) {
     score = 0.4;
-    reason = `步数超标 ${total_steps}/${maxSteps} (${ratio.toFixed(1)}x)`;
+    reason = `步数超标 ${total_steps}/${maxSteps} (${ratioStr}x)`;
   } else {
     score = 0.1;
-    reason = `步数严重超标 ${total_steps}/${maxSteps} (${ratio.toFixed(1)}x)`;
+    reason = `步数严重超标 ${total_steps}/${maxSteps} (${ratioStr}x)`;
   }
 
   return { pass: score >= 0.6, score, reason };
@@ -484,9 +609,16 @@ export function gradeEfficiency(meta: AgentMeta, maxSteps: number): DimScore {
  *
  * ─── 公式与阈值版本 ───
  *
- * 当前公式 v4（2026-05-25 起，基于实测分布重校准）:
+ * 当前公式 v5（2026-05-25 起，审查 #5 修复）:
+ *   有 token_breakdown：billable = input + output + cache_creation + cache_read * CACHE_READ_DISCOUNT
+ *   无 token_breakdown：billable = total_tokens（向后兼容老 wrapper）
+ *   阈值: 50k / 150k / 500k 不变
+ *
+ * 公式 v4（2026-05-25，已废弃，未折算 cache）:
  *   total_tokens 口径: input（取 last, 含全历史）+ output + cache_creation + cache_read 累加
- *   阈值: 50k / 150k / 500k（按 P50/P75 校准，让 cost 维度真正有鉴别度）
+ *   阈值: 50k / 150k / 500k
+ *   问题: claude-opus 默认开 cache，cache_read 是缓存复用、并非真实新 token，
+ *         按 0.1x 折算后 sid-code (deepseek，无 cache) 与 claude-code (opus，重 cache) 才能对齐
  *
  * 公式 v3（2026-05-25，已废弃，过松）:
  *   阈值 200k / 500k / 1.5M → 90% case 都给 1.0，cost 维度无鉴别度
@@ -499,39 +631,61 @@ export function gradeEfficiency(meta: AgentMeta, maxSteps: number): DimScore {
  *
  * ⚠️ 跨版本不可直接比较 cost 维度数值，详见 baseline_scores 的 _formula_version 字段。
  *
- * ─── 校准记录（2026-05-25）───
+ * ─── cache_read 折算原理 ───
  *
- * 实测分布（从 _runs/sid_code_deepseek_v4_pro.jsonl 25 case × 多 run）：
- *   P50 ≈ 50k，P75 ≈ 120k，P90 ≈ 250k，max ≈ 437k
- *   v3 阈值 200k 太松导致 90% case cost=1.0，鉴别度归零
+ * Anthropic API 计费（claude-opus-4-7）：
+ *   input:         15 USD / M token  (uncached)
+ *   cache_read:    1.5 USD / M token  (10x 便宜)
+ *   cache_creation: 18.75 USD / M token  (1.25x 贵于 input)
+ *   output:        75 USD / M token
  *
- * cache_read 折扣：opus 默认开 cache，cache_read 是缓存复用、并非真实新 token，
- *   按 0.1x 折算后 sid-code (deepseek，无 cache) 与 claude-code (opus，重 cache) 对齐：
- *   case_028 sid 94k vs claude 170k → 折算后 94k vs ~50k，cost 维度才能反映真实成本。
+ * 把 cache_read 按 0.1x 折算到等价 input token 数后，cost 维度才能横向对比：
+ *   case_028 sid 94k vs claude 170k(其中 cr=233k → 折算 23k) → 94k vs ~50k 真实计费
+ *
+ * deepseek（无 cache）的 token_breakdown 里 cache_creation = cache_read = 0，
+ * 折算后 billable = input + output 与裸 token 数一致，不影响其评分。
  */
-export const COST_FORMULA_VERSION = "v4";
+export const COST_FORMULA_VERSION = "v5";
+export const CACHE_READ_DISCOUNT = 0.1;
 
 export function gradeCost(meta: AgentMeta): DimScore {
-  const { total_tokens } = meta;
+  const { total_tokens, token_breakdown } = meta;
 
   // 无 token 数据：给 null 而非 1.0。原因同 efficiency——
   // wrapper 没读到 trajectory 时 total_tokens=0，旧实现兜底 1.0
   // 会让挂掉的 case 白拿"低消耗"的满分。
-  if (total_tokens === 0) {
+  if (total_tokens === 0 && (!token_breakdown || token_breakdown.input + token_breakdown.output === 0)) {
     return { pass: false, score: null, reason: "无 token 数据，跳过成本评估" };
+  }
+
+  // billable token：有 breakdown 用 cache_read 折算口径，否则退化为 total_tokens
+  let billable: number;
+  let reasonExtra: string;
+  if (token_breakdown) {
+    billable = Math.round(
+      token_breakdown.input
+      + token_breakdown.output
+      + token_breakdown.cache_creation
+      + token_breakdown.cache_read * CACHE_READ_DISCOUNT
+    );
+    const crDiscounted = Math.round(token_breakdown.cache_read * CACHE_READ_DISCOUNT);
+    reasonExtra = ` [billable=i${Math.round(token_breakdown.input/1000)}k+o${Math.round(token_breakdown.output/1000)}k+cc${Math.round(token_breakdown.cache_creation/1000)}k+cr${Math.round(token_breakdown.cache_read/1000)}k×${CACHE_READ_DISCOUNT}=${Math.round(crDiscounted/1000)}k]`;
+  } else {
+    billable = total_tokens;
+    reasonExtra = " [no breakdown，按 total_tokens 计]";
   }
 
   let score: number;
   let level: string;
 
-  // v4 阈值（2026-05-25 校准后，基于 P50/P75/P90 实测分布）：50k / 150k / 500k
-  if (total_tokens <= 50_000) {
+  // v5 阈值（沿用 v4，基于 P50/P75/P90 实测分布校准）：50k / 150k / 500k
+  if (billable <= 50_000) {
     score = 1.0;
     level = "低消耗";
-  } else if (total_tokens <= 150_000) {
+  } else if (billable <= 150_000) {
     score = 0.7;
     level = "中等";
-  } else if (total_tokens <= 500_000) {
+  } else if (billable <= 500_000) {
     score = 0.4;
     level = "偏高";
   } else {
@@ -539,7 +693,7 @@ export function gradeCost(meta: AgentMeta): DimScore {
     level = "严重超标";
   }
 
-  const reason = `[cost-${COST_FORMULA_VERSION}] token ${(total_tokens / 1000).toFixed(0)}k(含cache) ${level}`;
+  const reason = `[cost-${COST_FORMULA_VERSION}] billable ${(billable / 1000).toFixed(0)}k ${level}${reasonExtra}`;
   return { pass: score >= 0.6, score, reason };
 }
 
@@ -572,4 +726,29 @@ export function aggregate(
   if (totalWeight === 0) return { score: null, namedScores };
   const normalized = (weightedSum / totalWeight) * 5;
   return { score: Math.round(normalized * 100) / 100, namedScores };
+}
+
+/**
+ * 全 null 维度集（error/timeout/abnormal case 用）。
+ *
+ * 入口短路：当 wrapper 返回 error=true 时，所有维度强制 null，aggregate 也返回 null，
+ * 总分写 null 不参与平均、不污染 baseline。
+ *
+ * 修复审查 #1 + #14：
+ *   旧实现：error case 仍走 gradeCase，partial trajectory 让 eff=1, cost=0.7，
+ *   total_tokens 没写就 tool=1 兜底（mustCallTools 为空时），总分能算到 1.07~3.64。
+ *   这些假分数 1) 在 _runs/*.jsonl 里写成数值 2) Dashboard 算均分时拉低/拉高真实表现
+ *   → 横向对比、趋势图、weekly report 全部失真。
+ *
+ *   新实现：runner 在 gradeCase 入口检测 result.error / output.startsWith("[ERROR]")，
+ *   直接返回这个全 null 维度集 + score=null，杜绝任何兜底评分。
+ */
+export function makeErrorDims(reason: string): Record<string, DimScore> {
+  return {
+    anchor_hit: { pass: false, score: null, reason },
+    rubric_score: { pass: false, score: null, reason },
+    tool_compliance: { pass: false, score: null, reason },
+    efficiency: { pass: false, score: null, reason },
+    cost: { pass: false, score: null, reason },
+  };
 }

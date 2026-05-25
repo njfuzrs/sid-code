@@ -61,6 +61,7 @@ function mkResult(overrides: Partial<TestResult> = {}): TestResult {
     response: { output: "test output" },
     latencyMs: 1234,
     success: true,
+    runStatus: "success",
     testedAt: "2026-05-24T10:00:00.000Z",
     ...overrides,
   };
@@ -108,10 +109,11 @@ describe("appendRunHistory", () => {
 
   test("run_status 分类正确：timeout / error / success", () => {
     const runId = "run-status-test";
+    // 新行为（审查 #1 + #2）：runStatus 由 caller 显式传，appendRunHistory 不再 sniff output
     const results: TestResult[] = [
-      mkResult({ caseId: "case_t1", response: { output: "[ERROR] TIMEOUT after 30s" }, success: false }),
-      mkResult({ caseId: "case_t2", response: { output: "[ERROR] something else" }, success: false }),
-      mkResult({ caseId: "case_t3", response: { output: "good output" }, success: true }),
+      mkResult({ caseId: "case_t1", response: { output: "[ERROR] TIMEOUT after 30s" }, success: false, runStatus: "timeout", score: null }),
+      mkResult({ caseId: "case_t2", response: { output: "[ERROR] something else" }, success: false, runStatus: "error", score: null }),
+      mkResult({ caseId: "case_t3", response: { output: "good output" }, success: true, runStatus: "success" }),
     ];
     appendRunHistory(results, runId, 21, tmpRoot);
 
@@ -123,6 +125,10 @@ describe("appendRunHistory", () => {
     expect(t1.run_status).toBe("timeout");
     expect(t2.run_status).toBe("error");
     expect(t3.run_status).toBe("success");
+    // 修复审查 #1 + #10：error/timeout case 的 score 必须写 null（与 baseline 一致）
+    expect(t1.score).toBeNull();
+    expect(t2.score).toBeNull();
+    expect(t3.score).toBe(4.0);
   });
 
   test("按 provider 切分文件", () => {
@@ -209,6 +215,8 @@ describe("syncBaselineScores", () => {
         provider: "p_timeout",
         response: { output: "[ERROR] sid-code TIMEOUT after 360000ms" },
         success: false,
+        runStatus: "timeout",
+        score: null,
       }),
     ];
     syncBaselineScores(results, tmpRoot);
@@ -219,12 +227,24 @@ describe("syncBaselineScores", () => {
 });
 
 describe("isRetryableError", () => {
-  test("识别常见网络瞬时错误", () => {
+  test("识别 stderr 里的常见网络瞬时错误", () => {
     expect(isRetryableError("", "ECONNRESET while reading")).toBe(true);
-    expect(isRetryableError("HTTP 429 Too Many Requests", "")).toBe(true);
-    expect(isRetryableError("upstream 502 Bad Gateway", "")).toBe(true);
+    expect(isRetryableError("", "HTTP 429 Too Many Requests")).toBe(true);
+    expect(isRetryableError("", "upstream 502 Bad Gateway")).toBe(true);
     expect(isRetryableError("", "fetch failed")).toBe(true);
-    expect(isRetryableError("socket hang up", "")).toBe(true);
+    expect(isRetryableError("", "socket hang up")).toBe(true);
+  });
+
+  test("识别 output [ERROR]/[TIMEOUT] 前缀块里的网络错误", () => {
+    expect(isRetryableError("[ERROR] HTTP 429 Too Many Requests", "")).toBe(true);
+    expect(isRetryableError("[TIMEOUT] socket hang up after 30s", "")).toBe(true);
+    expect(isRetryableError("[ERROR] upstream 502 Bad Gateway", "")).toBe(true);
+  });
+
+  test("regression 审查 #9: agent 长答案里的 429/502 关键字不应触发重试", () => {
+    // 旧实现扫整段 stdout → 任何讨论 HTTP 状态码的回答都会触发误判
+    const agentAnswer = "如果遇到 HTTP 429 Too Many Requests 应该退避重试。502 Bad Gateway 是 nginx 常见错误。";
+    expect(isRetryableError(agentAnswer, "")).toBe(false);
   });
 
   test("业务错误不重试", () => {
@@ -236,7 +256,7 @@ describe("isRetryableError", () => {
 });
 
 describe("aggregate 权重公式回归", () => {
-  test("rubric_score 主导（权重 4.0/8.5）：rubric=0 时即使其它满分也 < 3 分", () => {
+  test("rubric_score 主导（权重 4.0/7.8）：rubric=0 时即使其它满分也 < 3 分", () => {
     const { score } = aggregate({
       anchor_hit: { pass: true, score: 1, reason: "" },
       rubric_score: { pass: false, score: 0, reason: "" },
@@ -244,9 +264,12 @@ describe("aggregate 权重公式回归", () => {
       efficiency: { pass: true, score: 1, reason: "" },
       cost: { pass: true, score: 1, reason: "" },
     });
-    // weighted: (1*1.5 + 0*4.0 + 1*1.5 + 1*1.0 + 1*0.5) / 8.5 * 5 = 4.5/8.5*5 ≈ 2.65
-    expect(score).toBeLessThan(3);
-    expect(score).toBeGreaterThan(2.5);
+    // 新权重（审查 #7：efficiency 1.0→0.3）：
+    // weighted: (1*1.5 + 0*4.0 + 1*1.5 + 1*0.3 + 1*0.5) / 7.8 * 5 = 3.8/7.8*5 ≈ 2.44
+    // rubric=0 仍然主导（< 3 分），但权重调整后总分略低于旧 2.65
+    expect(score).not.toBeNull();
+    expect(score!).toBeLessThan(3);
+    expect(score!).toBeGreaterThan(2.0);
   });
 
   test("全部满分 = 5", () => {

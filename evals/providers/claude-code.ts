@@ -242,6 +242,15 @@ async function main() {
     files_edited: parsed.filesEdited,
     total_steps: parsed.numTurns,
     total_tokens: parsed.totalTokens,
+    // token_breakdown：从 result.usage 抽出 4 项原始数，让 eval-judge 的 gradeCost
+    // 按 cache_read * 0.1x 折算后再评分（claude-opus 重 cache，不折算会被 raw token 全价计费）。
+    // result.usage 缺失时（incomplete stream）退化为 0，gradeCost 退化为 total_tokens 评分。
+    token_breakdown: parsed.rawResultUsage ? {
+      input: parsed.rawResultUsage.input_tokens || 0,
+      output: parsed.rawResultUsage.output_tokens || 0,
+      cache_creation: parsed.rawResultUsage.cache_creation_input_tokens || 0,
+      cache_read: parsed.rawResultUsage.cache_read_input_tokens || 0,
+    } : { input: 0, output: 0, cache_creation: 0, cache_read: 0 },
     latency_ms: elapsedMs,
     exit_status: timedOut ? "timeout" : (parsed.exitStatus || (exitCode === 0 ? "success" : "error")),
     error_count: parsed.errorCount,

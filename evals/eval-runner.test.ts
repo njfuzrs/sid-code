@@ -125,11 +125,25 @@ describe("isRetryableError - 真实匹配", () => {
     expect(isRetryableError("", "ECONNRESET socket")).toBe(true);
   });
 
-  test("429 / 503 / 502 / 504 触发", () => {
-    expect(isRetryableError("HTTP 429 Too Many Requests", "")).toBe(true);
+  test("429 / 503 / 502 / 504 在 stderr 触发", () => {
+    expect(isRetryableError("", "HTTP 429 Too Many Requests")).toBe(true);
     expect(isRetryableError("", "503 Service Unavailable")).toBe(true);
-    expect(isRetryableError("Bad Gateway 502", "")).toBe(true);
+    expect(isRetryableError("", "Bad Gateway 502")).toBe(true);
     expect(isRetryableError("", "504 Gateway Timeout")).toBe(true);
+  });
+
+  test("429 / 503 / 502 / 504 在 output [ERROR] 块开头触发", () => {
+    expect(isRetryableError("[ERROR] HTTP 429 Too Many Requests", "")).toBe(true);
+    expect(isRetryableError("[ERROR] 503 Service Unavailable from upstream", "")).toBe(true);
+    expect(isRetryableError("[TIMEOUT] Gateway Timeout 504", "")).toBe(true);
+  });
+
+  test("regression 审查 #9：agent 长输出里出现 429/502 关键字不应触发重试", () => {
+    // 旧实现扫整个 stdout → 任何讨论 HTTP 状态码的回答都会被误判为可重试错误，
+    // 触发无声 retry，最后一次 attempt 的结果覆盖前一次（污染数据）。
+    // 新实现：只看 stderr 和 output 的 [ERROR]/[TIMEOUT] 前缀块。
+    const agentAnswer = "HTTP 502 是 Bad Gateway 错误，常见于 nginx 反向代理。如果遇到 429 Too Many Requests，应该退避重试。";
+    expect(isRetryableError(agentAnswer, "")).toBe(false);
   });
 
   test("正常 [ERROR] 不触发", () => {

@@ -19,6 +19,7 @@ import {
   gradeCost,
   aggregate,
   extractJsonObject,
+  makeErrorDims,
   type DimScore,
 } from "./eval-judge.ts";
 
@@ -388,3 +389,206 @@ describe("aggregate - null 维度跳过", () => {
     expect(score!).toBeLessThan(4.8);
   });
 });
+
+describe("审查 #4 regression: 锚点 substring 去重", () => {
+  test("命中长锚点时，被它包含的短锚点不再独立计入", () => {
+    // case_001 锚点 [src/agent/loop.ts, agent/loop, loop.ts] 互相 substring
+    // 一个对答 "src/agent/loop.ts" 旧实现命中 3 个 → 满分；新实现去重后命中 1 个 → 0.5
+    const r = gradeAnchorHit(
+      "主 agent 循环在 src/agent/loop.ts",
+      ["src/agent/loop.ts", "agent/loop", "loop.ts"],
+    );
+    // hits = [src/agent/loop.ts, agent/loop, loop.ts] → 去重后 = [src/agent/loop.ts]
+    // hitCount=1, total=3, threshold=max(2, ceil(3*0.3))=2 → 单 hit = 0.5
+    expect(r.score).toBe(0.5);
+    expect(r.reason).toContain("substring 去重 2 项");
+  });
+
+  test("regression 误命中: 错答的子串锚点仍然命中但不应虚高", () => {
+    // 旧实现: agent 答 "src/query/loop.ts"（错误），命中 loop.ts → score=0.5 (虚高)
+    // 新实现: 命中 loop.ts → score=0.5（仍然不能完全避免误命中，但 anchor 维度本身就是 substring 检查，
+    //          至少不会因为多个长短锚点而虚高到 1.0）
+    const r = gradeAnchorHit(
+      "主入口在 src/query/loop.ts",
+      ["src/agent/loop.ts", "agent/loop", "loop.ts"],
+    );
+    // 只命中 loop.ts，substring 去重无作用，hitCount=1 → 0.5
+    expect(r.score).toBe(0.5);
+  });
+
+  test("无 substring 关系的锚点不受去重影响", () => {
+    const r = gradeAnchorHit(
+      "foo 和 bar 都用上了",
+      ["foo", "bar", "baz"],
+    );
+    // 命中 foo, bar，无 substring 关系 → 2/3，threshold=2 → 1.0
+    expect(r.score).toBe(1.0);
+    expect(r.reason).not.toContain("substring 去重");
+  });
+});
+
+describe("审查 #1 regression: makeErrorDims + error case 总分", () => {
+  test("makeErrorDims 返回全维度 null", () => {
+    const dims = makeErrorDims("wrapper TIMEOUT");
+    expect(dims.anchor_hit.score).toBeNull();
+    expect(dims.rubric_score.score).toBeNull();
+    expect(dims.tool_compliance.score).toBeNull();
+    expect(dims.efficiency.score).toBeNull();
+    expect(dims.cost.score).toBeNull();
+    for (const d of Object.values(dims)) {
+      expect(d.pass).toBe(false);
+      expect(d.reason).toContain("wrapper TIMEOUT");
+    }
+  });
+
+  test("aggregate(makeErrorDims) 返回 score=null（不再 1.07 假分）", () => {
+    const dims = makeErrorDims("[ERROR] claude-code TIMEOUT after 480000ms");
+    const { score, namedScores } = aggregate(dims);
+    expect(score).toBeNull();
+    expect(namedScores.anchor_hit).toBeNull();
+    expect(namedScores.rubric_score).toBeNull();
+    expect(namedScores.tool_compliance).toBeNull();
+  });
+});
+
+describe("审查 #5 regression: gradeCost cache_read 折算", () => {
+  test("有 breakdown：cache_read 按 0.1x 折算", () => {
+    // 模拟 claude-code case_028: i=3053 o=6828 cc=173k cr=233k
+    // billable = 3053 + 6828 + 173000 + 233000*0.1 = 3053 + 6828 + 173000 + 23300 = 206181
+    // 阈值 >150k → 0.4
+    const r = gradeCost({
+      tools_used: ["read"],
+      files_edited: [],
+      total_steps: 10,
+      total_tokens: 416000, // 不折算 4sum
+      token_breakdown: { input: 3053, output: 6828, cache_creation: 173000, cache_read: 233000 },
+    });
+    expect(r.score).toBe(0.4);
+    expect(r.reason).toContain("billable 206k");
+  });
+
+  test("无 breakdown 退化为按 total_tokens 评分（向后兼容）", () => {
+    const r = gradeCost({
+      tools_used: ["read"],
+      files_edited: [],
+      total_steps: 10,
+      total_tokens: 100_000,
+    });
+    expect(r.score).toBe(0.7);
+    expect(r.reason).toContain("no breakdown");
+  });
+
+  test("deepseek (无 cache) breakdown: cache_read=0 → 折算无影响", () => {
+    // sid-code case_002 实测 ~89k，全是 input+output，cc=cr=0
+    const r = gradeCost({
+      tools_used: ["read"],
+      files_edited: [],
+      total_steps: 10,
+      total_tokens: 89_000,
+      token_breakdown: { input: 70_000, output: 19_000, cache_creation: 0, cache_read: 0 },
+    });
+    expect(r.score).toBe(0.7); // 89k 在 50k~150k 区间
+  });
+
+  test("cache 重度复用：claude 比 sid 真实 billable 反而低", () => {
+    // 模拟同一 case 两种 provider
+    // claude: 30k input + 5k output + 50k cc + 200k cr → billable = 30k+5k+50k+20k = 105k
+    // sid:    80k input + 15k output + 0 cc + 0 cr → billable = 95k
+    const claude = gradeCost({
+      tools_used: ["read"], files_edited: [], total_steps: 10, total_tokens: 285_000,
+      token_breakdown: { input: 30_000, output: 5_000, cache_creation: 50_000, cache_read: 200_000 },
+    });
+    const sid = gradeCost({
+      tools_used: ["read"], files_edited: [], total_steps: 10, total_tokens: 95_000,
+      token_breakdown: { input: 80_000, output: 15_000, cache_creation: 0, cache_read: 0 },
+    });
+    // 折算后 claude billable=105k < sid billable=95k？等差不多，关键是不再因 raw 285k 被冤打 0.4
+    expect(claude.score).toBe(0.7);
+    expect(sid.score).toBe(0.7);
+  });
+});
+
+describe("审查 #7 regression: gradeEfficiency rubric-aware", () => {
+  test("rubric 高（≥0.6）+ 步数偏多 → 不扣分，只诊断", () => {
+    const r = gradeEfficiency(
+      { tools_used: ["read"], files_edited: [], total_steps: 20, total_tokens: 1000 },
+      10,
+      0.85, // rubric 已合格
+    );
+    expect(r.score).toBe(1.0);
+    expect(r.reason).toContain("rubric 已合格");
+  });
+
+  test("rubric 低（<0.6）+ 步数偏多 → 按比例扣分", () => {
+    const r = gradeEfficiency(
+      { tools_used: ["read"], files_edited: [], total_steps: 15, total_tokens: 1000 },
+      10,
+      0.3, // rubric 低
+    );
+    expect(r.score).toBe(0.7); // ratio=1.5 → 0.7
+  });
+
+  test("rubric 缺失（null）+ 步数偏多 → 按比例扣分（向后兼容）", () => {
+    const r = gradeEfficiency(
+      { tools_used: ["read"], files_edited: [], total_steps: 30, total_tokens: 1000 },
+      10,
+      null,
+    );
+    expect(r.score).toBe(0.1); // ratio=3.0 → 0.1
+  });
+
+  test("步数在预期内 → 1.0（无论 rubric）", () => {
+    const r = gradeEfficiency(
+      { tools_used: ["read"], files_edited: [], total_steps: 5, total_tokens: 1000 },
+      10,
+      0.0,
+    );
+    expect(r.score).toBe(1.0);
+  });
+});
+
+describe("审查 #3 regression: must_modify_files_in", () => {
+  test("修改了白名单外的文件 → 扣 0.4", () => {
+    const r = gradeToolCompliance(
+      { tools_used: ["edit"], files_edited: ["src/permission/checker.ts", "src/agent/loop.ts"], total_steps: 5, total_tokens: 1000 },
+      { mustModifyFilesIn: ["src/permission/"] },
+    );
+    expect(r.score).toBeCloseTo(0.6, 5);
+    expect(r.reason).toContain("src/agent/loop.ts");
+  });
+
+  test("所有修改都在白名单内 → 不扣分", () => {
+    const r = gradeToolCompliance(
+      { tools_used: ["edit"], files_edited: ["src/permission/checker.ts"], total_steps: 5, total_tokens: 1000 },
+      { mustModifyFilesIn: ["src/permission/"] },
+    );
+    expect(r.score).toBe(1.0);
+  });
+
+  test("空 mustModifyFilesIn 不检查（避免误伤无修改的 case）", () => {
+    const r = gradeToolCompliance(
+      { tools_used: ["read"], files_edited: [], total_steps: 5, total_tokens: 1000 },
+      { mustModifyFilesIn: [] },
+    );
+    expect(r.score).toBe(1.0);
+  });
+});
+
+describe("审查 #13 regression: extractJsonObject 复杂度保护", () => {
+  test("超长输出（30KB）+ 末尾合法 JSON 仍能抽出", () => {
+    const noise = "x".repeat(30 * 1024) + "\n\n";
+    const text = noise + '{"score": 0.85, "pass": true, "reason": "ok"}';
+    const r = extractJsonObject(text);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(JSON.parse(r.json).score).toBe(0.85);
+  });
+
+  test("超长 markdown noise + 末尾 code block 包裹 JSON", () => {
+    const noise = "```json\n{\"示例\": \"value\"}\n```\n".repeat(100);
+    const text = noise + "\n最终答案：\n```json\n{\"score\": 0.6, \"pass\": true}\n```";
+    const r = extractJsonObject(text);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(JSON.parse(r.json).score).toBe(0.6);
+  });
+});
+

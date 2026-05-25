@@ -344,6 +344,10 @@ async function main() {
     files_edited: meta.filesEdited,
     total_steps: meta.totalSteps,
     total_tokens: totalTokens,
+    // token_breakdown 让 eval-judge 的 gradeCost 按 cache_read 折算，
+    // 横向对比时让 sid-code（无 cache）和 claude-code（重 cache）公平对比。
+    // 没读到 raw.jsonl 时是 0/0/0/0，gradeCost 会退化为按 total_tokens 评。
+    token_breakdown: rawTokensInfo.breakdown,
     latency_ms: elapsedMs,
     exit_status: meta.exitStatus || (timedOut ? "timeout" : exitCode === 0 ? "success" : "error"),
     error_count: trajSignals.errorCount,
