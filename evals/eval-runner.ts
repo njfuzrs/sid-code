@@ -18,6 +18,10 @@ import {
 } from "./eval-judge.ts";
 import type { CaseYaml } from "./_types.ts";
 import { getGrader } from "./_graders/index.ts";
+import {
+  syncBaselineScores as syncBaselineScoresShared,
+  type BaselineResult,
+} from "./baseline-sync.ts";
 
 const ROOT = resolve(import.meta.dir);
 const CASE_DIRS = [
@@ -673,75 +677,30 @@ export function appendRunHistory(
   console.log(`  运行历史: ${runsDir}/ (${byProvider.size} 个 provider × ${results.length / byProvider.size} 个 case)`);
 }
 
-function findCaseYamlPath(caseId: string, baseDir: string = ROOT): string | null {
-  const dirs = [
-    join(baseDir, "p0-core"),
-    join(baseDir, "p1-common"),
-    join(baseDir, "p2-edge"),
-    join(baseDir, "holdout"),
-  ];
-  for (const dir of dirs) {
-    const p = join(dir, `${caseId}.yaml`);
-    if (existsSync(p)) return p;
-  }
-  return null;
-}
-
 export function syncBaselineScores(results: TestResult[], baseDir: string = ROOT) {
-  const byCaseId = new Map<string, TestResult[]>();
-  for (const r of results) {
-    if (!byCaseId.has(r.caseId)) byCaseId.set(r.caseId, []);
-    byCaseId.get(r.caseId)!.push(r);
-  }
+  // 映射 TestResult → BaselineResult；general 模式按 ROOT 下 4 个目录扫
+  // error / timeout 的 baseline score 写 null（不是数值 0、不是 ~2.5）。
+  // 旧实现：error case 因为 3 个维度兜底 1.0、rubric 0、anchor 0 → 总分 ~2.5 落入 baseline，
+  // dashboard 取均值时会把这 2.5 算进去，污染横向对比。
+  // 现在：score=null + run_status=error，下游消费者用 run_status 过滤、score 仅对 success 有效。
+  const baselineResults: BaselineResult[] = results.map((r) => ({
+    caseId: r.caseId,
+    provider: r.provider,
+    score: r.score,
+    runStatus: r.runStatus,
+    testedAt: r.testedAt,
+    dimensions: r.namedScores,
+    // 公式版本：让后续工具/人能一眼区分新旧 baseline
+    // 同一 case 同一 provider 的 cost 维度跨版本不可直接比较
+    // grader 字段标识整体 5 维加权方案的版本（见 eval-judge.ts GRADER_VERSION docstring）
+    // 跨 grader 版本的"总分 score"也不可直接比较——dashboard / 跨周对比要按此过滤
+    formulaVersion: { cost: COST_FORMULA_VERSION, grader: GRADER_VERSION },
+  }));
 
-  let updated = 0;
-  for (const [caseId, caseResults] of byCaseId) {
-    const yamlPath = findCaseYamlPath(caseId, baseDir);
-    if (!yamlPath) continue;
-
-    const content = readFileSync(yamlPath, "utf-8");
-    const doc = yamlLib.parseDocument(content);
-    const root = doc.contents as yamlLib.YAMLMap;
-
-    let baselineNode = root.get("baseline_scores") as yamlLib.YAMLMap | undefined;
-    if (!baselineNode) {
-      baselineNode = doc.createNode({}) as yamlLib.YAMLMap;
-      root.set("baseline_scores", baselineNode);
-    }
-
-    for (const r of caseResults) {
-      // error / timeout 的 baseline score 写 null（不是数值 0、不是 ~2.5）。
-      // 旧实现：error case 因为 3 个维度兜底 1.0、rubric 0、anchor 0 → 总分 ~2.5 落入 baseline，
-      // dashboard 取均值时会把这 2.5 算进去，污染横向对比。
-      // 现在：score=null + run_status=error，下游消费者用 run_status 过滤、score 仅对 success 有效。
-      const safeScore = r.runStatus === "success" ? r.score : null;
-      const isTimeout = r.runStatus === "timeout";
-      const isError = r.runStatus === "error" || r.runStatus === "abnormal";
-      const entry: Record<string, unknown> = {
-        score: safeScore,
-        run_status: r.runStatus,
-        tested_at: r.testedAt,
-        tested_by: "eval-runner",
-        transcript_path: null,
-        notes: isTimeout
-          ? "eval-runner 超时（score=null）"
-          : isError
-            ? "eval-runner error（score=null，仅 run_status 有效）"
-            : "",
-        dimensions: r.namedScores,
-        // 公式版本：让后续工具/人能一眼区分新旧 baseline
-        // 同一 case 同一 provider 的 cost 维度跨版本不可直接比较
-        // grader 字段标识整体 5 维加权方案的版本（见 eval-judge.ts GRADER_VERSION docstring）
-        // 跨 grader 版本的"总分 score"也不可直接比较——dashboard / 跨周对比要按此过滤
-        _formula_version: { cost: COST_FORMULA_VERSION, grader: GRADER_VERSION },
-      };
-      baselineNode.set(r.provider, doc.createNode(entry));
-    }
-
-    writeFileSync(yamlPath, doc.toString(), "utf-8");
-    updated++;
-  }
-  console.log(`  回写 baseline_scores: ${updated} 个 case yaml`);
+  syncBaselineScoresShared(baselineResults, {
+    baseDir,
+    testerLabel: "eval-runner",
+  });
 }
 
 async function main() {

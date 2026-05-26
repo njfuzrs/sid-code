@@ -479,8 +479,11 @@ export async function* queryLoop(
       // 执行工具
       const toolPerfHandle = getPerfTimer().start(`tool_batch_${state.turnCount}`);
       let toolResults: import("../llm/types.ts").ContentBlock[];
+      let toolFollowup: import("../llm/types.ts").ContentBlock[] | undefined;
       try {
-        toolResults = await deps.executeTools(response.content);
+        const ret = await deps.executeTools(response.content);
+        toolResults = ret.results;
+        toolFollowup = ret.followup;
       } catch (err: any) {
         toolPerfHandle.end();
         if (isAbortError(err)) {
@@ -500,6 +503,11 @@ export async function* queryLoop(
       }
       const toolBatchElapsed = toolPerfHandle.end();
       ctxMgr.addMessage({ role: "user", content: toolResults });
+
+      // ADR-019：plan-approved 等"工具完成后再追加"的 user 消息，必须在 toolResults 之后 enqueue。
+      if (toolFollowup && toolFollowup.length > 0) {
+        ctxMgr.addMessage({ role: "user", content: toolFollowup });
+      }
 
       // yield 工具结束事件
       const resultMap = new Map<string, import("../llm/types.ts").ContentBlock>();

@@ -569,7 +569,7 @@ export class App {
   }
 
   /** 执行工具调用，委托给 tool-executor */
-  async executeTools(content: ContentBlock[]): Promise<ContentBlock[]> {
+  async executeTools(content: ContentBlock[]): Promise<{ results: ContentBlock[]; followup?: ContentBlock[] }> {
     const { executeTools: executeToolsImpl } = await import("./query/tool-executor.ts");
     return executeToolsImpl(content, {
       config: this.config,
@@ -595,13 +595,18 @@ export class App {
    * Plan Mode 状态转换处理
    * 在工具执行完成后，检查是否有 enter/exit_plan_mode 调用，执行相应的状态转换
    * 使用 resultMap（按原始索引存储）避免数组错位
+   *
+   * ADR-019：返回 followup 让 loop 在 toolResults 之后再 enqueue。
+   * 不能在本函数内 ctxMgr.addMessage(plan-approved 文本) —— 会插在 user(tool_result) 之前，
+   * 触发 OpenAI 400 "tool_calls must be followed by tool messages"。
    */
   private async handlePlanModeTransitions(
     toolBlocks: Array<{ block: ToolUseBlock; idx: number }>,
     resultMap: Map<number, ContentBlock>,
-  ): Promise<void> {
-    if (!this.planManager) return;
+  ): Promise<{ followup?: ContentBlock[] }> {
+    if (!this.planManager) return {};
     const log = getLogger();
+    const followup: ContentBlock[] = [];
 
     for (const { block, idx } of toolBlocks) {
       const result = resultMap.get(idx);
@@ -613,7 +618,8 @@ export class App {
       }
 
       if (block.name === "exit_plan_mode" && this.planManager.isAwaitingApproval()) {
-        await this.handlePlanApproval();
+        const approvalFollowup = await this.handlePlanApproval();
+        if (approvalFollowup) followup.push(...approvalFollowup);
       }
 
       // plan 文件 write/edit 成功 → 记录 update 计数（plan_recovery capability 用）
@@ -632,6 +638,8 @@ export class App {
         }
       }
     }
+
+    return followup.length > 0 ? { followup } : {};
   }
 
   /** 激活 Plan Mode：切换权限模式 + 注入 Plan Mode 系统提示词 */
@@ -669,9 +677,15 @@ export class App {
     await this.rebuildSystemPrompt();
   }
 
-  /** 处理 Plan Mode 审批流程 */
-  private async handlePlanApproval(): Promise<void> {
-    if (!this.planManager) return;
+  /**
+   * 处理 Plan Mode 审批流程
+   *
+   * ADR-019：返回 followup（plan-approved / plan-rejected 反馈），由调用方 loop 在
+   * tool_results 之后再 enqueue。不再在本函数内直接 ctxMgr.addMessage——会让 user(text)
+   * 排在 user(tool_result) 之前，违反 OpenAI tool_calls 协议。
+   */
+  private async handlePlanApproval(): Promise<ContentBlock[] | null> {
+    if (!this.planManager) return null;
     const log = getLogger();
 
     // 审批结果由 TUI 层或 REPL 层处理
@@ -689,26 +703,24 @@ export class App {
         // 因为 deactivatePlanMode 后系统提示词的 plan prompt（含阶段 5）会被移除，
         // 批准消息是 LLM 进入执行阶段唯一保留的"plan 上下文锚点"
         const { buildPlanApprovedMessage } = await import("./plan/prompt.ts");
-        this.ctxMgr.addMessage({
-          role: "user",
-          content: [{
-            type: "text",
-            text: buildPlanApprovedMessage(planPath || ""),
-          }],
-        });
+        return [{
+          type: "text",
+          text: buildPlanApprovedMessage(planPath || ""),
+        }];
       } else {
         const canContinue = this.planManager.reject();
         if (canContinue) {
           const count = this.planManager.getRejectionCount();
           log.info("PLAN", `用户拒绝计划 (${count}/5)，继续修改`);
           // 注入拒绝反馈，让 LLM 知道需要修改计划
-          this.ctxMgr.addMessage({
-            role: "user",
-            content: [{ type: "text", text: `用户拒绝了你的计划（第 ${count} 次）。请根据用户反馈修改计划文件，然后再次调用 exit_plan_mode 提交审批。` }],
-          });
+          return [{
+            type: "text",
+            text: `用户拒绝了你的计划（第 ${count} 次）。请根据用户反馈修改计划文件，然后再次调用 exit_plan_mode 提交审批。`,
+          }];
         } else {
           await this.deactivatePlanMode();
           log.info("PLAN", "拒绝次数超限，强制退出 Plan Mode");
+          return null;
         }
       }
     } else {
@@ -719,13 +731,10 @@ export class App {
       await this.deactivatePlanMode();
       log.info("PLAN", "非交互模式，自动批准计划");
       const { buildPlanApprovedMessage } = await import("./plan/prompt.ts");
-      this.ctxMgr.addMessage({
-        role: "user",
-        content: [{
-          type: "text",
-          text: buildPlanApprovedMessage(planPath || ""),
-        }],
-      });
+      return [{
+        type: "text",
+        text: buildPlanApprovedMessage(planPath || ""),
+      }];
     }
   }
 

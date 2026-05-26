@@ -124,8 +124,8 @@ export interface QueryDeps {
     stream: AsyncIterable<StreamEvent>,
     onText?: (text: string) => void,
   ) => Promise<AccumulatedResponse>;
-  /** 执行工具调用（含权限检查） */
-  executeTools: (content: ContentBlock[]) => Promise<ContentBlock[]>;
+  /** 执行工具调用（含权限检查）。返回 results + 可选 followup（ADR-019） */
+  executeTools: (content: ContentBlock[]) => Promise<{ results: ContentBlock[]; followup?: ContentBlock[] }>;
   /** 自动压缩 */
   autoCompact: () => Promise<void>;
   /** 处理上下文溢出，返回调整后的 maxTokens 或 null */

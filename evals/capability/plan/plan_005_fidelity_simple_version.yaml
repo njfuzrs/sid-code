@@ -28,7 +28,7 @@ expected:
   plan_must_not_have:
     - "npm install"
     - "bun add"
-  execution_must_call_tools_any_of: [read, edit, write, bash, exit_plan_mode]
+  execution_must_call_tools_any_of: [ read, edit, write, bash, exit_plan_mode ]
   max_steps: 20
 
   # fidelity 维度专属：实际执行 step 数与 plan 步骤的 ratio 应接近 1
@@ -61,5 +61,18 @@ grader:
       - fidelity_step_count
 
 source: synthetic_capability_2026_05_18_W10
-related_subsystem: [plan]
-related_adr: [ADR-013]
+related_subsystem: [ plan ]
+related_adr: [ ADR-013 ]
+baseline_scores:
+  sid_code_deepseek_v4_pro:
+    score: 2.7
+    run_status: success
+    tested_at: 2026-05-26T02:58:06.031Z
+    tested_by: eval:plan-capability
+    transcript_path: null
+    notes: ""
+    dimensions:
+      assert: 2.7
+      llm_judge: null
+    _formula_version:
+      grader: capability-plan-v1

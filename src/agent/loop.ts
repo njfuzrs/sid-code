@@ -64,8 +64,14 @@ export interface AgentLoopDeps {
   quotaManager?: QuotaManager;
   tokenMeter?: TokenMeter;
   budgetTracker?: BudgetTracker;
-  /** 执行工具调用（含权限检查） */
-  executeTools: (content: ContentBlock[]) => Promise<ContentBlock[]>;
+  /**
+   * 执行工具调用（含权限检查）。
+   *
+   * 返回 `results`（必须立即 addMessage(user, results)）和可选的 `followup`
+   * （ADR-019：plan-approved 等"工具完成后再追加"的 user 消息，须在 results 之后 enqueue，
+   * 否则违反 OpenAI tool_calls 协议）。
+   */
+  executeTools: (content: ContentBlock[]) => Promise<{ results: ContentBlock[]; followup?: ContentBlock[] }>;
   /** 处理流式响应 */
   processStream: (
     stream: AsyncIterable<StreamEvent>,
@@ -541,8 +547,11 @@ export class AgentLoopRunner {
         // Bug #6 修复：PerfTimer 使用带序号的名称，避免同名覆盖
         const toolPerfHandle = getPerfTimer().start(`tool_batch_${turns}`);
         let toolResults: ContentBlock[];
+        let toolFollowup: ContentBlock[] | undefined;
         try {
-          toolResults = await this.deps.executeTools(response.content);
+          const ret = await this.deps.executeTools(response.content);
+          toolResults = ret.results;
+          toolFollowup = ret.followup;
         } catch (err: any) {
           toolPerfHandle.end();
           // 全局 tool_result 兜底：无论什么原因导致的异常，都保证 tool_result 完整性
@@ -562,6 +571,13 @@ export class AgentLoopRunner {
         }
         const toolBatchElapsed = toolPerfHandle.end();
         ctxMgr.addMessage({ role: "user", content: toolResults });
+
+        // ADR-019：plan-approved / plan-rejected 等"工具完成后再追加"的 user 消息，
+        // 必须在 toolResults 之后 enqueue。否则 user(text) 排在 user(tool_result) 之前，
+        // 违反 OpenAI tool_calls 协议（"assistant.tool_calls must be followed by tool messages"）。
+        if (toolFollowup && toolFollowup.length > 0) {
+          ctxMgr.addMessage({ role: "user", content: toolFollowup });
+        }
 
         // 注意：addToolDuration 已在 app.ts executeSingleTool 中逐工具调用，此处不再重复
 

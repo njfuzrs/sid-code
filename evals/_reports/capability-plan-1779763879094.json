@@ -1,0 +1,27 @@
+{
+  "timestamp": 1779763879094,
+  "mode": "skip-llm-judge",
+  "model": "deepseek-v4-pro",
+  "overall": {
+    "total": 1,
+    "avgScore": 1.8,
+    "passRate": 0
+  },
+  "by_dimension": {
+    "plan_generation": {
+      "avgScore": 1.8,
+      "count": 1,
+      "passRate": 0
+    }
+  },
+  "cases": [
+    {
+      "id": "plan_001",
+      "dimension": "plan_generation",
+      "score": 1.8,
+      "assert": 1.8,
+      "judge": null,
+      "timed_out": false
+    }
+  ]
+}

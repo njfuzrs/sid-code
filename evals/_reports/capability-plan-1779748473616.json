@@ -1,0 +1,26 @@
+{
+  "timestamp": 1779748473616,
+  "mode": "skip-llm-judge",
+  "overall": {
+    "total": 1,
+    "avgScore": 4.3,
+    "passRate": 1
+  },
+  "by_dimension": {
+    "plan_premature_exit": {
+      "avgScore": 4.3,
+      "count": 1,
+      "passRate": 1
+    }
+  },
+  "cases": [
+    {
+      "id": "plan_009",
+      "dimension": "plan_premature_exit",
+      "score": 4.3,
+      "assert": 4.3,
+      "judge": null,
+      "timed_out": false
+    }
+  ]
+}

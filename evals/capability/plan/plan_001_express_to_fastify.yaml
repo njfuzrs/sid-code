@@ -50,8 +50,8 @@ expected:
 
   # 仅做存在性检查，不限定顺序
   execution_must_call_tools_any_of:
-    - write   # 写 plan 文件
-    - edit    # 修改 plan 文件
+    - write # 写 plan 文件
+    - edit # 修改 plan 文件
     - exit_plan_mode
 
   # max_steps 由 W10 周二的 within_max_steps 排查决定最终公式，
@@ -87,8 +87,21 @@ grader:
       - plan_step_ordering
 
 source: synthetic_capability_2026_05_18_W10
-related_subsystem: [plan]
-related_adr: [ADR-013]
+related_subsystem: [ plan ]
+related_adr: [ ADR-013 ]
+baseline_scores:
+  sid_code_deepseek_v4_pro:
+    score: 1.8
+    run_status: success
+    tested_at: 2026-05-26T02:58:06.031Z
+    tested_by: eval:plan-capability
+    transcript_path: null
+    notes: ""
+    dimensions:
+      assert: 1.8
+      llm_judge: null
+    _formula_version:
+      grader: capability-plan-v1
 
 # 注: 本 case 是 ADR-013 §2.4 周一交付的"样板 case"，
 # 作为后续 plan_002 ~ plan_010 的命名/字段/grader 公式参考。

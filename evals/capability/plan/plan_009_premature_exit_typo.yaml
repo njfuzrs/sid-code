@@ -27,7 +27,7 @@ expected:
     - "新增测试"
     - "全仓 grep"
     - "重构"
-  execution_must_call_tools_any_of: [edit, exit_plan_mode]
+  execution_must_call_tools_any_of: [ edit, exit_plan_mode ]
   max_steps: 8
 
   # premature_exit 维度核心断言
@@ -56,5 +56,30 @@ grader:
       - premature_exit_direct_action
 
 source: synthetic_capability_2026_05_18_W10
-related_subsystem: [plan]
-related_adr: [ADR-013]
+related_subsystem: [ plan ]
+related_adr: [ ADR-013 ]
+baseline_scores:
+  sid_code_default:
+    score: 4.3
+    run_status: success
+    tested_at: 2026-05-25T22:54:48.766Z
+    tested_by: eval:plan-capability
+    transcript_path: null
+    notes: ""
+    dimensions:
+      assert: 4.3
+      llm_judge: null
+    _formula_version:
+      grader: capability-plan-v1
+  sid_code_deepseek_v4_pro:
+    score: 4.3
+    run_status: success
+    tested_at: 2026-05-26T02:58:06.031Z
+    tested_by: eval:plan-capability
+    transcript_path: null
+    notes: ""
+    dimensions:
+      assert: 4.3
+      llm_judge: null
+    _formula_version:
+      grader: capability-plan-v1

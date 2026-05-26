@@ -29,6 +29,10 @@ import {
   type CapabilityGraderInput,
 } from "../../evals/bench-runner/capability-grader.ts";
 import { gradeProcess, type JudgeConfig } from "../../evals/bench-runner/process-grader.ts";
+import {
+  syncBaselineScores,
+  type BaselineResult,
+} from "../../evals/baseline-sync.ts";
 
 const ROOT = process.cwd();
 const CAPABILITY_DIR = join(ROOT, "evals/capability/plan");
@@ -41,6 +45,9 @@ const { values } = parseArgs({
     execute: { type: "boolean", default: false }, // 真调 LLM Judge
     timeout: { type: "string", default: "360000" }, // 单 task 超时
     model: { type: "string" }, // 覆盖默认模型
+    // sync 默认 off：与 eval-runner 对齐，避免调试单 case 时污染 case yaml 的 baseline_scores。
+    // 跑正式 baseline / 对比历史时显式加 --sync 才回写。
+    sync: { type: "boolean", default: false },
   },
   allowPositionals: true,
 });
@@ -142,8 +149,9 @@ const liveConfig: SidCodeLiveConfig = {
   cwd: ROOT,
   // 不强制要求 ANTHROPIC_API_KEY：让 sid-code 子进程读 ~/.sid-code/config.yaml 的 anthropic_key
   // 也不透传 baseUrl：避免 SID_CODE_LLM_BASE_URL 覆盖 config.yaml 里的 dashscope/openai base_url
-  // model 可选：未传则用用户 ~/.sid-code/config.yaml 默认
-  model: values.model || process.env.SID_CODE_MODEL,
+  // model 默认 deepseek-v4-pro：与 eval-runner.ts PROVIDER_REGISTRY 一致，
+  // 让 baseline_scores key 形如 `sid_code_deepseek_v4_pro`，与 general baseline 同名空间。
+  model: values.model || process.env.SID_CODE_MODEL || "deepseek-v4-pro",
   timeoutMs: parseInt(values.timeout || "360000", 10),
 };
 
@@ -343,3 +351,48 @@ for (const [dim, s] of Object.entries(dimensionSummary)) {
 }
 console.log(`\n  Raw  → ${rawOutputPath}`);
 console.log(`  Report → ${reportOutputPath}`);
+
+// --sync：把跑分回写到 evals/capability/plan/plan_*.yaml 的 baseline_scores
+// 默认 off（与 eval-runner 对齐），需显式 --sync 才回写。
+// S0-T02 / docs/eval/plan-capability-baseline-sync.md
+if (values.sync) {
+  // 把 plan capability 内部的 CaseResult 归一化为共享 BaselineResult。
+  // 与 eval-runner.classifyRunStatus 同语义：timeout > error > success。
+  // capability runner 没有 retry / abnormal 通道，简化为三态：
+  //   - timed_out=true → timeout
+  //   - exit_status 既非 timeout 又非 end_turn → error（包括 unknown / spawn_exit_N / parse_error）
+  //   - 其他 → success
+  const modelSlug = (liveConfig.model || "default").replace(/[^a-zA-Z0-9]/g, "_");
+  const providerKey = `sid_code_${modelSlug}`;
+
+  const baselineResults: BaselineResult[] = results.map((r) => {
+    const exitStatus = r.agentSnapshot.exit_status;
+    let runStatus: string;
+    if (r.agentSnapshot.timed_out || exitStatus === "timeout" || exitStatus === "outer_timeout") {
+      runStatus = "timeout";
+    } else if (exitStatus === "end_turn" || exitStatus === "stop_sequence") {
+      runStatus = "success";
+    } else {
+      runStatus = "error";
+    }
+    return {
+      caseId: r.id,
+      provider: providerKey,
+      score: r.finalScore,
+      runStatus,
+      testedAt: new Date(ts).toISOString(),
+      dimensions: {
+        assert: r.assertScore,
+        llm_judge: r.llmScore,
+      },
+      // capability runner 目前不走 5 维 grader，标注独立版本以与 general baseline 区分
+      // S1 上 task-specific scorer 时再 bump 到对应版本号
+      formulaVersion: { grader: "capability-plan-v1" },
+    };
+  });
+
+  syncBaselineScores(baselineResults, {
+    yamlDir: CAPABILITY_DIR,
+    testerLabel: "eval:plan-capability",
+  });
+}

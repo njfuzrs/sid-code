@@ -44,8 +44,8 @@ export interface QueryEngineDeps {
   quotaManager?: QuotaManager;
   tokenMeter?: TokenMeter;
   budgetTracker?: BudgetTracker;
-  /** 执行工具调用（含权限检查） */
-  executeTools: (content: ContentBlock[]) => Promise<ContentBlock[]>;
+  /** 执行工具调用（含权限检查）。返回 results + 可选 followup（ADR-019） */
+  executeTools: (content: ContentBlock[]) => Promise<{ results: ContentBlock[]; followup?: ContentBlock[] }>;
   /** 处理流式响应 */
   processStream: (
     stream: AsyncIterable<StreamEvent>,

@@ -25,12 +25,36 @@ export interface ToolExecutorDeps {
   getAbortSignal: () => AbortSignal | undefined;
   /** 请求用户确认（TUI 回调或 headless 自动决策） */
   requestUserConfirmation: (desc: string, permReq: PermissionRequest, toolName: string, toolInput: unknown) => Promise<boolean>;
-  /** Plan Mode 状态转换处理 */
-  handlePlanModeTransitions?: (toolBlocks: Array<{ block: ToolUseBlock; idx: number }>, resultMap: Map<number, ContentBlock>) => Promise<void>;
+  /**
+   * Plan Mode 状态转换处理。
+   *
+   * 返回 followup：若本次处理需要在 tool_results 之后再 enqueue 一条 user 消息
+   * （例如 plan 批准反馈），通过 followup 返回；上层 loop 在 addMessage(toolResults)
+   * 之后再 addMessage(followup)。
+   *
+   * 不能在此函数内部直接 ctxMgr.addMessage——会让 user(text) 排在 user(tool_result) 之前，
+   * 违反 OpenAI tool_calls 协议（必须 assistant.tool_calls → 紧接 tool 消息）。详见 ADR-019。
+   */
+  handlePlanModeTransitions?: (
+    toolBlocks: Array<{ block: ToolUseBlock; idx: number }>,
+    resultMap: Map<number, ContentBlock>,
+  ) => Promise<{ followup?: ContentBlock[] } | void>;
   /** Plan Mode 系统提醒 */
   getPlanModeReminder?: () => Promise<string | null>;
   /** JIT 上下文发现 */
   discoverJitContext?: (toolBlocks: ToolUseBlock[]) => Promise<void>;
+}
+
+/**
+ * executeTools 返回结构。
+ *
+ * - results：常规 tool_result blocks，必须立即 addMessage(user, results)
+ * - followup（可选）：需要在 results 之后再 addMessage(user, followup) 的消息块。
+ *   ADR-019：plan-approved 反馈走这条通道，避免插在 tool_result 之前导致 OpenAI 400。
+ */
+export interface ExecuteToolsResult {
+  results: ContentBlock[];
+  followup?: ContentBlock[];
 }
 
 /**
@@ -39,7 +63,7 @@ export interface ToolExecutorDeps {
 export async function executeTools(
   content: ContentBlock[],
   deps: ToolExecutorDeps,
-): Promise<ContentBlock[]> {
+): Promise<ExecuteToolsResult> {
   const log = getLogger();
 
   // 提取所有 tool_use 块，保留原始顺序索引
@@ -47,7 +71,7 @@ export async function executeTools(
     .map((block, idx) => ({ block, idx }))
     .filter((item): item is { block: ToolUseBlock; idx: number } => item.block.type === "tool_use");
 
-  if (toolBlocks.length === 0) return [];
+  if (toolBlocks.length === 0) return { results: [] };
 
   // 收集本次工具调用会修改的文件路径（用于创建快照）
   const affectedFiles = getAffectedFiles(toolBlocks.map(t => t.block));
@@ -184,8 +208,14 @@ export async function executeTools(
   }
 
   // Plan Mode 状态转换处理
+  // ADR-019：followup 由上层 loop 在 addMessage(toolResults) 之后再 enqueue，
+  // 不能在此函数内部直接 addMessage。
+  let followup: ContentBlock[] | undefined;
   if (deps.handlePlanModeTransitions) {
-    await deps.handlePlanModeTransitions(toolBlocks, resultMap);
+    const transitionRet = await deps.handlePlanModeTransitions(toolBlocks, resultMap);
+    if (transitionRet && transitionRet.followup && transitionRet.followup.length > 0) {
+      followup = transitionRet.followup;
+    }
   }
 
   // Plan Mode 系统提醒
@@ -204,7 +234,7 @@ export async function executeTools(
     await deps.discoverJitContext(toolBlocks.map(t => t.block));
   }
 
-  return results;
+  return { results, followup };
 }
 
 /** 执行单个工具 */
