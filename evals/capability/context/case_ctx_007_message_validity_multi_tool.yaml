@@ -1,0 +1,65 @@
+# Context capability case — message_validity 维度
+# 验证: 中文 + 复杂工具序列下消息序列有效(无 API 400)
+
+id: case_ctx_007
+subsystem: context
+dimension: message_validity
+priority: P0
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: |
+    请按下列步骤执行:
+    1. 列出当前目录下的 .md 文件
+    2. 选第一个文件,读取前 20 行
+    3. 告诉我这个文件的主题是什么
+
+    每一步都要调对应工具,最后给我总结。
+
+expected:
+  # 应至少调 glob/ls 和 read 两类工具
+  execution_must_call_tools_any_of:
+    - glob
+    - read
+    - bash
+    - ls
+
+  # 不应 timeout/crash
+  exit_status_must_be:
+    - end_turn
+
+  # final_response 应给出主题概要(中文)
+  final_response_min_length: 30
+
+  max_steps: 15
+
+rubric:
+  message_validity_no_crash: "多工具序列后是否正确返回 end_turn"
+  message_validity_summary_quality: "最终是否给出合理的中文主题概要"
+
+grader:
+  - type: assert
+    check: execution_must_call_tools_any_of_hit
+    weight: 0.30
+  - type: assert
+    check: exit_status_must_be_any_of_hit
+    weight: 0.30
+  - type: assert
+    check: max_steps_within_budget
+    weight: 0.15
+  - type: assert
+    check: final_response_min_length_ok
+    weight: 0.15
+  - type: llm_judge
+    weight: 0.10
+    rubric_ref:
+      - message_validity_no_crash
+      - message_validity_summary_quality
+
+source: synthetic_capability_2026_05_27_S0_T04
+related_subsystem: [context]
+related_adr: []

@@ -1,0 +1,68 @@
+# Router capability case — quota_alert_visible 维度
+# 跑较长任务,无 quota 限制时应正常完成,不应误报 quota 警告
+
+id: case_rtr_004
+subsystem: router
+dimension: quota_alert_visible
+priority: P1
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: |
+    给我详细介绍 TypeScript 的 5 个高级类型特性,每个特性给出代码示例。
+    输出大约 1000 字即可。
+
+expected:
+  # 应正常完成
+  exit_status_must_be:
+    - end_turn
+
+  # final_response 应含 TypeScript 类型特性的关键词
+  final_response_must_include_any_of:
+    - typescript
+    - TypeScript
+    - 泛型
+    - generic
+    - 联合类型
+    - "union"
+    - 类型守卫
+    - "type guard"
+    - 条件类型
+    - "conditional"
+    - 映射类型
+    - "mapped"
+
+  # 不应误报 quota 警告
+  final_response_must_not_include:
+    - "quota exceeded"
+    - "超出配额"
+    - "rate limit"
+    - "限流"
+
+  max_steps: 15
+
+rubric:
+  quota_alert_no_false_positive: "正常长任务不应误触发 quota 警告"
+
+grader:
+  - type: assert
+    check: exit_status_must_be_any_of_hit
+    weight: 0.30
+  - type: assert
+    check: final_response_must_include_any_of_hit
+    weight: 0.30
+  - type: assert
+    check: final_response_must_not_include_zero_hit
+    weight: 0.30
+  - type: llm_judge
+    weight: 0.10
+    rubric_ref:
+      - quota_alert_no_false_positive
+
+source: synthetic_capability_2026_05_27_S0_T05
+related_subsystem: [router, llm]
+related_adr: []

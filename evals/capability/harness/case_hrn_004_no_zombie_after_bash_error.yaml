@@ -1,0 +1,62 @@
+# Harness capability case — harness_no_zombie_after_error 维度
+# 工具报错后(bash 退出码非 0)agent 应继续推进或正确收尾
+
+id: case_hrn_004
+subsystem: harness
+dimension: harness_no_zombie_after_error
+priority: P0
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: |
+    先跑 `ls /this/path/definitely/does/not/exist/xyz`(预期会失败),
+    然后跑 `echo "second step OK"`(预期成功),
+    最后告诉我两步的输出对比。
+
+expected:
+  execution_must_call_tools_any_of:
+    - bash
+
+  # 应正常完成(end_turn,不能 timeout)
+  exit_status_must_be:
+    - end_turn
+
+  # final_response 应含两步输出的描述
+  final_response_must_include_any_of:
+    - "second step OK"
+    - "OK"
+    - 第二步
+    - 第二
+    - 失败
+
+  # 应在合理步数内完成
+  max_steps: 12
+
+rubric:
+  harness_no_zombie_recovery: "工具报错后是否继续推进至完成,而不是卡死"
+
+grader:
+  - type: assert
+    check: execution_must_call_tools_any_of_hit
+    weight: 0.20
+  - type: assert
+    check: exit_status_must_be_any_of_hit
+    weight: 0.40
+  - type: assert
+    check: final_response_must_include_any_of_hit
+    weight: 0.20
+  - type: assert
+    check: max_steps_within_budget
+    weight: 0.10
+  - type: llm_judge
+    weight: 0.10
+    rubric_ref:
+      - harness_no_zombie_recovery
+
+source: synthetic_capability_2026_05_27_S0_T06
+related_subsystem: [harness, agent]
+related_adr: []

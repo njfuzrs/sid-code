@@ -1,0 +1,71 @@
+# Memory capability case — memory_isolation 维度
+# 验证: global memory 与 project memory 分级正确,scope 字段不混淆
+
+id: case_mem_005
+subsystem: memory
+dimension: memory_isolation
+priority: P1
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: |
+    告诉我现在已知的 memory(全局 + 项目),并指出哪些是全局,哪些是项目级。
+
+  seed_memory:
+    - scope: global
+      key: editor_preference
+      value: vscode
+    - scope: global
+      key: shell
+      value: zsh
+    - scope: project
+      key: project_name
+      value: sid-code
+    - scope: project
+      key: language
+      value: typescript
+
+expected:
+  # final_response 应同时提到全局和项目两类 memory
+  final_response_must_include_any_of:
+    - 全局
+    - global
+    - 项目
+    - project
+
+  # 关键 value 至少要召回 1-2 条
+  final_response_must_include_some_keywords:
+    - vscode
+    - zsh
+    - sid-code
+    - typescript
+
+  max_steps: 10
+
+rubric:
+  memory_isolation_clarity: "是否明确区分 global 与 project 两类 memory,不混在一起含糊回答"
+  memory_isolation_completeness: "是否完整列出 seed 的关键 memory,不漏掉一半"
+
+grader:
+  - type: assert
+    check: final_response_must_include_any_of_hit
+    weight: 0.30
+  - type: assert
+    check: memory_isolation_keyword_count_min_2
+    weight: 0.40
+  - type: assert
+    check: max_steps_within_budget
+    weight: 0.10
+  - type: llm_judge
+    weight: 0.20
+    rubric_ref:
+      - memory_isolation_clarity
+      - memory_isolation_completeness
+
+source: synthetic_capability_2026_05_27_S0_T03
+related_subsystem: [memory]
+related_adr: []

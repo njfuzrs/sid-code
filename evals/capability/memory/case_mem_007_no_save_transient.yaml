@@ -1,0 +1,49 @@
+# Memory capability case — memory_no_pollution 维度
+# 反向 case: 临时 / 一次性信息不应被保存到 memory
+
+id: case_mem_007
+subsystem: memory
+dimension: memory_no_pollution
+priority: P1
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: |
+    我现在临时调试,把 src/cli.ts 第 42 行的 console.log 删掉看看效果。
+    完成后告诉我。
+
+expected:
+  # 反向: 临时调试不应触发 save_memory(临时信息无需持久化)
+  execution_must_not_call_tools:
+    - save_memory
+
+  # final_response 应承认完成(或解释)而不是说"已保存到 memory"
+  final_response_must_not_include:
+    - 已保存到记忆
+    - 已记录到 memory
+    - save_memory
+
+  max_steps: 20
+
+rubric:
+  memory_no_pollution_judgement: "是否区分临时调试 vs 长期偏好,不滥用 save_memory"
+
+grader:
+  - type: assert
+    check: execution_must_not_call_tools_zero_hit
+    weight: 0.50
+  - type: assert
+    check: final_response_must_not_include_zero_hit
+    weight: 0.30
+  - type: llm_judge
+    weight: 0.20
+    rubric_ref:
+      - memory_no_pollution_judgement
+
+source: synthetic_capability_2026_05_27_S0_T03
+related_subsystem: [memory]
+related_adr: []

@@ -1,0 +1,65 @@
+# Router capability case — fallback_message_continuity 维度
+# 跑普通任务,确认 retry 不影响对话连续性
+
+id: case_rtr_003
+subsystem: router
+dimension: fallback_message_continuity
+priority: P0
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: |
+    用 bash 跑 `echo "hello world"`,告诉我输出。
+
+expected:
+  execution_must_call_tools_any_of:
+    - bash
+
+  # 应 end_turn(不应有 retry/fallback 触发的中断信号)
+  exit_status_must_be:
+    - end_turn
+
+  # final_response 应有 "hello world" 输出
+  final_response_must_include_any_of:
+    - "hello world"
+    - "hello"
+
+  # 不应在 final_response 中暴露 retry/fallback 内部信号
+  final_response_must_not_include:
+    - "retry failed"
+    - "fallback"
+    - "会话已断"
+    - "无法继续"
+    - "Provider error"
+    - "model unavailable"
+
+  max_steps: 5
+
+rubric:
+  fallback_no_user_facing_noise: "即使内部 retry,也不应在用户可见输出中暴露内部错误"
+
+grader:
+  - type: assert
+    check: execution_must_call_tools_any_of_hit
+    weight: 0.20
+  - type: assert
+    check: exit_status_must_be_any_of_hit
+    weight: 0.30
+  - type: assert
+    check: final_response_must_include_any_of_hit
+    weight: 0.20
+  - type: assert
+    check: final_response_must_not_include_zero_hit
+    weight: 0.20
+  - type: llm_judge
+    weight: 0.10
+    rubric_ref:
+      - fallback_no_user_facing_noise
+
+source: synthetic_capability_2026_05_27_S0_T05
+related_subsystem: [router, llm]
+related_adr: []

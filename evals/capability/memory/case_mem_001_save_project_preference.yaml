@@ -1,0 +1,81 @@
+# Memory capability case — memory_write 维度
+# 验证 sid-code 在"记住..."指令下能否调用 save_memory tool 并落到 project scope
+
+id: case_mem_001
+subsystem: memory
+dimension: memory_write
+priority: P0
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: |
+    我们项目用 vitest 做单测,bun test 跑全量。
+    请记住这个项目偏好,以后涉及测试的任务都按这个来。
+
+expected:
+  # 必须调 save_memory tool
+  execution_must_call_tools_any_of:
+    - save_memory
+
+  # save_memory 应落到 project scope（而不是 global，因为指令明确说"项目"）
+  memory_write_scope_must_be: project
+
+  # 跑后 memory 文件应新增条目，key/value 包含关键字
+  memory_write_keys_any_of:
+    - test
+    - testing
+    - vitest
+    - framework
+    - bun
+  memory_write_values_any_of:
+    - vitest
+    - bun
+    - "bun test"
+
+  # final_response 应确认保存动作
+  final_response_must_include_any_of:
+    - 已保存
+    - 已记录
+    - 保存
+    - 记住
+
+  # 反向: 不应包含 "API key" 等敏感词（这条 case 本身不涉及，但守护泛化）
+  final_response_must_not_include:
+    - API_KEY
+    - api_key
+
+  max_steps: 15
+
+rubric:
+  memory_write_scope_correctness: "scope 选择是否正确（项目偏好应落 project,不应 global）"
+  memory_key_naming: "key 是否简短描述性（如 test_framework 而不是 user_said_xxx）"
+
+grader:
+  - type: assert
+    check: execution_must_call_tools_any_of_hit
+    weight: 0.30
+  - type: assert
+    check: memory_write_keys_any_of_hit
+    weight: 0.20
+  - type: assert
+    check: memory_write_scope_must_be
+    weight: 0.20
+  - type: assert
+    check: final_response_must_include_any_of_hit
+    weight: 0.15
+  - type: assert
+    check: final_response_must_not_include_zero_hit
+    weight: 0.05
+  - type: llm_judge
+    weight: 0.10
+    rubric_ref:
+      - memory_write_scope_correctness
+      - memory_key_naming
+
+source: synthetic_capability_2026_05_27_S0_T03
+related_subsystem: [memory]
+related_adr: []

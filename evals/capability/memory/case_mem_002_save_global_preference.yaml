@@ -1,0 +1,66 @@
+# Memory capability case — memory_write 维度
+# 验证 "全局偏好"（涉及多项目共用的工程习惯）应落 global scope
+
+id: case_mem_002
+subsystem: memory
+dimension: memory_write
+priority: P0
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: |
+    我所有项目的 commit 信息都用中文写,这是我的全局习惯,
+    请帮我记住这一点,以后无论哪个项目都按这个规则。
+
+expected:
+  execution_must_call_tools_any_of:
+    - save_memory
+
+  # 全局偏好 → 应落 global scope
+  memory_write_scope_must_be: global
+
+  memory_write_keys_any_of:
+    - commit
+    - commit_message
+    - commit_style
+    - language
+
+  memory_write_values_any_of:
+    - 中文
+    - chinese
+    - zh
+
+  final_response_must_include_any_of:
+    - 已保存
+    - 已记录
+    - 全局
+
+  max_steps: 15
+
+rubric:
+  memory_write_scope_correctness: "全局偏好应落 global 而不是 project"
+
+grader:
+  - type: assert
+    check: execution_must_call_tools_any_of_hit
+    weight: 0.30
+  - type: assert
+    check: memory_write_keys_any_of_hit
+    weight: 0.20
+  - type: assert
+    check: memory_write_values_any_of_hit
+    weight: 0.20
+  - type: assert
+    check: memory_write_scope_must_be
+    weight: 0.20
+  - type: assert
+    check: final_response_must_include_any_of_hit
+    weight: 0.10
+
+source: synthetic_capability_2026_05_27_S0_T03
+related_subsystem: [memory]
+related_adr: []

@@ -1,0 +1,91 @@
+# Context capability case — signal_retention 维度
+# 验证: 在较长 user_query 前部嵌入关键信号,后部 query 时 agent 应回答时引用该信号
+
+id: case_ctx_001
+subsystem: context
+dimension: signal_retention
+priority: P0
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: |
+    我的项目是一个使用 Vue 3 + TypeScript + Pinia 的前端应用,
+    后端用 Node.js + Express,数据库是 PostgreSQL。
+    我已经实现了用户登录、注册、退出三个基础功能,
+    现在我想为这个项目添加"忘记密码"功能。
+
+    [背景填充开始]
+    这个项目最初是为公司内部使用而开发的,
+    主要服务于运营团队和客服团队。
+    项目从 2023 年开始,经历了多次迭代,
+    最初的技术栈是 Vue 2 + JavaScript + Vuex,
+    后来在 2024 年升级到了 Vue 3 + TypeScript + Pinia。
+    数据库最初用的是 MySQL,
+    后来因为业务规模扩展,迁移到了 PostgreSQL。
+    后端从最初的 Koa 切到了 Express,
+    主要因为团队对 Express 中间件生态更熟悉。
+
+    在用户登录功能的实现上,我们使用了 JWT 做认证,
+    refresh token 存在 httpOnly cookie 里,access token 在内存中。
+    密码哈希用的是 bcrypt,salt rounds = 12。
+    [背景填充结束]
+
+    现在,基于这个项目背景,
+    请你帮我设计"忘记密码"功能的实现方案,
+    要符合我们当前的技术栈。
+  trigger_plan_mode: false
+
+expected:
+  # final_response 应继续使用 Vue 3 / TS / Pinia / PostgreSQL 等当前栈
+  # 不能 hallucinate 回 Vue 2 / Vuex / MySQL / Koa
+  final_response_must_include_any_of:
+    - Vue 3
+    - vue 3
+    - TypeScript
+    - Pinia
+    - PostgreSQL
+    - postgres
+    - Express
+    - JWT
+    - bcrypt
+
+  # 反向: 不能用旧栈
+  final_response_must_not_include:
+    - Vue 2
+    - vue 2
+    - Vuex
+    - MySQL
+    - mysql
+    - Koa
+    - "改用 React"
+    - "建议改用"
+
+  max_steps: 25
+
+rubric:
+  signal_retention_correctness: "回答是否准确引用当前技术栈,不混淆历史栈"
+  signal_retention_design_quality: "忘记密码方案是否契合 JWT/bcrypt 这些已知约束"
+
+grader:
+  - type: assert
+    check: final_response_must_include_any_of_hit
+    weight: 0.40
+  - type: assert
+    check: final_response_must_not_include_zero_hit
+    weight: 0.40
+  - type: assert
+    check: max_steps_within_budget
+    weight: 0.10
+  - type: llm_judge
+    weight: 0.10
+    rubric_ref:
+      - signal_retention_correctness
+      - signal_retention_design_quality
+
+source: synthetic_capability_2026_05_27_S0_T04
+related_subsystem: [context]
+related_adr: []

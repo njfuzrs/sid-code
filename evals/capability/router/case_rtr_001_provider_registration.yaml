@@ -1,0 +1,65 @@
+# Router capability case — provider_registration 维度
+# 验证: 询问 agent 系统当前支持的 LLM provider,应能正确列出 ≥ 3 家
+
+id: case_rtr_001
+subsystem: router
+dimension: provider_registration
+priority: P0
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: |
+    sid-code 当前支持哪些 LLM Provider?
+    请读 src/llm/ 目录下的代码确认,然后告诉我具体支持哪 N 家厂商。
+
+expected:
+  # 应调 ls / glob / read 等工具确认
+  execution_must_call_tools_any_of:
+    - ls
+    - glob
+    - read
+    - bash
+    - grep
+
+  # final_response 应同时提到 anthropic / openai / ollama 三家
+  final_response_must_include_any_of:
+    - anthropic
+    - Anthropic
+    - openai
+    - OpenAI
+    - ollama
+    - Ollama
+
+  # 应给出"三家"或具体数字
+  final_response_must_include_count_keywords_min_3:
+    - anthropic
+    - openai
+    - ollama
+
+  max_steps: 15
+
+rubric:
+  provider_registration_completeness: "是否完整列出 anthropic / openai / ollama 三家,不遗漏"
+
+grader:
+  - type: assert
+    check: execution_must_call_tools_any_of_hit
+    weight: 0.25
+  - type: assert
+    check: final_response_must_include_any_of_hit
+    weight: 0.25
+  - type: assert
+    check: final_response_must_include_count_keywords_min_3_hit
+    weight: 0.40
+  - type: llm_judge
+    weight: 0.10
+    rubric_ref:
+      - provider_registration_completeness
+
+source: synthetic_capability_2026_05_27_S0_T05
+related_subsystem: [router, llm]
+related_adr: []

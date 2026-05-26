@@ -1,0 +1,62 @@
+# Router capability case — multi_provider_routing 维度
+# 询问 agent 当前使用的模型,应能正确报告
+
+id: case_rtr_002
+subsystem: router
+dimension: multi_provider_routing
+priority: P0
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: |
+    你当前用的是什么 LLM 模型?
+    简短回答,告诉我 model 名字即可,
+    不需要详细解释,也不需要调工具。
+
+expected:
+  # 不应大规模调工具(简单元信息查询)
+  max_steps: 5
+
+  # final_response 应含具体 model 名(deepseek/claude/gpt 等)
+  final_response_must_include_any_of:
+    - deepseek
+    - DeepSeek
+    - claude
+    - Claude
+    - gpt
+    - GPT
+    - llama
+    - qwen
+    - "v4-pro"
+    - "opus"
+    - "sonnet"
+    - "haiku"
+
+  # 简短回答(≤ 300 字符)
+  final_response_max_length: 500
+
+rubric:
+  multi_provider_routing_self_awareness: "agent 是否能识别自己当前的 model"
+
+grader:
+  - type: assert
+    check: final_response_must_include_any_of_hit
+    weight: 0.50
+  - type: assert
+    check: max_steps_within_budget
+    weight: 0.30
+  - type: assert
+    check: final_response_max_length_ok
+    weight: 0.10
+  - type: llm_judge
+    weight: 0.10
+    rubric_ref:
+      - multi_provider_routing_self_awareness
+
+source: synthetic_capability_2026_05_27_S0_T05
+related_subsystem: [router, llm]
+related_adr: []

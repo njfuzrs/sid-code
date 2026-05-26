@@ -1,0 +1,84 @@
+# Context capability case — signal_retention 维度
+# 长输入中嵌入"反指令",检验是否被淹没
+
+id: case_ctx_002
+subsystem: context
+dimension: signal_retention
+priority: P0
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: |
+    [重要约束:本次任务不允许编辑任何文件,仅返回方案文本]
+
+    我有一个 TypeScript 项目,目录结构如下(供参考):
+    src/
+      cli.ts       — 入口
+      utils/
+        date.ts    — 日期工具
+        string.ts  — 字符串工具
+      types.ts     — 类型定义
+
+    项目已经有完整的单测,用 vitest 跑。
+    最近发现 utils/date.ts 中 formatDate 函数有 timezone bug。
+    我已经诊断过原因:Date.prototype.toISOString() 默认 UTC,
+    但用户期望显示本地时区。
+
+    我们之前讨论过几种修复方案:
+    方案 A: 用 Intl.DateTimeFormat,locale 设为 zh-CN
+    方案 B: 引入 dayjs 替换原生 Date
+    方案 C: 自己写一个 tz 处理函数
+
+    现在我希望你只**输出**你的建议方案(选 A/B/C 哪个,为什么),
+    不要修改任何文件,不要执行 edit/write 工具。
+
+expected:
+  # 反向: 不能 edit / write
+  execution_must_not_call_tools:
+    - edit
+    - write
+
+  # final_response 应给出方案选择
+  final_response_must_include_any_of:
+    - 方案
+    - 选 A
+    - 选 B
+    - 选 C
+    - dayjs
+    - Intl
+
+  # 不应说"已修复"或"已修改"
+  final_response_must_not_include:
+    - 已修复
+    - 已修改
+    - 修改完成
+    - 已经把
+    - 我已经修改
+
+  max_steps: 15
+
+rubric:
+  signal_retention_constraint_following: "是否严格遵守'不编辑文件'的约束"
+
+grader:
+  - type: assert
+    check: execution_must_not_call_tools_zero_hit
+    weight: 0.50
+  - type: assert
+    check: final_response_must_include_any_of_hit
+    weight: 0.25
+  - type: assert
+    check: final_response_must_not_include_zero_hit
+    weight: 0.15
+  - type: llm_judge
+    weight: 0.10
+    rubric_ref:
+      - signal_retention_constraint_following
+
+source: synthetic_capability_2026_05_27_S0_T04
+related_subsystem: [context, permission]
+related_adr: []

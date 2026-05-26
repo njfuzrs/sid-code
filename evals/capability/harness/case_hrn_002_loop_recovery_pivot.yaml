@@ -1,0 +1,71 @@
+# Harness capability case — loop_recovery_pivot 维度
+# 触发 grep 反复无果后,agent 应换工具(用 ls/glob 列文件)
+
+id: case_hrn_002
+subsystem: harness
+dimension: loop_recovery_pivot
+priority: P0
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: |
+    在当前目录下用 grep 查找一个叫 "ZxYwVuTsRq_definitely_no_such_string" 的字符串。
+    我知道这个字符串很罕见,你可能找不到。
+    但如果 grep 找不到,请你换工具确认一下文件存在情况。
+    最后告诉我结论。
+
+expected:
+  # 应同时调 grep 和换其他工具(ls/glob/read)
+  execution_must_call_tools_any_of:
+    - grep
+
+  # 至少调用 2 种不同工具(说明发生了 pivot)
+  unique_tools_count_min_2: true
+
+  # max_steps 控制(防止反复 grep)
+  max_steps: 15
+
+  # 应给出"未找到"结论
+  final_response_must_include_any_of:
+    - 未找到
+    - 没有
+    - 不存在
+    - "no match"
+    - "not found"
+
+  exit_status_must_be:
+    - end_turn
+
+rubric:
+  loop_recovery_pivot_correctness: "grep 失败后是否真的换工具,而不是反复 grep 同一字符串"
+  loop_recovery_honest_conclusion: "是否诚实告知未找到,而不是编造结果"
+
+grader:
+  - type: assert
+    check: execution_must_call_tools_any_of_hit
+    weight: 0.20
+  - type: assert
+    check: unique_tools_count_min_2_hit
+    weight: 0.30
+  - type: assert
+    check: max_steps_within_budget
+    weight: 0.20
+  - type: assert
+    check: final_response_must_include_any_of_hit
+    weight: 0.20
+  - type: assert
+    check: exit_status_must_be_any_of_hit
+    weight: 0.05
+  - type: llm_judge
+    weight: 0.05
+    rubric_ref:
+      - loop_recovery_pivot_correctness
+      - loop_recovery_honest_conclusion
+
+source: synthetic_capability_2026_05_27_S0_T06
+related_subsystem: [harness, agent]
+related_adr: []

@@ -1,0 +1,62 @@
+# Memory capability case — memory_recall 维度
+# 验证: 多条 seed memory 中能精准召回 query 对应的那条(precision)
+
+id: case_mem_004
+subsystem: memory
+dimension: memory_recall
+priority: P1
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: |
+    我们项目用什么 lint 工具?
+
+  seed_memory:
+    - scope: project
+      key: test_framework
+      value: vitest
+    - scope: project
+      key: lint_tool
+      value: eslint + prettier
+    - scope: project
+      key: commit_style
+      value: conventional commits
+
+expected:
+  # 只应召回 lint_tool 对应的 value,不应把 test_framework / commit_style 全甩出来
+  final_response_must_include_any_of:
+    - eslint
+    - prettier
+    - lint
+
+  # 反向: 不应输出无关 memory 的 value
+  final_response_must_not_include:
+    - vitest
+    - conventional commits
+    - jest
+    - tslint
+
+  max_steps: 10
+
+rubric:
+  memory_recall_precision: "是否精准召回 query 对应的 memory,不夹带其他 key 的 value"
+
+grader:
+  - type: assert
+    check: final_response_must_include_any_of_hit
+    weight: 0.50
+  - type: assert
+    check: final_response_must_not_include_zero_hit
+    weight: 0.30
+  - type: llm_judge
+    weight: 0.20
+    rubric_ref:
+      - memory_recall_precision
+
+source: synthetic_capability_2026_05_27_S0_T03
+related_subsystem: [memory]
+related_adr: []

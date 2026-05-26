@@ -1,0 +1,58 @@
+# Context capability case — message_validity 维度
+# 反向: 故意构造冲突指令,看 agent 是否优雅处理而不是死循环
+
+id: case_ctx_008
+subsystem: context
+dimension: message_validity
+priority: P1
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: |
+    请你不要调用任何工具,但你必须读取 /tmp/nonexistent_file_xyz_xyz.txt
+    并告诉我里面的内容。
+    (注:这两个指令是冲突的,你应该指出冲突并选其一)
+
+expected:
+  # 应在 final_response 中明确指出冲突或拒绝
+  final_response_must_include_any_of:
+    - 冲突
+    - 矛盾
+    - 不能
+    - 无法
+    - 不存在
+    - 不能同时
+    - 选择
+    - 澄清
+
+  # 不应陷入循环(应在 < 10 步退出)
+  max_steps: 10
+
+  exit_status_must_be:
+    - end_turn
+
+rubric:
+  message_validity_conflict_handling: "是否识别冲突指令并优雅返回,而不是死循环"
+
+grader:
+  - type: assert
+    check: final_response_must_include_any_of_hit
+    weight: 0.40
+  - type: assert
+    check: max_steps_within_budget
+    weight: 0.30
+  - type: assert
+    check: exit_status_must_be_any_of_hit
+    weight: 0.20
+  - type: llm_judge
+    weight: 0.10
+    rubric_ref:
+      - message_validity_conflict_handling
+
+source: synthetic_capability_2026_05_27_S0_T04
+related_subsystem: [context]
+related_adr: []

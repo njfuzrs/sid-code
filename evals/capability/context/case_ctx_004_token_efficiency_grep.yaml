@@ -1,0 +1,59 @@
+# Context capability case — token_efficiency 维度
+# 中等任务: 应在合理步数内完成(< 20),不应反复 grep 同一目录
+
+id: case_ctx_004
+subsystem: context
+dimension: token_efficiency
+priority: P1
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: |
+    在当前目录下查找包含 "TODO" 的 typescript 文件,只列出前 5 个,
+    每个文件附 1 行该 TODO 的上下文。
+    用一次 grep 就能解决,不要反复尝试。
+
+expected:
+  # grep 至少调一次(任务本身就是 grep)
+  execution_must_call_tools_any_of:
+    - grep
+
+  # max_steps 控制在 15 以内(此任务 1-2 步可解)
+  max_steps: 15
+
+  # 反向: 不应反复 grep + read 大量文件
+  execution_must_not_call_tools_overuse_grep_3plus: true
+
+  # final_response 应含 TODO 关键字
+  final_response_must_include_any_of:
+    - TODO
+    - todo
+
+rubric:
+  token_efficiency_minimal_tool_calls: "是否一次 grep 就锁定结果,不反复尝试"
+
+grader:
+  - type: assert
+    check: execution_must_call_tools_any_of_hit
+    weight: 0.30
+  - type: assert
+    check: max_steps_within_budget
+    weight: 0.30
+  - type: assert
+    check: final_response_must_include_any_of_hit
+    weight: 0.20
+  - type: assert
+    check: tool_call_count_le_5
+    weight: 0.15
+  - type: llm_judge
+    weight: 0.05
+    rubric_ref:
+      - token_efficiency_minimal_tool_calls
+
+source: synthetic_capability_2026_05_27_S0_T04
+related_subsystem: [context]
+related_adr: []

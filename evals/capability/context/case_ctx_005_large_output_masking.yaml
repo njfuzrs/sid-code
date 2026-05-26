@@ -1,0 +1,70 @@
+# Context capability case — large_output_masking 维度
+# 触发 grep 大目录,看是否仍能完成后续步骤
+
+id: case_ctx_005
+subsystem: context
+dimension: large_output_masking
+priority: P1
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: |
+    在 node_modules 目录下 grep 查找所有 package.json 文件中含有
+    "version" 的行,不限制数量。
+    跑完后告诉我总数大概是多少。
+    (这是一个非常大的输出,你需要在 grep 后继续推理给出总数)
+
+expected:
+  # 必须调 grep
+  execution_must_call_tools_any_of:
+    - grep
+    - bash
+
+  # 跑完应有 final_response(说明 masking 后流程没崩)
+  final_response_min_length: 20
+
+  # final_response 应给出数字 / 估算
+  final_response_must_include_any_of:
+    - "数"
+    - "个"
+    - "约"
+    - "总"
+    - "package.json"
+
+  # 应在 30 步内完成(掩码生效防止反复读大输出)
+  max_steps: 30
+
+  # 应 end_turn 而不是 timeout 或 error
+  exit_status_must_be:
+    - end_turn
+
+rubric:
+  large_output_masking_no_crash: "大输出后流程是否继续推进,无 API 400"
+  large_output_masking_reasoning: "agent 是否能基于(可能被遮罩的)大输出给出合理推理"
+
+grader:
+  - type: assert
+    check: execution_must_call_tools_any_of_hit
+    weight: 0.30
+  - type: assert
+    check: final_response_must_include_any_of_hit
+    weight: 0.20
+  - type: assert
+    check: max_steps_within_budget
+    weight: 0.20
+  - type: assert
+    check: exit_status_must_be_any_of_hit
+    weight: 0.20
+  - type: llm_judge
+    weight: 0.10
+    rubric_ref:
+      - large_output_masking_no_crash
+      - large_output_masking_reasoning
+
+source: synthetic_capability_2026_05_27_S0_T04
+related_subsystem: [context]
+related_adr: []

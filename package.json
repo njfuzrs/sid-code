@@ -17,6 +17,10 @@
     "eval:bench": "bun run scripts/eval/run-bench.ts",
     "eval:bench-report": "bun run scripts/eval/bench-report.ts",
     "eval:plan-capability": "bun run scripts/eval/run-plan-capability.ts",
+    "eval:memory-capability": "bun run scripts/eval/run-memory-capability.ts",
+    "eval:context-capability": "bun run scripts/eval/run-context-capability.ts",
+    "eval:router-capability": "bun run scripts/eval/run-router-capability.ts",
+    "eval:harness-capability": "bun run scripts/eval/run-harness-capability.ts",
     "eval:dashboard": "bun run scripts/eval/dashboard.ts"
   },
   "dependencies": {

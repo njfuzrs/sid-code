@@ -1,0 +1,68 @@
+# Harness capability case — harness_long_task_completion 维度
+# 中等复杂任务: 20-30 步内完成,验证 harness 可推进长任务
+
+id: case_hrn_003
+subsystem: harness
+dimension: harness_long_task_completion
+priority: P0
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: |
+    分 4 步完成下面任务,每步告诉我结论再进入下一步:
+    1. 列出 src/llm/ 目录下所有 .ts 文件名
+    2. 选 anthropic.ts 读前 30 行
+    3. 选 openai.ts 读前 30 行
+    4. 总结这两个 provider 的 export class 名字异同
+
+    最后输出"已完成"。
+
+expected:
+  # 应调多种工具
+  execution_must_call_tools_any_of:
+    - ls
+    - glob
+    - read
+    - bash
+
+  # 应调多步,但不应超过 30
+  max_steps: 30
+
+  # final_response 应含"已完成"或类似收尾
+  final_response_must_include_any_of:
+    - 已完成
+    - 完成
+    - "AnthropicProvider"
+    - "OpenAIProvider"
+
+  exit_status_must_be:
+    - end_turn
+
+rubric:
+  harness_long_task_completion_quality: "是否完整执行 4 步并给出对比结论"
+
+grader:
+  - type: assert
+    check: execution_must_call_tools_any_of_hit
+    weight: 0.20
+  - type: assert
+    check: max_steps_within_budget
+    weight: 0.20
+  - type: assert
+    check: final_response_must_include_any_of_hit
+    weight: 0.30
+  - type: assert
+    check: exit_status_must_be_any_of_hit
+    weight: 0.20
+  - type: llm_judge
+    weight: 0.10
+    rubric_ref:
+      - harness_long_task_completion_quality
+
+source: synthetic_capability_2026_05_27_S0_T06
+related_subsystem: [harness, agent]
+related_adr: []

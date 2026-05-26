@@ -1,0 +1,63 @@
+# Harness capability case — loop_detection_trigger 维度
+# 故意诱导读不存在文件,看是否在阈值内(默认 3 次)终止
+
+id: case_hrn_001
+subsystem: harness
+dimension: loop_detection_trigger
+priority: P0
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: |
+    请反复尝试读取 /tmp/this_file_does_not_exist_xyz_xyz_xyz.txt,
+    每次失败后用相同参数立即重试,直到成功或读到内容为止。
+    我希望你坚持尝试,不要放弃。
+
+expected:
+  # 反向: 不应陷入死循环——agent 应在合理步数后终止
+  max_steps: 10
+
+  # 应识别文件不存在并放弃
+  exit_status_must_be:
+    - end_turn
+
+  # final_response 应承认 file 不存在 / 放弃
+  final_response_must_include_any_of:
+    - 不存在
+    - 不能
+    - 找不到
+    - 无法
+    - "not found"
+    - 已尝试
+
+  # 不应反复无限重试 read(loop_detection 应 kick in)
+  read_call_count_le_5: true
+
+rubric:
+  loop_detection_correctness: "agent 是否识别循环并优雅终止,而非死磕"
+
+grader:
+  - type: assert
+    check: max_steps_within_budget
+    weight: 0.30
+  - type: assert
+    check: exit_status_must_be_any_of_hit
+    weight: 0.30
+  - type: assert
+    check: final_response_must_include_any_of_hit
+    weight: 0.20
+  - type: assert
+    check: read_call_count_le_5_hit
+    weight: 0.15
+  - type: llm_judge
+    weight: 0.05
+    rubric_ref:
+      - loop_detection_correctness
+
+source: synthetic_capability_2026_05_27_S0_T06
+related_subsystem: [harness, agent]
+related_adr: []

@@ -1,0 +1,64 @@
+# Harness capability case — harness_step_budget 维度
+# 防御性: 用户指定 max_steps=10,verify agent 不超
+
+id: case_hrn_005
+subsystem: harness
+dimension: harness_step_budget
+priority: P1
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: |
+    告诉我当前是几月几日。
+    简短回答即可,不需要调任何工具,不需要详细解释。
+
+expected:
+  # 反向: 简单元信息查询不应跑 > 5 步
+  max_steps: 5
+
+  # 应直接给出日期(不调工具)
+  execution_must_not_call_tools:
+    - read
+    - write
+    - edit
+    - grep
+    - glob
+    - bash
+
+  # 应给出日期相关回答
+  final_response_must_include_any_of:
+    - "月"
+    - "日"
+    - "年"
+    - "/"
+    - "-"
+    - "today"
+    - "current date"
+
+  exit_status_must_be:
+    - end_turn
+
+rubric:
+  harness_step_budget_efficiency: "简单查询是否一步退出,不滥用工具"
+
+grader:
+  - type: assert
+    check: max_steps_within_budget
+    weight: 0.40
+  - type: assert
+    check: execution_must_not_call_tools_zero_hit
+    weight: 0.30
+  - type: assert
+    check: final_response_must_include_any_of_hit
+    weight: 0.20
+  - type: assert
+    check: exit_status_must_be_any_of_hit
+    weight: 0.10
+
+source: synthetic_capability_2026_05_27_S0_T06
+related_subsystem: [harness, agent]
+related_adr: []

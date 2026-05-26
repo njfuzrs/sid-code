@@ -1,0 +1,64 @@
+# Router capability case — multi_provider_routing 维度
+# 让 agent 阅读 registry.ts 描述各 provider 的注册逻辑
+
+id: case_rtr_005
+subsystem: router
+dimension: multi_provider_routing
+priority: P1
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: |
+    读 src/llm/registry.ts,告诉我 ProviderRegistry 的 createProvider 函数
+    是如何根据 providerName 路由到对应实现的。
+    简短回答即可。
+
+expected:
+  execution_must_call_tools_any_of:
+    - read
+    - grep
+    - glob
+
+  final_response_must_include_any_of:
+    - createProvider
+    - switch
+    - case
+    - AnthropicProvider
+    - OpenAIProvider
+    - OllamaProvider
+    - providerName
+
+  # 应在合理步数内完成
+  max_steps: 15
+
+  exit_status_must_be:
+    - end_turn
+
+rubric:
+  multi_provider_routing_understanding: "是否准确解释 switch-case 路由逻辑"
+
+grader:
+  - type: assert
+    check: execution_must_call_tools_any_of_hit
+    weight: 0.30
+  - type: assert
+    check: final_response_must_include_any_of_hit
+    weight: 0.30
+  - type: assert
+    check: max_steps_within_budget
+    weight: 0.10
+  - type: assert
+    check: exit_status_must_be_any_of_hit
+    weight: 0.20
+  - type: llm_judge
+    weight: 0.10
+    rubric_ref:
+      - multi_provider_routing_understanding
+
+source: synthetic_capability_2026_05_27_S0_T05
+related_subsystem: [router, llm]
+related_adr: []

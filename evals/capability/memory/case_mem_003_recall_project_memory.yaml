@@ -1,0 +1,64 @@
+# Memory capability case — memory_recall 维度
+# 验证: seed 的 project memory 能在新会话中被召回,出现在 final_response
+
+id: case_mem_003
+subsystem: memory
+dimension: memory_recall
+priority: P0
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: |
+    我之前告诉过你这个项目用什么测试框架。
+    请告诉我,我们项目的测试框架是什么?
+
+  # seed: 在跑 sid-code 之前先把 memory 写到对应 scope 的 memories.json
+  # runner 会在跑前 backup → seed → 跑完 restore
+  seed_memory:
+    - scope: project
+      key: test_framework
+      value: vitest 和 bun test
+
+expected:
+  # final_response 应召回 seed 的 value（"vitest" 至少出现一次）
+  final_response_must_include_any_of:
+    - vitest
+    - bun test
+    - bun
+
+  # 反向: 不应 hallucinate 成 jest / mocha 等其他框架
+  final_response_must_not_include:
+    - jest
+    - mocha
+    - jasmine
+    - ava
+
+  max_steps: 10
+
+rubric:
+  memory_recall_accuracy: "final_response 是否准确召回 seed 的 value(不 hallucinate)"
+  memory_recall_no_extra: "回答是否聚焦,不夹带无关 memory"
+
+grader:
+  - type: assert
+    check: final_response_must_include_any_of_hit
+    weight: 0.50
+  - type: assert
+    check: final_response_must_not_include_zero_hit
+    weight: 0.30
+  - type: assert
+    check: max_steps_within_budget
+    weight: 0.10
+  - type: llm_judge
+    weight: 0.10
+    rubric_ref:
+      - memory_recall_accuracy
+      - memory_recall_no_extra
+
+source: synthetic_capability_2026_05_27_S0_T03
+related_subsystem: [memory]
+related_adr: []

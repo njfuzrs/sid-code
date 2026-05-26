@@ -1,0 +1,67 @@
+# Memory capability case — memory_update 维度
+# 验证: 用户偏好变更后,agent 应采用新值,不能因为 memory 里有旧值就死磕旧的
+
+id: case_mem_008
+subsystem: memory
+dimension: memory_update
+priority: P1
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: |
+    我之前说项目用 vitest,现在改用 jest 了。
+    请更新这个偏好,以后涉及测试都按 jest 来。
+
+  seed_memory:
+    - scope: project
+      key: test_framework
+      value: vitest
+
+expected:
+  # 应再次调 save_memory 把 test_framework 更新成 jest
+  execution_must_call_tools_any_of:
+    - save_memory
+
+  # 跑后 memory 文件应有 jest 关键字(最新值);旧值 vitest 应被覆盖
+  memory_update_must_contain_value: jest
+  memory_update_must_not_keep_old_value: vitest
+
+  # final_response 应承认变更
+  final_response_must_include_any_of:
+    - 已更新
+    - 更新
+    - jest
+    - 改为
+
+  max_steps: 15
+
+rubric:
+  memory_update_correctness: "是否正确执行更新(覆盖旧值),而不是新增另一个 key"
+  memory_update_acknowledgement: "是否在 final_response 中清晰承认变更"
+
+grader:
+  - type: assert
+    check: execution_must_call_tools_any_of_hit
+    weight: 0.30
+  - type: assert
+    check: memory_update_must_contain_value_hit
+    weight: 0.30
+  - type: assert
+    check: memory_update_must_not_keep_old_value_zero_hit
+    weight: 0.20
+  - type: assert
+    check: final_response_must_include_any_of_hit
+    weight: 0.10
+  - type: llm_judge
+    weight: 0.10
+    rubric_ref:
+      - memory_update_correctness
+      - memory_update_acknowledgement
+
+source: synthetic_capability_2026_05_27_S0_T03
+related_subsystem: [memory]
+related_adr: []
