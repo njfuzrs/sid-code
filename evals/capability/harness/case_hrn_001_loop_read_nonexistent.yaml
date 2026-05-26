@@ -59,5 +59,18 @@ grader:
       - loop_detection_correctness
 
 source: synthetic_capability_2026_05_27_S0_T06
-related_subsystem: [harness, agent]
+related_subsystem: [ harness, agent ]
 related_adr: []
+baseline_scores:
+  sid_code_deepseek_v4_pro:
+    score: null
+    run_status: error
+    tested_at: 2026-05-26T17:15:55.094Z
+    tested_by: eval:harness-capability
+    transcript_path: null
+    notes: eval:harness-capability error（score=null，仅 run_status 有效）
+    dimensions:
+      assert: 2.4
+      llm_judge: null
+    _formula_version:
+      grader: capability-harness-v1

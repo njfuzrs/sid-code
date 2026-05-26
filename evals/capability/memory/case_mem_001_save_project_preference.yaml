@@ -77,5 +77,18 @@ grader:
       - memory_key_naming
 
 source: synthetic_capability_2026_05_27_S0_T03
-related_subsystem: [memory]
+related_subsystem: [ memory ]
 related_adr: []
+baseline_scores:
+  sid_code_deepseek_v4_pro:
+    score: 5
+    run_status: success
+    tested_at: 2026-05-26T17:15:14.224Z
+    tested_by: eval:memory-capability
+    transcript_path: null
+    notes: ""
+    dimensions:
+      assert: 5
+      llm_judge: null
+    _formula_version:
+      grader: capability-memory-v1
