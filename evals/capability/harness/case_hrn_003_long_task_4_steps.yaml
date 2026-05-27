@@ -8,7 +8,7 @@ priority: P0
 
 eval_type: capability
 target_score: 4.0
-graduated_at: null
+graduated_at: 2026-05-28  # S0-T11 N=3 中位 4.5/5 ≥ GA
 holdout: false
 
 input:
@@ -70,7 +70,7 @@ baseline_scores:
   sid_code_deepseek_v4_pro:
     score: 4.5
     run_status: success
-    tested_at: 2026-05-27T05:11:15.795Z
+    tested_at: 2026-05-27T15:44:44.900Z
     tested_by: eval:harness-capability
     transcript_path: null
     notes: ""
@@ -82,19 +82,19 @@ baseline_scores:
     samples:
       - score: 4.5
         runStatus: success
-        testedAt: 2026-05-27T05:11:15.795Z
+        testedAt: 2026-05-27T15:44:44.900Z
         dimensions:
           assert: 5
           llm_judge: null
       - score: 4.5
         runStatus: success
-        testedAt: 2026-05-27T05:11:15.795Z
+        testedAt: 2026-05-27T15:44:44.900Z
         dimensions:
           assert: 5
           llm_judge: null
       - score: 4.5
         runStatus: success
-        testedAt: 2026-05-27T05:11:15.795Z
+        testedAt: 2026-05-27T15:44:44.900Z
         dimensions:
           assert: 5
           llm_judge: null

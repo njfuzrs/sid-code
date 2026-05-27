@@ -1,4 +1,4 @@
-tested_at: 2026-05-25T20:57:18.150Z
+tested_at: 2026-05-27T16:03:40.424Z
 claude_code_claude_opus_4_7:
   score: 4.71
   anchor:
@@ -14,7 +14,7 @@ claude_code_claude_opus_4_7:
 sid_code_deepseek_v4_pro:
   score: 5
   run_status: success
-  tested_at: 2026-05-25T20:57:18.150Z
+  tested_at: 2026-05-27T16:03:40.424Z
   anchor:
     score: 1
   llm:

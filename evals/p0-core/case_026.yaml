@@ -121,7 +121,7 @@ baseline_scores:
   sid_code_deepseek_v4_pro:
     score: 4.46
     run_status: success
-    tested_at: 2026-05-25T20:56:25.213Z
+    tested_at: 2026-05-27T16:02:42.930Z
     tested_by: eval-runner
     transcript_path: null
     notes: ""

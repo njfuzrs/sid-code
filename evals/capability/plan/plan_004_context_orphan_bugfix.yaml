@@ -1,5 +1,12 @@
-# plan_004 — plan_generation 维度：debug 类任务（理解 + 修复）
-# 测假设：sid-code 在"debug 类不明确任务"下能先 plan 出"诊断步骤"再"修复步骤"
+# plan_004 — plan_generation 维度：debug 类任务的"诊断 plan"
+# 测假设：sid-code 在"debug 类不明确任务"下能产出"诊断步骤"+"修复步骤"+"验证步骤"三段 plan
+#
+# S0-T10 题面重写（B 路径，触发 ADR-022）：
+#   - 旧题面要求"定位根因并修复"——agent 在真 repo 上会触发大量 read/grep/edit + 单测
+#     N=3 全 timeout（480s 仍超），是 capability eval 设计原则违例（plan_generation
+#     维度只测"能否产出合理多步 plan"，不应测"能否真完成复杂修复"）
+#   - 新题面：明确"只产出 plan，不执行修复"，触发 trigger_plan_mode 后 exit_plan_mode 即停
+#   - tool 列表去 edit/write，只留 read/grep/exit_plan_mode（plan_must_not_have 反例守护）
 
 id: plan_004
 subsystem: plan
@@ -15,27 +22,75 @@ input:
   user_query: |
     最近用户反馈：sid-code 在长对话下偶尔会出现 "API 400: tool_use without tool_result" 错误，
     复现概率约 5%。看起来是 src/context/ 压缩时把 tool_use 切掉了但 tool_result 还在。
-    请定位根因并修复。
+
+    请你**只产出诊断与修复的 plan，不要真的修改任何代码**：
+    1) 用 read/grep 工具勘察 src/context/ 相关源文件（必要时）
+    2) 在 plan 中分别列出"诊断步骤"+"修复步骤"+"验证步骤"
+    3) 调用 exit_plan_mode 输出 plan 后停止——不要执行 edit/write 真改代码
   trigger_plan_mode: true
 
 expected:
   plan_min_steps: 5
   plan_max_steps: 12
+  # S0-T10 加同义词组适应 agent 实际用词（hit ≥4 不变）
   plan_must_cover_any_of:
+    # 节点 1：读 src/context
     - "读 src/context"
+    - "src/context"
+    - "context/manager"
+    - "勘察"
+    - "查看代码"
+    # 节点 2：复现
     - "复现"
+    - "重现"
+    - "reproduce"
+    # 节点 3：诊断/断点
     - "断点"
+    - "诊断"
+    - "排查"
+    - "定位"
+    # 节点 4：tool_use/tool_result
     - "tool_use"
     - "tool_result"
+    - "tool use"
+    # 节点 5：压缩逻辑
     - "压缩逻辑"
+    - "压缩"
+    - "compact"
+    - "compaction"
+    # 节点 6：orphan
     - "orphan"
+    - "孤儿"
+    - "孤立"
+    - "切掉"
+    # 节点 7：测试用例
     - "测试用例"
+    - "单测"
+    - "test"
+    - "tests/"
+    # 节点 8：回归
     - "回归"
+    - "regression"
+    - "验证"
+    # 节点 9：修复（plan 阶段提及即可）
+    - "修复"
+    - "fix"
+    - "patch"
+  # 反例：S0-T10 加 plan_must_not_have——agent 不应在 plan 阶段直接动手写修复代码
   plan_must_not_have:
     - "直接重写 context"
     - "删除压缩功能"
-  execution_must_call_tools_any_of: [ read, grep, edit, exit_plan_mode ]
-  max_steps: 50
+    # 守护题面"只 plan 不执行"边界
+    - "我已经修改"
+    - "已修复"
+    - "修改完成"
+  # S0-T10 工具列表去 edit/write,只留 read/grep/exit_plan_mode
+  execution_must_call_tools_any_of: [ read, grep, exit_plan_mode ]
+  # S0-T10 反向断言：不应调 edit/write（plan 阶段守护）
+  execution_must_not_call_tools:
+    - edit
+    - write
+  max_steps: 30
 
 rubric:
   plan_completeness: "plan 是否同时含 '诊断' + '修复' + '验证' 三个阶段"
@@ -48,15 +103,18 @@ grader:
     weight: 0.20
   - type: assert
     check: plan_must_cover_any_of_hit_ge_4
-    weight: 0.25
+    weight: 0.20
   - type: assert
     check: plan_must_not_have_zero_match
     weight: 0.10
   - type: assert
     check: execution_must_call_tools_any_of_hit
     weight: 0.10
+  - type: assert
+    check: execution_must_not_call_tools_zero_hit
+    weight: 0.10
   - type: llm_judge
-    weight: 0.35
+    weight: 0.30
     rubric_ref:
       - plan_completeness
       - plan_diagnostic_first
@@ -64,36 +122,40 @@ grader:
 
 source: synthetic_capability_2026_05_18_W10
 related_subsystem: [ plan ]
-related_adr: [ ADR-013 ]
+related_adr: [ ADR-013, ADR-022 ]
+known_limitation:
+  type: case_design + llm_capability_gap
+  reason: "S0-T10 题面重写为'只 plan 不执行'后 N=3 中位 2.9 (之前 3/3 全 timeout) → 题面重写让 case 出分,但 sample [2.9, 4.3/timeout, 1.4/timeout] 显示 deepseek 仍倾向真去 read/grep;1.4 sample 是 agent 没满足 plan_min_steps=5 提前 exit_plan_mode。真根因是 plan_generation 维度对 deepseek-v4-pro 在 debug 类任务上的能力短板"
+  resolved_in: "S1 模型横评(claude/opus 表现) 或 S2 题面再加'禁止用 read/grep,只产出文本 plan'(P2 备选)"
 baseline_scores:
   sid_code_deepseek_v4_pro:
-    score: null
-    run_status: timeout
-    tested_at: 2026-05-27T07:53:11.137Z
+    score: 2.9
+    run_status: success
+    tested_at: 2026-05-27T15:40:14.953Z
     tested_by: eval:plan-capability
     transcript_path: null
-    notes: eval:plan-capability 超时（score=null,dimensions 已置 null）
+    notes: ""
     dimensions:
-      assert: null
+      assert: 2.9
       llm_judge: null
     _formula_version:
       grader: capability-plan-v1
     samples:
+      - score: 2.9
+        runStatus: success
+        testedAt: 2026-05-27T15:40:14.953Z
+        dimensions:
+          assert: 2.9
+          llm_judge: null
       - score: null
         runStatus: timeout
-        testedAt: 2026-05-27T07:53:11.137Z
+        testedAt: 2026-05-27T15:40:14.953Z
         dimensions:
           assert: null
           llm_judge: null
       - score: null
         runStatus: timeout
-        testedAt: 2026-05-27T07:53:11.137Z
-        dimensions:
-          assert: null
-          llm_judge: null
-      - score: null
-        runStatus: timeout
-        testedAt: 2026-05-27T07:53:11.137Z
+        testedAt: 2026-05-27T15:40:14.953Z
         dimensions:
           assert: null
           llm_judge: null

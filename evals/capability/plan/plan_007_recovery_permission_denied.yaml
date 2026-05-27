@@ -9,7 +9,7 @@ priority: P0
 
 eval_type: capability
 target_score: 4.0
-graduated_at: null
+graduated_at: 2026-05-28  # S0-T11 复跑 N=3 中位 4.3/5 ≥ GA 0.70
 holdout: false
 
 input:
@@ -78,35 +78,35 @@ related_subsystem: [ plan ]
 related_adr: [ ADR-013 ]
 baseline_scores:
   sid_code_deepseek_v4_pro:
-    score: 3.6
+    score: 4.3
     run_status: success
-    tested_at: 2026-05-27T07:53:11.137Z
+    tested_at: 2026-05-27T15:40:14.953Z
     tested_by: eval:plan-capability
     transcript_path: null
     notes: ""
     dimensions:
-      assert: 3.6
+      assert: 4.3
       llm_judge: null
     _formula_version:
       grader: capability-plan-v1
     samples:
-      - score: 3.6
-        runStatus: success
-        testedAt: 2026-05-27T07:53:11.137Z
-        dimensions:
-          assert: 3.6
-          llm_judge: null
       - score: 5
         runStatus: success
-        testedAt: 2026-05-27T07:53:11.137Z
+        testedAt: 2026-05-27T15:40:14.953Z
         dimensions:
           assert: 5
           llm_judge: null
       - score: null
-        runStatus: timeout
-        testedAt: 2026-05-27T07:53:11.137Z
+        runStatus: error
+        testedAt: 2026-05-27T15:40:14.953Z
         dimensions:
           assert: null
+          llm_judge: null
+      - score: 4.3
+        runStatus: success
+        testedAt: 2026-05-27T15:40:14.953Z
+        dimensions:
+          assert: 4.3
           llm_judge: null
 
 # 已知 limitation: 当前 sid-code/src/plan/state.ts 只有 reject 计数，

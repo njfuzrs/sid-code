@@ -75,7 +75,7 @@ baseline_scores:
   sid_code_deepseek_v4_pro:
     score: 4.5
     run_status: success
-    tested_at: 2026-05-27T06:20:17.738Z
+    tested_at: 2026-05-27T15:44:14.774Z
     tested_by: eval:context-capability
     transcript_path: null
     notes: ""
@@ -87,19 +87,19 @@ baseline_scores:
     samples:
       - score: 4.5
         runStatus: success
-        testedAt: 2026-05-27T06:20:17.738Z
+        testedAt: 2026-05-27T15:44:14.774Z
         dimensions:
           assert: 5
           llm_judge: null
       - score: 4.5
         runStatus: success
-        testedAt: 2026-05-27T06:20:17.738Z
+        testedAt: 2026-05-27T15:44:14.774Z
         dimensions:
           assert: 5
           llm_judge: null
       - score: 4.5
         runStatus: success
-        testedAt: 2026-05-27T06:20:17.738Z
+        testedAt: 2026-05-27T15:44:14.774Z
         dimensions:
           assert: 5
           llm_judge: null

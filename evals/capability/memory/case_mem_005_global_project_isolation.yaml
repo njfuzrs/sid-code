@@ -8,7 +8,7 @@ priority: P1
 
 eval_type: capability
 target_score: 4.0
-graduated_at: null
+graduated_at: 2026-05-28  # S0-T11 N=3 中位 4/5 ≥ GA
 holdout: false
 
 input:
@@ -73,7 +73,7 @@ baseline_scores:
   sid_code_deepseek_v4_pro:
     score: 4
     run_status: success
-    tested_at: 2026-05-27T05:03:19.486Z
+    tested_at: 2026-05-27T15:42:23.734Z
     tested_by: eval:memory-capability
     transcript_path: null
     notes: ""
@@ -83,21 +83,21 @@ baseline_scores:
     _formula_version:
       grader: capability-memory-v1
     samples:
-      - score: 3.5
-        runStatus: success
-        testedAt: 2026-05-27T05:03:19.486Z
-        dimensions:
-          assert: 4.4
-          llm_judge: null
       - score: 4
         runStatus: success
-        testedAt: 2026-05-27T05:03:19.486Z
+        testedAt: 2026-05-27T15:42:23.734Z
         dimensions:
           assert: 5
           llm_judge: null
       - score: 4
         runStatus: success
-        testedAt: 2026-05-27T05:03:19.486Z
+        testedAt: 2026-05-27T15:42:23.734Z
+        dimensions:
+          assert: 5
+          llm_judge: null
+      - score: 4
+        runStatus: success
+        testedAt: 2026-05-27T15:42:23.734Z
         dimensions:
           assert: 5
           llm_judge: null

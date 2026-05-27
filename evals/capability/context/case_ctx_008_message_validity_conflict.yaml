@@ -8,7 +8,7 @@ priority: P1
 
 eval_type: capability
 target_score: 4.0
-graduated_at: null
+graduated_at: 2026-05-28  # S0-T11 N=3 中位 4.5/5 ≥ GA
 holdout: false
 
 input:
@@ -60,7 +60,7 @@ baseline_scores:
   sid_code_deepseek_v4_pro:
     score: 4.5
     run_status: success
-    tested_at: 2026-05-27T05:59:29.496Z
+    tested_at: 2026-05-27T15:44:14.774Z
     tested_by: eval:context-capability
     transcript_path: null
     notes: ""
@@ -70,21 +70,21 @@ baseline_scores:
     _formula_version:
       grader: capability-context-v1
     samples:
+      - score: 2.5
+        runStatus: success
+        testedAt: 2026-05-27T15:44:14.774Z
+        dimensions:
+          assert: 2.8
+          llm_judge: null
       - score: 4.5
         runStatus: success
-        testedAt: 2026-05-27T05:59:29.496Z
+        testedAt: 2026-05-27T15:44:14.774Z
         dimensions:
           assert: 5
           llm_judge: null
       - score: 4.5
         runStatus: success
-        testedAt: 2026-05-27T05:59:29.496Z
+        testedAt: 2026-05-27T15:44:14.774Z
         dimensions:
           assert: 5
-          llm_judge: null
-      - score: null
-        runStatus: error
-        testedAt: 2026-05-27T05:59:29.496Z
-        dimensions:
-          assert: null
           llm_judge: null

@@ -63,11 +63,16 @@ grader:
 source: synthetic_capability_2026_05_18_W10
 related_subsystem: [ plan ]
 related_adr: [ ADR-013 ]
+known_limitation:
+  type: kernel_capability_gap
+  reason: "fidelity 维度本身是 ADR-013 §5 标注的弱项——sid-code 当前 src/plan/ 没有 actual vs
+    plan 步骤对齐机制,fidelity_step_ratio 偏离是真信号"
+  resolved_in: "S1 内核加固或 S3 code-review Skill 三轴螺旋暴露后"
 baseline_scores:
   sid_code_deepseek_v4_pro:
     score: 2.7
     run_status: success
-    tested_at: 2026-05-27T07:53:11.137Z
+    tested_at: 2026-05-27T15:40:14.953Z
     tested_by: eval:plan-capability
     transcript_path: null
     notes: ""
@@ -77,21 +82,21 @@ baseline_scores:
     _formula_version:
       grader: capability-plan-v1
     samples:
+      - score: 2.7
+        runStatus: success
+        testedAt: 2026-05-27T15:40:14.953Z
+        dimensions:
+          assert: 2.7
+          llm_judge: null
+      - score: 2.7
+        runStatus: success
+        testedAt: 2026-05-27T15:40:14.953Z
+        dimensions:
+          assert: 2.7
+          llm_judge: null
       - score: 1.5
         runStatus: success
-        testedAt: 2026-05-27T07:53:11.137Z
+        testedAt: 2026-05-27T15:40:14.953Z
         dimensions:
           assert: 1.5
-          llm_judge: null
-      - score: 2.7
-        runStatus: success
-        testedAt: 2026-05-27T07:53:11.137Z
-        dimensions:
-          assert: 2.7
-          llm_judge: null
-      - score: 2.7
-        runStatus: success
-        testedAt: 2026-05-27T07:53:11.137Z
-        dimensions:
-          assert: 2.7
           llm_judge: null

@@ -1,6 +1,6 @@
-# baseline-w1.md — sid-code 自身 baseline（2026-05-25）
+# baseline-w1.md — sid-code 自身 baseline（2026-05-27）
 
-> 生成时间: 2026-05-25T12:42:40.645Z
+> 生成时间: 2026-05-27T18:45:03.771Z
 > 模式: EXECUTE（真跑）
 > case 总数: 30（含 holdout）
 

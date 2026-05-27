@@ -69,7 +69,7 @@ baseline_scores:
   sid_code_deepseek_v4_pro:
     score: 3.5
     run_status: success
-    tested_at: 2026-05-27T04:54:09.449Z
+    tested_at: 2026-05-27T15:46:28.332Z
     tested_by: eval:router-capability
     transcript_path: null
     notes: ""
@@ -81,19 +81,19 @@ baseline_scores:
     samples:
       - score: 3.5
         runStatus: success
-        testedAt: 2026-05-27T04:54:09.449Z
+        testedAt: 2026-05-27T15:46:28.332Z
         dimensions:
           assert: 3.9
           llm_judge: null
       - score: 3.5
         runStatus: success
-        testedAt: 2026-05-27T04:54:09.449Z
+        testedAt: 2026-05-27T15:46:28.332Z
         dimensions:
           assert: 3.9
           llm_judge: null
       - score: 3.5
         runStatus: success
-        testedAt: 2026-05-27T04:54:09.449Z
+        testedAt: 2026-05-27T15:46:28.332Z
         dimensions:
           assert: 3.9
           llm_judge: null

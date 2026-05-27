@@ -73,33 +73,33 @@ related_subsystem: [ router, llm ]
 related_adr: [ ADR-021 ]
 baseline_scores:
   sid_code_deepseek_v4_pro:
-    score: 2
+    score: 4.5
     run_status: success
-    tested_at: 2026-05-27T04:54:09.449Z
+    tested_at: 2026-05-27T15:46:28.332Z
     tested_by: eval:router-capability
     transcript_path: null
     notes: ""
     dimensions:
-      assert: 2.2
+      assert: 5
       llm_judge: null
     _formula_version:
       grader: capability-router-v1
     samples:
-      - score: 2
+      - score: 4.5
         runStatus: success
-        testedAt: 2026-05-27T04:54:09.449Z
+        testedAt: 2026-05-27T15:46:28.332Z
         dimensions:
-          assert: 2.2
+          assert: 5
           llm_judge: null
       - score: 4.5
         runStatus: success
-        testedAt: 2026-05-27T04:54:09.449Z
+        testedAt: 2026-05-27T15:46:28.332Z
         dimensions:
           assert: 5
           llm_judge: null
       - score: 2
         runStatus: success
-        testedAt: 2026-05-27T04:54:09.449Z
+        testedAt: 2026-05-27T15:46:28.332Z
         dimensions:
           assert: 2.2
           llm_judge: null

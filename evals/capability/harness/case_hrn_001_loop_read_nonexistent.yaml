@@ -76,33 +76,33 @@ related_subsystem: [ harness, agent ]
 related_adr: [ ADR-020 ]
 baseline_scores:
   sid_code_deepseek_v4_pro:
-    score: 3.7
+    score: 4.8
     run_status: success
-    tested_at: 2026-05-27T06:28:05.307Z
+    tested_at: 2026-05-27T15:44:44.900Z
     tested_by: eval:harness-capability
     transcript_path: null
     notes: ""
     dimensions:
-      assert: 3.9
+      assert: 5
       llm_judge: null
     _formula_version:
       grader: capability-harness-v1
     samples:
-      - score: 3.7
-        runStatus: success
-        testedAt: 2026-05-27T06:28:05.307Z
-        dimensions:
-          assert: 3.9
-          llm_judge: null
       - score: 4.8
         runStatus: success
-        testedAt: 2026-05-27T06:28:05.307Z
+        testedAt: 2026-05-27T15:44:44.900Z
         dimensions:
           assert: 5
           llm_judge: null
       - score: 3.7
         runStatus: success
-        testedAt: 2026-05-27T06:28:05.307Z
+        testedAt: 2026-05-27T15:44:44.900Z
         dimensions:
           assert: 3.9
+          llm_judge: null
+      - score: 4.8
+        runStatus: success
+        testedAt: 2026-05-27T15:44:44.900Z
+        dimensions:
+          assert: 5
           llm_judge: null

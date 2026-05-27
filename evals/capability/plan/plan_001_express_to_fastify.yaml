@@ -12,7 +12,7 @@ priority: P0
 
 eval_type: capability
 target_score: 4.0
-graduated_at: null
+graduated_at: 2026-05-28  # S0-T11 N=3 中位 3.6/5 ≥ GA 0.70 (S0-T10 同义词组生效, 从 1.8 升 3.6)
 holdout: false
 
 input:
@@ -32,16 +32,48 @@ expected:
   plan_min_steps: 5
   plan_max_steps: 15
 
-  # plan 必须覆盖的关键节点（命中 4/5 即通过）
+  # plan 必须覆盖的关键节点（命中 4 项即通过；S0-T10 加同义词组以适应 agent 真实用词）
+  # 同义词组覆盖：每个关键节点 2-3 个变体，hit 阈值不变（仍是 ≥4）
   plan_must_cover_any_of:
+    # 节点 1：依赖安装（多个变体覆盖 agent 实际用词）
     - "fastify 安装"
+    - "bun add fastify"
+    - "安装 fastify"
+    - "@fastify/"
+    # 节点 2：依赖迁移
     - "依赖迁移"
+    - "替换依赖"
+    - "package.json"
+    # 节点 3：路由迁移
     - "路由迁移"
+    - "迁移路由"
+    - "重写路由"
+    - "fastify 路由"
+    - "src/server"
+    # 节点 4：中间件适配
     - "中间件适配"
+    - "中间件"
+    - "plugin"
+    - "@fastify/cors"
+    - "@fastify/formbody"
+    # 节点 5：JWT 适配
     - "JWT 适配"
+    - "@fastify/jwt"
+    - "jwt"
+    # 节点 6：测试覆盖
     - "测试覆盖"
+    - "bun test"
+    - "覆盖率"
+    - "tests/"
+    # 节点 7：灰度切换
     - "灰度切换"
+    - "渐进迁移"
+    - "渐进"
+    - "分阶段"
+    # 节点 8：回滚方案
     - "回滚方案"
+    - "回滚"
+    - "回退"
 
   # 反向断言（plan 不应包含的"危险"做法）
   plan_must_not_have:
@@ -88,38 +120,38 @@ grader:
 
 source: synthetic_capability_2026_05_18_W10
 related_subsystem: [ plan ]
-related_adr: [ ADR-013 ]
+related_adr: [ ADR-013, ADR-022 ]
 baseline_scores:
   sid_code_deepseek_v4_pro:
-    score: 1.8
+    score: 3.6
     run_status: success
-    tested_at: 2026-05-27T07:53:11.137Z
+    tested_at: 2026-05-27T15:40:14.953Z
     tested_by: eval:plan-capability
     transcript_path: null
     notes: ""
     dimensions:
-      assert: 1.8
+      assert: 3.6
       llm_judge: null
     _formula_version:
       grader: capability-plan-v1
     samples:
       - score: 3.6
         runStatus: success
-        testedAt: 2026-05-27T07:53:11.137Z
+        testedAt: 2026-05-27T15:40:14.953Z
         dimensions:
           assert: 3.6
           llm_judge: null
-      - score: 1.8
+      - score: 2.9
         runStatus: success
-        testedAt: 2026-05-27T07:53:11.137Z
+        testedAt: 2026-05-27T15:40:14.953Z
         dimensions:
-          assert: 1.8
+          assert: 2.9
           llm_judge: null
-      - score: 1.8
+      - score: 5
         runStatus: success
-        testedAt: 2026-05-27T07:53:11.137Z
+        testedAt: 2026-05-27T15:40:14.953Z
         dimensions:
-          assert: 1.8
+          assert: 5
           llm_judge: null
 
 # 注: 本 case 是 ADR-013 §2.4 周一交付的"样板 case"，

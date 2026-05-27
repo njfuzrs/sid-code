@@ -146,7 +146,7 @@ sid-code 从 2026-05-15 起建立评测体系，当前进入 Sprint S0。**改�
 ### 当前 case 仓库（2026-05-25 实际盘点）
 
 - 现有：`evals/p0-core/`（10）+ `evals/p1-common/`（9）+ `evals/p2-edge/`（6）+ `evals/holdout/`（5）= 30 条
-- capability：`evals/capability/{plan,memory,context,router,harness}/`（**仅 plan 有 10 条 case + runner**，其余 4 个仅 .gitkeep，待 S0 补齐）
+- capability：`evals/capability/{plan,memory,context,router,harness}/`（**5 子系统全部就位**：plan 10 + memory 10 + context 10 + router 8 + harness 10 = 48 条 case；S0-T11 N=3 中位数 baseline 已落盘，27 graduated + 21 known_limitation）
 - S0 起新增（与 p0-core 平级）：`evals/architecture/{redline,form,pluggable,kernel,platform,discipline,context-engine,orchestration,chinese,durable-exec,notification,ux,nonfunctional,outcome,meta,milestone}/` + `evals/holdout/architecture/`
 
 ### 跑评测（细节见 evals/README.md）

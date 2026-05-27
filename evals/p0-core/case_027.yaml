@@ -110,14 +110,14 @@ baseline_scores:
     _formula_version:
       cost: legacy_v1
   sid_code_deepseek_v4_pro:
-    score: 5
+    score: 4.46
     run_status: success
-    tested_at: 2026-05-25T20:56:10.261Z
+    tested_at: 2026-05-27T16:02:29.853Z
     tested_by: eval-runner
     transcript_path: null
     notes: ""
     dimensions:
-      anchor_hit: 1
+      anchor_hit: 0.5
       negative_anchor: null
       rubric_score: 1
       tool_compliance: 1

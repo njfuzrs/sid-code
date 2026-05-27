@@ -1,0 +1,98 @@
+{
+  "timestamp": 1779896788332,
+  "mode": "skip-llm-judge",
+  "model": "deepseek-v4-pro",
+  "overall": {
+    "total": 8,
+    "avgScore": 3.88,
+    "passRate": 0.63
+  },
+  "by_dimension": {
+    "provider_registration": {
+      "avgScore": 4.5,
+      "count": 2,
+      "passRate": 1
+    },
+    "multi_provider_routing": {
+      "avgScore": 4.5,
+      "count": 2,
+      "passRate": 1
+    },
+    "fallback_message_continuity": {
+      "avgScore": 2.5,
+      "count": 2,
+      "passRate": 0
+    },
+    "quota_alert_visible": {
+      "avgScore": 4,
+      "count": 2,
+      "passRate": 0.5
+    }
+  },
+  "cases": [
+    {
+      "id": "case_rtr_001",
+      "dimension": "provider_registration",
+      "score": 4.5,
+      "assert": 5,
+      "judge": null,
+      "timed_out": false
+    },
+    {
+      "id": "case_rtr_002",
+      "dimension": "multi_provider_routing",
+      "score": 4.5,
+      "assert": 5,
+      "judge": null,
+      "timed_out": false
+    },
+    {
+      "id": "case_rtr_003",
+      "dimension": "fallback_message_continuity",
+      "score": 2.5,
+      "assert": 2.8,
+      "judge": null,
+      "timed_out": false
+    },
+    {
+      "id": "case_rtr_004",
+      "dimension": "quota_alert_visible",
+      "score": 4.5,
+      "assert": 5,
+      "judge": null,
+      "timed_out": false
+    },
+    {
+      "id": "case_rtr_005",
+      "dimension": "multi_provider_routing",
+      "score": 4.5,
+      "assert": 5,
+      "judge": null,
+      "timed_out": false
+    },
+    {
+      "id": "case_rtr_006",
+      "dimension": "provider_registration",
+      "score": 4.5,
+      "assert": 5,
+      "judge": null,
+      "timed_out": false
+    },
+    {
+      "id": "case_rtr_007",
+      "dimension": "fallback_message_continuity",
+      "score": 2.5,
+      "assert": 2.8,
+      "judge": null,
+      "timed_out": false
+    },
+    {
+      "id": "case_rtr_008",
+      "dimension": "quota_alert_visible",
+      "score": 3.5,
+      "assert": 3.9,
+      "judge": null,
+      "timed_out": false
+    }
+  ]
+}

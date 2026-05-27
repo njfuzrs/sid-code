@@ -8,7 +8,7 @@ priority: P0
 
 eval_type: capability
 target_score: 4.0
-graduated_at: null
+graduated_at: 2026-05-28  # S0-T11 复跑 N=3 中位 5/5 稳定毕业
 holdout: false
 
 input:
@@ -74,7 +74,7 @@ baseline_scores:
   sid_code_deepseek_v4_pro:
     score: 5
     run_status: success
-    tested_at: 2026-05-27T07:53:11.137Z
+    tested_at: 2026-05-27T15:40:14.953Z
     tested_by: eval:plan-capability
     transcript_path: null
     notes: ""
@@ -84,21 +84,21 @@ baseline_scores:
     _formula_version:
       grader: capability-plan-v1
     samples:
+      - score: 4.3
+        runStatus: success
+        testedAt: 2026-05-27T15:40:14.953Z
+        dimensions:
+          assert: 4.3
+          llm_judge: null
       - score: 5
         runStatus: success
-        testedAt: 2026-05-27T07:53:11.137Z
+        testedAt: 2026-05-27T15:40:14.953Z
         dimensions:
           assert: 5
           llm_judge: null
       - score: 5
         runStatus: success
-        testedAt: 2026-05-27T07:53:11.137Z
-        dimensions:
-          assert: 5
-          llm_judge: null
-      - score: 5
-        runStatus: success
-        testedAt: 2026-05-27T07:53:11.137Z
+        testedAt: 2026-05-27T15:40:14.953Z
         dimensions:
           assert: 5
           llm_judge: null

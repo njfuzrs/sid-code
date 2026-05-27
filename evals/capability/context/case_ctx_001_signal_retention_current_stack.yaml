@@ -95,11 +95,16 @@ grader:
 source: synthetic_capability_2026_05_27_S0_T04
 related_subsystem: [ context ]
 related_adr: []
+known_limitation:
+  type: llm_capability_gap
+  reason: "deepseek-v4-pro 在长隐式叙述中提取技术栈关键词的能力弱;题面已按 evals/a.md 问题 3 重写为故事化叙述,极稳
+    2.5 = 模型能力真信号 + context 无 LST 解析提取关键事实"
+  resolved_in: "S1 模型横评(横评通过测试模型间相对差异) 或 context engine LST 实施后"
 baseline_scores:
   sid_code_deepseek_v4_pro:
     score: 2.5
     run_status: success
-    tested_at: 2026-05-27T05:41:11.047Z
+    tested_at: 2026-05-27T15:44:14.774Z
     tested_by: eval:context-capability
     transcript_path: null
     notes: ""
@@ -111,19 +116,19 @@ baseline_scores:
     samples:
       - score: 2.5
         runStatus: success
-        testedAt: 2026-05-27T05:41:11.047Z
+        testedAt: 2026-05-27T15:44:14.774Z
         dimensions:
           assert: 2.8
           llm_judge: null
-      - score: 2.5
+      - score: 4.5
         runStatus: success
-        testedAt: 2026-05-27T05:41:11.047Z
+        testedAt: 2026-05-27T15:44:14.774Z
         dimensions:
-          assert: 2.8
+          assert: 5
           llm_judge: null
       - score: 2.5
         runStatus: success
-        testedAt: 2026-05-27T05:41:11.047Z
+        testedAt: 2026-05-27T15:44:14.774Z
         dimensions:
           assert: 2.8
           llm_judge: null

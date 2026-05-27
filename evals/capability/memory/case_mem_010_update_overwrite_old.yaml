@@ -56,11 +56,16 @@ grader:
 source: synthetic_capability_2026_05_27_S0_T08_D
 related_subsystem: [ memory ]
 related_adr: []
+known_limitation:
+  type: kernel_tool_semantics_gap
+  reason: "memory_save 当前是 append-only,无 update/overwrite 语义;极稳 2.3 = 工具语义设计问题,非
+    case 设计问题"
+  resolved_in: "S1 arch_kernel_007 + memory_save 工具加 mode 参数(append/replace)的 L3 内核加固"
 baseline_scores:
   sid_code_deepseek_v4_pro:
     score: 2.3
     run_status: success
-    tested_at: 2026-05-27T05:03:19.486Z
+    tested_at: 2026-05-27T15:42:23.734Z
     tested_by: eval:memory-capability
     transcript_path: null
     notes: ""
@@ -72,19 +77,19 @@ baseline_scores:
     samples:
       - score: 2.3
         runStatus: success
-        testedAt: 2026-05-27T05:03:19.486Z
+        testedAt: 2026-05-27T15:42:23.734Z
         dimensions:
           assert: 2.4
           llm_judge: null
       - score: 2.3
         runStatus: success
-        testedAt: 2026-05-27T05:03:19.486Z
+        testedAt: 2026-05-27T15:42:23.734Z
         dimensions:
           assert: 2.4
           llm_judge: null
       - score: 2.3
         runStatus: success
-        testedAt: 2026-05-27T05:03:19.486Z
+        testedAt: 2026-05-27T15:42:23.734Z
         dimensions:
           assert: 2.4
           llm_judge: null
