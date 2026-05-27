@@ -1,0 +1,103 @@
+{
+  "timestamp": 1779848228913,
+  "mode": "skip-llm-judge",
+  "model": "deepseek-v4-pro",
+  "overall": {
+    "total": 8,
+    "avgScore": 4.22,
+    "passRate": 0.88
+  },
+  "by_dimension": {
+    "memory_write": {
+      "avgScore": 4.15,
+      "count": 2,
+      "passRate": 0.5
+    },
+    "memory_recall": {
+      "avgScore": 4.25,
+      "count": 2,
+      "passRate": 1
+    },
+    "memory_isolation": {
+      "avgScore": 4,
+      "count": 1,
+      "passRate": 1
+    },
+    "memory_no_pollution": {
+      "avgScore": 4.25,
+      "count": 2,
+      "passRate": 1
+    },
+    "memory_update": {
+      "avgScore": 4.5,
+      "count": 1,
+      "passRate": 1
+    }
+  },
+  "cases": [
+    {
+      "id": "case_mem_001",
+      "dimension": "memory_write",
+      "score": 3.8,
+      "assert": 4.2,
+      "judge": null,
+      "timed_out": false
+    },
+    {
+      "id": "case_mem_002",
+      "dimension": "memory_write",
+      "score": 4.5,
+      "assert": 4.5,
+      "judge": null,
+      "timed_out": false
+    },
+    {
+      "id": "case_mem_003",
+      "dimension": "memory_recall",
+      "score": 4.5,
+      "assert": 5,
+      "judge": null,
+      "timed_out": false
+    },
+    {
+      "id": "case_mem_004",
+      "dimension": "memory_recall",
+      "score": 4,
+      "assert": 5,
+      "judge": null,
+      "timed_out": false
+    },
+    {
+      "id": "case_mem_005",
+      "dimension": "memory_isolation",
+      "score": 4,
+      "assert": 5,
+      "judge": null,
+      "timed_out": false
+    },
+    {
+      "id": "case_mem_006",
+      "dimension": "memory_no_pollution",
+      "score": 4.5,
+      "assert": 5,
+      "judge": null,
+      "timed_out": false
+    },
+    {
+      "id": "case_mem_007",
+      "dimension": "memory_no_pollution",
+      "score": 4,
+      "assert": 5,
+      "judge": null,
+      "timed_out": false
+    },
+    {
+      "id": "case_mem_008",
+      "dimension": "memory_update",
+      "score": 4.5,
+      "assert": 5,
+      "judge": null,
+      "timed_out": false
+    }
+  ]
+}

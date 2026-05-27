@@ -1,5 +1,11 @@
 # Context capability case — signal_retention 维度
 # 验证: 在较长 user_query 前部嵌入关键信号,后部 query 时 agent 应回答时引用该信号
+#
+# 题面去答案 (evals/a.md 问题 3):
+#   旧版题面把当前栈(Vue 3 + TypeScript + Pinia + PostgreSQL + Express + JWT + bcrypt)
+#   和历史栈(Vue 2/Vuex/MySQL/Koa)都直接列出,agent 复读题面任一段即满分。
+#   改为"对话式叙述"——栈信号埋在故事中,反例(历史栈)用过去时表达,迫使 agent 真理解
+#   "已迁移"语义。echo 排除对代码标识/产品名豁免,所以本质修复是改题面结构。
 
 id: case_ctx_001
 subsystem: context
@@ -13,35 +19,35 @@ holdout: false
 
 input:
   user_query: |
-    我的项目是一个使用 Vue 3 + TypeScript + Pinia 的前端应用,
-    后端用 Node.js + Express,数据库是 PostgreSQL。
-    我已经实现了用户登录、注册、退出三个基础功能,
-    现在我想为这个项目添加"忘记密码"功能。
+    我接手了一个内部系统,需要给它加一个"忘记密码"功能。
+    在动手前我先把项目背景说清楚,这样你能给出契合的方案。
 
-    [背景填充开始]
-    这个项目最初是为公司内部使用而开发的,
-    主要服务于运营团队和客服团队。
-    项目从 2023 年开始,经历了多次迭代,
-    最初的技术栈是 Vue 2 + JavaScript + Vuex,
-    后来在 2024 年升级到了 Vue 3 + TypeScript + Pinia。
-    数据库最初用的是 MySQL,
-    后来因为业务规模扩展,迁移到了 PostgreSQL。
-    后端从最初的 Koa 切到了 Express,
-    主要因为团队对 Express 中间件生态更熟悉。
+    [项目演进]
+    2023 年初做这个系统时,前端用的是当时主流方案,状态管理用 Vuex,
+    后端是 Koa,数据库选了 MySQL。那一版上线后跑了大半年。
+    2024 年 Q2 团队做了一次比较大的重构:
+      - 前端整体迁到了响应式 API 更现代的版本,版本号是 3.x,
+        语言换成了带类型系统的那种,状态管理也跟着换成新一代方案;
+      - 后端换了一个中间件生态更熟悉的框架,主要因为团队招的人都用过;
+      - 数据库迁到了关系更严格、JSON 字段支持更好的开源选项。
+    所以,旧版方案早就停用了,现在跑的就是这套重构后的栈。
 
-    在用户登录功能的实现上,我们使用了 JWT 做认证,
-    refresh token 存在 httpOnly cookie 里,access token 在内存中。
-    密码哈希用的是 bcrypt,salt rounds = 12。
-    [背景填充结束]
+    [已实现的功能]
+    用户登录 / 注册 / 退出三件套都做完了。
+    认证机制是这样的:登录时签发短期 access + 长期 refresh 双 token,
+    refresh 存在 httpOnly cookie 里防 XSS,access 在内存,刷新时拿 refresh 换新 access。
+    密码做了加盐哈希,盐位数取的是行业推荐的偏高档(12)。
 
-    现在,基于这个项目背景,
-    请你帮我设计"忘记密码"功能的实现方案,
-    要符合我们当前的技术栈。
+    [现在要做的]
+    基于上面这套已经在生产跑的栈,
+    请你给"忘记密码"功能的实现方案 —— 包括前端表单 / 后端接口 / token 怎么过期 / 通知怎么发。
+    方案要紧贴当前栈,不要建议我换框架。
   trigger_plan_mode: false
 
 expected:
   # final_response 应继续使用 Vue 3 / TS / Pinia / PostgreSQL 等当前栈
   # 不能 hallucinate 回 Vue 2 / Vuex / MySQL / Koa
+  # 注:这些关键词是代码标识/产品名,echo 豁免 —— 只要 agent 真在回答里提到就算命中
   final_response_must_include_any_of:
     - Vue 3
     - vue 3
@@ -91,9 +97,9 @@ related_subsystem: [ context ]
 related_adr: []
 baseline_scores:
   sid_code_deepseek_v4_pro:
-    score: 5
+    score: 4.5
     run_status: success
-    tested_at: 2026-05-26T17:17:21.472Z
+    tested_at: 2026-05-27T02:09:13.748Z
     tested_by: eval:context-capability
     transcript_path: null
     notes: ""

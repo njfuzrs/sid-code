@@ -66,7 +66,7 @@ baseline_scores:
   sid_code_deepseek_v4_pro:
     score: 5
     run_status: success
-    tested_at: 2026-05-26T17:15:55.094Z
+    tested_at: 2026-05-27T02:22:22.974Z
     tested_by: eval:harness-capability
     transcript_path: null
     notes: ""

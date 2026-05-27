@@ -189,6 +189,7 @@ for (let i = 0; i < cases.length; i++) {
     toolsCalled: graderInput.toolsCalled,
     steps: graderInput.steps,
     finalResponse: graderInput.finalResponse,
+    userQuery: c.input.user_query,
   };
 
   const assertResults: CheckResult[] = [];

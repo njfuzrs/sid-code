@@ -1,5 +1,13 @@
 # Router capability case — provider_registration 维度
 # 验证: 询问 agent 系统当前支持的 LLM provider,应能正确列出 ≥ 3 家
+#
+# Known Limitation (evals/a.md 问题 5):
+#   本 case 仅测 agent 能否在仓库中定位 provider 注册位置并报出 ≥ 3 家厂商,
+#   不能验证"router 子系统"真实行为(provider 接口契约 / 注册分发机制 / 拔插策略)。
+#   真测注册机制需 S2/S3 阶段引入 mock provider:
+#     - 注入第 4 个 mock provider,验证 register/lookup 流程
+#     - 删除一个 provider,验证 fallback / 降级逻辑
+#   当前 0.20-0.40 权重不应被解读为"router 已 ≥ GA"。
 
 id: case_rtr_001
 subsystem: router
@@ -11,10 +19,15 @@ target_score: 4.0
 graduated_at: null
 holdout: false
 
+known_limitation:
+  type: case_design
+  reason: "未注入 mock provider,实测的是文件检索能力而非 router 注册分发"
+  resolved_in: "S2/S3 mock provider 阶段"
+
 input:
   user_query: |
-    sid-code 当前支持哪些 LLM Provider?
-    请读 src/llm/ 目录下的代码确认,然后告诉我具体支持哪 N 家厂商。
+    sid-code 这个 CLI 当前接入了哪几家大模型厂商?给我列出具体的厂商名字。
+    请基于代码事实回答,不要凭印象猜测。
 
 expected:
   # 应调 ls / glob / read 等工具确认
@@ -25,7 +38,7 @@ expected:
     - bash
     - grep
 
-  # final_response 应同时提到 anthropic / openai / ollama 三家
+  # final_response 应同时提到 anthropic / openai / ollama 三家(代码标识豁免 echo)
   final_response_must_include_any_of:
     - anthropic
     - Anthropic
@@ -65,9 +78,9 @@ related_subsystem: [ router, llm ]
 related_adr: []
 baseline_scores:
   sid_code_deepseek_v4_pro:
-    score: 5
+    score: 4.5
     run_status: success
-    tested_at: 2026-05-26T17:15:55.093Z
+    tested_at: 2026-05-27T02:04:18.327Z
     tested_by: eval:router-capability
     transcript_path: null
     notes: ""

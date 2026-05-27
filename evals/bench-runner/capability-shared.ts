@@ -77,8 +77,71 @@ export interface SharedGraderInput {
   toolsCalled: string[];
   steps: number;
   finalResponse: string;
+  /** 题面（用于 echo 排除：query 中已出现的自然语言锚点不计入命中） */
+  userQuery?: string;
   /** 跑后从 ~/.sid-code 等持久化目录读出的辅助状态（由各 runner 注入） */
   postRunState?: Record<string, unknown>;
+}
+
+/**
+ * 判定一个 token 是否"代码标识符 / 路径"——echo 排除时予以豁免。
+ *
+ * 命中任一即视为代码标识：
+ *   - 含 `_`（user_id / MAX_RETRY_COUNT）
+ *   - 含 `.`（package.json / registry.ts）
+ *   - 含 `/`（src/llm/）
+ *   - 含 `::` 或 `->` 等代码连接符
+ *   - camelCase / PascalCase（含至少一个大写 + 至少一个小写）
+ *   - 全大写 ≥ 2 字符（API / SDK / JWT）
+ *   - 反引号包裹
+ *
+ * 反例（自然语言，**不**豁免，会被 echo 排除）：
+ *   - 中文短语
+ *   - 全小写英文单词（postgres / bcrypt / hello world）
+ *   - "Vue 3"（含空格 + 数字，但已含大写 → 仍豁免，视为产品名）
+ *
+ * 设计动机：CLAUDE.md §0.4 "echo 排除"——userQuery 中出现的自然语言锚点不计入命中（防复读得分）；
+ *   代码标识符/路径豁免（agent 真的在引用代码，是真信号）。
+ */
+export function isCodeIdentifier(token: string): boolean {
+  const t = token.trim();
+  if (t.length === 0) return false;
+  if (t.startsWith("`") && t.endsWith("`")) return true;
+  if (/[_./]/.test(t)) return true;
+  if (/(::|->)/.test(t)) return true;
+  // 全大写 ≥ 2 字符（缩写如 JWT / SDK）
+  if (/^[A-Z]{2,}$/.test(t.replace(/\s/g, ""))) return true;
+  // camelCase / PascalCase / 含大写的产品名（Vue 3 / TypeScript / Pinia）
+  if (/[a-z]/.test(t) && /[A-Z]/.test(t)) return true;
+  return false;
+}
+
+/**
+ * echo 排除：把已经在 userQuery 中字面出现的"自然语言锚点"从关键词列表中剔除；
+ * 代码标识符（isCodeIdentifier）保留。
+ *
+ * @returns { filtered: 真正参与命中判定的关键词, echoed: 因 echo 被剔除的关键词 }
+ */
+export function excludeEchoKeywords(
+  keywords: string[],
+  userQuery: string | undefined,
+): { filtered: string[]; echoed: string[] } {
+  if (!userQuery) return { filtered: keywords, echoed: [] };
+  const queryLower = userQuery.toLowerCase();
+  const filtered: string[] = [];
+  const echoed: string[] = [];
+  for (const kw of keywords) {
+    if (isCodeIdentifier(kw)) {
+      filtered.push(kw);
+      continue;
+    }
+    if (queryLower.includes(kw.toLowerCase())) {
+      echoed.push(kw);
+    } else {
+      filtered.push(kw);
+    }
+  }
+  return { filtered, echoed };
 }
 
 export interface CheckResult {
@@ -136,22 +199,46 @@ export function runSharedCheck(
     }
     case "final_response_must_include_any_of_hit": {
       const list = (expected.final_response_must_include_any_of as string[]) || [];
-      const hits = list.filter((kw) => finalLower.includes(kw.toLowerCase()));
+      // echo 排除：CLAUDE.md §0.4 —— 题面已含的自然语言锚点不计入命中
+      const { filtered, echoed } = excludeEchoKeywords(list, input.userQuery);
+      const hits = filtered.filter((kw) => finalLower.includes(kw.toLowerCase()));
+      const passed = hits.length > 0;
+      // 全部关键词都被 echo 剔除 → case_design 出问题，标记为 fail（题面露答案，无法判定）
+      const allEchoed = list.length > 0 && filtered.length === 0;
+      const reasonExtra = echoed.length > 0 ? ` | echo 排除 [${echoed.join(",")}]` : "";
       return {
         check,
-        passed: hits.length > 0,
+        passed: passed && !allEchoed,
         weight: rule.weight,
-        reason: hits.length > 0 ? `命中 [${hits.join(",")}]` : `未命中 [${list.join(",")}]`,
+        reason: allEchoed
+          ? `所有关键词均被题面 echo 排除（题面露答案,case_design 需修）${reasonExtra}`
+          : passed
+            ? `命中 [${hits.join(",")}]${reasonExtra}`
+            : `未命中（参与判定 [${filtered.join(",")}]）${reasonExtra}`,
       };
     }
     case "final_response_must_not_include_zero_hit": {
       const list = (expected.final_response_must_not_include as string[]) || [];
+      // echo 排除：题面 must_not 反例本来就会出现在 query 解释中，
+      // 仅判断 final_response 是否真的"使用"了违禁词（仍按 includes 逻辑），
+      // 但若关键词字面出现在 query 内，agent 复读 query 不应被罚——
+      // 反向词命中较罕见，保留原 includes 语义并在 reason 中标 echo 信息便于人工诊断。
       const hits = list.filter((kw) => finalLower.includes(kw.toLowerCase()));
+      const echoedInQuery = input.userQuery
+        ? list.filter(
+            (kw) =>
+              !isCodeIdentifier(kw) && input.userQuery!.toLowerCase().includes(kw.toLowerCase()),
+          )
+        : [];
+      // 真正违规 = 命中 - echo（仅自然语言被剔除，代码标识若命中仍算违规）
+      const violations = hits.filter((kw) => !echoedInQuery.includes(kw));
+      const passed = violations.length === 0;
+      const reasonExtra = echoedInQuery.length > 0 ? ` | echo 豁免 [${echoedInQuery.join(",")}]` : "";
       return {
         check,
-        passed: hits.length === 0,
+        passed,
         weight: rule.weight,
-        reason: hits.length === 0 ? `无违禁词` : `命中违禁词 [${hits.join(",")}]`,
+        reason: passed ? `无违禁词${reasonExtra}` : `命中违禁词 [${violations.join(",")}]${reasonExtra}`,
       };
     }
     case "max_steps_within_budget": {
@@ -190,14 +277,29 @@ export function aggregateCapabilityScore(opts: {
   const assertRatio = totalAssertWeight > 0 ? passWeight / totalAssertWeight : 0;
   const assertScore = Math.round(assertRatio * 5 * 10) / 10;
 
-  let finalScore = assertScore;
-  if (opts.llmJudgeScore != null && opts.llmJudgeWeight && opts.llmJudgeWeight > 0) {
-    const totalWeight = totalAssertWeight + opts.llmJudgeWeight;
+  // weight 分母：必须永远包含 yaml 设计的 llmJudgeWeight（即使本次 skip 跑没真调 LLM Judge）
+  // —— 否则 skip 模式下 assert 部分会被自动放大（"weight 蒸发" bug，evals/a.md 问题 1）
+  const declaredLlmWeight = opts.llmJudgeWeight && opts.llmJudgeWeight > 0 ? opts.llmJudgeWeight : 0;
+  const totalWeight = totalAssertWeight + declaredLlmWeight;
+
+  let finalScore: number;
+  let llmSkipped = false;
+  if (opts.llmJudgeScore != null && declaredLlmWeight > 0) {
+    // 真有 judge 分数：正常加权
     finalScore =
-      (assertScore * totalAssertWeight + opts.llmJudgeScore * opts.llmJudgeWeight) /
+      (assertScore * totalAssertWeight + opts.llmJudgeScore * declaredLlmWeight) /
       Math.max(totalWeight, 1e-6);
-    finalScore = Math.round(finalScore * 10) / 10;
+  } else if (declaredLlmWeight > 0) {
+    // yaml 设计了 llm_judge 但本次 skip 跑（null）：
+    // null 视为"该维度未测",其 weight 仍计入分母 —— assert 部分按其在总权重中的占比缩放
+    // 例:assert 总权重 0.9, llm 权重 0.1, assert 全过 → 5 * (0.9/1.0) = 4.5（而非虚高的 5.0）
+    finalScore = (assertScore * totalAssertWeight) / Math.max(totalWeight, 1e-6);
+    llmSkipped = true;
+  } else {
+    // yaml 没设 llm_judge：assert 即终分
+    finalScore = assertScore;
   }
+  finalScore = Math.round(finalScore * 10) / 10;
 
   const details: Record<string, string | number | boolean> = {
     assert_pass_ratio: assertRatio,
@@ -208,6 +310,9 @@ export function aggregateCapabilityScore(opts: {
   }
   if (opts.llmJudgeScore != null) {
     details.llm_judge_score = opts.llmJudgeScore;
+  }
+  if (llmSkipped) {
+    details.llm_judge_skipped = true;
   }
 
   return {

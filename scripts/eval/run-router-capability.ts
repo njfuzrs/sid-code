@@ -26,6 +26,7 @@ import {
   runSharedCheck,
   aggregateCapabilityScore,
   classifyRunStatus,
+  excludeEchoKeywords,
   type SharedGraderInput,
   type CheckResult,
   type GraderRule,
@@ -67,6 +68,7 @@ interface RouterGraderInput {
   steps: number;
   finalResponse: string;
   exitStatus: string;
+  userQuery: string;
 }
 
 function runRouterCheck(rule: GraderRule, input: RouterGraderInput): CheckResult {
@@ -87,14 +89,18 @@ function runRouterCheck(rule: GraderRule, input: RouterGraderInput): CheckResult
       return { check, passed: ok, weight: rule.weight, reason: `length=${len} ${ok ? "≤" : ">"} ${max}` };
     }
     case "final_response_must_include_count_keywords_min_3_hit": {
-      const list = (expected.final_response_must_include_count_keywords_min_3 || []).map((k) => k.toLowerCase());
-      const hits = list.filter((kw) => lower.includes(kw));
+      const list = expected.final_response_must_include_count_keywords_min_3 || [];
+      // echo 排除：题面已含的自然语言锚点不计入命中（CLAUDE.md §0.4）
+      const { filtered, echoed } = excludeEchoKeywords(list, input.userQuery);
+      const filteredLower = filtered.map((k) => k.toLowerCase());
+      const hits = filteredLower.filter((kw) => lower.includes(kw));
       const ok = hits.length >= 3;
+      const reasonExtra = echoed.length > 0 ? ` | echo 排除 [${echoed.join(",")}]` : "";
       return {
         check,
         passed: ok,
         weight: rule.weight,
-        reason: `命中 ${hits.length}/${list.length} (要求 ≥ 3): [${hits.join(",")}]`,
+        reason: `命中 ${hits.length}/${filtered.length} (要求 ≥ 3): [${hits.join(",")}]${reasonExtra}`,
       };
     }
     default:
@@ -172,12 +178,14 @@ for (let i = 0; i < cases.length; i++) {
     steps: live.output.steps,
     finalResponse: live.output.final_response,
     exitStatus: live.output.exit_status,
+    userQuery: c.input.user_query,
   };
   const sharedInput: SharedGraderInput = {
     expected: c.expected as Record<string, unknown>,
     toolsCalled: graderInput.toolsCalled,
     steps: graderInput.steps,
     finalResponse: graderInput.finalResponse,
+    userQuery: c.input.user_query,
   };
 
   const assertResults: CheckResult[] = [];

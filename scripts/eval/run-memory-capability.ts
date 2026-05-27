@@ -37,6 +37,7 @@ import {
   runSharedCheck,
   aggregateCapabilityScore,
   classifyRunStatus,
+  excludeEchoKeywords,
   readMemoryFile,
   type SharedGraderInput,
   type CheckResult,
@@ -97,6 +98,8 @@ interface MemoryGraderInput {
   postRunSnapshot: MemorySnapshot;
   /** 跑前 seed 的快照（用于"新增条目"判断） */
   preRunSnapshot: MemorySnapshot;
+  /** 题面（echo 排除用） */
+  userQuery: string;
 }
 
 /** memory 子系统专属 check 处理 */
@@ -158,15 +161,19 @@ function runMemoryCheck(rule: GraderRule, input: MemoryGraderInput): CheckResult
     }
 
     case "memory_isolation_keyword_count_min_2": {
-      const list = (expected.final_response_must_include_some_keywords || []).map((k) => k.toLowerCase());
+      const list = expected.final_response_must_include_some_keywords || [];
+      // echo 排除（CLAUDE.md §0.4）
+      const { filtered, echoed } = excludeEchoKeywords(list, input.userQuery);
+      const filteredLower = filtered.map((k) => k.toLowerCase());
       const lower = input.finalResponse.toLowerCase();
-      const hits = list.filter((kw) => lower.includes(kw));
+      const hits = filteredLower.filter((kw) => lower.includes(kw));
       const ok = hits.length >= 2;
+      const reasonExtra = echoed.length > 0 ? ` | echo 排除 [${echoed.join(",")}]` : "";
       return {
         check,
         passed: ok,
         weight: rule.weight,
-        reason: `命中 ${hits.length}/${list.length} (要求 ≥ 2): [${hits.join(",")}]`,
+        reason: `命中 ${hits.length}/${filtered.length} (要求 ≥ 2): [${hits.join(",")}]${reasonExtra}`,
       };
     }
 
@@ -394,6 +401,7 @@ for (let i = 0; i < cases.length; i++) {
     finalResponse: live.output.final_response,
     preRunSnapshot: preSnapshot,
     postRunSnapshot: postSnapshot,
+    userQuery: c.input.user_query,
   };
 
   const assertResults: CheckResult[] = [];
@@ -404,6 +412,7 @@ for (let i = 0; i < cases.length; i++) {
     toolsCalled: graderInput.toolsCalled,
     steps: graderInput.steps,
     finalResponse: graderInput.finalResponse,
+    userQuery: c.input.user_query,
   };
   for (const rule of c.grader) {
     if (rule.type === "llm_judge") {

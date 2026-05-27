@@ -151,11 +151,17 @@ export function syncBaselineScores(results: BaselineResult[], opts: SyncOptions)
     for (const r of caseResults) {
       const isTimeout = r.runStatus === "timeout";
       const isError = r.runStatus === "error" || r.runStatus === "abnormal";
+      const isAbnormal = isTimeout || isError;
       const safeScore = r.runStatus === "success" ? r.score : null;
+      // run_status !== success 时,各 dimensions 同样落 null —— 否则会被 dashboard / 子系统平均值统计
+      // 入污染分母（evals/a.md 问题 7）
+      const safeDimensions: Record<string, number | null> = isAbnormal
+        ? Object.fromEntries(Object.keys(r.dimensions).map((k) => [k, null]))
+        : r.dimensions;
       const defaultNotes = isTimeout
-        ? `${opts.testerLabel} 超时（score=null）`
+        ? `${opts.testerLabel} 超时（score=null,dimensions 已置 null）`
         : isError
-          ? `${opts.testerLabel} error（score=null，仅 run_status 有效）`
+          ? `${opts.testerLabel} error（score=null,dimensions 已置 null,仅 run_status 有效）`
           : "";
       const entry: Record<string, unknown> = {
         score: safeScore,
@@ -164,7 +170,7 @@ export function syncBaselineScores(results: BaselineResult[], opts: SyncOptions)
         tested_by: opts.testerLabel,
         transcript_path: r.transcriptPath ?? null,
         notes: r.notes ?? defaultNotes,
-        dimensions: r.dimensions,
+        dimensions: safeDimensions,
       };
       if (r.formulaVersion) {
         entry._formula_version = r.formulaVersion;

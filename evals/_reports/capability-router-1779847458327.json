@@ -1,0 +1,74 @@
+{
+  "timestamp": 1779847458327,
+  "mode": "skip-llm-judge",
+  "model": "deepseek-v4-pro",
+  "overall": {
+    "total": 5,
+    "avgScore": 4.1,
+    "passRate": 0.8
+  },
+  "by_dimension": {
+    "provider_registration": {
+      "avgScore": 4.5,
+      "count": 1,
+      "passRate": 1
+    },
+    "multi_provider_routing": {
+      "avgScore": 4.5,
+      "count": 2,
+      "passRate": 1
+    },
+    "fallback_message_continuity": {
+      "avgScore": 2.5,
+      "count": 1,
+      "passRate": 0
+    },
+    "quota_alert_visible": {
+      "avgScore": 4.5,
+      "count": 1,
+      "passRate": 1
+    }
+  },
+  "cases": [
+    {
+      "id": "case_rtr_001",
+      "dimension": "provider_registration",
+      "score": 4.5,
+      "assert": 5,
+      "judge": null,
+      "timed_out": false
+    },
+    {
+      "id": "case_rtr_002",
+      "dimension": "multi_provider_routing",
+      "score": 4.5,
+      "assert": 5,
+      "judge": null,
+      "timed_out": false
+    },
+    {
+      "id": "case_rtr_003",
+      "dimension": "fallback_message_continuity",
+      "score": 2.5,
+      "assert": 2.8,
+      "judge": null,
+      "timed_out": false
+    },
+    {
+      "id": "case_rtr_004",
+      "dimension": "quota_alert_visible",
+      "score": 4.5,
+      "assert": 5,
+      "judge": null,
+      "timed_out": false
+    },
+    {
+      "id": "case_rtr_005",
+      "dimension": "multi_provider_routing",
+      "score": 4.5,
+      "assert": 5,
+      "judge": null,
+      "timed_out": false
+    }
+  ]
+}

@@ -1,5 +1,13 @@
 # Router capability case — fallback_message_continuity 维度
 # 跑普通任务,确认 retry 不影响对话连续性
+#
+# Known Limitation (evals/a.md 问题 5):
+#   本 case 没有注入 fallback 场景（如 provider 503 / 超时 / 限流），
+#   只验证"正常路径下不会误暴露 retry/fallback 内部信号"。
+#   真测 fallback 连续性需 S2/S3 mock provider 阶段：
+#     - 注入 provider 503 → 验证 retry 后对话无断裂
+#     - 注入 rate limit → 验证 fallback 到备选 provider 后 final_response 无噪声
+#   当前 case 等价于"bash echo 能正常完成"，门槛极低。
 
 id: case_rtr_003
 subsystem: router
@@ -10,6 +18,11 @@ eval_type: capability
 target_score: 4.0
 graduated_at: null
 holdout: false
+
+known_limitation:
+  type: case_design
+  reason: "未注入 provider 故障,实测的是正常路径 bash 执行,与 fallback 无关"
+  resolved_in: "S2/S3 mock provider 阶段注入 503/rate-limit 验证 retry 连续性"
 
 input:
   user_query: |
@@ -65,14 +78,14 @@ related_subsystem: [ router, llm ]
 related_adr: []
 baseline_scores:
   sid_code_deepseek_v4_pro:
-    score: 3.9
+    score: 2.5
     run_status: success
-    tested_at: 2026-05-26T17:15:55.093Z
+    tested_at: 2026-05-27T02:04:18.327Z
     tested_by: eval:router-capability
     transcript_path: null
     notes: ""
     dimensions:
-      assert: 3.9
+      assert: 2.8
       llm_judge: null
     _formula_version:
       grader: capability-router-v1

@@ -1,0 +1,27 @@
+{
+  "timestamp": 1779848944899,
+  "mode": "skip-llm-judge",
+  "model": "deepseek-v4-pro",
+  "overall": {
+    "total": 1,
+    "avgScore": 2,
+    "passRate": 0
+  },
+  "by_dimension": {
+    "chinese_context": {
+      "avgScore": 2,
+      "count": 1,
+      "passRate": 0
+    }
+  },
+  "cases": [
+    {
+      "id": "case_ctx_006",
+      "dimension": "chinese_context",
+      "score": 2,
+      "assert": 2.5,
+      "judge": null,
+      "timed_out": false
+    }
+  ]
+}

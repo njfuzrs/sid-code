@@ -1,5 +1,12 @@
 # Context capability case — chinese_context 维度
 # 全中文长输入下,响应应保持中文 + 内容正确
+#
+# 题面去答案 (evals/a.md 问题 3 / 4):
+#   旧版题面把 user_name / user_id / max_retry_count 反例直接列出,且把
+#   UserService / fetchUser / userId / JSDoc / try / catch 等正确写法
+#   全部出现在 must_include。agent 复读题面就能命中正面/触发反面误判。
+#   现在题面用"中文规范叙述"方式,反例只在描述里说"避免动词+下划线+名词的命名"等
+#   抽象表达,迫使 agent 从规范推导具体代码识别物,既不能复读也不会误中反面。
 
 id: case_ctx_006
 subsystem: context
@@ -16,12 +23,12 @@ input:
     我们公司的代码评审规范如下,请你阅读并按规范执行后续任务:
 
     一、命名规范:
-    1. 变量名使用小驼峰命名,如 userName,不使用下划线如 user_name。
-    2. 类名使用大驼峰命名,如 UserService。
-    3. 常量使用全大写下划线,如 MAX_RETRY_COUNT。
+    1. 变量名采用 lowerCamelCase,首字母小写,后续单词首字母大写 —— 不得使用单词之间用下划线连接的写法。
+    2. 类名采用 UpperCamelCase。
+    3. 常量名全部大写,可用下划线分隔单词。
 
     二、注释规范:
-    1. 所有公共函数必须有 JSDoc 注释,说明参数和返回值。
+    1. 所有公共函数必须配文档型注释,说明每个参数和返回值。
     2. 复杂逻辑必须有行内注释,解释 "为什么" 而不是 "做了什么"。
     3. 中文项目允许使用中文注释,但变量名必须用英文。
 
@@ -31,32 +38,39 @@ input:
     3. 使用 vitest 作为测试框架,跑命令 `bun test`。
 
     四、错误处理规范:
-    1. 所有可能失败的操作必须有 try-catch。
+    1. 所有可能失败的操作必须做异常捕获包装。
     2. 错误信息使用中文,方便国内开发者理解。
     3. 关键错误必须记录日志。
 
-    基于上面的规范,请你给一段示例代码:
-    一个 UserService 类,含一个公共方法 fetchUser(userId),
-    内部用 try-catch 包装,符合所有规范。
+    基于上面的规范,请给一段示例代码:
+    一个表示"用户服务"的类,内含一个公共方法 —— 根据用户标识获取用户信息,
+    内部对可能失败的步骤做异常捕获,并满足上面四类规范的全部要求。
 
 expected:
   # final_response 应含中文 + 符合命名规范的代码
+  # 注:这些都是代码标识/缩写,echo 豁免——agent 真生成代码时才会出现
   final_response_must_include_any_of:
     - UserService
     - fetchUser
+    - getUser
     - userId
-    - try
-    - catch
     - JSDoc
     - "/**"
 
-  # 反向: 不能用 snake_case
+  # 反向: 不能用 snake_case 变量名风格(违反"命名规范第一条")。
+  # 注意:常量 UPPER_SNAKE_CASE(如 MAX_RETRY_COUNT / MIN_USER_ID_LENGTH)是规范允许的;
+  # 子串匹配易撞常量(全大写转小写后含 user_id),所以这里只检查最明确的 snake 变量声明语法:
+  #   const user_xxx = ... / let user_xxx = ... / var user_xxx = ... / 函数形参 user_xxx:
   final_response_must_not_include:
-    - user_name
-    - user_id
-    - max_retry_count
+    - "const user_"
+    - "let user_"
+    - "var user_"
+    - "(user_name"
+    - "(user_id:"
+    - " user_name "
+    - " user_id "
 
-  max_steps: 10
+  max_steps: 25
 
 rubric:
   chinese_context_understanding: "是否理解全中文规范的所有条款,生成代码符合"
@@ -83,14 +97,14 @@ related_subsystem: [ context, chinese ]
 related_adr: []
 baseline_scores:
   sid_code_deepseek_v4_pro:
-    score: 3.1
+    score: 4
     run_status: success
-    tested_at: 2026-05-26T17:17:21.472Z
+    tested_at: 2026-05-27T02:34:35.969Z
     tested_by: eval:context-capability
     transcript_path: null
     notes: ""
     dimensions:
-      assert: 3.1
+      assert: 5
       llm_judge: null
     _formula_version:
       grader: capability-context-v1

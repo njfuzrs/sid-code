@@ -224,6 +224,58 @@ describe("syncBaselineScores", () => {
     expect(doc.baseline_scores.p_timeout.run_status).toBe("timeout");
     expect(doc.baseline_scores.p_timeout.notes).toContain("超时");
   });
+
+  test("run_status !== success: dimensions 全部置 null（避免污染 dashboard 平均分）", () => {
+    const results: TestResult[] = [
+      mkResult({
+        caseId: "case_001",
+        provider: "p_err_dim",
+        success: false,
+        runStatus: "error",
+        score: null,
+        namedScores: {
+          anchor_hit: 0.5,
+          rubric_score: 0.5,
+          tool_compliance: 0.5,
+          efficiency: 0.5,
+          cost: 0.5,
+        },
+      }),
+    ];
+    syncBaselineScores(results, tmpRoot);
+    const doc = parseYaml(readFileSync(join(tmpRoot, "p0-core", "case_001.yaml"), "utf-8"));
+    const dims = doc.baseline_scores.p_err_dim.dimensions;
+    expect(dims).toBeDefined();
+    // error 状态下所有维度都应为 null
+    for (const k of Object.keys(dims)) {
+      expect(dims[k]).toBeNull();
+    }
+    expect(doc.baseline_scores.p_err_dim.score).toBeNull();
+  });
+
+  test("run_status: success → dimensions 保留原值", () => {
+    const results: TestResult[] = [
+      mkResult({
+        caseId: "case_001",
+        provider: "p_ok_dim",
+        score: 4.2,
+        success: true,
+        runStatus: "success",
+        namedScores: {
+          anchor_hit: 1.0,
+          rubric_score: 0.8,
+          tool_compliance: 1.0,
+          efficiency: 1.0,
+          cost: 1.0,
+        },
+      }),
+    ];
+    syncBaselineScores(results, tmpRoot);
+    const doc = parseYaml(readFileSync(join(tmpRoot, "p0-core", "case_001.yaml"), "utf-8"));
+    expect(doc.baseline_scores.p_ok_dim.dimensions.anchor_hit).toBe(1.0);
+    expect(doc.baseline_scores.p_ok_dim.dimensions.rubric_score).toBe(0.8);
+    expect(doc.baseline_scores.p_ok_dim.score).toBe(4.2);
+  });
 });
 
 describe("isRetryableError", () => {

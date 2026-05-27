@@ -1,5 +1,17 @@
 # Router capability case — multi_provider_routing 维度
-# 让 agent 阅读 registry.ts 描述各 provider 的注册逻辑
+# 让 agent 阅读 src/llm/ 下的 provider 注册中枢,描述路由实现方式
+#
+# Known Limitation (evals/a.md 问题 5):
+#   本 case 实测的是"代码阅读能力"——agent 能否找到 provider 注册中枢、
+#   读取并归纳代码逻辑。与 router 子系统的运行时行为无强关联。
+#   真测 router 路由需 S2/S3 mock provider 阶段:
+#     - 注入两套 mock provider,通过 model 切换验证 agent 报告的 provider 与实际一致
+#     - 验证 router 在 model name 解析失败时的 fallback / 报错行为
+#
+# 题面去答案 (evals/a.md 问题 3):
+#   旧版题面直接出现 createProvider / switch / AnthropicProvider / providerName 等
+#   全部 must_include 关键词,agent 复读题面即可命中。
+#   改为开放式提问,让 agent 必须真正读代码再用自己的话描述。
 
 id: case_rtr_005
 subsystem: router
@@ -11,22 +23,32 @@ target_score: 4.0
 graduated_at: null
 holdout: false
 
+known_limitation:
+  type: case_design
+  reason: "实测的是代码阅读 + 归纳能力,而非 router 运行时路由行为"
+  resolved_in: "S2/S3 mock provider 阶段切换 model 验证报告一致性"
+
 input:
   user_query: |
-    读 src/llm/registry.ts,告诉我 ProviderRegistry 的 createProvider 函数
-    是如何根据 providerName 路由到对应实现的。
-    简短回答即可。
+    我想了解这个项目里多个大模型厂商接入是怎么管理的。
+    请帮我看一下 src/llm/ 目录,告诉我:
+    1. 系统里有一个统一的入口来挑选用哪家厂商吗?如果有,它写在哪个文件?
+    2. 这个挑选逻辑是怎么实现的?简短描述即可。
+    不需要长篇引用代码。
 
 expected:
   execution_must_call_tools_any_of:
     - read
     - grep
     - glob
+    - ls
 
+  # 代码标识(echo 豁免):agent 必须真的读代码并报出这些识别物
+  # 题面已经不出现这些 token —— 命中代表 agent 真读了 registry.ts
   final_response_must_include_any_of:
     - createProvider
-    - switch
-    - case
+    - registry
+    - Registry
     - AnthropicProvider
     - OpenAIProvider
     - OllamaProvider
@@ -39,7 +61,7 @@ expected:
     - end_turn
 
 rubric:
-  multi_provider_routing_understanding: "是否准确解释 switch-case 路由逻辑"
+  multi_provider_routing_understanding: "是否准确描述 provider 路由机制(switch/分发/工厂模式之一)"
 
 grader:
   - type: assert
@@ -64,9 +86,9 @@ related_subsystem: [ router, llm ]
 related_adr: []
 baseline_scores:
   sid_code_deepseek_v4_pro:
-    score: 5
+    score: 4.5
     run_status: success
-    tested_at: 2026-05-26T17:15:55.093Z
+    tested_at: 2026-05-27T02:04:18.327Z
     tested_by: eval:router-capability
     transcript_path: null
     notes: ""
