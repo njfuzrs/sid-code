@@ -1,6 +1,6 @@
 # Evals Dashboard — sid-code
 
-> 自动生成,请勿手动编辑。生成时间: `2026-05-27T02:45:18.688Z`
+> 自动生成,请勿手动编辑。生成时间: `2026-05-27T06:55:15.196Z`
 > 数据源: `evals/p*-*/` + `evals/_scores/` + `evals/_reports/`
 > 触发: 手动 `bun run eval:dashboard` / git pre-push hook 自动刷新
 > Grader 过滤: **仅 `5d-v3`**（跨 grader 版本总分不可直接比较；切换：`--include-legacy`）
