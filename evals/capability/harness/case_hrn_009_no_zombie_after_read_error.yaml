@@ -1,71 +1,65 @@
-# Harness capability case — harness_long_task_completion 维度
-# 中等复杂任务: 20-30 步内完成,验证 harness 可推进长任务
+# Harness capability case — harness_no_zombie_after_error 维度（第 2 条,补 n≥2 / S0-T08-D）
+# 让 agent 尝试 read 不存在路径(read 工具会报错),验证 read 报错后继续推进
 
-id: case_hrn_003
+id: case_hrn_009
 subsystem: harness
-dimension: harness_long_task_completion
-priority: P0
+dimension: harness_no_zombie_after_error
+priority: P1
 
 eval_type: capability
 target_score: 4.0
 graduated_at: null
 holdout: false
 
+# 注:相比 hrn_004 用 bash 错误,本 case 用 read 工具自身报错路径,
+# 验证不同工具报错后的恢复能力
+
 input:
   user_query: |
-    分 4 步完成下面任务,每步告诉我结论再进入下一步:
-    1. 列出 src/llm/ 目录下所有 .ts 文件名
-    2. 选 anthropic.ts 读前 30 行
-    3. 选 openai.ts 读前 30 行
-    4. 总结这两个 provider 的 export class 名字异同
-
-    最后输出"已完成"。
+    请按顺序完成两件事:
+    1. 尝试 read /tmp/xyz_no_such_path_98765.md(预期会失败)
+    2. read 当前仓库的 package.json 文件,告诉我项目 name 字段
+    最后总结两步的结果。
 
 expected:
-  # 应调多种工具
   execution_must_call_tools_any_of:
-    - ls
-    - glob
     - read
-    - bash
-
-  # 应调多步,但不应超过 30
-  max_steps: 30
-
-  # final_response 应含"已完成"或类似收尾
-  final_response_must_include_any_of:
-    - 已完成
-    - 完成
-    - "AnthropicProvider"
-    - "OpenAIProvider"
 
   exit_status_must_be:
     - end_turn
 
+  # 应能报告 package.json 中的 name(代码标识豁免 echo)
+  final_response_must_include_any_of:
+    - sid-code
+    - sid_code
+    - package.json
+
+  max_steps: 10
+
 rubric:
-  harness_long_task_completion_quality: "是否完整执行 4 步并给出对比结论"
+  no_zombie_after_read_error: "read 报错后是否继续推进第 2 步,而不是卡死"
 
 grader:
   - type: assert
     check: execution_must_call_tools_any_of_hit
+    weight: 0.25
+  - type: assert
+    check: exit_status_must_be_any_of_hit
+    weight: 0.35
+  - type: assert
+    check: final_response_must_include_any_of_hit
     weight: 0.20
   - type: assert
     check: max_steps_within_budget
-    weight: 0.20
-  - type: assert
-    check: final_response_must_include_any_of_hit
-    weight: 0.30
-  - type: assert
-    check: exit_status_must_be_any_of_hit
-    weight: 0.20
+    weight: 0.10
   - type: llm_judge
     weight: 0.10
     rubric_ref:
-      - harness_long_task_completion_quality
+      - no_zombie_after_read_error
 
-source: synthetic_capability_2026_05_27_S0_T06
+source: synthetic_capability_2026_05_27_S0_T08_D
 related_subsystem: [ harness, agent ]
-related_adr: []
+related_adr: [ ADR-020 ]
 baseline_scores:
   sid_code_deepseek_v4_pro:
     score: 4.5

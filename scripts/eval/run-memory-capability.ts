@@ -37,7 +37,9 @@ import {
   runSharedCheck,
   aggregateCapabilityScore,
   classifyRunStatus,
-  excludeEchoKeywords,
+  classifyEchoKeywords,
+  medianSuccessScore,
+  pickRunStatus,
   readMemoryFile,
   type SharedGraderInput,
   type CheckResult,
@@ -59,6 +61,7 @@ const { values } = parseArgs({
     timeout: { type: "string", default: "180000" },
     model: { type: "string" },
     sync: { type: "boolean", default: false },
+    samples: { type: "string", default: "1" },
   },
   allowPositionals: true,
 });
@@ -162,18 +165,21 @@ function runMemoryCheck(rule: GraderRule, input: MemoryGraderInput): CheckResult
 
     case "memory_isolation_keyword_count_min_2": {
       const list = expected.final_response_must_include_some_keywords || [];
-      // echo 排除（CLAUDE.md §0.4）
-      const { filtered, echoed } = excludeEchoKeywords(list, input.userQuery);
-      const filteredLower = filtered.map((k) => k.toLowerCase());
+      // 三分类 echo（CLAUDE.md §0.4 + a.md 问题 3）
+      const { safe, echoedCode, echoedNatural } = classifyEchoKeywords(list, input.userQuery);
       const lower = input.finalResponse.toLowerCase();
-      const hits = filteredLower.filter((kw) => lower.includes(kw));
-      const ok = hits.length >= 2;
-      const reasonExtra = echoed.length > 0 ? ` | echo 排除 [${echoed.join(",")}]` : "";
+      const safeHits = safe.map((k) => k.toLowerCase()).filter((kw) => lower.includes(kw));
+      const codeEchoHits = echoedCode.map((k) => k.toLowerCase()).filter((kw) => lower.includes(kw));
+      const ok = safeHits.length >= 2;
+      const parts: string[] = [];
+      if (codeEchoHits.length > 0) parts.push(`code-echo 命中(不计) [${codeEchoHits.join(",")}]`);
+      if (echoedNatural.length > 0) parts.push(`自然语言 echo 排除 [${echoedNatural.join(",")}]`);
+      const reasonExtra = parts.length > 0 ? ` | ${parts.join(" | ")}` : "";
       return {
         check,
         passed: ok,
         weight: rule.weight,
-        reason: `命中 ${hits.length}/${filtered.length} (要求 ≥ 2): [${hits.join(",")}]${reasonExtra}`,
+        reason: `safe 命中 ${safeHits.length}/${safe.length} (要求 ≥ 2): [${safeHits.join(",")}]${reasonExtra}`,
       };
     }
 
@@ -344,136 +350,224 @@ interface CaseResult {
     session_dir: string | null;
   };
   reasoning: string;
+  samples: SampleSnapshot[];
+  aggregatedRunStatus: string;
 }
 
+interface SampleSnapshot {
+  finalScore: number;
+  assertScore: number;
+  llmScore: number | null;
+  runStatus: string;
+  exitStatus: string;
+  timedOut: boolean;
+  elapsedSec: number;
+  toolsCalled: string[];
+  steps: number;
+}
+
+const samplesN = Math.max(1, parseInt(values.samples || "1", 10));
 const results: CaseResult[] = [];
 
 for (let i = 0; i < cases.length; i++) {
   const c = cases[i];
-  console.log(`[${i + 1}/${cases.length}] ${c.id} (${c.dimension}) — 启动 sid-code-live ...`);
+  console.log(
+    `[${i + 1}/${cases.length}] ${c.id} (${c.dimension}) — 启动 sid-code-live ...${samplesN > 1 ? ` (samples=${samplesN})` : ""}`,
+  );
 
-  // 1. backup memory 文件
-  const globalBackup = snapshotMemoryFile(GLOBAL_MEMORY_FILE);
-  const projectBackup = snapshotMemoryFile(PROJECT_MEMORY_FILE);
+  // memory 特殊:每次 sample 都要 backup → seed → run → restore,
+  // 否则上轮 agent 写入会污染下一轮 pre snapshot。
+  const sampleSnapshots: SampleSnapshot[] = [];
+  let lastLive: SidCodeLiveResult | null = null;
+  let lastDetails: Record<string, string | number | boolean> = {};
+  let lastCheckSummary = "";
 
-  // 清空 memory(避免 backup 之外的污染干扰断言)
-  if (existsSync(GLOBAL_MEMORY_FILE)) {
-    try { unlinkSync(GLOBAL_MEMORY_FILE); } catch {}
-  }
-  if (existsSync(PROJECT_MEMORY_FILE)) {
-    try { unlinkSync(PROJECT_MEMORY_FILE); } catch {}
-  }
+  for (let s = 0; s < samplesN; s++) {
+    // 1. backup memory 文件
+    const globalBackup = snapshotMemoryFile(GLOBAL_MEMORY_FILE);
+    const projectBackup = snapshotMemoryFile(PROJECT_MEMORY_FILE);
 
-  // 2. seed memory
-  if (c.input.seed_memory && c.input.seed_memory.length > 0) {
-    seedMemory(c.input.seed_memory);
-  }
+    // 清空 memory(避免 backup 之外的污染干扰断言)
+    if (existsSync(GLOBAL_MEMORY_FILE)) {
+      try { unlinkSync(GLOBAL_MEMORY_FILE); } catch {}
+    }
+    if (existsSync(PROJECT_MEMORY_FILE)) {
+      try { unlinkSync(PROJECT_MEMORY_FILE); } catch {}
+    }
 
-  // 3. 读 pre snapshot
-  const preSnapshot = readMemorySnapshot();
+    // 2. seed memory
+    if (c.input.seed_memory && c.input.seed_memory.length > 0) {
+      seedMemory(c.input.seed_memory);
+    }
 
-  // 4. 跑 sid-code
-  const startedAt = Date.now();
-  let live: SidCodeLiveResult;
-  try {
-    live = await runSidCodeLive(c.input.user_query.trim(), liveConfig);
-  } catch (err) {
-    console.log(`    ✗ adapter error: ${String(err).slice(0, 200)}`);
-    // restore 后跳过本 case
-    restoreMemoryFile(GLOBAL_MEMORY_FILE, globalBackup);
-    restoreMemoryFile(PROJECT_MEMORY_FILE, projectBackup);
-    continue;
-  }
-  const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+    // 3. 读 pre snapshot
+    const preSnapshot = readMemorySnapshot();
 
-  // 5. 读 post snapshot（必须在 restore 之前读）
-  const postSnapshot = readMemorySnapshot();
-
-  // 6. restore（在 grader 之后立刻还原,确保下条 case 干净）
-  restoreMemoryFile(GLOBAL_MEMORY_FILE, globalBackup);
-  restoreMemoryFile(PROJECT_MEMORY_FILE, projectBackup);
-
-  // 7. 跑 grader
-  const graderInput: MemoryGraderInput = {
-    expected: c.expected,
-    toolsCalled: live.output.tools_called,
-    steps: live.output.steps,
-    finalResponse: live.output.final_response,
-    preRunSnapshot: preSnapshot,
-    postRunSnapshot: postSnapshot,
-    userQuery: c.input.user_query,
-  };
-
-  const assertResults: CheckResult[] = [];
-  let llmRule: GraderRule | null = null;
-  // 构造 shared check 用的输入（expected 拍平为 Record）
-  const sharedInput: SharedGraderInput = {
-    expected: c.expected as Record<string, unknown>,
-    toolsCalled: graderInput.toolsCalled,
-    steps: graderInput.steps,
-    finalResponse: graderInput.finalResponse,
-    userQuery: c.input.user_query,
-  };
-  for (const rule of c.grader) {
-    if (rule.type === "llm_judge") {
-      llmRule = rule;
+    // 4. 跑 sid-code
+    const startedAt = Date.now();
+    let live: SidCodeLiveResult;
+    try {
+      live = await runSidCodeLive(c.input.user_query.trim(), liveConfig);
+    } catch (err) {
+      console.log(`    [sample ${s + 1}/${samplesN}] ✗ adapter error: ${String(err).slice(0, 200)}`);
+      restoreMemoryFile(GLOBAL_MEMORY_FILE, globalBackup);
+      restoreMemoryFile(PROJECT_MEMORY_FILE, projectBackup);
+      sampleSnapshots.push({
+        finalScore: 0,
+        assertScore: 0,
+        llmScore: null,
+        runStatus: "error",
+        exitStatus: "adapter_error",
+        timedOut: false,
+        elapsedSec: (Date.now() - startedAt) / 1000,
+        toolsCalled: [],
+        steps: 0,
+      });
       continue;
     }
-    // 先 share check,未识别再 fallback memory 专属
-    const shared = runSharedCheck(rule, sharedInput);
-    assertResults.push(shared ?? runMemoryCheck(rule, graderInput));
-  }
+    const elapsedSec = (Date.now() - startedAt) / 1000;
+    lastLive = live;
 
-  // LLM Judge
-  let llmScore: number | undefined;
-  if (values.execute && llmRule && judgeConfig.apiKey) {
-    const judgeInput = {
-      task: c.input.user_query.slice(0, 1500),
-      expected: {
-        must_include_keywords: c.expected.final_response_must_include_any_of,
-        must_call_tools: c.expected.execution_must_call_tools_any_of,
-        max_steps: c.expected.max_steps,
-      },
-      agentResponse: live.output.final_response,
+    // 5. 读 post snapshot（必须在 restore 之前读）
+    const postSnapshot = readMemorySnapshot();
+
+    // 6. restore（在 grader 之后立刻还原,确保下条 case / 下个 sample 干净）
+    restoreMemoryFile(GLOBAL_MEMORY_FILE, globalBackup);
+    restoreMemoryFile(PROJECT_MEMORY_FILE, projectBackup);
+
+    // 7. 跑 grader
+    const graderInput: MemoryGraderInput = {
+      expected: c.expected,
+      toolsCalled: live.output.tools_called,
+      steps: live.output.steps,
+      finalResponse: live.output.final_response,
+      preRunSnapshot: preSnapshot,
+      postRunSnapshot: postSnapshot,
+      userQuery: c.input.user_query,
     };
-    const judgeResult = await gradeProcess(judgeInput, judgeConfig);
-    llmScore = judgeResult.score;
+
+    const assertResults: CheckResult[] = [];
+    let llmRule: GraderRule | null = null;
+    const sharedInput: SharedGraderInput = {
+      expected: c.expected as Record<string, unknown>,
+      toolsCalled: graderInput.toolsCalled,
+      steps: graderInput.steps,
+      finalResponse: graderInput.finalResponse,
+      userQuery: c.input.user_query,
+    };
+    for (const rule of c.grader) {
+      if (rule.type === "llm_judge") {
+        llmRule = rule;
+        continue;
+      }
+      const shared = runSharedCheck(rule, sharedInput);
+      assertResults.push(shared ?? runMemoryCheck(rule, graderInput));
+    }
+
+    let llmScore: number | undefined;
+    if (values.execute && llmRule && judgeConfig.apiKey) {
+      const judgeInput = {
+        task: c.input.user_query.slice(0, 1500),
+        expected: {
+          must_include_keywords: c.expected.final_response_must_include_any_of,
+          must_call_tools: c.expected.execution_must_call_tools_any_of,
+          max_steps: c.expected.max_steps,
+        },
+        agentResponse: live.output.final_response,
+      };
+      const judgeResult = await gradeProcess(judgeInput, judgeConfig);
+      llmScore = judgeResult.score;
+    }
+
+    const agg = aggregateCapabilityScore({
+      assertResults,
+      llmJudgeScore: llmScore,
+      llmJudgeWeight: llmRule?.weight,
+    });
+    const sampleStatus = classifyRunStatus({
+      exitStatus: live.output.exit_status,
+      timedOut: live.timedOut,
+    });
+
+    sampleSnapshots.push({
+      finalScore: agg.score,
+      assertScore: agg.assertScore,
+      llmScore: agg.llmScore,
+      runStatus: sampleStatus,
+      exitStatus: live.output.exit_status,
+      timedOut: live.timedOut,
+      elapsedSec,
+      toolsCalled: live.output.tools_called,
+      steps: live.output.steps,
+    });
+    lastDetails = agg.details;
+    lastCheckSummary = assertResults.map((r) => `${r.check}=${r.passed ? "✓" : "✗"}`).join(" / ");
+
+    if (samplesN > 1) {
+      console.log(
+        `    [sample ${s + 1}/${samplesN}] score=${agg.score}/5 (assert=${agg.assertScore}${llmScore != null ? `, judge=${llmScore}` : ""}) | ${elapsedSec.toFixed(1)}s | ${live.output.exit_status}${live.timedOut ? " ⚠️ timeout" : ""}`,
+      );
+    }
   }
 
-  const agg = aggregateCapabilityScore({
-    assertResults,
-    llmJudgeScore: llmScore,
-    llmJudgeWeight: llmRule?.weight,
-  });
+  const aggregatedRunStatus = pickRunStatus(sampleSnapshots);
+  const medianFinal =
+    aggregatedRunStatus === "success"
+      ? (medianSuccessScore(
+          sampleSnapshots.map((sn) => ({ score: sn.finalScore, runStatus: sn.runStatus })),
+        ) ?? 0)
+      : 0;
+  const medianAssert =
+    aggregatedRunStatus === "success"
+      ? (medianSuccessScore(
+          sampleSnapshots.map((sn) => ({ score: sn.assertScore, runStatus: sn.runStatus })),
+        ) ?? 0)
+      : 0;
+  const llmScores = sampleSnapshots
+    .filter((sn) => sn.runStatus === "success" && sn.llmScore != null)
+    .map((sn) => ({ score: sn.llmScore as number, runStatus: "success" }));
+  const medianLlm = llmScores.length > 0 ? medianSuccessScore(llmScores) : null;
 
-  const checkSummary = assertResults.map((r) => `${r.check}=${r.passed ? "✓" : "✗"}`).join(" / ");
-
+  const showLive = lastLive;
   const result: CaseResult = {
     id: c.id,
     dimension: c.dimension,
     priority: c.priority,
-    finalScore: agg.score,
-    assertScore: agg.assertScore,
-    llmScore: agg.llmScore,
-    details: agg.details,
+    finalScore: medianFinal,
+    assertScore: medianAssert,
+    llmScore: medianLlm,
+    details: lastDetails,
     agentSnapshot: {
-      tools_called: live.output.tools_called,
-      steps: live.output.steps,
-      exit_status: live.output.exit_status,
-      timed_out: live.timedOut,
-      session_dir: live.sessionDir,
+      tools_called: showLive?.output.tools_called ?? [],
+      steps: showLive?.output.steps ?? 0,
+      exit_status: showLive?.output.exit_status ?? "no_sample",
+      timed_out: showLive?.timedOut ?? false,
+      session_dir: showLive?.sessionDir ?? null,
     },
-    reasoning: `${elapsed}s, ${checkSummary}${llmScore != null ? `, judge=${llmScore}` : ""}`,
+    reasoning:
+      samplesN > 1
+        ? `samples=${samplesN}, median=${medianFinal}/5 (assert=${medianAssert}), status=${aggregatedRunStatus}`
+        : `${(sampleSnapshots[0]?.elapsedSec ?? 0).toFixed(1)}s, ${lastCheckSummary}`,
+    samples: samplesN > 1 ? sampleSnapshots : [],
+    aggregatedRunStatus,
   };
-  (result as unknown as { _stdout: string })._stdout = live.stdout.slice(-1500);
-  (result as unknown as { _stderr: string })._stderr = live.stderr.slice(-1500);
+  if (showLive) {
+    (result as unknown as { _stdout: string })._stdout = showLive.stdout.slice(-1500);
+    (result as unknown as { _stderr: string })._stderr = showLive.stderr.slice(-1500);
+  }
   results.push(result);
 
-  console.log(
-    `    → score=${result.finalScore}/5 (assert=${result.assertScore}${llmScore != null ? `, judge=${llmScore}` : ""}) | ${elapsed}s | ${result.agentSnapshot.exit_status}`,
-  );
-  if (live.timedOut) {
-    console.log(`    ⚠️  timeout`);
+  if (samplesN > 1) {
+    console.log(
+      `    → median=${medianFinal}/5 (assert=${medianAssert}) | run_status=${aggregatedRunStatus}`,
+    );
+  } else {
+    console.log(
+      `    → score=${result.finalScore}/5 (assert=${result.assertScore}${result.llmScore != null ? `, judge=${result.llmScore}` : ""}) | ${(sampleSnapshots[0]?.elapsedSec ?? 0).toFixed(1)}s | ${result.agentSnapshot.exit_status}`,
+    );
+    if (showLive?.timedOut) {
+      console.log(`    ⚠️  timeout`);
+    }
   }
 }
 
@@ -550,21 +644,30 @@ if (values.sync) {
   const providerKey = `sid_code_${modelSlug}`;
 
   const baselineResults: BaselineResult[] = results.map((r) => {
-    const runStatus = classifyRunStatus({
-      exitStatus: r.agentSnapshot.exit_status,
-      timedOut: r.agentSnapshot.timed_out,
-    });
+    const samples =
+      r.samples.length > 0
+        ? r.samples.map((sn) => ({
+            score: sn.runStatus === "success" ? sn.finalScore : null,
+            runStatus: sn.runStatus,
+            testedAt: new Date(ts).toISOString(),
+            dimensions: {
+              assert: sn.runStatus === "success" ? sn.assertScore : null,
+              llm_judge: sn.runStatus === "success" ? sn.llmScore : null,
+            },
+          }))
+        : undefined;
     return {
       caseId: r.id,
       provider: providerKey,
       score: r.finalScore,
-      runStatus,
+      runStatus: r.aggregatedRunStatus,
       testedAt: new Date(ts).toISOString(),
       dimensions: {
         assert: r.assertScore,
         llm_judge: r.llmScore,
       },
       formulaVersion: { grader: "capability-memory-v1" },
+      samples,
     };
   });
 

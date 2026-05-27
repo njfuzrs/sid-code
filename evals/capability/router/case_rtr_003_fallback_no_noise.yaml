@@ -36,10 +36,14 @@ expected:
   exit_status_must_be:
     - end_turn
 
-  # final_response 应有 "hello world" 输出
+  # final_response 应有 bash 输出特征(world / 输出 / output 等结果性词)
+  # 注:不再用 "hello world" 作为 must_include(题面已含,会触发 echo 排除)
   final_response_must_include_any_of:
-    - "hello world"
-    - "hello"
+    - "world"
+    - "输出"
+    - "output"
+    - "stdout"
+    - "结果"
 
   # 不应在 final_response 中暴露 retry/fallback 内部信号
   final_response_must_not_include:
@@ -75,12 +79,12 @@ grader:
 
 source: synthetic_capability_2026_05_27_S0_T05
 related_subsystem: [ router, llm ]
-related_adr: []
+related_adr: [ ADR-021 ]
 baseline_scores:
   sid_code_deepseek_v4_pro:
     score: 2.5
     run_status: success
-    tested_at: 2026-05-27T02:04:18.327Z
+    tested_at: 2026-05-27T04:54:09.449Z
     tested_by: eval:router-capability
     transcript_path: null
     notes: ""
@@ -89,3 +93,22 @@ baseline_scores:
       llm_judge: null
     _formula_version:
       grader: capability-router-v1
+    samples:
+      - score: 2.5
+        runStatus: success
+        testedAt: 2026-05-27T04:54:09.449Z
+        dimensions:
+          assert: 2.8
+          llm_judge: null
+      - score: 2.5
+        runStatus: success
+        testedAt: 2026-05-27T04:54:09.449Z
+        dimensions:
+          assert: 2.8
+          llm_judge: null
+      - score: 3.5
+        runStatus: success
+        testedAt: 2026-05-27T04:54:09.449Z
+        dimensions:
+          assert: 3.9
+          llm_judge: null

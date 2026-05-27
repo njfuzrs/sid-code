@@ -1,0 +1,27 @@
+{
+  "timestamp": 1779863285307,
+  "mode": "skip-llm-judge",
+  "model": "deepseek-v4-pro",
+  "overall": {
+    "total": 1,
+    "avgScore": 3.7,
+    "passRate": 0
+  },
+  "by_dimension": {
+    "loop_detection_trigger": {
+      "avgScore": 3.7,
+      "count": 1,
+      "passRate": 0
+    }
+  },
+  "cases": [
+    {
+      "id": "case_hrn_001",
+      "dimension": "loop_detection_trigger",
+      "score": 3.7,
+      "assert": 3.9,
+      "judge": null,
+      "timed_out": false
+    }
+  ]
+}

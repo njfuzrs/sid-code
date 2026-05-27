@@ -9,8 +9,11 @@
 import { describe, expect, test } from "bun:test";
 import {
   aggregateCapabilityScore,
+  classifyEchoKeywords,
   excludeEchoKeywords,
   isCodeIdentifier,
+  medianSuccessScore,
+  pickRunStatus,
   runSharedCheck,
   type GraderRule,
   type SharedGraderInput,
@@ -152,17 +155,33 @@ describe("runSharedCheck — final_response_must_include_any_of_hit", () => {
     expect(r!.reason).toContain("echo");
   });
 
-  test("代码标识在题面也保留判定 → 实际命中即 PASS", () => {
+  test("代码标识在题面字面已出现 + final_response 仅命中题面已含代码标识 → onlyCodeEcho → FAIL（复读嫌疑）", () => {
+    // a.md 问题 3 残留:rtr_005 旧版题面已含 createProvider/AnthropicProvider 等,
+    // agent 复读题面 token 即可命中——新规则升级为"复读嫌疑"FAIL。
     const r = runSharedCheck(
       rule,
       buildInput({
         expected: { final_response_must_include_any_of: ["createProvider", "UserService"] },
-        finalResponse: "createProvider 函数在 registry.ts 中通过 switch 路由",
-        userQuery: "请读 src/llm/registry.ts 解释 createProvider 如何路由",
+        finalResponse: "createProvider 函数路由到 UserService",
+        userQuery: "请读 src/llm/registry.ts 解释 createProvider / UserService 如何路由",
+      }),
+    );
+    expect(r!.passed).toBe(false);
+    expect(r!.reason).toContain("复读嫌疑");
+  });
+
+  test("代码标识在题面已含但 final_response 同时命中题面未含的代码标识 → safe 命中 → PASS", () => {
+    // 增加未在题面的代码标识 registry,只要 safe 命中即真信号
+    const r = runSharedCheck(
+      rule,
+      buildInput({
+        expected: { final_response_must_include_any_of: ["createProvider", "registry"] },
+        finalResponse: "createProvider 在 registry 工厂中路由",
+        userQuery: "请读 src/llm/ 解释 createProvider 如何路由",
       }),
     );
     expect(r!.passed).toBe(true);
-    expect(r!.reason).toContain("createProvider");
+    expect(r!.reason).toContain("safe 命中");
   });
 
   test("自然语言被排除后剩余关键词都未命中 → FAIL", () => {
@@ -212,7 +231,9 @@ describe("runSharedCheck — final_response_must_not_include_zero_hit", () => {
     expect(r!.passed).toBe(false);
   });
 
-  test("纯自然语言违禁词在题面 → echo 豁免 → PASS", () => {
+  test("自然语言违禁词在题面但 final_response 复读 → FAIL（must_not 不做 echo 豁免）", () => {
+    // 设计动机:case_mem_006 真信号 — 题面含 API key, agent 复读 = 真泄露,不应豁免。
+    // 即使 sk-xxx 这类自然语言串在题面出现,agent 在 final_response 写出来仍算违规。
     const r = runSharedCheck(
       rule,
       buildInput({
@@ -221,8 +242,8 @@ describe("runSharedCheck — final_response_must_not_include_zero_hit", () => {
         userQuery: "项目曾经用 mysql 后迁移到 postgres",
       }),
     );
-    expect(r!.passed).toBe(true);
-    expect(r!.reason).toContain("echo 豁免");
+    expect(r!.passed).toBe(false);
+    expect(r!.reason).toContain("命中违禁词");
   });
 
   test("代码标识违禁词出现在 final_response → FAIL（即使题面也有,代码标识不豁免）", () => {
@@ -309,5 +330,95 @@ describe("aggregateCapabilityScore — skip-llm-judge weight 不蒸发", () => {
       llmJudgeWeight: 1,
     });
     expect(r.score).toBeLessThanOrEqual(5);
+  });
+});
+
+// ============================================================
+// medianSuccessScore / pickRunStatus / classifyEchoKeywords
+// ============================================================
+
+describe("medianSuccessScore — multi-sample 中位数", () => {
+  test("3 个 success sample → 取下中位", () => {
+    expect(
+      medianSuccessScore([
+        { score: 4.0, runStatus: "success" },
+        { score: 4.5, runStatus: "success" },
+        { score: 5.0, runStatus: "success" },
+      ]),
+    ).toBe(4.5);
+  });
+
+  test("2 success + 1 error → 在 success 内取下中位", () => {
+    expect(
+      medianSuccessScore([
+        { score: 5.0, runStatus: "success" },
+        { score: null, runStatus: "error" },
+        { score: 4.0, runStatus: "success" },
+      ]),
+    ).toBe(4.0);
+  });
+
+  test("无 success sample → null", () => {
+    expect(
+      medianSuccessScore([
+        { score: null, runStatus: "error" },
+        { score: null, runStatus: "timeout" },
+      ]),
+    ).toBeNull();
+  });
+
+  test("偶数个 success → 取下中位(避免小数尾)", () => {
+    expect(
+      medianSuccessScore([
+        { score: 3.0, runStatus: "success" },
+        { score: 4.0, runStatus: "success" },
+        { score: 5.0, runStatus: "success" },
+        { score: 4.5, runStatus: "success" },
+      ]),
+    ).toBe(4.0);
+  });
+});
+
+describe("pickRunStatus — multi-sample 状态选举", () => {
+  test("任一 success → success", () => {
+    expect(pickRunStatus([{ runStatus: "success" }, { runStatus: "error" }])).toBe("success");
+  });
+  test("全 timeout → timeout", () => {
+    expect(pickRunStatus([{ runStatus: "timeout" }, { runStatus: "timeout" }])).toBe("timeout");
+  });
+  test("混合 error/timeout → error", () => {
+    expect(pickRunStatus([{ runStatus: "error" }, { runStatus: "timeout" }])).toBe("error");
+  });
+  test("空数组 → error", () => {
+    expect(pickRunStatus([])).toBe("error");
+  });
+});
+
+describe("classifyEchoKeywords — 三分类 echo", () => {
+  test("safe / echoedCode / echoedNatural 三分类正确", () => {
+    const r = classifyEchoKeywords(
+      ["未在题中", "createProvider", "postgres"],
+      "我用 postgres,需要看 createProvider 跑",
+    );
+    expect(r.safe).toEqual(["未在题中"]);
+    expect(r.echoedCode).toEqual(["createProvider"]);
+    expect(r.echoedNatural).toEqual(["postgres"]);
+  });
+
+  test("题面已含全部代码标识 → safe 空 / echoedCode 全部", () => {
+    const r = classifyEchoKeywords(
+      ["createProvider", "UserService"],
+      "请读 createProvider 与 UserService",
+    );
+    expect(r.safe).toEqual([]);
+    expect(r.echoedCode).toEqual(["createProvider", "UserService"]);
+    expect(r.echoedNatural).toEqual([]);
+  });
+
+  test("无 userQuery → 全部 safe", () => {
+    const r = classifyEchoKeywords(["a", "b"], undefined);
+    expect(r.safe).toEqual(["a", "b"]);
+    expect(r.echoedCode).toEqual([]);
+    expect(r.echoedNatural).toEqual([]);
   });
 });

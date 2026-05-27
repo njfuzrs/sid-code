@@ -1,0 +1,90 @@
+# Memory capability case — memory_update 维度（第 2 条,补 n≥2 / S0-T08-D）
+# 验证: 已存的 memory 被显式撤销时 agent 应删/标记为旧
+
+id: case_mem_010
+subsystem: memory
+dimension: memory_update
+priority: P1
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  seed_memory:
+    - scope: project
+      key: package_manager
+      value: npm
+  user_query: |
+    我之前说过这个项目用 npm,但今天起改用 pnpm,请把这个偏好覆盖更新。
+
+expected:
+  execution_must_call_tools_any_of:
+    - memory_save
+    - memory
+
+  # 跑完后 project memory 应含 pnpm
+  memory_update_must_contain_value: pnpm
+
+  # 不应继续保留 npm 旧值
+  memory_update_must_not_keep_old_value: npm
+
+  max_steps: 10
+
+rubric:
+  memory_update_replace_old: "是否真正覆盖旧值,而不是新建一条与 npm 并存"
+
+grader:
+  - type: assert
+    check: execution_must_call_tools_any_of_hit
+    weight: 0.20
+  - type: assert
+    check: memory_update_must_contain_value_hit
+    weight: 0.40
+  - type: assert
+    check: memory_update_must_not_keep_old_value_zero_hit
+    weight: 0.30
+  - type: assert
+    check: max_steps_within_budget
+    weight: 0.05
+  - type: llm_judge
+    weight: 0.05
+    rubric_ref:
+      - memory_update_replace_old
+
+source: synthetic_capability_2026_05_27_S0_T08_D
+related_subsystem: [ memory ]
+related_adr: []
+baseline_scores:
+  sid_code_deepseek_v4_pro:
+    score: 2.3
+    run_status: success
+    tested_at: 2026-05-27T05:03:19.486Z
+    tested_by: eval:memory-capability
+    transcript_path: null
+    notes: ""
+    dimensions:
+      assert: 2.4
+      llm_judge: null
+    _formula_version:
+      grader: capability-memory-v1
+    samples:
+      - score: 2.3
+        runStatus: success
+        testedAt: 2026-05-27T05:03:19.486Z
+        dimensions:
+          assert: 2.4
+          llm_judge: null
+      - score: 2.3
+        runStatus: success
+        testedAt: 2026-05-27T05:03:19.486Z
+        dimensions:
+          assert: 2.4
+          llm_judge: null
+      - score: 2.3
+        runStatus: success
+        testedAt: 2026-05-27T05:03:19.486Z
+        dimensions:
+          assert: 2.4
+          llm_judge: null

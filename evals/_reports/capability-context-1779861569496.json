@@ -1,0 +1,27 @@
+{
+  "timestamp": 1779861569496,
+  "mode": "skip-llm-judge",
+  "model": "deepseek-v4-pro",
+  "overall": {
+    "total": 1,
+    "avgScore": 4.5,
+    "passRate": 1
+  },
+  "by_dimension": {
+    "message_validity": {
+      "avgScore": 4.5,
+      "count": 1,
+      "passRate": 1
+    }
+  },
+  "cases": [
+    {
+      "id": "case_ctx_008",
+      "dimension": "message_validity",
+      "score": 4.5,
+      "assert": 5,
+      "judge": null,
+      "timed_out": false
+    }
+  ]
+}

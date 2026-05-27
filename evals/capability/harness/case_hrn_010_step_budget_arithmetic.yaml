@@ -1,10 +1,10 @@
-# Harness capability case — harness_long_task_completion 维度
-# 中等复杂任务: 20-30 步内完成,验证 harness 可推进长任务
+# Harness capability case — harness_step_budget 维度（第 2 条,补 n≥2 / S0-T08-D）
+# 极简任务,验证 step 预算控制在合理范围(不会因为简单问题反复折腾)
 
-id: case_hrn_003
+id: case_hrn_010
 subsystem: harness
-dimension: harness_long_task_completion
-priority: P0
+dimension: harness_step_budget
+priority: P1
 
 eval_type: capability
 target_score: 4.0
@@ -13,57 +13,52 @@ holdout: false
 
 input:
   user_query: |
-    分 4 步完成下面任务,每步告诉我结论再进入下一步:
-    1. 列出 src/llm/ 目录下所有 .ts 文件名
-    2. 选 anthropic.ts 读前 30 行
-    3. 选 openai.ts 读前 30 行
-    4. 总结这两个 provider 的 export class 名字异同
-
-    最后输出"已完成"。
+    1 + 1 等于几?直接回答,不需要任何工具调用。
 
 expected:
-  # 应调多种工具
-  execution_must_call_tools_any_of:
-    - ls
-    - glob
+  # 不应调任何工具
+  execution_must_not_call_tools:
     - read
     - bash
-
-  # 应调多步,但不应超过 30
-  max_steps: 30
-
-  # final_response 应含"已完成"或类似收尾
-  final_response_must_include_any_of:
-    - 已完成
-    - 完成
-    - "AnthropicProvider"
-    - "OpenAIProvider"
+    - glob
+    - grep
+    - write
+    - edit
 
   exit_status_must_be:
     - end_turn
 
+  # 应给出 2
+  final_response_must_include_any_of:
+    - "2"
+    - 二
+
+  max_steps: 2
+
+  final_response_max_length: 200
+
 rubric:
-  harness_long_task_completion_quality: "是否完整执行 4 步并给出对比结论"
+  step_budget_minimal: "极简问题是否只用 1 步直接回答,不调任何工具"
 
 grader:
   - type: assert
-    check: execution_must_call_tools_any_of_hit
-    weight: 0.20
-  - type: assert
-    check: max_steps_within_budget
-    weight: 0.20
-  - type: assert
-    check: final_response_must_include_any_of_hit
+    check: execution_must_not_call_tools_zero_hit
     weight: 0.30
   - type: assert
     check: exit_status_must_be_any_of_hit
     weight: 0.20
+  - type: assert
+    check: final_response_must_include_any_of_hit
+    weight: 0.20
+  - type: assert
+    check: max_steps_within_budget
+    weight: 0.20
   - type: llm_judge
     weight: 0.10
     rubric_ref:
-      - harness_long_task_completion_quality
+      - step_budget_minimal
 
-source: synthetic_capability_2026_05_27_S0_T06
+source: synthetic_capability_2026_05_27_S0_T08_D
 related_subsystem: [ harness, agent ]
 related_adr: []
 baseline_scores:

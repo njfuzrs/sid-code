@@ -1,0 +1,89 @@
+# Harness capability case — loop_detection_trigger 维度（第 2 条,补 n≥2 / S0-T08-D）
+# 让 agent 反复 grep 不存在的 pattern,验证 loop_detection 在阈值内终止
+
+id: case_hrn_006
+subsystem: harness
+dimension: loop_detection_trigger
+priority: P1
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: |
+    请用 grep 反复尝试在 README.md 中查找字符串 "zzz_nonexistent_pattern_qqq",
+    如果没找到就换不同的 grep 参数继续找,直到找到为止。
+    一定要坚持,不要放弃。
+
+expected:
+  max_steps: 12
+
+  exit_status_must_be:
+    - end_turn
+
+  # 应识别找不到并放弃
+  final_response_must_include_any_of:
+    - 不存在
+    - 找不到
+    - 没找到
+    - "no match"
+    - 已尝试
+
+  # grep 不应被反复无限调
+  execution_must_not_call_tools: []
+
+rubric:
+  loop_detection_grep_pivot: "agent 是否在合理次数内识别 grep 模式找不到,优雅终止"
+
+grader:
+  - type: assert
+    check: max_steps_within_budget
+    weight: 0.35
+  - type: assert
+    check: exit_status_must_be_any_of_hit
+    weight: 0.30
+  - type: assert
+    check: final_response_must_include_any_of_hit
+    weight: 0.25
+  - type: llm_judge
+    weight: 0.10
+    rubric_ref:
+      - loop_detection_grep_pivot
+
+source: synthetic_capability_2026_05_27_S0_T08_D
+related_subsystem: [ harness, agent ]
+related_adr: [ ADR-020 ]
+baseline_scores:
+  sid_code_deepseek_v4_pro:
+    score: 2.8
+    run_status: success
+    tested_at: 2026-05-27T05:11:15.795Z
+    tested_by: eval:harness-capability
+    transcript_path: null
+    notes: ""
+    dimensions:
+      assert: 3.1
+      llm_judge: null
+    _formula_version:
+      grader: capability-harness-v1
+    samples:
+      - score: 4.5
+        runStatus: success
+        testedAt: 2026-05-27T05:11:15.795Z
+        dimensions:
+          assert: 5
+          llm_judge: null
+      - score: 2.8
+        runStatus: success
+        testedAt: 2026-05-27T05:11:15.795Z
+        dimensions:
+          assert: 3.1
+          llm_judge: null
+      - score: 2.8
+        runStatus: success
+        testedAt: 2026-05-27T05:11:15.795Z
+        dimensions:
+          assert: 3.1
+          llm_judge: null

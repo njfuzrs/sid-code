@@ -1,10 +1,10 @@
-# Harness capability case — harness_long_task_completion 维度
-# 中等复杂任务: 20-30 步内完成,验证 harness 可推进长任务
+# Harness capability case — harness_long_task_completion 维度（第 2 条,补 n≥2 / S0-T08-D）
+# 让 agent 完成 5 步工具组合任务,验证长任务不中断
 
-id: case_hrn_003
+id: case_hrn_008
 subsystem: harness
 dimension: harness_long_task_completion
-priority: P0
+priority: P1
 
 eval_type: capability
 target_score: 4.0
@@ -13,88 +13,84 @@ holdout: false
 
 input:
   user_query: |
-    分 4 步完成下面任务,每步告诉我结论再进入下一步:
-    1. 列出 src/llm/ 目录下所有 .ts 文件名
-    2. 选 anthropic.ts 读前 30 行
-    3. 选 openai.ts 读前 30 行
-    4. 总结这两个 provider 的 export class 名字异同
-
-    最后输出"已完成"。
+    请按顺序完成以下 4 个小任务,每个都用 1-2 步工具完成:
+    1. 列出当前仓库根目录的顶层条目数量。
+    2. 在 evals/capability/router/ 下有几个 case yaml?
+    3. src/llm/ 目录下有多少个 .ts 文件?
+    4. 整理上述三个数字,做一个简短总结。
 
 expected:
-  # 应调多种工具
   execution_must_call_tools_any_of:
-    - ls
-    - glob
-    - read
     - bash
-
-  # 应调多步,但不应超过 30
-  max_steps: 30
-
-  # final_response 应含"已完成"或类似收尾
-  final_response_must_include_any_of:
-    - 已完成
-    - 完成
-    - "AnthropicProvider"
-    - "OpenAIProvider"
+    - glob
+    - ls
+    - grep
 
   exit_status_must_be:
     - end_turn
 
+  # 应给出三个数字 / 计数
+  final_response_must_include_any_of:
+    - "数"
+    - "个"
+    - "总"
+    - "条"
+
+  max_steps: 20
+
 rubric:
-  harness_long_task_completion_quality: "是否完整执行 4 步并给出对比结论"
+  long_task_4step_completion: "4 步任务是否全部覆盖,不漏步骤"
 
 grader:
   - type: assert
     check: execution_must_call_tools_any_of_hit
+    weight: 0.25
+  - type: assert
+    check: exit_status_must_be_any_of_hit
+    weight: 0.25
+  - type: assert
+    check: final_response_must_include_any_of_hit
     weight: 0.20
   - type: assert
     check: max_steps_within_budget
     weight: 0.20
-  - type: assert
-    check: final_response_must_include_any_of_hit
-    weight: 0.30
-  - type: assert
-    check: exit_status_must_be_any_of_hit
-    weight: 0.20
   - type: llm_judge
     weight: 0.10
     rubric_ref:
-      - harness_long_task_completion_quality
+      - long_task_4step_completion
 
-source: synthetic_capability_2026_05_27_S0_T06
+source: synthetic_capability_2026_05_27_S0_T08_D
 related_subsystem: [ harness, agent ]
 related_adr: []
 baseline_scores:
   sid_code_deepseek_v4_pro:
-    score: 4.5
+    score: 3.5
     run_status: success
     tested_at: 2026-05-27T05:11:15.795Z
     tested_by: eval:harness-capability
     transcript_path: null
     notes: ""
     dimensions:
-      assert: 5
+      assert: 3.9
       llm_judge: null
     _formula_version:
       grader: capability-harness-v1
     samples:
-      - score: 4.5
+      - score: 3.5
         runStatus: success
         testedAt: 2026-05-27T05:11:15.795Z
         dimensions:
-          assert: 5
+          assert: 3.9
           llm_judge: null
-      - score: 4.5
+      - score: 3.5
         runStatus: success
         testedAt: 2026-05-27T05:11:15.795Z
         dimensions:
-          assert: 5
+          assert: 3.9
           llm_judge: null
-      - score: 4.5
+      - score: 3.5
         runStatus: success
         testedAt: 2026-05-27T05:11:15.795Z
         dimensions:
-          assert: 5
+          assert: 3.9
           llm_judge: null

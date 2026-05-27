@@ -1,0 +1,88 @@
+# Context capability case — chinese_context 维度（第 2 条,补 n≥2 / S0-T08-D）
+# 全中文短输入 + 代码生成,验证 agent 中文上下文 + 代码符号生成的混合能力
+
+id: case_ctx_009
+subsystem: context
+dimension: chinese_context
+priority: P1
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: |
+    用中文回答下面问题,但代码片段保持英文:
+
+    问:在 TypeScript 里,如何把一个 Promise 数组并行执行并等待全部完成?
+    请给出 1-2 行代码示例 + 一句中文解释。
+
+expected:
+  # final_response 应同时含中文 + 代码 API 名(代码标识豁免 echo)
+  final_response_must_include_any_of:
+    - Promise.all
+    - Promise.allSettled
+    - await
+
+  # 应有中文(至少有一个中文标点 / 中文字符)
+  final_response_must_not_include:
+    - "[NO CHINESE]" # 占位
+
+  max_steps: 5
+
+  final_response_max_length: 1500
+
+rubric:
+  chinese_context_bilingual: "agent 是否中文解释 + 英文代码两者都到位,不全英文也不全中文"
+
+grader:
+  - type: assert
+    check: final_response_must_include_any_of_hit
+    weight: 0.50
+  - type: assert
+    check: max_steps_within_budget
+    weight: 0.20
+  - type: assert
+    check: final_response_max_length_ok
+    weight: 0.20
+  - type: llm_judge
+    weight: 0.10
+    rubric_ref:
+      - chinese_context_bilingual
+
+source: synthetic_capability_2026_05_27_S0_T08_D
+related_subsystem: [ context, chinese ]
+related_adr: []
+baseline_scores:
+  sid_code_deepseek_v4_pro:
+    score: 4.5
+    run_status: success
+    tested_at: 2026-05-27T06:04:05.006Z
+    tested_by: eval:context-capability
+    transcript_path: null
+    notes: ""
+    dimensions:
+      assert: 5
+      llm_judge: null
+    _formula_version:
+      grader: capability-context-v1
+    samples:
+      - score: 4.5
+        runStatus: success
+        testedAt: 2026-05-27T06:04:05.006Z
+        dimensions:
+          assert: 5
+          llm_judge: null
+      - score: 2
+        runStatus: success
+        testedAt: 2026-05-27T06:04:05.006Z
+        dimensions:
+          assert: 2.2
+          llm_judge: null
+      - score: 4.5
+        runStatus: success
+        testedAt: 2026-05-27T06:04:05.006Z
+        dimensions:
+          assert: 5
+          llm_judge: null

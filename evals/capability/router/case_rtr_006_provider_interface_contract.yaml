@@ -1,0 +1,100 @@
+# Router capability case — provider_registration 维度（第 2 条,补 n≥2 / S0-T08-D）
+# 让 agent 从 src/llm/ 目录读 provider 实现,描述某一家 provider 的最小接口契约
+
+id: case_rtr_006
+subsystem: router
+dimension: provider_registration
+priority: P1
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+known_limitation:
+  type: case_design
+  reason: "未注入 mock provider,实测的是代码阅读 + 接口归纳能力,与 router 运行时注册流程无强关联"
+  resolved_in: "S2/S3 mock provider 阶段 — 见 ADR-021"
+
+input:
+  user_query: |
+    在这个仓库里,每家大模型厂商接入时大致都要做些什么(从代码层看)?
+    告诉我哪个文件是入口、需要实现哪类方法,简短回答即可。
+
+expected:
+  execution_must_call_tools_any_of:
+    - read
+    - grep
+    - glob
+    - ls
+
+  # 命中接口契约关键词(代码标识豁免 echo)
+  final_response_must_include_any_of:
+    - Provider
+    - streamMessage
+    - createProvider
+    - registry
+    - Registry
+    - provider.ts
+
+  max_steps: 15
+
+  exit_status_must_be:
+    - end_turn
+
+rubric:
+  provider_registration_interface_grasp: "是否归纳出 Provider 接口的最小契约(stream / message / 工具调用之一)"
+
+grader:
+  - type: assert
+    check: execution_must_call_tools_any_of_hit
+    weight: 0.30
+  - type: assert
+    check: final_response_must_include_any_of_hit
+    weight: 0.30
+  - type: assert
+    check: max_steps_within_budget
+    weight: 0.15
+  - type: assert
+    check: exit_status_must_be_any_of_hit
+    weight: 0.15
+  - type: llm_judge
+    weight: 0.10
+    rubric_ref:
+      - provider_registration_interface_grasp
+
+source: synthetic_capability_2026_05_27_S0_T08_D
+related_subsystem: [ router, llm ]
+related_adr: [ ADR-021 ]
+baseline_scores:
+  sid_code_deepseek_v4_pro:
+    score: 3.8
+    run_status: success
+    tested_at: 2026-05-27T04:54:09.449Z
+    tested_by: eval:router-capability
+    transcript_path: null
+    notes: ""
+    dimensions:
+      assert: 4.2
+      llm_judge: null
+    _formula_version:
+      grader: capability-router-v1
+    samples:
+      - score: 3.8
+        runStatus: success
+        testedAt: 2026-05-27T04:54:09.449Z
+        dimensions:
+          assert: 4.2
+          llm_judge: null
+      - score: 3.8
+        runStatus: success
+        testedAt: 2026-05-27T04:54:09.449Z
+        dimensions:
+          assert: 4.2
+          llm_judge: null
+      - score: 3.8
+        runStatus: success
+        testedAt: 2026-05-27T04:54:09.449Z
+        dimensions:
+          assert: 4.2
+          llm_judge: null

@@ -46,6 +46,17 @@ export interface BaselineResult {
   transcriptPath?: string | null;
   /** 覆盖默认 notes（默认按 runStatus 自动生成） */
   notes?: string;
+  /**
+   * Multi-sample baseline（08 §9.3 第 6 条 / a.md 问题 6 残留）：
+   *   每条 case 跑 N 次,score 取中位数,本字段保留每次分数 + 状态用于事后审计。
+   *   单次跑(N=1)时不写本字段,与历史数据兼容。
+   */
+  samples?: Array<{
+    score: number | null;
+    runStatus: string;
+    testedAt: string;
+    dimensions?: Record<string, number | null>;
+  }>;
 }
 
 export interface SyncOptions {
@@ -174,6 +185,9 @@ export function syncBaselineScores(results: BaselineResult[], opts: SyncOptions)
       };
       if (r.formulaVersion) {
         entry._formula_version = r.formulaVersion;
+      }
+      if (r.samples && r.samples.length > 0) {
+        entry.samples = r.samples;
       }
       baselineNode.set(r.provider, doc.createNode(entry));
     }

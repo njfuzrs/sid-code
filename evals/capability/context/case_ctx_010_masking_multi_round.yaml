@@ -1,0 +1,105 @@
+# Context capability case — large_output_masking 维度（第 2 条,补 n≥2 / S0-T08-D）
+# 让 agent 跑两次会输出大量内容的 bash,验证多次大输出后 agent 仍能给出 final_response
+
+id: case_ctx_010
+subsystem: context
+dimension: large_output_masking
+priority: P1
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+# Known Limitation (ADR-021):
+#   真测 masking 需断言 message token 前后对比,本 case 仅验证"两次大输出后 agent 没崩"。
+#   S2 落地 ADR-021 后,本 case 加 message_token_reduction_after_masking 维度。
+
+known_limitation:
+  type: case_design
+  reason: "未断言 masking 真生效,只验证多次大输出后 agent 不爆 context"
+  resolved_in: "S2 落地 ADR-021 message_token_reduction 断言"
+
+input:
+  user_query: |
+    请帮我用 bash 跑两件事:
+    1. 列出当前仓库 src/ 下所有 .ts 文件路径(可能上百个)。
+    2. 列出当前仓库 evals/ 下所有 yaml 文件路径。
+    跑完后告诉我两类文件数量的大致量级即可。
+
+expected:
+  execution_must_call_tools_any_of:
+    - bash
+    - grep
+    - glob
+
+  # 应正常完成 + 给出数量描述
+  final_response_must_include_any_of:
+    - ".ts"
+    - ".yaml"
+    - 数量
+    - 大约
+    - "约"
+
+  # 应在 30 步内完成
+  max_steps: 30
+
+  exit_status_must_be:
+    - end_turn
+
+rubric:
+  masking_no_crash_multi_round: "多次大输出后流程是否继续,不爆 context"
+
+grader:
+  - type: assert
+    check: execution_must_call_tools_any_of_hit
+    weight: 0.30
+  - type: assert
+    check: final_response_must_include_any_of_hit
+    weight: 0.20
+  - type: assert
+    check: exit_status_must_be_any_of_hit
+    weight: 0.20
+  - type: assert
+    check: max_steps_within_budget
+    weight: 0.20
+  - type: llm_judge
+    weight: 0.10
+    rubric_ref:
+      - masking_no_crash_multi_round
+
+source: synthetic_capability_2026_05_27_S0_T08_D
+related_subsystem: [ context ]
+related_adr: [ ADR-021 ]
+baseline_scores:
+  sid_code_deepseek_v4_pro:
+    score: 4.5
+    run_status: success
+    tested_at: 2026-05-27T06:20:17.738Z
+    tested_by: eval:context-capability
+    transcript_path: null
+    notes: ""
+    dimensions:
+      assert: 5
+      llm_judge: null
+    _formula_version:
+      grader: capability-context-v1
+    samples:
+      - score: 4.5
+        runStatus: success
+        testedAt: 2026-05-27T06:20:17.738Z
+        dimensions:
+          assert: 5
+          llm_judge: null
+      - score: 4.5
+        runStatus: success
+        testedAt: 2026-05-27T06:20:17.738Z
+        dimensions:
+          assert: 5
+          llm_judge: null
+      - score: 4.5
+        runStatus: success
+        testedAt: 2026-05-27T06:20:17.738Z
+        dimensions:
+          assert: 5
+          llm_judge: null

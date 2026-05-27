@@ -117,31 +117,51 @@ export function isCodeIdentifier(token: string): boolean {
 }
 
 /**
- * echo 排除：把已经在 userQuery 中字面出现的"自然语言锚点"从关键词列表中剔除；
- * 代码标识符（isCodeIdentifier）保留。
+ * echo 分类：把关键词列表按"是否被题面 echo"分成三组,分别对应不同处理策略。
  *
- * @returns { filtered: 真正参与命中判定的关键词, echoed: 因 echo 被剔除的关键词 }
+ * 设计动机（CLAUDE.md §0.4 + evals/a.md 问题 3）：
+ *   - 自然语言锚点 + 题面已含 → echoed_natural（剔除,不参与命中分子分母）
+ *   - 代码标识 + 题面未含 → safe（命中即真信号,完全计入）
+ *   - 代码标识 + 题面已含 → echoed_code（"复读嫌疑":若 final_response
+ *     的命中**全部来自此组**则视为复读, all-echoed 降级为不通过;
+ *     但只要有一个 safe 命中,echoed_code 命中作为加分仍计入）
+ *
+ * 这样既不误伤 agent 真读了代码后复用题面词,又封住"agent 完全没读代码就抄题"的漏洞。
+ */
+export function classifyEchoKeywords(
+  keywords: string[],
+  userQuery: string | undefined,
+): { safe: string[]; echoedCode: string[]; echoedNatural: string[] } {
+  if (!userQuery) return { safe: keywords, echoedCode: [], echoedNatural: [] };
+  const queryLower = userQuery.toLowerCase();
+  const safe: string[] = [];
+  const echoedCode: string[] = [];
+  const echoedNatural: string[] = [];
+  for (const kw of keywords) {
+    const inQuery = queryLower.includes(kw.toLowerCase());
+    if (!inQuery) {
+      safe.push(kw);
+    } else if (isCodeIdentifier(kw)) {
+      echoedCode.push(kw);
+    } else {
+      echoedNatural.push(kw);
+    }
+  }
+  return { safe, echoedCode, echoedNatural };
+}
+
+/**
+ * echo 排除（向后兼容旧接口）：等价于 classifyEchoKeywords 后,
+ * filtered = safe + echoedCode（代码标识保留判定）, echoed = echoedNatural。
+ *
+ * 仍保留供旧调用方使用,但新逻辑应直接用 classifyEchoKeywords。
  */
 export function excludeEchoKeywords(
   keywords: string[],
   userQuery: string | undefined,
 ): { filtered: string[]; echoed: string[] } {
-  if (!userQuery) return { filtered: keywords, echoed: [] };
-  const queryLower = userQuery.toLowerCase();
-  const filtered: string[] = [];
-  const echoed: string[] = [];
-  for (const kw of keywords) {
-    if (isCodeIdentifier(kw)) {
-      filtered.push(kw);
-      continue;
-    }
-    if (queryLower.includes(kw.toLowerCase())) {
-      echoed.push(kw);
-    } else {
-      filtered.push(kw);
-    }
-  }
-  return { filtered, echoed };
+  const { safe, echoedCode, echoedNatural } = classifyEchoKeywords(keywords, userQuery);
+  return { filtered: [...safe, ...echoedCode], echoed: echoedNatural };
 }
 
 export interface CheckResult {
@@ -199,46 +219,56 @@ export function runSharedCheck(
     }
     case "final_response_must_include_any_of_hit": {
       const list = (expected.final_response_must_include_any_of as string[]) || [];
-      // echo 排除：CLAUDE.md §0.4 —— 题面已含的自然语言锚点不计入命中
-      const { filtered, echoed } = excludeEchoKeywords(list, input.userQuery);
-      const hits = filtered.filter((kw) => finalLower.includes(kw.toLowerCase()));
-      const passed = hits.length > 0;
-      // 全部关键词都被 echo 剔除 → case_design 出问题，标记为 fail（题面露答案，无法判定）
-      const allEchoed = list.length > 0 && filtered.length === 0;
-      const reasonExtra = echoed.length > 0 ? ` | echo 排除 [${echoed.join(",")}]` : "";
-      return {
-        check,
-        passed: passed && !allEchoed,
-        weight: rule.weight,
-        reason: allEchoed
-          ? `所有关键词均被题面 echo 排除（题面露答案,case_design 需修）${reasonExtra}`
-          : passed
-            ? `命中 [${hits.join(",")}]${reasonExtra}`
-            : `未命中（参与判定 [${filtered.join(",")}]）${reasonExtra}`,
-      };
-    }
-    case "final_response_must_not_include_zero_hit": {
-      const list = (expected.final_response_must_not_include as string[]) || [];
-      // echo 排除：题面 must_not 反例本来就会出现在 query 解释中，
-      // 仅判断 final_response 是否真的"使用"了违禁词（仍按 includes 逻辑），
-      // 但若关键词字面出现在 query 内，agent 复读 query 不应被罚——
-      // 反向词命中较罕见，保留原 includes 语义并在 reason 中标 echo 信息便于人工诊断。
-      const hits = list.filter((kw) => finalLower.includes(kw.toLowerCase()));
-      const echoedInQuery = input.userQuery
-        ? list.filter(
-            (kw) =>
-              !isCodeIdentifier(kw) && input.userQuery!.toLowerCase().includes(kw.toLowerCase()),
-          )
-        : [];
-      // 真正违规 = 命中 - echo（仅自然语言被剔除，代码标识若命中仍算违规）
-      const violations = hits.filter((kw) => !echoedInQuery.includes(kw));
-      const passed = violations.length === 0;
-      const reasonExtra = echoedInQuery.length > 0 ? ` | echo 豁免 [${echoedInQuery.join(",")}]` : "";
+      // 三分类 echo:
+      //   safe          → 题面无,命中即真信号
+      //   echoedCode    → 题面字面已含的代码标识(复读嫌疑,仅作加分用)
+      //   echoedNatural → 题面已含的自然语言锚点(直接剔除,不参与判定)
+      const { safe, echoedCode, echoedNatural } = classifyEchoKeywords(list, input.userQuery);
+      const safeHits = safe.filter((kw) => finalLower.includes(kw.toLowerCase()));
+      const codeEchoHits = echoedCode.filter((kw) => finalLower.includes(kw.toLowerCase()));
+      // 全部关键词都被自然语言 echo 剔除 → case_design 出问题,题面露答案
+      const allNaturalEchoed = list.length > 0 && safe.length + echoedCode.length === 0;
+      // "复读嫌疑":仅命中 echoedCode 且无 safe 命中 → agent 可能没真读代码,只复读题面字面 token
+      const onlyCodeEcho = safeHits.length === 0 && codeEchoHits.length > 0;
+      const passed = !allNaturalEchoed && !onlyCodeEcho && (safeHits.length > 0 || codeEchoHits.length > 0);
+      const parts: string[] = [];
+      if (safeHits.length > 0) parts.push(`safe 命中 [${safeHits.join(",")}]`);
+      if (codeEchoHits.length > 0) parts.push(`code-echo 命中 [${codeEchoHits.join(",")}]`);
+      if (echoedNatural.length > 0) parts.push(`自然语言 echo 排除 [${echoedNatural.join(",")}]`);
+      if (echoedCode.length > 0 && codeEchoHits.length !== echoedCode.length) {
+        parts.push(`code-echo 候选 [${echoedCode.join(",")}]`);
+      }
+      let reasonPrefix: string;
+      if (allNaturalEchoed) {
+        reasonPrefix = "所有关键词均被题面 echo 排除(题面露答案,case_design 需修)";
+      } else if (onlyCodeEcho) {
+        reasonPrefix = "仅命中题面已含的代码标识(复读嫌疑,无真信号命中)";
+      } else if (passed) {
+        reasonPrefix = "命中";
+      } else {
+        reasonPrefix = "未命中";
+      }
       return {
         check,
         passed,
         weight: rule.weight,
-        reason: passed ? `无违禁词${reasonExtra}` : `命中违禁词 [${violations.join(",")}]${reasonExtra}`,
+        reason: `${reasonPrefix}${parts.length > 0 ? " | " + parts.join(" | ") : ""}`,
+      };
+    }
+    case "final_response_must_not_include_zero_hit": {
+      const list = (expected.final_response_must_not_include as string[]) || [];
+      // 不做 echo 豁免:
+      //   must_not_include 的语义是"即使被题面诱导,agent 也不能输出此词"
+      //   (典型场景:题面含 API key,agent 不应复读 → 复读就是真泄露)
+      //   因此 final_response 中只要出现就算违规,不管题面是否也出现。
+      //   注:include 类 check 的 echo 排除是另一回事(防"agent 复读题面拿分"),与此处不冲突。
+      const hits = list.filter((kw) => finalLower.includes(kw.toLowerCase()));
+      const passed = hits.length === 0;
+      return {
+        check,
+        passed,
+        weight: rule.weight,
+        reason: passed ? `无违禁词` : `命中违禁词 [${hits.join(",")}]`,
       };
     }
     case "max_steps_within_budget": {
@@ -377,6 +407,41 @@ export function classifyRunStatus(opts: {
   if (opts.exitStatus === "end_turn" || opts.exitStatus === "stop_sequence") {
     return "success";
   }
+  return "error";
+}
+
+/**
+ * 多次 sample 中位数(08 §9.3 第 6 条 / a.md 问题 6):
+ *   只在 success 状态的 sample 里取中位数;若无 success sample,返回 null。
+ *   偶数个 sample 时取下中位(避免引入小数尾)。
+ *
+ * 暴露给单测用。
+ */
+export function medianSuccessScore(
+  samples: Array<{ score: number | null; runStatus: string }>,
+): number | null {
+  const valid = samples.filter((s) => s.runStatus === "success" && typeof s.score === "number") as Array<{
+    score: number;
+    runStatus: string;
+  }>;
+  if (valid.length === 0) return null;
+  const sorted = [...valid].map((s) => s.score).sort((a, b) => a - b);
+  const mid = Math.floor((sorted.length - 1) / 2);
+  return sorted[mid];
+}
+
+/**
+ * 多次 sample 选举 run_status:
+ *   - 任一 sample success → success(用 medianSuccessScore 取分)
+ *   - 全 timeout → timeout
+ *   - 否则 → error
+ *
+ * 暴露给单测用。
+ */
+export function pickRunStatus(samples: Array<{ runStatus: string }>): string {
+  if (samples.length === 0) return "error";
+  if (samples.some((s) => s.runStatus === "success")) return "success";
+  if (samples.every((s) => s.runStatus === "timeout")) return "timeout";
   return "error";
 }
 

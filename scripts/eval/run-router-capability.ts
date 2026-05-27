@@ -26,7 +26,9 @@ import {
   runSharedCheck,
   aggregateCapabilityScore,
   classifyRunStatus,
-  excludeEchoKeywords,
+  classifyEchoKeywords,
+  medianSuccessScore,
+  pickRunStatus,
   type SharedGraderInput,
   type CheckResult,
   type GraderRule,
@@ -44,6 +46,7 @@ const { values } = parseArgs({
     timeout: { type: "string", default: "180000" },
     model: { type: "string" },
     sync: { type: "boolean", default: false },
+    samples: { type: "string", default: "1" },
   },
   allowPositionals: true,
 });
@@ -90,17 +93,23 @@ function runRouterCheck(rule: GraderRule, input: RouterGraderInput): CheckResult
     }
     case "final_response_must_include_count_keywords_min_3_hit": {
       const list = expected.final_response_must_include_count_keywords_min_3 || [];
-      // echo 排除：题面已含的自然语言锚点不计入命中（CLAUDE.md §0.4）
-      const { filtered, echoed } = excludeEchoKeywords(list, input.userQuery);
-      const filteredLower = filtered.map((k) => k.toLowerCase());
-      const hits = filteredLower.filter((kw) => lower.includes(kw));
-      const ok = hits.length >= 3;
-      const reasonExtra = echoed.length > 0 ? ` | echo 排除 [${echoed.join(",")}]` : "";
+      // 三分类 echo（CLAUDE.md §0.4 + a.md 问题 3）
+      // 阈值要求"safe 命中 ≥ 3"——code-echo 命中只作为加分提示,不充数
+      const { safe, echoedCode, echoedNatural } = classifyEchoKeywords(list, input.userQuery);
+      const safeLower = safe.map((k) => k.toLowerCase());
+      const codeEchoLower = echoedCode.map((k) => k.toLowerCase());
+      const safeHits = safeLower.filter((kw) => lower.includes(kw));
+      const codeEchoHits = codeEchoLower.filter((kw) => lower.includes(kw));
+      const ok = safeHits.length >= 3;
+      const parts: string[] = [];
+      if (codeEchoHits.length > 0) parts.push(`code-echo 命中(不计) [${codeEchoHits.join(",")}]`);
+      if (echoedNatural.length > 0) parts.push(`自然语言 echo 排除 [${echoedNatural.join(",")}]`);
+      const reasonExtra = parts.length > 0 ? ` | ${parts.join(" | ")}` : "";
       return {
         check,
         passed: ok,
         weight: rule.weight,
-        reason: `命中 ${hits.length}/${filtered.length} (要求 ≥ 3): [${hits.join(",")}]${reasonExtra}`,
+        reason: `safe 命中 ${safeHits.length}/${safe.length} (要求 ≥ 3): [${safeHits.join(",")}]${reasonExtra}`,
       };
     }
     default:
@@ -138,6 +147,18 @@ const ts = Date.now();
 const rawOutputPath = join(RAW_DIR, `capability-router-${ts}.jsonl`);
 const reportOutputPath = join(REPORT_DIR, `capability-router-${ts}.json`);
 
+interface SampleSnapshot {
+  finalScore: number;
+  assertScore: number;
+  llmScore: number | null;
+  runStatus: string;
+  exitStatus: string;
+  timedOut: boolean;
+  elapsedSec: number;
+  toolsCalled: string[];
+  steps: number;
+}
+
 interface CaseResult {
   id: string;
   dimension: string;
@@ -154,100 +175,183 @@ interface CaseResult {
     session_dir: string | null;
   };
   reasoning: string;
+  /** N 次 sample 的快照(N>1 时填,N=1 时为空数组) */
+  samples: SampleSnapshot[];
+  /** 多次跑的 run_status 选举结果 */
+  aggregatedRunStatus: string;
 }
 
+const samplesN = Math.max(1, parseInt(values.samples || "1", 10));
 const results: CaseResult[] = [];
 
 for (let i = 0; i < cases.length; i++) {
   const c = cases[i];
-  console.log(`[${i + 1}/${cases.length}] ${c.id} (${c.dimension}) — 启动 sid-code-live ...`);
+  console.log(
+    `[${i + 1}/${cases.length}] ${c.id} (${c.dimension}) — 启动 sid-code-live ...${samplesN > 1 ? ` (samples=${samplesN})` : ""}`,
+  );
 
-  const startedAt = Date.now();
-  let live: SidCodeLiveResult;
-  try {
-    live = await runSidCodeLive(c.input.user_query.trim(), liveConfig);
-  } catch (err) {
-    console.log(`    ✗ adapter error: ${String(err).slice(0, 200)}`);
-    continue;
-  }
-  const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+  const sampleSnapshots: SampleSnapshot[] = [];
+  // 最后一次 sample 的产物作为"展示"快照(stdout / details / session_dir)
+  let lastLive: SidCodeLiveResult | null = null;
+  let lastDetails: Record<string, string | number | boolean> = {};
+  let lastCheckSummary = "";
 
-  const graderInput: RouterGraderInput = {
-    expected: c.expected,
-    toolsCalled: live.output.tools_called,
-    steps: live.output.steps,
-    finalResponse: live.output.final_response,
-    exitStatus: live.output.exit_status,
-    userQuery: c.input.user_query,
-  };
-  const sharedInput: SharedGraderInput = {
-    expected: c.expected as Record<string, unknown>,
-    toolsCalled: graderInput.toolsCalled,
-    steps: graderInput.steps,
-    finalResponse: graderInput.finalResponse,
-    userQuery: c.input.user_query,
-  };
-
-  const assertResults: CheckResult[] = [];
-  let llmRule: GraderRule | null = null;
-  for (const rule of c.grader) {
-    if (rule.type === "llm_judge") {
-      llmRule = rule;
+  for (let s = 0; s < samplesN; s++) {
+    const startedAt = Date.now();
+    let live: SidCodeLiveResult;
+    try {
+      live = await runSidCodeLive(c.input.user_query.trim(), liveConfig);
+    } catch (err) {
+      console.log(`    [sample ${s + 1}/${samplesN}] ✗ adapter error: ${String(err).slice(0, 200)}`);
+      sampleSnapshots.push({
+        finalScore: 0,
+        assertScore: 0,
+        llmScore: null,
+        runStatus: "error",
+        exitStatus: "adapter_error",
+        timedOut: false,
+        elapsedSec: (Date.now() - startedAt) / 1000,
+        toolsCalled: [],
+        steps: 0,
+      });
       continue;
     }
-    const shared = runSharedCheck(rule, sharedInput);
-    assertResults.push(shared ?? runRouterCheck(rule, graderInput));
-  }
+    const elapsedSec = (Date.now() - startedAt) / 1000;
+    lastLive = live;
 
-  let llmScore: number | undefined;
-  if (values.execute && llmRule && judgeConfig.apiKey) {
-    const judgeInput = {
-      task: c.input.user_query.slice(0, 1500),
-      expected: {
-        must_include_keywords: c.expected.final_response_must_include_any_of,
-        must_call_tools: c.expected.execution_must_call_tools_any_of,
-        max_steps: c.expected.max_steps,
-      },
-      agentResponse: live.output.final_response,
+    const graderInput: RouterGraderInput = {
+      expected: c.expected,
+      toolsCalled: live.output.tools_called,
+      steps: live.output.steps,
+      finalResponse: live.output.final_response,
+      exitStatus: live.output.exit_status,
+      userQuery: c.input.user_query,
     };
-    const judgeResult = await gradeProcess(judgeInput, judgeConfig);
-    llmScore = judgeResult.score;
+    const sharedInput: SharedGraderInput = {
+      expected: c.expected as Record<string, unknown>,
+      toolsCalled: graderInput.toolsCalled,
+      steps: graderInput.steps,
+      finalResponse: graderInput.finalResponse,
+      userQuery: c.input.user_query,
+    };
+
+    const assertResults: CheckResult[] = [];
+    let llmRule: GraderRule | null = null;
+    for (const rule of c.grader) {
+      if (rule.type === "llm_judge") {
+        llmRule = rule;
+        continue;
+      }
+      const shared = runSharedCheck(rule, sharedInput);
+      assertResults.push(shared ?? runRouterCheck(rule, graderInput));
+    }
+
+    let llmScore: number | undefined;
+    if (values.execute && llmRule && judgeConfig.apiKey) {
+      const judgeInput = {
+        task: c.input.user_query.slice(0, 1500),
+        expected: {
+          must_include_keywords: c.expected.final_response_must_include_any_of,
+          must_call_tools: c.expected.execution_must_call_tools_any_of,
+          max_steps: c.expected.max_steps,
+        },
+        agentResponse: live.output.final_response,
+      };
+      const judgeResult = await gradeProcess(judgeInput, judgeConfig);
+      llmScore = judgeResult.score;
+    }
+
+    const agg = aggregateCapabilityScore({
+      assertResults,
+      llmJudgeScore: llmScore,
+      llmJudgeWeight: llmRule?.weight,
+    });
+    const sampleStatus = classifyRunStatus({
+      exitStatus: live.output.exit_status,
+      timedOut: live.timedOut,
+    });
+
+    sampleSnapshots.push({
+      finalScore: agg.score,
+      assertScore: agg.assertScore,
+      llmScore: agg.llmScore,
+      runStatus: sampleStatus,
+      exitStatus: live.output.exit_status,
+      timedOut: live.timedOut,
+      elapsedSec,
+      toolsCalled: live.output.tools_called,
+      steps: live.output.steps,
+    });
+    lastDetails = agg.details;
+    lastCheckSummary = assertResults.map((r) => `${r.check}=${r.passed ? "✓" : "✗"}`).join(" / ");
+
+    if (samplesN > 1) {
+      console.log(
+        `    [sample ${s + 1}/${samplesN}] score=${agg.score}/5 (assert=${agg.assertScore}${llmScore != null ? `, judge=${llmScore}` : ""}) | ${elapsedSec.toFixed(1)}s | ${live.output.exit_status}${live.timedOut ? " ⚠️ timeout" : ""}`,
+      );
+    }
   }
 
-  const agg = aggregateCapabilityScore({
-    assertResults,
-    llmJudgeScore: llmScore,
-    llmJudgeWeight: llmRule?.weight,
-  });
+  // multi-sample 中位数 + run_status 选举
+  const aggregatedRunStatus = pickRunStatus(sampleSnapshots);
+  const medianFinal =
+    aggregatedRunStatus === "success"
+      ? (medianSuccessScore(
+          sampleSnapshots.map((sn) => ({ score: sn.finalScore, runStatus: sn.runStatus })),
+        ) ?? 0)
+      : 0;
+  const medianAssert =
+    aggregatedRunStatus === "success"
+      ? (medianSuccessScore(
+          sampleSnapshots.map((sn) => ({ score: sn.assertScore, runStatus: sn.runStatus })),
+        ) ?? 0)
+      : 0;
+  const llmScores = sampleSnapshots
+    .filter((sn) => sn.runStatus === "success" && sn.llmScore != null)
+    .map((sn) => ({ score: sn.llmScore as number, runStatus: "success" }));
+  const medianLlm = llmScores.length > 0 ? medianSuccessScore(llmScores) : null;
 
-  const checkSummary = assertResults.map((r) => `${r.check}=${r.passed ? "✓" : "✗"}`).join(" / ");
-
+  // 用最后一个 sample 的快照展示工具调用 / session_dir
+  const showLive = lastLive;
   const result: CaseResult = {
     id: c.id,
     dimension: c.dimension,
     priority: c.priority,
-    finalScore: agg.score,
-    assertScore: agg.assertScore,
-    llmScore: agg.llmScore,
-    details: agg.details,
+    finalScore: medianFinal,
+    assertScore: medianAssert,
+    llmScore: medianLlm,
+    details: lastDetails,
     agentSnapshot: {
-      tools_called: live.output.tools_called,
-      steps: live.output.steps,
-      exit_status: live.output.exit_status,
-      timed_out: live.timedOut,
-      session_dir: live.sessionDir,
+      tools_called: showLive?.output.tools_called ?? [],
+      steps: showLive?.output.steps ?? 0,
+      exit_status: showLive?.output.exit_status ?? "no_sample",
+      timed_out: showLive?.timedOut ?? false,
+      session_dir: showLive?.sessionDir ?? null,
     },
-    reasoning: `${elapsed}s, ${checkSummary}${llmScore != null ? `, judge=${llmScore}` : ""}`,
+    reasoning:
+      samplesN > 1
+        ? `samples=${samplesN}, median=${medianFinal}/5 (assert=${medianAssert}), status=${aggregatedRunStatus}`
+        : `${(sampleSnapshots[0]?.elapsedSec ?? 0).toFixed(1)}s, ${lastCheckSummary}`,
+    samples: samplesN > 1 ? sampleSnapshots : [],
+    aggregatedRunStatus,
   };
-  (result as unknown as { _stdout: string })._stdout = live.stdout.slice(-1500);
-  (result as unknown as { _stderr: string })._stderr = live.stderr.slice(-1500);
+  if (showLive) {
+    (result as unknown as { _stdout: string })._stdout = showLive.stdout.slice(-1500);
+    (result as unknown as { _stderr: string })._stderr = showLive.stderr.slice(-1500);
+  }
   results.push(result);
 
-  console.log(
-    `    → score=${result.finalScore}/5 (assert=${result.assertScore}${llmScore != null ? `, judge=${llmScore}` : ""}) | ${elapsed}s | ${result.agentSnapshot.exit_status}`,
-  );
-  if (live.timedOut) {
-    console.log(`    ⚠️  timeout`);
+  if (samplesN > 1) {
+    console.log(
+      `    → median=${medianFinal}/5 (assert=${medianAssert}) | run_status=${aggregatedRunStatus}`,
+    );
+  } else {
+    console.log(
+      `    → score=${result.finalScore}/5 (assert=${result.assertScore}${result.llmScore != null ? `, judge=${result.llmScore}` : ""}) | ${(sampleSnapshots[0]?.elapsedSec ?? 0).toFixed(1)}s | ${result.agentSnapshot.exit_status}`,
+    );
+    if (showLive?.timedOut) {
+      console.log(`    ⚠️  timeout`);
+    }
   }
 }
 
@@ -316,10 +420,19 @@ if (values.sync) {
   const providerKey = `sid_code_${modelSlug}`;
 
   const baselineResults: BaselineResult[] = results.map((r) => {
-    const runStatus = classifyRunStatus({
-      exitStatus: r.agentSnapshot.exit_status,
-      timedOut: r.agentSnapshot.timed_out,
-    });
+    const runStatus = r.aggregatedRunStatus;
+    const samples =
+      r.samples.length > 0
+        ? r.samples.map((sn) => ({
+            score: sn.runStatus === "success" ? sn.finalScore : null,
+            runStatus: sn.runStatus,
+            testedAt: new Date(ts).toISOString(),
+            dimensions: {
+              assert: sn.runStatus === "success" ? sn.assertScore : null,
+              llm_judge: sn.runStatus === "success" ? sn.llmScore : null,
+            },
+          }))
+        : undefined;
     return {
       caseId: r.id,
       provider: providerKey,
@@ -331,6 +444,7 @@ if (values.sync) {
         llm_judge: r.llmScore,
       },
       formulaVersion: { grader: "capability-router-v1" },
+      samples,
     };
   });
 

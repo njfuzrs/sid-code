@@ -1,10 +1,10 @@
-# Memory capability case — memory_write 维度
-# 验证 "全局偏好"（涉及多项目共用的工程习惯）应落 global scope
+# Memory capability case — memory_isolation 维度（第 2 条,补 n≥2 / S0-T08-D）
+# 跨 scope 写入：让 agent 同时记住一条 global + 一条 project,验证 scope 分隔正确
 
-id: case_mem_002
+id: case_mem_009
 subsystem: memory
-dimension: memory_write
-priority: P0
+dimension: memory_isolation
+priority: P1
 
 eval_type: capability
 target_score: 4.0
@@ -13,36 +13,32 @@ holdout: false
 
 input:
   user_query: |
-    我所有项目的 commit 信息都用中文写,这是我的全局习惯,
-    请帮我记住这一点,以后无论哪个项目都按这个规则。
+    我有两件事请你记住:
+    1. 我所有项目都偏好用 prettier 格式化 — 这是全局偏好。
+    2. 这个项目用 bun 作为运行时 — 这是当前项目专属。
+
+    请把这两条信息分别保存到对应的 memory scope。
 
 expected:
   execution_must_call_tools_any_of:
-    - save_memory
+    - memory_save
+    - memory
 
-  # 全局偏好 → 应落 global scope
-  memory_write_scope_must_be: global
-
+  # 跑后应同时有 global 和 project 两类新条目
   memory_write_keys_any_of:
-    - commit
-    - commit_message
-    - commit_style
-    - language
+    - prettier
+    - format
+    - bun
+    - runtime
 
   memory_write_values_any_of:
-    - 中文
-    - chinese
-    - zh
+    - prettier
+    - bun
 
-  final_response_must_include_any_of:
-    - 已保存
-    - 已记录
-    - 全局
-
-  max_steps: 15
+  max_steps: 10
 
 rubric:
-  memory_write_scope_correctness: "全局偏好应落 global 而不是 project"
+  memory_isolation_correct_scope: "agent 是否把全局偏好写到 global,项目偏好写到 project,不混淆"
 
 grader:
   - type: assert
@@ -50,49 +46,50 @@ grader:
     weight: 0.30
   - type: assert
     check: memory_write_keys_any_of_hit
-    weight: 0.20
+    weight: 0.30
   - type: assert
     check: memory_write_values_any_of_hit
     weight: 0.20
   - type: assert
-    check: memory_write_scope_must_be
-    weight: 0.20
-  - type: assert
-    check: final_response_must_include_any_of_hit
+    check: max_steps_within_budget
     weight: 0.10
+  - type: llm_judge
+    weight: 0.10
+    rubric_ref:
+      - memory_isolation_correct_scope
 
-source: synthetic_capability_2026_05_27_S0_T03
+source: synthetic_capability_2026_05_27_S0_T08_D
 related_subsystem: [ memory ]
 related_adr: []
 baseline_scores:
   sid_code_deepseek_v4_pro:
-    score: 4.5
+    score: 3
     run_status: success
     tested_at: 2026-05-27T05:03:19.486Z
     tested_by: eval:memory-capability
     transcript_path: null
     notes: ""
     dimensions:
-      assert: 4.5
+      assert: 3.3
       llm_judge: null
     _formula_version:
       grader: capability-memory-v1
     samples:
-      - score: 4.5
+      - score: 3
         runStatus: success
         testedAt: 2026-05-27T05:03:19.486Z
         dimensions:
-          assert: 4.5
+          assert: 3.3
           llm_judge: null
-      - score: 4.5
+      - score: 3
         runStatus: success
         testedAt: 2026-05-27T05:03:19.486Z
         dimensions:
-          assert: 4.5
+          assert: 3.3
           llm_judge: null
-      - score: 4.5
+      - score: 3
         runStatus: success
         testedAt: 2026-05-27T05:03:19.486Z
         dimensions:
-          assert: 4.5
+          assert: 3.3
           llm_judge: null

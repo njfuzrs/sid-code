@@ -1,0 +1,27 @@
+{
+  "timestamp": 1779851187047,
+  "mode": "skip-llm-judge",
+  "model": "deepseek-v4-pro",
+  "overall": {
+    "total": 1,
+    "avgScore": 2.5,
+    "passRate": 0
+  },
+  "by_dimension": {
+    "fallback_message_continuity": {
+      "avgScore": 2.5,
+      "count": 1,
+      "passRate": 0
+    }
+  },
+  "cases": [
+    {
+      "id": "case_rtr_003",
+      "dimension": "fallback_message_continuity",
+      "score": 2.5,
+      "assert": 2.8,
+      "judge": null,
+      "timed_out": false
+    }
+  ]
+}

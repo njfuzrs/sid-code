@@ -1,0 +1,101 @@
+# Router capability case — fallback_message_continuity 维度（第 2 条,补 n≥2 / S0-T08-D）
+# 让 agent 跑两个连续 bash,验证两次工具调用之间对话连续性
+
+id: case_rtr_007
+subsystem: router
+dimension: fallback_message_continuity
+priority: P1
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+known_limitation:
+  type: case_design
+  reason: "未注入 provider 故障,实测的是连续 bash 执行能力,与 fallback 重试无关"
+  resolved_in: "S2/S3 mock provider 503 注入 — 见 ADR-021"
+
+input:
+  user_query: |
+    先用 bash 输出当前日期,再用 bash 输出当前 shell 名,最后告诉我这两个结果。
+
+expected:
+  execution_must_call_tools_any_of:
+    - bash
+
+  exit_status_must_be:
+    - end_turn
+
+  # 应有日期 + shell 描述
+  final_response_must_include_any_of:
+    - 日期
+    - date
+    - shell
+    - bash
+    - zsh
+
+  # 不应暴露 provider 内部信号
+  final_response_must_not_include:
+    - "retry failed"
+    - "fallback"
+    - "Provider error"
+
+  max_steps: 8
+
+rubric:
+  fallback_continuity_dual_tool: "两次 bash 之间 agent 是否保持对话连续,不丢上下文"
+
+grader:
+  - type: assert
+    check: execution_must_call_tools_any_of_hit
+    weight: 0.20
+  - type: assert
+    check: exit_status_must_be_any_of_hit
+    weight: 0.30
+  - type: assert
+    check: final_response_must_include_any_of_hit
+    weight: 0.20
+  - type: assert
+    check: final_response_must_not_include_zero_hit
+    weight: 0.20
+  - type: llm_judge
+    weight: 0.10
+    rubric_ref:
+      - fallback_continuity_dual_tool
+
+source: synthetic_capability_2026_05_27_S0_T08_D
+related_subsystem: [ router, llm ]
+related_adr: [ ADR-021 ]
+baseline_scores:
+  sid_code_deepseek_v4_pro:
+    score: 3.5
+    run_status: success
+    tested_at: 2026-05-27T04:54:09.449Z
+    tested_by: eval:router-capability
+    transcript_path: null
+    notes: ""
+    dimensions:
+      assert: 3.9
+      llm_judge: null
+    _formula_version:
+      grader: capability-router-v1
+    samples:
+      - score: 2.5
+        runStatus: success
+        testedAt: 2026-05-27T04:54:09.449Z
+        dimensions:
+          assert: 2.8
+          llm_judge: null
+      - score: 3.5
+        runStatus: success
+        testedAt: 2026-05-27T04:54:09.449Z
+        dimensions:
+          assert: 3.9
+          llm_judge: null
+      - score: 3.5
+        runStatus: success
+        testedAt: 2026-05-27T04:54:09.449Z
+        dimensions:
+          assert: 3.9
+          llm_judge: null

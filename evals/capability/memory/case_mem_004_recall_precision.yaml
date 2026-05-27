@@ -64,7 +64,7 @@ baseline_scores:
   sid_code_deepseek_v4_pro:
     score: 4
     run_status: success
-    tested_at: 2026-05-27T02:17:08.913Z
+    tested_at: 2026-05-27T05:03:19.486Z
     tested_by: eval:memory-capability
     transcript_path: null
     notes: ""
@@ -73,3 +73,22 @@ baseline_scores:
       llm_judge: null
     _formula_version:
       grader: capability-memory-v1
+    samples:
+      - score: 2.5
+        runStatus: success
+        testedAt: 2026-05-27T05:03:19.486Z
+        dimensions:
+          assert: 3.1
+          llm_judge: null
+      - score: 4
+        runStatus: success
+        testedAt: 2026-05-27T05:03:19.486Z
+        dimensions:
+          assert: 5
+          llm_judge: null
+      - score: 4
+        runStatus: success
+        testedAt: 2026-05-27T05:03:19.486Z
+        dimensions:
+          assert: 5
+          llm_judge: null

@@ -70,17 +70,36 @@ grader:
 
 source: synthetic_capability_2026_05_27_S0_T05
 related_subsystem: [ router, llm ]
-related_adr: []
+related_adr: [ ADR-021 ]
 baseline_scores:
   sid_code_deepseek_v4_pro:
-    score: 4.5
+    score: 2
     run_status: success
-    tested_at: 2026-05-27T02:04:18.327Z
+    tested_at: 2026-05-27T04:54:09.449Z
     tested_by: eval:router-capability
     transcript_path: null
     notes: ""
     dimensions:
-      assert: 5
+      assert: 2.2
       llm_judge: null
     _formula_version:
       grader: capability-router-v1
+    samples:
+      - score: 2
+        runStatus: success
+        testedAt: 2026-05-27T04:54:09.449Z
+        dimensions:
+          assert: 2.2
+          llm_judge: null
+      - score: 4.5
+        runStatus: success
+        testedAt: 2026-05-27T04:54:09.449Z
+        dimensions:
+          assert: 5
+          llm_judge: null
+      - score: 2
+        runStatus: success
+        testedAt: 2026-05-27T04:54:09.449Z
+        dimensions:
+          assert: 2.2
+          llm_judge: null
