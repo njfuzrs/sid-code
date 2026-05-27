@@ -5,6 +5,7 @@
  *   bun run eval:plan-capability -- --case plan_009       # 跑单条
  *   bun run eval:plan-capability -- --execute             # 跑全部 + 真调 LLM Judge
  *   bun run eval:plan-capability                          # 跑全部 + 跳过 LLM Judge (省钱模式)
+ *   bun run eval:plan-capability -- --samples 3 --sync    # N=3 中位数 + 回写 baseline
  *
  * 必须依赖 sid-code-live adapter（ADR-016）。
  * 输出：
@@ -33,6 +34,11 @@ import {
   syncBaselineScores,
   type BaselineResult,
 } from "../../evals/baseline-sync.ts";
+import {
+  classifyRunStatus,
+  medianSuccessScore,
+  pickRunStatus,
+} from "../../evals/bench-runner/capability-shared.ts";
 
 const ROOT = process.cwd();
 const CAPABILITY_DIR = join(ROOT, "evals/capability/plan");
@@ -43,11 +49,13 @@ const { values } = parseArgs({
   options: {
     case: { type: "string" }, // 只跑指定 case（e.g. plan_009）
     execute: { type: "boolean", default: false }, // 真调 LLM Judge
-    timeout: { type: "string", default: "360000" }, // 单 task 超时
+    timeout: { type: "string", default: "480000" }, // 单 task 超时（对齐 general runner 的 480s；plan 类 case 跨文件改造，原 360s 偏紧）
     model: { type: "string" }, // 覆盖默认模型
     // sync 默认 off：与 eval-runner 对齐，避免调试单 case 时污染 case yaml 的 baseline_scores。
     // 跑正式 baseline / 对比历史时显式加 --sync 才回写。
     sync: { type: "boolean", default: false },
+    // multi-sample：N=3 中位数收敛 LLM 方差与偶发 timeout（对齐 memory/context/router/harness）
+    samples: { type: "string", default: "1" },
   },
   allowPositionals: true,
 });
@@ -152,7 +160,7 @@ const liveConfig: SidCodeLiveConfig = {
   // model 默认 deepseek-v4-pro：与 eval-runner.ts PROVIDER_REGISTRY 一致，
   // 让 baseline_scores key 形如 `sid_code_deepseek_v4_pro`，与 general baseline 同名空间。
   model: values.model || process.env.SID_CODE_MODEL || "deepseek-v4-pro",
-  timeoutMs: parseInt(values.timeout || "360000", 10),
+  timeoutMs: parseInt(values.timeout || "480000", 10),
 };
 
 const cases = loadCases(values.case);
@@ -161,16 +169,32 @@ if (cases.length === 0) {
   process.exit(1);
 }
 
+const samplesN = Math.max(1, parseInt(values.samples || "1", 10));
+
 console.log(`Mode      : ${values.execute ? "execute (真调 LLM Judge)" : "skip-llm-judge (省钱模式)"}`);
 console.log(`Adapter   : sid-code-live`);
 console.log(`Model     : ${liveConfig.model || "(用户 config 默认)"}`);
 console.log(`Timeout   : ${liveConfig.timeoutMs}ms`);
+console.log(`Samples   : ${samplesN}${samplesN > 1 ? " (中位数收敛)" : ""}`);
 console.log(`Cases     : ${cases.length} 条 (${cases.map((c) => c.id).join(", ")})`);
 console.log("");
 
 const ts = Date.now();
 const rawOutputPath = join(RAW_DIR, `capability-plan-${ts}.jsonl`);
 const reportOutputPath = join(REPORT_DIR, `capability-plan-${ts}.json`);
+
+interface SampleSnapshot {
+  finalScore: number;
+  assertScore: number;
+  llmScore: number | null;
+  runStatus: string;
+  exitStatus: string;
+  timedOut: boolean;
+  elapsedSec: number;
+  toolsCalled: string[];
+  steps: number;
+  planUpdateCount: number;
+}
 
 interface CaseResult {
   id: string;
@@ -189,103 +213,189 @@ interface CaseResult {
     plan_file: string | null;
   };
   reasoning: string;
+  samples: SampleSnapshot[];
+  aggregatedRunStatus: string;
 }
 
 const results: CaseResult[] = [];
 
 for (let i = 0; i < cases.length; i++) {
   const c = cases[i];
-  console.log(`[${i + 1}/${cases.length}] ${c.id} (${c.dimension}) — 启动 sid-code-live ...`);
+  console.log(
+    `[${i + 1}/${cases.length}] ${c.id} (${c.dimension}) — 启动 sid-code-live ...${samplesN > 1 ? ` (samples=${samplesN})` : ""}`,
+  );
 
   const { instruction, appendSystemPrompt } = buildInstruction(c);
-  const startedAt = Date.now();
-  const live = await runSidCodeLive(instruction, {
-    ...liveConfig,
-    appendSystemPrompt: appendSystemPrompt || undefined,
-    // Plan mode 维度 → 强制 plan permission mode
-    permissionMode: c.input.trigger_plan_mode ? "plan" : undefined,
-  });
-  const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+  const sampleSnapshots: SampleSnapshot[] = [];
+  let lastLive: SidCodeLiveResult | null = null;
+  let lastDetails: Record<string, string | number | boolean> = {};
+  let lastCheckSummary = "";
+  let lastPlanContent = "";
 
-  // 读 plan 文件内容
-  let planContent = "";
-  if (live.planFilePath) {
+  for (let s = 0; s < samplesN; s++) {
+    const startedAt = Date.now();
+    let live: SidCodeLiveResult;
     try {
-      planContent = readFileSync(live.planFilePath, "utf-8");
-    } catch {
-      planContent = "";
+      live = await runSidCodeLive(instruction, {
+        ...liveConfig,
+        appendSystemPrompt: appendSystemPrompt || undefined,
+        // Plan mode 维度 → 强制 plan permission mode
+        permissionMode: c.input.trigger_plan_mode ? "plan" : undefined,
+      });
+    } catch (err) {
+      console.log(`    [sample ${s + 1}/${samplesN}] ✗ adapter error: ${String(err).slice(0, 200)}`);
+      sampleSnapshots.push({
+        finalScore: 0,
+        assertScore: 0,
+        llmScore: null,
+        runStatus: "error",
+        exitStatus: "adapter_error",
+        timedOut: false,
+        elapsedSec: (Date.now() - startedAt) / 1000,
+        toolsCalled: [],
+        steps: 0,
+        planUpdateCount: 0,
+      });
+      continue;
+    }
+    const elapsedSec = (Date.now() - startedAt) / 1000;
+    lastLive = live;
+
+    // 读 plan 文件内容
+    let planContent = "";
+    if (live.planFilePath) {
+      try {
+        planContent = readFileSync(live.planFilePath, "utf-8");
+      } catch {
+        planContent = "";
+      }
+    }
+    lastPlanContent = planContent;
+
+    const planUpdateCount = planUpdateCountFromAdapter(live);
+
+    const graderInput: CapabilityGraderInput = {
+      expected: c.expected,
+      planContent,
+      toolsCalled: live.output.tools_called,
+      steps: live.output.steps,
+      finalResponse: live.output.final_response,
+      planUpdateCount,
+    };
+
+    const { assertResults, llmRule } = runAllChecks(c.grader, graderInput);
+
+    // LLM Judge（execute 模式下）
+    let llmScore: number | undefined;
+    if (values.execute && llmRule && judgeConfig.apiKey) {
+      const judgeInput = {
+        task: instruction.slice(0, 1500),
+        expected: {
+          ...c.expected,
+          // capability 没有 must_include_keywords，借 plan_must_cover 字段塞
+          must_include_keywords: c.expected.plan_must_cover_any_of,
+          must_call_tools: c.expected.execution_must_call_tools_any_of,
+          max_steps: c.expected.max_steps,
+        },
+        agentResponse: planContent || live.output.final_response,
+      };
+      const judgeResult = await gradeProcess(judgeInput, judgeConfig);
+      llmScore = judgeResult.score;
+    }
+
+    const agg = aggregateCapabilityScore({
+      assertResults,
+      llmJudgeScore: llmScore,
+      llmJudgeWeight: llmRule?.weight,
+    });
+
+    const sampleStatus = classifyRunStatus({
+      exitStatus: live.output.exit_status,
+      timedOut: live.timedOut,
+    });
+
+    sampleSnapshots.push({
+      finalScore: agg.score,
+      assertScore: agg.assertScore,
+      llmScore: agg.llmScore,
+      runStatus: sampleStatus,
+      exitStatus: live.output.exit_status,
+      timedOut: live.timedOut,
+      elapsedSec,
+      toolsCalled: live.output.tools_called,
+      steps: live.output.steps,
+      planUpdateCount,
+    });
+    lastDetails = agg.details;
+    lastCheckSummary = assertResults.map((r) => `${r.check}=${r.passed ? "✓" : "✗"}`).join(" / ");
+
+    if (samplesN > 1) {
+      console.log(
+        `    [sample ${s + 1}/${samplesN}] score=${agg.score}/5 (assert=${agg.assertScore}${llmScore != null ? `, judge=${llmScore}` : ""}) | ${elapsedSec.toFixed(1)}s | ${live.output.exit_status}${live.timedOut ? " ⚠️ timeout" : ""}`,
+      );
     }
   }
 
-  const planUpdateCount = planUpdateCountFromAdapter(live);
+  const aggregatedRunStatus = pickRunStatus(sampleSnapshots);
+  const medianFinal =
+    aggregatedRunStatus === "success"
+      ? (medianSuccessScore(
+          sampleSnapshots.map((sn) => ({ score: sn.finalScore, runStatus: sn.runStatus })),
+        ) ?? 0)
+      : 0;
+  const medianAssert =
+    aggregatedRunStatus === "success"
+      ? (medianSuccessScore(
+          sampleSnapshots.map((sn) => ({ score: sn.assertScore, runStatus: sn.runStatus })),
+        ) ?? 0)
+      : 0;
+  const llmScores = sampleSnapshots
+    .filter((sn) => sn.runStatus === "success" && sn.llmScore != null)
+    .map((sn) => ({ score: sn.llmScore as number, runStatus: "success" }));
+  const medianLlm = llmScores.length > 0 ? medianSuccessScore(llmScores) : null;
 
-  const graderInput: CapabilityGraderInput = {
-    expected: c.expected,
-    planContent,
-    toolsCalled: live.output.tools_called,
-    steps: live.output.steps,
-    finalResponse: live.output.final_response,
-    planUpdateCount,
-  };
-
-  const { assertResults, llmRule } = runAllChecks(c.grader, graderInput);
-
-  // LLM Judge（execute 模式下）
-  let llmScore: number | undefined;
-  if (values.execute && llmRule && judgeConfig.apiKey) {
-    const judgeInput = {
-      task: instruction.slice(0, 1500),
-      expected: {
-        ...c.expected,
-        // capability 没有 must_include_keywords，借 plan_must_cover 字段塞
-        must_include_keywords: c.expected.plan_must_cover_any_of,
-        must_call_tools: c.expected.execution_must_call_tools_any_of,
-        max_steps: c.expected.max_steps,
-      },
-      agentResponse: planContent || live.output.final_response,
-    };
-    const judgeResult = await gradeProcess(judgeInput, judgeConfig);
-    llmScore = judgeResult.score;
-  }
-
-  const agg = aggregateCapabilityScore({
-    assertResults,
-    llmJudgeScore: llmScore,
-    llmJudgeWeight: llmRule?.weight,
-  });
-
-  const checkSummary = assertResults
-    .map((r) => `${r.check}=${r.passed ? "✓" : "✗"}`)
-    .join(" / ");
-
+  const showLive = lastLive;
   const result: CaseResult = {
     id: c.id,
     dimension: c.dimension,
     priority: c.priority,
-    finalScore: agg.score,
-    assertScore: agg.assertScore,
-    llmScore: agg.llmScore,
-    details: agg.details,
+    finalScore: medianFinal,
+    assertScore: medianAssert,
+    llmScore: medianLlm,
+    details: lastDetails,
     agentSnapshot: {
-      tools_called: live.output.tools_called,
-      steps: live.output.steps,
-      exit_status: live.output.exit_status,
-      timed_out: live.timedOut,
-      session_dir: live.sessionDir,
-      plan_file: live.planFilePath,
+      tools_called: showLive?.output.tools_called ?? [],
+      steps: showLive?.output.steps ?? 0,
+      exit_status: showLive?.output.exit_status ?? "no_sample",
+      timed_out: showLive?.timedOut ?? false,
+      session_dir: showLive?.sessionDir ?? null,
+      plan_file: showLive?.planFilePath ?? null,
     },
-    reasoning: `${elapsed}s, ${checkSummary}${llmScore != null ? `, judge=${llmScore}` : ""}`,
+    reasoning:
+      samplesN > 1
+        ? `samples=${samplesN}, median=${medianFinal}/5 (assert=${medianAssert}), status=${aggregatedRunStatus}`
+        : `${(sampleSnapshots[0]?.elapsedSec ?? 0).toFixed(1)}s, ${lastCheckSummary}`,
+    samples: samplesN > 1 ? sampleSnapshots : [],
+    aggregatedRunStatus,
   };
-  // 把 stdout/stderr 摘要也写进 raw（≤ 500 chars 各，便于排错）
-  (result as unknown as { _stdout: string })._stdout = live.stdout.slice(-1500);
-  (result as unknown as { _stderr: string })._stderr = live.stderr.slice(-1500);
+  if (showLive) {
+    (result as unknown as { _stdout: string })._stdout = showLive.stdout.slice(-1500);
+    (result as unknown as { _stderr: string })._stderr = showLive.stderr.slice(-1500);
+    (result as unknown as { _plan_content: string })._plan_content = lastPlanContent.slice(0, 3000);
+  }
   results.push(result);
 
-  console.log(
-    `    → score=${result.finalScore}/5 (assert=${result.assertScore}${llmScore != null ? `, judge=${llmScore}` : ""}) | ${elapsed}s | ${result.agentSnapshot.exit_status}`,
-  );
-  if (live.timedOut) {
-    console.log(`    ⚠️  timeout`);
+  if (samplesN > 1) {
+    console.log(
+      `    → median=${medianFinal}/5 (assert=${medianAssert}) | run_status=${aggregatedRunStatus}`,
+    );
+  } else {
+    console.log(
+      `    → score=${result.finalScore}/5 (assert=${result.assertScore}${result.llmScore != null ? `, judge=${result.llmScore}` : ""}) | ${(sampleSnapshots[0]?.elapsedSec ?? 0).toFixed(1)}s | ${result.agentSnapshot.exit_status}`,
+    );
+    if (showLive?.timedOut) {
+      console.log(`    ⚠️  timeout`);
+    }
   }
 }
 
@@ -325,6 +435,7 @@ await Bun.write(
       timestamp: ts,
       mode: values.execute ? "execute" : "skip-llm-judge",
       model: liveConfig.model,
+      samples: samplesN,
       overall,
       by_dimension: dimensionSummary,
       cases: results.map((r) => ({
@@ -334,6 +445,8 @@ await Bun.write(
         assert: r.assertScore,
         judge: r.llmScore,
         timed_out: r.agentSnapshot.timed_out,
+        run_status: r.aggregatedRunStatus,
+        samples_n: r.samples.length,
       })),
     },
     null,
@@ -356,30 +469,27 @@ console.log(`  Report → ${reportOutputPath}`);
 // 默认 off（与 eval-runner 对齐），需显式 --sync 才回写。
 // S0-T02 / docs/eval/plan-capability-baseline-sync.md
 if (values.sync) {
-  // 把 plan capability 内部的 CaseResult 归一化为共享 BaselineResult。
-  // 与 eval-runner.classifyRunStatus 同语义：timeout > error > success。
-  // capability runner 没有 retry / abnormal 通道，简化为三态：
-  //   - timed_out=true → timeout
-  //   - exit_status 既非 timeout 又非 end_turn → error（包括 unknown / spawn_exit_N / parse_error）
-  //   - 其他 → success
   const modelSlug = (liveConfig.model || "default").replace(/[^a-zA-Z0-9]/g, "_");
   const providerKey = `sid_code_${modelSlug}`;
 
   const baselineResults: BaselineResult[] = results.map((r) => {
-    const exitStatus = r.agentSnapshot.exit_status;
-    let runStatus: string;
-    if (r.agentSnapshot.timed_out || exitStatus === "timeout" || exitStatus === "outer_timeout") {
-      runStatus = "timeout";
-    } else if (exitStatus === "end_turn" || exitStatus === "stop_sequence") {
-      runStatus = "success";
-    } else {
-      runStatus = "error";
-    }
+    const samples =
+      r.samples.length > 0
+        ? r.samples.map((sn) => ({
+            score: sn.runStatus === "success" ? sn.finalScore : null,
+            runStatus: sn.runStatus,
+            testedAt: new Date(ts).toISOString(),
+            dimensions: {
+              assert: sn.runStatus === "success" ? sn.assertScore : null,
+              llm_judge: sn.runStatus === "success" ? sn.llmScore : null,
+            },
+          }))
+        : undefined;
     return {
       caseId: r.id,
       provider: providerKey,
       score: r.finalScore,
-      runStatus,
+      runStatus: r.aggregatedRunStatus,
       testedAt: new Date(ts).toISOString(),
       dimensions: {
         assert: r.assertScore,
@@ -388,6 +498,7 @@ if (values.sync) {
       // capability runner 目前不走 5 维 grader，标注独立版本以与 general baseline 区分
       // S1 上 task-specific scorer 时再 bump 到对应版本号
       formulaVersion: { grader: "capability-plan-v1" },
+      samples,
     };
   });
 

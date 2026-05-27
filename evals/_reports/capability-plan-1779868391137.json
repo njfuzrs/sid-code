@@ -1,0 +1,135 @@
+{
+  "timestamp": 1779868391137,
+  "mode": "skip-llm-judge",
+  "model": "deepseek-v4-pro",
+  "samples": 3,
+  "overall": {
+    "total": 10,
+    "avgScore": 2.58,
+    "passRate": 0.2
+  },
+  "by_dimension": {
+    "plan_generation": {
+      "avgScore": 2,
+      "count": 4,
+      "passRate": 0
+    },
+    "plan_execution_fidelity": {
+      "avgScore": 1.75,
+      "count": 2,
+      "passRate": 0
+    },
+    "plan_recovery": {
+      "avgScore": 2.15,
+      "count": 2,
+      "passRate": 0
+    },
+    "plan_premature_exit": {
+      "avgScore": 5,
+      "count": 2,
+      "passRate": 1
+    }
+  },
+  "cases": [
+    {
+      "id": "plan_001",
+      "dimension": "plan_generation",
+      "score": 1.8,
+      "assert": 1.8,
+      "judge": null,
+      "timed_out": false,
+      "run_status": "success",
+      "samples_n": 3
+    },
+    {
+      "id": "plan_002",
+      "dimension": "plan_generation",
+      "score": 3.1,
+      "assert": 3.1,
+      "judge": null,
+      "timed_out": false,
+      "run_status": "success",
+      "samples_n": 3
+    },
+    {
+      "id": "plan_003",
+      "dimension": "plan_generation",
+      "score": 3.1,
+      "assert": 3.1,
+      "judge": null,
+      "timed_out": true,
+      "run_status": "success",
+      "samples_n": 3
+    },
+    {
+      "id": "plan_004",
+      "dimension": "plan_generation",
+      "score": 0,
+      "assert": 0,
+      "judge": null,
+      "timed_out": true,
+      "run_status": "timeout",
+      "samples_n": 3
+    },
+    {
+      "id": "plan_005",
+      "dimension": "plan_execution_fidelity",
+      "score": 2.7,
+      "assert": 2.7,
+      "judge": null,
+      "timed_out": false,
+      "run_status": "success",
+      "samples_n": 3
+    },
+    {
+      "id": "plan_006",
+      "dimension": "plan_execution_fidelity",
+      "score": 0.8,
+      "assert": 0.8,
+      "judge": null,
+      "timed_out": false,
+      "run_status": "success",
+      "samples_n": 3
+    },
+    {
+      "id": "plan_007",
+      "dimension": "plan_recovery",
+      "score": 3.6,
+      "assert": 3.6,
+      "judge": null,
+      "timed_out": true,
+      "run_status": "success",
+      "samples_n": 3
+    },
+    {
+      "id": "plan_008",
+      "dimension": "plan_recovery",
+      "score": 0.7,
+      "assert": 0.7,
+      "judge": null,
+      "timed_out": false,
+      "run_status": "success",
+      "samples_n": 3
+    },
+    {
+      "id": "plan_009",
+      "dimension": "plan_premature_exit",
+      "score": 5,
+      "assert": 5,
+      "judge": null,
+      "timed_out": false,
+      "run_status": "success",
+      "samples_n": 3
+    },
+    {
+      "id": "plan_010",
+      "dimension": "plan_premature_exit",
+      "score": 5,
+      "assert": 5,
+      "judge": null,
+      "timed_out": false,
+      "run_status": "success",
+      "samples_n": 3
+    }
+  ]
+}

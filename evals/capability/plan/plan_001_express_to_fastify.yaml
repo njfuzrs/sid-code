@@ -93,7 +93,7 @@ baseline_scores:
   sid_code_deepseek_v4_pro:
     score: 1.8
     run_status: success
-    tested_at: 2026-05-26T02:58:06.031Z
+    tested_at: 2026-05-27T07:53:11.137Z
     tested_by: eval:plan-capability
     transcript_path: null
     notes: ""
@@ -102,6 +102,25 @@ baseline_scores:
       llm_judge: null
     _formula_version:
       grader: capability-plan-v1
+    samples:
+      - score: 3.6
+        runStatus: success
+        testedAt: 2026-05-27T07:53:11.137Z
+        dimensions:
+          assert: 3.6
+          llm_judge: null
+      - score: 1.8
+        runStatus: success
+        testedAt: 2026-05-27T07:53:11.137Z
+        dimensions:
+          assert: 1.8
+          llm_judge: null
+      - score: 1.8
+        runStatus: success
+        testedAt: 2026-05-27T07:53:11.137Z
+        dimensions:
+          assert: 1.8
+          llm_judge: null
 
 # 注: 本 case 是 ADR-013 §2.4 周一交付的"样板 case"，
 # 作为后续 plan_002 ~ plan_010 的命名/字段/grader 公式参考。

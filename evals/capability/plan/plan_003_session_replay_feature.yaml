@@ -68,14 +68,33 @@ related_subsystem: [ plan ]
 related_adr: [ ADR-013 ]
 baseline_scores:
   sid_code_deepseek_v4_pro:
-    score: null
-    run_status: timeout
-    tested_at: 2026-05-26T02:58:06.031Z
+    score: 3.1
+    run_status: success
+    tested_at: 2026-05-27T07:53:11.137Z
     tested_by: eval:plan-capability
     transcript_path: null
-    notes: eval:plan-capability 超时（score=null）
+    notes: ""
     dimensions:
       assert: 3.1
       llm_judge: null
     _formula_version:
       grader: capability-plan-v1
+    samples:
+      - score: 3.1
+        runStatus: success
+        testedAt: 2026-05-27T07:53:11.137Z
+        dimensions:
+          assert: 3.1
+          llm_judge: null
+      - score: 3.1
+        runStatus: success
+        testedAt: 2026-05-27T07:53:11.137Z
+        dimensions:
+          assert: 3.1
+          llm_judge: null
+      - score: null
+        runStatus: timeout
+        testedAt: 2026-05-27T07:53:11.137Z
+        dimensions:
+          assert: null
+          llm_judge: null
