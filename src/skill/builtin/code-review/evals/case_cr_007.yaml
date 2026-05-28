@@ -1,0 +1,85 @@
+id: case_cr_007
+category: code-review false_positive style_low_priority
+priority: P1
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: code-review
+
+input:
+  user_query: |
+    review 这个 PR：
+
+    ```diff
+    diff --git a/src/parsers/json.ts b/src/parsers/json.ts
+    --- a/src/parsers/json.ts
+    +++ b/src/parsers/json.ts
+    @@ -1,5 +1,10 @@
+    +// Quick JSON wrapper - keep it simple
+     export function parseJSON(text: string) {
+    -    return JSON.parse(text);
+    +  try {
+    +    return JSON.parse(text);
+    +  } catch (e) {
+    +    return null;
+    +  }
+     }
+    ```
+
+    给 parseJSON 加了 try/catch 兜底，避免抛错。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: style_issue_severity_low_not_blocker
+
+  must_include_any_of:
+    - "approve"
+    - "可接受"
+    - "low"
+    - "minor"
+    - "建议"
+    - "可考虑"
+    - "log"
+    - "记录"
+    - "吞错"
+    - "swallow"
+
+  must_not_include:
+    - "[blocker]"
+    - "严重错误"
+    - "立即修复"
+    - "block this PR"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 12
+
+  reference_answer: |
+    这是一个有讨论空间的改动：
+    - 加 try/catch 防御性兜底是合理的设计选择
+    - 但 catch 中静默吞错（返回 null）会丢失错误上下文 — 这个属于 [medium] 或 [low]，不是 blocker
+    - 缩进从 4 空格改为 2 空格属于 style，不应单独 flag
+
+    Verdict: approve（可建议在 catch 中加 logger，但不阻断 PR）
+
+rubric:
+  completeness: "Skill 必须给出可接受的 verdict + 至多 medium severity 建议"
+  precision: "不要把 style / 防御性编程 当成 blocker；catch 吞错是设计 trade-off"
+  helpfulness: "建议可执行（如加 logger.warn）"
+
+baseline_scores: {}
+
+source: "RFC-001 §4.2 false_positive 控制 / severity 分级标准"
+notes: |
+  false_positive 维度 + severity 分级 case。
+  常见误报模式：把 style / 防御性编程当 blocker。
+related_subsystem: [ skill, skill/code-review ]

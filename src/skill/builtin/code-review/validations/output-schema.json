@@ -1,0 +1,79 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "code-review Skill output schema",
+  "description": "Contract: Skill 输出必须可以解析为本 schema。Step 4 起强制。",
+  "type": "object",
+  "required": ["verdict", "summary", "findings"],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["approve", "request_changes", "block"],
+      "description": "Review 总评。block 用于红线类违反 / 严重 bug。"
+    },
+    "summary": {
+      "type": "object",
+      "required": ["totalFiles", "totalAdded", "totalRemoved"],
+      "properties": {
+        "totalFiles": { "type": "integer", "minimum": 0 },
+        "totalAdded": { "type": "integer", "minimum": 0 },
+        "totalRemoved": { "type": "integer", "minimum": 0 },
+        "issuesDetected": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["severity", "file", "line", "title", "why"],
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": ["blocker", "high", "medium", "low"]
+          },
+          "file": { "type": "string", "minLength": 1 },
+          "line": { "type": "integer", "minimum": 1 },
+          "title": { "type": "string", "minLength": 1 },
+          "why": { "type": "string", "minLength": 1 },
+          "suggestion": { "type": "string" },
+          "category": {
+            "type": "string",
+            "enum": [
+              "correctness",
+              "security",
+              "test_coverage",
+              "readability",
+              "design",
+              "ai_pattern",
+              "performance"
+            ]
+          }
+        }
+      }
+    },
+    "testCoverage": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["change", "covered"],
+        "properties": {
+          "change": { "type": "string" },
+          "covered": { "type": "boolean" },
+          "testFile": { "type": "string" },
+          "testLine": { "type": "integer" },
+          "suggestedPath": { "type": "string" }
+        }
+      }
+    },
+    "skippedChecks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["check", "reason"],
+        "properties": {
+          "check": { "type": "string" },
+          "reason": { "type": "string" }
+        }
+      }
+    }
+  }
+}

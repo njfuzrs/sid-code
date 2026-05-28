@@ -1,0 +1,54 @@
+id: arch_nonfunc_005
+category: 架构非功能
+priority: P1
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 3.5
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是商业指标断言，月跑）
+    断言（nf_005）：可用性 —— 月度可用性 > 99.5%。
+    商业指标，需要生产环境数据。本 case 写为契约。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: monthly_availability_gt_99_5
+  max_steps: 1
+  reference_answer: |
+    生产环境部署后通过 SRE dashboard（如 Grafana）计算月可用性；
+    报警规则：连续 5 分钟健康检查失败 → 计入 downtime。
+
+arch_assertions:
+  - type: file_must_exist
+    path: deploy/k8s/deployment.yaml
+
+placeholder: true
+contract_only: true
+metric_type: business
+
+rubric:
+  completeness: "生产环境监控 + SRE 流程就位"
+  precision: "商业指标，不能用合成 fixture 测"
+  helpfulness: "SaaS 阶段必备 SLA"
+
+baseline_scores: {}
+
+known_limitation:
+  type: implementation_pending
+  reason: |
+    商业指标，需要真实生产环境数据。M7+ 阶段 3 才有意义。
+  resolved_in: M7+ 阶段 3 生产环境部署后
+  status: contract_only
+
+source: "nf_005 / 09 §nf 类"
+notes: |
+  nf_005 月可用性（商业指标，契约占位）。
+related_subsystem: [ deploy, sre ]

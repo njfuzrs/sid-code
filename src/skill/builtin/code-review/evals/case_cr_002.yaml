@@ -1,0 +1,73 @@
+id: case_cr_002
+category: code-review trigger
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: code-review
+
+input:
+  user_query: |
+    请帮我 review 一下这个变更：
+
+    ```diff
+    diff --git a/README.md b/README.md
+    --- a/README.md
+    +++ b/README.md
+    @@ -10,7 +10,7 @@
+     ## Installation
+    -Run `npm install` to install dependencies.
+    +Run `npm install` to install dependencies. See docs/getting-started.md for more.
+    ```
+
+    这次 PR 只改了 README 文档。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: skipped_doc_only_pr
+
+  must_include_any_of:
+    - "仅文档"
+    - "doc-only"
+    - "文档变更"
+    - "skip"
+    - "跳过"
+    - "无需 review"
+    - "无需审查"
+    - "approve"
+
+  must_not_include:
+    - "[blocker]"
+    - "[high]"
+    - "严重问题"
+    - "安全漏洞"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 10
+
+  reference_answer: |
+    本 PR 仅为文档变更（README.md），Skill 应直接判定 verdict=approve 或 skip，
+    不要生成不必要的 finding。
+
+rubric:
+  completeness: "正确识别仅文档变更场景"
+  precision: "不要在文档 PR 上生硬制造代码问题"
+  helpfulness: "明确告知用户已跳过 review 的原因"
+
+baseline_scores: {}
+
+source: "RFC-001 §5.1 trigger / 与 orch_005 联动"
+notes: |
+  trigger 维度反向 case：测试 Skill 在错误语境下不触发误报。
+  false_positive 控制重要 case。
+related_subsystem: [ skill, skill/code-review ]

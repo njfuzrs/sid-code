@@ -1,0 +1,52 @@
+id: arch_nonfunc_008
+category: 架构非功能
+priority: P1
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 3.5
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是性能契约断言，月跑）
+    断言（nf_008）：Token 成本上限 —— 单次 Code Review token 成本 < $0.3。
+    前置能力"已有"——sid-code 当前 cost 公式 v6 已能精确计算 token 成本（input + output + cache_creation + cache_read × 0.1）。
+    与 §0.4 Cost 维度降权为诊断的设计协同：本 case 是 Skill 单次调用的成本契约，不是 eval 5 维总分。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: code_review_token_cost_under_0_3_usd
+  max_steps: 1
+  reference_answer: |
+    Code Review Skill 跑 10 条标准 PR 的 token 成本中位数 < $0.3；
+    用 cost 公式 v6 计算；
+    超阈值时 Skill SLA 标红，需要优化 prompt 或裁剪 context。
+
+arch_assertions:
+  - type: file_must_exist
+    path: evals/eval-judge.ts
+  - type: file_must_contain
+    path: evals/eval-judge.ts
+    pattern: "COST_FORMULA_VERSION"
+
+placeholder: false
+
+rubric:
+  completeness: "token cost 计算公式 + Skill 调用粒度记录就位"
+  precision: "区分 input tokens / output / cache（不同价格档）"
+  helpfulness: "Skill 成本可控的基础护栏"
+
+baseline_scores: {}
+
+source: "nf_008 / 09 §nf 类 / 前置能力已有"
+notes: |
+  nf_008 Token 成本上限（前置能力：已有；待 Code Review Skill 上线后跑月度 baseline）。
+  - 本 case 不是契约占位，cost 公式 v6 已就位；只是缺 Skill 调用粒度的月度 batch
+  - S3 写 case，跑 baseline 等 S3-T10 code-review Skill 落地后
+related_subsystem: [ skill, cost ]

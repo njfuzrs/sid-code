@@ -1,0 +1,90 @@
+id: case_cr_010
+category: code-review context_awareness
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: code-review
+
+input:
+  user_query: |
+    本 PR 是 sid-code 自身仓库的变更：
+
+    ```diff
+    diff --git a/src/agent/loop.ts b/src/agent/loop.ts
+    --- a/src/agent/loop.ts
+    +++ b/src/agent/loop.ts
+    @@ -100,7 +100,12 @@ export class AgentLoopRunner {
+       async run(input: string) {
+         while (true) {
+           const response = await this.llm.stream(input);
+    -      if (response.stopReason === "end_turn") return response;
+    +      // AI 优化 — 简化退出条件
+    +      if (response) return response;
+    +      // 处理 tool_use
+           await this.handleToolUse(response);
+         }
+       }
+    ```
+
+    请 review 这个变更，并**引用具体的 file:line** 说明问题。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: review_with_specific_file_line_references
+
+  must_include_any_of:
+    - "src/agent/loop.ts:"
+    - "loop.ts 第"
+    - "loop.ts line"
+    - "AgentLoopRunner"
+    - "stopReason"
+    - "end_turn"
+    - "tool_use"
+    - "无限循环"
+    - "无法工作"
+    - "破坏"
+
+  must_not_include:
+    - "可能存在问题"
+    - "may have issue"
+    - "请确认"
+    - "I'm not sure"
+    - "我不确定"
+  must_call_tools:
+    - read
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 18
+
+  reference_answer: |
+    [blocker] src/agent/loop.ts:104 — 简化退出条件从 `stopReason === "end_turn"` 改为 `if (response)` 是严重错误：
+    response 几乎永远存在（除非 LLM 直接抛错），意味着循环第一次就退出，永远不会 handleToolUse。
+    这破坏了 agentic while-loop 的核心机制（详见 sid-code CLAUDE.md §0.1：当 stop_reason=tool_use 时执行工具并继续循环）。
+
+    Verdict: block
+
+    建议：恢复原来的 `if (response.stopReason === "end_turn") return response`，
+    并保留 tool_use 分支的循环继续逻辑。
+
+rubric:
+  completeness: "识别 agentic while-loop 关键行为变化 + 必须引用 src/agent/loop.ts:NNN 行号"
+  precision: "RL-007 (不编造问题) — 每条 flag 必须有具体行号引用，不能用 '可能' / '请确认' 模糊用语"
+  helpfulness: "用 read 工具核实 loop.ts 当前结构再判断"
+
+baseline_scores: {}
+
+source: "RFC-001 §5.1 context_awareness / 与 RL-007 不编造问题强相关"
+notes: |
+  context_awareness 维度核心 case。
+  考验：(a) 是否会 read 文件验证 (b) 是否引用具体行号 (c) 是否真理解 agentic while-loop 机制
+related_subsystem: [ skill, skill/code-review, agent ]

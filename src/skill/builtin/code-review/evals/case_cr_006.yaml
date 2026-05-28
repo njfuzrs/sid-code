@@ -1,0 +1,83 @@
+id: case_cr_006
+category: code-review false_positive
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: code-review
+
+input:
+  user_query: |
+    review 这个 PR：
+
+    ```diff
+    diff --git a/src/utils/format.ts b/src/utils/format.ts
+    --- a/src/utils/format.ts
+    +++ b/src/utils/format.ts
+    @@ -1,8 +1,12 @@
+     /**
+      * 格式化货币数额为千分位字符串
+    + * @param amount 金额（人民币元）
+    + * @param locale 区域（默认 zh-CN）
+      */
+    -export function formatCurrency(amount: number): string {
+    -  return amount.toLocaleString("zh-CN", { style: "currency", currency: "CNY" });
+    +export function formatCurrency(amount: number, locale: string = "zh-CN"): string {
+    +  return amount.toLocaleString(locale, {
+    +    style: "currency",
+    +    currency: locale === "zh-CN" ? "CNY" : "USD",
+    +  });
+     }
+    ```
+
+    本次是一个良性扩展：给已有函数加可选参数和注释。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: no_false_positive_on_benign_change
+
+  must_include_any_of:
+    - "approve"
+    - "良性"
+    - "向后兼容"
+    - "no issues"
+    - "无重大问题"
+    - "扩展"
+    - "增强"
+
+  must_not_include:
+    - "[blocker]"
+    - "严重"
+    - "request_changes"
+    - "block"
+    - "破坏"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 12
+
+  reference_answer: |
+    这是一个良性扩展（加可选参数 + 注释 + 多区域支持），向后兼容。
+    Skill 应给出 approve / no critical issues，至多 [low] 提示"建议为 currency 映射加单元测试"。
+    不应误报 blocker / high。
+
+rubric:
+  completeness: "正确判定良性 PR，不强行制造问题"
+  precision: "false_positive 控制核心 case，宁可漏报不可误报"
+  helpfulness: "可建议增加测试，但不要 block"
+
+baseline_scores: {}
+
+source: "RFC-001 §4.2 false_positive 控制 / 良性扩展模式"
+notes: |
+  false_positive 维度核心 case。考验 Skill 抑制冲动报问题的能力。
+related_subsystem: [ skill, skill/code-review ]

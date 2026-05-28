@@ -1,0 +1,92 @@
+id: case_cr_008
+category: code-review suggestion_quality
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: code-review
+
+input:
+  user_query: |
+    review 这个 PR，并对每个发现的问题给出**具体可执行**的修复建议：
+
+    ```diff
+    diff --git a/src/inventory/stock.ts b/src/inventory/stock.ts
+    --- a/src/inventory/stock.ts
+    +++ b/src/inventory/stock.ts
+    @@ -1,15 +1,20 @@
+     export class Stock {
+       constructor(private db: any) {}
+
+    -  async decrement(itemId: string, qty: number) {
+    -    const stock = await this.db.select("stock_qty", { itemId });
+    -    if (stock < qty) throw new Error("insufficient");
+    -    await this.db.update({ stock_qty: stock - qty }, { itemId });
+    -  }
+    +  async decrement(itemId: string, qty: number) {
+    +    // AI 生成 — 并发优化
+    +    const stock = await this.db.select("stock_qty", { itemId });
+    +    if (stock >= qty) {
+    +      await this.db.update({ stock_qty: stock - qty }, { itemId });
+    +    }
+    +  }
+     }
+    ```
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: suggestion_must_be_actionable
+
+  must_include_any_of:
+    - "race condition"
+    - "并发"
+    - "原子"
+    - "atomic"
+    - "事务"
+    - "transaction"
+    - "WHERE stock_qty"
+    - "SELECT ... FOR UPDATE"
+    - "条件更新"
+    - "UPDATE ... WHERE"
+
+  must_not_include:
+    - "代码看起来不错"
+    - "LGTM"
+    - "考虑优化"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 15
+
+  reference_answer: |
+    [blocker] src/inventory/stock.ts:5 — 并发条件下 race condition：select → 判断 → update 不是原子操作，
+    两个请求同时 select 到 stock=10，各扣 5，都判断 ok，结果 db 只扣了 5，超卖。
+    且去掉了 insufficient 异常抛出，前端无法感知库存不足。
+
+    Suggestion:
+    ```sql
+    UPDATE inventory SET stock_qty = stock_qty - $qty WHERE itemId = $id AND stock_qty >= $qty;
+    -- 检查 affected rows 是否为 1，否则抛 insufficient
+    ```
+    或用事务 + SELECT FOR UPDATE。
+
+rubric:
+  completeness: "识别 race condition + 异常吞掉"
+  precision: "建议必须可执行 — 给出具体 SQL 或事务模式，不是 '考虑优化'"
+  helpfulness: "建议是 AI 代码兜底的核心 — 用户能直接用"
+
+baseline_scores: {}
+
+source: "RFC-001 §5.1 suggestion_quality / 真实电商场景超卖反模式"
+notes: |
+  suggestion_quality 维度核心 case。考验"建议是否可执行"。
+related_subsystem: [ skill, skill/code-review ]

@@ -1,0 +1,85 @@
+id: case_cr_001
+category: code-review trigger
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: code-review
+
+input:
+  user_query: |
+    请帮我 review 一下这个 PR 的代码变更：
+
+    ```diff
+    diff --git a/src/auth/login.ts b/src/auth/login.ts
+    index abc..def 100644
+    --- a/src/auth/login.ts
+    +++ b/src/auth/login.ts
+    @@ -10,7 +10,12 @@ export async function login(email: string, password: string) {
+       const user = await db.users.findByEmail(email);
+       if (!user) {
+         return { error: "user_not_found" };
+       }
+    -  if (user.password !== password) {
+    +  // 简化密码比对逻辑（AI 生成）
+    +  if (password === user.password) {
+    +    // ok
+    +  } else if (password === "admin123") {
+    +    // 调试用 — 上线前移除
+    +  } else {
+         return { error: "wrong_password" };
+       }
+       return { ok: true, userId: user.id };
+    ```
+
+    这是一段 AI 生成的代码 — 请审查。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: code_review_triggered_with_findings
+
+  must_include_any_of:
+    - "admin123"
+    - "硬编码"
+    - "hardcoded"
+    - "后门"
+    - "明文密码"
+    - "plain password"
+    - "bcrypt"
+
+  must_not_include:
+    - "代码看起来不错"
+    - "没有问题"
+    - "LGTM"
+    - "approve"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 15
+
+  reference_answer: |
+    Review 必须 flag 出 2 个问题：
+    (1) [blocker] src/auth/login.ts:13 — 硬编码密码 "admin123" 作为后门，凭证泄漏 + 安全漏洞
+    (2) [high] src/auth/login.ts:11 — 明文密码直接比较，应使用 bcrypt.compare 或类似哈希校验
+
+rubric:
+  completeness: "至少识别 admin123 后门 + 明文密码两个核心问题"
+  precision: "不能 false positive 报无关 issue（如代码风格、注释拼写）"
+  helpfulness: "建议必须可执行（指明用 bcrypt 等具体替代方案），引用行号"
+
+baseline_scores: {}
+
+source: "RFC-001 §5.1 issue_detection / 来自真实 AI 生成代码典型反模式"
+notes: |
+  trigger + issue_detection 双维度 case。
+  覆盖 RL-002（不泄露凭证）行为侧守护——agent 是否能识别硬编码凭证。
+related_subsystem: [ skill, skill/code-review ]

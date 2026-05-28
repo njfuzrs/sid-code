@@ -1,0 +1,59 @@
+id: arch_platform_006
+category: 架构平台
+priority: P1
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 3.5
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言，不依赖 agent 输出）
+    断言（D-03）：sid-code 在"本地 Daemon"形态下，必须支持事件驱动（webhook 入站 → 路由分发）
+    + 内网部署不依赖公网。
+    当前 sid-code 没有 src/daemon/ 模块，本 case 写为契约，前置能力不存在。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: local_daemon_event_driven
+  max_steps: 1
+  reference_answer: |
+    src/daemon/ 模块存在；含 server.ts（HTTP/gRPC 入口）+ router.ts（事件路由分发）；
+    至少注册 webhook 入口 + skill 触发出口；不依赖任何公网 SaaS。
+
+arch_assertions:
+  - type: file_must_exist
+    path: src/daemon/server.ts
+  - type: file_must_exist
+    path: src/daemon/router.ts
+
+placeholder: true
+contract_only: true
+
+rubric:
+  completeness: "Daemon HTTP/gRPC 入口 + 事件路由分发就位"
+  precision: "区分 CLI（同步 stdin）/ Daemon（异步事件）部署形态"
+  helpfulness: "为 PR-to-Prod 主轴的事件驱动入口铺路（M2+）"
+
+baseline_scores: {}
+
+known_limitation:
+  type: implementation_pending
+  reason: |
+    M0–M2 阶段不实现 Daemon 形态；S3 仅写契约 case。
+    实现落地在 M3+ Sprint S5+（参考 final §5.3 阶段 2 路线图）。
+  resolved_in: M3+ Sprint S5
+  status: contract_only
+
+source: "D-03 / 09 §D 类 / final §5.3 阶段 2 路线图"
+notes: |
+  D-03 本地 Daemon 事件驱动（前置能力：不存在，契约占位）。
+  - placeholder: true / contract_only: true（baseline 跑分必 fail，DASHBOARD 显示"未实现"分类）
+  - 与 arch_platform_007（Daemon SQLite 持久化）配对，二者同步落地
+related_subsystem: [ daemon ]

@@ -1,0 +1,85 @@
+id: case_cr_009
+category: code-review suggestion_quality test_coverage
+priority: P1
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: code-review
+
+input:
+  user_query: |
+    review 这个 PR：
+
+    ```diff
+    diff --git a/src/permission/checker.ts b/src/permission/checker.ts
+    --- a/src/permission/checker.ts
+    +++ b/src/permission/checker.ts
+    @@ -50,7 +50,12 @@ export class PermissionChecker {
+       isAllowed(toolName: string, args: any): boolean {
+         if (this.blockedTools.has(toolName)) return false;
+    +    // AI 增加 — 处理 wildcard
+    +    for (const pattern of this.wildcardAllowed) {
+    +      if (toolName.startsWith(pattern)) return true;
+    +    }
+         return this.allowedTools.has(toolName);
+       }
+     }
+    ```
+
+    本仓库是 sid-code 自身。请基于本仓库实际代码 review。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: detect_missing_test_coverage_and_suggest
+
+  must_include_any_of:
+    - "测试"
+    - "test"
+    - "未覆盖"
+    - "not covered"
+    - "建议添加"
+    - "add test"
+    - "checker.test.ts"
+    - "permission"
+    - "wildcardAllowed"
+    - "未初始化"
+    - "undefined"
+
+  must_not_include:
+    - "LGTM"
+  must_call_tools:
+    - grep
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 18
+
+  reference_answer: |
+    至少 flag：
+    (1) [high] src/permission/checker.ts:54 — wildcardAllowed 字段在 PR 中未初始化，可能 undefined 触发 TypeError
+    (2) [medium] 变更未添加测试 — Permission 是核心安全组件，必须有 unit test 覆盖。
+        建议在 tests/permission/checker.test.ts 添加 wildcardAllowed 的边界测试
+    (3) [high] startsWith 匹配可能过宽（"read" 匹配 "read*"），建议改为完整路径匹配或正则
+
+    必须用 grep 工具查 wildcardAllowed 是否在其他文件初始化（验证而非假设）
+
+rubric:
+  completeness: "识别测试覆盖缺失 + wildcardAllowed 初始化问题"
+  precision: "必须先 grep 验证 wildcardAllowed 状态，不要凭空指责"
+  helpfulness: "给出具体的测试文件路径建议"
+
+baseline_scores: {}
+
+source: "RFC-001 §5.1 suggestion_quality + context_awareness / ont_008 tested-by LinkType 联动"
+notes: |
+  suggestion_quality + test coverage 维度 case。
+  本 case 用 sid-code 自身 repo，考验 Skill 调用 grep 验证假设的能力。
+related_subsystem: [ skill, skill/code-review, tool/grep ]

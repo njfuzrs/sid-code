@@ -1,0 +1,85 @@
+id: case_cr_003
+category: code-review issue_detection bug
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: code-review
+
+input:
+  user_query: |
+    review 这个 PR：
+
+    ```diff
+    diff --git a/src/calc/discount.ts b/src/calc/discount.ts
+    --- a/src/calc/discount.ts
+    +++ b/src/calc/discount.ts
+    @@ -1,10 +1,15 @@
+     export function applyDiscount(price: number, discountPct: number): number {
+    -  if (price <= 0) throw new Error("invalid price");
+    -  return price * (1 - discountPct / 100);
+    +  // AI 生成 — 处理 discountPct
+    +  return price * (1 - discountPct);
+     }
+
+     export function bulkDiscount(items: { price: number; qty: number }[]) {
+    -  return items.reduce((sum, i) => sum + applyDiscount(i.price * i.qty, 10), 0);
+    +  // 优化：去掉对负数 price 的检查（性能）
+    +  let sum = 0;
+    +  for (let i = 0; i <= items.length; i++) {
+    +    sum += applyDiscount(items[i].price * items[i].qty, 10);
+    +  }
+    +  return sum;
+     }
+    ```
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: detect_bug_off_by_one_and_semantics
+
+  must_include_any_of:
+    - "off-by-one"
+    - "<="
+    - "out of bound"
+    - "数组越界"
+    - "越界"
+    - "i.length"
+    - "discountPct"
+    - "百分比"
+    - "100"
+    - "1 -"
+
+  must_not_include:
+    - "代码看起来不错"
+    - "LGTM"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 15
+
+  reference_answer: |
+    至少 flag 出：
+    (1) [blocker] src/calc/discount.ts:11 — 循环条件 `i <= items.length` 导致数组越界（off-by-one），应改为 `<`
+    (2) [blocker] src/calc/discount.ts:3 — 去掉了 discountPct/100 的百分比转换，10% 折扣会变成 1000% 折扣，逻辑错误
+    (3) [high] src/calc/discount.ts:8 — 去掉了 price <= 0 的边界检查，会传播负数
+
+rubric:
+  completeness: "至少识别 off-by-one + discountPct 语义两个核心 bug"
+  precision: "不要把性能优化的注释当成正面修改"
+  helpfulness: "建议必须给出具体修改"
+
+baseline_scores: {}
+
+source: "RFC-001 §5.1 issue_detection bug / 真实 AI 重写引入逻辑 bug 反模式"
+notes: |
+  issue_detection bug 维度核心 case。
+related_subsystem: [ skill, skill/code-review ]

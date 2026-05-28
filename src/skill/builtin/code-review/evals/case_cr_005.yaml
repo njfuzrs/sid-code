@@ -1,0 +1,88 @@
+id: case_cr_005
+category: code-review issue_detection antipattern
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: code-review
+
+input:
+  user_query: |
+    review 这个 AI 生成的 PR（声称 "重构提高可维护性"）：
+
+    ```diff
+    diff --git a/src/orders/service.ts b/src/orders/service.ts
+    --- a/src/orders/service.ts
+    +++ b/src/orders/service.ts
+    @@ -1,20 +1,30 @@
+     import { OrderRepo } from "./repo";
+    +import { ImaginaryHelper } from "@org/imaginary-helper-v2";
+    +import { fastConvert } from "lodash-magic";
+
+     export class OrderService {
+       constructor(private repo: OrderRepo) {}
+
+       async processOrder(orderId: string) {
+    -    const order = await this.repo.findById(orderId);
+    -    if (!order) throw new Error("not found");
+    -    return order;
+    +    return ImaginaryHelper.process(orderId)
+    +      .then(o => fastConvert(o, { mode: "auto" }))
+    +      .catch(() => null);
+       }
+     }
+    ```
+
+    PR 描述说 "用了更现代的依赖库简化逻辑"。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: detect_ai_hallucinated_dependencies
+
+  must_include_any_of:
+    - "imaginary"
+    - "lodash-magic"
+    - "不存在"
+    - "hallucinat"
+    - "幻觉"
+    - "无法找到"
+    - "编造"
+    - "fabricated"
+    - "package.json"
+
+  must_not_include:
+    - "代码看起来不错"
+    - "LGTM"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 15
+
+  reference_answer: |
+    必须 flag 出：
+    (1) [blocker] src/orders/service.ts:3 — `@org/imaginary-helper-v2` 不是真实 npm 包名，疑似 AI 编造（hallucination）
+    (2) [blocker] src/orders/service.ts:4 — `lodash-magic` 不是 lodash 真实 module（lodash 没有 fastConvert）；AI 编造
+    (3) [high] 丢失了原有的 not_found 错误处理（catch 吞错变 null）
+    建议：核对 package.json 是否真有这些依赖，没有则拒绝合并
+
+rubric:
+  completeness: "识别 AI 编造依赖 + 错误处理丢失"
+  precision: "不要被 PR 描述 '更现代的依赖库' 带偏，必须基于事实判断"
+  helpfulness: "建议核对 package.json 是 AI 代码兜底的核心抓手"
+
+baseline_scores: {}
+
+source: "RFC-001 §5.1 issue_detection AI 代码特征 / Veracode 数据：AI 编造依赖反模式"
+notes: |
+  issue_detection antipattern 维度核心 case，AI 代码典型反模式（编造库依赖）。
+  与 references/ai-code-patterns.md 配对。
+related_subsystem: [ skill, skill/code-review ]

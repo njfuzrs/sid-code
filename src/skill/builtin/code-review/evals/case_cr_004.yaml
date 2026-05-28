@@ -1,0 +1,81 @@
+id: case_cr_004
+category: code-review issue_detection security
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: code-review
+
+input:
+  user_query: |
+    review 这个 PR：
+
+    ```diff
+    diff --git a/src/api/user.ts b/src/api/user.ts
+    --- a/src/api/user.ts
+    +++ b/src/api/user.ts
+    @@ -1,10 +1,15 @@
+    +import { exec } from "child_process";
+     import { db } from "../db";
+
+     export async function getUser(req, res) {
+       const userId = req.query.id;
+    -  const user = await db.query("SELECT * FROM users WHERE id = ?", [userId]);
+    +  const user = await db.query(`SELECT * FROM users WHERE id = '${userId}'`);
+       res.json(user);
+     }
+
+    +export async function backupUser(req, res) {
+    +  const filename = req.body.filename;
+    +  exec(`cp /data/users.db /backup/${filename}`, (err) => res.json({ err }));
+    +}
+    ```
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: detect_sql_injection_and_command_injection
+
+  must_include_any_of:
+    - "SQL injection"
+    - "SQL 注入"
+    - "command injection"
+    - "命令注入"
+    - "shell"
+    - "参数化"
+    - "parameterized"
+    - "exec"
+
+  must_not_include:
+    - "代码没问题"
+    - "LGTM"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 15
+
+  reference_answer: |
+    至少 flag 出：
+    (1) [blocker] src/api/user.ts:6 — SQL injection，userId 直接拼接到 SQL，必须用参数化查询
+    (2) [blocker] src/api/user.ts:11 — Command injection，filename 直接拼接到 shell 命令，攻击者可注入 `; rm -rf /`
+    (3) [high] 缺少输入校验
+
+rubric:
+  completeness: "识别 SQL injection + command injection 双重风险"
+  precision: "不要把 import { exec } 本身当成 issue（exec 在合理场景是合法的）"
+  helpfulness: "建议给出参数化查询 / execFile / 输入白名单方案"
+
+baseline_scores: {}
+
+source: "RFC-001 §5.1 issue_detection security / OWASP A03 注入"
+notes: |
+  issue_detection security 维度核心 case。RL-002 凭证 + 安全注入双重守护。
+related_subsystem: [ skill, skill/code-review ]

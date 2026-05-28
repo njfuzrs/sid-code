@@ -1,0 +1,55 @@
+id: arch_ont_010
+category: 架构本体论
+priority: P1
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 3.5
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言）
+    断言（ont_010）：Ontology 查询工具 ——
+    提供 MCP 工具查询 Ontology（对象 / 关系 / 操作）。
+    与 arch_ctxeng_010（Context Engine MCP exposure）联动。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: ontology_query_mcp_tool
+  max_steps: 1
+  reference_answer: |
+    src/mcp/server/ontology-tools.ts 存在；
+    MCP tool list_objects / list_links / query_action 三种；
+    schema 描述完整。
+
+arch_assertions:
+  - type: file_must_exist
+    path: src/mcp/server/ontology-tools.ts
+
+placeholder: true
+contract_only: true
+
+rubric:
+  completeness: "MCP ontology tools 注册 + schema 就位"
+  precision: "区分 list / query / mutate 三种动作"
+  helpfulness: "外部 Agent 复用 sid-code Ontology 的入口"
+
+baseline_scores: {}
+
+known_limitation:
+  type: implementation_pending
+  reason: |
+    依赖 ont_001~009 + MCP Server（A-06）。
+  resolved_in: M3+ Ontology + MCP Server
+  status: contract_only
+
+source: "ont_010 / 09 §ont 类 / 与 arch_ctxeng_010 联动"
+notes: |
+  ont_010 Ontology 查询 MCP 工具（前置能力：待建≤1sprint，契约占位）。
+related_subsystem: [ ontology, mcp ]
