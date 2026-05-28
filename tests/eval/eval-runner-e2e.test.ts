@@ -33,9 +33,10 @@ beforeAll(() => {
   tmpRoot = join(tmpdir(), `eval-runner-e2e-${Date.now()}`);
   mkdirSync(tmpRoot, { recursive: true });
   // 准备 mock case yaml（让 syncBaselineScores 能找到回写目标）
-  mkdirSync(join(tmpRoot, "p0-core"), { recursive: true });
+  // S1-T00 起 general 目录从 evals/p0-core/ 移到 evals/general/p0-core/
+  mkdirSync(join(tmpRoot, "general", "p0-core"), { recursive: true });
   writeFileSync(
-    join(tmpRoot, "p0-core", "case_001.yaml"),
+    join(tmpRoot, "general", "p0-core", "case_001.yaml"),
     `id: case_001
 category: 代码理解
 priority: P0
@@ -196,7 +197,7 @@ describe("syncBaselineScores", () => {
       }),
     ];
     syncBaselineScores(results, tmpRoot);
-    const doc = parseYaml(readFileSync(join(tmpRoot, "p0-core", "case_001.yaml"), "utf-8"));
+    const doc = parseYaml(readFileSync(join(tmpRoot, "general", "p0-core", "case_001.yaml"), "utf-8"));
     expect(doc.baseline_scores.sid_code_v2.score).toBe(4.5);
     expect(doc.baseline_scores.sid_code_v2.tested_at).toBe("2026-05-24T13:00:00.000Z");
     expect(doc.baseline_scores.sid_code_v2.tested_by).toBe("eval-runner");
@@ -220,7 +221,7 @@ describe("syncBaselineScores", () => {
       }),
     ];
     syncBaselineScores(results, tmpRoot);
-    const doc = parseYaml(readFileSync(join(tmpRoot, "p0-core", "case_001.yaml"), "utf-8"));
+    const doc = parseYaml(readFileSync(join(tmpRoot, "general", "p0-core", "case_001.yaml"), "utf-8"));
     expect(doc.baseline_scores.p_timeout.run_status).toBe("timeout");
     expect(doc.baseline_scores.p_timeout.notes).toContain("超时");
   });
@@ -243,7 +244,7 @@ describe("syncBaselineScores", () => {
       }),
     ];
     syncBaselineScores(results, tmpRoot);
-    const doc = parseYaml(readFileSync(join(tmpRoot, "p0-core", "case_001.yaml"), "utf-8"));
+    const doc = parseYaml(readFileSync(join(tmpRoot, "general", "p0-core", "case_001.yaml"), "utf-8"));
     const dims = doc.baseline_scores.p_err_dim.dimensions;
     expect(dims).toBeDefined();
     // error 状态下所有维度都应为 null
@@ -271,7 +272,7 @@ describe("syncBaselineScores", () => {
       }),
     ];
     syncBaselineScores(results, tmpRoot);
-    const doc = parseYaml(readFileSync(join(tmpRoot, "p0-core", "case_001.yaml"), "utf-8"));
+    const doc = parseYaml(readFileSync(join(tmpRoot, "general", "p0-core", "case_001.yaml"), "utf-8"));
     expect(doc.baseline_scores.p_ok_dim.dimensions.anchor_hit).toBe(1.0);
     expect(doc.baseline_scores.p_ok_dim.dimensions.rubric_score).toBe(0.8);
     expect(doc.baseline_scores.p_ok_dim.score).toBe(4.2);

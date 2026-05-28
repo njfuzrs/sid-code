@@ -133,19 +133,19 @@ baseline_scores:
     _formula_version:
       cost: legacy_v1
   sid_code_deepseek_v4_pro:
-    score: null
-    run_status: abnormal
-    tested_at: 2026-05-28T02:15:22.096Z
+    score: 5
+    run_status: success
+    tested_at: 2026-05-28T02:36:31.754Z
     tested_by: eval-runner
     transcript_path: null
-    notes: eval-runner error（score=null,dimensions 已置 null,仅 run_status 有效）
+    notes: ""
     dimensions:
-      anchor_hit: null
-      rubric_score: null
-      tool_compliance: null
+      anchor_hit: 1
       negative_anchor: null
-      efficiency: null
-      cost: null
+      rubric_score: 1
+      tool_compliance: 1
+      efficiency: 1
+      cost: 1
     _formula_version:
       cost: v6
       grader: 5d-v3
