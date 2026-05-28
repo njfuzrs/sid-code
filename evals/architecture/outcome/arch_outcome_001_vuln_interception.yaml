@@ -1,0 +1,63 @@
+id: arch_outcome_001
+category: 架构北极星
+priority: P1
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 3.5
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言，不依赖 agent 输出）
+    断言（outcome_001）：漏洞拦截率 ——
+    sid-code 接入 PR 主流程后，对 OWASP Top 10 类漏洞（SQL injection / XSS / 凭证泄漏 / 路径遍历等）
+    的拦截率 ≥ 60%（M3 baseline）/ ≥ 80%（M6 目标）。
+    需要 security-audit Skill 上线（候选 RFC-003，S6 启动）+ 真实 PR 数据集（待建）。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: vulnerability_interception_rate_target
+  max_steps: 1
+  reference_answer: |
+    M3 阶段：security-audit Skill 未上线，本 case 仅守"指标定义就位"；
+    code-review Skill 已能识别 RL-002 凭证类漏洞（case_cr_001 / case_cr_015 守护）；
+    M6 阶段：security-audit 上线后跑 OWASP 数据集真测拦截率。
+
+arch_assertions:
+  - type: file_must_exist
+    path: docs/eval/演进路线/智能研发基座-final.md
+  - type: file_must_exist
+    path: src/skill/builtin/code-review/SKILL.md
+  - type: file_must_contain
+    path: src/skill/builtin/code-review/SKILL.md
+    pattern: "RL-002"
+
+placeholder: true
+contract_only: true
+
+known_limitation:
+  type: implementation_pending
+  reason: |
+    需要 security-audit Skill 上线 + 真实 PR / OWASP 数据集。
+    M3 阶段 code-review Skill 可识别凭证类漏洞（cr_001 / cr_015），但未达"漏洞拦截率"商业指标。
+  resolved_in: M6 — security-audit Skill 上线 + RFC-003
+  status: contract_only
+
+rubric:
+  completeness: "拦截率指标定义 + 数据集来源 + 阈值（M3 60% / M6 80%）三件齐"
+  precision: "区分'拦截率'（漏报率反指标）vs'误报率'（false_positive 反指标）"
+  helpfulness: "对外叙事'为 AI 代码兜底'的关键量化指标"
+
+baseline_scores: {}
+
+source: "outcome_001 / 09 §outcome 类 / final §核心叙事"
+notes: |
+  outcome_001 漏洞拦截率（北极星之一）。
+  M3 阶段先守指标定义，M6 阶段真测。
+related_subsystem: [ skill, security, outcome ]

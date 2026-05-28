@@ -1,0 +1,99 @@
+id: case_cr_011
+category: code-review boundary long_pr
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: code-review
+
+input:
+  user_query: |
+    请帮我 review 这个超大 PR（35 个文件，约 1480 行变更）。摘录前几个文件 hunk：
+
+    ```diff
+    diff --git a/src/auth/login.ts b/src/auth/login.ts
+    --- a/src/auth/login.ts
+    +++ b/src/auth/login.ts
+    @@ -1,40 +1,80 @@
+    +// 整体重写认证逻辑（AI 一次生成 1200 行）
+    +export async function login(email: string, password: string) {
+    +  if (password === user.password) return ok();
+    +  // ... 80 行 ...
+    +}
+
+    diff --git a/src/auth/session.ts b/src/auth/session.ts
+    @@ -1,30 +1,90 @@
+    +// session 模块重写
+    +// ... 90 行 ...
+
+    diff --git a/src/middleware/cors.ts b/src/middleware/cors.ts
+    @@ -1,10 +1,50 @@
+    +// CORS 中间件重写
+    +// ... 50 行 ...
+
+    （省略后面 32 个文件，每个 ~30-150 行变更，合计约 1480 行）
+    ```
+
+    总共变更 35 个文件，1480 行 +/-，请 review 全部。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: long_pr_warning_with_partial_review
+
+  must_include_any_of:
+    - "超大 PR"
+    - "建议拆分"
+    - "拆分"
+    - "split"
+    - "前 10 个文件"
+    - "1480"
+    - "35 个文件"
+    - "review 范围有限"
+    - "scope"
+
+  must_not_include:
+    - "已完成全部 review"
+    - "all files reviewed"
+    - "100% 覆盖"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 20
+
+  reference_answer: |
+    ## Review Summary
+
+    **Verdict**: request_changes
+    **PR**: 35 files, ~1480 additions, ~50 deletions
+    ⚠️ **超大 PR 警告**：本 PR 文件数 > 10、行数 > 1000，建议拆分为多个独立 PR：
+      (1) 认证模块重写
+      (2) session 改动
+      (3) middleware 调整
+    Skill 仅 review 前 10 个文件，请人工对剩余 25 个文件单独审查。
+
+    （后跟前 10 文件的具体 findings ...）
+
+rubric:
+  completeness: "正确触发长 PR 警告 + 给出拆分建议 + 仅 review 前 10 个文件并明确告知"
+  precision: "不假装 review 完所有文件（false_positive 控制）"
+  helpfulness: "拆分建议要具体（按模块/功能分），不要空泛说 '请拆分'"
+
+baseline_scores: {}
+
+source: "RFC-001 §5.1 / SKILL.md §2.1 长 PR 警告 / orch_006 长 PR 拆分逻辑"
+notes: |
+  S4-T01 边界 case (1/5)：长 PR 边界 — 测试 Skill 在 > 1000 行 / > 50 文件场景下：
+  (a) 不假装 review 完
+  (b) 给出拆分建议
+  (c) 局部 review 前 N 个文件并明确告知
+  与 SKILL.md §2.1 + orch_006 长 PR 拆分逻辑联动。
+related_subsystem: [ skill, skill/code-review, orchestrator ]

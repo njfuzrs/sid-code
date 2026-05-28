@@ -1,0 +1,86 @@
+id: arch_milestone_001
+category: 架构里程碑
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言，不依赖 agent 输出）
+    断言（I-01 / 08 §9.3）：sid-code 评测体系含 M3 Go/No-Go 的 7 个量化条件全部就位 ——
+      1. Layer 1 红线全 pass（arch_redline_001~009/011/012/013）
+      2. Layer 3 能力平均 ≥ 0.60（capability 5 子系统 sprint-S0.md 落盘）
+      3. 架构 holdout baseline 偏差 ≤ 0.5（evals/holdout/architecture/）
+      4. ≥ 1 个 Skill 完成完整三轴螺旋 + SLA 达标（src/skill/builtin/code-review/）
+      5. M0–M1 阶段产生 ≥ 3 条底座加固 ADR（docs/adr/ADR-019/022/023/024/025）
+      6. P0 每条 case 至少跑过 3 次（capability runner --samples 3 + general 多 batch）
+      7. code-review Skill baseline ≥ 0.60（src/skill/builtin/code-review/SKILL.md release_metadata）
+    出处：08 §9.3 / S4-T12 评审材料。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: m3_gate_7_conditions_in_eval_system
+  max_steps: 1
+  reference_answer: |
+    7 条 Go 条件在 eval 系统中以可机器验证的方式存在：
+      条件 1 → arch_redline_001~013 case yaml 落盘
+      条件 2 → evals/capability/{plan,memory,context,router,harness}/ 5 子系统全 ≥ GA
+      条件 3 → evals/holdout/architecture/ 至少 8 条
+      条件 4 → src/skill/builtin/code-review/SKILL.md frontmatter sla / release_metadata
+      条件 5 → docs/adr/ADR-019/022/023/024/025 5 条已落盘
+      条件 6 → capability runner --samples 3 + scripts/eval/run-code-review-skill.ts 支持 --samples N
+      条件 7 → SKILL.md release_metadata.baseline_after ≥ 3.0/5（即归一化 ≥ 0.60）
+
+arch_assertions:
+  - type: file_must_exist
+    path: docs/eval/TODO.md
+  - type: file_must_contain
+    path: docs/eval/TODO.md
+    pattern: "M3 Go"
+  - type: file_must_contain
+    path: docs/eval/TODO.md
+    pattern: "S4-T12"
+  - type: file_must_exist
+    path: docs/eval/08-研发智能基座-eval总纲.md
+  - type: file_must_exist
+    path: src/skill/builtin/code-review/SKILL.md
+  - type: file_must_exist
+    path: docs/adr/ADR-025-内置-Skill-加载机制重构.md
+  - type: dir_must_exist
+    path: evals/holdout/architecture
+  - type: dir_must_exist
+    path: evals/capability/plan
+  - type: dir_must_exist
+    path: evals/capability/memory
+  - type: dir_must_exist
+    path: evals/capability/context
+  - type: dir_must_exist
+    path: evals/capability/router
+  - type: dir_must_exist
+    path: evals/capability/harness
+  - type: dir_must_exist
+    path: evals/architecture/redline
+
+rubric:
+  completeness: "7 条 Go 条件全部有可机器验证的 eval/ADR/code 资产"
+  precision: "区分'文档层面记录'（arch_discipline_001）vs'实施层面就位'（本 case）"
+  helpfulness: "M3 末评审时直接对照 7 条 Go 条件查"
+
+baseline_scores: {}
+
+source: "I-01 / 08 §9.3 M3 Go/No-Go Checkpoint / 09 §I 类"
+notes: |
+  I-01 M3 Go/No-Go 检查器（实施层面）。
+  与 arch_discipline_001（文档层面）互补：
+    - arch_discipline_001 守 7 条 Go 条件在文档中明确列出
+    - 本 case 守 7 条 Go 条件对应的资产已经实施（adr / capability runner / Skill / holdout）
+  S4-T12 评审会用本 case 作为状态表的"实施侧"证据。
+related_subsystem: [ eval, milestone, adr ]

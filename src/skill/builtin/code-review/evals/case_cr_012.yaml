@@ -1,0 +1,84 @@
+id: case_cr_012
+category: code-review boundary empty_pr
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: code-review
+
+input:
+  user_query: |
+    请帮我 review 这个 PR：
+
+    ```diff
+    diff --git a/.gitignore b/.gitignore
+    index abc..abc 100644
+    --- a/.gitignore
+    +++ b/.gitignore
+    @@ -1,3 +1,3 @@
+     node_modules
+     dist
+     .env
+    ```
+
+    （diff 内容相同，只是空白行调整 — 实质上 0 行有效变更）
+
+    这个 PR 真的需要 review 吗？
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: empty_pr_skipped
+
+  must_include_any_of:
+    - "无变更"
+    - "no change"
+    - "空 PR"
+    - "empty"
+    - "无实质变更"
+    - "whitespace"
+    - "格式化"
+    - "approve"
+    - "无需 review"
+
+  must_not_include:
+    - "[blocker]"
+    - "[high]"
+    - "严重问题"
+    - "安全漏洞"
+    - "bug"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 6
+
+  reference_answer: |
+    ## Review Summary
+
+    **Verdict**: approve
+    **PR**: 1 file, 0 effective additions / deletions（仅空白调整）
+    **Skipped**: 此 PR 无实质代码变更（whitespace-only），无需 Review。
+
+    ### Skipped Checks
+    - 仅 whitespace 变更，跳过所有规则检查
+
+rubric:
+  completeness: "正确识别空 PR / whitespace-only 场景，verdict=approve 或 skip"
+  precision: "不要无中生有制造 finding"
+  helpfulness: "明确说明跳过 review 的原因"
+
+baseline_scores: {}
+
+source: "RFC-001 §5.1 trigger / SKILL.md §1 触发不命中场景"
+notes: |
+  S4-T01 边界 case (2/5)：空 PR / whitespace-only 边界 — 测试 Skill 不触发误报。
+  false_positive 控制核心 case（与 case_cr_002 仅文档变更 case 互补）。
+related_subsystem: [ skill, skill/code-review ]

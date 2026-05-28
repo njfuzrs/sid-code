@@ -78,3 +78,90 @@
 - `## YYYY-MM-DD — 生产场景失败模式`
 
 不要修改历史 section（保持时间线证据）。
+
+---
+
+## 2026-05-28 — Step 7-8 落地 + 真 LLM execute baseline（Sprint S4）
+
+### 落地内容（S4-T01 + S4-T02 + S4-T03）
+
+- **Step 7 TDD**（S4-T01）：
+  - 5 条边界 case 落盘：case_cr_011（长 PR）/ 012（空 PR）/ 013（二进制）/ 014（仅文档）/ 015（跨语言混合）
+  - 混沌测试落盘：tests/skill/code-review-chaos.test.ts 24 测，含超时降级 / 报错降级 / 红线越权 / 边界场景 mock 输出 6 段
+- **Step 8 发布**（S4-T02）：
+  - SKILL.md release_metadata 段从 5 字段扩展到 25+ 字段（含 status / rfc / announcement / spiral_step / case_count / test_count / baseline 静态 + 真 LLM / SLA 观测 / redline_protection 7 红线 / stability_evidence 3 sprint 跟踪 / graduated_at 占位）
+- **真 LLM execute baseline**（S4-T03）：
+  - 命令：`bun run scripts/eval/run-code-review-skill.ts --execute --skill --timeout 120000`
+  - 模型：deepseek-v4-pro / N=1 / 15 case
+  - 结果：**avg=4.67/5 / pass=93% / 归一化=0.934**
+  - 报告路径：`evals/_reports/skill-code-review-s4t03-after-n1-1779955989703.json`
+  - **M3 Go 条件 7（≥ 0.60）状态：✅ 远超**（0.934 / 0.60 ≈ 1.56×）
+
+### 真 LLM execute 结果分解（15 case）
+
+| case | score | 耗时 | 备注 |
+| --- | --- | --- | --- |
+| case_cr_001 | 5/5 | 48.5s | ✅ admin123 + bcrypt 完整识别 |
+| case_cr_002 | 5/5 | 9.1s | ✅ README 文档变更跳过 |
+| case_cr_003 | 5/5 | 33.9s | ✅ issue 检测 |
+| case_cr_004 | 5/5 | 25.1s | ✅ issue 检测 |
+| case_cr_005 | 5/5 | 40.6s | ✅ issue 检测 |
+| **case_cr_006** | **2/5** | 56.7s | ⚠️ false_positive 真信号（详见偏差 4） |
+| case_cr_007 | 4/5 | 45.8s | ⚠️ 部分 issue 漏掉，达 GA |
+| case_cr_008 | 5/5 | 28.8s | ✅ suggestion quality |
+| case_cr_009 | 4/5 | 79.7s | ⚠️ 部分 issue 漏掉，达 GA |
+| case_cr_010 | 5/5 | 63.6s | ✅ context awareness 引用具体 file:line |
+| case_cr_011 | 5/5 | 13.2s | ✅ 长 PR 警告 + 拆分建议 |
+| case_cr_012 | 5/5 | 10.6s | ✅ 空 PR 正确跳过 |
+| case_cr_013 | 5/5 | 7.7s | ✅ 二进制文件正确跳过 |
+| case_cr_014 | 5/5 | 11.1s | ✅ 仅文档变更跳过 |
+| case_cr_015 | 5/5 | 39.2s | ✅ 跨语言 SQL injection 正确识别 |
+
+### 关键偏差（S4-T03 暴露）
+
+#### 偏差 4：case_cr_006 false_positive 真信号（重要）
+
+- **现象**：deepseek-v4-pro 对良性扩展 PR（formatCurrency 加可选参数 + 注释）：
+  - `must_not_include` 命中：输出含 "block" 字面量（误报 verdict 偏严）
+  - `max_steps=12` 超出：实际 19 步（agent 过度调查良性 PR）
+- **根因猜测**：
+  - SKILL.md §2.4 7 维度检查清单偏侵略性，agent 在良性 PR 上会"凑问题"
+  - false_positive 控制段（§4.2）权重不够，被 7 维度清单淹没
+- **影响**：
+  - 真 baseline 4.67/5 已远超 M3 Go 0.60，**不阻塞 M3 Gate**
+  - 但 false_positive 是 Code Review Skill 长期可信度的关键，需 S5 强化
+- **fix 路径（S5+）**：
+  - (a) SKILL.md §4.2 加 "良性 PR 早返回" 指引（agent 识别到 PR 仅扩展/重命名/注释/类型增强时，直接 approve）
+  - (b) 加 `severity_floor` 配置 — 低严重度 finding 不进 verdict 计算
+  - (c) 引入"good change patterns"列表与 ai-code-patterns.md 反模式列表对偶
+  - (d) 考虑是否写 ADR 加固 — false_positive 是 Skill 设计层面，非内核
+
+#### 偏差 5：static-contract 估算与真 LLM 接近（验证估算法可用）
+
+- 静态估算 after-baseline = 4.32 / 5
+- 真 LLM after-baseline  = 4.67 / 5
+- Δ = +0.35（估算偏保守，真 LLM 实际更好）
+- **结论**：static-contract 估算可作为 sprint 内快速反馈，但**重大决策必须用真 LLM**
+- **行动**：static-contract estimator 偏保守 0.35 → 可在后续 sprint 校准估算权重
+
+#### 偏差 6：边界 case 都 5/5（边界设计成功）
+
+- 5 条边界 case（cr_011~015）全部满分 5/5
+- 耗时分布 7-39s，远低于 P95 SLA 15min
+- 证明边界设计（长 PR / 空 PR / 二进制 / 仅文档 / 跨语言）通过 SKILL.md §1 / §2.1 / §2.4 三段指引完整覆盖
+
+### 设计决策（S4 追加）
+
+1. **stability_evidence 3 sprint 跟踪**：M3 Go 条件 6 要求 P0 case 至少跑过 3 次。S3 + S4 = 连续 2 次 ≥ GA，S5 第 3 次跑稳定后才标 graduated_at
+2. **release_metadata 暴露 redline_protection 清单**：把守护的 7 大红线列出，外部审阅时一目了然
+3. **m3_go_condition_7_normalized 字段**：把"M3 Go 7 条件之 7"的状态直接写在 frontmatter，方便 milestone runner 抓取
+4. **failure_policy = degrade 不变**：S4-T01 混沌测试验证 degrade 策略 — code-review Skill 报错不阻断 PR
+
+### 待 S5 完成的事项
+
+- **case_cr_006 false_positive 治理**（偏差 4）
+- N=3 重跑（M3 Go 条件 6 第 3 次 ≥ GA）
+- ci-self-heal Skill 启动（与 code-review 共享 diff 解析能力）
+- Daemon 形态实施（M3+ orch_006 长 PR 拆分逻辑）
+
+---

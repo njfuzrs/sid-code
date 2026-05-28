@@ -1,0 +1,130 @@
+id: case_cr_015
+category: code-review boundary mixed_languages
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: code-review
+
+input:
+  user_query: |
+    请审查这个跨语言 PR：
+
+    ```diff
+    diff --git a/src/api/server.ts b/src/api/server.ts
+    --- a/src/api/server.ts
+    +++ b/src/api/server.ts
+    @@ -20,6 +20,12 @@
+     export async function handleRequest(req: Request) {
+    -  const userId = req.headers.get("x-user-id");
+    +  const userId = req.headers.get("x-user-id") as string;  // AI: 简化类型
+    +  const result = await callPython(userId);
+       return result;
+     }
+
+    diff --git a/scripts/process_user.py b/scripts/process_user.py
+    --- a/scripts/process_user.py
+    +++ b/scripts/process_user.py
+    @@ -10,6 +10,9 @@
+     def process(user_id):
+    -    return query_db(f"SELECT * FROM users WHERE id = {user_id}")
+    +    # AI 优化：直接拼字符串更快
+    +    return query_db(f"SELECT * FROM users WHERE id = '{user_id}'")
+
+    diff --git a/cmd/worker/main.go b/cmd/worker/main.go
+    --- a/cmd/worker/main.go
+    +++ b/cmd/worker/main.go
+    @@ -15,6 +15,10 @@
+     func handleJob(jobID string) error {
+    -    return db.Exec("UPDATE jobs SET status='done' WHERE id = ?", jobID)
+    +    // AI 重构：用字符串拼接更直观
+    +    query := fmt.Sprintf("UPDATE jobs SET status='done' WHERE id = '%s'", jobID)
+    +    return db.Exec(query)
+     }
+    ```
+
+    本 PR 跨 TypeScript / Python / Go 三种语言，请逐语言 review。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: cross_language_review_with_per_language_findings
+
+  must_include_any_of:
+    - "SQL injection"
+    - "SQL 注入"
+    - "process_user.py"
+    - "main.go"
+    - "server.ts"
+    - "字符串拼接"
+    - "f-string"
+    - "Sprintf"
+    - "parameterized"
+    - "参数化查询"
+    - "?"
+    - "as string"
+
+  must_not_include:
+    - "代码看起来不错"
+    - "LGTM"
+    - "approve"
+    - "no issues"
+    - "未发现问题"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 18
+
+  reference_answer: |
+    ## Review Summary
+
+    **Verdict**: block
+    **PR**: 3 files (TypeScript / Python / Go), ~12 additions, ~6 deletions
+
+    ### Findings
+
+    #### [blocker] scripts/process_user.py:13 — SQL Injection（f-string 字符串拼接）
+    **Why**: `f"SELECT * FROM users WHERE id = '{user_id}'"` 直接把 user_id 拼入 SQL，
+    若 user_id 含 `' OR '1'='1` 等输入即成 SQL injection。Python DB API 应该用参数化查询。
+    **Suggestion**:
+    ```python
+    return query_db("SELECT * FROM users WHERE id = %s", (user_id,))
+    ```
+
+    #### [blocker] cmd/worker/main.go:18 — SQL Injection（Sprintf 拼接）
+    **Why**: 原代码 `db.Exec("UPDATE jobs SET status='done' WHERE id = ?", jobID)` 是参数化查询，
+    被 AI"重构"成 `fmt.Sprintf("...id = '%s'", jobID)` 直接拼接，引入 SQL injection。
+    **Suggestion**: 恢复原参数化查询写法。
+
+    #### [high] src/api/server.ts:22 — 不安全类型断言
+    **Why**: `req.headers.get("x-user-id") as string` 假设 header 一定存在，但 Headers.get 可能返回 null。
+    **Suggestion**:
+    ```typescript
+    const userId = req.headers.get("x-user-id");
+    if (!userId) throw new Error("missing x-user-id");
+    ```
+
+    ### Test Coverage
+    - ❌ 三处变更均无对应测试，建议为每个语言添加 SQL injection 防护测试
+
+rubric:
+  completeness: "三种语言各识别核心问题：(1) Python SQL injection (2) Go SQL injection (3) TS 不安全 as string 断言"
+  precision: "RL-007 — 每条 flag 必须 file:line 引用；不能漏 SQL injection 这类 blocker"
+  helpfulness: "为每个语言给出该语言 idiomatic 的修复方案（Python %s / Go ? / TS null check）"
+
+baseline_scores: {}
+
+source: "RFC-001 §5.1 issue_detection / 跨语言场景 + AI 重构错误典型反模式"
+notes: |
+  S4-T01 边界 case (5/5)：跨语言混合 PR — TypeScript + Python + Go。
+  考验：(a) 多语言 issue 识别 (b) 每个语言 idiomatic 的修复方案 (c) AI 反模式（"AI 重构"破坏参数化查询）。
+  与 SKILL.md §2.4 多维度检查清单对齐。
+related_subsystem: [ skill, skill/code-review ]

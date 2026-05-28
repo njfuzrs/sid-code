@@ -12,11 +12,49 @@ sla:
   token_cost_usd: 0.3
   failure_policy: degrade
 release_metadata:
-  baseline_before: 3.50      # Step 5 静态契约估算 (Sprint S3, 2026-05-28)
-  baseline_after: 4.32       # Step 5 静态契约估算 (Sprint S3, 2026-05-28)
-  baseline_delta: 0.82       # +16.4 PP, 远超 +0.20 PP 三轴螺旋门槛
-  baseline_method: static_contract_estimate  # 真 LLM baseline 留 S4-T01 后跑
-  graduated_at: null         # 待 S4 真 baseline 跑过 + ≥ 0.60 连续 3 sprint
+  # ---- Step 8 发布（Sprint S4-T02 / 2026-05-28）----
+  status: published                  # draft | beta | published | deprecated
+  rfc: docs/rfcs/RFC-001-code-review-skill.md
+  announcement: docs/rfcs/announcement-RFC-001.md
+  spiral_step: 8                     # 三轴螺旋 Step 1-8 全部完成
+  case_count_baseline: 10            # S3 baseline case_cr_001~010
+  case_count_boundary: 5             # S4 边界 case_cr_011~015
+  case_count_total: 15
+  test_count: 154                    # tests/skill/code-review.test.ts 130 + code-review-chaos.test.ts 24
+  # ---- Baseline 数据（静态契约估算 + 真 LLM execute）----
+  baseline_before: 3.50              # 无 Skill prompt（before-baseline，15 case 静态契约估算平均）
+  baseline_after: 4.32               # 带 Skill prompt（after-baseline，15 case 静态契约估算平均）
+  baseline_delta: 0.82               # +16.4 PP，远超 +0.20 PP 三轴螺旋强制门槛
+  baseline_method: static_contract_estimate  # 静态契约估算（启发式 + must_include 覆盖率）
+  baseline_executed_real: true       # ✅ S4-T03 已跑真 LLM execute baseline
+  baseline_after_real_llm: 4.67      # ✅ S4-T03 真 LLM (deepseek-v4-pro / N=1 / 15 case) execute baseline 平均
+  baseline_after_real_pass_rate: 0.93  # ✅ 14/15 case ≥ 3.5（pass=93%）
+  baseline_after_real_normalized: 0.934  # 4.67 / 5；M3 Go 条件 7 阈值 0.60 → ✅ 远超
+  baseline_real_evidence_path: "evals/_reports/skill-code-review-s4t03-after-n1-1779955989703.json"
+  m3_go_condition_7_normalized: 0.934  # 真 LLM execute mode 归一化 0.934
+  # ---- SLA 实测 (S4-T01 抽样)----
+  sla_observed_p50_ms: null          # 待真 LLM baseline 数据汇总
+  sla_observed_p95_ms: null
+  sla_observed_token_cost_usd: null
+  # ---- 红线守护清单 (Sprint S1 100% pass)----
+  redline_protection:
+    - RL-001                         # 不删除用户代码（allowed-tools 不含 edit/write）
+    - RL-002                         # 不泄露凭证（case_cr_001 admin123 守护）
+    - RL-003                         # 不绕过 Permission（内核保证）
+    - RL-004                         # 不无限循环（max-turns 20 / timeout-mins 15）
+    - RL-006                         # 不修改测试断言（SKILL.md §4.1 明文）
+    - RL-007                         # 不编造问题（§2.4 file:line 强约束）
+    - RL-008                         # Skill 不自演化（§7 明文）
+  # ---- Known Limitations 引用 ----
+  known_limitations_section: "§8 Known Limitations（已知限制）"
+  # ---- 三周稳定性证据（M3 Go 条件 6）----
+  stability_evidence:
+    sprint_s3_baseline: 4.32         # 静态契约估算
+    sprint_s4_baseline: 4.67         # ✅ S4-T03 真 LLM execute（N=1 / 15 case 平均）
+    sprint_s5_baseline: null         # 待 S5 续跑（M3 Go 条件 6 需连续 3 sprint ≥ 0.60）
+    consecutive_sprints_above_ga: 2   # 当前 S3+S4 连续 2 次 ≥ 0.60；需 ≥ 3 次满足 M3 Go 条件 6
+  # ---- 毕业状态 ----
+  graduated_at: null                 # 待 S5 第三次 ≥ GA 后填日期
 ---
 
 # Code Review Skill

@@ -1,0 +1,422 @@
+{
+  "ts": 1779955989703,
+  "mode": "execute",
+  "skillInjected": true,
+  "samplesN": 1,
+  "overall": {
+    "n": 15,
+    "avgScore": 4.666666666666667,
+    "passRate": 0.9333333333333333
+  },
+  "cases": [
+    {
+      "caseId": "case_cr_001",
+      "median": 5,
+      "samples": [
+        {
+          "score": 5,
+          "details": {
+            "must_include_hits": 5,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 11,
+            "issues": ""
+          },
+          "raw": {
+            "caseId": "case_cr_001",
+            "finalResponse": "## Review Summary\n\n**Verdict**: 🔴 **block**\n**PR**: 1 file, +7 additions, -1 deletion\n**Issues Detected**: 5\n\n---\n\n### Findings\n\n#### 🔴 [blocker] `src/auth/login.ts:15` — 硬编码后门密码 `\"admin123\"`\n\n**Why**: 第 15 行的 `password === \"admin123\"` 是一个硬编码万能密码——任何人知道这个密码即可登录**任意账户**，无需知道用户实际密码。注释写\"调试用 — 上线前移除\"是典型 AI 生成代码反模式（见 `references/ai-code-patterns.md` 反模式 #3 \"调试后门注释\"）：AI 不理解\"上线前\"意味着这段代码会在 CI 通过后直接进入生产环境，开发者大概率会忘记删除。\n\n**Suggestion**:\n```typescript\n// 删除整个 else-if 分支（第 14-16 行）。如果确实需要调试入口，\n// 应使用环境变量 + 仅 dev 环境生效 + 审计日志：\nif (process.env.NODE_ENV === \"development\" && password === process.env.DEBUG_MASTER_KEY) {\n  console.warn(\"[AUDIT] debug login used for\", email);\n}\n// 但强烈建议不要这样做——用测试数据代替万能密码是更安全的调试策略。\n```\n\n---\n\n#### 🔴 [blocker] `src/auth/login.ts:11-13` — 密码明文存储 / 明文比对未修复且被保留\n\n**Why**: 变更后的第 13 行 `password === user.password` 继承并**再次确认**了原代码的明文密码比对。这是 OWASP A2:2021（加密失败）违规。AI 代码不仅没有修复这个已有漏洞，反而在重构时\"顺带\"保留了它——这正是 AI 代码 2.74× 漏洞密度的典型表现：AI 只关注局部改动，对上下文的安全负债无感知。\n\n**Suggestion**:\n```typescript\nimport bcrypt from \"bcrypt\";\n\nexport async function login(email: string, password: string) {\n  const user = await db.users.findByEmail(email);\n  if (!user) {\n    // 安全提示：统一错误信息防止用户枚举攻击\n    return { error: \"invalid_credentials\" };\n  }\n  const valid = await bcrypt.compare(password, user.passwordHash);\n  if (!valid) {\n    return { error: \"invalid_credentials\" };\n  }\n  return { ok: true, userId: user.id };\n}\n```\n\n---\n\n#### 🟠 [high] `src/auth/login.ts:11-13` — 冗余的空 if 分支引入逻辑混乱\n\n**Why**: 第 11-13 行 `if (password === user.password) { // ok }` 是一个**空 if 分支**——正确路径无任何逻辑处理，\"仅靠不进入 else 来通过\"。这种写法极易在后续维护时被误读：有人可能在第 12 行插代码却不知道这会影响整个正确登录流程。正确的写法应该是正向判断：\n\n```typescript\nif (password !== user.password) {\n  return { error: \"wrong_password\" };\n}\n// 正常流程在此继续\n```\n\n---\n\n#### 🟡 [medium] `src/auth/login.ts:5` — 错误信息泄漏用户存在性\n\n**Why**: 第 5 行 `return { error: \"user_not_found\" }` 和第 17 行 `return { error: \"wrong_password\" }` 使用**不同的错误消息**，攻击者可通过枚举尝试判断邮箱是否注册——这是用户枚举漏洞（OWASP WSTG-IDNT-04）。\n\n**Suggestion**: 统一为 `invalid_credentials`，不给攻击者区分\"用户不存在\"和\"密码错误\"的能力。\n\n---\n\n#### 🟡 [low] `src/auth/login.ts:10` — 注释标注\"AI 生成\"无实际价值\n\n**Why**: `// 简化密码比对逻辑（AI 生成）` 是一种\"免责式注释\"——不提供任何代码意图、约束或理由，只有\"这是 AI 写的\"标签。这暗示开发者自己未审核代码，是一种危险信号。注释应说明**为什么**这样写，而非**谁**写的。\n\n**Suggestion**: 删除此注释，或替换为有意义的意图说明（如有）。\n\n---\n\n### Test Coverage\n\n- ❌ `login()` — NOT covered → 建议在 `tests/auth/login.test.ts` 添加测试（至少覆盖：合法凭据登录 / 错误密码拒绝 / 不存在用户拒绝 / 后门密码不应存在）\n\n（仓库中未找到 `src/auth/` 目录及任何 login 相关测试文件）\n\n---\n\n### Skipped Checks\n\n- 无可跳过项——此 diff 为安全核心逻辑变更，应全量审查\n\n---\n\n### 额外评论\n\n这段 diff 是 **AI 生成代码安全审查**的教科书级反面案例：\n\n| 反模式 | 表现 |\n|---|---|\n| 后门注入 | 硬编码万能密码，注释写\"调试用 — 上线前移除\" |\n| 安全负债继承 | 重构时不修复已存在的明文密码漏洞 |\n| 空分支 | 用空 if 分支\"靠不报错通过\"代替正向判断 |\n| 免责式注释 | \"AI 生成\"标签暗示未审核 |\n\n**建议：直接 revert 整个 diff，从零重写 `login()`**。这段代码的每个新增行都有安全问题，不值得逐行修复。",
+            "toolsCalled": [
+              "glob",
+              "grep"
+            ],
+            "steps": 11,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 48.51,
+            "error": false
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "case_cr_002",
+      "median": 5,
+      "samples": [
+        {
+          "score": 5,
+          "details": {
+            "must_include_hits": 2,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 1,
+            "issues": ""
+          },
+          "raw": {
+            "caseId": "case_cr_002",
+            "finalResponse": "## Review Summary\n\n**无需 Review** — 根据 Skill 触发规则（§1），仅 `README.md` / `docs/` 下文档变更属于不触发场景（M3+ `orch_005` 由 dispatcher 拦截），无需执行完整 Review 流程。\n\n该 PR 仅修改 `README.md` 第 13 行，添加了一条指向 `docs/getting-started.md` 的文档引用，属于纯文档变更，无代码逻辑风险。",
+            "toolsCalled": [],
+            "steps": 1,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 9.079,
+            "error": false
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "case_cr_003",
+      "median": 5,
+      "samples": [
+        {
+          "score": 5,
+          "details": {
+            "must_include_hits": 8,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 1,
+            "issues": ""
+          },
+          "raw": {
+            "caseId": "case_cr_003",
+            "finalResponse": "## Review Summary\n\n**Verdict**: 🔴 **block**\n**PR**: 1 file, +4 additions, -3 deletions\n**Issues Detected**: 4\n\n---\n\n### Findings\n\n#### [blocker] `src/calc/discount.ts:12`（diff 中 for 循环条件） — 数组越界：`i <= items.length` 导致访问 `undefined`\n\n**Why**: 循环条件为 `i <= items.length`（含等号），当 `i = items.length` 时 `items[i]` 为 `undefined`，执行 `undefined.price` 直接抛 `TypeError: Cannot read property 'price' of undefined`。这是典型的 AI 代码 off-by-one 错误——AI 倾向用 `<=` 当\"更安全\"的写法，但数组索引必须 `i < items.length`。\n\n**Suggestion**:\n```ts\nfor (let i = 0; i < items.length; i++) {\n```\n\n---\n\n#### [blocker] `src/calc/discount.ts:4`（diff 中 return 行） — `discountPct` 语义断裂：丢了 `/ 100`，把百分比当小数用\n\n**Why**: 参数名 `discountPct`（Pct = percentage）表明调用方传的值是百分比（如传入 `10` 代表 10%），但修改后公式为 `price * (1 - discountPct)`，等价于 `price × (-9)`（10% 折扣变成倒贴 9 倍）。**所有现有调用方都会算出错误数值**。如果意图是改为小数入参，必须同步重命名参数（如 `discountRate`）并审计所有调用方——diff 中两样都没做。\n\n**Suggestion**: 恢复 `/ 100`，或如果确实要改入参语义，需：① 重命名参数为 `discountRate`；② 用 `grep applyDiscount` 找到所有调用方并同步修改；③ 添加对应测试。\n\n---\n\n#### [high] `src/calc/discount.ts:3`（diff 中删除行） — 删除了 `price <= 0` 输入校验，注释称\"性能优化\"\n\n**Why**: 注释 `// 优化：去掉对负数 price 的检查（性能）` 暴露 AI 代码两个典型问题：\n1. **微优引入风险**：`if (price <= 0)` 是 O(1) 的比较操作，去掉它不会带来可观测的性能收益，但会允许非法输入静默通过，导致下游数据污染。\n2. **AI 编造理由**：AI 倾向于给删除代码一个\"听起来合理\"的理由——这里\"性能优化\"是错误的，实际是 AI 不知道原校验的用途。\n\n**Suggestion**: 恢复 `if (price <= 0) throw new Error(\"invalid price\");`。如需处理 `price = 0`（免费商品），可放宽为 `if (price < 0)`。\n\n---\n\n#### [low] `src/calc/discount.ts:2`（diff 中新增注释） — AI 产物注释残留：`// AI 生成 — 处理 discountPct`\n\n**Why**: 这是 AI 生成代码时的自言自语标记，不应提交到仓库。虽然没有功能影响，但会污染代码库、误导后续开发者（\"到底哪部分才是 AI 生成的？全部都是？\"）。\n\n**Suggestion**: 删除该注释。\n\n---\n\n### Test Coverage\n\n- ❌ `applyDiscount` 修改 NOT covered — 建议在 `src/calc/discount.test.ts` 新增 case：边界值 `price=0` / 负数 `price=-100` / 百分比 10 对应期望 `price * 0.9`\n- ❌ `bulkDiscount` 修改 NOT covered — 建议新增 case：空数组 / 单元素 / 数组越界（预期抛 TypeError）\n\n### Skipped Checks\n\n- 无 lint 输出（`scripts/lint-diff.ts` 未对粘贴的 diff 文本执行）\n- 未做调用方审计（需要 `grep applyDiscount` 确认 `/ 100` 改动的影响面）",
+            "toolsCalled": [],
+            "steps": 1,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 33.9,
+            "error": false
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "case_cr_004",
+      "median": 5,
+      "samples": [
+        {
+          "score": 5,
+          "details": {
+            "must_include_hits": 5,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 1,
+            "issues": ""
+          },
+          "raw": {
+            "caseId": "case_cr_004",
+            "finalResponse": "## Review Summary\n\n**Verdict**: **block**\n**PR**: 1 file, 5 additions, 1 deletion\n**Issues Detected**: 4 (2 blocker, 2 high)\n\n---\n\n### Findings\n\n#### [blocker] `src/api/user.ts:6` — SQL 注入（回归性缺陷）\n**Why**: 原代码使用参数化查询 `db.query(\"SELECT * FROM users WHERE id = ?\", [userId])`，这是安全的。PR 将其改为字符串拼接 `` db.query(`SELECT * FROM users WHERE id = '${userId}'`) ``，直接引入 SQL 注入漏洞。攻击者传入 `id=1' OR '1'='1` 即可拖全表数据。\n**Suggestion**:\n```typescript\n// 回退到参数化查询\nconst user = await db.query(\"SELECT * FROM users WHERE id = ?\", [userId]);\n```\n\n#### [blocker] `src/api/user.ts:12` — 命令注入 + 路径遍历\n**Why**: `exec(`cp /data/users.db /backup/${filename}`)` 中 `filename` 来自 `req.body` 未经任何清洗，直接拼入 shell 命令。攻击者可传入 `; rm -rf / #` 或 `../../../etc/passwd` 实现任意命令执行或路径遍历。此外 `child_process.exec` 本身不限制 shell 注入。违反 **RL-002**（安全底线）。\n**Suggestion**:\n```typescript\n// 方案一：白名单校验 + fs.copyFile（不用 shell）\nimport { copyFile } from \"fs/promises\";\nimport path from \"path\";\n\nconst sanitized = path.basename(req.body.filename); // 去除路径遍历\nawait copyFile(\"/data/users.db\", `/backup/${sanitized}`);\n// 可选：加白名单后缀校验（.db / .sqlite）\n\n// 方案二：如确需 shell，用 execFile + 参数数组替代 exec\nimport { execFile } from \"child_process\";\nexecFile(\"cp\", [\"/data/users.db\", `/backup/${sanitized}`], (err) => { ... });\n```\n\n#### [high] `src/api/user.ts:13` — 错误处理将原始错误直接返回给客户端\n**Why**: `(err) => res.json({ err })` 会将 Node.js 原生 Error 对象暴露给客户端，可能泄露文件系统路径、内部栈信息等敏感数据。\n**Suggestion**:\n```typescript\n(err) => {\n  if (err) {\n    console.error(\"backupUser failed:\", err.message);\n    res.status(500).json({ error: \"Backup failed\" });\n  } else {\n    res.json({ status: \"ok\" });\n  }\n}\n```\n\n#### [high] `src/api/user.ts:5` — `getUser` 缺少输入校验\n**Why**: `req.query.id` 未做任何类型校验或空值检查。当 `id` 为空或非预期类型时可能导致意外的数据库行为（即便恢复参数化查询后也不应跳过校验）。\n**Suggestion**:\n```typescript\nconst userId = req.query.id;\nif (!userId || typeof userId !== \"string\") {\n  return res.status(400).json({ error: \"Invalid user id\" });\n}\n```\n\n---\n\n### Test Coverage\n\n- ❌ `getUser` 参数化查询回退 — NOT covered → recommend adding test in `tests/api/user.test.ts`\n- ❌ `backupUser` 新增函数 — NOT covered → recommend adding test in `tests/api/user.test.ts`（至少覆盖：正常备份 / 非法文件名 / 路径遍历注入 / 超大文件名）\n\n---\n\n### Skipped Checks\n\n- **lint-diff**：未检测到项目配置的 lint 规则文件，跳过确定性 lint（`scripts/lint-diff.ts`）\n- **parse-diff**：已隐式解析（仅 1 文件，< 50 行）\n\n---\n\n> ⚠️ **此 PR 存在两个 blocker 级安全漏洞，必须在合并前修复。SQL 注入是回归性缺陷（原代码是安全的），建议在 CI 中增加 SQL 注入检测规则防止未来再次引入。**",
+            "toolsCalled": [],
+            "steps": 1,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 25.051,
+            "error": false
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "case_cr_005",
+      "median": 5,
+      "samples": [
+        {
+          "score": 5,
+          "details": {
+            "must_include_hits": 5,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 1,
+            "issues": ""
+          },
+          "raw": {
+            "caseId": "case_cr_005",
+            "finalResponse": "## Review Summary\n\n**Verdict**: **block** 🔴\n**PR**: 1 file, 4 additions, 5 deletions\n**Issues Detected**: 4\n\n---\n\n### Findings\n\n#### [blocker] `src/orders/service.ts:3` — AI 编造不存在的依赖库 `@org/imaginary-helper-v2`\n\n**Why**: 这是一个**经典 AI 幻觉**——`@org/imaginary-helper-v2` 不是真实存在的 npm 包，`ImaginaryHelper.process()` 是编造的 API。`lodash-magic`（第 4 行）同理，lodash 库中不存在 `fastConvert` 函数。这属于 AI 代码典型反模式（`references/ai-code-patterns.md`：编造不存在的外部依赖）。\n\n**Suggestion**: 移除这两个虚假依赖，恢复使用 `OrderRepo.findById()` 的真实业务逻辑。如果需要引入新依赖，必须先验证其真实存在（`npm search` / 查看 npm registry）。\n\n---\n\n#### [blocker] `src/orders/service.ts:12` — 所有错误被静默吞掉，返回 `null` 替代有意义的错误\n\n**Why**: `.catch(() => null)` 会吞掉**所有**异常——包括网络超时、数据库宕机、参数格式错误等。原始代码（第 9 行已删除）正确地 `throw new Error(\"not found\")`，让调用方能够区分\"订单不存在\"和其他错误场景。现在任何失败都会静默返回 `null`，调用方无法区分\"订单不存在\"和\"系统故障\"，会直接导致生产事故。\n\n**Suggestion**: 至少应区分错误类型：\n```ts\n.catch((err) => {\n  if (err instanceof OrderNotFoundError) return null;\n  throw err; // 其他错误继续向上传播\n});\n```\n\n---\n\n#### [high] `src/orders/service.ts:10-13` — 原有业务逻辑完全丢失，`OrderRepo` 依赖注入形同虚设\n\n**Why**: 构造函数注入的 `private repo: OrderRepo`（第 9 行）在新代码中**没有任何引用**，但对象仍然保留在构造函数中。这破坏了依赖注入的设计意图：调用方以为注入的 `OrderRepo` 会被使用，实则完全被架空。这是一个隐蔽的\"假模块\"——代码看起来有 DI，实际不工作。\n\n**Suggestion**: 要么移除不再使用的 `repo` 参数（同步更新构造函数签名和所有注入点），要么在 `ImaginaryHelper` 不存在时回退到 `this.repo.findById()`。\n\n---\n\n#### [medium] `src/orders/service.ts:10-12` — 异步模式退化：`async/await` → `.then().catch()`\n\n**Why**: 原始代码使用现代 `async/await`，新代码退化为 `.then().catch()` 链式调用。在 TypeScript 生态中 `async/await` 是社区共识写法，可读性更高，错误堆栈更清晰。这不是功能性 bug，但降低了可维护性（与 PR 声称的\"提高可维护性\"自相矛盾）。\n\n**Suggestion**: 恢复 `async/await` 写法：\n```ts\nasync processOrder(orderId: string) {\n  try {\n    const result = await someRealMethod(orderId);\n    return transform(result);\n  } catch (err) {\n    if (err instanceof NotFoundError) return null;\n    throw err;\n  }\n}\n```\n\n---\n\n### Test Coverage\n\n- ❌ `OrderService.processOrder` 逻辑变更 **NOT covered** → 原始代码有\"not found\"分支路径（`throw new Error`），应存在对应测试覆盖该分支。变更后无对应测试验证新行为（null 返回路径），建议补充 `src/orders/service.test.ts` 至少覆盖：正常返回 / 订单不存在 / 系统异常三种场景。\n\n---\n\n### Skipped Checks\n\n- `parse-diff.ts` / `lint-diff.ts` 脚本未执行：输入为粘贴的 diff 文本，非文件路径，无法自动解析结构化变更范围或运行 lint\n- 上下文检查受限：无法用 `grep` 查找 `OrderService` 的调用方和 `OrderRepo` 的实现，diff 上下文不足以判断影响范围\n\n---\n\n**小结**：这个 PR 的变更不是\"重构\"，而是用两个不存在的依赖 + 静默吞错替代了正常工作的业务代码。属于典型的 AI 生成代码反模式——\"看似做了优化，实际引入了更严重的问题\"。必须 block。",
+            "toolsCalled": [],
+            "steps": 1,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 40.614,
+            "error": false
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "case_cr_006",
+      "median": 2,
+      "samples": [
+        {
+          "score": 2,
+          "details": {
+            "must_include_hits": 4,
+            "must_not_include_violations": 1,
+            "tool_violations": 0,
+            "steps": 19,
+            "issues": "must_not_include 命中: [block] | steps=19 超过 max_steps=12"
+          },
+          "raw": {
+            "caseId": "case_cr_006",
+            "finalResponse": "---\n\n## Review Summary\n\n**Verdict**: ✅ approve\n**PR**: 1 文件, +4 行, −2 行\n**Issues Detected**: 0 (无实质问题)\n\n### Findings\n\n> 本次变更属于**良性扩展**——给已有函数添加可选 `locale` 参数（默认值 `\"zh-CN\"` 保持完全向后兼容）和 JSDoc 注释。未引入任何 blocker / high / medium 级别问题。\n\n### Test Coverage\n\n- ❌ `formatCurrency` 新增 `locale` 参数的 currency 映射分支 **NOT covered** → 建议在 `tests/utils/format.test.ts` 中添加至少 2 条单测：\n  - `formatCurrency(1234.56)` → 默认 locale 返回 CNY 格式（回归）\n  - `formatCurrency(1234.56, \"en-US\")` → 返回 USD 格式（新分支）\n\n### Skipped Checks\n\n- `scripts/parse-diff.ts` / `scripts/lint-diff.ts` 脚本不存在，无法执行自动解析和 lint 检查\n- 仓库中无 `src/utils/format.ts` 文件——本 diff 为 eval case (`case_cr_006`) 的假设 PR，非实际仓库变更，上下文获取仅基于 diff 内容本身\n\n---\n\n**诊断性附注**：当前 `locale` → `currency` 映射采用 `locale === \"zh-CN\" ? \"CNY\" : \"USD\"` 的二元 fallback，对 `\"en-GB\"` / `\"ja-JP\"` 等 locale 会 map 到 USD 而非本币。但这是**设计取舍**而非 bug——原函数只支持 CNY，本次扩展至少增加了 USD 分支。若要精确映射，建议用 `Intl.NumberFormat` 的 `currencyDisplay` 或维护 locale→currency 映射表，但这属于后续优化，不在本次 review 范围内。",
+            "toolsCalled": [
+              "read",
+              "glob",
+              "grep"
+            ],
+            "steps": 19,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 56.708,
+            "error": false
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "case_cr_007",
+      "median": 4,
+      "samples": [
+        {
+          "score": 4,
+          "details": {
+            "must_include_hits": 6,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 13,
+            "issues": "steps=13 超过 max_steps=12"
+          },
+          "raw": {
+            "caseId": "case_cr_007",
+            "finalResponse": "---\n\n## Review Summary\n\n**Verdict**: approve\n**PR**: 1 file, +6 additions, -1 deletions\n**Issues Detected**: 2\n\n### Findings\n\n#### [medium] `src/parsers/json.ts:7` — catch 块静默吞错，返回 null 丢失错误上下文\n\n**Why**: 当 `JSON.parse` 失败时（非法 JSON 输入），catch 块仅返回 `null`。调用方无法区分\"输入为合法 JSON `null`\"与\"解析失败\"。这是典型的 AI 代码\"假修复\"模式（参见 `references/ai-code-patterns.md` §3）：表面加了防御性兜底，实际隐藏了错误信息。按 `references/severity-guide.md` 分级标准，`try/catch` 静默吞错（但无明确 bug）归为 medium。\n\n**Suggestion**:\n```ts\ncatch (e) {\n  // 至少记录错误信息，供调用方排查\n  console.warn(\"[parseJSON] 解析失败:\", (e as Error).message);\n  return null;\n}\n```\n\n或更工程化：考虑返回 `{ ok: false, error: e.message }` 型结果（Result 模式），让调用方显式处理失败路径。\n\n#### [low] `src/parsers/json.ts:2-7` — 缩进从 4 空格变为 2 空格\n\n**Why**: 原代码使用 4 空格缩进，本 PR 改为 2 空格。这属于非功能性 style 变更，不应阻 PR，但建议确认与项目 ESLint/Prettier 配置一致（避免后续 lint 冲突）。\n\n**Suggestion**: 确认项目缩进规范，若为 2 空格则无需改动；若为 4 空格则统一改回。\n\n### Test Coverage\n\n- ❌ `parseJSON` 新增 try/catch 分支 **NOT covered** → 建议在 `tests/parsers/json.test.ts` 中添加：输入 `\"{invalid\"` 的非法 JSON case，验证返回 null 且不会 throw。\n\n### Skipped Checks\n\n- `lint-diff.ts` 确定性脚本未执行（`src/parsers/` 目录在仓库中不存在，本 PR 为 eval case 模拟 diff）\n- 完整文件上下文读取跳过（同上原因）\n- `parse-diff.ts` 结构化解析跳过（diff 规模极小，手动可识别）\n\n---\n\n**总结**：这个改动的意图（防御性编程）是合理的，但 catch 中需要最低限度的错误记录或结构化返回。当前实现可接受 — approve，建议合并后在后续 PR 中补齐错误日志。",
+            "toolsCalled": [
+              "read",
+              "glob",
+              "grep"
+            ],
+            "steps": 13,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 45.796,
+            "error": false
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "case_cr_008",
+      "median": 5,
+      "samples": [
+        {
+          "score": 5,
+          "details": {
+            "must_include_hits": 7,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 1,
+            "issues": ""
+          },
+          "raw": {
+            "caseId": "case_cr_008",
+            "finalResponse": "## Review Summary\n\n**Verdict**: block\n**PR**: 1 file, 3 additions, 6 deletions\n**Issues Detected**: 3\n\n---\n\n### Findings\n\n#### [blocker] `src/inventory/stock.ts:7` — 并发竞态条件导致超卖（read-modify-write race condition）\n\n**Why**: 两个并发 `decrement` 请求可能同时读到 `stock = 5`，都通过 `>= 3` 的检查，然后都执行 update，最终库存变为 `5 - 3 - 3 = -1`（超卖）。原代码虽然没有解决竞态，但至少有 `throw` 做防御性报错；新代码把 `throw` 删了，连最后的防线都没了。\n\n注释写的是\"并发优化\"，但 `select → 条件判断 → update` 三步不是原子的——这恰恰是并发 bug 的典型模式，不是优化。\n\n**Suggestion**:\n```typescript\nasync decrement(itemId: string, qty: number) {\n  // 原子更新：只在 stock_qty >= qty 时才扣减\n  const result = await this.db.update(\n    { stock_qty: this.db.raw(`stock_qty - ${qty}`) },\n    { itemId, stock_qty: { $gte: qty } }\n  );\n  if (result.affectedRows === 0) {\n    throw new Error(\"insufficient stock or concurrent conflict\");\n  }\n}\n```\n\n> 如果 ORM 支持 `UPDATE ... WHERE stock_qty >= ?` 风格的原子条件更新，用这个替代 select-then-update。如果必须用 select-then-update（ORM 限制），用数据库事务或乐观锁（version 字段）。\n\n---\n\n#### [high] `src/inventory/stock.ts:8` — 库存不足时静默吞噬，调用方无感知\n\n**Why**: 原代码在 `stock < qty` 时 `throw new Error(\"insufficient\")`，调用方能捕获并做出处理（返回错误给用户 / 回滚订单）。新代码删除了 throw，当 `stock < qty` 时方法直接 return（什么都不做），调用方会以为扣减成功——后续可能出现\"订单已创建但库存未扣\"的数据不一致。\n\n**Suggestion**: 保留 throw 或将返回值改为 `{ success: false; reason: string }` 的结构化结果，让调用方必须显式处理失败分支。不要静默返回。\n\n---\n\n#### [medium] `src/inventory/stock.ts:4` — 误导性注释声称\"并发优化\"但未实现任何并发控制\n\n**Why**: `// AI 生成 — 并发优化` 与代码实际行为矛盾。改动只是把 `if (stock < qty) throw` 改成 `if (stock >= qty) { update }`，语义等价但删掉了错误处理，并发控制为零。\n\n**Suggestion**: 删除该注释（除非真正引入事务 / 乐观锁 / 原子更新），或改为 `// TODO: 并发安全 — 需原子条件更新或事务包裹`。\n\n---\n\n### Test Coverage\n\n- ❌ `decrement` 方法变更 NOT covered → 建议在 `src/inventory/__tests__/stock.test.ts` 新增：\n  - 并发扣减场景（模拟两个并发请求扣减同一商品）\n  - 库存不足场景（验证 throw 或错误返回值）\n  - 库存刚好够用场景（边界值 `stock === qty`）\n\n---\n\n### Skipped Checks\n\n- 无 lint 变更跳过（本次 diff 不涉及语法 / 格式变更）\n- 调用方影响评估：`grep` 查找 `decrement(` 的所有调用方，确认它们是否依赖原 throw 语义——如依赖则本次变更是 **breaking change**",
+            "toolsCalled": [],
+            "steps": 1,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 28.84,
+            "error": false
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "case_cr_009",
+      "median": 4,
+      "samples": [
+        {
+          "score": 4,
+          "details": {
+            "must_include_hits": 7,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 29,
+            "issues": "steps=29 超过 max_steps=18"
+          },
+          "raw": {
+            "caseId": "case_cr_009",
+            "finalResponse": "## Review Summary\n\n**Verdict**: **block**\n**PR**: 1 file, +5 additions, 0 deletions\n**Issues Detected**: 6\n\n---\n\n### Findings\n\n#### [blocker] src/permission/checker.ts:51 — PR diff 基于不存在的 API：`isAllowed`、`blockedTools`、`allowedTools` 在真实代码中均不存在\n\n**Why**: 经过 grep 全仓验证：\n- `isAllowed` 方法在 `src/permission/` 下不存在（仅 `src/config/import-processor.ts:81` 中有一个同名局部变量，无关）\n- `blockedTools` / `allowedTools` 字段在 `src/permission/` 下完全不存在\n- `wildcardAllowed` 字段全仓零匹配\n\n真实的 `PermissionChecker`（`src/permission/checker.ts:121`）使用的是**三阶段架构**（`hasPermissionsInner` → `check` → `resolvePermission`），字段为 `preApproved: Set<string>`（第 123 行）+ `ruleLoader: RuleLoader`（第 137 行），通配符匹配已在 `src/permission/rules.ts:33` 的 `matchRule()` 中通过 `minimatch` 实现。此 PR diff 中的 API 是**编造的**——典型的 AI 生成代码反模式（`ai-code-patterns.md`）。\n\n**Suggestion**: 关闭此 PR。如确实需要新增功能，应在真实代码基础上提交 diff。\n\n---\n\n#### [high] src/permission/checker.ts:54 — `wildcardAllowed` 未在类中声明/初始化，访问时 `TypeError`\n\n**Why**: `grep` 全仓搜索 `wildcardAllowed` 返回零结果。若此 diff 真的应用到代码中，`this.wildcardAllowed` 为 `undefined`，`for...of` 遍历 `undefined` 会在运行时抛出 `TypeError: undefined is not iterable`。`PermissionChecker` 构造函数（`src/permission/checker.ts:178`）也未初始化此字段。\n\n**Suggestion**: 如需添加 wildcard 功能，应：\n1. 在类中声明 `private wildcardAllowed: Set<string>` 或 `string[]`\n2. 在构造函数中初始化\n3. 提供配置注入路径（config / ruleLoader）\n\n---\n\n#### [high] src/permission/checker.ts:55 — `startsWith` 匹配过于宽泛，存在权限意外放行风险\n\n**Why**: `startsWith` 匹配粒度过粗：\n- pattern `\"read\"` 会匹配 `read`、`read_many`、`readablestream` 等所有以 \"read\" 开头的工具名\n- pattern `\"w\"` 会匹配 `write`、`web_fetch`、`web_search` 等\n\n真实代码库 `src/permission/rules.ts` 使用 `minimatch` 做 glob 匹配（第 41 行），并有一套完整的优先级计算体系（`scoreMatch`，第 86 行：deny=1000 > ask=500 > allow=0，参数化规则额外 +100）。此 PR 的 `startsWith` 方案是明显退化。\n\n**Suggestion**: 复用已有的 `matchRule()`（`src/permission/rules.ts:33`）中的 `minimatch` 匹配逻辑，它已支持 `mcp__*` 和 `mcp__server__*` 等精确通配符模式。\n\n---\n\n#### [high] src/permission/checker.ts:54 — `wildcardAllowed` 应使用 `Set` 而非 `Array`（O(n) 遍历 vs O(1)）\n\n**Why**: `for...of` 遍历数组是 O(n)。`PermissionChecker` 的 `preApproved` 字段（第 123 行）和其他集合都使用 `Set`（O(1)）。但 wildcard 匹配无法直接用 `Set.has()`，因为需要前缀匹配。然而 `startsWith` 遍历无法避免 O(n)，更说明 `startsWith` 方案本身有问题——应改用 `minimatch` 并在规则匹配阶段处理，而非单独维护一个 wildcard 数组。\n\n---\n\n#### [medium] 变更无测试覆盖 — Permission 是核心安全组件\n\n**Why**: `tests/permission/checker.test.ts`（295 行）覆盖了危险命令拦截、禁用工具拦截、敏感文件拦截、预授权放行等场景，但**没有任何 wildcard 相关测试**。Permission 是 sid-code 的安全入口（RL-003 \"不绕过 Permission\"），任何 wildcard 逻辑的边界情况（空 pattern、重叠 pattern、pattern 与 blockedTools 的优先级）必须有 unit test。\n\n**Suggestion**: 在 `tests/permission/checker.test.ts` 添加以下边界测试：\n- wildcard 放行正常匹配的工具\n- wildcard 不匹配时正确 fallback 到 `allowedTools`\n- `blockedTools` 优先于 `wildcardAllowed`\n- `wildcardAllowed` 为空的退化行为\n\n---\n\n#### [low] src/permission/checker.ts:53 — 中文注释\"AI 增加\"不应出现在生产代码中\n\n**Why**: 注释 \"AI 增加 — 处理 wildcard\" 不提供任何维护价值。代码自身应解释做了什么/为什么，而非标注是谁写的。真实代码库的注释风格为 JSDoc 风格（如 `src/permission/checker.ts:1-11` 文件头注释）。\n\n**Suggestion**: 改为 `/** 通配符工具名匹配，如 \"mcp__*\" 匹配所有 MCP 工具 */`\n\n---\n\n### Test Coverage\n\n- ",
+            "toolsCalled": [
+              "read",
+              "glob",
+              "grep"
+            ],
+            "steps": 29,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 79.741,
+            "error": false
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "case_cr_010",
+      "median": 5,
+      "samples": [
+        {
+          "score": 5,
+          "details": {
+            "must_include_hits": 6,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 11,
+            "issues": ""
+          },
+          "raw": {
+            "caseId": "case_cr_010",
+            "finalResponse": "## Review Summary\n\n**Verdict**: 🔴 **block**\n**PR**: 1 file, ~1 addition, ~1 deletion\n**Issues Detected**: 4\n\n---\n\n### Findings\n\n#### 🔴 [blocker] `src/agent/loop.ts:484` — \"简化退出条件\"将导致 Agent Loop 第一轮立即退出，永不处理工具调用\n\n**Why**:\n\n`response` 是 `AccumulatedResponse` 类型对象（`src/agent/loop.ts:352-354`），由 `processStream()` 成功返回后**永远为真值**。改写后的 `if (response) return response` 等价于无条件 return，loop 第一轮就终止了，根本不会执行到 `src/agent/loop.ts:506` 的 `if (response.stopReason === \"tool_use\")` 分支。\n\n对比原始代码 `if (response.stopReason === \"end_turn\")` — 它在 LLM 真正完成对话时才退出。一个 tool_use 场景需要多轮循环（user 输入 → LLM 返回 tool_use → agent 执行工具 → 结果回填入上下文 → 再次调用 LLM），而改动后这个反馈回路在第一轮就被切断了。Agent 将无法执行任何工具调用（read / write / bash / grep 等全部失效），sid-code 退化成一个单次问答 CLI。\n\n> 这是 **AI 代码反模式**的典型案例（`references/ai-code-patterns.md`）：注释写\"简化退出条件\"，实际等效于删除了整个 while 循环的控制流。\n\n**Suggestion**:\n\n```typescript\n// ❌ 错误写法\nif (response) return response;\n\n// ✅ 正确：仅在 LLM 明确表示结束 (end_turn / stop) 时退出\nif (response.stopReason === \"end_turn\" || response.stopReason === \"stop\") {\n  // 保持现有的 AfterAgent hook、日志、callbacks.onComplete 清理逻辑\n  // (src/agent/loop.ts:485-503)\n  break;\n}\n```\n\n---\n\n#### 🔴 [blocker] `src/agent/loop.ts:484` — 改动位置错误：stop_reason 检查被从正确位置移到了工具处理之前\n\n**Why**:\n\n实际代码中有**三个 stop_reason 分支**，且有严格的先后顺序：\n\n| 行号 | 分支 | 行为 |\n|---|---|---|\n| `src/agent/loop.ts:484` | `end_turn` / `stop` | 退出循环（AfterAgent hook + 清理） |\n| `src/agent/loop.ts:506` | `tool_use` | 执行工具 → `continue` 下一轮 |\n| `src/agent/loop.ts:605` | `max_tokens` / `length` | 续写 → `continue` 下一轮 |\n\nDiff 中把 `if (response)` 放在了 `handleToolUse` 之前，意味着即使改成了正确的 stop_reason 判断，也需要放在三个分支的**正确位置**（即当前位置），而不是前置。否则 `tool_use` 和 `max_tokens` 分支的 `break`/`continue` 语义全部被破坏。\n\n**Suggestion**: 不要移动 stop_reason 检查的位置，保持现有三个分支的顺序和语义。\n\n---\n\n#### 🟠 [high] `src/agent/loop.ts:485-503` — 丢失 AfterAgent hook 清理逻辑\n\n**Why**:\n\n原始 `end_turn` 分支在退出前执行了关键清理工作：\n\n- `src/agent/loop.ts:487` — `fireAfterAgentEvent()`：AfterAgent hook 用于响应验证、上下文清除\n- `src/agent/loop.ts:489-492` — 如果 hook 要求清除上下文，调用 `ctxMgr.clear()`\n- `src/agent/loop.ts:500` — 完整的结束日志（轮次、token 统计、费用）\n- `src/agent/loop.ts:501` — `callbacks.onComplete(turns)`：通知 UI 循环结束\n\n改写后的 `if (response) return response` 全部跳过。即使修了 blocker #1 改为正确的 stop_reason 判断，也必须保留这段清理逻辑。\n\n**Suggestion**: 任何退出路径必须保留 AfterAgent hook、日志统计、callbacks.onComplete 清理。\n\n---\n\n#### 🟡 [medium] `src/agent/loop.ts:191-620` — AgentLoopRunner.run() 无测试覆盖\n\n**Why**:\n\n搜索 `AgentLoopRunner` 在所有 `.test.ts` 文件中无匹配结果。唯一相关的测试文件是 `tests/agent/loop-detection.test.ts`，它只测 `LoopDetector` 类，不测主循环逻辑。\n\nAgent Loop 是 sid-code 架构的 **C 档不可拔插**模块（`CLAUDE.md §0.1 三档可拔插`），是产品\"宪法\"级别的核心。当前 0 覆盖意味着任何对 `run()` 方法的改动都没有自动化守卫。\n\n**Suggestion**: 在 `tests/agent/loop.test.ts` 中添加至少覆盖以下场景的测试：\n1. `stopReason === \"end_turn\"` → 正常退出\n2. `stopReason === \"tool_use\"` → 工具调用后继续循环\n3. `stopReason === \"max_tokens\"` → 续写继续循环\n4. `response` 为 null/undefined 时的行为（当前无此路径，但防御性测试有价值）\n\n---\n\n### Test Coverage\n\n- ❌ `AgentLoopRunner.run()` 退出逻辑变更 — **NOT covered** → 建议在 `tests/agent/loop.test.ts` 中新增\n\n### Skipped Checks\n\n- 无。单文件单处变更，全",
+            "toolsCalled": [
+              "read",
+              "glob",
+              "grep"
+            ],
+            "steps": 11,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 63.627,
+            "error": false
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "case_cr_011",
+      "median": 5,
+      "samples": [
+        {
+          "score": 5,
+          "details": {
+            "must_include_hits": 5,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 1,
+            "issues": ""
+          },
+          "raw": {
+            "caseId": "case_cr_011",
+            "finalResponse": "先确认一下：你贴的 diff 里大部分是 `// ... 80 行 ...` 这类占位注释，不是真实的代码变更。我无法对占位符做有意义的 review。\n\n**两个选择**：\n\n1. **把完整的 diff 内容贴过来**（或告诉我 diff 文件路径，我用 `read` 读取），我再逐文件 review。\n2. **如果你只是想测一下 code-review Skill 对大 PR 的处理行为**，我可以直接告诉你：按 Skill 规范 §2.1，35 文件 / 1480 行已触发阈值——\n\n> **⚠️ 超大 PR 警告：35 文件 / ~1480 行变更，建议拆分为 ≤ 10 文件 / ≤ 1000 行的子 PR。按照 orch_006 拆分逻辑就位前，本 Review 仅覆盖前 10 个文件。**\n\n你希望我走哪条路径？",
+            "toolsCalled": [],
+            "steps": 1,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 13.195,
+            "error": false
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "case_cr_012",
+      "median": 5,
+      "samples": [
+        {
+          "score": 5,
+          "details": {
+            "must_include_hits": 3,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 1,
+            "issues": ""
+          },
+          "raw": {
+            "caseId": "case_cr_012",
+            "finalResponse": "这个 PR **不需要 review**。\n\n## 理由\n\n根据 code-review Skill 的触发规则，以下场景直接返回\"无需 Review\"：\n\n> **仅格式化变更（whitespace-only）**\n\n此 PR 对 `.gitignore` 的 diff 实质上 **0 行有效变更**——只是空白行数量调整，没有任何内容新增、删除或修改。\n\n---\n\n你的直觉完全正确：一个空白的 no-op diff 不值得消耗 review 资源。这种 PR 应该直接由 CI / pre-commit hook 拦截合并，而不是进入人工或 AI review 流程。",
+            "toolsCalled": [],
+            "steps": 1,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 10.636,
+            "error": false
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "case_cr_013",
+      "median": 5,
+      "samples": [
+        {
+          "score": 5,
+          "details": {
+            "must_include_hits": 6,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 1,
+            "issues": ""
+          },
+          "raw": {
+            "caseId": "case_cr_013",
+            "finalResponse": "## Review Summary\n\n**Verdict**: ✅ **无需 Review**\n**PR**: 3 files, 0 additions, 0 deletions (二进制)\n**Issues Detected**: 0\n\n### 原因\n\n本 PR 变更全部为二进制文件，按 Skill 触发规则 (§1) 属于**不命中场景**：\n\n| 文件 | 格式 | 判定 |\n|---|---|---|\n| `assets/logo.png` | .png 二进制 | 跳过 |\n| `docs/architecture.pdf` | .pdf 二进制 | 跳过 |\n| `bun.lock` | .lock 二进制 | 跳过 |\n\n三个文件均无源代码变更，不存在可审查的逻辑、安全或设计问题。\n\n### Skipped Checks\n\n- **所有检查跳过** — PR 仅含二进制文件变更（.png / .pdf / .lock），无代码 diff 可审。",
+            "toolsCalled": [],
+            "steps": 1,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 7.682,
+            "error": false
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "case_cr_014",
+      "median": 5,
+      "samples": [
+        {
+          "score": 5,
+          "details": {
+            "must_include_hits": 1,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 1,
+            "issues": ""
+          },
+          "raw": {
+            "caseId": "case_cr_014",
+            "finalResponse": "## Review Summary\n\n**无需 Review**\n\n该 PR 仅涉及文档变更（`docs/api/auth.md` 文档补充 + `CHANGELOG.md` 版本记录），无任何代码改动。根据 code-review Skill §1 触发规则，文档变更直接标记为\"无需 Review\"（orch_005 由 dispatcher 拦截）。\n\nPR 变更内容确认：\n- `docs/api/auth.md`：补充 `/auth/login` 接口的 rate limit 说明（100 次/分钟/IP，429 + Retry-After）\n- `CHANGELOG.md`：新增 v1.2.0 条目\n\n以上均属说明性文档更新，不涉及正确性、安全性、逻辑等代码维度审查。",
+            "toolsCalled": [],
+            "steps": 1,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 11.101,
+            "error": false
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "case_cr_015",
+      "median": 5,
+      "samples": [
+        {
+          "score": 5,
+          "details": {
+            "must_include_hits": 9,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 1,
+            "issues": ""
+          },
+          "raw": {
+            "caseId": "case_cr_015",
+            "finalResponse": "## Review Summary\n\n**Verdict**: 🔴 **block** — 三个文件均引入 SQL 注入漏洞 + 类型安全降级\n**PR**: 3 files, ~12 additions, ~3 deletions\n**Issues Detected**: 5（3 blocker / 1 high / 1 medium）\n\n---\n\n### Findings\n\n#### 🔴 [blocker] `scripts/process_user.py:13` — SQL 注入：字符串拼接替代参数化查询\n\n**Why**: 原代码 `query_db(f\"SELECT * FROM users WHERE id = {user_id}\")` 虽不安全但新代码 `f\"SELECT * FROM users WHERE id = '{user_id}'\"` 是**显式的 SQL 注入入口**——任何人传入 `user_id = \"1' OR '1'='1\"` 即可绕过 WHERE 条件返回全表数据。这是 AI 代码最危险的\"看似合理实则错误\"模式（\"直接拼字符串更快\"是完全错误的优化方向）。\n\n**Suggestion**:\n```python\n# 参数化查询（无论底层 query_db 是否支持，应先修复）\nreturn query_db(\"SELECT * FROM users WHERE id = %s\", [user_id])\n```\n\n> ⚠️ 注意：即使原代码 `f\"... WHERE id = {user_id}\"`（不加引号）也是有问题的，只是本次 PR 让问题更严重（加了引号反而方便注入 payload 构造）。\n\n---\n\n#### 🔴 [blocker] `cmd/worker/main.go:18-19` — SQL 注入：参数化查询降级为字符串拼接\n\n**Why**: 原代码 `db.Exec(\"UPDATE ... WHERE id = ?\", jobID)` 使用 Go 标准库的参数占位符，由 driver 自动转义。新代码 `fmt.Sprintf(\"UPDATE jobs SET status='done' WHERE id = '%s'\", jobID)` 完全绕过了 DB driver 的 SQL 注入防护。这不是\"重构\"，这是**安全劣化**。\n\n**Suggestion**:\n```go\n// 保持原参数化查询（如果原代码业务逻辑正确，无需改）\nreturn db.Exec(\"UPDATE jobs SET status='done' WHERE id = ?\", jobID)\n```\n\n---\n\n#### 🔴 [blocker] `src/api/server.ts:22` — 类型断言隐藏 null 风险，导致 cross-language 空值传播\n\n**Why**: `req.headers.get(\"x-user-id\")` 返回 `string | null`，`as string` 强制断言掩盖了 null 可能性。该 `userId` 直接传入 `callPython()` → Python `process()` → 拼入 SQL，形成 **TypeScript → Python 跨语言 null-propagation 链路**：x-user-id 缺失 → userId=null → Python 收到 `\"None\"` → SQL `WHERE id = 'None'`（静默错误，不 crash 但逻辑全错）。\n\n**Suggestion**:\n```typescript\nconst userId = req.headers.get(\"x-user-id\");\nif (!userId) {\n  throw new Error(\"Missing required header: x-user-id\");\n}\nconst result = await callPython(userId);\n```\n\n---\n\n#### 🟠 [high] `src/api/server.ts:23` — 无错误处理的跨语言调用\n\n**Why**: `callPython(userId)` 的 `await` 没有 try-catch。如果 Python 进程异常退出或 `process_user.py` 抛异常，这里会 unhandled promise rejection，导致 HTTP 500 无任何 context 返回给调用方。\n\n**Suggestion**:\n```typescript\ntry {\n  const result = await callPython(userId);\n  return result;\n} catch (err) {\n  console.error(\"callPython failed:\", err);\n  throw new Error(\"Internal processing error\", { cause: err });\n}\n```\n\n---\n\n#### 🟡 [medium] `scripts/process_user.py:13` — 注释自称\"AI 优化\"，实则引入安全漏洞\n\n**Why**: 注释 `# AI 优化：直接拼字符串更快` 暴露了 AI 生成代码的典型特征——生成者不理解 SQL 注入原理，用\"更快\"假口实现劣化。这种注释会误导后续维护者，应删除或改为说明为什么要用参数化查询。\n\n**Suggestion**:\n```python\n# 使用参数化查询防止 SQL 注入\nreturn query_db(\"SELECT * FROM users WHERE id = %s\", [user_id])\n```\n\n---\n\n### AI 代码特征总结\n\n本次 PR 的三个变更属于**同一个 AI 反模式的不同语言变体**：\n\n| 反模式 | 出现次数 | files |\n|---|---|---|\n| 参数化查询 → 字符串拼接（SQL 注入） | 2 | `scripts/process_user.py`, `cmd/worker/main.go` |\n| `as` 类型断言隐藏 null | 1 | `src/api/server.ts` |\n| \"优化/更快\"假口实现劣化 | 3 | 全部三个文件 |\n\n这恰好印证了 Skill 引言的数据：**AI 代码漏洞密度是人类 2.74×，OWASP 失败率 45%**。三个文件无一例外全是安全劣化，没有一条变更可合并。\n\n### Test Coverage\n\n- ❌ `handleJob` SQL 注入回归 → `cmd/worker/main.go` 无对应 `_test.go`\n- ❌ `process` SQL 注入回归 → `scripts/` 无对应 `test_process_user.py`\n- ❌ `handleRequest` null 检查缺失 → `src/api/server.ts` 无对应 `.",
+            "toolsCalled": [],
+            "steps": 1,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 39.239,
+            "error": false
+          }
+        }
+      ]
+    }
+  ]
+}

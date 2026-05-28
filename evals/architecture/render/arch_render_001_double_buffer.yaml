@@ -1,0 +1,54 @@
+id: arch_render_001
+category: 架构渲染
+priority: P1
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 3.5
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言，不依赖 agent 输出）
+    断言（render_001）：双缓冲渲染 ——
+    Ink TUI 流式输出时不能闪烁 / 行抖动 / 重绘整屏。
+    技术要求：
+      - 使用 Ink 内置双缓冲（默认就有）
+      - 关键节点用 useMemo / Static 组件减少重绘
+      - 长输出用 Box 滚动而不是清屏重渲染
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: double_buffer_no_flicker
+  max_steps: 1
+  reference_answer: |
+    src/ui/ 含 Ink Static / useMemo 优化点；
+    流式渲染时 lazy 重渲染只在 token 到达时；
+    长输出（> 30 行）走 Box 滚动而非 clear screen。
+
+arch_assertions:
+  - type: dir_must_exist
+    path: src/ui
+  - type: file_must_contain
+    path: package.json
+    pattern: "ink"
+
+placeholder: false
+
+rubric:
+  completeness: "Ink 双缓冲 + Static 组件 + 滚动而非清屏三件齐"
+  precision: "区分'流式输出存在'（ux_001）vs'流式无抖动'（本 case）"
+  helpfulness: "降低用户焦虑感（闪烁会让用户以为程序卡死）"
+
+baseline_scores: {}
+
+source: "render_001 / 09 §render 类"
+notes: |
+  render_001 双缓冲渲染。
+  与 ux_001 流式渲染配套；本 case 守"无抖动"。
+related_subsystem: [ ui, ink ]

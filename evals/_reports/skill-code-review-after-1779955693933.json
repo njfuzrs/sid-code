@@ -1,0 +1,137 @@
+{
+  "ts": 1779955693933,
+  "mode": "static-contract",
+  "skillInjected": true,
+  "overall": {
+    "avgContract": 5,
+    "avgEstimatedExec": 4.113333333333334,
+    "passN": 15
+  },
+  "cases": [
+    {
+      "id": "case_cr_001",
+      "contractIssues": [],
+      "contractScore": 5,
+      "estimatedExecScore": 4.2,
+      "estimatedNotes": [
+        "Skill 含 'when-to-use' 触发指引，提高 trigger 维度命中率"
+      ]
+    },
+    {
+      "id": "case_cr_002",
+      "contractIssues": [],
+      "contractScore": 5,
+      "estimatedExecScore": 4.2,
+      "estimatedNotes": [
+        "Skill 含 'when-to-use' 触发指引，提高 trigger 维度命中率"
+      ]
+    },
+    {
+      "id": "case_cr_003",
+      "contractIssues": [],
+      "contractScore": 5,
+      "estimatedExecScore": 4.5,
+      "estimatedNotes": [
+        "Skill 含 AI 反模式清单 / 7 维度检查清单，提高 issue 检出"
+      ]
+    },
+    {
+      "id": "case_cr_004",
+      "contractIssues": [],
+      "contractScore": 5,
+      "estimatedExecScore": 4.5,
+      "estimatedNotes": [
+        "Skill 含 AI 反模式清单 / 7 维度检查清单，提高 issue 检出"
+      ]
+    },
+    {
+      "id": "case_cr_005",
+      "contractIssues": [],
+      "contractScore": 5,
+      "estimatedExecScore": 4.5,
+      "estimatedNotes": [
+        "Skill 含 AI 反模式清单 / 7 维度检查清单，提高 issue 检出"
+      ]
+    },
+    {
+      "id": "case_cr_006",
+      "contractIssues": [],
+      "contractScore": 5,
+      "estimatedExecScore": 4.3,
+      "estimatedNotes": [
+        "Skill §4.2 false_positive 控制 + severity guide，降低误报"
+      ]
+    },
+    {
+      "id": "case_cr_007",
+      "contractIssues": [],
+      "contractScore": 5,
+      "estimatedExecScore": 4.3,
+      "estimatedNotes": [
+        "Skill §4.2 false_positive 控制 + severity guide，降低误报"
+      ]
+    },
+    {
+      "id": "case_cr_008",
+      "contractIssues": [],
+      "contractScore": 5,
+      "estimatedExecScore": 4.2,
+      "estimatedNotes": [
+        "Skill 要求 Suggestion 可执行 + 含具体代码，提高 suggestion 质量"
+      ]
+    },
+    {
+      "id": "case_cr_009",
+      "contractIssues": [],
+      "contractScore": 5,
+      "estimatedExecScore": 4.2,
+      "estimatedNotes": [
+        "Skill 要求 Suggestion 可执行 + 含具体代码，提高 suggestion 质量"
+      ]
+    },
+    {
+      "id": "case_cr_010",
+      "contractIssues": [],
+      "contractScore": 5,
+      "estimatedExecScore": 4.3,
+      "estimatedNotes": [
+        "Skill §4.1 RL-007 + must read 工具用法，强化 file:line 引用"
+      ]
+    },
+    {
+      "id": "case_cr_011",
+      "contractIssues": [],
+      "contractScore": 5,
+      "estimatedExecScore": 3.7,
+      "estimatedNotes": []
+    },
+    {
+      "id": "case_cr_012",
+      "contractIssues": [],
+      "contractScore": 5,
+      "estimatedExecScore": 3.7,
+      "estimatedNotes": []
+    },
+    {
+      "id": "case_cr_013",
+      "contractIssues": [],
+      "contractScore": 5,
+      "estimatedExecScore": 3.7,
+      "estimatedNotes": []
+    },
+    {
+      "id": "case_cr_014",
+      "contractIssues": [],
+      "contractScore": 5,
+      "estimatedExecScore": 3.7,
+      "estimatedNotes": []
+    },
+    {
+      "id": "case_cr_015",
+      "contractIssues": [],
+      "contractScore": 5,
+      "estimatedExecScore": 3.7,
+      "estimatedNotes": []
+    }
+  ]
+}

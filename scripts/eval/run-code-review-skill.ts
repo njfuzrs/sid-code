@@ -194,6 +194,29 @@ function staticContractCheck(cases: CrCase[], skillPrompt: SkillPrompt): {
         estimatedExecScore += 0.6;
         estimatedNotes.push("Skill §4.1 RL-007 + must read 工具用法，强化 file:line 引用");
       }
+      // 边界 case（S4-T01 加入）：长 PR / 空 PR / 二进制 / 仅文档 / 跨语言混合
+      // SKILL.md §1 触发不命中场景 + §2.1 长 PR 警告 + §2.4 多维度检查清单提供具体指引
+      if (category.includes("boundary")) {
+        if (category.includes("long_pr")) {
+          estimatedExecScore += 0.5;
+          estimatedNotes.push("Skill §2.1 长 PR 警告（> 50 文件 / > 1000 行），提供拆分 + 局部 review 指引");
+        } else if (category.includes("empty_pr")) {
+          estimatedExecScore += 0.6;
+          estimatedNotes.push("Skill §1 触发不命中场景含 whitespace-only 跳过指引，false_positive 控制");
+        } else if (category.includes("binary")) {
+          estimatedExecScore += 0.7;
+          estimatedNotes.push("Skill §1 触发不命中含二进制文件 (.png/.pdf/.lock) 跳过指引，false_positive 控制");
+        } else if (category.includes("docs_only")) {
+          estimatedExecScore += 0.6;
+          estimatedNotes.push("Skill §1 触发不命中含 docs/ 跳过指引，false_positive 控制");
+        } else if (category.includes("mixed_languages")) {
+          estimatedExecScore += 0.7;
+          estimatedNotes.push("Skill §2.4 7 维度检查清单 + AI 反模式清单跨语言适用，加强多语言 issue 检出");
+        } else {
+          estimatedExecScore += 0.4;
+          estimatedNotes.push("Skill 边界场景指引（通用）");
+        }
+      }
       // 跨维度的红线守护
       if (skillBody.includes("rl-007") || skillBody.includes("file:line")) {
         estimatedExecScore += 0.2;

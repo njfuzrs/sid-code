@@ -1,0 +1,88 @@
+id: case_cr_013
+category: code-review boundary binary_file
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: code-review
+
+input:
+  user_query: |
+    请帮我 review 这个 PR：
+
+    ```diff
+    diff --git a/assets/logo.png b/assets/logo.png
+    index abc..def 100644
+    Binary files a/assets/logo.png and b/assets/logo.png differ
+
+    diff --git a/docs/architecture.pdf b/docs/architecture.pdf
+    index 123..456 100644
+    Binary files a/docs/architecture.pdf and b/docs/architecture.pdf differ
+
+    diff --git a/bun.lock b/bun.lock
+    index xyz..uvw 100644
+    Binary files a/bun.lock and b/bun.lock differ
+    ```
+
+    本 PR 改了 logo.png、architecture.pdf 和 bun.lock。请审查。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: binary_files_skipped_with_explanation
+
+  must_include_any_of:
+    - "二进制文件"
+    - "binary"
+    - "无法 review"
+    - "跳过"
+    - "skip"
+    - "lock"
+    - "无法审查"
+    - ".png"
+    - ".pdf"
+
+  must_not_include:
+    - "[blocker]"
+    - "[high]"
+    - "严重问题"
+    - "代码质量差"
+    - "硬编码"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 6
+
+  reference_answer: |
+    ## Review Summary
+
+    **Verdict**: approve
+    **PR**: 3 files (binary), 0 reviewable lines
+
+    ### Skipped Checks
+    - assets/logo.png — 二进制文件 (.png)，无法做代码 review
+    - docs/architecture.pdf — 二进制文件 (.pdf)，无法做代码 review
+    - bun.lock — lockfile，由工具维护，建议人工核验依赖项
+
+    建议：lockfile 类变更请人工核验依赖版本是否符合预期；图像/PDF 类资产建议视觉检查。
+
+rubric:
+  completeness: "正确识别 3 个二进制文件并跳过；lockfile 单独标注（建议人工核验）"
+  precision: "不要给二进制文件编造 finding（RL-007）"
+  helpfulness: "明确告诉用户二进制文件的处理方式（人工核验）"
+
+baseline_scores: {}
+
+source: "RFC-001 §5.1 / SKILL.md §1 触发不命中场景"
+notes: |
+  S4-T01 边界 case (3/5)：二进制文件边界 — 测试 Skill 对 .png / .pdf / lockfile 等二进制文件不做代码 review。
+  与 SKILL.md §1 触发不命中场景对应。
+related_subsystem: [ skill, skill/code-review ]

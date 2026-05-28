@@ -1,0 +1,57 @@
+id: arch_render_003
+category: 架构渲染
+priority: P1
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 3.5
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言，不依赖 agent 输出）
+    断言（render_003）：Ink TUI 抖动控制 ——
+    在以下场景下 TUI 不能抖动 / 闪烁：
+      (1) 多并发工具调用，结果同时返回
+      (2) 长输出（> 100 行）滚动
+      (3) 用户同时输入文字
+      (4) 终端窗口大小变化
+    技术要求：
+      - 使用 React.memo / useMemo 隔离重渲染
+      - Ink Static 组件用于不变内容
+      - resize 监听 + 智能 layout
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: tui_no_jitter
+  max_steps: 1
+  reference_answer: |
+    src/ui/ 优化点：
+      - React.memo 包裹 Tool / Plan / Output 等子组件
+      - useMemo 缓存格式化结果
+      - Ink Static 组件用于历史输出
+      - resize 监听 + Box 自适应
+
+arch_assertions:
+  - type: dir_must_exist
+    path: src/ui
+
+placeholder: false
+
+rubric:
+  completeness: "并发 / 长输出 / 用户输入 / 窗口变化 4 场景下无抖动"
+  precision: "区分'肉眼无抖动'（rubric_5d 后续可加）vs'结构层面有 React.memo / Static'（本 case）"
+  helpfulness: "TUI 抖动是用户最容易感知的体验问题"
+
+baseline_scores: {}
+
+source: "render_003 / 09 §render 类"
+notes: |
+  render_003 Ink TUI 抖动控制。
+  当前守'结构层面就位'；后续可加 video / 截屏类 case 守'肉眼无抖动'。
+related_subsystem: [ ui, ink ]

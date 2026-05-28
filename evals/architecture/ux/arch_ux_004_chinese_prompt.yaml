@@ -1,0 +1,58 @@
+id: arch_ux_004
+category: 架构 UX
+priority: P1
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 3.5
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言，不依赖 agent 输出）
+    断言（ux_004）：中文 prompt 易理解性 ——
+    sid-code 的系统提示 / 错误提示 / Skill 提示 / 工具描述对中文用户友好：
+      - 不直译英文（避免"请提供您的输入"这类生硬翻译）
+      - 中英术语统一（bug / null / API 保留英文，其他用中文）
+      - 重要场景用中文示例
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: chinese_prompt_quality_visible
+  max_steps: 1
+  reference_answer: |
+    SKILL.md / system prompt 中文段含具体例子；
+    CLAUDE.md / docs/ 全中文；
+    错误信息含中文。
+
+arch_assertions:
+  - type: file_must_exist
+    path: CLAUDE.md
+  - type: file_must_contain
+    path: CLAUDE.md
+    pattern: "中文一等公民"
+  - type: file_must_exist
+    path: src/skill/builtin/code-review/SKILL.md
+  - type: file_must_contain
+    path: src/skill/builtin/code-review/SKILL.md
+    pattern: "中文"
+
+placeholder: false
+
+rubric:
+  completeness: "中文一等公民在 CLAUDE.md / SKILL.md / docs/ 全链路体现"
+  precision: "区分'有中文文档'vs'中文质量好'（后者依赖 LLM judge）"
+  helpfulness: "中文用户使用体验"
+
+baseline_scores: {}
+
+source: "ux_004 / 09 §ux 类 / chinese 类 zh_001~005"
+notes: |
+  ux_004 中文 prompt 易理解性。
+  与 chinese 类 case 互补。
+related_subsystem: [ ui, skill, docs ]

@@ -1,0 +1,104 @@
+id: case_cr_014
+category: code-review boundary docs_only
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: code-review
+
+input:
+  user_query: |
+    请审查这个 PR：
+
+    ```diff
+    diff --git a/docs/api/auth.md b/docs/api/auth.md
+    --- a/docs/api/auth.md
+    +++ b/docs/api/auth.md
+    @@ -10,7 +10,12 @@
+     ## Login Endpoint
+    -POST /auth/login
+    +POST /auth/login (rate limited 100/min/IP)
+
+    Body: `{ email, password }`
+
+    Response: `{ token, expires_at }`
+
+    +## Rate Limit Behavior
+    +
+    +若超出每 IP 100 次/分钟限制，返回 429 + Retry-After header。
+
+    diff --git a/CHANGELOG.md b/CHANGELOG.md
+    --- a/CHANGELOG.md
+    +++ b/CHANGELOG.md
+    @@ -1,3 +1,7 @@
+    +## v1.2.0
+    +- docs: 补充 rate limit 说明
+
+     ## v1.1.0
+    ```
+
+    PR 仅改 docs/ 和 CHANGELOG.md，无代码改动。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: docs_only_skipped_with_optional_review
+
+  must_include_any_of:
+    - "仅文档"
+    - "doc-only"
+    - "文档变更"
+    - "无代码改动"
+    - "skip"
+    - "跳过"
+    - "approve"
+    - "可选审查"
+
+  must_not_include:
+    - "[blocker]"
+    - "[high]"
+    - "严重问题"
+    - "安全漏洞"
+    - "bug"
+    - "edit "
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "docs/"
+    - "src/"
+  max_steps: 8
+
+  reference_answer: |
+    ## Review Summary
+
+    **Verdict**: approve
+    **PR**: 2 files (docs/, CHANGELOG.md), 0 source code changes
+
+    ### Skipped Checks
+    - 仅文档变更，跳过 lint / test / 代码风格检查
+
+    ### Optional Notes
+    - docs/api/auth.md — rate limit 描述清晰，建议在实现侧确认 100/min 与代码常量一致
+    - CHANGELOG.md — 格式符合 keep-a-changelog 风格
+
+    备注：建议核对 rate limit "100/min" 是否与 src/middleware/rate-limit.ts 实际配置一致（如有）。
+
+rubric:
+  completeness: "正确识别仅文档/CHANGELOG 变更场景，verdict=approve 或 skip"
+  precision: "不在文档 PR 上制造代码问题（false_positive 控制）"
+  helpfulness: "可选地提示文档与代码一致性核对（不强制 finding）"
+
+baseline_scores: {}
+
+source: "RFC-001 §5.1 trigger / SKILL.md §1 / 与 case_cr_002 互补（更完整的 docs+CHANGELOG 场景）"
+notes: |
+  S4-T01 边界 case (4/5)：仅文档变更扩展场景 —
+  case_cr_002 仅 README，本 case 含 docs/ + CHANGELOG.md，验证 Skill 通用 docs 路径识别。
+related_subsystem: [ skill, skill/code-review ]
