@@ -1,0 +1,186 @@
+id: case_001
+category: 代码理解
+priority: P0
+created_date: 2026-05-16
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+input:
+  user_query: "sid-code 的主 agent 循环（agentic while-loop）入口在哪个文件里？类名是什么？请定位并简要解释这个类的核心职责。"
+  repo: sid-code
+  repo_commit: b27b546
+  attachments: []
+
+expected:
+  outcome: locate_main_agent_loop_class
+
+  must_include_any_of:
+    - "src/agent/loop.ts"
+    - "AgentLoopRunner"
+    - "agent/loop"
+    - "loop.ts"
+    - "agentic while"
+    - "agentic loop"
+
+  must_not_include: []
+
+  must_call_tools:
+    - grep
+  must_not_call_tools: []
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 12
+
+  reference_answer: |
+    主 agent 循环入口在 src/agent/loop.ts，导出类 AgentLoopRunner（第 82 行）。
+    职责：接收用户输入 → 调用 LLM 流式响应 → 当 stop_reason 为 tool_use 时执行工具
+    并继续循环；end_turn 时结束本轮。是 agentic while-loop 架构的"主"循环（区别于
+    src/query/loop.ts 的 sub-loop）。
+
+rubric:
+  completeness: "是否同时定位到文件路径 + 类名"
+  precision: "是否避免将 src/query/loop.ts（sub-loop）作为主入口答案；如果提到 src/query/loop.ts
+    是作为对比或区分说明（例如'主循环是 agent/loop.ts，而非 query/loop.ts'），不应扣分；只有将其当作主入口才算错误"
+  helpfulness: "是否解释了主循环 vs sub-loop 区别 / agentic while-loop 关键点"
+
+baseline_scores:
+  sid_code_w0:
+    score: 5
+    run_status: success
+    tested_at: "2026-05-15T19:34:13.234Z"
+    tested_by: anchor_auto_v0
+    transcript_path: "evals/raw-outputs/case_001_1778870152964.jsonl"
+    notes: "⚠️ legacy cost 公式: score/cost 字段为旧公式（v1: input+output 累加 / v2: 4 项累加
+      input 含 N² 过计数, 阈值 500k 系列）产物, 与 v3 (input 取 last + 其它累加, 阈值
+      200k/500k/1.5M, 已校准) 不可直接比较; --sync 重跑后会刷成 v3 真实值; --sync 重跑后会刷成 v2 真实值;
+      锚点 2/2 全命中,且回答含 AgentLoopRunner 完整职责;人工 D5 复核：5; 重跑会跳变)"
+    _formula_version:
+      cost: legacy_v1
+  claude_code:
+    score: 1.4
+    run_status: success
+    tested_at: 2026-05-21T16:57:24.606Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: "⚠️ legacy cost 公式: score/cost 字段为旧公式（v1: input+output 累加 / v2: 4 项累加
+      input 含 N² 过计数, 阈值 500k 系列）产物, 与 v3 (input 取 last + 其它累加, 阈值
+      200k/500k/1.5M, 已校准) 不可直接比较; --sync 重跑后会刷成 v3 真实值; --sync 重跑后会刷成 v2 真实值; ;
+      重跑会跳变)"
+    _formula_version:
+      cost: legacy_v1
+  codex:
+    score: null
+    run_status: pending
+    tested_at: null
+    tested_by: manual
+    transcript_path: null
+    notes: ""
+  sid_code_live:
+    score: 5
+    run_status: success
+    tested_at: 2026-05-21T16:57:24.606Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: "⚠️ legacy cost 公式: score/cost 字段为旧公式（v1: input+output 累加 / v2: 4 项累加
+      input 含 N² 过计数, 阈值 500k 系列）产物, 与 v3 (input 取 last + 其它累加, 阈值
+      200k/500k/1.5M, 已校准) 不可直接比较; --sync 重跑后会刷成 v3 真实值; --sync 重跑后会刷成 v2 真实值; ;
+      重跑会跳变)"
+    _formula_version:
+      cost: legacy_v1
+  claude_code_opus47:
+    score: 4.6
+    run_status: success
+    tested_at: 2026-05-22T17:25:00.843Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: "⚠️ legacy cost 公式: score/cost 字段为旧公式（v1: input+output 累加 / v2: 4 项累加
+      input 含 N² 过计数, 阈值 500k 系列）产物, 与 v3 (input 取 last + 其它累加, 阈值
+      200k/500k/1.5M, 已校准) 不可直接比较; --sync 重跑后会刷成 v3 真实值; --sync 重跑后会刷成 v2 真实值; ;
+      重跑会跳变)"
+    dimensions:
+      anchor_hit: 1
+      rubric_score: 1
+      tool_compliance: 0.6
+      efficiency: 1
+      cost: 1
+    _formula_version:
+      cost: legacy_v1
+  sid_code_opus47:
+    score: 4.6
+    run_status: success
+    tested_at: 2026-05-22T17:25:00.843Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: "⚠️ legacy cost 公式: score/cost 字段为旧公式（v1: input+output 累加 / v2: 4 项累加
+      input 含 N² 过计数, 阈值 500k 系列）产物, 与 v3 (input 取 last + 其它累加, 阈值
+      200k/500k/1.5M, 已校准) 不可直接比较; --sync 重跑后会刷成 v3 真实值; --sync 重跑后会刷成 v2 真实值; ;
+      重跑会跳变)"
+    dimensions:
+      anchor_hit: 1
+      rubric_score: 1
+      tool_compliance: 0.6
+      efficiency: 1
+      cost: 1
+    _formula_version:
+      cost: legacy_v1
+  sid_code_deepseek_v4_pro:
+    score: 5
+    run_status: success
+    tested_at: 2026-05-28T02:08:24.139Z
+    tested_by: eval-runner
+    transcript_path: null
+    notes: ""
+    dimensions:
+      anchor_hit: 1
+      negative_anchor: null
+      rubric_score: 1
+      tool_compliance: 1
+      efficiency: 1
+      cost: 1
+    _formula_version:
+      cost: v6
+      grader: 5d-v3
+  sid_code_claude_opus_4_7:
+    score: 5
+    run_status: success
+    tested_at: 2026-05-24T03:23:14.222Z
+    tested_by: eval-runner
+    transcript_path: null
+    notes: "⚠️ legacy cost 公式: score/cost 字段为旧公式（v1: input+output 累加 / v2: 4 项累加
+      input 含 N² 过计数, 阈值 500k 系列）产物, 与 v3 (input 取 last + 其它累加, 阈值
+      200k/500k/1.5M, 已校准) 不可直接比较; --sync 重跑后会刷成 v3 真实值; --sync 重跑后会刷成 v2 真实值; ;
+      重跑会跳变)"
+    dimensions:
+      anchor_hit: 1
+      rubric_score: 1
+      tool_compliance: 1
+      efficiency: 1
+      cost: 1
+    _formula_version:
+      cost: legacy_v1
+  claude_code_claude_opus_4_7:
+    score: 4.65
+    run_status: success
+    tested_at: 2026-05-24T17:14:55.732Z
+    tested_by: eval-runner
+    transcript_path: null
+    notes: ""
+    dimensions:
+      anchor_hit: 1
+      rubric_score: 1
+      tool_compliance: 0.6
+      efficiency: 1
+      cost: 1
+    _formula_version:
+      cost: v3
+
+source: "personal_exploration_2026_05_16"
+notes: |
+  W1 第一条样板 case。代码理解 4 条之 1（agent 主循环入口）。
+  关键词 AgentLoopRunner 已 grep 验证存在于 src/agent/loop.ts:82。
+related_subsystem: [ agent, tool/grep ]

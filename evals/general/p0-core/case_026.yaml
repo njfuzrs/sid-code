@@ -1,0 +1,176 @@
+id: case_026
+category: 文档生成
+priority: P0
+created_date: 2026-05-20
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+
+input:
+  user_query: "帮我看一下 src/memory/store.ts 的 MemoryStore
+    类，列出它的所有公开方法（load/set/get/delete/list），每个方法的参数和返回值是什么，以及这个类在 src/app.ts 和
+    src/cli.ts 中是怎么被使用的"
+  repo: sid-code
+  repo_commit: 764e7b9
+
+expected:
+  outcome: document_class_api_and_usage
+  must_include_any_of:
+    - "MemoryStore"
+    - "src/memory/store.ts"
+    - "load"
+    - "set"
+    - "get"
+    - "delete"
+    - "list"
+  must_not_include: []
+  must_call_tools:
+    - read
+  must_not_call_tools: []
+  must_modify_files_in: []
+  must_not_modify_files: []
+  max_steps: 15
+  reference_answer: |
+    MemoryStore 类位于 src/memory/store.ts，有 5 个公开方法：
+    - load(): Promise<void> — 加载全局和项目级 memory 文件
+    - set(key, value, scope): Promise<void> — 写入/更新一条记忆
+    - get(key): Promise<MemoryEntry | null> — 读取一条记忆
+    - delete(key, scope?): Promise<boolean> — 删除一条记忆
+    - list(): Promise<MemoryEntry[]> — 列出所有记忆
+    在 src/app.ts 中被 import 并实例化用于读写 memory；在 src/cli.ts 中用于初始化时加载 memory。
+
+rubric:
+  completeness: "是否列出了全部 5 个公开方法及其签名"
+  precision: "参数和返回值描述是否准确"
+  helpfulness: "是否说明了在 app.ts/cli.ts 中的使用方式"
+
+baseline_scores:
+  sid_code_w0:
+    score: null
+    run_status: pending
+    tested_at: null
+    tested_by: manual
+    transcript_path: null
+    notes: ""
+  claude_code:
+    score: 5
+    run_status: success
+    tested_at: 2026-05-21T16:57:24.606Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: "⚠️ legacy cost 公式: score/cost 字段为旧公式（v1: input+output 累加 / v2: 4 项累加
+      input 含 N² 过计数, 阈值 500k 系列）产物, 与 v3 (input 取 last + 其它累加, 阈值
+      200k/500k/1.5M, 已校准) 不可直接比较; --sync 重跑后会刷成 v3 真实值; --sync 重跑后会刷成 v2 真实值; ;
+      重跑会跳变)"
+    _formula_version:
+      cost: legacy_v1
+  codex:
+    score: null
+    tested_at: null
+    tested_by: manual
+  sid_code_live:
+    score: 5
+    run_status: success
+    tested_at: 2026-05-21T16:57:24.606Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: "⚠️ legacy cost 公式: score/cost 字段为旧公式（v1: input+output 累加 / v2: 4 项累加
+      input 含 N² 过计数, 阈值 500k 系列）产物, 与 v3 (input 取 last + 其它累加, 阈值
+      200k/500k/1.5M, 已校准) 不可直接比较; --sync 重跑后会刷成 v3 真实值; --sync 重跑后会刷成 v2 真实值; ;
+      重跑会跳变)"
+    _formula_version:
+      cost: legacy_v1
+  claude_code_opus47:
+    score: 4.6
+    run_status: success
+    tested_at: 2026-05-22T17:25:00.843Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: "⚠️ legacy cost 公式: score/cost 字段为旧公式（v1: input+output 累加 / v2: 4 项累加
+      input 含 N² 过计数, 阈值 500k 系列）产物, 与 v3 (input 取 last + 其它累加, 阈值
+      200k/500k/1.5M, 已校准) 不可直接比较; --sync 重跑后会刷成 v3 真实值; --sync 重跑后会刷成 v2 真实值; ;
+      重跑会跳变)"
+    dimensions:
+      anchor_hit: 1
+      rubric_score: 1
+      tool_compliance: 0.6
+      efficiency: 1
+      cost: 1
+    _formula_version:
+      cost: legacy_v1
+  sid_code_opus47:
+    score: 4.6
+    run_status: success
+    tested_at: 2026-05-22T17:25:00.843Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: "⚠️ legacy cost 公式: score/cost 字段为旧公式（v1: input+output 累加 / v2: 4 项累加
+      input 含 N² 过计数, 阈值 500k 系列）产物, 与 v3 (input 取 last + 其它累加, 阈值
+      200k/500k/1.5M, 已校准) 不可直接比较; --sync 重跑后会刷成 v3 真实值; --sync 重跑后会刷成 v2 真实值; ;
+      重跑会跳变)"
+    dimensions:
+      anchor_hit: 1
+      rubric_score: 1
+      tool_compliance: 0.6
+      efficiency: 1
+      cost: 1
+    _formula_version:
+      cost: legacy_v1
+  sid_code_deepseek_v4_pro:
+    score: null
+    run_status: abnormal
+    tested_at: 2026-05-28T02:15:32.968Z
+    tested_by: eval-runner
+    transcript_path: null
+    notes: eval-runner error（score=null,dimensions 已置 null,仅 run_status 有效）
+    dimensions:
+      anchor_hit: null
+      rubric_score: null
+      tool_compliance: null
+      negative_anchor: null
+      efficiency: null
+      cost: null
+    _formula_version:
+      cost: v6
+      grader: 5d-v3
+  sid_code_claude_opus_4_7:
+    score: 5
+    run_status: success
+    tested_at: 2026-05-24T03:23:14.222Z
+    tested_by: eval-runner
+    transcript_path: null
+    notes: "⚠️ legacy cost 公式: score/cost 字段为旧公式（v1: input+output 累加 / v2: 4 项累加
+      input 含 N² 过计数, 阈值 500k 系列）产物, 与 v3 (input 取 last + 其它累加, 阈值
+      200k/500k/1.5M, 已校准) 不可直接比较; --sync 重跑后会刷成 v3 真实值; --sync 重跑后会刷成 v2 真实值; ;
+      重跑会跳变)"
+    dimensions:
+      anchor_hit: 1
+      rubric_score: 1
+      tool_compliance: 1
+      efficiency: 1
+      cost: 1
+    _formula_version:
+      cost: legacy_v1
+  claude_code_claude_opus_4_7:
+    score: 5
+    run_status: success
+    tested_at: 2026-05-24T17:30:43.226Z
+    tested_by: eval-runner
+    transcript_path: null
+    notes: ""
+    dimensions:
+      anchor_hit: 1
+      rubric_score: 1
+      tool_compliance: 1
+      efficiency: 1
+      cost: 1
+    _formula_version:
+      cost: v3
+
+source: "manual_design_2026_05_20_coverage_gap_文档生成"
+notes: |
+  补充 category=文档生成 的覆盖（原 25 条中缺失此类别）。
+  考查 agent 读代码 → 生成结构化 API 文档的能力。
+related_subsystem: [ memory, tool/read ]

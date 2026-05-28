@@ -1,0 +1,71 @@
+id: arch_redline_012
+category: 架构红线
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构检查 + 文档断言，不依赖 agent 输出）
+    断言：sid-code 的 PermissionMode 默认值是 "default"（只读默认 / Level 0），
+    即默认模式下写操作（edit / write / bash 危险命令）需要用户确认。
+    护身符：CLAUDE.md §0.1 五层洋葱第 1 层"Permission 7 种 PermissionMode（default /
+    acceptEdits / dontAsk / plan / always-allow / deny-write / dangerously-skip-permissions）"。
+  repo: sid-code
+  repo_commit: ""
+  attachments: []
+
+expected:
+  outcome: permission_default_mode_is_readonly_safe
+  must_include_any_of: []
+  must_not_include: []
+  max_steps: 1
+  reference_answer: |
+    src/permission/ 模块存在；
+    PermissionMode 枚举包含 "default" 字面量；
+    默认模式下写操作需要 ask（confirmation）。
+
+arch_assertions:
+  - type: dir_must_contain_files
+    dir: src/permission
+    min_count: 3
+  - type: file_must_contain
+    path: src/permission/mode.ts
+    pattern: "default"
+  - type: file_must_contain
+    path: src/permission/mode.ts
+    pattern: "acceptEdits"
+
+rubric:
+  completeness: "Permission 模块完整 + 默认模式只读"
+  precision: "区分 default（需确认）vs acceptEdits（自动接受）"
+  helpfulness: "保持 Level 0 只读默认是企业级护身符"
+
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 5,
+        run_status: success,
+        tested_at: 2026-05-28T02:08:00.473Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 1 },
+        _formula_version: { cost: v6, grader: 5d-v3 }
+      }
+  }
+
+source: "G-12 / CLAUDE.md §0.1 五层洋葱第 1 层 + §0.2 三组不变量"
+notes: |
+  G-12 Level 0 只读默认（structured_arch 文件检查）。
+  - severity: blocker（扩展红线，非主 7 条；S4-T12 不锚定，但按 P0 走）
+  - 检查 src/permission/mode.ts 必须包含 "default" / "acceptEdits" 字面量（PermissionMode 枚举完整）
+related_subsystem: [ permission ]

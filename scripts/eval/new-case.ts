@@ -13,9 +13,9 @@ import { parseArgs } from "node:util";
 const ROOT = process.cwd();
 const TEMPLATE = join(ROOT, "evals/_template.yaml");
 const PRIO_DIR: Record<string, string> = {
-  P0: "evals/p0-core",
-  P1: "evals/p1-common",
-  P2: "evals/p2-edge",
+  P0: "evals/general/p0-core",
+  P1: "evals/general/p1-common",
+  P2: "evals/general/p2-edge",
 };
 
 function nextId(): string {

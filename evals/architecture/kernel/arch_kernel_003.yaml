@@ -1,0 +1,66 @@
+id: arch_kernel_003
+category: 架构内核
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言，不依赖 agent 输出）
+    断言：sid-code 实现了 Checkpoint 机制（C-06）—— src/checkpoint/manager.ts 必须存在。
+    Checkpoint 用于：误删/误改用户文件后恢复（与 RL-001 配套）。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: checkpoint_module_present
+  max_steps: 1
+  reference_answer: |
+    src/checkpoint/manager.ts 存在；含 createCheckpoint / restoreCheckpoint 等关键 API；
+    存储路径：~/.sid-code/checkpoints/<session-id>/。
+
+arch_assertions:
+  - type: dir_must_contain_files
+    dir: src/checkpoint
+    min_count: 2
+  - type: file_must_exist
+    path: src/checkpoint/manager.ts
+  - type: file_must_exist
+    path: src/checkpoint/diff.ts
+  - type: file_must_contain
+    path: src/checkpoint/manager.ts
+    pattern: "Checkpoint"
+
+rubric:
+  completeness: "Checkpoint 模块完整"
+  precision: "manager + diff 两个核心文件就位"
+  helpfulness: "为意外修改提供恢复兜底"
+
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 5,
+        run_status: success,
+        tested_at: 2026-05-28T02:04:33.857Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 1 },
+        _formula_version: { cost: v6, grader: 5d-v3 }
+      }
+  }
+
+source: "C-06 / CLAUDE.md §0.1"
+notes: |
+  C-06 Checkpoint 恢复（structured_arch）。
+  - 与 RL-001（不删除用户代码）配套：误删后 Checkpoint 兜底
+  - 防止未来重构误删 src/checkpoint/
+related_subsystem: [ checkpoint ]

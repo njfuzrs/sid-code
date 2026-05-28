@@ -1,0 +1,80 @@
+id: arch_kernel_004
+category: 架构内核
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言，不依赖 agent 输出）
+    断言：sid-code 实现了 7 种 PermissionMode（C-07）：
+      default / always-allow / deny-write / acceptEdits / plan / dontAsk / dangerously-skip-permissions
+    出处：CLAUDE.md §0.1 当前位置 + src/permission/mode.ts。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: permission_mode_7_types_present
+  max_steps: 1
+  reference_answer: |
+    src/permission/mode.ts 必须导出 PermissionMode 联合类型，含全部 7 种字面量。
+    保护 sid-code 已成熟的 Permission 模式可拔插能力。
+
+arch_assertions:
+  - type: file_must_exist
+    path: src/permission/mode.ts
+  - type: file_must_contain
+    path: src/permission/mode.ts
+    pattern: "default"
+  - type: file_must_contain
+    path: src/permission/mode.ts
+    pattern: "always-allow"
+  - type: file_must_contain
+    path: src/permission/mode.ts
+    pattern: "deny-write"
+  - type: file_must_contain
+    path: src/permission/mode.ts
+    pattern: "acceptEdits"
+  - type: file_must_contain
+    path: src/permission/mode.ts
+    pattern: "plan"
+  - type: file_must_contain
+    path: src/permission/mode.ts
+    pattern: "dontAsk"
+  - type: file_must_contain
+    path: src/permission/mode.ts
+    pattern: "dangerously-skip-permissions"
+
+rubric:
+  completeness: "7 种模式全部就位"
+  precision: "区分 deny-write（仅写禁止）vs default（写需确认）"
+  helpfulness: "为不同部署场景提供合适默认"
+
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 5,
+        run_status: success,
+        tested_at: 2026-05-28T02:04:45.202Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 1 },
+        _formula_version: { cost: v6, grader: 5d-v3 }
+      }
+  }
+
+source: "C-07 / CLAUDE.md §0.1 当前位置"
+notes: |
+  C-07 Permission 模式完整可用（7 种）。
+  - structured_arch grader：检查 src/permission/mode.ts 全部 7 个字面量
+  - 与 arch_redline_012（G-12 Level 0 只读默认）配对，本 case 是更细的全集守护
+related_subsystem: [ permission ]

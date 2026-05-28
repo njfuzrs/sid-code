@@ -3,9 +3,9 @@
  *
  * 背景（S0-T02 / docs/eval/plan-capability-baseline-sync.md）：
  *   eval-runner.ts 原本独占 syncBaselineScores 逻辑，硬编码 general case 的 4 个目录
- *   （p0-core / p1-common / p2-edge / holdout）。plan capability runner 因目录结构不同
- *   （evals/capability/plan/），无法复用，导致 capability case 的 baseline 只有 _reports/ 时间戳
- *   文件可查，无法通过 eval:tally / dashboard 读取。
+ *   （general/p0-core / general/p1-common / general/p2-edge / holdout，S1-T00 起重组）。
+ *   plan capability runner 因目录结构不同（evals/capability/plan/），无法复用，导致 capability case
+ *   的 baseline 只有 _reports/ 时间戳文件可查，无法通过 eval:tally / dashboard 读取。
  *
  * 解法：把回写逻辑抽到本模块，按 SyncOptions 接受 yamlDir（capability 单目录）或 baseDir（general 多目录）。
  *   各 runner 把自家 result 类型映射成 BaselineResult 再调用本模块。
@@ -67,20 +67,37 @@ export interface SyncOptions {
   yamlDir?: string;
   /**
    * eval 根目录（general 模式）；与 yamlDir 二选一。
-   * 内部扫 `${baseDir}/p0-core`、`${baseDir}/p1-common`、`${baseDir}/p2-edge`、`${baseDir}/holdout` 四目录。
+   * 内部扫 `${baseDir}/general/p0-core`、`${baseDir}/general/p1-common`、`${baseDir}/general/p2-edge`、`${baseDir}/holdout` 四目录。
    */
   baseDir?: string;
   /** 写到 `baseline_scores[provider].tested_by`，例："eval-runner" / "eval:plan-capability" */
   testerLabel: string;
 }
 
-const DEFAULT_GENERAL_DIRS = ["p0-core", "p1-common", "p2-edge", "holdout"];
+const DEFAULT_GENERAL_DIRS = ["general/p0-core", "general/p1-common", "general/p2-edge", "holdout"];
+
+/**
+ * 动态发现 architecture/<sub>/ 与 holdout/architecture/<sub>/ 下所有子目录。
+ * S1-T01 起 architecture 类 case 加入 baseline_scores 回写流程；与 eval-runner.ts 的
+ * discoverArchitectureSubDirs 同语义。
+ */
+function discoverArchitectureSubDirs(absRoot: string): string[] {
+  if (!existsSync(absRoot)) return [];
+  const dirs: string[] = [];
+  for (const entry of readdirSync(absRoot)) {
+    const p = join(absRoot, entry);
+    try {
+      if (require("node:fs").statSync(p).isDirectory()) dirs.push(p);
+    } catch { /* skip */ }
+  }
+  return dirs;
+}
 
 /**
  * general 模式：case yaml 文件名 = `${caseId}.yaml`，按文件名查路径。
  *
- * 这是 evals/p0-core/ 等 4 个目录的硬约定（case_001.yaml 内 id: case_001）。
- * 历史上 eval-runner 一直按此假设工作，迁移时保持原行为不变。
+ * 这是 evals/general/p0-core/ 等 4 个目录的硬约定（case_001.yaml 内 id: case_001）。
+ * 历史上 eval-runner 一直按此假设工作，S1-T00 后路径重组，目录前缀加 general/。
  */
 function findGeneralCaseYamlPath(caseId: string, searchDirs: string[]): string | null {
   for (const dir of searchDirs) {
@@ -131,8 +148,15 @@ export function syncBaselineScores(results: BaselineResult[], opts: SyncOptions)
     const index = buildCapabilityIdIndex(opts.yamlDir);
     resolveYamlPath = (caseId: string) => index.get(caseId) ?? null;
   } else if (opts.baseDir) {
-    // general 模式：约定文件名 = caseId.yaml
-    const searchDirs = DEFAULT_GENERAL_DIRS.map((d) => join(opts.baseDir!, d));
+    // general + architecture 模式：约定文件名 = caseId.yaml
+    // architecture 子目录动态发现 —— S1-T01 起 evals/architecture/<sub>/<case>.yaml 加入 sync
+    const archSubs = discoverArchitectureSubDirs(join(opts.baseDir, "architecture"));
+    const holdoutArchSubs = discoverArchitectureSubDirs(join(opts.baseDir, "holdout", "architecture"));
+    const searchDirs = [
+      ...DEFAULT_GENERAL_DIRS.map((d) => join(opts.baseDir!, d)),
+      ...archSubs,
+      ...holdoutArchSubs,
+    ];
     resolveYamlPath = (caseId: string) => findGeneralCaseYamlPath(caseId, searchDirs);
   } else {
     throw new Error("syncBaselineScores: opts.yamlDir 或 opts.baseDir 至少传一个");

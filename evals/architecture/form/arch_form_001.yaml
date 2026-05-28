@@ -1,0 +1,76 @@
+id: arch_form_001
+category: 架构形态
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言，不依赖 agent 输出）
+    断言：sid-code 当前已具备"CLI 作为 Skill 开发 IDE"的核心能力（A-01）：
+      - CLI 入口存在（src/cli.ts）
+      - bootstrap 入口存在（src/entrypoints/bootstrap.ts，evaluation 模式无头启动）
+      - Skill 系统就位（src/skill/loader.ts / manager.ts）
+      - skill-creator 元 Skill 就位（让用户通过 CLI 写 Skill）
+      - eval runner 就位（写 case → 跑评测 → 反馈给 Skill 的 EDD 闭环）
+    出处：CLAUDE.md §0.1 五层洋葱第 5 层（用户触点）+ §0.2 PR-to-Prod 主轴。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: cli_skill_development_ide_ready
+  max_steps: 1
+  reference_answer: |
+    sid-code CLI 形态已经支持完整 Skill 开发流：
+      - 用户在 CLI 输入 prompt → Agent Loop 跑 → Skill 触发
+      - 用户写新 Skill：复制 SKILL.md → reload → 评测 case 跑分
+      - skill-creator 元 Skill 提供 Skill 创建辅助
+
+arch_assertions:
+  - type: file_must_exist
+    path: src/cli.ts
+  - type: file_must_exist
+    path: src/entrypoints/bootstrap.ts
+  - type: file_must_exist
+    path: src/skill/loader.ts
+  - type: file_must_exist
+    path: src/skill/manager.ts
+  - type: dir_must_contain_files
+    dir: src/skill/builtin/skill-creator
+    min_count: 1
+  - type: file_must_exist
+    path: evals/eval-runner.ts
+
+rubric:
+  completeness: "CLI + bootstrap + Skill loader/manager + skill-creator + eval-runner 五件套就位"
+  precision: "区分 CLI 形态（已就位）vs Daemon/MCP Server 形态（待建）"
+  helpfulness: "证明 sid-code 形态 A-CLI 自闭环：开发 → 测试 → 评测三件套打通"
+
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 5,
+        run_status: success,
+        tested_at: 2026-05-28T02:03:02.518Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 1 },
+        _formula_version: { cost: v6, grader: 5d-v3 }
+      }
+  }
+
+source: "A-01 / CLAUDE.md §0.1 五层洋葱第 5 层 + §0.2 PR-to-Prod 主轴"
+notes: |
+  A-01 CLI 作为 Skill 开发 IDE。
+  - structured_arch grader：检查 5 个核心文件 + skill-creator 目录就位
+  - 与 form/README.md 的 5 条 case 互补：本条守护 CLI 全栈; form_002 守护"五形态共享内核 parity"
+related_subsystem: [ skill, agent, command ]

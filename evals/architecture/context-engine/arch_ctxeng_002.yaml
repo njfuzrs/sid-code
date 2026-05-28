@@ -1,0 +1,64 @@
+id: arch_ctxeng_002
+category: 架构 Context Engine
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 前置能力"不存在"，写出来作为契约，S1 暂不跑分）
+    断言（F-03）：sid-code Context Engine 必须支持增量更新 ——
+    修改 1 个文件后仅重索引该文件，不全量重建。
+    当前 sid-code 没有索引系统，每次都是 grep / glob 实时扫。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: incremental_update_single_file
+  max_steps: 1
+  reference_answer: |
+    src/context/index/ 必须存在；
+    含 incremental-updater.ts；
+    修改 X.ts 后仅 X.ts 的索引被重建，其他文件 mtime 不变。
+
+arch_assertions:
+  - type: dir_must_contain_files
+    dir: src/context/index
+    min_count: 2
+  - type: file_must_exist
+    path: src/context/index/incremental-updater.ts
+
+placeholder: true
+contract_only: true
+
+rubric:
+  completeness: "索引 + 增量更新模块就位"
+  precision: "单文件更新不触发全量重建"
+  helpfulness: "支撑大仓库下 Context Engine 性能"
+
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 0,
+        run_status: success,
+        tested_at: 2026-05-28T02:02:21.453Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 0 },
+        _formula_version: { cost: v6, grader: 5d-v3 }
+      }
+  }
+
+source: "F-03 / CLAUDE.md §0.1 L3 Context 护城河 / 09 §F 类"
+notes: |
+  F-03 增量更新（前置能力：不存在，契约占位）。
+related_subsystem: [ context ]

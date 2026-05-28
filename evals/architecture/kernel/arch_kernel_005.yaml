@@ -1,0 +1,63 @@
+id: arch_kernel_005
+category: 架构内核
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言，不依赖 agent 输出）
+    断言：sid-code 的 Permission 系统区分读写风险（C-08）——
+    src/permission/checker.ts 的 check() 必须能区分 read 类工具 vs 写类工具（edit / write / bash 危险命令）。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: permission_rw_risk_distinguished
+  max_steps: 1
+  reference_answer: |
+    src/permission/checker.ts 应该按 tool 类型区分判定路径，
+    读操作（read/grep/glob/ls）默认放行，写操作（edit/write）默认走 ask（default 模式）或自动接受（acceptEdits）。
+
+arch_assertions:
+  - type: file_must_exist
+    path: src/permission/checker.ts
+  - type: file_must_contain
+    path: src/permission/checker.ts
+    pattern: "PermissionChecker"
+  - type: file_must_exist
+    path: src/permission/sensitive.ts
+
+rubric:
+  completeness: "checker + sensitive 模块完整"
+  precision: "区分 read vs write 风险"
+  helpfulness: "default 模式只确认写操作 = 低骚扰高安全"
+
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 5,
+        run_status: success,
+        tested_at: 2026-05-28T02:05:27.145Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 1 },
+        _formula_version: { cost: v6, grader: 5d-v3 }
+      }
+  }
+
+source: "C-08 / CLAUDE.md §0.1"
+notes: |
+  C-08 Permission 读写风险区分。
+  - structured_arch grader：检查 checker.ts + sensitive.ts 都在
+  - 与 arch_kernel_004（7 种模式）+ arch_redline_012（默认只读）配套守护
+related_subsystem: [ permission ]

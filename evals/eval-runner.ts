@@ -25,11 +25,28 @@ import {
 
 const ROOT = resolve(import.meta.dir);
 const CASE_DIRS = [
-  join(ROOT, "p0-core"),
-  join(ROOT, "p1-common"),
-  join(ROOT, "p2-edge"),
+  join(ROOT, "general", "p0-core"),
+  join(ROOT, "general", "p1-common"),
+  join(ROOT, "general", "p2-edge"),
 ];
 const HOLDOUT_DIR = join(ROOT, "holdout");
+const ARCHITECTURE_ROOT = join(ROOT, "architecture");
+const HOLDOUT_ARCHITECTURE_ROOT = join(ROOT, "holdout", "architecture");
+
+/**
+ * 动态发现 `evals/architecture/<sub>/` 下所有子目录。
+ * S1-T01 起 architecture/ 下有 redline / form / kernel / ... 18 个子目录，
+ * 每个子目录都是 case 容器；用动态扫描避免每加一类都改硬编码常量。
+ */
+function discoverArchitectureSubDirs(root: string): string[] {
+  if (!existsSync(root)) return [];
+  const dirs: string[] = [];
+  for (const entry of require("node:fs").readdirSync(root)) {
+    const p = join(root, entry);
+    if (require("node:fs").statSync(p).isDirectory()) dirs.push(p);
+  }
+  return dirs;
+}
 
 export interface ProviderDef {
   name: string;
@@ -138,14 +155,15 @@ async function loadCases(
   const wantSet = caseFilter ? new Set(caseFilter) : null;
   const cases: CaseYaml[] = [];
 
-  // 默认行为：扫描 P0/P1/P2 + 过滤 holdout=true 标记。
-  // includeHoldout=true 时，额外扫描 evals/holdout/ 目录，且不再过滤 holdout 标记。
+  // 默认行为：扫描 general (P0/P1/P2) + architecture/<sub>/ 所有子目录 + 过滤 holdout=true 标记。
+  // includeHoldout=true 时，额外扫描 evals/holdout/ + evals/holdout/architecture/<sub>/，且不再过滤 holdout 标记。
   // 注意：单独传 --cases case_004（在 holdout 目录里）的情况，
   // 会通过下面的 holdout 目录扫描分支拿到（即便 includeHoldout=false 也允许显式指定）。
-  const dirsToScan = [...CASE_DIRS];
+  const dirsToScan = [...CASE_DIRS, ...discoverArchitectureSubDirs(ARCHITECTURE_ROOT)];
   const explicitlyAskedHoldoutId = wantSet ? hasHoldoutId(wantSet) : false;
   if (includeHoldout || explicitlyAskedHoldoutId) {
     dirsToScan.push(HOLDOUT_DIR);
+    dirsToScan.push(...discoverArchitectureSubDirs(HOLDOUT_ARCHITECTURE_ROOT));
   }
 
   for (const dir of dirsToScan) {
@@ -154,8 +172,11 @@ async function loadCases(
     for (const f of files) {
       const content = await Bun.file(join(dir, f)).text();
       const c = parseYaml(content) as CaseYaml;
-      // case 在 holdout 目录或带 holdout=true 标记 → 视为 holdout
-      const isHoldout = dir === HOLDOUT_DIR || c.holdout === true;
+      // case 在 holdout 目录/子树 或带 holdout=true 标记 → 视为 holdout
+      const isHoldout =
+        dir === HOLDOUT_DIR ||
+        dir.startsWith(HOLDOUT_ARCHITECTURE_ROOT) ||
+        c.holdout === true;
       if (isHoldout && skipHoldout && !includeHoldout && !(wantSet && wantSet.has(c.id))) continue;
       if (wantSet && !wantSet.has(c.id)) continue;
       cases.push(c);
@@ -165,9 +186,16 @@ async function loadCases(
 }
 
 function hasHoldoutId(want: Set<string>): boolean {
-  if (!existsSync(HOLDOUT_DIR)) return false;
-  for (const id of want) {
-    if (existsSync(join(HOLDOUT_DIR, `${id}.yaml`))) return true;
+  if (existsSync(HOLDOUT_DIR)) {
+    for (const id of want) {
+      if (existsSync(join(HOLDOUT_DIR, `${id}.yaml`))) return true;
+    }
+  }
+  // architecture holdout 子目录: evals/holdout/architecture/<sub>/<case>.yaml
+  for (const sub of discoverArchitectureSubDirs(HOLDOUT_ARCHITECTURE_ROOT)) {
+    for (const id of want) {
+      if (existsSync(join(sub, `${id}.yaml`))) return true;
+    }
   }
   return false;
 }

@@ -1,0 +1,188 @@
+id: case_005
+category: bug修复
+priority: P0
+created_date: 2026-05-16
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+input:
+  user_query: "我在跑测试时遇到报错：`TypeError: Cannot read properties of undefined (reading
+    'undo')`，发生在我执行 /undo 命令的时候。请你定位 /undo 命令的实现并解释这个错误最可能的根因（不要改代码,我先了解情况）。"
+  repo: sid-code
+  repo_commit: b27b546
+  attachments: []
+
+expected:
+  outcome: locate_undo_command_and_diagnose
+
+  must_include_any_of:
+    - "src/command/builtins.ts"
+    - "UndoCommand"
+    - "CheckpointManager"
+    - "cpMgr"
+
+  must_not_include: []
+
+  must_call_tools:
+    - grep
+  must_not_call_tools: []
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 12
+
+  reference_answer: |
+    /undo 命令实现在 src/command/builtins.ts:362 的 UndoCommand 类。它依赖
+    CheckpointManager（src/checkpoint/manager.ts:118）。报错"undefined.undo"最可能的
+    根因：cpMgr 未初始化 / getCheckpointManager() 返回 undefined / 当前会话没有任何
+    snapshot 可回滚（manager 内部 undo 时取的字段为 undefined）。建议先 grep
+    getCheckpointManager 在 builtins.ts 里的获取方式，再看 manager 内 undo 实现。
+
+rubric:
+  completeness: "定位到 UndoCommand + CheckpointManager 两个层"
+  precision: "不能直接给出修复 patch（用户明确说不要改）"
+  helpfulness: "提出 ≥ 2 个可能根因 + 下一步排查建议"
+
+baseline_scores:
+  sid_code_w0:
+    {
+      score: 1,
+      run_status: success,
+      tested_at: "2026-05-15T18:58:53.186Z",
+      tested_by: anchor_auto_v0,
+      transcript_path: "evals/raw-outputs/case_005_1778871333176.jsonl",
+      notes: "⚠️ legacy cost 公式: score/cost 字段为旧公式（v1: input+output 累加 / v2: 4 项累加
+        input 含 N² 过计数, 阈值 500k 系列）产物, 与 v3 (input 取 last + 其它累加, 阈值
+        200k/500k/1.5M, 已校准) 不可直接比较; --sync 重跑后会刷成 v3 真实值; --sync 重跑后会刷成 v2 真实值;
+        锚点 0/4 命中, 反向违规 0; 人工 D5 复核可调; 重跑会跳变)",
+      _formula_version: { cost: legacy_v1 }
+    }
+  claude_code:
+    score: 5
+    run_status: success
+    tested_at: 2026-05-21T16:57:24.606Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: "⚠️ legacy cost 公式: score/cost 字段为旧公式（v1: input+output 累加 / v2: 4 项累加
+      input 含 N² 过计数, 阈值 500k 系列）产物, 与 v3 (input 取 last + 其它累加, 阈值
+      200k/500k/1.5M, 已校准) 不可直接比较; --sync 重跑后会刷成 v3 真实值; --sync 重跑后会刷成 v2 真实值; ;
+      重跑会跳变)"
+    _formula_version:
+      cost: legacy_v1
+  codex:
+    {
+      score: null,
+      run_status: pending,
+      tested_at: null,
+      tested_by: manual,
+      transcript_path: null,
+      notes: ""
+    }
+  sid_code_live:
+    score: 5
+    run_status: success
+    tested_at: 2026-05-21T16:57:24.606Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: "⚠️ legacy cost 公式: score/cost 字段为旧公式（v1: input+output 累加 / v2: 4 项累加
+      input 含 N² 过计数, 阈值 500k 系列）产物, 与 v3 (input 取 last + 其它累加, 阈值
+      200k/500k/1.5M, 已校准) 不可直接比较; --sync 重跑后会刷成 v3 真实值; --sync 重跑后会刷成 v2 真实值; ;
+      重跑会跳变)"
+    _formula_version:
+      cost: legacy_v1
+  sid_code_opus47:
+    score: 3
+    run_status: success
+    tested_at: 2026-05-22T17:25:00.843Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: "⚠️ legacy cost 公式: score/cost 字段为旧公式（v1: input+output 累加 / v2: 4 项累加
+      input 含 N² 过计数, 阈值 500k 系列）产物, 与 v3 (input 取 last + 其它累加, 阈值
+      200k/500k/1.5M, 已校准) 不可直接比较; --sync 重跑后会刷成 v3 真实值; --sync 重跑后会刷成 v2 真实值; ;
+      重跑会跳变)"
+    dimensions:
+      anchor_hit: 1
+      rubric_score: 0.3
+      tool_compliance: 0.6
+      efficiency: 1
+      cost: 1
+    _formula_version:
+      cost: legacy_v1
+  claude_code_opus47:
+    score: 4.1
+    run_status: success
+    tested_at: 2026-05-22T17:25:00.843Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: "⚠️ legacy cost 公式: score/cost 字段为旧公式（v1: input+output 累加 / v2: 4 项累加
+      input 含 N² 过计数, 阈值 500k 系列）产物, 与 v3 (input 取 last + 其它累加, 阈值
+      200k/500k/1.5M, 已校准) 不可直接比较; --sync 重跑后会刷成 v3 真实值; --sync 重跑后会刷成 v2 真实值; ;
+      重跑会跳变)"
+    dimensions:
+      anchor_hit: 1
+      rubric_score: 0.85
+      tool_compliance: 0.6
+      efficiency: 0.7
+      cost: 1
+    _formula_version:
+      cost: legacy_v1
+  sid_code_deepseek_v4_pro:
+    score: null
+    run_status: abnormal
+    tested_at: 2026-05-28T02:11:59.409Z
+    tested_by: eval-runner
+    transcript_path: null
+    notes: eval-runner error（score=null,dimensions 已置 null,仅 run_status 有效）
+    dimensions:
+      anchor_hit: null
+      rubric_score: null
+      tool_compliance: null
+      negative_anchor: null
+      efficiency: null
+      cost: null
+    _formula_version:
+      cost: v6
+      grader: 5d-v3
+  sid_code_claude_opus_4_7:
+    score: 4.53
+    run_status: success
+    tested_at: 2026-05-24T03:23:14.222Z
+    tested_by: eval-runner
+    transcript_path: null
+    notes: "⚠️ legacy cost 公式: score/cost 字段为旧公式（v1: input+output 累加 / v2: 4 项累加
+      input 含 N² 过计数, 阈值 500k 系列）产物, 与 v3 (input 取 last + 其它累加, 阈值
+      200k/500k/1.5M, 已校准) 不可直接比较; --sync 重跑后会刷成 v3 真实值; --sync 重跑后会刷成 v2 真实值; ;
+      重跑会跳变)"
+    dimensions:
+      anchor_hit: 1
+      rubric_score: 0.95
+      tool_compliance: 1
+      efficiency: 0.4
+      cost: 1
+    _formula_version:
+      cost: legacy_v1
+  claude_code_claude_opus_4_7:
+    score: 4.44
+    run_status: success
+    tested_at: 2026-05-24T17:18:07.220Z
+    tested_by: eval-runner
+    transcript_path: null
+    notes: ""
+    dimensions:
+      anchor_hit: 1
+      rubric_score: 0.95
+      tool_compliance: 1
+      efficiency: 0.4
+      cost: 0.7
+    _formula_version:
+      cost: v3
+
+source: "personal_exploration_2026_05_16"
+notes: |
+  bug 修复 3 条之 1。考查"诊断 vs 修复"的克制（用户明确说不要改）。
+  must_not_modify_files=src/ 兜底防止 agent 自作主张写代码。
+related_subsystem: [ command, checkpoint, tool/grep ]

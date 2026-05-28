@@ -1,0 +1,74 @@
+id: arch_kernel_007
+category: 架构内核
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言，不依赖 agent 输出）
+    断言：sid-code 的 Memory 系统支持双层注入（C-19）——
+    全局记忆（~/.sid-code/memory/）+ 项目记忆（<project>/.sid-code/memory/），
+    通过 system prompt 附件机制注入到 LLM 调用。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: memory_dual_layer_present
+  max_steps: 1
+  reference_answer: |
+    src/memory/store.ts 必须存在；
+    MemoryEntry 含 scope: "global" | "project"；
+    src/config/attachments.ts 必须有 generateMemoryAttachment 函数把双层记忆注入 system prompt。
+
+arch_assertions:
+  - type: file_must_exist
+    path: src/memory/store.ts
+  - type: file_must_contain
+    path: src/memory/store.ts
+    pattern: "global"
+  - type: file_must_contain
+    path: src/memory/store.ts
+    pattern: "project"
+  - type: file_must_contain
+    path: src/memory/store.ts
+    pattern: "scope"
+  - type: file_must_exist
+    path: src/config/attachments.ts
+  - type: file_must_contain
+    path: src/config/attachments.ts
+    pattern: "generateMemoryAttachment"
+
+rubric:
+  completeness: "双层 store + system prompt 注入路径完整"
+  precision: "scope 字段明确区分 global / project"
+  helpfulness: "项目记忆优先级 > 全局，符合软件工程经验"
+
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 5,
+        run_status: success,
+        tested_at: 2026-05-28T02:06:14.624Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 1 },
+        _formula_version: { cost: v6, grader: 5d-v3 }
+      }
+  }
+
+source: "C-19 / CLAUDE.md §0.1"
+notes: |
+  C-19 Memory 双层注入。
+  - structured_arch grader：store + attachments 两端都检查
+  - 与 capability 子系统 evals/capability/memory/ 配对：本 case 是结构层，capability 是行为层
+related_subsystem: [ memory, context ]

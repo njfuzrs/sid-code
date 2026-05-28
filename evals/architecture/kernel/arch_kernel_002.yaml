@@ -1,0 +1,65 @@
+id: arch_kernel_002
+category: 架构内核
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言，不依赖 agent 输出）
+    断言：sid-code 当前实现了循环检测（loop detection）—— C-04。
+    出处：src/agent/loop-detection.ts 必须存在 + 含核心检测逻辑。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: loop_detection_present
+  max_steps: 1
+  reference_answer: |
+    src/agent/loop-detection.ts 存在；含循环检测算法（重复 tool_use 模式识别）。
+    防止未来重构把循环检测逻辑误删，导致 RL-004（不无限循环）失守。
+
+arch_assertions:
+  - type: file_must_exist
+    path: src/agent/loop-detection.ts
+  - type: file_must_contain
+    path: src/agent/loop-detection.ts
+    pattern: "loop"
+  - type: file_lines_lt
+    path: src/agent/loop-detection.ts
+    max_lines: 1500
+
+rubric:
+  completeness: "循环检测模块就位"
+  precision: "针对工具调用循环模式（不针对所有循环）"
+  helpfulness: "为 RL-004 提供工程兜底"
+
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 5,
+        run_status: success,
+        tested_at: 2026-05-28T02:04:20.304Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 1 },
+        _formula_version: { cost: v6, grader: 5d-v3 }
+      }
+  }
+
+source: "C-04 / CLAUDE.md §0.1"
+notes: |
+  C-04 循环检测。
+  - structured_arch grader：检查 src/agent/loop-detection.ts 存在 + 模块完整（行数上限 1500 防意外膨胀）
+  - 与 arch_redline_004（RL-004 不无限循环）互补：RL-004 是行为层；本 case 是结构层
+related_subsystem: [ agent, agent/loop-detection ]
+related_adr: [ ADR-020 ]

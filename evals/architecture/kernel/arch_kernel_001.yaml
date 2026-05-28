@@ -1,0 +1,73 @@
+id: arch_kernel_001
+category: 架构内核
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言，不依赖 agent 输出）
+    断言：sid-code 当前的 Sub-agent 系统支持 4 种类型（explore / task / summarize / plan），
+    出处：CLAUDE.md §0.1 / C-03。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: subagent_4_types_present
+  max_steps: 1
+  reference_answer: |
+    src/agent/sub-agent.ts 必须导出 SubAgentType = "explore" | "task" | "summarize" | "plan"，
+    四种类型完整定义。
+
+arch_assertions:
+  - type: file_must_exist
+    path: src/agent/sub-agent.ts
+  - type: file_must_contain
+    path: src/agent/sub-agent.ts
+    pattern: "explore"
+  - type: file_must_contain
+    path: src/agent/sub-agent.ts
+    pattern: "task"
+  - type: file_must_contain
+    path: src/agent/sub-agent.ts
+    pattern: "summarize"
+  - type: file_must_contain
+    path: src/agent/sub-agent.ts
+    pattern: "plan"
+  - type: file_must_contain
+    path: src/agent/sub-agent.ts
+    pattern: "SubAgentType"
+
+rubric:
+  completeness: "4 种 Sub-agent 类型全部就位"
+  precision: "区分 main loop vs sub loop"
+  helpfulness: "保持 4 种类型可拔插"
+
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 5,
+        run_status: success,
+        tested_at: 2026-05-28T02:04:06.271Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 1 },
+        _formula_version: { cost: v6, grader: 5d-v3 }
+      }
+  }
+
+source: "C-03 / CLAUDE.md §0.1"
+notes: |
+  C-03 Sub-agent 4 种类型。
+  - structured_arch grader：检查 src/agent/sub-agent.ts 同时含 4 个类型字面量 + SubAgentType 定义
+  - 防止未来重构无声删掉某个类型
+related_subsystem: [ agent, agent/sub-agent ]

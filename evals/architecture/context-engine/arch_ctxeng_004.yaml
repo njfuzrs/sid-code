@@ -1,0 +1,60 @@
+id: arch_ctxeng_004
+category: 架构 Context Engine
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 前置能力"不存在"，写出来作为契约，S1 暂不跑分）
+    断言（F-06）：sid-code Context Engine 必须能查询模块依赖图 ——
+    给定 moduleA，正确返回其 import 列表（dep graph）。
+    与 call-graph 互补：依赖图关注模块边界，调用图关注函数边界。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: module_dep_graph_query
+  max_steps: 1
+  reference_answer: |
+    src/context/graph/dep-graph.ts 必须存在；
+    支持 query("moduleA") → [{ module, type: "import" | "reexport" }]。
+
+arch_assertions:
+  - type: file_must_exist
+    path: src/context/graph/dep-graph.ts
+
+placeholder: true
+contract_only: true
+
+rubric:
+  completeness: "依赖图 API 就位"
+  precision: "import vs reexport 区分"
+  helpfulness: "支撑大型 refactor 的影响范围估算"
+
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 0,
+        run_status: success,
+        tested_at: 2026-05-28T02:02:38.334Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 0 },
+        _formula_version: { cost: v6, grader: 5d-v3 }
+      }
+  }
+
+source: "F-06 / CLAUDE.md §0.1 L3 Context 护城河 / 09 §F 类"
+notes: |
+  F-06 依赖图（前置能力：不存在，契约占位）。
+related_subsystem: [ context ]

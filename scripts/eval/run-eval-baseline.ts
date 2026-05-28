@@ -26,7 +26,7 @@ import { spawn } from "node:child_process";
 import yaml from "yaml";
 
 const ROOT = process.cwd();
-const CASE_DIRS = ["evals/p0-core", "evals/p1-common", "evals/p2-edge", "evals/holdout"];
+const CASE_DIRS = ["evals/general/p0-core", "evals/general/p1-common", "evals/general/p2-edge", "evals/holdout"];
 const RAW_DIR = "evals/raw-outputs";
 const REPORTS_DIR = "evals/_reports";
 

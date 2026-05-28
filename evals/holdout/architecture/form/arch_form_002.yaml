@@ -1,0 +1,78 @@
+id: arch_form_002
+category: 架构形态
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: true
+holdout_reason: "五形态共享内核 parity（A 类 holdout，禁止改 yaml 内容；08 §9.3 Go 条件 3）"
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言，不依赖 agent 输出 —— 架构 holdout，禁止改）
+    断言：CLI / TUI / Headless 三种形态共享同一个 Agent Loop 内核（不复制实现）。
+    五层洋葱第 5 层（用户触点）的多形态共存需要："五形态共享内核"——同一个 src/agent/loop.ts，
+    五种入口都通过它跑。本 case 守护"内核共享性"——通过检查：
+      - CLI 入口 src/cli.ts 必须存在
+      - Headless / Eval 入口 src/entrypoints/bootstrap.ts 必须存在
+      - Agent Loop 内核 src/agent/loop.ts 必须存在（且行数 < 1500）
+      - 不存在多个 loop 实现（src/agent/loop-cli.ts / src/agent/loop-headless.ts 等不应出现）
+    出处：CLAUDE.md §0.1 五层洋葱 + arch_form 类设计意图（08 §9.2 P0-tier1）。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: parity_kernel_shared_across_forms
+  max_steps: 1
+  reference_answer: |
+    sid-code 五形态都通过同一个 AgentLoopRunner（src/agent/loop.ts）跑，
+    不允许出现 CLI / Headless 各自的 loop 实现。本 case 通过 file_must_not_exist
+    防止"形态特定 loop"渗透。
+
+arch_assertions:
+  - type: file_must_exist
+    path: src/cli.ts
+  - type: file_must_exist
+    path: src/entrypoints/bootstrap.ts
+  - type: file_must_exist
+    path: src/agent/loop.ts
+  - type: file_lines_lt
+    path: src/agent/loop.ts
+    max_lines: 1500
+  - type: file_must_not_exist
+    path: src/agent/loop-cli.ts
+  - type: file_must_not_exist
+    path: src/agent/loop-headless.ts
+  - type: file_must_not_exist
+    path: src/agent/loop-tui.ts
+
+rubric:
+  completeness: "共享内核 + 多入口都就位"
+  precision: "防止形态特定 loop"
+  helpfulness: "保持 sid-code 多形态 parity"
+
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 5,
+        run_status: success,
+        tested_at: 2026-05-28T01:58:14.711Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 1 },
+        _formula_version: { cost: v6, grader: 5d-v3 }
+      }
+  }
+
+source: "A 类 / CLAUDE.md §0.1 五形态共存"
+notes: |
+  A-class 架构 holdout：五形态共享内核 parity。
+  - holdout: true，跑分用 --include-holdout 触发
+  - 与 arch_kernel_008（C 档不可拔插）配套：本 case 守护"形态层不复制内核"，008 守护"内核不可被替换"
+related_subsystem: [ agent, agent/loop ]

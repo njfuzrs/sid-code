@@ -1,0 +1,16 @@
+tested_at: 2026-05-28T02:15:18.706Z
+sid_code_deepseek_v4_pro:
+  score: null
+  run_status: abnormal
+  tested_at: 2026-05-28T02:15:18.706Z
+  anchor:
+    score: null
+  llm:
+    score: null
+    dimensions:
+      anchor_hit: null
+      rubric_score: null
+      tool_compliance: null
+      negative_anchor: null
+      efficiency: null
+      cost: null

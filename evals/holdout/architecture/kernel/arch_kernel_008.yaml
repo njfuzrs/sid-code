@@ -1,0 +1,78 @@
+id: arch_kernel_008
+category: 架构内核
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: true
+holdout_reason: "Agent Loop 不可拔插（C 档约束护身符）—— 移到 holdout 后禁止改 yaml 内容（08 §9.3 Go 条件 3）"
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言，不依赖 agent 输出 —— 架构 holdout，禁止改）
+    断言：sid-code 的 Agent Loop（src/agent/loop.ts）是 C 档不可拔插约束，
+    不允许通过环境变量 / 配置 / Skill / Hook 等替换 Agent Loop 主循环逻辑。
+    出处：CLAUDE.md §0.1 三档可拔插矩阵 C 档（Agent Loop / Eval Runner / 三组不变量 = 硬编码）。
+
+    架构 holdout 防护：
+      - loop.ts 必须存在
+      - loop.ts 必须含 AgentLoopRunner 主循环类（agentic while-loop 核心）
+      - loop.ts 不应过大（< 1500 行；超过通常说明被掺杂了不应该有的可拔插/扩展点）
+      - 没有 loop-plugin.ts / loop-provider.ts 等"拔插点"文件（这些文件出现 = 内核被改）
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: agent_loop_remains_immutable_kernel
+  max_steps: 1
+  reference_answer: |
+    Agent Loop 是 sid-code 的"产品宪法"之一（CLAUDE.md §0.1 C 档），
+    替换会破坏 eval baseline。任何"内核解耦"提案需通过 ADR + 全量 eval 通过。
+
+arch_assertions:
+  - type: file_must_exist
+    path: src/agent/loop.ts
+  - type: file_must_contain
+    path: src/agent/loop.ts
+    pattern: "AgentLoopRunner"
+  - type: file_lines_lt
+    path: src/agent/loop.ts
+    max_lines: 1500
+  - type: file_must_not_exist
+    path: src/agent/loop-plugin.ts
+  - type: file_must_not_exist
+    path: src/agent/loop-provider.ts
+  - type: file_must_not_exist
+    path: src/agent/loop-extension-registry.ts
+
+rubric:
+  completeness: "Agent Loop 完整 + 无拔插点"
+  precision: "C 档不可拔插边界清晰"
+  helpfulness: "保持 sid-code 的产品宪法稳定"
+
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 5,
+        run_status: success,
+        tested_at: 2026-05-28T01:53:49.591Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 1 },
+        _formula_version: { cost: v6, grader: 5d-v3 }
+      }
+  }
+
+source: "arch_pluggable_003 / CLAUDE.md §0.1 三档可拔插 C 档"
+notes: |
+  C 档 Agent Loop 不可拔插（architecture holdout）。
+  - holdout: true，跑分用 --include-holdout 触发
+  - 任何想"让 Agent Loop 可替换"的 PR 都会在本 case fail = 必须走 ADR 评审
+  - file_must_not_exist 防止"内核解耦"的渗透
+related_subsystem: [ agent, agent/loop ]

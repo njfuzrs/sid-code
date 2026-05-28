@@ -1,0 +1,67 @@
+id: arch_form_003
+category: 架构形态
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 前置能力"待建（≤1sprint）"，跑分时 baseline=0 / pending）
+    断言（A-06）：sid-code 应该具备 MCP Server 能力，被外部 Agent 调用。
+    当前 sid-code 是 MCP Client（消费 mastergo / context7 等 MCP server），
+    暂未自己作为 Server 暴露给外部 Agent。
+    本 case 现在落盘作为契约，待 sid-code MCP Server 实现后跑通。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: mcp_server_capability_planned
+  max_steps: 1
+  reference_answer: |
+    src/mcp/server/ 应该存在（待建）；
+    package.json 应注册 "mcp-server" bin entry；
+    本 case 当前作为契约占位，前置能力实现后跑通。
+
+arch_assertions:
+  - type: dir_must_contain_files
+    dir: src/mcp
+    min_count: 3
+  - type: file_must_exist
+    path: src/mcp/server.ts
+
+placeholder: true
+
+rubric:
+  completeness: "MCP Server 入口存在（待建）"
+  precision: "区分 MCP Client（已有）vs Server（待建）"
+  helpfulness: "为 A-06 提供实现契约"
+
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 2.5,
+        run_status: success,
+        tested_at: 2026-05-28T02:05:53.326Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 0.5 },
+        _formula_version: { cost: v6, grader: 5d-v3 }
+      }
+  }
+
+source: "A-06 / CLAUDE.md §0.1 五形态共存 / 09 §A 类"
+notes: |
+  A-06 MCP Server 被外部 Agent 调用（前置能力：待建（≤1sprint））。
+  - placeholder: true（baseline 跑分会 fail，但属预期 —— DASHBOARD 应单独标"待建"分类）
+  - 跑分时 file_must_exist src/mcp 会 fail（当前是文件不是目录或不存在），
+    fail 即为"前置能力未就位"信号；当 src/mcp/ 模块就位后本 case 自动 pass
+related_subsystem: [ mcp ]

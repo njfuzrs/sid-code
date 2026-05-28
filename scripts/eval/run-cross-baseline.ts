@@ -9,9 +9,9 @@ import { parseArgs } from "node:util";
 
 const ROOT = join(import.meta.dir, "../..");
 const CASE_DIRS = [
-  join(ROOT, "evals/p0-core"),
-  join(ROOT, "evals/p1-common"),
-  join(ROOT, "evals/p2-edge"),
+  join(ROOT, "evals/general/p0-core"),
+  join(ROOT, "evals/general/p1-common"),
+  join(ROOT, "evals/general/p2-edge"),
 ];
 const OUTPUT_DIR = join(ROOT, "evals/raw-outputs");
 

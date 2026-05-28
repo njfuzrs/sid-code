@@ -1,0 +1,70 @@
+id: arch_ctxeng_001
+category: 架构 Context Engine
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 前置能力"不存在"，写出来作为契约，S1 暂不跑分）
+    断言（F-01）：sid-code Context Engine 必须支持 tree-sitter 解析三种语言 —— TypeScript / Python / Go。
+    当前 sid-code 没有 src/context/treesitter/ 模块，依赖 grep / glob 等 native 工具，
+    无 AST 级理解能力。本 case 是契约：M2 阶段 Context Engine 实现后跑通。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: treesitter_3lang_parsing
+  max_steps: 1
+  reference_answer: |
+    src/context/treesitter/ 模块必须存在；
+    至少有 parser-ts.ts / parser-py.ts / parser-go.ts 三个 parser；
+    可以解析三种语言文件并返回 AST 节点数 > 0。
+
+arch_assertions:
+  - type: dir_must_contain_files
+    dir: src/context/treesitter
+    min_count: 3
+  - type: file_must_exist
+    path: src/context/treesitter/parser-ts.ts
+  - type: file_must_exist
+    path: src/context/treesitter/parser-py.ts
+  - type: file_must_exist
+    path: src/context/treesitter/parser-go.ts
+
+placeholder: true
+contract_only: true
+
+rubric:
+  completeness: "三语言 parser 全部就位"
+  precision: "区分 TS / Python / Go 各自专用 parser"
+  helpfulness: "AST 级理解是 sid-code 护城河（CLAUDE.md §0.1 L3 Context）"
+
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 0,
+        run_status: success,
+        tested_at: 2026-05-28T02:01:57.085Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 0 },
+        _formula_version: { cost: v6, grader: 5d-v3 }
+      }
+  }
+
+source: "F-01 / CLAUDE.md §0.1 L3 Context 护城河 / 09 §F 类"
+notes: |
+  F-01 tree-sitter 解析三语言（前置能力：不存在，契约占位）。
+  - placeholder: true / contract_only: true（baseline 跑分必 fail，DASHBOARD 显示"未实现"分类）
+  - M2 阶段 Context Engine 实现后跑通
+related_subsystem: [ context ]

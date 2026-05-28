@@ -15,7 +15,7 @@ import { parseArgs } from "node:util";
 import yaml from "yaml";
 
 const ROOT = process.cwd();
-const CASE_DIRS = ["evals/p0-core", "evals/p1-common", "evals/p2-edge", "evals/holdout"];
+const CASE_DIRS = ["evals/general/p0-core", "evals/general/p1-common", "evals/general/p2-edge", "evals/holdout"];
 
 interface CaseSummary {
   id: string;

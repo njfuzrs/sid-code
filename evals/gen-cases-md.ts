@@ -10,9 +10,9 @@ import { parse as parseYaml } from "yaml";
 
 const ROOT = resolve(import.meta.dir);
 const CASE_DIRS = [
-  { dir: join(ROOT, "p0-core"), label: "P0 核心" },
-  { dir: join(ROOT, "p1-common"), label: "P1 常见" },
-  { dir: join(ROOT, "p2-edge"), label: "P2 边缘" },
+  { dir: join(ROOT, "general", "p0-core"), label: "P0 核心" },
+  { dir: join(ROOT, "general", "p1-common"), label: "P1 常见" },
+  { dir: join(ROOT, "general", "p2-edge"), label: "P2 边缘" },
   { dir: join(ROOT, "holdout"), label: "Holdout 保留" },
 ];
 

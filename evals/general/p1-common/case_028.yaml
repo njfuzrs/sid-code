@@ -1,0 +1,171 @@
+id: case_028
+category: 多文件协调
+priority: P1
+created_date: 2026-05-20
+
+eval_type: capability
+target_score: 3.5
+graduated_at: null
+holdout: false
+
+input:
+  user_query: "帮我追踪 MemoryStore 的完整调用链：从 src/cli.ts 入口到 src/app.ts 再到
+    src/memory/store.ts，列出每个文件中 MemoryStore 被 import 和实例化的具体行号，以及数据流向（哪里读、哪里写）"
+  repo: sid-code
+  repo_commit: 764e7b9
+
+expected:
+  outcome: trace_memory_store_call_chain
+  must_include_any_of:
+    - "src/cli.ts"
+    - "src/app.ts"
+    - "src/memory/store.ts"
+    - "MemoryStore"
+    - "import"
+  must_not_include: []
+  must_call_tools:
+    - grep
+  must_not_call_tools: []
+  must_modify_files_in: []
+  must_not_modify_files: []
+  max_steps: 18
+  reference_answer: |
+    调用链：
+    1. src/cli.ts:381 — import MemoryStore，实例化 new MemoryStore(process.cwd())
+    2. src/app.ts:308,412,690 — 三处 import + 实例化，分别用于初始化加载、CLAUDE.md 写入、运行时读写
+    3. src/memory/store.ts:45 — MemoryStore 类定义，管理 globalDir + projectDir 两层存储
+    数据流向：cli.ts 初始化读 → app.ts 运行时读写 → store.ts 持久化到 ~/.sid-code/memory/ 和 .sid-code/memory/
+
+rubric:
+  completeness: "是否列出了 cli.ts 和 app.ts 中所有 MemoryStore 的使用点"
+  precision: "行号是否准确（允许 ±5 行误差）"
+  helpfulness: "是否清晰描述了数据流向（读/写方向）"
+
+baseline_scores:
+  sid_code_w0:
+    score: null
+    run_status: pending
+    tested_at: null
+    tested_by: manual
+    transcript_path: null
+    notes: ""
+  claude_code:
+    score: 5
+    run_status: success
+    tested_at: 2026-05-21T16:57:24.606Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: "⚠️ legacy cost 公式: score/cost 字段为旧公式（v1: input+output 累加 / v2: 4 项累加
+      input 含 N² 过计数, 阈值 500k 系列）产物, 与 v3 (input 取 last + 其它累加, 阈值
+      200k/500k/1.5M, 已校准) 不可直接比较; --sync 重跑后会刷成 v3 真实值; --sync 重跑后会刷成 v2 真实值; ;
+      重跑会跳变)"
+    _formula_version:
+      cost: legacy_v1
+  codex:
+    score: null
+    tested_at: null
+    tested_by: manual
+  sid_code_live:
+    score: 5
+    run_status: success
+    tested_at: 2026-05-21T16:57:24.606Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: "⚠️ legacy cost 公式: score/cost 字段为旧公式（v1: input+output 累加 / v2: 4 项累加
+      input 含 N² 过计数, 阈值 500k 系列）产物, 与 v3 (input 取 last + 其它累加, 阈值
+      200k/500k/1.5M, 已校准) 不可直接比较; --sync 重跑后会刷成 v3 真实值; --sync 重跑后会刷成 v2 真实值; ;
+      重跑会跳变)"
+    _formula_version:
+      cost: legacy_v1
+  claude_code_opus47:
+    score: 4.5
+    run_status: success
+    tested_at: 2026-05-22T17:25:00.843Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: "⚠️ legacy cost 公式: score/cost 字段为旧公式（v1: input+output 累加 / v2: 4 项累加
+      input 含 N² 过计数, 阈值 500k 系列）产物, 与 v3 (input 取 last + 其它累加, 阈值
+      200k/500k/1.5M, 已校准) 不可直接比较; --sync 重跑后会刷成 v3 真实值; --sync 重跑后会刷成 v2 真实值; ;
+      重跑会跳变)"
+    dimensions:
+      anchor_hit: 1
+      rubric_score: 1
+      tool_compliance: 0.6
+      efficiency: 0.7
+      cost: 1
+    _formula_version:
+      cost: legacy_v1
+  sid_code_opus47:
+    score: 4.6
+    run_status: success
+    tested_at: 2026-05-22T17:25:00.843Z
+    tested_by: promptfoo
+    transcript_path: null
+    notes: "⚠️ legacy cost 公式: score/cost 字段为旧公式（v1: input+output 累加 / v2: 4 项累加
+      input 含 N² 过计数, 阈值 500k 系列）产物, 与 v3 (input 取 last + 其它累加, 阈值
+      200k/500k/1.5M, 已校准) 不可直接比较; --sync 重跑后会刷成 v3 真实值; --sync 重跑后会刷成 v2 真实值; ;
+      重跑会跳变)"
+    dimensions:
+      anchor_hit: 1
+      rubric_score: 1
+      tool_compliance: 0.6
+      efficiency: 1
+      cost: 1
+    _formula_version:
+      cost: legacy_v1
+  sid_code_deepseek_v4_pro:
+    score: null
+    run_status: abnormal
+    tested_at: 2026-05-28T02:16:02.262Z
+    tested_by: eval-runner
+    transcript_path: null
+    notes: eval-runner error（score=null,dimensions 已置 null,仅 run_status 有效）
+    dimensions:
+      anchor_hit: null
+      rubric_score: null
+      tool_compliance: null
+      negative_anchor: null
+      efficiency: null
+      cost: null
+    _formula_version:
+      cost: v6
+      grader: 5d-v3
+  sid_code_claude_opus_4_7:
+    score: 5
+    run_status: success
+    tested_at: 2026-05-24T03:23:14.222Z
+    tested_by: eval-runner
+    transcript_path: null
+    notes: "⚠️ legacy cost 公式: score/cost 字段为旧公式（v1: input+output 累加 / v2: 4 项累加
+      input 含 N² 过计数, 阈值 500k 系列）产物, 与 v3 (input 取 last + 其它累加, 阈值
+      200k/500k/1.5M, 已校准) 不可直接比较; --sync 重跑后会刷成 v3 真实值; --sync 重跑后会刷成 v2 真实值; ;
+      重跑会跳变)"
+    dimensions:
+      anchor_hit: 1
+      rubric_score: 1
+      tool_compliance: 1
+      efficiency: 1
+      cost: 1
+    _formula_version:
+      cost: legacy_v1
+  claude_code_claude_opus_4_7:
+    score: 5
+    run_status: success
+    tested_at: 2026-05-24T17:32:28.479Z
+    tested_by: eval-runner
+    transcript_path: null
+    notes: ""
+    dimensions:
+      anchor_hit: 1
+      rubric_score: 1
+      tool_compliance: 1
+      efficiency: 1
+      cost: 1
+    _formula_version:
+      cost: v3
+
+source: "manual_design_2026_05_20_coverage_gap_多文件协调"
+notes: |
+  补充 P1 多文件协调类 case。考查 agent 跨文件追踪调用链的能力。
+  涉及 3 个文件的 import/实例化关系追踪。
+related_subsystem: [ memory, agent ]

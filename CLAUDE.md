@@ -143,11 +143,12 @@ sid-code 从 2026-05-15 起建立评测体系，当前进入 Sprint S0。**改�
 | ADR | `docs/adr/`（必须有 rejected alternatives；当前 9 条） |
 | Sprint 报告 | `docs/weekly-eval-report/sprint-SN.md`（S0 起；旧 week-00..11.md 为历史档案） |
 
-### 当前 case 仓库（2026-05-25 实际盘点）
+### 当前 case 仓库（2026-05-28 实际盘点）
 
-- 现有：`evals/p0-core/`（10）+ `evals/p1-common/`（9）+ `evals/p2-edge/`（6）+ `evals/holdout/`（5）= 30 条
+- 现有：`evals/general/p0-core/`（10）+ `evals/general/p1-common/`（9）+ `evals/general/p2-edge/`（6）+ `evals/holdout/`（5）= 30 条
 - capability：`evals/capability/{plan,memory,context,router,harness}/`（**5 子系统全部就位**：plan 10 + memory 10 + context 10 + router 8 + harness 10 = 48 条 case；S0-T11 N=3 中位数 baseline 已落盘，27 graduated + 21 known_limitation）
-- S0 起新增（与 p0-core 平级）：`evals/architecture/{redline,form,pluggable,kernel,platform,discipline,context-engine,orchestration,chinese,durable-exec,notification,ux,nonfunctional,outcome,meta,milestone}/` + `evals/holdout/architecture/`
+- S1 起新增（与 general 平级）：`evals/architecture/{redline,form,pluggable,kernel,platform,discipline,context-engine,orchestration,chinese,durable-exec,notification,ux,nonfunctional,outcome,meta,milestone,ontology,render}/` + `evals/holdout/architecture/{kernel,form,...}/`
+  - S1-T15 起 30 条 P0-tier1 已就位：redline 12 + kernel 7（+ holdout/kernel 1）+ form 4（+ holdout/form 1）+ context-engine 5
 
 ### 跑评测（细节见 evals/README.md）
 

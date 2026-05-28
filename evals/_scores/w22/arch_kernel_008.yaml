@@ -1,0 +1,11 @@
+tested_at: 2026-05-28T01:53:49.591Z
+sid_code_deepseek_v4_pro:
+  score: 5
+  run_status: success
+  tested_at: 2026-05-28T01:53:49.591Z
+  anchor:
+    score: null
+  llm:
+    score: null
+    dimensions:
+      arch_check: 1

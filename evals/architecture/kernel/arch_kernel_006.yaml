@@ -1,0 +1,103 @@
+id: arch_kernel_006
+category: 架构内核
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言，不依赖 agent 输出）
+    断言：sid-code 的 Hook 系统支持 14 种事件（C-11）：
+      PreToolUse / PostToolUse / PostToolUseFailure / UserPromptSubmit /
+      AfterAgent / BeforeModel / AfterModel / SessionStart / SessionEnd /
+      PreCompact / SubagentStart / SubagentStop / Notification / Stop
+    出处：src/hook/types.ts HookEventName 枚举。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: hook_14_events_present
+  max_steps: 1
+  reference_answer: |
+    src/hook/types.ts 的 HookEventName 枚举必须含 14 个事件名字面量。
+    防止重构无声删事件导致用户 hook 静默失效。
+
+arch_assertions:
+  - type: file_must_exist
+    path: src/hook/types.ts
+  - type: file_must_contain
+    path: src/hook/types.ts
+    pattern: "PreToolUse"
+  - type: file_must_contain
+    path: src/hook/types.ts
+    pattern: "PostToolUse"
+  - type: file_must_contain
+    path: src/hook/types.ts
+    pattern: "PostToolUseFailure"
+  - type: file_must_contain
+    path: src/hook/types.ts
+    pattern: "UserPromptSubmit"
+  - type: file_must_contain
+    path: src/hook/types.ts
+    pattern: "AfterAgent"
+  - type: file_must_contain
+    path: src/hook/types.ts
+    pattern: "BeforeModel"
+  - type: file_must_contain
+    path: src/hook/types.ts
+    pattern: "AfterModel"
+  - type: file_must_contain
+    path: src/hook/types.ts
+    pattern: "SessionStart"
+  - type: file_must_contain
+    path: src/hook/types.ts
+    pattern: "SessionEnd"
+  - type: file_must_contain
+    path: src/hook/types.ts
+    pattern: "PreCompact"
+  - type: file_must_contain
+    path: src/hook/types.ts
+    pattern: "SubagentStart"
+  - type: file_must_contain
+    path: src/hook/types.ts
+    pattern: "SubagentStop"
+  - type: file_must_contain
+    path: src/hook/types.ts
+    pattern: "Notification"
+  - type: file_must_contain
+    path: src/hook/types.ts
+    pattern: "Stop"
+
+rubric:
+  completeness: "14 种 hook 事件全部就位"
+  precision: "枚举字面量与文档一致"
+  helpfulness: "为第三方 hook 提供完整事件触点"
+
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 5,
+        run_status: success,
+        tested_at: 2026-05-28T02:04:59.252Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 1 },
+        _formula_version: { cost: v6, grader: 5d-v3 }
+      }
+  }
+
+source: "C-11 / CLAUDE.md §0.1"
+notes: |
+  C-11 Hook 14 种事件。
+  - structured_arch grader：HookEventName 枚举全集字面量检查
+  - 与五层洋葱第 1 层 Hook 子系统对应
+related_subsystem: [ hook ]

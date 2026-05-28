@@ -1,0 +1,67 @@
+id: arch_form_004
+category: 架构形态
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 前置能力"待建（≤1sprint）"，跑分时 baseline=0 / pending）
+    断言（A-23）：sid-code MCP Server 应该可以被 Claude Code 调用（A-06 的具体场景）。
+    依赖：arch_form_003（A-06）必须先做完。当 sid-code 暴露为 MCP Server 后，
+    在 ~/.claude/mcp_settings.json 添加 "sid-code" 配置，Claude Code 可调用其工具。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: mcp_server_consumable_by_claude_code
+  max_steps: 1
+  reference_answer: |
+    sid-code MCP Server 实现完成后，docs/mcp-server-integration.md 应记录
+    Claude Code 接入方式（mcp_settings.json 示例）。
+    当前作为契约占位。
+
+arch_assertions:
+  - type: dir_must_contain_files
+    dir: src/mcp
+    min_count: 3
+  - type: file_must_exist
+    path: src/mcp/server.ts
+  - type: file_must_exist
+    path: docs/mcp-server-integration.md
+
+placeholder: true
+
+rubric:
+  completeness: "MCP Server + 接入文档双就位"
+  precision: "区分 Server 实现 vs 接入示例"
+  helpfulness: "为 A-23 提供实现契约"
+
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 1.67,
+        run_status: success,
+        tested_at: 2026-05-28T02:03:38.910Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 0.3333333333333333 },
+        _formula_version: { cost: v6, grader: 5d-v3 }
+      }
+  }
+
+source: "A-23 / CLAUDE.md §0.1 五形态共存 / 09 §A 类"
+notes: |
+  A-23 MCP Server 被 Claude Code 调用（前置能力：待建（≤1sprint））。
+  - placeholder: true，跑分会 fail 直到前置能力就位
+  - 依赖 arch_form_003（先有 Server，再谈被谁调用）
+related_subsystem: [ mcp ]

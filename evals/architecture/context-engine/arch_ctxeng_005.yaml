@@ -1,0 +1,63 @@
+id: arch_ctxeng_005
+category: 架构 Context Engine
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 前置能力"不存在"，写出来作为契约，S1 暂不跑分）
+    断言（F-07）：sid-code Context Engine 必须支持跨文件变更影响分析 ——
+    修改 funcA 后，正确返回受影响的所有函数列表（基于调用图 + 类型推断）。
+    用于：PR 自动 review 时识别"这个改动会影响 N 处用法"。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: cross_file_impact_analysis
+  max_steps: 1
+  reference_answer: |
+    src/context/impact-analyzer.ts 必须存在；
+    支持 analyzeImpact({ file, function }) → [{ affected_file, affected_function, reason }]。
+    依赖 F-01 (tree-sitter parsing) + F-05 (call graph)。
+
+arch_assertions:
+  - type: file_must_exist
+    path: src/context/impact-analyzer.ts
+
+placeholder: true
+contract_only: true
+
+rubric:
+  completeness: "影响分析 API 就位"
+  precision: "区分'真实调用受影响' vs '同名巧合'"
+  helpfulness: "支撑 code review Skill 的核心能力（M3 关键 Skill）"
+
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 0,
+        run_status: success,
+        tested_at: 2026-05-28T02:02:57.505Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 0 },
+        _formula_version: { cost: v6, grader: 5d-v3 }
+      }
+  }
+
+source: "F-07 / CLAUDE.md §0.1 L3 Context 护城河 / 09 §F 类"
+notes: |
+  F-07 跨文件变更影响分析（前置能力：不存在，契约占位）。
+  - 依赖 F-01 / F-05 先完成
+  - 是 code-review Skill（M3 关键 Skill）的核心能力前置
+related_subsystem: [ context ]
