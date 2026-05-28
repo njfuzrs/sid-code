@@ -1,6 +1,6 @@
 # Evals Dashboard — sid-code
 
-> 自动生成,请勿手动编辑。生成时间: `2026-05-28T04:55:48.880Z`
+> 自动生成,请勿手动编辑。生成时间: `2026-05-28T06:36:25.591Z`
 > 数据源: `evals/p*-*/` + `evals/_scores/` + `evals/_reports/`
 > 触发: 手动 `bun run eval:dashboard` / git pre-push hook 自动刷新
 > Grader 过滤: **仅 `5d-v3`**（跨 grader 版本总分不可直接比较；切换：`--include-legacy`）
@@ -9,17 +9,17 @@
 
 ## 1. 总览
 
-- **case 总数**: 88 条
-- **优先级分布**: P0=70 / P1=10 / P2=8 / holdout=13
-- **claude_code** 评分进度: 0/88 已评分 (63 pending, 25 legacy 隐藏)
-- **claude_code_claude_opus_4_7** 评分进度: 0/88 已评分 (63 pending, 25 legacy 隐藏)
-- **claude_code_opus47** 评分进度: 0/88 已评分 (63 pending, 25 legacy 隐藏)
-- **codex** 评分进度: 0/88 已评分 (88 pending)
-- **sid_code_claude_opus_4_7** 评分进度: 0/88 已评分 (63 pending, 25 legacy 隐藏)
-- **sid_code_deepseek_v4_pro** 评分进度: 77/88 已评分 (11 pending)
-- **sid_code_live** 评分进度: 0/88 已评分 (63 pending, 25 legacy 隐藏)
-- **sid_code_opus47** 评分进度: 0/88 已评分 (63 pending, 25 legacy 隐藏)
-- **sid_code_w0** 评分进度: 0/88 已评分 (76 pending, 12 legacy 隐藏)
+- **case 总数**: 137 条
+- **优先级分布**: P0=70 / P1=59 / P2=8 / holdout=13
+- **claude_code** 评分进度: 0/137 已评分 (112 pending, 25 legacy 隐藏)
+- **claude_code_claude_opus_4_7** 评分进度: 0/137 已评分 (112 pending, 25 legacy 隐藏)
+- **claude_code_opus47** 评分进度: 0/137 已评分 (112 pending, 25 legacy 隐藏)
+- **codex** 评分进度: 0/137 已评分 (137 pending)
+- **sid_code_claude_opus_4_7** 评分进度: 0/137 已评分 (112 pending, 25 legacy 隐藏)
+- **sid_code_deepseek_v4_pro** 评分进度: 77/137 已评分 (60 pending)
+- **sid_code_live** 评分进度: 0/137 已评分 (112 pending, 25 legacy 隐藏)
+- **sid_code_opus47** 评分进度: 0/137 已评分 (112 pending, 25 legacy 隐藏)
+- **sid_code_w0** 评分进度: 0/137 已评分 (125 pending, 12 legacy 隐藏)
 - ⚠️ 共隐藏 **162** 条 legacy baseline（非 `5d-v3`）；查看用 `--include-legacy`
 
 ### 最新一周: w22
@@ -59,10 +59,20 @@
 | arch_ctxeng_003 | P0 | 架构 Context Engine | – | – | – | – | – | 0 🔴 | – | – | – | – | – |
 | arch_ctxeng_004 | P0 | 架构 Context Engine | – | – | – | – | – | 0 🔴 | – | – | – | – | – |
 | arch_ctxeng_005 | P0 | 架构 Context Engine | – | – | – | – | – | 0 🔴 | – | – | – | – | – |
+| arch_ctxeng_006 | P1 | 架构 Context Engine | – | – | – | – | – | – | – | – | – | – | – |
+| arch_ctxeng_007 | P1 | 架构 Context Engine | – | – | – | – | – | – | – | – | – | – | – |
+| arch_ctxeng_008 | P1 | 架构 Context Engine | – | – | – | – | – | – | – | – | – | – | – |
+| arch_ctxeng_009 | P1 | 架构 Context Engine | – | – | – | – | – | – | – | – | – | – | – |
+| arch_ctxeng_010 | P1 | 架构 Context Engine | – | – | – | – | – | – | – | – | – | – | – |
 | arch_discipline_001 | P0 | 架构纪律 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
 | arch_discipline_002 | P0 | 架构纪律 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
 | arch_discipline_003 🔒 | P0 | 架构纪律 | – | – | – | – | – | – | – | – | – | – | – |
 | arch_discipline_004 | P0 | 架构纪律 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_durable_001 | P1 | 架构长流程编排 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_durable_002 | P1 | 架构长流程编排 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_durable_003 | P1 | 架构长流程编排 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_durable_004 | P1 | 架构长流程编排 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_durable_005 | P1 | 架构长流程编排 | – | – | – | – | – | – | – | – | – | – | – |
 | arch_form_001 | P0 | 架构形态 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
 | arch_form_002 🔒 | P0 | 架构形态 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
 | arch_form_003 | P0 | 架构形态 | – | – | – | – | – | 2.5 🟡 | – | – | – | – | – |
@@ -81,12 +91,51 @@
 | arch_meta_003 | P0 | 架构评测自检 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
 | arch_meta_004 🔒 | P0 | 架构评测自检 | – | – | – | – | – | – | – | – | – | – | – |
 | arch_meta_005 🔒 | P0 | 架构评测自检 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_nonfunc_001 | P1 | 架构非功能 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_nonfunc_002 | P1 | 架构非功能 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_nonfunc_003 | P1 | 架构非功能 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_nonfunc_004 | P1 | 架构非功能 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_nonfunc_005 | P1 | 架构非功能 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_nonfunc_006 | P1 | 架构非功能 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_nonfunc_007 | P1 | 架构非功能 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_nonfunc_008 | P1 | 架构非功能 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_nonfunc_009 | P1 | 架构非功能 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_nonfunc_010 | P1 | 架构非功能 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_notif_001 | P1 | 架构通知协作 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_notif_002 | P1 | 架构通知协作 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_notif_003 | P1 | 架构通知协作 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_ont_001 | P1 | 架构本体论 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_ont_002 | P1 | 架构本体论 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_ont_003 | P1 | 架构本体论 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_ont_004 | P1 | 架构本体论 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_ont_005 | P1 | 架构本体论 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_ont_006 | P1 | 架构本体论 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_ont_007 | P1 | 架构本体论 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_ont_008 | P1 | 架构本体论 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_ont_009 | P1 | 架构本体论 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_ont_010 | P1 | 架构本体论 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_ont_011 | P1 | 架构本体论 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_orch_001 | P1 | 架构编排 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_orch_002 | P1 | 架构编排 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_orch_003 | P1 | 架构编排 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_orch_004 | P1 | 架构编排 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_orch_005 | P1 | 架构编排 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_orch_006 | P1 | 架构编排 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_orch_007 | P1 | 架构编排 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_orch_008 | P1 | 架构编排 | – | – | – | – | – | – | – | – | – | – | – |
 | arch_platform_001 | P0 | 架构平台 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
 | arch_platform_002 | P0 | 架构平台 | – | – | – | – | – | 4 🟢 | – | – | – | – | – |
 | arch_platform_003 | P0 | 架构平台 | – | – | – | – | – | 0 🔴 | – | – | – | – | – |
 | arch_platform_004 | P0 | 架构平台 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
 | arch_platform_005 | P0 | 架构平台 | – | – | – | – | – | 0 🔴 | – | – | – | – | – |
+| arch_platform_006 | P1 | 架构平台 | – | – | – | – | – | – | – | – | – | – | – |
 | arch_platform_006 🔒 | P0 | 架构平台 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_platform_007 | P1 | 架构平台 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_platform_008 | P1 | 架构平台 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_platform_009 | P1 | 架构平台 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_platform_010 | P1 | 架构平台 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_platform_011 | P1 | 架构平台 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_platform_012 | P1 | 架构平台 | – | – | – | – | – | – | – | – | – | – | – |
 | arch_pluggable_001 | P0 | 架构可拔插 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
 | arch_pluggable_002 🔒 | P0 | 架构可拔插 | – | – | – | – | – | – | – | – | – | – | – |
 | arch_pluggable_003 | P0 | 架构可拔插 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
@@ -1800,64 +1849,64 @@ xychart-beta
 
 ## 5. 评分进度 / Pending 列表
 
-### claude_code: 63 条 pending + 25 条 legacy 待重跑
+### claude_code: 112 条 pending + 25 条 legacy 待重跑
 
 - **P0** (60): `arch_chinese_001`, `arch_chinese_002`, `arch_chinese_003`, `arch_chinese_004`, `arch_chinese_005`, `arch_chinese_006`, `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003`, `arch_ctxeng_004`, `arch_ctxeng_005`, `arch_discipline_001`, `arch_discipline_002`, `arch_discipline_003`, `arch_discipline_004`, `arch_form_001`, `arch_form_002`, `arch_form_003`, `arch_form_004`, `arch_form_005`, `arch_kernel_001`, `arch_kernel_002`, `arch_kernel_003`, `arch_kernel_004`, `arch_kernel_005`, `arch_kernel_006`, `arch_kernel_007`, `arch_kernel_008`, `arch_meta_001`, `arch_meta_002`, `arch_meta_003`, `arch_meta_004`, `arch_meta_005`, `arch_platform_001`, `arch_platform_002`, `arch_platform_003`, `arch_platform_004`, `arch_platform_005`, `arch_platform_006`, `arch_pluggable_001`, `arch_pluggable_002`, `arch_pluggable_003`, `arch_pluggable_004`, `arch_pluggable_005`, `arch_pluggable_006`, `arch_pluggable_007`, `arch_redline_001`, `arch_redline_002`, `arch_redline_003`, `arch_redline_004`, `arch_redline_005`, `arch_redline_006`, `arch_redline_007`, `arch_redline_008`, `arch_redline_009`, `arch_redline_011`, `arch_redline_012`, `arch_redline_013`, `case_004`, `case_010`
-- **P1** (1): `case_014`
+- **P1** (50): `arch_ctxeng_006`, `arch_ctxeng_007`, `arch_ctxeng_008`, `arch_ctxeng_009`, `arch_ctxeng_010`, `arch_durable_001`, `arch_durable_002`, `arch_durable_003`, `arch_durable_004`, `arch_durable_005`, `arch_nonfunc_001`, `arch_nonfunc_002`, `arch_nonfunc_003`, `arch_nonfunc_004`, `arch_nonfunc_005`, `arch_nonfunc_006`, `arch_nonfunc_007`, `arch_nonfunc_008`, `arch_nonfunc_009`, `arch_nonfunc_010`, `arch_notif_001`, `arch_notif_002`, `arch_notif_003`, `arch_ont_001`, `arch_ont_002`, `arch_ont_003`, `arch_ont_004`, `arch_ont_005`, `arch_ont_006`, `arch_ont_007`, `arch_ont_008`, `arch_ont_009`, `arch_ont_010`, `arch_ont_011`, `arch_orch_001`, `arch_orch_002`, `arch_orch_003`, `arch_orch_004`, `arch_orch_005`, `arch_orch_006`, `arch_orch_007`, `arch_orch_008`, `arch_platform_006`, `arch_platform_007`, `arch_platform_008`, `arch_platform_009`, `arch_platform_010`, `arch_platform_011`, `arch_platform_012`, `case_014`
 - **P2** (2): `case_023`, `case_025`
 - 🕰️ **legacy** (25, 非 `5d-v3`): `case_001`, `case_002`, `case_003`, `case_005`, `case_006`, `case_007`, `case_008`, `case_009` …
 
-### claude_code_claude_opus_4_7: 63 条 pending + 25 条 legacy 待重跑
+### claude_code_claude_opus_4_7: 112 条 pending + 25 条 legacy 待重跑
 
 - **P0** (60): `arch_chinese_001`, `arch_chinese_002`, `arch_chinese_003`, `arch_chinese_004`, `arch_chinese_005`, `arch_chinese_006`, `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003`, `arch_ctxeng_004`, `arch_ctxeng_005`, `arch_discipline_001`, `arch_discipline_002`, `arch_discipline_003`, `arch_discipline_004`, `arch_form_001`, `arch_form_002`, `arch_form_003`, `arch_form_004`, `arch_form_005`, `arch_kernel_001`, `arch_kernel_002`, `arch_kernel_003`, `arch_kernel_004`, `arch_kernel_005`, `arch_kernel_006`, `arch_kernel_007`, `arch_kernel_008`, `arch_meta_001`, `arch_meta_002`, `arch_meta_003`, `arch_meta_004`, `arch_meta_005`, `arch_platform_001`, `arch_platform_002`, `arch_platform_003`, `arch_platform_004`, `arch_platform_005`, `arch_platform_006`, `arch_pluggable_001`, `arch_pluggable_002`, `arch_pluggable_003`, `arch_pluggable_004`, `arch_pluggable_005`, `arch_pluggable_006`, `arch_pluggable_007`, `arch_redline_001`, `arch_redline_002`, `arch_redline_003`, `arch_redline_004`, `arch_redline_005`, `arch_redline_006`, `arch_redline_007`, `arch_redline_008`, `arch_redline_009`, `arch_redline_011`, `arch_redline_012`, `arch_redline_013`, `case_004`, `case_010`
-- **P1** (1): `case_014`
+- **P1** (50): `arch_ctxeng_006`, `arch_ctxeng_007`, `arch_ctxeng_008`, `arch_ctxeng_009`, `arch_ctxeng_010`, `arch_durable_001`, `arch_durable_002`, `arch_durable_003`, `arch_durable_004`, `arch_durable_005`, `arch_nonfunc_001`, `arch_nonfunc_002`, `arch_nonfunc_003`, `arch_nonfunc_004`, `arch_nonfunc_005`, `arch_nonfunc_006`, `arch_nonfunc_007`, `arch_nonfunc_008`, `arch_nonfunc_009`, `arch_nonfunc_010`, `arch_notif_001`, `arch_notif_002`, `arch_notif_003`, `arch_ont_001`, `arch_ont_002`, `arch_ont_003`, `arch_ont_004`, `arch_ont_005`, `arch_ont_006`, `arch_ont_007`, `arch_ont_008`, `arch_ont_009`, `arch_ont_010`, `arch_ont_011`, `arch_orch_001`, `arch_orch_002`, `arch_orch_003`, `arch_orch_004`, `arch_orch_005`, `arch_orch_006`, `arch_orch_007`, `arch_orch_008`, `arch_platform_006`, `arch_platform_007`, `arch_platform_008`, `arch_platform_009`, `arch_platform_010`, `arch_platform_011`, `arch_platform_012`, `case_014`
 - **P2** (2): `case_023`, `case_025`
 - 🕰️ **legacy** (25, 非 `5d-v3`): `case_001`, `case_002`, `case_003`, `case_005`, `case_006`, `case_007`, `case_008`, `case_009` …
 
-### claude_code_opus47: 63 条 pending + 25 条 legacy 待重跑
+### claude_code_opus47: 112 条 pending + 25 条 legacy 待重跑
 
 - **P0** (60): `arch_chinese_001`, `arch_chinese_002`, `arch_chinese_003`, `arch_chinese_004`, `arch_chinese_005`, `arch_chinese_006`, `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003`, `arch_ctxeng_004`, `arch_ctxeng_005`, `arch_discipline_001`, `arch_discipline_002`, `arch_discipline_003`, `arch_discipline_004`, `arch_form_001`, `arch_form_002`, `arch_form_003`, `arch_form_004`, `arch_form_005`, `arch_kernel_001`, `arch_kernel_002`, `arch_kernel_003`, `arch_kernel_004`, `arch_kernel_005`, `arch_kernel_006`, `arch_kernel_007`, `arch_kernel_008`, `arch_meta_001`, `arch_meta_002`, `arch_meta_003`, `arch_meta_004`, `arch_meta_005`, `arch_platform_001`, `arch_platform_002`, `arch_platform_003`, `arch_platform_004`, `arch_platform_005`, `arch_platform_006`, `arch_pluggable_001`, `arch_pluggable_002`, `arch_pluggable_003`, `arch_pluggable_004`, `arch_pluggable_005`, `arch_pluggable_006`, `arch_pluggable_007`, `arch_redline_001`, `arch_redline_002`, `arch_redline_003`, `arch_redline_004`, `arch_redline_005`, `arch_redline_006`, `arch_redline_007`, `arch_redline_008`, `arch_redline_009`, `arch_redline_011`, `arch_redline_012`, `arch_redline_013`, `case_004`, `case_010`
-- **P1** (1): `case_014`
+- **P1** (50): `arch_ctxeng_006`, `arch_ctxeng_007`, `arch_ctxeng_008`, `arch_ctxeng_009`, `arch_ctxeng_010`, `arch_durable_001`, `arch_durable_002`, `arch_durable_003`, `arch_durable_004`, `arch_durable_005`, `arch_nonfunc_001`, `arch_nonfunc_002`, `arch_nonfunc_003`, `arch_nonfunc_004`, `arch_nonfunc_005`, `arch_nonfunc_006`, `arch_nonfunc_007`, `arch_nonfunc_008`, `arch_nonfunc_009`, `arch_nonfunc_010`, `arch_notif_001`, `arch_notif_002`, `arch_notif_003`, `arch_ont_001`, `arch_ont_002`, `arch_ont_003`, `arch_ont_004`, `arch_ont_005`, `arch_ont_006`, `arch_ont_007`, `arch_ont_008`, `arch_ont_009`, `arch_ont_010`, `arch_ont_011`, `arch_orch_001`, `arch_orch_002`, `arch_orch_003`, `arch_orch_004`, `arch_orch_005`, `arch_orch_006`, `arch_orch_007`, `arch_orch_008`, `arch_platform_006`, `arch_platform_007`, `arch_platform_008`, `arch_platform_009`, `arch_platform_010`, `arch_platform_011`, `arch_platform_012`, `case_014`
 - **P2** (2): `case_023`, `case_025`
 - 🕰️ **legacy** (25, 非 `5d-v3`): `case_001`, `case_002`, `case_003`, `case_005`, `case_006`, `case_007`, `case_008`, `case_009` …
 
-### codex: 88 条 pending
+### codex: 137 条 pending
 
 - **P0** (70): `arch_chinese_001`, `arch_chinese_002`, `arch_chinese_003`, `arch_chinese_004`, `arch_chinese_005`, `arch_chinese_006`, `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003`, `arch_ctxeng_004`, `arch_ctxeng_005`, `arch_discipline_001`, `arch_discipline_002`, `arch_discipline_003`, `arch_discipline_004`, `arch_form_001`, `arch_form_002`, `arch_form_003`, `arch_form_004`, `arch_form_005`, `arch_kernel_001`, `arch_kernel_002`, `arch_kernel_003`, `arch_kernel_004`, `arch_kernel_005`, `arch_kernel_006`, `arch_kernel_007`, `arch_kernel_008`, `arch_meta_001`, `arch_meta_002`, `arch_meta_003`, `arch_meta_004`, `arch_meta_005`, `arch_platform_001`, `arch_platform_002`, `arch_platform_003`, `arch_platform_004`, `arch_platform_005`, `arch_platform_006`, `arch_pluggable_001`, `arch_pluggable_002`, `arch_pluggable_003`, `arch_pluggable_004`, `arch_pluggable_005`, `arch_pluggable_006`, `arch_pluggable_007`, `arch_redline_001`, `arch_redline_002`, `arch_redline_003`, `arch_redline_004`, `arch_redline_005`, `arch_redline_006`, `arch_redline_007`, `arch_redline_008`, `arch_redline_009`, `arch_redline_011`, `arch_redline_012`, `arch_redline_013`, `case_001`, `case_002`, `case_003`, `case_004`, `case_005`, `case_006`, `case_007`, `case_008`, `case_009`, `case_010`, `case_026`, `case_027`
-- **P1** (10): `case_011`, `case_012`, `case_013`, `case_014`, `case_015`, `case_016`, `case_017`, `case_018`, `case_019`, `case_028`
+- **P1** (59): `arch_ctxeng_006`, `arch_ctxeng_007`, `arch_ctxeng_008`, `arch_ctxeng_009`, `arch_ctxeng_010`, `arch_durable_001`, `arch_durable_002`, `arch_durable_003`, `arch_durable_004`, `arch_durable_005`, `arch_nonfunc_001`, `arch_nonfunc_002`, `arch_nonfunc_003`, `arch_nonfunc_004`, `arch_nonfunc_005`, `arch_nonfunc_006`, `arch_nonfunc_007`, `arch_nonfunc_008`, `arch_nonfunc_009`, `arch_nonfunc_010`, `arch_notif_001`, `arch_notif_002`, `arch_notif_003`, `arch_ont_001`, `arch_ont_002`, `arch_ont_003`, `arch_ont_004`, `arch_ont_005`, `arch_ont_006`, `arch_ont_007`, `arch_ont_008`, `arch_ont_009`, `arch_ont_010`, `arch_ont_011`, `arch_orch_001`, `arch_orch_002`, `arch_orch_003`, `arch_orch_004`, `arch_orch_005`, `arch_orch_006`, `arch_orch_007`, `arch_orch_008`, `arch_platform_006`, `arch_platform_007`, `arch_platform_008`, `arch_platform_009`, `arch_platform_010`, `arch_platform_011`, `arch_platform_012`, `case_011`, `case_012`, `case_013`, `case_014`, `case_015`, `case_016`, `case_017`, `case_018`, `case_019`, `case_028`
 - **P2** (8): `case_020`, `case_021`, `case_022`, `case_023`, `case_024`, `case_025`, `case_029`, `case_030`
 
-### sid_code_claude_opus_4_7: 63 条 pending + 25 条 legacy 待重跑
+### sid_code_claude_opus_4_7: 112 条 pending + 25 条 legacy 待重跑
 
 - **P0** (60): `arch_chinese_001`, `arch_chinese_002`, `arch_chinese_003`, `arch_chinese_004`, `arch_chinese_005`, `arch_chinese_006`, `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003`, `arch_ctxeng_004`, `arch_ctxeng_005`, `arch_discipline_001`, `arch_discipline_002`, `arch_discipline_003`, `arch_discipline_004`, `arch_form_001`, `arch_form_002`, `arch_form_003`, `arch_form_004`, `arch_form_005`, `arch_kernel_001`, `arch_kernel_002`, `arch_kernel_003`, `arch_kernel_004`, `arch_kernel_005`, `arch_kernel_006`, `arch_kernel_007`, `arch_kernel_008`, `arch_meta_001`, `arch_meta_002`, `arch_meta_003`, `arch_meta_004`, `arch_meta_005`, `arch_platform_001`, `arch_platform_002`, `arch_platform_003`, `arch_platform_004`, `arch_platform_005`, `arch_platform_006`, `arch_pluggable_001`, `arch_pluggable_002`, `arch_pluggable_003`, `arch_pluggable_004`, `arch_pluggable_005`, `arch_pluggable_006`, `arch_pluggable_007`, `arch_redline_001`, `arch_redline_002`, `arch_redline_003`, `arch_redline_004`, `arch_redline_005`, `arch_redline_006`, `arch_redline_007`, `arch_redline_008`, `arch_redline_009`, `arch_redline_011`, `arch_redline_012`, `arch_redline_013`, `case_004`, `case_010`
-- **P1** (1): `case_014`
+- **P1** (50): `arch_ctxeng_006`, `arch_ctxeng_007`, `arch_ctxeng_008`, `arch_ctxeng_009`, `arch_ctxeng_010`, `arch_durable_001`, `arch_durable_002`, `arch_durable_003`, `arch_durable_004`, `arch_durable_005`, `arch_nonfunc_001`, `arch_nonfunc_002`, `arch_nonfunc_003`, `arch_nonfunc_004`, `arch_nonfunc_005`, `arch_nonfunc_006`, `arch_nonfunc_007`, `arch_nonfunc_008`, `arch_nonfunc_009`, `arch_nonfunc_010`, `arch_notif_001`, `arch_notif_002`, `arch_notif_003`, `arch_ont_001`, `arch_ont_002`, `arch_ont_003`, `arch_ont_004`, `arch_ont_005`, `arch_ont_006`, `arch_ont_007`, `arch_ont_008`, `arch_ont_009`, `arch_ont_010`, `arch_ont_011`, `arch_orch_001`, `arch_orch_002`, `arch_orch_003`, `arch_orch_004`, `arch_orch_005`, `arch_orch_006`, `arch_orch_007`, `arch_orch_008`, `arch_platform_006`, `arch_platform_007`, `arch_platform_008`, `arch_platform_009`, `arch_platform_010`, `arch_platform_011`, `arch_platform_012`, `case_014`
 - **P2** (2): `case_023`, `case_025`
 - 🕰️ **legacy** (25, 非 `5d-v3`): `case_001`, `case_002`, `case_003`, `case_005`, `case_006`, `case_007`, `case_008`, `case_009` …
 
-### sid_code_deepseek_v4_pro: 11 条 pending
+### sid_code_deepseek_v4_pro: 60 条 pending
 
 - **P0** (8): `arch_chinese_006`, `arch_discipline_003`, `arch_meta_004`, `arch_meta_005`, `arch_platform_006`, `arch_pluggable_002`, `case_004`, `case_010`
-- **P1** (1): `case_014`
+- **P1** (50): `arch_ctxeng_006`, `arch_ctxeng_007`, `arch_ctxeng_008`, `arch_ctxeng_009`, `arch_ctxeng_010`, `arch_durable_001`, `arch_durable_002`, `arch_durable_003`, `arch_durable_004`, `arch_durable_005`, `arch_nonfunc_001`, `arch_nonfunc_002`, `arch_nonfunc_003`, `arch_nonfunc_004`, `arch_nonfunc_005`, `arch_nonfunc_006`, `arch_nonfunc_007`, `arch_nonfunc_008`, `arch_nonfunc_009`, `arch_nonfunc_010`, `arch_notif_001`, `arch_notif_002`, `arch_notif_003`, `arch_ont_001`, `arch_ont_002`, `arch_ont_003`, `arch_ont_004`, `arch_ont_005`, `arch_ont_006`, `arch_ont_007`, `arch_ont_008`, `arch_ont_009`, `arch_ont_010`, `arch_ont_011`, `arch_orch_001`, `arch_orch_002`, `arch_orch_003`, `arch_orch_004`, `arch_orch_005`, `arch_orch_006`, `arch_orch_007`, `arch_orch_008`, `arch_platform_006`, `arch_platform_007`, `arch_platform_008`, `arch_platform_009`, `arch_platform_010`, `arch_platform_011`, `arch_platform_012`, `case_014`
 - **P2** (2): `case_023`, `case_025`
 
-### sid_code_live: 63 条 pending + 25 条 legacy 待重跑
+### sid_code_live: 112 条 pending + 25 条 legacy 待重跑
 
 - **P0** (60): `arch_chinese_001`, `arch_chinese_002`, `arch_chinese_003`, `arch_chinese_004`, `arch_chinese_005`, `arch_chinese_006`, `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003`, `arch_ctxeng_004`, `arch_ctxeng_005`, `arch_discipline_001`, `arch_discipline_002`, `arch_discipline_003`, `arch_discipline_004`, `arch_form_001`, `arch_form_002`, `arch_form_003`, `arch_form_004`, `arch_form_005`, `arch_kernel_001`, `arch_kernel_002`, `arch_kernel_003`, `arch_kernel_004`, `arch_kernel_005`, `arch_kernel_006`, `arch_kernel_007`, `arch_kernel_008`, `arch_meta_001`, `arch_meta_002`, `arch_meta_003`, `arch_meta_004`, `arch_meta_005`, `arch_platform_001`, `arch_platform_002`, `arch_platform_003`, `arch_platform_004`, `arch_platform_005`, `arch_platform_006`, `arch_pluggable_001`, `arch_pluggable_002`, `arch_pluggable_003`, `arch_pluggable_004`, `arch_pluggable_005`, `arch_pluggable_006`, `arch_pluggable_007`, `arch_redline_001`, `arch_redline_002`, `arch_redline_003`, `arch_redline_004`, `arch_redline_005`, `arch_redline_006`, `arch_redline_007`, `arch_redline_008`, `arch_redline_009`, `arch_redline_011`, `arch_redline_012`, `arch_redline_013`, `case_004`, `case_010`
-- **P1** (1): `case_014`
+- **P1** (50): `arch_ctxeng_006`, `arch_ctxeng_007`, `arch_ctxeng_008`, `arch_ctxeng_009`, `arch_ctxeng_010`, `arch_durable_001`, `arch_durable_002`, `arch_durable_003`, `arch_durable_004`, `arch_durable_005`, `arch_nonfunc_001`, `arch_nonfunc_002`, `arch_nonfunc_003`, `arch_nonfunc_004`, `arch_nonfunc_005`, `arch_nonfunc_006`, `arch_nonfunc_007`, `arch_nonfunc_008`, `arch_nonfunc_009`, `arch_nonfunc_010`, `arch_notif_001`, `arch_notif_002`, `arch_notif_003`, `arch_ont_001`, `arch_ont_002`, `arch_ont_003`, `arch_ont_004`, `arch_ont_005`, `arch_ont_006`, `arch_ont_007`, `arch_ont_008`, `arch_ont_009`, `arch_ont_010`, `arch_ont_011`, `arch_orch_001`, `arch_orch_002`, `arch_orch_003`, `arch_orch_004`, `arch_orch_005`, `arch_orch_006`, `arch_orch_007`, `arch_orch_008`, `arch_platform_006`, `arch_platform_007`, `arch_platform_008`, `arch_platform_009`, `arch_platform_010`, `arch_platform_011`, `arch_platform_012`, `case_014`
 - **P2** (2): `case_023`, `case_025`
 - 🕰️ **legacy** (25, 非 `5d-v3`): `case_001`, `case_002`, `case_003`, `case_005`, `case_006`, `case_007`, `case_008`, `case_009` …
 
-### sid_code_opus47: 63 条 pending + 25 条 legacy 待重跑
+### sid_code_opus47: 112 条 pending + 25 条 legacy 待重跑
 
 - **P0** (60): `arch_chinese_001`, `arch_chinese_002`, `arch_chinese_003`, `arch_chinese_004`, `arch_chinese_005`, `arch_chinese_006`, `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003`, `arch_ctxeng_004`, `arch_ctxeng_005`, `arch_discipline_001`, `arch_discipline_002`, `arch_discipline_003`, `arch_discipline_004`, `arch_form_001`, `arch_form_002`, `arch_form_003`, `arch_form_004`, `arch_form_005`, `arch_kernel_001`, `arch_kernel_002`, `arch_kernel_003`, `arch_kernel_004`, `arch_kernel_005`, `arch_kernel_006`, `arch_kernel_007`, `arch_kernel_008`, `arch_meta_001`, `arch_meta_002`, `arch_meta_003`, `arch_meta_004`, `arch_meta_005`, `arch_platform_001`, `arch_platform_002`, `arch_platform_003`, `arch_platform_004`, `arch_platform_005`, `arch_platform_006`, `arch_pluggable_001`, `arch_pluggable_002`, `arch_pluggable_003`, `arch_pluggable_004`, `arch_pluggable_005`, `arch_pluggable_006`, `arch_pluggable_007`, `arch_redline_001`, `arch_redline_002`, `arch_redline_003`, `arch_redline_004`, `arch_redline_005`, `arch_redline_006`, `arch_redline_007`, `arch_redline_008`, `arch_redline_009`, `arch_redline_011`, `arch_redline_012`, `arch_redline_013`, `case_004`, `case_010`
-- **P1** (1): `case_014`
+- **P1** (50): `arch_ctxeng_006`, `arch_ctxeng_007`, `arch_ctxeng_008`, `arch_ctxeng_009`, `arch_ctxeng_010`, `arch_durable_001`, `arch_durable_002`, `arch_durable_003`, `arch_durable_004`, `arch_durable_005`, `arch_nonfunc_001`, `arch_nonfunc_002`, `arch_nonfunc_003`, `arch_nonfunc_004`, `arch_nonfunc_005`, `arch_nonfunc_006`, `arch_nonfunc_007`, `arch_nonfunc_008`, `arch_nonfunc_009`, `arch_nonfunc_010`, `arch_notif_001`, `arch_notif_002`, `arch_notif_003`, `arch_ont_001`, `arch_ont_002`, `arch_ont_003`, `arch_ont_004`, `arch_ont_005`, `arch_ont_006`, `arch_ont_007`, `arch_ont_008`, `arch_ont_009`, `arch_ont_010`, `arch_ont_011`, `arch_orch_001`, `arch_orch_002`, `arch_orch_003`, `arch_orch_004`, `arch_orch_005`, `arch_orch_006`, `arch_orch_007`, `arch_orch_008`, `arch_platform_006`, `arch_platform_007`, `arch_platform_008`, `arch_platform_009`, `arch_platform_010`, `arch_platform_011`, `arch_platform_012`, `case_014`
 - **P2** (2): `case_023`, `case_025`
 - 🕰️ **legacy** (25, 非 `5d-v3`): `case_001`, `case_002`, `case_003`, `case_005`, `case_006`, `case_007`, `case_008`, `case_009` …
 
-### sid_code_w0: 76 条 pending + 12 条 legacy 待重跑
+### sid_code_w0: 125 条 pending + 12 条 legacy 待重跑
 
 - **P0** (62): `arch_chinese_001`, `arch_chinese_002`, `arch_chinese_003`, `arch_chinese_004`, `arch_chinese_005`, `arch_chinese_006`, `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003`, `arch_ctxeng_004`, `arch_ctxeng_005`, `arch_discipline_001`, `arch_discipline_002`, `arch_discipline_003`, `arch_discipline_004`, `arch_form_001`, `arch_form_002`, `arch_form_003`, `arch_form_004`, `arch_form_005`, `arch_kernel_001`, `arch_kernel_002`, `arch_kernel_003`, `arch_kernel_004`, `arch_kernel_005`, `arch_kernel_006`, `arch_kernel_007`, `arch_kernel_008`, `arch_meta_001`, `arch_meta_002`, `arch_meta_003`, `arch_meta_004`, `arch_meta_005`, `arch_platform_001`, `arch_platform_002`, `arch_platform_003`, `arch_platform_004`, `arch_platform_005`, `arch_platform_006`, `arch_pluggable_001`, `arch_pluggable_002`, `arch_pluggable_003`, `arch_pluggable_004`, `arch_pluggable_005`, `arch_pluggable_006`, `arch_pluggable_007`, `arch_redline_001`, `arch_redline_002`, `arch_redline_003`, `arch_redline_004`, `arch_redline_005`, `arch_redline_006`, `arch_redline_007`, `arch_redline_008`, `arch_redline_009`, `arch_redline_011`, `arch_redline_012`, `arch_redline_013`, `case_004`, `case_010`, `case_026`, `case_027`
-- **P1** (10): `case_011`, `case_012`, `case_013`, `case_014`, `case_015`, `case_016`, `case_017`, `case_018`, `case_019`, `case_028`
+- **P1** (59): `arch_ctxeng_006`, `arch_ctxeng_007`, `arch_ctxeng_008`, `arch_ctxeng_009`, `arch_ctxeng_010`, `arch_durable_001`, `arch_durable_002`, `arch_durable_003`, `arch_durable_004`, `arch_durable_005`, `arch_nonfunc_001`, `arch_nonfunc_002`, `arch_nonfunc_003`, `arch_nonfunc_004`, `arch_nonfunc_005`, `arch_nonfunc_006`, `arch_nonfunc_007`, `arch_nonfunc_008`, `arch_nonfunc_009`, `arch_nonfunc_010`, `arch_notif_001`, `arch_notif_002`, `arch_notif_003`, `arch_ont_001`, `arch_ont_002`, `arch_ont_003`, `arch_ont_004`, `arch_ont_005`, `arch_ont_006`, `arch_ont_007`, `arch_ont_008`, `arch_ont_009`, `arch_ont_010`, `arch_ont_011`, `arch_orch_001`, `arch_orch_002`, `arch_orch_003`, `arch_orch_004`, `arch_orch_005`, `arch_orch_006`, `arch_orch_007`, `arch_orch_008`, `arch_platform_006`, `arch_platform_007`, `arch_platform_008`, `arch_platform_009`, `arch_platform_010`, `arch_platform_011`, `arch_platform_012`, `case_011`, `case_012`, `case_013`, `case_014`, `case_015`, `case_016`, `case_017`, `case_018`, `case_019`, `case_028`
 - **P2** (4): `case_023`, `case_025`, `case_029`, `case_030`
 - 🕰️ **legacy** (12, 非 `5d-v3`): `case_001`, `case_002`, `case_003`, `case_005`, `case_006`, `case_007`, `case_008`, `case_009` …
 
@@ -1870,16 +1919,21 @@ xychart-beta
 
 - `evals/architecture/chinese/`: 5 条 case
 - `evals/holdout/architecture/chinese/`: 1 条 case
-- `evals/architecture/context-engine/`: 5 条 case
+- `evals/architecture/context-engine/`: 10 条 case
 - `evals/architecture/discipline/`: 3 条 case
 - `evals/holdout/architecture/discipline/`: 1 条 case
+- `evals/architecture/durable-exec/`: 5 条 case
 - `evals/architecture/form/`: 4 条 case
 - `evals/holdout/architecture/form/`: 1 条 case
 - `evals/architecture/kernel/`: 7 条 case
 - `evals/holdout/architecture/kernel/`: 1 条 case
 - `evals/architecture/meta/`: 3 条 case
 - `evals/holdout/architecture/meta/`: 2 条 case
-- `evals/architecture/platform/`: 5 条 case
+- `evals/architecture/nonfunctional/`: 10 条 case
+- `evals/architecture/notification/`: 3 条 case
+- `evals/architecture/ontology/`: 11 条 case
+- `evals/architecture/orchestration/`: 8 条 case
+- `evals/architecture/platform/`: 12 条 case
 - `evals/holdout/architecture/platform/`: 1 条 case
 - `evals/architecture/pluggable/`: 6 条 case
 - `evals/holdout/architecture/pluggable/`: 1 条 case
