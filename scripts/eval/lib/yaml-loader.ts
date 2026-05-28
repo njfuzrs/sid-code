@@ -59,14 +59,61 @@ export interface WeekScore {
   testedAt?: string;
 }
 
-const CASE_DIRS = ["p0-core", "p1-common", "p2-edge", "holdout"];
+/**
+ * Bucket：case 所在桶（用于分组统计 / dashboard 双指标）。
+ *
+ * 当前支持：
+ *   - p0-core / p1-common / p2-edge / holdout：S1-T00 之前的扁平结构（向后兼容）
+ *   - general/p0-core / general/p1-common / general/p2-edge：S1-T00 起的 general 子目录
+ *   - holdout/architecture/<sub>：S1 起架构 holdout（meta/kernel/form/...）
+ *   - architecture/<sub>：S1 起 18 类架构 case（redline/kernel/form/discipline/meta/...）
+ *
+ * loadAllCases() 同时扫这三种结构，bucket 字段标示 case 实际归属。
+ */
+const LEGACY_GENERAL_BUCKETS = ["p0-core", "p1-common", "p2-edge", "holdout"];
+const NEW_GENERAL_BUCKETS = ["general/p0-core", "general/p1-common", "general/p2-edge"];
+
+/** 判断 bucket 是否属于"行为分"（general 类，5 维 grader） */
+export function isBehaviorBucket(bucket: string): boolean {
+  return (
+    LEGACY_GENERAL_BUCKETS.includes(bucket) ||
+    bucket.startsWith("general/")
+  );
+}
+
+/** 判断 bucket 是否属于"架构分"（architecture 类，binary_redline / structured_arch grader） */
+export function isArchitectureBucket(bucket: string): boolean {
+  return bucket.startsWith("architecture/") || bucket.startsWith("holdout/architecture/");
+}
+
+function listArchitectureSubBuckets(evalsDir: string, base: string): string[] {
+  const root = join(evalsDir, base);
+  if (!existsSync(root)) return [];
+  const out: string[] = [];
+  for (const entry of readdirSync(root)) {
+    const p = join(root, entry);
+    if (!existsSync(p) || !statSync(p).isDirectory()) continue;
+    out.push(`${base}/${entry}`);
+  }
+  return out;
+}
 
 export function loadAllCases(evalsDir: string): CaseDoc[] {
   const out: CaseDoc[] = [];
-  for (const bucket of CASE_DIRS) {
+  const buckets = [
+    ...LEGACY_GENERAL_BUCKETS,
+    ...NEW_GENERAL_BUCKETS,
+    ...listArchitectureSubBuckets(evalsDir, "architecture"),
+    ...listArchitectureSubBuckets(evalsDir, "holdout/architecture"),
+  ];
+  for (const bucket of buckets) {
     const abs = join(evalsDir, bucket);
     if (!existsSync(abs)) continue;
-    const entries = readdirSync(abs).filter((f) => f.startsWith("case_") && f.endsWith(".yaml"));
+    // case 文件名前缀：legacy 用 case_*，新架构用 arch_*
+    const entries = readdirSync(abs).filter(
+      (f) =>
+        (f.startsWith("case_") || f.startsWith("arch_")) && f.endsWith(".yaml"),
+    );
     for (const f of entries) {
       const p = join(abs, f);
       if (!statSync(p).isFile()) continue;

@@ -1,0 +1,55 @@
+id: arch_meta_005
+category: 架构评测自检
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: true
+holdout_reason: "H-05 Eval Runner 不可拔插（C 档约束）——本身是元级 holdout"
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言，不依赖 agent 输出）
+    断言：sid-code 评测 Runner 不可拔插（C 档约束）——
+    evals/eval-runner.ts 是单一入口，不存在 RunnerProvider 接口或运行时替换机制；
+    Grader 注册表也是 C 档（不允许运行时动态注入）。
+    出处：H-05 / 08 §1 / CLAUDE.md §0.1 三档可拔插。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: eval_runner_immutable
+  max_steps: 1
+  reference_answer: |
+    evals/eval-runner.ts 不导出可替换的 RunnerProvider 接口；
+    Grader 注册表 evals/_graders/registry.ts 显式声明"不可拔插（C 档）"。
+
+arch_assertions:
+  - type: file_must_exist
+    path: evals/eval-runner.ts
+  - type: file_must_exist
+    path: evals/_graders/registry.ts
+  - type: file_must_contain
+    path: evals/_graders/registry.ts
+    pattern: "C 档"
+  - type: file_must_contain
+    path: evals/_graders/registry.ts
+    pattern: "不允许运行时动态注入"
+
+rubric:
+  completeness: "Runner + Grader 注册表都标 C 档不可拔插"
+  precision: "区分'内核组件（C 档）'与'扩展点（A/B 档）'"
+  helpfulness: "防止供应链注入 + 评测体系完整性"
+
+baseline_scores: {}
+
+source: "H-05 / 08 §1 / CLAUDE.md §0.1 三档可拔插 C 档"
+notes: |
+  H-05 Eval Runner 不可拔插。
+  - 本 case 自身是 holdout——与 H-04 配对的元保护
+  - 当未来某天有人提"加 RunnerProvider 接口"时，本 case 会立即 fail，强制走 ADR
+related_subsystem: [ eval ]

@@ -1,0 +1,67 @@
+id: arch_chinese_004
+category: 架构中文一等公民
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: rubric_5d
+
+input:
+  user_query: |
+    在 sid-code 仓库中，搜索"权限"这个中文关键词，找到 3 个含此关键词的文件路径。
+    返回路径列表（绝对路径或相对仓库根的路径都行），并简要说明每个文件中"权限"
+    的语境是什么（比如出现在注释里 / 类名 / 错误信息等）。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: chinese_keyword_search
+  must_include_any_of:
+    - "权限"
+    - "permission"
+    - "src/permission"
+  must_call_tools:
+    - grep
+  max_steps: 8
+  reference_answer: |
+    用 grep 搜"权限"，返回 ≥ 3 个路径（多半在 src/permission/ 注释里 + docs/ 里）。
+
+rubric:
+  completeness: "返回 ≥ 3 条路径 + 每条简要语境说明"
+  precision: "grep 工具真触发，不是凭记忆"
+  helpfulness: "中文关键词检索能力可靠"
+
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 4.46,
+        run_status: success,
+        tested_at: 2026-05-28T03:46:33.791Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions:
+          {
+            anchor_hit: 0.5,
+            negative_anchor: null,
+            rubric_score: 1,
+            tool_compliance: 1,
+            efficiency: 1,
+            cost: 1
+          },
+        _formula_version: { cost: v6, grader: 5d-v3 }
+      }
+  }
+
+source: "zh_004 / 08 §9.2 P0-tier2 / chinese 类 4/5"
+notes: |
+  zh_004 中文搜索。
+  - rubric_5d grader：tool_compliance 守 grep 调用
+  - 中文 grep 在 ripgrep 下天然支持 utf-8
+related_subsystem: [ tool/grep ]

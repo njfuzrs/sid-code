@@ -1,0 +1,69 @@
+id: arch_platform_005
+category: 架构平台
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言，不依赖 agent 输出）
+    断言：sid-code 引入 PlanStore 接口（plan 持久化抽象）后，FilePlanStore（本地 JSON）
+    和 PostgresPlanStore（服务化）行为一致——同一份 plan 在两种实现下读写无差异。
+    出处：platform_012 / 08 §9.2 P0-tier2。
+    **前置能力**：待建（≤1sprint）—— 当前只有 file-based PlanStore（src/plan/store.ts），
+    Postgres adapter 在 M2+ 引入。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: storage_interface_swappable
+  max_steps: 1
+  reference_answer: |
+    src/plan/store.ts 暴露 PlanStore 接口；FilePlanStore 是当前实现；
+    M2+ 引入 PostgresPlanStore 时,接口不变,实现可换。
+
+arch_assertions:
+  - type: file_must_exist
+    path: src/plan/store.ts
+
+rubric:
+  completeness: "PlanStore 接口就位 + 至少一个实现"
+  precision: "区分接口（B 档可拔插）与实现（多家可选）"
+  helpfulness: "服务化时直接换 Postgres adapter"
+
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 0,
+        run_status: success,
+        tested_at: 2026-05-28T03:04:38.585Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 0 },
+        _formula_version: { cost: v6, grader: 5d-v3 }
+      }
+  }
+
+known_limitation:
+  type: implementation_pending
+  reason: |
+    当前只有 FilePlanStore 一种实现；PostgresPlanStore 在 M2+ 引入。
+    本 case placeholder 跑 baseline 时只能断言 PlanStore 接口存在,真实 swap 测试待 ADR-025+。
+  resolved_in: M2 Sprint S3 / S4
+  status: contract_only
+
+source: "platform_012 / 08 §9.2 P0-tier2 / CLAUDE.md §0.1 三档可拔插 A 档 Storage Adapter"
+notes: |
+  platform_012 Storage 接口换实现。
+  - 前置能力待建：PlanStore 接口当前存在但只一家实现
+  - 真测能力建设在 S2/S3 mock provider 阶段（ADR-021）顺带做
+related_subsystem: [ plan, plan/store ]

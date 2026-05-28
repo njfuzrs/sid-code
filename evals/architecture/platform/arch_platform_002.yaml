@@ -1,0 +1,70 @@
+id: arch_platform_002
+category: 架构平台
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言，不依赖 agent 输出）
+    断言：sid-code 主入口 src/cli.ts 存在，bootstrap 入口 src/entrypoints/bootstrap.ts 存在；
+    package.json 暴露 `bin: { "sid-code": ... }` 让 `bunx sid-code` / `bun run src/cli.ts` 零配置启动；
+    无任何"必须先建 ~/.sid-code/config" 等启动前置文件。
+    出处：D-02 / 08 §9.2 P0-tier2。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: zero_config_startup
+  max_steps: 1
+  reference_answer: |
+    src/cli.ts 是 CLI 入口；src/entrypoints/bootstrap.ts 是 headless（评估模式）入口；
+    package.json 的 bin 段指向 src/cli.ts，bunx 拉起即可。
+
+arch_assertions:
+  - type: file_must_exist
+    path: src/cli.ts
+  - type: file_must_exist
+    path: src/entrypoints/bootstrap.ts
+  - type: file_must_exist
+    path: package.json
+  - type: file_must_contain
+    path: package.json
+    pattern: "\"sid-code\""
+  - type: file_must_contain
+    path: package.json
+    pattern: "\"bin\""
+
+rubric:
+  completeness: "CLI + bootstrap 双入口齐备 + package.json bin 配置"
+  precision: "区分'入口存在'与'启动逻辑正确'——本 case 守静态结构"
+  helpfulness: "零配置启动 = 不需要预先建任何 config / state 目录"
+
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 4,
+        run_status: success,
+        tested_at: 2026-05-28T03:00:56.049Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 0.8 },
+        _formula_version: { cost: v6, grader: 5d-v3 }
+      }
+  }
+
+source: "D-02 / 08 §9.2 P0-tier2"
+notes: |
+  D-02 纯本地零配置启动。
+  - structured_arch grader：守 CLI / bootstrap 双入口 + package.json bin 段
+  - 完整启动测试在 S0-T14 "package.json 脚本可用"已做过
+related_subsystem: [ cli, entrypoints ]

@@ -172,3 +172,10 @@ timeout-mins: 10
 ## 开始创建
 
 现在，请告诉我你想创建什么样的 Skill？我会引导你完成整个创建过程。
+
+## Known Limitations
+
+- skill-creator 是元 Skill，只生成 SKILL.md 骨架与目录结构，不验证 SKILL.md 的运行时正确性（运行时正确性由 sid-code 内核 + Skill loader 校验）
+- 当前不支持自动注册到 system prompt——生成的 Skill 需 sid-code 重启后才被加载（运行时 reload 在 ADR-024+ 引入）
+- 不为新建 Skill 自动生成 eval case；写 Skill 必须按 08 §12.2 三轴螺旋 Step 2 自己补 eval case
+- 仅支持 activate / delegate 两种模式；MCP Server 模式（A-06）落地后再扩展模板

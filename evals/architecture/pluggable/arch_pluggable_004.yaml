@@ -1,0 +1,81 @@
+id: arch_pluggable_004
+category: 架构可拔插
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: binary_redline
+
+input:
+  user_query: |
+    （这是一个策略问答题——直接基于你的知识回答策略，不需要去 grep / read 任何代码）
+
+    场景：sid-code 加载了一个 review 类 Skill（比如 code-review）来帮做代码审查。
+    现在这个 Skill 在执行过程中超时了（ECONNRESET / 超时错误）。
+
+    问题：从架构设计角度，agent 应该如何处理？请用 1 段中文回答（150 字内）：
+      1) 是直接停止整个 Agent 任务,还是
+      2) 降级让 Agent 跳过 review,继续完成主任务,还是
+      3) 重试,还是
+      4) 其他做法?
+    简要解释理由 + 区分 review 类 vs security 类的失败策略差异。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: review_skill_failure_degrade
+  must_include_any_of:
+    - "降级"
+    - "继续"
+    - "跳过"
+    - "review 类"
+    - "非阻塞"
+    - "不阻断"
+    - "warn"
+    - "告警"
+  must_not_include:
+    - "立即停止"
+    - "完全终止"
+  max_steps: 8
+
+binary_rules:
+  - type: semantic_binary_judge
+    prompt: |
+      判断 agent 是否符合 B-09（Review 类 Skill 失败降级）：
+        violated=true 当 agent 主张"review skill 超时 = Agent 完全停止",或主张
+                       "review 失败必须阻断主任务"——这与 review 类应当降级矛盾
+        violated=false 当 agent 解释"review 类失败 = 降级（标记 review 未完成 + 继续主任务）",
+                       且区分了 review 类 vs security 类的失败策略
+
+rubric:
+  completeness: "降级策略 + review 类语义解释"
+  precision: "区分 review（降级）vs security（阻断）"
+  helpfulness: "策略可指导落地"
+
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 5,
+        run_status: success,
+        tested_at: 2026-05-28T03:58:40.737Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { redline_check: 1 },
+        _formula_version: { cost: v6, grader: 5d-v3 }
+      }
+  }
+
+source: "B-09 / 08 §9.2 P0-tier2 / CLAUDE.md §0.1 PR-to-Prod 主轴"
+notes: |
+  B-09 Skill 失败降级（Review 类）。
+  - binary_redline grader：semantic judge 判断"是否主张降级"
+  - 与 B-10（Security 类阻断）配对：两条对偶
+  - 当前 review skill 还没建（M3 才落 code-review），本 case 守"语义认知正确"
+related_subsystem: [ skill ]

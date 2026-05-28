@@ -21,7 +21,8 @@
     "eval:context-capability": "bun run scripts/eval/run-context-capability.ts",
     "eval:router-capability": "bun run scripts/eval/run-router-capability.ts",
     "eval:harness-capability": "bun run scripts/eval/run-harness-capability.ts",
-    "eval:dashboard": "bun run scripts/eval/dashboard.ts"
+    "eval:dashboard": "bun run scripts/eval/dashboard.ts",
+    "eval:lint-arch": "bun run scripts/eval/lint-architecture.ts"
   },
   "dependencies": {
     "@alcalzone/ansi-tokenize": "^0.3.0",

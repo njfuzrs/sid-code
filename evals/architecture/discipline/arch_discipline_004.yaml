@@ -1,0 +1,64 @@
+id: arch_discipline_004
+category: 架构纪律
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言，不依赖 agent 输出）
+    断言：sid-code 在关闭 Daemon / Webhook 后，CLI 仍可独立运行——
+    即 src/cli.ts 不 import 任何 daemon / webhook 模块（或 import 是 lazy / optional）。
+    出处：E-07 / 08 §11 反向检验 / CLAUDE.md §0.6。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: cli_standalone_no_daemon_dep
+  max_steps: 1
+  reference_answer: |
+    src/cli.ts 的 import 链不含 daemon / webhook 硬依赖；
+    CLAUDE.md §0.6 退路表明确"关闭 Daemon/Webhook 后 CLI 仍可独立运行"。
+
+arch_assertions:
+  - type: file_must_exist
+    path: src/cli.ts
+  - type: file_must_exist
+    path: CLAUDE.md
+  - type: file_must_contain
+    path: CLAUDE.md
+    pattern: "退回"
+
+rubric:
+  completeness: "CLI 独立运行 + 退路文档化"
+  precision: "区分'当前无 Daemon 模块'与'未来有 Daemon 但 CLI 不硬依赖'"
+  helpfulness: "阶段 1 失败退路可行"
+
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 5,
+        run_status: success,
+        tested_at: 2026-05-28T03:14:08.424Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 1 },
+        _formula_version: { cost: v6, grader: 5d-v3 }
+      }
+  }
+
+source: "E-07 / 08 §11 反向检验 / CLAUDE.md §0.6"
+notes: |
+  E-07 阶段 1 失败退路可行。
+  - 当前 sid-code 没有 Daemon 模块（src/ 下无 daemon/ 目录），本 case 天然 pass
+  - 未来 M2+ 引入 Daemon 时，本 case 守护"CLI 不硬依赖 Daemon"
+related_subsystem: [ cli ]

@@ -1,0 +1,71 @@
+id: arch_pluggable_001
+category: 架构可拔插
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言，不依赖 agent 输出）
+    断言：sid-code Skill loader 只在 system prompt 中加载 SKILL.md frontmatter（name / description / when-to-use），
+    不加载 body 全文——加载 N 个 Skill 时 system prompt 增量近似线性 N×~50 token。
+    出处：B-02 / 08 §9.2 P0-tier2。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: skill_frontmatter_only_in_prompt
+  max_steps: 1
+  reference_answer: |
+    src/skill/loader.ts 仅提取 frontmatter 装入 system prompt；body 在 Skill 真正激活时才读。
+
+arch_assertions:
+  - type: file_must_exist
+    path: src/skill/loader.ts
+  - type: file_must_contain
+    path: src/skill/loader.ts
+    pattern: "frontmatter"
+  - type: file_must_exist
+    path: src/skill/manager.ts
+
+rubric:
+  completeness: "loader 只加载 frontmatter，manager 管理激活态"
+  precision: "区分 frontmatter（启动加载）与 body（按需加载）"
+  helpfulness: "Skill 系统支持 100+ Skill 而 prompt 不爆炸"
+
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 5,
+        run_status: success,
+        tested_at: 2026-05-28T03:46:33.792Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 1 },
+        _formula_version: { cost: v6, grader: 5d-v3 }
+      }
+  }
+
+source: "B-02 / 08 §9.2 P0-tier2 / CLAUDE.md §0.1 五层第 4 层"
+notes: |
+  B-02 Skill frontmatter 加载成本。
+  - structured_arch grader：检查 loader 含 frontmatter 处理代码
+  - 真测加 20 Skill 后 token 增量 < 2000 的实测，留 S3 mock provider 落地后做（ADR-021）
+  - 本 case 当前守静态结构信号，配 known_limitation 字段说明
+known_limitation:
+  type: real_test_pending
+  reason: |
+    "加载 20 个 Skill 后 token 增量 < 2000" 的实测断言依赖 mock skill provider；
+    M0 阶段只守静态结构（loader 含 frontmatter 提取代码）。真测落到 S3 mock 阶段。
+  resolved_in: S3 / ADR-021
+  status: contract_only_for_now
+related_subsystem: [ skill, skill/loader, skill/manager ]

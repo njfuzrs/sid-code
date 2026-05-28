@@ -1,0 +1,68 @@
+id: arch_platform_003
+category: 架构平台
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言，不依赖 agent 输出）
+    断言：sid-code 引入 WorkspaceProvider 抽象后，CLI / Daemon 部署形态下同一 read 工具行为一致；
+    Provider 接口落在 src/tool/workspace-provider.ts，至少有 LocalWorkspaceProvider 一种实现。
+    出处：platform_010 / 08 §9.2 P0-tier2。
+    **前置能力**：待建（≤1sprint）—— S2 阶段标 placeholder，跑分时跳过。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: workspace_provider_abstraction_in_place
+  max_steps: 1
+  reference_answer: |
+    建立 WorkspaceProvider 接口（src/tool/workspace-provider.ts）；至少 LocalWorkspaceProvider 一种实现；
+    read/write/edit 工具通过 provider 调用，不直接 import node:fs。
+
+arch_assertions:
+  - type: file_must_exist
+    path: src/tool/workspace-provider.ts
+
+rubric:
+  completeness: "WorkspaceProvider 接口 + LocalWorkspaceProvider 实现就位"
+  precision: "区分 CLI（trust-workdir）/ Daemon（sandbox）部署形态"
+  helpfulness: "为 M3+ Daemon 形态铺路"
+
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 0,
+        run_status: success,
+        tested_at: 2026-05-28T03:01:26.098Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 0 },
+        _formula_version: { cost: v6, grader: 5d-v3 }
+      }
+  }
+
+known_limitation:
+  type: implementation_pending
+  reason: |
+    M0–M1 阶段不实现 Daemon 形态；WorkspaceProvider 抽象作为契约存在,实现 leveraged 在 M2 起。
+    本 case 当前 placeholder，N=1 跑会 fail（文件不存在）, 等 ADR-024+ 落地后才能毕业。
+  resolved_in: M2 Sprint S3 / S4
+  status: contract_only
+
+source: "platform_010 / 08 §9.2 P0-tier2"
+notes: |
+  platform_010 WorkspaceProvider 抽象。
+  - 前置能力"待建（≤1sprint）"——本 case 写为契约，跑 baseline 时记 score=0（文件不存在）
+  - 当 src/tool/workspace-provider.ts 落地，自然毕业
+related_subsystem: [ tool, tool/workspace-provider ]

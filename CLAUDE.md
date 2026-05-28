@@ -149,6 +149,7 @@ sid-code 从 2026-05-15 起建立评测体系，当前进入 Sprint S0。**改�
 - capability：`evals/capability/{plan,memory,context,router,harness}/`（**5 子系统全部就位**：plan 10 + memory 10 + context 10 + router 8 + harness 10 = 48 条 case；S0-T11 N=3 中位数 baseline 已落盘，27 graduated + 21 known_limitation）
 - S1 起新增（与 general 平级）：`evals/architecture/{redline,form,pluggable,kernel,platform,discipline,context-engine,orchestration,chinese,durable-exec,notification,ux,nonfunctional,outcome,meta,milestone,ontology,render}/` + `evals/holdout/architecture/{kernel,form,...}/`
   - S1-T15 起 30 条 P0-tier1 已就位：redline 12 + kernel 7（+ holdout/kernel 1）+ form 4（+ holdout/form 1）+ context-engine 5
+  - S2-T27 起 28 条 P0-tier2 + 扩展就位（合计 58 条 P0）：platform 5（+ holdout/platform 1）+ discipline 3（+ holdout/discipline 1）+ meta 3（+ holdout/meta 2）+ pluggable 6（+ holdout/pluggable 1）+ chinese 5（+ holdout/chinese 1）；架构 holdout 共 8 条覆盖 7 类
 
 ### 跑评测（细节见 evals/README.md）
 

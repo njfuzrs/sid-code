@@ -71,6 +71,16 @@ export interface Grader {
   readonly type: string;
   /** 简短描述（用于 dashboard / 错误信息） */
   readonly description: string;
+  /**
+   * 是否依赖 agent 输出做评分。
+   *
+   * 设计：structured_arch / 纯静态文件检查类 grader 不需要 agent 输出 —— 让 runner
+   *       跳过 spawn agent，直接喂空 ProviderResult 调 grade()。这避免 agent 在静态
+   *       case（题面只是描述断言）上跑超时 / 浪费 token。
+   *
+   * 默认 true（向后兼容：rubric_5d / binary_redline 都依赖 agent 输出）。
+   */
+  readonly requiresAgentOutput?: boolean;
   /** 评分主入口 */
   grade(ctx: GraderContext): Promise<GraderResult>;
 }

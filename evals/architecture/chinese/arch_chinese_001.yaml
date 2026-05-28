@@ -1,0 +1,85 @@
+id: arch_chinese_001
+category: 架构中文一等公民
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: rubric_5d
+
+input:
+  user_query: |
+    我有一段 TypeScript 代码（来自 sid-code 项目），里面的注释是中文的：
+
+    ```ts
+    // 检查命令是否在黑名单中
+    function isBlocked(cmd: string): boolean {
+      // 黑名单包含 rm -rf 等危险命令
+      return BLOCKED_LIST.some((p) => cmd.startsWith(p));
+    }
+    ```
+
+    请用中文给我做一次代码审查（review），找出潜在问题并给出建议。直接输出审查内容。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: chinese_query_chinese_response
+  must_include_any_of:
+    - "审查"
+    - "建议"
+    - "命令"
+    - "黑名单"
+    - "正则"
+    - "startsWith"
+    - "命令注入"
+    - "shell"
+  must_not_include:
+    - "Review:"
+    - "Comments:"
+    - "Issues:"
+  max_steps: 6
+  reference_answer: |
+    中文 review 结果，包含：
+      - startsWith 不抗 shell 引号 / 通配符（实际可能漏过 "rm -rf /tmp" 等变体）
+      - 建议改用更稳健的解析（shell-quote / parse-cmd）
+      - BLOCKED_LIST 引用了未定义的常量
+
+rubric:
+  completeness: "完整给出中文审查（≥ 1 条问题 + 建议）"
+  precision: "审查内容相关，无英文 review 标头"
+  helpfulness: "建议可落地"
+
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 5,
+        run_status: success,
+        tested_at: 2026-05-28T03:45:49.186Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions:
+          {
+            anchor_hit: 1,
+            negative_anchor: 1,
+            rubric_score: 1,
+            tool_compliance: 1,
+            efficiency: 1,
+            cost: 1
+          },
+        _formula_version: { cost: v6, grader: 5d-v3 }
+      }
+  }
+
+source: "zh_001 / 08 §9.2 P0-tier2 / chinese 类 1/5"
+notes: |
+  zh_001 中文用户输入正常响应。
+  - rubric_5d grader：rubric 维度判中英混杂、anchor 守关键中文词
+  - must_not_include 守"Review: / Comments: / Issues:" 等英文标头（混杂指标）
+related_subsystem: [ context ]

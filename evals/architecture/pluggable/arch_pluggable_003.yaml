@@ -1,0 +1,75 @@
+id: arch_pluggable_003
+category: 架构可拔插
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言，不依赖 agent 输出）
+    断言：sid-code Skill 系统支持挂 100+ Skill 而 system prompt 不爆炸——
+    通过 frontmatter-only 加载策略 + 按需 body 拉取，100 个 Skill 的初始 prompt 增量 < 30000 token
+    （远低于 180000 上限）。
+    出处：B-05 / 08 §9.2 P0-tier2。
+    **真测前置**：依赖 mock skill provider（ADR-021），当前只守静态结构。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: 100_skill_no_explosion
+  max_steps: 1
+  reference_answer: |
+    Skill 系统三件套（loader / manager / resources / tool）齐备，按需加载策略明确。
+
+arch_assertions:
+  - type: file_must_exist
+    path: src/skill/loader.ts
+  - type: file_must_exist
+    path: src/skill/manager.ts
+  - type: file_must_exist
+    path: src/skill/resources.ts
+  - type: file_must_exist
+    path: src/skill/tool.ts
+  - type: file_must_exist
+    path: src/skill/types.ts
+
+rubric:
+  completeness: "Skill 系统五件套齐备"
+  precision: "区分静态结构（已守）与真测（待 mock 落地）"
+  helpfulness: "支撑 5 PR-to-Prod Skill + 未来 100+ Skill"
+
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 5,
+        run_status: success,
+        tested_at: 2026-05-28T03:46:33.792Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 1 },
+        _formula_version: { cost: v6, grader: 5d-v3 }
+      }
+  }
+
+known_limitation:
+  type: real_test_pending
+  reason: |
+    100 个 mock Skill 真测断言（system prompt < 180000 token）依赖 ADR-021 mock provider。
+    本 case 当前守静态结构（5 件套齐备），等 S3 mock 落地后切真测。
+  resolved_in: S3 / ADR-021
+  status: contract_only_for_now
+
+source: "B-05 / 08 §9.2 P0-tier2"
+notes: |
+  B-05 100+ Skill 上下文不爆炸。
+  - 与 B-02/B-03 形成"frontmatter only + body on demand + 100 不爆"三层守护
+related_subsystem: [ skill ]

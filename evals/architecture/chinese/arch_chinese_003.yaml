@@ -1,0 +1,73 @@
+id: arch_chinese_003
+category: 架构中文一等公民
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: rubric_5d
+
+input:
+  user_query: |
+    sid-code 仓库中 src/permission/checker.ts 是一个英文代码 + 中文注释的混合文件。
+    请你读这个文件，然后告诉我：
+      1) 这个模块的核心职责是什么（用中文回答）
+      2) 注释里的"黑名单"对应代码中的哪个常量
+      3) 主要的两个公开函数名（用英文给出函数名,但解释用中文）
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: cn_en_mixed_understanding
+  must_include_any_of:
+    - "权限"
+    - "checker"
+    - "permission"
+    - "命令"
+    - "黑名单"
+    - "BLOCKED"
+  must_not_include: []
+  must_call_tools:
+    - read
+  max_steps: 8
+  reference_answer: |
+    解释 src/permission/checker.ts 的职责（权限校验），中文解释里嵌英文函数名。
+
+rubric:
+  completeness: "三个问题都回答 + 真读了文件"
+  precision: "函数名（英文）+ 解释（中文）正确对应"
+  helpfulness: "中英混合场景下不混淆语义"
+
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 5,
+        run_status: success,
+        tested_at: 2026-05-28T03:46:49.410Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions:
+          {
+            anchor_hit: 1,
+            negative_anchor: null,
+            rubric_score: 1,
+            tool_compliance: 1,
+            efficiency: 1,
+            cost: 1
+          },
+        _formula_version: { cost: v6, grader: 5d-v3 }
+      }
+  }
+
+source: "zh_003 / 08 §9.2 P0-tier2 / chinese 类 3/5"
+notes: |
+  zh_003 中英混合场景。
+  - rubric_5d grader：anchor 守关键中文/英文混合词
+  - must_call_tools 守 agent 真读了文件（不是凭记忆）
+related_subsystem: [ context, tool/read ]

@@ -1,0 +1,54 @@
+id: arch_discipline_003
+category: 架构纪律
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: true
+holdout_reason: "E-06 holdout 不参与调优——本 case 自身就是 holdout 保护的实例"
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言，不依赖 agent 输出）
+    断言：sid-code 评测体系的 holdout case 不参与日常调优——
+    eval-runner.ts 默认 --skip-holdout=true，holdout 目录下的 case 不被日常 eval:run 扫到。
+    出处：E-06 / 08 §13.2。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: holdout_not_in_daily_tuning
+  max_steps: 1
+  reference_answer: |
+    evals/eval-runner.ts 默认行为：扫描 general + architecture 子目录，
+    过滤 holdout=true 标记的 case；只有 --include-holdout 时才扫 evals/holdout/ 目录。
+
+arch_assertions:
+  - type: file_must_exist
+    path: evals/eval-runner.ts
+  - type: file_must_contain
+    path: evals/eval-runner.ts
+    pattern: "includeHoldout"
+  - type: file_must_contain
+    path: evals/eval-runner.ts
+    pattern: "skip-holdout"
+  - type: file_must_exist
+    path: evals/holdout/README.md
+
+rubric:
+  completeness: "holdout 保护机制完整（flag + 目录隔离 + 默认跳过）"
+  precision: "区分'holdout 标记过滤'与'holdout 目录隔离'——两层防护"
+  helpfulness: "防止 holdout case 被无意纳入调优循环"
+
+baseline_scores: {}
+
+source: "E-06 / 08 §13.2 holdout 保护"
+notes: |
+  E-06 holdout 不参与调优。
+  - 本 case 自身就是 holdout（放在 evals/holdout/architecture/discipline/）
+  - 守护 eval-runner 的 --skip-holdout 默认行为 + holdout 目录隔离
+related_subsystem: [ eval ]

@@ -11,7 +11,7 @@
  */
 
 import type { CaseDoc, ProjectSnapshot, WeekScore, RunRecord, BaselineSnapshot } from "./yaml-loader";
-import { readBaseline, LATEST_GRADER_VERSION } from "./yaml-loader";
+import { readBaseline, LATEST_GRADER_VERSION, isBehaviorBucket, isArchitectureBucket } from "./yaml-loader";
 
 export interface DashboardOptions {
   /** true = 一并展示旧 grader 版本 baseline；默认 false（仅展示 LATEST_GRADER_VERSION 数据） */
@@ -73,6 +73,8 @@ export function renderDashboard(snapshot: ProjectSnapshot, options: DashboardOpt
   lines.push("");
 
   lines.push(...renderOverview(snapshot, includeLegacy));
+  lines.push("");
+  lines.push(...renderBehaviorVsArchitecture(snapshot, includeLegacy));
   lines.push("");
   lines.push(...renderCaseToolMatrix(snapshot, includeLegacy));
   lines.push("");
@@ -160,6 +162,69 @@ function renderOverview(snap: ProjectSnapshot, includeLegacy: boolean): string[]
     out.push(`### 最新一周: w${latestWeek}`);
     if (anchorCount > 0) out.push(`- Anchor 均分: **${(anchorSum / anchorCount).toFixed(2)}/5** (${anchorCount} case)`);
     if (llmCount > 0) out.push(`- LLM Judge 均分: **${(llmSum / llmCount).toFixed(2)}/5** (${llmCount} case)`);
+  }
+
+  return out;
+}
+
+/**
+ * 行为分（general）vs 架构分（architecture）双指标面板。
+ *
+ * 设计依据：08 §13.3 双指标 + S2-T27 要求 DASHBOARD 加"行为分 vs 架构分"双 panel。
+ *
+ * 数据源：snap.cases 按 bucket 分组——bucket 以 "general/" 开头或在 LEGACY_GENERAL_BUCKETS
+ *        内的归"行为"，以 "architecture/" 或 "holdout/architecture/" 开头的归"架构"。
+ *        每条 case 取 baseline.score（按 LATEST_GRADER_VERSION 过滤）平均。
+ */
+function renderBehaviorVsArchitecture(
+  snap: ProjectSnapshot,
+  includeLegacy: boolean,
+): string[] {
+  const out: string[] = [];
+  out.push("## 1.1 行为分 vs 架构分 双指标");
+  out.push("");
+  out.push("> 行为分 = `evals/general/` 下 5 维 grader 跑出的均分（动态行为评测）");
+  out.push("> 架构分 = `evals/architecture/` 下 binary_redline / structured_arch 跑出的均分（静态结构评测 + 红线 binary）");
+  out.push("> 两者对应 08 §13.3 双指标：行为分反映 agent 跑事件能力，架构分反映底座完整性");
+  out.push("");
+
+  type Bucket = { tool: string; behaviorSum: number; behaviorN: number; archSum: number; archN: number };
+  const stats = new Map<string, Bucket>();
+
+  for (const tool of snap.tools) {
+    stats.set(tool, { tool, behaviorSum: 0, behaviorN: 0, archSum: 0, archN: 0 });
+  }
+
+  for (const c of snap.cases) {
+    const isBehavior = isBehaviorBucket(c.bucket);
+    const isArch = isArchitectureBucket(c.bucket);
+    if (!isBehavior && !isArch) continue;
+    for (const tool of snap.tools) {
+      const b = readBaseline(c, tool);
+      if (b.status !== "tested") continue;
+      if (!includeLegacy && b.graderVersion !== LATEST_GRADER_VERSION) continue;
+      if (typeof b.score !== "number") continue;
+      const s = stats.get(tool)!;
+      if (isBehavior) {
+        s.behaviorSum += b.score;
+        s.behaviorN += 1;
+      } else {
+        s.archSum += b.score;
+        s.archN += 1;
+      }
+    }
+  }
+
+  out.push("| Tool | 行为分（n） | 架构分（n） | Δ |");
+  out.push("| --- | --- | --- | --- |");
+  for (const tool of snap.tools) {
+    const s = stats.get(tool)!;
+    const behAvg = s.behaviorN > 0 ? s.behaviorSum / s.behaviorN : null;
+    const archAvg = s.archN > 0 ? s.archSum / s.archN : null;
+    const beh = behAvg !== null ? `${behAvg.toFixed(2)} (n=${s.behaviorN})` : "–";
+    const arch = archAvg !== null ? `${archAvg.toFixed(2)} (n=${s.archN})` : "–";
+    const delta = behAvg !== null && archAvg !== null ? (archAvg - behAvg).toFixed(2) : "–";
+    out.push(`| ${tool} | ${beh} | ${arch} | ${delta} |`);
   }
 
   return out;

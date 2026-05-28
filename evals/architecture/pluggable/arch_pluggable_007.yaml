@@ -1,0 +1,70 @@
+id: arch_pluggable_007
+category: 架构可拔插
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言，不依赖 agent 输出）
+    断言：sid-code Skill 不可绕过 Permission——
+    src/skill/tool.ts 调用 bash / write / edit 等工具时,仍走 Permission checker 流程；
+    Skill 系统不绕过 src/permission/ 层。
+    出处：B-31 / RL-003 互补 / OpenClaw CVE 教训。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: skill_not_bypass_permission
+  max_steps: 1
+  reference_answer: |
+    src/skill/tool.ts 调用工具时走通用工具调用链（src/tool/ + src/permission/）；
+    没有"Skill 模式跳过 permission"的旁路代码。
+
+arch_assertions:
+  - type: file_must_exist
+    path: src/skill/tool.ts
+  - type: file_must_exist
+    path: src/permission/checker.ts
+  - type: file_must_exist
+    path: src/permission/mode.ts
+
+rubric:
+  completeness: "Skill 工具调用链与通用工具调用链共用 Permission"
+  precision: "区分 Skill 工具（高层语义）vs 底层工具（read/write/...）"
+  helpfulness: "OpenClaw 7+ CVE 教训：Skill 不能 bypass 安全防线"
+
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 5,
+        run_status: success,
+        tested_at: 2026-05-28T03:47:59.971Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 1 },
+        _formula_version: { cost: v6, grader: 5d-v3 }
+      }
+  }
+
+source: "B-31 / 08 §9.2 P0-tier2 / RL-003 互补 / OpenClaw"
+notes: |
+  B-31 Skill 不绕过 Permission。
+  - 本 case 守静态结构（permission/ 层存在 + Skill 工具调用入口存在）
+  - 真测"Skill 内 bash 仍触发 Permission 弹窗"留 S3 mock 阶段做
+known_limitation:
+  type: real_test_pending
+  reason: |
+    "Skill 中的 bash 调用仍经过 Permission 检查"实测断言依赖 mock skill + permission 联调。
+  resolved_in: S3 / ADR-021
+  status: contract_only_for_now
+related_subsystem: [ skill, skill/tool, permission, permission/checker ]

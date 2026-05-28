@@ -1,0 +1,49 @@
+id: arch_platform_006
+category: 架构平台
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: true
+holdout_reason: "平台差异元保护——CLI 模式默认行为不被未来 Daemon 模块破坏"
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言，不依赖 agent 输出）
+    断言：sid-code 在引入 Daemon / WorkspaceProvider 等服务化模块后，
+    CLI 默认行为仍可独立运行——src/cli.ts 不强依赖任何服务化模块；
+    src/ 下若有 daemon/ 目录，其 import 不出现在 src/cli.ts 调用链中。
+    出处：平台差异元 holdout / D 类整体守护 / E-07 配对。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: cli_no_daemon_hard_dep
+  max_steps: 1
+  reference_answer: |
+    src/cli.ts 启动链不 import src/daemon/ 任何东西（M0 阶段没有 daemon/ 目录，本案天然 pass；
+    M2+ 引入 daemon/ 后,本 case 仍守不硬依赖）。
+
+arch_assertions:
+  - type: file_must_exist
+    path: src/cli.ts
+  - type: file_must_exist
+    path: src/entrypoints/bootstrap.ts
+
+rubric:
+  completeness: "CLI + bootstrap 独立可启动"
+  precision: "区分'当前阶段天然 pass'与'未来引入 Daemon 后仍 pass'"
+  helpfulness: "退路保险——退回'高级 Coding CLI'方案随时可行"
+
+baseline_scores: {}
+
+source: "platform 元 holdout / E-07 配对 / CLAUDE.md §0.6 退路表"
+notes: |
+  platform_006 平台元保护。
+  - 本 case 是 holdout——M2+ 引入 Daemon 模块后,本 case 必须仍 pass
+  - 当前 M0 没 daemon/ 目录,断言简化为"CLI 入口存在"
+related_subsystem: [ cli, entrypoints ]

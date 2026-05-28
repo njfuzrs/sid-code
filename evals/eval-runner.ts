@@ -415,7 +415,34 @@ const FAILED_EXIT_STATUSES = new Set([
   "outer_timeout",
 ]);
 
+/**
+ * 生成 stub ProviderResult，用于 requiresAgentOutput=false 的 grader（如 structured_arch）。
+ *
+ * 设计：static grader 不依赖 agent 输出，让 runner 跳过 spawn agent，直接用 stub 喂 grader。
+ *       避免长描述题面让 agent 真去 ls/read 文件超时（meta_001/003 案例）。
+ *       stub 标记 exit_status=static_grader_skip，便于 jsonl 落盘后追溯。
+ */
+function makeStubProviderResult(caseId: string): ProviderResult {
+  return {
+    output: `[STATIC_GRADER_SKIP] case=${caseId} 走 grader.requiresAgentOutput=false 路径，未 spawn agent`,
+    meta: {
+      tools_used: [],
+      files_edited: [],
+      total_steps: 0,
+      total_tokens: 0,
+      latency_ms: 0,
+      exit_status: "static_grader_skip",
+      error_count: 0,
+      retry_count: 0,
+      backtrack_count: 0,
+    },
+    error: false,
+  };
+}
+
 export function isCompleteFailure(result: ProviderResult): { failed: boolean; reason: string } {
+  // static_grader_skip 是合法路径（structured_arch 不需要 agent），不算 failure
+  if (result.meta?.exit_status === "static_grader_skip") return { failed: false, reason: "" };
   if (result.error === true) return { failed: true, reason: `wrapper error=true (exit_status=${result.meta.exit_status})` };
   const out = result.output ?? "";
   if (out.startsWith("[ERROR]")) return { failed: true, reason: `output 以 [ERROR] 开头: ${out.slice(0, 100)}` };
@@ -845,7 +872,14 @@ async function main() {
           completedAt: string;
         }> = [];
         for (let i = 0; i < samples; i++) {
-          const provResult = await runProvider(p, c.input.user_query, c.id);
+          // T-10.2 静态 grader 短路：requiresAgentOutput=false（如 structured_arch）的 case
+          // 不需要 agent 输出，直接喂 stub ProviderResult 调 grader——避免 agent 在描述类
+          // 题面上跑超时（meta_001/003 类长描述会让 agent 真去 ls/read 文件，超过 510s outer timeout）。
+          const grader = getGrader(c.grader_type);
+          const useStub = grader.requiresAgentOutput === false;
+          const provResult = useStub
+            ? makeStubProviderResult(c.id)
+            : await runProvider(p, c.input.user_query, c.id);
           const grade = await gradeCase(c, provResult, skipLlmJudge, judgeSamples);
           const failure = isCompleteFailure(provResult);
           const runStatus = classifyRunStatus(provResult, failure);

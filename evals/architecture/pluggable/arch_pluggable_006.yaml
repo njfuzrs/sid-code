@@ -1,0 +1,70 @@
+id: arch_pluggable_006
+category: 架构可拔插
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言，不依赖 agent 输出）
+    断言：sid-code 遵守开闭原则（Open-Closed Principle）——
+    加载新 Skill 不修改 src/skill/loader.ts / manager.ts 已有逻辑；
+    所有 Skill 通过 frontmatter 元数据驱动注册，loader 是"配置驱动"而非"硬编码每个 Skill"。
+    出处：B-21 / 08 §9.2 P0-tier2。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: open_closed_principle_in_skill
+  max_steps: 1
+  reference_answer: |
+    src/skill/loader.ts 通过遍历目录 + 解析 frontmatter 加载 Skill；
+    不存在 hardcode 某具体 Skill 名称的代码（如 if (name === "code-review") {...}）。
+
+arch_assertions:
+  - type: file_must_exist
+    path: src/skill/loader.ts
+  - type: file_must_contain
+    path: src/skill/loader.ts
+    pattern: "frontmatter"
+
+rubric:
+  completeness: "Skill loader 配置驱动 + 不硬编码具体 Skill"
+  precision: "区分'通用注册'与'硬编码 if 分支'"
+  helpfulness: "M3+ 加新 Skill 时不动 loader 代码"
+
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 5,
+        run_status: success,
+        tested_at: 2026-05-28T03:47:59.971Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 1 },
+        _formula_version: { cost: v6, grader: 5d-v3 }
+      }
+  }
+
+source: "B-21 / 08 §9.2 P0-tier2 / SOLID"
+notes: |
+  B-21 开闭原则。
+  - 当前 case 守"loader 含 frontmatter 加载逻辑"
+  - 真测"加新 Skill 不影响现有 25 case"留 S3 mock 阶段做（ADR-021）
+known_limitation:
+  type: real_test_pending
+  reason: |
+    "加载新 Skill 后现有 25 case 分数不降"的实测要 mock skill provider 注入。
+    本 case 当前守静态结构。
+  resolved_in: S3 / ADR-021
+  status: contract_only_for_now
+related_subsystem: [ skill, skill/loader ]

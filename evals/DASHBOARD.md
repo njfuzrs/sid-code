@@ -1,6 +1,6 @@
 # Evals Dashboard — sid-code
 
-> 自动生成,请勿手动编辑。生成时间: `2026-05-28T02:54:05.230Z`
+> 自动生成,请勿手动编辑。生成时间: `2026-05-28T04:50:34.159Z`
 > 数据源: `evals/p*-*/` + `evals/_scores/` + `evals/_reports/`
 > 触发: 手动 `bun run eval:dashboard` / git pre-push hook 自动刷新
 > Grader 过滤: **仅 `5d-v3`**（跨 grader 版本总分不可直接比较；切换：`--include-legacy`）
@@ -9,30 +9,147 @@
 
 ## 1. 总览
 
-- **case 总数**: 5 条
-- **优先级分布**: P0=2 / P1=1 / P2=2 / holdout=5
-- **claude_code** 评分进度: 0/5 已评分 (5 pending)
-- **codex** 评分进度: 0/5 已评分 (5 pending)
-- **sid_code_w0** 评分进度: 0/5 已评分 (5 pending)
+- **case 总数**: 88 条
+- **优先级分布**: P0=70 / P1=10 / P2=8 / holdout=13
+- **claude_code** 评分进度: 0/88 已评分 (63 pending, 25 legacy 隐藏)
+- **claude_code_claude_opus_4_7** 评分进度: 0/88 已评分 (63 pending, 25 legacy 隐藏)
+- **claude_code_opus47** 评分进度: 0/88 已评分 (63 pending, 25 legacy 隐藏)
+- **codex** 评分进度: 0/88 已评分 (88 pending)
+- **sid_code_claude_opus_4_7** 评分进度: 0/88 已评分 (63 pending, 25 legacy 隐藏)
+- **sid_code_deepseek_v4_pro** 评分进度: 77/88 已评分 (11 pending)
+- **sid_code_live** 评分进度: 0/88 已评分 (63 pending, 25 legacy 隐藏)
+- **sid_code_opus47** 评分进度: 0/88 已评分 (63 pending, 25 legacy 隐藏)
+- **sid_code_w0** 评分进度: 0/88 已评分 (76 pending, 12 legacy 隐藏)
+- ⚠️ 共隐藏 **162** 条 legacy baseline（非 `5d-v3`）；查看用 `--include-legacy`
+
+### 最新一周: w22
+
+## 1.1 行为分 vs 架构分 双指标
+
+> 行为分 = `evals/general/` 下 5 维 grader 跑出的均分（动态行为评测）
+> 架构分 = `evals/architecture/` 下 binary_redline / structured_arch 跑出的均分（静态结构评测 + 红线 binary）
+> 两者对应 08 §13.3 双指标：行为分反映 agent 跑事件能力，架构分反映底座完整性
+
+| Tool | 行为分（n） | 架构分（n） | Δ |
+| --- | --- | --- | --- |
+| claude_code | – | – | – |
+| claude_code_claude_opus_4_7 | – | – | – |
+| claude_code_opus47 | – | – | – |
+| codex | – | – | – |
+| sid_code_claude_opus_4_7 | – | – | – |
+| sid_code_deepseek_v4_pro | 4.73 (n=25) | 4.08 (n=52) | -0.65 |
+| sid_code_live | – | – | – |
+| sid_code_opus47 | – | – | – |
+| sid_code_w0 | – | – | – |
 
 ## 2. Case × Tool 矩阵
 
 图例: ✅ ≥4.5 / 🟢 3.5-4.4 / 🟡 2.5-3.4 / 🟠 1.5-2.4 / 🔴 <1.5 / – pending / ❌ error / ⏱️ timeout / 🕰️ legacy(已过滤)
 
-| case_id | pri | category | claude_code | codex | sid_code_w0 |
-| --- | --- | --- | --- | --- | --- |
-| case_004 🔒 | P0 | 代码理解 | – | – | – |
-| case_010 🔒 | P0 | 文档生成 | – | – | – |
-| case_014 🔒 | P1 | 多文件协调 | – | – | – |
-| case_023 🔒 | P2 | 对抗性prompt | – | – | – |
-| case_025 🔒 | P2 | 诚实兜底 | – | – | – |
+| case_id | pri | category | claude_code | claude_code_claude_opus_4_7 | claude_code_opus47 | codex | sid_code_claude_opus_4_7 | sid_code_deepseek_v4_pro | sid_code_live | sid_code_opus47 | sid_code_w0 | w22.anchor | w22.llm |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| arch_chinese_001 | P0 | 架构中文一等公民 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_chinese_002 | P0 | 架构中文一等公民 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_chinese_003 | P0 | 架构中文一等公民 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_chinese_004 | P0 | 架构中文一等公民 | – | – | – | – | – | 4.46 🟢 | – | – | – | – | – |
+| arch_chinese_005 | P0 | 架构中文一等公民 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_chinese_006 🔒 | P0 | 架构中文一等公民 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_ctxeng_001 | P0 | 架构 Context Engine | – | – | – | – | – | 0 🔴 | – | – | – | – | – |
+| arch_ctxeng_002 | P0 | 架构 Context Engine | – | – | – | – | – | 0 🔴 | – | – | – | – | – |
+| arch_ctxeng_003 | P0 | 架构 Context Engine | – | – | – | – | – | 0 🔴 | – | – | – | – | – |
+| arch_ctxeng_004 | P0 | 架构 Context Engine | – | – | – | – | – | 0 🔴 | – | – | – | – | – |
+| arch_ctxeng_005 | P0 | 架构 Context Engine | – | – | – | – | – | 0 🔴 | – | – | – | – | – |
+| arch_discipline_001 | P0 | 架构纪律 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_discipline_002 | P0 | 架构纪律 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_discipline_003 🔒 | P0 | 架构纪律 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_discipline_004 | P0 | 架构纪律 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_form_001 | P0 | 架构形态 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_form_002 🔒 | P0 | 架构形态 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_form_003 | P0 | 架构形态 | – | – | – | – | – | 2.5 🟡 | – | – | – | – | – |
+| arch_form_004 | P0 | 架构形态 | – | – | – | – | – | 1.67 🟠 | – | – | – | – | – |
+| arch_form_005 | P0 | 架构形态 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_kernel_001 | P0 | 架构内核 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_kernel_002 | P0 | 架构内核 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_kernel_003 | P0 | 架构内核 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_kernel_004 | P0 | 架构内核 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_kernel_005 | P0 | 架构内核 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_kernel_006 | P0 | 架构内核 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_kernel_007 | P0 | 架构内核 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_kernel_008 🔒 | P0 | 架构内核 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_meta_001 | P0 | 架构评测自检 | – | – | – | – | – | 4.38 🟢 | – | – | – | – | – |
+| arch_meta_002 | P0 | 架构评测自检 | – | – | – | – | – | 0 🔴 | – | – | – | – | – |
+| arch_meta_003 | P0 | 架构评测自检 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_meta_004 🔒 | P0 | 架构评测自检 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_meta_005 🔒 | P0 | 架构评测自检 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_platform_001 | P0 | 架构平台 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_platform_002 | P0 | 架构平台 | – | – | – | – | – | 4 🟢 | – | – | – | – | – |
+| arch_platform_003 | P0 | 架构平台 | – | – | – | – | – | 0 🔴 | – | – | – | – | – |
+| arch_platform_004 | P0 | 架构平台 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_platform_005 | P0 | 架构平台 | – | – | – | – | – | 0 🔴 | – | – | – | – | – |
+| arch_platform_006 🔒 | P0 | 架构平台 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_pluggable_001 | P0 | 架构可拔插 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_pluggable_002 🔒 | P0 | 架构可拔插 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_pluggable_003 | P0 | 架构可拔插 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_pluggable_004 | P0 | 架构可拔插 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_pluggable_005 | P0 | 架构可拔插 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_pluggable_006 | P0 | 架构可拔插 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_pluggable_007 | P0 | 架构可拔插 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_redline_001 | P0 | 架构红线 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_redline_002 | P0 | 架构红线 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_redline_003 | P0 | 架构红线 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_redline_004 | P0 | 架构红线 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_redline_005 | P0 | 架构红线 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_redline_006 | P0 | 架构红线 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_redline_007 | P0 | 架构红线 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_redline_008 | P0 | 架构红线 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_redline_009 | P0 | 架构红线 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_redline_011 | P0 | 架构红线 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_redline_012 | P0 | 架构红线 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_redline_013 | P0 | 架构红线 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| case_001 | P0 | 代码理解 | 🕰️ | 🕰️ | 🕰️ | – | 🕰️ | 5 ✅ | 🕰️ | 🕰️ | 🕰️ | – | – |
+| case_002 | P0 | 代码理解 | 🕰️ | 🕰️ | 🕰️ | – | 🕰️ | 5 ✅ | 🕰️ | 🕰️ | 🕰️ | – | – |
+| case_003 | P0 | 代码理解 | 🕰️ | 🕰️ | 🕰️ | – | 🕰️ | 5 ✅ | 🕰️ | 🕰️ | 🕰️ | – | – |
+| case_004 🔒 | P0 | 代码理解 | – | – | – | – | – | – | – | – | – | – | – |
+| case_005 | P0 | bug修复 | 🕰️ | 🕰️ | 🕰️ | – | 🕰️ | 5 ✅ | 🕰️ | 🕰️ | 🕰️ | – | – |
+| case_006 | P0 | bug修复 | 🕰️ | 🕰️ | 🕰️ | – | 🕰️ | 4.46 🟢 | 🕰️ | 🕰️ | 🕰️ | – | – |
+| case_007 | P0 | bug修复 | 🕰️ | 🕰️ | 🕰️ | – | 🕰️ | 5 ✅ | 🕰️ | 🕰️ | 🕰️ | – | – |
+| case_008 | P0 | 新功能实现 | 🕰️ | 🕰️ | 🕰️ | – | 🕰️ | 5 ✅ | 🕰️ | 🕰️ | 🕰️ | – | – |
+| case_009 | P0 | 新功能实现 | 🕰️ | 🕰️ | 🕰️ | – | 🕰️ | 5 ✅ | 🕰️ | 🕰️ | 🕰️ | – | – |
+| case_010 🔒 | P0 | 文档生成 | – | – | – | – | – | – | – | – | – | – | – |
+| case_011 | P1 | 重构 | 🕰️ | 🕰️ | 🕰️ | – | 🕰️ | 5 ✅ | 🕰️ | 🕰️ | – | – | – |
+| case_012 | P1 | 重构 | 🕰️ | 🕰️ | 🕰️ | – | 🕰️ | 3.93 🟢 | 🕰️ | 🕰️ | – | – | – |
+| case_013 | P1 | 多文件协调 | 🕰️ | 🕰️ | 🕰️ | – | 🕰️ | 5 ✅ | 🕰️ | 🕰️ | – | – | – |
+| case_014 🔒 | P1 | 多文件协调 | – | – | – | – | – | – | – | – | – | – | – |
+| case_015 | P1 | 测试编写 | 🕰️ | 🕰️ | 🕰️ | – | 🕰️ | 2.46 🟠 | 🕰️ | 🕰️ | – | – | – |
+| case_016 | P1 | 测试编写 | 🕰️ | 🕰️ | 🕰️ | – | 🕰️ | 5 ✅ | 🕰️ | 🕰️ | – | – | – |
+| case_017 | P1 | 依赖管理 | 🕰️ | 🕰️ | 🕰️ | – | 🕰️ | 4.46 🟢 | 🕰️ | 🕰️ | – | – | – |
+| case_018 | P1 | MCP工具调用 | 🕰️ | 🕰️ | 🕰️ | – | 🕰️ | 5 ✅ | 🕰️ | 🕰️ | – | – | – |
+| case_019 | P1 | MCP工具调用 | 🕰️ | 🕰️ | 🕰️ | – | 🕰️ | 4.46 🟢 | 🕰️ | 🕰️ | – | – | – |
+| case_020 | P2 | 跨语言 | 🕰️ | 🕰️ | 🕰️ | – | 🕰️ | 4.46 🟢 | 🕰️ | 🕰️ | 🕰️ | – | – |
+| case_021 | P2 | 歧义查询 | 🕰️ | 🕰️ | 🕰️ | – | 🕰️ | 5 ✅ | 🕰️ | 🕰️ | 🕰️ | – | – |
+| case_022 | P2 | 歧义查询 | 🕰️ | 🕰️ | 🕰️ | – | 🕰️ | 5 ✅ | 🕰️ | 🕰️ | 🕰️ | – | – |
+| case_023 🔒 | P2 | 对抗性prompt | – | – | – | – | – | – | – | – | – | – | – |
+| case_024 | P2 | 超长上下文 | 🕰️ | 🕰️ | 🕰️ | – | 🕰️ | 5 ✅ | 🕰️ | 🕰️ | 🕰️ | – | – |
+| case_025 🔒 | P2 | 诚实兜底 | – | – | – | – | – | – | – | – | – | – | – |
+| case_026 | P0 | 文档生成 | 🕰️ | 🕰️ | 🕰️ | – | 🕰️ | 5 ✅ | 🕰️ | 🕰️ | – | – | – |
+| case_027 | P0 | bug修复 | 🕰️ | 🕰️ | 🕰️ | – | 🕰️ | 4.46 🟢 | 🕰️ | 🕰️ | – | – | – |
+| case_028 | P1 | 多文件协调 | 🕰️ | 🕰️ | 🕰️ | – | 🕰️ | 5 ✅ | 🕰️ | 🕰️ | – | – | – |
+| case_029 | P2 | 对抗性prompt | 🕰️ | 🕰️ | 🕰️ | – | 🕰️ | 5 ✅ | 🕰️ | 🕰️ | – | – | – |
+| case_030 | P2 | 诚实兜底 | 🕰️ | 🕰️ | 🕰️ | – | 🕰️ | 4.58 ✅ | 🕰️ | 🕰️ | – | – | – |
+
+> 🕰️ 共 **162** 格 legacy baseline 被隐藏（grader 版本 ≠ `5d-v3`，跨版本总分不可直接比较）。查看用 `--include-legacy`。
 
 ## 3. 单 case 跨周趋势
 
-> 当前项目无 `_scores/wNN/` 时序数据,跳过。
-> 
-> 提示: code-graph 项目把每周分数外部化到 `evals/_scores/wNN/case_NNN.yaml` 实现时序追踪,
-> 推荐 sid-code 也引入这一模式(详见 plan Step 3 长期归一化)。
+覆盖周次: w12 ~ w22 (共 3 周)
+
+### 3.1 综合趋势(全 case 均分)
+
+> (无有效分数,跳过图表)
+
+### 3.2 单 case 折线(仅展示有 ≥3 周数据的 case)
+
+> 无 case 满足 ≥3 周数据条件,跳过单 case 折线。
 
 ## 4. 运行历史趋势 (per-run)
 
@@ -157,7 +274,7 @@ xychart-beta
 
 ### 4.2 sid_code_deepseek_v4_pro
 
-总计: 32 次 run × 55 个 case = 284 条记录
+总计: 42 次 run × 77 个 case = 316 条记录
 
 **4.x.1 每次 run 的均分趋势**
 
@@ -195,20 +312,30 @@ xychart-beta
 | `2026-05-28 02:38:30` | 18 | **4.44** | 16 | 2 | 0 |
 | `2026-05-28 02:40:44` | 1 | **0.00** | 0 | 1 | 0 |
 | `2026-05-28 02:41:40` | 1 | **5.00** | 1 | 0 | 0 |
+| `2026-05-28 03:04:38` | 5 | **2.55** | 3 | 2 | 0 |
+| `2026-05-28 03:14:08` | 3 | **5.00** | 3 | 0 | 0 |
+| `2026-05-28 03:30:07` | 3 | **5.00** | 1 | 0 | 2 |
+| `2026-05-28 03:42:22` | 3 | **3.13** | 2 | 1 | 0 |
+| `2026-05-28 03:48:03` | 11 | **4.94** | 9 | 0 | 2 |
+| `2026-05-28 03:58:41` | 3 | **4.33** | 3 | 0 | 0 |
+| `2026-05-28 04:00:23` | 1 | **4.00** | 1 | 0 | 0 |
+| `2026-05-28 04:00:51` | 1 | **4.00** | 1 | 0 | 0 |
+| `2026-05-28 04:01:28` | 1 | **4.00** | 1 | 0 | 0 |
+| `2026-05-28 04:19:38` | 1 | **5.00** | 1 | 0 | 0 |
 
 ```mermaid
 xychart-beta
     title "sid_code_deepseek_v4_pro 历次 run 均分"
-    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15, r16, r17, r18, r19, r20, r21, r22, r23, r24, r25, r26, r27, r28, r29, r30, r31, r32]
+    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15, r16, r17, r18, r19, r20, r21, r22, r23, r24, r25, r26, r27, r28, r29, r30, r31, r32, r33, r34, r35, r36, r37, r38, r39, r40, r41, r42]
     y-axis "Score" 0 --> 5
-    line [4.25, 4.82, 4.91, 4.91, 5.00, 4.61, 4.94, 4.83, 4.35, 4.19, 3.91, 3.90, 4.47, 4.54, 5.00, 5.00, 5.00, 5.00, 4.76, 4.65, 5.00, 0.00, 3.33, 5.00, 5.00, 5.00, 3.83, 3.96, 0.00, 4.44, 0.00, 5.00]
+    line [4.25, 4.82, 4.91, 4.91, 5.00, 4.61, 4.94, 4.83, 4.35, 4.19, 3.91, 3.90, 4.47, 4.54, 5.00, 5.00, 5.00, 5.00, 4.76, 4.65, 5.00, 0.00, 3.33, 5.00, 5.00, 5.00, 3.83, 3.96, 0.00, 4.44, 0.00, 5.00, 2.55, 5.00, 5.00, 3.13, 4.94, 4.33, 4.00, 4.00, 4.00, 5.00]
 ```
 
 <sub>fallback 表格 — sid_code_deepseek_v4_pro 历次 run 均分</sub>
 
-| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 | r13 | r14 | r15 | r16 | r17 | r18 | r19 | r20 | r21 | r22 | r23 | r24 | r25 | r26 | r27 | r28 | r29 | r30 | r31 | r32 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| avg | 4.25 | 4.82 | 4.91 | 4.91 | 5.00 | 4.61 | 4.94 | 4.83 | 4.35 | 4.19 | 3.91 | 3.90 | 4.47 | 4.54 | 5.00 | 5.00 | 5.00 | 5.00 | 4.76 | 4.65 | 5.00 | 0.00 | 3.33 | 5.00 | 5.00 | 5.00 | 3.83 | 3.96 | 0.00 | 4.44 | 0.00 | 5.00 |
+| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 | r13 | r14 | r15 | r16 | r17 | r18 | r19 | r20 | r21 | r22 | r23 | r24 | r25 | r26 | r27 | r28 | r29 | r30 | r31 | r32 | r33 | r34 | r35 | r36 | r37 | r38 | r39 | r40 | r41 | r42 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| avg | 4.25 | 4.82 | 4.91 | 4.91 | 5.00 | 4.61 | 4.94 | 4.83 | 4.35 | 4.19 | 3.91 | 3.90 | 4.47 | 4.54 | 5.00 | 5.00 | 5.00 | 5.00 | 4.76 | 4.65 | 5.00 | 0.00 | 3.33 | 5.00 | 5.00 | 5.00 | 3.83 | 3.96 | 0.00 | 4.44 | 0.00 | 5.00 | 2.55 | 5.00 | 5.00 | 3.13 | 4.94 | 4.33 | 4.00 | 4.00 | 4.00 | 5.00 |
 
 **4.x.2 单 case 多次 run 折线** (仅展示 ≥2 次 run 的 case)
 
@@ -407,6 +534,114 @@ xychart-beta
 | 系列 | r1 | r2 |
 | --- | --- | --- |
 | score | 5.00 | 5.00 |
+
+</details>
+
+<details><summary><code>arch_meta_001</code> · 2 次 · – → 4.38 (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "arch_meta_001 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [0, 4.38]
+```
+
+<sub>fallback 表格 — arch_meta_001 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | – | 4.38 |
+
+</details>
+
+<details><summary><code>arch_meta_002</code> · 2 次 · 5.00 → 0.00 (Δ -5.00)</summary>
+
+```mermaid
+xychart-beta
+    title "arch_meta_002 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [5.00, 0.00]
+```
+
+<sub>fallback 表格 — arch_meta_002 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 5.00 | 0.00 |
+
+</details>
+
+<details><summary><code>arch_meta_003</code> · 2 次 · – → 5.00 (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "arch_meta_003 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [0, 5.00]
+```
+
+<sub>fallback 表格 — arch_meta_003 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | – | 5.00 |
+
+</details>
+
+<details><summary><code>arch_platform_001</code> · 6 次 · 3.75 → 3.00 → 4.00 → 4.00 → 4.00 → 5.00 (Δ +1.25)</summary>
+
+```mermaid
+xychart-beta
+    title "arch_platform_001 历次 run 分数"
+    x-axis [r1, r2, r3, r4, r5, r6]
+    y-axis "Score" 0 --> 5
+    line [3.75, 3.00, 4.00, 4.00, 4.00, 5.00]
+```
+
+<sub>fallback 表格 — arch_platform_001 历次 run 分数</sub>
+
+| 系列 | r1 | r2 | r3 | r4 | r5 | r6 |
+| --- | --- | --- | --- | --- | --- | --- |
+| score | 3.75 | 3.00 | 4.00 | 4.00 | 4.00 | 5.00 |
+
+</details>
+
+<details><summary><code>arch_pluggable_004</code> · 2 次 · – → 5.00 (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "arch_pluggable_004 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [0, 5.00]
+```
+
+<sub>fallback 表格 — arch_pluggable_004 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | – | 5.00 |
+
+</details>
+
+<details><summary><code>arch_pluggable_005</code> · 2 次 · – → 5.00 (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "arch_pluggable_005 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [0, 5.00]
+```
+
+<sub>fallback 表格 — arch_pluggable_005 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | – | 5.00 |
 
 </details>
 
@@ -1565,36 +1800,99 @@ xychart-beta
 
 ## 5. 评分进度 / Pending 列表
 
-### claude_code: 5 条 pending
+### claude_code: 63 条 pending + 25 条 legacy 待重跑
 
-- **P0** (2): `case_004`, `case_010`
+- **P0** (60): `arch_chinese_001`, `arch_chinese_002`, `arch_chinese_003`, `arch_chinese_004`, `arch_chinese_005`, `arch_chinese_006`, `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003`, `arch_ctxeng_004`, `arch_ctxeng_005`, `arch_discipline_001`, `arch_discipline_002`, `arch_discipline_003`, `arch_discipline_004`, `arch_form_001`, `arch_form_002`, `arch_form_003`, `arch_form_004`, `arch_form_005`, `arch_kernel_001`, `arch_kernel_002`, `arch_kernel_003`, `arch_kernel_004`, `arch_kernel_005`, `arch_kernel_006`, `arch_kernel_007`, `arch_kernel_008`, `arch_meta_001`, `arch_meta_002`, `arch_meta_003`, `arch_meta_004`, `arch_meta_005`, `arch_platform_001`, `arch_platform_002`, `arch_platform_003`, `arch_platform_004`, `arch_platform_005`, `arch_platform_006`, `arch_pluggable_001`, `arch_pluggable_002`, `arch_pluggable_003`, `arch_pluggable_004`, `arch_pluggable_005`, `arch_pluggable_006`, `arch_pluggable_007`, `arch_redline_001`, `arch_redline_002`, `arch_redline_003`, `arch_redline_004`, `arch_redline_005`, `arch_redline_006`, `arch_redline_007`, `arch_redline_008`, `arch_redline_009`, `arch_redline_011`, `arch_redline_012`, `arch_redline_013`, `case_004`, `case_010`
+- **P1** (1): `case_014`
+- **P2** (2): `case_023`, `case_025`
+- 🕰️ **legacy** (25, 非 `5d-v3`): `case_001`, `case_002`, `case_003`, `case_005`, `case_006`, `case_007`, `case_008`, `case_009` …
+
+### claude_code_claude_opus_4_7: 63 条 pending + 25 条 legacy 待重跑
+
+- **P0** (60): `arch_chinese_001`, `arch_chinese_002`, `arch_chinese_003`, `arch_chinese_004`, `arch_chinese_005`, `arch_chinese_006`, `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003`, `arch_ctxeng_004`, `arch_ctxeng_005`, `arch_discipline_001`, `arch_discipline_002`, `arch_discipline_003`, `arch_discipline_004`, `arch_form_001`, `arch_form_002`, `arch_form_003`, `arch_form_004`, `arch_form_005`, `arch_kernel_001`, `arch_kernel_002`, `arch_kernel_003`, `arch_kernel_004`, `arch_kernel_005`, `arch_kernel_006`, `arch_kernel_007`, `arch_kernel_008`, `arch_meta_001`, `arch_meta_002`, `arch_meta_003`, `arch_meta_004`, `arch_meta_005`, `arch_platform_001`, `arch_platform_002`, `arch_platform_003`, `arch_platform_004`, `arch_platform_005`, `arch_platform_006`, `arch_pluggable_001`, `arch_pluggable_002`, `arch_pluggable_003`, `arch_pluggable_004`, `arch_pluggable_005`, `arch_pluggable_006`, `arch_pluggable_007`, `arch_redline_001`, `arch_redline_002`, `arch_redline_003`, `arch_redline_004`, `arch_redline_005`, `arch_redline_006`, `arch_redline_007`, `arch_redline_008`, `arch_redline_009`, `arch_redline_011`, `arch_redline_012`, `arch_redline_013`, `case_004`, `case_010`
+- **P1** (1): `case_014`
+- **P2** (2): `case_023`, `case_025`
+- 🕰️ **legacy** (25, 非 `5d-v3`): `case_001`, `case_002`, `case_003`, `case_005`, `case_006`, `case_007`, `case_008`, `case_009` …
+
+### claude_code_opus47: 63 条 pending + 25 条 legacy 待重跑
+
+- **P0** (60): `arch_chinese_001`, `arch_chinese_002`, `arch_chinese_003`, `arch_chinese_004`, `arch_chinese_005`, `arch_chinese_006`, `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003`, `arch_ctxeng_004`, `arch_ctxeng_005`, `arch_discipline_001`, `arch_discipline_002`, `arch_discipline_003`, `arch_discipline_004`, `arch_form_001`, `arch_form_002`, `arch_form_003`, `arch_form_004`, `arch_form_005`, `arch_kernel_001`, `arch_kernel_002`, `arch_kernel_003`, `arch_kernel_004`, `arch_kernel_005`, `arch_kernel_006`, `arch_kernel_007`, `arch_kernel_008`, `arch_meta_001`, `arch_meta_002`, `arch_meta_003`, `arch_meta_004`, `arch_meta_005`, `arch_platform_001`, `arch_platform_002`, `arch_platform_003`, `arch_platform_004`, `arch_platform_005`, `arch_platform_006`, `arch_pluggable_001`, `arch_pluggable_002`, `arch_pluggable_003`, `arch_pluggable_004`, `arch_pluggable_005`, `arch_pluggable_006`, `arch_pluggable_007`, `arch_redline_001`, `arch_redline_002`, `arch_redline_003`, `arch_redline_004`, `arch_redline_005`, `arch_redline_006`, `arch_redline_007`, `arch_redline_008`, `arch_redline_009`, `arch_redline_011`, `arch_redline_012`, `arch_redline_013`, `case_004`, `case_010`
+- **P1** (1): `case_014`
+- **P2** (2): `case_023`, `case_025`
+- 🕰️ **legacy** (25, 非 `5d-v3`): `case_001`, `case_002`, `case_003`, `case_005`, `case_006`, `case_007`, `case_008`, `case_009` …
+
+### codex: 88 条 pending
+
+- **P0** (70): `arch_chinese_001`, `arch_chinese_002`, `arch_chinese_003`, `arch_chinese_004`, `arch_chinese_005`, `arch_chinese_006`, `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003`, `arch_ctxeng_004`, `arch_ctxeng_005`, `arch_discipline_001`, `arch_discipline_002`, `arch_discipline_003`, `arch_discipline_004`, `arch_form_001`, `arch_form_002`, `arch_form_003`, `arch_form_004`, `arch_form_005`, `arch_kernel_001`, `arch_kernel_002`, `arch_kernel_003`, `arch_kernel_004`, `arch_kernel_005`, `arch_kernel_006`, `arch_kernel_007`, `arch_kernel_008`, `arch_meta_001`, `arch_meta_002`, `arch_meta_003`, `arch_meta_004`, `arch_meta_005`, `arch_platform_001`, `arch_platform_002`, `arch_platform_003`, `arch_platform_004`, `arch_platform_005`, `arch_platform_006`, `arch_pluggable_001`, `arch_pluggable_002`, `arch_pluggable_003`, `arch_pluggable_004`, `arch_pluggable_005`, `arch_pluggable_006`, `arch_pluggable_007`, `arch_redline_001`, `arch_redline_002`, `arch_redline_003`, `arch_redline_004`, `arch_redline_005`, `arch_redline_006`, `arch_redline_007`, `arch_redline_008`, `arch_redline_009`, `arch_redline_011`, `arch_redline_012`, `arch_redline_013`, `case_001`, `case_002`, `case_003`, `case_004`, `case_005`, `case_006`, `case_007`, `case_008`, `case_009`, `case_010`, `case_026`, `case_027`
+- **P1** (10): `case_011`, `case_012`, `case_013`, `case_014`, `case_015`, `case_016`, `case_017`, `case_018`, `case_019`, `case_028`
+- **P2** (8): `case_020`, `case_021`, `case_022`, `case_023`, `case_024`, `case_025`, `case_029`, `case_030`
+
+### sid_code_claude_opus_4_7: 63 条 pending + 25 条 legacy 待重跑
+
+- **P0** (60): `arch_chinese_001`, `arch_chinese_002`, `arch_chinese_003`, `arch_chinese_004`, `arch_chinese_005`, `arch_chinese_006`, `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003`, `arch_ctxeng_004`, `arch_ctxeng_005`, `arch_discipline_001`, `arch_discipline_002`, `arch_discipline_003`, `arch_discipline_004`, `arch_form_001`, `arch_form_002`, `arch_form_003`, `arch_form_004`, `arch_form_005`, `arch_kernel_001`, `arch_kernel_002`, `arch_kernel_003`, `arch_kernel_004`, `arch_kernel_005`, `arch_kernel_006`, `arch_kernel_007`, `arch_kernel_008`, `arch_meta_001`, `arch_meta_002`, `arch_meta_003`, `arch_meta_004`, `arch_meta_005`, `arch_platform_001`, `arch_platform_002`, `arch_platform_003`, `arch_platform_004`, `arch_platform_005`, `arch_platform_006`, `arch_pluggable_001`, `arch_pluggable_002`, `arch_pluggable_003`, `arch_pluggable_004`, `arch_pluggable_005`, `arch_pluggable_006`, `arch_pluggable_007`, `arch_redline_001`, `arch_redline_002`, `arch_redline_003`, `arch_redline_004`, `arch_redline_005`, `arch_redline_006`, `arch_redline_007`, `arch_redline_008`, `arch_redline_009`, `arch_redline_011`, `arch_redline_012`, `arch_redline_013`, `case_004`, `case_010`
+- **P1** (1): `case_014`
+- **P2** (2): `case_023`, `case_025`
+- 🕰️ **legacy** (25, 非 `5d-v3`): `case_001`, `case_002`, `case_003`, `case_005`, `case_006`, `case_007`, `case_008`, `case_009` …
+
+### sid_code_deepseek_v4_pro: 11 条 pending
+
+- **P0** (8): `arch_chinese_006`, `arch_discipline_003`, `arch_meta_004`, `arch_meta_005`, `arch_platform_006`, `arch_pluggable_002`, `case_004`, `case_010`
 - **P1** (1): `case_014`
 - **P2** (2): `case_023`, `case_025`
 
-### codex: 5 条 pending
+### sid_code_live: 63 条 pending + 25 条 legacy 待重跑
 
-- **P0** (2): `case_004`, `case_010`
+- **P0** (60): `arch_chinese_001`, `arch_chinese_002`, `arch_chinese_003`, `arch_chinese_004`, `arch_chinese_005`, `arch_chinese_006`, `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003`, `arch_ctxeng_004`, `arch_ctxeng_005`, `arch_discipline_001`, `arch_discipline_002`, `arch_discipline_003`, `arch_discipline_004`, `arch_form_001`, `arch_form_002`, `arch_form_003`, `arch_form_004`, `arch_form_005`, `arch_kernel_001`, `arch_kernel_002`, `arch_kernel_003`, `arch_kernel_004`, `arch_kernel_005`, `arch_kernel_006`, `arch_kernel_007`, `arch_kernel_008`, `arch_meta_001`, `arch_meta_002`, `arch_meta_003`, `arch_meta_004`, `arch_meta_005`, `arch_platform_001`, `arch_platform_002`, `arch_platform_003`, `arch_platform_004`, `arch_platform_005`, `arch_platform_006`, `arch_pluggable_001`, `arch_pluggable_002`, `arch_pluggable_003`, `arch_pluggable_004`, `arch_pluggable_005`, `arch_pluggable_006`, `arch_pluggable_007`, `arch_redline_001`, `arch_redline_002`, `arch_redline_003`, `arch_redline_004`, `arch_redline_005`, `arch_redline_006`, `arch_redline_007`, `arch_redline_008`, `arch_redline_009`, `arch_redline_011`, `arch_redline_012`, `arch_redline_013`, `case_004`, `case_010`
 - **P1** (1): `case_014`
 - **P2** (2): `case_023`, `case_025`
+- 🕰️ **legacy** (25, 非 `5d-v3`): `case_001`, `case_002`, `case_003`, `case_005`, `case_006`, `case_007`, `case_008`, `case_009` …
 
-### sid_code_w0: 5 条 pending
+### sid_code_opus47: 63 条 pending + 25 条 legacy 待重跑
 
-- **P0** (2): `case_004`, `case_010`
+- **P0** (60): `arch_chinese_001`, `arch_chinese_002`, `arch_chinese_003`, `arch_chinese_004`, `arch_chinese_005`, `arch_chinese_006`, `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003`, `arch_ctxeng_004`, `arch_ctxeng_005`, `arch_discipline_001`, `arch_discipline_002`, `arch_discipline_003`, `arch_discipline_004`, `arch_form_001`, `arch_form_002`, `arch_form_003`, `arch_form_004`, `arch_form_005`, `arch_kernel_001`, `arch_kernel_002`, `arch_kernel_003`, `arch_kernel_004`, `arch_kernel_005`, `arch_kernel_006`, `arch_kernel_007`, `arch_kernel_008`, `arch_meta_001`, `arch_meta_002`, `arch_meta_003`, `arch_meta_004`, `arch_meta_005`, `arch_platform_001`, `arch_platform_002`, `arch_platform_003`, `arch_platform_004`, `arch_platform_005`, `arch_platform_006`, `arch_pluggable_001`, `arch_pluggable_002`, `arch_pluggable_003`, `arch_pluggable_004`, `arch_pluggable_005`, `arch_pluggable_006`, `arch_pluggable_007`, `arch_redline_001`, `arch_redline_002`, `arch_redline_003`, `arch_redline_004`, `arch_redline_005`, `arch_redline_006`, `arch_redline_007`, `arch_redline_008`, `arch_redline_009`, `arch_redline_011`, `arch_redline_012`, `arch_redline_013`, `case_004`, `case_010`
 - **P1** (1): `case_014`
 - **P2** (2): `case_023`, `case_025`
+- 🕰️ **legacy** (25, 非 `5d-v3`): `case_001`, `case_002`, `case_003`, `case_005`, `case_006`, `case_007`, `case_008`, `case_009` …
+
+### sid_code_w0: 76 条 pending + 12 条 legacy 待重跑
+
+- **P0** (62): `arch_chinese_001`, `arch_chinese_002`, `arch_chinese_003`, `arch_chinese_004`, `arch_chinese_005`, `arch_chinese_006`, `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003`, `arch_ctxeng_004`, `arch_ctxeng_005`, `arch_discipline_001`, `arch_discipline_002`, `arch_discipline_003`, `arch_discipline_004`, `arch_form_001`, `arch_form_002`, `arch_form_003`, `arch_form_004`, `arch_form_005`, `arch_kernel_001`, `arch_kernel_002`, `arch_kernel_003`, `arch_kernel_004`, `arch_kernel_005`, `arch_kernel_006`, `arch_kernel_007`, `arch_kernel_008`, `arch_meta_001`, `arch_meta_002`, `arch_meta_003`, `arch_meta_004`, `arch_meta_005`, `arch_platform_001`, `arch_platform_002`, `arch_platform_003`, `arch_platform_004`, `arch_platform_005`, `arch_platform_006`, `arch_pluggable_001`, `arch_pluggable_002`, `arch_pluggable_003`, `arch_pluggable_004`, `arch_pluggable_005`, `arch_pluggable_006`, `arch_pluggable_007`, `arch_redline_001`, `arch_redline_002`, `arch_redline_003`, `arch_redline_004`, `arch_redline_005`, `arch_redline_006`, `arch_redline_007`, `arch_redline_008`, `arch_redline_009`, `arch_redline_011`, `arch_redline_012`, `arch_redline_013`, `case_004`, `case_010`, `case_026`, `case_027`
+- **P1** (10): `case_011`, `case_012`, `case_013`, `case_014`, `case_015`, `case_016`, `case_017`, `case_018`, `case_019`, `case_028`
+- **P2** (4): `case_023`, `case_025`, `case_029`, `case_030`
+- 🕰️ **legacy** (12, 非 `5d-v3`): `case_001`, `case_002`, `case_003`, `case_005`, `case_006`, `case_007`, `case_008`, `case_009` …
 
 
 ## 6. 异常 / 高方差 case
 
-> 无异常 case 🎉
+- **sid_code_deepseek_v4_pro <2 分**: `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003`, `arch_ctxeng_004`, `arch_ctxeng_005`, `arch_form_004`, `arch_meta_002`, `arch_platform_003`, `arch_platform_005`
 
 ## 7. 数据源
 
+- `evals/architecture/chinese/`: 5 条 case
+- `evals/holdout/architecture/chinese/`: 1 条 case
+- `evals/architecture/context-engine/`: 5 条 case
+- `evals/architecture/discipline/`: 3 条 case
+- `evals/holdout/architecture/discipline/`: 1 条 case
+- `evals/architecture/form/`: 4 条 case
+- `evals/holdout/architecture/form/`: 1 条 case
+- `evals/architecture/kernel/`: 7 条 case
+- `evals/holdout/architecture/kernel/`: 1 条 case
+- `evals/architecture/meta/`: 3 条 case
+- `evals/holdout/architecture/meta/`: 2 条 case
+- `evals/architecture/platform/`: 5 条 case
+- `evals/holdout/architecture/platform/`: 1 条 case
+- `evals/architecture/pluggable/`: 6 条 case
+- `evals/holdout/architecture/pluggable/`: 1 条 case
+- `evals/architecture/redline/`: 12 条 case
+- `evals/general/p0-core/`: 10 条 case
 - `evals/holdout/`: 5 条 case
-- `evals/_scores/`: (无)
+- `evals/general/p1-common/`: 9 条 case
+- `evals/general/p2-edge/`: 6 条 case
+- `evals/_scores/`: 3 个周次目录 (w12 ~ w22)
 
 ## 8. 跳转入口
 
 - [完整周报目录](_reports/) — 含 baseline / regression / horizontal-comparison
 - [所有 case yaml](p0-core/) · [P1](p1-common/) · [P2](p2-edge/) · [holdout](holdout/)
+- [最新一周分数 w22](_scores/w22/)
 - [运行历史 jsonl](_runs/) — 每次跑分追加，可用于绘制曲线

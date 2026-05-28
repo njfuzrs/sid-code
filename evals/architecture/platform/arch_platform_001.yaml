@@ -1,0 +1,90 @@
+id: arch_platform_001
+category: 架构平台
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言，不依赖 agent 输出）
+    断言：sid-code 在"纯本地模式"下，文件系统访问全部通过本地工具（read/write/edit/bash/grep/glob）落地，
+    不依赖任何远端服务（Daemon / Sandbox / WorkspaceProvider）。
+    出处：D-01 / 08 §9.2 P0-tier2。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: local_mode_fs_via_local_tools
+  max_steps: 1
+  reference_answer: |
+    src/tool/ 下的 read/write/edit/bash/grep/glob 工具直接走 node:fs / child_process，
+    没有任何 fetch / http / grpc 远端调用——本地模式零依赖。
+
+arch_assertions:
+  - type: file_must_exist
+    path: src/tool/read.ts
+  - type: file_must_exist
+    path: src/tool/write.ts
+  - type: file_must_exist
+    path: src/tool/edit.ts
+  - type: file_must_exist
+    path: src/tool/bash.ts
+  - type: file_must_exist
+    path: src/tool/grep.ts
+  - type: file_must_exist
+    path: src/tool/glob.ts
+  - type: file_must_contain
+    path: src/tool/read.ts
+    pattern: 'from "fs"'
+  - type: file_must_contain
+    path: src/tool/write.ts
+    pattern: 'from "fs"'
+  - type: file_must_contain
+    path: src/tool/edit.ts
+    pattern: 'from "fs"'
+  - type: file_must_contain
+    path: src/tool/glob.ts
+    pattern: 'from "fs"'
+
+rubric:
+  completeness: "6 个本地工具齐备且直连本地 fs"
+  precision: "区分本地工具与未来远端 Provider（WorkspaceProvider）"
+  helpfulness: "纯本地模式 = 默认零远端依赖"
+
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 5,
+        run_status: success,
+        tested_at: 2026-05-28T04:19:38.223Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 1 },
+        _formula_version: { cost: v6, grader: 5d-v3 }
+      }
+  }
+
+source: "D-01 / 08 §9.2 P0-tier2 / CLAUDE.md §0.1 五层第 2 层 工具+集成"
+notes: |
+  D-01 纯本地模式 fs 访问。
+  - structured_arch grader：检查 6 个本地工具文件齐全 + 至少 2 个工具用 node:fs（local impl）
+  - 未来 D-03（WorkspaceProvider 抽象）落地后，仍要保证本 case pass（不能用纯远端实现替换本地）
+related_subsystem:
+  [
+    tool,
+    tool/read,
+    tool/write,
+    tool/edit,
+    tool/bash,
+    tool/grep,
+    tool/glob
+  ]

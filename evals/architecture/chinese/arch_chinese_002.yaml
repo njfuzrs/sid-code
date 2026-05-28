@@ -1,0 +1,73 @@
+id: arch_chinese_002
+category: 架构中文一等公民
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: rubric_5d
+
+input:
+  user_query: |
+    请帮我用中文写一段 README 段落（150-300 字之间），介绍 sid-code 项目的核心模块结构。
+    要求：
+      - 全程中文，不出现"the / and / by"等英文连接词
+      - 至少提到 5 个模块名（agent / tool / permission / context / skill 等）
+      - 段落自然，不逐项列点
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: chinese_doc_quality
+  must_include_any_of:
+    - "agent"
+    - "tool"
+    - "permission"
+    - "context"
+    - "skill"
+  must_not_include:
+    - "the "
+    - "and "
+    - " by "
+  max_steps: 4
+  reference_answer: |
+    一段流畅中文，介绍 sid-code 的 5+ 模块结构，无中英混杂。
+
+rubric:
+  completeness: "150-300 字段落 + 5 模块覆盖"
+  precision: "纯中文，无英文连接词"
+  helpfulness: "可直接放入 README"
+
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 5,
+        run_status: success,
+        tested_at: 2026-05-28T03:46:07.395Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions:
+          {
+            anchor_hit: 1,
+            negative_anchor: 1,
+            rubric_score: 1,
+            tool_compliance: 1,
+            efficiency: 1,
+            cost: 1
+          },
+        _formula_version: { cost: v6, grader: 5d-v3 }
+      }
+  }
+
+source: "zh_002 / 08 §9.2 P0-tier2 / chinese 类 2/5"
+notes: |
+  zh_002 中文文档生成质量。
+  - rubric_5d grader：rubric 判段落质量
+  - must_not_include 守"the / and / by"等英文连接词混杂
+related_subsystem: [ context ]

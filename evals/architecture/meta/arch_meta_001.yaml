@@ -1,0 +1,75 @@
+id: arch_meta_001
+category: 架构评测自检
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言，不依赖 agent 输出）
+    断言：sid-code 评测体系含四层金字塔结构——
+    第 1 层 红线 binary（`evals/architecture/redline/`）；
+    第 2 层 capability（`evals/capability/<sub>/`）；
+    第 3 层 general 行为（`evals/general/`）；
+    第 4 层 outcome 北极星（S4 阶段在 `evals/architecture/outcome/` 落地，当前占位）。
+    出处：H-01 / 08 §5.0。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: pyramid_4_layers_present
+  max_steps: 1
+  reference_answer: |
+    四层金字塔目录全部存在，且第 1-3 层有 case 落盘。
+
+arch_assertions:
+  - type: file_must_exist
+    path: evals/architecture/redline/README.md
+  - type: file_must_exist
+    path: evals/capability/plan/README.md
+  - type: file_must_exist
+    path: evals/capability/memory/README.md
+  - type: file_must_exist
+    path: evals/capability/context/README.md
+  - type: file_must_exist
+    path: evals/capability/router/README.md
+  - type: file_must_exist
+    path: evals/capability/harness/README.md
+  - type: file_must_exist
+    path: evals/general/p0-core
+  - type: file_must_exist
+    path: evals/architecture/outcome/README.md
+
+rubric:
+  completeness: "四层金字塔目录就位 + 各层 README 解释收录范围"
+  precision: "区分第 1-3 层（已建）与第 4 层 outcome（S4 占位）"
+  helpfulness: "评测体系结构自身被 case 守护"
+
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 4.38,
+        run_status: success,
+        tested_at: 2026-05-28T03:41:20.992Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 0.875 },
+        _formula_version: { cost: v6, grader: 5d-v3 }
+      }
+  }
+
+source: "H-01 / 08 §5.0 evals 目录结构 / S1-T01 18 子目录"
+notes: |
+  H-01 四层金字塔结构。
+  - structured_arch grader：守 4 层目录 + README 完整性
+  - 注：file_must_exist 既能检查文件也能检查目录（看 grader 实现）
+related_subsystem: [ eval ]

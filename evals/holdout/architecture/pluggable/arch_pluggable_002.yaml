@@ -1,0 +1,54 @@
+id: arch_pluggable_002
+category: 架构可拔插
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: true
+holdout_reason: "B-03 Skill body 按需加载——架构 holdout（核心可拔插语义防线）"
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言，不依赖 agent 输出）
+    断言：sid-code Skill body 按需加载——
+    SKILL.md body 不在初始 system prompt 中；只有 Skill 被激活（用户触发或 manager 决定）后
+    才读取 body 装入 context。
+    出处：B-03 / 08 §9.2 P0-tier2。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: skill_body_on_demand
+  max_steps: 1
+  reference_answer: |
+    src/skill/manager.ts 含"激活时才读 body"的逻辑（resources.ts / tool.ts 配套）；
+    loader.ts 不读完整 body 装 prompt。
+
+arch_assertions:
+  - type: file_must_exist
+    path: src/skill/manager.ts
+  - type: file_must_exist
+    path: src/skill/resources.ts
+  - type: file_must_exist
+    path: src/skill/tool.ts
+  - type: file_must_contain
+    path: src/skill/loader.ts
+    pattern: "frontmatter"
+
+rubric:
+  completeness: "manager + resources + tool 三件套就位 + loader 不读 body"
+  precision: "区分 frontmatter（始终加载）与 body（按需）"
+  helpfulness: "100+ Skill 上下文不爆炸的关键防线"
+
+baseline_scores: {}
+
+source: "B-03 / 08 §9.2 P0-tier2 / CLAUDE.md §0.1"
+notes: |
+  B-03 Skill body 按需加载。
+  - 本 case 是架构 holdout（不日常跑，等 future 触发后再启动）
+  - 与 B-02 (frontmatter cost) / B-05 (100 Skill no explosion) 配对成可拔插底线
+related_subsystem: [ skill, skill/manager, skill/resources, skill/tool ]

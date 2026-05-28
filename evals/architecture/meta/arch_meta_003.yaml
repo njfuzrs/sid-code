@@ -1,0 +1,72 @@
+id: arch_meta_003
+category: 架构评测自检
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言，不依赖 agent 输出）
+    断言：sid-code 所有 eval case 都使用外部 Grader（注册在 evals/_graders/registry.ts）；
+    不存在"agent 自己输出 score"或"prompt 让 LLM 给自己打分"的反模式。
+    出处：H-03 / 08 §1 评测纪律。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: external_grader_used
+  max_steps: 1
+  reference_answer: |
+    evals/_graders/registry.ts 集中管理 Grader；
+    所有 grader 实现都在 evals/_graders/ 下（rubric_5d / binary_redline / structured_arch / execution_test）；
+    不允许运行时动态注入 Grader（避免供应链注入）。
+
+arch_assertions:
+  - type: file_must_exist
+    path: evals/_graders/registry.ts
+  - type: file_must_exist
+    path: evals/_graders/rubric-5d-grader.ts
+  - type: file_must_exist
+    path: evals/_graders/binary-redline-grader.ts
+  - type: file_must_exist
+    path: evals/_graders/structured-arch-grader.ts
+  - type: file_must_contain
+    path: evals/_graders/registry.ts
+    pattern: "REGISTRY"
+  - type: file_must_contain
+    path: evals/_graders/registry.ts
+    pattern: "不可拔插"
+
+rubric:
+  completeness: "Grader 注册表 + 4 种实现 + 不可拔插约束"
+  precision: "区分外部 Grader（评测者）与 agent 输出（被评测者）"
+  helpfulness: "Grader 是评测纪律的物理实现"
+
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 5,
+        run_status: success,
+        tested_at: 2026-05-28T03:41:20.992Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 1 },
+        _formula_version: { cost: v6, grader: 5d-v3 }
+      }
+  }
+
+source: "H-03 / 08 §1 评测纪律 / ADR-018"
+notes: |
+  H-03 外部 Grader。
+  - structured_arch grader：守 Grader 注册表 + 4 种实现 + 不可拔插注释
+  - 与 H-05（Eval Runner 不可拔插）形成体系闭环
+related_subsystem: [ eval ]

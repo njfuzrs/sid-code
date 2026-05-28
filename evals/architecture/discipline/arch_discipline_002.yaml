@@ -1,0 +1,65 @@
+id: arch_discipline_002
+category: 架构纪律
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言，不依赖 agent 输出）
+    断言：sid-code 评测体系在 TODO.md 中明确写有"30 条 general case 全程守护，任何 src/ 改动后不允许回归"
+    以及"降幅 ≤ 0.3"的守护规则——即 E-05 回归告警机制已文档化。
+    出处：E-05 / 08 §13.4。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: regression_alert_documented
+  max_steps: 1
+  reference_answer: |
+    docs/eval/TODO.md 铁律段含"30 条 general case 全程守护"+"降幅 ≤ 0.3"。
+
+arch_assertions:
+  - type: file_must_contain
+    path: docs/eval/TODO.md
+    pattern: "降幅"
+  - type: file_must_contain
+    path: docs/eval/TODO.md
+    pattern: "不允许回归"
+  - type: file_must_contain
+    path: docs/eval/TODO.md
+    pattern: "general case"
+
+rubric:
+  completeness: "回归告警规则已文档化（降幅阈值 + 守护范围）"
+  precision: "区分'文档化'与'自动化 CI 告警'——后者在 S2-T11 lint 脚本落地"
+  helpfulness: "每个 Sprint 复跑时有明确判定标准"
+
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 5,
+        run_status: success,
+        tested_at: 2026-05-28T03:13:31.195Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 1 },
+        _formula_version: { cost: v6, grader: 5d-v3 }
+      }
+  }
+
+source: "E-05 / 08 §13.4 守护规则"
+notes: |
+  E-05 30 case 平均分回归告警。
+  - 本 case 守"规则已写入 TODO.md"
+  - S2-T11 lint-architecture.ts 落地后加自动化断言
+related_subsystem: [ eval ]

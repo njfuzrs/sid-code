@@ -1,0 +1,55 @@
+id: arch_chinese_006
+category: 架构中文一等公民
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: true
+holdout_reason: "中文一等公民的元保护——评测体系本身的中文文档完整性 holdout"
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言，不依赖 agent 输出）
+    断言：sid-code 的评测体系文档（CLAUDE.md / TODO.md / 09-eval详细清单 / 08-eval总纲）
+    主体内容是中文，且核心约束（红线 / 三档可拔插 / 三组不变量）用中文表达。
+    出处：chinese 类元 holdout / CLAUDE.md §0 中文一等公民。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: eval_docs_in_chinese
+  max_steps: 1
+  reference_answer: |
+    CLAUDE.md / TODO.md / 08 / 09 主体内容中文。
+
+arch_assertions:
+  - type: file_must_contain
+    path: CLAUDE.md
+    pattern: "中文一等公民"
+  - type: file_must_contain
+    path: docs/eval/TODO.md
+    pattern: "执行 TODO-List"
+  - type: file_must_contain
+    path: docs/eval/08-研发智能基座-eval总纲.md
+    pattern: "三组不变量"
+  - type: file_must_contain
+    path: docs/eval/09-研发智能基座-eval详细清单.md
+    pattern: "前置能力"
+
+rubric:
+  completeness: "评测文档四大件均含核心中文术语"
+  precision: "区分中文一等公民（内容）与多语言 i18n（产品功能）"
+  helpfulness: "防止未来误把中文文档翻译成英文（流失叙事 ownership）"
+
+baseline_scores: {}
+
+source: "chinese 类元 holdout / CLAUDE.md §0"
+notes: |
+  chinese_006 中文一等公民元保护。
+  - 本 case 守"评测体系文档自身的中文性"，与 zh_001~005 配对
+  - holdout，不日常跑——防止有人重构文档时无意丢失中文术语
+related_subsystem: [ context ]

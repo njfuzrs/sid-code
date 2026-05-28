@@ -1,0 +1,60 @@
+id: arch_meta_004
+category: 架构评测自检
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: true
+holdout_reason: "H-04 holdout 保护机制本身放 holdout——元级 holdout"
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言，不依赖 agent 输出）
+    断言：sid-code 评测体系的 holdout 保护机制完整——
+    eval-runner.ts 默认行为不扫 evals/holdout/，必须显式 --include-holdout 才扫；
+    同时 evals/holdout/architecture/ 子目录隔离架构 holdout，与日常 eval:run 隔离。
+    出处：H-04 / 08 §13.2。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: holdout_protection_intact
+  max_steps: 1
+  reference_answer: |
+    evals/eval-runner.ts 含 includeHoldout flag + HOLDOUT_DIR + HOLDOUT_ARCHITECTURE_ROOT；
+    默认 --skip-holdout=true。
+
+arch_assertions:
+  - type: file_must_exist
+    path: evals/eval-runner.ts
+  - type: file_must_contain
+    path: evals/eval-runner.ts
+    pattern: "HOLDOUT_DIR"
+  - type: file_must_contain
+    path: evals/eval-runner.ts
+    pattern: "HOLDOUT_ARCHITECTURE_ROOT"
+  - type: file_must_contain
+    path: evals/eval-runner.ts
+    pattern: "includeHoldout"
+  - type: file_must_exist
+    path: evals/holdout/README.md
+  - type: file_must_exist
+    path: evals/holdout/architecture/README.md
+
+rubric:
+  completeness: "holdout 双层防护（标记 + 目录）+ 默认行为隔离"
+  precision: "区分 general holdout 与 architecture holdout"
+  helpfulness: "防止 holdout 数据污染调优循环"
+
+baseline_scores: {}
+
+source: "H-04 / 08 §13.2 / S1-T02"
+notes: |
+  H-04 holdout 保护（元 holdout）。
+  - 本 case 自身是 holdout——评测自检的元层防护
+  - 与 arch_discipline_003（holdout 不参与调优）配对：003 守"日常不扫"，004 守"实现完整"
+related_subsystem: [ eval ]

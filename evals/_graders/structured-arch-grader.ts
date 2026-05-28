@@ -36,6 +36,7 @@ interface AssertionResult {
 export class StructuredArchGrader implements Grader {
   readonly type = "structured_arch";
   readonly description = "架构断言：file_must_exist / file_lines_lt 等纯文件系统检查，无 LLM judge";
+  readonly requiresAgentOutput = false;
 
   /**
    * 仓库根目录（用于解析 arch_assertions 中的相对路径）。

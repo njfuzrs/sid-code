@@ -1,0 +1,71 @@
+id: arch_discipline_001
+category: 架构纪律
+priority: P0
+created_date: 2026-05-28
+
+eval_type: capability
+target_score: 5.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: structured_arch
+
+input:
+  user_query: |
+    （本 case 是静态结构断言，不依赖 agent 输出）
+    断言：sid-code 评测体系包含 M3 Go/No-Go 7 个量化条件的检查逻辑——
+    至少在 docs/eval/TODO.md 或 docs/eval/08-研发智能基座-eval总纲.md 中明确列出 7 条 Go 条件，
+    且 S4 阶段有对应 task（S4-T12）准备评审材料。
+    出处：E-03 / 08 §9.3。
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: m3_gate_7_conditions_documented
+  max_steps: 1
+  reference_answer: |
+    docs/eval/TODO.md §S4.E 含 S4-T12（准备评审材料：填 7 条 Go 条件状态表）；
+    docs/eval/08-研发智能基座-eval总纲.md §9.3 列出 M3 Go 条件 7 条。
+
+arch_assertions:
+  - type: file_must_exist
+    path: docs/eval/TODO.md
+  - type: file_must_contain
+    path: docs/eval/TODO.md
+    pattern: "Go/No-Go"
+  - type: file_must_contain
+    path: docs/eval/TODO.md
+    pattern: "S4-T12"
+  - type: file_must_exist
+    path: docs/eval/08-研发智能基座-eval总纲.md
+  - type: file_must_contain
+    path: docs/eval/08-研发智能基座-eval总纲.md
+    pattern: "M3 Go 条件"
+
+rubric:
+  completeness: "7 条 Go 条件全部有文档记录 + 有对应 task 落地"
+  precision: "区分'文档记录'与'自动化检查脚本'——本 case 守文档完整性"
+  helpfulness: "M3 末评审时有据可查"
+
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 5,
+        run_status: success,
+        tested_at: 2026-05-28T03:13:56.878Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 1 },
+        _formula_version: { cost: v6, grader: 5d-v3 }
+      }
+  }
+
+source: "E-03 / 08 §9.3 Go/No-Go Checkpoint"
+notes: |
+  E-03 M3 Go/No-Go 检查器。
+  - 本 case 守"文档层面 7 条 Go 条件完整记录"
+  - S4-T12 落地时会有自动化脚本（scripts/eval/m3-gate-check.ts），届时加 file_must_exist 断言
+related_subsystem: [ eval ]
