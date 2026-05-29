@@ -203,11 +203,32 @@ function renderProviderDetail(
   return lines;
 }
 
-function renderCase(c: CaseYaml, dir: string, pfResults: PromptfooResult[]): string {
+function renderHoldoutCaseSummary(c: CaseYaml, dir: string): string {
   const lines: string[] = [];
-  const lockIcon = c.holdout ? " 🔒" : "";
+  lines.push(`### ${c.id} 🔒 — ${c.category}`);
+  lines.push("");
+  lines.push(`| 字段 | 值 |`);
+  lines.push(`| --- | --- |`);
+  lines.push(`| 优先级 | **${c.priority}** |`);
+  lines.push(`| 类别 | ${c.category} |`);
+  lines.push(`| 目录 | \`${basename(dir)}/\` |`);
+  lines.push("");
+  lines.push(`> 🔒 **holdout** — 题面 / 锚点 / 反例 / 参考答案 / rubric 已隔离，不在 CASES.md 渲染。`);
+  lines.push(`> 详情仅可在私有路径 \`evals/holdout/\` 直接 cat yaml 查看；跑分见 \`evals/_meta/_private/\`（如有）。`);
+  lines.push("");
+  lines.push("---");
+  lines.push("");
+  return lines.join("\n");
+}
 
-  lines.push(`### ${c.id}${lockIcon} — ${c.category}`);
+function renderCase(c: CaseYaml, dir: string, pfResults: PromptfooResult[]): string {
+  if (c.holdout) {
+    return renderHoldoutCaseSummary(c, dir);
+  }
+
+  const lines: string[] = [];
+
+  lines.push(`### ${c.id} — ${c.category}`);
   lines.push("");
   lines.push(`| 字段 | 值 |`);
   lines.push(`| --- | --- |`);
@@ -217,9 +238,6 @@ function renderCase(c: CaseYaml, dir: string, pfResults: PromptfooResult[]): str
   lines.push(`| 创建日期 | ${c.created_date} |`);
   lines.push(`| 评测类型 | ${c.eval_type} |`);
   lines.push(`| 目标分 | ${c.target_score} |`);
-  if (c.holdout) {
-    lines.push(`| Holdout 原因 | ${c.holdout_reason || "–"} |`);
-  }
   if (c.related_subsystem?.length) {
     lines.push(`| 关联子系统 | ${c.related_subsystem.join(", ")} |`);
   }
@@ -392,7 +410,9 @@ async function main() {
   for (let i = 0; i < allCases.length; i++) {
     const c = allCases[i].case_;
     const lock = c.holdout ? " 🔒" : "";
-    const summary = c.input.user_query.slice(0, 50) + (c.input.user_query.length > 50 ? "…" : "");
+    const summary = c.holdout
+      ? "🔒 题面已隔离"
+      : c.input.user_query.slice(0, 50) + (c.input.user_query.length > 50 ? "…" : "");
     const anchor = `${c.id}--${c.category}`.toLowerCase().replace(/[^\w一-鿿-]/g, "-");
     out.push(`| ${i + 1} | [${c.id}${lock}](#${anchor}) | ${c.category} | ${c.priority} | ${c.target_score} | ${summary} |`);
   }
