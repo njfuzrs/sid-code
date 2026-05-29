@@ -10,7 +10,8 @@
  * 解法：把回写逻辑抽到本模块，按 SyncOptions 接受 yamlDir（capability 单目录）或 baseDir（general 多目录）。
  *   各 runner 把自家 result 类型映射成 BaselineResult 再调用本模块。
  *
- * grader 冻结期（CLAUDE.md §0.3.1）说明：本模块只搬运回写流程，不改 grader 公式 / 权重 / 阈值。
+ * grader 解冻后约束（CLAUDE.md §0.3.1，2026-05-28 起）：本模块只搬运回写流程，不改 grader 公式 / 权重 / 阈值。
+ *   改 grader 仍需走 ADR + bump GRADER_VERSION + 单测 + holdout 验证四件事。
  */
 
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";

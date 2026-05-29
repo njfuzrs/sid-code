@@ -15,7 +15,7 @@
  *   - capability-grader.ts：plan 子系统专属，保留不变（ADR-013 §2.5）
  *   - capability-shared.ts：memory / context / router / harness 共享底座
  *
- * grader 冻结期约束（CLAUDE.md §0.3.1）：
+ * grader 解冻后约束（CLAUDE.md §0.3.1，2026-05-28 解冻起适用）：
  *   本模块不调用 evals/eval-judge.ts 的 5 维 grader，独立维度由各子系统 yaml 决定。
  */
 

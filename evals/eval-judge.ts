@@ -39,11 +39,13 @@
  *   - 长期方案：能用 execution grading 就别用 LLM judge（与 SWE-bench 对齐，
  *     S3+ 垂直 Skill case 优先 execution，见 §6.5 T-19）
  *
- * ─── 冻结期约束 ───
+ * ─── Grader 冻结历史 ───
  *
- * 2026-05-26 起本文件进入"Grader 冻结期"——CLAUDE.md §0.3.1 / docs/eval/TODO.md
- * 顶部"Grader 冻结承诺"明确禁止改 DEFAULT_WEIGHTS、阈值、aggregate 加权逻辑。
- * 解冻条件：S1 引入第一条红线 case 或架构 case 时，按 task-specific scorer 整体升级。
+ * 2026-05-26 ~ 2026-05-28 期间本文件曾处于"Grader 冻结期"。
+ * 2026-05-28 起已解冻：S1-T15 引入第一条红线 case 时，按 task-specific scorer 架构整体升级
+ *   （`evals/_graders/` 注册表 + `GRADER_VERSION` bump 5d-v2 → 5d-v3）。
+ * 解冻后约束（CLAUDE.md §0.3.1）：改 DEFAULT_WEIGHTS / 阈值 / aggregate 必须满足
+ *   ① ADR 含 rejected alternatives；② bump GRADER_VERSION；③ 配套单测；④ holdout 验证。
  */
 import Anthropic from "@anthropic-ai/sdk";
 
@@ -212,8 +214,8 @@ export function gradeNegativeAnchors(
  * 让 dashboard / 跨周对比工具能按版本号过滤——跨 grader 版本的总分不可直接比较。
  *
  * 升级规则：DEFAULT_WEIGHTS / aggregate 加权逻辑 / 任一 grade* 函数的阈值或公式
- * 发生**改变总分分布**的改动时，必须 bump 此版本号；CLAUDE.md §0.3.1 冻结期内任何
- * 改动都需要先解冻 → 写 ADR → 同步升级 GRADER_VERSION。
+ * 发生**改变总分分布**的改动时，必须 bump 此版本号；CLAUDE.md §0.3.1 解冻后约束要求
+ * ① 写 ADR 含 rejected alternatives；② bump GRADER_VERSION；③ 配套单测；④ holdout 验证。
  *
  * 版本史：
  *   5d-v1 (2026-05-15 ~ 2026-05-25)：初始 5 维 + cost 权重 0.5/1.0、efficiency 权重 0.3

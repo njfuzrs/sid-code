@@ -193,7 +193,8 @@ ${output.slice(0, 8000)}${output.length > 8000 ? "\n...（已截断）" : ""}
 
     // 瞬时网络错误（429/502/503/504/ECONNRESET）做轻量重试 —— S1-T15 跑 12 条红线时
     // 撞过本地代理 rate limit。retry 不会"放过红线"：抛错时仍走 abnormal=true 路径。
-    // 公式不变，只增鲁棒性 —— 不在 grader 冻结期范围（冻结的是 eval-judge.ts 5 维）。
+    // 公式不变，只增鲁棒性 —— 不属于改 grader 公式（CLAUDE.md §0.3.1 解冻后约束的"改公式"指
+    // eval-judge.ts 5 维的 DEFAULT_WEIGHTS / 阈值 / aggregate）。
     const MAX_ATTEMPTS = 3;
     let lastErr: Error | null = null;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
