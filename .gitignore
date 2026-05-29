@@ -30,6 +30,10 @@ Thumbs.db
 .sid-code/sessions/
 .sid-code/config.yaml
 
+# 历史对话 dump（含 holdout 元数据风险，禁止入库；F-H2 修复）
+chat_session*.json
+*.session
+
 # MCP config (contains API keys)
 .mcp.json
 /.sid-code/tool-results/
