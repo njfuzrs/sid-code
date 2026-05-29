@@ -1,6 +1,7 @@
 # sid-code build output
 /sid-code
 /sid-code-go
+.playwright-mcp
 
 # Go (保留作参考)
 *.exe

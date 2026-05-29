@@ -22,6 +22,8 @@
     "eval:router-capability": "bun run scripts/eval/run-router-capability.ts",
     "eval:harness-capability": "bun run scripts/eval/run-harness-capability.ts",
     "eval:dashboard": "bun run scripts/eval/dashboard.ts",
+    "eval:dashboard-html": "bun run scripts/eval/build-dashboard-html.ts",
+    "eval:dashboard:open": "bun run scripts/eval/build-dashboard-html.ts --serve",
     "eval:lint-arch": "bun run scripts/eval/lint-architecture.ts"
   },
   "dependencies": {

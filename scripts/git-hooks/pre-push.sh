@@ -55,10 +55,30 @@ else
   exit 0
 fi
 
+# 同步刷新 HTML 操作台（评测系统 HTML 可视化操作台，docs/eval/演进路线/评测系统html.md）
+if grep -q '"eval:dashboard-html"' package.json 2>/dev/null; then
+  echo "[eval-dashboard-html] 刷新 evals/eval-dashboard.html + eval-data.json ..."
+  bun run eval:dashboard-html || {
+    echo "[eval-dashboard-html] ⚠️  HTML dashboard 刷新失败，push 中止"
+    exit 1
+  }
+fi
+
+REFRESHED_FILES=""
 if ! git diff --quiet evals/DASHBOARD.md 2>/dev/null; then
-  git add evals/DASHBOARD.md
+  REFRESHED_FILES="$REFRESHED_FILES evals/DASHBOARD.md"
+fi
+if ! git diff --quiet evals/eval-dashboard.html 2>/dev/null; then
+  REFRESHED_FILES="$REFRESHED_FILES evals/eval-dashboard.html"
+fi
+if ! git diff --quiet evals/eval-data.json 2>/dev/null; then
+  REFRESHED_FILES="$REFRESHED_FILES evals/eval-data.json"
+fi
+
+if [ -n "$REFRESHED_FILES" ]; then
+  git add $REFRESHED_FILES
   git commit -m "ci(eval): refresh dashboard $(date -u +%Y-%m-%dT%H:%MZ)"
-  echo "[eval-dashboard] ✅ 已生成独立 commit"
+  echo "[eval-dashboard] ✅ 已生成独立 commit (含:$REFRESHED_FILES)"
 fi
 
 exit 0
