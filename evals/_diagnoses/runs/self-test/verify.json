@@ -1,0 +1,23 @@
+{
+  "provider": "sid_code_deepseek_v4_pro",
+  "ts": "manual",
+  "total": 1,
+  "verified": 1,
+  "inconclusive": 0,
+  "misdiagnosed": 0,
+  "results": [
+    {
+      "case_id": "case_022",
+      "ts": "manual",
+      "ai_fix_type": "case_design",
+      "ai_confidence": 0.95,
+      "ai_root_cause": "case_022 同型: agent 复读 user_query 即满分 (echo 排除豁免对代码标识符不生效,仅短自然词)",
+      "matched_rule": "R-CASE-01",
+      "score_before": 5,
+      "score_after": 4.79,
+      "score_diff": -0.20999999999999996,
+      "verified": true,
+      "notes": "case_design 修复方向正确,假阳信号被杀 (Δ-0.21)"
+    }
+  ]
+}

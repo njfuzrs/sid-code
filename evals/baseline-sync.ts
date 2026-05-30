@@ -37,12 +37,15 @@ export interface BaselineResult {
   /** 各维度归一化分；general: anchor_hit / rubric_score / tool_compliance / efficiency / cost；capability: assert / llm_judge */
   dimensions: Record<string, number | null>;
   /**
-   * 公式版本号；可选。
+   * 公式版本号；**必传**（F-11，2026-05-30 起）。
    *   general 传 { cost: COST_FORMULA_VERSION, grader: GRADER_VERSION }
-   *   capability runner 当前阶段无 cost 公式，传 { grader: "capability-plan-v1" } 或不传
-   * 缺失时本模块不会写 `_formula_version` 字段，避免假装"无版本"是 legacy。
+   *   capability runner 当前阶段无 cost 公式，传 { grader: "capability-plan-v1" } 等
+   *
+   * 设计动机：缺失等于"无版本"假装是 legacy，会让 dashboard 过滤误判，且违反 §0.3.1 解冻后
+   * 约束第 1 条"baseline 必须可版本追溯"的同源精神。强制必传后，新 baseline 一定带版本，
+   * 旧 legacy 走 cost: "legacy_v1" / cost: "v3" 等显式标记。
    */
-  formulaVersion?: Record<string, string | undefined>;
+  formulaVersion: Record<string, string | undefined>;
   /** transcript 文件路径，可选 */
   transcriptPath?: string | null;
   /** 覆盖默认 notes（默认按 runStatus 自动生成） */
@@ -87,6 +90,16 @@ export interface SyncOptions {
   baseDir?: string;
   /** 写到 `baseline_scores[provider].tested_by`，例："eval-runner" / "eval:plan-capability" */
   testerLabel: string;
+  /**
+   * F-H4(2026-05-30 起):holdout 双重防御。
+   *
+   * 默认 false → 命中 holdout 路径或 yaml.holdout=true 的 result 直接 skip + warn,
+   * 不写入 baseline_scores(防止 holdout 跑分通过 sync 路径泄露到公开 yaml)。
+   *
+   * 仅 holdout 专用评测脚本(如 m3-gate-eval-runner)可显式 true,
+   * 该脚本应单独写到 `evals/_meta/_private/holdout-baselines.jsonl` 而非公开 yaml。
+   */
+  allowHoldout?: boolean;
 }
 
 const DEFAULT_GENERAL_DIRS = ["general/p0-core", "general/p1-common", "general/p2-edge", "holdout"];
@@ -184,13 +197,27 @@ export function syncBaselineScores(results: BaselineResult[], opts: SyncOptions)
   }
 
   let updated = 0;
+  let droppedHoldout = 0;
   for (const [caseId, caseResults] of byCaseId) {
     const yamlPath = resolveYamlPath(caseId);
     if (!yamlPath) continue;
 
+    // F-H4: 双重防御。yamlPath 含 "/holdout/" 或 yaml 内 holdout: true 必须开关
+    const isHoldoutPath = /[\\/]holdout[\\/]/.test(yamlPath);
+
     const content = readFileSync(yamlPath, "utf-8");
     const doc = yamlLib.parseDocument(content);
     const root = doc.contents as yamlLib.YAMLMap;
+    const isHoldoutFlag = root.get("holdout") === true;
+
+    if ((isHoldoutPath || isHoldoutFlag) && !opts.allowHoldout) {
+      droppedHoldout += caseResults.length;
+      // 不打印 caseId/score 等敏感信息;仅给计数,避免 stdout 也泄露
+      process.stderr.write(
+        `[baseline-sync] F-H4 holdout case skipped (allowHoldout=false): caseId=<redacted> path=<redacted>\n`,
+      );
+      continue;
+    }
 
     let baselineNode = root.get("baseline_scores") as yamlLib.YAMLMap | undefined;
     if (!baselineNode) {
@@ -240,6 +267,9 @@ export function syncBaselineScores(results: BaselineResult[], opts: SyncOptions)
 
     writeFileSync(yamlPath, doc.toString(), "utf-8");
     updated++;
+  }
+  if (droppedHoldout > 0) {
+    console.warn(`  ⚠️ F-H4 holdout 防御:跳过 ${droppedHoldout} 条 holdout result(allowHoldout=false)`);
   }
   console.log(`  回写 baseline_scores: ${updated} 个 case yaml`);
   return updated;

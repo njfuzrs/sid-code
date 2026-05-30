@@ -1,0 +1,201 @@
+{
+  "mode": "self-test",
+  "accuracy": 100,
+  "correct": 6,
+  "total": 6,
+  "results": [
+    {
+      "case_id": "case_015",
+      "total_score": null,
+      "low_dimensions": [],
+      "matched_rule": "R-MODEL-02",
+      "fix_type": "model_limit",
+      "confidence": 0.7,
+      "root_cause": "case_015 同型,LLM judge 50-57% 准确率天花板 (JudgeBench),非 sid-code bug",
+      "evidence": [
+        {
+          "field": "dimensions.rubric_score",
+          "value": 0.65,
+          "rule": "R-MODEL-02"
+        },
+        {
+          "field": "stats.rubric_variance_across_batches",
+          "value": 1.79,
+          "rule": "R-MODEL-02"
+        }
+      ],
+      "gold_match": {
+        "diagnosis_id": "case_015-2026-05-22",
+        "verified": true,
+        "same_fix_type": true
+      },
+      "alternative_rules": []
+    },
+    {
+      "case_id": "case_022",
+      "total_score": null,
+      "low_dimensions": [],
+      "matched_rule": "R-CASE-01",
+      "fix_type": "case_design",
+      "confidence": 0.95,
+      "root_cause": "case_022 同型: agent 复读 user_query 即满分 (echo 排除豁免对代码标识符不生效,仅短自然词)",
+      "evidence": [
+        {
+          "field": "dimensions.anchor_hit",
+          "value": 1,
+          "rule": "R-CASE-01"
+        },
+        {
+          "field": "case.anchor_in_user_query",
+          "value": true,
+          "rule": "R-CASE-01"
+        },
+        {
+          "field": "case.anchor_is_natural_language",
+          "value": true,
+          "rule": "R-CASE-01"
+        }
+      ],
+      "gold_match": {
+        "diagnosis_id": "case_022-2026-05-20",
+        "verified": true,
+        "same_fix_type": true
+      },
+      "alternative_rules": []
+    },
+    {
+      "case_id": "plan_004",
+      "total_score": null,
+      "low_dimensions": [
+        "all_null"
+      ],
+      "matched_rule": "R-CASE-05",
+      "fix_type": "case_design",
+      "confidence": 0.85,
+      "root_cause": "plan_004 同型: 题面要求时间内完成,trajectory 显示工具调用进展正常但卡 timeout —— 拆短任务 / 标 known_limitation",
+      "evidence": [
+        {
+          "field": "sideband.exit_status",
+          "value": "timeout",
+          "rule": "R-CASE-05"
+        },
+        {
+          "field": "case.task_type",
+          "value": "long_running_plan",
+          "rule": "R-CASE-05"
+        }
+      ],
+      "gold_match": {
+        "diagnosis_id": "plan_004-2026-05-15",
+        "verified": true,
+        "same_fix_type": true
+      },
+      "alternative_rules": []
+    },
+    {
+      "case_id": "case_hrn_001",
+      "total_score": null,
+      "low_dimensions": [
+        "all_null"
+      ],
+      "matched_rule": "R-INFRA-01",
+      "fix_type": "infra_bug",
+      "confidence": 0.95,
+      "root_cause": "wrapper / loop_detection / sandbox 类故障,trajectory 未落盘",
+      "evidence": [
+        {
+          "field": "sideband.total_steps",
+          "value": 0,
+          "rule": "R-INFRA-01"
+        },
+        {
+          "field": "sideband.tools_used.length",
+          "value": 0,
+          "rule": "R-INFRA-01"
+        },
+        {
+          "field": "sideband.errors.contains_any",
+          "value": [
+            "ZOMBIE_LOOP_NOT_DETECTED"
+          ],
+          "rule": "R-INFRA-01"
+        }
+      ],
+      "gold_match": {
+        "diagnosis_id": "hrn_001-2026-05-18",
+        "verified": true,
+        "same_fix_type": true
+      },
+      "alternative_rules": []
+    },
+    {
+      "case_id": "case_cr_006",
+      "total_score": null,
+      "low_dimensions": [
+        "rubric_score",
+        "negative_anchor"
+      ],
+      "matched_rule": "R-PROMPT-01",
+      "fix_type": "system_prompt",
+      "confidence": 0.65,
+      "root_cause": "case_cr_006 同型: SKILL.md 文案偏侵略性导致假阳性;先 grep SKILL.md 是否有该 case 反例",
+      "evidence": [
+        {
+          "field": "dimensions.rubric_score",
+          "value": 0.3,
+          "rule": "R-PROMPT-01"
+        },
+        {
+          "field": "dimensions.anchor_hit",
+          "value": 0.5,
+          "rule": "R-PROMPT-01"
+        },
+        {
+          "field": "dimensions.tool_compliance",
+          "value": 1,
+          "rule": "R-PROMPT-01"
+        },
+        {
+          "field": "cross_provider.available",
+          "value": false,
+          "rule": "R-PROMPT-01"
+        }
+      ],
+      "gold_match": {
+        "diagnosis_id": "case_cr_006-2026-05-25",
+        "verified": true,
+        "same_fix_type": true
+      },
+      "alternative_rules": []
+    },
+    {
+      "case_id": "case_meta_001",
+      "total_score": null,
+      "low_dimensions": [
+        "all_null"
+      ],
+      "matched_rule": "R-INFRA-02",
+      "fix_type": "infra_bug",
+      "confidence": 0.9,
+      "root_cause": "eval-runner 没有按 grader_type 短路 spawn agent (ADR-024 同源)",
+      "evidence": [
+        {
+          "field": "case.grader_type",
+          "value": "structured_arch",
+          "rule": "R-INFRA-02"
+        },
+        {
+          "field": "sideband.exit_status",
+          "value": "timeout",
+          "rule": "R-INFRA-02"
+        }
+      ],
+      "gold_match": {
+        "diagnosis_id": "meta_001-2026-04-30",
+        "verified": true,
+        "same_fix_type": true
+      },
+      "alternative_rules": []
+    }
+  ]
+}

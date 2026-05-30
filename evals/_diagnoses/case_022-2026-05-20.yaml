@@ -1,0 +1,51 @@
+diagnosis_id: case_022-2026-05-20
+case_id: case_022
+case_path: evals/general/p2-edge/case_022.yaml
+
+dimensions_snapshot:
+  anchor_hit: 1.0
+  rubric_score: 4.5
+  efficiency: 1.0
+  tool_compliance: 1.0
+  negative_anchor: 1.0
+  cost: 0.7
+sideband_metadata:
+  total_steps: 5
+  total_tokens: 8000
+  tools_used: [read, grep]
+  errors: []
+  exit_status: success
+
+expected_fix_type: case_design
+expected_root_cause: 'anchor "更好" 是用户原话,复读即命中 (echo bias)。anchor=1.0 + rubric=4.5/5 但实际 agent 没真做"模糊查询消歧",信号被复读拉满。'
+expected_confidence: 0.95
+key_evidence:
+  - field: anchor_in_user_query
+    value: ['更好']
+    rule: 'echo_bias'
+  - field: rubric_score
+    value: 4.5
+    rule: 'high_rubric_with_anchor_echo'
+
+# self-test 历史快照: 修复前的 case yaml 状态。优先级高于当前 case yaml。
+case_snapshot:
+  must_include_any_of: ['src/permission/', 'PermissionChecker', '更好', '权限', '具体']
+  must_not_include: []
+  user_query: '把那个权限模块改一下让它更好。'
+  task_type: 'ambiguous_query'
+  priority: 'P0'
+  grader_type: 'rubric_5d'
+
+reviewer: zhourusheng
+reviewed_at: 2026-05-20
+sources:
+  - docs/eval/edd-iteration-playbook.md
+  - evals/general/p2-edge/case_022.yaml
+
+post_fix_verification:
+  fixed_at: 2026-05-21
+  fix_commit: ''
+  score_before: 5.0
+  score_after: 4.2
+  verified: true
+  notes: '修了 anchor 词后真信号回落 0.8 分,确认 echo bias。'

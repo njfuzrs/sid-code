@@ -72,18 +72,30 @@ export interface WeekScore {
  */
 const LEGACY_GENERAL_BUCKETS = ["p0-core", "p1-common", "p2-edge", "holdout"];
 const NEW_GENERAL_BUCKETS = ["general/p0-core", "general/p1-common", "general/p2-edge"];
+// B5-6（2026-05-30 / ADR-032）：execution case 单独成桶，与 5d-v3 主表分开展示
+const EXECUTION_BUCKET = "general/execution";
 
 /** 判断 bucket 是否属于"行为分"（general 类，5 维 grader） */
 export function isBehaviorBucket(bucket: string): boolean {
   return (
     LEGACY_GENERAL_BUCKETS.includes(bucket) ||
-    bucket.startsWith("general/")
+    (bucket.startsWith("general/") && bucket !== EXECUTION_BUCKET)
   );
 }
 
 /** 判断 bucket 是否属于"架构分"（architecture 类，binary_redline / structured_arch grader） */
 export function isArchitectureBucket(bucket: string): boolean {
   return bucket.startsWith("architecture/") || bucket.startsWith("holdout/architecture/");
+}
+
+/**
+ * B5-6（2026-05-30 / ADR-032）：判断 bucket 是否属于 execution 轴。
+ *
+ * execution case 走 grader_type=execution_test，binary 0/1，
+ * **不与 5d-v3 加权混算**——必须独立成栏在 DASHBOARD 展示。
+ */
+export function isExecutionBucket(bucket: string): boolean {
+  return bucket === EXECUTION_BUCKET || bucket.startsWith("general/execution/");
 }
 
 function listArchitectureSubBuckets(evalsDir: string, base: string): string[] {
@@ -103,16 +115,17 @@ export function loadAllCases(evalsDir: string): CaseDoc[] {
   const buckets = [
     ...LEGACY_GENERAL_BUCKETS,
     ...NEW_GENERAL_BUCKETS,
+    EXECUTION_BUCKET,
     ...listArchitectureSubBuckets(evalsDir, "architecture"),
     ...listArchitectureSubBuckets(evalsDir, "holdout/architecture"),
   ];
   for (const bucket of buckets) {
     const abs = join(evalsDir, bucket);
     if (!existsSync(abs)) continue;
-    // case 文件名前缀：legacy 用 case_*，新架构用 arch_*
+    // case 文件名前缀：legacy 用 case_*，新架构用 arch_*；B5-6 起 execution 桶用 bug_*
     const entries = readdirSync(abs).filter(
       (f) =>
-        (f.startsWith("case_") || f.startsWith("arch_")) && f.endsWith(".yaml"),
+        (f.startsWith("case_") || f.startsWith("arch_") || f.startsWith("bug_")) && f.endsWith(".yaml"),
     );
     for (const f of entries) {
       const p = join(abs, f);

@@ -268,6 +268,58 @@ const ruleE16: LintRule = {
 };
 
 // ============================================================
+// P-11: commit 触及 src/agent/ src/tool/ src/llm/ ≥ 3 个文件 + 无 Reviewed-by trailer → warn
+// ============================================================
+const ruleP11: LintRule = {
+  id: "P-11",
+  description: "core_code commit 拆分检查(≥ 3 个内核文件须带 Reviewed-by trailer)",
+  run(): LintFinding[] {
+    const findings: LintFinding[] = [];
+    const KERNEL_PREFIXES = ["src/agent/", "src/tool/", "src/llm/"];
+    let commits: string[] = [];
+    try {
+      const { execSync } = require("node:child_process") as typeof import("node:child_process");
+      commits = execSync("git log -n 10 --format=%H", { cwd: ROOT, encoding: "utf-8" })
+        .trim()
+        .split("\n")
+        .filter(Boolean);
+    } catch {
+      // git 不可用时静默 pass(CI 兼容)
+      return findings;
+    }
+
+    for (const sha of commits) {
+      let files: string[] = [];
+      let body = "";
+      try {
+        const { execSync } = require("node:child_process") as typeof import("node:child_process");
+        files = execSync(`git show --pretty=format: --name-only ${sha}`, { cwd: ROOT, encoding: "utf-8" })
+          .trim()
+          .split("\n")
+          .filter(Boolean);
+        body = execSync(`git show -s --format=%B ${sha}`, { cwd: ROOT, encoding: "utf-8" });
+      } catch {
+        continue;
+      }
+      const kernelFiles = files.filter((f) => KERNEL_PREFIXES.some((p) => f.startsWith(p)));
+      if (kernelFiles.length < 3) continue;
+      const hasReviewBy = /Reviewed-by:/i.test(body);
+      const hasAdrRef = /ADR-\d{3}/i.test(body);
+      const hasFixTypeTrailer = /fix_type:\s*(core_code|new_module)/i.test(body);
+      if (!hasReviewBy && !hasAdrRef && !hasFixTypeTrailer) {
+        findings.push({
+          rule: "P-11",
+          severity: "warn",
+          file: `commit ${sha.slice(0, 8)}`,
+          message: `触及 ${kernelFiles.length} 个内核文件但缺 Reviewed-by/ADR/fix_type trailer (CLAUDE.md §0.3.1.1)`,
+        });
+      }
+    }
+    return findings;
+  },
+};
+
+// ============================================================
 // 主入口
 // ============================================================
 function parseRulesFlag(): Set<string> | null {
@@ -283,7 +335,7 @@ function parseRulesFlag(): Set<string> | null {
 }
 
 function main(): number {
-  const allRules: LintRule[] = [ruleE01, ruleE02, ruleE14, ruleE15, ruleE16];
+  const allRules: LintRule[] = [ruleE01, ruleE02, ruleE14, ruleE15, ruleE16, ruleP11];
   const filter = parseRulesFlag();
   const rules = filter ? allRules.filter((r) => filter.has(r.id)) : allRules;
 

@@ -64,6 +64,8 @@ function mkResult(overrides: Partial<TestResult> = {}): TestResult {
     success: true,
     runStatus: "success",
     testedAt: "2026-05-24T10:00:00.000Z",
+    mandatoryPass: true,
+    graderType: "rubric_5d",
     ...overrides,
   };
 }
@@ -309,20 +311,35 @@ describe("isRetryableError", () => {
 });
 
 describe("aggregate 权重公式回归", () => {
-  test("rubric_score 主导（权重 4.0/7.8）：rubric=0 时即使其它满分也 < 3 分", () => {
+  test("5d-v5：rubric 降权后非 mandatory，rubric=0 + 其它硬约束满分仍可过 GA 线", () => {
     const { score } = aggregate({
       anchor_hit: { pass: true, score: 1, reason: "" },
       rubric_score: { pass: false, score: 0, reason: "" },
       tool_compliance: { pass: true, score: 1, reason: "" },
+      negative_anchor: { pass: true, score: 1, reason: "" },
       efficiency: { pass: true, score: 1, reason: "" },
       cost: { pass: true, score: 1, reason: "" },
     });
-    // 新权重（审查 #7：efficiency 1.0→0.3）：
-    // weighted: (1*1.5 + 0*4.0 + 1*1.5 + 1*0.3 + 1*0.5) / 7.8 * 5 = 3.8/7.8*5 ≈ 2.44
-    // rubric=0 仍然主导（< 3 分），但权重调整后总分略低于旧 2.65
+    // 5d-v5（A4-1）权重：anchor 1.5 / rubric 1.5 / tool 1.5 / negative 2.0 / eff 0 / cost 0
+    // weighted: (1*1.5 + 0*1.5 + 1*1.5 + 1*2.0) / (1.5+1.5+1.5+2.0) * 5
+    //         = 5.0 / 6.5 * 5 ≈ 3.85（≥ GA 线 3.5）
     expect(score).not.toBeNull();
-    expect(score!).toBeLessThan(3);
-    expect(score!).toBeGreaterThan(2.0);
+    expect(score!).toBeGreaterThan(3.5);
+    expect(score!).toBeLessThan(4.0);
+  });
+
+  test("5d-v5：rubric 占比 ≤ 25%（防 LLM judge 噪声主导）", () => {
+    // 验证 rubric=0 vs rubric=1 的总分差不超过 25% 的 5（即 1.25）
+    const dimsBase = {
+      anchor_hit: { pass: true, score: 1, reason: "" },
+      tool_compliance: { pass: true, score: 1, reason: "" },
+      negative_anchor: { pass: true, score: 1, reason: "" },
+    };
+    const { score: lo } = aggregate({ ...dimsBase, rubric_score: { pass: false, score: 0, reason: "" } });
+    const { score: hi } = aggregate({ ...dimsBase, rubric_score: { pass: true, score: 1, reason: "" } });
+    expect(lo).not.toBeNull();
+    expect(hi).not.toBeNull();
+    expect(hi! - lo!).toBeLessThanOrEqual(1.25);
   });
 
   test("全部满分 = 5", () => {

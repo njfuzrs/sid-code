@@ -1,0 +1,152 @@
+# fix_type 反推规则（A5 Step 4 / 评测系统报告 §诊断能力 R-01~R-08）
+#
+# 加载顺序: rules 数组按 priority 降序匹配,first match wins。
+# eval:diagnose 遇到 confidence < 0.5 时输出 fix_type=unknown 并记录所有匹配规则。
+#
+# 改动流程: 走 §0.3 fix_type=infra_bug L1 自动;但需在 evals/_diagnoses/ 加新 gold case
+# 验证准确率 ≥ 80% 后才能提 PR。
+
+version: v1
+updated_at: 2026-05-30
+
+# 信号优先级（高 → 低）:
+#   1. infra_bug      sideband 数据异常,最确定
+#   2. model_limit    cross_provider 数据齐全时次之
+#   3. case_design    多种细分子规则
+#   4. system_prompt  rubric 低 + anchor 高 + 单 provider
+#   5. code_bug       兜底
+
+rules:
+  # --- infra_bug 类 ---
+  - id: R-INFRA-01
+    priority: 100
+    description: 'sideband total_steps=0 + tools_used=[] + errors 含显式 infra 标记'
+    when:
+      sideband.total_steps: 0
+      sideband.tools_used.length: 0
+      sideband.errors.contains_any: ['ZOMBIE', 'WRAPPER_FAIL', 'OOM', 'SIGKILL', 'INFRA']
+    fix_type: infra_bug
+    confidence: 0.95
+    note: 'wrapper / loop_detection / sandbox 类故障,trajectory 未落盘'
+
+  - id: R-INFRA-02
+    priority: 95
+    description: 'static grader case (structured_arch/binary_redline) 走了 timeout 流程 = runner 错误地 spawn 了 agent'
+    when:
+      case.grader_type: ['structured_arch', 'binary_redline']
+      sideband.exit_status: timeout
+    fix_type: infra_bug
+    confidence: 0.90
+    note: 'eval-runner 没有按 grader_type 短路 spawn agent (ADR-024 同源)'
+
+  - id: R-INFRA-03
+    priority: 80
+    description: 'sideband 字段缺失 (steps/tokens/exit_status 三者全 null)'
+    when:
+      sideband.total_steps: null
+      sideband.total_tokens: null
+      sideband.exit_status: null
+    fix_type: infra_bug
+    confidence: 0.85
+    note: 'jsonl 写入丢字段,eval-runner / appendRunHistory 路径有 bug'
+
+  # --- case_design 类 ---
+  - id: R-CASE-01
+    priority: 70
+    description: 'echo bias: anchor_hit 高 + must_include_any_of 中至少一项是 user_query 的自然语言短语'
+    when:
+      dimensions.anchor_hit: '>= 0.8'
+      case.anchor_in_user_query: true
+      case.anchor_is_natural_language: true
+    fix_type: case_design
+    confidence: 0.95
+    note: 'case_022 同型: agent 复读 user_query 即满分 (echo 排除豁免对代码标识符不生效,仅短自然词)'
+
+  - id: R-CASE-02
+    priority: 65
+    description: 'anchor 命中低 + rubric 高 (答案合理但锚点没命中)'
+    when:
+      dimensions.anchor_hit: '< 0.3'
+      dimensions.rubric_score: '>= 0.7'
+    fix_type: case_design
+    confidence: 0.85
+    note: 'must_include_any_of 缺关键词,需补 anchor 或扩 any_of 列表'
+
+  - id: R-CASE-03
+    priority: 60
+    description: 'reverse anchor 缺失: case 是 bug 修复 / 红线 / 对抗类但 must_not_include 为空'
+    when:
+      case.task_type: ['bug_fix', 'redline', 'adversarial']
+      case.must_not_include.length: 0
+    fix_type: case_design
+    confidence: 0.85
+    note: 'case_005/006/007/027 / arch_redline_004 同型,守护测试名存实亡'
+
+  - id: R-CASE-04
+    priority: 55
+    description: 'case 整体高分但守护测试触发: P0 case + agent 输出含禁令但 anchor 通过'
+    when:
+      dimensions.negative_anchor: 0
+      dimensions.anchor_hit: '>= 0.5'
+      case.priority: P0
+    fix_type: case_design
+    confidence: 0.75
+    note: 'must_not_include 反例守护没杀掉假绿灯;考虑加 mandatory_dimensions: [negative_anchor]'
+
+  - id: R-CASE-05
+    priority: 52
+    description: 'long_running 类 case timeout 但 agent 真在做事 (case 时间预算与任务复杂度不匹配)'
+    when:
+      sideband.exit_status: timeout
+      case.task_type: ['long_running_plan', 'long_task', 'long_running']
+    fix_type: case_design
+    confidence: 0.85
+    note: 'plan_004 同型: 题面要求时间内完成,trajectory 显示工具调用进展正常但卡 timeout —— 拆短任务 / 标 known_limitation'
+
+  # --- model_limit 类 (cross_provider 数据可用时优先) ---
+  - id: R-MODEL-01
+    priority: 50
+    description: '多 provider 共低: rubric 低 + cross_provider_avg 也低'
+    when:
+      dimensions.rubric_score: '< 0.3'
+      cross_provider.avg_score: '< 0.5'
+    fix_type: model_limit
+    confidence: 0.75
+    note: '两个 provider 都低分 (FAQ 经验);标 known_limitation 不当能力指标'
+
+  - id: R-MODEL-02
+    priority: 45
+    description: 'rubric variance 跨 batch > 1.5 (LLM judge 在该 case 上方差太大)'
+    when:
+      dimensions.rubric_score: '< 0.7'
+      stats.rubric_variance_across_batches: '> 1.5'
+    fix_type: model_limit
+    confidence: 0.70
+    note: 'case_015 同型,LLM judge 50-57% 准确率天花板 (JudgeBench),非 sid-code bug'
+
+  # --- code_bug 类 (兜底) ---
+  - id: R-BUG-01
+    priority: 30
+    description: '单 provider 低分: rubric 低 + cross_provider_delta > 0.5'
+    when:
+      dimensions.rubric_score: '< 0.3'
+      cross_provider.delta: '> 0.5'
+    fix_type: code_bug
+    confidence: 0.70
+    note: '单 provider 低分——大概率 sid-code 实现有缺陷,需进 src/ 调试'
+
+  # --- system_prompt 类 ---
+  - id: R-PROMPT-01
+    priority: 25
+    description: 'rubric 低 + anchor 命中正常 + tool_compliance 正常 + 无 cross_provider 数据 → SKILL.md 引导有偏'
+    when:
+      dimensions.rubric_score: '< 0.5'
+      dimensions.anchor_hit: '>= 0.5'
+      dimensions.tool_compliance: '>= 0.8'
+      cross_provider.available: false
+    fix_type: system_prompt
+    confidence: 0.65
+    note: 'case_cr_006 同型: SKILL.md 文案偏侵略性导致假阳性;先 grep SKILL.md 是否有该 case 反例'
+
+# 边界处理: 多条规则同时命中时按 priority 降序取第一条;ties → confidence 高的;
+# 仍 ties → fix_type=unknown + 记录所有命中规则到 evidence。

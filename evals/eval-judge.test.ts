@@ -310,6 +310,25 @@ describe("gradeEfficiency", () => {
     const r = gradeEfficiency({ tools_used: ["read"], files_edited: [], total_steps: 10, total_tokens: 1000 }, 15);
     expect(r.score).toBe(1.0);
   });
+
+  test("F-12: max_steps 缺失（undefined） → score=null + reason 标记 case_yaml_missing_max_steps", () => {
+    const r = gradeEfficiency({ tools_used: ["read"], files_edited: [], total_steps: 5, total_tokens: 1000 }, undefined);
+    expect(r.score).toBeNull();
+    expect(r.pass).toBe(false);
+    expect(r.reason).toContain("case_yaml_missing_max_steps");
+  });
+
+  test("F-12: max_steps = 0 → score=null（旧实现 || 15 兜底，新实现拒绝）", () => {
+    const r = gradeEfficiency({ tools_used: ["read"], files_edited: [], total_steps: 5, total_tokens: 1000 }, 0);
+    expect(r.score).toBeNull();
+    expect(r.reason).toContain("case_yaml_missing_max_steps");
+  });
+
+  test("F-12: max_steps = NaN → score=null", () => {
+    const r = gradeEfficiency({ tools_used: ["read"], files_edited: [], total_steps: 5, total_tokens: 1000 }, NaN);
+    expect(r.score).toBeNull();
+    expect(r.reason).toContain("case_yaml_missing_max_steps");
+  });
 });
 
 describe("gradeNegativeAnchors（must_not_include 反例硬检查）", () => {

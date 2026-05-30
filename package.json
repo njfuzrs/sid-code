@@ -24,7 +24,9 @@
     "eval:dashboard": "bun run scripts/eval/dashboard.ts",
     "eval:dashboard-html": "bun run scripts/eval/build-dashboard-html.ts",
     "eval:dashboard:open": "bun run scripts/eval/build-dashboard-html.ts --serve",
-    "eval:lint-arch": "bun run scripts/eval/lint-architecture.ts"
+    "eval:lint-arch": "bun run scripts/eval/lint-architecture.ts",
+    "eval:diagnose": "bun run scripts/eval/diagnose.ts",
+    "eval:verify-diagnosis": "bun run scripts/eval/verify-diagnosis.ts"
   },
   "dependencies": {
     "@alcalzone/ansi-tokenize": "^0.3.0",

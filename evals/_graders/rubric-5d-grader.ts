@@ -78,7 +78,8 @@ export class Rubric5dGrader implements Grader {
       mustModifyFilesIn: caseYaml.expected.must_modify_files_in,
       mustNotModifyFiles: caseYaml.expected.must_not_modify_files,
     });
-    dims.efficiency = gradeEfficiency(meta, caseYaml.expected.max_steps || 15, dims.rubric_score.score);
+    // F-12：max_steps 缺失时不再 || 15 兜底，传原值让 gradeEfficiency 落 null + reason 警示
+    dims.efficiency = gradeEfficiency(meta, caseYaml.expected.max_steps, dims.rubric_score.score);
     dims.cost = gradeCost(meta);
 
     const { score, namedScores } = aggregate(dims);

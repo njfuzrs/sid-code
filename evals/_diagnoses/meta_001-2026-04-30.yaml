@@ -1,0 +1,52 @@
+diagnosis_id: meta_001-2026-04-30
+case_id: case_meta_001
+case_path: evals/architecture/meta/arch_meta_001.yaml
+
+dimensions_snapshot:
+  anchor_hit: null
+  rubric_score: null
+  efficiency: null
+  tool_compliance: null
+  negative_anchor: null
+  cost: null
+sideband_metadata:
+  total_steps: 0
+  total_tokens: 0
+  tools_used: []
+  errors: []
+  exit_status: timeout
+
+expected_fix_type: infra_bug
+expected_root_cause: 'meta_001 是 structured_arch case (静态文件检查,grader_type=structured_arch),runner 错误地为它 spawn 了 agent wrapper,导致跑 ~3min 后超时。不是 case 设计错——runner 的"是否 spawn agent"判定逻辑没读 grader_type 字段。'
+expected_confidence: 0.95
+key_evidence:
+  - field: case_grader_type
+    value: structured_arch
+    rule: 'static_grader_should_skip_agent'
+  - field: total_steps
+    value: 0
+    rule: 'sideband_total_steps_zero'
+  - field: exit_status
+    value: timeout
+    rule: 'static_case_runner_timeout'
+
+case_snapshot:
+  must_include_any_of: []
+  must_not_include: []
+  task_type: 'arch_static'
+  priority: 'P0'
+  grader_type: 'structured_arch'
+
+reviewer: zhourusheng
+reviewed_at: 2026-04-30
+sources:
+  - docs/adr/ADR-024-静态-grader-短路-不-spawn-agent.md
+  - docs/weekly-eval-report/sprint-S2.md
+
+post_fix_verification:
+  fixed_at: 2026-05-01
+  fix_commit: ''
+  score_before: null
+  score_after: 1.0
+  verified: true
+  notes: 'eval-runner 加 makeStubProviderResult 短路 grader_type=structured_arch/binary_redline,跳过 spawn agent,meta_001/003 1.0 满分。'

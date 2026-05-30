@@ -1,0 +1,49 @@
+diagnosis_id: plan_004-2026-05-15
+case_id: plan_004
+case_path: evals/capability/plan/plan_004_context_orphan_bugfix.yaml
+
+dimensions_snapshot:
+  anchor_hit: null
+  rubric_score: null
+  efficiency: 0
+  tool_compliance: null
+  negative_anchor: null
+  cost: null
+sideband_metadata:
+  total_steps: 0
+  total_tokens: 0
+  tools_used: []
+  errors: ['TIMEOUT']
+  exit_status: timeout
+
+expected_fix_type: case_design
+expected_root_cause: 'plan_004 题面要求 480s 内完成,但 agent 真在做事(N=3 全部 timeout 但 trajectory 显示工具调用进展正常),是 case 设计的时间预算与真实 plan_recovery 任务复杂度不匹配。'
+expected_confidence: 0.85
+key_evidence:
+  - field: exit_status
+    value: timeout
+    rule: 'timeout_with_real_progress'
+  - field: trajectory_progress_signal
+    value: 'tools_called > 5 + files_edited > 0'
+    rule: 'agent_doing_work_but_timeout'
+
+case_snapshot:
+  must_include_any_of: ['plan_recovery', 'orphan', 'context']
+  must_not_include: []
+  task_type: 'long_running_plan'
+  priority: 'P1'
+  grader_type: 'rubric_5d'
+
+reviewer: zhourusheng
+reviewed_at: 2026-05-15
+sources:
+  - docs/adr/ADR-022-capability-eval-plan-generation-题面边界.md
+  - evals/capability/plan/plan_004_long_running.yaml
+
+post_fix_verification:
+  fixed_at: 2026-05-16
+  fix_commit: ''
+  score_before: null
+  score_after: 4.5
+  verified: true
+  notes: 'case 标 known_limitation + 拆短任务后,plan_004_short 子集 baseline ≥ 4.5。'

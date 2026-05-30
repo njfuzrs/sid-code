@@ -1,0 +1,46 @@
+{
+  "provider": "sid_code_deepseek_v4_pro",
+  "scoreBelow": null,
+  "results": [
+    {
+      "case_id": "case_005",
+      "total_score": 5,
+      "low_dimensions": [],
+      "matched_rule": null,
+      "fix_type": "unknown",
+      "confidence": 0,
+      "root_cause": "无规则匹配；建议人审或扩 dispatch-rules.yaml",
+      "evidence": []
+    },
+    {
+      "case_id": "case_015",
+      "total_score": 4.46,
+      "low_dimensions": [],
+      "matched_rule": null,
+      "fix_type": "unknown",
+      "confidence": 0,
+      "root_cause": "无规则匹配；建议人审或扩 dispatch-rules.yaml",
+      "evidence": [],
+      "gold_match": {
+        "diagnosis_id": "case_015-2026-05-22",
+        "verified": true,
+        "same_fix_type": false
+      }
+    },
+    {
+      "case_id": "case_022",
+      "total_score": 4.79,
+      "low_dimensions": [],
+      "matched_rule": null,
+      "fix_type": "unknown",
+      "confidence": 0,
+      "root_cause": "无规则匹配；建议人审或扩 dispatch-rules.yaml",
+      "evidence": [],
+      "gold_match": {
+        "diagnosis_id": "case_022-2026-05-20",
+        "verified": true,
+        "same_fix_type": false
+      }
+    }
+  ]
+}

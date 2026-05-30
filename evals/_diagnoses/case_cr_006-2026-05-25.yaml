@@ -1,0 +1,44 @@
+diagnosis_id: case_cr_006-2026-05-25
+case_id: case_cr_006
+case_path: evals/skill/code-review/case_cr_006_false_positive.yaml
+
+dimensions_snapshot:
+  anchor_hit: 0.5
+  rubric_score: 0.3
+  efficiency: 1.0
+  tool_compliance: 1.0
+  negative_anchor: 0
+  cost: 0.7
+sideband_metadata:
+  total_steps: 8
+  total_tokens: 25000
+  tools_used: [read, grep]
+  errors: []
+  exit_status: success
+
+expected_fix_type: system_prompt
+expected_root_cause: 'code-review SKILL.md §2.4 检查清单偏侵略性,导致 agent 把"无安全风险的代码"误标为"潜在 SQL 注入";rubric 低 (0.3) + negative_anchor 命中 (0) → SKILL.md 文案需要降低假阳性。'
+expected_confidence: 0.80
+key_evidence:
+  - field: rubric_score
+    value: 0.3
+    rule: 'low_rubric_with_anchor_ok'
+  - field: negative_anchor
+    value: 0
+    rule: 'negative_anchor_violation'
+  - field: cross_provider_avg
+    value: 0.4
+    rule: 'multi_provider_consistent_low'
+
+reviewer: zhourusheng
+reviewed_at: 2026-05-25
+sources:
+  - docs/weekly-eval-report/sprint-S4.md
+
+post_fix_verification:
+  fixed_at: 2026-05-26
+  fix_commit: ''
+  score_before: 1.5
+  score_after: 3.8
+  verified: true
+  notes: 'SKILL.md §2.4 改为 "若代码已用参数化查询则不报告" 后 case_cr_006 baseline 升到 GA 线。'

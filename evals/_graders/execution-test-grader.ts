@@ -19,7 +19,7 @@
  *   - security-audit：fixture SQL injection → agent fix → 模拟攻击命令应被拦截
  */
 
-import { GRADER_VERSION } from "../eval-judge";
+import { EXECUTION_TEST_VERSION } from "../eval-judge";
 import { isCompleteFailure } from "../eval-runner";
 import { runSandbox } from "../_sandbox";
 import type { Grader, GraderContext, GraderResult } from "./types";
@@ -96,7 +96,7 @@ export class ExecutionTestGrader implements Grader {
       dims: { execution_check: dim },
       mandatoryPass: allOk,
       graderType: this.type,
-      graderVersion: GRADER_VERSION,
+      graderVersion: EXECUTION_TEST_VERSION,
     };
   }
 
@@ -152,7 +152,7 @@ function errResult(type: string, reason: string): GraderResult {
     dims: { execution_check: { pass: false, score: null, reason } },
     mandatoryPass: false,
     graderType: type,
-    graderVersion: GRADER_VERSION,
+    graderVersion: EXECUTION_TEST_VERSION,
   };
 }
 

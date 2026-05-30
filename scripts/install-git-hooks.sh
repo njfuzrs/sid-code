@@ -27,4 +27,5 @@ for src in "$SRC_DIR"/*.sh; do
 done
 
 echo ""
+echo "已安装：pre-commit (B6-10 数据污染扫描) / pre-push (测试守门 + dashboard 刷新)"
 echo "完成。要禁用某个 hook，加 --no-verify 跳过单次，或删除 $DST_DIR/<name>"

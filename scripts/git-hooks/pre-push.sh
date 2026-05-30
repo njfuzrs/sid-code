@@ -24,6 +24,16 @@ if [ $TEST_EXIT -ne 0 ]; then
 fi
 echo "[pre-push] ✅ bun test 通过"
 
+# F-H5: holdout 泄露检测(双重防御 L5)
+echo "[pre-push] 跑 holdout 泄露检测 ..."
+if [ -x "scripts/eval/check-holdout-leak.sh" ] || [ -f "scripts/eval/check-holdout-leak.sh" ]; then
+  sh scripts/eval/check-holdout-leak.sh || {
+    echo "[pre-push] ❌ holdout 泄露检测失败,push 中止"
+    exit 1
+  }
+  echo "[pre-push] ✅ 无 holdout 泄露"
+fi
+
 # Step 2-4：dashboard 刷新（与原 hook 行为一致）
 NEEDS_REFRESH=0
 

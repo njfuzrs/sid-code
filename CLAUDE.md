@@ -101,10 +101,43 @@ sid-code **不是**"又一个 Coding CLI"——从 2026-05 起向"对外可交�
 - **不要重写**——5.2 万行重写至少 6 个月，得不偿失。沿现有架构加层，不要"内核解耦"
 - **src 子目录归属（哪个目录对应五层洋葱哪一层）**：Agent 用 `ls src/` 自查；五层归属规则见 §0.1 + `docs/eval/演进路线/智能研发基座-final.md §4`，**不在 CLAUDE.md 维护静态目录树**（避免与代码漂移）
 
+### 0.3.1.1 审批留痕格式（P-4，2026-05-30 起）
+
+`core_code` / `new_module` 类 commit 必须满足以下任一,作为 §0.3 L3 审批的**实操证据**(防 H-2 同型再发生):
+
+1. commit message body 含两行 trailer:
+   ```
+   fix_type: core_code
+   Reviewed-by: <name> <email>
+   ```
+2. commit body 引用对应 ADR 编号(`See ADR-NNN-标题.md`)
+3. `docs/eval/TODO.md` 对应 task 项标 `[x] 已审 diff <commit-hash>` (后写入)
+
+任一条件满足即视为合规。L1/L2 fix_type commit 不强制(但建议带 `fix_type: <type>` trailer 帮 lint 工具识别)。
+
+### 0.3.1.2 §0.3.1 解冻后约束边界字面化（P-3，2026-05-30 起）
+
+§0.3.1 文字"`gradeRubric` 公式"明确**包含**以下聚合策略 —— 任一改动必须 ADR + bump + 单测 + holdout 验证:
+- 单次 grade 内的阈值 / 档位 / 吸附逻辑(snapToTier)
+- 多采样下中位数 / 平均 / 最低分 等聚合算法
+- ensemble majority vote / weighted vote 等多 judge 投票算法
+- echo 排除 / fail-safe 等"边界处理"
+
+**不**包含: judge 调用底座 (Anthropic client / temperature / 重试) —— 这些是基础设施,改动只需 §0.3 fix_type=infra_bug L1 流程(F-8 / ADR-036 同源)。
+
 ## 0.3.1 Grader 改动约束（冻结期已结束，改动需走流程）
 
 > **当前状态：可改，但有流程**（冻结期 2026-05-26 → 2026-05-28 已结束，S1-T15 引入 30 条 P0-tier1 红线/架构 case 时一并完成）。
-> **历史冻结期解除证据**：① `evals/_graders/` 注册表落盘（rubric-5d / binary-redline / structured-arch / execution-test 4 类 grader + registry + 单测）；② `GRADER_VERSION` 已 bump `5d-v2 → 5d-v3`；③ `grader_type` 字段在 case yaml 与 BaselineEntry 双侧就位；④ 行业调研落地：`docs/eval/investigations/eval-rubric-industry-survey.md §6.3 T-10/T-11`。
+> **历史冻结期解除证据**：① `evals/_graders/` 注册表落盘（rubric-5d / binary-redline / structured-arch / execution-test 4 类 grader + registry + 单测）；② `GRADER_VERSION` 已 bump `5d-v2 → 5d-v3 → 5d-v4 → 5d-v5`(详见 eval-judge.ts:234 docstring)；③ `grader_type` 字段在 case yaml 与 BaselineEntry 双侧就位；④ 行业调研落地：`docs/eval/investigations/eval-rubric-industry-survey.md §6.3 T-10/T-11`。
+
+### 违反清单（live，2026-05-30 起维护）
+
+> 透明化历史违反不是抹黑过去,是建立"违反会留痕、留痕会被引用"的工程信任。新违反必须及时追加。
+
+| 日期 | commit | 违反内容 | 修复 ADR | 影响 |
+| --- | --- | --- | --- | --- |
+| 2026-05-26 | 7c34ef6 | 改 gradeNegativeAnchors echo 排除 + gradeRubric 下中位数,未及时 bump GRADER_VERSION | ADR-027(2026-05-30 追溯补) | 5d-v3 自该 commit 起含未声明语义,跨 commit baseline 比较失真 |
+| 2026-05-26~28 | 多个 | sprint batch 模式单 commit 触及 ≥ 5 个 src/ 内核文件,无 Reviewed-by trailer | P-11 lint 已上线检测 | core_code L3 审批靠 commit author 自觉 |
 > 历史背景（保留为档案，对当前不生效）：12 个月 11 次 grader 改动（cost v1→v6、权重反复调）证明"在错的架构里做局部补丁"是病根；2026-05-26 至 2026-05-28 期间的冻结期约束防止了再次"补丁式"改动。完整诊断：`docs/eval/investigations/eval-rubric-industry-survey.md`。
 
 **Grader 改动流程**（与 §0.3 fix_type 审批层级**同级**——任一违反**直接打回**）：

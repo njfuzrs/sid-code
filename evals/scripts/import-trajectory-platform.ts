@@ -45,7 +45,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
-import { dirname, join, relative, resolve, basename } from "node:path";
+import { dirname, join, resolve, basename } from "node:path";
 import * as yamlLib from "yaml";
 
 // ============================================================================
@@ -107,8 +107,11 @@ const SECRET_PATTERNS: { kind: string; regex: RegExp }[] = [
   { kind: "private_key", regex: /-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----/ },
 ];
 
-/** case yaml 白名单字段（只提取这些；其余字段一律丢弃） */
-const ALLOWED_TASK_FIELDS = [
+/**
+ * case yaml 白名单字段（仅供文档/未来全量映射参考；当前 buildCaseYaml 走显式 schema 提取，
+ * 比纯字段拷贝更稳——保留这份清单作为 §9.1.1 白名单的可读对照）
+ */
+export const ALLOWED_TASK_FIELDS = [
   "id",
   "instruction",
   "repo",
@@ -174,11 +177,13 @@ export function scanSecrets(text: string): { kind: string; match: string }[] {
 /**
  * 路径相对化：把绝对路径替换为 ${REPO_ROOT}/...
  * - 默认 repoRoot 取 process.env.REPO_ROOT，否则 cwd（sid-code 仓库根）
- * - 同时处理 trajectory-platform 常见 mount path: /project/sid-code/...
+ * - 处理 trajectory-platform 常见 mount path: /project/<any-repo>/... → ${REPO_ROOT}/<any-repo>/...
+ *   说明：trajectory-platform 容器同时挂多个 repo（sid-code / claude-code / docs / ...）；
+ *   全部统一转为 ${REPO_ROOT}/<repo>/，由 setup 脚本决定具体 mount 位置
  */
 export function rewritePaths(text: string, repoRoot: string): string {
-  // 上游 trajectory-platform 容器内 mount 路径
-  let out = text.replace(/\/project\/sid-code\//g, "${REPO_ROOT}/");
+  // 上游 trajectory-platform 容器内 mount 路径（通用匹配，不限定单一 repo 名）
+  let out = text.replace(/\/project\//g, "${REPO_ROOT}/");
 
   // 命中 repoRoot 绝对路径（防机器名泄露）
   if (repoRoot) {

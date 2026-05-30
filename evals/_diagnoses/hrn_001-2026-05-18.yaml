@@ -1,0 +1,51 @@
+diagnosis_id: hrn_001-2026-05-18
+case_id: case_hrn_001
+case_path: evals/capability/harness/case_hrn_001_loop_read_nonexistent.yaml
+
+dimensions_snapshot:
+  anchor_hit: null
+  rubric_score: null
+  efficiency: null
+  tool_compliance: null
+  negative_anchor: null
+  cost: null
+sideband_metadata:
+  total_steps: 0
+  total_tokens: 0
+  tools_used: []
+  errors: ['ZOMBIE_LOOP_NOT_DETECTED']
+  exit_status: error
+
+expected_fix_type: infra_bug
+expected_root_cause: 'src/agent/loop_detection.ts 漏判循环——agent 反复调 read 同一文件 50 次,本应被 loop detector 触发 abort 但未触发。runner sideband total_steps=0 是因为 loop detector 失效后 wrapper 直接超时被外层 SIGKILL,trajectory 没落盘。'
+expected_confidence: 0.95
+key_evidence:
+  - field: total_steps
+    value: 0
+    rule: 'sideband_total_steps_zero'
+  - field: errors
+    value: ['ZOMBIE_LOOP_NOT_DETECTED']
+    rule: 'explicit_infra_error_marker'
+  - field: tools_used
+    value: []
+    rule: 'tools_used_empty_with_error'
+
+case_snapshot:
+  must_include_any_of: ['loop detected', 'aborted', 'too many same calls']
+  must_not_include: []
+  task_type: 'harness_loop_detection'
+  priority: 'P0'
+  grader_type: 'rubric_5d'
+
+reviewer: zhourusheng
+reviewed_at: 2026-05-18
+sources:
+  - docs/adr/ADR-020-harness-loop-detection-zombie-诊断.md
+
+post_fix_verification:
+  fixed_at: 2026-05-19
+  fix_commit: ''
+  score_before: null
+  score_after: 4.0
+  verified: true
+  notes: 'src/agent/loop_detection.ts 加 same-tool-same-args 计数器后,hrn_001/004 一并修复。'

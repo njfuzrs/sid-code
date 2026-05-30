@@ -179,6 +179,7 @@ release_metadata:
 - **RL-004 不无限循环**：max-turns: 20 + timeout-mins: 15 已在 frontmatter 限定
 - **RL-006 不修改测试**：发现测试问题只 flag，不改测试代码
 - **RL-007 不编造问题**：每条 finding 必须含 `file:line` 引用，且文件/行号真实存在
+- **RL-007 加固（B0-4 / 2026-05-30 paired comparison T0023 CTX-02 教训）**：finding 的 `file:line` 必须**先用 read 工具成功读到该行原文**才能产出，禁止仅凭 diff 片段、grep 摘要或 LLM 记忆推断行号；read 持续失败时（如路径 `/project/...` 误读、文件不存在）必须停下来澄清路径，**绝不允许**在未读到原文的情况下给出该位置的 finding —— 这会同时违反 RL-007（编造）和 §4.2 false_positive 控制。Step 2.2 上下文获取的 read **不是**可选步骤，是 finding 合法性的前置条件
 
 ### 4.2 false_positive 控制
 

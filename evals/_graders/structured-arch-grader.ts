@@ -22,7 +22,7 @@
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { GRADER_VERSION } from "../eval-judge";
+import { STRUCTURED_ARCH_VERSION } from "../eval-judge";
 import type { Grader, GraderContext, GraderResult } from "./types";
 import type { DimScore } from "../eval-judge";
 import type { ArchAssertion } from "../_types";
@@ -65,7 +65,7 @@ export class StructuredArchGrader implements Grader {
         },
         mandatoryPass: true,
         graderType: this.type,
-        graderVersion: GRADER_VERSION,
+        graderVersion: STRUCTURED_ARCH_VERSION,
       };
     }
 
@@ -93,7 +93,7 @@ export class StructuredArchGrader implements Grader {
       dims: { arch_check: dim },
       mandatoryPass: allPass,
       graderType: this.type,
-      graderVersion: GRADER_VERSION,
+      graderVersion: STRUCTURED_ARCH_VERSION,
     };
   }
 

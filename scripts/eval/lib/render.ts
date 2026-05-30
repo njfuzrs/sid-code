@@ -11,7 +11,7 @@
  */
 
 import type { CaseDoc, ProjectSnapshot, WeekScore, RunRecord, BaselineSnapshot } from "./yaml-loader";
-import { readBaseline, LATEST_GRADER_VERSION, isBehaviorBucket, isArchitectureBucket, CAPABILITY_GRADER_PREFIX } from "./yaml-loader";
+import { readBaseline, LATEST_GRADER_VERSION, isBehaviorBucket, isArchitectureBucket, isExecutionBucket, CAPABILITY_GRADER_PREFIX } from "./yaml-loader";
 
 export interface DashboardOptions {
   /** true = 一并展示旧 grader 版本 baseline；默认 false（仅展示 LATEST_GRADER_VERSION 数据） */
@@ -79,6 +79,8 @@ export function renderDashboard(snapshot: ProjectSnapshot, options: DashboardOpt
   lines.push(...renderOverview(snapshot, includeLegacy));
   lines.push("");
   lines.push(...renderBehaviorVsArchitecture(snapshot, includeLegacy));
+  lines.push("");
+  lines.push(...renderExecutionAxis(snapshot));
   lines.push("");
   lines.push(...renderCaseToolMatrix(snapshot, includeLegacy));
   lines.push("");
@@ -232,6 +234,57 @@ function renderBehaviorVsArchitecture(
     out.push(`| ${tool} | ${beh} | ${arch} | ${delta} |`);
   }
 
+  return out;
+}
+
+/**
+ * Execution 轴独立 section（B5-6 / 2026-05-30 / ADR-032）。
+ *
+ * 设计依据：agent-eval-真化路线-v1.md §6.4 与 §8.1 — execution case 走 grader_type=execution_test，
+ * binary 0/1 输出，**不与 5d-v3 加权混算**，必须独立成栏在 DASHBOARD 展示。
+ *
+ * 数据源：snap.cases 中 bucket = "general/execution" 的所有 case。
+ *   - 每条 case 取 baseline_scores.<tool>.score（0 或 1）平均 → pass_rate
+ *   - 不走 isLatestGrader 过滤（execution-test-v1 是独立 grader 版本号，与 5d-v* 跨版本）
+ *
+ * M5 Gate 准入 quota（§4.2 双轨）：修改型 Skill execution case ≥ 60% — 本 section 给出真实进度。
+ */
+function renderExecutionAxis(snap: ProjectSnapshot): string[] {
+  const out: string[] = [];
+  out.push("## 1.2 Execution 轴（binary 0/1，不与 5d-v3 混算）");
+  out.push("");
+  const execCases = snap.cases.filter((c) => isExecutionBucket(c.bucket));
+  if (execCases.length === 0) {
+    out.push("> ⏳ 暂无 execution case（B5-2 起 evals/general/execution/ 下首条 case `bug_001` 之后会出现）");
+    return out;
+  }
+  out.push("> 数据源 = `evals/general/execution/`，grader=`execution-test-v1`，sandbox 跑 verify_commands 决定 0/1");
+  out.push("> 与 5d-v3 主表分轨：M5 前不混算总分；execution case 通过率独立看（§6.4）");
+  out.push("");
+  out.push(`- **execution case 总数**: ${execCases.length} 条`);
+  out.push("");
+  out.push("| Tool | pass_rate (n) | 已 pass | 已 fail | pending |");
+  out.push("| --- | --- | --- | --- | --- |");
+  for (const tool of snap.tools) {
+    let pass = 0;
+    let fail = 0;
+    let pending = 0;
+    for (const c of execCases) {
+      const b = readBaseline(c, tool);
+      if (b.status !== "tested") {
+        pending++;
+        continue;
+      }
+      if (typeof b.score === "number" && b.score >= 1) pass++;
+      else fail++;
+    }
+    const total = pass + fail;
+    const rate = total > 0 ? `${((pass / total) * 100).toFixed(0)}% (n=${total})` : "–";
+    out.push(`| ${tool} | ${rate} | ${pass} | ${fail} | ${pending} |`);
+  }
+  out.push("");
+  out.push("> 进度提示：sandbox 接进 eval-runner 主流程已就位（B5-1，commit a524bfb）；");
+  out.push("> 第一条 case `bug_001` 已落 evals/general/execution/，端到端 baseline 跑通后本表自动填充。");
   return out;
 }
 

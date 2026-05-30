@@ -1,0 +1,57 @@
+diagnosis_id: case_015-2026-05-22
+case_id: case_015
+case_path: evals/general/p1-common/case_015.yaml
+
+dimensions_snapshot:
+  anchor_hit: 0.85
+  rubric_score: 0.65
+  efficiency: 1.0
+  tool_compliance: 1.0
+  negative_anchor: null
+  cost: 0.4
+sideband_metadata:
+  total_steps: 12
+  total_tokens: 45000
+  tools_used: [read, grep, edit]
+  errors: []
+  exit_status: success
+
+expected_fix_type: model_limit
+expected_root_cause: 'LLM judge 在测试编写类 case 上跨 batch 方差大 (deepseek=0.3 vs opus47=1.0,跨次差 4.25→2.46)。两个 provider 都低分 → model_limit;且 rubric 单维度的 LLM judge variance 是已知行业问题(JudgeBench 50-57%),非 sid-code 实现 bug。'
+expected_confidence: 0.75
+key_evidence:
+  - field: cross_provider_avg
+    value: 0.5
+    rule: 'low_rubric_cross_provider_low'
+  - field: rubric_variance_across_batches
+    value: 1.79
+    rule: 'high_judge_variance_known_limitation'
+
+case_snapshot:
+  must_include_any_of: ['tests/llm/quota.test.ts', 'QuotaManager', 'bun:test', 'describe', 'it(']
+  must_not_include: []
+  task_type: 'test_authoring'
+  priority: 'P0'
+  grader_type: 'rubric_5d'
+
+# self-test 模式下需要的额外信号(规则 R-MODEL-01/02 用)
+extra_signals:
+  cross_provider:
+    avg: 0.5
+    delta: 0.1
+    available: true
+  rubric_variance_across_batches: 1.79
+
+reviewer: zhourusheng
+reviewed_at: 2026-05-22
+sources:
+  - evals/general/p1-common/case_015.yaml
+  - docs/weekly-eval-report/sprint-S4.md
+
+post_fix_verification:
+  fixed_at: 2026-05-23
+  fix_commit: ''
+  score_before: 2.46
+  score_after: 2.46
+  verified: true
+  notes: '诊断方向正确——case 标 known_limitation 不再当作能力指标,改用 ensemble + N=3 中位数缓解,但根本不能修。'
