@@ -579,4 +579,162 @@ new file
     expect(r.mandatoryPass).toBe(false);
     expect(r.dims.execution_check.reason).toContain("pre_apply_must_fail");
   });
+
+  // B5-5（2026-05-30 / ADR-032）：端到端 bug_001 等价 fixture 双向验证
+  // 闭环：buggy fixture 必 fail（pre_apply）→ agent 修好后 verify 必 pass。
+  // 这条测试不读 evals/general/execution/bug_001.yaml（避免 yaml parser 在单测里引外部依赖），
+  // 而是用同语义的最小 fixture 验证 ExecutionTestGrader 在 extract_files apply_mode 下的完整路径。
+  test("B5-5 端到端：buggy fixture + agent extract_files 修复 → mandatoryPass=true", async () => {
+    const buggyTest = [
+      'import { readFileSync } from "node:fs";',
+      'const v = "buggy";',
+      'if (v !== "fixed") { console.error("FAIL: still buggy"); process.exit(1); }',
+      'console.log("PASS"); process.exit(0);',
+    ].join("\n");
+    const g = getGrader("execution_test");
+
+    // 1) 不应用 patch（apply_mode=skip 等价于"未修复"）→ 必须 fail
+    const beforeFix = await g.grade({
+      caseYaml: fakeCase({
+        execution_test: {
+          fixtures: [{ path: "test.ts", content: buggyTest }],
+          apply_mode: "skip",
+          verify_commands: [{ cmd: "bun", args: ["test.ts"], timeout_ms: 10000 }],
+        },
+      }),
+      providerResult: fakeResult("（未修复）"),
+      skipLlmJudge: true,
+      judgeSamples: 1,
+    });
+    expect(beforeFix.mandatoryPass).toBe(false);
+
+    // 2) agent 用 extract_files 给出修复 → 必须 pass
+    const fixedAgentOut = [
+      "我修好了：",
+      "",
+      "=== FILE: test.ts ===",
+      'import { readFileSync } from "node:fs";',
+      'const v = "fixed";',
+      'if (v !== "fixed") { console.error("FAIL: still buggy"); process.exit(1); }',
+      'console.log("PASS"); process.exit(0);',
+    ].join("\n");
+    const afterFix = await g.grade({
+      caseYaml: fakeCase({
+        execution_test: {
+          fixtures: [{ path: "test.ts", content: buggyTest }],
+          apply_mode: "extract_files",
+          verify_commands: [{ cmd: "bun", args: ["test.ts"], timeout_ms: 10000 }],
+        },
+      }),
+      providerResult: fakeResult(fixedAgentOut),
+      skipLlmJudge: true,
+      judgeSamples: 1,
+    });
+    expect(afterFix.mandatoryPass).toBe(true);
+    expect(afterFix.score).toBe(1.0);
+  });
+});
+
+// B6-9（2026-05-30 / ADR-033）：TrajectoryMatchGrader 单测
+// 关键不变量（M5 前不可破）：mandatoryPass 始终 true（诊断维度，不影响 case 总分）
+describe("B6-9 TrajectoryMatchGrader（M5 前仅诊断维度）", () => {
+  test("getGrader 显式 trajectory_match", () => {
+    const g = getGrader("trajectory_match");
+    expect(g.type).toBe("trajectory_match");
+  });
+
+  test("listGraderTypes 包含 trajectory_match", () => {
+    const types = listGraderTypes().map((t) => t.type);
+    expect(types).toContain("trajectory_match");
+  });
+
+  test("缺少 trajectory_assertion 配置 → score=null + reason 提示", async () => {
+    const g = getGrader("trajectory_match");
+    const r = await g.grade({
+      caseYaml: fakeCase({}),
+      providerResult: fakeResult("any"),
+      skipLlmJudge: true,
+      judgeSamples: 1,
+    });
+    expect(r.score).toBeNull();
+    // 关键不变量：诊断 grader 即便异常也不让 case fail
+    expect(r.mandatoryPass).toBe(true);
+    expect(r.dims.trajectory_diagnostic.reason).toContain("trajectory_assertion");
+  });
+
+  test("等价类全覆盖 + milestone 全命中 → score=1.0 + mandatoryPass 仍 true", async () => {
+    const g = getGrader("trajectory_match");
+    const r = await g.grade({
+      caseYaml: fakeCase({
+        trajectory_assertion: {
+          milestones: ["读源码定位入口", "理解 sub-loop 区别"],
+          tool_equivalence_classes: [
+            ["grep", "rg", "lsp_references"],
+            ["read", "cat"],
+          ],
+          max_steps: 30,
+        },
+      }),
+      providerResult: fakeResult("output", { tools_used: ["grep", "read"], total_steps: 8 }),
+      skipLlmJudge: true,
+      judgeSamples: 1,
+    });
+    expect(r.score).not.toBeNull();
+    expect(r.score!).toBeGreaterThanOrEqual(0.8);
+    // **§15.2 铁律 1**：M5 前 mandatoryPass 必须始终 true
+    expect(r.mandatoryPass).toBe(true);
+    expect(r.namedScores.trajectory_milestone).toBeGreaterThan(0);
+    expect(r.namedScores.trajectory_tool_match).toBe(1.0);
+  });
+
+  test("等价类未触发 → 仅诊断扣分，case 仍可通过 (mandatoryPass=true)", async () => {
+    const g = getGrader("trajectory_match");
+    const r = await g.grade({
+      caseYaml: fakeCase({
+        trajectory_assertion: {
+          milestones: ["定位文件"],
+          tool_equivalence_classes: [["lsp_definition"]],
+        },
+      }),
+      // 用了 grep 而非 lsp_definition → 等价类未命中
+      providerResult: fakeResult("output", { tools_used: ["grep"], total_steps: 3 }),
+      skipLlmJudge: true,
+      judgeSamples: 1,
+    });
+    expect(r.namedScores.trajectory_tool_match).toBe(0);
+    // **§15.2 铁律 3**：等价类未命中只是诊断扣分，不让 case fail
+    expect(r.mandatoryPass).toBe(true);
+  });
+
+  test("步数 > max_steps × 2 → reason 含「探索过度」告警", async () => {
+    const g = getGrader("trajectory_match");
+    const r = await g.grade({
+      caseYaml: fakeCase({
+        trajectory_assertion: {
+          milestones: ["m1"],
+          tool_equivalence_classes: [["read"]],
+          max_steps: 10,
+        },
+      }),
+      providerResult: fakeResult("output", { tools_used: ["read"], total_steps: 30 }),
+      skipLlmJudge: true,
+      judgeSamples: 1,
+    });
+    expect(r.dims.trajectory_diagnostic.reason).toContain("探索过度");
+    // **§15.2 铁律 2**：步数告警仅诊断，不影响 case 总分
+    expect(r.mandatoryPass).toBe(true);
+  });
+
+  test("graderVersion 含 trajectory-v1 后缀（与 5d-v4 解耦）", async () => {
+    const g = getGrader("trajectory_match");
+    const r = await g.grade({
+      caseYaml: fakeCase({
+        trajectory_assertion: { milestones: [], tool_equivalence_classes: [] },
+      }),
+      providerResult: fakeResult("o", { tools_used: [], total_steps: 0 }),
+      skipLlmJudge: true,
+      judgeSamples: 1,
+    });
+    expect(r.graderVersion).toContain("trajectory-v1");
+  });
 });

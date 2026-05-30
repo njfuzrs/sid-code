@@ -14,6 +14,7 @@ import { Rubric5dGrader } from "./rubric-5d-grader";
 import { BinaryRedlineGrader } from "./binary-redline-grader";
 import { StructuredArchGrader } from "./structured-arch-grader";
 import { ExecutionTestGrader } from "./execution-test-grader";
+import { TrajectoryMatchGrader } from "./trajectory-match-grader";
 import type { Grader } from "./types";
 
 const REGISTRY: Record<string, Grader> = {};
@@ -29,6 +30,8 @@ register(new Rubric5dGrader());
 register(new BinaryRedlineGrader());
 register(new StructuredArchGrader());
 register(new ExecutionTestGrader());
+// B6-7（2026-05-30 / ADR-033）：trajectory_match 维度，M5 前仅诊断不进总分
+register(new TrajectoryMatchGrader());
 
 /** 默认 grader 类型（case yaml 不写 grader_type 时使用） */
 export const DEFAULT_GRADER_TYPE = "rubric_5d";

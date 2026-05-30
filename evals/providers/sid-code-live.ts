@@ -359,6 +359,7 @@ async function main() {
     retry_count: trajSignals.retryCount,
     backtrack_count: trajSignals.backtrackCount,
     session_id: parsed.sessionId,
+    trajectory_path: trajPath,
   };
 
   process.stderr.write(

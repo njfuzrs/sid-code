@@ -1,0 +1,151 @@
+# SWE-bench Verified subset — 10 条精挑（B8-2）
+#
+# 选取标准（v1.3 §15.1 + 接入计划.md §1.2）:
+#   1. Python 单语言（避免多语言 sandbox 适配复杂度）
+#   2. 单文件修改（避免多文件 patch 评分歧义）
+#   3. FAIL_TO_PASS 测试 ≤ 5 条（保证测试结果稳定）
+#   4. 难度分散 easy:5 / medium:3 / hard:2（避免全过 or 全 0 虚高/虚低）
+#   5. 排除已知训练污染严重 instance（OpenAI 2026 报告中明确点名的）
+#
+# 数据隔离铁律(CLAUDE.md §0.4 + §9.3):
+#   - 不写自家 baseline_scores
+#   - 不进自家 grader registry
+#   - 报告独立到 _reports/external/inspect-{date}.md
+#
+# ⚠ 注意：本文件是 B8-1 骨架阶段产出，instance_id 基于公开 SWE-bench Verified 仓库
+#         实际跑前 S8 实施者必须用 `python -c "from datasets import load_dataset; ds = load_dataset('princeton-nlp/SWE-bench_Verified', split='test'); print([r['instance_id'] for r in ds])"` 校验
+#         如有 instance_id 已被 OpenAI 2026 标记污染，从 1.7-候选池 替换
+
+selection_criteria:
+  language: Python
+  files_modified_max: 1
+  fail_to_pass_max: 5
+  difficulty_split:
+    easy: 5
+    medium: 3
+    hard: 2
+  excluded_repos:
+    # 这些仓库在 SWE-bench Verified 中存在已知训练污染
+    # 留空待 S8 实施者根据 OpenAI 2026 最新报告填充
+    - ""
+
+instances:
+  # === easy（5 条）：单函数 bug fix，测试简单 ===
+  - instance_id: "sympy__sympy-13647"
+    repo: "sympy/sympy"
+    base_commit: "TODO_S8_FILL"  # 实施者 from datasets API 取
+    problem_statement_summary: "Matrix col_insert insertion 位置 off-by-one"
+    difficulty: easy
+    selection_reason: "纯逻辑 bug，单文件 sympy/matrices/dense.py，测试 ≤3 条"
+    fail_to_pass_count: 2
+
+  - instance_id: "django__django-11099"
+    repo: "django/django"
+    base_commit: "TODO_S8_FILL"
+    problem_statement_summary: "UsernameValidator 允许尾部换行"
+    difficulty: easy
+    selection_reason: "正则修改，validators.py 单文件，测试覆盖明确"
+    fail_to_pass_count: 1
+
+  - instance_id: "psf__requests-2317"
+    repo: "psf/requests"
+    base_commit: "TODO_S8_FILL"
+    problem_statement_summary: "method 参数 binary string 兼容"
+    difficulty: easy
+    selection_reason: "类型转换 fix，sessions.py 单文件"
+    fail_to_pass_count: 2
+
+  - instance_id: "matplotlib__matplotlib-23314"
+    repo: "matplotlib/matplotlib"
+    base_commit: "TODO_S8_FILL"
+    problem_statement_summary: "set_visible() 对 3D Axes 不生效"
+    difficulty: easy
+    selection_reason: "属性继承 fix，axes3d.py 单文件，测试单元清晰"
+    fail_to_pass_count: 1
+
+  - instance_id: "pylint-dev__pylint-7080"
+    repo: "pylint-dev/pylint"
+    base_commit: "TODO_S8_FILL"
+    problem_statement_summary: "--recursive=y 忽略 ignore-paths 配置"
+    difficulty: easy
+    selection_reason: "配置读取顺序 fix，expand_modules.py 单文件"
+    fail_to_pass_count: 2
+
+  # === medium（3 条）：跨函数 / 状态机 bug ===
+  - instance_id: "django__django-13315"
+    repo: "django/django"
+    base_commit: "TODO_S8_FILL"
+    problem_statement_summary: "ModelChoiceField limit_choices_to 重复 query"
+    difficulty: medium
+    selection_reason: "状态计算去重，forms/models.py 单文件，测试 4 条"
+    fail_to_pass_count: 4
+
+  - instance_id: "sympy__sympy-15011"
+    repo: "sympy/sympy"
+    base_commit: "TODO_S8_FILL"
+    problem_statement_summary: "lambdify 处理 MatrixSymbol with special chars"
+    difficulty: medium
+    selection_reason: "符号生成跨多函数，但限定 utilities/lambdify.py 单文件"
+    fail_to_pass_count: 3
+
+  - instance_id: "scikit-learn__scikit-learn-13496"
+    repo: "scikit-learn/scikit-learn"
+    base_commit: "TODO_S8_FILL"
+    problem_statement_summary: "IsolationForest 的 warm_start 参数缺失"
+    difficulty: medium
+    selection_reason: "新增 API 参数，ensemble/_iforest.py 单文件，测试 5 条"
+    fail_to_pass_count: 5
+
+  # === hard（2 条）：需读多文件理解再单文件改 ===
+  - instance_id: "django__django-15347"
+    repo: "django/django"
+    base_commit: "TODO_S8_FILL"
+    problem_statement_summary: "Messages framework 序列化 extra_tags 丢失"
+    difficulty: hard
+    selection_reason: "需读 storage 多 backend 找根因，最终改 cookie.py 单文件"
+    fail_to_pass_count: 3
+
+  - instance_id: "sympy__sympy-21055"
+    repo: "sympy/sympy"
+    base_commit: "TODO_S8_FILL"
+    problem_statement_summary: "refine() 处理 arg(z) 和 abs(x*y) 的恒等式"
+    difficulty: hard
+    selection_reason: "符号假设传播，需读 assumptions / refine 模块，最终改 assumptions/refine.py 单文件"
+    fail_to_pass_count: 4
+
+# === 候选池（备选，若上述任一被替换）===
+candidate_pool:
+  - instance_id: "astropy__astropy-12907"
+    repo: "astropy/astropy"
+    difficulty: medium
+    note: "Modeling separability_matrix 计算 bug，单文件"
+  - instance_id: "sphinx-doc__sphinx-8801"
+    repo: "sphinx-doc/sphinx"
+    difficulty: easy
+    note: "继承类成员展示 bug"
+  - instance_id: "pytest-dev__pytest-7373"
+    repo: "pytest-dev/pytest"
+    difficulty: medium
+    note: "skip mark 在 fixture 求值时机"
+  - instance_id: "django__django-11848"
+    repo: "django/django"
+    difficulty: easy
+    note: "parse_http_date 处理 2 位年份"
+  - instance_id: "matplotlib__matplotlib-25433"
+    repo: "matplotlib/matplotlib"
+    difficulty: hard
+    note: "RangeSlider on_changed 回调中 set_val 失效"
+
+# === 数据来源 ===
+source:
+  dataset: "princeton-nlp/SWE-bench_Verified"
+  split: "test"
+  total: 500
+  pulled_at: "TODO_S8_FILL"
+  selection_method: "人工挑选 + 候选池备选"
+
+# === 数据隔离声明 ===
+isolation:
+  baseline_scores: "禁止写入自家 case yaml 的 baseline_scores"
+  grader_registry: "不进 evals/_graders/registry.ts，独立走 inspect_ai scorer"
+  reports: "独立到 _reports/external/inspect-{date}.md"

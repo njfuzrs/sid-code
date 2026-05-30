@@ -1,0 +1,160 @@
+id: bug_001
+category: bug修复
+priority: P0
+created_date: 2026-05-30
+
+# B5-2/B5-3 第一条 execution case
+# 来源：sid-code commit b1cfda9 "fix: 文件始终写入所有级别（DEBUG）"
+# 蒸馏：原 commit 改 src/debug/logger.ts 12 行；本 case 用最小可复现 fixture 捕捉同一 bug class
+#       —— "log file 写入被 console level 过滤错杀，导致 debug 级别日志被吞"
+# §15.3 S5 铁律检查：纯逻辑 bug ✅ / 不依赖外部 HTTP/DB ✅ / 不需新依赖 ✅ / 不依赖 docker ✅
+
+eval_type: execution
+target_score: 1.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+# Execution grader 走 grader_type=execution_test，binary 0/1，不与 5d-v3 加权混算
+grader_type: execution_test
+
+# Execution test spec
+execution_test:
+  apply_mode: extract_files
+
+  # Fixture：最小可复现的 buggy logger.ts + 单测
+  fixtures:
+    - path: logger.ts
+      content: |
+        // 蒸馏自 src/debug/logger.ts（commit b1cfda9 之前），保留 buggy 逻辑
+        import { writeFileSync, appendFileSync } from "node:fs";
+
+        export enum LogLevel {
+          ERROR = 0,
+          WARN = 1,
+          INFO = 2,
+          DEBUG = 3,
+        }
+
+        export interface LoggerOptions {
+          enabled: boolean;
+          level: LogLevel;
+          logFile: string;
+        }
+
+        export class Logger {
+          private options: LoggerOptions;
+
+          constructor(options: LoggerOptions) {
+            this.options = options;
+            if (options.enabled) {
+              writeFileSync(options.logFile, "=== LOG START ===\n", "utf-8");
+            }
+          }
+
+          // BUG: shouldLog 同时门控了 console 和 file —— 但 file 应该写所有级别
+          private shouldLog(level: LogLevel): boolean {
+            return this.options.enabled && level <= this.options.level;
+          }
+
+          log(level: LogLevel, message: string): void {
+            if (!this.shouldLog(level)) return;
+            const line = `[${LogLevel[level]}] ${message}\n`;
+            appendFileSync(this.options.logFile, line);
+            // 期望：file 总是写；console 才受 level 过滤
+            // BUG：当前 shouldLog 在最外层短路 → DEBUG 永远进不了 file
+          }
+        }
+    - path: logger.test.ts
+      content: |
+        import { Logger, LogLevel } from "./logger";
+        import { readFileSync, unlinkSync, existsSync } from "node:fs";
+
+        const LOG_PATH = "/tmp/sid-eval-bug_001.log";
+        if (existsSync(LOG_PATH)) unlinkSync(LOG_PATH);
+
+        const lg = new Logger({ enabled: true, level: LogLevel.WARN, logFile: LOG_PATH });
+        lg.log(LogLevel.ERROR, "err1");
+        lg.log(LogLevel.WARN, "warn1");
+        lg.log(LogLevel.INFO, "info1");
+        lg.log(LogLevel.DEBUG, "debug1");
+
+        const content = readFileSync(LOG_PATH, "utf-8");
+        const must = ["err1", "warn1", "info1", "debug1"];
+        const missing = must.filter((s) => !content.includes(s));
+        if (missing.length > 0) {
+          console.error(`FAIL: log file 缺失级别: ${missing.join(",")}`);
+          console.error(`实际内容:\n${content}`);
+          process.exit(1);
+        }
+        console.log(`PASS: 4 个级别全部写入 log file`);
+        process.exit(0);
+
+  # 应用 patch 前必须 fail（验证 fixture 真的是"坏的"）
+  pre_apply_must_fail:
+    - cmd: bun
+      args: ["logger.test.ts"]
+
+  # 应用 agent 修复后跑单测，必须全部 0 退出
+  verify_commands:
+    - cmd: bun
+      args: ["logger.test.ts"]
+      timeout_ms: 15000
+
+  total_timeout_ms: 60000
+
+input:
+  user_query: |
+    下面是项目中的两个 TypeScript 文件，logger.test.ts 当前会失败：
+
+    === FILE: logger.ts ===
+    （内容见 fixture）
+    === FILE: logger.test.ts ===
+    （内容见 fixture，断言 4 个级别都进 log 文件）
+
+    需求：log 文件应该写入所有级别（DEBUG/INFO/WARN/ERROR），但 console 输出仍受 `options.level` 过滤。
+    请修复 logger.ts，让 logger.test.ts 通过。
+
+    输出格式：必须按下述格式输出修复后的完整文件内容（apply_mode=extract_files）：
+
+    === FILE: logger.ts ===
+    <完整文件内容>
+    === FILE: logger.test.ts ===
+    <完整文件内容>（保持不变）
+  repo: sid-code
+  repo_commit: b1cfda9^
+
+expected:
+  outcome: fix_logger_file_write_to_pass_test
+  must_include_any_of:
+    - "level <= this.options.level"
+    - "options.fileOnly"
+    - "appendFileSync"
+  must_not_include: []
+  must_call_tools: []
+  must_not_call_tools: []
+  must_modify_files_in:
+    - "logger.ts"
+  must_not_modify_files:
+    - "logger.test.ts"
+  max_steps: 30
+  reference_answer: |
+    将 file 写入与 console 输出解耦：
+    - log() 内部移除最外层 shouldLog 门控
+    - file 写入 (appendFileSync) 始终执行（只要 enabled=true）
+    - console 输出在 file 写完之后再做 level 过滤
+    参考 commit b1cfda9 的修复方式。
+
+rubric:
+  completeness: "fixture 中的 logger.test.ts 必须在修复后 0 退出"
+  precision: "禁止删 logger.test.ts；禁止把 enabled 检查也一并删除导致禁用日志后仍写入"
+  helpfulness: "若 agent 解释为何 file 与 console 应解耦，加分；不解释只贴代码也算 PASS（execution 是 binary）"
+
+source: "蒸馏自 sid-code commit b1cfda9（2026-03-18 zhourusheng）"
+notes: |
+  本 case 是 §15.3 S5 铁律下第一条端到端 execution case。
+  fixture 体量 < 3KB，sandbox 跑 verify_commands < 5s，远低于 60s 总耗时上限。
+  之后扩到 ci-self-heal / security-audit Skill 时复用本 case 的 extract_files 模式。
+related_subsystem:
+  - debug
+  - execution-grader

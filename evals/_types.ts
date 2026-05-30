@@ -67,6 +67,12 @@ export interface CaseYaml {
    * 设计依据：SWE-bench Verified（500 case 全 docker 测试，0 LLM judge）。
    */
   execution_test?: ExecutionTestSpec;
+  /**
+   * Trajectory 诊断断言（grader_type=trajectory_match 时使用，B6-7/B6-8 / ADR-033 引入）。
+   * **M5 之前仅作诊断**：分数不进总分加权；落 _reports/sprint-S<N>/diagnostic/ 用于失败根因分析。
+   * §15.2 v1.3 修正：等价路径爆炸 + 里程碑主观 + 步数差不是错误信号 — 三条铁律决定诊断维度而非 KPI。
+   */
+  trajectory_assertion?: TrajectoryAssertion;
   input: {
     user_query: string;
     repo?: string;
@@ -177,4 +183,45 @@ export interface ExecutionTestSpec {
   total_timeout_ms?: number;
   /** 期望必须 fail 的命令（fixture 验证：未应用 patch 时这些命令应该 fail） */
   pre_apply_must_fail?: Array<{ cmd: string; args: string[] }>;
+}
+
+/**
+ * Trajectory diagnostic assertion（B6-8 / ADR-033 引入）。
+ *
+ * 设计原则（§15.2 v1.3）：
+ *   1. **不进总分加权**：M5 前仅作诊断维度，落 _reports/.../diagnostic/<case_id>.json
+ *   2. **不奖励短路径**：reward 公式禁止 step 数 ≤ reference 的正向项；仅在长度爆炸时告警
+ *   3. **等价路径不当错误**：tool_equivalence_classes 把 grep / rg / lsp_references 视为同一组
+ *
+ * 升格判定（M5 后才会启动）：
+ *   - 等价类误判率 < 15%（人工 spot-check 100 条）
+ *   - milestone 命中率与 execution pass rate 相关性 ρ ≥ 0.5
+ *   - 不同 LLM provider 跑同一 case，trajectory_match score 方差 < 0.2
+ */
+export interface TrajectoryAssertion {
+  /**
+   * 必须达成的语义里程碑（描述性，不绑定具体工具）。
+   * grader 用 LLM judge 在 spans 序列上做语义匹配；任一未命中 → 该里程碑 fail。
+   * 示例："找到 src/agent/loop.ts" / "理解 sub-loop 与 main-loop 区别"
+   */
+  milestones: string[];
+  /**
+   * 工具等价类（同一组内的工具被视为可互换）。
+   * 示例：[["grep", "rg", "lsp_references"], ["read", "cat", "lsp_definition"]]
+   * milestone 命中判定时，命中等价组任一工具即可。
+   */
+  tool_equivalence_classes?: string[][];
+  /**
+   * 关键参数断言（可选，针对必须命中特定文件 / 路径的场景）。
+   * field 为 spans[*].tool_input 的 jsonpath（简化版："file_path" / "args[0]"）。
+   * 示例：[{ field: "file_path", regex: "^src/agent/.*\\.ts$" }]
+   */
+  arg_must_match?: Array<{ field: string; regex: string }>;
+  /**
+   * 异常告警阈值。
+   * - 步数 > max_steps × 2 时告警「探索过度」
+   * - 步数 < milestones.length / 2 时告警「步数太少疑似过早收尾」
+   * - 注意：**不奖励** step ≤ max_steps；仅作长度爆炸告警
+   */
+  max_steps?: number;
 }

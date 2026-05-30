@@ -1,7 +1,7 @@
 # Eval Cases 详情手册
 
 > 自动生成，请勿手动编辑。运行 `bun run evals/gen-cases-md.ts` 刷新。
-> 生成时间: 2026-05-29T20:26:55.641Z
+> 生成时间: 2026-05-30T02:52:39.284Z
 > 数据源: case YAML + `_reports/promptfoo-latest.json`
 
 ## 总览
@@ -161,38 +161,16 @@ src/query/loop.ts 的 sub-loop）。
 
 #### sid_code_deepseek_v4_pro — 5 ✅
 
-🕐 2026-05-29T18:41:58.349Z | 评分方式: eval-runner | 耗时: 16.2s
+🕐 2026-05-29T18:41:58.349Z | 评分方式: eval-runner
 
 | 维度 | 得分 | 说明 |
 | --- | --- | --- |
 | 锚点命中 (×1.5) | ✅ 1 | — |
-| negative_anchor (×2) | ❌ null | 🚨 **无 must_not_include 锚点，跳过反例检查** |
-| LLM 评判 (×4) | ❌ null | 🚨 **Step1: 事实核对完全正确，输出准确定位到 src/agent/loop.ts 文件和 AgentLoopRunner 类，核心职责描述与代码实际状态一致，详细解释了 agentic while-loop 的完整流程（上下文管理、LLM请求、流式响应、工具执行、循环检测等8个关键环节）；Step2: 无任何硬扣分违规，未触发 must_not_include/precision/must_no…** |
+| negative_anchor (×2) | ❌ null | 严重不足 |
+| LLM 评判 (×4) | ❌ null | 严重不足 |
 | 工具合规 (×1.5) | ✅ 1 | — |
 | 效率 (×1) | ✅ 1 | — |
 | 成本 (×1) | ✅ 1 | — |
-
-<details><summary>💬 实际回答（819 字）</summary>
-
-```
-文件: src/agent/loop.ts  
-类名: AgentLoopRunner
-
-核心职责
-
-AgentLoopRunner 是 sid-code 的 Agentic While-Loop 统一核心循环，消除 REPL/TUI 中重复的循环逻辑。其 run() 方法（第 191 行）实现一个 while (turns < maxTurns) 循环，每次迭代完成以下流程：
-
-1. 上下文管理 — 估算 token 用量，按 emergency/hard/soft/none 四级策略做截断或摘要压缩
-2. LLM 请求 — 构建 SendParams（含系统提示词、工具定义），经 sendWithRetry（带 fallback 重试）发送流式请求
-3. 流式响应处理 — 通过回调 onStreamText 实时输出文本，记录 TTFT 和 API 耗时
-4. 用量追踪 — 更新 session 级别的 token/cost 统计，触发配额检查和预算告警
-5. Hook 拦截点 — BeforeModel/AfterModel/AfterAgent hook，可阻止请求、修改响应、清除上下文
-6. 工具调用执行 — stopReason === "tool_use" 时批量执行工具，注入结果回上下文，并补齐缺失的 tool_result
-7. 循环检测与恢复 — 三层检测：内容重复、工具调用重复、LLM 认知检测（30 轮后每 10 轮一次），检测到循环时注入恢复提示让 LLM 自我纠正
-8. 停止条件 — end_turn/stop 正常结束；max_tokens/length 自动续写；达到 maxTurns 上限强制终止
-```
-
-</details>
 
 #### sid_code_claude_opus_4_7 — 5 ✅
 

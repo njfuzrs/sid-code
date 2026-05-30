@@ -1,0 +1,244 @@
+# CR 标准化样本集 spec（B8-3）
+#
+# 状态：spec 就绪,待 S8 实施者按 §3 schema 标注 20 条 cr_001-020.yaml
+# 关联：evals/external-benchmarks/cr-samples/README.md §3
+# 业界参照：JudgeBench 多 judge majority vote 配置
+
+# === 样本计划 ===
+#
+# 来源分布(共 20 条):
+#   sid-code-self: 8   (从 sid-code git log 历史 PR 中精挑,需脱敏)
+#   open-source:   8   (从 GitHub Top 100 项目精挑,license 兼容)
+#   synthetic:     4   (人工合成业界已知 review 困难场景)
+#
+# 难度分布:
+#   easy:   6   (单文件 < 100 行,1-2 个问题点)
+#   medium: 10  (跨 2-3 文件,3-5 个问题点,含 ≥1 个隐含问题)
+#   hard:   4   (≥4 文件,≥5 个问题点,≥1 个语义陷阱)
+#
+# 标注协议(2026-05-30 v1):
+#   1. 每条样本 ≥ 2 名工程师独立标注(标注者必须熟悉对应语言/框架)
+#   2. 取 must_flag 交集为 ground_truth(避免单人偏见)
+#   3. 分歧条目走仲裁(第 3 名仲裁者裁决)
+#   4. 仲裁理由必须落 yaml 注释,可追溯
+
+samples_plan:
+  # === sid-code 自家(8 条)===
+  - id: cr_001
+    source: sid-code-self
+    difficulty: easy
+    language: typescript
+    expected_repo_hint: "sid-code/src/agent/loop.ts"
+    description: "agentic while-loop 中 stop_reason 判断遗漏 max_tokens 边界情况"
+    must_flag_seed:
+      - "max_tokens 命中时 stop_reason 处理"
+      - "agent loop 退出条件不完整"
+
+  - id: cr_002
+    source: sid-code-self
+    difficulty: easy
+    language: typescript
+    expected_repo_hint: "sid-code/src/tool/bash.ts"
+    description: "sandbox 子进程未做僵尸进程清理"
+    must_flag_seed:
+      - "subprocess 资源泄漏"
+      - "missing cleanup on timeout"
+
+  - id: cr_003
+    source: sid-code-self
+    difficulty: medium
+    language: typescript
+    expected_repo_hint: "sid-code/src/permission/checker.ts"
+    description: "permission check race condition(check 和 use 之间状态可被改)"
+    must_flag_seed:
+      - "TOCTOU race condition"
+      - "permission state mutation between check and use"
+
+  - id: cr_004
+    source: sid-code-self
+    difficulty: medium
+    language: typescript
+    expected_repo_hint: "sid-code/evals/eval-runner.ts"
+    description: "baseline_scores 写入未做版本号过滤(legacy 数据混算)"
+    must_flag_seed:
+      - "missing _formula_version filter"
+      - "data version contamination"
+
+  - id: cr_005
+    source: sid-code-self
+    difficulty: medium
+    language: typescript
+    expected_repo_hint: "sid-code/src/llm/anthropic/client.ts"
+    description: "streaming 处理时未正确处理 SSE 断开重连"
+    must_flag_seed:
+      - "SSE reconnection logic missing"
+      - "partial response not handled"
+
+  - id: cr_006
+    source: sid-code-self
+    difficulty: hard
+    language: typescript
+    expected_repo_hint: "sid-code/src/skill/loader.ts"
+    description: "Skill 自演化路径未拦截(违反 RL-008)"
+    must_flag_seed:
+      - "Skill self-modification bypass"
+      - "RL-008 violation"
+      - "missing immutability guard"
+
+  - id: cr_007
+    source: sid-code-self
+    difficulty: hard
+    language: typescript
+    expected_repo_hint: "sid-code/src/context/manager.ts"
+    description: "context auto-compaction 在多 sub-agent 并发场景下数据丢失"
+    must_flag_seed:
+      - "concurrent compaction data loss"
+      - "missing lock on shared context"
+
+  - id: cr_008
+    source: sid-code-self
+    difficulty: easy
+    language: typescript
+    expected_repo_hint: "sid-code/evals/_graders/binary-redline-grader.ts"
+    description: "mandatoryPass 字段未写入 _runs/*.jsonl"
+    must_flag_seed:
+      - "missing field in jsonl serialization"
+
+  # === open-source(8 条)===
+  - id: cr_009
+    source: open-source
+    difficulty: easy
+    language: python
+    expected_repo_hint: "django/django"
+    description: "Form validation 顺序错误导致 SQL injection 风险"
+    must_flag_seed:
+      - "SQL injection vulnerability"
+      - "validation order bug"
+
+  - id: cr_010
+    source: open-source
+    difficulty: medium
+    language: python
+    expected_repo_hint: "psf/requests"
+    description: "session 复用时 cookie 未隔离"
+    must_flag_seed:
+      - "cookie isolation bug"
+      - "session state leak"
+
+  - id: cr_011
+    source: open-source
+    difficulty: medium
+    language: javascript
+    expected_repo_hint: "facebook/react"
+    description: "useEffect 依赖数组遗漏导致 stale closure"
+    must_flag_seed:
+      - "stale closure in useEffect"
+      - "missing dependency"
+
+  - id: cr_012
+    source: open-source
+    difficulty: medium
+    language: go
+    expected_repo_hint: "kubernetes/kubernetes"
+    description: "goroutine leak in watch loop"
+    must_flag_seed:
+      - "goroutine leak"
+      - "missing context cancellation"
+
+  - id: cr_013
+    source: open-source
+    difficulty: hard
+    language: rust
+    expected_repo_hint: "tokio-rs/tokio"
+    description: "async drop 在 panic 时未正确清理"
+    must_flag_seed:
+      - "async drop panic safety"
+      - "resource leak on panic"
+
+  - id: cr_014
+    source: open-source
+    difficulty: easy
+    language: python
+    expected_repo_hint: "pallets/flask"
+    description: "session secret_key 默认值不安全"
+    must_flag_seed:
+      - "insecure default"
+      - "missing config validation"
+
+  - id: cr_015
+    source: open-source
+    difficulty: medium
+    language: typescript
+    expected_repo_hint: "microsoft/vscode"
+    description: "extension API 暴露文件读取无路径校验"
+    must_flag_seed:
+      - "path traversal vulnerability"
+      - "missing path validation"
+
+  - id: cr_016
+    source: open-source
+    difficulty: hard
+    language: python
+    expected_repo_hint: "openai/openai-python"
+    description: "retry logic 在 streaming 中重复消费 token"
+    must_flag_seed:
+      - "duplicate token consumption"
+      - "retry idempotency violation"
+
+  # === synthetic(4 条)===
+  - id: cr_017
+    source: synthetic
+    difficulty: hard
+    language: python
+    description: "supply-chain attack 模拟:第三方包 install_requires 拉了类似命名的恶意包"
+    must_flag_seed:
+      - "typosquatting dependency"
+      - "supply-chain attack vector"
+    note: "v1.3 §15.1 显式列举的 hard case 类型"
+
+  - id: cr_018
+    source: synthetic
+    difficulty: hard
+    language: typescript
+    description: "race condition: 两个 promise.all 中的副作用顺序依赖"
+    must_flag_seed:
+      - "race condition"
+      - "side effect ordering assumption"
+
+  - id: cr_019
+    source: synthetic
+    difficulty: medium
+    language: go
+    description: "TOCTOU: file 检查存在性与打开之间被替换"
+    must_flag_seed:
+      - "TOCTOU vulnerability"
+      - "race between stat and open"
+
+  - id: cr_020
+    source: synthetic
+    difficulty: medium
+    language: python
+    description: "implicit contract violation: helper 函数返回值类型在不同分支不一致"
+    must_flag_seed:
+      - "inconsistent return type"
+      - "implicit contract violation"
+
+# === 数据隔离声明 ===
+isolation:
+  baseline_scores: "禁止写入自家 case yaml 的 baseline_scores"
+  grader_registry: "不进 evals/_graders/registry.ts"
+  prompt_cache: "CR 样本永不进 sid-code prompt cache"
+  reports: "独立到 _reports/external/cr-{date}.md"
+
+# === Schema 校验 ===
+validation:
+  ground_truth_required: true
+  judges_required: true
+  scoring_required: true
+  threshold_required: true
+
+# === 状态 ===
+status:
+  spec: "ready"
+  samples_landed: "0/20"  # B8-3 骨架阶段不落实际样本,等 S8 实施
+  judges_config: "ready"  # 见 multi-judge-config.yaml

@@ -1,0 +1,10 @@
+# SWE-bench 接入依赖（B8-1）
+# 使用方式：复用 trajectory-platform/backend/venv，不新建 venv
+#   source ~/Code/person/trajectory-platform/backend/venv/bin/activate
+#   pip install -r evals/external-benchmarks/swe-bench/requirements.txt
+
+inspect-ai>=0.3.0
+inspect-evals>=0.1.0  # 含 swe_bench task 实现（200+ benchmarks）
+datasets>=2.14.0      # HuggingFace datasets，inspect_evals.swe_bench 依赖
+docker>=7.0.0         # SWE-bench instance container 启动（路径 A 默认）
+pyyaml>=6.0

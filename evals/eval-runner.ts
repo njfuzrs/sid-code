@@ -28,6 +28,9 @@ const CASE_DIRS = [
   join(ROOT, "general", "p0-core"),
   join(ROOT, "general", "p1-common"),
   join(ROOT, "general", "p2-edge"),
+  // B5-1（2026-05-30 / ADR-032）：execution case 新增子目录，走 grader_type=execution_test
+  // 通过 _graders registry 自动分流到 ExecutionTestGrader → runSandbox()，主流程不需特殊改动。
+  join(ROOT, "general", "execution"),
 ];
 const HOLDOUT_DIR = join(ROOT, "holdout");
 const ARCHITECTURE_ROOT = join(ROOT, "architecture");

@@ -1,0 +1,102 @@
+# 多 judge majority vote 配置(B8-3)
+#
+# 业界参照: JudgeBench 2025 多 judge 实验
+#   - 单 judge: 50-57% accuracy
+#   - 3-judge majority: 57%+ stable
+#   - 5-judge majority: 60%+ but 成本翻倍
+#
+# 本路线决策(M5 Gate 前): 3-judge,平衡成本与稳定性
+# 关联: evals/external-benchmarks/cr-samples/README.md §4
+
+version: "v1"
+
+judges:
+  - id: primary
+    model: "anthropic/claude-sonnet-4-6"
+    role: "primary"
+    weight: 1.0
+    prompt_template: "evals/external-benchmarks/cr-samples/judge-prompt.md"
+    max_tokens: 4096
+
+  - id: secondary
+    model: "anthropic/claude-opus-4-7"
+    role: "secondary"
+    weight: 1.0
+    prompt_template: "evals/external-benchmarks/cr-samples/judge-prompt.md"
+    max_tokens: 4096
+
+  - id: tiebreaker
+    model: "openai/gpt-5"  # S8 实施者根据可用性调整
+    role: "tiebreaker"
+    weight: 1.0
+    activation: "on_disagreement"  # 仅在 primary/secondary 分歧 ≥ 0.2 时启用
+    prompt_template: "evals/external-benchmarks/cr-samples/judge-prompt.md"
+    max_tokens: 4096
+
+# === 投票算法 ===
+voting:
+  algorithm: "median_with_tiebreaker"
+  disagreement_threshold: 0.2  # primary/secondary 差 ≥ 0.2 → 启用 tiebreaker
+  aggregation:
+    when_agree: "average"     # |p - s| < 0.2 → (p + s) / 2
+    when_disagree: "median"   # 否则 median(p, s, t)
+  tie_break: "primary"        # 仍打平 → primary 优先
+
+# === 防偏护栏 ===
+safeguards:
+  # 防 self-grading bias
+  forbid_same_provider:
+    enabled: true
+    description: "禁止用 sid-code 内置 LLM judge 评 sid-code 的 review"
+    enforcement:
+      - "sid-code-live wrapper 不可作为任何 judge"
+      - "若 sid-code 改用 anthropic/claude-sonnet-4-6,则 primary judge 必须切换"
+
+  # 防 thinking trace 引导
+  forbid_thinking_trace:
+    enabled: true
+    description: "judge 不可看 sid-code 的 reasoning / thinking 输出"
+    enforcement:
+      - "runner.ts 喂 judge 前必须 strip <thinking> 标签"
+      - "trace.jsonl 中的 internal reasoning 不进 judge prompt"
+
+  # 防 ground_truth 泄漏
+  forbid_gt_leak:
+    enabled: true
+    description: "ground_truth 不可在 sid-code prompt cache 中"
+    enforcement:
+      - "CR 样本路径加 .gitignore-cache 标记"
+      - "sid-code prompt cache TTL 设置 < CR 样本注入间隔"
+
+  # 防顺序 bias
+  randomize_order:
+    enabled: true
+    description: "judge 评 sid-code 输出 vs ground_truth 时,顺序随机化"
+
+# === 阈值 ===
+threshold:
+  pass: 0.7              # 单条样本 total ≥ 0.7 算 pass
+  baseline_target: 0.6   # 整批 20 条平均 ≥ 0.6 算"sid-code code-review 达 baseline"
+  ga_target: 0.7         # 整批平均 ≥ 0.7 算"达 GA"(M5 Gate 准入)
+  excellence_target: 0.85
+
+# === 跑分输出 ===
+output:
+  per_sample: "evals/external-benchmarks/cr-samples/results/{date}/cr_{NNN}.json"
+  aggregate: "_reports/external/cr-{date}.md"
+  raw_judge_responses: "evals/external-benchmarks/cr-samples/results/{date}/judges/"
+
+# === Sprint 末必跑流程 ===
+sprint_end_protocol:
+  required: true  # M5 Gate 起 self-vs-external gap 报告必跑
+  failure_action: "Sprint 报告作废 + 重跑"
+  reporting:
+    - "self_score(报告型)"
+    - "cr_judge_majority"
+    - "gap = self_score - cr_judge_majority"
+    - "gap > 0.2 警示:可能存在自家 case 偏向"
+
+# === 数据隔离 ===
+isolation:
+  judge_runs: "独立 _reports/external/cr-{date}.md,不混入自家 grader registry"
+  cost_tracking: "judge 调用成本独立计入 _reports/external/cost-{date}.json"
