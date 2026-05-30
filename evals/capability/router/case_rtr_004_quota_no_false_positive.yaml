@@ -18,10 +18,11 @@ target_score: 4.0
 graduated_at: null
 holdout: false
 
-known_limitation:
-  type: case_design
-  reason: "未注入 quota 限制,实测的是正常长回答能力,与 router quota 无强关联"
-  resolved_in: "S2/S3 mock provider 阶段注入 quota 阈值/耗尽验证"
+# 真测补充 (2026-05-31 / ADR-021 §4.4 / S6-T06):
+#   rtr_010 验证 mock-rate-limit 携带 retryAfterMs (quota 提示文本数据源).
+#   本 case 保留测"agent 不在无 quota 限制时假报告 quota"维度, known_limitation 已移除.
+
+related_real_tests: [tests/llm/router-mock-integration.test.ts]
 
 input:
   user_query: |

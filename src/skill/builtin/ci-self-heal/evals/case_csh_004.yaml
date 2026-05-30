@@ -1,0 +1,75 @@
+id: case_csh_004
+category: ci-self-heal failure_classification
+priority: P0
+created_date: 2026-05-30
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: ci-self-heal
+
+input:
+  user_query: |
+    我的 lint CI 挂了，请帮我看下：
+
+    ```
+    /workspace/src/components/Button.tsx
+      14:7   error  'unused' is assigned a value but never used  no-unused-vars
+      18:3   error  Missing semicolon                            semi
+      22:11  error  Expected '===' and instead saw '=='          eqeqeq
+
+    /workspace/src/utils/format.ts
+      8:1   error  Expected indentation of 2 spaces but found 4  indent
+
+    ✖ 4 problems (4 errors, 0 warnings)
+    ```
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: lint_failure_diagnosed
+
+  must_include_any_of:
+    - "lint_failure"
+    - "lint 失败"
+    - "no-unused-vars"
+    - "semi"
+    - "eqeqeq"
+    - "indent"
+    - "Button.tsx"
+
+  must_not_include:
+    - "test_failure"
+    - "build_failure"
+    - "type_error"
+    - "flaky"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 10
+
+  reference_answer: |
+    诊断必须：
+    (1) Failure Class = lint_failure
+    (2) 列出 4 条 lint rule 命中 + 对应 file:line
+    (3) 建议运行 `eslint --fix` 自动修复（这些都是 fixable rules）
+    (4) 不要把 lint 误归为 test_failure 或 build_failure
+
+rubric:
+  completeness: "识别 lint_failure + 列出 ≥ 3 条 lint rule + 引用 file:line"
+  precision: "不能 false positive 把 lint 升级为 build_failure 或 test_failure"
+  helpfulness: "建议 eslint --fix 自动修复路径"
+
+baseline_scores: {}
+
+source: "RFC-002 §5.1 failure_classification / eslint 标准输出格式"
+notes: |
+  failure_classification（lint_failure）case.
+  P0 覆盖：eslint 类失败 + 多文件多 rule.
+related_subsystem: [ skill, skill/ci-self-heal ]

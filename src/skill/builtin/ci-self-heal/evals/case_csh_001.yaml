@@ -1,0 +1,74 @@
+id: case_csh_001
+category: ci-self-heal trigger
+priority: P0
+created_date: 2026-05-30
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: ci-self-heal
+
+input:
+  user_query: |
+    我的 CI 挂了，请帮我看一下这个失败日志：
+
+    ```
+    FAIL  src/auth/login.test.ts
+      ✗ should reject wrong password
+        Expected: { error: "wrong_password" }
+        Received: { ok: true, userId: "u123" }
+        at Object.<anonymous> (src/auth/login.test.ts:42:30)
+
+    Tests:       1 failed, 12 passed
+    ```
+
+    （这是上 PR 时 GitHub Actions 跑出来的）
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: ci_failure_diagnosed_with_classification
+
+  must_include_any_of:
+    - "test_failure"
+    - "测试失败"
+    - "src/auth/login.test.ts"
+    - "wrong_password"
+    - "密码"
+
+  must_not_include:
+    - "无法诊断"
+    - "需要更多信息"
+    - "请提供更多上下文"
+    - "LGTM"
+    - "已修复"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 12
+
+  reference_answer: |
+    诊断必须给出：
+    (1) Failure Class = test_failure
+    (2) 引用 src/auth/login.test.ts:42 具体行号
+    (3) 至少 1 条 hypothesis（如：login() 函数对 wrong_password 分支返回了 ok:true，需检查密码比对逻辑）
+    (4) Verdict = likely_pr_caused（因为是测试失败 + 行号定位明确）
+
+rubric:
+  completeness: "识别 test_failure 分类 + 引用 src/auth/login.test.ts:42 行号 + 给出 ≥ 1 条 hypothesis"
+  precision: "不能 false positive 把 test_failure 归为 flaky 或 build_failure"
+  helpfulness: "至少 1 条 Suggested Fix 含可执行步骤（如检查 login.ts 密码分支）"
+
+baseline_scores: {}
+
+source: "RFC-002 §5.1 trigger / 复用 case_cr_001 的 admin123 反模式作为前置上下文"
+notes: |
+  trigger + failure_classification 双维度 case.
+  P0 覆盖最高频场景：jest 类测试失败 + 单文件 file:line 引用.
+related_subsystem: [ skill, skill/ci-self-heal ]

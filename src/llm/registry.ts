@@ -112,6 +112,29 @@ export class ProviderRegistry {
 
   /** 创建 Provider 实例（同步，使用 require 避免顶层 await） */
   private createProvider(providerName: string, apiKey: string, baseURL?: string): Provider {
+    // ADR-021 §4.4: mock-* 系列名走 MockProvider 工厂
+    // 仅 router capability eval 用 (例如 mock-503 / mock-rate-limit / mock-timeout / mock-ok)
+    if (providerName.startsWith("mock-")) {
+      const { createMockProvider } = require("./mocks/mock-provider.ts");
+      const failPattern = (() => {
+        const tail = providerName.slice("mock-".length);
+        if (tail === "503" || tail === "503-after-3") return "503";
+        if (tail.startsWith("503")) return "503";
+        if (tail.startsWith("rate-limit")) return "rate_limit";
+        if (tail.startsWith("timeout")) return "timeout";
+        return "ok";
+      })();
+      // failAfterRequests 后缀解析: "mock-503-after-2" → 2 次成功后失败
+      const afterMatch = providerName.match(/-after-(\d+)$/);
+      const failAfterRequests = afterMatch ? parseInt(afterMatch[1], 10) : 0;
+      return createMockProvider({
+        name: providerName,
+        failPattern,
+        model: this.config.model,
+        failAfterRequests,
+      });
+    }
+
     switch (providerName) {
       case "anthropic": {
         // 动态导入 Anthropic Provider

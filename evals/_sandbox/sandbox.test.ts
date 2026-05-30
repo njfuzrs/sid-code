@@ -92,4 +92,118 @@ describe("runSandbox", () => {
     expect(existsSync(r.workdir)).toBe(true);
     rmSync(r.workdir, { recursive: true, force: true });
   });
+
+  // ============================================================================
+  // §15.3 S5 铁律 sandbox 边界测试清单（B5-3 prereq）
+  // ============================================================================
+
+  test("§15.3-1 tmpdir cleanup：keepTmp=false 时 workdir 物理删除（不只是 cleaned 标志）", async () => {
+    const { existsSync } = await import("node:fs");
+    const r = await runSandbox({
+      files: [{ path: "a.txt", content: "remove me" }],
+      commands: [{ cmd: "echo", args: ["hi"] }],
+    });
+    expect(r.cleaned).toBe(true);
+    // 关键：workdir 真的不在文件系统上了，不只是字段标记
+    expect(existsSync(r.workdir)).toBe(false);
+  });
+
+  test("§15.3-1 tmpdir cleanup：命令 fail 也要清理（finally 路径）", async () => {
+    const { existsSync } = await import("node:fs");
+    const r = await runSandbox({
+      files: [{ path: "x.txt", content: "x" }],
+      commands: [{ cmd: "sh", args: ["-c", "exit 99"] }],
+    });
+    expect(r.allOk).toBe(false);
+    expect(r.exec[0].exitCode).toBe(99);
+    expect(r.cleaned).toBe(true);
+    expect(existsSync(r.workdir)).toBe(false);
+  });
+
+  test("§15.3-1 tmpdir cleanup：timeout 触发后 workdir 仍被清理", async () => {
+    const { existsSync } = await import("node:fs");
+    const r = await runSandbox({
+      files: [{ path: "x.txt", content: "x" }],
+      commands: [{ cmd: "sh", args: ["-c", "sleep 5"] }],
+      sandbox: { timeoutMs: 300 },
+    });
+    expect(r.exec[0].timedOut).toBe(true);
+    expect(r.cleaned).toBe(true);
+    expect(existsSync(r.workdir)).toBe(false);
+  });
+
+  test("§15.3-2 超时回收：SIGKILL 真把子进程干掉（用 ps 反查 PID 已死）", async () => {
+    // 让子进程把自己 PID 写到文件，sandbox 超时 SIGKILL 它后用 kill -0 反查应已死
+    const { existsSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const pidFile = join(tmpdir(), `sid-sandbox-pid-${Date.now()}-${Math.floor(Math.random() * 1e6)}`);
+    if (existsSync(pidFile)) rmSync(pidFile);
+
+    const r = await runSandbox({
+      files: [],
+      commands: [
+        {
+          cmd: "sh",
+          args: ["-c", `echo $$ > "${pidFile}" && sleep 30`],
+        },
+      ],
+      sandbox: { timeoutMs: 500 },
+    });
+    expect(r.exec[0].timedOut).toBe(true);
+
+    // 给 OS 一点反应时间收尸
+    await new Promise((res) => setTimeout(res, 200));
+
+    // 反查 PID 是否真死
+    const { readFileSync } = await import("node:fs");
+    expect(existsSync(pidFile)).toBe(true);
+    const pid = parseInt(readFileSync(pidFile, "utf-8").trim(), 10);
+    expect(Number.isFinite(pid)).toBe(true);
+
+    // kill -0 0 returns true 仅当进程仍存活；已死则抛 ESRCH
+    let stillAlive: boolean;
+    try {
+      process.kill(pid, 0);
+      stillAlive = true;
+    } catch {
+      stillAlive = false;
+    }
+    expect(stillAlive).toBe(false);
+
+    rmSync(pidFile, { force: true });
+  });
+
+  test("§15.3-2 超时回收：长 stdout 流不让 sandbox 漏 timeout（防数据流卡死 timer）", async () => {
+    // yes 命令疯狂吐 stdout，sandbox 必须仍能在 timeoutMs 后强杀
+    const start = Date.now();
+    const r = await runSandbox({
+      files: [],
+      commands: [{ cmd: "sh", args: ["-c", "yes spam | head -c 1000000 && sleep 10"] }],
+      sandbox: { timeoutMs: 500 },
+    });
+    const elapsed = Date.now() - start;
+    expect(r.exec[0].timedOut).toBe(true);
+    // 真在 timeoutMs 附近终止（给 1.5s 容差，避免 CI 慢机器误报）
+    expect(elapsed).toBeLessThan(2000);
+    // stdout 截到 64KB 上限以内（防 OOM）
+    expect(r.exec[0].stdout.length).toBeLessThanOrEqual(64 * 1024);
+  });
+
+  test("§15.3-3 边界：stdout 超 64KB 截断到末尾 64KB（防被测代码 OOM 评测进程）", async () => {
+    // 100KB 的 stdout（每行 ~20 字节 × 5500 行 ≈ 110KB > 64KB 上限）
+    const r = await runSandbox({
+      files: [],
+      commands: [
+        { cmd: "sh", args: ["-c", "for i in $(seq 1 5500); do echo line-$i-padding-text; done"] },
+      ],
+      sandbox: { timeoutMs: 10_000 },
+    });
+    expect(r.exec[0].exitCode).toBe(0);
+    expect(r.exec[0].stdout.length).toBeLessThanOrEqual(64 * 1024);
+    // 截到末尾：最后一行编号必须 ≈ 5500（保留尾部，丢弃头部）
+    expect(r.exec[0].stdout).toContain("line-5500-");
+    // 头几行应该已经被截掉
+    expect(r.exec[0].stdout).not.toContain("line-1-padding");
+  });
 });

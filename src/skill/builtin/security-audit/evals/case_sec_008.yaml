@@ -1,0 +1,72 @@
+id: case_sec_008
+category: sca_dependency
+priority: P1
+created_date: 2026-05-31
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: security-audit
+
+input:
+  user_query: |
+    审计:
+
+    ```diff
+    --- a/requirements.txt
+    +++ b/requirements.txt
+    @@ -1,4 +1,5 @@
+     flask==2.3.3
+     requests==2.31.0
+     pyyaml==6.0
+    +pickle-loader==0.1.0
+    ```
+  repo: example-app
+  repo_commit: ""
+
+expected:
+  outcome: medium_or_high_severity_sca_finding
+
+  must_include_any_of:
+    - "pickle"
+    - "依赖"
+    - "dependency"
+    - "新增"
+    - "new"
+    - "审"
+    - "warn"
+    - "block"
+
+  must_not_include:
+    - "LGTM"
+    - "pass: 0 finding"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 12
+
+  reference_answer: |
+    (1) Audit Verdict = warn 或 block
+    (2) Finding category=sca_dependency 或 cve_dependency
+    (3) Evidence 引用新增 pickle-loader==0.1.0 行
+    (4) Fix Direction: 标注未审依赖 + 建议先评估 supply-chain 风险 (新名 + 0.1.0 极早期版本)
+    (5) 命名空间风险 (typosquat 候选)
+
+rubric:
+  completeness: "识别新增依赖 + 早期版本风险"
+  precision: "不能把 flask/requests/pyyaml 这类知名依赖误标"
+  helpfulness: "Fix Direction 提到 supply-chain / typosquat 评估路径"
+
+baseline_scores: {}
+
+source: "RFC-003 §5.1 sca_dependency 维度"
+notes: |
+  P1. 测试新增依赖审计 + 名称风险敏感度.
+  pickle-loader 是合成名 (实际不存在), 模拟可疑 typosquat 场景.
+related_subsystem: [ skill, skill/security-audit ]

@@ -1,0 +1,102 @@
+{
+  "ts": 1780163630589,
+  "mode": "static-contract",
+  "skillInjected": true,
+  "overall": {
+    "avgContract": 5,
+    "avgEstimatedExec": 3.79,
+    "passN": 10
+  },
+  "cases": [
+    {
+      "id": "case_csh_001",
+      "contractIssues": [],
+      "contractScore": 5,
+      "estimatedExecScore": 3.6,
+      "estimatedNotes": [
+        "Skill §1 触发条件描述清晰，trigger 准确"
+      ]
+    },
+    {
+      "id": "case_csh_002",
+      "contractIssues": [],
+      "contractScore": 5,
+      "estimatedExecScore": 3.8,
+      "estimatedNotes": [
+        "Skill §1 触发不命中场景 / RL-007 防编造守护，false_positive 控制"
+      ]
+    },
+    {
+      "id": "case_csh_003",
+      "contractIssues": [],
+      "contractScore": 5,
+      "estimatedExecScore": 3.9,
+      "estimatedNotes": [
+        "Skill §3.2 9 类启发式分类 + classify-failure.ts pipeline 加强分类准确性"
+      ]
+    },
+    {
+      "id": "case_csh_004",
+      "contractIssues": [],
+      "contractScore": 5,
+      "estimatedExecScore": 3.9,
+      "estimatedNotes": [
+        "Skill §3.2 9 类启发式分类 + classify-failure.ts pipeline 加强分类准确性"
+      ]
+    },
+    {
+      "id": "case_csh_005",
+      "contractIssues": [],
+      "contractScore": 5,
+      "estimatedExecScore": 3.9,
+      "estimatedNotes": [
+        "Skill §3.2 9 类启发式分类 + classify-failure.ts pipeline 加强分类准确性"
+      ]
+    },
+    {
+      "id": "case_csh_006",
+      "contractIssues": [],
+      "contractScore": 5,
+      "estimatedExecScore": 3.7,
+      "estimatedNotes": [
+        "Skill §3.4 hypothesis + Suggested Fix 模板加强建议可执行性"
+      ]
+    },
+    {
+      "id": "case_csh_007",
+      "contractIssues": [],
+      "contractScore": 5,
+      "estimatedExecScore": 3.7,
+      "estimatedNotes": [
+        "Skill §3.4 hypothesis + Suggested Fix 模板加强建议可执行性"
+      ]
+    },
+    {
+      "id": "case_csh_008",
+      "contractIssues": [],
+      "contractScore": 5,
+      "estimatedExecScore": 3.8,
+      "estimatedNotes": [
+        "Skill §1 触发不命中场景 / RL-007 防编造守护，false_positive 控制"
+      ]
+    },
+    {
+      "id": "case_csh_009",
+      "contractIssues": [],
+      "contractScore": 5,
+      "estimatedExecScore": 3.8,
+      "estimatedNotes": [
+        "Skill §1 触发不命中场景 / RL-007 防编造守护，false_positive 控制"
+      ]
+    },
+    {
+      "id": "case_csh_010",
+      "contractIssues": [],
+      "contractScore": 5,
+      "estimatedExecScore": 3.8,
+      "estimatedNotes": [
+        "Skill §2 输出契约要求 file:line 引用，参考 §3.1 parse-ci-log.ts 抽取"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,1 @@
+../../code-review/scripts/parse-diff.ts

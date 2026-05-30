@@ -1,0 +1,73 @@
+id: case_sec_001
+category: vulnerability_detection_injection
+priority: P0
+created_date: 2026-05-31
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: security-audit
+
+input:
+  user_query: |
+    审计这个 PR diff，看有没有安全风险：
+
+    ```diff
+    --- a/src/db/user.ts
+    +++ b/src/db/user.ts
+    @@ -10,6 +10,9 @@
+     export async function findUserByName(name: string) {
+    -  return db.query("SELECT * FROM users WHERE name = ?", [name]);
+    +  // 优化: 直接拼接, 减少参数解析开销
+    +  return db.query(`SELECT * FROM users WHERE name = '${name}'`);
+     }
+    ```
+  repo: example-app
+  repo_commit: ""
+
+expected:
+  outcome: high_severity_sql_injection_detected_with_block
+
+  must_include_any_of:
+    - "SQL"
+    - "injection"
+    - "注入"
+    - "block"
+    - "high"
+    - "CWE-89"
+
+  must_not_include:
+    - "LGTM"
+    - "无安全问题"
+    - "已修复"
+    - "pass"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 15
+
+  reference_answer: |
+    必须命中:
+    (1) Audit Verdict = block
+    (2) high-severity finding category=injection
+    (3) Evidence 引用 src/db/user.ts 增量行 + 原文 `${name}` 拼接
+    (4) Fix Direction 建议恢复参数化查询 (不直接给 edit 命令)
+    (5) CWE-89 引用
+
+rubric:
+  completeness: "识别 SQL 注入 + Verdict=block + Evidence 含 file:line + Fix Direction 文字描述"
+  precision: "不能 false positive 把已正确参数化的代码标 high; 不能漏报这条增量 high"
+  helpfulness: "Fix Direction 必须可执行 (描述参数化查询的改动方向)"
+
+baseline_scores: {}
+
+source: "RFC-003 §5.1 vulnerability_detection injection 维度"
+notes: |
+  P0 覆盖最高频场景: 拼接 SQL 引发的注入 + failure_policy=block 触发.
+related_subsystem: [ skill, skill/security-audit ]

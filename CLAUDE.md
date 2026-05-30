@@ -39,14 +39,15 @@ sid-code **不是**"又一个 Coding CLI"——从 2026-05 起向"对外可交�
 
 判断规则：① 需要外部生态扩展？→ A；② 是产品承诺？→ B 或 C；③ 替换会破坏 eval baseline？→ C。
 
-### sid-code 当前位置（2026-05-25）
+### sid-code 当前位置（2026-05-31）
 
 | 维度 | 状态 |
 | --- | --- |
 | **架构骨架** | ✅ 命中范式 C 约 80%——Runtime + Tools + Skill 系统 + MCP 全部就位 |
-| **行业稀缺资产** | ⭐⭐⭐⭐⭐ EDD 评测主轴（30 case 含 5 holdout + 5 维 Grader + 三组不变量） |
-| **三块短板** | ① Skill 仓库仅含 skill-creator 元 Skill（PR-to-Prod 5 个业务 Skill 待建，最致命）② 入口只能被主动调用（缺事件驱动）③ 缺服务化与多租户 |
-| **代码体量** | ~5.2 万行 / 269 TS 文件 / 1137 单测 / Permission 7 种 PermissionMode（default / acceptEdits / dontAsk / plan / always-allow / deny-write / dangerously-skip-permissions） / LLM Provider 3 家（Anthropic / OpenAI / Ollama） |
+| **行业稀缺资产** | ⭐⭐⭐⭐⭐ EDD 评测主轴（30 case 含 5 holdout + 5 维 Grader + 三组不变量）+ B0 paired comparison + B5 sandbox/execution 双轨 |
+| **三块短板** | ① Skill 仓库当前 4 个（skill-creator 元 + code-review 真信号 0.947 + ci-self-heal Step 4 已完成 + security-audit Step 3 已完成）② 入口只能被主动调用（缺事件驱动）③ 缺服务化与多租户 |
+| **代码体量** | ~5.5 万行 / 280+ TS 文件 / **1870 单测** / Permission 7 种 PermissionMode / LLM Provider 3 家 + MockProvider / **Skill 内置 4 个**（skill-creator / code-review / ci-self-heal / security-audit） |
+| **当前 Sprint** | **S6 主线完成 → S7 启动**（M4 主体推进）：secret-redact / ADR-021 升级 / MockProvider / router 真测 / ADR-028 plan-fidelity-recovery / ci-self-heal Step 4 实施 / security-audit Step 1-3 完成，**1870 单测全过** |
 
 ## 0.2 执行入口（唯一）
 

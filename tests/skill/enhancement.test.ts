@@ -211,12 +211,20 @@ description: Test skill
       );
 
       await manager.discover(testDir);
-      expect(manager.getSkills().length).toBe(1);
+      // ADR-025 修复后,discover() 会同时加载 builtin Skill (skill-creator / code-review)
+      // 所以 getSkills() 含 builtin + 本测试 project Skill,这里只验证 project 来源的 test Skill 被加载
+      const projectTest = manager.getAllSkills().find(s => s.name === "test" && s.source === "project");
+      expect(projectTest).toBeDefined();
+      expect(projectTest!.disabled).toBeFalsy();
 
       // 禁用 Skill
       manager.setDisabledSkills(["test"]);
-      expect(manager.getSkills().length).toBe(0);
-      expect(manager.getAllSkills().length).toBe(1);
+      const disabledTest = manager.getAllSkills().find(s => s.name === "test");
+      expect(disabledTest!.disabled).toBe(true);
+      // getSkills 排除 disabled 后,test 不在列表里
+      expect(manager.getSkills().find(s => s.name === "test")).toBeUndefined();
+      // getAllSkills 仍包含 test
+      expect(manager.getAllSkills().find(s => s.name === "test")).toBeDefined();
     });
 
     it("应该追踪激活状态", () => {

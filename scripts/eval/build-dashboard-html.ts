@@ -299,7 +299,7 @@ function buildDashboardData(snapshot: ProjectSnapshot): DashboardData {
   };
 }
 
-function inferGraderType(c: CaseDoc): string {
+export function inferGraderType(c: CaseDoc): string {
   // 1. 显式声明优先
   const declared = (c as any).grader_type;
   if (typeof declared === "string" && declared.length > 0) return declared;
@@ -312,7 +312,20 @@ function inferGraderType(c: CaseDoc): string {
     return "structured_arch";
   }
 
-  // 3. 默认 general 类走 5d-v3
+  // 3. execution / trajectory 轴（与 yaml-loader.isExecutionBucket / isTrajectoryBucket 同口径）
+  if (c.bucket === "general/execution" || c.bucket.startsWith("general/execution/")) {
+    return "execution_test";
+  }
+  if (
+    c.bucket === "real-tasks" ||
+    c.bucket.startsWith("real-tasks/") ||
+    c.bucket === "holdout/real-tasks" ||
+    c.bucket.startsWith("holdout/real-tasks/")
+  ) {
+    return "trajectory_match";
+  }
+
+  // 4. 默认 general 类走 5d-v3
   return "rubric_5d";
 }
 
@@ -396,4 +409,6 @@ function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
-main();
+if (import.meta.main) {
+  main();
+}

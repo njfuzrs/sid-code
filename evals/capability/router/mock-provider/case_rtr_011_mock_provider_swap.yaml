@@ -1,0 +1,40 @@
+# Router capability case rtr_011 — provider swap (failAfterRequests)
+#
+# 真测目标:
+#   注入 mock-503-after-2, 验证前 2 次成功 + 第 3 次失败的"半路故障"场景.
+#   替代 rtr_005 的"代码阅读"间接测试.
+
+id: case_rtr_011
+subsystem: router
+dimension: provider_mid_session_failure
+priority: P0
+
+eval_type: integration_test
+target_score: 5.0
+graduated_at: null
+holdout: false
+
+related_adr: [ADR-021]
+test_file: tests/llm/router-mock-integration.test.ts
+test_describe: "rtr_011 — mock-503-after-2 半路故障"
+
+input:
+  scenario: |
+    主 provider 配置为 mock-503-after-2.
+    前 2 次 sendMessageStream 应成功完成 (含 message_stop event),
+    第 3 次必抛 RetryableError(overloaded).
+  mock_environment:
+    primary_provider:
+      name: mock-503-after-2
+      fail_pattern: 503
+      fail_after_requests: 2
+
+expected:
+  successful_calls_before_fail: 2
+  third_call_throws: true
+  retryable_reason: overloaded
+
+rubric:
+  contract: "ProviderRegistry 同 provider 名缓存同一 MockProvider 实例, requestCount 跨 getProvider() 单调递增"
+
+source: ADR-021_§4.4_S6_T06_2026_05_31

@@ -1,0 +1,77 @@
+id: case_csh_008
+category: ci-self-heal false_positive
+priority: P0
+created_date: 2026-05-30
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: ci-self-heal
+
+input:
+  user_query: |
+    CI 挂了，但我感觉是 flaky：
+
+    ```
+    ✗ test_websocket_connect (attempt 1 of 3)
+        Error: ECONNREFUSED 127.0.0.1:9090
+        at TCPConnectWrap.afterConnect
+    ✗ test_websocket_connect (attempt 2 of 3)
+        Error: socket hang up
+    ✓ test_websocket_connect (attempt 3 of 3, 1.2s)
+
+    Tests: 1 passed (3 attempts)
+    ```
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: flaky_test_correctly_identified
+
+  must_include_any_of:
+    - "flaky"
+    - "不稳定"
+    - "retry"
+    - "ECONNREFUSED"
+    - "网络"
+    - "Verdict.*flaky"
+    - "likely_flaky"
+
+  must_not_include:
+    - "test_failure"
+    - "PR 引入"
+    - "建议立即修复"
+    - "请检查代码逻辑"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 10
+
+  reference_answer: |
+    诊断必须：
+    (1) Failure Class = flaky（因为有 retry markers + ECONNREFUSED 网络信号 + 最终 attempt 通过）
+    (2) Verdict = likely_flaky（不要误归 likely_pr_caused）
+    (3) hypothesis：测试依赖外部端口 9090 服务，未启动 / 启动慢导致首次失败
+    (4) Suggested Fix：
+        - 测试前 explicitly wait for port 就绪（poll loop）
+        - 或 mock 掉外部依赖（mock provider 模式）
+    (5) 不能建议"立即修复代码逻辑" —— flaky 通常是测试基础设施问题不是业务代码问题
+
+rubric:
+  completeness: "识别 flaky + Verdict=likely_flaky + 不归 PR 引入"
+  precision: "不能 false positive 把 flaky 当成 PR 引入的 test_failure（会浪费开发者时间排查无关代码）"
+  helpfulness: "Fix 路径含 wait-for-port / mock 等基础设施级建议"
+
+baseline_scores: {}
+
+source: "RFC-002 §5.1 false_positive / arch_pluggable_006 + ADR-021 mock 联动"
+notes: |
+  false_positive 维度 case.
+  P0 覆盖：flaky 不要误判为 PR 引入（最容易让 ci-self-heal 信号失效的失败模式）.
+related_subsystem: [ skill, skill/ci-self-heal ]

@@ -2,22 +2,11 @@
  * ProviderRegistry 测试
  */
 
-import { describe, test, expect, beforeEach } from "bun:test";
+import { describe, test, expect } from "bun:test";
 import { ProviderRegistry } from "../../src/llm/registry.ts";
 import type { Config } from "../../src/config/config.ts";
 import { defaultConfig } from "../../src/config/config.ts";
-import type { Provider } from "../../src/llm/provider.ts";
 import type { SendParams, StreamEvent } from "../../src/llm/types.ts";
-
-/** Mock Provider */
-class MockProvider implements Provider {
-  constructor(private _name: string = "mock") {}
-  name() { return this._name; }
-  defaultModel() { return "mock-model"; }
-  async *sendMessageStream(_params: SendParams): AsyncIterable<StreamEvent> {
-    yield { type: "message_stop" } as StreamEvent;
-  }
-}
 
 /** 创建测试用 Config */
 function testConfig(overrides: Partial<Config> = {}): Config {
@@ -121,5 +110,61 @@ describe("ProviderRegistry", () => {
     const registry = new ProviderRegistry(config);
 
     expect(() => registry.getProvider()).toThrow("未知的 Provider");
+  });
+
+  // ADR-021 §4.4: mock-* 系列 provider 名走 MockProvider
+  test("mock-503 provider 名返回 503 失败模式的 MockProvider", () => {
+    const config = testConfig({ provider: "mock-503" });
+    const registry = new ProviderRegistry(config);
+    const provider = registry.getProvider();
+    expect(provider.name()).toBe("mock-503");
+    expect(provider.defaultModel()).toBe("test-model");
+  });
+
+  test("mock-rate-limit provider 名走 rate_limit 失败模式", () => {
+    const config = testConfig({ provider: "mock-rate-limit" });
+    const registry = new ProviderRegistry(config);
+    const provider = registry.getProvider();
+    expect(provider.name()).toBe("mock-rate-limit");
+  });
+
+  test("mock-timeout provider 名走 timeout 失败模式", () => {
+    const config = testConfig({ provider: "mock-timeout" });
+    const registry = new ProviderRegistry(config);
+    expect(registry.getProvider().name()).toBe("mock-timeout");
+  });
+
+  test("mock-ok provider 名走 ok (永不失败)", () => {
+    const config = testConfig({ provider: "mock-ok" });
+    const registry = new ProviderRegistry(config);
+    expect(registry.getProvider().name()).toBe("mock-ok");
+  });
+
+  test("mock-503-after-3 provider 名: 前 3 次成功后才 503", async () => {
+    const config = testConfig({ provider: "mock-503-after-3" });
+    const registry = new ProviderRegistry(config);
+    const provider = registry.getProvider() as any;
+    expect(provider.name()).toBe("mock-503-after-3");
+    // 调 3 次都应成功
+    const sendParams: SendParams = {
+      model: "test-model",
+      messages: [{ role: "user", content: [{ type: "text", text: "x" }] }],
+      maxTokens: 10,
+    };
+    for (let i = 0; i < 3; i++) {
+      const events: StreamEvent[] = [];
+      for await (const ev of provider.sendMessageStream(sendParams)) events.push(ev);
+      expect(events.find((e) => e.type === "message_stop")).toBeDefined();
+    }
+    // 第 4 次抛 RetryableError
+    let threw = false;
+    try {
+      for await (const _ of provider.sendMessageStream(sendParams)) { /* noop */ }
+    } catch (err: any) {
+      threw = true;
+      expect(err.name).toBe("RetryableError");
+      expect(err.reason).toBe("overloaded");
+    }
+    expect(threw).toBe(true);
   });
 });

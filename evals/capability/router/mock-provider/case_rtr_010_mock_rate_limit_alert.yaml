@@ -1,0 +1,38 @@
+# Router capability case rtr_010 — rate_limit alert visibility
+#
+# 真测目标:
+#   注入 mock-rate-limit, 验证 RetryableError 携带 retryAfterMs 可被上层读取
+#   (用于 quota_alert UI 提示). 替代 rtr_004 的"间接 quota 测试".
+
+id: case_rtr_010
+subsystem: router
+dimension: rate_limit_alert
+priority: P0
+
+eval_type: integration_test
+target_score: 5.0
+graduated_at: null
+holdout: false
+
+related_adr: [ADR-021]
+test_file: tests/llm/router-mock-integration.test.ts
+test_describe: "rtr_010 — mock-rate-limit 携带 retryAfterMs"
+
+input:
+  scenario: |
+    主 provider 配置为 mock-rate-limit, retryAfterMs=3000.
+    调用方读 retryAfterMs 作为 fallback 退避决策依据.
+  mock_environment:
+    primary_provider:
+      name: mock-rate-limit
+      fail_pattern: rate_limit
+      retry_after_ms: 3000
+
+expected:
+  retryable_reason: rate_limit
+  retry_after_ms_present: true
+
+rubric:
+  contract: "MockProvider rate_limit 模式必须透传 retryAfterMs, 用户可见的 quota 提示文本依赖此字段"
+
+source: ADR-021_§4.4_S6_T06_2026_05_31

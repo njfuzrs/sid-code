@@ -1,0 +1,34 @@
+# Router capability case rtr_013 — 未知 provider 名抛错
+#
+# 真测目标:
+#   ProviderRegistry 收到未注册的 provider 名 (非 anthropic/openai/ollama/mock-*) 应抛
+#   "未知的 Provider", 而不是 silent fallback / 拿默认值.
+
+id: case_rtr_013
+subsystem: router
+dimension: unknown_provider_throws
+priority: P0
+
+eval_type: integration_test
+target_score: 5.0
+graduated_at: null
+holdout: false
+
+related_adr: [ADR-021]
+test_file: tests/llm/router-mock-integration.test.ts
+test_describe: "rtr_013 — 未知 provider 抛错"
+
+input:
+  scenario: |
+    Config.provider = "weird_provider_xyz".
+    registry.getProvider() 应同步抛 Error("未知的 Provider: weird_provider_xyz").
+  config_provider: weird_provider_xyz
+
+expected:
+  throws_message_contains: "未知的 Provider"
+  throws_synchronously: true
+
+rubric:
+  contract: "Provider 注册分发是 fail-fast — 配置错就当场抛, 不应运行时才发现"
+
+source: ADR-021_§4.4_S6_T06_2026_05_31

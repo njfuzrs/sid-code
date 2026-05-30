@@ -1,0 +1,27 @@
+{
+  "timestamp": 1780160105751,
+  "mode": "execute",
+  "model": "deepseek-v4-pro",
+  "overall": {
+    "total": 1,
+    "avgScore": 5,
+    "passRate": 1
+  },
+  "by_dimension": {
+    "memory_no_pollution": {
+      "avgScore": 5,
+      "count": 1,
+      "passRate": 1
+    }
+  },
+  "cases": [
+    {
+      "id": "case_mem_006",
+      "dimension": "memory_no_pollution",
+      "score": 5,
+      "assert": 5,
+      "judge": 5,
+      "timed_out": false
+    }
+  ]
+}

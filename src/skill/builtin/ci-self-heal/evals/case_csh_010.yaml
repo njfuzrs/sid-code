@@ -1,0 +1,85 @@
+id: case_csh_010
+category: ci-self-heal context_awareness
+priority: P0
+created_date: 2026-05-30
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: ci-self-heal
+
+input:
+  user_query: |
+    pytest 挂了，请帮诊断：
+
+    ```
+    =========================== test session starts ============================
+    collected 47 items
+
+    tests/test_user.py::test_create_user PASSED
+    tests/test_user.py::test_login FAILED
+    tests/test_payment.py::test_charge PASSED
+
+    ================================== FAILURES ==================================
+    _________________________________ test_login _________________________________
+
+        def test_login():
+            user = create_user("alice@test.com", "pwd123")
+    >       assert login("alice@test.com", "wrong") is None
+    E       assert <User alice> is None
+
+    File "tests/test_user.py", line 28, in test_login
+    File "src/auth.py", line 45, in login
+    ```
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: pytest_failure_with_context
+
+  must_include_any_of:
+    - "test_failure"
+    - "test_login"
+    - "tests/test_user.py:28"
+    - "src/auth.py:45"
+    - "login"
+    - "wrong password"
+    - "密码"
+
+  must_not_include:
+    - "无法诊断"
+    - "信息不足"
+    - "build_failure"
+    - "lint_failure"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 12
+
+  reference_answer: |
+    诊断必须：
+    (1) Failure Class = test_failure（runner=pytest）
+    (2) 引用 tests/test_user.py:28 + src/auth.py:45 两处 file:line（来自 stack trace）
+    (3) hypothesis：login() 在 wrong password 时返回了 User 而不是 None，
+        密码校验逻辑可能没生效（可能与 case_cr_001 同源 admin123 后门类问题）
+    (4) Suggested Fix：检查 src/auth.py:45 附近的 login 实现，
+        确认 wrong password 分支返回 None / raise
+
+rubric:
+  completeness: "识别 test_failure + 引用 ≥ 2 个 file:line（test 文件 + src 文件）+ 根因假设"
+  precision: "不能编造 log 中没出现的 file:line（RL-007 不编造问题）"
+  helpfulness: "Fix 路径含 src/auth.py:45 具体定位，不是模糊建议"
+
+baseline_scores: {}
+
+source: "RFC-002 §5.1 context_awareness / pytest 标准 traceback 格式"
+notes: |
+  context_awareness 维度 + RL-007 守护 case.
+  P0 覆盖：从 pytest stack trace 抽取多 file:line + 关联 test 文件与 src 文件.
+related_subsystem: [ skill, skill/ci-self-heal ]

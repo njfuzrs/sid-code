@@ -1,0 +1,102 @@
+{
+  "ts": 1780164200803,
+  "mode": "static-contract",
+  "skillInjected": true,
+  "overall": {
+    "avgContract": 5,
+    "avgEstimatedExec": 3.9799999999999995,
+    "passN": 10
+  },
+  "cases": [
+    {
+      "id": "case_sec_001",
+      "contractIssues": [],
+      "contractScore": 5,
+      "estimatedExecScore": 4,
+      "estimatedNotes": [
+        "Skill §3.2 多通道并行检测 + 8 类漏洞类别 + CWE/OWASP 引用"
+      ]
+    },
+    {
+      "id": "case_sec_002",
+      "contractIssues": [],
+      "contractScore": 5,
+      "estimatedExecScore": 4,
+      "estimatedNotes": [
+        "Skill §3.2 多通道并行检测 + 8 类漏洞类别 + CWE/OWASP 引用"
+      ]
+    },
+    {
+      "id": "case_sec_003",
+      "contractIssues": [],
+      "contractScore": 5,
+      "estimatedExecScore": 4,
+      "estimatedNotes": [
+        "Skill §3.2 多通道并行检测 + 8 类漏洞类别 + CWE/OWASP 引用"
+      ]
+    },
+    {
+      "id": "case_sec_004",
+      "contractIssues": [],
+      "contractScore": 5,
+      "estimatedExecScore": 4,
+      "estimatedNotes": [
+        "Skill §3.2 多通道并行检测 + 8 类漏洞类别 + CWE/OWASP 引用"
+      ]
+    },
+    {
+      "id": "case_sec_005",
+      "contractIssues": [],
+      "contractScore": 5,
+      "estimatedExecScore": 4,
+      "estimatedNotes": [
+        "Skill §3.4 误报过滤 + RL-007 防编造守护, false_positive 控制"
+      ]
+    },
+    {
+      "id": "case_sec_006",
+      "contractIssues": [],
+      "contractScore": 5,
+      "estimatedExecScore": 4,
+      "estimatedNotes": [
+        "Skill §3.4 误报过滤 + RL-007 防编造守护, false_positive 控制"
+      ]
+    },
+    {
+      "id": "case_sec_007",
+      "contractIssues": [],
+      "contractScore": 5,
+      "estimatedExecScore": 3.9,
+      "estimatedNotes": [
+        "Skill §3.2 CVE/SCA 子模块 + 离线 OSV snapshot"
+      ]
+    },
+    {
+      "id": "case_sec_008",
+      "contractIssues": [],
+      "contractScore": 5,
+      "estimatedExecScore": 3.9,
+      "estimatedNotes": [
+        "Skill §3.2 CVE/SCA 子模块 + 离线 OSV snapshot"
+      ]
+    },
+    {
+      "id": "case_sec_009",
+      "contractIssues": [],
+      "contractScore": 5,
+      "estimatedExecScore": 3.9,
+      "estimatedNotes": [
+        "Skill §3.2 IaC 误配检测 (Dockerfile/K8s/CI)"
+      ]
+    },
+    {
+      "id": "case_sec_010",
+      "contractIssues": [],
+      "contractScore": 5,
+      "estimatedExecScore": 4.1,
+      "estimatedNotes": [
+        "Skill §5.3 与 ADR-026 secret-redact hook 联动, redact 输出"
+      ]
+    }
+  ]
+}

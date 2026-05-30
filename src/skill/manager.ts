@@ -43,14 +43,20 @@ export class SkillManager {
 
   /**
    * 发现内置 Skill
+   *
+   * 修复 ADR-025:旧实现把 builtinDir 当 projectDir 传给 loader.loadAll,导致
+   * ExtensionLoader 去扫 `{builtinDir}/.sid-code/skills/` 而不是 builtinDir 直接子目录,
+   * builtin Skill (skill-creator / code-review 等) 全部不被加载。
+   *
+   * 新实现:通过 scanOptions.builtinDir 让 ExtensionLoader 直接扫 builtinDir/<name>/SKILL.md。
    */
   private async discoverBuiltin(): Promise<void> {
     try {
-      // 获取当前模块所在目录
       const __dirname = dirname(fileURLToPath(import.meta.url));
       const builtinDir = join(__dirname, "builtin");
 
-      const builtinSkills = await this.loader.loadAll(builtinDir);
+      // 不传 projectDir(避免与 user/project 来源混淆),通过 builtinDir 选项让 ExtensionLoader 走 builtin 来源分支
+      const builtinSkills = await this.loader.loadAll(undefined, { builtinDir });
 
       for (const skill of builtinSkills) {
         skill.isBuiltin = true;

@@ -1,0 +1,73 @@
+id: case_sec_007
+category: cve_lookup
+priority: P1
+created_date: 2026-05-31
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: security-audit
+
+input:
+  user_query: |
+    审计这个 package.json 升级 PR:
+
+    ```diff
+    --- a/package.json
+    +++ b/package.json
+    @@ -10,7 +10,7 @@
+       "dependencies": {
+    -    "lodash": "4.17.21",
+    +    "lodash": "4.17.4",
+         "express": "4.18.2"
+       }
+    ```
+  repo: example-app
+  repo_commit: ""
+
+expected:
+  outcome: medium_or_high_severity_cve_detected
+
+  must_include_any_of:
+    - "lodash"
+    - "CVE"
+    - "降级"
+    - "downgrade"
+    - "已知漏洞"
+    - "warn"
+    - "block"
+
+  must_not_include:
+    - "LGTM"
+    - "无问题"
+    - "pass: 0"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 12
+
+  reference_answer: |
+    (1) Audit Verdict = warn 或 block
+    (2) Finding category=cve_dependency severity ≥ medium
+    (3) Evidence 引用 package.json 行 + lodash 4.17.4 已知 CVE (CVE-2019-10744 / CVE-2020-8203 等)
+    (4) Fix Direction 建议恢复或升级到 4.17.21+
+    (5) "降级"行为本身值得标注 — 是反模式
+
+rubric:
+  completeness: "识别依赖版本降级 + CVE 关联"
+  precision: "不能把无 CVE 的依赖升级误报"
+  helpfulness: "明确建议版本号"
+
+baseline_scores: {}
+
+source: "RFC-003 §5.1 cve_lookup 维度"
+notes: |
+  P1 需 OSV/CVE feed 离线 snapshot 支持.
+  Step 4 实施时 cve-lookup.ts 落盘前, LLM 可用先验知识近似 (告知用户需校验最新 CVE 数据库).
+related_subsystem: [ skill, skill/security-audit ]

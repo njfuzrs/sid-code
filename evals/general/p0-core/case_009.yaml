@@ -138,7 +138,7 @@ baseline_scores:
   sid_code_deepseek_v4_pro:
     score: 5
     run_status: success
-    tested_at: 2026-05-29T19:17:31.296Z
+    tested_at: 2026-05-30T15:05:09.890Z
     tested_by: eval-runner
     transcript_path: null
     notes: ""
@@ -153,7 +153,7 @@ baseline_scores:
     grader_type: rubric_5d
     _formula_version:
       cost: v6
-      grader: 5d-v4
+      grader: 5d-v5
   sid_code_claude_opus_4_7:
     score: 4.88
     run_status: success

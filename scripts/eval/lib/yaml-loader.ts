@@ -98,6 +98,21 @@ export function isExecutionBucket(bucket: string): boolean {
   return bucket === EXECUTION_BUCKET || bucket.startsWith("general/execution/");
 }
 
+/**
+ * B7-1（2026-05-31 / §15.2 ADR-033）：判断 bucket 是否属于 trajectory 轴。
+ *
+ * trajectory case 走 grader_type=trajectory_match，**M5 前仅作诊断维度，不进总分**。
+ * 数据来源：evals/real-tasks/（B6-1 适配器导出）+ evals/holdout/real-tasks/（B7-3 永封）。
+ */
+export function isTrajectoryBucket(bucket: string): boolean {
+  return (
+    bucket === "real-tasks" ||
+    bucket.startsWith("real-tasks/") ||
+    bucket === "holdout/real-tasks" ||
+    bucket.startsWith("holdout/real-tasks/")
+  );
+}
+
 function listArchitectureSubBuckets(evalsDir: string, base: string): string[] {
   const root = join(evalsDir, base);
   if (!existsSync(root)) return [];

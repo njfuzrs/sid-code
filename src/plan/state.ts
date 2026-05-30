@@ -2,14 +2,45 @@
  * Plan Mode 状态机
  * 三态：inactive → planning → awaiting_approval
  * 管理计划文件路径、拒绝计数、状态转换
+ *
+ * S6-T07/T08 (ADR-028): 增加 fidelity 追踪 — plan 步骤解析 + actual tool call 对齐.
  */
 
 import { homedir } from "os";
 import { join, resolve } from "path";
 import { mkdirSync, existsSync } from "fs";
+import { createHash } from "crypto";
 
 /** Plan Mode 状态 */
 export type PlanModeState = "inactive" | "planning" | "awaiting_approval";
+
+/** ADR-028: plan markdown 解析后的单步 */
+export interface PlanStep {
+  index: number;
+  description: string;
+  matchedActualIndices: number[];
+}
+
+/** ADR-028: exit_plan_mode 后实际工具调用记录 */
+export interface ActualToolCall {
+  index: number;
+  toolName: string;
+  argsHash: string;
+  matchedPlanStepIndex: number | null;
+  timestamp: number;
+}
+
+/** ADR-028: fidelity 报告 (内核权威信号) */
+export interface FidelityReport {
+  planStepCount: number;
+  actualToolCallCount: number;
+  /** actual / plan, plan=0 时返回 NaN */
+  stepRatio: number;
+  /** matched (matchedPlanStepIndex !== null) 的 actual 占 plan 比例 */
+  matchedRatio: number;
+  /** matchedPlanStepIndex===null 的 actual 数 */
+  offPlanCount: number;
+}
 
 /** Plan Mode 状态变更事件 */
 export interface PlanModeEvent {
@@ -32,6 +63,12 @@ export class PlanModeManager {
   private prePlanMode: string | null = null;
   /** Plan 文件被 write/edit 成功的时间戳序列（plan_recovery capability 用） */
   private planFileUpdates: number[] = [];
+
+  // ADR-028: fidelity 追踪字段
+  /** 解析 plan markdown 拿到的步骤 */
+  private planSteps: PlanStep[] = [];
+  /** exit_plan_mode 后的工具调用记录 */
+  private actualToolCalls: ActualToolCall[] = [];
 
   /** 获取进入 plan 前的权限模式 */
   getPrePlanMode(): string | null {
@@ -94,6 +131,8 @@ export class PlanModeManager {
     this.state = "inactive";
     this.rejectionCount = 0;
     this.planFileUpdates = [];
+    this.planSteps = [];
+    this.actualToolCalls = [];
     this.emit({ from, to: this.state, planFilePath: this.planFilePath });
   }
 
@@ -135,6 +174,94 @@ export class PlanModeManager {
     return this.planFileUpdates;
   }
 
+  // ── ADR-028 fidelity 追踪 ──
+
+  /**
+   * 解析 plan markdown 拿到顶层步骤列表 (1. xxx / - xxx).
+   * 支持: 中文/英文编号 + 顶层 dash 项. 嵌套子步骤不计 step.
+   * 解析后存入 this.planSteps 供后续对齐使用.
+   * 多次调用以最后一次为准 (plan 文件更新).
+   */
+  parsePlanFromMarkdown(md: string): PlanStep[] {
+    if (typeof md !== "string") {
+      this.planSteps = [];
+      return [];
+    }
+    const steps: PlanStep[] = [];
+    const lines = md.split(/\r?\n/);
+    // 仅匹配顶层 (没有 leading 空格 / tab) 的有序项 "1. xxx" / "1) xxx" 或顶层 "- xxx" / "* xxx".
+    const orderedRe = /^(\d+)[.)]\s+(.+)$/;
+    const dashRe = /^[-*]\s+(.+)$/;
+    let idx = 0;
+    for (const raw of lines) {
+      // 跳过被缩进的子项
+      if (/^\s/.test(raw)) continue;
+      const om = raw.match(orderedRe);
+      const dm = !om && raw.match(dashRe);
+      if (om) {
+        idx += 1;
+        steps.push({
+          index: idx,
+          description: om[2].trim(),
+          matchedActualIndices: [],
+        });
+      } else if (dm) {
+        idx += 1;
+        steps.push({
+          index: idx,
+          description: dm[1].trim(),
+          matchedActualIndices: [],
+        });
+      }
+    }
+    this.planSteps = steps;
+    return steps;
+  }
+
+  /**
+   * 记录一次 actual 工具调用 (在 exit_plan_mode 之后调用方负责调).
+   * 用 description 中第一个名词 / 工具名做 fuzzy match — 命中算 matched, 否则 off-plan.
+   */
+  recordActualToolCall(toolName: string, args: unknown): ActualToolCall {
+    const argsHash = this.hashArgs(args);
+    const next: ActualToolCall = {
+      index: this.actualToolCalls.length + 1,
+      toolName,
+      argsHash,
+      matchedPlanStepIndex: this.matchAgainstPlan(toolName, args),
+      timestamp: this.now(),
+    };
+    this.actualToolCalls.push(next);
+    if (next.matchedPlanStepIndex !== null) {
+      const step = this.planSteps.find((s) => s.index === next.matchedPlanStepIndex);
+      if (step) step.matchedActualIndices.push(next.index);
+    }
+    return next;
+  }
+
+  /** ADR-028 §3.1: 内核权威 fidelity 报告 */
+  getFidelityReport(): FidelityReport {
+    const planStepCount = this.planSteps.length;
+    const actualToolCallCount = this.actualToolCalls.length;
+    const offPlanCount = this.actualToolCalls.filter((c) => c.matchedPlanStepIndex === null).length;
+    const matchedActualCount = actualToolCallCount - offPlanCount;
+    const stepRatio = planStepCount === 0 ? Number.NaN : actualToolCallCount / planStepCount;
+    const matchedRatio = planStepCount === 0 ? Number.NaN : matchedActualCount / planStepCount;
+    return {
+      planStepCount,
+      actualToolCallCount,
+      stepRatio,
+      matchedRatio,
+      offPlanCount,
+    };
+  }
+
+  /** 单测/runner 注入用 — 重置 fidelity 追踪状态 */
+  resetFidelity(): void {
+    this.planSteps = [];
+    this.actualToolCalls = [];
+  }
+
   // ── 事件监听 ──
 
   onStateChange(listener: PlanModeListener): () => void {
@@ -162,5 +289,70 @@ export class PlanModeManager {
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
     }
+  }
+
+  // ── ADR-028 内部 helper ──
+
+  /**
+   * 把 toolName + args 摘要做哈希, 用于偏差检测 (单测可断言 hash 稳定).
+   */
+  private hashArgs(args: unknown): string {
+    let serial: string;
+    try {
+      serial = JSON.stringify(args ?? null);
+    } catch {
+      serial = String(args);
+    }
+    return createHash("sha1").update(serial).digest("hex").slice(0, 12);
+  }
+
+  /**
+   * 把 actual tool call 与 planSteps 做 fuzzy match.
+   * 规则 (顺序): toolName 字面命中 step.description → 直接命中;
+   *            args 中含路径 / 文件名命中 description → 命中;
+   *            否则返回 null = off-plan.
+   * 注意: 一个 step 可被多个 actual 命中 (matchedActualIndices 是 list).
+   */
+  private matchAgainstPlan(toolName: string, args: unknown): number | null {
+    if (this.planSteps.length === 0) return null;
+    const argText = (() => {
+      try {
+        return JSON.stringify(args ?? "").toLowerCase();
+      } catch {
+        return String(args ?? "").toLowerCase();
+      }
+    })();
+    const lowerTool = toolName.toLowerCase();
+    for (const step of this.planSteps) {
+      const desc = step.description.toLowerCase();
+      // 1) tool name 出现在 description
+      if (desc.includes(lowerTool)) return step.index;
+      // 2) description 中含中文动作词与 tool 语义对应
+      const verbMap: Record<string, string[]> = {
+        read: ["读", "查看", "看", "load"],
+        edit: ["改", "修改", "edit"],
+        write: ["写", "创建", "新建", "write"],
+        bash: ["跑", "执行", "运行", "run"],
+        grep: ["搜", "查找", "grep"],
+        glob: ["遍历", "list"],
+        exit_plan_mode: ["exit_plan", "完成", "提交"],
+      };
+      const verbs = verbMap[lowerTool] ?? [];
+      if (verbs.some((v) => desc.includes(v))) {
+        // 还要看 args 是否能锚定到该 step (args 路径 / 关键词 出现在 desc)
+        const tokens = desc.split(/[\s,，、:：（）()「」"'`]+/).filter((t) => t.length >= 2);
+        for (const tk of tokens) {
+          if (tk && argText.includes(tk.toLowerCase())) return step.index;
+        }
+        // 没有 args 锚定但动作词命中: 仍算 match (LLM 在 plan 第 N 步明确说"读 X"，本次 read 即视为对应 step 的执行)
+        return step.index;
+      }
+    }
+    return null;
+  }
+
+  /** 注入点: 单测可 mock now() 控制时间戳 (默认 Date.now) */
+  protected now(): number {
+    return Date.now();
   }
 }

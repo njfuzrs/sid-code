@@ -23,10 +23,12 @@ target_score: 4.0
 graduated_at: null
 holdout: false
 
-known_limitation:
-  type: case_design
-  reason: "实测的是代码阅读 + 归纳能力,而非 router 运行时路由行为"
-  resolved_in: "S2/S3 mock provider 阶段切换 model 验证报告一致性"
+# 真测补充 (2026-05-31 / ADR-021 §4.4 / S6-T06):
+#   rtr_011/012 验证 mock provider 真切换的 stream 行为;
+#   rtr_013 验证未知 provider fail-fast.
+#   本 case 保留测"agent 解释路由决策能引用代码事实"维度, known_limitation 已移除.
+
+related_real_tests: [tests/llm/router-mock-integration.test.ts, tests/llm/registry.test.ts]
 
 input:
   user_query: |

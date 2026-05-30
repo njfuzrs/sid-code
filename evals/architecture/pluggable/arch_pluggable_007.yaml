@@ -47,12 +47,14 @@ baseline_scores:
       {
         score: 5,
         run_status: success,
-        tested_at: 2026-05-28T03:47:59.971Z,
+        tested_at: 2026-05-30T15:11:04.930Z,
         tested_by: eval-runner,
         transcript_path: null,
         notes: "",
         dimensions: { arch_check: 1 },
-        _formula_version: { cost: v6, grader: 5d-v3 }
+        mandatory_pass: true,
+        grader_type: structured_arch,
+        _formula_version: { cost: v6, grader: 5d-v5 }
       }
   }
 

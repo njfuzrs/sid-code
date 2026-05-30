@@ -1,0 +1,90 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ci-self-heal Skill 输出契约",
+  "description": "ci-self-heal Skill 输出 markdown 报告需按本 schema 描述的字段顺序与字段集. 不直接做 JSON-Schema 校验 (输出本身是 markdown), 但用于 SDK 形态 Step 7 边界回归 + 单测 prompt 一致性断言.",
+  "type": "object",
+  "required": [
+    "failure_class",
+    "confidence",
+    "verdict",
+    "root_cause_hypotheses",
+    "related_files"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "failure_class": {
+      "type": "string",
+      "enum": [
+        "test_failure",
+        "lint_failure",
+        "build_failure",
+        "type_error",
+        "dependency_missing",
+        "config_error",
+        "flaky",
+        "timeout",
+        "unknown"
+      ],
+      "description": "8 类候选 + unknown 兜底, 由 classify-failure.ts 决定"
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["high", "medium", "low"],
+      "description": "对应 classify confidence: high≥0.75 / medium 0.5-0.75 / low<0.5"
+    },
+    "verdict": {
+      "type": "string",
+      "enum": [
+        "likely_pr_caused",
+        "likely_flaky",
+        "likely_environment",
+        "needs_human"
+      ],
+      "description": "根据 PR diff 关联 + 启发式信号决定; LLM 不确定时必须返回 needs_human (RL-007 守护)"
+    },
+    "root_cause_hypotheses": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "required": ["priority", "title", "evidence", "why", "suggested_fix"],
+        "properties": {
+          "priority": { "type": "integer", "minimum": 1, "maximum": 3 },
+          "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "evidence": {
+            "type": "string",
+            "description": "必含 file:line 或 log line 引用; LLM 不能编造未在 log 中出现的失败 (RL-007)"
+          },
+          "why": { "type": "string" },
+          "suggested_fix": {
+            "type": "string",
+            "description": "可执行步骤 (命令 / diff 草稿 / 配置改动); 涉及测试断言时必须标记 'needs human review' (RL-006)"
+          }
+        }
+      }
+    },
+    "related_files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["file", "reason"],
+        "properties": {
+          "file": { "type": "string" },
+          "line": { "type": "integer", "minimum": 1 },
+          "reason": { "type": "string" }
+        }
+      }
+    },
+    "skipped_checks": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Skill 跳过的检查项 + 跳过原因 (例如 'PR diff 不可用 → 跳过 is_pr_caused 判定')"
+    },
+    "redacted_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "RL-002 守护: log 中检测到的凭证数, 输出已 redact"
+    }
+  }
+}

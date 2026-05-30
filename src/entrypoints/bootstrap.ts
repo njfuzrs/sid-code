@@ -51,6 +51,14 @@ async function main(): Promise<void> {
     return;
   }
 
+  // 快速路径 5: review 子命令 — 从 stdin / --diff 读 unified diff，调用 code-review Skill
+  if (args[0] === "review") {
+    profileCheckpoint("bootstrap_route_resolved");
+    const { handleReviewCommand } = await import("../command/review.ts");
+    await handleReviewCommand(args.slice(1));
+    return;
+  }
+
   // 所有快速路径未命中 → 启动早期输入捕获 → 加载完整 CLI
   profileCheckpoint("bootstrap_route_resolved");
 

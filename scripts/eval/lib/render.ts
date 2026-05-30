@@ -11,7 +11,7 @@
  */
 
 import type { CaseDoc, ProjectSnapshot, WeekScore, RunRecord, BaselineSnapshot } from "./yaml-loader";
-import { readBaseline, LATEST_GRADER_VERSION, isBehaviorBucket, isArchitectureBucket, isExecutionBucket, CAPABILITY_GRADER_PREFIX } from "./yaml-loader";
+import { readBaseline, LATEST_GRADER_VERSION, isBehaviorBucket, isArchitectureBucket, isExecutionBucket, isTrajectoryBucket, CAPABILITY_GRADER_PREFIX } from "./yaml-loader";
 
 export interface DashboardOptions {
   /** true = 一并展示旧 grader 版本 baseline；默认 false（仅展示 LATEST_GRADER_VERSION 数据） */
@@ -81,6 +81,8 @@ export function renderDashboard(snapshot: ProjectSnapshot, options: DashboardOpt
   lines.push(...renderBehaviorVsArchitecture(snapshot, includeLegacy));
   lines.push("");
   lines.push(...renderExecutionAxis(snapshot));
+  lines.push("");
+  lines.push(...renderTrajectoryAxis(snapshot));
   lines.push("");
   lines.push(...renderCaseToolMatrix(snapshot, includeLegacy));
   lines.push("");
@@ -285,6 +287,61 @@ function renderExecutionAxis(snap: ProjectSnapshot): string[] {
   out.push("");
   out.push("> 进度提示：sandbox 接进 eval-runner 主流程已就位（B5-1，commit a524bfb）；");
   out.push("> 第一条 case `bug_001` 已落 evals/general/execution/，端到端 baseline 跑通后本表自动填充。");
+  return out;
+}
+
+/**
+ * Trajectory 轴独立 section（B7-1 / 2026-05-31 / §15.2 + ADR-033）。
+ *
+ * §15.2 v1.3：trajectory_match grader **仅作诊断维度**，**M5 前不进总分**，
+ * 与 rubric_5d / execution_test 三栏并列。升格判据见 B9-7：≥4 Sprint 真实数据 + 等价类误判率 <15%。
+ *
+ * 数据源：snap.cases 中 bucket = "real-tasks" / "holdout/real-tasks" 的所有 case。
+ * holdout 不进 dashboard 平均（永封不参与调优）。
+ */
+function renderTrajectoryAxis(snap: ProjectSnapshot): string[] {
+  const out: string[] = [];
+  out.push("## 1.3 Trajectory 轴（诊断维度，M5 前不进总分）");
+  out.push("");
+  const trajCases = snap.cases.filter((c) => isTrajectoryBucket(c.bucket));
+  if (trajCases.length === 0) {
+    out.push("> ⏳ 暂无 trajectory case（B6-2 起 evals/real-tasks/ 下 30 条精标 case + B7-3 起 holdout 200 条永封后会出现）");
+    out.push(">");
+    out.push("> 当前阶段说明：trajectory_match grader 由 ADR-033 引入；§15.2 v1.3 修订把它从 KPI **降级为诊断辅助**。");
+    out.push("> 依据：milestone 等价类误判率风险高（不同正确路径都达成目标但 step 序列差异大），");
+    out.push("> 单一公式无法稳定区分'真做事'与'绕路做事'。需 ≥4 Sprint 真实数据 + 误判率 <15% 才考虑升格。");
+    return out;
+  }
+  out.push("> 数据源 = `evals/real-tasks/` + `evals/holdout/real-tasks/`，grader=`trajectory-match-v1`");
+  out.push("> **诊断维度**：M5 前不进 §10.3 监控指标平均分；仅作 Sprint 末'过程偏差'信号");
+  out.push("> 升格判据（§15.2 / B9-7）：≥4 Sprint 真实数据 + 等价类误判率 <15%");
+  out.push("");
+  out.push(`- **trajectory case 总数**: ${trajCases.length} 条`);
+  const holdoutN = trajCases.filter((c) => c.holdout).length;
+  if (holdoutN > 0) out.push(`- 其中 holdout: ${holdoutN} 条（不进 dashboard 平均，永封不参与调优）`);
+  out.push("");
+  out.push("| Tool | avg_match_score (n) | 已评 | pending |");
+  out.push("| --- | --- | --- | --- |");
+  for (const tool of snap.tools) {
+    let sum = 0;
+    let n = 0;
+    let pending = 0;
+    for (const c of trajCases) {
+      if (c.holdout) continue;
+      const b = readBaseline(c, tool);
+      if (b.status !== "tested" || typeof b.score !== "number") {
+        pending++;
+        continue;
+      }
+      sum += b.score;
+      n++;
+    }
+    const avg = n > 0 ? `${(sum / n).toFixed(2)} (n=${n})` : "–";
+    out.push(`| ${tool} | ${avg} | ${n} | ${pending} |`);
+  }
+  out.push("");
+  out.push("> 进度提示：B6-1 trajectory-platform 适配器已落地（489 行 + 24 单测，2026-05-30）；");
+  out.push("> 待 B6-2 30 条精标 case 入库后本表开始填充；M5 Gate 评审时综合 ≥4 Sprint 数据决定是否升格 KPI。");
   return out;
 }
 

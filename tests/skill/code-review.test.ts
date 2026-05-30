@@ -199,13 +199,24 @@ describe("code-review Skill - baseline case yaml 结构契约", () => {
 });
 
 describe("code-review Skill - SkillLoader 集成（无 LLM 调用）", () => {
-  // 注：Step 3 写本测试时发现 sid-code SkillManager.discoverBuiltin 存在已知 bug：
-  //   ExtensionLoader 把 builtinDir 当 projectDir 处理，会去找 `{builtinDir}/.sid-code/skills/`，
-  //   但 builtin Skill 在 src/skill/builtin/<name>/SKILL.md 直接子目录里，不在 `.sid-code/skills/` 下，
-  //   导致 builtin Skill 实际不被加载（skill-creator 也一样）。
-  // 这是 Step 5 暴露 / 应在 S3-T13 底座加固 ADR 中追踪的真问题。
-  // 当前测试只验证：把 SKILL.md 直接放 `.sid-code/skills/code-review/SKILL.md` 路径下能正常加载（loader 子目录模式正常）。
-  test("SkillLoader 子目录模式可识别 SKILL.md（直接绕过 builtin bug 验证 loader 本身）", async () => {
+  // ADR-025 已修复（S5-T01）:builtinDir 选项让 ExtensionLoader 走 builtin 来源分支,
+  // 直接扫 src/skill/builtin/<name>/SKILL.md,不再被当作 projectDir 处理。
+
+  test("ADR-025: SkillManager.discover 把 code-review 标为 builtin（生产路径）", async () => {
+    const { SkillManager } = await import("../../src/skill/manager.ts");
+    const manager = new SkillManager();
+    await manager.discover();
+    const skills = manager.getAllSkills();
+    const cr = skills.find((s) => s.name === "code-review");
+    expect(cr).toBeDefined();
+    expect(cr!.isBuiltin).toBe(true);
+    expect(cr!.source).toBe("builtin");
+    expect(cr!.mode).toBe("delegate");
+    expect(cr!.allowedTools).toContain("read");
+    expect(cr!.allowedTools).not.toContain("edit");
+  });
+
+  test("SkillLoader 子目录模式可识别 SKILL.md（保留旧测试覆盖 project 来源加载路径）", async () => {
     const { mkdirSync, rmSync, copyFileSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
 

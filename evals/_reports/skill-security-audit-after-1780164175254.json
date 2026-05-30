@@ -1,0 +1,132 @@
+{
+  "ts": 1780164175254,
+  "mode": "static-contract",
+  "skillInjected": true,
+  "overall": {
+    "avgContract": 4.5,
+    "avgEstimatedExec": 3.6799999999999997,
+    "passN": 0
+  },
+  "cases": [
+    {
+      "id": "case_sec_001",
+      "contractIssues": [
+        "SKILL.md 缺 failure_policy=block 声明 (合规类区别于 degrade)"
+      ],
+      "contractScore": 4.5,
+      "estimatedExecScore": 3.7,
+      "estimatedNotes": [
+        "Skill §3.2 多通道并行检测 + 8 类漏洞类别 + CWE/OWASP 引用",
+        "契约 1 处不一致, 扣 0.3 分"
+      ]
+    },
+    {
+      "id": "case_sec_002",
+      "contractIssues": [
+        "SKILL.md 缺 failure_policy=block 声明 (合规类区别于 degrade)"
+      ],
+      "contractScore": 4.5,
+      "estimatedExecScore": 3.7,
+      "estimatedNotes": [
+        "Skill §3.2 多通道并行检测 + 8 类漏洞类别 + CWE/OWASP 引用",
+        "契约 1 处不一致, 扣 0.3 分"
+      ]
+    },
+    {
+      "id": "case_sec_003",
+      "contractIssues": [
+        "SKILL.md 缺 failure_policy=block 声明 (合规类区别于 degrade)"
+      ],
+      "contractScore": 4.5,
+      "estimatedExecScore": 3.7,
+      "estimatedNotes": [
+        "Skill §3.2 多通道并行检测 + 8 类漏洞类别 + CWE/OWASP 引用",
+        "契约 1 处不一致, 扣 0.3 分"
+      ]
+    },
+    {
+      "id": "case_sec_004",
+      "contractIssues": [
+        "SKILL.md 缺 failure_policy=block 声明 (合规类区别于 degrade)"
+      ],
+      "contractScore": 4.5,
+      "estimatedExecScore": 3.7,
+      "estimatedNotes": [
+        "Skill §3.2 多通道并行检测 + 8 类漏洞类别 + CWE/OWASP 引用",
+        "契约 1 处不一致, 扣 0.3 分"
+      ]
+    },
+    {
+      "id": "case_sec_005",
+      "contractIssues": [
+        "SKILL.md 缺 failure_policy=block 声明 (合规类区别于 degrade)"
+      ],
+      "contractScore": 4.5,
+      "estimatedExecScore": 3.7,
+      "estimatedNotes": [
+        "Skill §3.4 误报过滤 + RL-007 防编造守护, false_positive 控制",
+        "契约 1 处不一致, 扣 0.3 分"
+      ]
+    },
+    {
+      "id": "case_sec_006",
+      "contractIssues": [
+        "SKILL.md 缺 failure_policy=block 声明 (合规类区别于 degrade)"
+      ],
+      "contractScore": 4.5,
+      "estimatedExecScore": 3.7,
+      "estimatedNotes": [
+        "Skill §3.4 误报过滤 + RL-007 防编造守护, false_positive 控制",
+        "契约 1 处不一致, 扣 0.3 分"
+      ]
+    },
+    {
+      "id": "case_sec_007",
+      "contractIssues": [
+        "SKILL.md 缺 failure_policy=block 声明 (合规类区别于 degrade)"
+      ],
+      "contractScore": 4.5,
+      "estimatedExecScore": 3.6,
+      "estimatedNotes": [
+        "Skill §3.2 CVE/SCA 子模块 + 离线 OSV snapshot",
+        "契约 1 处不一致, 扣 0.3 分"
+      ]
+    },
+    {
+      "id": "case_sec_008",
+      "contractIssues": [
+        "SKILL.md 缺 failure_policy=block 声明 (合规类区别于 degrade)"
+      ],
+      "contractScore": 4.5,
+      "estimatedExecScore": 3.6,
+      "estimatedNotes": [
+        "Skill §3.2 CVE/SCA 子模块 + 离线 OSV snapshot",
+        "契约 1 处不一致, 扣 0.3 分"
+      ]
+    },
+    {
+      "id": "case_sec_009",
+      "contractIssues": [
+        "SKILL.md 缺 failure_policy=block 声明 (合规类区别于 degrade)"
+      ],
+      "contractScore": 4.5,
+      "estimatedExecScore": 3.6,
+      "estimatedNotes": [
+        "Skill §3.2 IaC 误配检测 (Dockerfile/K8s/CI)",
+        "契约 1 处不一致, 扣 0.3 分"
+      ]
+    },
+    {
+      "id": "case_sec_010",
+      "contractIssues": [
+        "SKILL.md 缺 failure_policy=block 声明 (合规类区别于 degrade)"
+      ],
+      "contractScore": 4.5,
+      "estimatedExecScore": 3.8,
+      "estimatedNotes": [
+        "Skill §5.3 与 ADR-026 secret-redact hook 联动, redact 输出",
+        "契约 1 处不一致, 扣 0.3 分"
+      ]
+    }
+  ]
+}

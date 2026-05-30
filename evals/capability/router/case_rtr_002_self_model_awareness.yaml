@@ -17,10 +17,11 @@ target_score: 4.0
 graduated_at: null
 holdout: false
 
-known_limitation:
-  type: case_design
-  reason: "agent 自我感知 model 是 LLM 内化能力,与 router 路由行为无强关联;命中 list 即过偏松"
-  resolved_in: "S2/S3 mock provider 阶段切换 provider 验证报告一致性"
+# 真测补充 (2026-05-31 / ADR-021 §4.4 / S6-T06):
+#   rtr_011 验证 ProviderRegistry 缓存语义 (同名 getProvider 返回同实例).
+#   本 case 保留测"agent 自我报告当前 model 名"维度, known_limitation 已移除.
+
+related_real_tests: [tests/llm/router-mock-integration.test.ts, tests/llm/registry.test.ts]
 
 input:
   user_query: |

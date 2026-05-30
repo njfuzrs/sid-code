@@ -1,0 +1,74 @@
+id: case_sec_005
+category: false_positive_safe_code
+priority: P0
+created_date: 2026-05-31
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: security-audit
+
+input:
+  user_query: |
+    审计:
+
+    ```diff
+    --- a/src/db/order.ts
+    +++ b/src/db/order.ts
+    @@ -8,6 +8,10 @@
+     export async function findOrderById(id: string) {
+       return db.query("SELECT * FROM orders WHERE id = $1", [id]);
+     }
+    +
+    +export async function listOrdersByUser(userId: string) {
+    +  return db.query("SELECT * FROM orders WHERE user_id = $1 ORDER BY created_at DESC", [userId]);
+    +}
+    ```
+  repo: example-app
+  repo_commit: ""
+
+expected:
+  outcome: pass_no_false_positive
+
+  must_include_any_of:
+    - "pass"
+    - "无"
+    - "no"
+    - "0"
+    - "参数化"
+    - "parameterized"
+    - "safe"
+
+  must_not_include:
+    - "block"
+    - "high"
+    - "SQL injection"
+    - "注入"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 10
+
+  reference_answer: |
+    (1) Audit Verdict = pass
+    (2) High = 0, Medium = 0
+    (3) 解释为何不命中: 增量代码使用了参数化查询 ($1 占位 + 参数数组)
+    (4) Coverage Summary: 该新函数已被审, 但无 finding
+
+rubric:
+  completeness: "正确识别参数化查询 = 安全, Verdict=pass"
+  precision: "不能误报参数化 SQL 为注入"
+  helpfulness: "Coverage Summary 体现'已审但无 finding'而非'未审'"
+
+baseline_scores: {}
+
+source: "RFC-003 §5.1 false_positive 维度"
+notes: |
+  P0 防止"杯弓蛇影". block-policy Skill 误报代价 ≫ degrade Skill, 必须严控.
+related_subsystem: [ skill, skill/security-audit ]

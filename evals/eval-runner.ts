@@ -733,6 +733,9 @@ export function appendRunHistory(
         tested_at: r.testedAt,
         // meta：原始 token / step 计数，事后分析用（不再依赖 grep dims.cost.reason）
         ...(r.meta ? { meta: r.meta } : {}),
+        // B5-3 诊断：grader_reasons 落各维度 reason 文本（≤ 1KB 截断），事后无需 keepTmp 即可看 sandbox 跑出哪条命令 fail / exitCode 几 / 是否 timeout
+        // 仅落非 pass 维度的 reason（pass=true 时省略，避免 jsonl 膨胀）
+        grader_reasons: collectGraderReasons(r.dims),
         // is_median=true 当本批跑了 --samples > 1 后的中位数聚合；
         // dashboard 默认只读 is_median=true 或字段缺失（向后兼容单次跑）的行
         ...(rawSamples ? { is_median: true } : {}),
@@ -757,6 +760,7 @@ export function appendRunHistory(
         grader_version: GRADER_VERSION,
         tested_at: r.testedAt,
         ...(r.meta ? { meta: r.meta } : {}),
+        grader_reasons: collectGraderReasons(r.dims),
         sample_index: r.sampleIndex,
         is_median: false,
       }));
@@ -764,6 +768,29 @@ export function appendRunHistory(
     appendFileSync(filePath, lines.join("\n") + "\n", "utf-8");
   }
   console.log(`  运行历史: ${runsDir}/ (${byProvider.size} 个 provider × ${results.length / byProvider.size} 个 case)`);
+}
+
+/**
+ * 收集各维度 reason 文本（B5-3 诊断字段）。
+ *
+ * 仅落非 pass 维度的 reason，pass=true 的维度省略——绝大多数情况下我们只关心 fail 原因。
+ * 单条 reason 截到 1KB（4× ASCII 字符），整体最多 5 个维度，jsonl 最坏情况 ≈ 5KB——
+ * 与 meta（token/step 计数）量级相当，不会让 jsonl 体积失控。
+ *
+ * 例：execution_test grader 失败时落
+ *   { execution_check: "[1/1] ❌ bun logger.test.ts (exit=1, 234ms)\nFAIL: log file 缺失级别: debug1" }
+ * 直接看就能定位是 sandbox 跑了 verify 命令但单测断言 fail，不需要 keepTmp 翻 tmpdir。
+ */
+function collectGraderReasons(dims: Record<string, DimScore>): Record<string, string> | undefined {
+  const out: Record<string, string> = {};
+  let hasAny = false;
+  for (const [name, dim] of Object.entries(dims)) {
+    if (!dim || dim.pass === true) continue;
+    if (typeof dim.reason !== "string" || dim.reason.length === 0) continue;
+    out[name] = dim.reason.length > 1000 ? dim.reason.slice(0, 1000) + "...(truncated)" : dim.reason;
+    hasAny = true;
+  }
+  return hasAny ? out : undefined;
 }
 
 export function syncBaselineScores(results: TestResult[], baseDir: string = ROOT) {

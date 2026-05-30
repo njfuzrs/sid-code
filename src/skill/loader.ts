@@ -18,10 +18,26 @@ export class SkillLoader {
     this.extensionLoader = extensionLoader ?? new ExtensionLoader();
   }
 
-  /** 加载所有 Skill 定义 */
-  async loadAll(projectDir?: string, scanOptions?: ScanOptions): Promise<SkillDefinition[]> {
+  /**
+   * 加载所有 Skill 定义
+   *
+   * 加载来源（按优先级从低到高）：
+   * - builtin（仅当 scanOptions.builtinDir 提供时）：sid-code 自带 Skill,从 builtinDir/<name>/SKILL.md 加载
+   * - user：~/.sid-code/skills/
+   * - project：{projectDir}/.sid-code/skills/
+   *
+   * 注意:builtinDir 不会被当作 projectDir,而是直接作为 builtin 来源传给 ExtensionLoader。
+   */
+  async loadAll(
+    projectDir?: string,
+    scanOptions?: ScanOptions,
+  ): Promise<SkillDefinition[]> {
     const log = getLogger();
-    const files = await this.extensionLoader.scan("skills", projectDir ?? process.cwd(), scanOptions);
+    const files = await this.extensionLoader.scan(
+      "skills",
+      projectDir,
+      scanOptions,
+    );
     const skills: SkillDefinition[] = [];
 
     for (const file of files) {

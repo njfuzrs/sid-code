@@ -143,6 +143,70 @@ describe("appendRunHistory", () => {
     expect(existsSync(join(tmpRoot, "_runs", "sid_code_test.jsonl"))).toBe(true);
     expect(existsSync(join(tmpRoot, "_runs", "claude_code_test.jsonl"))).toBe(true);
   });
+
+  test("B5-3 诊断字段：grader_reasons 落非 pass 维度的 reason，pass 维度省略", () => {
+    const results: TestResult[] = [
+      mkResult({
+        caseId: "case_diag",
+        provider: "sid_code_diag",
+        score: 0,
+        runStatus: "success",
+        dims: {
+          execution_check: {
+            pass: false,
+            score: 0,
+            reason: "[1/1] ❌ bun logger.test.ts (exit=1, 234ms)\nFAIL: log file 缺失级别: debug1",
+          },
+          rubric_score: { pass: true, score: 0.8, reason: "rubric ok（不应落 jsonl）" },
+        },
+      }),
+    ];
+    appendRunHistory(results, "run-diag", 21, tmpRoot);
+
+    const content = readFileSync(join(tmpRoot, "_runs", "sid_code_diag.jsonl"), "utf-8");
+    const last = JSON.parse(content.trim().split("\n").filter((l) => l.length > 0).pop()!);
+    expect(last.grader_reasons).toBeDefined();
+    expect(last.grader_reasons.execution_check).toContain("exit=1");
+    expect(last.grader_reasons.execution_check).toContain("debug1");
+    // pass=true 的维度不落
+    expect(last.grader_reasons.rubric_score).toBeUndefined();
+  });
+
+  test("B5-3 诊断字段：所有维度 pass → grader_reasons 字段省略（避免 jsonl 膨胀）", () => {
+    const results: TestResult[] = [
+      mkResult({
+        caseId: "case_clean",
+        provider: "sid_code_clean",
+        dims: {
+          execution_check: { pass: true, score: 1.0, reason: "全过" },
+        },
+      }),
+    ];
+    appendRunHistory(results, "run-clean", 21, tmpRoot);
+
+    const content = readFileSync(join(tmpRoot, "_runs", "sid_code_clean.jsonl"), "utf-8");
+    const last = JSON.parse(content.trim().split("\n").filter((l) => l.length > 0).pop()!);
+    expect("grader_reasons" in last).toBe(false);
+  });
+
+  test("B5-3 诊断字段：超长 reason 截断到 1KB + 标记 (truncated)", () => {
+    const longReason = "x".repeat(2000);
+    const results: TestResult[] = [
+      mkResult({
+        caseId: "case_long",
+        provider: "sid_code_long",
+        dims: {
+          execution_check: { pass: false, score: 0, reason: longReason },
+        },
+      }),
+    ];
+    appendRunHistory(results, "run-long", 21, tmpRoot);
+
+    const content = readFileSync(join(tmpRoot, "_runs", "sid_code_long.jsonl"), "utf-8");
+    const last = JSON.parse(content.trim().split("\n").filter((l) => l.length > 0).pop()!);
+    expect(last.grader_reasons.execution_check.length).toBeLessThanOrEqual(1100);
+    expect(last.grader_reasons.execution_check).toContain("truncated");
+  });
 });
 
 describe("writeWeekScores", () => {

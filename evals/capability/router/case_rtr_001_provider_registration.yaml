@@ -19,10 +19,14 @@ target_score: 4.0
 graduated_at: null
 holdout: false
 
-known_limitation:
-  type: case_design
-  reason: "未注入 mock provider,实测的是文件检索能力而非 router 注册分发"
-  resolved_in: "S2/S3 mock provider 阶段"
+# 真测补充 (2026-05-31 / ADR-021 §4.4 / S6-T06):
+#   rtr_009~013 通过 MockProvider + ProviderRegistry 真测了:
+#     - 注册分发 fail-fast (rtr_013 未知 provider 抛错)
+#     - 缓存语义 (rtr_011 同名 getProvider 返回同实例, requestCount 跨调用累加)
+#     - mock-* 路由优先级 (mock-anything 走 MockProvider, 不走 anthropic 严格枚举)
+#   本 case 保留, 测的是"agent 自检报告 provider 列表"维度, known_limitation 已移除.
+
+related_real_tests: [tests/llm/router-mock-integration.test.ts, tests/llm/registry.test.ts]
 
 input:
   user_query: |

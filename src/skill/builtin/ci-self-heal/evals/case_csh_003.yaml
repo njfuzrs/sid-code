@@ -1,0 +1,76 @@
+id: case_csh_003
+category: ci-self-heal failure_classification
+priority: P0
+created_date: 2026-05-30
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: ci-self-heal
+
+input:
+  user_query: |
+    build failed，CI 报错日志如下：
+
+    ```
+    src/foo.ts:10:5 - error TS2305: Module "./bar" has no exported member "Baz".
+
+    10     import { Baz } from "./bar";
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    src/foo.ts:25:18 - error TS2322: Type "string" is not assignable to type "number".
+
+    25       const total: number = "100";
+                            ~~~~~
+
+    Found 2 errors.
+    ```
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: type_error_diagnosed
+
+  must_include_any_of:
+    - "type_error"
+    - "类型错误"
+    - "TS2305"
+    - "TS2322"
+    - "src/foo.ts:10"
+    - "src/foo.ts:25"
+
+  must_not_include:
+    - "test_failure"
+    - "lint_failure"
+    - "flaky"
+    - "无法识别"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 10
+
+  reference_answer: |
+    诊断必须：
+    (1) Failure Class = type_error（不能误归 test_failure）
+    (2) 引用 src/foo.ts:10 + src/foo.ts:25 两个具体行号
+    (3) hypothesis 1：./bar 缺 Baz 导出（建议检查 bar.ts 是否漏 export）
+    (4) hypothesis 2：第 25 行类型错误，"100" 应改为 100 或 parseInt("100")
+
+rubric:
+  completeness: "识别 type_error 分类 + 引用两个 file:line + 给出 ≥ 2 条 hypothesis"
+  precision: "不能把 tsc 错误归为 build_failure 或 test_failure（虽相关，但 type_error 更精确）"
+  helpfulness: "Suggested Fix 含具体改动方向（加 export / 改类型）"
+
+baseline_scores: {}
+
+source: "RFC-002 §5.1 failure_classification / TS2305 + TS2322 是 sid-code 仓库实际 pre-existing 错误"
+notes: |
+  failure_classification（type_error）case.
+  P0 覆盖：tsc 类失败 + 多 file:line 引用 + 多 hypothesis.
+related_subsystem: [ skill, skill/ci-self-heal ]

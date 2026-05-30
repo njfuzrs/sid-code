@@ -8,6 +8,7 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { SkillLoader } from "../../src/skill/loader.ts";
 import { SkillTool } from "../../src/skill/tool.ts";
+import { SkillManager } from "../../src/skill/manager.ts";
 import { ExtensionLoader } from "../../src/extension/loader.ts";
 
 describe("SkillLoader", () => {
@@ -96,6 +97,50 @@ allowed-tools:
     const loader = new SkillLoader(new ExtensionLoader());
     const skills = await loader.loadAll(testDir);
     expect(skills.length).toBe(0);
+  });
+
+  test("ADR-025: builtinDir 选项识别 builtin Skill 子目录模式（不当 projectDir 处理）", async () => {
+    // 模拟 src/skill/builtin/ 结构: builtinDir/<name>/SKILL.md
+    const builtinRoot = join(testDir, "builtin");
+    const skillSubdir = join(builtinRoot, "demo-builtin");
+    mkdirSync(skillSubdir, { recursive: true });
+    writeFileSync(join(skillSubdir, "SKILL.md"), `---
+name: demo-builtin
+description: 演示内置 Skill
+mode: delegate
+allowed-tools: read, grep
+---
+内置 Skill body`);
+
+    const loader = new SkillLoader(new ExtensionLoader());
+
+    // 旧实现把 builtinRoot 当 projectDir 会去找 {builtinRoot}/.sid-code/skills/,扫不到
+    // 新实现通过 builtinDir 选项让 ExtensionLoader 直接扫 builtinRoot/<name>/SKILL.md
+    const skills = await loader.loadAll(undefined, { builtinDir: builtinRoot });
+    const demo = skills.find(s => s.name === "demo-builtin");
+    expect(demo).toBeDefined();
+    expect(demo!.source).toBe("builtin");
+    expect(demo!.mode).toBe("delegate");
+  });
+});
+
+describe("SkillManager - ADR-025 内置加载机制", () => {
+  test("discoverBuiltin 加载 src/skill/builtin/ 下的 skill-creator + code-review", async () => {
+    const m = new SkillManager();
+    await m.discover();
+    const all = m.getAllSkills();
+
+    const skillCreator = all.find(s => s.name === "skill-creator");
+    const codeReview = all.find(s => s.name === "code-review");
+
+    expect(skillCreator).toBeDefined();
+    expect(skillCreator!.isBuiltin).toBe(true);
+    expect(skillCreator!.source).toBe("builtin");
+
+    expect(codeReview).toBeDefined();
+    expect(codeReview!.isBuiltin).toBe(true);
+    expect(codeReview!.source).toBe("builtin");
+    expect(codeReview!.mode).toBe("delegate");
   });
 });
 

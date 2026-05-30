@@ -1,0 +1,38 @@
+# Router capability case rtr_012 — 503 抛错不应污染 stdout
+#
+# 真测目标:
+#   验证 MockProvider 503 失败时仅抛 RetryableError, 不向 yield 流中插入 error event.
+#   保证用户终端不会看到 [object Object] / undefined 之类杂讯.
+
+id: case_rtr_012
+subsystem: router
+dimension: error_does_not_pollute_stream
+priority: P0
+
+eval_type: integration_test
+target_score: 5.0
+graduated_at: null
+holdout: false
+
+related_adr: [ADR-021]
+test_file: tests/llm/router-mock-integration.test.ts
+test_describe: "rtr_012 — mock-503 失败前不发任何 stream event"
+
+input:
+  scenario: |
+    收集 mock-503 第 1 次 sendMessageStream 在抛错前发出的 events.
+    应为 [] — 不应 yield 任何 message_start / content_block_*.
+  mock_environment:
+    primary_provider:
+      name: mock-503
+      fail_pattern: 503
+      fail_after_requests: 0
+
+expected:
+  events_before_throw_length: 0
+  throw_type: RetryableError
+
+rubric:
+  contract: "503/rate_limit/timeout 失败模式都应在第一个 yield 之前抛错; 流式协议保持干净"
+
+source: ADR-021_§4.4_S6_T06_2026_05_31

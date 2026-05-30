@@ -19,10 +19,14 @@ target_score: 4.0
 graduated_at: null
 holdout: false
 
-known_limitation:
-  type: case_design
-  reason: "未注入 provider 故障,实测的是正常路径 bash 执行,与 fallback 无关"
-  resolved_in: "S2/S3 mock provider 阶段注入 503/rate-limit 验证 retry 连续性"
+# 真测补充 (2026-05-31 / ADR-021 §4.4 / S6-T06):
+#   rtr_009 验证 503 失败抛 RetryableError(overloaded);
+#   rtr_010 验证 rate_limit 携带 retryAfterMs;
+#   rtr_011 验证半路故障 (前 N 次成功后失败);
+#   rtr_012 验证失败前不污染 stream events.
+#   本 case 保留测"用户视角 fallback 文案不带技术细节"维度, known_limitation 已移除.
+
+related_real_tests: [tests/llm/router-mock-integration.test.ts]
 
 input:
   user_query: |

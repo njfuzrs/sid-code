@@ -1,0 +1,70 @@
+id: case_csh_005
+category: ci-self-heal failure_classification
+priority: P0
+created_date: 2026-05-30
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: ci-self-heal
+
+input:
+  user_query: |
+    pip install 在 CI 装包阶段挂了：
+
+    ```
+    Collecting tensorflow==2.16.0
+      ERROR: Could not find a version that satisfies the requirement tensorflow==2.16.0 (from versions: 2.13.0, 2.13.1, 2.14.0, 2.15.0)
+    ERROR: No matching distribution found for tensorflow==2.16.0
+
+    ##[error]Process completed with exit code 1.
+    ```
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: dependency_missing_diagnosed
+
+  must_include_any_of:
+    - "dependency_missing"
+    - "依赖缺失"
+    - "tensorflow"
+    - "2.16.0"
+    - "版本"
+    - "pip install"
+
+  must_not_include:
+    - "test_failure"
+    - "type_error"
+    - "lint_failure"
+    - "无法诊断"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 10
+
+  reference_answer: |
+    诊断必须：
+    (1) Failure Class = dependency_missing
+    (2) 识别问题：tensorflow 2.16.0 不存在（pip 列出可用版本到 2.15.0）
+    (3) Suggested Fix：降版到 2.15.0 或 2.14.0，或检查 requirements.txt 是否有拼写错误
+    (4) Verdict = likely_pr_caused（如果 PR 升了版本号）
+
+rubric:
+  completeness: "识别 dependency_missing + 引用 tensorflow + 2.16.0 + 给出降版建议"
+  precision: "不能误归为其他类（lint / build / test）"
+  helpfulness: "建议必须含具体可执行版本号或修复路径"
+
+baseline_scores: {}
+
+source: "RFC-002 §5.1 failure_classification / 真实 pip CI 失败模式"
+notes: |
+  failure_classification（dependency_missing）case.
+  P0 覆盖：pip / Python 生态依赖缺失（与 npm 不同的错误格式）.
+related_subsystem: [ skill, skill/ci-self-heal ]
