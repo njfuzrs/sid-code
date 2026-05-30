@@ -8,8 +8,16 @@ priority: P0
 
 eval_type: capability
 target_score: 4.0
-graduated_at: 2026-05-28  # S0-T11 复跑 N=3 中位 5/5 稳定毕业
+# 2026-05-29: 撤销毕业（A2-3 / F-1）—— 原 4 个锚点中 "改 cli.ts"/"typo" 复读 user_query，
+# agent 复读 query 即可命中阈值。重写锚点后需重新跑 N=3 中位数验证毕业（待 A3-4 重跑）。
+graduated_at: null
 holdout: false
+_audit_note: |
+  graduated under flawed anchors (echo bias).
+  原 plan_must_cover_any_of: [改 cli.ts, Edit, typo] —— 其中 "改 cli.ts" / "typo" 直接复读
+  user_query（含 src/cli.ts + recevied typo），agent 仅复读 query 即满足 ≥ 1/3 命中阈值。
+  详见 docs/eval/investigations/case-design-audit.md §2.2 H-1 同型。
+  重写后须 A3-4 N=3 重跑验证锚点鉴别力，再决定是否重新毕业。
 
 input:
   user_query: |
@@ -19,14 +27,22 @@ input:
 expected:
   plan_min_steps: 1
   plan_max_steps: 3
+  # 锚点设计：避开 user_query 已点名的 cli.ts / typo / recevied / received，
+  # 改用 plan 步骤里"工具名"+"步数克制"的真实信号——agent 必须在 plan 中明确
+  # 使用 Edit/edit_string/replace 等编辑动作描述，而不只是复述用户给的位置。
   plan_must_cover_any_of:
-    - "改 cli.ts"
     - "Edit"
-    - "typo"
+    - "edit_string"
+    - "replace"
+    - "old_string"
+    - "new_string"
   plan_must_not_have:
     - "新增测试"
     - "全仓 grep"
     - "重构"
+    - "更新 CHANGELOG"
+    - "运行 lint"
+    - "Read 整个文件"
   execution_must_call_tools_any_of: [ edit, exit_plan_mode ]
   max_steps: 8
 
@@ -66,6 +82,7 @@ baseline_scores:
     tested_by: eval:plan-capability
     transcript_path: null
     notes: ""
+    _audit_note: "fixture had echo bug — anchors 含 user_query 复读词；A3-4 重跑前数据不进 dashboard 均值"
     dimensions:
       assert: 4.3
       llm_judge: null
@@ -78,6 +95,7 @@ baseline_scores:
     tested_by: eval:plan-capability
     transcript_path: null
     notes: ""
+    _audit_note: "fixture had echo bug — S0-T11 N=3 中位毕业判定基于复读锚点不可信；A3-4 重跑后刷新"
     dimensions:
       assert: 5
       llm_judge: null

@@ -45,7 +45,22 @@ rubric:
   precision: "区分中文一等公民（内容）与多语言 i18n（产品功能）"
   helpfulness: "防止未来误把中文文档翻译成英文（流失叙事 ownership）"
 
-baseline_scores: {}
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 3.75,
+        run_status: success,
+        tested_at: 2026-05-29T19:15:46.162Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 0.75 },
+        mandatory_pass: false,
+        grader_type: structured_arch,
+        _formula_version: { cost: v6, grader: 5d-v4 }
+      }
+  }
 
 source: "chinese 类元 holdout / CLAUDE.md §0"
 notes: |

@@ -470,6 +470,8 @@ if (values.sync) {
         assert: r.assertScore,
         llm_judge: r.llmScore,
       },
+      mandatoryPass: r.aggregatedRunStatus === "success",
+      graderType: "capability-context-v1",
       formulaVersion: { grader: "capability-context-v1" },
       samples,
     };

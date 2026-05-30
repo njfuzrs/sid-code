@@ -44,7 +44,22 @@ rubric:
   precision: "区分 frontmatter（始终加载）与 body（按需）"
   helpfulness: "100+ Skill 上下文不爆炸的关键防线"
 
-baseline_scores: {}
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 5,
+        run_status: success,
+        tested_at: 2026-05-29T19:15:46.162Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 1 },
+        mandatory_pass: true,
+        grader_type: structured_arch,
+        _formula_version: { cost: v6, grader: 5d-v4 }
+      }
+  }
 
 source: "B-03 / 08 §9.2 P0-tier2 / CLAUDE.md §0.1"
 notes: |

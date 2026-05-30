@@ -22,9 +22,20 @@ expected:
   must_include_any_of:
     - "src/llm/quota.ts"
     - "QuotaManager"
-    - "check"
+    - "AlertLevel"
+    - "Literal"
+    - "Enum"
+    - "def "
+    - "class QuotaManager"
+    - "import"
 
-  must_not_include: []
+  must_not_include:
+    - "我已写入 quota.py"
+    - "已保存"
+    - "我帮你 mkdir"
+    - "已创建文件"
+    - "Bash"
+    - "write_file"
 
   must_call_tools:
     - read
@@ -129,22 +140,24 @@ baseline_scores:
     _formula_version:
       cost: legacy_v1
   sid_code_deepseek_v4_pro:
-    score: 4.46
+    score: 5
     run_status: success
-    tested_at: 2026-05-28T02:34:51.608Z
+    tested_at: 2026-05-29T19:19:21.458Z
     tested_by: eval-runner
     transcript_path: null
     notes: ""
     dimensions:
-      anchor_hit: 0.5
-      negative_anchor: null
+      anchor_hit: 1
+      negative_anchor: 1
       rubric_score: 1
       tool_compliance: 1
       efficiency: 1
       cost: 1
+    mandatory_pass: true
+    grader_type: rubric_5d
     _formula_version:
       cost: v6
-      grader: 5d-v3
+      grader: 5d-v4
   sid_code_claude_opus_4_7:
     score: 4.88
     run_status: success

@@ -443,6 +443,8 @@ if (values.sync) {
         assert: r.assertScore,
         llm_judge: r.llmScore,
       },
+      mandatoryPass: runStatus === "success",
+      graderType: "capability-router-v1",
       formulaVersion: { grader: "capability-router-v1" },
       samples,
     };

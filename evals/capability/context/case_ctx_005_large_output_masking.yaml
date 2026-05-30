@@ -41,13 +41,21 @@ expected:
   # 跑完应有 final_response(说明 masking 后流程没崩)
   final_response_min_length: 20
 
-  # final_response 应给出数字 / 估算
+  # final_response 应给出数字 / 估算（避免单字虚词，要求具体数字格式）
   final_response_must_include_any_of:
-    - "数"
-    - "个"
-    - "约"
-    - "总"
     - "package.json"
+    - "node_modules"
+    - "总计"
+    - "估计"
+    - "数量级"
+    - "version"
+    - "依赖"
+
+  final_response_must_not_include:
+    - "无法统计"
+    - "我不会"
+    - "你自己跑"
+    - "请使用 head"
 
   # 应在 30 步内完成(掩码生效防止反复读大输出)
   max_steps: 30

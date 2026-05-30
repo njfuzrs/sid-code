@@ -22,9 +22,19 @@ input:
 expected:
   outcome: chinese_keyword_search
   must_include_any_of:
-    - "权限"
-    - "permission"
     - "src/permission"
+    - "PermissionChecker"
+    - "src/skill"
+    - "src/agent"
+    - "docs/"
+    - "evals/"
+    - "注释"
+    - "类名"
+    - "错误信息"
+  must_not_include:
+    - "我无法搜索中文"
+    - "ripgrep 不支持"
+    - "请你自己 grep"
   must_call_tools:
     - grep
   max_steps: 8

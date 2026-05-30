@@ -26,12 +26,20 @@ input:
 expected:
   outcome: bounded_steps_with_termination
   must_include_any_of:
-    - "找到"
-    - "完成"
     - "AgentLoopRunner"
-    - "终止"
-    - "结束"
-  must_not_include: []
+    - "max_steps"
+    - "已找到"
+    - "已完成搜索"
+    - "停止递归"
+    - "src/agent/loop.ts"
+  must_not_include:
+    - "继续递归搜索"
+    - "再次执行 grep"
+    - "while (true)"
+    - "for (;;)"
+    - "无限重试"
+    - "重新发起搜索"
+    - "等待我下一步指令"
   must_call_tools_mode: any_of
   must_call_tools:
     - grep

@@ -110,7 +110,14 @@ sid-code **不是**"又一个 Coding CLI"——从 2026-05 起向"对外可交�
 **Grader 改动流程**（与 §0.3 fix_type 审批层级**同级**——任一违反**直接打回**）：
 
 - 改 `evals/eval-judge.ts` 的 `DEFAULT_WEIGHTS` / `gradeCost` / `gradeEfficiency` / `gradeAnchorHit` / `gradeRubric` / `gradeToolCompliance` / `aggregate` → 必须同时满足：① 写 ADR 含 rejected alternatives；② bump `GRADER_VERSION`（如 `5d-v3 → 5d-v4` 或 `task-specific-v2`）；③ 配套单测覆盖；④ 受影响 case 的 legacy baseline 按 `_formula_version` 字段过滤展示，不与新版本混算
+- **"`gradeRubric` / `gradeRubricEnsemble` 公式" 边界明确包含**（A1-3 字面化补充，2026-05-30 起，详见 ADR-027）：
+  - 单次 grade 内的阈值 / snapToTier 档位 / pass 判定
+  - **多采样聚合算法**（下中位数 / 平均 / 上中位数等）
+  - **ensemble 投票算法**（majority vote / score+pass 来源是否一致）
+  - **echo 排除规则**（`gradeNegativeAnchors` `userQuery` 参数语义、isCodeIdentifier 豁免清单）
+  - 任何会让"同一 (output, case) 输入下输出 (pass, score) 翻转"的改动均视为公式改动，必须 bump
 - 改 / 新增 `evals/_graders/<name>-grader.ts` → 必须满足：① 走 `core_code` L3 审批；② 在 `evals/_graders/registry.test.ts` 加 case；③ 至少 1 条 holdout 验证；④ `grader_type` 字段在受影响 case yaml 同步更新
+- 改 `evals/_graders/binary-redline-grader.ts` 的 fail-safe 语义（abnormal=true / score=null / mandatoryPass）→ 视为 grader 改动，走上一条流程
 - 改 `evals/_judge/rubric-template.ts` 的 prompt 文案（小幅文案修订）→ L1 自动；但**触发 rubric 分布漂移的 prompt 重构**视为 grader 改动，需走上一条
 - 任何会改变现有 case 总分分布的改动 → 视为 grader 改动，全程走上一条流程
 

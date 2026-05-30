@@ -20,12 +20,17 @@ expected:
   must_include_any_of:
     - "MemoryStore"
     - "src/memory/store.ts"
-    - "load"
-    - "set"
-    - "get"
-    - "delete"
-    - "list"
-  must_not_include: []
+    - "src/app.ts"
+    - "src/cli.ts"
+    - "MemoryEntry"
+    - "Promise"
+    - "scope"
+  must_not_include:
+    - "我猜"
+    - "大概是"
+    - "可能有"
+    - "请你自己看"
+    - "还需要更多信息"
   must_call_tools:
     - read
   must_not_call_tools: []
@@ -121,20 +126,22 @@ baseline_scores:
   sid_code_deepseek_v4_pro:
     score: 5
     run_status: success
-    tested_at: 2026-05-28T02:37:18.343Z
+    tested_at: 2026-05-29T19:20:25.752Z
     tested_by: eval-runner
     transcript_path: null
     notes: ""
     dimensions:
       anchor_hit: 1
-      negative_anchor: null
+      negative_anchor: 1
       rubric_score: 1
       tool_compliance: 1
       efficiency: 1
       cost: 1
+    mandatory_pass: true
+    grader_type: rubric_5d
     _formula_version:
       cost: v6
-      grader: 5d-v3
+      grader: 5d-v4
   sid_code_claude_opus_4_7:
     score: 5
     run_status: success

@@ -33,13 +33,20 @@ expected:
     - grep
     - glob
 
-  # 应正常完成 + 给出数量描述
+  # 应正常完成 + 给出数量描述（避免单字"约/百/条"——任何啰嗦回答都易误命中）
   final_response_must_include_any_of:
     - ".ts"
     - ".yaml"
-    - 数量
-    - 大约
-    - "约"
+    - "src/"
+    - "evals/"
+    - "数量级"
+    - "总计"
+
+  final_response_must_not_include:
+    - "我不会"
+    - "请你自己跑"
+    - "无法统计"
+    - "context 已爆"
 
   # 应在 30 步内完成
   max_steps: 30

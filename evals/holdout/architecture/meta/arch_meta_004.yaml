@@ -50,7 +50,22 @@ rubric:
   precision: "区分 general holdout 与 architecture holdout"
   helpfulness: "防止 holdout 数据污染调优循环"
 
-baseline_scores: {}
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 4.17,
+        run_status: success,
+        tested_at: 2026-05-29T19:15:46.162Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 0.8333333333333334 },
+        mandatory_pass: false,
+        grader_type: structured_arch,
+        _formula_version: { cost: v6, grader: 5d-v4 }
+      }
+  }
 
 source: "H-04 / 08 §13.2 / S1-T02"
 notes: |

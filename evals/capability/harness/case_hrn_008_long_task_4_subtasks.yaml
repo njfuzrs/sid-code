@@ -29,12 +29,20 @@ expected:
   exit_status_must_be:
     - end_turn
 
-  # 应给出三个数字 / 计数
+  # 应给出三个数字 / 计数（避免单字虚词，要求确实出现 3 个数字 + 总结词）
   final_response_must_include_any_of:
-    - "数"
-    - "个"
-    - "总"
-    - "条"
+    - "数量级"
+    - "src/llm"
+    - "evals/capability"
+    - ".ts"
+    - "case yaml"
+    - "yaml"
+
+  final_response_must_not_include:
+    - "我无法完成"
+    - "请你自己跑"
+    - "task.*跳过"
+    - "未完成"
 
   max_steps: 20
 

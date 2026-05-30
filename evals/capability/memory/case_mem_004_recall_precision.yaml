@@ -28,10 +28,10 @@ input:
 
 expected:
   # 只应召回 lint_tool 对应的 value,不应把 test_framework / commit_style 全甩出来
+  # 注意：避开 user_query 中已含的 "lint"——agent 复读 query 即可命中。
   final_response_must_include_any_of:
     - eslint
     - prettier
-    - lint
 
   # 反向: 不应输出无关 memory 的 value
   final_response_must_not_include:
@@ -39,6 +39,8 @@ expected:
     - conventional commits
     - jest
     - tslint
+    - test_framework
+    - commit_style
 
   max_steps: 10
 

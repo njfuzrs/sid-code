@@ -8,8 +8,15 @@ priority: P1
 
 eval_type: capability
 target_score: 4.0
-graduated_at: 2026-05-28  # S0-T11 复跑 N=3 中位 5/5 稳定毕业
+# 2026-05-29: 撤销毕业（A2-3 / F-1）—— 原 4 个锚点 [改 package.json, version, bun run build, 验证]
+# 中 3 个直接复读 user_query；agent 复述 query 即拿满分。重写锚点后须 A3-4 N=3 重跑验证。
+graduated_at: null
 holdout: false
+_audit_note: |
+  graduated under flawed anchors (echo bias).
+  原 plan_must_cover_any_of: [改 package.json, version, bun run build, 验证] ——
+  4 个锚点中 3 个（version / bun run build / 验证）直接复读 user_query。
+  详见 docs/eval/investigations/case-design-audit.md §2.2 H-1。
 
 input:
   user_query: |
@@ -19,16 +26,26 @@ input:
 expected:
   plan_min_steps: 1
   plan_max_steps: 3
+  # 锚点设计：避开 user_query 已说的 version / bun run build / 验证 / package.json，
+  # 改用 plan 必须命中的"工具操作 + 具体值"——
+  #   agent 必须在 plan 中提到 Edit/Bash 工具名（query 没说），
+  #   或者明确出现目标值 0.2.0（这是 query 中给的具体值，但只有真正在 plan 中
+  #   把它作为 new_string 才算理解任务）。
   plan_must_cover_any_of:
-    - "改 package.json"
-    - "version"
-    - "bun run build"
-    - "验证"
+    - "Edit"
+    - "Bash"
+    - "0.2.0"
+    - "new_string"
+    - "old_string"
   plan_must_not_have:
     - "新增测试"
     - "更新 CHANGELOG"
     - "git tag"
     - "git commit"
+    - "npm publish"
+    - "bumpp"
+    - "release"
+    - "运行 lint"
   execution_must_call_tools_any_of: [ edit, bash, exit_plan_mode ]
   max_steps: 8
 
@@ -67,6 +84,7 @@ baseline_scores:
     tested_by: eval:plan-capability
     transcript_path: null
     notes: ""
+    _audit_note: "fixture had echo bug — 3/4 锚点复读 user_query；A3-4 重跑前 dashboard 应过滤"
     dimensions:
       assert: 5
       llm_judge: null

@@ -29,15 +29,20 @@ expected:
     - glob
     - bash
 
-  # 应给出日期相关回答
+  # 应给出日期相关回答（避免单字 / 单符号，用具体日期格式 / 月份名 / 年份四位数）
   final_response_must_include_any_of:
-    - "月"
-    - "日"
-    - "年"
-    - "/"
-    - "-"
+    - "2026"
+    - "2025"
+    - "2027"
     - "today"
     - "current date"
+    - "当前日期"
+    - "现在是"
+
+  final_response_must_not_include:
+    - "我不会"
+    - "请你自己看日历"
+    - "无法获取日期"
 
   exit_status_must_be:
     - end_turn

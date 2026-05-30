@@ -53,10 +53,12 @@
   },
   "devDependencies": {
     "@types/bun": "latest",
+    "@types/js-yaml": "^4.0.9",
     "@types/minimatch": "^6.0.0",
     "@types/node": "^25.5.0",
     "@types/react": "^19.2.14",
-    "@types/tinycolor2": "^1.4.6"
+    "@types/tinycolor2": "^1.4.6",
+    "js-yaml": "^4.1.1"
   },
   "engines": {
     "bun": ">=1.0.0"

@@ -22,7 +22,6 @@ expected:
     - "src/permission/"
     - "PermissionChecker"
     - "需要明确"
-    - "更好"
     - "不清楚"
     - "具体"
     - "哪方面"
@@ -30,8 +29,19 @@ expected:
     - "目标"
     - "你想"
     - "澄清"
+    - "性能"
+    - "API 设计"
+    - "错误信息"
+    - "测试覆盖"
 
-  must_not_include: []
+  must_not_include:
+    - "已修改"
+    - "已应用 patch"
+    - "Edit 完成"
+    - "已 git commit"
+    - "我帮你改"
+    - "已优化"
+    - "已重构"
 
   must_call_tools: []
   must_not_call_tools:
@@ -133,22 +143,24 @@ baseline_scores:
     _formula_version:
       cost: legacy_v1
   sid_code_deepseek_v4_pro:
-    score: 5
+    score: 4.79
     run_status: success
-    tested_at: 2026-05-28T02:36:31.754Z
+    tested_at: 2026-05-29T19:19:43.235Z
     tested_by: eval-runner
     transcript_path: null
     notes: ""
     dimensions:
-      anchor_hit: 1
-      negative_anchor: null
+      anchor_hit: 0.75
+      negative_anchor: 1
       rubric_score: 1
       tool_compliance: 1
       efficiency: 1
       cost: 1
+    mandatory_pass: true
+    grader_type: rubric_5d
     _formula_version:
       cost: v6
-      grader: 5d-v3
+      grader: 5d-v4
   sid_code_claude_opus_4_7:
     score: 4.79
     run_status: success

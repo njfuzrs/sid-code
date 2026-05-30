@@ -45,7 +45,22 @@ rubric:
   precision: "区分'内核组件（C 档）'与'扩展点（A/B 档）'"
   helpfulness: "防止供应链注入 + 评测体系完整性"
 
-baseline_scores: {}
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 5,
+        run_status: success,
+        tested_at: 2026-05-29T19:15:46.162Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 1 },
+        mandatory_pass: true,
+        grader_type: structured_arch,
+        _formula_version: { cost: v6, grader: 5d-v4 }
+      }
+  }
 
 source: "H-05 / 08 §1 / CLAUDE.md §0.1 三档可拔插 C 档"
 notes: |

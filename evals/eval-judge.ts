@@ -220,10 +220,18 @@ export function gradeNegativeAnchors(
  * 版本史：
  *   5d-v1 (2026-05-15 ~ 2026-05-25)：初始 5 维 + cost 权重 0.5/1.0、efficiency 权重 0.3
  *   5d-v2 (2026-05-26)：cost 权重 0、efficiency 权重 0；cost / efficiency 完全降级为诊断维度
- *   5d-v3 (2026-05-26 起)：rubric-template.ts 增加 CoT 评分流程（Step 1-4 强制 reasoning）；
- *                          与 task-specific-v1 scorer 注册表（T-10）+ mandatory/optional 分级（T-11）同步发布
+ *   5d-v3 (2026-05-26 ~ 2026-05-29)：rubric-template.ts 增加 CoT 评分流程（Step 1-4 强制 reasoning）；
+ *                          与 task-specific-v1 scorer 注册表（T-10）+ mandatory/optional 分级（T-11）同步发布。
+ *                          注意：7c34ef6（2026-05-26 04:38）的 echo 排除 + 下中位数 + binary fail-safe
+ *                          实际改动了语义但未及时 bump，是历史违规。详见 ADR-027 追溯。
+ *   5d-v4 (2026-05-30 起)：追溯式 bump，正式纳入 7c34ef6 的 4 项改动语义 ——
+ *                          ① gradeNegativeAnchors echo 排除（自然语言反例 user_query 复读豁免，代码标识符不豁免）
+ *                          ② gradeRubric 多采样下中位数 + 取该样本完整 (pass, score, reason)
+ *                          ③ gradeRubricEnsemble 投票算法同上（score / pass / reason 一致取自下中位数样本）
+ *                          ④ BinaryRedlineGrader fail-safe（API key 缺失 / judge 异常 → score=null + mandatoryPass=false）
+ *                          配套：ADR-027（rejected alternatives + validation signal）。
  */
-export const GRADER_VERSION = "5d-v3";
+export const GRADER_VERSION = "5d-v4";
 
 /**
  * 默认维度权重。

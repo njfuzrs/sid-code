@@ -275,8 +275,36 @@ export function readBaseline(c: CaseDoc, tool: string): BaselineSnapshot {
  * 旧版本走 includeLegacy 开关（renderCaseToolMatrix 在脚注列出过滤的 legacy 条目数）。
  *
  * 升级时机：eval-judge.ts 的 GRADER_VERSION bump 后，**同步**改本常量；不允许两边漂移。
+ *
+ * 历史：
+ *   5d-v3：rubric-template.ts CoT 评分 + task-specific scorer 注册表，2026-05-26 ~ 2026-05-29
+ *   5d-v4：追溯式 bump，纳入 7c34ef6 echo 排除 + 下中位数 + binary fail-safe，2026-05-30 起，
+ *           详见 ADR-027 / 评测系统报告 §人的纪律 H-1
  */
-export const LATEST_GRADER_VERSION = "5d-v3";
+export const LATEST_GRADER_VERSION = "5d-v4";
+
+/**
+ * Capability runner 自家 grader 版本——dashboard 把这些当成 5d-v4 之外的"真版本数据"展示，不进 legacy。
+ *
+ * 这些 grader 各自有 mandatoryPass / score / dimensions 含义，不与 5d-v* 跨版本比较。
+ * 单字符串前缀 "capability-" 用于快速识别。
+ */
+export const CAPABILITY_GRADER_PREFIX = "capability-";
+
+/**
+ * 判定 baseline entry 是否属于"legacy 数据"（应当被 dashboard 主表过滤）：
+ *   - graderVersion 缺失（早期 promptfoo / anchor_auto_v0 数据）
+ *   - graderVersion 不是 LATEST_GRADER_VERSION 且不带 capability- 前缀（5d-v1/5d-v2/5d-v3 等历史版本）
+ *
+ * dashboard --include-legacy 时绕过本判定一并展示。
+ */
+export function isLegacyBaseline(entry: { graderVersion?: string }): boolean {
+  const v = entry.graderVersion;
+  if (!v) return true;
+  if (v === LATEST_GRADER_VERSION) return false;
+  if (v.startsWith(CAPABILITY_GRADER_PREFIX)) return false;
+  return true;
+}
 
 export interface RunRecord {
   runId: string;

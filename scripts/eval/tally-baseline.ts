@@ -15,6 +15,7 @@ import { readdirSync, readFileSync, statSync, writeFileSync, existsSync } from "
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import yaml from "yaml";
+import { LATEST_GRADER_VERSION } from "./lib/yaml-loader";
 
 const ROOT = process.cwd();
 const CASE_DIRS = ["evals/general/p0-core", "evals/general/p1-common", "evals/general/p2-edge", "evals/holdout"];
@@ -28,9 +29,15 @@ interface Case {
   target_score: number;
   source: string;
   related_subsystem?: string[];
-  baseline_scores?: {
-    sid_code_w0?: { score: number | null; run_status: string; notes: string };
-  };
+  baseline_scores?: Record<
+    string,
+    {
+      score: number | null;
+      run_status?: string;
+      notes?: string;
+      _formula_version?: { cost?: string; grader?: string };
+    } | undefined
+  >;
 }
 
 interface RawRecord {
@@ -62,6 +69,22 @@ function loadCases(): Case[] {
   }
   out.sort((a, b) => a.id.localeCompare(b.id));
   return out;
+}
+
+/**
+ * tally 用：取 sid-code 自家分（与原实现等价 —— sid_code_w0 / sid_code_default / sid_code_<modelSlug>）
+ * 返回 first non-null score。
+ */
+function firstSidCodeScore(
+  bs: Case["baseline_scores"] | undefined,
+): number | null {
+  if (!bs) return null;
+  for (const k of Object.keys(bs)) {
+    if (!k.startsWith("sid_code")) continue;
+    const v = bs[k];
+    if (v && typeof v.score === "number") return v.score;
+  }
+  return null;
 }
 
 function main(): void {
@@ -113,12 +136,54 @@ function main(): void {
     );
     const rate = hits.t > 0 ? `${((hits.h / hits.t) * 100).toFixed(0)}%` : "—";
     const scores = group
-      .map((c) => c.baseline_scores?.sid_code_w0?.score)
+      .map((c) => firstSidCodeScore(c.baseline_scores))
       .filter((s): s is number => typeof s === "number");
     const avg = scores.length > 0
       ? (scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(2)
       : "—";
     lines.push(`| ${k} | ${group.length} | ${ran} | ${rate} | ${avg} |`);
+  }
+  lines.push("");
+
+  // §1.5 grader 版本占比（A3-3 / F-3）
+  // 让 baseline-w*.md 直接展示 5d-v4 数据是否已经覆盖到位 — §6 收敛标准 #1（5d-v4 占比 ≥ 80%）的判定依据
+  lines.push("## §1.5 grader 版本占比");
+  lines.push("");
+  const versionCounter = new Map<string, number>();
+  let totalEntries = 0;
+  for (const c of cases) {
+    const bs = c.baseline_scores ?? {};
+    for (const provider of Object.keys(bs)) {
+      const entry = bs[provider];
+      if (!entry) continue;
+      // 只统计实际跑过的 entry（pending / null score 不进分母 — 避免 5d-v4 占比被未跑的 case 拉低）
+      const ran = typeof entry.score === "number" || (entry.run_status && entry.run_status !== "pending");
+      if (!ran) continue;
+      const v = entry._formula_version?.grader ?? "<missing>";
+      versionCounter.set(v, (versionCounter.get(v) ?? 0) + 1);
+      totalEntries += 1;
+    }
+  }
+  if (totalEntries === 0) {
+    lines.push("（无 baseline 数据）");
+  } else {
+    lines.push("| grader 版本 | 条数 | 占比 | 状态 |");
+    lines.push("|---|---:|---:|---|");
+    const sorted = [...versionCounter.entries()].sort((a, b) => b[1] - a[1]);
+    for (const [v, n] of sorted) {
+      const pct = ((n / totalEntries) * 100).toFixed(1);
+      const status =
+        v === LATEST_GRADER_VERSION ? "✅ 当前"
+        : v.startsWith("capability-") ? "🟢 capability runner（独立版本，不与 5d-v* 跨比较）"
+        : v === "<missing>" ? "🕰️ legacy（缺 _formula_version）"
+        : "🕰️ legacy（历史版本号）";
+      lines.push(`| \`${v}\` | ${n} | ${pct}% | ${status} |`);
+    }
+    lines.push("");
+    const latestN = versionCounter.get(LATEST_GRADER_VERSION) ?? 0;
+    const latestPct = ((latestN / totalEntries) * 100).toFixed(1);
+    lines.push(`> 当前 \`${LATEST_GRADER_VERSION}\` 占比：**${latestPct}%**（${latestN}/${totalEntries}）`);
+    lines.push(`> 收敛标准 §6 #1：5d-v4 占比 ≥ 80%（当前${parseFloat(latestPct) >= 80 ? " ✅ 达标" : " ⏳ 未达标，需重跑刷新"}）`);
   }
   lines.push("");
 
@@ -129,7 +194,7 @@ function main(): void {
   lines.push("|---|---|---|---:|---:|---:|---|---:|");
   for (const c of cases.filter((c) => !c.holdout)) {
     const r = rawById.get(c.id);
-    const score = c.baseline_scores?.sid_code_w0?.score ?? "—";
+    const score = firstSidCodeScore(c.baseline_scores) ?? "—";
     if (!r) {
       lines.push(`| ${c.id} | ${c.priority} | ${c.category} | — | — | — | 未跑 | ${score} |`);
       continue;

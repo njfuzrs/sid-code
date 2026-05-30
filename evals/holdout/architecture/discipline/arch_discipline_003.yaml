@@ -44,7 +44,22 @@ rubric:
   precision: "区分'holdout 标记过滤'与'holdout 目录隔离'——两层防护"
   helpfulness: "防止 holdout case 被无意纳入调优循环"
 
-baseline_scores: {}
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: 3.75,
+        run_status: success,
+        tested_at: 2026-05-29T19:15:46.162Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 0.75 },
+        mandatory_pass: false,
+        grader_type: structured_arch,
+        _formula_version: { cost: v6, grader: 5d-v4 }
+      }
+  }
 
 source: "E-06 / 08 §13.2 holdout 保护"
 notes: |

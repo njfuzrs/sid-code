@@ -48,6 +48,20 @@ export interface BaselineResult {
   /** 覆盖默认 notes（默认按 runStatus 自动生成） */
   notes?: string;
   /**
+   * A3-1 / A3-2 / F-1：红线一票否决结果。
+   *   - binary_redline grader 的 case 才有意义（true=全 pass / false=任一规则违反或 abnormal）
+   *   - 其它 grader 默认 true（不参与红线语义；dashboard 用 graderType 过滤）
+   *   - 缺失时本模块不写字段，向后兼容旧 baseline
+   */
+  mandatoryPass?: boolean;
+  /**
+   * A3-1 / A3-2 / F-1：grader 类型（rubric_5d / binary_redline / structured_arch / execution_test / capability-*-v1）。
+   * 缺失时本模块不写字段；与 _formula_version.grader 不同——
+   *   _formula_version.grader 是 grader 公式版本号（5d-v3 / 5d-v4），
+   *   graderType 是 grader 注册表里的 type 名，是分类维度。
+   */
+  graderType?: string;
+  /**
    * Multi-sample baseline（08 §9.3 第 6 条 / a.md 问题 6 残留）：
    *   每条 case 跑 N 次,score 取中位数,本字段保留每次分数 + 状态用于事后审计。
    *   单次跑(N=1)时不写本字段,与历史数据兼容。
@@ -208,6 +222,13 @@ export function syncBaselineScores(results: BaselineResult[], opts: SyncOptions)
         notes: r.notes ?? defaultNotes,
         dimensions: safeDimensions,
       };
+      // A3-1 / A3-2：写 mandatory_pass / grader_type；abnormal 时 mandatory_pass 落 null（无法判定）
+      if (typeof r.mandatoryPass === "boolean") {
+        entry.mandatory_pass = isAbnormal ? null : r.mandatoryPass;
+      }
+      if (typeof r.graderType === "string" && r.graderType.length > 0) {
+        entry.grader_type = r.graderType;
+      }
       if (r.formulaVersion) {
         entry._formula_version = r.formulaVersion;
       }

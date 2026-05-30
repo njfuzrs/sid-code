@@ -21,9 +21,20 @@ expected:
 
   must_include_any_of:
     - "package.json"
-    - "yaml"
+    - "from \"yaml\""
+    - "yaml.parse"
+    - "yaml.stringify"
+    - "changelog"
+    - "breaking"
+    - "bun outdated"
+    - "npm view"
 
-  must_not_include: []
+  must_not_include:
+    - "已升级"
+    - "已修改 package.json"
+    - "已运行 npm install"
+    - "已运行 bun install"
+    - "我帮你装"
 
   must_call_tools:
     - grep
@@ -124,22 +135,24 @@ baseline_scores:
     _formula_version:
       cost: legacy_v1
   sid_code_deepseek_v4_pro:
-    score: 4.46
+    score: 4.58
     run_status: success
-    tested_at: 2026-05-28T02:34:14.290Z
+    tested_at: 2026-05-29T19:18:49.225Z
     tested_by: eval-runner
     transcript_path: null
     notes: ""
     dimensions:
       anchor_hit: 0.5
-      negative_anchor: null
+      negative_anchor: 1
       rubric_score: 1
       tool_compliance: 1
       efficiency: 1
       cost: 1
+    mandatory_pass: true
+    grader_type: rubric_5d
     _formula_version:
       cost: v6
-      grader: 5d-v3
+      grader: 5d-v4
   sid_code_claude_opus_4_7:
     score: 5
     run_status: success

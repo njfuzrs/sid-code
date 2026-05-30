@@ -24,15 +24,19 @@ input:
 expected:
   outcome: chinese_doc_quality
   must_include_any_of:
-    - "agent"
-    - "tool"
-    - "permission"
-    - "context"
-    - "skill"
+    - "核心模块"
+    - "中文一等公民"
+    - "工具调用"
+    - "权限"
+    - "上下文"
+    - "技能"
   must_not_include:
     - "the "
     - "and "
     - " by "
+    - " is "
+    - " are "
+    - " of "
   max_steps: 4
   reference_answer: |
     一段流畅中文，介绍 sid-code 的 5+ 模块结构，无中英混杂。

@@ -435,6 +435,8 @@ if (values.sync) {
         assert: r.assertScore,
         llm_judge: r.llmScore,
       },
+      mandatoryPass: r.aggregatedRunStatus === "success",
+      graderType: "capability-harness-v1",
       formulaVersion: { grader: "capability-harness-v1" },
       samples,
     };

@@ -82,6 +82,27 @@ export interface TestResult {
   /** 单 case 实际跑完时间（ISO 字符串）—— 与整批 runId 不同，趋势图按这个画 */
   testedAt: string;
   /**
+   * A3-1 / F-1：mandatoryPass — binary_redline grader 一票否决结果。
+   *
+   * 来源：
+   *   - binary_redline grader：当任一红线规则违反或任一规则 abnormal（API key 缺失等 fail-safe 路径）→ false
+   *   - 其它 grader（rubric_5d / structured_arch / execution_test）：默认 true（不参与一票否决语义）
+   *
+   * 用途：dashboard / weekly-report 用此字段单独统计"红线击穿率"，不与 score=0 混淆。
+   *   旧实现：mandatoryPass=false 时 score=0；与"5 维 grader 实测打了 0 分"的 case 在 jsonl/baseline 完全
+   *           无法区分。M3 Go/No-Go 条件 1 "Layer 1 红线全 pass" 因此无法用现有数据验证。
+   *   新实现：mandatoryPass 字段独立落 _runs/*.jsonl + baseline_scores，红线击穿在数据层面变得可见。
+   *
+   * 详见：ADR-027、`docs/eval/评测系统和迭代流程的可靠性和安全性报告.md` §Grader 公式合理性 H-1
+   */
+  mandatoryPass: boolean;
+  /**
+   * A3-1 / F-1：grader 类型 — 来自 grader.type（rubric_5d / binary_redline / structured_arch / execution_test）。
+   *
+   * 用途：dashboard 按 grader 分类统计；跨 grader 版本号变化时的过滤维度（与 _formula_version.grader 配套）。
+   */
+  graderType: string;
+  /**
    * 原始 token / step 元数据（来自 wrapper meta）。可选——error / timeout 时缺失。
    * 落 _runs/*.jsonl，便于事后做"provider 在 case_X 上的 median token 消耗"等分析，
    * 不再只能 grep dims.cost.reason 字符串提取（脆弱）。
@@ -699,6 +720,12 @@ export function appendRunHistory(
         latency_ms: r.latencyMs,
         success: r.success,
         run_status: r.runStatus,
+        // A3-1：红线一票否决结果（binary_redline grader 的关键信号）+ grader 类型 + grader 版本
+        // dashboard / weekly-report 用 mandatory_pass 单独统计红线击穿率，与 score=0 区分
+        // grader_version：决策文档 §6 第 2 条收敛标准——legacy 数据隔离过滤器靠这个字段
+        mandatory_pass: r.mandatoryPass,
+        grader_type: r.graderType,
+        grader_version: GRADER_VERSION,
         // 单 case 实际完成时间，与整批 run_id 分开。趋势图按 tested_at 画。
         tested_at: r.testedAt,
         // meta：原始 token / step 计数，事后分析用（不再依赖 grep dims.cost.reason）
@@ -721,6 +748,10 @@ export function appendRunHistory(
         latency_ms: r.latencyMs,
         success: r.success,
         run_status: r.runStatus,
+        // A3-1：raw sample 也落红线一票否决 + grader 类型 + grader 版本，事后追溯单次表现
+        mandatory_pass: r.mandatoryPass,
+        grader_type: r.graderType,
+        grader_version: GRADER_VERSION,
         tested_at: r.testedAt,
         ...(r.meta ? { meta: r.meta } : {}),
         sample_index: r.sampleIndex,
@@ -745,6 +776,11 @@ export function syncBaselineScores(results: TestResult[], baseDir: string = ROOT
     runStatus: r.runStatus,
     testedAt: r.testedAt,
     dimensions: r.namedScores,
+    // A3-1 / A3-2：mandatoryPass / graderType 落到 baseline_scores
+    // dashboard 用 mandatory_pass 单独统计红线击穿率（与 score=0 区分）
+    // grader_type 用于跨 grader 分类聚合，不与 _formula_version.grader 混淆（前者是 type 名，后者是版本号）
+    mandatoryPass: r.mandatoryPass,
+    graderType: r.graderType,
     // 公式版本：让后续工具/人能一眼区分新旧 baseline
     // 同一 case 同一 provider 的 cost 维度跨版本不可直接比较
     // grader 字段标识整体 5 维加权方案的版本（见 eval-judge.ts GRADER_VERSION docstring）
@@ -784,9 +820,13 @@ async function main() {
       //   samples 是"同一份 case × N 次 agent"——对冲 agent 跨次输出波动（temperature>0 时同一 case 不同回答）
       // 默认 1 保持向后兼容；跑权威 baseline 建议 --samples=3 取中位数。
       "samples": { type: "string", default: "1" },
-      // sync 默认 off：避免调试单 case 时污染 case yaml 的 baseline_scores（diff 噪声 + git 历史污染）。
-      // 跑正式 baseline / 横向对比时，显式加 --sync 才回写。
-      "sync": { type: "boolean", default: false },
+      // sync 默认行为：
+      //   - 未指定 --cases（全量模式）：默认 on（baseline 必须刷新；不刷会让 dashboard 持续显示旧数据）
+      //   - 指定 --cases（调试模式）：默认 off（避免单 case 调试污染 baseline_scores）
+      // 显式 --sync 始终生效；显式 --no-sync 禁用回写
+      // A1-4 / F-S2（2026-05-30）：评测系统报告"全量模式不 sync 会让 dashboard 滞后"
+      "sync": { type: "boolean" },
+      "no-sync": { type: "boolean", default: false },
       "dry-run": { type: "boolean", default: false },
       // 控制 refreshReports 失败是否让 eval-runner exit 非 0（CI 用）
       "strict-refresh": { type: "boolean", default: false },
@@ -803,7 +843,13 @@ async function main() {
   const skipLlmJudge = values["skip-llm-judge"] as boolean;
   const judgeSamples = parseInt((values["judge-samples"] as string) || "1", 10) || 1;
   const samples = Math.max(1, parseInt((values["samples"] as string) || "1", 10) || 1);
-  const doSync = values["sync"] as boolean;
+  // A1-4：sync 默认值 — 全量模式自动 on；--cases 指定时默认 off；显式 --sync / --no-sync 覆盖默认
+  const syncFlag = values["sync"] as boolean | undefined;
+  const noSync = values["no-sync"] as boolean;
+  let doSync: boolean;
+  if (noSync) doSync = false;
+  else if (syncFlag === true) doSync = true;
+  else doSync = caseFilter === undefined; // 全量默认 on，单 case 默认 off
   const dryRun = values["dry-run"] as boolean;
   const strictRefresh = values["strict-refresh"] as boolean;
   const outputPath = resolve(ROOT, "..", values.output as string);
@@ -870,6 +916,8 @@ async function main() {
           provResult: ProviderResult;
           runStatus: string;
           completedAt: string;
+          mandatoryPass: boolean;
+          graderType: string;
         }> = [];
         for (let i = 0; i < samples; i++) {
           // T-10.2 静态 grader 短路：requiresAgentOutput=false（如 structured_arch）的 case
@@ -883,7 +931,14 @@ async function main() {
           const grade = await gradeCase(c, provResult, skipLlmJudge, judgeSamples);
           const failure = isCompleteFailure(provResult);
           const runStatus = classifyRunStatus(provResult, failure);
-          perSample.push({ dims: grade.dims, provResult, runStatus, completedAt: new Date().toISOString() });
+          perSample.push({
+            dims: grade.dims,
+            provResult,
+            runStatus,
+            completedAt: new Date().toISOString(),
+            mandatoryPass: grade.mandatoryPass,
+            graderType: grade.graderType,
+          });
           if (samples > 1) {
             const sScoreStr = grade.score === null ? `null（${runStatus}）` : String(grade.score);
             console.log(`  · sample ${i + 1}/${samples} = ${sScoreStr}`);
@@ -899,6 +954,8 @@ async function main() {
               success: !provResult.error,
               runStatus,
               testedAt: perSample[i].completedAt,
+              mandatoryPass: grade.mandatoryPass,
+              graderType: grade.graderType,
               meta: extractMeta(provResult.meta),
               sampleIndex: i,
               isMedian: false,
@@ -928,6 +985,13 @@ async function main() {
           : "🔴";
         const scoreStr = score === null ? `null（${majorityRunStatus}）` : String(score);
         const sampleNote = samples > 1 ? ` [中位数 of ${samples}]` : "";
+        // mandatoryPass 跨 samples 取与 majorityRunStatus 同源的"多数派"——
+        //   只要 ≥半数 sample 红线 pass，就算整体 pass；半数以上击穿才算击穿。
+        //   binary_redline 之外的 grader 默认每个 sample 都 mandatoryPass=true，多数派恒为 true。
+        const mandatoryPassCount = perSample.filter((s) => s.mandatoryPass).length;
+        const aggregatedMandatoryPass = mandatoryPassCount >= Math.ceil(samples / 2);
+        // graderType：取最后一次（perSample 内同 case_id 的 grader 是稳定的）
+        const aggregatedGraderType = lastSample.graderType;
         console.log(`  ${emoji} ${c.id} × ${p.name} = ${scoreStr}${sampleNote} (${(elapsed / 1000).toFixed(1)}s)`);
 
         const finalResult: TestResult = {
@@ -941,6 +1005,8 @@ async function main() {
           success: majorityRunStatus === "success",
           runStatus: majorityRunStatus,
           testedAt: completedAt,
+          mandatoryPass: aggregatedMandatoryPass,
+          graderType: aggregatedGraderType,
           // samples > 1 时取最后一次的 meta（与 output / latency 同源；中位数维度已聚合在 dims 里）
           // 注意：billable/total_tokens 不是中位数，事后做精细分析用 sampleResults 里的 raw 行
           meta: extractMeta(lastSample.provResult.meta),
@@ -968,6 +1034,9 @@ async function main() {
           success: false,
           runStatus: "error",
           testedAt: new Date().toISOString(),
+          // crash 时无法判定红线 pass/fail —— fail-safe 视为击穿（与 binary-redline-grader abnormal 路径一致）
+          mandatoryPass: false,
+          graderType: c.grader_type ?? "rubric_5d",
         });
       }
     }))
@@ -1032,7 +1101,13 @@ async function main() {
   if (doSync) {
     syncBaselineScores(results);
   } else {
-    console.log("  跳过 baseline_scores 回写（默认行为；加 --sync 显式开启）");
+    // A1-4 / F-S2：未 sync 时 dashboard 会显示旧数据。在末尾打 banner 警示
+    const reason = caseFilter !== undefined
+      ? "（--cases 模式默认不回写，避免污染 baseline；--sync 显式启用）"
+      : "（已显式 --no-sync）";
+    console.log("");
+    console.log("⚠️  本次未回写 baseline_scores，dashboard 将显示上次已 sync 的数据（可能滞后）");
+    console.log(`    跳过原因${reason}`);
   }
 
   console.log("");

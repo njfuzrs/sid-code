@@ -495,6 +495,11 @@ if (values.sync) {
         assert: r.assertScore,
         llm_judge: r.llmScore,
       },
+      // A3-1 / A3-2：capability runner 不走 binary_redline 一票否决；mandatoryPass 默认 true
+      // 让 dashboard 红线击穿率统计能正确包含 capability case（不当成"无 grader 的旧数据"）
+      mandatoryPass: r.aggregatedRunStatus === "success",
+      // capability runner 走独立 assert + llm_judge 公式，标 capability-plan-v1 与 general 5d-vN 区分
+      graderType: "capability-plan-v1",
       // capability runner 目前不走 5 维 grader，标注独立版本以与 general baseline 区分
       // S1 上 task-specific scorer 时再 bump 到对应版本号
       formulaVersion: { grader: "capability-plan-v1" },

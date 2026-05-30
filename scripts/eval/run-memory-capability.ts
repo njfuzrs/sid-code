@@ -666,6 +666,8 @@ if (values.sync) {
         assert: r.assertScore,
         llm_judge: r.llmScore,
       },
+      mandatoryPass: r.aggregatedRunStatus === "success",
+      graderType: "capability-memory-v1",
       formulaVersion: { grader: "capability-memory-v1" },
       samples,
     };

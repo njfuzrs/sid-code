@@ -11,7 +11,7 @@
  */
 
 import type { CaseDoc, ProjectSnapshot, WeekScore, RunRecord, BaselineSnapshot } from "./yaml-loader";
-import { readBaseline, LATEST_GRADER_VERSION, isBehaviorBucket, isArchitectureBucket } from "./yaml-loader";
+import { readBaseline, LATEST_GRADER_VERSION, isBehaviorBucket, isArchitectureBucket, CAPABILITY_GRADER_PREFIX } from "./yaml-loader";
 
 export interface DashboardOptions {
   /** true = 一并展示旧 grader 版本 baseline；默认 false（仅展示 LATEST_GRADER_VERSION 数据） */
@@ -23,13 +23,17 @@ export interface DashboardOptions {
  *
  * 规则：
  *   - graderVersion === LATEST_GRADER_VERSION → 当前版本（保留）
+ *   - graderVersion 以 capability- 前缀打头 → capability runner 自家版本，保留（不与 5d-v* 跨版本比，
+ *     但属于真版本数据，不是 legacy；A3-3 修正前会被一并 hide 导致 capability dashboard 空表）
  *   - graderVersion === undefined → legacy 数据（promptfoo 时代或 5d-v1 之前），按 includeLegacy 过滤
- *   - graderVersion 为其它值（如未来 5d-v3 跑出来的）→ 不属于当前版本，按 includeLegacy 过滤
+ *   - graderVersion 为其它值（如 5d-v3 / 5d-v2 / 5d-v1）→ 历史版本 legacy，按 includeLegacy 过滤
  *   - status === "pending"（无 baseline 数据）→ 始终保留（用于显示"待评测"状态）
  */
 function isLatestGrader(b: BaselineSnapshot): boolean {
   if (b.status === "pending") return true;
-  return b.graderVersion === LATEST_GRADER_VERSION;
+  if (b.graderVersion === LATEST_GRADER_VERSION) return true;
+  if (b.graderVersion && b.graderVersion.startsWith(CAPABILITY_GRADER_PREFIX)) return true;
+  return false;
 }
 
 const STATUS_ICON = {
@@ -202,7 +206,8 @@ function renderBehaviorVsArchitecture(
     for (const tool of snap.tools) {
       const b = readBaseline(c, tool);
       if (b.status !== "tested") continue;
-      if (!includeLegacy && b.graderVersion !== LATEST_GRADER_VERSION) continue;
+      // A3-3：grader 过滤——当前版本 + capability-* 都算真版本数据；legacy 走 includeLegacy 开关
+      if (!includeLegacy && !isLatestGrader(b)) continue;
       if (typeof b.score !== "number") continue;
       const s = stats.get(tool)!;
       if (isBehavior) {

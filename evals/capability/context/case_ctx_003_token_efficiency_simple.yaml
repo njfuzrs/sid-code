@@ -26,10 +26,20 @@ expected:
     - grep
     - glob
 
-  # 应直接给答案
+  # 应直接给答案——避免单字 "2"/"二" 误命中（任何回答都可能含数字 2），
+  # 改成必须明确出现"等于 2"或"是 2"这类表达。
   final_response_must_include_any_of:
-    - "2"
-    - "二"
+    - "等于 2"
+    - "= 2"
+    - "是 2"
+    - "结果为 2"
+    - "答案是 2"
+    - "等于二"
+
+  final_response_must_not_include:
+    - "我不会"
+    - "请你自己算"
+    - "无法回答"
 
   # final_response 不应太啰嗦
   final_response_max_length: 200
