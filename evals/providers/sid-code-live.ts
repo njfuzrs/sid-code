@@ -2,7 +2,9 @@
 
 import { spawn } from "node:child_process";
 import { join, resolve } from "node:path";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync } from "node:fs";
+import { convertRawJsonlToTrace } from "../../scripts/eval/raw-jsonl-to-trace.ts";
+import { validateTrace } from "../_types/agent-trace.ts";
 
 const REPO_ROOT = resolve(import.meta.dir, "../..");
 const ENTRYPOINT = join(REPO_ROOT, "src/entrypoints/bootstrap.ts");
@@ -405,6 +407,38 @@ async function main() {
       }) + "\n");
       process.exit(0);
     }
+
+    // B6-5：trace.json 落盘（AgentTrace v1 格式）
+    // 条件：raw.jsonl 存在 + sessionId 有效；失败不阻塞主流程（best-effort）
+    if (trajPath && parsed.sessionId) {
+      const rawJsonlPath = join(trajPath, "..", "raw.jsonl");
+      if (existsSync(rawJsonlPath)) {
+        try {
+          const rawText = readFileSync(rawJsonlPath, "utf-8");
+          // sid-code 用短码 session ID（8 字符），trace schema §5-1 要求 UUID v4。
+          // 用短码 pad 成合法 UUID 保持可追溯性。
+          const sid = parsed.sessionId;
+          const padded = sid.padEnd(32, "0");
+          const uuidFromSid = `${padded.slice(0,8)}-${padded.slice(8,12)}-4${padded.slice(13,16)}-a${padded.slice(17,20)}-${padded.slice(20,32)}`;
+          const trace = convertRawJsonlToTrace(rawText, {
+            session_id: uuidFromSid,
+            case_id: caseId !== "unknown" ? caseId : undefined,
+            agent_kind: "sid-code",
+            agent_version: "live",
+            provider: model || "deepseek-v4-pro",
+            trace_id: uuidFromSid,
+          });
+          const validation = validateTrace(trace);
+          if (validation.ok) {
+            const traceOutPath = join(trajPath, "..", "trace.json");
+            writeFileSync(traceOutPath, JSON.stringify(trace, null, 2), "utf-8");
+          }
+        } catch {
+          // best-effort: trace 落盘失败不影响评测主流程
+        }
+      }
+    }
+
     process.stdout.write(JSON.stringify({ output: parsed.text, meta: metaOut }) + "\n");
     process.exit(0);
   }

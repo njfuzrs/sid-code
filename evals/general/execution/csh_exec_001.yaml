@@ -1,0 +1,222 @@
+id: csh_exec_001
+category: ci-self-heal execution
+priority: P0
+created_date: 2026-05-31
+
+# B7-5 ci-self-heal Skill 第一条 execution case
+# 场景：TypeScript 类型错误导致 CI build 失败
+# 蒸馏自真实 CI 失败模式：函数签名变更后调用方未同步更新
+# §15.3 S5 铁律检查：TS 类型错误 ✅ / 不依赖外部 HTTP/DB ✅ / 不需新依赖 ✅ / 不依赖 docker ✅
+
+eval_type: execution
+target_score: 1.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: execution_test
+
+execution_test:
+  apply_mode: extract_files
+
+  fixtures:
+    - path: config-loader.ts
+      content: |
+        // CI 失败场景：loadConfig 签名从 (path: string) 改为 (path: string, opts: LoadOptions)
+        // 但调用方 initApp 未同步更新，导致 tsc 报类型错误
+
+        export interface LoadOptions {
+          strict: boolean;
+          envOverride?: string;
+        }
+
+        export interface AppConfig {
+          port: number;
+          host: string;
+          debug: boolean;
+        }
+
+        // 新签名：opts 参数是必填的
+        export function loadConfig(path: string, opts: LoadOptions): AppConfig {
+          const raw = { port: 3000, host: "localhost", debug: !opts.strict };
+          if (opts.envOverride) {
+            raw.host = opts.envOverride;
+          }
+          return raw;
+        }
+
+        // BUG: 调用方仍用旧签名 loadConfig(path) —— 缺少第二个参数
+        export function initApp(configPath: string): AppConfig {
+          return loadConfig(configPath);
+        }
+
+        // 另一个调用方也有同样问题
+        export function initTestApp(): AppConfig {
+          return loadConfig("./test.config.json");
+        }
+    - path: config-loader.test.ts
+      content: |
+        import { initApp, initTestApp, loadConfig } from "./config-loader";
+
+        // 测试 1：initApp 应该正常返回 config
+        const cfg = initApp("./app.config.json");
+        if (cfg.port !== 3000) {
+          console.error(`FAIL: expected port=3000, got ${cfg.port}`);
+          process.exit(1);
+        }
+        if (cfg.debug !== false) {
+          console.error(`FAIL: expected debug=false (strict mode), got ${cfg.debug}`);
+          process.exit(1);
+        }
+
+        // 测试 2：initTestApp 应该返回 debug=true（非 strict）
+        const testCfg = initTestApp();
+        if (testCfg.debug !== true) {
+          console.error(`FAIL: expected test debug=true, got ${testCfg.debug}`);
+          process.exit(1);
+        }
+
+        // 测试 3：直接调用 loadConfig 带 envOverride
+        const overrideCfg = loadConfig("./prod.json", { strict: true, envOverride: "0.0.0.0" });
+        if (overrideCfg.host !== "0.0.0.0") {
+          console.error(`FAIL: expected host=0.0.0.0, got ${overrideCfg.host}`);
+          process.exit(1);
+        }
+
+        console.log("PASS: all config-loader tests passed");
+        process.exit(0);
+
+  pre_apply_must_fail:
+    - cmd: bun
+      args: ["config-loader.test.ts"]
+
+  verify_commands:
+    - cmd: bun
+      args: ["config-loader.test.ts"]
+      timeout_ms: 15000
+
+  total_timeout_ms: 60000
+
+input:
+  user_query: |
+    CI 挂了，tsc 报类型错误。这是一个**独立的最小可复现**示例，请只看下方文件内容修复。
+
+    CI 失败日志：
+    ```
+    error TS2554: Expected 2 arguments, but got 1.
+      config-loader.ts:28:10 - error in initApp()
+      config-loader.ts:33:10 - error in initTestApp()
+
+    Found 2 errors.
+    Build failed.
+    ```
+
+    === FILE: config-loader.ts ===
+    ```typescript
+    export interface LoadOptions {
+      strict: boolean;
+      envOverride?: string;
+    }
+
+    export interface AppConfig {
+      port: number;
+      host: string;
+      debug: boolean;
+    }
+
+    export function loadConfig(path: string, opts: LoadOptions): AppConfig {
+      const raw = { port: 3000, host: "localhost", debug: !opts.strict };
+      if (opts.envOverride) {
+        raw.host = opts.envOverride;
+      }
+      return raw;
+    }
+
+    // BUG: 调用方仍用旧签名 loadConfig(path) —— 缺少第二个参数
+    export function initApp(configPath: string): AppConfig {
+      return loadConfig(configPath);
+    }
+
+    export function initTestApp(): AppConfig {
+      return loadConfig("./test.config.json");
+    }
+    ```
+
+    === FILE: config-loader.test.ts ===
+    ```typescript
+    import { initApp, initTestApp, loadConfig } from "./config-loader";
+
+    const cfg = initApp("./app.config.json");
+    if (cfg.port !== 3000) {
+      console.error(`FAIL: expected port=3000, got ${cfg.port}`);
+      process.exit(1);
+    }
+    if (cfg.debug !== false) {
+      console.error(`FAIL: expected debug=false (strict mode), got ${cfg.debug}`);
+      process.exit(1);
+    }
+
+    const testCfg = initTestApp();
+    if (testCfg.debug !== true) {
+      console.error(`FAIL: expected test debug=true, got ${testCfg.debug}`);
+      process.exit(1);
+    }
+
+    const overrideCfg = loadConfig("./prod.json", { strict: true, envOverride: "0.0.0.0" });
+    if (overrideCfg.host !== "0.0.0.0") {
+      console.error(`FAIL: expected host=0.0.0.0, got ${overrideCfg.host}`);
+      process.exit(1);
+    }
+
+    console.log("PASS: all config-loader tests passed");
+    process.exit(0);
+    ```
+
+    需求：
+    - initApp 应该以 strict=true 模式加载（生产环境）
+    - initTestApp 应该以 strict=false 模式加载（测试环境）
+    - 修复两个调用方，补上缺失的 LoadOptions 参数
+
+    **输出格式（必须严格遵守 apply_mode=extract_files）**：在最终回答末尾按下述格式输出修复后的完整文件内容，
+    每个文件用 `=== FILE: <path> ===` 头标记，**不要使用 ```typescript 代码围栏包裹**——直接贴源代码：
+
+    === FILE: config-loader.ts ===
+    <完整源文件内容，不带 ``` 围栏>
+
+    === FILE: config-loader.test.ts ===
+    <完整源文件内容，保持不变，不带 ``` 围栏>
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: fix_type_error_ci_build_pass
+  must_include_any_of:
+    - "strict"
+    - "LoadOptions"
+    - "{ strict:"
+  must_not_include: []
+  must_call_tools: []
+  must_not_call_tools: []
+  must_modify_files_in:
+    - "config-loader.ts"
+  must_not_modify_files:
+    - "config-loader.test.ts"
+  max_steps: 30
+  reference_answer: |
+    修复 initApp 和 initTestApp 两个函数，补上 LoadOptions 参数：
+    - initApp: loadConfig(configPath, { strict: true })
+    - initTestApp: loadConfig("./test.config.json", { strict: false })
+
+rubric:
+  completeness: "两个调用方都必须补上 LoadOptions 参数，测试全部通过"
+  precision: "initApp 必须 strict=true（生产），initTestApp 必须 strict=false（测试）"
+  helpfulness: "若 agent 解释 CI 失败根因（签名变更后调用方未同步），加分"
+
+source: "B7-5 ci-self-heal Skill execution case，模拟 TS2554 类型错误 CI 失败"
+notes: |
+  ci-self-heal Skill 的第一条 execution case。
+  场景：函数签名变更后调用方未同步更新，是 CI 失败最高频模式之一。
+  与 S7 主线 ci-self-heal task 共享——验证 agent 不仅能诊断还能修复。
+related_subsystem:
+  - skill/ci-self-heal
+  - execution-grader

@@ -103,7 +103,7 @@ function isSkillMd(path: string): boolean {
   return /\/SKILL\.md$/.test(norm) || /\/skills\/.+\.md$/.test(norm);
 }
 
-function main(argv: string[]): number {
+async function main(argv: string[]): Promise<number> {
   const args = argv.slice(2);
 
   // 解析 staged SKILL.md 列表
@@ -142,21 +142,95 @@ function main(argv: string[]): number {
     return 0;
   }
 
-  console.log("");
-  console.log(`[skill-holdout-guardrail] ✅ holdout 有 ${survey.execution_cases} 条 execution case，应跑回归：`);
-  console.log("");
-  console.log(`    bun run eval:run --cases "evals/holdout/**/*.yaml" --provider sid-code`);
-  console.log("");
-  console.log("    跑完检查 _runs/sid_code_*.jsonl 中本次 run_id 的所有 execution_test case mandatoryPass");
-  console.log("    — 任一 false 即视为护栏 2 reject，不应合入 SKILL.md 改动");
-  console.log("");
-  console.log("    （CI=true 环境下未来会改为自动跑 + 失败阻塞合入）");
+  const isCI = process.env.CI === "true" || process.env.CI === "1";
 
+  if (!isCI) {
+    console.log("");
+    console.log(`[skill-holdout-guardrail] ✅ holdout 有 ${survey.execution_cases} 条 execution case，应跑回归：`);
+    console.log("");
+    console.log(`    bun run eval:run --cases ${survey.execution_case_paths.map(p => p.replace(SID_CODE_ROOT + "/", "")).join(",")} --provider sid-code --skip-llm-judge`);
+    console.log("");
+    console.log("    跑完检查 _runs/sid_code_*.jsonl 中本次 run_id 的所有 execution_test case mandatoryPass");
+    console.log("    — 任一 false 即视为护栏 2 reject，不应合入 SKILL.md 改动");
+    console.log("");
+    console.log("    （CI=true 环境下会自动跑 + 失败阻塞合入）");
+    return 0;
+  }
+
+  // CI=true 模式：自动跑 holdout execution 回归 + 失败阻塞合入
+  console.log("");
+  console.log(`[skill-holdout-guardrail] 🔒 CI 模式：自动跑 ${survey.execution_cases} 条 holdout execution 回归`);
+
+  const { spawnSync } = await import("node:child_process");
+  const caseIds = survey.execution_case_paths.map(p => {
+    const base = p.split("/").pop()!.replace(/\.ya?ml$/, "");
+    return base;
+  });
+
+  const result = spawnSync("bun", [
+    "run", "eval:run",
+    "--cases", caseIds.join(","),
+    "--provider", "sid-code",
+    "--skip-llm-judge",
+    "--no-sync",
+    "--concurrency", "2",
+  ], {
+    cwd: SID_CODE_ROOT,
+    stdio: "inherit",
+    timeout: 600_000,
+  });
+
+  if (result.status !== 0) {
+    console.error("");
+    console.error("[skill-holdout-guardrail] ❌ eval-runner 非 0 退出，护栏 2 REJECT");
+    console.error("    SKILL.md 改动不应合入——holdout execution 回归未通过");
+    return 1;
+  }
+
+  // 检查 _runs jsonl 中最新 run 的 execution case 是否全部 mandatoryPass
+  const runsFile = join(SID_CODE_ROOT, "evals", "_runs", "sid_code_deepseek_v4_pro.jsonl");
+  if (!existsSync(runsFile)) {
+    console.error("[skill-holdout-guardrail] ❌ _runs jsonl 不存在，无法验证结果");
+    return 1;
+  }
+
+  const lines = readFileSync(runsFile, "utf-8").trim().split("\n");
+  const caseIdSet = new Set(caseIds);
+  let allPass = true;
+  let checked = 0;
+
+  // 从末尾往前找匹配的 case
+  for (let i = lines.length - 1; i >= 0 && checked < caseIdSet.size; i--) {
+    try {
+      const entry = JSON.parse(lines[i]);
+      if (caseIdSet.has(entry.case_id) && entry.grader_type === "execution_test") {
+        checked++;
+        if (!entry.mandatory_pass) {
+          console.error(`  ❌ ${entry.case_id}: mandatoryPass=false`);
+          allPass = false;
+        } else {
+          console.log(`  ✅ ${entry.case_id}: mandatoryPass=true`);
+        }
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  if (!allPass || checked === 0) {
+    console.error("");
+    console.error(`[skill-holdout-guardrail] ❌ 护栏 2 REJECT — ${checked === 0 ? "未找到 execution 结果" : "存在 mandatoryPass=false"}`);
+    console.error("    SKILL.md 改动不应合入");
+    return 1;
+  }
+
+  console.log("");
+  console.log(`[skill-holdout-guardrail] ✅ 护栏 2 PASS — ${checked}/${survey.execution_cases} 条 holdout execution 全部通过`);
   return 0;
 }
 
 if (import.meta.main) {
-  process.exit(main(process.argv));
+  process.exit(await main(process.argv));
 }
 
 export { main, walkYaml, isSkillMd };

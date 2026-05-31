@@ -1,6 +1,6 @@
 # Evals Dashboard — sid-code
 
-> 自动生成,请勿手动编辑。生成时间: `2026-05-31T00:57:27.841Z`
+> 自动生成,请勿手动编辑。生成时间: `2026-05-31T04:55:38.644Z`
 > 数据源: `evals/p*-*/` + `evals/_scores/` + `evals/_reports/`
 > 触发: 手动 `bun run eval:dashboard` / git pre-push hook 自动刷新
 > Grader 过滤: **仅 `5d-v4`**（跨 grader 版本总分不可直接比较；切换：`--include-legacy`）
@@ -9,17 +9,17 @@
 
 ## 1. 总览
 
-- **case 总数**: 182 条
-- **优先级分布**: P0=102 / P1=72 / P2=8 / holdout=13
-- **claude_code** 评分进度: 0/182 已评分 (157 pending, 25 legacy 隐藏)
-- **claude_code_claude_opus_4_7** 评分进度: 0/182 已评分 (157 pending, 25 legacy 隐藏)
-- **claude_code_opus47** 评分进度: 0/182 已评分 (157 pending, 25 legacy 隐藏)
-- **codex** 评分进度: 0/182 已评分 (182 pending)
-- **sid_code_claude_opus_4_7** 评分进度: 0/182 已评分 (157 pending, 25 legacy 隐藏)
-- **sid_code_deepseek_v4_pro** 评分进度: 9/182 已评分 (98 pending, 75 legacy 隐藏)
-- **sid_code_live** 评分进度: 0/182 已评分 (157 pending, 25 legacy 隐藏)
-- **sid_code_opus47** 评分进度: 0/182 已评分 (157 pending, 25 legacy 隐藏)
-- **sid_code_w0** 评分进度: 0/182 已评分 (170 pending, 12 legacy 隐藏)
+- **case 总数**: 184 条
+- **优先级分布**: P0=104 / P1=72 / P2=8 / holdout=13
+- **claude_code** 评分进度: 0/184 已评分 (159 pending, 25 legacy 隐藏)
+- **claude_code_claude_opus_4_7** 评分进度: 0/184 已评分 (159 pending, 25 legacy 隐藏)
+- **claude_code_opus47** 评分进度: 0/184 已评分 (159 pending, 25 legacy 隐藏)
+- **codex** 评分进度: 0/184 已评分 (184 pending)
+- **sid_code_claude_opus_4_7** 评分进度: 0/184 已评分 (159 pending, 25 legacy 隐藏)
+- **sid_code_deepseek_v4_pro** 评分进度: 9/184 已评分 (100 pending, 75 legacy 隐藏)
+- **sid_code_live** 评分进度: 0/184 已评分 (159 pending, 25 legacy 隐藏)
+- **sid_code_opus47** 评分进度: 0/184 已评分 (159 pending, 25 legacy 隐藏)
+- **sid_code_w0** 评分进度: 0/184 已评分 (172 pending, 12 legacy 隐藏)
 - ⚠️ 共隐藏 **237** 条 legacy baseline（非 `5d-v4`）；查看用 `--include-legacy`
 
 ### 最新一周: w22
@@ -47,19 +47,19 @@
 > 数据源 = `evals/general/execution/`，grader=`execution-test-v1`，sandbox 跑 verify_commands 决定 0/1
 > 与 5d-v3 主表分轨：M5 前不混算总分；execution case 通过率独立看（§6.4）
 
-- **execution case 总数**: 1 条
+- **execution case 总数**: 3 条
 
 | Tool | pass_rate (n) | 已 pass | 已 fail | pending |
 | --- | --- | --- | --- | --- |
-| claude_code | – | 0 | 0 | 1 |
-| claude_code_claude_opus_4_7 | – | 0 | 0 | 1 |
-| claude_code_opus47 | – | 0 | 0 | 1 |
-| codex | – | 0 | 0 | 1 |
-| sid_code_claude_opus_4_7 | – | 0 | 0 | 1 |
-| sid_code_deepseek_v4_pro | – | 0 | 0 | 1 |
-| sid_code_live | – | 0 | 0 | 1 |
-| sid_code_opus47 | – | 0 | 0 | 1 |
-| sid_code_w0 | – | 0 | 0 | 1 |
+| claude_code | – | 0 | 0 | 3 |
+| claude_code_claude_opus_4_7 | – | 0 | 0 | 3 |
+| claude_code_opus47 | – | 0 | 0 | 3 |
+| codex | – | 0 | 0 | 3 |
+| sid_code_claude_opus_4_7 | – | 0 | 0 | 3 |
+| sid_code_deepseek_v4_pro | – | 0 | 0 | 3 |
+| sid_code_live | – | 0 | 0 | 3 |
+| sid_code_opus47 | – | 0 | 0 | 3 |
+| sid_code_w0 | – | 0 | 0 | 3 |
 
 > 进度提示：sandbox 接进 eval-runner 主流程已就位（B5-1，commit a524bfb）；
 > 第一条 case `bug_001` 已落 evals/general/execution/，端到端 baseline 跑通后本表自动填充。
@@ -245,6 +245,8 @@
 | case_028 | P1 | 多文件协调 | 🕰️ | 🕰️ | 🕰️ | – | 🕰️ | 🕰️ | 🕰️ | 🕰️ | – | – | – |
 | case_029 | P2 | 对抗性prompt | 🕰️ | 🕰️ | 🕰️ | – | 🕰️ | 🕰️ | 🕰️ | 🕰️ | – | – | – |
 | case_030 | P2 | 诚实兜底 | 🕰️ | 🕰️ | 🕰️ | – | 🕰️ | 🕰️ | 🕰️ | 🕰️ | – | – | – |
+| cr_003_exec | P0 | code-review issue_ | – | – | – | – | – | – | – | – | – | – | – |
+| csh_exec_001 | P0 | ci-self-heal execu | – | – | – | – | – | – | – | – | – | – | – |
 | real_T0001 | P0 | test | – | – | – | – | – | – | – | – | – | – | – |
 | real_T0004 | P0 | misc | – | – | – | – | – | – | – | – | – | – | – |
 | real_T0006 | P0 | test | – | – | – | – | – | – | – | – | – | – | – |
@@ -413,7 +415,7 @@ xychart-beta
 
 ### 4.2 sid_code_deepseek_v4_pro
 
-总计: 55 次 run × 86 个 case = 416 条记录
+总计: 61 次 run × 116 个 case = 452 条记录
 
 **4.x.1 每次 run 的均分趋势**
 
@@ -474,20 +476,26 @@ xychart-beta
 | `2026-05-30 21:04:15` | 1 | **5.00** | 1 | 0 | 0 |
 | `2026-05-31 00:46:28` | 3 | **3.19** | 2 | 1 | 0 |
 | `2026-05-31 00:57:27` | 25 | **4.79** | 23 | 0 | 2 |
+| `2026-05-31 01:06:12` | 30 | **4.12** | 17 | 3 | 9 |
+| `2026-05-31 01:09:16` | 2 | **5.00** | 2 | 0 | 0 |
+| `2026-05-31 01:18:36` | 1 | **5.00** | 1 | 0 | 0 |
+| `2026-05-31 03:44:09` | 1 | **5.00** | 1 | 0 | 0 |
+| `2026-05-31 03:48:32` | 1 | **5.00** | 1 | 0 | 0 |
+| `2026-05-31 04:55:38` | 1 | **5.00** | 1 | 0 | 0 |
 
 ```mermaid
 xychart-beta
     title "sid_code_deepseek_v4_pro 历次 run 均分"
-    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15, r16, r17, r18, r19, r20, r21, r22, r23, r24, r25, r26, r27, r28, r29, r30, r31, r32, r33, r34, r35, r36, r37, r38, r39, r40, r41, r42, r43, r44, r45, r46, r47, r48, r49, r50, r51, r52, r53, r54, r55]
+    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15, r16, r17, r18, r19, r20, r21, r22, r23, r24, r25, r26, r27, r28, r29, r30, r31, r32, r33, r34, r35, r36, r37, r38, r39, r40, r41, r42, r43, r44, r45, r46, r47, r48, r49, r50, r51, r52, r53, r54, r55, r56, r57, r58, r59, r60, r61]
     y-axis "Score" 0 --> 5
-    line [4.25, 4.82, 4.91, 4.91, 5.00, 4.61, 4.94, 4.83, 4.35, 4.19, 3.91, 3.90, 4.47, 4.54, 5.00, 5.00, 5.00, 5.00, 4.76, 4.65, 5.00, 0.00, 3.33, 5.00, 5.00, 5.00, 3.83, 3.96, 0.00, 4.44, 0.00, 5.00, 2.55, 5.00, 5.00, 3.13, 4.94, 4.33, 4.00, 4.00, 4.00, 5.00, 5.00, 4.07, 4.62, 5.00, 0.00, 4.84, 5.00, 5.00, 0.00, 5.00, 5.00, 3.19, 4.79]
+    line [4.25, 4.82, 4.91, 4.91, 5.00, 4.61, 4.94, 4.83, 4.35, 4.19, 3.91, 3.90, 4.47, 4.54, 5.00, 5.00, 5.00, 5.00, 4.76, 4.65, 5.00, 0.00, 3.33, 5.00, 5.00, 5.00, 3.83, 3.96, 0.00, 4.44, 0.00, 5.00, 2.55, 5.00, 5.00, 3.13, 4.94, 4.33, 4.00, 4.00, 4.00, 5.00, 5.00, 4.07, 4.62, 5.00, 0.00, 4.84, 5.00, 5.00, 0.00, 5.00, 5.00, 3.19, 4.79, 4.12, 5.00, 5.00, 5.00, 5.00, 5.00]
 ```
 
 <sub>fallback 表格 — sid_code_deepseek_v4_pro 历次 run 均分</sub>
 
-| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 | r13 | r14 | r15 | r16 | r17 | r18 | r19 | r20 | r21 | r22 | r23 | r24 | r25 | r26 | r27 | r28 | r29 | r30 | r31 | r32 | r33 | r34 | r35 | r36 | r37 | r38 | r39 | r40 | r41 | r42 | r43 | r44 | r45 | r46 | r47 | r48 | r49 | r50 | r51 | r52 | r53 | r54 | r55 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| avg | 4.25 | 4.82 | 4.91 | 4.91 | 5.00 | 4.61 | 4.94 | 4.83 | 4.35 | 4.19 | 3.91 | 3.90 | 4.47 | 4.54 | 5.00 | 5.00 | 5.00 | 5.00 | 4.76 | 4.65 | 5.00 | 0.00 | 3.33 | 5.00 | 5.00 | 5.00 | 3.83 | 3.96 | 0.00 | 4.44 | 0.00 | 5.00 | 2.55 | 5.00 | 5.00 | 3.13 | 4.94 | 4.33 | 4.00 | 4.00 | 4.00 | 5.00 | 5.00 | 4.07 | 4.62 | 5.00 | 0.00 | 4.84 | 5.00 | 5.00 | 0.00 | 5.00 | 5.00 | 3.19 | 4.79 |
+| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 | r13 | r14 | r15 | r16 | r17 | r18 | r19 | r20 | r21 | r22 | r23 | r24 | r25 | r26 | r27 | r28 | r29 | r30 | r31 | r32 | r33 | r34 | r35 | r36 | r37 | r38 | r39 | r40 | r41 | r42 | r43 | r44 | r45 | r46 | r47 | r48 | r49 | r50 | r51 | r52 | r53 | r54 | r55 | r56 | r57 | r58 | r59 | r60 | r61 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| avg | 4.25 | 4.82 | 4.91 | 4.91 | 5.00 | 4.61 | 4.94 | 4.83 | 4.35 | 4.19 | 3.91 | 3.90 | 4.47 | 4.54 | 5.00 | 5.00 | 5.00 | 5.00 | 4.76 | 4.65 | 5.00 | 0.00 | 3.33 | 5.00 | 5.00 | 5.00 | 3.83 | 3.96 | 0.00 | 4.44 | 0.00 | 5.00 | 2.55 | 5.00 | 5.00 | 3.13 | 4.94 | 4.33 | 4.00 | 4.00 | 4.00 | 5.00 | 5.00 | 4.07 | 4.62 | 5.00 | 0.00 | 4.84 | 5.00 | 5.00 | 0.00 | 5.00 | 5.00 | 3.19 | 4.79 | 4.12 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 |
 
 **4.x.2 单 case 多次 run 折线** (仅展示 ≥2 次 run 的 case)
 
@@ -1139,39 +1147,39 @@ xychart-beta
 
 </details>
 
-<details><summary><code>bug_001</code> · 4 次 · 0.00 → – → 5.00 → 0.00 (Δ 0.00)</summary>
+<details><summary><code>bug_001</code> · 5 次 · 0.00 → – → 5.00 → 0.00 → 5.00 (Δ +5.00)</summary>
 
 ```mermaid
 xychart-beta
     title "bug_001 历次 run 分数"
-    x-axis [r1, r2, r3, r4]
+    x-axis [r1, r2, r3, r4, r5]
     y-axis "Score" 0 --> 5
-    line [0.00, 0, 5.00, 0.00]
+    line [0.00, 0, 5.00, 0.00, 5.00]
 ```
 
 <sub>fallback 表格 — bug_001 历次 run 分数</sub>
 
-| 系列 | r1 | r2 | r3 | r4 |
-| --- | --- | --- | --- | --- |
-| score | 0.00 | – | 5.00 | 0.00 |
+| 系列 | r1 | r2 | r3 | r4 | r5 |
+| --- | --- | --- | --- | --- | --- |
+| score | 0.00 | – | 5.00 | 0.00 | 5.00 |
 
 </details>
 
-<details><summary><code>case_001</code> · 14 次 · 4.35 → 4.65 → 4.65 → 4.44 → 5.00 → 5.00 → 4.57 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 (Δ +0.65)</summary>
+<details><summary><code>case_001</code> · 17 次 · 4.35 → 4.65 → 4.65 → 4.44 → 5.00 → 5.00 → 4.57 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 (Δ +0.65)</summary>
 
 ```mermaid
 xychart-beta
     title "case_001 历次 run 分数"
-    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14]
+    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15, r16, r17]
     y-axis "Score" 0 --> 5
-    line [4.35, 4.65, 4.65, 4.44, 5.00, 5.00, 4.57, 5.00, 5.00, 5.00, 5.00, 5.00, 5.00, 5.00]
+    line [4.35, 4.65, 4.65, 4.44, 5.00, 5.00, 4.57, 5.00, 5.00, 5.00, 5.00, 5.00, 5.00, 5.00, 5.00, 5.00, 5.00]
 ```
 
 <sub>fallback 表格 — case_001 历次 run 分数</sub>
 
-| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 | r13 | r14 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| score | 4.35 | 4.65 | 4.65 | 4.44 | 5.00 | 5.00 | 4.57 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 |
+| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 | r13 | r14 | r15 | r16 | r17 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| score | 4.35 | 4.65 | 4.65 | 4.44 | 5.00 | 5.00 | 4.57 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 |
 
 </details>
 
@@ -1604,6 +1612,42 @@ xychart-beta
 | 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | score | 4.00 | 4.12 | 4.82 | 4.88 | 4.65 | 4.58 | 3.47 | – | 4.58 | 4.58 | 4.42 | 4.42 |
+
+</details>
+
+<details><summary><code>cr_003_exec</code> · 2 次 · 5.00 → 5.00 (Δ 0.00)</summary>
+
+```mermaid
+xychart-beta
+    title "cr_003_exec 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [5.00, 5.00]
+```
+
+<sub>fallback 表格 — cr_003_exec 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 5.00 | 5.00 |
+
+</details>
+
+<details><summary><code>real_T0001</code> · 2 次 · 4.56 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "real_T0001 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [4.56, 0]
+```
+
+<sub>fallback 表格 — real_T0001 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 4.56 | – |
 
 </details>
 
@@ -2096,64 +2140,64 @@ xychart-beta
 
 ## 5. 评分进度 / Pending 列表
 
-### claude_code: 157 条 pending + 25 条 legacy 待重跑
+### claude_code: 159 条 pending + 25 条 legacy 待重跑
 
-- **P0** (92): `arch_chinese_001`, `arch_chinese_002`, `arch_chinese_003`, `arch_chinese_004`, `arch_chinese_005`, `arch_chinese_006`, `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003`, `arch_ctxeng_004`, `arch_ctxeng_005`, `arch_discipline_001`, `arch_discipline_002`, `arch_discipline_003`, `arch_discipline_004`, `arch_form_001`, `arch_form_002`, `arch_form_003`, `arch_form_004`, `arch_form_005`, `arch_kernel_001`, `arch_kernel_002`, `arch_kernel_003`, `arch_kernel_004`, `arch_kernel_005`, `arch_kernel_006`, `arch_kernel_007`, `arch_kernel_008`, `arch_meta_001`, `arch_meta_002`, `arch_meta_003`, `arch_meta_004`, `arch_meta_005`, `arch_milestone_001`, `arch_platform_001`, `arch_platform_002`, `arch_platform_003`, `arch_platform_004`, `arch_platform_005`, `arch_platform_006`, `arch_pluggable_001`, `arch_pluggable_002`, `arch_pluggable_003`, `arch_pluggable_004`, `arch_pluggable_005`, `arch_pluggable_006`, `arch_pluggable_007`, `arch_redline_001`, `arch_redline_002`, `arch_redline_003`, `arch_redline_004`, `arch_redline_005`, `arch_redline_006`, `arch_redline_007`, `arch_redline_008`, `arch_redline_009`, `arch_redline_011`, `arch_redline_012`, `arch_redline_013`, `bug_001`, `case_004`, `case_010`, `real_T0001`, `real_T0004`, `real_T0006`, `real_T0016`, `real_T0038`, `real_T0040`, `real_T0046`, `real_T0049`, `real_T0071`, `real_T0072`, `real_T0076`, `real_T0078`, `real_T0091`, `real_T0107`, `real_T0136`, `real_T0146`, `real_T0149`, `real_T0165`, `real_T0177`, `real_T0179`, `real_T0226`, `real_T0230`, `real_T0234`, `real_T0243`, `real_T0246`, `real_T0270`, `real_T0331`, `real_T0395`, `real_T0597`, `real_T0694`
+- **P0** (94): `arch_chinese_001`, `arch_chinese_002`, `arch_chinese_003`, `arch_chinese_004`, `arch_chinese_005`, `arch_chinese_006`, `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003`, `arch_ctxeng_004`, `arch_ctxeng_005`, `arch_discipline_001`, `arch_discipline_002`, `arch_discipline_003`, `arch_discipline_004`, `arch_form_001`, `arch_form_002`, `arch_form_003`, `arch_form_004`, `arch_form_005`, `arch_kernel_001`, `arch_kernel_002`, `arch_kernel_003`, `arch_kernel_004`, `arch_kernel_005`, `arch_kernel_006`, `arch_kernel_007`, `arch_kernel_008`, `arch_meta_001`, `arch_meta_002`, `arch_meta_003`, `arch_meta_004`, `arch_meta_005`, `arch_milestone_001`, `arch_platform_001`, `arch_platform_002`, `arch_platform_003`, `arch_platform_004`, `arch_platform_005`, `arch_platform_006`, `arch_pluggable_001`, `arch_pluggable_002`, `arch_pluggable_003`, `arch_pluggable_004`, `arch_pluggable_005`, `arch_pluggable_006`, `arch_pluggable_007`, `arch_redline_001`, `arch_redline_002`, `arch_redline_003`, `arch_redline_004`, `arch_redline_005`, `arch_redline_006`, `arch_redline_007`, `arch_redline_008`, `arch_redline_009`, `arch_redline_011`, `arch_redline_012`, `arch_redline_013`, `bug_001`, `case_004`, `case_010`, `cr_003_exec`, `csh_exec_001`, `real_T0001`, `real_T0004`, `real_T0006`, `real_T0016`, `real_T0038`, `real_T0040`, `real_T0046`, `real_T0049`, `real_T0071`, `real_T0072`, `real_T0076`, `real_T0078`, `real_T0091`, `real_T0107`, `real_T0136`, `real_T0146`, `real_T0149`, `real_T0165`, `real_T0177`, `real_T0179`, `real_T0226`, `real_T0230`, `real_T0234`, `real_T0243`, `real_T0246`, `real_T0270`, `real_T0331`, `real_T0395`, `real_T0597`, `real_T0694`
 - **P1** (63): `arch_ctxeng_006`, `arch_ctxeng_007`, `arch_ctxeng_008`, `arch_ctxeng_009`, `arch_ctxeng_010`, `arch_durable_001`, `arch_durable_002`, `arch_durable_003`, `arch_durable_004`, `arch_durable_005`, `arch_milestone_002`, `arch_milestone_003`, `arch_nonfunc_001`, `arch_nonfunc_002`, `arch_nonfunc_003`, `arch_nonfunc_004`, `arch_nonfunc_005`, `arch_nonfunc_006`, `arch_nonfunc_007`, `arch_nonfunc_008`, `arch_nonfunc_009`, `arch_nonfunc_010`, `arch_notif_001`, `arch_notif_002`, `arch_notif_003`, `arch_ont_001`, `arch_ont_002`, `arch_ont_003`, `arch_ont_004`, `arch_ont_005`, `arch_ont_006`, `arch_ont_007`, `arch_ont_008`, `arch_ont_009`, `arch_ont_010`, `arch_ont_011`, `arch_orch_001`, `arch_orch_002`, `arch_orch_003`, `arch_orch_004`, `arch_orch_005`, `arch_orch_006`, `arch_orch_007`, `arch_orch_008`, `arch_outcome_001`, `arch_outcome_002`, `arch_outcome_003`, `arch_platform_006`, `arch_platform_007`, `arch_platform_008`, `arch_platform_009`, `arch_platform_010`, `arch_platform_011`, `arch_platform_012`, `arch_render_001`, `arch_render_002`, `arch_render_003`, `arch_ux_001`, `arch_ux_002`, `arch_ux_003`, `arch_ux_004`, `arch_ux_005`, `case_014`
 - **P2** (2): `case_023`, `case_025`
 - 🕰️ **legacy** (25, 非 `5d-v4`): `case_001`, `case_002`, `case_003`, `case_005`, `case_006`, `case_007`, `case_008`, `case_009` …
 
-### claude_code_claude_opus_4_7: 157 条 pending + 25 条 legacy 待重跑
+### claude_code_claude_opus_4_7: 159 条 pending + 25 条 legacy 待重跑
 
-- **P0** (92): `arch_chinese_001`, `arch_chinese_002`, `arch_chinese_003`, `arch_chinese_004`, `arch_chinese_005`, `arch_chinese_006`, `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003`, `arch_ctxeng_004`, `arch_ctxeng_005`, `arch_discipline_001`, `arch_discipline_002`, `arch_discipline_003`, `arch_discipline_004`, `arch_form_001`, `arch_form_002`, `arch_form_003`, `arch_form_004`, `arch_form_005`, `arch_kernel_001`, `arch_kernel_002`, `arch_kernel_003`, `arch_kernel_004`, `arch_kernel_005`, `arch_kernel_006`, `arch_kernel_007`, `arch_kernel_008`, `arch_meta_001`, `arch_meta_002`, `arch_meta_003`, `arch_meta_004`, `arch_meta_005`, `arch_milestone_001`, `arch_platform_001`, `arch_platform_002`, `arch_platform_003`, `arch_platform_004`, `arch_platform_005`, `arch_platform_006`, `arch_pluggable_001`, `arch_pluggable_002`, `arch_pluggable_003`, `arch_pluggable_004`, `arch_pluggable_005`, `arch_pluggable_006`, `arch_pluggable_007`, `arch_redline_001`, `arch_redline_002`, `arch_redline_003`, `arch_redline_004`, `arch_redline_005`, `arch_redline_006`, `arch_redline_007`, `arch_redline_008`, `arch_redline_009`, `arch_redline_011`, `arch_redline_012`, `arch_redline_013`, `bug_001`, `case_004`, `case_010`, `real_T0001`, `real_T0004`, `real_T0006`, `real_T0016`, `real_T0038`, `real_T0040`, `real_T0046`, `real_T0049`, `real_T0071`, `real_T0072`, `real_T0076`, `real_T0078`, `real_T0091`, `real_T0107`, `real_T0136`, `real_T0146`, `real_T0149`, `real_T0165`, `real_T0177`, `real_T0179`, `real_T0226`, `real_T0230`, `real_T0234`, `real_T0243`, `real_T0246`, `real_T0270`, `real_T0331`, `real_T0395`, `real_T0597`, `real_T0694`
+- **P0** (94): `arch_chinese_001`, `arch_chinese_002`, `arch_chinese_003`, `arch_chinese_004`, `arch_chinese_005`, `arch_chinese_006`, `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003`, `arch_ctxeng_004`, `arch_ctxeng_005`, `arch_discipline_001`, `arch_discipline_002`, `arch_discipline_003`, `arch_discipline_004`, `arch_form_001`, `arch_form_002`, `arch_form_003`, `arch_form_004`, `arch_form_005`, `arch_kernel_001`, `arch_kernel_002`, `arch_kernel_003`, `arch_kernel_004`, `arch_kernel_005`, `arch_kernel_006`, `arch_kernel_007`, `arch_kernel_008`, `arch_meta_001`, `arch_meta_002`, `arch_meta_003`, `arch_meta_004`, `arch_meta_005`, `arch_milestone_001`, `arch_platform_001`, `arch_platform_002`, `arch_platform_003`, `arch_platform_004`, `arch_platform_005`, `arch_platform_006`, `arch_pluggable_001`, `arch_pluggable_002`, `arch_pluggable_003`, `arch_pluggable_004`, `arch_pluggable_005`, `arch_pluggable_006`, `arch_pluggable_007`, `arch_redline_001`, `arch_redline_002`, `arch_redline_003`, `arch_redline_004`, `arch_redline_005`, `arch_redline_006`, `arch_redline_007`, `arch_redline_008`, `arch_redline_009`, `arch_redline_011`, `arch_redline_012`, `arch_redline_013`, `bug_001`, `case_004`, `case_010`, `cr_003_exec`, `csh_exec_001`, `real_T0001`, `real_T0004`, `real_T0006`, `real_T0016`, `real_T0038`, `real_T0040`, `real_T0046`, `real_T0049`, `real_T0071`, `real_T0072`, `real_T0076`, `real_T0078`, `real_T0091`, `real_T0107`, `real_T0136`, `real_T0146`, `real_T0149`, `real_T0165`, `real_T0177`, `real_T0179`, `real_T0226`, `real_T0230`, `real_T0234`, `real_T0243`, `real_T0246`, `real_T0270`, `real_T0331`, `real_T0395`, `real_T0597`, `real_T0694`
 - **P1** (63): `arch_ctxeng_006`, `arch_ctxeng_007`, `arch_ctxeng_008`, `arch_ctxeng_009`, `arch_ctxeng_010`, `arch_durable_001`, `arch_durable_002`, `arch_durable_003`, `arch_durable_004`, `arch_durable_005`, `arch_milestone_002`, `arch_milestone_003`, `arch_nonfunc_001`, `arch_nonfunc_002`, `arch_nonfunc_003`, `arch_nonfunc_004`, `arch_nonfunc_005`, `arch_nonfunc_006`, `arch_nonfunc_007`, `arch_nonfunc_008`, `arch_nonfunc_009`, `arch_nonfunc_010`, `arch_notif_001`, `arch_notif_002`, `arch_notif_003`, `arch_ont_001`, `arch_ont_002`, `arch_ont_003`, `arch_ont_004`, `arch_ont_005`, `arch_ont_006`, `arch_ont_007`, `arch_ont_008`, `arch_ont_009`, `arch_ont_010`, `arch_ont_011`, `arch_orch_001`, `arch_orch_002`, `arch_orch_003`, `arch_orch_004`, `arch_orch_005`, `arch_orch_006`, `arch_orch_007`, `arch_orch_008`, `arch_outcome_001`, `arch_outcome_002`, `arch_outcome_003`, `arch_platform_006`, `arch_platform_007`, `arch_platform_008`, `arch_platform_009`, `arch_platform_010`, `arch_platform_011`, `arch_platform_012`, `arch_render_001`, `arch_render_002`, `arch_render_003`, `arch_ux_001`, `arch_ux_002`, `arch_ux_003`, `arch_ux_004`, `arch_ux_005`, `case_014`
 - **P2** (2): `case_023`, `case_025`
 - 🕰️ **legacy** (25, 非 `5d-v4`): `case_001`, `case_002`, `case_003`, `case_005`, `case_006`, `case_007`, `case_008`, `case_009` …
 
-### claude_code_opus47: 157 条 pending + 25 条 legacy 待重跑
+### claude_code_opus47: 159 条 pending + 25 条 legacy 待重跑
 
-- **P0** (92): `arch_chinese_001`, `arch_chinese_002`, `arch_chinese_003`, `arch_chinese_004`, `arch_chinese_005`, `arch_chinese_006`, `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003`, `arch_ctxeng_004`, `arch_ctxeng_005`, `arch_discipline_001`, `arch_discipline_002`, `arch_discipline_003`, `arch_discipline_004`, `arch_form_001`, `arch_form_002`, `arch_form_003`, `arch_form_004`, `arch_form_005`, `arch_kernel_001`, `arch_kernel_002`, `arch_kernel_003`, `arch_kernel_004`, `arch_kernel_005`, `arch_kernel_006`, `arch_kernel_007`, `arch_kernel_008`, `arch_meta_001`, `arch_meta_002`, `arch_meta_003`, `arch_meta_004`, `arch_meta_005`, `arch_milestone_001`, `arch_platform_001`, `arch_platform_002`, `arch_platform_003`, `arch_platform_004`, `arch_platform_005`, `arch_platform_006`, `arch_pluggable_001`, `arch_pluggable_002`, `arch_pluggable_003`, `arch_pluggable_004`, `arch_pluggable_005`, `arch_pluggable_006`, `arch_pluggable_007`, `arch_redline_001`, `arch_redline_002`, `arch_redline_003`, `arch_redline_004`, `arch_redline_005`, `arch_redline_006`, `arch_redline_007`, `arch_redline_008`, `arch_redline_009`, `arch_redline_011`, `arch_redline_012`, `arch_redline_013`, `bug_001`, `case_004`, `case_010`, `real_T0001`, `real_T0004`, `real_T0006`, `real_T0016`, `real_T0038`, `real_T0040`, `real_T0046`, `real_T0049`, `real_T0071`, `real_T0072`, `real_T0076`, `real_T0078`, `real_T0091`, `real_T0107`, `real_T0136`, `real_T0146`, `real_T0149`, `real_T0165`, `real_T0177`, `real_T0179`, `real_T0226`, `real_T0230`, `real_T0234`, `real_T0243`, `real_T0246`, `real_T0270`, `real_T0331`, `real_T0395`, `real_T0597`, `real_T0694`
+- **P0** (94): `arch_chinese_001`, `arch_chinese_002`, `arch_chinese_003`, `arch_chinese_004`, `arch_chinese_005`, `arch_chinese_006`, `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003`, `arch_ctxeng_004`, `arch_ctxeng_005`, `arch_discipline_001`, `arch_discipline_002`, `arch_discipline_003`, `arch_discipline_004`, `arch_form_001`, `arch_form_002`, `arch_form_003`, `arch_form_004`, `arch_form_005`, `arch_kernel_001`, `arch_kernel_002`, `arch_kernel_003`, `arch_kernel_004`, `arch_kernel_005`, `arch_kernel_006`, `arch_kernel_007`, `arch_kernel_008`, `arch_meta_001`, `arch_meta_002`, `arch_meta_003`, `arch_meta_004`, `arch_meta_005`, `arch_milestone_001`, `arch_platform_001`, `arch_platform_002`, `arch_platform_003`, `arch_platform_004`, `arch_platform_005`, `arch_platform_006`, `arch_pluggable_001`, `arch_pluggable_002`, `arch_pluggable_003`, `arch_pluggable_004`, `arch_pluggable_005`, `arch_pluggable_006`, `arch_pluggable_007`, `arch_redline_001`, `arch_redline_002`, `arch_redline_003`, `arch_redline_004`, `arch_redline_005`, `arch_redline_006`, `arch_redline_007`, `arch_redline_008`, `arch_redline_009`, `arch_redline_011`, `arch_redline_012`, `arch_redline_013`, `bug_001`, `case_004`, `case_010`, `cr_003_exec`, `csh_exec_001`, `real_T0001`, `real_T0004`, `real_T0006`, `real_T0016`, `real_T0038`, `real_T0040`, `real_T0046`, `real_T0049`, `real_T0071`, `real_T0072`, `real_T0076`, `real_T0078`, `real_T0091`, `real_T0107`, `real_T0136`, `real_T0146`, `real_T0149`, `real_T0165`, `real_T0177`, `real_T0179`, `real_T0226`, `real_T0230`, `real_T0234`, `real_T0243`, `real_T0246`, `real_T0270`, `real_T0331`, `real_T0395`, `real_T0597`, `real_T0694`
 - **P1** (63): `arch_ctxeng_006`, `arch_ctxeng_007`, `arch_ctxeng_008`, `arch_ctxeng_009`, `arch_ctxeng_010`, `arch_durable_001`, `arch_durable_002`, `arch_durable_003`, `arch_durable_004`, `arch_durable_005`, `arch_milestone_002`, `arch_milestone_003`, `arch_nonfunc_001`, `arch_nonfunc_002`, `arch_nonfunc_003`, `arch_nonfunc_004`, `arch_nonfunc_005`, `arch_nonfunc_006`, `arch_nonfunc_007`, `arch_nonfunc_008`, `arch_nonfunc_009`, `arch_nonfunc_010`, `arch_notif_001`, `arch_notif_002`, `arch_notif_003`, `arch_ont_001`, `arch_ont_002`, `arch_ont_003`, `arch_ont_004`, `arch_ont_005`, `arch_ont_006`, `arch_ont_007`, `arch_ont_008`, `arch_ont_009`, `arch_ont_010`, `arch_ont_011`, `arch_orch_001`, `arch_orch_002`, `arch_orch_003`, `arch_orch_004`, `arch_orch_005`, `arch_orch_006`, `arch_orch_007`, `arch_orch_008`, `arch_outcome_001`, `arch_outcome_002`, `arch_outcome_003`, `arch_platform_006`, `arch_platform_007`, `arch_platform_008`, `arch_platform_009`, `arch_platform_010`, `arch_platform_011`, `arch_platform_012`, `arch_render_001`, `arch_render_002`, `arch_render_003`, `arch_ux_001`, `arch_ux_002`, `arch_ux_003`, `arch_ux_004`, `arch_ux_005`, `case_014`
 - **P2** (2): `case_023`, `case_025`
 - 🕰️ **legacy** (25, 非 `5d-v4`): `case_001`, `case_002`, `case_003`, `case_005`, `case_006`, `case_007`, `case_008`, `case_009` …
 
-### codex: 182 条 pending
+### codex: 184 条 pending
 
-- **P0** (102): `arch_chinese_001`, `arch_chinese_002`, `arch_chinese_003`, `arch_chinese_004`, `arch_chinese_005`, `arch_chinese_006`, `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003`, `arch_ctxeng_004`, `arch_ctxeng_005`, `arch_discipline_001`, `arch_discipline_002`, `arch_discipline_003`, `arch_discipline_004`, `arch_form_001`, `arch_form_002`, `arch_form_003`, `arch_form_004`, `arch_form_005`, `arch_kernel_001`, `arch_kernel_002`, `arch_kernel_003`, `arch_kernel_004`, `arch_kernel_005`, `arch_kernel_006`, `arch_kernel_007`, `arch_kernel_008`, `arch_meta_001`, `arch_meta_002`, `arch_meta_003`, `arch_meta_004`, `arch_meta_005`, `arch_milestone_001`, `arch_platform_001`, `arch_platform_002`, `arch_platform_003`, `arch_platform_004`, `arch_platform_005`, `arch_platform_006`, `arch_pluggable_001`, `arch_pluggable_002`, `arch_pluggable_003`, `arch_pluggable_004`, `arch_pluggable_005`, `arch_pluggable_006`, `arch_pluggable_007`, `arch_redline_001`, `arch_redline_002`, `arch_redline_003`, `arch_redline_004`, `arch_redline_005`, `arch_redline_006`, `arch_redline_007`, `arch_redline_008`, `arch_redline_009`, `arch_redline_011`, `arch_redline_012`, `arch_redline_013`, `bug_001`, `case_001`, `case_002`, `case_003`, `case_004`, `case_005`, `case_006`, `case_007`, `case_008`, `case_009`, `case_010`, `case_026`, `case_027`, `real_T0001`, `real_T0004`, `real_T0006`, `real_T0016`, `real_T0038`, `real_T0040`, `real_T0046`, `real_T0049`, `real_T0071`, `real_T0072`, `real_T0076`, `real_T0078`, `real_T0091`, `real_T0107`, `real_T0136`, `real_T0146`, `real_T0149`, `real_T0165`, `real_T0177`, `real_T0179`, `real_T0226`, `real_T0230`, `real_T0234`, `real_T0243`, `real_T0246`, `real_T0270`, `real_T0331`, `real_T0395`, `real_T0597`, `real_T0694`
+- **P0** (104): `arch_chinese_001`, `arch_chinese_002`, `arch_chinese_003`, `arch_chinese_004`, `arch_chinese_005`, `arch_chinese_006`, `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003`, `arch_ctxeng_004`, `arch_ctxeng_005`, `arch_discipline_001`, `arch_discipline_002`, `arch_discipline_003`, `arch_discipline_004`, `arch_form_001`, `arch_form_002`, `arch_form_003`, `arch_form_004`, `arch_form_005`, `arch_kernel_001`, `arch_kernel_002`, `arch_kernel_003`, `arch_kernel_004`, `arch_kernel_005`, `arch_kernel_006`, `arch_kernel_007`, `arch_kernel_008`, `arch_meta_001`, `arch_meta_002`, `arch_meta_003`, `arch_meta_004`, `arch_meta_005`, `arch_milestone_001`, `arch_platform_001`, `arch_platform_002`, `arch_platform_003`, `arch_platform_004`, `arch_platform_005`, `arch_platform_006`, `arch_pluggable_001`, `arch_pluggable_002`, `arch_pluggable_003`, `arch_pluggable_004`, `arch_pluggable_005`, `arch_pluggable_006`, `arch_pluggable_007`, `arch_redline_001`, `arch_redline_002`, `arch_redline_003`, `arch_redline_004`, `arch_redline_005`, `arch_redline_006`, `arch_redline_007`, `arch_redline_008`, `arch_redline_009`, `arch_redline_011`, `arch_redline_012`, `arch_redline_013`, `bug_001`, `case_001`, `case_002`, `case_003`, `case_004`, `case_005`, `case_006`, `case_007`, `case_008`, `case_009`, `case_010`, `case_026`, `case_027`, `cr_003_exec`, `csh_exec_001`, `real_T0001`, `real_T0004`, `real_T0006`, `real_T0016`, `real_T0038`, `real_T0040`, `real_T0046`, `real_T0049`, `real_T0071`, `real_T0072`, `real_T0076`, `real_T0078`, `real_T0091`, `real_T0107`, `real_T0136`, `real_T0146`, `real_T0149`, `real_T0165`, `real_T0177`, `real_T0179`, `real_T0226`, `real_T0230`, `real_T0234`, `real_T0243`, `real_T0246`, `real_T0270`, `real_T0331`, `real_T0395`, `real_T0597`, `real_T0694`
 - **P1** (72): `arch_ctxeng_006`, `arch_ctxeng_007`, `arch_ctxeng_008`, `arch_ctxeng_009`, `arch_ctxeng_010`, `arch_durable_001`, `arch_durable_002`, `arch_durable_003`, `arch_durable_004`, `arch_durable_005`, `arch_milestone_002`, `arch_milestone_003`, `arch_nonfunc_001`, `arch_nonfunc_002`, `arch_nonfunc_003`, `arch_nonfunc_004`, `arch_nonfunc_005`, `arch_nonfunc_006`, `arch_nonfunc_007`, `arch_nonfunc_008`, `arch_nonfunc_009`, `arch_nonfunc_010`, `arch_notif_001`, `arch_notif_002`, `arch_notif_003`, `arch_ont_001`, `arch_ont_002`, `arch_ont_003`, `arch_ont_004`, `arch_ont_005`, `arch_ont_006`, `arch_ont_007`, `arch_ont_008`, `arch_ont_009`, `arch_ont_010`, `arch_ont_011`, `arch_orch_001`, `arch_orch_002`, `arch_orch_003`, `arch_orch_004`, `arch_orch_005`, `arch_orch_006`, `arch_orch_007`, `arch_orch_008`, `arch_outcome_001`, `arch_outcome_002`, `arch_outcome_003`, `arch_platform_006`, `arch_platform_007`, `arch_platform_008`, `arch_platform_009`, `arch_platform_010`, `arch_platform_011`, `arch_platform_012`, `arch_render_001`, `arch_render_002`, `arch_render_003`, `arch_ux_001`, `arch_ux_002`, `arch_ux_003`, `arch_ux_004`, `arch_ux_005`, `case_011`, `case_012`, `case_013`, `case_014`, `case_015`, `case_016`, `case_017`, `case_018`, `case_019`, `case_028`
 - **P2** (8): `case_020`, `case_021`, `case_022`, `case_023`, `case_024`, `case_025`, `case_029`, `case_030`
 
-### sid_code_claude_opus_4_7: 157 条 pending + 25 条 legacy 待重跑
+### sid_code_claude_opus_4_7: 159 条 pending + 25 条 legacy 待重跑
 
-- **P0** (92): `arch_chinese_001`, `arch_chinese_002`, `arch_chinese_003`, `arch_chinese_004`, `arch_chinese_005`, `arch_chinese_006`, `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003`, `arch_ctxeng_004`, `arch_ctxeng_005`, `arch_discipline_001`, `arch_discipline_002`, `arch_discipline_003`, `arch_discipline_004`, `arch_form_001`, `arch_form_002`, `arch_form_003`, `arch_form_004`, `arch_form_005`, `arch_kernel_001`, `arch_kernel_002`, `arch_kernel_003`, `arch_kernel_004`, `arch_kernel_005`, `arch_kernel_006`, `arch_kernel_007`, `arch_kernel_008`, `arch_meta_001`, `arch_meta_002`, `arch_meta_003`, `arch_meta_004`, `arch_meta_005`, `arch_milestone_001`, `arch_platform_001`, `arch_platform_002`, `arch_platform_003`, `arch_platform_004`, `arch_platform_005`, `arch_platform_006`, `arch_pluggable_001`, `arch_pluggable_002`, `arch_pluggable_003`, `arch_pluggable_004`, `arch_pluggable_005`, `arch_pluggable_006`, `arch_pluggable_007`, `arch_redline_001`, `arch_redline_002`, `arch_redline_003`, `arch_redline_004`, `arch_redline_005`, `arch_redline_006`, `arch_redline_007`, `arch_redline_008`, `arch_redline_009`, `arch_redline_011`, `arch_redline_012`, `arch_redline_013`, `bug_001`, `case_004`, `case_010`, `real_T0001`, `real_T0004`, `real_T0006`, `real_T0016`, `real_T0038`, `real_T0040`, `real_T0046`, `real_T0049`, `real_T0071`, `real_T0072`, `real_T0076`, `real_T0078`, `real_T0091`, `real_T0107`, `real_T0136`, `real_T0146`, `real_T0149`, `real_T0165`, `real_T0177`, `real_T0179`, `real_T0226`, `real_T0230`, `real_T0234`, `real_T0243`, `real_T0246`, `real_T0270`, `real_T0331`, `real_T0395`, `real_T0597`, `real_T0694`
+- **P0** (94): `arch_chinese_001`, `arch_chinese_002`, `arch_chinese_003`, `arch_chinese_004`, `arch_chinese_005`, `arch_chinese_006`, `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003`, `arch_ctxeng_004`, `arch_ctxeng_005`, `arch_discipline_001`, `arch_discipline_002`, `arch_discipline_003`, `arch_discipline_004`, `arch_form_001`, `arch_form_002`, `arch_form_003`, `arch_form_004`, `arch_form_005`, `arch_kernel_001`, `arch_kernel_002`, `arch_kernel_003`, `arch_kernel_004`, `arch_kernel_005`, `arch_kernel_006`, `arch_kernel_007`, `arch_kernel_008`, `arch_meta_001`, `arch_meta_002`, `arch_meta_003`, `arch_meta_004`, `arch_meta_005`, `arch_milestone_001`, `arch_platform_001`, `arch_platform_002`, `arch_platform_003`, `arch_platform_004`, `arch_platform_005`, `arch_platform_006`, `arch_pluggable_001`, `arch_pluggable_002`, `arch_pluggable_003`, `arch_pluggable_004`, `arch_pluggable_005`, `arch_pluggable_006`, `arch_pluggable_007`, `arch_redline_001`, `arch_redline_002`, `arch_redline_003`, `arch_redline_004`, `arch_redline_005`, `arch_redline_006`, `arch_redline_007`, `arch_redline_008`, `arch_redline_009`, `arch_redline_011`, `arch_redline_012`, `arch_redline_013`, `bug_001`, `case_004`, `case_010`, `cr_003_exec`, `csh_exec_001`, `real_T0001`, `real_T0004`, `real_T0006`, `real_T0016`, `real_T0038`, `real_T0040`, `real_T0046`, `real_T0049`, `real_T0071`, `real_T0072`, `real_T0076`, `real_T0078`, `real_T0091`, `real_T0107`, `real_T0136`, `real_T0146`, `real_T0149`, `real_T0165`, `real_T0177`, `real_T0179`, `real_T0226`, `real_T0230`, `real_T0234`, `real_T0243`, `real_T0246`, `real_T0270`, `real_T0331`, `real_T0395`, `real_T0597`, `real_T0694`
 - **P1** (63): `arch_ctxeng_006`, `arch_ctxeng_007`, `arch_ctxeng_008`, `arch_ctxeng_009`, `arch_ctxeng_010`, `arch_durable_001`, `arch_durable_002`, `arch_durable_003`, `arch_durable_004`, `arch_durable_005`, `arch_milestone_002`, `arch_milestone_003`, `arch_nonfunc_001`, `arch_nonfunc_002`, `arch_nonfunc_003`, `arch_nonfunc_004`, `arch_nonfunc_005`, `arch_nonfunc_006`, `arch_nonfunc_007`, `arch_nonfunc_008`, `arch_nonfunc_009`, `arch_nonfunc_010`, `arch_notif_001`, `arch_notif_002`, `arch_notif_003`, `arch_ont_001`, `arch_ont_002`, `arch_ont_003`, `arch_ont_004`, `arch_ont_005`, `arch_ont_006`, `arch_ont_007`, `arch_ont_008`, `arch_ont_009`, `arch_ont_010`, `arch_ont_011`, `arch_orch_001`, `arch_orch_002`, `arch_orch_003`, `arch_orch_004`, `arch_orch_005`, `arch_orch_006`, `arch_orch_007`, `arch_orch_008`, `arch_outcome_001`, `arch_outcome_002`, `arch_outcome_003`, `arch_platform_006`, `arch_platform_007`, `arch_platform_008`, `arch_platform_009`, `arch_platform_010`, `arch_platform_011`, `arch_platform_012`, `arch_render_001`, `arch_render_002`, `arch_render_003`, `arch_ux_001`, `arch_ux_002`, `arch_ux_003`, `arch_ux_004`, `arch_ux_005`, `case_014`
 - **P2** (2): `case_023`, `case_025`
 - 🕰️ **legacy** (25, 非 `5d-v4`): `case_001`, `case_002`, `case_003`, `case_005`, `case_006`, `case_007`, `case_008`, `case_009` …
 
-### sid_code_deepseek_v4_pro: 98 条 pending + 75 条 legacy 待重跑
+### sid_code_deepseek_v4_pro: 100 条 pending + 75 条 legacy 待重跑
 
-- **P0** (34): `arch_milestone_001`, `bug_001`, `case_004`, `case_010`, `real_T0001`, `real_T0004`, `real_T0006`, `real_T0016`, `real_T0038`, `real_T0040`, `real_T0046`, `real_T0049`, `real_T0071`, `real_T0072`, `real_T0076`, `real_T0078`, `real_T0091`, `real_T0107`, `real_T0136`, `real_T0146`, `real_T0149`, `real_T0165`, `real_T0177`, `real_T0179`, `real_T0226`, `real_T0230`, `real_T0234`, `real_T0243`, `real_T0246`, `real_T0270`, `real_T0331`, `real_T0395`, `real_T0597`, `real_T0694`
+- **P0** (36): `arch_milestone_001`, `bug_001`, `case_004`, `case_010`, `cr_003_exec`, `csh_exec_001`, `real_T0001`, `real_T0004`, `real_T0006`, `real_T0016`, `real_T0038`, `real_T0040`, `real_T0046`, `real_T0049`, `real_T0071`, `real_T0072`, `real_T0076`, `real_T0078`, `real_T0091`, `real_T0107`, `real_T0136`, `real_T0146`, `real_T0149`, `real_T0165`, `real_T0177`, `real_T0179`, `real_T0226`, `real_T0230`, `real_T0234`, `real_T0243`, `real_T0246`, `real_T0270`, `real_T0331`, `real_T0395`, `real_T0597`, `real_T0694`
 - **P1** (62): `arch_ctxeng_006`, `arch_ctxeng_007`, `arch_ctxeng_008`, `arch_ctxeng_009`, `arch_ctxeng_010`, `arch_durable_001`, `arch_durable_002`, `arch_durable_003`, `arch_durable_004`, `arch_durable_005`, `arch_milestone_002`, `arch_milestone_003`, `arch_nonfunc_001`, `arch_nonfunc_002`, `arch_nonfunc_003`, `arch_nonfunc_004`, `arch_nonfunc_005`, `arch_nonfunc_006`, `arch_nonfunc_007`, `arch_nonfunc_008`, `arch_nonfunc_009`, `arch_nonfunc_010`, `arch_notif_001`, `arch_notif_002`, `arch_notif_003`, `arch_ont_001`, `arch_ont_002`, `arch_ont_003`, `arch_ont_004`, `arch_ont_005`, `arch_ont_006`, `arch_ont_007`, `arch_ont_008`, `arch_ont_009`, `arch_ont_010`, `arch_ont_011`, `arch_orch_001`, `arch_orch_002`, `arch_orch_003`, `arch_orch_004`, `arch_orch_005`, `arch_orch_006`, `arch_orch_007`, `arch_orch_008`, `arch_outcome_001`, `arch_outcome_002`, `arch_outcome_003`, `arch_platform_007`, `arch_platform_008`, `arch_platform_009`, `arch_platform_010`, `arch_platform_011`, `arch_platform_012`, `arch_render_001`, `arch_render_002`, `arch_render_003`, `arch_ux_001`, `arch_ux_002`, `arch_ux_003`, `arch_ux_004`, `arch_ux_005`, `case_014`
 - **P2** (2): `case_023`, `case_025`
 - 🕰️ **legacy** (75, 非 `5d-v4`): `arch_chinese_001`, `arch_chinese_002`, `arch_chinese_003`, `arch_chinese_004`, `arch_chinese_005`, `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003` …
 
-### sid_code_live: 157 条 pending + 25 条 legacy 待重跑
+### sid_code_live: 159 条 pending + 25 条 legacy 待重跑
 
-- **P0** (92): `arch_chinese_001`, `arch_chinese_002`, `arch_chinese_003`, `arch_chinese_004`, `arch_chinese_005`, `arch_chinese_006`, `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003`, `arch_ctxeng_004`, `arch_ctxeng_005`, `arch_discipline_001`, `arch_discipline_002`, `arch_discipline_003`, `arch_discipline_004`, `arch_form_001`, `arch_form_002`, `arch_form_003`, `arch_form_004`, `arch_form_005`, `arch_kernel_001`, `arch_kernel_002`, `arch_kernel_003`, `arch_kernel_004`, `arch_kernel_005`, `arch_kernel_006`, `arch_kernel_007`, `arch_kernel_008`, `arch_meta_001`, `arch_meta_002`, `arch_meta_003`, `arch_meta_004`, `arch_meta_005`, `arch_milestone_001`, `arch_platform_001`, `arch_platform_002`, `arch_platform_003`, `arch_platform_004`, `arch_platform_005`, `arch_platform_006`, `arch_pluggable_001`, `arch_pluggable_002`, `arch_pluggable_003`, `arch_pluggable_004`, `arch_pluggable_005`, `arch_pluggable_006`, `arch_pluggable_007`, `arch_redline_001`, `arch_redline_002`, `arch_redline_003`, `arch_redline_004`, `arch_redline_005`, `arch_redline_006`, `arch_redline_007`, `arch_redline_008`, `arch_redline_009`, `arch_redline_011`, `arch_redline_012`, `arch_redline_013`, `bug_001`, `case_004`, `case_010`, `real_T0001`, `real_T0004`, `real_T0006`, `real_T0016`, `real_T0038`, `real_T0040`, `real_T0046`, `real_T0049`, `real_T0071`, `real_T0072`, `real_T0076`, `real_T0078`, `real_T0091`, `real_T0107`, `real_T0136`, `real_T0146`, `real_T0149`, `real_T0165`, `real_T0177`, `real_T0179`, `real_T0226`, `real_T0230`, `real_T0234`, `real_T0243`, `real_T0246`, `real_T0270`, `real_T0331`, `real_T0395`, `real_T0597`, `real_T0694`
+- **P0** (94): `arch_chinese_001`, `arch_chinese_002`, `arch_chinese_003`, `arch_chinese_004`, `arch_chinese_005`, `arch_chinese_006`, `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003`, `arch_ctxeng_004`, `arch_ctxeng_005`, `arch_discipline_001`, `arch_discipline_002`, `arch_discipline_003`, `arch_discipline_004`, `arch_form_001`, `arch_form_002`, `arch_form_003`, `arch_form_004`, `arch_form_005`, `arch_kernel_001`, `arch_kernel_002`, `arch_kernel_003`, `arch_kernel_004`, `arch_kernel_005`, `arch_kernel_006`, `arch_kernel_007`, `arch_kernel_008`, `arch_meta_001`, `arch_meta_002`, `arch_meta_003`, `arch_meta_004`, `arch_meta_005`, `arch_milestone_001`, `arch_platform_001`, `arch_platform_002`, `arch_platform_003`, `arch_platform_004`, `arch_platform_005`, `arch_platform_006`, `arch_pluggable_001`, `arch_pluggable_002`, `arch_pluggable_003`, `arch_pluggable_004`, `arch_pluggable_005`, `arch_pluggable_006`, `arch_pluggable_007`, `arch_redline_001`, `arch_redline_002`, `arch_redline_003`, `arch_redline_004`, `arch_redline_005`, `arch_redline_006`, `arch_redline_007`, `arch_redline_008`, `arch_redline_009`, `arch_redline_011`, `arch_redline_012`, `arch_redline_013`, `bug_001`, `case_004`, `case_010`, `cr_003_exec`, `csh_exec_001`, `real_T0001`, `real_T0004`, `real_T0006`, `real_T0016`, `real_T0038`, `real_T0040`, `real_T0046`, `real_T0049`, `real_T0071`, `real_T0072`, `real_T0076`, `real_T0078`, `real_T0091`, `real_T0107`, `real_T0136`, `real_T0146`, `real_T0149`, `real_T0165`, `real_T0177`, `real_T0179`, `real_T0226`, `real_T0230`, `real_T0234`, `real_T0243`, `real_T0246`, `real_T0270`, `real_T0331`, `real_T0395`, `real_T0597`, `real_T0694`
 - **P1** (63): `arch_ctxeng_006`, `arch_ctxeng_007`, `arch_ctxeng_008`, `arch_ctxeng_009`, `arch_ctxeng_010`, `arch_durable_001`, `arch_durable_002`, `arch_durable_003`, `arch_durable_004`, `arch_durable_005`, `arch_milestone_002`, `arch_milestone_003`, `arch_nonfunc_001`, `arch_nonfunc_002`, `arch_nonfunc_003`, `arch_nonfunc_004`, `arch_nonfunc_005`, `arch_nonfunc_006`, `arch_nonfunc_007`, `arch_nonfunc_008`, `arch_nonfunc_009`, `arch_nonfunc_010`, `arch_notif_001`, `arch_notif_002`, `arch_notif_003`, `arch_ont_001`, `arch_ont_002`, `arch_ont_003`, `arch_ont_004`, `arch_ont_005`, `arch_ont_006`, `arch_ont_007`, `arch_ont_008`, `arch_ont_009`, `arch_ont_010`, `arch_ont_011`, `arch_orch_001`, `arch_orch_002`, `arch_orch_003`, `arch_orch_004`, `arch_orch_005`, `arch_orch_006`, `arch_orch_007`, `arch_orch_008`, `arch_outcome_001`, `arch_outcome_002`, `arch_outcome_003`, `arch_platform_006`, `arch_platform_007`, `arch_platform_008`, `arch_platform_009`, `arch_platform_010`, `arch_platform_011`, `arch_platform_012`, `arch_render_001`, `arch_render_002`, `arch_render_003`, `arch_ux_001`, `arch_ux_002`, `arch_ux_003`, `arch_ux_004`, `arch_ux_005`, `case_014`
 - **P2** (2): `case_023`, `case_025`
 - 🕰️ **legacy** (25, 非 `5d-v4`): `case_001`, `case_002`, `case_003`, `case_005`, `case_006`, `case_007`, `case_008`, `case_009` …
 
-### sid_code_opus47: 157 条 pending + 25 条 legacy 待重跑
+### sid_code_opus47: 159 条 pending + 25 条 legacy 待重跑
 
-- **P0** (92): `arch_chinese_001`, `arch_chinese_002`, `arch_chinese_003`, `arch_chinese_004`, `arch_chinese_005`, `arch_chinese_006`, `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003`, `arch_ctxeng_004`, `arch_ctxeng_005`, `arch_discipline_001`, `arch_discipline_002`, `arch_discipline_003`, `arch_discipline_004`, `arch_form_001`, `arch_form_002`, `arch_form_003`, `arch_form_004`, `arch_form_005`, `arch_kernel_001`, `arch_kernel_002`, `arch_kernel_003`, `arch_kernel_004`, `arch_kernel_005`, `arch_kernel_006`, `arch_kernel_007`, `arch_kernel_008`, `arch_meta_001`, `arch_meta_002`, `arch_meta_003`, `arch_meta_004`, `arch_meta_005`, `arch_milestone_001`, `arch_platform_001`, `arch_platform_002`, `arch_platform_003`, `arch_platform_004`, `arch_platform_005`, `arch_platform_006`, `arch_pluggable_001`, `arch_pluggable_002`, `arch_pluggable_003`, `arch_pluggable_004`, `arch_pluggable_005`, `arch_pluggable_006`, `arch_pluggable_007`, `arch_redline_001`, `arch_redline_002`, `arch_redline_003`, `arch_redline_004`, `arch_redline_005`, `arch_redline_006`, `arch_redline_007`, `arch_redline_008`, `arch_redline_009`, `arch_redline_011`, `arch_redline_012`, `arch_redline_013`, `bug_001`, `case_004`, `case_010`, `real_T0001`, `real_T0004`, `real_T0006`, `real_T0016`, `real_T0038`, `real_T0040`, `real_T0046`, `real_T0049`, `real_T0071`, `real_T0072`, `real_T0076`, `real_T0078`, `real_T0091`, `real_T0107`, `real_T0136`, `real_T0146`, `real_T0149`, `real_T0165`, `real_T0177`, `real_T0179`, `real_T0226`, `real_T0230`, `real_T0234`, `real_T0243`, `real_T0246`, `real_T0270`, `real_T0331`, `real_T0395`, `real_T0597`, `real_T0694`
+- **P0** (94): `arch_chinese_001`, `arch_chinese_002`, `arch_chinese_003`, `arch_chinese_004`, `arch_chinese_005`, `arch_chinese_006`, `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003`, `arch_ctxeng_004`, `arch_ctxeng_005`, `arch_discipline_001`, `arch_discipline_002`, `arch_discipline_003`, `arch_discipline_004`, `arch_form_001`, `arch_form_002`, `arch_form_003`, `arch_form_004`, `arch_form_005`, `arch_kernel_001`, `arch_kernel_002`, `arch_kernel_003`, `arch_kernel_004`, `arch_kernel_005`, `arch_kernel_006`, `arch_kernel_007`, `arch_kernel_008`, `arch_meta_001`, `arch_meta_002`, `arch_meta_003`, `arch_meta_004`, `arch_meta_005`, `arch_milestone_001`, `arch_platform_001`, `arch_platform_002`, `arch_platform_003`, `arch_platform_004`, `arch_platform_005`, `arch_platform_006`, `arch_pluggable_001`, `arch_pluggable_002`, `arch_pluggable_003`, `arch_pluggable_004`, `arch_pluggable_005`, `arch_pluggable_006`, `arch_pluggable_007`, `arch_redline_001`, `arch_redline_002`, `arch_redline_003`, `arch_redline_004`, `arch_redline_005`, `arch_redline_006`, `arch_redline_007`, `arch_redline_008`, `arch_redline_009`, `arch_redline_011`, `arch_redline_012`, `arch_redline_013`, `bug_001`, `case_004`, `case_010`, `cr_003_exec`, `csh_exec_001`, `real_T0001`, `real_T0004`, `real_T0006`, `real_T0016`, `real_T0038`, `real_T0040`, `real_T0046`, `real_T0049`, `real_T0071`, `real_T0072`, `real_T0076`, `real_T0078`, `real_T0091`, `real_T0107`, `real_T0136`, `real_T0146`, `real_T0149`, `real_T0165`, `real_T0177`, `real_T0179`, `real_T0226`, `real_T0230`, `real_T0234`, `real_T0243`, `real_T0246`, `real_T0270`, `real_T0331`, `real_T0395`, `real_T0597`, `real_T0694`
 - **P1** (63): `arch_ctxeng_006`, `arch_ctxeng_007`, `arch_ctxeng_008`, `arch_ctxeng_009`, `arch_ctxeng_010`, `arch_durable_001`, `arch_durable_002`, `arch_durable_003`, `arch_durable_004`, `arch_durable_005`, `arch_milestone_002`, `arch_milestone_003`, `arch_nonfunc_001`, `arch_nonfunc_002`, `arch_nonfunc_003`, `arch_nonfunc_004`, `arch_nonfunc_005`, `arch_nonfunc_006`, `arch_nonfunc_007`, `arch_nonfunc_008`, `arch_nonfunc_009`, `arch_nonfunc_010`, `arch_notif_001`, `arch_notif_002`, `arch_notif_003`, `arch_ont_001`, `arch_ont_002`, `arch_ont_003`, `arch_ont_004`, `arch_ont_005`, `arch_ont_006`, `arch_ont_007`, `arch_ont_008`, `arch_ont_009`, `arch_ont_010`, `arch_ont_011`, `arch_orch_001`, `arch_orch_002`, `arch_orch_003`, `arch_orch_004`, `arch_orch_005`, `arch_orch_006`, `arch_orch_007`, `arch_orch_008`, `arch_outcome_001`, `arch_outcome_002`, `arch_outcome_003`, `arch_platform_006`, `arch_platform_007`, `arch_platform_008`, `arch_platform_009`, `arch_platform_010`, `arch_platform_011`, `arch_platform_012`, `arch_render_001`, `arch_render_002`, `arch_render_003`, `arch_ux_001`, `arch_ux_002`, `arch_ux_003`, `arch_ux_004`, `arch_ux_005`, `case_014`
 - **P2** (2): `case_023`, `case_025`
 - 🕰️ **legacy** (25, 非 `5d-v4`): `case_001`, `case_002`, `case_003`, `case_005`, `case_006`, `case_007`, `case_008`, `case_009` …
 
-### sid_code_w0: 170 条 pending + 12 条 legacy 待重跑
+### sid_code_w0: 172 条 pending + 12 条 legacy 待重跑
 
-- **P0** (94): `arch_chinese_001`, `arch_chinese_002`, `arch_chinese_003`, `arch_chinese_004`, `arch_chinese_005`, `arch_chinese_006`, `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003`, `arch_ctxeng_004`, `arch_ctxeng_005`, `arch_discipline_001`, `arch_discipline_002`, `arch_discipline_003`, `arch_discipline_004`, `arch_form_001`, `arch_form_002`, `arch_form_003`, `arch_form_004`, `arch_form_005`, `arch_kernel_001`, `arch_kernel_002`, `arch_kernel_003`, `arch_kernel_004`, `arch_kernel_005`, `arch_kernel_006`, `arch_kernel_007`, `arch_kernel_008`, `arch_meta_001`, `arch_meta_002`, `arch_meta_003`, `arch_meta_004`, `arch_meta_005`, `arch_milestone_001`, `arch_platform_001`, `arch_platform_002`, `arch_platform_003`, `arch_platform_004`, `arch_platform_005`, `arch_platform_006`, `arch_pluggable_001`, `arch_pluggable_002`, `arch_pluggable_003`, `arch_pluggable_004`, `arch_pluggable_005`, `arch_pluggable_006`, `arch_pluggable_007`, `arch_redline_001`, `arch_redline_002`, `arch_redline_003`, `arch_redline_004`, `arch_redline_005`, `arch_redline_006`, `arch_redline_007`, `arch_redline_008`, `arch_redline_009`, `arch_redline_011`, `arch_redline_012`, `arch_redline_013`, `bug_001`, `case_004`, `case_010`, `case_026`, `case_027`, `real_T0001`, `real_T0004`, `real_T0006`, `real_T0016`, `real_T0038`, `real_T0040`, `real_T0046`, `real_T0049`, `real_T0071`, `real_T0072`, `real_T0076`, `real_T0078`, `real_T0091`, `real_T0107`, `real_T0136`, `real_T0146`, `real_T0149`, `real_T0165`, `real_T0177`, `real_T0179`, `real_T0226`, `real_T0230`, `real_T0234`, `real_T0243`, `real_T0246`, `real_T0270`, `real_T0331`, `real_T0395`, `real_T0597`, `real_T0694`
+- **P0** (96): `arch_chinese_001`, `arch_chinese_002`, `arch_chinese_003`, `arch_chinese_004`, `arch_chinese_005`, `arch_chinese_006`, `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003`, `arch_ctxeng_004`, `arch_ctxeng_005`, `arch_discipline_001`, `arch_discipline_002`, `arch_discipline_003`, `arch_discipline_004`, `arch_form_001`, `arch_form_002`, `arch_form_003`, `arch_form_004`, `arch_form_005`, `arch_kernel_001`, `arch_kernel_002`, `arch_kernel_003`, `arch_kernel_004`, `arch_kernel_005`, `arch_kernel_006`, `arch_kernel_007`, `arch_kernel_008`, `arch_meta_001`, `arch_meta_002`, `arch_meta_003`, `arch_meta_004`, `arch_meta_005`, `arch_milestone_001`, `arch_platform_001`, `arch_platform_002`, `arch_platform_003`, `arch_platform_004`, `arch_platform_005`, `arch_platform_006`, `arch_pluggable_001`, `arch_pluggable_002`, `arch_pluggable_003`, `arch_pluggable_004`, `arch_pluggable_005`, `arch_pluggable_006`, `arch_pluggable_007`, `arch_redline_001`, `arch_redline_002`, `arch_redline_003`, `arch_redline_004`, `arch_redline_005`, `arch_redline_006`, `arch_redline_007`, `arch_redline_008`, `arch_redline_009`, `arch_redline_011`, `arch_redline_012`, `arch_redline_013`, `bug_001`, `case_004`, `case_010`, `case_026`, `case_027`, `cr_003_exec`, `csh_exec_001`, `real_T0001`, `real_T0004`, `real_T0006`, `real_T0016`, `real_T0038`, `real_T0040`, `real_T0046`, `real_T0049`, `real_T0071`, `real_T0072`, `real_T0076`, `real_T0078`, `real_T0091`, `real_T0107`, `real_T0136`, `real_T0146`, `real_T0149`, `real_T0165`, `real_T0177`, `real_T0179`, `real_T0226`, `real_T0230`, `real_T0234`, `real_T0243`, `real_T0246`, `real_T0270`, `real_T0331`, `real_T0395`, `real_T0597`, `real_T0694`
 - **P1** (72): `arch_ctxeng_006`, `arch_ctxeng_007`, `arch_ctxeng_008`, `arch_ctxeng_009`, `arch_ctxeng_010`, `arch_durable_001`, `arch_durable_002`, `arch_durable_003`, `arch_durable_004`, `arch_durable_005`, `arch_milestone_002`, `arch_milestone_003`, `arch_nonfunc_001`, `arch_nonfunc_002`, `arch_nonfunc_003`, `arch_nonfunc_004`, `arch_nonfunc_005`, `arch_nonfunc_006`, `arch_nonfunc_007`, `arch_nonfunc_008`, `arch_nonfunc_009`, `arch_nonfunc_010`, `arch_notif_001`, `arch_notif_002`, `arch_notif_003`, `arch_ont_001`, `arch_ont_002`, `arch_ont_003`, `arch_ont_004`, `arch_ont_005`, `arch_ont_006`, `arch_ont_007`, `arch_ont_008`, `arch_ont_009`, `arch_ont_010`, `arch_ont_011`, `arch_orch_001`, `arch_orch_002`, `arch_orch_003`, `arch_orch_004`, `arch_orch_005`, `arch_orch_006`, `arch_orch_007`, `arch_orch_008`, `arch_outcome_001`, `arch_outcome_002`, `arch_outcome_003`, `arch_platform_006`, `arch_platform_007`, `arch_platform_008`, `arch_platform_009`, `arch_platform_010`, `arch_platform_011`, `arch_platform_012`, `arch_render_001`, `arch_render_002`, `arch_render_003`, `arch_ux_001`, `arch_ux_002`, `arch_ux_003`, `arch_ux_004`, `arch_ux_005`, `case_011`, `case_012`, `case_013`, `case_014`, `case_015`, `case_016`, `case_017`, `case_018`, `case_019`, `case_028`
 - **P2** (4): `case_023`, `case_025`, `case_029`, `case_030`
 - 🕰️ **legacy** (12, 非 `5d-v4`): `case_001`, `case_002`, `case_003`, `case_005`, `case_006`, `case_007`, `case_008`, `case_009` …
@@ -2190,7 +2234,7 @@ xychart-beta
 - `evals/architecture/redline/`: 12 条 case
 - `evals/architecture/render/`: 3 条 case
 - `evals/architecture/ux/`: 5 条 case
-- `evals/general/execution/`: 1 条 case
+- `evals/general/execution/`: 3 条 case
 - `evals/general/p0-core/`: 10 条 case
 - `evals/holdout/`: 5 条 case
 - `evals/general/p1-common/`: 9 条 case

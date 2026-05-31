@@ -1,6 +1,9 @@
 #!/usr/bin/env bun
 
 import { spawn } from "node:child_process";
+import { writeFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { validateTrace, type AgentTrace, type TraceSpan } from "../_types/agent-trace.ts";
 
 function parseArgs(): { prompt: string; caseId: string; model: string | null; timeoutMs: number; maxTurns: number | null; skipPermissions: boolean; cliPath: string } {
   const argv = process.argv.slice(2);
@@ -304,6 +307,56 @@ async function main() {
   if (exitCode !== 0) {
     process.stdout.write(JSON.stringify({ output: `[ERROR] claude-code exit=${exitCode}\nstderr tail:\n${stderrBuf.slice(-800)}`, meta: metaOut, error: true }) + "\n");
     process.exit(0);
+  }
+
+  // B6-5：trace.json 落盘（AgentTrace v1 简化版——从 streaming events 构建）
+  // claude-code 没有 raw.jsonl，用 StreamMeta 构建只含顶层元数据 + 1 个 summary span 的 trace
+  if (parsed.text && parsed.sawResult) {
+    try {
+      const now = new Date().toISOString();
+      const startIso = new Date(startedAt).toISOString();
+      const sessionUuid = crypto.randomUUID();
+      const usage = parsed.rawResultUsage || { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+      const summarySpan: TraceSpan = {
+        span_id: 0,
+        span_kind: "thought",
+        started_at: startIso,
+        ended_at: now,
+        duration_ms: elapsedMs,
+        role: "assistant",
+        agent_label: "primary",
+        thought: parsed.text.slice(0, 8192),
+      };
+      const trace: AgentTrace = {
+        trace_id: sessionUuid,
+        session_id: sessionUuid,
+        agent_kind: "claude-code",
+        agent_version: "cli",
+        case_id: caseId !== "unknown" ? caseId : undefined,
+        provider: "anthropic",
+        model: model || "claude-opus-4-7",
+        started_at: startIso,
+        ended_at: now,
+        total_duration_ms: elapsedMs,
+        total_input_tokens: usage.input_tokens || 0,
+        total_output_tokens: usage.output_tokens || 0,
+        total_cache_read_tokens: usage.cache_read_input_tokens || 0,
+        total_cache_creation_tokens: usage.cache_creation_input_tokens || 0,
+        billable_tokens: (usage.input_tokens || 0) + (usage.output_tokens || 0) + (usage.cache_creation_input_tokens || 0) + Math.round((usage.cache_read_input_tokens || 0) * 0.1),
+        status: "ok",
+        final_output: parsed.text.slice(0, 8192),
+        spans: [summarySpan],
+      };
+      const validation = validateTrace(trace);
+      if (validation.ok) {
+        const traceDir = join(import.meta.dir, "..", "_traces", "claude-code");
+        mkdirSync(traceDir, { recursive: true });
+        const traceOutPath = join(traceDir, `${caseId}-${sessionUuid.slice(0, 8)}.json`);
+        writeFileSync(traceOutPath, JSON.stringify(trace, null, 2), "utf-8");
+      }
+    } catch {
+      // best-effort
+    }
   }
 
   process.stdout.write(JSON.stringify({ output: parsed.text || "[ERROR] empty output from claude-code", meta: metaOut, error: !parsed.text }) + "\n");

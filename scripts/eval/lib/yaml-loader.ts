@@ -154,10 +154,10 @@ export function loadAllCases(evalsDir: string): CaseDoc[] {
   for (const bucket of buckets) {
     const abs = join(evalsDir, bucket);
     if (!existsSync(abs)) continue;
-    // case 文件名前缀：legacy 用 case_*，新架构用 arch_*；B5-6 起 execution 桶用 bug_*；B6-2 起 real-tasks 用 real_*
+    // case 文件名前缀：legacy 用 case_*，新架构用 arch_*；B5-6 起 execution 桶用 bug_*；B6-2 起 real-tasks 用 real_*；B7-4 起 cr_* (code-review execution)；B7-5 起 csh_* (ci-self-heal execution)
     const entries = readdirSync(abs).filter(
       (f) =>
-        (f.startsWith("case_") || f.startsWith("arch_") || f.startsWith("bug_") || f.startsWith("real_")) && f.endsWith(".yaml"),
+        (f.startsWith("case_") || f.startsWith("arch_") || f.startsWith("bug_") || f.startsWith("real_") || f.startsWith("cr_") || f.startsWith("csh_")) && f.endsWith(".yaml"),
     );
     for (const f of entries) {
       const p = join(abs, f);
