@@ -1,9 +1,14 @@
 {
   "version": 2,
-  "timestamp": "2026-05-31T04:55:38.481Z",
+  "timestamp": "2026-05-31T07:11:59.957Z",
   "config": {
     "cases": [
-      "case_001"
+      "arch_form_002",
+      "arch_meta_004",
+      "arch_meta_005",
+      "arch_platform_006",
+      "arch_platform_006",
+      "arch_pluggable_002"
     ],
     "providers": [
       {
@@ -12,106 +17,256 @@
       }
     ],
     "model": "deepseek-v4-pro",
-    "concurrency": 2,
+    "concurrency": 3,
     "week": 22,
     "cost_formula_version": "v6",
     "grader_version": "5d-v5"
   },
   "results": {
-    "timestamp": "2026-05-31T04:55:38.481Z",
+    "timestamp": "2026-05-31T07:11:59.957Z",
     "results": [
       {
         "cost": 0,
-        "latencyMs": 26450,
+        "latencyMs": 1,
         "provider": {
           "id": "sid_code_deepseek_v4_pro",
           "label": "sid_code_deepseek_v4_pro"
         },
         "response": {
-          "output": "## 回答\n\n**文件**：`src/agent/loop.ts:88`  \n**类名**：`AgentLoopRunner`  \n**循环入口**：第 246 行 `while (turns < maxTurns)`\n\n---\n\n### 核心职责\n\n`AgentLoopRunner` 是 sid-code 的 **agentic while-loop 引擎**，统一了 REPL 和 TUI 两种 UI 模式的循环逻辑。每一轮循环大致做四件事：\n\n1. **上下文管理**（L250-280）：估算 token 用量，按 `emergency/hard/soft/none` 四个等级自动压缩或截断上下文。\n\n2. **发送请求 → 流式接收**（L286-410）：构建 `SendParams`（含 system prompt、工具定义、extended thinking），通过 `sendWithRetry`（内置模型 fallback）发送，并对响应做成本追踪、预算控制、配额检查。\n\n3. **响应分发**（L484-613）：根据 `stopReason` 分发到不同分支：\n   - `end_turn` / `stop` → 触发 `AfterAgent` hook，结束循环\n   - `tool_use` → 执行工具调用，将 `tool_result` 回填到上下文，继续循环\n   - `max_tokens` / `length` → 自动续写，继续循环\n\n4. **循环检测与恢复**（L477-538）：三层防线防止 LLM 死循环 —\n   - 内容重复检测（文本指纹）\n   - 工具调用重复检测（同名同参）\n   - LLM 认知循环检测（30 轮后每 10 轮发送轻量分析请求，让 LLM 自判是否陷入非生产性循环）\n   \n   检测到循环后注入 `LOOP_RECOVERY_PROMPT` 提示 LLM 自我纠正，耗尽恢复次数后强制终止。"
+          "output": "[STATIC_GRADER_SKIP] case=arch_form_002 走 grader.requiresAgentOutput=false 路径，未 spawn agent"
         },
         "score": 1,
         "success": true,
         "runStatus": "success",
         "namedScores": {
-          "anchor_hit": 1,
-          "negative_anchor": null,
-          "rubric_score": 1,
-          "tool_compliance": 1,
-          "efficiency": 1,
-          "cost": 1
+          "arch_check": 1
         },
         "testCase": {
           "vars": {
-            "case_id": "case_001"
+            "case_id": "arch_form_002"
           },
-          "description": "case_001"
+          "description": "arch_form_002"
         },
         "gradingResult": {
           "pass": true,
           "score": 1,
           "namedScores": {
-            "anchor_hit": 1,
-            "negative_anchor": null,
-            "rubric_score": 1,
-            "tool_compliance": 1,
-            "efficiency": 1,
-            "cost": 1
+            "arch_check": 1
           },
           "componentResults": [
             {
               "assertion": {
                 "type": "custom",
-                "metric": "anchor_hit"
+                "metric": "arch_check"
               },
               "pass": true,
               "score": 1,
-              "reason": "命中 2/5（达到满分阈值 2）: src/agent/loop.ts, AgentLoopRunner；echo 排除 1 项: agentic while；substring 去重 2 项"
-            },
+              "reason": "[1/7] ✅ file_must_exist(src/cli.ts): 存在\n[2/7] ✅ file_must_exist(src/entrypoints/bootstrap.ts): 存在\n[3/7] ✅ file_must_exist(src/agent/loop.ts): 存在\n[4/7] ✅ file_lines_lt(src/agent/loop.ts, <1500): 622 行（上限 1500）\n[5/7] ✅ file_must_not_exist(src/agent/loop-cli.ts): 不存在 ✓\n[6/7] ✅ file_must_not_exist(src/agent/loop-headless.ts): 不存在 ✓\n[7/7] ✅ file_must_not_exist(src/agent/loop-tui.ts): 不存在 ✓"
+            }
+          ]
+        }
+      },
+      {
+        "cost": 0,
+        "latencyMs": 0,
+        "provider": {
+          "id": "sid_code_deepseek_v4_pro",
+          "label": "sid_code_deepseek_v4_pro"
+        },
+        "response": {
+          "output": "[STATIC_GRADER_SKIP] case=arch_meta_004 走 grader.requiresAgentOutput=false 路径，未 spawn agent"
+        },
+        "score": 0.834,
+        "success": true,
+        "runStatus": "success",
+        "namedScores": {
+          "arch_check": 0.8333333333333334
+        },
+        "testCase": {
+          "vars": {
+            "case_id": "arch_meta_004"
+          },
+          "description": "arch_meta_004"
+        },
+        "gradingResult": {
+          "pass": true,
+          "score": 0.834,
+          "namedScores": {
+            "arch_check": 0.8333333333333334
+          },
+          "componentResults": [
             {
               "assertion": {
                 "type": "custom",
-                "metric": "negative_anchor"
+                "metric": "arch_check"
               },
-              "pass": true,
-              "score": null,
-              "reason": "无 must_not_include 锚点，跳过反例检查"
-            },
+              "pass": false,
+              "score": 0.8333333333333334,
+              "reason": "[1/6] ✅ file_must_exist(evals/eval-runner.ts): 存在\n[2/6] ✅ file_must_contain(evals/eval-runner.ts): 包含 pattern\n[3/6] ✅ file_must_contain(evals/eval-runner.ts): 包含 pattern\n[4/6] ✅ file_must_contain(evals/eval-runner.ts): 包含 pattern\n[5/6] ❌ file_must_exist(evals/holdout/README.md): 不存在: evals/holdout/README.md\n[6/6] ✅ file_must_exist(evals/holdout/architecture/README.md): 存在"
+            }
+          ]
+        }
+      },
+      {
+        "cost": 0,
+        "latencyMs": 0,
+        "provider": {
+          "id": "sid_code_deepseek_v4_pro",
+          "label": "sid_code_deepseek_v4_pro"
+        },
+        "response": {
+          "output": "[STATIC_GRADER_SKIP] case=arch_meta_005 走 grader.requiresAgentOutput=false 路径，未 spawn agent"
+        },
+        "score": 1,
+        "success": true,
+        "runStatus": "success",
+        "namedScores": {
+          "arch_check": 1
+        },
+        "testCase": {
+          "vars": {
+            "case_id": "arch_meta_005"
+          },
+          "description": "arch_meta_005"
+        },
+        "gradingResult": {
+          "pass": true,
+          "score": 1,
+          "namedScores": {
+            "arch_check": 1
+          },
+          "componentResults": [
             {
               "assertion": {
                 "type": "custom",
-                "metric": "rubric_score"
+                "metric": "arch_check"
               },
               "pass": true,
               "score": 1,
-              "reason": "跳过 LLM judge"
-            },
+              "reason": "[1/4] ✅ file_must_exist(evals/eval-runner.ts): 存在\n[2/4] ✅ file_must_exist(evals/_graders/registry.ts): 存在\n[3/4] ✅ file_must_contain(evals/_graders/registry.ts): 包含 pattern\n[4/4] ✅ file_must_contain(evals/_graders/registry.ts): 包含 pattern"
+            }
+          ]
+        }
+      },
+      {
+        "cost": 0,
+        "latencyMs": 1,
+        "provider": {
+          "id": "sid_code_deepseek_v4_pro",
+          "label": "sid_code_deepseek_v4_pro"
+        },
+        "response": {
+          "output": "[STATIC_GRADER_SKIP] case=arch_platform_006 走 grader.requiresAgentOutput=false 路径，未 spawn agent"
+        },
+        "score": 0.5,
+        "success": true,
+        "runStatus": "success",
+        "namedScores": {
+          "arch_check": 0.5
+        },
+        "testCase": {
+          "vars": {
+            "case_id": "arch_platform_006"
+          },
+          "description": "arch_platform_006"
+        },
+        "gradingResult": {
+          "pass": false,
+          "score": 0.5,
+          "namedScores": {
+            "arch_check": 0.5
+          },
+          "componentResults": [
             {
               "assertion": {
                 "type": "custom",
-                "metric": "tool_compliance"
+                "metric": "arch_check"
               },
-              "pass": true,
-              "score": 1,
-              "reason": "工具使用合规"
-            },
+              "pass": false,
+              "score": 0.5,
+              "reason": "[1/2] ✅ file_must_exist(src/daemon/server.ts): 存在\n[2/2] ❌ file_must_exist(src/daemon/router.ts): 不存在: src/daemon/router.ts"
+            }
+          ]
+        }
+      },
+      {
+        "cost": 0,
+        "latencyMs": 1,
+        "provider": {
+          "id": "sid_code_deepseek_v4_pro",
+          "label": "sid_code_deepseek_v4_pro"
+        },
+        "response": {
+          "output": "[STATIC_GRADER_SKIP] case=arch_platform_006 走 grader.requiresAgentOutput=false 路径，未 spawn agent"
+        },
+        "score": 1,
+        "success": true,
+        "runStatus": "success",
+        "namedScores": {
+          "arch_check": 1
+        },
+        "testCase": {
+          "vars": {
+            "case_id": "arch_platform_006"
+          },
+          "description": "arch_platform_006"
+        },
+        "gradingResult": {
+          "pass": true,
+          "score": 1,
+          "namedScores": {
+            "arch_check": 1
+          },
+          "componentResults": [
             {
               "assertion": {
                 "type": "custom",
-                "metric": "efficiency"
+                "metric": "arch_check"
               },
               "pass": true,
               "score": 1,
-              "reason": "步数 5/12 在预期内"
-            },
+              "reason": "[1/2] ✅ file_must_exist(src/cli.ts): 存在\n[2/2] ✅ file_must_exist(src/entrypoints/bootstrap.ts): 存在"
+            }
+          ]
+        }
+      },
+      {
+        "cost": 0,
+        "latencyMs": 1,
+        "provider": {
+          "id": "sid_code_deepseek_v4_pro",
+          "label": "sid_code_deepseek_v4_pro"
+        },
+        "response": {
+          "output": "[STATIC_GRADER_SKIP] case=arch_pluggable_002 走 grader.requiresAgentOutput=false 路径，未 spawn agent"
+        },
+        "score": 1,
+        "success": true,
+        "runStatus": "success",
+        "namedScores": {
+          "arch_check": 1
+        },
+        "testCase": {
+          "vars": {
+            "case_id": "arch_pluggable_002"
+          },
+          "description": "arch_pluggable_002"
+        },
+        "gradingResult": {
+          "pass": true,
+          "score": 1,
+          "namedScores": {
+            "arch_check": 1
+          },
+          "componentResults": [
             {
               "assertion": {
                 "type": "custom",
-                "metric": "cost"
+                "metric": "arch_check"
               },
               "pass": true,
               "score": 1,
-              "reason": "[cost-v6] billable 22k 低消耗 [billable=i21k+o1k+cc0k+cr0k×0.1=0k]"
+              "reason": "[1/4] ✅ file_must_exist(src/skill/manager.ts): 存在\n[2/4] ✅ file_must_exist(src/skill/resources.ts): 存在\n[3/4] ✅ file_must_exist(src/skill/tool.ts): 存在\n[4/4] ✅ file_must_contain(src/skill/loader.ts): 包含 pattern"
             }
           ]
         }
@@ -119,7 +274,7 @@
     ]
   },
   "stats": {
-    "totalMs": 26473,
-    "count": 1
+    "totalMs": 2,
+    "count": 6
   }
 }

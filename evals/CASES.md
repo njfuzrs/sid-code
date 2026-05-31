@@ -1,7 +1,7 @@
 # Eval Cases 详情手册
 
 > 自动生成，请勿手动编辑。运行 `bun run evals/gen-cases-md.ts` 刷新。
-> 生成时间: 2026-05-31T04:55:38.568Z
+> 生成时间: 2026-05-31T07:12:00.072Z
 > 数据源: case YAML + `_reports/promptfoo-latest.json`
 
 ## 总览
@@ -161,48 +161,16 @@ src/query/loop.ts 的 sub-loop）。
 
 #### sid_code_deepseek_v4_pro — 5 ✅
 
-🕐 2026-05-30T15:03:08.802Z | 评分方式: eval-runner | 耗时: 26.4s
+🕐 2026-05-30T15:03:08.802Z | 评分方式: eval-runner
 
 | 维度 | 得分 | 说明 |
 | --- | --- | --- |
 | 锚点命中 (×1.5) | ✅ 1 | — |
-| negative_anchor (×2) | ❌ null | 🚨 **无 must_not_include 锚点，跳过反例检查** |
+| negative_anchor (×2) | ❌ null | 严重不足 |
 | LLM 评判 (×4) | ✅ 1 | — |
 | 工具合规 (×1.5) | ✅ 1 | — |
 | 效率 (×1) | ✅ 1 | — |
 | 成本 (×1) | ✅ 1 | — |
-
-<details><summary>💬 实际回答（844 字）</summary>
-
-```
-回答
-
-文件：src/agent/loop.ts:88  
-类名：AgentLoopRunner  
-循环入口：第 246 行 while (turns < maxTurns)
-
-核心职责
-
-AgentLoopRunner 是 sid-code 的 agentic while-loop 引擎，统一了 REPL 和 TUI 两种 UI 模式的循环逻辑。每一轮循环大致做四件事：
-
-1. 上下文管理（L250-280）：估算 token 用量，按 emergency/hard/soft/none 四个等级自动压缩或截断上下文。
-
-2. 发送请求 → 流式接收（L286-410）：构建 SendParams（含 system prompt、工具定义、extended thinking），通过 sendWithRetry（内置模型 fallback）发送，并对响应做成本追踪、预算控制、配额检查。
-
-3. 响应分发（L484-613）：根据 stopReason 分发到不同分支：
-   - end_turn / stop → 触发 AfterAgent hook，结束循环
-   - tool_use → 执行工具调用，将 tool_result 回填到上下文，继续循环
-   - max_tokens / length → 自动续写，继续循环
-
-4. 循环检测与恢复（L477-538）：三层防线防止 LLM 死循环 —
-   - 内容重复检测（文本指纹）
-   - 工具调用重复检测（同名同参）
-   - LLM 认知循环检测（30 轮后每 10 轮发送轻量分析请求，让 LLM 自判是否陷入非生产性循环）
-   
-   检测到循环后注入 LOOP_RECOVERY_PROMPT 提示 LLM 自我纠正，耗尽恢复次数后强制终止。
-```
-
-</details>
 
 #### sid_code_claude_opus_4_7 — 5 ✅
 
