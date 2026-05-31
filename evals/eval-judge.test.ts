@@ -126,12 +126,12 @@ describe("gradeAnchorHit", () => {
       expect(r.score).toBe(1.0);
     });
 
-    test("所有锚点都被 echo 排除 → 给 1.0 + 提示", () => {
+    test("所有锚点都被 echo 排除 → score=null（跳过该维度）", () => {
       const userQuery = "foo bar baz";
       const anchors = ["foo", "bar", "baz"];
       const output = "any output";
       const r = gradeAnchorHit(output, anchors, userQuery);
-      expect(r.score).toBe(1.0);
+      expect(r.score).toBe(null);
       expect(r.reason).toContain("echo 排除");
     });
 

@@ -574,8 +574,8 @@ export function aggregateSamples(sampleDims: Array<Record<string, DimScore>>): R
     if (samples.length === 0) continue;
 
     const validSamples = samples.filter((s) => s.score !== null);
-    // 多数样本无可评 → 该维度判定 null（不能用少数样本伪装合格）
-    if (validSamples.length < Math.ceil(samples.length / 2)) {
+    // 严格多数样本有效才出分（> 50%），50% 有效率视为不可靠
+    if (validSamples.length <= Math.floor(samples.length / 2)) {
       merged[name] = {
         pass: false,
         score: null,

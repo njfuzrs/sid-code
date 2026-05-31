@@ -97,16 +97,17 @@ export interface AgentMeta {
  *   - 全英文 + 至少 1 个大写字母（驼峰类名/标识符 QuotaManager / AgentLoopRunner）
  *   - 含括号 `(` 或 `)`（函数调用如 it( / check()）
  *   - 含特殊字符 `:` `<` `>` `=`（运算符/类型注解如 >= / ratio:）
- *   - 全英文小写字母 + 数字组合但含分隔符如 `bun:test` / `auto-retry`
+ *   - 含连字符 + 含数字或大写字母（RL-003 / G-13 等编号标识符）
  *
- * 不排除（即应用 echo 检查）：自然语言短语（"更好" / "哪方面" / "请确认"等）
+ * 不排除（即应用 echo 检查）：自然语言短语（"更好" / "哪方面" / "well-known" / "self-service"等）
  */
 function isCodeIdentifier(anchor: string): boolean {
   if (/[\/.]/.test(anchor) && /[a-zA-Z]/.test(anchor)) return true;
   if (/[()]/.test(anchor)) return true;
   if (/[:<>=]/.test(anchor)) return true;
   if (anchor.length >= 4 && /^[A-Za-z]+$/.test(anchor) && /[A-Z]/.test(anchor)) return true;
-  if (/-/.test(anchor) && /[a-zA-Z]/.test(anchor)) return true;
+  // 连字符规则：要求含数字或大写字母（区分 RL-003/G-13 等代码标识符 vs well-known 等自然语言）
+  if (/-/.test(anchor) && /^[a-zA-Z0-9-]+$/.test(anchor) && (/[0-9]/.test(anchor) || /[A-Z]/.test(anchor))) return true;
   return false;
 }
 
@@ -356,11 +357,12 @@ export function gradeAnchorHit(
       })
     : anchors;
 
-  // 全部锚点都被 echo 排除：当作"无可评锚点"，不当作 0 分（避免冤枉）
+  // 全部锚点都被 echo 排除：当作"无可评锚点"，score=null 让 aggregate 跳过该维度
+  // （与 gradeNegativeAnchors 同等处理，避免白拿满分）
   if (effective.length === 0) {
     return {
       pass: true,
-      score: 1.0,
+      score: null,
       reason: `所有锚点（${anchors.length}）均出现在用户 query 中，echo 排除后无可评锚点`,
     };
   }
@@ -447,30 +449,48 @@ export function extractJsonObject(text: string): { json: string; ok: true } | { 
   }
 
   // 路径 3：从末尾向前找最后一个完整的 JSON 对象（限制扫描范围避免 O(n²)）
+  // 策略：找到最后一个 `}`，然后从该位置**正向扫描**找匹配的 `{`。
+  // 反向扫描字符串内转义符方向是反的（`\"` 从右往左看是 `"` 先于 `\`），
+  // 正向扫描避免了这个问题。
   const scanStart = Math.max(0, trimmed.length - SCAN_TAIL_BYTES);
   const tail = trimmed.slice(scanStart);
   for (let endIdx = tail.length - 1; endIdx >= 0; endIdx--) {
     if (tail[endIdx] !== "}") continue;
-    let depth = 0;
-    let inStr = false;
-    let escape = false;
-    for (let i = endIdx; i >= 0; i--) {
-      const ch = tail[i];
-      if (escape) { escape = false; continue; }
-      if (ch === "\\") { escape = true; continue; }
-      if (ch === '"' && !escape) { inStr = !inStr; continue; }
-      if (inStr) continue;
-      if (ch === "}") depth++;
-      else if (ch === "{") {
-        depth--;
-        if (depth === 0) {
-          const candidate = tail.slice(i, endIdx + 1);
-          try {
-            JSON.parse(candidate);
-            return { json: candidate, ok: true };
-          } catch { break; } // 这个区间不是合法 JSON，跳到下一个 endIdx
+    // 从 tail 开头正向扫描到 endIdx，找与该 `}` 配对的 `{`
+    let lastOpenBrace = -1;
+    for (let startCandidate = 0; startCandidate <= endIdx; startCandidate++) {
+      if (tail[startCandidate] !== "{") continue;
+      // 正向验证括号平衡
+      let depth = 0;
+      let inStr = false;
+      let esc = false;
+      let balanced = false;
+      for (let j = startCandidate; j <= endIdx; j++) {
+        const ch = tail[j];
+        if (esc) { esc = false; continue; }
+        if (ch === "\\") { esc = true; continue; }
+        if (ch === '"') { inStr = !inStr; continue; }
+        if (inStr) continue;
+        if (ch === "{") depth++;
+        else if (ch === "}") {
+          depth--;
+          if (depth === 0) {
+            if (j === endIdx) balanced = true;
+            break;
+          }
         }
       }
+      if (balanced) {
+        lastOpenBrace = startCandidate;
+        // 继续找更靠后的 `{`（取最内层/最后一个匹配的完整对象）
+      }
+    }
+    if (lastOpenBrace >= 0) {
+      const candidate = tail.slice(lastOpenBrace, endIdx + 1);
+      try {
+        JSON.parse(candidate);
+        return { json: candidate, ok: true };
+      } catch { /* 继续尝试下一个 endIdx */ }
     }
   }
 

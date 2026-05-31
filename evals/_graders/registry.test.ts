@@ -279,7 +279,7 @@ describe("StructuredArchGrader", () => {
       judgeSamples: 1,
     });
     expect(r.mandatoryPass).toBe(true);
-    expect(r.score).toBe(1.0);
+    expect(r.score).toBe(5.0);
   });
 
   test("file_must_exist 不存在 → fail", async () => {
@@ -370,7 +370,7 @@ describe("StructuredArchGrader", () => {
       skipLlmJudge: true,
       judgeSamples: 1,
     });
-    expect(r.score).toBe(0.5);
+    expect(r.score).toBe(2.5);
     expect(r.mandatoryPass).toBe(false);
   });
 });

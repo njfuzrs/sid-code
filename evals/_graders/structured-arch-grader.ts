@@ -71,7 +71,8 @@ export class StructuredArchGrader implements Grader {
 
     const results: AssertionResult[] = assertions.map((a) => this.evalAssertion(a));
     const passCount = results.filter((r) => r.pass).length;
-    const score = passCount / results.length;
+    // 0-5 刻度（与 rubric_5d 对齐），便于 eval-runner 统一 /5 归一化
+    const score = (passCount / results.length) * 5;
     const allPass = passCount === results.length;
 
     const summary = results

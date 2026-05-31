@@ -31,7 +31,7 @@ import type { DimScore } from "../eval-judge";
 export class Rubric5dGrader implements Grader {
   readonly type = "rubric_5d";
   readonly description =
-    "5d-v2: 6 维加权（anchor 1.5 / rubric 4.0 / tool 1.5 / negative 2.0 / efficiency 0 / cost 0）";
+    "5d-v5: 6 维加权（anchor 1.5 / rubric 1.5 / tool 1.5 / negative 2.0 / efficiency 0 / cost 0）";
 
   async grade(ctx: GraderContext): Promise<GraderResult> {
     const { caseYaml, providerResult, skipLlmJudge, judgeSamples } = ctx;
