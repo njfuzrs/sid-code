@@ -125,6 +125,19 @@ function listArchitectureSubBuckets(evalsDir: string, base: string): string[] {
   return out;
 }
 
+function listRealTaskSubBuckets(evalsDir: string, base: string): string[] {
+  const root = join(evalsDir, base);
+  if (!existsSync(root)) return [];
+  const out: string[] = [];
+  for (const entry of readdirSync(root)) {
+    const p = join(root, entry);
+    if (!existsSync(p) || !statSync(p).isDirectory()) continue;
+    if (entry === "scripts") continue; // setup_*.sh 不是 case yaml
+    out.push(`${base}/${entry}`);
+  }
+  return out;
+}
+
 export function loadAllCases(evalsDir: string): CaseDoc[] {
   const out: CaseDoc[] = [];
   const buckets = [
@@ -133,14 +146,18 @@ export function loadAllCases(evalsDir: string): CaseDoc[] {
     EXECUTION_BUCKET,
     ...listArchitectureSubBuckets(evalsDir, "architecture"),
     ...listArchitectureSubBuckets(evalsDir, "holdout/architecture"),
+    // B6-2/3（2026-05-31 / §15.2 ADR-033）：trajectory case 子桶 evals/real-tasks/<cat>/
+    // 文件名前缀 real_*；trajectory_match grader M5 前仅作诊断维度，不进总分。
+    ...listRealTaskSubBuckets(evalsDir, "real-tasks"),
+    ...listRealTaskSubBuckets(evalsDir, "holdout/real-tasks"),
   ];
   for (const bucket of buckets) {
     const abs = join(evalsDir, bucket);
     if (!existsSync(abs)) continue;
-    // case 文件名前缀：legacy 用 case_*，新架构用 arch_*；B5-6 起 execution 桶用 bug_*
+    // case 文件名前缀：legacy 用 case_*，新架构用 arch_*；B5-6 起 execution 桶用 bug_*；B6-2 起 real-tasks 用 real_*
     const entries = readdirSync(abs).filter(
       (f) =>
-        (f.startsWith("case_") || f.startsWith("arch_") || f.startsWith("bug_")) && f.endsWith(".yaml"),
+        (f.startsWith("case_") || f.startsWith("arch_") || f.startsWith("bug_") || f.startsWith("real_")) && f.endsWith(".yaml"),
     );
     for (const f of entries) {
       const p = join(abs, f);

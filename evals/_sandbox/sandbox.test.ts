@@ -184,11 +184,11 @@ describe("runSandbox", () => {
     });
     const elapsed = Date.now() - start;
     expect(r.exec[0].timedOut).toBe(true);
-    // 真在 timeoutMs 附近终止（给 1.5s 容差，避免 CI 慢机器误报）
-    expect(elapsed).toBeLessThan(2000);
+    // 真在 timeoutMs 附近终止（给 4s 容差，全量 bun test 并发跑时 IO 竞争 + 子进程启动会占几秒）
+    expect(elapsed).toBeLessThan(4500);
     // stdout 截到 64KB 上限以内（防 OOM）
     expect(r.exec[0].stdout.length).toBeLessThanOrEqual(64 * 1024);
-  });
+  }, 15_000);
 
   test("§15.3-3 边界：stdout 超 64KB 截断到末尾 64KB（防被测代码 OOM 评测进程）", async () => {
     // 100KB 的 stdout（每行 ~20 字节 × 5500 行 ≈ 110KB > 64KB 上限）

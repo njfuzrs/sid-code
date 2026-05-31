@@ -1,0 +1,76 @@
+id: real_T0076
+category: bugfix
+priority: P0
+created_date: 2026-05-30
+eval_type: real_task
+target_score: 4
+graduated_at: null
+holdout: false
+holdout_reason: null
+grader_type: rubric_5d
+source_meta:
+  origin: trajectory-platform
+  source_task_id: T0076
+  imported_at: 2026-05-30T19:40:38.863Z
+  imported_by: import-trajectory-platform.ts
+input:
+  user_query: |-
+    [用户问题]
+    anka-app 的 packages/base/src/views/config/PortraitPage 目录下有哪些子模块？它们之间是怎么依赖的？请列出对外入口组件和内部组件。
+
+    [Agent 回答]
+    packages/base/src/views/config/PortraitPage 的目录结构和依赖关系:
+
+    **6 个子目录(对照 README + 文件系统 ground truth)**:
+    1. **components/** — 跨模版复用展示组件:PortraitBanner.vue / PortraitDynamicCard.vue / PortraitLabelCard.vue / PortraitOverflowTooltip.vue,外加 dynamic-card/ 下 7 个 body 组件
+    2. **domain/** — 纯函数解析层:resolveCardData.ts / resolveLabelCardData.ts / portraitCardFallback.ts / portraitCardBucket.ts(无副作用,做数据变形)
+    3. **runtime/** — tagPortraitRuntime.ts(数据编排层,把 domain 的纯函数串起来)
+    4. **object-portrait/** — 对象刻画模版:PortraitObjectView.vue / PortraitObjectListView.vue / PortraitObjectDetailView.vue + 2 个 TS helpers(含 portraitObjectDefaultShell.ts)
+    5. **tag-statistics/** — 标签统计模版:PortraitTagStatisticsView.vue
+    6. **styles/** — portraitPage.css
+
+    **对外入口组件(被 base 路由 / WorkspaceConfigView 引用)**:
+    - object-portrait/PortraitObjectView.vue
+    - tag-statistics/PortraitTagStatisticsView.vue
+    - object-portrait/portraitObjectDefaultShell.ts(shell 配置)
+
+    **内部依赖分层**:
+    - object-portrait 和 tag-statistics 两个"模版目录"调 runtime/tagPortraitRuntime.ts 做数据编排
+    - runtime 调 domain 的纯函数做数据解析
+    - 所有模版共享 components/ 下的展示组件
+    - styles/portraitPage.css 被各模版按需引入
+
+    **架构理解**:这是典型的"模版 + 运行时 + 纯函数域"三层分离 — 模版层管 UI,runtime 层管数据流,domain 层管纯函数逻辑。修改新模版一般只加 object-portrait / tag-statistics 兄弟目录,不改 runtime/domain;修改数据解析逻辑只动 domain/,不影响模版。
+
+    [评审维度]
+    - completeness: 6 个子目录是否齐（components/domain/runtime/object-portrait/tag-statistics/styles），缺一扣 0.5 分
+    - layering: 能否识别出分层结构（runtime 调 domain、composables 调 runtime、views 调 composables）
+    - entry_awareness: 能否区分'对外入口'（只有 3 个）和'内部组件'
+    - precision: 有没有把不在该目录的组件列进来
+
+    [参考答案]
+    目录结构（已对照 README.md 验证）：
+    - components/ : 跨模版复用展示组件（PortraitBanner / PortraitDynamicCard / PortraitLabelCard + dynamic-card/*）
+    - domain/ : 纯函数解析层（resolveCardData / resolveLabelCardData / portraitCardFallback / portraitCardBucket）
+    - runtime/ : tagPortraitRuntime.ts（数据编排层）
+    - object-portrait/ : 对象刻画模版（PortraitObjectView / PortraitObjectListView / Portr
+  repo: null
+  repo_commit: null
+  attachments: []
+expected:
+  outcome: ""
+  must_include_any_of: []
+  must_not_include: []
+  must_call_tools: []
+  must_not_call_tools: []
+  must_modify_files_in: []
+  must_not_modify_files: []
+  max_steps: 45
+  reference_answer: null
+rubric:
+  completeness: "TODO: 由 importer 占位，请人审补充"
+  precision: TODO
+  helpfulness: TODO
+baseline_scores: {}
+setup_script: evals/real-tasks/scripts/setup_T0076.sh
+notes: 由 import-trajectory-platform.ts 自动生成（B6-1 适配器）。grader_type=rubric_5d。

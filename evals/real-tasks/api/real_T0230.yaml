@@ -1,0 +1,58 @@
+id: real_T0230
+category: api
+priority: P0
+created_date: 2026-05-30
+eval_type: real_task
+target_score: 4
+graduated_at: null
+holdout: false
+holdout_reason: null
+grader_type: rubric_5d
+source_meta:
+  origin: trajectory-platform
+  source_task_id: T0230
+  imported_at: 2026-05-30T19:40:39.768Z
+  imported_by: import-trajectory-platform.ts
+input:
+  user_query: |-
+    分析 ${REPO_ROOT}/src 中记忆与上下文持久化的实现。
+
+    读取并总结以下目录和文件：
+    1. memdir/ 目录全部文件，重点：memoryTypes.ts, paths.ts, memdir.ts, findRelevantMemories.ts
+    2. services/extractMemories/ 目录全部文件
+    3. services/SessionMemory/ 目录全部文件
+    4. services/compact/ 目录中与 sessionMemory 相关的文件
+    5. utils/claudemd.ts
+    6. services/MagicDocs/ 目录全部文件
+    7. services/teamMemorySync/ 目录全部文件
+
+    对每个文件输出：
+    - 核心数据结构和接口定义
+    - 关键算法和执行流程
+    - 安全设计要点
+    - 与其他模块的依赖关系
+
+    最后生成完整能力清单，列举该系统具备的所有记忆管理能力。
+  repo: null
+  repo_commit: null
+  attachments: []
+expected:
+  outcome: 完整理解记忆系统的架构、数据结构、算法流程和模块交互，生成详细的能力清单文档。
+  must_include_any_of: []
+  must_not_include: []
+  must_call_tools:
+    - Glob
+    - Read
+  must_not_call_tools:
+    - Agent
+  must_modify_files_in: []
+  must_not_modify_files: []
+  max_steps: 45
+  reference_answer: null
+rubric:
+  completeness: "TODO: 由 importer 占位，请人审补充"
+  precision: TODO
+  helpfulness: TODO
+baseline_scores: {}
+setup_script: evals/real-tasks/scripts/setup_T0230.sh
+notes: 由 import-trajectory-platform.ts 自动生成（B6-1 适配器）。grader_type=rubric_5d。

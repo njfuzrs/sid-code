@@ -1,0 +1,119 @@
+id: case_gov_010
+category: false_positive
+priority: P0
+created_date: 2026-05-31
+
+eval_type: skill
+target_score: 4.5
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: code-governance
+
+title: "综合场景不误报"
+description: "包含多种看似触发治理告警但实际合规的代码模式，验证不产生 false positive"
+dimension: false_positive
+difficulty: hard
+
+input:
+  user_query: |
+    审计这个 PR diff 的代码治理合规性（许可证、PII、合规元数据、审计追踪）：
+
+    ```diff
+    --- a/src/utils/crypto.ts
+    +++ b/src/utils/crypto.ts
+    @@ -1,3 +1,20 @@
+    +// MIT License - see LICENSE file
+    +// See ADR-007-crypto-library-selection.md for algorithm choices
+    +
+    +import { createHash, randomBytes } from 'crypto';
+    +
+    +/**
+    + * 生成用户 ID 的哈希值（用于日志脱敏）
+    + * 输入: 用户真实 ID
+    + * 输出: 不可逆哈希，无法还原原始 ID
+    + */
+    +export function hashUserId(userId: string): string {
+    +  return createHash('sha256').update(userId).digest('hex').slice(0, 16);
+    +}
+    +
+    +// 测试用常量（非真实数据）
+    +export const TEST_PHONE_PATTERN = "1[3-9]\\d{9}";  // 正则模式，非真实号码
+    +export const TEST_ID_PATTERN = "\\d{17}[\\dXx]";   // 正则模式，非真实身份证
+    +export const EXAMPLE_HASH = "a1b2c3d4e5f67890";    // 哈希输出示例
+     export { createHash, randomBytes };
+    ```
+
+    ```diff
+    --- a/package.json
+    +++ b/package.json
+    @@ -5,6 +5,7 @@
+       "dependencies": {
+    +    "helmet": "^7.1.0",
+    +    "cors": "^2.8.5",
+         "express": "^4.18.0"
+       }
+    ```
+
+    commit message: "feat(crypto): add userId hashing for log redaction (ADR-007)"
+  repo: backend-service
+  repo_commit: ""
+
+expected:
+  outcome: all_governance_checks_pass
+
+  must_include_any_of:
+    - "合规"
+    - "无问题"
+    - "pass"
+    - "通过"
+    - "无告警"
+    - "无风险"
+
+  must_include:
+    - "ADR"
+    - "脱敏"
+
+  must_not_include:
+    - "PII 泄露"
+    - "许可证冲突"
+    - "GPL"
+    - "手机号泄露"
+    - "身份证泄露"
+    - "block"
+    - "高风险"
+    - "需要备案"
+    - "缺少 ADR"
+    - "不合规"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 15
+
+  reference_answer: |
+    必须命中:
+    (1) 许可证合规：helmet/cors/express 均为 MIT，与项目兼容
+    (2) PII 无泄露：TEST_PHONE_PATTERN 和 TEST_ID_PATTERN 是正则模式字符串，非真实数据；EXAMPLE_HASH 是哈希输出
+    (3) 审计追踪完整：commit message 引用 ADR-007，代码注释也引用
+    (4) 功能本身是脱敏工具（hashUserId），属于治理加固而非风险引入
+    (5) 综合判定：全部治理维度通过
+
+rubric:
+  completeness: "四个维度（许可证/PII/合规元数据/审计追踪）逐一确认通过 + 综合判定"
+  precision: "不能将正则模式误报为真实 PII；不能将 MIT 依赖误报为许可证冲突；不能将脱敏工具误报为 PII 处理风险"
+  helpfulness: "可以肯定该 PR 的治理实践（ADR 引用、脱敏设计、测试数据规范）"
+
+baseline_scores: {}
+
+source: "code-governance skill false_positive 综合维度"
+notes: |
+  高难度：综合场景包含多种"看似触发但实际合规"的模式，考验 false positive 抑制能力。
+  - 正则模式 vs 真实手机号/身份证号
+  - 哈希输出 vs 敏感数据
+  - MIT 依赖 vs GPL 依赖
+  - 有 ADR 引用 vs 无 ADR 引用
+related_subsystem: [ skill, skill/code-governance ]

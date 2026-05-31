@@ -1,0 +1,57 @@
+id: real_T0234
+category: config
+priority: P0
+created_date: 2026-05-30
+eval_type: real_task
+target_score: 4
+graduated_at: null
+holdout: false
+holdout_reason: null
+grader_type: rubric_5d
+source_meta:
+  origin: trajectory-platform
+  source_task_id: T0234
+  imported_at: 2026-05-30T19:40:39.609Z
+  imported_by: import-trajectory-platform.ts
+input:
+  user_query: |-
+    分析 sid-code 项目的记忆和上下文系统实现。项目位于 ${REPO_ROOT}/sid-code。
+
+    逐个完整阅读以下文件并分析：
+
+    1. src/memory/store.ts — 记忆存储实现
+    2. src/context/manager.ts — 上下文管理器
+    3. src/context/tool-output-masking.ts — 工具输出遮罩
+    4. src/config/system-prompt.ts — 系统提示词构建
+    5. src/config/attachments.ts — 附件系统
+    6. src/config/rules.ts — 规则文件加载
+    7. src/config/jit-context.ts — JIT 上下文
+    8. src/session/store.ts — 会话持久化
+    9. src/agent/loop.ts — Agent 循环
+    10. src/agent/sub-agent.ts — 子代理系统
+
+    对每个文件详细分析：当前实现的能力、实现质量和完整度、与 Claude Code 对应模块相比的缺陷。
+  repo: null
+  repo_commit: null
+  attachments: []
+expected:
+  outcome: 完整理解 sid-code 项目的记忆、上下文、配置和 Agent 循环系统的设计与实现，识别与 Claude Code 的差异点。
+  must_include_any_of: []
+  must_not_include: []
+  must_call_tools:
+    - Bash
+    - Glob
+    - Read
+  must_not_call_tools:
+    - Agent
+  must_modify_files_in: []
+  must_not_modify_files: []
+  max_steps: 45
+  reference_answer: null
+rubric:
+  completeness: "TODO: 由 importer 占位，请人审补充"
+  precision: TODO
+  helpfulness: TODO
+baseline_scores: {}
+setup_script: evals/real-tasks/scripts/setup_T0234.sh
+notes: 由 import-trajectory-platform.ts 自动生成（B6-1 适配器）。grader_type=rubric_5d。

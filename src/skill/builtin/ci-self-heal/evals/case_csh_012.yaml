@@ -1,0 +1,75 @@
+id: case_csh_012
+category: ci-self-heal boundary_multi_language
+priority: P1
+created_date: 2026-05-31
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: ci-self-heal
+
+input:
+  user_query: |
+    单 repo 多语言项目 CI 挂了, 同时 Python + Go + TypeScript 都报错:
+
+    ```
+    [python] tests/test_api.py::test_login FAILED
+        AssertionError: expected 200, got 500
+        File "tests/test_api.py", line 28
+    [go] FAIL ./internal/payment [build failed]
+        ./internal/payment/charge.go:42:14: undefined: stripeClient
+    [typescript] tsc src/ui/login.tsx
+        src/ui/login.tsx(15,7): error TS2322: Type 'string' is not assignable to type 'number'.
+    ```
+
+    哪一个最严重? 给我诊断.
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: ci_diagnosis_multi_language_priority
+
+  must_include_any_of:
+    - "Python"
+    - "python"
+    - "Go"
+    - "go"
+    - "TypeScript"
+    - "typescript"
+    - "build_failure"
+    - "stripeClient"
+    - "test_failure"
+    - "type_error"
+
+  must_not_include:
+    - "无法诊断"
+    - "已修复"
+    - "只看其中一个"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 12
+
+  reference_answer: |
+    必须三个失败都识别 + 给优先级:
+    优先级 1 (build_failure, Go): undefined: stripeClient — 阻塞编译,先修
+    优先级 2 (type_error, TS): src/ui/login.tsx:15 类型不匹配 — 阻塞 build
+    优先级 3 (test_failure, Python): test_login 500 — 业务逻辑 bug,但不阻塞 build
+    建议先按"阻塞性"修,test_failure 留到最后
+
+rubric:
+  multi_language: "三个语言的失败都被识别,不能漏掉任何一个"
+  fix_priority: "build_failure / type_error 优先于 test_failure (因为阻塞性)"
+
+baseline_scores: {}
+
+source: "S7-T01 边界 case / 多语言项目场景"
+notes: |
+  边界 case — 跨语言混合失败时的优先级排序能力.
+related_subsystem: [ skill, skill/ci-self-heal ]

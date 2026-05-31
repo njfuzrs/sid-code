@@ -1,0 +1,57 @@
+id: real_T0331
+category: bugfix
+priority: P0
+created_date: 2026-05-30
+eval_type: real_task
+target_score: 4
+graduated_at: null
+holdout: false
+holdout_reason: null
+grader_type: rubric_5d
+source_meta:
+  origin: trajectory-platform
+  source_task_id: T0331
+  imported_at: 2026-05-30T19:40:38.968Z
+  imported_by: import-trajectory-platform.ts
+input:
+  user_query: |-
+    目标 1 : Q2季度末AI提效平台完成端到端实现，BU整体提效率达到15%
+    关键举措 1 : 完成业内大模型/核心模块的源码深度调研分析至少5家
+    关键举措 2 : 输出copilot平台和agent平台的技术架构设计并评审通过
+    关键举措 3 : 完成vibe coding的BU内普及推广,并完成前端的端到端试点
+    关键举措 4 : 完成codeReviewagent的实战质量门禁接入,完成实际提效(AI自动修复代码)
+    关键举措 5 : 完成metrics指标平台的搭建
+    目标 2 : Q2完成团队的能力建设，团队优化和凝聚力打造，提高团队战斗力与执行力
+    关键举措 1 : 完成岗标的建设,明确职级体系评价标准(专家、架构师、高潜)
+    关键举措 2 : 该季度团队成员1v1沟通辅导一轮
+    关键举措 3 : 招聘到岗前端开发4名
+    关键举措 4 : 招聘到岗架构师1名
+    关键举措 5 : 每2周组织一次技术分享or业务分享
+    关键举措 6 : 团队文档库沉淀超过54篇（2人/月/篇）（6*9）
+    目标 3 : 3.0产品版本
+    关键举措 1 : 深度理解/挖掘需求，参与任务拆解，主导技术架构，进行架构风险排查，从源头确保产品方案的前瞻性，以及一、二阶段交付的确定性
+    关键举措 2 : 负责或深度参与产品每个阶段的关键设计，并拉通对齐，进行验收，保证业务闭环；严格把控一、二阶段的研发节奏与里程碑，确保版本按时交付
+    关键举措 3 : 指导团队针对核心技术、架构进行研发攻坚，保障交付进度重点如本体建模、数据管道、标签/BI Agent的落地执行，攻克关键技术难点。
+    目标 4 : Q2完成2.6.x敏捷迭代市场侧发布2次,前端故障降量超过20%
+    关键举措 1 : 严格审核技术方案，从源头保障产品质量
+    关键举措 2 : 深度理解/挖掘需求，参与任务拆解，合理调配团队资源保障版本发布 这是我直属上级的Q2绩效目标，我现在也要订三个目标，除了他的目标 2 : Q2完成团队的能力建设，团队优化和凝聚力打造，提高团队战斗力与执行力 这个不用我去对齐，其他三点需要我去引用和对齐，我要写的是我自己的关键举措，每个目标要写三到四点，目标名称跟他134保持一致，只不过关键举措不同，我的角色是业务和核心开发，架构设计，引导者，请你帮我写具体举措
+  repo: null
+  repo_commit: null
+  attachments: []
+expected:
+  outcome: ""
+  must_include_any_of: []
+  must_not_include: []
+  must_call_tools: []
+  must_not_call_tools: []
+  must_modify_files_in: []
+  must_not_modify_files: []
+  max_steps: 45
+  reference_answer: null
+rubric:
+  completeness: "TODO: 由 importer 占位，请人审补充"
+  precision: TODO
+  helpfulness: TODO
+baseline_scores: {}
+setup_script: evals/real-tasks/scripts/setup_T0331.sh
+notes: 由 import-trajectory-platform.ts 自动生成（B6-1 适配器）。grader_type=rubric_5d。

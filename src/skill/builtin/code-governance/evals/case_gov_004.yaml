@@ -1,0 +1,95 @@
+id: case_gov_004
+category: pii_detection
+priority: P0
+created_date: 2026-05-31
+
+eval_type: skill
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: code-governance
+
+title: "身份证号泄露检测"
+description: "检测代码中硬编码的中国居民身份证号，属于高敏感 PII 泄露"
+dimension: pii_detection
+difficulty: medium
+
+input:
+  user_query: |
+    审计这个 PR diff，检查是否有 PII 泄露：
+
+    ```diff
+    --- a/src/utils/id-validator.ts
+    +++ b/src/utils/id-validator.ts
+    @@ -1,5 +1,15 @@
+    +// 身份证校验工具
+    +const SAMPLE_IDS = [
+    +  "110101199003076534",  // 北京
+    +  "440305198812041234",  // 深圳
+    +];
+    +
+     export function validateIdCard(id: string): boolean {
+    -  // TODO: implement
+    -  return true;
+    +  const pattern = /^\d{17}[\dXx]$/;
+    +  if (!pattern.test(id)) return false;
+    +  // 加权校验
+    +  const weights = [7,9,10,5,8,4,2,1,6,3,7,9,10,5,8,4,2];
+    +  const checkCodes = "10X98765432";
+    +  const sum = id.slice(0,17).split('').reduce((s,c,i) => s + parseInt(c) * weights[i], 0);
+    +  return checkCodes[sum % 11] === id[17].toUpperCase();
+     }
+    ```
+  repo: id-service
+  repo_commit: ""
+
+expected:
+  outcome: pii_id_card_number_hardcoded
+
+  must_include_any_of:
+    - "身份证"
+    - "身份证号"
+    - "ID card"
+    - "PII"
+    - "个人信息"
+    - "敏感"
+
+  must_include:
+    - "110101199003076534"
+    - "SAMPLE_IDS"
+
+  must_not_include:
+    - "无 PII"
+    - "无泄露"
+    - "LGTM"
+    - "pass"
+    - "合规"
+    - "仅校验逻辑无风险"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 15
+
+  reference_answer: |
+    必须命中:
+    (1) 识别 SAMPLE_IDS 中的字符串为中国居民身份证号（18位，含地区码+出生日期+校验位）
+    (2) 指出身份证号属于高敏感 PII，即使用于测试也不应硬编码在源码中
+    (3) 建议使用虚构的不符合校验规则的假数据，或从环境变量/测试 fixture 加载
+    (4) 校验逻辑本身无问题，问题在于示例数据
+
+rubric:
+  completeness: "识别身份证号 PII + 高敏感等级说明 + 替代方案（假数据/fixture）"
+  precision: "不能误报校验逻辑代码本身为问题；问题仅在硬编码的示例数据"
+  helpfulness: "建议应区分'测试用假身份证号生成方式'和'真实身份证号存储方式'"
+
+baseline_scores: {}
+
+source: "code-governance skill pii_detection 维度"
+notes: |
+  中等难度：需区分校验逻辑（合规）和硬编码示例数据（不合规）。
+related_subsystem: [ skill, skill/code-governance ]

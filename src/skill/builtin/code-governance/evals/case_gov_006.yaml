@@ -1,0 +1,101 @@
+id: case_gov_006
+category: compliance_metadata
+priority: P0
+created_date: 2026-05-31
+
+eval_type: skill
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: code-governance
+
+title: "EU AI Act 高风险推断"
+description: "根据代码功能推断系统是否属于 EU AI Act 高风险类别，需标注合规元数据"
+dimension: compliance_metadata
+difficulty: medium
+
+input:
+  user_query: |
+    审计这个模块的合规性，判断是否触发 EU AI Act 高风险分类：
+
+    ```typescript
+    // src/hr/resume-screener.ts
+    import { OpenAI } from 'openai';
+
+    export class ResumeScreener {
+      private client: OpenAI;
+
+      constructor() {
+        this.client = new OpenAI();
+      }
+
+      /**
+       * 自动筛选简历，根据岗位要求对候选人进行评分排名
+       * 用于招聘流程的初筛阶段
+       */
+      async screenResumes(resumes: Resume[], jobRequirements: JobReq): Promise<RankedCandidate[]> {
+        const prompt = `根据以下岗位要求对候选人简历进行评分(1-10)并排名：
+          岗位要求: ${JSON.stringify(jobRequirements)}
+          候选人简历: ${JSON.stringify(resumes)}
+          输出JSON格式的排名结果。`;
+
+        const response = await this.client.chat.completions.create({
+          model: "gpt-4",
+          messages: [{ role: "user", content: prompt }],
+        });
+
+        return JSON.parse(response.choices[0].message.content!);
+      }
+    }
+    ```
+  repo: hr-platform
+  repo_commit: ""
+
+expected:
+  outcome: eu_ai_act_high_risk_employment_detected
+
+  must_include_any_of:
+    - "EU AI Act"
+    - "高风险"
+    - "high risk"
+    - "Annex III"
+    - "附件三"
+
+  must_include:
+    - "招聘"
+    - "AI"
+
+  must_not_include:
+    - "低风险"
+    - "无需合规"
+    - "LGTM"
+    - "不适用"
+    - "minimal risk"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 15
+
+  reference_answer: |
+    必须命中:
+    (1) 判定该系统属于 EU AI Act 高风险类别（Annex III, Area 4: Employment）
+    (2) 说明原因：AI 用于招聘筛选/候选人评估属于就业领域高风险 AI 系统
+    (3) 列出合规要求：风险管理体系、数据治理、技术文档、透明度、人工监督
+    (4) 建议添加合规元数据标注（risk_level, domain, regulatory_framework）
+
+rubric:
+  completeness: "正确分类为高风险 + 引用 EU AI Act 条款 + 列出合规要求 + 建议元数据标注"
+  precision: "分类依据准确（就业领域 AI 决策）；不能错误分类为低风险或不适用"
+  helpfulness: "合规要求应具体到可执行步骤，而非仅列法条"
+
+baseline_scores: {}
+
+source: "code-governance skill compliance_metadata 维度"
+notes: |
+  中等难度：需要理解 EU AI Act 高风险分类体系，并从代码功能推断适用类别。
+related_subsystem: [ skill, skill/code-governance ]

@@ -1,0 +1,50 @@
+id: real_T0177
+category: config
+priority: P0
+created_date: 2026-05-30
+eval_type: real_task
+target_score: 4
+graduated_at: null
+holdout: false
+holdout_reason: null
+grader_type: rubric_5d
+source_meta:
+  origin: trajectory-platform
+  source_task_id: T0177
+  imported_at: 2026-05-30T19:40:39.735Z
+  imported_by: import-trajectory-platform.ts
+input:
+  user_query: |-
+    分析 ${REPO_ROOT}/sid-code 项目中与记忆、上下文、持久化相关的代码架构。
+
+    1. 读取 src/memory/ 目录下的所有文件，总结核心功能和接口
+    2. 读取 src/context/ 目录下的所有文件，总结核心功能和接口
+    3. 读取 src/session/ 目录下的所有文件，总结核心功能和接口
+    4. 读取 src/config/ 目录下与系统提示词、规则相关的文件
+    5. 读取 src/agent/ 目录下的核心循环文件
+
+    对每个文件输出：核心功能、关键接口、主要实现逻辑。最后给出完整的架构概览，说明模块间的依赖关系和数据流。
+  repo: null
+  repo_commit: null
+  attachments: []
+expected:
+  outcome: 完整理解 sid-code 项目的记忆、上下文、会话、配置、代理循环等核心模块的代码结构、接口定义和模块间的依赖关系。
+  must_include_any_of: []
+  must_not_include: []
+  must_call_tools:
+    - Bash
+    - Grep
+    - Read
+  must_not_call_tools:
+    - Agent
+  must_modify_files_in: []
+  must_not_modify_files: []
+  max_steps: 45
+  reference_answer: null
+rubric:
+  completeness: "TODO: 由 importer 占位，请人审补充"
+  precision: TODO
+  helpfulness: TODO
+baseline_scores: {}
+setup_script: evals/real-tasks/scripts/setup_T0177.sh
+notes: 由 import-trajectory-platform.ts 自动生成（B6-1 适配器）。grader_type=rubric_5d。

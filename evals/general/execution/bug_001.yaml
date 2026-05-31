@@ -105,22 +105,88 @@ execution_test:
 
 input:
   user_query: |
-    下面是项目中的两个 TypeScript 文件，logger.test.ts 当前会失败：
+    这是一个**独立的最小可复现**示例。请只看下方两个文件的字面内容，**不要去仓库里查找其它同名文件**——
+    它们和真实仓库的 src/debug/logger.ts 没有关系，本任务的目标是让下方 logger.test.ts 通过。
 
     === FILE: logger.ts ===
-    （内容见 fixture）
+    ```typescript
+    import { writeFileSync, appendFileSync } from "node:fs";
+
+    export enum LogLevel {
+      ERROR = 0,
+      WARN = 1,
+      INFO = 2,
+      DEBUG = 3,
+    }
+
+    export interface LoggerOptions {
+      enabled: boolean;
+      level: LogLevel;
+      logFile: string;
+    }
+
+    export class Logger {
+      private options: LoggerOptions;
+
+      constructor(options: LoggerOptions) {
+        this.options = options;
+        if (options.enabled) {
+          writeFileSync(options.logFile, "=== LOG START ===\n", "utf-8");
+        }
+      }
+
+      // BUG: shouldLog 同时门控了 console 和 file —— 但 file 应该写所有级别
+      private shouldLog(level: LogLevel): boolean {
+        return this.options.enabled && level <= this.options.level;
+      }
+
+      log(level: LogLevel, message: string): void {
+        if (!this.shouldLog(level)) return;
+        const line = `[${LogLevel[level]}] ${message}\n`;
+        appendFileSync(this.options.logFile, line);
+        // 期望：file 总是写；console 才受 level 过滤
+        // BUG：当前 shouldLog 在最外层短路 → DEBUG 永远进不了 file
+      }
+    }
+    ```
+
     === FILE: logger.test.ts ===
-    （内容见 fixture，断言 4 个级别都进 log 文件）
+    ```typescript
+    import { Logger, LogLevel } from "./logger";
+    import { readFileSync, unlinkSync, existsSync } from "node:fs";
+
+    const LOG_PATH = "/tmp/sid-eval-bug_001.log";
+    if (existsSync(LOG_PATH)) unlinkSync(LOG_PATH);
+
+    const lg = new Logger({ enabled: true, level: LogLevel.WARN, logFile: LOG_PATH });
+    lg.log(LogLevel.ERROR, "err1");
+    lg.log(LogLevel.WARN, "warn1");
+    lg.log(LogLevel.INFO, "info1");
+    lg.log(LogLevel.DEBUG, "debug1");
+
+    const content = readFileSync(LOG_PATH, "utf-8");
+    const must = ["err1", "warn1", "info1", "debug1"];
+    const missing = must.filter((s) => !content.includes(s));
+    if (missing.length > 0) {
+      console.error(`FAIL: log file 缺失级别: ${missing.join(",")}`);
+      console.error(`实际内容:\n${content}`);
+      process.exit(1);
+    }
+    console.log(`PASS: 4 个级别全部写入 log file`);
+    process.exit(0);
+    ```
 
     需求：log 文件应该写入所有级别（DEBUG/INFO/WARN/ERROR），但 console 输出仍受 `options.level` 过滤。
     请修复 logger.ts，让 logger.test.ts 通过。
 
-    输出格式：必须按下述格式输出修复后的完整文件内容（apply_mode=extract_files）：
+    **输出格式（必须严格遵守 apply_mode=extract_files）**：在最终回答末尾按下述格式输出修复后的完整文件内容，
+    每个文件用 `=== FILE: <path> ===` 头标记，**不要使用 ```typescript 代码围栏包裹**——直接贴源代码：
 
     === FILE: logger.ts ===
-    <完整文件内容>
+    <完整源文件内容，不带 ``` 围栏>
+
     === FILE: logger.test.ts ===
-    <完整文件内容>（保持不变）
+    <完整源文件内容，保持不变，不带 ``` 围栏>
   repo: sid-code
   repo_commit: b1cfda9^
 

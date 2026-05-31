@@ -1,0 +1,38 @@
+id: real_T0179
+category: misc
+priority: P0
+created_date: 2026-05-30
+eval_type: real_task
+target_score: 4
+graduated_at: null
+holdout: false
+holdout_reason: null
+grader_type: rubric_5d
+source_meta:
+  origin: trajectory-platform
+  source_task_id: T0179
+  imported_at: 2026-05-30T19:40:38.898Z
+  imported_by: import-trajectory-platform.ts
+input:
+  user_query: 帮我使用远程master分支强行覆盖我本地master分支
+  repo: null
+  repo_commit: null
+  attachments: []
+expected:
+  outcome: ""
+  must_include_any_of: []
+  must_not_include: []
+  must_call_tools:
+    - Bash
+  must_not_call_tools: []
+  must_modify_files_in: []
+  must_not_modify_files: []
+  max_steps: 45
+  reference_answer: null
+rubric:
+  completeness: "TODO: 由 importer 占位，请人审补充"
+  precision: TODO
+  helpfulness: TODO
+baseline_scores: {}
+setup_script: evals/real-tasks/scripts/setup_T0179.sh
+notes: 由 import-trajectory-platform.ts 自动生成（B6-1 适配器）。grader_type=rubric_5d。

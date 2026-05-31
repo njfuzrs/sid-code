@@ -1,0 +1,41 @@
+id: real_T0071
+category: ui
+priority: P0
+created_date: 2026-05-30
+eval_type: real_task
+target_score: 4
+graduated_at: null
+holdout: false
+holdout_reason: null
+grader_type: rubric_5d
+source_meta:
+  origin: trajectory-platform
+  source_task_id: T0071
+  imported_at: 2026-05-30T19:40:39.124Z
+  imported_by: import-trajectory-platform.ts
+input:
+  user_query: |-
+    Anthropic在做一个AI操作系统。
+    Claude Code是终端。Cowork是桌面环境。Agent Teams是进程管理。Google Drive和Slack连接器是文件系统和通讯。Computer Use是外设驱动。Marketplace是应用商店。Dispatch是跨设备同步。/schedule和/loop是定时任务。每一个传统操作系统需要的组件，Anthropic都在用AI重新实现一遍。而且速度快到你来不及反应。 如何理解这段话，帮我使用Tavily Search MCP 再联网查询最新资料文章博客，Anthropic 产品矩阵是什么，各产品定位是什么，未来发展研究方向是什么，请你帮我收集最新丰富的资料，帮我写一个研究分析文档，一段一段写，我想知道ai未来发展方向，以Anthropic claude claude code为例子
+  repo: null
+  repo_commit: null
+  attachments: []
+expected:
+  outcome: ""
+  must_include_any_of: []
+  must_not_include: []
+  must_call_tools:
+    - Bash
+    - Edit
+  must_not_call_tools: []
+  must_modify_files_in: []
+  must_not_modify_files: []
+  max_steps: 45
+  reference_answer: null
+rubric:
+  completeness: "TODO: 由 importer 占位，请人审补充"
+  precision: TODO
+  helpfulness: TODO
+baseline_scores: {}
+setup_script: evals/real-tasks/scripts/setup_T0071.sh
+notes: 由 import-trajectory-platform.ts 自动生成（B6-1 适配器）。grader_type=rubric_5d。

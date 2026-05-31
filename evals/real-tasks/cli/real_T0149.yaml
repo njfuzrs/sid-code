@@ -1,0 +1,38 @@
+id: real_T0149
+category: cli
+priority: P0
+created_date: 2026-05-30
+eval_type: real_task
+target_score: 4
+graduated_at: null
+holdout: false
+holdout_reason: null
+grader_type: rubric_5d
+source_meta:
+  origin: trajectory-platform
+  source_task_id: T0149
+  imported_at: 2026-05-30T19:40:39.038Z
+  imported_by: import-trajectory-platform.ts
+input:
+  user_query: "'/Users/dev/Code/person/docs-research/interview-notes/03-模型（llm）/大纲.md' 请你认真阅读大纲中：07-生成控制（Decoding & Sampling） 00-采样策略 这个章节的内容，这个章节有 9 道面试题，注意：每一题需要你调用 '/Users/dev/Code/person/docs-research/interview-notes/.claude/commands/add-question.md' ，使用 add-question 命令一题一题去添加答案，将生成的答案添加到对应的章节的目录中去，直到该章节所有题目都回答完毕"
+  repo: null
+  repo_commit: null
+  attachments: []
+expected:
+  outcome: ""
+  must_include_any_of: []
+  must_not_include: []
+  must_call_tools:
+    - Bash
+  must_not_call_tools: []
+  must_modify_files_in: []
+  must_not_modify_files: []
+  max_steps: 45
+  reference_answer: null
+rubric:
+  completeness: "TODO: 由 importer 占位，请人审补充"
+  precision: TODO
+  helpfulness: TODO
+baseline_scores: {}
+setup_script: evals/real-tasks/scripts/setup_T0149.sh
+notes: 由 import-trajectory-platform.ts 自动生成（B6-1 适配器）。grader_type=rubric_5d。

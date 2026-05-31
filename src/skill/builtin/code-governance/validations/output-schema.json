@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "code-governance/output-schema",
+  "type": "object",
+  "required": ["verdict", "violations_count", "warnings_count", "findings", "compliance_metadata"],
+  "properties": {
+    "verdict": { "type": "string", "enum": ["pass", "warn", "block"] },
+    "violations_count": { "type": "integer", "minimum": 0 },
+    "warnings_count": { "type": "integer", "minimum": 0 },
+    "audit_notes_count": { "type": "integer", "minimum": 0 },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["category", "severity", "evidence_file", "evidence_line"],
+        "properties": {
+          "category": { "type": "string", "enum": ["license", "pii", "compliance_metadata", "audit_trail"] },
+          "severity": { "type": "string", "enum": ["violation", "warning", "info"] },
+          "evidence_file": { "type": "string" },
+          "evidence_line": { "type": "integer", "minimum": 1 },
+          "package": { "type": ["string", "null"] },
+          "license": { "type": ["string", "null"] },
+          "pii_class": { "type": ["string", "null"] },
+          "snippet_redacted": { "type": ["string", "null"] },
+          "action": { "type": ["string", "null"] },
+          "policy_reference": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "compliance_metadata": {
+      "type": "object",
+      "required": ["eu_ai_act_risk_class", "audit_trail_status"],
+      "properties": {
+        "eu_ai_act_risk_class": { "type": "string", "enum": ["limited", "high", "prohibited", "unknown"] },
+        "pii_categories_detected": { "type": "array", "items": { "type": "string" } },
+        "audit_trail_status": { "type": "string", "enum": ["complete", "incomplete"] },
+        "high_risk_paths": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "recommendation": { "type": "string" }
+  }
+}

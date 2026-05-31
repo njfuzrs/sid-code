@@ -1,0 +1,80 @@
+id: case_inc_007
+category: incident-rca timeline_construction
+priority: P1
+created_date: 2026-05-31
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: incident-rca
+
+input:
+  user_query: |
+    P1 incident,2026-05-31T22:00 ~ 22:45,API 5xx 飙高.
+
+    日志(乱序):
+    ```
+    22:14:11 ERROR [api] dependency check failed: redis connection refused
+    22:00:33 INFO [deploy] new image rollout started: v2.5.1 → v2.6.0
+    22:18:44 ERROR [api] HTTP 503 (cnt=247)
+    22:01:02 INFO [deploy] 25% pods updated
+    22:30:12 INFO [oncall] manual rollback initiated
+    22:14:00 INFO [redis] config reload signal received
+    22:15:45 ERROR [redis] AUTH command failed: invalid password
+    22:32:50 INFO [api] all 5xx subsiding,error_rate 38% → 0.2%
+    ```
+
+    请构造 Timeline + Top Hypothesis.
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: rca_timeline_correctly_ordered
+
+  must_include_any_of:
+    - "22:00"
+    - "22:14"
+    - "22:30"
+    - "rollout"
+    - "回滚"
+    - "rollback"
+    - "redis"
+    - "AUTH"
+
+  must_not_include:
+    - "无法构造"
+    - "信息不足"
+    - "已修复"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 12
+
+  reference_answer: |
+    Timeline 必须按时间正序:
+    22:00 v2.6.0 rollout 启动
+    22:14 redis config reload + AUTH failed
+    22:14-22:30 API 5xx 飙高
+    22:30 oncall 回滚
+    22:32 5xx 收敛
+    Top Hypothesis: v2.6.0 引入的 redis client 配置不兼容老 redis AUTH 格式
+    Hotfix 已通过回滚执行(22:30)
+    Long-term: redis client 升级与 redis 版本兼容性测试
+
+rubric:
+  timeline_construction: "Timeline 必须按 ISO 时间正序排列,不能保持原始乱序"
+  rca_hypothesis: "假设要把 deploy 时间窗 (22:00) + 故障起点 (22:14) + 收敛点 (22:32) 串起来"
+
+baseline_scores: {}
+
+source: "RFC-004 §3.3 时间窗自省 / Timeline 正序构造能力"
+notes: |
+  timeline_construction 主维度 case.
+  考察"乱序日志能否被正确按时间排序"的细节工程能力.
+related_subsystem: [ skill, skill/incident-rca ]

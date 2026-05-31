@@ -1,0 +1,83 @@
+id: real_T0246
+category: bugfix
+priority: P0
+created_date: 2026-05-30
+eval_type: real_task
+target_score: 4
+graduated_at: null
+holdout: false
+holdout_reason: null
+grader_type: rubric_5d
+source_meta:
+  origin: trajectory-platform
+  source_task_id: T0246
+  imported_at: 2026-05-30T19:40:38.932Z
+  imported_by: import-trajectory-platform.ts
+input:
+  user_query: |-
+    [用户问题]
+    Pinia store 在 anka-app 的 packages/base 里有哪些？每个 store 的职责是什么？分别在哪些组件中被使用？
+
+    [Agent 回答]
+    packages/base 下的 Pinia store 清单(packages/base/src/stores/ 共 5 个 defineStore):
+
+    1. **useWorkspaceStore**(stores/workspace.ts)— 工作空间列表、创建、权限管理,是所有页面的底座
+    2. **useAuthStore**(stores/auth.ts)— 鉴权状态(token / 当前用户 / role)
+    3. **useArbitrationStore**(stores/arbitration.ts)— 专家仲裁案例状态
+    4. **useFileManagementStore**(stores/fileManagement.ts)— 文件管理(上传 / 列表 / 删除)
+    5. **useAppStore**(stores/index.ts)— demo / 占位 counter store,实战使用面窄
+
+    **使用模式**:全部是 defineStore + composition API 风格,通过 packages/base/src/stores/index.ts 统一 re-export。base 包的 views 和 layouts 通过 import { useWorkspaceStore } from '@/stores' 这种 alias 使用。
+
+    **consumer 分布**:
+    - useWorkspaceStore / useAuthStore 被基座 layouts 和几乎全部 views 使用(>10 处)
+    - useArbitrationStore 主要被 packages/base/src/views/arbitration/* 使用
+    - useFileManagementStore 被 PortraitPage 等需要附件上传的视图使用
+    - useAppStore 只有 demo 路由使用
+
+    **边界**:本次问的是 packages/base 的 stores。另一个范围 packages/ontology-studio/src/stores/ 有 2 个 store(ontology.ts + ruleChatComposer.ts),不在本次答案范围。
+
+    **precision**:anka-app 不存在 useDatasourceStore / usePortraitStore / useGlobalStore(这些不是 base 的 store,可能是用户凭印象提的)。图谱里没有这 3 个 defineStore 节点。
+
+    **scale 数据**:base 共 5 个 defineStore 调用,图谱 UA Layer 把它们归在同一个 stores Layer 下,置信度 0.7(UA 推断)。
+
+    [评审维度]
+    - completeness: 4 个业务 store（不算 useAppStore demo）至少列出 3 个
+    - role_awareness: 能否说出每个 store 的职责，不只是列名字
+    - consumer_awareness: 能否给出至少 1 个消费者文件，展示 store → component 的边
+    - precision: 不要把 packages/ontology-studio 的 store（useOntologyStore）混进来
+
+    [参考答案]
+    packages/base/src/stores/ 的 Pinia store（5 个 defineStore）：
+    1. useWorkspaceStore  (workspace.ts)  — 工作空间列表/创建/权限
+    2. useAuthStore       (auth.ts)       — 鉴权状态（token/用户）
+    3. useArbitrationStore(arbitration.ts)— 专家仲裁案例状态
+    4. useFileManagementStore(fileManagement.ts) — 文件管理
+    5. useAppStore        (index.ts)      — demo/占位 counter store
+
+    完美答案应给出：
+    - 每个 store 的命名导出（use*Store）
+    - 每个 store 的主要 state（至少 1 个代表性字段）
+    - 至少 1 个消费者（哪个 .vue 里 const store = useXxxStore()）
+
+    请按 sy
+  repo: null
+  repo_commit: null
+  attachments: []
+expected:
+  outcome: ""
+  must_include_any_of: []
+  must_not_include: []
+  must_call_tools: []
+  must_not_call_tools: []
+  must_modify_files_in: []
+  must_not_modify_files: []
+  max_steps: 45
+  reference_answer: null
+rubric:
+  completeness: "TODO: 由 importer 占位，请人审补充"
+  precision: TODO
+  helpfulness: TODO
+baseline_scores: {}
+setup_script: evals/real-tasks/scripts/setup_T0246.sh
+notes: 由 import-trajectory-platform.ts 自动生成（B6-1 适配器）。grader_type=rubric_5d。

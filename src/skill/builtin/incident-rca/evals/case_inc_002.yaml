@@ -1,0 +1,81 @@
+id: case_inc_002
+category: incident-rca metric_anomaly
+priority: P0
+created_date: 2026-05-31
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: incident-rca
+
+input:
+  user_query: |
+    线上 P1 incident,2026-05-31T08:00 ~ 09:00 UTC,接口 P95 突然飙到 8s.
+
+    metric snapshot:
+    - api.p95_latency_ms: 200 → 8000 (起跳点 08:15)
+    - api.qps: 1500 → 1500 (持平)
+    - api.error_rate: 0.1% → 0.1% (持平)
+    - jvm.gc.pause_ms: 50 → 4500 (起跳点 08:14:50)
+    - jvm.heap_used_pct: 65% → 92% (起跳点 08:00)
+
+    应用日志只看到 ~10 条:
+    ```
+    08:14:23 INFO 受到一个请求 /v1/big_export (size_estimate=2.3GB)
+    08:14:55 WARN GC 暂停 4500ms
+    08:15:00 INFO ...请求处理中
+    ```
+
+    recent commits: 无,过去 7 天稳定.
+
+    请给 RCA.
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: rca_metric_anomaly_gc_pressure
+
+  must_include_any_of:
+    - "GC"
+    - "heap"
+    - "内存"
+    - "big_export"
+    - "2.3GB"
+    - "暂停"
+
+  must_not_include:
+    - "无法诊断"
+    - "请提供更多上下文"
+    - "建议重启"
+    - "已修复"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 12
+
+  reference_answer: |
+    Top Hypothesis #1 应识别:
+    (1) heap_used_pct 从 08:00 起爬升 → /v1/big_export 触发大对象加载
+    (2) 92% heap 触发频繁 GC → gc.pause 4500ms 导致 P95 飙升
+    (3) qps / error_rate 持平排除流量飙升 / 下游故障假设
+    Hotfix: 临时熔断 big_export 接口
+    Long-term Fix: big_export 走流式或 paging,heap 限额监控
+
+rubric:
+  metric_anomaly: "对照时间窗的 metric 偏离,识别最早偏离起点(heap 比 latency 早 14 分钟)"
+  rca_hypothesis: "假设要排除掉 qps / error_rate 持平的反证,不能编造流量飙升"
+  fix_priority: "hotfix 必须可在 5 分钟内执行(熔断/降级)"
+
+baseline_scores: {}
+
+source: "RFC-004 §2.2 metric_anomaly 维度 / GC 压力 archetype"
+notes: |
+  metric_anomaly 主维度 case.
+  反证设计:qps + error_rate 持平,逼模型不要走"流量飙升"或"下游故障"假设.
+related_subsystem: [ skill, skill/incident-rca ]

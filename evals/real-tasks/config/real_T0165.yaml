@@ -1,0 +1,42 @@
+id: real_T0165
+category: config
+priority: P0
+created_date: 2026-05-30
+eval_type: real_task
+target_score: 4
+graduated_at: null
+holdout: false
+holdout_reason: null
+grader_type: rubric_5d
+source_meta:
+  origin: trajectory-platform
+  source_task_id: T0165
+  imported_at: 2026-05-30T19:40:39.315Z
+  imported_by: import-trajectory-platform.ts
+input:
+  user_query: 修改 @anka-app/packages/base/src/layouts/WorkspaceConfigLayout.vue，将菜单从硬编码的 aside 标签改为从 getWorkspaceMenuTree 接口动态获取。接口返回的 router 字段对应当前硬编码的 key 字段。
+  repo: null
+  repo_commit: null
+  attachments: []
+expected:
+  outcome: WorkspaceConfigLayout.vue 中的菜单从硬编码改为通过 getWorkspaceMenuTree 接口动态渲染，保持 radio button 等 UI 组件的功能不变。
+  must_include_any_of: []
+  must_not_include: []
+  must_call_tools:
+    - Edit
+    - Glob
+    - Grep
+    - Read
+  must_not_call_tools:
+    - Agent
+  must_modify_files_in: []
+  must_not_modify_files: []
+  max_steps: 45
+  reference_answer: null
+rubric:
+  completeness: "TODO: 由 importer 占位，请人审补充"
+  precision: TODO
+  helpfulness: TODO
+baseline_scores: {}
+setup_script: evals/real-tasks/scripts/setup_T0165.sh
+notes: 由 import-trajectory-platform.ts 自动生成（B6-1 适配器）。grader_type=rubric_5d。

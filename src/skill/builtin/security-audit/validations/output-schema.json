@@ -1,0 +1,70 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "security-audit Skill 输出契约",
+  "type": "object",
+  "required": ["audit_verdict", "severity_counts", "findings"],
+  "properties": {
+    "audit_verdict": {
+      "type": "string",
+      "enum": ["block", "request_changes", "approve", "needs_human"],
+      "description": "整体审计结论. block = 必修 high/blocker; request_changes = 有 medium 需关注; approve = 无 finding; needs_human = 上下文不足"
+    },
+    "severity_counts": {
+      "type": "object",
+      "required": ["blocker", "high", "medium", "low"],
+      "properties": {
+        "blocker": { "type": "integer", "minimum": 0 },
+        "high": { "type": "integer", "minimum": 0 },
+        "medium": { "type": "integer", "minimum": 0 },
+        "low": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["vuln_class", "severity", "file", "line", "description", "evidence_kind"],
+        "properties": {
+          "vuln_class": {
+            "type": "string",
+            "enum": [
+              "injection",
+              "secret_leak",
+              "xss",
+              "auth_bypass",
+              "crypto_weak",
+              "cve_dependency",
+              "iac_misconfig",
+              "data_leak"
+            ]
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["blocker", "high", "medium", "low"]
+          },
+          "file": { "type": "string" },
+          "line": { "type": "integer", "minimum": 0 },
+          "description": { "type": "string" },
+          "cwe": { "type": "string" },
+          "owasp": { "type": "string" },
+          "evidence_kind": {
+            "type": "string",
+            "enum": ["heuristic", "llm", "sca", "merged"],
+            "description": "evidence 来源:确定性脚本 / LLM 推理 / SCA 工具 / 多源融合"
+          },
+          "snippet": { "type": "string" },
+          "suggested_fix": { "type": "string" },
+          "false_positive_risk": {
+            "type": "string",
+            "enum": ["low", "medium", "high"]
+          }
+        }
+      }
+    },
+    "skipped_checks": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "明确跳过的检查及原因"
+    }
+  }
+}

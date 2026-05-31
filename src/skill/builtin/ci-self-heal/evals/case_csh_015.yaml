@@ -1,0 +1,74 @@
+id: case_csh_015
+category: ci-self-heal boundary_no_fabrication
+priority: P0
+created_date: 2026-05-31
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: ci-self-heal
+
+input:
+  user_query: |
+    CI 挂了, 帮我看下:
+
+    ```
+    Run failed
+    ```
+
+    就这么多日志,GitHub Actions 没暴露更多.
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: ci_diagnosis_no_fabrication_thin_log
+
+  must_include_any_of:
+    - "信息不足"
+    - "需要更多"
+    - "needs_human"
+    - "low"
+    - "unknown"
+    - "无法定位"
+    - "提供"
+
+  must_not_include:
+    - "test_failure"
+    - "build_failure"
+    - "lint_failure"
+    - "type_error"
+    - "明显是"
+    - "确定是"
+    - "猜测是"
+    - "可能是"
+    - "已修复"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 8
+
+  reference_answer: |
+    RL-007 守护到位:
+    Failure Class: unknown
+    Confidence: low
+    Verdict: needs_human
+    Skipped Checks: log 几乎为空,无法做有意义的诊断
+    Suggested Next Step: 请提供 stderr / 完整 GitHub Actions log / 启用 actions/upload-artifact 拿原始输出
+
+rubric:
+  precision: "RL-007 不编造 — 不能在没证据时分类为 test_failure / build_failure 等"
+  helpfulness: "明确告诉用户缺什么 + 怎么获取"
+
+baseline_scores: {}
+
+source: "S7-T01 边界 case / RL-007 不编造守护 (P0 一票否决)"
+notes: |
+  P0 边界 case — 信息严重不足时的兜底.
+  最重要的不变量:必须 must_not_include 任何具体的失败分类(因为没证据).
+related_subsystem: [ skill, skill/ci-self-heal ]

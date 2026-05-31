@@ -35,6 +35,10 @@ const CASE_DIRS = [
 const HOLDOUT_DIR = join(ROOT, "holdout");
 const ARCHITECTURE_ROOT = join(ROOT, "architecture");
 const HOLDOUT_ARCHITECTURE_ROOT = join(ROOT, "holdout", "architecture");
+// B6-2/3（2026-05-31 / §15.2 ADR-033）：trajectory case 子桶 evals/real-tasks/<cat>/
+// trajectory_match grader M5 前仅作诊断维度，不进总分；scripts/ 目录是 setup_*.sh 不算 case。
+const REAL_TASKS_ROOT = join(ROOT, "real-tasks");
+const HOLDOUT_REAL_TASKS_ROOT = join(ROOT, "holdout", "real-tasks");
 
 /**
  * 动态发现 `evals/architecture/<sub>/` 下所有子目录。
@@ -45,6 +49,21 @@ function discoverArchitectureSubDirs(root: string): string[] {
   if (!existsSync(root)) return [];
   const dirs: string[] = [];
   for (const entry of require("node:fs").readdirSync(root)) {
+    const p = join(root, entry);
+    if (require("node:fs").statSync(p).isDirectory()) dirs.push(p);
+  }
+  return dirs;
+}
+
+/**
+ * 动态发现 `evals/real-tasks/<cat>/` 下所有子目录（B6-2/3）。
+ * scripts/ 子目录存 setup_*.sh，不属于 case 桶。
+ */
+function discoverRealTasksSubDirs(root: string): string[] {
+  if (!existsSync(root)) return [];
+  const dirs: string[] = [];
+  for (const entry of require("node:fs").readdirSync(root)) {
+    if (entry === "scripts") continue;
     const p = join(root, entry);
     if (require("node:fs").statSync(p).isDirectory()) dirs.push(p);
   }
@@ -183,11 +202,12 @@ async function loadCases(
   // includeHoldout=true 时，额外扫描 evals/holdout/ + evals/holdout/architecture/<sub>/，且不再过滤 holdout 标记。
   // 注意：单独传 --cases case_004（在 holdout 目录里）的情况，
   // 会通过下面的 holdout 目录扫描分支拿到（即便 includeHoldout=false 也允许显式指定）。
-  const dirsToScan = [...CASE_DIRS, ...discoverArchitectureSubDirs(ARCHITECTURE_ROOT)];
+  const dirsToScan = [...CASE_DIRS, ...discoverArchitectureSubDirs(ARCHITECTURE_ROOT), ...discoverRealTasksSubDirs(REAL_TASKS_ROOT)];
   const explicitlyAskedHoldoutId = wantSet ? hasHoldoutId(wantSet) : false;
   if (includeHoldout || explicitlyAskedHoldoutId) {
     dirsToScan.push(HOLDOUT_DIR);
     dirsToScan.push(...discoverArchitectureSubDirs(HOLDOUT_ARCHITECTURE_ROOT));
+    dirsToScan.push(...discoverRealTasksSubDirs(HOLDOUT_REAL_TASKS_ROOT));
   }
 
   for (const dir of dirsToScan) {

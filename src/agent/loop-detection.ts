@@ -18,6 +18,10 @@ export interface LoopDetectionConfig {
   contentChunkSize: number;
   /** 最大恢复尝试次数 */
   maxRecoveryAttempts: number;
+  /** 工具 shape 探测循环阈值（同 toolName + 同 key-set 但 value 不同的连续次数） */
+  toolShapeThreshold: number;
+  /** 工具 shape 滑动窗口大小（最近 N 次内统计 shape 出现次数） */
+  toolShapeWindow: number;
 }
 
 /** 默认配置 */
@@ -26,6 +30,8 @@ export const DEFAULT_LOOP_CONFIG: LoopDetectionConfig = {
   contentThreshold: 10,      // 相同内容块出现 10 次
   contentChunkSize: 50,      // 50 字符一块
   maxRecoveryAttempts: 2,    // 最多恢复 2 次
+  toolShapeThreshold: 5,     // ADR-020 §2.2: 同 shape 在窗口内出现 5 次即判循环（hrn_006 grep 不同 pattern 探测）
+  toolShapeWindow: 8,        // 最近 8 次工具调用窗口
 };
 
 /** 循环恢复提示词
@@ -120,6 +126,89 @@ export class ToolCallLoopDetector {
 
   /** 之前已触发循环恢复的 key 集合：恢复后再次撞同一个 key 直接判循环 */
   private recoveryHistory: Set<string> = new Set();
+}
+
+/** 工具 shape 探测循环检测器（ADR-020 §2.2 落地）
+ *  case 来源：hrn_006 — agent 反复 grep 同一 path 但变换 pattern / case_insensitive 等参数
+ *  尝试找一个不存在的字符串。
+ *  现象：每次参数 value 都不同 → ToolCallLoopDetector 不触发；
+ *  但其实是同 shape（toolName + 主结构 key-set + 关键 path/cwd）在反复探测。
+ *
+ *  策略：
+ *  - 对每次工具调用提取一个稳定的 shape key（例如 grep:cwd=/x:keys=case_insensitive,pattern,path）
+ *  - 在最近 N 次工具调用滑动窗口内统计同 shape 出现次数
+ *  - 出现 ≥ threshold 次即判循环（默认窗口 8 / 阈值 5）
+ *
+ *  与 ToolCallLoopDetector 的关系：互补。ToolCallLoopDetector 看完全相同；
+ *  ToolShapeLoopDetector 看"同形状的反复探测"，对参数变体不敏感的探测循环兜底。 */
+export class ToolShapeLoopDetector {
+  private config: LoopDetectionConfig;
+  private window: string[] = [];
+  private triggeredShapes: Set<string> = new Set();
+
+  constructor(config: LoopDetectionConfig = DEFAULT_LOOP_CONFIG) {
+    this.config = config;
+  }
+
+  /** 提取工具调用的 shape key —— 反映"在同一目标上重复探测"的语义不变量。
+   *  - toolName 进 key
+   *  - 顶层对象的 key 集合排序后进 key（结构稳定）
+   *  - "锚点字段" path / cwd / file 的 value 进 key（同一目标）
+   *  - 其他字段 value 不进 key（让 grep pattern 变化、edit content 变化等被算成同 shape） */
+  private shapeKey(toolName: string, toolInput: unknown): string {
+    if (!toolInput || typeof toolInput !== "object" || Array.isArray(toolInput)) {
+      return `${toolName}:scalar`;
+    }
+    const obj = toolInput as Record<string, unknown>;
+    const keys = Object.keys(obj).sort();
+    const anchorFields = ["path", "cwd", "file", "file_path", "dir", "directory"];
+    const anchors = anchorFields
+      .filter(f => f in obj)
+      .map(f => `${f}=${typeof obj[f] === "string" ? obj[f] : JSON.stringify(obj[f])}`)
+      .join("|");
+    return `${toolName}::keys=[${keys.join(",")}]::anchors=${anchors || "(none)"}`;
+  }
+
+  /** 记录一次工具调用，返回是否检测到 shape 循环 */
+  record(toolName: string, toolInput: unknown): boolean {
+    const log = getLogger();
+    const shape = this.shapeKey(toolName, toolInput);
+
+    if (this.triggeredShapes.has(shape)) {
+      log.warn("LOOP_DETECT", `恢复后再次撞到已记录的 shape 循环: ${shape}，立即触发`);
+      return true;
+    }
+
+    this.window.push(shape);
+    if (this.window.length > this.config.toolShapeWindow) {
+      this.window.shift();
+    }
+
+    let count = 0;
+    for (const s of this.window) {
+      if (s === shape) count++;
+    }
+
+    if (count >= this.config.toolShapeThreshold) {
+      log.warn("LOOP_DETECT", `检测到工具 shape 探测循环: ${shape} 在 ${this.window.length} 次内出现 ${count} 次`);
+      return true;
+    }
+    return false;
+  }
+
+  reset(): void {
+    this.window = [];
+    this.triggeredShapes.clear();
+  }
+
+  /** 清除窗口但记录已触发的 shape，恢复后再次命中立即触发 */
+  clearState(): void {
+    if (this.window.length > 0) {
+      const last = this.window[this.window.length - 1];
+      if (last) this.triggeredShapes.add(last);
+    }
+    this.window = [];
+  }
 }
 
 /** 内容模式重复检测器 */
@@ -222,6 +311,7 @@ export interface LLMLoopCheckResult {
 export class LoopDetector {
   private config: LoopDetectionConfig;
   private toolCallDetector: ToolCallLoopDetector;
+  private toolShapeDetector: ToolShapeLoopDetector;
   private contentDetector: ContentLoopDetector;
   private recoveryAttempts = 0;
   private turnCount = 0;
@@ -230,12 +320,15 @@ export class LoopDetector {
   constructor(config: LoopDetectionConfig = DEFAULT_LOOP_CONFIG) {
     this.config = config;
     this.toolCallDetector = new ToolCallLoopDetector(config);
+    this.toolShapeDetector = new ToolShapeLoopDetector(config);
     this.contentDetector = new ContentLoopDetector(config);
   }
 
-  /** 记录工具调用，返回是否检测到循环 */
+  /** 记录工具调用，返回是否检测到循环（任一检测器命中即触发） */
   recordToolCall(toolName: string, toolInput: unknown): boolean {
-    return this.toolCallDetector.record(toolName, toolInput);
+    const exact = this.toolCallDetector.record(toolName, toolInput);
+    const shape = this.toolShapeDetector.record(toolName, toolInput);
+    return exact || shape;
   }
 
   /** 记录内容输出，返回是否检测到循环 */
@@ -282,6 +375,7 @@ export class LoopDetector {
   /** 重置所有检测状态（新的用户输入时） */
   reset(): void {
     this.toolCallDetector.reset();
+    this.toolShapeDetector.reset();
     this.contentDetector.reset();
     this.recoveryAttempts = 0;
     this.turnCount = 0;
@@ -302,6 +396,7 @@ export class LoopDetector {
 
     // 清除检测状态但保留计数
     this.toolCallDetector.clearState();
+    this.toolShapeDetector.clearState();
     this.contentDetector.clearState();
 
     return true;

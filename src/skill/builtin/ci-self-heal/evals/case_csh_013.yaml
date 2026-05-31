@@ -1,0 +1,72 @@
+id: case_csh_013
+category: ci-self-heal boundary_flaky_detection
+priority: P1
+created_date: 2026-05-31
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: ci-self-heal
+
+input:
+  user_query: |
+    CI 间歇性挂, 重试 3 次有 1 次过. 最新一次失败日志:
+
+    ```
+    FAIL  tests/integration/db.test.ts (12.5s)
+      ✗ should query users (5023ms)
+        Connection timeout after 5000ms
+        at db.query (src/db/client.ts:42:11)
+    Tests: 1 failed, 47 passed, 48 total
+    ```
+
+    历史数据: 过去 14 天该测试 retry 率 12%, 其他测试 retry 率 < 0.5%.
+
+    请诊断.
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: ci_diagnosis_flaky_test
+
+  must_include_any_of:
+    - "flaky"
+    - "间歇"
+    - "不稳定"
+    - "12%"
+    - "timeout"
+    - "重试"
+
+  must_not_include:
+    - "无法诊断"
+    - "已修复"
+    - "build_failure"
+    - "lint_failure"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 10
+
+  reference_answer: |
+    必须分类为 flaky:
+    Failure Class: flaky
+    Verdict: likely_flaky (12% retry rate vs base 0.5%)
+    Hypothesis: db connection 在 CI 资源紧张时偶发 timeout
+    Suggested Fix: 加 connection pool / 增加 timeout / 把该测试移到 nightly suite
+
+rubric:
+  flaky_detection: "必须识别为 flaky 而不是单次 timeout — 历史数据支撑"
+  fix_priority: "建议必须区分'立即修'(加 timeout) vs '架构改'(移到 nightly)"
+
+baseline_scores: {}
+
+source: "S7-T01 边界 case / flaky 检测能力"
+notes: |
+  边界 case — flaky 类失败的识别 + 与单次 timeout 的区分.
+related_subsystem: [ skill, skill/ci-self-heal ]

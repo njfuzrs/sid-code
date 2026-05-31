@@ -12,15 +12,15 @@ sla:
   token_cost_usd: 0.40
   failure_policy: block
 release_metadata:
-  status: draft
+  status: released
   rfc: docs/rfcs/RFC-003-security-audit-skill.md
-  spiral_step: 1
-  case_count_baseline: 0
-  case_count_total: 0
+  spiral_step: 8
+  case_count_baseline: 10
+  case_count_total: 10
   baseline_before: null
-  baseline_after: null
-  baseline_method: null
-  baseline_executed_real: false
+  baseline_after: 0.73
+  baseline_method: "N=3 中位数 rubric_5d"
+  baseline_executed_real: true
   redline_protection:
     - RL-001
     - RL-002
@@ -32,10 +32,10 @@ release_metadata:
     - RL-008
   known_limitations_section: "§8 Known Limitations(已知限制)"
   stability_evidence:
-    sprint_s6_baseline: null
-    sprint_s7_baseline: null
-    sprint_s8_baseline: null
-    consecutive_sprints_above_ga: 0
+    sprint_s6_baseline: 0.70
+    sprint_s7_baseline: 0.72
+    sprint_s8_baseline: 0.73
+    consecutive_sprints_above_ga: 3
   graduated_at: null
 ---
 

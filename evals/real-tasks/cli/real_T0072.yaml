@@ -1,0 +1,114 @@
+id: real_T0072
+category: cli
+priority: P0
+created_date: 2026-05-30
+eval_type: real_task
+target_score: 4
+graduated_at: null
+holdout: false
+holdout_reason: null
+grader_type: rubric_5d
+source_meta:
+  origin: trajectory-platform
+  source_task_id: T0072
+  imported_at: 2026-05-30T19:40:39.283Z
+  imported_by: import-trajectory-platform.ts
+input:
+  user_query: |-
+    # 新增面试问题
+
+    当用户调用 `/add-question <问题内容>` 时，按以下流程执行。
+
+    用户输入的 `如何建立大模型应用效果评估体系，如准确率，效率提升率，业务满意度等` 就是问题内容。
+
+    ## 流程
+
+    ### 第一步：解析问题，判断归属分类
+
+    1. 用 Glob 扫描当前目录结构，获取所有 `{工程,人,模型}/*/` 子目录作为可用分类列表
+    2. 根据问题内容和子目录名称，判断问题属于哪个分类
+    3. 如果问题不属于任何现有分类，询问用户是否要新建子分类目录
+    4. 如果问题跨多个领域，选最核心的那个。如果实在无法判断，询问用户
+
+    ### 第二步：检查是否有重复问题
+
+    1. 运行 `bun run interview.ts search <关键词>` 检查是否已有相同或高度相似的问题（从问题中提取 2-3 个核心关键词分别搜索）
+    2. 如果发现重复，告知用户已有的问题标题和位置，询问是要补充还是新建
+
+    ### 第三步：定位目标文件
+
+    1. 用 Glob 检查目标分类目录是否存在：`{工程,人,模型}/<子分类>/00-Question.md`
+    2. 如果目录不存在，用 `mkdir -p` 创建目录
+    3. 如果 `00-Question.md` 不存在，创建文件并写入头部：
+
+    ```markdown
+    # <子分类名称>
+
+    > <子分类的一句话描述>
+
+    <!-- 添加问题格式：## 问题标题 + 换行 + <!-- status: 未学习 | difficulty: 基础 --> -->
+    ```
+
+    4. 如果文件已存在，用 Read 读取现有内容，确认追加位置（文件末尾）
+
+    ### 第四步：联网查询资料（两层搜索策略）
+
+    **必须执行，不可跳过。**
+
+    采用「广度扫描 → 深度挖掘」两层策略，确保答案既全面又有深度。
+
+    #### 第一层：广度扫描（2-3 次 tavily_search，basic 深度）
+
+    目标：快速覆盖问题的各个角度，收集高质量来源 URL。
+
+    1. **英文搜索**：用英文关键词搜索核心概念的技术解释和最新实践
+       - 设置 `search_depth: "basic"`, `max_results: 10`
+       - 设置 `time_range: "year"` 优先获取最近一年的内容
+       - 用 `include_domains` 限定高质量源，根据问题领域选择：
+         - 工程类：`["arxiv.org", "github.com", "huggingface.co", "docs.anthropic.com", "platform.openai.com", "lilianweng.github.io", "blog.langchain.dev"]`
+         - 模型类：`["arxiv.org", "huggingface.co", "transformer-circuits.pub", "proceedings.neurips.cc"]`
+         - 通用：不设限制，让搜索引擎自由发挥
+    2. **中文搜索**：用中文关键词搜索，补充中文社区的实践经验和面试视角
+       - 同样 `search_depth: "basic"`, `max_results: 5`
+    3. **对比/trade-off 补充搜索**（可选）：如果问题涉及方案对比、技术选型，针对性搜索
+       - 例如 "X vs Y"、"X alternatives"、"X limitations"
+
+    #### 第二层：深度挖掘（1-2 次 tavily_search advanced + tavily_extract）
+
+    目标：对第一层发现的关键内容做深度阅读，获取完整论述。
+
+    1. **深度搜索**：针对第一层中发现的最关键概念或争议点，用 `search_depth: "advanced"` 再搜一次
+       - 设置 `max_results: 5`，质量优先
+    2. **全文提取**：从第一层和第二层的搜索结果中，挑选 1-3 个最高质量的 URL，用 `mcp__tavily__tavily_extract` 提取全文
+       - 优先提取：官方文档、权威博客长文、论文摘要
+       - 不要提取：新闻聚合页、问答网站的短回答
+
+    #### 搜索总量控制
+
+    - 基础难度：广度 2 次 + extract 2-3 次 = 共 4-5 次调用
+    - 进阶难度：广度 3 次 + advanced 1 次 + extract 2-4 次 = 共 6-8 次调用
+    - 深水区：广度 3 次 + advanced 1-2 次 + extract 4-5 次 = 共 8-10 次调用
+
+    从搜索和提取结果中整理关键信息，用于编写答
+  repo: null
+  repo_commit: null
+  attachments: []
+expected:
+  outcome: ""
+  must_include_any_of: []
+  must_not_include: []
+  must_call_tools:
+    - Bash
+    - Glob
+  must_not_call_tools: []
+  must_modify_files_in: []
+  must_not_modify_files: []
+  max_steps: 45
+  reference_answer: null
+rubric:
+  completeness: "TODO: 由 importer 占位，请人审补充"
+  precision: TODO
+  helpfulness: TODO
+baseline_scores: {}
+setup_script: evals/real-tasks/scripts/setup_T0072.sh
+notes: 由 import-trajectory-platform.ts 自动生成（B6-1 适配器）。grader_type=rubric_5d。

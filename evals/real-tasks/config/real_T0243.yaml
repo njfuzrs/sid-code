@@ -1,0 +1,58 @@
+id: real_T0243
+category: config
+priority: P0
+created_date: 2026-05-30
+eval_type: real_task
+target_score: 4
+graduated_at: null
+holdout: false
+holdout_reason: null
+grader_type: rubric_5d
+source_meta:
+  origin: trajectory-platform
+  source_task_id: T0243
+  imported_at: 2026-05-30T19:40:39.704Z
+  imported_by: import-trajectory-platform.ts
+input:
+  user_query: |-
+    深入探索 ${REPO_ROOT}/sid-code 项目的以下模块，分析当前实现细节以便编写设计方案：
+
+    1. src/checkpoint/ - 文件快照系统的实现细节
+    2. src/hook/ - Hook 系统的事件类型和执行机制
+    3. src/config/ - 配置系统和规则文件加载
+    4. src/skill/ - Skills 系统的实现
+    5. src/command/ - 命令系统
+    6. src/agent/ - 子代理系统的架构
+    7. src/session/ - 会话持久化
+    8. src/permission/ - 权限系统
+    9. src/tool/ - 工具系统（特别是 edit 和 bash）
+    10. src/memory/ - 记忆系统
+
+    对每个模块，分析：
+    - 主要文件和接口定义
+    - 核心功能和实现方式
+    - 与其他模块的依赖关系
+    - 当前的局限性
+  repo: null
+  repo_commit: null
+  attachments: []
+expected:
+  outcome: 完整分析 sid-code 项目 10 个核心模块的架构、接口、依赖关系和局限性，为设计方案提供实现细节参考
+  must_include_any_of: []
+  must_not_include: []
+  must_call_tools:
+    - Bash
+    - Glob
+  must_not_call_tools:
+    - Agent
+  must_modify_files_in: []
+  must_not_modify_files: []
+  max_steps: 45
+  reference_answer: null
+rubric:
+  completeness: "TODO: 由 importer 占位，请人审补充"
+  precision: TODO
+  helpfulness: TODO
+baseline_scores: {}
+setup_script: evals/real-tasks/scripts/setup_T0243.sh
+notes: 由 import-trajectory-platform.ts 自动生成（B6-1 适配器）。grader_type=rubric_5d。

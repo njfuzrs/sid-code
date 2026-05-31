@@ -1,0 +1,146 @@
+id: cr_003_exec
+category: code-review issue_detection bug (execution variant)
+priority: P0
+created_date: 2026-05-31
+
+# B7-4 PoC：cr_003 升级为 execution_test
+# 来源：src/skill/builtin/code-review/evals/case_cr_003.yaml（rubric_5d 版）
+# 关系：本 case 与 case_cr_003 **并存**——
+#   - case_cr_003 (rubric_5d) 测 agent 是否给出 verdict + flag 关键词
+#   - cr_003_exec (execution_test) 测 agent 修复后代码是否真的能跑通
+# §15.5 "真改代码"形态：从 review-only → review + 修复，agent 输出 = verdict + 修后完整文件
+
+eval_type: execution
+target_score: 1.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+
+grader_type: execution_test
+
+execution_test:
+  apply_mode: extract_files
+
+  fixtures:
+    - path: discount.ts
+      content: |
+        // 蒸馏自 case_cr_003 PR diff——保留 buggy 逻辑
+        // BUG #1: discountPct 没除 100，10% 折扣变 1000% 折扣（return 负数甚至负无穷）
+        // BUG #2: bulkDiscount 循环条件 i <= items.length，最后一轮 items[i] = undefined
+        // BUG #3: 去掉了 price <= 0 边界检查
+        export function applyDiscount(price: number, discountPct: number): number {
+          // AI 生成 — 处理 discountPct
+          return price * (1 - discountPct);
+        }
+
+        export function bulkDiscount(items: { price: number; qty: number }[]) {
+          // 优化：去掉对负数 price 的检查（性能）
+          let sum = 0;
+          for (let i = 0; i <= items.length; i++) {
+            sum += applyDiscount(items[i].price * items[i].qty, 10);
+          }
+          return sum;
+        }
+
+    - path: discount.test.ts
+      content: |
+        import { applyDiscount, bulkDiscount } from "./discount";
+
+        const cases = [
+          { name: "10% 折扣 100 元 → 90", got: () => applyDiscount(100, 10), want: 90 },
+          { name: "0% 折扣 50 元 → 50", got: () => applyDiscount(50, 0), want: 50 },
+          { name: "100% 折扣 200 元 → 0", got: () => applyDiscount(200, 100), want: 0 },
+          { name: "bulkDiscount 三件 → 270", got: () => bulkDiscount([{ price: 100, qty: 1 }, { price: 50, qty: 2 }, { price: 100, qty: 1 }]), want: 270 },
+          { name: "bulkDiscount 空数组 → 0", got: () => bulkDiscount([]), want: 0 },
+        ];
+
+        let pass = 0, fail: string[] = [];
+        for (const c of cases) {
+          try {
+            const v = c.got();
+            if (Math.abs(v - c.want) < 1e-6) { pass++; continue; }
+            fail.push(`FAIL: ${c.name} → got=${v} want=${c.want}`);
+          } catch (e) {
+            fail.push(`THROW: ${c.name} → ${(e as Error).message}`);
+          }
+        }
+        if (fail.length > 0) {
+          console.error(fail.join("\n"));
+          process.exit(1);
+        }
+        console.log(`PASS: ${pass} / ${cases.length}`);
+        process.exit(0);
+
+  pre_apply_must_fail:
+    cmd: bun
+    args: ["discount.test.ts"]
+    timeout_ms: 15000
+
+  verify_commands:
+    - cmd: bun
+      args: ["discount.test.ts"]
+      timeout_ms: 15000
+
+input:
+  user_query: |
+    下方是一段独立的 buggy TypeScript 代码（与你工作目录里的同名文件无关，请只看下面字面内容）：
+
+    === FILE: discount.ts ===
+    ```typescript
+    export function applyDiscount(price: number, discountPct: number): number {
+      // AI 生成 — 处理 discountPct
+      return price * (1 - discountPct);
+    }
+
+    export function bulkDiscount(items: { price: number; qty: number }[]) {
+      // 优化：去掉对负数 price 的检查（性能）
+      let sum = 0;
+      for (let i = 0; i <= items.length; i++) {
+        sum += applyDiscount(items[i].price * items[i].qty, 10);
+      }
+      return sum;
+    }
+    ```
+
+    === FILE: discount.test.ts ===
+    ```typescript
+    import { applyDiscount, bulkDiscount } from "./discount";
+    // 5 条断言：applyDiscount(100,10)=90 / applyDiscount(50,0)=50 / applyDiscount(200,100)=0
+    //          bulkDiscount([100,50×2,100]) = 270 / bulkDiscount([])=0
+    // 全部 pass 才退出 0
+    ```
+
+    需求：discount.ts 当前有 3 个 bug——
+    (1) `applyDiscount` 没把 `discountPct` 当百分比处理（10% 折扣变 1000% 折扣）
+    (2) `bulkDiscount` 循环条件 `i <= items.length` 越界
+    (3) 丢失 `price <= 0` 的边界检查
+    请修复 discount.ts，让 discount.test.ts 通过。
+
+    **输出格式（必须严格遵守 apply_mode=extract_files）**：在最终回答末尾按下述格式输出修复后的完整文件，
+    每个文件用 `=== FILE: <path> ===` 头标记，可以加 ```typescript 围栏（grader 会自动剥）：
+
+    === FILE: discount.ts ===
+    <完整源文件内容>
+
+    === FILE: discount.test.ts ===
+    <完整源文件内容，保持不变>
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: fix_discount_to_pass_test
+  must_include_any_of:
+    - "discountPct / 100"
+    - "discountPct/100"
+    - "i < items.length"
+  must_not_include:
+    - "i <= items.length"
+  must_call_tools: []
+  must_not_call_tools: []
+  must_modify_files_in: []
+  must_not_modify_files: []
+  max_steps: 15
+
+baseline_scores: {}
+
+source: "B7-4 PoC升级（来自 case_cr_003，路线 §15.5 真改代码定义扩展）"

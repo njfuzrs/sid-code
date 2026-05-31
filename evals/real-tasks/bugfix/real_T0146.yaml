@@ -1,0 +1,40 @@
+id: real_T0146
+category: bugfix
+priority: P0
+created_date: 2026-05-30
+eval_type: real_task
+target_score: 4
+graduated_at: null
+holdout: false
+holdout_reason: null
+grader_type: rubric_5d
+source_meta:
+  origin: trajectory-platform
+  source_task_id: T0146
+  imported_at: 2026-05-30T19:40:39.800Z
+  imported_by: import-trajectory-platform.ts
+input:
+  user_query: 修复 ${REPO_ROOT}/iam-studio-fe/anka-app/packages/ontology-studio/src/views/PilotVerify.vue 中的图谱渲染问题。getTryrunPreview 接口返回的数据（参考 ${REPO_ROOT}/iam-studio-fe/anka-app/packages/ontology-studio/src/views/a.json）无法正确渲染，浏览器报错：G6 v5.0.51 未注册的节点元素类型（Post、Label、OrganizationGroup、Personnel）和边类型（relation）。定位问题根源并修复，使图谱数据能正常渲染。
+  repo: null
+  repo_commit: null
+  attachments: []
+expected:
+  outcome: 注册缺失的 G6 节点和边元素类型，使 PilotVerify.vue 中的图谱数据正常渲染，消除浏览器控制台的注册错误。
+  must_include_any_of: []
+  must_not_include: []
+  must_call_tools:
+    - Edit
+    - Read
+  must_not_call_tools:
+    - Agent
+  must_modify_files_in: []
+  must_not_modify_files: []
+  max_steps: 45
+  reference_answer: null
+rubric:
+  completeness: "TODO: 由 importer 占位，请人审补充"
+  precision: TODO
+  helpfulness: TODO
+baseline_scores: {}
+setup_script: evals/real-tasks/scripts/setup_T0146.sh
+notes: 由 import-trajectory-platform.ts 自动生成（B6-1 适配器）。grader_type=rubric_5d。

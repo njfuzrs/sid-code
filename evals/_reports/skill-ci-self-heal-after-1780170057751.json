@@ -1,0 +1,43 @@
+{
+  "ts": 1780170057751,
+  "mode": "execute",
+  "skillInjected": true,
+  "samplesN": 1,
+  "overall": {
+    "n": 1,
+    "avgScore": 5,
+    "passRate": 1
+  },
+  "cases": [
+    {
+      "caseId": "case_csh_001",
+      "median": 5,
+      "samples": [
+        {
+          "score": 5,
+          "details": {
+            "must_include_hits": 4,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 9,
+            "issues": ""
+          },
+          "raw": {
+            "caseId": "case_csh_001",
+            "finalResponse": "项目 `sid-code` 中无 `src/auth/` 目录，该 CI 日志来自用户的其他项目仓库。以下基于日志本身给出诊断。\n\n---\n\n## CI Failure Diagnosis\n\n**Failure Class**: `test_failure`\n\n**Confidence**: `high`\n\n**Verdict**: `likely_pr_caused`\n\n### Root Cause Hypotheses\n\n1. **[priority=1]** 登录函数中密码校验逻辑被绕过或条件判断反转\n   - **Evidence**: `src/auth/login.test.ts:42:30` — 断言期望传入错误密码后返回 `{ error: \"wrong_password\" }`，但实际返回了 `{ ok: true, userId: \"u123\" }`，说明密码校验未生效。\n   - **Why**: 这是 12 个测试中唯一失败的用例（其余 12 passed），且失败断言类型是\"期望失败却成功\"，典型表现为 PR 中修改了 `src/auth/login.ts` 的密码验证分支（如 `if` 条件取反、短路返回提前、校验函数调用被删除或注释），导致错误密码也能通过。\n   - **Suggested Fix**:\n     1. 打开 `src/auth/login.ts`，定位密码校验逻辑所在函数。\n     2. 确认是否存在类似 `if (password !== expectedPassword)` 的条件被误改为 `if (password === expectedPassword)` 或提前 `return { ok: true }` 绕过了校验。\n     3. 用 `git diff HEAD~1 -- src/auth/login.ts` 查看本次 PR 对该文件的具体变更，重点看 `return` / `throw` / `if` 分支。\n     4. 修复后本地跑 `npx jest src/auth/login.test.ts` 验证。\n\n2. **[priority=2]** 测试用例中传入的密码变量为正确密码（而非错误密码）\n   - **Evidence**: `src/auth/login.test.ts:42:30` — 测试命名为 `should reject wrong password`，但 `Received: { ok: true, userId: \"u123\" }` 说明登录成功，可能测试中传入的密码值和预期\"错误密码\"不一致。\n   - **Why**: 用户 `u123` 的 `userId` 出现在返回值中，说明登录流程完整执行且用户确实存在。如果密码校验逻辑本身没问题，则测试用例中 `password` 常量可能是正确密码（例如从上一测试用例 `should login successfully` 中复制了密码变量而未改值）。\n   - **Suggested Fix**:\n     1. 检查 `src/auth/login.test.ts` 第 42 行附近的测试代码，确认传入 `login()` 的 password 参数值确实是一个错误密码（如 `\"wrong_password_123\"` 而非正确密码）。\n     2. 如果使用了共享常量，确认该常量在两个测试用例（成功登录 vs 错误密码）中是不同的值。\n\n3. **[priority=3]** 密码验证 mock/stub 配置在最近改动中失效\n   - **Evidence**: `src/auth/login.test.ts:42:30` — 如果 `src/auth/login.ts` 依赖外部密码验证服务或 hash 库，测试中可能通过 mock/spy 控制其返回值。本次 PR 可能重构了模块导入路径或 mock 配置，使 mock 未正确挂载。\n   - **Why**: `jest.mock` / `vi.mock` 的路径变更、mock 返回值从 `false` 误设为 `true`、或 `beforeEach` 中未正确重置 mock 状态都可能导致此问题。其余 12 个测试通过说明 mock 并未全挂，可能是该特定 mock 的作用域问题。\n   - **Suggested Fix**:\n     1. 检查测试文件中 `beforeEach` / `beforeAll` 的 mock 配置，确认密码校验相关 mock 是否返回 `false`（表示校验失败）。\n     2. 如果最近改动了 `import` 路径（如从 `../utils/hash` 改为 `../crypto/hash`），需要同步更新 `jest.mock()` 的第一个参数。\n\n### Related Files\n\n- `src/auth/login.ts` — 登录主逻辑所在，密码校验分支为重点排查对象\n- `src/auth/login.test.ts:42` — 失败断言所在行，检查传入参数与 mock 配置\n\n### Skipped Checks\n\n- 无法读取源文件（`src/auth/` 不在 sid-code 仓库中），以上假设基于日志中的测试命名与断言值推断。建议在目标仓库中按上述步骤逐项排查。\n- 无 PR diff 输入，未能进行 Step D diff→fileRef 关联以确认 `is_pr_caused` 精确度。",
+            "toolsCalled": [
+              "read",
+              "glob",
+              "ls"
+            ],
+            "steps": 9,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 54.016,
+            "error": false
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,55 @@
+id: real_T0597
+category: config
+priority: P0
+created_date: 2026-05-30
+eval_type: real_task
+target_score: 4
+graduated_at: null
+holdout: false
+holdout_reason: null
+grader_type: rubric_5d
+source_meta:
+  origin: trajectory-platform
+  source_task_id: T0597
+  imported_at: 2026-05-30T19:40:39.446Z
+  imported_by: import-trajectory-platform.ts
+input:
+  user_query: |-
+    非常彻底地探索 ${REPO_ROOT}/src 目录的架构。我需要了解：
+
+    1. agent/ 目录的完整结构和每个文件的职责（特别是 loop.ts, sub-agent.ts, tool.ts, custom.ts）
+    2. session/ 目录的结构（store.ts, state.ts）
+    3. permission/ 目录的结构和权限模式
+    4. tool/ 目录有哪些工具，是否有 plan mode、worktree、cron、background 相关工具
+    5. ui/ 目录的结构，特别是 contexts/, stores/, renderer/
+    6. config/ 目录的结构
+    7. context/ 目录的结构
+    8. checkpoint/ 目录的结构
+    9. command/ 目录有哪些命令
+    10. hook/ 目录的结构
+    11. memory/ 目录的结构
+    12. skill/ 目录的结构
+    13. mcp/ 目录的结构
+
+    请列出每个目录下的所有文件，并读取关键文件的前 50-100 行来理解其职责。
+  repo: null
+  repo_commit: null
+  attachments: []
+expected:
+  outcome: ""
+  must_include_any_of: []
+  must_not_include: []
+  must_call_tools:
+    - Bash
+  must_not_call_tools: []
+  must_modify_files_in: []
+  must_not_modify_files: []
+  max_steps: 45
+  reference_answer: null
+rubric:
+  completeness: "TODO: 由 importer 占位，请人审补充"
+  precision: TODO
+  helpfulness: TODO
+baseline_scores: {}
+setup_script: evals/real-tasks/scripts/setup_T0597.sh
+notes: 由 import-trajectory-platform.ts 自动生成（B6-1 适配器）。grader_type=rubric_5d。

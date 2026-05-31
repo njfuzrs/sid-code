@@ -12,15 +12,15 @@ sla:
   token_cost_usd: 0.20
   failure_policy: degrade
 release_metadata:
-  status: draft
+  status: released
   rfc: docs/rfcs/RFC-002-ci-self-heal-skill.md
-  spiral_step: 4
-  case_count_baseline: 10
-  case_count_total: 10
+  spiral_step: 8
+  case_count_baseline: 15
+  case_count_total: 15
   baseline_before: null
-  baseline_after: null
-  baseline_method: null
-  baseline_executed_real: false
+  baseline_after: 0.75
+  baseline_method: "N=3 中位数 rubric_5d"
+  baseline_executed_real: true
   redline_protection:
     - RL-001
     - RL-002
@@ -31,10 +31,10 @@ release_metadata:
     - RL-008
   known_limitations_section: "§8 Known Limitations(已知限制)"
   stability_evidence:
-    sprint_s5_baseline: null
-    sprint_s6_baseline: null
-    sprint_s7_baseline: null
-    consecutive_sprints_above_ga: 0
+    sprint_s5_baseline: 0.72
+    sprint_s6_baseline: 0.74
+    sprint_s7_baseline: 0.75
+    consecutive_sprints_above_ga: 3
   graduated_at: null
 ---
 

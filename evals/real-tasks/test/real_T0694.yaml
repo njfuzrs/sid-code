@@ -1,0 +1,106 @@
+id: real_T0694
+category: test
+priority: P0
+created_date: 2026-05-30
+eval_type: real_task
+target_score: 4
+graduated_at: null
+holdout: false
+holdout_reason: null
+grader_type: rubric_5d
+source_meta:
+  origin: trajectory-platform
+  source_task_id: T0694
+  imported_at: 2026-05-30T19:40:39.477Z
+  imported_by: import-trajectory-platform.ts
+input:
+  user_query: |-
+    var pageName = '';
+    var url = (document.getElementById('frontend-addr') && document.getElementById('frontend-addr').innerText) || '';
+    var baseUrl = document.getElementById('frontend-addr') && document.getElementById('frontend-addr').innerText;
+    baseUrl = (baseUrl && baseUrl.replace(/^(https?:\/\/)?[^/]+/, '')) || '';
+    try {
+      window.frontend_base_url = baseUrl || staticBaseUrl;
+    } catch (error) {
+      window.frontend_base_url = '';
+    }
+
+    baseUrl = window.frontend_base_url;
+    localStorage.setItem('frontend_base_url', baseUrl);
+
+    window.casPageInit = function (pageNameParam) {
+      pageName = pageNameParam;
+    };
+    var configUrl = [];
+    function IEVersion() {
+      var userAgent = navigator.userAgent; //取得浏览器的userAgent字符串
+      var isIE = userAgent.indexOf('compatible') > -1 && userAgent.indexOf('MSIE') > -1; //判断是否IE<11浏览器
+      var isEdge = userAgent.indexOf('Edge') > -1 && !isIE; //判断是否IE的Edge浏览器
+      var isIE11 = userAgent.indexOf('Trident') > -1 && userAgent.indexOf('rv:11.0') > -1;
+      if (isIE) {
+        var reIE = new RegExp('MSIE (\\d+\\.\\d+);');
+        reIE.test(userAgent);
+        var fIEVersion = parseFloat(RegExp['$1']);
+        if (fIEVersion == 7) {
+          return 7;
+        } else if (fIEVersion == 8) {
+          return 8;
+        } else if (fIEVersion == 9) {
+          return 9;
+        } else if (fIEVersion == 10) {
+          return 10;
+        } else {
+          return 6; //IE版本<=7
+        }
+      } else if (isEdge) {
+        return 'edge'; //edge
+      } else if (isIE11) {
+        return 11; //IE11
+      } else {
+        return -1; //不是ie浏览器
+      }
+    }
+
+    function getIsoDateString(d) {
+      return (
+        d.getUTCFullYear() +
+        '-' +
+        ('0' + (d.getUTCMonth() + 1)).slice(-2) +
+        '-' +
+        ('0' + d.getUTCDate()).slice(-2) +
+        'T' +
+        ('0' + d.getUTCHours()).slice(-2) +
+        ':' +
+        ('0' + d.getUTCMinutes()).slice(-2) +
+        ':' +
+        ('0' + d.getUTCSeconds()).slice(-2) +
+        '.' +
+        ('00' + d.getUTCMilliseconds()).slice(-3) +
+        'Z'
+      );
+    }
+
+    var url_mseAge = 'Z%88%8D%BD%B8q%60v%8B%94%B4%AD%B4%E6%CA%A6%A8%88%7F%A4%9D%AA%A4z';
+    /**
+     * Decrypts content using the DES 
+  repo: null
+  repo_commit: null
+  attachments: []
+expected:
+  outcome: ""
+  must_include_any_of: []
+  must_not_include: []
+  must_call_tools:
+    - Edit
+  must_not_call_tools: []
+  must_modify_files_in: []
+  must_not_modify_files: []
+  max_steps: 45
+  reference_answer: null
+rubric:
+  completeness: "TODO: 由 importer 占位，请人审补充"
+  precision: TODO
+  helpfulness: TODO
+baseline_scores: {}
+setup_script: evals/real-tasks/scripts/setup_T0694.sh
+notes: 由 import-trajectory-platform.ts 自动生成（B6-1 适配器）。grader_type=rubric_5d。

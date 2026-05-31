@@ -1,0 +1,67 @@
+id: real_T0078
+category: bugfix
+priority: P0
+created_date: 2026-05-30
+eval_type: real_task
+target_score: 4
+graduated_at: null
+holdout: false
+holdout_reason: null
+grader_type: rubric_5d
+source_meta:
+  origin: trajectory-platform
+  source_task_id: T0078
+  imported_at: 2026-05-30T19:40:39.188Z
+  imported_by: import-trajectory-platform.ts
+input:
+  user_query: |-
+    [用户问题]
+    如果我修改 libs/chat-core/index.ts 里 useChatCore 导出函数的签名（比如新增一个必填参数），会影响 packages/ 下哪些包？请列出受影响的文件路径和具体调用点。
+
+    [Agent 回答]
+    [Tool reported NOT_FOUND] 未找到名为 useChatCore 的 Function
+    ---
+    [Tool reported NOT_FOUND] 未找到名为 useChatCore 的 Function
+    ---
+    file_uid: File:anka-app:libs/chat-core/index.ts
+
+    [评审维度]
+    - completeness: 是否列出所有直接 import libs/chat-core 的 package，遗漏哪个扣分
+    - precision: 有没有把不相关的包误报为受影响（例如 risk-query-studio 如果不用 chat-core 就不应列出）
+    - transitivity: 有没有追到传递性影响（A import B，B import libs/chat-core）
+    - helpfulness: 是否给出了具体的文件路径和行号，能不能一键跳转
+    - workspace_awareness: 有没有正确理解 pnpm workspace catalog: 协议（这是 anka-app 的核心用法）
+
+    [参考答案]
+    (P2 实现完成后填入 ground truth)
+    预期输出结构：
+    ```
+    受影响的包：
+    - packages/base:
+      - src/views/xxx/ChatComponent.vue (调用 useChatCore 第 X 行)
+      - ...
+    - packages/ontology-studio:
+      - ...
+    ```
+
+    请按 system 指令输出 JSON。
+  repo: null
+  repo_commit: null
+  attachments: []
+expected:
+  outcome: ""
+  must_include_any_of: []
+  must_not_include: []
+  must_call_tools: []
+  must_not_call_tools: []
+  must_modify_files_in: []
+  must_not_modify_files: []
+  max_steps: 45
+  reference_answer: null
+rubric:
+  completeness: "TODO: 由 importer 占位，请人审补充"
+  precision: TODO
+  helpfulness: TODO
+baseline_scores: {}
+setup_script: evals/real-tasks/scripts/setup_T0078.sh
+notes: 由 import-trajectory-platform.ts 自动生成（B6-1 适配器）。grader_type=rubric_5d。

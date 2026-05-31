@@ -1,0 +1,40 @@
+id: real_T0006
+category: test
+priority: P0
+created_date: 2026-05-30
+eval_type: real_task
+target_score: 4
+graduated_at: null
+holdout: false
+holdout_reason: null
+grader_type: rubric_5d
+source_meta:
+  origin: trajectory-platform
+  source_task_id: T0006
+  imported_at: 2026-05-30T19:40:39.545Z
+  imported_by: import-trajectory-platform.ts
+input:
+  user_query: 阅读 ${REPO_ROOT}/docs/specs/active/04-permission-security-optimization.md 架构优化文档。按照文档中的实施路线图分阶段完成代码开发和改造任务。每完成一个 Phase 后，对照文档检查完成情况，确保所有 Phase 对应的需求都完成后再开发下一个 Phase。源码位置：${REPO_ROOT}/src
+  repo: null
+  repo_commit: null
+  attachments: []
+expected:
+  outcome: 按照权限安全优化文档的路线图，完成多个 Phase 的代码重构，涉及权限检查、规则加载、信任管理和沙箱隔离等模块的改造，并通过文档检查验证每个阶段的完成情况。
+  must_include_any_of: []
+  must_not_include: []
+  must_call_tools:
+    - Bash
+    - Read
+  must_not_call_tools:
+    - Agent
+  must_modify_files_in: []
+  must_not_modify_files: []
+  max_steps: 45
+  reference_answer: null
+rubric:
+  completeness: "TODO: 由 importer 占位，请人审补充"
+  precision: TODO
+  helpfulness: TODO
+baseline_scores: {}
+setup_script: evals/real-tasks/scripts/setup_T0006.sh
+notes: 由 import-trajectory-platform.ts 自动生成（B6-1 适配器）。grader_type=rubric_5d。

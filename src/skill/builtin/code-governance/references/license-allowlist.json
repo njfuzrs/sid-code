@@ -1,0 +1,20 @@
+[
+  { "license": "MIT", "policy": "allow", "reason": "permissive" },
+  { "license": "Apache-2.0", "policy": "allow", "reason": "permissive" },
+  { "license": "BSD-3-Clause", "policy": "allow", "reason": "permissive" },
+  { "license": "BSD-2-Clause", "policy": "allow", "reason": "permissive" },
+  { "license": "ISC", "policy": "allow", "reason": "permissive" },
+  { "license": "0BSD", "policy": "allow", "reason": "permissive" },
+  { "license": "Unlicense", "policy": "allow", "reason": "permissive" },
+  { "license": "GPL-3.0", "policy": "block", "reason": "copyleft", "alternatives": ["MIT 替代", "Apache-2.0 替代"] },
+  { "license": "GPL-2.0", "policy": "block", "reason": "copyleft" },
+  { "license": "AGPL-3.0", "policy": "block", "reason": "strong copyleft (network use)" },
+  { "license": "SSPL", "policy": "block", "reason": "MongoDB SSPL 闭源限制" },
+  { "license": "LGPL-3.0", "policy": "warn", "reason": "weak copyleft 需法务审批" },
+  { "license": "LGPL-2.1", "policy": "warn", "reason": "weak copyleft 需法务审批" },
+  { "license": "MPL-2.0", "policy": "warn", "reason": "file-level copyleft 需法务审批" },
+  { "license": "EPL-2.0", "policy": "warn", "reason": "受限商业 需法务审批" },
+  { "license": "CC-BY-NC-4.0", "policy": "block", "reason": "非商业 license" },
+  { "license": "BUSL-1.1", "policy": "warn", "reason": "商业源码许可证 需法务审批" },
+  { "license": "UNKNOWN", "policy": "warn", "reason": "未识别 license 类型, 走人工法务审批" }
+]

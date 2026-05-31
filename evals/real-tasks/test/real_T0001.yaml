@@ -1,0 +1,41 @@
+id: real_T0001
+category: test
+priority: P0
+created_date: 2026-05-30
+eval_type: real_task
+target_score: 4
+graduated_at: null
+holdout: false
+holdout_reason: null
+grader_type: rubric_5d
+source_meta:
+  origin: trajectory-platform
+  source_task_id: T0001
+  imported_at: 2026-05-30T19:40:39.512Z
+  imported_by: import-trajectory-platform.ts
+input:
+  user_query: 阅读 ${REPO_ROOT}/docs/chapter-16-ide-integration-bridge.md 中关于 IDE 集成桥接架构设计的文档。分析当前 sid-code 代码库与 claude-code 源码（位于 ${REPO_ROOT}/claude-code/src）中的优秀 harness 架构设计的差距。制定一份优化方案文档，输出到 ${REPO_ROOT}/sid-code/docs/specs/active/16-ide-integration-bridge-optimization.md。方案应涵盖：MCP 和 LSP 协议集成、WebSocket 通信机制、Bridge 架构模式等方面的改进。文档分段编写，先完成方案设计，暂不实现代码。
+  repo: null
+  repo_commit: null
+  attachments: []
+expected:
+  outcome: 生成详细的 IDE 集成桥接架构优化方案文档，对标 claude-code 的设计模式，明确 sid-code 的改进方向和实施路径。
+  must_include_any_of: []
+  must_not_include: []
+  must_call_tools:
+    - Bash
+    - Edit
+    - Read
+  must_not_call_tools:
+    - Agent
+  must_modify_files_in: []
+  must_not_modify_files: []
+  max_steps: 45
+  reference_answer: null
+rubric:
+  completeness: "TODO: 由 importer 占位，请人审补充"
+  precision: TODO
+  helpfulness: TODO
+baseline_scores: {}
+setup_script: evals/real-tasks/scripts/setup_T0001.sh
+notes: 由 import-trajectory-platform.ts 自动生成（B6-1 适配器）。grader_type=rubric_5d。

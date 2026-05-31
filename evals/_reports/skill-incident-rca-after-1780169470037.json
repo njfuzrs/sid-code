@@ -1,0 +1,132 @@
+{
+  "ts": 1780169470037,
+  "mode": "static-contract",
+  "skillInjected": true,
+  "overall": {
+    "avgContract": 4.5,
+    "avgEstimatedExec": 3.4899999999999998,
+    "passN": 0
+  },
+  "cases": [
+    {
+      "id": "case_inc_001",
+      "contractIssues": [
+        "SKILL.md 缺 RL-001 守护段"
+      ],
+      "contractScore": 4.5,
+      "estimatedExecScore": 3.5,
+      "estimatedNotes": [
+        "Skill §3.1 5 维度顺序 + log_pattern 主维度",
+        "契约 1 处不一致,扣 0.3 分"
+      ]
+    },
+    {
+      "id": "case_inc_002",
+      "contractIssues": [
+        "SKILL.md 缺 RL-001 守护段"
+      ],
+      "contractScore": 4.5,
+      "estimatedExecScore": 3.5,
+      "estimatedNotes": [
+        "Skill §3.1 metric_anomaly + 时间窗对照",
+        "契约 1 处不一致,扣 0.3 分"
+      ]
+    },
+    {
+      "id": "case_inc_003",
+      "contractIssues": [
+        "SKILL.md 缺 RL-001 守护段"
+      ],
+      "contractScore": 4.5,
+      "estimatedExecScore": 3.4,
+      "estimatedNotes": [
+        "Skill §3.1 trace_correlation 串联推理",
+        "契约 1 处不一致,扣 0.3 分"
+      ]
+    },
+    {
+      "id": "case_inc_004",
+      "contractIssues": [
+        "SKILL.md 缺 RL-001 守护段"
+      ],
+      "contractScore": 4.5,
+      "estimatedExecScore": 3.5,
+      "estimatedNotes": [
+        "Skill §3.1 rca_hypothesis 排序 + ≤ 3 条假设",
+        "契约 1 处不一致,扣 0.3 分"
+      ]
+    },
+    {
+      "id": "case_inc_005",
+      "contractIssues": [
+        "SKILL.md 缺 RL-001 守护段"
+      ],
+      "contractScore": 4.5,
+      "estimatedExecScore": 3.4,
+      "estimatedNotes": [
+        "Skill §2 三档行动模板(hotfix / mitigation / long-term)",
+        "契约 1 处不一致,扣 0.3 分"
+      ]
+    },
+    {
+      "id": "case_inc_006",
+      "contractIssues": [
+        "SKILL.md 缺 RL-001 守护段"
+      ],
+      "contractScore": 4.5,
+      "estimatedExecScore": 3.6,
+      "estimatedNotes": [
+        "Skill §7.2 / §3.2 RL-007 不编造守护,reject scenarios 控制",
+        "契约 1 处不一致,扣 0.3 分"
+      ]
+    },
+    {
+      "id": "case_inc_007",
+      "contractIssues": [
+        "SKILL.md 缺 RL-001 守护段"
+      ],
+      "contractScore": 4.5,
+      "estimatedExecScore": 3.4,
+      "estimatedNotes": [
+        "Skill §3.3 时间窗自省 + ISO 时间戳要求",
+        "契约 1 处不一致,扣 0.3 分"
+      ]
+    },
+    {
+      "id": "case_inc_008",
+      "contractIssues": [
+        "SKILL.md 缺 RL-001 守护段"
+      ],
+      "contractScore": 4.5,
+      "estimatedExecScore": 3.5,
+      "estimatedNotes": [
+        "Skill §3.2 证据不足走 monitoring gap 自省",
+        "契约 1 处不一致,扣 0.3 分"
+      ]
+    },
+    {
+      "id": "case_inc_009",
+      "contractIssues": [
+        "SKILL.md 缺 RL-001 守护段"
+      ],
+      "contractScore": 4.5,
+      "estimatedExecScore": 3.5,
+      "estimatedNotes": [
+        "Skill §3.1 rca_hypothesis 排序 + ≤ 3 条假设",
+        "契约 1 处不一致,扣 0.3 分"
+      ]
+    },
+    {
+      "id": "case_inc_010",
+      "contractIssues": [
+        "SKILL.md 缺 RL-001 守护段"
+      ],
+      "contractScore": 4.5,
+      "estimatedExecScore": 3.6,
+      "estimatedNotes": [
+        "Skill §7.2 / §3.2 RL-007 不编造守护,reject scenarios 控制",
+        "契约 1 处不一致,扣 0.3 分"
+      ]
+    }
+  ]
+}

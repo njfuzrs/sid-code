@@ -1,0 +1,1060 @@
+{
+  "ts": 1780170159285,
+  "mode": "execute",
+  "skillInjected": true,
+  "samplesN": 3,
+  "overall": {
+    "n": 15,
+    "avgScore": 4.066666666666666,
+    "passRate": 0.6666666666666666
+  },
+  "cases": [
+    {
+      "caseId": "case_csh_001",
+      "median": 4,
+      "samples": [
+        {
+          "score": 3,
+          "details": {
+            "must_include_hits": 0,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 12,
+            "issues": "must_include 0 命中（need ≥ 1，title: ci_failure_diagnosed_with_classification）"
+          },
+          "raw": {
+            "caseId": "case_csh_001",
+            "finalResponse": "",
+            "toolsCalled": [
+              "glob"
+            ],
+            "steps": 12,
+            "exitStatus": "error",
+            "timedOut": false,
+            "elapsedSec": 13.634,
+            "error": false
+          }
+        },
+        {
+          "score": 5,
+          "details": {
+            "must_include_hits": 4,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 1,
+            "issues": ""
+          },
+          "raw": {
+            "caseId": "case_csh_001",
+            "finalResponse": "## CI 故障诊断\n\n**Failure Class**: `test_failure`\n\n**Confidence**: `high`\n\n**Verdict**: `likely_pr_caused`\n\n---\n\n### 根因假设\n\n**1. [priority=1] 登录验证逻辑未正确校验密码**\n\n- **Evidence**: `src/auth/login.test.ts:42:30` — 测试断言期望 `{ error: \"wrong_password\" }`，实际收到 `{ ok: true, userId: \"u123\" }`，说明错误密码通过了验证。\n- **Why**: 最可能的根因是 `login` 函数（或其内部调用的密码校验逻辑）在最近 PR 中被修改，导致密码不匹配时仍返回成功。可能是：\n  - 密码比较逻辑被意外短路（如 `password !== hash ? false : true` 写反了）\n  - 新增了提前 `return { ok: true }` 的代码路径\n  - bcrypt/argon2 等哈希库的异步调用没有正确 `await`，导致 `compare()` 返回 `undefined` 被当作\"密码正确\"\n- **Suggested Fix**:\n  1. 检查 `src/auth/login.ts` 中密码校验逻辑，确认 `password` 与实际存储的 hash 比较是否在失败时正确 return `{ error: \"wrong_password\" }`\n  2. 如果是异步哈希库（如 `bcrypt.compare`），确认没有遗漏 `await`\n  3. 在修复后运行 `bun test tests/auth/login.test.ts` 确认通过\n\n**2. [priority=2] 测试 mock/stub 配置在 PR 中被覆盖导致校验绕过**\n\n- **Evidence**: 同上 `src/auth/login.test.ts:42` — 测试期望错误密码被拒绝，但返回了 `userId: \"u123\"`，说明测试里 mock 的\"错误密码用户\"可能被之前（同一个 `describe` 块内）`beforeEach` 或共享的 mock 覆盖，导致实际查到了正确密码的用户记录。\n- **Why**: 13 个测试中 12 个通过，只有\"should reject wrong password\"失败，可能是测试环境的 mock 数据在 PR 中调整了 `beforeEach` 的设置顺序或共享引用，导致错误密码的测试用例意外拿到了正确密码的 stub 数据。\n- **Suggested Fix**:\n  1. 检查 `src/auth/login.test.ts` 中 `should reject wrong password` 所在 `describe` 块的 `beforeEach` / mock 配置\n  2. 确认该测试用例的 mock 密码哈希确实不同于用户实际密码\n  3. 如果 mock 是共享对象引用，改为每次测试前深拷贝\n\n---\n\n### 关联文件\n\n- `src/auth/login.test.ts:42` — 失败断言所在行\n- `src/auth/login.ts` — 被测试的登录逻辑（需要检查密码校验路径）\n\n---\n\n### 跳过检查\n\n- 无 PR diff 输入，无法做 Step D（PR diff 关联分析），`Verdict` 基于日志信号推断为 `likely_pr_caused`\n- 无历史 CI run 数据，无法判定是否为 flaky（单次失败）\n- 没在日志中发现凭证泄露（无 token/API key）",
+            "toolsCalled": [],
+            "steps": 1,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 20.033,
+            "error": false
+          }
+        },
+        {
+          "score": 4,
+          "details": {
+            "must_include_hits": 4,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 17,
+            "issues": "steps=17 超过 max_steps=12"
+          },
+          "raw": {
+            "caseId": "case_csh_001",
+            "finalResponse": "`src/auth/` 目录不在 sid-code 仓库中，此 CI 日志来自你的其他项目仓库。以下基于日志内容本身给出结构化诊断。\n\n---\n\n## CI Failure Diagnosis\n\n**Failure Class**: `test_failure`\n\n**Confidence**: `high`\n\n**Verdict**: `likely_pr_caused`\n\n### Root Cause Hypotheses\n\n1. **[priority=1]** 登录函数中密码校验分支被绕过或条件判断反转\n   - **Evidence**: `src/auth/login.test.ts:42:30` — 断言期望传入错误密码后返回 `{ error: \"wrong_password\" }`，实际却返回 `{ ok: true, userId: \"u123\" }`。日志显示 `1 failed, 12 passed`，其余 12 个测试全过，说明这不是全局性崩溃，而是单点逻辑异常。\n   - **Why**: \"期望失败却成功\" 是典型的实现侧逻辑缺陷——很可能是本次 PR 修改了 `src/auth/login.ts` 的密码校验分支（如 `if (password !== stored)` 误改为 `if (password === stored)`、提前 `return { ok: true }` 短路绕过了校验、或校验函数调用被删除/注释）。\n   - **Suggested Fix**:\n     1. 在目标仓库中执行 `git diff HEAD~1 -- src/auth/login.ts`，重点排查 `return` / `if` 分支变更。\n     2. 确认密码校验逻辑完整——正常路径应比对密码后返回 `{ error: \"wrong_password\" }` 或抛异常。\n     3. 修复后在本地跑 `npx jest src/auth/login.test.ts --testNamePattern=\"should reject wrong password\"` 验证。\n\n2. **[priority=2]** 测试用例中传入的密码变量实际为正解密码（参数错误）\n   - **Evidence**: `src/auth/login.test.ts:42:30` — 测试命名为 `should reject wrong password`，但 `Received: { ok: true, userId: \"u123\" }` 说明登录成功。返回值中包含具体 `userId` 表明用户 `u123` 确实存在且整个登录流程完整执行。\n   - **Why**: 如果实现侧密码校验逻辑正确，那很可能测试侧传入的 `password` 参数本身就是正确密码——常见场景：从上一个测试用例（如 `should login successfully`）中复制代码但忘改 password 变量，导致错误密码测试实际传的是正确密码。\n   - **Suggested Fix**:\n     1. 检查 `src/auth/login.test.ts` 第 42 行附近的测试代码，确认 `login()` 调用的 password 实参确实是错误密码（如 `\"wrong_pwd_123\"`）。\n     2. 如果使用了共享常量（如 `const PASSWORD = \"correct\"`），需确保两个测试用例（成功登录 vs 错误密码）使用不同的密码值。\n\n3. **[priority=3]** 密码验证 mock/stub 在本次 PR 中配置失效\n   - **Evidence**: `src/auth/login.test.ts:42:30` — 如果 `src/auth/login.ts` 依赖外部密码验证服务或 bcrypt 等 hash 库，测试中通常通过 `jest.mock` / `vi.mock` 控制返回值。本次 PR 可能重构了模块导入路径或 mock 配置，使密码校验 mock 未正确挂载，默认返回 `true`。\n   - **Why**: `jest.mock()` 路径变更、mock 返回值从 `false` 误设为 `true`、或 `beforeEach` 中未正确重置 mock 状态都可能导致。其余 12 个测试通过表明 mock 并未全挂，可能是该特定 mock 的作用域或返回值问题。\n   - **Suggested Fix**:\n     1. 检查测试文件 `beforeEach` / `beforeAll` 中密码校验相关 mock 配置，确认其模拟的校验函数返回 `false`（校验失败）。\n     2. 如果最近改动了 `import` 路径（如从 `../utils/hash` 改为 `../crypto/hash`），需同步更新 `jest.mock()` 的第一个参数。\n\n### Related Files\n\n- `src/auth/login.ts` — 登录主逻辑，重点排查密码校验分支（`if` 条件 / `return` 路径）\n- `src/auth/login.test.ts:42` — 失败断言所在行，检查传入参数与 mock 配置\n\n### Skipped Checks\n\n- 无法读取源文件（`src/auth/` 不在 sid-code 仓库中），以上假设基于日志中的测试命名与断言值推断，请在目标仓库中逐项排查。\n- 无 PR diff 输入，未能进行 diff ↔ fileRef 关联以精确判定 `is_pr_caused`（若提供 `git diff` 输出可进一步提升诊断精度）。\n- 无历史 CI run 数据，无法判定是否为 flaky（日志中无 retry marker、无 timeout、无网络/端口错误，单次日志 flaky 概率低）。",
+            "toolsCalled": [
+              "glob",
+              "grep",
+              "read"
+            ],
+            "steps": 17,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 49.502,
+            "error": false
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "case_csh_002",
+      "median": 5,
+      "samples": [
+        {
+          "score": 5,
+          "details": {
+            "must_include_hits": 3,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 1,
+            "issues": ""
+          },
+          "raw": {
+            "caseId": "case_csh_002",
+            "finalResponse": "## 输入不匹配 ci-self-heal 触发条件\n\n**ci-self-heal** 和 **code-review** 的输入域明确不重叠：\n\n| Skill | 输入 | 用途 |\n|---|---|---|\n| `ci-self-heal` | **CI 失败日志**（stack trace / build output / test failure） | 诊断 CI 卡点 |\n| `code-review` | **PR diff**（git diff 输出） | 审查代码变更 |\n\n你提供的是 PR diff，不是 CI 失败日志——ci-self-heal 无法基于 diff 做 CI 诊断。\n\n---\n\n**建议**：用 `code-review` Skill 来审查这段 diff。它会识别 bug、安全漏洞、设计反模式，引用具体 file:line，给出可执行修改建议。\n\n需要我切换到 code-review 来审这个 PR 吗？",
+            "toolsCalled": [],
+            "steps": 1,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 17.829,
+            "error": false
+          }
+        },
+        {
+          "score": 4,
+          "details": {
+            "must_include_hits": 2,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 11,
+            "issues": "steps=11 超过 max_steps=8"
+          },
+          "raw": {
+            "caseId": "case_csh_002",
+            "finalResponse": "基于 PR diff 做 code review。`src/utils.ts` 在仓库中尚不存在，是个新增文件。\n\n---\n\n## Code Review\n\n### ⚠️ Issue 1 — 缺少显式返回类型注解\n\n**`src/utils.ts:1`**\n\n```diff\n+export function noop() {}\n```\n\n- **问题**: `noop()` 没有显式返回类型 `void`。在 TypeScript strict 模式下，空函数体隐式返回 `void` 不会报错，但显式标注是更好的实践，提升可读性且避免未来重构时意外返回值。\n- **建议**:\n\n```ts\nexport function noop(): void {}\n```\n\n**严重度**: 低 (style/minor)\n\n---\n\n### ⚠️ Issue 2 — 文件路径与已有 `src/utils/` 目录歧义\n\n仓库中已存在 `src/utils/markdownParsingUtils.ts`、`src/ui/utils/terminalUtils.ts` 等多个 utils 目录。新增 `src/utils.ts` 可能与 `src/utils/` 目录产生导入混淆。\n\n- **建议**: 可考虑将 `noop` 放入已有模块（如 `src/utils/markdownParsingUtils.ts` 或新建 `src/utils/noop.ts`），或者确认 `src/utils.ts` 和 `src/utils/` 目录同时存在是预期行为（Bun/Node 允许这样做，但不利于代码导航）。\n\n**严重度**: 低 (organization)\n\n---\n\n### ✅ 正向点\n\n- `add()` 函数已有完整的参数类型和返回类型推断，风格符合 TypeScript 规范\n- `noop()` 是通用工具函数，导出供其他模块复用，设计合理\n\n---\n\n### 总结\n\n| 维度 | 评估 |\n| --- | --- |\n| **Bug** | 无 |\n| **安全** | 无风险 |\n| **设计** | 基本合理，路径可优化 |\n| **测试** | 未随 PR 附带单测（建议补 `noop()` 的单测，至少验证不抛异常） |\n| **可合入** | ✅ 可以，建议补 `: void` 返回类型后合入 |",
+            "toolsCalled": [
+              "glob"
+            ],
+            "steps": 11,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 37.915,
+            "error": false
+          }
+        },
+        {
+          "score": 5,
+          "details": {
+            "must_include_hits": 3,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 1,
+            "issues": ""
+          },
+          "raw": {
+            "caseId": "case_csh_002",
+            "finalResponse": "## 触发不匹配\n\n你提供的是 **PR diff**，不是 CI 失败日志。这与 ci-self-heal 的输入域不符：\n\n> ci-self-heal 看 CI log，code-review 看 PR diff——两者输入域明确不重叠。\n\nci-self-heal 触发不命中，但既然你问了，我简单说一下这份 diff：\n\n---\n\n### 快速 Code Review（非正式，不替代 code-review Skill）\n\n**变更**：`src/utils.ts` 新增 `noop()` 空函数。\n\n| 项目 | 评估 |\n|------|------|\n| **空洞函数** | `noop()` 体为空，无类型注解。如果这是默认回调占位，建议至少加 `// intentionally empty` 注释说明意图 |\n| **缺少返回值类型** | `function noop()` 返回 `void` 隐式，建议显式标注 `(): void` |\n| **用途不明** | 单看 diff 无法判断 `noop()` 是否被引用。如果无调用方，就是死代码 |\n\n建议操作：\n\n```typescript\n/** 空操作占位函数，用于默认回调 / 可选参数 */\nexport function noop(): void {\n  // intentionally empty\n}\n```\n\n---\n\n**需要正式 Code Review 吗？** 可以用 `skill__code-review` 跑完整审查（包含 bug / 安全 / 设计反模式检测 + 具体行号引用）。",
+            "toolsCalled": [],
+            "steps": 1,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 18.944,
+            "error": false
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "case_csh_003",
+      "median": 3,
+      "samples": [
+        {
+          "score": 3,
+          "details": {
+            "must_include_hits": 6,
+            "must_not_include_violations": 1,
+            "tool_violations": 0,
+            "steps": 5,
+            "issues": "must_not_include 命中: [flaky]"
+          },
+          "raw": {
+            "caseId": "case_csh_003",
+            "finalResponse": "## CI 故障诊断\n\n**Failure Class**: `type_error`\n\n**Confidence**: `high`\n\n**Verdict**: `likely_pr_caused`\n\n### 根因假设\n\n**1. [priority=1] `src/bar.ts` 未导出 `Baz` 成员**\n\n- **Evidence**: `src/foo.ts:10:5` — `error TS2305: Module \"./bar\" has no exported member \"Baz\"`\n- **Why**: 三选一：① `Baz` 在 `src/bar.ts` 中被删除或重命名，但 `src/foo.ts` 的 import 未同步更新；② `Baz` 的定义缺少 `export` 关键字；③ `./bar` 指向目录但其 index/re-export 文件未包含 `Baz`。\n- **Suggested Fix**: 先检查 `src/bar.ts` 中是否存在 `Baz` 的定义以及是否有 `export` 关键字：\n  ```bash\n  grep -n \"Baz\" src/bar.ts\n  ```\n  - 若存在但缺 `export`：补上 `export` 关键字。\n  - 若已重命名（如 `BazNew`）：将 `src/foo.ts:10` 的 import 改为新名称。\n  - 若已删除：移除 `src/foo.ts:10` 的 import 行，并清理所有对 `Baz` 的引用。\n\n**2. [priority=2] `src/foo.ts:25` 类型赋值错误：`string` 赋给 `number`**\n\n- **Evidence**: `src/foo.ts:25:18` — `error TS2322: Type \"string\" is not assignable to type \"number\"`，源码 `const total: number = \"100\";`\n- **Why**: 字面量 `\"100\"` 是字符串类型，变量 `total` 标注为 `number`，类型不兼容。大概率是开发时手误加了引号。\n- **Suggested Fix** ⚠️ 需人工 review（涉及业务逻辑语义）：\n  - 若 `total` 本应是数字：去掉引号 → `const total: number = 100;`\n  - 若 `total` 本应是字符串：改类型标注 → `const total: string = \"100\";`\n  - 若 `\"100\"` 是外部字符串输入需转数字：`const total: number = parseInt(\"100\", 10);`\n\n### 相关文件\n\n| 文件 | 行号 | 关联原因 |\n| --- | --- | --- |\n| `src/foo.ts` | 10 | 引用了不存在的导出 `Baz`（TS2305） |\n| `src/foo.ts` | 25 | 类型赋值错误（TS2322） |\n| `src/bar.ts` | — | `Baz` 的预期定义位置，需检查导出情况 |\n\n### 跳过的检查\n\n- **PR diff 关联**：未提供 PR diff，无法判定这两个错误是否由同一 commit 引入，也无法关联到具体变更行。\n- **历史 flaky 判定**：这是首次出现的类型错误，无历史 run 数据可对比，不判定为 flaky。\n- **跨文件影响**：`src/bar.ts` 在仓库中不存在（可能尚未添加到版本控制，或 PR 新建但未推送），无法做完整的依赖链追踪。\n\n---\n\n**总结**：两个 TypeScript 编译错误均为 `src/foo.ts` 中的问题。优先修复第 1 条（检查 `src/bar.ts` 的 `Baz` 导出），第 2 条类型错误通常一行即可修复，但需要确认业务意图后再改。",
+            "toolsCalled": [
+              "glob"
+            ],
+            "steps": 5,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 27.275,
+            "error": false
+          }
+        },
+        {
+          "score": 3,
+          "details": {
+            "must_include_hits": 5,
+            "must_not_include_violations": 1,
+            "tool_violations": 0,
+            "steps": 5,
+            "issues": "must_not_include 命中: [flaky]"
+          },
+          "raw": {
+            "caseId": "case_csh_003",
+            "finalResponse": "由于仓库中不存在 `src/foo.ts` 和 `src/bar.ts`（这是用户提供的假设 CI 日志），诊断将仅基于日志中的错误信息。\n\n---\n\n## CI 故障诊断\n\n**Failure Class**: `build_failure`\n\n**Confidence**: `high`\n\n**Verdict**: `likely_pr_caused`\n\n### 根因假设\n\n**1. [priority=1] `./bar` 模块未导出 `Baz` 成员**\n\n- **Evidence**: `src/foo.ts:10:5 — error TS2305: Module \"./bar\" has no exported member \"Baz\"`\n- **Why**: `src/foo.ts` 第 10 行试图从 `./bar` 导入 `Baz`，但 `src/bar.ts` 中未 `export` 该成员。常见原因：① 该成员被重命名或删除但导入语句未同步更新；② 该成员仍未编写；③ 导出方式错误（例如未使用 `export` 关键字或写成了默认导出）。\n- **Suggested Fix**:\n  1. 检查 `src/bar.ts` 中是否定义了 `Baz`，确认其导出方式（命名导出 vs 默认导出）。\n  2. 若 `Baz` 已重命名：更新导入语句为新名称，如 `import { RenamedBaz } from \"./bar\";`。\n  3. 若 `Baz` 已删除：审阅代码逻辑，移除无用导入或补回 `Baz` 定义。\n  4. 若 `Baz` 存在但未导出：添加 `export` 关键字，如 `export class Baz { ... }`。\n\n**2. [priority=2] `total` 变量类型声明与实际赋值不匹配**\n\n- **Evidence**: `src/foo.ts:25:18 — error TS2322: Type \"string\" is not assignable to type \"number\"`\n- **Why**: 第 25 行声明 `total` 为 `number` 类型，但赋值为字符串 `\"100\"`。常见原因：① 数据来自 API / 用户输入 / 环境变量未做类型转换（如 `process.env.SOME_NUMBER` 返回 string）；② 硬编码的值被误加了引号；③ 重构过程中类型声明和赋值来源不同步。\n- **Suggested Fix** ⚠️ 需人工 review:\n  1. 若值来源确实应是数字：将 `\"100\"` 改为 `100`（去掉引号），或使用 `Number(\"100\")` / `parseInt(\"100\", 10)` 转换。\n  2. 若值来源是动态字符串（如 `process.env.TOTAL`）：使用显式转换 `const total: number = Number(process.env.TOTAL ?? \"0\");`。\n  3. 若 `total` 确实应该是 string：修改类型声明为 `const total: string = \"100\";`——但这需要确认下游消费者能否接受 string。\n\n### 相关文件\n\n- `src/foo.ts:10` — 导入 `Baz` 失败，需对齐 `src/bar.ts` 的导出\n- `src/foo.ts:25` — 类型不匹配，string 赋值给 number\n- `src/bar.ts`（推断） — `Baz` 成员未导出或不存在\n\n### 跳过的检查\n\n- **PR diff 未提供**：无法确定是哪次提交引入的回归，`is_pr_caused` 判定仅基于错误模式（类型错误 + 缺失导出 → 大概率是本次变更引入）\n- **flaky 识别不适用**：两次均为确定性编译错误，非时间 / 网络 / 竞态相关，不需要 flaky 分析\n- **仓库文件不存在**：`src/foo.ts` / `src/bar.ts` 不在当前仓库中，无法读文件做更深层静态分析；建议在本地仓库中按上述 file:line 排查\n\n---\n\n### 修复优先级建议\n\n| 优先级 | 操作 | 理由 |\n| ------ | ---- | ---- |\n| **P0** | 对齐 `src/bar.ts` 导出 `Baz` 或修正 `src/foo.ts:10` 导入 | 阻塞编译，必须先修 |\n| **P1** | 修正 `src/foo.ts:25` 的类型不匹配 | 同为编译阻塞，可并行修 |\n| **后续** | 跑 `tsc --noEmit` 确认无残留类型错误后提交 | 防止修复不完整 |",
+            "toolsCalled": [
+              "glob"
+            ],
+            "steps": 5,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 31.317,
+            "error": false
+          }
+        },
+        {
+          "score": 5,
+          "details": {
+            "must_include_hits": 4,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 1,
+            "issues": ""
+          },
+          "raw": {
+            "caseId": "case_csh_003",
+            "finalResponse": "## CI Failure Diagnosis\n\n**Failure Class**: `build_failure` (TypeScript type check 失败)\n\n**Confidence**: `high`\n\n**Verdict**: `likely_pr_caused`\n\n### Root Cause Hypotheses\n\n1. **[priority=1] `src/foo.ts:25` — 类型赋值错误：给 `number` 类型变量赋予字符串字面量**\n   - **Evidence**: `src/foo.ts:25:18 - error TS2322: Type \"string\" is not assignable to type \"number\". const total: number = \"100\";`\n   - **Why**: `total` 声明为 `number` 类型，但右侧赋值为字符串 `\"100\"`。这通常是手误——应该用数字 `100` 而非字符串，或者预期从某处 parse 但遗漏了 `Number()` / `parseInt()` 转换。\n   - **Suggested Fix**:\n     - 如果源数据就是数字：改为 `const total: number = 100;`\n     - 如果源数据是字符串需要转换：改为 `const total: number = Number(\"100\");` 或 `const total: number = parseInt(\"100\", 10);`\n     - 如果 `total` 实际应该是字符串类型：改为 `const total: string = \"100\";`（需确认下游消费者是否接受 `string`）\n\n2. **[priority=2] `src/foo.ts:10` — 导入不存在：模块 `./bar` 未导出成员 `Baz`**\n   - **Evidence**: `src/foo.ts:10:5 - error TS2305: Module \"./bar\" has no exported member \"Baz\". import { Baz } from \"./bar\";`\n   - **Why**: `./bar` 模块中不存在名为 `Baz` 的导出。可能原因：① `Baz` 已被重命名或删除（PR 重构遗漏）；② 导出名拼写错误（如应是 `BazClass` 或 `baz`）；③ `./bar` 文件路径本身错误，实际应从其他模块导入。\n   - **Suggested Fix**:\n     - 检查 `src/bar.ts` 的实际导出列表：`grep -n \"export\" src/bar.ts`\n     - 根据实际导出名修正 import 语句，例如 `import { BazClass } from \"./bar\";`\n     - 或如果 `Baz` 类型已移至其他文件，修正导入路径\n\n### Related Files\n\n- `src/foo.ts:10` — import 语句引用了不存在的导出成员 `Baz`\n- `src/foo.ts:25` — 类型不匹配赋值\n- `src/bar.ts` — 需确认该模块的实际导出列表（未在 log 中出现，但被 `src/foo.ts:10` 引用）\n\n### Skipped Checks\n\n- 未检查 PR diff（未提供），无法精确判定是否为本次 PR 引入\n- 未检查 `src/bar.ts` 实际内容（log 中未包含该文件信息）\n\n---\n\n**修复建议总结**：两个错误独立，均可本地修复。先在 `src/bar.ts` 确认 `Baz` 的实际导出名，修正 `src/foo.ts:10` 的 import；再将 `src/foo.ts:25` 的字符串 `\"100\"` 改为数字 `100`（或加显式转换）。修复后本地运行 `npx tsc --noEmit` 验证。",
+            "toolsCalled": [],
+            "steps": 1,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 12.985,
+            "error": false
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "case_csh_004",
+      "median": 3,
+      "samples": [
+        {
+          "score": 3,
+          "details": {
+            "must_include_hits": 6,
+            "must_not_include_violations": 1,
+            "tool_violations": 0,
+            "steps": 1,
+            "issues": "must_not_include 命中: [flaky]"
+          },
+          "raw": {
+            "caseId": "case_csh_004",
+            "finalResponse": "## CI 失败诊断\n\n**Failure Class**: `lint_failure`\n\n**Confidence**: `high`\n\n**Verdict**: `likely_pr_caused`\n\n### 根因假设\n\n**1. [priority=1] 代码未通过 ESLint 静态检查，4 条规则违规**\n\n- **Evidence**:\n  - `/workspace/src/components/Button.tsx:14` — `no-unused-vars`: 变量 `unused` 已赋值但从未使用\n  - `/workspace/src/components/Button.tsx:18` — `semi`: 缺少分号\n  - `/workspace/src/components/Button.tsx:22` — `eqeqeq`: 使用了 `==` 而非 `===`\n  - `/workspace/src/utils/format.ts:8` — `indent`: 缩进为 4 空格，期望 2 空格\n- **Why**: 这 4 条错误均属于代码风格与质量规则，很可能是开发者在本地未运行 `eslint`（或 IDE 未配置保存时自动修复）就直接提交，导致 CI lint 阶段被拦截。\n- **Suggested Fix**:\n  1. **Button.tsx:14** — 删除未使用的变量 `unused` 声明，或如果后续需要则先注释说明用途\n  2. **Button.tsx:18** — 在语句末尾补上分号 `;`\n  3. **Button.tsx:22** — 将 `==` 改为 `===`（严格相等比较）\n  4. **format.ts:8** — 将该行缩进从 4 空格改为 2 空格\n  5. 修复后本地运行 `npx eslint src/` 确认 0 error，再重新推送\n\n**2. [priority=2] 本地开发环境未启用 pre-commit hook 或 IDE 自动修复**\n\n- **Evidence**: 4 条错误均属于可自动修复（`--fix`）类型，却在 CI 阶段才暴露\n- **Why**: `semi`、`indent`、`eqeqeq` 都可被 `eslint --fix` 自动修复；`no-unused-vars` 虽不能自动修复但 IDE 通常会有高亮提示。这些错误逃逸到 CI 说明本地缺少 lint 门禁\n- **Suggested Fix**:\n  - 配置 `husky` + `lint-staged`，在 `pre-commit` 阶段自动运行 `eslint --fix`\n  - 或在 `.vscode/settings.json` 中开启 `\"editor.codeActionsOnSave\": { \"source.fixAll.eslint\": true }`\n\n### 关联文件\n\n- `/workspace/src/components/Button.tsx:14` — `no-unused-vars` 错误位置\n- `/workspace/src/components/Button.tsx:18` — `semi` 错误位置\n- `/workspace/src/components/Button.tsx:22` — `eqeqeq` 错误位置\n- `/workspace/src/utils/format.ts:8` — `indent` 错误位置\n\n### 跳过检查\n\n- 未提供 PR diff，无法关联此次 lint 错误是否由当次 PR 变更引入（但 4 条错误均在当前代码中，属本次提交范畴）\n- 仅单次 CI log，无法判定是否为 flaky（lint 错误本身具有确定性，标 `likely_pr_caused`）",
+            "toolsCalled": [],
+            "steps": 1,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 16.3,
+            "error": false
+          }
+        },
+        {
+          "score": 3,
+          "details": {
+            "must_include_hits": 6,
+            "must_not_include_violations": 1,
+            "tool_violations": 0,
+            "steps": 1,
+            "issues": "must_not_include 命中: [flaky]"
+          },
+          "raw": {
+            "caseId": "case_csh_004",
+            "finalResponse": "## CI 失败诊断\n\n**Failure Class**: `lint_failure`\n\n**Confidence**: `high`\n\n**Verdict**: `likely_pr_caused`\n\n### 根因假设\n\n**1. [priority=1] Button.tsx 中引入了未使用变量 + 风格/质量规则违反**\n\n- **Evidence**:\n  - `src/components/Button.tsx:14` — `'unused' is assigned a value but never used` (`no-unused-vars`)\n  - `src/components/Button.tsx:18` — `Missing semicolon` (`semi`)\n  - `src/components/Button.tsx:22` — `Expected '===' and instead saw '=='` (`eqeqeq`)\n- **Why**: 同一文件连续 3 个 lint 错误，集中在语义(vars)、风格(semi)、质量(eqeqeq)三类，典型模式是新增或修改了一段代码后未跑本地 lint (IDE 未装 ESLint 插件或 pre-commit hook 缺失)。`'unused'` 这个变量名暗示可能是调试残留。\n- **Suggested Fix**:\n  ```bash\n  # 1. 先自动修复可修复项 (semi, indent)\n  npx eslint src/components/Button.tsx src/utils/format.ts --fix\n\n  # 2. 手动修复不可自动修复项\n  ```\n  - `Button.tsx:14`：删除 `unused` 变量的声明语句（如果确实不需要）。若变量后续会用到，暂时加 `// eslint-disable-next-line no-unused-vars` 并在 PR 描述中说明。\n  - `Button.tsx:22`：将 `==` 改为 `===`（注意类型转换语义，确认两边类型一致）。\n  - 修改后跑 `npx eslint src/` 确认清零。\n\n**2. [priority=2] format.ts 缩进配置与项目 ESLint 规则不一致**\n\n- **Evidence**: `src/utils/format.ts:8` — `Expected indentation of 2 spaces but found 4` (`indent`)\n- **Why**: 可能开发者的编辑器使用 4 空格缩进，而项目 `.eslintrc` 配置为 2 空格。单文件单错误，通常是个人编辑器设置未对齐。\n- **Suggested Fix**:\n  ```bash\n  # 自动修复缩进（推荐）\n  npx eslint src/utils/format.ts --fix\n  ```\n  或手动将第 8 行缩进从 4 空格改为 2 空格。确保 VS Code / 编辑器设置 `\"editor.tabSize\": 2` 并启用 `\"editor.formatOnSave\": true`。\n\n### 涉及文件\n\n| 文件 | 行号 | 错误类型 | 修复方式 |\n| --- | --- | --- | --- |\n| `src/components/Button.tsx` | 14 | `no-unused-vars` | 手动：删除 `unused` 变量或加 eslint-disable |\n| `src/components/Button.tsx` | 18 | `semi` | 自动：`--fix` |\n| `src/components/Button.tsx` | 22 | `eqeqeq` | 手动：`==` → `===` |\n| `src/utils/format.ts` | 8 | `indent` | 自动：`--fix` |\n\n### 跳过的检查\n\n- **flaky 识别**：不适用。lint 错误是确定性的，不存在 flaky 特征。\n- **PR diff 关联**：未提供 PR diff，无法判定是否与特定 PR 变更直接关联。但从错误模式（`unused` 变量 + `==` + 缩进不一致）判断，极大概率为本次代码变更引入。\n\n### 建议前置卡点（预防复发）\n\n```bash\n# 在 CI lint step 之前本地验证，或加入 pre-commit hook\nnpx eslint src/ --max-warnings 0\n```",
+            "toolsCalled": [],
+            "steps": 1,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 15.998,
+            "error": false
+          }
+        },
+        {
+          "score": 5,
+          "details": {
+            "must_include_hits": 6,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 1,
+            "issues": ""
+          },
+          "raw": {
+            "caseId": "case_csh_004",
+            "finalResponse": "## CI 故障诊断\n\n**Failure Class**: `lint_failure`\n\n**Confidence**: `high`\n\n**Verdict**: `likely_pr_caused`\n\n### 根因假设\n\n1. **[priority=1] ESLint 规则违规 — 3 处代码风格问题在 Button.tsx**\n   - **Evidence**:\n     - `src/components/Button.tsx:14` — 变量 `unused` 被赋值但从未使用 (`no-unused-vars`)\n     - `src/components/Button.tsx:18` — 语句末尾缺少分号 (`semi`)\n     - `src/components/Button.tsx:22` — 使用 `==` 而非 `===` (`eqeqeq`)\n   - **Why**: 这三条都是 ESLint 内置规则，通常由最近一次提交引入。`no-unused-vars` 说明可能遗留了调试变量或重构后未清理的声明；`semi` 和 `eqeqeq` 是典型的编码疏忽。\n   - **Suggested Fix**（只读建议，不直接修改文件）:\n     - **第 14 行**：删除 `unused` 变量的声明及赋值行；若该变量是函数调用有副作用（如 `const unused = initSomething()`），改为直接调用 `initSomething()` 并删除 `const unused =`。\n     - **第 18 行**：在语句末尾补上分号 `;`。\n     - **第 22 行**：将 `==` 替换为 `===`。\n     ```diff\n     // Button.tsx\n     - const unused = someFunc();  // L14: 删除或改为直接调用\n     + someFunc();\n     \n     - doSomething()               // L18: 补分号\n     + doSomething();\n     \n     - if (a == b)                 // L22: 改为严格相等\n     + if (a === b)\n     ```\n\n2. **[priority=2] format.ts 缩进不一致 — 使用 4 空格而非项目约定的 2 空格**\n   - **Evidence**: `src/utils/format.ts:8` — ESLint `indent` 规则期望 2 空格缩进，实际发现 4 空格。\n   - **Why**: 可能是编辑器配置切换（Tab vs Space）、复制粘贴代码，或开发者未启用 editorconfig/Prettier 自动格式化。\n   - **Suggested Fix**:\n     ```bash\n     # 手动修复：把第 8 行的 4 空格缩进改为 2 空格\n     # 或自动修复整个文件:\n     npx eslint --fix src/utils/format.ts\n     ```\n     > ⚠️ 建议先运行 `npx eslint --fix src/utils/format.ts src/components/Button.tsx` 一条命令自动修复全部 4 条（`indent` 和 `semi` 可自动 fix；`no-unused-vars` 和 `eqeqeq` 需人工确认后再自动 fix 或手动处理）。\n\n### 相关文件\n\n- `src/components/Button.tsx:14` — `no-unused-vars` 违规\n- `src/components/Button.tsx:18` — `semi` 违规\n- `src/components/Button.tsx:22` — `eqeqeq` 违规\n- `src/utils/format.ts:8` — `indent` 违规\n\n### 跳过的检查\n\n- 未拿到 PR diff，无法确认是否为本次 PR 引入（标记 `likely_pr_caused` 基于 lint 错误的典型特征推测）\n- 未检查 `.eslintrc` 配置 —— 若 `semi` / `eqeqeq` / `indent` 规则是本次 PR 新增/收紧的，则可能是 config 侧问题而非代码侧问题（建议复查 ESLint 配置变更）",
+            "toolsCalled": [],
+            "steps": 1,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 19.014,
+            "error": false
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "case_csh_005",
+      "median": 5,
+      "samples": [
+        {
+          "score": 5,
+          "details": {
+            "must_include_hits": 5,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 1,
+            "issues": ""
+          },
+          "raw": {
+            "caseId": "case_csh_005",
+            "finalResponse": "## CI 失败诊断\n\n**Failure Class**: `dependency_missing`\n\n**Confidence**: `high`\n\n**Verdict**: `likely_environment`\n\n### 根因假设\n\n1. **[priority=1] Python 版本或平台架构不兼容导致 tensorflow 2.16.0 不可用**\n   - **Evidence**: `ERROR: Could not find a version that satisfies the requirement tensorflow==2.16.0 (from versions: 2.13.0, 2.13.1, 2.14.0, 2.15.0)` — PyPI 对该 CI 环境只暴露到 2.15.0，2.16.0 未被索引。\n   - **Why**: tensorflow 2.16.0 于 2024 年 3 月发布，要求 Python 3.9–3.11 且仅提供 Linux x86_64 / macOS arm64 (Apple Silicon) wheel。如果 CI runner 的 Python 版本是 3.12+、或架构是 Linux aarch64 / macOS x86_64，pip 会回退到纯源码包安装；若连源码包也不匹配，PyPI 索引直接不返回该版本。此外，tensorflow 2.16.0 已移除了对某些旧 glibc 的支持（需 ≥ 2.28），CI 镜像若基于 CentOS 7 / Ubuntu 18.04 也会因系统库版本不足而无法安装。\n   - **Suggested Fix**:\n     1. 在 CI 中运行 `python --version && pip debug --verbose | grep Compatible` 确认 Python 版本和 wheel 兼容标签。\n     2. 若 Python ≥ 3.12：降级到 3.11，或将依赖改为 `tensorflow==2.17.0`（首个正式支持 Python 3.12 的版本）。\n     3. 若架构不匹配（如 Linux aarch64）：改用 `tensorflow-cpu==2.16.0` 或降级到 `tensorflow==2.15.0`（最后支持广泛架构的版本）。\n     4. 若是 glibc 版本不足：升级 CI 基础镜像到 `ubuntu-22.04` 或 `debian:bookworm`。\n\n2. **[priority=2] CI 镜像缓存了过期的 PyPI 索引**\n   - **Evidence**: PyPI 可用版本列表截止在 2.15.0，但 tensorflow 2.16.0 已于 2024 年 3 月发布且至今可正常拉取。\n   - **Why**: 部分 CI 平台（如自建 GitLab Runner、Jenkins）会缓存 pip 索引，若缓存未刷新可能导致新旧版本列表不一致。\n   - **Suggested Fix**: 在 `pip install` 前加入 `pip install --upgrade pip && pip cache purge` 或使用 `--no-cache-dir` 标志。若使用私有镜像源，确认该源是否已同步 tensorflow 2.16.0。\n\n3. **[priority=3] requirements.txt / pyproject.toml 中版本号拼写错误或 lock 文件冲突**\n   - **Evidence**: CI 日志直接引用了 `tensorflow==2.16.0`，但实际该环境可用的最高版本为 2.15.0。\n   - **Why**: 若开发者本地 macOS (Apple Silicon) 可安装 2.16.0 但 CI 是 Linux x86_64，可能误将本地 lock 文件直接提交，未做跨平台兼容性验证。\n   - **Suggested Fix** (需人工 review): 检查 `requirements.txt` 或 `pyproject.toml` 中 tensorflow 的版本约束。若不需要 2.16 新特性，将约束放宽为 `tensorflow>=2.13.0,<2.16.0` 或 `tensorflow>=2.15.0`。若确实需要 2.16.0，确保 CI 环境满足上述 priority=1 中的兼容性条件。\n\n### 相关文件\n\n- CI log line 2–3: — `tensorflow==2.16.0` 版本不匹配的直接证据\n- (待确认) `requirements.txt` / `pyproject.toml` — 依赖声明源文件，需定位 tensorflow 的版本 pin 行\n\n### 已跳过检查\n\n- 未提供 PR diff，无法关联本次失败是否由最近代码变更引入 (`is_pr_caused` 默认为 `unknown`)\n- 未提供 CI 环境的 Python 版本与平台信息，priority=1 的结论基于日志推断，需在 CI 中跑 `python --version` + `uname -m` 确认",
+            "toolsCalled": [],
+            "steps": 1,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 18.727,
+            "error": false
+          }
+        },
+        {
+          "score": 5,
+          "details": {
+            "must_include_hits": 4,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 1,
+            "issues": ""
+          },
+          "raw": {
+            "caseId": "case_csh_005",
+            "finalResponse": "## CI 失败诊断\n\n**Failure Class**: `dependency_missing`\n\n**Confidence**: `high`\n\n**Verdict**: `likely_environment`\n\n### 根因假设\n\n**1. [priority=1] Python 版本过旧，不兼容 tensorflow 2.16.x**\n\n- **Evidence**: `ERROR: Could not find a version that satisfies the requirement tensorflow==2.16.0 (from versions: 2.13.0, 2.13.1, 2.14.0, 2.15.0)` — PyPI 上 tensorflow 2.16.1/2.16.2 等 patch 版本是存在的，但 pip 完全看不到 2.16.x 系列，只列出了 ≤2.15.0 的版本。这是 Python 版本不兼容的典型信号：tensorflow 2.16.x 要求 Python ≥ 3.9，而 2.15.x 兼容 Python 3.8。\n- **Why**: pip 按 Python 版本 + 平台 + CPU 架构过滤 wheel。CI runner 的 Python 版本 ≤ 3.8 时，tensorflow 2.16.x 所有 wheel 都被过滤掉，pip 只能看到 2.15.0 及更早版本。\n- **Suggested Fix**:\n  1. 在 CI 配置中检查 `python --version`，确认版本（预期 ≤ 3.8）\n  2. 方案 A（推荐）：升级 CI runner 的 Python 到 ≥ 3.9，或使用 `setup-python` action 指定 `python-version: \"3.10\"`\n  3. 方案 B（临时）：降级 tensorflow 依赖到 `tensorflow==2.15.0`，在 `requirements.txt` 或 `setup.py` 中修改版本约束\n\n**2. [priority=2] tensorflow 2.16.0 并非有效版本号（typo/误写）**\n\n- **Evidence**: `tensorflow==2.16.0` — tensorflow 官方发版历史中，2.16 系列首发是 2.16.1（2024-03），`2.16.0` 从未在 PyPI 上存在过。日志显示可用版本到 2.15.0 为止，也从侧面印证 2.16.0 本身就不是有效版本。\n- **Why**: 如果 PR 中新增了 `tensorflow==2.16.0` 依赖，很可能是开发者手误想写 `2.16.1` 或 `2.16.2`。\n- **Suggested Fix**:\n  1. 检查 `requirements.txt` / `setup.py` / `pyproject.toml` 中 tensorflow 的版本声明\n  2. 改为实际存在的版本，如 `tensorflow==2.16.2` 或 `tensorflow>=2.15.0,<2.17`\n  3. 执行 `pip index versions tensorflow` 确认可用版本列表\n\n### 相关文件\n\n- `requirements.txt` 或 `setup.py` 或 `pyproject.toml` — tensorflow 版本声明所在文件（需定位）\n- CI 配置文件（`.github/workflows/*.yml` 或类似）— Python 版本设置所在\n\n### Skipped Checks\n\n- 未提供 PR diff，无法确定 `tensorflow==2.16.0` 是否为本次 PR 新增依赖\n- 未提供 CI 配置文件，无法确认 runner 的 Python 版本和 OS/arch\n\n---\n\n**行动建议优先级**：先跑 `python --version` 确认 CI runner Python 版本。如果是 3.8 → 升级 Python；如果已是 3.9+ → 检查 tensorflow 版本号是否为 typo（`2.16.0` 应改为 `2.16.1` 或 `2.16.2`）。",
+            "toolsCalled": [],
+            "steps": 1,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 21.079,
+            "error": false
+          }
+        },
+        {
+          "score": 5,
+          "details": {
+            "must_include_hits": 5,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 1,
+            "issues": ""
+          },
+          "raw": {
+            "caseId": "case_csh_005",
+            "finalResponse": "## CI Failure Diagnosis\n\n**Failure Class**: `dependency_missing`\n\n**Confidence**: `high`\n\n**Verdict**: `likely_pr_caused`\n\n### Root Cause Hypotheses\n\n1. **[priority=1]** `tensorflow==2.16.0` 在目标 Python 环境 / 平台下不可用\n   - **Evidence**: pip 报错 `Could not find a version that satisfies the requirement tensorflow==2.16.0 (from versions: 2.13.0, 2.13.1, 2.14.0, 2.15.0)` — 可用版本只到 2.15.0，2.16.0 不在 PyPI 索引中。\n   - **Why**: TensorFlow 对不同 Python 版本和平台（Linux x86_64 / ARM / macOS / Windows）的 wheel 支持不一致。常见原因：\n     - CI runner 的 Python 版本过旧（如 3.8），而 tensorflow 2.16 要求 Python 3.9–3.12；\n     - CI runner 是 ARM 架构（如 Apple M 系列 / AWS Graviton），tensorflow 2.16 可能未提供 ARM wheel；\n     - 依赖声明中直接 pin 了不存在的版本号（如从某篇博客或 AI 生成抄来）。\n   - **Suggested Fix**（按优先级排查）:\n     1. 确认 CI runner 的 Python 版本：添加 `python --version` 到 CI 步骤，检查是否 ≥ 3.9。tensorflow 2.16 最低要求 Python 3.9。\n     2. 确认 CI runner 架构：添加 `uname -m` 检查是否为 `x86_64`。若为 `aarch64`（ARM），退回到 tensorflow 2.15.x（最后一个支持 ARM 的版本）或换用 `tensorflow-cpu`。\n     3. 若 Python 版本和架构都满足，检查 PyPI 索引配置（如私有镜像源未同步 2.16.0）。\n     4. 快速止血方案：将 `tensorflow==2.16.0` 改为 `tensorflow>=2.13.0,<3.0` 或 `tensorflow==2.15.0`（当前 PyPI 可见的最高版本）。\n\n2. **[priority=2]** CI 环境使用了非标准 PyPI 镜像，镜像未同步 tensorflow 2.16.0\n   - **Evidence**: 从 `from versions:` 列表仅显示 2.13.0–2.15.0，缺少 2.16.0 及更高版本（tensorflow 2.17/2.18 均已发布）。官方 PyPI 上 tensorflow 2.16.0 是存在的，但此处不可见。\n   - **Why**: CI pipeline 可能配置了 `--index-url` 指向内部镜像或阿里云/清华等国内镜像，这些镜像可能未及时同步新版 tensorflow，或只同步了特定版本范围。\n   - **Suggested Fix**: 检查 CI 配置中是否有 `PIP_INDEX_URL` 环境变量或 `pip.conf` 中配置了镜像源。临时验证：在安装前加 `pip install tensorflow==2.16.0 -i https://pypi.org/simple/` 看官方源是否正常。若确认是镜像滞后，联系镜像管理员同步或切换回官方源。\n\n### Related Files\n\n- `requirements.txt` 或 `setup.py` / `pyproject.toml`: 包含 `tensorflow==2.16.0` 声明的行 — 直接 pin 了不可用版本\n- `.github/workflows/*.yml` 或 CI 配置文件: 检查 `pip install` 步骤是否指定了 `--index-url` / `--extra-index-url` / `PIP_INDEX_URL`\n\n### Skipped Checks\n\n- 未检查 PR diff（用户未提供），无法判断是否为本次 PR 新引入的依赖变更还是历史遗留\n- 未检查 CI runner 的操作系统 / Python 版本 / 架构（日志中未包含这些元信息），建议在 CI 步骤中显式打印 `python --version && uname -m && pip --version`\n- tensorflow 2.16.0 在官方 PyPI 确实存在（2024-03 发布），因此本地安装可过但 CI 挂的情况大概率是环境差异（Python 版本 / 平台 / 镜像源），建议在上述任一步骤加 `--verbose` 获取更多诊断信息",
+            "toolsCalled": [],
+            "steps": 1,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 16.413,
+            "error": false
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "case_csh_006",
+      "median": 3,
+      "samples": [
+        {
+          "score": 3,
+          "details": {
+            "must_include_hits": 7,
+            "must_not_include_violations": 1,
+            "tool_violations": 0,
+            "steps": 7,
+            "issues": "must_not_include 命中: [rm -rf node_modules]"
+          },
+          "raw": {
+            "caseId": "case_csh_006",
+            "finalResponse": "## CI Failure Diagnosis\n\n**Failure Class**: dependency_missing\n\n**Confidence**: high\n\n**Verdict**: likely_pr_caused\n\n### Root Cause Hypotheses\n\n1. **[priority=1]** React 19 升级后未同步升级 `react-router-dom`\n   - **Evidence**: `npm ERR! Found: react@19.0.0`（log line 4） / `npm ERR! peer react@\"^18.0.0\" from react-router-dom@6.20.0`（log line 9） / `react@\"^19.0.0\" from the root project`（log line 7）\n   - **Why**: `react-router-dom@6.20.0` 的 `peerDependencies` 仅声明 `react@\"^18.0.0\"`，不支持 React 19。当 root project 的 `package.json` 将 react 升级到 `^19.0.0` 后，npm 的 `ERESOLVE` 算法检测到 peer dependency 冲突，拒绝安装。\n   - **Suggested Fix**:\n     - **方案 A（推荐）**：将 `react-router-dom` 升级到支持 React 19 的版本（6.28+ 或 7.x）：\n       ```bash\n       npm install react-router-dom@^7.0.0\n       ```\n     - **方案 B（临时）**：若暂不能升级 router，降级 react 到 18：\n       ```bash\n       npm install react@^18.0.0 react-dom@^18.0.0\n       ```\n     - **方案 C（紧急绕过，不推荐）**：CI 中加 `--legacy-peer-deps` 跳过冲突检查：\n       ```diff\n       - npm install\n       + npm install --legacy-peer-deps\n       ```\n       ⚠️ 此方案仅在必须紧急通过 CI 时使用，**不可长期保留**——运行时可能出现 React 19 与 react-router-dom 6.x 的不兼容行为。\n\n2. **[priority=2]** `package.json` 中 react 版本号手误或未经过 review 升级\n   - **Evidence**: root project 声明 `react@\"^19.0.0\"`（log line 7），而 react-router-dom 6.20.0 典型配套 React 18.x 生态\n   - **Why**: 可能是某次 PR 中将 `react` 从 `^18.x` 改为 `^19.x` 但未级联更新 `react-router-dom` 及其他依赖（如 `@types/react`、`react-dom`），导致 CI 在全新 `npm install` 时暴露冲突（本地可能因 lockfile 缓存未触发）\n   - **Suggested Fix**: 在 PR diff 中搜索 `package.json` 中 `react` 版本号的变更，确认是否为有意升级。若有意升级 React 19，需**全量检查**所有声明 `peer react@\"^18\"` 的依赖并一并升级（常用清单：`react-router-dom`, `@testing-library/react`, `react-query`, `react-hook-form` 等）。\n\n3. **[priority=3]** CI 环境与本地 lockfile 不一致\n   - **Evidence**: 当前 log 仅展示 `npm install` 阶段的 `ERESOLVE`，未提供 lockfile 内容，无法确认 CI 是否使用了 `package-lock.json`\n   - **Why**: 如果 CI 执行的是 `npm install`（非 `npm ci`），且 CI 镜像的 npm 版本比本地更新（npm 8+ 默认开启 `--strict-peer-deps`），可能导致本地能安装但 CI 失败\n   - **Suggested Fix**:\n     1. 检查 CI 配置中 npm install 命令，确保使用 `npm ci` 而非 `npm install`（保证与 lockfile 严格一致）\n     2. 本地执行 `rm -rf node_modules package-lock.json && npm install` 验证是否能复现\n\n### Related Files\n\n- `package.json` — root project 声明 `react@\"^19.0.0\"` 导致 peer conflict 的源头\n- `package.json` — `react-router-dom@6.20.0` 的 peer dep 约束不兼容 React 19\n- `.github/workflows/ci.yml`（推测）— CI 配置中 npm install 命令可能需要加入 `--legacy-peer-deps` 或改为 `npm ci`\n\n### Skipped Checks\n\n- 未提供 PR diff，无法判定是否由最近 PR 的 `package.json` 变更直接导致\n- 未提供 `package-lock.json` 内容，无法确认 lockfile 中锁定的 react-router-dom 版本\n- 未提供 CI workflow 配置文件，无法检查 `npm install` 命令的参数（如是否已有 `--legacy-peer-deps`）",
+            "toolsCalled": [
+              "glob",
+              "read"
+            ],
+            "steps": 7,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 34.317,
+            "error": false
+          }
+        },
+        {
+          "score": 3,
+          "details": {
+            "must_include_hits": 6,
+            "must_not_include_violations": 1,
+            "tool_violations": 0,
+            "steps": 1,
+            "issues": "must_not_include 命中: [rm -rf node_modules]"
+          },
+          "raw": {
+            "caseId": "case_csh_006",
+            "finalResponse": "## CI 失败诊断\n\n**Failure Class**: `build_failure`（子类: `dependency_conflict`）\n\n**Confidence**: `high`\n\n**Verdict**: `needs_human`\n\n---\n\n### 根因假设\n\n1. **[priority=1] react-router-dom 版本与 React 19 的 peer dependency 不兼容**\n   - **Evidence**: `npm ERR! peer react@\"^18.0.0\" from react-router-dom@6.20.0` — react-router-dom@6.20.0 声明的 peer dependency 上限是 React 18，而根项目声明 `react@\"^19.0.0\"`\n   - **Why**: React 19 于 2024-12 正式发布，react-router-dom@6.20.0（2024 年初）发布时尚未知 React 19，其 `peerDependencies` 字段限定了 `\"react\": \"^18.0.0\"`，semver caret 不会自动匹配 19.x\n   - **Suggested Fix** (三选一，按推荐度排序):\n     - **方案 A（推荐）**: 升级 react-router-dom 到支持 React 19 的版本\n       ```bash\n       npm install react-router-dom@latest   # 7.x 正式支持 React 18/19\n       # 或锁定到 6.x 中首个支持 React 19 的版本\n       npm install react-router-dom@^6.28.0\n       ```\n     - **方案 B**: 降级 React 到 18（如果项目暂不需要 React 19 特性）\n       ```bash\n       npm install react@^18.3.0 react-dom@^18.3.0\n       ```\n     - **方案 C**: 使用 npm `--legacy-peer-deps` 绕过（临时方案，不推荐）\n       ```bash\n       npm install --legacy-peer-deps\n       ```\n       ⚠️ 这会忽略所有 peer dependency 冲突，可能在运行时暴露隐藏的不兼容问题。\n\n2. **[priority=2] PR 中修改了 package.json 但未同步更新 lockfile**\n   - **Evidence**: 如果此次 CI 失败是在某 PR 修改了 `package.json` 中的 react 版本后首次出现，且 `package-lock.json` 仍指向旧解析树\n   - **Why**: 本地 `npm install` 可能因缓存/已有 node_modules 未触发完整解析，CI 裸环境才会暴露冲突\n   - **Suggested Fix**: 确认 PR 中 `package.json` 与 `package-lock.json` 是否同步变更；若不一致：\n     ```bash\n     rm -rf node_modules package-lock.json\n     npm install\n     ```\n     然后提交更新后的 `package-lock.json`\n\n---\n\n### 相关文件\n\n- `package.json` — `react@\"^19.0.0\"` 声明行\n- `package.json` — `react-router-dom` 版本声明行\n- `package-lock.json` — 可能未同步更新（如果方案 2 为真）\n\n---\n\n### Skipped Checks\n\n- **PR diff 关联**: 用户未提供 PR diff 路径，无法判断此次失败是否由 PR 引入（`is_pr_caused` 标记为 `unknown`）\n- **其他依赖冲突**: 日志只展示了 react / react-router-dom 一对冲突，其他 package 的 peer dependency 兼容性未扫描\n\n---\n\n### 补充说明\n\n- react-router-dom 7.x 是一次大版本升级（从 Remix 合并），API 有 breaking changes（如 `Switch` → `Routes` 早已在 v6 完成，v7 主要变化在数据路由和 loader/action 模式）。如果项目重度使用 react-router v6 API，建议先升级到 `^6.28.0` 而非直接跳到 7.x。\n- `--legacy-peer-deps` 仅建议作为临时应急方案，长期使用会积累隐蔽的运行时兼容性问题，不利于后续升级。",
+            "toolsCalled": [],
+            "steps": 1,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 18.72,
+            "error": false
+          }
+        },
+        {
+          "score": 5,
+          "details": {
+            "must_include_hits": 6,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 1,
+            "issues": ""
+          },
+          "raw": {
+            "caseId": "case_csh_006",
+            "finalResponse": "## CI 失败诊断\n\n**Failure Class**: `dependency_missing`\n\n**Confidence**: `high`\n\n**Verdict**: `likely_pr_caused`\n\n### Root Cause Hypotheses\n\n**1. [priority=1] React 19 升级未同步升级 react-router-dom**\n\n- **Evidence**: `npm ERR! Found: react@19.0.0` / `npm ERR! peer react@\"^18.0.0\" from react-router-dom@6.20.0`\n- **Why**: `react-router-dom@6.20.0` 的 peerDependencies 只声明兼容 `react@^18.0.0`，不兼容 React 19。PR 中将 `react` 升级到 `^19.0.0` 但未同步升级 `react-router-dom`，导致 npm 严格 peer 检查失败。\n- **Suggested Fix**:\n  ```bash\n  # 方案 A（推荐）：升级 react-router-dom 到支持 React 19 的版本\n  npm install react-router-dom@^6.28.0   # 6.28.0+ 支持 React 19\n  # 或直接上 v7\n  npm install react-router-dom@^7.0.0\n  ```\n  修改 `package.json` 后重新 `npm install`。\n\n**2. [priority=2] npm 严格 peer 检查导致旧 lockfile 冲突（临时绕过）**\n\n- **Evidence**: `npm ERR! code ERESOLVE` — npm 7+ 默认启用 strict peer dependencies 解析\n- **Why**: 如果短期内不能升级 react-router-dom（如等上游发布），可以临时绕过 peer 检查通过 CI，但长期有运行时风险。\n- **Suggested Fix**:\n  ```bash\n  # 仅作 CI 临时应急，不推荐长期使用\n  npm install --legacy-peer-deps\n  ```\n  ⚠️ 需人工 review：绕过 peer 检查后 react-router-dom 在 React 19 运行时可能出现未预期的行为。\n\n### Related Files\n\n- `package.json` — `react` 版本声明（`\"^19.0.0\"`）与 `react-router-dom` 版本声明（当前 `6.20.0`）\n- `package-lock.json` — 锁定版本固化冲突，可能需一并更新\n\n### Skipped Checks\n\n- 无 PR diff 提供，无法确认 react 升级是否来自本次 PR 变更（仅按 log 推断为 `likely_pr_caused`）\n- 未检查项目中是否还有其他依赖同样有 `peer react@\"^18.0.0\"` 限制（`react-dom`、`@types/react` 等也可能受影响）\n\n---\n\n**附：排查同类冲突的快速命令**\n```bash\n# 列出所有声明了 peer react 的依赖，逐个检查兼容性\nnpm ls react --depth=0 2>&1 | grep -E \"peer|UNMET\"\n```",
+            "toolsCalled": [],
+            "steps": 1,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 14.734,
+            "error": false
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "case_csh_007",
+      "median": 2,
+      "samples": [
+        {
+          "score": 5,
+          "details": {
+            "must_include_hits": 6,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 5,
+            "issues": ""
+          },
+          "raw": {
+            "caseId": "case_csh_007",
+            "finalResponse": "当前仓库（sid-code）无 Go 文件，本次诊断仅基于 CI log 本身。以下是结构化诊断：\n\n---\n\n## CI 失败诊断\n\n**Failure Class**: `test_failure`\n\n**Confidence**: `high`\n\n**Verdict**: `likely_pr_caused`\n\n### 根因假设\n\n1. **[priority=1] 测试配置文件未找到或路径错误——ParseConfig 返回零值结构体**\n   - **Evidence**: `config_test.go:42` → `want config.Port=8080, got 0`；`config_test.go:43` → `want config.Host=\"localhost\", got \"\"`。Port 和 Host 同时拿到零值（0 / `\"\"`），说明 `ParseConfig()` 没有成功读取到配置，直接返回了 `Config{}` 初始值。\n   - **Why**: Go 中 `ParseConfig(\"config.yaml\")` 若文件不存在或路径错误，常见实现是返回空配置 + `nil` error（或被测试忽略），导致所有字段为零值。CI 环境的工作目录可能与本地不同，测试使用的相对路径 `\"config.yaml\"` 在 CI 中找不到。\n   - **Suggested Fix**:\n     - 检查 `ParseConfig` 的调用参数（`config_test.go` 中传给 `ParseConfig` 的文件路径），确认 CI 环境中该文件存在。\n     - 若用相对路径，改为用 `testdata/config.yaml` 或通过 `t.TempDir()` 动态写入测试配置：\n       ```go\n       // config_test.go — 建议修改\n       func TestParseConfig(t *testing.T) {\n           dir := t.TempDir()\n           cfg := filepath.Join(dir, \"config.yaml\")\n           os.WriteFile(cfg, []byte(\"port: 8080\\nhost: localhost\"), 0644)\n           got := ParseConfig(cfg)\n           // ...\n       }\n       ```\n     - 若 `ParseConfig` 返回 error，确保测试中检查了 err（`if err != nil { t.Fatal(err) }`），否则零值断言会掩盖真正的文件读取失败。\n\n2. **[priority=2] ParseConfig 函数回归——解析逻辑未正确填充字段**\n   - **Evidence**: 同上 `config_test.go:42-43`。若配置文件确实存在但两个字段都为零值，可能是 YAML/JSON 解析的 struct tag 不匹配（如 yaml tag 写错）或最近 PR 改动了 `Config` 结构体但未同步更新解析逻辑。\n   - **Why**: 若测试配置文件存在且内容正确，`Port=0` 和 `Host=\"\"` 同时发生暗示 `viper.Unmarshal` / `yaml.Unmarshal` 目标 struct 的字段 tag 与实际配置文件 key 不一致。\n   - **Suggested Fix**:\n     - 检查 `Config` struct 定义，确认字段 tag 与配置文件 key 一致：\n       ```go\n       type Config struct {\n           Port int    `yaml:\"port\"`   // 确保不是 `yaml:\"Port\"`\n           Host string `yaml:\"host\"`   // 确保不是 `yaml:\"Host\"`\n       }\n       ```\n     - 检查最近 PR 是否重命名了 struct 字段或修改了 tag。**如有修改需人工 review 确认**（RL-006 守护）。\n\n3. **[priority=3] CI 环境中环境变量覆盖导致零值**\n   - **Evidence**: 测试在 0.123s 内快速失败（不是超时），零值整齐，无明显 panic。若 `ParseConfig` 内部依赖环境变量（如 `os.Getenv(\"APP_PORT\")`），CI 环境未设置这些变量也会导致 zero value。\n   - **Why**: 可能性较低但易排查——若 CI 环境变量 `APP_PORT` / `APP_HOST` 未配置，且代码中 `ParseConfig` 优先读环境变量 > 配置文件，会出现此现象。\n   - **Suggested Fix**:\n     - 检查 `ParseConfig` 实现中是否有 `os.Getenv(\"PORT\")` 或 `viper.BindEnv(\"port\")` 等环境变量绑定。\n     - 若 CI 需要环境变量，在 `.github/workflows/*.yml` 的 `env:` 段添加或 `.env.ci` 文件中补齐。\n\n### 相关文件\n\n- `config_test.go:42` — Port 断言失败（want 8080, got 0）\n- `config_test.go:43` — Host 断言失败（want \"localhost\", got \"\"）\n- `config.go` (推定) 中的 `ParseConfig` 函数 — 解析入口，返回零值\n- 测试配置文件（如 `config.yaml` / `testdata/config.yaml`）— 若缺失或路径错误，直接导致零值\n\n### 跳过的检查\n\n- 未找到对应仓库的 Go 源文件（当前仓库为 TypeScript 项目 `sid-code`，无 `.go` 文件），无法直接读取 `ParseConfig` 实现或 `config_test.go` 完整内容来精确定位根因\n- 未提供 PR diff，无法判定是否本次 PR 引入的回归\n- CI log 仅含 4 行，无可用的 stack trace 或环境变量打印信息\n\n---\n\n**总结建议**：优先排查 `config_test.go` 中传给 `ParseConfig` 的文件路径是否在 CI 环境中可访问（根因假设 #1，最常见）。用 `t.Logf(\"config path: %s\", cfgPath)` 加日志在 CI 环境重跑一次即可快速验证。",
+            "toolsCalled": [
+              "glob"
+            ],
+            "steps": 5,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 37.02,
+            "error": false
+          }
+        },
+        {
+          "score": 0,
+          "details": {
+            "error": false,
+            "timedOut": true,
+            "exitStatus": "timeout"
+          },
+          "raw": {
+            "caseId": "case_csh_007",
+            "finalResponse": "",
+            "toolsCalled": [],
+            "steps": 0,
+            "exitStatus": "timeout",
+            "timedOut": true,
+            "elapsedSec": 90.062,
+            "error": false
+          }
+        },
+        {
+          "score": 2,
+          "details": {
+            "must_include_hits": 5,
+            "must_not_include_violations": 1,
+            "tool_violations": 0,
+            "steps": 17,
+            "issues": "must_not_include 命中: [flaky] | steps=17 超过 max_steps=10"
+          },
+          "raw": {
+            "caseId": "case_csh_007",
+            "finalResponse": "## CI Failure Diagnosis\n\n**Failure Class**: test_failure\n\n**Confidence**: medium\n\n**Verdict**: likely_pr_caused\n\n### Root Cause Hypotheses\n\n1. **[priority=1] `ParseConfig` 未读取配置文件或读取了空文件，返回零值 Config**\n   - **Evidence**:\n     - `config_test.go:42`: `want config.Port=8080, got 0`\n     - `config_test.go:43`: `want config.Host=\"localhost\", got \"\"`\n     - 两个字段同时为零值（`0` / `\"\"`），不是个别字段缺失，说明整个 Config 结构体未被填充\n   - **Why**: Port=8080 和 Host=\"localhost\" 是典型默认配置值。`ParseConfig` 返回了 `Config{}` 零值，最可能的原因是：(a) 配置文件路径错误（如相对路径在 test 运行时找不到）；(b) 文件读取失败但未检查 error，静默返回空 Config；(c) 反序列化（JSON/YAML/toml）字段 tag 与配置文件 key 不匹配\n   - **Suggested Fix**:\n     1. 检查 `ParseConfig` 里文件读取的 error 是否被忽略：`data, err := os.ReadFile(path)` 后面是否有 `if err != nil { return Config{}, err }`（而不是静默返回空 Config）\n     2. 检查测试中传给 `ParseConfig` 的文件路径——Go test 的工作目录是包目录，相对路径通常有效；如果用了 `os.Getwd()` 或绝对路径，可能与预期不一致\n     3. 检查 Config struct 的 tag（如 `json:\"port\"` / `yaml:\"port\"`）与配置文件 key 是否一致\n\n2. **[priority=2] 测试配置文件未提交或 test fixture 缺失**\n   - **Evidence**: `config_test.go:42-43`——断言期望非零值但得到零值，表明测试依赖的外部配置文件（如 `config.yaml` / `config.json`）可能不在仓库中或不在 test 运行时可访问的路径\n   - **Why**: Go test 中常见模式是用 `testdata/` 目录存放 fixture。如果 `ParseConfig(\"./testdata/config.yaml\")` 但这个文件未被 `git add`，CI 环境干净 checkout 后就会读不到文件，导致静默返回零值 Config\n   - **Suggested Fix**: 用 `git ls-files` 检查测试依赖的配置文件是否已提交；如果在 `testdata/` 下，确认 `.gitignore` 没有误排除。也可以用 `embed` 把配置嵌入测试二进制规避路径问题\n\n3. **[priority=3] 测试断言编写错误——端口字段名或类型不匹配**\n   - **Evidence**: `config_test.go:42`: `want config.Port=8080, got 0`——虽然概率低，但不排除 Config struct 里字段叫 `HTTPPort` 而断言用 `Port`，或者 Port 字段类型为 `string` 而非 `int`\n   - **Why**: 如果是字段名/类型不匹配，反序列化库（如 `encoding/json`）会跳过未知/不匹配字段，导致部分字段为零值。不过两个字段同时为零值，这个假设概率低于前两个\n   - **Suggested Fix**: 检查 `config.go` 中 Config struct 定义，确认字段名、类型、tag 与测试断言完全对齐。如果字段名不一致，优先改 Config struct tag（不改测试断言，RL-006 守护：涉及测试断言的 fix 需人工 review）\n\n### Related Files\n\n- `config_test.go:42` — want config.Port=8080, got 0（第一个失败断言）\n- `config_test.go:43` — want config.Host=\"localhost\", got \"\"（第二个失败断言）\n- `config.go`（推断） — ParseConfig 函数实现所在地，需检查错误处理逻辑\n- `config.yaml` / `config.json`（推断） — 若存在外部配置文件，检查是否已提交到仓库\n\n### Skipped Checks\n\n- PR diff 未提供：无法确认 `config.go` / `config_test.go` 是否在本次 PR 变更范围内，无法执行 Step D（PR diff 关联）来进一步确认 `likely_pr_caused`\n- 无 `config.go` 源文件：日志仅含 `github.com/example/app/config` 包名，无法用 read/grep 直接读取源文件做具体 line 级对照\n- 无历史 CI run 数据：无法判定是否为 flaky（单次失败 + 无 retry marker + 无时间/网络关键词，flaky 概率低）",
+            "toolsCalled": [
+              "glob",
+              "read"
+            ],
+            "steps": 17,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 70.355,
+            "error": false
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "case_csh_008",
+      "median": 3,
+      "samples": [
+        {
+          "score": 3,
+          "details": {
+            "must_include_hits": 6,
+            "must_not_include_violations": 1,
+            "tool_violations": 0,
+            "steps": 7,
+            "issues": "must_not_include 命中: [PR 引入]"
+          },
+          "raw": {
+            "caseId": "case_csh_008",
+            "finalResponse": "## CI Failure Diagnosis\n\n**Failure Class**: `flaky`\n\n**Confidence**: `high`\n\n**Verdict**: `likely_flaky`\n\n### Root Cause Hypotheses\n\n1. **[priority=1] WebSocket 服务端启动竞态条件**\n\n   - **Evidence**:\n     - 第 1 次尝试: `ECONNREFUSED 127.0.0.1:9090` — 端口上根本没有监听进程,说明服务端尚未启动完毕\n     - 第 2 次尝试: `socket hang up` — 连接建立后被服务端异常关闭,服务端可能处于\"刚启动但不稳定\"的中间态\n     - 第 3 次尝试: 通过,耗时 1.2s — 服务端最终稳定就绪\n   - **Why**: 三次失败模式形成一条清晰的时序曲线: **无服务 → 半就绪 → 就绪**。这是典型的\"测试代码在 `server.listen()` 回调完成前就发起了 WebSocket 连接\"的竞态问题。`ECONNREFUSED` 和 `socket hang up` 恰好命中 `flaky-patterns.md` 的网络相关信号(网络相关: `ECONNREFUSED` / `EADDRINUSE` / `fetch failed`)。\n   - **Suggested Fix**:\n     ```diff\n     // 测试启动 WebSocket server 后,不应直接 connect,需轮询等待 server 就绪\n     - await startServer();\n     - await ws.connect('ws://127.0.0.1:9090');\n     + await startServer();\n     + await waitForServer('http://127.0.0.1:9090/health', { timeout: 5000, interval: 200 });\n     + await ws.connect('ws://127.0.0.1:9090');\n     ```\n     其中 `waitForServer` 实现为带指数的重试轮询(HTTP health check 或 TCP connect 探测),确保服务端完全就绪后再发起 WebSocket 连接。\n     > ⚠️ **RL-006 标记**: 如果当前测试的 retry 逻辑是 `vitest.config.ts` 中配置的 `retry: 3`,则此改动涉及**测试断言/流程变更**,需人工 review 确认: 应该修复竞态还是保留 retry 容错?\n\n2. **[priority=2] 端口残留 / 资源泄露 (TCP 时序问题)**\n\n   - **Evidence**: 第 2 次尝试报 `socket hang up`(而非 `ECONNREFUSED`),说明端口此时已被监听,但连接立即被关闭。可能原因: 前一次 CI job / 测试进程未完全清理,残留了处于 `TIME_WAIT` 状态的 TCP 连接,新服务端绑定同端口后旧连接干扰了新握手。\n   - **Why**: 概率较低(需要严格时序巧合),但在 CI 容器频繁启停的环境中,`SO_REUSEADDR` 未设置时偶发。\n   - **Suggested Fix**: 确保 WebSocket server 创建时设置 `SO_REUSEADDR`:\n     ```typescript\n     server.listen(9090, { reuseAddr: true });\n     ```\n     此外在 `afterAll` / `afterEach` 中显式 `server.close()` 并 `await` 其 close 完成。\n\n### Related Files\n\n- **测试文件**(未在当前仓库找到): 搜索 `test_websocket_connect` 无结果,该测试不在 sid-code 代码库内。请在 PR 对应仓库中定位 WebSocket 相关测试文件(`grep -r \"127.0.0.1:9090\"` 或 `grep -r \"test_websocket_connect\"`),然后检查 `startServer` 与 `connect` 之间是否有等待服务就绪的逻辑。\n- `src/skill/builtin/ci-self-heal/references/flaky-patterns.md:15-16` — 网络相关 flaky 信号定义\n\n### Skipped Checks\n\n- **PR diff 关联**: 用户未提供 PR diff,无法判断本次失败是否由当前 PR 引入。\n- **跨 run 历史**: 未提供历史 CI run 数据,无法统计该测试的历史 flaky 率(M5+ Daemon 持久化后可精确判定)。",
+            "toolsCalled": [
+              "grep",
+              "read"
+            ],
+            "steps": 7,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 44.34,
+            "error": false
+          }
+        },
+        {
+          "score": 2,
+          "details": {
+            "must_include_hits": 5,
+            "must_not_include_violations": 1,
+            "tool_violations": 0,
+            "steps": 11,
+            "issues": "must_not_include 命中: [PR 引入] | steps=11 超过 max_steps=10"
+          },
+          "raw": {
+            "caseId": "case_csh_008",
+            "finalResponse": "仓库中未找到 `test_websocket_connect` 对应的源文件（未跟踪或路径不在当前 repo 内）。基于 CI log 本身即可完成诊断——以下为结构化输出：\n\n---\n\n## CI Failure Diagnosis\n\n**Failure Class**: flaky\n\n**Confidence**: high\n\n**Verdict**: likely_flaky\n\n### Root Cause Hypotheses\n\n1. **[priority=1]** WebSocket server 在测试连接时尚未就绪（启动竞态）\n   - **Evidence**:\n     - `attempt 1`: `ECONNREFUSED 127.0.0.1:9090` — 端口 9090 无进程监听，server 还未完成 `listen()`\n     - `attempt 2`: `socket hang up` — server 已开始监听但握手未完成就被对端关闭（典型半初始化状态）\n     - `attempt 3`: `✓ test_websocket_connect` — server 完全就绪后连接成功\n     - retry 模式 `attempt 1 of 3` / `attempt 2 of 3` / `attempt 3 of 3` 命中 flaky 强信号（`ci-failure-patterns.md §2.7`）\n   - **Why**: WebSocket server 的 `server.listen(9090)` 是异步操作，测试代码在 server 触发 `listening` 事件前就开始发起连接。attempt 2 的 `socket hang up` 进一步说明 server 生命周期不稳定——可能在两次重试之间被意外关闭或尚未完成 WebSocket 升级握手。\n   - **Suggested Fix**（三选一，推荐方案 1）:\n     - **方案 1（推荐）**：在测试 `beforeAll` / `beforeEach` 中等待 server `listening` 事件后再执行连接。\n       ```ts\n       // 确保 server 就绪后再测试\n       await new Promise<void>((resolve) => server.once(\"listening\", resolve));\n       ```\n     - **方案 2**：用 `wait-for-port` 类工具做就绪探针，替代固定 `sleep`：\n       ```ts\n       import { waitForPort } from \"some-util\"; // 或用 net.createConnection 轮询\n       await waitForPort({ port: 9090, timeout: 5000 });\n       ```\n     - **方案 3**：如果 server 启动无法改（如外部依赖），在测试框架层配置更长的 `beforeEach` timeout + retry 间隔而非依赖框架级 `retry`。\n\n2. **[priority=2]** 测试间 server 状态未清理，前序测试残留影响当前连接（端口复用冲突）\n   - **Evidence**:\n     - `attempt 2` 报 `socket hang up` 而非 `ECONNREFUSED`——说明端口 9090 有进程监听，但连接被异常关闭\n     - 测试框架配置了 `retry: 3`（或等效 jest circus `retryTimes`），暗示开发者已预期此测试不稳定，但未从根因解决\n   - **Why**: 如果多个测试用例共享同一 WebSocket server 实例且 `afterEach` 未正确 `server.close()` + 等待 `close` 事件，上一个测试残留的半关闭状态（TCP `TIME_WAIT`）会干扰下一次 `listen(9090)`，导致 `socket hang up`。\n   - **Suggested Fix**: 在 `afterEach` / `afterAll` 中确保 server 完全关闭后再启动下一个：\n     ```ts\n     afterEach(async () => {\n       if (server.listening) {\n         await new Promise<void>((resolve) => server.close(() => resolve()));\n       }\n     });\n     ```\n\n3. **[priority=3]** CI 环境资源争抢导致端口绑定延迟（环境因素）\n   - **Evidence**: `attempt 3` 成功耗时 `1.2s`——比正常本地开发环境慢，暗示 CI runner 的 CPU/IO 资源紧张，server 启动时间被拉长\n   - **Why**: CI 容器（如 GitHub Actions 2-core runner）上并发 job 争抢资源时，`listen()` 系统调用可能比预期多花 200-500ms，恰好超出测试的超时窗口\n   - **Suggested Fix**: 在 CI 配置中为 WebSocket 测试 job 设置更高的资源或串行执行，并增大 `beforeAll` 中 server 启动的超时阈值（如 `jest.setTimeout(15000)`），同时观察连续 5 次 CI run 是否复现——若不再复现则标记为环境抖动，保持当前 retry 配置即可。\n\n### Related Files\n\n- 用户提供的 CI log（未关联到仓库源文件）— `test_websocket_connect` 测试用例位置未知；建议全局搜索 `9090` 或 `websocket` 定位调用方\n- `ci-failure-patterns.md §2.7` — flaky 分类规则：`ECONNREFUSED` + `socket hang up` + `retry` 三重命中即 high confidence flaky\n\n### Skipped Checks\n\n- 未提供 PR diff — 无法执行 Step D（PR 关联分析：判断是否本次 PR 引入了 server 启动竞态）\n- 未提供测试配置文件（`vitest.config.ts` / `jest.config.ts`）— 无法确认 retry 是框架配置还是隐式重试，影响 flaky 根因定位精度\n\n---\n\n**一句话总结**：`ECONNREFUSED` → `socket hang up` → 成功 的三段式 pattern 是典型 WebSocket server 启动竞态，修正 `beforeAll` 中",
+            "toolsCalled": [
+              "read",
+              "grep"
+            ],
+            "steps": 11,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 45.274,
+            "error": false
+          }
+        },
+        {
+          "score": 3,
+          "details": {
+            "must_include_hits": 6,
+            "must_not_include_violations": 1,
+            "tool_violations": 0,
+            "steps": 1,
+            "issues": "must_not_include 命中: [PR 引入]"
+          },
+          "raw": {
+            "caseId": "case_csh_008",
+            "finalResponse": "## CI 失败诊断\n\n**Failure Class**: `flaky`\n\n**Confidence**: `high`\n\n**Verdict**: `likely_flaky`\n\n### 根因假设\n\n1. **[priority=1]** WebSocket 服务端未在测试启动前完成端口绑定，前两次 attempt 时端口未就绪\n   - **Evidence**: `ECONNREFUSED 127.0.0.1:9090` (attempt 1) — 端口无进程监听；`socket hang up` (attempt 2) — 服务端可能刚启动但尚未完成 WebSocket 握手；仅 attempt 3 通过。\n   - **Why**: WebSocket 服务端启动是异步的，测试代码未等待 `listening` 事件或就绪信号就直接发起连接，端口绑定存在竞态窗口（尤其在 CI 资源受限环境下窗口更大）。\n   - **Suggested Fix**: 在测试 setup 中增加显式就绪等待，例如：\n     ```ts\n     // 方案 A: 轮询端口\n     await waitForPort(9090, { timeout: 10000 });\n     // 方案 B: 监听服务端 ready 事件\n     await new Promise<void>((resolve) => server.once(\"listening\", resolve));\n     ```\n     或使用 `retry` 工具函数替代硬编码的 3 次 attempt（让重试逻辑更健壮，包含指数退避）。\n\n2. **[priority=2]** CI 环境端口残留（前次 run 的 server 进程未清理），导致 attempt 1-2 时旧进程干扰\n   - **Evidence**: `socket hang up` (attempt 2) 暗示端口上可能有进程但行为异常；attempt 3 通过说明最终端口恢复正常。\n   - **Why**: CI runner 复用时，前次测试的 WebSocket server 可能未正确 `close()`，导致端口被 `TIME_WAIT` 状态占用或被僵尸进程监听。\n   - **Suggested Fix**: 测试 teardown 中强制 `server.close()` + 等待 `close` 事件；或使用 `SO_REUSEADDR` 选项绑定端口。CI 配置中加 `--forceExit` / `--detectOpenHandles` 排查。\n\n### 相关文件\n\n- 无法从给定日志片段直接提取测试文件路径。可在本地执行 `grep -r \"test_websocket_connect\" --include=\"*.test.*\"` 定位测试文件，再检查 `beforeEach` / `beforeAll` 中的 server 启动逻辑。\n\n### 跳过的检查\n\n- **未做 PR diff 关联**：用户未提供 PR diff，无法判断是否本次 PR 引入。\n- **未做历史 flaky 统计**：仅有单次 CI run 的 3 attempt 日志，无法跨 run 判定 flaky 频率（需 M6+ Daemon 持久化数据才能精确）。\n\n---\n\n### flaky 命中信号\n\n| 信号 | 匹配 |\n| --- | --- |\n| 网络/端口错误 (`ECONNREFUSED`, `socket hang up`) | ✅ |\n| 多次 retry 中表现不稳定 (attempt 1/2 失败, 3 通过) | ✅ |\n| 时间无关（无 `setTimeout`/`sleep` 涉及） | — |\n\n结论：这是一个典型的 **CI 环境 WebSocket 端口竞态 flaky**。优先在测试 setup 中加入端口就绪等待，可从根本上消除此类 flaky。",
+            "toolsCalled": [],
+            "steps": 1,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 16.696,
+            "error": false
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "case_csh_009",
+      "median": 4,
+      "samples": [
+        {
+          "score": 2,
+          "details": {
+            "must_include_hits": 0,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 16,
+            "issues": "must_include 0 命中（need ≥ 1，title: environment_failure_correctly_identified） | steps=16 超过 max_steps=8"
+          },
+          "raw": {
+            "caseId": "case_csh_009",
+            "finalResponse": "",
+            "toolsCalled": [
+              "glob",
+              "read"
+            ],
+            "steps": 16,
+            "exitStatus": "error",
+            "timedOut": false,
+            "elapsedSec": 28.602,
+            "error": false
+          }
+        },
+        {
+          "score": 5,
+          "details": {
+            "must_include_hits": 5,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 5,
+            "issues": ""
+          },
+          "raw": {
+            "caseId": "case_csh_009",
+            "finalResponse": "## CI 故障诊断\n\n**Failure Class**: `timeout`\n\n**Confidence**: `medium`\n\n**Verdict**: `likely_environment`\n\n### Root Cause Hypotheses\n\n1. **[priority=1] CI Job 超时被强制终止**\n   - **Evidence**: \n     - log line 1: `##[error]The runner has received a shutdown signal.`\n     - log line 2: `##[error]Process completed with exit code 143.`\n     - exit code 143 = 128 + 15 = **SIGTERM**，即 runner 进程被外部信号终止\n   - **Why**: GitHub Actions（或同类 CI 平台）在 job 运行时间超过配置的 `timeout-minutes` 上限时，会向 runner 发送 SIGTERM 信号优雅终止。exit code 143 是收到 SIGTERM 的典型表现（区别于 exit 137 = SIGKILL/OOM）。\n   - **Suggested Fix**:\n     1. 检查 `.github/workflows/*.yml` 中该 job 的 `timeout-minutes` 设置，当前可能太小（例如默认 360 分钟但被手动设为 10 分钟）\n     2. 若 CI 确实需要更长时间：增大 `timeout-minutes` 值，或拆分 job 为多个并行/串行步骤\n     3. 若 CI 不应该跑这么久：检查是否引入了死循环、无限等待、或依赖的外部服务不可达导致 hang 住\n\n2. **[priority=2] Runner 资源被抢占或宿主机维护**\n   - **Evidence**: 同上两条 log line；日志中没有任何测试失败、构建错误、lint 报错，说明是在运行过程中被外部终止\n   - **Why**: 如果使用的是 self-hosted runner 或 spot instance，宿主机的维护/抢占也会导致 runner 收到 shutdown signal\n   - **Suggested Fix**:\n     1. 若是 self-hosted runner：检查宿主机是否有维护窗口或资源不足（`dmesg` / `journalctl` 查看 OOM killer 日志）\n     2. 若是 spot instance：考虑改用 on-demand instance 或增加 retry 策略\n     3. 在 workflow 中添加 `continue-on-error: true` 或 retry 步骤（`nick-fields/retry@v2`）作为短期缓解\n\n### Related Files\n\n- `.github/workflows/ci.yml`（或对应 CI 配置文件）— 检查 `timeout-minutes` 字段\n- 本次 CI run 的完整 log — 查看 shutdown 前最后执行的步骤是什么，判断是否卡在某个特定操作\n\n### Skipped Checks\n\n- **PR diff 关联未执行**：未提供 PR diff 路径，无法判断是否由本次 PR 变更引入\n- **Step A/B 确定性脚本未执行**：日志仅 2 行，parse-ci-log 和 classify-failure 无有效 stack trace / failed assertion 可抽取，直接基于 exit code 语义诊断\n- **flaky 判定**：当前无 retry markers / 时间相关 / 网络相关信号，不标记为 flaky；但如果多次 CI run 复现此 exit code 143，建议升级 verdict 为 `likely_flaky` 并排查超时阈值或 hang 住的步骤",
+            "toolsCalled": [
+              "ls",
+              "read"
+            ],
+            "steps": 5,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 27.835,
+            "error": false
+          }
+        },
+        {
+          "score": 4,
+          "details": {
+            "must_include_hits": 5,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 13,
+            "issues": "steps=13 超过 max_steps=8"
+          },
+          "raw": {
+            "caseId": "case_csh_009",
+            "finalResponse": "日志极短，无法运行脚本（需交互确认），但信息量足够手动诊断。以下按模板输出：\n\n---\n\n## CI Failure Diagnosis\n\n**Failure Class**: `timeout`\n\n**Confidence**: `medium`\n\n**Verdict**: `likely_environment`\n\n### Root Cause Hypotheses\n\n1. **[priority=1]** GitHub Actions Job / Step 超时导致 SIGTERM\n   - **Evidence**: `Log Line 1`: `##[error]The runner has received a shutdown signal.` + `Log Line 2`: `Process completed with exit code 143.` (143 = 128 + 15 = SIGTERM)\n   - **Why**: GitHub Actions 在 job 或 step 超时时向 runner 发送 SIGTERM 信号强制终止。exit code 143 是 SIGTERM 的标准退出码。日志中无任何测试/构建/lint 错误输出，说明进程在被终止前没有机会报告任何业务层面失败——这符合\"超时被 kill\"的典型形态（进程还在跑，但外部信号先到）。\n   - **Suggested Fix**:\n     1. 检查 `.github/workflows/*.yml` 中该 job 的 `timeout-minutes` 配置，适当增大（默认 360 分钟，但可被 step 级覆盖）\n     2. 检查是否有 step 级 `timeout-minutes` 过短\n     3. 若 timeout 配置合理但仍超时，排查是哪个步骤慢：在 workflow 中加入 `time` 前缀或启用 step 级计时日志\n     4. 如果是测试步骤超时：考虑拆分测试为并行 matrix、或给特定慢测试加 `jest.setTimeout()` 延长\n\n2. **[priority=2]** Runner 被手动取消或平台维护\n   - **Evidence**: `Log Line 1`: `shutdown signal` — 未出现 `timeout exceeded` / `deadline exceeded` 等典型超时字样，可能是外部取消而非超时\n   - **Why**: GitHub Actions 有时会因平台维护、runner 迁移、或有人在 UI 上点击 \"Cancel workflow\" 触发 shutdown signal。日志只含 shutdown 信号而无超时提示，不能排除手动取消或平台侧事件。\n   - **Suggested Fix**:\n     1. 在 GitHub Actions UI 中查看该 run 的 \"Cancel\" 操作记录\n     2. 查看 GitHub Status (https://www.githubstatus.com/) 确认是否有平台事件\n     3. 若为自托管 runner：检查 runner 所在机器的系统日志 (`journalctl` / `dmesg`)，排查 OOM killer 或系统 shutdown\n\n### Related Files\n\n- `.github/workflows/*.yml` — 需检查 `timeout-minutes` 配置（job 级和 step 级）\n- （无代码文件——本次失败无 file:line 级别的代码引用，原因是 runner 在业务日志输出前已被 SIGTERM 终止）\n\n### Skipped Checks\n\n- **parse-ci-log.ts 未执行**：非交互模式下无法运行 bash 脚本，但日志仅 2 行，手动解析已覆盖全部信息\n- **classify-failure.ts 未执行**：同上；基于启发式规则手动分类为 `timeout`（SIGTERM shutdown signal → +0.25 中等信号），无 candidate_alternatives（其他 7 类信号均为 0）\n- **PR diff 关联**：未提供 PR diff，无法判断是否与本次 PR 变更相关\n- **flaky 深度判断**：无历史 run 数据，无法区分\"偶发超时\"与\"系统性超时\"\n\n---\n\n**总结**：这是一个基础设施层面的 CI 失败——runner 被 SIGTERM 信号强制终止，大概率是 job/step 超时触发。日志中没有代码错误，优先排查 workflow 的 `timeout-minutes` 配置和平台侧事件。",
+            "toolsCalled": [
+              "glob",
+              "read"
+            ],
+            "steps": 13,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 44.264,
+            "error": false
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "case_csh_010",
+      "median": 5,
+      "samples": [
+        {
+          "score": 5,
+          "details": {
+            "must_include_hits": 6,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 7,
+            "issues": ""
+          },
+          "raw": {
+            "caseId": "case_csh_010",
+            "finalResponse": "栈追踪指向 `src/auth.py:45` 的 `login` 函数和 `tests/test_user.py:28` 的断言，但这俩文件不在当前工作区中——这是外部项目的 CI 日志，以下基于日志中提供的证据做诊断。\n\n---\n\n## CI 失败诊断\n\n**Failure Class**: `test_failure`\n\n**Confidence**: `high`\n\n**Verdict**: `likely_pr_caused`\n\n### 根因假设\n\n1. **[priority=1] `login()` 未校验密码，仅按邮箱查找用户**\n   - **Evidence**: \n     - `tests/test_user.py:28` — `assert login(\"alice@test.com\", \"wrong\") is None`\n     - 断言失败输出：`assert <User alice> is None`（即 `login(\"alice@test.com\", \"wrong\")` 返回了 `User alice` 对象而非 `None`）\n     - `src/auth.py:45` — `login` 函数入口行\n   - **Why**: 用错误密码 `\"wrong\"` 调用 `login` 时仍返回了 `alice` 用户对象，说明 `login` 函数流程有问题——最可能的原因是只查了邮箱 `\"alice@test.com\"` 是否存在就返回用户，完全跳过了密码比对步骤（或者密码比对逻辑有 bug，如始终返回 `True`）。\n   - **建议修复**:\n     ```python\n     # src/auth.py:45 login 函数内，确保密码比对逻辑存在且正确\n     def login(email: str, password: str):\n         user = find_user_by_email(email)          # 查用户\n         if user is None:\n             return None\n         if not verify_password(password, user.hashed_password):  # ← 关键：密码校验\n             return None\n         return user\n     ```\n     此外排查：密码哈希算法是否一致（`create_user` 用的是 `hash(\"pwd123\")`，而 `login` 里可能用 `==` 直接比较明文与哈希？）\n\n2. **[priority=2] `login()` 逻辑被最近的 PR 改动破坏**\n   - **Evidence**:\n     - 同一个测试文件中的 `test_create_user` **PASSED**，说明 `create_user` 本身没问题\n     - `test_charge` 也 PASSED，说明环境/依赖没问题\n     - 仅 `test_login` 失败，是孤立的函数级故障\n   - **Why**: 如果 `login` 之前是正常的（假设 `test_login` 不是新增的），本次故障极可能是最近的代码变更引入的回归。检查 `src/auth.py` 的最近 diff（`git diff HEAD~1 -- src/auth.py`）可以确认。\n   - **建议修复**: 回看本次 PR 对 `src/auth.py` 的改动，尤其关注 `login` 函数体内是否有删除或条件短路（如早期 return、`if not password_required: return user` 等调试代码残留）。\n\n3. **[priority=3] 密码常量或 mock 污染** (低概率)\n   - **Evidence**: `create_user(\"alice@test.com\", \"pwd123\")` 和 `login(\"alice@test.com\", \"wrong\")` 的密码在一个测试里——如果有全局 mock 或 patch 把 `verify_password` 替换为始终返回 `True`，也会触发同一症状。\n   - **Why**: 概率低，因为其他测试如 `test_charge` PASSED 说明全局 mock 未被滥用。但仍应排查。\n   - **建议修复**: 检查 `tests/test_user.py` 顶部的 `@patch` / `@mock` 装饰器，确认 `verify_password` 相关 mock 未影响 `test_login`。\n\n### 相关文件\n\n- `src/auth.py:45` — `login` 函数，密码校验逻辑存在缺陷\n- `tests/test_user.py:28` — 断言位置，`login(\"alice@test.com\", \"wrong\")` 应为 `None` 但返回了 `User`\n\n### 跳过的检查\n\n- 无法读取 `src/auth.py` 和 `tests/test_user.py` 的实际内容（不在当前工作区），根因分析基于日志堆栈 + 常见模式推断\n- 未提供 PR diff，无法做 `is_pr_caused` 精确判定，结论来自 `test_create_user` PASSED 的间接证据\n- 未执行 `scripts/parse-ci-log.ts` 解析（pytest 输出简短，手动提取已足够）",
+            "toolsCalled": [
+              "glob"
+            ],
+            "steps": 7,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 28.742,
+            "error": false
+          }
+        },
+        {
+          "score": 5,
+          "details": {
+            "must_include_hits": 6,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 5,
+            "issues": ""
+          },
+          "raw": {
+            "caseId": "case_csh_010",
+            "finalResponse": "## CI 故障诊断\n\n**Failure Class**: `test_failure`\n\n**Confidence**: `high`\n\n**Verdict**: `likely_pr_caused`\n\n### 根因假设\n\n1. **[priority=1] `login()` 函数未校验密码或校验逻辑有缺陷**\n   - **Evidence**: `tests/test_user.py:28` — `assert login(\"alice@test.com\", \"wrong\") is None` 期望错误密码返回 `None`，但实际返回了 `<User alice>` 对象。调用栈指向 `src/auth.py:45`。\n   - **Why**: `create_user(\"alice@test.com\", \"pwd123\")` 注册密码是 `\"pwd123\"`，但 `login(\"alice@test.com\", \"wrong\")` 传入 `\"wrong\"` 仍然成功返回 User 对象，说明 `login()` 内部要么根本没有比对密码，要么密码比对逻辑写反了（例如条件判断写成 `if password == stored` 而不是 `if password != stored`）。\n   - **Suggested Fix**（需人工 review）:\n     - 检查 `src/auth.py:45` 附近 `login` 函数体，确认密码比对逻辑。典型修复示意：\n       ```python\n       # src/auth.py login 函数内\n       def login(email, password):\n           user = find_user_by_email(email)\n           if user is None:\n               return None\n           # 确保密码校验正确\n           if not check_password_hash(user.password_hash, password):  # ← 检查此处逻辑\n               return None\n           return user\n       ```\n     - 常见错误形态：`if password == user.password` 写成 `if password = user.password`（赋值而非比较）、哈希比对函数调反参数、或直接 `return user` 跳过校验分支。\n\n2. **[priority=2] `login()` 函数忽略返回值提前返回 User 对象**\n   - **Evidence**: 同上 `tests/test_user.py:28` / `src/auth.py:45`。\n   - **Why**: 可能 `login()` 开头 `user = find_user_by_email(email)` 后直接 `return user`，中间缺失密码校验步骤；或者密码校验结果未用于控制流（例如校验结果赋值后被忽略）。\n   - **Suggested Fix**: 沿 `src/auth.py` 从 line 45 向上追溯，确认在 `return user` 语句之前是否存在 `if not valid:` / `if password != ...` 类型的守卫分支。如果缺失，添加密码校验守卫。\n\n### 相关文件\n\n| 文件 | 行号 | 说明 |\n| --- | --- | --- |\n| `tests/test_user.py` | 28 | 断言失败点：`login(\"alice@test.com\", \"wrong\")` 期望返回 `None`，实际返回 `User` |\n| `src/auth.py` | 45 | 调用栈指向的 `login` 函数实现位置，密码校验缺陷最可能所在 |\n\n### 跳过的检查\n\n- **PR diff 关联**: 未提供 PR diff，跳过 `is_pr_caused` 判定（本次按 `likely_pr_caused` 标记，因为 `login` 密码校验缺失通常是最近变更引入的逻辑 bug）。\n- **flaky 识别**: 本失败无时间/网络/端口相关字段，无可重复 attempt 标记，排除 flaky。\n\n### 快速验证建议\n\n```bash\n# 1. 定位 login 函数体\ngrep -n \"def login\" src/auth.py\n\n# 2. 查看 login 函数完整实现\nsed -n '45,70p' src/auth.py\n\n# 3. 复现单条用例\npytest tests/test_user.py::test_login -v\n```",
+            "toolsCalled": [
+              "glob"
+            ],
+            "steps": 5,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 20.687,
+            "error": false
+          }
+        },
+        {
+          "score": 5,
+          "details": {
+            "must_include_hits": 5,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 5,
+            "issues": ""
+          },
+          "raw": {
+            "caseId": "case_csh_010",
+            "finalResponse": "## CI Failure Diagnosis\n\n**Failure Class**: `test_failure`\n\n**Confidence**: `high`\n\n**Verdict**: `likely_pr_caused`\n\n### Root Cause Hypotheses\n\n1. **[priority=1] `login()` 未验证密码直接返回了 User 对象**\n   - **Evidence**: `tests/test_user.py:28` — `assert login(\"alice@test.com\", \"wrong\") is None` 断言失败，实际返回了 `<User alice>` 而非 `None`。调用栈指向 `src/auth.py:45`。\n   - **Why**: 测试传入错误密码 `\"wrong\"`（正确密码应为 `\"pwd123\"`），期望返回 `None`。但 `login()` 实际返回了 User 对象，说明该函数在 `src/auth.py:45` 附近**只按 email 查到了用户就直接返回，跳过了密码比对逻辑**。这是典型的认证漏洞（CWE-287）。\n   - **Suggested Fix**（需人工 review）:\n     ```python\n     # src/auth.py login() 函数中，在 return 前增加密码校验：\n     def login(email, password):\n         user = find_user_by_email(email)\n         if user is None:\n             return None\n         # 缺失的密码校验逻辑 ↓\n         if not verify_password(user.password, password):\n             return None\n         return user\n     ```\n\n2. **[priority=2] `login()` 内部调用的密码验证函数签名/返回值有 bug**\n   - **Evidence**: 同上 `tests/test_user.py:28`，`src/auth.py:45`。\n   - **Why**: 备选可能性——`login()` 内部调用了某个 `check_password()` 辅助函数，但该函数返回值被忽略（如 `check_password(user, password)` 没有用其返回值做判断），或函数本身始终返回 `True`。\n   - **Suggested Fix**: 检查 `src/auth.py:45` 附近是否有 `check_password` / `verify_password` 调用，确认其返回值被正确用于条件判断。\n\n### Related Files\n\n- `tests/test_user.py:28` — 失败断言所在行，测试预期错误的密码返回 `None`\n- `src/auth.py:45` — `login()` 函数定义，堆栈指向该位置，疑似缺少密码校验\n- `src/auth.py` — 推测 `find_user_by_email()` / `verify_password()` 位于同文件或相邻模块\n\n### Skipped Checks\n\n- **PR diff 未提供**：无法判定本次失败是否由当前 PR 直接引入（`is_pr_caused: unknown`）\n- **源文件不在当前仓库**：`tests/test_user.py` 和 `src/auth.py` 均未在 sid-code 项目内找到，无法做深层代码分析。以上诊断基于 CI log 中的断言语义推断。\n- **无历史 CI run 数据**：无法判定是否 flaky（但本次失败语义明确——错误密码仍返回 User，非随机行为，flaky 概率低）",
+            "toolsCalled": [
+              "glob"
+            ],
+            "steps": 5,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 19.403,
+            "error": false
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "case_csh_011",
+      "median": 5,
+      "samples": [
+        {
+          "score": 5,
+          "details": {
+            "must_include_hits": 5,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 1,
+            "issues": ""
+          },
+          "raw": {
+            "caseId": "case_csh_011",
+            "finalResponse": "## CI Failure Diagnosis\n\n**Failure Class**: `unknown`\n\n**Confidence**: `low`\n\n**Verdict**: `needs_human`\n\n### Root Cause Hypotheses\n\n当前日志信息严重不足——仅知\"17 tests failed / exit code 1 / output truncated at 4MB\"，无具体测试名、file:line、stack trace。4MB 输出被截断说明两个可能：① 确实有大量失败（17 个失败的完整 stack trace + 输出确实可能轻松超 4MB）；② 某处存在**无限循环日志输出**（log spam）把真实失败信息冲掉了。\n\n**在当前信息贫乏下，唯一有效诊断是帮用户拿到完整日志**：\n\n1. **[priority=1] 下载完整 CI raw log（绕过 GitHub 4MB 截断）**\n   - **Evidence**: GitHub Actions UI 对 `... (output truncated, exceeded 4MB)` 做了前端截断，但 raw log 通过 API 可以完整下载\n   - **Why**: 4MB 输出包含 17 个失败的全部 stack trace / assertion 信息，是诊断的唯一原材料\n   - **Suggested Fix**:\n     ```bash\n     # 方法 1: GitHub CLI 下载 raw log\n     gh run view <RUN_ID> --log > /tmp/ci-full.log\n\n     # 方法 2: 直接 curl (需要 token)\n     curl -H \"Authorization: token <REDACTED:github_token>\" \\\n       https://api.github.com/repos/<OWNER>/<REPO>/actions/runs/<RUN_ID>/logs \\\n       -o /tmp/ci-full.log\n\n     # 方法 3: 在 GitHub Actions 页面点右上角齿轮 → \"Download log archive\"\n     ```\n\n2. **[priority=2] 输出太大可能是 log spam，非真实 17 个失败**\n   - **Evidence**: 4MB 输出在大多数 CI 场景下异常——正常 17 个测试失败即使带完整 stack trace 也极少超 4MB\n   - **Why**: 可能是某个测试触发了死循环打印、`console.log` 在循环内、或 mock 对象序列化失控\n   - **Suggested Fix**:\n     ```bash\n     # 拿到完整日志后，先看文件大小和最后 500 行\n     wc -l /tmp/ci-full.log\n     tail -500 /tmp/ci-full.log\n\n     # 如果确实是 log spam，定位重复模式\n     grep -o '.*' /tmp/ci-full.log | sort | uniq -c | sort -rn | head -20\n     ```\n\n### Related Files\n\n- 无——CI log 截断，无法关联具体文件\n\n### Skipped Checks\n\n- **Step A (parse-ci-log)**: 无法执行——log 仅含尾部截断提示，无可解析的 stack trace / assertion / file:line\n- **Step B (classify-failure)**: 无法执行——分类需要至少一个可解析的失败条目\n- **Step F (flaky 识别)**: 无法执行——无重试信息、无时间/网络相关字段\n- **全部 8 类失败分类信号均不可用**（test_failure / lint_failure / build_failure / type_error / dependency_missing / config_error / flaky / timeout）\n\n### 下一步操作建议\n\n拿到完整日志后，再跑一次诊断：\n\n```\n# 假设你已保存到 /tmp/ci-full.log\ncat /tmp/ci-full.log | bun run src/skill/builtin/ci-self-heal/scripts/parse-ci-log.ts\n```\n\n如果该仓库就是 sid-code 自身，也可以直接告诉我 `<OWNER>/<REPO>` 和 `<RUN_ID>`，我来帮你用 `gh` 拉取并诊断。",
+            "toolsCalled": [],
+            "steps": 1,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 18.927,
+            "error": false
+          }
+        },
+        {
+          "score": 5,
+          "details": {
+            "must_include_hits": 6,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 1,
+            "issues": ""
+          },
+          "raw": {
+            "caseId": "case_csh_011",
+            "finalResponse": "## CI Failure Diagnosis\n\n**Failure Class**: `test_failure`\n\n**Confidence**: `low`（日志被截断，无法读取具体断言/堆栈）\n\n**Verdict**: `needs_human`（4MB 日志截断 = 无可用堆栈，必须人介入获取完整日志后再诊断）\n\n---\n\n### Root Cause Hypotheses\n\n#### 1. **[priority=1] 日志 4MB 截断：某个测试产生了海量输出（循环打印 / 递归渲染 / 大对象序列化）**\n\n- **Evidence**: \n  - 日志行：`... (output truncated, exceeded 4MB)` — GitHub Actions 的 4MB 日志上限被触发\n  - 日志行：`✗ 17 tests failed` — 失败数量多但尚在\"一次 PR 引入多处 break\"合理范围内\n  - 一个正常 vitest/jest 全量跑完的日志通常在 100KB–2MB 量级，**4MB 截断是异常信号**\n- **Why**: 4MB 日志意味着某（几）个测试 case 在循环或递归中疯狂 `console.log` / `console.error`，或者某个大对象被序列化后输出到 stderr。17 个失败可能是\"第一个测试炸了后级联污染\"或\"共享 fixture 被破坏导致批量失败\"。\n- **Suggested Fix**:\n  1. **先拿到完整日志**：在 workflow yaml 中加 `continue-on-error: true` 并把日志 artifact 上传（GitHub 不会截断 artifact），或本地 `bun test 2>&1 | tee ci-full.log` 复现\n  2. 检查日志前 500 行 — 第一个失败的测试往往就是\"污染源\"\n  3. 在可疑测试中搜索 `console.log` / `console.error` / `JSON.stringify(largeObject)` / `process.stdout.write` — 把调试日志换成 `if (process.env.CI) return` 守卫\n  4. 如果日志体积来自海量 `expect(received).toBe(expected)` diff（大对象对比失败），把断言改为 `expect(received.id).toBe(expected.id)` 精确字段而非全量对比\n\n#### 2. **[priority=2] 共享 fixture / setup 文件被破坏，导致 17 个测试级联失败**\n\n- **Evidence**: \n  - `✗ 17 tests failed` — 17 个失败集中在同一次 run，比单点 bug 更符合\"setup 炸了\"的特征\n  - 日志在截断点之前没有可见的单个错误 — 如果有，GitHub 通常会保留最后几千字节\n- **Why**: 如果 `beforeAll` / `beforeEach` / 共享 mock 模块抛出异常，后续所有依赖该 setup 的测试都会 fail。17 个失败可能是\"1 个根因 + 16 个级联\"。\n- **Suggested Fix**:\n  1. 本地跑 `bun test --bail`（第一个失败就停）— 看是不是 setup 阶段挂的\n  2. 检查最近改动的 `tests/setup.ts`、`tests/_fixtures/`、共享 mock 文件（`__mocks__/`）— 这些文件的改动会让所有依赖方全挂\n  3. 回顾本次 PR 变更的 `src/` 文件 — 如果改了某个被 mock 的模块的导出签名，所有 mock 都会 fail（vitest `vi.mock` 不会自动更新签名）\n\n#### 3. **[priority=3] 依赖版本漂移（lockfile 未更新 / CI 环境缺依赖）**\n\n- **Evidence**: \n  - `##[error]Process completed with exit code 1.` — 只有退出码，没有\"module not found\"类错误（但日志截断了，可能在截断段里）\n  - 17 个失败数量偏高，符合\"缺依赖 → import 全炸\"的模式\n- **Why**: 如果 `bun install --frozen-lockfile` 在 CI 上失败但被静默吞掉，测试阶段会因为缺包而批量 fail。\n- **Suggested Fix**:\n  1. 检查 CI workflow 的 `Install dependencies` step 是否通过（日志截断前）\n  2. 本地 `rm -rf node_modules && bun install --frozen-lockfile && bun test` 验证\n  3. 检查 PR 是否改了 `package.json` 但忘记 commit `bun.lockb` / `package-lock.json`\n\n---\n\n### Related Files\n\n- `.github/workflows/*.yml` — 检查是否有日志 artifact 上传步骤；如无可加 `actions/upload-artifact` 保存完整日志\n- `tests/` 目录下最近修改的文件 — `git diff origin/master --name-only -- tests/` 定位本次 PR 的测试变更\n\n---\n\n### Skipped Checks\n\n- **Step A (parse-ci-log)**: 日志被截断，无可解析的堆栈/断言/文件引用\n- **Step D (PR diff 关联)**: 用户未提供 PR diff 路径\n- **Stack trace 提取**: 4MB 截断后只剩结尾 2 行，无任何 file:line 信息\n- **Flaky 识别**: 无时间/网络/端口相关信号可见\n\n---\n\n### 立即行动建议\n\n```bash\n# 1. 本地复现（最优先）\nbun test --bail 2>&1 | head -200   # 看第一个失败的测试\n\n# 2. 找最近改动的测试文件\ngit diff origin/master --name-only -- tests/\n\n# 3. 如果本地全过但 CI 挂 → 对比环境差异\nbun --version && node --version    # 确认版本一致\n```\n\n> ⚠️ **核心行动**：4MB 日志截断是\"症状不是根因\"——你需要先绕过截断拿到完整日志（artifact 上传或本地复现），否则任何诊断都是盲猜。上述 3 条假设覆盖了 80% 的\"4MB 截断 + 17 失败\"场景，但确认需要完整日志。",
+            "toolsCalled": [],
+            "steps": 1,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 31.375,
+            "error": false
+          }
+        },
+        {
+          "score": 2,
+          "details": {
+            "must_include_hits": 0,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 54,
+            "issues": "must_include 0 命中（need ≥ 1，title: ci_diagnosis_truncated_log_degrade） | steps=54 超过 max_steps=10"
+          },
+          "raw": {
+            "caseId": "case_csh_011",
+            "finalResponse": "",
+            "toolsCalled": [
+              "read",
+              "glob",
+              "ls"
+            ],
+            "steps": 54,
+            "exitStatus": "error",
+            "timedOut": false,
+            "elapsedSec": 56.895,
+            "error": false
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "case_csh_012",
+      "median": 5,
+      "samples": [
+        {
+          "score": 5,
+          "details": {
+            "must_include_hits": 10,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 9,
+            "issues": ""
+          },
+          "raw": {
+            "caseId": "case_csh_012",
+            "finalResponse": "## CI Failure Diagnosis\n\n**Failure Class**: build_failure (Go) + test_failure (Python) + type_error (TypeScript) — 多类复合失败\n\n**Confidence**: high\n\n**Verdict**: likely_pr_caused\n\n---\n\n### 严重性排序\n\n| 排名 | 语言 | 失败类型 | 严重性 | 理由 |\n|------|------|----------|--------|------|\n| 🔴 1 | Go | `build_failure` | **最严重** | 编译阻断：整个 `./internal/payment` 包无法产出二进制，下游全部阻塞 |\n| 🟠 2 | TypeScript | `type_error` | 次严重 | 编译阻断：`tsc` 不过则前端产物无法生成 |\n| 🟡 3 | Python | `test_failure` | 较严重 | 运行时逻辑 bug：编译可过但 `/login` 端点返回 500，可能已是线上隐患 |\n\n**结论：Go 的 `undefined: stripeClient` 最严重，因为它是硬编译错误，零容忍，任何依赖 `internal/payment` 的模块都无法构建。**\n\n---\n\n### Root Cause Hypotheses\n\n#### 🔴 Go — `build_failure` (priority=1)\n\n1. **[priority=1] `stripeClient` 变量未定义或 import 缺失**\n   - **Evidence**: `./internal/payment/charge.go:42:14: undefined: stripeClient`\n   - **Why**: Go 编译器在第 42 行第 14 列找不到 `stripeClient` 标识符。典型原因：(a) 变量声明被误删或注释掉；(b) 缺少 `import \"github.com/stripe/stripe-go/v78\"` 之类的外部包导入；(c) 变量作用域错误（在函数内引用包级变量但拼写不一致）。\n   - **Suggested Fix**:\n     1. 检查 `charge.go:42` 附近是否有 `stripeClient` 的声明或初始化\n     2. 如果是外部包，确认 `go.mod` 中有对应依赖且已 `go mod tidy`\n     3. 搜索全仓库 `stripeClient` 的使用位置：`grep -rn \"stripeClient\" ./internal/`\n     4. 若是最近 PR 删除了该变量，恢复声明或用替代方案\n\n2. **[priority=2] 变量命名不一致（驼峰 vs 下划线）**\n   - **Evidence**: `stripeClient`（驼峰）vs Go 常见风格 `stripe_client`（下划线），可能是拼写错误\n   - **Why**: Go 中包级导出变量首字母大写，私有变量首字母小写。如果原变量名是 `stripe_client` 或 `StripeClient`，代码中写了 `stripeClient` 就会报 `undefined`。\n   - **Suggested Fix**: 在 `internal/payment/` 目录下搜索 `stripe*` 相关标识符，确认正确变量名后修正 `charge.go:42`\n\n---\n\n#### 🟠 TypeScript — `type_error` (priority=1)\n\n1. **[priority=1] `login.tsx:15` 属性类型不匹配**\n   - **Evidence**: `src/ui/login.tsx(15,7): error TS2322: Type 'string' is not assignable to type 'number'.`\n   - **Why**: 某个 React 组件 prop 或变量期望 `number` 类型，但传入了 `string`。常见场景：`<Input value={someString} />` 而 `value` prop 声明为 `number`，或者表单字段 `onChange` 回调中未做类型转换。\n   - **Suggested Fix**:\n     1. 查看 `login.tsx:15` 的具体赋值表达式\n     2. 如果是表单输入：在赋值前加 `Number()` 或 `parseInt()` 转换\n     3. 如果 prop 类型定义错误：修正 interface/type 声明\n     4. 检查是否有 string literal 硬编码（如 `\"100\"` 应为 `100`）\n\n---\n\n#### 🟡 Python — `test_failure` (priority=1)\n\n1. **[priority=1] `/login` 端点内部抛出未处理异常返回 500**\n   - **Evidence**: `tests/test_api.py:28: AssertionError: expected 200, got 500`\n   - **Why**: 500 是服务端内部错误。可能原因：(a) 缺少必需的环境变量（如 `SECRET_KEY`、`DATABASE_URL`）；(b) 数据库连接失败；(c) 依赖服务（如 Redis、Stripe API）不可用；(d) 代码中未捕获的异常。注意：Go 侧 `stripeClient` 构建失败与此可能**同源**——如果 Python login 也依赖 Stripe，500 可能是 Stripe SDK 初始化失败导致。\n   - **Suggested Fix**:\n     1. 查看 Python 测试环境的 500 详细 traceback：`pytest tests/test_api.py::test_login -v -s` 获取完整 stderr\n     2. 检查 CI 环境变量是否齐全（`STRIPE_API_KEY` 等）\n     3. 在 login 端点内加 try/except 兜底日志，避免裸 500\n     4. **关联检查**：若 Go 的 `stripeClient` 是共享依赖的配置问题（如 Stripe key 缺失），修复 Go 侧后 Python 500 可能同步解决\n\n2. **[priority=2] 测试环境数据库未迁移或 fixture 缺失**\n   - **Evidence**: 500 在 `/login` 端点常见于 DB 未就绪\n   - **Why**: login 通常涉及查库，若测试 DB 未 migrate 或 fixture 未加载，会触发 500。\n   - **Suggested Fi",
+            "toolsCalled": [
+              "glob",
+              "grep",
+              "read"
+            ],
+            "steps": 9,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 49.459,
+            "error": false
+          }
+        },
+        {
+          "score": 5,
+          "details": {
+            "must_include_hits": 10,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 1,
+            "issues": ""
+          },
+          "raw": {
+            "caseId": "case_csh_012",
+            "finalResponse": "## CI Failure Diagnosis\n\n**Failure Class**: `build_failure`（主）/ `test_failure` + `type_error`（次）\n\n**Confidence**: `high`\n\n**Verdict**: `likely_pr_caused`（三语言同时挂 = 单次 PR 跨层改动的典型信号：Go 连编译都过不了，是硬阻断）\n\n---\n\n### 严重度排序\n\n| 排名 | 语言 | 失败类型 | 严重度 | 理由 |\n|------|------|----------|--------|------|\n| **#1** | **Go** | `build_failure` | 🔴 **最严重** | `undefined: stripeClient` 是编译错误——整个 `internal/payment` 包产不出二进制，所有下游依赖全部阻断。这会让 CI pipeline 在第一阶段就挂掉，Python 和 TS 的错误可能根本跑不到 |\n| **#2** | **TypeScript** | `type_error` | 🟠 次严重 | `TS2322` 也是编译阻断（`tsc` 非零退出），阻止前端产物生成。但它排在 Go 之后，因为 Go 挂在前序 step 时 TS 编译可能根本没执行 |\n| **#3** | **Python** | `test_failure` | 🟡 最不严重 | 代码编译通过，是运行时行为错误。500 说明服务端处理登录请求时崩溃，但不会阻断构建产物生成 |\n\n**结论**：Go 是硬阻断——不修它，另外两个错误甚至不需要看。\n\n---\n\n### Root Cause Hypotheses\n\n#### 1. **[priority=1] Go — `stripeClient` 未定义（编译阻断）**\n\n- **Evidence**: `./internal/payment/charge.go:42:14: undefined: stripeClient`\n- **Why**: 最可能的场景：① 有人删了 `stripeClient` 的全局声明或 import，但 `charge.go:42` 仍在引用；② 变量名拼写错误（如应为 `stripe.Client` 但写成了 `stripeClient`）；③ 初始化逻辑被条件编译排除（`//go:build` tag 不匹配）\n- **Suggested Fix**:\n  1. 查 `charge.go` 第 42 行，确认 `stripeClient` 的引用方式\n  2. 在 `internal/payment/` 下搜索 `stripeClient` 的声明位置：`grep -rn \"stripeClient\" internal/payment/`\n  3. 若是拼写错误 → 修正变量名；若是 import 缺失 → 补 `import` 块；若声明被删 → 恢复声明语句\n  4. 修完后先跑 `go build ./internal/payment/...` 验证，再重新触发 CI\n\n#### 2. **[priority=2] TypeScript — `login.tsx:15` 类型不匹配**\n\n- **Evidence**: `src/ui/login.tsx(15,7): error TS2322: Type 'string' is not assignable to type 'number'`\n- **Why**: 第 15 行某个 props / state 期望 `number` 类型，但传入了 `string`。常见诱因：① API 响应字段类型变更（后端把某个字段从数字改成了字符串）；② 表单输入值未做 `parseInt` / `Number()` 转换就赋给数值型字段\n- **Suggested Fix**:\n  1. 读 `login.tsx:15` 确认该行赋值的变量名和目标类型\n  2. 若来自 API 响应 → 在赋值处加类型转换（`Number(value)` 或 `parseInt`）并处理 NaN\n  3. 若来自表单 → 确认 input type 和 onChange handler 的类型一致\n  4. 修完后跑 `tsc --noEmit` 验证\n\n#### 3. **[priority=3] Python — `test_login` 返回 500**\n\n- **Evidence**: `tests/test_api.py:28: expected 200, got 500`\n- **Why**: 登录接口返回 500，说明服务端在处理请求时抛了未捕获异常。最可能的根因：Go 的 `payment` 包编译失败 → 如果登录流程间接依赖 payment 服务，那这个 500 可能是级联失败（Python 后端调用 Go 微服务超时/报错）。**更可能这不是 Python 侧自身的问题，而是 Go build failure 的连锁反应**。另一种可能：Python 侧数据库连接 / 认证配置变更导致运行时异常\n- **Suggested Fix**:\n  1. **先修 Go build failure（priority #1）**，修完后重跑 Python 测试，很可能自动变绿\n  2. 若 Go 修完仍 500 → 查 Python 服务端日志（stderr / traceback），定位抛异常的具体行\n  3. 在 `test_api.py:28` 附近加更详细的错误信息打印（`print(response.text)`），先拿到实际 500 的 body\n\n---\n\n### Related Files\n\n- `internal/payment/charge.go:42` — `stripeClient` 引用点\n- `internal/payment/`（目录） — 搜索 `stripeClient` 声明/import\n- `src/ui/login.tsx:15` — 类型不匹配赋值点\n- `tests/test_api.py:28` — login 测试断言点\n\n---\n\n### Skipped Checks\n\n- **无 PR diff 输入**：未提供 PR diff 文件路径，无法执行 Step D（PR 关联），无法确认三个错误是否由同一次改动引入\n- **无可执行仓库**：CI log 是用户粘贴的，无法用 `grep` / `glob` 直接扫描仓库源码做 file:line 追加定位——上方 suggested fix 中的命令需开发者在本地执行\n- **Python 500 日志缺失**：log 中只有断言失败，没有 traceback / stderr，无法定位服务端崩溃的具体行\n\n---\n\n**行动建议**：先按 priority #1 → #2 → #3 顺序修。Go 编译一过，TS 类型错误大概率独立存在，Python 500 有较高概率",
+            "toolsCalled": [],
+            "steps": 1,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 36.538,
+            "error": false
+          }
+        },
+        {
+          "score": 0,
+          "details": {
+            "error": false,
+            "timedOut": true,
+            "exitStatus": "timeout"
+          },
+          "raw": {
+            "caseId": "case_csh_012",
+            "finalResponse": "",
+            "toolsCalled": [],
+            "steps": 0,
+            "exitStatus": "timeout",
+            "timedOut": true,
+            "elapsedSec": 932.055,
+            "error": false
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "case_csh_013",
+      "median": 4,
+      "samples": [
+        {
+          "score": 4,
+          "details": {
+            "must_include_hits": 4,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 11,
+            "issues": "steps=11 超过 max_steps=10"
+          },
+          "raw": {
+            "caseId": "case_csh_013",
+            "finalResponse": "## CI Failure Diagnosis\n\n**Failure Class**: flaky\n\n**Confidence**: high\n\n**Verdict**: likely_flaky\n\n### Root Cause Hypotheses\n\n1. **[priority=1]** 数据库连接超时 — 测试未等待 DB 就绪即发起查询\n   - **Evidence**: `Connection timeout after 5000ms` at `src/db/client.ts:42:11`；`should query users (5023ms)` 耗时远超其他 47 个通过的测试；历史 14 天 retry 率 12%（其他测试 < 0.5%）；\"重试 3 次有 1 次过\"说明问题非确定性。\n   - **Why**: `db.query()` 的超时配置为 5000ms，CI 环境中 DB 容器启动慢或连接池耗尽时恰好超过该阈值。测试文件 `tests/integration/db.test.ts` 中 `should query users` 测试在 `beforeAll`/`beforeEach` 生命周期里可能没有调用 `waitForDbReady()` 或类似的就绪检查，直接发起查询。其他 47 个测试通过说明 DB 在大多数情况下是可用的，但边界时刻（冷启动 / 连接池回收）会触发超时。\n   - **Suggested Fix**:\n     1. 在 `tests/integration/db.test.ts` 的 `beforeAll` 中增加重试等待逻辑：\n        ```ts\n        // 草稿：添加 DB 就绪检查（不直接编辑，需人工 review）\n        const waitForDb = async (retries = 5, delay = 1000) => {\n          for (let i = 0; i < retries; i++) {\n            try {\n              await db.query('SELECT 1');\n              return;\n            } catch { await new Promise(r => setTimeout(r, delay)); }\n          }\n          throw new Error('DB not ready after retries');\n        };\n        beforeAll(async () => { await waitForDb(); });\n        ```\n     2. 将 `src/db/client.ts:42` 的查询超时从 5000ms 提升到 10000ms（仅对集成测试环境，通过环境变量控制）。\n     3. 在 CI workflow 中为 DB 服务添加 `healthcheck` 确保容器就绪后再跑测试。\n\n2. **[priority=2]** CI 环境 DB 连接池耗尽 — 并行测试争抢有限连接\n   - **Evidence**: `Connection timeout after 5000ms` 指向 `db.query`；47 个其他测试通过说明大部分时间 DB 可用；12% retry 率远高于其他测试（< 0.5%）暗示该测试对连接可用性更敏感。\n   - **Why**: 若测试框架以并行模式运行（Jest 默认 `maxWorkers=50%`），多个测试文件同时竞争 DB 连接池。`should query users` 可能是集成测试文件中第一个或最重的查询，在连接池满载时首当其冲。其他 47 个测试大部分是单元测试（mock DB），不占真实连接。\n   - **Suggested Fix**:\n     1. 检查 `jest.config` 或 `vitest.config` 中 `maxWorkers` 配置，集成测试文件用 `--runInBand` 串行执行：\n        ```bash\n        # CI 命令调整为\n        jest --runInBand tests/integration/\n        ```\n     2. 或增大 `src/db/client.ts` 连接池 `max` 配置（例如从默认 10 提升到 20）。\n\n3. **[priority=3]** `should query users` 测试用例自身无超时兜底 — 单测超时阈值与 DB 超时阈值竞态\n   - **Evidence**: `should query users (5023ms)` — 测试自身耗时 5023ms，恰好略高于 DB 连接超时 5000ms。这说明测试框架的 `testTimeout` 可能设为默认 5000ms，与 `db.query` 的 5000ms 超时形成竞态。\n   - **Why**: 当 DB 响应慢（接近 5s）时，Jest 的 test timeout 和 `db.query` 的 connection timeout 同时到期，导致错误信息不确定（有时报 `Exceeded timeout of 5000ms`，有时报 `Connection timeout`）。12% 的概率恰好是边界竞态的典型表现。\n   - **Suggested Fix**: 在 `tests/integration/db.test.ts` 中对该测试显式设置更长超时：\n     ```ts\n     it('should query users', async () => {\n       // ... test body\n     }, 15000); // 第三个参数：显式 test timeout\n     ```\n\n### Related Files\n\n- `tests/integration/db.test.ts` — 失败的测试文件，\"should query users\" 用例所在位置\n- `src/db/client.ts:42` — 抛出 `Connection timeout after 5000ms` 的位置，`db.query()` 超时配置处\n- CI workflow 配置（`.github/workflows/*.yml` 或等效） — DB 服务 healthcheck / 测试并行度配置\n- `jest.config.ts` 或 `vitest.config.ts` — 测试框架的 `testTimeout` / `maxWorkers` 配置\n\n### Skipped Checks\n\n- **PR diff 未提供**：无法判断本次失败是否由最近的代码变更引入（`is_pr_caused` 无法判定），当前诊断基于 log + 历史 retry 率\n- **DB client 源码不可读**：`src/db/c",
+            "toolsCalled": [
+              "read",
+              "glob"
+            ],
+            "steps": 11,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 50.195,
+            "error": false
+          }
+        },
+        {
+          "score": 4,
+          "details": {
+            "must_include_hits": 5,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 19,
+            "issues": "steps=19 超过 max_steps=10"
+          },
+          "raw": {
+            "caseId": "case_csh_013",
+            "finalResponse": "我已完整分析了提供的 CI 日志和 Skill 参考文档。以下是结构化诊断：\n\n---\n\n## CI Failure Diagnosis\n\n**Failure Class**: flaky\n\n**Confidence**: high\n\n**Verdict**: likely_flaky\n\n### Root Cause Hypotheses\n\n1. **[priority=1]** CI 数据库容器启动延迟导致连接超时\n   - **Evidence**: `src/db/client.ts:42:11` — `Connection timeout after 5000ms`，测试耗时 5023ms 恰好略超 5s 阈值；该测试过去 14 天 retry 率 12%，其他测试仅 < 0.5%，排除了框架级或全局环境问题。\n   - **Why**: 5023ms 仅比 5000ms 多 23ms，说明连接在\"临界点\"附近完成了大半握手但未在截止前返回。结合 retry 能过（3 次中 1 次 pass），根因极可能是 CI 容器化数据库（如 PostgreSQL/MySQL Docker 容器）的启动就绪时间存在波动——当容器冷启动或 CI runner 负载高时，TCP 连接建立 + 认证握手总耗时偶尔突破 5s。\n   - **Suggested Fix**:\n     - **方案 A（推荐）**：在测试 setup 阶段（`beforeAll`）增加数据库就绪探针，先做一次轻量 `SELECT 1` 健康检查（带 30s 超时和重试），确认可达后再跑业务测试。\n     - **方案 B**：将 `db.query` 的连接超时从 5000ms 提高到 15000ms（仅测试环境，生产保持原值），配合 `NODE_ENV=test` 条件判断。\n     - **方案 C**：在 CI workflow 中显式加 `dockerize -wait tcp://db:5432 -timeout 30s` 等 wait-for 步骤（如已使用 Docker Compose，确保 `depends_on` + `healthcheck` 已配置）。\n\n2. **[priority=2]** `db.client.ts:42` 处缺少连接重试与指数退避\n   - **Evidence**: 日志仅显示单次 `db.query` 直调报 `Connection timeout`，未见任何重试标记（如 \"retry 1\" / \"attempt 2\"）。若 client 层有内置重试，日志应出现对应 attempt 字样。\n   - **Why**: 数据库驱动层不默认重试连接超时——`pg` (node-postgres)、`mysql2` 等默认无自动重连。偶尔的网络抖动（NAT 超时、DNS 解析慢、TCP SYN 丢包）在无重试保护下直接转化为测试失败。\n   - **Suggested Fix**: 在 `src/db/client.ts` 的 `db.query` 封装层增加连接错误重试逻辑（最多 3 次，指数退避 100ms → 200ms → 400ms）。示例 diff 草稿：\n     ```ts\n     // src/db/client.ts 改动示意\n     async function queryWithRetry(sql: string, params?: any[], retries = 3): Promise<any> {\n       for (let i = 0; i <= retries; i++) {\n         try {\n           return await pool.query(sql, params);\n         } catch (err) {\n           if (i === retries || !isConnectionError(err)) throw err;\n           await sleep(100 * Math.pow(2, i));\n         }\n       }\n     }\n     ```\n\n3. **[priority=3]** CI runner 资源争抢导致连接池分配延迟\n   - **Evidence**: 该测试文件 `tests/integration/db.test.ts` 仅 1 个 `should query users` 用例失败，同文件其他 47 个测试（若有）或全量 47 pass。12% 的 retry 率呈现间歇性特征，与 CI runner CPU/IO 瞬时饥饿模式一致。\n   - **Why**: 当 runner 同时调度多个 job 或同一 job 内并行执行大量测试时，数据库连接池可能瞬间耗尽（如最大连接数 10，50 个测试并发请求），导致新建连接的 TCP 握手排队超过 5s。\n   - **Suggested Fix**: 检查 CI 配置中测试并行度（`--maxWorkers` / `--pool=forks`）和数据库连接池 `max` 值。建议 `pool.max = maxWorkers + 5`（留 5 个溢出缓冲），同时在 CI workflow 中限制同一 runner 的并发 job 数 ≤ 2。\n\n### Related Files\n\n- `src/db/client.ts:42` — 连接超时抛出处，`db.query` 调用点\n- `tests/integration/db.test.ts` — 失败测试用例 `should query users`，需增加 `beforeAll` 健康检查\n- `CI workflow 配置`（如 `.github/workflows/ci.yml`） — 检查数据库服务的 `healthcheck` 与 `depends_on` 是否配置完整\n- `数据库连接池配置`（如 `src/db/pool.ts` 或环境变量 `DB_POOL_MAX`） — 检查 `max` 与 `connectionTimeoutMillis` 值\n\n### Skipped Checks\n\n- PR diff 未提供，无法判断是否本次 PR 引入（`is_pr_caused: unknown`）。建议下次附带 PR diff 路径以启用 Step D 关联分析。\n- `src/db/client.ts` 与 `tests/integration/db.test.ts` 不在当前 sid-code 仓库内（用户项目文件），无法直接 `read` 确认连接池实现细节与测试 setup 逻辑——上述 fix 建议基于通用数据库集成测试最佳实践推导。\n- 未执行 `scripts/parse-ci-log.ts` 和 `scripts/classify-failure.ts`：日志体量极小（6 行），且文件不在当前仓库内，人工分类（flaky + test_failure 双命中）精度高于脚本启",
+            "toolsCalled": [
+              "read",
+              "glob"
+            ],
+            "steps": 19,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 83.611,
+            "error": false
+          }
+        },
+        {
+          "score": 0,
+          "details": {
+            "error": false,
+            "timedOut": true,
+            "exitStatus": "timeout"
+          },
+          "raw": {
+            "caseId": "case_csh_013",
+            "finalResponse": "",
+            "toolsCalled": [
+              "glob",
+              "read"
+            ],
+            "steps": 20,
+            "exitStatus": "timeout",
+            "timedOut": true,
+            "elapsedSec": 90.024,
+            "error": false
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "case_csh_014",
+      "median": 5,
+      "samples": [
+        {
+          "score": 5,
+          "details": {
+            "must_include_hits": 7,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 9,
+            "issues": ""
+          },
+          "raw": {
+            "caseId": "case_csh_014",
+            "finalResponse": "## CI Failure Diagnosis\n\n**Failure Class**: dependency_missing\n\n**Confidence**: high\n\n**Verdict**: likely_environment\n\n### Root Cause Hypotheses\n\n1. **[priority=1]** `@some-old-lib@2.1.0` 的 peer dependency 要求 `react@^17.0.0`，与根项目的 `react@^18.2.0` 冲突\n   - **Evidence**: CI log 第 5–9 行明确输出：\n     ```\n     Found: react@18.2.0\n     node_modules/react\n       react@\"^18.2.0\" from the root project\n     ...\n     peer react@\"^17.0.0\" from @some-old-lib@2.1.0\n     ```\n   - **Why**: npm v7+ 默认强制解析 peer dependency 冲突 (`--legacy-peer-deps` 不再默认开启)。`@some-old-lib@2.1.0` 声明 `peer react@\"^17.0.0\"`，semver `^17.0.0` 不涵盖 `18.2.0`，npm 拒绝安装。\n   - **Suggested Fix**（三选一，按推荐度排序）：\n     - **方案 A（推荐，治本）**：升级 `@some-old-lib` 到支持 React 18 的版本（如 `@some-old-lib@3.x`），`npm install @some-old-lib@latest`。做回归测试确认无 breaking change。\n     - **方案 B（快速绕过，有风险）**：若升级不可行且确认 `@some-old-lib` 在 React 18 下实际兼容，使用 `npm install --legacy-peer-deps` 或配置 `.npmrc`:\n       ```\n       legacy-peer-deps=true\n       ```\n       ⚠️ 这跳过了 peer dep 校验，可能导致运行时异常，需人工 review 并加集成测试覆盖。\n     - **方案 C**：用 `overrides`（npm v8.3+）/ `resolutions`（yarn）强制统一 react 版本，例如在 `package.json` 中：\n       ```json\n       \"overrides\": {\n         \"@some-old-lib\": {\n           \"react\": \"$react\"\n         }\n       }\n       ```\n       同样需要人工 review：确认 `@some-old-lib@2.1.0` 在 React 18 下无运行时问题。\n\n2. **[priority=2]** 根项目的 `react` 版本可能被意外降级为 `^17.0.0`（反向修复）\n   - **Evidence**: 未提供 PR diff，无法确认引发变更。\n   - **Why**: 这个方向修复成本更高（整个应用的 React 18 API 需回退），仅在 `@some-old-lib` 完全无法升级且方案 B/C 验证不通过时才考虑。\n   - **Suggested Fix**: 将根项目 `react` 降级到 `^17.0.0` + `react-dom@^17.0.0`，需要人工 review 且**必须标记为\"需人工 review\"**（涉及大量代码变更）。\n\n### Related Files\n\n- `package.json`（根项目） — 包含 `react@\"^18.2.0\"` 和 `@some-old-lib@\"^2.1.0\"` 两条冲突依赖\n- `.npmrc` — 如果已存在且设了 `legacy-peer-deps=false`，需留意修改后对其他依赖的影响\n\n### Skipped Checks\n\n- 未提供 PR diff，无法判定本次冲突是否由近期的 `@some-old-lib` 引入引起\n- 未拉取 `@some-old-lib` 的 changelog，无法确认最新版本是否已支持 React 18\n- 未拉取历史 CI run 数据，无法判定此冲突是否为首次出现",
+            "toolsCalled": [
+              "glob",
+              "grep",
+              "read"
+            ],
+            "steps": 9,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 40.905,
+            "error": false
+          }
+        },
+        {
+          "score": 0,
+          "details": {
+            "error": false,
+            "timedOut": true,
+            "exitStatus": "timeout"
+          },
+          "raw": {
+            "caseId": "case_csh_014",
+            "finalResponse": "",
+            "toolsCalled": [],
+            "steps": 4,
+            "exitStatus": "timeout",
+            "timedOut": true,
+            "elapsedSec": 933.192,
+            "error": false
+          }
+        },
+        {
+          "score": 5,
+          "details": {
+            "must_include_hits": 8,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 5,
+            "issues": ""
+          },
+          "raw": {
+            "caseId": "case_csh_014",
+            "finalResponse": "## CI 故障诊断\n\n**Failure Class**: dependency_missing\n\n**Confidence**: high\n\n**Verdict**: likely_pr_caused (如果是因 PR 引入 `@some-old-lib` 或升级 `react` 导致)\n\n### Root Cause Hypotheses\n\n1. **[priority=1]** `@some-old-lib@2.1.0` 的 `peerDependencies` 要求 `react@^17.0.0`，与项目已安装的 `react@18.2.0` 不兼容，npm v7+ strict peer dep 解析模式下拒绝安装。\n\n   - **Evidence**:\n     ```\n     npm ERR! Found: react@18.2.0\n     npm ERR! Could not resolve dependency:\n     npm ERR! peer react@\"^17.0.0\" from @some-old-lib@2.1.0\n     ```\n   - **Why**: `^17.0.0` 的 semver range 不会匹配 `18.2.0`，npm 无法自动安装。这是 React 大版本不兼容问题。\n   - **Suggested Fix**（三选一，按推荐度排序）：\n     - **方案 A（推荐）**：升级 `@some-old-lib` 到支持 React 18 的版本（如果有），执行 `npm info @some-old-lib versions` 查看可用版本，`npm install @some-old-lib@latest`。\n     - **方案 B**：如果 `@some-old-lib` 没有 React 18 版本，考虑替换为兼容 React 18 的替代库，或降级 `react` 到 17（`npm install react@^17.0.0 react-dom@^17.0.0`）。\n     - **方案 C**（临时绕过，不推荐生产使用）：`npm install --legacy-peer-deps`，但这会跳过 peer dep 检查，运行时可能报错。\n\n2. **[priority=2]** `package.json` 中 `@some-old-lib` 的版本范围过宽（`^2.1.0`），自动拉取了不兼容的版本，而 `package-lock.json` 未锁定或冲突。\n\n   - **Evidence**: 日志中 `@some-old-lib@\"^2.1.0\" from the root project` 表明依赖声明允许次版本和补丁版本自动升级。\n   - **Why**: 如果之前的 lockfile 锁定了某个与 React 18 兼容的 2.x 版本，但 lockfile 未提交或被删除，npm 会重新解析并触发冲突。\n   - **Suggested Fix**：确认 `package-lock.json` 是否被 `.gitignore` 忽略或未提交。执行 `git log -- package-lock.json` 检查 lockfile 历史，确保 lockfile 存在于仓库中。\n\n### Related Files\n\n- `package.json` — `react@^18.2.0` 与 `@some-old-lib@^2.1.0` 的依赖声明位置\n- `package-lock.json` — 依赖解析锁定的版本快照（需确认是否存在/被提交）\n\n### Skipped Checks\n\n- 未提供 PR diff，无法判定此次冲突是否由本次 PR 变更直接引入，Verdict 基于假设。\n- `scripts/parse-ci-log.ts` / `scripts/classify-failure.ts` 未实际执行（log 为直接粘贴的短文本，启发式分类可直接完成）。\n- 未读取 `package.json` 实际内容，`@some-old-lib` 为 log 中的示例库名，实际排查时需替换为真实包名。",
+            "toolsCalled": [
+              "glob",
+              "read_many"
+            ],
+            "steps": 5,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 35.652,
+            "error": false
+          }
+        }
+      ]
+    },
+    {
+      "caseId": "case_csh_015",
+      "median": 5,
+      "samples": [
+        {
+          "score": 5,
+          "details": {
+            "must_include_hits": 3,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 1,
+            "issues": ""
+          },
+          "raw": {
+            "caseId": "case_csh_015",
+            "finalResponse": "## CI Failure Diagnosis\n\n**Failure Class**: `unknown`\n\n**Confidence**: `low`\n\n**Verdict**: `needs_human`\n\n### Root Cause Hypotheses\n\n无法生成根因假设 —— CI 日志仅包含 `Run failed` 两个词，没有任何 stack trace、file:line 引用、断言失败信息或错误消息。\n\n### Related Files\n\n- （无）—— 日志中无可识别的文件引用\n\n### Skipped Checks\n\n- **日志不可用（log insufficient）**：输入仅 `Run failed` 两词，Step A（parse-ci-log）无可用输出，Step B（classify-failure）无法分类，Step C/E（fix 建议/根因假设）无依据可执行。根据 §1 触发规则，此场景属于\"CI log 完全为空\"等价类，直接返回 needs_human。\n\n---\n\n### 建议下一步\n\n1. **检查 GitHub Actions 完整原始日志**：在 Actions 页面的 job 详情中点击 build step 展开，复制完整 stdout/stderr。`Run failed` 通常是 workflow 级别的摘要，实际错误在上方折叠的 step 输出里。\n2. **常见原因快速排查**：\n   - workflow YAML 语法错误（`on` / `jobs` 结构不对）\n   - step 命令返回非零退出码但没有捕获 stderr（如 `set -e` 下某命令静默失败）\n   - 环境变量缺失导致 job 启动即终止（如 `secrets.SOME_KEY` 未配置）\n3. 拿到完整日志后重新触发本 Skill 即可。",
+            "toolsCalled": [],
+            "steps": 1,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 13.583,
+            "error": false
+          }
+        },
+        {
+          "score": 3,
+          "details": {
+            "must_include_hits": 4,
+            "must_not_include_violations": 1,
+            "tool_violations": 0,
+            "steps": 1,
+            "issues": "must_not_include 命中: [可能是]"
+          },
+          "raw": {
+            "caseId": "case_csh_015",
+            "finalResponse": "## CI Failure Diagnosis\n\n**Failure Class**: `unknown`\n\n**Confidence**: `low`\n\n**Verdict**: `needs_human`\n\n### Root Cause Hypotheses\n\n**无法生成根因假设** —— 日志内容仅 \"Run failed\"，不包含 stack trace / failed assertion / file:line 引用 / runner 识别信号。ci-self-heal Skill 的 Step A（`parse-ci-log.ts`）需要至少包含以下任一信息才能工作：stack trace、assertion 输出、编译错误、lint 报错。\n\n### Related Files\n\n- （无，日志不可解析）\n\n### Skipped Checks\n\n- **Step A 日志解析**: 跳过——输入无结构化 CI 输出（无 stack trace / assertion / file:line）\n- **Step B 失败分类**: 跳过——无 parse 结果可供分类\n- **Step C fix 模板**: 跳过——无分类结果\n- **Step D PR diff 关联**: 跳过——无 file:line 可匹配\n- **Step E 根因假设**: 跳过——无证据可构建假设\n- **Step F flaky 识别**: 跳过——无 assertion 可供分析\n\n---\n\n### 建议下一步操作\n\n1. **查看 GitHub Actions 完整日志**：进入 Actions run 页面 → 点击失败的 job → 展开 **\"Run\" 步骤**，通常 \"Run failed\" 只是 summary，展开后会有完整的 stderr/stdout。\n2. **本地复现**：拉取对应 commit，执行 CI 中失败的相同命令（`bun test` / `make build` 等），本地输出通常比 GitHub Actions 截断更少。\n3. **检查 Actions 配置**：如果 Actions 确实没输出详细日志，可能是 `continue-on-error` 或 `|| true` 吞掉了 stderr，确认 workflow yaml 中该 step 的配置。\n4. **提供更多信息后重新触发本 Skill**：拿到完整日志后，再次输入 \"CI 挂了\" 并附上日志即可重新诊断。",
+            "toolsCalled": [],
+            "steps": 1,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 13.244,
+            "error": false
+          }
+        },
+        {
+          "score": 5,
+          "details": {
+            "must_include_hits": 4,
+            "must_not_include_violations": 0,
+            "tool_violations": 0,
+            "steps": 1,
+            "issues": ""
+          },
+          "raw": {
+            "caseId": "case_csh_015",
+            "finalResponse": "## CI Failure Diagnosis\n\n**Failure Class**: `unknown`\n\n**Confidence**: `low`\n\n**Verdict**: `needs_human`\n\n### Root Cause Hypotheses\n\n**无法生成有意义的根因假设**——CI 日志仅含 `Run failed`，无 stack trace、无 file:line 引用、无 runner 信息、无错误消息。按 Skill 规范，日志不可用。\n\n### 排查建议\n\n要定位问题，需要补充以下任一信息：\n\n1. **获取完整 CI 日志**：在 GitHub Actions 的 run 页面，展开失败的 step 的折叠区域（通常有一个 ▶ 箭头），复制完整 stderr/stdout\n2. **本地复现**：在本地执行 CI 中失败的 command（如 `bun test` / `bun run build` / `bun lint`），看是否能复现\n3. **GitHub CLI 拉取日志**：\n   ```bash\n   gh run view <run-id> --log --job <job-id>\n   ```\n4. **提供 PR diff**：如果这次 CI 是 PR 触发的，提供 PR diff 路径可做 Step D 关联分析\n\n### Skipped Checks\n\n- **Step A (日志解析)**：日志内容不足，`parse-ci-log.ts` 无法提取有效 JSON\n- **Step B (失败分类)**：无信号可分类\n- **Step D (PR 关联)**：无 file:line 引用可匹配\n- **所有 hypothesis**：RL-007 约束下，不得编造未出现在 log 中的问题\n\n---\n\n> ⚠️ `Run failed` 本身通常表示 GitHub Actions 在 job 级别的通用失败标记——可能的原因包括 step 返回非零 exit code、runner 崩溃、或 workflow 配置错误。**但当前 Skill 只能根据实际日志内容诊断**，不能靠经验猜测。请补充完整日志后重新触发。",
+            "toolsCalled": [],
+            "steps": 1,
+            "exitStatus": "end_turn",
+            "timedOut": false,
+            "elapsedSec": 13.302,
+            "error": false
+          }
+        }
+      ]
+    }
+  ]
+}

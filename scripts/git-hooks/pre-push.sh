@@ -34,6 +34,17 @@ if [ -x "scripts/eval/check-holdout-leak.sh" ] || [ -f "scripts/eval/check-holdo
   echo "[pre-push] ✅ 无 holdout 泄露"
 fi
 
+# B7-3 (2026-05-31)：holdout/real-tasks/holdout-sids.txt 永封校验 + 公开页面 sid 泄露检测
+echo "[pre-push] 跑 holdout/real-tasks 永封校验 ..."
+if [ -f "scripts/eval/check-holdout-real-tasks-sealed.sh" ]; then
+  sh scripts/eval/check-holdout-real-tasks-sealed.sh || {
+    echo "[pre-push] ❌ holdout/real-tasks 永封被改 / 公开页面泄露 sid，push 中止"
+    echo "  恢复方法：git checkout HEAD -- evals/holdout/real-tasks/holdout-sids.txt"
+    exit 1
+  }
+  echo "[pre-push] ✅ holdout/real-tasks 永封完整"
+fi
+
 # Step 2-4：dashboard 刷新（与原 hook 行为一致）
 NEEDS_REFRESH=0
 

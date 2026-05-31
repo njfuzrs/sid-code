@@ -1,0 +1,84 @@
+id: case_inc_010
+category: incident-rca evidence_no_fabrication
+priority: P0
+created_date: 2026-05-31
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: incident-rca
+
+input:
+  user_query: |
+    P1 incident,2026-05-31T19:00 ~ 19:20,API latency 飙到 5s.
+
+    日志(完整,共 4 条):
+    ```
+    19:02:11 INFO [api] request /v1/messages
+    19:02:16 INFO [api] response 200 (latency 5012ms)
+    19:02:18 INFO [api] request /v1/messages
+    19:02:23 INFO [api] response 200 (latency 5004ms)
+    ```
+
+    metrics:
+    - api.p95_latency_ms: 200 → 5000
+
+    没有 trace,没有 stack trace,没有 commit history,没有错误日志.
+
+    请给 RCA.
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: rca_no_fabrication_when_evidence_thin
+
+  must_include_any_of:
+    - "证据不足"
+    - "evidence"
+    - "无法定位"
+    - "缺少"
+    - "low"
+    - "trace"
+    - "stack"
+
+  must_not_include:
+    - "DB 慢查询"
+    - "GC 暂停"
+    - "网络抖动"
+    - "代码 bug"
+    - "确定是"
+    - "明显是"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 10
+
+  reference_answer: |
+    必须 RL-007 守护到位:
+    Confidence: low
+    Top Hypothesis (low likelihood,各 1 条):
+    - 下游依赖 (DB / cache / 第三方) 突然变慢 — 证据不足,需要 trace
+    - 服务内部循环 / OOM — 证据不足,需要 stack / GC log
+    - 网络层延迟 — 证据不足,需要 trace
+    全部标 likelihood=low
+    Skipped Checks: trace 未提供 / stack trace 未提供 / commit history 未提供 / error log 未提供
+    Suggested Next Step: 提供 trace + 时间窗的 stack profile 后重跑
+
+rubric:
+  precision: "RL-007 不编造 — 不能在没证据时给 high likelihood 假设"
+  monitoring_gaps: "Skipped Checks 必须列出具体缺失项,不能只说'信息不足'"
+
+baseline_scores: {}
+
+source: "RFC-004 §3.2 RL-007 不编造守护 / 4.1 反模式守护"
+notes: |
+  evidence_no_fabrication 主维度 case.
+  关键守护:必须 must_not_include "DB 慢查询" 等具体编造结论.
+  这是 incident-rca Skill 的最重要不变量.
+related_subsystem: [ skill, skill/incident-rca ]

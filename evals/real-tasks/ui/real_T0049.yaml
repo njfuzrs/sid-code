@@ -1,0 +1,48 @@
+id: real_T0049
+category: ui
+priority: P0
+created_date: 2026-05-30
+eval_type: real_task
+target_score: 4
+graduated_at: null
+holdout: false
+holdout_reason: null
+grader_type: rubric_5d
+source_meta:
+  origin: trajectory-platform
+  source_task_id: T0049
+  imported_at: 2026-05-30T19:40:39.003Z
+  imported_by: import-trajectory-platform.ts
+input:
+  user_query: |-
+    在 ${REPO_ROOT} 项目中，探索 TUI 层如何展示工具执行结果。我需要了解：
+
+    1. src/ui/App.tsx 或主 TUI 组件如何接收和展示工具调用结果
+    2. MessageItemRenderer 或类似组件如何渲染 tool_result
+    3. StreamingMessage 组件如何处理流式文本
+    4. App.ts 中 executeTools 的结果如何传递到 TUI 层显示
+    5. TUI 中是否有展示 markdown 内容的能力（比如展示计划文件内容）
+    6. tuiConfirmCallback 是如何注入和使用的（作为 Plan Mode 审批回调的参考）
+
+    重点关注工具结果的展示链路和用户交互机制。
+  repo: null
+  repo_commit: null
+  attachments: []
+expected:
+  outcome: ""
+  must_include_any_of: []
+  must_not_include: []
+  must_call_tools:
+    - Read
+  must_not_call_tools: []
+  must_modify_files_in: []
+  must_not_modify_files: []
+  max_steps: 45
+  reference_answer: null
+rubric:
+  completeness: "TODO: 由 importer 占位，请人审补充"
+  precision: TODO
+  helpfulness: TODO
+baseline_scores: {}
+setup_script: evals/real-tasks/scripts/setup_T0049.sh
+notes: 由 import-trajectory-platform.ts 自动生成（B6-1 适配器）。grader_type=rubric_5d。

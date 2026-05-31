@@ -542,6 +542,44 @@ new file
     expect(r.mandatoryPass).toBe(true);
   });
 
+  test("B5-3 extract_files 容忍 ```typescript / ```ts / ```diff 围栏（agent 自然倾向加围栏）", async () => {
+    // §15.3 sandbox 边界 + 真实 agent 输出反例：deepseek-v4-pro 跑 bug_001 时把 logger.ts 内容
+    // 包在 ```typescript ... ``` 里写进 === FILE === 段。如果 grader 不剥围栏，bun 跑这份"代码"
+    // 直接 SyntaxError，case 永远 0 分 — 但这是 grader 的格式洁癖，不是 agent 的真实失败。
+    const agentOut = [
+      "我修好了：",
+      "",
+      "=== FILE: hi.ts ===",
+      "```typescript",
+      'console.log("ok"); process.exit(0);',
+      "```",
+      "",
+      "=== FILE: bye.diff ===",
+      "```diff",
+      "- old line",
+      "+ new line",
+      "```",
+    ].join("\n");
+    const g = getGrader("execution_test");
+    const r = await g.grade({
+      caseYaml: fakeCase({
+        execution_test: {
+          fixtures: [{ path: "hi.ts", content: "console.error('broken'); process.exit(1);" }],
+          apply_mode: "extract_files",
+          verify_commands: [
+            { cmd: "bun", args: ["hi.ts"], timeout_ms: 10000 }, // 围栏未剥则 SyntaxError
+            { cmd: "sh", args: ["-c", "grep -F '+ new line' bye.diff && ! grep -F '\\`\\`\\`' bye.diff"] },
+          ],
+        },
+      }),
+      providerResult: fakeResult(agentOut),
+      skipLlmJudge: true,
+      judgeSamples: 1,
+    });
+    expect(r.mandatoryPass).toBe(true);
+    expect(r.score).toBe(1.0);
+  });
+
   test("apply_mode=extract_files 但 agent 输出无 FILE 段 → fail", async () => {
     const g = getGrader("execution_test");
     const r = await g.grade({

@@ -158,18 +158,35 @@ function errResult(type: string, reason: string): GraderResult {
 
 function parseFileBlocks(output: string): Array<{ path: string; content: string }> {
   const blocks: Array<{ path: string; content: string }> = [];
-  // 按行扫描，遇到 === FILE: ... === 开新 block，遇到下一个 marker 或 EOF 结束
   const lines = output.split("\n");
   let current: { path: string; lines: string[] } | null = null;
   for (const line of lines) {
     const m = line.match(/^===\s*FILE:\s*(.+?)\s*===\s*$/);
     if (m) {
-      if (current) blocks.push({ path: current.path, content: current.lines.join("\n").trim() });
+      if (current) blocks.push({ path: current.path, content: stripFenceWrap(current.lines) });
       current = { path: m[1].trim(), lines: [] };
     } else if (current) {
       current.lines.push(line);
     }
   }
-  if (current) blocks.push({ path: current.path, content: current.lines.join("\n").trim() });
+  if (current) blocks.push({ path: current.path, content: stripFenceWrap(current.lines) });
   return blocks;
+}
+
+function stripFenceWrap(rawLines: string[]): string {
+  // 容忍 agent 自然加的 ```ts / ```typescript / ```diff 等围栏：
+  // 段内首行匹配 ``` 开头 + 最后非空行匹配 ```$ 时，剥掉这两行，避免被写进 fixture 让 bun 把围栏当代码报语法错。
+  let lines = [...rawLines];
+  // 去尾部空行
+  while (lines.length > 0 && lines[lines.length - 1].trim() === "") lines.pop();
+  // 去头部空行
+  while (lines.length > 0 && lines[0].trim() === "") lines.shift();
+  if (lines.length >= 2) {
+    const first = lines[0].trim();
+    const last = lines[lines.length - 1].trim();
+    if (/^```[\w-]*$/.test(first) && last === "```") {
+      lines = lines.slice(1, -1);
+    }
+  }
+  return lines.join("\n").trim();
 }

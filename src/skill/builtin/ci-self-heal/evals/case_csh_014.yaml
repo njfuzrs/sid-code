@@ -1,0 +1,81 @@
+id: case_csh_014
+category: ci-self-heal boundary_dependency_cycle
+priority: P1
+created_date: 2026-05-31
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: ci-self-heal
+
+input:
+  user_query: |
+    npm install 失败:
+
+    ```
+    npm ERR! code ERESOLVE
+    npm ERR! ERESOLVE could not resolve
+    npm ERR!
+    npm ERR! While resolving: my-app@1.0.0
+    npm ERR! Found: react@18.2.0
+    npm ERR! node_modules/react
+    npm ERR!   react@"^18.2.0" from the root project
+    npm ERR!
+    npm ERR! Could not resolve dependency:
+    npm ERR! peer react@"^17.0.0" from @some-old-lib@2.1.0
+    npm ERR! node_modules/@some-old-lib
+    npm ERR!   @some-old-lib@"^2.1.0" from the root project
+    ```
+
+    请诊断.
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: ci_diagnosis_dependency_cycle
+
+  must_include_any_of:
+    - "dependency"
+    - "依赖"
+    - "peer"
+    - "react"
+    - "version"
+    - "版本"
+    - "@some-old-lib"
+    - "升级"
+
+  must_not_include:
+    - "无法诊断"
+    - "已修复"
+    - "build_failure"
+    - "test_failure"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 10
+
+  reference_answer: |
+    必须分类为 dependency_missing 类:
+    Failure Class: dependency_missing (peer dependency conflict)
+    Verdict: likely_pr_caused (or 长期依赖债务)
+    Hypothesis: @some-old-lib 仍依赖 react@17, 但根项目升到 18
+    Suggested Fix:
+    - Hotfix: 加 --legacy-peer-deps 临时绕过
+    - Long-term: 升级 @some-old-lib 到支持 react 18 的版本,或更换库
+
+rubric:
+  dependency_diagnosis: "必须识别为 peer dependency 冲突,不是 build 失败"
+  fix_priority: "区分 hotfix(--legacy-peer-deps) 和 long-term(升级或替换)"
+
+baseline_scores: {}
+
+source: "S7-T01 边界 case / 依赖冲突类失败"
+notes: |
+  边界 case — npm/peer dependency 冲突的诊断能力.
+related_subsystem: [ skill, skill/ci-self-heal ]

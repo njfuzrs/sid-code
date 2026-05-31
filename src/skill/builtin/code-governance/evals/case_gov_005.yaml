@@ -1,0 +1,102 @@
+id: case_gov_005
+category: pii_detection
+priority: P0
+created_date: 2026-05-31
+
+eval_type: skill
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: code-governance
+
+title: "不误报 fixture/test 中的脱敏数据"
+description: "测试文件中使用明显脱敏的手机号和身份证号（如全0/全X），不应误报为 PII 泄露"
+dimension: false_positive
+difficulty: medium
+
+input:
+  user_query: |
+    审计这个 PR diff，检查是否有 PII 泄露：
+
+    ```diff
+    --- a/tests/validators/id-validator.test.ts
+    +++ b/tests/validators/id-validator.test.ts
+    @@ -1,4 +1,25 @@
+    +import { validateIdCard, validatePhone } from '../../src/utils/validators';
+    +
+     describe('ID Validator', () => {
+    +  it('should reject invalid id card', () => {
+    +    // 明显虚构的测试数据
+    +    expect(validateIdCard("000000000000000000")).toBe(false);
+    +    expect(validateIdCard("999999999999999999")).toBe(false);
+    +    expect(validateIdCard("11010119900307XXXX")).toBe(false);
+    +  });
+    +
+    +  it('should validate phone format', () => {
+    +    // 脱敏测试号段（运营商测试号）
+    +    expect(validatePhone("10000000000")).toBe(false);
+    +    expect(validatePhone("19999999999")).toBe(true);  // 格式合法但非真实号码
+    +  });
+    +
+    +  it('should handle masked data', () => {
+    +    // 脱敏格式：中间4位用*替代
+    +    const masked = "138****5678";
+    +    expect(validatePhone(masked)).toBe(false);
+    +  });
+     });
+    ```
+  repo: id-service
+  repo_commit: ""
+
+expected:
+  outcome: no_pii_leak_test_fixtures_safe
+
+  must_include_any_of:
+    - "无 PII 泄露"
+    - "测试数据"
+    - "脱敏"
+    - "虚构"
+    - "no PII"
+    - "合规"
+    - "安全"
+
+  must_include:
+    - "测试"
+    - "脱敏"
+
+  must_not_include:
+    - "PII 泄露"
+    - "身份证号泄露"
+    - "手机号泄露"
+    - "高风险"
+    - "block"
+    - "需要修复"
+    - "建议替换"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 15
+
+  reference_answer: |
+    必须命中:
+    (1) 判定为无 PII 泄露 / 合规
+    (2) 说明原因：测试文件中使用的是明显虚构/脱敏的数据
+    (3) 识别脱敏特征：全0、全9、XXXX、****、运营商测试号段
+    (4) 不产生误报告警
+
+rubric:
+  completeness: "正确判定无 PII 泄露 + 解释脱敏数据特征 + 不产生误报"
+  precision: "不能将全0/全9/星号脱敏/测试号段误报为真实 PII"
+  helpfulness: "可以补充说明什么样的测试数据是安全的最佳实践"
+
+baseline_scores: {}
+
+source: "code-governance skill pii_detection false_positive 维度"
+notes: |
+  中等难度：考验 false positive 抑制能力，测试文件中的脱敏数据不应触发告警。
+related_subsystem: [ skill, skill/code-governance ]

@@ -1,0 +1,51 @@
+id: real_T0226
+category: bugfix
+priority: P0
+created_date: 2026-05-30
+eval_type: real_task
+target_score: 4
+graduated_at: null
+holdout: false
+holdout_reason: null
+grader_type: rubric_5d
+source_meta:
+  origin: trajectory-platform
+  source_task_id: T0226
+  imported_at: 2026-05-30T19:40:39.641Z
+  imported_by: import-trajectory-platform.ts
+input:
+  user_query: |-
+    整合 sid-code 可观测性体系中的三个模块（debug、trace、telemetry），消除重复采集，建立共享数据源架构。
+
+    核心任务：
+    1. 梳理 src/debug/、src/trace/、src/telemetry/ 中的数据采集点，识别重复和冲突
+    2. 统一事件触发机制，确保 fireAfterModelEvent、firePostToolUseEvent、fireSessionEndEvent 等事件只在一处定义和触发
+    3. 整合 AfterModelInput.llm_response.ttft_ms 等指标采集，避免多处重复计算
+    4. 重构 TokenMeter.calculateCacheSavings() 为共享数据源，供 trace 和 telemetry 模块调用
+    5. 为 Harness 工程预留完整的扩展点，确保新增可观测性需求可通过插件机制接入
+    6. 编写整合方案设计文档，包括数据流图、采集点地图、模块边界定义
+  repo: null
+  repo_commit: null
+  attachments: []
+expected:
+  outcome: 完成可观测性三模块的数据采集点整合，建立统一的事件触发和指标计算机制，消除重复采集，并为后续 Harness 工程预留扩展点。
+  must_include_any_of: []
+  must_not_include: []
+  must_call_tools:
+    - Bash
+    - Edit
+    - Grep
+    - Read
+  must_not_call_tools:
+    - Agent
+  must_modify_files_in: []
+  must_not_modify_files: []
+  max_steps: 45
+  reference_answer: null
+rubric:
+  completeness: "TODO: 由 importer 占位，请人审补充"
+  precision: TODO
+  helpfulness: TODO
+baseline_scores: {}
+setup_script: evals/real-tasks/scripts/setup_T0226.sh
+notes: 由 import-trajectory-platform.ts 自动生成（B6-1 适配器）。grader_type=rubric_5d。

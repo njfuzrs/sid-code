@@ -1,0 +1,41 @@
+id: real_T0046
+category: test
+priority: P0
+created_date: 2026-05-30
+eval_type: real_task
+target_score: 4
+graduated_at: null
+holdout: false
+holdout_reason: null
+grader_type: rubric_5d
+source_meta:
+  origin: trajectory-platform
+  source_task_id: T0046
+  imported_at: 2026-05-30T19:40:39.347Z
+  imported_by: import-trajectory-platform.ts
+input:
+  user_query: 阅读 ${REPO_ROOT}/docs/specs/active/自研web_search/web-search-design.md 中的设计文档。结合云服务器信息（见 ${REPO_ROOT}/docs/deployment.md），基于「方案一：最小自建（不用代理池）」，分析并列出接下来需要执行的具体步骤。
+  repo: null
+  repo_commit: null
+  attachments: []
+expected:
+  outcome: 理解 web_search 设计方案，根据服务器配置制定最小自建实现的具体行动计划。
+  must_include_any_of: []
+  must_not_include: []
+  must_call_tools:
+    - Bash
+    - Edit
+    - Read
+  must_not_call_tools:
+    - Agent
+  must_modify_files_in: []
+  must_not_modify_files: []
+  max_steps: 45
+  reference_answer: null
+rubric:
+  completeness: "TODO: 由 importer 占位，请人审补充"
+  precision: TODO
+  helpfulness: TODO
+baseline_scores: {}
+setup_script: evals/real-tasks/scripts/setup_T0046.sh
+notes: 由 import-trajectory-platform.ts 自动生成（B6-1 适配器）。grader_type=rubric_5d。

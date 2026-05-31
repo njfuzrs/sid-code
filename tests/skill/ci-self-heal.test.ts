@@ -9,12 +9,10 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { readFileSync, existsSync, statSync, readdirSync } from "node:fs";
+import { readFileSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { parse as loadYaml } from "yaml";
-import { SkillLoader } from "../../src/skill/loader.ts";
 import { SkillManager } from "../../src/skill/manager.ts";
-import { ExtensionLoader } from "../../src/extension/loader.ts";
 import { parseCILog } from "../../src/skill/builtin/ci-self-heal/scripts/parse-ci-log.ts";
 import { classifyFailure } from "../../src/skill/builtin/ci-self-heal/scripts/classify-failure.ts";
 import { generateFixSuggestions } from "../../src/skill/builtin/ci-self-heal/scripts/fix-suggestion-templates.ts";
@@ -138,8 +136,8 @@ describe("ci-self-heal Skill - SKILL.md frontmatter 契约", () => {
     expect("graduated_at" in rm).toBe(true);
   });
 
-  test("release_metadata.status = draft (Step 1 阶段)", () => {
-    expect(fm.release_metadata!.status).toBe("draft");
+  test("release_metadata.status = released (Step 8 完成)", () => {
+    expect(fm.release_metadata!.status).toBe("released");
   });
 });
 

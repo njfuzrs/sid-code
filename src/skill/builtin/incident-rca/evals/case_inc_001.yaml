@@ -1,0 +1,82 @@
+id: case_inc_001
+category: incident-rca log_pattern
+priority: P0
+created_date: 2026-05-31
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: incident-rca
+
+input:
+  user_query: |
+    线上 incident,P1 故障,2026-05-31T14:00 ~ 14:30 UTC,请给 RCA 报告.
+
+    应用日志(节选):
+    ```
+    2026-05-31T14:05:17Z ERROR [pg-pool] connection timeout after 5000ms (host=db-prod-01)
+    2026-05-31T14:05:18Z ERROR [api-server] HTTP 500 on /v1/messages (cause: pg-pool)
+    2026-05-31T14:05:19Z ERROR [pg-pool] connection timeout after 5000ms (host=db-prod-01)
+    2026-05-31T14:05:21Z ERROR [api-server] HTTP 500 on /v1/messages (cause: pg-pool)
+    ... (重复 ~200 行类似)
+    2026-05-31T14:05:00Z INFO [migration] CREATE INDEX idx_messages_body ON messages (body) -- starting
+    ```
+
+    metrics 突变(14:04:50 起):
+    - pg.slow_query.count: 0 → 47
+    - pg.connection.active: 50 → 100 (饱和)
+    - api.error_rate: 0.5% → 38%
+
+    recent commits (last 24h):
+    - abc123 feat: add full-text search index on messages.body (15 min before incident)
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: rca_log_pattern_correct_hypothesis
+
+  must_include_any_of:
+    - "abc123"
+    - "CREATE INDEX"
+    - "索引"
+    - "lock"
+    - "锁"
+    - "pg-pool"
+
+  must_not_include:
+    - "无法诊断"
+    - "需要更多信息"
+    - "请提供更多上下文"
+    - "已修复"
+    - "已重启"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 12
+
+  reference_answer: |
+    RCA 报告必须给出:
+    (1) Severity P1
+    (2) Top Hypothesis #1 = abc123 commit 创建索引在生产 db 上长时间锁表 → pg slow_query 激增 → 连接池饱和 → API 500
+    (3) Evidence 引用具体 log 行 / metric 数值 / commit hash
+    (4) Hotfix = 取消正在创建的索引或杀掉 lock 进程
+    (5) Long-term Fix = 索引创建用 CONCURRENTLY 或 maintenance window
+
+rubric:
+  log_pattern: "识别日志模式 — pg-pool timeout 重复 + CREATE INDEX 启动事件"
+  rca_hypothesis: "构造的 Top #1 假设要把 commit / metric / log 三个证据维度串起来,不能只单点"
+  fix_priority: "至少给 hotfix + long-term 两档行动建议"
+
+baseline_scores: {}
+
+source: "RFC-004 §6 输入示例 / 灵感来自 PG 慢查询故障 archetype"
+notes: |
+  log_pattern + rca_hypothesis 双维度 case.
+  P0 覆盖最高频场景:DDL 在生产环境引起的事故.
+related_subsystem: [ skill, skill/incident-rca ]

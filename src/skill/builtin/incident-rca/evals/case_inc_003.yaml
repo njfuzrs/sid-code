@@ -1,0 +1,85 @@
+id: case_inc_003
+category: incident-rca trace_correlation
+priority: P0
+created_date: 2026-05-31
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: incident-rca
+
+input:
+  user_query: |
+    分布式 incident,2026-05-31T03:00 ~ 03:20 UTC,P0,下单接口大量超时.
+
+    trace 片段(简化):
+    ```
+    span order-api/createOrder (3000ms total)
+      → span auth/check (50ms ok)
+      → span inventory/reserve (200ms ok)
+      → span payment/charge (2700ms TIMEOUT)
+        → span payment->stripe-sdk (2500ms TIMEOUT)
+          → span DNS lookup api.stripe.com (1900ms FAIL: NXDOMAIN)
+    ```
+
+    应用日志(payment 服务):
+    ```
+    03:01:15 ERROR DNS resolution failed for api.stripe.com: NXDOMAIN
+    03:01:15 ERROR DNS resolution failed for api.stripe.com: NXDOMAIN
+    (重复)
+    ```
+
+    metric:
+    - payment.timeout_rate: 0% → 95%
+    - other_services.error_rate: 持平
+
+    请给 RCA 报告.
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: rca_trace_correlation_dns_failure
+
+  must_include_any_of:
+    - "DNS"
+    - "NXDOMAIN"
+    - "stripe"
+    - "解析"
+    - "trace"
+
+  must_not_include:
+    - "无法诊断"
+    - "需要更多信息"
+    - "已修复"
+    - "请重启"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 12
+
+  reference_answer: |
+    trace 串联应给出:
+    (1) 故障在 payment 服务的 DNS 层 (root cause: NXDOMAIN api.stripe.com)
+    (2) 通过 trace 排除 auth / inventory 子链 (各 ok)
+    (3) DNS 解析失败的可能原因(stripe 域名 DNS 配置变更 / 内部 DNS server 故障 / 上游 DNS provider 抖动)
+    Hotfix: 切到 stripe 备用 endpoint 或缓存 DNS
+    Long-term Fix: payment 客户端加 DNS 缓存 + 健康检查
+
+rubric:
+  trace_correlation: "通过 trace 把根因定位到 DNS 层,而不是 payment 服务本身或 stripe 服务"
+  rca_hypothesis: "≥ 2 条假设(DNS server 故障 / 域名变更 / 上游抖动)各自给证据来源"
+  fix_priority: "hotfix 必须不依赖 stripe 自身恢复"
+
+baseline_scores: {}
+
+source: "RFC-004 §2.2 trace_correlation 维度 / DNS 故障 archetype"
+notes: |
+  trace_correlation 主维度 case.
+  考察 trace 跨进程根因定位 + 反证(其他子链 ok).
+related_subsystem: [ skill, skill/incident-rca ]

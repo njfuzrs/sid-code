@@ -132,12 +132,12 @@ describe("security-audit Skill - SKILL.md frontmatter 契约", () => {
     expect("graduated_at" in fm.release_metadata!).toBe(true);
   });
 
-  test("release_metadata.status = draft (Step 1 阶段)", () => {
-    expect((fm.release_metadata as Record<string, string>).status).toBe("draft");
+  test("release_metadata.status = released (Step 8 完成)", () => {
+    expect((fm.release_metadata as Record<string, string>).status).toBe("released");
   });
 
-  test("release_metadata.spiral_step = 1 (Step 1 SDD 完成)", () => {
-    expect((fm.release_metadata as Record<string, number>).spiral_step).toBe(1);
+  test("release_metadata.spiral_step = 8 (Step 8 发布完成)", () => {
+    expect((fm.release_metadata as Record<string, number>).spiral_step).toBe(8);
   });
 
   test("release_metadata.redline_protection 含 RL-002 / RL-005 (security 专属红线)", () => {

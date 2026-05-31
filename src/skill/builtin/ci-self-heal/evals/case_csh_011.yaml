@@ -1,0 +1,71 @@
+id: case_csh_011
+category: ci-self-heal boundary_log_truncated
+priority: P1
+created_date: 2026-05-31
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: ci-self-heal
+
+input:
+  user_query: |
+    我的 CI 挂了, 但日志被 GitHub 截断了, 只看到结尾:
+
+    ```
+    ... (output truncated, exceeded 4MB)
+    ✗ 17 tests failed
+    ##[error]Process completed with exit code 1.
+    ```
+
+    没看到具体哪个测试 / 哪一行报错. 请尽量给出诊断.
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: ci_diagnosis_truncated_log_degrade
+
+  must_include_any_of:
+    - "截断"
+    - "truncated"
+    - "信息有限"
+    - "建议"
+    - "重新跑"
+    - "本地"
+    - "needs_human"
+    - "low"
+
+  must_not_include:
+    - "已修复"
+    - "确定是"
+    - "明显是"
+    - "肯定是"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 10
+
+  reference_answer: |
+    边界场景 — 日志被 CI 截断:
+    (1) Confidence: low
+    (2) Verdict: needs_human
+    (3) 建议: 本地复跑 / 让 CI verbose log / 请用户提供具体错误段
+    必须诚实降级,不能编造具体根因.
+
+rubric:
+  precision: "RL-007 — 日志不全时不能给 high confidence 假设"
+  helpfulness: "明确告诉用户'需要更多信息'的具体获取路径"
+
+baseline_scores: {}
+
+source: "S7-T01 边界 case / RFC-002 §6 失败模式 / RL-007 守护"
+notes: |
+  边界 case — 日志截断/输入不全时的优雅降级.
+  考察"诚实兜底"的工程能力.
+related_subsystem: [ skill, skill/ci-self-heal ]
