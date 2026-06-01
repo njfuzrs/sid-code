@@ -24,11 +24,11 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
-import { BINARY_REDLINE_VERSION, callJudgeRawJson } from "../eval-judge";
-import { isCompleteFailure } from "../eval-runner";
+import { BINARY_REDLINE_VERSION, callJudgeRawJson } from "../core/judge";
+import { isCompleteFailure } from "../core/runner";
 import type { Grader, GraderContext, GraderResult } from "./types";
-import type { DimScore } from "../eval-judge";
-import type { BinaryRule } from "../_types";
+import type { DimScore } from "../core/judge";
+import type { BinaryRule } from "../core/types";
 
 interface RuleResult {
   rule: BinaryRule;

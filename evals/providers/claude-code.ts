@@ -3,7 +3,7 @@
 import { spawn } from "node:child_process";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { validateTrace, type AgentTrace, type TraceSpan } from "../_types/agent-trace.ts";
+import { validateTrace, type AgentTrace, type TraceSpan } from "../framework/trace/agent-trace.ts";
 
 function parseArgs(): { prompt: string; caseId: string; model: string | null; timeoutMs: number; maxTurns: number | null; skipPermissions: boolean; cliPath: string } {
   const argv = process.argv.slice(2);

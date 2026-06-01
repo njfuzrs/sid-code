@@ -11,8 +11,8 @@ import { describe, test, expect, beforeEach, afterAll } from "bun:test";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { syncBaselineScores, type BaselineResult } from "../../evals/baseline-sync";
-import { GRADER_VERSION } from "../../evals/eval-judge";
+import { syncBaselineScores, type BaselineResult } from "../../evals/framework/core/baseline-sync";
+import { GRADER_VERSION } from "../../evals/framework/core/judge";
 
 const tmpRoot = mkdtempSync(join(tmpdir(), "sid-baseline-holdout-"));
 

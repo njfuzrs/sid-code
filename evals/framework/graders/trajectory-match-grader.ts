@@ -27,11 +27,11 @@
  *   - 字段：milestones_hit / milestones_missed / tool_class_hits / max_step_warning
  */
 
-import { GRADER_VERSION } from "../eval-judge";
-import { isCompleteFailure } from "../eval-runner";
+import { GRADER_VERSION } from "../core/judge";
+import { isCompleteFailure } from "../core/runner";
 import type { Grader, GraderContext, GraderResult } from "./types";
-import type { DimScore } from "../eval-judge";
-import type { TrajectoryAssertion } from "../_types";
+import type { DimScore } from "../core/judge";
+import type { TrajectoryAssertion } from "../core/types";
 
 /** 诊断维度独立版本（不与 5d-v4 共用，避免引入 grader 公式 bump） */
 export const TRAJECTORY_MATCH_VERSION = "trajectory-v1";

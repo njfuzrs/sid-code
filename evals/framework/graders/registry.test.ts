@@ -6,8 +6,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getGrader, listGraderTypes, DEFAULT_GRADER_TYPE } from "./registry";
-import type { CaseYaml } from "../_types";
-import type { ProviderResult } from "../eval-runner";
+import type { CaseYaml } from "../core/types";
+import type { ProviderResult } from "../core/runner";
 
 function fakeMeta(overrides: Partial<ProviderResult["meta"]> = {}): ProviderResult["meta"] {
   return {

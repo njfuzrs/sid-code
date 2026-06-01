@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { join, resolve } from "node:path";
 import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { convertRawJsonlToTrace } from "../../scripts/eval/raw-jsonl-to-trace.ts";
-import { validateTrace } from "../_types/agent-trace.ts";
+import { validateTrace } from "../framework/trace/agent-trace.ts";
 
 const REPO_ROOT = resolve(import.meta.dir, "../..");
 const ENTRYPOINT = join(REPO_ROOT, "src/entrypoints/bootstrap.ts");

@@ -22,10 +22,10 @@
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { STRUCTURED_ARCH_VERSION } from "../eval-judge";
+import { STRUCTURED_ARCH_VERSION } from "../core/judge";
 import type { Grader, GraderContext, GraderResult } from "./types";
-import type { DimScore } from "../eval-judge";
-import type { ArchAssertion } from "../_types";
+import type { DimScore } from "../core/judge";
+import type { ArchAssertion } from "../core/types";
 
 interface AssertionResult {
   assertion: ArchAssertion;

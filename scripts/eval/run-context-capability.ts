@@ -25,7 +25,7 @@ import { gradeProcess, type JudgeConfig } from "../../evals/bench-runner/process
 import {
   syncBaselineScores,
   type BaselineResult,
-} from "../../evals/baseline-sync.ts";
+} from "../../evals/framework/core/baseline-sync.ts";
 import {
   loadCapabilityCases,
   runSharedCheck,

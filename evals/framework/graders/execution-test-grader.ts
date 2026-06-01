@@ -19,12 +19,12 @@
  *   - security-audit：fixture SQL injection → agent fix → 模拟攻击命令应被拦截
  */
 
-import { EXECUTION_TEST_VERSION } from "../eval-judge";
-import { isCompleteFailure } from "../eval-runner";
-import { runSandbox } from "../_sandbox";
+import { EXECUTION_TEST_VERSION } from "../core/judge";
+import { isCompleteFailure } from "../core/runner";
+import { runSandbox } from "../sandbox";
 import type { Grader, GraderContext, GraderResult } from "./types";
-import type { DimScore } from "../eval-judge";
-import type { ExecutionTestSpec } from "../_types";
+import type { DimScore } from "../core/judge";
+import type { ExecutionTestSpec } from "../core/types";
 
 export class ExecutionTestGrader implements Grader {
   readonly type = "execution_test";

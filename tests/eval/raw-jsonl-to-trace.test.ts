@@ -18,7 +18,7 @@ import {
 import {
   validateTrace,
   SPAN_FIELD_BYTE_LIMIT,
-} from "../../evals/_types/agent-trace.ts";
+} from "../../evals/framework/trace/agent-trace.ts";
 
 const SESSION_UUID = "12345678-1234-4234-8234-123456789012";
 

@@ -22,11 +22,11 @@ import {
   gradeRubric,
   gradeToolCompliance,
   makeErrorDims,
-} from "../eval-judge";
-import { isCompleteFailure } from "../eval-runner";
-import { buildRubricPrompt } from "../_judge/rubric-template";
+} from "../core/judge";
+import { isCompleteFailure } from "../core/runner";
+import { buildRubricPrompt } from "../judge/rubric-template";
 import type { Grader, GraderContext, GraderResult } from "./types";
-import type { DimScore } from "../eval-judge";
+import type { DimScore } from "../core/judge";
 
 export class Rubric5dGrader implements Grader {
   readonly type = "rubric_5d";

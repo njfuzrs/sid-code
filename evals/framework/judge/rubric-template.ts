@@ -43,7 +43,7 @@
  *   - 硬扣分规则在 system 显著位置，judge 不容易忽略
  */
 
-import type { CaseYaml } from "../_types.ts";
+import type { CaseYaml } from "../core/types.ts";
 
 /** 静态 system prompt：所有 case 共享，可走 prompt cache */
 export const JUDGE_SYSTEM_PROMPT = `你是一个 coding agent 评测裁判。你的工作是基于明确规则给 agent 的回答打分。

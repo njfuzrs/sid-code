@@ -24,7 +24,7 @@ import {
   makeErrorDims,
   type DimScore,
   type JudgeProvider,
-} from "./eval-judge.ts";
+} from "./judge.ts";
 
 describe("gradeAnchorHit", () => {
   test("无锚点直接满分", () => {

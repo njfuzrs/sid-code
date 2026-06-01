@@ -15,28 +15,24 @@ import {
   type DimScore,
   type AgentMeta,
   type TokenBreakdown,
-} from "./eval-judge.ts";
-import type { CaseYaml } from "./_types.ts";
-import { getGrader } from "./_graders/index.ts";
+} from "./judge.ts";
+import type { CaseYaml } from "./types.ts";
+import { getGrader } from "../graders/index.ts";
 import {
   syncBaselineScores as syncBaselineScoresShared,
   type BaselineResult,
 } from "./baseline-sync.ts";
 
-const ROOT = resolve(import.meta.dir);
+const ROOT = resolve(import.meta.dir, "..", "..");
 const CASE_DIRS = [
   join(ROOT, "general", "p0-core"),
   join(ROOT, "general", "p1-common"),
   join(ROOT, "general", "p2-edge"),
-  // B5-1（2026-05-30 / ADR-032）：execution case 新增子目录，走 grader_type=execution_test
-  // 通过 _graders registry 自动分流到 ExecutionTestGrader → runSandbox()，主流程不需特殊改动。
   join(ROOT, "general", "execution"),
 ];
 const HOLDOUT_DIR = join(ROOT, "holdout");
 const ARCHITECTURE_ROOT = join(ROOT, "architecture");
 const HOLDOUT_ARCHITECTURE_ROOT = join(ROOT, "holdout", "architecture");
-// B6-2/3（2026-05-31 / §15.2 ADR-033）：trajectory case 子桶 evals/real-tasks/<cat>/
-// trajectory_match grader M5 前仅作诊断维度，不进总分；scripts/ 目录是 setup_*.sh 不算 case。
 const REAL_TASKS_ROOT = join(ROOT, "real-tasks");
 const HOLDOUT_REAL_TASKS_ROOT = join(ROOT, "holdout", "real-tasks");
 
@@ -149,7 +145,7 @@ interface ProviderRegistryEntry {
 }
 
 function loadProviderRegistry(): Record<string, ProviderRegistryEntry> {
-  const configPath = join(ROOT, "eval.config.yaml");
+  const configPath = join(ROOT, "framework", "eval.config.yaml");
   if (!existsSync(configPath)) {
     throw new Error(`eval.config.yaml 不存在: ${configPath}\n请创建配置文件或检查 evals/ 目录`);
   }

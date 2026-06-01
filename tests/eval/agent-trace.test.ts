@@ -11,7 +11,7 @@ import {
   SPAN_FIELD_BYTE_LIMIT,
   TRACE_SCHEMA_VERSION,
   type AgentTrace,
-} from "../../evals/_types/agent-trace.ts";
+} from "../../evals/framework/trace/agent-trace.ts";
 
 const UUID_A = "11111111-1111-4111-8111-111111111111";
 const UUID_B = "22222222-2222-4222-8222-222222222222";

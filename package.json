@@ -10,7 +10,7 @@
     "test": "bun test",
     "install-hooks": "sh scripts/install-git-hooks.sh",
     "lint": "echo 'TODO: add linter'",
-    "eval:run": "bun run evals/eval-runner.ts",
+    "eval:run": "bun run evals/framework/core/runner.ts",
     "eval:list": "bun run scripts/eval/list-evals.ts",
     "eval:tally": "bun run scripts/eval/tally-baseline.ts",
     "eval:new-case": "bun run scripts/eval/new-case.ts",
@@ -60,6 +60,7 @@
     "@types/node": "^25.5.0",
     "@types/react": "^19.2.14",
     "@types/tinycolor2": "^1.4.6",
+    "eval-framework": "file:../eval-framework",
     "js-yaml": "^4.1.1"
   },
   "engines": {

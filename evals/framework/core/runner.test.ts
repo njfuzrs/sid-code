@@ -15,10 +15,10 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { join, resolve } from "node:path";
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { runProvider, runProviderOnce, isRetryableError, aggregateSamples, type ProviderDef } from "./eval-runner.ts";
-import type { DimScore } from "./eval-judge.ts";
+import { runProvider, runProviderOnce, isRetryableError, aggregateSamples, type ProviderDef } from "./runner.ts";
+import type { DimScore } from "./judge.ts";
 
-const FAKE_SCRIPT = resolve(import.meta.dir, "./providers/_test_fixtures/fake-provider.ts");
+const FAKE_SCRIPT = resolve(import.meta.dir, "../../providers/_test_fixtures/fake-provider.ts");
 
 function buildFakeProvider(opts: Partial<ProviderDef> = {}): ProviderDef {
   return {
