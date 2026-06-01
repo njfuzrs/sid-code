@@ -38,7 +38,9 @@ export interface AgentTrace {
   spans: TraceSpan[];
 }
 
-export type AgentKind = "sid-code" | "claude-code" | "claude-trace" | "external";
+/** 内置 agent kind；外部 agent 可使用任意非空字符串（运行时校验只检查非空） */
+export const BUILTIN_AGENT_KINDS = ["sid-code", "claude-code", "claude-trace", "external"] as const;
+export type AgentKind = string;
 export type TraceStatus = "ok" | "abnormal" | "timeout" | "abort";
 
 /** §2 span 字段 */
@@ -86,7 +88,7 @@ const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9
 /** ISO8601 with 时区正则（§5 第 3 条）：要求 Z 或 ±HH:MM 后缀 */
 const ISO8601_TZ_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
 
-const VALID_AGENT_KINDS: AgentKind[] = ["sid-code", "claude-code", "claude-trace", "external"];
+const VALID_AGENT_KINDS = BUILTIN_AGENT_KINDS as readonly string[];
 const VALID_TRACE_STATUS: TraceStatus[] = ["ok", "abnormal", "timeout", "abort"];
 const VALID_SPAN_KINDS: SpanKind[] = ["action", "observation", "thought", "system", "error"];
 const VALID_SPAN_ROLES: SpanRole[] = ["assistant", "user", "system"];
@@ -135,8 +137,8 @@ export function validateTrace(input: unknown): ValidationResult {
   }
 
   // ===== 顶层枚举校验 =====
-  if (!VALID_AGENT_KINDS.includes(t.agent_kind as AgentKind)) {
-    violations.push(`agent_kind must be one of ${VALID_AGENT_KINDS.join("/")}`);
+  if (typeof t.agent_kind !== "string" || t.agent_kind.length === 0) {
+    violations.push(`agent_kind must be a non-empty string (builtin: ${VALID_AGENT_KINDS.join("/")})`);
   }
   if (!VALID_TRACE_STATUS.includes(t.status as TraceStatus)) {
     violations.push(`status must be one of ${VALID_TRACE_STATUS.join("/")}`);

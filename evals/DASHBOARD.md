@@ -1,6 +1,6 @@
 # Evals Dashboard — sid-code
 
-> 自动生成,请勿手动编辑。生成时间: `2026-06-01T16:26:53.723Z`
+> 自动生成,请勿手动编辑。生成时间: `2026-06-01T19:15:58.406Z`
 > 数据源: `evals/p*-*/` + `evals/_scores/` + `evals/_reports/`
 > 触发: 手动 `bun run eval:dashboard` / git pre-push hook 自动刷新
 > Grader 过滤: **仅 `5d-v4`**（跨 grader 版本总分不可直接比较；切换：`--include-legacy`）
@@ -2307,7 +2307,35 @@ xychart-beta
 
 </details>
 
-### 4.3 claude_code_claude_opus_4_7
+### 4.3 mock_echo_echo
+
+总计: 1 次 run × 1 个 case = 1 条记录
+
+**4.x.1 每次 run 的均分趋势**
+
+| run_id (UTC) | cases | avg | pass≥3 | fail<3 | error/timeout |
+| --- | --- | --- | --- | --- | --- |
+| `2026-06-01 19:15:58` | 1 | **2.67** | 0 | 1 | 0 |
+
+```mermaid
+xychart-beta
+    title "mock_echo_echo 历次 run 均分"
+    x-axis [r1]
+    y-axis "Score" 0 --> 5
+    line [2.67]
+```
+
+<sub>fallback 表格 — mock_echo_echo 历次 run 均分</sub>
+
+| 系列 | r1 |
+| --- | --- |
+| avg | 2.67 |
+
+**4.x.2 单 case 多次 run 折线**: 暂无 case 有 ≥2 次 run，跳过
+
+> 持续跑分后此图会自动出现。
+
+### 4.4 claude_code_claude_opus_4_7
 
 总计: 11 次 run × 25 个 case = 85 条记录
 

@@ -140,22 +140,41 @@ export interface TestResult {
   };
 }
 
-const PROVIDER_REGISTRY: Record<string, Omit<ProviderDef, "name" | "model"> & { defaultModel: string }> = {
-  "sid-code": {
-    script: join(ROOT, "providers/sid-code-live.ts"),
-    timeoutMs: 480_000,
-    maxTurns: 30,
-    defaultModel: "deepseek-v4-pro",
-  },
-  "claude-code": {
-    script: join(ROOT, "providers/claude-code.ts"),
-    timeoutMs: 480_000,
-    maxTurns: 30,
-    // claude CLI 只认 anthropic 模型 slug（claude-opus-4-7 / claude-sonnet-4-6 / claude-haiku-4-5）。
-    // 传 deepseek-v4-pro 会让 claude 立刻报错退出 → 横向对比全部跑挂。
-    defaultModel: "claude-opus-4-7",
-  },
-};
+interface ProviderRegistryEntry {
+  script: string;
+  defaultModel: string;
+  timeoutMs: number;
+  maxTurns: number;
+  constraints?: { modelPrefix?: string };
+}
+
+function loadProviderRegistry(): Record<string, ProviderRegistryEntry> {
+  const configPath = join(ROOT, "eval.config.yaml");
+  if (!existsSync(configPath)) {
+    throw new Error(`eval.config.yaml 不存在: ${configPath}\n请创建配置文件或检查 evals/ 目录`);
+  }
+  const raw = readFileSync(configPath, "utf-8");
+  const config = parseYaml(raw) as { providers: Record<string, { script: string; default_model: string; timeout_ms?: number; max_turns?: number; constraints?: { model_prefix?: string } }> };
+  if (!config?.providers || typeof config.providers !== "object") {
+    throw new Error(`eval.config.yaml 格式错误: 缺少 providers 字段`);
+  }
+  const registry: Record<string, ProviderRegistryEntry> = {};
+  for (const [name, def] of Object.entries(config.providers)) {
+    if (!def.script || !def.default_model) {
+      throw new Error(`eval.config.yaml: provider "${name}" 缺少 script 或 default_model`);
+    }
+    registry[name] = {
+      script: resolve(ROOT, def.script),
+      defaultModel: def.default_model,
+      timeoutMs: def.timeout_ms ?? 480_000,
+      maxTurns: def.max_turns ?? 30,
+      constraints: def.constraints ? { modelPrefix: def.constraints.model_prefix } : undefined,
+    };
+  }
+  return registry;
+}
+
+const PROVIDER_REGISTRY = loadProviderRegistry();
 
 /**
  * 校验 provider 是否兼容指定 model。不兼容直接抛错退出，不做静默 fallback。
@@ -170,12 +189,15 @@ const PROVIDER_REGISTRY: Record<string, Omit<ProviderDef, "name" | "model"> & { 
  *   2. 多 provider 模式不传 --model：buildProvider 用各自的 defaultModel
  */
 function validateModelForProvider(providerType: string, model: string): void {
-  if (providerType === "claude-code" && !model.startsWith("claude-")) {
+  const reg = PROVIDER_REGISTRY[providerType];
+  if (!reg) return;
+  const prefix = reg.constraints?.modelPrefix;
+  if (prefix && !model.startsWith(prefix)) {
     throw new Error(
-      `provider=claude-code 不兼容 model=${model}（claude CLI 只认 claude-* 前缀）。\n`
+      `provider=${providerType} 不兼容 model=${model}（要求前缀 "${prefix}"）。\n`
       + `  解决方法：\n`
-      + `    1. 拆成两次跑：先 --provider sid-code --model ${model}，再 --provider claude-code --model claude-<X>\n`
-      + `    2. 多 provider 时不传 --model：各自用 defaultModel（sid-code=deepseek-v4-pro, claude-code=claude-opus-4-7）`
+      + `    1. 拆成两次跑：先 --provider sid-code --model ${model}，再 --provider ${providerType} --model ${prefix}<X>\n`
+      + `    2. 多 provider 时不传 --model：各自用 defaultModel`
     );
   }
 }
@@ -186,17 +208,46 @@ function buildProvider(type: string, model: string | undefined): ProviderDef {
   const resolved = model ?? reg.defaultModel;
   validateModelForProvider(type, resolved);
   const modelSlug = resolved.replace(/[^a-zA-Z0-9]/g, "_");
-  const { defaultModel: _ignored, ...rest } = reg;
-  return { ...rest, name: `${type.replace(/-/g, "_")}_${modelSlug}`, model: resolved };
+  return {
+    script: reg.script,
+    timeoutMs: reg.timeoutMs,
+    maxTurns: reg.maxTurns,
+    name: `${type.replace(/-/g, "_")}_${modelSlug}`,
+    model: resolved,
+  };
 }
 
 async function loadCases(
   caseFilter?: string[],
-  opts: { skipHoldout?: boolean; includeHoldout?: boolean } = {},
+  opts: { skipHoldout?: boolean; includeHoldout?: boolean; casesDir?: string } = {},
 ): Promise<CaseYaml[]> {
-  const { skipHoldout = true, includeHoldout = false } = opts;
+  const { skipHoldout = true, includeHoldout = false, casesDir } = opts;
   const wantSet = caseFilter ? new Set(caseFilter) : null;
   const cases: CaseYaml[] = [];
+
+  // --cases-dir 模式：只扫指定目录（含子目录），跳过默认的 general/architecture/holdout 逻辑
+  if (casesDir) {
+    const absDir = resolve(casesDir);
+    if (!existsSync(absDir)) {
+      throw new Error(`--cases-dir 指定的目录不存在: ${absDir}`);
+    }
+    const dirsToScan = [absDir];
+    // 递归发现子目录
+    for (const entry of require("node:fs").readdirSync(absDir)) {
+      const p = join(absDir, entry);
+      if (require("node:fs").statSync(p).isDirectory()) dirsToScan.push(p);
+    }
+    for (const dir of dirsToScan) {
+      const files = await Array.fromAsync(new Bun.Glob("*.yaml").scan(dir));
+      for (const f of files) {
+        const content = await Bun.file(join(dir, f)).text();
+        const c = parseYaml(content) as CaseYaml;
+        if (wantSet && !wantSet.has(c.id)) continue;
+        cases.push(c);
+      }
+    }
+    return cases.sort((a, b) => a.id.localeCompare(b.id));
+  }
 
   // 默认行为：扫描 general (P0/P1/P2) + architecture/<sub>/ 所有子目录 + 过滤 holdout=true 标记。
   // includeHoldout=true 时，额外扫描 evals/holdout/ + evals/holdout/architecture/<sub>/，且不再过滤 holdout 标记。
@@ -850,6 +901,7 @@ async function main() {
     args: Bun.argv.slice(2),
     options: {
       cases: { type: "string" },
+      "cases-dir": { type: "string" },
       provider: { type: "string", default: "sid-code" },
       // model 默认 undefined → buildProvider 用 provider 各自的 defaultModel
       // （sid-code → deepseek-v4-pro，claude-code → claude-opus-4-7）。
@@ -909,6 +961,7 @@ async function main() {
   const cases = await loadCases(caseFilter, {
     skipHoldout: values["skip-holdout"] as boolean,
     includeHoldout: values["include-holdout"] as boolean,
+    casesDir: values["cases-dir"] as string | undefined,
   });
 
   if (cases.length === 0) {

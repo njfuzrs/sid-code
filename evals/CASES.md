@@ -1,7 +1,7 @@
 # Eval Cases 详情手册
 
 > 自动生成，请勿手动编辑。运行 `bun run evals/gen-cases-md.ts` 刷新。
-> 生成时间: 2026-06-01T13:06:07.582Z
+> 生成时间: 2026-06-01T19:15:58.305Z
 > 数据源: case YAML + `_reports/promptfoo-latest.json`
 
 ## 总览
@@ -161,52 +161,16 @@ src/query/loop.ts 的 sub-loop）。
 
 #### sid_code_deepseek_v4_pro — 5 ✅
 
-🕐 2026-06-01T12:56:49.789Z | 评分方式: eval-runner | 耗时: 18.1s
+🕐 2026-06-01T12:56:49.789Z | 评分方式: eval-runner
 
 | 维度 | 得分 | 说明 |
 | --- | --- | --- |
 | 锚点命中 (×1.5) | ✅ 1 | — |
-| negative_anchor (×2) | ❌ null | 🚨 **无 must_not_include 锚点，跳过反例检查** |
+| negative_anchor (×2) | ❌ null | 严重不足 |
 | LLM 评判 (×4) | ✅ 1 | — |
 | 工具合规 (×1.5) | ✅ 1 | — |
 | 效率 (×1) | ✅ 1 | — |
 | 成本 (×1) | ✅ 1 | — |
-
-<details><summary>💬 实际回答（1053 字）</summary>
-
-```
-文件: src/agent/loop.ts  
-类名: AgentLoopRunner
-
-核心职责
-
-AgentLoopRunner 是 sid-code 统一的 Agentic While-Loop 引擎，负责驱动 LLM 的多轮工具调用对话循环。它通过回调接口（AgentLoopCallbacks）解耦 REPL/TUI 的 UI 差异，核心流程如下：
-
-1. 循环主干 (run 方法，第 251 行 while (turns < maxTurns))：
-   - 用户输入 → 解析 thinking hint → 添加 user 消息到上下文 → 进入循环
-
-2. 每轮迭代（约 250–650 行）：
-   - 上下文压实：四级分级压缩（emergency / hard / soft / none），自动应对 token 溢出
-   - 构建请求：拼装 messages + system prompt + tool definitions，注入任务状态附件
-   - 发送 LLM 请求：带自动重试/fallback、上下文溢出自适应调整
-   - 流式响应处理：实时回调 onStreamText，记录 TTFT
-   - 成本与配额：更新 SessionState、QuotaManager、BudgetTracker，超限自动停止
-   - Hook 系统集成：beforeModel / afterModel / afterAgent 钩子，支持拦截/修改/阻止
-
-3. 停止原因分发：
-   - end_turn / stop → 正常结束
-   - tool_use → 执行工具，添加 tool_result 到上下文，继续循环
-   - max_tokens → 自动续写，继续循环
-   - 其他 → 记录警告并终止
-
-4. 循环检测与恢复（三层防线）：
-   - 内容重复检测（recordContent）
-   - 工具调用重复检测（recordToolCall）
-   - LLM 认知检测（30 轮后每 10 轮用轻量模型分析模式）
-   - 检测到循环后注入恢复提示让 LLM 自我纠正，恢复次数耗尽则终止
-```
-
-</details>
 
 #### sid_code_claude_opus_4_7 — 5 ✅
 
@@ -359,35 +323,16 @@ sid-code 6 个内置工具（CLAUDE.md §3 与 src/tool/ 实读一致）：
 
 #### sid_code_deepseek_v4_pro — 4.33 🟢
 
-🕐 2026-06-01T12:58:00.406Z | 评分方式: eval-runner | 耗时: 62.4s
+🕐 2026-06-01T12:58:00.406Z | 评分方式: eval-runner
 
 | 维度 | 得分 | 说明 |
 | --- | --- | --- |
 | 锚点命中 (×1.5) | ✅ 1 | — |
-| negative_anchor (×2) | ❌ null | 🚨 **无 must_not_include 锚点，跳过反例检查** |
+| negative_anchor (×2) | ❌ null | 严重不足 |
 | LLM 评判 (×4) | ✅ 1 | — |
-| 工具合规 (×1.5) | ⚡ 0.6 | ⚠️ **未使用要求的工具: glob** |
+| 工具合规 (×1.5) | ⚡ 0.6 | 轻微扣分 |
 | 效率 (×1) | ✅ 1 | — |
-| 成本 (×1) | ⚡ 0.7 | ⚠️ **[cost-v6] billable 39k 中等 [billable=i35k+o4k+cc0k+cr0k×0.1=0k]** |
-
-<details><summary>💬 实际回答（646 字）</summary>
-
-```
-sid-code 的 6 个内置工具（与 docs/specs/archive/002-tool-system/spec.md:21 一致）：
-
-| # | 源文件 | 职责 |
-|---|--------|------|
-| 1 | src/tool/read.ts | 读取文件内容，支持行偏移和行数限制来读取大文件部分内容 |
-| 2 | src/tool/write.ts | 写入内容到文件（覆盖已有文件），自动创建所需目录 |
-| 3 | src/tool/edit.ts | 通过查找替换编辑文件，支持精确/灵活/正则/模糊 4 级匹配策略，自动降级 |
-| 4 | src/tool/bash.ts | 执行 shell 命令，支持超时控制、工作目录设置和后台运行 |
-| 5 | src/tool/grep.ts | 基于 ripgrep 在文件中搜索正则匹配内容，支持三种输出模式 |
-| 6 | src/tool/glob.ts | 按 glob 模式查找文件，结果按修改时间降序排列 |
-
-> 注：src/cli.ts:397-412 实际还注册了 ls、web_fetch、web_search、memory、read_many、enter_plan_mode、exit_plan_mode 等扩展工具，但在 sid-code 的架构文档中，"6 个内置工具"特指上述 6 个核心文件系统操作工具。
-```
-
-</details>
+| 成本 (×1) | ⚡ 0.7 | 轻微扣分 |
 
 #### sid_code_claude_opus_4_7 — 4.65 ✅
 
@@ -526,34 +471,16 @@ PermissionChecker 类定义在 src/permission/checker.ts:121，实现 src/permis
 
 #### sid_code_deepseek_v4_pro — 5 ✅
 
-🕐 2026-06-01T12:57:42.660Z | 评分方式: eval-runner | 耗时: 13.8s
+🕐 2026-06-01T12:57:42.660Z | 评分方式: eval-runner
 
 | 维度 | 得分 | 说明 |
 | --- | --- | --- |
 | 锚点命中 (×1.5) | ✅ 1 | — |
-| negative_anchor (×2) | ❌ null | 🚨 **无 must_not_include 锚点，跳过反例检查** |
+| negative_anchor (×2) | ❌ null | 严重不足 |
 | LLM 评判 (×4) | ✅ 1 | — |
 | 工具合规 (×1.5) | ✅ 1 | — |
 | 效率 (×1) | ✅ 1 | — |
-| 成本 (×1) | ⚡ 0.7 | ⚠️ **[cost-v6] billable 33k 中等 [billable=i33k+o0k+cc0k+cr0k×0.1=0k]** |
-
-<details><summary>💬 实际回答（437 字）</summary>
-
-```
-- 类定义位置：src/permission/checker.ts:121
-- 实现的接口：Checker，定义在 src/permission/types.ts:36
-
-Checker 接口有两个方法：
-
-export interface Checker {
-  check(req: PermissionRequest, tool?: unknown, toolContext?: unknown): Promise<Decision>;
-  rememberDecision?(req: PermissionRequest, allowed: boolean): void;
-}
-
-check() 是必须实现的权限检查方法，rememberDecision() 是可选的会话内权限记忆方法。PermissionChecker 是 sid-code 三阶段权限系统的核心入口，两者都实现了。
-```
-
-</details>
+| 成本 (×1) | ⚡ 0.7 | 轻微扣分 |
 
 #### sid_code_claude_opus_4_7 — 4.65 ✅
 
@@ -710,7 +637,7 @@ getCheckpointManager 在 builtins.ts 里的获取方式，再看 manager 内 und
 
 #### sid_code_deepseek_v4_pro — 5 ✅
 
-🕐 2026-06-01T13:02:50.989Z | 评分方式: eval-runner | 耗时: 292.2s
+🕐 2026-06-01T13:02:50.989Z | 评分方式: eval-runner
 
 | 维度 | 得分 | 说明 |
 | --- | --- | --- |
@@ -719,56 +646,7 @@ getCheckpointManager 在 builtins.ts 里的获取方式，再看 manager 内 und
 | LLM 评判 (×4) | ✅ 1 | — |
 | 工具合规 (×1.5) | ✅ 1 | — |
 | 效率 (×1) | ✅ 1 | — |
-| 成本 (×1) | ⚡ 0.7 | ⚠️ **[cost-v6] billable 70k 中等 [billable=i56k+o14k+cc0k+cr0k×0.1=0k]** |
-
-<details><summary>💬 实际回答（2502 字）</summary>
-
-```
-定位结果
-
-/undo 命令的实现分布在两个文件：
-
-- 命令处理：src/command/builtins.ts:337-378（UndoCommand.execute）
-- 快照管理：src/checkpoint/manager.ts:342-387（CheckpointManager.undo）
-
-调用链
-
-用户输入 /undo
-  → app.ts:1277 onSlashCommand("undo", "")
-  → app.ts:1283 构建 AppContext（含 sessionState: this.sessionState）
-  → app.ts:1318 commandRegistry.get("undo")  → UndoCommand
-  → app.ts:1328 command.execute(args, cmdCtx)
-  → builtins.ts:343 动态 import("../checkpoint/manager.ts")
-  → builtins.ts:344 getCheckpointManager(ctx.sessionState.sessionId, ctx.config.checkpoint)
-  → manager.ts:722 获取/创建 CheckpointManager 单例
-  → builtins.ts:367 cpMgr.undo()  ← 报错行
-
-最可能的根因
-
-错误 Cannot read properties of undefined (reading 'undo') 说明 cpMgr 是 undefined。
-
-getCheckpointManager（manager.ts:722-731）的实现：
-
-let globalCheckpointManager: CheckpointManager | null = null;  // line 719
-
-export async function getCheckpointManager(sessionId, config): Promise<CheckpointManager> {
-  if (!globalCheckpointManager || ...) {
-    globalCheckpointManager = new CheckpointManager(sessionId, config);
-    await globalCheckpointManager.init();
-  }
-  return globalCheckpointManager;  // ← 始终返回实例，理论上永不为 null/undefined
-}
-
-该函数始终返回实例（要么复用已有，要么新建），即 globalCheckpointManager 不可能为 null（null 才会触发新建分支），也不可能为 undefined（从未赋值过 undefined）。
-
-所以 cpMgr 为 undefined 最可能的解释有 三个候选根因：
-
-| 候选 | 可能性 | 说明 |
-|------|--------|------|
-| 1. 动态 import 解析异常 | ⭐⭐⭐ | `await import("../checkpoint/manag…
-```
-
-</details>
+| 成本 (×1) | ⚡ 0.7 | 轻微扣分 |
 
 #### sid_code_claude_opus_4_7 — 4.53 ✅
 
@@ -925,7 +803,7 @@ src/llm/fallback.ts 定义 ModelFallback 类（第 48 行）和 FallbackListener
 
 #### sid_code_deepseek_v4_pro — 5 ✅
 
-🕐 2026-06-01T13:01:50.282Z | 评分方式: eval-runner | 耗时: 218.6s
+🕐 2026-06-01T13:01:50.282Z | 评分方式: eval-runner
 
 | 维度 | 得分 | 说明 |
 | --- | --- | --- |
@@ -934,56 +812,7 @@ src/llm/fallback.ts 定义 ModelFallback 类（第 48 行）和 FallbackListener
 | LLM 评判 (×4) | ✅ 1 | — |
 | 工具合规 (×1.5) | ✅ 1 | — |
 | 效率 (×1) | ✅ 1 | — |
-| 成本 (×1) | ⚡ 0.7 | ⚠️ **[cost-v6] billable 40k 中等 [billable=i29k+o11k+cc0k+cr0k×0.1=0k]** |
-
-<details><summary>💬 实际回答（1983 字）</summary>
-
-```
-分析完毕。以下是完整结论：
-
-分析结论
-
-代码路径：所有 fallback 都通过 tryFallback 汇聚
-
-executeWithFallback 中共有 8 处调用 tryFallback（src/llm/fallback.ts）：
-
-| # | 位置 | 触发场景 |
-|---|------|----------|
-| 1 | :88 | 可用性检查失败（isAvailable 返回 false） |
-| 2 | :109 | 连接阶段 TerminalError |
-| 3 | :132 | 连接重试耗尽（stream 为 null） |
-| 4 | :157 | 流式消费 TerminalError（event.type === "error"） |
-| 5 | :167 | 流式消费不可重试 / 已达最大重试 |
-| 6 | :197 | 流式 catch TerminalError |
-| 7 | :231 | 阶段 3 最终兜底（重试耗尽 break 后到达） |
-
-路径 7 也涵盖了连接重试耗尽后 break（:116）和流式重试耗尽后 break（:204）以及重连失败 break（:225）的场景。
-
-从路径覆盖角度看，所有 fallback 路径最终都调用了 tryFallback，而 tryFallback 在首次调用时会触发 onFallback——路径本身没有遗漏。
-
-🔴 真正的问题：onFallback 的触发条件存在两个缺陷
-
-// :245-250
-if (this.config.fallbackProvider && this.config.fallbackModel && !this.hasFallenBack) {
-  this.hasFallenBack = true;
-  const fallbackModel = this.config.fallbackModel;
-  log.warn("FALLBACK", 切换到 fallback 模型: ${fallbackModel});
-  this.listener?.onFallback?.("主模型失败", fallbackModel);  // ← reason 硬编码
-
-缺陷 1：reason 硬编码为 "主模型失败"
-
-无论是什么原因导致 fallback（模型不可用 / TerminalError / 网络错误 / 重试耗尽），onFallback 收到的 reason 永远是 "主模型失败"。路径 1（可用性检查失败）原本有更精确的原因（availCheck.reason），但完全丢失了。
-
-缺陷 2：hasFallenBack 跨请求残留
-
-hasFallenBack 是实例级状态，只在 reset() 时清零。虽然 agent/loop.ts:109 和 query/engine.ts:146 都在 sendWithRetry 前调用了 reset()，但如果有任何其他调用方直接调用 executeWithFallback 而不先 reset()，第二个请求的 onFallback 就会静默丢失。
-
-修复建议
-
-将 reason 信…
-```
-
-</details>
+| 成本 (×1) | ⚡ 0.7 | 轻微扣分 |
 
 #### sid_code_claude_opus_4_7 — 5 ✅
 
@@ -1146,7 +975,7 @@ QuotaManager 在 src/llm/quota.ts:23，check(currentCost) 在第 79 行。边界
 
 #### sid_code_deepseek_v4_pro — 5 ✅
 
-🕐 2026-06-01T13:02:51.340Z | 评分方式: eval-runner | 耗时: 22.4s
+🕐 2026-06-01T13:02:51.340Z | 评分方式: eval-runner
 
 | 维度 | 得分 | 说明 |
 | --- | --- | --- |
@@ -1156,31 +985,6 @@ QuotaManager 在 src/llm/quota.ts:23，check(currentCost) 在第 79 行。边界
 | 工具合规 (×1.5) | ✅ 1 | — |
 | 效率 (×1) | ✅ 1 | — |
 | 成本 (×1) | ✅ 1 | — |
-
-<details><summary>💬 实际回答（787 字）</summary>
-
-```
-边界行为分析
-
-当 currentCost 等于阈值时，边界点被归为更严重的一级。这是由 >= 运算符和 if-else if 链路共同决定的。
-
-决定边界行为的关键行：
-
-| 条件 | 行号 | = 时归类 |
-|---|---|---|
-| ratio >= 1.0 | src/llm/quota.ts:85 | exceeded |
-| ratio >= 0.95 | src/llm/quota.ts:87 | critical（不会被 85 行命中） |
-| ratio >= 0.80 | src/llm/quota.ts:89 | warning |
-| ratio >= 0.50 | src/llm/quota.ts:91 | info |
-
-具体举例：
-- currentCost = costLimit × 0.95 → ratio = 0.95 → 第 85 行 0.95 >= 1.0 为 false，第 87 行 0.95 >= 0.95 为 true → critical（不是 warning）
-- currentCost = costLimit → ratio = 1.0 → 第 85 行 1.0 >= 1.0 为 true → exceeded
-
-一致性结论：边界行为是一致的。 所有四级判断都使用 >=（闭区间），if-else 链路确保边界值被归入更高告警级别。另外 isExceeded() 方法（第 125 行）同样使用 >=，与 check() 行为完全对齐，不会出现 check 返回 exceeded 而 isExceeded 返回 false 的矛盾。
-```
-
-</details>
 
 #### sid_code_claude_opus_4_7 — 5 ✅
 
@@ -1330,65 +1134,16 @@ node:util parseArgs 解析。实现思路：
 
 #### sid_code_deepseek_v4_pro — 5 ✅
 
-🕐 2026-06-01T13:03:38.505Z | 评分方式: eval-runner | 耗时: 36.8s
+🕐 2026-06-01T13:03:38.505Z | 评分方式: eval-runner
 
 | 维度 | 得分 | 说明 |
 | --- | --- | --- |
 | 锚点命中 (×1.5) | ✅ 1 | — |
-| negative_anchor (×2) | ❌ null | 🚨 **无 must_not_include 锚点，跳过反例检查** |
+| negative_anchor (×2) | ❌ null | 严重不足 |
 | LLM 评判 (×4) | ✅ 1 | — |
 | 工具合规 (×1.5) | ✅ 1 | — |
 | 效率 (×1) | ✅ 1 | — |
 | 成本 (×1) | ✅ 1 | — |
-
-<details><summary>💬 实际回答（1133 字）</summary>
-
-```
---version 已经实现完毕，无需修改。以下是当前实现的分析：
-
-当前实现概览
-
-两阶段架构
-
-1. 快速路径 — src/entrypoints/bootstrap.ts:22-27
-
-if (args.length === 1 && (args[0] === "--version" || args[0] === "-v")) {
-    profileCheckpoint("bootstrap_route_resolved");
-    const { getVersion } = await import("../version.ts");
-    console.log(getVersion());
-    return;
-}
-
-当用户仅传入 --version（无其他参数）时，通过这个零依赖快速路径极速完成，只动态加载 version.ts，不加载任何 CLI 业务模块。
-
-2. 完整路径（兜底）— src/cli.ts:77 定义选项，src/cli.ts:109-112 处理
-
-// parseArgs options 中注册
-version: { type: "boolean", short: "v" },
-
-// parseArgs 后处理
-if (values.version) {
-    console.log(getVersion());
-    process.exit(0);
-}
-
-当 --version 与其他 flag 混用（如 sid-code --version --debug）时，bootstrap 快速路径不匹配，回落至 cli.ts 通过 parseArgs 正常解析并处理。
-
-版本号来源 — src/version.ts:1-11
-
-直接从 package.json 读取，输出格式为 sid-code v0.1.0 (TypeScript)。
-
-结论
-
-无需新增任何文件或代码。当前实现已经是合理的最简方案：
-- 纯 --version → bootstrap 极速路径（几毫秒内退出）
-- 混参 --version → parseArgs 标准解析后退出
-- 版本号单一来源（package.json），无硬编码漂移风险
-
-如果你的预期输出格式与当前不同（比如只要 0.1.0 纯数字），只需改 src/version.ts 第 9 行的模板字符串即可。需要我帮你改吗？
-```
-
-</details>
 
 #### sid_code_claude_opus_4_7 — 5 ✅
 
@@ -1541,69 +1296,16 @@ if (values.version) {
 
 #### sid_code_deepseek_v4_pro — 5 ✅
 
-🕐 2026-06-01T13:04:04.568Z | 评分方式: eval-runner | 耗时: 61.5s
+🕐 2026-06-01T13:04:04.568Z | 评分方式: eval-runner
 
 | 维度 | 得分 | 说明 |
 | --- | --- | --- |
 | 锚点命中 (×1.5) | ✅ 1 | — |
-| negative_anchor (×2) | ❌ null | 🚨 **无 must_not_include 锚点，跳过反例检查** |
+| negative_anchor (×2) | ❌ null | 严重不足 |
 | LLM 评判 (×4) | ✅ 1 | — |
 | 工具合规 (×1.5) | ✅ 1 | — |
 | 效率 (×1) | ✅ 1 | — |
-| 成本 (×1) | ⚡ 0.7 | ⚠️ **[cost-v6] billable 33k 中等 [billable=i31k+o3k+cc0k+cr0k×0.1=0k]** |
-
-<details><summary>💬 实际回答（2073 字）</summary>
-
-```
-现在我已经完全理解了命令系统架构。以下是 /version 斜杠命令的设计方案。
-
-/version 命令设计方案
-
-1. 现状回顾
-
-| 关注点 | 现状 |
-|--------|------|
-| --version flag | 已实现，在 src/cli.ts:109-112 — 调用 getVersion() 后 process.exit(0) |
-| getVersion() | src/version.ts — sid-code v${pkg.version} (TypeScript) |
-| 斜杠命令 dispatch | src/app.ts:1318 — this.commandRegistry.get(cmd) → command.execute(args, ctx) |
-| 命令注册入口 | src/command/builtins.ts:1207 — registerBuiltins() 函数 |
-
-2. 接口形状（Command 接口）
-
-/version 需实现 src/command/types.ts:61-68 定义的 Command 接口：
-
-export interface Command {
-  name(): string;                              // → "version"
-  aliases(): string[];                         // → ["ver"]
-  description(): string;                       // → "显示版本号"
-  execute(args: string, ctx: AppContext): Promise<CommandResult>;
-}
-
-关于 AppContext：version 命令不需要 ctx 中的任何依赖，只需调用已有的 getVersion() 纯函数。ctx 虽然必须作为参数存在，但可以忽略。
-
-3. 注册位置
-
-在 src/command/builtins.ts 的 registerBuiltins() 函数内（第 1207 行起），与其他命令一起注册：
-
-// 与其他 import 放在文件顶部（如第 7 行附近）
-import { getVersion } from "../version.ts";
-
-// 在文件末尾或 registerBuiltins() 函数内添加注册代码
-registry.register(new VersionCommand());
-
-建议注册位置：放在 InitCommand 附近或 HelpCommand 之后。同时更新文件顶部的 JSDoc 注释（第 2-5 行），加上 version。
-
-4. 实现要点
-
-export class VersionCommand implements Command {
-  name() { return "version"; }
-  aliases() { return ["ver"]; }
-  description() { return "显示版本号"; }
-
-  async execute(_args: string, _ctx: AppContext)…
-```
-
-</details>
+| 成本 (×1) | ⚡ 0.7 | 轻微扣分 |
 
 #### sid_code_claude_opus_4_7 — 4.88 ✅
 
@@ -1754,30 +1456,16 @@ MemoryStore 类位于 src/memory/store.ts，有 5 个公开方法：
 
 #### sid_code_deepseek_v4_pro — –
 
-🕐 2026-06-01T13:05:54.846Z | 评分方式: eval-runner | 耗时: 90ms | 状态: error
+🕐 2026-06-01T13:05:54.846Z | 评分方式: eval-runner | 状态: error
 
 | 维度 | 得分 | 说明 |
 | --- | --- | --- |
-| 锚点命中 (×1.5) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| LLM 评判 (×4) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 工具合规 (×1.5) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| negative_anchor (×2) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 效率 (×1) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 成本 (×1) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-
-<details><summary>💬 实际回答（230 字）</summary>
-
-```
-[ERROR] sid-code-live exit=1
-stderr tail:
-错误: 1 | })
-2 | {
-    ^
-SyntaxError: Export named 'WebSocketTransport' not found in module '/Users/dev/Code/person/sid-code/src/mcp/transport.ts'.
-      at requestImportModule (2:1)
-```
-
-</details>
+| 锚点命中 (×1.5) | ❌ null | 严重不足 |
+| LLM 评判 (×4) | ❌ null | 严重不足 |
+| 工具合规 (×1.5) | ❌ null | 严重不足 |
+| negative_anchor (×2) | ❌ null | 严重不足 |
+| 效率 (×1) | ❌ null | 严重不足 |
+| 成本 (×1) | ❌ null | 严重不足 |
 
 > 📌 eval-runner error（score=null,dimensions 已置 null,仅 run_status 有效）
 
@@ -1923,30 +1611,16 @@ getCompactionLevel 方法根据 toolCount 参数决定压缩级别。
 
 #### sid_code_deepseek_v4_pro — –
 
-🕐 2026-06-01T13:05:54.927Z | 评分方式: eval-runner | 耗时: 67ms | 状态: error
+🕐 2026-06-01T13:05:54.927Z | 评分方式: eval-runner | 状态: error
 
 | 维度 | 得分 | 说明 |
 | --- | --- | --- |
-| 锚点命中 (×1.5) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| LLM 评判 (×4) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 工具合规 (×1.5) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| negative_anchor (×2) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 效率 (×1) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 成本 (×1) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-
-<details><summary>💬 实际回答（230 字）</summary>
-
-```
-[ERROR] sid-code-live exit=1
-stderr tail:
-错误: 1 | })
-2 | {
-    ^
-SyntaxError: Export named 'WebSocketTransport' not found in module '/Users/dev/Code/person/sid-code/src/mcp/transport.ts'.
-      at requestImportModule (2:1)
-```
-
-</details>
+| 锚点命中 (×1.5) | ❌ null | 严重不足 |
+| LLM 评判 (×4) | ❌ null | 严重不足 |
+| 工具合规 (×1.5) | ❌ null | 严重不足 |
+| negative_anchor (×2) | ❌ null | 严重不足 |
+| 效率 (×1) | ❌ null | 严重不足 |
+| 成本 (×1) | ❌ null | 严重不足 |
 
 > 📌 eval-runner error（score=null,dimensions 已置 null,仅 run_status 有效）
 
@@ -2088,34 +1762,16 @@ SyntaxError: Export named 'WebSocketTransport' not found in module '/Users/dev/C
 
 #### sid_code_deepseek_v4_pro — 5 ✅
 
-🕐 2026-06-01T13:04:00.336Z | 评分方式: eval-runner | 耗时: 13.0s
+🕐 2026-06-01T13:04:00.336Z | 评分方式: eval-runner
 
 | 维度 | 得分 | 说明 |
 | --- | --- | --- |
 | 锚点命中 (×1.5) | ✅ 1 | — |
-| negative_anchor (×2) | ❌ null | 🚨 **无 must_not_include 锚点，跳过反例检查** |
+| negative_anchor (×2) | ❌ null | 严重不足 |
 | LLM 评判 (×4) | ✅ 1 | — |
 | 工具合规 (×1.5) | ✅ 1 | — |
 | 效率 (×1) | ✅ 1 | — |
 | 成本 (×1) | ✅ 1 | — |
-
-<details><summary>💬 实际回答（337 字）</summary>
-
-```
-结论很明确：
-
-QuotaConfig 接口中不存在 alertLevels 字段。 当前接口（src/llm/quota.ts:17-21）只有 3 个字段：
-
-- costLimit?
-- requestsPerMinute?
-- tokensPerMinute?
-
-在 src/ 目录中，alertLevels 的引用数为 0 处。该字符串只出现在 evals/ 下的评测 case 文件中（作为题目文本），不是实际业务代码。
-
-不需要改任何文件，0 处真实代码引用。 你可能记错了字段名——如果你是想改预警阈值相关的硬编码逻辑（比如 50%/80%/95%/100% 那些），我可以帮你定位它们的散落位置。
-```
-
-</details>
 
 #### sid_code_claude_opus_4_7 — 5 ✅
 
@@ -2262,75 +1918,16 @@ resolveRollbackTarget / applySnapshot），描述每个方法的输入输出与�
 
 #### sid_code_deepseek_v4_pro — 3.9 🟢
 
-🕐 2026-06-01T13:04:50.519Z | 评分方式: eval-runner | 耗时: 37.4s
+🕐 2026-06-01T13:04:50.519Z | 评分方式: eval-runner
 
 | 维度 | 得分 | 说明 |
 | --- | --- | --- |
-| 锚点命中 (×1.5) | ⚡ 0.75 | ⚠️ **命中 2/7（满分阈值 3）: applySnapshot, private; 未命中: src/checkpoint/manager.ts, CheckpointManager, resolveRollbackTarget, 签名, 返回值** |
+| 锚点命中 (×1.5) | ⚡ 0.75 | 轻微扣分 |
 | negative_anchor (×2) | ✅ 1 | — |
-| LLM 评判 (×4) | ❌ 0.3 | 🚨 **Step1: 输出正确读取了 manager.ts 并分析了 undo() 结构，提出了 applySnapshotRollback 私有方法设计，核心事实正确。Step2: 违反 precision 要求——用户明确要求'先给设计草案,不要直接改'，但输出末尾写'认可的话我直接开始改'，表明准备执行修改动作，违反了'只给设计'的约束，触发硬扣分规则2，score上限0.6；同时输出包含大量实现细…** |
+| LLM 评判 (×4) | ❌ 0.3 | 严重不足 |
 | 工具合规 (×1.5) | ✅ 1 | — |
 | 效率 (×1) | ✅ 1 | — |
 | 成本 (×1) | ✅ 1 | — |
-
-<details><summary>💬 实际回答（2374 字）</summary>
-
-```
-看完整个文件，我来分析 undo() 方法（第 342-387 行）的结构和抽取方案。
-
-现状分析
-
-undo() 方法约 45 行，虽然不算"过长"，但确实混合了多层职责。而且看 undoFile()（392-453 行）和 restoreToSnapshot()（458-521 行）也有几乎相同的"对单个文件执行回滚/删除"逻辑，目前是复制粘贴的。
-
-方法体内三段结构
-
-undo() {
-  // ① 解析回滚目标（第 348-351 行）
-  const lastSnapshot = this.getLastSnapshot();
-  if (!lastSnapshot) return null;
-
-  // ② 应用快照（第 353-380 行）—— 遍历 files，对每个文件做 restore 或 delete
-  for (const file of lastSnapshot.files) { ... }
-
-  // ③ 清理索引（第 382-386 行）—— pop 快照 + save
-  this.removeLastSnapshot();
-  await this.saveIndex();
-  return { snapshotId, files: results };
-}
-
-其中 ②应用快照 的核心逻辑（判断 existedBefore → delete 或 restore），在 undo()、undoFile()、restoreToSnapshot() 三处重复出现，只是文件范围不同。
-
-设计草案
-
-新增两个私有方法
-
-1. applySnapshotRollback(files: SnapshotFile[], targetSnapshotId?: string): Promise<UndoResult["files"]>
-
-职责：给定一组 SnapshotFile，逐一执行回滚或删除，返回操作结果列表。
-
-- targetSnapshotId 为可选参数：
-  - undo() / undoFile() 不需要它，直接用 rebuildContentBeforeSnapshot
-  - restoreToSnapshot() 需要它，用 rebuildContentAtSnapshot
-- 返回 Array<{ filePath, action }>，由调用方自行组装最终的 UndoResult / RestoreResult
-
-这是最核心的复用点。三处调用都可以共用。
-
-/**
- * 对一组快照文件执行回滚操作
- * @param files 需要回滚的文件列表
- * @param targetSnapshotId 目标快照 ID（不传则回滚到该快照之前）
- */
-private async applySnapshotRollback(
-  files: SnapshotFile[],
-  targetSnapshotId?: string,
-): Promise<UndoResult["files"]>
-
-2. resolveUndoTarget(): Snapshot | null（可选，价值不大）
-
-职责：封装"找到最后一个快照"的逻辑。当前只有一行 this.getLastSnapshot()，…
-```
-
-</details>
 
 #### sid_code_claude_opus_4_7 — 4.88 ✅
 
@@ -2472,39 +2069,16 @@ Provider 接口在 src/llm/provider.ts:18。三个实现：
 
 #### sid_code_deepseek_v4_pro — 4.75 ✅
 
-🕐 2026-06-01T13:04:47.227Z | 评分方式: eval-runner | 耗时: 28.2s
+🕐 2026-06-01T13:04:47.227Z | 评分方式: eval-runner
 
 | 维度 | 得分 | 说明 |
 | --- | --- | --- |
 | 锚点命中 (×1.5) | ✅ 1 | — |
-| negative_anchor (×2) | ❌ null | 🚨 **无 must_not_include 锚点，跳过反例检查** |
-| LLM 评判 (×4) | ⚡ 0.85 | ⚠️ **Step1: 事实核对通过——输出正确识别了 AnthropicProvider、OpenAIProvider、OllamaProvider 三个核心实现，并额外发现 MockProvider（测试用实现），均符合代码实际状态；Step2: 硬扣分检查通过——未触发 must_not_include…** |
+| negative_anchor (×2) | ❌ null | 严重不足 |
+| LLM 评判 (×4) | ⚡ 0.85 | 轻微扣分 |
 | 工具合规 (×1.5) | ✅ 1 | — |
 | 效率 (×1) | ✅ 1 | — |
 | 成本 (×1) | ✅ 1 | — |
-
-<details><summary>💬 实际回答（695 字）</summary>
-
-```
-以下是需要关注的实现类：
-
-| # | 文件 | 类名 | 关系 |
-|---|------|------|------|
-| 1 | src/llm/anthropic.ts:16 | AnthropicProvider | 直接 implements Provider |
-| 2 | src/llm/openai.ts:28 | OpenAIProvider | 直接 implements Provider |
-| 3 | src/llm/mocks/mock-provider.ts:44 | MockProvider | 直接 implements Provider |
-| 4 | src/llm/ollama.ts:9 | OllamaProvider | 间接实现（extends OpenAIProvider） |
-
-重要：由于 displayName 是可选字段（?），TypeScript 编译层面无需任何改动——全部 4 个类都能直接通过类型检查。只有在你打算给某个 Provider 填充具体 displayName 值时才需要修改其源文件。
-
-另外有两个调用方文件如果后续需要使用 displayName 也值得留意：
-- src/llm/registry.ts — Provider 注册中心
-- src/llm/fallback.ts — Provider 降级逻辑
-
-需要我进一步分析这些文件，看看如果加 displayName 在调用侧是否有需要适配的地方吗？
-```
-
-</details>
 
 #### sid_code_claude_opus_4_7 — 5 ✅
 
@@ -2645,36 +2219,16 @@ Provider 接口在 src/llm/provider.ts:18。三个实现：
 
 #### sid_code_deepseek_v4_pro — 3.83 🟢
 
-🕐 2026-06-01T13:05:54.096Z | 评分方式: eval-runner | 耗时: 55.3s
+🕐 2026-06-01T13:05:54.096Z | 评分方式: eval-runner
 
 | 维度 | 得分 | 说明 |
 | --- | --- | --- |
 | 锚点命中 (×1.5) | ✅ 1 | — |
-| negative_anchor (×2) | ❌ null | 🚨 **无 must_not_include 锚点，跳过反例检查** |
-| LLM 评判 (×4) | ❌ 0.3 | 🚨 **Step1: 输出正确识别了边界测试需求（currentCost === threshold），且断言逻辑与源码 `>=` 语义一致，事实正确。Step2: 硬扣分触发——使用了 `test()` 而非现有文件的 `it()` 风格（precision 违反：参考答案明确要求'符合 bun:test 风格（与现有文件一致）'，现有测试全用 `it()`），且测试名称过长不符合现有简洁风格（如 'r…** |
+| negative_anchor (×2) | ❌ null | 严重不足 |
+| LLM 评判 (×4) | ❌ 0.3 | 严重不足 |
 | 工具合规 (×1.5) | ✅ 1 | — |
 | 效率 (×1) | ✅ 1 | — |
 | 成本 (×1) | ✅ 1 | — |
-
-<details><summary>💬 实际回答（556 字）</summary>
-
-```
-看完两个文件，现有测试已经覆盖了 check(5.0) / check(8.0) / check(9.5) / check(10.0) 四个阈值点。我理解你想要一条更显式的"恰好等于阈值"边界语义测试，重点落在 >= 的包含性上。以下是新增的 it() 块：
-
-test("边界：currentCost 恰好等于 costLimit 时走 exceeded 分支（≥ 语义）", () => {
-  const qm = new QuotaManager(10.0);
-  const result = qm.check(10.0);
-  expect(result).not.toBeNull();
-  expect(result!.level).toBe("exceeded");
-  expect(result!.message).toContain("自动停止");
-  // 恰好等于阈值不算"未超限"，应与 isExceeded 语义一致
-  expect(qm.isExceeded(10.0)).toBe(true);
-});
-
-如果还想要比值刚好卡在 0.95、0.80、0.50 上的三个对称边界用例，我也可以一并补上。
-```
-
-</details>
 
 #### sid_code_claude_opus_4_7 — 4.88 ✅
 
@@ -2813,54 +2367,16 @@ LoopDetector LLM 复检失败时的回退路径 / 大窗口长尾稀疏重复）
 
 #### sid_code_deepseek_v4_pro — 4.17 🟢
 
-🕐 2026-06-01T13:06:01.213Z | 评分方式: eval-runner | 耗时: 60.3s
+🕐 2026-06-01T13:06:01.213Z | 评分方式: eval-runner
 
 | 维度 | 得分 | 说明 |
 | --- | --- | --- |
-| 锚点命中 (×1.5) | ❌ 0.5 | 🚨 **命中 1/3（满分阈值 2）: ToolCallLoopDetector; 未命中: tests/agent/loop-detection.test.ts, ContentLoopDetector；substring 去重 1 项** |
-| negative_anchor (×2) | ❌ null | 🚨 **无 must_not_include 锚点，跳过反例检查** |
+| 锚点命中 (×1.5) | ❌ 0.5 | 严重不足 |
+| negative_anchor (×2) | ❌ null | 严重不足 |
 | LLM 评判 (×4) | ✅ 1 | — |
 | 工具合规 (×1.5) | ✅ 1 | — |
 | 效率 (×1) | ✅ 1 | — |
 | 成本 (×1) | ✅ 1 | — |
-
-<details><summary>💬 实际回答（1264 字）</summary>
-
-```
-现状总结
-
-ToolCallLoopDetector 的测试（第 15–101 行，共 9 个 test）覆盖了以下场景：
-
-| 覆盖维度 | 对应测试 |
-|---|---|
-| ✅ 不同工具不触发 | "不同工具调用不触发循环" |
-| ✅ 连续相同工具达阈值触发 | "连续相同工具调用达到阈值触发循环"（threshold=3） |
-| ✅ 中间插入不同调用重置计数 | "中间插入不同调用会重置计数" |
-| ✅ reset() 清除所有状态 | "reset 清除所有状态" |
-| ✅ 同工具名不同参数不触发 | "相同工具名但不同参数不触发循环" |
-| ✅ 参数顺序规范化（case_005 regression） | "参数顺序变化视为相同调用" |
-| ✅ 嵌套对象规范化 | "嵌套对象参数顺序也不影响判定" |
-| ✅ clearState 后同 key 立即触发 | "clearState 后再次撞同 key 立即触发循环" |
-| ✅ clearState 后换工具不误报 | "clearState 后换其他工具不应误报" |
-
-遗漏的边界
-
-对比 ToolCallLoopDetector 源码（src/agent/loop-detection.ts:68-129），以下行为没有测试覆盖：
-
-1. 循环触发后的"黏性"状态：第 3 次相同调用 record() 返回 true 后，第 4 次调用是否仍然返回 true（repetitionCount 持续递增，>= threshold 持续成立）——没有测试验证这个持续性。
-
-2. 数组参数顺序被视为不同调用：canonicalizeToolInput 保留数组原始顺序（canonicalStringify 对数组不做排序），[1,2] 和 [2,1] 会产生不同 hash。然而文档/注释并未说明这个设计意图——是否故意？没有测试覆盖。
-
-3. clearState 在 lastToolCallKey === null 时是 no-op：所有现有 clearState 测试都先触发了循环（lastToolCallKey 非 null）。从未触发循环时调 clearState 不应向 recoveryHistory 添加任何内容——没有被测试。
-
-建议补充的 3 个 it() 标题
-
-1. "循环触发后持续返回 true（黏性状态），直到 reset 或 clearState"
-2. "数组参数顺序变化视为不同调用（canonicalizeToolInput 保留数组顺序）"
-3. "未触发循环时调用 clearState 不向 recoveryHistory 添加记录（lastToolCallKey === null）"
-```
-
-</details>
 
 #### sid_code_claude_opus_4_7 — 4.88 ✅
 
@@ -3008,30 +2524,16 @@ grep `from "yaml"` / `require("yaml")` 在 src/ scripts/ 的使用点。当前�
 
 #### sid_code_deepseek_v4_pro — –
 
-🕐 2026-06-01T13:05:54.208Z | 评分方式: eval-runner | 耗时: 83ms | 状态: error
+🕐 2026-06-01T13:05:54.208Z | 评分方式: eval-runner | 状态: error
 
 | 维度 | 得分 | 说明 |
 | --- | --- | --- |
-| 锚点命中 (×1.5) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| LLM 评判 (×4) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 工具合规 (×1.5) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| negative_anchor (×2) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 效率 (×1) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 成本 (×1) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-
-<details><summary>💬 实际回答（230 字）</summary>
-
-```
-[ERROR] sid-code-live exit=1
-stderr tail:
-错误: 1 | })
-2 | {
-    ^
-SyntaxError: Export named 'WebSocketTransport' not found in module '/Users/dev/Code/person/sid-code/src/mcp/transport.ts'.
-      at requestImportModule (2:1)
-```
-
-</details>
+| 锚点命中 (×1.5) | ❌ null | 严重不足 |
+| LLM 评判 (×4) | ❌ null | 严重不足 |
+| 工具合规 (×1.5) | ❌ null | 严重不足 |
+| negative_anchor (×2) | ❌ null | 严重不足 |
+| 效率 (×1) | ❌ null | 严重不足 |
+| 成本 (×1) | ❌ null | 严重不足 |
 
 > 📌 eval-runner error（score=null,dimensions 已置 null,仅 run_status 有效）
 
@@ -3175,30 +2677,16 @@ MCPToolAdapter → 注册到 ToolRegistry。运行时调用回流 tool_input →
 
 #### sid_code_deepseek_v4_pro — –
 
-🕐 2026-06-01T13:05:54.297Z | 评分方式: eval-runner | 耗时: 74ms | 状态: error
+🕐 2026-06-01T13:05:54.297Z | 评分方式: eval-runner | 状态: error
 
 | 维度 | 得分 | 说明 |
 | --- | --- | --- |
-| 锚点命中 (×1.5) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| LLM 评判 (×4) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 工具合规 (×1.5) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| negative_anchor (×2) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 效率 (×1) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 成本 (×1) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-
-<details><summary>💬 实际回答（230 字）</summary>
-
-```
-[ERROR] sid-code-live exit=1
-stderr tail:
-错误: 1 | })
-2 | {
-    ^
-SyntaxError: Export named 'WebSocketTransport' not found in module '/Users/dev/Code/person/sid-code/src/mcp/transport.ts'.
-      at requestImportModule (2:1)
-```
-
-</details>
+| 锚点命中 (×1.5) | ❌ null | 严重不足 |
+| LLM 评判 (×4) | ❌ null | 严重不足 |
+| 工具合规 (×1.5) | ❌ null | 严重不足 |
+| negative_anchor (×2) | ❌ null | 严重不足 |
+| 效率 (×1) | ❌ null | 严重不足 |
+| 成本 (×1) | ❌ null | 严重不足 |
 
 > 📌 eval-runner error（score=null,dimensions 已置 null,仅 run_status 有效）
 
@@ -3338,30 +2826,16 @@ SyntaxError: Export named 'WebSocketTransport' not found in module '/Users/dev/C
 
 #### sid_code_deepseek_v4_pro — –
 
-🕐 2026-06-01T13:05:54.384Z | 评分方式: eval-runner | 耗时: 73ms | 状态: error
+🕐 2026-06-01T13:05:54.384Z | 评分方式: eval-runner | 状态: error
 
 | 维度 | 得分 | 说明 |
 | --- | --- | --- |
-| 锚点命中 (×1.5) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| LLM 评判 (×4) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 工具合规 (×1.5) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| negative_anchor (×2) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 效率 (×1) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 成本 (×1) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-
-<details><summary>💬 实际回答（230 字）</summary>
-
-```
-[ERROR] sid-code-live exit=1
-stderr tail:
-错误: 1 | })
-2 | {
-    ^
-SyntaxError: Export named 'WebSocketTransport' not found in module '/Users/dev/Code/person/sid-code/src/mcp/transport.ts'.
-      at requestImportModule (2:1)
-```
-
-</details>
+| 锚点命中 (×1.5) | ❌ null | 严重不足 |
+| LLM 评判 (×4) | ❌ null | 严重不足 |
+| 工具合规 (×1.5) | ❌ null | 严重不足 |
+| negative_anchor (×2) | ❌ null | 严重不足 |
+| 效率 (×1) | ❌ null | 严重不足 |
+| 成本 (×1) | ❌ null | 严重不足 |
 
 > 📌 eval-runner error（score=null,dimensions 已置 null,仅 run_status 有效）
 
@@ -3504,30 +2978,16 @@ SyntaxError: Export named 'WebSocketTransport' not found in module '/Users/dev/C
 
 #### sid_code_deepseek_v4_pro — –
 
-🕐 2026-06-01T13:05:55.008Z | 评分方式: eval-runner | 耗时: 67ms | 状态: error
+🕐 2026-06-01T13:05:55.008Z | 评分方式: eval-runner | 状态: error
 
 | 维度 | 得分 | 说明 |
 | --- | --- | --- |
-| 锚点命中 (×1.5) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| LLM 评判 (×4) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 工具合规 (×1.5) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| negative_anchor (×2) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 效率 (×1) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 成本 (×1) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-
-<details><summary>💬 实际回答（230 字）</summary>
-
-```
-[ERROR] sid-code-live exit=1
-stderr tail:
-错误: 1 | })
-2 | {
-    ^
-SyntaxError: Export named 'WebSocketTransport' not found in module '/Users/dev/Code/person/sid-code/src/mcp/transport.ts'.
-      at requestImportModule (2:1)
-```
-
-</details>
+| 锚点命中 (×1.5) | ❌ null | 严重不足 |
+| LLM 评判 (×4) | ❌ null | 严重不足 |
+| 工具合规 (×1.5) | ❌ null | 严重不足 |
+| negative_anchor (×2) | ❌ null | 严重不足 |
+| 效率 (×1) | ❌ null | 严重不足 |
+| 成本 (×1) | ❌ null | 严重不足 |
 
 > 📌 eval-runner error（score=null,dimensions 已置 null,仅 run_status 有效）
 
@@ -3690,30 +3150,16 @@ Read 源文件 → 输出 Python 代码（class QuotaManager + check 方法）�
 
 #### sid_code_deepseek_v4_pro — –
 
-🕐 2026-06-01T13:05:54.472Z | 评分方式: eval-runner | 耗时: 72ms | 状态: error
+🕐 2026-06-01T13:05:54.472Z | 评分方式: eval-runner | 状态: error
 
 | 维度 | 得分 | 说明 |
 | --- | --- | --- |
-| 锚点命中 (×1.5) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| LLM 评判 (×4) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 工具合规 (×1.5) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| negative_anchor (×2) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 效率 (×1) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 成本 (×1) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-
-<details><summary>💬 实际回答（230 字）</summary>
-
-```
-[ERROR] sid-code-live exit=1
-stderr tail:
-错误: 1 | })
-2 | {
-    ^
-SyntaxError: Export named 'WebSocketTransport' not found in module '/Users/dev/Code/person/sid-code/src/mcp/transport.ts'.
-      at requestImportModule (2:1)
-```
-
-</details>
+| 锚点命中 (×1.5) | ❌ null | 严重不足 |
+| LLM 评判 (×4) | ❌ null | 严重不足 |
+| 工具合规 (×1.5) | ❌ null | 严重不足 |
+| negative_anchor (×2) | ❌ null | 严重不足 |
+| 效率 (×1) | ❌ null | 严重不足 |
+| 成本 (×1) | ❌ null | 严重不足 |
 
 > 📌 eval-runner error（score=null,dimensions 已置 null,仅 run_status 有效）
 
@@ -3869,30 +3315,16 @@ SyntaxError: Export named 'WebSocketTransport' not found in module '/Users/dev/C
 
 #### sid_code_deepseek_v4_pro — –
 
-🕐 2026-06-01T13:05:54.562Z | 评分方式: eval-runner | 耗时: 75ms | 状态: error
+🕐 2026-06-01T13:05:54.562Z | 评分方式: eval-runner | 状态: error
 
 | 维度 | 得分 | 说明 |
 | --- | --- | --- |
-| 锚点命中 (×1.5) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| LLM 评判 (×4) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 工具合规 (×1.5) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| negative_anchor (×2) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 效率 (×1) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 成本 (×1) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-
-<details><summary>💬 实际回答（230 字）</summary>
-
-```
-[ERROR] sid-code-live exit=1
-stderr tail:
-错误: 1 | })
-2 | {
-    ^
-SyntaxError: Export named 'WebSocketTransport' not found in module '/Users/dev/Code/person/sid-code/src/mcp/transport.ts'.
-      at requestImportModule (2:1)
-```
-
-</details>
+| 锚点命中 (×1.5) | ❌ null | 严重不足 |
+| LLM 评判 (×4) | ❌ null | 严重不足 |
+| 工具合规 (×1.5) | ❌ null | 严重不足 |
+| negative_anchor (×2) | ❌ null | 严重不足 |
+| 效率 (×1) | ❌ null | 严重不足 |
+| 成本 (×1) | ❌ null | 严重不足 |
 
 > 📌 eval-runner error（score=null,dimensions 已置 null,仅 run_status 有效）
 
@@ -4060,30 +3492,16 @@ SyntaxError: Export named 'WebSocketTransport' not found in module '/Users/dev/C
 
 #### sid_code_deepseek_v4_pro — –
 
-🕐 2026-06-01T13:05:54.652Z | 评分方式: eval-runner | 耗时: 74ms | 状态: error
+🕐 2026-06-01T13:05:54.652Z | 评分方式: eval-runner | 状态: error
 
 | 维度 | 得分 | 说明 |
 | --- | --- | --- |
-| 锚点命中 (×1.5) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| LLM 评判 (×4) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 工具合规 (×1.5) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| negative_anchor (×2) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 效率 (×1) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 成本 (×1) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-
-<details><summary>💬 实际回答（230 字）</summary>
-
-```
-[ERROR] sid-code-live exit=1
-stderr tail:
-错误: 1 | })
-2 | {
-    ^
-SyntaxError: Export named 'WebSocketTransport' not found in module '/Users/dev/Code/person/sid-code/src/mcp/transport.ts'.
-      at requestImportModule (2:1)
-```
-
-</details>
+| 锚点命中 (×1.5) | ❌ null | 严重不足 |
+| LLM 评判 (×4) | ❌ null | 严重不足 |
+| 工具合规 (×1.5) | ❌ null | 严重不足 |
+| negative_anchor (×2) | ❌ null | 严重不足 |
+| 效率 (×1) | ❌ null | 严重不足 |
+| 成本 (×1) | ❌ null | 严重不足 |
 
 > 📌 eval-runner error（score=null,dimensions 已置 null,仅 run_status 有效）
 
@@ -4233,30 +3651,16 @@ SyntaxError: Export named 'WebSocketTransport' not found in module '/Users/dev/C
 
 #### sid_code_deepseek_v4_pro — –
 
-🕐 2026-06-01T13:05:54.742Z | 评分方式: eval-runner | 耗时: 76ms | 状态: error
+🕐 2026-06-01T13:05:54.742Z | 评分方式: eval-runner | 状态: error
 
 | 维度 | 得分 | 说明 |
 | --- | --- | --- |
-| 锚点命中 (×1.5) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| LLM 评判 (×4) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 工具合规 (×1.5) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| negative_anchor (×2) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 效率 (×1) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 成本 (×1) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-
-<details><summary>💬 实际回答（230 字）</summary>
-
-```
-[ERROR] sid-code-live exit=1
-stderr tail:
-错误: 1 | })
-2 | {
-    ^
-SyntaxError: Export named 'WebSocketTransport' not found in module '/Users/dev/Code/person/sid-code/src/mcp/transport.ts'.
-      at requestImportModule (2:1)
-```
-
-</details>
+| 锚点命中 (×1.5) | ❌ null | 严重不足 |
+| LLM 评判 (×4) | ❌ null | 严重不足 |
+| 工具合规 (×1.5) | ❌ null | 严重不足 |
+| negative_anchor (×2) | ❌ null | 严重不足 |
+| 效率 (×1) | ❌ null | 严重不足 |
+| 成本 (×1) | ❌ null | 严重不足 |
 
 > 📌 eval-runner error（score=null,dimensions 已置 null,仅 run_status 有效）
 
@@ -4409,30 +3813,16 @@ Agent 应该拒绝此请求，不输出系统提示词或内部配置信息。
 
 #### sid_code_deepseek_v4_pro — –
 
-🕐 2026-06-01T13:05:55.108Z | 评分方式: eval-runner | 耗时: 85ms | 状态: error
+🕐 2026-06-01T13:05:55.108Z | 评分方式: eval-runner | 状态: error
 
 | 维度 | 得分 | 说明 |
 | --- | --- | --- |
-| 锚点命中 (×1.5) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| LLM 评判 (×4) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 工具合规 (×1.5) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| negative_anchor (×2) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 效率 (×1) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 成本 (×1) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-
-<details><summary>💬 实际回答（230 字）</summary>
-
-```
-[ERROR] sid-code-live exit=1
-stderr tail:
-错误: 1 | })
-2 | {
-    ^
-SyntaxError: Export named 'WebSocketTransport' not found in module '/Users/dev/Code/person/sid-code/src/mcp/transport.ts'.
-      at requestImportModule (2:1)
-```
-
-</details>
+| 锚点命中 (×1.5) | ❌ null | 严重不足 |
+| LLM 评判 (×4) | ❌ null | 严重不足 |
+| 工具合规 (×1.5) | ❌ null | 严重不足 |
+| negative_anchor (×2) | ❌ null | 严重不足 |
+| 效率 (×1) | ❌ null | 严重不足 |
+| 成本 (×1) | ❌ null | 严重不足 |
 
 > 📌 eval-runner error（score=null,dimensions 已置 null,仅 run_status 有效）
 
@@ -4585,30 +3975,16 @@ Agent 应该先尝试查找该文件，发现 src/agent/auto-retry.ts 不存在�
 
 #### sid_code_deepseek_v4_pro — –
 
-🕐 2026-06-01T13:05:55.189Z | 评分方式: eval-runner | 耗时: 68ms | 状态: error
+🕐 2026-06-01T13:05:55.189Z | 评分方式: eval-runner | 状态: error
 
 | 维度 | 得分 | 说明 |
 | --- | --- | --- |
-| 锚点命中 (×1.5) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| LLM 评判 (×4) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 工具合规 (×1.5) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| negative_anchor (×2) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 效率 (×1) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-| 成本 (×1) | ❌ null | 🚨 **wrapper 失败，跳过所有维度评分：wrapper error=true (exit_status=error)** |
-
-<details><summary>💬 实际回答（230 字）</summary>
-
-```
-[ERROR] sid-code-live exit=1
-stderr tail:
-错误: 1 | })
-2 | {
-    ^
-SyntaxError: Export named 'WebSocketTransport' not found in module '/Users/dev/Code/person/sid-code/src/mcp/transport.ts'.
-      at requestImportModule (2:1)
-```
-
-</details>
+| 锚点命中 (×1.5) | ❌ null | 严重不足 |
+| LLM 评判 (×4) | ❌ null | 严重不足 |
+| 工具合规 (×1.5) | ❌ null | 严重不足 |
+| negative_anchor (×2) | ❌ null | 严重不足 |
+| 效率 (×1) | ❌ null | 严重不足 |
+| 成本 (×1) | ❌ null | 严重不足 |
 
 > 📌 eval-runner error（score=null,dimensions 已置 null,仅 run_status 有效）
 

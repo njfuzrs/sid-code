@@ -191,9 +191,14 @@ describe("validateTrace §5-5 spans 数组顺序 = 时间顺序", () => {
 });
 
 describe("validateTrace 枚举校验", () => {
-  test("agent_kind 非法 → 违反", () => {
-    const r = validateTrace(buildOk({ agent_kind: "unknown" as never }));
+  test("agent_kind 空字符串 → 违反", () => {
+    const r = validateTrace(buildOk({ agent_kind: "" as never }));
     expect(r.violations.some((v) => v.includes("agent_kind"))).toBe(true);
+  });
+
+  test("agent_kind 任意非空字符串 → 合法（可扩展）", () => {
+    const r = validateTrace(buildOk({ agent_kind: "custom-agent" as never }));
+    expect(r.violations.some((v) => v.includes("agent_kind"))).toBe(false);
   });
 
   test("status 非法 → 违反", () => {
