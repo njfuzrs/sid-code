@@ -12,7 +12,7 @@ import { getLogger } from "../debug/logger.ts";
 
 /** MCP 服务器配置 */
 export interface MCPServerConfig {
-  transport: "stdio" | "http" | "sse";
+  transport: "stdio" | "http" | "sse" | "ws";
   command?: string;
   args?: string[];
   env?: Record<string, string>;

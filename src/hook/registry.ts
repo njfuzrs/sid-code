@@ -8,9 +8,7 @@ import {
   ConfigSource,
   LEGACY_EVENT_MAP,
   type HookConfig,
-  type HookDefinition,
   type NewHooksConfig,
-  getHookKey,
 } from "./types.ts";
 import type { HooksConfig as LegacyHooksConfig, HookConfig as LegacyHookConfig } from "../config/config.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -27,6 +25,7 @@ export interface HookRegistryEntry {
 
 export class HookRegistry {
   private entries: HookRegistryEntry[] = [];
+  private eventIndex = new Map<HookEventName, number>();
 
   /** 从旧格式配置初始化（向后兼容） */
   initializeFromLegacy(legacyHooks: LegacyHooksConfig): void {
@@ -34,6 +33,7 @@ export class HookRegistry {
     // 保留已有的 runtime hook
     const runtimeEntries = this.entries.filter(e => e.source === ConfigSource.Runtime);
     this.entries = [...runtimeEntries];
+    this.rebuildEventIndex();
 
     for (const [eventKey, hookList] of Object.entries(legacyHooks)) {
       if (!hookList || !Array.isArray(hookList) || hookList.length === 0) continue;
@@ -59,6 +59,7 @@ export class HookRegistry {
           sequential: false,
           enabled: true,
         });
+        this.incrementEventIndex(eventName);
       }
     }
 
@@ -96,6 +97,7 @@ export class HookRegistry {
             sequential: def.sequential,
             enabled: true,
           });
+          this.incrementEventIndex(resolvedEvent);
         }
       }
     }
@@ -121,10 +123,17 @@ export class HookRegistry {
       sequential: options?.sequential,
       enabled: true,
     });
+    this.incrementEventIndex(eventName);
+  }
+
+  /** O(1) 快速检查：该事件是否有任何已注册的 hook */
+  hasHookForEvent(eventName: HookEventName): boolean {
+    return (this.eventIndex.get(eventName) ?? 0) > 0;
   }
 
   /** 获取指定事件的所有 hook（已过滤禁用项，按优先级排序） */
   getHooksForEvent(eventName: HookEventName): HookRegistryEntry[] {
+    if (!this.hasHookForEvent(eventName)) return [];
     return this.entries
       .filter(e => e.eventName === eventName && e.enabled)
       .sort((a, b) => this.getSourcePriority(a.source) - this.getSourcePriority(b.source));
@@ -210,7 +219,7 @@ export class HookRegistry {
   /** 验证 hook 配置 */
   private validateHookConfig(config: HookConfig, eventName: HookEventName): boolean {
     const log = getLogger();
-    if (!config.type || !["command", "url", "runtime"].includes(config.type)) {
+    if (!config.type || !["command", "url", "runtime", "prompt", "agent"].includes(config.type)) {
       log.warn("HOOK", `无效的 hook 类型: ${config.type} (事件: ${eventName})`);
       return false;
     }
@@ -226,6 +235,14 @@ export class HookRegistry {
       log.warn("HOOK", `runtime hook 缺少 name 字段 (事件: ${eventName})`);
       return false;
     }
+    if (config.type === "prompt" && !config.prompt) {
+      log.warn("HOOK", `prompt hook 缺少 prompt 字段 (事件: ${eventName})`);
+      return false;
+    }
+    if (config.type === "agent" && !config.prompt) {
+      log.warn("HOOK", `agent hook 缺少 prompt 字段 (事件: ${eventName})`);
+      return false;
+    }
     return true;
   }
 
@@ -237,6 +254,17 @@ export class HookRegistry {
       case ConfigSource.User: return 2;
       case ConfigSource.Global: return 3;
       default: return 999;
+    }
+  }
+
+  private incrementEventIndex(eventName: HookEventName): void {
+    this.eventIndex.set(eventName, (this.eventIndex.get(eventName) ?? 0) + 1);
+  }
+
+  private rebuildEventIndex(): void {
+    this.eventIndex.clear();
+    for (const entry of this.entries) {
+      this.incrementEventIndex(entry.eventName);
     }
   }
 }

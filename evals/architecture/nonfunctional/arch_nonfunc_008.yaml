@@ -42,7 +42,22 @@ rubric:
   precision: "区分 input tokens / output / cache（不同价格档）"
   helpfulness: "Skill 成本可控的基础护栏"
 
-baseline_scores: {}
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: null,
+        run_status: success,
+        tested_at: 2026-06-01T12:52:44.742Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 5 },
+        mandatory_pass: true,
+        grader_type: structured_arch,
+        _formula_version: { cost: v6, grader: 5d-v6 }
+      }
+  }
 
 source: "nf_008 / 09 §nf 类 / 前置能力已有"
 notes: |

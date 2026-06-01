@@ -201,4 +201,54 @@ export class HookSystem {
   async fireStopEvent(assistantResponse: string): Promise<AggregatedHookResult> {
     return this.eventHandler.fireStopEvent(assistantResponse);
   }
+
+  /** StopFailure 事件 */
+  async fireStopFailureEvent(error: string, errorType: "api_error" | "rate_limit" | "context_overflow" | "abort" | "unknown"): Promise<AggregatedHookResult> {
+    return this.eventHandler.fireStopFailureEvent(error, errorType);
+  }
+
+  /** PostCompact 事件 */
+  async firePostCompactEvent(trigger: "manual" | "auto", messagesBefore: number, messagesAfter: number, tokensSaved: number): Promise<AggregatedHookResult> {
+    return this.eventHandler.firePostCompactEvent(trigger, messagesBefore, messagesAfter, tokensSaved);
+  }
+
+  /** Setup 事件 */
+  async fireSetupEvent(trigger: "first_run" | "dependency_change" | "manual", projectDir: string): Promise<AggregatedHookResult> {
+    return this.eventHandler.fireSetupEvent(trigger, projectDir);
+  }
+
+  /** PermissionRequest 事件 */
+  async firePermissionRequestEvent(toolName: string, toolInput: Record<string, unknown>, permissionMode: string): Promise<AggregatedHookResult> {
+    return this.eventHandler.firePermissionRequestEvent(toolName, toolInput, permissionMode);
+  }
+
+  /** PermissionDenied 事件 */
+  async firePermissionDeniedEvent(toolName: string, toolInput: Record<string, unknown>, denialReason: string, denialSource: "user" | "rule" | "hook" | "auto"): Promise<AggregatedHookResult> {
+    return this.eventHandler.firePermissionDeniedEvent(toolName, toolInput, denialReason, denialSource);
+  }
+
+  /** ConfigChange 事件 */
+  async fireConfigChangeEvent(changedKeys: string[], source: "file" | "command" | "env"): Promise<AggregatedHookResult> {
+    return this.eventHandler.fireConfigChangeEvent(changedKeys, source);
+  }
+
+  /** FileChanged 事件 */
+  async fireFileChangedEvent(filePath: string, changeType: "created" | "modified" | "deleted"): Promise<AggregatedHookResult> {
+    return this.eventHandler.fireFileChangedEvent(filePath, changeType);
+  }
+
+  /** CwdChanged 事件 */
+  async fireCwdChangedEvent(oldCwd: string, newCwd: string): Promise<AggregatedHookResult> {
+    return this.eventHandler.fireCwdChangedEvent(oldCwd, newCwd);
+  }
+
+  /** TaskCreated 事件 */
+  async fireTaskCreatedEvent(taskId: string, taskDescription: string): Promise<AggregatedHookResult> {
+    return this.eventHandler.fireTaskCreatedEvent(taskId, taskDescription);
+  }
+
+  /** TaskCompleted 事件 */
+  async fireTaskCompletedEvent(taskId: string, taskDescription: string, success: boolean, result?: string): Promise<AggregatedHookResult> {
+    return this.eventHandler.fireTaskCompletedEvent(taskId, taskDescription, success, result);
+  }
 }

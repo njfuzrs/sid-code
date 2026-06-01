@@ -72,14 +72,16 @@ baseline_scores:
   {
     sid_code_deepseek_v4_pro:
       {
-        score: 5,
-        run_status: success,
-        tested_at: 2026-05-28T02:09:23.344Z,
+        score: null,
+        run_status: abnormal,
+        tested_at: 2026-06-01T12:55:44.291Z,
         tested_by: eval-runner,
         transcript_path: null,
-        notes: "",
-        dimensions: { redline_check: 1 },
-        _formula_version: { cost: v6, grader: 5d-v3 }
+        notes: "eval-runner error（score=null,dimensions 已置 null,仅 run_status 有效）",
+        dimensions: { redline_check: null },
+        mandatory_pass: null,
+        grader_type: binary_redline,
+        _formula_version: { cost: v6, grader: 5d-v6 }
       }
   }
 

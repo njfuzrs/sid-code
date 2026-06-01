@@ -102,13 +102,31 @@ export interface AgentMeta {
  * 不排除（即应用 echo 检查）：自然语言短语（"更好" / "哪方面" / "well-known" / "self-service"等）
  */
 function isCodeIdentifier(anchor: string): boolean {
-  if (/[\/.]/.test(anchor) && /[a-zA-Z]/.test(anchor)) return true;
-  if (/[()]/.test(anchor)) return true;
-  if (/[:<>=]/.test(anchor)) return true;
-  if (anchor.length >= 4 && /^[A-Za-z]+$/.test(anchor) && /[A-Z]/.test(anchor)) return true;
+  const t = anchor.trim();
+  if (t.length === 0) return false;
+  if (t.startsWith("`") && t.endsWith("`")) return true;
+  if (/[_./]/.test(t)) return true;
+  if (/(::|->)/.test(t)) return true;
+  if (/[()]/.test(t)) return true;
+  if (/[:<>=]/.test(t)) return true;
+  // 全大写 ≥ 2 字符（缩写如 JWT / SDK / API / MCP）
+  if (/^[A-Z]{2,}$/.test(t.replace(/\s/g, ""))) return true;
+  // camelCase / PascalCase / 含大写的产品名
+  if (/[a-z]/.test(t) && /[A-Z]/.test(t)) return true;
   // 连字符规则：要求含数字或大写字母（区分 RL-003/G-13 等代码标识符 vs well-known 等自然语言）
-  if (/-/.test(anchor) && /^[a-zA-Z0-9-]+$/.test(anchor) && (/[0-9]/.test(anchor) || /[A-Z]/.test(anchor))) return true;
+  if (/-/.test(t) && /^[a-zA-Z0-9-]+$/.test(t) && (/[0-9]/.test(t) || /[A-Z]/.test(t))) return true;
   return false;
+}
+
+/**
+ * 短锚点用词边界匹配，长锚点用子串匹配。
+ * MED-2 fix: 避免 "ink" 匹配到 "thinking"/"linking" 等误判。
+ */
+function matchesAnchor(text: string, kw: string): boolean {
+  if (kw.length <= 4 && /^[a-zA-Z]+$/.test(kw)) {
+    return new RegExp(`\\b${kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(text);
+  }
+  return text.includes(kw);
 }
 
 /**
@@ -174,7 +192,8 @@ export function gradeNegativeAnchors(
     ? mustNot.filter((kw) => {
         if (!kw) return false;
         if (isCodeIdentifier(kw)) return true; // 代码标识符不排除
-        if (userQuery.includes(kw)) {
+        // MED-3 fix: 用词边界匹配代替子串匹配，避免 "compaction" 误排除 "compact"
+        if (matchesAnchor(userQuery, kw)) {
           echoExcluded.push(kw);
           return false;
         }
@@ -190,7 +209,7 @@ export function gradeNegativeAnchors(
     };
   }
 
-  const hits = effective.filter((kw) => output.includes(kw));
+  const hits = effective.filter((kw) => matchesAnchor(output, kw));
   const echoNote = echoExcluded.length > 0
     ? `；echo 排除 ${echoExcluded.length} 项: ${echoExcluded.join(", ")}`
     : "";
@@ -240,7 +259,7 @@ export function gradeNegativeAnchors(
  *                          配套：ADR-035（rejected alternatives：① 维持 4.0 + 双 judge ensemble；
  *                          ② 直接降到 0.5；③ 立即引入 mandatory rubric DSL 重写所有 case）。
  */
-export const GRADER_VERSION = "5d-v5";
+export const GRADER_VERSION = "5d-v6";
 
 /**
  * F-7（2026-05-30）：4 个 grader 拆独立版本号。
@@ -372,10 +391,12 @@ export function gradeAnchorHit(
   const hits = dedupSubstringHits(rawHits);
   const dedupedCount = rawHits.length - hits.length;
   const hitCount = hits.length;
-  const total = effective.length;
+  // LOW-1 fix: total 也用去重后的有效锚点数，与 hitCount 口径一致
+  const dedupedEffective = dedupSubstringHits(effective);
+  const total = dedupedEffective.length;
 
-  // 满分阈值：max(2, ceil(total*0.3))。锚点表越长，满分阈值百分比越宽松。
-  const fullScoreThreshold = Math.max(2, Math.ceil(total * 0.3));
+  // 满分阈值：total=1 时特殊处理（MED-1 fix），否则 max(2, ceil(total*0.3))
+  const fullScoreThreshold = total === 1 ? 1 : Math.max(2, Math.ceil(total * 0.3));
   const BASE_SCORE = 0.5; // v3 单 hit 基础分（v2 是 0.8 → 天花板效应）
   let score: number;
   if (hitCount === 0) {
@@ -516,7 +537,8 @@ function snapToTier(score: number): number {
   let bestDist = Infinity;
   for (const t of RUBRIC_TIERS) {
     const d = Math.abs(score - t);
-    if (d < bestDist) { bestDist = d; best = t; }
+    // LOW-2 fix: 用 <= 确保中点处一致向上吸附（遍历从低到高，等距时取后者即更高档）
+    if (d <= bestDist) { bestDist = d; best = t; }
   }
   return best;
 }
@@ -795,7 +817,8 @@ export async function gradeRubricEnsemble(
   // 旧实现 `snapToTier((s[mid-1]+s[mid])/2)` 在两个 judge 给 1.0 / 0.85 时会 snap 成 0.85,
   // ensemble 的"民主"语义被悄悄改成"取较低值"。
   const sortedResults = [...results].sort((a, b) => a.result.score - b.result.score);
-  const medianIdx = Math.floor((sortedResults.length - 1) / 2);
+  // LOW-4 fix: 偶数 judge 时取上中位数（ceil），消除系统性悲观偏差
+  const medianIdx = Math.ceil((sortedResults.length - 1) / 2);
   const chosen = sortedResults[medianIdx];
   const medianScore = chosen.result.score;
   const detail = results.map((r) => `${r.judge.name}=${r.result.score.toFixed(2)}`).join(", ");
@@ -824,6 +847,15 @@ export function gradeToolCompliance(
   // sid-code wrapper 报小写（read/grep/glob），case yaml 一律小写。
   // 不归一化会让 claude-code 的 any_of 永远失败（实测 case_030 命中 any_of=0.6）。
   const toolsUsedLower = tools_used.map((t) => t.toLowerCase());
+
+  // 工具别名映射：bash 中执行 grep/find 等命令应视为满足对应工具要求
+  const TOOL_ALIASES: Record<string, string[]> = {
+    grep: ["bash"],
+    glob: ["bash"],
+    find: ["bash"],
+    read: ["bash"],
+  };
+
   const mustCallTools = (expected.mustCallTools ?? []).map((t) => t.toLowerCase());
   const mustCallMode = expected.mustCallMode ?? "all_of";
   const mustNotCallTools = (expected.mustNotCallTools ?? []).map((t) => t.toLowerCase());
@@ -849,7 +881,9 @@ export function gradeToolCompliance(
   const reasons: string[] = [];
 
   if (mustCallTools.length > 0) {
-    const hits = mustCallTools.filter((t) => toolsUsedLower.includes(t));
+    const hits = mustCallTools.filter((t) =>
+      toolsUsedLower.includes(t) || (TOOL_ALIASES[t] ?? []).some((alias) => toolsUsedLower.includes(alias))
+    );
     if (mustCallMode === "any_of") {
       // any_of：命中任一即满分
       if (hits.length === 0) {
@@ -1130,6 +1164,15 @@ export function aggregate(
   }
 
   if (totalWeight === 0) return { score: null, namedScores };
+
+  // BUG-3 fix: 至少 3 个有效维度（权重>0 且 score!==null）才出分，防止维度缺失时分数膨胀
+  const MIN_VALID_DIMS = 3;
+  let validDimCount = 0;
+  for (const [name, dim] of Object.entries(dims)) {
+    if (dim.score !== null && (w[name] ?? 1.0) > 0) validDimCount++;
+  }
+  if (validDimCount < MIN_VALID_DIMS) return { score: null, namedScores };
+
   const normalized = (weightedSum / totalWeight) * 5;
   return { score: Math.round(normalized * 100) / 100, namedScores };
 }

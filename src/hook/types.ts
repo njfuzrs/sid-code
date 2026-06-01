@@ -19,10 +19,20 @@ export enum HookEventName {
   SessionStart = "SessionStart",
   SessionEnd = "SessionEnd",
   PreCompact = "PreCompact",
+  PostCompact = "PostCompact",
   SubagentStart = "SubagentStart",
   SubagentStop = "SubagentStop",
   Notification = "Notification",
   Stop = "Stop",
+  StopFailure = "StopFailure",
+  Setup = "Setup",
+  PermissionRequest = "PermissionRequest",
+  PermissionDenied = "PermissionDenied",
+  ConfigChange = "ConfigChange",
+  FileChanged = "FileChanged",
+  CwdChanged = "CwdChanged",
+  TaskCreated = "TaskCreated",
+  TaskCompleted = "TaskCompleted",
 }
 
 /** 旧 snake_case → 新 PascalCase 映射（向后兼容） */
@@ -34,11 +44,20 @@ export const LEGACY_EVENT_MAP: Record<string, HookEventName> = {
   session_start: HookEventName.SessionStart,
   session_end: HookEventName.SessionEnd,
   pre_compact: HookEventName.PreCompact,
+  post_compact: HookEventName.PostCompact,
   subagent_start: HookEventName.SubagentStart,
   subagent_stop: HookEventName.SubagentStop,
   notification: HookEventName.Notification,
-  permission_request: HookEventName.Notification, // 旧事件映射到 Notification
+  permission_request: HookEventName.PermissionRequest,
+  permission_denied: HookEventName.PermissionDenied,
   stop: HookEventName.Stop,
+  stop_failure: HookEventName.StopFailure,
+  setup: HookEventName.Setup,
+  config_change: HookEventName.ConfigChange,
+  file_changed: HookEventName.FileChanged,
+  cwd_changed: HookEventName.CwdChanged,
+  task_created: HookEventName.TaskCreated,
+  task_completed: HookEventName.TaskCompleted,
 };
 
 /** 配置来源（优先级从高到低） */
@@ -54,6 +73,8 @@ export enum HookType {
   Command = "command",
   Url = "url",
   Runtime = "runtime",
+  Prompt = "prompt",
+  Agent = "agent",
 }
 
 /** 决策类型 */
@@ -70,6 +91,8 @@ export interface CommandHookConfig {
   command: string;
   timeout?: number;
   env?: Record<string, string>;
+  async?: boolean;
+  asyncRewake?: boolean;
   source?: ConfigSource;
 }
 
@@ -81,6 +104,28 @@ export interface UrlHookConfig {
   method?: string;
   headers?: Record<string, string>;
   timeout?: number;
+  allowedEnvVars?: string[];
+  source?: ConfigSource;
+}
+
+/** Prompt Hook 配置（LLM 验证） */
+export interface PromptHookConfig {
+  type: "prompt";
+  name?: string;
+  prompt: string;
+  model?: string;
+  timeout?: number;
+  source?: ConfigSource;
+}
+
+/** Agent Hook 配置（多轮 Agent 验证） */
+export interface AgentHookConfig {
+  type: "agent";
+  name?: string;
+  prompt: string;
+  model?: string;
+  timeout?: number;
+  tools?: string[];
   source?: ConfigSource;
 }
 
@@ -93,7 +138,7 @@ export interface RuntimeHookConfig {
   source?: ConfigSource;
 }
 
-export type HookConfig = CommandHookConfig | UrlHookConfig | RuntimeHookConfig;
+export type HookConfig = CommandHookConfig | UrlHookConfig | RuntimeHookConfig | PromptHookConfig | AgentHookConfig;
 
 /** Hook 定义（配置文件中的一组 hook，带 matcher） */
 export interface HookDefinition {
@@ -292,6 +337,73 @@ export interface NotificationInput extends HookInput {
 export interface StopInput extends HookInput {
   /** 模型最后一次回复的文本 */
   assistant_response: string;
+}
+
+/** StopFailure 事件输入（API 错误导致的非正常结束） */
+export interface StopFailureInput extends HookInput {
+  error: string;
+  error_type: "api_error" | "rate_limit" | "context_overflow" | "abort" | "unknown";
+}
+
+/** PostCompact 输入 */
+export interface PostCompactInput extends HookInput {
+  trigger: "manual" | "auto";
+  messages_before: number;
+  messages_after: number;
+  tokens_saved: number;
+}
+
+/** Setup 输入 */
+export interface SetupInput extends HookInput {
+  trigger: "first_run" | "dependency_change" | "manual";
+  project_dir: string;
+}
+
+/** PermissionRequest 输入 */
+export interface PermissionRequestInput extends HookInput {
+  tool_name: string;
+  tool_input: Record<string, unknown>;
+  permission_mode: string;
+}
+
+/** PermissionDenied 输入 */
+export interface PermissionDeniedInput extends HookInput {
+  tool_name: string;
+  tool_input: Record<string, unknown>;
+  denial_reason: string;
+  denial_source: "user" | "rule" | "hook" | "auto";
+}
+
+/** ConfigChange 输入 */
+export interface ConfigChangeInput extends HookInput {
+  changed_keys: string[];
+  source: "file" | "command" | "env";
+}
+
+/** FileChanged 输入 */
+export interface FileChangedInput extends HookInput {
+  file_path: string;
+  change_type: "created" | "modified" | "deleted";
+}
+
+/** CwdChanged 输入 */
+export interface CwdChangedInput extends HookInput {
+  old_cwd: string;
+  new_cwd: string;
+}
+
+/** TaskCreated 输入 */
+export interface TaskCreatedInput extends HookInput {
+  task_id: string;
+  task_description: string;
+}
+
+/** TaskCompleted 输入 */
+export interface TaskCompletedInput extends HookInput {
+  task_id: string;
+  task_description: string;
+  success: boolean;
+  result?: string;
 }
 
 // ============================================================

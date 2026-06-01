@@ -3,7 +3,7 @@
  * 对标 Claude Code：基于 ripgrep 构建，支持 output_mode、上下文行数、文件类型过滤
  */
 
-import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
+import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResult, ToolUseContext } from "./types.ts";
 import { spawn } from "bun";
 import { getLogger } from "../debug/logger.ts";
 
@@ -25,6 +25,11 @@ interface GrepMatch {
 export class GrepTool implements Tool {
   readOnly(): boolean {
     return true;
+  }
+
+  /** 只读工具：无权限意见，交给权限系统决定 */
+  async checkPermissions(_input: unknown, _context: ToolUseContext): Promise<PermissionResult> {
+    return { behavior: "passthrough" };
   }
 
   name(): string {

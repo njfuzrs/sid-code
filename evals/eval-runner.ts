@@ -656,9 +656,10 @@ export function writeWeekScores(results: TestResult[], weekNum: number, baseDir:
 
     const doc: Record<string, unknown> = { ...existing, tested_at: latestTested };
     for (const r of caseResults) {
+      const existingProviderData = existing[r.provider] as { score?: number | null } | undefined;
       doc[r.provider] = {
-        // error/timeout 的 score 写 null（与 baseline 一致），dashboard 用 run_status 过滤
-        score: r.runStatus === "success" ? r.score : null,
+        // BUG-1 fix: 异常运行不覆盖已有好分数，保留磁盘上已有 score
+        score: r.runStatus === "success" ? r.score : (existingProviderData?.score ?? null),
         run_status: r.runStatus,
         tested_at: r.testedAt,
         anchor: { score: r.namedScores.anchor_hit ?? null },
@@ -1035,13 +1036,12 @@ async function main() {
           : "🔴";
         const scoreStr = score === null ? `null（${majorityRunStatus}）` : String(score);
         const sampleNote = samples > 1 ? ` [中位数 of ${samples}]` : "";
-        // mandatoryPass 跨 samples 取与 majorityRunStatus 同源的"多数派"——
-        //   只要 ≥半数 sample 红线 pass，就算整体 pass；半数以上击穿才算击穿。
-        //   binary_redline 之外的 grader 默认每个 sample 都 mandatoryPass=true，多数派恒为 true。
+        // mandatoryPass 聚合：红线类用 AND（一票否决），其他类用多数派
         const mandatoryPassCount = perSample.filter((s) => s.mandatoryPass).length;
-        const aggregatedMandatoryPass = mandatoryPassCount >= Math.ceil(samples / 2);
-        // graderType：取最后一次（perSample 内同 case_id 的 grader 是稳定的）
         const aggregatedGraderType = lastSample.graderType;
+        const aggregatedMandatoryPass = aggregatedGraderType === "binary_redline"
+          ? perSample.every((s) => s.mandatoryPass)
+          : mandatoryPassCount >= Math.ceil(samples / 2);
         console.log(`  ${emoji} ${c.id} × ${p.name} = ${scoreStr}${sampleNote} (${(elapsed / 1000).toFixed(1)}s)`);
 
         const finalResult: TestResult = {

@@ -1,9 +1,10 @@
 /**
- * 子代理工具过滤（三层架构）
+ * 子代理工具过滤（四层架构）
  *
  * Layer 1（硬性禁止）：所有子代理都不能用的工具
  * Layer 2（角色特定）：内置子代理用白名单，自定义子代理用黑名单
  * Layer 3（Agent 定义级）：每个 Agent 可声明 tools/disallowedTools
+ * Layer 4（异步白名单）：后台 Agent 只允许安全子集
  *
  * MCP 工具始终通过硬性过滤（用户显式配置的）
  */
@@ -15,6 +16,8 @@ const ALL_AGENT_DISALLOWED_TOOLS = new Set([
   "enter_plan_mode",   // 计划模式是主代理的状态
   "exit_plan_mode",    // 同上
   "save_memory",       // 记忆管理是主代理的职责
+  "task_output",       // 子代理不应读取其他任务输出
+  "task_stop",         // 子代理不应终止其他任务
 ]);
 
 /** 自定义 Agent 额外禁止的工具 */
@@ -28,7 +31,15 @@ const BUILTIN_AGENT_ALLOWED_TOOLS: Record<string, string[] | null> = {
   task: ["read", "write", "edit", "bash", "grep", "glob", "ls", "read_many", "web_fetch", "web_search"],
   plan: ["read", "grep", "glob", "ls", "read_many"],
   summarize: null,  // null = 不需要工具
+  "general-purpose": null, // null = 不限制（由 Layer 3 的 disallowedTools 控制）
 };
+
+/** 异步（后台）Agent 的工具白名单 */
+const ASYNC_ALLOWED_TOOLS = new Set([
+  "read", "read_many", "write", "edit",
+  "bash", "grep", "glob", "ls",
+  "web_search", "web_fetch",
+]);
 
 export interface ToolFilterOptions {
   /** 是否为内置子代理类型 */
@@ -39,6 +50,8 @@ export interface ToolFilterOptions {
   tools?: string[];
   /** Agent 定义级工具黑名单 */
   disallowedTools?: string[];
+  /** 是否异步执行（后台 Agent） */
+  isAsync?: boolean;
 }
 
 /**
@@ -81,6 +94,11 @@ export function filterToolsForAgent(
       if (!isMcp && !options.tools.includes(name)) return false;
     }
 
+    // Layer 4: 异步白名单（后台 Agent 只允许安全子集）
+    if (options.isAsync && !isMcp && !ASYNC_ALLOWED_TOOLS.has(name)) {
+      return false;
+    }
+
     return true;
   });
 }
@@ -92,6 +110,7 @@ export function resolveAgentTools(
   allTools: Tool[],
   agentDef: { tools?: string[]; disallowedTools?: string[] },
   builtInType?: string,
+  isAsync?: boolean,
 ): { resolvedTools: Tool[]; invalidToolSpecs: string[] } {
   const isBuiltIn = !!builtInType;
 
@@ -100,6 +119,7 @@ export function resolveAgentTools(
     builtInType,
     tools: agentDef.tools,
     disallowedTools: agentDef.disallowedTools,
+    isAsync,
   });
 
   // 检查无效的工具名

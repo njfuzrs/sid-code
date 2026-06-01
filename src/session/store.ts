@@ -1,24 +1,31 @@
 /**
- * 会话持久化
- * 将对话历史保存为 JSON 文件，支持恢复会话
- * 支持会话摘要保存和恢复（上下文溢出时自动触发）
+ * 会话持久化（双模式：JSONL 事件溯源 + 旧 JSON 兼容）
+ *
+ * 新会话使用 JSONL 追加写入（崩溃安全、增量写入）
+ * 旧会话仍可从 JSON 格式加载（向后兼容）
  */
 
 import type { Message } from "../llm/types.ts";
 import { join } from "path";
 import { homedir } from "os";
-import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "fs";
+import { existsSync, mkdirSync, readdirSync, statSync, appendFileSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
 
 /** 当前会话数据格式版本 */
-const CURRENT_VERSION = "1.0";
+const CURRENT_VERSION = "2.0";
 
-/** 文件锁超时时间（5 分钟） */
-const LOCK_TIMEOUT_MS = 5 * 60 * 1000;
+/** JSONL 记录类型 */
+type SessionRecord =
+  | { type: "session_start"; sessionId: string; model: string; provider: string; cwd: string; timestamp: string }
+  | { type: "user_message"; message: Message; timestamp: string }
+  | { type: "assistant_message"; message: Message; timestamp: string }
+  | { type: "tool_result"; message: Message; timestamp: string }
+  | { type: "context_compact"; summary: string; removedCount: number; timestamp: string }
+  | { type: "metadata"; key: string; value: unknown; timestamp: string }
+  | { type: "session_end"; totalCostUSD: number; totalMessages: number; timestamp: string };
 
-/** 会话数据 */
+/** 会话数据（兼容旧格式） */
 export interface SessionData {
-  /** 数据格式版本，方便后续升级兼容 */
   version: string;
   id: string;
   model: string;
@@ -26,15 +33,9 @@ export interface SessionData {
   messages: Message[];
   createdAt: string;
   updatedAt: string;
-
-  // 新增字段（可选，向后兼容）
-  /** 会话类型 */
   kind?: "main" | "subagent";
-  /** 项目哈希（用于多项目隔离） */
   projectHash?: string;
-  /** 工作区目录列表 */
   directories?: string[];
-  /** AI 生成的摘要 */
   summary?: string;
 }
 
@@ -45,15 +46,14 @@ export interface SessionSummary {
   model: string;
   provider: string;
   createdAt: string;
-  /** 摘要生成时的消息数 */
   messageCount: number;
-  /** 摘要生成时的 token 估算 */
   estimatedTokens: number;
 }
 
 export class SessionStore {
   private sessionDir: string;
   private summaryDir: string;
+  private currentFile: string | null = null;
 
   constructor() {
     const home = process.env.HOME || homedir();
@@ -67,42 +67,102 @@ export class SessionStore {
     }
   }
 
-  /** 保存会话（带文件锁） */
+  /** 开始新会话（JSONL 模式） */
+  startSession(sessionId: string, model: string, provider: string, cwd: string): void {
+    this.currentFile = join(this.sessionDir, `${sessionId}.jsonl`);
+    this.appendRecord({
+      type: "session_start",
+      sessionId,
+      model,
+      provider,
+      cwd,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  /** 追加消息（增量写入） */
+  appendMessage(message: Message): void {
+    if (!this.currentFile) return;
+    const type = message.role === "user" ? "user_message"
+      : message.role === "assistant" ? "assistant_message"
+      : "tool_result";
+    this.appendRecord({ type, message, timestamp: new Date().toISOString() } as SessionRecord);
+  }
+
+  /** 记录上下文压缩事件 */
+  appendCompact(summary: string, removedCount: number): void {
+    if (!this.currentFile) return;
+    this.appendRecord({
+      type: "context_compact",
+      summary,
+      removedCount,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  /** 记录元数据变更 */
+  appendMetadata(key: string, value: unknown): void {
+    if (!this.currentFile) return;
+    this.appendRecord({ type: "metadata", key, value, timestamp: new Date().toISOString() });
+  }
+
+  /** 结束会话 */
+  endSession(totalCostUSD: number, totalMessages: number): void {
+    if (!this.currentFile) return;
+    this.appendRecord({
+      type: "session_end",
+      totalCostUSD,
+      totalMessages,
+      timestamp: new Date().toISOString(),
+    });
+    this.currentFile = null;
+  }
+
+  /** 保存会话（兼容旧接口，内部转为 JSONL 追加） */
   async save(session: SessionData): Promise<void> {
     const log = getLogger();
     session.version = CURRENT_VERSION;
     session.updatedAt = new Date().toISOString();
-    const filePath = join(this.sessionDir, `${session.id}.json`);
 
-    this.acquireLock(session.id);
-    try {
-      await Bun.write(filePath, JSON.stringify(session, null, 2));
-      const fileSize = statSync(filePath).size;
-      const sizeStr = fileSize > 1024 * 1024
-        ? `${(fileSize / 1024 / 1024).toFixed(1)}MB`
-        : `${(fileSize / 1024).toFixed(1)}KB`;
-      log.info("SESSION", `会话已保存: ${session.id} (${session.messages.length}条消息, ${sizeStr})`);
-    } finally {
-      this.releaseLock(session.id);
+    // 如果已有 JSONL 文件在写入，跳过（消息已通过 appendMessage 增量写入）
+    if (this.currentFile && existsSync(this.currentFile)) {
+      log.debug("SESSION", `会话增量保存中: ${session.id}`);
+      return;
     }
+
+    // 回退到 JSON 全量保存（兼容未启动 JSONL 的场景）
+    const filePath = join(this.sessionDir, `${session.id}.json`);
+    await Bun.write(filePath, JSON.stringify(session, null, 2));
+    const fileSize = statSync(filePath).size;
+    const sizeStr = fileSize > 1024 * 1024
+      ? `${(fileSize / 1024 / 1024).toFixed(1)}MB`
+      : `${(fileSize / 1024).toFixed(1)}KB`;
+    log.info("SESSION", `会话已保存: ${session.id} (${session.messages.length}条消息, ${sizeStr})`);
   }
 
-  /** 加载会话（兼容无版本号的旧数据） */
+  /** 加载会话（优先 JSONL，回退 JSON） */
   async load(id: string): Promise<SessionData | null> {
     const log = getLogger();
-    const filePath = join(this.sessionDir, `${id}.json`);
-    if (!existsSync(filePath)) {
-      return null;
+
+    // 优先尝试 JSONL 格式
+    const jsonlPath = join(this.sessionDir, `${id}.jsonl`);
+    if (existsSync(jsonlPath)) {
+      const result = await this.loadFromJsonl(jsonlPath);
+      if (result) {
+        log.info("SESSION", `会话已加载(JSONL): ${id} (${result.messages.length}条消息)`);
+        return result;
+      }
     }
 
+    // 回退到旧 JSON 格式
+    const jsonPath = join(this.sessionDir, `${id}.json`);
+    if (!existsSync(jsonPath)) return null;
+
     try {
-      const content = await Bun.file(filePath).text();
+      const content = await Bun.file(jsonPath).text();
       const data = JSON.parse(content) as SessionData;
-      // 兼容旧版本：补上 version 字段
-      if (!data.version) {
-        data.version = "0.0";
-      }
-      log.info("SESSION", `会话已加载: ${id} (${data.messages.length}条消息)`);
+      if (!data.version) data.version = "0.0";
+      log.info("SESSION", `会话已加载(JSON): ${id} (${data.messages.length}条消息)`);
       return data;
     } catch {
       return null;
@@ -111,12 +171,10 @@ export class SessionStore {
 
   /** 获取最近一次会话 */
   async loadLatest(): Promise<SessionData | null> {
-    if (!existsSync(this.sessionDir)) {
-      return null;
-    }
+    if (!existsSync(this.sessionDir)) return null;
 
     const files = readdirSync(this.sessionDir)
-      .filter((f) => f.endsWith(".json"))
+      .filter((f) => f.endsWith(".json") || f.endsWith(".jsonl"))
       .map((f) => ({
         name: f,
         path: join(this.sessionDir, f),
@@ -124,27 +182,29 @@ export class SessionStore {
       }))
       .sort((a, b) => b.mtime - a.mtime);
 
-    if (files.length === 0) {
-      return null;
-    }
+    if (files.length === 0) return null;
 
-    return this.load(files[0].name.replace(".json", ""));
+    const latest = files[0].name;
+    const id = latest.replace(/\.(json|jsonl)$/, "");
+    return this.load(id);
   }
 
   /** 列出所有会话 */
   async list(): Promise<{ id: string; updatedAt: string; messageCount: number }[]> {
-    if (!existsSync(this.sessionDir)) {
-      return [];
-    }
+    if (!existsSync(this.sessionDir)) return [];
 
-    const files = readdirSync(this.sessionDir).filter((f) => f.endsWith(".json"));
+    const files = readdirSync(this.sessionDir).filter((f) => f.endsWith(".json") || f.endsWith(".jsonl"));
     const sessions: { id: string; updatedAt: string; messageCount: number }[] = [];
+    const seen = new Set<string>();
 
     for (const file of files) {
+      const id = file.replace(/\.(json|jsonl)$/, "");
+      if (seen.has(id)) continue;
+      seen.add(id);
+
       try {
-        const content = await Bun.file(join(this.sessionDir, file)).text();
-        const data = JSON.parse(content) as SessionData;
-        if (data.id && data.updatedAt && data.messages) {
+        const data = await this.load(id);
+        if (data?.id && data.updatedAt && data.messages) {
           sessions.push({
             id: data.id,
             updatedAt: data.updatedAt,
@@ -168,9 +228,7 @@ export class SessionStore {
   /** 加载会话摘要 */
   async loadSummary(sessionId: string): Promise<SessionSummary | null> {
     const filePath = join(this.summaryDir, `${sessionId}.json`);
-    if (!existsSync(filePath)) {
-      return null;
-    }
+    if (!existsSync(filePath)) return null;
 
     try {
       const content = await Bun.file(filePath).text();
@@ -180,10 +238,7 @@ export class SessionStore {
     }
   }
 
-  /**
-   * 构建恢复消息
-   * 从摘要构建一条用户消息，让 LLM 从上次中断的地方继续
-   */
+  /** 构建恢复消息 */
   static buildResumeMessage(summary: string): string {
     return `本次会话是从之前的对话中恢复的，之前的对话因上下文窗口限制而中断。
 以下是之前对话的摘要：
@@ -198,38 +253,74 @@ ${summary}
     return crypto.randomUUID().slice(0, 8);
   }
 
-  /**
-   * 获取文件锁（防止并发写入）
-   * 如果锁文件存在且未超时，抛出错误
-   * 如果锁文件超时（5 分钟），自动清理僵尸锁
-   */
-  private acquireLock(sessionId: string): void {
-    const lockPath = join(this.sessionDir, `.${sessionId}.lock`);
-    if (existsSync(lockPath)) {
+  /** 从 JSONL 文件恢复会话 */
+  private async loadFromJsonl(filePath: string): Promise<SessionData | null> {
+    const content = await Bun.file(filePath).text();
+    const lines = content.trim().split("\n").filter(Boolean);
+
+    const messages: Message[] = [];
+    const metadata: Record<string, unknown> = {};
+    let sessionId = "";
+    let model = "";
+    let provider = "";
+    let createdAt = "";
+    let updatedAt = "";
+
+    for (const line of lines) {
       try {
-        const lockTimeStr = Bun.file(lockPath).text();
-        const lockTime = parseInt(lockTimeStr as any, 10);
-        if (Date.now() - lockTime > LOCK_TIMEOUT_MS) {
-          // 超时，清理僵尸锁
-          unlinkSync(lockPath);
-        } else {
-          throw new Error(`会话 ${sessionId} 被另一个进程锁定`);
+        const record = JSON.parse(line) as SessionRecord;
+        switch (record.type) {
+          case "session_start":
+            sessionId = record.sessionId;
+            model = record.model;
+            provider = record.provider;
+            createdAt = record.timestamp;
+            updatedAt = record.timestamp;
+            break;
+          case "user_message":
+          case "assistant_message":
+          case "tool_result":
+            messages.push(record.message);
+            updatedAt = record.timestamp;
+            break;
+          case "metadata":
+            metadata[record.key] = record.value;
+            updatedAt = record.timestamp;
+            break;
+          case "context_compact":
+            messages.length = 0;
+            messages.push({
+              role: "user",
+              content: [{ type: "text", text: `[上下文摘要] ${record.summary}` }],
+            });
+            updatedAt = record.timestamp;
+            break;
+          case "session_end":
+            updatedAt = record.timestamp;
+            break;
         }
-      } catch (err: any) {
-        if (err.message.includes("锁定")) throw err;
-        // 读取失败，清理损坏的锁文件
-        unlinkSync(lockPath);
+      } catch {
+        continue;
       }
     }
-    // 写入锁文件
-    Bun.write(lockPath, Date.now().toString());
+
+    if (!sessionId) return null;
+
+    return {
+      version: CURRENT_VERSION,
+      id: sessionId,
+      model,
+      provider,
+      messages,
+      createdAt,
+      updatedAt,
+      summary: metadata["summary"] as string | undefined,
+    };
   }
 
-  /** 释放文件锁 */
-  private releaseLock(sessionId: string): void {
-    const lockPath = join(this.sessionDir, `.${sessionId}.lock`);
-    if (existsSync(lockPath)) {
-      unlinkSync(lockPath);
-    }
+  /** 追加一条 JSONL 记录 */
+  private appendRecord(record: SessionRecord): void {
+    if (!this.currentFile) return;
+    appendFileSync(this.currentFile, JSON.stringify(record) + "\n");
   }
 }

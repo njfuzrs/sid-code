@@ -5,12 +5,12 @@
  * 要求：必须先用 Read 工具读取文件后才能编辑（先读后改）
  */
 
-import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
+import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResult, ToolUseContext } from "./types.ts";
 import type { FileReadTracker } from "./file-read-tracker.ts";
 import { getLogger } from "../debug/logger.ts";
 import { detectOmissionPlaceholders } from "./omission-detector.ts";
 import { mkdirSync, existsSync } from "fs";
-import { dirname } from "path";
+import { dirname, basename } from "path";
 
 // ─── 内部类型 ────────────────────────────────────────────────────────────────
 
@@ -348,6 +348,19 @@ export class EditTool implements Tool {
 
   name(): string {
     return "edit";
+  }
+
+  /** 工具级权限检查：敏感文件路径要求确认，其余 passthrough */
+  async checkPermissions(input: unknown, _context: ToolUseContext): Promise<PermissionResult> {
+    const filePath = (input as any)?.file_path;
+    if (!filePath || typeof filePath !== "string") {
+      return { behavior: "passthrough" };
+    }
+    const name = basename(filePath);
+    if (name.startsWith(".env") || name === "credentials.json" || name.endsWith(".pem") || name.endsWith(".key")) {
+      return { behavior: "ask", message: `编辑敏感文件需要确认: ${filePath}` };
+    }
+    return { behavior: "passthrough" };
   }
 
   description(): string {

@@ -1,8 +1,7 @@
-tested_at: 2026-05-31T00:54:15.130Z
 sid_code_deepseek_v4_pro:
-  score: null
-  run_status: abnormal
-  tested_at: 2026-05-31T00:54:15.130Z
+  score: 4.71
+  run_status: error
+  tested_at: 2026-06-01T13:05:54.208Z
   anchor:
     score: null
   llm:
@@ -14,3 +13,4 @@ sid_code_deepseek_v4_pro:
       negative_anchor: null
       efficiency: null
       cost: null
+tested_at: 2026-06-01T13:05:54.208Z

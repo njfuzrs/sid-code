@@ -118,7 +118,7 @@ export async function executeTools(
           ? `${block.name}: ${(block.input as any).description}`
           : `${block.name}: ${JSON.stringify(block.input).slice(0, 120)}`,
       };
-      const decision = await deps.permissionChecker.check(permReq);
+      const decision = await deps.permissionChecker.check(permReq, tool);
 
       if (!decision.allowed) {
         if (decision.needsConfirmation) {

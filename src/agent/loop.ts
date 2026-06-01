@@ -26,6 +26,11 @@ import { LoopDetector, LOOP_RECOVERY_PROMPT } from "./loop-detection.ts";
 import type { LLMLoopCheckResult } from "./loop-detection.ts";
 import { isAbortError } from "../llm/errors.ts";
 import { yieldMissingToolResults, collectToolResultIdsFromBlocks } from "./tool-result-guard.ts";
+import {
+  generateTaskStatusAttachment,
+  dequeuePendingNotifications,
+  getRunningTasks,
+} from "../task/index.ts";
 
 /** UI 回调接口，处理 REPL/TUI 的差异 */
 export interface AgentLoopCallbacks {
@@ -247,6 +252,18 @@ export class AgentLoopRunner {
       turns++;
       this.loopDetector.recordTurn();
 
+      // 注入后台任务完成通知（作为 user 消息）
+      const notifications = dequeuePendingNotifications();
+      if (notifications.length > 0) {
+        for (const notification of notifications) {
+          ctxMgr.addMessage({
+            role: "user",
+            content: [{ type: "text", text: notification }],
+          });
+        }
+        log.info("AGENT", `注入 ${notifications.length} 条任务通知`);
+      }
+
       // 上下文使用率监控（分级压缩策略）
       const toolCount = toolRegistry.size();
       const currentTokens = ctxMgr.estimateTokens(toolCount);
@@ -286,13 +303,20 @@ export class AgentLoopRunner {
       // 构建请求参数
       const cleanedMessages = ctxMgr.getCleanedMessages();
       const toolDefs = toolCount > 0 ? toolRegistry.definitions() : undefined;
+
+      // 注入任务状态附件到系统提示词
+      const taskAttachment = generateTaskStatusAttachment();
+      const systemPrompt = taskAttachment
+        ? ctxMgr.getSystemPrompt() + "\n\n" + taskAttachment
+        : ctxMgr.getSystemPrompt();
+
       log.llmRequest(config.provider, config.model, cleanedMessages.length, toolDefs?.length ?? 0, config.maxTokens);
-      log.info("LLM", `系统提示词 ${ctxMgr.getSystemPrompt().length}字符`);
+      log.info("LLM", `系统提示词 ${systemPrompt.length}字符`);
 
       const sendParams: SendParams = {
         model: config.model,
         messages: cleanedMessages,
-        system: ctxMgr.getSystemPrompt(),
+        system: systemPrompt,
         maxTokens: config.maxTokens,
         tools: toolDefs,
         // Extended Thinking（仅首轮传入，后续工具循环不需要）
@@ -616,6 +640,12 @@ export class AgentLoopRunner {
     if (turns >= maxTurns) {
       log.warn("AGENT", `达到最大轮次限制: ${maxTurns}`);
       callbacks.onMaxTurns?.(maxTurns);
+    }
+
+    // 会话结束时清理运行中的任务
+    const runningTasks = getRunningTasks();
+    if (runningTasks.length > 0) {
+      log.info("AGENT", `会话结束，${runningTasks.length} 个后台任务仍在运行`);
     }
   }
 }

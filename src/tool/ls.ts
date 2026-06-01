@@ -3,7 +3,7 @@
  * 列举指定目录的直接子项（非递归），目录优先，显示文件大小
  */
 
-import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
+import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResult, ToolUseContext } from "./types.ts";
 import { readdirSync, statSync } from "fs";
 import { join, isAbsolute } from "path";
 import { getLogger } from "../debug/logger.ts";
@@ -35,6 +35,11 @@ function matchesIgnorePattern(name: string, patterns: string[]): boolean {
 export class LsTool implements Tool {
   readOnly(): boolean {
     return true;
+  }
+
+  /** 只读工具：无权限意见，交给权限系统决定 */
+  async checkPermissions(_input: unknown, _context: ToolUseContext): Promise<PermissionResult> {
+    return { behavior: "passthrough" };
   }
 
   name(): string {

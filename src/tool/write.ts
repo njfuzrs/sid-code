@@ -3,8 +3,8 @@
  * 自动创建目录，覆盖已存在的文件
  */
 
-import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
-import { dirname } from "path";
+import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResult, ToolUseContext } from "./types.ts";
+import { dirname, basename } from "path";
 import { mkdirSync, existsSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
 import { detectOmissionPlaceholders } from "./omission-detector.ts";
@@ -12,6 +12,19 @@ import { detectOmissionPlaceholders } from "./omission-detector.ts";
 export class WriteTool implements Tool {
   name(): string {
     return "write";
+  }
+
+  /** 工具级权限检查：敏感文件路径要求确认，其余 passthrough */
+  async checkPermissions(input: unknown, _context: ToolUseContext): Promise<PermissionResult> {
+    const filePath = (input as any)?.file_path;
+    if (!filePath || typeof filePath !== "string") {
+      return { behavior: "passthrough" };
+    }
+    const name = basename(filePath);
+    if (name.startsWith(".env") || name === "credentials.json" || name.endsWith(".pem") || name.endsWith(".key")) {
+      return { behavior: "ask", message: `写入敏感文件需要确认: ${filePath}` };
+    }
+    return { behavior: "passthrough" };
   }
 
   description(): string {

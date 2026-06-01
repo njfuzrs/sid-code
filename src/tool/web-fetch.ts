@@ -4,7 +4,7 @@
  * 安全限制：拒绝私有 IP 和 localhost
  */
 
-import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
+import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResult, ToolUseContext } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
 
 const FETCH_TIMEOUT_MS = 10000;
@@ -127,6 +127,11 @@ function htmlToText(html: string): string {
 export class WebFetchTool implements Tool {
   readOnly(): boolean {
     return true;
+  }
+
+  /** 只读工具：无权限意见，交给权限系统决定 */
+  async checkPermissions(_input: unknown, _context: ToolUseContext): Promise<PermissionResult> {
+    return { behavior: "passthrough" };
   }
 
   name(): string {

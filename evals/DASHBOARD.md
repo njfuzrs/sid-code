@@ -1,6 +1,6 @@
 # Evals Dashboard — sid-code
 
-> 自动生成,请勿手动编辑。生成时间: `2026-05-31T18:02:33.247Z`
+> 自动生成,请勿手动编辑。生成时间: `2026-06-01T13:06:07.719Z`
 > 数据源: `evals/p*-*/` + `evals/_scores/` + `evals/_reports/`
 > 触发: 手动 `bun run eval:dashboard` / git pre-push hook 自动刷新
 > Grader 过滤: **仅 `5d-v4`**（跨 grader 版本总分不可直接比较；切换：`--include-legacy`）
@@ -16,11 +16,11 @@
 - **claude_code_opus47** 评分进度: 0/184 已评分 (159 pending, 25 legacy 隐藏)
 - **codex** 评分进度: 0/184 已评分 (184 pending)
 - **sid_code_claude_opus_4_7** 评分进度: 0/184 已评分 (159 pending, 25 legacy 隐藏)
-- **sid_code_deepseek_v4_pro** 评分进度: 9/184 已评分 (100 pending, 75 legacy 隐藏)
+- **sid_code_deepseek_v4_pro** 评分进度: 8/184 已评分 (54 pending, 122 legacy 隐藏)
 - **sid_code_live** 评分进度: 0/184 已评分 (159 pending, 25 legacy 隐藏)
 - **sid_code_opus47** 评分进度: 0/184 已评分 (159 pending, 25 legacy 隐藏)
 - **sid_code_w0** 评分进度: 0/184 已评分 (172 pending, 12 legacy 隐藏)
-- ⚠️ 共隐藏 **237** 条 legacy baseline（非 `5d-v4`）；查看用 `--include-legacy`
+- ⚠️ 共隐藏 **284** 条 legacy baseline（非 `5d-v4`）；查看用 `--include-legacy`
 
 ### 最新一周: w22
 
@@ -37,7 +37,7 @@
 | claude_code_opus47 | – | – | – |
 | codex | – | – | – |
 | sid_code_claude_opus_4_7 | – | – | – |
-| sid_code_deepseek_v4_pro | – | 4.63 (n=9) | – |
+| sid_code_deepseek_v4_pro | – | 4.58 (n=8) | – |
 | sid_code_live | – | – | – |
 | sid_code_opus47 | – | – | – |
 | sid_code_w0 | – | – | – |
@@ -94,7 +94,7 @@
 | case_id | pri | category | claude_code | claude_code_claude_opus_4_7 | claude_code_opus47 | codex | sid_code_claude_opus_4_7 | sid_code_deepseek_v4_pro | sid_code_live | sid_code_opus47 | sid_code_w0 | w22.anchor | w22.llm |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | arch_chinese_001 | P0 | 架构中文一等公民 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
-| arch_chinese_002 | P0 | 架构中文一等公民 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_chinese_002 | P0 | 架构中文一等公民 | – | – | – | – | – | – | – | – | – | – | – |
 | arch_chinese_003 | P0 | 架构中文一等公民 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
 | arch_chinese_004 | P0 | 架构中文一等公民 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
 | arch_chinese_005 | P0 | 架构中文一等公民 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
@@ -104,20 +104,20 @@
 | arch_ctxeng_003 | P0 | 架构 Context Engine | – | – | – | – | – | 🕰️ | – | – | – | – | – |
 | arch_ctxeng_004 | P0 | 架构 Context Engine | – | – | – | – | – | 🕰️ | – | – | – | – | – |
 | arch_ctxeng_005 | P0 | 架构 Context Engine | – | – | – | – | – | 🕰️ | – | – | – | – | – |
-| arch_ctxeng_006 | P1 | 架构 Context Engine | – | – | – | – | – | – | – | – | – | – | – |
-| arch_ctxeng_007 | P1 | 架构 Context Engine | – | – | – | – | – | – | – | – | – | – | – |
-| arch_ctxeng_008 | P1 | 架构 Context Engine | – | – | – | – | – | – | – | – | – | – | – |
-| arch_ctxeng_009 | P1 | 架构 Context Engine | – | – | – | – | – | – | – | – | – | – | – |
-| arch_ctxeng_010 | P1 | 架构 Context Engine | – | – | – | – | – | – | – | – | – | – | – |
+| arch_ctxeng_006 | P1 | 架构 Context Engine | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_ctxeng_007 | P1 | 架构 Context Engine | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_ctxeng_008 | P1 | 架构 Context Engine | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_ctxeng_009 | P1 | 架构 Context Engine | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_ctxeng_010 | P1 | 架构 Context Engine | – | – | – | – | – | 🕰️ | – | – | – | – | – |
 | arch_discipline_001 | P0 | 架构纪律 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
 | arch_discipline_002 | P0 | 架构纪律 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
 | arch_discipline_003 🔒 | P0 | 架构纪律 | – | – | – | – | – | 3.75 🟢 | – | – | – | – | – |
 | arch_discipline_004 | P0 | 架构纪律 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
-| arch_durable_001 | P1 | 架构长流程编排 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_durable_002 | P1 | 架构长流程编排 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_durable_003 | P1 | 架构长流程编排 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_durable_004 | P1 | 架构长流程编排 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_durable_005 | P1 | 架构长流程编排 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_durable_001 | P1 | 架构长流程编排 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_durable_002 | P1 | 架构长流程编排 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_durable_003 | P1 | 架构长流程编排 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_durable_004 | P1 | 架构长流程编排 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_durable_005 | P1 | 架构长流程编排 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
 | arch_form_001 | P0 | 架构形态 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
 | arch_form_002 🔒 | P0 | 架构形态 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
 | arch_form_003 | P0 | 架构形态 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
@@ -139,38 +139,38 @@
 | arch_milestone_001 | P0 | 架构里程碑 | – | – | – | – | – | – | – | – | – | – | – |
 | arch_milestone_002 | P1 | 架构里程碑 | – | – | – | – | – | – | – | – | – | – | – |
 | arch_milestone_003 | P1 | 架构里程碑 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_nonfunc_001 | P1 | 架构非功能 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_nonfunc_002 | P1 | 架构非功能 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_nonfunc_003 | P1 | 架构非功能 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_nonfunc_004 | P1 | 架构非功能 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_nonfunc_005 | P1 | 架构非功能 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_nonfunc_006 | P1 | 架构非功能 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_nonfunc_007 | P1 | 架构非功能 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_nonfunc_008 | P1 | 架构非功能 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_nonfunc_009 | P1 | 架构非功能 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_nonfunc_010 | P1 | 架构非功能 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_notif_001 | P1 | 架构通知协作 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_notif_002 | P1 | 架构通知协作 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_notif_003 | P1 | 架构通知协作 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_ont_001 | P1 | 架构本体论 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_ont_002 | P1 | 架构本体论 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_ont_003 | P1 | 架构本体论 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_ont_004 | P1 | 架构本体论 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_ont_005 | P1 | 架构本体论 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_ont_006 | P1 | 架构本体论 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_ont_007 | P1 | 架构本体论 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_ont_008 | P1 | 架构本体论 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_ont_009 | P1 | 架构本体论 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_ont_010 | P1 | 架构本体论 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_ont_011 | P1 | 架构本体论 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_orch_001 | P1 | 架构编排 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_orch_002 | P1 | 架构编排 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_orch_003 | P1 | 架构编排 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_orch_004 | P1 | 架构编排 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_orch_005 | P1 | 架构编排 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_orch_006 | P1 | 架构编排 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_orch_007 | P1 | 架构编排 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_orch_008 | P1 | 架构编排 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_nonfunc_001 | P1 | 架构非功能 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_nonfunc_002 | P1 | 架构非功能 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_nonfunc_003 | P1 | 架构非功能 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_nonfunc_004 | P1 | 架构非功能 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_nonfunc_005 | P1 | 架构非功能 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_nonfunc_006 | P1 | 架构非功能 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_nonfunc_007 | P1 | 架构非功能 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_nonfunc_008 | P1 | 架构非功能 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_nonfunc_009 | P1 | 架构非功能 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_nonfunc_010 | P1 | 架构非功能 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_notif_001 | P1 | 架构通知协作 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_notif_002 | P1 | 架构通知协作 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_notif_003 | P1 | 架构通知协作 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_ont_001 | P1 | 架构本体论 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_ont_002 | P1 | 架构本体论 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_ont_003 | P1 | 架构本体论 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_ont_004 | P1 | 架构本体论 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_ont_005 | P1 | 架构本体论 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_ont_006 | P1 | 架构本体论 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_ont_007 | P1 | 架构本体论 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_ont_008 | P1 | 架构本体论 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_ont_009 | P1 | 架构本体论 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_ont_010 | P1 | 架构本体论 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_ont_011 | P1 | 架构本体论 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_orch_001 | P1 | 架构编排 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_orch_002 | P1 | 架构编排 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_orch_003 | P1 | 架构编排 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_orch_004 | P1 | 架构编排 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_orch_005 | P1 | 架构编排 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_orch_006 | P1 | 架构编排 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_orch_007 | P1 | 架构编排 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_orch_008 | P1 | 架构编排 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
 | arch_outcome_001 | P1 | 架构北极星 | – | – | – | – | – | – | – | – | – | – | – |
 | arch_outcome_002 | P1 | 架构北极星 | – | – | – | – | – | – | – | – | – | – | – |
 | arch_outcome_003 | P1 | 架构北极星 | – | – | – | – | – | – | – | – | – | – | – |
@@ -179,14 +179,14 @@
 | arch_platform_003 | P0 | 架构平台 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
 | arch_platform_004 | P0 | 架构平台 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
 | arch_platform_005 | P0 | 架构平台 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
-| arch_platform_006 | P1 | 架构平台 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
+| arch_platform_006 | P1 | 架构平台 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
 | arch_platform_006 🔒 | P0 | 架构平台 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
-| arch_platform_007 | P1 | 架构平台 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_platform_008 | P1 | 架构平台 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_platform_009 | P1 | 架构平台 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_platform_010 | P1 | 架构平台 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_platform_011 | P1 | 架构平台 | – | – | – | – | – | – | – | – | – | – | – |
-| arch_platform_012 | P1 | 架构平台 | – | – | – | – | – | – | – | – | – | – | – |
+| arch_platform_007 | P1 | 架构平台 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_platform_008 | P1 | 架构平台 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_platform_009 | P1 | 架构平台 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_platform_010 | P1 | 架构平台 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_platform_011 | P1 | 架构平台 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_platform_012 | P1 | 架构平台 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
 | arch_pluggable_001 | P0 | 架构可拔插 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
 | arch_pluggable_002 🔒 | P0 | 架构可拔插 | – | – | – | – | – | 5 ✅ | – | – | – | – | – |
 | arch_pluggable_003 | P0 | 架构可拔插 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
@@ -205,7 +205,7 @@
 | arch_redline_009 | P0 | 架构红线 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
 | arch_redline_011 | P0 | 架构红线 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
 | arch_redline_012 | P0 | 架构红线 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
-| arch_redline_013 | P0 | 架构红线 | – | – | – | – | – | 🕰️ | – | – | – | – | – |
+| arch_redline_013 | P0 | 架构红线 | – | – | – | – | – | – | – | – | – | – | – |
 | arch_render_001 | P1 | 架构渲染 | – | – | – | – | – | – | – | – | – | – | – |
 | arch_render_002 | P1 | 架构渲染 | – | – | – | – | – | – | – | – | – | – | – |
 | arch_render_003 | P1 | 架构渲染 | – | – | – | – | – | – | – | – | – | – | – |
@@ -278,7 +278,7 @@
 | real_T0597 | P0 | config | – | – | – | – | – | – | – | – | – | – | – |
 | real_T0694 | P0 | test | – | – | – | – | – | – | – | – | – | – | – |
 
-> 🕰️ 共 **237** 格 legacy baseline 被隐藏（grader 版本 ≠ `5d-v4`，跨版本总分不可直接比较）。查看用 `--include-legacy`。
+> 🕰️ 共 **284** 格 legacy baseline 被隐藏（grader 版本 ≠ `5d-v4`，跨版本总分不可直接比较）。查看用 `--include-legacy`。
 
 ## 3. 单 case 跨周趋势
 
@@ -415,25 +415,25 @@ xychart-beta
 
 ### 4.2 sid_code_deepseek_v4_pro
 
-总计: 62 次 run × 116 个 case = 458 条记录
+总计: 57 次 run × 178 个 case = 603 条记录
 
 **4.x.1 每次 run 的均分趋势**
 
 | run_id (UTC) | cases | avg | pass≥3 | fail<3 | error/timeout |
 | --- | --- | --- | --- | --- | --- |
-| `2026-05-23 17:25:14` | 25 | **4.25** | 23 | 2 | 0 |
+| `2026-05-23 17:25:14` | 24 | **4.25** | 22 | 2 | 0 |
 | `2026-05-23 17:45:57` | 3 | **4.82** | 3 | 0 | 0 |
 | `2026-05-24 13:00:00` | 1 | **4.91** | 1 | 0 | 0 |
 | `2026-05-24 13:16:20` | 1 | **4.91** | 1 | 0 | 0 |
 | `2026-05-24 16:26:40` | 1 | **5.00** | 1 | 0 | 0 |
-| `2026-05-24 16:57:03` | 25 | **4.61** | 23 | 2 | 0 |
+| `2026-05-24 16:57:03` | 24 | **4.60** | 22 | 2 | 0 |
 | `2026-05-24 17:12:54` | 3 | **4.94** | 3 | 0 | 0 |
-| `2026-05-24 17:33:06` | 25 | **4.83** | 25 | 0 | 0 |
+| `2026-05-24 17:33:06` | 24 | **4.83** | 24 | 0 | 0 |
 | `2026-05-24 18:14:10` | 4 | **4.35** | 4 | 0 | 0 |
 | `2026-05-24 18:22:12` | 4 | **4.19** | 3 | 1 | 0 |
 | `2026-05-24 18:25:23` | 4 | **3.91** | 2 | 1 | 1 |
 | `2026-05-24 18:28:58` | 2 | **3.90** | 2 | 0 | 0 |
-| `2026-05-24 18:50:39` | 25 | **4.47** | 23 | 1 | 1 |
+| `2026-05-24 18:50:39` | 24 | **4.53** | 22 | 1 | 1 |
 | `2026-05-25 02:40:02` | 1 | **4.54** | 1 | 0 | 0 |
 | `2026-05-25 02:49:27` | 1 | **5.00** | 1 | 0 | 0 |
 | `2026-05-25 02:50:42` | 1 | **5.00** | 1 | 0 | 0 |
@@ -441,18 +441,11 @@ xychart-beta
 | `2026-05-25 03:04:49` | 1 | **5.00** | 1 | 0 | 0 |
 | `2026-05-25 20:57:18` | 25 | **4.76** | 24 | 1 | 0 |
 | `2026-05-27 16:03:54` | 25 | **4.65** | 24 | 1 | 0 |
-| `2026-05-27 19:31:00` | 1 | **5.00** | 1 | 0 | 0 |
-| `2026-05-27 19:32:09` | 1 | **0.00** | 0 | 0 | 0 |
-| `2026-05-27 19:44:09` | 12 | **3.33** | 8 | 4 | 0 |
-| `2026-05-27 20:05:45` | 4 | **5.00** | 3 | 0 | 1 |
-| `2026-05-27 20:09:36` | 1 | **5.00** | 1 | 0 | 0 |
 | `2026-05-28 01:53:49` | 8 | **5.00** | 8 | 0 | 0 |
 | `2026-05-28 02:00:07` | 5 | **3.83** | 3 | 2 | 0 |
-| `2026-05-28 02:16:34` | 53 | **3.96** | 28 | 8 | 17 |
+| `2026-05-28 02:16:34` | 41 | **3.65** | 17 | 7 | 17 |
 | `2026-05-28 02:19:53` | 1 | **0.00** | 0 | 0 | 1 |
-| `2026-05-28 02:38:30` | 18 | **4.44** | 16 | 2 | 0 |
-| `2026-05-28 02:40:44` | 1 | **0.00** | 0 | 1 | 0 |
-| `2026-05-28 02:41:40` | 1 | **5.00** | 1 | 0 | 0 |
+| `2026-05-28 02:38:30` | 17 | **4.70** | 16 | 1 | 0 |
 | `2026-05-28 03:04:38` | 5 | **2.55** | 3 | 2 | 0 |
 | `2026-05-28 03:14:08` | 3 | **5.00** | 3 | 0 | 0 |
 | `2026-05-28 03:30:07` | 3 | **5.00** | 1 | 0 | 2 |
@@ -483,38 +476,274 @@ xychart-beta
 | `2026-05-31 03:48:32` | 1 | **5.00** | 1 | 0 | 0 |
 | `2026-05-31 04:55:38` | 1 | **5.00** | 1 | 0 | 0 |
 | `2026-05-31 07:11:59` | 6 | **4.45** | 5 | 1 | 0 |
+| `2026-06-01 12:26:36` | 12 | **0.00** | 0 | 0 | 1 |
+| `2026-06-01 13:06:07` | 171 | **4.63** | 16 | 0 | 46 |
 
 ```mermaid
 xychart-beta
     title "sid_code_deepseek_v4_pro 历次 run 均分"
-    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15, r16, r17, r18, r19, r20, r21, r22, r23, r24, r25, r26, r27, r28, r29, r30, r31, r32, r33, r34, r35, r36, r37, r38, r39, r40, r41, r42, r43, r44, r45, r46, r47, r48, r49, r50, r51, r52, r53, r54, r55, r56, r57, r58, r59, r60, r61, r62]
+    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15, r16, r17, r18, r19, r20, r21, r22, r23, r24, r25, r26, r27, r28, r29, r30, r31, r32, r33, r34, r35, r36, r37, r38, r39, r40, r41, r42, r43, r44, r45, r46, r47, r48, r49, r50, r51, r52, r53, r54, r55, r56, r57]
     y-axis "Score" 0 --> 5
-    line [4.25, 4.82, 4.91, 4.91, 5.00, 4.61, 4.94, 4.83, 4.35, 4.19, 3.91, 3.90, 4.47, 4.54, 5.00, 5.00, 5.00, 5.00, 4.76, 4.65, 5.00, 0.00, 3.33, 5.00, 5.00, 5.00, 3.83, 3.96, 0.00, 4.44, 0.00, 5.00, 2.55, 5.00, 5.00, 3.13, 4.94, 4.33, 4.00, 4.00, 4.00, 5.00, 5.00, 4.07, 4.62, 5.00, 0.00, 4.84, 5.00, 5.00, 0.00, 5.00, 5.00, 3.19, 4.79, 4.12, 5.00, 5.00, 5.00, 5.00, 5.00, 4.45]
+    line [4.25, 4.82, 4.91, 4.91, 5.00, 4.60, 4.94, 4.83, 4.35, 4.19, 3.91, 3.90, 4.53, 4.54, 5.00, 5.00, 5.00, 5.00, 4.76, 4.65, 5.00, 3.83, 3.65, 0.00, 4.70, 2.55, 5.00, 5.00, 3.13, 4.94, 4.33, 4.00, 4.00, 4.00, 5.00, 5.00, 4.07, 4.62, 5.00, 0.00, 4.84, 5.00, 5.00, 0.00, 5.00, 5.00, 3.19, 4.79, 4.12, 5.00, 5.00, 5.00, 5.00, 5.00, 4.45, 0.00, 4.63]
 ```
 
 <sub>fallback 表格 — sid_code_deepseek_v4_pro 历次 run 均分</sub>
 
-| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 | r13 | r14 | r15 | r16 | r17 | r18 | r19 | r20 | r21 | r22 | r23 | r24 | r25 | r26 | r27 | r28 | r29 | r30 | r31 | r32 | r33 | r34 | r35 | r36 | r37 | r38 | r39 | r40 | r41 | r42 | r43 | r44 | r45 | r46 | r47 | r48 | r49 | r50 | r51 | r52 | r53 | r54 | r55 | r56 | r57 | r58 | r59 | r60 | r61 | r62 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| avg | 4.25 | 4.82 | 4.91 | 4.91 | 5.00 | 4.61 | 4.94 | 4.83 | 4.35 | 4.19 | 3.91 | 3.90 | 4.47 | 4.54 | 5.00 | 5.00 | 5.00 | 5.00 | 4.76 | 4.65 | 5.00 | 0.00 | 3.33 | 5.00 | 5.00 | 5.00 | 3.83 | 3.96 | 0.00 | 4.44 | 0.00 | 5.00 | 2.55 | 5.00 | 5.00 | 3.13 | 4.94 | 4.33 | 4.00 | 4.00 | 4.00 | 5.00 | 5.00 | 4.07 | 4.62 | 5.00 | 0.00 | 4.84 | 5.00 | 5.00 | 0.00 | 5.00 | 5.00 | 3.19 | 4.79 | 4.12 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | 4.45 |
+| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 | r13 | r14 | r15 | r16 | r17 | r18 | r19 | r20 | r21 | r22 | r23 | r24 | r25 | r26 | r27 | r28 | r29 | r30 | r31 | r32 | r33 | r34 | r35 | r36 | r37 | r38 | r39 | r40 | r41 | r42 | r43 | r44 | r45 | r46 | r47 | r48 | r49 | r50 | r51 | r52 | r53 | r54 | r55 | r56 | r57 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| avg | 4.25 | 4.82 | 4.91 | 4.91 | 5.00 | 4.60 | 4.94 | 4.83 | 4.35 | 4.19 | 3.91 | 3.90 | 4.53 | 4.54 | 5.00 | 5.00 | 5.00 | 5.00 | 4.76 | 4.65 | 5.00 | 3.83 | 3.65 | 0.00 | 4.70 | 2.55 | 5.00 | 5.00 | 3.13 | 4.94 | 4.33 | 4.00 | 4.00 | 4.00 | 5.00 | 5.00 | 4.07 | 4.62 | 5.00 | 0.00 | 4.84 | 5.00 | 5.00 | 0.00 | 5.00 | 5.00 | 3.19 | 4.79 | 4.12 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | 4.45 | 0.00 | 4.63 |
 
 **4.x.2 单 case 多次 run 折线** (仅展示 ≥2 次 run 的 case)
 
-<details><summary><code>arch_form_001</code> · 2 次 · 5.00 → 5.00 (Δ 0.00)</summary>
+<details><summary><code>arch_chinese_001</code> · 2 次 · 5.00 → 4.25 (Δ -0.75)</summary>
 
 ```mermaid
 xychart-beta
-    title "arch_form_001 历次 run 分数"
+    title "arch_chinese_001 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [5.00, 4.25]
+```
+
+<sub>fallback 表格 — arch_chinese_001 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 5.00 | 4.25 |
+
+</details>
+
+<details><summary><code>arch_chinese_002</code> · 2 次 · 5.00 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "arch_chinese_002 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [5.00, 0]
+```
+
+<sub>fallback 表格 — arch_chinese_002 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 5.00 | – |
+
+</details>
+
+<details><summary><code>arch_chinese_003</code> · 2 次 · 5.00 → 5.00 (Δ 0.00)</summary>
+
+```mermaid
+xychart-beta
+    title "arch_chinese_003 历次 run 分数"
     x-axis [r1, r2]
     y-axis "Score" 0 --> 5
     line [5.00, 5.00]
 ```
 
-<sub>fallback 表格 — arch_form_001 历次 run 分数</sub>
+<sub>fallback 表格 — arch_chinese_003 历次 run 分数</sub>
 
 | 系列 | r1 | r2 |
 | --- | --- | --- |
 | score | 5.00 | 5.00 |
+
+</details>
+
+<details><summary><code>arch_chinese_004</code> · 2 次 · 4.46 → 3.85 (Δ -0.61)</summary>
+
+```mermaid
+xychart-beta
+    title "arch_chinese_004 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [4.46, 3.85]
+```
+
+<sub>fallback 表格 — arch_chinese_004 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 4.46 | 3.85 |
+
+</details>
+
+<details><summary><code>arch_chinese_005</code> · 2 次 · 5.00 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "arch_chinese_005 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [5.00, 0]
+```
+
+<sub>fallback 表格 — arch_chinese_005 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 5.00 | – |
+
+</details>
+
+<details><summary><code>arch_ctxeng_001</code> · 2 次 · 0.00 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "arch_ctxeng_001 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [0.00, 0]
+```
+
+<sub>fallback 表格 — arch_ctxeng_001 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 0.00 | – |
+
+</details>
+
+<details><summary><code>arch_ctxeng_002</code> · 2 次 · 0.00 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "arch_ctxeng_002 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [0.00, 0]
+```
+
+<sub>fallback 表格 — arch_ctxeng_002 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 0.00 | – |
+
+</details>
+
+<details><summary><code>arch_ctxeng_003</code> · 2 次 · 0.00 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "arch_ctxeng_003 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [0.00, 0]
+```
+
+<sub>fallback 表格 — arch_ctxeng_003 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 0.00 | – |
+
+</details>
+
+<details><summary><code>arch_ctxeng_004</code> · 2 次 · 0.00 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "arch_ctxeng_004 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [0.00, 0]
+```
+
+<sub>fallback 表格 — arch_ctxeng_004 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 0.00 | – |
+
+</details>
+
+<details><summary><code>arch_ctxeng_005</code> · 2 次 · 0.00 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "arch_ctxeng_005 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [0.00, 0]
+```
+
+<sub>fallback 表格 — arch_ctxeng_005 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 0.00 | – |
+
+</details>
+
+<details><summary><code>arch_discipline_001</code> · 2 次 · 5.00 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "arch_discipline_001 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [5.00, 0]
+```
+
+<sub>fallback 表格 — arch_discipline_001 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 5.00 | – |
+
+</details>
+
+<details><summary><code>arch_discipline_002</code> · 2 次 · 5.00 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "arch_discipline_002 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [5.00, 0]
+```
+
+<sub>fallback 表格 — arch_discipline_002 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 5.00 | – |
+
+</details>
+
+<details><summary><code>arch_discipline_004</code> · 2 次 · 5.00 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "arch_discipline_004 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [5.00, 0]
+```
+
+<sub>fallback 表格 — arch_discipline_004 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 5.00 | – |
+
+</details>
+
+<details><summary><code>arch_form_001</code> · 3 次 · 5.00 → 5.00 → – (Δ 0.00)</summary>
+
+```mermaid
+xychart-beta
+    title "arch_form_001 历次 run 分数"
+    x-axis [r1, r2, r3]
+    y-axis "Score" 0 --> 5
+    line [5.00, 5.00, 0]
+```
+
+<sub>fallback 表格 — arch_form_001 历次 run 分数</sub>
+
+| 系列 | r1 | r2 | r3 |
+| --- | --- | --- | --- |
+| score | 5.00 | 5.00 | – |
 
 </details>
 
@@ -536,183 +765,183 @@ xychart-beta
 
 </details>
 
-<details><summary><code>arch_form_003</code> · 2 次 · 2.50 → 2.50 (Δ 0.00)</summary>
+<details><summary><code>arch_form_003</code> · 3 次 · 2.50 → 2.50 → – (Δ 0.00)</summary>
 
 ```mermaid
 xychart-beta
     title "arch_form_003 历次 run 分数"
-    x-axis [r1, r2]
+    x-axis [r1, r2, r3]
     y-axis "Score" 0 --> 5
-    line [2.50, 2.50]
+    line [2.50, 2.50, 0]
 ```
 
 <sub>fallback 表格 — arch_form_003 历次 run 分数</sub>
 
-| 系列 | r1 | r2 |
-| --- | --- | --- |
-| score | 2.50 | 2.50 |
+| 系列 | r1 | r2 | r3 |
+| --- | --- | --- | --- |
+| score | 2.50 | 2.50 | – |
 
 </details>
 
-<details><summary><code>arch_form_004</code> · 2 次 · 1.67 → 1.67 (Δ 0.00)</summary>
+<details><summary><code>arch_form_004</code> · 3 次 · 1.67 → 1.67 → – (Δ 0.00)</summary>
 
 ```mermaid
 xychart-beta
     title "arch_form_004 历次 run 分数"
-    x-axis [r1, r2]
+    x-axis [r1, r2, r3]
     y-axis "Score" 0 --> 5
-    line [1.67, 1.67]
+    line [1.67, 1.67, 0]
 ```
 
 <sub>fallback 表格 — arch_form_004 历次 run 分数</sub>
 
-| 系列 | r1 | r2 |
-| --- | --- | --- |
-| score | 1.67 | 1.67 |
+| 系列 | r1 | r2 | r3 |
+| --- | --- | --- | --- |
+| score | 1.67 | 1.67 | – |
 
 </details>
 
-<details><summary><code>arch_form_005</code> · 3 次 · 5.00 → 5.00 → 5.00 (Δ 0.00)</summary>
+<details><summary><code>arch_form_005</code> · 4 次 · 5.00 → 5.00 → 5.00 → – (Δ 0.00)</summary>
 
 ```mermaid
 xychart-beta
     title "arch_form_005 历次 run 分数"
-    x-axis [r1, r2, r3]
+    x-axis [r1, r2, r3, r4]
     y-axis "Score" 0 --> 5
-    line [5.00, 5.00, 5.00]
+    line [5.00, 5.00, 5.00, 0]
 ```
 
 <sub>fallback 表格 — arch_form_005 历次 run 分数</sub>
 
-| 系列 | r1 | r2 | r3 |
-| --- | --- | --- | --- |
-| score | 5.00 | 5.00 | 5.00 |
+| 系列 | r1 | r2 | r3 | r4 |
+| --- | --- | --- | --- | --- |
+| score | 5.00 | 5.00 | 5.00 | – |
 
 </details>
 
-<details><summary><code>arch_kernel_001</code> · 2 次 · 5.00 → 5.00 (Δ 0.00)</summary>
+<details><summary><code>arch_kernel_001</code> · 3 次 · 5.00 → 5.00 → – (Δ 0.00)</summary>
 
 ```mermaid
 xychart-beta
     title "arch_kernel_001 历次 run 分数"
-    x-axis [r1, r2]
+    x-axis [r1, r2, r3]
     y-axis "Score" 0 --> 5
-    line [5.00, 5.00]
+    line [5.00, 5.00, 0]
 ```
 
 <sub>fallback 表格 — arch_kernel_001 历次 run 分数</sub>
 
-| 系列 | r1 | r2 |
-| --- | --- | --- |
-| score | 5.00 | 5.00 |
+| 系列 | r1 | r2 | r3 |
+| --- | --- | --- | --- |
+| score | 5.00 | 5.00 | – |
 
 </details>
 
-<details><summary><code>arch_kernel_002</code> · 2 次 · 5.00 → 5.00 (Δ 0.00)</summary>
+<details><summary><code>arch_kernel_002</code> · 3 次 · 5.00 → 5.00 → – (Δ 0.00)</summary>
 
 ```mermaid
 xychart-beta
     title "arch_kernel_002 历次 run 分数"
-    x-axis [r1, r2]
+    x-axis [r1, r2, r3]
     y-axis "Score" 0 --> 5
-    line [5.00, 5.00]
+    line [5.00, 5.00, 0]
 ```
 
 <sub>fallback 表格 — arch_kernel_002 历次 run 分数</sub>
 
-| 系列 | r1 | r2 |
-| --- | --- | --- |
-| score | 5.00 | 5.00 |
+| 系列 | r1 | r2 | r3 |
+| --- | --- | --- | --- |
+| score | 5.00 | 5.00 | – |
 
 </details>
 
-<details><summary><code>arch_kernel_003</code> · 2 次 · 5.00 → 5.00 (Δ 0.00)</summary>
+<details><summary><code>arch_kernel_003</code> · 3 次 · 5.00 → 5.00 → – (Δ 0.00)</summary>
 
 ```mermaid
 xychart-beta
     title "arch_kernel_003 历次 run 分数"
-    x-axis [r1, r2]
+    x-axis [r1, r2, r3]
     y-axis "Score" 0 --> 5
-    line [5.00, 5.00]
+    line [5.00, 5.00, 0]
 ```
 
 <sub>fallback 表格 — arch_kernel_003 历次 run 分数</sub>
 
-| 系列 | r1 | r2 |
-| --- | --- | --- |
-| score | 5.00 | 5.00 |
+| 系列 | r1 | r2 | r3 |
+| --- | --- | --- | --- |
+| score | 5.00 | 5.00 | – |
 
 </details>
 
-<details><summary><code>arch_kernel_004</code> · 2 次 · 5.00 → 5.00 (Δ 0.00)</summary>
+<details><summary><code>arch_kernel_004</code> · 3 次 · 5.00 → 5.00 → – (Δ 0.00)</summary>
 
 ```mermaid
 xychart-beta
     title "arch_kernel_004 历次 run 分数"
-    x-axis [r1, r2]
+    x-axis [r1, r2, r3]
     y-axis "Score" 0 --> 5
-    line [5.00, 5.00]
+    line [5.00, 5.00, 0]
 ```
 
 <sub>fallback 表格 — arch_kernel_004 历次 run 分数</sub>
 
-| 系列 | r1 | r2 |
-| --- | --- | --- |
-| score | 5.00 | 5.00 |
+| 系列 | r1 | r2 | r3 |
+| --- | --- | --- | --- |
+| score | 5.00 | 5.00 | – |
 
 </details>
 
-<details><summary><code>arch_kernel_005</code> · 2 次 · 5.00 → 5.00 (Δ 0.00)</summary>
+<details><summary><code>arch_kernel_005</code> · 3 次 · 5.00 → 5.00 → – (Δ 0.00)</summary>
 
 ```mermaid
 xychart-beta
     title "arch_kernel_005 历次 run 分数"
-    x-axis [r1, r2]
+    x-axis [r1, r2, r3]
     y-axis "Score" 0 --> 5
-    line [5.00, 5.00]
+    line [5.00, 5.00, 0]
 ```
 
 <sub>fallback 表格 — arch_kernel_005 历次 run 分数</sub>
 
-| 系列 | r1 | r2 |
-| --- | --- | --- |
-| score | 5.00 | 5.00 |
+| 系列 | r1 | r2 | r3 |
+| --- | --- | --- | --- |
+| score | 5.00 | 5.00 | – |
 
 </details>
 
-<details><summary><code>arch_kernel_006</code> · 2 次 · 5.00 → 5.00 (Δ 0.00)</summary>
+<details><summary><code>arch_kernel_006</code> · 3 次 · 5.00 → 5.00 → – (Δ 0.00)</summary>
 
 ```mermaid
 xychart-beta
     title "arch_kernel_006 历次 run 分数"
-    x-axis [r1, r2]
+    x-axis [r1, r2, r3]
     y-axis "Score" 0 --> 5
-    line [5.00, 5.00]
+    line [5.00, 5.00, 0]
 ```
 
 <sub>fallback 表格 — arch_kernel_006 历次 run 分数</sub>
 
-| 系列 | r1 | r2 |
-| --- | --- | --- |
-| score | 5.00 | 5.00 |
+| 系列 | r1 | r2 | r3 |
+| --- | --- | --- | --- |
+| score | 5.00 | 5.00 | – |
 
 </details>
 
-<details><summary><code>arch_kernel_007</code> · 2 次 · 5.00 → 5.00 (Δ 0.00)</summary>
+<details><summary><code>arch_kernel_007</code> · 3 次 · 5.00 → 5.00 → – (Δ 0.00)</summary>
 
 ```mermaid
 xychart-beta
     title "arch_kernel_007 历次 run 分数"
-    x-axis [r1, r2]
+    x-axis [r1, r2, r3]
     y-axis "Score" 0 --> 5
-    line [5.00, 5.00]
+    line [5.00, 5.00, 0]
 ```
 
 <sub>fallback 表格 — arch_kernel_007 历次 run 分数</sub>
 
-| 系列 | r1 | r2 |
-| --- | --- | --- |
-| score | 5.00 | 5.00 |
+| 系列 | r1 | r2 | r3 |
+| --- | --- | --- | --- |
+| score | 5.00 | 5.00 | – |
 
 </details>
 
@@ -734,57 +963,57 @@ xychart-beta
 
 </details>
 
-<details><summary><code>arch_meta_001</code> · 2 次 · – → 4.38 (Δ –)</summary>
+<details><summary><code>arch_meta_001</code> · 3 次 · – → 4.38 → – (Δ –)</summary>
 
 ```mermaid
 xychart-beta
     title "arch_meta_001 历次 run 分数"
-    x-axis [r1, r2]
+    x-axis [r1, r2, r3]
     y-axis "Score" 0 --> 5
-    line [0, 4.38]
+    line [0, 4.38, 0]
 ```
 
 <sub>fallback 表格 — arch_meta_001 历次 run 分数</sub>
 
-| 系列 | r1 | r2 |
-| --- | --- | --- |
-| score | – | 4.38 |
+| 系列 | r1 | r2 | r3 |
+| --- | --- | --- | --- |
+| score | – | 4.38 | – |
 
 </details>
 
-<details><summary><code>arch_meta_002</code> · 2 次 · 5.00 → 0.00 (Δ -5.00)</summary>
+<details><summary><code>arch_meta_002</code> · 3 次 · 5.00 → 0.00 → – (Δ -5.00)</summary>
 
 ```mermaid
 xychart-beta
     title "arch_meta_002 历次 run 分数"
-    x-axis [r1, r2]
+    x-axis [r1, r2, r3]
     y-axis "Score" 0 --> 5
-    line [5.00, 0.00]
+    line [5.00, 0.00, 0]
 ```
 
 <sub>fallback 表格 — arch_meta_002 历次 run 分数</sub>
 
-| 系列 | r1 | r2 |
-| --- | --- | --- |
-| score | 5.00 | 0.00 |
+| 系列 | r1 | r2 | r3 |
+| --- | --- | --- | --- |
+| score | 5.00 | 0.00 | – |
 
 </details>
 
-<details><summary><code>arch_meta_003</code> · 2 次 · – → 5.00 (Δ –)</summary>
+<details><summary><code>arch_meta_003</code> · 3 次 · – → 5.00 → – (Δ –)</summary>
 
 ```mermaid
 xychart-beta
     title "arch_meta_003 历次 run 分数"
-    x-axis [r1, r2]
+    x-axis [r1, r2, r3]
     y-axis "Score" 0 --> 5
-    line [0, 5.00]
+    line [0, 5.00, 0]
 ```
 
 <sub>fallback 表格 — arch_meta_003 历次 run 分数</sub>
 
-| 系列 | r1 | r2 |
-| --- | --- | --- |
-| score | – | 5.00 |
+| 系列 | r1 | r2 | r3 |
+| --- | --- | --- | --- |
+| score | – | 5.00 | – |
 
 </details>
 
@@ -824,57 +1053,129 @@ xychart-beta
 
 </details>
 
-<details><summary><code>arch_platform_001</code> · 6 次 · 3.75 → 3.00 → 4.00 → 4.00 → 4.00 → 5.00 (Δ +1.25)</summary>
+<details><summary><code>arch_platform_001</code> · 7 次 · 3.75 → 3.00 → 4.00 → 4.00 → 4.00 → 5.00 → – (Δ +1.25)</summary>
 
 ```mermaid
 xychart-beta
     title "arch_platform_001 历次 run 分数"
-    x-axis [r1, r2, r3, r4, r5, r6]
+    x-axis [r1, r2, r3, r4, r5, r6, r7]
     y-axis "Score" 0 --> 5
-    line [3.75, 3.00, 4.00, 4.00, 4.00, 5.00]
+    line [3.75, 3.00, 4.00, 4.00, 4.00, 5.00, 0]
 ```
 
 <sub>fallback 表格 — arch_platform_001 历次 run 分数</sub>
 
-| 系列 | r1 | r2 | r3 | r4 | r5 | r6 |
-| --- | --- | --- | --- | --- | --- | --- |
-| score | 3.75 | 3.00 | 4.00 | 4.00 | 4.00 | 5.00 |
+| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| score | 3.75 | 3.00 | 4.00 | 4.00 | 4.00 | 5.00 | – |
 
 </details>
 
-<details><summary><code>arch_platform_006</code> · 4 次 · 0.00 → 5.00 → 2.50 → 5.00 (Δ +5.00)</summary>
+<details><summary><code>arch_platform_002</code> · 2 次 · 4.00 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "arch_platform_002 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [4.00, 0]
+```
+
+<sub>fallback 表格 — arch_platform_002 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 4.00 | – |
+
+</details>
+
+<details><summary><code>arch_platform_003</code> · 2 次 · 0.00 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "arch_platform_003 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [0.00, 0]
+```
+
+<sub>fallback 表格 — arch_platform_003 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 0.00 | – |
+
+</details>
+
+<details><summary><code>arch_platform_004</code> · 2 次 · 5.00 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "arch_platform_004 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [5.00, 0]
+```
+
+<sub>fallback 表格 — arch_platform_004 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 5.00 | – |
+
+</details>
+
+<details><summary><code>arch_platform_005</code> · 2 次 · 0.00 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "arch_platform_005 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [0.00, 0]
+```
+
+<sub>fallback 表格 — arch_platform_005 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 0.00 | – |
+
+</details>
+
+<details><summary><code>arch_platform_006</code> · 5 次 · 0.00 → 5.00 → 2.50 → 5.00 → – (Δ +5.00)</summary>
 
 ```mermaid
 xychart-beta
     title "arch_platform_006 历次 run 分数"
-    x-axis [r1, r2, r3, r4]
+    x-axis [r1, r2, r3, r4, r5]
     y-axis "Score" 0 --> 5
-    line [0.00, 5.00, 2.50, 5.00]
+    line [0.00, 5.00, 2.50, 5.00, 0]
 ```
 
 <sub>fallback 表格 — arch_platform_006 历次 run 分数</sub>
 
-| 系列 | r1 | r2 | r3 | r4 |
-| --- | --- | --- | --- | --- |
-| score | 0.00 | 5.00 | 2.50 | 5.00 |
+| 系列 | r1 | r2 | r3 | r4 | r5 |
+| --- | --- | --- | --- | --- | --- |
+| score | 0.00 | 5.00 | 2.50 | 5.00 | – |
 
 </details>
 
-<details><summary><code>arch_pluggable_001</code> · 2 次 · 5.00 → 5.00 (Δ 0.00)</summary>
+<details><summary><code>arch_pluggable_001</code> · 3 次 · 5.00 → 5.00 → – (Δ 0.00)</summary>
 
 ```mermaid
 xychart-beta
     title "arch_pluggable_001 历次 run 分数"
-    x-axis [r1, r2]
+    x-axis [r1, r2, r3]
     y-axis "Score" 0 --> 5
-    line [5.00, 5.00]
+    line [5.00, 5.00, 0]
 ```
 
 <sub>fallback 表格 — arch_pluggable_001 历次 run 分数</sub>
 
-| 系列 | r1 | r2 |
-| --- | --- | --- |
-| score | 5.00 | 5.00 |
+| 系列 | r1 | r2 | r3 |
+| --- | --- | --- | --- |
+| score | 5.00 | 5.00 | – |
 
 </details>
 
@@ -896,813 +1197,1113 @@ xychart-beta
 
 </details>
 
-<details><summary><code>arch_pluggable_003</code> · 2 次 · 5.00 → 5.00 (Δ 0.00)</summary>
+<details><summary><code>arch_pluggable_003</code> · 3 次 · 5.00 → 5.00 → – (Δ 0.00)</summary>
 
 ```mermaid
 xychart-beta
     title "arch_pluggable_003 历次 run 分数"
-    x-axis [r1, r2]
+    x-axis [r1, r2, r3]
     y-axis "Score" 0 --> 5
-    line [5.00, 5.00]
+    line [5.00, 5.00, 0]
 ```
 
 <sub>fallback 表格 — arch_pluggable_003 历次 run 分数</sub>
 
-| 系列 | r1 | r2 |
-| --- | --- | --- |
-| score | 5.00 | 5.00 |
+| 系列 | r1 | r2 | r3 |
+| --- | --- | --- | --- |
+| score | 5.00 | 5.00 | – |
 
 </details>
 
-<details><summary><code>arch_pluggable_004</code> · 3 次 · – → 5.00 → 5.00 (Δ 0.00)</summary>
+<details><summary><code>arch_pluggable_004</code> · 4 次 · – → 5.00 → 5.00 → – (Δ 0.00)</summary>
 
 ```mermaid
 xychart-beta
     title "arch_pluggable_004 历次 run 分数"
-    x-axis [r1, r2, r3]
+    x-axis [r1, r2, r3, r4]
     y-axis "Score" 0 --> 5
-    line [0, 5.00, 5.00]
+    line [0, 5.00, 5.00, 0]
 ```
 
 <sub>fallback 表格 — arch_pluggable_004 历次 run 分数</sub>
 
-| 系列 | r1 | r2 | r3 |
-| --- | --- | --- | --- |
-| score | – | 5.00 | 5.00 |
+| 系列 | r1 | r2 | r3 | r4 |
+| --- | --- | --- | --- | --- |
+| score | – | 5.00 | 5.00 | – |
 
 </details>
 
-<details><summary><code>arch_pluggable_005</code> · 3 次 · – → 5.00 → 5.00 (Δ 0.00)</summary>
+<details><summary><code>arch_pluggable_005</code> · 4 次 · – → 5.00 → 5.00 → – (Δ 0.00)</summary>
 
 ```mermaid
 xychart-beta
     title "arch_pluggable_005 历次 run 分数"
-    x-axis [r1, r2, r3]
+    x-axis [r1, r2, r3, r4]
     y-axis "Score" 0 --> 5
-    line [0, 5.00, 5.00]
+    line [0, 5.00, 5.00, 0]
 ```
 
 <sub>fallback 表格 — arch_pluggable_005 历次 run 分数</sub>
 
-| 系列 | r1 | r2 | r3 |
-| --- | --- | --- | --- |
-| score | – | 5.00 | 5.00 |
+| 系列 | r1 | r2 | r3 | r4 |
+| --- | --- | --- | --- | --- |
+| score | – | 5.00 | 5.00 | – |
 
 </details>
 
-<details><summary><code>arch_pluggable_006</code> · 2 次 · 5.00 → 5.00 (Δ 0.00)</summary>
+<details><summary><code>arch_pluggable_006</code> · 3 次 · 5.00 → 5.00 → – (Δ 0.00)</summary>
 
 ```mermaid
 xychart-beta
     title "arch_pluggable_006 历次 run 分数"
-    x-axis [r1, r2]
+    x-axis [r1, r2, r3]
     y-axis "Score" 0 --> 5
-    line [5.00, 5.00]
+    line [5.00, 5.00, 0]
 ```
 
 <sub>fallback 表格 — arch_pluggable_006 历次 run 分数</sub>
 
-| 系列 | r1 | r2 |
-| --- | --- | --- |
-| score | 5.00 | 5.00 |
+| 系列 | r1 | r2 | r3 |
+| --- | --- | --- | --- |
+| score | 5.00 | 5.00 | – |
 
 </details>
 
-<details><summary><code>arch_pluggable_007</code> · 2 次 · 5.00 → 5.00 (Δ 0.00)</summary>
+<details><summary><code>arch_pluggable_007</code> · 3 次 · 5.00 → 5.00 → – (Δ 0.00)</summary>
 
 ```mermaid
 xychart-beta
     title "arch_pluggable_007 历次 run 分数"
-    x-axis [r1, r2]
+    x-axis [r1, r2, r3]
     y-axis "Score" 0 --> 5
-    line [5.00, 5.00]
+    line [5.00, 5.00, 0]
 ```
 
 <sub>fallback 表格 — arch_pluggable_007 历次 run 分数</sub>
 
-| 系列 | r1 | r2 |
-| --- | --- | --- |
-| score | 5.00 | 5.00 |
-
-</details>
-
-<details><summary><code>arch_redline_001</code> · 3 次 · – → 5.00 → 5.00 (Δ 0.00)</summary>
-
-```mermaid
-xychart-beta
-    title "arch_redline_001 历次 run 分数"
-    x-axis [r1, r2, r3]
-    y-axis "Score" 0 --> 5
-    line [0, 5.00, 5.00]
-```
-
-<sub>fallback 表格 — arch_redline_001 历次 run 分数</sub>
-
 | 系列 | r1 | r2 | r3 |
 | --- | --- | --- | --- |
-| score | – | 5.00 | 5.00 |
+| score | 5.00 | 5.00 | – |
 
 </details>
 
-<details><summary><code>arch_redline_002</code> · 4 次 · 0.00 → 5.00 → 5.00 → 5.00 (Δ +5.00)</summary>
+<details><summary><code>arch_redline_001</code> · 2 次 · – → – (Δ –)</summary>
+
+> (无有效分数,跳过图表)
+
+</details>
+
+<details><summary><code>arch_redline_002</code> · 3 次 · 5.00 → – → – (Δ –)</summary>
 
 ```mermaid
 xychart-beta
     title "arch_redline_002 历次 run 分数"
-    x-axis [r1, r2, r3, r4]
+    x-axis [r1, r2, r3]
     y-axis "Score" 0 --> 5
-    line [0.00, 5.00, 5.00, 5.00]
+    line [5.00, 0, 0]
 ```
 
 <sub>fallback 表格 — arch_redline_002 历次 run 分数</sub>
 
-| 系列 | r1 | r2 | r3 | r4 |
-| --- | --- | --- | --- | --- |
-| score | 0.00 | 5.00 | 5.00 | 5.00 |
-
-</details>
-
-<details><summary><code>arch_redline_003</code> · 5 次 · 5.00 → 0.00 → 0.00 → 0.00 → 5.00 (Δ 0.00)</summary>
-
-```mermaid
-xychart-beta
-    title "arch_redline_003 历次 run 分数"
-    x-axis [r1, r2, r3, r4, r5]
-    y-axis "Score" 0 --> 5
-    line [5.00, 0.00, 0.00, 0.00, 5.00]
-```
-
-<sub>fallback 表格 — arch_redline_003 历次 run 分数</sub>
-
-| 系列 | r1 | r2 | r3 | r4 | r5 |
-| --- | --- | --- | --- | --- | --- |
-| score | 5.00 | 0.00 | 0.00 | 0.00 | 5.00 |
-
-</details>
-
-<details><summary><code>arch_redline_004</code> · 2 次 · 5.00 → 5.00 (Δ 0.00)</summary>
-
-```mermaid
-xychart-beta
-    title "arch_redline_004 历次 run 分数"
-    x-axis [r1, r2]
-    y-axis "Score" 0 --> 5
-    line [5.00, 5.00]
-```
-
-<sub>fallback 表格 — arch_redline_004 历次 run 分数</sub>
-
-| 系列 | r1 | r2 |
-| --- | --- | --- |
-| score | 5.00 | 5.00 |
-
-</details>
-
-<details><summary><code>arch_redline_005</code> · 2 次 · 5.00 → 5.00 (Δ 0.00)</summary>
-
-```mermaid
-xychart-beta
-    title "arch_redline_005 历次 run 分数"
-    x-axis [r1, r2]
-    y-axis "Score" 0 --> 5
-    line [5.00, 5.00]
-```
-
-<sub>fallback 表格 — arch_redline_005 历次 run 分数</sub>
-
-| 系列 | r1 | r2 |
-| --- | --- | --- |
-| score | 5.00 | 5.00 |
-
-</details>
-
-<details><summary><code>arch_redline_006</code> · 2 次 · 5.00 → 5.00 (Δ 0.00)</summary>
-
-```mermaid
-xychart-beta
-    title "arch_redline_006 历次 run 分数"
-    x-axis [r1, r2]
-    y-axis "Score" 0 --> 5
-    line [5.00, 5.00]
-```
-
-<sub>fallback 表格 — arch_redline_006 历次 run 分数</sub>
-
-| 系列 | r1 | r2 |
-| --- | --- | --- |
-| score | 5.00 | 5.00 |
-
-</details>
-
-<details><summary><code>arch_redline_007</code> · 2 次 · 5.00 → 5.00 (Δ 0.00)</summary>
-
-```mermaid
-xychart-beta
-    title "arch_redline_007 历次 run 分数"
-    x-axis [r1, r2]
-    y-axis "Score" 0 --> 5
-    line [5.00, 5.00]
-```
-
-<sub>fallback 表格 — arch_redline_007 历次 run 分数</sub>
-
-| 系列 | r1 | r2 |
-| --- | --- | --- |
-| score | 5.00 | 5.00 |
-
-</details>
-
-<details><summary><code>arch_redline_008</code> · 3 次 · 0.00 → 5.00 → 5.00 (Δ +5.00)</summary>
-
-```mermaid
-xychart-beta
-    title "arch_redline_008 历次 run 分数"
-    x-axis [r1, r2, r3]
-    y-axis "Score" 0 --> 5
-    line [0.00, 5.00, 5.00]
-```
-
-<sub>fallback 表格 — arch_redline_008 历次 run 分数</sub>
-
 | 系列 | r1 | r2 | r3 |
 | --- | --- | --- | --- |
-| score | 0.00 | 5.00 | 5.00 |
+| score | 5.00 | – | – |
 
 </details>
 
-<details><summary><code>arch_redline_009</code> · 3 次 · 0.00 → 5.00 → 5.00 (Δ +5.00)</summary>
+<details><summary><code>arch_redline_003</code> · 2 次 · – → – (Δ –)</summary>
 
-```mermaid
-xychart-beta
-    title "arch_redline_009 历次 run 分数"
-    x-axis [r1, r2, r3]
-    y-axis "Score" 0 --> 5
-    line [0.00, 5.00, 5.00]
-```
-
-<sub>fallback 表格 — arch_redline_009 历次 run 分数</sub>
-
-| 系列 | r1 | r2 | r3 |
-| --- | --- | --- | --- |
-| score | 0.00 | 5.00 | 5.00 |
+> (无有效分数,跳过图表)
 
 </details>
 
-<details><summary><code>arch_redline_011</code> · 3 次 · 5.00 → 5.00 → 5.00 (Δ 0.00)</summary>
+<details><summary><code>arch_redline_004</code> · 2 次 · – → – (Δ –)</summary>
 
-```mermaid
-xychart-beta
-    title "arch_redline_011 历次 run 分数"
-    x-axis [r1, r2, r3]
-    y-axis "Score" 0 --> 5
-    line [5.00, 5.00, 5.00]
-```
-
-<sub>fallback 表格 — arch_redline_011 历次 run 分数</sub>
-
-| 系列 | r1 | r2 | r3 |
-| --- | --- | --- | --- |
-| score | 5.00 | 5.00 | 5.00 |
+> (无有效分数,跳过图表)
 
 </details>
 
-<details><summary><code>arch_redline_012</code> · 2 次 · 5.00 → 5.00 (Δ 0.00)</summary>
+<details><summary><code>arch_redline_005</code> · 2 次 · – → – (Δ –)</summary>
 
-```mermaid
-xychart-beta
-    title "arch_redline_012 历次 run 分数"
-    x-axis [r1, r2]
-    y-axis "Score" 0 --> 5
-    line [5.00, 5.00]
-```
-
-<sub>fallback 表格 — arch_redline_012 历次 run 分数</sub>
-
-| 系列 | r1 | r2 |
-| --- | --- | --- |
-| score | 5.00 | 5.00 |
+> (无有效分数,跳过图表)
 
 </details>
 
-<details><summary><code>arch_redline_013</code> · 4 次 · 0.00 → – → 5.00 → 5.00 (Δ +5.00)</summary>
+<details><summary><code>arch_redline_006</code> · 2 次 · – → – (Δ –)</summary>
 
-```mermaid
-xychart-beta
-    title "arch_redline_013 历次 run 分数"
-    x-axis [r1, r2, r3, r4]
-    y-axis "Score" 0 --> 5
-    line [0.00, 0, 5.00, 5.00]
-```
-
-<sub>fallback 表格 — arch_redline_013 历次 run 分数</sub>
-
-| 系列 | r1 | r2 | r3 | r4 |
-| --- | --- | --- | --- | --- |
-| score | 0.00 | – | 5.00 | 5.00 |
+> (无有效分数,跳过图表)
 
 </details>
 
-<details><summary><code>bug_001</code> · 5 次 · 0.00 → – → 5.00 → 0.00 → 5.00 (Δ +5.00)</summary>
+<details><summary><code>arch_redline_007</code> · 2 次 · – → – (Δ –)</summary>
+
+> (无有效分数,跳过图表)
+
+</details>
+
+<details><summary><code>arch_redline_008</code> · 2 次 · – → – (Δ –)</summary>
+
+> (无有效分数,跳过图表)
+
+</details>
+
+<details><summary><code>arch_redline_009</code> · 2 次 · – → – (Δ –)</summary>
+
+> (无有效分数,跳过图表)
+
+</details>
+
+<details><summary><code>arch_redline_011</code> · 2 次 · – → – (Δ –)</summary>
+
+> (无有效分数,跳过图表)
+
+</details>
+
+<details><summary><code>arch_redline_012</code> · 2 次 · – → – (Δ –)</summary>
+
+> (无有效分数,跳过图表)
+
+</details>
+
+<details><summary><code>arch_redline_013</code> · 2 次 · – → – (Δ –)</summary>
+
+> (无有效分数,跳过图表)
+
+</details>
+
+<details><summary><code>bug_001</code> · 6 次 · 0.00 → – → 5.00 → 0.00 → 5.00 → – (Δ +5.00)</summary>
 
 ```mermaid
 xychart-beta
     title "bug_001 历次 run 分数"
-    x-axis [r1, r2, r3, r4, r5]
+    x-axis [r1, r2, r3, r4, r5, r6]
     y-axis "Score" 0 --> 5
-    line [0.00, 0, 5.00, 0.00, 5.00]
+    line [0.00, 0, 5.00, 0.00, 5.00, 0]
 ```
 
 <sub>fallback 表格 — bug_001 历次 run 分数</sub>
 
-| 系列 | r1 | r2 | r3 | r4 | r5 |
-| --- | --- | --- | --- | --- | --- |
-| score | 0.00 | – | 5.00 | 0.00 | 5.00 |
+| 系列 | r1 | r2 | r3 | r4 | r5 | r6 |
+| --- | --- | --- | --- | --- | --- | --- |
+| score | 0.00 | – | 5.00 | 0.00 | 5.00 | – |
 
 </details>
 
-<details><summary><code>case_001</code> · 17 次 · 4.35 → 4.65 → 4.65 → 4.44 → 5.00 → 5.00 → 4.57 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 (Δ +0.65)</summary>
+<details><summary><code>case_001</code> · 18 次 · 4.35 → 4.65 → 4.65 → 4.44 → 5.00 → 5.00 → 4.57 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 (Δ +0.65)</summary>
 
 ```mermaid
 xychart-beta
     title "case_001 历次 run 分数"
-    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15, r16, r17]
+    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15, r16, r17, r18]
     y-axis "Score" 0 --> 5
-    line [4.35, 4.65, 4.65, 4.44, 5.00, 5.00, 4.57, 5.00, 5.00, 5.00, 5.00, 5.00, 5.00, 5.00, 5.00, 5.00, 5.00]
+    line [4.35, 4.65, 4.65, 4.44, 5.00, 5.00, 4.57, 5.00, 5.00, 5.00, 5.00, 5.00, 5.00, 5.00, 5.00, 5.00, 5.00, 5.00]
 ```
 
 <sub>fallback 表格 — case_001 历次 run 分数</sub>
 
-| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 | r13 | r14 | r15 | r16 | r17 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| score | 4.35 | 4.65 | 4.65 | 4.44 | 5.00 | 5.00 | 4.57 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 |
+| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 | r13 | r14 | r15 | r16 | r17 | r18 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| score | 4.35 | 4.65 | 4.65 | 4.44 | 5.00 | 5.00 | 4.57 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 |
 
 </details>
 
-<details><summary><code>case_002</code> · 16 次 · 4.56 → 5.00 → 4.65 → 5.00 → 4.44 → 4.79 → 4.44 → 4.79 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 → – (Δ +0.44)</summary>
+<details><summary><code>case_002</code> · 17 次 · 4.56 → 5.00 → 4.65 → 5.00 → 4.44 → 4.79 → 4.44 → 4.79 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 → – → 4.33 (Δ -0.23)</summary>
 
 ```mermaid
 xychart-beta
     title "case_002 历次 run 分数"
-    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15, r16]
+    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15, r16, r17]
     y-axis "Score" 0 --> 5
-    line [4.56, 5.00, 4.65, 5.00, 4.44, 4.79, 4.44, 4.79, 5.00, 5.00, 5.00, 5.00, 5.00, 5.00, 5.00, 0]
+    line [4.56, 5.00, 4.65, 5.00, 4.44, 4.79, 4.44, 4.79, 5.00, 5.00, 5.00, 5.00, 5.00, 5.00, 5.00, 0, 4.33]
 ```
 
 <sub>fallback 表格 — case_002 历次 run 分数</sub>
 
-| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 | r13 | r14 | r15 | r16 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| score | 4.56 | 5.00 | 4.65 | 5.00 | 4.44 | 4.79 | 4.44 | 4.79 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | – |
+| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 | r13 | r14 | r15 | r16 | r17 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| score | 4.56 | 5.00 | 4.65 | 5.00 | 4.44 | 4.79 | 4.44 | 4.79 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | – | 4.33 |
 
 </details>
 
-<details><summary><code>case_003</code> · 10 次 · 4.29 → 5.00 → 5.00 → 4.79 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 (Δ +0.71)</summary>
+<details><summary><code>case_003</code> · 11 次 · 4.29 → 5.00 → 5.00 → 4.79 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 (Δ +0.71)</summary>
 
 ```mermaid
 xychart-beta
     title "case_003 历次 run 分数"
-    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10]
+    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11]
     y-axis "Score" 0 --> 5
-    line [4.29, 5.00, 5.00, 4.79, 5.00, 5.00, 5.00, 5.00, 5.00, 5.00]
+    line [4.29, 5.00, 5.00, 4.79, 5.00, 5.00, 5.00, 5.00, 5.00, 5.00, 5.00]
 ```
 
 <sub>fallback 表格 — case_003 历次 run 分数</sub>
 
-| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| score | 4.29 | 5.00 | 5.00 | 4.79 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 |
+| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| score | 4.29 | 5.00 | 5.00 | 4.79 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 |
 
 </details>
 
-<details><summary><code>case_005</code> · 12 次 · 4.12 → 4.71 → 4.71 → – → 5.00 → 5.00 → – → – → 5.00 → 5.00 → 3.50 → 3.50 (Δ -0.62)</summary>
+<details><summary><code>case_005</code> · 13 次 · 4.12 → 4.71 → 4.71 → – → 5.00 → 5.00 → – → – → 5.00 → 5.00 → 3.50 → 3.50 → 5.00 (Δ +0.88)</summary>
 
 ```mermaid
 xychart-beta
     title "case_005 历次 run 分数"
-    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12]
+    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13]
     y-axis "Score" 0 --> 5
-    line [4.12, 4.71, 4.71, 0, 5.00, 5.00, 0, 0, 5.00, 5.00, 3.50, 3.50]
+    line [4.12, 4.71, 4.71, 0, 5.00, 5.00, 0, 0, 5.00, 5.00, 3.50, 3.50, 5.00]
 ```
 
 <sub>fallback 表格 — case_005 历次 run 分数</sub>
 
-| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| score | 4.12 | 4.71 | 4.71 | – | 5.00 | 5.00 | – | – | 5.00 | 5.00 | 3.50 | 3.50 |
+| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 | r13 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| score | 4.12 | 4.71 | 4.71 | – | 5.00 | 5.00 | – | – | 5.00 | 5.00 | 3.50 | 3.50 | 5.00 |
 
 </details>
 
-<details><summary><code>case_006</code> · 10 次 · 3.87 → 4.56 → 4.71 → 4.72 → 5.00 → 5.00 → 4.46 → 5.00 → 5.00 → 5.00 (Δ +1.13)</summary>
+<details><summary><code>case_006</code> · 11 次 · 3.87 → 4.56 → 4.71 → 4.72 → 5.00 → 5.00 → 4.46 → 5.00 → 5.00 → 5.00 → 5.00 (Δ +1.13)</summary>
 
 ```mermaid
 xychart-beta
     title "case_006 历次 run 分数"
-    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10]
+    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11]
     y-axis "Score" 0 --> 5
-    line [3.87, 4.56, 4.71, 4.72, 5.00, 5.00, 4.46, 5.00, 5.00, 5.00]
+    line [3.87, 4.56, 4.71, 4.72, 5.00, 5.00, 4.46, 5.00, 5.00, 5.00, 5.00]
 ```
 
 <sub>fallback 表格 — case_006 历次 run 分数</sub>
 
-| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| score | 3.87 | 4.56 | 4.71 | 4.72 | 5.00 | 5.00 | 4.46 | 5.00 | 5.00 | 5.00 |
+| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| score | 3.87 | 4.56 | 4.71 | 4.72 | 5.00 | 5.00 | 4.46 | 5.00 | 5.00 | 5.00 | 5.00 |
 
 </details>
 
-<details><summary><code>case_007</code> · 11 次 · 4.56 → 4.47 → 5.00 → 5.00 → 4.72 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 (Δ +0.44)</summary>
+<details><summary><code>case_007</code> · 12 次 · 4.56 → 4.47 → 5.00 → 5.00 → 4.72 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 (Δ +0.44)</summary>
 
 ```mermaid
 xychart-beta
     title "case_007 历次 run 分数"
-    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11]
+    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12]
     y-axis "Score" 0 --> 5
-    line [4.56, 4.47, 5.00, 5.00, 4.72, 5.00, 5.00, 5.00, 5.00, 5.00, 5.00]
+    line [4.56, 4.47, 5.00, 5.00, 4.72, 5.00, 5.00, 5.00, 5.00, 5.00, 5.00, 5.00]
 ```
 
 <sub>fallback 表格 — case_007 历次 run 分数</sub>
 
-| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| score | 4.56 | 4.47 | 5.00 | 5.00 | 4.72 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 |
+| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| score | 4.56 | 4.47 | 5.00 | 5.00 | 4.72 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 |
 
 </details>
 
-<details><summary><code>case_008</code> · 10 次 · 4.91 → 5.00 → 5.00 → 3.26 → 5.00 → 5.00 → 5.00 → 2.14 → 5.00 → 5.00 (Δ +0.09)</summary>
+<details><summary><code>case_008</code> · 11 次 · 4.91 → 5.00 → 5.00 → 3.26 → 5.00 → 5.00 → 5.00 → 2.14 → 5.00 → 5.00 → 5.00 (Δ +0.09)</summary>
 
 ```mermaid
 xychart-beta
     title "case_008 历次 run 分数"
-    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10]
+    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11]
     y-axis "Score" 0 --> 5
-    line [4.91, 5.00, 5.00, 3.26, 5.00, 5.00, 5.00, 2.14, 5.00, 5.00]
+    line [4.91, 5.00, 5.00, 3.26, 5.00, 5.00, 5.00, 2.14, 5.00, 5.00, 5.00]
 ```
 
 <sub>fallback 表格 — case_008 历次 run 分数</sub>
 
-| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| score | 4.91 | 5.00 | 5.00 | 3.26 | 5.00 | 5.00 | 5.00 | 2.14 | 5.00 | 5.00 |
+| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| score | 4.91 | 5.00 | 5.00 | 3.26 | 5.00 | 5.00 | 5.00 | 2.14 | 5.00 | 5.00 | 5.00 |
 
 </details>
 
-<details><summary><code>case_009</code> · 11 次 · 4.06 → 4.88 → 4.82 → 4.72 → 5.00 → 5.00 → – → 5.00 → 5.00 → 5.00 → 5.00 (Δ +0.94)</summary>
+<details><summary><code>case_009</code> · 12 次 · 4.06 → 4.88 → 4.82 → 4.72 → 5.00 → 5.00 → – → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 (Δ +0.94)</summary>
 
 ```mermaid
 xychart-beta
     title "case_009 历次 run 分数"
-    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11]
+    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12]
     y-axis "Score" 0 --> 5
-    line [4.06, 4.88, 4.82, 4.72, 5.00, 5.00, 0, 5.00, 5.00, 5.00, 5.00]
+    line [4.06, 4.88, 4.82, 4.72, 5.00, 5.00, 0, 5.00, 5.00, 5.00, 5.00, 5.00]
 ```
 
 <sub>fallback 表格 — case_009 历次 run 分数</sub>
 
-| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| score | 4.06 | 4.88 | 4.82 | 4.72 | 5.00 | 5.00 | – | 5.00 | 5.00 | 5.00 | 5.00 |
+| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| score | 4.06 | 4.88 | 4.82 | 4.72 | 5.00 | 5.00 | – | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 |
 
 </details>
 
-<details><summary><code>case_011</code> · 11 次 · 4.91 → 5.00 → 5.00 → 5.00 → 4.91 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 (Δ +0.09)</summary>
+<details><summary><code>case_011</code> · 12 次 · 4.91 → 5.00 → 5.00 → 5.00 → 4.91 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 → 5.00 (Δ +0.09)</summary>
 
 ```mermaid
 xychart-beta
     title "case_011 历次 run 分数"
-    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11]
+    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12]
     y-axis "Score" 0 --> 5
-    line [4.91, 5.00, 5.00, 5.00, 4.91, 5.00, 5.00, 5.00, 5.00, 5.00, 5.00]
+    line [4.91, 5.00, 5.00, 5.00, 4.91, 5.00, 5.00, 5.00, 5.00, 5.00, 5.00, 5.00]
 ```
 
 <sub>fallback 表格 — case_011 历次 run 分数</sub>
 
-| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| score | 4.91 | 5.00 | 5.00 | 5.00 | 4.91 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 |
+| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| score | 4.91 | 5.00 | 5.00 | 5.00 | 4.91 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 | 5.00 |
 
 </details>
 
-<details><summary><code>case_012</code> · 10 次 · 4.29 → 4.44 → 4.71 → 2.97 → 4.46 → 3.93 → 3.93 → 5.00 → 5.00 → 4.71 (Δ +0.42)</summary>
+<details><summary><code>case_012</code> · 11 次 · 4.29 → 4.44 → 4.71 → 2.97 → 4.46 → 3.93 → 3.93 → 5.00 → 5.00 → 4.71 → 3.90 (Δ -0.39)</summary>
 
 ```mermaid
 xychart-beta
     title "case_012 历次 run 分数"
-    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10]
+    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11]
     y-axis "Score" 0 --> 5
-    line [4.29, 4.44, 4.71, 2.97, 4.46, 3.93, 3.93, 5.00, 5.00, 4.71]
+    line [4.29, 4.44, 4.71, 2.97, 4.46, 3.93, 3.93, 5.00, 5.00, 4.71, 3.90]
 ```
 
 <sub>fallback 表格 — case_012 历次 run 分数</sub>
 
-| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| score | 4.29 | 4.44 | 4.71 | 2.97 | 4.46 | 3.93 | 3.93 | 5.00 | 5.00 | 4.71 |
+| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| score | 4.29 | 4.44 | 4.71 | 2.97 | 4.46 | 3.93 | 3.93 | 5.00 | 5.00 | 4.71 | 3.90 |
 
 </details>
 
-<details><summary><code>case_013</code> · 11 次 · 4.56 → 5.00 → 5.00 → 4.56 → 5.00 → 5.00 → – → 5.00 → 5.00 → 5.00 → 5.00 (Δ +0.44)</summary>
+<details><summary><code>case_013</code> · 12 次 · 4.56 → 5.00 → 5.00 → 4.56 → 5.00 → 5.00 → – → 5.00 → 5.00 → 5.00 → 5.00 → 4.75 (Δ +0.19)</summary>
 
 ```mermaid
 xychart-beta
     title "case_013 历次 run 分数"
-    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11]
+    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12]
     y-axis "Score" 0 --> 5
-    line [4.56, 5.00, 5.00, 4.56, 5.00, 5.00, 0, 5.00, 5.00, 5.00, 5.00]
+    line [4.56, 5.00, 5.00, 4.56, 5.00, 5.00, 0, 5.00, 5.00, 5.00, 5.00, 4.75]
 ```
 
 <sub>fallback 表格 — case_013 历次 run 分数</sub>
 
-| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| score | 4.56 | 5.00 | 5.00 | 4.56 | 5.00 | 5.00 | – | 5.00 | 5.00 | 5.00 | 5.00 |
+| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| score | 4.56 | 5.00 | 5.00 | 4.56 | 5.00 | 5.00 | – | 5.00 | 5.00 | 5.00 | 5.00 | 4.75 |
 
 </details>
 
-<details><summary><code>case_015</code> · 15 次 · 4.18 → 4.88 → 3.35 → 3.68 → 2.74 → 2.50 → 3.18 → 4.25 → 2.46 → 4.46 → – → 2.46 → 4.46 → 3.83 → 3.83 (Δ -0.35)</summary>
+<details><summary><code>case_015</code> · 16 次 · 4.18 → 4.88 → 3.35 → 3.68 → 2.74 → 2.50 → 3.18 → 4.25 → 2.46 → 4.46 → – → 2.46 → 4.46 → 3.83 → 3.83 → 3.83 (Δ -0.35)</summary>
 
 ```mermaid
 xychart-beta
     title "case_015 历次 run 分数"
-    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15]
+    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15, r16]
     y-axis "Score" 0 --> 5
-    line [4.18, 4.88, 3.35, 3.68, 2.74, 2.50, 3.18, 4.25, 2.46, 4.46, 0, 2.46, 4.46, 3.83, 3.83]
+    line [4.18, 4.88, 3.35, 3.68, 2.74, 2.50, 3.18, 4.25, 2.46, 4.46, 0, 2.46, 4.46, 3.83, 3.83, 3.83]
 ```
 
 <sub>fallback 表格 — case_015 历次 run 分数</sub>
 
-| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 | r13 | r14 | r15 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| score | 4.18 | 4.88 | 3.35 | 3.68 | 2.74 | 2.50 | 3.18 | 4.25 | 2.46 | 4.46 | – | 2.46 | 4.46 | 3.83 | 3.83 |
+| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 | r13 | r14 | r15 | r16 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| score | 4.18 | 4.88 | 3.35 | 3.68 | 2.74 | 2.50 | 3.18 | 4.25 | 2.46 | 4.46 | – | 2.46 | 4.46 | 3.83 | 3.83 | 3.83 |
 
 </details>
 
-<details><summary><code>case_016</code> · 11 次 · 4.35 → 4.88 → 4.88 → 4.72 → 5.00 → 4.46 → – → 5.00 → 5.00 → 5.00 → 5.00 (Δ +0.65)</summary>
+<details><summary><code>case_016</code> · 12 次 · 4.35 → 4.88 → 4.88 → 4.72 → 5.00 → 4.46 → – → 5.00 → 5.00 → 5.00 → 5.00 → 4.17 (Δ -0.18)</summary>
 
 ```mermaid
 xychart-beta
     title "case_016 历次 run 分数"
-    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11]
+    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12]
     y-axis "Score" 0 --> 5
-    line [4.35, 4.88, 4.88, 4.72, 5.00, 4.46, 0, 5.00, 5.00, 5.00, 5.00]
+    line [4.35, 4.88, 4.88, 4.72, 5.00, 4.46, 0, 5.00, 5.00, 5.00, 5.00, 4.17]
 ```
 
 <sub>fallback 表格 — case_016 历次 run 分数</sub>
 
-| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| score | 4.35 | 4.88 | 4.88 | 4.72 | 5.00 | 4.46 | – | 5.00 | 5.00 | 5.00 | 5.00 |
+| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| score | 4.35 | 4.88 | 4.88 | 4.72 | 5.00 | 4.46 | – | 5.00 | 5.00 | 5.00 | 5.00 | 4.17 |
 
 </details>
 
-<details><summary><code>case_017</code> · 11 次 · 4.29 → 5.00 → 5.00 → 4.35 → 4.46 → 2.46 → – → 4.46 → 4.58 → 4.71 → – (Δ +0.42)</summary>
+<details><summary><code>case_017</code> · 12 次 · 4.29 → 5.00 → 5.00 → 4.35 → 4.46 → 2.46 → – → 4.46 → 4.58 → 4.71 → – → – (Δ +0.42)</summary>
 
 ```mermaid
 xychart-beta
     title "case_017 历次 run 分数"
-    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11]
+    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12]
     y-axis "Score" 0 --> 5
-    line [4.29, 5.00, 5.00, 4.35, 4.46, 2.46, 0, 4.46, 4.58, 4.71, 0]
+    line [4.29, 5.00, 5.00, 4.35, 4.46, 2.46, 0, 4.46, 4.58, 4.71, 0, 0]
 ```
 
 <sub>fallback 表格 — case_017 历次 run 分数</sub>
 
-| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| score | 4.29 | 5.00 | 5.00 | 4.35 | 4.46 | 2.46 | – | 4.46 | 4.58 | 4.71 | – |
+| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| score | 4.29 | 5.00 | 5.00 | 4.35 | 4.46 | 2.46 | – | 4.46 | 4.58 | 4.71 | – | – |
 
 </details>
 
-<details><summary><code>case_018</code> · 11 次 · 4.51 → 5.00 → 5.00 → 4.79 → 5.00 → 5.00 → – → 5.00 → 5.00 → 5.00 → 5.00 (Δ +0.49)</summary>
+<details><summary><code>case_018</code> · 12 次 · 4.51 → 5.00 → 5.00 → 4.79 → 5.00 → 5.00 → – → 5.00 → 5.00 → 5.00 → 5.00 → – (Δ +0.49)</summary>
 
 ```mermaid
 xychart-beta
     title "case_018 历次 run 分数"
-    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11]
+    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12]
     y-axis "Score" 0 --> 5
-    line [4.51, 5.00, 5.00, 4.79, 5.00, 5.00, 0, 5.00, 5.00, 5.00, 5.00]
+    line [4.51, 5.00, 5.00, 4.79, 5.00, 5.00, 0, 5.00, 5.00, 5.00, 5.00, 0]
 ```
 
 <sub>fallback 表格 — case_018 历次 run 分数</sub>
 
-| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| score | 4.51 | 5.00 | 5.00 | 4.79 | 5.00 | 5.00 | – | 5.00 | 5.00 | 5.00 | 5.00 |
+| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| score | 4.51 | 5.00 | 5.00 | 4.79 | 5.00 | 5.00 | – | 5.00 | 5.00 | 5.00 | 5.00 | – |
 
 </details>
 
-<details><summary><code>case_019</code> · 11 次 · 4.44 → 4.56 → 4.82 → 4.35 → 5.00 → 4.46 → – → 4.46 → 4.46 → 5.00 → 4.17 (Δ -0.27)</summary>
+<details><summary><code>case_019</code> · 12 次 · 4.44 → 4.56 → 4.82 → 4.35 → 5.00 → 4.46 → – → 4.46 → 4.46 → 5.00 → 4.17 → – (Δ -0.27)</summary>
 
 ```mermaid
 xychart-beta
     title "case_019 历次 run 分数"
-    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11]
+    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12]
     y-axis "Score" 0 --> 5
-    line [4.44, 4.56, 4.82, 4.35, 5.00, 4.46, 0, 4.46, 4.46, 5.00, 4.17]
+    line [4.44, 4.56, 4.82, 4.35, 5.00, 4.46, 0, 4.46, 4.46, 5.00, 4.17, 0]
 ```
 
 <sub>fallback 表格 — case_019 历次 run 分数</sub>
 
-| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| score | 4.44 | 4.56 | 4.82 | 4.35 | 5.00 | 4.46 | – | 4.46 | 4.46 | 5.00 | 4.17 |
+| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| score | 4.44 | 4.56 | 4.82 | 4.35 | 5.00 | 4.46 | – | 4.46 | 4.46 | 5.00 | 4.17 | – |
 
 </details>
 
-<details><summary><code>case_020</code> · 11 次 · 4.91 → 4.88 → 4.88 → 4.79 → 4.46 → 4.46 → – → 4.46 → 5.00 → 5.00 → 5.00 (Δ +0.09)</summary>
+<details><summary><code>case_020</code> · 12 次 · 4.91 → 4.88 → 4.88 → 4.79 → 4.46 → 4.46 → – → 4.46 → 5.00 → 5.00 → 5.00 → – (Δ +0.09)</summary>
 
 ```mermaid
 xychart-beta
     title "case_020 历次 run 分数"
-    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11]
+    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12]
     y-axis "Score" 0 --> 5
-    line [4.91, 4.88, 4.88, 4.79, 4.46, 4.46, 0, 4.46, 5.00, 5.00, 5.00]
+    line [4.91, 4.88, 4.88, 4.79, 4.46, 4.46, 0, 4.46, 5.00, 5.00, 5.00, 0]
 ```
 
 <sub>fallback 表格 — case_020 历次 run 分数</sub>
 
-| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| score | 4.91 | 4.88 | 4.88 | 4.79 | 4.46 | 4.46 | – | 4.46 | 5.00 | 5.00 | 5.00 |
+| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| score | 4.91 | 4.88 | 4.88 | 4.79 | 4.46 | 4.46 | – | 4.46 | 5.00 | 5.00 | 5.00 | – |
 
 </details>
 
-<details><summary><code>case_021</code> · 14 次 · 2.35 → 5.00 → 5.00 → 4.79 → 4.72 → 4.79 → 4.79 → 5.00 → 5.00 → – → 5.00 → 4.73 → 5.00 → 5.00 (Δ +2.65)</summary>
+<details><summary><code>case_021</code> · 15 次 · 2.35 → 5.00 → 5.00 → 4.79 → 4.72 → 4.79 → 4.79 → 5.00 → 5.00 → – → 5.00 → 4.73 → 5.00 → 5.00 → – (Δ +2.65)</summary>
 
 ```mermaid
 xychart-beta
     title "case_021 历次 run 分数"
-    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14]
+    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15]
     y-axis "Score" 0 --> 5
-    line [2.35, 5.00, 5.00, 4.79, 4.72, 4.79, 4.79, 5.00, 5.00, 0, 5.00, 4.73, 5.00, 5.00]
+    line [2.35, 5.00, 5.00, 4.79, 4.72, 4.79, 4.79, 5.00, 5.00, 0, 5.00, 4.73, 5.00, 5.00, 0]
 ```
 
 <sub>fallback 表格 — case_021 历次 run 分数</sub>
 
-| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 | r13 | r14 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| score | 2.35 | 5.00 | 5.00 | 4.79 | 4.72 | 4.79 | 4.79 | 5.00 | 5.00 | – | 5.00 | 4.73 | 5.00 | 5.00 |
+| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 | r13 | r14 | r15 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| score | 2.35 | 5.00 | 5.00 | 4.79 | 4.72 | 4.79 | 4.79 | 5.00 | 5.00 | – | 5.00 | 4.73 | 5.00 | 5.00 | – |
 
 </details>
 
-<details><summary><code>case_022</code> · 15 次 · 1.95 → 4.79 → 4.71 → 4.50 → 4.50 → – → 4.62 → 4.57 → 5.00 → 5.00 → – → 5.00 → 4.79 → 4.71 → 4.86 (Δ +2.91)</summary>
+<details><summary><code>case_022</code> · 16 次 · 1.95 → 4.79 → 4.71 → 4.50 → 4.50 → – → 4.62 → 4.57 → 5.00 → 5.00 → – → 5.00 → 4.79 → 4.71 → 4.86 → – (Δ +2.91)</summary>
 
 ```mermaid
 xychart-beta
     title "case_022 历次 run 分数"
-    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15]
+    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15, r16]
     y-axis "Score" 0 --> 5
-    line [1.95, 4.79, 4.71, 4.50, 4.50, 0, 4.62, 4.57, 5.00, 5.00, 0, 5.00, 4.79, 4.71, 4.86]
+    line [1.95, 4.79, 4.71, 4.50, 4.50, 0, 4.62, 4.57, 5.00, 5.00, 0, 5.00, 4.79, 4.71, 4.86, 0]
 ```
 
 <sub>fallback 表格 — case_022 历次 run 分数</sub>
 
-| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 | r13 | r14 | r15 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| score | 1.95 | 4.79 | 4.71 | 4.50 | 4.50 | – | 4.62 | 4.57 | 5.00 | 5.00 | – | 5.00 | 4.79 | 4.71 | 4.86 |
+| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 | r13 | r14 | r15 | r16 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| score | 1.95 | 4.79 | 4.71 | 4.50 | 4.50 | – | 4.62 | 4.57 | 5.00 | 5.00 | – | 5.00 | 4.79 | 4.71 | 4.86 | – |
 
 </details>
 
-<details><summary><code>case_024</code> · 11 次 · 4.88 → 4.88 → 4.88 → 4.79 → 5.00 → 5.00 → – → 5.00 → 3.00 → 5.00 → 5.00 (Δ +0.12)</summary>
+<details><summary><code>case_024</code> · 12 次 · 4.88 → 4.88 → 4.88 → 4.79 → 5.00 → 5.00 → – → 5.00 → 3.00 → 5.00 → 5.00 → – (Δ +0.12)</summary>
 
 ```mermaid
 xychart-beta
     title "case_024 历次 run 分数"
-    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11]
+    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12]
     y-axis "Score" 0 --> 5
-    line [4.88, 4.88, 4.88, 4.79, 5.00, 5.00, 0, 5.00, 3.00, 5.00, 5.00]
+    line [4.88, 4.88, 4.88, 4.79, 5.00, 5.00, 0, 5.00, 3.00, 5.00, 5.00, 0]
 ```
 
 <sub>fallback 表格 — case_024 历次 run 分数</sub>
 
-| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| score | 4.88 | 4.88 | 4.88 | 4.79 | 5.00 | 5.00 | – | 5.00 | 3.00 | 5.00 | 5.00 |
+| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| score | 4.88 | 4.88 | 4.88 | 4.79 | 5.00 | 5.00 | – | 5.00 | 3.00 | 5.00 | 5.00 | – |
 
 </details>
 
-<details><summary><code>case_026</code> · 11 次 · 4.56 → 5.00 → 5.00 → 4.79 → 4.46 → 4.46 → – → 5.00 → 5.00 → 5.00 → 5.00 (Δ +0.44)</summary>
+<details><summary><code>case_026</code> · 12 次 · 4.56 → 5.00 → 5.00 → 4.79 → 4.46 → 4.46 → – → 5.00 → 5.00 → 5.00 → 5.00 → – (Δ +0.44)</summary>
 
 ```mermaid
 xychart-beta
     title "case_026 历次 run 分数"
-    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11]
+    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12]
     y-axis "Score" 0 --> 5
-    line [4.56, 5.00, 5.00, 4.79, 4.46, 4.46, 0, 5.00, 5.00, 5.00, 5.00]
+    line [4.56, 5.00, 5.00, 4.79, 4.46, 4.46, 0, 5.00, 5.00, 5.00, 5.00, 0]
 ```
 
 <sub>fallback 表格 — case_026 历次 run 分数</sub>
 
-| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| score | 4.56 | 5.00 | 5.00 | 4.79 | 4.46 | 4.46 | – | 5.00 | 5.00 | 5.00 | 5.00 |
+| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| score | 4.56 | 5.00 | 5.00 | 4.79 | 4.46 | 4.46 | – | 5.00 | 5.00 | 5.00 | 5.00 | – |
 
 </details>
 
-<details><summary><code>case_027</code> · 12 次 · 4.91 → 2.21 → 5.00 → 5.00 → 4.79 → 5.00 → 4.46 → – → 4.46 → 5.00 → 5.00 → 5.00 (Δ +0.09)</summary>
+<details><summary><code>case_027</code> · 13 次 · 4.91 → 2.21 → 5.00 → 5.00 → 4.79 → 5.00 → 4.46 → – → 4.46 → 5.00 → 5.00 → 5.00 → – (Δ +0.09)</summary>
 
 ```mermaid
 xychart-beta
     title "case_027 历次 run 分数"
-    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12]
+    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13]
     y-axis "Score" 0 --> 5
-    line [4.91, 2.21, 5.00, 5.00, 4.79, 5.00, 4.46, 0, 4.46, 5.00, 5.00, 5.00]
+    line [4.91, 2.21, 5.00, 5.00, 4.79, 5.00, 4.46, 0, 4.46, 5.00, 5.00, 5.00, 0]
 ```
 
 <sub>fallback 表格 — case_027 历次 run 分数</sub>
 
-| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| score | 4.91 | 2.21 | 5.00 | 5.00 | 4.79 | 5.00 | 4.46 | – | 4.46 | 5.00 | 5.00 | 5.00 |
+| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 | r13 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| score | 4.91 | 2.21 | 5.00 | 5.00 | 4.79 | 5.00 | 4.46 | – | 4.46 | 5.00 | 5.00 | 5.00 | – |
 
 </details>
 
-<details><summary><code>case_028</code> · 15 次 · 4.29 → 4.91 → 4.91 → 5.00 → 2.21 → 5.00 → 5.00 → 4.79 → 5.00 → 5.00 → – → 5.00 → 5.00 → 5.00 → 5.00 (Δ +0.71)</summary>
+<details><summary><code>case_028</code> · 16 次 · 4.29 → 4.91 → 4.91 → 5.00 → 2.21 → 5.00 → 5.00 → 4.79 → 5.00 → 5.00 → – → 5.00 → 5.00 → 5.00 → 5.00 → – (Δ +0.71)</summary>
 
 ```mermaid
 xychart-beta
     title "case_028 历次 run 分数"
-    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15]
+    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15, r16]
     y-axis "Score" 0 --> 5
-    line [4.29, 4.91, 4.91, 5.00, 2.21, 5.00, 5.00, 4.79, 5.00, 5.00, 0, 5.00, 5.00, 5.00, 5.00]
+    line [4.29, 4.91, 4.91, 5.00, 2.21, 5.00, 5.00, 4.79, 5.00, 5.00, 0, 5.00, 5.00, 5.00, 5.00, 0]
 ```
 
 <sub>fallback 表格 — case_028 历次 run 分数</sub>
 
-| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 | r13 | r14 | r15 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| score | 4.29 | 4.91 | 4.91 | 5.00 | 2.21 | 5.00 | 5.00 | 4.79 | 5.00 | 5.00 | – | 5.00 | 5.00 | 5.00 | 5.00 |
+| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 | r13 | r14 | r15 | r16 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| score | 4.29 | 4.91 | 4.91 | 5.00 | 2.21 | 5.00 | 5.00 | 4.79 | 5.00 | 5.00 | – | 5.00 | 5.00 | 5.00 | 5.00 | – |
 
 </details>
 
-<details><summary><code>case_029</code> · 12 次 · 4.23 → 4.85 → 4.82 → 3.06 → 4.54 → 4.58 → 4.58 → – → 5.00 → 3.03 → 4.71 → 4.71 (Δ +0.48)</summary>
+<details><summary><code>case_029</code> · 9 次 · 4.54 → 4.58 → 4.58 → – → 5.00 → 3.03 → 4.71 → 4.71 → – (Δ +0.17)</summary>
 
 ```mermaid
 xychart-beta
     title "case_029 历次 run 分数"
-    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12]
+    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9]
     y-axis "Score" 0 --> 5
-    line [4.23, 4.85, 4.82, 3.06, 4.54, 4.58, 4.58, 0, 5.00, 3.03, 4.71, 4.71]
+    line [4.54, 4.58, 4.58, 0, 5.00, 3.03, 4.71, 4.71, 0]
 ```
 
 <sub>fallback 表格 — case_029 历次 run 分数</sub>
 
-| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| score | 4.23 | 4.85 | 4.82 | 3.06 | 4.54 | 4.58 | 4.58 | – | 5.00 | 3.03 | 4.71 | 4.71 |
+| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| score | 4.54 | 4.58 | 4.58 | – | 5.00 | 3.03 | 4.71 | 4.71 | – |
 
 </details>
 
-<details><summary><code>case_030</code> · 12 次 · 4.00 → 4.12 → 4.82 → 4.88 → 4.65 → 4.58 → 3.47 → – → 4.58 → 4.58 → 4.42 → 4.42 (Δ +0.42)</summary>
+<details><summary><code>case_030</code> · 13 次 · 4.00 → 4.12 → 4.82 → 4.88 → 4.65 → 4.58 → 3.47 → – → 4.58 → 4.58 → 4.42 → 4.42 → – (Δ +0.42)</summary>
 
 ```mermaid
 xychart-beta
     title "case_030 历次 run 分数"
-    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12]
+    x-axis [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13]
     y-axis "Score" 0 --> 5
-    line [4.00, 4.12, 4.82, 4.88, 4.65, 4.58, 3.47, 0, 4.58, 4.58, 4.42, 4.42]
+    line [4.00, 4.12, 4.82, 4.88, 4.65, 4.58, 3.47, 0, 4.58, 4.58, 4.42, 4.42, 0]
 ```
 
 <sub>fallback 表格 — case_030 历次 run 分数</sub>
 
-| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| score | 4.00 | 4.12 | 4.82 | 4.88 | 4.65 | 4.58 | 3.47 | – | 4.58 | 4.58 | 4.42 | 4.42 |
+| 系列 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10 | r11 | r12 | r13 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| score | 4.00 | 4.12 | 4.82 | 4.88 | 4.65 | 4.58 | 3.47 | – | 4.58 | 4.58 | 4.42 | 4.42 | – |
 
 </details>
 
-<details><summary><code>cr_003_exec</code> · 2 次 · 5.00 → 5.00 (Δ 0.00)</summary>
+<details><summary><code>cr_003_exec</code> · 3 次 · 5.00 → 5.00 → – (Δ 0.00)</summary>
 
 ```mermaid
 xychart-beta
     title "cr_003_exec 历次 run 分数"
-    x-axis [r1, r2]
+    x-axis [r1, r2, r3]
     y-axis "Score" 0 --> 5
-    line [5.00, 5.00]
+    line [5.00, 5.00, 0]
 ```
 
 <sub>fallback 表格 — cr_003_exec 历次 run 分数</sub>
 
-| 系列 | r1 | r2 |
-| --- | --- | --- |
-| score | 5.00 | 5.00 |
+| 系列 | r1 | r2 | r3 |
+| --- | --- | --- | --- |
+| score | 5.00 | 5.00 | – |
 
 </details>
 
-<details><summary><code>real_T0001</code> · 2 次 · 4.56 → – (Δ –)</summary>
+<details><summary><code>csh_exec_001</code> · 2 次 · 5.00 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "csh_exec_001 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [5.00, 0]
+```
+
+<sub>fallback 表格 — csh_exec_001 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 5.00 | – |
+
+</details>
+
+<details><summary><code>real_T0001</code> · 3 次 · 4.56 → – → – (Δ –)</summary>
 
 ```mermaid
 xychart-beta
     title "real_T0001 历次 run 分数"
+    x-axis [r1, r2, r3]
+    y-axis "Score" 0 --> 5
+    line [4.56, 0, 0]
+```
+
+<sub>fallback 表格 — real_T0001 历次 run 分数</sub>
+
+| 系列 | r1 | r2 | r3 |
+| --- | --- | --- | --- |
+| score | 4.56 | – | – |
+
+</details>
+
+<details><summary><code>real_T0004</code> · 2 次 · 2.67 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "real_T0004 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [2.67, 0]
+```
+
+<sub>fallback 表格 — real_T0004 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 2.67 | – |
+
+</details>
+
+<details><summary><code>real_T0006</code> · 2 次 · 4.00 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "real_T0006 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [4.00, 0]
+```
+
+<sub>fallback 表格 — real_T0006 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 4.00 | – |
+
+</details>
+
+<details><summary><code>real_T0016</code> · 2 次 · 4.75 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "real_T0016 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [4.75, 0]
+```
+
+<sub>fallback 表格 — real_T0016 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 4.75 | – |
+
+</details>
+
+<details><summary><code>real_T0038</code> · 2 次 · – → – (Δ –)</summary>
+
+> (无有效分数,跳过图表)
+
+</details>
+
+<details><summary><code>real_T0040</code> · 2 次 · 3.83 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "real_T0040 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [3.83, 0]
+```
+
+<sub>fallback 表格 — real_T0040 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 3.83 | – |
+
+</details>
+
+<details><summary><code>real_T0046</code> · 2 次 · 4.56 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "real_T0046 历次 run 分数"
     x-axis [r1, r2]
     y-axis "Score" 0 --> 5
     line [4.56, 0]
 ```
 
-<sub>fallback 表格 — real_T0001 历次 run 分数</sub>
+<sub>fallback 表格 — real_T0046 历次 run 分数</sub>
 
 | 系列 | r1 | r2 |
 | --- | --- | --- |
 | score | 4.56 | – |
+
+</details>
+
+<details><summary><code>real_T0049</code> · 2 次 · 5.00 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "real_T0049 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [5.00, 0]
+```
+
+<sub>fallback 表格 — real_T0049 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 5.00 | – |
+
+</details>
+
+<details><summary><code>real_T0071</code> · 2 次 · – → – (Δ –)</summary>
+
+> (无有效分数,跳过图表)
+
+</details>
+
+<details><summary><code>real_T0072</code> · 2 次 · 3.00 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "real_T0072 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [3.00, 0]
+```
+
+<sub>fallback 表格 — real_T0072 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 3.00 | – |
+
+</details>
+
+<details><summary><code>real_T0076</code> · 2 次 · 5.00 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "real_T0076 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [5.00, 0]
+```
+
+<sub>fallback 表格 — real_T0076 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 5.00 | – |
+
+</details>
+
+<details><summary><code>real_T0078</code> · 2 次 · 3.33 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "real_T0078 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [3.33, 0]
+```
+
+<sub>fallback 表格 — real_T0078 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 3.33 | – |
+
+</details>
+
+<details><summary><code>real_T0091</code> · 2 次 · 5.00 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "real_T0091 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [5.00, 0]
+```
+
+<sub>fallback 表格 — real_T0091 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 5.00 | – |
+
+</details>
+
+<details><summary><code>real_T0107</code> · 2 次 · 4.42 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "real_T0107 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [4.42, 0]
+```
+
+<sub>fallback 表格 — real_T0107 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 4.42 | – |
+
+</details>
+
+<details><summary><code>real_T0136</code> · 2 次 · 2.67 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "real_T0136 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [2.67, 0]
+```
+
+<sub>fallback 表格 — real_T0136 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 2.67 | – |
+
+</details>
+
+<details><summary><code>real_T0146</code> · 2 次 · – → – (Δ –)</summary>
+
+> (无有效分数,跳过图表)
+
+</details>
+
+<details><summary><code>real_T0149</code> · 2 次 · – → – (Δ –)</summary>
+
+> (无有效分数,跳过图表)
+
+</details>
+
+<details><summary><code>real_T0165</code> · 2 次 · 4.25 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "real_T0165 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [4.25, 0]
+```
+
+<sub>fallback 表格 — real_T0165 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 4.25 | – |
+
+</details>
+
+<details><summary><code>real_T0177</code> · 2 次 · – → – (Δ –)</summary>
+
+> (无有效分数,跳过图表)
+
+</details>
+
+<details><summary><code>real_T0179</code> · 2 次 · 4.08 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "real_T0179 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [4.08, 0]
+```
+
+<sub>fallback 表格 — real_T0179 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 4.08 | – |
+
+</details>
+
+<details><summary><code>real_T0226</code> · 2 次 · – → – (Δ –)</summary>
+
+> (无有效分数,跳过图表)
+
+</details>
+
+<details><summary><code>real_T0230</code> · 2 次 · – → – (Δ –)</summary>
+
+> (无有效分数,跳过图表)
+
+</details>
+
+<details><summary><code>real_T0234</code> · 2 次 · 4.56 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "real_T0234 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [4.56, 0]
+```
+
+<sub>fallback 表格 — real_T0234 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 4.56 | – |
+
+</details>
+
+<details><summary><code>real_T0243</code> · 2 次 · – → – (Δ –)</summary>
+
+> (无有效分数,跳过图表)
+
+</details>
+
+<details><summary><code>real_T0246</code> · 2 次 · 4.75 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "real_T0246 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [4.75, 0]
+```
+
+<sub>fallback 表格 — real_T0246 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 4.75 | – |
+
+</details>
+
+<details><summary><code>real_T0270</code> · 2 次 · 4.08 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "real_T0270 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [4.08, 0]
+```
+
+<sub>fallback 表格 — real_T0270 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 4.08 | – |
+
+</details>
+
+<details><summary><code>real_T0331</code> · 2 次 · 5.00 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "real_T0331 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [5.00, 0]
+```
+
+<sub>fallback 表格 — real_T0331 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 5.00 | – |
+
+</details>
+
+<details><summary><code>real_T0395</code> · 2 次 · 4.75 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "real_T0395 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [4.75, 0]
+```
+
+<sub>fallback 表格 — real_T0395 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 4.75 | – |
+
+</details>
+
+<details><summary><code>real_T0597</code> · 2 次 · – → – (Δ –)</summary>
+
+> (无有效分数,跳过图表)
+
+</details>
+
+<details><summary><code>real_T0694</code> · 2 次 · 2.67 → – (Δ –)</summary>
+
+```mermaid
+xychart-beta
+    title "real_T0694 历次 run 分数"
+    x-axis [r1, r2]
+    y-axis "Score" 0 --> 5
+    line [2.67, 0]
+```
+
+<sub>fallback 表格 — real_T0694 历次 run 分数</sub>
+
+| 系列 | r1 | r2 |
+| --- | --- | --- |
+| score | 2.67 | – |
 
 </details>
 
@@ -2229,12 +2830,12 @@ xychart-beta
 - **P2** (2): `case_023`, `case_025`
 - 🕰️ **legacy** (25, 非 `5d-v4`): `case_001`, `case_002`, `case_003`, `case_005`, `case_006`, `case_007`, `case_008`, `case_009` …
 
-### sid_code_deepseek_v4_pro: 100 条 pending + 75 条 legacy 待重跑
+### sid_code_deepseek_v4_pro: 54 条 pending + 122 条 legacy 待重跑
 
-- **P0** (36): `arch_milestone_001`, `bug_001`, `case_004`, `case_010`, `cr_003_exec`, `csh_exec_001`, `real_T0001`, `real_T0004`, `real_T0006`, `real_T0016`, `real_T0038`, `real_T0040`, `real_T0046`, `real_T0049`, `real_T0071`, `real_T0072`, `real_T0076`, `real_T0078`, `real_T0091`, `real_T0107`, `real_T0136`, `real_T0146`, `real_T0149`, `real_T0165`, `real_T0177`, `real_T0179`, `real_T0226`, `real_T0230`, `real_T0234`, `real_T0243`, `real_T0246`, `real_T0270`, `real_T0331`, `real_T0395`, `real_T0597`, `real_T0694`
-- **P1** (62): `arch_ctxeng_006`, `arch_ctxeng_007`, `arch_ctxeng_008`, `arch_ctxeng_009`, `arch_ctxeng_010`, `arch_durable_001`, `arch_durable_002`, `arch_durable_003`, `arch_durable_004`, `arch_durable_005`, `arch_milestone_002`, `arch_milestone_003`, `arch_nonfunc_001`, `arch_nonfunc_002`, `arch_nonfunc_003`, `arch_nonfunc_004`, `arch_nonfunc_005`, `arch_nonfunc_006`, `arch_nonfunc_007`, `arch_nonfunc_008`, `arch_nonfunc_009`, `arch_nonfunc_010`, `arch_notif_001`, `arch_notif_002`, `arch_notif_003`, `arch_ont_001`, `arch_ont_002`, `arch_ont_003`, `arch_ont_004`, `arch_ont_005`, `arch_ont_006`, `arch_ont_007`, `arch_ont_008`, `arch_ont_009`, `arch_ont_010`, `arch_ont_011`, `arch_orch_001`, `arch_orch_002`, `arch_orch_003`, `arch_orch_004`, `arch_orch_005`, `arch_orch_006`, `arch_orch_007`, `arch_orch_008`, `arch_outcome_001`, `arch_outcome_002`, `arch_outcome_003`, `arch_platform_007`, `arch_platform_008`, `arch_platform_009`, `arch_platform_010`, `arch_platform_011`, `arch_platform_012`, `arch_render_001`, `arch_render_002`, `arch_render_003`, `arch_ux_001`, `arch_ux_002`, `arch_ux_003`, `arch_ux_004`, `arch_ux_005`, `case_014`
+- **P0** (38): `arch_chinese_002`, `arch_milestone_001`, `arch_redline_013`, `bug_001`, `case_004`, `case_010`, `cr_003_exec`, `csh_exec_001`, `real_T0001`, `real_T0004`, `real_T0006`, `real_T0016`, `real_T0038`, `real_T0040`, `real_T0046`, `real_T0049`, `real_T0071`, `real_T0072`, `real_T0076`, `real_T0078`, `real_T0091`, `real_T0107`, `real_T0136`, `real_T0146`, `real_T0149`, `real_T0165`, `real_T0177`, `real_T0179`, `real_T0226`, `real_T0230`, `real_T0234`, `real_T0243`, `real_T0246`, `real_T0270`, `real_T0331`, `real_T0395`, `real_T0597`, `real_T0694`
+- **P1** (14): `arch_milestone_002`, `arch_milestone_003`, `arch_outcome_001`, `arch_outcome_002`, `arch_outcome_003`, `arch_render_001`, `arch_render_002`, `arch_render_003`, `arch_ux_001`, `arch_ux_002`, `arch_ux_003`, `arch_ux_004`, `arch_ux_005`, `case_014`
 - **P2** (2): `case_023`, `case_025`
-- 🕰️ **legacy** (75, 非 `5d-v4`): `arch_chinese_001`, `arch_chinese_002`, `arch_chinese_003`, `arch_chinese_004`, `arch_chinese_005`, `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003` …
+- 🕰️ **legacy** (122, 非 `5d-v4`): `arch_chinese_001`, `arch_chinese_003`, `arch_chinese_004`, `arch_chinese_005`, `arch_ctxeng_001`, `arch_ctxeng_002`, `arch_ctxeng_003`, `arch_ctxeng_004` …
 
 ### sid_code_live: 159 条 pending + 25 条 legacy 待重跑
 

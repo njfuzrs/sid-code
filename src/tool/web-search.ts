@@ -3,7 +3,7 @@
  * 返回结构化的搜索结果（标题、URL、摘要），与 web_fetch 形成互补
  */
 
-import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
+import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResult, ToolUseContext } from "./types.ts";
 import type { SearchBackend, SearchResponse } from "./search-backends/types.ts";
 import { getLogger } from "../debug/logger.ts";
 
@@ -21,6 +21,11 @@ export class WebSearchTool implements Tool {
 
   readOnly(): boolean {
     return true;
+  }
+
+  /** 只读工具：无权限意见，交给权限系统决定 */
+  async checkPermissions(_input: unknown, _context: ToolUseContext): Promise<PermissionResult> {
+    return { behavior: "passthrough" };
   }
 
   description(): string {

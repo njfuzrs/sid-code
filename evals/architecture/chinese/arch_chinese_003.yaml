@@ -48,7 +48,7 @@ baseline_scores:
       {
         score: 5,
         run_status: success,
-        tested_at: 2026-05-28T03:46:49.410Z,
+        tested_at: 2026-06-01T12:52:28.381Z,
         tested_by: eval-runner,
         transcript_path: null,
         notes: "",
@@ -61,7 +61,9 @@ baseline_scores:
             efficiency: 1,
             cost: 1
           },
-        _formula_version: { cost: v6, grader: 5d-v3 }
+        mandatory_pass: true,
+        grader_type: rubric_5d,
+        _formula_version: { cost: v6, grader: 5d-v6 }
       }
   }
 

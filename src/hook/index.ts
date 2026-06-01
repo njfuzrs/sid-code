@@ -5,9 +5,17 @@
 export { HookSystem } from "./system.ts";
 export { HookRegistry } from "./registry.ts";
 export { HookPlanner } from "./planner.ts";
-export { HookRunner } from "./runner.ts";
+export { HookRunner, LazyJsonInput } from "./runner.ts";
 export { HookAggregator } from "./aggregator.ts";
 export { HookEventHandler } from "./event-handler.ts";
+export { HookConfigSnapshot } from "./config-snapshot.ts";
+export { StopHookOrchestrator, createStopHookErrorMessage } from "./stop-hook-orchestrator.ts";
+export { AsyncHookRegistry } from "./async-registry.ts";
+export { isBlockedAddress, sanitizeHeaders, ssrfGuardedFetch } from "./ssrf-guard.ts";
+export { createResolveOnce } from "./resolve-once.ts";
+export { handleInteractivePermission } from "./permission-race.ts";
+export { SessionHookManager } from "./session-hooks.ts";
+export { EnterprisePolicyGate } from "./enterprise-policy.ts";
 
 export type {
   HookEventName,
@@ -20,10 +28,11 @@ export type {
   HookExecutionResult,
   HookExecutionPlan,
   AggregatedHookResult,
-  HookRegistryEntry,
   CommandHookConfig,
   UrlHookConfig,
   RuntimeHookConfig,
+  PromptHookConfig,
+  AgentHookConfig,
   PreToolUseInput,
   PostToolUseInput,
   UserPromptSubmitInput,
@@ -34,6 +43,7 @@ export type {
   SessionEndInput,
   PreCompactInput,
   NotificationInput,
+  StopInput,
 } from "./types.ts";
 
 export {
@@ -51,3 +61,4 @@ export {
 } from "./types.ts";
 
 export type { HookEventContext } from "./planner.ts";
+export type { HookRegistryEntry } from "./registry.ts";

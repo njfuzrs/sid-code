@@ -18,9 +18,19 @@ import {
   type SessionStartInput,
   type SessionEndInput,
   type PreCompactInput,
+  type PostCompactInput,
   type NotificationInput,
   type SubagentStartInput,
   type StopInput,
+  type StopFailureInput,
+  type SetupInput,
+  type PermissionRequestInput,
+  type PermissionDeniedInput,
+  type ConfigChangeInput,
+  type FileChangedInput,
+  type CwdChangedInput,
+  type TaskCreatedInput,
+  type TaskCompletedInput,
   type AggregatedHookResult,
 } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -270,6 +280,127 @@ export class HookEventHandler {
     return this.executeHooks(HookEventName.Stop, input);
   }
 
+  /** StopFailure 事件：API 错误导致的非正常结束 */
+  async fireStopFailureEvent(error: string, errorType: StopFailureInput["error_type"]): Promise<AggregatedHookResult> {
+    const input: StopFailureInput = {
+      ...this.createBaseInput(HookEventName.StopFailure),
+      error,
+      error_type: errorType,
+    };
+    return this.executeHooks(HookEventName.StopFailure, input);
+  }
+
+  /** PostCompact 事件：上下文压缩后 */
+  async firePostCompactEvent(
+    trigger: "manual" | "auto",
+    messagesBefore: number,
+    messagesAfter: number,
+    tokensSaved: number,
+  ): Promise<AggregatedHookResult> {
+    const input: PostCompactInput = {
+      ...this.createBaseInput(HookEventName.PostCompact),
+      trigger,
+      messages_before: messagesBefore,
+      messages_after: messagesAfter,
+      tokens_saved: tokensSaved,
+    };
+    return this.executeHooks(HookEventName.PostCompact, input);
+  }
+
+  /** Setup 事件：仓库初始化 */
+  async fireSetupEvent(trigger: SetupInput["trigger"], projectDir: string): Promise<AggregatedHookResult> {
+    const input: SetupInput = {
+      ...this.createBaseInput(HookEventName.Setup),
+      trigger,
+      project_dir: projectDir,
+    };
+    return this.executeHooks(HookEventName.Setup, input);
+  }
+
+  /** PermissionRequest 事件 */
+  async firePermissionRequestEvent(
+    toolName: string,
+    toolInput: Record<string, unknown>,
+    permissionMode: string,
+  ): Promise<AggregatedHookResult> {
+    const input: PermissionRequestInput = {
+      ...this.createBaseInput(HookEventName.PermissionRequest),
+      tool_name: toolName,
+      tool_input: toolInput,
+      permission_mode: permissionMode,
+    };
+    return this.executeHooks(HookEventName.PermissionRequest, input);
+  }
+
+  /** PermissionDenied 事件 */
+  async firePermissionDeniedEvent(
+    toolName: string,
+    toolInput: Record<string, unknown>,
+    denialReason: string,
+    denialSource: PermissionDeniedInput["denial_source"],
+  ): Promise<AggregatedHookResult> {
+    const input: PermissionDeniedInput = {
+      ...this.createBaseInput(HookEventName.PermissionDenied),
+      tool_name: toolName,
+      tool_input: toolInput,
+      denial_reason: denialReason,
+      denial_source: denialSource,
+    };
+    return this.executeHooks(HookEventName.PermissionDenied, input);
+  }
+
+  /** ConfigChange 事件 */
+  async fireConfigChangeEvent(changedKeys: string[], source: ConfigChangeInput["source"]): Promise<AggregatedHookResult> {
+    const input: ConfigChangeInput = {
+      ...this.createBaseInput(HookEventName.ConfigChange),
+      changed_keys: changedKeys,
+      source,
+    };
+    return this.executeHooks(HookEventName.ConfigChange, input);
+  }
+
+  /** FileChanged 事件 */
+  async fireFileChangedEvent(filePath: string, changeType: FileChangedInput["change_type"]): Promise<AggregatedHookResult> {
+    const input: FileChangedInput = {
+      ...this.createBaseInput(HookEventName.FileChanged),
+      file_path: filePath,
+      change_type: changeType,
+    };
+    return this.executeHooks(HookEventName.FileChanged, input);
+  }
+
+  /** CwdChanged 事件 */
+  async fireCwdChangedEvent(oldCwd: string, newCwd: string): Promise<AggregatedHookResult> {
+    const input: CwdChangedInput = {
+      ...this.createBaseInput(HookEventName.CwdChanged),
+      old_cwd: oldCwd,
+      new_cwd: newCwd,
+    };
+    return this.executeHooks(HookEventName.CwdChanged, input);
+  }
+
+  /** TaskCreated 事件 */
+  async fireTaskCreatedEvent(taskId: string, taskDescription: string): Promise<AggregatedHookResult> {
+    const input: TaskCreatedInput = {
+      ...this.createBaseInput(HookEventName.TaskCreated),
+      task_id: taskId,
+      task_description: taskDescription,
+    };
+    return this.executeHooks(HookEventName.TaskCreated, input);
+  }
+
+  /** TaskCompleted 事件 */
+  async fireTaskCompletedEvent(taskId: string, taskDescription: string, success: boolean, result?: string): Promise<AggregatedHookResult> {
+    const input: TaskCompletedInput = {
+      ...this.createBaseInput(HookEventName.TaskCompleted),
+      task_id: taskId,
+      task_description: taskDescription,
+      success,
+      result,
+    };
+    return this.executeHooks(HookEventName.TaskCompleted, input);
+  }
+
   // ============================================================
   // 核心执行流程
   // ============================================================
@@ -286,6 +417,17 @@ export class HookEventHandler {
       // 1. 创建执行计划
       const plan = this.planner.createExecutionPlan(eventName, context);
       if (!plan || plan.hookConfigs.length === 0) {
+        return emptyResult();
+      }
+
+      // ★ 快速路径：全部是 runtime hook → 直接执行，跳过 aggregator 开销
+      const userHooks = plan.hookConfigs.filter(h => h.type !== "runtime");
+      if (userHooks.length === 0) {
+        for (const config of plan.hookConfigs) {
+          if (config.type === "runtime") {
+            await config.action(input);
+          }
+        }
         return emptyResult();
       }
 

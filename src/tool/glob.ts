@@ -3,7 +3,7 @@
  * 对标 Claude Code：按修改时间降序排列，最近编辑的在前面
  */
 
-import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
+import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResult, ToolUseContext } from "./types.ts";
 import { glob } from "glob";
 import { statSync } from "fs";
 import { join } from "path";
@@ -12,6 +12,11 @@ import { getLogger } from "../debug/logger.ts";
 export class GlobTool implements Tool {
   readOnly(): boolean {
     return true;
+  }
+
+  /** 只读工具：无权限意见，交给权限系统决定 */
+  async checkPermissions(_input: unknown, _context: ToolUseContext): Promise<PermissionResult> {
+    return { behavior: "passthrough" };
   }
 
   name(): string {

@@ -41,7 +41,22 @@ rubric:
   precision: "和 RL-005（arch_redline_005）行为侧守护互补，本 case 是部署侧契约"
   helpfulness: "支撑多租户 SaaS / K8s 私有化部署"
 
-baseline_scores: {}
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: null,
+        run_status: success,
+        tested_at: 2026-06-01T12:52:44.744Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 0 },
+        mandatory_pass: false,
+        grader_type: structured_arch,
+        _formula_version: { cost: v6, grader: 5d-v6 }
+      }
+  }
 
 known_limitation:
   type: implementation_pending

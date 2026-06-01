@@ -40,7 +40,22 @@ rubric:
   precision: "区分 webhook（被动）/ bot（主动）两种集成"
   helpfulness: "Review 闭环关键一环"
 
-baseline_scores: {}
+baseline_scores:
+  {
+    sid_code_deepseek_v4_pro:
+      {
+        score: null,
+        run_status: success,
+        tested_at: 2026-06-01T12:52:44.742Z,
+        tested_by: eval-runner,
+        transcript_path: null,
+        notes: "",
+        dimensions: { arch_check: 0 },
+        mandatory_pass: false,
+        grader_type: structured_arch,
+        _formula_version: { cost: v6, grader: 5d-v6 }
+      }
+  }
 
 known_limitation:
   type: implementation_pending

@@ -6,7 +6,7 @@
  *          (纵深防御 — 不是 redact 后写入, 而是引导 LLM 不要写 secret)
  */
 
-import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
+import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResult, ToolUseContext } from "./types.ts";
 import type { MemoryStore } from "../memory/store.ts";
 import { getLogger } from "../debug/logger.ts";
 import { getSharedSecretRedactHook } from "../llm/hooks/secret-redact.ts";
@@ -16,6 +16,11 @@ export class MemoryTool implements Tool {
 
   constructor(store: MemoryStore) {
     this.store = store;
+  }
+
+  /** 低风险工具：无权限意见，交给权限系统决定 */
+  async checkPermissions(_input: unknown, _context: ToolUseContext): Promise<PermissionResult> {
+    return { behavior: "passthrough" };
   }
 
   name(): string {

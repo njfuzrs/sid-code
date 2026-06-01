@@ -252,13 +252,13 @@ describe("gradeToolCompliance", () => {
     expect(r.score).toBe(1.0);
   });
 
-  test("any_of 模式下一个都没命中扣 0.4", () => {
+  test("any_of 模式下 bash 作为 grep/glob/read 别名命中", () => {
     const meta = { tools_used: ["bash"], files_edited: [], total_steps: 3, total_tokens: 500 };
     const r = gradeToolCompliance(meta, {
       mustCallTools: ["grep", "glob", "ls", "read"],
       mustCallMode: "any_of",
     });
-    expect(r.score).toBe(0.6);
+    expect(r.score).toBe(1.0);
   });
 
   test("禁止的工具被使用扣 0.3", () => {
@@ -288,14 +288,15 @@ describe("gradeToolCompliance", () => {
     expect(r.score).toBe(1.0);
   });
 
-  test("regression Bug B: 禁止的工具大小写不敏感", () => {
+  test("regression Bug B: 禁止的工具大小写不敏感（bash 作为 read 别名但同时被禁止）", () => {
     const meta = { tools_used: ["Bash"], files_edited: [], total_steps: 3, total_tokens: 500 };
     const r = gradeToolCompliance(meta, {
       mustCallTools: ["read"],
       mustNotCallTools: ["bash"],
     });
     expect(r.score).not.toBeNull();
-    expect(r.score!).toBeCloseTo(0.3, 5);
+    // bash 是 read 的别名所以 mustCallTools 满足（不扣 0.4），但 bash 在 mustNotCallTools 中（扣 0.3）
+    expect(r.score!).toBeCloseTo(0.7, 5);
   });
 });
 
@@ -452,7 +453,7 @@ describe("gradeCost (v6 阈值)", () => {
 });
 
 describe("aggregate - null 维度跳过", () => {
-  test("error case：anchor=0 + 其它全 null → 总分 0（不再 ~2.5）", () => {
+  test("error case：anchor=0 + 其它全 null → 总分 null（BUG-3 fix: 有效维度<3 不出分）", () => {
     const dims: Record<string, DimScore> = {
       anchor_hit: { pass: false, score: 0, reason: "0 命中" },
       rubric_score: { pass: false, score: null, reason: "judge 不可用" },
@@ -461,7 +462,7 @@ describe("aggregate - null 维度跳过", () => {
       cost: { pass: false, score: null, reason: "无 token" },
     };
     const { score, namedScores } = aggregate(dims);
-    expect(score).toBe(0);
+    expect(score).toBeNull();
     expect(namedScores.rubric_score).toBeNull();
     expect(namedScores.tool_compliance).toBeNull();
     expect(namedScores.efficiency).toBeNull();
@@ -489,20 +490,21 @@ describe("aggregate - null 维度跳过", () => {
     expect(score).toBe(5.0);
   });
 
-  test("rubric=null（限流）但其它正常 → 不污染总分（与旧版兜底 1.0 不同）", () => {
-    // 5d-v2（2026-05-26）下 efficiency / cost 权重均为 0，dims 不传 negative_anchor →
-    // 实际进权重的只有 anchor (1.5) + tool (1.5) = 总权 3.0。
-    // weightedSum = 1.0×1.5 + 0.8×1.5 = 2.7 → normalized = 2.7/3.0 × 5 = 4.5
+  test("rubric=null（限流）但其它正常且有效维度≥3 → 不污染总分", () => {
+    // BUG-3 fix: 需要至少 3 个有效维度（权重>0 且 score!==null）
+    // anchor (1.5) + tool (1.5) + negative_anchor (2.0) = 3 个有效维度，满足门槛
+    // weightedSum = 1.0×1.5 + 0.8×1.5 + 1.0×2.0 = 4.7 → normalized = 4.7/5.0 × 5 = 4.7
     const dims: Record<string, DimScore> = {
       anchor_hit: { pass: true, score: 1.0, reason: "" },
       rubric_score: { pass: false, score: null, reason: "judge 不可用" },
+      negative_anchor: { pass: true, score: 1.0, reason: "" },
       tool_compliance: { pass: true, score: 0.8, reason: "" },
       efficiency: { pass: true, score: 1.0, reason: "" },
       cost: { pass: true, score: 1.0, reason: "" },
     };
     const { score } = aggregate(dims);
     expect(score).not.toBeNull();
-    expect(score!).toBe(4.5);
+    expect(score!).toBe(4.7);
   });
 
   test("cost 权重 0：cost 维度有效但不进总分（诊断模式）", () => {

@@ -6,22 +6,37 @@
 import { spawn } from "bun";
 import {
   HookEventName,
-  HookType,
   type HookConfig,
   type CommandHookConfig,
   type UrlHookConfig,
   type RuntimeHookConfig,
+  type PromptHookConfig,
+  type AgentHookConfig,
   type HookInput,
   type HookOutput,
   type HookExecutionResult,
-  type BeforeModelInput,
-  type PreToolUseInput,
-  type UserPromptSubmitInput,
 } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
 
 /** 默认超时 60 秒 */
 const DEFAULT_TIMEOUT = 60_000;
+
+/** 延迟 JSON 序列化：只在需要时序列化一次 */
+export class LazyJsonInput {
+  private _json: string | undefined;
+  constructor(private input: HookInput) {}
+
+  get json(): string {
+    if (this._json === undefined) {
+      this._json = JSON.stringify(this.input);
+    }
+    return this._json;
+  }
+
+  get raw(): HookInput {
+    return this.input;
+  }
+}
 
 /** 退出码常量 */
 const EXIT_SUCCESS = 0;
@@ -53,6 +68,10 @@ export class HookRunner {
           return await this.executeRuntimeHook(hookConfig, eventName, input, startTime);
         case "url":
           return await this.executeUrlHook(hookConfig, eventName, input, startTime);
+        case "prompt":
+          return await this.executePromptHook(hookConfig, eventName, input, startTime);
+        case "agent":
+          return await this.executeAgentHook(hookConfig, eventName, input, startTime);
         case "command":
         default:
           return await this.executeCommandHook(hookConfig, eventName, input, startTime);
@@ -88,6 +107,40 @@ export class HookRunner {
       return result;
     });
     return Promise.all(promises);
+  }
+
+  /** AsyncGenerator 流式执行：任一 hook 完成立即 yield 结果 */
+  async *executeHooksStreaming(
+    hookConfigs: HookConfig[],
+    eventName: HookEventName,
+    input: HookInput,
+    signal?: AbortSignal,
+  ): AsyncGenerator<HookExecutionResult> {
+    if (hookConfigs.length === 0) return;
+
+    // 用 channel 模式：所有 promise 完成时 push 到队列
+    const results: HookExecutionResult[] = [];
+    let resolveNext: (() => void) | null = null;
+    let remaining = hookConfigs.length;
+
+    for (const config of hookConfigs) {
+      if (signal?.aborted) return;
+      this.executeHook(config, eventName, input).then(result => {
+        results.push(result);
+        remaining--;
+        resolveNext?.();
+      });
+    }
+
+    while (remaining > 0 || results.length > 0) {
+      if (signal?.aborted) return;
+      if (results.length > 0) {
+        yield results.shift()!;
+      } else {
+        await new Promise<void>(r => { resolveNext = r; });
+        resolveNext = null;
+      }
+    }
   }
 
   /** 串行执行多个 hook（链式传递：前一个输出修改后一个输入） */
@@ -152,7 +205,7 @@ export class HookRunner {
     // 展开命令中的变量
     const command = this.expandCommand(hookConfig.command, input);
 
-    const stdinData = JSON.stringify(input);
+    const lazyInput = new LazyJsonInput(input);
 
     const proc = spawn({
       cmd: ["sh", "-c", command],
@@ -165,7 +218,7 @@ export class HookRunner {
 
     // 写入 stdin（静默处理 EPIPE）
     try {
-      proc.stdin.write(stdinData);
+      proc.stdin.write(lazyInput.json);
       proc.stdin.end();
     } catch {
       // stdin 写入失败不影响执行
@@ -481,5 +534,154 @@ export class HookRunner {
     }
 
     return modified;
+  }
+
+  // ============================================================
+  // Prompt Hook 执行器（LLM 验证）
+  // ============================================================
+
+  private async executePromptHook(
+    hookConfig: PromptHookConfig,
+    eventName: HookEventName,
+    input: HookInput,
+    startTime: number,
+  ): Promise<HookExecutionResult> {
+    const log = getLogger();
+    const timeout = (hookConfig.timeout ?? 30) * 1000;
+
+    try {
+      const jsonInput = JSON.stringify(input);
+      const processedPrompt = hookConfig.prompt.replace(/\$ARGUMENTS/g, jsonInput);
+
+      // 动态导入避免循环依赖
+      const { ProviderRegistry } = await import("../llm/registry.ts");
+      const { loadConfig } = await import("../config/config.ts");
+      const config = await loadConfig();
+      const registry = new ProviderRegistry(config);
+      const provider = registry.getProvider();
+      const model = hookConfig.model ?? config.model;
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+      try {
+        const text = await this.collectStreamResponse(provider, {
+          model,
+          messages: [{ role: "user", content: [{ type: "text", text: processedPrompt }] }],
+          system: "你是一个 Hook 验证器，负责评估 AI 编程助手的操作是否合理。\n你的响应必须是一个 JSON 对象：\n- 如果操作合理：{\"ok\": true}\n- 如果操作不合理：{\"ok\": false, \"reason\": \"具体原因\"}\n只返回 JSON，不要包含其他内容。",
+          maxTokens: 1024,
+        }, controller.signal);
+
+        const parsed = this.parseJsonOutput(text);
+
+        if (parsed && (parsed as any).ok === false) {
+          return {
+            hookConfig, eventName, success: true,
+            output: { decision: "block", reason: (parsed as any).reason ?? "Prompt Hook 拒绝" },
+            duration: Date.now() - startTime,
+          };
+        }
+
+        return {
+          hookConfig, eventName, success: true,
+          output: { decision: "allow" },
+          duration: Date.now() - startTime,
+        };
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    } catch (error) {
+      log.warn("HOOK", `Prompt Hook 执行失败: ${error}`);
+      return {
+        hookConfig, eventName, success: true,
+        output: { decision: "allow" },
+        duration: Date.now() - startTime,
+      };
+    }
+  }
+
+  // ============================================================
+  // Agent Hook 执行器（多轮 Agent 验证）
+  // ============================================================
+
+  private async executeAgentHook(
+    hookConfig: AgentHookConfig,
+    eventName: HookEventName,
+    input: HookInput,
+    startTime: number,
+  ): Promise<HookExecutionResult> {
+    const log = getLogger();
+    const timeout = (hookConfig.timeout ?? 60) * 1000;
+
+    try {
+      const jsonInput = JSON.stringify(input);
+      const processedPrompt = hookConfig.prompt.replace(/\$ARGUMENTS/g, jsonInput);
+
+      const { ProviderRegistry } = await import("../llm/registry.ts");
+      const { loadConfig } = await import("../config/config.ts");
+      const config = await loadConfig();
+      const registry = new ProviderRegistry(config);
+      const provider = registry.getProvider();
+      const model = hookConfig.model ?? config.model;
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+      try {
+        const text = await this.collectStreamResponse(provider, {
+          model,
+          messages: [{ role: "user", content: [{ type: "text", text: processedPrompt }] }],
+          system: "你是一个 Agent Hook 验证器。你的任务是验证 AI 编程助手的操作结果是否正确。\n分析完成后，返回一个 JSON 对象：\n- 如果验证通过：{\"ok\": true}\n- 如果验证失败：{\"ok\": false, \"reason\": \"失败原因和修复建议\"}\n只返回 JSON，不要包含其他内容。",
+          maxTokens: 2048,
+        }, controller.signal);
+
+        const parsed = this.parseJsonOutput(text);
+
+        if (parsed && (parsed as any).ok === false) {
+          return {
+            hookConfig, eventName, success: true,
+            output: {
+              decision: "block",
+              reason: (parsed as any).reason ?? "Agent Hook 验证失败",
+              hookSpecificOutput: { additionalContext: text },
+            },
+            duration: Date.now() - startTime,
+          };
+        }
+
+        return {
+          hookConfig, eventName, success: true,
+          output: { decision: "allow" },
+          duration: Date.now() - startTime,
+        };
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    } catch (error) {
+      log.warn("HOOK", `Agent Hook 执行失败: ${error}`);
+      return {
+        hookConfig, eventName, success: true,
+        output: { decision: "allow" },
+        duration: Date.now() - startTime,
+      };
+    }
+  }
+
+  // ============================================================
+  // 辅助：收集流式响应为文本
+  // ============================================================
+
+  private async collectStreamResponse(
+    provider: any,
+    params: any,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    let text = "";
+    for await (const event of provider.sendMessageStream(params, signal)) {
+      if (event.type === "content_block_delta" && "text" in event.delta) {
+        text += event.delta.text;
+      }
+    }
+    return text;
   }
 }

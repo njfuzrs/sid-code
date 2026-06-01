@@ -419,3 +419,189 @@ export class SSETransport implements Transport {
     this.pendingRequests.clear();
   }
 }
+
+/** WebSocket 传输 - 通过 WebSocket 双向通信 */
+export class WebSocketTransport implements Transport {
+  private ws: WebSocket;
+  private pendingRequests = new Map<number | string, {
+    resolve: (resp: JsonRpcResponse) => void;
+    reject: (err: Error) => void;
+  }>();
+  private closed = false;
+  private timeout: number;
+  private connectPromise: Promise<void>;
+  onNotification?: (notification: JsonRpcNotification) => void;
+  onClose?: () => void;
+
+  constructor(url: string, headers?: Record<string, string>, timeout?: number) {
+    this.timeout = timeout ?? 30000;
+    this.ws = new WebSocket(url, { headers } as any);
+    this.connectPromise = this.waitForOpen();
+    this.setupListeners();
+  }
+
+  private waitForOpen(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.ws.addEventListener('open', () => resolve(), { once: true });
+      this.ws.addEventListener('error', () => reject(new Error('WebSocket 连接失败')), { once: true });
+    });
+  }
+
+  private setupListeners(): void {
+    this.ws.addEventListener('message', (event) => {
+      try {
+        const msg = JSON.parse(event.data as string);
+
+        if (msg.jsonrpc === '2.0' && !('id' in msg) && msg.method) {
+          this.onNotification?.(msg as JsonRpcNotification);
+          return;
+        }
+
+        const response = msg as JsonRpcResponse;
+        const pending = this.pendingRequests.get(response.id);
+        if (pending) {
+          this.pendingRequests.delete(response.id);
+          pending.resolve(response);
+        }
+      } catch {}
+    });
+
+    this.ws.addEventListener('close', () => {
+      if (!this.closed) {
+        this.closed = true;
+        for (const [, p] of this.pendingRequests) {
+          p.reject(new Error('WebSocket 连接断开'));
+        }
+        this.pendingRequests.clear();
+        this.onClose?.();
+      }
+    });
+  }
+
+  async send(request: JsonRpcRequest, signal?: AbortSignal): Promise<JsonRpcResponse> {
+    if (this.closed) throw new Error('传输已关闭');
+    await this.connectPromise;
+
+    return new Promise((resolve, reject) => {
+      this.pendingRequests.set(request.id, { resolve, reject });
+
+      if (signal?.aborted) {
+        this.pendingRequests.delete(request.id);
+        reject(new Error('用户取消'));
+        return;
+      }
+      signal?.addEventListener('abort', () => {
+        if (this.pendingRequests.has(request.id)) {
+          this.pendingRequests.delete(request.id);
+          reject(new Error('用户取消'));
+        }
+      }, { once: true });
+
+      this.ws.send(JSON.stringify(request));
+
+      setTimeout(() => {
+        if (this.pendingRequests.has(request.id)) {
+          this.pendingRequests.delete(request.id);
+          reject(new Error(`WebSocket 请求超时: ${request.method}`));
+        }
+      }, this.timeout);
+    });
+  }
+
+  sendNotification(notification: JsonRpcNotification): void {
+    if (!this.closed) this.ws.send(JSON.stringify(notification));
+  }
+
+  close(): void {
+    this.closed = true;
+    this.ws.close();
+    for (const [, p] of this.pendingRequests) {
+      p.reject(new Error('传输已关闭'));
+    }
+    this.pendingRequests.clear();
+  }
+}
+
+/** 进程内传输 - 同进程内存直接通信 */
+class InProcessTransportImpl implements Transport {
+  private peer: InProcessTransportImpl | undefined;
+  private pendingRequests = new Map<number | string, {
+    resolve: (resp: JsonRpcResponse) => void;
+    reject: (err: Error) => void;
+  }>();
+  private closed = false;
+  onNotification?: (notification: JsonRpcNotification) => void;
+  onClose?: () => void;
+
+  _setPeer(peer: InProcessTransportImpl): void {
+    this.peer = peer;
+  }
+
+  async send(request: JsonRpcRequest, signal?: AbortSignal): Promise<JsonRpcResponse> {
+    if (this.closed || !this.peer) throw new Error('传输已关闭');
+
+    return new Promise((resolve, reject) => {
+      this.pendingRequests.set(request.id, { resolve, reject });
+
+      if (signal?.aborted) {
+        this.pendingRequests.delete(request.id);
+        reject(new Error('用户取消'));
+        return;
+      }
+      signal?.addEventListener('abort', () => {
+        if (this.pendingRequests.has(request.id)) {
+          this.pendingRequests.delete(request.id);
+          reject(new Error('用户取消'));
+        }
+      }, { once: true });
+
+      queueMicrotask(() => {
+        this.peer?.handleIncoming(request);
+      });
+    });
+  }
+
+  handleIncoming(msg: JsonRpcRequest | JsonRpcResponse | JsonRpcNotification): void {
+    if ('result' in msg || 'error' in msg) {
+      const resp = msg as JsonRpcResponse;
+      const pending = this.pendingRequests.get(resp.id);
+      if (pending) {
+        this.pendingRequests.delete(resp.id);
+        pending.resolve(resp);
+      }
+      return;
+    }
+
+    if (!('id' in msg)) {
+      this.onNotification?.(msg as JsonRpcNotification);
+      return;
+    }
+  }
+
+  sendNotification(notification: JsonRpcNotification): void {
+    if (this.closed || !this.peer) return;
+    queueMicrotask(() => {
+      this.peer?.onNotification?.(notification);
+    });
+  }
+
+  close(): void {
+    this.closed = true;
+    for (const [, p] of this.pendingRequests) {
+      p.reject(new Error('传输已关闭'));
+    }
+    this.pendingRequests.clear();
+  }
+}
+
+/**
+ * 创建一对互联的进程内传输
+ * 返回 [clientTransport, serverTransport]
+ */
+export function createLinkedTransportPair(): [Transport, Transport] {
+  const a = new InProcessTransportImpl();
+  const b = new InProcessTransportImpl();
+  a._setPeer(b);
+  b._setPeer(a);
+  return [a, b];
+}

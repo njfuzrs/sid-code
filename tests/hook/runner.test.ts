@@ -92,7 +92,7 @@ describe("HookSystem", () => {
     const sys = createSystem({
       pre_tool_use: [{ command: "echo plain text" }],
     });
-    const result = await sys.firePreToolUseEvent("bash", );
+    const result = await sys.firePreToolUseEvent("bash", {});
     expect(result.success).toBe(true);
   });
 

@@ -38,6 +38,15 @@ export interface InitializeResult {
   protocolVersion: string;
   capabilities: ServerCapabilities;
   serverInfo: { name: string; version: string };
+  instructions?: string;
+}
+
+/** MCP Tool Annotations (2025-03-26 规范) */
+export interface MCPToolAnnotations {
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  idempotentHint?: boolean;
+  openWorldHint?: boolean;
 }
 
 /** MCP 工具定义 */
@@ -45,6 +54,7 @@ export interface MCPToolDefinition {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  annotations?: MCPToolAnnotations;
 }
 
 /** MCP 工具列表结果 */
@@ -54,18 +64,18 @@ export interface ListToolsResult {
 
 /** MCP 工具调用结果 */
 export interface CallToolResult {
-  content: Array<{ type: string; text?: string }>;
+  content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
   isError?: boolean;
 }
 
 /** MCP 服务器连接状态 */
 export enum MCPConnectionStatus {
-  DISCONNECTED = "disconnected",     // 初始/关闭状态
-  CONNECTING   = "connecting",       // 正在连接
-  CONNECTED    = "connected",        // 已连接正常
-  RECONNECTING = "reconnecting",     // 断线重连中
-  FAILED       = "failed",           // 超过最大重试，永久失败
-  DISABLED     = "disabled",         // 配置 enabled: false
+  DISCONNECTED = "disconnected",
+  CONNECTING   = "connecting",
+  CONNECTED    = "connected",
+  RECONNECTING = "reconnecting",
+  FAILED       = "failed",
+  DISABLED     = "disabled",
 }
 
 /** MCP 资源定义 */
@@ -114,4 +124,53 @@ export interface GetPromptResult {
     role: "user" | "assistant";
     content: { type: string; text?: string; data?: string; mimeType?: string };
   }>;
+}
+
+// ─── 配置 Scope 体系 ───
+
+export type ConfigScope = 'user' | 'project' | 'local' | 'dynamic';
+
+/** 带 Scope 标记的 MCP 服务器配置 */
+export interface ScopedMcpServerConfig {
+  transport: "stdio" | "http" | "sse" | "ws";
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
+  enabled?: boolean;
+  timeout?: number;
+  retries?: number;
+  includeTools?: string[];
+  excludeTools?: string[];
+  scope: ConfigScope;
+}
+
+// ─── Elicitation ───
+
+export interface ElicitRequest {
+  method: 'elicitation/create';
+  params: {
+    message: string;
+    requestedSchema?: Record<string, unknown>;
+    url?: string;
+  };
+}
+
+export interface ElicitResult {
+  action: 'accept' | 'cancel';
+  content?: Record<string, unknown>;
+}
+
+// ─── 安全策略 ───
+
+export interface McpPolicyEntry {
+  name?: string;
+  command?: string[];
+  url?: string;
+}
+
+export interface McpPolicy {
+  deniedServers?: McpPolicyEntry[];
+  allowedServers?: McpPolicyEntry[];
 }

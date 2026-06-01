@@ -47,14 +47,16 @@ baseline_scores:
   {
     sid_code_deepseek_v4_pro:
       {
-        score: 2.5,
+        score: null,
         run_status: success,
-        tested_at: 2026-05-28T02:05:53.326Z,
+        tested_at: 2026-06-01T12:52:22.641Z,
         tested_by: eval-runner,
         transcript_path: null,
         notes: "",
-        dimensions: { arch_check: 0.5 },
-        _formula_version: { cost: v6, grader: 5d-v3 }
+        dimensions: { arch_check: 2.5 },
+        mandatory_pass: false,
+        grader_type: structured_arch,
+        _formula_version: { cost: v6, grader: 5d-v6 }
       }
   }
 

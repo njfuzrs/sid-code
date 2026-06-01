@@ -3,7 +3,7 @@
  * 对标 Claude Code：description 参数、输出截断、AbortSignal 集成、跨平台适配
  */
 
-import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
+import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResult, ToolUseContext } from "./types.ts";
 import { spawn } from "bun";
 import { platform } from "os";
 import { getLogger } from "../debug/logger.ts";
@@ -12,9 +12,6 @@ import { isReadOnlyCommand, isDestructiveCommand } from "./bash/read-only-valida
 
 /** Bash 输出截断阈值（对标 Claude Code 30000 字符） */
 const MAX_OUTPUT_LENGTH = 30000;
-
-/** 空闲超时时间（60 秒无输出则终止） */
-const IDLE_TIMEOUT_MS = 60000;
 
 /** 后台进程延迟时间（200ms 后切换到后台） */
 const BACKGROUND_DELAY_MS = 200;
@@ -116,6 +113,10 @@ export class BashTool implements Tool {
           type: "boolean",
           description: "是否后台运行（不等待命令完成，立即返回 PID）",
         },
+        run_in_background: {
+          type: "boolean",
+          description: "是否以后台任务模式运行（通过 Task 系统管理，完成后通知）",
+        },
       },
       required: ["command"],
     };
@@ -124,6 +125,21 @@ export class BashTool implements Tool {
   /** 基于命令内容判断是否只读（输入感知） */
   readOnly(): boolean {
     return false; // 默认非只读，实际判断在 isConcurrencySafe 中
+  }
+
+  /** 工具级权限检查：只读命令直接放行，破坏性命令要求确认，其余 passthrough */
+  async checkPermissions(input: unknown, _context: ToolUseContext): Promise<PermissionResult> {
+    const command = (input as any)?.command;
+    if (!command || typeof command !== "string") {
+      return { behavior: "passthrough" };
+    }
+    if (isReadOnlyCommand(command)) {
+      return { behavior: "allow" };
+    }
+    if (isDestructiveCommand(command)) {
+      return { behavior: "ask", message: `破坏性命令需要确认: ${command.slice(0, 80)}` };
+    }
+    return { behavior: "passthrough" };
   }
 
   /** 基于命令内容判断是否并发安全（输入感知） */
@@ -141,6 +157,7 @@ export class BashTool implements Tool {
       timeout?: number;
       cwd?: string;
       is_background?: boolean;
+      run_in_background?: boolean;
     };
 
     if (!params.command) {
@@ -149,7 +166,12 @@ export class BashTool implements Tool {
 
     log.info("TOOL", `▶ 执行: ${params.command.slice(0, 200)}${params.command.length > 200 ? "..." : ""}`);
 
-    // 后台模式
+    // Task 系统后台模式（新）
+    if (params.run_in_background) {
+      return this.executeWithTaskSystem(params, signal);
+    }
+
+    // 旧后台模式（兼容）
     if (params.is_background) {
       return this.executeBackground(params);
     }
@@ -334,5 +356,29 @@ export class BashTool implements Tool {
     } catch (err: any) {
       return { output: `后台执行失败: ${err.message}`, isError: true };
     }
+  }
+
+  /** Task 系统后台执行（新模式） */
+  private executeWithTaskSystem(params: {
+    command: string;
+    cwd?: string;
+  }, signal?: AbortSignal): ToolResult {
+    const { spawnShellTask } = require("../task/index.ts");
+    const cwd = params.cwd || process.cwd();
+
+    const taskState = spawnShellTask({
+      command: params.command,
+      cwd,
+      signal,
+    });
+
+    return {
+      output: JSON.stringify({
+        task_id: taskState.id,
+        status: taskState.status,
+        output_file: taskState.outputFile,
+        message: `命令已作为后台任务启动 (task_id: ${taskState.id})`,
+      }),
+    };
   }
 }
