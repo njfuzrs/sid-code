@@ -1,0 +1,41 @@
+# Docs Governance Lint (治理 Batch 6 §5 第四层守门)
+#
+# 触发：PR 改动 docs/ 或 CLAUDE.md 时，跑文档守门 lint + INDEX 一致性检查。
+# 设计：scripts/docs-lint.ts(5 类规则) + scripts/docs-index-gen.ts --check。
+#   防止 §8 断链 / 状态漂移 / INDEX 漂移复发——违反即 block merge。
+#
+# 规则：
+#   R1 位置==状态  R2 superseded 必有后继  R3 frontmatter 完整
+#   R4 CLAUDE.md 路径存在  R5 全仓相对链接不断链
+#   + INDEX.md 必须与 frontmatter 同步(docs:index 重新生成无 diff)
+
+name: Docs Lint
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - "docs/**"
+      - "CLAUDE.md"
+      - "scripts/docs-lint.ts"
+      - "scripts/docs-index-gen.ts"
+      - "scripts/docs-frontmatter-fill.ts"
+      - ".github/workflows/docs-lint.yml"
+
+jobs:
+  docs-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: 文档守门 lint（5 类规则）
+        run: bun run scripts/docs-lint.ts
+
+      - name: INDEX.md 一致性检查（与 frontmatter 同步）
+        run: bun run scripts/docs-index-gen.ts --check
