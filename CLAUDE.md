@@ -6,7 +6,7 @@
 - **联网工具**：遇到不熟悉的 API / 库 / 报错信息时，主动用 WebSearch / WebFetch / context7 查最新文档，不要凭记忆猜
 - **调试日志**：排查复杂 bug 时主动在关键路径加详细日志（console.log / debug 模块）；修复确认后清理
 - **禁止创建文档**：除非用户明确要求，不要创建任何 README / SUMMARY / 总结 / 说明等文档文件
-- **构建验证**：task 完成后跑 `bun test`（1137 单测）即可；改 src/ 涉及编译产物时才跑 `make build`（编译耗时长，不要每个 task 都跑）
+- **构建验证**：task 完成后跑 `bun test`（全量单测，以实际输出为准）即可；改 src/ 涉及编译产物时才跑 `make build`（编译耗时长，不要每个 task 都跑）
 
 ## 0.1 战略定位（2026-05 起，长期不变）
 
@@ -39,23 +39,25 @@ sid-code **不是**"又一个 Coding CLI"——从 2026-05 起向"对外可交�
 
 判断规则：① 需要外部生态扩展？→ A；② 是产品承诺？→ B 或 C；③ 替换会破坏 eval baseline？→ C。
 
-### sid-code 当前位置（2026-05-31）
+### sid-code 当前位置
 
-| 维度 | 状态 |
-| --- | --- |
-| **架构骨架** | ✅ 命中范式 C 约 80%——Runtime + Tools + Skill 系统 + MCP 全部就位 |
-| **行业稀缺资产** | ⭐⭐⭐⭐⭐ EDD 评测主轴（30 case 含 5 holdout + 5 维 Grader + 三组不变量）+ B0 paired comparison + B5 sandbox/execution 双轨 |
-| **三块短板** | ① Skill 仓库当前 4 个（skill-creator 元 + code-review 真信号 0.947 + ci-self-heal Step 4 已完成 + security-audit Step 3 已完成）② 入口只能被主动调用（缺事件驱动）③ 缺服务化与多租户 |
-| **代码体量** | ~5.5 万行 / 280+ TS 文件 / **1870 单测** / Permission 7 种 PermissionMode / LLM Provider 3 家 + MockProvider / **Skill 内置 4 个**（skill-creator / code-review / ci-self-heal / security-audit） |
-| **当前 Sprint** | **S6 主线完成 → S7 启动**（M4 主体推进）：secret-redact / ADR-021 升级 / MockProvider / router 真测 / ADR-028 plan-fidelity-recovery / ci-self-heal Step 4 实施 / security-audit Step 1-3 完成，**1870 单测全过** |
+> ⚠️ **易漂移状态数据已下沉**：实时进度（当前 Sprint、Skill 数量、ADR 数量、单测数、case 盘点、各子系统 baseline）一律以 **`docs/eval-status.md`** 为准（每 Sprint 末更新）。CLAUDE.md 不再维护这些数字，避免与现实漂移。
+
+稳定事实（不随 Sprint 频繁变化）：
+
+- **架构骨架**：命中范式 C——Runtime + Tools + Skill 系统 + MCP 全部就位
+- **行业稀缺资产**：EDD 评测主轴（general + capability + architecture 三类 case + 5 维 Grader + 三组不变量）+ paired comparison + sandbox/execution 双轨
+- **已知短板方向**：① 入口仍偏主动调用（事件驱动/daemon 形态在建）② 服务化与多租户未完成
+- **PR-to-Prod 主轴 Skill**：见 §0.1 顶部 5 Skill 链；实际已落地内置 Skill 清单以 `ls src/skill/builtin/` 为准
 
 ## 0.2 执行入口（唯一）
 
-**`docs/eval/TODO.md`** —— 唯一的 task 清单。任何时候问"现在该做什么"都回到这里。
+**`docs/eval/TODO-M4-M5.md`** —— 唯一的现行 task 清单（M4–M5 / Sprint S5–S8）。任何时候问"现在该做什么"都回到这里。
 
-- 5 阶段：S0 capability 夯实 → S1 M0 P0-tier1 → S2 M1 P0-tier2 → S3 M2 P1 + code-review Skill → S4 M3 Go/No-Go
-- 当前：**Sprint S0 启动中**——补齐 memory/context/router/harness capability 子系统 + 跑五子系统 baseline，全部 ≥ GA（锚点 3.5 / 归一化 0.70）
-- 铁律：上一阶段任一 task 未完成 = 不开下一阶段；30 条 general case 全程守护，任何 src/ 改动后不允许回归
+- 旧 `docs/eval/TODO.md`（S0–S4）= **历史档案 + 战略背景**，不要再修改其打勾状态。
+- 全程阶段脉络：S0 capability 夯实 → S1–S4 M0–M3 各 tier → M3 Gate Go 之后进入 M4–M5（S5–S8，现行）。
+- **当前 Sprint 进度以 `docs/eval-status.md` 为准**（避免在此写死 Sprint 号导致漂移）。
+- 铁律：上一阶段任一 task 未完成 = 不开下一阶段；general case 全程守护，任何 src/ 改动后不允许回归。
 
 ### 三组不变量（语义统一，08 §1）
 
@@ -144,12 +146,7 @@ sid-code **不是**"又一个 Coding CLI"——从 2026-05 起向"对外可交�
 **Grader 改动流程**（与 §0.3 fix_type 审批层级**同级**——任一违反**直接打回**）：
 
 - 改 `evals/eval-judge.ts` 的 `DEFAULT_WEIGHTS` / `gradeCost` / `gradeEfficiency` / `gradeAnchorHit` / `gradeRubric` / `gradeToolCompliance` / `aggregate` → 必须同时满足：① 写 ADR 含 rejected alternatives；② bump `GRADER_VERSION`（如 `5d-v3 → 5d-v4` 或 `task-specific-v2`）；③ 配套单测覆盖；④ 受影响 case 的 legacy baseline 按 `_formula_version` 字段过滤展示，不与新版本混算
-- **"`gradeRubric` / `gradeRubricEnsemble` 公式" 边界明确包含**（A1-3 字面化补充，2026-05-30 起，详见 ADR-027）：
-  - 单次 grade 内的阈值 / snapToTier 档位 / pass 判定
-  - **多采样聚合算法**（下中位数 / 平均 / 上中位数等）
-  - **ensemble 投票算法**（majority vote / score+pass 来源是否一致）
-  - **echo 排除规则**（`gradeNegativeAnchors` `userQuery` 参数语义、isCodeIdentifier 豁免清单）
-  - 任何会让"同一 (output, case) 输入下输出 (pass, score) 翻转"的改动均视为公式改动，必须 bump
+- **"`gradeRubric` / `gradeRubricEnsemble` 公式"的边界范围**：见 §0.3.1.2 字面化清单（阈值/snapToTier、多采样聚合、ensemble 投票、echo 排除；详见 ADR-027）。判据：任何会让"同一 (output, case) 输入下输出 (pass, score) 翻转"的改动均视为公式改动，必须 bump。
 - 改 / 新增 `evals/_graders/<name>-grader.ts` → 必须满足：① 走 `core_code` L3 审批；② 在 `evals/_graders/registry.test.ts` 加 case；③ 至少 1 条 holdout 验证；④ `grader_type` 字段在受影响 case yaml 同步更新
 - 改 `evals/_graders/binary-redline-grader.ts` 的 fail-safe 语义（abnormal=true / score=null / mandatoryPass）→ 视为 grader 改动，走上一条流程
 - 改 `evals/_judge/rubric-template.ts` 的 prompt 文案（小幅文案修订）→ L1 自动；但**触发 rubric 分布漂移的 prompt 重构**视为 grader 改动，需走上一条
@@ -166,7 +163,7 @@ sid-code **不是**"又一个 Coding CLI"——从 2026-05 起向"对外可交�
 
 ## 0.4 评测体系入口（EDD 主轴）
 
-sid-code 从 2026-05-15 起建立评测体系，当前进入 Sprint S0。**改动 src/ 之前先看评测分数走向**。
+sid-code 从 2026-05-15 起建立评测体系。**改动 src/ 之前先看评测分数走向**（当前 Sprint 与分数以 `docs/eval-status.md` 为准）。
 
 > **完整评测系统文档**：`evals/README.md`（目录约定 / 命令 / 数据资产分层与生命周期 / case 写作要点 / 关键铁律）。CLAUDE.md 只保留 4 条设计原则 + 入口指针，避免与 README 漂移。
 
@@ -174,24 +171,26 @@ sid-code 从 2026-05-15 起建立评测体系，当前进入 Sprint S0。**改�
 
 | 信息 | 文件 |
 | --- | --- |
-| Sprint 执行清单 | `docs/eval/TODO.md` |
+| 现行执行清单（S5–S8） | `docs/eval/TODO-M4-M5.md`（旧 `docs/eval/TODO.md` S0–S4 为历史档案） |
 | 战略蓝本 | `docs/eval/演进路线/智能研发基座-final.md` |
-| eval 总纲（178 约束 → ~169 case） | `docs/eval/08-研发智能基座-eval总纲.md` |
+| eval 总纲（约束 → case 映射） | `docs/eval/08-研发智能基座-eval总纲.md` |
 | eval 详细清单（逐条 case 映射） | `docs/eval/09-研发智能基座-eval详细清单.md` |
 | EDD 5 步迭代手册 | `docs/eval/edd-iteration-playbook.md` |
 | 当前阶段状态（每 Sprint 末更新） | `docs/eval-status.md` |
 | 评测架构分析（promptfoo 决策） | `docs/eval/10-eval-architecture-analysis.md` |
-| 三轴螺旋 8 步 / 三轴权重迁移 | `docs/eval/08-研发智能基座-eval总纲.md §12.2 / §14`（S3 写 Skill 时再读，S0/S1/S2 不用） |
-| ADR | `docs/adr/`（必须有 rejected alternatives；当前 9 条） |
-| Sprint 报告 | `docs/weekly-eval-report/sprint-SN.md`（S0 起；旧 week-00..11.md 为历史档案） |
+| 三轴螺旋 8 步 / 三轴权重迁移 | `docs/eval/08-研发智能基座-eval总纲.md §12.2 / §14`（写 Skill 时再读） |
+| ADR | `docs/adr/`（必须有 rejected alternatives；数量以目录为准） |
+| Sprint 报告 | `docs/weekly-eval-report/sprint-S{N}.md`（`{N}` 为 Sprint 号，如 sprint-S8.md；旧 week-00..11.md 为历史档案） |
 
-### 当前 case 仓库（2026-05-28 实际盘点）
+### 当前 case 仓库
 
-- 现有：`evals/general/p0-core/`（10）+ `evals/general/p1-common/`（9）+ `evals/general/p2-edge/`（6）+ `evals/holdout/`（5）= 30 条
-- capability：`evals/capability/{plan,memory,context,router,harness}/`（**5 子系统全部就位**：plan 10 + memory 10 + context 10 + router 8 + harness 10 = 48 条 case；S0-T11 N=3 中位数 baseline 已落盘，27 graduated + 21 known_limitation）
-- S1 起新增（与 general 平级）：`evals/architecture/{redline,form,pluggable,kernel,platform,discipline,context-engine,orchestration,chinese,durable-exec,notification,ux,nonfunctional,outcome,meta,milestone,ontology,render}/` + `evals/holdout/architecture/{kernel,form,...}/`
-  - S1-T15 起 30 条 P0-tier1 已就位：redline 12 + kernel 7（+ holdout/kernel 1）+ form 4（+ holdout/form 1）+ context-engine 5
-  - S2-T27 起 28 条 P0-tier2 + 扩展就位（合计 58 条 P0）：platform 5（+ holdout/platform 1）+ discipline 3（+ holdout/discipline 1）+ meta 3（+ holdout/meta 2）+ pluggable 6（+ holdout/pluggable 1）+ chinese 5（+ holdout/chinese 1）；架构 holdout 共 8 条覆盖 7 类
+> ⚠️ **case 数量明细易漂移，已下沉到 `docs/eval-status.md`**（实时盘点：general / capability / architecture 各类 case 数、graduated / known_limitation 统计、baseline 落盘状态）。
+
+稳定结构（目录约定，不随盘点变化）：
+
+- `evals/general/{p0-core,p1-common,p2-edge}/` + `evals/holdout/` —— 通用能力 case
+- `evals/capability/{plan,memory,context,router,harness}/` —— 5 子系统独立 runner（不走 5 维 grader）
+- `evals/architecture/{redline,form,pluggable,kernel,platform,discipline,context-engine,...}/` + `evals/holdout/architecture/` —— 架构约束 case（P0-tier1/tier2）
 
 ### 跑评测（细节见 evals/README.md）
 
@@ -258,5 +257,5 @@ bun run eval:run --provider sid-code,claude-code
 
 - TypeScript strict 模式 / 接口驱动（Provider / Tool / Checker / Command 均为接口）
 - 错误处理：`new Error("xxx", { cause: err })` 或直接 throw
-- 测试：1137 单测分布在 `tests/` 和模块内同位 `.test.ts`；`bun test` 跑全量
+- 测试：单测分布在 `tests/` 和模块内同位 `.test.ts`；`bun test` 跑全量（数量以实际输出为准）
 - 目录结构：用 `ls src/` 自查；不在 CLAUDE.md 维护静态目录树（与代码易漂移）
