@@ -41,7 +41,7 @@ sid-code **不是**"又一个 Coding CLI"——从 2026-05 起向"对外可交�
 
 ### sid-code 当前位置
 
-> ⚠️ **易漂移状态数据已下沉**：实时进度（当前 Sprint、Skill 数量、ADR 数量、单测数、case 盘点、各子系统 baseline）一律以 **`docs/eval-status.md`** 为准（每 Sprint 末更新）。CLAUDE.md 不再维护这些数字，避免与现实漂移。
+> ⚠️ **易漂移状态数据已下沉**：实时进度（当前 Sprint、Skill 数量、ADR 数量、单测数、case 盘点、各子系统 baseline）一律以 **`docs/eval/STATUS.md`** 为准（每 Sprint 末更新）。CLAUDE.md 不再维护这些数字，避免与现实漂移。
 
 稳定事实（不随 Sprint 频繁变化）：
 
@@ -56,7 +56,7 @@ sid-code **不是**"又一个 Coding CLI"——从 2026-05 起向"对外可交�
 
 - 旧 `docs/eval/TODO.md`（S0–S4）= **历史档案 + 战略背景**，不要再修改其打勾状态。
 - 全程阶段脉络：S0 capability 夯实 → S1–S4 M0–M3 各 tier → M3 Gate Go 之后进入 M4–M5（S5–S8，现行）。
-- **当前 Sprint 进度以 `docs/eval-status.md` 为准**（避免在此写死 Sprint 号导致漂移）。
+- **当前 Sprint 进度以 `docs/eval/STATUS.md` 为准**（避免在此写死 Sprint 号导致漂移）。
 - 铁律：上一阶段任一 task 未完成 = 不开下一阶段；general case 全程守护，任何 src/ 改动后不允许回归。
 
 ### 三组不变量（语义统一，08 §1）
@@ -163,7 +163,7 @@ sid-code **不是**"又一个 Coding CLI"——从 2026-05 起向"对外可交�
 
 ## 0.4 评测体系入口（EDD 主轴）
 
-sid-code 从 2026-05-15 起建立评测体系。**改动 src/ 之前先看评测分数走向**（当前 Sprint 与分数以 `docs/eval-status.md` 为准）。
+sid-code 从 2026-05-15 起建立评测体系。**改动 src/ 之前先看评测分数走向**（当前 Sprint 与分数以 `docs/eval/STATUS.md` 为准）。
 
 > **完整评测系统文档**：`evals/README.md`（目录约定 / 命令 / 数据资产分层与生命周期 / case 写作要点 / 关键铁律）。CLAUDE.md 只保留 4 条设计原则 + 入口指针，避免与 README 漂移。
 
@@ -176,7 +176,7 @@ sid-code 从 2026-05-15 起建立评测体系。**改动 src/ 之前先看评测
 | eval 总纲（约束 → case 映射） | `docs/eval/08-研发智能基座-eval总纲.md` |
 | eval 详细清单（逐条 case 映射） | `docs/eval/09-研发智能基座-eval详细清单.md` |
 | EDD 5 步迭代手册 | `docs/eval/edd-iteration-playbook.md` |
-| 当前阶段状态（每 Sprint 末更新） | `docs/eval-status.md` |
+| 当前阶段状态（每 Sprint 末更新） | `docs/eval/STATUS.md` |
 | 评测架构分析（promptfoo 决策） | `docs/eval/10-eval-architecture-analysis.md` |
 | 三轴螺旋 8 步 / 三轴权重迁移 | `docs/eval/08-研发智能基座-eval总纲.md §12.2 / §14`（写 Skill 时再读） |
 | ADR | `docs/adr/`（必须有 rejected alternatives；数量以目录为准） |
@@ -184,7 +184,7 @@ sid-code 从 2026-05-15 起建立评测体系。**改动 src/ 之前先看评测
 
 ### 当前 case 仓库
 
-> ⚠️ **case 数量明细易漂移，已下沉到 `docs/eval-status.md`**（实时盘点：general / capability / architecture 各类 case 数、graduated / known_limitation 统计、baseline 落盘状态）。
+> ⚠️ **case 数量明细易漂移，已下沉到 `docs/eval/STATUS.md`**（实时盘点：general / capability / architecture 各类 case 数、graduated / known_limitation 统计、baseline 落盘状态）。
 
 稳定结构（目录约定，不随盘点变化）：
 
