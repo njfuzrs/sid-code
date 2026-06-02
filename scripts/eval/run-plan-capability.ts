@@ -33,7 +33,7 @@ import { gradeProcess, type JudgeConfig } from "../../evals/bench-runner/process
 import {
   syncBaselineScores,
   type BaselineResult,
-} from "../../evals/framework/core/baseline-sync.ts";
+} from "eval-framework/core/baseline-sync.ts";
 import {
   classifyRunStatus,
   medianSuccessScore,

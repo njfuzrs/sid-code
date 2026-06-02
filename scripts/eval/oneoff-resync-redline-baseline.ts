@@ -11,8 +11,8 @@
 
 import { resolve, join } from "node:path";
 import { readFileSync, existsSync } from "node:fs";
-import { syncBaselineScores, type BaselineResult } from "../../evals/framework/core/baseline-sync.ts";
-import { COST_FORMULA_VERSION, GRADER_VERSION } from "../../evals/framework/core/judge.ts";
+import { syncBaselineScores, type BaselineResult } from "eval-framework/core/baseline-sync.ts";
+import { COST_FORMULA_VERSION, GRADER_VERSION } from "eval-framework/core/judge.ts";
 
 const REDLINE_IDS = [
   "arch_redline_001",

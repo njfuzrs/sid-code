@@ -19,7 +19,7 @@ const CASE_DIRS = [
 const PROMPTFOO_REPORT = join(ROOT, "_reports/promptfoo-latest.json");
 const EVAL_REPORT = join(ROOT, "_reports/eval-latest.json");
 
-import type { CaseYaml, CaseBaselineEntry } from "./framework/core/types.ts";
+import type { CaseYaml, CaseBaselineEntry } from "eval-framework/core/types.ts";
 
 interface PromptfooResult {
   provider: { label?: string; id?: string };

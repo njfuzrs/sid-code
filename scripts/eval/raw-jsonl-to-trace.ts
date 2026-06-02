@@ -38,7 +38,7 @@ import {
   SPAN_FIELD_BYTE_LIMIT,
   type AgentTrace,
   type TraceSpan,
-} from "../../evals/framework/trace/agent-trace.ts";
+} from "eval-framework/trace/agent-trace.ts";
 
 interface RawLine {
   timestamp?: string;

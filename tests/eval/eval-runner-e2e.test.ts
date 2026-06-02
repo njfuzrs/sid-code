@@ -24,8 +24,8 @@ import {
   syncBaselineScores,
   isRetryableError,
   type TestResult,
-} from "../../evals/framework/core/runner.ts";
-import { aggregate } from "../../evals/framework/core/judge.ts";
+} from "eval-framework/core/runner.ts";
+import { aggregate } from "eval-framework/core/judge.ts";
 
 let tmpRoot: string;
 

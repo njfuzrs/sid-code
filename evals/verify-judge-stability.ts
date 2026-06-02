@@ -12,9 +12,9 @@
 import { parse as parseYaml } from "yaml";
 import { join, resolve } from "node:path";
 import { readFileSync } from "node:fs";
-import { gradeRubric } from "./framework/core/judge.ts";
-import { buildRubricPrompt } from "./framework/judge/rubric-template.ts";
-import type { CaseYaml } from "./framework/core/types.ts";
+import { gradeRubric } from "eval-framework/core/judge.ts";
+import { buildRubricPrompt } from "eval-framework/judge/rubric-template.ts";
+import type { CaseYaml } from "eval-framework/core/types.ts";
 
 const ROOT = resolve(import.meta.dir);
 
