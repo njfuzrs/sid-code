@@ -15,8 +15,11 @@ import {
   generatePermissionModeAttachment,
   generateDiagnosticsAttachment,
   generateIDESelectionAttachment,
+  generateIDEMentionAttachment,
   generateTodoListAttachment,
   generateMemoryAttachment,
+  generateRecalledMemoryAttachment,
+  generateSessionMemoryAttachment,
 } from "./attachments.ts";
 import { getLogger } from "../debug/logger.ts";
 
@@ -43,12 +46,20 @@ export interface SystemPromptContext {
   gitStatus?: boolean;
   /** IDE 选中代码 */
   ideSelection?: string;
+  /** IDE @提及（已格式化的位置列表文本） */
+  ideMention?: string;
   /** 诊断信息 */
   diagnostics?: string;
   /** Todo 列表 */
   todoList?: string;
   /** 记忆摘要（全局/项目双层记忆） */
   memorySummary?: string;
+  /** MEMORY.md 索引内容 + 记忆系统指令（Task 7） */
+  memorySystemPrompt?: string;
+  /** 动态召回的相关记忆（Task 7） */
+  recalledMemories?: Array<{ filename: string; content: string }>;
+  /** Session Memory 内容（压缩后注入，Task 7） */
+  sessionMemoryContent?: string;
 
   // 限制
   /** 系统提示词最大 token 数（默认 180000） */
@@ -90,6 +101,7 @@ function generateCacheKey(ctx: SystemPromptContext): string {
     ctx.appendPrompt ? simpleHash(ctx.appendPrompt) : "",
     ctx.filePrompt ? simpleHash(ctx.filePrompt) : "",
     ctx.ideSelection ? simpleHash(ctx.ideSelection) : "",
+    ctx.ideMention ? simpleHash(ctx.ideMention) : "",
     ctx.diagnostics ? simpleHash(ctx.diagnostics) : "",
     ctx.todoList ? simpleHash(ctx.todoList) : "",
     ctx.memorySummary ? simpleHash(ctx.memorySummary) : "",
@@ -168,6 +180,11 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
   // IDE 选中代码
   if (ctx.ideSelection) {
     attachments.push(generateIDESelectionAttachment(ctx.ideSelection));
+  }
+
+  // IDE @提及
+  if (ctx.ideMention) {
+    attachments.push(generateIDEMentionAttachment(ctx.ideMention));
   }
 
   // 诊断信息

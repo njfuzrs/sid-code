@@ -29,6 +29,18 @@ const CLAUDE_MD_FILES = [
   ".claude/instructions.md",
 ] as const;
 
+/** 本地私有规则文件名（不检入代码库，优先级最高） */
+const CLAUDE_LOCAL_FILES = [
+  "CLAUDE.local.md",
+  ".claude/CLAUDE.local.md",
+] as const;
+
+/** 项目规则目录（.claude/rules/*.md） */
+const CLAUDE_RULES_DIR = ".claude/rules";
+
+/** frontmatter 块匹配（文件开头的 --- ... ---） */
+const RULES_FRONTMATTER_RE = /^---\s*\n([\s\S]*?)\n---\s*\n?/;
+
 // ─── 结构化解析 ───
 
 /** Markdown 段落 */
@@ -60,6 +72,78 @@ export interface ProjectRules {
   customRules?: string[];
   /** 记忆键值对（累积型） */
   memory?: Record<string, string>;
+  /**
+   * frontmatter paths 条件过滤（glob 模式数组）。
+   * 仅当当前工作的文件路径匹配任一 glob 时，此规则才生效。
+   * 为空 / undefined 表示无条件生效。
+   */
+  paths?: string[];
+  /** 规则层级（用于调试与优先级展示） */
+  layer?: "user" | "project" | "subdir" | "rulesDir" | "local";
+}
+
+/**
+ * 解析文件开头的 frontmatter，返回 { paths, body }。
+ * 只支持 `paths:` 字段（数组或逗号分隔），其余忽略。
+ */
+export function parseRulesFrontmatter(content: string): { paths?: string[]; body: string } {
+  const m = content.match(RULES_FRONTMATTER_RE);
+  if (!m) return { body: content };
+  const block = m[1];
+  const body = content.slice(m[0].length);
+  let paths: string[] | undefined;
+
+  // 支持两种写法：
+  //   paths: ["src/**", "lib/**"]
+  //   paths:
+  //     - src/**
+  //     - lib/**
+  const inlineMatch = block.match(/^paths:\s*\[(.*)\]\s*$/m);
+  if (inlineMatch) {
+    paths = inlineMatch[1]
+      .split(",")
+      .map((s) => s.trim().replace(/^["']|["']$/g, ""))
+      .filter(Boolean);
+  } else {
+    const lines = block.split("\n");
+    const idx = lines.findIndex((l) => /^paths:\s*$/.test(l));
+    if (idx >= 0) {
+      const collected: string[] = [];
+      for (let i = idx + 1; i < lines.length; i++) {
+        const itemMatch = lines[i].match(/^\s*-\s*(.+?)\s*$/);
+        if (!itemMatch) break;
+        collected.push(itemMatch[1].replace(/^["']|["']$/g, ""));
+      }
+      if (collected.length > 0) paths = collected;
+    } else {
+      // 单值写法 paths: src/**
+      const singleMatch = block.match(/^paths:\s*(.+?)\s*$/m);
+      if (singleMatch) {
+        paths = singleMatch[1]
+          .split(",")
+          .map((s) => s.trim().replace(/^["']|["']$/g, ""))
+          .filter(Boolean);
+      }
+    }
+  }
+  return { paths, body };
+}
+
+/**
+ * 判断规则的 paths 条件是否匹配给定的活动文件列表。
+ * - 无 paths 条件：始终匹配
+ * - 有 paths 条件：任一 activeFile 匹配任一 glob 即生效
+ */
+export function rulesPathsMatch(paths: string[] | undefined, activeFiles: string[]): boolean {
+  if (!paths || paths.length === 0) return true;
+  if (activeFiles.length === 0) return false;
+  for (const pattern of paths) {
+    const glob = new Bun.Glob(pattern);
+    for (const file of activeFiles) {
+      if (glob.match(file)) return true;
+    }
+  }
+  return false;
 }
 
 /** 按 Markdown 标题分段 */
@@ -166,8 +250,12 @@ function extractRules(sections: ClaudeMdSection[], sourcePath: string, rawConten
 
 /** 解析 CLAUDE.md 内容为结构化规则 */
 export function parseClaudeMd(content: string, sourcePath: string): ProjectRules {
-  const sections = splitSections(content);
-  return extractRules(sections, sourcePath, content);
+  // 先剥离 frontmatter（提取 paths 条件），用 body 做段落解析
+  const { paths, body } = parseRulesFrontmatter(content);
+  const sections = splitSections(body);
+  const rules = extractRules(sections, sourcePath, content);
+  if (paths) rules.paths = paths;
+  return rules;
 }
 
 // ─── 多文件合并 ───
@@ -199,6 +287,8 @@ export function mergeProjectRules(base: ProjectRules, override: ProjectRules): P
     disallowedTools: override.disallowedTools || base.disallowedTools,
     permissionMode: override.permissionMode || base.permissionMode,
     model: override.model || base.model,
+    // paths 条件在合并前已被各文件单独应用；合并结果无条件生效（不再携带 paths）
+    layer: override.layer || base.layer,
   };
 }
 
@@ -332,33 +422,94 @@ async function findProjectCLAUDEmdFiles(projectRoot: string): Promise<string[]> 
 }
 
 /**
- * 加载并合并所有 CLAUDE.md（全局 + 项目根 + 子目录）
- * 返回合并后的结构化规则
+ * 加载 .claude/rules/ 目录下的所有 *.md 规则文件。
+ * 按文件名排序，逐个解析（各自可带 frontmatter paths 条件）。
  */
-export async function loadAllCLAUDEmd(startDir: string): Promise<ProjectRules | null> {
+async function loadRulesDir(projectRoot: string): Promise<ProjectRules[]> {
   const log = getLogger();
+  const rulesDir = join(projectRoot, CLAUDE_RULES_DIR);
+  if (!existsSync(rulesDir)) return [];
 
-  // 1. 加载全局 CLAUDE.md
+  const out: ProjectRules[] = [];
+  try {
+    const entries = await Array.fromAsync(
+      new Bun.Glob("**/*.md").scan({ cwd: rulesDir, onlyFiles: true }),
+    );
+    entries.sort();
+    for (const rel of entries) {
+      const full = join(rulesDir, rel);
+      const rules = await loadAndParse(full, projectRoot);
+      if (rules) {
+        rules.layer = "rulesDir";
+        out.push(rules);
+        log.debug("RULES", `加载规则目录文件: ${full}`);
+      }
+    }
+  } catch (err) {
+    log.debug("RULES", `加载 .claude/rules/ 失败: ${rulesDir}`, err);
+  }
+  return out;
+}
+
+/**
+ * 加载本地私有规则 CLAUDE.local.md（不检入代码库，优先级最高）。
+ */
+async function loadLocalRules(projectRoot: string): Promise<ProjectRules | null> {
+  const log = getLogger();
+  for (const name of CLAUDE_LOCAL_FILES) {
+    const candidate = join(projectRoot, name);
+    if (existsSync(candidate)) {
+      const rules = await loadAndParse(candidate, projectRoot);
+      if (rules) {
+        rules.layer = "local";
+        log.info("RULES", `加载本地私有规则: ${candidate}`);
+        return rules;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * 加载并合并所有 CLAUDE.md（全局 + 项目根 + 子目录）
+ * 返回合并后的结构化规则。
+ *
+ * 优先级链（后者覆盖/累积在前者之上）：
+ *   User(全局) → Project(项目根) → Subdir(子目录) → rulesDir(.claude/rules/) → Local(CLAUDE.local.md)
+ *
+ * @param startDir   起始目录
+ * @param opts.activeFiles  当前活动文件列表（相对项目根），用于 frontmatter paths 条件过滤
+ */
+export async function loadAllCLAUDEmd(
+  startDir: string,
+  opts?: { activeFiles?: string[] },
+): Promise<ProjectRules | null> {
+  const log = getLogger();
+  const activeFiles = opts?.activeFiles ?? [];
+
+  // 1. 加载全局 CLAUDE.md（User 层）
   const globalPath = findGlobalCLAUDEmd();
   let globalRules: ProjectRules | null = null;
   if (globalPath) {
     globalRules = await loadAndParse(globalPath);
     if (globalRules) {
+      globalRules.layer = "user";
       log.info("RULES", `加载全局规则: ${globalPath}`);
     }
   }
 
-  // 2. 加载项目根 CLAUDE.md
+  // 2. 加载项目根 CLAUDE.md（Project 层）
   const projectPath = await findCLAUDEmd(startDir);
   let projectRules: ProjectRules | null = null;
   if (projectPath) {
     projectRules = await loadAndParse(projectPath, startDir);
     if (projectRules) {
+      projectRules.layer = "project";
       log.info("RULES", `加载项目规则: ${projectPath}`);
     }
   }
 
-  // 3. 查找并加载子目录 CLAUDE.md
+  // 3. 查找并加载子目录 CLAUDE.md（Subdir 层）
   const projectRoot = projectPath ? dirname(projectPath) : startDir;
   const subFiles = await findProjectCLAUDEmdFiles(projectRoot);
 
@@ -369,18 +520,36 @@ export async function loadAllCLAUDEmd(startDir: string): Promise<ProjectRules | 
   for (const subFile of subFilesFiltered) {
     const rules = await loadAndParse(subFile, projectRoot);
     if (rules) {
+      rules.layer = "subdir";
       log.info("RULES", `加载子目录规则: ${subFile}`);
       subRules = subRules ? mergeProjectRules(subRules, rules) : rules;
     }
   }
 
-  // 4. 合并（全局 → 项目根 → 子目录）
-  let merged = globalRules;
-  if (projectRules) {
-    merged = merged ? mergeProjectRules(merged, projectRules) : projectRules;
-  }
-  if (subRules) {
-    merged = merged ? mergeProjectRules(merged, subRules) : subRules;
+  // 4. 加载 .claude/rules/ 目录规则（rulesDir 层）
+  const rulesDirRules = await loadRulesDir(projectRoot);
+
+  // 5. 加载本地私有规则（Local 层，优先级最高）
+  const localRules = await loadLocalRules(projectRoot);
+
+  // 6. 按优先级链合并，frontmatter paths 不匹配的规则被跳过
+  const ordered: (ProjectRules | null)[] = [
+    globalRules,
+    projectRules,
+    subRules,
+    ...rulesDirRules,
+    localRules,
+  ];
+
+  let merged: ProjectRules | null = null;
+  for (const r of ordered) {
+    if (!r) continue;
+    // frontmatter paths 条件过滤
+    if (!rulesPathsMatch(r.paths, activeFiles)) {
+      log.debug("RULES", `规则 paths 条件不匹配，跳过: ${r.sourcePath}`);
+      continue;
+    }
+    merged = merged ? mergeProjectRules(merged, r) : r;
   }
 
   if (merged) {

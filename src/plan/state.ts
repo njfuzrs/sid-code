@@ -10,6 +10,7 @@ import { homedir } from "os";
 import { join, resolve } from "path";
 import { mkdirSync, existsSync } from "fs";
 import { createHash } from "crypto";
+import { generateWordSlug } from "./slug.ts";
 
 /** Plan Mode 状态 */
 export type PlanModeState = "inactive" | "planning" | "awaiting_approval";
@@ -61,6 +62,14 @@ export class PlanModeManager {
   private listeners: PlanModeListener[] = [];
   /** 进入 plan 模式前的权限模式（退出时恢复） */
   private prePlanMode: string | null = null;
+  /** 缓存的计划文件 slug（同一会话内复用，避免重命名） */
+  private planSlug: string | null = null;
+  /** Plan Mode 提醒注入轮次计数（用于节流：每 N 轮发完整提醒） */
+  private reminderTurn = 0;
+  /** 完整提醒间隔（每 N 轮发一次完整提醒，其余发简短提醒） */
+  private readonly fullReminderInterval = 5;
+  /** 执行阶段所需权限（exit_plan_mode 声明，用户审批计划时一并审批） */
+  private allowedPrompts: Array<{ tool?: string; prompt: string }> = [];
   /** Plan 文件被 write/edit 成功的时间戳序列（plan_recovery capability 用） */
   private planFileUpdates: number[] = [];
 
@@ -81,6 +90,8 @@ export class PlanModeManager {
     const from = this.state;
     this.state = "planning";
     this.rejectionCount = 0;
+    this.reminderTurn = 0;
+    this.allowedPrompts = [];
     this.prePlanMode = currentPermissionMode || null;
     this.planFilePath = this.generatePlanFilePath();
     this.ensurePlanDir();
@@ -130,6 +141,8 @@ export class PlanModeManager {
     const from = this.state;
     this.state = "inactive";
     this.rejectionCount = 0;
+    this.reminderTurn = 0;
+    this.allowedPrompts = [];
     this.planFileUpdates = [];
     this.planSteps = [];
     this.actualToolCalls = [];
@@ -149,6 +162,29 @@ export class PlanModeManager {
   isPlanFile(filePath: string): boolean {
     if (!this.planFilePath) return false;
     return resolve(filePath) === resolve(this.planFilePath);
+  }
+
+  /**
+   * 推进提醒轮次并返回本轮是否应发"完整提醒"。
+   * 节流策略：第 1 轮完整，第 2..(N-1) 轮简短，第 N 轮再次完整，循环往复。
+   * 由 app.ts 在每次注入 plan 提醒时调用。
+   */
+  nextReminderIsFull(): boolean {
+    this.reminderTurn++;
+    return (
+      this.reminderTurn === 1 ||
+      this.reminderTurn % this.fullReminderInterval === 0
+    );
+  }
+
+  /** 记录执行阶段所需权限（exit_plan_mode 调用） */
+  setAllowedPrompts(prompts: Array<{ tool?: string; prompt: string }>): void {
+    this.allowedPrompts = prompts;
+  }
+
+  /** 获取执行阶段所需权限（审批流程用） */
+  getAllowedPrompts(): ReadonlyArray<{ tool?: string; prompt: string }> {
+    return this.allowedPrompts;
   }
 
   // ── plan_recovery capability 用 ──
@@ -280,8 +316,12 @@ export class PlanModeManager {
   // ── 内部方法 ──
 
   private generatePlanFilePath(): string {
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    return join(homedir(), ".sid-code", "plans", `plan-${timestamp}.md`);
+    // 词汇 Slug 命名（brave-eagle-42.md），可读性优于时间戳。
+    // 同一会话内缓存 slug，避免每次进入 plan 都换名字。
+    if (!this.planSlug) {
+      this.planSlug = generateWordSlug();
+    }
+    return join(homedir(), ".sid-code", "plans", `${this.planSlug}.md`);
   }
 
   private ensurePlanDir(): void {

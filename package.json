@@ -38,6 +38,7 @@
     "@anthropic-ai/sdk": "^0.79.0",
     "@inkjs/ui": "^2.0.0",
     "cli-truncate": "^5.2.0",
+    "fuse.js": "^7.4.1",
     "glob": "^13.0.6",
     "ink": "npm:@jrichman/ink@6.4.11",
     "lowlight": "^3.3.0",
@@ -51,7 +52,8 @@
     "tinycolor2": "^1.6.0",
     "tinygradient": "^2.0.1",
     "wrap-ansi": "^9.0.0",
-    "yaml": "^2.8.2"
+    "yaml": "^2.8.2",
+    "zod": "^3.25.0"
   },
   "overrides": {
     "ink": "npm:@jrichman/ink@6.4.11",

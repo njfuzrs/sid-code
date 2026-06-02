@@ -3,10 +3,25 @@
  * 从 ~/.sid-code/skills/ 和 {project}/.sid-code/skills/ 加载 Skill 定义
  */
 
+import { dirname } from "node:path";
 import { ExtensionLoader } from "../extension/loader.ts";
 import type { ScanOptions } from "../extension/types.ts";
 import { getLogger } from "../debug/logger.ts";
 import type { SkillDefinition } from "./types.ts";
+
+/** 解析字符串列表字段（支持数组 / 逗号或空白分隔字符串） */
+function parseStringList(raw: unknown): string[] | undefined {
+  if (!raw) return undefined;
+  if (Array.isArray(raw)) {
+    const list = raw.map(String).map((s) => s.trim()).filter(Boolean);
+    return list.length > 0 ? list : undefined;
+  }
+  if (typeof raw === "string") {
+    const list = raw.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean);
+    return list.length > 0 ? list : undefined;
+  }
+  return undefined;
+}
 
 /** 最大 Skill 数量（避免工具列表膨胀） */
 const MAX_SKILLS = 20;
@@ -84,11 +99,35 @@ export class SkillLoader {
       const mode: "activate" | "delegate" | undefined =
         rawMode === "activate" || rawMode === "delegate" ? rawMode : undefined;
 
+      // 解析 context 字段（优先级高于 mode；未指定时由 mode 推导）
+      const rawContext = fm.context as string;
+      let context: "inline" | "fork" | undefined =
+        rawContext === "inline" || rawContext === "fork" ? rawContext : undefined;
+      if (!context && mode) {
+        context = mode === "activate" ? "inline" : "fork";
+      }
+
       // 解析 maxTurns 和 timeoutMins
       const maxTurns = typeof fm["max-turns"] === "number" ? fm["max-turns"] :
                        typeof fm["maxTurns"] === "number" ? fm["maxTurns"] : undefined;
       const timeoutMins = typeof fm["timeout-mins"] === "number" ? fm["timeout-mins"] :
                           typeof fm["timeoutMins"] === "number" ? fm["timeoutMins"] : undefined;
+
+      // user-invocable（默认 true）
+      const rawUserInvocable = fm["user-invocable"] ?? fm["userInvocable"];
+      const userInvocable = rawUserInvocable === false ? false : true;
+
+      // 条件激活路径模式
+      const paths = parseStringList(fm["paths"]);
+      // 命名参数列表
+      const argumentNames = parseStringList(fm["arguments"]);
+      // 生命周期钩子
+      const hooks =
+        fm["hooks"] && typeof fm["hooks"] === "object" && !Array.isArray(fm["hooks"])
+          ? (fm["hooks"] as SkillDefinition["hooks"])
+          : undefined;
+
+      const skillRoot = dirname(file.filePath);
 
       const skill: SkillDefinition = {
         name: sanitizedName,
@@ -99,11 +138,22 @@ export class SkillLoader {
         model: fm.model as string,
         disableModelInvocation: fm["disable-model-invocation"] === true || fm["disableModelInvocation"] === true,
         mode,
+        context,
         maxTurns,
         timeoutMins,
         prompt: file.body,
         source: file.source,
+        loadedFrom: file.source === "builtin" ? "builtin" : "skills",
         filePath: file.filePath,
+        skillRoot,
+        userInvocable,
+        version: fm["version"] as string,
+        effort: fm["effort"] as string,
+        agent: fm["agent"] as string,
+        shell: fm["shell"] as string,
+        argumentNames,
+        paths,
+        hooks,
       };
 
       skills.push(skill);

@@ -10,7 +10,9 @@ export type SpanStatus = "ok" | "error" | "unset";
 export type SpanKind =
   | "invoke_agent"    // Agent 调用（顶层）
   | "chat"            // LLM 推理调用
-  | "execute_tool";   // 工具执行
+  | "execute_tool"    // 工具执行
+  | "blocked_on_user" // 等待用户权限确认（spec 17 §6.1.3）
+  | "hook_execution"; // Hook 执行（spec 17 §6.1.3）
 
 /** 属性值类型——OTel 兼容 */
 export type AttributeValue = string | number | boolean | string[] | number[];

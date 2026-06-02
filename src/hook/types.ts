@@ -33,6 +33,14 @@ export enum HookEventName {
   CwdChanged = "CwdChanged",
   TaskCreated = "TaskCreated",
   TaskCompleted = "TaskCompleted",
+  /** 权限检查开始（spec 17 §6.1.3，用于 blocked_on_user span） */
+  BeforePermissionCheck = "BeforePermissionCheck",
+  /** 权限检查结束 */
+  AfterPermissionCheck = "AfterPermissionCheck",
+  /** Hook 执行开始（用于 hook_execution span） */
+  BeforeHookExecution = "BeforeHookExecution",
+  /** Hook 执行结束 */
+  AfterHookExecution = "AfterHookExecution",
 }
 
 /** 旧 snake_case → 新 PascalCase 映射（向后兼容） */
@@ -66,6 +74,8 @@ export enum ConfigSource {
   Project = "project",
   User = "user",
   Global = "global",
+  /** 插件提供的 hook（可被 replacePluginHooks 原子替换） */
+  Plugin = "plugin",
 }
 
 /** Hook 实现类型 */
@@ -331,6 +341,20 @@ export interface NotificationInput extends HookInput {
   notification_type: string;
   message: string;
   details: Record<string, unknown>;
+}
+
+/** BeforePermissionCheck / AfterPermissionCheck 输入（spec 17 §6.1.3） */
+export interface PermissionCheckInput extends HookInput {
+  tool_name: string;
+  tool_use_id?: string;
+}
+
+/** BeforeHookExecution / AfterHookExecution 输入（spec 17 §6.1.3） */
+export interface HookExecutionInput extends HookInput {
+  /** 被执行 hook 的名称 */
+  hook_name: string;
+  /** 触发该 hook 的事件名 */
+  triggering_event?: string;
 }
 
 /** Stop 事件输入（模型 end_turn 后执行检查） */

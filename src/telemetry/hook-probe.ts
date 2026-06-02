@@ -19,6 +19,8 @@ import type {
   PostToolUseInput,
   SessionStartInput,
   SessionEndInput,
+  PermissionCheckInput,
+  HookExecutionInput,
 } from "../hook/types.ts";
 
 /**

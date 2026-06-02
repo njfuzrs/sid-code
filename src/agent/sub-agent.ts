@@ -15,7 +15,7 @@ import { LoopDetector, LOOP_RECOVERY_PROMPT } from "./loop-detection.ts";
 import { filterToolsForAgent } from "./tool-filter.ts";
 
 /** 子代理类型 */
-export type SubAgentType = "explore" | "task" | "summarize" | "plan";
+export type SubAgentType = "explore" | "task" | "summarize" | "plan" | "verify";
 
 /** 子代理任务定义 */
 export interface SubAgentTask {
@@ -65,6 +65,13 @@ const SYSTEM_PROMPTS: Record<SubAgentType, string> = {
 - 使用 grep、glob、read 工具搜索和阅读代码
 - 输出包含：问题分析、方案设计、涉及文件、实现步骤
 - 不要修改任何文件，保持输出简洁可操作`,
+
+  verify: `你是一个对抗式验证代理。你的任务是验证给定的结论/修复/发现是否真实成立。
+规则：
+- 默认持怀疑态度，主动寻找反例和漏洞
+- 用 read/grep/bash 等只读手段核实，不要修改文件
+- 不确定时倾向于判定"未通过验证"
+- 输出明确结论：通过 / 未通过 + 关键证据`,
 };
 
 /** 自定义子代理任务（Skills/Agents 用） */

@@ -21,6 +21,12 @@ export interface HookRegistryEntry {
   matcher?: string;
   sequential?: boolean;
   enabled: boolean;
+  /** 来源 Skill 名称（Skill 声明的会话级 hook） */
+  skillName?: string;
+  /** 一次性 hook：被取用一次后自动失效 */
+  once?: boolean;
+  /** once hook 是否已被取用 */
+  executed?: boolean;
 }
 
 export class HookRegistry {
@@ -131,12 +137,56 @@ export class HookRegistry {
     return (this.eventIndex.get(eventName) ?? 0) > 0;
   }
 
-  /** 获取指定事件的所有 hook（已过滤禁用项，按优先级排序） */
+  /** 获取指定事件的所有 hook（已过滤禁用项和已执行的 once hook，按优先级排序） */
   getHooksForEvent(eventName: HookEventName): HookRegistryEntry[] {
     if (!this.hasHookForEvent(eventName)) return [];
     return this.entries
-      .filter(e => e.eventName === eventName && e.enabled)
+      .filter(e => e.eventName === eventName && e.enabled && !(e.once && e.executed))
       .sort((a, b) => this.getSourcePriority(a.source) - this.getSourcePriority(b.source));
+  }
+
+  /**
+   * 注册 Skill 声明的会话级 hook（Task 7）
+   * source 固定为 Runtime，附带 skillName / once 元数据。
+   */
+  registerSessionHook(
+    config: HookConfig,
+    eventName: HookEventName,
+    options: { matcher?: string; skillName: string; once?: boolean },
+  ): void {
+    if (!this.validateHookConfig(config, eventName)) {
+      throw new Error(`无效的 Skill hook 配置: ${eventName} from skill:${options.skillName}`);
+    }
+    this.entries.push({
+      config,
+      source: ConfigSource.Runtime,
+      eventName,
+      matcher: options.matcher,
+      enabled: true,
+      skillName: options.skillName,
+      once: options.once ?? false,
+      executed: false,
+    });
+    this.incrementEventIndex(eventName);
+  }
+
+  /** 标记一个 once hook 为已执行（取用后调用） */
+  markOnceExecuted(entry: HookRegistryEntry): void {
+    if (!entry.once) return;
+    const target = this.entries.find((e) => e === entry);
+    if (target) target.executed = true;
+  }
+
+  /**
+   * 移除指定 Skill 注册的所有会话级 hook
+   * @returns 移除的数量
+   */
+  removeSkillHooks(skillName: string): number {
+    const before = this.entries.length;
+    this.entries = this.entries.filter((e) => e.skillName !== skillName);
+    const removed = before - this.entries.length;
+    if (removed > 0) this.rebuildEventIndex();
+    return removed;
   }
 
   /** 获取所有 hook */
@@ -166,6 +216,20 @@ export class HookRegistry {
     for (const entry of this.entries) {
       entry.enabled = enabled;
     }
+  }
+
+  /**
+   * 移除指定来源的所有 hook（用于插件 hooks 原子交换）
+   * @returns 移除的数量
+   */
+  removeBySource(source: ConfigSource): number {
+    const before = this.entries.length;
+    this.entries = this.entries.filter((e) => e.source !== source);
+    const removed = before - this.entries.length;
+    if (removed > 0) {
+      this.rebuildEventIndex();
+    }
+    return removed;
   }
 
   /** 获取 hook 名称 */
@@ -252,7 +316,8 @@ export class HookRegistry {
       case ConfigSource.Runtime: return 0;
       case ConfigSource.Project: return 1;
       case ConfigSource.User: return 2;
-      case ConfigSource.Global: return 3;
+      case ConfigSource.Plugin: return 3;
+      case ConfigSource.Global: return 4;
       default: return 999;
     }
   }

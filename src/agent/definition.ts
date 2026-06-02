@@ -103,6 +103,23 @@ export const BUILT_IN_AGENTS: AgentDefinition[] = [
 - 完成后简洁地报告结果和关键变更`;
     },
   },
+  {
+    agentType: "verify",
+    whenToUse: "对抗式验证某个结论/修复/发现是否真实成立。只读，倾向于证伪。",
+    tools: ["read", "grep", "glob", "ls", "read_many", "bash"],
+    maxTurns: 12,
+    maxTokens: 50000,
+    timeout: 120_000,
+    source: "built-in",
+    getSystemPrompt() {
+      return `你是一个对抗式验证代理。你的任务是验证给定的结论/修复/发现是否真实成立。
+规则：
+- 默认持怀疑态度，主动寻找反例和漏洞
+- 用 read/grep/bash 等只读手段核实，不要修改文件
+- 不确定时倾向于判定"未通过验证"
+- 输出明确结论：通过 / 未通过 + 关键证据`;
+    },
+  },
 ];
 
 /** 按 agentType 查找 AgentDefinition */

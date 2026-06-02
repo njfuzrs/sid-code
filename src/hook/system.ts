@@ -8,12 +8,11 @@ import { HookPlanner } from "./planner.ts";
 import { HookRunner } from "./runner.ts";
 import { HookAggregator } from "./aggregator.ts";
 import { HookEventHandler } from "./event-handler.ts";
-import type { HooksConfig as LegacyHooksConfig } from "../config/config.ts";
+import { HookEventName, ConfigSource, LEGACY_EVENT_MAP } from "./types.ts";
+import type { HooksConfig as LegacyHooksConfig, HookConfig as LegacyHookConfig } from "../config/config.ts";
 import type {
   HookConfig,
-  HookEventName,
   NewHooksConfig,
-  ConfigSource,
   AggregatedHookResult,
   SessionStartInput,
   SessionEndInput,
@@ -60,6 +59,23 @@ export class HookSystem {
     this.registry.registerHook(config, eventName, options);
   }
 
+  /**
+   * 注册 Skill 声明的会话级 hook（Task 7）
+   * Skill 被调用时注册，会话结束或 Skill 卸载时通过 removeSkillHooks 清理。
+   */
+  registerSessionHook(
+    config: HookConfig,
+    eventName: HookEventName,
+    options: { matcher?: string; skillName: string; once?: boolean },
+  ): void {
+    this.registry.registerSessionHook(config, eventName, options);
+  }
+
+  /** 移除指定 Skill 注册的所有会话级 hook，返回移除数量 */
+  removeSkillHooks(skillName: string): number {
+    return this.registry.removeSkillHooks(skillName);
+  }
+
   /** 获取事件处理器（用于触发事件） */
   getEventHandler(): HookEventHandler {
     return this.eventHandler;
@@ -93,6 +109,68 @@ export class HookSystem {
   /** 获取所有 hook（用于管理命令） */
   getAllHooks(): HookRegistryEntry[] {
     return this.registry.getAllHooks();
+  }
+
+  /**
+   * 原子替换插件 hooks（不影响 user/project/runtime 来源的 hooks）
+   *
+   * 关键设计（对标 Claude Code gh-29767 教训）：先清除所有 source=plugin 的旧 hook，
+   * 再注册新的插件 hooks，整个过程在同一同步调用内完成——旧 hooks 一直有效直到新 hooks 就位。
+   *
+   * @param pluginHooks 按事件名分组的插件 hook 列表（config 层 HooksConfig 格式）
+   */
+  replacePluginHooks(pluginHooks: LegacyHooksConfig): void {
+    // 1. 清除所有 source === Plugin 的已注册 hook
+    this.registry.removeBySource(ConfigSource.Plugin);
+
+    // 2. 注册新的插件 hooks
+    for (const [eventKey, hooks] of Object.entries(pluginHooks)) {
+      if (!Array.isArray(hooks)) continue;
+      const eventName = this.resolveEventName(eventKey);
+      if (!eventName) continue;
+
+      for (const legacyHook of hooks) {
+        const config = this.convertPluginHook(legacyHook);
+        if (!config) continue;
+        try {
+          this.registry.registerHook(config, eventName, {
+            matcher: legacyHook.matcher,
+            source: ConfigSource.Plugin,
+          });
+        } catch {
+          // 单个 hook 配置无效不影响其他 hook（错误已由 registry 内部记录）
+        }
+      }
+    }
+  }
+
+  /** 将 config 层 HookConfig 转为 hook 注册表的 HookConfig（command / url 两类） */
+  private convertPluginHook(legacy: LegacyHookConfig): HookConfig | null {
+    const type = legacy.type || "command";
+    if (type === "url") {
+      if (!legacy.url) return null;
+      return {
+        type: "url",
+        url: legacy.url,
+        method: legacy.method,
+        headers: legacy.headers,
+        timeout: legacy.timeout,
+      };
+    }
+    if (!legacy.command) return null;
+    return {
+      type: "command",
+      command: legacy.command,
+      timeout: legacy.timeout,
+    };
+  }
+
+  /** 解析事件名（支持 snake_case 和 PascalCase），委托给 registry 同款逻辑 */
+  private resolveEventName(name: string): HookEventName | null {
+    const values = Object.values(HookEventName) as string[];
+    if (values.includes(name)) return name as HookEventName;
+    const legacy = (LEGACY_EVENT_MAP as Record<string, HookEventName>)[name];
+    return legacy ?? null;
   }
 
   // ============================================================

@@ -27,11 +27,20 @@ import { BudgetTracker } from "./telemetry/metrics/budget-tracker.ts";
 import type { BudgetRule } from "./telemetry/metrics/budget-tracker.ts";
 import type { BudgetRuleConfig } from "./config/config.ts";
 import { loadAllCLAUDEmd, watchCLAUDEmd, unwatchCLAUDEmd } from "./config/rules.ts";
+import { cleanup as cleanupSettingsWatcher } from "./config/settings/change-detector.ts";
+import { stopAppConfigWatcher } from "./config/app-config.ts";
 import type { ProjectRules } from "./config/rules.ts";
 import { clearPromptCache } from "./config/system-prompt.ts";
 import { getLogger, getMemoryMonitor, getSessionMetrics } from "./debug/index.ts";
 import { QueryEngine } from "./query/engine.ts";
 import { HookSystem } from "./hook/system.ts";
+import {
+  SDKQueryEngine,
+  type SDKQueryEngineDriver,
+  StructuredIO,
+  CommandQueue,
+  runHeadless as sdkRunHeadless,
+} from "./sdk/index.ts";
 import { JitContextManager } from "./config/jit-context.ts";
 import { isAbortError } from "./llm/errors.ts";
 import { execSync } from "child_process";
@@ -108,6 +117,12 @@ export class App {
   private tuiStateUpdater: ((patch: Record<string, unknown>) => void) | null = null;
   /** 幂等保护：init() 只执行一次 */
   private initPromise: Promise<void> | null = null;
+  /** 是否正在处理一轮对话（Cron 调度器据此避免 REPL 忙时触发） */
+  private busy = false;
+  /** TUI 注入的提示词提交器（Cron 触发时把 prompt 注入主循环） */
+  private promptInjector: ((text: string) => Promise<void>) | null = null;
+  /** Cron 在 REPL 忙时触发的待处理提示词队列 */
+  private scheduledPromptQueue: string[] = [];
 
   constructor(opts: AppOptions) {
     this.config = opts.config;
@@ -260,6 +275,7 @@ export class App {
   /** 实际初始化逻辑 */
   private async doInit(): Promise<void> {
     const log = getLogger();
+    const initStartMs = Date.now();
     log.info("APP", "开始初始化...");
 
     // 启动内存监控
@@ -268,6 +284,14 @@ export class App {
     // 设置 bash 工具配置（用于环境变量清理）
     const { setBashToolConfig } = await import("./tool/bash.ts");
     setBashToolConfig(this.config);
+
+    // 加载插件 Hooks（原子注册到 HookSystem，失败不阻塞启动）
+    try {
+      const { loadPluginHooks } = await import("./plugin/index.ts");
+      await loadPluginHooks(this.hookSystem);
+    } catch (err: any) {
+      log.warn("APP", `插件 Hooks 加载失败: ${err.message}`);
+    }
 
     // 工作区信任检查（在加载项目级配置之前）
     if (!this.config.skipPermissions && !this.config.yesMode) {
@@ -378,6 +402,12 @@ export class App {
     // 信号兜底：SIGINT / SIGTERM 时强制落地 SessionEnd（reason=abort），避免 trajectory 残留 unknown
     // 这是 25% session 卡在 exit_status=unknown 的另一个根因——promptfoo timeout 时 SIGTERM 杀进程
     this.registerSignalHandlers();
+
+    // 启动耗时事件（spec 17 §3.1 零依赖事件 API 埋点示例）
+    try {
+      const { logEvent } = await import("./analytics/index.ts");
+      logEvent("startup_timing", { duration_ms: Date.now() - initStartMs });
+    } catch { /* 遥测旁路，绝不影响启动 */ }
   }
 
   /** 注册信号处理：SIGINT/SIGTERM 时同步触发 SessionEnd，避免 trajectory 丢失 */
@@ -585,7 +615,8 @@ export class App {
       getPlanModeReminder: async () => {
         if (!this.planManager?.isPlanning()) return null;
         const { buildPlanModeReminder } = await import("./plan/prompt.ts");
-        return buildPlanModeReminder();
+        // 节流：每 N 轮发完整提醒，中间轮次发简短提醒，省 token
+        return buildPlanModeReminder(this.planManager.nextReminderIsFull());
       },
       discoverJitContext: (toolBlocks) => this.discoverJitContext(toolBlocks),
     });
@@ -764,6 +795,7 @@ export class App {
     } catch { /* 忽略 */ }
 
     const { buildSystemPrompt } = await import("./config/system-prompt.ts");
+    const { collectIDEContext } = await import("./ide/integration.ts");
     const newPrompt = buildSystemPrompt({
       tools: this.toolRegistry.all(),
       projectRules: projectRules?.rawContent || undefined,
@@ -773,6 +805,7 @@ export class App {
       permissionMode: this.config.permissionMode,
       gitStatus: true,
       memorySummary,
+      ...collectIDEContext(),
       maxTokens: 180000,
     });
     this.ctxMgr.setSystemPrompt(newPrompt);
@@ -793,6 +826,39 @@ export class App {
   /** 获取 Plan Mode 管理器（供 TUI/命令使用） */
   getPlanManager(): PlanModeManager | null {
     return this.planManager;
+  }
+
+  /** 当前是否正在处理一轮对话（Cron 调度器据此判断 REPL 是否空闲） */
+  isBusy(): boolean {
+    return this.busy;
+  }
+
+  /** TUI 注入提示词提交器（Cron 触发时把 prompt 注入主循环） */
+  setPromptInjector(injector: (text: string) => Promise<void>): void {
+    this.promptInjector = injector;
+    // 注入器就绪后，立即冲刷忙时积压的调度提示词
+    void this.flushScheduledPrompts();
+  }
+
+  /**
+   * Cron 触发：把调度的 prompt 注入主循环。
+   * REPL 忙时（busy 或无注入器）先入队，待空闲再冲刷，避免污染当前轮上下文。
+   */
+  async enqueueScheduledPrompt(prompt: string): Promise<void> {
+    if (this.busy || !this.promptInjector) {
+      this.scheduledPromptQueue.push(prompt);
+      return;
+    }
+    await this.promptInjector(prompt);
+  }
+
+  /** 冲刷忙时积压的调度提示词（空闲时调用） */
+  private async flushScheduledPrompts(): Promise<void> {
+    if (this.busy || !this.promptInjector) return;
+    const pending = this.scheduledPromptQueue.splice(0);
+    for (const p of pending) {
+      await this.promptInjector(p);
+    }
   }
 
   /** JIT 上下文发现：根据工具访问的路径发现新的 CLAUDE.md */
@@ -859,6 +925,12 @@ export class App {
   /** 无头模式：消费 QueryEngine async generator，不依赖任何 renderer */
   async runHeadless(input: string): Promise<string> {
     await this.init();
+
+    // stream-json 模式：走 SDK 编程接口（NDJSON 双向流式）
+    if (this.config.outputFormat === "stream-json") {
+      await this.runHeadlessSDK(input);
+      return "";
+    }
 
     let streamBuffer = "";
     this.queryEngine.setStreamTextCallback((text) => { streamBuffer += text; });
@@ -928,6 +1000,8 @@ export class App {
 
     // 清理
     unwatchCLAUDEmd();
+    cleanupSettingsWatcher();
+    stopAppConfigWatcher();
     this.mcpManager?.closeAll();
 
     // 停止内存监控
@@ -944,6 +1018,111 @@ export class App {
 
     // headless 模式强制退出：init() 启动的 watcher/interval/telemetry 不会自行排空事件循环
     // 出错时 exit code 非 0，方便 wrapper 区分；trajectory 已在上面正确落盘
+    // 优雅关闭：刷新遥测/事件缓冲区（500ms 硬超时）后再强制退出（spec 17 §3.4）
+    const { runShutdownSequence } = await import("./utils/graceful-shutdown.ts");
+    await runShutdownSequence();
+    process.exit(runError ? 1 : 0);
+  }
+
+  /**
+   * 构建 SDKQueryEngineDriver：把现有 QueryEngine 适配为 SDK 引擎驱动。
+   *
+   * 关键：不重建 queryLoop，而是包装 this.queryEngine 的事件流（依赖反转，
+   * spec §2.1 #4）。SDK 用户因此获得与交互式用户一致的 Agent 内核。
+   */
+  private buildSDKDriver(): SDKQueryEngineDriver {
+    return {
+      submitMessage: (input: string) => this.queryEngine.submitMessage(input),
+      getUsage: () => this.sessionState.getTotalUsage(),
+      getCostUsd: () => this.sessionState.totalCostUSD,
+      getMessages: () => this.ctxMgr.getMessages(),
+      listTools: () =>
+        this.toolRegistry.all().map((t) => ({
+          name: t.name,
+          description: typeof t.description === "function" ? t.description() : "",
+        })),
+      getApiDurationMs: () => this.sessionState.getElapsedMs(),
+      setStreamTextCallback: (cb) => this.queryEngine.setStreamTextCallback(cb),
+    };
+  }
+
+  /**
+   * SDK stream-json 无头模式：NDJSON 双向流式通信
+   *
+   * 通过 stdin/stdout 与外部调用者（Python SDK / IDE / CI）通信：
+   * - 初始 prompt 入队执行
+   * - stdin 后续 user 消息触发多轮对话
+   * - 每条 SDKMessage 以 NDJSON 写出 stdout
+   *
+   * session_end hook 与优雅关闭复用与文本/JSON 模式一致的收尾逻辑。
+   */
+  private async runHeadlessSDK(input: string): Promise<void> {
+    this.abortController = new AbortController();
+
+    const structuredIO = new StructuredIO(process.stdin, process.stdout);
+    const commandQueue = new CommandQueue();
+    const driver = this.buildSDKDriver();
+
+    const engine = new SDKQueryEngine(
+      {
+        cwd: process.cwd(),
+        sessionId: this.sessionState.sessionId,
+        model: this.config.model,
+        maxTurns: this.config.maxTurns || undefined,
+        systemPrompt: this.config.systemPrompt || undefined,
+        jsonSchema: this.config.jsonSchema,
+      },
+      driver,
+    );
+
+    let runError: Error | null = null;
+    let aborted = false;
+    try {
+      await sdkRunHeadless(engine, {
+        outputFormat: "stream-json",
+        verbose: this.config.verbose,
+        initialPrompt: input,
+        structuredIO,
+        commandQueue,
+      });
+    } catch (err: any) {
+      runError = err instanceof Error ? err : new Error(String(err));
+      aborted =
+        runError.name === "AbortError" || /abort/i.test(runError.message ?? "");
+      structuredIO.rejectAllPending("session ended");
+      process.stderr.write(`\n[runHeadlessSDK] 异常: ${runError.message}\n`);
+    } finally {
+      this.abortController = null;
+    }
+
+    // session_end hook（与文本/JSON 模式一致：abort/error/exit 三态）
+    const endReason: "exit" | "error" | "abort" = aborted
+      ? "abort"
+      : runError
+      ? "error"
+      : "exit";
+    try {
+      await this.hookSystem.fireSessionEndEvent(
+        endReason,
+        this.buildSessionEndStats(),
+        runError
+          ? { error: { message: runError.message, name: runError.name, stack: runError.stack } }
+          : undefined,
+      );
+    } catch (hookErr: any) {
+      process.stderr.write(
+        `[runHeadlessSDK] SessionEnd hook 失败: ${hookErr?.message ?? hookErr}\n`,
+      );
+    }
+
+    // 清理 + 优雅关闭（与 runHeadless 收尾一致）
+    unwatchCLAUDEmd();
+    this.mcpManager?.closeAll();
+    getMemoryMonitor().stop();
+    getLogger().close();
+
+    const { runShutdownSequence } = await import("./utils/graceful-shutdown.ts");
+    await runShutdownSequence();
     process.exit(runError ? 1 : 0);
   }
 
@@ -1144,6 +1323,7 @@ export class App {
 
     // TUI 版本的 agentLoop（消费 QueryEngine async generator）
     const tuiAgentLoop = async (userInput: string) => {
+      this.busy = true;
       updateState({
         isLoading: true,
       });
@@ -1233,7 +1413,17 @@ export class App {
         costUSD: this.sessionState.totalCostUSD,
         contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / 200000) * 100),
       });
+
+      // 本轮结束 → 标记空闲并冲刷 Cron 忙时积压的提示词
+      this.busy = false;
+      void this.flushScheduledPrompts();
     };
+
+    // 注册提示词注入器：Cron 触发时，把调度 prompt 当作一次用户输入跑完整循环
+    this.setPromptInjector(async (text: string) => {
+      this.abortController = new AbortController();
+      await tuiAgentLoop(text);
+    });
 
     // 回调
     const callbacks: import("./ui/App.tsx").TUICallbacks = {
@@ -1313,6 +1503,7 @@ export class App {
             });
           },
           hookSystem: this.hookSystem,
+          commandRegistry: this.commandRegistry,
         };
 
         const command = this.commandRegistry.get(cmd);
@@ -1320,6 +1511,14 @@ export class App {
           log.warn("TUI:CMD", `未知命令: /${cmd}`);
           appendCommandOutput(commandInput, `未知命令: /${cmd}，输入 /help 查看可用命令`);
           return;
+        }
+
+        // 记录命令使用频率（驱动补全排序的指数衰减统计）
+        try {
+          const { recordUsage } = await import("./command/usage-tracking.ts");
+          recordUsage(command.name());
+        } catch {
+          // 使用追踪失败不影响命令执行
         }
 
         let result: import("./command/types.ts").CommandResult;
@@ -1410,6 +1609,8 @@ export class App {
     await app.waitUntilExit();
     await this.hookSystem.fireSessionEndEvent("exit", this.buildSessionEndStats());
     unwatchCLAUDEmd();
+    cleanupSettingsWatcher();
+    stopAppConfigWatcher();
     this.mcpManager?.closeAll();
 
     // 停止内存监控并输出会话摘要
@@ -1425,5 +1626,10 @@ export class App {
     console.log('─'.repeat(60) + '\n');
 
     log.info("TUI", "TUI 退出");
+
+    // 优雅关闭：刷新遥测/事件缓冲区（500ms 硬超时）+ failsafe（5s 强制退出）（spec 17 §3.4）
+    // 正常退出（/exit 或 Ctrl+D）不触发 SIGINT/SIGTERM，必须显式刷新，否则缓冲数据丢失
+    const { runShutdownSequence } = await import("./utils/graceful-shutdown.ts");
+    await runShutdownSequence();
   }
 }

@@ -9,6 +9,7 @@ import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResu
 import type { FileReadTracker } from "./file-read-tracker.ts";
 import { getLogger } from "../debug/logger.ts";
 import { detectOmissionPlaceholders } from "./omission-detector.ts";
+import { coerceSemanticBoolean } from "../utils/semantic-boolean.ts";
 import { mkdirSync, existsSync } from "fs";
 import { dirname, basename } from "path";
 
@@ -435,7 +436,9 @@ export class EditTool implements Tool {
     // 行号前缀剥离（如 "123→content" → "content"）
     const oldString = this.stripLineNumbers(params.old_string);
     const newString = params.new_string;
-    const replaceAll = params.replace_all ?? false;
+    // LLM 可能把布尔写成字符串 "false"——JS truthiness 会误判为 true，
+    // 导致本该替换一处却替换全部。用语义化布尔归一化兜底。
+    const replaceAll = coerceSemanticBoolean(params.replace_all, false);
 
     // 省略占位符检测（仅对较长的 new_string 检测，避免小编辑误报）
     if (newString.split("\n").length > 5) {

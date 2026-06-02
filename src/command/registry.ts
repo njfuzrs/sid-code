@@ -7,7 +7,7 @@
 import type { Command } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
 
-export type CommandSource = "builtin" | "user" | "project";
+export type CommandSource = "builtin" | "user" | "project" | "plugin";
 
 export class Registry {
   private commands = new Map<string, Command>();
@@ -80,6 +80,38 @@ export class Registry {
   /** 返回所有已注册的命令（不含别名重复） */
   all(): Command[] {
     return Array.from(this.commands.values());
+  }
+
+  /**
+   * 原子替换所有插件命令（source=plugin）。
+   *
+   * 插件命令名自带 pluginName: 前缀，天然与内置/用户命令隔离，因此直接按 source
+   * 清除旧的再注册新的。内置命令永远不会被插件命令覆盖（前缀不同）。
+   */
+  replacePluginCommands(commands: Command[]): void {
+    // 1. 清除所有 source=plugin 的旧命令
+    for (const [name, src] of this.commandSources) {
+      if (src === "plugin") {
+        const cmd = this.commands.get(name);
+        this.commands.delete(name);
+        this.commandSources.delete(name);
+        // 清理别名
+        if (cmd) {
+          for (const alias of cmd.aliases()) {
+            if (this.aliasMap.get(alias) === cmd) this.aliasMap.delete(alias);
+          }
+        }
+      }
+    }
+
+    // 2. 注册新插件命令（前缀保证不与内置冲突）
+    for (const cmd of commands) {
+      this.commands.set(cmd.name(), cmd);
+      this.commandSources.set(cmd.name(), "plugin");
+      for (const alias of cmd.aliases()) {
+        this.aliasMap.set(alias, cmd);
+      }
+    }
   }
 }
 

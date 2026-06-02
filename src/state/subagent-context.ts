@@ -5,6 +5,7 @@
 
 import type { AppState } from "./app-state.ts";
 import type { Store } from "./store.ts";
+import { createChildAbortController } from "../utils/abort-controller.ts";
 
 /** 子代理上下文选项 */
 export interface SubagentContextOptions {
@@ -40,12 +41,13 @@ export function createSubagentContext(
 ): SubagentContext {
   const { shareSetAppState = false, shareAbortController = false } = options;
 
-  const abortController = new AbortController();
-  if (parentAbortSignal && !shareAbortController) {
-    parentAbortSignal.addEventListener("abort", () => {
-      abortController.abort(parentAbortSignal.reason);
-    }, { once: true });
-  }
+  // 用 createChildAbortController 替代手写监听器：
+  // 同样实现父 → 子单向传播，但子完成/取消时自动清理父上的监听器，
+  // 防止长生命周期的父（主会话）累积死监听器导致内存泄漏。
+  const abortController =
+    parentAbortSignal && !shareAbortController
+      ? createChildAbortController(parentAbortSignal).controller
+      : new AbortController();
 
   const getAppState = () => rootStore.getState();
 

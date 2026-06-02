@@ -5,6 +5,10 @@
 
 import { execSync } from "child_process";
 import { getLogger } from "../debug/logger.ts";
+import {
+  generateSkillListing,
+  type SkillListingEntry,
+} from "../skill/budget.ts";
 
 /** 附件类型 */
 export interface Attachment {
@@ -24,6 +28,8 @@ export const PRIORITY = {
   CRITICAL_REMINDER: 1,
   /** Plan/Delegate 模式提醒 */
   MODE_REMINDER: 5,
+  /** Skill 摘要列表（在 CLAUDE.md 之前，确保模型能发现 Skill） */
+  SKILL_LISTING: 8,
   /** CLAUDE.md 项目规则 */
   CLAUDE_MD: 10,
   /** 诊断信息 */
@@ -34,6 +40,10 @@ export const PRIORITY = {
   IDE_OPEN_FILES: 25,
   /** 记忆信息 */
   MEMORY: 30,
+  /** 动态召回的记忆文件（比静态摘要稍后，获得更多注意力） */
+  MEMORY_RECALLED: 32,
+  /** Session Memory 摘要（压缩后注入） */
+  SESSION_MEMORY: 33,
   /** Todo 列表 */
   TODO_LIST: 35,
   /** Git 状态（最低优先级） */
@@ -240,6 +250,19 @@ export function generateIDESelectionAttachment(selection: string): Attachment {
 }
 
 /**
+ * 生成 IDE @提及附件
+ * 入参为已格式化的提及列表文本（每行一个位置）。
+ */
+export function generateIDEMentionAttachment(mentionText: string): Attachment {
+  return {
+    type: "ideMention",
+    label: "IDE @提及",
+    content: `<ide-mentions>\n用户在 IDE 中引用了以下代码位置：\n${mentionText}\n</ide-mentions>`,
+    priority: PRIORITY.IDE_SELECTION, // 与选区同优先级
+  };
+}
+
+/**
  * 生成 Todo 列表附件（预留接口）
  */
 export function generateTodoListAttachment(todoList: string): Attachment {
@@ -263,3 +286,62 @@ export function generateMemoryAttachment(memorySummary: string): Attachment {
     priority: PRIORITY.MEMORY,
   };
 }
+
+/**
+ * 生成动态召回的记忆附件（Task 7）。
+ * 根据当前查询召回的相关记忆文件正文（已含新鲜度警告）。
+ */
+export function generateRecalledMemoryAttachment(
+  recalled: Array<{ filename: string; content: string }>,
+): Attachment | null {
+  if (!recalled || recalled.length === 0) return null;
+  const body = recalled
+    .map((m) => `### ${m.filename}\n${m.content}`)
+    .join("\n\n---\n\n");
+  return {
+    type: "memoryRecalled",
+    label: "召回记忆",
+    content: `<recalled-memory>\n以下是与当前任务相关的记忆，请参考：\n\n${body}\n</recalled-memory>`,
+    priority: PRIORITY.MEMORY_RECALLED,
+  };
+}
+
+/**
+ * 生成 Session Memory 附件（Task 7）。
+ * 仅在压缩后注入结构化会话笔记。
+ */
+export function generateSessionMemoryAttachment(
+  sessionMemoryContent: string | null,
+): Attachment | null {
+  if (!sessionMemoryContent || !sessionMemoryContent.trim()) return null;
+  return {
+    type: "sessionMemory",
+    label: "会话笔记",
+    content: `<session-memory>\n以下是本次会话的结构化笔记（任务目标、进展、关键文件）：\n\n${sessionMemoryContent}\n</session-memory>`,
+    priority: PRIORITY.SESSION_MEMORY,
+  };
+}
+
+/**
+ * 生成 Skill 摘要列表附件（Task 2：两层索引发现机制）
+ *
+ * 只放 Skill 摘要（约 1% 上下文窗口），模型通过 skill 工具按名称调用，
+ * 避免每个 Skill 注册独立工具导致工具列表膨胀。
+ *
+ * @param entries Skill 摘要条目
+ * @param contextWindowTokens 上下文窗口 token 数（用于计算 1% 预算）
+ */
+export function generateSkillListingAttachment(
+  entries: SkillListingEntry[],
+  contextWindowTokens?: number,
+): Attachment | null {
+  const content = generateSkillListing(entries, contextWindowTokens);
+  if (!content) return null;
+  return {
+    type: "skillListing",
+    label: "Skill 摘要列表",
+    content,
+    priority: PRIORITY.SKILL_LISTING,
+  };
+}
+

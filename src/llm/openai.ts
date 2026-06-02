@@ -14,6 +14,8 @@ import type {
   StreamEvent,
   Message,
   Usage,
+  AccumulatedResponse,
+  ContentBlock,
 } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
 
@@ -240,6 +242,99 @@ export class OpenAIProvider implements Provider {
         error: { message: err.message || String(err) },
       };
     }
+  }
+
+  /**
+   * 非流式请求（流式降级场景使用）。
+   * 复用 convertMessages，用普通 chat/completions 请求（stream:false）。
+   */
+  async sendMessageNonStreaming(
+    params: SendParams,
+    signal?: AbortSignal,
+  ): Promise<AccumulatedResponse> {
+    const messages = this.convertMessages(params.messages);
+    const tools = params.tools?.map((t) => ({
+      type: "function",
+      function: {
+        name: t.name,
+        description: t.description,
+        parameters: t.input_schema,
+      },
+    }));
+
+    const requestBody: any = {
+      model: params.model || this._model,
+      messages,
+      max_tokens: params.maxTokens,
+      stream: false,
+    };
+    if (params.system) {
+      requestBody.messages.unshift({ role: "system", content: params.system });
+    }
+    if (tools && tools.length > 0) {
+      requestBody.tools = tools;
+    }
+
+    const log = getLogger();
+    log.debug("LLM:OPENAI", "非流式请求", { model: requestBody.model });
+
+    const response = await fetch(`${this.baseURL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${this.apiKey}`,
+      },
+      body: JSON.stringify(requestBody),
+      signal,
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`OpenAI API 错误: ${response.status} ${errText}`);
+    }
+
+    const data: any = await response.json();
+    const choice = data.choices?.[0];
+    const msg = choice?.message ?? {};
+    const content: ContentBlock[] = [];
+
+    if (typeof msg.content === "string" && msg.content.length > 0) {
+      content.push({ type: "text", text: msg.content });
+    }
+    if (Array.isArray(msg.tool_calls)) {
+      for (const tc of msg.tool_calls) {
+        let input: unknown = {};
+        try {
+          input = tc.function?.arguments ? JSON.parse(tc.function.arguments) : {};
+        } catch {
+          input = {};
+        }
+        content.push({
+          type: "tool_use",
+          id: tc.id || "",
+          name: tc.function?.name || "",
+          input,
+        });
+      }
+    }
+
+    const finishReason = choice?.finish_reason;
+    const stopReason =
+      finishReason === "tool_calls"
+        ? "tool_use"
+        : finishReason === "length"
+          ? "max_tokens"
+          : "end_turn";
+
+    return {
+      role: "assistant",
+      content,
+      stopReason,
+      usage: {
+        inputTokens: data.usage?.prompt_tokens ?? 0,
+        outputTokens: data.usage?.completion_tokens ?? 0,
+      },
+    };
   }
 
   /**

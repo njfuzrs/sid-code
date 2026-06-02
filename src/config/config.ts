@@ -23,6 +23,11 @@ export interface MCPServerConfig {
   retries?: number;        // 重试次数，默认 2
   includeTools?: string[]; // 工具白名单（优先于 excludeTools）
   excludeTools?: string[]; // 工具黑名单
+  // ─── IDE 集成元数据（动态注册的 IDE MCP server 使用，对标 Claude Code sse-ide/ws-ide） ───
+  authToken?: string;          // 认证令牌（注入为 Authorization: Bearer 头）
+  ideName?: string;            // IDE 名称（VS Code / Cursor / JetBrains 等）
+  ideRunningInWindows?: boolean; // IDE 是否运行在 Windows 上（WSL 场景）
+  scope?: "user" | "project" | "local" | "dynamic"; // 配置来源标记
 }
 
 /** Hook 配置（支持 command 和 url 两种类型） */
@@ -89,6 +94,10 @@ export interface Config {
   print: boolean;
   outputFormat: string;
   maxTurns: number;
+  /** stream-json/json 模式下输出全量消息数组（而非仅最终消息） */
+  verbose?: boolean;
+  /** 结构化输出的 JSON Schema 约束（--json-schema 文件解析后注入） */
+  jsonSchema?: Record<string, unknown>;
 
   // 系统提示词配置
   systemPrompt: string;
@@ -125,6 +134,10 @@ export interface Config {
   /** 是否信任项目级扩展（跳过信任检查，默认 false） */
   trustProjectExtensions?: boolean;
 
+  // 插件配置
+  /** 会话级插件目录（--plugin-dir，不持久化，视为 inline 来源） */
+  pluginDirs?: string[];
+
   // Checkpoint 配置
   checkpoint?: CheckpointConfig;
 
@@ -150,6 +163,22 @@ export interface Config {
 
   // 遥测配置（OTel 兼容的结构化 Trace）
   telemetry?: TelemetryConfig;
+
+  // 分析/事件系统配置（spec 17 — analytics 通道）
+  analytics?: AnalyticsConfig;
+
+  // IDE 集成配置
+  ide?: IDEConfig;
+}
+
+/** IDE 集成配置 */
+export interface IDEConfig {
+  /** 是否自动连接 IDE（默认 false，在 IDE 内置终端中自动开启） */
+  autoConnect?: boolean;
+  /** 自动发现超时（毫秒，默认 30000） */
+  discoveryTimeout?: number;
+  /** 是否自动安装 IDE 扩展（默认 false，扩展尚未发布） */
+  autoInstallExtension?: boolean;
 }
 
 /** 轨迹上传配置 */
@@ -222,6 +251,43 @@ export interface TelemetryConfig {
   flushIntervalMs?: number;
   /** 最大队列大小（默认 2048） */
   maxQueueSize?: number;
+}
+
+/** 隐私级别（spec 17 §3.3） */
+export type PrivacyLevel = "default" | "no-telemetry" | "essential-traffic";
+
+/** 远程事件导出后端配置（spec 17 §4.2） */
+export interface AnalyticsBackendConfig {
+  /** 后端名称（用于日志与 killswitch） */
+  name: string;
+  /** 后端类型，目前支持 http */
+  type: "http";
+  /** 远程端点 URL */
+  endpoint: string;
+  /** 认证头（可选） */
+  authHeader?: string;
+  /** 批量大小 */
+  batchSize?: number;
+  /** 刷新间隔（ms） */
+  flushIntervalMs?: number;
+  /** 网络超时（ms） */
+  networkTimeoutMs?: number;
+  /** 是否脱敏 _PROTECTED_* 字段（默认 true） */
+  stripProtected?: boolean;
+  /** 事件白名单（为空则接受所有事件） */
+  allowedEvents?: string[];
+}
+
+/** 分析/事件系统配置（spec 17 — analytics 通道，与 telemetry Span 通道并行） */
+export interface AnalyticsConfig {
+  /** 隐私级别覆盖（环境变量优先级更高） */
+  privacyLevel?: PrivacyLevel;
+  /** Feature Flag 远程端点（可选） */
+  featureFlagEndpoint?: string;
+  /** 本地 Feature Flag 定义 */
+  flags?: Record<string, string | number | boolean | Record<string, unknown>>;
+  /** 远程事件导出后端列表 */
+  backends?: AnalyticsBackendConfig[];
 }
 
 /** Checkpoint 配置 */
@@ -301,6 +367,8 @@ export function defaultConfig(): Config {
     print: false,
     outputFormat: "text",
     maxTurns: 0,
+    verbose: false,
+    jsonSchema: undefined,
     systemPrompt: "",
     appendSystemPrompt: "",
     systemPromptFile: "",
@@ -313,12 +381,17 @@ export function defaultConfig(): Config {
   };
 }
 
+/** 解析字符串中的 ${ENV_VAR} 占位符（用于 authHeader 等敏感配置，避免明文落配置文件） */
+function resolveEnvPlaceholder(value: string | undefined): string | undefined {
+  if (!value || typeof value !== "string") return value;
+  return value.replace(/\$\{([A-Z0-9_]+)\}/g, (_m, name) => process.env[name] ?? "");
+}
+
 /** 将 YAML 字段名转换为 Config 字段名 */
 function normalizeConfigKeys(raw: any): Partial<Config> {
   if (!raw || typeof raw !== "object") {
     return {};
   }
-
   const keyMap: Record<string, keyof Config> = {
     provider: "provider",
     model: "model",
@@ -361,6 +434,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     trace: "trace",
     search: "search",
     telemetry: "telemetry",
+    analytics: "analytics",
   };
 
   const result: any = {};
@@ -437,6 +511,28 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
         batchSize: v.batch_size || v.batchSize,
         flushIntervalMs: v.flush_interval_ms || v.flushIntervalMs,
         maxQueueSize: v.max_queue_size || v.maxQueueSize,
+      };
+    // 特殊处理 analytics：转换字段名（snake_case → camelCase），解析后端列表（spec 17）
+    } else if (configKey === "analytics" && typeof value === "object" && value !== null) {
+      const v = value as any;
+      const backends = Array.isArray(v.backends)
+        ? v.backends.map((b: any) => ({
+            name: b.name,
+            type: b.type ?? "http",
+            endpoint: b.endpoint,
+            authHeader: resolveEnvPlaceholder(b.auth_header || b.authHeader),
+            batchSize: b.batch_size ?? b.batchSize,
+            flushIntervalMs: b.flush_interval_ms ?? b.flushIntervalMs,
+            networkTimeoutMs: b.network_timeout_ms ?? b.networkTimeoutMs,
+            stripProtected: b.strip_protected ?? b.stripProtected,
+            allowedEvents: b.allowed_events ?? b.allowedEvents,
+          }))
+        : undefined;
+      result[configKey] = {
+        privacyLevel: v.privacy_level ?? v.privacyLevel,
+        featureFlagEndpoint: v.feature_flag_endpoint ?? v.featureFlagEndpoint,
+        flags: v.flags,
+        backends,
       };
     // 特殊处理 quota：转换字段名
     } else if (configKey === "quota" && typeof value === "object" && value !== null) {

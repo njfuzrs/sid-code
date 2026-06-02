@@ -145,13 +145,13 @@ export class TelemetryBus {
       () => { this.flush().catch(() => {}); },
       this.config.flushIntervalMs,
     );
-    // Bun 兼容的进程退出处理
+    // 关闭交由统一的 graceful-shutdown 流程驱动(spec 17 §3.4):
+    // 不再在此自行注册 SIGINT/SIGTERM,避免与 app.ts 的信号处理器、
+    // graceful-shutdown 的 failsafe 重复触发 process.exit。
+    // 仅保留 beforeExit 作为非信号退出路径(如事件循环排空)的兜底刷新。
     if (!this._shutdownRegistered) {
       this._shutdownRegistered = true;
-      const doShutdown = () => { this.shutdown().catch(() => {}); };
-      process.on("beforeExit", doShutdown);
-      process.on("SIGINT", async () => { await this.shutdown(); process.exit(0); });
-      process.on("SIGTERM", async () => { await this.shutdown(); process.exit(0); });
+      process.on("beforeExit", () => { this.shutdown().catch(() => {}); });
     }
   }
 
@@ -255,6 +255,18 @@ export class TelemetryBus {
       this.flushTimer = undefined;
     }
     await this.flush();
+
+    // Perfetto 追踪输出（spec 17 §6.2）：SID_CODE_PERFETTO_TRACE 启用时落盘
+    try {
+      const { isPerfettoEnabled, writePerfettoTrace } = await import("./perfetto.ts");
+      if (isPerfettoEnabled() && this.spanHistory.length > 0) {
+        const path = writePerfettoTrace(this.spanHistory);
+        if (path) getLogger().debug("TELEMETRY", `Perfetto 追踪已写入: ${path}`);
+      }
+    } catch {
+      // Perfetto 输出失败不影响关闭
+    }
+
     await Promise.allSettled(this.exporters.map(e => e.shutdown()));
   }
 

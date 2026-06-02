@@ -46,8 +46,10 @@ export class SubAgentTool implements Tool {
 - task: 执行特定的编码子任务
 - summarize: 总结大量内容
 - plan: 分析代码库并输出结构化的实现方案
+- verify: 对抗式验证某个结论/修复是否真实成立（只读，倾向证伪）
 子代理完成后只返回最终结果。
-设置 run_in_background=true 可以后台执行，立即返回 task_id，完成后通过通知告知结果。`;
+设置 run_in_background=true 可以后台执行，立即返回 task_id，完成后通过通知告知结果。
+设置 isolation=worktree 可在独立 Git Worktree 中执行（文件改动隔离，仅同步模式）。`;
   }
 
   inputSchema(): Record<string, unknown> {
@@ -56,8 +58,8 @@ export class SubAgentTool implements Tool {
       properties: {
         type: {
           type: "string",
-          enum: ["explore", "task", "summarize", "plan"],
-          description: "子代理类型：explore(代码探索)、task(任务执行)、summarize(内容总结)、plan(代码分析和规划)",
+          enum: ["explore", "task", "summarize", "plan", "verify"],
+          description: "子代理类型：explore(代码探索)、task(任务执行)、summarize(内容总结)、plan(代码分析和规划)、verify(对抗式验证)",
         },
         description: {
           type: "string",
@@ -71,6 +73,11 @@ export class SubAgentTool implements Tool {
           type: "boolean",
           description: "是否后台执行（立即返回 task_id，完成后通知）",
         },
+        isolation: {
+          type: "string",
+          enum: ["worktree"],
+          description: "隔离模式。worktree=在独立 Git Worktree 中执行（文件改动不影响主工作区），完成后自动清理无改动的 Worktree。仅同步模式支持。",
+        },
       },
       required: ["type", "description", "prompt"],
     };
@@ -82,13 +89,14 @@ export class SubAgentTool implements Tool {
       description: string;
       prompt: string;
       run_in_background?: boolean;
+      isolation?: "worktree";
     };
 
     if (!params.type || !params.description || !params.prompt) {
       return { output: "错误: 缺少必需参数 (type, description, prompt)", isError: true };
     }
 
-    const validTypes: SubAgentType[] = ["explore", "task", "summarize", "plan"];
+    const validTypes: SubAgentType[] = ["explore", "task", "summarize", "plan", "verify"];
     if (!validTypes.includes(params.type)) {
       return { output: `错误: 无效的子代理类型 "${params.type}"，可选: ${validTypes.join(", ")}`, isError: true };
     }
@@ -107,12 +115,46 @@ export class SubAgentTool implements Tool {
     type: SubAgentType;
     description: string;
     prompt: string;
+    isolation?: "worktree";
   }, signal?: AbortSignal): Promise<ToolResult> {
     const log = getLogger();
 
     // 并发控制
     if (SubAgentTool.running >= SubAgentTool.MAX_CONCURRENT) {
       return { output: `子代理并发数已达上限(${SubAgentTool.MAX_CONCURRENT})，请等待其他子代理完成`, isError: true };
+    }
+
+    // Worktree 隔离：在独立工作区执行，结束后清理无改动的 Worktree
+    let isolationCleanup: (() => Promise<void>) | null = null;
+    let originalCwd: string | null = null;
+    if (params.isolation === "worktree") {
+      try {
+        const { WorktreeManager, findGitRoot } = await import("../worktree/manager.ts");
+        const gitRoot = findGitRoot(process.cwd());
+        if (!gitRoot) {
+          return { output: "错误: isolation=worktree 需要在 Git 仓库中执行", isError: true };
+        }
+        const { randomBytes } = await import("crypto");
+        const wtName = `agent-${randomBytes(4).toString("hex")}`;
+        const manager = new WorktreeManager(gitRoot);
+        const session = await manager.create(wtName);
+        originalCwd = process.cwd();
+        process.chdir(session.worktreePath);
+        isolationCleanup = async () => {
+          if (originalCwd) {
+            try { process.chdir(originalCwd); } catch { /* 忽略 */ }
+          }
+          // 无改动则自动删除；有改动则保留（fail-closed，不强删）
+          try {
+            await manager.remove(session, false);
+            log.info("SUBAGENT", `已清理隔离 Worktree: ${session.worktreeName}`);
+          } catch {
+            log.info("SUBAGENT", `保留有改动的隔离 Worktree: ${session.worktreePath}`);
+          }
+        };
+      } catch (err: any) {
+        return { output: `创建隔离 Worktree 失败: ${err.message}`, isError: true };
+      }
     }
 
     SubAgentTool.running++;
@@ -141,6 +183,9 @@ export class SubAgentTool implements Tool {
       return { output: `子代理执行失败: ${err.message}`, isError: true };
     } finally {
       SubAgentTool.running--;
+      if (isolationCleanup) {
+        await isolationCleanup();
+      }
     }
   }
 

@@ -286,6 +286,11 @@ export class MCPManager {
   private createTransport(name: string, config: MCPServerConfig) {
     const timeout = config.timeout ?? 30000;
 
+    // IDE 动态注册场景：authToken 注入为 Authorization 头（对标 Claude Code sse-ide/ws-ide）
+    const headers: Record<string, string> | undefined = config.authToken
+      ? { ...config.headers, Authorization: `Bearer ${config.authToken}` }
+      : config.headers;
+
     if (config.transport === "stdio") {
       if (!config.command) {
         throw new Error(`MCP 服务器 ${name} 缺少 command 配置`);
@@ -299,19 +304,19 @@ export class MCPManager {
         throw new Error(`MCP 服务器 ${name} 缺少 url 配置`);
       }
       const { expanded: url } = expandEnvVars(config.url);
-      return new HTTPTransport(url, config.headers, timeout);
+      return new HTTPTransport(url, headers, timeout);
     } else if (config.transport === "sse") {
       if (!config.url) {
         throw new Error(`MCP 服务器 ${name} 缺少 url 配置`);
       }
       const { expanded: url } = expandEnvVars(config.url);
-      return new SSETransport(url, config.headers, timeout);
+      return new SSETransport(url, headers, timeout);
     } else if (config.transport === "ws") {
       if (!config.url) {
         throw new Error(`MCP 服务器 ${name} 缺少 url 配置`);
       }
       const { expanded: url } = expandEnvVars(config.url);
-      return new WebSocketTransport(url, config.headers, timeout);
+      return new WebSocketTransport(url, headers, timeout);
     } else {
       throw new Error(`MCP 服务器 ${name} 不支持的传输方式: ${config.transport}`);
     }
@@ -584,5 +589,126 @@ export class MCPManager {
       client.close();
     }
     this.clients.clear();
+  }
+
+  /** 断开指定名称的单个服务器连接（清理 client / state / config） */
+  disconnect(name: string): void {
+    this.stopHeartbeat(name);
+    const client = this.clients.get(name);
+    if (client) {
+      try { client.close(); } catch {}
+      this.clients.delete(name);
+    }
+    this.serverStates.delete(name);
+    this.serverConfigs.delete(name);
+  }
+
+  /**
+   * 重连插件作用域的 MCP 服务器（用于 /reload-plugins）。
+   *
+   * 1. 断开所有现存的 plugin: 前缀服务器（旧插件 MCP）
+   * 2. 连接传入的新插件 MCP 服务器
+   *
+   * @param pluginServers 新的插件 MCP 服务器配置（已带 plugin:name:server 前缀）
+   * @returns 新连接产生的工具列表
+   */
+  async reconnectPluginServers(
+    pluginServers: Record<string, MCPServerConfig>,
+  ): Promise<Tool[]> {
+    // 1. 断开所有旧的插件作用域服务器
+    const oldPluginServers = [...this.serverConfigs.keys()].filter((n) => n.startsWith("plugin:"));
+    for (const name of oldPluginServers) {
+      this.disconnect(name);
+    }
+
+    // 2. 连接新的插件服务器
+    if (Object.keys(pluginServers).length === 0) return [];
+    return this.connectAll(pluginServers);
+  }
+
+  // ─── 运行时动态增删（IDE 发现 / 用户手动管理 / Bridge 场景） ───
+
+  /**
+   * 运行时添加一个 MCP 服务器
+   * 用于 IDE 发现后动态注册、用户手动添加等场景。
+   * 幂等：同名服务器已存在时先移除再重连，避免连接泄漏。
+   */
+  async addServer(name: string, config: MCPServerConfig): Promise<Tool[]> {
+    const log = getLogger();
+
+    // 同名已存在 → 先清理
+    if (this.clients.has(name) || this.serverConfigs.has(name)) {
+      this.disconnect(name);
+    }
+
+    this.serverConfigs.set(name, config);
+    this.setStatus(name, MCPConnectionStatus.CONNECTING);
+
+    const connectTimeout = config.timeout ?? 30000;
+    try {
+      const tools = await Promise.race([
+        this.connect(name, config),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error(`连接超时 (${connectTimeout}ms)`)), connectTimeout),
+        ),
+      ]);
+      this.setStatus(name, MCPConnectionStatus.CONNECTED);
+      log.info("MCP", `动态注册 ${name} 成功，注册 ${tools.length} 个工具`);
+      this.onToolsRefresh?.(name, tools);
+      return tools;
+    } catch (err: any) {
+      this.setStatus(name, MCPConnectionStatus.FAILED, err.message);
+      const client = this.clients.get(name);
+      if (client) {
+        try { client.close(); } catch {}
+        this.clients.delete(name);
+      }
+      log.error("MCP", `动态注册 ${name} 失败: ${err.message}`);
+      return [];
+    }
+  }
+
+  /**
+   * 运行时移除一个 MCP 服务器
+   * 用于 IDE 断开、用户手动移除等场景。清理所有状态后通知外部刷新（空工具列表）。
+   */
+  async removeServer(name: string): Promise<void> {
+    this.disconnect(name);
+    // 通知外部该服务器的工具全部移除
+    this.onToolsRefresh?.(name, []);
+  }
+
+  /** 检查指定服务器是否已连接 */
+  isConnected(name: string): boolean {
+    return this.serverStates.get(name)?.status === MCPConnectionStatus.CONNECTED
+      && this.clients.has(name);
+  }
+
+  /**
+   * 直接调用指定服务器的工具（不经过 ToolRegistry）。
+   * 用于 IDE RPC（openDiff / closeAllDiffTabs 等）等场景。
+   * @returns 工具输出文本；服务器未连接或调用失败返回 null
+   */
+  async callServerTool(
+    serverName: string,
+    toolName: string,
+    args: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<{ output: string; isError?: boolean } | null> {
+    const client = this.clients.get(serverName);
+    if (!client) return null;
+
+    const result = await client.callTool(toolName, args, signal);
+    const text = result.content
+      .filter((c) => c.type === "text" && c.text)
+      .map((c) => c.text!)
+      .join("\n");
+
+    return { output: text || "", isError: result.isError };
+  }
+
+  /** 获取指定服务器的 MCPClient（供 IDE 通知处理器注册等场景） */
+  getClient(serverName: string): MCPClient | undefined {
+    return this.clients.get(serverName);
   }
 }

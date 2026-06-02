@@ -1,0 +1,108 @@
+/**
+ * Skill 生命周期钩子集成（Task 7）
+ *
+ * Skill 可在 frontmatter 中声明 hooks，这些 hooks 在 Skill 被调用时注册为
+ * 会话级钩子（source=runtime），持续到会话结束或 Skill 卸载。
+ * 支持 once: true 的一次性钩子。
+ *
+ * frontmatter 示例：
+ *   hooks:
+ *     PostToolUse:
+ *       - matcher: "write"
+ *         hooks:
+ *           - command: "npx eslint --fix ${SKILL_DIR}/x"
+ *             once: false
+ */
+
+import { getLogger } from "../debug/logger.ts";
+import type { HookSystem } from "../hook/system.ts";
+import {
+  HookEventName,
+  LEGACY_EVENT_MAP,
+  type CommandHookConfig,
+} from "../hook/types.ts";
+import type { SkillHooksConfig } from "./types.ts";
+
+/** 校验事件名是否合法（PascalCase 或旧 snake_case） */
+export function isValidHookEvent(name: string): boolean {
+  const values = Object.values(HookEventName) as string[];
+  return values.includes(name) || name in LEGACY_EVENT_MAP;
+}
+
+function resolveEvent(name: string): HookEventName | null {
+  const values = Object.values(HookEventName) as string[];
+  if (values.includes(name)) return name as HookEventName;
+  return (LEGACY_EVENT_MAP as Record<string, HookEventName>)[name] ?? null;
+}
+
+/**
+ * 注册 Skill 声明的生命周期钩子
+ * @returns 成功注册的 hook 数量
+ */
+export function registerSkillHooks(
+  hookSystem: HookSystem,
+  skillName: string,
+  hooksConfig: SkillHooksConfig | undefined,
+  skillRoot: string | undefined,
+): number {
+  if (!hooksConfig) return 0;
+  const log = getLogger();
+  let count = 0;
+
+  for (const [eventName, definitions] of Object.entries(hooksConfig)) {
+    const resolved = resolveEvent(eventName);
+    if (!resolved) {
+      log.warn("SKILL", `Skill ${skillName} 声明了未知的 hook 事件: ${eventName}`);
+      continue;
+    }
+    if (!Array.isArray(definitions)) continue;
+
+    for (const def of definitions) {
+      if (!def || !Array.isArray(def.hooks)) continue;
+      for (const hook of def.hooks) {
+        if (!hook?.command) continue;
+
+        // 替换命令中的 ${SKILL_DIR} 变量
+        let command = hook.command;
+        if (skillRoot) {
+          command = command.replace(/\$\{SKILL_DIR\}/g, skillRoot);
+        }
+
+        const config: CommandHookConfig = {
+          type: "command",
+          name: `skill:${skillName}`,
+          command,
+        };
+
+        try {
+          hookSystem.registerSessionHook(config, resolved, {
+            matcher: def.matcher,
+            skillName,
+            once: hook.once ?? false,
+          });
+          count++;
+          log.debug(
+            "SKILL",
+            `注册 Skill hook: ${skillName} → ${eventName}:${def.matcher ?? "*"}`,
+          );
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          log.warn("SKILL", `注册 Skill hook 失败 (${skillName}): ${msg}`);
+        }
+      }
+    }
+  }
+
+  if (count > 0) {
+    log.info("SKILL", `Skill ${skillName} 注册了 ${count} 个会话级 hook`);
+  }
+  return count;
+}
+
+/** 卸载 Skill 声明的所有生命周期钩子 */
+export function unregisterSkillHooks(
+  hookSystem: HookSystem,
+  skillName: string,
+): number {
+  return hookSystem.removeSkillHooks(skillName);
+}

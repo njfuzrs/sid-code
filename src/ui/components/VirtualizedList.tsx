@@ -23,6 +23,7 @@ import React from "react";
 import { type DOMElement, Box, ResizeObserver } from "ink";
 import { theme } from "../semantic-colors.ts";
 import { useBatchedScroll } from "../hooks/useBatchedScroll.ts";
+import { quantize, SCROLL_QUANTUM } from "../utils/scroll-quantum.ts";
 
 export const SCROLL_TO_ITEM_END = Number.MAX_SAFE_INTEGER;
 
@@ -348,14 +349,23 @@ function VirtualizedList<T>(
     scrollableContainerHeight,
   ]);
 
-  // ── 虚拟化：计算可见范围 ──
+  // ── 虚拟化：计算可见范围（滚动量化 P2-1） ──
+  // 将用于“计算可见范围”的 scrollTop 量化到固定 bin，并在 bin 两侧各扩一个 quantum
+  // 作为 overscan。由此：
+  //   1) 该窗口恒为“精确视口覆盖范围”的超集 → 滚动中绝不会露出未挂载的空白行；
+  //   2) 仅当 scrollTop 跨越 quantum 边界时窗口边界才变化 → 挂载集合稳定，
+  //      减少 Yoga 布局 / ResizeObserver 抖动（高频滚动时收益明显）。
+  // 视觉滚动仍由下方 Ink 容器的精确 scrollTop 驱动，保持平滑。
+  const qTop = quantize(Math.max(0, actualScrollTop), SCROLL_QUANTUM);
+  const windowTop = Math.max(0, qTop - SCROLL_QUANTUM);
+  const windowBottom =
+    qTop + SCROLL_QUANTUM + scrollableContainerHeight + SCROLL_QUANTUM;
+
   const startIndex = Math.max(
     0,
-    findLastIndex(offsets, (offset) => offset <= actualScrollTop) - 1,
+    findLastIndex(offsets, (offset) => offset <= windowTop) - 1,
   );
-  const endIndexOffset = offsets.findIndex(
-    (offset) => offset > actualScrollTop + scrollableContainerHeight,
-  );
+  const endIndexOffset = offsets.findIndex((offset) => offset > windowBottom);
   const endIndex =
     endIndexOffset === -1
       ? data.length - 1

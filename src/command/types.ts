@@ -1,8 +1,15 @@
 /**
  * 斜杠命令系统的核心类型
  * 用户在交互式模式下输入 /xxx 即可触发对应的命令
+ *
+ * 本文件包含两套类型体系：
+ * 1. 旧体系（Command / CommandResult / AppContext）—— 方法式接口，标记 deprecated，
+ *    通过 src/command/adapter.ts 桥接到新体系，迁移期间保留可用
+ * 2. 新体系（UnifiedCommand）—— 判别联合类型（local / local-jsx / prompt），
+ *    对齐 Claude Code 命令系统架构，支持延迟加载、多来源聚合、命令队列
  */
 
+import type { ReactNode } from "react";
 import type { Config } from "../config/config.ts";
 import type { Manager as ContextManager } from "../context/manager.ts";
 import type { Provider } from "../llm/provider.ts";
@@ -12,7 +19,14 @@ import type { SessionState } from "../session/state.ts";
 import type { MCPManager } from "../mcp/manager.ts";
 import type { HookSystem } from "../hook/system.ts";
 
-/** 应用上下文 - 将应用内部状态暴露给命令 */
+// ============================================================
+// 旧体系（deprecated，迁移期间保留）
+// ============================================================
+
+/**
+ * 应用上下文 - 将应用内部状态暴露给命令
+ * @deprecated 新命令请使用 {@link CommandContext}，旧命令通过 adapter.ts 桥接
+ */
 export interface AppContext {
   ctxMgr: ContextManager;
   registry: ToolRegistry;
@@ -32,6 +46,8 @@ export interface AppContext {
   confirmShellCommands?: (commands: string[]) => Promise<boolean>;
   /** Hook 系统引用（/hooks 命令用） */
   hookSystem?: HookSystem;
+  /** 命令注册表引用（/reload-plugins 重新合并插件命令用） */
+  commandRegistry?: import("./registry.ts").Registry;
 }
 
 /** 支持的对话框类型 */
@@ -57,7 +73,10 @@ export interface CommandResult {
   dialog?: DialogType;
 }
 
-/** 命令接口 - 所有斜杠命令必须实现 */
+/**
+ * 命令接口 - 所有斜杠命令必须实现
+ * @deprecated 新命令请直接定义为 {@link UnifiedCommand}，旧命令通过 adaptLegacyCommand 桥接
+ */
 export interface Command {
   name(): string;
   aliases(): string[];
@@ -66,3 +85,154 @@ export interface Command {
   subCommands?(): Command[];
   execute(args: string, ctx: AppContext): Promise<CommandResult>;
 }
+
+// ============================================================
+// 新体系：命令来源
+// ============================================================
+
+export type CommandSource =
+  | "builtin"       // 内置命令
+  | "user"          // 用户自定义（~/.sid-code/commands/）
+  | "project"       // 项目自定义（.sid-code/commands/）
+  | "skill"         // Skill 系统
+  | "mcp";          // MCP 服务器
+
+// ============================================================
+// 新体系：命令上下文（替代 AppContext，更精简）
+// ============================================================
+
+export interface CommandContext {
+  ctxMgr: ContextManager;
+  toolRegistry: ToolRegistry;
+  config: Config;
+  sessionId: string;
+  provider: Provider;
+  providerRegistry?: ProviderRegistry;
+  mcpManager?: MCPManager;
+  sessionState: SessionState;
+  hookSystem?: HookSystem;
+  cwd: string;
+  /** 切换模型回调 */
+  setModel?: (model: string) => void;
+  /** 将文本注入对话并触发 LLM 响应 */
+  sendToLLM?: (text: string) => Promise<void>;
+  /** Shell 注入确认回调，返回 true 表示用户确认 */
+  confirmShellCommands?: (commands: string[]) => Promise<boolean>;
+  /** 自定义命令摘要（/help 显示用） */
+  customCommands?: Array<{ name: string; description: string }>;
+}
+
+// ============================================================
+// 新体系：命令基础属性（所有命令共享）
+// ============================================================
+
+export interface CommandBase {
+  // === 身份标识 ===
+  name: string;                       // 命令名（唯一标识，如 "compact"）
+  aliases?: string[];                 // 别名（如 ["q"] 对应 /exit）
+  description: string;                // 描述（显示在补全列表和 /help 中）
+  argumentHint?: string;              // 参数提示（如 "session-id"）
+
+  // === 可见性控制 ===
+  isEnabled?: () => boolean;          // 运行时条件门控（feature flag 等）
+  isHidden?: boolean;                 // 从补全列表/help 中隐藏
+
+  // === 调用控制 ===
+  userInvocable?: boolean;            // 用户能否通过 /name 调用（false = 仅模型可用）
+  disableModelInvocation?: boolean;   // 模型能否通过 SkillTool 调用
+  immediate?: boolean;                // 是否绕过队列立即执行（模型运行时可用）
+
+  // === 来源追踪 ===
+  source?: CommandSource;             // 来源标记
+
+  // === 模型集成 ===
+  whenToUse?: string;                 // 告诉模型何时应该使用此命令
+
+  // === 子命令 ===
+  subCommands?: () => UnifiedCommand[];
+}
+
+// ============================================================
+// 新体系：三种命令变体
+// ============================================================
+
+/** local 命令：同步执行，返回文本/压缩结果/跳过 */
+export interface LocalCommand {
+  type: "local";
+  load: () => Promise<LocalCommandModule>;
+}
+
+export interface LocalCommandModule {
+  call(args: string, ctx: CommandContext): Promise<LocalCommandResult>;
+}
+
+export type LocalCommandResult =
+  | { type: "text"; value: string }           // 显示文本
+  | { type: "compact"; summary: string }      // 上下文压缩结果
+  | { type: "skip" }                          // 静默完成
+  | { type: "clear" }                         // 清空对话
+  | { type: "quit"; message?: string }        // 退出程序
+  | { type: "dialog"; dialog: DialogType }    // 打开交互式对话框
+  | { type: "submit_prompt"; prompt: string } // 将文本提交给 LLM
+  | { type: "confirm"; message: string; onConfirm: () => Promise<LocalCommandResult> }; // 需要用户确认
+
+/** local-jsx 命令：渲染 Ink 交互式 UI */
+export interface LocalJSXCommand {
+  type: "local-jsx";
+  load: () => Promise<LocalJSXCommandModule>;
+}
+
+export interface LocalJSXCommandModule {
+  call(
+    onDone: LocalJSXCommandOnDone,
+    ctx: CommandContext,
+    args: string,
+  ): Promise<ReactNode | null>;
+}
+
+export type LocalJSXCommandOnDone = (
+  result?: string,
+  options?: LocalJSXDoneOptions,
+) => void;
+
+export interface LocalJSXDoneOptions {
+  display?: "skip" | "system" | "user";   // 结果如何显示
+  shouldQuery?: boolean;                   // 完成后是否触发模型调用
+  nextInput?: string;                      // 链式命令：设置下一个输入
+  submitNextInput?: boolean;               // 链式命令：自动提交下一个输入
+}
+
+/** prompt 命令：生成 prompt 注入对话，触发模型调用 */
+export interface PromptCommand {
+  type: "prompt";
+  context?: "inline" | "fork";             // inline=当前对话展开，fork=子代理执行
+  getPromptForCommand(
+    args: string,
+    ctx: CommandContext,
+  ): Promise<string>;
+  allowedTools?: string[];                 // 限制模型可用的工具集（fork 模式）
+  maxTurns?: number;                       // 最大轮次（fork 模式）
+}
+
+// ============================================================
+// 新体系：统一命令类型 = 基础属性 + 三种变体之一
+// ============================================================
+
+export type UnifiedCommand = CommandBase &
+  (LocalCommand | LocalJSXCommand | PromptCommand);
+
+// ============================================================
+// 新体系：命令执行结果（执行引擎返回给应用层）
+// ============================================================
+
+export type CommandExecutionResult =
+  | { type: "message"; value: string; shouldQuery?: boolean }
+  | { type: "submit_prompt"; value: string; shouldQuery: boolean }
+  | { type: "dialog"; dialog: DialogType }
+  | { type: "clear" }
+  | { type: "quit"; message?: string }
+  | { type: "compact"; summary: string }
+  | { type: "confirm"; message: string; onConfirm: () => Promise<CommandExecutionResult> }
+  | { type: "error"; message: string }
+  | { type: "passthrough"; value: string }  // 当作普通文本发给模型
+  | { type: "skip" };                       // 静默完成

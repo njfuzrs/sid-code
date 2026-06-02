@@ -29,6 +29,20 @@ export interface TruncationResult {
   savedPath: string | null;
 }
 
+/**
+ * 已调用的 Skill 记录（Task 3：压缩时保留 Skill 上下文）
+ * 对齐 Claude Code addInvokedSkill：Skill prompt 是模型正确执行任务的关键上下文，
+ * 压缩时必须重新注入，否则模型会"忘记"应遵循的工作流。
+ */
+export interface InvokedSkill {
+  /** Skill 名称 */
+  name: string;
+  /** Skill prompt 内容 */
+  content: string;
+  /** 调用时的消息索引 */
+  invokedAt: number;
+}
+
 /** 压缩级别 */
 export type CompactionLevel =
   | "none"       // 不需要压缩
@@ -58,6 +72,8 @@ export class Manager {
   private compactThreshold: number;
   private tempDir?: string;
   private maskingService?: ToolOutputMaskingService;
+  /** 已调用的 Skill 记录（压缩时保留其 prompt 上下文） */
+  private invokedSkills: InvokedSkill[] = [];
 
   constructor(opts: ManagerOptions) {
     this.maxTokens = opts.maxTokens;
@@ -78,6 +94,30 @@ export class Manager {
   /** 获取系统提示词 */
   getSystemPrompt(): string {
     return this.systemPrompt;
+  }
+
+  /**
+   * 记录 Skill 调用（Skill 被 inline 执行后调用）
+   * 压缩时这些 Skill 的 prompt 内容会被重新注入，避免模型遗忘工作流。
+   * 同名 Skill 重复调用时更新为最新内容。
+   */
+  addInvokedSkill(name: string, content: string): void {
+    const existing = this.invokedSkills.find((s) => s.name === name);
+    if (existing) {
+      existing.content = content;
+      existing.invokedAt = this.messages.length;
+      return;
+    }
+    this.invokedSkills.push({
+      name,
+      content,
+      invokedAt: this.messages.length,
+    });
+  }
+
+  /** 获取已调用的 Skill 列表 */
+  getInvokedSkills(): InvokedSkill[] {
+    return [...this.invokedSkills];
   }
 
   /** 添加消息（带验证） */
@@ -517,7 +557,10 @@ export class Manager {
       content: [{ type: "text", text: "好的，我已了解之前的对话内容。请继续。" }],
     };
 
-    this.messages = [summaryMsg, ackMsg, ...kept];
+    // 保留已调用的 Skill 上下文（压缩会丢弃旧消息，Skill 工作流指令必须重新注入）
+    const skillMsgs = this.buildInvokedSkillMessages();
+
+    this.messages = [summaryMsg, ackMsg, ...skillMsgs, ...kept];
 
     const tokensAfter = this.estimateTokens();
     const log = getLogger();
@@ -531,6 +574,31 @@ export class Manager {
 
     // 记录压缩到会话指标
     getSessionMetrics().recordCompact();
+  }
+
+  /**
+   * 构造已调用 Skill 的保留消息对
+   * 压缩会丢弃旧消息，但 Skill 的工作流指令是模型正确执行任务的关键上下文，
+   * 必须重新注入（对齐 Claude Code addInvokedSkill 的"必须保留"语义）。
+   */
+  private buildInvokedSkillMessages(): Message[] {
+    const toPreserve = this.invokedSkills;
+    if (toPreserve.length === 0) return [];
+
+    const skillUserMsg: Message = {
+      role: "user",
+      content: toPreserve.map((s) => ({
+        type: "text" as const,
+        text: `[已调用 Skill: ${s.name}]\n${s.content}`,
+      })),
+    };
+    const skillAckMsg: Message = {
+      role: "assistant",
+      content: [
+        { type: "text", text: "好的，我已重新加载之前调用的 Skill 上下文，会继续遵循。" },
+      ],
+    };
+    return [skillUserMsg, skillAckMsg];
   }
 
   /**

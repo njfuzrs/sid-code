@@ -42,6 +42,9 @@ export class MCPClient {
   /** 连接断开回调 */
   onDisconnected?: () => void;
 
+  /** 通用通知处理器注册表（method → handlers） */
+  private notificationHandlers = new Map<string, Array<(params: unknown) => void>>();
+
   constructor(transport: Transport, options?: MCPClientOptions) {
     this.transport = transport;
     this.retries = options?.retries ?? 2;
@@ -59,6 +62,28 @@ export class MCPClient {
     }
   }
 
+  /**
+   * 注册通用 MCP 通知处理器（支持同一 method 多个处理器）。
+   * 用于 IDE 通知（selection_changed / at_mentioned 等）。
+   * @returns 取消注册函数
+   */
+  onNotification(method: string, handler: (params: unknown) => void): () => void {
+    let handlers = this.notificationHandlers.get(method);
+    if (!handlers) {
+      handlers = [];
+      this.notificationHandlers.set(method, handlers);
+    }
+    handlers.push(handler);
+
+    return () => {
+      const list = this.notificationHandlers.get(method);
+      if (list) {
+        const idx = list.indexOf(handler);
+        if (idx >= 0) list.splice(idx, 1);
+      }
+    };
+  }
+
   /** 处理服务器通知 */
   private handleNotification(notification: JsonRpcNotification): void {
     switch (notification.method) {
@@ -71,6 +96,18 @@ export class MCPClient {
       case "notifications/prompts/list_changed":
         this.onPromptsChanged?.();
         break;
+    }
+
+    // 分发到通用通知处理器（IDE 选区 / @提及等）
+    const handlers = this.notificationHandlers.get(notification.method);
+    if (handlers) {
+      for (const handler of handlers) {
+        try {
+          handler(notification.params);
+        } catch {
+          // 单个处理器失败不影响其他处理器
+        }
+      }
     }
   }
 

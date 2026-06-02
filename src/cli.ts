@@ -30,6 +30,8 @@ type CLIArgs = Partial<Config> & {
   "delete-session"?: string;
   "cleanup-sessions"?: boolean;
   "upload-traces"?: boolean;
+  /** --json-schema 指向的文件路径，后续解析为 config.jsonSchema */
+  jsonSchemaFile?: string;
 };
 
 /** 解析命令行参数 */
@@ -61,6 +63,8 @@ function parseCLIArgs(): CLIArgs {
         print: { type: "boolean", short: "p" },
         "output-format": { type: "string" },
         "max-turns": { type: "string" },
+        verbose: { type: "boolean" },
+        "json-schema": { type: "string" },
 
         // 系统提示词
         "system-prompt": { type: "string" },
@@ -75,6 +79,9 @@ function parseCLIArgs(): CLIArgs {
         // 帮助
         help: { type: "boolean", short: "h" },
         version: { type: "boolean", short: "v" },
+
+        // 插件
+        "plugin-dir": { type: "string", multiple: true },
 
         // 轨迹采集
         trace: { type: "boolean" },
@@ -124,12 +131,15 @@ function parseCLIArgs(): CLIArgs {
     print: values.print,
     outputFormat: values["output-format"],
     maxTurns: values["max-turns"] ? parseInt(values["max-turns"]) : undefined,
+    verbose: values.verbose,
+    jsonSchemaFile: values["json-schema"],
     systemPrompt: values["system-prompt"],
     appendSystemPrompt: values["append-system-prompt"],
     systemPromptFile: values["system-prompt-file"],
     debug: values.debug,
     debugLevel: values["debug-level"],
     debugLogFile: values["debug-log-file"],
+    pluginDirs: values["plugin-dir"],
     "list-sessions": values["list-sessions"],
     "browse-sessions": values["browse-sessions"],
     "delete-session": values["delete-session"],
@@ -288,9 +298,45 @@ export async function main(): Promise<void> {
     runMigrations();
     profileCheckpoint("migrations_end");
 
+    // 配置迁移：config.yaml → settings.json + app.json（非破坏式，保留 config.yaml）
+    try {
+      const { migrateConfigIfNeeded } = await import("./config/migration.ts");
+      migrateConfigIfNeeded();
+    } catch (err) {
+      getLogger().warn("CONFIG", `配置迁移跳过: ${err}`);
+    }
+
     profileCheckpoint("config_load_start");
     const config = await loadConfig(cliArgs);
     profileCheckpoint("config_load_end");
+
+    // Settings 系统：Phase 1 安全环境变量（信任边界之前，仅可信来源 + 安全白名单）
+    // 旧 safe-env.ts 从未被调用——此处首次接入两阶段环境变量应用。
+    try {
+      const { applySafeConfigEnvironmentVariables } = await import(
+        "./config/settings/managed-env.ts"
+      );
+      applySafeConfigEnvironmentVariables();
+    } catch (err) {
+      getLogger().warn("ENV", `Phase 1 环境变量应用跳过: ${err}`);
+    }
+
+    // AppConfig：加载内部应用状态 + 递增启动计数（write-through，后台 watchFile）
+    try {
+      const { getAppConfig, incrementStartupCount } = await import(
+        "./config/app-config.ts"
+      );
+      getAppConfig();
+      incrementStartupCount();
+    } catch (err) {
+      getLogger().warn("CONFIG", `AppConfig 初始化跳过: ${err}`);
+    }
+
+    // 注册会话级插件目录（--plugin-dir），必须在任何插件加载前设置
+    if (config.pluginDirs && config.pluginDirs.length > 0) {
+      const { setInlinePluginDirs } = await import("./plugin/index.ts");
+      setInlinePluginDirs(config.pluginDirs);
+    }
 
     // 初始化调试日志
     if (config.debug) {
@@ -353,6 +399,27 @@ export async function main(): Promise<void> {
     if (config.provider === "openai" && !config.openaiKey) {
       console.error("错误: 未设置 OPENAI_API_KEY 环境变量");
       process.exit(1);
+    }
+
+    // Settings 系统：Phase 2 全量环境变量（信任边界之后）+ 启动文件变更监听。
+    // 当前无独立信任对话框 UI，以"通过 API Key 校验、确定在此项目运行"为信任边界。
+    if (!config.print) {
+      try {
+        const { applyAllConfigEnvironmentVariables } = await import(
+          "./config/settings/managed-env.ts"
+        );
+        applyAllConfigEnvironmentVariables();
+
+        const { initializeChangeDetector } = await import(
+          "./config/settings/change-detector.ts"
+        );
+        const { getSettingsFilePaths } = await import(
+          "./config/settings/constants.ts"
+        );
+        initializeChangeDetector(getSettingsFilePaths());
+      } catch (err) {
+        getLogger().warn("SETTINGS", `Phase 2 / 变更监听初始化跳过: ${err}`);
+      }
     }
 
     profileCheckpoint("init_start");
@@ -423,6 +490,32 @@ export async function main(): Promise<void> {
     const { SubAgentTool } = await import("./agent/tool.ts");
     toolRegistry.register(new SubAgentTool(providerRegistry, toolRegistry));
 
+    // 注册后台任务工具（task 系统已就位，此处补齐工具入口）
+    const { TaskOutputTool } = await import("./tool/task-output.ts");
+    const { TaskStopTool } = await import("./tool/task-stop.ts");
+    const { SendMessageTool } = await import("./tool/send-message.ts");
+    toolRegistry.register(new TaskOutputTool());
+    toolRegistry.register(new TaskStopTool());
+    toolRegistry.register(new SendMessageTool());
+
+    // 注册 Worktree 隔离工具
+    const { EnterWorktreeTool } = await import("./tool/enter-worktree.ts");
+    const { ExitWorktreeTool } = await import("./tool/exit-worktree.ts");
+    toolRegistry.register(new EnterWorktreeTool());
+    toolRegistry.register(new ExitWorktreeTool());
+
+    // 注册 Cron 调度工具
+    const { CronCreateTool } = await import("./tool/cron-create.ts");
+    const { CronDeleteTool } = await import("./tool/cron-delete.ts");
+    const { CronListTool } = await import("./tool/cron-list.ts");
+    toolRegistry.register(new CronCreateTool());
+    toolRegistry.register(new CronDeleteTool());
+    toolRegistry.register(new CronListTool());
+
+    // 注册 Swarm 多代理协作工具
+    const { TeamCreateTool } = await import("./tool/team-create.ts");
+    toolRegistry.register(new TeamCreateTool(providerRegistry, toolRegistry));
+
     // 注册内置命令
     const { Registry: CommandRegistry } = await import("./command/registry.ts");
     const { registerBuiltins } = await import("./command/builtins.ts");
@@ -470,11 +563,46 @@ export async function main(): Promise<void> {
       toolRegistry.register(new CustomAgentTool(def, providerRegistry, toolRegistry));
     }
 
+    // 加载插件组件（命令 / Agent；Hooks 和 MCP 在下方各自的初始化点接入）
+    let pluginMcpServers: Record<string, import("./config/config.ts").MCPServerConfig> = {};
+    try {
+      const {
+        mergePluginCommands,
+        loadPluginAgents,
+        collectPluginMcpServers,
+      } = await import("./plugin/index.ts");
+
+      // 插件命令（带 pluginName: 前缀，与内置/自定义命令隔离）
+      const pluginCmdCount = await mergePluginCommands(commandRegistry);
+
+      // 插件 Agent（注册为工具）
+      const pluginAgents = await loadPluginAgents();
+      for (const def of pluginAgents) {
+        toolRegistry.register(new CustomAgentTool(def, providerRegistry, toolRegistry));
+      }
+
+      // 收集插件 MCP 服务器（合并到 config.mcpServers，下方统一连接）
+      pluginMcpServers = await collectPluginMcpServers();
+
+      if (pluginCmdCount > 0 || pluginAgents.length > 0 || Object.keys(pluginMcpServers).length > 0) {
+        getLogger().info("PLUGIN", `插件组件: ${pluginCmdCount} 命令, ${pluginAgents.length} Agent, ${Object.keys(pluginMcpServers).length} MCP 服务器`);
+      }
+    } catch (err: any) {
+      getLogger().error("PLUGIN", `插件组件加载失败: ${err.message}`);
+    }
+
     profileCheckpoint("tool_reg_end");
 
-    // 初始化 MCP 服务器（后台连接，不阻塞启动）
+    // 初始化 MCP 服务器（后台连接，不阻塞启动）—— 合并用户配置 + 插件 MCP
+    const allMcpServers = { ...config.mcpServers, ...pluginMcpServers };
     let mcpManager: import("./mcp/manager.ts").MCPManager | undefined;
-    if (config.mcpServers && Object.keys(config.mcpServers).length > 0) {
+
+    // IDE 自动连接需要 mcpManager（IDE 作为动态 MCP server 接入），
+    // 因此即使没有配置 MCP 服务器，只要 IDE 自动连接生效也创建 manager
+    const { shouldAutoConnect } = await import("./ide/integration.ts");
+    const ideAutoConnect = shouldAutoConnect();
+
+    if (Object.keys(allMcpServers).length > 0 || ideAutoConnect) {
       const { MCPManager } = await import("./mcp/manager.ts");
       mcpManager = new MCPManager();
 
@@ -484,13 +612,27 @@ export async function main(): Promise<void> {
         for (const tool of tools) toolRegistry.register(tool);
       };
 
-      mcpManager.connectAll(config.mcpServers).then((mcpTools) => {
-        for (const tool of mcpTools) toolRegistry.register(tool);
-        if (mcpTools.length > 0) {
-          getLogger().info("MCP", `已连接，注册 ${mcpTools.length} 个工具`);
-        }
-      }).catch((err: any) => {
-        getLogger().error("MCP", `初始化失败: ${err.message}`);
+      if (Object.keys(allMcpServers).length > 0) {
+        mcpManager.connectAll(allMcpServers).then((mcpTools) => {
+          for (const tool of mcpTools) toolRegistry.register(tool);
+          if (mcpTools.length > 0) {
+            getLogger().info("MCP", `已连接，注册 ${mcpTools.length} 个工具`);
+          }
+        }).catch((err: any) => {
+          getLogger().error("MCP", `初始化失败: ${err.message}`);
+        });
+      }
+    }
+
+    // IDE 自动发现与连接（后台进行，不阻塞启动）
+    // 复用 mcpManager 的 onToolsRefresh 同步工具，IDE 作为动态 MCP server 接入
+    if (mcpManager && ideAutoConnect) {
+      const { getIDEIntegration } = await import("./ide/integration.ts");
+      const ideIntegration = getIDEIntegration(mcpManager, process.cwd(), {
+        discoveryTimeout: config.ide?.discoveryTimeout,
+      });
+      void ideIntegration?.startAutoConnect().catch((err: any) => {
+        getLogger().debug("IDE", `自动连接失败: ${err.message}`);
       });
     }
 
@@ -521,6 +663,41 @@ export async function main(): Promise<void> {
     // 创建 App
     const { App } = await import("./app.ts");
     const app = new App({ config, provider, providerRegistry, toolRegistry, commandRegistry, permissionChecker, mcpManager, planManager });
+
+    // 注册并发会话（Spec 18 §4）+ 启动 Cron 调度器（Spec 18 §5）
+    {
+      const { registerSession, unregisterSession } = await import("./session/concurrent.ts");
+      const sessionEntry = {
+        sessionId: config.sessionId,
+        pid: process.pid,
+        kind: (config.print ? "headless" : "interactive") as "headless" | "interactive",
+        cwd: process.cwd(),
+        startedAt: Date.now(),
+        model: config.model,
+      };
+      registerSession(sessionEntry);
+
+      // Cron 调度器：onFire 把 prompt 注入 App 主循环；isLoading 避免 REPL 忙时触发
+      const { getScheduler } = await import("./cron/scheduler.ts");
+      const scheduler = getScheduler({
+        onFire: (prompt: string) => {
+          void app.enqueueScheduledPrompt?.(prompt);
+        },
+        isLoading: () => app.isBusy?.() ?? false,
+        sessionId: config.sessionId,
+        workspaceDir: process.cwd(),
+      });
+      scheduler.start();
+
+      // 退出时注销会话 + 停止调度器
+      const cleanup = () => {
+        try { unregisterSession(config.sessionId); } catch { /* 忽略 */ }
+        try { scheduler.stop(); } catch { /* 忽略 */ }
+      };
+      process.once("exit", cleanup);
+      process.once("SIGINT", () => { cleanup(); process.exit(130); });
+      process.once("SIGTERM", () => { cleanup(); process.exit(143); });
+    }
 
     // 启动时自动清理过期会话（后台静默执行）
     if (!config.print) {
@@ -570,6 +747,20 @@ export async function main(): Promise<void> {
       if (!cliArgs.prompt) {
         console.error("错误: 无头模式需要提供提示词");
         process.exit(1);
+      }
+      // 解析 --json-schema 文件 → config.jsonSchema（结构化输出约束）
+      if (cliArgs.jsonSchemaFile) {
+        try {
+          const { readFileSync } = await import("node:fs");
+          config.jsonSchema = JSON.parse(readFileSync(cliArgs.jsonSchemaFile, "utf-8"));
+        } catch (err) {
+          console.error(
+            `错误: 无法读取/解析 --json-schema 文件 "${cliArgs.jsonSchemaFile}": ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+          process.exit(1);
+        }
       }
       startupTimer.end();
       await app.runHeadless(cliArgs.prompt);

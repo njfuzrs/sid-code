@@ -44,4 +44,35 @@ describe("ToolRegistry", () => {
     expect(defs[0].name).toBe("read");
     expect(defs[0].description).toBe("Mock tool: read");
   });
+
+  test("内置工具保持注册顺序，MCP 工具按名称排序（prompt cache 稳定性）", () => {
+    const reg = new Registry();
+    // 内置工具：人工编排顺序，不排序
+    reg.register(new MockTool("read"));
+    reg.register(new MockTool("bash"));
+    // MCP 工具：以非字典序注册，验证组装时被排序
+    reg.register(new MockTool("mcp__zeta"));
+    reg.register(new MockTool("mcp__alpha"));
+    reg.register(new MockTool("mcp__mid"));
+
+    const pool = reg.assembleToolPool();
+    const names = pool.map((t) => t.name());
+
+    // 内置在前，保持注册顺序
+    expect(names.slice(0, 2)).toEqual(["read", "bash"]);
+    // MCP 在后，按名称升序
+    expect(names.slice(2)).toEqual(["mcp__alpha", "mcp__mid", "mcp__zeta"]);
+  });
+
+  test("MCP 排序是确定性的（多次组装结果一致）", () => {
+    const reg = new Registry();
+    reg.register(new MockTool("mcp__c"));
+    reg.register(new MockTool("mcp__a"));
+    reg.register(new MockTool("mcp__b"));
+
+    const first = reg.assembleToolPool().map((t) => t.name());
+    const second = reg.assembleToolPool().map((t) => t.name());
+    expect(first).toEqual(second);
+    expect(first).toEqual(["mcp__a", "mcp__b", "mcp__c"]);
+  });
 });

@@ -30,6 +30,7 @@ const BUILTIN_AGENT_ALLOWED_TOOLS: Record<string, string[] | null> = {
   explore: ["read", "grep", "glob", "ls", "read_many"],
   task: ["read", "write", "edit", "bash", "grep", "glob", "ls", "read_many", "web_fetch", "web_search"],
   plan: ["read", "grep", "glob", "ls", "read_many"],
+  verify: ["read", "grep", "glob", "ls", "read_many", "bash"],  // 对抗式验证：只读 + bash 核实
   summarize: null,  // null = 不需要工具
   "general-purpose": null, // null = 不限制（由 Layer 3 的 disallowedTools 控制）
 };

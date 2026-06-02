@@ -34,6 +34,11 @@ export interface AutoCompactDeps {
   ctxMgr: ContextManager;
   hookSystem: HookSystem;
   getAbortSignal: () => AbortSignal | undefined;
+  /**
+   * 可选 Session Memory 提供方。
+   * 提供时优先用结构化会话笔记压缩，为空则回退到 LLM 摘要。
+   */
+  sessionMemory?: import("../session-memory/compact.ts").SessionMemoryProvider;
 }
 
 /**
@@ -66,6 +71,23 @@ export async function autoCompact(deps: AutoCompactDeps): Promise<void> {
   }
 
   try {
+    // 优先路径：Session Memory 压缩（结构化会话笔记）
+    if (deps.sessionMemory) {
+      try {
+        const { trySessionMemoryCompaction } = await import("../session-memory/compact.ts");
+        const smResult = await trySessionMemoryCompaction(deps.sessionMemory);
+        if (smResult) {
+          deps.ctxMgr.compactWithSummary(smResult.summary);
+          circuitBreaker.recordSuccess();
+          log.info("COMPACT", `Session Memory 压缩完成，剩余 ${deps.ctxMgr.messageCount()} 条消息`);
+          return;
+        }
+        // smResult 为 null：Session Memory 为空，回退到 LLM 摘要（不计失败）
+      } catch (err: any) {
+        log.debug("COMPACT", `Session Memory 压缩异常，回退 LLM 摘要: ${err.message}`);
+      }
+    }
+
     // 尝试用 LLM 生成摘要
     const toSummarize = messages.slice(0, -4);
     const summaryPrompt = `请用中文简洁地总结以下对话内容，保留关键信息（文件路径、代码修改、决策、待办事项）：\n\n${

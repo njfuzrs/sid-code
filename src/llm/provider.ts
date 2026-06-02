@@ -3,7 +3,7 @@
  * 所有 LLM 提供商（Anthropic/OpenAI/Ollama）必须实现此接口
  */
 
-import type { SendParams, StreamEvent } from "./types.ts";
+import type { SendParams, StreamEvent, AccumulatedResponse } from "./types.ts";
 
 /** Provider 支持的能力 */
 export interface ProviderCapabilities {
@@ -27,6 +27,16 @@ export interface Provider {
 
   /** 查询 Provider 支持的能力（可选，默认全 true） */
   capabilities?(): ProviderCapabilities;
+
+  /**
+   * 非流式请求（可选，用于流式降级场景）。
+   * 当某些网关不支持 SSE 时，stream-handler 会降级到此方法。
+   * 返回累积好的完整响应，由调用方转换为流式事件序列。
+   */
+  sendMessageNonStreaming?(
+    params: SendParams,
+    signal?: AbortSignal,
+  ): Promise<AccumulatedResponse>;
 }
 
 /** 默认能力（向后兼容，不强制实现） */

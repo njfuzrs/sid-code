@@ -44,6 +44,8 @@ export class HelpCommand implements Command {
       "  /agents          - 自定义 Agents 管理 (list)",
       "  /commands        - 列出自定义命令",
       "  /hooks           - Hook 管理 (list/enable/disable/enable-all/disable-all)",
+      "  /plugin          - 插件管理 (list/info/install/uninstall/enable/disable)",
+      "  /reload-plugins  - 重新加载所有插件组件",
       "  /plan            - 进入计划模式（先规划后执行）",
       "  /theme           - 显示或切换主题",
       "  /init            - 初始化项目 .sid-code/ 配置目录",
@@ -1220,6 +1222,10 @@ export async function registerBuiltins(registry: import("./registry.ts").Registr
   const { MCPEnhancedCommand } = await import("./mcp-enhanced.ts");
   registry.register(new MCPEnhancedCommand());
 
+  // IDE 集成命令
+  const { IDECommand } = await import("./ide.ts");
+  registry.register(new IDECommand());
+
   // 注册扩展管理命令
   const { SkillsCommand, AgentsCommand, CommandsListCommand } = await import("./extensions.ts");
   registry.register(new SkillsCommand());
@@ -1243,4 +1249,15 @@ export async function registerBuiltins(registry: import("./registry.ts").Registr
   registry.register(new AllowCommand());
   registry.register(new DenyCommand());
   registry.register(new PermissionsCommand());
+
+  // 插件管理命令
+  const { PluginCommand, ReloadPluginsCommand } = await import("./plugin.ts");
+  registry.register(new PluginCommand());
+  registry.register(new ReloadPluginsCommand());
+
+  // Spec 18 高级特性命令
+  const { PsCommand, WorktreeCommand, CronCommand } = await import("./advanced.ts");
+  registry.register(new PsCommand());
+  registry.register(new WorktreeCommand());
+  registry.register(new CronCommand());
 }

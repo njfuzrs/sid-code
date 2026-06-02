@@ -58,8 +58,20 @@ ${planExists
 `;
 }
 
-/** 生成 Plan Mode 系统提醒（附加到用户消息中，防止 LLM 遗忘） */
-export function buildPlanModeReminder(): string {
+/**
+ * 生成 Plan Mode 系统提醒（附加到用户消息中，防止 LLM 遗忘）
+ *
+ * 节流策略（对标 Claude Code）：完整提醒 token 较多，每 N 轮发一次完整版，
+ * 中间轮次发简短版，平衡"防遗忘"与"省 token"。
+ *
+ * @param full true=完整提醒，false=简短提醒（默认 true 保持向后兼容）
+ */
+export function buildPlanModeReminder(full: boolean = true): string {
+  if (!full) {
+    return `<system-reminder>
+[计划模式] 只允许只读操作。完成后调用 exit_plan_mode 提交计划。
+</system-reminder>`;
+  }
   return `<system-reminder>
 你当前处于计划模式。不要进行任何编辑或运行任何命令。
 专注于探索代码库和编写计划。

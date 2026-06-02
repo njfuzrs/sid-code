@@ -79,6 +79,12 @@ export class Registry {
       mcp = mcp.filter(t => !denySet.has(t.name()));
     }
 
+    // 4.1 MCP 工具按名称排序，保证 prompt cache 稳定性。
+    //   多个 MCP server 的连接顺序不确定，会导致工具定义顺序漂移，
+    //   进而使 Anthropic prompt cache（基于 tools 定义内容哈希）失效。
+    //   内置工具顺序是人工精心编排的（不排序），仅对 MCP 部分排序。
+    mcp.sort((a, b) => a.name().localeCompare(b.name()));
+
     // 5. 内置工具在前（稳定顺序），MCP 工具在后
     return [...builtIn, ...mcp];
   }

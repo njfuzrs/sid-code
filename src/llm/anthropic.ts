@@ -10,8 +10,11 @@ import type {
   StreamEvent,
   ContentBlock,
   Usage,
+  AccumulatedResponse,
 } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
+import { generateClientRequestId } from "../api/api-log.ts";
+import { updateRateLimitStatus } from "../api/rate-limit.ts";
 
 export class AnthropicProvider implements Provider {
   private client: Anthropic;
@@ -113,27 +116,48 @@ export class AnthropicProvider implements Provider {
       const requestStartTime = Date.now();
       let firstTokenTime: number | null = null;
 
+      // 注入客户端请求 ID，用于与服务端日志关联排查（请求超时时仍可追踪）
+      const clientRequestId = generateClientRequestId();
+
       log.debug("LLM:ANTHROPIC", `发送请求（Prompt Caching 已启用）`, {
         model: params.model || this._model,
         messageCount: messages.length,
         toolCount: tools?.length ?? 0,
         maxTokens: params.maxTokens,
+        clientRequestId,
       });
 
-      const stream = this.client.messages.stream({
-        model: params.model || this._model,
-        max_tokens: params.maxTokens,
-        messages: messages as any,
-        system: system as any,
-        tools: tools as any,
-        // Extended Thinking 支持
-        ...(params.thinking?.enabled && {
-          thinking: {
-            type: "enabled",
-            budget_tokens: params.thinking.budgetTokens,
-          },
-        }),
-      });
+      const stream = this.client.messages.stream(
+        {
+          model: params.model || this._model,
+          max_tokens: params.maxTokens,
+          messages: messages as any,
+          system: system as any,
+          tools: tools as any,
+          // Extended Thinking 支持
+          ...(params.thinking?.enabled && {
+            thinking: {
+              type: "enabled",
+              budget_tokens: params.thinking.budgetTokens,
+            },
+          }),
+        },
+        { headers: { "x-client-request-id": clientRequestId } },
+      );
+
+      // 从响应 headers 提取真实速率限制状态（不阻塞流式迭代）
+      stream
+        .withResponse()
+        .then(({ response }) => {
+          try {
+            updateRateLimitStatus(response.headers);
+          } catch {
+            /* headers 提取失败不影响主流程 */
+          }
+        })
+        .catch(() => {
+          /* withResponse 失败（如请求被中止）忽略 */
+        });
 
       let accumulatedUsage: Usage = { inputTokens: 0, outputTokens: 0 };
 
@@ -243,6 +267,84 @@ export class AnthropicProvider implements Provider {
         error: { message: err.message || String(err) },
       };
     }
+  }
+
+  /**
+   * 非流式请求（流式降级场景使用）。
+   * 复用与 sendMessageStream 相同的消息/system/tools 转换逻辑，但用 SDK 的非流式 create()。
+   */
+  async sendMessageNonStreaming(
+    params: SendParams,
+    signal?: AbortSignal,
+  ): Promise<AccumulatedResponse> {
+    const messages = params.messages.map((msg) => ({
+      role: msg.role,
+      content: msg.content.map((block) => {
+        if (block.type === "text") {
+          return { type: "text" as const, text: block.text };
+        } else if (block.type === "tool_use") {
+          return {
+            type: "tool_use" as const,
+            id: block.id,
+            name: block.name,
+            input: block.input,
+          };
+        } else if (block.type === "tool_result") {
+          return {
+            type: "tool_result" as const,
+            tool_use_id: block.tool_use_id,
+            content: block.content,
+            is_error: block.is_error,
+          };
+        }
+        throw new Error(`Unknown content block type: ${(block as any).type}`);
+      }),
+    }));
+
+    const tools = params.tools?.map((t) => ({
+      name: t.name,
+      description: t.description,
+      input_schema: t.input_schema,
+    }));
+
+    const system = params.system
+      ? [{ type: "text" as const, text: params.system }]
+      : undefined;
+
+    const log = getLogger();
+    log.debug("LLM:ANTHROPIC", "非流式请求", {
+      model: params.model || this._model,
+      maxTokens: params.maxTokens,
+    });
+
+    const message = await this.client.messages.create(
+      {
+        model: params.model || this._model,
+        max_tokens: params.maxTokens,
+        messages: messages as any,
+        system: system as any,
+        tools: tools as any,
+        stream: false,
+      },
+      signal ? { signal } : undefined,
+    );
+
+    const content: ContentBlock[] = [];
+    for (const block of (message as any).content ?? []) {
+      const converted = this.convertContentBlock(block);
+      // 跳过被忽略的空块（未知类型）
+      if (converted.type === "text" && converted.text === "" && block.type !== "text") {
+        continue;
+      }
+      content.push(converted);
+    }
+
+    return {
+      role: "assistant",
+      content,
+      stopReason: (message as any).stop_reason ?? null,
+      usage: this.convertUsage((message as any).usage),
+    };
   }
 
   private convertUsage(usage: any): Usage {
