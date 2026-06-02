@@ -13,6 +13,7 @@ import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { getLogger } from "../debug/index.ts";
 import { isAbortError } from "../llm/errors.ts";
 import { processToolResult } from "../tool/result-storage.ts";
+import { yieldMissingToolResults, collectToolResultIdsFromBlocks } from "../agent/tool-result-guard.ts";
 
 /** 工具执行器依赖 */
 export interface ToolExecutorDeps {
@@ -182,14 +183,28 @@ export async function executeTools(
         executeSingleTool(block, tool, deps).then(r => ({ idx, result: r }))
       ),
     );
+    // abort 优先：任一工具被取消，立即向上抛（由 loop.ts catch 兜底补齐）
     for (const r of readResults) {
       if (r.status === "rejected" && isAbortError(r.reason)) {
         throw r.reason;
       }
     }
-    for (const r of readResults) {
+    for (let i = 0; i < readResults.length; i++) {
+      const r = readResults[i];
       if (r.status === "fulfilled") {
         resultMap.set(r.value.idx, r.value.result);
+      } else {
+        // 非 abort 的 rejected（如 hook 异常）：executeSingleTool 的 catch 理论上会
+        // 返回 error tool_result，走不到这里；但若异常发生在 catch 之外（pre hook 等），
+        // Promise 会 rejected。此处把它转成 error tool_result，避免孤儿 tool_use。
+        const { block, idx } = concurrent[i];
+        log.error("TOOL", `并行工具 ${block.name} 异常未被内部捕获: ${r.reason?.message ?? r.reason}`);
+        resultMap.set(idx, {
+          type: "tool_result",
+          tool_use_id: block.id,
+          content: `工具执行异常: ${r.reason?.message ?? String(r.reason)}`,
+          is_error: true,
+        });
       }
     }
   }
@@ -201,10 +216,36 @@ export async function executeTools(
   }
 
   // 按原始顺序组装结果
+  //
+  // 协议级不变量：N 个 tool_use 必须产出 N 个 tool_result（OpenAI tool_calls 要求
+  // assistant.tool_calls 后紧跟对每个 tool_call_id 的 tool 消息，缺一即 400）。
+  // 正常路径下 resultMap 应已含每个 idx，但为防御以下情况仍做兜底：
+  //   - 并发分支 Promise.allSettled 中非 abort 的 rejected（其 tool_result 不会进 resultMap）
+  //   - 未来新增的提前 return / continue 路径遗漏某个 idx
+  // 这些情况 executeTools 会正常 return（不 throw），故 loop.ts 的 catch 兜底不会触发，
+  // 必须在此处补齐。参见 ADR-039。
   const results: ContentBlock[] = [];
-  for (const { idx } of toolBlocks) {
+  const missingBlocks: ToolUseBlock[] = [];
+  for (const { block, idx } of toolBlocks) {
     const result = resultMap.get(idx);
-    if (result) results.push(result);
+    if (result) {
+      results.push(result);
+    } else {
+      missingBlocks.push(block);
+    }
+  }
+  if (missingBlocks.length > 0) {
+    log.error(
+      "TOOL",
+      `检测到 ${missingBlocks.length} 个 tool_use 缺少 tool_result，补齐错误占位以维持协议不变量: ${missingBlocks.map(b => b.name).join(", ")}`,
+    );
+    for (const missing of yieldMissingToolResults(
+      [{ role: "assistant", content: toolBlocks.map(t => t.block) }],
+      collectToolResultIdsFromBlocks(results),
+      "工具执行异常：未产生结果（已由协议兜底补齐）",
+    )) {
+      results.push(missing);
+    }
   }
 
   // Plan Mode 状态转换处理
