@@ -6,6 +6,7 @@ describe("Config Validation", () => {
   const baseConfig: Config = {
     provider: "anthropic",
     model: "claude-sonnet-4",
+    fallbackModel: "",
     anthropicKey: "sk-ant-test123456789012345678901234567890",
     openaiKey: "",
     baseURL: "",
@@ -32,7 +33,7 @@ describe("Config Validation", () => {
     debugLogFile: "",
     hooks: {},
     mcpServers: {},
-    useAlternateBuffer: true,
+    alternateBuffer: true,
     showLineNumbers: true,
   };
 

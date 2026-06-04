@@ -55,7 +55,7 @@ describe("Config Integration Tests", () => {
       debugLogFile: "",
       hooks: {},
       mcpServers: {},
-      useAlternateBuffer: true,
+      alternateBuffer: true,
       showLineNumbers: true,
     };
 
@@ -115,7 +115,7 @@ describe("Config Integration Tests", () => {
       debugLogFile: "",
       hooks: {},
       mcpServers: {},
-      useAlternateBuffer: true,
+      alternateBuffer: true,
       showLineNumbers: true,
     };
 

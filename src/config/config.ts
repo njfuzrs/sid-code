@@ -109,6 +109,14 @@ export interface Config {
   debugLevel: string;
   debugLogFile: string;
 
+  // UI 渲染配置
+  /**
+   * 是否启用 alternate buffer（全屏 TUI）模式。
+   * - false（默认）：主屏 Static 渲染，历史进终端 scrollback，支持边流式边鼠标原生选中复制（对标 claude-code，见 ADR-040）
+   * - true（--alternate-buffer opt-in）：全屏虚拟滚动 + 鼠标滚轮/滚动条 + Ctrl+S Copy Mode
+   */
+  alternateBuffer?: boolean;
+
   // 子代理模型映射
   subAgentModels?: import("../llm/registry.ts").SubAgentModelMap;
 
@@ -378,6 +386,7 @@ export function defaultConfig(): Config {
     hooks: {},
     mcpServers: {},
     showLineNumbers: true,
+    alternateBuffer: false,
   };
 }
 

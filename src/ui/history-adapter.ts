@@ -10,6 +10,7 @@
  */
 
 import {
+  type HistoryItem,
   type HistoryItemWithoutId,
   type IndividualToolCallDisplay,
   ToolCallStatus,
@@ -17,6 +18,24 @@ import {
 } from "./types.ts";
 import type { Message } from "../llm/types.ts";
 import { getToolSummary, getResultSummary, isDiffContent, getFilenameFromInput } from "./ui-utils.ts";
+
+/**
+ * 构建主屏 Static 模式的历史项数组（ADR-040）。
+ *
+ * - 空历史 → 空数组（不插 header，让 EmptyLogo 显示）
+ * - 非空 → 顶部插入一个 app_header，其后接全部已完成历史项
+ *
+ * 关键不变量：返回结果**绝不包含流式虚拟项**（STREAMING_ITEM_ID）。
+ * 流式内容在 MainScreenLayout 动态区单独渲染，流式完成后才并入 historyItems，
+ * 届时本函数才把它纳入 Static（保证一条消息要么在动态区要么在 Static，不重叠）。
+ */
+export function buildStaticItems(historyItems: HistoryItem[], version: string): HistoryItem[] {
+  if (historyItems.length === 0) return [];
+  return [
+    { id: -2, type: "app_header", version } as HistoryItem,
+    ...historyItems,
+  ];
+}
 
 /** 思考摘要（从 thinking block 提取） */
 export interface ThoughtSummary {

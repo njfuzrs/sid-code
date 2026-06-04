@@ -1183,7 +1183,7 @@ export class App {
     const log = getLogger();
     // TUI 模式下切换为仅文件输出，避免干扰 Ink 渲染
     log.setFileOnly(true);
-    log.info("TUI", "进入 TUI 模式（alternate screen）");
+    log.info("TUI", "进入 TUI 模式");
 
     await this.init();
 
@@ -1638,15 +1638,18 @@ export class App {
       },
     };
 
-    // 渲染 TUI
-    log.info("TUI", "开始渲染 TUI 组件（Alternate Buffer 模式）");
+    // 渲染 TUI（ADR-040：默认主屏 Static 原生选择，--alternate-buffer 走全屏虚拟滚动）
+    const alternateBuffer = this.config.alternateBuffer === true;
+    log.info("TUI", `开始渲染 TUI 组件（${alternateBuffer ? "Alternate Buffer 全屏" : "主屏 Static"} 模式）`);
 
     const app = createFullScreen(
       React.createElement(TUIApp, {
         initialState: bridge.current,
         callbacks,
         bridge,
+        alternateBuffer,
       }),
+      { alternateBuffer },
     );
     await app.start();
 

@@ -23,11 +23,12 @@ import { SessionProvider, type SessionContextValue } from "./contexts/SessionCon
 import { SettingsProvider } from "./contexts/SettingsContext.tsx";
 import { AlternateBufferQuittingDisplay } from "./components/AlternateBufferQuittingDisplay.tsx";
 import { DefaultAppLayout } from "./components/DefaultAppLayout.tsx";
+import { MainScreenLayout } from "./components/MainScreenLayout.tsx";
 import type { StateBridge } from "./state-bridge.ts";
 import type { Message, Usage } from "../llm/types.ts";
 import type { HistoryItem } from "./types.ts";
 import { StreamingState } from "./types.ts";
-import { messagesToHistoryItems, isPlaceholderMessage } from "./history-adapter.ts";
+import { messagesToHistoryItems, isPlaceholderMessage, buildStaticItems } from "./history-adapter.ts";
 import { getLogger } from "../debug/logger.ts";
 import { DEFAULT_TERM_WIDTH } from "./markdown.ts";
 
@@ -128,13 +129,15 @@ interface AppProps {
   initialState: TUIState;
   callbacks: TUICallbacks;
   bridge: StateBridge;
+  /** 是否启用 alternate buffer 全屏模式；默认 false → 主屏 Static 渲染（ADR-040） */
+  alternateBuffer?: boolean;
 }
 
 // ── 流式虚拟 HistoryItem（用于在列表末尾插入流式内容） ──
 const STREAMING_ITEM_ID = -1;
 
 /** 内部 App 组件（在 Provider 内部，可使用 useKeypress） */
-function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
+function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppProps) {
   const { exit } = useApp();
   const [state, setState] = useState<TUIState>(initialState);
   const isSubmittingRef = useRef(false);
@@ -188,7 +191,9 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
   });
 
   // Copy Mode 切换（Ctrl+S 进入，任意非导航键退出）
+  // 仅 alternate buffer 全屏模式有意义；主屏模式鼠标从未被抢、原生选择一直可用，Ctrl+S 为 no-op（ADR-040）
   useKeypress(KeypressPriority.High, (key: Key) => {
+    if (!alternateBuffer) return false;
     if (key.ctrl && key.name === "s") {
       const next = !state.copyModeEnabled;
       log.info("UI:APP", `Copy Mode ${next ? "启用" : "禁用"}`);
@@ -325,6 +330,13 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
     return items;
   }, [state.historyItems, state.isStreaming, state.streamingText]);
 
+  // 主屏 Static 模式专用：仅已完成历史（含 app_header，不含流式虚拟项）。
+  // 流式内容在 MainScreenLayout 动态区单独渲染，完成后才并入 historyItems → 进 Static（ADR-040）
+  const staticItems = useMemo(
+    (): HistoryItem[] => buildStaticItems(state.historyItems, require("../../package.json").version),
+    [state.historyItems],
+  );
+
   // key 提取器
   const keyExtractor = useCallback((item: HistoryItem, _index: number): string => {
     if (item.id === STREAMING_ITEM_ID) return "streaming-tail";
@@ -411,6 +423,8 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
 
   // 退出回显模式
   if (state.isQuitting) {
+    // 主屏模式：历史已在终端 scrollback，退出直接 unmount，无需重画（ADR-040）
+    if (!alternateBuffer) return null;
     return (
       <AlternateBufferQuittingDisplay
         historyItems={state.historyItems}
@@ -432,41 +446,75 @@ function TUIAppInner({ initialState, callbacks, bridge }: AppProps) {
       lastToolResult={state.lastToolResult}
       statusMessage={state.statusMessage}
     >
-      <DefaultAppLayout
-        listData={listData}
-        streamingText={state.streamingText}
-        isStreaming={state.isStreaming}
-        isEmpty={isEmpty}
-        termWidth={termWidth}
-        rows={rows}
-        estimatedItemHeight={estimatedItemHeight}
-        keyExtractor={keyExtractor}
-        copyModeEnabled={state.copyModeEnabled}
-        statusMessage={state.statusMessage}
-        permissionRequest={state.permissionRequest}
-        shellConfirmRequest={state.shellConfirmRequest}
-        planApprovalRequest={state.planApprovalRequest}
-        isLoading={state.isLoading}
-        commands={state.commands}
-        cwd={state.cwd}
-        onSubmit={handleSubmit}
-        permissionMode={state.permissionMode}
-        gitBranch={state.gitBranch}
-        debug={state.debug}
-        usage={state.usage}
-        costUSD={state.costUSD}
-        costLimit={state.costLimit}
-        contextPercent={state.contextPercent}
-        model={state.model}
-        scrollPercent={scrollPercent}
-        activeDialog={state.activeDialog}
-        onDialogClose={handleDialogClose}
-        availableModels={availableModels}
-        onModelSelect={handleModelSelect}
-        availableThemes={availableThemes}
-        currentTheme={currentTheme}
-        onThemeSelect={handleThemeSelect}
-      />
+      {alternateBuffer ? (
+        <DefaultAppLayout
+          listData={listData}
+          streamingText={state.streamingText}
+          isStreaming={state.isStreaming}
+          isEmpty={isEmpty}
+          termWidth={termWidth}
+          rows={rows}
+          estimatedItemHeight={estimatedItemHeight}
+          keyExtractor={keyExtractor}
+          copyModeEnabled={state.copyModeEnabled}
+          statusMessage={state.statusMessage}
+          permissionRequest={state.permissionRequest}
+          shellConfirmRequest={state.shellConfirmRequest}
+          planApprovalRequest={state.planApprovalRequest}
+          isLoading={state.isLoading}
+          commands={state.commands}
+          cwd={state.cwd}
+          onSubmit={handleSubmit}
+          permissionMode={state.permissionMode}
+          gitBranch={state.gitBranch}
+          debug={state.debug}
+          usage={state.usage}
+          costUSD={state.costUSD}
+          costLimit={state.costLimit}
+          contextPercent={state.contextPercent}
+          model={state.model}
+          scrollPercent={scrollPercent}
+          activeDialog={state.activeDialog}
+          onDialogClose={handleDialogClose}
+          availableModels={availableModels}
+          onModelSelect={handleModelSelect}
+          availableThemes={availableThemes}
+          currentTheme={currentTheme}
+          onThemeSelect={handleThemeSelect}
+        />
+      ) : (
+        <MainScreenLayout
+          staticItems={staticItems}
+          streamingText={state.streamingText}
+          isStreaming={state.isStreaming}
+          isEmpty={isEmpty}
+          termWidth={termWidth}
+          keyExtractor={keyExtractor}
+          statusMessage={state.statusMessage}
+          permissionRequest={state.permissionRequest}
+          shellConfirmRequest={state.shellConfirmRequest}
+          planApprovalRequest={state.planApprovalRequest}
+          isLoading={state.isLoading}
+          commands={state.commands}
+          cwd={state.cwd}
+          onSubmit={handleSubmit}
+          permissionMode={state.permissionMode}
+          gitBranch={state.gitBranch}
+          debug={state.debug}
+          usage={state.usage}
+          costUSD={state.costUSD}
+          costLimit={state.costLimit}
+          contextPercent={state.contextPercent}
+          model={state.model}
+          activeDialog={state.activeDialog}
+          onDialogClose={handleDialogClose}
+          availableModels={availableModels}
+          onModelSelect={handleModelSelect}
+          availableThemes={availableThemes}
+          currentTheme={currentTheme}
+          onThemeSelect={handleThemeSelect}
+        />
+      )}
     </StreamingProvider>
     </SessionProvider>
     </ConfigProvider>
@@ -496,7 +544,7 @@ export function TUIApp(props: AppProps) {
   return (
     <TerminalProvider>
       <KeypressProvider>
-        <MouseProvider onSelectionWarning={handleSelectionWarning}>
+        <MouseProvider mouseEventsEnabled={props.alternateBuffer === true} onSelectionWarning={handleSelectionWarning}>
           <ScrollProvider>
             <OverflowProvider>
               <SettingsProvider>

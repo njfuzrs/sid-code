@@ -1,8 +1,9 @@
 /**
- * TUI 渲染模块（Alternate Buffer 模式）
+ * TUI 渲染模块（双模式）
  *
- * 使用 Ink 原生 alternateBuffer + incrementalRendering
- * 鼠标事件启用/禁用由 MouseContext 管理
+ * - alternateBuffer=true：Ink 原生 alternateBuffer + incrementalRendering（全屏 TUI，虚拟滚动）
+ * - alternateBuffer=false（默认，ADR-040）：主屏渲染，历史进终端 scrollback，支持原生文本选择
+ * 鼠标事件启用/禁用由 MouseContext 管理（仅 alternateBuffer 模式启用）
  * 退出时 Ink fork 会自动将最终帧渲染到主缓冲区（由 AlternateBufferQuittingDisplay 提供内容）
  */
 
@@ -26,14 +27,21 @@ export interface FullScreenInstance {
   waitUntilExit: () => Promise<void>;
 }
 
+export interface FullScreenOptions {
+  /** 是否启用 alternate buffer 全屏模式；默认 false（主屏 Static 渲染） */
+  alternateBuffer?: boolean;
+}
+
 /**
- * 创建 ink 应用（Alternate Buffer 模式）
+ * 创建 ink 应用（双模式：alternate buffer 全屏 / 主屏 Static）
  */
 export function createFullScreen(
   node: ReactElement,
+  opts?: FullScreenOptions,
 ): FullScreenInstance {
   const log = getLogger();
   const stdout = process.stdout;
+  const alternateBuffer = opts?.alternateBuffer ?? false;
 
   let instance: ReturnType<typeof render>;
   let exitPromise: Promise<void>;
@@ -46,21 +54,26 @@ export function createFullScreen(
         stdin: process.stdin,
         exitOnCtrlC: false,
         patchConsole: false,
-        alternateBuffer: true,
-        incrementalRendering: true,
+        alternateBuffer,
+        incrementalRendering: alternateBuffer,
       };
 
       instance = render(node, options);
 
-      // 与 gemini-cli 一致：alternate buffer 模式下禁用行自动换行
-      disableLineWrapping();
+      // alternate buffer 模式下禁用行自动换行（防折行溢出，与 gemini-cli 一致）。
+      // 主屏模式必须保留自动换行，否则长行被截断且不进 scrollback。
+      if (alternateBuffer) {
+        disableLineWrapping();
+      }
 
-      log.info("TUI:RENDER", "ink 实例已创建（Alternate Buffer 模式）");
+      log.info("TUI:RENDER", `ink 实例已创建（${alternateBuffer ? "Alternate Buffer" : "主屏 Static"} 模式）`);
 
       exitPromise = (async () => {
         await instance.waitUntilExit();
-        // 退出时恢复行自动换行
-        enableLineWrapping();
+        // 退出时恢复行自动换行（仅 alternate buffer 模式改过）
+        if (alternateBuffer) {
+          enableLineWrapping();
+        }
         log.info("TUI:RENDER", "ink 实例已退出");
       })();
     },

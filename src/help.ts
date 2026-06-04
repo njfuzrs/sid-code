@@ -51,7 +51,8 @@ LLM 配置:
   --upload-traces             手动触发重试队列补传（处理之前失败的上传）
 
 UI:
-  --alternate-buffer          启用 alternate buffer 模式（全屏 TUI，默认禁用以支持原生文本选择）
+  --alternate-buffer          启用全屏 Alternate Buffer 模式（应用内虚拟滚动 + 鼠标滚轮 + Ctrl+S Copy Mode）。
+                              默认关闭：走主屏渲染，历史进终端 scrollback，可边流式边用鼠标原生选中复制（ADR-040）
 
 Bridge 远程控制:
   --bridge <ws-url>           进入 Bridge 模式，连接中继服务器接受远程客户端操控（ws:// 或 wss://）

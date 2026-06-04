@@ -99,6 +99,9 @@ function parseCLIArgs(): CLIArgs {
         // Bridge 远程控制（spec 16 §7）
         bridge: { type: "string" }, // 中继 WebSocket URL，提供即进入 Bridge 模式
         "bridge-token": { type: "string" },
+
+        // UI 渲染（ADR-040）
+        "alternate-buffer": { type: "boolean" }, // 启用全屏 alt-screen；缺省走主屏 Static 模式（原生文本选择）
       },
       allowPositionals: true,
       allowNegative: true,
@@ -155,6 +158,8 @@ function parseCLIArgs(): CLIArgs {
     "upload-traces": values["upload-traces"],
     bridgeUrl: values.bridge,
     bridgeToken: values["bridge-token"],
+    // UI 渲染模式（ADR-040）：--alternate-buffer 显式开全屏；缺省 undefined → 主屏 Static
+    alternateBuffer: values["alternate-buffer"] === true ? true : undefined,
     // 轨迹采集配置（默认启用，--no-trace 关闭整个采集；--trace-upload-disabled 仅禁上传保留本地落盘）
     trace: {
       enabled: values.trace !== false,
