@@ -68,6 +68,7 @@
     "@types/react": "^19.2.14",
     "@types/tinycolor2": "^1.4.6",
     "eval-framework": "file:../eval-framework",
+    "ink-testing-library": "4.0.0",
     "js-yaml": "^4.1.1"
   },
   "engines": {
