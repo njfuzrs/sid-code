@@ -11,6 +11,7 @@ import React from "react";
 import { Box, Text, useStdout } from "ink";
 import { theme } from "../semantic-colors.ts";
 import { DEFAULT_TERM_WIDTH } from "../markdown.ts";
+import { DEFAULT_BINDINGS } from "../keybindings/defaultBindings.ts";
 
 // ── 快捷键数据 ──
 
@@ -19,19 +20,10 @@ interface ShortcutItem {
   description: string;
 }
 
-const SHORTCUTS: ShortcutItem[] = [
-  { key: "!", description: "shell 模式" },
-  { key: "@", description: "选择文件/目录" },
-  { key: "Shift+Enter", description: "多行输入" },
-  { key: "Ctrl+S", description: "Copy Mode" },
-  { key: "Alt+M", description: "切换 Markdown 渲染" },
-  { key: "Ctrl+O", description: "切换高度限制" },
-  { key: "↑/↓", description: "输入历史" },
-  { key: "Ctrl+R", description: "反向搜索历史" },
-  { key: "Ctrl+C", description: "退出" },
-  { key: "Esc", description: "取消当前操作" },
-  { key: "Shift+Tab", description: "切换权限模式" },
-];
+// 从集中声明表(K1)生成,不再独立硬编码。改键位只改 defaultBindings.ts 一处。
+const SHORTCUTS: ShortcutItem[] = DEFAULT_BINDINGS
+  .filter((b) => b.showInHelp)
+  .map((b) => ({ key: b.display, description: b.description }));
 
 // ── ShortcutsHint（简要提示） ──
 

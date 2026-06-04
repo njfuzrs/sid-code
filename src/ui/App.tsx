@@ -12,6 +12,7 @@
 import React, { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { useApp } from "ink";
 import { KeypressProvider, useKeypress, KeypressPriority, type Key } from "./contexts/KeypressContext.tsx";
+import { matchBinding } from "./keybindings/defaultBindings.ts";
 import { ScrollProvider, useScrollState } from "./contexts/ScrollProvider.tsx";
 import { TerminalProvider, useTerminalDimensions } from "./contexts/TerminalContext.tsx";
 import { MouseProvider, enableMouseEvents, disableMouseEvents } from "./contexts/MouseContext.tsx";
@@ -182,7 +183,8 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
 
   // Ctrl+C 退出（Critical 优先级）
   useKeypress(KeypressPriority.Critical, (key: Key) => {
-    if (key.ctrl && key.name === "c") {
+    const b = matchBinding(key);
+    if (b?.action === "app:quit") {
       log.info("UI:APP", "用户按下 Ctrl+C，退出");
       triggerQuit();
       return true;
@@ -193,8 +195,9 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
   // Copy Mode 切换（Ctrl+S 进入，任意非导航键退出）
   // 仅 alternate buffer 全屏模式有意义；主屏模式鼠标从未被抢、原生选择一直可用，Ctrl+S 为 no-op（ADR-040）
   useKeypress(KeypressPriority.High, (key: Key) => {
-    if (!alternateBuffer) return false;
-    if (key.ctrl && key.name === "s") {
+    const b = matchBinding(key);
+    if (b?.action === "app:toggleCopyMode") {
+      if (!alternateBuffer) return false;
       const next = !state.copyModeEnabled;
       log.info("UI:APP", `Copy Mode ${next ? "启用" : "禁用"}`);
       bridge.update({ copyModeEnabled: next });
@@ -219,7 +222,8 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
 
   // Alt+M 切换 Markdown 渲染
   useKeypress(KeypressPriority.High, (key: Key) => {
-    if (key.alt && key.name === "m") {
+    const b = matchBinding(key);
+    if (b?.action === "app:toggleMarkdown") {
       log.info("UI:APP", "切换 Markdown 渲染模式");
       toggleRenderMarkdown();
       return true;
@@ -229,7 +233,8 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
 
   // Ctrl+O 切换高度限制
   useKeypress(KeypressPriority.High, (key: Key) => {
-    if (key.ctrl && key.name === "o") {
+    const b = matchBinding(key);
+    if (b?.action === "app:toggleHeight") {
       log.info("UI:APP", "切换高度限制");
       setConstrainHeight((prev: boolean) => !prev);
       setShowIsExpandableHint(true);
@@ -248,7 +253,8 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
       !state.activeDialog;
 
     if (!isInterruptible) return false;
-    if (key.name !== "escape") return false;
+    const b = matchBinding(key);
+    if (b?.action !== "app:interrupt") return false;
 
     log.info("UI:APP", "用户按下 Esc，请求中断当前操作");
     callbacks.onInterrupt();
