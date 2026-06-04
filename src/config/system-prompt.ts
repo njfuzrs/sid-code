@@ -105,6 +105,11 @@ function generateCacheKey(ctx: SystemPromptContext): string {
     ctx.diagnostics ? simpleHash(ctx.diagnostics) : "",
     ctx.todoList ? simpleHash(ctx.todoList) : "",
     ctx.memorySummary ? simpleHash(ctx.memorySummary) : "",
+    ctx.memorySystemPrompt ? simpleHash(ctx.memorySystemPrompt) : "",
+    ctx.recalledMemories?.length
+      ? simpleHash(ctx.recalledMemories.map((m) => m.filename).join(","))
+      : "",
+    ctx.sessionMemoryContent ? simpleHash(ctx.sessionMemoryContent) : "",
   ].filter(Boolean).join(":");
 }
 
@@ -155,6 +160,11 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
 
   coreParts.push(buildConstraintsSection());
 
+  // 记忆系统指令 + MEMORY.md 索引（Task 7，作为核心部分注入）
+  if (ctx.memorySystemPrompt) {
+    coreParts.push(ctx.memorySystemPrompt);
+  }
+
   // 2. 收集动态附件
   const attachments: Attachment[] = [];
 
@@ -200,6 +210,18 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
   // 记忆（全局/项目双层）
   if (ctx.memorySummary) {
     attachments.push(generateMemoryAttachment(ctx.memorySummary));
+  }
+
+  // 动态召回的相关记忆（Task 7）
+  if (ctx.recalledMemories && ctx.recalledMemories.length > 0) {
+    const recalledAttachment = generateRecalledMemoryAttachment(ctx.recalledMemories);
+    if (recalledAttachment) attachments.push(recalledAttachment);
+  }
+
+  // Session Memory（压缩后注入，Task 7）
+  if (ctx.sessionMemoryContent) {
+    const smAttachment = generateSessionMemoryAttachment(ctx.sessionMemoryContent);
+    if (smAttachment) attachments.push(smAttachment);
   }
 
   // 追加提示词

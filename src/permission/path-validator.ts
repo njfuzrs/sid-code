@@ -6,6 +6,7 @@
 
 import * as path from "node:path";
 import * as fs from "node:fs";
+import { hasDangerousUnicode } from "../utils/sanitization.ts";
 
 /** 路径验证结果 */
 export interface PathValidationResult {
@@ -46,6 +47,28 @@ const SENSITIVE_FILES = [
   /token\.json/i,
 ];
 
+/**
+ * Windows 路径绕过模式（跨平台防御）。
+ * 即使当前运行在 macOS/Linux，路径仍可能来自 LLM 生成——LLM 不区分平台，
+ * 可能产出这些可绕过 Windows 文件系统语义的特殊形态。统一拦截，宁严勿松。
+ */
+const WINDOWS_BYPASS_PATTERNS: Array<{ pattern: RegExp; desc: string }> = [
+  { pattern: /::\$[A-Za-z]+/i, desc: "NTFS 备用数据流 (::$DATA)" },
+  { pattern: /~\d/, desc: "8.3 短名称 (PROGRA~1)" },
+  { pattern: /^\\\\\?\\/, desc: "长路径前缀 (\\\\?\\)" },
+  // 尾随点/空格：要求前面有真实文件名字符，避免误伤 "." / ".." 目录引用
+  { pattern: /[^.\\/ ][. ]+$/, desc: "尾随点/空格（Windows 静默去除）" },
+  { pattern: /(^|[\\/])(CON|PRN|AUX|NUL|COM\d|LPT\d)(\.|$)/i, desc: "DOS 设备名" },
+];
+
+/** 检测路径是否命中 Windows 绕过模式，返回命中的描述（未命中返回 null） */
+function detectWindowsBypass(filePath: string): string | null {
+  for (const { pattern, desc } of WINDOWS_BYPASS_PATTERNS) {
+    if (pattern.test(filePath)) return desc;
+  }
+  return null;
+}
+
 export class PathValidator {
   private workspacePath: string;
   private allowedDirectories: string[];
@@ -80,6 +103,28 @@ export class PathValidator {
   validateAccess(filePath: string, operation: "read" | "write"): PathValidationResult {
     const resolved = path.resolve(filePath);
     const realPath = this.resolveRealPath(filePath);
+
+    // 0. Unicode 净化预检查：拦截零宽空格 / 方向控制符等不可见字符
+    //    （这些字符让用户「看到」的路径与实际值不符，是混淆攻击的常见手法）
+    if (hasDangerousUnicode(filePath)) {
+      return {
+        allowed: false,
+        reason: `路径包含危险的不可见 Unicode 字符: ${filePath}`,
+        needsConfirmation: true,
+        resolvedPath: realPath,
+      };
+    }
+
+    // 0.1 Windows 路径绕过检测（跨平台防御，详见 WINDOWS_BYPASS_PATTERNS）
+    const bypass = detectWindowsBypass(filePath);
+    if (bypass) {
+      return {
+        allowed: false,
+        reason: `路径命中 Windows 绕过模式（${bypass}）: ${filePath}`,
+        needsConfirmation: true,
+        resolvedPath: realPath,
+      };
+    }
 
     // 1. 目录黑名单（最高优先级）
     for (const blocked of this.blockedDirectories) {

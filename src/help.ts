@@ -53,6 +53,10 @@ LLM 配置:
 UI:
   --alternate-buffer          启用 alternate buffer 模式（全屏 TUI，默认禁用以支持原生文本选择）
 
+Bridge 远程控制:
+  --bridge <ws-url>           进入 Bridge 模式，连接中继服务器接受远程客户端操控（ws:// 或 wss://）
+  --bridge-token <token>      Bridge 连接认证令牌
+
 其他:
   -h, --help                  显示帮助信息
   -v, --version               显示版本信息

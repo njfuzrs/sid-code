@@ -139,6 +139,25 @@ export class PermissionChecker implements Checker {
   private prePlanMode: string | null = null;
   /** 沙箱管理器（可选） */
   private sandboxManager: SandboxManager | null = null;
+  /** Bridge 远程权限代理（可选，Bridge 模式下注入；签名对齐 PermissionProxy.requestPermission） */
+  private bridgePermissionDelegate: ((req: {
+    toolName: string;
+    toolInput: unknown;
+    description: string;
+    dangerLevel: string;
+  }) => Promise<boolean>) | null = null;
+
+  /** 设置 Bridge 远程权限代理（null 清除，回退到本地确认） */
+  setBridgePermissionDelegate(
+    delegate: ((req: {
+      toolName: string;
+      toolInput: unknown;
+      description: string;
+      dangerLevel: string;
+    }) => Promise<boolean>) | null,
+  ): void {
+    this.bridgePermissionDelegate = delegate;
+  }
 
   /** 设置 Plan Mode 管理器 */
   setPlanManager(manager: PlanModeManager): void {
@@ -719,6 +738,18 @@ export class PermissionChecker implements Checker {
     }
 
     const description = req.description || `${req.toolName}: ${JSON.stringify(req.input).slice(0, 100)}`;
+
+    // Bridge 模式：转发给远程客户端决策（远程不支持"始终允许"，故 remember=false）
+    if (this.bridgePermissionDelegate) {
+      const allowed = await this.bridgePermissionDelegate({
+        toolName: req.toolName,
+        toolInput: req.input,
+        description,
+        dangerLevel: (req as any).dangerLevel ?? "unknown",
+      });
+      return { confirmed: allowed, remember: false };
+    }
+
     console.log(`\n[权限请求] ${description}`);
 
     const readline = await import("readline");

@@ -252,6 +252,7 @@ export async function buildInitialSystemPrompt(config: Config, tools: import("..
   }
 
   let memorySummary: string | undefined;
+  let memorySystemPrompt: string | undefined;
   try {
     const { MemoryStore } = await import("../memory/store.ts");
     const memStore = new MemoryStore(process.cwd());
@@ -259,6 +260,10 @@ export async function buildInitialSystemPrompt(config: Config, tools: import("..
     if (memorySummary) {
       log.debug("APP", `加载记忆摘要 (${memorySummary.length} 字符)`);
     }
+    // Task 7：记忆系统指令 + MEMORY.md 索引
+    const { buildMemorySystemPrompt } = await import("../memory/prompt.ts");
+    const indexContent = await memStore.getIndexContent();
+    memorySystemPrompt = buildMemorySystemPrompt(indexContent);
   } catch (err) {
     log.warn("APP", `加载记忆失败: ${err}`);
   }
@@ -275,6 +280,7 @@ export async function buildInitialSystemPrompt(config: Config, tools: import("..
     permissionMode: config.permissionMode,
     gitStatus: true,
     memorySummary,
+    memorySystemPrompt,
     ...collectIDEContext(),
     maxTokens: 180000,
   });

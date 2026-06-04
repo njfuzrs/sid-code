@@ -32,6 +32,10 @@ type CLIArgs = Partial<Config> & {
   "upload-traces"?: boolean;
   /** --json-schema 指向的文件路径，后续解析为 config.jsonSchema */
   jsonSchemaFile?: string;
+  /** Bridge 远程控制：中继 WebSocket URL（ws:// 或 wss://） */
+  bridgeUrl?: string;
+  /** Bridge 远程控制：认证令牌 */
+  bridgeToken?: string;
 };
 
 /** 解析命令行参数 */
@@ -91,6 +95,10 @@ function parseCLIArgs(): CLIArgs {
         "trace-device-id": { type: "string" },
         "trace-upload-disabled": { type: "boolean" }, // ADR-016: 仅 capability eval 用，禁上传保留本地 trace
         "upload-traces": { type: "boolean" },
+
+        // Bridge 远程控制（spec 16 §7）
+        bridge: { type: "string" }, // 中继 WebSocket URL，提供即进入 Bridge 模式
+        "bridge-token": { type: "string" },
       },
       allowPositionals: true,
       allowNegative: true,
@@ -145,6 +153,8 @@ function parseCLIArgs(): CLIArgs {
     "delete-session": values["delete-session"],
     "cleanup-sessions": values["cleanup-sessions"],
     "upload-traces": values["upload-traces"],
+    bridgeUrl: values.bridge,
+    bridgeToken: values["bridge-token"],
     // 轨迹采集配置（默认启用，--no-trace 关闭整个采集；--trace-upload-disabled 仅禁上传保留本地落盘）
     trace: {
       enabled: values.trace !== false,
@@ -636,6 +646,15 @@ export async function main(): Promise<void> {
       });
     }
 
+    // LSP 代码智能系统懒初始化（后台进行，不阻塞启动）
+    // 无 LSP 配置或语言服务器不可用时自动降级为无操作
+    try {
+      const { initializeLSP } = await import("./lsp/manager.ts");
+      initializeLSP(process.cwd());
+    } catch (err: any) {
+      getLogger().debug("LSP", `LSP 初始化跳过: ${err.message}`);
+    }
+
     // 记录注册的工具
     if (config.debug) {
       const { getLogger } = await import("./debug/logger.ts");
@@ -743,7 +762,14 @@ export async function main(): Promise<void> {
     }
 
     // 根据模式路由
-    if (config.print) {
+    if (cliArgs.bridgeUrl) {
+      // Bridge 远程控制模式（spec 16 §7）：常驻进程，接受远程客户端连接
+      startupTimer.end();
+      await app.runBridge({
+        url: cliArgs.bridgeUrl,
+        authToken: cliArgs.bridgeToken,
+      });
+    } else if (config.print) {
       if (!cliArgs.prompt) {
         console.error("错误: 无头模式需要提供提示词");
         process.exit(1);

@@ -54,6 +54,12 @@ export interface AgentLoopCallbacks {
   onLoopDetected?(detail: string): void;
   /** 循环恢复尝试 */
   onLoopRecovery?(attempt: number, maxAttempts: number): void;
+  /**
+   * 一轮对话自然结束（end_turn）后触发，fire-and-forget。
+   * 用于后台记忆提取（Task 3）与 Session Memory 更新（Task 4）。
+   * 实现方不应阻塞主循环——内部应自行 fire-and-forget。
+   */
+  onTurnEnd?(): void;
 }
 
 /** AgentLoopRunner 依赖 */
@@ -522,6 +528,12 @@ export class AgentLoopRunner {
 
         const totalUsage = sessionState.getTotalUsage();
         log.info("AGENT", `对话结束 (${response.stopReason})，共 ${turns} 轮，in=${totalUsage.inputTokens} out=${totalUsage.outputTokens}，累计费用 $${sessionState.totalCostUSD.toFixed(4)}`);
+        // 轮次结束钩子：后台记忆提取 + Session Memory 更新（fire-and-forget）
+        try {
+          callbacks.onTurnEnd?.();
+        } catch (err: any) {
+          log.debug("AGENT", `onTurnEnd 钩子异常（忽略）: ${err?.message}`);
+        }
         callbacks.onComplete(turns);
         break;
       }

@@ -344,6 +344,11 @@ export async function executeSingleTool(
       finalOutput = truncatedOutput + "\n\n[Hook 附加上下文]\n" + additionalCtx;
     }
 
+    // LSP 文件变更通知（write/edit 工具后异步投递，不阻塞工具返回）
+    if (!result.isError && (block.name === "write" || block.name === "edit")) {
+      void notifyLSPFileChange(block.input as Record<string, unknown>);
+    }
+
     return {
       type: "tool_result",
       tool_use_id: block.id,
@@ -396,4 +401,23 @@ function getAffectedFiles(toolBlocks: ToolUseBlock[]): string[] {
     }
   }
   return files;
+}
+
+/**
+ * 通知 LSP 文件已变更（write/edit 后调用）。
+ * 从磁盘读取最新内容投递给 LSP；LSP 未就绪或读取失败时静默跳过。
+ */
+async function notifyLSPFileChange(input: Record<string, unknown>): Promise<void> {
+  const filePath = (input?.file_path ?? input?.path) as string | undefined;
+  if (!filePath) return;
+  try {
+    const { getLSPManager } = await import("../lsp/manager.ts");
+    if (!getLSPManager()) return; // LSP 未启用，避免无谓读盘
+    const { readFile } = await import("fs/promises");
+    const content = await readFile(filePath, "utf-8");
+    const { notifyFileChanged } = await import("../lsp/manager.ts");
+    await notifyFileChanged(filePath, content);
+  } catch {
+    // 静默忽略：LSP 是可选增强
+  }
 }

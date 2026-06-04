@@ -9,6 +9,7 @@
  */
 
 import { profileCheckpoint } from "../utils/startup-profiler.ts";
+import { preconnectApi } from "./preconnect.ts";
 
 /**
  * 启动延迟预取
@@ -18,6 +19,10 @@ export function startDeferredPrefetches(isInteractive: boolean): void {
   if (!isInteractive) return;
 
   profileCheckpoint("deferred_prefetch_start");
+
+  // API 预连接：在用户输入期间提前建立 TCP+TLS，首次请求零握手延迟。
+  // 走环境变量配置的 base URL（已在 init 阶段经 safe-env 处理），无则用官方端点。
+  preconnectApi(process.env.SID_CODE_LLM_BASE_URL);
 
   void prefetchGitStatus();
   void prefetchMemory();

@@ -796,6 +796,7 @@ export class App {
 
     const { buildSystemPrompt } = await import("./config/system-prompt.ts");
     const { collectIDEContext } = await import("./ide/integration.ts");
+    const { collectDiagnosticText } = await import("./lsp/manager.ts");
     const newPrompt = buildSystemPrompt({
       tools: this.toolRegistry.all(),
       projectRules: projectRules?.rawContent || undefined,
@@ -805,6 +806,7 @@ export class App {
       permissionMode: this.config.permissionMode,
       gitStatus: true,
       memorySummary,
+      diagnostics: collectDiagnosticText() || undefined,
       ...collectIDEContext(),
       maxTokens: 180000,
     });
@@ -1025,6 +1027,55 @@ export class App {
   }
 
   /**
+   * Bridge 远程控制模式：通过 WebSocket 中继接受远程客户端的消息，
+   * 把 QueryEngine 的事件流转发回远程，并把工具权限确认转交远程决策。
+   *
+   * 与 runHeadless / runTUI 平级的第三种运行形态（spec 16 §7）。
+   * 进程常驻，直到收到 SIGINT/SIGTERM 才退出。
+   */
+  async runBridge(options: { url: string; authToken?: string; permissionTimeoutMs?: number }): Promise<void> {
+    await this.init();
+
+    const { BridgeRunner } = await import("./bridge/bridge-runner.ts");
+    const log = getLogger();
+
+    const runner = new BridgeRunner(
+      {
+        submitMessage: (input: string) => this.queryEngine.submitMessage(input),
+        setStreamTextCallback: (cb) => this.queryEngine.setStreamTextCallback(cb),
+        abort: () => this.abortController?.abort(),
+        setPermissionDelegate: (delegate) => {
+          // 仅当 checker 支持 Bridge 代理时注入（PermissionChecker 实现了该方法）
+          const checker = this.permissionChecker as { setBridgePermissionDelegate?: (d: typeof delegate) => void } | null;
+          checker?.setBridgePermissionDelegate?.(delegate);
+        },
+      },
+      options,
+    );
+
+    this.abortController = new AbortController();
+
+    try {
+      await runner.start();
+      log.info("BRIDGE", `Bridge 模式已就绪: ${options.url}`);
+      process.stderr.write(`\nBridge 远程控制已启动: ${options.url}\n按 Ctrl+C 退出\n\n`);
+
+      // 常驻：等待退出信号
+      await new Promise<void>((resolve) => {
+        const shutdown = () => resolve();
+        process.once("SIGINT", shutdown);
+        process.once("SIGTERM", shutdown);
+      });
+    } finally {
+      await runner.stop().catch(() => {});
+      this.abortController = null;
+      this.mcpManager?.closeAll();
+      const { runShutdownSequence } = await import("./utils/graceful-shutdown.ts");
+      await runShutdownSequence();
+    }
+  }
+
+  /**
    * 构建 SDKQueryEngineDriver：把现有 QueryEngine 适配为 SDK 引擎驱动。
    *
    * 关键：不重建 queryLoop，而是包装 this.queryEngine 的事件流（依赖反转，
@@ -1038,11 +1089,12 @@ export class App {
       getMessages: () => this.ctxMgr.getMessages(),
       listTools: () =>
         this.toolRegistry.all().map((t) => ({
-          name: t.name,
-          description: typeof t.description === "function" ? t.description() : "",
+          name: t.name(),
+          description: t.description(),
         })),
       getApiDurationMs: () => this.sessionState.getElapsedMs(),
-      setStreamTextCallback: (cb) => this.queryEngine.setStreamTextCallback(cb),
+      setStreamTextCallback: (cb: ((text: string) => void) | null) =>
+        this.queryEngine.setStreamTextCallback(cb),
     };
   }
 
@@ -1182,7 +1234,7 @@ export class App {
       availableModels: this.config.availableModels.map(m => ({
         name: m.name,
         provider: m.provider || this.config.provider,
-        description: m.baseUrl ? `${m.provider || this.config.provider} (${m.baseUrl})` : undefined,
+        description: m.baseURL ? `${m.provider || this.config.provider} (${m.baseURL})` : undefined,
       })),
     });
 

@@ -37,6 +37,11 @@ export class TelemetryHookProbe {
   private llmSpan: SpanHandle | undefined;
   private turns = 0;
 
+  /** blocked_on_user span 暂存：key = tool_use_id || tool_name */
+  private permissionSpans = new Map<string, SpanHandle>();
+  /** hook_execution span 暂存：key = hook_name */
+  private hookSpans = new Map<string, SpanHandle>();
+
   /** Harness 扩展点：Span 属性注入器列表 */
   private spanEnrichers: SpanEnricher[] = [];
 
@@ -75,6 +80,11 @@ export class TelemetryHookProbe {
       HookEventName.AfterModel,
       HookEventName.PostToolUse,
       HookEventName.SessionEnd,
+      // spec 17 §6.1.3 增强追踪树：权限等待 + Hook 执行 span
+      HookEventName.BeforePermissionCheck,
+      HookEventName.AfterPermissionCheck,
+      HookEventName.BeforeHookExecution,
+      HookEventName.AfterHookExecution,
     ];
     for (const eventName of events) {
       hookSystem.registerHook(
@@ -108,6 +118,18 @@ export class TelemetryHookProbe {
         break;
       case HookEventName.SessionEnd:
         this.handleSessionEnd(input as SessionEndInput);
+        break;
+      case HookEventName.BeforePermissionCheck:
+        this.handleBeforePermissionCheck(input as PermissionCheckInput);
+        break;
+      case HookEventName.AfterPermissionCheck:
+        this.handleAfterPermissionCheck(input as PermissionCheckInput);
+        break;
+      case HookEventName.BeforeHookExecution:
+        this.handleBeforeHookExecution(input as HookExecutionInput);
+        break;
+      case HookEventName.AfterHookExecution:
+        this.handleAfterHookExecution(input as HookExecutionInput);
         break;
     }
   }
@@ -198,6 +220,58 @@ export class TelemetryHookProbe {
       toolSpan.recordError(new Error(JSON.stringify(input.tool_response).slice(0, 200)));
     }
     toolSpan.end();
+  }
+
+  // ---- spec 17 §6.1.3：权限等待 / Hook 执行 span ----
+
+  private permissionKey(input: PermissionCheckInput): string {
+    return input.tool_use_id || input.tool_name;
+  }
+
+  private handleBeforePermissionCheck(input: PermissionCheckInput): void {
+    const span = this.bus.startSpan(
+      "blocked_on_user",
+      `blocked_on_user ${input.tool_name}`,
+      {
+        [ATTR.OPERATION_NAME]: "blocked_on_user",
+        [ATTR.TOOL_NAME]: input.tool_name,
+        ...(input.tool_use_id ? { [ATTR.TOOL_CALL_ID]: input.tool_use_id } : {}),
+        ...this.collectEnrichedAttributes("execute_tool", input) as Attributes,
+      },
+    );
+    this.permissionSpans.set(this.permissionKey(input), span);
+  }
+
+  private handleAfterPermissionCheck(input: PermissionCheckInput): void {
+    const key = this.permissionKey(input);
+    const span = this.permissionSpans.get(key);
+    if (span) {
+      span.end();
+      this.permissionSpans.delete(key);
+    }
+  }
+
+  private handleBeforeHookExecution(input: HookExecutionInput): void {
+    const span = this.bus.startSpan(
+      "hook_execution",
+      `hook_execution ${input.hook_name}`,
+      {
+        [ATTR.OPERATION_NAME]: "hook_execution",
+        "sidcode.hook.name": input.hook_name,
+        ...(input.triggering_event
+          ? { "sidcode.hook.triggering_event": input.triggering_event }
+          : {}),
+      },
+    );
+    this.hookSpans.set(input.hook_name, span);
+  }
+
+  private handleAfterHookExecution(input: HookExecutionInput): void {
+    const span = this.hookSpans.get(input.hook_name);
+    if (span) {
+      span.end();
+      this.hookSpans.delete(input.hook_name);
+    }
   }
 
   private handleSessionEnd(input: SessionEndInput): void {
