@@ -10,7 +10,7 @@
  */
 
 import { join } from "node:path";
-import { mkdirSync, appendFileSync, existsSync } from "node:fs";
+import { mkdirSync, appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { getLogger } from "../debug/logger.ts";
 
 /** hook 事件记录（写入 events.jsonl 的行格式） */
@@ -170,5 +170,23 @@ export class TraceWriter {
   appendEvent(event: HookEvent): void {
     const line = JSON.stringify(event);
     this.appendEventsJsonl(line);
+  }
+
+  /**
+   * 写入/覆盖 messages.json — D3-1 崩溃验尸快照。
+   *
+   * 落实 CLAUDE.md 评测纪律不变量第 1 条「transcript 必落盘」到真实交互退出路径。
+   * 此前崩溃 session 只有 metadata.json，无完整消息历史，无法验尸（如孤儿 tool_use 现场）。
+   *
+   * @param snapshot 完整消息历史快照对象（含 messages + 退出归因）
+   */
+  writeMessagesSnapshot(snapshot: object): void {
+    if (!this.ensureDir()) return;
+    try {
+      const filePath = join(this.sessionDir, "messages.json");
+      writeFileSync(filePath, JSON.stringify(snapshot, null, 2));
+    } catch (err) {
+      getLogger().warn("TRACE", `写入 messages.json 失败: ${err}`);
+    }
   }
 }

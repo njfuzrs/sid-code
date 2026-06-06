@@ -288,6 +288,9 @@ async function main() {
       // 评测隔离：禁用项目 CLAUDE.md 加载（含 JIT 发现），避免目录结构描述泄露成 case 锚点答案
       // 例：CLAUDE.md 第 277 行写 "AgentLoopRunner"，不隔离会让 case_001 的 anchor 虚高
       SID_CODE_DISABLE_PROJECT_RULES: "1",
+      // D1-1：eval 路径开启协议 strict 模式——发送前若检测到孤儿 tool_use 直接抛错，
+      // 让本次 attempt 当场 abnormal（CI 红），而非静默 400 后才在 metadata 里显形。
+      SID_CODE_PROTOCOL_STRICT: "1",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

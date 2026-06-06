@@ -149,6 +149,17 @@ export interface TraceMetadata {
   end_source?: string;
   /** 错误退出时的简要错误信息（reason="error"） */
   error?: { message: string; name?: string };
+  /** D3-3：异常退出自动归因摘要（abnormal 时填充，免去人工翻日志） */
+  exit_attribution?: {
+    abnormal: boolean;
+    summary: string;
+    reason: string;
+    exit_status: string;
+    api_calls: number;
+    last_tool: string | null;
+    has_orphan_tool_use: boolean;
+    error_name?: string;
+  };
 
   // ── Harness 扩展（可选，当前不填） ──
   harness?: HarnessTraceMetadata;

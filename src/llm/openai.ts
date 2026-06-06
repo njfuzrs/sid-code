@@ -18,6 +18,7 @@ import type {
   ContentBlock,
 } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
+import { guardOutgoingMessages } from "./protocol-sentinel.ts";
 
 /** 工具调用追踪状态（用于 SSE 流中多工具并行解析） */
 interface ToolCallState {
@@ -146,6 +147,8 @@ export class OpenAIProvider implements Provider {
     params: SendParams,
     signal?: AbortSignal,
   ): AsyncIterable<StreamEvent> {
+    // D1-1：发送前协议完整性关卡（只读校验 + 告警 + 落盘，不修数据，尊重 ADR-039）
+    guardOutgoingMessages(params.messages, { providerName: this.name() });
     // 转换消息格式
     const messages = this.convertMessages(params.messages);
 
@@ -252,6 +255,8 @@ export class OpenAIProvider implements Provider {
     params: SendParams,
     signal?: AbortSignal,
   ): Promise<AccumulatedResponse> {
+    // D1-1：发送前协议完整性关卡（非流式路径同样校验）
+    guardOutgoingMessages(params.messages, { providerName: this.name() });
     const messages = this.convertMessages(params.messages);
     const tools = params.tools?.map((t) => ({
       type: "function",

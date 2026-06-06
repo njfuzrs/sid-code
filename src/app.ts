@@ -1599,7 +1599,16 @@ export class App {
 
           case "quit":
             appendCommandOutput(commandInput, result.message ?? "再见！");
-            setTimeout(() => process.exit(0), 100);
+            // D3-4：/quit 退出前必须 fireSessionEndEvent，否则跳过 line 1665 的 SessionEnd，
+            // 导致 messages.json / trajectory 不落盘（违反纪律不变量第 1 条「transcript 必落盘」）。
+            void (async () => {
+              try {
+                await this.hookSystem.fireSessionEndEvent("exit", this.buildSessionEndStats());
+              } catch (err: any) {
+                process.stderr.write(`[quit] SessionEnd hook 失败: ${err?.message ?? err}\n`);
+              }
+              setTimeout(() => process.exit(0), 100);
+            })();
             break;
 
           case "submit_prompt":

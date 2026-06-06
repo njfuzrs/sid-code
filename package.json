@@ -8,6 +8,8 @@
     "dev": "bun run src/entrypoints/bootstrap.ts",
     "build": "bun build --compile --outfile sid-code src/entrypoints/bootstrap.ts",
     "test": "bun test",
+    "test:ui": "bun test tests/ui src/ui",
+    "test:ui:stats": "bun run scripts/ui-test-stats.ts",
     "docs:lint": "bun run scripts/docs-lint.ts",
     "docs:index": "bun run scripts/docs-index-gen.ts",
     "docs:index-check": "bun run scripts/docs-index-gen.ts --check",

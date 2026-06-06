@@ -457,6 +457,82 @@ describe("TraceCollector", () => {
     expect(traj.metadata.tool_source).toBe("sid-code");
   });
 
+  // ─── D3-1 / D3-3：退出落 messages.json + 异常归因 ───
+
+  test("D3-1：SessionEnd 落 messages.json，含完整消息历史", async () => {
+    await fireSessionStart(hookSystem);
+    await fireModelRound(hookSystem, {
+      messages: [{ role: "user", content: "读个文件" }],
+      contentBlocks: [{ type: "text", text: "好的" }],
+      stopReason: "end_turn",
+    });
+    await hookSystem.fireSessionEndEvent("exit");
+
+    const msgPath = join(testDir, "sessions", "sess-001", "messages.json");
+    expect(existsSync(msgPath)).toBe(true);
+    const snapshot = JSON.parse(readFileSync(msgPath, "utf-8"));
+    expect(snapshot.kind).toBe("messages-snapshot");
+    expect(snapshot.session_id).toBe("sess-001");
+    expect(Array.isArray(snapshot.messages)).toBe(true);
+    expect(snapshot.message_count).toBeGreaterThan(0);
+  });
+
+  test("D3-3：异常退出(error) 写 exit_attribution 到 metadata，abnormal=true", async () => {
+    await fireSessionStart(hookSystem);
+    await fireModelRound(hookSystem, {
+      messages: [{ role: "user", content: "task" }],
+      contentBlocks: [{ type: "text", text: "处理中" }],
+      stopReason: "tool_use",
+    });
+    await hookSystem.fireSessionEndEvent("error", undefined, {
+      error: { message: "OpenAI API 错误: 400", name: "ApiError" },
+    });
+
+    const meta = collector.getMetadata()!;
+    expect(meta.exit_attribution).toBeDefined();
+    expect(meta.exit_attribution!.abnormal).toBe(true);
+    expect(meta.exit_attribution!.reason).toBe("error");
+    expect(meta.exit_attribution!.summary).toContain("reason=error");
+    // messages.json 也应含归因
+    const snapshot = JSON.parse(
+      readFileSync(join(testDir, "sessions", "sess-001", "messages.json"), "utf-8"),
+    );
+    expect(snapshot.attribution.abnormal).toBe(true);
+  });
+
+  test("D3-3：孤儿 tool_use 场景 → has_orphan_tool_use=true + last_tool 命中", async () => {
+    await fireSessionStart(hookSystem);
+    // 构造一轮:assistant 回复含 tool_use(boom),但历史里无对应 tool_result(孤儿)
+    await fireModelRound(hookSystem, {
+      messages: [
+        { role: "user", content: "task" },
+      ],
+      contentBlocks: [
+        { type: "tool_use", id: "orphan_1", name: "boom", input: {} },
+      ],
+      stopReason: "tool_use",
+    });
+    await hookSystem.fireSessionEndEvent("abort");
+
+    const meta = collector.getMetadata()!;
+    expect(meta.exit_attribution).toBeDefined();
+    expect(meta.exit_attribution!.has_orphan_tool_use).toBe(true);
+    expect(meta.exit_attribution!.last_tool).toBe("boom");
+    expect(meta.exit_attribution!.abnormal).toBe(true);
+  });
+
+  test("D3-3：正常 end_turn 退出 → 不写 exit_attribution（abnormal=false 不污染 metadata）", async () => {
+    await fireSessionStart(hookSystem);
+    await fireModelRound(hookSystem, { stopReason: "end_turn" });
+    await hookSystem.fireSessionEndEvent("exit");
+
+    const meta = collector.getMetadata()!;
+    // 正常退出 abnormal=false,不写 exit_attribution
+    expect(meta.exit_attribution).toBeUndefined();
+    // 但 messages.json 仍落盘(纪律不变量:transcript 必落盘)
+    expect(existsSync(join(testDir, "sessions", "sess-001", "messages.json"))).toBe(true);
+  });
+
   // ─── 错误容错 ───
 
   test("AfterModel 前无 BeforeModel 时静默跳过", async () => {

@@ -1,0 +1,88 @@
+# Harness capability case — harness_long_task_completion 维度（长多轮 / 协议 400 复发防护）
+#
+# 本次 bug 触发条件复刻（系统级查漏补缺方案 D2-2）：
+# 2026-06-04 deepseek-v4-pro 执行 SPEC-K1 时，**第 19 次** API 调用才触发 OpenAI 协议 400
+# （孤儿 tool_use）。此前的长任务 case（hrn_003/008）只 4 步，够不到 ~19 次 API call 的
+# 累积阈值，结构性测不到该 bug。本 case 用一个**强制 ≥15 个串行工具轮次**的查询，把
+# "多轮累积后消息历史是否仍合法"纳入回归——配合 SID_CODE_PROTOCOL_STRICT=1（eval 默认开），
+# 任一轮出现孤儿 tool_use 都会当场抛错 → exit_status 不为 end_turn → assert 失败。
+
+id: case_hrn_011
+subsystem: harness
+dimension: harness_long_task_completion
+priority: P0
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null  # 新增 case，待 N=3 baseline 后 GA
+holdout: false
+
+input:
+  user_query: |
+    我要逐个文件了解 src/llm/ 目录。请严格按下面顺序，**一次只读一个文件**，
+    每读完一个就用一两句话告诉我它的职责，然后再读下一个，不要一次性批量读：
+
+    1. 读 src/llm/types.ts 前 20 行，说它的职责
+    2. 读 src/llm/provider.ts 前 20 行，说它的职责
+    3. 读 src/llm/openai.ts 前 20 行，说它的职责
+    4. 读 src/llm/ollama.ts 前 20 行，说它的职责
+    5. 读 src/llm/anthropic.ts 前 20 行，说它的职责
+    6. 读 src/llm/fallback.ts 前 20 行，说它的职责
+    7. 读 src/llm/thinking.ts 前 20 行，说它的职责
+    8. 读 src/llm/quota.ts 前 20 行，说它的职责
+    9. 读 src/llm/registry.ts 前 20 行，说它的职责
+    10. 读 src/llm/errors.ts 前 20 行，说它的职责
+    11. 读 src/llm/token-estimator.ts 前 20 行，说它的职责
+    12. 读 src/llm/availability.ts 前 20 行，说它的职责
+
+    全部读完后，输出一句"全部读取完成"，并用 3 句话总结这个目录的整体架构。
+
+expected:
+  execution_must_call_tools_any_of:
+    - read
+    - bash
+    - glob
+
+  # 12 个串行读取 + 收尾，正常应在 ~13-20 步完成。给 35 步预算（足够但能挡住失控循环）。
+  # 关键：能跑到这么多步且 exit_status=end_turn，即证明多轮累积后消息历史仍合法（无 400）。
+  max_steps: 35
+
+  final_response_must_include_any_of:
+    - 全部读取完成
+    - 读取完成
+    - 整体架构
+    - provider
+
+  # 最强信号：end_turn 证明全程无协议 400 / 无 abnormal 中断。
+  # eval strict 模式下若任一轮出现孤儿 tool_use，会抛 MessageHistoryViolationError →
+  # 进程 abnormal 退出 → exit_status 必不为 end_turn → 此 assert 失败暴露 bug。
+  exit_status_must_be:
+    - end_turn
+
+rubric:
+  long_multiround_no_protocol_400: "≥12 个串行工具轮次后是否仍正常 end_turn（无 OpenAI 400 / 无孤儿 tool_use 中断）"
+  long_multiround_completion_quality: "是否逐个读完并给出整体架构总结"
+
+grader:
+  - type: assert
+    check: execution_must_call_tools_any_of_hit
+    weight: 0.20
+  - type: assert
+    check: exit_status_must_be_any_of_hit
+    weight: 0.35  # 本 case 的核心信号：end_turn = 无 400
+  - type: assert
+    check: final_response_must_include_any_of_hit
+    weight: 0.25
+  - type: assert
+    check: max_steps_within_budget
+    weight: 0.10
+  - type: llm_judge
+    weight: 0.10
+    rubric_ref:
+      - long_multiround_no_protocol_400
+      - long_multiround_completion_quality
+
+source: bugfix_2026_06_04_protocol_400_recurrence  # 系统级查漏补缺方案 D2-2
+related_subsystem: [ harness, agent, context, llm ]
+related_adr: [ ADR-039, ADR-041 ]
+baseline_scores: {}

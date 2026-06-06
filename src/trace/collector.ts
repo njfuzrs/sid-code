@@ -29,6 +29,8 @@ import type { HookSystem } from "../hook/system.ts";
 import { TraceWriter, type RawJsonlEntry } from "./writer.ts";
 import { buildTrajectory, type RequestResponsePair, type TraceMetadata } from "./builder.ts";
 import { getLogger } from "../debug/logger.ts";
+import type { Message } from "../llm/types.ts";
+import { checkMessageHistoryIntegrity } from "../agent/message-invariants.ts";
 
 // ─── 最小化上传器接口（避免循环依赖，Task 8 实现后注入） ───
 
@@ -589,6 +591,11 @@ export class TraceCollector {
     // 最终重建 session.traj（确保包含所有数据）
     await this.rebuildTraj();
 
+    // D3-1 + D3-3：退出时落 messages.json（完整消息历史 + 退出归因）。
+    // 落实 CLAUDE.md 评测纪律不变量第 1 条「transcript 必落盘」到真实交互退出路径。
+    // 尤其 abnormal / user_interrupt 退出时，此前只有 metadata.json 无法验尸。
+    this.persistMessagesSnapshot(input);
+
     // 触发上传（有限等待）
     if (this.uploader) {
       try {
@@ -617,6 +624,124 @@ export class TraceCollector {
 
   // ─── 辅助：增量 messages 计算 ───
 
+  /**
+   * D3-1：把完整消息历史 + 退出归因落到 sessions/<id>/messages.json。
+   *
+   * 消息历史来源：最后一个 pair 的 raw_messages（发送给 LLM 前的完整历史，含全部
+   * 历史轮次），再追加最后一次 response 的 content（assistant 回复），近似还原退出
+   * 时刻 ctxMgr 的完整 messages。best-effort：失败只告警，不阻塞退出。
+   */
+  private persistMessagesSnapshot(input: SessionEndInput): void {
+    try {
+      const messages = this.reconstructMessages();
+
+      // D3-3：崩溃自动归因摘要——abnormal 时一行根因，免去人工翻日志
+      const attribution = this.buildExitAttribution(input, messages);
+
+      // 把归因摘要也写进 metadata（D3-3），便于 trajectory 诊断不必另开 messages.json
+      if (attribution.abnormal) {
+        this.metadata.exit_attribution = attribution;
+      }
+
+      const snapshot = {
+        kind: "messages-snapshot",
+        session_id: input.session_id,
+        reason: input.reason,
+        exit_status: this.metadata.exit_status,
+        timestamp: input.timestamp,
+        attribution,
+        message_count: messages.length,
+        messages,
+      };
+      this.writer.writeMessagesSnapshot(snapshot);
+
+      if (attribution.abnormal) {
+        getLogger().warn(
+          "TRACE",
+          `异常退出已落 messages.json 验尸: ${attribution.summary}`,
+        );
+      }
+    } catch (err: any) {
+      getLogger().warn("TRACE", `落 messages.json 失败（不影响退出）: ${err?.message ?? err}`);
+    }
+  }
+
+  /**
+   * 从 pairs 还原退出时刻的完整消息历史。
+   * 最后一个 pair 的 raw_messages 已含本轮发送前的全部历史；再补最后一次 assistant 回复。
+   */
+  private reconstructMessages(): Message[] {
+    const lastPair = this.pairs[this.pairs.length - 1];
+    if (!lastPair) return [];
+
+    const base = (lastPair.request.raw_messages ?? lastPair.request.messages ?? []) as Message[];
+    const messages: Message[] = Array.isArray(base) ? [...base] : [];
+
+    // 补最后一次 response 的 assistant content（raw_messages 是"发送前"快照，不含本轮回复）
+    const respContent = lastPair.response?.content as unknown[] | undefined;
+    if (Array.isArray(respContent) && respContent.length > 0) {
+      messages.push({ role: "assistant", content: respContent as Message["content"] });
+    }
+    return messages;
+  }
+
+  /**
+   * D3-3：构建退出归因。abnormal 时给出错误类型 / 最后工具 / 步数 / 是否孤儿。
+   */
+  private buildExitAttribution(input: SessionEndInput, messages: Message[]): {
+    abnormal: boolean;
+    summary: string;
+    reason: string;
+    exit_status: string;
+    api_calls: number;
+    last_tool: string | null;
+    has_orphan_tool_use: boolean;
+    error_name?: string;
+  } {
+    const exitStatus = String(this.metadata.exit_status ?? "");
+    const abnormal =
+      input.reason === "error" ||
+      input.reason === "abort" ||
+      exitStatus === "user_interrupt" ||
+      exitStatus === "error" ||
+      exitStatus === "abort";
+
+    // 最后一个被调用的工具名（从消息历史里找最后一个 tool_use）
+    let lastTool: string | null = null;
+    for (let i = messages.length - 1; i >= 0 && !lastTool; i--) {
+      const c = messages[i]?.content;
+      if (!Array.isArray(c)) continue;
+      for (let j = c.length - 1; j >= 0; j--) {
+        const b = c[j];
+        if (b.type === "tool_use") { lastTool = b.name; break; }
+      }
+    }
+
+    const orphan = checkMessageHistoryIntegrity(messages).orphans.length > 0;
+    const errName = this.metadata.error?.name;
+
+    const summaryParts = [
+      `reason=${input.reason}`,
+      `exit=${exitStatus}`,
+      `api_calls=${this.metadata.total_api_calls}`,
+      `last_tool=${lastTool ?? "none"}`,
+      `orphan_tool_use=${orphan}`,
+    ];
+    if (errName) summaryParts.push(`error=${errName}`);
+
+    return {
+      abnormal,
+      summary: summaryParts.join(" "),
+      reason: String(input.reason),
+      exit_status: exitStatus,
+      api_calls: this.metadata.total_api_calls,
+      last_tool: lastTool,
+      has_orphan_tool_use: orphan,
+      ...(errName ? { error_name: errName } : {}),
+    };
+  }
+
+  // ─── 辅助：增量 messages 计算 ───
   /**
    * 计算本次请求相对于上次请求新增的 messages
    * 处理压缩边界（压缩后 messages 数组截断重组）
