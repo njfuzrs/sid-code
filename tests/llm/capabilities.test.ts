@@ -64,8 +64,8 @@ describe("Provider capabilities", () => {
       expect(provider.capabilities!().thinking).toBe(false);
     });
 
-    test("支持 vision", () => {
-      expect(provider.capabilities!().vision).toBe(true);
+    test("vision 如实声明 false（无图片输入管线，不虚标）", () => {
+      expect(provider.capabilities!().vision).toBe(false);
     });
 
     test("不支持 promptCaching", () => {

@@ -52,10 +52,85 @@ export class OpenAIProvider implements Provider {
       streaming: true,
       tools: true,
       thinking: false,       // OpenAI 的 o1/o3 有内置推理，但接口不同
-      vision: true,          // GPT-4o 支持图片
+      // §3.4：诚实能力。模型（GPT-4o）确实支持图片，但 sid-code 内部 ContentBlock
+      // 目前无 image 变体、convertMessages 也无 image → image_url content part 的转换，
+      // 即没有任何上游路径能把图片喂进来。在补齐多模态管线前如实声明 false，避免能力虚标。
+      vision: false,
       promptCaching: false,
       parallelToolCalls: true,
     };
+  }
+
+  /**
+   * 判断模型是否为 OpenAI o-series 推理模型（o1/o3/o4...）。
+   * o-series 协议差异：
+   *   - system 消息须用 `developer` role（§3.1）
+   *   - 须用 `max_completion_tokens`，`max_tokens` 已废弃且不兼容（§3.2）
+   * 仅对官方端点的 o-series 生效；第三方兼容端点（deepseek/ollama 等）模型名不命中，保持旧行为。
+   */
+  private isReasoningModel(model: string): boolean {
+    return /^o[0-9]/.test(model);
+  }
+
+  /**
+   * 把内部 toolChoice 翻译为 OpenAI `tool_choice` 字段格式（§4.2）。
+   *   "auto"/"none"/"required" → 同名字符串
+   *   { name } → { type: "function", function: { name } }
+   * 返回 undefined 表示不下发（沿用服务端默认）。
+   */
+  private static toToolChoice(
+    tc: SendParams["toolChoice"],
+  ): string | { type: "function"; function: { name: string } } | undefined {
+    if (tc == null) return undefined;
+    if (typeof tc === "string") return tc;
+    return { type: "function", function: { name: tc.name } };
+  }
+
+  /**
+   * 把 OpenAI finish_reason 映射为 sid-code 内部 stop_reason（§4.4）。
+   * 规范枚举 5 值：stop / length / tool_calls / content_filter / function_call。
+   *   - tool_calls / function_call → tool_use
+   *   - length → max_tokens
+   *   - content_filter → content_filter（不再误并入 end_turn，掩盖内容审查）
+   *   - stop / 其它 → end_turn
+   */
+  private static mapFinishReason(finishReason: string | null | undefined): string {
+    switch (finishReason) {
+      case "tool_calls":
+      case "function_call":
+        return "tool_use";
+      case "length":
+        return "max_tokens";
+      case "content_filter":
+        return "content_filter";
+      default:
+        return "end_turn";
+    }
+  }
+
+  /**
+   * 统一注入 system 消息：o-series 用 `developer` role，其余用 `system`（§3.1）。
+   * 仅在历史首条尚不是 system/developer 时注入，避免重复（§4.1）。
+   */
+  private prependSystemMessage(messages: any[], system: string, model: string): void {
+    const first = messages[0];
+    if (first && (first.role === "system" || first.role === "developer")) {
+      return; // 已有，避免双 system（§4.1）
+    }
+    const role = this.isReasoningModel(model) ? "developer" : "system";
+    messages.unshift({ role, content: system });
+  }
+
+  /**
+   * 统一设置输出 token 上限字段：o-series 用 `max_completion_tokens`，
+   * 其余用旧 `max_tokens`（§3.2）。直接写入 requestBody。
+   */
+  private applyMaxTokens(requestBody: any, maxTokens: number, model: string): void {
+    if (this.isReasoningModel(model)) {
+      requestBody.max_completion_tokens = maxTokens;
+    } else {
+      requestBody.max_tokens = maxTokens;
+    }
   }
 
   /**
@@ -79,12 +154,21 @@ export class OpenAIProvider implements Provider {
           if (block.type === "text") {
             textParts.push(block.text);
           } else if (block.type === "tool_use") {
+            // §2.3 fail-fast：空 id 的 tool_use 无法与后续 tool message 配对，
+            // 原样转发必然触发 OpenAI 400。在转换层提前抛错，比让服务端 400 更易定位。
+            if (!block.id) {
+              throw new Error(
+                `OpenAI convertMessages: tool_use 缺少 id（name=${block.name}），无法构造合法 tool_calls`,
+              );
+            }
             toolCalls.push({
               id: block.id,
               type: "function",
               function: {
                 name: block.name,
-                arguments: JSON.stringify(block.input),
+                // §2.2：input 为 undefined 时 JSON.stringify 返回 JS undefined（非字符串），
+                // 序列化进 body 会丢字段 → arguments 缺失 → 400。空参数应为 "{}"。
+                arguments: JSON.stringify(block.input ?? {}),
               },
             });
           }
@@ -114,9 +198,17 @@ export class OpenAIProvider implements Provider {
           if (block.type === "text") {
             textParts.push(block.text);
           } else if (block.type === "tool_result") {
+            // §2.3 fail-fast：空 tool_call_id 的 tool message 无法与任何 tool_call 配对 → 400。
+            if (!block.tool_use_id) {
+              throw new Error(
+                `OpenAI convertMessages: tool_result 缺少 tool_use_id，无法构造合法 role:tool 消息`,
+              );
+            }
             toolResults.push({
               tool_call_id: block.tool_use_id,
-              content: block.content,
+              // §2.1：规范要求 tool message content 为非空 string。工具返回空串
+              //（如 bash 无输出、grep 无匹配）时部分严格网关会判非法 → 400，兜底占位。
+              content: block.content && block.content.length > 0 ? block.content : "(empty)",
             });
           }
         }
@@ -162,24 +254,29 @@ export class OpenAIProvider implements Provider {
       },
     }));
 
+    const effectiveModel = params.model || this._model;
     const requestBody: any = {
-      model: params.model || this._model,
+      model: effectiveModel,
       messages,
-      max_tokens: params.maxTokens,
       stream: true,
       stream_options: { include_usage: true },
     };
+    // §3.2：o-series 用 max_completion_tokens，其余用 max_tokens
+    this.applyMaxTokens(requestBody, params.maxTokens, effectiveModel);
 
     if (params.system) {
-      // OpenAI 将 system 作为第一条消息
-      requestBody.messages.unshift({
-        role: "system",
-        content: params.system,
-      });
+      // §3.1：o-series 用 developer role，其余 system；并避免重复注入(§4.1)
+      this.prependSystemMessage(requestBody.messages, params.system, effectiveModel);
     }
 
     if (tools && tools.length > 0) {
       requestBody.tools = tools;
+      // §4.2：工具调用策略透传（不传则沿用服务端默认）
+      const toolChoice = OpenAIProvider.toToolChoice(params.toolChoice);
+      if (toolChoice !== undefined) requestBody.tool_choice = toolChoice;
+      if (params.parallelToolCalls !== undefined) {
+        requestBody.parallel_tool_calls = params.parallelToolCalls;
+      }
     }
 
     try {
@@ -191,7 +288,7 @@ export class OpenAIProvider implements Provider {
         model: requestBody.model,
         messageCount: requestBody.messages.length,
         toolCount: requestBody.tools?.length ?? 0,
-        maxTokens: requestBody.max_tokens,
+        maxTokens: requestBody.max_completion_tokens ?? requestBody.max_tokens,
       });
 
       const response = await fetch(`${this.baseURL}/chat/completions`, {
@@ -267,17 +364,26 @@ export class OpenAIProvider implements Provider {
       },
     }));
 
+    const effectiveModel = params.model || this._model;
     const requestBody: any = {
-      model: params.model || this._model,
+      model: effectiveModel,
       messages,
-      max_tokens: params.maxTokens,
       stream: false,
     };
+    // §3.2：o-series 用 max_completion_tokens，其余用 max_tokens
+    this.applyMaxTokens(requestBody, params.maxTokens, effectiveModel);
     if (params.system) {
-      requestBody.messages.unshift({ role: "system", content: params.system });
+      // §3.1：o-series 用 developer role，其余 system；并避免重复注入(§4.1)
+      this.prependSystemMessage(requestBody.messages, params.system, effectiveModel);
     }
     if (tools && tools.length > 0) {
       requestBody.tools = tools;
+      // §4.2：工具调用策略透传（不传则沿用服务端默认）
+      const toolChoice = OpenAIProvider.toToolChoice(params.toolChoice);
+      if (toolChoice !== undefined) requestBody.tool_choice = toolChoice;
+      if (params.parallelToolCalls !== undefined) {
+        requestBody.parallel_tool_calls = params.parallelToolCalls;
+      }
     }
 
     const log = getLogger();
@@ -324,12 +430,7 @@ export class OpenAIProvider implements Provider {
     }
 
     const finishReason = choice?.finish_reason;
-    const stopReason =
-      finishReason === "tool_calls"
-        ? "tool_use"
-        : finishReason === "length"
-          ? "max_tokens"
-          : "end_turn";
+    const stopReason = OpenAIProvider.mapFinishReason(finishReason);
 
     return {
       role: "assistant",
@@ -430,12 +531,7 @@ export class OpenAIProvider implements Provider {
               yield {
                 type: "message_delta",
                 delta: {
-                  stop_reason:
-                    pendingFinishReason === "tool_calls"
-                      ? "tool_use"
-                      : pendingFinishReason === "length"
-                        ? "max_tokens"
-                        : "end_turn",
+                  stop_reason: OpenAIProvider.mapFinishReason(pendingFinishReason),
                 },
                 usage,
               };
@@ -447,6 +543,17 @@ export class OpenAIProvider implements Provider {
 
           try {
             const chunk = JSON.parse(data);
+
+            // §3.3：流中途的 API error chunk（配额超限/内容过滤/上游中断）。
+            // 此前只看 choices/usage，error 被 `!delta && !finishReason` 静默跳过，
+            // 表现为"流莫名结束/空响应/超时"。这里显式 yield error 并终止流。
+            if (chunk.error) {
+              const msg = chunk.error.message || JSON.stringify(chunk.error);
+              dbg(`stream error chunk: ${msg}`);
+              yield { type: "error", error: { message: `OpenAI 流内错误: ${msg}` } };
+              return;
+            }
+
             const delta = chunk.choices?.[0]?.delta;
             const finishReason = chunk.choices?.[0]?.finish_reason;
             totalChunks++;

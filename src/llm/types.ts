@@ -82,6 +82,20 @@ export interface SendParams {
   system?: string;
   maxTokens: number;
   tools?: ToolDefinition[];
+  /**
+   * 工具调用策略（§4.2）。透传给支持的 provider（OpenAI 兼容）：
+   *   - "auto"：模型自行决定是否调用工具（服务端默认）
+   *   - "none"：禁止调用工具
+   *   - "required"：强制至少调用一个工具
+   *   - { name }：强制调用指定工具
+   * 不传则不下发该字段，沿用服务端默认。
+   */
+  toolChoice?: "auto" | "none" | "required" | { name: string };
+  /**
+   * 是否允许并行工具调用（§4.2）。仅在 provider capabilities.parallelToolCalls 为 true 时有意义。
+   * 不传则不下发该字段，沿用服务端默认（通常为 true）。
+   */
+  parallelToolCalls?: boolean;
   /** Extended Thinking 配置（仅 Anthropic 支持） */
   thinking?: {
     enabled: boolean;
