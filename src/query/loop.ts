@@ -24,6 +24,10 @@ import { SessionState } from "../session/state.ts";
 import { getLogger, getSessionMetrics, getPerfTimer } from "../debug/index.ts";
 import { LoopDetector, LOOP_RECOVERY_PROMPT } from "../agent/loop-detection.ts";
 import type { LLMLoopCheckResult } from "../agent/loop-detection.ts";
+import {
+  checkMessageHistoryIntegrity,
+  backfillOrphanToolResults,
+} from "../agent/message-invariants.ts";
 import { isAbortError } from "../llm/errors.ts";
 import { isPromptTooLongError, reactiveCompact, DiminishingReturnsDetector } from "./reactive-compact.ts";
 import { runCompactPipeline } from "./compact/index.ts";
@@ -128,6 +132,26 @@ export async function* queryLoop(
     }
 
     // ─── 构建请求参数 ───
+    // 生产端发送前孤儿兜底 backstop（系统级查漏补缺方案 防线 1，根因终结关卡）：
+    // 无论孤儿从哪条路径进入历史（循环恢复 / 中断时序 / followup 排序 / plan-mode 转换 / 未来新增），
+    // 发送前统一在 ctxMgr 历史层补 error 占位 tool_result，使其满足 tool_use/tool_result 协议配对。
+    // 这是 ADR-039「不变量在出口强制」哲学的终点——executeTools 守生产单点，这里守"所有路径的总出口"。
+    // 与消费端只读哨兵（protocol-sentinel）互补：哨兵负责发现+告警+落盘，本关卡负责真正修复，不让 400 发生。
+    {
+      const backfill = backfillOrphanToolResults(ctxMgr.getMessages());
+      if (backfill.changed) {
+        ctxMgr.setMessages(backfill.messages);
+        const detail = backfill.backfilled
+          .map(o => `${o.name}(id=${o.id} @msg#${o.messageIndex})`)
+          .join(", ");
+        log.error(
+          "QUERY_LOOP",
+          `发送前孤儿兜底关卡触发：补齐 ${backfill.backfilled.length} 个孤儿 tool_use 的占位 tool_result（已修复，避免 OpenAI 400）：${detail}。` +
+            `孤儿来源应在产生端排查（循环恢复/中断/followup/plan-mode）。`,
+        );
+      }
+    }
+
     const cleanedMessages = ctxMgr.getCleanedMessages();
     const toolDefs = toolCount > 0 ? toolRegistry.definitions() : undefined;
     log.llmRequest(config.provider, config.model, cleanedMessages.length, toolDefs?.length ?? 0, config.maxTokens);
@@ -572,6 +596,16 @@ async function recoverFromLoop(
   const canRecover = loopDetector.tryRecover();
   if (!canRecover) {
     log.warn("QUERY_LOOP", "循环恢复次数耗尽，终止循环");
+    // 即使放弃恢复，也必须补齐未应答 tool_use 的占位 tool_result——
+    // 否则孤儿残留在历史里，下一条用户消息发送时仍会 OpenAI 400。
+    const pending = buildPendingToolResults(
+      ctxMgr.getMessages(),
+      "[系统] 循环恢复次数耗尽，此工具调用未执行。",
+    );
+    if (pending.length > 0) {
+      ctxMgr.addMessage({ role: "user", content: pending });
+      log.warn("QUERY_LOOP", `放弃恢复前补齐 ${pending.length} 个未应答 tool_use 的占位 tool_result（防孤儿 → 400）`);
+    }
     return false;
   }
 
@@ -579,12 +613,49 @@ async function recoverFromLoop(
   const maxAttempts = loopDetector.getMaxRecoveryAttempts();
   log.info("QUERY_LOOP", `注入循环恢复提示 (${attempt}/${maxAttempts})，原因: ${detail}`);
 
+  // 根因修复（系统级查漏补缺方案 第四条孤儿来源）：
+  // 循环检测可能在 stopReason=tool_use 的轮次触发——此时 assistant 的 tool_use 已入历史，
+  // 但 executeTools 被 continue 跳过，这些 tool_use 永远拿不到 tool_result → 孤儿 → OpenAI 400。
+  // 这里把"未应答的 tool_use 补 error 占位 tool_result" + "恢复提示" 合并进**同一条 user 消息**，
+  // 既维持 tool_use/tool_result 协议配对，又保持 user/assistant 角色交替。
+  const orphanResults = buildPendingToolResults(
+    ctxMgr.getMessages(),
+    "[系统] 检测到非生产性循环，此工具调用未执行；请改换思路，不要重复等价调用。",
+  );
+  if (orphanResults.length > 0) {
+    log.warn(
+      "QUERY_LOOP",
+      `循环恢复时补齐 ${orphanResults.length} 个未应答 tool_use 的占位 tool_result（防孤儿 → 400）`,
+    );
+  }
+
   ctxMgr.addMessage({
     role: "user",
-    content: [{ type: "text", text: LOOP_RECOVERY_PROMPT }],
+    content: [...orphanResults, { type: "text", text: LOOP_RECOVERY_PROMPT }],
   });
 
   return true;
+}
+
+/**
+ * 为消息历史中"末尾 assistant 的未应答 tool_use"构造 error 占位 tool_result。
+ *
+ * 只看历史末尾这一组孤儿（即最近一条 assistant 的 tool_use 里尚无 tool_result 的），
+ * 因为循环恢复/中断发生在"刚产生 assistant tool_use、还没执行工具"的时刻。
+ * 用全局完整性检查锁定孤儿 id，避免误补历史更早处已正常配对的调用。
+ */
+function buildPendingToolResults(
+  messages: import("../llm/types.ts").Message[],
+  content: string,
+): import("../llm/types.ts").ContentBlock[] {
+  const integrity = checkMessageHistoryIntegrity(messages);
+  if (integrity.orphans.length === 0) return [];
+  return integrity.orphans.map(o => ({
+    type: "tool_result" as const,
+    tool_use_id: o.id,
+    content,
+    is_error: true,
+  }));
 }
 
 /** LLM 认知循环检测 */

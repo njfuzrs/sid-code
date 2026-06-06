@@ -16,6 +16,7 @@ import {
   hasOrphanToolUse,
   assertMessageHistoryIntact,
   describeIntegrityViolation,
+  backfillOrphanToolResults,
   MessageHistoryViolationError,
 } from "../../src/agent/message-invariants.ts";
 
@@ -135,5 +136,102 @@ describe("D1-4 — 消息历史不变量纯函数", () => {
         { role: "assistant", content: [{ type: "text", text: "hello" }] },
       ]).intact,
     ).toBe(true);
+  });
+});
+
+describe("backfillOrphanToolResults — 生产端孤儿兜底", () => {
+  test("无孤儿 → changed=false 且原样返回引用", () => {
+    const messages: Message[] = [asst(["c1", "read"]), userResults("c1")];
+    const r = backfillOrphanToolResults(messages);
+    expect(r.changed).toBe(false);
+    expect(r.messages).toBe(messages); // 同一引用，零拷贝
+    expect(r.backfilled).toHaveLength(0);
+  });
+
+  test("末尾孤儿且其后无 user 消息 → 插入一条新 user 消息承载占位", () => {
+    const messages: Message[] = [
+      { role: "user", content: [{ type: "text", text: "hi" }] },
+      asst(["c1", "bash"], ["c2", "bash"]), // 两个 tool_use 都无应答
+    ];
+    const r = backfillOrphanToolResults(messages);
+    expect(r.changed).toBe(true);
+    expect(r.backfilled).toHaveLength(2);
+    // 修补后历史必须完整
+    expect(checkMessageHistoryIntegrity(r.messages).intact).toBe(true);
+    // 末尾应是一条 user 消息，含 2 个 error 占位 tool_result
+    const last = r.messages[r.messages.length - 1];
+    expect(last.role).toBe("user");
+    const trs = last.content.filter(b => b.type === "tool_result");
+    expect(trs).toHaveLength(2);
+    expect(trs.every(b => b.type === "tool_result" && b.is_error === true)).toBe(true);
+  });
+
+  test("部分应答（仅缺其中一个）→ 占位合并进紧邻的已有 user 消息，不破坏角色交替", () => {
+    const messages: Message[] = [
+      asst(["c1", "read"], ["c2", "boom"]),
+      userResults("c1"), // c2 缺失
+    ];
+    const r = backfillOrphanToolResults(messages);
+    expect(r.changed).toBe(true);
+    expect(r.backfilled).toHaveLength(1);
+    expect(checkMessageHistoryIntegrity(r.messages).intact).toBe(true);
+    // 消息条数不增加（合并进已有 user 消息，而非新插一条 → 不产生 user/user）
+    expect(r.messages).toHaveLength(2);
+    // 不存在相邻同角色
+    for (let i = 1; i < r.messages.length; i++) {
+      expect(r.messages[i].role).not.toBe(r.messages[i - 1].role);
+    }
+  });
+
+  test("复刻崩溃现场：assistant(text + 4 个 bash tool_use) 后紧跟纯 text user(循环恢复提示) → 补齐后 intact", () => {
+    // 这是 28b7eed7 session 21:28 崩溃的真实结构（msg#25 assistant 4 孤儿，msg#26 纯 text user）
+    const messages: Message[] = [
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "现在验证 KeypressContext 和 InputArea" },
+          { type: "tool_use", id: "call_00", name: "bash", input: { command: "rg escape ..." } },
+          { type: "tool_use", id: "call_01", name: "bash", input: { command: "rg escape ..." } },
+          { type: "tool_use", id: "call_02", name: "bash", input: { command: "git diff ..." } },
+          { type: "tool_use", id: "call_03", name: "bash", input: { command: "git diff ..." } },
+        ],
+      },
+      { role: "user", content: [{ type: "text", text: "系统检测到你陷入了非生产性循环…" }] },
+    ];
+    // 修补前：4 个孤儿（正是 OpenAI 400 的成因）
+    expect(checkMessageHistoryIntegrity(messages).orphans).toHaveLength(4);
+
+    const r = backfillOrphanToolResults(messages);
+    expect(r.changed).toBe(true);
+    expect(r.backfilled).toHaveLength(4);
+    // 修补后：完整，且不再有相邻同角色
+    expect(checkMessageHistoryIntegrity(r.messages).intact).toBe(true);
+    for (let i = 1; i < r.messages.length; i++) {
+      expect(r.messages[i].role).not.toBe(r.messages[i - 1].role);
+    }
+    // 4 个占位 tool_result 应合并进 assistant 之后那条已有 user 消息（排在恢复提示文本之前）
+    const merged = r.messages[1];
+    expect(merged.role).toBe("user");
+    expect(merged.content.filter(b => b.type === "tool_result")).toHaveLength(4);
+    expect(merged.content.some(b => b.type === "text")).toBe(true);
+  });
+
+  test("幂等：对已补齐的历史再跑一次 → changed=false", () => {
+    const messages: Message[] = [
+      { role: "user", content: [{ type: "text", text: "hi" }] },
+      asst(["c1", "bash"]),
+    ];
+    const once = backfillOrphanToolResults(messages);
+    expect(once.changed).toBe(true);
+    const twice = backfillOrphanToolResults(once.messages);
+    expect(twice.changed).toBe(false);
+  });
+
+  test("不修改入参数组（纯函数）", () => {
+    const messages: Message[] = [asst(["c1", "bash"])];
+    const before = messages.length;
+    backfillOrphanToolResults(messages);
+    expect(messages).toHaveLength(before);
+    expect(messages[0].content.every(b => b.type === "tool_use")).toBe(true);
   });
 });

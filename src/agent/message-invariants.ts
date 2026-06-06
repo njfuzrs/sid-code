@@ -20,7 +20,7 @@
  * 纯函数：无副作用、无 I/O、无日志。调用方负责"发现后怎么办"（告警 / 落盘 / 抛错）。
  */
 
-import type { ContentBlock, Message } from "../llm/types.ts";
+import type { ContentBlock, Message, ToolResultBlock } from "../llm/types.ts";
 
 /** 一条孤儿 tool_use 记录（assistant 里有 tool_use，但后续无对应 tool_result） */
 export interface OrphanToolUse {
@@ -184,6 +184,76 @@ export function assertMessageHistoryIntact(messages: Message[], context = ""): v
       result,
     );
   }
+}
+
+/** backfill 占位 tool_result 的默认文案（统一事实源，便于测试断言 & 诊断检索） */
+export const ORPHAN_BACKFILL_CONTENT =
+  "[系统] 此工具调用未被执行（被循环检测/中断/时序切断），自动补占位结果以维持 tool_use/tool_result 协议配对。";
+
+/** backfill 结果 */
+export interface BackfillResult {
+  /** 是否发生了修补（false 表示历史本就完整，messages 原样返回引用不变） */
+  changed: boolean;
+  /** 修补后的消息历史（changed=false 时为入参同一引用；changed=true 时为新数组） */
+  messages: Message[];
+  /** 本次补齐的孤儿明细（供日志/落盘/测试） */
+  backfilled: OrphanToolUse[];
+}
+
+/**
+ * 生产端孤儿兜底：为所有孤儿 tool_use 补 error 占位 tool_result，使历史满足协议配对。
+ *
+ * 设计（对齐 ADR-039「不变量在出口强制」）：
+ *   - 这是**生产端**修补（在 ctxMgr 历史层），不是 ADR-039 否决的「convertMessages 消费端修数据」。
+ *     ADR-039 方案 B 否决的是「在 provider 转换时悄悄改数据掩盖问题」；本函数在更上游的
+ *     消息历史层显式补齐 + 由调用方告警落盘，是「让脏数据无法形成」而非「掩盖」。
+ *   - 占位 tool_result 紧跟在对应 assistant 消息**之后**插入（保持 OpenAI 要求的相邻顺序）。
+ *   - 若该 assistant 之后已存在一条 user 消息（部分 tool_result 已补、仅缺其中几个），
+ *     则把缺失的占位**合并进那条已有 user 消息**，避免插入造成 user/user 不交替。
+ *
+ * 纯函数：不修改入参数组（changed 时返回新数组），无 I/O、无日志。
+ *
+ * @param messages 待修补的消息历史
+ * @returns BackfillResult；无孤儿时 changed=false 且原样返回入参引用
+ */
+export function backfillOrphanToolResults(messages: Message[]): BackfillResult {
+  const result = checkMessageHistoryIntegrity(messages);
+  if (result.orphans.length === 0) {
+    return { changed: false, messages, backfilled: [] };
+  }
+
+  // 按 assistant 消息下标聚合缺失的占位 tool_result
+  const placeholdersByMsgIdx = new Map<number, ToolResultBlock[]>();
+  for (const orphan of result.orphans) {
+    const block: ToolResultBlock = {
+      type: "tool_result",
+      tool_use_id: orphan.id,
+      content: ORPHAN_BACKFILL_CONTENT,
+      is_error: true,
+    };
+    const arr = placeholdersByMsgIdx.get(orphan.messageIndex);
+    if (arr) arr.push(block);
+    else placeholdersByMsgIdx.set(orphan.messageIndex, [block]);
+  }
+
+  const out: Message[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    out.push(messages[i]);
+    const placeholders = placeholdersByMsgIdx.get(i);
+    if (!placeholders) continue;
+
+    // 若紧邻的下一条是 user 消息，把占位合并进去（避免 user/user 不交替）
+    const next = messages[i + 1];
+    if (next && next.role === "user" && Array.isArray(next.content)) {
+      out.push({ ...next, content: [...placeholders, ...next.content] });
+      i++; // 已消费 next
+    } else {
+      // 否则插入一条新的 user 消息承载占位
+      out.push({ role: "user", content: placeholders });
+    }
+  }
+
+  return { changed: true, messages: out, backfilled: result.orphans };
 }
 
 /**

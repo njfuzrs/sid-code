@@ -27,6 +27,10 @@ import type { LLMLoopCheckResult } from "./loop-detection.ts";
 import { isAbortError } from "../llm/errors.ts";
 import { yieldMissingToolResults, collectToolResultIdsFromBlocks } from "./tool-result-guard.ts";
 import {
+  checkMessageHistoryIntegrity,
+  backfillOrphanToolResults,
+} from "./message-invariants.ts";
+import {
   generateTaskStatusAttachment,
   dequeuePendingNotifications,
   getRunningTasks,
@@ -131,6 +135,12 @@ export class AgentLoopRunner {
     const canRecover = this.loopDetector.tryRecover();
     if (!canRecover) {
       log.warn("AGENT", "循环恢复次数耗尽，终止循环");
+      // 即使放弃恢复，也必须补齐未应答 tool_use 的占位 tool_result——
+      // 否则孤儿残留在历史里，下一条用户消息发送时仍会 OpenAI 400。
+      this.backfillPendingToolResults(
+        ctxMgr,
+        "[系统] 循环恢复次数耗尽，此工具调用未执行。",
+      );
       return false;
     }
 
@@ -139,13 +149,53 @@ export class AgentLoopRunner {
     log.info("AGENT", `注入循环恢复提示 (${attempt}/${maxAttempts})`);
     callbacks.onLoopRecovery?.(attempt, maxAttempts);
 
-    // 注入恢复提示让 LLM 自我纠正
+    // 根因修复（系统级查漏补缺方案 第四条孤儿来源）：
+    // 循环检测可能在 stopReason=tool_use 的轮次触发——此时 assistant 的 tool_use 已入历史，
+    // 但 executeTools 被 continue 跳过，这些 tool_use 永远拿不到 tool_result → 孤儿 → OpenAI 400。
+    // 这里把"未应答 tool_use 的 error 占位 tool_result" + "恢复提示" 合并进**同一条 user 消息**，
+    // 既维持 tool_use/tool_result 协议配对，又保持 user/assistant 角色交替。
+    const integrity = checkMessageHistoryIntegrity(ctxMgr.getMessages());
+    const orphanResults: ContentBlock[] = integrity.orphans.map(o => ({
+      type: "tool_result" as const,
+      tool_use_id: o.id,
+      content: "[系统] 检测到非生产性循环，此工具调用未执行；请改换思路，不要重复等价调用。",
+      is_error: true,
+    }));
+    if (orphanResults.length > 0) {
+      log.warn(
+        "AGENT",
+        `循环恢复时补齐 ${orphanResults.length} 个未应答 tool_use 的占位 tool_result（防孤儿 → 400）`,
+      );
+    }
+
+    // 注入恢复提示让 LLM 自我纠正（占位 tool_result 排在提示文本之前）
     ctxMgr.addMessage({
       role: "user",
-      content: [{ type: "text", text: LOOP_RECOVERY_PROMPT }],
+      content: [...orphanResults, { type: "text", text: LOOP_RECOVERY_PROMPT }],
     });
 
     return true;
+  }
+
+  /**
+   * 为历史末尾未应答的 tool_use 补 error 占位 tool_result（不注入恢复提示）。
+   * 用于"放弃恢复但仍要保证协议配对"的场景，避免孤儿残留导致后续 400。
+   */
+  private backfillPendingToolResults(ctxMgr: ContextManager, content: string): void {
+    const log = getLogger();
+    const integrity = checkMessageHistoryIntegrity(ctxMgr.getMessages());
+    if (integrity.orphans.length === 0) return;
+    const orphanResults: ContentBlock[] = integrity.orphans.map(o => ({
+      type: "tool_result" as const,
+      tool_use_id: o.id,
+      content,
+      is_error: true,
+    }));
+    ctxMgr.addMessage({ role: "user", content: orphanResults });
+    log.warn(
+      "AGENT",
+      `放弃恢复前补齐 ${orphanResults.length} 个未应答 tool_use 的占位 tool_result（防孤儿 → 400）`,
+    );
   }
 
   /**
@@ -307,6 +357,26 @@ export class AgentLoopRunner {
       }
 
       // 构建请求参数
+      // 生产端发送前孤儿兜底 backstop（系统级查漏补缺方案 防线 1，根因终结关卡）：
+      // 无论孤儿从哪条路径进入历史（循环恢复 / 中断时序 / followup 排序 / plan-mode 转换 / 未来新增），
+      // 发送前统一在 ctxMgr 历史层补 error 占位 tool_result，使其满足 tool_use/tool_result 协议配对。
+      // 这是 ADR-039「不变量在出口强制」哲学的终点；与消费端只读哨兵（protocol-sentinel）互补：
+      // 哨兵负责发现+告警+落盘，本关卡负责真正修复，不让 400 发生。
+      {
+        const backfill = backfillOrphanToolResults(ctxMgr.getMessages());
+        if (backfill.changed) {
+          ctxMgr.setMessages(backfill.messages);
+          const detail = backfill.backfilled
+            .map(o => `${o.name}(id=${o.id} @msg#${o.messageIndex})`)
+            .join(", ");
+          log.error(
+            "AGENT",
+            `发送前孤儿兜底关卡触发：补齐 ${backfill.backfilled.length} 个孤儿 tool_use 的占位 tool_result（已修复，避免 OpenAI 400）：${detail}。` +
+              `孤儿来源应在产生端排查（循环恢复/中断/followup/plan-mode）。`,
+          );
+        }
+      }
+
       const cleanedMessages = ctxMgr.getCleanedMessages();
       const toolDefs = toolCount > 0 ? toolRegistry.definitions() : undefined;
 
