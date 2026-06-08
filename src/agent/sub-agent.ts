@@ -126,8 +126,8 @@ export class SubAgent {
     const agent = new SubAgent(provider, model, toolRegistry, hookSystem);
     agent.registry = registry;
     agent.modelOverride = modelOverride;
-    // 保存 spawn 配置（用于子进程启动）
-    agent.spawnConfig = registry.getSpawnConfig();
+    // 保存 spawn 配置（用于子进程启动，兼容未实现 getSpawnConfig 的 registry）
+    try { agent.spawnConfig = registry.getSpawnConfig?.(); } catch { /* registry 未实现 getSpawnConfig，spawn 模式自动回退 */ }
     return agent;
   }
 

@@ -337,7 +337,14 @@ function registerGlobalErrorHandlers(): void {
     if (err.stack) process.stderr.write(`${err.stack}\n`);
     // 紧急 SessionEnd（在 exit 前做最后一搏）
     try { lastAppRef?.deref()?.emergencySessionEnd(err); } catch { /* ignore */ }
-    process.exit(1);
+    // 强制退出（对标 claude-code forceExit）：
+    // 终端已死时 process.exit() 可能抛 EIO，此时回退到 SIGKILL
+    try {
+      process.exit(1);
+    } catch {
+      // 生产环境：dead terminal → EIO → 回退 SIGKILL
+      process.kill(process.pid, "SIGKILL");
+    }
   });
 }
 

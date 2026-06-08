@@ -10,6 +10,7 @@
 import { render } from "ink";
 import type { ReactElement } from "react";
 import { getLogger } from "../debug/logger.ts";
+import { registerProcessOutputErrorHandlers } from "../utils/process.ts";
 
 /** 禁用终端行自动换行（防止长行折行导致布局溢出） */
 function disableLineWrapping() {
@@ -49,6 +50,11 @@ export function createFullScreen(
   return {
     get instance() { return instance; },
     start: async () => {
+      // 防止 EIO/EPIPE 错误从 Ink 渲染管线抛出 uncaughtException
+      // 对标 claude-code registerProcessOutputErrorHandlers()
+      // 必须在 Ink render() 之前注册，因为 Ink 渲染时立即开始写 stdout
+      registerProcessOutputErrorHandlers();
+
       const options: Parameters<typeof render>[1] = {
         stdout,
         stdin: process.stdin,
