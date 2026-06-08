@@ -44,6 +44,7 @@ import {
 import { JitContextManager } from "./config/jit-context.ts";
 import { isAbortError } from "./llm/errors.ts";
 import * as CrashMarker from "./trace/crash-marker.ts";
+import * as PidManager from "./trace/pid-manager.ts";
 import { execSync } from "child_process";
 import { readFile } from "fs/promises";
 import { resolve, extname, join } from "path";
@@ -411,6 +412,11 @@ export class App {
     // 这是 25% session 卡在 exit_status=unknown 的另一个根因——promptfoo timeout 时 SIGTERM 杀进程
     this.registerSignalHandlers();
 
+    // PID 文件：标记进程生命周期（启动时写入，正常退出时删除）
+    try {
+      PidManager.write(this.sessionState.sessionId);
+    } catch { /* PID 写入失败不影响启动 */ }
+
     // 启动诊断：检查上一会话是否异常退出
     try {
       const crash = CrashMarker.readPrevious();
@@ -424,6 +430,32 @@ export class App {
           `  模型: ${crash.last_model}`,
           `  内存: ${crash.memory_mb.toFixed(1)} MB`,
           `  运行时间: ${crash.uptime_seconds.toFixed(1)}s`,
+        ].join("\n"));
+      }
+    } catch { /* 诊断失败不影响启动 */ }
+
+    // PID 孤儿诊断：扫描残留 PID 文件（进程已退出但 PID 文件未清理 → 异常退出）
+    try {
+      const orphanPids = PidManager.findOrphanPids();
+      if (orphanPids.length > 0) {
+        log.warn("DIAG", [
+          `发现 ${orphanPids.length} 个孤儿进程残留（进程已退出但 PID 文件未清理）:`,
+          ...orphanPids.map(p => `  PID ${p.pid} → session ${p.session_id}, 启动时间 ${p.start_time}`),
+        ].join("\n"));
+        // 后台清理孤儿 PID 文件
+        for (const p of orphanPids) {
+          try { PidManager.cleanup(p.session_id); } catch { /* ignore */ }
+        }
+      }
+    } catch { /* 诊断失败不影响启动 */ }
+
+    // 心跳残留诊断：检测有心跳无 crash.json 的会话 → 疑似 hang/僵尸
+    try {
+      const stale = PidManager.scanStaleHeartbeats();
+      if (stale.length > 0) {
+        log.warn("DIAG", [
+          `发现 ${stale.length} 个疑似 hang/僵尸会话（有心跳无 crash.json，最后心跳 >30s）:`,
+          ...stale.map(s => `  session ${s.session_id}, 最后心跳 ${s.last_heartbeat_ts}, 进程状态 ${s.is_process_alive ? "存活" : "已退出"}`),
         ].join("\n"));
       }
     } catch { /* 诊断失败不影响启动 */ }
@@ -457,6 +489,7 @@ export class App {
       }
       // 清理 crash marker（正常退出不残留）
       try { CrashMarker.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
+      try { PidManager.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
       // 给 trajectory 写入一点时间，再强制退出
       setTimeout(() => process.exit(signal === "SIGINT" ? 130 : 143), 200);
     };
@@ -1027,6 +1060,7 @@ export class App {
     }
     // 清理 crash marker（正常退出不残留）
     try { CrashMarker.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
+    try { PidManager.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
 
     // 输出结果（即使出错也输出已收到的内容，便于诊断）
     if (this.config.outputFormat === "json") {
@@ -1220,6 +1254,7 @@ export class App {
     }
     // 清理 crash marker（正常退出不残留）
     try { CrashMarker.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
+    try { PidManager.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
 
     // 清理 + 优雅关闭（与 runHeadless 收尾一致）
     unwatchCLAUDEmd();
@@ -1723,6 +1758,7 @@ export class App {
               }
               // 清理 crash marker（正常退出不残留）
               try { CrashMarker.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
+              try { PidManager.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
               setTimeout(() => process.exit(0), 100);
             })();
             break;
@@ -1790,6 +1826,7 @@ export class App {
     await this.hookSystem.fireSessionEndEvent("exit", this.buildSessionEndStats());
     // 清理 crash marker（正常退出不残留）
     try { CrashMarker.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
+    try { PidManager.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
     unwatchCLAUDEmd();
     cleanupSettingsWatcher();
     stopAppConfigWatcher();

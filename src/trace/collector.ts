@@ -12,7 +12,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync, unlinkSync, writeFileSync } from "node:fs";
 import {
   HookEventName,
   type HookInput,
@@ -74,6 +74,10 @@ export class TraceCollector {
   private initialized = false;
   /** 待写入下次 raw.jsonl 的 compact_boundary */
   private pendingCompactBoundary: RawJsonlEntry["compact_boundary"] | undefined;
+  /** 心跳定时器：每 10 秒写 heartbeat.txt */
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  /** 心跳文件路径 */
+  private heartbeatPath: string = "";
 
   // ── Harness 编辑统计内部计数器 ──
   private harnessEditCount = 0;
@@ -197,6 +201,20 @@ export class TraceCollector {
 
     this.writer = new TraceWriter(this.outputDir, input.session_id);
     this.initialized = true;
+
+    // 启动心跳：每 10 秒写 heartbeat.txt（用于下次启动诊断 session hang）
+    this.heartbeatPath = join(this.writer.getSessionDir(), "heartbeat.txt");
+    this.heartbeatTimer = setInterval(() => {
+      try {
+        const content = JSON.stringify({
+          ts: new Date().toISOString(),
+          session_id: input.session_id,
+        });
+        writeFileSync(this.heartbeatPath, content);
+      } catch { /* 心跳失败静默 */ }
+    }, 10_000);
+    // unref 确保心跳定时器不阻止进程退出
+    this.heartbeatTimer.unref();
 
     this.writer.appendEvent({
       event: HookEventName.SessionStart,
@@ -646,6 +664,17 @@ export class TraceCollector {
         getLogger().warn("TRACE", `上传异常: ${err.message}`);
       }
     }
+
+    // 停止心跳并清理 heartbeat.txt
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+    try {
+      if (this.heartbeatPath && existsSync(this.heartbeatPath)) {
+        unlinkSync(this.heartbeatPath);
+      }
+    } catch { /* 清理失败静默 */ }
   }
 
   // ─── 辅助：增量 messages 计算 ───
