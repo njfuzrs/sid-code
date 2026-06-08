@@ -38,3 +38,7 @@ chat_session*.json
 # MCP config (contains API keys)
 .mcp.json
 /.sid-code/tool-results/
+
+# 临时文件
+_template
+scheduled_tasks.lock
