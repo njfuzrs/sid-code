@@ -1252,13 +1252,29 @@ export class App {
     // 注入 TUI 状态更新器（供 activatePlanMode/deactivatePlanMode 同步 permissionMode）
     this.tuiStateUpdater = (patch) => updateState(patch as any);
 
-    const scheduleStatusMessageClear = (message: string, delayMs = 1500) => {
-      setTimeout(() => {
-        if (bridge.current.statusMessage === message) {
-          updateState({ statusMessage: "" });
-        }
-      }, delayMs);
-    };
+    // 通知队列：管理 statusMessage 的叠加与去重，解决多条通知互相覆盖的问题
+    // - sticky 通知（max_turns/loop_detected/hook_blocked 等）不设超时，持久保留
+    // - transient 通知（compact/tombstone/error）通过 removeStatusMessage 按 id 移除
+    const activeStatusMessages = new Map<string, string>();
+    let statusMsgSerial = 0; // 递增序号，确保同 id 的 transient 通知不会互相干扰
+
+    function addStatusMessage(id: string, text: string): void {
+      activeStatusMessages.set(id, text);
+      const joined = [...activeStatusMessages.values()].join(" | ");
+      updateState({ statusMessage: joined });
+    }
+
+    function addTransientStatusMessage(baseId: string, text: string, delayMs: number): void {
+      const id = `${baseId}:${++statusMsgSerial}`;
+      addStatusMessage(id, text);
+      setTimeout(() => removeStatusMessage(id), delayMs);
+    }
+
+    function removeStatusMessage(id: string): void {
+      activeStatusMessages.delete(id);
+      const joined = [...activeStatusMessages.values()].join(" | ") || "";
+      updateState({ statusMessage: joined });
+    }
 
     // HistoryItem 同步：追踪上次同步的 ctxMgr 消息数
     const { messagesToDisplayItems } = await import("./ui/App.tsx");
@@ -1299,7 +1315,10 @@ export class App {
       const allMsgs = this.ctxMgr.getMessages();
       lastSyncedCount = allMsgs.length;
       historyIdCounter = 0;
-      const displayItems = messagesToDisplayItems(allMsgs);
+      // 保留事件处理中追加的系统消息（如 loop_detected/max_turns/hook_blocked），
+      // 这些消息不在 ctxMgr 中，messagesToDisplayItems 无法生成
+      const systemItems = bridge.current.displayItems.filter(d => d.kind === "system");
+      const displayItems = [...messagesToDisplayItems(allMsgs), ...systemItems];
       const historyItems = assignIds(messagesToHistoryItems(allMsgs));
       updateState({ messages: allMsgs, displayItems, historyItems, ...extraPatch });
     };
@@ -1399,6 +1418,14 @@ export class App {
             case "user_message_added":
               syncDisplay();
               break;
+            case "hook_blocked": {
+              const hookBlockedText = `⛔ Hook 阻止执行: ${event.reason}`;
+              addStatusMessage("hook_blocked", hookBlockedText);
+              updateState({ isLoading: false });
+              const hookBlockedDisplay = [...bridge.current.displayItems, { kind: "system" as const, text: hookBlockedText }];
+              updateState({ displayItems: hookBlockedDisplay });
+              break;
+            }
             case "tool_start":
               // 工具开始前，结束当前流式输出
               streamingFullText = "";
@@ -1414,26 +1441,44 @@ export class App {
               });
               break;
             case "compact":
-              rebuildDisplay({ statusMessage: "上下文已自动压缩" });
-              setTimeout(() => updateState({ statusMessage: "" }), 3000);
+              rebuildDisplay();
+              addTransientStatusMessage("compact", "上下文已自动压缩", 3000);
               break;
             case "context_warning":
-              updateState({ statusMessage: `⚠ 上下文剩余 ${event.remaining.toFixed(0)}%，即将自动压缩` });
+              addStatusMessage("context_warning", `⚠ 上下文剩余 ${event.remaining.toFixed(0)}%，即将自动压缩`);
               break;
-            case "max_turns":
-              updateState({ statusMessage: `达到最大轮次限制: ${event.maxTurns}` });
+            case "max_turns": {
+              const maxTurnsText = `达到最大轮次限制: ${event.maxTurns}`;
+              addStatusMessage("max_turns", maxTurnsText);
+              const maxTurnsDisplay = [...bridge.current.displayItems, { kind: "system" as const, text: maxTurnsText }];
+              updateState({ displayItems: maxTurnsDisplay });
               break;
+            }
+            case "loop_detected": {
+              const loopDetectedText = `⚠️ 检测到循环模式: ${event.detail}`;
+              addStatusMessage("loop_detected", loopDetectedText);
+              const loopDetectedDisplay = [...bridge.current.displayItems, { kind: "system" as const, text: loopDetectedText }];
+              updateState({ displayItems: loopDetectedDisplay });
+              break;
+            }
+            case "loop_recovery": {
+              const loopRecoveryText = `🔄 循环恢复尝试 ${event.attempt}/${event.maxAttempts}`;
+              addStatusMessage("loop_recovery", loopRecoveryText);
+              const loopRecoveryDisplay = [...bridge.current.displayItems, { kind: "system" as const, text: loopRecoveryText }];
+              updateState({ displayItems: loopRecoveryDisplay });
+              break;
+            }
             case "system":
               if (event.level === "warning") {
-                updateState({ statusMessage: `⚠️ ${event.text}` });
+                addStatusMessage("system", `⚠️ ${event.text}`);
               }
               break;
             case "tombstone":
               // 模型降级：清理流式文本残留，重建显示
               streamingFullText = "";
               streamSynced = false;
-              rebuildDisplay({ statusMessage: "模型降级，正在使用备用模型重试..." });
-              setTimeout(() => updateState({ statusMessage: "" }), 3000);
+              rebuildDisplay();
+              addTransientStatusMessage("tombstone", "模型降级，正在使用备用模型重试...", 3000);
               break;
             case "done": {
               const ctxUsed = this.ctxMgr.estimateTokens(this.toolRegistry.size());
@@ -1444,7 +1489,6 @@ export class App {
                 usage: { ...this.sessionState.getTotalUsage() },
                 costUSD: this.sessionState.totalCostUSD,
                 contextPercent: ctxPct,
-                statusMessage: "",
                 streamingText: "",
                 isStreaming: false,
                 streamingLine: "",
@@ -1506,12 +1550,8 @@ export class App {
             usage: { ...this.sessionState.getTotalUsage() },
             costUSD: this.sessionState.totalCostUSD,
             contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / 200000) * 100),
-            statusMessage: message,
           });
-
-          if (aborted) {
-            scheduleStatusMessageClear(message);
-          }
+          addTransientStatusMessage("error", message, aborted ? 1500 : 5000);
         } finally {
           this.abortController = null;
         }
@@ -1594,6 +1634,7 @@ export class App {
             this.fallback.reset();
             lastSyncedCount = 0;
             historyIdCounter = 0;
+            activeStatusMessages.clear();
             updateState(getConversationClearedPatch());
             break;
 
