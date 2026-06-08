@@ -12,6 +12,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
+import { appendFileSync } from "node:fs";
 import {
   HookEventName,
   type HookInput,
@@ -265,6 +266,22 @@ export class TraceCollector {
       cwd: input.cwd,
       data: { model: req.model, index },
     });
+
+    // 迷你 raw_preview：即使进程在 API 调用期间被 V8 OOM kill，也能知道最后一次请求的关键指标
+    // 约 200 字节一行，不依赖 AfterModel 才能落盘
+    try {
+      const sessionDir = this.writer.getSessionDir();
+      const previewLine = JSON.stringify({
+        ts: input.timestamp,
+        index,
+        model: req.model,
+        msg_count: rawMessages.length,
+        total_tokens_est: 0, // 暂时放 0，estimateTokens 在 ctxMgr 内部，此处仅记录请求结构
+      });
+      appendFileSync(join(sessionDir, "raw_preview.jsonl"), previewLine + "\n");
+    } catch {
+      // 静默失败：preview 不是关键路径
+    }
   }
 
   // ─── AfterModel ───

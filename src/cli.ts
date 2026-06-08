@@ -301,6 +301,16 @@ async function handleUploadTraces(config: Config): Promise<void> {
   }
 }
 
+// ─── 全局 App 弱引用（供 uncaughtException 等异常兜底使用）───
+
+/** 全局 App 弱引用，供 emergencySessionEnd 在 uncaughtException 时调用 */
+let lastAppRef: WeakRef<import("./app.ts").App> | null = null;
+
+/** 注册当前 App 实例（由 main() 在 App 创建后调用） */
+export function setLastApp(app: import("./app.ts").App): void {
+  lastAppRef = new WeakRef(app);
+}
+
 /** 全局异常兜底处理器 */
 function registerGlobalErrorHandlers(): void {
   process.on("unhandledRejection", (reason: unknown, _promise: Promise<unknown>) => {
@@ -312,6 +322,10 @@ function registerGlobalErrorHandlers(): void {
     } catch { /* logger 可能未初始化 */ }
     process.stderr.write(`[sid-code] unhandledRejection: ${msg}\n`);
     if (stack) process.stderr.write(`${stack}\n`);
+    // 尝试紧急 SessionEnd
+    const err = reason instanceof Error ? reason : new Error(String(reason));
+    try { lastAppRef?.deref()?.emergencySessionEnd(err); } catch { /* ignore */ }
+    process.exit(1);
   });
 
   process.on("uncaughtException", (err: Error) => {
@@ -321,6 +335,8 @@ function registerGlobalErrorHandlers(): void {
     } catch { /* logger 可能未初始化 */ }
     process.stderr.write(`[sid-code] uncaughtException: ${err.message}\n`);
     if (err.stack) process.stderr.write(`${err.stack}\n`);
+    // 紧急 SessionEnd（在 exit 前做最后一搏）
+    try { lastAppRef?.deref()?.emergencySessionEnd(err); } catch { /* ignore */ }
     process.exit(1);
   });
 }
@@ -712,6 +728,8 @@ export async function main(): Promise<void> {
     // 创建 App
     const { App } = await import("./app.ts");
     const app = new App({ config, provider, providerRegistry, toolRegistry, commandRegistry, permissionChecker, mcpManager, planManager });
+    // 注册全局 App 弱引用（供 uncaughtException 等异常兜底使用）
+    setLastApp(app);
 
     // 注册并发会话（Spec 18 §4）+ 启动 Cron 调度器（Spec 18 §5）
     {

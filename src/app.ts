@@ -43,6 +43,7 @@ import {
 } from "./sdk/index.ts";
 import { JitContextManager } from "./config/jit-context.ts";
 import { isAbortError } from "./llm/errors.ts";
+import * as CrashMarker from "./trace/crash-marker.ts";
 import { execSync } from "child_process";
 import { readFile } from "fs/promises";
 import { resolve, extname, join } from "path";
@@ -104,6 +105,8 @@ export class App {
   private tokenMeter?: TokenMeter;
   private budgetTracker?: BudgetTracker;
   private abortController: AbortController | null = null;
+  /** 紧急退出防重入：emergencySessionEnd 只执行一次 */
+  private emergencyEnded = false;
   private queryEngine: QueryEngine;
   private hookSystem!: HookSystem;
   private jitContextMgr: JitContextManager;
@@ -408,6 +411,23 @@ export class App {
     // 这是 25% session 卡在 exit_status=unknown 的另一个根因——promptfoo timeout 时 SIGTERM 杀进程
     this.registerSignalHandlers();
 
+    // 启动诊断：检查上一会话是否异常退出
+    try {
+      const crash = CrashMarker.readPrevious();
+      if (crash) {
+        log.warn("DIAG", [
+          `上一会话异常退出:`,
+          `  时间: ${crash.timestamp}`,
+          `  会话: ${crash.session_id}`,
+          `  错误: ${crash.error_name}: ${crash.error_message}`,
+          `  最后 API 调用: #${crash.last_api_call_index}`,
+          `  模型: ${crash.last_model}`,
+          `  内存: ${crash.memory_mb.toFixed(1)} MB`,
+          `  运行时间: ${crash.uptime_seconds.toFixed(1)}s`,
+        ].join("\n"));
+      }
+    } catch { /* 诊断失败不影响启动 */ }
+
     // 启动耗时事件（spec 17 §3.1 零依赖事件 API 埋点示例）
     try {
       const { logEvent } = await import("./analytics/index.ts");
@@ -435,6 +455,8 @@ export class App {
       } catch (err: any) {
         process.stderr.write(`[signal] SessionEnd hook 失败: ${err?.message ?? err}\n`);
       }
+      // 清理 crash marker（正常退出不残留）
+      try { CrashMarker.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
       // 给 trajectory 写入一点时间，再强制退出
       setTimeout(() => process.exit(signal === "SIGINT" ? 130 : 143), 200);
     };
@@ -909,6 +931,49 @@ export class App {
     };
   }
 
+  /**
+   * 紧急 SessionEnd：uncaughtException / V8 OOM 等无法正常退出的场景。
+   *
+   * 约束：
+   * - 同步优先：先同步写 crash.json，再尝试异步 fireSessionEndEvent（200ms 超时）
+   * - 防重入：emergencyEnded flag 确保只执行一次
+   * - 幂等：正常 SessionEnd 已触发则跳过（crash.json 已清理）
+   */
+  emergencySessionEnd(err: Error): void {
+    if (this.emergencyEnded) return;
+    this.emergencyEnded = true;
+
+    // 1. abort 当前请求
+    try { this.abortController?.abort(); } catch { /* ignore */ }
+
+    // 2. 同步写 crash.json 到磁盘（OOM 前的最后一搏）
+    try {
+      CrashMarker.write({
+        session_id: this.sessionState.sessionId,
+        timestamp: new Date().toISOString(),
+        error_message: err.message,
+        error_name: err.name,
+        stack: err.stack?.split("\n").slice(0, 10).join("\n"),
+        last_api_call_index: -1, // emergency 上下文中无法安全获取
+        last_model: this.config.model ?? "unknown",
+        memory_mb: process.memoryUsage().rss / 1024 / 1024,
+        uptime_seconds: process.uptime(),
+      });
+    } catch { /* 文件系统可能已不可用 */ }
+
+    // 3. fire-and-forget: 尝试触发 SessionEnd（有 200ms 超时）
+    try {
+      const promise = this.hookSystem.fireSessionEndEvent(
+        "error",
+        this.buildSessionEndStats(),
+        { error: { message: err.message, name: err.name, stack: err.stack } },
+      );
+      // 200ms 超时，不阻塞 exit
+      const timeout = new Promise<void>((resolve) => setTimeout(resolve, 200));
+      void Promise.race([promise, timeout]);
+    } catch { /* SessionEnd hook 自身报错也不能阻塞退出 */ }
+  }
+
   /** 无头模式：消费 QueryEngine async generator，不依赖任何 renderer */
   async runHeadless(input: string): Promise<string> {
     await this.init();
@@ -960,6 +1025,8 @@ export class App {
       // SessionEnd hook 自身报错也不能阻塞退出，否则 trajectory 反而丢失
       process.stderr.write(`[runHeadless] SessionEnd hook 失败: ${hookErr?.message ?? hookErr}\n`);
     }
+    // 清理 crash marker（正常退出不残留）
+    try { CrashMarker.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
 
     // 输出结果（即使出错也输出已收到的内容，便于诊断）
     if (this.config.outputFormat === "json") {
@@ -1151,6 +1218,8 @@ export class App {
         `[runHeadlessSDK] SessionEnd hook 失败: ${hookErr?.message ?? hookErr}\n`,
       );
     }
+    // 清理 crash marker（正常退出不残留）
+    try { CrashMarker.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
 
     // 清理 + 优雅关闭（与 runHeadless 收尾一致）
     unwatchCLAUDEmd();
@@ -1652,6 +1721,8 @@ export class App {
               } catch (err: any) {
                 process.stderr.write(`[quit] SessionEnd hook 失败: ${err?.message ?? err}\n`);
               }
+              // 清理 crash marker（正常退出不残留）
+              try { CrashMarker.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
               setTimeout(() => process.exit(0), 100);
             })();
             break;
@@ -1717,6 +1788,8 @@ export class App {
 
     await app.waitUntilExit();
     await this.hookSystem.fireSessionEndEvent("exit", this.buildSessionEndStats());
+    // 清理 crash marker（正常退出不残留）
+    try { CrashMarker.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
     unwatchCLAUDEmd();
     cleanupSettingsWatcher();
     stopAppConfigWatcher();
