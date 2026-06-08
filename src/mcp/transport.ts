@@ -5,6 +5,7 @@
 
 import type { JsonRpcRequest, JsonRpcResponse } from "./types.ts";
 import { spawn, type Subprocess } from "bun";
+import { sanitizeStrings } from "../llm/sanitize-unicode.ts";
 
 /** JSON-RPC 通知（无 id） */
 export interface JsonRpcNotification {
@@ -192,7 +193,7 @@ export class HTTPTransport implements Transport {
         "Content-Type": "application/json",
         ...this.headers,
       },
-      body: JSON.stringify(request),
+      body: JSON.stringify(sanitizeStrings(request)),
       signal: combinedSignal,
     });
 
@@ -378,7 +379,7 @@ export class SSETransport implements Transport {
           "Content-Type": "application/json",
           ...this.headers,
         },
-        body: JSON.stringify(request),
+        body: JSON.stringify(sanitizeStrings(request)),
         signal: combinedSignal,
       }).catch((err) => {
         if (this.pendingRequests.has(request.id)) {
@@ -406,7 +407,7 @@ export class SSETransport implements Transport {
         "Content-Type": "application/json",
         ...this.headers,
       },
-      body: JSON.stringify(notification),
+      body: JSON.stringify(sanitizeStrings(notification)),
     }).catch(() => {});
   }
 
@@ -497,7 +498,7 @@ export class WebSocketTransport implements Transport {
         }
       }, { once: true });
 
-      this.ws.send(JSON.stringify(request));
+      this.ws.send(JSON.stringify(sanitizeStrings(request)));
 
       setTimeout(() => {
         if (this.pendingRequests.has(request.id)) {
@@ -509,7 +510,7 @@ export class WebSocketTransport implements Transport {
   }
 
   sendNotification(notification: JsonRpcNotification): void {
-    if (!this.closed) this.ws.send(JSON.stringify(notification));
+    if (!this.closed) this.ws.send(JSON.stringify(sanitizeStrings(notification)));
   }
 
   close(): void {

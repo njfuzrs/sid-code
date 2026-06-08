@@ -19,6 +19,7 @@ import type {
 } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
 import { guardOutgoingMessages } from "./protocol-sentinel.ts";
+import { sanitizeStrings } from "./sanitize-unicode.ts";
 
 /** 工具调用追踪状态（用于 SSE 流中多工具并行解析） */
 interface ToolCallState {
@@ -297,7 +298,7 @@ export class OpenAIProvider implements Provider {
           "Content-Type": "application/json",
           Authorization: `Bearer ${this.apiKey}`,
         },
-        body: JSON.stringify(requestBody),
+        body: JSON.stringify(sanitizeStrings(requestBody)),
         signal,
       });
 
@@ -395,7 +396,7 @@ export class OpenAIProvider implements Provider {
         "Content-Type": "application/json",
         Authorization: `Bearer ${this.apiKey}`,
       },
-      body: JSON.stringify(requestBody),
+      body: JSON.stringify(sanitizeStrings(requestBody)),
       signal,
     });
 

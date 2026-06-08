@@ -17,6 +17,7 @@ import {
   type HookExecutionResult,
 } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
+import { sanitizeStrings } from "../llm/sanitize-unicode.ts";
 
 /** 默认超时 60 秒 */
 const DEFAULT_TIMEOUT = 60_000;
@@ -292,7 +293,7 @@ export class HookRunner {
           "Content-Type": "application/json",
           ...(hookConfig.headers || {}),
         },
-        body: JSON.stringify(input),
+        body: JSON.stringify(sanitizeStrings(input)),
         signal: controller.signal,
       });
 
