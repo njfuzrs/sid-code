@@ -112,9 +112,9 @@ describe("incident-rca Skill - SKILL.md frontmatter 契约", () => {
     expect(tools).not.toContain("write");
   });
 
-  test("max-turns 在 20..30 范围 (RCA 推理链长)", () => {
-    expect(fm["max-turns"]).toBeGreaterThanOrEqual(20);
-    expect(fm["max-turns"]).toBeLessThanOrEqual(30);
+  test("max-turns 在 25..40 范围 (RCA 推理链长)", () => {
+    expect(fm["max-turns"]).toBeGreaterThanOrEqual(25);
+    expect(fm["max-turns"]).toBeLessThanOrEqual(40);
   });
 
   test("timeout-mins 与 SLA P95 一致 (3 分钟 = 180s)", () => {

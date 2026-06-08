@@ -72,7 +72,7 @@ export async function* queryLoop(
   } = loopConfig;
 
   const loopDetector = new LoopDetector();
-  const state: LoopState = createInitialLoopState(config.maxTurns || 50);
+  const state: LoopState = createInitialLoopState(config.maxTurns || Infinity);
   const diminishingDetector = new DiminishingReturnsDetector();
 
   while (state.turnCount < state.maxTurns) {

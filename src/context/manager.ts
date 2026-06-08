@@ -50,12 +50,27 @@ export type CompactionLevel =
   | "hard"       // 需要摘要压缩
   | "emergency"; // 紧急：强制截断，防止 API 报错
 
-/** 压缩阈值配置 */
-const COMPACTION_THRESHOLDS = {
-  soft: 0.5,       // 50% — 触发工具输出遮罩
-  hard: 0.7,       // 70% — 触发 LLM 摘要压缩
-  emergency: 0.94, // 94% — 强制截断旧消息
+/**
+ * 压缩阈值配置（绝对 buffer，单位 tokens）
+ *
+ * 对齐 claude-code 的绝对 buffer 策略（13K/20K/20K），适配 sid-code 多模型（32K~200K 窗口）：
+ * - 对 ≥ 80K 窗口模型：三层渐进压缩全部生效
+ * - 对 60-80K 窗口模型：仅 L3 紧急截断生效
+ * - 对 ≤ 60K 小窗口模型：仅 L3 剩 10% 时触发轻量截断，前两层不触发（防治信息过早丢失）
+ *
+ * 旧值（百分比，已废弃）：soft=0.50 / hard=0.70 / emergency=0.94
+ * 百分比在不同窗口模型下行为不可预测（32K 窗口 50%=16K 过早，200K 窗口 50%=100K 过晚）
+ */
+const BUFFER_THRESHOLDS = {
+  /** 剩余 ≤ 40K tokens → 触发工具输出遮罩（仅 ≥ 80K 窗口模型生效） */
+  masking: 40_000,
+  /** 剩余 ≤ 60K tokens → 触发 LLM 摘要压缩（仅 ≥ 80K 窗口模型生效） */
+  compression: 60_000,
+  /** 剩余 ≤ 80K tokens → 紧急截断（保证最后 80K 内容不丢） */
+  emergency: 80_000,
 };
+/** 小窗口模型阈值（window ≤ 60K tokens 时仅 emergency 截断生效，比例触发） */
+const SMALL_WINDOW_EMERGENCY_RATIO = 0.90;
 
 /** 上下文管理器配置 */
 export interface ManagerOptions {
@@ -388,14 +403,29 @@ export class Manager {
 
   /**
    * 获取压缩级别
-   * 根据上下文使用率返回对应的压缩策略
+   *
+   * 基于绝对 token buffer 而非百分比，使行为在不同窗口模型间可预测：
+   * - 小窗口模型（≤ 60K）：仅剩 10% 时触发 emergency 截断
+   * - 标准窗口模型（≥ 80K）：三层渐进压缩按 buffer 阈值触发
    */
   getCompactionLevel(toolCount: number = 0): CompactionLevel {
-    const ratio = this.estimateTokens(toolCount) / this.maxTokens;
-    if (ratio >= COMPACTION_THRESHOLDS.emergency) return "emergency";
-    if (ratio >= COMPACTION_THRESHOLDS.hard) return "hard";
-    if (ratio >= COMPACTION_THRESHOLDS.soft) return "soft";
-    return "none";
+    const used = this.estimateTokens(toolCount);
+    const remaining = this.maxTokens - used;
+
+    // 小窗口模型（≤ 60K tokens）：仅 emergency 截断（比例触发）
+    if (this.maxTokens <= 60_000) {
+      if (remaining <= (1 - SMALL_WINDOW_EMERGENCY_RATIO) * this.maxTokens) {
+        return "emergency";
+      }
+      return "none";
+    }
+
+    // 标准窗口模型：三层渐进压缩（绝对 buffer）
+    // 按剩余空间从紧到松检查：剩余越少 → 响应越激进
+    if (remaining <= BUFFER_THRESHOLDS.masking) return "emergency";     // ≤ 40K → 紧急截断
+    if (remaining <= BUFFER_THRESHOLDS.compression) return "hard";      // ≤ 60K → LLM 摘要压缩
+    if (remaining <= BUFFER_THRESHOLDS.emergency) return "soft";        // ≤ 80K → 工具输出遮罩
+    return "none";                                                       // > 80K → 不需要压缩
   }
 
   /**

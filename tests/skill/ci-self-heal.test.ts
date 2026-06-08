@@ -107,9 +107,9 @@ describe("ci-self-heal Skill - SKILL.md frontmatter 契约", () => {
     expect(tools).not.toContain("write");
   });
 
-  test("max-turns 在 10..20 范围(诊断类应较紧)", () => {
-    expect(fm["max-turns"]).toBeGreaterThanOrEqual(10);
-    expect(fm["max-turns"]).toBeLessThanOrEqual(20);
+  test("max-turns 在 20..35 范围(诊断类需足够步骤排查)", () => {
+    expect(fm["max-turns"]).toBeGreaterThanOrEqual(20);
+    expect(fm["max-turns"]).toBeLessThanOrEqual(35);
   });
 
   test("timeout-mins 与 SLA P95 一致", () => {

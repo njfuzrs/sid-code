@@ -2,7 +2,7 @@
  * 循环检测器测试
  */
 
-import { describe, test, expect, beforeEach } from "bun:test";
+import { describe, test, expect, beforeEach, beforeAll, afterAll } from "bun:test";
 import {
   ToolCallLoopDetector,
   ToolShapeLoopDetector,
@@ -11,6 +11,14 @@ import {
   DEFAULT_LOOP_CONFIG,
   LOOP_RECOVERY_PROMPT,
 } from "../../src/agent/loop-detection.ts";
+
+// 循环检测默认禁用（对齐 claude-code），测试需显式开启
+beforeAll(() => {
+  process.env.SID_ENABLE_LOOP_DETECTION = "1";
+});
+afterAll(() => {
+  delete process.env.SID_ENABLE_LOOP_DETECTION;
+});
 
 describe("ToolCallLoopDetector", () => {
   let detector: ToolCallLoopDetector;

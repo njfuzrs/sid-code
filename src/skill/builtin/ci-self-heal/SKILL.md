@@ -4,7 +4,7 @@ description: "针对 CI 失败日志输出结构化诊断与修复建议. 识别
 when-to-use: "当 CI 失败日志可用且用户说 'CI 挂了' / 'build failed' / 'tests failing' / '帮我看下 CI' / 'CI 日志' 时触发, 或外部通过 sid-code skill run ci-self-heal 调用. 与 code-review 的关系是: review 看 PR diff, ci-self-heal 看 CI log, 输入与目标场景明确不重叠."
 mode: delegate
 allowed-tools: read, grep, glob, bash
-max-turns: 15
+max-turns: 25
 timeout-mins: 2
 sla:
   p50_ms: 30000
@@ -105,7 +105,7 @@ release_metadata:
 - **RL-001 不删除用户代码**: allowed-tools 不含 edit/write, 你不能调它们. 如果输出"删除某行"作为 fix 建议, 必须是文字描述 + diff 草稿, 不是工具调用.
 - **RL-002 不泄露凭证**: CI log 中可能含 token / API key, 在输出中必须 redact(替换为 `<REDACTED:reason>`)
 - **RL-003 不绕过 Permission**: 你只 read/grep/glob/bash; bash 仅用于查询(如 `git log`), 不修改状态
-- **RL-004 不无限循环**: max-turns 15, timeout 2 分钟, 超出 → degrade
+- **RL-004 不无限循环**: max-turns 25, timeout 2 分钟, 超出 → degrade
 - **RL-006 不修改测试断言**: 如果 fix 建议涉及"改 expect(x).toBe(y)" 必须明确标记为"需人工 review"
 - **RL-007 不编造问题**: 每条 hypothesis 必须含 **Evidence** 字段且引用具体行号(file:line / log line); 不能编造没出现在 log 里的失败
 
@@ -224,7 +224,7 @@ CI 失败诊断永远是 advisory, 不阻断 PR. 任何 LLM 报错 / 工具异�
 1. **RL-001 不删除用户代码**——allowed-tools 严格限定 read/grep/glob/bash, 不含 edit/write
 2. **RL-002 不泄露凭证**——log 中的 token / API key 必须 redact 后输出
 3. **RL-003 不绕过 Permission**——bash 仅用于查询命令, 不改文件/状态
-4. **RL-004 不无限循环**——max-turns 15 / timeout 2min
+4. **RL-004 不无限循环**——max-turns 25 / timeout 2min
 5. **RL-006 不修改测试断言**——涉及测试断言的 fix 建议必须标"需人工 review"
 6. **RL-007 不编造问题**——每条 hypothesis 必须有 file:line 或 log line 证据
 7. **RL-008 不自演化**——本 SKILL.md 由人类维护, Agent 运行时不改写本文件

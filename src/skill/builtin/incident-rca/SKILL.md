@@ -4,7 +4,7 @@ description: "针对线上 incident(P0/P1) 输出结构化根因分析报告. �
 when-to-use: "当用户说 '线上挂了' / 'incident' / '故障复盘' / 'RCA' / '根因分析' / '帮我看下这个故障' 时触发, 或外部通过 sid-code skill run incident-rca 调用. 与 ci-self-heal 输入域明确不重叠 (CI log vs production observability), 与 code-review / security-audit 关注阶段不同 (前者 PR 阶段,本 Skill 故障后)."
 mode: delegate
 allowed-tools: read, grep, glob, bash
-max-turns: 25
+max-turns: 35
 timeout-mins: 3
 sla:
   p50_ms: 60000

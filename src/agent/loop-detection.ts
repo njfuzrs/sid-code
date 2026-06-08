@@ -341,14 +341,21 @@ export interface LLMLoopCheckResult {
 /** 循环检测器（组合工具调用和内容检测） */
 export class LoopDetector {
   private config: LoopDetectionConfig;
-  private toolCallDetector: ToolCallLoopDetector;
-  private toolShapeDetector: ToolShapeLoopDetector;
-  private contentDetector: ContentLoopDetector;
+  private toolCallDetector!: ToolCallLoopDetector;
+  private toolShapeDetector!: ToolShapeLoopDetector;
+  private contentDetector!: ContentLoopDetector;
   private recoveryAttempts = 0;
   private turnCount = 0;
   private lastLLMCheckTurn = 0;
+  /** 循环检测是否已禁用（对齐 claude-code，默认禁用，opt-in 开启） */
+  private _disabled = false;
 
   constructor(config: LoopDetectionConfig = DEFAULT_LOOP_CONFIG) {
+    if (!isLoopDetectionEnabled()) {
+      this._disabled = true;
+      this.config = config;
+      return;
+    }
     this.config = config;
     this.toolCallDetector = new ToolCallLoopDetector(config);
     this.toolShapeDetector = new ToolShapeLoopDetector(config);
@@ -357,6 +364,7 @@ export class LoopDetector {
 
   /** 记录工具调用，返回是否检测到循环（任一检测器命中即触发） */
   recordToolCall(toolName: string, toolInput: unknown): boolean {
+    if (this._disabled) return false;
     const exact = this.toolCallDetector.record(toolName, toolInput);
     const shape = this.toolShapeDetector.record(toolName, toolInput);
     return exact || shape;
@@ -364,16 +372,19 @@ export class LoopDetector {
 
   /** 记录内容输出，返回是否检测到循环 */
   recordContent(text: string): boolean {
+    if (this._disabled) return false;
     return this.contentDetector.record(text);
   }
 
   /** 记录一轮对话 */
   recordTurn(): void {
+    if (this._disabled) return;
     this.turnCount++;
   }
 
   /** 是否应该运行 LLM 认知检测 */
   shouldRunLLMCheck(): boolean {
+    if (this._disabled) return false;
     if (this.turnCount < LLM_CHECK_AFTER_TURNS) return false;
     if (this.turnCount - this.lastLLMCheckTurn < LLM_CHECK_INTERVAL) return false;
     this.lastLLMCheckTurn = this.turnCount;
@@ -382,6 +393,7 @@ export class LoopDetector {
 
   /** 构建 LLM 认知检测提示词 */
   buildLLMCheckPrompt(recentMessages: Message[]): string {
+    if (this._disabled) return "";
     const toolCalls: string[] = [];
     for (const msg of recentMessages) {
       for (const block of msg.content) {
@@ -395,6 +407,7 @@ export class LoopDetector {
 
   /** 处理 LLM 认知检测结果 */
   processLLMResult(result: LLMLoopCheckResult): boolean {
+    if (this._disabled) return false;
     const log = getLogger();
     if (result.is_loop && result.confidence >= LLM_CONFIDENCE_THRESHOLD) {
       log.warn("LOOP_DETECT", `LLM 认知检测: ${result.reason} (置信度: ${result.confidence})`);
@@ -405,6 +418,7 @@ export class LoopDetector {
 
   /** 重置所有检测状态（新的用户输入时） */
   reset(): void {
+    if (this._disabled) return;
     this.toolCallDetector.reset();
     this.toolShapeDetector.reset();
     this.contentDetector.reset();
@@ -415,6 +429,7 @@ export class LoopDetector {
 
   /** 尝试恢复，返回是否可以继续（未超过最大恢复次数） */
   tryRecover(): boolean {
+    if (this._disabled) return true;
     const log = getLogger();
     this.recoveryAttempts++;
 
@@ -435,16 +450,23 @@ export class LoopDetector {
 
   /** 获取当前恢复尝试次数 */
   getRecoveryAttempts(): number {
-    return this.recoveryAttempts;
+    return this._disabled ? 0 : this.recoveryAttempts;
   }
 
   /** 获取最大恢复次数 */
   getMaxRecoveryAttempts(): number {
-    return this.config.maxRecoveryAttempts;
+    return this._disabled ? 0 : this.config.maxRecoveryAttempts;
   }
 
   /** 获取当前轮次数 */
   getTurnCount(): number {
-    return this.turnCount;
+    return this._disabled ? 0 : this.turnCount;
   }
+}
+
+/** 检查循环检测是否启用（对齐 claude-code，默认不启用）
+ *  通过环境变量 SID_ENABLE_LOOP_DETECTION=1 开启，
+ *  供弱模型（DeepSeek/Ollama）场景使用。 */
+export function isLoopDetectionEnabled(): boolean {
+  return process.env.SID_ENABLE_LOOP_DETECTION === "1";
 }

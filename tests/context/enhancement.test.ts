@@ -112,28 +112,50 @@ describe("truncateForCompression", () => {
 });
 
 describe("CompactionLevel", () => {
-  test("none: 低使用率", () => {
-    const mgr = new Manager({ maxTokens: 100000 });
+  // 使用标准窗口模型（200K）测试三层渐进压缩（绝对 buffer 40K/60K/80K）
+  // token 估算规则：≤ 100K 字符 → 0.25 token/char；> 100K 字符 → 0.35 token/char（快速近似）
+  // 检查顺序：remaining ≤ 40K → emergency | ≤ 60K → hard | ≤ 80K → soft | > 80K → none
+
+  test("none: 剩余 > 80K tokens", () => {
+    const mgr = new Manager({ maxTokens: 200_000 });
+    // 300K 字符 → 105K tokens，剩余 ~95K
+    mgr.setSystemPrompt("a".repeat(300_000));
     expect(mgr.getCompactionLevel()).toBe("none");
   });
 
-  test("soft: 50% 以上", () => {
-    const mgr = new Manager({ maxTokens: 1000 });
-    // 填充到 50% 以上
-    mgr.setSystemPrompt("a".repeat(2100)); // ~525 tokens > 500
+  test("soft: 剩余在 60K-80K → 触发工具输出遮罩", () => {
+    const mgr = new Manager({ maxTokens: 200_000 });
+    // 370K 字符 → 129.5K tokens，剩余 ~70.5K
+    mgr.setSystemPrompt("a".repeat(370_000));
     expect(mgr.getCompactionLevel()).toBe("soft");
   });
 
-  test("hard: 70% 以上", () => {
-    const mgr = new Manager({ maxTokens: 1000 });
-    mgr.setSystemPrompt("a".repeat(2900)); // ~725 tokens > 700
+  test("hard: 剩余在 40K-60K → 触发摘要压缩", () => {
+    const mgr = new Manager({ maxTokens: 200_000 });
+    // 430K 字符 → 150.5K tokens，剩余 ~49.5K
+    mgr.setSystemPrompt("a".repeat(430_000));
     expect(mgr.getCompactionLevel()).toBe("hard");
   });
 
-  test("emergency: 94% 以上", () => {
-    const mgr = new Manager({ maxTokens: 1000 });
-    mgr.setSystemPrompt("a".repeat(3800)); // ~950 tokens > 940
+  test("emergency: 剩余 ≤ 40K → 紧急截断", () => {
+    const mgr = new Manager({ maxTokens: 200_000 });
+    // 480K 字符 → 168K tokens，剩余 ~32K
+    mgr.setSystemPrompt("a".repeat(480_000));
     expect(mgr.getCompactionLevel()).toBe("emergency");
+  });
+
+  test("小窗口模型（≤ 60K）仅剩 10% 时触发 emergency", () => {
+    const mgr = new Manager({ maxTokens: 50_000 });
+    // 130K 字符（> 100K → 快速近似 0.35）→ 45.5K tokens，剩余 ~4.5K ≤ 10%
+    mgr.setSystemPrompt("a".repeat(130_000));
+    expect(mgr.getCompactionLevel()).toBe("emergency");
+  });
+
+  test("小窗口模型（≤ 60K）剩余 > 10% 时不触发", () => {
+    const mgr = new Manager({ maxTokens: 50_000 });
+    // 115K 字符（> 100K → 快速近似 0.35）→ 40.25K tokens，剩余 ~9.75K > 10%
+    mgr.setSystemPrompt("a".repeat(115_000));
+    expect(mgr.getCompactionLevel()).toBe("none");
   });
 });
 
@@ -159,7 +181,13 @@ describe("emergencyTruncate", () => {
   });
 });
 
-describe("LoopDetector LLM 认知检测", () => {
+describe("LoopDetector LLM 认知检测（需 SID_ENABLE_LOOP_DETECTION=1）", () => {
+  beforeAll(() => {
+    process.env.SID_ENABLE_LOOP_DETECTION = "1";
+  });
+  afterAll(() => {
+    delete process.env.SID_ENABLE_LOOP_DETECTION;
+  });
   test("30 轮前不触发 LLM 检测", () => {
     const detector = new LoopDetector();
     for (let i = 0; i < 29; i++) {

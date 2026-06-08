@@ -302,7 +302,7 @@ export class AgentLoopRunner {
     this.loopDetector.reset();
 
     let turns = 0;
-    const maxTurns = config.maxTurns || 50;
+    const maxTurns = config.maxTurns || Infinity;
 
     while (turns < maxTurns) {
       turns++;

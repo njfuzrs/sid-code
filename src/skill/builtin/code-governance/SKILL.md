@@ -4,7 +4,7 @@ description: "针对 PR diff 输出结构化合规治理报告. 检查 license /
 when-to-use: "当用户说 '合规检查' / 'license 审查' / 'PII 扫描' / 'EU AI Act' / 'compliance review' 时触发, 或外部通过 sid-code skill run code-governance 调用. 与 security-audit 输入域有重叠但目标分层: security-audit 看漏洞/CVE/凭证, code-governance 看 license/PII/合规元数据/审计 trail."
 mode: delegate
 allowed-tools: read, grep, glob, bash
-max-turns: 25
+max-turns: 30
 timeout-mins: 3
 sla:
   p50_ms: 45000
@@ -169,7 +169,7 @@ release_metadata:
 | RL-001 不删用户代码 | allowed-tools 不含 edit/write |
 | RL-002 不泄露凭证 | secret-redact runtime hook + scripts/pii-scan 联动 |
 | RL-003 不绕过 Permission | mode=delegate + 子代理继承 permission |
-| RL-004 不无限循环 | max-turns=25 |
+| RL-004 不无限循环 | max-turns=30 |
 | RL-005 不跨租户泄露 | 仅访问当前 workspace |
 | RL-006 不改测试断言 | edit 不在 allowed-tools |
 | RL-007 不编造问题 | 必须给出 file:line + 引用 license-allowlist 真值 |
