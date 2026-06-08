@@ -61,6 +61,10 @@ export interface SystemPromptContext {
   /** Session Memory 内容（压缩后注入，Task 7） */
   sessionMemoryContent?: string;
 
+  // 语言偏好
+  /** 首选输出语言: "zh" 中文优先, "en" 英文优先。不设置时默认中文 */
+  preferredLanguage?: "zh" | "en";
+
   // 限制
   /** 系统提示词最大 token 数（默认 180000） */
   maxTokens?: number;
@@ -150,7 +154,7 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
 
   // 1. 构建核心部分（固定模板，必须保留）
   const coreParts: string[] = [
-    buildIdentitySection(),
+    buildIdentitySection(ctx.preferredLanguage),
     buildEnvironmentSection(ctx.workingDir),
   ];
 
@@ -158,7 +162,7 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
     coreParts.push(buildToolGuideSection(ctx.tools));
   }
 
-  coreParts.push(buildConstraintsSection());
+  coreParts.push(buildConstraintsSection(ctx.preferredLanguage));
 
   // 记忆系统指令 + MEMORY.md 索引（Task 7，作为核心部分注入）
   if (ctx.memorySystemPrompt) {
@@ -296,12 +300,26 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
 }
 
 /** 构建身份指令部分 */
-function buildIdentitySection(): string {
+function buildIdentitySection(language?: "zh" | "en"): string {
+  const langRule = language === "en"
+    ? `⚠️ 语言规则（最高优先级）:
+- 你的思考过程（reasoning/thinking）必须使用英文
+- 你的所有回复、代码注释、文档均使用英文
+- 代码标识符、技术术语（API 名/函数名/变量名）保持原文
+- 只有当用户在提示词中明确要求使用中文时（如"用中文回答"），才切换到中文`
+    : `⚠️ 语言规则（最高优先级）:
+- 你的思考过程（reasoning/thinking）必须使用中文
+- 你的所有回复、代码注释、文档均使用中文
+- 代码标识符、技术术语（API 名/函数名/变量名）保持原文
+- 只有当用户在提示词中明确要求使用其他语言时（如"用英文回答"、"respond in English"），才切换到该语言`;
+
   return `你是 sid-code AI 编程助手，一个专业的代码辅助工具。你可以：
 - 帮助用户编写、修改、调试代码
 - 执行 shell 命令、读写文件
 - 解释技术概念、提供最佳实践建议
 - 使用工具完成复杂任务
+
+${langRule}
 
 你的回复应该简洁、专业、可操作。`;
 }
@@ -322,6 +340,7 @@ function buildEnvironmentSection(workingDir?: string): string {
 - 操作系统: ${os}
 - Shell: ${shell}
 - 当前日期: ${date}
+- 路径提示: 如果读取文件时报告"文件不存在"，请先检查路径是否为绝对路径、是否与上述工作目录/主目录一致，然后重试。不要预设"文件已被删除"。
 </environment>`;
 }
 
@@ -367,11 +386,15 @@ ${customGuides.length > 0 ? "\n" + customGuides.join("\n") : ""}
 }
 
 /** 构建行为约束部分 */
-function buildConstraintsSection(): string {
+function buildConstraintsSection(language?: "zh" | "en"): string {
+  const langConstraint = language === "en"
+    ? "1. **语言要求**: 所有回复、代码注释、文档均使用英文。详细规则见上方"⚠️ 语言规则""
+    : "1. **语言要求**: 所有回复、代码注释、文档均使用中文。详细规则见上方"⚠️ 语言规则"";
+
   return `
 <constraints>
 ## 行为约束
-1. **语言要求**: 所有回复、代码注释、文档均使用中文
+${langConstraint}
 2. **先确认再行动**: 对于破坏性操作（删除文件、强制推送等），先向用户确认
 3. **最小化修改**: 只修改必要的代码，不要过度重构或添加不必要的功能
 4. **保持简洁**: 回复简洁明了，避免冗长的解释

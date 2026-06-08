@@ -72,6 +72,8 @@ export interface Config {
   baseURL: string;
   maxTokens: number;
   availableModels: ModelConfig[];
+  /** 输出语言偏好: "zh" 中文优先（默认）, "en" 英文优先。不设置时系统提示词默认中文 */
+  language?: "zh" | "en";
 
   // 权限配置
   // 支持 6 种模式：default, always-allow, deny-write, acceptEdits, plan, dontAsk
@@ -444,6 +446,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     search: "search",
     telemetry: "telemetry",
     analytics: "analytics",
+    language: "language",
   };
 
   const result: any = {};

@@ -623,6 +623,7 @@ export class MemoryCommand implements Command {
             permissionMode: ctx.config.permissionMode,
             gitStatus: true,
             memorySummary: freshSummary,
+            preferredLanguage: ctx.config.language,
             maxTokens: 180000,
           });
           ctx.ctxMgr.setSystemPrompt(newPrompt);

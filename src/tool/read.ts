@@ -8,6 +8,7 @@ import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResu
 import type { FileReadTracker } from "./file-read-tracker.ts";
 import { statSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
+import { normalizeToolPath, formatPathNotFoundError } from "./path-utils.ts";
 
 /** 未指定 limit 时的默认最大行数，防止超大文件撑爆上下文 */
 const DEFAULT_MAX_LINES = 2000;
@@ -73,13 +74,20 @@ export class ReadTool implements Tool {
       return { output: "错误: 缺少 file_path 参数", isError: true };
     }
 
-    log.info("TOOL", `▶ 读取 ${params.file_path} offset=${params.offset ?? 1} limit=${params.limit ?? DEFAULT_MAX_LINES}`);
+    let filePath: string;
+    try {
+      filePath = normalizeToolPath(params.file_path);
+    } catch (err: any) {
+      return { output: `路径无效: ${err.message}`, isError: true };
+    }
+
+    log.info("TOOL", `▶ 读取 ${filePath} offset=${params.offset ?? 1} limit=${params.limit ?? DEFAULT_MAX_LINES}`);
 
     try {
-      const file = Bun.file(params.file_path);
+      const file = Bun.file(filePath);
       const exists = await file.exists();
       if (!exists) {
-        return { output: `错误: 文件不存在: ${params.file_path}`, isError: true };
+        return { output: formatPathNotFoundError(filePath), isError: true };
       }
 
       const content = await file.text();
@@ -96,8 +104,8 @@ export class ReadTool implements Tool {
 
       // 记录文件已被读取
       if (this.tracker) {
-        const mtime = statSync(params.file_path).mtimeMs;
-        this.tracker.markAsRead(params.file_path, mtime);
+        const mtime = statSync(filePath).mtimeMs;
+        this.tracker.markAsRead(filePath, mtime);
       }
 
       // 格式化输出（带行号）
@@ -113,7 +121,7 @@ export class ReadTool implements Tool {
         output += `\n\n[文件已截断：当前显示第 ${shownStart}-${shownEnd} 行，共 ${totalLines} 行。如需读取更多，请使用 offset=${nextOffset} 继续读取。]`;
       }
 
-      log.info("TOOL", `✓ 读取 ${params.file_path} ${selectedLines.length}行 ${isTruncated ? `(截断，共${totalLines}行)` : ""}`);
+      log.info("TOOL", `✓ 读取 ${filePath} ${selectedLines.length}行 ${isTruncated ? `(截断，共${totalLines}行)` : ""}`);
 
       return { output };
     } catch (err: any) {

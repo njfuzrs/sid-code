@@ -9,6 +9,7 @@ import { platform } from "os";
 import { getLogger } from "../debug/logger.ts";
 import type { Config } from "../config/config.ts";
 import { isReadOnlyCommand, isDestructiveCommand } from "./bash/read-only-validation.ts";
+import { normalizeToolPath } from "./path-utils.ts";
 
 /** Bash 输出截断阈值（对标 Claude Code 30000 字符） */
 const MAX_OUTPUT_LENGTH = 30000;
@@ -178,7 +179,7 @@ export class BashTool implements Tool {
 
     // 超时限制：最短 1 秒，最长 10 分钟
     const timeout = Math.min(Math.max(params.timeout || 120000, 1000), 600000);
-    const cwd = params.cwd || process.cwd();
+    const cwd = normalizeToolPath(params.cwd || process.cwd());
     const { shell, args } = getPlatformShell();
 
     // 准备环境变量（如果启用了清理）
@@ -307,7 +308,7 @@ export class BashTool implements Tool {
     cwd?: string;
   }): Promise<ToolResult> {
     const log = getLogger();
-    const cwd = params.cwd || process.cwd();
+    const cwd = normalizeToolPath(params.cwd || process.cwd());
     const { shell, args } = getPlatformShell();
 
     // 准备环境变量（如果启用了清理）
@@ -364,7 +365,7 @@ export class BashTool implements Tool {
     cwd?: string;
   }, signal?: AbortSignal): ToolResult {
     const { spawnShellTask } = require("../task/index.ts");
-    const cwd = params.cwd || process.cwd();
+    const cwd = normalizeToolPath(params.cwd || process.cwd());
 
     const taskState = spawnShellTask({
       command: params.command,

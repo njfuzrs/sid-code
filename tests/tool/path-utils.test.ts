@@ -1,0 +1,128 @@
+/**
+ * path-utils 单元测试
+ * 覆盖 normalizeToolPath / levenshteinDistance / formatPathNotFoundError
+ */
+import { describe, it, expect } from "bun:test";
+import { homedir } from "os";
+import { resolve, normalize } from "path";
+import {
+  normalizeToolPath,
+  levenshteinDistance,
+  formatPathNotFoundError,
+} from "../../src/tool/path-utils.ts";
+
+// ============================================================
+// normalizeToolPath
+// ============================================================
+
+describe("normalizeToolPath", () => {
+  it("~ 展开为 home 目录", () => {
+    const result = normalizeToolPath("~");
+    expect(result).toBe(homedir());
+  });
+
+  it("~/path 展开并 resolve", () => {
+    const result = normalizeToolPath("~/Documents");
+    expect(result).toBe(resolve(homedir(), "Documents"));
+  });
+
+  it("相对路径 resolve 为绝对路径", () => {
+    const result = normalizeToolPath("src/tool/read.ts", "/home/user/project");
+    expect(result).toBe(resolve("/home/user/project", "src/tool/read.ts"));
+  });
+
+  it("冗余 .. 规范化", () => {
+    const result = normalizeToolPath("/a/b/../c", "/tmp");
+    expect(result).toBe(resolve("/a/c"));
+  });
+
+  it("null byte 被拦截并抛错", () => {
+    expect(() => normalizeToolPath("/etc/passwd\x00.jpg")).toThrow("null byte");
+  });
+
+  it("NFC 归一化：NFD 输入转为 NFC", () => {
+    // é 的 NFD 形式：e + combining acute accent (U+0065 U+0301)
+    const nfd = "cafe\u0301.txt"; // café in NFD
+    const result = normalizeToolPath(nfd, "/tmp");
+    // NFC 形式：é (U+00E9)
+    const nfc = normalize("caf\u00E9.txt").normalize("NFC");
+    expect(result).toBe(resolve("/tmp", nfc));
+  });
+
+  it("首尾空格被 trim", () => {
+    const result = normalizeToolPath("  /usr/bin  ");
+    expect(result).toBe("/usr/bin");
+  });
+
+  it("路径中包含 // 被规范化", () => {
+    const result = normalizeToolPath("/usr//local/bin");
+    expect(result).toBe("/usr/local/bin");
+  });
+});
+
+// ============================================================
+// levenshteinDistance
+// ============================================================
+
+describe("levenshteinDistance", () => {
+  it("两个相同字符串距离为 0", () => {
+    expect(levenshteinDistance("hello", "hello")).toBe(0);
+  });
+
+  it("单字符替换距离为 1", () => {
+    expect(levenshteinDistance("kitten", "sitten")).toBe(1);
+  });
+
+  it("单字符插入距离为 1", () => {
+    expect(levenshteinDistance("cat", "cats")).toBe(1);
+  });
+
+  it("单字符删除距离为 1", () => {
+    expect(levenshteinDistance("cats", "cat")).toBe(1);
+  });
+
+  it("空字符串距离等于另一字符串长度", () => {
+    expect(levenshteinDistance("", "abc")).toBe(3);
+    expect(levenshteinDistance("abc", "")).toBe(3);
+  });
+
+  it("综合示例", () => {
+    // kitten → sitting: 替换 k→s, 插入 g → 距离 2
+    // 实际：k→s, e→i, (无), t→t, (无), e→n, n→g → 3
+    expect(levenshteinDistance("kitten", "sitting")).toBe(3);
+  });
+});
+
+// ============================================================
+// formatPathNotFoundError
+// ============================================================
+
+describe("formatPathNotFoundError", () => {
+  it("文件不存在 + 父目录存在 → 含 CWD", () => {
+    const msg = formatPathNotFoundError("/tmp/nonexistent-file-12345.txt", "/home/user");
+    expect(msg).toContain("错误: 文件不存在");
+    expect(msg).toContain("/tmp/nonexistent-file-12345.txt");
+    expect(msg).toContain("当前工作目录: /home/user");
+  });
+
+  it("文件不存在 + 父目录不存在 → 含父目录提示", () => {
+    const msg = formatPathNotFoundError("/nonexistent-dir-12345/file.txt", "/home/user");
+    expect(msg).toContain("父目录");
+    expect(msg).toContain("也不存在");
+    expect(msg).toContain("当前工作目录: /home/user");
+  });
+
+  it("相似文件建议：父目录存在相似文件时给出提示", () => {
+    // 使用实际存在的目录测试（系统 /tmp 可能有很多临时文件，不用它）
+    // 用 tests 目录，它肯定有一些 .test.ts 文件
+    const cwd = process.cwd();
+    const msg = formatPathNotFoundError(
+      resolve(cwd, "tests/tool/nonexistent-test.ts"),
+      cwd,
+      3,
+    );
+    // 应该提示父目录信息（tests/tool/ 存在）
+    expect(msg).toContain("错误: 文件不存在");
+    expect(msg).toContain("当前工作目录");
+  });
+});

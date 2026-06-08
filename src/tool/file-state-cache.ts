@@ -21,9 +21,9 @@ export interface FileState {
   isPartialView?: boolean;
 }
 
-/** 路径规范化（大小写不敏感，macOS/Windows） */
+/** 路径规范化（大小写不敏感，macOS/Windows；NFC 归一化兼容 macOS NFD） */
 function normalizePath(p: string): string {
-  return resolve(p).toLowerCase();
+  return resolve(p).normalize("NFC").toLowerCase();
 }
 
 /**

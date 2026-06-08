@@ -12,6 +12,7 @@ import { detectOmissionPlaceholders } from "./omission-detector.ts";
 import { coerceSemanticBoolean } from "../utils/semantic-boolean.ts";
 import { mkdirSync, existsSync } from "fs";
 import { dirname, basename } from "path";
+import { normalizeToolPath, formatPathNotFoundError } from "./path-utils.ts";
 
 // ─── 内部类型 ────────────────────────────────────────────────────────────────
 
@@ -415,19 +416,26 @@ export class EditTool implements Tool {
       return { output: "错误: 缺少必需参数", isError: true };
     }
 
-    log.info("TOOL", `▶ 编辑 ${params.file_path}`);
+    let filePath: string;
+    try {
+      filePath = normalizeToolPath(params.file_path);
+    } catch (err: any) {
+      return { output: `路径无效: ${err.message}`, isError: true };
+    }
+
+    log.info("TOOL", `▶ 编辑 ${filePath}`);
 
     // 设置文件保护：禁止编辑 sid-code 自身的配置文件
-    if (isProtectedSettingsFile(params.file_path)) {
+    if (isProtectedSettingsFile(filePath)) {
       return {
-        output: `错误: ${params.file_path} 是受保护的设置文件，不允许通过 edit 工具修改。请使用 /config 命令或手动编辑。`,
+        output: `错误: ${filePath} 是受保护的设置文件，不允许通过 edit 工具修改。请使用 /config 命令或手动编辑。`,
         isError: true,
       };
     }
 
     // 先读后改校验
     if (this.tracker) {
-      const error = this.tracker.validateForEdit(params.file_path);
+      const error = this.tracker.validateForEdit(filePath);
       if (error) {
         return { output: `错误: ${error}`, isError: true };
       }
@@ -453,7 +461,7 @@ export class EditTool implements Tool {
     }
 
     try {
-      const file = Bun.file(params.file_path);
+      const file = Bun.file(filePath);
       const exists = await file.exists();
 
       // ── old_string='' 创建新文件 ──────────────────────────────────────────
@@ -465,16 +473,16 @@ export class EditTool implements Tool {
           };
         }
 
-        const dir = dirname(params.file_path);
+        const dir = dirname(filePath);
         if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-        await Bun.write(params.file_path, newString);
-        log.info("TOOL", `✓ 创建新文件 ${params.file_path}`);
-        return { output: `文件已创建: ${params.file_path}` };
+        await Bun.write(filePath, newString);
+        log.info("TOOL", `✓ 创建新文件 ${filePath}`);
+        return { output: `文件已创建: ${filePath}` };
       }
 
       // ── 普通编辑 ──────────────────────────────────────────────────────────
       if (!exists) {
-        return { output: `错误: 文件不存在: ${params.file_path}`, isError: true };
+        return { output: formatPathNotFoundError(filePath), isError: true };
       }
 
       const rawContent = await file.text();
@@ -499,22 +507,22 @@ export class EditTool implements Tool {
         finalContent = finalContent.replace(/\r?\n/g, "\r\n");
       }
 
-      await Bun.write(params.file_path, finalContent);
+      await Bun.write(filePath, finalContent);
 
       if (this.tracker) {
-        this.tracker.updateMtime(params.file_path);
+        this.tracker.updateMtime(filePath);
       }
 
       const strategyNote = result.strategy !== "exact"
         ? `，使用${this.strategyLabel(result.strategy)}匹配`
         : "";
-      log.info("TOOL", `✓ 编辑 ${params.file_path} 完成 (${result.occurrences}处${strategyNote})`);
+      log.info("TOOL", `✓ 编辑 ${filePath} 完成 (${result.occurrences}处${strategyNote})`);
 
       // 生成 diff 上下文片段（帮助 LLM 验证编辑结果）
       const diffContext = this.getDiffContextSnippet(rawContent, finalContent, oldString);
 
       return {
-        output: `文件已编辑: ${params.file_path}（替换了 ${result.occurrences} 处${strategyNote}）${diffContext}`,
+        output: `文件已编辑: ${filePath}（替换了 ${result.occurrences} 处${strategyNote}）${diffContext}`,
       };
     } catch (err: any) {
       return { output: `编辑文件失败: ${err.message}`, isError: true };

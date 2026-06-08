@@ -5,8 +5,9 @@
 
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResult, ToolUseContext } from "./types.ts";
 import { readdirSync, statSync } from "fs";
-import { join, isAbsolute } from "path";
+import { join } from "path";
 import { getLogger } from "../debug/logger.ts";
+import { normalizeToolPath } from "./path-utils.ts";
 
 /** 默认忽略的文件/目录名 */
 const DEFAULT_IGNORE = new Set(["node_modules", ".git", "dist", ".DS_Store"]);
@@ -83,25 +84,28 @@ export class LsTool implements Tool {
       return { output: "错误: 缺少 dir_path 参数", isError: true };
     }
 
-    if (!isAbsolute(params.dir_path)) {
-      return { output: "错误: dir_path 必须是绝对路径", isError: true };
+    let dirPath: string;
+    try {
+      dirPath = normalizeToolPath(params.dir_path);
+    } catch (err: any) {
+      return { output: `路径无效: ${err.message}`, isError: true };
     }
 
-    log.info("TOOL", `▶ 列举目录 ${params.dir_path}`);
+    log.info("TOOL", `▶ 列举目录 ${dirPath}`);
 
     try {
       let stat: ReturnType<typeof statSync>;
       try {
-        stat = statSync(params.dir_path);
+        stat = statSync(dirPath);
       } catch {
-        return { output: `错误: 路径不存在: ${params.dir_path}`, isError: true };
+        return { output: `错误: 路径不存在: ${dirPath}\n当前工作目录: ${process.cwd()}`, isError: true };
       }
 
       if (!stat.isDirectory()) {
-        return { output: `错误: 路径不是目录: ${params.dir_path}`, isError: true };
+        return { output: `错误: 路径不是目录: ${dirPath}`, isError: true };
       }
 
-      const entries = readdirSync(params.dir_path);
+      const entries = readdirSync(dirPath);
       const extraIgnore = params.ignore ?? [];
 
       const items: Array<{ name: string; isDir: boolean; size: number }> = [];
@@ -112,7 +116,7 @@ export class LsTool implements Tool {
         // 用户自定义忽略
         if (extraIgnore.length > 0 && matchesIgnorePattern(name, extraIgnore)) continue;
 
-        const fullPath = join(params.dir_path, name);
+        const fullPath = join(dirPath, name);
         try {
           const s = statSync(fullPath);
           items.push({ name, isDir: s.isDirectory(), size: s.isDirectory() ? 0 : s.size });
@@ -122,7 +126,7 @@ export class LsTool implements Tool {
       }
 
       if (items.length === 0) {
-        return { output: `目录为空: ${params.dir_path}` };
+        return { output: `目录为空: ${dirPath}` };
       }
 
       // 目录优先，同类按字母升序
@@ -131,7 +135,7 @@ export class LsTool implements Tool {
         return a.name.localeCompare(b.name);
       });
 
-      const lines: string[] = [`目录列表：${params.dir_path}`, ""];
+      const lines: string[] = [`目录列表：${dirPath}`, ""];
       let dirCount = 0;
       let fileCount = 0;
 

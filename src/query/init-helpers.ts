@@ -281,6 +281,7 @@ export async function buildInitialSystemPrompt(config: Config, tools: import("..
     gitStatus: true,
     memorySummary,
     memorySystemPrompt,
+    preferredLanguage: config.language,
     ...collectIDEContext(),
     maxTokens: 180000,
   });

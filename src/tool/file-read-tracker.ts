@@ -19,7 +19,7 @@ export class FileReadTracker {
 
   /** 标记文件已被读取 */
   markAsRead(filePath: string, mtime: number): void {
-    const resolved = resolve(filePath);
+    const resolved = resolve(filePath).normalize("NFC");
     this.readFiles.set(resolved, {
       path: resolved,
       readTime: Date.now(),
@@ -29,7 +29,7 @@ export class FileReadTracker {
 
   /** 检查文件是否已被读取过 */
   hasBeenRead(filePath: string): boolean {
-    return this.readFiles.has(resolve(filePath));
+    return this.readFiles.has(resolve(filePath).normalize("NFC"));
   }
 
   /**
@@ -37,7 +37,7 @@ export class FileReadTracker {
    * 返回 null 表示可以编辑，返回字符串表示错误原因
    */
   validateForEdit(filePath: string): string | null {
-    const resolved = resolve(filePath);
+    const resolved = resolve(filePath).normalize("NFC");
     const record = this.readFiles.get(resolved);
 
     if (!record) {
@@ -59,7 +59,7 @@ export class FileReadTracker {
 
   /** 更新文件的 mtime（写入/编辑后调用） */
   updateMtime(filePath: string): void {
-    const resolved = resolve(filePath);
+    const resolved = resolve(filePath).normalize("NFC");
     const record = this.readFiles.get(resolved);
     if (record) {
       try {

@@ -8,6 +8,7 @@ import { glob } from "glob";
 import { statSync } from "fs";
 import { join } from "path";
 import { getLogger } from "../debug/logger.ts";
+import { normalizeToolPath } from "./path-utils.ts";
 
 export class GlobTool implements Tool {
   readOnly(): boolean {
@@ -72,7 +73,7 @@ export class GlobTool implements Tool {
     log.info("TOOL", `▶ 匹配 "${params.pattern}" in ${params.path || "."}`);
 
     try {
-      const cwd = params.path || process.cwd();
+      const cwd = normalizeToolPath(params.path || process.cwd());
       const ignore = params.ignore || ["node_modules/**", ".git/**", "dist/**"];
 
       const files = await glob(params.pattern, {

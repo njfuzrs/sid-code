@@ -8,6 +8,7 @@ import { dirname, basename } from "path";
 import { mkdirSync, existsSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
 import { detectOmissionPlaceholders } from "./omission-detector.ts";
+import { normalizeToolPath } from "./path-utils.ts";
 
 export class WriteTool implements Tool {
   name(): string {
@@ -67,6 +68,13 @@ export class WriteTool implements Tool {
       return { output: "错误: 缺少 content 参数", isError: true };
     }
 
+    let filePath: string;
+    try {
+      filePath = normalizeToolPath(params.file_path);
+    } catch (err: any) {
+      return { output: `路径无效: ${err.message}`, isError: true };
+    }
+
     // 省略占位符检测
     const omissions = detectOmissionPlaceholders(params.content);
     if (omissions.length > 0) {
@@ -77,21 +85,21 @@ export class WriteTool implements Tool {
       };
     }
 
-    log.info("TOOL", `▶ 写入 ${params.file_path} (${params.content.length}字符)`);
+    log.info("TOOL", `▶ 写入 ${filePath} (${params.content.length}字符)`);
 
     try {
       // 确保目录存在
-      const dir = dirname(params.file_path);
+      const dir = dirname(filePath);
       if (!existsSync(dir)) {
         mkdirSync(dir, { recursive: true });
       }
 
       // 写入文件
-      await Bun.write(params.file_path, params.content);
+      await Bun.write(filePath, params.content);
 
-      log.info("TOOL", `✓ 写入 ${params.file_path} 完成`);
+      log.info("TOOL", `✓ 写入 ${filePath} 完成`);
 
-      return { output: `文件已写入: ${params.file_path}` };
+      return { output: `文件已写入: ${filePath}` };
     } catch (err: any) {
       return { output: `写入文件失败: ${err.message}`, isError: true };
     }

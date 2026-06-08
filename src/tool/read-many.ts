@@ -7,6 +7,7 @@ import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types
 import type { FileReadTracker } from "./file-read-tracker.ts";
 import { glob } from "glob";
 import { getLogger } from "../debug/logger.ts";
+import { normalizeToolPath } from "./path-utils.ts";
 
 /** 每文件最大行数 */
 const MAX_LINES_PER_FILE = 400;
@@ -98,7 +99,7 @@ export class ReadManyTool implements Tool {
       return { output: "错误: 缺少 pattern 参数", isError: true };
     }
 
-    const searchPath = params.path || process.cwd();
+    const searchPath = normalizeToolPath(params.path || process.cwd());
     const excludePatterns = [...DEFAULT_EXCLUDES, ...(params.exclude || [])];
 
     log.info("TOOL", `▶ 批量读取 ${params.pattern.join(", ")} in ${searchPath}`);

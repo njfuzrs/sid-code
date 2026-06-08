@@ -6,6 +6,7 @@
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResult, ToolUseContext } from "./types.ts";
 import { spawn } from "bun";
 import { getLogger } from "../debug/logger.ts";
+import { normalizeToolPath } from "./path-utils.ts";
 
 /** 输出截断阈值 */
 const MAX_OUTPUT_LENGTH = 30000;
@@ -145,7 +146,7 @@ export class GrepTool implements Tool {
       }
     }
 
-    const searchPath = params.path || ".";
+    const searchPath = normalizeToolPath(params.path || ".");
     const mode = params.output_mode || "files_with_matches";
     const totalMaxMatches = params.total_max_matches ?? DEFAULT_TOTAL_MAX_MATCHES;
 

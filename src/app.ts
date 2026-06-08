@@ -807,6 +807,7 @@ export class App {
       gitStatus: true,
       memorySummary,
       diagnostics: collectDiagnosticText() || undefined,
+      preferredLanguage: this.config.language,
       ...collectIDEContext(),
       maxTokens: 180000,
     });
