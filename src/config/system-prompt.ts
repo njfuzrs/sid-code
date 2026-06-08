@@ -388,8 +388,8 @@ ${customGuides.length > 0 ? "\n" + customGuides.join("\n") : ""}
 /** 构建行为约束部分 */
 function buildConstraintsSection(language?: "zh" | "en"): string {
   const langConstraint = language === "en"
-    ? "1. **语言要求**: 所有回复、代码注释、文档均使用英文。详细规则见上方"⚠️ 语言规则""
-    : "1. **语言要求**: 所有回复、代码注释、文档均使用中文。详细规则见上方"⚠️ 语言规则"";
+    ? "1. **语言要求**: 所有回复、代码注释、文档均使用英文。详细规则见上方\"⚠️ 语言规则\""
+    : "1. **语言要求**: 所有回复、代码注释、文档均使用中文。详细规则见上方\"⚠️ 语言规则\"";
 
   return `
 <constraints>

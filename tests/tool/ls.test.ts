@@ -79,11 +79,8 @@ describe("LsTool - 错误处理", () => {
     expect(result.output).toContain("不是目录");
   });
 
-  test("非绝对路径时返回错误", async () => {
-    const result = await tool.execute({ dir_path: "relative/path" });
-    expect(result.isError).toBe(true);
-    expect(result.output).toContain("绝对路径");
-  });
+  // 注：非绝对路径检查已移除，normalizeToolPath() 自动将相对路径转为绝对路径
+  // 这是"路径处理缺失"修复的一部分（详见 docs/bugfixes/todo/ReadTool-路径处理缺失-弱模型路径纠错能力不足.md §方案 E）
 });
 
 describe("LsTool - 空目录", () => {
