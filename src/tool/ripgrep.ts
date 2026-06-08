@@ -41,50 +41,57 @@ function isEagainError(stderr: string): boolean {
 }
 
 /**
+ * 使用 ReadableStream reader 读取流，带缓冲区上限
+ */
+async function readStreamWithLimit(
+  stream: ReadableStream<Uint8Array> | null,
+  maxSize: number,
+): Promise<{ text: string; truncated: boolean }> {
+  if (!stream) return { text: "", truncated: false };
+
+  const reader = stream.getReader();
+  let text = "";
+  let truncated = false;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!truncated) {
+        text += new TextDecoder().decode(value);
+        if (text.length > maxSize) {
+          text = text.slice(0, maxSize);
+          truncated = true;
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  return { text, truncated };
+}
+
+/**
  * 在子进程中收集 stdout/stderr，带缓冲区上限
+ * Bun 的 spawn 返回 ReadableStream，不使用 Node.js EventEmitter API
  */
 function collectOutput(child: ReturnType<typeof spawn>): {
   promise: Promise<{ stdout: string; stderr: string; truncatedStdout: boolean; truncatedStderr: boolean }>;
   cleanup: () => void;
 } {
-  let stdout = "";
-  let stderr = "";
-  let stdoutTruncated = false;
-  let stderrTruncated = false;
+  const stdoutPromise = readStreamWithLimit(child.stdout as ReadableStream<Uint8Array> | null, MAX_BUFFER_SIZE);
+  const stderrPromise = readStreamWithLimit(child.stderr as ReadableStream<Uint8Array> | null, MAX_BUFFER_SIZE);
 
-  const onStdout = (data: Uint8Array) => {
-    if (!stdoutTruncated) {
-      stdout += new TextDecoder().decode(data);
-      if (stdout.length > MAX_BUFFER_SIZE) {
-        stdout = stdout.slice(0, MAX_BUFFER_SIZE);
-        stdoutTruncated = true;
-      }
-    }
-  };
-
-  const onStderr = (data: Uint8Array) => {
-    if (!stderrTruncated) {
-      stderr += new TextDecoder().decode(data);
-      if (stderr.length > MAX_BUFFER_SIZE) {
-        stderr = stderr.slice(0, MAX_BUFFER_SIZE);
-        stderrTruncated = true;
-      }
-    }
-  };
-
-  child.stdout?.on("data", onStdout);
-  child.stderr?.on("data", onStderr);
-
-  const promise = child.exited.then(() => ({
-    stdout,
-    stderr,
-    truncatedStdout: stdoutTruncated,
-    truncatedStderr: stderrTruncated,
+  const promise = Promise.all([stdoutPromise, stderrPromise]).then(([stdout, stderr]) => ({
+    stdout: stdout.text,
+    stderr: stderr.text,
+    truncatedStdout: stdout.truncated,
+    truncatedStderr: stderr.truncated,
   }));
 
   const cleanup = () => {
-    child.stdout?.removeListener("data", onStdout);
-    child.stderr?.removeListener("data", onStderr);
+    // ReadableStream reader 通过 releaseLock 清理，无需额外操作
   };
 
   return { promise, cleanup };

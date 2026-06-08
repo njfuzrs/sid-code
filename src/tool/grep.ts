@@ -1,26 +1,37 @@
 /**
  * Grep 工具 - 搜索文件内容
- * 对标 Claude Code：基于 ripgrep 构建，支持 output_mode、上下文行数、文件类型过滤
+ * 对标 Claude Code：基于 ripgrep 构建，支持 output_mode、分页、mtime 排序
  */
 
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResult, ToolUseContext } from "./types.ts";
-import { spawn } from "bun";
+import { ripGrep, hasRipgrep, RipgrepTimeoutError } from "./ripgrep.ts";
 import { getLogger } from "../debug/logger.ts";
 import { normalizeToolPath } from "./path-utils.ts";
+import { statSync } from "node:fs";
+import { relative, resolve, normalize } from "node:path";
 
 /** 输出截断阈值 */
 const MAX_OUTPUT_LENGTH = 30000;
 
-/** 默认总匹配数上限 */
-const DEFAULT_TOTAL_MAX_MATCHES = 100;
+/** 默认 head_limit（与 CC 一致） */
+const DEFAULT_HEAD_LIMIT = 250;
 
-/** 匹配结果结构 */
-interface GrepMatch {
-  filePath: string;
-  absolutePath: string;
-  lineNumber: number;
-  line: string;
-  isContext?: boolean;
+/** VCS 排除 glob 模式 */
+const VCS_EXCLUDE_GLOBS = ["!.git", "!.svn", "!.hg"];
+
+/** max-columns 限制（防止 minified 文件输出过大） */
+const MAX_COLUMNS = 500;
+
+/** 结构化输出类型 */
+interface StructuredOutput {
+  mode: "files_with_matches" | "content" | "count";
+  numFiles: number;
+  filenames: string[];
+  content: string;
+  numLines?: number;
+  numMatches: number;
+  appliedLimit?: number;
+  appliedOffset?: number;
 }
 
 export class GrepTool implements Tool {
@@ -46,10 +57,9 @@ export class GrepTool implements Tool {
 - 支持正则表达式模式，用 fixed_strings=true 可按字面量搜索
 - 默认 output_mode=files_with_matches，只返回文件路径，最省 token
 - 需要看匹配内容时用 output_mode=content，配合 context 参数控制上下文行数
-- 当匹配数 1-3 个时，自动添加周围代码上下文（1个匹配50行，2-3个匹配15行），省去再次 read
 - 用 glob 参数过滤文件类型（如 '*.ts'），用 type 参数按语言过滤（如 'ts'）
-- 用 exclude_pattern 过滤掉不想要的匹配行
-- 用 total_max_matches 限制总结果数（默认100），防止结果过多
+- 用 head_limit 限制结果数（默认 250），用 offset 翻页（默认 0）；显式传 0 表示无限制
+- 结果文件按修改时间降序排列（最近编辑的文件在前）
 - 搜索文件名请用 glob 工具，搜索内容请用 grep 工具`;
   }
 
@@ -94,13 +104,13 @@ export class GrepTool implements Tool {
           type: "number",
           description: "显示匹配行之后的行数（-A 参数），仅 output_mode=content 时有效",
         },
-        exclude_pattern: {
-          type: "string",
-          description: "正则表达式，用于过滤掉匹配的行（后置过滤）",
-        },
-        total_max_matches: {
+        head_limit: {
           type: "number",
-          description: "总结果数上限，默认 100，防止结果过多",
+          description: "输出结果数上限，默认 250；显式传 0 表示无限制。替代旧的 total_max_matches",
+        },
+        offset: {
+          type: "number",
+          description: "分页偏移量（从 0 开始），默认 0",
         },
         max_matches_per_file: {
           type: "number",
@@ -110,12 +120,17 @@ export class GrepTool implements Tool {
           type: "boolean",
           description: "按字面量搜索（不作为正则表达式），默认 false",
         },
+        // 向后兼容：total_max_matches 作为 head_limit 别名
+        total_max_matches: {
+          type: "number",
+          description: "已废弃，请使用 head_limit 代替",
+        },
       },
       required: ["pattern"],
     };
   }
 
-  async execute(input: unknown): Promise<ToolResult> {
+  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
     const log = getLogger();
     const params = input as {
       pattern: string;
@@ -127,57 +142,60 @@ export class GrepTool implements Tool {
       context?: number;
       before_context?: number;
       after_context?: number;
-      exclude_pattern?: string;
-      total_max_matches?: number;
+      head_limit?: number;
+      offset?: number;
       max_matches_per_file?: number;
       fixed_strings?: boolean;
+      total_max_matches?: number;
     };
 
     if (!params.pattern) {
       return { output: "错误: 缺少 pattern 参数", isError: true };
     }
 
-    // 验证 exclude_pattern 正则
-    if (params.exclude_pattern && !params.fixed_strings) {
-      try {
-        new RegExp(params.exclude_pattern);
-      } catch {
-        return { output: `错误: exclude_pattern 不是有效的正则表达式: ${params.exclude_pattern}`, isError: true };
-      }
-    }
-
     const searchPath = normalizeToolPath(params.path || ".");
     const mode = params.output_mode || "files_with_matches";
-    const totalMaxMatches = params.total_max_matches ?? DEFAULT_TOTAL_MAX_MATCHES;
+    const headLimit = params.head_limit ?? params.total_max_matches ?? DEFAULT_HEAD_LIMIT;
+    const offset = params.offset ?? 0;
 
     log.info("TOOL", `▶ 搜索 "${params.pattern}" in ${searchPath}`);
 
-    // 优先尝试 ripgrep，降级到系统 grep
-    const useRipgrep = await this.hasRipgrep();
+    // 构建 abort signal
+    const abortController = new AbortController();
+    const abortSignal = signal ?? abortController.signal;
+    if (signal) {
+      signal.addEventListener("abort", () => abortController.abort(), { once: true });
+    }
 
-    if (useRipgrep) {
-      const result = await this.executeRipgrep(params, searchPath, mode, totalMaxMatches);
+    // 检查 ripgrep 是否可用
+    const useRipgrep = await hasRipgrep();
+
+    try {
+      if (useRipgrep) {
+        const result = await this.executeWithRipgrep(params, searchPath, mode, headLimit, offset, abortSignal);
+        log.info("TOOL", `✓ 搜索完成`);
+        return result;
+      }
+      const result = await this.executeFallbackGrep(params, searchPath, mode, headLimit, offset);
       log.info("TOOL", `✓ 搜索完成`);
       return result;
-    }
-    const result = await this.executeFallbackGrep(params, searchPath, mode, totalMaxMatches);
-    log.info("TOOL", `✓ 搜索完成`);
-    return result;
-  }
-
-  /** 检查 ripgrep 是否可用 */
-  private async hasRipgrep(): Promise<boolean> {
-    try {
-      const proc = spawn({ cmd: ["rg", "--version"], stdout: "pipe", stderr: "pipe" });
-      await proc.exited;
-      return proc.exitCode === 0;
-    } catch {
-      return false;
+    } catch (err: any) {
+      if (err instanceof RipgrepTimeoutError) {
+        if (err.partialResults.length > 0) {
+          const output = this.formatStructuredOutput(
+            mode, err.partialResults, searchPath, headLimit === 0 ? undefined : headLimit, offset,
+            `警告: 搜索超时，仅返回部分结果（${err.partialResults.length} 行）。请尝试缩小搜索范围。`,
+          );
+          return { output };
+        }
+        return { output: err.message, isError: true };
+      }
+      return { output: `搜索失败: ${err.message}`, isError: true };
     }
   }
 
-  /** 使用 ripgrep 执行搜索 */
-  private async executeRipgrep(
+  /** 使用 ripgrep 执行搜索（通过 ripgrep.ts 执行层） */
+  private async executeWithRipgrep(
     params: {
       pattern: string;
       case_insensitive?: boolean;
@@ -186,15 +204,27 @@ export class GrepTool implements Tool {
       context?: number;
       before_context?: number;
       after_context?: number;
-      exclude_pattern?: string;
       max_matches_per_file?: number;
       fixed_strings?: boolean;
     },
     searchPath: string,
     mode: string,
-    totalMaxMatches: number,
+    headLimit: number,
+    offset: number,
+    abortSignal: AbortSignal,
   ): Promise<ToolResult> {
-    const args = ["rg"];
+    const args: string[] = [];
+
+    // 默认参数增强：始终添加（对标 CC）
+    args.push("--hidden");
+
+    // VCS 目录排除
+    for (const glob of VCS_EXCLUDE_GLOBS) {
+      args.push("--glob", glob);
+    }
+
+    // max-columns 限制
+    args.push("--max-columns", String(MAX_COLUMNS));
 
     // 输出模式
     switch (mode) {
@@ -206,7 +236,6 @@ export class GrepTool implements Tool {
         break;
       case "content":
         args.push("--line-number");
-        // 上下文参数
         if (params.context !== undefined) {
           args.push("-C", String(params.context));
         }
@@ -242,217 +271,174 @@ export class GrepTool implements Tool {
       args.push("--type", params.type);
     }
 
-    args.push(params.pattern, searchPath);
+    // pattern 作为最后一个 arg
+    args.push(params.pattern);
 
-    try {
-      const proc = spawn({ cmd: args, stdout: "pipe", stderr: "pipe" });
+    const lines = await ripGrep(args, searchPath, abortSignal);
 
-      const [stdout, stderr] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-      ]);
-
-      const exitCode = await proc.exited;
-
-      // rg 退出码 1 = 未找到匹配
-      if (exitCode === 1) {
-        return { output: "未找到匹配的内容" };
-      }
-
-      if (exitCode !== 0 && stderr) {
-        return { output: `搜索失败: ${stderr}`, isError: true };
-      }
-
-      let output = stdout || "未找到匹配的内容";
-
-      // 解析匹配结果
-      const matches = this.parseRipgrepOutput(output, mode, searchPath);
-
-      // 应用 exclude_pattern 过滤（只过滤匹配行，保留上下文行）
-      let filteredMatches = matches;
-      if (params.exclude_pattern && mode === "content") {
-        const excludeRegex = new RegExp(params.exclude_pattern, params.case_insensitive ? "i" : "");
-        filteredMatches = matches.filter(m => m.isContext || !excludeRegex.test(m.line));
-      }
-
-      // 应用 total_max_matches 限制
-      const actualMatches = filteredMatches.filter(m => !m.isContext);
-      const wasTruncated = actualMatches.length > totalMaxMatches;
-      if (wasTruncated) {
-        filteredMatches = filteredMatches.slice(0, totalMaxMatches);
-      }
-
-      // 自动上下文丰富（仅当匹配数 1-3 且未指定上下文参数时）
-      if (mode === "content" && actualMatches.length >= 1 && actualMatches.length <= 3 &&
-          params.context === undefined && params.before_context === undefined && params.after_context === undefined) {
-        filteredMatches = await this.enrichWithAutoContext(filteredMatches, actualMatches.length, searchPath);
-      }
-
-      // 格式化输出
-      output = this.formatGrepResults(filteredMatches, mode, params.pattern, wasTruncated, totalMaxMatches);
-
-      return { output };
-    } catch (err: any) {
-      return { output: `搜索失败: ${err.message}`, isError: true };
+    if (lines.length === 0) {
+      return { output: "未找到匹配的内容" };
     }
+
+    // 按 mtime 排序（files_with_matches / count 模式）
+    const sortedLines = this.sortLinesByMtime(lines, searchPath, mode);
+
+    // 应用分页
+    const { appliedLimit, pagedLines } = this.applyPagination(sortedLines, mode, headLimit, offset);
+
+    const output = this.formatStructuredOutput(mode, pagedLines, searchPath, appliedLimit, offset);
+
+    return { output };
   }
 
-  /** 解析 ripgrep 输出为结构化匹配结果 */
-  private parseRipgrepOutput(output: string, mode: string, searchPath: string): GrepMatch[] {
-    if (mode !== "content") {
-      return []; // files_with_matches 和 count 模式不需要解析
+  /**
+   * 从 rg 输出行中提取文件路径
+   * 处理三种输出格式：
+   * - files_with_matches: "path/to/file"（整行）
+   * - count: "path/to/file:42"（最后一个 : 之前）
+   * - content: "path/to/file:10:matched" 或 "path/to/file-15-context"（rg 用 :数字: 或 -数字- 分隔）
+   */
+  private extractFilePath(line: string, mode: string): string {
+    if (mode === "files_with_matches") {
+      return line;
     }
 
-    const matches: GrepMatch[] = [];
-    const lines = output.split("\n");
-    let currentFile = "";
+    if (mode === "count") {
+      const lastColon = line.lastIndexOf(":");
+      if (lastColon > 0) {
+        return line.substring(0, lastColon);
+      }
+      return line;
+    }
+
+    // content 模式：匹配 rg 的 "filepath:数字:..." 或 "filepath-数字-" 格式
+    const match = line.match(/^(.+?)([-:])\d+\2/);
+    if (match) {
+      return match[1];
+    }
+
+    // fallback：第一个 : 之前
+    const colonIdx = line.indexOf(":");
+    if (colonIdx > 0) {
+      return line.substring(0, colonIdx);
+    }
+
+    return line;
+  }
+
+  /** 按文件 mtime 降序排列结果行 */
+  private sortLinesByMtime(lines: string[], searchPath: string, mode: string): string[] {
+    const fileLines = new Map<string, string[]>();
 
     for (const line of lines) {
-      if (!line) continue;
+      const filePath = this.extractFilePath(line, mode);
 
-      // 解析格式：path:lineNumber:content 或 path-lineNumber-content（上下文行）
-      const matchLine = line.match(/^(.+?):(\d+):(.*)$/);
-      const contextLine = line.match(/^(.+?)-(\d+)-(.*)$/);
-
-      if (matchLine) {
-        const [, filePath, lineNum, content] = matchLine;
-        currentFile = filePath;
-        matches.push({
-          filePath,
-          absolutePath: `${searchPath}/${filePath}`,
-          lineNumber: parseInt(lineNum, 10),
-          line: content,
-          isContext: false,
-        });
-      } else if (contextLine) {
-        const [, filePath, lineNum, content] = contextLine;
-        matches.push({
-          filePath: filePath || currentFile,
-          absolutePath: `${searchPath}/${filePath || currentFile}`,
-          lineNumber: parseInt(lineNum, 10),
-          line: content,
-          isContext: true,
-        });
+      if (!fileLines.has(filePath)) {
+        fileLines.set(filePath, []);
       }
+      fileLines.get(filePath)!.push(line);
     }
 
-    return matches;
-  }
-
-  /** 自动上下文丰富：当匹配数少时自动添加周围代码 */
-  private async enrichWithAutoContext(
-    matches: GrepMatch[],
-    matchCount: number,
-    searchPath: string,
-  ): Promise<GrepMatch[]> {
-    const contextLines = matchCount === 1 ? 50 : 15;
-    const matchesByFile = new Map<string, GrepMatch[]>();
-
-    // 按文件分组
-    for (const match of matches) {
-      if (!matchesByFile.has(match.filePath)) {
-        matchesByFile.set(match.filePath, []);
-      }
-      matchesByFile.get(match.filePath)!.push(match);
-    }
-
-    const enrichedMatches: GrepMatch[] = [];
-
-    // 为每个文件读取并添加上下文
-    for (const [filePath, fileMatches] of matchesByFile) {
+    // 获取每个文件的 mtime
+    const fileMtimes = new Map<string, number>();
+    for (const filePath of fileLines.keys()) {
       try {
-        const absolutePath = fileMatches[0].absolutePath;
-        const file = Bun.file(absolutePath);
-        const content = await file.text();
-        const fileLines = content.split("\n");
-
-        const seenLines = new Set<number>();
-        const newMatches: GrepMatch[] = [];
-
-        // 按行号排序
-        fileMatches.sort((a, b) => a.lineNumber - b.lineNumber);
-
-        for (const match of fileMatches) {
-          const startLine = Math.max(1, match.lineNumber - contextLines);
-          const endLine = Math.min(fileLines.length, match.lineNumber + contextLines);
-
-          for (let i = startLine; i <= endLine; i++) {
-            if (!seenLines.has(i)) {
-              newMatches.push({
-                filePath,
-                absolutePath,
-                lineNumber: i,
-                line: fileLines[i - 1] || "",
-                isContext: i !== match.lineNumber,
-              });
-              seenLines.add(i);
-            } else if (i === match.lineNumber) {
-              // 确保匹配行标记为非上下文
-              const existing = newMatches.find(m => m.lineNumber === i);
-              if (existing) existing.isContext = false;
-            }
-          }
-        }
-
-        enrichedMatches.push(...newMatches.sort((a, b) => a.lineNumber - b.lineNumber));
+        const fullPath = resolve(searchPath, filePath);
+        fileMtimes.set(filePath, statSync(fullPath).mtimeMs);
       } catch {
-        // 读取失败时保留原始匹配
-        enrichedMatches.push(...fileMatches);
+        fileMtimes.set(filePath, 0); // 无法获取 mtime 的排在最后
       }
     }
 
-    return enrichedMatches;
+    // 按 mtime 降序排列文件，然后拼接每行的结果
+    const sortedFiles = [...fileLines.keys()].sort((a, b) => {
+      return (fileMtimes.get(b) ?? 0) - (fileMtimes.get(a) ?? 0);
+    });
+
+    return sortedFiles.flatMap((file) => fileLines.get(file) ?? []);
   }
 
-  /** 格式化 grep 结果为可读输出 */
-  private formatGrepResults(
-    matches: GrepMatch[],
+  /** 应用分页截断 */
+  private applyPagination(
+    lines: string[],
     mode: string,
-    pattern: string,
-    wasTruncated: boolean,
-    totalMaxMatches: number,
+    headLimit: number,
+    offset: number,
+  ): { appliedLimit?: number; pagedLines: string[] } {
+    // headLimit === 0 表示无限制
+    if (headLimit === 0) {
+      return { appliedLimit: undefined, pagedLines: lines };
+    }
+
+    const start = offset;
+    const end = offset + headLimit;
+    const pagedLines = lines.slice(start, end);
+
+    return { appliedLimit: headLimit, pagedLines };
+  }
+
+  /** 格式化结构化 JSON 输出 */
+  private formatStructuredOutput(
+    mode: string,
+    lines: string[],
+    searchPath: string,
+    appliedLimit: number | undefined,
+    offset: number,
+    warning?: string,
   ): string {
-    if (mode !== "content" || matches.length === 0) {
-      return "未找到匹配的内容";
-    }
+    // 提取唯一文件名
+    const filenames = new Set<string>();
+    const relativeFilenames = new Set<string>();
 
-    const actualMatches = matches.filter(m => !m.isContext);
-    const matchCount = actualMatches.length;
-    const matchTerm = matchCount === 1 ? "个匹配" : "个匹配";
+    for (const line of lines) {
+      const filePath = this.extractFilePath(line, mode);
 
-    let output = `找到 ${matchCount} ${matchTerm}，模式 "${pattern}"`;
-    if (wasTruncated) {
-      output += ` (结果已限制为 ${totalMaxMatches} 条匹配)`;
-    }
-    output += ":\n---\n";
-
-    // 按文件分组
-    const matchesByFile = new Map<string, GrepMatch[]>();
-    for (const match of matches) {
-      if (!matchesByFile.has(match.filePath)) {
-        matchesByFile.set(match.filePath, []);
+      try {
+        const resolvedPath = resolve(searchPath, filePath);
+        const relPath = relative(normalize(searchPath), normalize(resolvedPath));
+        relativeFilenames.add(relPath || filePath);
+      } catch {
+        relativeFilenames.add(filePath);
       }
-      matchesByFile.get(match.filePath)!.push(match);
+      filenames.add(filePath);
     }
 
-    // 输出每个文件的匹配
-    for (const [filePath, fileMatches] of matchesByFile) {
-      output += `File: ${filePath}\n`;
-      for (const match of fileMatches) {
-        const separator = match.isContext ? "-" : ":";
-        const lineContent = match.line.trimEnd();
-        output += `L${match.lineNumber}${separator} ${lineContent}\n`;
-      }
-      output += "---\n";
+    // 计算匹配数（非上下文行的数量，content 模式才区分）
+    let numMatches = lines.length;
+    if (mode === "content") {
+      numMatches = lines.filter((l) => !l.match(/^.+-(\d+)-/)).length;
+    } else if (mode === "files_with_matches") {
+      numMatches = lines.length;
     }
 
-    // 截断超长输出
-    if (output.length > MAX_OUTPUT_LENGTH) {
-      const truncated = output.slice(0, MAX_OUTPUT_LENGTH);
-      return `${truncated}\n\n... [输出已截断: 共 ${output.length} 字符，仅显示前 ${MAX_OUTPUT_LENGTH} 字符]`;
+    // 构建结构化输出
+    const structured: StructuredOutput = {
+      mode: mode as StructuredOutput["mode"],
+      numFiles: relativeFilenames.size,
+      filenames: [...relativeFilenames], // 保持 mtime 排序顺序（不重新字母排序）
+      content: lines.join("\n"),
+      numLines: lines.length,
+      numMatches,
+      appliedLimit,
+      appliedOffset: offset,
+    };
+
+    // 序列化为 JSON（紧凑格式节省 token）
+    let json = JSON.stringify(structured);
+
+    // 如果超长，截断 content 字段
+    if (json.length > MAX_OUTPUT_LENGTH) {
+      const truncated = lines.slice(0, Math.floor(lines.length * 0.8));
+      structured.content = truncated.join("\n") + "\n... [输出已截断]";
+      structured.numLines = truncated.length;
+      json = JSON.stringify(structured);
     }
 
-    return output.trim();
+    if (warning) {
+      json = json.slice(0, -1) + `,"warning":"${warning}"}`;
+    }
+
+    return json;
   }
 
   /** 降级到系统 grep */
@@ -464,12 +450,12 @@ export class GrepTool implements Tool {
       context?: number;
       before_context?: number;
       after_context?: number;
-      exclude_pattern?: string;
       fixed_strings?: boolean;
     },
     searchPath: string,
     mode: string,
-    totalMaxMatches: number,
+    headLimit: number,
+    offset: number,
   ): Promise<ToolResult> {
     const args = ["grep", "-r"];
 
@@ -509,6 +495,7 @@ export class GrepTool implements Tool {
     args.push(params.pattern, searchPath);
 
     try {
+      const { spawn } = await import("bun");
       const proc = spawn({ cmd: args, stdout: "pipe", stderr: "pipe" });
 
       const [stdout, stderr] = await Promise.all([
@@ -526,24 +513,19 @@ export class GrepTool implements Tool {
         return { output: `搜索失败: ${stderr}`, isError: true };
       }
 
-      let output = stdout || "未找到匹配的内容";
+      const lines = (stdout || "").trim().split("\n").filter(Boolean);
 
-      // 简单处理：系统 grep 不做复杂的结构化解析和自动上下文
-      // 只应用 exclude_pattern 和截断
-      if (params.exclude_pattern && mode === "content") {
-        const excludeRegex = new RegExp(params.exclude_pattern, params.case_insensitive ? "i" : "");
-        const lines = output.split("\n");
-        const filtered = lines.filter(line => {
-          const match = line.match(/^.+?:\d+:(.*)$/);
-          return !match || !excludeRegex.test(match[1]);
-        });
-        output = filtered.join("\n");
+      if (lines.length === 0) {
+        return { output: "未找到匹配的内容" };
       }
 
-      if (output.length > MAX_OUTPUT_LENGTH) {
-        const truncated = output.slice(0, MAX_OUTPUT_LENGTH);
-        output = `${truncated}\n\n... [输出已截断: 共 ${output.length} 字符]`;
-      }
+      // 按 mtime 排序
+      const sortedLines = this.sortLinesByMtime(lines, searchPath, mode);
+
+      // 应用分页
+      const { appliedLimit, pagedLines } = this.applyPagination(sortedLines, mode, headLimit, offset);
+
+      const output = this.formatStructuredOutput(mode, pagedLines, searchPath, appliedLimit, offset);
 
       return { output };
     } catch (err: any) {
