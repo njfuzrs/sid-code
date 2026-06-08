@@ -125,7 +125,7 @@ describe("MCPClient", () => {
     const client = new MCPClient(transport, { retries: 2 });
 
     await expect(client.initialize()).rejects.toThrow("超时3");
-  });
+  }, 15000); // 指数退避 1s/2s + jitter，最坏约 8s，Bun 默认 5s 不够
 
   test("listTools 返回工具列表", async () => {
     const transport = createMockTransport([

@@ -2,7 +2,7 @@
  * 智能压缩增强 + 压缩触发策略 + LLM 认知检测 测试
  */
 
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { Manager } from "../../src/context/manager.ts";
 import { LoopDetector } from "../../src/agent/loop-detection.ts";
 
