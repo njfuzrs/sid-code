@@ -200,7 +200,8 @@ export async function runForkedAgent(
         }
         try {
           const input = (decision as { updatedInput?: unknown }).updatedInput ?? tu.input;
-          const res = await tool.execute(input, signal);
+          // 注入 _agentId 标记，防止分叉代理调用 enter_plan_mode 形成套娃
+          const res = await tool.execute({ ...input, _agentId: "forked-agent" }, signal);
           results.push({
             type: "tool_result",
             tool_use_id: tu.id,

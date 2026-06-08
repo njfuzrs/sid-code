@@ -16,6 +16,7 @@ import { DialogRenderer } from "./DialogManager.tsx";
 import { MainContent } from "./MainContent.tsx";
 import { CopyModeWarning } from "./CopyModeWarning.tsx";
 import { Notifications } from "./Notifications.tsx";
+import { TodoPanel } from "./TodoPanel.tsx";
 import { ToastDisplay } from "./ToastDisplay.tsx";
 import { ExitWarning } from "./ExitWarning.tsx";
 import { EmptyLogo } from "./EmptyLogo.tsx";
@@ -27,6 +28,7 @@ import type { HistoryItem } from "../types.ts";
 import type { PermissionRequestInfo, ShellConfirmRequestInfo, PlanApprovalRequestInfo } from "../App.tsx";
 import type { DialogType } from "../../command/types.ts";
 import type { Usage } from "../../llm/types.ts";
+import type { TodoItem } from "../../tool/todo-write.ts";
 import { theme } from "../semantic-colors.ts";
 import { useFlickerDetector } from "../hooks/useFlickerDetector.ts";
 
@@ -72,6 +74,8 @@ interface DefaultAppLayoutProps {
   availableThemes: Array<{ name: string; type: "light" | "dark"; description?: string }>;
   currentTheme: string;
   onThemeSelect: (themeName: string) => void;
+  /** 当前 todo 列表（来自 TodoWrite 工具） */
+  todos: TodoItem[];
 }
 
 export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
@@ -109,6 +113,7 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
   availableThemes,
   currentTheme,
   onThemeSelect,
+  todos,
 }) => {
   const hasDialog = !!(permissionRequest || shellConfirmRequest || planApprovalRequest || activeDialog);
   const rootRef = useRef<DOMElement>(null);
@@ -148,6 +153,7 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
       <Box flexDirection="column" flexShrink={0} flexGrow={0} width={termWidth}>
         <CopyModeWarning enabled={copyModeEnabled} />
         <Notifications />
+        <TodoPanel todos={todos} termWidth={termWidth} />
         <ToastDisplay />
 
         {statusMessage ? (

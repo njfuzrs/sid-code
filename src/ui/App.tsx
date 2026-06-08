@@ -126,6 +126,8 @@ export interface TUIState {
   activeDialog: import("../command/types.ts").DialogType | null;
   /** 可用模型列表（对话框用） */
   availableModels: Array<{ name: string; provider: string; description?: string }>;
+  /** 当前 todo 列表（来自 TodoWrite 工具，供 TUI 面板显示） */
+  todos: import("../tool/todo-write.ts").TodoItem[];
 }
 
 interface AppProps {
@@ -491,6 +493,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           availableThemes={availableThemes}
           currentTheme={currentTheme}
           onThemeSelect={handleThemeSelect}
+          todos={state.todos}
         />
       ) : (
         <MainScreenLayout
@@ -524,6 +527,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           availableThemes={availableThemes}
           currentTheme={currentTheme}
           onThemeSelect={handleThemeSelect}
+          todos={state.todos}
         />
       )}
     </StreamingProvider>

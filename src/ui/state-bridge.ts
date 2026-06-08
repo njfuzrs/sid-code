@@ -39,5 +39,6 @@ export function getConversationClearedPatch(): Partial<TUIState> {
     permissionRequest: null,
     shellConfirmRequest: null,
     activeDialog: null,
+    todos: [],
   };
 }

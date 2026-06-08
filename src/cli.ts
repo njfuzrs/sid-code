@@ -549,6 +549,10 @@ export async function main(): Promise<void> {
     toolRegistry.register(new EnterPlanModeTool(planManager));
     toolRegistry.register(new ExitPlanModeTool(planManager));
 
+    // 注册 TodoWrite 工具（执行阶段进度追踪，防 Plan Mode 套娃）
+    const { TodoWriteTool } = await import("./tool/todo-write.ts");
+    toolRegistry.register(new TodoWriteTool());
+
     // 注册子代理工具
     const { SubAgentTool } = await import("./agent/tool.ts");
     toolRegistry.register(new SubAgentTool(providerRegistry, toolRegistry));

@@ -69,12 +69,15 @@ ${planExists
 export function buildPlanModeReminder(full: boolean = true): string {
   if (!full) {
     return `<system-reminder>
-[计划模式] 只允许只读操作。分析完成后立即写计划并调用 exit_plan_mode 提交审批，不要反复探索。
+[计划模式] 只允许只读操作。如果你已完成分析并有清晰方案，立即写计划并调用 exit_plan_mode 提交审批。
+不要反复探索或过度分析——目标是尽快拿出可执行的方案，不是写出完美的设计文档。
 </system-reminder>`;
   }
   return `<system-reminder>
 你当前处于计划模式。不要进行任何编辑或运行任何命令。
 专注于探索代码库和编写计划。
+如果你已完成分析并有清晰方案，立即写计划并调用 exit_plan_mode 提交审批。
+不要反复探索或过度分析——目标是尽快拿出可执行的方案。
 执行计划时遇到工具失败，先用 edit 工具更新计划文件再继续执行。
 </system-reminder>`;
 }
@@ -87,7 +90,14 @@ export function buildPlanModeReminder(full: boolean = true): string {
  * 用于：TUI 用户批准路径 + headless 自动批准路径（W12.D3 补丁）
  */
 export function buildPlanApprovedMessage(planFilePath: string): string {
-  return `用户已批准你的计划（位于 ${planFilePath}）。请按计划开始编写代码。
+  return `用户已批准你的计划（位于 ${planFilePath}）。
+
+如果计划包含多个步骤（≥ 3 步），建议首先使用 todo_write 工具将计划拆解为任务清单（每步一个 todo 项），然后逐条执行。
+
+**重要**：执行阶段不要再调用 enter_plan_mode。遇到复杂子步骤时：
+- 用 todo_write 追踪进度，或
+- 用 sub_agent 委托子任务执行（主代理继续推进其他 todo 项）
+plan mode 只用于需要用户审批的新方案设计，不是执行阶段的进度管理工具。
 
 执行守则：如果在执行过程中遇到工具失败（权限拒绝、文件不存在、命令报错等）、发现实际环境与计划假设不一致、或发现计划遗漏关键步骤，**你必须先用 edit 工具更新计划文件 ${planFilePath} 再继续执行**：
 1. 在计划中标注失败步骤（[FAILED] 或 [BLOCKED]）+ 原因

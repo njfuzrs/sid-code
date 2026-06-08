@@ -1326,6 +1326,7 @@ export class App {
         provider: m.provider || this.config.provider,
         description: m.baseURL ? `${m.provider || this.config.provider} (${m.baseURL})` : undefined,
       })),
+      todos: [],
     });
 
     const updateState = (patch: Partial<import("./ui/App.tsx").TUIState>) => {
@@ -1535,6 +1536,13 @@ export class App {
                 isToolExecuting: false,
                 lastToolResult: event.result ? { toolName: event.toolName, isError: !!event.result.isError, elapsedMs: event.result.elapsedMs ?? 0 } : null,
               });
+              // TodoWrite 工具执行后同步 todo 列表到 TUI
+              if (event.toolName === "todo_write") {
+                const todoTool = this.toolRegistry.get("todo_write") as import("./tool/todo-write.ts").TodoWriteTool | undefined;
+                if (todoTool) {
+                  updateState({ todos: todoTool.getTodos() });
+                }
+              }
               break;
             case "compact":
               rebuildDisplay();

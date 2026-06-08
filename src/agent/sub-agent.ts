@@ -469,7 +469,8 @@ export class SubAgent {
     }
 
     try {
-      const result = await tool.execute(input, signal);
+      // 注入 _agentId 标记，防止子代理调用 enter_plan_mode 形成套娃
+      const result = await tool.execute({ ...input, _agentId: "sub-agent" }, signal);
       const truncated = ContextManager.truncateToolOutput(result.output);
       return { content: truncated, is_error: result.isError ?? false };
     } catch (err: any) {
@@ -975,7 +976,8 @@ export class SubAgent {
     }
 
     try {
-      const result = await tool.execute(block.input, signal);
+      // 注入 _agentId 标记，防止子代理调用 enter_plan_mode 形成套娃
+      const result = await tool.execute({ ...block.input, _agentId: "sub-agent" }, signal);
       // 截断超大输出
       const truncated = ContextManager.truncateToolOutput(result.output);
       return {

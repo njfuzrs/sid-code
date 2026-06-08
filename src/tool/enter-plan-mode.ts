@@ -40,7 +40,17 @@ export class EnterPlanModeTool implements Tool {
 
   readOnly(): boolean { return true; }
 
-  async execute(_input: unknown, _signal?: AbortSignal): Promise<ToolResult> {
+  async execute(input: unknown, _signal?: AbortSignal): Promise<ToolResult> {
+    // 禁止在子代理上下文中进入 plan mode（防套娃）
+    // 参考：Claude Code EnterPlanModeTool.ts:78-80
+    const inp = input as Record<string, unknown> | undefined;
+    if (inp?._agentId) {
+      return {
+        output: "子代理不能进入 plan mode。如需制定方案，请使用 sub_agent(type='plan') 委托子代理研究。",
+        isError: true,
+      };
+    }
+
     if (this.planManager.isActive()) {
       return { output: "已经在计划模式中", isError: true };
     }

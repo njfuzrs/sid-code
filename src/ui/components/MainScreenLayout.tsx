@@ -29,6 +29,8 @@ import type { HistoryItem } from "../types.ts";
 import type { PermissionRequestInfo, ShellConfirmRequestInfo, PlanApprovalRequestInfo } from "../App.tsx";
 import type { DialogType } from "../../command/types.ts";
 import type { Usage } from "../../llm/types.ts";
+import type { TodoItem } from "../../tool/todo-write.ts";
+import { TodoPanel } from "./TodoPanel.tsx";
 import { theme } from "../semantic-colors.ts";
 
 interface MainScreenLayoutProps {
@@ -74,6 +76,8 @@ interface MainScreenLayoutProps {
   availableThemes: Array<{ name: string; type: "light" | "dark"; description?: string }>;
   currentTheme: string;
   onThemeSelect: (themeName: string) => void;
+  /** 当前 todo 列表（来自 TodoWrite 工具） */
+  todos: TodoItem[];
 }
 
 export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function MainScreenLayout({
@@ -107,6 +111,7 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
   availableThemes,
   currentTheme,
   onThemeSelect,
+  todos,
 }) {
   const confirmingTool = useConfirmingTool(staticItems);
 
@@ -140,6 +145,7 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
         ) : null}
 
         <Notifications />
+        <TodoPanel todos={todos} termWidth={termWidth} />
         <ToastDisplay />
 
         {statusMessage ? (
