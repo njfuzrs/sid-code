@@ -23,8 +23,8 @@ function parseStringList(raw: unknown): string[] | undefined {
   return undefined;
 }
 
-/** 最大 Skill 数量（避免工具列表膨胀） */
-const MAX_SKILLS = 20;
+/** 最大 Skill 数量（避免工具列表膨胀，支持更多自定义 Skill） */
+const MAX_SKILLS = 50;
 
 export class SkillLoader {
   private extensionLoader: ExtensionLoader;

@@ -482,6 +482,15 @@ export class OpenAIProvider implements Provider {
     let reasoningBlockStarted = false;
     let reasoningContent = "";
 
+    /** 30s stall 日志（只记不杀，对齐 claude-code，给弱模型喘息空间） */
+    const STALL_LOG_MS = 30_000;
+    const stallLogger = setInterval(() => {
+      const elapsed = Date.now() - lastContentProgressAt;
+      if (elapsed >= STALL_LOG_MS) {
+        dbg(`stall: ${(elapsed / 1000).toFixed(0)}s 无内容进展 chunks=${totalChunks} empty=${emptyChunks}`);
+      }
+    }, STALL_LOG_MS);
+
     try {
       while (true) {
         // 4 重死锁检测 race：网络断连 / 思考停滞 / reasoning 停滞 / 总超时
@@ -716,6 +725,7 @@ export class OpenAIProvider implements Provider {
         }
       }
     } finally {
+      clearInterval(stallLogger);
       reader.releaseLock();
     }
   }

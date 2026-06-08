@@ -11,8 +11,8 @@ import { getLogger, getSessionMetrics } from "../debug/index.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-/** 持久化输出阈值（对标 Claude Code 30000 字符） */
-const OUTPUT_THRESHOLD = 30000;  // 30K 字符，超过此大小的工具输出会被截断
+/** 持久化输出阈值（对标 Claude Code 30000 字符，可通过 SID_OUTPUT_THRESHOLD 环境变量覆盖） */
+const OUTPUT_THRESHOLD = parseInt(process.env.SID_OUTPUT_THRESHOLD ?? "30000", 10);
 const KEEP_RECENT_OUTPUTS = 3;   // 保留最近 N 个大输出，旧的清理掉
 const CLEARED_MARKER = "[旧的工具输出已清理]";
 
@@ -62,12 +62,12 @@ export type CompactionLevel =
  * 百分比在不同窗口模型下行为不可预测（32K 窗口 50%=16K 过早，200K 窗口 50%=100K 过晚）
  */
 const BUFFER_THRESHOLDS = {
-  /** 剩余 ≤ 40K tokens → 触发工具输出遮罩（仅 ≥ 80K 窗口模型生效） */
-  masking: 40_000,
+  /** 剩余 ≤ 80K tokens → 触发工具输出遮罩（仅 ≥ 80K 窗口模型生效） */
+  masking: 80_000,
   /** 剩余 ≤ 60K tokens → 触发 LLM 摘要压缩（仅 ≥ 80K 窗口模型生效） */
   compression: 60_000,
-  /** 剩余 ≤ 80K tokens → 紧急截断（保证最后 80K 内容不丢） */
-  emergency: 80_000,
+  /** 剩余 ≤ 40K tokens → 紧急截断（保证最后 40K 内容不丢） */
+  emergency: 40_000,
 };
 /** 小窗口模型阈值（window ≤ 60K tokens 时仅 emergency 截断生效，比例触发） */
 const SMALL_WINDOW_EMERGENCY_RATIO = 0.90;
@@ -422,10 +422,10 @@ export class Manager {
 
     // 标准窗口模型：三层渐进压缩（绝对 buffer）
     // 按剩余空间从紧到松检查：剩余越少 → 响应越激进
-    if (remaining <= BUFFER_THRESHOLDS.masking) return "emergency";     // ≤ 40K → 紧急截断
-    if (remaining <= BUFFER_THRESHOLDS.compression) return "hard";      // ≤ 60K → LLM 摘要压缩
-    if (remaining <= BUFFER_THRESHOLDS.emergency) return "soft";        // ≤ 80K → 工具输出遮罩
-    return "none";                                                       // > 80K → 不需要压缩
+    if (remaining <= BUFFER_THRESHOLDS.emergency) return "emergency";    // ≤ 40K → 紧急截断
+    if (remaining <= BUFFER_THRESHOLDS.compression) return "hard";       // ≤ 60K → LLM 摘要压缩
+    if (remaining <= BUFFER_THRESHOLDS.masking) return "soft";           // ≤ 80K → 工具输出遮罩
+    return "none";                                                        // > 80K → 不需要压缩
   }
 
   /**

@@ -9,10 +9,10 @@ import { glob } from "glob";
 import { getLogger } from "../debug/logger.ts";
 
 /** 每文件最大行数 */
-const MAX_LINES_PER_FILE = 200;
+const MAX_LINES_PER_FILE = 400;
 
 /** 总输出上限 */
-const MAX_TOTAL_OUTPUT = 50000;
+const MAX_TOTAL_OUTPUT = 100000;
 
 /** 默认排除模式 */
 const DEFAULT_EXCLUDES = [
