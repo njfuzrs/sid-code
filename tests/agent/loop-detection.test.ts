@@ -78,14 +78,19 @@ describe("ToolCallLoopDetector", () => {
     expect(detector.record("foo", a)).toBe(true); // 第 3 次相同调用即命中
   });
 
-  test("clearState 后再次撞同 key 立即触发循环（防恢复后绕过）", () => {
+  test("clearState 后 grace 缓冲生效，同 key 不会立即触发（方案 C-2）", () => {
     const input = { path: "/x.ts" };
     detector.record("read", input);
     detector.record("read", input);
     expect(detector.record("read", input)).toBe(true); // 触发循环
-    detector.clearState(); // 模拟 LoopDetector.tryRecover() 后的状态清理
-    // 注入恢复 prompt 后，模型理论上应换工具；如果还撞同一个 key，必须立即识别
-    expect(detector.record("read", input)).toBe(true);
+    detector.clearState(); // 记录到 grace map（初始值 = toolCallThreshold = 3）
+    // 恢复后 grace 缓冲：前 2 次免费，第 3 次 grace 耗尽后开始正常计数
+    expect(detector.record("read", input)).toBe(false); // grace 3→2，放过
+    expect(detector.record("read", input)).toBe(false); // grace 2→1，放过
+    // grace 耗尽，删除记录，正常计数：count=1
+    expect(detector.record("read", input)).toBe(false); // count=1
+    expect(detector.record("read", input)).toBe(false); // count=2
+    expect(detector.record("read", input)).toBe(true);  // count=3
   });
 
   test("clearState 后换其他工具不应误报", () => {
@@ -111,7 +116,7 @@ describe("ToolShapeLoopDetector (ADR-020 §2.2 — hrn_006 grep 不同 pattern �
     });
   });
 
-  test("同 toolName + 同 path + 不同 pattern 反复探测,在窗口内达到阈值触发", () => {
+  test("同 toolName + 同 path + 不同 pattern 反复探测,在窗口内达到阈值触发（hrn_006 仍被兜住）", () => {
     // 模拟 hrn_006:agent 反复 grep 同一目录但变换 pattern 找不存在的字符串
     const calls = [
       { pattern: "zzz_a", path: "/repo", case_insensitive: false },
@@ -142,21 +147,44 @@ describe("ToolShapeLoopDetector (ADR-020 §2.2 — hrn_006 grep 不同 pattern �
     }
   });
 
-  test("read 同 path 反复读多次也算 shape 循环(语义一致)", () => {
-    expect(detector.record("read", { path: "/a.ts", offset: 0 })).toBe(false);
-    expect(detector.record("read", { path: "/a.ts", offset: 100 })).toBe(false);
-    expect(detector.record("read", { path: "/a.ts", offset: 200 })).toBe(false);
-    expect(detector.record("read", { path: "/a.ts", offset: 300 })).toBe(false);
-    expect(detector.record("read", { path: "/a.ts", offset: 400 })).toBe(true);
+  test("read 同 path 但不同 offset/limit 不应触发 shape 循环（方案 A: 分页读是正当行为）", () => {
+    expect(detector.record("read", { file_path: "/a.ts", offset: 0 })).toBe(false);
+    expect(detector.record("read", { file_path: "/a.ts", offset: 100 })).toBe(false);
+    expect(detector.record("read", { file_path: "/a.ts", offset: 200 })).toBe(false);
+    expect(detector.record("read", { file_path: "/a.ts", offset: 300 })).toBe(false);
+    expect(detector.record("read", { file_path: "/a.ts", offset: 400 })).toBe(false);
+    // 5 次 read 同文件不同 offset —— 分页推进，不应误杀
   });
 
-  test("clearState 后再次撞同 shape 立即触发", () => {
+  test("同文件 edit 不同 old_string 不应触发 shape 循环（方案 B: 多点编辑是正当行为）", () => {
+    expect(detector.record("edit", { file_path: "/a.ts", old_string: "line1", new_string: "new1" })).toBe(false);
+    expect(detector.record("edit", { file_path: "/a.ts", old_string: "line2", new_string: "new2" })).toBe(false);
+    expect(detector.record("edit", { file_path: "/a.ts", old_string: "line3", new_string: "new3" })).toBe(false);
+    expect(detector.record("edit", { file_path: "/a.ts", old_string: "line4", new_string: "new4" })).toBe(false);
+    expect(detector.record("edit", { file_path: "/a.ts", old_string: "line5", new_string: "new5" })).toBe(false);
+    // 5 次 edit 同文件但不同 old_string（改不同位置），不应触发
+  });
+
+  test("同文件 edit 相同 old_string 仍触发循环（真循环：反复用同一 old_string 失败）", () => {
+    for (let i = 0; i < 4; i++) {
+      expect(detector.record("edit", { file_path: "/a.ts", old_string: "stale_content", new_string: `v${i}` })).toBe(false);
+    }
+    // 第 5 次同 old_string → 同 shape → 触发
+    expect(detector.record("edit", { file_path: "/a.ts", old_string: "stale_content", new_string: "v5" })).toBe(true);
+  });
+
+  test("clearState 后 grace 缓冲生效，同 shape 不会立即触发（方案 C-2）", () => {
+    // 先触发循环
     for (let i = 0; i < 5; i++) {
       const last = detector.record("grep", { pattern: `p${i}`, path: "/x" });
       if (i === 4) expect(last).toBe(true);
     }
-    detector.clearState();
-    expect(detector.record("grep", { pattern: "new_pattern", path: "/x" })).toBe(true);
+    detector.clearState(); // 记录到 grace map（初始值 = 3）
+    // 恢复后 grace 缓冲：前 2 次免费
+    expect(detector.record("grep", { pattern: "new_pattern", path: "/x" })).toBe(false); // grace 3→2
+    expect(detector.record("grep", { pattern: "new_pattern2", path: "/x" })).toBe(false); // grace 2→1
+    // grace 耗尽后，shape 进入窗口正常计数，需要再从 1 累积到 5
+    expect(detector.record("grep", { pattern: "new_pattern3", path: "/x" })).toBe(false);
   });
 
   test("reset 完全清除状态", () => {
@@ -174,7 +202,7 @@ describe("ToolShapeLoopDetector (ADR-020 §2.2 — hrn_006 grep 不同 pattern �
   test("窗口外的旧 shape 不计入(window=8)", () => {
     // 4 次 grep:/x → 4 次 read:/y(占满窗口)→ 再 grep:/x 应只剩 1 次记录
     for (let i = 0; i < 4; i++) detector.record("grep", { pattern: `g${i}`, path: "/x" });
-    for (let i = 0; i < 4; i++) detector.record("read", { path: "/y", offset: i });
+    for (let i = 0; i < 4; i++) detector.record("read", { file_path: "/y", offset: i * 100 });
     // 此时窗口里 grep:/x 已被挤出 4 个,grep:/x 计数应回到 0;新一次 grep:/x 还能再走 4 次才触发
     expect(detector.record("grep", { pattern: "g_new_1", path: "/x" })).toBe(false);
     expect(detector.record("grep", { pattern: "g_new_2", path: "/x" })).toBe(false);
@@ -283,8 +311,9 @@ describe("LoopDetector", () => {
     expect(detector.getMaxRecoveryAttempts()).toBe(2);
   });
 
-  test("LOOP_RECOVERY_PROMPT 非空", () => {
+  test("LOOP_RECOVERY_PROMPT 非空且包含正当操作出口（方案 C-3）", () => {
     expect(LOOP_RECOVERY_PROMPT.length).toBeGreaterThan(0);
     expect(LOOP_RECOVERY_PROMPT).toContain("循环");
+    expect(LOOP_RECOVERY_PROMPT).toContain("合法的分段读取");
   });
 });

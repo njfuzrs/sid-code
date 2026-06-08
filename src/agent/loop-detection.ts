@@ -29,7 +29,7 @@ export const DEFAULT_LOOP_CONFIG: LoopDetectionConfig = {
   toolCallThreshold: 3,      // 连续 3 次相同工具调用即触发（之前 5 次过于宽松，模型容易绕开）
   contentThreshold: 10,      // 相同内容块出现 10 次
   contentChunkSize: 50,      // 50 字符一块
-  maxRecoveryAttempts: 2,    // 最多恢复 2 次
+  maxRecoveryAttempts: 3,    // 最多恢复 3 次（方案 C-1: 2→3，避免正当任务被一次误判掐死）
   toolShapeThreshold: 5,     // ADR-020 §2.2: 同 shape 在窗口内出现 5 次即判循环（hrn_006 grep 不同 pattern 探测）
   toolShapeWindow: 8,        // 最近 8 次工具调用窗口
 };
@@ -44,7 +44,7 @@ export const LOOP_RECOVERY_PROMPT = `系统检测到你陷入了非生产性循�
 3. **放宽匹配**：grep 没结果时，去掉 path 限定、用更短的 pattern、或加 case_insensitive；read 失败时检查文件是否真的存在（先用 glob/ls）。
 4. **诚实兜底**：如果反复确认目标文件/函数不存在，直接告诉用户"未找到"，不要继续无效搜索。
 
-不要再用相同或仅参数顺序不同的工具调用。`;
+如果你其实在对**同一个文件的不同部分**做合法的分段读取、多点编辑或迭代验证（这是正常的开发行为），请明确说明你的当前进展，然后继续完成剩余工作。只有在反复尝试完全相同的参数却无任何进展时才需要换思路。`;
 
 /** 把工具输入规范化为稳定字符串，用于循环检测。
  *  目的：让 {"a":1,"b":2} 和 {"b":2,"a":1} 哈希一致——LLM 输出工具参数顺序经常变化，
@@ -84,10 +84,16 @@ export class ToolCallLoopDetector {
     const hash = createHash("sha256").update(inputStr).digest("hex").slice(0, 16);
     const key = `${toolName}:${hash}`;
 
-    // 恢复后再次命中之前已触发循环的 key —— 立刻判定为循环，不给二次机会
-    if (this.recoveryHistory.has(key)) {
-      log.warn("LOOP_DETECT", `恢复后再次撞到已记录的循环调用: ${toolName}，立即触发`);
-      return true;
+    // 方案 C-2: 恢复后给 grace 缓冲，而非立即零容忍
+    const grace = this.recoveryGrace.get(key);
+    if (grace !== undefined) {
+      if (grace > 1) {
+        this.recoveryGrace.set(key, grace - 1);
+        return false; // 仍在 grace 缓冲期，放过
+      }
+      // grace 耗尽，删除记录，继续正常检测
+      this.recoveryGrace.delete(key);
+      // 不 return，继续走下面的正常重复检测逻辑
     }
 
     if (key === this.lastToolCallKey) {
@@ -110,22 +116,22 @@ export class ToolCallLoopDetector {
   reset(): void {
     this.lastToolCallKey = null;
     this.repetitionCount = 0;
-    this.recoveryHistory.clear();
+    this.recoveryGrace.clear();
   }
 
   /** 清除检测状态但保留计数（恢复后继续监控）
-   *  注：把上一次循环命中的 key 记入 recoveryHistory，下次再撞同一个 key 直接判循环——
-   *  不给模型"恢复一次就重置 5 次窗口"的漏洞。 */
+   *  方案 C-2: 恢复后给 N 次 grace 缓冲，而非之前记录的 key 被零容忍立即触发。
+   *  grace 次数 = toolCallThreshold（默认 3），同 key 在 grace 缓冲内重复不会被立即杀。 */
   clearState(): void {
     if (this.lastToolCallKey) {
-      this.recoveryHistory.add(this.lastToolCallKey);
+      this.recoveryGrace.set(this.lastToolCallKey, this.config.toolCallThreshold);
     }
     this.lastToolCallKey = null;
     // 保留 repetitionCount，用于判断是否需要再次恢复
   }
 
-  /** 之前已触发循环恢复的 key 集合：恢复后再次撞同一个 key 直接判循环 */
-  private recoveryHistory: Set<string> = new Set();
+  /** 方案 C-2: 恢复后 grace 缓冲 map（key → 剩余 grace 次数），替代原来的零容忍 Set */
+  private recoveryGrace: Map<string, number> = new Map();
 }
 
 /** 工具 shape 探测循环检测器（ADR-020 §2.2 落地）
@@ -144,7 +150,6 @@ export class ToolCallLoopDetector {
 export class ToolShapeLoopDetector {
   private config: LoopDetectionConfig;
   private window: string[] = [];
-  private triggeredShapes: Set<string> = new Set();
 
   constructor(config: LoopDetectionConfig = DEFAULT_LOOP_CONFIG) {
     this.config = config;
@@ -154,19 +159,36 @@ export class ToolShapeLoopDetector {
    *  - toolName 进 key
    *  - 顶层对象的 key 集合排序后进 key（结构稳定）
    *  - "锚点字段" path / cwd / file 的 value 进 key（同一目标）
-   *  - 其他字段 value 不进 key（让 grep pattern 变化、edit content 变化等被算成同 shape） */
+   *  - "分页字段" offset / limit / start_line / end_line / line 的 value 进 key（方案 A：区分翻页与原地探测）
+   *  - edit 工具按 old_string hash 区分（方案 B：多点编辑不算循环）
+   *  - 其他字段 value 不进 key（让 grep pattern 变化等被算成同 shape） */
   private shapeKey(toolName: string, toolInput: unknown): string {
     if (!toolInput || typeof toolInput !== "object" || Array.isArray(toolInput)) {
       return `${toolName}:scalar`;
     }
     const obj = toolInput as Record<string, unknown>;
     const keys = Object.keys(obj).sort();
+
+    // 方案 B: edit 工具按 old_string 内容区分 shape —— 改不同地方各算各的
+    if (toolName === "edit" && typeof obj.old_string === "string") {
+      const editHash = createHash("sha256").update(obj.old_string).digest("hex").slice(0, 8);
+      return `${toolName}::file=${obj.file_path ?? "?"}::edit=${editHash}`;
+    }
+
     const anchorFields = ["path", "cwd", "file", "file_path", "dir", "directory"];
+    // 方案 A: 分页字段也进 key —— 不同区间是"推进"不是"探测"
+    const paginationFields = ["offset", "limit", "start_line", "end_line", "line"];
+
     const anchors = anchorFields
       .filter(f => f in obj)
       .map(f => `${f}=${typeof obj[f] === "string" ? obj[f] : JSON.stringify(obj[f])}`)
       .join("|");
-    return `${toolName}::keys=[${keys.join(",")}]::anchors=${anchors || "(none)"}`;
+    const pages = paginationFields
+      .filter(f => f in obj)
+      .map(f => `${f}=${typeof obj[f] === "string" ? obj[f] : JSON.stringify(obj[f])}`)
+      .join("|");
+
+    return `${toolName}::keys=[${keys.join(",")}]::anchors=${anchors || "(none)"}${pages ? `::pages=${pages}` : ""}`;
   }
 
   /** 记录一次工具调用，返回是否检测到 shape 循环 */
@@ -174,9 +196,15 @@ export class ToolShapeLoopDetector {
     const log = getLogger();
     const shape = this.shapeKey(toolName, toolInput);
 
-    if (this.triggeredShapes.has(shape)) {
-      log.warn("LOOP_DETECT", `恢复后再次撞到已记录的 shape 循环: ${shape}，立即触发`);
-      return true;
+    // 方案 C-2: 恢复后 grace 缓冲，而非立即零容忍
+    const graceRemaining = this.recoveryShapeGrace.get(shape);
+    if (graceRemaining !== undefined) {
+      if (graceRemaining > 1) {
+        this.recoveryShapeGrace.set(shape, graceRemaining - 1);
+        return false; // 仍在 grace 缓冲期
+      }
+      this.recoveryShapeGrace.delete(shape);
+      // 不 return，继续走正常的滑动窗口检测
     }
 
     this.window.push(shape);
@@ -198,17 +226,20 @@ export class ToolShapeLoopDetector {
 
   reset(): void {
     this.window = [];
-    this.triggeredShapes.clear();
+    this.recoveryShapeGrace.clear();
   }
 
-  /** 清除窗口但记录已触发的 shape，恢复后再次命中立即触发 */
+  /** 方案 C-2: 清除窗口但给最后触发的 shape N 次 grace 缓冲，替代原来的零容忍 */
   clearState(): void {
     if (this.window.length > 0) {
       const last = this.window[this.window.length - 1];
-      if (last) this.triggeredShapes.add(last);
+      if (last) this.recoveryShapeGrace.set(last, 3); // 3 次 grace
     }
     this.window = [];
   }
+
+  /** 方案 C-2: 恢复后 grace 缓冲 map（shape → 剩余 grace 次数），替代原来的零容忍 Set */
+  private recoveryShapeGrace: Map<string, number> = new Map();
 }
 
 /** 内容模式重复检测器 */
