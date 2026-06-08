@@ -60,6 +60,15 @@ export class ProviderRegistry {
     return this.config.model;
   }
 
+  /** 获取用于子进程 spawn 的 Provider 配置（含 API Key — 仅调用方通过管道传递） */
+  getSpawnConfig(): { providerName: string; apiKey: string; baseURL?: string } {
+    return {
+      providerName: this.config.provider,
+      apiKey: this.getApiKey(this.config.provider),
+      baseURL: this.config.baseURL || undefined,
+    };
+  }
+
   /** 获取子代理模型（按类型查映射，未配置则跟主模型） */
   getModelForSubAgent(type: string): string {
     const mapped = this.subAgentModels[type as keyof SubAgentModelMap];

@@ -5,7 +5,7 @@
  */
 
 import type { Provider } from "../llm/provider.ts";
-import type { ContentBlock, StreamEvent, Usage } from "../llm/types.ts";
+import type { ContentBlock, StreamEvent, Usage, ToolDefinition } from "../llm/types.ts";
 import type { ProviderRegistry } from "../llm/registry.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
@@ -13,6 +13,11 @@ import { getLogger } from "../debug/logger.ts";
 import type { HookSystem } from "../hook/system.ts";
 import { LoopDetector, LOOP_RECOVERY_PROMPT } from "./loop-detection.ts";
 import { filterToolsForAgent } from "./tool-filter.ts";
+import {
+  type ParentInitMessage,
+  type ChildMessage,
+  writeParentMsg,
+} from "./sub-agent-protocol.ts";
 
 /** 子代理类型 */
 export type SubAgentType = "explore" | "task" | "summarize" | "plan" | "verify";
@@ -94,6 +99,9 @@ export class SubAgent {
   /** 模型覆盖（自定义 Agent/Skill 指定模型时使用） */
   private modelOverride?: string;
 
+  /** Spawn 模式配置（子进程启动所需的 Provider 信息） */
+  private spawnConfig?: { providerName: string; apiKey: string; baseURL?: string };
+
   /** 嵌套深度计数器（不允许子代理再 spawn 子代理） */
   static depth = 0;
   static readonly MAX_DEPTH = 1;
@@ -118,6 +126,8 @@ export class SubAgent {
     const agent = new SubAgent(provider, model, toolRegistry, hookSystem);
     agent.registry = registry;
     agent.modelOverride = modelOverride;
+    // 保存 spawn 配置（用于子进程启动）
+    agent.spawnConfig = registry.getSpawnConfig();
     return agent;
   }
 
@@ -145,7 +155,18 @@ export class SubAgent {
         task.type,
       ).catch(err => log.error("HOOK", `subagent_start hook 失败: ${err.message}`));
 
-      result = await this.executeInner(task, signal);
+      // 尝试 spawn 模式（独立进程，避免 V8 OOM）
+      if (this.shouldUseSpawn()) {
+        try {
+          result = await this.executeSpawned(task, signal);
+          log.info("SUBAGENT", `[${task.type}] spawn 模式完成`);
+        } catch (err: any) {
+          log.warn("SUBAGENT", `spawn 模式失败，回退到进程内模式: ${err.message}`);
+          result = await this.executeInner(task, signal);
+        }
+      } else {
+        result = await this.executeInner(task, signal);
+      }
     } finally {
       SubAgent.depth--;
       // subagent_stop hook（非阻塞）
@@ -180,7 +201,18 @@ export class SubAgent {
         "custom",
       ).catch(err => log.error("HOOK", `subagent_start hook 失败: ${err.message}`));
 
-      result = await this.executeCustomInner(task, signal);
+      // 尝试 spawn 模式
+      if (this.shouldUseSpawn()) {
+        try {
+          result = await this.executeSpawnedCustom(task, signal);
+          log.info("SUBAGENT", `[custom] spawn 模式完成`);
+        } catch (err: any) {
+          log.warn("SUBAGENT", `spawn 模式失败，回退到进程内模式: ${err.message}`);
+          result = await this.executeCustomInner(task, signal);
+        }
+      } else {
+        result = await this.executeCustomInner(task, signal);
+      }
     } finally {
       SubAgent.depth--;
       // subagent_stop hook（非阻塞）
@@ -189,6 +221,260 @@ export class SubAgent {
       }).catch(err => log.error("HOOK", `subagent_stop hook 失败: ${err.message}`));
     }
     return result;
+  }
+
+  // ============================================================
+  // Spawn 模式（Wave 2：进程隔离）
+  // ============================================================
+
+  /** 判断是否使用 spawn 模式（可通过环境变量 SIDCODE_NO_SPAWN=1 禁用） */
+  private shouldUseSpawn(): boolean {
+    if (process.env.SIDCODE_NO_SPAWN === "1") return false;
+    if (!this.spawnConfig) return false;
+    // 需要 Bun.spawn 可用（Bun 运行时）
+    return typeof Bun !== "undefined" && typeof Bun.spawn === "function";
+  }
+
+  /** 从工具注册表获取工具定义列表（用于 spawn init 消息） */
+  private getToolDefs(task: SubAgentTask): { name: string; description: string; inputSchema: Record<string, unknown> }[] {
+    const sourceRegistry = task.tools ?? this.toolRegistry;
+    const allTools = sourceRegistry.all();
+    const filteredTools = filterToolsForAgent(allTools, {
+      isBuiltIn: true,
+      builtInType: task.type,
+    });
+    return filteredTools.map(t => ({
+      name: t.name(),
+      description: t.description(),
+      inputSchema: t.inputSchema(),
+    }));
+  }
+
+  /** 获取自定义子代理的工具定义 */
+  private getCustomToolDefs(allowedTools: string[]): { name: string; description: string; inputSchema: Record<string, unknown> }[] {
+    const filtered = this.toolRegistry.filter(allowedTools);
+    return filtered.all().map(t => ({
+      name: t.name(),
+      description: t.description(),
+      inputSchema: t.inputSchema(),
+    }));
+  }
+
+  /** Spawn 子代理（标准类型） */
+  private async executeSpawned(task: SubAgentTask, signal?: AbortSignal): Promise<SubAgentResult> {
+    const systemPrompt = SYSTEM_PROMPTS[task.type];
+    const toolDefs = this.getToolDefs(task);
+
+    const initMsg: ParentInitMessage = {
+      type: "init",
+      session_id: `subagent-${task.type}-${Date.now()}`,
+      task_type: task.type,
+      system_prompt: systemPrompt,
+      user_prompt: task.prompt,
+      allowed_tools: toolDefs.map(t => t.name),
+      tool_defs: toolDefs,
+      model: this.model,
+      max_turns: task.maxTurns ?? 10,
+      max_tokens: task.maxTokens ?? 50000,
+      timeout: task.timeout ?? 120_000,
+      workdir: process.cwd(),
+      provider_name: this.spawnConfig!.providerName,
+      api_key: this.spawnConfig!.apiKey,
+      base_url: this.spawnConfig?.baseURL,
+    };
+
+    return this.executeSpawnedInternal(initMsg, task.tools ?? this.toolRegistry, signal);
+  }
+
+  /** Spawn 自定义子代理 */
+  private async executeSpawnedCustom(task: CustomSubAgentTask, signal?: AbortSignal): Promise<SubAgentResult> {
+    const tools = task.allowedTools.length > 0
+      ? this.toolRegistry.filter(task.allowedTools)
+      : new ToolRegistry();
+    const toolDefs = this.getCustomToolDefs(task.allowedTools);
+
+    const initMsg: ParentInitMessage = {
+      type: "init",
+      session_id: `subagent-custom-${Date.now()}`,
+      task_type: "task", // 自定义代理按 task 类型
+      system_prompt: task.systemPrompt,
+      user_prompt: task.userPrompt,
+      allowed_tools: task.allowedTools,
+      tool_defs: toolDefs,
+      model: this.model,
+      max_turns: task.maxTurns ?? 10,
+      max_tokens: task.maxTokens ?? 50000,
+      timeout: task.timeout ?? 120_000,
+      workdir: process.cwd(),
+      provider_name: this.spawnConfig!.providerName,
+      api_key: this.spawnConfig!.apiKey,
+      base_url: this.spawnConfig?.baseURL,
+    };
+
+    return this.executeSpawnedInternal(initMsg, tools, signal);
+  }
+
+  /** 核心 spawn 逻辑：启动子进程、通信、超时控制 */
+  private async executeSpawnedInternal(
+    initMsg: ParentInitMessage,
+    tools: ToolRegistry,
+    signal?: AbortSignal,
+  ): Promise<SubAgentResult> {
+    const log = getLogger();
+    const startTime = Date.now();
+    const timeout = initMsg.timeout;
+
+    // 构建启动参数
+    const spawnArgs = ["run", "src/entrypoints/headless.ts"];
+    // 容器环境设堆限制
+    const maxOldSpace = process.env.SIDCODE_MAX_OLD_SPACE_SIZE;
+    if (maxOldSpace) {
+      spawnArgs.unshift(`--max-old-space-size=${maxOldSpace}`);
+    }
+
+    log.info("SUBAGENT", `spawn 子进程: bun ${spawnArgs.join(" ")}`);
+
+    // Spawn 子进程
+    const subprocess = Bun.spawn(["bun", ...spawnArgs], {
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "inherit",
+      cwd: process.cwd(),
+      env: { ...process.env },
+    });
+
+    // 发送 init 消息
+    writeParentMsg(subprocess.stdin, initMsg);
+
+    // 超时控制
+    const timeoutId = setTimeout(() => {
+      log.warn("SUBAGENT", `spawn 子进程超时 (${Math.round(timeout / 1000)}秒)，kill`);
+      if (!subprocess.killed) subprocess.kill();
+    }, timeout);
+
+    // 父进程 abort → kill 子进程
+    const onAbort = () => {
+      log.info("SUBAGENT", "父进程 abort，kill 子进程");
+      if (!subprocess.killed) subprocess.kill();
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+
+    try {
+      // 读取子进程 stdout 消息循环
+      const stdoutReader = subprocess.stdout.getReader();
+      const decoder = new TextDecoder();
+      let stdoutBuffer = "";
+      let result: SubAgentResult | null = null;
+
+      while (true) {
+        const { done, value } = await stdoutReader.read();
+        if (done) break;
+
+        stdoutBuffer += decoder.decode(value, { stream: true });
+        // 按行分割
+        const lines = stdoutBuffer.split("\n");
+        stdoutBuffer = lines.pop() || ""; // 保留不完整的最后一行
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+
+          let msg: ChildMessage;
+          try {
+            msg = JSON.parse(line);
+          } catch {
+            log.warn("SUBAGENT", `子进程 stdout 非 JSON: ${line.slice(0, 100)}`);
+            continue;
+          }
+
+          switch (msg.type) {
+            case "ready":
+              break;
+
+            case "tool_use": {
+              // 父进程执行工具并返回结果
+              const toolResult = await this.executeToolForChild(
+                msg.name,
+                msg.input,
+                tools,
+                signal,
+              );
+              writeParentMsg(subprocess.stdin, {
+                type: "tool_result",
+                tool_use_id: msg.id,
+                content: toolResult.content,
+                is_error: toolResult.is_error,
+              });
+              break;
+            }
+
+            case "progress":
+              break;
+
+            case "result":
+              result = {
+                success: msg.success,
+                output: msg.output,
+                usage: msg.usage,
+                turns: msg.turns,
+              };
+              break;
+
+            case "crash":
+              throw new Error(
+                `子代理崩溃: ${msg.error}${msg.stack ? `\n${msg.stack}` : ""}`,
+              );
+          }
+        }
+
+        if (result) break;
+      }
+
+      // 等待子进程退出
+      await subprocess.exited;
+
+      if (!result) {
+        const exitCode = subprocess.exitCode;
+        return {
+          success: false,
+          output: `子代理意外退出 (exit code: ${exitCode})`,
+          usage: { inputTokens: 0, outputTokens: 0 },
+          turns: 0,
+        };
+      }
+
+      log.info("SUBAGENT", `spawn 完成，耗时 ${((Date.now() - startTime) / 1000).toFixed(1)}秒`);
+
+      return result;
+    } finally {
+      clearTimeout(timeoutId);
+      signal?.removeEventListener("abort", onAbort);
+      // 确保子进程被终止
+      if (!subprocess.killed) {
+        subprocess.kill();
+      }
+    }
+  }
+
+  /** 为子进程执行工具（与 executeSingleTool 类似，但输入来自 ChildToolUseMessage） */
+  private async executeToolForChild(
+    name: string,
+    input: Record<string, unknown>,
+    tools: ToolRegistry,
+    signal?: AbortSignal,
+  ): Promise<{ content: string; is_error: boolean }> {
+    const tool = tools.get(name);
+
+    if (!tool) {
+      return { content: `工具 "${name}" 未找到`, is_error: true };
+    }
+
+    try {
+      const result = await tool.execute(input, signal);
+      const truncated = ContextManager.truncateToolOutput(result.output);
+      return { content: truncated, is_error: result.isError ?? false };
+    } catch (err: any) {
+      return { content: `工具执行异常: ${err.message}`, is_error: true };
+    }
   }
 
   /** 内部执行逻辑（含超时控制） */
