@@ -259,17 +259,6 @@ export async function executeTools(
     }
   }
 
-  // Plan Mode 系统提醒
-  if (deps.getPlanModeReminder && results.length > 0) {
-    const reminder = await deps.getPlanModeReminder();
-    if (reminder) {
-      const lastResult = results[results.length - 1];
-      if (lastResult.type === "tool_result" && typeof lastResult.content === "string") {
-        (lastResult as any).content = lastResult.content + "\n\n" + reminder;
-      }
-    }
-  }
-
   // JIT 上下文发现
   if (deps.discoverJitContext) {
     await deps.discoverJitContext(toolBlocks.map(t => t.block));

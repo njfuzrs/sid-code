@@ -69,7 +69,7 @@ ${planExists
 export function buildPlanModeReminder(full: boolean = true): string {
   if (!full) {
     return `<system-reminder>
-[计划模式] 只允许只读操作。完成后调用 exit_plan_mode 提交计划。
+[计划模式] 只允许只读操作。分析完成后立即写计划并调用 exit_plan_mode 提交审批，不要反复探索。
 </system-reminder>`;
   }
   return `<system-reminder>

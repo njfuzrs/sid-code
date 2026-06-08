@@ -57,6 +57,7 @@ interface MainScreenLayoutProps {
 
   // Footer
   permissionMode: string;
+  isPlanMode: boolean;
   gitBranch: string;
   debug: boolean;
   usage: Usage;
@@ -91,6 +92,7 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
   cwd,
   onSubmit,
   permissionMode,
+  isPlanMode,
   gitBranch,
   debug,
   usage,
@@ -194,6 +196,7 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
 
         <Footer
           permissionMode={permissionMode}
+          isPlanMode={isPlanMode}
           gitBranch={gitBranch}
           debug={debug}
           usage={usage}

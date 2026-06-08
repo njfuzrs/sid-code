@@ -162,9 +162,38 @@ export async function* queryLoop(
     const toolDefs = toolCount > 0 ? toolRegistry.definitions() : undefined;
     log.llmRequest(config.provider, config.model, cleanedMessages.length, toolDefs?.length ?? 0, config.maxTokens);
 
+    // ─── System Reminder 注入（对标 Claude Code 每轮注入）───
+    // 注意: getCleanedMessages 返回浅拷贝数组，消息对象仍是 ctxMgr 引用。
+    // 这里不对 cleanedMessages 做 in-place 修改，而是构建新的 messages 数组。
+    let finalMessages = cleanedMessages;
+    if (deps.getPlanModeReminder) {
+      const reminder = await deps.getPlanModeReminder();
+      if (reminder) {
+        // 找到最后一条 user message，创建修改后的副本
+        for (let i = finalMessages.length - 1; i >= 0; i--) {
+          const msg = finalMessages[i];
+          if (msg.role === "user") {
+            const textIdx = (msg.content as any[]).findIndex(
+              (c: any) => c.type === "text"
+            );
+            if (textIdx >= 0) {
+              const newContent = [...(msg.content as any[])];
+              newContent[textIdx] = {
+                ...newContent[textIdx],
+                text: reminder + "\n\n" + newContent[textIdx].text,
+              };
+              finalMessages = [...finalMessages];
+              finalMessages[i] = { ...msg, content: newContent };
+            }
+            break;
+          }
+        }
+      }
+    }
+
     const sendParams: SendParams = {
       model: config.model,
-      messages: cleanedMessages,
+      messages: finalMessages,
       system: ctxMgr.getSystemPrompt(),
       maxTokens: config.maxTokens,
       tools: toolDefs,

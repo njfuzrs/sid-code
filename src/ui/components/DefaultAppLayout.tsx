@@ -54,6 +54,7 @@ interface DefaultAppLayoutProps {
 
   // Footer
   permissionMode: string;
+  isPlanMode: boolean;
   gitBranch: string;
   debug: boolean;
   usage: Usage;
@@ -92,6 +93,7 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
   cwd,
   onSubmit,
   permissionMode,
+  isPlanMode,
   gitBranch,
   debug,
   usage,
@@ -202,6 +204,7 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
 
         <Footer
           permissionMode={permissionMode}
+          isPlanMode={isPlanMode}
           gitBranch={gitBranch}
           debug={debug}
           usage={usage}

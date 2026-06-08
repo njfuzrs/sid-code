@@ -97,6 +97,8 @@ export interface TUIState {
   costLimit: number;
   contextPercent: number;
   permissionMode: string;
+  /** 是否处于计划模式（用于 TUI 状态标签显示） */
+  isPlanMode: boolean;
   gitBranch: string;
   statusMessage: string;
   permissionRequest: PermissionRequestInfo | null;
@@ -296,11 +298,12 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     model: state.model,
     provider: state.provider,
     permissionMode: state.permissionMode,
+    isPlanMode: state.isPlanMode,
     gitBranch: state.gitBranch,
     debug: state.debug,
     cwd: state.cwd,
     commands: state.commands,
-  }), [state.model, state.provider, state.permissionMode, state.gitBranch, state.debug, state.cwd, state.commands]);
+  }), [state.model, state.provider, state.permissionMode, state.isPlanMode, state.gitBranch, state.debug, state.cwd, state.commands]);
 
   // 派生 SessionContext 值
   const sessionValue = useMemo((): SessionContextValue => ({
@@ -472,6 +475,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           cwd={state.cwd}
           onSubmit={handleSubmit}
           permissionMode={state.permissionMode}
+          isPlanMode={state.isPlanMode}
           gitBranch={state.gitBranch}
           debug={state.debug}
           usage={state.usage}
@@ -505,6 +509,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           cwd={state.cwd}
           onSubmit={handleSubmit}
           permissionMode={state.permissionMode}
+          isPlanMode={state.isPlanMode}
           gitBranch={state.gitBranch}
           debug={state.debug}
           usage={state.usage}

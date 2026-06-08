@@ -103,6 +103,7 @@ interface FooterColumn {
 
 interface FooterProps {
   permissionMode: string;
+  isPlanMode: boolean;
   gitBranch: string;
   debug: boolean;
   usage: Usage;
@@ -116,6 +117,7 @@ interface FooterProps {
 export const Footer = React.memo(function Footer(props: FooterProps) {
   const {
     permissionMode,
+    isPlanMode,
     gitBranch,
     debug,
     usage,
@@ -162,6 +164,11 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
   })();
   const permDisplay = permissionMode === "dangerously-skip-permissions" ? "skip-perms" : permissionMode;
   addCol("mode", "模式", <Text color={permColor}>{permDisplay}</Text>, permDisplay.length);
+
+  // Plan Mode 标签
+  if (isPlanMode) {
+    addCol("plan", "", <Text bold color={theme.ui.active}>[PLAN]</Text>, 6);
+  }
 
   // Git 分支
   if (gitBranch) {

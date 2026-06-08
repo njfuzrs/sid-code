@@ -14,6 +14,8 @@ export interface ConfigContextValue {
   provider: string;
   /** 权限模式 */
   permissionMode: string;
+  /** 是否处于计划模式（用于 TUI 状态标签显示） */
+  isPlanMode: boolean;
   /** Git 分支 */
   gitBranch: string;
   /** 是否调试模式 */
@@ -44,6 +46,7 @@ export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children, value 
     value.model,
     value.provider,
     value.permissionMode,
+    value.isPlanMode,
     value.gitBranch,
     value.debug,
     value.cwd,

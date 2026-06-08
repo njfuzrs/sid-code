@@ -234,6 +234,11 @@ export class App {
       autoCompact: () => this.autoCompact(),
       handleContextOverflow: (err, max) => this.handleContextOverflow(err, max),
       getAbortSignal: () => this.abortController?.signal,
+      getPlanModeReminder: async () => {
+        if (!this.planManager?.isPlanning()) return null;
+        const { buildPlanModeReminder } = await import("./plan/prompt.ts");
+        return buildPlanModeReminder(this.planManager.nextReminderIsFull());
+      },
     });
   }
 
@@ -641,7 +646,33 @@ export class App {
 
     for (const { block, idx } of toolBlocks) {
       const result = resultMap.get(idx);
-      // 跳过执行失败的工具
+
+      // 工具执行失败 + 处于 planning 状态 → 触发 Recovery Hook
+      if (result && result.type === "tool_result" && result.is_error && this.planManager.isPlanning()) {
+        const { getSharedRecoveryHook } = await import("./plan/recovery.ts");
+        const hook = getSharedRecoveryHook();
+        const ctx = {
+          toolName: block.name,
+          errorMessage: typeof result.content === "string"
+            ? result.content
+            : JSON.stringify(result.content ?? ""),
+          failedArgs: block.input,
+          currentPlanFilePath: this.planManager.getPlanFilePath() || "",
+          planStepIndex: null,
+        };
+        const triggerType = block.name === "read" || block.name === "edit"
+          ? "file_not_found"
+          : "tool_failure";
+        if (hook.shouldTrigger(triggerType, ctx)) {
+          hook.recordTrigger(triggerType, ctx.currentPlanFilePath);
+          const hint = hook.buildRecoveryHint(triggerType, ctx);
+          followup.push({ type: "text", text: hint });
+          log.info("PLAN", `Recovery Hook 触发: trigger=${triggerType} tool=${block.name}`);
+        }
+        continue;
+      }
+
+      // 跳过执行失败的工具（上面已处理 plan mode 中的失败，这里跳过非 plan mode 的失败）
       if (result && result.type === "tool_result" && result.is_error) continue;
 
       if (block.name === "enter_plan_mode" && this.planManager.isPlanning()) {
@@ -673,7 +704,7 @@ export class App {
     return followup.length > 0 ? { followup } : {};
   }
 
-  /** 激活 Plan Mode：切换权限模式 + 注入 Plan Mode 系统提示词 */
+  /** 激活 Plan Mode：切换权限模式（不重建 system prompt，对标 Claude Code） */
   private async activatePlanMode(): Promise<void> {
     const log = getLogger();
     log.info("PLAN", "激活 Plan Mode");
@@ -685,13 +716,13 @@ export class App {
     this.config.permissionMode = "plan";
 
     // 同步 TUI 状态
-    this.tuiStateUpdater?.({ permissionMode: "plan" });
+    this.tuiStateUpdater?.({ permissionMode: "plan", isPlanMode: true });
 
-    // 重建系统提示词（注入 Plan Mode 提示词）
-    await this.rebuildSystemPromptForPlanMode();
+    // ✅ 不重建 system prompt——plan mode 约束通过 system-reminder 注入
+    // 对标 Claude Code：system prompt 不变 + 工具集不变 = Prompt Caching 不中断
   }
 
-  /** 退出 Plan Mode：恢复权限模式 + 重建系统提示词 */
+  /** 退出 Plan Mode：恢复权限模式（不重建 system prompt，对标 Claude Code） */
   private async deactivatePlanMode(): Promise<void> {
     const log = getLogger();
     log.info("PLAN", "退出 Plan Mode");
@@ -702,10 +733,9 @@ export class App {
     this._originalPermissionMode = null;
 
     // 同步 TUI 状态
-    this.tuiStateUpdater?.({ permissionMode: restored });
+    this.tuiStateUpdater?.({ permissionMode: restored, isPlanMode: false });
 
-    // 重建系统提示词（移除 Plan Mode 提示词）
-    await this.rebuildSystemPrompt();
+    // ✅ 不需要重建 system prompt——plan mode 信息只在 system-reminder 中
   }
 
   /**
@@ -767,52 +797,6 @@ export class App {
         text: buildPlanApprovedMessage(planPath || ""),
       }];
     }
-  }
-
-  /** 重建系统提示词（Plan Mode 专用，注入 Plan Mode 提示词片段） */
-  private async rebuildSystemPromptForPlanMode(): Promise<void> {
-    const { buildPlanModePrompt } = await import("./plan/prompt.ts");
-    const { existsSync } = await import("fs");
-
-    const planPath = this.planManager?.getPlanFilePath() || "";
-    const planExists = planPath ? existsSync(planPath) : false;
-    const planModePrompt = buildPlanModePrompt(planPath, planExists);
-
-    // 在现有系统提示词末尾追加 Plan Mode 提示词
-    const currentPrompt = this.ctxMgr.getSystemPrompt();
-    this.ctxMgr.setSystemPrompt(currentPrompt + "\n\n" + planModePrompt);
-    clearPromptCache();
-  }
-
-  /** 重建系统提示词（恢复正常模式） */
-  private async rebuildSystemPrompt(): Promise<void> {
-    const projectRules = await loadAllCLAUDEmd(process.cwd());
-    let memorySummary: string | undefined;
-    try {
-      const { MemoryStore } = await import("./memory/store.ts");
-      const memStore = new MemoryStore(process.cwd());
-      memorySummary = await memStore.generateSummary() || undefined;
-    } catch { /* 忽略 */ }
-
-    const { buildSystemPrompt } = await import("./config/system-prompt.ts");
-    const { collectIDEContext } = await import("./ide/integration.ts");
-    const { collectDiagnosticText } = await import("./lsp/manager.ts");
-    const newPrompt = buildSystemPrompt({
-      tools: this.toolRegistry.all(),
-      projectRules: projectRules?.rawContent || undefined,
-      projectRulesPath: projectRules?.sourcePath,
-      appendPrompt: this.config.appendSystemPrompt || undefined,
-      workingDir: process.cwd(),
-      permissionMode: this.config.permissionMode,
-      gitStatus: true,
-      memorySummary,
-      diagnostics: collectDiagnosticText() || undefined,
-      preferredLanguage: this.config.language,
-      ...collectIDEContext(),
-      maxTokens: 180000,
-    });
-    this.ctxMgr.setSystemPrompt(newPrompt);
-    clearPromptCache();
   }
 
   /** 原始权限模式（Plan Mode 退出时恢复） */
@@ -1213,6 +1197,7 @@ export class App {
       costLimit: this.config.costLimit ?? 0,
       contextPercent: 0,
       permissionMode: this.config.permissionMode || "default",
+      isPlanMode: false,
       gitBranch: (() => { try { return execSync("git rev-parse --abbrev-ref HEAD 2>/dev/null", { encoding: "utf-8" }).trim(); } catch { return ""; } })(),
       statusMessage: "",
       permissionRequest: null,

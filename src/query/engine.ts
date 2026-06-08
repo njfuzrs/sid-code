@@ -57,6 +57,8 @@ export interface QueryEngineDeps {
   handleContextOverflow: (err: any, currentMaxTokens: number) => number | null;
   /** 获取 abort signal */
   getAbortSignal: () => AbortSignal | undefined;
+  /** Plan Mode 系统提醒（对标 Claude Code 每轮 system-reminder 注入） */
+  getPlanModeReminder?: () => Promise<string | null>;
 }
 
 export class QueryEngine {
@@ -160,6 +162,7 @@ export class QueryEngine {
       uuid: () => crypto.randomUUID(),
       checkFallbackOccurred: () => this.deps.fallback.checkFallbackOccurred(),
       resetFallbackFlag: () => this.deps.fallback.reset(),
+      getPlanModeReminder: this.deps.getPlanModeReminder,
     };
 
     // ─── 启动 queryLoop ───

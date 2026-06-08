@@ -138,6 +138,8 @@ export interface QueryDeps {
   checkFallbackOccurred?: () => boolean;
   /** 重置降级标志 */
   resetFallbackFlag?: () => void;
+  /** Plan Mode 系统提醒（对标 Claude Code 每轮 system-reminder 注入） */
+  getPlanModeReminder?: () => Promise<string | null>;
 }
 
 // ─── QueryEngine 配置 ───
