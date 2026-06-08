@@ -1395,6 +1395,12 @@ export class App {
 
     // TUI 版本的 agentLoop（消费 QueryEngine async generator）
     const tuiAgentLoop = async (userInput: string) => {
+      const SESSION_TIMEOUT_MS = 30 * 60 * 1000; // 单次 session 最长 30 分钟
+      const sessionTimer = setTimeout(() => {
+        log.warn("TUI", "Session 超时，触发 abort");
+        this.abortController?.abort();
+      }, SESSION_TIMEOUT_MS);
+
       this.busy = true;
       updateState({
         isLoading: true,
@@ -1499,9 +1505,21 @@ export class App {
           }
         }
       } finally {
+        // 清理 session 超时定时器
+        clearTimeout(sessionTimer);
+
         // 兜底：确保异常路径也能正确清理
         streamingFullText = "";
         this.queryEngine.setStreamTextCallback(null);
+
+        // 检查是否正在 loading（意味着是异常退出而非正常的 done 事件）
+        if (bridge.current.isLoading) {
+          const warningDisplay = [...bridge.current.displayItems,
+            { kind: "system" as const, text: "⚠️ 任务异常中断，部分操作可能未完成" }];
+          updateState({ isLoading: false, isStreaming: false,
+            displayItems: warningDisplay,
+            statusMessage: "任务异常中断" });
+        }
       }
 
       syncDisplay({

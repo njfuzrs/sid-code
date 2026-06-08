@@ -473,10 +473,9 @@ export class OpenAIProvider implements Provider {
     let reasoningBlockStarted = false;
     let reasoningContent = "";
 
-    /** 流式空闲超时（对齐 claude-code，通过 SID_ENABLE_STREAM_WATCHDOG=1 开启）
+    /** 流式空闲超时（默认启用，不再依赖环境变量开关）
      *  仅 1 级 idle timeout：N 秒内 reader 无任何 chunk → 断开
      *  按模型区分：DeepSeek 大上下文处理慢 → 180s；Claude/OpenAI 等 → 90s */
-    const watchdogEnabled = process.env.SID_ENABLE_STREAM_WATCHDOG === "1";
     const isDeepSeek = /deepseek/i.test(this._model);
     const IDLE_TIMEOUT_MS = isDeepSeek ? 180_000 : 90_000;
 
@@ -491,17 +490,25 @@ export class OpenAIProvider implements Provider {
 
     try {
       while (true) {
-        // idle timeout：仅当 SID_ENABLE_STREAM_WATCHDOG=1 时生效
-        // DeepSeek 大上下文处理慢 → 180s；Claude/OpenAI → 90s
+        // idle timeout 默认启用：reader 超时后 reject + cancel 释放底层 TCP 连接
         const readPromise = reader.read();
-        const racePromises: Promise<any>[] = [readPromise];
-        if (watchdogEnabled) {
-          racePromises.push(new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error(`SSE 流空闲超时：${IDLE_TIMEOUT_MS / 1000} 秒无 chunk chunks=${totalChunks} empty=${emptyChunks}`)), IDLE_TIMEOUT_MS)
-          ));
+        let timeoutId: ReturnType<typeof setTimeout> | null = null;
+        const timeoutPromise = new Promise<never>((_resolve, reject) => {
+          timeoutId = setTimeout(() => {
+            reject(new Error(`SSE 流空闲超时：${IDLE_TIMEOUT_MS / 1000} 秒无 chunk chunks=${totalChunks} empty=${emptyChunks}`));
+          }, IDLE_TIMEOUT_MS);
+          // 超时后 cancel reader，释放底层 TCP 连接（+100ms 确保 reject 先传播）
+          setTimeout(() => { reader.cancel().catch(() => {}); }, IDLE_TIMEOUT_MS + 100);
+        });
+
+        let result: ReadableStreamReadResult<Uint8Array>;
+        try {
+          result = await Promise.race([readPromise, timeoutPromise]);
+        } finally {
+          if (timeoutId !== null) clearTimeout(timeoutId);
         }
 
-        const { done, value } = await Promise.race(racePromises);
+        const { done, value } = result;
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
@@ -702,7 +709,8 @@ export class OpenAIProvider implements Provider {
       }
     } finally {
       clearInterval(stallLogger);
-      reader.releaseLock();
+      try { reader.cancel(); } catch {}
+      try { reader.releaseLock(); } catch {}
     }
   }
 }

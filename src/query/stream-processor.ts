@@ -11,16 +11,18 @@ import { getLogger } from "../debug/index.ts";
 
 /** 流式处理器配置 */
 export interface StreamProcessorOptions {
-  /** 心跳超时（毫秒，默认 30000） */
+  /** 心跳超时（毫秒，默认 60000） */
   heartbeatTimeoutMs?: number;
   /** 心跳检查间隔（毫秒，默认 5000） */
   heartbeatCheckIntervalMs?: number;
-  /** 获取 AbortController（用于心跳超时中断） */
+  /** 整体超时（毫秒，默认 300000 = 5 分钟） */
+  overallTimeoutMs?: number;
+  /** 获取 AbortController（用于超时时中断上游） */
   getAbortController?: () => AbortController | null;
 }
 
 /**
- * 处理流式响应，累积内容块（含心跳检测）
+ * 处理流式响应，累积内容块（含心跳检测 + 整体超时）
  */
 export async function processStream(
   stream: AsyncIterable<StreamEvent>,
@@ -46,23 +48,47 @@ export async function processStream(
   // 累积 reasoning 文本（DeepSeek reasoning_content 回传用）
   let accumulatedReasoning = "";
 
-  // 心跳检测
-  const HEARTBEAT_TIMEOUT = options?.heartbeatTimeoutMs ?? 30_000;
-  const HEARTBEAT_CHECK_INTERVAL = options?.heartbeatCheckIntervalMs ?? 5_000;
+  // 超时配置（心跳 + 整体超时共用一个定时器，每 5 秒检查一次）
+  const HEARTBEAT_TIMEOUT = options?.heartbeatTimeoutMs ?? 60_000;
+  const OVERALL_TIMEOUT = options?.overallTimeoutMs ?? 300_000;
+  const startTime = Date.now();
   let lastActivityTime = Date.now();
-  let heartbeatError: Error | null = null;
+  let timeoutError: Error | null = null;
 
-  const heartbeatTimer = setInterval(() => {
-    if (Date.now() - lastActivityTime > HEARTBEAT_TIMEOUT) {
-      heartbeatError = new Error("Stream heartbeat timeout: 30 秒无数据");
-      log.warn("STREAM", "心跳超时，30 秒未收到任何事件");
+  const checkInterval = setInterval(() => {
+    const now = Date.now();
+
+    // 整体超时检测
+    if (now - startTime > OVERALL_TIMEOUT) {
+      timeoutError = new Error(
+        `Stream overall timeout: ${OVERALL_TIMEOUT / 1000}s 总时长超限`,
+      );
+      log.warn("STREAM", `整体超时: ${OVERALL_TIMEOUT / 1000}s`);
       options?.getAbortController?.()?.abort();
+      clearInterval(checkInterval);
+      return;
     }
-  }, HEARTBEAT_CHECK_INTERVAL);
+
+    // 心跳超时检测
+    if (now - lastActivityTime > HEARTBEAT_TIMEOUT) {
+      timeoutError = new Error(
+        `Stream heartbeat timeout: ${HEARTBEAT_TIMEOUT / 1000}s 无数据`,
+      );
+      log.warn("STREAM", `心跳超时: ${HEARTBEAT_TIMEOUT / 1000}s 无数据`);
+      options?.getAbortController?.()?.abort();
+      clearInterval(checkInterval);
+    }
+  }, 5_000);
 
   try {
     for await (const event of stream) {
       lastActivityTime = Date.now();
+
+      // 关键修复：每次事件前检查超时标志，一旦超时就抛错主动退出循环
+      if (timeoutError) {
+        throw timeoutError;
+      }
+
       switch (event.type) {
         case "message_start":
           response.usage.inputTokens += event.message.usage.inputTokens;
@@ -137,11 +163,11 @@ export async function processStream(
       }
     }
   } finally {
-    clearInterval(heartbeatTimer);
+    clearInterval(checkInterval);
   }
 
-  if (heartbeatError) {
-    throw heartbeatError;
+  if (timeoutError) {
+    throw timeoutError;
   }
 
   // 流结束日志

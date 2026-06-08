@@ -38,6 +38,12 @@ import type {
 } from "./types.ts";
 import { createInitialLoopState } from "./types.ts";
 
+/** 判断是否为超时类错误（用于 timeout 重试逻辑） */
+function isTimeoutError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return /timeout|超时|timed out/i.test(err.message);
+}
+
 /** queryLoop 配置 */
 export interface QueryLoopConfig {
   config: Config;
@@ -238,6 +244,22 @@ export async function* queryLoop(
       });
     } catch (err: any) {
       perfHandle.end({ model: config.model });
+
+      // timeout 错误直接重试（不需要压缩上下文，最多 2 次）
+      if (isTimeoutError(err)) {
+        const maxTimeoutRetries = 2;
+        const timeoutRetryCount = (state as any).timeoutRetryCount ?? 0;
+
+        if (timeoutRetryCount < maxTimeoutRetries) {
+          (state as any).timeoutRetryCount = timeoutRetryCount + 1;
+          state.transition = { type: "timeout_retry" };
+          log.warn("QUERY_LOOP", `流式超时，重试 ${timeoutRetryCount + 1}/${maxTimeoutRetries}`);
+          yield { kind: "system", level: "info",
+            text: `请求超时，正在重试 (${timeoutRetryCount + 1}/${maxTimeoutRetries})...` };
+          continue;
+        }
+        log.error("QUERY_LOOP", `流式超时重试耗尽`);
+      }
 
       // 流式阶段的 prompt-too-long 错误恢复（与连接阶段逻辑一致）
       if (isPromptTooLongError(err) && !state.hasAttemptedReactiveCompact) {
@@ -672,6 +694,16 @@ async function runLLMLoopCheck(
     const recentMessages = messages.slice(-20);
     const prompt = loopDetector.buildLLMCheckPrompt(recentMessages);
 
+    // 创建 30s 超时 AbortController（避免 sendWithRetry 的流式 for-await 永久阻塞）
+    const existingSignal = loopConfig.deps.getAbortSignal();
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30_000);
+
+    // 如果已有 signal 被 abort，也 abort 新的 controller
+    if (existingSignal) {
+      existingSignal.addEventListener("abort", () => controller.abort(), { once: true });
+    }
+
     const stream = loopConfig.deps.sendWithRetry(
       {
         model: loopConfig.config.model,
@@ -679,7 +711,7 @@ async function runLLMLoopCheck(
         system: "你是一个对话模式分析器。只返回 JSON，不要其他内容。",
         maxTokens: 200,
       },
-      loopConfig.deps.getAbortSignal(),
+      controller.signal,
     );
 
     let resultText = "";
@@ -700,6 +732,8 @@ async function runLLMLoopCheck(
   } catch (err: any) {
     log.warn("QUERY_LOOP", `LLM 认知检测失败: ${err.message}`);
     return false;
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 

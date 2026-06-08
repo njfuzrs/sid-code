@@ -301,8 +301,33 @@ async function handleUploadTraces(config: Config): Promise<void> {
   }
 }
 
+/** 全局异常兜底处理器 */
+function registerGlobalErrorHandlers(): void {
+  process.on("unhandledRejection", (reason: unknown, _promise: Promise<unknown>) => {
+    const msg = reason instanceof Error ? reason.message : String(reason);
+    const stack = reason instanceof Error ? reason.stack : undefined;
+    try {
+      const { getLogger } = require("./debug/logger.ts");
+      getLogger().error("GLOBAL", `unhandledRejection: ${msg}`, { stack });
+    } catch { /* logger 可能未初始化 */ }
+    process.stderr.write(`[sid-code] unhandledRejection: ${msg}\n`);
+    if (stack) process.stderr.write(`${stack}\n`);
+  });
+
+  process.on("uncaughtException", (err: Error) => {
+    try {
+      const { getLogger } = require("./debug/logger.ts");
+      getLogger().error("GLOBAL", `uncaughtException: ${err.message}`, { stack: err.stack });
+    } catch { /* logger 可能未初始化 */ }
+    process.stderr.write(`[sid-code] uncaughtException: ${err.message}\n`);
+    if (err.stack) process.stderr.write(`${err.stack}\n`);
+    process.exit(1);
+  });
+}
+
 /** 主函数（由 bootstrap.ts 调用） */
 export async function main(): Promise<void> {
+  registerGlobalErrorHandlers();
   const startupTimer = getPerfTimer().start('startup');
 
   try {

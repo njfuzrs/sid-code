@@ -133,98 +133,112 @@ export class ModelFallback {
       return;
     }
 
-    // 阶段 2：流式消费
+    // 阶段 2：流式消费（增加整体超时保护，防止上游 hang 时永久阻塞）
+    const STREAM_TOTAL_TIMEOUT = 300_000; // 5 分钟
+    let isStreamTimedOut = false;
+    const streamTimeoutId = setTimeout(() => {
+      isStreamTimedOut = true;
+      log.warn("FALLBACK", `流式整体超时: ${STREAM_TOTAL_TIMEOUT / 1000}s`);
+    }, STREAM_TOTAL_TIMEOUT);
+
     let hasYieldedContent = false;
-    for (let attempt = 0; attempt <= STREAM_RETRY.maxRetries; attempt++) {
-      try {
-        log.debug("FALLBACK", `流式阶段尝试 ${attempt + 1}/${STREAM_RETRY.maxRetries + 1}`);
+    try {
+      for (let attempt = 0; attempt <= STREAM_RETRY.maxRetries; attempt++) {
+        try {
+          log.debug("FALLBACK", `流式阶段尝试 ${attempt + 1}/${STREAM_RETRY.maxRetries + 1}`);
 
-        for await (const event of stream) {
-          if (signal?.aborted) {
-            throw new RequestAbortedError("请求已中止");
-          }
-
-          if (event.type === "error") {
-            if (isAbortError(event.error.message)) {
-              throw toAbortError(event.error.message);
+          for await (const event of stream) {
+            if (isStreamTimedOut) {
+              throw new Error(`流式响应整体超时: ${STREAM_TOTAL_TIMEOUT / 1000}秒`);
+            }
+            if (signal?.aborted) {
+              throw new RequestAbortedError("请求已中止");
             }
 
-            const classified = classifyError(new Error(event.error.message));
+            if (event.type === "error") {
+              if (isAbortError(event.error.message)) {
+                throw toAbortError(event.error.message);
+              }
 
-            if (classified instanceof TerminalError) {
-              this.availability.markTerminal(params.model, classified.reason);
-              log.error("FALLBACK", `流式终端错误: ${classified.reason}`);
+              const classified = classifyError(new Error(event.error.message));
+
+              if (classified instanceof TerminalError) {
+                this.availability.markTerminal(params.model, classified.reason);
+                log.error("FALLBACK", `流式终端错误: ${classified.reason}`);
+                yield* this.tryFallback(params, signal);
+                return;
+              }
+
+              if (classified instanceof RetryableError && attempt < STREAM_RETRY.maxRetries) {
+                log.warn("FALLBACK", `流式错误，准备重试: ${event.error.message}`);
+                throw classified; // 触发流式重试
+              }
+
+              // 不可重试或已达最大重试次数，尝试 fallback
               yield* this.tryFallback(params, signal);
               return;
             }
 
-            if (classified instanceof RetryableError && attempt < STREAM_RETRY.maxRetries) {
-              log.warn("FALLBACK", `流式错误，准备重试: ${event.error.message}`);
-              throw classified; // 触发流式重试
+            if (event.type === "content_block_delta") {
+              hasYieldedContent = true;
             }
 
-            // 不可重试或已达最大重试次数，尝试 fallback
+            yield event;
+          }
+
+          // 验证流完整性
+          if (!hasYieldedContent) {
+            throw new StreamValidationError("响应为空", "empty_response");
+          }
+
+          // 成功完成，标记模型健康
+          this.availability.markHealthy(params.model);
+          return;
+
+        } catch (err) {
+          if (signal?.aborted || isAbortError(err)) {
+            throw toAbortError(err);
+          }
+
+          const classified = classifyError(err);
+
+          if (classified instanceof TerminalError) {
+            this.availability.markTerminal(params.model, classified.reason);
+            log.error("FALLBACK", `终端错误: ${classified.reason}`);
             yield* this.tryFallback(params, signal);
             return;
           }
 
-          if (event.type === "content_block_delta") {
-            hasYieldedContent = true;
+          if (attempt >= STREAM_RETRY.maxRetries) {
+            log.warn("FALLBACK", `流式阶段重试 ${STREAM_RETRY.maxRetries} 次后仍失败`);
+            this.availability.markRetryOnce(params.model, "流式传输失败");
+            break;
           }
 
-          yield event;
-        }
+          // 流式重试：重新发起完整请求
+          const isRateLimit = classified instanceof RetryableError && classified.reason === "rate_limit";
+          const delayMs = classified instanceof RetryableError && classified.retryAfterMs
+            ? classified.retryAfterMs
+            : this.calculateDelay(attempt, STREAM_RETRY, isRateLimit);
 
-        // 验证流完整性
-        if (!hasYieldedContent) {
-          throw new StreamValidationError("响应为空", "empty_response");
-        }
+          log.info("FALLBACK", `流式重试 ${attempt + 1}，延迟 ${delayMs}ms`);
+          this.listener?.onRetry?.(attempt + 1, classified.message, delayMs);
+          await this.sleep(delayMs, signal);
 
-        // 成功完成，标记模型健康
-        this.availability.markHealthy(params.model);
-        return;
-
-      } catch (err) {
-        if (signal?.aborted || isAbortError(err)) {
-          throw toAbortError(err);
-        }
-
-        const classified = classifyError(err);
-
-        if (classified instanceof TerminalError) {
-          this.availability.markTerminal(params.model, classified.reason);
-          log.error("FALLBACK", `终端错误: ${classified.reason}`);
-          yield* this.tryFallback(params, signal);
-          return;
-        }
-
-        if (attempt >= STREAM_RETRY.maxRetries) {
-          log.warn("FALLBACK", `流式阶段重试 ${STREAM_RETRY.maxRetries} 次后仍失败`);
-          this.availability.markRetryOnce(params.model, "流式传输失败");
-          break;
-        }
-
-        // 流式重试：重新发起完整请求
-        const isRateLimit = classified instanceof RetryableError && classified.reason === "rate_limit";
-        const delayMs = classified instanceof RetryableError && classified.retryAfterMs
-          ? classified.retryAfterMs
-          : this.calculateDelay(attempt, STREAM_RETRY, isRateLimit);
-
-        log.info("FALLBACK", `流式重试 ${attempt + 1}，延迟 ${delayMs}ms`);
-        this.listener?.onRetry?.(attempt + 1, classified.message, delayMs);
-        await this.sleep(delayMs, signal);
-
-        // 重新获取流
-        try {
-          stream = primaryProvider.sendMessageStream(params, signal);
-        } catch (reconnectErr) {
-          if (signal?.aborted || isAbortError(reconnectErr)) {
-            throw toAbortError(reconnectErr);
+          // 重新获取流
+          try {
+            stream = primaryProvider.sendMessageStream(params, signal);
+          } catch (reconnectErr) {
+            if (signal?.aborted || isAbortError(reconnectErr)) {
+              throw toAbortError(reconnectErr);
+            }
+            log.error("FALLBACK", `重连失败: ${reconnectErr}`);
+            break;
           }
-          log.error("FALLBACK", `重连失败: ${reconnectErr}`);
-          break;
         }
       }
+    } finally {
+      clearTimeout(streamTimeoutId);
     }
 
     // 阶段 3：Fallback Provider
