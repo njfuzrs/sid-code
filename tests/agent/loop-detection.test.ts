@@ -211,6 +211,44 @@ describe("ToolShapeLoopDetector (ADR-020 §2.2 — hrn_006 grep 不同 pattern �
     // 第 5 次同 shape 才触发
     expect(detector.record("grep", { pattern: "g_new_5", path: "/x" })).toBe(true);
   });
+
+  test("f2124f85 真实轨迹回归：大文件分段读 + bash 验证不应触发 shape 循环（ADR-043）", () => {
+    // 来自 session f2124f85（deepseek-v4-pro，整理 1920 行 Markdown）
+    // 修复前：第 6 次 read（offset=200）被误判为 shape 循环
+    // 修复后：方案 A（分页字段进 key）区分翻页推进，全序列不触发
+    const F = "/repo/deepseek-api.md";
+
+    // 1. read 读全文（无 offset —— shape 不含 pages 段）
+    expect(detector.record("read", { file_path: F })).toBe(false);
+
+    // 2. bash grep 定位标题行
+    expect(detector.record("bash", { command: 'grep -n "^#"', description: "定位标题行" })).toBe(false);
+
+    // 3-8. 分段读不同区间（各有不同 offset，方案 A 修复后各算各的 shape）
+    expect(detector.record("read", { file_path: F, offset: 1, limit: 200 })).toBe(false);
+    expect(detector.record("read", { file_path: F, offset: 1040, limit: 200 })).toBe(false);
+    expect(detector.record("read", { file_path: F, offset: 1240, limit: 250 })).toBe(false);
+    expect(detector.record("read", { file_path: F, offset: 1490, limit: 250 })).toBe(false);  // ← 修复前误杀点
+    expect(detector.record("read", { file_path: F, offset: 1740 })).toBe(false);
+    expect(detector.record("read", { file_path: F, offset: 200, limit: 450 })).toBe(false);
+
+    // 9. write 重写整个文件（任务核心动作）
+    expect(detector.record("write", { file_path: F, content: "重新整理后的内容..." })).toBe(false);
+
+    // 10-11. bash 验证结果（不同 command 内容）
+    expect(detector.record("bash", { command: 'grep -n "^#"', description: "验证标题" })).toBe(false);
+    expect(detector.record("bash", { command: 'grep -n "^# Turn 1"', description: "验证 Turn 1" })).toBe(false);
+
+    // 12. read 再次分段验证（offset=1008，修复前触发第二次误杀）
+    expect(detector.record("read", { file_path: F, offset: 1008, limit: 200 })).toBe(false);
+
+    // 13. grep 验证代码围栏
+    expect(detector.record("grep", { pattern: "```python", path: "/repo" })).toBe(false);
+    expect(detector.record("grep", { pattern: '\\\\`\\\\`\\\\`python', path: "/repo" })).toBe(false);
+    expect(detector.record("grep", { pattern: "```", path: "/repo" })).toBe(false);
+
+    // 全序列无触发 —— 方案 A/B/C 修复后误杀消除
+  });
 });
 
 describe("ContentLoopDetector", () => {
