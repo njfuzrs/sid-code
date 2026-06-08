@@ -71,6 +71,12 @@ export interface RawJsonlEntry {
   stop_reason: string;
   /** 是否为不完整响应 */
   is_partial: boolean;
+  /** compact_boundary 信息（压缩事件发生时设置） */
+  compact_boundary?: {
+    summary: string;
+    messageCountBefore: number;
+    timestamp: string;
+  };
 }
 
 export class TraceWriter {

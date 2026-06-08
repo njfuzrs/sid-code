@@ -19,6 +19,7 @@ import type { TokenMeter } from "../telemetry/metrics/token-meter.ts";
 import type { BudgetTracker } from "../telemetry/metrics/budget-tracker.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
+import { TOKEN_THRESHOLDS } from "../context/auto-compact.ts";
 import { ModelFallback } from "../llm/fallback.ts";
 import { SessionState } from "../session/state.ts";
 import { getLogger, getSessionMetrics, getPerfTimer } from "../debug/index.ts";
@@ -97,15 +98,38 @@ export async function* queryLoop(
     log.info("QUERY_LOOP", `轮次 ${state.turnCount}/${state.maxTurns}，消息数 ${ctxMgr.getMessages().length}，上下文 ${usagePercent.toFixed(0)}%`);
 
     // ─── 分级压缩策略 ───
+    // 优先使用新的四层阈值（context/auto-compact.ts），再回退到现有三层逻辑
+    const remainingTokens = contextMax - currentTokens;
+    const newLevel = (() => {
+      if (remainingTokens <= TOKEN_THRESHOLDS.blocking) return "blocking";
+      if (remainingTokens <= TOKEN_THRESHOLDS.autoCompact) return "autoCompact";
+      return null;
+    })();
+
     const compactionLevel = ctxMgr.getCompactionLevel(toolCount);
-    switch (compactionLevel) {
+
+    // blocking：强制截断（不调用 LLM）
+    if (newLevel === "blocking") {
+      log.warn("QUERY_LOOP", `上下文阻塞 (剩余 ${remainingTokens} tokens)，强制截断`);
+      const msgCountBefore = ctxMgr.messageCount();
+      ctxMgr.emergencyTruncate();
+      ctxMgr.addCompactBoundary(`阻塞级压缩：剩余 ${remainingTokens} tokens`, msgCountBefore);
+      ctxMgr.releaseBeforeBoundary();
+      yield { kind: "compact" };
+    } else {
+      switch (compactionLevel) {
       case "emergency":
         log.warn("QUERY_LOOP", `上下文紧急 (${usagePercent.toFixed(0)}%)，强制截断`);
-        ctxMgr.emergencyTruncate();
+        {
+          const msgCountBefore = ctxMgr.messageCount();
+          ctxMgr.emergencyTruncate();
+          ctxMgr.addCompactBoundary(`紧急压缩：使用率 ${usagePercent.toFixed(0)}%`, msgCountBefore);
+        }
         yield { kind: "compact" };
         break;
       case "hard": {
         log.warn("QUERY_LOOP", `上下文接近上限 (${usagePercent.toFixed(0)}%)，启动渐进式压缩管道`);
+        const msgCountBefore = ctxMgr.messageCount();
         const pipelineResult = runCompactPipeline(ctxMgr.getMessages(), {
           currentUsageRatio: usagePercent / 100,
           maxTokens: contextMax,
@@ -123,6 +147,8 @@ export async function* queryLoop(
           await deps.autoCompact();
         }
 
+        ctxMgr.addCompactBoundary(`渐进式压缩: ${pipelineResult.steps.join(" → ")}`, msgCountBefore);
+        ctxMgr.releaseBeforeBoundary();
         yield { kind: "compact" };
         break;
       }
@@ -131,6 +157,7 @@ export async function* queryLoop(
         break;
       case "none":
         break;
+      }
     }
 
     if (remaining <= 6) {

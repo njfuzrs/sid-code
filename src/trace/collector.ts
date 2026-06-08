@@ -72,6 +72,8 @@ export class TraceCollector {
   private uploader: TraceUploaderInterface | null;
   private readonly outputDir: string;
   private initialized = false;
+  /** 待写入下次 raw.jsonl 的 compact_boundary */
+  private pendingCompactBoundary: RawJsonlEntry["compact_boundary"] | undefined;
 
   // ── Harness 编辑统计内部计数器 ──
   private harnessEditCount = 0;
@@ -474,6 +476,13 @@ export class TraceCollector {
       timestamp: input.timestamp,
     });
 
+    // 暂存 compact_boundary 信息，在下次 AfterModel 写入 raw.jsonl
+    this.pendingCompactBoundary = {
+      summary: input.trigger ?? "auto",
+      messageCountBefore: this.pairs.length,
+      timestamp: input.timestamp,
+    };
+
     // 重置增量计数器：压缩后 messages 数组会被截断重组
     this.prevMessageCount = 0;
 
@@ -796,6 +805,9 @@ export class TraceCollector {
 
   private toRawJsonlEntry(pair: RequestResponsePair): RawJsonlEntry {
     const { raw_messages: _rm, ...requestWithoutRaw } = pair.request;
+    // 纳入待写入的 compact_boundary（如果有）
+    const compactBoundary = this.pendingCompactBoundary;
+    this.pendingCompactBoundary = undefined;
     return {
       timestamp: pair.timestamp,
       index: pair.index,
@@ -805,6 +817,7 @@ export class TraceCollector {
       usage: pair.usage,
       stop_reason: pair.stop_reason,
       is_partial: pair.is_partial,
+      ...(compactBoundary ? { compact_boundary: compactBoundary } : {}),
     };
   }
 

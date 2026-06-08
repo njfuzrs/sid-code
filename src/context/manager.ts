@@ -6,7 +6,8 @@
 import type { Message } from "../llm/types.ts";
 import { MessageValidator } from "./validator.ts";
 import { estimateTextTokens } from "./token.ts";
-import { ToolOutputMaskingService } from "./tool-output-masking.ts";
+import { ToolOutputMaskingService, TOOL_RESULT_CLEARED_MESSAGE } from "./tool-output-masking.ts";
+import { persistLargeOutput, isPersistedReference } from "./tool-result-storage.ts";
 import { getLogger, getSessionMetrics } from "../debug/index.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -14,7 +15,7 @@ import * as path from "node:path";
 /** 持久化输出阈值（对标 Claude Code 30000 字符，可通过 SID_OUTPUT_THRESHOLD 环境变量覆盖） */
 const OUTPUT_THRESHOLD = parseInt(process.env.SID_OUTPUT_THRESHOLD ?? "30000", 10);
 const KEEP_RECENT_OUTPUTS = 3;   // 保留最近 N 个大输出，旧的清理掉
-const CLEARED_MARKER = "[旧的工具输出已清理]";
+// CLEARED_MARKER 已迁移到 tool-output-masking.ts 的 TOOL_RESULT_CLEARED_MESSAGE 统一导出
 
 /** 压缩前的工具输出预算（token） */
 const COMPRESSION_TOOL_OUTPUT_BUDGET = 50_000;
@@ -86,6 +87,7 @@ export class Manager {
   private maxTokens: number;
   private compactThreshold: number;
   private tempDir?: string;
+  private sessionId?: string;
   private maskingService?: ToolOutputMaskingService;
   /** 已调用的 Skill 记录（压缩时保留其 prompt 上下文） */
   private invokedSkills: InvokedSkill[] = [];
@@ -96,8 +98,9 @@ export class Manager {
     this.tempDir = opts.tempDir;
   }
 
-  /** 设置会话 ID（用于工具输出遮罩） */
+  /** 设置会话 ID（用于工具输出遮罩和持久化） */
   setSessionId(sessionId: string): void {
+    this.sessionId = sessionId;
     this.maskingService = new ToolOutputMaskingService(sessionId);
   }
 
@@ -159,14 +162,21 @@ export class Manager {
       }
     }
 
-    // 增量压缩：tool_result 内容在添加时即截断，防止上下文膨胀
+    // 增量压缩：tool_result 内容在添加时即持久化到磁盘，防止上下文膨胀
+    const sessionId = this.sessionId ?? "default";
     const compressed: Message = {
       ...msg,
       content: msg.content.map(block => {
-        if (block.type === "tool_result" && block.content.length > OUTPUT_THRESHOLD) {
-          log.debug("CONTEXT", `增量压缩 tool_result: ${block.content.length} → 截断`);
-          const truncated = Manager.truncateToolOutput(block.content);
-          return { ...block, content: truncated };
+        if (block.type === "tool_result" && typeof block.content === "string" && block.content.length > OUTPUT_THRESHOLD) {
+          log.debug("CONTEXT", `增量持久化 tool_result: ${block.content.length} → 磁盘`);
+          const { reference } = persistLargeOutput(
+            block.content,
+            block.tool_use_id,
+            "unknown", // tool_name 在 addMessage 时不可知，后续可从工具执行处注入
+            sessionId,
+            OUTPUT_THRESHOLD,
+          );
+          return { ...block, content: reference };
         }
         return block;
       }),
@@ -235,7 +245,7 @@ export class Manager {
         if (cleanSet.has(`${msgIdx}:${blockIdx}`) && block.type === "tool_result") {
           return {
             ...block,
-            content: CLEARED_MARKER,
+            content: TOOL_RESULT_CLEARED_MESSAGE,
           };
         }
         return block;
@@ -251,6 +261,85 @@ export class Manager {
     }
 
     return result;
+  }
+
+  // ─── compact_boundary 支持 ───
+
+  /**
+   * 插入 compact_boundary 标记
+   *
+   * 在消息列表中插入一条特殊消息，标记该点之前的内容已被压缩。
+   * 使用 Message._meta 字段而非新增 ContentBlock 类型，保持向后兼容。
+   *
+   * @param summary 压缩摘要
+   * @param messageCountBefore 压缩前的消息数
+   */
+  addCompactBoundary(summary: string, messageCountBefore: number): void {
+    const boundaryMsg: Message = {
+      role: "user",
+      content: [{ type: "text", text: `[压缩边界] ${summary}` }],
+      _meta: {
+        compact_boundary: {
+          summary,
+          messageCountBefore,
+          timestamp: Date.now(),
+        },
+        compact_source: "compact",
+      },
+    };
+
+    this.messages.push(boundaryMsg);
+    const log = getLogger();
+    log.debug("CONTEXT", `插入 compact_boundary: messageCountBefore=${messageCountBefore}`);
+  }
+
+  /**
+   * 释放 compact_boundary 之前的消息内容供 GC 回收
+   *
+   * 找到最近的 compact_boundary，将其之前的所有消息的 content
+   * 替换为轻量引用，让 V8 GC 可以回收大对象。
+   * 保留消息骨架（role）和 compact_boundary 摘要。
+   */
+  releaseBeforeBoundary(): number {
+    // 从后向前找到最近的 compact_boundary
+    let boundaryIdx = -1;
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      const meta = this.messages[i]._meta;
+      if (meta?.compact_boundary) {
+        boundaryIdx = i;
+        break;
+      }
+    }
+
+    if (boundaryIdx <= 0) return 0; // 没有边界或边界在开头
+
+    let releasedCount = 0;
+    for (let i = 0; i < boundaryIdx; i++) {
+      const msg = this.messages[i];
+      // 替换内容为空引用，让 GC 回收
+      // 使用小对象替换大 content 数组
+      const hadContent = msg.content.length > 0 && msg.content.some(b => {
+        if (b.type === "tool_result" && typeof b.content === "string" && b.content.length > 100) return true;
+        if (b.type === "text" && b.text.length > 100) return true;
+        return false;
+      });
+
+      if (hadContent) {
+        this.messages[i] = {
+          role: msg.role,
+          content: [{ type: "text", text: `[已释放] ${msg.role} 消息内容已被 GC 回收，详情见 compact_boundary` }],
+          _meta: { gc_released: true },
+        };
+        releasedCount++;
+      }
+    }
+
+    if (releasedCount > 0) {
+      const log = getLogger();
+      log.info("CONTEXT", `GC 释放: compact_boundary 前 ${releasedCount} 条消息内容已替换`);
+    }
+
+    return releasedCount;
   }
 
   /** 设置消息列表（用于恢复会话） */
@@ -655,7 +744,7 @@ export class Manager {
           // 超出预算，截断这个工具输出
           msg.content[j] = {
             ...block,
-            content: "[旧的工具输出已清理，超出函数响应预算]",
+            content: `${TOOL_RESULT_CLEARED_MESSAGE}，超出函数响应预算`,
           };
           cleanedCount++;
         }

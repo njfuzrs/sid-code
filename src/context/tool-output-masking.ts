@@ -7,6 +7,7 @@ import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { estimateTextTokens } from "./token.ts";
+import { isPersistedReference } from "./tool-result-storage.ts";
 import type { Message } from "../llm/types.ts";
 
 /** 保护窗口：最近 50K token 的工具输出不遮罩 */
@@ -17,6 +18,9 @@ const MIN_PRUNABLE_THRESHOLD = 30_000;
 const MASKING_TAG = "[tool_output_masked]";
 /** 不遮罩的工具列表（记忆、用户交互等关键工具） */
 const EXEMPT_TOOLS = new Set(["memory", "ask_user"]);
+
+/** 已清理的工具输出的占位文本（统一常量，避免硬编码分散） */
+export const TOOL_RESULT_CLEARED_MESSAGE = "[旧的工具输出已清理]";
 
 interface MaskCandidate {
   msgIdx: number;
@@ -48,6 +52,11 @@ export class ToolOutputMaskingService {
       for (let j = msg.content.length - 1; j >= 0; j--) {
         const block = msg.content[j];
         if (block.type !== "tool_result") continue;
+
+        // 已是持久化引用（约 200 字节），跳过遮罩（无需再压缩）
+        if (typeof block.content === "string" && isPersistedReference(block.content)) {
+          continue;
+        }
 
         const tokens = estimateTextTokens(block.content);
 

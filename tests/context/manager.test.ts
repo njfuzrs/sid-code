@@ -247,9 +247,10 @@ describe("增量压缩", () => {
     const toolResult = msgs[2].content[0];
     expect(toolResult.type).toBe("tool_result");
     if (toolResult.type === "tool_result") {
-      // 应该被截断了
+      // 应该被持久化到磁盘，content 变为 ~200 字节的轻量引用
       expect(toolResult.content.length).toBeLessThan(bigContent.length);
-      expect(toolResult.content).toContain("省略约");
+      expect(toolResult.content).toContain("[持久化输出]");
+      expect(toolResult.content).toContain("tool_use_id=c1");
     }
   });
 
