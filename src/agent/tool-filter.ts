@@ -16,6 +16,7 @@ const ALL_AGENT_DISALLOWED_TOOLS = new Set([
   "enter_plan_mode",   // 计划模式是主代理的状态
   "exit_plan_mode",    // 同上
   "save_memory",       // 记忆管理是主代理的职责
+  "sub_agent",         // 防嵌套：子代理不允许再 spawn 子代理
   "task_output",       // 子代理不应读取其他任务输出
   "task_stop",         // 子代理不应终止其他任务
 ]);

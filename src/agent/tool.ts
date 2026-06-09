@@ -12,9 +12,7 @@ import type { SubAgentType } from "./sub-agent.ts";
 import { getLogger } from "../debug/logger.ts";
 import {
   createAgentTask,
-  completeAgentTask,
   failAgentTask,
-  appendAgentOutput,
   updateAgentProgress,
 } from "../task/index.ts";
 import { ProgressTracker } from "./progress.ts";
@@ -90,7 +88,13 @@ export class SubAgentTool implements Tool {
       prompt: string;
       run_in_background?: boolean;
       isolation?: "worktree";
+      _agentId?: string;
     };
+
+    // 防嵌套：子代理上下文不允许再 spawn 子代理（参考 enter_plan_mode 的 _agentId 模式）
+    if (params._agentId) {
+      return { output: "子代理不允许嵌套调用子代理。如需并行执行多个任务，请在主代理层面直接使用多个 sub_agent 调用。", isError: true };
+    }
 
     if (!params.type || !params.description || !params.prompt) {
       return { output: "错误: 缺少必需参数 (type, description, prompt)", isError: true };
@@ -210,7 +214,7 @@ export class SubAgentTool implements Tool {
 
     // 后台启动子代理（不 await）
     const taskId = taskState.id;
-    void this.executeInBackground(taskId, params, abortController.signal);
+    void this.executeInBackground(taskId, params, abortController);
 
     log.info("SUBAGENT", `后台子代理已启动: ${taskId} (${params.type})`);
 
@@ -228,7 +232,7 @@ export class SubAgentTool implements Tool {
   private async executeInBackground(
     taskId: string,
     params: { type: SubAgentType; description: string; prompt: string },
-    signal: AbortSignal,
+    abortController: AbortController,
   ): Promise<void> {
     const log = getLogger();
     const tracker = new ProgressTracker();
@@ -236,21 +240,24 @@ export class SubAgentTool implements Tool {
     try {
       const subAgent = SubAgent.fromRegistry(this.providerRegistry, this.toolRegistry, this.hookSystem);
 
-      const result = await subAgent.execute(
+      // 传递预创建的 task 信息，execute() 内部不再重复创建
+      await subAgent.execute(
         {
           type: params.type,
           description: params.description,
           prompt: params.prompt,
+          _taskId: taskId,
+          _abortController: abortController,
         },
-        signal,
+        abortController.signal,
       );
 
-      appendAgentOutput(taskId, result.output);
+      // execute() 内部已调用 completeAgentTask/failAgentTask，这里只更新进度
       updateAgentProgress(taskId, tracker.getProgress());
-      await completeAgentTask(taskId, result.output);
     } catch (err: any) {
       log.error("SUBAGENT", `后台子代理失败: ${taskId}`, { error: err.message });
-      await failAgentTask(taskId, err.message);
+      // execute() 内部 try/catch 已调用 failAgentTask，这里兜底
+      await failAgentTask(taskId, err.message).catch(() => {});
     }
   }
 }

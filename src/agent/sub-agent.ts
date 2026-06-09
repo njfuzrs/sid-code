@@ -14,6 +14,11 @@ import type { HookSystem } from "../hook/system.ts";
 import { LoopDetector, LOOP_RECOVERY_PROMPT } from "./loop-detection.ts";
 import { filterToolsForAgent } from "./tool-filter.ts";
 import {
+  createAgentTask,
+  completeAgentTask,
+  failAgentTask,
+} from "../task/index.ts";
+import {
   type ParentInitMessage,
   type ChildMessage,
   writeParentMsg,
@@ -35,6 +40,10 @@ export interface SubAgentTask {
   maxTokens?: number;
   /** 超时时间（毫秒，默认 120000） */
   timeout?: number;
+  /** 外部预创建的 task ID（后台执行时由 runAsync 预先创建，内部使用） */
+  _taskId?: string;
+  /** 外部预创建的 AbortController（后台执行时使用） */
+  _abortController?: AbortController;
 }
 
 /** 子代理执行结果 */
@@ -51,32 +60,35 @@ const SYSTEM_PROMPTS: Record<SubAgentType, string> = {
 规则：
 - 使用 grep、glob、read 工具搜索代码
 - 只返回文件路径、行号和关键代码片段
-- 保持输出简洁，不要冗长解释`,
+- 保持输出简洁，不要冗长解释
+- 完成搜索后，以 "## 发现" 开头输出最终报告，包含：关键文件列表、核心发现、建议的下一步行动`,
 
   task: `你是一个任务执行代理。你的任务是完成指定的子任务并返回结果。
 规则：
 - 专注于完成指定任务
-- 完成后简洁地报告结果
-- 如果遇到问题，说明原因`,
+- 完成后以 "## 结果" 开头简洁地报告完成状态和关键输出
+- 如果遇到问题，以 "## 问题" 开头说明原因和可能的解决方案`,
 
   summarize: `你是一个摘要代理。你的任务是总结对话内容。
 规则：
 - 保留关键信息：文件路径、代码修改、决策、待办事项
 - 使用中文
-- 保持简洁`,
+- 保持简洁
+- 完成后以 "## 摘要" 开头输出结构化摘要`,
 
   plan: `你是一个代码分析和规划代理。分析代码库并输出结构化的实现方案。
 规则：
 - 使用 grep、glob、read 工具搜索和阅读代码
-- 输出包含：问题分析、方案设计、涉及文件、实现步骤
-- 不要修改任何文件，保持输出简洁可操作`,
+- 不要修改任何文件
+- 完成后以 "## 方案" 开头输出：问题分析、方案设计、涉及文件、实现步骤`,
 
   verify: `你是一个对抗式验证代理。你的任务是验证给定的结论/修复/发现是否真实成立。
 规则：
 - 默认持怀疑态度，主动寻找反例和漏洞
 - 用 read/grep/bash 等只读手段核实，不要修改文件
 - 不确定时倾向于判定"未通过验证"
-- 输出明确结论：通过 / 未通过 + 关键证据`,
+- 完成后以 "## 结论" 开头输出：通过 / 未通过 + 关键证据`,
+
 };
 
 /** 自定义子代理任务（Skills/Agents 用） */
@@ -101,10 +113,6 @@ export class SubAgent {
 
   /** Spawn 模式配置（子进程启动所需的 Provider 信息） */
   private spawnConfig?: { providerName: string; apiKey: string; baseURL?: string };
-
-  /** 嵌套深度计数器（不允许子代理再 spawn 子代理） */
-  static depth = 0;
-  static readonly MAX_DEPTH = 1;
 
   constructor(provider: Provider, model: string, toolRegistry: ToolRegistry, hookSystem?: HookSystem) {
     this.provider = provider;
@@ -135,18 +143,22 @@ export class SubAgent {
   async execute(task: SubAgentTask, signal?: AbortSignal): Promise<SubAgentResult> {
     const log = getLogger();
 
-    // 嵌套防护
-    if (SubAgent.depth >= SubAgent.MAX_DEPTH) {
-      log.warn("SUBAGENT", `嵌套深度超限 (${SubAgent.depth}/${SubAgent.MAX_DEPTH})，拒绝执行`);
-      return {
-        success: false,
-        output: "子代理不允许嵌套调用",
-        usage: { inputTokens: 0, outputTokens: 0 },
-        turns: 0,
-      };
+    // 创建或获取 task 状态（后台执行时由 runAsync 预先创建）
+    let taskId: string;
+    let abortController: AbortController;
+    if (task._taskId && task._abortController) {
+      taskId = task._taskId;
+      abortController = task._abortController;
+    } else {
+      const created = createAgentTask({
+        agentType: task.type,
+        prompt: task.prompt,
+        description: task.description,
+      });
+      taskId = created.taskState.id;
+      abortController = created.abortController;
     }
 
-    SubAgent.depth++;
     let result: SubAgentResult;
     try {
       // SubagentStart hook
@@ -167,8 +179,24 @@ export class SubAgent {
       } else {
         result = await this.executeInner(task, signal);
       }
+
+      // 成功：标记任务完成并发送通知
+      if (result.success) {
+        await completeAgentTask(taskId, result.output);
+      } else {
+        await failAgentTask(taskId, result.output);
+      }
+    } catch (err: any) {
+      // 顶层异常兜底
+      log.error("SUBAGENT", `[${task.type}] 顶层异常`, { error: err.message });
+      await failAgentTask(taskId, err.message).catch(() => {});
+      result = {
+        success: false,
+        output: `子代理执行异常: ${err.message}`,
+        usage: { inputTokens: 0, outputTokens: 0 },
+        turns: 0,
+      };
     } finally {
-      SubAgent.depth--;
       // subagent_stop hook（非阻塞）
       this.hookSystem?.fireSubagentStopEvent({
         toolName: `subagent:${task.type}`,
@@ -181,18 +209,6 @@ export class SubAgent {
   async executeCustom(task: CustomSubAgentTask, signal?: AbortSignal): Promise<SubAgentResult> {
     const log = getLogger();
 
-    // 嵌套防护
-    if (SubAgent.depth >= SubAgent.MAX_DEPTH) {
-      log.warn("SUBAGENT", `嵌套深度超限，拒绝执行自定义子代理`);
-      return {
-        success: false,
-        output: "子代理不允许嵌套调用",
-        usage: { inputTokens: 0, outputTokens: 0 },
-        turns: 0,
-      };
-    }
-
-    SubAgent.depth++;
     let result: SubAgentResult;
     try {
       // SubagentStart hook
@@ -214,7 +230,6 @@ export class SubAgent {
         result = await this.executeCustomInner(task, signal);
       }
     } finally {
-      SubAgent.depth--;
       // subagent_stop hook（非阻塞）
       this.hookSystem?.fireSubagentStopEvent({
         toolName: "subagent:custom",
@@ -552,6 +567,17 @@ export class SubAgent {
         // 处理流式响应
         const response = await this.processStream(stream);
 
+        // LLM API 错误处理：不再穿透，转为失败结果
+        if (response.stopReason === "error") {
+          log.error("SUBAGENT", `[${task.type}] LLM 错误: ${response.errorMessage}`);
+          return {
+            success: false,
+            output: response.errorMessage || "子代理 LLM 错误",
+            usage: totalUsage,
+            turns,
+          };
+        }
+
         totalUsage.inputTokens += response.usage.inputTokens;
         totalUsage.outputTokens += response.usage.outputTokens;
 
@@ -624,12 +650,15 @@ export class SubAgent {
         break;
       }
 
-      log.info("SUBAGENT", `[${task.type}] 结果: ${lastTextOutput.slice(0, 200)}`);
+      // 提取最终结果：从所有 assistant 消息中回溯查找最后一条有文本内容的
+      // 参考 claude-code finalizeAgentTool 回退逻辑：优先最后一条有 text 的 assistant
+      const finalOutput = this.extractFinalText(ctxMgr.getMessages(), lastTextOutput);
+      log.info("SUBAGENT", `[${task.type}] 结果: ${finalOutput.slice(0, 200)}`);
       log.info("SUBAGENT", `[${task.type}] 完成，共 ${turns} 轮，耗时 ${((Date.now() - startTime) / 1000).toFixed(1)}秒`);
 
       return {
         success: true,
-        output: lastTextOutput,
+        output: finalOutput,
         usage: totalUsage,
         turns,
       };
@@ -644,7 +673,14 @@ export class SubAgent {
           turns: 0,
         };
       }
-      throw err;
+      // 其他异常也不穿透，转为失败结果
+      log.error("SUBAGENT", `[${task.type}] 执行异常`, { error: err.message });
+      return {
+        success: false,
+        output: `子代理执行异常: ${err.message}`,
+        usage: { inputTokens: 0, outputTokens: 0 },
+        turns: 0,
+      };
     } finally {
       clearTimeout(timer);
     }
@@ -714,6 +750,17 @@ export class SubAgent {
 
         const response = await this.processStream(stream);
 
+        // LLM API 错误处理：不再穿透，转为失败结果
+        if (response.stopReason === "error") {
+          log.error("SUBAGENT", `[custom] LLM 错误: ${response.errorMessage}`);
+          return {
+            success: false,
+            output: response.errorMessage || "子代理 LLM 错误",
+            usage: totalUsage,
+            turns,
+          };
+        }
+
         totalUsage.inputTokens += response.usage.inputTokens;
         totalUsage.outputTokens += response.usage.outputTokens;
 
@@ -782,11 +829,13 @@ export class SubAgent {
         break;
       }
 
+      // 提取最终结果：从所有 assistant 消息中回溯查找最后一条有文本内容的
+      const finalOutput = this.extractFinalText(ctxMgr.getMessages(), lastTextOutput);
       log.info("SUBAGENT", `[custom] 完成，共 ${turns} 轮，耗时 ${((Date.now() - startTime) / 1000).toFixed(1)}秒`);
 
       return {
         success: true,
-        output: lastTextOutput,
+        output: finalOutput,
         usage: totalUsage,
         turns,
       };
@@ -800,7 +849,14 @@ export class SubAgent {
           turns: 0,
         };
       }
-      throw err;
+      // 其他异常也不穿透，转为失败结果
+      log.error("SUBAGENT", `[custom] 执行异常`, { error: err.message });
+      return {
+        success: false,
+        output: `子代理执行异常: ${err.message}`,
+        usage: { inputTokens: 0, outputTokens: 0 },
+        turns: 0,
+      };
     } finally {
       clearTimeout(timer);
     }
@@ -809,6 +865,7 @@ export class SubAgent {
     content: ContentBlock[];
     stopReason: string | null;
     usage: Usage;
+    errorMessage?: string;
   }> {
     const content: ContentBlock[] = [];
     let stopReason: string | null = null;
@@ -872,7 +929,12 @@ export class SubAgent {
           break;
 
         case "error":
-          throw new Error(`子代理 LLM 错误: ${event.error.message}`);
+          return {
+            content,
+            stopReason: "error",
+            usage,
+            errorMessage: `子代理 LLM 错误: ${event.error.message}`,
+          };
       }
     }
 
@@ -995,5 +1057,25 @@ export class SubAgent {
         is_error: true,
       };
     }
+  }
+
+  /** 从所有 assistant 消息中回溯提取最终文本输出
+   *  参考 claude-code finalizeAgentTool 回退逻辑：
+   *  优先取最后一条有 text content 的 assistant 消息，
+   *  如果最后一条 assistant 是纯 tool_use block（无文本），向前查找最近的有文本的，
+   *  只有在完全没有文本时才回退到 lastTextOutput */
+  private extractFinalText(messages: Array<{ role: string; content: ContentBlock[] }>, fallback: string): string {
+    // 倒序遍历所有消息
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg?.role !== "assistant") continue;
+      const texts = (msg.content as ContentBlock[])
+        .filter(b => b.type === "text")
+        .map(b => b.type === "text" ? b.text : "")
+        .join("\n")
+        .trim();
+      if (texts) return texts;
+    }
+    return fallback;
   }
 }

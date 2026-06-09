@@ -200,38 +200,40 @@ describe("SubAgent 工具白名单", () => {
 });
 
 // ─── 嵌套防护 ───
+// 注意：原 static depth 计数器已移除（替代方案为消息标记检测，待实现）。
+// 以下测试验证当前行为：不再有全局深度计数，并发执行不受限。
 
-describe("SubAgent 嵌套防护", () => {
-  test("深度超限时拒绝执行", async () => {
+describe("SubAgent 嵌套防护（已移除 static depth）", () => {
+  test("不再因静态深度拒绝并发执行", async () => {
     const provider = new MockProvider();
     const toolRegistry = new Registry();
     const agent = new SubAgent(provider, "test-model", toolRegistry);
 
-    SubAgent.depth = 1; // 模拟已在子代理内
-
+    // 即使有"兄弟"子代理在运行（模拟并发场景），也不应被拒绝
     const result = await agent.execute({
       type: "explore",
-      description: "嵌套测试",
+      description: "并发测试",
       prompt: "测试",
     });
 
-    expect(result.success).toBe(false);
-    expect(result.output).toContain("不允许嵌套");
-    expect(result.turns).toBe(0);
+    // 正常执行成功（不再有全局深度阻断）
+    expect(result.success).toBe(true);
+    expect(result.turns).toBeGreaterThan(0);
   });
 
-  test("正常调用后深度计数器归零", async () => {
+  test("execute() 完成后资源正确清理", async () => {
     const provider = new MockProvider();
     const toolRegistry = new Registry();
     const agent = new SubAgent(provider, "test-model", toolRegistry);
 
-    expect(SubAgent.depth).toBe(0);
-    await agent.execute({ type: "explore", description: "测试", prompt: "测试" });
-    expect(SubAgent.depth).toBe(0);
+    const result = await agent.execute({ type: "explore", description: "测试", prompt: "测试" });
+    expect(result.success).toBe(true);
+    // 子代理执行完成后应能正常再次执行（无状态泄漏）
+    const result2 = await agent.execute({ type: "explore", description: "测试2", prompt: "测试2" });
+    expect(result2.success).toBe(true);
   });
 
-  test("异常时深度计数器也能归零", async () => {
-    // Provider 抛异常
+  test("provider 异常时 execute() 正确兜底", async () => {
     class ErrorProvider implements Provider {
       name() { return "error"; }
       defaultModel() { return "error-model"; }
@@ -241,15 +243,11 @@ describe("SubAgent 嵌套防护", () => {
     }
 
     const agent = new SubAgent(new ErrorProvider(), "test-model", new Registry());
-    expect(SubAgent.depth).toBe(0);
+    const result = await agent.execute({ type: "explore", description: "异常测试", prompt: "测试" });
 
-    try {
-      await agent.execute({ type: "explore", description: "异常测试", prompt: "测试" });
-    } catch {
-      // 预期抛异常
-    }
-
-    expect(SubAgent.depth).toBe(0);
+    // execute() 内部 try/catch 兜底：success=false、输出含异常信息
+    expect(result.success).toBe(false);
+    expect(result.output).toContain("子代理执行异常");
   });
 });
 

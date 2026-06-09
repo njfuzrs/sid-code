@@ -89,12 +89,55 @@ export class ModelFallback {
       return;
     }
 
+    // ═══════════════════════════════════════════════════════════════
+    // 流超时保护：在连接阶段之前创建 AbortController，将超时信号
+    // 注入到 sendMessageStream 的 HTTP 请求中。这样超时发生时
+    // abort() 会直接关闭 TCP 连接，触发 for-await 抛出 AbortError，
+    // 从而进入流式重试 → fallback 的正常链路。
+    //
+    // 关键：不能只在循环体内检查超时 flag，因为 for-await 卡在
+    // 等待第一个 event 时，循环体内的代码永远执行不到。
+    // ═══════════════════════════════════════════════════════════════
+    const STREAM_TOTAL_TIMEOUT = 300_000; // 5 分钟
+    let streamTimeoutCtl = new AbortController();
+    let streamTimeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    const startStreamTimeout = () => {
+      streamTimeoutId = setTimeout(() => {
+        log.warn("FALLBACK", `流式整体超时: ${STREAM_TOTAL_TIMEOUT / 1000}s，主动中断连接`);
+        streamTimeoutCtl.abort();
+      }, STREAM_TOTAL_TIMEOUT);
+      // 防止 Node.js/Bun 进程被定时器阻止退出
+      if (streamTimeoutId && typeof streamTimeoutId === "object" && "unref" in streamTimeoutId) {
+        (streamTimeoutId as any).unref();
+      }
+    };
+
+    const resetStreamTimeout = () => {
+      if (streamTimeoutId !== null) {
+        clearTimeout(streamTimeoutId);
+        streamTimeoutId = null;
+      }
+      streamTimeoutCtl = new AbortController();
+      startStreamTimeout();
+    };
+
+    /** 合并外部 signal 和流超时 signal */
+    const makeCombinedSignal = (): AbortSignal => {
+      if (signal && !signal.aborted) {
+        return AbortSignal.any([signal, streamTimeoutCtl.signal]);
+      }
+      return streamTimeoutCtl.signal;
+    };
+
+    startStreamTimeout();
+
     // 阶段 1：连接（获取流对象）
     let stream: AsyncIterable<StreamEvent> | null = null;
     for (let attempt = 0; attempt <= CONNECTION_RETRY.maxRetries; attempt++) {
       try {
         log.debug("FALLBACK", `连接阶段尝试 ${attempt + 1}/${CONNECTION_RETRY.maxRetries + 1}`);
-        stream = primaryProvider.sendMessageStream(params, signal);
+        stream = primaryProvider.sendMessageStream(params, makeCombinedSignal());
         break; // 连接成功
       } catch (err) {
         if (signal?.aborted || isAbortError(err)) {
@@ -133,14 +176,9 @@ export class ModelFallback {
       return;
     }
 
-    // 阶段 2：流式消费（增加整体超时保护，防止上游 hang 时永久阻塞）
-    const STREAM_TOTAL_TIMEOUT = 300_000; // 5 分钟
-    let isStreamTimedOut = false;
-    const streamTimeoutId = setTimeout(() => {
-      isStreamTimedOut = true;
-      log.warn("FALLBACK", `流式整体超时: ${STREAM_TOTAL_TIMEOUT / 1000}s`);
-    }, STREAM_TOTAL_TIMEOUT);
-
+    // 阶段 2：流式消费
+    // 超时保护已通过 makeCombinedSignal() 注入 HTTP 层，不需要
+    // 在循环体内额外检查。
     let hasYieldedContent = false;
     try {
       for (let attempt = 0; attempt <= STREAM_RETRY.maxRetries; attempt++) {
@@ -148,9 +186,6 @@ export class ModelFallback {
           log.debug("FALLBACK", `流式阶段尝试 ${attempt + 1}/${STREAM_RETRY.maxRetries + 1}`);
 
           for await (const event of stream) {
-            if (isStreamTimedOut) {
-              throw new Error(`流式响应整体超时: ${STREAM_TOTAL_TIMEOUT / 1000}秒`);
-            }
             if (signal?.aborted) {
               throw new RequestAbortedError("请求已中止");
             }
@@ -225,9 +260,12 @@ export class ModelFallback {
           this.listener?.onRetry?.(attempt + 1, classified.message, delayMs);
           await this.sleep(delayMs, signal);
 
-          // 重新获取流
+          // 重置超时计时器（重试应从此刻重新计时 5 分钟）
+          resetStreamTimeout();
+
+          // 重新获取流（使用包含新超时 signal 的 combined signal）
           try {
-            stream = primaryProvider.sendMessageStream(params, signal);
+            stream = primaryProvider.sendMessageStream(params, makeCombinedSignal());
           } catch (reconnectErr) {
             if (signal?.aborted || isAbortError(reconnectErr)) {
               throw toAbortError(reconnectErr);
@@ -238,7 +276,10 @@ export class ModelFallback {
         }
       }
     } finally {
-      clearTimeout(streamTimeoutId);
+      if (streamTimeoutId !== null) {
+        clearTimeout(streamTimeoutId);
+        streamTimeoutId = null;
+      }
     }
 
     // 阶段 3：Fallback Provider

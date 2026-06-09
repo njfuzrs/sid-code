@@ -338,6 +338,17 @@ export interface LLMLoopCheckResult {
   reason: string;
 }
 
+/** 豁免工具集合：这些工具的连续调用是合法的并发/分派行为，不应被判定为循环
+ *  - sub_agent: 每次 description/prompt 不同，hash 必然不同，但 shape detector 可能误判
+ *  - task_output/task_stop/send_message: 任务管理工具，操作不同 task
+ *  - todo_write: 状态更新工具，内容自然变化
+ *  - enter_plan_mode/exit_plan_mode: 模式切换工具 */
+const EXEMPT_TOOLS = new Set([
+  "sub_agent", "task_output", "task_stop",
+  "send_message", "todo_write", "enter_plan_mode",
+  "exit_plan_mode",
+]);
+
 /** 循环检测器（组合工具调用和内容检测） */
 export class LoopDetector {
   private config: LoopDetectionConfig;
@@ -365,6 +376,8 @@ export class LoopDetector {
   /** 记录工具调用，返回是否检测到循环（任一检测器命中即触发） */
   recordToolCall(toolName: string, toolInput: unknown): boolean {
     if (this._disabled) return false;
+    // 豁免工具：合法并发/分派行为不应被判定为循环
+    if (EXEMPT_TOOLS.has(toolName)) return false;
     const exact = this.toolCallDetector.record(toolName, toolInput);
     const shape = this.toolShapeDetector.record(toolName, toolInput);
     return exact || shape;
