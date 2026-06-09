@@ -77,6 +77,11 @@ export async function generateTaskStatusAttachment(): Promise<string | null> {
       }
       lines.push(`    </progress>`);
 
+      // 进度摘要（M5 opt-in）
+      if (task.progressSummary) {
+        lines.push(`    <progress-summary>${task.progressSummary}</progress-summary>`);
+      }
+
       // 增量输出：获取最近输出片段（最多 500 字符）
       try {
         const tail = await getTaskOutputTail(task.id, 500);

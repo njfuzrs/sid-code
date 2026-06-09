@@ -4,7 +4,8 @@
  */
 
 import { EventEmitter } from "events";
-import type { TUIState } from "./App.tsx";
+import type { TUIState, TaskDisplayInfo } from "./App.tsx";
+import { getAllTasks, isAgentTask, isShellTask } from "../task/index.ts";
 
 export class StateBridge extends EventEmitter {
   current: TUIState;
@@ -18,6 +19,37 @@ export class StateBridge extends EventEmitter {
   update(patch: Partial<TUIState>): void {
     this.current = { ...this.current, ...patch };
     this.emit("change", this.current);
+  }
+
+  /** 从 Task 注册表拉取最新任务列表并更新 TUI 状态 */
+  updateTasks(): void {
+    const all = getAllTasks();
+    const taskInfos: TaskDisplayInfo[] = all.map(t => {
+      const info: TaskDisplayInfo = {
+        id: t.id,
+        type: t.type,
+        status: t.status,
+        description: t.description,
+        durationMs: (t.endTime ?? Date.now()) - t.startTime,
+      };
+      if (isAgentTask(t)) {
+        info.agentType = t.agentType;
+        if (t.progress) {
+          info.progress = {
+            toolUseCount: t.progress.toolUseCount,
+            tokenCount: t.progress.tokenCount,
+          };
+        }
+        if (t.progressSummary) {
+          info.progressSummary = t.progressSummary;
+        }
+      }
+      if (isShellTask(t)) {
+        info.command = t.command;
+      }
+      return info;
+    });
+    this.update({ tasks: taskInfos });
   }
 }
 
@@ -40,5 +72,6 @@ export function getConversationClearedPatch(): Partial<TUIState> {
     shellConfirmRequest: null,
     activeDialog: null,
     todos: [],
+    tasks: [],
   };
 }

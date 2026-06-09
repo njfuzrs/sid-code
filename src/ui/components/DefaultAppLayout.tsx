@@ -25,7 +25,7 @@ import { ModelDialog } from "./ModelDialog.tsx";
 import { ThemeDialog } from "./ThemeDialog.tsx";
 import { useConfirmingTool } from "../hooks/useConfirmingTool.ts";
 import type { HistoryItem } from "../types.ts";
-import type { PermissionRequestInfo, ShellConfirmRequestInfo, PlanApprovalRequestInfo } from "../App.tsx";
+import type { PermissionRequestInfo, ShellConfirmRequestInfo, PlanApprovalRequestInfo, TaskDisplayInfo } from "../App.tsx";
 import type { DialogType } from "../../command/types.ts";
 import type { Usage } from "../../llm/types.ts";
 import type { TodoItem } from "../../tool/todo-write.ts";
@@ -76,6 +76,8 @@ interface DefaultAppLayoutProps {
   onThemeSelect: (themeName: string) => void;
   /** 当前 todo 列表（来自 TodoWrite 工具） */
   todos: TodoItem[];
+  /** 当前后台任务列表（Shell/Agent） */
+  tasks: TaskDisplayInfo[];
 }
 
 export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
@@ -114,6 +116,7 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
   currentTheme,
   onThemeSelect,
   todos,
+  tasks,
 }) => {
   const hasDialog = !!(permissionRequest || shellConfirmRequest || planApprovalRequest || activeDialog);
   const rootRef = useRef<DOMElement>(null);
@@ -153,7 +156,7 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
       <Box flexDirection="column" flexShrink={0} flexGrow={0} width={termWidth}>
         <CopyModeWarning enabled={copyModeEnabled} />
         <Notifications />
-        <TodoPanel todos={todos} termWidth={termWidth} />
+        <TodoPanel todos={todos} tasks={tasks} termWidth={termWidth} />
         <ToastDisplay />
 
         {statusMessage ? (

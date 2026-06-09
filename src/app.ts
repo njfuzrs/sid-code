@@ -1328,6 +1328,7 @@ export class App {
         description: m.baseURL ? `${m.provider || this.config.provider} (${m.baseURL})` : undefined,
       })),
       todos: [],
+      tasks: [],
     });
 
     const updateState = (patch: Partial<import("./ui/App.tsx").TUIState>) => {
@@ -1400,6 +1401,8 @@ export class App {
 
       lastSyncedCount = allMsgs.length;
       updateState({ messages: allMsgs, displayItems, historyItems, ...extraPatch });
+      // 每次同步时刷新后台任务面板
+      bridge.updateTasks();
     };
 
     /** 重建（/compact 后消息被压缩，需要完整重建） */
@@ -1413,9 +1416,9 @@ export class App {
       const displayItems = [...messagesToDisplayItems(allMsgs), ...systemItems];
       const historyItems = assignIds(messagesToHistoryItems(allMsgs));
       updateState({ messages: allMsgs, displayItems, historyItems, ...extraPatch });
+      // 每次重建时刷新后台任务面板
+      bridge.updateTasks();
     };
-
-    /** 追加命令消息（输入+输出分离，不进 ctxMgr） */
     const appendCommandOutput = (input: string, output: string | null) => {
       const displayItem = { kind: "command" as const, input, output };
       const prevDisplayItems = bridge.current.displayItems;

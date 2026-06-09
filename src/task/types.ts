@@ -80,6 +80,8 @@ export interface LocalAgentTaskState extends TaskStateBase {
   error?: string;
   isBackgrounded: boolean;
   progress?: AgentProgress;
+  /** 周期性进度摘要（M5 opt-in 双轨特性） */
+  progressSummary?: string;
 }
 
 /** 联合类型 */

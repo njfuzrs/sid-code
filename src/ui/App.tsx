@@ -128,6 +128,22 @@ export interface TUIState {
   availableModels: Array<{ name: string; provider: string; description?: string }>;
   /** 当前 todo 列表（来自 TodoWrite 工具，供 TUI 面板显示） */
   todos: import("../tool/todo-write.ts").TodoItem[];
+  /** 当前后台任务列表（Shell/Agent，供 TUI 面板实时显示） */
+  tasks: TaskDisplayInfo[];
+}
+
+/** TUI 友好的任务显示信息 */
+export interface TaskDisplayInfo {
+  id: string;
+  type: string;
+  status: string;
+  description: string;
+  agentType?: string;
+  command?: string;
+  progress?: { toolUseCount: number; tokenCount: number };
+  /** 周期性进度摘要（M5 opt-in） */
+  progressSummary?: string;
+  durationMs: number;
 }
 
 interface AppProps {
@@ -494,6 +510,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           currentTheme={currentTheme}
           onThemeSelect={handleThemeSelect}
           todos={state.todos}
+          tasks={state.tasks}
         />
       ) : (
         <MainScreenLayout
@@ -528,6 +545,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           currentTheme={currentTheme}
           onThemeSelect={handleThemeSelect}
           todos={state.todos}
+          tasks={state.tasks}
         />
       )}
     </StreamingProvider>
