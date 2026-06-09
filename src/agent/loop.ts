@@ -40,6 +40,7 @@ import {
   detectEnglishTriggerWords,
   evaluateChineseRatio,
   buildLanguageCorrectionMessage,
+  LanguageRetryError,
   MAX_LANG_RETRY,
   CHINESE_RATIO_HARD_THRESHOLD,
 } from "../query/chinese-ratio.ts";
@@ -463,13 +464,10 @@ export class AgentLoopRunner {
       const ttftStart = performance.now();
 
       let response: AccumulatedResponse;
-      // L3: 流中累积完整响应文本（对标 Claude Code "先收集后判断" 思想）
-      let fullResponseText = "";
       try {
         response = await this.deps.processStream(
           stream,
           (text) => {
-            fullResponseText += text;
             if (ttftMs === undefined) {
               ttftMs = performance.now() - ttftStart;
             }
@@ -592,6 +590,13 @@ export class AgentLoopRunner {
               "AGENT",
               `L5: 中文占比较低 (${(chineseRatio * 100).toFixed(1)}%)，但在可接受范围 (>=50%)`,
             );
+          } else if (
+            chineseRatio < CHINESE_RATIO_HARD_THRESHOLD &&
+            langRetryCount >= MAX_LANG_RETRY
+          ) {
+            // 重试耗尽：中文占比仍不达标，记录 [ERROR] 日志并接受当前响应
+            const err = new LanguageRetryError(chineseRatio, MAX_LANG_RETRY);
+            log.error("AGENT", err.message);
           } else {
             // 中文占比达标
             if (englishTriggered) {

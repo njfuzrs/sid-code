@@ -306,7 +306,7 @@ export class SubAgent {
   /** Spawn 子代理（标准类型） */
   private async executeSpawned(task: SubAgentTask, signal?: AbortSignal): Promise<SubAgentResult> {
     const basePrompt = getSystemPrompt(task.type);
-    const systemPrompt = await enhanceSubAgentPrompt(basePrompt, this.language);
+    const systemPrompt = await enhanceSubAgentPrompt(basePrompt, this.language, process.cwd());
     const toolDefs = this.getToolDefs(task);
 
     const initMsg: ParentInitMessage = {
@@ -332,7 +332,7 @@ export class SubAgent {
 
   /** Spawn 自定义子代理 */
   private async executeSpawnedCustom(task: CustomSubAgentTask, signal?: AbortSignal): Promise<SubAgentResult> {
-    const enhancedSystemPrompt = await enhanceSubAgentPrompt(task.systemPrompt, this.language);
+    const enhancedSystemPrompt = await enhanceSubAgentPrompt(task.systemPrompt, this.language, process.cwd());
     const tools = task.allowedTools.length > 0
       ? this.toolRegistry.filter(task.allowedTools)
       : new ToolRegistry();
@@ -547,7 +547,7 @@ export class SubAgent {
       });
 
       const basePrompt = getSystemPrompt(task.type);
-      const systemPrompt = await enhanceSubAgentPrompt(basePrompt, this.language);
+      const systemPrompt = await enhanceSubAgentPrompt(basePrompt, this.language, process.cwd());
       ctxMgr.setSystemPrompt(systemPrompt);
 
       // 添加任务提示
@@ -713,7 +713,7 @@ export class SubAgent {
         maxTokens: task.maxTokens ?? 50000,
       });
 
-      const systemPrompt = await enhanceSubAgentPrompt(task.systemPrompt, this.language);
+      const systemPrompt = await enhanceSubAgentPrompt(task.systemPrompt, this.language, process.cwd());
       ctxMgr.setSystemPrompt(systemPrompt);
       ctxMgr.addMessage({
         role: "user",
