@@ -7,7 +7,7 @@ import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResu
 import { dirname, basename } from "path";
 import { mkdirSync, existsSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
-import { detectOmissionPlaceholders } from "./omission-detector.ts";
+import { detectOmissionPlaceholders, isDocumentFile } from "./omission-detector.ts";
 import { normalizeToolPath } from "./path-utils.ts";
 
 export class WriteTool implements Tool {
@@ -36,7 +36,8 @@ export class WriteTool implements Tool {
     return `- 使用 write 而不是 bash echo/cat 来创建文件
 - 会自动创建不存在的父目录
 - 如果文件已存在会被覆盖，修改已有文件请用 edit 工具
-- file_path 必须是绝对路径`;
+- file_path 必须是绝对路径
+- 内容必须完整，禁止使用三个英文点号 ... 作为省略标记。Markdown 文档中用 Unicode 省略号 …（U+2026）代替`;
   }
 
   inputSchema(): Record<string, unknown> {
@@ -75,8 +76,8 @@ export class WriteTool implements Tool {
       return { output: `路径无效: ${err.message}`, isError: true };
     }
 
-    // 省略占位符检测
-    const omissions = detectOmissionPlaceholders(params.content);
+    // 省略占位符检测（文档文件跳过易误伤规则）
+    const omissions = detectOmissionPlaceholders(params.content, isDocumentFile(filePath));
     if (omissions.length > 0) {
       const details = omissions.map(m => `  行 ${m.line}: ${m.text}`).join("\n");
       return {

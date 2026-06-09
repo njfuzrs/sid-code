@@ -7,6 +7,7 @@
 - **调试日志**：排查复杂 bug 时主动在关键路径加详细日志（console.log / debug 模块）；修复确认后清理
 - **禁止创建文档**：除非用户明确要求，不要创建任何 README / SUMMARY / 总结 / 说明等文档文件
 - **构建验证**：task 完成后跑 `bun test`（全量单测，以实际输出为准）以及跑 `make build` 验证构建成功，**不可跳过，必须执行**
+- **禁止省略占位符**：write/edit 工具会**自动检测并拒绝**含三个英文点号省略标记的内容。代码文件中 **NEVER** 用 `// … rest of` 或 `# … rest` 代替已存在的代码；Markdown 文档中如需示意省略，用 Unicode 省略号 `…`（U+2026）或 `[内容省略]` 代替 ASCII 三连点 `...`。被拒绝后不要反复用 edit 修补同一文件——直接 full rewrite。
 
 ## 0.1 战略定位（2026-05 起，长期不变）
 
@@ -28,3 +29,14 @@ sid-code **不是**"又一个 Coding CLI"——从 2026-05 起向"对外可交�
 第 2 层 工具+集成 商品化：内置工具 + MCP；混合（核心自建 + 长尾用开源）
 第 1 层 Runtime   商品化：Agent loop / Permission / Hook；海外 Buy / 国内 Build 双模
 ```
+
+---
+
+## 文件编辑规范
+
+### 7. 禁止三连点省略占位符
+
+- write/edit 工具自动检测并拒绝含 ASCII 三连点 `...` 省略标记的内容（对代码文件）。
+- 代码中：**NEVER** 使用 `// … rest of implementation` 或 `# … existing code` 代替完整代码。
+- Markdown 文档中：用 Unicode 省略号 `…`（U+2026）代替三连点 `...`；代码块中的伪代码用 `[内容省略]` 代替省略号。
+- 如果 write/edit 报 "检测到省略占位符"，不要反复用 edit 修补同一文件。直接重新 Read 后 full rewrite，确保无三连点。

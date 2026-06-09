@@ -8,7 +8,7 @@
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResult, ToolUseContext } from "./types.ts";
 import type { FileReadTracker } from "./file-read-tracker.ts";
 import { getLogger } from "../debug/logger.ts";
-import { detectOmissionPlaceholders } from "./omission-detector.ts";
+import { detectOmissionPlaceholders, isDocumentFile } from "./omission-detector.ts";
 import { coerceSemanticBoolean } from "../utils/semantic-boolean.ts";
 import { mkdirSync, existsSync } from "fs";
 import { dirname, basename } from "path";
@@ -375,7 +375,8 @@ export class EditTool implements Tool {
 - old_string 优先精确匹配，失败时自动尝试灵活/正则/模糊匹配
 - 如果 read 输出带行号前缀（如 "123→"），edit 会自动剥离，无需手动处理
 - 设置 replace_all=true 可替换所有匹配项
-- old_string='' 且文件不存在时，直接创建新文件（等价于 write）`;
+- old_string='' 且文件不存在时，直接创建新文件（等价于 write）
+- new_string 必须包含完整替换内容，禁止使用 ... 省略已存在的代码`;
   }
 
   inputSchema(): Record<string, unknown> {
@@ -448,9 +449,10 @@ export class EditTool implements Tool {
     // 导致本该替换一处却替换全部。用语义化布尔归一化兜底。
     const replaceAll = coerceSemanticBoolean(params.replace_all, false);
 
-    // 省略占位符检测（仅对较长的 new_string 检测，避免小编辑误报）
-    if (newString.split("\n").length > 5) {
-      const omissions = detectOmissionPlaceholders(newString);
+    // 省略占位符检测（文档文件完全不检测；代码文件仅对 > 10 行的 new_string 检测）
+    const isDoc = isDocumentFile(filePath);
+    if (!isDoc && newString.split("\n").length > 10) {
+      const omissions = detectOmissionPlaceholders(newString, false);
       if (omissions.length > 0) {
         const details = omissions.map(m => `  行 ${m.line}: ${m.text}`).join("\n");
         return {
