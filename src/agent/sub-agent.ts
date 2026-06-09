@@ -910,7 +910,6 @@ export class SubAgent {
       clearTimeout(timer);
     }
   }
-  }
 
   /** 从所有 assistant 消息中回溯提取最终文本输出
    *  参考 claude-code finalizeAgentTool 回退逻辑：

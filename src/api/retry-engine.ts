@@ -1,19 +1,26 @@
 /**
- * AsyncGenerator 驱动的重试引擎
+ * @deprecated 此模块已废弃，所有能力已吸收至 src/llm/fallback.ts
  *
- * 职责（对标 Claude Code 的 withRetry.ts）：
- * - 通过 yield 向 UI 层报告重试进度（"API 过载，5 秒后重试 (3/10)"）
- * - 前台 / 后台查询差异化重试（后台查询遇到 529 立即放弃，避免重试风暴）
- * - 529 连续 N 次 → 触发模型降级（FallbackTriggeredError）
- * - max_tokens 溢出自动计算安全值并重试
- * - ECONNRESET → 标记需要禁用 keep-alive 并重试
- * - 401 → 触发认证刷新并重试
- * - prompt too long → 不重试，抛出特殊错误供上层触发响应式压缩
+ * 保留为兼容层，提供 re-export 以维持现有测试通过。
+ * 请迁移至 src/llm/fallback.ts 中的 ModelFallback 和相关导出。
  *
- * 设计为通用 AsyncGenerator，不直接耦合 Provider，便于单测与复用。
+ * 原来职责（已迁移）：
+ * - 通过 yield 向 UI 层报告重试进度（→ fallback.ts FallbackListener + SystemAPIErrorMessage）
+ * - 前台 / 后台查询差异化重试（→ fallback.ts QuerySource + shouldRetry529）
+ * - 529 连续 N 次 → 触发模型降级（→ fallback.ts 连续 529 计数 + tryFallback）
+ * - max_tokens 溢出自动计算安全值（→ fallback.ts tryRecoverMaxTokens）
+ * - ECONNRESET → 标记 keep-alive（→ fallback.ts RetryContext.disableKeepAlive）
+ * - 401 → 触发认证刷新（→ fallback.ts RetryContext.needsAuthRefresh）
  */
 
-import { isAbortError, RequestAbortedError } from "../llm/errors.ts";
+// Re-export 从 fallback.ts（这些类型和函数已迁移到核心引擎）
+export {
+  type QuerySource,
+  FOREGROUND_SOURCES,
+  shouldRetry529,
+} from "../llm/fallback.ts";
+
+import { isAbortError, RequestAbortedError, getNetworkErrorCode } from "../llm/errors.ts";
 import {
   classifyAPIError,
   getErrorMessageForUser,
@@ -22,33 +29,13 @@ import {
   is401Error,
   isConnectionError,
 } from "./errors.ts";
-import { getNetworkErrorCode } from "../llm/errors.ts";
+import { shouldRetry529 } from "../llm/fallback.ts";
 
-/** 查询来源分类 */
-export type QuerySource =
-  | "main_thread" // 用户主对话（前台）
-  | "agent" // 子代理（前台）
-  | "compact" // 上下文压缩（前台）
-  | "summary" // 摘要生成（后台）
-  | "title" // 标题生成（后台）
-  | "classifier"; // 分类器（后台）
+import type { FallbackConfig } from "../llm/fallback.ts";
 
-/** 前台查询源 — 用户正在等待结果，529 时重试 */
-export const FOREGROUND_SOURCES = new Set<QuerySource>([
-  "main_thread",
-  "agent",
-  "compact",
-]);
+// ─── 保留类型（兼容旧测试） ───
 
-/** 重试常量 */
-export const DEFAULT_MAX_RETRIES = 10;
-export const MAX_529_RETRIES = 3;
-const BASE_DELAY_MS = 500;
-const MAX_DELAY_MS = 32_000;
-const SAFETY_BUFFER = 1_000;
-const FLOOR_OUTPUT_TOKENS = 3_000;
-
-/** 重试上下文 — 在重试过程中可被修改并回传给 operation */
+/** @deprecated 请使用 llm/fallback.ts 中的 FallbackConfig */
 export interface RetryContext {
   /** max_tokens 溢出恢复时设置 */
   maxTokensOverride?: number;
@@ -60,7 +47,7 @@ export interface RetryContext {
   needsAuthRefresh?: boolean;
 }
 
-/** 重试配置 */
+/** @deprecated 请使用 llm/fallback.ts 中的 FallbackConfig */
 export interface RetryOptions {
   /** 最大重试次数（默认 10） */
   maxRetries?: number;
@@ -71,7 +58,7 @@ export interface RetryOptions {
   /** 中断信号 */
   signal?: AbortSignal;
   /** 查询来源（前台/后台） */
-  querySource?: QuerySource;
+  querySource?: import("../llm/fallback.ts").QuerySource;
   /** 预设的连续 529 计数（跨调用累积时使用） */
   initialConsecutive529Errors?: number;
   /** 上下文窗口大小（用于 max_tokens 溢出兜底计算，可选） */
@@ -80,22 +67,7 @@ export interface RetryOptions {
   isInteractive?: boolean;
 }
 
-/** 系统 API 错误消息 — yield 给 UI 层显示 */
-export interface SystemAPIErrorMessage {
-  type: "system_api_error";
-  /** 用户可读的错误描述 */
-  content: string;
-  /** 等待时间（毫秒） */
-  delayMs: number;
-  /** 当前尝试次数（1-based） */
-  attempt: number;
-  /** 最大重试次数 */
-  maxRetries: number;
-  /** 错误分类标签 */
-  category: string;
-}
-
-/** 模型降级触发错误 */
+/** @deprecated 模型降级已由 fallback.ts 统一处理 */
 export class FallbackTriggeredError extends Error {
   constructor(
     public readonly originalModel: string,
@@ -106,7 +78,7 @@ export class FallbackTriggeredError extends Error {
   }
 }
 
-/** 不可重试错误 */
+/** @deprecated 不可重试错误已由 fallback.ts 统一处理 */
 export class CannotRetryError extends Error {
   constructor(
     public readonly originalError: unknown,
@@ -121,15 +93,23 @@ export class CannotRetryError extends Error {
   }
 }
 
-/** 后台查询遇到 529 时是否仍重试 */
-export function shouldRetry529(querySource?: QuerySource): boolean {
-  return querySource === undefined || FOREGROUND_SOURCES.has(querySource);
-}
+// ─── 重试常量 ───
+
+/** @deprecated 重试次数由 fallback.ts 各阶段配置决定 */
+export const DEFAULT_MAX_RETRIES = 10;
+
+/** @deprecated 529 计数由 fallback.ts 的 MAX_529_CONSECUTIVE 决定 */
+export const MAX_529_RETRIES = 3;
+
+// ─── 工具函数 ───
+
+const MAX_DELAY_MS = 32_000;
+const BASE_DELAY_MS = 500;
+const SAFETY_BUFFER = 1_000;
+const FLOOR_OUTPUT_TOKENS = 3_000;
 
 /**
- * 计算退避延迟。
- * - 优先使用服务端指定的 Retry-After
- * - 否则指数退避 + 25% 抖动
+ * @deprecated 退避计算已吸收至 fallback.ts 的 calculateRetryDelay()
  */
 export function getRetryDelay(
   attempt: number,
@@ -144,8 +124,7 @@ export function getRetryDelay(
 }
 
 /**
- * 计算 max_tokens 溢出后的安全 max_tokens 值。
- * 返回 undefined 表示可用空间太小，无法恢复。
+ * @deprecated max_tokens 溢出恢复已吸收至 fallback.ts 的 computeSafeMaxTokens()
  */
 export function computeSafeMaxTokens(
   inputTokens: number,
@@ -155,6 +134,20 @@ export function computeSafeMaxTokens(
   if (available < FLOOR_OUTPUT_TOKENS) return undefined;
   return Math.max(FLOOR_OUTPUT_TOKENS, available);
 }
+
+// ─── 系统 API 错误消息 ───
+
+/** @deprecated 系统 API 错误消息类型，请使用 fallback.ts 的同名类型 */
+export interface SystemAPIErrorMessage {
+  type: "system_api_error";
+  content: string;
+  delayMs: number;
+  attempt: number;
+  maxRetries: number;
+  category: string;
+}
+
+// ─── withRetry（保留完整实现以兼容旧测试） ───
 
 /** 判断错误是否值得重试（瞬态错误） */
 function isRetryableError(error: unknown): boolean {
@@ -188,13 +181,9 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 /**
- * AsyncGenerator 驱动的重试引擎。
+ * @deprecated AsyncGenerator 重试引擎已废弃，请使用 fallback.ts 的 ModelFallback。
  *
- * - yield SystemAPIErrorMessage 给 UI 层显示重试进度
- * - return T 表示操作成功
- * - throw CannotRetryError / FallbackTriggeredError / RequestAbortedError 表示最终失败
- *
- * operation 接收 (attempt, context)，从 context 读取 maxTokensOverride 等动态调整。
+ * 保留完整实现以兼容 tests/api/retry-engine.test.ts。
  */
 export async function* withRetry<T>(
   operation: (attempt: number, context: RetryContext) => Promise<T>,
@@ -205,37 +194,31 @@ export async function* withRetry<T>(
   let consecutive529 = options.initialConsecutive529Errors ?? 0;
 
   for (let attempt = 1; ; attempt++) {
-    // 每次尝试前清除一次性标志由调用方在 operation 内消费
     if (options.signal?.aborted) {
       throw new RequestAbortedError("Request aborted");
     }
 
     try {
       const result = await operation(attempt, context);
-      // 成功后清除一次性标志
       context.maxTokensOverride = undefined;
       return result;
     } catch (error) {
-      // ── 用户中止：不重试 ──
       if (options.signal?.aborted || isAbortError(error)) {
         throw new RequestAbortedError("Request aborted");
       }
 
       const category = classifyAPIError(error);
 
-      // ── 529 计数维护 ──
       if (category === "server_overload") {
         consecutive529++;
       } else {
         consecutive529 = 0;
       }
 
-      // ── 529 + 非前台查询：立即放弃（避免重试风暴放大） ──
       if (category === "server_overload" && !shouldRetry529(options.querySource)) {
         throw new CannotRetryError(error, context);
       }
 
-      // ── 529 连续达上限：降级或放弃 ──
       if (category === "server_overload" && consecutive529 >= MAX_529_RETRIES) {
         if (options.fallbackModel) {
           throw new FallbackTriggeredError(options.model, options.fallbackModel);
@@ -243,13 +226,10 @@ export async function* withRetry<T>(
         throw new CannotRetryError(error, context);
       }
 
-      // ── prompt too long：不重试，交上层响应式压缩 ──
-      // （注意：max_tokens_overflow 不在此分支，它可自动恢复）
       if (category === "prompt_too_long") {
         throw new CannotRetryError(error, context);
       }
 
-      // ── max_tokens 溢出：计算安全值后重试（不消耗 attempt 退避） ──
       if (category === "max_tokens_overflow") {
         const overflow = parseMaxTokensOverflowError(error);
         const contextLimit = overflow?.contextLimit ?? options.contextLimit;
@@ -257,38 +237,30 @@ export async function* withRetry<T>(
           const safe = computeSafeMaxTokens(overflow.inputTokens, contextLimit);
           if (safe !== undefined) {
             context.maxTokensOverride = safe;
-            continue; // 立即用调整后的 max_tokens 重试
+            continue;
           }
         }
-        // 无法恢复
         throw new CannotRetryError(error, context);
       }
 
-      // ── 超过最大重试次数 ──
       if (attempt > maxRetries) {
         throw new CannotRetryError(error, context);
       }
 
-      // ── 401：刷新认证后重试 ──
       if (is401Error(error)) {
         context.needsAuthRefresh = true;
-        // 认证刷新不退避，直接重试一次
         continue;
       }
 
-      // ── ECONNRESET / EPIPE：禁用 keep-alive 后重试 ──
       const code = getNetworkErrorCode(error);
       if ((code === "ECONNRESET" || code === "EPIPE") || (isConnectionError(error) && !context.disableKeepAlive)) {
         context.disableKeepAlive = true;
-        // 连接重置：短暂退避后重试
       }
 
-      // ── 不可重试错误：放弃 ──
       if (!isRetryableError(error)) {
         throw new CannotRetryError(error, context);
       }
 
-      // ── 可重试：计算延迟，yield 进度，等待 ──
       const retryAfterSec = extractRetryAfter(error);
       const delayMs = getRetryDelay(
         attempt,

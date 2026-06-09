@@ -1,7 +1,19 @@
 /**
- * 模型回退机制
- * 分阶段重试：连接阶段快速重试，流式阶段谨慎重试
- * 集成错误分类和模型可用性服务
+ * 模型回退机制 — 统一的重试引擎
+ *
+ * Phase 1.2 重写：从双引擎（fallback.ts + retry-engine.ts）统一为单一引擎，
+ * 吸收 retry-engine 的全部能力：
+ * - QuerySource 前台/后台差异化
+ * - 指数退避 + 25% jitter + Retry-After 优先
+ * - x-should-retry header 支持
+ * - rate-limit-reset header 解析
+ * - 529 连续计数 + Fallback 触发
+ * - max_tokens 溢出自动恢复
+ * - 401 认证刷新重试
+ * - keep-alive 管理（ECONNRESET/EPIPE）
+ * - Telemetry 埋点回调
+ *
+ * Phase 4：persistent retry + fast-mode 预留
  */
 
 import type { Provider } from "./provider.ts";
@@ -15,35 +27,151 @@ import {
   isAbortError,
   toAbortError,
   RequestAbortedError,
+  getNetworkErrorCode,
+  parseXShouldRetry,
+  parseRetryAfterFromHeaders,
+  parseRateLimitReset,
+  is401Error,
+  is408Error,
+  is409Error,
 } from "./errors.ts";
 import { ModelAvailabilityService } from "./availability.ts";
+import type { RetryTelemetryEvent } from "./retry-telemetry.ts";
 
-/** 连接阶段重试配置（快速重试，次数多） */
+// ═══════════════════════════════════════════════════════════════════
+// 查询来源分类（从 retry-engine.ts 吸收）
+// ═══════════════════════════════════════════════════════════════════
+
+/** 查询来源分类 */
+export type QuerySource =
+  | "main_thread"   // 用户主对话（前台）
+  | "agent"         // 子代理（前台）
+  | "compact"       // 上下文压缩（前台）
+  | "summary"       // 摘要生成（后台）
+  | "title"         // 标题生成（后台）
+  | "classifier";   // 分类器（后台）
+
+/** 前台查询源 — 用户正在等待结果，529 时重试 */
+export const FOREGROUND_SOURCES = new Set<QuerySource>([
+  "main_thread",
+  "agent",
+  "compact",
+]);
+
+/** 后台查询遇到 529 时是否仍重试 */
+export function shouldRetry529(querySource?: QuerySource): boolean {
+  return querySource === undefined || FOREGROUND_SOURCES.has(querySource);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// 重试常量
+// ═══════════════════════════════════════════════════════════════════
+
+/** 连接阶段重试配置 */
 const CONNECTION_RETRY = {
   maxRetries: 3,
   initialDelayMs: 1000,
   maxDelayMs: 30000,
 };
 
-/** 流式阶段重试配置（谨慎重试，次数少） */
+/** 流式阶段重试配置 */
 const STREAM_RETRY = {
   maxRetries: 2,
   initialDelayMs: 1000,
   maxDelayMs: 10000,
 };
 
+/** 默认流超时（毫秒） */
+const DEFAULT_STREAM_TIMEOUT_MS = 300_000; // 5 分钟
+
+/** 退避延迟上限 */
+const MAX_DELAY_MS = 32_000;
+
+/** max_tokens 溢出恢复：安全余量 */
+const SAFETY_BUFFER = 1_000;
+
+/** max_tokens 溢出恢复：最小输出 token 数 */
+const FLOOR_OUTPUT_TOKENS = 3_000;
+
+/** 连续 529 触发降级的阈值 */
+const MAX_529_CONSECUTIVE = 3;
+
+/** persistent retry 最大退避（5 分钟） */
+const PERSISTENT_MAX_DELAY_MS = 300_000;
+
+/** persistent retry heartbeat 间隔（30 秒） */
+const PERSISTENT_HEARTBEAT_MS = 30_000;
+
+// ═══════════════════════════════════════════════════════════════════
+// 类型定义
+// ═══════════════════════════════════════════════════════════════════
+
 /** 回退配置 */
 export interface FallbackConfig {
-  fallbackProvider?: Provider;  // 降级 Provider
-  fallbackModel?: string;       // 降级模型
-  availability?: ModelAvailabilityService; // 模型可用性服务
+  /** 降级 Provider */
+  fallbackProvider?: Provider;
+  /** 降级模型 */
+  fallbackModel?: string;
+  /** 模型可用性服务 */
+  availability?: ModelAvailabilityService;
+  /** 查询来源（前台/后台），影响 529 重试策略 */
+  querySource?: QuerySource;
+  /** 最大重试次数（默认由各阶段配置决定） */
+  maxRetries?: number;
+  /** 流式整体超时（毫秒，默认 5 分钟） */
+  streamTimeoutMs?: number;
+  /** 上下文窗口大小（用于 max_tokens 溢出恢复） */
+  contextLimit?: number;
+  /** 是否禁用 keep-alive（ECONNRESET 后自动置位） */
+  disableKeepAlive?: boolean;
+  /** Phase 4：无人值守 persistent retry 模式 */
+  persistent?: boolean;
+  /** Phase 4：fast-mode 感知（预留，暂未启用） */
+  fastMode?: boolean;
+  /** Telemetry 埋点回调 */
+  onTelemetry?: (event: RetryTelemetryEvent) => void;
 }
 
 /** 回退事件监听器 */
 export interface FallbackListener {
   onRetry?: (attempt: number, error: string, delayMs: number) => void;
   onFallback?: (reason: string, fallbackModel: string) => void;
+  /** 后台 529 被丢弃时的回调 */
+  on529Dropped?: (querySource: string) => void;
+  /** max_tokens 自动调整时的回调 */
+  onMaxTokensAdjusted?: (originalTokens: number, adjustedTokens: number) => void;
 }
+
+/** 系统 API 错误消息 — 对标 claude-code 的 SystemAPIErrorMessage */
+export interface SystemAPIErrorMessage {
+  type: "system_api_error";
+  /** 用户可读的错误描述 */
+  content: string;
+  /** 等待时间（毫秒） */
+  delayMs: number;
+  /** 当前尝试次数（1-based） */
+  attempt: number;
+  /** 最大重试次数 */
+  maxRetries: number;
+  /** 错误分类标签 */
+  category: string;
+}
+
+/** 内部重试上下文 */
+interface RetryContext {
+  /** 是否需要刷新认证（401 后置位） */
+  needsAuthRefresh: boolean;
+  /** 是否需要禁用 keep-alive（ECONNRESET 后置位） */
+  disableKeepAlive: boolean;
+  /** 连续 529 计数 */
+  consecutive529: number;
+  /** max_tokens 溢出恢复时的覆盖值 */
+  maxTokensOverride?: number;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ModelFallback — 核心引擎
+// ═══════════════════════════════════════════════════════════════════
 
 export class ModelFallback {
   private config: FallbackConfig;
@@ -55,6 +183,15 @@ export class ModelFallback {
     this.config = {
       fallbackProvider: config.fallbackProvider,
       fallbackModel: config.fallbackModel,
+      availability: config.availability,
+      querySource: config.querySource,
+      maxRetries: config.maxRetries,
+      streamTimeoutMs: config.streamTimeoutMs,
+      contextLimit: config.contextLimit,
+      disableKeepAlive: config.disableKeepAlive,
+      persistent: config.persistent,
+      fastMode: config.fastMode,
+      onTelemetry: config.onTelemetry,
     };
     this.listener = listener ?? null;
     this.availability = config.availability ?? new ModelAvailabilityService();
@@ -67,7 +204,11 @@ export class ModelFallback {
 
   /**
    * 执行带回退的操作
-   * 分三个阶段：连接阶段重试 → 流式阶段重试 → Fallback Provider
+   *
+   * 分阶段：
+   * 1. 连接阶段重试（含 401 认证刷新、ECONNRESET keep-alive 处理）
+   * 2. 流式阶段消费（含 529 计数、max_tokens 溢出恢复、超时保护）
+   * 3. Fallback Provider
    */
   async *executeWithFallback(
     primaryProvider: Provider,
@@ -84,30 +225,22 @@ export class ModelFallback {
     const availCheck = this.availability.isAvailable(params.model);
     if (!availCheck.available) {
       log.warn("FALLBACK", `模型 ${params.model} 不可用: ${availCheck.reason}`);
-      // 直接跳到 fallback
       yield* this.tryFallback(params, signal);
       return;
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // 流超时保护：在连接阶段之前创建 AbortController，将超时信号
-    // 注入到 sendMessageStream 的 HTTP 请求中。这样超时发生时
-    // abort() 会直接关闭 TCP 连接，触发 for-await 抛出 AbortError，
-    // 从而进入流式重试 → fallback 的正常链路。
-    //
-    // 关键：不能只在循环体内检查超时 flag，因为 for-await 卡在
-    // 等待第一个 event 时，循环体内的代码永远执行不到。
+    // 流超时保护：AbortController 主动中断 HTTP 连接
     // ═══════════════════════════════════════════════════════════════
-    const STREAM_TOTAL_TIMEOUT = 300_000; // 5 分钟
+    const streamTimeoutMs = this.config.streamTimeoutMs ?? DEFAULT_STREAM_TIMEOUT_MS;
     let streamTimeoutCtl = new AbortController();
     let streamTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
     const startStreamTimeout = () => {
       streamTimeoutId = setTimeout(() => {
-        log.warn("FALLBACK", `流式整体超时: ${STREAM_TOTAL_TIMEOUT / 1000}s，主动中断连接`);
+        log.warn("FALLBACK", `流式整体超时: ${streamTimeoutMs / 1000}s，主动中断连接`);
         streamTimeoutCtl.abort();
-      }, STREAM_TOTAL_TIMEOUT);
-      // 防止 Node.js/Bun 进程被定时器阻止退出
+      }, streamTimeoutMs);
       if (streamTimeoutId && typeof streamTimeoutId === "object" && "unref" in streamTimeoutId) {
         (streamTimeoutId as any).unref();
       }
@@ -122,7 +255,6 @@ export class ModelFallback {
       startStreamTimeout();
     };
 
-    /** 合并外部 signal 和流超时 signal */
     const makeCombinedSignal = (): AbortSignal => {
       if (signal && !signal.aborted) {
         return AbortSignal.any([signal, streamTimeoutCtl.signal]);
@@ -132,20 +264,56 @@ export class ModelFallback {
 
     startStreamTimeout();
 
+    // 重试上下文（跨 phase 共享）
+    const ctx: RetryContext = {
+      needsAuthRefresh: false,
+      disableKeepAlive: this.config.disableKeepAlive ?? false,
+      consecutive529: 0,
+    };
+
+    // ═══════════════════════════════════════════════════════════════
     // 阶段 1：连接（获取流对象）
+    // ═══════════════════════════════════════════════════════════════
     let stream: AsyncIterable<StreamEvent> | null = null;
-    for (let attempt = 0; attempt <= CONNECTION_RETRY.maxRetries; attempt++) {
+
+    const connMaxRetries = this.config.maxRetries ?? CONNECTION_RETRY.maxRetries;
+    for (let attempt = 0; attempt <= connMaxRetries; attempt++) {
       try {
-        log.debug("FALLBACK", `连接阶段尝试 ${attempt + 1}/${CONNECTION_RETRY.maxRetries + 1}`);
-        stream = primaryProvider.sendMessageStream(params, makeCombinedSignal());
-        break; // 连接成功
+        log.debug("FALLBACK", `连接阶段尝试 ${attempt + 1}/${connMaxRetries + 1}`);
+
+        // 应用 max_tokens 覆盖（溢出恢复时）
+        const effectiveParams = ctx.maxTokensOverride
+          ? { ...params, maxTokens: ctx.maxTokensOverride }
+          : params;
+
+        stream = primaryProvider.sendMessageStream(effectiveParams, makeCombinedSignal());
+        ctx.consecutive529 = 0; // 连接成功，重置 529 计数
+        break;
       } catch (err) {
         if (signal?.aborted || isAbortError(err)) {
           throw toAbortError(err);
         }
 
+        // ── 401 认证错误：标记刷新 + 重试一次 ──
+        if (is401Error(err) && !ctx.needsAuthRefresh) {
+          log.info("FALLBACK", "401 认证错误，标记刷新标志并重试");
+          ctx.needsAuthRefresh = true;
+          this.emitTelemetry({ type: "auth_refresh", model: params.model, error: String(err) });
+          // 不退避，直接重试
+          continue;
+        }
+
+        // ── ECONNRESET / EPIPE：禁用 keep-alive ──
+        const code = getNetworkErrorCode(err);
+        if ((code === "ECONNRESET" || code === "EPIPE") && !ctx.disableKeepAlive) {
+          log.info("FALLBACK", `${code} 检测到，禁用 keep-alive 连接池`);
+          ctx.disableKeepAlive = true;
+          this.config.disableKeepAlive = true;
+        }
+
         const classified = classifyError(err);
 
+        // ── 终端错误：直接 fallback ──
         if (classified instanceof TerminalError) {
           this.availability.markTerminal(params.model, classified.reason);
           log.error("FALLBACK", `终端错误: ${classified.reason}`);
@@ -153,20 +321,31 @@ export class ModelFallback {
           return;
         }
 
-        if (attempt >= CONNECTION_RETRY.maxRetries) {
-          log.warn("FALLBACK", `连接阶段重试 ${CONNECTION_RETRY.maxRetries} 次后仍失败`);
-          this.availability.markRetryOnce(params.model, "连接失败");
-          break; // 进入 fallback
+        // ── 529 连续计数 ──
+        if (classified instanceof RetryableError && classified.reason === "overloaded") {
+          ctx.consecutive529++;
         }
 
-        // 可重试错误，计算延迟
-        const isRateLimit = classified instanceof RetryableError && classified.reason === "rate_limit";
-        const delayMs = classified instanceof RetryableError && classified.retryAfterMs
-          ? classified.retryAfterMs
-          : this.calculateDelay(attempt, CONNECTION_RETRY, isRateLimit);
+        if (attempt >= connMaxRetries) {
+          log.warn("FALLBACK", `连接阶段重试 ${connMaxRetries} 次后仍失败`);
+          this.availability.markRetryOnce(params.model, "连接失败");
+          break;
+        }
+
+        // ── 可重试：计算延迟 ──
+        const delayMs = this.calculateRetryDelay(err, attempt, classified, CONNECTION_RETRY.maxDelayMs);
 
         log.info("FALLBACK", `连接重试 ${attempt + 1}，延迟 ${delayMs}ms`);
         this.listener?.onRetry?.(attempt + 1, classified.message, delayMs);
+        this.emitTelemetry({
+          type: "retry",
+          model: params.model,
+          attempt: attempt + 1,
+          delayMs,
+          error: classified.message,
+          phase: "connection",
+        });
+
         await this.sleep(delayMs, signal);
       }
     }
@@ -176,14 +355,16 @@ export class ModelFallback {
       return;
     }
 
+    // ═══════════════════════════════════════════════════════════════
     // 阶段 2：流式消费
-    // 超时保护已通过 makeCombinedSignal() 注入 HTTP 层，不需要
-    // 在循环体内额外检查。
+    // ═══════════════════════════════════════════════════════════════
     let hasYieldedContent = false;
+    const streamMaxRetries = this.config.maxRetries ?? STREAM_RETRY.maxRetries;
+
     try {
-      for (let attempt = 0; attempt <= STREAM_RETRY.maxRetries; attempt++) {
+      for (let attempt = 0; attempt <= streamMaxRetries; attempt++) {
         try {
-          log.debug("FALLBACK", `流式阶段尝试 ${attempt + 1}/${STREAM_RETRY.maxRetries + 1}`);
+          log.debug("FALLBACK", `流式阶段尝试 ${attempt + 1}/${streamMaxRetries + 1}`);
 
           for await (const event of stream) {
             if (signal?.aborted) {
@@ -195,6 +376,24 @@ export class ModelFallback {
                 throw toAbortError(event.error.message);
               }
 
+              // ── max_tokens 溢出自动恢复 ──
+              const maxTokensResult = this.tryRecoverMaxTokens(event.error.message);
+              if (maxTokensResult !== null) {
+                const adjusted = maxTokensResult;
+                const original = params.maxTokens;
+                log.info("FALLBACK", `max_tokens 溢出恢复: ${original} → ${adjusted}`);
+                ctx.maxTokensOverride = adjusted;
+                this.listener?.onMaxTokensAdjusted?.(original, adjusted);
+                this.emitTelemetry({
+                  type: "max_tokens_adjust",
+                  model: params.model,
+                  originalTokens: original,
+                  adjustedTokens: adjusted,
+                });
+                // 跳出当前流，进入流式重试（会使用新的 maxTokens）
+                throw new RetryableError(event.error.message, "server_error");
+              }
+
               const classified = classifyError(new Error(event.error.message));
 
               if (classified instanceof TerminalError) {
@@ -204,12 +403,52 @@ export class ModelFallback {
                 return;
               }
 
-              if (classified instanceof RetryableError && attempt < STREAM_RETRY.maxRetries) {
-                log.warn("FALLBACK", `流式错误，准备重试: ${event.error.message}`);
-                throw classified; // 触发流式重试
+              // ── 529 计数维护 ──
+              if (classified instanceof RetryableError && classified.reason === "overloaded") {
+                ctx.consecutive529++;
+              } else {
+                ctx.consecutive529 = 0;
               }
 
-              // 不可重试或已达最大重试次数，尝试 fallback
+              // ── 后台 529 立即放弃 ──
+              if (
+                classified instanceof RetryableError &&
+                classified.reason === "overloaded" &&
+                !shouldRetry529(this.config.querySource)
+              ) {
+                log.info("FALLBACK", `后台查询遇 529，立即放弃`);
+                this.listener?.on529Dropped?.(this.config.querySource ?? "unknown");
+                this.emitTelemetry({
+                  type: "529_dropped",
+                  model: params.model,
+                  querySource: this.config.querySource ?? "unknown",
+                });
+                yield* this.tryFallback(params, signal);
+                return;
+              }
+
+              // ── 529 连续达上限 ──
+              if (
+                classified instanceof RetryableError &&
+                classified.reason === "overloaded" &&
+                ctx.consecutive529 >= MAX_529_CONSECUTIVE
+              ) {
+                log.warn("FALLBACK", `连续 ${ctx.consecutive529} 次 529，触发降级`);
+                this.emitTelemetry({
+                  type: "fallback",
+                  model: params.model,
+                  fallbackModel: this.config.fallbackModel,
+                  error: "连续 529 错误",
+                });
+                yield* this.tryFallback(params, signal);
+                return;
+              }
+
+              if (classified instanceof RetryableError && attempt < streamMaxRetries) {
+                log.warn("FALLBACK", `流式错误，准备重试: ${event.error.message}`);
+                throw classified;
+              }
+
               yield* this.tryFallback(params, signal);
               return;
             }
@@ -244,33 +483,68 @@ export class ModelFallback {
             return;
           }
 
-          if (attempt >= STREAM_RETRY.maxRetries) {
-            log.warn("FALLBACK", `流式阶段重试 ${STREAM_RETRY.maxRetries} 次后仍失败`);
+          if (attempt >= streamMaxRetries) {
+            log.warn("FALLBACK", `流式阶段重试 ${streamMaxRetries} 次后仍失败`);
             this.availability.markRetryOnce(params.model, "流式传输失败");
+
+            // persistent 模式：无限重试
+            if (this.config.persistent) {
+              log.info("FALLBACK", "persistent 模式，继续重试");
+              const delayMs = PERSISTENT_MAX_DELAY_MS;
+              this.emitTelemetry({
+                type: "persistent_retry_wait",
+                model: params.model,
+                delayMs,
+              });
+              await this.sleep(delayMs, signal);
+              // 重置计数，继续循环
+              attempt = -1;
+              continue;
+            }
+
             break;
           }
 
           // 流式重试：重新发起完整请求
-          const isRateLimit = classified instanceof RetryableError && classified.reason === "rate_limit";
-          const delayMs = classified instanceof RetryableError && classified.retryAfterMs
-            ? classified.retryAfterMs
-            : this.calculateDelay(attempt, STREAM_RETRY, isRateLimit);
+          const delayMs = this.calculateRetryDelay(err, attempt, classified, STREAM_RETRY.maxDelayMs);
 
           log.info("FALLBACK", `流式重试 ${attempt + 1}，延迟 ${delayMs}ms`);
           this.listener?.onRetry?.(attempt + 1, classified.message, delayMs);
+          this.emitTelemetry({
+            type: "retry",
+            model: params.model,
+            attempt: attempt + 1,
+            delayMs,
+            error: classified.message,
+            phase: "stream",
+          });
+
           await this.sleep(delayMs, signal);
 
-          // 重置超时计时器（重试应从此刻重新计时 5 分钟）
+          // 重置超时计时器
           resetStreamTimeout();
 
-          // 重新获取流（使用包含新超时 signal 的 combined signal）
+          // 重新获取流
           try {
-            stream = primaryProvider.sendMessageStream(params, makeCombinedSignal());
+            const effectiveParams = ctx.maxTokensOverride
+              ? { ...params, maxTokens: ctx.maxTokensOverride }
+              : params;
+            stream = primaryProvider.sendMessageStream(effectiveParams, makeCombinedSignal());
+            // 清空内容标志（新流需要重新检测）
+            hasYieldedContent = false;
           } catch (reconnectErr) {
             if (signal?.aborted || isAbortError(reconnectErr)) {
               throw toAbortError(reconnectErr);
             }
             log.error("FALLBACK", `重连失败: ${reconnectErr}`);
+
+            if (this.config.persistent) {
+              log.info("FALLBACK", "persistent 模式，重连失败后继续等待");
+              await this.sleep(PERSISTENT_HEARTBEAT_MS, signal);
+              attempt = -1;
+              continue;
+            }
+
             break;
           }
         }
@@ -282,7 +556,9 @@ export class ModelFallback {
       }
     }
 
+    // ═══════════════════════════════════════════════════════════════
     // 阶段 3：Fallback Provider
+    // ═══════════════════════════════════════════════════════════════
     yield* this.tryFallback(params, signal);
   }
 
@@ -303,6 +579,12 @@ export class ModelFallback {
 
       log.warn("FALLBACK", `切换到 fallback 模型: ${fallbackModel}`);
       this.listener?.onFallback?.("主模型失败", fallbackModel);
+      this.emitTelemetry({
+        type: "fallback",
+        model: params.model,
+        fallbackModel,
+        error: "主模型失败",
+      });
 
       const fallbackParams = { ...params, model: fallbackModel };
       for await (const event of this.config.fallbackProvider.sendMessageStream(fallbackParams, signal)) {
@@ -319,32 +601,104 @@ export class ModelFallback {
     };
   }
 
-  /**
-   * 计算重试延迟（指数退避 + 差异化 Jitter）
-   * - 限流错误：+20% 正向抖动（尊重服务器最小延迟）
-   * - 其他错误：±30% 双向抖动（避免惊群效应）
-   */
-  private calculateDelay(
-    attempt: number,
-    config: typeof CONNECTION_RETRY | typeof STREAM_RETRY,
-    isRateLimit = false,
-  ): number {
-    let delay = Math.min(
-      config.initialDelayMs * Math.pow(2, attempt),
-      config.maxDelayMs,
-    );
+  // ═══════════════════════════════════════════════════════════════
+  // 退避延迟计算（对标 retry-engine 的 getRetryDelay）
+  // ═══════════════════════════════════════════════════════════════
 
-    if (isRateLimit) {
-      // 限流错误：+20% 正向抖动
-      delay += delay * 0.2 * Math.random();
-    } else {
-      // 其他错误：±30% 双向抖动
-      const jitter = delay * 0.3;
-      delay += Math.random() * jitter * 2 - jitter;
+  /**
+   * 计算重试延迟。
+   * 优先级：服务端 Retry-After > rate-limit-reset > 指数退避 + 25% jitter
+   */
+  private calculateRetryDelay(
+    err: unknown,
+    attempt: number,
+    classified: TerminalError | RetryableError | Error,
+    maxDelayMs: number,
+  ): number {
+    // 1. 服务端明确指定的 Retry-After（headers 优先）
+    const retryAfterMs = parseRetryAfterFromHeaders(err);
+    if (retryAfterMs && retryAfterMs > 0) return Math.min(retryAfterMs, MAX_DELAY_MS);
+
+    // 2. RetryableError 携带的 retryAfterMs
+    if (classified instanceof RetryableError && classified.retryAfterMs && classified.retryAfterMs > 0) {
+      return Math.min(classified.retryAfterMs, MAX_DELAY_MS);
     }
 
-    return Math.round(delay);
+    // 3. rate-limit-reset header：计算等待到 reset 时刻的延迟
+    const resetTime = parseRateLimitReset(err);
+    if (resetTime) {
+      const waitMs = Math.max(0, resetTime - Date.now());
+      if (waitMs > 0 && waitMs <= MAX_DELAY_MS) return waitMs;
+    }
+
+    // 4. 指数退避 + 25% jitter
+    const isRateLimit = classified instanceof RetryableError && classified.reason === "rate_limit";
+    const baseDelay = Math.min(1000 * Math.pow(2, attempt), maxDelayMs);
+
+    if (isRateLimit) {
+      // 限流错误：+20% 正向抖动（尊重服务器最小延迟）
+      const jitter = baseDelay * 0.2 * Math.random();
+      return Math.round(baseDelay + jitter);
+    }
+
+    // 其他错误：±30% 双向抖动（避免惊群效应）
+    const jitter = baseDelay * 0.3;
+    return Math.round(baseDelay + Math.random() * jitter * 2 - jitter);
   }
+
+  // ═══════════════════════════════════════════════════════════════
+  // max_tokens 溢出自动恢复
+  // ═══════════════════════════════════════════════════════════════
+
+  /**
+   * 尝试从错误消息中恢复 max_tokens 溢出。
+   * 返回调整后的 maxTokens，或 null（无法恢复）。
+   */
+  private tryRecoverMaxTokens(errorMessage: string): number | null {
+    const contextLimit = this.config.contextLimit;
+    if (!contextLimit) return null;
+
+    // 匹配: "188059 + 20000 > 200000"
+    const sumMatch = errorMessage.match(/(\d+)\s*\+\s*(\d+)\s*>\s*(\d+)/);
+    if (sumMatch) {
+      const inputTokens = parseInt(sumMatch[1], 10);
+      return this.computeSafeMaxTokens(inputTokens, contextLimit);
+    }
+
+    // 匹配: "prompt is too long: 137500 tokens > 135000 maximum"
+    const tokenMatch = errorMessage.match(/(\d+)\s*tokens?\s*>\s*(\d+)/i);
+    if (tokenMatch) {
+      const inputTokens = parseInt(tokenMatch[1], 10);
+      return this.computeSafeMaxTokens(inputTokens, contextLimit);
+    }
+
+    return null;
+  }
+
+  /** 计算安全的 maxTokens 值 */
+  private computeSafeMaxTokens(inputTokens: number, contextLimit: number): number | null {
+    const available = Math.max(0, contextLimit - inputTokens - SAFETY_BUFFER);
+    if (available < FLOOR_OUTPUT_TOKENS) return null;
+    return Math.max(FLOOR_OUTPUT_TOKENS, available);
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // Telemetry 埋点
+  // ═══════════════════════════════════════════════════════════════
+
+  private emitTelemetry(event: RetryTelemetryEvent): void {
+    if (this.config.onTelemetry) {
+      try {
+        this.config.onTelemetry(event);
+      } catch {
+        // telemetry 不应影响主流程
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // 工具方法
+  // ═══════════════════════════════════════════════════════════════
 
   /** 异步睡眠 */
   private sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -352,19 +706,24 @@ export class ModelFallback {
       return Promise.reject(new RequestAbortedError("Request aborted"));
     }
 
+    // 防御性检查：某些环境（如 Bun）中 AbortSignal 可能不支持 addEventListener
+    const hasListener = signal && typeof (signal as any).addEventListener === "function";
+
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        signal?.removeEventListener("abort", onAbort);
+        if (hasListener) signal!.removeEventListener("abort", onAbort);
         resolve();
       }, ms);
 
       const onAbort = () => {
         clearTimeout(timer);
-        signal?.removeEventListener("abort", onAbort);
+        if (hasListener) signal!.removeEventListener("abort", onAbort);
         reject(new RequestAbortedError("Request aborted"));
       };
 
-      signal?.addEventListener("abort", onAbort, { once: true });
+      if (hasListener) {
+        signal!.addEventListener("abort", onAbort, { once: true });
+      }
     });
   }
 

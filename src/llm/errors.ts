@@ -1,7 +1,14 @@
 /**
  * LLM 错误分类体系
  * 将原始错误分为 Terminal / Retryable / StreamValidation 三类
+ *
+ * 增强（Phase 1.1）：新增 x-should-retry header 解析、rate-limit-reset header 解析、
+ * 更细粒度的 HTTP 状态码分类（408/409）、response headers 提取与 Retry-After 精确解析。
  */
+
+// ─── 遍历 cause 链的常量 ───
+// 保持与原始实现一致的深度限制
+const MAX_CAUSE_DEPTH = 5;
 
 /** 不可重试的终端错误（模型不存在、认证失败、配额耗尽） */
 export class TerminalError extends Error {
@@ -18,12 +25,14 @@ export type TerminalReason =
   | "content_policy"       // 内容策略拒绝
   | "invalid_request";     // 请求参数错误
 
-/** 可重试的瞬态错误（限流、过载、网络抖动） */
+/** 可重试的瞬态错误（限流、过载、网络抖动、请求超时、锁超时） */
 export class RetryableError extends Error {
   constructor(
     message: string,
     public readonly reason: RetryableReason,
-    public readonly retryAfterMs?: number,  // 服务器建议的重试延迟
+    public readonly retryAfterMs?: number,  // 服务器建议的重试延迟（毫秒）
+    /** 服务端明确指示应该重试（来自 x-should-retry header） */
+    public readonly serverInstructedRetry = false,
   ) {
     super(message);
     this.name = "RetryableError";
@@ -32,10 +41,12 @@ export class RetryableError extends Error {
 
 export type RetryableReason =
   | "rate_limit"           // 429 限流
-  | "overloaded"           // 503 过载
+  | "overloaded"           // 529/503 过载
   | "network_error"        // 网络连接错误
   | "timeout"              // 超时
-  | "server_error";        // 500/502 服务端错误
+  | "server_error"         // 500/502 服务端错误
+  | "request_timeout"      // 408 请求超时
+  | "lock_timeout";        // 409 锁超时
 
 /** 流式内容验证错误（响应不完整、工具调用格式错误） */
 export class StreamValidationError extends Error {
@@ -67,15 +78,156 @@ const RETRYABLE_NETWORK_CODES = [
   "EAI_AGAIN", "ECONNREFUSED", "EHOSTUNREACH",
 ];
 
+// ─── Cause 链遍历工具 ───
+
 /**
- * 从原始错误中提取网络错误码（遍历 cause 链，最多 5 层）
+ * 从原始错误中提取网络错误码（遍历 cause 链，最多 MAX_CAUSE_DEPTH 层）
  */
 export function getNetworkErrorCode(error: unknown): string | undefined {
   let current: any = error;
-  for (let depth = 0; depth < 5 && current; depth++) {
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH && current; depth++) {
     if (current.code && typeof current.code === "string") return current.code;
     current = current.cause;
   }
+  return undefined;
+}
+
+/**
+ * 从原始错误中提取 HTTP 状态码（遍历 cause 链）
+ */
+export function getHTTPStatus(error: unknown): number | undefined {
+  let current: any = error;
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH && current; depth++) {
+    if (typeof current.status === "number") return current.status;
+    if (typeof current.statusCode === "number") return current.statusCode;
+    if (current.response && typeof current.response.status === "number") {
+      return current.response.status;
+    }
+    current = current.cause;
+  }
+  return undefined;
+}
+
+/**
+ * 从错误中提取 HTTP response headers（遍历 cause 链）。
+ * Anthropic/OpenAI SDK 通常把 headers 挂在 error.headers 或 error.response.headers。
+ */
+export function extractResponseHeaders(
+  error: unknown,
+): Headers | Record<string, string> | undefined {
+  let current: any = error;
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH && current; depth++) {
+    if (current.headers) return current.headers;
+    if (current.response?.headers) return current.response.headers;
+    current = current.cause;
+  }
+  return undefined;
+}
+
+// ─── Header 解析工具（Phase 1.1 新增）───
+
+/**
+ * 从 response headers 中检查 x-should-retry。
+ * 服务端通过此 header 明确告知客户端是否应该重试。
+ */
+export function parseXShouldRetry(error: unknown): boolean {
+  const headers = extractResponseHeaders(error);
+  if (!headers) return false;
+
+  let value: string | null = null;
+
+  if (headers instanceof Headers) {
+    value = headers.get("x-should-retry");
+  } else if (typeof headers === "object") {
+    const keys = Object.keys(headers);
+    for (const k of keys) {
+      if (k.toLowerCase() === "x-should-retry") {
+        value = String(headers[k]);
+        break;
+      }
+    }
+  }
+
+  if (value !== null) {
+    const lowered = value.toLowerCase().trim();
+    return lowered === "true" || lowered === "yes" || lowered === "1";
+  }
+  return false;
+}
+
+/**
+ * 从 response headers 解析 Retry-After（秒）。
+ * 支持标准 Retry-After header 和自定义 retry-after 变体。
+ */
+export function parseRetryAfterFromHeaders(error: unknown): number | undefined {
+  const headers = extractResponseHeaders(error);
+  if (!headers) return undefined;
+
+  let value: string | null = null;
+
+  const extractFrom = (h: Headers | Record<string, string>) => {
+    if (h instanceof Headers) {
+      value = h.get("retry-after");
+      return;
+    }
+    const keys = Object.keys(h);
+    for (const k of keys) {
+      if (k.toLowerCase() === "retry-after") {
+        value = String(h[k]);
+        return;
+      }
+    }
+  };
+  extractFrom(headers);
+
+  if (value !== null && value.trim()) {
+    const seconds = parseInt(value.trim(), 10);
+    if (seconds > 0 && seconds <= 3600) return seconds * 1000; // 返回毫秒
+  }
+  return undefined;
+}
+
+/**
+ * 解析速率限制重置时间 header。
+ * 支持：
+ * - anthropic-ratelimit-unified-reset（Anthropic 专用，ISO 8601）
+ * - x-ratelimit-reset（OpenAI 风格，Unix 秒）
+ * - retry-after（标准 header，秒数或 HTTP-date）
+ */
+export function parseRateLimitReset(error: unknown): number | undefined {
+  const headers = extractResponseHeaders(error);
+  if (!headers) return undefined;
+
+  const getHeader = (name: string): string | null => {
+    if (headers instanceof Headers) return headers.get(name);
+    const keys = Object.keys(headers);
+    for (const k of keys) {
+      if (k.toLowerCase() === name.toLowerCase()) return String(headers[k]);
+    }
+    return null;
+  };
+
+  // 1. Anthropic unified reset（ISO 8601）
+  const unifiedReset = getHeader("anthropic-ratelimit-unified-reset");
+  if (unifiedReset) {
+    const parsed = Date.parse(unifiedReset);
+    if (!isNaN(parsed)) return parsed;
+  }
+
+  // 2. OpenAI x-ratelimit-reset（Unix 秒）
+  const openaiReset = getHeader("x-ratelimit-reset");
+  if (openaiReset) {
+    const seconds = parseFloat(openaiReset);
+    if (seconds > 0) return seconds * 1000; // 转为毫秒
+  }
+
+  // 3. 标准 Retry-After（秒数）
+  const retryAfter = getHeader("retry-after");
+  if (retryAfter) {
+    const seconds = parseInt(retryAfter, 10);
+    if (seconds > 0) return Date.now() + seconds * 1000;
+  }
+
   return undefined;
 }
 
@@ -115,16 +267,71 @@ export function toAbortError(error?: unknown): RequestAbortedError {
   return new RequestAbortedError(message);
 }
 
+// ─── 细粒度错误检测谓词 ───
+
+export function is408Error(error: unknown): boolean {
+  const status = getHTTPStatus(error);
+  if (status === 408) return true;
+  const msg = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return msg.includes("408") || msg.includes("http 408") || msg.includes("status 408");
+}
+
+export function is409Error(error: unknown): boolean {
+  const status = getHTTPStatus(error);
+  if (status === 409) return true;
+  const msg = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return msg.includes("409") || msg.includes("lock timeout") || msg.includes("conflict");
+}
+
+export function is401Error(error: unknown): boolean {
+  const status = getHTTPStatus(error);
+  if (status === 401) return true;
+  const msg = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return (
+    msg.includes("401") ||
+    msg.includes("authentication") ||
+    msg.includes("invalid api key") ||
+    msg.includes("invalid x-api-key")
+  );
+}
+
+/**
+ * 从错误信息中解析 Retry-After（秒 → 毫秒）
+ * 优先匹配 headers，回退到消息正则提取
+ */
+function parseRetryAfter(error: unknown): number | undefined {
+  // 优先从 headers 提取
+  const fromHeaders = parseRetryAfterFromHeaders(error);
+  if (fromHeaders) return fromHeaders;
+
+  // 回退：从消息中正则提取
+  const msg = error instanceof Error ? error.message : String(error);
+  const match = msg.match(/retry[_-]after[:\s"]*(\d+)/i);
+  if (match) {
+    const seconds = parseInt(match[1], 10);
+    if (seconds > 0 && seconds <= 300) return seconds * 1000;
+  }
+  return undefined;
+}
+
 /**
  * 将原始错误分类为 Terminal / Retryable / 未知
  * 供 fallback.ts 和 provider 使用
+ *
+ * Phase 1.1 增强：新增 408、409、x-should-retry header 识别
  */
 export function classifyError(error: unknown): TerminalError | RetryableError | Error {
   const msg = error instanceof Error ? error.message : String(error);
   const lowerMsg = msg.toLowerCase();
 
+  // 0. 服务端 x-should-retry header 优先
+  if (parseXShouldRetry(error)) {
+    const retryAfter = parseRetryAfter(error);
+    return new RetryableError(msg, "server_error", retryAfter, true);
+  }
+
   // 1. 终端错误
-  if (lowerMsg.includes("401") || lowerMsg.includes("authentication") || lowerMsg.includes("invalid api key")) {
+  if (is401Error(error)) {
     return new TerminalError(msg, "auth_failed");
   }
   if (lowerMsg.includes("404") || lowerMsg.includes("model_not_found") || lowerMsg.includes("not found")) {
@@ -137,13 +344,20 @@ export function classifyError(error: unknown): TerminalError | RetryableError | 
     return new TerminalError(msg, "invalid_request");
   }
 
-  // 2. 可重试错误
+  // 2. 可重试错误 — 新增 408、409
+  if (is408Error(error)) {
+    return new RetryableError(msg, "request_timeout");
+  }
+  if (is409Error(error)) {
+    return new RetryableError(msg, "lock_timeout");
+  }
   if (lowerMsg.includes("429") || lowerMsg.includes("rate_limit")) {
-    const retryAfter = parseRetryAfter(msg);
+    const retryAfter = parseRetryAfter(error);
     return new RetryableError(msg, "rate_limit", retryAfter);
   }
-  if (lowerMsg.includes("overloaded") || lowerMsg.includes("503")) {
-    return new RetryableError(msg, "overloaded");
+  if (lowerMsg.includes("overloaded") || lowerMsg.includes("529") || lowerMsg.includes("503")) {
+    const retryAfter = parseRetryAfter(error);
+    return new RetryableError(msg, "overloaded", retryAfter);
   }
   if (lowerMsg.includes("502") || lowerMsg.includes("500") || lowerMsg.includes("server_error")) {
     return new RetryableError(msg, "server_error");
@@ -160,14 +374,4 @@ export function classifyError(error: unknown): TerminalError | RetryableError | 
 
   // 4. 无法分类，返回原始错误
   return error instanceof Error ? error : new Error(msg);
-}
-
-/** 从错误信息中解析 retry-after（秒 → 毫秒） */
-function parseRetryAfter(msg: string): number | undefined {
-  const match = msg.match(/retry[_-]after[:\s"]*(\d+)/i);
-  if (match) {
-    const seconds = parseInt(match[1], 10);
-    if (seconds > 0 && seconds <= 300) return seconds * 1000;
-  }
-  return undefined;
 }
