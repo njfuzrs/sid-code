@@ -11,8 +11,9 @@ import { Manager as ContextManager } from "../context/manager.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { getLogger } from "../debug/logger.ts";
 import type { HookSystem } from "../hook/system.ts";
-import { LoopDetector, LOOP_RECOVERY_PROMPT } from "./loop-detection.ts";
+import { LoopDetector } from "./loop-detection.ts";
 import { filterToolsForAgent } from "./tool-filter.ts";
+import { runAgentLoop } from "./agentic-loop.ts";
 import {
   createAgentTask,
   completeAgentTask,
@@ -29,8 +30,6 @@ import {
 } from "./sub-agent-protocol.ts";
 import { drainAgentMessages } from "./message-queue.ts";
 import { getAgentSystemPrompt, getAgentWhenToUse, type AgentDefinition } from "./agent-definition.ts";
-import { processStream } from "./stream-processor.ts";
-import { executeTools } from "./tool-executor.ts";
 
 /** 子代理类型 */
 export type SubAgentType = "explore" | "task" | "summarize" | "plan" | "verify";
@@ -480,7 +479,8 @@ export class SubAgent {
     }
   }
 
-  /** 内部执行逻辑（含超时控制） */
+  /** 内部执行逻辑（含超时控制）
+   *  M5: 使用共享 runAgentLoop() 替代自维护 while 循环，对标 claude-code runAgent() */
   private async executeInner(task: SubAgentTask, signal?: AbortSignal, taskId?: string): Promise<SubAgentResult> {
     const log = getLogger();
     const startTime = Date.now();
@@ -518,188 +518,110 @@ export class SubAgent {
       const tools = new ToolRegistry();
       for (const t of filteredTools) tools.register(t);
       const maxTurns = task.maxTurns ?? 10;
-      const totalUsage: Usage = { inputTokens: 0, outputTokens: 0 };
-      let turns = 0;
-      let toolUseCount = 0;
-      let lastTextOutput = "";
       const loopDetector = new LoopDetector();
 
       const toolNames = filteredTools.map(t => t.name());
       log.info("SUBAGENT", `[${task.type}] 可用工具: ${toolNames.join(", ") || "无"}, 超时: ${timeout / 1000}秒, 最大轮次: ${maxTurns}`);
 
-      while (turns < maxTurns) {
-        turns++;
-        log.debug("SUBAGENT", `[${task.type}] 轮次 ${turns}/${maxTurns}`);
+      // 动态获取 provider/model（registry 模式下按子代理类型选择）
+      const activeProvider = this.registry
+        ? this.registry.getProviderForSubAgent(task.type)
+        : this.provider;
+      const activeModel = this.registry
+        ? this.registry.getModelForSubAgent(task.type)
+        : this.model;
 
-        // 消费 SendMessage 注入的消息（对标 claude-code pendingMessages 机制）
-        // 从第 2 轮开始检查（第 1 轮刚启动，通常还没有消息）
-        if (taskId && turns > 1) {
-          const injected = drainAgentMessages(taskId);
-          for (const msg of injected) {
-            log.info("SUBAGENT", `[${task.type}] 收到主代理消息: ${msg.slice(0, 100)}`);
-            ctxMgr.addMessage({
-              role: "user",
-              content: [{ type: "text", text: `[主代理消息] ${msg}` }],
-            });
-          }
-        }
+      // M5: 使用共享 runAgentLoop() 运行独立 Agent Loop
+      let lastTextOutput = "";
+      let toolUseCount = 0;
+      let tokenCount = 0;
 
-        const toolDefs = tools.size() > 0 ? tools.definitions() : undefined;
-
-        // 动态获取 provider/model（registry 模式下按子代理类型选择）
-        const activeProvider = this.registry
-          ? this.registry.getProviderForSubAgent(task.type)
-          : this.provider;
-        const activeModel = this.registry
-          ? this.registry.getModelForSubAgent(task.type)
-          : this.model;
-
-        const stream = activeProvider.sendMessageStream(
-          {
-            model: activeModel,
-            messages: ctxMgr.getMessages(),
-            system: ctxMgr.getSystemPrompt(),
-            maxTokens: 4096,
-            tools: toolDefs,
-          },
-          mergedSignal,
-        );
-
-        // 处理流式响应
-        const response = await processStream(stream);
-
-        // LLM API 错误处理：不再穿透，转为失败结果
-        if (response.stopReason === "error") {
-          log.error("SUBAGENT", `[${task.type}] LLM 错误: ${response.errorMessage}`);
-          return {
-            success: false,
-            output: response.errorMessage || "子代理 LLM 错误",
-            usage: totalUsage,
-            turns,
-            toolUseCount,
-          };
-        }
-
-        totalUsage.inputTokens += response.usage.inputTokens;
-        totalUsage.outputTokens += response.usage.outputTokens;
-
-        // 提取文本输出
-        const textBlocks = response.content.filter(b => b.type === "text");
-        if (textBlocks.length > 0) {
-          lastTextOutput = textBlocks
-            .map(b => b.type === "text" ? b.text : "")
-            .join("\n");
-        }
-
-        // 实时写输出到磁盘（支持 task_output 增量读取）
-        if (taskId && lastTextOutput) {
-          appendAgentOutput(taskId, `[轮次 ${turns}] ${lastTextOutput}\n`);
-        }
-
-        ctxMgr.addMessage({
-          role: "assistant",
-          content: response.content,
-        });
-
-        // 内容循环检测
-        if (lastTextOutput && loopDetector.recordContent(lastTextOutput)) {
-          if (!loopDetector.tryRecover()) {
-            log.warn("SUBAGENT", `[${task.type}] 内容循环恢复次数耗尽，终止`);
-            break;
-          }
-          log.info("SUBAGENT", `[${task.type}] 检测到内容循环，注入恢复提示`);
-          ctxMgr.addMessage({
-            role: "user",
-            content: [{ type: "text", text: LOOP_RECOVERY_PROMPT }],
-          });
-          continue;
-        }
-
-        // 检查停止原因
-        if (response.stopReason === "end_turn" || response.stopReason === "stop") {
-          log.info("SUBAGENT", `[${task.type}] 完成，共 ${turns} 轮`);
-          break;
-        }
-
-        // 处理工具调用
-        if (response.stopReason === "tool_use") {
-          // 工具调用循环检测
-          let loopDetected = false;
-          for (const block of response.content) {
-            if (block.type === "tool_use") {
-              if (loopDetector.recordToolCall(block.name, block.input)) {
-                loopDetected = true;
-                break;
-              }
+      const loopResult = await runAgentLoop({
+        provider: activeProvider,
+        model: activeModel,
+        ctxMgr,
+        tools,
+        maxTurns,
+        signal: mergedSignal,
+        loopDetector,
+        onBeforeTurn: (turn) => {
+          // 消费 SendMessage 注入的消息（从第 2 轮开始检查）
+          if (taskId && turn > 1) {
+            const injected = drainAgentMessages(taskId);
+            for (const msg of injected) {
+              log.info("SUBAGENT", `[${task.type}] 收到主代理消息: ${msg.slice(0, 100)}`);
+              ctxMgr.addMessage({
+                role: "user",
+                content: [{ type: "text", text: `[主代理消息] ${msg}` }],
+              });
             }
           }
-          if (loopDetected) {
-            if (!loopDetector.tryRecover()) {
-              log.warn("SUBAGENT", `[${task.type}] 工具循环恢复次数耗尽，终止`);
-              break;
-            }
-            log.info("SUBAGENT", `[${task.type}] 检测到工具循环，注入恢复提示`);
-            ctxMgr.addMessage({
-              role: "user",
-              content: [{ type: "text", text: LOOP_RECOVERY_PROMPT }],
-            });
-            continue;
+        },
+        onTurnEnd: (info) => {
+          lastTextOutput = info.textOutput || lastTextOutput;
+          toolUseCount += info.tools.length;
+          // tokenCount 从 ctxMgr 消息中估算（输入 token 在流式响应中累加，此处保守使用 turn 数 * 4096 作为近似值）
+          // 实际精确值在 runAgentLoop 返回后从 loopResult.totalUsage 获取
+          tokenCount += 4096;
+
+          // 实时写输出到磁盘（支持 task_output 增量读取）
+          if (taskId && info.textOutput) {
+            appendAgentOutput(taskId, `[轮次 ${info.turn}] ${info.textOutput}\n`);
           }
-
-          // 统计工具调用次数
-          const toolUseBlocks = response.content.filter(b => b.type === "tool_use");
-          toolUseCount += toolUseBlocks.length;
-
-          const toolResults = await executeTools(response.content, tools, mergedSignal);
-          ctxMgr.addMessage({
-            role: "user",
-            content: toolResults,
-          });
 
           // 更新任务进度（供 pollTasks 读取实时状态）
-          if (taskId) {
-            const lastTool = toolUseBlocks[toolUseBlocks.length - 1];
+          if (taskId && info.tools.length > 0) {
+            const lastToolEntry = info.tools[info.tools.length - 1];
             updateAgentProgress(taskId, {
               toolUseCount,
-              tokenCount: totalUsage.inputTokens + totalUsage.outputTokens,
-              lastActivity: lastTool ? {
-                toolName: lastTool.name,
-                input: lastTool.input as Record<string, unknown>,
-                activityDescription: `${lastTool.name}: ${JSON.stringify(lastTool.input).slice(0, 80)}`,
+              tokenCount,
+              lastActivity: lastToolEntry ? {
+                toolName: lastToolEntry.name,
+                input: lastToolEntry.input,
+                activityDescription: `${lastToolEntry.name}: ${JSON.stringify(lastToolEntry.input).slice(0, 80)}`,
               } : undefined,
               recentActivities: [],
             });
 
             // M5 opt-in: 周期性进度摘要（每 5 轮生成一次）
-            if (process.env.SIDCODE_AGENT_PROGRESS_SUMMARY === "1" && turns % 5 === 0) {
-              const toolNames = toolUseBlocks.map(b => b.name).join(", ");
-              const textPreview = lastTextOutput.slice(0, 100);
-              const summary = `[轮次 ${turns}] 工具: ${toolNames || "(无)"} | 输出预览: ${textPreview || "(无文本)"}`;
+            if (process.env.SIDCODE_AGENT_PROGRESS_SUMMARY === "1" && info.turn % 5 === 0) {
+              const toolNames = info.tools.map(t => t.name).join(", ");
+              const textPreview = info.textOutput.slice(0, 100);
+              const summary = `[轮次 ${info.turn}] 工具: ${toolNames || "(无)"} | 输出预览: ${textPreview || "(无文本)"}`;
               updateTask<LocalAgentTaskState>(taskId, (t) => ({
                 ...t,
                 progressSummary: summary,
               }));
             }
           }
-          continue;
-        }
+        },
+      });
 
-        break;
-      }
+      // 更新 final 状态（runAgentLoop 结束后 lastTextOutput 已从 onTurnEnd 累积）
+      const totalUsage = loopResult.totalUsage;
 
       // 提取最终结果：从所有 assistant 消息中回溯查找最后一条有文本内容的
-      // 参考 claude-code finalizeAgentTool 回退逻辑：优先最后一条有 text 的 assistant
       const finalOutput = this.extractFinalText(ctxMgr.getMessages(), lastTextOutput);
       log.info("SUBAGENT", `[${task.type}] 结果: ${finalOutput.slice(0, 200)}`);
-      log.info("SUBAGENT", `[${task.type}] 完成，共 ${turns} 轮，耗时 ${((Date.now() - startTime) / 1000).toFixed(1)}秒`);
+      log.info("SUBAGENT", `[${task.type}] 完成，共 ${loopResult.turns} 轮，耗时 ${((Date.now() - startTime) / 1000).toFixed(1)}秒`);
 
-      return {
-        success: true,
-        output: finalOutput,
-        usage: totalUsage,
-        turns,
-        toolUseCount,
-      };
+      if (loopResult.success) {
+        return {
+          success: true,
+          output: finalOutput,
+          usage: totalUsage,
+          turns: loopResult.turns,
+          toolUseCount,
+        };
+      } else {
+        return {
+          success: false,
+          output: loopResult.errorMessage || "子代理执行未成功",
+          usage: totalUsage,
+          turns: loopResult.turns,
+          toolUseCount,
+        };
+      }
     } catch (err: any) {
       // 超时中断时返回友好提示
       if (timeoutCtrl.signal.aborted) {
@@ -726,7 +648,7 @@ export class SubAgent {
     }
   }
 
-  /** 自定义子代理内部执行逻辑（复用流式处理和工具执行） */
+  /** 自定义子代理内部执行逻辑（M5: 使用共享 runAgentLoop） */
   private async executeCustomInner(task: CustomSubAgentTask, signal?: AbortSignal): Promise<SubAgentResult> {
     const log = getLogger();
     const startTime = Date.now();
@@ -754,138 +676,61 @@ export class SubAgent {
         ? this.toolRegistry.filter(task.allowedTools)
         : new ToolRegistry();
       const maxTurns = task.maxTurns ?? 10;
-      const totalUsage: Usage = { inputTokens: 0, outputTokens: 0 };
-      let turns = 0;
-      let toolUseCount = 0;
-      let lastTextOutput = "";
       const loopDetector = new LoopDetector();
 
       log.info("SUBAGENT", `[custom] 可用工具: ${task.allowedTools.join(", ") || "无"}, 超时: ${timeout / 1000}秒, 最大轮次: ${maxTurns}`);
 
-      while (turns < maxTurns) {
-        turns++;
-        log.debug("SUBAGENT", `[custom] 轮次 ${turns}/${maxTurns}`);
+      // 动态获取 provider/model（registry 模式下使用 modelOverride 或主模型）
+      const activeProvider = this.registry
+        ? (this.modelOverride
+          ? this.registry.getProviderForSubAgent("task")  // 自定义 agent 按 task 类型查找
+          : this.registry.getProvider())
+        : this.provider;
+      const activeModel = this.modelOverride || (this.registry
+        ? this.registry.getCurrentModel()
+        : this.model);
 
-        const toolDefs = tools.size() > 0 ? tools.definitions() : undefined;
+      // M5: 使用共享 runAgentLoop() 运行独立 Agent Loop
+      let lastTextOutput = "";
+      let toolUseCount = 0;
 
-        // 动态获取 provider/model（registry 模式下使用 modelOverride 或主模型）
-        const activeProvider = this.registry
-          ? (this.modelOverride
-            ? this.registry.getProviderForSubAgent("task")  // 自定义 agent 按 task 类型查找
-            : this.registry.getProvider())
-          : this.provider;
-        const activeModel = this.modelOverride || (this.registry
-          ? this.registry.getCurrentModel()
-          : this.model);
+      const loopResult = await runAgentLoop({
+        provider: activeProvider,
+        model: activeModel,
+        ctxMgr,
+        tools,
+        maxTurns,
+        signal: mergedSignal,
+        loopDetector,
+        onTurnEnd: (info) => {
+          lastTextOutput = info.textOutput || lastTextOutput;
+          toolUseCount += info.tools.length;
+        },
+      });
 
-        const stream = activeProvider.sendMessageStream(
-          {
-            model: activeModel,
-            messages: ctxMgr.getMessages(),
-            system: ctxMgr.getSystemPrompt(),
-            maxTokens: 4096,
-            tools: toolDefs,
-          },
-          mergedSignal,
-        );
-
-        const response = await processStream(stream);
-
-        // LLM API 错误处理：不再穿透，转为失败结果
-        if (response.stopReason === "error") {
-          log.error("SUBAGENT", `[custom] LLM 错误: ${response.errorMessage}`);
-          return {
-            success: false,
-            output: response.errorMessage || "子代理 LLM 错误",
-            usage: totalUsage,
-            turns,
-            toolUseCount,
-          };
-        }
-
-        totalUsage.inputTokens += response.usage.inputTokens;
-        totalUsage.outputTokens += response.usage.outputTokens;
-
-        const textBlocks = response.content.filter(b => b.type === "text");
-        if (textBlocks.length > 0) {
-          lastTextOutput = textBlocks
-            .map(b => b.type === "text" ? b.text : "")
-            .join("\n");
-        }
-
-        ctxMgr.addMessage({
-          role: "assistant",
-          content: response.content,
-        });
-
-        // 内容循环检测
-        if (lastTextOutput && loopDetector.recordContent(lastTextOutput)) {
-          if (!loopDetector.tryRecover()) {
-            log.warn("SUBAGENT", `[custom] 内容循环恢复次数耗尽，终止`);
-            break;
-          }
-          log.info("SUBAGENT", `[custom] 检测到内容循环，注入恢复提示`);
-          ctxMgr.addMessage({
-            role: "user",
-            content: [{ type: "text", text: LOOP_RECOVERY_PROMPT }],
-          });
-          continue;
-        }
-
-        if (response.stopReason === "end_turn" || response.stopReason === "stop") {
-          break;
-        }
-
-        if (response.stopReason === "tool_use") {
-          // 工具调用循环检测
-          let loopDetected = false;
-          for (const block of response.content) {
-            if (block.type === "tool_use") {
-              if (loopDetector.recordToolCall(block.name, block.input)) {
-                loopDetected = true;
-                break;
-              }
-            }
-          }
-          if (loopDetected) {
-            if (!loopDetector.tryRecover()) {
-              log.warn("SUBAGENT", `[custom] 工具循环恢复次数耗尽，终止`);
-              break;
-            }
-            log.info("SUBAGENT", `[custom] 检测到工具循环，注入恢复提示`);
-            ctxMgr.addMessage({
-              role: "user",
-              content: [{ type: "text", text: LOOP_RECOVERY_PROMPT }],
-            });
-            continue;
-          }
-
-          // 统计工具调用次数
-          const toolUseBlocks = response.content.filter(b => b.type === "tool_use");
-          toolUseCount += toolUseBlocks.length;
-
-          const toolResults = await executeTools(response.content, tools, mergedSignal);
-          ctxMgr.addMessage({
-            role: "user",
-            content: toolResults,
-          });
-          continue;
-        }
-
-        break;
-      }
+      const totalUsage = loopResult.totalUsage;
 
       // 提取最终结果：从所有 assistant 消息中回溯查找最后一条有文本内容的
       const finalOutput = this.extractFinalText(ctxMgr.getMessages(), lastTextOutput);
-      log.info("SUBAGENT", `[custom] 完成，共 ${turns} 轮，耗时 ${((Date.now() - startTime) / 1000).toFixed(1)}秒`);
+      log.info("SUBAGENT", `[custom] 完成，共 ${loopResult.turns} 轮，耗时 ${((Date.now() - startTime) / 1000).toFixed(1)}秒`);
 
-      return {
-        success: true,
-        output: finalOutput,
-        usage: totalUsage,
-        turns,
-        toolUseCount,
-      };
+      if (loopResult.success) {
+        return {
+          success: true,
+          output: finalOutput,
+          usage: totalUsage,
+          turns: loopResult.turns,
+          toolUseCount,
+        };
+      } else {
+        return {
+          success: false,
+          output: loopResult.errorMessage || "子代理执行未成功",
+          usage: totalUsage,
+          turns: loopResult.turns,
+          toolUseCount,
+        };
+      }
     } catch (err: any) {
       if (timeoutCtrl.signal.aborted) {
         log.warn("SUBAGENT", `[custom] 超时 (${timeout}ms)`);

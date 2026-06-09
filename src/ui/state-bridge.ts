@@ -5,14 +5,28 @@
 
 import { EventEmitter } from "events";
 import type { TUIState, TaskDisplayInfo } from "./App.tsx";
-import { getAllTasks, isAgentTask, isShellTask } from "../task/index.ts";
+import { getAllTasks, isAgentTask, isShellTask, onTaskChanged, offTaskChanged } from "../task/index.ts";
 
 export class StateBridge extends EventEmitter {
   current: TUIState;
+  /** 任务变更监听器引用（用于清理） */
+  private _taskChangeHandler: (() => void) | null = null;
 
   constructor(initial: TUIState) {
     super();
     this.current = initial;
+
+    // M5: 订阅任务变更事件，自动同步到 TUI 状态（事件驱动刷新）
+    this._taskChangeHandler = () => this.updateTasks();
+    onTaskChanged(this._taskChangeHandler);
+  }
+
+  /** 取消任务变更订阅 */
+  detach(): void {
+    if (this._taskChangeHandler) {
+      offTaskChanged(this._taskChangeHandler);
+      this._taskChangeHandler = null;
+    }
   }
 
   /** 更新状态并触发事件 */

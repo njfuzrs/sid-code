@@ -346,7 +346,13 @@ export class ModelFallback {
           phase: "connection",
         });
 
-        await this.sleep(delayMs, signal);
+        yield* this.sleepWithProgress(
+          delayMs,
+          attempt + 1,
+          connMaxRetries + 1,
+          "retry",
+          signal,
+        );
       }
     }
 
@@ -376,8 +382,11 @@ export class ModelFallback {
                 throw toAbortError(event.error.message);
               }
 
-              // ── max_tokens 溢出自动恢复 ──
-              const maxTokensResult = this.tryRecoverMaxTokens(event.error.message);
+              // ── max_tokens 溢出自动恢复（感知 thinking budget）──
+              const maxTokensResult = this.tryRecoverMaxTokens(
+                event.error.message,
+                params.thinking?.budgetTokens,
+              );
               if (maxTokensResult !== null) {
                 const adjusted = maxTokensResult;
                 const original = params.maxTokens;
@@ -496,7 +505,13 @@ export class ModelFallback {
                 model: params.model,
                 delayMs,
               });
-              await this.sleep(delayMs, signal);
+              yield* this.sleepWithProgress(
+                delayMs,
+                attempt + 1,
+                streamMaxRetries + 1,
+                "persistent_retry",
+                signal,
+              );
               // 重置计数，继续循环
               attempt = -1;
               continue;
@@ -519,7 +534,13 @@ export class ModelFallback {
             phase: "stream",
           });
 
-          await this.sleep(delayMs, signal);
+          yield* this.sleepWithProgress(
+            delayMs,
+            attempt + 1,
+            streamMaxRetries + 1,
+            "retry",
+            signal,
+          );
 
           // 重置超时计时器
           resetStreamTimeout();
@@ -540,7 +561,13 @@ export class ModelFallback {
 
             if (this.config.persistent) {
               log.info("FALLBACK", "persistent 模式，重连失败后继续等待");
-              await this.sleep(PERSISTENT_HEARTBEAT_MS, signal);
+              yield* this.sleepWithProgress(
+                PERSISTENT_HEARTBEAT_MS,
+                attempt + 1,
+                streamMaxRetries + 1,
+                "persistent_retry",
+                signal,
+              );
               attempt = -1;
               continue;
             }
@@ -653,8 +680,11 @@ export class ModelFallback {
   /**
    * 尝试从错误消息中恢复 max_tokens 溢出。
    * 返回调整后的 maxTokens，或 null（无法恢复）。
+   *
+   * @param errorMessage 错误消息
+   * @param thinkingBudget thinking 预算 token 数（Extended Thinking 场景，需从可用空间中扣除）
    */
-  private tryRecoverMaxTokens(errorMessage: string): number | null {
+  private tryRecoverMaxTokens(errorMessage: string, thinkingBudget?: number): number | null {
     const contextLimit = this.config.contextLimit;
     if (!contextLimit) return null;
 
@@ -662,22 +692,32 @@ export class ModelFallback {
     const sumMatch = errorMessage.match(/(\d+)\s*\+\s*(\d+)\s*>\s*(\d+)/);
     if (sumMatch) {
       const inputTokens = parseInt(sumMatch[1], 10);
-      return this.computeSafeMaxTokens(inputTokens, contextLimit);
+      return this.computeSafeMaxTokens(inputTokens, contextLimit, thinkingBudget);
     }
 
     // 匹配: "prompt is too long: 137500 tokens > 135000 maximum"
     const tokenMatch = errorMessage.match(/(\d+)\s*tokens?\s*>\s*(\d+)/i);
     if (tokenMatch) {
       const inputTokens = parseInt(tokenMatch[1], 10);
-      return this.computeSafeMaxTokens(inputTokens, contextLimit);
+      return this.computeSafeMaxTokens(inputTokens, contextLimit, thinkingBudget);
     }
 
     return null;
   }
 
-  /** 计算安全的 maxTokens 值 */
-  private computeSafeMaxTokens(inputTokens: number, contextLimit: number): number | null {
-    const available = Math.max(0, contextLimit - inputTokens - SAFETY_BUFFER);
+  /**
+   * 计算安全的 maxTokens 值。
+   *
+   * 对标 claude-code 的 thinking budget 感知：当 Extended Thinking 启用时，
+   * thinking 消耗的 token 不计入 output，但仍占用上下文窗口，需要从可用空间中扣除。
+   */
+  private computeSafeMaxTokens(
+    inputTokens: number,
+    contextLimit: number,
+    thinkingBudget?: number,
+  ): number | null {
+    const thinkingCost = thinkingBudget ?? 0;
+    const available = Math.max(0, contextLimit - inputTokens - thinkingCost - SAFETY_BUFFER);
     if (available < FLOOR_OUTPUT_TOKENS) return null;
     return Math.max(FLOOR_OUTPUT_TOKENS, available);
   }
@@ -725,6 +765,59 @@ export class ModelFallback {
         signal!.addEventListener("abort", onAbort, { once: true });
       }
     });
+  }
+
+  /**
+   * 带进度报告的异步睡眠。
+   *
+   * 对标 claude-code 的 withRetry() 中 yield SystemAPIErrorMessage 到 UI 层：
+   * - 短延迟（< 15s）：yield 一次进度消息后 sleep
+   * - 长延迟（≥ 15s）：拆分为 10s 心跳块，每块 yield 剩余时间
+   * 让 TUI 在重试等待期间能向用户展示"正在重试…"等反馈。
+   */
+  private async *sleepWithProgress(
+    delayMs: number,
+    attempt: number,
+    maxRetries: number,
+    category: string,
+    signal?: AbortSignal,
+  ): AsyncGenerator<StreamEvent> {
+    // 短延迟：单次 sleep + yield 一条进度消息
+    if (delayMs < 15_000) {
+      yield {
+        type: "system_api_error",
+        content: `正在重试 (${attempt}/${maxRetries})…`,
+        delayMs,
+        attempt,
+        maxRetries,
+        category,
+      };
+      await this.sleep(delayMs, signal);
+      return;
+    }
+
+    // 长延迟（persistent retry 等）：拆分为心跳块
+    const heartbeatMs = 10_000;
+    let remaining = delayMs;
+    let chunkIndex = 0;
+
+    while (remaining > 0) {
+      const chunk = Math.min(heartbeatMs, remaining);
+      await this.sleep(chunk, signal);
+      remaining -= chunk;
+      chunkIndex++;
+
+      if (remaining > 0) {
+        yield {
+          type: "system_api_error",
+          content: `等待中… 剩余 ${Math.ceil(remaining / 1000)}s (${attempt}/${maxRetries})`,
+          delayMs: remaining,
+          attempt,
+          maxRetries,
+          category,
+        };
+      }
+    }
   }
 
   /** 检查是否发生了模型降级 */

@@ -561,10 +561,12 @@ export async function main(): Promise<void> {
     const { TaskOutputTool } = await import("./tool/task-output.ts");
     const { TaskStopTool } = await import("./tool/task-stop.ts");
     const { TaskListTool } = await import("./tool/task-list.ts");
+    const { TaskGetTool } = await import("./tool/task-get.ts");
     const { SendMessageTool } = await import("./tool/send-message.ts");
     toolRegistry.register(new TaskOutputTool());
     toolRegistry.register(new TaskStopTool());
     toolRegistry.register(new TaskListTool());
+    toolRegistry.register(new TaskGetTool());
     toolRegistry.register(new SendMessageTool());
 
     // 注册 Worktree 隔离工具

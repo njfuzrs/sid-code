@@ -13,9 +13,31 @@ import { getTaskOutputTail } from "./disk-output.ts";
 /** 全局任务存储 */
 const tasks = new Map<string, TaskState>();
 
+/** 任务变更监听器集合（M5: 事件驱动 TUI 刷新） */
+type TaskChangeCallback = () => void;
+const changeListeners = new Set<TaskChangeCallback>();
+
+/** 注册任务变更监听器 */
+export function onTaskChanged(callback: TaskChangeCallback): void {
+  changeListeners.add(callback);
+}
+
+/** 取消注册任务变更监听器 */
+export function offTaskChanged(callback: TaskChangeCallback): void {
+  changeListeners.delete(callback);
+}
+
+/** 通知所有监听器任务已变更 */
+function notifyTaskChanged(): void {
+  for (const cb of changeListeners) {
+    try { cb(); } catch { /* 监听器异常不应影响任务系统 */ }
+  }
+}
+
 /** 注册新任务 */
 export function registerTask(task: TaskState): void {
   tasks.set(task.id, task);
+  notifyTaskChanged();
 }
 
 /** 原子性更新任务状态 */
@@ -28,6 +50,7 @@ export function updateTask<T extends TaskState>(
   const updated = updater(task);
   if (updated !== task) {
     tasks.set(taskId, updated);
+    notifyTaskChanged();
   }
 }
 

@@ -26,6 +26,8 @@ export {
   evictTerminalTasks,
   clearAllTasks,
   generateTaskStatusAttachment,
+  onTaskChanged,
+  offTaskChanged,
 } from "./registry.ts";
 
 export {

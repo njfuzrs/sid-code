@@ -92,6 +92,10 @@ export async function processStream(
           usage,
           errorMessage: `LLM 错误: ${event.error.message}`,
         };
+
+      case "system_api_error":
+        // 子代理上下文无 TUI 渲染，静默忽略重试进度事件
+        break;
     }
   }
 

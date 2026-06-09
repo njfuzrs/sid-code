@@ -160,6 +160,12 @@ export async function processStream(
 
         case "error":
           throw new Error(`LLM 错误: ${event.error.message}`);
+
+        case "system_api_error":
+          // 对标 claude-code：通过 onText 将重试进度消息传递给 TUI 渲染
+          // 格式："[重试中] 正在重试 (2/4)…" 等用户可见文案
+          onText?.(`[重试中] ${event.content}`);
+          break;
       }
     }
   } finally {
