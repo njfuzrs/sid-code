@@ -282,6 +282,7 @@ export async function buildInitialSystemPrompt(config: Config, tools: import("..
     memorySummary,
     memorySystemPrompt,
     preferredLanguage: config.language,
+    model: config.model,
     ...collectIDEContext(),
     maxTokens: 180000,
   });

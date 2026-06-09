@@ -83,6 +83,7 @@ function mockProviderRegistry(provider: Provider, model: string = "test-model"):
     getProviderFor: () => provider,
     getCurrentModel: () => model,
     getModelForSubAgent: () => model,
+    getLanguage: () => "zh" as const,
     getProviderForSubAgent: () => provider,
     clearCache: () => {},
   } as unknown as ProviderRegistry;

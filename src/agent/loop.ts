@@ -35,6 +35,14 @@ import {
   dequeuePendingNotifications,
   getRunningTasks,
 } from "../task/index.ts";
+import {
+  calculateChineseRatio,
+  detectEnglishTriggerWords,
+  evaluateChineseRatio,
+  buildLanguageCorrectionMessage,
+  MAX_LANG_RETRY,
+  CHINESE_RATIO_HARD_THRESHOLD,
+} from "../query/chinese-ratio.ts";
 
 /** UI 回调接口，处理 REPL/TUI 的差异 */
 export interface AgentLoopCallbacks {
@@ -306,6 +314,8 @@ export class AgentLoopRunner {
 
     let turns = 0;
     const maxTurns = config.maxTurns || Infinity;
+    /** 语言纠正重试计数（L5，独立于 turns） */
+    let langRetryCount = 0;
 
     while (turns < maxTurns) {
       turns++;
@@ -453,10 +463,13 @@ export class AgentLoopRunner {
       const ttftStart = performance.now();
 
       let response: AccumulatedResponse;
+      // L3: 流中累积完整响应文本（对标 Claude Code "先收集后判断" 思想）
+      let fullResponseText = "";
       try {
         response = await this.deps.processStream(
           stream,
           (text) => {
+            fullResponseText += text;
             if (ttftMs === undefined) {
               ttftMs = performance.now() - ttftStart;
             }
@@ -531,6 +544,82 @@ export class AgentLoopRunner {
         .join("");
       if (responseText) {
         log.llmResponseText(responseText);
+      }
+
+      // ================================================================
+      // L3 + L5: 英文触发词检测 + 中文占比检测 + 语言纠正重试
+      // 对标 Claude Code 的"先收集后判断"思想（但用途不同：
+      // Claude Code 用于 API 错误，sid-code 用于内容质量）
+      // ================================================================
+
+      // L3: 检测英文触发词（DeepSeek reasoning 泄露到 content 等模式）
+      const englishTriggered = responseText
+        ? detectEnglishTriggerWords(responseText)
+        : false;
+      if (englishTriggered) {
+        log.info("AGENT", "L3: 检测到英文触发词");
+      }
+
+      // L5: 中文占比检测 + 语言纠正重试
+      // 仅在中文模式 + DeepSeek 模型时启用
+      const enableLangCheck =
+        config.language !== "en" &&
+        !!config.model?.toLowerCase().includes("deepseek");
+      let langRetry = false;
+
+      if (enableLangCheck && responseText) {
+        const stopIsEndTurn =
+          response.stopReason === "end_turn" ||
+          response.stopReason === "stop";
+
+        if (stopIsEndTurn) {
+          const chineseRatio = calculateChineseRatio(responseText);
+          const evaluation = evaluateChineseRatio(
+            chineseRatio,
+            langRetryCount,
+            MAX_LANG_RETRY,
+          );
+
+          if (evaluation.needsRetry) {
+            langRetryCount++;
+            langRetry = true;
+            log.warn(
+              "AGENT",
+              `L5: 中文占比过低 (${(chineseRatio * 100).toFixed(1)}%，阈值 ${(CHINESE_RATIO_HARD_THRESHOLD * 100).toFixed(0)}%)，第 ${langRetryCount}/${MAX_LANG_RETRY} 次语言纠正重试`,
+            );
+          } else if (evaluation.needsWarn) {
+            log.warn(
+              "AGENT",
+              `L5: 中文占比较低 (${(chineseRatio * 100).toFixed(1)}%)，但在可接受范围 (>=50%)`,
+            );
+          } else {
+            // 中文占比达标
+            if (englishTriggered) {
+              log.info(
+                "AGENT",
+                `L3: 英文触发词出现但中文占比达标 (${(chineseRatio * 100).toFixed(1)}%)，通过`,
+              );
+            }
+          }
+        }
+      }
+
+      // 语言纠正重试：追加纠正消息后重新调用 LLM
+      if (langRetry) {
+        // 方案 A：保留低质量响应在历史中，追加纠正消息
+        ctxMgr.addMessage({
+          role: "assistant",
+          content: response.content,
+          ...(response._meta ? { _meta: response._meta } : {}),
+        });
+        ctxMgr.addMessage({
+          role: "user",
+          content: [
+            { type: "text", text: buildLanguageCorrectionMessage() },
+          ],
+        });
+        log.info("AGENT", "L5: 已注入语言纠正消息，重新调用 LLM");
+        continue;
       }
 
       // AfterModel hook：可修改响应、阻止响应

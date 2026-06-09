@@ -129,6 +129,9 @@ export const SettingsSchema = lazySchema(() =>
       maxTokens: z.number().min(1000).max(200000).optional(),
       availableModels: z.array(ModelConfigSchema()).optional(),
 
+      // 输出语言偏好（对标 Claude Code language 配置）
+      language: z.enum(["zh", "en"]).optional(),
+
       // 权限配置
       permissions: PermissionsSchema().optional(),
       permissionMode: z.string().optional(),

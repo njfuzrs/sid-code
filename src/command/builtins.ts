@@ -624,6 +624,7 @@ export class MemoryCommand implements Command {
             gitStatus: true,
             memorySummary: freshSummary,
             preferredLanguage: ctx.config.language,
+            model: ctx.config.model,
             maxTokens: 180000,
           });
           ctx.ctxMgr.setSystemPrompt(newPrompt);

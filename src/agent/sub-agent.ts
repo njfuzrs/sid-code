@@ -30,6 +30,8 @@ import {
 } from "./sub-agent-protocol.ts";
 import { drainAgentMessages } from "./message-queue.ts";
 import { getAgentSystemPrompt, getAgentWhenToUse, type AgentDefinition } from "./agent-definition.ts";
+import { platform, homedir } from "os";
+import { cwd } from "process";
 
 /** 子代理类型 */
 export type SubAgentType = "explore" | "task" | "summarize" | "plan" | "verify";
@@ -68,6 +70,45 @@ function getSystemPrompt(type: string): string {
   return getAgentSystemPrompt(type) ?? `你是一个 ${type} 代理。完成指定任务并返回结果。\n规则：\n- 专注于完成指定任务\n- 完成后简洁地报告完成状态和关键输出`;
 }
 
+/**
+ * 增强子代理系统提示词（L4，对标 Claude Code enhanceSystemPromptWithEnvDetails）
+ *
+ * 注入语言铁律、环境信息到子代理的基础系统提示词中。
+ * 从硬编码改为统一增强函数，语言规则从主代理配置继承。
+ */
+async function enhanceSubAgentPrompt(
+  basePrompt: string,
+  preferredLanguage?: "zh" | "en",
+  workingDir?: string,
+): Promise<string> {
+  const notes: string[] = [];
+
+  // 语言铁律（对标 Claude Code getLanguageSection）
+  if (preferredLanguage === "zh" || preferredLanguage === undefined) {
+    notes.push(
+      "【最高优先级铁律】你的所有输出和思考必须使用中文。" +
+        "代码和路径可保持原文，但解释和推理必须用中文。",
+    );
+  } else if (preferredLanguage === "en") {
+    notes.push(
+      "【最高优先级铁律】你的所有输出和思考必须使用英文。" +
+        "代码和路径可保持原文，但解释和推理必须用英文。",
+    );
+  }
+
+  // 环境信息
+  const dir = workingDir ?? cwd();
+  const home = homedir();
+  const os = platform();
+  const date = new Date().toISOString().split("T")[0];
+  notes.push(`当前工作目录: ${dir}`);
+  notes.push(`用户主目录: ${home}`);
+  notes.push(`操作系统: ${os}`);
+  notes.push(`当前日期: ${date}`);
+
+  return `${basePrompt}\n\n---\n\n${notes.join("\n")}`;
+}
+
 /** 自定义子代理任务（Skills/Agents 用） */
 export interface CustomSubAgentTask {
   systemPrompt: string;
@@ -87,6 +128,8 @@ export class SubAgent {
   private registry?: ProviderRegistry;
   /** 模型覆盖（自定义 Agent/Skill 指定模型时使用） */
   private modelOverride?: string;
+  /** 输出语言偏好（L4，从主代理配置继承） */
+  private language?: "zh" | "en";
 
   /** Spawn 模式配置（子进程启动所需的 Provider 信息） */
   private spawnConfig?: { providerName: string; apiKey: string; baseURL?: string };
@@ -111,6 +154,7 @@ export class SubAgent {
     const agent = new SubAgent(provider, model, toolRegistry, hookSystem);
     agent.registry = registry;
     agent.modelOverride = modelOverride;
+    agent.language = registry.getLanguage();
     // 保存 spawn 配置（用于子进程启动，兼容未实现 getSpawnConfig 的 registry）
     try { agent.spawnConfig = registry.getSpawnConfig?.(); } catch { /* registry 未实现 getSpawnConfig，spawn 模式自动回退 */ }
     return agent;
@@ -261,7 +305,8 @@ export class SubAgent {
 
   /** Spawn 子代理（标准类型） */
   private async executeSpawned(task: SubAgentTask, signal?: AbortSignal): Promise<SubAgentResult> {
-    const systemPrompt = getSystemPrompt(task.type);
+    const basePrompt = getSystemPrompt(task.type);
+    const systemPrompt = await enhanceSubAgentPrompt(basePrompt, this.language);
     const toolDefs = this.getToolDefs(task);
 
     const initMsg: ParentInitMessage = {
@@ -287,6 +332,7 @@ export class SubAgent {
 
   /** Spawn 自定义子代理 */
   private async executeSpawnedCustom(task: CustomSubAgentTask, signal?: AbortSignal): Promise<SubAgentResult> {
+    const enhancedSystemPrompt = await enhanceSubAgentPrompt(task.systemPrompt, this.language);
     const tools = task.allowedTools.length > 0
       ? this.toolRegistry.filter(task.allowedTools)
       : new ToolRegistry();
@@ -296,7 +342,7 @@ export class SubAgent {
       type: "init",
       session_id: `subagent-custom-${Date.now()}`,
       task_type: "task", // 自定义代理按 task 类型
-      system_prompt: task.systemPrompt,
+      system_prompt: enhancedSystemPrompt,
       user_prompt: task.userPrompt,
       allowed_tools: task.allowedTools,
       tool_defs: toolDefs,
@@ -500,7 +546,8 @@ export class SubAgent {
         maxTokens: task.maxTokens ?? 50000,
       });
 
-      const systemPrompt = getSystemPrompt(task.type);
+      const basePrompt = getSystemPrompt(task.type);
+      const systemPrompt = await enhanceSubAgentPrompt(basePrompt, this.language);
       ctxMgr.setSystemPrompt(systemPrompt);
 
       // 添加任务提示
@@ -666,7 +713,8 @@ export class SubAgent {
         maxTokens: task.maxTokens ?? 50000,
       });
 
-      ctxMgr.setSystemPrompt(task.systemPrompt);
+      const systemPrompt = await enhanceSubAgentPrompt(task.systemPrompt, this.language);
+      ctxMgr.setSystemPrompt(systemPrompt);
       ctxMgr.addMessage({
         role: "user",
         content: [{ type: "text", text: task.userPrompt }],

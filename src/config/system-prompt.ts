@@ -65,6 +65,10 @@ export interface SystemPromptContext {
   /** 首选输出语言: "zh" 中文优先, "en" 英文优先。不设置时默认中文 */
   preferredLanguage?: "zh" | "en";
 
+  // 模型标识（用于 DeepSeek 等模型的语言策略差异化处理）
+  /** 当前使用的模型名（如 "deepseek-chat"、"claude-sonnet-4-20250514"） */
+  model?: string;
+
   // 限制
   /** 系统提示词最大 token 数（默认 180000） */
   maxTokens?: number;
@@ -114,6 +118,7 @@ function generateCacheKey(ctx: SystemPromptContext): string {
       ? simpleHash(ctx.recalledMemories.map((m) => m.filename).join(","))
       : "",
     ctx.sessionMemoryContent ? simpleHash(ctx.sessionMemoryContent) : "",
+    ctx.model || "",
   ].filter(Boolean).join(":");
 }
 
@@ -154,7 +159,7 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
 
   // 1. 构建核心部分（固定模板，必须保留）
   const coreParts: string[] = [
-    buildIdentitySection(ctx.preferredLanguage),
+    buildIdentitySection(ctx.preferredLanguage, ctx.model),
     buildEnvironmentSection(ctx.workingDir),
   ];
 
@@ -300,26 +305,63 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
 }
 
 /** 构建身份指令部分 */
-function buildIdentitySection(language?: "zh" | "en"): string {
-  const langRule = language === "en"
-    ? `⚠️ 语言规则（最高优先级）:
+function buildIdentitySection(language?: "zh" | "en", model?: string): string {
+  const isDeepSeek = model ? model.toLowerCase().includes("deepseek") : false;
+
+  // 英文模式（标准措辞，对标 Claude Code getLanguageSection）
+  if (language === "en") {
+    let section = `你是 sid-code AI 编程助手，一个专业的代码辅助工具。你可以：
+- 帮助用户编写、修改、调试代码
+- 执行 shell 命令、读写文件
+- 解释技术概念、提供最佳实践建议
+- 使用工具完成复杂任务
+
+⚠️ 语言规则（最高优先级）:
 - 你的思考过程（reasoning/thinking）必须使用英文
 - 你的所有回复、代码注释、文档均使用英文
 - 代码标识符、技术术语（API 名/函数名/变量名）保持原文
-- 只有当用户在提示词中明确要求使用中文时（如"用中文回答"），才切换到中文`
-    : `⚠️ 语言规则（最高优先级）:
-- 你的思考过程（reasoning/thinking）必须使用中文
-- 你的所有回复、代码注释、文档均使用中文
-- 代码标识符、技术术语（API 名/函数名/变量名）保持原文
-- 只有当用户在提示词中明确要求使用其他语言时（如"用英文回答"、"respond in English"），才切换到该语言`;
+- 只有当用户在提示词中明确要求使用中文时（如"用中文回答"），才切换到中文
 
+你的回复应该简洁、专业、可操作。`;
+    return section;
+  }
+
+  // DeepSeek 中文模式：铁律级措辞（L1）
+  if (isDeepSeek) {
+    return `你是 sid-code AI 编程助手，一个专业的代码辅助工具。你可以：
+- 帮助用户编写、修改、调试代码
+- 执行 shell 命令、读写文件
+- 解释技术概念、提供最佳实践建议
+- 使用工具完成复杂任务
+
+【不可违反的铁律】你的所有思考（reasoning/thinking）和回复，必须使用纯正的中文。
+技术术语和代码标识符（API 名/函数名/变量名）保持原文。
+即使在思考推理过程中，也不得输出英文自然语言句子。
+只有代码块中的代码、命令输出、错误日志可保持原文，但解释性文字必须使用中文。
+
+# 思考语言疏导（DeepSeek 专用，实验性方案）
+
+如果你的技术思考（reasoning/thinking）自然倾向于使用英文，
+你可以将其包裹在 <internal_en> 和 </internal_en> 标签中。
+
+但所有在 <internal_en> 标签之外的输出，必须是纯正的中文，
+不可夹杂英文自然语言句子。
+
+技术代码、API 名称可保持原文，但解释和推理必须用中文。`;
+  }
+
+  // 非 DeepSeek 中文模式（标准措辞，当前行为）
   return `你是 sid-code AI 编程助手，一个专业的代码辅助工具。你可以：
 - 帮助用户编写、修改、调试代码
 - 执行 shell 命令、读写文件
 - 解释技术概念、提供最佳实践建议
 - 使用工具完成复杂任务
 
-${langRule}
+⚠️ 语言规则（最高优先级）:
+- 你的思考过程（reasoning/thinking）必须使用中文
+- 你的所有回复、代码注释、文档均使用中文
+- 代码标识符、技术术语（API 名/函数名/变量名）保持原文
+- 只有当用户在提示词中明确要求使用其他语言时（如"用英文回答"、"respond in English"），才切换到该语言
 
 你的回复应该简洁、专业、可操作。`;
 }

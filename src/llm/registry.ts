@@ -60,6 +60,11 @@ export class ProviderRegistry {
     return this.config.model;
   }
 
+  /** 获取输出语言偏好 */
+  getLanguage(): "zh" | "en" | undefined {
+    return this.config.language;
+  }
+
   /** 获取用于子进程 spawn 的 Provider 配置（含 API Key — 仅调用方通过管道传递） */
   getSpawnConfig(): { providerName: string; apiKey: string; baseURL?: string } {
     return {

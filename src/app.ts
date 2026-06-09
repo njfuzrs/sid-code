@@ -382,6 +382,8 @@ export class App {
           permissionMode: this.config.permissionMode,
           gitStatus: true,
           memorySummary,
+          preferredLanguage: this.config.language,
+          model: this.config.model,
           maxTokens: 180000,
         });
         this.ctxMgr.setSystemPrompt(newPrompt);
