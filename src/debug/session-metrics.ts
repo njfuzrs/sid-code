@@ -268,8 +268,8 @@ export class SessionMetricsCollector {
       `会话时长: ${elapsed} 分钟`,
       `LLM: ${m.llm.totalRequests} 次请求, ${m.llm.totalInputTokens + m.llm.totalOutputTokens} tokens, 平均 ${avgLatency}s, $${m.llm.totalCostUSD.toFixed(4)}`,
       `工具: ${m.tools.totalCalls} 次调用 (${m.tools.totalSuccess}成功/${m.tools.totalFail}失败)`,
-      `交互: ${m.interaction.promptCount} 次提示, ${m.interaction.turnCount} 轮循环`,
-    ];
+      `交互: ${m.interaction.promptCount} 次提示, ${m.interaction.turnCount} 轮循环`
+    );
 
     if (m.context.compactCount > 0) {
       lines.push(`压缩: ${m.context.compactCount} 次, 峰值 ${m.context.peakTokens} tokens`);
