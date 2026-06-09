@@ -8,7 +8,7 @@ import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "../tool
 import type { ProviderRegistry } from "../llm/registry.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { SubAgent } from "./sub-agent.ts";
-import type { SubAgentType } from "./sub-agent.ts";
+import { getBuiltInAgentTypes } from "./agent-definition.ts";
 import { getLogger } from "../debug/logger.ts";
 import {
   createAgentTask,
@@ -38,13 +38,9 @@ export class SubAgentTool implements Tool {
   }
 
   description(): string {
+    const types = getBuiltInAgentTypes();
     return `启动一个子代理来执行独立的子任务。子代理有自己独立的上下文，不会污染主对话。
-适用场景：
-- explore: 搜索和分析代码库，返回关键发现
-- task: 执行特定的编码子任务
-- summarize: 总结大量内容
-- plan: 分析代码库并输出结构化的实现方案
-- verify: 对抗式验证某个结论/修复是否真实成立（只读，倾向证伪）
+可用类型: ${types.join("、")}
 子代理完成后只返回最终结果。
 设置 run_in_background=true 可以后台执行，立即返回 task_id，完成后通过通知告知结果。
 设置 isolation=worktree 可在独立 Git Worktree 中执行（文件改动隔离，仅同步模式）。`;
@@ -56,8 +52,8 @@ export class SubAgentTool implements Tool {
       properties: {
         type: {
           type: "string",
-          enum: ["explore", "task", "summarize", "plan", "verify"],
-          description: "子代理类型：explore(代码探索)、task(任务执行)、summarize(内容总结)、plan(代码分析和规划)、verify(对抗式验证)",
+          enum: getBuiltInAgentTypes(),
+          description: `子代理类型：${getBuiltInAgentTypes().join("、")}`,
         },
         description: {
           type: "string",
@@ -83,7 +79,7 @@ export class SubAgentTool implements Tool {
 
   async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
     const params = input as {
-      type: SubAgentType;
+      type: string;
       description: string;
       prompt: string;
       run_in_background?: boolean;
@@ -100,7 +96,7 @@ export class SubAgentTool implements Tool {
       return { output: "错误: 缺少必需参数 (type, description, prompt)", isError: true };
     }
 
-    const validTypes: SubAgentType[] = ["explore", "task", "summarize", "plan", "verify"];
+    const validTypes = getBuiltInAgentTypes();
     if (!validTypes.includes(params.type)) {
       return { output: `错误: 无效的子代理类型 "${params.type}"，可选: ${validTypes.join(", ")}`, isError: true };
     }
@@ -116,7 +112,7 @@ export class SubAgentTool implements Tool {
 
   /** 同步执行子代理 */
   private async runSync(params: {
-    type: SubAgentType;
+    type: string;
     description: string;
     prompt: string;
     isolation?: "worktree";
@@ -195,7 +191,7 @@ export class SubAgentTool implements Tool {
 
   /** 后台异步执行子代理 */
   private async runAsync(params: {
-    type: SubAgentType;
+    type: string;
     description: string;
     prompt: string;
   }, signal?: AbortSignal): Promise<ToolResult> {
@@ -231,7 +227,7 @@ export class SubAgentTool implements Tool {
   /** 后台执行逻辑 */
   private async executeInBackground(
     taskId: string,
-    params: { type: SubAgentType; description: string; prompt: string },
+    params: { type: string; description: string; prompt: string },
     abortController: AbortController,
   ): Promise<void> {
     const log = getLogger();

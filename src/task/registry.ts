@@ -8,6 +8,7 @@ import {
   isTerminalStatus,
   isAgentTask,
 } from "./types.ts";
+import { getTaskOutputTail } from "./disk-output.ts";
 
 /** 全局任务存储 */
 const tasks = new Map<string, TaskState>();
@@ -59,8 +60,8 @@ export function clearAllTasks(): void {
   tasks.clear();
 }
 
-/** 生成任务状态附件（注入系统提示词） */
-export function generateTaskStatusAttachment(): string | null {
+/** 生成任务状态附件（注入系统提示词，包含运行中 Agent 的增量输出） */
+export async function generateTaskStatusAttachment(): Promise<string | null> {
   const running = getRunningTasks();
   if (running.length === 0) return null;
 
@@ -75,6 +76,17 @@ export function generateTaskStatusAttachment(): string | null {
         lines.push(`      <last-activity>${p.lastActivity.toolName}: ${p.lastActivity.activityDescription || ""}</last-activity>`);
       }
       lines.push(`    </progress>`);
+
+      // 增量输出：获取最近输出片段（最多 500 字符）
+      try {
+        const tail = await getTaskOutputTail(task.id, 500);
+        if (tail) {
+          const trimmed = tail.slice(-500).replace(/<\/?[^>]+(>|$)/g, ""); // 防 XML 注入
+          lines.push(`    <recent-output>${trimmed}</recent-output>`);
+        }
+      } catch {
+        // 输出文件可能还不存在，忽略
+      }
     }
     lines.push(`  </task>`);
   }

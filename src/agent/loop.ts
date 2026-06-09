@@ -380,8 +380,8 @@ export class AgentLoopRunner {
       const cleanedMessages = ctxMgr.getCleanedMessages();
       const toolDefs = toolCount > 0 ? toolRegistry.definitions() : undefined;
 
-      // 注入任务状态附件到系统提示词
-      const taskAttachment = generateTaskStatusAttachment();
+      // 注入任务状态附件到系统提示词（含运行中 Agent 的增量输出）
+      const taskAttachment = await generateTaskStatusAttachment();
       const systemPrompt = taskAttachment
         ? ctxMgr.getSystemPrompt() + "\n\n" + taskAttachment
         : ctxMgr.getSystemPrompt();

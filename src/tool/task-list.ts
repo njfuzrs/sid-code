@@ -8,7 +8,6 @@ import {
   getAllTasks,
   isAgentTask,
   isShellTask,
-  generateTaskStatusAttachment,
 } from "../task/index.ts";
 
 export class TaskListTool implements Tool {

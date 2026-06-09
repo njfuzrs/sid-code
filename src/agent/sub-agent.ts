@@ -18,6 +18,7 @@ import {
   completeAgentTask,
   failAgentTask,
   appendAgentOutput,
+  updateAgentProgress,
 } from "../task/index.ts";
 import type { AgentTaskResult } from "../task/types.ts";
 import {
@@ -26,13 +27,14 @@ import {
   writeParentMsg,
 } from "./sub-agent-protocol.ts";
 import { drainAgentMessages } from "./message-queue.ts";
+import { getAgentSystemPrompt, getAgentWhenToUse, type AgentDefinition } from "./agent-definition.ts";
 
 /** 子代理类型 */
 export type SubAgentType = "explore" | "task" | "summarize" | "plan" | "verify";
 
 /** 子代理任务定义 */
 export interface SubAgentTask {
-  type: SubAgentType;
+  type: string;
   description: string;
   prompt: string;
   /** 子代理可用的工具（默认继承主代理的工具） */
@@ -59,42 +61,10 @@ export interface SubAgentResult {
   toolUseCount: number;
 }
 
-/** 子代理系统提示词 */
-const SYSTEM_PROMPTS: Record<SubAgentType, string> = {
-  explore: `你是一个代码库探索代理。你的任务是搜索和分析代码，只返回关键发现。
-规则：
-- 使用 grep、glob、read 工具搜索代码
-- 只返回文件路径、行号和关键代码片段
-- 保持输出简洁，不要冗长解释
-- 完成搜索后，以 "## 发现" 开头输出最终报告，包含：关键文件列表、核心发现、建议的下一步行动`,
-
-  task: `你是一个任务执行代理。你的任务是完成指定的子任务并返回结果。
-规则：
-- 专注于完成指定任务
-- 完成后以 "## 结果" 开头简洁地报告完成状态和关键输出
-- 如果遇到问题，以 "## 问题" 开头说明原因和可能的解决方案`,
-
-  summarize: `你是一个摘要代理。你的任务是总结对话内容。
-规则：
-- 保留关键信息：文件路径、代码修改、决策、待办事项
-- 使用中文
-- 保持简洁
-- 完成后以 "## 摘要" 开头输出结构化摘要`,
-
-  plan: `你是一个代码分析和规划代理。分析代码库并输出结构化的实现方案。
-规则：
-- 使用 grep、glob、read 工具搜索和阅读代码
-- 不要修改任何文件
-- 完成后以 "## 方案" 开头输出：问题分析、方案设计、涉及文件、实现步骤`,
-
-  verify: `你是一个对抗式验证代理。你的任务是验证给定的结论/修复/发现是否真实成立。
-规则：
-- 默认持怀疑态度，主动寻找反例和漏洞
-- 用 read/grep/bash 等只读手段核实，不要修改文件
-- 不确定时倾向于判定"未通过验证"
-- 完成后以 "## 结论" 开头输出：通过 / 未通过 + 关键证据`,
-
-};
+/** 子代理系统提示词（从 AgentDefinition 注册表获取，兼容内置 + 自定义类型） */
+function getSystemPrompt(type: string): string {
+  return getAgentSystemPrompt(type) ?? `你是一个 ${type} 代理。完成指定任务并返回结果。\n规则：\n- 专注于完成指定任务\n- 完成后简洁地报告完成状态和关键输出`;
+}
 
 /** 自定义子代理任务（Skills/Agents 用） */
 export interface CustomSubAgentTask {
@@ -289,7 +259,7 @@ export class SubAgent {
 
   /** Spawn 子代理（标准类型） */
   private async executeSpawned(task: SubAgentTask, signal?: AbortSignal): Promise<SubAgentResult> {
-    const systemPrompt = SYSTEM_PROMPTS[task.type];
+    const systemPrompt = getSystemPrompt(task.type);
     const toolDefs = this.getToolDefs(task);
 
     const initMsg: ParentInitMessage = {
@@ -527,7 +497,7 @@ export class SubAgent {
         maxTokens: task.maxTokens ?? 50000,
       });
 
-      const systemPrompt = SYSTEM_PROMPTS[task.type];
+      const systemPrompt = getSystemPrompt(task.type);
       ctxMgr.setSystemPrompt(systemPrompt);
 
       // 添加任务提示
@@ -682,6 +652,21 @@ export class SubAgent {
             role: "user",
             content: toolResults,
           });
+
+          // 更新任务进度（供 pollTasks 读取实时状态）
+          if (taskId) {
+            const lastTool = toolUseBlocks[toolUseBlocks.length - 1];
+            updateAgentProgress(taskId, {
+              toolUseCount,
+              tokenCount: totalUsage.inputTokens + totalUsage.outputTokens,
+              lastActivity: lastTool ? {
+                toolName: lastTool.name,
+                input: lastTool.input as Record<string, unknown>,
+                activityDescription: `${lastTool.name}: ${JSON.stringify(lastTool.input).slice(0, 80)}`,
+              } : undefined,
+              recentActivities: [],
+            });
+          }
           continue;
         }
 
