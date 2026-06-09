@@ -60,6 +60,7 @@ export interface SessionMetrics {
 
 export class SessionMetricsCollector {
   private metrics: SessionMetrics;
+  private sessionId: string = "";
 
   // ── Harness 扩展：通用计数器/仪表 ──
   private customCounters = new Map<string, number>();
@@ -67,6 +68,11 @@ export class SessionMetricsCollector {
 
   constructor() {
     this.metrics = this.createInitial();
+  }
+
+  /** 设置当前会话 ID（供会话摘要展示） */
+  setSessionId(id: string): void {
+    this.sessionId = id;
   }
 
   private createInitial(): SessionMetrics {
@@ -254,7 +260,11 @@ export class SessionMetricsCollector {
       ? (m.llm.totalLatencyMs / m.llm.totalRequests / 1000).toFixed(1)
       : '0';
 
-    const lines = [
+    const lines: string[] = [];
+    if (this.sessionId) {
+      lines.push(`Session ID: ${this.sessionId}`);
+    }
+    lines.push(
       `会话时长: ${elapsed} 分钟`,
       `LLM: ${m.llm.totalRequests} 次请求, ${m.llm.totalInputTokens + m.llm.totalOutputTokens} tokens, 平均 ${avgLatency}s, $${m.llm.totalCostUSD.toFixed(4)}`,
       `工具: ${m.tools.totalCalls} 次调用 (${m.tools.totalSuccess}成功/${m.tools.totalFail}失败)`,

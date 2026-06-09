@@ -141,6 +141,7 @@ export class App {
     this.ctxMgr = new ContextManager({ maxTokens: 200000 });
     this.ctxMgr.setSessionId(sessionId);
     this.sessionState = new SessionState(sessionId);
+    getSessionMetrics().setSessionId(sessionId);
     // 成本配额管理（合并 costLimit 和 quota 配置）
     const quotaConfig = opts.config.quota;
     const effectiveCostLimit = quotaConfig?.costLimit ?? opts.config.costLimit;
