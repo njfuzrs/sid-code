@@ -235,7 +235,7 @@ export class App {
       tokenMeter: this.tokenMeter,
       budgetTracker: this.budgetTracker,
       executeTools: (content) => this.executeTools(content),
-      processStream: (stream, onText) => this.processStream(stream, onText),
+      processStream: (stream, onText, onThinking) => this.processStream(stream, onText, onThinking),
       autoCompact: () => this.autoCompact(),
       handleContextOverflow: (err, max) => this.handleContextOverflow(err, max),
       getAbortSignal: () => this.abortController?.signal,
@@ -624,9 +624,10 @@ export class App {
   async processStream(
     stream: AsyncIterable<StreamEvent>,
     onText?: (text: string) => void,
+    onThinking?: (text: string) => void,
   ): Promise<AccumulatedResponse> {
     const { processStream: processStreamImpl } = await import("./query/stream-processor.ts");
-    return processStreamImpl(stream, onText, {
+    return processStreamImpl(stream, onText, onThinking, {
       getAbortController: () => this.abortController,
     });
   }

@@ -42,6 +42,8 @@ export interface AgentLoopCallbacks {
   onUserMessageAdded?(): void;
   /** 流式文本输出 */
   onStreamText(text: string): void;
+  /** 流式思考输出（v2：独立于 onStreamText，对标 Claude Code） */
+  onStreamThinking?(text: string): void;
   /** 工具开始执行 */
   onToolStart(toolName: string, toolInput?: unknown): void;
   /** 工具执行结束 */
@@ -91,6 +93,7 @@ export interface AgentLoopDeps {
   processStream: (
     stream: AsyncIterable<StreamEvent>,
     onText?: (text: string) => void,
+    onThinking?: (text: string) => void,
   ) => Promise<AccumulatedResponse>;
   /** 自动压缩 */
   autoCompact: () => Promise<void>;
@@ -451,12 +454,19 @@ export class AgentLoopRunner {
 
       let response: AccumulatedResponse;
       try {
-        response = await this.deps.processStream(stream, (text) => {
-          if (ttftMs === undefined) {
-            ttftMs = performance.now() - ttftStart;
-          }
-          callbacks.onStreamText(text);
-        });
+        response = await this.deps.processStream(
+          stream,
+          (text) => {
+            if (ttftMs === undefined) {
+              ttftMs = performance.now() - ttftStart;
+            }
+            callbacks.onStreamText(text);
+          },
+          (thinking) => {
+            // v2：思考文本通过独立回调传递，对标 Claude Code
+            callbacks.onStreamThinking?.(thinking);
+          },
+        );
       } catch (err: any) {
         perfHandle.end({ model: config.model });
         throw err;

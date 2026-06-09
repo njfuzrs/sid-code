@@ -1,6 +1,9 @@
 /**
  * 流式响应处理器
  * 从 app.ts 提取，处理 LLM 流式事件，累积内容块
+ *
+ * v2 改变（对标 Claude Code）：思考块保留在 content 中（原地转型为 ThinkingBlock），
+ * 不再从 content 移除。新增 onThinking 回调，与 onText 完全分离。
  */
 
 import type {
@@ -27,6 +30,7 @@ export interface StreamProcessorOptions {
 export async function processStream(
   stream: AsyncIterable<StreamEvent>,
   onText?: (text: string) => void,
+  onThinking?: (text: string) => void,
   options?: StreamProcessorOptions,
 ): Promise<AccumulatedResponse> {
   const log = getLogger();
@@ -43,8 +47,6 @@ export async function processStream(
   const thinkingBlocks: unknown[] = [];
   // 记录哪些 index 是 thinking 块
   const thinkingIndexes = new Set<number>();
-  // 记录已完成的 thinking 块索引（用于最后从 content 中移除）
-  const removedThinkingIndexes = new Set<number>();
   // 累积 reasoning 文本（DeepSeek reasoning_content 回传用）
   let accumulatedReasoning = "";
 
@@ -118,7 +120,12 @@ export async function processStream(
             const block = response.content[event.index];
             if (block?.type === "text") {
               block.text += delta.text;
-              onText?.(delta.text);
+              // 对标 Claude Code：思考块不调 onText，调 onThinking
+              if (thinkingIndexes.has(event.index)) {
+                onThinking?.(delta.text);
+              } else {
+                onText?.(delta.text);
+              }
             }
           } else if (delta.type === "input_json_delta") {
             const acc = jsonAccumulators.get(event.index) ?? "";
@@ -143,10 +150,12 @@ export async function processStream(
           if (thinkingIndexes.has(event.index)) {
             const block = response.content[event.index];
             if (block?.type === "text" && block.text) {
-              thinkingBlocks.push({ type: "thinking", thinking: block.text });
+              // 原地转型为 ThinkingBlock（保留在 content 中，对标 Claude Code）
+              const thinkingBlock = { type: "thinking" as const, thinking: block.text };
+              response.content[event.index] = thinkingBlock;
+              thinkingBlocks.push(thinkingBlock);
               accumulatedReasoning += block.text;
             }
-            removedThinkingIndexes.add(event.index);
             thinkingIndexes.delete(event.index);
           }
           break;
@@ -176,12 +185,13 @@ export async function processStream(
     throw timeoutError;
   }
 
-  // 流结束日志
+  // 流结束日志（区分文本块和思考块）
   const totalTextLen = response.content
     .filter(b => b.type === "text")
     .reduce((sum, b) => sum + (b.type === "text" ? b.text.length : 0), 0);
+  const thinkingCount = response.content.filter(b => b.type === "thinking").length;
   const toolCallCount = response.content.filter(b => b.type === "tool_use").length;
-  log.info("STREAM", `流结束: 文本${totalTextLen}字符, 工具调用${toolCallCount}个, stop=${response.stopReason}, in=${response.usage.inputTokens} out=${response.usage.outputTokens}`);
+  log.info("STREAM", `流结束: 文本${totalTextLen}字符, 思考${thinkingCount}块, 工具调用${toolCallCount}个, stop=${response.stopReason}, in=${response.usage.inputTokens} out=${response.usage.outputTokens}`);
 
   if (thinkingBlocks.length > 0) {
     (response as any)._thinkingBlocks = thinkingBlocks;
@@ -192,10 +202,7 @@ export async function processStream(
     response._meta = { ...response._meta, reasoning_content: accumulatedReasoning };
   }
 
-  // 从 content 中移除 thinking 块（防止 convertMessages 把 thinking 文本混入 content）
-  if (removedThinkingIndexes.size > 0) {
-    response.content = response.content.filter((_, i) => !removedThinkingIndexes.has(i));
-  }
+  // 思考块已原地转型为 ThinkingBlock 保留在 content 中，不再需要过滤移除
 
   return response;
 }

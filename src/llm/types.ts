@@ -28,8 +28,15 @@ export interface ToolResultBlock {
   is_error?: boolean;
 }
 
+/** 思考块（对标 Claude Code ThinkingBlock） */
+export interface ThinkingBlock {
+  type: "thinking";
+  thinking: string;
+  signature?: string;  // Anthropic 签名（保留用于回传验证）
+}
+
 /** 内容块类型 */
-export type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock;
+export type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock | ThinkingBlock;
 
 /** 消息 */
 export interface Message {

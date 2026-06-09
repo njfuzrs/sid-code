@@ -36,6 +36,10 @@ interface DefaultAppLayoutProps {
   // 消息区域
   listData: HistoryItem[];
   streamingText: string;
+  /** v2：流式思考内容（独立于 streamingText） */
+  streamingThinking: string;
+  /** v2：思考块折叠状态 */
+  thinkCollapsed: boolean;
   isStreaming: boolean;
   isEmpty: boolean;
   termWidth: number;
@@ -83,6 +87,8 @@ interface DefaultAppLayoutProps {
 export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
   listData,
   streamingText,
+  streamingThinking,
+  thinkCollapsed,
   isStreaming,
   isEmpty,
   termWidth,
@@ -143,12 +149,14 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
         <MainContent
           listData={listData}
           streamingText={streamingText}
+          streamingThinking={streamingThinking}
           isStreaming={isStreaming}
           termWidth={termWidth}
           hasFocus={true}
           estimatedItemHeight={estimatedItemHeight}
           keyExtractor={keyExtractor}
           copyModeEnabled={copyModeEnabled}
+          thinkCollapsed={thinkCollapsed}
         />
       )}
 

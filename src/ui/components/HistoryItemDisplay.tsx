@@ -26,6 +26,8 @@ interface HistoryItemDisplayProps {
   terminalWidth: number;
   isPending?: boolean;
   availableTerminalHeight?: number;
+  /** v2：思考块折叠状态 */
+  thinkCollapsed?: boolean;
 }
 
 /** 分隔线 */
@@ -41,6 +43,7 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
   terminalWidth,
   isPending = false,
   availableTerminalHeight,
+  thinkCollapsed = false,
 }) => {
   const width = terminalWidth;
 
@@ -78,7 +81,7 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
 
     case "thinking":
       return (
-        <ThinkingMessage text={item.thought.text} width={width} />
+        <ThinkingMessage text={item.thought.text} width={width} collapsed={thinkCollapsed} />
       );
 
     case "hint":

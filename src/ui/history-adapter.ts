@@ -188,7 +188,14 @@ function convertAssistantMessage(
   };
 
   for (const block of msg.content) {
-    if (block.type === "text") {
+    if (block.type === "thinking") {
+      // v2：思考块 → 独立 thinking HistoryItem（对标 Claude Code）
+      flushText();
+      items.push({
+        type: "thinking",
+        thought: { text: block.thinking },
+      });
+    } else if (block.type === "text") {
       flushText(); // 先 flush 前面的文本（如果有的话）
       textAccum += (textAccum ? "\n" : "") + block.text;
     } else if (block.type === "tool_use") {

@@ -80,6 +80,7 @@ export function getConversationClearedPatch(): Partial<TUIState> {
     statusMessage: "",
     lastToolResult: null,
     streamingText: "",
+    streamingThinking: "",
     isStreaming: false,
     streamingLine: "",
     permissionRequest: null,

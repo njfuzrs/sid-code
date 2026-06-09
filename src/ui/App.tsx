@@ -108,6 +108,8 @@ export interface TUIState {
   lastToolResult: { toolName: string; isError: boolean; elapsedMs: number } | null;
   /** 流式输出的完整文本 */
   streamingText: string;
+  /** 新增：流式思考内容（独立于 streamingText，对标 Claude Code） */
+  streamingThinking: string;
   /** 是否正在流式输出 */
   isStreaming: boolean;
   /** 兼容旧接口：流式输出的未完成行预览 */
@@ -165,6 +167,10 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
   const log = getLogger();
   const { getScrollState } = useScrollState();
   const { toggleRenderMarkdown, setConstrainHeight, setShowIsExpandableHint } = useUIActions();
+
+  // v2：思考折叠状态（AB 模式默认折叠，Static 模式始终展开不可折叠）
+  const defaultCollapsed = alternateBuffer === true;
+  const [thinkCollapsed, setThinkCollapsed] = useState(defaultCollapsed);
 
   useEffect(() => {
     log.info("UI:APP", "TUIApp 组件已挂载（Alternate Buffer 模式）");
@@ -259,6 +265,18 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
       setConstrainHeight((prev: boolean) => !prev);
       setShowIsExpandableHint(true);
       setTimeout(() => setShowIsExpandableHint(false), 3000);
+      return true;
+    }
+    return false;
+  });
+
+  // Ctrl+T 切换思考过程折叠/展开（仅 Alternate Buffer 模式生效）
+  useKeypress(KeypressPriority.High, (key: Key) => {
+    const b = matchBinding(key);
+    if (b?.action === "app:toggleThinking") {
+      if (!alternateBuffer) return false;
+      log.info("UI:APP", `思考块 ${thinkCollapsed ? "展开" : "折叠"}`);
+      setThinkCollapsed(prev => !prev);
       return true;
     }
     return false;
@@ -477,6 +495,8 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
         <DefaultAppLayout
           listData={listData}
           streamingText={state.streamingText}
+          streamingThinking={state.streamingThinking}
+          thinkCollapsed={thinkCollapsed}
           isStreaming={state.isStreaming}
           isEmpty={isEmpty}
           termWidth={termWidth}
@@ -516,6 +536,8 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
         <MainScreenLayout
           staticItems={staticItems}
           streamingText={state.streamingText}
+          streamingThinking={state.streamingThinking}
+          thinkCollapsed={false}
           isStreaming={state.isStreaming}
           isEmpty={isEmpty}
           termWidth={termWidth}

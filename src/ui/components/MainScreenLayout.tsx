@@ -17,6 +17,7 @@ import { Footer } from "./Footer.tsx";
 import { DialogRenderer } from "./DialogManager.tsx";
 import { HistoryItemDisplay } from "./HistoryItemDisplay.tsx";
 import { StreamingMessage } from "./StreamingMessage.tsx";
+import { ThinkingMessage } from "./messages/ThinkingMessage.tsx";
 import { Notifications } from "./Notifications.tsx";
 import { ToastDisplay } from "./ToastDisplay.tsx";
 import { ExitWarning } from "./ExitWarning.tsx";
@@ -38,6 +39,10 @@ interface MainScreenLayoutProps {
   staticItems: HistoryItem[];
   /** 流式输出文本 */
   streamingText: string;
+  /** v2：流式思考内容（独立于 streamingText） */
+  streamingThinking: string;
+  /** v2：思考块折叠状态（Static 模式始终 false） */
+  thinkCollapsed: boolean;
   /** 是否正在流式输出 */
   isStreaming: boolean;
   /** 是否空会话（无历史且未流式） */
@@ -85,6 +90,8 @@ interface MainScreenLayoutProps {
 export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function MainScreenLayout({
   staticItems,
   streamingText,
+  streamingThinking,
+  thinkCollapsed,
   isStreaming,
   isEmpty,
   termWidth,
@@ -129,6 +136,7 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
             item={item}
             prevItem={index > 0 ? staticItems[index - 1] : undefined}
             terminalWidth={termWidth}
+            thinkCollapsed={thinkCollapsed}
           />
         )}
       </Static>
@@ -145,6 +153,11 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
         {/* 正在生成的流式消息（完成后由父层并入 staticItems，此处清空） */}
         {isStreaming && streamingText ? (
           <StreamingMessage fullText={streamingText} maxWidth={termWidth} />
+        ) : null}
+
+        {/* v2：流式思考区域 — 独立于 streamingText（对标 Claude Code） */}
+        {isStreaming && streamingThinking ? (
+          <ThinkingMessage text={streamingThinking} width={termWidth} collapsed={false} />
         ) : null}
 
         <Notifications />
