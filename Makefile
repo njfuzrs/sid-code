@@ -4,6 +4,7 @@ BUN=bun
 .PHONY: build run test clean deps lint
 
 build:
+	$(BUN) run scripts/bump-version.ts
 	$(BUN) build --compile --outfile $(BINARY) src/entrypoints/bootstrap.ts
 
 run:
