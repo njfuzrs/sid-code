@@ -1497,6 +1497,7 @@ export class App {
       });
 
       let streamSynced = false;
+      let completedNormally = false;
 
       // 设置流式文本回调（桥接 processStream 内部的 onText）
       this.queryEngine.setStreamTextCallback((text: string) => {
@@ -1516,6 +1517,7 @@ export class App {
               syncDisplay();
               break;
             case "hook_blocked": {
+              completedNormally = true;
               const hookBlockedText = `⛔ Hook 阻止执行: ${event.reason}`;
               addStatusMessage("hook_blocked", hookBlockedText);
               updateState({ isLoading: false });
@@ -1585,11 +1587,13 @@ export class App {
               addTransientStatusMessage("tombstone", "模型降级，正在使用备用模型重试...", 3000);
               break;
             case "done": {
+              completedNormally = true;
               const ctxUsed = this.ctxMgr.estimateTokens(this.toolRegistry.size());
               const ctxPct = Math.round((ctxUsed / 200000) * 100);
               streamingFullText = "";
               streamSynced = false;
               syncDisplay({
+                isLoading: false,
                 usage: { ...this.sessionState.getTotalUsage() },
                 costUSD: this.sessionState.totalCostUSD,
                 contextPercent: ctxPct,
@@ -1609,8 +1613,8 @@ export class App {
         streamingFullText = "";
         this.queryEngine.setStreamTextCallback(null);
 
-        // 检查是否正在 loading（意味着是异常退出而非正常的 done 事件）
-        if (bridge.current.isLoading) {
+        // 检查是否正常完成（通过 done 事件标记）
+        if (!completedNormally) {
           const warningDisplay = [...bridge.current.displayItems,
             { kind: "system" as const, text: "⚠️ 任务异常中断，部分操作可能未完成" }];
           updateState({ isLoading: false, isStreaming: false,
