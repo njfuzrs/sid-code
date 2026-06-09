@@ -46,10 +46,11 @@ export interface QueryEngineDeps {
   budgetTracker?: BudgetTracker;
   /** 执行工具调用（含权限检查）。返回 results + 可选 followup（ADR-019） */
   executeTools: (content: ContentBlock[]) => Promise<{ results: ContentBlock[]; followup?: ContentBlock[] }>;
-  /** 处理流式响应 */
+  /** 处理流式响应。onThinking 对标 Claude Code 的独立思考流通道 */
   processStream: (
     stream: AsyncIterable<StreamEvent>,
     onText?: (text: string) => void,
+    onThinking?: (text: string) => void,
   ) => Promise<AccumulatedResponse>;
   /** 自动压缩 */
   autoCompact: () => Promise<void>;
@@ -65,6 +66,8 @@ export class QueryEngine {
   private deps: QueryEngineDeps;
   /** 流式文本回调（由 submitMessage 的消费者设置） */
   private streamTextCallback: ((text: string) => void) | null = null;
+  /** v2：流式思考回调（对标 Claude Code 的独立思考流通道） */
+  private streamThinkingCallback: ((text: string) => void) | null = null;
 
   constructor(deps: QueryEngineDeps) {
     this.deps = deps;
@@ -148,12 +151,19 @@ export class QueryEngine {
         this.deps.fallback.reset();
         return this.deps.fallback.executeWithFallback(this.deps.provider, params, signal);
       },
-      processStream: (stream, onText) => {
-        // 桥接：将 processStream 内部的 onText 回调转发给外部
-        return this.deps.processStream(stream, (text) => {
-          this.streamTextCallback?.(text);
-          onText?.(text);
-        });
+      processStream: (stream, onText, onThinking) => {
+        // 桥接：将 processStream 内部的 onText/onThinking 回调转发给外部
+        return this.deps.processStream(
+          stream,
+          (text) => {
+            this.streamTextCallback?.(text);
+            onText?.(text);
+          },
+          (thinking) => {
+            this.streamThinkingCallback?.(thinking);
+            onThinking?.(thinking);
+          },
+        );
       },
       executeTools: this.deps.executeTools,
       autoCompact: this.deps.autoCompact,
@@ -195,5 +205,13 @@ export class QueryEngine {
    */
   setStreamTextCallback(cb: ((text: string) => void) | null): void {
     this.streamTextCallback = cb;
+  }
+
+  /**
+   * 设置流式思考回调（v2：对标 Claude Code 的独立思考流通道）
+   * 通过此回调桥接：processStream 内部 onThinking → 此回调 → 外部消费者（TUI）
+   */
+  setStreamThinkingCallback(cb: ((text: string) => void) | null): void {
+    this.streamThinkingCallback = cb;
   }
 }

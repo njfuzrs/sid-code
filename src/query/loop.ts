@@ -297,7 +297,8 @@ export async function* queryLoop(
           ttftMs = performance.now() - ttftStart;
         }
         // 流式文本通过 QueryEngine 层的 onStreamText 回调桥接
-      });
+      }, undefined);
+      // onThinking 通过 QueryEngine 层的 streamThinkingCallback 桥接，queryLoop 自身无需处理
     } catch (err: any) {
       perfHandle.end({ model: config.model });
 

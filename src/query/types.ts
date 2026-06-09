@@ -119,10 +119,11 @@ export function createInitialLoopState(maxTurns: number): LoopState {
 export interface QueryDeps {
   /** 调用 LLM（含重试和回退） */
   sendWithRetry: (params: SendParams, signal?: AbortSignal) => AsyncIterable<StreamEvent>;
-  /** 处理流式响应，累积内容块 */
+  /** 处理流式响应，累积内容块。onThinking 对标 Claude Code 的独立思考流通道 */
   processStream: (
     stream: AsyncIterable<StreamEvent>,
     onText?: (text: string) => void,
+    onThinking?: (text: string) => void,
   ) => Promise<AccumulatedResponse>;
   /** 执行工具调用（含权限检查）。返回 results + 可选 followup（ADR-019） */
   executeTools: (content: ContentBlock[]) => Promise<{ results: ContentBlock[]; followup?: ContentBlock[] }>;

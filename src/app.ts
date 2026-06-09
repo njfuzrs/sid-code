@@ -1288,7 +1288,8 @@ export class App {
 
     // 流式文本累积器（状态驱动）
     let streamingFullText = "";
-
+    // v2：流式思考累积器（独立于 streamingText，对标 Claude Code）
+    let streamingThinkingFull = "";
     // 事件驱动状态桥接（替代 50ms 轮询）
     const bridge = new StateBridge({
       messages: [],
@@ -1517,6 +1518,12 @@ export class App {
         updateState({ streamingText: streamingFullText, isStreaming: true });
       });
 
+      // v2：设置流式思考回调（桥接 processStream 内部的 onThinking，对标 Claude Code）
+      this.queryEngine.setStreamThinkingCallback((thinking: string) => {
+        streamingThinkingFull += thinking;
+        updateState({ streamingThinking: streamingThinkingFull });
+      });
+
       try {
         for await (const event of this.queryEngine.submitMessage(userInput)) {
           switch (event.kind) {
@@ -1535,8 +1542,9 @@ export class App {
             case "tool_start":
               // 工具开始前，结束当前流式输出
               streamingFullText = "";
+              streamingThinkingFull = "";
               streamSynced = false;
-              syncDisplay({ toolName: event.toolName, toolInput: event.toolInput ?? null, isToolExecuting: true, streamingText: "", isStreaming: false, streamingLine: "" });
+              syncDisplay({ toolName: event.toolName, toolInput: event.toolInput ?? null, isToolExecuting: true, streamingText: "", streamingThinking: "", isStreaming: false, streamingLine: "" });
               break;
             case "tool_end":
               syncDisplay({
@@ -1589,8 +1597,9 @@ export class App {
             case "tombstone":
               // 模型降级：清理流式文本残留，重建显示
               streamingFullText = "";
+              streamingThinkingFull = "";
               streamSynced = false;
-              rebuildDisplay();
+              rebuildDisplay({ streamingThinking: "" });
               addTransientStatusMessage("tombstone", "模型降级，正在使用备用模型重试...", 3000);
               break;
             case "done": {
@@ -1598,6 +1607,7 @@ export class App {
               const ctxUsed = this.ctxMgr.estimateTokens(this.toolRegistry.size());
               const ctxPct = Math.round((ctxUsed / 200000) * 100);
               streamingFullText = "";
+              streamingThinkingFull = "";
               streamSynced = false;
               syncDisplay({
                 isLoading: false,
@@ -1605,6 +1615,7 @@ export class App {
                 costUSD: this.sessionState.totalCostUSD,
                 contextPercent: ctxPct,
                 streamingText: "",
+                streamingThinking: "",
                 isStreaming: false,
                 streamingLine: "",
               });
@@ -1618,7 +1629,9 @@ export class App {
 
         // 兜底：确保异常路径也能正确清理
         streamingFullText = "";
+        streamingThinkingFull = "";
         this.queryEngine.setStreamTextCallback(null);
+        this.queryEngine.setStreamThinkingCallback(null);
 
         // 检查是否正常完成（通过 done 事件标记）
         if (!completedNormally) {
