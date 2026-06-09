@@ -7,6 +7,7 @@ import {
   generateTaskId,
   type LocalAgentTaskState,
   type AgentProgress,
+  type AgentTaskResult,
   isTerminalStatus,
 } from "./types.ts";
 import { registerTask, updateTask, getTask } from "./registry.ts";
@@ -68,8 +69,8 @@ export function appendAgentOutput(taskId: string, content: string): void {
   appendTaskOutput(taskId, content);
 }
 
-/** 标记 Agent 任务完成 */
-export async function completeAgentTask(taskId: string, result: string): Promise<void> {
+/** 标记 Agent 任务完成（接受结构化结果） */
+export async function completeAgentTask(taskId: string, result: AgentTaskResult): Promise<void> {
   await flushTaskOutput(taskId);
   activeAgentControllers.delete(taskId);
 
@@ -91,7 +92,7 @@ export async function completeAgentTask(taskId: string, result: string): Promise
       outputFile: task.outputFile,
       status: "completed",
       summary: `Agent "${task.description}" 执行完成`,
-      result: result.slice(0, 2000),
+      result,
     }),
   );
 }

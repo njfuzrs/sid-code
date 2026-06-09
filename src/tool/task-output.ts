@@ -98,7 +98,12 @@ export class TaskOutputTool implements Tool {
     }
     if (isAgentTask(currentTask)) {
       info.agent_type = currentTask.agentType;
-      if (currentTask.result) info.result = currentTask.result.slice(0, 4000);
+      if (currentTask.result) {
+        info.result = currentTask.result.output.slice(0, 4000);
+        info.total_tool_uses = currentTask.result.totalToolUseCount;
+        info.total_tokens = currentTask.result.totalTokens;
+        info.usage = currentTask.result.usage;
+      }
     }
 
     return {

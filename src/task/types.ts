@@ -29,6 +29,22 @@ export interface AgentProgress {
   recentActivities: ToolActivity[];
 }
 
+/** Agent 任务结构化结果（对标 claude-code AgentToolResult）
+ *  替代原来的纯字符串 result，保留 usage、工具调用次数等结构化信息 */
+export interface AgentTaskResult {
+  /** 文本输出（子代理的最终结论） */
+  output: string;
+  /** 工具调用次数 */
+  totalToolUseCount: number;
+  /** 总 token 消耗 */
+  totalTokens: number;
+  /** LLM 用量明细 */
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+  };
+}
+
 /** 任务状态基类 */
 export interface TaskStateBase {
   id: string;
@@ -60,7 +76,7 @@ export interface LocalAgentTaskState extends TaskStateBase {
   agentType: string;
   prompt: string;
   model?: string;
-  result?: string;
+  result?: AgentTaskResult;
   error?: string;
   isBackgrounded: boolean;
   progress?: AgentProgress;

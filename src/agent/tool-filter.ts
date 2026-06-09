@@ -28,10 +28,10 @@ const CUSTOM_AGENT_DISALLOWED_TOOLS = new Set([
 
 /** 内置子代理类型的工具白名单 */
 const BUILTIN_AGENT_ALLOWED_TOOLS: Record<string, string[] | null> = {
-  explore: ["read", "grep", "glob", "ls", "read_many"],
-  task: ["read", "write", "edit", "bash", "grep", "glob", "ls", "read_many", "web_fetch", "web_search"],
-  plan: ["read", "grep", "glob", "ls", "read_many"],
-  verify: ["read", "grep", "glob", "ls", "read_many", "bash"],  // 对抗式验证：只读 + bash 核实
+  explore: ["read", "grep", "glob", "ls", "read_many", "task_list"],
+  task: ["read", "write", "edit", "bash", "grep", "glob", "ls", "read_many", "web_fetch", "web_search", "task_list"],
+  plan: ["read", "grep", "glob", "ls", "read_many", "task_list"],
+  verify: ["read", "grep", "glob", "ls", "read_many", "bash", "task_list"],  // 对抗式验证：只读 + bash 核实
   summarize: null,  // null = 不需要工具
   "general-purpose": null, // null = 不限制（由 Layer 3 的 disallowedTools 控制）
 };
@@ -40,7 +40,7 @@ const BUILTIN_AGENT_ALLOWED_TOOLS: Record<string, string[] | null> = {
 const ASYNC_ALLOWED_TOOLS = new Set([
   "read", "read_many", "write", "edit",
   "bash", "grep", "glob", "ls",
-  "web_search", "web_fetch",
+  "web_search", "web_fetch", "task_list",
 ]);
 
 export interface ToolFilterOptions {

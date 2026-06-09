@@ -1,9 +1,11 @@
 /**
  * 任务通知机制
  * 当后台任务完成时，通过 XML 结构化消息通知主对话循环
+ *
+ * XML 结构对标 claude-code <task-notification>
  */
 
-import type { TaskStatus } from "./types.ts";
+import type { TaskStatus, AgentTaskResult } from "./types.ts";
 
 export interface TaskNotification {
   taskId: string;
@@ -11,10 +13,15 @@ export interface TaskNotification {
   outputFile: string;
   status: TaskStatus;
   summary: string;
-  result?: string;
+  /** 结构化结果（completed 状态时可用，对标 claude-code AgentToolResult） */
+  result?: AgentTaskResult;
+  /** 纯文本错误信息（failed 状态时可用，向后兼容旧调用方传 string） */
+  error?: string;
 }
 
-/** 生成 <task-notification> XML */
+/** 生成 <task-notification> XML（对标 claude-code）
+ *  completed 时包含结构化 <result> 和 <usage> 块，
+ *  failed 时包含错误信息 */
 export function formatNotification(n: TaskNotification): string {
   const parts = [
     "<task-notification>",
@@ -28,9 +35,22 @@ export function formatNotification(n: TaskNotification): string {
     `  <status>${n.status}</status>`,
     `  <summary>${n.summary}</summary>`,
   );
+
   if (n.result) {
-    parts.push(`  <result>${n.result}</result>`);
+    const { output, totalToolUseCount, totalTokens, usage } = n.result;
+    parts.push(
+      `  <result>${output.slice(0, 2000)}</result>`,
+      `  <usage>`,
+      `    <total_tokens>${totalTokens}</total_tokens>`,
+      `    <input_tokens>${usage.inputTokens}</input_tokens>`,
+      `    <output_tokens>${usage.outputTokens}</output_tokens>`,
+      `    <tool_uses>${totalToolUseCount}</tool_uses>`,
+      `  </usage>`,
+    );
+  } else if (n.error) {
+    parts.push(`  <error>${n.error.slice(0, 2000)}</error>`);
   }
+
   parts.push("</task-notification>");
   return parts.join("\n");
 }

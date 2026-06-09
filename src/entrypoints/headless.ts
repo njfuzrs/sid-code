@@ -146,6 +146,7 @@ async function runAgentLoop(
   const totalUsage: Usage = { inputTokens: 0, outputTokens: 0 };
   let turns = 0;
   let lastTextOutput = "";
+  let toolUseCount = 0;
 
   try {
     while (turns < init.max_turns) {
@@ -202,6 +203,7 @@ async function runAgentLoop(
           output: lastTextOutput,
           usage: totalUsage,
           turns,
+          toolUseCount,
         });
         return;
       }
@@ -220,9 +222,13 @@ async function runAgentLoop(
             output: "LLM 返回 tool_use stop_reason 但没有工具调用",
             usage: totalUsage,
             turns,
+            toolUseCount,
           });
           return;
         }
+
+        // 统计工具调用
+        toolUseCount += toolUses.length;
 
         // 发送所有 tool_use 消息给父进程
         for (const tu of toolUses) {
@@ -290,6 +296,7 @@ async function runAgentLoop(
         output: lastTextOutput,
         usage: totalUsage,
         turns,
+        toolUseCount,
       });
       return;
     }
@@ -301,6 +308,7 @@ async function runAgentLoop(
       output: lastTextOutput || `已达到最大轮次 (${init.max_turns})`,
       usage: totalUsage,
       turns,
+      toolUseCount,
     });
   } finally {
     clearTimeout(timeoutId);

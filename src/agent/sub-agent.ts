@@ -17,12 +17,15 @@ import {
   createAgentTask,
   completeAgentTask,
   failAgentTask,
+  appendAgentOutput,
 } from "../task/index.ts";
+import type { AgentTaskResult } from "../task/types.ts";
 import {
   type ParentInitMessage,
   type ChildMessage,
   writeParentMsg,
 } from "./sub-agent-protocol.ts";
+import { drainAgentMessages } from "./message-queue.ts";
 
 /** 子代理类型 */
 export type SubAgentType = "explore" | "task" | "summarize" | "plan" | "verify";
@@ -52,6 +55,8 @@ export interface SubAgentResult {
   output: string;
   usage: Usage;
   turns: number;
+  /** 工具调用次数（用于构造结构化 AgentTaskResult） */
+  toolUseCount: number;
 }
 
 /** 子代理系统提示词 */
@@ -174,15 +179,21 @@ export class SubAgent {
           log.info("SUBAGENT", `[${task.type}] spawn 模式完成`);
         } catch (err: any) {
           log.warn("SUBAGENT", `spawn 模式失败，回退到进程内模式: ${err.message}`);
-          result = await this.executeInner(task, signal);
+          result = await this.executeInner(task, signal, taskId);
         }
       } else {
-        result = await this.executeInner(task, signal);
+        result = await this.executeInner(task, signal, taskId);
       }
 
-      // 成功：标记任务完成并发送通知
+      // 成功：标记任务完成并发送通知（结构化结果）
       if (result.success) {
-        await completeAgentTask(taskId, result.output);
+        const agentResult: AgentTaskResult = {
+          output: result.output,
+          totalToolUseCount: result.toolUseCount,
+          totalTokens: result.usage.inputTokens + result.usage.outputTokens,
+          usage: result.usage,
+        };
+        await completeAgentTask(taskId, agentResult);
       } else {
         await failAgentTask(taskId, result.output);
       }
@@ -195,6 +206,7 @@ export class SubAgent {
         output: `子代理执行异常: ${err.message}`,
         usage: { inputTokens: 0, outputTokens: 0 },
         turns: 0,
+        toolUseCount: 0,
       };
     } finally {
       // subagent_stop hook（非阻塞）
@@ -431,6 +443,7 @@ export class SubAgent {
                 output: msg.output,
                 usage: msg.usage,
                 turns: msg.turns,
+                toolUseCount: msg.toolUseCount ?? 0,
               };
               break;
 
@@ -454,6 +467,7 @@ export class SubAgent {
           output: `子代理意外退出 (exit code: ${exitCode})`,
           usage: { inputTokens: 0, outputTokens: 0 },
           turns: 0,
+          toolUseCount: 0,
         };
       }
 
@@ -494,7 +508,7 @@ export class SubAgent {
   }
 
   /** 内部执行逻辑（含超时控制） */
-  private async executeInner(task: SubAgentTask, signal?: AbortSignal): Promise<SubAgentResult> {
+  private async executeInner(task: SubAgentTask, signal?: AbortSignal, taskId?: string): Promise<SubAgentResult> {
     const log = getLogger();
     const startTime = Date.now();
     log.info("SUBAGENT", `启动子代理 [${task.type}]: ${task.description}`);
@@ -533,6 +547,7 @@ export class SubAgent {
       const maxTurns = task.maxTurns ?? 10;
       const totalUsage: Usage = { inputTokens: 0, outputTokens: 0 };
       let turns = 0;
+      let toolUseCount = 0;
       let lastTextOutput = "";
       const loopDetector = new LoopDetector();
 
@@ -542,6 +557,19 @@ export class SubAgent {
       while (turns < maxTurns) {
         turns++;
         log.debug("SUBAGENT", `[${task.type}] 轮次 ${turns}/${maxTurns}`);
+
+        // 消费 SendMessage 注入的消息（对标 claude-code pendingMessages 机制）
+        // 从第 2 轮开始检查（第 1 轮刚启动，通常还没有消息）
+        if (taskId && turns > 1) {
+          const injected = drainAgentMessages(taskId);
+          for (const msg of injected) {
+            log.info("SUBAGENT", `[${task.type}] 收到主代理消息: ${msg.slice(0, 100)}`);
+            ctxMgr.addMessage({
+              role: "user",
+              content: [{ type: "text", text: `[主代理消息] ${msg}` }],
+            });
+          }
+        }
 
         const toolDefs = tools.size() > 0 ? tools.definitions() : undefined;
 
@@ -575,6 +603,7 @@ export class SubAgent {
             output: response.errorMessage || "子代理 LLM 错误",
             usage: totalUsage,
             turns,
+            toolUseCount,
           };
         }
 
@@ -587,6 +616,11 @@ export class SubAgent {
           lastTextOutput = textBlocks
             .map(b => b.type === "text" ? b.text : "")
             .join("\n");
+        }
+
+        // 实时写输出到磁盘（支持 task_output 增量读取）
+        if (taskId && lastTextOutput) {
+          appendAgentOutput(taskId, `[轮次 ${turns}] ${lastTextOutput}\n`);
         }
 
         ctxMgr.addMessage({
@@ -639,6 +673,10 @@ export class SubAgent {
             continue;
           }
 
+          // 统计工具调用次数
+          const toolUseBlocks = response.content.filter(b => b.type === "tool_use");
+          toolUseCount += toolUseBlocks.length;
+
           const toolResults = await this.executeTools(response.content, tools, mergedSignal);
           ctxMgr.addMessage({
             role: "user",
@@ -661,6 +699,7 @@ export class SubAgent {
         output: finalOutput,
         usage: totalUsage,
         turns,
+        toolUseCount,
       };
     } catch (err: any) {
       // 超时中断时返回友好提示
@@ -671,6 +710,7 @@ export class SubAgent {
           output: `子代理执行超时 (${Math.round(timeout / 1000)}秒)`,
           usage: { inputTokens: 0, outputTokens: 0 },
           turns: 0,
+          toolUseCount: 0,
         };
       }
       // 其他异常也不穿透，转为失败结果
@@ -680,6 +720,7 @@ export class SubAgent {
         output: `子代理执行异常: ${err.message}`,
         usage: { inputTokens: 0, outputTokens: 0 },
         turns: 0,
+        toolUseCount: 0,
       };
     } finally {
       clearTimeout(timer);
@@ -716,6 +757,7 @@ export class SubAgent {
       const maxTurns = task.maxTurns ?? 10;
       const totalUsage: Usage = { inputTokens: 0, outputTokens: 0 };
       let turns = 0;
+      let toolUseCount = 0;
       let lastTextOutput = "";
       const loopDetector = new LoopDetector();
 
@@ -758,6 +800,7 @@ export class SubAgent {
             output: response.errorMessage || "子代理 LLM 错误",
             usage: totalUsage,
             turns,
+            toolUseCount,
           };
         }
 
@@ -818,6 +861,10 @@ export class SubAgent {
             continue;
           }
 
+          // 统计工具调用次数
+          const toolUseBlocks = response.content.filter(b => b.type === "tool_use");
+          toolUseCount += toolUseBlocks.length;
+
           const toolResults = await this.executeTools(response.content, tools, mergedSignal);
           ctxMgr.addMessage({
             role: "user",
@@ -838,6 +885,7 @@ export class SubAgent {
         output: finalOutput,
         usage: totalUsage,
         turns,
+        toolUseCount,
       };
     } catch (err: any) {
       if (timeoutCtrl.signal.aborted) {
@@ -847,6 +895,7 @@ export class SubAgent {
           output: `子代理执行超时 (${Math.round(timeout / 1000)}秒)`,
           usage: { inputTokens: 0, outputTokens: 0 },
           turns: 0,
+          toolUseCount: 0,
         };
       }
       // 其他异常也不穿透，转为失败结果
@@ -856,6 +905,7 @@ export class SubAgent {
         output: `子代理执行异常: ${err.message}`,
         usage: { inputTokens: 0, outputTokens: 0 },
         turns: 0,
+        toolUseCount: 0,
       };
     } finally {
       clearTimeout(timer);

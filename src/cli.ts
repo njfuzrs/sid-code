@@ -560,9 +560,11 @@ export async function main(): Promise<void> {
     // 注册后台任务工具（task 系统已就位，此处补齐工具入口）
     const { TaskOutputTool } = await import("./tool/task-output.ts");
     const { TaskStopTool } = await import("./tool/task-stop.ts");
+    const { TaskListTool } = await import("./tool/task-list.ts");
     const { SendMessageTool } = await import("./tool/send-message.ts");
     toolRegistry.register(new TaskOutputTool());
     toolRegistry.register(new TaskStopTool());
+    toolRegistry.register(new TaskListTool());
     toolRegistry.register(new SendMessageTool());
 
     // 注册 Worktree 隔离工具

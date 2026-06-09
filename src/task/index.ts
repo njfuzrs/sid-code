@@ -9,6 +9,7 @@ export {
   type LocalShellTaskState,
   type LocalAgentTaskState,
   type AgentProgress,
+  type AgentTaskResult,
   type ToolActivity,
   isTerminalStatus,
   isShellTask,

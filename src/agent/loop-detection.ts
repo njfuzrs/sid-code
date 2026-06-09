@@ -346,7 +346,7 @@ export interface LLMLoopCheckResult {
 const EXEMPT_TOOLS = new Set([
   "sub_agent", "task_output", "task_stop",
   "send_message", "todo_write", "enter_plan_mode",
-  "exit_plan_mode",
+  "exit_plan_mode", "task_list",
 ]);
 
 /** 循环检测器（组合工具调用和内容检测） */

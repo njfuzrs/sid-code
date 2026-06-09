@@ -100,6 +100,8 @@ export interface ChildResultMessage {
   output: string;
   usage: Usage;
   turns: number;
+  /** 工具调用次数（用于构造结构化 AgentTaskResult） */
+  toolUseCount: number;
 }
 
 /** 子进程崩溃消息 */
