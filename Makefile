@@ -5,6 +5,7 @@ BUN=bun
 
 build:
 	$(BUN) run scripts/bump-version.ts
+	$(BUN) run scripts/embed-builtin-skills.ts
 	$(BUN) build --compile --outfile $(BINARY) src/entrypoints/bootstrap.ts
 
 run:

@@ -56,7 +56,15 @@ export class SkillManager {
       const builtinDir = join(__dirname, "builtin");
 
       // 不传 projectDir(避免与 user/project 来源混淆),通过 builtinDir 选项让 ExtensionLoader 走 builtin 来源分支
-      const builtinSkills = await this.loader.loadAll(undefined, { builtinDir });
+      let builtinSkills = await this.loader.loadAll(undefined, { builtinDir });
+
+      // 编译二进制回退：bun build --compile 不会嵌入 fs.readFile 读盘的 SKILL.md，
+      // 运行时 import.meta.url=/$bunfs/root → builtinDir 在真实磁盘不存在 → 磁盘扫描返回空。
+      // 此时回退用编译期嵌入清单（builtin-embedded.generated.ts，会被 --compile 打进二进制）解析。
+      // 源码运行（bun run）磁盘扫描已命中,不会进入此分支。
+      if (builtinSkills.length === 0) {
+        builtinSkills = this.loader.loadFromEmbedded();
+      }
 
       for (const skill of builtinSkills) {
         skill.isBuiltin = true;
