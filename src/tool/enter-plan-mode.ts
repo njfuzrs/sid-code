@@ -61,10 +61,14 @@ export class EnterPlanModeTool implements Tool {
     }
 
     const planPath = this.planManager.getPlanFilePath();
+    // 复活完整工作流引导（缺陷修复）：原先这段引导通过重建 system prompt 注入，
+    // 重建逻辑删除后丢失。现作为 tool_result 返回——走消息通道不破坏 Prompt Caching，
+    // 同时保留阶段 1-5 工作流、决策记录防漂移、以及回应用户的"不清空上下文"说明。
+    const { existsSync } = await import("fs");
+    const planExists = planPath ? existsSync(planPath) : false;
+    const { buildPlanModePrompt } = await import("../plan/prompt.ts");
     return {
-      output: `已进入计划模式。你现在只能使用只读工具（read、grep、glob）来探索代码库。
-计划文件路径: ${planPath}
-请分析代码库并制定实现方案，完成后调用 exit_plan_mode 提交计划。`,
+      output: buildPlanModePrompt(planPath || "", planExists),
     };
   }
 }

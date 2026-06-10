@@ -185,7 +185,7 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
         {/* v2：流式思考区域 — 独立于 streamingText（对标 Claude Code）
             同样按视口高度尾部截断，避免与正文叠加把动态区撑高触发闪烁 */}
         {hasThinking && visibleThinking ? (
-          <ThinkingMessage text={visibleThinking} width={termWidth} collapsed={false} />
+          <ThinkingMessage text={visibleThinking} width={termWidth} collapsed={false} streaming={true} />
         ) : null}
 
         <Notifications />

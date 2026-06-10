@@ -717,17 +717,27 @@ export class App {
     for (const { block, idx } of toolBlocks) {
       const result = resultMap.get(idx);
 
-      // 工具执行失败 + 处于 planning 状态 → 触发 Recovery Hook
-      if (result && result.type === "tool_result" && result.is_error && this.planManager.isPlanning()) {
+      // 工具执行失败 + (planning 探索阶段 或 执行阶段) → 触发 Recovery Hook
+      //
+      // 缺陷修复：旧条件只判 isPlanning()，而 recovery 的设计意图恰恰是"执行阶段
+      // （approve 后）工具失败时提醒先更新 plan 再继续"。但 approve() 后状态已回 inactive、
+      // isPlanning() 为 false，导致 recovery 在它真正该工作的执行阶段永不触发。
+      // 现在追加 isExecuting()：approve 后进入执行阶段标志，按计划执行期间失败也能触发。
+      const inPlanContext = this.planManager.isPlanning() || this.planManager.isExecuting();
+      if (result && result.type === "tool_result" && result.is_error && inPlanContext) {
         const { getSharedRecoveryHook } = await import("./plan/recovery.ts");
         const hook = getSharedRecoveryHook();
+        const planFilePath = this.planManager.getPlanFilePath() || "";
+        // 执行阶段 plan 文件路径仍保留（approve/deactivate 不清空，仅 forceExit/下次 enter 清）。
+        // 防御：路径为空时跳过（hook 的 isValidContext 也会拒，这里提前 continue 省一次 import）。
+        if (!planFilePath) continue;
         const ctx = {
           toolName: block.name,
           errorMessage: typeof result.content === "string"
             ? result.content
             : JSON.stringify(result.content ?? ""),
           failedArgs: block.input,
-          currentPlanFilePath: this.planManager.getPlanFilePath() || "",
+          currentPlanFilePath: planFilePath,
           planStepIndex: null,
         };
         const triggerType = block.name === "read" || block.name === "edit"
@@ -737,7 +747,8 @@ export class App {
           hook.recordTrigger(triggerType, ctx.currentPlanFilePath);
           const hint = hook.buildRecoveryHint(triggerType, ctx);
           followup.push({ type: "text", text: hint });
-          log.info("PLAN", `Recovery Hook 触发: trigger=${triggerType} tool=${block.name}`);
+          const phase = this.planManager.isExecuting() ? "执行阶段" : "探索阶段";
+          log.info("PLAN", `Recovery Hook 触发(${phase}): trigger=${triggerType} tool=${block.name}`);
         }
         continue;
       }
@@ -1054,6 +1065,9 @@ export class App {
     this.abortController = new AbortController();
     let runError: Error | null = null;
     let aborted = false;
+    // 新用户回合开始：清执行阶段标志。approve 永远发生在 run 中途（exit_plan_mode 工具执行时），
+    // 故 submitMessage 开始时上一轮执行阶段必已收尾，此处清理不会误清刚 approve 的标志。
+    this.planManager?.endExecution();
     try {
       for await (const event of this.queryEngine.submitMessage(input)) {
         // 无头模式只关心 done 和 system 消息
@@ -1552,6 +1566,8 @@ export class App {
       });
 
       try {
+        // 新用户回合开始：清执行阶段标志（同 runHeadless，详见该处注释）。
+        this.planManager?.endExecution();
         for await (const event of this.queryEngine.submitMessage(userInput)) {
           switch (event.kind) {
             case "user_message_added":

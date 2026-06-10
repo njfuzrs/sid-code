@@ -85,6 +85,7 @@ export const MainContent = memo(function MainContent({
             text={streamingThinking}
             width={termWidth}
             collapsed={false}
+            streaming={true}
           />
         </Box>
       )}

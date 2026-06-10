@@ -72,6 +72,15 @@ export class PlanModeManager {
   private allowedPrompts: Array<{ tool?: string; prompt: string }> = [];
   /** Plan 文件被 write/edit 成功的时间戳序列（plan_recovery capability 用） */
   private planFileUpdates: number[] = [];
+  /**
+   * 是否处于"执行阶段"——计划已被 approve、正在按计划执行。
+   *
+   * 缺陷修复：Recovery Hook 的设计意图是"执行阶段工具失败时提醒先更新 plan 再继续"，
+   * 但 approve() 后状态立刻回到 inactive、isPlanning() 为 false，recovery 永远触发不到。
+   * 这里用独立标志追踪执行阶段：approve() 时置 true，下次 enter()/forceExit() 时清零。
+   * 与三态状态机正交——执行阶段权限模式已恢复（非 plan），但语义上仍"在按计划干活"。
+   */
+  private executing = false;
 
   // ADR-028: fidelity 追踪字段
   /** 解析 plan markdown 拿到的步骤 */
@@ -92,6 +101,7 @@ export class PlanModeManager {
     this.rejectionCount = 0;
     this.reminderTurn = 0;
     this.allowedPrompts = [];
+    this.executing = false;
     this.prePlanMode = currentPermissionMode || null;
     this.planFilePath = this.generatePlanFilePath();
     this.ensurePlanDir();
@@ -108,11 +118,14 @@ export class PlanModeManager {
     return true;
   }
 
-  /** 用户批准计划 → 退出 Plan Mode */
+  /** 用户批准计划 → 退出 Plan Mode，进入执行阶段 */
   approve(): boolean {
     if (this.state !== "awaiting_approval") return false;
     const from = this.state;
     this.state = "inactive";
+    // 缺陷修复：进入执行阶段。此后权限模式已恢复（非 plan），但语义上在按计划执行，
+    // Recovery Hook 据 isExecuting() 在执行阶段工具失败时触发"先更新 plan 再继续"。
+    this.executing = true;
     this.emit({ from, to: this.state, planFilePath: this.planFilePath });
     return true;
   }
@@ -146,7 +159,17 @@ export class PlanModeManager {
     this.planFileUpdates = [];
     this.planSteps = [];
     this.actualToolCalls = [];
+    this.executing = false;
     this.emit({ from, to: this.state, planFilePath: this.planFilePath });
+  }
+
+  /**
+   * 结束执行阶段（清 executing 标志）。
+   * 当一轮按计划执行彻底收尾、或用户开启新一轮 plan 时调用。
+   * 注意 enter() 已会清零，此方法供"执行完成但未进入新 plan"的显式收尾场景。
+   */
+  endExecution(): void {
+    this.executing = false;
   }
 
   // ── 查询方法 ──
@@ -154,6 +177,12 @@ export class PlanModeManager {
   isActive(): boolean { return this.state !== "inactive"; }
   isPlanning(): boolean { return this.state === "planning"; }
   isAwaitingApproval(): boolean { return this.state === "awaiting_approval"; }
+  /**
+   * 是否处于执行阶段（计划已 approve、正在按计划执行）。
+   * 与 isActive() 正交：执行阶段 state 已是 inactive、权限模式已恢复，但 isExecuting() 为真。
+   * Recovery Hook 据此在执行阶段工具失败时触发。
+   */
+  isExecuting(): boolean { return this.executing; }
   getState(): PlanModeState { return this.state; }
   getPlanFilePath(): string | null { return this.planFilePath; }
   getRejectionCount(): number { return this.rejectionCount; }

@@ -53,6 +53,7 @@ import {
   buildProgressReminder,
 } from "./work-log.ts";
 import { dequeuePendingNotifications } from "../task/index.ts";
+import { injectReminders } from "./reminder-inject.ts";
 import type {
   QueryLoopYield,
   QueryDeps,
@@ -282,26 +283,10 @@ export async function* queryLoop(
     }
 
     if (reminderParts.length > 0) {
-      const reminder = reminderParts.join("\n\n");
-      // 找到最后一条 user message，创建修改后的副本
-      for (let i = finalMessages.length - 1; i >= 0; i--) {
-        const msg = finalMessages[i];
-        if (msg.role === "user") {
-          const textIdx = (msg.content as any[]).findIndex(
-            (c: any) => c.type === "text"
-          );
-          if (textIdx >= 0) {
-            const newContent = [...(msg.content as any[])];
-            newContent[textIdx] = {
-              ...newContent[textIdx],
-              text: reminder + "\n\n" + newContent[textIdx].text,
-            };
-            finalMessages = [...finalMessages];
-            finalMessages[i] = { ...msg, content: newContent };
-          }
-          break;
-        }
-      }
+      // 注入逻辑抽到 reminder-inject.ts（纯函数，便于单测）。
+      // 关键：纯 tool_result 轮（plan 探索高频场景）无 text block 时会追加 text block，
+      // 不再放弃注入——修复了工具轮漏注入 reminder 的回归。
+      finalMessages = injectReminders(finalMessages, reminderParts);
     }
 
     const sendParams: SendParams = {

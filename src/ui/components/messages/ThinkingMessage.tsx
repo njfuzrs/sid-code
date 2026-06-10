@@ -1,10 +1,12 @@
 /**
  * 思考过程展示组件
  *
- * 渲染模型的思考过程，带左侧边框和斜体样式。
- * v2：支持 collapsed 属性（对标 Claude Code ThinkingMessage）。
+ * 渲染模型的思考过程。视觉语言（对标 Claude Code / gemini-cli）：
+ * - 标题行：✻ 图标 + 状态文案（流式中 = "思考中…"，已完成 = "思考过程"）
+ * - 正文：统一 secondary + italic，左侧一条竖线引导，保留段落结构
+ * - 折叠态：单行摘要，含字符数与展开提示
  *
- * 参考 gemini-cli ThinkingMessage.tsx
+ * 关键设计原则：单一视觉语言，不做"第一行高亮、其余暗色"的无依据多色处理。
  */
 
 import React from "react";
@@ -14,32 +16,70 @@ import { theme } from "../../semantic-colors.ts";
 interface ThinkingMessageProps {
   text: string;
   width: number;
-  /** v2：是否折叠为一行摘要，默认 false（展开） */
+  /** 是否折叠为一行摘要，默认 false（展开） */
   collapsed?: boolean;
+  /** 是否正在流式输出（仅影响标题文案：思考中… vs 思考过程） */
+  streaming?: boolean;
 }
 
-export const ThinkingMessage: React.FC<ThinkingMessageProps> = ({ text, width, collapsed = false }) => {
+/**
+ * 规整思考文本：
+ * - 去除每行尾部空白
+ * - 合并连续空行为单个空行（保留段落分隔，不粗暴删光）
+ * - 去除首尾空行
+ */
+function normalizeThinkingLines(text: string): string[] {
+  const rawLines = text.replace(/\r\n/g, "\n").split("\n");
+  const out: string[] = [];
+  let blankRun = 0;
+  for (const line of rawLines) {
+    if (line.trim() === "") {
+      blankRun++;
+      // 仅在已有内容后保留至多一个空行作为段落分隔
+      if (blankRun === 1 && out.length > 0) out.push("");
+    } else {
+      blankRun = 0;
+      out.push(line.replace(/\s+$/, ""));
+    }
+  }
+  while (out.length > 0 && out[out.length - 1] === "") out.pop();
+  return out;
+}
+
+export const ThinkingMessage: React.FC<ThinkingMessageProps> = ({
+  text,
+  width,
+  collapsed = false,
+  streaming = false,
+}) => {
   if (!text.trim()) return null;
 
-  // 折叠模式：只显示一行摘要
+  // 折叠态：单行摘要
   if (collapsed) {
     return (
-      <Box width={width} flexDirection="column">
+      <Box width={width}>
         <Text color={theme.text.secondary} dimColor>
-          {"💭 思考过程 ("}{text.length.toLocaleString()}{" 字符) [Ctrl+T 展开]"}
+          {"✻ 思考过程 · "}{text.length.toLocaleString()}{" 字符 · ctrl+t 展开"}
         </Text>
       </Box>
     );
   }
 
-  const lines = text.split("\n").filter((l) => l.trim());
+  const lines = normalizeThinkingLines(text);
   if (lines.length === 0) return null;
+
+  const title = streaming ? "✻ 思考中…" : "✻ 思考过程";
+  // 正文有效宽度：扣除竖线引导占用的列（marginLeft 1 + border 1 + paddingLeft 1）
+  const bodyWidth = Math.max(1, width - 3);
 
   return (
     <Box width={width} flexDirection="column">
-      <Text color={theme.text.primary} italic>
-        {" "}思考中...{" "}
+      {/* 标题行：accent 色 italic，不 bold（避免过亮抢眼） */}
+      <Text color={theme.text.accent} italic>
+        {title}
       </Text>
+
+      {/* 正文：左侧竖线引导 + 统一 secondary italic */}
       <Box
         marginLeft={1}
         paddingLeft={1}
@@ -48,19 +88,26 @@ export const ThinkingMessage: React.FC<ThinkingMessageProps> = ({ text, width, c
         borderRight={false}
         borderTop={false}
         borderBottom={false}
-        borderColor={theme.text.secondary}
+        borderColor={theme.ui.dark}
         flexDirection="column"
+        width={width}
       >
-        {lines.length > 0 && (
-          <Text color={theme.text.primary} bold italic>
-            {lines[0]}
-          </Text>
-        )}
-        {lines.slice(1).map((line, index) => (
-          <Text key={`thought-${index}`} color={theme.text.secondary} italic>
-            {line}
+        {lines.map((line, index) => (
+          <Text
+            key={`thought-${index}`}
+            color={theme.text.secondary}
+            italic
+            wrap="wrap"
+          >
+            {line === "" ? " " : line}
           </Text>
         ))}
+        {/* 流式时在末尾附一个闪烁感的省略提示，暗示仍在输出 */}
+        {streaming && (
+          <Text color={theme.ui.dark} dimColor>
+            {"▌"}
+          </Text>
+        )}
       </Box>
     </Box>
   );
