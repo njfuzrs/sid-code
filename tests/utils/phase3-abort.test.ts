@@ -4,7 +4,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { createChildAbortController } from "./abort-controller.ts";
+import { createChildAbortController } from "../../src/utils/abort-controller.ts";
 
 describe("createChildAbortController", () => {
   test("父取消传播到子，携带 reason", () => {

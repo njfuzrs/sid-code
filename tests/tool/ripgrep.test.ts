@@ -4,7 +4,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { ripGrep, hasRipgrep, RipgrepTimeoutError } from "./ripgrep.ts";
+import { ripGrep, hasRipgrep, RipgrepTimeoutError } from "../../src/tool/ripgrep.ts";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 

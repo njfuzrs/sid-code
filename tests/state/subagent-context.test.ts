@@ -1,7 +1,7 @@
 import { describe, test, expect } from "bun:test";
-import { createSubagentContext } from "./subagent-context.ts";
-import { createStore } from "./store.ts";
-import { getDefaultAppState } from "./app-state.ts";
+import { createSubagentContext } from "../../src/state/subagent-context.ts";
+import { createStore } from "../../src/state/store.ts";
+import { getDefaultAppState } from "../../src/state/app-state.ts";
 
 describe("createSubagentContext", () => {
   test("默认 setAppState 为 no-op", () => {

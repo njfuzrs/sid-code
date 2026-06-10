@@ -8,8 +8,8 @@ import { describe, test, expect, afterEach } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { LSPServerInstance } from "./server-instance.ts";
-import type { LSPServerConfig } from "./types.ts";
+import { LSPServerInstance } from "../../src/lsp/server-instance.ts";
+import type { LSPServerConfig } from "../../src/lsp/types.ts";
 
 /** 写一个最小 mock LSP server（Content-Length 帧 JSON-RPC） */
 function writeMockLSP(dir: string): string {

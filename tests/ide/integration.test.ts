@@ -8,11 +8,11 @@ import { mkdtempSync, writeFileSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 
-import { isSubPath, lockfileToDetectedIDE } from "./detect.ts";
-import { IDESelectionSync } from "./selection.ts";
-import { IDEMentionManager } from "./mention.ts";
-import { isProcessRunning, readIDELockfile } from "./lockfile.ts";
-import { shouldAutoConnect, isSupportedTerminal } from "./integration.ts";
+import { isSubPath, lockfileToDetectedIDE } from "../../src/ide/detect.ts";
+import { IDESelectionSync } from "../../src/ide/selection.ts";
+import { IDEMentionManager } from "../../src/ide/mention.ts";
+import { isProcessRunning, readIDELockfile } from "../../src/ide/lockfile.ts";
+import { shouldAutoConnect, isSupportedTerminal } from "../../src/ide/integration.ts";
 
 // ───────────────────────────── isSubPath ─────────────────────────────
 

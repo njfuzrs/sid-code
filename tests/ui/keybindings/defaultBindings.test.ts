@@ -6,8 +6,8 @@
  */
 
 import { test, expect, describe } from "bun:test";
-import { matchBinding, bindingFor, DEFAULT_BINDINGS } from "./defaultBindings.ts";
-import type { Key } from "../contexts/KeypressContext.ts";
+import { matchBinding, bindingFor, DEFAULT_BINDINGS } from "../../../src/ui/keybindings/defaultBindings.ts";
+import type { Key } from "../../../src/ui/contexts/KeypressContext.ts";
 
 const mkKey = (p: Partial<Key>): Key => ({
   name: "",

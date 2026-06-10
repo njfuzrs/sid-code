@@ -5,8 +5,8 @@
 
 import { describe, test, expect } from "bun:test";
 import { z } from "zod";
-import { semanticBoolean, coerceSemanticBoolean } from "./semantic-boolean.ts";
-import { asSessionId, asAgentId, asToolCallId } from "../types/ids.ts";
+import { semanticBoolean, coerceSemanticBoolean } from "../../src/utils/semantic-boolean.ts";
+import { asSessionId, asAgentId, asToolCallId } from "../../src/types/ids.ts";
 
 describe("semanticBoolean (Zod)", () => {
   const schema = semanticBoolean(z.boolean());
