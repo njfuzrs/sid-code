@@ -85,10 +85,120 @@ export class TodoWriteTool implements Tool {
 8. 完成任务后 — 立即标记为 completed（不要批量完成）
 
 ## 何时不使用
+
+跳过 todo_write 当：
 1. 只有一个简单任务
 2. 任务太简单，追踪没有组织价值
 3. 任务可以在 3 个以下简单步骤内完成
 4. 任务是纯对话或信息查询
+
+注意：只有一个简单任务时，直接做就行，不需要建清单。
+
+## 正例（应使用 todo_write）
+
+<example>
+用户：我想给设置页加一个深色模式切换开关。做完后记得跑测试和构建！
+助手：*创建 todo 清单，包含以下项：*
+1. 在设置页创建深色模式切换组件
+2. 添加深色模式状态管理（context/store）
+3. 实现深色主题的 CSS-in-JS 样式
+4. 更新已有组件支持主题切换
+5. 运行测试和构建，处理可能的失败或错误
+*开始做第一项任务*
+
+<reasoning>
+助手使用 todo 清单因为：
+1. 添加深色模式是多步骤功能，涉及 UI、状态管理、样式变更
+2. 用户明确要求跑测试和构建
+3. 助手推断测试和构建也需要作为一个任务，添加到清单末尾
+</reasoning>
+</example>
+
+<example>
+用户：帮我把函数 getCwd 重命名为 getCurrentWorkingDirectory，全项目替换。
+助手：*先用 grep 搜索工具定位所有 getCwd 出现的位置*
+在 8 个文件中找到 15 处 getCwd 引用。
+*创建 todo 清单，每个需要更新的文件一条任务*
+
+<reasoning>
+助手使用 todo 清单因为：
+1. 先用工具搜索了解任务范围
+2. 发现分布在多个文件中，确定这是多步骤复杂任务
+3. todo 清单确保每一处都被追踪和系统性更新，不会遗漏
+</reasoning>
+</example>
+
+<example>
+用户：帮我实现这些电商功能：用户注册、商品目录、购物车、结算流程。
+助手：*创建 todo 清单，将每个功能拆解为具体任务*
+我们先从用户注册开始。这需要创建数据库模型、API 端点，以及与现有认证系统集成的前端表单。
+
+<reasoning>
+助手使用 todo 清单因为：
+1. 用户提供了多个复杂功能（逗号分隔的列表）
+2. todo 清单帮助把大功能拆成可管理的小任务
+3. 可以追踪整个实现过程的进度
+</reasoning>
+</example>
+
+<example>
+用户：能帮我优化 React 应用的性能吗？渲染很慢。
+助手：*先分析组件结构、渲染模式、状态管理和数据获取*
+分析完代码后，发现多个性能问题。
+*创建 todo 清单：1) 为 ProductList 的昂贵计算添加 memoization，2) 为 Dashboard 的长列表添加虚拟化，3) 优化 Gallery 组件的图片加载，4) 修复 ShoppingCart 的状态更新循环，5) 检查打包体积并实施代码分割*
+先从 ProductList 的 memoization 开始。
+
+<reasoning>
+助手使用 todo 清单因为：
+1. 先分析代码库，识别具体性能问题
+2. 基于分析结果，识别出多个优化点
+3. 性能优化是非平凡任务，需要多步骤
+4. todo 清单帮助有条理地跟踪各组件的改进
+</reasoning>
+</example>
+
+## 反例（不应使用 todo_write）
+
+<example>
+用户：Python 怎么打印 Hello World？
+助手：Python 中打印 "Hello World" 很简单：
+print("Hello World")
+运行后会输出 "Hello World"。
+
+<reasoning>
+助手没有用 todo 清单，因为这是单一简单任务，一步就能完成。不需要追踪多个步骤。
+</reasoning>
+</example>
+
+<example>
+用户：git status 命令是干什么的？
+助手：git status 命令显示工作目录和暂存区的当前状态，包括哪些改动已暂存、哪些未暂存、哪些文件未被 Git 跟踪。
+
+<reasoning>
+助手没有用 todo 清单，因为这是纯信息查询，没有实际的编码任务需要完成。
+</reasoning>
+</example>
+
+<example>
+用户：给 calculateTotal 函数加个注释说明它做什么。
+助手：好的，让我给 calculateTotal 函数加个注释。
+*用 edit 工具在 calculateTotal 函数上方添加注释*
+
+<reasoning>
+助手没有用 todo 清单，因为这是单一简单任务，局限在一个位置。加注释不需要追踪多个步骤。
+</reasoning>
+</example>
+
+<example>
+用户：帮我跑 npm install，告诉我结果。
+助手：我来执行 npm install。
+*执行 npm install*
+命令执行成功。所有依赖已安装。
+
+<reasoning>
+助手没有用 todo 清单，因为这是单条命令执行，立即出结果。没有多个步骤需要追踪，不需要清单。
+</reasoning>
+</example>
 
 ## 任务状态
 - pending: 尚未开始

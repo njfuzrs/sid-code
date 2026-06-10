@@ -424,6 +424,10 @@ ${toolList}
 - **执行命令**: 使用 bash 工具，必须提供 description 参数说明命令意图，设置合理的超时时间
 - **搜索内容**: grep 工具默认只返回文件路径（省 token），需要看内容时用 output_mode=content
 ${customGuides.length > 0 ? "\n" + customGuides.join("\n") : ""}
+
+### 任务编排
+- **复杂任务先拆解**: 用 todo_write 工具把复杂任务拆成结构化清单，逐条追踪进度。收到新指令时立即捕捉为 todo 项，完成即标记为 completed，不要攒到最后批量完成
+- **方案不确定先规划**: 当实现路径存在真实架构歧义（多种合理方案、需求不明确、高风险重构）时，用 enter_plan_mode 先对齐方案再编码。日常任务拿不准时倾向于直接开始工作，遇到具体选择点再问用户——「先动手再问」比「每个任务都 plan」更高效
 </tool-guide>`;
 }
 
