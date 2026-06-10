@@ -426,6 +426,19 @@ export async function main(): Promise<void> {
         logFile: logger.getLogFilePath(),
       });
       logger.configLoaded("CLI", config);
+    } else if (config.audit !== false) {
+      // 零配置审计日志：不开 --debug 也常驻留痕。
+      // 只落 WARN/ERROR 关键事件（空参数退化、循环、压缩、孤儿修复、上传失败等），
+      // 不输出控制台、不写 DEBUG/INFO 噪音，出问题必有现场。只写本地、不外传。
+      // logger 自带 10MB 大小轮转 + 仅留 1 备份，磁盘安全。
+      initLogger({
+        enabled: true,
+        level: LogLevel.WARN,
+        logFile: config.auditLogFile ?? "~/.sid-code/audit.log",
+        console: false,
+        fileOnly: true,
+        append: true,
+      });
     }
 
     // 处理会话管理命令（不需要 API Key）

@@ -27,6 +27,8 @@ export interface LoggerOptions {
   jsonLog?: boolean;
   /** JSON Lines 日志文件路径（默认在 logFile 同目录下 .jsonl 后缀） */
   jsonLogFile?: string;
+  /** 追加模式写入（审计日志跨会话累积用，默认 false=覆盖） */
+  append?: boolean;
 }
 
 // ANSI 颜色码
@@ -88,6 +90,7 @@ class Logger {
       mutedCategories: options.mutedCategories,
       jsonLog: options.jsonLog ?? false,
       jsonLogFile: options.jsonLogFile,
+      append: options.append ?? false,
     };
 
     if (this.options.enabled && this.options.logFile) {
@@ -101,8 +104,8 @@ class Logger {
         mkdirSync(logDir, { recursive: true });
       }
 
-      // 改用 WriteStream 异步写入
-      this.logStream = createWriteStream(this.logFilePath, { flags: 'w' });
+      // 改用 WriteStream 异步写入（审计模式 append 跨会话累积，debug 模式 w 覆盖）
+      this.logStream = createWriteStream(this.logFilePath, { flags: this.options.append ? 'a' : 'w' });
       this.logStream.on('error', () => {}); // 静默错误
 
       // 写入头部

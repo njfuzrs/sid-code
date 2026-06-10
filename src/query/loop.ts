@@ -52,6 +52,7 @@ import {
   persistProgress,
   buildProgressReminder,
 } from "./work-log.ts";
+import { dequeuePendingNotifications } from "../task/index.ts";
 import type {
   QueryLoopYield,
   QueryDeps,
@@ -105,6 +106,22 @@ export async function* queryLoop(
   while (state.turnCount < state.maxTurns) {
     state.turnCount++;
     loopDetector.recordTurn();
+
+    // ─── 后台任务完成通知回注（对标 claude-code <task-notification> 投递）───
+    // 根因修复：后台子代理（run_in_background=true）完成后 completeAgentTask/failAgentTask
+    // 把 <task-notification> 塞进 pendingQueue，但真实主循环 queryLoop 此前从不出队，
+    // 导致"完成后会通知你"成为虚假承诺。这里在每轮开头出队并作为 user 消息注入，
+    // 让主代理被动收到后台子代理的结构化结果/失败信息。
+    const notifications = dequeuePendingNotifications();
+    if (notifications.length > 0) {
+      for (const notification of notifications) {
+        ctxMgr.addMessage({
+          role: "user",
+          content: [{ type: "text", text: notification }],
+        });
+      }
+      log.info("QUERY_LOOP", `注入 ${notifications.length} 条后台任务通知`);
+    }
 
     // ─── 上下文使用率监控 ───
     const toolCount = toolRegistry.size();

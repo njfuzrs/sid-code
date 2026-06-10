@@ -24,6 +24,9 @@ export class AnthropicProvider implements Provider {
     this.client = new Anthropic({
       apiKey,
       ...(baseURL && { baseURL }),
+      // SDK 自带重试与 fallback.ts 的重试引擎会叠加放大请求次数，
+      // 这里关掉 SDK 层重试，统一由 fallback.ts 管理重试/退避策略。
+      maxRetries: 0,
     });
     this._model = model || this.defaultModel();
   }
@@ -142,7 +145,13 @@ export class AnthropicProvider implements Provider {
             },
           }),
         },
-        { headers: { "x-client-request-id": clientRequestId } },
+        {
+          headers: { "x-client-request-id": clientRequestId },
+          // ⭐ 关键：把 signal 透传给 SDK，使 abort() 能真正中断底层 HTTP/TCP 连接。
+          // 缺了它，流 hang 时 fallback.ts 的超时 abort 无法穿透到 fetch 层，
+          // for-await 会永久阻塞 → 进程僵死（会话 11984e23 根因）。
+          ...(signal ? { signal } : {}),
+        },
       );
 
       // 从响应 headers 提取真实速率限制状态（不阻塞流式迭代）

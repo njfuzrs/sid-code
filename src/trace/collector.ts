@@ -12,7 +12,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, unlinkSync, writeFileSync, readdirSync, statSync, rmSync } from "node:fs";
 import {
   HookEventName,
   type HookInput,
@@ -71,6 +71,8 @@ export class TraceCollector {
   private writer!: TraceWriter;
   private uploader: TraceUploaderInterface | null;
   private readonly outputDir: string;
+  /** 本地最大保留会话数（LRU 清理用，默认 100） */
+  private readonly maxSessionsRetained: number;
   private initialized = false;
   /** 待写入下次 raw.jsonl 的 compact_boundary */
   private pendingCompactBoundary: RawJsonlEntry["compact_boundary"] | undefined;
@@ -87,7 +89,55 @@ export class TraceCollector {
   constructor(options: CollectorOptions = {}, uploader: TraceUploaderInterface | null = null) {
     this.outputDir = options.outputDir
       ?? join(homedir(), ".sid-code", "trajectories");
+    this.maxSessionsRetained = options.maxSessionsRetained ?? 100;
     this.uploader = uploader;
+    // 启动时做一次 LRU 清理，回收已上传/旧会话目录，防止本地无限堆积
+    this.pruneOldSessions();
+  }
+
+  /**
+   * LRU 清理：当 sessions/ 下目录数超过 maxSessionsRetained 时，按修改时间删最旧的。
+   * 优先删已上传的（含 .uploaded 标记）——它们的数据已安全落到远端；
+   * 未上传的目录（重试队列待传）即使较旧也尽量保留，避免丢失尚未采集到的训练数据。
+   * 失败静默：清理不是关键路径，不能阻塞采集。
+   */
+  private pruneOldSessions(): void {
+    try {
+      const sessionsDir = join(this.outputDir, "sessions");
+      if (!existsSync(sessionsDir)) return;
+
+      const entries = readdirSync(sessionsDir, { withFileTypes: true })
+        .filter((e) => e.isDirectory())
+        .map((e) => {
+          const dir = join(sessionsDir, e.name);
+          let mtime = 0;
+          try { mtime = statSync(dir).mtimeMs; } catch { /* 忽略 */ }
+          const uploaded = existsSync(join(dir, ".uploaded"));
+          return { dir, mtime, uploaded };
+        });
+
+      if (entries.length <= this.maxSessionsRetained) return;
+
+      const overflow = entries.length - this.maxSessionsRetained;
+      // 删除优先级：已上传的优先（按最旧在前），其次才动未上传的（同样最旧在前）
+      const deletable = [
+        ...entries.filter((e) => e.uploaded).sort((a, b) => a.mtime - b.mtime),
+        ...entries.filter((e) => !e.uploaded).sort((a, b) => a.mtime - b.mtime),
+      ].slice(0, overflow);
+
+      let removed = 0;
+      for (const e of deletable) {
+        try {
+          rmSync(e.dir, { recursive: true, force: true });
+          removed++;
+        } catch { /* 单个删除失败不影响其余 */ }
+      }
+      if (removed > 0) {
+        getLogger().info("TRACE", `LRU 清理：本地会话 ${entries.length} 个超过上限 ${this.maxSessionsRetained}，已删除最旧 ${removed} 个`);
+      }
+    } catch (err) {
+      getLogger().warn("TRACE", `LRU 清理失败（不影响采集）: ${err}`);
+    }
   }
 
   // ─── Hook 注册 ───

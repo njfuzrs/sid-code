@@ -111,6 +111,11 @@ export interface Config {
   debugLevel: string;
   debugLogFile: string;
 
+  // 审计日志（零配置常驻：不依赖 debug，始终把 WARN/ERROR 关键事件落本地，
+  // 出问题必有现场。只写本地、不外传。默认开，audit:false 可关）
+  audit?: boolean;
+  auditLogFile?: string;
+
   // UI 渲染配置
   /**
    * 是否启用 alternate buffer（全屏 TUI）模式。
@@ -385,6 +390,8 @@ export function defaultConfig(): Config {
     debug: false,
     debugLevel: "INFO",
     debugLogFile: "~/.sid-code/debug.log",
+    audit: true,
+    auditLogFile: "~/.sid-code/audit.log",
     hooks: {},
     mcpServers: {},
     showLineNumbers: true,
@@ -431,6 +438,8 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     debug: "debug",
     debug_level: "debugLevel",
     debug_log_file: "debugLogFile",
+    audit: "audit",
+    audit_log_file: "auditLogFile",
     hooks: "hooks",
     mcp_servers: "mcpServers",
     sub_agent_models: "subAgentModels",
