@@ -69,8 +69,8 @@ export const ThinkingMessage: React.FC<ThinkingMessageProps> = ({
   if (lines.length === 0) return null;
 
   const title = streaming ? "✻ 思考中…" : "✻ 思考过程";
-  // 正文有效宽度：扣除竖线引导占用的列（marginLeft 1 + border 1 + paddingLeft 1）
-  const bodyWidth = Math.max(1, width - 3);
+  // 正文容器扣除 marginLeft(1)，其内 border(1)+paddingLeft(1) 由 ink 在该宽度内分配
+  const bodyWidth = Math.max(1, width - 1);
 
   return (
     <Box width={width} flexDirection="column">
@@ -90,7 +90,7 @@ export const ThinkingMessage: React.FC<ThinkingMessageProps> = ({
         borderBottom={false}
         borderColor={theme.ui.dark}
         flexDirection="column"
-        width={width}
+        width={bodyWidth}
       >
         {lines.map((line, index) => (
           <Text
@@ -102,7 +102,7 @@ export const ThinkingMessage: React.FC<ThinkingMessageProps> = ({
             {line === "" ? " " : line}
           </Text>
         ))}
-        {/* 流式时在末尾附一个闪烁感的省略提示，暗示仍在输出 */}
+        {/* 流式时在末尾附一个光标提示，暗示仍在输出 */}
         {streaming && (
           <Text color={theme.ui.dark} dimColor>
             {"▌"}

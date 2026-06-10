@@ -176,16 +176,17 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
           </Box>
         ) : null}
 
+        {/* v2：流式思考区域 — 独立于 streamingText（对标 Claude Code）
+            思考在正文之前渲染（模型先思考后回答），顺序与语义一致。
+            同样按视口高度尾部截断，避免与正文叠加把动态区撑高触发闪烁 */}
+        {hasThinking && visibleThinking ? (
+          <ThinkingMessage text={visibleThinking} width={termWidth} collapsed={false} streaming={true} />
+        ) : null}
+
         {/* 正在生成的流式消息（完成后由父层并入 staticItems，此处清空）
             注意：visibleText 已按视口高度做尾部截断（防 stock ink 全屏重打闪烁，见 streaming-viewport.ts） */}
         {hasText && visibleText ? (
           <StreamingMessage fullText={visibleText} maxWidth={termWidth} />
-        ) : null}
-
-        {/* v2：流式思考区域 — 独立于 streamingText（对标 Claude Code）
-            同样按视口高度尾部截断，避免与正文叠加把动态区撑高触发闪烁 */}
-        {hasThinking && visibleThinking ? (
-          <ThinkingMessage text={visibleThinking} width={termWidth} collapsed={false} streaming={true} />
         ) : null}
 
         <Notifications />
