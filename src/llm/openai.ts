@@ -180,13 +180,17 @@ export class OpenAIProvider implements Provider {
           content: textParts.join("") || null,
         };
 
-        // DeepSeek: 回传 reasoning_content
-        if (msg._meta?.reasoning_content) {
-          assistantMsg.reasoning_content = msg._meta.reasoning_content;
-        }
-
         if (toolCalls.length > 0) {
           assistantMsg.tool_calls = toolCalls;
+        }
+
+        // DeepSeek: 回传 reasoning_content（思考链）。
+        // 根因 5.2 修复（P1-2）：含 tool_calls 的 assistant 消息**不能**携带 reasoning_content——
+        // DeepSeek reasoning 模型在多轮工具调用回传该字段会触发
+        // `The reasoning_content ... must be ...` 类 400（实测 sub_agent 35.9% 失败、13 次精确命中）。
+        // 仅在无 tool_calls 时回传，规避协议冲突。
+        if (msg._meta?.reasoning_content && toolCalls.length === 0) {
+          assistantMsg.reasoning_content = msg._meta.reasoning_content;
         }
 
         result.push(assistantMsg);

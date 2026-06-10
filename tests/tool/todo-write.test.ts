@@ -202,4 +202,26 @@ describe("TodoWriteTool", () => {
     const todos = tool.getTodos();
     expect(todos).toEqual([]);
   });
+
+  // P0-2：writeVersion 用于"距上次 todo_write 多少轮"判定
+  it("getWriteVersion 初始为 0，每次成功 execute 后递增", async () => {
+    const tool = new TodoWriteTool();
+    expect(tool.getWriteVersion()).toBe(0);
+
+    await tool.execute({ todos: [makeTodo("任务1")] });
+    expect(tool.getWriteVersion()).toBe(1);
+
+    await tool.execute({ todos: [makeTodo("任务1", "in_progress")] });
+    expect(tool.getWriteVersion()).toBe(2);
+  });
+
+  it("getWriteVersion 在校验失败时不递增", async () => {
+    const tool = new TodoWriteTool();
+    await tool.execute({ todos: [makeTodo("任务1")] });
+    expect(tool.getWriteVersion()).toBe(1);
+
+    // 非法输入（todos 不是数组）→ 失败，版本号不变
+    await tool.execute({ todos: "not-an-array" });
+    expect(tool.getWriteVersion()).toBe(1);
+  });
 });

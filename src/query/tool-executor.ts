@@ -15,6 +15,27 @@ import { isAbortError } from "../llm/errors.ts";
 import { processToolResult } from "../tool/result-storage.ts";
 import { yieldMissingToolResults, collectToolResultIdsFromBlocks } from "../agent/tool-result-guard.ts";
 
+/**
+ * P2-1（占位消息治理）：为成功但输出为空的工具生成有语义的"无输出"描述。
+ * 让模型能区分"命令成功但无输出"与"出错/未执行"，并避免空 tool_result 在协议层
+ * 被兜底成无信息的 "(empty)" 进而触发占位污染。
+ */
+function describeEmptyOutput(toolName: string): string {
+  switch (toolName) {
+    case "bash":
+      return "(命令执行成功，无标准输出)";
+    case "grep":
+      return "(未匹配到任何结果)";
+    case "glob":
+      return "(未找到匹配的文件)";
+    case "edit":
+    case "write":
+      return "(文件写入成功)";
+    default:
+      return `(工具 ${toolName} 执行成功，无输出内容)`;
+  }
+}
+
 /** 工具执行器依赖 */
 export interface ToolExecutorDeps {
   config: Config;
@@ -316,17 +337,25 @@ export async function executeSingleTool(
 
     log.toolEnd(block.name, result.output, !!result.isError, elapsed);
 
+    // P2-1（占位消息治理，根因 5.1）：工具成功但输出为空时，给出**有语义的"无输出"描述**，
+    // 而不是把空串交给协议层兜底成无信息的 "(empty)"。这样模型能区分"命令成功但无输出"
+    // 与"命令未执行/出错"，也避免空 tool_result 触发后续占位插入污染上下文。
+    const normalizedOutput =
+      !result.isError && (!truncatedOutput || truncatedOutput.trim().length === 0)
+        ? describeEmptyOutput(block.name)
+        : truncatedOutput;
+
     // post_tool_use hook
     const postResult = await deps.hookSystem.firePostToolUseEvent(
       block.name,
       block.input as Record<string, unknown>,
-      { output: truncatedOutput, isError: result.isError },
+      { output: normalizedOutput, isError: result.isError },
       result.isError,
       block.id,
       { duration_ms: elapsed },
     );
 
-    let finalOutput = truncatedOutput;
+    let finalOutput = normalizedOutput;
     const additionalCtx = postResult.finalOutput?.getAdditionalContext();
     if (additionalCtx) {
       log.info("HOOK", `PostToolUse hook 追加上下文到 ${block.name} 结果`);

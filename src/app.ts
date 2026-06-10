@@ -244,6 +244,17 @@ export class App {
         const { buildPlanModeReminder } = await import("./plan/prompt.ts");
         return buildPlanModeReminder(this.planManager.nextReminderIsFull());
       },
+      getTodoState: () => {
+        // P0-2 / P0-3：把 TodoWriteTool 的内存状态暴露给 queryLoop，
+        // 用于每轮回注完整清单（根因 1）+ end_turn 完成度硬校验（根因 1、2）。
+        const todoTool = this.toolRegistry.get("todo_write") as
+          | import("./tool/todo-write.ts").TodoWriteTool
+          | undefined;
+        if (!todoTool) return null;
+        const todos = todoTool.getTodos();
+        if (todos.length === 0) return null;
+        return { todos, writeVersion: todoTool.getWriteVersion() };
+      },
     });
   }
 
@@ -825,7 +836,7 @@ export class App {
         const { buildPlanApprovedMessage } = await import("./plan/prompt.ts");
         return [{
           type: "text",
-          text: buildPlanApprovedMessage(planPath || ""),
+          text: buildPlanApprovedMessage(planPath || "", this.countPlanSteps(planPath)),
         }];
       } else {
         const canContinue = this.planManager.reject();
@@ -853,8 +864,24 @@ export class App {
       const { buildPlanApprovedMessage } = await import("./plan/prompt.ts");
       return [{
         type: "text",
-        text: buildPlanApprovedMessage(planPath || ""),
+        text: buildPlanApprovedMessage(planPath || "", this.countPlanSteps(planPath)),
       }];
+    }
+  }
+
+  /**
+   * P1-1（全集锚点）：解析计划文件得到顶层步骤数，供 buildPlanApprovedMessage 生成
+   * "todo 必须覆盖全部 N 步"的硬约束。解析失败/无文件返回 0（退化为通用约束）。
+   */
+  private countPlanSteps(planPath: string | null): number {
+    if (!planPath || !this.planManager) return 0;
+    try {
+      const { existsSync, readFileSync } = require("fs");
+      if (!existsSync(planPath)) return 0;
+      const md = readFileSync(planPath, "utf-8");
+      return this.planManager.parsePlanFromMarkdown(md).length;
+    } catch {
+      return 0;
     }
   }
 

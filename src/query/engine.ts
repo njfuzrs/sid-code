@@ -60,6 +60,8 @@ export interface QueryEngineDeps {
   getAbortSignal: () => AbortSignal | undefined;
   /** Plan Mode 系统提醒（对标 Claude Code 每轮 system-reminder 注入） */
   getPlanModeReminder?: () => Promise<string | null>;
+  /** P0-2 / P0-3：读取 todo 状态快照（回注 + 完成度校验用） */
+  getTodoState?: () => { todos: import("../tool/todo-write.ts").TodoItem[]; writeVersion: number } | null;
 }
 
 export class QueryEngine {
@@ -173,6 +175,7 @@ export class QueryEngine {
       checkFallbackOccurred: () => this.deps.fallback.checkFallbackOccurred(),
       resetFallbackFlag: () => this.deps.fallback.reset(),
       getPlanModeReminder: this.deps.getPlanModeReminder,
+      getTodoState: this.deps.getTodoState,
     };
 
     // ─── 启动 queryLoop ───

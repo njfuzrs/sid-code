@@ -541,6 +541,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           isStreaming={state.isStreaming}
           isEmpty={isEmpty}
           termWidth={termWidth}
+          rows={rows}
           keyExtractor={keyExtractor}
           statusMessage={state.statusMessage}
           permissionRequest={state.permissionRequest}

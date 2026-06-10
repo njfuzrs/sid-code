@@ -105,13 +105,14 @@ function makeCallbacks() {
   };
 }
 
-/** 在消息序列中找某 block 类型首次出现的消息下标 */
+/** 在消息序列中找某 block 类型首次出现的消息下标（保留供基线对照测试参考） */
 function firstIndexOfBlockType(messages: Message[], pred: (b: ContentBlock) => boolean): number {
   for (let i = 0; i < messages.length; i++) {
     if (messages[i].content.some(pred)) return i;
   }
   return -1;
 }
+void firstIndexOfBlockType;
 
 describe("D1-3 — followup / plan-mode 时序不变量", () => {
   test("executeTools 返回 followup：tool_result 排在 followup 之前，历史无孤儿", async () => {
@@ -133,19 +134,22 @@ describe("D1-3 — followup / plan-mode 时序不变量", () => {
     const integrity = checkMessageHistoryIntegrity(messages);
     expect(integrity.intact).toBe(true);
 
-    // 2. tool_result 必须排在 followup(plan_approved text) 之前
-    const toolResultIdx = firstIndexOfBlockType(messages, b => b.type === "tool_result");
-    const followupIdx = firstIndexOfBlockType(
-      messages,
-      b => b.type === "text" && b.text.includes("批准"),
+    // 2. tool_result 必须排在 followup(plan_approved text) 之前。
+    //    注意（P2-1 占位消息治理）：addMessage 现在会把连续同角色消息**合并**为一条，
+    //    因此 tool_result 与 followup 可能落在同一条 user 消息内——此时按"块顺序"而非"消息下标"判定。
+    //    真正受 ADR-019 约束的是发送给 OpenAI 的 wire 顺序：role:tool 必须在 role:user(text) 之前。
+    const flat: ContentBlock[] = messages.flatMap((m) => m.content);
+    const toolResultBlockIdx = flat.findIndex((b) => b.type === "tool_result");
+    const followupBlockIdx = flat.findIndex(
+      (b) => b.type === "text" && b.text.includes("批准"),
     );
-    expect(toolResultIdx).toBeGreaterThanOrEqual(0);
-    expect(followupIdx).toBeGreaterThanOrEqual(0);
-    expect(toolResultIdx).toBeLessThan(followupIdx);
+    expect(toolResultBlockIdx).toBeGreaterThanOrEqual(0);
+    expect(followupBlockIdx).toBeGreaterThanOrEqual(0);
+    expect(toolResultBlockIdx).toBeLessThan(followupBlockIdx);
 
-    // 3. tool_result 紧贴 assistant(tool_use)：assistant < tool_result
-    const assistantToolUseIdx = firstIndexOfBlockType(messages, b => b.type === "tool_use");
-    expect(assistantToolUseIdx).toBeLessThan(toolResultIdx);
+    // 2b. assistant(tool_use) 必须在 tool_result 之前（块顺序）
+    const toolUseBlockIdx = flat.findIndex((b) => b.type === "tool_use");
+    expect(toolUseBlockIdx).toBeLessThan(toolResultBlockIdx);
   });
 
   test("无 followup 时：历史仍合法（基线对照）", async () => {

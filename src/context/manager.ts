@@ -14,7 +14,10 @@ import * as path from "node:path";
 
 /** 持久化输出阈值（对标 Claude Code 30000 字符，可通过 SID_OUTPUT_THRESHOLD 环境变量覆盖） */
 const OUTPUT_THRESHOLD = parseInt(process.env.SID_OUTPUT_THRESHOLD ?? "30000", 10);
-const KEEP_RECENT_OUTPUTS = 3;   // 保留最近 N 个大输出，旧的清理掉
+// 保留最近 N 个大输出，旧的清理掉。
+// P1-3（缓解信息蒸发）：由 3 提到 6——根因 4 实证单文件被读 18 次、窗口越读越碎（200→50→30→20→15）。
+// 旧值 3 过于激进，模型读过的文件几轮后即被清成占位符，被迫"读→蒸发→重读"。
+const KEEP_RECENT_OUTPUTS = parseInt(process.env.SID_KEEP_RECENT_OUTPUTS ?? "6", 10);
 // CLEARED_MARKER 已迁移到 tool-output-masking.ts 的 TOOL_RESULT_CLEARED_MESSAGE 统一导出
 
 /** 压缩前的工具输出预算（token） */
@@ -148,20 +151,6 @@ export class Manager {
       return;
     }
 
-    // 检查角色交替
-    if (this.messages.length > 0) {
-      const lastMsg = this.messages[this.messages.length - 1];
-      if (lastMsg.role === msg.role) {
-        log.warn("CONTEXT", `角色未交替: 上一条=${lastMsg.role}, 当前=${msg.role}，自动修复`);
-        // 插入占位消息以保持交替
-        const placeholderRole = msg.role === "user" ? "assistant" : "user";
-        this.messages.push({
-          role: placeholderRole,
-          content: [{ type: "text", text: "[系统] 自动插入占位消息以保持角色交替" }],
-        });
-      }
-    }
-
     // 增量压缩：tool_result 内容在添加时即持久化到磁盘，防止上下文膨胀
     const sessionId = this.sessionId ?? "default";
     const compressed: Message = {
@@ -182,6 +171,27 @@ export class Manager {
       }),
     };
 
+    // 角色交替处理（P2-1 占位消息治理，对应根因 5.1）：
+    // 旧实现遇到连续同角色时**插入** "[系统] 自动插入占位消息以保持角色交替" —— 实测 130 个会话被这条
+    // 空洞占位污染上下文、稀释真实任务信息。新实现改为**合并**：把新消息的 content 追加到上一条同角色
+    // 消息里，既维持 user/assistant 严格交替，又不丢任何真实内容（text / tool_use / tool_result），
+    // 且天然保持 tool_use→tool_result 配对顺序，零污染。
+    if (this.messages.length > 0) {
+      const lastMsg = this.messages[this.messages.length - 1];
+      if (lastMsg.role === compressed.role) {
+        log.debug("CONTEXT", `角色未交替: 连续 ${compressed.role}，合并到上一条消息（不再插占位）`);
+        this.messages[this.messages.length - 1] = {
+          ...lastMsg,
+          content: [...lastMsg.content, ...compressed.content],
+          // 保留上一条的 _meta，新消息若带 _meta 则浅合并（reasoning_content 等以新值为准）
+          _meta: compressed._meta || lastMsg._meta
+            ? { ...lastMsg._meta, ...compressed._meta }
+            : undefined,
+        };
+        return;
+      }
+    }
+
     this.messages.push(compressed);
   }
 
@@ -191,9 +201,45 @@ export class Manager {
   }
 
   /**
+   * P1-3：从消息历史构建 tool_use_id → {toolName, filePath} 映射。
+   * 用于（a）识别哪些大 tool_result 对应"正在编辑的文件"应豁免清理；
+   *      （b）为被清理的占位符附带"重读指引"。
+   */
+  private buildToolUseIndex(messages: Message[]): Map<string, { toolName: string; filePath?: string }> {
+    const index = new Map<string, { toolName: string; filePath?: string }>();
+    for (const msg of messages) {
+      if (msg.role !== "assistant") continue;
+      for (const block of msg.content) {
+        if (block.type === "tool_use" && block.id) {
+          const input = (block.input ?? {}) as { file_path?: string; path?: string };
+          const filePath = input.file_path ?? input.path;
+          index.set(block.id, { toolName: block.name, filePath });
+        }
+      }
+    }
+    return index;
+  }
+
+  /**
+   * P1-3：判断某文件是否为"本任务正在编辑的活跃文件"。
+   * 规则：历史中出现过对该文件的 write 或 edit（成功与否不区分，意图即视为活跃）。
+   * 活跃文件的 read 大输出不清理——避免"改代码 → 输出被蒸发 → 被迫重读"的循环。
+   */
+  private collectActiveFiles(toolIndex: Map<string, { toolName: string; filePath?: string }>): Set<string> {
+    const active = new Set<string>();
+    for (const { toolName, filePath } of toolIndex.values()) {
+      if (!filePath) continue;
+      if (toolName === "write" || toolName === "edit") {
+        active.add(filePath);
+      }
+    }
+    return active;
+  }
+
+  /**
    * 获取清理后的消息列表（发送给 LLM 前调用）
    * 1. 应用工具输出遮罩（soft 级别压缩）
-   * 2. 清理旧的大输出，只保留最近 N 个
+   * 2. 清理旧的大输出，只保留最近 N 个（P1-3：豁免活跃文件 + 占位符附重读指引）
    * 3. 验证消息格式
    * 4. 返回深拷贝，不影响原始消息
    */
@@ -209,21 +255,37 @@ export class Manager {
       }
     }
 
-    // 找到所有大输出的位置（从后往前扫描）
-    const largeOutputPositions: { msgIdx: number; blockIdx: number }[] = [];
+    // P1-3：构建 tool_use 索引 + 活跃文件集合（正在编辑的文件 read 输出豁免清理）
+    const toolIndex = this.buildToolUseIndex(cleaned);
+    const activeFiles = this.collectActiveFiles(toolIndex);
+
+    // 找到所有大输出的位置（从后往前扫描），并标注是否豁免（活跃文件）+ 重读指引
+    const largeOutputPositions: {
+      msgIdx: number;
+      blockIdx: number;
+      exempt: boolean;
+      filePath?: string;
+    }[] = [];
 
     for (let i = 0; i < cleaned.length; i++) {
       const msg = cleaned[i];
       for (let j = 0; j < msg.content.length; j++) {
         const block = msg.content[j];
         if (block.type === "tool_result" && block.content.length > OUTPUT_THRESHOLD) {
-          largeOutputPositions.push({ msgIdx: i, blockIdx: j });
+          const meta = toolIndex.get(block.tool_use_id);
+          const filePath = meta?.filePath;
+          // P1-3：read 了活跃（被 write/edit 过）文件的大输出 → 豁免清理
+          const exempt = !!(filePath && meta?.toolName === "read" && activeFiles.has(filePath));
+          largeOutputPositions.push({ msgIdx: i, blockIdx: j, exempt, filePath });
         }
       }
     }
 
-    // 如果大输出数量不超过保留数，直接返回
-    if (largeOutputPositions.length <= KEEP_RECENT_OUTPUTS) {
+    // 仅对"非豁免"的大输出做保留数判定（活跃文件输出不计入清理候选）
+    const cleanable = largeOutputPositions.filter(p => !p.exempt);
+
+    // 如果可清理的大输出数量不超过保留数，直接返回
+    if (cleanable.length <= KEEP_RECENT_OUTPUTS) {
       // 验证消息格式（仅警告，不阻塞）
       const errors = MessageValidator.validate(cleaned);
       if (errors.length > 0) {
@@ -234,18 +296,27 @@ export class Manager {
       return cleaned;
     }
 
-    // 需要清理的旧输出（保留最近 N 个）
-    const toClean = largeOutputPositions.slice(0, -KEEP_RECENT_OUTPUTS);
-    const cleanSet = new Set(toClean.map(p => `${p.msgIdx}:${p.blockIdx}`));
+    // 需要清理的旧输出（保留最近 N 个），活跃文件已被排除在 cleanable 之外
+    const toClean = cleanable.slice(0, -KEEP_RECENT_OUTPUTS);
+    // key → filePath，用于占位符重读指引
+    const cleanMap = new Map<string, string | undefined>(
+      toClean.map(p => [`${p.msgIdx}:${p.blockIdx}`, p.filePath]),
+    );
 
-    // 深拷贝并清理
+    // 深拷贝并清理（P1-3：占位符附带重读指引）
     const result = cleaned.map((msg, msgIdx) => ({
       role: msg.role,
       content: msg.content.map((block, blockIdx) => {
-        if (cleanSet.has(`${msgIdx}:${blockIdx}`) && block.type === "tool_result") {
+        const key = `${msgIdx}:${blockIdx}`;
+        if (cleanMap.has(key) && block.type === "tool_result") {
+          const filePath = cleanMap.get(key);
+          // 若能识别出文件路径，提示模型如何精准重读，而不是盲目从头再读一遍
+          const guidance = filePath
+            ? `${TOOL_RESULT_CLEARED_MESSAGE}\n（此处原为文件 ${filePath} 的内容，已清理以节省上下文。如需该内容，请用 read("${filePath}", offset=...) 精准重读你需要的行段，不要从头整文件重读。）`
+            : TOOL_RESULT_CLEARED_MESSAGE;
           return {
             ...block,
-            content: TOOL_RESULT_CLEARED_MESSAGE,
+            content: guidance,
           };
         }
         return block;

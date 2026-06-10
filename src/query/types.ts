@@ -82,7 +82,9 @@ export type ContinueReason =
   | { type: "reactive_compact" }
   | { type: "loop_recovery" }
   | { type: "context_overflow_retry" }
-  | { type: "stop_hook_retry" };
+  | { type: "stop_hook_retry" }
+  | { type: "timeout_retry" }
+  | { type: "todo_gate_retry" };
 
 // ─── 循环状态 ───
 
@@ -100,6 +102,20 @@ export interface LoopState {
   transition: ContinueReason | undefined;
   /** Stop Hook 重试次数 */
   stopHookRetryCount?: number;
+  /**
+   * P0-2：上次回注 todo system-reminder 时的轮次（两次回注间隔节流用）。
+   * 0/undefined 表示尚未回注过。
+   */
+  lastTodoReminderTurn?: number;
+  /**
+   * P0-2：上次回注时观察到的 todo writeVersion 快照。
+   * writeVersion 变化说明模型更新过清单，回注计时随之刷新。
+   */
+  lastSeenTodoWriteVersion?: number;
+  /** P0-3：end_turn 完成度硬校验已软续命的次数 */
+  todoGateRetryCount?: number;
+  /** P2-2：上次回注工作日志摘要时的轮次（每 N 轮回注一次） */
+  lastProgressReminderTurn?: number;
 }
 
 /** 创建初始循环状态 */
@@ -141,6 +157,11 @@ export interface QueryDeps {
   resetFallbackFlag?: () => void;
   /** Plan Mode 系统提醒（对标 Claude Code 每轮 system-reminder 注入） */
   getPlanModeReminder?: () => Promise<string | null>;
+  /**
+   * P0-2 / P0-3：读取当前 todo 状态快照（用于回注 + 完成度校验）。
+   * 返回 null 表示无 todo 工具或无 todo 项。可 mock。
+   */
+  getTodoState?: () => { todos: import("../tool/todo-write.ts").TodoItem[]; writeVersion: number } | null;
 }
 
 // ─── QueryEngine 配置 ───

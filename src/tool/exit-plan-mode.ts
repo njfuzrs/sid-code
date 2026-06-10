@@ -56,7 +56,25 @@ export class ExitPlanModeTool implements Tool {
 
   async execute(input: unknown, _signal?: AbortSignal): Promise<ToolResult> {
     if (!this.planManager.isPlanning()) {
-      return { output: "当前不在计划模式中，无法提交计划", isError: true };
+      // 根因 3 修复（P0-1）：非 planning 状态下的 exit_plan_mode 改为**幂等成功**，
+      // 从源头切断"报错 → 重试 → 再报错"的空转循环（实测 46.9% 失败率，127 次"不在计划模式"）。
+      //
+      // 两种非 planning 情形都返回成功提示（isError:false），引导模型进入/继续执行阶段，
+      // 而不是反复重复调用本工具：
+      //   - awaiting_approval：计划已提交、正等待用户审批 → 告诉模型"已提交，无需重复提交"
+      //   - inactive：计划已审批通过（或从未进入计划模式）→ 告诉模型"进入执行阶段，逐条执行，勿再调用"
+      if (this.planManager.isAwaitingApproval()) {
+        return {
+          output:
+            "计划已提交，正在等待用户审批，无需重复调用 exit_plan_mode。请耐心等待审批结果。",
+        };
+      }
+      return {
+        output:
+          "计划已进入执行阶段（已审批通过或当前不在计划模式）。请直接开始执行计划的第一步任务，" +
+          "不要再调用 exit_plan_mode——它只用于提交新计划等待审批。" +
+          "如计划包含多个步骤，建议先用 todo_write 将计划逐条拆解为任务清单，再依次执行。",
+      };
     }
 
     const planPath = this.planManager.getPlanFilePath();

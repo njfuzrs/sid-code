@@ -178,3 +178,51 @@ describe("OpenAI convertMessages", () => {
     expect(result[3]).toEqual({ role: "assistant", content: "文件内容是..." });
   });
 });
+
+// ─── P1-2：sub_agent reasoning_content 剥离 ───
+// 根因 5.2：含 tool_calls 的 assistant 消息携带 reasoning_content 会触发 DeepSeek 400
+// （实测 sub_agent 35.9% 失败、13 次精确命中）。断言：有 tool_calls → 剥离；无 tool_calls → 保留。
+describe("OpenAI convertMessages — reasoning_content 剥离 (P1-2)", () => {
+  const provider = new TestableOpenAIProvider("test-key");
+
+  test("含 tool_calls 的 assistant 消息不携带 reasoning_content", () => {
+    const result = provider.testConvertMessages([
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "让我调用工具" },
+          { type: "tool_use", id: "c1", name: "read", input: { file_path: "/a.ts" } },
+        ],
+        _meta: { reasoning_content: "我应该先读文件再分析" },
+      },
+    ]);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].tool_calls).toHaveLength(1);
+    expect(result[0].reasoning_content).toBeUndefined();
+  });
+
+  test("无 tool_calls 的 assistant 消息保留 reasoning_content", () => {
+    const result = provider.testConvertMessages([
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "结论是 X" }],
+        _meta: { reasoning_content: "推理过程……" },
+      },
+    ]);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].reasoning_content).toBe("推理过程……");
+    expect(result[0].tool_calls).toBeUndefined();
+  });
+
+  test("空 tool_result 兜底为有语义占位而非空串", () => {
+    const result = provider.testConvertMessages([
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "c1", content: "" }],
+      },
+    ]);
+    expect(result[0]).toEqual({ role: "tool", tool_call_id: "c1", content: "(empty)" });
+  });
+});

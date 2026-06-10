@@ -32,6 +32,20 @@ import {
 import { isAbortError } from "../llm/errors.ts";
 import { isPromptTooLongError, reactiveCompact, DiminishingReturnsDetector } from "./reactive-compact.ts";
 import { runCompactPipeline } from "./compact/index.ts";
+import {
+  TODO_REMINDER_CONFIG,
+  MAX_TODO_GATE_RETRIES,
+  buildTodoReminder,
+  buildTodoGateMessage,
+  buildTodoGateExhaustedMessage,
+  countUnfinished,
+} from "./todo-reminder.ts";
+import {
+  PROGRESS_REMINDER_INTERVAL,
+  snapshotFromTodos,
+  persistProgress,
+  buildProgressReminder,
+} from "./work-log.ts";
 import type {
   QueryLoopYield,
   QueryDeps,
@@ -193,27 +207,76 @@ export async function* queryLoop(
     // 注意: getCleanedMessages 返回浅拷贝数组，消息对象仍是 ctxMgr 引用。
     // 这里不对 cleanedMessages 做 in-place 修改，而是构建新的 messages 数组。
     let finalMessages = cleanedMessages;
+
+    // 收集本轮要注入的 system-reminder 片段（plan 提醒 + todo 回注）
+    const reminderParts: string[] = [];
+
+    // Plan Mode 提醒（既有逻辑）
     if (deps.getPlanModeReminder) {
       const reminder = await deps.getPlanModeReminder();
-      if (reminder) {
-        // 找到最后一条 user message，创建修改后的副本
-        for (let i = finalMessages.length - 1; i >= 0; i--) {
-          const msg = finalMessages[i];
-          if (msg.role === "user") {
-            const textIdx = (msg.content as any[]).findIndex(
-              (c: any) => c.type === "text"
-            );
-            if (textIdx >= 0) {
-              const newContent = [...(msg.content as any[])];
-              newContent[textIdx] = {
-                ...newContent[textIdx],
-                text: reminder + "\n\n" + newContent[textIdx].text,
-              };
-              finalMessages = [...finalMessages];
-              finalMessages[i] = { ...msg, content: newContent };
-            }
-            break;
+      if (reminder) reminderParts.push(reminder);
+    }
+
+    // P0-2：todo 每隔 N 轮回注完整清单（对标 claude-code attachments.ts）。
+    // 根因 1 修复——todo 写完即沉没、只喂 TUI、从不回注 LLM，弱模型靠工作记忆追踪必然遗漏。
+    // 触发条件：有未完成项 + (距上次 todo_write ≥ TURNS_SINCE_WRITE 轮，或距上次回注 ≥ TURNS_BETWEEN_REMINDERS 轮)。
+    if (deps.getTodoState) {
+      const todoState = deps.getTodoState();
+      if (todoState && todoState.todos.length > 0 && countUnfinished(todoState.todos) > 0) {
+        // P2-2：todo 状态变化（writeVersion 变化）即把进度快照落盘到 ~/.sid-code/progress/<sessionId>.md，
+        // 形成抗压缩、抗清理、可跨会话的外部记忆（CLAUDE.md §0.1 Context 层）。
+        if (state.lastSeenTodoWriteVersion !== todoState.writeVersion) {
+          const snap = snapshotFromTodos(sessionState.sessionId, todoState.todos);
+          persistProgress(snap);
+        }
+
+        // writeVersion 变化 → 模型刚更新过清单，刷新基线、本轮不重复回注
+        if (state.lastSeenTodoWriteVersion !== todoState.writeVersion) {
+          state.lastSeenTodoWriteVersion = todoState.writeVersion;
+          state.lastTodoReminderTurn = state.turnCount;
+        } else {
+          const turnsSinceReminder = state.turnCount - (state.lastTodoReminderTurn ?? 0);
+          if (turnsSinceReminder >= TODO_REMINDER_CONFIG.TURNS_BETWEEN_REMINDERS) {
+            reminderParts.push(buildTodoReminder(todoState.todos));
+            state.lastTodoReminderTurn = state.turnCount;
+            log.info("QUERY_LOOP", `P0-2：回注 todo 清单（${countUnfinished(todoState.todos)} 项未完成）`);
           }
+        }
+
+        // P2-2：每隔 PROGRESS_REMINDER_INTERVAL 轮额外回注一次"工作日志摘要"，
+        // 强调持久进度 + 别重复已完成项（与 P0-2 的 todo 原文回注互补）。
+        const turnsSinceProgress = state.turnCount - (state.lastProgressReminderTurn ?? 0);
+        if (turnsSinceProgress >= PROGRESS_REMINDER_INTERVAL) {
+          const snap = snapshotFromTodos(sessionState.sessionId, todoState.todos);
+          const progressReminder = buildProgressReminder(snap);
+          if (progressReminder) {
+            reminderParts.push(progressReminder);
+            state.lastProgressReminderTurn = state.turnCount;
+            log.info("QUERY_LOOP", `P2-2：回注工作日志摘要（已完成 ${snap.completed.length} / 待办 ${snap.pending.length}）`);
+          }
+        }
+      }
+    }
+
+    if (reminderParts.length > 0) {
+      const reminder = reminderParts.join("\n\n");
+      // 找到最后一条 user message，创建修改后的副本
+      for (let i = finalMessages.length - 1; i >= 0; i--) {
+        const msg = finalMessages[i];
+        if (msg.role === "user") {
+          const textIdx = (msg.content as any[]).findIndex(
+            (c: any) => c.type === "text"
+          );
+          if (textIdx >= 0) {
+            const newContent = [...(msg.content as any[])];
+            newContent[textIdx] = {
+              ...newContent[textIdx],
+              text: reminder + "\n\n" + newContent[textIdx].text,
+            };
+            finalMessages = [...finalMessages];
+            finalMessages[i] = { ...msg, content: newContent };
+          }
+          break;
         }
       }
     }
@@ -522,6 +585,46 @@ export async function* queryLoop(
         }
       }
 
+      // ─── P0-3：end_turn 完成度硬校验（对标 claude-code stopHooks.ts）───
+      // 根因 1、2 修复——模型常"做了一半就 end_turn"。这里在收尾前查 todo：
+      // 仍有 pending/in_progress 项 → 注入提醒并软续命（最多 MAX_TODO_GATE_RETRIES 次），
+      // 把"人肉完成度校验器"内置进 harness。续命耗尽后放行，但如实列出未完成项，不假装完成。
+      if (deps.getTodoState) {
+        const todoState = deps.getTodoState();
+        const unfinished = todoState ? countUnfinished(todoState.todos) : 0;
+        if (todoState && unfinished > 0) {
+          const retries = state.todoGateRetryCount ?? 0;
+          if (retries < MAX_TODO_GATE_RETRIES) {
+            state.todoGateRetryCount = retries + 1;
+            ctxMgr.addMessage({
+              role: "user",
+              content: [{ type: "text", text: buildTodoGateMessage(todoState.todos) }],
+            });
+            log.info(
+              "QUERY_LOOP",
+              `P0-3：end_turn 拦截——仍有 ${unfinished} 项未完成，软续命 ${state.todoGateRetryCount}/${MAX_TODO_GATE_RETRIES}`,
+            );
+            yield {
+              kind: "system",
+              level: "info",
+              text: `检测到 ${unfinished} 项任务未完成，自动继续推进 (${state.todoGateRetryCount}/${MAX_TODO_GATE_RETRIES})`,
+            };
+            state.transition = { type: "todo_gate_retry" };
+            continue;
+          }
+          // 续命耗尽：放行但如实呈现未完成项
+          log.warn(
+            "QUERY_LOOP",
+            `P0-3：完成度续命已达上限 ${MAX_TODO_GATE_RETRIES}，放行但仍有 ${unfinished} 项未完成`,
+          );
+          yield {
+            kind: "system",
+            level: "warning",
+            text: buildTodoGateExhaustedMessage(todoState.todos),
+          };
+        }
+      }
+
       const totalUsage = sessionState.getTotalUsage();
       log.info("QUERY_LOOP", `对话结束 (${response.stopReason})，共 ${state.turnCount} 轮，in=${totalUsage.inputTokens} out=${totalUsage.outputTokens}，累计费用 $${sessionState.totalCostUSD.toFixed(4)}`);
       yield { kind: "done", turns: state.turnCount };
@@ -746,6 +849,8 @@ async function runLLMLoopCheck(
   const log = getLogger();
   log.info("QUERY_LOOP", "启动 LLM 认知循环检测");
 
+  // timeoutId 在 try 内赋值、finally 内 clearTimeout，须在 try 外声明以保证 finally 可见。
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
   try {
     const messages = ctxMgr.getMessages();
     const recentMessages = messages.slice(-20);
@@ -754,7 +859,7 @@ async function runLLMLoopCheck(
     // 创建 30s 超时 AbortController（避免 sendWithRetry 的流式 for-await 永久阻塞）
     const existingSignal = loopConfig.deps.getAbortSignal();
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30_000);
+    timeoutId = setTimeout(() => controller.abort(), 30_000);
 
     // 如果已有 signal 被 abort，也 abort 新的 controller
     if (existingSignal) {
@@ -790,7 +895,7 @@ async function runLLMLoopCheck(
     log.warn("QUERY_LOOP", `LLM 认知检测失败: ${err.message}`);
     return false;
   } finally {
-    clearTimeout(timeoutId);
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
   }
 }
 

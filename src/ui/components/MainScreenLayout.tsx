@@ -10,8 +10,9 @@
  * 与 DefaultAppLayout（--alternate-buffer 全屏虚拟滚动）互斥；不抢鼠标、无 Copy Mode。
  */
 
-import React, { memo } from "react";
+import React, { memo, useMemo } from "react";
 import { Box, Text, Static } from "ink";
+import { tailToFit, estimateChromeLines, computeStreamBudgets } from "../streaming-viewport.ts";
 import { Composer } from "./Composer.tsx";
 import { Footer } from "./Footer.tsx";
 import { DialogRenderer } from "./DialogManager.tsx";
@@ -49,6 +50,8 @@ interface MainScreenLayoutProps {
   isEmpty: boolean;
   /** 终端宽度 */
   termWidth: number;
+  /** 终端高度（行数）——用于流式动态区视口裁剪，防止 stock ink clearTerminal 全屏重打 */
+  rows: number;
   /** key 提取器（供 Static 子项 key） */
   keyExtractor: (item: HistoryItem, index: number) => string;
 
@@ -95,6 +98,7 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
   isStreaming,
   isEmpty,
   termWidth,
+  rows,
   keyExtractor,
   statusMessage,
   permissionRequest,
@@ -125,6 +129,28 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
 }) {
   const confirmingTool = useConfirmingTool(staticItems);
 
+  // 流式动态区视口裁剪（ADR-040 防闪烁，见 streaming-viewport.ts）：
+  // stock ink 在「动态区高度 >= 终端行数」时每帧 clearTerminal 重打全部 → 全屏闪烁。
+  // 故对会随流式增长的正文/思考做尾部截断，保证动态区高度 < 终端行数。
+  // 完成后整条消息进 <Static> → 终端 scrollback，可原生上滚回看完整内容。
+  const hasText = isStreaming && !!streamingText;
+  const hasThinking = isStreaming && !!streamingThinking;
+  const { visibleText, visibleThinking } = useMemo(() => {
+    if (!hasText && !hasThinking) return { visibleText: "", visibleThinking: "" };
+    const chrome = estimateChromeLines({
+      todoCount: todos.length,
+      taskCount: tasks.length,
+      hasStatusMessage: !!statusMessage,
+    });
+    const { thinkingLines, textLines } = computeStreamBudgets(rows, chrome, hasThinking, hasText);
+    // 正文带 "✦ " 前缀，有效宽度略减
+    const textWidth = Math.max(1, termWidth - 2);
+    return {
+      visibleText: hasText ? tailToFit(streamingText, textWidth, textLines) : "",
+      visibleThinking: hasThinking ? tailToFit(streamingThinking, Math.max(1, termWidth - 4), thinkingLines) : "",
+    };
+  }, [hasText, hasThinking, streamingText, streamingThinking, rows, termWidth, todos.length, tasks.length, statusMessage]);
+
   return (
     // 根 Box 不设固定高度 / 不 overflow hidden：让内容顺序增长，Static 落 scrollback、动态区在末尾。
     <Box flexDirection="column" width={termWidth}>
@@ -150,14 +176,16 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
           </Box>
         ) : null}
 
-        {/* 正在生成的流式消息（完成后由父层并入 staticItems，此处清空） */}
-        {isStreaming && streamingText ? (
-          <StreamingMessage fullText={streamingText} maxWidth={termWidth} />
+        {/* 正在生成的流式消息（完成后由父层并入 staticItems，此处清空）
+            注意：visibleText 已按视口高度做尾部截断（防 stock ink 全屏重打闪烁，见 streaming-viewport.ts） */}
+        {hasText && visibleText ? (
+          <StreamingMessage fullText={visibleText} maxWidth={termWidth} />
         ) : null}
 
-        {/* v2：流式思考区域 — 独立于 streamingText（对标 Claude Code） */}
-        {isStreaming && streamingThinking ? (
-          <ThinkingMessage text={streamingThinking} width={termWidth} collapsed={false} />
+        {/* v2：流式思考区域 — 独立于 streamingText（对标 Claude Code）
+            同样按视口高度尾部截断，避免与正文叠加把动态区撑高触发闪烁 */}
+        {hasThinking && visibleThinking ? (
+          <ThinkingMessage text={visibleThinking} width={termWidth} collapsed={false} />
         ) : null}
 
         <Notifications />

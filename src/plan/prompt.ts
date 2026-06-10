@@ -88,11 +88,21 @@ export function buildPlanModeReminder(full: boolean = true): string {
  * （含阶段 5）会被移除，批准消息是 LLM 进入执行阶段唯一保留的"plan 上下文锚点"
  *
  * 用于：TUI 用户批准路径 + headless 自动批准路径（W12.D3 补丁）
+ *
+ * P1-1（全集锚点）：若解析出了计划步骤数 planStepCount（≥ 3），则强制要求第一步
+ * todo_write **逐条枚举计划全部步骤**，把"全集覆盖"从依赖模型记忆变成外部约束（根因 2）。
  */
-export function buildPlanApprovedMessage(planFilePath: string): string {
+export function buildPlanApprovedMessage(planFilePath: string, planStepCount = 0): string {
+  // P1-1：全集锚点指令。有可解析步骤数时给出强制要求 + 数量锚点；否则退化为通用强约束。
+  const todoMandate = planStepCount >= 3
+    ? `**第一步（必须执行）**：调用 todo_write 把计划逐条拆解为任务清单。本计划已识别出约 ${planStepCount} 个步骤，` +
+      `你的 todo 清单**必须覆盖计划的全部步骤**（每步一个 todo 项，不要只挑其中几件做），创建后清单总数保持稳定、只更新状态。` +
+      `随后逐条把当前项标记 in_progress、做完标记 completed，依次推进直到全部 completed。`
+    : `如果计划包含多个步骤（≥ 3 步），**必须首先**使用 todo_write 工具把计划的**每一个步骤**都列为一个 todo 项（不要遗漏、不要只挑几件），然后逐条执行。`;
+
   return `用户已批准你的计划（位于 ${planFilePath}）。
 
-如果计划包含多个步骤（≥ 3 步），建议首先使用 todo_write 工具将计划拆解为任务清单（每步一个 todo 项），然后逐条执行。
+${todoMandate}
 
 **重要**：执行阶段不要再调用 enter_plan_mode。遇到复杂子步骤时：
 - 用 todo_write 追踪进度，或

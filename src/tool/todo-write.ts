@@ -60,6 +60,12 @@ const VALID_STATUSES = new Set(["pending", "in_progress", "completed"]);
 
 export class TodoWriteTool implements Tool {
   private currentTodos: TodoItem[] = [];
+  /**
+   * todo_write 被成功调用的次数（单调递增）。
+   * P0-2 用它判断"距上次 todo_write 多少轮"：queryLoop 在每轮记录该值的快照，
+   * 与当前值比较即可知道这段时间内模型有没有更新过清单。
+   */
+  private writeVersion = 0;
 
   name(): string {
     return "todo_write";
@@ -95,6 +101,11 @@ export class TodoWriteTool implements Tool {
 - **恰好一个 in_progress** — 任何时候都必须有且仅有一个 in_progress 任务
 - 完成当前任务再开始新任务
 - 删除不再相关的任务
+
+## 全集覆盖规则（重要）
+- 当任务来自一份文档/计划/编号需求列表时，**首次 todo_write 必须逐条枚举其中的全部条目**，不要只挑其中几件做。
+- 清单一旦建立，总数应保持稳定——后续只更新各项的 status，不要悄悄缩减清单规模。
+- 遗漏文档中的任何一个条目都视为任务未完成。宁可多列、标注后续，也不要漏列。
 
 ## 任务完成要求
 - 只有完全完成才能标记 completed
@@ -148,6 +159,14 @@ export class TodoWriteTool implements Tool {
   /** 获取当前 todo 列表的深拷贝（供 TUI 面板读取，防止外部修改污染内部状态） */
   getTodos(): TodoItem[] {
     return this.currentTodos.map(t => ({ ...t }));
+  }
+
+  /**
+   * 获取 todo_write 成功调用次数（单调递增）。
+   * P0-2：queryLoop 据此判断"距上次更新清单多少轮"，决定是否回注 todo system-reminder。
+   */
+  getWriteVersion(): number {
+    return this.writeVersion;
   }
 
   async execute(input: unknown, _signal?: AbortSignal): Promise<ToolResult> {
@@ -211,6 +230,9 @@ export class TodoWriteTool implements Tool {
 
     // 保存旧状态
     const oldTodos = [...this.currentTodos];
+
+    // 校验通过、即将更新状态 → 记一次成功写入（P0-2 回注判定用）
+    this.writeVersion++;
 
     // 更新为新状态（全量替换）
     this.currentTodos = allDone ? [] : todos;
