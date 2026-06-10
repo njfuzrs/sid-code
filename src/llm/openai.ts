@@ -682,6 +682,12 @@ export class OpenAIProvider implements Provider {
                     },
                   };
                 }
+                // F3：记录工具参数增量（区分 identity-only 退化 vs broken-JSON）
+                dbg(
+                  `tool_call[${tcIndex}] name=${state.name || "?"} ` +
+                    `args_delta_len=${tc.function?.arguments?.length ?? 0} ` +
+                    `args_acc_len=${state.arguments.length}`,
+                );
               }
             }
 
@@ -701,6 +707,25 @@ export class OpenAIProvider implements Provider {
 
               // 关闭所有工具调用块
               for (const [, state] of toolCalls) {
+                // F3：工具块关闭时记录最终参数特征——
+                // args_len=0 → identity-only 退化（模型完全没填参数）；
+                // args_len>0 但 JSON.parse 失败 → broken-JSON（参数被发但截断/非法）。
+                // 二者在 stream-processor 都落成 input={}，但根因不同，此日志用于区分。
+                if (debugSse) {
+                  let parseOk = true;
+                  try {
+                    if (state.arguments) JSON.parse(state.arguments);
+                    else parseOk = state.arguments.length === 0 ? false : true;
+                  } catch {
+                    parseOk = false;
+                  }
+                  dbg(
+                    `tool_call close: name=${state.name || "?"} ` +
+                      `finish=${finishReason} args_len=${state.arguments.length} ` +
+                      `args_valid_json=${state.arguments.length > 0 && parseOk} ` +
+                      `${state.arguments.length === 0 ? "[EMPTY-PARAM 退化]" : ""}`,
+                  );
+                }
                 yield { type: "content_block_stop", index: state.contentIndex };
               }
 

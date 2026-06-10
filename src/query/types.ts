@@ -84,7 +84,8 @@ export type ContinueReason =
   | { type: "context_overflow_retry" }
   | { type: "stop_hook_retry" }
   | { type: "timeout_retry" }
-  | { type: "todo_gate_retry" };
+  | { type: "todo_gate_retry" }
+  | { type: "empty_param_retry" };
 
 // ─── 循环状态 ───
 
@@ -116,6 +117,11 @@ export interface LoopState {
   todoGateRetryCount?: number;
   /** P2-2：上次回注工作日志摘要时的轮次（每 N 轮回注一次） */
   lastProgressReminderTurn?: number;
+  /**
+   * F1：空参数 tool_use 退化的连续重试次数（DeepSeek 大上下文退化兜底）。
+   * 工具成功执行或正常 end_turn 收尾后清零，确保只对"连续退化"计数。
+   */
+  emptyParamRetryCount?: number;
 }
 
 /** 创建初始循环状态 */

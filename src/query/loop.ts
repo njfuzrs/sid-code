@@ -33,6 +33,12 @@ import { isAbortError } from "../llm/errors.ts";
 import { isPromptTooLongError, reactiveCompact, DiminishingReturnsDetector } from "./reactive-compact.ts";
 import { runCompactPipeline } from "./compact/index.ts";
 import {
+  MAX_EMPTY_PARAM_RETRIES,
+  detectEmptyParamToolUses,
+  replaceEmptyParamToolUses,
+  buildEmptyParamRetryMessage,
+} from "./empty-param.ts";
+import {
   TODO_REMINDER_CONFIG,
   MAX_TODO_GATE_RETRIES,
   buildTodoReminder,
@@ -523,6 +529,91 @@ export async function* queryLoop(
       // 注意：降级后 response 已经是备用模型的完整响应，不需要重试
     }
 
+    // ─── F1：空参数 tool_use 退化检测与重试（DeepSeek 大上下文兜底）───
+    // 根因：模型生成 tool_use 声明但参数为空（input={}），并以 end_turn 自行停止。
+    // 不干预则走到下方 end_turn 分支直接退出、永不重试 → 任务卡死。
+    // 处理：①把空参数 tool_use 替换为 text（消除孤儿，避免 OpenAI 400）；
+    //      ②重试前先压缩上下文（reactiveCompact），让 input tokens 单调下降，
+    //        直接打击"大上下文"根因，而非原样追加提示重发（那只会加剧退化）；
+    //      ③最多重试 MAX_EMPTY_PARAM_RETRIES 次，耗尽后放行（替换后的 content 已无 tool_use，
+    //        会正常走 end_turn 结束，并如实呈现退化，不假装完成）。
+    const emptyParamHits = detectEmptyParamToolUses(response.content);
+    if (emptyParamHits.length > 0) {
+      const names = emptyParamHits.map((h) => h.name).join("、");
+      // 始终先把空参数 tool_use 替换为 text，再入历史（无论是否还重试，都要消除孤儿）
+      const sanitizedContent = replaceEmptyParamToolUses(response.content);
+
+      const retries = state.emptyParamRetryCount ?? 0;
+      if (retries < MAX_EMPTY_PARAM_RETRIES) {
+        state.emptyParamRetryCount = retries + 1;
+
+        ctxMgr.addMessage({
+          role: "assistant",
+          content: sanitizedContent,
+          ...(response._meta ? { _meta: response._meta } : {}),
+        });
+        yield { kind: "assistant_message", message: { role: "assistant", content: sanitizedContent } };
+
+        // 重试前压缩上下文，打击大上下文根因（消息足够多才有意义）
+        const compactResult = reactiveCompact(ctxMgr);
+        if (compactResult.success) {
+          log.info(
+            "QUERY_LOOP",
+            `F1：空参数重试前压缩上下文 ${compactResult.messageCountBefore} → ${compactResult.messageCountAfter} 条`,
+          );
+          yield { kind: "compact" };
+        }
+
+        // 注入"参数为空请重试"提示
+        ctxMgr.addMessage({
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: buildEmptyParamRetryMessage(
+                emptyParamHits,
+                state.emptyParamRetryCount,
+                MAX_EMPTY_PARAM_RETRIES,
+                compactResult.success,
+              ),
+            },
+          ],
+        });
+
+        log.warn(
+          "QUERY_LOOP",
+          `F1：检测到空参数 tool_use「${names}」（stop=${response.stopReason}），` +
+            `替换为 text 并重试 ${state.emptyParamRetryCount}/${MAX_EMPTY_PARAM_RETRIES}`,
+        );
+        yield {
+          kind: "system",
+          level: "warning",
+          text: `检测到工具调用参数为空（模型退化），自动重试 (${state.emptyParamRetryCount}/${MAX_EMPTY_PARAM_RETRIES})`,
+        };
+        state.transition = { type: "empty_param_retry" };
+        continue;
+      }
+
+      // 重试耗尽：替换后入历史并放行（sanitizedContent 已无 tool_use，会正常走 end_turn 结束）
+      log.error(
+        "QUERY_LOOP",
+        `F1：空参数重试已达上限 ${MAX_EMPTY_PARAM_RETRIES}，工具「${names}」仍参数为空，放行并如实呈现退化`,
+      );
+      ctxMgr.addMessage({
+        role: "assistant",
+        content: sanitizedContent,
+        ...(response._meta ? { _meta: response._meta } : {}),
+      });
+      yield { kind: "assistant_message", message: { role: "assistant", content: sanitizedContent } };
+      yield {
+        kind: "system",
+        level: "warning",
+        text: `工具调用参数持续为空（已重试 ${MAX_EMPTY_PARAM_RETRIES} 次），模型在当前上下文下无法正常生成工具参数，停止重试。`,
+      };
+      yield { kind: "done", turns: state.turnCount };
+      return;
+    }
+
     // ─── 添加助手消息到历史 ───
     ctxMgr.addMessage({
       role: "assistant",
@@ -546,7 +637,16 @@ export async function* queryLoop(
     }
 
     // ─── 检查停止原因 ───
-    if (response.stopReason === "end_turn" || response.stopReason === "stop") {
+    // F2：end_turn 兜底——模型有时 stop_reason=end_turn 却在 content 里留下正常参数的 tool_use。
+    // 此处的 tool_use 必为非空参数（空参数已被上方 F1 拦截：要么 continue 重试，要么 return）。
+    // 若仍有 tool_use，说明模型有未执行的工具调用 → 不在此结束，fall-through 到下方 tool_use 分支
+    // 正常执行（复用循环检测 / UI 事件 / followup / tool_result 全套，避免重写执行逻辑）。
+    const hasPendingToolUse = response.content.some((b) => b.type === "tool_use");
+    // F2 fall-through 标记：仅 end_turn/stop 且含（非空）tool_use 时为真。
+    // 限定 stopReason 避免影响 max_tokens 续写 / content_filter 等其他分支的既有语义。
+    const isEndTurnLike = response.stopReason === "end_turn" || response.stopReason === "stop";
+    const f2FallThrough = isEndTurnLike && hasPendingToolUse;
+    if (isEndTurnLike && !hasPendingToolUse) {
       // AfterAgent hook
       if (hookSystem) {
         const userInput = extractLastUserInput(ctxMgr);
@@ -627,15 +727,23 @@ export async function* queryLoop(
 
       const totalUsage = sessionState.getTotalUsage();
       log.info("QUERY_LOOP", `对话结束 (${response.stopReason})，共 ${state.turnCount} 轮，in=${totalUsage.inputTokens} out=${totalUsage.outputTokens}，累计费用 $${sessionState.totalCostUSD.toFixed(4)}`);
+      // F1：正常收尾，清零连续退化计数
+      state.emptyParamRetryCount = 0;
       yield { kind: "done", turns: state.turnCount };
       return;
     }
 
     // ─── 处理工具调用 ───
-    if (response.stopReason === "tool_use") {
+    // 进入条件：stop_reason=tool_use（正常路径），或 F2 fall-through——
+    // stop_reason=end_turn/stop 但 content 仍有（非空参数）tool_use 未执行。
+    if (response.stopReason === "tool_use" || f2FallThrough) {
       const toolBlocks = response.content.filter(b => b.type === "tool_use");
       const toolNames = toolBlocks.map(b => b.type === "tool_use" ? b.name : "").filter(Boolean);
-      log.info("QUERY_LOOP", `工具调用: ${toolNames.join(", ")}`);
+      if (response.stopReason !== "tool_use") {
+        log.info("QUERY_LOOP", `F2：end_turn(${response.stopReason}) 含未执行 tool_use，兜底执行: ${toolNames.join(", ")}`);
+      } else {
+        log.info("QUERY_LOOP", `工具调用: ${toolNames.join(", ")}`);
+      }
 
       // 工具调用循环检测
       let loopDetected = false;
@@ -730,6 +838,9 @@ export async function* queryLoop(
         const isError = result && result.type === "tool_result" ? !!result.is_error : false;
         yield { kind: "tool_end", toolName: b.name, result: { isError, elapsedMs: perToolDuration } };
       }
+
+      // F1：工具成功执行 → 模型已恢复正常生成参数的能力，清零连续退化计数
+      state.emptyParamRetryCount = 0;
 
       state.transition = { type: "tool_use" };
       continue;
