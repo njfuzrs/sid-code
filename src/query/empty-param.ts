@@ -5,9 +5,16 @@
  * 生成 tool_use 声明但对参数填空（input={}），并以 stop_reason=end_turn 自行停止。
  * 系统若不干预，会走到 loop.ts 的 end_turn 分支直接退出，永不重试 → 任务卡死。
  *
+ * ⚠️ 误杀防护（2026-06-10）：`enter_plan_mode` / `cron_list` 这类工具的 inputSchema
+ * 本就是 `{ type:"object", properties:{} }`（无必填参数），input={} 是它们**唯一合法状态**。
+ * 旧实现对任何 {} 都判退化，导致 enter_plan_mode 的合法调用被反复作废、plan mode 永远进不去
+ * （会话 b168a817 死循环根因）。因此检测必须结合工具 schema 的 `required` 字段：
+ * 只有"有必填参数却交了空 input"才是退化；"本就无必填参数"放行。
+ *
  * 本模块提供纯函数（无副作用、易单测）：
- * - 检测一组 content 块中哪些 tool_use 参数为空
- * - 把空参数 tool_use 块原地替换为 text 块（消除孤儿风险：替换后不含 tool_use，无需 tool_result 配对）
+ * - 判断工具 schema 是否声明了必填参数（toolHasRequiredParams）
+ * - 检测一组 content 块中哪些 tool_use 是"真退化"（结合 schema）
+ * - 把真退化的 tool_use 块原地替换为 text 块（消除孤儿风险：替换后不含 tool_use，无需 tool_result 配对）
  * - 构造给模型的"参数为空请重试"提示
  *
  * 重试策略（在 loop.ts 中编排）：每次重试前先压缩上下文（reactiveCompact），
@@ -19,6 +26,9 @@ import type { ContentBlock } from "../llm/types.ts";
 
 /** 最大空参数重试次数 */
 export const MAX_EMPTY_PARAM_RETRIES = 3;
+
+/** 根据工具名查询其 inputSchema 的函数签名（由 loop.ts 用 toolRegistry 注入） */
+export type SchemaLookup = (toolName: string) => unknown;
 
 /** 单个空参数 tool_use 的识别信息 */
 export interface EmptyParamHit {
@@ -48,14 +58,53 @@ export function isEmptyToolInput(input: unknown): boolean {
 }
 
 /**
- * 扫描 content，返回所有空参数 tool_use 的命中信息。
- * 仅检测 type==="tool_use" 的块；其余块忽略。
+ * 判断工具 schema 是否声明了**必填参数**。
+ *
+ * 判据：schema.required 是非空数组 → 有必填参数 → true；否则 → false。
+ *
+ * 拿不到 schema（undefined/null）时**保守返回 true**：宁可把它当成"应有参数"而触发
+ * 重试兜底，也不放过一个可疑的空参数 tool_use。已知无必填参数的工具
+ * （enter_plan_mode / cron_list 等）schema 形如 `{ type:"object", properties:{} }`，
+ * 无 required 字段 → 返回 false → 其合法 input={} 不会被误判为退化。
  */
-export function detectEmptyParamToolUses(content: ContentBlock[]): EmptyParamHit[] {
+export function toolHasRequiredParams(schema: unknown): boolean {
+  if (schema === null || schema === undefined) return true; // 保守：拿不到 schema 维持旧行为
+  if (typeof schema !== "object") return true;
+  const required = (schema as Record<string, unknown>).required;
+  return Array.isArray(required) && required.length > 0;
+}
+
+/**
+ * 判断一个 tool_use 块是否为"真退化"（空参数 + 该工具本应有必填参数）。
+ *
+ * @param block tool_use 块
+ * @param getSchema 可选的 schema 查询函数；不传时退化为"任何空参数都算退化"（向后兼容旧行为）
+ */
+function isDegradedToolUse(
+  block: Extract<ContentBlock, { type: "tool_use" }>,
+  getSchema?: SchemaLookup,
+): boolean {
+  if (!isEmptyToolInput(block.input)) return false;
+  // 不传 getSchema：维持旧逻辑（任何空参数即退化），保证既有调用方/测试不变
+  if (!getSchema) return true;
+  return toolHasRequiredParams(getSchema(block.name));
+}
+
+/**
+ * 扫描 content，返回所有"真退化"空参数 tool_use 的命中信息。
+ * 仅检测 type==="tool_use" 的块；其余块忽略。
+ *
+ * @param content content 块数组
+ * @param getSchema 可选；传入后会结合工具 schema 的 required 字段，放过本就无必填参数的工具
+ */
+export function detectEmptyParamToolUses(
+  content: ContentBlock[],
+  getSchema?: SchemaLookup,
+): EmptyParamHit[] {
   const hits: EmptyParamHit[] = [];
   for (let i = 0; i < content.length; i++) {
     const block = content[i];
-    if (block.type === "tool_use" && isEmptyToolInput(block.input)) {
+    if (block.type === "tool_use" && isDegradedToolUse(block, getSchema)) {
       hits.push({ id: block.id, name: block.name, index: i });
     }
   }
@@ -63,19 +112,25 @@ export function detectEmptyParamToolUses(content: ContentBlock[]): EmptyParamHit
 }
 
 /**
- * 把 content 中的空参数 tool_use 块原地替换为 text 块。
+ * 把 content 中的"真退化"空参数 tool_use 块原地替换为 text 块。
  *
  * 替换后返回的 content：
- * - 不再含任何空参数 tool_use（消除孤儿 → 不会触发 OpenAI 400）
- * - 非空参数 tool_use 块**原样保留**（混合场景下不误伤正常工具调用——
- *   这些块由 loop.ts 的 fall-through 逻辑在后续正常执行）
- * - 其余块（text / thinking / 非空 tool_use）原样保留
+ * - 不再含任何真退化空参数 tool_use（消除孤儿 → 不会触发 OpenAI 400）
+ * - 非空参数 tool_use 块、以及本就无必填参数工具的合法空 tool_use（如 enter_plan_mode）
+ *   **原样保留**（混合场景下不误伤——这些块由 loop.ts 的 fall-through 逻辑在后续正常执行）
+ * - 其余块（text / thinking）原样保留
  *
  * 返回新数组（不修改入参），符合 loop.ts 中 addMessage 前不可变更新的约定。
+ *
+ * @param content content 块数组
+ * @param getSchema 可选；与 detectEmptyParamToolUses 保持一致的判据
  */
-export function replaceEmptyParamToolUses(content: ContentBlock[]): ContentBlock[] {
+export function replaceEmptyParamToolUses(
+  content: ContentBlock[],
+  getSchema?: SchemaLookup,
+): ContentBlock[] {
   return content.map((block) => {
-    if (block.type === "tool_use" && isEmptyToolInput(block.input)) {
+    if (block.type === "tool_use" && isDegradedToolUse(block, getSchema)) {
       return {
         type: "text" as const,
         text: `[系统检测] 工具 ${block.name} 的参数为空——模型在大上下文场景下退化（生成了工具调用声明但未填写参数）。该次调用已作废。`,

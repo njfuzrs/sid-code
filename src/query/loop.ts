@@ -539,11 +539,14 @@ export async function* queryLoop(
     //        直接打击"大上下文"根因，而非原样追加提示重发（那只会加剧退化）；
     //      ③最多重试 MAX_EMPTY_PARAM_RETRIES 次，耗尽后放行（替换后的 content 已无 tool_use，
     //        会正常走 end_turn 结束，并如实呈现退化，不假装完成）。
-    const emptyParamHits = detectEmptyParamToolUses(response.content);
+    // 注入工具 schema 查询：让检测器结合 required 字段区分"真退化"与"本就无必填参数"
+    // （如 enter_plan_mode 的合法 input={} 不应被误判为退化，否则 plan mode 永远进不去）。
+    const getSchema = (name: string) => toolRegistry.get(name)?.inputSchema();
+    const emptyParamHits = detectEmptyParamToolUses(response.content, getSchema);
     if (emptyParamHits.length > 0) {
       const names = emptyParamHits.map((h) => h.name).join("、");
       // 始终先把空参数 tool_use 替换为 text，再入历史（无论是否还重试，都要消除孤儿）
-      const sanitizedContent = replaceEmptyParamToolUses(response.content);
+      const sanitizedContent = replaceEmptyParamToolUses(response.content, getSchema);
 
       const retries = state.emptyParamRetryCount ?? 0;
       if (retries < MAX_EMPTY_PARAM_RETRIES) {
