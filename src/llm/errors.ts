@@ -238,7 +238,8 @@ export function isAbortError(error: unknown): boolean {
 
   if (error && typeof error === "object" && "name" in error) {
     const name = String((error as { name?: unknown }).name ?? "");
-    if (name === "AbortError") return true;
+    // AbortError（DOM/fetch）、APIUserAbortError（@anthropic-ai/sdk）
+    if (name === "AbortError" || name === "APIUserAbortError") return true;
   }
 
   const msg = error instanceof Error ? error.message : String(error ?? "");
@@ -246,6 +247,7 @@ export function isAbortError(error: unknown): boolean {
 
   return [
     "request aborted",
+    "request was aborted", // @anthropic-ai/sdk APIUserAbortError 的默认文案
     "请求已中止",
     "请求已取消",
     "用户取消",

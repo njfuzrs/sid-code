@@ -257,6 +257,17 @@ describe("isAbortError", () => {
     expect(isAbortError(new Error("请求已中止"))).toBe(true);
   });
 
+  test("识别 @anthropic-ai/sdk 的 APIUserAbortError 文案（回归：流超时 abort 必须被识别）", () => {
+    // SDK 的 APIUserAbortError 默认 message 为 "Request was aborted."（含 was）。
+    // 早期 fragment 列表只有 "request aborted"（无 was），导致流超时 abort 被误判为
+    // 不可分类错误 → 静默走 fallback 而非干净传播，是 P0 僵死修复的隐藏断链。
+    expect(isAbortError(new Error("Request was aborted."))).toBe(true);
+  });
+
+  test("通过 name=APIUserAbortError 识别 abort 对象", () => {
+    expect(isAbortError({ name: "APIUserAbortError", message: "boom" })).toBe(true);
+  });
+
   test("非 abort 错误返回 false", () => {
     expect(isAbortError(new Error("503 Service Unavailable"))).toBe(false);
   });

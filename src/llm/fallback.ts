@@ -479,11 +479,23 @@ export class ModelFallback {
           return;
 
         } catch (err) {
-          if (signal?.aborted || isAbortError(err)) {
+          // 用户主动中断（ESC）：立即传播，终止整轮对话
+          if (signal?.aborted) {
             throw toAbortError(err);
           }
 
-          const classified = classifyError(err);
+          // 区分「流式超时中断」与「其他 abort」：
+          // - 超时中断（streamTimeoutCtl 触发）当作可重试的 timeout 错误，
+          //   走正常重试 → fallback 路径（对标文档承诺的「超时 → 流重试 → fallback」）
+          // - 其他 abort（非用户、非超时，理论上少见）仍传播
+          const isTimeoutAbort = isAbortError(err) && streamTimeoutCtl.signal.aborted;
+          if (isAbortError(err) && !isTimeoutAbort) {
+            throw toAbortError(err);
+          }
+
+          const classified = isTimeoutAbort
+            ? new RetryableError(`流式整体超时（${streamTimeoutMs / 1000}s 无数据）`, "timeout")
+            : classifyError(err);
 
           if (classified instanceof TerminalError) {
             this.availability.markTerminal(params.model, classified.reason);

@@ -559,4 +559,67 @@ describe("ModelFallback 增强", () => {
     );
     expect(events.some(e => e.type === "message_stop")).toBe(true);
   });
+
+  // ─── 流超时 → 主动中断 → 重试 → fallback（P0 僵死回归）───
+  test("流 hang 触发超时 abort 时走重试/fallback 而非永久阻塞", async () => {
+    // 模拟「流 hang」：provider 监听传入 signal，signal abort 后抛出
+    // SDK 风格的 abort 错误；signal 不 abort 则永远不产出任何事件（卡死）。
+    const hangProvider: Provider = {
+      name: () => "mock-hang",
+      defaultModel: () => "mock-model",
+      async *sendMessageStream(_p: SendParams, signal?: AbortSignal): AsyncIterable<StreamEvent> {
+        await new Promise<void>((resolve, reject) => {
+          if (signal?.aborted) return reject(new Error("Request was aborted."));
+          signal?.addEventListener(
+            "abort",
+            () => reject(new Error("Request was aborted.")),
+            { once: true },
+          );
+        });
+        yield { type: "message_stop" };
+      },
+    };
+
+    // 50ms 超时即触发中断；fallback provider 兜底返回正常结果
+    const fallback = new ModelFallback({
+      streamTimeoutMs: 50,
+      fallbackProvider: successProvider(),
+      fallbackModel: "fallback-model",
+    });
+
+    // 必须在合理时间内完成（不会永久卡死），且最终拿到 fallback 的 message_stop
+    const events = await collectEvents(
+      fallback.executeWithFallback(hangProvider, defaultParams),
+    );
+    expect(events.some(e => e.type === "message_stop")).toBe(true);
+  }, 10_000);
+
+  // ─── 用户主动 ESC 中断必须传播，不被当成超时重试 ───
+  test("用户 abort（外部 signal）立即传播 RequestAbortedError", async () => {
+    const hangProvider: Provider = {
+      name: () => "mock-hang",
+      defaultModel: () => "mock-model",
+      async *sendMessageStream(_p: SendParams, signal?: AbortSignal): AsyncIterable<StreamEvent> {
+        await new Promise<void>((resolve, reject) => {
+          signal?.addEventListener(
+            "abort",
+            () => reject(new Error("Request was aborted.")),
+            { once: true },
+          );
+        });
+        yield { type: "message_stop" };
+      },
+    };
+
+    const userController = new AbortController();
+    const fallback = new ModelFallback({ streamTimeoutMs: 60_000 });
+    // 30ms 后模拟用户按 ESC
+    setTimeout(() => userController.abort(), 30);
+
+    await expect(
+      collectEvents(
+        fallback.executeWithFallback(hangProvider, defaultParams, userController.signal),
+      ),
+    ).rejects.toBeInstanceOf(RequestAbortedError);
+  }, 10_000);
 });
