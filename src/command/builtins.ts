@@ -195,7 +195,7 @@ export class ModelCommand implements Command {
 
   private buildAvailableModels(ctx: AppContext): string {
     if (ctx.config.availableModels.length === 0) {
-      return "未配置可用模型列表\n请在 ~/.sid-code/config.yaml 中添加 available_models 配置";
+      return "未配置可用模型列表\n请在 ~/.sid-code/settings.json 中添加 availableModels 配置";
     }
     const lines = ["可用模型列表:"];
     ctx.config.availableModels.forEach((m, idx) => {
@@ -665,7 +665,7 @@ export class MCPCommand implements Command {
     if (!ctx.mcpManager) {
       return {
         kind: "message",
-        message: "未配置 MCP 服务器\n在 ~/.sid-code/config.yaml 或 .mcp.json 中添加 mcp_servers 配置",
+        message: "未配置 MCP 服务器\n在 ~/.sid-code/settings.json 或项目 .mcp.json 中添加 mcpServers 配置",
       };
     }
 

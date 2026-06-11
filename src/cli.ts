@@ -370,14 +370,6 @@ export async function main(): Promise<void> {
     runMigrations();
     profileCheckpoint("migrations_end");
 
-    // 配置迁移：config.yaml → settings.json + app.json（非破坏式，保留 config.yaml）
-    try {
-      const { migrateConfigIfNeeded } = await import("./config/migration.ts");
-      migrateConfigIfNeeded();
-    } catch (err) {
-      getLogger().warn("CONFIG", `配置迁移跳过: ${err}`);
-    }
-
     profileCheckpoint("config_load_start");
     const config = await loadConfig(cliArgs);
     profileCheckpoint("config_load_end");

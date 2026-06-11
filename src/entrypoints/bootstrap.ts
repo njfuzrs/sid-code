@@ -62,13 +62,9 @@ async function main(): Promise<void> {
   // 所有快速路径未命中 → 启动早期输入捕获 → 加载完整 CLI
   profileCheckpoint("bootstrap_route_resolved");
 
-  // 在加载完整 CLI 之前启动早期输入捕获（缓冲用户按键）
+  // 在加载完整 CLI 之前启动早期输入捕获(缓冲用户按键)
   const { startCapturingEarlyInput } = await import("../ui/early-input.ts");
   startCapturingEarlyInput();
-
-  // ⚠️ 配置文件预加载：在 cli.ts 模块加载之前启动异步读取，与模块求值并行
-  const { startConfigPreload } = await import("../config/preload.ts");
-  startConfigPreload();
 
   const { main: cliMain } = await import("../cli.ts");
   await cliMain();

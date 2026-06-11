@@ -8,8 +8,10 @@ import { ArgParser } from "./args.ts";
 import { getLogger } from "../debug/logger.ts";
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { resolve } from "path";
-import { sidHomePath } from "../config/paths.ts";
-import YAML from "yaml";
+import {
+  getSettingsForSource,
+  writeSettingsFile,
+} from "../config/settings/index.ts";
 
 /** MCP 服务器配置 */
 interface MCPServerConfig {
@@ -61,7 +63,7 @@ class MCPListCommand implements Command {
     if (!ctx.mcpManager) {
       return {
         kind: "message",
-        message: "未配置 MCP 服务器\n在 ~/.sid-code/config.yaml 或 .mcp.json 中添加 mcp_servers 配置",
+        message: "未配置 MCP 服务器\n在 ~/.sid-code/settings.json 或项目 .mcp.json 中添加 mcpServers 配置",
       };
     }
 
@@ -196,20 +198,15 @@ class MCPAddCommand implements Command {
       writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 2), "utf-8");
       log.info("MCP_ADD", `已写入 ${mcpJsonPath}`);
     } else {
-      // 写入用户级 ~/.sid-code/config.yaml
-      const configPath = sidHomePath("config.yaml");
-      let yamlConfig: any = {};
+      // 写入用户级 ~/.sid-code/settings.json 的 mcpServers
+      const { settings } = getSettingsForSource("userSettings");
+      const current = { ...(settings ?? {}) };
+      const servers = { ...(current.mcpServers ?? {}) };
+      servers[name] = config as any;
+      current.mcpServers = servers;
 
-      if (existsSync(configPath)) {
-        const content = readFileSync(configPath, "utf-8");
-        yamlConfig = YAML.parse(content) || {};
-      }
-
-      if (!yamlConfig.mcp_servers) yamlConfig.mcp_servers = {};
-      yamlConfig.mcp_servers[name] = config;
-
-      writeFileSync(configPath, YAML.stringify(yamlConfig), "utf-8");
-      log.info("MCP_ADD", `已写入 ${configPath}`);
+      writeSettingsFile("userSettings", current);
+      log.info("MCP_ADD", `已写入用户 settings.json: ${name}`);
     }
   }
 }
@@ -261,21 +258,18 @@ class MCPRemoveCommand implements Command {
       writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 2), "utf-8");
       log.info("MCP_REMOVE", `已从 ${mcpJsonPath} 移除 ${name}`);
     } else {
-      const configPath = sidHomePath("config.yaml");
-      if (!existsSync(configPath)) {
-        throw new Error("用户配置文件不存在");
-      }
+      const { settings } = getSettingsForSource("userSettings");
+      const current = { ...(settings ?? {}) };
+      const servers = { ...(current.mcpServers ?? {}) };
 
-      const content = readFileSync(configPath, "utf-8");
-      const yamlConfig = YAML.parse(content) || {};
-
-      if (!yamlConfig.mcp_servers?.[name]) {
+      if (!servers[name]) {
         throw new Error(`服务器 "${name}" 不存在于用户配置中`);
       }
 
-      delete yamlConfig.mcp_servers[name];
-      writeFileSync(configPath, YAML.stringify(yamlConfig), "utf-8");
-      log.info("MCP_REMOVE", `已从 ${configPath} 移除 ${name}`);
+      delete servers[name];
+      current.mcpServers = servers;
+      writeSettingsFile("userSettings", current);
+      log.info("MCP_REMOVE", `已从用户 settings.json 移除 ${name}`);
     }
   }
 }

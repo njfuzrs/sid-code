@@ -585,53 +585,20 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
 /**
  * 加载配置文件。
  *
- * 配置源优先级（P1-1 统一双配置源）：
- * 1. settings.json + app.json（新格式，camelCase，经 env 占位符展开）—— 若存在则**只**用它
- * 2. config.yaml（旧格式，snake_case）—— 仅当新格式不存在时回退
- *
- * 这样切断了"双写并存"：迁移完成后 config.yaml 被重命名为 .migrated，
- * 运行时不再读它，settings.json 成为唯一真相源。
+ * 唯一真相源：settings.json + app.json（~/.sid-code/ 下）。
+ * 两文件均为 JSON，合并后经 env 占位符展开 + normalizeConfigKeys 归一化。
+ * 旧格式 config.yaml 已废弃，不再读取（历史用户请手动迁移到 settings.json）。
  */
 async function loadConfigFile(): Promise<Partial<Config>> {
-  const log = getLogger();
   const configDir = getSidHome();
   const settingsPath = join(configDir, "settings.json");
   const appConfigPath = join(configDir, "app.json");
 
-  // 优先：新格式 settings.json（+ app.json）
   if (existsSync(settingsPath) || existsSync(appConfigPath)) {
     return loadNewFormatAsConfig(settingsPath, appConfigPath);
   }
 
-  // 回退：旧格式 config.yaml
-  const configPath = join(configDir, "config.yaml");
-  if (!existsSync(configPath)) {
-    log.debug("CONFIG", `配置文件不存在: ${configPath}`);
-    return {};
-  }
-
-  try {
-    // 优先消费预加载结果（与模块加载并行读取的）
-    const { getPreloadedConfig } = await import("./preload.ts");
-    let content = await getPreloadedConfig();
-    if (!content) {
-      // 预加载未命中，回退到同步读取
-      const file = Bun.file(configPath);
-      content = await file.text();
-    }
-    const parsed = parseYAML(content);
-
-    // 环境变量插值
-    const { resolveEnvVars } = await import("./env-interpolation.ts");
-    const interpolated = resolveEnvVars(parsed);
-
-    const normalized = normalizeConfigKeys(interpolated);
-    log.configLoaded("配置文件", { path: configPath, keys: Object.keys(normalized) });
-    return normalized;
-  } catch (err) {
-    log.error("CONFIG", `读取配置文件失败: ${configPath}`, err);
-    throw new Error(`读取配置文件失败: ${err}`);
-  }
+  return {};
 }
 
 /**
@@ -660,12 +627,18 @@ async function loadNewFormatAsConfig(
     }
   }
 
-  const interpolated = resolveEnvVars(merged) as Partial<Config>;
-  log.configLoaded("配置文件(新格式)", {
+  const interpolated = resolveEnvVars(merged);
+
+  // 关键：新格式同样经过 normalizeConfigKeys 归一化。
+  // settings.json 里 availableModels 数组项允许 snake_case（api_key/base_url）
+  // 或 camelCase 混写，normalizeConfigKeys 会统一转成 Config 期望的 camelCase，
+  // 否则 resolveCurrentModelConfig 读不到 apiKey，导致 openaiKey 不回填而启动报错。
+  const normalized = normalizeConfigKeys(interpolated);
+  log.configLoaded("配置文件", {
     path: settingsPath,
-    keys: Object.keys(interpolated),
+    keys: Object.keys(normalized),
   });
-  return interpolated;
+  return normalized;
 }
 
 /** 从环境变量加载配置 */
@@ -849,7 +822,7 @@ export async function ensureConfigDir(): Promise<string> {
  * 五层权限规则加载
  * 优先级（数组合并，deny > allow > ask）：
  * 1. 策略配置：/etc/sid-code/policy.yaml（企业级，可选）
- * 2. 全局配置：~/.sid-code/config.yaml 中的 permissions 字段
+ * 2. 全局配置：~/.sid-code/settings.json 中的 permissions 字段
  * 3. 项目配置：<project>/.sid-code/permissions.yaml（团队共享）
  * 4. 本地配置：<project>/.sid-code/permissions.local.yaml（个人，加入 .gitignore）
  * 5. 会话配置：内存中的临时规则（由 checker 的 sessionMemory 管理）
@@ -860,7 +833,7 @@ export async function loadPermissionRules(): Promise<import("../permission/types
 
   const layers: string[] = [
     "/etc/sid-code/policy.yaml",
-    join(getSidHome(), "config.yaml"),
+    join(getSidHome(), "settings.json"),
     join(process.cwd(), ".sid-code/permissions.yaml"),
     join(process.cwd(), ".sid-code/permissions.local.yaml"),
   ];
@@ -872,7 +845,10 @@ export async function loadPermissionRules(): Promise<import("../permission/types
 
     try {
       const content = await Bun.file(filePath).text();
-      const parsed = parseYAML(content);
+      // settings.json 为 JSON，其余层为 YAML
+      const parsed = filePath.endsWith(".json")
+        ? JSON.parse(content)
+        : parseYAML(content);
       const permissions = parsed?.permissions || parsed?.permission_rules;
       if (!permissions) continue;
 

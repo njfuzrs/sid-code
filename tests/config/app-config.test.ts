@@ -1,7 +1,6 @@
 /**
- * 配置迁移 + AppConfig 单元测试
+ * AppConfig 单元测试
  *
- * 迁移测试聚焦字段分类（纯逻辑，无 IO）。
  * AppConfig 测试用临时 HOME 做真实读写往返，验证缓存/备份/Auth-Loss Guard。
  */
 
@@ -15,62 +14,6 @@ import {
 } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-
-import { _internal } from "../../src/config/migration.ts";
-
-describe("配置迁移：字段分类", () => {
-  const { SETTINGS_FIELDS, APP_CONFIG_FIELDS, KEY_MAP } = _internal;
-
-  test("行为配置字段归属 Settings", () => {
-    for (const f of [
-      "provider",
-      "model",
-      "anthropicKey",
-      "permissionMode",
-      "mcpServers",
-      "hooks",
-      "env",
-      "quota",
-    ]) {
-      expect(SETTINGS_FIELDS.has(f)).toBe(true);
-    }
-  });
-
-  test("内部状态字段归属 AppConfig", () => {
-    for (const f of [
-      "debug",
-      "debugLevel",
-      "showLineNumbers",
-      "checkpoint",
-      "trace",
-      "telemetry",
-      "sessionRetention",
-    ]) {
-      expect(APP_CONFIG_FIELDS.has(f)).toBe(true);
-    }
-  });
-
-  test("Settings 与 AppConfig 字段集合无交集", () => {
-    for (const f of SETTINGS_FIELDS) {
-      expect(APP_CONFIG_FIELDS.has(f)).toBe(false);
-    }
-  });
-
-  test("snake_case → camelCase 映射正确", () => {
-    expect(KEY_MAP["anthropic_key"]).toBe("anthropicKey");
-    expect(KEY_MAP["base_url"]).toBe("baseURL");
-    expect(KEY_MAP["max_tokens"]).toBe("maxTokens");
-    expect(KEY_MAP["mcp_servers"]).toBe("mcpServers");
-    expect(KEY_MAP["debug_level"]).toBe("debugLevel");
-  });
-
-  test("会话字段不在任何迁移集合（不迁移 CLI 参数）", () => {
-    for (const f of ["sessionId", "continue", "resume", "print", "maxTurns"]) {
-      expect(SETTINGS_FIELDS.has(f)).toBe(false);
-      expect(APP_CONFIG_FIELDS.has(f)).toBe(false);
-    }
-  });
-});
 
 /**
  * AppConfig 真实读写测试。

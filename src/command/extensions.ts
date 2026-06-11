@@ -7,10 +7,11 @@ import type { Command, AppContext, CommandResult } from "./types.ts";
 import { ArgParser } from "./args.ts";
 import { ExtensionLoader } from "../extension/loader.ts";
 import { getLogger } from "../debug/logger.ts";
-import { readFileSync, writeFileSync, existsSync } from "fs";
-import { resolve } from "path";
-import { sidHomePath } from "../config/paths.ts";
-import YAML from "yaml";
+import {
+  getSettings,
+  getSettingsForSource,
+  writeSettingsFile,
+} from "../config/settings/index.ts";
 
 /** /skills 命令 */
 export class SkillsCommand implements Command {
@@ -87,13 +88,9 @@ class SkillsListCommand implements Command {
   }
 
   private getDisabledSkills(): string[] {
-    const configPath = sidHomePath("config.yaml");
-    if (!existsSync(configPath)) return [];
-
     try {
-      const content = readFileSync(configPath, "utf-8");
-      const config = YAML.parse(content) || {};
-      return config.disabled_skills || [];
+      const { settings } = getSettings();
+      return settings.disabledSkills || [];
     } catch {
       return [];
     }
@@ -130,51 +127,23 @@ class SkillsEnableCommand implements Command {
   private updateSkillStatus(name: string, action: "enable" | "disable", scope: "user" | "project"): void {
     const log = getLogger();
 
-    if (scope === "project") {
-      // 项目级配置（.sid-code/config.yaml）
-      const configPath = resolve(process.cwd(), ".sid-code", "config.yaml");
-      let config: any = {};
+    // user → 用户全局 settings.json；project → 项目 .sid-code/settings.json
+    const source = scope === "project" ? "projectSettings" : "userSettings";
 
-      if (existsSync(configPath)) {
-        const content = readFileSync(configPath, "utf-8");
-        config = YAML.parse(content) || {};
-      }
+    // 读取该来源的现有内容（不合并其他来源，避免写回时污染单一文件）
+    const { settings } = getSettingsForSource(source);
+    const current = { ...(settings ?? {}) };
+    const disabled = new Set(current.disabledSkills ?? []);
 
-      if (!config.disabled_skills) config.disabled_skills = [];
-
-      if (action === "enable") {
-        config.disabled_skills = config.disabled_skills.filter((s: string) => s !== name);
-      } else {
-        if (!config.disabled_skills.includes(name)) {
-          config.disabled_skills.push(name);
-        }
-      }
-
-      writeFileSync(configPath, YAML.stringify(config), "utf-8");
-      log.info("SKILLS", `已更新 ${configPath}`);
+    if (action === "enable") {
+      disabled.delete(name);
     } else {
-      // 用户级配置
-      const configPath = sidHomePath("config.yaml");
-      let config: any = {};
-
-      if (existsSync(configPath)) {
-        const content = readFileSync(configPath, "utf-8");
-        config = YAML.parse(content) || {};
-      }
-
-      if (!config.disabled_skills) config.disabled_skills = [];
-
-      if (action === "enable") {
-        config.disabled_skills = config.disabled_skills.filter((s: string) => s !== name);
-      } else {
-        if (!config.disabled_skills.includes(name)) {
-          config.disabled_skills.push(name);
-        }
-      }
-
-      writeFileSync(configPath, YAML.stringify(config), "utf-8");
-      log.info("SKILLS", `已更新 ${configPath}`);
+      disabled.add(name);
     }
+    current.disabledSkills = [...disabled];
+
+    writeSettingsFile(source, current);
+    log.info("SKILLS", `已更新 ${scope} settings.json: ${name} → ${action}`);
   }
 }
 
