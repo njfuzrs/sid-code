@@ -19,12 +19,18 @@ export interface SessionMetrics {
     totalInputTokens: number;
     totalOutputTokens: number;
     totalCostUSD: number;
+    /** 累计缓存命中（读）token 数 */
+    totalCacheReadTokens: number;
+    /** 累计缓存写入 token 数（DeepSeek 恒 0） */
+    totalCacheCreationTokens: number;
     byModel: Record<string, {
       requests: number;
       inputTokens: number;
       outputTokens: number;
       latencyMs: number;
       costUSD: number;
+      cacheReadTokens: number;
+      cacheCreationTokens: number;
     }>;
   };
 
@@ -81,6 +87,7 @@ export class SessionMetricsCollector {
       llm: {
         totalRequests: 0, totalErrors: 0, totalLatencyMs: 0,
         totalInputTokens: 0, totalOutputTokens: 0, totalCostUSD: 0,
+        totalCacheReadTokens: 0, totalCacheCreationTokens: 0,
         byModel: {},
       },
       tools: {
@@ -92,8 +99,20 @@ export class SessionMetricsCollector {
     };
   }
 
-  /** 记录 LLM 请求完成 */
-  recordLlmResponse(model: string, inputTokens: number, outputTokens: number, latencyMs: number, costUSD: number, isError: boolean): void {
+  /** 记录 LLM 请求完成
+   * @param cacheReadTokens 本次命中（读缓存）token 数
+   * @param cacheCreationTokens 本次写入缓存 token 数（DeepSeek 恒 0）
+   */
+  recordLlmResponse(
+    model: string,
+    inputTokens: number,
+    outputTokens: number,
+    latencyMs: number,
+    costUSD: number,
+    isError: boolean,
+    cacheReadTokens = 0,
+    cacheCreationTokens = 0,
+  ): void {
     const llm = this.metrics.llm;
     llm.totalRequests++;
     if (isError) llm.totalErrors++;
@@ -104,9 +123,12 @@ export class SessionMetricsCollector {
     llm.totalInputTokens = inputTokens;
     llm.totalOutputTokens += outputTokens;
     llm.totalCostUSD += costUSD;
+    // 缓存：read 取末次（与 input 同口径，含全部稳定前缀的命中），write 累加
+    llm.totalCacheReadTokens = cacheReadTokens;
+    llm.totalCacheCreationTokens += cacheCreationTokens;
 
     if (!llm.byModel[model]) {
-      llm.byModel[model] = { requests: 0, inputTokens: 0, outputTokens: 0, latencyMs: 0, costUSD: 0 };
+      llm.byModel[model] = { requests: 0, inputTokens: 0, outputTokens: 0, latencyMs: 0, costUSD: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
     }
     const m = llm.byModel[model];
     m.requests++;
@@ -114,6 +136,8 @@ export class SessionMetricsCollector {
     m.outputTokens += outputTokens;
     m.latencyMs += latencyMs;
     m.costUSD += costUSD;
+    m.cacheReadTokens = cacheReadTokens; // 覆盖（末次含全部命中）
+    m.cacheCreationTokens += cacheCreationTokens;
   }
 
   /** 记录工具调用完成 */
@@ -183,6 +207,8 @@ export class SessionMetricsCollector {
             afterModel.llm_response.api_duration_ms ?? 0,
             afterModel.llm_response.cost_usd ?? 0,
             false,
+            usage.cacheReadInputTokens ?? 0,
+            usage.cacheCreationInputTokens ?? 0,
           );
         },
       },
@@ -273,6 +299,16 @@ export class SessionMetricsCollector {
       `工具: ${m.tools.totalCalls} 次调用 (${m.tools.totalSuccess}成功/${m.tools.totalFail}失败)`,
       `交互: ${m.interaction.promptCount} 次提示, ${m.interaction.turnCount} 轮循环`
     );
+
+    // 缓存命中率（命中 / (命中 + 末次未命中输入)）——仅在有命中时展示，避免无缓存模型误导
+    const cacheHit = m.llm.totalCacheReadTokens;
+    if (cacheHit > 0) {
+      // 命中率分母用 input（末次 prompt，含历史）+ 命中：对两家口径都给出近似可读比例
+      const denom = Math.max(1, m.llm.totalInputTokens + cacheHit);
+      const rate = Math.round((cacheHit / denom) * 100);
+      const fmtK = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`);
+      lines.push(`缓存: 命中 ${rate}% (${fmtK(cacheHit)}/${fmtK(denom)})`);
+    }
 
     if (m.context.compactCount > 0) {
       lines.push(`压缩: ${m.context.compactCount} 次, 峰值 ${m.context.peakTokens} tokens`);

@@ -382,6 +382,14 @@ export async function main(): Promise<void> {
     const config = await loadConfig(cliArgs);
     profileCheckpoint("config_load_end");
 
+    // 启动期管家：生成配置目录 .gitignore + 按水位线节流的过期清理（幂等、不阻塞）
+    try {
+      const { runStartupHousekeeping } = await import("./config/startup-housekeeping.ts");
+      runStartupHousekeeping();
+    } catch (err) {
+      getLogger().debug("CONFIG", `启动管家任务跳过: ${err}`);
+    }
+
     // Settings 系统：Phase 1 安全环境变量（信任边界之前，仅可信来源 + 安全白名单）
     // 旧 safe-env.ts 从未被调用——此处首次接入两阶段环境变量应用。
     try {

@@ -45,12 +45,87 @@ export interface Message {
   _meta?: Record<string, unknown>;
 }
 
-/** Token 用量统计 */
+/** Token 用量统计
+ *
+ * ⚠️ inputTokens 的口径**因 provider 而异**（全方案最关键的约定）：
+ * - **Anthropic**：inputTokens = `input_tokens` = **未命中余量**，本就不含命中/写入。
+ * - **OpenAI/DeepSeek**：inputTokens = `prompt_tokens` = **含命中的全量** prompt。
+ * 因此任何"命中率/省钱/计费"计算都必须先经 {@link normalizeCacheUsage} 归一化为
+ * 与厂商无关的互斥三段（hit / write / uncached），杜绝口径分裂。
+ */
 export interface Usage {
   inputTokens: number;
   outputTokens: number;
   cacheCreationInputTokens?: number;
   cacheReadInputTokens?: number;
+}
+
+/**
+ * 归一化缓存用量视图（与厂商无关的互斥三段）。
+ *
+ * 三段互斥：promptTotal = cacheHitTokens + cacheWriteTokens + uncachedInputTokens。
+ * Footer、会话摘要、长期账本、计费**全部**走 {@link normalizeCacheUsage} 派生此视图，
+ * 是缓存命中率/省钱/计费的**单一事实源**。
+ */
+export interface NormalizedCacheUsage {
+  /** 命中（读缓存）token 数 */
+  cacheHitTokens: number;
+  /** 写入缓存 token 数（DeepSeek 恒 0，仅 Anthropic 有） */
+  cacheWriteTokens: number;
+  /** 既非命中也非写入的全价输入 token 数 */
+  uncachedInputTokens: number;
+  /** 输出 token 数 */
+  outputTokens: number;
+  /** 完整输入 = hit + write + uncached（派生，可断言校验） */
+  promptTotal: number;
+}
+
+/**
+ * 把 provider 原始 {@link Usage} 归一化为厂商无关的互斥三段（方案 §2.2）。
+ *
+ * 映射规则（依据 Usage.inputTokens 的 provider 口径差异）：
+ * - **Anthropic**：`inputTokens` 已是未命中余量 →
+ *     uncached = inputTokens；promptTotal = inputTokens + hit + write。
+ * - **OpenAI/DeepSeek**：`inputTokens = prompt_tokens` 含命中 →
+ *     uncached = inputTokens − hit（DeepSeek 写入恒 0）；promptTotal = inputTokens。
+ * - **其它（ollama 等无缓存）**：hit/write 恒 0，三段退化为 uncached = inputTokens。
+ *
+ * @param usage provider 解析后的原始用量
+ * @param provider provider 名称（来自 Provider.name()："anthropic" / "openai" / "ollama" / ...）
+ */
+export function normalizeCacheUsage(
+  usage: Usage,
+  provider: string,
+): NormalizedCacheUsage {
+  const hit = usage.cacheReadInputTokens ?? 0;
+  const write = usage.cacheCreationInputTokens ?? 0;
+  const output = usage.outputTokens ?? 0;
+  const input = usage.inputTokens ?? 0;
+
+  if (provider === "anthropic") {
+    // Anthropic：input_tokens 本就是未命中余量，勿再减
+    const uncached = Math.max(0, input);
+    return {
+      cacheHitTokens: hit,
+      cacheWriteTokens: write,
+      uncachedInputTokens: uncached,
+      outputTokens: output,
+      promptTotal: uncached + hit + write,
+    };
+  }
+
+  // OpenAI / DeepSeek / 其它兼容端点：inputTokens = prompt_tokens 含命中
+  // uncached = prompt_tokens − hit；写入概念在 DeepSeek 不存在（write 恒 0）
+  const uncached = Math.max(0, input - hit - write);
+  return {
+    cacheHitTokens: hit,
+    cacheWriteTokens: write,
+    uncachedInputTokens: uncached,
+    outputTokens: output,
+    // promptTotal 直接取 input（prompt_tokens 本就是完整输入），
+    // 与 uncached+hit+write 在 hit/write 不超过 input 时一致。
+    promptTotal: input,
+  };
 }
 
 /** 文本增量 */

@@ -582,12 +582,29 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
   return result;
 }
 
-/** 加载配置文件（优先消费预加载结果） */
+/**
+ * 加载配置文件。
+ *
+ * 配置源优先级（P1-1 统一双配置源）：
+ * 1. settings.json + app.json（新格式，camelCase，经 env 占位符展开）—— 若存在则**只**用它
+ * 2. config.yaml（旧格式，snake_case）—— 仅当新格式不存在时回退
+ *
+ * 这样切断了"双写并存"：迁移完成后 config.yaml 被重命名为 .migrated，
+ * 运行时不再读它，settings.json 成为唯一真相源。
+ */
 async function loadConfigFile(): Promise<Partial<Config>> {
   const log = getLogger();
   const configDir = getSidHome();
-  const configPath = join(configDir, "config.yaml");
+  const settingsPath = join(configDir, "settings.json");
+  const appConfigPath = join(configDir, "app.json");
 
+  // 优先：新格式 settings.json（+ app.json）
+  if (existsSync(settingsPath) || existsSync(appConfigPath)) {
+    return loadNewFormatAsConfig(settingsPath, appConfigPath);
+  }
+
+  // 回退：旧格式 config.yaml
+  const configPath = join(configDir, "config.yaml");
   if (!existsSync(configPath)) {
     log.debug("CONFIG", `配置文件不存在: ${configPath}`);
     return {};
@@ -615,6 +632,40 @@ async function loadConfigFile(): Promise<Partial<Config>> {
     log.error("CONFIG", `读取配置文件失败: ${configPath}`, err);
     throw new Error(`读取配置文件失败: ${err}`);
   }
+}
+
+/**
+ * 从新格式（settings.json + app.json）构造 Config。
+ * 两文件均为 camelCase JSON，合并后经 env 占位符展开（${VAR}）。
+ * app.json 字段（debug/checkpoint/trace/...）与 settings.json 字段（provider/model/...）
+ * 合并到同一 Config，字段名已对齐 Config 接口，无需 snake_case 归一化。
+ */
+async function loadNewFormatAsConfig(
+  settingsPath: string,
+  appConfigPath: string,
+): Promise<Partial<Config>> {
+  const log = getLogger();
+  const { resolveEnvVars } = await import("./env-interpolation.ts");
+  const merged: Record<string, unknown> = {};
+
+  for (const p of [settingsPath, appConfigPath]) {
+    if (!existsSync(p)) continue;
+    try {
+      const raw = JSON.parse(await Bun.file(p).text());
+      if (raw && typeof raw === "object") {
+        Object.assign(merged, raw);
+      }
+    } catch (err) {
+      log.warn("CONFIG", `读取 ${p} 失败，跳过: ${err}`);
+    }
+  }
+
+  const interpolated = resolveEnvVars(merged) as Partial<Config>;
+  log.configLoaded("配置文件(新格式)", {
+    path: settingsPath,
+    keys: Object.keys(interpolated),
+  });
+  return interpolated;
 }
 
 /** 从环境变量加载配置 */

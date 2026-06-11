@@ -6,7 +6,8 @@
  * - API 耗时 vs 工具耗时分开追踪
  */
 
-import type { Usage } from "../llm/types.ts";
+import type { Usage, NormalizedCacheUsage } from "../llm/types.ts";
+import { normalizeCacheUsage } from "../llm/types.ts";
 
 /** 单个模型的用量统计 */
 export interface ModelUsageStats {
@@ -16,17 +17,35 @@ export interface ModelUsageStats {
   cacheCreationInputTokens: number;
   requests: number;
   costUSD: number;
+  /** 缓存节省金额（美元）：假设全部按未命中全价 − 实际成本，逐次累加 */
+  cacheSavingsUSD: number;
+  /** 该模型对应的 provider（"anthropic"/"openai"/...），用于归一化口径区分 */
+  provider: string;
 }
 
 /** 模型定价（每百万 token） */
 interface ModelPricing {
-  input: number;   // 输入价格 $/M tokens
+  input: number;   // 未命中输入价格 $/M tokens
   output: number;  // 输出价格 $/M tokens
+  /**
+   * 缓存命中（读）价格 $/M tokens。
+   * - Anthropic：= input × 0.1（90% 折扣）
+   * - DeepSeek：独立固定价（pro 0.025 元/M → 0.0035 $/M ≈ 未命中的 1/120）
+   * 不填时 calculateCost 兜底按 input × 0.1 计（Anthropic 式近似）。
+   */
+  cacheHit?: number;
+  /**
+   * 缓存写入价格 $/M tokens。
+   * - Anthropic：= input × 1.25（25% 加价，5min TTL）
+   * - DeepSeek：无写入计费概念 → 0
+   * 不填时 calculateCost 兜底按 input × 1.25 计（Anthropic 式近似）。
+   */
+  cacheWrite?: number;
 }
 
 /** 内置模型定价表（单位：USD / 百万 token） */
 const MODEL_PRICING: Record<string, ModelPricing> = {
-  // Claude 系列（官方 USD/M）
+  // Claude 系列（官方 USD/M）；命中 = input×0.1、写入 = input×1.25 由 calculateCost 兜底派生
   "claude-opus-4-20250514": { input: 15, output: 75 },
   "claude-sonnet-4-20250514": { input: 3, output: 15 },
   "claude-haiku-4-20250514": { input: 0.25, output: 1.25 },
@@ -37,16 +56,16 @@ const MODEL_PRICING: Record<string, ModelPricing> = {
 
   // DeepSeek 系列：官方价为 RMB/M（见 api-reference/deepseek-api.md「模型 & 价格」），
   // 按 1 元 ≈ $0.14 折算成 USD（汇率快照 2026-06，随官方调整需复核）。
-  // pro：未命中 3 元 / 输出 6 元；flash：未命中 1 元 / 输出 2 元。
-  // 缓存命中是独立固定价（pro 0.025 元 / flash 0.02 元 ≈ 未命中的 1/120），
-  // 这里命中部分仍按 input 价的近似折扣计（命中成本极小，误差可接受，见 calculateCost 注释）。
+  // pro：未命中 3 元 / 输出 6 元 / 命中 0.025 元；flash：未命中 1 元 / 输出 2 元 / 命中 0.02 元。
+  // cacheHit 用 DeepSeek 独立固定价（非 input×0.1 近似），更贴近真实账单；
+  // cacheWrite=0——DeepSeek 无缓存写入计费概念。
   // 前缀匹配：getPricing 用 startsWith，可命中带后缀的 "deepseek-v4-pro[1m]" 等变体。
-  "deepseek-v4-pro": { input: 0.42, output: 0.84 },   // 3×0.14 / 6×0.14
-  "deepseek-v4-flash": { input: 0.14, output: 0.28 },  // 1×0.14 / 2×0.14
+  "deepseek-v4-pro": { input: 0.42, output: 0.84, cacheHit: 0.0035, cacheWrite: 0 },   // 3×0.14 / 6×0.14 / 0.025×0.14
+  "deepseek-v4-flash": { input: 0.14, output: 0.28, cacheHit: 0.0028, cacheWrite: 0 },  // 1×0.14 / 2×0.14 / 0.02×0.14
 
-  // OpenAI 系列（官方 USD/M）
-  "gpt-4o": { input: 2.5, output: 10 },
-  "gpt-4o-mini": { input: 0.15, output: 0.6 },
+  // OpenAI 系列（官方 USD/M）；OpenAI 命中价 = input×0.5（缓存读 50% 折扣），无写入计费
+  "gpt-4o": { input: 2.5, output: 10, cacheHit: 1.25, cacheWrite: 0 },
+  "gpt-4o-mini": { input: 0.15, output: 0.6, cacheHit: 0.075, cacheWrite: 0 },
 };
 
 /** 会话状态 */
@@ -93,7 +112,8 @@ export class SessionState {
   }
 
   /** 更新 API 调用的用量统计 */
-  updateUsage(model: string, usage: Usage, durationMs: number): void {
+  updateUsage(model: string, usage: Usage, durationMs: number, provider?: string): void {
+    const prov = provider ?? SessionState.inferProvider(model);
     // 初始化模型统计
     if (!this.modelUsage[model]) {
       this.modelUsage[model] = {
@@ -103,10 +123,13 @@ export class SessionState {
         cacheCreationInputTokens: 0,
         requests: 0,
         costUSD: 0,
+        cacheSavingsUSD: 0,
+        provider: prov,
       };
     }
 
     const stats = this.modelUsage[model];
+    stats.provider = prov; // 末次 provider 覆盖（同模型 provider 稳定，覆盖无害）
 
     // 累加 token
     // ⚠️ usage.inputTokens 是"本次 API 调用时的 prompt 总长度"（含全部历史），
@@ -118,9 +141,12 @@ export class SessionState {
     stats.cacheCreationInputTokens += usage.cacheCreationInputTokens ?? 0;
     stats.requests += 1;
 
-    // 计算本次成本
-    const cost = this.calculateCost(model, usage);
+    // 计算本次成本（带 provider 口径）
+    const cost = this.calculateCost(model, usage, prov);
     stats.costUSD += cost;
+
+    // 累加缓存节省（全价假设 − 实际）
+    stats.cacheSavingsUSD += this.calculateSavings(model, usage, prov);
 
     // 更新全局统计
     this.totalCostUSD += cost;
@@ -133,35 +159,108 @@ export class SessionState {
   }
 
   /**
-   * 计算单次 API 调用的成本
-   * 缓存读取: input 价格 × 0.1（90% 折扣，Anthropic 式近似）
-   * 缓存写入: input 价格 × 1.25（25% 加价，仅 Anthropic 适用）
+   * 计算单次 API 调用的成本（方案 §2.3 口径修复）。
    *
-   * ⚠️ DeepSeek 说明：DeepSeek 命中价是独立固定价（pro 0.025 元/M ≈ 未命中的 1/120），
-   * 比这里的 0.1 折扣更便宜；但命中部分成本本就极小，用 0.1 近似的绝对误差可忽略。
-   * DeepSeek 无「缓存写入计费」概念——cacheCreationInputTokens 在 openai.ts 不映射（恒 0），
-   * 所以 × 1.25 那条对 DeepSeek 永不触发，仅对 Anthropic 生效。
-   * regularInput = input − cacheRead − cacheCreation 会自动把命中部分从全价输入中扣掉，逻辑对所有 provider 通用。
+   * **修复前的 bug**：旧实现用 `regularInput = inputTokens − cacheRead − cacheCreation`，
+   * 对 Anthropic 会重复扣减——Anthropic 的 inputTokens 本就是未命中余量，再减一次导致
+   * regularInput 偏小、费用算低。
+   *
+   * **修复后**：统一经 {@link normalizeCacheUsage} 归一化为互斥三段后分别计价，不再做减法。
+   * 两家口径都正确：
+   * - 未命中：uncachedInputTokens × pricing.input（全价）
+   * - 命中：cacheHitTokens × pricing.cacheHit（DeepSeek 固定价 / Anthropic = input×0.1 兜底）
+   * - 写入：cacheWriteTokens × pricing.cacheWrite（DeepSeek=0 / Anthropic = input×1.25 兜底）
+   * - 输出：outputTokens × pricing.output
+   *
+   * @param model 模型名
+   * @param usage 原始用量
+   * @param provider provider 名（"anthropic"/"openai"/...）。不传时按模型名推断（claude* → anthropic）。
    */
-  calculateCost(model: string, usage: Usage): number {
+  calculateCost(model: string, usage: Usage, provider?: string): number {
     const pricing = this.getPricing(model);
     if (!pricing) return 0;
 
-    const cacheRead = usage.cacheReadInputTokens ?? 0;
-    const cacheCreation = usage.cacheCreationInputTokens ?? 0;
-    const regularInput = Math.max(0, usage.inputTokens - cacheRead - cacheCreation);
+    const prov = provider ?? SessionState.inferProvider(model);
+    const n = normalizeCacheUsage(usage, prov);
+
+    // 命中/写入价：优先用定价表显式值，否则按 Anthropic 式近似派生（input×0.1 / input×1.25）
+    const cacheHitPrice = pricing.cacheHit ?? pricing.input * 0.1;
+    const cacheWritePrice = pricing.cacheWrite ?? pricing.input * 1.25;
 
     let cost = 0;
-    // 正常输入
-    cost += (regularInput / 1_000_000) * pricing.input;
-    // 缓存读取（90% 折扣）
-    cost += (cacheRead / 1_000_000) * pricing.input * 0.1;
-    // 缓存写入（25% 加价）
-    cost += (cacheCreation / 1_000_000) * pricing.input * 1.25;
-    // 输出
-    cost += (usage.outputTokens / 1_000_000) * pricing.output;
+    cost += (n.uncachedInputTokens / 1_000_000) * pricing.input;   // 未命中全价
+    cost += (n.cacheHitTokens / 1_000_000) * cacheHitPrice;         // 命中
+    cost += (n.cacheWriteTokens / 1_000_000) * cacheWritePrice;     // 写入
+    cost += (n.outputTokens / 1_000_000) * pricing.output;          // 输出
 
     return cost;
+  }
+
+  /**
+   * 计算单次调用的缓存节省金额（美元）= 假设全部按未命中全价 − 实际成本。
+   * 全价假设：把 promptTotal 全部当未命中输入计价。
+   */
+  calculateSavings(model: string, usage: Usage, provider?: string): number {
+    const pricing = this.getPricing(model);
+    if (!pricing) return 0;
+    const prov = provider ?? SessionState.inferProvider(model);
+    const n = normalizeCacheUsage(usage, prov);
+    // 全价成本：promptTotal 全按未命中输入 + 输出
+    const hypothetical =
+      (n.promptTotal / 1_000_000) * pricing.input +
+      (n.outputTokens / 1_000_000) * pricing.output;
+    const actual = this.calculateCost(model, usage, prov);
+    return Math.max(0, hypothetical - actual);
+  }
+
+  /**
+   * 按模型名推断 provider，供 calculateCost 在调用方未显式传 provider 时兜底。
+   * - claude* → "anthropic"（input_tokens 是未命中余量口径）
+   * - 其余（deepseek/gpt/ollama 等）→ "openai"（prompt_tokens 含命中口径）
+   * 注：ollama 无缓存字段，归一化后 hit/write 恒 0，归到哪类都不影响结果。
+   */
+  static inferProvider(model: string): string {
+    return /^claude/i.test(model) ? "anthropic" : "openai";
+  }
+
+  /**
+   * 汇总全会话的归一化缓存视图（跨所有模型累加三段）。
+   * 供 Footer 命中率列、会话摘要、SessionEnd 账本使用——单一事实源。
+   */
+  getNormalizedCacheUsage(): NormalizedCacheUsage {
+    const total: NormalizedCacheUsage = {
+      cacheHitTokens: 0,
+      cacheWriteTokens: 0,
+      uncachedInputTokens: 0,
+      outputTokens: 0,
+      promptTotal: 0,
+    };
+    for (const stats of Object.values(this.modelUsage)) {
+      const n = normalizeCacheUsage(
+        {
+          inputTokens: stats.inputTokens,
+          outputTokens: stats.outputTokens,
+          cacheReadInputTokens: stats.cacheReadInputTokens,
+          cacheCreationInputTokens: stats.cacheCreationInputTokens,
+        },
+        stats.provider,
+      );
+      total.cacheHitTokens += n.cacheHitTokens;
+      total.cacheWriteTokens += n.cacheWriteTokens;
+      total.uncachedInputTokens += n.uncachedInputTokens;
+      total.outputTokens += n.outputTokens;
+      total.promptTotal += n.promptTotal;
+    }
+    return total;
+  }
+
+  /** 全会话累计缓存节省金额（美元） */
+  getTotalCacheSavings(): number {
+    let sum = 0;
+    for (const stats of Object.values(this.modelUsage)) {
+      sum += stats.cacheSavingsUSD;
+    }
+    return sum;
   }
 
   /** 获取模型定价，未知模型返回 null */

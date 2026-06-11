@@ -183,3 +183,77 @@ export function resetCacheDetection(): void {
 export function formatCacheBreakReport(report: CacheBreakReport): string {
   return `缓存命中下降 ${report.dropPercent}% (${report.dropTokens} tokens): ${report.changes.join("; ")}`;
 }
+
+// ─── D1/D3：最近中断记录环形缓冲 + 健康度建议（供 /cache --breaks 查询） ───
+
+/** 单条带时间戳的中断记录 */
+export interface CacheBreakRecord extends CacheBreakReport {
+  /** 记录时间戳（秒，Unix epoch） */
+  ts: number;
+  model: string;
+}
+
+const MAX_BREAK_RECORDS = 50;
+const recentBreaks: CacheBreakRecord[] = [];
+
+/** 记录一条中断（环形缓冲，最多 MAX_BREAK_RECORDS 条） */
+export function recordCacheBreak(record: CacheBreakRecord): void {
+  recentBreaks.push(record);
+  if (recentBreaks.length > MAX_BREAK_RECORDS) {
+    recentBreaks.splice(0, recentBreaks.length - MAX_BREAK_RECORDS);
+  }
+}
+
+/** 获取最近 N 条中断记录（默认全部，最新在后） */
+export function getRecentCacheBreaks(limit?: number): CacheBreakRecord[] {
+  if (limit !== undefined && recentBreaks.length > limit) {
+    return recentBreaks.slice(recentBreaks.length - limit);
+  }
+  return [...recentBreaks];
+}
+
+/** 清空中断记录（新会话 / clear / 测试） */
+export function clearCacheBreaks(): void {
+  recentBreaks.length = 0;
+}
+
+/**
+ * D3 健康度告警：基于最近中断记录，给出可执行的修复建议。
+ * 例如"system 提示词频繁变化"→ 建议把易变内容移到 messages 尾部。
+ */
+export function getCacheHealthAdvice(): string[] {
+  const advice: string[] = [];
+  if (recentBreaks.length === 0) return advice;
+
+  const systemBreaks = recentBreaks.filter((b) =>
+    b.changes.some((c) => c.includes("System prompt"))
+  ).length;
+  const toolBreaks = recentBreaks.filter((b) =>
+    b.changes.some((c) => c.includes("工具变化"))
+  ).length;
+  const modelBreaks = recentBreaks.filter((b) =>
+    b.changes.some((c) => c.includes("模型变化"))
+  ).length;
+
+  // 阈值：同类中断占比 ≥ 50% 且 ≥ 2 次 → 给出针对性建议
+  const n = recentBreaks.length;
+  if (systemBreaks >= 2 && systemBreaks / n >= 0.5) {
+    advice.push(
+      `检测到 system 提示词频繁变化（${systemBreaks}/${n} 次中断）——` +
+        `建议将时间戳/git-status/动态提醒等易变内容移至 messages 尾部，让 system 段逐字节稳定，成为永久可命中前缀。`,
+    );
+  }
+  if (toolBreaks >= 2 && toolBreaks / n >= 0.5) {
+    advice.push(
+      `检测到工具列表频繁变化（${toolBreaks}/${n} 次中断）——` +
+        `建议工具注册/序列化按固定字典序，杜绝顺序抖动废掉工具 schema 缓存。`,
+    );
+  }
+  if (modelBreaks >= 2 && modelBreaks / n >= 0.5) {
+    advice.push(
+      `检测到模型频繁切换（${modelBreaks}/${n} 次中断）——` +
+        `建议分类/总结等廉价子查询用独立上下文，不污染主循环前缀。`,
+    );
+  }
+  return advice;
+}

@@ -14,7 +14,7 @@
  * Settings 系统后再单独走一个清理 task 移除 config.yaml 依赖。
  */
 
-import { existsSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, renameSync } from "fs";
 import { parse as parseYAML } from "yaml";
 import { join } from "path";
 import { getSidHome } from "./paths.ts";
@@ -139,8 +139,24 @@ export function migrateConfigIfNeeded(): boolean {
       log.info("CONFIG", `已迁移 ${Object.keys(appConfigData).length} 个字段到 app.json`);
     }
 
-    // 非破坏式：保留 config.yaml 不动（loadConfig 仍依赖它）
-    log.info("CONFIG", "迁移完成，config.yaml 已保留为兼容层");
+    // 切断旧路径：把 config.yaml 重命名为 .migrated。
+    // 此时 loadConfigFile() 已优先读 settings.json + app.json（见 config.ts），
+    // 不再依赖 config.yaml；保留 .migrated 备份供用户回查，但不再参与加载。
+    // 仅当确实写出了新格式文件时才重命名，避免空迁移误伤原文件。
+    if (
+      Object.keys(settingsData).length > 0 ||
+      Object.keys(appConfigData).length > 0
+    ) {
+      try {
+        renameSync(oldPath, `${oldPath}.migrated`);
+        log.info("CONFIG", "迁移完成，config.yaml 已重命名为 config.yaml.migrated");
+      } catch (renameErr) {
+        // 重命名失败不致命：新格式已就绪，loadConfigFile 仍优先读它
+        log.warn("CONFIG", `config.yaml 重命名失败（不影响加载）: ${renameErr}`);
+      }
+    } else {
+      log.info("CONFIG", "config.yaml 无可迁移字段，保留原文件");
+    }
     return true;
   } catch (err) {
     log.warn("CONFIG", `配置迁移失败: ${err}，将继续使用旧格式加载`);

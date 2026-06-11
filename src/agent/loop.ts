@@ -485,8 +485,8 @@ export class AgentLoopRunner {
       const apiDuration = perfHandle.end({ model: config.model });
 
       // 更新 SessionState（成本权威源）
-      sessionState.updateUsage(config.model, response.usage, apiDuration);
-      const thisCost = sessionState.calculateCost(config.model, response.usage);
+      sessionState.updateUsage(config.model, response.usage, apiDuration, config.provider);
+      const thisCost = sessionState.calculateCost(config.model, response.usage, config.provider);
 
       // 计算缓存节省金额（供 AfterModel Hook 载荷传递）
       const cacheSavingsUSD = this.deps.tokenMeter

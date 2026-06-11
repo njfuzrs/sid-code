@@ -31,6 +31,7 @@ import {
 } from "./ui/pending-input.ts";
 import { QuotaManager } from "./llm/quota.ts";
 import { TokenMeter } from "./telemetry/metrics/token-meter.ts";
+import { appendUsageLedger } from "./telemetry/usage-ledger.ts";
 import { BudgetTracker } from "./telemetry/metrics/budget-tracker.ts";
 import type { BudgetRule } from "./telemetry/metrics/budget-tracker.ts";
 import type { BudgetRuleConfig } from "./config/config.ts";
@@ -116,6 +117,8 @@ export class App {
   private abortController: AbortController | null = null;
   /** 紧急退出防重入：emergencySessionEnd 只执行一次 */
   private emergencyEnded = false;
+  /** 模块 C1：用量账本防重入——每会话只落一行 */
+  private ledgerWritten = false;
   /** B1/B2/B3：会话持久化写入端（JSONL 增量写入） */
   private sessionStore: SessionStore | null = null;
   /** B6：被 resume 恢复的会话 id（非 null 表示当前是 resume 会话，doInit 应续写原 jsonl 而非新建） */
@@ -1075,6 +1078,44 @@ export class App {
         this.ctxMgr.getMessages().length,
       );
     } catch { /* 文件系统可能已不可用 */ }
+    // 模块 C1：会话末落一行用量账本（幂等，best-effort，绝不阻断退出）
+    this.appendSessionToLedger();
+  }
+
+  /**
+   * 模块 C1：SessionEnd 时落一行用量账本汇总（~/.sid-code/usage-ledger.jsonl）。
+   *
+   * - 幂等：ledgerWritten flag 确保每会话只落一行（finalizeSessionStore 在多退出路径调用）。
+   * - 跳过空会话：无任何 API 调用（promptTotal=0）不落行，避免噪声。
+   * - 经 SessionState.getNormalizedCacheUsage() 单一事实源派生三段，口径与 Footer/摘要一致。
+   * - 只存聚合数字，绝不含消息内容——隐私安全。
+   */
+  private appendSessionToLedger(): void {
+    if (this.ledgerWritten) return;
+    try {
+      const n = this.sessionState.getNormalizedCacheUsage();
+      if (n.promptTotal <= 0) return; // 空会话不落行
+      this.ledgerWritten = true;
+      const models = Object.entries(this.sessionState.modelUsage);
+      // 主模型 = 请求数最多者（多模型会话取主导模型标注；token 仍为全会话汇总）
+      const primary = models.sort(([, a], [, b]) => b.requests - a.requests)[0];
+      const model = primary?.[0] ?? this.config.model ?? "unknown";
+      const provider = primary?.[1]?.provider ?? this.config.provider ?? "unknown";
+      appendUsageLedger({
+        ts: Math.floor(Date.now() / 1000),
+        sessionId: this.sessionState.sessionId,
+        model,
+        provider,
+        promptTotal: n.promptTotal,
+        cacheHit: n.cacheHitTokens,
+        cacheWrite: n.cacheWriteTokens,
+        uncachedInput: n.uncachedInputTokens,
+        output: n.outputTokens,
+        costUSD: this.sessionState.totalCostUSD,
+        savingsUSD: this.sessionState.getTotalCacheSavings(),
+        durationMs: this.sessionState.getElapsedMs(),
+      });
+    } catch { /* 账本写入失败绝不阻断退出 */ }
   }
 
   /**

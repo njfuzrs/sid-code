@@ -99,6 +99,8 @@ export const sidPaths = {
   trajectories: () => sidHomePath("trajectories"),
   uploadQueue: () => sidHomePath("trajectories", ".upload_queue.jsonl"),
   telemetry: () => sidHomePath("telemetry"),
+  /** 用量账本（缓存命中长期统计底座，append-only，默认开、不轮转） */
+  usageLedger: () => sidHomePath("usage-ledger.jsonl"),
 
   // ── 计划 ──
   plans: () => sidHomePath("plans"),

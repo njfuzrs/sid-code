@@ -11,6 +11,8 @@ import React from "react";
 import { Box, Text } from "ink";
 import { homedir } from "os";
 import type { Usage } from "../../llm/types.ts";
+import { normalizeCacheUsage } from "../../llm/types.ts";
+import { SessionState } from "../../session/state.ts";
 import { theme } from "../semantic-colors.ts";
 import { useUIState } from "../contexts/UIStateContext.tsx";
 import { useConfig } from "../contexts/ConfigContext.tsx";
@@ -193,6 +195,22 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
   // Token 统计
   const tokenStr = `${usage.inputTokens}↓ ${usage.outputTokens}↑`;
   addCol("tokens", "Tokens", <Text color={itemColor}>{tokenStr}</Text>, tokenStr.length);
+
+  // 缓存命中率（模块 B）：经归一化单一事实源派生，命中率 0 或无缓存字段时不显示该列
+  // （避免对 Ollama / 无缓存模型显示 0% 误导）。≥50% 绿、<50% 默认色。
+  {
+    const n = normalizeCacheUsage(usage, SessionState.inferProvider(model));
+    if (n.cacheHitTokens > 0 && n.promptTotal > 0) {
+      const rate = Math.round((n.cacheHitTokens / Math.max(1, n.promptTotal)) * 100);
+      const cacheStr = `⚡${rate}%`;
+      addCol(
+        "cache",
+        "缓存",
+        <Text color={rate >= 50 ? theme.status.success : itemColor}>{cacheStr}</Text>,
+        cacheStr.length,
+      );
+    }
+  }
 
   // 费用
   const costText = costUSD > 0 ? `$${costUSD.toFixed(4)}` : "$0";

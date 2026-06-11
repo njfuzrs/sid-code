@@ -92,7 +92,7 @@ export class Registry {
   /** 返回所有工具的 LLM 定义（用于发送给 AI） */
   definitions(options?: AssembleOptions): ToolDefinition[] {
     const tools = options ? this.assembleToolPool(options) : this.all();
-    return tools.map((t) => {
+    const defs = tools.map((t) => {
       let desc = t.description();
       if (t.usageGuide) {
         const guide = t.usageGuide();
@@ -104,6 +104,10 @@ export class Registry {
         input_schema: t.inputSchema(),
       };
     });
+    // D2 前缀稳定性：工具定义按 name 固定字典序输出，杜绝注册顺序抖动（尤其 MCP 异步连接顺序）
+    // 废掉工具 schema 缓存前缀。序列化顺序只影响请求载荷的缓存前缀，不影响执行查找（按 name 索引）。
+    defs.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    return defs;
   }
 
   /** 按名称过滤，返回只包含指定工具的新 Registry */

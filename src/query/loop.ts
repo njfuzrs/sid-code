@@ -54,6 +54,11 @@ import {
 } from "./work-log.ts";
 import { dequeuePendingNotifications } from "../task/index.ts";
 import { injectReminders } from "./reminder-inject.ts";
+import {
+  checkResponseForCacheBreak,
+  recordCacheBreak,
+  formatCacheBreakReport,
+} from "../api/cache-detection.ts";
 import type {
   QueryLoopYield,
   QueryDeps,
@@ -449,8 +454,28 @@ export async function* queryLoop(
     }
 
     // ─── 更新用量统计 ───
-    sessionState.updateUsage(config.model, response.usage, apiDuration);
-    const thisCost = sessionState.calculateCost(config.model, response.usage);
+    sessionState.updateUsage(config.model, response.usage, apiDuration, config.provider);
+    const thisCost = sessionState.calculateCost(config.model, response.usage, config.provider);
+
+    // ─── D1：缓存中断检测与归因 ───
+    // 比对本次 cacheRead 与上次，骤降时归因到 system/tools/model 变化，落入最近中断环形缓冲（供 /cache --breaks）。
+    try {
+      const cacheRead = response.usage.cacheReadInputTokens ?? 0;
+      const breakReport = checkResponseForCacheBreak({
+        cacheReadTokens: cacheRead,
+        systemPrompt: typeof sendParams.system === "string" ? sendParams.system : "",
+        toolSchemas: (sendParams.tools ?? []).map((t) => ({ ...t, name: t.name })),
+        model: config.model,
+      });
+      if (breakReport) {
+        recordCacheBreak({
+          ...breakReport,
+          ts: Math.floor(Date.now() / 1000),
+          model: config.model,
+        });
+        log.warn("CACHE_BREAK", formatCacheBreakReport(breakReport));
+      }
+    } catch { /* 中断检测失败绝不影响主循环 */ }
 
     const cacheSavingsUSD = loopConfig.tokenMeter
       ? loopConfig.tokenMeter.calculateCacheSavings(config.model, response.usage)
