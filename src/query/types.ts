@@ -168,6 +168,11 @@ export interface QueryDeps {
    * 返回 null 表示无 todo 工具或无 todo 项。可 mock。
    */
   getTodoState?: () => { todos: import("../tool/todo-write.ts").TodoItem[]; writeVersion: number } | null;
+  /**
+   * B2：会话持久化写入端（方案 a）。queryLoop 在 ctxMgr.addMessage(toolResults) 的同时，
+   * 通过它把 tool_result 直接写入 jsonl。可选——未注入则不持久化。
+   */
+  sessionStore?: import("../session/store.ts").SessionStore;
 }
 
 // ─── QueryEngine 配置 ───

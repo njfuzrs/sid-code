@@ -21,6 +21,7 @@ import { Registry as CommandRegistry } from "./command/registry.ts";
 import { ModelFallback } from "./llm/fallback.ts";
 import { ThinkingManager } from "./llm/thinking.ts";
 import { SessionState } from "./session/state.ts";
+import { SessionStore } from "./session/store.ts";
 import { QuotaManager } from "./llm/quota.ts";
 import { TokenMeter } from "./telemetry/metrics/token-meter.ts";
 import { BudgetTracker } from "./telemetry/metrics/budget-tracker.ts";
@@ -108,6 +109,10 @@ export class App {
   private abortController: AbortController | null = null;
   /** 紧急退出防重入：emergencySessionEnd 只执行一次 */
   private emergencyEnded = false;
+  /** B1/B2/B3：会话持久化写入端（JSONL 增量写入） */
+  private sessionStore: SessionStore | null = null;
+  /** B6：被 resume 恢复的会话 id（非 null 表示当前是 resume 会话，doInit 应续写原 jsonl 而非新建） */
+  private resumedSessionId: string | null = null;
   private queryEngine: QueryEngine;
   private hookSystem!: HookSystem;
   private jitContextMgr: JitContextManager;
@@ -142,6 +147,9 @@ export class App {
     this.ctxMgr.setSessionId(sessionId);
     this.sessionState = new SessionState(sessionId);
     getSessionMetrics().setSessionId(sessionId);
+    // B1：会话持久化写入端（构造很轻，仅建目录）。startSession/resumeSession 延迟到 doInit 调用，
+    // 以便 B6 能根据 resumedSessionId 决定"新建 jsonl"还是"续写旧 jsonl"。
+    this.sessionStore = new SessionStore();
     // 成本配额管理（合并 costLimit 和 quota 配置）
     const quotaConfig = opts.config.quota;
     const effectiveCostLimit = quotaConfig?.costLimit ?? opts.config.costLimit;
@@ -234,6 +242,7 @@ export class App {
       quotaManager: this.quotaManager,
       tokenMeter: this.tokenMeter,
       budgetTracker: this.budgetTracker,
+      sessionStore: this.sessionStore ?? undefined,
       executeTools: (content) => this.executeTools(content),
       processStream: (stream, onText, onThinking) => this.processStream(stream, onText, onThinking),
       autoCompact: () => this.autoCompact(),
@@ -366,6 +375,33 @@ export class App {
 
     this.ctxMgr.setSystemPrompt(systemPrompt);
     log.info("APP", `初始化完成，系统提示词 ${systemPrompt.length} 字符，工具数 ${this.toolRegistry.size()}`);
+
+    // B1/B6：接入会话持久化写入端。
+    // - 纯新会话：startSession（写 session_start，新建 jsonl）。
+    // - resume 会话（restoreSession 已设 resumedSessionId）：resumeSession（续写旧 jsonl，不写 session_start），
+    //   避免恢复进来的历史不回写、多次 resume 历史碎片化。
+    // 持久化失败绝不能阻断启动。
+    try {
+      if (this.resumedSessionId) {
+        this.sessionStore?.resumeSession(
+          this.resumedSessionId,
+          this.config.model,
+          this.config.provider,
+          process.cwd(),
+        );
+        log.info("APP", `会话持久化续写已启动（resume）: ${this.resumedSessionId}`);
+      } else {
+        this.sessionStore?.startSession(
+          this.sessionState.sessionId,
+          this.config.model,
+          this.config.provider,
+          process.cwd(),
+        );
+        log.info("APP", `会话持久化已启动: ${this.sessionState.sessionId}`);
+      }
+    } catch (e) {
+      log.warn("APP", `会话持久化启动失败（不阻断）: ${(e as Error)?.message}`);
+    }
 
     // 启动 CLAUDE.md 文件变化监听（变更时重新加载规则 + 重建系统提示词）
     watchCLAUDEmd(process.cwd(), async (changedPath) => {
@@ -501,6 +537,8 @@ export class App {
       } catch (err: any) {
         process.stderr.write(`[signal] SessionEnd hook 失败: ${err?.message ?? err}\n`);
       }
+      // B3：信号退出也结束会话持久化（幂等）
+      this.finalizeSessionStore();
       // 清理 crash marker（正常退出不残留）
       try { CrashMarker.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
       try { PidManager.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
@@ -596,6 +634,11 @@ export class App {
     const { SessionStore } = await import("./session/store.ts");
 
     log.info("APP", `恢复会话: ${sessionData.id}, 消息数 ${sessionData.messages.length}`);
+
+    // B6：标记当前为 resume 会话。doInit 据此调 resumeSession（续写原 jsonl）而非 startSession（新建）。
+    // 注意：不修改 sessionState.sessionId（trajectory/PID/crash marker 仍用本进程的新 id，避免跨进程冲突），
+    // 仅让 SessionStore 的 currentFile 指向被恢复会话的旧 jsonl 续写，使历史不碎片化。
+    this.resumedSessionId = sessionData.id;
 
     // 如果消息数量不多，直接恢复
     const SUMMARY_THRESHOLD = 20;
@@ -1007,6 +1050,24 @@ export class App {
   }
 
   /**
+   * B3：结束会话持久化（唯一的 endSession 调用封装）。
+   *
+   * - 在所有退出路径调用（正常退出 / /quit / SIGINT|SIGTERM / runHeadless / emergencySessionEnd）。
+   * - endSession 自身幂等（store.ts：currentFile 为 null 时直接 return），重复调用安全 no-op，
+   *   故无需在 App 层再加防重入标志。
+   * - 修正 bug⑥：消息数用 ctxMgr.getMessages().length（SessionState 无 getMessageCount）。
+   * - 持久化失败绝不能阻断退出流程。
+   */
+  private finalizeSessionStore(): void {
+    try {
+      this.sessionStore?.endSession(
+        this.sessionState.totalCostUSD,
+        this.ctxMgr.getMessages().length,
+      );
+    } catch { /* 文件系统可能已不可用 */ }
+  }
+
+  /**
    * 紧急 SessionEnd：uncaughtException / V8 OOM 等无法正常退出的场景。
    *
    * 约束：
@@ -1035,6 +1096,9 @@ export class App {
         uptime_seconds: process.uptime(),
       });
     } catch { /* 文件系统可能已不可用 */ }
+
+    // B3：崩溃兜底也结束会话持久化（best-effort，幂等）
+    this.finalizeSessionStore();
 
     // 3. fire-and-forget: 尝试触发 SessionEnd（有 200ms 超时）
     try {
@@ -1103,6 +1167,8 @@ export class App {
       // SessionEnd hook 自身报错也不能阻塞退出，否则 trajectory 反而丢失
       process.stderr.write(`[runHeadless] SessionEnd hook 失败: ${hookErr?.message ?? hookErr}\n`);
     }
+    // B3：无头模式退出也结束会话持久化（幂等）
+    this.finalizeSessionStore();
     // 清理 crash marker（正常退出不残留）
     try { CrashMarker.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
     try { PidManager.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
@@ -1297,6 +1363,8 @@ export class App {
         `[runHeadlessSDK] SessionEnd hook 失败: ${hookErr?.message ?? hookErr}\n`,
       );
     }
+    // B3：stream-json 无头模式退出也结束会话持久化（幂等）
+    this.finalizeSessionStore();
     // 清理 crash marker（正常退出不残留）
     try { CrashMarker.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
     try { PidManager.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
@@ -1666,6 +1734,17 @@ export class App {
             }
           }
         }
+      } catch (err: any) {
+        // A3：区分 abort 与真异常。用户按 ESC 触发的 abort 是"主动结束"而非故障，
+        // 标记 completedNormally=true 避免 finally 误报"⚠️ 任务异常中断"。
+        // 不重新 throw——交给 onUserInput 的 catch 显示"已取消当前响应"，让 TUI 继续等待下一轮输入。
+        if (isAbortError(err)) {
+          completedNormally = true;
+          log.info("TUI", "用户中断当前响应");
+        } else {
+          log.error("TUI", `agent loop 异常: ${err?.message}`, { stack: err?.stack });
+          throw err;
+        }
       } finally {
         // 清理 session 超时定时器
         clearTimeout(sessionTimer);
@@ -1831,6 +1910,8 @@ export class App {
               } catch (err: any) {
                 process.stderr.write(`[quit] SessionEnd hook 失败: ${err?.message ?? err}\n`);
               }
+              // B3：/quit 退出也结束会话持久化（幂等）
+              this.finalizeSessionStore();
               // 清理 crash marker（正常退出不残留）
               try { CrashMarker.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
               try { PidManager.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
@@ -1899,6 +1980,9 @@ export class App {
 
     await app.waitUntilExit();
     await this.hookSystem.fireSessionEndEvent("exit", this.buildSessionEndStats());
+    // B3：正常退出——唯一的"主路径" endSession。写 session_end 并把 currentFile 置 null，
+    // 后续若 emergency 再调一次会安全 no-op（幂等）。
+    this.finalizeSessionStore();
     // 清理 crash marker（正常退出不残留）
     try { CrashMarker.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
     try { PidManager.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }

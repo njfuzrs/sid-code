@@ -44,6 +44,8 @@ export interface QueryEngineDeps {
   quotaManager?: QuotaManager;
   tokenMeter?: TokenMeter;
   budgetTracker?: BudgetTracker;
+  /** B2：会话持久化写入端（增量写入 user/assistant/tool_result 消息）。可选——未注入则不持久化 */
+  sessionStore?: import("../session/store.ts").SessionStore;
   /** 执行工具调用（含权限检查）。返回 results + 可选 followup（ADR-019） */
   executeTools: (content: ContentBlock[]) => Promise<{ results: ContentBlock[]; followup?: ContentBlock[] }>;
   /** 处理流式响应。onThinking 对标 Claude Code 的独立思考流通道 */
@@ -104,7 +106,7 @@ export class QueryEngine {
     options?: { thinking?: { enabled: boolean; budgetTokens: number } },
   ): AsyncGenerator<QueryEngineEvent> {
     const log = getLogger();
-    const { config, ctxMgr, toolRegistry, sessionState, hookSystem } = this.deps;
+    const { config, ctxMgr, toolRegistry, sessionState, hookSystem, sessionStore } = this.deps;
 
     log.info("ENGINE", `用户输入: ${userInput.slice(0, 200)}${userInput.length > 200 ? "..." : ""}`);
 
@@ -141,10 +143,18 @@ export class QueryEngine {
     const _thinking = options?.thinking ?? thinkingConfig ?? this.deps.thinkingMgr.getThinkingConfig(cleanedInput);
 
     // ─── 添加用户消息 ───
-    ctxMgr.addMessage({
-      role: "user",
-      content: [{ type: "text", text: cleanedInput }],
-    });
+    // B2：API 调用前先持久化 user 消息（对标 claude-code：进程中途被 kill 也可 resume）。
+    // 持久化失败绝不能阻断主流程，故 try/catch 吞掉异常。
+    const userMessage = {
+      role: "user" as const,
+      content: [{ type: "text" as const, text: cleanedInput }],
+    };
+    try {
+      sessionStore?.appendMessage(userMessage);
+    } catch (e) {
+      log.warn("ENGINE", `用户消息持久化失败（不阻断）: ${(e as Error)?.message}`);
+    }
+    ctxMgr.addMessage(userMessage);
     yield { kind: "user_message_added" };
 
     // ─── 构建 queryLoop 依赖 ───
@@ -176,6 +186,7 @@ export class QueryEngine {
       resetFallbackFlag: () => this.deps.fallback.reset(),
       getPlanModeReminder: this.deps.getPlanModeReminder,
       getTodoState: this.deps.getTodoState,
+      sessionStore: this.deps.sessionStore,
     };
 
     // ─── 启动 queryLoop ───
@@ -194,6 +205,20 @@ export class QueryEngine {
 
     // ─── 消费 queryLoop 的 yield，桥接到外部 ───
     for await (const event of loop) {
+      // B2：持久化 assistant 消息。queryLoop 每次 ctxMgr.addMessage(assistant) 后都紧跟
+      // yield assistant_message，故此处写入与内存历史一一对应（含空参数 sanitized、降级前等
+      // 已入历史的中间态——持久化与内存保持一致，恢复时状态对齐）。tool_result 由 queryLoop
+      // 内部经注入的 sessionStore 直接写入（方案 a），不在此处理。
+      // ⚠️ 修正 bug①：endSession 绝不放在此循环/finally——它每轮用户输入调用一次，
+      // 会写 session_end 并置 currentFile=null，导致第 2 轮起所有消息静默丢失。
+      // endSession 只在 App 退出时调用一次（B3）。
+      if (event.kind === "assistant_message") {
+        try {
+          sessionStore?.appendMessage(event.message);
+        } catch (e) {
+          log.warn("ENGINE", `assistant 消息持久化失败（不阻断）: ${(e as Error)?.message}`);
+        }
+      }
       yield event;
       if (event.kind === "done") {
         return;

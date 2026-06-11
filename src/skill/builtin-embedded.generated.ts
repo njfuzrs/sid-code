@@ -2,8 +2,8 @@
  * 自动生成文件 —— 请勿手动编辑。
  *
  * 由 scripts/embed-builtin-skills.ts 在 make build 时生成。
- * 内容是 src/skill/builtin/<name>/SKILL.md 的原文，用于编译二进制（bun build --compile）
- * 运行时回退加载 builtin Skill（详见生成脚本注释）。
+ * 内容是 src/skill/builtin/<name>/SKILL.md 的原文，被 import 后会随 bun build --compile
+ * 打进二进制。运行时由 src/skill/ensure-builtin.ts 释放到 ~/.sid-code/builtin-skills/。
  */
 
 export interface EmbeddedBuiltinSkill {
@@ -12,6 +12,9 @@ export interface EmbeddedBuiltinSkill {
   /** SKILL.md 原文（含 frontmatter） */
   rawContent: string;
 }
+
+/** 嵌入内容哈希（sha256 前 16 位）：释放模块据此判断磁盘内容是否过期 */
+export const EMBEDDED_BUILTIN_SKILLS_HASH = "b409965e61ce3a30";
 
 export const EMBEDDED_BUILTIN_SKILLS: EmbeddedBuiltinSkill[] = [
   {

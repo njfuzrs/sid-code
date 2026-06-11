@@ -3,12 +3,11 @@
  * 统一管理 Skill 生命周期：发现、加载、激活、禁用
  */
 
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import { getLogger } from "../debug/logger.ts";
 import type { SkillDefinition } from "./types.ts";
 import { SkillLoader } from "./loader.ts";
 import type { ScanOptions } from "../extension/types.ts";
+import { ensureBuiltinSkillsReleased } from "./ensure-builtin.ts";
 
 export class SkillManager {
   private skills: SkillDefinition[] = [];
@@ -44,27 +43,22 @@ export class SkillManager {
   /**
    * 发现内置 Skill
    *
-   * 修复 ADR-025:旧实现把 builtinDir 当 projectDir 传给 loader.loadAll,导致
-   * ExtensionLoader 去扫 `{builtinDir}/.sid-code/skills/` 而不是 builtinDir 直接子目录,
-   * builtin Skill (skill-creator / code-review 等) 全部不被加载。
+   * 实现思路（2026-06 重构）：编译二进制运行时 import.meta.url=/$bunfs/root，
+   * 无法用相对路径定位 src/skill/builtin/。改为：先把编译期嵌入的 builtin Skill
+   * 释放到磁盘 ~/.sid-code/builtin-skills/（ensureBuiltinSkillsReleased），再以该目录作为
+   * builtinDir 走与 user/project 完全一致的磁盘扫描链。这样三类 skill 同源同链，
+   * 且二进制自包含、可拷贝到任意机器运行，不依赖 repo 路径。
    *
-   * 新实现:通过 scanOptions.builtinDir 让 ExtensionLoader 直接扫 builtinDir/<name>/SKILL.md。
+   * 历史（ADR-025）：旧实现把 builtinDir 当 projectDir 传给 loader.loadAll，
+   * 导致扫错目录、builtin skill 全部不被加载——已通过 scanOptions.builtinDir 修正。
    */
   private async discoverBuiltin(): Promise<void> {
     try {
-      const __dirname = dirname(fileURLToPath(import.meta.url));
-      const builtinDir = join(__dirname, "builtin");
+      // 把嵌入的 builtin Skill 释放到磁盘，拿到释放目录
+      const builtinDir = await ensureBuiltinSkillsReleased();
 
-      // 不传 projectDir(避免与 user/project 来源混淆),通过 builtinDir 选项让 ExtensionLoader 走 builtin 来源分支
-      let builtinSkills = await this.loader.loadAll(undefined, { builtinDir });
-
-      // 编译二进制回退：bun build --compile 不会嵌入 fs.readFile 读盘的 SKILL.md，
-      // 运行时 import.meta.url=/$bunfs/root → builtinDir 在真实磁盘不存在 → 磁盘扫描返回空。
-      // 此时回退用编译期嵌入清单（builtin-embedded.generated.ts，会被 --compile 打进二进制）解析。
-      // 源码运行（bun run）磁盘扫描已命中,不会进入此分支。
-      if (builtinSkills.length === 0) {
-        builtinSkills = this.loader.loadFromEmbedded();
-      }
+      // 通过 builtinDir 选项让 ExtensionLoader 直接扫 builtinDir/<name>/SKILL.md（builtin 来源分支）
+      const builtinSkills = await this.loader.loadAll(undefined, { builtinDir });
 
       for (const skill of builtinSkills) {
         skill.isBuiltin = true;
@@ -72,8 +66,11 @@ export class SkillManager {
 
       this.addSkillsWithPrecedence(builtinSkills);
     } catch (error) {
-      // 内置目录不存在是正常的（尚未实现内置 Skill）
-      getLogger().debug("SKILL", "未找到内置 Skill 目录");
+      // 释放/加载失败不阻断启动：降级为"无 builtin skill"
+      getLogger().debug(
+        "SKILL",
+        `加载内置 Skill 失败（降级）: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
 

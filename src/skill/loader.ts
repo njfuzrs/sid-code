@@ -5,11 +5,9 @@
 
 import { dirname } from "node:path";
 import { ExtensionLoader } from "../extension/loader.ts";
-import { parseFrontmatter } from "../extension/frontmatter.ts";
 import type { ScanOptions, ParsedExtensionFile } from "../extension/types.ts";
 import { getLogger } from "../debug/logger.ts";
 import type { SkillDefinition } from "./types.ts";
-import { EMBEDDED_BUILTIN_SKILLS } from "./builtin-embedded.generated.ts";
 
 /** 解析字符串列表字段（支持数组 / 逗号或空白分隔字符串） */
 function parseStringList(raw: unknown): string[] | undefined {
@@ -69,47 +67,6 @@ export class SkillLoader {
 
     if (skills.length > 0) {
       log.info("SKILL", `加载了 ${skills.length} 个 Skill`, {
-        names: skills.map(s => s.name),
-      });
-    }
-
-    return skills;
-  }
-
-  /**
-   * 从编译期嵌入的清单加载 builtin Skill（编译二进制回退路径）。
-   *
-   * 背景：`bun build --compile` 不会把 fs.readFile 读盘的 SKILL.md 嵌入二进制，
-   * 编译二进制运行时磁盘上没有 builtin 目录 → 磁盘扫描返回空。此方法用
-   * builtin-embedded.generated.ts（编译期由 scripts/embed-builtin-skills.ts 生成、
-   * 会被 --compile 打进二进制的真实 TS 模块）解析出 builtin Skill 定义。
-   *
-   * 源码运行（bun run）时磁盘扫描已能命中，调用方应优先用磁盘结果，仅在磁盘为空时回退到此。
-   */
-  loadFromEmbedded(): SkillDefinition[] {
-    const log = getLogger();
-    const skills: SkillDefinition[] = [];
-
-    for (const entry of EMBEDDED_BUILTIN_SKILLS) {
-      if (skills.length >= MAX_SKILLS) break;
-      const { frontmatter, body } = parseFrontmatter(entry.rawContent);
-      // 嵌入场景没有真实磁盘路径：用标识性虚拟路径（仅用于日志/调试，
-      // bug-fix 等 builtin skill 不依赖 ${SKILL_DIR} 资源目录）。
-      const virtualPath = `<embedded>/builtin/${entry.name}/SKILL.md`;
-      const file: ParsedExtensionFile = {
-        name: entry.name,
-        filePath: virtualPath,
-        source: "builtin",
-        rawContent: entry.rawContent,
-        frontmatter,
-        body,
-      };
-      const skill = this.buildSkillDefinition(file);
-      if (skill) skills.push(skill);
-    }
-
-    if (skills.length > 0) {
-      log.info("SKILL", `从嵌入清单加载了 ${skills.length} 个 builtin Skill`, {
         names: skills.map(s => s.name),
       });
     }

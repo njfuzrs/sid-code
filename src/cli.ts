@@ -19,6 +19,7 @@ import { initLogger, getLogger, LogLevel, getPerfTimer } from "./debug/index.ts"
 import { printHelp } from "./help.ts";
 import { runMigrations } from "./migrations/runner.ts";
 import { getVersion } from "./version.ts";
+import { isAbortError } from "./llm/errors.ts";
 
 profileCheckpoint("full_cli_imports_loaded");
 
@@ -320,9 +321,19 @@ function registerGlobalErrorHandlers(): void {
       const { getLogger } = require("./debug/logger.ts");
       getLogger().error("GLOBAL", `unhandledRejection: ${msg}`, { stack });
     } catch { /* logger 可能未初始化 */ }
+
+    // A5：abort 类拒绝 = 用户按 ESC / 超时主动中断，是可观测事件而非故障。
+    // 对标 claude-code：abort 的 unhandledRejection 仅记录，不触发 emergencySessionEnd
+    // （避免把会话错误标记为 error 并吃掉真正的 SessionEnd），更不退出进程。
+    // 配合 anthropic.ts 已把 signal 下传 SDK（A1），abort 几乎不会再产生孤儿 Promise；
+    // 此处为双保险——即使偶发，进程也保持存活。
+    if (isAbortError(reason)) {
+      return;
+    }
+
     process.stderr.write(`[sid-code] unhandledRejection: ${msg}\n`);
     if (stack) process.stderr.write(`${stack}\n`);
-    // 尝试紧急 SessionEnd
+    // 非 abort 的未处理拒绝：保留原有兜底（紧急 SessionEnd + 退出）
     const err = reason instanceof Error ? reason : new Error(String(reason));
     try { lastAppRef?.deref()?.emergencySessionEnd(err); } catch { /* ignore */ }
     process.exit(1);
@@ -626,6 +637,7 @@ export async function main(): Promise<void> {
     // 加载 Skills（通过 SkillManager 统一管理）
     const { SkillManager } = await import("./skill/manager.ts");
     const { SkillTool } = await import("./skill/tool.ts");
+    const { SkillCommand } = await import("./command/skill-command.ts");
     const skillManager = new SkillManager();
     await skillManager.discover(process.cwd(), scanOptions);
 
@@ -635,8 +647,14 @@ export async function main(): Promise<void> {
 
     const skills = skillManager.getSkills();
     for (const skill of skills) {
+      // 模型调用路径：注册为工具（除非显式禁止模型调用）
       if (!skill.disableModelInvocation) {
         toolRegistry.register(new SkillTool(skill, providerRegistry, toolRegistry));
+      }
+      // 用户调用路径：注册为斜杠命令 /skill-name（除非显式禁止用户调用）
+      // 此前缺失此步骤,导致 /bug-fix 等 skill 命令报"未知命令"。
+      if (skill.userInvocable !== false) {
+        commandRegistry.register(new SkillCommand(skill), "user");
       }
     }
 

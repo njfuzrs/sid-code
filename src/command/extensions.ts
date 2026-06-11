@@ -41,14 +41,19 @@ class SkillsListCommand implements Command {
   async execute(args: string, _ctx: AppContext): Promise<CommandResult> {
     const parser = new ArgParser(args);
     const showAll = parser.flag("all");
+    void showAll;
 
-    const loader = new ExtensionLoader();
-    const files = await loader.scan("skills", process.cwd());
+    // 走 SkillManager（含 builtin 释放+加载），与运行时实际加载链一致，
+    // 否则会漏掉 builtin skill（旧实现自建 ExtensionLoader.scan 只扫 user/project）。
+    const { SkillManager } = await import("../skill/manager.ts");
+    const manager = new SkillManager();
+    await manager.discover(process.cwd());
+    const skills = manager.getAllSkills();
 
-    if (files.length === 0) {
+    if (skills.length === 0) {
       return {
         kind: "message",
-        message: "未找到 skills\n在 .sid-code/skills/ 或 ~/.sid-code/skills/ 目录添加 .md 文件",
+        message: "未找到 skills\n在 .sid-code/skills/ 或 ~/.sid-code/skills/ 目录添加 .md 文件，或使用内置 skills",
       };
     }
 
@@ -56,26 +61,23 @@ class SkillsListCommand implements Command {
     const disabled = this.getDisabledSkills();
 
     const lines = ["Skills 列表:"];
-    const userSkills = files.filter(f => f.source === "user");
-    const projectSkills = files.filter(f => f.source === "project");
+    const builtinSkills = skills.filter(s => s.loadedFrom === "builtin" || s.isBuiltin);
+    const userSkills = skills.filter(s => s.loadedFrom !== "builtin" && !s.isBuiltin && s.source === "user");
+    const projectSkills = skills.filter(s => s.loadedFrom !== "builtin" && !s.isBuiltin && s.source === "project");
 
-    if (userSkills.length > 0) {
-      lines.push("\n用户级 (~/.sid-code/skills/):");
-      for (const skill of userSkills) {
+    const renderGroup = (title: string, group: typeof skills) => {
+      if (group.length === 0) return;
+      lines.push(`\n${title}`);
+      for (const skill of group) {
         const status = disabled.includes(skill.name) ? "○ 已禁用" : "✓ 已启用";
-        const desc = skill.frontmatter.description || "";
+        const desc = skill.description || "";
         lines.push(`  ${status} ${skill.name}${desc ? ` - ${desc}` : ""}`);
       }
-    }
+    };
 
-    if (projectSkills.length > 0) {
-      lines.push("\n项目级 (.sid-code/skills/):");
-      for (const skill of projectSkills) {
-        const status = disabled.includes(skill.name) ? "○ 已禁用" : "✓ 已启用";
-        const desc = skill.frontmatter.description || "";
-        lines.push(`  ${status} ${skill.name}${desc ? ` - ${desc}` : ""}`);
-      }
-    }
+    renderGroup("内置 (builtin):", builtinSkills);
+    renderGroup("用户级 (~/.sid-code/skills/):", userSkills);
+    renderGroup("项目级 (.sid-code/skills/):", projectSkills);
 
     lines.push("\n提示:");
     lines.push("  /skills enable <name>  - 启用 skill");

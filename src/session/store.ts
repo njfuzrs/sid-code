@@ -80,6 +80,25 @@ export class SessionStore {
     });
   }
 
+  /**
+   * 续写已有会话（B6：resume 场景）。
+   *
+   * 与 startSession 的区别：把 currentFile 指向**已存在**的旧 jsonl，且**不写 session_start**。
+   * 这样 `-c` / `--resume` 恢复的会话，后续新消息会续写进原文件，而非另开新文件导致历史碎片化。
+   * 若旧文件不存在（极端情况，如手动删了 jsonl），回退为新建会话以免丢失后续写入。
+   */
+  resumeSession(sessionId: string, model: string, provider: string, cwd: string): void {
+    const jsonlPath = join(this.sessionDir, `${sessionId}.jsonl`);
+    if (existsSync(jsonlPath)) {
+      this.currentFile = jsonlPath;
+      getLogger().info("SESSION", `会话续写已就绪（resume）: ${sessionId}`);
+    } else {
+      // 旧 jsonl 不存在（可能是从旧 JSON 格式恢复的会话）→ 新建 jsonl 续写
+      getLogger().info("SESSION", `resume 会话无 jsonl，新建续写文件: ${sessionId}`);
+      this.startSession(sessionId, model, provider, cwd);
+    }
+  }
+
   /** 追加消息（增量写入） */
   appendMessage(message: Message): void {
     if (!this.currentFile) return;
@@ -288,11 +307,11 @@ ${summary}
             updatedAt = record.timestamp;
             break;
           case "context_compact":
-            messages.length = 0;
-            messages.push({
-              role: "user",
-              content: [{ type: "text", text: `[上下文摘要] ${record.summary}` }],
-            });
+            // B2 方案A：compact 记录退化为纯标记，**不再清空 messages**。
+            // 旧实现 `messages.length = 0` + 只塞一条 `[上下文摘要]` 占位，会导致 resume 时
+            // 历史被清空（bug②）。压缩效果本就已反映在后续写入的真实消息流里——
+            // sid-code 的压缩多为截断/管道压缩而非 LLM 摘要，未必有可用摘要文本，
+            // 保留真实消息流是最忠实、无损的恢复方式。
             updatedAt = record.timestamp;
             break;
           case "session_end":

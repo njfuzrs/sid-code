@@ -415,6 +415,39 @@ export async function* queryLoop(
     }
     const apiDuration = perfHandle.end({ model: config.model });
 
+    // ─── A2：流式响应后检测 abort，优雅收尾 ───
+    // 对标 claude-code：用户在流式输出期间按 ESC，此处已拿到 response 但尚未做任何后续处理。
+    // 若 response 含 tool_use，先把 assistant 的 tool_use 入历史、再补 cancel result，保持协议配对；
+    // 然后 yield done + return 优雅结束（绝不 return 数据——消费者 for await 收不到 generator 返回值）。
+    {
+      const abortSignal = deps.getAbortSignal();
+      if (abortSignal?.aborted) {
+        const pendingToolUses = response.content.filter(
+          (b): b is Extract<typeof b, { type: "tool_use" }> => b.type === "tool_use",
+        );
+        if (pendingToolUses.length > 0) {
+          const cancelResults = pendingToolUses.map(b => ({
+            type: "tool_result" as const,
+            tool_use_id: b.id,
+            content: "用户取消了此工具调用",
+            is_error: true,
+          }));
+          ctxMgr.addMessage({ role: "assistant", content: response.content });
+          ctxMgr.addMessage({ role: "user", content: cancelResults });
+          // B2：此分支直接 yield done，不会再 yield assistant_message，故 engine 不会持久化该 assistant。
+          // 在此一并落盘 assistant + cancel，保持 jsonl 与内存历史一致、tool_use/result 配对完整。
+          try {
+            deps.sessionStore?.appendMessage({ role: "assistant", content: response.content });
+            deps.sessionStore?.appendMessage({ role: "user", content: cancelResults });
+          } catch { /* 持久化失败不阻断 */ }
+        }
+        log.info("QUERY_LOOP", "流式响应后检测到 abort，优雅收尾（reason=aborted_streaming）");
+        yield { kind: "system", level: "info", text: "请求已被取消" };
+        yield { kind: "done", turns: state.turnCount };
+        return;
+      }
+    }
+
     // ─── 更新用量统计 ───
     sessionState.updateUsage(config.model, response.usage, apiDuration);
     const thisCost = sessionState.calculateCost(config.model, response.usage);
@@ -806,7 +839,9 @@ export async function* queryLoop(
       } catch (err: any) {
         toolPerfHandle.end();
         if (isAbortError(err)) {
-          // 用户取消：补上取消的 tool_result
+          // A2：用户取消工具执行 → 补上取消的 tool_result（保持 tool_use/tool_result 协议配对），
+          // 然后优雅收尾（yield done + return），而非 throw err 让异常穿透。
+          // 对标 claude-code：abort 是正常的"用户中断"而非错误路径。
           const cancelResults = toolBlocks
             .filter((b): b is typeof b & { type: "tool_use" } => b.type === "tool_use")
             .map(b => ({
@@ -816,16 +851,23 @@ export async function* queryLoop(
               is_error: true,
             }));
           ctxMgr.addMessage({ role: "user", content: cancelResults });
-          log.info("QUERY_LOOP", "工具执行被用户取消，已补充取消的 tool_result");
+          // B2：assistant（含 tool_use）已在上方 yield assistant_message 时由 engine 持久化，此处仅补 cancel result，保持配对。
+          try { deps.sessionStore?.appendMessage({ role: "user", content: cancelResults }); } catch { /* 持久化失败不阻断 */ }
+          log.info("QUERY_LOOP", "工具执行被用户取消，已补 cancel result，优雅收尾（reason=aborted_tools）");
+          yield { kind: "done", turns: state.turnCount };
+          return;
         }
         throw err;
       }
       const toolBatchElapsed = toolPerfHandle.end();
       ctxMgr.addMessage({ role: "user", content: toolResults });
+      // B2 方案 a：tool_result 与入历史同步持久化（appendMessage 按 role=user 自动分派为 tool_result 记录）。
+      try { deps.sessionStore?.appendMessage({ role: "user", content: toolResults }); } catch { /* 持久化失败不阻断 */ }
 
       // ADR-019：plan-approved 等"工具完成后再追加"的 user 消息，必须在 toolResults 之后 enqueue。
       if (toolFollowup && toolFollowup.length > 0) {
         ctxMgr.addMessage({ role: "user", content: toolFollowup });
+        try { deps.sessionStore?.appendMessage({ role: "user", content: toolFollowup }); } catch { /* 持久化失败不阻断 */ }
       }
 
       // yield 工具结束事件
