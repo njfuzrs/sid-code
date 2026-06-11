@@ -194,13 +194,12 @@ async function handleBrowseSessions(config: Config): Promise<void> {
   const { render } = await import("ink");
   const { SessionBrowser } = await import("./session/browser.tsx");
   const { SessionStore } = await import("./session/store.ts");
-  const { homedir } = await import("os");
+  const { sidPaths } = await import("./config/paths.ts");
   const { join } = await import("path");
   const { unlinkSync, existsSync } = await import("fs");
 
   const store = new SessionStore();
-  const home = process.env.HOME || homedir();
-  const sessionDir = join(home, ".sid-code", "sessions");
+  const sessionDir = sidPaths.sessions();
 
   let selectedSession: any = null;
 
@@ -276,10 +275,9 @@ async function handleUploadTraces(config: Config): Promise<void> {
   }
 
   const { UploadManager } = await import("./trace/uploader.ts");
-  const { homedir } = await import("os");
-  const { join } = await import("path");
+  const { sidPaths } = await import("./config/paths.ts");
 
-  const outputDir = config.trace?.outputDir ?? join(homedir(), ".sid-code", "trajectories");
+  const outputDir = config.trace?.outputDir ?? sidPaths.trajectories();
   const mgr = new UploadManager({
     baseUrl: traceUpload.url,
     token: traceUpload.token,

@@ -6,13 +6,14 @@
 
 import { existsSync } from "fs";
 import { readFile, writeFile, mkdir } from "fs/promises";
-import { join } from "path";
-import { homedir } from "os";
 import { createHash } from "crypto";
 import { getLogger } from "../debug/logger.ts";
+import { sidPaths } from "../config/paths.ts";
 
-/** 信任存储文件路径 */
-const TRUST_FILE = join(homedir(), ".sid-code", "trusted-extensions.json");
+/** 信任存储文件路径：~/.sid-code/state/trusted-extensions.json */
+function trustFilePath(): string {
+  return sidPaths.trustedExtensions();
+}
 
 /** 信任存储格式 */
 interface TrustStore {
@@ -106,14 +107,14 @@ export class TrustManager {
 
     const log = getLogger();
 
-    if (!existsSync(TRUST_FILE)) {
+    if (!existsSync(trustFilePath())) {
       this.store = {};
       this.loaded = true;
       return;
     }
 
     try {
-      const content = await readFile(TRUST_FILE, "utf-8");
+      const content = await readFile(trustFilePath(), "utf-8");
       this.store = JSON.parse(content);
       this.loaded = true;
     } catch (err: any) {
@@ -128,12 +129,12 @@ export class TrustManager {
     const log = getLogger();
 
     try {
-      const dir = join(homedir(), ".sid-code");
+      const dir = sidPaths.state();
       if (!existsSync(dir)) {
         await mkdir(dir, { recursive: true });
       }
 
-      await writeFile(TRUST_FILE, JSON.stringify(this.store, null, 2), "utf-8");
+      await writeFile(trustFilePath(), JSON.stringify(this.store, null, 2), "utf-8");
     } catch (err: any) {
       log.error("TRUST", `保存信任存储失败: ${err.message}`);
     }

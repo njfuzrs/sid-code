@@ -43,8 +43,9 @@ if (mode !== "activate" && mode !== "delegate") {
   process.exit(1);
 }
 
-// 确定 Skill 目录
-const skillsDir = join(homedir(), ".sid-code", "skills");
+// 确定 Skill 目录（尊重 SID_CONFIG_DIR 覆盖，与主程序配置根一致）
+const sidHome = process.env.SID_CONFIG_DIR?.trim() || join(homedir(), ".sid-code");
+const skillsDir = join(sidHome, "skills");
 if (!existsSync(skillsDir)) {
   mkdirSync(skillsDir, { recursive: true });
 }

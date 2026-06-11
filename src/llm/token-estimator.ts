@@ -16,13 +16,18 @@ const MODEL_CONTEXT_LIMITS: Record<string, number> = {
   "gpt-4o-mini": 128000,
   "o1": 200000,
   "o3-mini": 200000,
+  // DeepSeek（doc 实证 1M 上下文，见 api-reference/deepseek-api.md「模型细节」）
+  "deepseek-v4-pro": 1_000_000,
+  "deepseek-v4-flash": 1_000_000,
 };
 
 /** 超过此长度使用快速近似（性能优化） */
 const MAX_CHARS_FOR_FULL_HEURISTIC = 100_000;
 
-const ASCII_TOKENS_PER_CHAR = 0.25;
-const NON_ASCII_TOKENS_PER_CHAR = 1.3;
+/** ASCII 字符：英文散文实测 0.17、代码/JSON 偏高，取 0.20 折中 */
+const ASCII_TOKENS_PER_CHAR = 0.20;
+/** 非 ASCII 字符（中文等）：DeepSeek 官方 tokenizer 实测中文 ≈0.52，取 0.55（旧值 1.3 高估 ~2.5 倍） */
+const NON_ASCII_TOKENS_PER_CHAR = 0.55;
 
 export class TokenEstimator {
   /** 估算文本的 token 数 */

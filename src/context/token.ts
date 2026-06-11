@@ -5,10 +5,11 @@
 
 import { memoizeWithLRU } from "../utils/memoize-lru.ts";
 
-/** ASCII 字符: ~4 字符/token */
-const ASCII_TOKENS_PER_CHAR = 0.25;
-/** 非 ASCII 字符（中文/日文/韩文等）: ~1.3 token/字符 */
-const NON_ASCII_TOKENS_PER_CHAR = 1.3;
+/** ASCII 字符：英文散文实测 0.17、代码/JSON 偏高，取 0.20 折中 */
+const ASCII_TOKENS_PER_CHAR = 0.20;
+/** 非 ASCII 字符（中文/日文/韩文等）：DeepSeek 官方 tokenizer 实测中文 ≈0.52 tok/字符，
+ *  留少量余量取 0.55（旧值 1.3 是错的，会把中文高估 ~2.5 倍并触发过早压缩） */
+const NON_ASCII_TOKENS_PER_CHAR = 0.55;
 /** 超过此长度使用快速近似（性能优化） */
 const MAX_CHARS_FOR_FULL_HEURISTIC = 100_000;
 /** 快速近似的混合语言平均比率 */

@@ -9,11 +9,11 @@
  * - 存储路径：~/.sid-code/checkpoints/<session-id>/
  */
 
-import { homedir } from "os";
 import { join } from "path";
 import { existsSync, mkdirSync, readdirSync, statSync, rmSync, unlinkSync } from "fs";
 import { computeDiff, type DiffResult } from "./diff.ts";
 import { getLogger } from "../debug/logger.ts";
+import { sidPaths } from "../config/paths.ts";
 import type { CheckpointConfig } from "../config/config.ts";
 
 /** 快照组：一次工具调用产生的所有文件变更 */
@@ -124,7 +124,7 @@ export class CheckpointManager {
 
   constructor(sessionId: string, config?: CheckpointConfig) {
     this.sessionId = sessionId;
-    this.baseDir = join(homedir(), ".sid-code", "checkpoints", sessionId);
+    this.baseDir = sidPaths.checkpoints(sessionId);
     this.index = {
       sessionId,
       createdAt: Date.now(),
@@ -640,7 +640,7 @@ export class CheckpointManager {
   /** 清理过期的其他会话目录 */
   private cleanupOldSessions(): void {
     const log = getLogger();
-    const parentDir = join(homedir(), ".sid-code", "checkpoints");
+    const parentDir = sidPaths.checkpointsRoot();
 
     try {
       if (!existsSync(parentDir)) return;

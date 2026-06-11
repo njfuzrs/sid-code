@@ -6,11 +6,11 @@
  * S6-T07/T08 (ADR-028): 增加 fidelity 追踪 — plan 步骤解析 + actual tool call 对齐.
  */
 
-import { homedir } from "os";
-import { join, resolve } from "path";
+import { resolve } from "path";
 import { mkdirSync, existsSync } from "fs";
 import { createHash } from "crypto";
 import { generateWordSlug } from "./slug.ts";
+import { sidPaths } from "../config/paths.ts";
 
 /** Plan Mode 状态 */
 export type PlanModeState = "inactive" | "planning" | "awaiting_approval";
@@ -350,11 +350,11 @@ export class PlanModeManager {
     if (!this.planSlug) {
       this.planSlug = generateWordSlug();
     }
-    return join(homedir(), ".sid-code", "plans", `${this.planSlug}.md`);
+    return sidPaths.plan(this.planSlug);
   }
 
   private ensurePlanDir(): void {
-    const dir = join(homedir(), ".sid-code", "plans");
+    const dir = sidPaths.plans();
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
     }

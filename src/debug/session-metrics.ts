@@ -98,7 +98,10 @@ export class SessionMetricsCollector {
     llm.totalRequests++;
     if (isError) llm.totalErrors++;
     llm.totalLatencyMs += latencyMs;
-    llm.totalInputTokens += inputTokens;
+    // ⚠️ usage.inputTokens 是"本次 API 调用时的 prompt 总长度"（含全部历史），
+    // 累加会把系统提示词重复计数、历史消息 N² 过计数。input 取最后一次（已含全部历史），
+    // output/cost 累加。与 SessionState.updateUsage 的去重口径保持一致。
+    llm.totalInputTokens = inputTokens;
     llm.totalOutputTokens += outputTokens;
     llm.totalCostUSD += costUSD;
 
@@ -107,7 +110,7 @@ export class SessionMetricsCollector {
     }
     const m = llm.byModel[model];
     m.requests++;
-    m.inputTokens += inputTokens;
+    m.inputTokens = inputTokens;       // 同上：覆盖而非累加
     m.outputTokens += outputTokens;
     m.latencyMs += latencyMs;
     m.costUSD += costUSD;

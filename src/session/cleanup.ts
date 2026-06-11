@@ -4,12 +4,12 @@
  */
 
 import { join } from "path";
-import { homedir } from "os";
-import { existsSync, readdirSync, statSync, unlinkSync, rmSync } from "fs";
+import { existsSync, unlinkSync, rmSync } from "fs";
 import type { Config } from "../config/config.ts";
 import type { SessionFileEntry } from "./utils.ts";
 import { getAllSessionFiles } from "./utils.ts";
 import { getLogger } from "../debug/logger.ts";
+import { sidHomePath, sidPaths } from "../config/paths.ts";
 
 /** 会话保留配置 */
 export interface SessionRetentionSettings {
@@ -145,10 +145,9 @@ async function deleteSessionArtifacts(
   config: Config
 ): Promise<void> {
   const log = getLogger();
-  const home = process.env.HOME || homedir();
 
   // 删除会话文件
-  const sessionDir = join(home, ".sid-code", "sessions");
+  const sessionDir = sidPaths.sessions();
   const sessionPath = join(sessionDir, sessionFileName);
   if (existsSync(sessionPath)) {
     unlinkSync(sessionPath);
@@ -168,7 +167,7 @@ async function deleteSessionArtifacts(
   // 实际实现可能需要从会话数据中读取
   const projectHash = config.projectHash;
   if (projectHash) {
-    const tmpDir = join(home, ".sid-code", "tmp", projectHash);
+    const tmpDir = sidHomePath("tmp", projectHash);
 
     // 删除日志文件
     const logPath = join(tmpDir, "logs", `session-${sessionId}.jsonl`);
@@ -215,8 +214,7 @@ export async function cleanupExpiredSessions(
     };
   }
 
-  const home = process.env.HOME || homedir();
-  const sessionDir = join(home, ".sid-code", "sessions");
+  const sessionDir = sidPaths.sessions();
 
   if (!existsSync(sessionDir)) {
     log.debug("CLEANUP", "会话目录不存在");

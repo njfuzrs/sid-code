@@ -15,9 +15,9 @@
  * 此为 sid-code 独有创新。
  */
 
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import { sidPaths } from "../config/paths.ts";
 
 // ─── 类型定义 ───
 
@@ -46,13 +46,19 @@ export interface StaleHeartbeatSession {
 // ─── 路径常量 ───
 
 /** 基础路径：~/.sid-code/trajectories/ */
-const BASE_DIR = join(homedir(), ".sid-code", "trajectories");
+function baseDir(): string {
+  return sidPaths.trajectories();
+}
 
 /** PID 文件目录 */
-const PIDS_DIR = join(BASE_DIR, ".pids");
+function pidsDir(): string {
+  return join(baseDir(), ".pids");
+}
 
 /** Sessions 目录 */
-const SESSIONS_DIR = join(BASE_DIR, "sessions");
+function sessionsDir(): string {
+  return join(baseDir(), "sessions");
+}
 
 // ─── PID 文件管理 ───
 
@@ -64,8 +70,8 @@ const SESSIONS_DIR = join(BASE_DIR, "sessions");
  */
 export function write(sessionId: string): boolean {
   try {
-    if (!existsSync(PIDS_DIR)) {
-      mkdirSync(PIDS_DIR, { recursive: true });
+    if (!existsSync(pidsDir())) {
+      mkdirSync(pidsDir(), { recursive: true });
     }
 
     const entry: PidEntry = {
@@ -75,7 +81,7 @@ export function write(sessionId: string): boolean {
       process_title: process.title || process.argv0 || "unknown",
     };
 
-    const filePath = join(PIDS_DIR, `${process.pid}.json`);
+    const filePath = join(pidsDir(), `${process.pid}.json`);
     writeFileSync(filePath, JSON.stringify(entry, null, 2));
     return true;
   } catch {
@@ -94,15 +100,15 @@ export function write(sessionId: string): boolean {
  */
 export function findOrphanPids(): PidEntry[] {
   try {
-    if (!existsSync(PIDS_DIR)) return [];
+    if (!existsSync(pidsDir())) return [];
 
-    const files = readdirSync(PIDS_DIR, { withFileTypes: true });
+    const files = readdirSync(pidsDir(), { withFileTypes: true });
     const orphans: Array<{ entry: PidEntry; mtime: number }> = [];
 
     for (const f of files) {
       if (!f.isFile() || !f.name.endsWith(".json")) continue;
 
-      const filePath = join(PIDS_DIR, f.name);
+      const filePath = join(pidsDir(), f.name);
       try {
         const raw = readFileSync(filePath, "utf-8");
         const entry = JSON.parse(raw) as PidEntry;
@@ -146,14 +152,14 @@ export function findOrphanPids(): PidEntry[] {
  */
 export function cleanup(sessionId: string): void {
   try {
-    if (!existsSync(PIDS_DIR)) return;
+    if (!existsSync(pidsDir())) return;
 
-    const files = readdirSync(PIDS_DIR, { withFileTypes: true });
+    const files = readdirSync(pidsDir(), { withFileTypes: true });
 
     for (const f of files) {
       if (!f.isFile() || !f.name.endsWith(".json")) continue;
 
-      const filePath = join(PIDS_DIR, f.name);
+      const filePath = join(pidsDir(), f.name);
       try {
         const raw = readFileSync(filePath, "utf-8");
         const entry = JSON.parse(raw) as PidEntry;
@@ -183,16 +189,16 @@ export function cleanup(sessionId: string): void {
  */
 export function scanStaleHeartbeats(): StaleHeartbeatSession[] {
   try {
-    if (!existsSync(SESSIONS_DIR)) return [];
+    if (!existsSync(sessionsDir())) return [];
 
-    const dirs = readdirSync(SESSIONS_DIR, { withFileTypes: true });
+    const dirs = readdirSync(sessionsDir(), { withFileTypes: true });
     const stale: StaleHeartbeatSession[] = [];
     const now = Date.now();
 
     for (const d of dirs) {
       if (!d.isDirectory()) continue;
 
-      const sessionDir = join(SESSIONS_DIR, d.name);
+      const sessionDir = join(sessionsDir(), d.name);
       const crashPath = join(sessionDir, "crash.json");
       const heartbeatPath = join(sessionDir, "heartbeat.txt");
 
@@ -226,13 +232,13 @@ export function scanStaleHeartbeats(): StaleHeartbeatSession[] {
             // 如果不在孤儿列表中，可能进程还在运行
             if (!isProcessAlive) {
               // 再检查 .pids/ 目录中的文件是否匹配该 session
-              const pidsDir = PIDS_DIR;
-              if (existsSync(pidsDir)) {
-                const pidFiles = readdirSync(pidsDir, { withFileTypes: true });
+              const pidDir = pidsDir();
+              if (existsSync(pidDir)) {
+                const pidFiles = readdirSync(pidDir, { withFileTypes: true });
                 for (const pf of pidFiles) {
                   if (!pf.isFile() || !pf.name.endsWith(".json")) continue;
                   try {
-                    const entryRaw = readFileSync(join(pidsDir, pf.name), "utf-8");
+                    const entryRaw = readFileSync(join(pidDir, pf.name), "utf-8");
                     const entry = JSON.parse(entryRaw) as PidEntry;
                     if (entry.session_id === d.name) {
                       // 找到了对应的 PID 文件，检查进程是否存活

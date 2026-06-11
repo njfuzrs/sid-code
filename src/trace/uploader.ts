@@ -10,7 +10,6 @@
  * 实现 TraceUploaderInterface，可直接注入 TraceCollector。
  */
 
-import { homedir } from "node:os";
 import { join, basename } from "node:path";
 import {
   existsSync,
@@ -22,6 +21,7 @@ import {
 } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { getLogger } from "../debug/logger.ts";
+import { sidPaths } from "../config/paths.ts";
 import type { TraceUploaderInterface } from "./collector.ts";
 
 // ─── 接口定义 ───
@@ -100,10 +100,10 @@ export class UploadManager implements TraceUploaderInterface {
       compress: true,
       userId: "",
       deviceId: "",
-      outputDir: join(homedir(), ".sid-code", "trajectories"),
+      outputDir: sidPaths.trajectories(),
       ...options,
     };
-    this.retryQueuePath = join(homedir(), ".sid-code", ".upload_queue.jsonl");
+    this.retryQueuePath = sidPaths.uploadQueue();
   }
 
   // ─── 服务端心跳检测 ───
@@ -320,7 +320,7 @@ export class UploadManager implements TraceUploaderInterface {
         last_error: "",
         status: "pending",
       };
-      const dir = join(homedir(), ".sid-code");
+      const dir = sidPaths.trajectories();
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
       appendFileSync(this.retryQueuePath, JSON.stringify(entry) + "\n");
     } catch (err) {

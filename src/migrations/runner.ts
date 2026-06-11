@@ -10,8 +10,7 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
-import { join } from "path";
-import { homedir } from "os";
+import { sidPaths } from "../config/paths.ts";
 
 interface Migration {
   version: number;
@@ -31,9 +30,9 @@ const migrations: Migration[] = [
 
 const CURRENT_VERSION = migrations.length;
 
-/** 状态文件路径 */
+/** 状态文件路径：~/.sid-code/state/migrations.json */
 function getStateFilePath(): string {
-  return join(homedir(), ".sid-code", "state.json");
+  return sidPaths.migrationState();
 }
 
 /** 读取已执行的迁移版本号 */
@@ -51,7 +50,7 @@ function getStoredMigrationVersion(): number {
 /** 写入迁移版本号 */
 function setStoredMigrationVersion(version: number): void {
   const stateFile = getStateFilePath();
-  const dir = join(homedir(), ".sid-code");
+  const dir = sidPaths.state();
 
   // 确保目录存在
   if (!existsSync(dir)) {

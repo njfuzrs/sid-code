@@ -15,26 +15,26 @@ describe("TokenEstimator", () => {
       expect(estimator.estimateText("")).toBe(0);
     });
 
-    test("纯 ASCII 文本：约 0.25 token/char", () => {
+    test("纯 ASCII 文本：约 0.20 token/char", () => {
       const text = "Hello, this is a test message for token estimation.";
       const tokens = estimator.estimateText(text);
-      // 51 chars * 0.25 = 12.75 → ceil = 13
-      expect(tokens).toBe(13);
+      // 51 chars * 0.20 = 10.2 → ceil = 11
+      expect(tokens).toBe(11);
     });
 
-    test("纯中文文本：约 1.3 token/char", () => {
+    test("纯中文文本：约 0.55 token/char", () => {
       const text = "这是一个测试消息";
       const tokens = estimator.estimateText(text);
-      // 8 chars * 1.3 = 10.4 → ceil = 11
-      expect(tokens).toBe(11);
+      // 8 chars * 0.55 = 4.4 → ceil = 5（校准后中文系数 0.55，旧 1.3 高估 ~2.5 倍）
+      expect(tokens).toBe(5);
     });
 
     test("中英文混合文本", () => {
       const text = "Hello 你好 World 世界";
       const tokens = estimator.estimateText(text);
-      // ASCII: "Hello  World " = 13 chars * 0.25 = 3.25
-      // CJK: "你好世界" = 4 chars * 1.3 = 5.2
-      // total = 8.45 → ceil = 9
+      // ASCII: "Hello  World " = 13 chars * 0.20 = 2.6
+      // CJK: "你好世界" = 4 chars * 0.55 = 2.2
+      // total = 4.8 → ceil = 5
       expect(tokens).toBeGreaterThan(0);
       expect(tokens).toBeLessThan(20);
     });
@@ -49,8 +49,8 @@ describe("TokenEstimator", () => {
     test("刚好在阈值内使用精确计算", () => {
       const text = "a".repeat(100_000);
       const tokens = estimator.estimateText(text);
-      // 100000 * 0.25 = 25000
-      expect(tokens).toBe(25000);
+      // 100000 * 0.20 ≈ 20000，浮点累加微漂移后 ceil → 20001
+      expect(tokens).toBe(20001);
     });
   });
 
@@ -64,8 +64,8 @@ describe("TokenEstimator", () => {
       const tokens = estimator.estimateMessages([
         { role: "user", content: [{ type: "text", text: "Hello" }] },
       ]);
-      // 4 (overhead) + ceil(5 * 0.25) = 4 + 2 = 6
-      expect(tokens).toBe(6);
+      // 4 (overhead) + ceil(5 * 0.20) = 4 + 1 = 5
+      expect(tokens).toBe(5);
     });
 
     test("包含 tool_use 块", () => {
@@ -212,8 +212,8 @@ describe("TokenEstimator", () => {
 
     test("留 5% 安全余量", () => {
       // 构造刚好在 95% 边界的请求
-      // gpt-4o: 128000 limit, 95% = 121600
-      const charCount = Math.floor(121600 / 0.25); // ~486400 ASCII chars ≈ 121600 tokens
+      // gpt-4o: 128000 limit, 95% = 121600；ASCII 系数 0.20 → 需 121600/0.20 字符
+      const charCount = Math.floor(121600 / 0.20); // ~608000 ASCII chars ≈ 121600 tokens
       const result = estimator.checkContextFit({
         model: "gpt-4o",
         messages: [
@@ -221,7 +221,7 @@ describe("TokenEstimator", () => {
         ],
         maxTokens: 100,
       });
-      // 应该 fits: false，因为 estimated ≈ 121604 + 100 > 121600
+      // 应该 fits: false，因为 estimated ≈ 121600 + 100 > 121600
       expect(result.fits).toBe(false);
     });
   });

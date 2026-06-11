@@ -14,9 +14,9 @@
  * 此为 sid-code 独有创新——将 crashpad dump 转换为结构化 crash.json。
  */
 
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { sidPaths } from "../config/paths.ts";
 
 // ─── 类型定义 ───
 
@@ -53,11 +53,13 @@ export interface CrashSnapshot {
 // ─── 路径常量 ───
 
 /** 基础路径：~/.sid-code/trajectories/ */
-const BASE_DIR = join(homedir(), ".sid-code", "trajectories");
+function baseDir(): string {
+  return sidPaths.trajectories();
+}
 
 /** 对应 session 目录下的 crash 文件 */
 function crashPath(sessionId: string): string {
-  return join(BASE_DIR, "sessions", sessionId, "crash.json");
+  return join(baseDir(), "sessions", sessionId, "crash.json");
 }
 
 /** 获取最后一层目录（提取 sessionId） */
@@ -72,7 +74,7 @@ function extractSessionId(pathStr: string): string {
  */
 function findCrashedSessions(): string[] {
   try {
-    const sessionsDir = join(BASE_DIR, "sessions");
+    const sessionsDir = join(baseDir(), "sessions");
     if (!existsSync(sessionsDir)) return [];
 
     const { readdirSync, statSync } = require("node:fs") as typeof import("node:fs");
@@ -106,7 +108,7 @@ function findCrashedSessions(): string[] {
  */
 export function write(snapshot: CrashSnapshot): boolean {
   try {
-    const dir = join(BASE_DIR, "sessions", snapshot.session_id);
+    const dir = join(baseDir(), "sessions", snapshot.session_id);
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
     }

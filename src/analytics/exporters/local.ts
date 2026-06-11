@@ -7,11 +7,10 @@
 
 import { appendFile, mkdir, stat, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { sidPaths } from "../../config/paths.ts";
 import type { SinkBackend } from "../sink.ts";
 import type { EventMetadata } from "../index.ts";
 
-const DEFAULT_DIR = join(homedir(), ".sid-code", "telemetry");
 const EVENTS_FILE = "events.jsonl";
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 const MAX_FILES = 5;
@@ -28,7 +27,7 @@ export class LocalEventBackend implements SinkBackend {
 
   constructor(
     private sessionId: string,
-    dir: string = DEFAULT_DIR,
+    dir: string = sidPaths.telemetry(),
   ) {
     this.dir = dir;
     this.filePath = join(dir, EVENTS_FILE);

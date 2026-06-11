@@ -10,6 +10,7 @@ import { homedir } from "os";
 import { existsSync, mkdirSync } from "fs";
 import { createHash } from "crypto";
 import { getLogger } from "../debug/logger.ts";
+import { sidPaths } from "../config/paths.ts";
 
 /** 信任检查项 */
 export interface TrustCheckItem {
@@ -42,7 +43,10 @@ interface TrustedProjectsFile {
   projects: TrustedProject[];
 }
 
-const TRUSTED_PROJECTS_PATH = join(homedir(), ".sid-code", "trusted-projects.json");
+/** 信任记录持久化路径：~/.sid-code/state/trusted-projects.json */
+function trustedProjectsPath(): string {
+  return sidPaths.trustedProjects();
+}
 
 /**
  * 工作区信任管理器
@@ -228,10 +232,10 @@ export class TrustManager {
   /** 加载持久化的信任记录 */
   private async loadTrustedProjects(): Promise<TrustedProjectsFile> {
     try {
-      if (!existsSync(TRUSTED_PROJECTS_PATH)) {
+      if (!existsSync(trustedProjectsPath())) {
         return { version: 1, projects: [] };
       }
-      const content = await Bun.file(TRUSTED_PROJECTS_PATH).text();
+      const content = await Bun.file(trustedProjectsPath()).text();
       return JSON.parse(content);
     } catch {
       return { version: 1, projects: [] };
@@ -240,10 +244,10 @@ export class TrustManager {
 
   /** 保存持久化的信任记录 */
   private async saveTrustedProjects(data: TrustedProjectsFile): Promise<void> {
-    const dir = join(homedir(), ".sid-code");
+    const dir = sidPaths.state();
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
     }
-    await Bun.write(TRUSTED_PROJECTS_PATH, JSON.stringify(data, null, 2) + "\n");
+    await Bun.write(trustedProjectsPath(), JSON.stringify(data, null, 2) + "\n");
   }
 }

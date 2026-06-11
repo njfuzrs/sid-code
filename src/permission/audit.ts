@@ -1,12 +1,11 @@
 /**
  * 权限审计日志
  * JSONL 格式，支持日志轮转（10MB 上限，保留 10 个历史文件）
- * 日志路径：~/.sid-code/permissions-audit.log
+ * 日志路径：~/.sid-code/logs/permissions-audit.log
  */
 
-import { join } from "path";
-import { homedir } from "os";
 import { appendFileSync, existsSync, statSync, renameSync, mkdirSync } from "fs";
+import { sidPaths } from "../config/paths.ts";
 import type { AuditEntry } from "./types.ts";
 
 export class AuditLogger {
@@ -15,11 +14,11 @@ export class AuditLogger {
   private maxFiles = 10;
 
   constructor(logPath?: string) {
-    const configDir = join(homedir(), ".sid-code");
-    if (!existsSync(configDir)) {
-      mkdirSync(configDir, { recursive: true });
+    const logsDir = sidPaths.logs();
+    if (!existsSync(logsDir)) {
+      mkdirSync(logsDir, { recursive: true });
     }
-    this.logPath = logPath || join(configDir, "permissions-audit.log");
+    this.logPath = logPath || sidPaths.log("permissions-audit.log");
   }
 
   /** 写入审计日志条目 */

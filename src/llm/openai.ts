@@ -437,6 +437,13 @@ export class OpenAIProvider implements Provider {
     const finishReason = choice?.finish_reason;
     const stopReason = OpenAIProvider.mapFinishReason(finishReason);
 
+    // DeepSeek 缓存命中数：顶层 prompt_cache_hit_tokens（DeepSeek 专有），
+    // 兜底读 OpenAI 标准的 prompt_tokens_details.cached_tokens。
+    // DeepSeek 无缓存写入计费概念，cacheCreationInputTokens 不映射（恒 0）。
+    const cacheHit = data.usage?.prompt_cache_hit_tokens
+      ?? data.usage?.prompt_tokens_details?.cached_tokens
+      ?? 0;
+
     return {
       role: "assistant",
       content,
@@ -444,6 +451,7 @@ export class OpenAIProvider implements Provider {
       usage: {
         inputTokens: data.usage?.prompt_tokens ?? 0,
         outputTokens: data.usage?.completion_tokens ?? 0,
+        ...(cacheHit > 0 ? { cacheReadInputTokens: cacheHit } : {}),
       },
     };
   }
@@ -563,6 +571,13 @@ export class OpenAIProvider implements Provider {
             if (chunk.usage) {
               usage.inputTokens = chunk.usage.prompt_tokens || 0;
               usage.outputTokens = chunk.usage.completion_tokens || 0;
+              // DeepSeek 缓存命中数：顶层 prompt_cache_hit_tokens（DeepSeek 专有），
+              // 兜底读 OpenAI 标准的 prompt_tokens_details.cached_tokens。
+              // 不映射 cacheCreationInputTokens——DeepSeek 无缓存写入计费概念（恒 0）。
+              const cacheHit = chunk.usage.prompt_cache_hit_tokens
+                ?? chunk.usage.prompt_tokens_details?.cached_tokens
+                ?? 0;
+              if (cacheHit > 0) usage.cacheReadInputTokens = cacheHit;
             }
 
             if (!delta && !finishReason) continue;

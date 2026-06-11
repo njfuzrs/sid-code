@@ -14,8 +14,8 @@
 
 import { writeFileSync, mkdirSync, existsSync, readdirSync, statSync, unlinkSync, rmdirSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import { getLogger } from "../debug/index.ts";
+import { sidPaths } from "../config/paths.ts";
 import type { Message } from "../llm/types.ts";
 
 // ─── 配置 ───
@@ -101,9 +101,7 @@ export function persistLargeOutput(
 
   // 构建输出目录
   const outputDir = join(
-    homedir(),
-    ".sid-code",
-    "trajectories",
+    sidPaths.trajectories(),
     "sessions",
     sessionId,
     "tool-outputs",
@@ -266,9 +264,7 @@ export function cleanupPersistedOutputs(sessionId: string, maxAgeMs: number = 36
   const log = getLogger();
 
   const dir = join(
-    homedir(),
-    ".sid-code",
-    "trajectories",
+    sidPaths.trajectories(),
     "sessions",
     sessionId,
     "tool-outputs",

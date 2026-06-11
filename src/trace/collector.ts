@@ -9,7 +9,6 @@
  * - SessionEnd 时以 stats 参数覆盖自己累积的统计值（SessionState 更准确）
  */
 
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, unlinkSync, writeFileSync, readdirSync, statSync, rmSync } from "node:fs";
@@ -30,6 +29,7 @@ import type { HookSystem } from "../hook/system.ts";
 import { TraceWriter, type RawJsonlEntry } from "./writer.ts";
 import { buildTrajectory, type RequestResponsePair, type TraceMetadata } from "./builder.ts";
 import { getLogger } from "../debug/logger.ts";
+import { sidPaths } from "../config/paths.ts";
 import type { Message } from "../llm/types.ts";
 import { checkMessageHistoryIntegrity } from "../agent/message-invariants.ts";
 
@@ -88,7 +88,7 @@ export class TraceCollector {
 
   constructor(options: CollectorOptions = {}, uploader: TraceUploaderInterface | null = null) {
     this.outputDir = options.outputDir
-      ?? join(homedir(), ".sid-code", "trajectories");
+      ?? sidPaths.trajectories();
     this.maxSessionsRetained = options.maxSessionsRetained ?? 100;
     this.uploader = uploader;
     // 启动时做一次 LRU 清理，回收已上传/旧会话目录，防止本地无限堆积

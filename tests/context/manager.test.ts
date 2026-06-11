@@ -131,10 +131,10 @@ describe("ContextManager", () => {
 
   test("默认 compactThreshold 为 0.7", () => {
     const mgr = new Manager({ maxTokens: 1000 });
-    // 700 tokens 以上应触发压缩（0.7 * 1000 = 700）
-    mgr.setSystemPrompt("a".repeat(2800)); // ~700 tokens
+    // 700 tokens 以上应触发压缩（0.7 * 1000 = 700）；ASCII 系数 0.20 → 700 tokens ≈ 3500 字符
+    mgr.setSystemPrompt("a".repeat(3300)); // ~660 tokens < 700
     expect(mgr.needsCompaction(0)).toBe(false);
-    mgr.setSystemPrompt("a".repeat(2900)); // ~725 tokens > 700
+    mgr.setSystemPrompt("a".repeat(3700)); // ~740 tokens > 700
     expect(mgr.needsCompaction(0)).toBe(true);
   });
 

@@ -1,11 +1,10 @@
 /**
  * MCP 项目级 .mcp.json 审批机制
- * 审批记录存储在 ~/.sid-code/mcp-approvals.json
+ * 审批记录存储在 ~/.sid-code/state/mcp-approvals.json
  */
 
-import { join } from "path";
-import { homedir } from "os";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { sidPaths } from "../config/paths.ts";
 
 export type ApprovalStatus = 'approved' | 'rejected' | 'pending';
 
@@ -15,23 +14,26 @@ interface ApprovalStore {
   approveAll?: boolean;
 }
 
-const APPROVALS_PATH = join(homedir(), '.sid-code', 'mcp-approvals.json');
+/** 审批记录路径：~/.sid-code/state/mcp-approvals.json */
+function approvalsPath(): string {
+  return sidPaths.stateFile("mcp-approvals.json");
+}
 
 function loadApprovals(): ApprovalStore {
   try {
-    if (existsSync(APPROVALS_PATH)) {
-      return JSON.parse(readFileSync(APPROVALS_PATH, 'utf-8'));
+    if (existsSync(approvalsPath())) {
+      return JSON.parse(readFileSync(approvalsPath(), 'utf-8'));
     }
   } catch {}
   return { approved: [], rejected: [] };
 }
 
 function saveApprovals(store: ApprovalStore): void {
-  const dir = join(homedir(), '.sid-code');
+  const dir = sidPaths.state();
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }
-  writeFileSync(APPROVALS_PATH, JSON.stringify(store, null, 2));
+  writeFileSync(approvalsPath(), JSON.stringify(store, null, 2));
 }
 
 /**

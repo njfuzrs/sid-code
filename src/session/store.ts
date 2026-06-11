@@ -7,9 +7,9 @@
 
 import type { Message } from "../llm/types.ts";
 import { join } from "path";
-import { homedir } from "os";
 import { existsSync, mkdirSync, readdirSync, statSync, appendFileSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
+import { sidPaths } from "../config/paths.ts";
 
 /** 当前会话数据格式版本 */
 const CURRENT_VERSION = "2.0";
@@ -56,9 +56,8 @@ export class SessionStore {
   private currentFile: string | null = null;
 
   constructor() {
-    const home = process.env.HOME || homedir();
-    this.sessionDir = join(home, ".sid-code", "sessions");
-    this.summaryDir = join(home, ".sid-code", "sessions", "summaries");
+    this.sessionDir = sidPaths.sessions();
+    this.summaryDir = join(this.sessionDir, "summaries");
     if (!existsSync(this.sessionDir)) {
       mkdirSync(this.sessionDir, { recursive: true });
     }

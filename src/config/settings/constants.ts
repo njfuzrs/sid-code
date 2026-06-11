@@ -11,7 +11,8 @@
  */
 
 import { join } from "path";
-import { getSidHome } from "../paths.ts";
+import { homedir } from "os";
+import { getSidHome, isInsideSidHome } from "../paths.ts";
 
 export const SETTING_SOURCES = [
   "userSettings", // ~/.sid-code/settings.json — 用户全局
@@ -38,13 +39,15 @@ export function getSettingsFilePath(
   source: SettingSource,
   workspacePath: string = process.cwd(),
 ): string | null {
+  // 防御（P0-2）：项目级基准落在 ~/.sid-code 内时回退 homedir()，避免自嵌套
+  const projectBase = isInsideSidHome(workspacePath) ? homedir() : workspacePath;
   switch (source) {
     case "userSettings":
       return join(getSidHome(), "settings.json");
     case "projectSettings":
-      return join(workspacePath, ".sid-code", "settings.json");
+      return join(projectBase, ".sid-code", "settings.json");
     case "localSettings":
-      return join(workspacePath, ".sid-code", "settings.local.json");
+      return join(projectBase, ".sid-code", "settings.local.json");
     case "policySettings":
       return "/etc/sid-code/policy.json";
     case "flagSettings":

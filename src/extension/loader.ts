@@ -7,9 +7,9 @@
 import { existsSync } from "fs";
 import { readdir, readFile } from "fs/promises";
 import { join, basename } from "path";
-import { homedir } from "os";
 import { parseFrontmatter } from "./frontmatter.ts";
 import { getLogger } from "../debug/logger.ts";
+import { sidPaths } from "../config/paths.ts";
 import type {
   ExtensionSource,
   ParsedExtensionFile,
@@ -74,7 +74,7 @@ export class ExtensionLoader {
     }
 
     // 1. 扫描用户目录 ~/.sid-code/{type}/
-    const userDir = join(homedir(), ".sid-code", type);
+    const userDir = sidPaths.extensionDir(type);
     const { files: userFiles, errors: userErrors } = await this.scanDir(userDir, "user");
     for (const f of userFiles) {
       const existing = fileMap.get(f.name);

@@ -6,9 +6,9 @@
 
 import { parse as parseYAML } from "yaml";
 import { join } from "path";
-import { homedir } from "os";
 import { existsSync, mkdirSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
+import { getSidHome } from "./paths.ts";
 
 /** MCP 服务器配置 */
 export interface MCPServerConfig {
@@ -585,7 +585,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
 /** 加载配置文件（优先消费预加载结果） */
 async function loadConfigFile(): Promise<Partial<Config>> {
   const log = getLogger();
-  const configDir = join(homedir(), ".sid-code");
+  const configDir = getSidHome();
   const configPath = join(configDir, "config.yaml");
 
   if (!existsSync(configPath)) {
@@ -787,7 +787,7 @@ export function resolveModelMaxOutputTokens(config: Config): number | undefined 
 
 /** 确保配置目录存在 */
 export async function ensureConfigDir(): Promise<string> {
-  const configDir = join(homedir(), ".sid-code");
+  const configDir = getSidHome();
   if (!existsSync(configDir)) {
     mkdirSync(configDir, { recursive: true });
   }
@@ -809,7 +809,7 @@ export async function loadPermissionRules(): Promise<import("../permission/types
 
   const layers: string[] = [
     "/etc/sid-code/policy.yaml",
-    join(homedir(), ".sid-code/config.yaml"),
+    join(getSidHome(), "config.yaml"),
     join(process.cwd(), ".sid-code/permissions.yaml"),
     join(process.cwd(), ".sid-code/permissions.local.yaml"),
   ];

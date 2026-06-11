@@ -8,8 +8,8 @@
 import { existsSync } from "fs";
 import { readFile, writeFile, rename, mkdir } from "fs/promises";
 import { join } from "path";
-import { homedir } from "os";
 import { getLogger } from "../debug/logger.ts";
+import { sidPaths } from "../config/paths.ts";
 import type { InstalledPluginEntry } from "./types.ts";
 
 /** installed.json 格式 */
@@ -20,7 +20,7 @@ export interface InstalledPluginsFile {
 
 /** 插件根目录 ~/.sid-code/plugins/ */
 export function getPluginsDir(): string {
-  return join(homedir(), ".sid-code", "plugins");
+  return sidPaths.plugins();
 }
 
 /** installed.json 文件路径 */

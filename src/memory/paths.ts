@@ -21,10 +21,11 @@ import { homedir } from "os";
 import { join, isAbsolute, resolve, sep } from "path";
 import { existsSync, mkdirSync } from "fs";
 import { execSync } from "child_process";
+import { getSidHome, isInsideSidHome } from "../config/paths.ts";
 
 /** 记忆根目录：~/.sid-code/projects/ */
 function projectsRoot(): string {
-  return join(homedir(), ".sid-code", "projects");
+  return join(getSidHome(), "projects");
 }
 
 /**
@@ -45,8 +46,13 @@ export function sanitizeProjectKey(raw: string): string {
 /**
  * 解析项目的 canonical root。
  * 优先取 git 顶层目录（同仓库多 worktree 共享记忆），失败时回退传入路径。
+ *
+ * 防御（P0-2）：若解析结果落在配置根 ~/.sid-code 之内（典型场景：进程 cwd
+ * 恰为 ~/.sid-code，git 顶层或 resolve(cwd) 都会指向配置目录），则拒绝该根，
+ * 改回退到 homedir()，避免项目级 ".sid-code/" 叠加出 ~/.sid-code/.sid-code/ 自嵌套。
  */
 export function resolveProjectRoot(cwd: string = process.cwd()): string {
+  let root: string;
   try {
     const top = execSync("git rev-parse --show-toplevel", {
       cwd,
@@ -55,11 +61,17 @@ export function resolveProjectRoot(cwd: string = process.cwd()): string {
     })
       .toString()
       .trim();
-    if (top) return top;
+    root = top || resolve(cwd);
   } catch {
     // 非 git 仓库或 git 不可用，回退
+    root = resolve(cwd);
   }
-  return resolve(cwd);
+
+  // 防御：项目根不得落在配置目录内，否则叠加出自嵌套
+  if (isInsideSidHome(root)) {
+    return homedir();
+  }
+  return root;
 }
 
 /**

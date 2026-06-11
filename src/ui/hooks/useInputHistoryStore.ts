@@ -9,17 +9,16 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { readFileSync, writeFileSync, mkdirSync } from "fs";
-import { join } from "path";
-import { homedir } from "os";
+import { getSidHome, sidHomePath } from "../../config/paths.ts";
 
-const CONFIG_DIR = join(homedir(), ".sid-code");
-const HISTORY_FILE = join(CONFIG_DIR, "input-history.json");
 const MAX_PERSISTED_HISTORY = 200;
+const CONFIG_DIR = (): string => getSidHome();
+const HISTORY_FILE = (): string => sidHomePath("input-history.json");
 
 /** 从磁盘加载历史 */
 function loadHistory(): string[] {
   try {
-    const data = readFileSync(HISTORY_FILE, "utf-8");
+    const data = readFileSync(HISTORY_FILE(), "utf-8");
     const parsed = JSON.parse(data);
     if (Array.isArray(parsed)) {
       return parsed.filter((item): item is string => typeof item === "string").slice(0, MAX_PERSISTED_HISTORY);
@@ -33,8 +32,8 @@ function loadHistory(): string[] {
 /** 保存历史到磁盘 */
 function saveHistory(history: string[]): void {
   try {
-    mkdirSync(CONFIG_DIR, { recursive: true });
-    writeFileSync(HISTORY_FILE, JSON.stringify(history.slice(0, MAX_PERSISTED_HISTORY)), "utf-8");
+    mkdirSync(CONFIG_DIR(), { recursive: true });
+    writeFileSync(HISTORY_FILE(), JSON.stringify(history.slice(0, MAX_PERSISTED_HISTORY)), "utf-8");
   } catch {
     // 写入失败静默忽略
   }

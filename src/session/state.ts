@@ -24,9 +24,9 @@ interface ModelPricing {
   output: number;  // 输出价格 $/M tokens
 }
 
-/** 内置模型定价表 */
+/** 内置模型定价表（单位：USD / 百万 token） */
 const MODEL_PRICING: Record<string, ModelPricing> = {
-  // Claude 系列
+  // Claude 系列（官方 USD/M）
   "claude-opus-4-20250514": { input: 15, output: 75 },
   "claude-sonnet-4-20250514": { input: 3, output: 15 },
   "claude-haiku-4-20250514": { input: 0.25, output: 1.25 },
@@ -34,6 +34,19 @@ const MODEL_PRICING: Record<string, ModelPricing> = {
   "claude-3-5-sonnet-20241022": { input: 3, output: 15 },
   "claude-3-5-haiku-20241022": { input: 0.8, output: 4 },
   "claude-3-opus-20240229": { input: 15, output: 75 },
+
+  // DeepSeek 系列：官方价为 RMB/M（见 api-reference/deepseek-api.md「模型 & 价格」），
+  // 按 1 元 ≈ $0.14 折算成 USD（汇率快照 2026-06，随官方调整需复核）。
+  // pro：未命中 3 元 / 输出 6 元；flash：未命中 1 元 / 输出 2 元。
+  // 缓存命中是独立固定价（pro 0.025 元 / flash 0.02 元 ≈ 未命中的 1/120），
+  // 这里命中部分仍按 input 价的近似折扣计（命中成本极小，误差可接受，见 calculateCost 注释）。
+  // 前缀匹配：getPricing 用 startsWith，可命中带后缀的 "deepseek-v4-pro[1m]" 等变体。
+  "deepseek-v4-pro": { input: 0.42, output: 0.84 },   // 3×0.14 / 6×0.14
+  "deepseek-v4-flash": { input: 0.14, output: 0.28 },  // 1×0.14 / 2×0.14
+
+  // OpenAI 系列（官方 USD/M）
+  "gpt-4o": { input: 2.5, output: 10 },
+  "gpt-4o-mini": { input: 0.15, output: 0.6 },
 };
 
 /** 会话状态 */
@@ -121,8 +134,14 @@ export class SessionState {
 
   /**
    * 计算单次 API 调用的成本
-   * 缓存读取: input 价格 × 0.1（90% 折扣）
-   * 缓存写入: input 价格 × 1.25（25% 加价）
+   * 缓存读取: input 价格 × 0.1（90% 折扣，Anthropic 式近似）
+   * 缓存写入: input 价格 × 1.25（25% 加价，仅 Anthropic 适用）
+   *
+   * ⚠️ DeepSeek 说明：DeepSeek 命中价是独立固定价（pro 0.025 元/M ≈ 未命中的 1/120），
+   * 比这里的 0.1 折扣更便宜；但命中部分成本本就极小，用 0.1 近似的绝对误差可忽略。
+   * DeepSeek 无「缓存写入计费」概念——cacheCreationInputTokens 在 openai.ts 不映射（恒 0），
+   * 所以 × 1.25 那条对 DeepSeek 永不触发，仅对 Anthropic 生效。
+   * regularInput = input − cacheRead − cacheCreation 会自动把命中部分从全价输入中扣掉，逻辑对所有 provider 通用。
    */
   calculateCost(model: string, usage: Usage): number {
     const pricing = this.getPricing(model);

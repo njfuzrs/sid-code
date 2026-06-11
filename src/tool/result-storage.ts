@@ -13,8 +13,8 @@
  */
 
 import { mkdirSync, writeFileSync } from "fs";
-import { homedir } from "os";
 import { join } from "path";
+import { sidPaths } from "../config/paths.ts";
 
 /** 各工具的 maxResultSizeChars 配置 */
 export const TOOL_MAX_RESULT_SIZE: Record<string, number> = {
@@ -39,9 +39,7 @@ const DEFAULT_MAX_RESULT_SIZE = 30000;
  */
 function toolResultsDir(sessionId: string): string {
   return join(
-    homedir(),
-    ".sid-code",
-    "trajectories",
+    sidPaths.trajectories(),
     "sessions",
     sessionId,
     "tool-outputs",

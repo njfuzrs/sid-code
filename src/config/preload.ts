@@ -5,8 +5,8 @@
  */
 
 import { readFile } from "fs/promises";
-import { homedir } from "os";
 import { join } from "path";
+import { getSidHome } from "./paths.ts";
 
 let configPromise: Promise<string | null> | null = null;
 
@@ -16,7 +16,7 @@ let configPromise: Promise<string | null> | null = null;
  */
 export function startConfigPreload(): void {
   if (configPromise) return; // 已启动，不重复
-  const configPath = join(homedir(), ".sid-code", "config.yaml");
+  const configPath = join(getSidHome(), "config.yaml");
   configPromise = readFile(configPath, "utf-8").catch(() => null);
 }
 

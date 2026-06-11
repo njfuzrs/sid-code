@@ -8,11 +8,13 @@
 
 import { readdir, readFile, unlink, stat } from "fs/promises";
 import { join } from "path";
-import { homedir } from "os";
+import { sidPaths } from "../config/paths.ts";
 import type { IDELockfileContent } from "./types.ts";
 
 /** Lockfile 目录 */
-export const IDE_LOCKFILE_DIR = join(homedir(), ".sid-code", "ide");
+export function getIDELockfileDir(): string {
+  return sidPaths.ideLockDir();
+}
 
 /** 读取单个 lockfile */
 export async function readIDELockfile(filePath: string): Promise<{
@@ -38,12 +40,12 @@ export async function getSortedIDELockfiles(): Promise<Array<{
   mtime: number;
 }>> {
   try {
-    const files = await readdir(IDE_LOCKFILE_DIR);
+    const files = await readdir(getIDELockfileDir());
     const lockfiles = files.filter(f => f.endsWith(".lock"));
 
     const results = await Promise.all(
       lockfiles.map(async (file) => {
-        const filePath = join(IDE_LOCKFILE_DIR, file);
+        const filePath = join(getIDELockfileDir(), file);
         const [lockfile, fileStat] = await Promise.all([
           readIDELockfile(filePath),
           stat(filePath).catch(() => null),
@@ -70,7 +72,7 @@ export async function cleanupStaleLockfiles(): Promise<void> {
 
   for (const { port, content } of lockfiles) {
     if (content.pid && !isProcessRunning(content.pid)) {
-      const filePath = join(IDE_LOCKFILE_DIR, `${port}.lock`);
+      const filePath = join(getIDELockfileDir(), `${port}.lock`);
       await unlink(filePath).catch(() => {});
     }
   }

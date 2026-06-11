@@ -16,12 +16,12 @@
  * ADR-026: save_memory 写盘前的 secret 检测在 tool/memory.ts 完成，store 保持纯净。
  */
 
-import { homedir } from "os";
 import { join, basename } from "path";
 import { existsSync, mkdirSync } from "fs";
 import { readdir, stat, unlink, rename } from "fs/promises";
 import { getLogger } from "../debug/logger.ts";
 import { getAutoMemPath } from "./paths.ts";
+import { sidHomePath } from "../config/paths.ts";
 import {
   MEMORY_LIMITS,
   MEMORY_TYPES,
@@ -153,7 +153,7 @@ export class MemoryStore {
     projectRoot?: string,
     opts?: { projectMemoryDir?: string; globalMemoryDir?: string },
   ) {
-    this.globalDir = opts?.globalMemoryDir ?? join(homedir(), ".sid-code", "memory");
+    this.globalDir = opts?.globalMemoryDir ?? sidHomePath("memory");
     this.projectRoot = projectRoot ?? null;
     this.projectDir = opts?.projectMemoryDir
       ?? (projectRoot ? getAutoMemPath(projectRoot) : null);

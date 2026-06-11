@@ -9,12 +9,14 @@
  * 2. 多实例/沙箱——同一机器跑多个隔离的 sid-code 实例
  * 3. 容器/CI——显式指定配置位置
  *
- * 注意：本解析器是新增的，仅被新 Settings/AppConfig 子系统使用。
- * 旧模块仍直接 join(homedir(), ".sid-code")——渐进迁移，不在本次一并重构。
+ * 中心化路径布局（sidPaths）：
+ *   所有子路径在此集中定义，杜绝各模块自行 join(homedir(), ".sid-code", ...)。
+ *   对标 claude-code 的 envUtils.ts 统一入口模式。新增模块一律走 sidPaths.*
+ *   或 sidHomePath()，禁止再硬编码 homedir()。
  */
 
 import { homedir } from "os";
-import { join } from "path";
+import { join, resolve, sep } from "path";
 
 /**
  * 返回 sid-code 配置根目录。
@@ -34,3 +36,86 @@ export function getSidHome(): string {
 export function sidHomePath(...segments: string[]): string {
   return join(getSidHome(), ...segments);
 }
+
+/**
+ * 判断某个绝对路径是否落在配置根目录（getSidHome()）之内。
+ *
+ * 用于「项目级路径派生」的防御：当进程 cwd 恰为 ~/.sid-code 时，
+ * 任何 process.cwd() + ".sid-code"/".claude" 的项目级拼接会叠加出
+ * ~/.sid-code/.sid-code/ 或 ~/.sid-code/.claude/ 自嵌套。派生项目根前
+ * 先用本函数判定，若落在配置根内则拒绝派生（见各项目级路径模块）。
+ *
+ * 规范化两端并按路径分隔符比较，避免 ~/.sid-code-foo 这类前缀误判。
+ */
+export function isInsideSidHome(absolutePath: string): boolean {
+  const target = resolve(absolutePath);
+  const home = resolve(getSidHome());
+  return target === home || target.startsWith(home + sep);
+}
+
+/**
+ * 中心化路径布局。所有 ~/.sid-code 下的子路径在此定义，
+ * 各模块统一调用，杜绝散落的 join(homedir(), ".sid-code", ...) 硬编码。
+ *
+ * 归拢策略（对标 claude-code）：
+ * - logs/   ：所有运行时日志（audit / permissions-audit / debug 等）
+ * - state/  ：散落的运行时状态（app.json / command-usage / trusted-extensions 等）
+ * - 其余按职责分目录（checkpoints / sessions / projects / trajectories / ...）
+ */
+export const sidPaths = {
+  // ── 配置文件 ──
+  settings: () => sidHomePath("settings.json"),
+  appConfig: () => sidHomePath("app.json"),
+  legacyConfig: () => sidHomePath("config.yaml"),
+  managedSettings: () => sidHomePath("managed-settings.json"),
+  globalClaudeMd: () => sidHomePath("CLAUDE.md"),
+  gitignore: () => sidHomePath(".gitignore"),
+  lspConfig: () => sidHomePath("lsp.json"),
+
+  // ── 日志归拢：logs/ ──
+  logs: () => sidHomePath("logs"),
+  log: (name: string) => sidHomePath("logs", name),
+
+  // ── 状态归拢：state/ ──
+  state: () => sidHomePath("state"),
+  stateFile: (name: string) => sidHomePath("state", name),
+  migrationState: () => sidHomePath("state", "migrations.json"),
+  commandUsage: () => sidHomePath("state", "command-usage.json"),
+  trustedExtensions: () => sidHomePath("state", "trusted-extensions.json"),
+  trustedProjects: () => sidHomePath("state", "trusted-projects.json"),
+
+  // ── 检查点 ──
+  checkpointsRoot: () => sidHomePath("checkpoints"),
+  checkpoints: (sessionId: string) => sidHomePath("checkpoints", sessionId),
+
+  // ── 会话 ──
+  sessions: () => sidHomePath("sessions"),
+  activeSessions: () => sidHomePath("active-sessions"),
+
+  // ── 记忆/项目 ──
+  projects: () => sidHomePath("projects"),
+
+  // ── 轨迹/遥测 ──
+  trajectories: () => sidHomePath("trajectories"),
+  uploadQueue: () => sidHomePath("trajectories", ".upload_queue.jsonl"),
+  telemetry: () => sidHomePath("telemetry"),
+
+  // ── 计划 ──
+  plans: () => sidHomePath("plans"),
+  plan: (slug: string) => sidHomePath("plans", `${slug}.md`),
+
+  // ── 任务输出 ──
+  tasks: () => sidHomePath("tasks"),
+
+  // ── 扩展/插件/skill ──
+  plugins: () => sidHomePath("plugins"),
+  builtinSkills: () => sidHomePath("builtin-skills"),
+  skills: () => sidHomePath("skills"),
+  extensionDir: (type: string) => sidHomePath(type),
+
+  // ── IDE ──
+  ideLockDir: () => sidHomePath("ide"),
+
+  // ── 清理水位线 ──
+  lastCleanup: () => sidHomePath(".last-cleanup"),
+} as const;

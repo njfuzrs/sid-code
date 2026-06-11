@@ -84,7 +84,9 @@ describe('Debug 模块集成测试', () => {
 
     const snapshot = metrics.getMetrics();
     expect(snapshot.llm.byModel['claude-opus-4'].requests).toBe(2);
-    expect(snapshot.llm.byModel['claude-opus-4'].inputTokens).toBe(1800);
+    // inputTokens 取最后一次（覆盖，非累加）：每次 API 调用的 input 已含全部历史，
+    // 累加会 N² 过计数。与 SessionState.updateUsage 去重口径一致，故为 800 而非 1800。
+    expect(snapshot.llm.byModel['claude-opus-4'].inputTokens).toBe(800);
     expect(snapshot.llm.byModel['claude-sonnet-4'].requests).toBe(1);
   });
 

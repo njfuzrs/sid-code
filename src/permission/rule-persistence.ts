@@ -9,6 +9,7 @@ import { homedir } from "os";
 import { existsSync, mkdirSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
 import { addFileGlobRuleToGitignore } from "../config/gitignore.ts";
+import { getSidHome, isInsideSidHome } from "../config/paths.ts";
 import type { SettingsPermissions } from "./types.ts";
 
 /** 设置文件 JSON 格式 */
@@ -114,10 +115,25 @@ export async function removePersistedRule(
 function getSettingsPath(target: "user" | "project" | "local", workspacePath?: string): string {
   switch (target) {
     case "user":
-      return join(homedir(), ".sid-code", "settings.json");
+      return join(getSidHome(), "settings.json");
     case "project":
-      return join(workspacePath || process.cwd(), ".sid-code", "settings.json");
+      return join(resolveProjectBase(workspacePath), ".sid-code", "settings.json");
     case "local":
-      return join(workspacePath || process.cwd(), ".sid-code", "settings.local.json");
+      return join(resolveProjectBase(workspacePath), ".sid-code", "settings.local.json");
   }
+}
+
+/**
+ * 解析项目级配置的基准目录。
+ *
+ * 防御（P0-2）：若 workspacePath/cwd 落在配置根 ~/.sid-code 之内（典型场景：
+ * 进程 cwd 恰为 ~/.sid-code），项目级 ".sid-code/" 拼接会叠加出
+ * ~/.sid-code/.sid-code/ 自嵌套。此时回退到 homedir()，避免污染配置目录。
+ */
+function resolveProjectBase(workspacePath?: string): string {
+  const base = workspacePath || process.cwd();
+  if (isInsideSidHome(base)) {
+    return homedir();
+  }
+  return base;
 }

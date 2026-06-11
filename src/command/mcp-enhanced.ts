@@ -8,7 +8,7 @@ import { ArgParser } from "./args.ts";
 import { getLogger } from "../debug/logger.ts";
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { resolve } from "path";
-import { homedir } from "os";
+import { sidHomePath } from "../config/paths.ts";
 import YAML from "yaml";
 
 /** MCP 服务器配置 */
@@ -197,7 +197,7 @@ class MCPAddCommand implements Command {
       log.info("MCP_ADD", `已写入 ${mcpJsonPath}`);
     } else {
       // 写入用户级 ~/.sid-code/config.yaml
-      const configPath = resolve(homedir(), ".sid-code", "config.yaml");
+      const configPath = sidHomePath("config.yaml");
       let yamlConfig: any = {};
 
       if (existsSync(configPath)) {
@@ -261,7 +261,7 @@ class MCPRemoveCommand implements Command {
       writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 2), "utf-8");
       log.info("MCP_REMOVE", `已从 ${mcpJsonPath} 移除 ${name}`);
     } else {
-      const configPath = resolve(homedir(), ".sid-code", "config.yaml");
+      const configPath = sidHomePath("config.yaml");
       if (!existsSync(configPath)) {
         throw new Error("用户配置文件不存在");
       }

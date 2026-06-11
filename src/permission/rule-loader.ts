@@ -7,9 +7,9 @@
  */
 
 import { join } from "path";
-import { homedir } from "os";
 import { existsSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
+import { sidPaths } from "../config/paths.ts";
 import type {
   PermissionRuleSource,
   SourcedPermissionRule,
@@ -58,7 +58,7 @@ export class RuleLoader {
 
     // 并行加载各来源
     await Promise.all([
-      this.loadSettingsFile("userSettings", join(homedir(), ".sid-code", "settings.json")),
+      this.loadSettingsFile("userSettings", sidPaths.settings()),
       this.loadSettingsFile("projectSettings", join(this.workspacePath, ".sid-code", "settings.json")),
       this.loadSettingsFile("localSettings", join(this.workspacePath, ".sid-code", "settings.local.json")),
     ]);

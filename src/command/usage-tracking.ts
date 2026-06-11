@@ -14,8 +14,8 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { homedir } from "node:os";
+import { dirname } from "node:path";
+import { sidPaths } from "../config/paths.ts";
 
 const HALF_LIFE_DAYS = 7;
 const MIN_DECAY_FACTOR = 0.1;
@@ -38,7 +38,7 @@ function usageFilePath(): string {
   // 测试可通过环境变量重定向，避免污染真实 ~/.sid-code/
   const override = process.env.SID_CODE_USAGE_FILE;
   if (override) return override;
-  return join(homedir(), ".sid-code", "command-usage.json");
+  return sidPaths.commandUsage();
 }
 
 function loadStore(): UsageStore {

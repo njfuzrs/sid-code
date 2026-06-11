@@ -5,11 +5,11 @@
 
 import { appendFile, mkdir, stat, open } from "fs/promises";
 import { join } from "path";
-import { homedir } from "os";
+import { sidPaths } from "../config/paths.ts";
 
 /** 输出目录 */
 function getOutputDir(): string {
-  return join(homedir(), ".sid-code", "tasks");
+  return sidPaths.tasks();
 }
 
 /** 磁盘上限：1GB */

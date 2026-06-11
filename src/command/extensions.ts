@@ -9,7 +9,7 @@ import { ExtensionLoader } from "../extension/loader.ts";
 import { getLogger } from "../debug/logger.ts";
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { resolve } from "path";
-import { homedir } from "os";
+import { sidHomePath } from "../config/paths.ts";
 import YAML from "yaml";
 
 /** /skills 命令 */
@@ -87,7 +87,7 @@ class SkillsListCommand implements Command {
   }
 
   private getDisabledSkills(): string[] {
-    const configPath = resolve(homedir(), ".sid-code", "config.yaml");
+    const configPath = sidHomePath("config.yaml");
     if (!existsSync(configPath)) return [];
 
     try {
@@ -154,7 +154,7 @@ class SkillsEnableCommand implements Command {
       log.info("SKILLS", `已更新 ${configPath}`);
     } else {
       // 用户级配置
-      const configPath = resolve(homedir(), ".sid-code", "config.yaml");
+      const configPath = sidHomePath("config.yaml");
       let config: any = {};
 
       if (existsSync(configPath)) {

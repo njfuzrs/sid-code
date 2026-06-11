@@ -6,7 +6,7 @@
 
 import { appendFile, mkdir, stat, rename, unlink } from "fs/promises";
 import { join, dirname } from "path";
-import { homedir } from "os";
+import { sidPaths } from "../../config/paths.ts";
 import type { SpanData, MetricPoint, TelemetryExporter } from "../types.ts";
 
 export interface JsonlExporterOptions {
@@ -18,11 +18,14 @@ export interface JsonlExporterOptions {
   maxFiles: number;
 }
 
-const DEFAULT_OPTIONS: JsonlExporterOptions = {
-  outputDir: join(homedir(), ".sid-code", "telemetry"),
-  maxFileSize: 50 * 1024 * 1024, // 50MB
-  maxFiles: 5,
-};
+/** 默认配置（outputDir 运行时解析，响应 SID_CONFIG_DIR 切换） */
+function defaultOptions(): JsonlExporterOptions {
+  return {
+    outputDir: sidPaths.telemetry(),
+    maxFileSize: 50 * 1024 * 1024, // 50MB
+    maxFiles: 5,
+  };
+}
 
 export class JsonlExporter implements TelemetryExporter {
   readonly name = "jsonl";
@@ -32,7 +35,7 @@ export class JsonlExporter implements TelemetryExporter {
   private _dirCreated = false;
 
   constructor(options?: Partial<JsonlExporterOptions>) {
-    this.options = { ...DEFAULT_OPTIONS, ...options };
+    this.options = { ...defaultOptions(), ...options };
     this.spanFile = join(this.options.outputDir, "traces.jsonl");
     this.metricFile = join(this.options.outputDir, "metrics.jsonl");
   }

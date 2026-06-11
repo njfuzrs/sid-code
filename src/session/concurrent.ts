@@ -15,7 +15,7 @@ import {
   existsSync,
 } from "fs";
 import { join } from "path";
-import { homedir } from "os";
+import { sidPaths } from "../config/paths.ts";
 
 /** 会话类型 */
 export type SessionKind = "interactive" | "headless" | "daemon" | "teammate";
@@ -36,7 +36,7 @@ export interface SessionEntry {
 function sessionsDir(): string {
   // 注意：不能用 ~/.sid-code/sessions/（SessionStore 在那里存会话 JSON/JSONL，
   // 会和会话浏览器冲突）。活跃会话注册用独立目录。
-  return join(homedir(), ".sid-code", "active-sessions");
+  return sidPaths.activeSessions();
 }
 
 function sessionPath(sessionId: string): string {

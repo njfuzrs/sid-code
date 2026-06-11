@@ -19,6 +19,7 @@ import { Manager as ContextManager } from "./context/manager.ts";
 import { Registry as ToolRegistry } from "./tool/registry.ts";
 import { Registry as CommandRegistry } from "./command/registry.ts";
 import { ModelFallback } from "./llm/fallback.ts";
+import { TokenEstimator } from "./llm/token-estimator.ts";
 import { ThinkingManager } from "./llm/thinking.ts";
 import { SessionState } from "./session/state.ts";
 import { SessionStore } from "./session/store.ts";
@@ -55,7 +56,7 @@ import * as PidManager from "./trace/pid-manager.ts";
 import { execSync } from "child_process";
 import { readFile } from "fs/promises";
 import { resolve, extname, join } from "path";
-import { homedir } from "node:os";
+import { sidPaths } from "./config/paths.ts";
 
 /**
  * 展开用户输入中的 @path 引用为文件内容
@@ -149,7 +150,10 @@ export class App {
     this.permissionChecker = opts.permissionChecker ?? null;
     this.planManager = opts.planManager ?? null;
     const sessionId = opts.config.sessionId || crypto.randomUUID().slice(0, 8);
-    this.ctxMgr = new ContextManager({ maxTokens: 200000 });
+    // 上下文窗口按模型实际大小初始化（deepseek-v4 为 1M，Claude 200K，gpt-4o 128K）。
+    // 硬编码 200000 会让 deepseek 的 contextPercent 高估 5 倍、过早触发自动压缩。
+    const ctxWindow = new TokenEstimator().getContextLimit(opts.config.model);
+    this.ctxMgr = new ContextManager({ maxTokens: ctxWindow });
     this.ctxMgr.setSessionId(sessionId);
     this.sessionState = new SessionState(sessionId);
     getSessionMetrics().setSessionId(sessionId);
@@ -1201,7 +1205,7 @@ export class App {
       const messages = this.ctxMgr.getMessages();
       const lastAssistant = messages.filter((m) => m.role === "assistant").pop();
       const traceOutputDir = this.config.trace?.outputDir
-        ?? join(homedir(), ".sid-code", "trajectories");
+        ?? sidPaths.trajectories();
       const result: Record<string, unknown> = {
         session_id: this.sessionState.sessionId,
         trajectory_path: join(traceOutputDir, "sessions", this.sessionState.sessionId, "session.traj"),
@@ -1434,9 +1438,9 @@ export class App {
       model: this.config.model,
       provider: this.config.provider,
       usage: { ...this.sessionState.getTotalUsage() },
-      costUSD: 0,
+      costUSD: this.sessionState.totalCostUSD,
       costLimit: this.config.costLimit ?? 0,
-      contextPercent: 0,
+      contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / this.ctxMgr.getMaxTokens()) * 100),
       permissionMode: this.config.permissionMode || "default",
       isPlanMode: false,
       gitBranch: (() => { try { return execSync("git rev-parse --abbrev-ref HEAD 2>/dev/null", { encoding: "utf-8" }).trim(); } catch { return ""; } })(),
@@ -1687,6 +1691,10 @@ export class App {
                 toolInput: null,
                 isToolExecuting: false,
                 lastToolResult: event.result ? { toolName: event.toolName, isError: !!event.result.isError, elapsedMs: event.result.elapsedMs ?? 0 } : null,
+                // 工具结束即刷新统计三件套，不必等下一轮 done（否则工具跑完后 Footer 仍显示上一轮旧值）
+                usage: { ...this.sessionState.getTotalUsage() },
+                costUSD: this.sessionState.totalCostUSD,
+                contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / this.ctxMgr.getMaxTokens()) * 100),
               });
               // TodoWrite 工具执行后同步 todo 列表到 TUI
               if (event.toolName === "todo_write") {
@@ -1740,7 +1748,7 @@ export class App {
             case "done": {
               completedNormally = true;
               const ctxUsed = this.ctxMgr.estimateTokens(this.toolRegistry.size());
-              const ctxPct = Math.round((ctxUsed / 200000) * 100);
+              const ctxPct = Math.round((ctxUsed / this.ctxMgr.getMaxTokens()) * 100);
               streamingFullText = "";
               streamingThinkingFull = "";
               streamSynced = false;
@@ -1793,7 +1801,7 @@ export class App {
         isLoading: false,
         usage: { ...this.sessionState.getTotalUsage() },
         costUSD: this.sessionState.totalCostUSD,
-        contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / 200000) * 100),
+        contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / this.ctxMgr.getMaxTokens()) * 100),
       });
 
       // 本轮结束 → 标记空闲并冲刷 Cron 忙时积压的提示词
@@ -1850,7 +1858,7 @@ export class App {
             isToolExecuting: false,
             usage: { ...this.sessionState.getTotalUsage() },
             costUSD: this.sessionState.totalCostUSD,
-            contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / 200000) * 100),
+            contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / this.ctxMgr.getMaxTokens()) * 100),
           });
           addTransientStatusMessage("error", message, aborted ? 1500 : 5000);
         } finally {

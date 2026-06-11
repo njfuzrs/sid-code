@@ -12,6 +12,7 @@ import { tmpdir } from "os";
 describe("SessionStore", () => {
   let testDir: string;
   let origHome: string | undefined;
+  let origConfigDir: string | undefined;
 
   beforeEach(() => {
     // 使用临时目录避免污染用户目录
@@ -19,10 +20,16 @@ describe("SessionStore", () => {
     mkdirSync(join(testDir, ".sid-code", "sessions"), { recursive: true });
     origHome = process.env.HOME;
     process.env.HOME = testDir;
+    // store.ts 已改走 sidPaths → getSidHome()，后者只认 SID_CONFIG_DIR（不认 HOME）。
+    // 必须同时设置 SID_CONFIG_DIR 指向临时目录，否则会读到真实 ~/.sid-code/sessions。
+    origConfigDir = process.env.SID_CONFIG_DIR;
+    process.env.SID_CONFIG_DIR = join(testDir, ".sid-code");
   });
 
   afterEach(() => {
     process.env.HOME = origHome;
+    if (origConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
+    else process.env.SID_CONFIG_DIR = origConfigDir;
     if (existsSync(testDir)) {
       rmSync(testDir, { recursive: true });
     }

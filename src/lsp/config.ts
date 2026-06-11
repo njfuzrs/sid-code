@@ -11,7 +11,7 @@ import type { LSPServerConfig } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
 import { readFile } from "fs/promises";
 import { join } from "path";
-import { homedir } from "os";
+import { sidPaths } from "../config/paths.ts";
 
 /** lsp.json 文件格式：服务器名 → 部分配置（workspaceFolder/name 自动填充） */
 type LSPConfigFile = Record<string, Partial<LSPServerConfig> & {
@@ -46,7 +46,7 @@ export async function loadLSPConfigs(
   }
 
   // 2. 全局配置覆盖
-  await mergeConfigFile(configs, join(homedir(), ".sid-code", "lsp.json"), workspaceFolder, log);
+  await mergeConfigFile(configs, sidPaths.lspConfig(), workspaceFolder, log);
   // 3. 项目配置覆盖（最高优先级）
   await mergeConfigFile(configs, join(workspaceFolder, ".sid-code", "lsp.json"), workspaceFolder, log);
 

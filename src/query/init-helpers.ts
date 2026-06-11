@@ -138,10 +138,9 @@ async function initAnalyticsSink(config: Config, sessionId: string): Promise<voi
     if (shouldLoadRemoteConfig()) {
       try {
         const { initFeatureFlags } = await import("../analytics/feature-flags.ts");
-        const { homedir } = await import("node:os");
-        const { join } = await import("node:path");
+        const { getSidHome } = await import("../config/paths.ts");
         initFeatureFlags({
-          configDir: join(homedir(), ".sid-code"),
+          configDir: getSidHome(),
           remoteEndpoint: analyticsCfg?.featureFlagEndpoint,
           localFlags: analyticsCfg?.flags,
         });
@@ -186,10 +185,9 @@ async function initAnalyticsSink(config: Config, sessionId: string): Promise<voi
         try {
           const { HttpExporter } = await import("../analytics/exporters/http.ts");
           const { EventDiskCache } = await import("../analytics/disk-cache.ts");
-          const { homedir } = await import("node:os");
-          const { join } = await import("node:path");
+          const { sidPaths } = await import("../config/paths.ts");
           const diskCache = new EventDiskCache({
-            cacheDir: join(homedir(), ".sid-code", "telemetry"),
+            cacheDir: sidPaths.telemetry(),
             sessionId,
             maxRetries: 8,
           });

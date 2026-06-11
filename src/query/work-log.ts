@@ -12,9 +12,9 @@
  * 设计原则：纯文件 I/O + 纯函数，不依赖具体 LLM/循环实现，便于单测。
  */
 
-import { homedir } from "os";
 import { join } from "path";
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from "fs";
+import { sidHomePath } from "../config/paths.ts";
 import type { TodoItem } from "../tool/todo-write.ts";
 
 /** 每隔 N 轮回注一次工作日志摘要（与 todo 回注节流对齐，弱模型记忆短取 8） */
@@ -36,8 +36,7 @@ export interface ProgressSnapshot {
 
 /** 获取 progress 文件目录（~/.sid-code/progress） */
 function progressDir(): string {
-  const home = process.env.HOME || homedir();
-  return join(home, ".sid-code", "progress");
+  return sidHomePath("progress");
 }
 
 /** 获取某会话的 progress 文件路径 */

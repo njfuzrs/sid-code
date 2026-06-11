@@ -3,16 +3,15 @@
  * 只包含不需要完整 CLI 初始化的轻量命令
  */
 
-import { homedir } from "os";
 import { join } from "path";
 import { unlinkSync, existsSync } from "fs";
+import { sidPaths } from "../config/paths.ts";
 
 /** 处理列出会话命令 */
 export async function handleListSessions(): Promise<void> {
   const { SessionSelector, formatRelativeTime } = await import("./utils.ts");
 
-  const home = process.env.HOME || homedir();
-  const sessionDir = join(home, ".sid-code", "sessions");
+  const sessionDir = sidPaths.sessions();
   const selector = new SessionSelector(sessionDir);
 
   try {
@@ -44,8 +43,7 @@ export async function handleListSessions(): Promise<void> {
 export async function handleDeleteSession(sessionId: string): Promise<void> {
   const { SessionSelector } = await import("./utils.ts");
 
-  const home = process.env.HOME || homedir();
-  const sessionDir = join(home, ".sid-code", "sessions");
+  const sessionDir = sidPaths.sessions();
   const selector = new SessionSelector(sessionDir);
 
   try {

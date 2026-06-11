@@ -4,10 +4,9 @@
  * first-source-wins：只取最高优先级的来源，不合并
  */
 
-import { join } from "path";
-import { homedir } from "os";
 import { existsSync, statSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
+import { sidPaths } from "./paths.ts";
 
 /** 策略来源（优先级从高到低，first-source-wins） */
 export type PolicySource = "remote" | "mdm" | "managed_file";
@@ -43,7 +42,7 @@ export class ManagedFileLoader implements PolicyLoader {
 
   async load(): Promise<PolicySettings | null> {
     const log = getLogger();
-    const filePath = join(homedir(), ".sid-code", "managed-settings.json");
+    const filePath = sidPaths.managedSettings();
 
     if (!existsSync(filePath)) return null;
 

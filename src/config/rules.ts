@@ -18,6 +18,7 @@ import { homedir } from "os";
 import { existsSync, watch } from "fs";
 import type { FSWatcher } from "fs";
 import { getLogger } from "../debug/logger.ts";
+import { sidHomePath } from "./paths.ts";
 import { clearPromptCache } from "./system-prompt.ts";
 
 /** CLAUDE.md 文件名候选列表（对标 Claude Code） */
@@ -323,7 +324,7 @@ export function findGlobalCLAUDEmd(): string | null {
   const globalPath = join(homedir(), ".claude", "CLAUDE.md");
   if (existsSync(globalPath)) return globalPath;
   // 也检查 sid-code 自己的配置目录
-  const sidCodePath = join(homedir(), ".sid-code", "CLAUDE.md");
+  const sidCodePath = sidHomePath("CLAUDE.md");
   if (existsSync(sidCodePath)) return sidCodePath;
   return null;
 }
