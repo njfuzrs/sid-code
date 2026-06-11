@@ -1996,6 +1996,15 @@ export class App {
       },
     };
 
+    // 恢复会话首屏渲染：restoreSession 仅把历史灌入 ctxMgr（LLM 上下文），
+    // 而 syncDisplay/rebuildDisplay 只在事件回调中触发，故 resume 后历史不会出现在视图里。
+    // 在 createFullScreen 前先 rebuildDisplay 一次，把已恢复的消息写进 bridge.current，
+    // 这样 initialState: bridge.current 就能带上历史首屏渲染。
+    if (this.ctxMgr.getMessages().length > 0) {
+      log.info("TUI", `恢复会话首屏渲染: ${this.ctxMgr.getMessages().length} 条消息`);
+      rebuildDisplay();
+    }
+
     // 渲染 TUI（ADR-040：默认主屏 Static 原生选择，--alternate-buffer 走全屏虚拟滚动）
     const alternateBuffer = this.config.alternateBuffer === true;
     log.info("TUI", `开始渲染 TUI 组件（${alternateBuffer ? "Alternate Buffer 全屏" : "主屏 Static"} 模式）`);
