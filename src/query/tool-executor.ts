@@ -333,7 +333,12 @@ export async function executeSingleTool(
 
     deps.sessionState.addToolDuration(elapsed);
 
-    const truncatedOutput = processToolResult(block.name, block.id, result.output);
+    const truncatedOutput = processToolResult(
+      block.name,
+      block.id,
+      result.output,
+      deps.sessionState.sessionId,
+    );
 
     log.toolEnd(block.name, result.output, !!result.isError, elapsed);
 

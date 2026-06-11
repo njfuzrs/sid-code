@@ -10,6 +10,10 @@
  *   并通过文件锁保证只有一个会话负责触发持久任务
  *
  * 循环任务最多存活 7 天后自动过期删除。
+ *
+ * 持久任务文件刻意放在 <project>/.sid-code/（而非用户 HOME），与锁文件同理：
+ * 调度权是"同项目并发协调"语义，详见 lock.ts 文件头注。对标 claude-code 的
+ * cronTasks.ts（"stored in <project>/.claude/scheduled_tasks.json"）。
  */
 
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "fs";

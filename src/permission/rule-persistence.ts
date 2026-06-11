@@ -8,6 +8,7 @@ import { join } from "path";
 import { homedir } from "os";
 import { existsSync, mkdirSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
+import { addFileGlobRuleToGitignore } from "../config/gitignore.ts";
 import type { SettingsPermissions } from "./types.ts";
 
 /** 设置文件 JSON 格式 */
@@ -66,6 +67,16 @@ export async function persistRule(
   // 写入文件
   await Bun.write(filePath, JSON.stringify(settings, null, 2) + "\n");
   log.info("RULE_PERSIST", `规则已持久化到 ${filePath}: ${behavior} ${rawRule}`);
+
+  // 对标 claude-code：写 .sid-code/settings.local.json 时，把它加入全局 gitignore
+  //（~/.config/git/ignore），使这份「私有、不应提交」的本地配置默认被忽略。
+  // fire-and-forget，不阻塞主流程，失败仅记日志。
+  if (target === "local") {
+    void addFileGlobRuleToGitignore(
+      ".sid-code/settings.local.json",
+      workspacePath || process.cwd(),
+    );
+  }
 }
 
 /**

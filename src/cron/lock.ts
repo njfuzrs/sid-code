@@ -6,11 +6,21 @@
  * 会话级（非 durable）任务不需要锁——它们只活在本进程内存里。
  *
  * 锁文件记录持有者 PID，通过 PID 探活回收崩溃残留的锁（stale）。
+ *
+ * ── 为什么锁文件刻意放在 <project>/.sid-code/ 而非用户 HOME ──
+ * 这是有意设计，对标 claude-code 的 cronTasksLock.ts：锁的语义本身就是
+ * "同一项目目录下的多个会话之间协调，只让一个会话驱动调度器"，因此锁必须
+ * 与项目目录绑定——两个不同项目的会话各自独立调度，互不阻塞。把锁搬到
+ * ~/.sid-code/ 反而需要按项目哈希再隔离一遍，是多此一举且易错（子目录启动
+ * 会哈希成不同键→双调度器→持久任务被重复触发）。
+ * scheduled_tasks.json 同理放项目目录（见 scheduler.ts），且和 claude-code
+ * 一样视为"项目级配置"——不主动写入 .gitignore，允许团队按需提交共享。
  */
 
 import { writeFileSync, readFileSync, unlinkSync, existsSync } from "fs";
 import { join } from "path";
 
+/** 锁文件相对项目根的路径（项目级，刻意不放 HOME，理由见文件头注） */
 const LOCK_FILE = ".sid-code/scheduled_tasks.lock";
 
 interface LockContent {
