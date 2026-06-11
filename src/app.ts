@@ -22,6 +22,12 @@ import { ModelFallback } from "./llm/fallback.ts";
 import { ThinkingManager } from "./llm/thinking.ts";
 import { SessionState } from "./session/state.ts";
 import { SessionStore } from "./session/store.ts";
+import {
+  stashPendingInput,
+  markForRestore,
+  clearPendingInput,
+  canRestoreCanceledInput,
+} from "./ui/pending-input.ts";
 import { QuotaManager } from "./llm/quota.ts";
 import { TokenMeter } from "./telemetry/metrics/token-meter.ts";
 import { BudgetTracker } from "./telemetry/metrics/budget-tracker.ts";
@@ -1068,6 +1074,23 @@ export class App {
   }
 
   /**
+   * A4：判断"被取消的本轮输入"是否应自动回填到输入框。
+   *
+   * 对标 claude-code `messagesAfterAreOnlySynthetic`（REPL.tsx:3015）：
+   * 仅当用户在"收到任何实质响应之前"中断,才回退会话并恢复输入框——
+   * 若 LLM 已经吐出真实内容,保留对话、不回填。
+   *
+   * sid-code 适配:取末尾最后一条 user 消息,检查其后是否**没有任何含非空 text 的 assistant 消息**。
+   * - 其后只有 tool_use/tool_result（工具已跑但还没产出 assistant 总结）→ 仍视为"无实质响应",可回填。
+   * - 其后有非空 assistant text → 有实质响应,不回填。
+   *
+   * @returns true 表示可回填(且调用方应回退该 user 轮次)
+   */
+  private shouldRestoreCanceledInput(): boolean {
+    return canRestoreCanceledInput(this.ctxMgr.getMessages() as any);
+  }
+
+  /**
    * 紧急 SessionEnd：uncaughtException / V8 OOM 等无法正常退出的场景。
    *
    * 约束：
@@ -1605,7 +1628,8 @@ export class App {
       const SESSION_TIMEOUT_MS = 30 * 60 * 1000; // 单次 session 最长 30 分钟
       const sessionTimer = setTimeout(() => {
         log.warn("TUI", "Session 超时，触发 abort");
-        this.abortController?.abort();
+        // A6：超时中断 reason='timeout'，与用户主动取消区分——超时不触发输入框回填。
+        this.abortController?.abort("timeout");
       }, SESSION_TIMEOUT_MS);
 
       this.busy = true;
@@ -1787,17 +1811,32 @@ export class App {
     const callbacks: import("./ui/App.tsx").TUICallbacks = {
       onUserInput: async (text) => {
         log.debug("TUI:CB", `onUserInput 被调用: "${text.slice(0, 100)}"`);
+        // A4：暂存本轮原始输入,供"中断后自动回填"使用（仅暂存,是否回填由 ESC 取消时决定）。
+        stashPendingInput(text, false);
         try {
           this.abortController = new AbortController();
           // @ 文件注入：展开用户输入中的 @path 引用
           const expanded = await expandAtReferences(text);
           await tuiAgentLoop(expanded);
+          // 正常完成 → 丢弃暂存,不回填
+          clearPendingInput();
         } catch (err: any) {
           const aborted = isAbortError(err);
           if (aborted) {
             log.info("TUI:CB", "当前响应已被用户中断");
+            // A4：仅"用户主动 ESC 取消"（reason==='user-cancel'，A6）且尚无实质响应时,
+            // 回退该 user 轮次并标记输入框回填。超时/其他 reason 不回填。
+            const reason = this.abortController?.signal?.reason;
+            if (reason === "user-cancel" && this.shouldRestoreCanceledInput()) {
+              this.ctxMgr.rewindTurns(1); // 回退本轮 user 输入及其后残留消息
+              markForRestore();
+              log.info("TUI:CB", "已回退被取消的输入轮次,输入框将自动恢复原文");
+            } else {
+              clearPendingInput();
+            }
           } else {
             log.error("TUI:CB", `onUserInput 异常`, { error: err.message, stack: err.stack });
+            clearPendingInput();
           }
 
           const message = aborted ? "已取消当前响应" : `错误: ${err.message ?? String(err)}`;
@@ -1951,7 +1990,9 @@ export class App {
 
         log.info("TUI:CB", "收到中断请求，取消当前响应");
         updateState({ statusMessage: "正在取消当前响应..." });
-        this.abortController.abort();
+        // A6：带 reason 区分中断场景。对标 claude-code 的 signal.reason === 'user-cancel'：
+        // 仅"用户主动 ESC 取消"这一场景才触发 A4 的输入框自动回填；超时/信号等不回填。
+        this.abortController.abort("user-cancel");
       },
     };
 

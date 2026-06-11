@@ -27,6 +27,7 @@ import { useAtCompletion } from "./hooks/useAtCompletion.ts";
 import { useReverseSearch } from "./hooks/useReverseSearch.ts";
 import { useInputHistoryStore } from "./hooks/useInputHistoryStore.ts";
 import { useShellCompletion } from "./hooks/useShellCompletion.ts";
+import { consumePendingRestore } from "./pending-input.ts";
 import { SuggestionsDisplay, type Suggestion } from "./components/SuggestionsDisplay.tsx";
 import { parseInputForHighlighting, renderHighlightedSegments } from "./utils/inputHighlight.tsx";
 import { DEFAULT_TERM_WIDTH } from "./markdown.ts";
@@ -219,9 +220,21 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, onPermissionMode
   useEffect(() => {
     if (prevLoadingRef.current !== isLoading) {
       log.debug("UI:INPUT", `isLoading 变化: ${prevLoadingRef.current} → ${isLoading}`);
+      const wasLoading = prevLoadingRef.current;
       prevLoadingRef.current = isLoading;
+      // A4：loading→idle 边沿(本轮结束)消费"待回填输入"。
+      // 仅当用户 ESC 取消且通过守卫时 app 层才会 markForRestore,故此处拿到非 null 即应回填。
+      // 守卫 tb.isEmpty():不覆盖用户在 loading 期间已敲入的新内容（对标 cc 的 inputValueRef==='' 守卫）。
+      if (wasLoading && !isLoading) {
+        const restore = consumePendingRestore();
+        if (restore && tb.isEmpty()) {
+          tb.setText(restore.text);
+          if (restore.shellMode) setShellModeActive(true);
+          log.info("UI:INPUT", "已自动恢复被取消的输入");
+        }
+      }
     }
-  }, [isLoading]);
+  }, [isLoading, tb]);
 
   const handleSubmit = useCallback(() => {
     const text = tb.submit();
