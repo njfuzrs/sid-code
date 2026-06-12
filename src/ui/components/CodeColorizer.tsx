@@ -12,7 +12,8 @@
  */
 
 import React from "react";
-import { Text, Box } from "ink";
+import Text from "../../ink/components/Text.js";
+import Box from "../../ink/components/Box.js";
 import { common, createLowlight } from "lowlight";
 import type { Root, Element, Text as HastText, RootContent, ElementContent } from "hast";
 import { themeManager } from "../themes/theme-manager.ts";

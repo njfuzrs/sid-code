@@ -4,7 +4,9 @@
  */
 
 import React, { useState, useCallback, useMemo, useEffect, useRef } from "react";
-import { Box, Text, useInput } from "ink";
+import Box from "../ink/components/Box.js";
+import Text from "../ink/components/Text.js";
+import useInput from "../ink/hooks/use-input.js";
 import type { Config } from "../config/config.ts";
 import type { SessionInfo } from "./utils.ts";
 import {

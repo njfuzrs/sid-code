@@ -9,7 +9,8 @@
  */
 
 import React from "react";
-import { Box, Text } from "ink";
+import Box from "../../ink/components/Box.js";
+import Text from "../../ink/components/Text.js";
 import type { TodoItem } from "../../tool/todo-write.ts";
 import type { TaskDisplayInfo } from "../App.tsx";
 import { theme } from "../semantic-colors.ts";

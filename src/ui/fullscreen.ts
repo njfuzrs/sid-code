@@ -7,8 +7,9 @@
  * 退出时 Ink fork 会自动将最终帧渲染到主缓冲区（由 AlternateBufferQuittingDisplay 提供内容）
  */
 
-import { render } from "ink";
-import type { ReactElement } from "react";
+import render from "../ink/root.js";
+import { AlternateScreen } from "../ink/components/AlternateScreen.js";
+import React, { type ReactElement } from "react";
 import { getLogger } from "../debug/logger.ts";
 import { registerProcessOutputErrorHandlers } from "../utils/process.ts";
 
@@ -23,18 +24,18 @@ function enableLineWrapping() {
 }
 
 export interface FullScreenInstance {
-  instance: ReturnType<typeof render>;
+  instance: Awaited<ReturnType<typeof render>>;
   start: () => Promise<void>;
   waitUntilExit: () => Promise<void>;
 }
 
 export interface FullScreenOptions {
-  /** 是否启用 alternate buffer 全屏模式；默认 false（主屏 Static 渲染） */
+  /** 是否启用 alternate buffer 全屏模式；默认 false（主屏渲染） */
   alternateBuffer?: boolean;
 }
 
 /**
- * 创建 ink 应用（双模式：alternate buffer 全屏 / 主屏 Static）
+ * 创建 ink 应用（双模式：alternate buffer 全屏 / 主屏）
  */
 export function createFullScreen(
   node: ReactElement,
@@ -44,7 +45,7 @@ export function createFullScreen(
   const stdout = process.stdout;
   const alternateBuffer = opts?.alternateBuffer ?? false;
 
-  let instance: ReturnType<typeof render>;
+  let instance: Awaited<ReturnType<typeof render>>;
   let exitPromise: Promise<void>;
 
   return {
@@ -55,16 +56,22 @@ export function createFullScreen(
       // 必须在 Ink render() 之前注册，因为 Ink 渲染时立即开始写 stdout
       registerProcessOutputErrorHandlers();
 
-      const options: Parameters<typeof render>[1] = {
+      // vendored ink 的 alt-screen 是组件(<AlternateScreen>)而非 render option。
+      // alternateBuffer=true 时用 AlternateScreen 包裹(约束高度到视口 + 启用鼠标跟踪);
+      // 主屏模式直接渲染,内容自然滚入终端 scrollback。
+      const rootNode = alternateBuffer
+        ? React.createElement(AlternateScreen, null, node)
+        : node;
+
+      const options = {
         stdout,
         stdin: process.stdin,
         exitOnCtrlC: false,
         patchConsole: false,
-        alternateBuffer,
-        incrementalRendering: alternateBuffer,
       };
 
-      instance = render(node, options);
+      // vendored ink 的 render 是 async(返回 Promise<Instance>)。
+      instance = await render(rootNode, options);
 
       // alternate buffer 模式下禁用行自动换行（防折行溢出，与 gemini-cli 一致）。
       // 主屏模式必须保留自动换行，否则长行被截断且不进 scrollback。
@@ -72,7 +79,7 @@ export function createFullScreen(
         disableLineWrapping();
       }
 
-      log.info("TUI:RENDER", `ink 实例已创建（${alternateBuffer ? "Alternate Buffer" : "主屏 Static"} 模式）`);
+      log.info("TUI:RENDER", `ink 实例已创建（${alternateBuffer ? "Alternate Buffer" : "主屏"} 模式）`);
 
       exitPromise = (async () => {
         await instance.waitUntilExit();

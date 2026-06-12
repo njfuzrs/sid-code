@@ -12,7 +12,9 @@
  */
 
 import React from "react";
-import { Box, Text, useStdout } from "ink";
+import Box from "../../ink/components/Box.js";
+import Text from "../../ink/components/Text.js";
+import useStdout from "../../ink/_vendor/use-stdout.js";
 import type { DisplayItem } from "../App.tsx";
 import type { Message } from "../../llm/types.ts";
 import { UserMessage } from "./messages/UserMessage.tsx";

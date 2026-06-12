@@ -11,7 +11,9 @@
  */
 
 import React, { memo, useMemo } from "react";
-import { Box, Text, Static } from "ink";
+import Box from "../../ink/components/Box.js";
+import Text from "../../ink/components/Text.js";
+import Static from "../../ink/_vendor/Static.js";
 import { tailToFit, estimateChromeLines, computeStreamBudgets } from "../streaming-viewport.ts";
 import { Composer } from "./Composer.tsx";
 import { Footer } from "./Footer.tsx";

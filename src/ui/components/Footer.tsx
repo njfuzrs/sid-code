@@ -8,7 +8,8 @@
  */
 
 import React from "react";
-import { Box, Text } from "ink";
+import Box from "../../ink/components/Box.js";
+import Text from "../../ink/components/Text.js";
 import { homedir } from "os";
 import type { Usage } from "../../llm/types.ts";
 import { normalizeCacheUsage } from "../../llm/types.ts";

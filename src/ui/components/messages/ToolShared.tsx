@@ -14,7 +14,8 @@
  */
 
 import React from "react";
-import { Box, Text } from "ink";
+import Box from "../../../ink/components/Box.js";
+import Text from "../../../ink/components/Text.js";
 import { theme } from "../../semantic-colors.ts";
 
 export const STATUS_INDICATOR_WIDTH = 3;

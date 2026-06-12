@@ -4,7 +4,8 @@
  */
 
 import React, { useEffect, useState } from "react";
-import { Box, Text } from "ink";
+import Box from "../ink/components/Box.js";
+import Text from "../ink/components/Text.js";
 import { getLogger } from "../debug/logger.ts";
 import { theme } from "./semantic-colors.ts";
 

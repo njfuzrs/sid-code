@@ -4,9 +4,10 @@
  */
 
 import React, { useMemo } from "react";
-import { Text, Box } from "ink";
-import type { StyledChar } from "ink";
-import { toStyledCharacters, styledCharsWidth, wrapStyledChars, widestLineFromStyledChars, wordBreakStyledChars } from "ink";
+import Text from "../../ink/components/Text.js";
+import Box from "../../ink/components/Box.js";
+import type { StyledChar } from "../../ink/_vendor/styled-chars.js";
+import { toStyledCharacters, styledCharsWidth, wrapStyledChars, widestLineFromStyledChars, wordBreakStyledChars } from "../../ink/_vendor/styled-chars.js";
 import { styledCharsToString } from "@alcalzone/ansi-tokenize";
 import { theme } from "../semantic-colors.ts";
 import { parseMarkdownToANSI } from "../../utils/markdownParsingUtils.ts";

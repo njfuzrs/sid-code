@@ -5,7 +5,8 @@
  */
 
 import React from "react";
-import { Box, Text } from "ink";
+import Box from "../../ink/components/Box.js";
+import Text from "../../ink/components/Text.js";
 
 interface SlicingMaxSizedBoxProps {
   /** 最大字符数 */

@@ -4,7 +4,7 @@
  */
 
 import React from 'react';
-import { Text } from 'ink';
+import Text from "../../../ink/components/Text.js";
 import { theme } from '../../semantic-colors.ts';
 import {
   BaseSelectionList,

@@ -5,7 +5,9 @@
  */
 
 import React from 'react';
-import { Box, Text, useStdout } from 'ink';
+import Box from "../../../ink/components/Box.js";
+import Text from "../../../ink/components/Text.js";
+import useStdout from "../../../ink/_vendor/use-stdout.js";
 import { DEFAULT_TERM_WIDTH } from '../../markdown.ts';
 
 export interface HorizontalLineProps {

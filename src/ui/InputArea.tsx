@@ -17,7 +17,9 @@
  */
 
 import React, { useCallback, useRef, useEffect, useState } from "react";
-import { Box, Text, useStdout } from "ink";
+import Box from "../ink/components/Box.js";
+import Text from "../ink/components/Text.js";
+import useStdout from "../ink/_vendor/use-stdout.js";
 import { getLogger } from "../debug/logger.ts";
 import { theme } from "./semantic-colors.ts";
 import { useKeypress, KeypressPriority } from "./contexts/KeypressContext.tsx";

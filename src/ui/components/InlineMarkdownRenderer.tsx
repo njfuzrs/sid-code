@@ -6,7 +6,7 @@
  */
 
 import React from "react";
-import { Text } from "ink";
+import Text from "../../ink/components/Text.js";
 import { parseMarkdownToANSI, stripUnsafeCharacters } from "../../utils/markdownParsingUtils.ts";
 
 interface RenderInlineProps {

@@ -6,7 +6,8 @@
  */
 
 import React, { useRef } from "react";
-import { Box, Text } from "ink";
+import Box from "../../ink/components/Box.js";
+import Text from "../../ink/components/Text.js";
 import { useKeypress, KeypressPriority } from "../contexts/KeypressContext.tsx";
 import type { PermissionRequestInfo, ShellConfirmRequestInfo, PlanApprovalRequestInfo } from "../App.tsx";
 import { getToolSummary } from "../ui-utils.ts";

@@ -12,7 +12,7 @@
  */
 
 import React from "react";
-import { Box } from "ink";
+import Box from "../../../ink/components/Box.js";
 import {
   ToolStatusIndicator,
   ToolInfo,

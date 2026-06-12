@@ -6,7 +6,8 @@
  */
 
 import React from "react";
-import { Box, type BoxProps } from "ink";
+import Box from "../../ink/components/Box.js";
+import type { Props as BoxProps } from "../../ink/components/Box.js";
 import { theme } from "../semantic-colors.ts";
 import { resolveSemanticColor, type SemanticColorName } from "./colors.ts";
 

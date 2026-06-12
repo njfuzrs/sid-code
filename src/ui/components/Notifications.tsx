@@ -11,7 +11,8 @@
  */
 
 import React, { useState, useCallback, useMemo } from 'react';
-import { Box, Text } from 'ink';
+import Box from "../../ink/components/Box.js";
+import Text from "../../ink/components/Text.js";
 import { theme } from '../semantic-colors.ts';
 import { useUIState } from '../contexts/UIStateContext.tsx';
 import { useStreamingState, StreamingState } from '../contexts/StreamingContext.tsx';

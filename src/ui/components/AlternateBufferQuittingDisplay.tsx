@@ -9,7 +9,9 @@
  */
 
 import React from "react";
-import { Box, Text, useStdout } from "ink";
+import Box from "../../ink/components/Box.js";
+import Text from "../../ink/components/Text.js";
+import useStdout from "../../ink/_vendor/use-stdout.js";
 import type { HistoryItem } from "../types.ts";
 import { QuittingDisplay } from "./QuittingDisplay.tsx";
 import { theme } from "../semantic-colors.ts";

@@ -10,7 +10,7 @@
  */
 
 import React, { useState, useCallback, useEffect, useRef, useMemo } from "react";
-import { useApp } from "ink";
+import useApp from "../ink/hooks/use-app.js";
 import { KeypressProvider, useKeypress, KeypressPriority, type Key } from "./contexts/KeypressContext.tsx";
 import { matchBinding } from "./keybindings/defaultBindings.ts";
 import { ScrollProvider, useScrollState } from "./contexts/ScrollProvider.tsx";

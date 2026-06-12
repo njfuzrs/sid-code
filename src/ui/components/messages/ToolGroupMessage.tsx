@@ -8,7 +8,8 @@
  */
 
 import React, { useMemo } from "react";
-import { Box, Text } from "ink";
+import Box from "../../../ink/components/Box.js";
+import Text from "../../../ink/components/Text.js";
 import { ToolMessage } from "./ToolMessage.tsx";
 import { getToolGroupBorderAppearance } from "../../utils/borderStyles.ts";
 import type { ToolCallStatus } from "./ToolShared.tsx";

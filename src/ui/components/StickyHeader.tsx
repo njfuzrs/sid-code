@@ -1,5 +1,6 @@
 import React from 'react';
-import { Box, type DOMElement } from 'ink';
+import Box from "../../ink/components/Box.js";
+import type { DOMElement } from "../../ink/dom.js";
 import { theme } from '../semantic-colors.js';
 
 export interface StickyHeaderProps {

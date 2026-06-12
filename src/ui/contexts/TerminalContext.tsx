@@ -8,7 +8,8 @@
  */
 
 import React, { createContext, useContext, useCallback, useEffect, useRef, useMemo, useState } from "react";
-import { useStdin, useStdout } from "ink";
+import useStdin from "../../ink/hooks/use-stdin.js";
+import useStdout from "../../ink/_vendor/use-stdout.js";
 import { TerminalCapabilityManager } from "../utils/terminalCapabilityManager.ts";
 import { DEFAULT_TERM_WIDTH } from "../markdown.ts";
 

@@ -654,7 +654,8 @@ export function renderMarkdown(text: string, maxWidth?: number): string {
 // ── React 版本渲染（用于 VirtualizedList）─────────────────────────
 
 import React from "react";
-import { Text, Box } from "ink";
+import Text from "../ink/components/Text.js";
+import Box from "../ink/components/Box.js";
 import { colorizeCode } from "./components/CodeColorizer.tsx";
 import { theme } from "./semantic-colors.ts";
 import { TableRenderer } from "./components/TableRenderer.tsx";

@@ -9,7 +9,9 @@
  */
 
 import React, { useRef } from "react";
-import { Box, Text, type DOMElement } from "ink";
+import Box from "../../ink/components/Box.js";
+import Text from "../../ink/components/Text.js";
+import type { DOMElement } from "../../ink/dom.js";
 import { Composer } from "./Composer.tsx";
 import { Footer } from "./Footer.tsx";
 import { DialogRenderer } from "./DialogManager.tsx";

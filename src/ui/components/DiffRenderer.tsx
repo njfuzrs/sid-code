@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
-import { Box, Text } from 'ink';
+import Box from "../../ink/components/Box.js";
+import Text from "../../ink/components/Text.js";
 import crypto from 'node:crypto';
 import { colorizeCode, colorizeLine } from './CodeColorizer.js';
 import { theme as semanticTheme } from '../semantic-colors.js';

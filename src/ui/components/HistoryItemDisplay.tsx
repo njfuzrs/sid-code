@@ -8,7 +8,8 @@
  */
 
 import React from "react";
-import { Box, Text } from "ink";
+import Box from "../../ink/components/Box.js";
+import Text from "../../ink/components/Text.js";
 import type { HistoryItem } from "../types.ts";
 import { ToolCallStatus } from "../types.ts";
 import { UserMessage } from "./messages/UserMessage.tsx";

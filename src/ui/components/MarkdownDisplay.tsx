@@ -6,7 +6,8 @@
  */
 
 import React from "react";
-import { Text, Box } from "ink";
+import Text from "../../ink/components/Text.js";
+import Box from "../../ink/components/Box.js";
 import { theme } from "../semantic-colors.ts";
 import { colorizeCode } from "./CodeColorizer.tsx";
 import { TableRenderer } from "./TableRenderer.tsx";

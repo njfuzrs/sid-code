@@ -15,7 +15,9 @@
  */
 
 import React, { useState, useEffect } from "react";
-import { Box, Text, useStdout } from "ink";
+import Box from "../../ink/components/Box.js";
+import Text from "../../ink/components/Text.js";
+import useStdout from "../../ink/_vendor/use-stdout.js";
 import { InputArea } from "../InputArea.tsx";
 import { LoadingIndicator } from "./LoadingIndicator.tsx";
 import { ShortcutsHelp } from "./ShortcutsHelp.tsx";

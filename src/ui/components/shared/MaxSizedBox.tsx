@@ -6,7 +6,10 @@
  */
 
 import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { Box, Text, ResizeObserver, type DOMElement } from 'ink';
+import Box from "../../../ink/components/Box.js";
+import Text from "../../../ink/components/Text.js";
+import { ResizeObserver } from "../../../ink/_vendor/resize-observer.js";
+import type { DOMElement } from "../../../ink/dom.js";
 import { theme } from '../../semantic-colors.ts';
 import { useOverflowActions } from '../../contexts/OverflowContext.tsx';
 
