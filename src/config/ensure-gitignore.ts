@@ -49,9 +49,6 @@ ide/
 .last-cleanup
 .upload_queue.jsonl
 
-# ── 迁移备份 / 旧格式残留 ──
-config.yaml.migrated
-
 # ── 本地私有凭证（不应进入任何仓库）──
 *.local.json
 managed-settings.json

@@ -3,11 +3,16 @@
  * 两阶段检测 / 双重阈值 / 归因（模型/system/工具增删改/TTL）
  */
 
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, beforeEach } from "bun:test";
 import {
   CacheBreakDetector,
   formatCacheBreakReport,
+  recordCacheBreak,
+  getRecentCacheBreaks,
+  clearCacheBreaks,
+  getCacheHealthAdvice,
   type CacheCheckParams,
+  type CacheBreakRecord,
 } from "../../src/api/cache-detection.ts";
 
 const TOOLS = [
@@ -130,5 +135,64 @@ describe("reset / format", () => {
     const line = formatCacheBreakReport(report);
     expect(line).toContain("%");
     expect(line).toContain("tokens");
+  });
+});
+
+describe("中断记录环形缓冲 + 健康度建议（D3）", () => {
+  beforeEach(() => clearCacheBreaks());
+
+  function rec(over: Partial<CacheBreakRecord> = {}): CacheBreakRecord {
+    return {
+      dropTokens: 3000,
+      dropPercent: 60,
+      changes: ["System prompt 变化"],
+      previousCacheReadTokens: 5000,
+      currentCacheReadTokens: 2000,
+      ts: 1_700_000_000,
+      model: "deepseek-v4-pro",
+      ...over,
+    };
+  }
+
+  test("record 后能读回，最新在后", () => {
+    recordCacheBreak(rec({ dropTokens: 100 }));
+    recordCacheBreak(rec({ dropTokens: 200 }));
+    const all = getRecentCacheBreaks();
+    expect(all.length).toBe(2);
+    expect(all[1].dropTokens).toBe(200);
+  });
+
+  test("环形缓冲上限 50 条", () => {
+    for (let i = 0; i < 60; i++) recordCacheBreak(rec({ dropTokens: i }));
+    const all = getRecentCacheBreaks();
+    expect(all.length).toBe(50);
+    expect(all[0].dropTokens).toBe(10); // 前 10 条被挤出
+  });
+
+  test("getRecentCacheBreaks(limit) 取尾部", () => {
+    for (let i = 0; i < 5; i++) recordCacheBreak(rec({ dropTokens: i }));
+    expect(getRecentCacheBreaks(2).map((b) => b.dropTokens)).toEqual([3, 4]);
+  });
+
+  test("system 频繁变化 → 给出移至 messages 的建议", () => {
+    for (let i = 0; i < 3; i++) recordCacheBreak(rec({ changes: ["System prompt 变化"] }));
+    const advice = getCacheHealthAdvice();
+    expect(advice.some((a) => a.includes("system 提示词"))).toBe(true);
+  });
+
+  test("工具频繁变化 → 给出定序建议", () => {
+    for (let i = 0; i < 3; i++) recordCacheBreak(rec({ changes: ["工具变化: +foo"] }));
+    const advice = getCacheHealthAdvice();
+    expect(advice.some((a) => a.includes("工具"))).toBe(true);
+  });
+
+  test("无记录时无建议", () => {
+    expect(getCacheHealthAdvice()).toEqual([]);
+  });
+
+  test("clearCacheBreaks 清空", () => {
+    recordCacheBreak(rec());
+    clearCacheBreaks();
+    expect(getRecentCacheBreaks()).toEqual([]);
   });
 });

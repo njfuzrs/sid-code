@@ -66,7 +66,6 @@ export const sidPaths = {
   // ── 配置文件 ──
   settings: () => sidHomePath("settings.json"),
   appConfig: () => sidHomePath("app.json"),
-  legacyConfig: () => sidHomePath("config.yaml"),
   managedSettings: () => sidHomePath("managed-settings.json"),
   globalClaudeMd: () => sidHomePath("CLAUDE.md"),
   gitignore: () => sidHomePath(".gitignore"),

@@ -28,6 +28,7 @@ export class HelpCommand implements Command {
       "  /model [name]    - 显示/切换模型",
       "  /model list      - 显示所有可用模型",
       "  /cost            - 显示 token 用量和费用",
+      "  /cache           - 缓存命中率/省钱长期统计（--period|--model|--breaks|--prune）",
       "  /compact         - 压缩对话历史",
       "  /clear           - 清空对话",
       "  /rewind [n]      - 回退最近 n 轮对话（默认 1 轮）",
@@ -251,6 +252,14 @@ export class CostCommand implements Command {
     }
     if (totalUsage.cacheReadInputTokens) {
       lines.push(`  缓存读取: ${totalUsage.cacheReadInputTokens}`);
+    }
+
+    // 模块 B：本会话缓存命中率 + 省钱（经归一化单一事实源）
+    const cacheView = ss.getNormalizedCacheUsage();
+    if (cacheView.cacheHitTokens > 0 && cacheView.promptTotal > 0) {
+      const rate = ((cacheView.cacheHitTokens / cacheView.promptTotal) * 100).toFixed(1);
+      const savings = ss.getTotalCacheSavings();
+      lines.push("", `缓存命中率: ${rate}%   省钱: $${savings.toFixed(4)}`);
     }
 
     const models = Object.entries(ss.modelUsage);
@@ -985,7 +994,7 @@ export class TelemetryCommand implements Command {
     const bus = getTelemetryBus();
 
     if (!bus.isEnabled()) {
-      return { kind: "message", message: "遥测未启用。在 ~/.sid-code/config.yaml 中设置 telemetry.enabled: true" };
+      return { kind: "message", message: "遥测未启用。在 ~/.sid-code/app.json 中设置 telemetry.enabled: true" };
     }
 
     const spans = bus.getCompletedSpans();
@@ -1207,11 +1216,138 @@ function fmtDuration(ms: number): string {
   return `${min}m${sec}s`;
 }
 
+/** 把 0~1 的比率序列渲染成 ▁▃▅▆▇█ sparkline */
+function sparkline(values: number[]): string {
+  if (values.length === 0) return "";
+  const chars = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+  return values
+    .map((v) => {
+      const clamped = Math.max(0, Math.min(1, v));
+      const idx = Math.min(chars.length - 1, Math.round(clamped * (chars.length - 1)));
+      return chars[idx];
+    })
+    .join("");
+}
+
+/** /cache 命令 — 缓存命中长期统计与退化监测（模块 C3 + D3） */
+export class CacheCommand implements Command {
+  name() { return "cache"; }
+  aliases() { return []; }
+  description() { return "显示缓存命中率/省钱长期统计（--period day|week|month --model <name> --breaks --prune <N>）"; }
+
+  async execute(args: string, _ctx: AppContext): Promise<CommandResult> {
+    const { aggregateUsage, aggregateOverall } = await import("../telemetry/usage-aggregator.ts");
+    const { pruneUsageLedger } = await import("../telemetry/usage-ledger.ts");
+    const { getRecentCacheBreaks, getCacheHealthAdvice, formatCacheBreakReport } =
+      await import("../api/cache-detection.ts");
+
+    const tokens = args.trim().split(/\s+/).filter(Boolean);
+
+    // ── 参数解析 ──
+    let granularity: "day" | "week" | "month" = "day";
+    let model: string | undefined;
+    let showBreaks = false;
+    let pruneN: number | undefined;
+    for (let i = 0; i < tokens.length; i++) {
+      const t = tokens[i];
+      if (t === "--period" && tokens[i + 1]) {
+        const p = tokens[++i];
+        if (p === "day" || p === "week" || p === "month") granularity = p;
+      } else if (t === "--model" && tokens[i + 1]) {
+        model = tokens[++i];
+      } else if (t === "--breaks") {
+        showBreaks = true;
+      } else if (t === "--prune" && tokens[i + 1]) {
+        pruneN = parseInt(tokens[++i], 10);
+      }
+    }
+
+    // ── --prune：滚动裁剪账本 ──
+    if (pruneN !== undefined) {
+      if (!Number.isFinite(pruneN) || pruneN < 0) {
+        return { kind: "error", message: "--prune 需要一个非负整数" };
+      }
+      const kept = pruneUsageLedger(pruneN);
+      return {
+        kind: "message",
+        message: kept >= 0 ? `账本已裁剪，保留最近 ${kept} 行` : "账本裁剪失败（文件不可写）",
+      };
+    }
+
+    // ── --breaks：最近缓存中断记录 + 健康度建议（D3） ──
+    if (showBreaks) {
+      const breaks = getRecentCacheBreaks(20);
+      const advice = getCacheHealthAdvice();
+      const lines: string[] = ["缓存中断记录（最近 20 条）:"];
+      if (breaks.length === 0) {
+        lines.push("  （本会话暂无检测到缓存中断）");
+      } else {
+        for (const b of breaks) {
+          const time = new Date(b.ts * 1000).toLocaleTimeString();
+          lines.push(`  [${time}] ${b.model}: ${formatCacheBreakReport(b)}`);
+        }
+      }
+      if (advice.length > 0) {
+        lines.push("", "健康度建议:");
+        for (const a of advice) lines.push(`  ⚠ ${a}`);
+      }
+      return { kind: "message", message: lines.join("\n") };
+    }
+
+    // ── 默认：长期命中率/省钱统计 ──
+    const overall = aggregateOverall({ granularity, model });
+    if (overall.totalSessions === 0) {
+      return {
+        kind: "message",
+        message:
+          "暂无用量账本数据。账本在每次会话结束时落一行到 ~/.sid-code/usage-ledger.jsonl，\n" +
+          "跑完至少一个会话后再查。（当前会话的实时命中率见状态栏 ⚡ 列与 /stats）",
+      };
+    }
+
+    const periods = aggregateUsage({ granularity, model });
+    const lines: string[] = [];
+    const periodLabel = granularity === "day" ? "按天" : granularity === "week" ? "按周" : "按月";
+    lines.push(`缓存统计 (${periodLabel}${model ? `, 模型=${model}` : ""})`);
+
+    // 总览
+    const fmtTok = (n: number) =>
+      n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : `${n}`;
+    const totalHit = Object.values(overall.byModel).reduce((s, m) => s + m.cacheHit, 0);
+    const totalPrompt = Object.values(overall.byModel).reduce((s, m) => s + m.promptTotal, 0);
+    const hitPct = (overall.totalHitRate * 100).toFixed(1);
+    lines.push(`  总命中率:   ${hitPct}%   (${fmtTok(totalHit)} / ${fmtTok(totalPrompt)} tokens)`);
+    lines.push(`  累计省钱:   $${overall.totalSavingsUSD.toFixed(4)}`);
+    lines.push(`  累计成本:   $${overall.totalCostUSD.toFixed(4)}   (${overall.totalSessions} 会话)`);
+
+    // Usage by model（按命中 token 降序）
+    const models = Object.entries(overall.byModel);
+    if (models.length > 0) {
+      lines.push("  Usage by model:");
+      models.sort(([, a], [, b]) => b.cacheHit - a.cacheHit);
+      for (const [name, m] of models) {
+        const rate = m.promptTotal > 0 ? Math.round((m.cacheHit / m.promptTotal) * 100) : 0;
+        lines.push(`    ${name}:  命中 ${rate}%  省 $${m.savingsUSD.toFixed(4)}  (${m.sessions} 会话)`);
+      }
+    }
+
+    // 趋势 sparkline（各周期命中率）
+    if (periods.length >= 2) {
+      const rates = periods.map((p) => p.totalHitRate);
+      const unit = granularity === "day" ? "日" : granularity === "week" ? "周" : "月";
+      lines.push(`  趋势(${periods.length}${unit}命中率): ${sparkline(rates)}   ← 上升=前缀越来越稳定`);
+    }
+
+    return { kind: "message", message: lines.join("\n") };
+  }
+}
+
 /** 注册所有内置命令 */
 export async function registerBuiltins(registry: import("./registry.ts").Registry): Promise<void> {
   registry.register(new HelpCommand());
   registry.register(new ModelCommand());
   registry.register(new CostCommand());
+  registry.register(new CacheCommand());
   registry.register(new CompactCommand());
   registry.register(new ClearCommand());
   registry.register(new ConfigCommand());

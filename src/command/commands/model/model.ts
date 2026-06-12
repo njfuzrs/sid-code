@@ -50,7 +50,7 @@ function buildCurrentModel(ctx: CommandContext): string {
 
 function buildAvailableModels(ctx: CommandContext): string {
   if (ctx.config.availableModels.length === 0) {
-    return "未配置可用模型列表\n请在 ~/.sid-code/config.yaml 中添加 available_models 配置";
+    return "未配置可用模型列表\n请在 ~/.sid-code/settings.json 中添加 availableModels 配置";
   }
   const lines = ["可用模型列表:"];
   ctx.config.availableModels.forEach((m, idx) => {

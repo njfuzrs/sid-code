@@ -1,7 +1,7 @@
 /**
  * 配置加载模块
  * 优先级：命令行参数 > 环境变量 > 配置文件 > 默认值
- * 配置文件位置：~/.sid-code/config.yaml
+ * 配置文件位置：~/.sid-code/settings.json + ~/.sid-code/app.json（唯一真相源）
  */
 
 import { parse as parseYAML } from "yaml";
@@ -459,7 +459,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
   };
 
   const result: any = {};
-  for (const [yamlKey, value] of Object.entries(raw)) {
+  for (const [yamlKey, value] of Object.entries(raw as Record<string, any>)) {
     const configKey = keyMap[yamlKey] || yamlKey;
 
     // 特殊处理 available_models，转换字段名

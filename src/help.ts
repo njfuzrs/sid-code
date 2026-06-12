@@ -77,6 +77,7 @@ Bridge 远程控制:
   SID_CODE_TRACE_DEVICE_ID    设备标识
 
 配置文件:
-  ~/.sid-code/config.yaml     YAML 格式配置文件
+  ~/.sid-code/settings.json   JSON 格式配置文件(模型/权限/MCP 等)
+  ~/.sid-code/app.json        JSON 格式应用配置(调试/遥测/检查点等)
 `);
 }
