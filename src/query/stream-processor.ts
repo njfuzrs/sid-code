@@ -165,6 +165,16 @@ export async function processStream(
           response.stopReason = event.delta.stop_reason;
           response.usage.inputTokens += event.usage.inputTokens ?? 0;
           response.usage.outputTokens += event.usage.outputTokens;
+          // 缓存命中/写入字段同样要累积,否则 SessionState 计费拿不到命中数 → 永远按全价算
+          // (DeepSeek 命中在最终 usage chunk 经 message_delta 到达)
+          if (event.usage.cacheReadInputTokens != null) {
+            response.usage.cacheReadInputTokens =
+              (response.usage.cacheReadInputTokens ?? 0) + event.usage.cacheReadInputTokens;
+          }
+          if (event.usage.cacheCreationInputTokens != null) {
+            response.usage.cacheCreationInputTokens =
+              (response.usage.cacheCreationInputTokens ?? 0) + event.usage.cacheCreationInputTokens;
+          }
           break;
 
         case "error":

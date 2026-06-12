@@ -335,6 +335,15 @@ async function processStream(stream: AsyncIterable<StreamEvent>): Promise<{
       case "message_start":
         usage.inputTokens += event.message.usage.inputTokens;
         usage.outputTokens += event.message.usage.outputTokens;
+        // 缓存命中/写入字段同样要累积，否则计费拿不到命中数 → 永远按全价算
+        if (event.message.usage.cacheReadInputTokens != null) {
+          usage.cacheReadInputTokens =
+            (usage.cacheReadInputTokens ?? 0) + event.message.usage.cacheReadInputTokens;
+        }
+        if (event.message.usage.cacheCreationInputTokens != null) {
+          usage.cacheCreationInputTokens =
+            (usage.cacheCreationInputTokens ?? 0) + event.message.usage.cacheCreationInputTokens;
+        }
         break;
 
       case "content_block_start":
@@ -383,7 +392,17 @@ async function processStream(stream: AsyncIterable<StreamEvent>): Promise<{
 
       case "message_delta":
         stopReason = event.delta.stop_reason;
+        usage.inputTokens += event.usage.inputTokens ?? 0;
         usage.outputTokens += event.usage.outputTokens;
+        // 缓存命中/写入字段同样要累积(DeepSeek 命中在最终 usage chunk 经 message_delta 到达)
+        if (event.usage.cacheReadInputTokens != null) {
+          usage.cacheReadInputTokens =
+            (usage.cacheReadInputTokens ?? 0) + event.usage.cacheReadInputTokens;
+        }
+        if (event.usage.cacheCreationInputTokens != null) {
+          usage.cacheCreationInputTokens =
+            (usage.cacheCreationInputTokens ?? 0) + event.usage.cacheCreationInputTokens;
+        }
         break;
 
       case "error":
