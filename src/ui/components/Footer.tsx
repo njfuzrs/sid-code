@@ -214,7 +214,11 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
   }
 
   // 费用
-  const costText = costUSD > 0 ? `$${costUSD.toFixed(4)}` : "$0";
+  // DISP-2：DeepSeek 官方按 RMB 计价，此处的 $ 是用硬编码汇率折算的**估算值**，
+  // 非官方账单原值。用 ≈ 前缀标注"非精确美元"，避免用户误以为是官方 USD 账单。
+  const isExchangeRateConverted = /deepseek/i.test(model);
+  const costPrefix = isExchangeRateConverted ? "≈$" : "$";
+  const costText = costUSD > 0 ? `${costPrefix}${costUSD.toFixed(4)}` : `${costPrefix}0`;
   const costColor = (() => {
     if (costLimit <= 0 || costUSD <= 0) return undefined;
     const pct = (costUSD / costLimit) * 100;

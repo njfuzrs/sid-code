@@ -19,6 +19,7 @@ import type {
 } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
 import { guardOutgoingMessages } from "./protocol-sentinel.ts";
+import { estimateTextTokens } from "../context/token.ts";
 import { sanitizeStrings } from "./sanitize-unicode.ts";
 
 /** 工具调用追踪状态（用于 SSE 流中多工具并行解析） */
@@ -107,6 +108,30 @@ export class OpenAIProvider implements Provider {
       default:
         return "end_turn";
     }
+  }
+
+  /**
+   * PARSE-4：估算请求的 prompt token 数（仅在端点未返回 usage 时兜底）。
+   * 把 system + 全部消息内容（文本 / tool_use 入参 JSON / tool_result）拼起来字符级估算。
+   */
+  private static estimatePromptTokens(params: SendParams): number {
+    let text = "";
+    if (typeof params.system === "string") text += params.system + "\n";
+    for (const msg of params.messages) {
+      for (const block of msg.content) {
+        if (block.type === "text") text += block.text + "\n";
+        else if (block.type === "tool_use") text += JSON.stringify(block.input) + "\n";
+        else if (block.type === "tool_result") text += block.content + "\n";
+        else if (block.type === "thinking") text += block.thinking + "\n";
+      }
+    }
+    // 工具定义也占输入：每个工具按 schema 序列化长度估算
+    if (params.tools) {
+      for (const t of params.tools) {
+        text += t.name + t.description + JSON.stringify(t.input_schema) + "\n";
+      }
+    }
+    return estimateTextTokens(text);
   }
 
   /**
@@ -320,6 +345,8 @@ export class OpenAIProvider implements Provider {
 
       // 解析 SSE 流
       let accumulatedUsage: Usage = { inputTokens: 0, outputTokens: 0 };
+      // PARSE-4：累积输出文本，供"端点不返回 usage"（Ollama 等）时估算兜底
+      let accumulatedOutputText = "";
       for await (const event of this.parseSSE(response.body!)) {
         // 记录首 token 延迟（TTFT）
         if (event.type === "content_block_delta" && !firstTokenTime) {
@@ -327,9 +354,28 @@ export class OpenAIProvider implements Provider {
           log.debug("LLM:OPENAI", `首 token 延迟: ${firstTokenTime - requestStartTime}ms`);
         }
 
+        // PARSE-4：累积文本增量（仅文本，工具调用 JSON 不计入输出估算的主体）
+        if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+          accumulatedOutputText += event.delta.text;
+        }
+
         // 累积 usage
         if (event.type === "message_delta") {
           accumulatedUsage = event.usage;
+          // PARSE-4：端点未返回 usage（in=out=0）时用字符估算兜底，
+          // 否则本地/兼容模型全程零 token、零成本，污染统计与上下文百分比。
+          const u = event.usage;
+          if (u && (u.inputTokens ?? 0) === 0 && (u.outputTokens ?? 0) === 0) {
+            const estIn = OpenAIProvider.estimatePromptTokens(params);
+            const estOut = estimateTextTokens(accumulatedOutputText);
+            if (estIn > 0 || estOut > 0) {
+              const patched: Usage = { inputTokens: estIn, outputTokens: estOut };
+              accumulatedUsage = patched;
+              log.debug("LLM:OPENAI", `端点未返回 usage，已用估算兜底`, patched);
+              yield { ...event, usage: patched };
+              continue;
+            }
+          }
         }
 
         yield event;

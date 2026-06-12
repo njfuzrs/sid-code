@@ -353,6 +353,19 @@ export class SessionState {
     return total;
   }
 
+  /**
+   * 累计输入 prompt token（flow 口径，各模型 cumulativePromptTokens 之和）。
+   * DISP-1：与逐次累加的 totalCostUSD 口径可比（"花了多少钱 ↔ 累计喂了多少 token"）；
+   * getTotalUsage().inputTokens 是末次值（stock），不可与 cost 直接对照。
+   */
+  getCumulativePromptTokens(): number {
+    let total = 0;
+    for (const stats of Object.values(this.modelUsage)) {
+      total += stats.cumulativePromptTokens;
+    }
+    return total;
+  }
+
   /** 获取会话运行时长（毫秒） */
   getElapsedMs(): number {
     return Date.now() - this.startTime;

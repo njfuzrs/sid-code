@@ -8,7 +8,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { normalizeCacheUsage } from "../../src/llm/types.ts";
+import { normalizeCacheUsage, accumulateUsage } from "../../src/llm/types.ts";
 import type { Usage } from "../../src/llm/types.ts";
 import { SessionState } from "../../src/session/state.ts";
 
@@ -109,9 +109,13 @@ describe("SessionState.calculateCost — 口径修复", () => {
     expect(cost).toBeCloseTo(expected, 10);
   });
 
-  test("未知模型返回 0", () => {
+  test("未知模型不静默归零，用保守兜底价估算（P1-4）", () => {
     const ss = new SessionState("test");
-    expect(ss.calculateCost("unknown-model", { inputTokens: 100, outputTokens: 10 })).toBe(0);
+    // P1-4：未知模型不再返回 0（否则换个模型名费用立刻变 0，costLimit 守卫被绕过）。
+    // 用保守兜底价（input $3/M、output $15/M）估算：100/1e6*3 + 10/1e6*15 = 0.00045
+    const cost = ss.calculateCost("unknown-model", { inputTokens: 100, outputTokens: 10 });
+    expect(cost).toBeCloseTo((100 / 1e6) * 3 + (10 / 1e6) * 15, 10);
+    expect(cost).toBeGreaterThan(0);
   });
 
   test("calculateSavings：命中越多省钱越多，且非负", () => {
@@ -158,5 +162,64 @@ describe("SessionState.getNormalizedCacheUsage — 会话级汇总", () => {
       "openai",
     );
     expect(ss.getTotalCacheSavings()).toBeGreaterThan(0);
+  });
+
+  test("P1-3：多轮 OpenAI 口径下命中率用累加输入(flow)而非末次(stock)", () => {
+    // OpenAI/DeepSeek 的 inputTokens 是含命中的全量 prompt。多轮后累加命中(flow)
+    // 会远超末次输入(stock)。若 normalize 用末次输入，uncached=max(0,input−hit) 被钳到 0，
+    // promptTotal 也会塌缩。必须用 cumulativePromptTokens(flow)。
+    const ss = new SessionState("test");
+    // 3 轮，每轮末次输入 6000、命中 5000；累加输入应为 18000、累加命中 15000
+    for (let i = 0; i < 3; i++) {
+      ss.updateUsage(
+        "deepseek-v4-pro",
+        { inputTokens: 6000, outputTokens: 200, cacheReadInputTokens: 5000 },
+        100,
+        "openai",
+      );
+    }
+    const n = ss.getNormalizedCacheUsage();
+    expect(n.cacheHitTokens).toBe(15000);              // 累加命中
+    expect(n.promptTotal).toBe(18000);                 // 累加输入(flow)，非末次 6000
+    expect(n.uncachedInputTokens).toBe(3000);          // 18000 − 15000，未被钳 0
+    // 命中率 = 15000/18000 ≈ 83%，而非用末次输入算出的虚高值
+    expect(n.cacheHitTokens / n.promptTotal).toBeCloseTo(15000 / 18000, 6);
+  });
+
+  test("getCumulativePromptTokens 跨模型累加各自 flow 值", () => {
+    const ss = new SessionState("test");
+    ss.updateUsage("deepseek-v4-pro", { inputTokens: 6000, outputTokens: 200 }, 100, "openai");
+    ss.updateUsage("deepseek-v4-pro", { inputTokens: 7000, outputTokens: 200 }, 100, "openai");
+    ss.updateUsage("claude-sonnet-4-20250514", { inputTokens: 1000, outputTokens: 100 }, 100, "anthropic");
+    // deepseek flow = 13000，claude flow = 1000
+    expect(ss.getCumulativePromptTokens()).toBe(14000);
+    // 末次值(stock)各取最后一次：deepseek 7000 + claude 1000 = 8000
+    expect(ss.getTotalUsage().inputTokens).toBe(8000);
+  });
+});
+
+describe("accumulateUsage — 单一权威累加（P0/P1-2）", () => {
+  test("累加 input/output 并仅在提供时累加缓存字段", () => {
+    const target: Usage = { inputTokens: 0, outputTokens: 0 };
+    accumulateUsage(target, { inputTokens: 100, outputTokens: 10, cacheReadInputTokens: 50 });
+    accumulateUsage(target, { inputTokens: 0, outputTokens: 20, cacheCreationInputTokens: 30 });
+    expect(target.inputTokens).toBe(100);
+    expect(target.outputTokens).toBe(30);
+    expect(target.cacheReadInputTokens).toBe(50);
+    expect(target.cacheCreationInputTokens).toBe(30);
+  });
+
+  test("undefined 事件 usage 不污染目标", () => {
+    const target: Usage = { inputTokens: 5, outputTokens: 5 };
+    accumulateUsage(target, undefined);
+    expect(target.inputTokens).toBe(5);
+    expect(target.outputTokens).toBe(5);
+  });
+
+  test("缓存字段为 undefined 时不当作 0 写入（保持 undefined 不污染）", () => {
+    const target: Usage = { inputTokens: 0, outputTokens: 0 };
+    accumulateUsage(target, { inputTokens: 100, outputTokens: 10 });
+    expect(target.cacheReadInputTokens).toBeUndefined();
+    expect(target.cacheCreationInputTokens).toBeUndefined();
   });
 });

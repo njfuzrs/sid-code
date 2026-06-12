@@ -5,25 +5,42 @@
 
 import { memoizeWithLRU } from "../utils/memoize-lru.ts";
 
-/** ASCII 字符：英文散文实测 0.17、代码/JSON 偏高，取 0.20 折中 */
+/** ASCII 字符：英文散文实测 0.17、代码/JSON 偏高,取 0.20 折中 */
 const ASCII_TOKENS_PER_CHAR = 0.20;
 /** 非 ASCII 字符（中文/日文/韩文等）：DeepSeek 官方 tokenizer 实测中文 ≈0.52 tok/字符，
  *  留少量余量取 0.55（旧值 1.3 是错的，会把中文高估 ~2.5 倍并触发过早压缩） */
 const NON_ASCII_TOKENS_PER_CHAR = 0.55;
 /** 超过此长度使用快速近似（性能优化） */
 const MAX_CHARS_FOR_FULL_HEURISTIC = 100_000;
-/** 快速近似的混合语言平均比率 */
-const FAST_APPROX_RATIO = 0.35;
 /** LRU 缓存键长度上限——超长文本不缓存（key 本身就贵，且命中率低） */
 const CACHE_KEY_MAX_LEN = 2_000;
+
+/**
+ * 对超长文本抽样估算"每字符 token 数"（EST-6）。
+ * 等距抽样后按 ASCII / 非 ASCII 占比加权，比旧固定 0.35 对大段中文准确得多
+ * （中文应为 0.55，旧值低估约 36%），同时保持 O(样本数) 性能。
+ */
+function sampledTokensPerChar(text: string): number {
+  const SAMPLE_SIZE = 2_000;
+  const step = Math.max(1, Math.floor(text.length / SAMPLE_SIZE));
+  let nonAscii = 0;
+  let sampled = 0;
+  for (let i = 0; i < text.length; i += step) {
+    if (text.charCodeAt(i) > 127) nonAscii++;
+    sampled++;
+  }
+  if (sampled === 0) return ASCII_TOKENS_PER_CHAR;
+  const nonAsciiRatio = nonAscii / sampled;
+  return ASCII_TOKENS_PER_CHAR * (1 - nonAsciiRatio) + NON_ASCII_TOKENS_PER_CHAR * nonAsciiRatio;
+}
 
 /** 逐字符分类的核心算法（被缓存包裹） */
 function computeTextTokens(text: string): number {
   if (text.length === 0) return 0;
 
-  // 超长文本用快速近似
+  // 超长文本用快速近似（按抽样语言占比加权，而非固定混合系数）
   if (text.length > MAX_CHARS_FOR_FULL_HEURISTIC) {
-    return Math.ceil(text.length * FAST_APPROX_RATIO);
+    return Math.ceil(text.length * sampledTokensPerChar(text));
   }
 
   let tokens = 0;

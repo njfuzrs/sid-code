@@ -169,6 +169,11 @@ export class AnthropicProvider implements Provider {
         });
 
       let accumulatedUsage: Usage = { inputTokens: 0, outputTokens: 0 };
+      // PARSE-2：Anthropic 的 message_delta.usage.output_tokens 是**累积值**（每次给当前总数），
+      // 但下游 processStream 走 accumulateUsage **累加** delta。若直接累加累积值，会把
+      // message_start 的种子 + 每个 delta 的累积值叠加 → 固定多算且 delta 越多放大越狠。
+      // 正解：发**每次增量** = 当前累积 − 已发出累积，下游累加后正好等于最终累积值。
+      let emittedOutputTokens = 0;
 
       // 转换 Anthropic SDK 事件到统一格式
       for await (const event of stream) {
@@ -179,6 +184,8 @@ export class AnthropicProvider implements Provider {
         switch (event.type) {
           case "message_start":
             accumulatedUsage = this.convertUsage(event.message.usage);
+            // message_start 的 output_tokens 会被下游累加，计入"已发出累积"基线
+            emittedOutputTokens = accumulatedUsage.outputTokens;
             yield {
               type: "message_start",
               message: {
@@ -237,17 +244,23 @@ export class AnthropicProvider implements Provider {
             };
             break;
 
-          case "message_delta":
+          case "message_delta": {
+            // output_tokens 是累积值 → 取增量发出，下游累加后等于最终累积，不重复计种子
+            const cumulativeOutput = event.usage.output_tokens || 0;
+            const deltaOutput = Math.max(0, cumulativeOutput - emittedOutputTokens);
+            emittedOutputTokens = Math.max(emittedOutputTokens, cumulativeOutput);
             accumulatedUsage = {
               ...accumulatedUsage,
-              outputTokens: accumulatedUsage.outputTokens + (event.usage.output_tokens || 0),
+              outputTokens: accumulatedUsage.outputTokens + deltaOutput,
             };
             yield {
               type: "message_delta",
               delta: { stop_reason: event.delta.stop_reason || null },
-              usage: accumulatedUsage,
+              // 只发本次增量（下游 accumulateUsage 会累加）
+              usage: { inputTokens: 0, outputTokens: deltaOutput },
             };
             break;
+          }
 
           case "message_stop":
             log.debug("LLM:ANTHROPIC", "请求完成", {

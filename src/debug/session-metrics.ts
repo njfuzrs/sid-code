@@ -118,13 +118,10 @@ export class SessionMetricsCollector {
     if (isError) llm.totalErrors++;
     llm.totalLatencyMs += latencyMs;
     // ⚠️ usage.inputTokens 是"本次 API 调用时的 prompt 总长度"（含全部历史），
-    // 累加会把系统提示词重复计数、历史消息 N² 过计数。input 取最后一次（已含全部历史），
+    // 累加会把系统提示词重复计数、历史消息 N² 过计数 → 末次覆盖是有意的去重口径。
     // output/cost 累加。与 SessionState.updateUsage 的去重口径保持一致。
-    llm.totalInputTokens = inputTokens;
     llm.totalOutputTokens += outputTokens;
     llm.totalCostUSD += costUSD;
-    // 缓存：read 取末次（与 input 同口径，含全部稳定前缀的命中），write 累加
-    llm.totalCacheReadTokens = cacheReadTokens;
     llm.totalCacheCreationTokens += cacheCreationTokens;
 
     if (!llm.byModel[model]) {
@@ -132,12 +129,26 @@ export class SessionMetricsCollector {
     }
     const m = llm.byModel[model];
     m.requests++;
-    m.inputTokens = inputTokens;       // 同上：覆盖而非累加
+    m.inputTokens = inputTokens;       // 末次覆盖（含全部历史，去重）
     m.outputTokens += outputTokens;
     m.latencyMs += latencyMs;
     m.costUSD += costUSD;
-    m.cacheReadTokens = cacheReadTokens; // 覆盖（末次含全部命中）
+    // ACC-3：cacheRead 改为累加，与计费真相源 SessionState.updateUsage 口径对齐
+    // （cache_read 是"本次从缓存读取的 token 数"，per-request 值；累加 = 整个会话累计命中量，
+    //  才能与累计 cost / 累计 cacheCreation 同口径对照。旧的末次覆盖只反映最后一次请求）。
+    m.cacheReadTokens += cacheReadTokens;
     m.cacheCreationTokens += cacheCreationTokens;
+
+    // ACC-6：全局 input 仍用"各模型末次值之和"（含全历史去重，避免 N²）；
+    // cacheRead 改为"各模型累加值之和"，与 SessionState 口径一致。
+    let sumInput = 0;
+    let sumCacheRead = 0;
+    for (const stats of Object.values(llm.byModel)) {
+      sumInput += stats.inputTokens;
+      sumCacheRead += stats.cacheReadTokens;
+    }
+    llm.totalInputTokens = sumInput;
+    llm.totalCacheReadTokens = sumCacheRead;
   }
 
   /** 记录工具调用完成 */

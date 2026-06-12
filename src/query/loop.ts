@@ -13,6 +13,7 @@
 
 import type { Config } from "../config/config.ts";
 import type { SendParams } from "../llm/types.ts";
+import { normalizeCacheUsage } from "../llm/types.ts";
 import type { HookSystem } from "../hook/system.ts";
 import type { QuotaManager } from "../llm/quota.ts";
 import type { TokenMeter } from "../telemetry/metrics/token-meter.ts";
@@ -456,6 +457,14 @@ export async function* queryLoop(
     // ─── 更新用量统计 ───
     sessionState.updateUsage(config.model, response.usage, apiDuration, config.provider);
     const thisCost = sessionState.calculateCost(config.model, response.usage, config.provider);
+
+    // ─── P1-6/P1-7：用真实 usage 校准上下文估算器 ───
+    // 把 provider 原始 usage 归一化为完整 prompt（promptTotal，与厂商无关），
+    // 喂给 ctxMgr 作校准锚点：收敛估算偏差 + 防止 compact 因启发式低估而触发过晚。
+    try {
+      const norm = normalizeCacheUsage(response.usage, config.provider);
+      ctxMgr.recordActualTokens(norm.promptTotal, toolRegistry.size());
+    } catch { /* 校准失败绝不影响主循环 */ }
 
     // ─── D1：缓存中断检测与归因 ───
     // 比对本次 cacheRead 与上次，骤降时归因到 system/tools/model 变化，落入最近中断环形缓冲（供 /cache --breaks）。

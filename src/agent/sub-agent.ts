@@ -469,6 +469,10 @@ export class SubAgent {
                 usage: msg.usage,
                 turns: msg.turns,
                 toolUseCount: msg.toolUseCount ?? 0,
+                // P0-1：spawn 子进程的 result 消息可能不带 model/provider，
+                // 父进程用 initMsg 已知值兜底（子进程必用 initMsg.model + provider_name）
+                model: msg.model ?? initMsg.model,
+                provider: msg.provider ?? initMsg.provider_name,
               };
               break;
 

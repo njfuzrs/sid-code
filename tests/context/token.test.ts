@@ -47,11 +47,19 @@ describe("estimateTextTokens", () => {
     expect(Math.abs(newEstimate - oldEstimate)).toBeLessThanOrEqual(3);
   });
 
-  test("超长文本使用快速近似", () => {
+  test("超长文本使用快速近似（按抽样语言占比加权）", () => {
     const longText = "a".repeat(200_000);
     const tokens = estimateTextTokens(longText);
-    // 200000 * 0.35 = 70000
-    expect(tokens).toBe(70_000);
+    // EST-6：全 ASCII → 抽样占比 0 非 ASCII → 0.20/char。200000 * 0.20 = 40000
+    expect(tokens).toBe(40_000);
+  });
+
+  test("超长纯中文文本按非 ASCII 系数估算", () => {
+    const longChinese = "中".repeat(200_000);
+    const tokens = estimateTextTokens(longChinese);
+    // EST-6：全中文 → 0.55/char。200000 * 0.55 = 110000，ceil 后 110000（旧固定 0.35 会低估到 70000）
+    expect(tokens).toBeGreaterThanOrEqual(110_000);
+    expect(tokens).toBeLessThanOrEqual(110_001);
   });
 
   test("刚好在阈值边界的文本使用精确计算", () => {
@@ -64,7 +72,7 @@ describe("estimateTextTokens", () => {
   test("超过阈值的文本使用快速近似", () => {
     const text = "a".repeat(100_001);
     const tokens = estimateTextTokens(text);
-    // 100001 * 0.35 = 35000.35 → ceil = 35001
-    expect(tokens).toBe(35_001);
+    // EST-6：全 ASCII → 0.20/char。100001 * 0.20 = 20000.2 → ceil = 20001
+    expect(tokens).toBe(20_001);
   });
 });

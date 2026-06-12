@@ -17,11 +17,21 @@ import {
 } from "../task/index.ts";
 import { ProgressTracker } from "./progress.ts";
 import type { HookSystem } from "../hook/system.ts";
+import type { SubAgentResult } from "./sub-agent.ts";
+
+/**
+ * 子代理 usage 归集回调（P0-1）。
+ * 主会话注入此 sink，子代理执行完毕后把消耗的 token/费用按实际 model 回写主会话，
+ * 否则子代理烧的钱完全不计入总费用，costLimit 守卫对子代理失效。
+ */
+export type SubAgentUsageSink = (result: SubAgentResult) => void;
 
 export class SubAgentTool implements Tool {
   private providerRegistry: ProviderRegistry;
   private toolRegistry: ToolRegistry;
   private hookSystem?: HookSystem;
+  /** 子代理 usage 归集 sink（由主会话注入；未注入时不归集，仅 spawn 前的早期阶段） */
+  private usageSink?: SubAgentUsageSink;
 
   /** 并发控制 */
   static running = 0;
@@ -31,6 +41,31 @@ export class SubAgentTool implements Tool {
     this.providerRegistry = providerRegistry;
     this.toolRegistry = toolRegistry;
     this.hookSystem = hookSystem;
+  }
+
+  /**
+   * 注入 usage 归集 sink（P0-1）。主会话创建 SessionState 后调用，
+   * 把"子代理 usage 回写主会话"的逻辑接上。
+   */
+  setUsageSink(sink: SubAgentUsageSink): void {
+    this.usageSink = sink;
+  }
+
+  /** 归集子代理 usage 到主会话（仅成功或有实际消耗时）。容错：sink 异常不影响子代理结果。 */
+  private collectUsage(result: SubAgentResult): void {
+    if (!this.usageSink) return;
+    const u = result.usage;
+    const hasUsage =
+      (u?.inputTokens ?? 0) > 0 ||
+      (u?.outputTokens ?? 0) > 0 ||
+      (u?.cacheReadInputTokens ?? 0) > 0 ||
+      (u?.cacheCreationInputTokens ?? 0) > 0;
+    if (!hasUsage) return;
+    try {
+      this.usageSink(result);
+    } catch (err: any) {
+      getLogger().warn("SUBAGENT", `usage 归集失败（不影响子代理结果）: ${err?.message}`);
+    }
   }
 
   name(): string {
@@ -170,6 +205,9 @@ export class SubAgentTool implements Tool {
         signal,
       );
 
+      // P0-1：把子代理消耗的 token/费用回写主会话
+      this.collectUsage(result);
+
       const summary = [
         `[子代理完成] 类型: ${params.type}, 轮次: ${result.turns}`,
         `Token 用量: input=${result.usage.inputTokens}, output=${result.usage.outputTokens}`,
@@ -237,7 +275,7 @@ export class SubAgentTool implements Tool {
       const subAgent = SubAgent.fromRegistry(this.providerRegistry, this.toolRegistry, this.hookSystem);
 
       // 传递预创建的 task 信息，execute() 内部不再重复创建
-      await subAgent.execute(
+      const result = await subAgent.execute(
         {
           type: params.type,
           description: params.description,
@@ -247,6 +285,9 @@ export class SubAgentTool implements Tool {
         },
         abortController.signal,
       );
+
+      // P0-1：后台子代理同样要把 usage 回写主会话
+      this.collectUsage(result);
 
       // execute() 内部已调用 completeAgentTask/failAgentTask，这里只更新进度
       updateAgentProgress(taskId, tracker.getProgress());

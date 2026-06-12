@@ -39,11 +39,19 @@ describe("TokenEstimator", () => {
       expect(tokens).toBeLessThan(20);
     });
 
-    test("超长文本使用快速近似（0.35）", () => {
+    test("超长文本使用快速近似（按抽样语言占比加权）", () => {
       const text = "a".repeat(200_000);
       const tokens = estimator.estimateText(text);
-      // 200000 * 0.35 = 70000
-      expect(tokens).toBe(70000);
+      // EST-6：全 ASCII → 抽样占比 0 非 ASCII → 0.20/char。200000 * 0.20 = 40000
+      expect(tokens).toBe(40000);
+    });
+
+    test("超长纯中文文本按非 ASCII 系数估算", () => {
+      const text = "中".repeat(200_000);
+      const tokens = estimator.estimateText(text);
+      // EST-6：全中文 → 0.55/char。200000 * 0.55 = 110000（浮点累加后 ceil 可能 +1）
+      expect(tokens).toBeGreaterThanOrEqual(110000);
+      expect(tokens).toBeLessThanOrEqual(110001);
     });
 
     test("刚好在阈值内使用精确计算", () => {
@@ -161,6 +169,14 @@ describe("TokenEstimator", () => {
       expect(estimator.getContextLimit("claude-sonnet-4-20260101")).toBe(200000);
     });
 
+    test("EST-3：1M 窗口 deepseek 变体不回退到 128K", () => {
+      // 带后缀的 deepseek 变体命名，旧 split(0,3) 前缀逻辑会回退到 128K（分母偏 8 倍）
+      expect(estimator.getContextLimit("deepseek-v4-pro-1m")).toBe(1_000_000);
+      expect(estimator.getContextLimit("deepseek-v4-flash-20260101")).toBe(1_000_000);
+      // 完全未知的 deepseek 变体也按 1M 兜底（DeepSeek 全系 1M）
+      expect(estimator.getContextLimit("deepseek-unknown-variant")).toBe(1_000_000);
+    });
+
     test("未知模型返回默认值 128000", () => {
       expect(estimator.getContextLimit("unknown-model")).toBe(128000);
     });
@@ -180,8 +196,8 @@ describe("TokenEstimator", () => {
     });
 
     test("超大请求 fits: false", () => {
-      // 构造一个超大消息
-      const bigText = "a".repeat(800_000); // 约 200000 tokens
+      // 构造一个超大消息（EST-6 后 ASCII 系数 0.20）：1.2M 字符 ≈ 240000 tokens > 200000 limit
+      const bigText = "a".repeat(1_200_000);
       const result = estimator.checkContextFit({
         model: "claude-sonnet-4-20250514", // 200000 limit
         messages: [

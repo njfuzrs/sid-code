@@ -307,6 +307,8 @@ export interface SessionEndInput extends HookInput {
     model?: string;
     total_tokens_sent?: number;
     total_tokens_received?: number;
+    /** DISP-1：累计输入 prompt token（flow 口径，与累计 cost 可比） */
+    total_cumulative_prompt_tokens?: number;
     total_cache_read_tokens?: number;
     total_cache_creation_tokens?: number;
     total_cost_usd?: number;

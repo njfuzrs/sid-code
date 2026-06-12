@@ -74,11 +74,18 @@ export class CustomAgentTool implements Tool {
   private def: CustomAgentDefinition;
   private providerRegistry: ProviderRegistry;
   private toolRegistry: ToolRegistry;
+  /** 子代理 usage 归集 sink（P0-1，由主会话注入） */
+  private usageSink?: import("./tool.ts").SubAgentUsageSink;
 
   constructor(def: CustomAgentDefinition, providerRegistry: ProviderRegistry, toolRegistry: ToolRegistry) {
     this.def = def;
     this.providerRegistry = providerRegistry;
     this.toolRegistry = toolRegistry;
+  }
+
+  /** 注入 usage 归集 sink（P0-1） */
+  setUsageSink(sink: import("./tool.ts").SubAgentUsageSink): void {
+    this.usageSink = sink;
   }
 
   name(): string {
@@ -123,6 +130,17 @@ export class CustomAgentTool implements Tool {
       maxTurns: 10,
       timeout: 120_000,
     }, signal);
+
+    // P0-1：把自定义子代理消耗的 token/费用回写主会话
+    if (this.usageSink) {
+      const u = result.usage;
+      const hasUsage = (u?.inputTokens ?? 0) > 0 || (u?.outputTokens ?? 0) > 0 ||
+        (u?.cacheReadInputTokens ?? 0) > 0 || (u?.cacheCreationInputTokens ?? 0) > 0;
+      if (hasUsage) {
+        try { this.usageSink(result); }
+        catch (err: any) { log.warn("CUSTOM_AGENT", `usage 归集失败（不影响结果）: ${err?.message}`); }
+      }
+    }
 
     log.info("CUSTOM_AGENT", `Agent ${this.def.name} 完成`, {
       success: result.success,

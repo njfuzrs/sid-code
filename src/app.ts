@@ -278,6 +278,30 @@ export class App {
         return { todos, writeVersion: todoTool.getWriteVersion() };
       },
     });
+
+    // P0-1：把子代理 usage 归集 sink 注入到 SubAgentTool / CustomAgentTool。
+    // 子代理执行完毕后按其实际使用的 model/provider 回写主会话 SessionState，
+    // 否则子代理烧的 token/费用完全不计入总费用、costLimit 守卫对子代理失效。
+    this.wireSubAgentUsageSink();
+  }
+
+  /** 注入子代理 usage 归集 sink（P0-1）。遍历工具注册表，给所有带 setUsageSink 的工具接线。 */
+  private wireSubAgentUsageSink(): void {
+    const sink = (result: import("./agent/sub-agent.ts").SubAgentResult): void => {
+      const usage = result.usage;
+      if (!usage) return;
+      // 子代理可能用不同 subAgentModel，按其实际 model 分别计费；缺省回退主模型。
+      const model = result.model || this.config.model;
+      const provider = result.provider || SessionState.inferProvider(model);
+      // 子代理无独立 API 耗时归集口径，durationMs 计 0（费用/ token 才是归集重点）。
+      this.sessionState.updateUsage(model, usage, 0, provider);
+    };
+    for (const tool of this.toolRegistry.all()) {
+      const maybe = tool as { setUsageSink?: (s: typeof sink) => void };
+      if (typeof maybe.setUsageSink === "function") {
+        maybe.setUsageSink(sink);
+      }
+    }
   }
 
   /** 获取自定义命令摘要（供 /help 显示） */
@@ -1054,6 +1078,7 @@ export class App {
       model: this.config.model,
       total_tokens_sent: totalUsage.inputTokens,
       total_tokens_received: totalUsage.outputTokens,
+      total_cumulative_prompt_tokens: this.sessionState.getCumulativePromptTokens(),
       total_cache_read_tokens: totalUsage.cacheReadInputTokens ?? 0,
       total_cache_creation_tokens: totalUsage.cacheCreationInputTokens ?? 0,
       total_cost_usd: this.sessionState.totalCostUSD,

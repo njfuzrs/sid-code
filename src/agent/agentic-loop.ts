@@ -9,7 +9,7 @@
 
 import type { Provider } from "../llm/provider.ts";
 import type { ContentBlock, Usage, StreamEvent, SendParams } from "../llm/types.ts";
-import { accumulateUsage } from "../llm/types.ts";
+import { accumulateUsage, normalizeCacheUsage } from "../llm/types.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -146,6 +146,12 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
     // 累加本轮 usage（统一走 accumulateUsage，补齐 cacheRead/cacheCreation 字段；
     // response.usage 已是本轮 processStream 累加好的完整 usage）
     accumulateUsage(totalUsage, response.usage);
+
+    // P1-6/P1-7：用真实 usage 校准子代理上下文估算器（防 compact 触发过晚 → 溢出）
+    try {
+      const norm = normalizeCacheUsage(response.usage, provider.name());
+      ctxMgr.recordActualTokens(norm.promptTotal, tools.size());
+    } catch { /* 校准失败不影响子代理循环 */ }
 
     // 提取文本输出
     const textBlocks = response.content.filter(b => b.type === "text");

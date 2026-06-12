@@ -282,4 +282,36 @@ describe("增量压缩", () => {
       expect(toolResult.content).toBe(smallContent);
     }
   });
+
+  test("P1-7：recordActualTokens 校准估算向真实 usage 收敛", () => {
+    const mgr = new Manager({ maxTokens: 200_000 });
+    mgr.addMessage({ role: "user", content: [{ type: "text", text: "x".repeat(10_000) }] });
+    const raw = mgr.estimateTokens(0);
+    // 假设真实 input 是纯启发式估算的 2 倍 → factor 应趋向 2
+    mgr.recordActualTokens(raw * 2, 0);
+    const calibrated = mgr.estimateTokens(0);
+    // 校准后应明显大于原始估算（向真实值靠拢），且不小于真实锚点
+    expect(calibrated).toBeGreaterThan(raw);
+    expect(calibrated).toBeGreaterThanOrEqual(raw * 2);
+  });
+
+  test("P1-6：estimateTokens 不低于上次真实输入锚点", () => {
+    const mgr = new Manager({ maxTokens: 200_000 });
+    mgr.addMessage({ role: "user", content: [{ type: "text", text: "hi" }] });
+    // 真实输入 50000（远大于这条短消息的字符估算）
+    mgr.recordActualTokens(50_000, 0);
+    // compact 决策依赖的估算不应塌缩到字符估算的极小值，至少守住真实锚点
+    expect(mgr.estimateTokens(0)).toBeGreaterThanOrEqual(50_000);
+  });
+
+  test("recordActualTokens 忽略非法真实值（0/负/NaN）", () => {
+    const mgr = new Manager({ maxTokens: 200_000 });
+    mgr.addMessage({ role: "user", content: [{ type: "text", text: "x".repeat(1000) }] });
+    const before = mgr.estimateTokens(0);
+    mgr.recordActualTokens(0, 0);
+    mgr.recordActualTokens(-100, 0);
+    mgr.recordActualTokens(NaN, 0);
+    // 未校准，估算保持纯启发式不变
+    expect(mgr.estimateTokens(0)).toBe(before);
+  });
 });

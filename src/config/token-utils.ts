@@ -90,8 +90,12 @@ export function truncateToLimit(
       // 超限，尝试截断当前附件内容（保留前半部分）
       const remainingTokens = targetTokens - currentTokens;
       if (remainingTokens > 200) {
-        // 至少还能放 200 token 才值得截断
-        const truncatedChars = Math.floor(remainingTokens * 2.5); // 保守估算
+        // 至少还能放 200 token 才值得截断。
+        // EST-5：用该附件自身的真实 字符/token 比率换算，而非硬编码 2.5
+        // （与 estimateTokens 的口径不一致会让截断点偏移；中文 ~2.0、英文 ~3.5）。
+        const attTokens = estimateTokens(attachment.content);
+        const charsPerToken = attTokens > 0 ? attachment.content.length / attTokens : 3.5;
+        const truncatedChars = Math.floor(remainingTokens * charsPerToken);
         const truncatedContent = attachment.content.slice(0, truncatedChars) + "\n\n[... 内容已截断 ...]";
         content += "\n\n" + truncatedContent;
         truncated = attachment;

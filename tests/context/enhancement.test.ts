@@ -113,48 +113,48 @@ describe("truncateForCompression", () => {
 
 describe("CompactionLevel", () => {
   // 使用标准窗口模型（200K）测试三层渐进压缩（绝对 buffer 40K/60K/80K）
-  // token 估算规则：≤ 100K 字符 → 0.25 token/char；> 100K 字符 → 0.35 token/char（快速近似）
+  // token 估算规则（EST-6 后）：ASCII 0.20 token/char（含 >100K 字符的抽样快速近似，全 ASCII 仍 0.20）
   // 检查顺序：remaining ≤ 40K → emergency | ≤ 60K → hard | ≤ 80K → soft | > 80K → none
 
   test("none: 剩余 > 80K tokens", () => {
     const mgr = new Manager({ maxTokens: 200_000 });
-    // 300K 字符 → 105K tokens，剩余 ~95K
+    // 300K 字符 × 0.20 → 60K tokens，剩余 ~140K
     mgr.setSystemPrompt("a".repeat(300_000));
     expect(mgr.getCompactionLevel()).toBe("none");
   });
 
   test("soft: 剩余在 60K-80K → 触发工具输出遮罩", () => {
     const mgr = new Manager({ maxTokens: 200_000 });
-    // 370K 字符 → 129.5K tokens，剩余 ~70.5K
-    mgr.setSystemPrompt("a".repeat(370_000));
+    // 650K 字符 × 0.20 → 130K tokens，剩余 ~70K
+    mgr.setSystemPrompt("a".repeat(650_000));
     expect(mgr.getCompactionLevel()).toBe("soft");
   });
 
   test("hard: 剩余在 40K-60K → 触发摘要压缩", () => {
     const mgr = new Manager({ maxTokens: 200_000 });
-    // 430K 字符 → 150.5K tokens，剩余 ~49.5K
-    mgr.setSystemPrompt("a".repeat(430_000));
+    // 750K 字符 × 0.20 → 150K tokens，剩余 ~50K
+    mgr.setSystemPrompt("a".repeat(750_000));
     expect(mgr.getCompactionLevel()).toBe("hard");
   });
 
   test("emergency: 剩余 ≤ 40K → 紧急截断", () => {
     const mgr = new Manager({ maxTokens: 200_000 });
-    // 480K 字符 → 168K tokens，剩余 ~32K
-    mgr.setSystemPrompt("a".repeat(480_000));
+    // 850K 字符 × 0.20 → 170K tokens，剩余 ~30K
+    mgr.setSystemPrompt("a".repeat(850_000));
     expect(mgr.getCompactionLevel()).toBe("emergency");
   });
 
   test("小窗口模型（≤ 60K）仅剩 10% 时触发 emergency", () => {
     const mgr = new Manager({ maxTokens: 50_000 });
-    // 130K 字符（> 100K → 快速近似 0.35）→ 45.5K tokens，剩余 ~4.5K ≤ 10%
-    mgr.setSystemPrompt("a".repeat(130_000));
+    // 230K 字符 × 0.20 → 46K tokens，剩余 ~4K ≤ 10%
+    mgr.setSystemPrompt("a".repeat(230_000));
     expect(mgr.getCompactionLevel()).toBe("emergency");
   });
 
   test("小窗口模型（≤ 60K）剩余 > 10% 时不触发", () => {
     const mgr = new Manager({ maxTokens: 50_000 });
-    // 115K 字符（> 100K → 快速近似 0.35）→ 40.25K tokens，剩余 ~9.75K > 10%
-    mgr.setSystemPrompt("a".repeat(115_000));
+    // 215K 字符 × 0.20 → 43K tokens，剩余 ~7K > 10%
+    mgr.setSystemPrompt("a".repeat(215_000));
     expect(mgr.getCompactionLevel()).toBe("none");
   });
 });

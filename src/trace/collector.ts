@@ -243,6 +243,7 @@ export class TraceCollector {
       start_source: input.source,
       total_tokens_sent: 0,
       total_tokens_received: 0,
+      total_cumulative_prompt_tokens: 0,
       total_cache_read_tokens: 0,
       total_cache_creation_tokens: 0,
       total_cost_usd: 0,
@@ -381,6 +382,8 @@ export class TraceCollector {
     // 校准记录见 evals/eval-judge.ts gradeCost 注释 + 2026-05-25 横向对比实验。
     this.metadata.total_tokens_sent = inputTokens;
     this.metadata.total_tokens_received += outputTokens;
+    // DISP-1：累计 prompt（flow），与累计 cost 口径可比
+    this.metadata.total_cumulative_prompt_tokens += inputTokens;
     this.metadata.total_cache_read_tokens += cacheRead;
     this.metadata.total_cache_creation_tokens += cacheCreate;
     this.metadata.total_api_calls += 1;
@@ -623,6 +626,7 @@ export class TraceCollector {
       if (s.model) this.metadata.model = s.model;
       if (s.total_tokens_sent !== undefined) this.metadata.total_tokens_sent = s.total_tokens_sent;
       if (s.total_tokens_received !== undefined) this.metadata.total_tokens_received = s.total_tokens_received;
+      if (s.total_cumulative_prompt_tokens !== undefined) this.metadata.total_cumulative_prompt_tokens = s.total_cumulative_prompt_tokens;
       if (s.total_cache_read_tokens !== undefined) this.metadata.total_cache_read_tokens = s.total_cache_read_tokens;
       if (s.total_cache_creation_tokens !== undefined) this.metadata.total_cache_creation_tokens = s.total_cache_creation_tokens;
       if (s.total_cost_usd !== undefined) this.metadata.total_cost_usd = s.total_cost_usd;

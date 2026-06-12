@@ -94,11 +94,53 @@ export class Manager {
   private maskingService?: ToolOutputMaskingService;
   /** 已调用的 Skill 记录（压缩时保留其 prompt 上下文） */
   private invokedSkills: InvokedSkill[] = [];
+  /**
+   * 估算校准因子（P1-7）：= 真实 inputTokens / 当时纯启发式估算值。
+   * 每次 API 返回真实 usage 后用 recordActualTokens 平滑更新；
+   * estimateTokens 输出 ×factor 收敛到真实口径。初值 1（未校准前不偏移）。
+   */
+  private calibrationFactor: number = 1;
+  /** 是否已收到过至少一次真实 usage 校准（false 时 estimateTokens 不乘 factor） */
+  private calibrated: boolean = false;
+  /** 上一次 API 返回的真实输入 token 数（P1-6：compact 决策优先用它作锚点，而非纯字符估算） */
+  private lastActualInputTokens: number = 0;
 
   constructor(opts: ManagerOptions) {
     this.maxTokens = opts.maxTokens;
     this.compactThreshold = opts.compactThreshold ?? 0.7;
     this.tempDir = opts.tempDir;
+  }
+
+  /**
+   * 用一次 API 调用返回的真实输入 token 数校准估算器（P1-6 + P1-7）。
+   *
+   * - **P1-7 校准回路**：记录"真实值 / 当时纯启发式估算值"的比值，用指数平滑（EMA, α=0.3）
+   *   更新 calibrationFactor，使后续 estimateTokens 收敛到真实口径，偏差不再永久存在。
+   * - **P1-6 锚点**：把真实 inputTokens 存为 lastActualInputTokens，供 estimateTokens 在
+   *   "真实锚点 + 锚定后新增量估算"模式下计算，避免纯字符启发式低估导致 compact 触发过晚。
+   *
+   * @param actualInputTokens 上一次 API 返回的真实输入 token（已归一化为完整 prompt，即 promptTotal）。
+   *   传 0 或负数（如本地模型无 usage）时跳过校准。
+   * @param toolCount 当时的工具数量（与 estimateTokens 的入参一致，保证基线可比）
+   */
+  recordActualTokens(actualInputTokens: number, toolCount: number = 0): void {
+    if (!Number.isFinite(actualInputTokens) || actualInputTokens <= 0) return;
+    this.lastActualInputTokens = actualInputTokens;
+
+    // 用未校准的纯启发式估算作分母（rawEstimateTokens），否则 factor 会自我反馈漂移
+    const rawEstimate = this.rawEstimateTokens(toolCount);
+    if (rawEstimate <= 0) return;
+
+    const ratio = actualInputTokens / rawEstimate;
+    // 防御异常比值（极端短会话 / 估算为 0 边界）：钳到合理区间 [0.3, 5]
+    const clamped = Math.min(5, Math.max(0.3, ratio));
+    if (!this.calibrated) {
+      this.calibrationFactor = clamped;
+      this.calibrated = true;
+    } else {
+      // EMA 平滑，α=0.3，兼顾收敛速度与抗抖动
+      this.calibrationFactor = this.calibrationFactor * 0.7 + clamped * 0.3;
+    }
   }
 
   /** 设置会话 ID（用于工具输出遮罩和持久化） */
@@ -522,8 +564,26 @@ export class Manager {
   /**
    * 估算当前 token 数（区分 ASCII/非 ASCII 字符）
    * 包含：系统提示词 + 消息内容 + 消息结构开销 + 工具定义开销
+   *
+   * P1-6/P1-7：输出经 calibrationFactor 校准（已收到真实 usage 后），收敛到真实口径，
+   * 避免纯字符启发式对代码/JSON 低估导致 compact 触发过晚、上下文溢出。
+   * 未校准前（calibrated=false）等同纯启发式估算。
    */
   estimateTokens(toolCount: number = 0): number {
+    const raw = this.rawEstimateTokens(toolCount);
+    if (!this.calibrated) return raw;
+    const calibrated = Math.ceil(raw * this.calibrationFactor);
+    // P1-6 锚定：compact 决策依赖此估算。真实 inputTokens 是已知下界——
+    // 上一次 API 实际就发了这么多 prompt，之后只会增不会减（除非中途压缩）。
+    // 取「校准估算」与「真实锚点」的较大值，确保不会因启发式低估而把 compact 推迟到溢出。
+    return Math.max(calibrated, this.lastActualInputTokens);
+  }
+
+  /**
+   * 纯启发式 token 估算（未经校准）。calibrationFactor 的分母、estimateTokens 的基线。
+   * 单独抽出避免校准自我反馈漂移（用已校准值反推 factor 会发散）。
+   */
+  private rawEstimateTokens(toolCount: number = 0): number {
     // 系统提示词
     let total = estimateTextTokens(this.systemPrompt);
 
