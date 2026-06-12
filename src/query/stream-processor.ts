@@ -10,6 +10,7 @@ import type {
   StreamEvent,
   AccumulatedResponse,
 } from "../llm/types.ts";
+import { accumulateUsage } from "../llm/types.ts";
 import { getLogger } from "../debug/index.ts";
 
 /** 流式处理器配置 */
@@ -93,8 +94,7 @@ export async function processStream(
 
       switch (event.type) {
         case "message_start":
-          response.usage.inputTokens += event.message.usage.inputTokens;
-          response.usage.outputTokens += event.message.usage.outputTokens;
+          accumulateUsage(response.usage, event.message.usage);
           break;
 
         case "content_block_start":
@@ -163,18 +163,9 @@ export async function processStream(
 
         case "message_delta":
           response.stopReason = event.delta.stop_reason;
-          response.usage.inputTokens += event.usage.inputTokens ?? 0;
-          response.usage.outputTokens += event.usage.outputTokens;
-          // 缓存命中/写入字段同样要累积,否则 SessionState 计费拿不到命中数 → 永远按全价算
-          // (DeepSeek 命中在最终 usage chunk 经 message_delta 到达)
-          if (event.usage.cacheReadInputTokens != null) {
-            response.usage.cacheReadInputTokens =
-              (response.usage.cacheReadInputTokens ?? 0) + event.usage.cacheReadInputTokens;
-          }
-          if (event.usage.cacheCreationInputTokens != null) {
-            response.usage.cacheCreationInputTokens =
-              (response.usage.cacheCreationInputTokens ?? 0) + event.usage.cacheCreationInputTokens;
-          }
+          // 统一走 accumulateUsage：累加 input/output 并补齐 cacheRead/cacheCreation
+          // （DeepSeek 命中在最终 usage chunk 经 message_delta 到达，缺了会按全价算）
+          accumulateUsage(response.usage, event.usage);
           break;
 
         case "error":

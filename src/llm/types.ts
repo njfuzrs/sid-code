@@ -128,6 +128,38 @@ export function normalizeCacheUsage(
   };
 }
 
+/**
+ * 把一次流式事件携带的 usage 累加进目标 usage（方案主题 A：单一权威累加实现）。
+ *
+ * 四套 processStream（query / headless / agent / agentic-loop）此前各自拷贝同一段
+ * "累加 usage" 逻辑，导致缓存字段、inputTokens 在不同路径丢弃口径不一致
+ * （子代理路径甚至只加 output、丢 input 与全部缓存字段）。统一改调此函数消灭拷贝。
+ *
+ * 累加口径（与 message_start / message_delta 两类事件对齐）：
+ * - inputTokens：累加。Provider 已保证 message_start 给全量、message_delta 给 0 或增量，
+ *   两类相加得到本次调用的输入口径（Anthropic=未命中余量 / OpenAI=prompt_tokens）。
+ * - outputTokens：累加（输出 token 随 delta 增长）。
+ * - cacheReadInputTokens / cacheCreationInputTokens：累加，且仅在事件显式提供（!= null）时累加，
+ *   避免把 undefined 当 0 污染——这正是子代理路径"命中省钱失真"的根因。
+ *
+ * @param target 累加目标（原地修改并返回）
+ * @param eventUsage 单次流式事件的 usage（message_start.message.usage 或 message_delta.usage）
+ */
+export function accumulateUsage(target: Usage, eventUsage: Usage | undefined): Usage {
+  if (!eventUsage) return target;
+  target.inputTokens += eventUsage.inputTokens ?? 0;
+  target.outputTokens += eventUsage.outputTokens ?? 0;
+  if (eventUsage.cacheReadInputTokens != null) {
+    target.cacheReadInputTokens =
+      (target.cacheReadInputTokens ?? 0) + eventUsage.cacheReadInputTokens;
+  }
+  if (eventUsage.cacheCreationInputTokens != null) {
+    target.cacheCreationInputTokens =
+      (target.cacheCreationInputTokens ?? 0) + eventUsage.cacheCreationInputTokens;
+  }
+  return target;
+}
+
 /** 文本增量 */
 export interface TextDelta {
   type: "text_delta";

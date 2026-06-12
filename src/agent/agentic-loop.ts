@@ -9,6 +9,7 @@
 
 import type { Provider } from "../llm/provider.ts";
 import type { ContentBlock, Usage, StreamEvent, SendParams } from "../llm/types.ts";
+import { accumulateUsage } from "../llm/types.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -91,7 +92,12 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
   let turns = 0;
   let toolUseCount = 0;
   let lastTextOutput = "";
-  const totalUsage: Usage = { inputTokens: 0, outputTokens: 0 };
+  const totalUsage: Usage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+  };
 
   while (turns < maxTurns) {
     turns++;
@@ -137,8 +143,9 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
       };
     }
 
-    totalUsage.inputTokens += response.usage.inputTokens;
-    totalUsage.outputTokens += response.usage.outputTokens;
+    // 累加本轮 usage（统一走 accumulateUsage，补齐 cacheRead/cacheCreation 字段；
+    // response.usage 已是本轮 processStream 累加好的完整 usage）
+    accumulateUsage(totalUsage, response.usage);
 
     // 提取文本输出
     const textBlocks = response.content.filter(b => b.type === "text");

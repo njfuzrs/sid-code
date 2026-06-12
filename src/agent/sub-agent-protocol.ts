@@ -102,6 +102,10 @@ export interface ChildResultMessage {
   turns: number;
   /** 工具调用次数（用于构造结构化 AgentTaskResult） */
   toolUseCount: number;
+  /** 子代理实际使用的模型名（P0-1：归集计费时按此 model 分别计价） */
+  model?: string;
+  /** 子代理实际使用的 provider 名（计费口径区分） */
+  provider?: string;
 }
 
 /** 子进程崩溃消息 */

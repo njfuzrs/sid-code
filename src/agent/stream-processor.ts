@@ -8,6 +8,7 @@
  */
 
 import type { ContentBlock, StreamEvent, Usage } from "../llm/types.ts";
+import { accumulateUsage } from "../llm/types.ts";
 
 /** 流式处理结果 */
 export interface StreamProcessResult {
@@ -32,8 +33,7 @@ export async function processStream(
   for await (const event of stream) {
     switch (event.type) {
       case "message_start":
-        usage.inputTokens += event.message.usage.inputTokens;
-        usage.outputTokens += event.message.usage.outputTokens;
+        accumulateUsage(usage, event.message.usage);
         break;
 
       case "content_block_start":
@@ -82,7 +82,9 @@ export async function processStream(
 
       case "message_delta":
         stopReason = event.delta.stop_reason;
-        usage.outputTokens += event.usage.outputTokens;
+        // 统一走 accumulateUsage：补齐此前丢弃的 inputTokens 与 cacheRead/cacheCreation 字段
+        // （子代理路径原先只加 outputTokens → 接入计费后会按全价计 + input 计 0）
+        accumulateUsage(usage, event.usage);
         break;
 
       case "error":

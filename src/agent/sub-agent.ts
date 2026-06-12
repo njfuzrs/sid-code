@@ -63,6 +63,13 @@ export interface SubAgentResult {
   turns: number;
   /** 工具调用次数（用于构造结构化 AgentTaskResult） */
   toolUseCount: number;
+  /**
+   * 子代理实际使用的模型名（P0-1：子代理可能用不同 subAgentModel，
+   * 归集到主会话计费时需按此 model 分别计价，而非主模型）。
+   */
+  model?: string;
+  /** 子代理实际使用的 provider 名（计费口径区分，缺省时由 model 推断） */
+  provider?: string;
 }
 
 /** 子代理系统提示词（从 AgentDefinition 注册表获取，兼容内置 + 自定义类型） */
@@ -659,6 +666,8 @@ export class SubAgent {
           usage: totalUsage,
           turns: loopResult.turns,
           toolUseCount,
+          model: activeModel,
+          provider: activeProvider.name(),
         };
       } else {
         return {
@@ -667,6 +676,8 @@ export class SubAgent {
           usage: totalUsage,
           turns: loopResult.turns,
           toolUseCount,
+          model: activeModel,
+          provider: activeProvider.name(),
         };
       }
     } catch (err: any) {
@@ -769,6 +780,8 @@ export class SubAgent {
           usage: totalUsage,
           turns: loopResult.turns,
           toolUseCount,
+          model: activeModel,
+          provider: activeProvider.name(),
         };
       } else {
         return {
@@ -777,6 +790,8 @@ export class SubAgent {
           usage: totalUsage,
           turns: loopResult.turns,
           toolUseCount,
+          model: activeModel,
+          provider: activeProvider.name(),
         };
       }
     } catch (err: any) {
