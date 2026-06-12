@@ -35,13 +35,22 @@ export const MODEL_PRICING: Record<string, ModelPricing> = {
 
 const FALLBACK_PRICING: ModelPricing = MODEL_PRICING["claude-sonnet-4-20250514"];
 
-/** 解析模型定价（精确 + 前缀模糊匹配） */
+/** 解析模型定价（精确匹配 + 正向最长前缀匹配） */
 export function resolvePricing(model: string): ModelPricing {
   if (MODEL_PRICING[model]) return MODEL_PRICING[model];
+  // P1-5：只保留正向 model.startsWith(key) 并取最长前缀。
+  // 去掉危险的反向 key.startsWith(model)——它会把短/截断模型名（如 "deepseek-v4"）
+  // 错配到表中先定义的更贵表项（"deepseek-v4-pro"），且依赖键顺序、非确定。
+  // 与 session/state.ts:getPricing 口径保持一致（主题 A：消灭多套实现的修复不同步）。
+  let best: ModelPricing = FALLBACK_PRICING;
+  let bestLen = 0;
   for (const [key, pricing] of Object.entries(MODEL_PRICING)) {
-    if (model.startsWith(key) || key.startsWith(model)) return pricing;
+    if (model.startsWith(key) && key.length > bestLen) {
+      best = pricing;
+      bestLen = key.length;
+    }
   }
-  return FALLBACK_PRICING;
+  return best;
 }
 
 /**

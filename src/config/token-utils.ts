@@ -4,40 +4,18 @@
  */
 
 import type { Attachment } from "./attachments.ts";
+import { estimateTextTokens } from "../context/token.ts";
 
 /**
- * 估算文本的 token 数
- * 根据内容类型使用不同的字符/token 比率：
- * - 中文文本：约 2.0 字符/token（CJK 字符更密集）
- * - 代码：约 3.0 字符/token
- * - 英文文本：约 3.5 字符/token
+ * 估算文本的 token 数。
+ *
+ * EST-1：收敛为单一权威实现——直接复用 context/token.ts 的 estimateTextTokens
+ * （字符级逐个分类：ASCII 0.20、非 ASCII 0.55 tok/char，经 DeepSeek 官方 tokenizer 实测校准）。
+ * 此前本函数自带一套粗比例系数（中文 2.0 / 代码 3.0 / 英文 3.5 字符每 token），
+ * 与权威实现口径打架（英文 3.5≈0.286 vs 0.20，同段文本估出不同值）。统一改调消灭分叉。
  */
 export function estimateTokens(text: string): number {
-  if (!text) return 0;
-
-  // 统计 CJK 字符数量
-  const cjkCount = (text.match(/[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/g) || []).length;
-  const cjkRatio = cjkCount / text.length;
-
-  // 统计代码特征（关键字、符号密度）
-  const codePatterns = /(?:function |class |const |let |var |import |export |return |if |for |while |=>|[{}();=])/g;
-  const codeMatches = (text.match(codePatterns) || []).length;
-  const codeRatio = codeMatches / Math.max(1, text.length / 50); // 每 50 字符的代码特征数
-
-  let charsPerToken: number;
-
-  if (cjkRatio > 0.3) {
-    // 中文为主的内容
-    charsPerToken = 2.0;
-  } else if (codeRatio > 0.5) {
-    // 代码为主的内容
-    charsPerToken = 3.0;
-  } else {
-    // 英文为主的内容
-    charsPerToken = 3.5;
-  }
-
-  return Math.ceil(text.length / charsPerToken);
+  return estimateTextTokens(text);
 }
 
 /** 截断结果（结构化，便于日志追踪） */
@@ -96,7 +74,7 @@ export function truncateToLimit(
         const attTokens = estimateTokens(attachment.content);
         const charsPerToken = attTokens > 0 ? attachment.content.length / attTokens : 3.5;
         const truncatedChars = Math.floor(remainingTokens * charsPerToken);
-        const truncatedContent = attachment.content.slice(0, truncatedChars) + "\n\n[... 内容已截断 ...]";
+        const truncatedContent = attachment.content.slice(0, truncatedChars) + "\n\n[内容已截断]";
         content += "\n\n" + truncatedContent;
         truncated = attachment;
       } else {

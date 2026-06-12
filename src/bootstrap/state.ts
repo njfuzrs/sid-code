@@ -116,7 +116,10 @@ export function addModelUsage(
     inputTokens: 0,
     outputTokens: 0,
   };
-  existing.inputTokens += input;
+  // ACC-5：inputTokens 用末次覆盖（=），与 SessionState.updateUsage 口径一致。
+  // Anthropic/OpenAI 的 input 含全部历史，逐次 += 会 N² 过计数；末次值天然去重。
+  // outputTokens 是 per-call 增量，累加（+=）正确。
+  existing.inputTokens = input;
   existing.outputTokens += output;
   state.modelUsage[model] = existing;
 }

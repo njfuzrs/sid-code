@@ -144,7 +144,14 @@ async function runAgentLoop(
   // 不让定时器阻止进程退出
   if (timeoutId.unref) timeoutId.unref();
 
-  const totalUsage: Usage = { inputTokens: 0, outputTokens: 0 };
+  // P0/P1-2：初始化补齐缓存字段，回传父进程的 totalUsage 才能携带命中/写入量，
+  // 否则父会话 sink 按全价计费、子代理缓存省钱失真。
+  const totalUsage: Usage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+  };
   let turns = 0;
   let lastTextOutput = "";
   let toolUseCount = 0;
@@ -176,8 +183,9 @@ async function runAgentLoop(
       // 处理流式响应
       const response = await processStream(stream);
 
-      totalUsage.inputTokens += response.usage.inputTokens;
-      totalUsage.outputTokens += response.usage.outputTokens;
+      // P0/P1-2：统一走 accumulateUsage，补齐 cacheRead/cacheCreation，
+      // 与 query/agent/agentic-loop 三处口径一致（消灭第四套拷贝的丢字段缺陷）。
+      accumulateUsage(totalUsage, response.usage);
 
       // 提取文本输出
       const textBlocks = response.content.filter(b => b.type === "text");

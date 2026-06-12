@@ -283,6 +283,21 @@ export class App {
     // 子代理执行完毕后按其实际使用的 model/provider 回写主会话 SessionState，
     // 否则子代理烧的 token/费用完全不计入总费用、costLimit 守卫对子代理失效。
     this.wireSubAgentUsageSink();
+
+    // EST-4：注入工具定义的真实 schema token 数，替代 ContextManager 内 toolCount×80 粗估，
+    // 避免 schema 大/工具多时低估上下文占用、compact 触发过晚。
+    this.refreshToolSchemaTokens();
+  }
+
+  /** 重算并注入工具定义的真实 token 数（EST-4）。工具池变化（含 MCP 连接）后可重复调用。 */
+  refreshToolSchemaTokens(): void {
+    try {
+      const defs = this.toolRegistry.definitions();
+      const tokens = new TokenEstimator().estimateTools(defs);
+      this.ctxMgr.setToolSchemaTokens(tokens);
+    } catch {
+      // 估算失败不致命：ContextManager 回退到 toolCount×80 粗估
+    }
   }
 
   /** 注入子代理 usage 归集 sink（P0-1）。遍历工具注册表，给所有带 setUsageSink 的工具接线。 */

@@ -4,6 +4,7 @@
 
 import { describe, test, expect } from "bun:test";
 import { estimateTokens, truncateToLimit } from "../../src/config/token-utils.ts";
+import { estimateTextTokens } from "../../src/context/token.ts";
 import type { Attachment } from "../../src/config/attachments.ts";
 
 describe("estimateTokens", () => {
@@ -11,27 +12,44 @@ describe("estimateTokens", () => {
     expect(estimateTokens("")).toBe(0);
   });
 
-  test("英文文本使用 ~3.5 字符/token", () => {
+  // EST-1：estimateTokens 已收敛为复用 context/token.ts 的权威字符级估算
+  // （ASCII 0.20 tok/char、非 ASCII 0.55 tok/char），不再自带分内容类型的系数。
+  // 以下用例验证收敛后的统一口径，而非旧的"中文2.0/代码3.0/英文3.5字符每token"分档。
+
+  test("英文文本：ASCII ~0.20 tok/char", () => {
     const text = "Hello world, this is a test string for token estimation.";
     const tokens = estimateTokens(text);
-    // 56 字符 / 3.5 ≈ 16
+    // 56 字符 × 0.20 ≈ 11~12
+    expect(tokens).toBeGreaterThan(8);
+    expect(tokens).toBeLessThan(18);
+  });
+
+  test("中文文本：非 ASCII ~0.55 tok/char", () => {
+    const text = "你好世界，这是一个用于测试的中文字符串，包含足够多的中文字符来触发中文检测。";
+    const tokens = estimateTokens(text);
+    // 约 38 个非 ASCII 字符 × 0.55 ≈ 20 上下
+    expect(tokens).toBeGreaterThan(15);
+    expect(tokens).toBeLessThan(30);
+  });
+
+  test("代码文本：ASCII ~0.20 tok/char", () => {
+    const text = `function hello() { const x = 1; return x; } class Foo { constructor() {} }`;
+    const tokens = estimateTokens(text);
+    // 74 字符全 ASCII × 0.20 ≈ 15
     expect(tokens).toBeGreaterThan(10);
     expect(tokens).toBeLessThan(25);
   });
 
-  test("中文文本使用 ~2.0 字符/token", () => {
-    const text = "你好世界，这是一个用于测试的中文字符串，包含足够多的中文字符来触发中文检测。";
-    const tokens = estimateTokens(text);
-    // 中文字符占比高，使用 2.0 字符/token
-    expect(tokens).toBeGreaterThan(15);
-    expect(tokens).toBeLessThan(40);
-  });
-
-  test("代码文本使用 ~3.0 字符/token", () => {
-    const text = `function hello() { const x = 1; return x; } class Foo { constructor() {} }`;
-    const tokens = estimateTokens(text);
-    expect(tokens).toBeGreaterThan(15);
-    expect(tokens).toBeLessThan(35);
+  test("EST-1：与权威估算器 estimateTextTokens 完全一致", () => {
+    const samples = [
+      "Hello world",
+      "你好世界，测试中文",
+      "function f() { return 42; }",
+      "mixed 混合 content 内容 123",
+    ];
+    for (const s of samples) {
+      expect(estimateTokens(s)).toBe(estimateTextTokens(s));
+    }
   });
 });
 

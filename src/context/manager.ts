@@ -104,11 +104,31 @@ export class Manager {
   private calibrated: boolean = false;
   /** 上一次 API 返回的真实输入 token 数（P1-6：compact 决策优先用它作锚点，而非纯字符估算） */
   private lastActualInputTokens: number = 0;
+  /**
+   * 工具定义的真实 token 数（EST-4）：由上层在工具就绪后通过 setToolSchemaTokens 注入。
+   * 估算时优先用它，回退到 toolCount×80 粗估（schema 大/工具多时粗估明显偏低）。
+   * null 表示尚未注入真实值。
+   */
+  private toolSchemaTokens: number | null = null;
 
   constructor(opts: ManagerOptions) {
     this.maxTokens = opts.maxTokens;
     this.compactThreshold = opts.compactThreshold ?? 0.7;
     this.tempDir = opts.tempDir;
+  }
+
+  /**
+   * 注入工具定义的真实 token 数（EST-4）。
+   *
+   * 上层在工具池就绪后（含 MCP 异步连接）序列化全部工具定义并估算其 token，
+   * 调用此方法注入。此后 rawEstimateTokens 用真实值替代 toolCount×80 粗估，
+   * 避免 schema 大/工具多时低估上下文占用、导致 compact 触发过晚。
+   *
+   * @param tokens 全部工具定义序列化后的估算 token 数；传 0 或负数视为未知，回退粗估。
+   */
+  setToolSchemaTokens(tokens: number): void {
+    this.toolSchemaTokens =
+      Number.isFinite(tokens) && tokens > 0 ? Math.ceil(tokens) : null;
   }
 
   /**
@@ -587,8 +607,9 @@ export class Manager {
     // 系统提示词
     let total = estimateTextTokens(this.systemPrompt);
 
-    // 工具定义开销（每个工具约 80 token）
-    total += toolCount * 80;
+    // 工具定义开销：EST-4 优先用注入的真实 schema token 数；
+    // 未注入时回退每工具 80 token 粗估（schema 大/工具多时偏低）。
+    total += this.toolSchemaTokens ?? toolCount * 80;
 
     // 消息内容 + 结构开销
     for (const msg of this.messages) {
