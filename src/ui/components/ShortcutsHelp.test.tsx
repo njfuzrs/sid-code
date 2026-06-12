@@ -4,12 +4,12 @@
  * 验证 ShortcutsHelp 从 DEFAULT_BINDINGS 生成后,仍渲染出全部关键快捷键。
  * 防止「从表生成」重构后丢项。
  *
- * ink-testing-library 4.0.0 已验证可用于 @jrichman/ink@6.4.11 fork(2026-06-04 实测)。
+ * 测试渲染用 vendored ink 的测试 shim(src/ink/_vendor/testing.tsx)抓 lastFrame 断言。
  */
 
 import { test, expect, describe } from "bun:test";
 import React from "react";
-import { render } from "ink-testing-library";
+import { render } from "../../ink/_vendor/testing.js";
 import { ShortcutsHelp } from "./ShortcutsHelp.tsx";
 
 describe("K1 — ShortcutsHelp 从表生成", () => {

@@ -191,7 +191,7 @@ function parseCLIArgs(): CLIArgs {
 /** 处理浏览会话命令 */
 async function handleBrowseSessions(config: Config): Promise<void> {
   const React = await import("react");
-  const { render } = await import("ink");
+  const { default: render } = await import("./ink/root.js");
   const { SessionBrowser } = await import("./session/browser.tsx");
   const { SessionStore } = await import("./session/store.ts");
   const { sidPaths } = await import("./config/paths.ts");
@@ -203,7 +203,7 @@ async function handleBrowseSessions(config: Config): Promise<void> {
 
   let selectedSession: any = null;
 
-  const { waitUntilExit } = render(
+  const { waitUntilExit } = await render(
     React.createElement(SessionBrowser, {
       config,
       currentSessionId: config.sessionId,

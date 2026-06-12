@@ -3,16 +3,16 @@
  *
  * 系统级查漏补缺方案 §防线4 D4-2：对核心消息/状态组件加 golden snapshot，防渲染回归。
  * 此前 src/ui 仅 2 个测试（K1 新加），渲染层几乎裸奔。本文件覆盖几个**纯展示、低依赖**
- * 的核心组件（diff 渲染 / 加载指示 / Copy Mode 警告），用 ink-testing-library 抓
+ * 的核心组件（diff 渲染 / 加载指示 / Copy Mode 警告），用 vendored ink 的测试 shim 抓
  * lastFrame 做内容断言（非逐字符 golden，避免 spinner/颜色码带来的脆弱性）。
  *
- * ink-testing-library 4.0.0 已验证可用于 @jrichman/ink@6.4.11 fork（2026-06-04 实测）。
+ * 测试 shim: src/ink/_vendor/testing.tsx（基于 vendored ink 的 renderSync + PassThrough 捕获帧）。
  * fix_type: entry_code（L2）
  */
 
 import { test, expect, describe } from "bun:test";
 import React from "react";
-import { render } from "ink-testing-library";
+import { render } from "../../ink/_vendor/testing.js";
 import { DiffRenderer } from "./DiffRenderer.tsx";
 import { LoadingIndicator } from "./LoadingIndicator.tsx";
 import { CopyModeWarning } from "./CopyModeWarning.tsx";
