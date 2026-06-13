@@ -11,13 +11,13 @@
 
 ## 0.1 战略定位（2026-05 起，长期不变）
 
-sid-code **不是**"又一个 Coding CLI"——从 2026-05 起向"对外可交付的研发智能基座"（档位 B）演进，路线按 Sprint S0–S4 / 里程碑 M0–M3 推进。这是后续全部 task 的根背景。
+sid-code 是一个**通用 AI 编程基座**，对标 Claude Code 的 Agentic While-Loop 架构。从 2026-05 起向"对外可交付的研发智能基座"（档位 B）演进，路线按 Sprint S0–S4 / 里程碑 M0–M3 推进。这是后续全部 task 的根背景。
 
 - **完整战略**：`docs/eval/演进路线/智能研发基座-final.md`
 - **档位选择**：B（对外可交付）；**不追求** C（跨行业平台，那是 Port/Backstage 赛道，护城河在企业销售关系而非技术）
 - **产品范式**：C — 通用 Runtime + Skills（**禁止**做"N 个独立 Agent"或"单体大 Agent"）
-- **核心叙事**：**"为 AI 代码兜底"**（Code Review / Security / Governance / Incident），不是"用 AI 加速编程"——前者新增需求，后者已红海
-- **PR-to-Prod 主轴 5 个 Skill**：code-review → ci-self-heal → incident-rca → security-audit → code-governance
+- **核心叙事**：**通用 AI 编程基座 + 多垂直场景 Skill 集**。基座层面对标 Claude Code，帮开发者写好代码；Skill 体系让基座能力横向扩展到 Review / CI / Security / Governance / Incident 等质量保障场景，形成"先写好代码，再兜好底"的完整闭环
+- **首批重点 Skill**：code-review / ci-self-heal / incident-rca / security-audit / code-governance（覆盖 PR-to-Prod 质量闸门），同一基座未来可扩展到更多垂直场景
 - **技术栈**：TypeScript + Bun + Ink；核心架构 Agentic While-Loop（用户输入 → LLM 流式响应 → stop_reason=tool_use 时执行工具并继续循环，end_turn 时结束）
 
 ### 五层洋葱架构（任何改动前先确认改的是哪一层）
