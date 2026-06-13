@@ -8,8 +8,10 @@
 import type { Theme } from './theme.ts';
 import { DefaultDark } from './builtin/dark/default-dark.ts';
 import { GitHubDark } from './builtin/dark/github-dark.ts';
+import { DaltonizedDark } from './builtin/dark/daltonized-dark.ts';
 import { DefaultLight } from './builtin/light/default-light.ts';
 import { GitHubLight } from './builtin/light/github-light.ts';
+import { DaltonizedLight } from './builtin/light/daltonized-light.ts';
 import { getThemeTypeFromBackgroundColor } from './color-utils.ts';
 
 export const DEFAULT_THEME: Theme = DefaultDark;
@@ -31,6 +33,8 @@ class ThemeManager {
       DefaultLight,
       GitHubDark,
       GitHubLight,
+      DaltonizedDark,
+      DaltonizedLight,
     ];
     this.activeTheme = DEFAULT_THEME;
   }

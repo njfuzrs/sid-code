@@ -127,6 +127,26 @@ describe("SessionState.calculateCost — 口径修复", () => {
     expect(savingsNone).toBe(0);
     expect(savingsCached).toBeGreaterThan(0);
   });
+
+  test("本地 provider（ollama）计费恒 0，不被 FALLBACK_PRICING 误算（P2-2）", () => {
+    const ss = new SessionState("test");
+    // 本地模型名（llama3）不在定价表，旧逻辑会走兜底价算出真金白银费用并误触 costLimit。
+    // 显式 provider="ollama" 时应恒 0。
+    const cost = ss.calculateCost("llama3", { inputTokens: 100000, outputTokens: 5000 }, "ollama");
+    expect(cost).toBe(0);
+    // 本地无费用即无"节省"
+    const savings = ss.calculateSavings("llama3", { inputTokens: 100000, outputTokens: 5000, cacheReadInputTokens: 50000 }, "ollama");
+    expect(savings).toBe(0);
+  });
+
+  test("isLocalProvider 识别常见本地 provider（P2-2）", () => {
+    expect(SessionState.isLocalProvider("ollama")).toBe(true);
+    expect(SessionState.isLocalProvider("Ollama")).toBe(true);
+    expect(SessionState.isLocalProvider("lmstudio")).toBe(true);
+    expect(SessionState.isLocalProvider("openai")).toBe(false);
+    expect(SessionState.isLocalProvider("anthropic")).toBe(false);
+    expect(SessionState.isLocalProvider(undefined)).toBe(false);
+  });
 });
 
 describe("SessionState.getNormalizedCacheUsage — 会话级汇总", () => {

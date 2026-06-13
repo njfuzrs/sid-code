@@ -1968,6 +1968,12 @@ export class App {
               this.provider = this.providerRegistry.getProvider();
               this.queryEngine.updateProvider(this.provider);
             }
+            // 同步上下文窗口：新模型窗口可能与旧模型不同（如 200k↔1M）。
+            // 不更新会让 compact 决策与 Footer 上下文百分比沿用旧窗口作分母而失真。
+            try {
+              const newWindow = new TokenEstimator().getContextLimit(m);
+              this.ctxMgr.setMaxTokens(newWindow);
+            } catch { /* 窗口解析失败不影响切换，沿用旧窗口 */ }
             updateState({ model: m });
           },
           exitRequested: false,

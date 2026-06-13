@@ -17,6 +17,9 @@ export interface SemanticColors {
     diff: {
       added: string;
       removed: string;
+      /** 词级 diff 中「变化词」的强调底色（比整行底色更深） */
+      addedEmphasis: string;
+      removedEmphasis: string;
     };
   };
   border: {
@@ -54,6 +57,8 @@ export const darkSemanticColors: SemanticColors = {
     diff: {
       added: '#1e3a2e',
       removed: '#3a1e1e',
+      addedEmphasis: '#2d5a43',
+      removedEmphasis: '#5a2d2d',
     },
   },
   border: {
@@ -91,6 +96,8 @@ export const lightSemanticColors: SemanticColors = {
     diff: {
       added: '#d4edda',
       removed: '#f8d7da',
+      addedEmphasis: '#a3d9b1',
+      removedEmphasis: '#f1aeb5',
     },
   },
   border: {

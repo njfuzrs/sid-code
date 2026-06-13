@@ -54,6 +54,37 @@ describe("ProviderRegistry", () => {
     expect(registry.getModelForSubAgent("plan")).toBe("main-model");
   });
 
+  test("getSpawnConfigForSubAgent：未映射类型沿用主模型 + 主 spawn 配置（P1-1）", () => {
+    const config = testConfig({ model: "main-model", provider: "openai", baseURL: "https://api.test.com/v1" });
+    const registry = new ProviderRegistry(config);
+    const sc = registry.getSpawnConfigForSubAgent("explore");
+    expect(sc.model).toBe("main-model");
+    expect(sc.providerName).toBe("openai");
+    expect(sc.baseURL).toBe("https://api.test.com/v1");
+  });
+
+  test("getSpawnConfigForSubAgent：映射类型返回子模型及其 availableModels 中的 provider 配置（P1-1）", () => {
+    const config = testConfig({ model: "main-model" });
+    const registry = new ProviderRegistry(config, {
+      explore: "cheap-model",   // 在 availableModels 中：openai + cheap baseURL
+    });
+    const sc = registry.getSpawnConfigForSubAgent("explore");
+    // 关键：spawn 模式必须用子代理实际模型，而非主模型 —— 否则与进程内模式计费口径分裂
+    expect(sc.model).toBe("cheap-model");
+    expect(sc.providerName).toBe("openai");
+    expect(sc.baseURL).toBe("https://api.cheap.com/v1");
+  });
+
+  test("getSpawnConfigForSubAgent：映射到 anthropic 模型时切换 provider（P1-1）", () => {
+    const config = testConfig({ model: "main-model", anthropicKey: "sk-ant-test" });
+    const registry = new ProviderRegistry(config, {
+      plan: "anthropic-model",
+    });
+    const sc = registry.getSpawnConfigForSubAgent("plan");
+    expect(sc.model).toBe("anthropic-model");
+    expect(sc.providerName).toBe("anthropic");
+  });
+
   test("clearCache 清除缓存", () => {
     const config = testConfig();
     const registry = new ProviderRegistry(config);

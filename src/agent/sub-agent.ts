@@ -316,6 +316,15 @@ export class SubAgent {
     const systemPrompt = await enhanceSubAgentPrompt(basePrompt, this.language, process.cwd());
     const toolDefs = this.getToolDefs(task);
 
+    // 计费口径对齐：spawn 模式按子代理类型解析模型 + 对应 provider 配置，
+    // 与进程内 executeInner 的 getModelForSubAgent/getProviderForSubAgent 口径一致。
+    // 缺省（registry 未实现）回退主模型 + 主 spawn 配置。
+    const sc = this.registry?.getSpawnConfigForSubAgent?.(task.type);
+    const model = sc?.model ?? this.model;
+    const providerName = sc?.providerName ?? this.spawnConfig!.providerName;
+    const apiKey = sc?.apiKey ?? this.spawnConfig!.apiKey;
+    const baseURL = sc?.baseURL ?? this.spawnConfig?.baseURL;
+
     const initMsg: ParentInitMessage = {
       type: "init",
       session_id: `subagent-${task.type}-${Date.now()}`,
@@ -324,14 +333,14 @@ export class SubAgent {
       user_prompt: task.prompt,
       allowed_tools: toolDefs.map(t => t.name),
       tool_defs: toolDefs,
-      model: this.model,
+      model,
       max_turns: task.maxTurns ?? 10,
       max_tokens: task.maxTokens ?? 50000,
       timeout: task.timeout ?? 120_000,
       workdir: process.cwd(),
-      provider_name: this.spawnConfig!.providerName,
-      api_key: this.spawnConfig!.apiKey,
-      base_url: this.spawnConfig?.baseURL,
+      provider_name: providerName,
+      api_key: apiKey,
+      base_url: baseURL,
     };
 
     return this.executeSpawnedInternal(initMsg, task.tools ?? this.toolRegistry, signal);
@@ -345,6 +354,13 @@ export class SubAgent {
       : new ToolRegistry();
     const toolDefs = this.getCustomToolDefs(task.allowedTools);
 
+    // 计费口径对齐 executeCustomInner：modelOverride 优先，否则按 "task" 类型解析。
+    const sc = this.registry?.getSpawnConfigForSubAgent?.("task");
+    const model = this.modelOverride ?? sc?.model ?? this.model;
+    const providerName = sc?.providerName ?? this.spawnConfig!.providerName;
+    const apiKey = sc?.apiKey ?? this.spawnConfig!.apiKey;
+    const baseURL = sc?.baseURL ?? this.spawnConfig?.baseURL;
+
     const initMsg: ParentInitMessage = {
       type: "init",
       session_id: `subagent-custom-${Date.now()}`,
@@ -353,14 +369,14 @@ export class SubAgent {
       user_prompt: task.userPrompt,
       allowed_tools: task.allowedTools,
       tool_defs: toolDefs,
-      model: this.model,
+      model,
       max_turns: task.maxTurns ?? 10,
       max_tokens: task.maxTokens ?? 50000,
       timeout: task.timeout ?? 120_000,
       workdir: process.cwd(),
-      provider_name: this.spawnConfig!.providerName,
-      api_key: this.spawnConfig!.apiKey,
-      base_url: this.spawnConfig?.baseURL,
+      provider_name: providerName,
+      api_key: apiKey,
+      base_url: baseURL,
     };
 
     return this.executeSpawnedInternal(initMsg, tools, signal);

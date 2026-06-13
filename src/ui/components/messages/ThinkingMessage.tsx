@@ -12,6 +12,7 @@
 import React from "react";
 import Box from "../../../ink/components/Box.js";
 import Text from "../../../ink/components/Text.js";
+import { useInterval } from "../../../ink/hooks/use-interval.ts";
 import { theme } from "../../semantic-colors.ts";
 
 interface ThinkingMessageProps {
@@ -21,6 +22,46 @@ interface ThinkingMessageProps {
   collapsed?: boolean;
   /** 是否正在流式输出（仅影响标题文案：思考中… vs 思考过程） */
   streaming?: boolean;
+  /** 思考耗时（秒）。流式态由组件自计时；完成态可由外部传入冻结值 */
+  thinkingSeconds?: number;
+}
+
+/** 格式化思考耗时 */
+function formatThinkingDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}m${s}s`;
+}
+
+/**
+ * 思考态计时 Hook：仅在 streaming=true 时累加秒数，停止后冻结当前值。
+ * 借共享 Clock（useInterval），不额外开 setInterval。
+ */
+function useThinkingTimer(streaming: boolean): number {
+  const [seconds, setSeconds] = React.useState(0);
+  const startRef = React.useRef<number | null>(null);
+
+  // 进入流式态时记录起点并清零；离开流式态时保留最后值（冻结）。
+  React.useEffect(() => {
+    if (streaming) {
+      startRef.current = Date.now();
+      setSeconds(0);
+    } else {
+      startRef.current = null;
+    }
+  }, [streaming]);
+
+  useInterval(
+    () => {
+      if (startRef.current !== null) {
+        setSeconds(Math.floor((Date.now() - startRef.current) / 1000));
+      }
+    },
+    streaming ? 1000 : null,
+  );
+
+  return seconds;
 }
 
 /**
@@ -52,7 +93,12 @@ export const ThinkingMessage: React.FC<ThinkingMessageProps> = ({
   width,
   collapsed = false,
   streaming = false,
+  thinkingSeconds,
 }) => {
+  // 流式态自计时；完成态优先用外部传入的冻结值，无则自计时器最后值。
+  const timerSeconds = useThinkingTimer(streaming);
+  const elapsed = thinkingSeconds ?? timerSeconds;
+
   if (!text.trim()) return null;
 
   // 折叠态：单行摘要
@@ -69,7 +115,12 @@ export const ThinkingMessage: React.FC<ThinkingMessageProps> = ({
   const lines = normalizeThinkingLines(text);
   if (lines.length === 0) return null;
 
-  const title = streaming ? "✻ 思考中…" : "✻ 思考过程";
+  // 标题：流式中显示「思考中… (Ns)」实时耗时；完成态显示「已思考 Ns」
+  const title = streaming
+    ? `✻ 思考中… (${formatThinkingDuration(elapsed)})`
+    : elapsed > 0
+      ? `✻ 已思考 ${formatThinkingDuration(elapsed)}`
+      : "✻ 思考过程";
   // 正文容器扣除 marginLeft(1)，其内 border(1)+paddingLeft(1) 由 ink 在该宽度内分配
   const bodyWidth = Math.max(1, width - 1);
 

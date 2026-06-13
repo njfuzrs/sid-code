@@ -156,6 +156,21 @@ async function runAgentLoop(
   let lastTextOutput = "";
   let toolUseCount = 0;
 
+  // 计费口径修复：result 显式回传子代理实际 model/provider（来自 init），
+  // 父进程归集时按此计价，不再依赖兜底；spawn 与进程内模式口径一致。
+  const emitResult = (success: boolean, output: string): void => {
+    writeChildMsg({
+      type: "result",
+      success,
+      output,
+      usage: totalUsage,
+      turns,
+      toolUseCount,
+      model: init.model,
+      provider: init.provider_name,
+    });
+  };
+
   try {
     while (turns < init.max_turns) {
       turns++;
@@ -206,14 +221,7 @@ async function runAgentLoop(
         response.stopReason === "stop"
       ) {
         // 正常结束
-        writeChildMsg({
-          type: "result",
-          success: true,
-          output: lastTextOutput,
-          usage: totalUsage,
-          turns,
-          toolUseCount,
-        });
+        emitResult(true, lastTextOutput);
         return;
       }
 
@@ -225,14 +233,7 @@ async function runAgentLoop(
 
         if (toolUses.length === 0) {
           // 没有工具调用但 stop_reason 是 tool_use (异常)
-          writeChildMsg({
-            type: "result",
-            success: false,
-            output: "LLM 返回 tool_use stop_reason 但没有工具调用",
-            usage: totalUsage,
-            turns,
-            toolUseCount,
-          });
+          emitResult(false, "LLM 返回 tool_use stop_reason 但没有工具调用");
           return;
         }
 
@@ -299,26 +300,12 @@ async function runAgentLoop(
       }
 
       // 未知 stop_reason → 退出
-      writeChildMsg({
-        type: "result",
-        success: true,
-        output: lastTextOutput,
-        usage: totalUsage,
-        turns,
-        toolUseCount,
-      });
+      emitResult(true, lastTextOutput);
       return;
     }
 
     // 达到最大轮次
-    writeChildMsg({
-      type: "result",
-      success: true,
-      output: lastTextOutput || `已达到最大轮次 (${init.max_turns})`,
-      usage: totalUsage,
-      turns,
-      toolUseCount,
-    });
+    emitResult(true, lastTextOutput || `已达到最大轮次 (${init.max_turns})`);
   } finally {
     clearTimeout(timeoutId);
   }

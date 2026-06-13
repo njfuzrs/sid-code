@@ -80,6 +80,40 @@ export class ProviderRegistry {
     return mapped || this.config.model;
   }
 
+  /**
+   * 获取子代理 spawn 配置（按类型解析模型 + 对应 provider/apiKey/baseURL）。
+   *
+   * 计费口径修复：spawn 模式此前固定用主模型 + 主 provider 配置（this.model / getSpawnConfig），
+   * 与进程内模式 getModelForSubAgent/getProviderForSubAgent 的"按类型选模型"口径分裂——
+   * 配了 subAgentModels 时同一子任务在两种执行模式下会按不同模型计费（可差数十倍）。
+   * 此方法让 spawn 与进程内对齐：返回子代理实际模型及其在 availableModels 中配置的 provider。
+   */
+  getSpawnConfigForSubAgent(type: string): {
+    model: string;
+    providerName: string;
+    apiKey: string;
+    baseURL?: string;
+  } {
+    const model = this.getModelForSubAgent(type);
+    // 子代理模型与主模型相同 → 复用主 spawn 配置
+    if (model === this.config.model) {
+      const base = this.getSpawnConfig();
+      return { model, providerName: base.providerName, apiKey: base.apiKey, baseURL: base.baseURL };
+    }
+    // 子代理模型在 availableModels 中有独立配置 → 用其 provider/apiKey/baseURL
+    const modelConfig = this.findModelConfig(model);
+    if (modelConfig) {
+      const providerName = modelConfig.provider || this.config.provider;
+      const apiKey = modelConfig.apiKey || this.getApiKey(providerName);
+      const baseURL = modelConfig.baseURL
+        || (providerName === this.config.provider ? this.config.baseURL : undefined);
+      return { model, providerName, apiKey, baseURL: baseURL || undefined };
+    }
+    // 未找到独立配置 → 沿用主 provider 配置，仅模型名不同（与 getProviderForSubAgent 末路径一致）
+    const base = this.getSpawnConfig();
+    return { model, providerName: base.providerName, apiKey: base.apiKey, baseURL: base.baseURL };
+  }
+
   /** 获取子代理 Provider（根据模型在 availableModels 中的配置自动选择） */
   getProviderForSubAgent(type: string): Provider {
     const model = this.getModelForSubAgent(type);

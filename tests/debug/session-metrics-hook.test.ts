@@ -223,3 +223,31 @@ describe("SessionMetricsCollector 通用计数器/仪表", () => {
     expect(summary).not.toContain("Harness");
   });
 });
+
+describe("SessionMetricsCollector 命中率口径（P2-1：flow，非 stock/flow 混用）", () => {
+  test("命中率分母用累计 promptTotal，多轮后不虚高", () => {
+    const collector = new SessionMetricsCollector();
+    // 模拟 DeepSeek（openai 口径）多轮：每轮 prompt 含历史，命中累加。
+    // inputTokens 是含命中的全量 prompt（stock，逐轮增长）；cacheRead 是 per-request 命中。
+    // 旧逻辑分母 = 末次 input(stock) + 累计命中(flow) → 多轮后命中累加远超末次输入，命中率虚高甚至 >100%。
+    // 新逻辑分母 = 累计 promptTotal(flow) = Σ各轮 prompt_tokens，与累计命中同口径。
+    collector.recordLlmResponse("deepseek-v4-pro", 10_000, 100, 500, 0.01, false, 8_000, 0, "openai");
+    collector.recordLlmResponse("deepseek-v4-pro", 12_000, 100, 500, 0.01, false, 10_000, 0, "openai");
+    collector.recordLlmResponse("deepseek-v4-pro", 14_000, 100, 500, 0.01, false, 12_000, 0, "openai");
+
+    const m = collector.getMetrics();
+    // 累计命中 = 8000+10000+12000 = 30000
+    expect(m.llm.totalCacheReadTokens).toBe(30_000);
+    // 累计 promptTotal = 10000+12000+14000 = 36000（openai 口径 promptTotal=prompt_tokens）
+    expect(m.llm.totalCumulativePromptTokens).toBe(36_000);
+
+    // 命中率 = 30000/36000 ≈ 83%，必须 ≤ 100%（旧逻辑用末次 input 14000 作分母会算出 30000/44000 口径错乱）
+    const summary = collector.getSummary();
+    const match = summary.match(/命中 (\d+)%/);
+    expect(match).not.toBeNull();
+    const rate = Number(match![1]);
+    expect(rate).toBeGreaterThan(0);
+    expect(rate).toBeLessThanOrEqual(100);
+    expect(rate).toBe(Math.round((30_000 / 36_000) * 100));
+  });
+});

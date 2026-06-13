@@ -17,6 +17,7 @@ import chalk from "chalk";
 import { marked } from "marked";
 import { highlight as cliHighlight, supportsLanguage } from "cli-highlight";
 import stringWidth from "string-width";
+import { supportsHyperlinks } from "../ink/supports-hyperlinks.ts";
 import { getLogger } from "../debug/logger.ts";
 
 // ── 常量 ────────────────────────────────────────────────────────
@@ -428,15 +429,14 @@ function renderLink(label: string, href: string): string {
   // 使用主题配置的链接颜色，而不是 chalk 默认蓝色
   const styledLabel = chalk.hex(theme.text.link).underline(label);
 
-  // 关键修复：在非 TTY 环境下禁用 OSC 8 超链接，只保留颜色和下划线
-  // 避免在表格等场景中显示裸露的转义码
-  const isTTY = process.stdout.isTTY;
-
-  if (isTTY) {
-    // TTY 环境：使用 OSC 8 超链接
+  // 关键修复：仅在终端真正支持 OSC 8 超链接时才发送转义序列。
+  // 此前用 process.stdout.isTTY 判断会误伤——很多 TTY 终端并不支持 OSC 8，
+  // 会把裸露的转义码显示出来。改用 supportsHyperlinks() 做真实终端兼容检测
+  // （覆盖 iTerm2/Kitty/Ghostty/alacritty/Hyper + tmux 透传等），
+  // 不支持的终端降级为「颜色 + 下划线」纯文本。
+  if (supportsHyperlinks()) {
     return `\x1b]8;;${href}\x1b\\${styledLabel}\x1b]8;;\x1b\\`;
   } else {
-    // 非 TTY 环境：只使用颜色和下划线，不使用 OSC 8
     return styledLabel;
   }
 }

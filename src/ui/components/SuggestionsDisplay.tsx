@@ -19,6 +19,10 @@ export interface Suggestion {
   value: string;
   /** 描述（命令补全用） */
   description?: string;
+  /** 分类图标（单字符，如 📁 / 📄 / ⌘），显示在 label 前 */
+  icon?: string;
+  /** 分类标签（如「命令」「文件」「目录」），显示在行尾 dim 色 */
+  tag?: string;
 }
 
 interface SuggestionsDisplayProps {
@@ -49,24 +53,35 @@ export function SuggestionsDisplay({ suggestions, activeIndex, width }: Suggesti
       {visible.map((item, i) => {
         const realIndex = startIdx + i;
         const isActive = realIndex === activeIndex;
+        // 图标前缀（如有），label 前显示
+        const iconPrefix = item.icon ? `${item.icon} ` : "";
+        // 行尾标签（如有），dim 色
+        const tagSuffix = item.tag ? `  [${item.tag}]` : "";
         // 截断标签和描述以适应宽度
         const desc = item.description ? `  ${item.description}` : "";
-        const maxLabelWidth = innerWidth - (desc ? Math.min(desc.length, 30) : 0);
+        const reserved = (desc ? Math.min(desc.length, 30) : 0) + tagSuffix.length + iconPrefix.length;
+        const maxLabelWidth = Math.max(4, innerWidth - reserved);
         const label = item.label.length > maxLabelWidth
           ? item.label.slice(0, maxLabelWidth - 1) + "…"
           : item.label;
         const descTruncated = desc.length > 30 ? desc.slice(0, 29) + "…" : desc;
+        const labelWithIcon = `${iconPrefix}${label}`;
+        const padCount = Math.max(
+          0,
+          innerWidth - labelWithIcon.length - descTruncated.length - tagSuffix.length,
+        );
 
         return (
           <Box key={`suggestion-${realIndex}`}>
             {isActive ? (
               <Text inverse color={theme.ui.active}>
-                {" "}{label}{descTruncated}{" ".repeat(Math.max(0, innerWidth - label.length - descTruncated.length))}
+                {" "}{labelWithIcon}{descTruncated}{tagSuffix}{" ".repeat(padCount)}
               </Text>
             ) : (
               <Text>
-                <Text> {label}</Text>
+                <Text> {labelWithIcon}</Text>
                 <Text dimColor>{descTruncated}</Text>
+                <Text dimColor>{tagSuffix}</Text>
               </Text>
             )}
           </Box>

@@ -30,6 +30,12 @@ import { useReverseSearch } from "./hooks/useReverseSearch.ts";
 import { useInputHistoryStore } from "./hooks/useInputHistoryStore.ts";
 import { useShellCompletion } from "./hooks/useShellCompletion.ts";
 import { consumePendingRestore } from "./pending-input.ts";
+import {
+  registerPaste,
+  shouldPlaceholder,
+  expandPastedRefs,
+  clearPastes,
+} from "./pasted-contents.ts";
 import { SuggestionsDisplay, type Suggestion } from "./components/SuggestionsDisplay.tsx";
 import { parseInputForHighlighting, renderHighlightedSegments } from "./utils/inputHighlight.tsx";
 import { DEFAULT_TERM_WIDTH } from "./markdown.ts";
@@ -294,6 +300,15 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, onPermissionMode
         reverseSearch.searchNext();
         return true;
       }
+      // ↑/↓ 在反搜模式下遍历匹配项（↑ 更早，↓ 更新），不插入换行
+      if (key.name === "up") {
+        reverseSearch.searchNext();
+        return true;
+      }
+      if (key.name === "down") {
+        reverseSearch.searchPrev();
+        return true;
+      }
       if (key.name === "backspace") {
         reverseSearch.deleteQuery();
         return true;
@@ -337,8 +352,16 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, onPermissionMode
     if (key.name === "paste") {
       const cleaned = cleanPasteText(key.sequence);
       if (cleaned.length > 0) {
-        log.debug("UI:INPUT", `粘贴: ${cleaned.length} 字符`);
-        tb.insert(cleaned);
+        // IN3：大块粘贴登记元数据并插入精简占位引用，提交时还原；
+        // 小块粘贴直接插入，保持顺手。
+        if (shouldPlaceholder(cleaned)) {
+          const ref = registerPaste(cleaned, "text");
+          log.debug("UI:INPUT", `粘贴(占位): ${cleaned.length} 字符 → ${ref}`);
+          tb.insert(ref);
+        } else {
+          log.debug("UI:INPUT", `粘贴: ${cleaned.length} 字符`);
+          tb.insert(cleaned);
+        }
       }
       return true;
     }

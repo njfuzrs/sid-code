@@ -132,6 +132,21 @@ export class Manager {
   }
 
   /**
+   * 更新上下文窗口大小（运行中 /model 切换模型时调用）。
+   *
+   * maxTokens 此前仅构造时按初始模型窗口设定、之后只读。运行中切换到不同窗口的模型后，
+   * shouldCompact / getCompactionLevel / Footer 上下文百分比仍用旧窗口作分母：
+   * 1M→200k 方向会让百分比虚低 → 误判余量充足、放任上下文溢出（危险方向）；
+   * 200k→1M 方向虚高 → 过早 compact。切模型时同步窗口可消除该失真。
+   *
+   * @param maxTokens 新模型的上下文窗口 token 数；非正值忽略（防御非法输入）。
+   */
+  setMaxTokens(maxTokens: number): void {
+    if (!Number.isFinite(maxTokens) || maxTokens <= 0) return;
+    this.maxTokens = maxTokens;
+  }
+
+  /**
    * 用一次 API 调用返回的真实输入 token 数校准估算器（P1-6 + P1-7）。
    *
    * - **P1-7 校准回路**：记录"真实值 / 当时纯启发式估算值"的比值，用指数平滑（EMA, α=0.3）
@@ -167,6 +182,19 @@ export class Manager {
   setSessionId(sessionId: string): void {
     this.sessionId = sessionId;
     this.maskingService = new ToolOutputMaskingService(sessionId);
+  }
+
+  /**
+   * 使真实 token 锚点失效（P1-6 锚点重置）。
+   *
+   * estimateTokens 取 max(校准估算, lastActualInputTokens) 作 compact 决策下界。
+   * 压缩/截断后真实 prompt 骤降，但锚点仍停在压缩前的高值——若不重置，下一轮
+   * compact 决策会被旧锚点钉死（刚压缩完又判定需压缩），导致重复压缩、误丢上下文。
+   * 压缩消息的方法（emergencyTruncate / compactWithSummary / setMessages / clear）
+   * 调用此方法清零锚点，让估算回落到校准后的纯启发式值，直到下次 recordActualTokens 重新锚定。
+   */
+  invalidateActualTokenAnchor(): void {
+    this.lastActualInputTokens = 0;
   }
 
   /** 设置系统提示词 */
@@ -478,11 +506,14 @@ export class Manager {
   /** 设置消息列表（用于恢复会话） */
   setMessages(msgs: Message[]): void {
     this.messages = [...msgs];
+    // 消息集整体替换 → 真实 token 锚点失效，避免沿用旧值误判 compact
+    this.invalidateActualTokenAnchor();
   }
 
   /** 清空消息 */
   clear(): void {
     this.messages = [];
+    this.invalidateActualTokenAnchor();
   }
 
   /**
@@ -689,6 +720,8 @@ export class Manager {
       getSessionMetrics().recordTruncation();
     }
 
+    // 真实 token 锚点失效：截断后 prompt 骤降，旧锚点会让下一轮 compact 决策误判
+    this.invalidateActualTokenAnchor();
     log.warn("CONTEXT", `紧急压缩: ${before} → ${this.messages.length} 条消息`);
   }
 
@@ -832,6 +865,10 @@ export class Manager {
     const skillMsgs = this.buildInvokedSkillMessages();
 
     this.messages = [summaryMsg, ackMsg, ...skillMsgs, ...kept];
+
+    // 真实 token 锚点失效：摘要压缩后真实 prompt 骤降，必须在 estimateTokens 验证前重置，
+    // 否则 tokensAfter 仍被旧锚点钉在高位（既污染验证日志，也让后续 compact 决策误判）。
+    this.invalidateActualTokenAnchor();
 
     const tokensAfter = this.estimateTokens();
     const log = getLogger();

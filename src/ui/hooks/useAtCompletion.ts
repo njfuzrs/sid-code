@@ -88,7 +88,8 @@ export function useAtCompletion({ cursorCol, currentLine, cwd, setSuggestions }:
         matches.push({
           label: displayName,
           value: valuePath,
-          description: isDir ? "目录" : undefined,
+          icon: isDir ? "📁" : "📄",
+          tag: isDir ? "目录" : "文件",
         });
 
         if (matches.length >= MAX_SUGGESTIONS) break;

@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
 import crypto from 'node:crypto';
+import { diffWordsWithSpace } from 'diff';
 import { colorizeCode, colorizeLine } from './CodeColorizer.js';
 import { theme as semanticTheme } from '../semantic-colors.js';
 
@@ -11,6 +12,54 @@ interface DiffLine {
   newLine?: number;
   content: string;
 }
+
+/**
+ * 对配对的 del/add 行做词级 diff，返回强调了「变化词」的 React 片段。
+ *
+ * - which='del'：渲染删除行，强调「本行独有（被删掉）」的词段。
+ * - which='add'：渲染新增行，强调「本行独有（新加入）」的词段。
+ * 公共词段用常规前景色，变化词段加粗 + 反色底，色盲用户也能靠
+ * 「加粗 + 行首 +/- 符号」区分，不只依赖颜色。
+ */
+function renderWordDiff(
+  oldContent: string,
+  newContent: string,
+  which: 'del' | 'add',
+): React.ReactNode {
+  const parts = diffWordsWithSpace(oldContent, newContent);
+  const nodes: React.ReactNode[] = [];
+  let k = 0;
+  for (const part of parts) {
+    // del 行只渲染「公共 + 删除」段，add 行只渲染「公共 + 新增」段。
+    if (which === 'del' && part.added) continue;
+    if (which === 'add' && part.removed) continue;
+    const changed = which === 'del' ? part.removed : part.added;
+    if (changed) {
+      nodes.push(
+        <Text
+          key={`wd-${k++}`}
+          bold
+          color={
+            which === 'del'
+              ? semanticTheme.status.error
+              : semanticTheme.status.success
+          }
+          backgroundColor={
+            which === 'del'
+              ? semanticTheme.background.diff.removedEmphasis
+              : semanticTheme.background.diff.addedEmphasis
+          }
+        >
+          {part.value}
+        </Text>,
+      );
+    } else {
+      nodes.push(<Text key={`wd-${k++}`}>{part.value}</Text>);
+    }
+  }
+  return <>{nodes}</>;
+}
+
 
 /**
  * 解析 unified diff 格式并附加行号
@@ -73,6 +122,35 @@ function parseDiffWithLineNumbers(diffContent: string): DiffLine[] {
     }
   }
   return result;
+}
+
+/**
+ * 词级 diff 配对：把连续的 del 块与紧随其后的 add 块按行序一一配对。
+ * 返回 index → 对侧行原始内容（未做 baseIndentation 裁剪）的映射。
+ * 仅一一对应的位置配对；多出的行无对侧，调用方应回退整行高亮。
+ * 抽成纯函数便于单测。
+ */
+export function computeWordDiffPairs(
+  lines: { type: DiffLine['type']; content: string }[],
+): Map<number, string> {
+  const pairMap = new Map<number, string>();
+  for (let i = 0; i < lines.length; ) {
+    if (lines[i].type !== 'del') {
+      i++;
+      continue;
+    }
+    let delEnd = i;
+    while (delEnd < lines.length && lines[delEnd].type === 'del') delEnd++;
+    let addEnd = delEnd;
+    while (addEnd < lines.length && lines[addEnd].type === 'add') addEnd++;
+    const pairCount = Math.min(delEnd - i, addEnd - delEnd);
+    for (let p = 0; p < pairCount; p++) {
+      pairMap.set(i + p, lines[delEnd + p].content);
+      pairMap.set(delEnd + p, lines[i + p].content);
+    }
+    i = addEnd > i ? addEnd : i + 1;
+  }
+  return pairMap;
 }
 
 interface DiffRendererProps {
@@ -238,6 +316,15 @@ const renderDiffContent = (
   let lastLineNumber: number | null = null;
   const MAX_CONTEXT_LINES_WITHOUT_GAP = 5;
 
+  // 词级 diff 配对：用裁剪后的内容计算，pairMap 的对侧内容已是裁剪后的，
+  // 可直接传给 renderWordDiff。
+  const pairMap = computeWordDiffPairs(
+    displayableLines.map((l) => ({
+      type: l.type,
+      content: l.content.substring(baseIndentation),
+    })),
+  );
+
   const content = displayableLines.reduce<React.ReactNode[]>(
     (acc, line, index) => {
       // 根据类型确定用于间隔计算的相关行号
@@ -331,6 +418,7 @@ const renderDiffContent = (
               wrap="wrap"
             >
               <Text
+                bold
                 color={
                   line.type === 'add'
                     ? semanticTheme.status.success
@@ -339,7 +427,13 @@ const renderDiffContent = (
               >
                 {prefixSymbol}
               </Text>{' '}
-              {colorizeLine(displayContent, language)}
+              {pairMap.has(index)
+                ? renderWordDiff(
+                    line.type === 'del' ? displayContent : pairMap.get(index)!,
+                    line.type === 'del' ? pairMap.get(index)! : displayContent,
+                    line.type as 'del' | 'add',
+                  )
+                : colorizeLine(displayContent, language)}
             </Text>
           )}
         </Box>,

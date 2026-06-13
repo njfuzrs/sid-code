@@ -7,18 +7,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { StreamingState } from "../types.ts";
-
-/** 加载短语列表 */
-const LOADING_PHRASES = [
-  "思考中...",
-  "分析代码...",
-  "搜索文件...",
-  "生成方案...",
-  "整理思路...",
-  "编写代码...",
-  "检查逻辑...",
-  "优化方案...",
-];
+import { pickSpinnerVerb } from "../spinnerVerbs.ts";
 
 /** 短语切换间隔（毫秒） */
 const PHRASE_INTERVAL = 4000;
@@ -40,7 +29,9 @@ export function useLoadingIndicator({
   toolName,
 }: UseLoadingIndicatorProps): UseLoadingIndicatorReturn {
   const [elapsedTime, setElapsedTime] = useState(0);
-  const [phraseIndex, setPhraseIndex] = useState(0);
+  const [currentPhrase, setCurrentPhrase] = useState<string>(() =>
+    pickSpinnerVerb(),
+  );
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const phraseTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const prevStateRef = useRef<StreamingState>(StreamingState.Idle);
@@ -73,17 +64,17 @@ export function useLoadingIndicator({
     if (prevStateRef.current !== streamingState) {
       if (streamingState === StreamingState.Responding) {
         setElapsedTime(0);
-        setPhraseIndex(0);
+        setCurrentPhrase(pickSpinnerVerb());
       }
       prevStateRef.current = streamingState;
     }
   }, [streamingState]);
 
-  // 短语循环
+  // 短语循环：每隔 PHRASE_INTERVAL 随机抽取一个动词（避免与上一个重复）
   useEffect(() => {
     if (isResponding && !toolName) {
       phraseTimerRef.current = setInterval(() => {
-        setPhraseIndex(i => (i + 1) % LOADING_PHRASES.length);
+        setCurrentPhrase(prev => pickSpinnerVerb(prev));
       }, PHRASE_INTERVAL);
     } else {
       if (phraseTimerRef.current) {
@@ -100,7 +91,7 @@ export function useLoadingIndicator({
   }, [isResponding, toolName]);
 
   const currentLoadingPhrase = isResponding && !toolName
-    ? LOADING_PHRASES[phraseIndex]
+    ? currentPhrase
     : null;
 
   return {

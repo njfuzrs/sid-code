@@ -193,13 +193,21 @@ export class SessionState {
    * @param provider provider 名（"anthropic"/"openai"/...）。不传时按模型名推断（claude* → anthropic）。
    */
   calculateCost(model: string, usage: Usage, provider?: string): number {
+    const prov = provider ?? SessionState.inferProvider(model);
+
+    // 本地推理 provider（ollama 等）不产生真金白银费用，恒 0。
+    // 否则其模型名不在定价表 → 走 FALLBACK_PRICING 被算出虚高费用，
+    // 还会误触 costLimit 守卫中断本地会话（本地跑大上下文尤甚）。
+    if (SessionState.isLocalProvider(prov)) {
+      return 0;
+    }
+
     const pricing = this.getPricing(model);
     if (!pricing) {
       // P1-4：未知模型不静默归零（否则换个模型名费用立刻变 0，costLimit 守卫被绕过，
       // 用户以为"免费"实际在烧钱）。记 WARN 一次（按模型去重），用保守兜底价估算成本，
       // 宁可高估也不归零，让预算守卫继续生效。
       this.warnUnknownPricing(model);
-      const prov = provider ?? SessionState.inferProvider(model);
       const n = normalizeCacheUsage(usage, prov);
       const fb = SessionState.FALLBACK_PRICING;
       let cost = 0;
@@ -210,7 +218,6 @@ export class SessionState {
       return cost;
     }
 
-    const prov = provider ?? SessionState.inferProvider(model);
     const n = normalizeCacheUsage(usage, prov);
 
     // 命中/写入价：优先用定价表显式值，否则按 Anthropic 式近似派生（input×0.1 / input×1.25）
@@ -231,9 +238,11 @@ export class SessionState {
    * 全价假设：把 promptTotal 全部当未命中输入计价。
    */
   calculateSavings(model: string, usage: Usage, provider?: string): number {
+    const prov = provider ?? SessionState.inferProvider(model);
+    // 本地 provider 无费用 → 无"节省"概念，恒 0
+    if (SessionState.isLocalProvider(prov)) return 0;
     const pricing = this.getPricing(model);
     if (!pricing) return 0;
-    const prov = provider ?? SessionState.inferProvider(model);
     const n = normalizeCacheUsage(usage, prov);
     // 全价成本：promptTotal 全按未命中输入 + 输出
     const hypothetical =
@@ -251,6 +260,19 @@ export class SessionState {
    */
   static inferProvider(model: string): string {
     return /^claude/i.test(model) ? "anthropic" : "openai";
+  }
+
+  /**
+   * 判定是否本地推理 provider（不产生 API 费用）。
+   *
+   * 仅凭模型名无法识别（ollama 跑 llama3 等会被 inferProvider 归为 "openai"），
+   * 必须依赖显式传入的 provider 名。本地 provider 计费/节省恒 0，避免 FALLBACK_PRICING
+   * 把免费的本地推理算成真金白银、误触 costLimit。
+   */
+  static isLocalProvider(provider: string | undefined): boolean {
+    if (!provider) return false;
+    const p = provider.toLowerCase();
+    return p === "ollama" || p === "local" || p === "llamacpp" || p === "lmstudio";
   }
 
   /**

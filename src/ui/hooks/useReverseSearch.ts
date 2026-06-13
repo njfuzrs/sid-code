@@ -43,6 +43,8 @@ export interface UseReverseSearchReturn {
   deleteQuery: () => void;
   /** 搜索下一个匹配 */
   searchNext: () => void;
+  /** 搜索上一个匹配（反方向遍历） */
+  searchPrev: () => void;
   /** 获取当前匹配结果 */
   getMatch: () => string | null;
 }
@@ -60,6 +62,18 @@ export function useReverseSearch({ history }: UseReverseSearchProps): UseReverse
     const lowerQuery = query.toLowerCase();
     for (let i = startIndex; i < history.length; i++) {
       if (history[i].toLowerCase().includes(lowerQuery)) {
+        return { match: history[i], index: i };
+      }
+    }
+    return null;
+  }, [history]);
+
+  /** 向更早方向（索引减小）查找匹配 */
+  const findMatchBackward = useCallback((query: string, startIndex: number): { match: string; index: number } | null => {
+    if (!query) return null;
+    const lowerQuery = query.toLowerCase();
+    for (let i = startIndex; i >= 0; i--) {
+      if (history[i] && history[i].toLowerCase().includes(lowerQuery)) {
         return { match: history[i], index: i };
       }
     }
@@ -121,9 +135,26 @@ export function useReverseSearch({ history }: UseReverseSearchProps): UseReverse
     });
   }, [findMatch]);
 
+  /** 搜索上一个匹配（向更新方向，索引减小）。到头则循环到末尾。 */
+  const searchPrev = useCallback(() => {
+    setState(prev => {
+      if (!prev.active || !prev.query) return prev;
+      const result = findMatchBackward(prev.query, prev.matchIndex - 1);
+      if (result) {
+        return { ...prev, match: result.match, matchIndex: result.index };
+      }
+      // 循环到末尾
+      const fromEnd = findMatchBackward(prev.query, history.length - 1);
+      if (fromEnd) {
+        return { ...prev, match: fromEnd.match, matchIndex: fromEnd.index };
+      }
+      return prev;
+    });
+  }, [findMatchBackward, history.length]);
+
   const getMatch = useCallback((): string | null => {
     return state.match;
   }, [state.match]);
 
-  return { state, activate, deactivate, appendQuery, deleteQuery, searchNext, getMatch };
+  return { state, activate, deactivate, appendQuery, deleteQuery, searchNext, searchPrev, getMatch };
 }

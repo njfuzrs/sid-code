@@ -6,6 +6,8 @@
 import type { HookSystem } from "../hook/system.ts";
 import { HookEventName } from "../hook/types.ts";
 import type { HookInput, AfterModelInput, PostToolUseInput } from "../hook/types.ts";
+import { normalizeCacheUsage } from "../llm/types.ts";
+import { SessionState } from "../session/state.ts";
 
 export interface SessionMetrics {
   /** 会话开始时间 */
@@ -23,6 +25,12 @@ export interface SessionMetrics {
     totalCacheReadTokens: number;
     /** 累计缓存写入 token 数（DeepSeek 恒 0） */
     totalCacheCreationTokens: number;
+    /**
+     * 累计完整输入 prompt token（flow 口径，经 normalizeCacheUsage 归一化的 promptTotal 之和）。
+     * 命中率分母专用：与累计命中（totalCacheReadTokens，同为 flow）口径一致，
+     * 杜绝"末次 input(stock) + 累计命中(flow)"混用导致的命中率虚高。
+     */
+    totalCumulativePromptTokens: number;
     byModel: Record<string, {
       requests: number;
       inputTokens: number;
@@ -88,6 +96,7 @@ export class SessionMetricsCollector {
         totalRequests: 0, totalErrors: 0, totalLatencyMs: 0,
         totalInputTokens: 0, totalOutputTokens: 0, totalCostUSD: 0,
         totalCacheReadTokens: 0, totalCacheCreationTokens: 0,
+        totalCumulativePromptTokens: 0,
         byModel: {},
       },
       tools: {
@@ -102,6 +111,7 @@ export class SessionMetricsCollector {
   /** 记录 LLM 请求完成
    * @param cacheReadTokens 本次命中（读缓存）token 数
    * @param cacheCreationTokens 本次写入缓存 token 数（DeepSeek 恒 0）
+   * @param provider 本次调用的 provider（用于归一化 promptTotal；缺省按 model 推断）
    */
   recordLlmResponse(
     model: string,
@@ -112,6 +122,7 @@ export class SessionMetricsCollector {
     isError: boolean,
     cacheReadTokens = 0,
     cacheCreationTokens = 0,
+    provider?: string,
   ): void {
     const llm = this.metrics.llm;
     llm.totalRequests++;
@@ -123,6 +134,21 @@ export class SessionMetricsCollector {
     llm.totalOutputTokens += outputTokens;
     llm.totalCostUSD += costUSD;
     llm.totalCacheCreationTokens += cacheCreationTokens;
+
+    // 命中率分母专用（flow）：累计本次完整 prompt（promptTotal）。
+    // 经 normalizeCacheUsage 归一化，消除 Anthropic（input=未命中余量）与
+    // OpenAI/DeepSeek（input=含命中全量）的口径差异，与累计命中同口径。
+    const prov = provider ?? SessionState.inferProvider(model);
+    const norm = normalizeCacheUsage(
+      {
+        inputTokens,
+        outputTokens,
+        cacheReadInputTokens: cacheReadTokens,
+        cacheCreationInputTokens: cacheCreationTokens,
+      },
+      prov,
+    );
+    llm.totalCumulativePromptTokens += norm.promptTotal;
 
     if (!llm.byModel[model]) {
       llm.byModel[model] = { requests: 0, inputTokens: 0, outputTokens: 0, latencyMs: 0, costUSD: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
@@ -311,11 +337,12 @@ export class SessionMetricsCollector {
       `交互: ${m.interaction.promptCount} 次提示, ${m.interaction.turnCount} 轮循环`
     );
 
-    // 缓存命中率（命中 / (命中 + 末次未命中输入)）——仅在有命中时展示，避免无缓存模型误导
+    // 缓存命中率（命中 / 累计完整 prompt）——仅在有命中时展示，避免无缓存模型误导。
+    // 分子分母同为 flow 口径（累计），与 SessionState/Footer 的命中率一致，不再 stock/flow 混用。
     const cacheHit = m.llm.totalCacheReadTokens;
     if (cacheHit > 0) {
-      // 命中率分母用 input（末次 prompt，含历史）+ 命中：对两家口径都给出近似可读比例
-      const denom = Math.max(1, m.llm.totalInputTokens + cacheHit);
+      // 分母用累计 promptTotal（含命中），与累计命中同口径；兜底 max 防零除。
+      const denom = Math.max(cacheHit, m.llm.totalCumulativePromptTokens);
       const rate = Math.round((cacheHit / denom) * 100);
       const fmtK = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`);
       lines.push(`缓存: 命中 ${rate}% (${fmtK(cacheHit)}/${fmtK(denom)})`);

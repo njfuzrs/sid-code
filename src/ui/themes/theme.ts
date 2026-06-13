@@ -83,6 +83,55 @@ export const darkTheme: ColorsTheme = {
   GradientColors: ['#4796E4', '#847ACE', '#C3677F'],
 };
 
+// ── 色盲友好（daltonized）配色 ──
+// 策略：避开红/绿对立（红绿色盲最难分辨），改用「蓝=增/成功、橙=删/错误」的
+// 蓝橙对比，这是色觉缺陷研究中辨识度最高的一对（Okabe-Ito / IBM 色盲安全色板）。
+// 同时整行 diff 底色也用蓝橙，配合 DiffRenderer 的「加粗 + 行首 +/- 符号」双保险。
+
+export const daltonizedDarkTheme: ColorsTheme = {
+  type: 'dark',
+  Background: '#000000',
+  Foreground: '#FFFFFF',
+  LightBlue: '#99CCFF',
+  AccentBlue: '#56B4E9', // 蓝（Okabe-Ito sky blue）= 增/成功/链接强调
+  AccentPurple: '#CC79A7', // 玫红（reddish purple）保留作变量色，与橙蓝均可分
+  AccentCyan: '#56B4E9',
+  AccentGreen: '#56B4E9', // success → 蓝
+  AccentYellow: '#F0E442', // 黄（保留，色盲可辨）
+  AccentRed: '#E69F00', // 橙（Okabe-Ito orange）= 删/错误，替代红
+  DiffAdded: '#003A5C', // 深蓝底
+  DiffRemoved: '#4A3000', // 深橙底
+  Comment: '#AFAFAF',
+  Gray: '#AFAFAF',
+  DarkGray: '#878787',
+  InputBackground: '#5F5F5F',
+  MessageBackground: '#5F5F5F',
+  FocusBackground: '#003A5C',
+  GradientColors: ['#56B4E9', '#F0E442', '#E69F00'],
+};
+
+export const daltonizedLightTheme: ColorsTheme = {
+  type: 'light',
+  Background: '#FFFFFF',
+  Foreground: '#000000',
+  LightBlue: '#0072B2',
+  AccentBlue: '#0072B2', // 深蓝（Okabe-Ito blue）= 增/成功/链接
+  AccentPurple: '#CC79A7',
+  AccentCyan: '#0072B2',
+  AccentGreen: '#0072B2', // success → 蓝
+  AccentYellow: '#9A7D0A', // 暗黄（浅底上仍可读）
+  AccentRed: '#D55E00', // 朱橙（Okabe-Ito vermillion）= 删/错误
+  DiffAdded: '#CCE5FF', // 浅蓝底
+  DiffRemoved: '#FFE0CC', // 浅橙底
+  Comment: '#5F5F5F',
+  Gray: '#5F5F5F',
+  DarkGray: '#5F5F5F',
+  InputBackground: '#E4E4E4',
+  MessageBackground: '#FAFAFA',
+  FocusBackground: '#CCE5FF',
+  GradientColors: ['#0072B2', '#9A7D0A', '#D55E00'],
+};
+
 export class Theme {
   /**
    * 默认前景色，当没有特定高亮规则时使用
@@ -145,6 +194,18 @@ export class Theme {
         diff: {
           added: this.colors.DiffAdded,
           removed: this.colors.DiffRemoved,
+          // 词级 diff 强调底色：在整行底色基础上向对应 accent 色加深，
+          // 无独立配色时由插值派生，保证任意主题都有可用的强调色。
+          addedEmphasis: interpolateColor(
+            this.colors.DiffAdded,
+            this.colors.AccentGreen,
+            0.35,
+          ),
+          removedEmphasis: interpolateColor(
+            this.colors.DiffRemoved,
+            this.colors.AccentRed,
+            0.35,
+          ),
         },
       },
       border: {

@@ -29,6 +29,7 @@ import type { StateBridge } from "./state-bridge.ts";
 import type { Message, Usage } from "../llm/types.ts";
 import type { HistoryItem } from "./types.ts";
 import { StreamingState } from "./types.ts";
+import { useTerminalIntegration } from "./hooks/useTerminalIntegration.ts";
 import { messagesToHistoryItems, isPlaceholderMessage, buildStaticItems } from "./history-adapter.ts";
 import { getLogger } from "../debug/logger.ts";
 import { DEFAULT_TERM_WIDTH } from "./markdown.ts";
@@ -328,6 +329,14 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     if (state.isStreaming || state.isToolExecuting) return StreamingState.Responding;
     return StreamingState.Idle;
   }, [state.permissionRequest, state.shellConfirmRequest, state.planApprovalRequest, state.isStreaming, state.isToolExecuting]);
+
+  // TM2/TM3/TM4：终端集成接线（标题 / tab 状态圆点 / 响应完成通知）。
+  // 以 cwd 末段作为窗口标题提示，便于多窗口区分。
+  const titleHint = useMemo(() => {
+    const parts = (state.cwd || "").split(/[/\\]/).filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : "sid-code";
+  }, [state.cwd]);
+  useTerminalIntegration({ streamingState, titleHint });
 
   // 派生 ConfigContext 值
   const configValue = useMemo((): ConfigContextValue => ({

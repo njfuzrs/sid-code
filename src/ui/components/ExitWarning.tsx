@@ -14,8 +14,9 @@ import { useUIState } from "../contexts/UIStateContext.tsx";
 export const ExitWarning: React.FC = () => {
   const { dialogsVisible, ctrlCPressedOnce, ctrlDPressedOnce } = useUIState();
 
-  // 仅在 Composer 可见时（非对话框模式）显示退出警告
-  if (!dialogsVisible) return null;
+  // 仅在 Composer 可见时（非对话框模式）显示退出警告。
+  // dialogsVisible=true 表示对话框占据输入区，此时不显示 Ctrl+C/D 提示。
+  if (dialogsVisible) return null;
 
   return (
     <>

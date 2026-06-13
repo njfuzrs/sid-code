@@ -314,4 +314,56 @@ describe("增量压缩", () => {
     // 未校准，估算保持纯启发式不变
     expect(mgr.estimateTokens(0)).toBe(before);
   });
+
+  test("P1-6：compactWithSummary 后真实锚点失效，估算回落（不再被旧高锚点钉死）", () => {
+    const mgr = new Manager({ maxTokens: 200_000 });
+    for (let i = 0; i < 12; i++) {
+      mgr.addMessage({ role: "user", content: [{ type: "text", text: `msg-${i} ${"x".repeat(200)}` }] });
+      mgr.addMessage({ role: "assistant", content: [{ type: "text", text: `reply-${i}` }] });
+    }
+    // 锚定一个远高于压缩后真实量的值
+    mgr.recordActualTokens(180_000, 0);
+    expect(mgr.estimateTokens(0)).toBeGreaterThanOrEqual(180_000);
+    // 压缩后真实 prompt 骤降，锚点必须失效，否则估算仍被钉在 180k → 刚压缩完又触发 compact
+    mgr.compactWithSummary("早期对话摘要");
+    expect(mgr.estimateTokens(0)).toBeLessThan(180_000);
+  });
+
+  test("P1-6：emergencyTruncate / setMessages / clear 均重置真实锚点", () => {
+    // emergencyTruncate
+    const m1 = new Manager({ maxTokens: 200_000 });
+    for (let i = 0; i < 12; i++) {
+      m1.addMessage({ role: "user", content: [{ type: "text", text: `u${i} ${"x".repeat(200)}` }] });
+      m1.addMessage({ role: "assistant", content: [{ type: "text", text: `a${i}` }] });
+    }
+    m1.recordActualTokens(180_000, 0);
+    m1.emergencyTruncate();
+    expect(m1.estimateTokens(0)).toBeLessThan(180_000);
+
+    // setMessages
+    const m2 = new Manager({ maxTokens: 200_000 });
+    m2.addMessage({ role: "user", content: [{ type: "text", text: "hi" }] });
+    m2.recordActualTokens(150_000, 0);
+    m2.setMessages([{ role: "user", content: [{ type: "text", text: "short" }] }]);
+    expect(m2.estimateTokens(0)).toBeLessThan(150_000);
+
+    // clear
+    const m3 = new Manager({ maxTokens: 200_000 });
+    m3.addMessage({ role: "user", content: [{ type: "text", text: "hi" }] });
+    m3.recordActualTokens(150_000, 0);
+    m3.clear();
+    expect(m3.estimateTokens(0)).toBeLessThan(150_000);
+  });
+
+  test("P2-3：setMaxTokens 更新上下文窗口，忽略非法值", () => {
+    const mgr = new Manager({ maxTokens: 200_000 });
+    expect(mgr.getMaxTokens()).toBe(200_000);
+    mgr.setMaxTokens(1_000_000);
+    expect(mgr.getMaxTokens()).toBe(1_000_000);
+    // 非法值忽略，保持原窗口
+    mgr.setMaxTokens(0);
+    mgr.setMaxTokens(-5);
+    mgr.setMaxTokens(NaN);
+    expect(mgr.getMaxTokens()).toBe(1_000_000);
+  });
 });
