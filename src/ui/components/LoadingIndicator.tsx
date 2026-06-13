@@ -10,6 +10,7 @@ import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
 import { theme } from "../semantic-colors.ts";
 import { StreamingState } from "../types.ts";
+import { useIsAccessibilityEnabled } from "../accessibility/AccessibilityContext.tsx";
 
 /** Spinner 帧 */
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -46,20 +47,24 @@ export const LoadingIndicator: React.FC<LoadingIndicatorProps> = ({
   showCancelAndTimer = true,
 }) => {
   // Spinner 动画
+  const a11y = useIsAccessibilityEnabled();
   const [frame, setFrame] = React.useState(0);
   React.useEffect(() => {
+    // LY2：无障碍模式下不跑动画——屏幕阅读器会把每帧字符变化读成噪声。
+    if (a11y) return;
     if (streamingState === StreamingState.Idle) return;
     const timer = setInterval(() => {
       setFrame(f => (f + 1) % SPINNER_FRAMES.length);
     }, 80);
     return () => clearInterval(timer);
-  }, [streamingState]);
+  }, [streamingState, a11y]);
 
   if (streamingState === StreamingState.Idle) {
     return null;
   }
 
-  const spinner = SPINNER_FRAMES[frame];
+  // LY2：无障碍模式用静态可朗读标记替代动画 spinner。
+  const spinner = a11y ? "●" : SPINNER_FRAMES[frame];
   const isWaiting = streamingState === StreamingState.WaitingForConfirmation;
 
   // 主文本

@@ -188,6 +188,8 @@ export type HistoryItemCommand = HistoryItemBase & {
   type: "command";
   input: string;
   output: string | null;
+  /** 输出是否为错误流（stderr / 执行失败）。CM2：bash 错误输出红色区分。 */
+  isError?: boolean;
 };
 
 /** AppHeader（消息列表顶部，随消息滚动） */

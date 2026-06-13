@@ -19,6 +19,7 @@ import { MarkdownDisplay } from '../MarkdownDisplay.tsx';
 import { AnsiOutputText } from '../AnsiOutput.tsx';
 import { SlicingMaxSizedBox } from '../SlicingMaxSizedBox.tsx';
 import { useUIState } from '../../contexts/UIStateContext.tsx';
+import { EXPAND_LEVEL_MAX_LINES } from '../../contexts/UIStateContext.tsx';
 import type { AnsiOutput } from '../../types/ansi.ts';
 
 /** 最大结果字符数（超过此值预先截断，避免性能问题） */
@@ -94,9 +95,18 @@ export const ToolResultDisplay: React.FC<ToolResultDisplayProps> = ({
   filename,
   isError = false,
 }) => {
-  const { renderMarkdown } = useUIState();
+  const { renderMarkdown, expandLevel } = useUIState();
 
   if (!resultDisplay) return null;
+
+  // TO4：阶梯式展开。调用方传入的 maxLines 视作"折叠档(level 0)"基线；
+  // 当用户用 Ctrl+O 提升展开级别时，按级别放大行数上限（level 2 = 全展开不截断）。
+  // 取两者较大值，确保调用方显式要求更多行时不被缩小。
+  const levelMaxLines = EXPAND_LEVEL_MAX_LINES[expandLevel];
+  const effectiveMaxLines =
+    levelMaxLines === Infinity
+      ? undefined // 全展开：不传 maxLines，交由下游不截断
+      : Math.max(maxLines, levelMaxLines);
 
   // 0. 预先截断超长内容，避免性能问题
   let content = resultDisplay;
@@ -124,7 +134,7 @@ export const ToolResultDisplay: React.FC<ToolResultDisplayProps> = ({
     return (
       <SlicingMaxSizedBox
         text={content}
-        maxLines={maxLines}
+        maxLines={effectiveMaxLines}
         overflowDirection="bottom"
       />
     );
@@ -137,7 +147,7 @@ export const ToolResultDisplay: React.FC<ToolResultDisplayProps> = ({
       <AnsiOutputText
         data={ansiData}
         width={terminalWidth}
-        maxLines={maxLines}
+        maxLines={effectiveMaxLines}
       />
     );
   }
@@ -149,7 +159,7 @@ export const ToolResultDisplay: React.FC<ToolResultDisplayProps> = ({
     return (
       <SlicingMaxSizedBox
         text={formatted}
-        maxLines={maxLines}
+        maxLines={effectiveMaxLines}
         overflowDirection={overflowDirection}
       />
     );
@@ -171,7 +181,7 @@ export const ToolResultDisplay: React.FC<ToolResultDisplayProps> = ({
   return (
     <SlicingMaxSizedBox
       text={content}
-      maxLines={maxLines}
+      maxLines={effectiveMaxLines}
       overflowDirection={overflowDirection}
     />
   );

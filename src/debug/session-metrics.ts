@@ -283,6 +283,19 @@ export class SessionMetricsCollector {
       HookEventName.BeforeModel,
       { source: "runtime" as any },
     );
+
+    // SubagentStart → 记录子代理调用
+    hookSystem.registerHook(
+      {
+        type: "runtime",
+        name: "session-metrics-subagent-start",
+        action: async (_input: HookInput) => {
+          this.recordSubAgent();
+        },
+      },
+      HookEventName.SubagentStart,
+      { source: "runtime" as any },
+    );
   }
 
   /** 递增计数器（Harness 模块调用） */

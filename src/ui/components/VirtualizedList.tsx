@@ -14,6 +14,7 @@ import {
   useState,
   useRef,
   useLayoutEffect,
+  useEffect,
   forwardRef,
   useImperativeHandle,
   useMemo,
@@ -39,6 +40,8 @@ type VirtualizedListProps<T> = {
   scrollbarThumbColor?: string;
   /** Copy Mode：禁用 Ink 滚动，改用 marginTop 偏移，让终端原生选择文本 */
   copyModeEnabled?: boolean;
+  /** ST8：粘底状态变化回调（true=跟随底部，false=用户滚离暂停）。 */
+  onStickyChange?: (sticky: boolean) => void;
 };
 
 export type VirtualizedListRef<T> = {
@@ -86,6 +89,7 @@ function VirtualizedList<T>(
     keyExtractor,
     initialScrollIndex,
     initialScrollOffsetInIndex,
+    onStickyChange,
   } = props;
 
   const dataRef = useRef(data);
@@ -240,6 +244,15 @@ function VirtualizedList<T>(
   const scrollTop = isStickingToBottom
     ? Number.MAX_SAFE_INTEGER
     : actualScrollTop;
+
+  // ST8：粘底状态变化时通知外部协调器（流式↔滚动状态机）。
+  const prevStickyRef = useRef(isStickingToBottom);
+  useEffect(() => {
+    if (prevStickyRef.current !== isStickingToBottom) {
+      prevStickyRef.current = isStickingToBottom;
+      onStickyChange?.(isStickingToBottom);
+    }
+  }, [isStickingToBottom, onStickyChange]);
 
   // ── 粘底逻辑 ──
   const prevDataLength = useRef(data.length);

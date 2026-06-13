@@ -12,7 +12,8 @@
 import React, { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import useApp from "../ink/hooks/use-app.js";
 import { KeypressProvider, useKeypress, KeypressPriority, type Key } from "./contexts/KeypressContext.tsx";
-import { matchBinding } from "./keybindings/defaultBindings.ts";
+import { KeybindingProvider, useKeybindings } from "./contexts/KeybindingContext.tsx";
+import { AccessibilityProvider } from "./accessibility/AccessibilityContext.tsx";
 import { ScrollProvider, useScrollState } from "./contexts/ScrollProvider.tsx";
 import { TerminalProvider, useTerminalDimensions } from "./contexts/TerminalContext.tsx";
 import { MouseProvider, enableMouseEvents, disableMouseEvents } from "./contexts/MouseContext.tsx";
@@ -133,6 +134,26 @@ export interface TUIState {
   todos: import("../tool/todo-write.ts").TodoItem[];
   /** 当前后台任务列表（Shell/Agent，供 TUI 面板实时显示） */
   tasks: TaskDisplayInfo[];
+  /** CM3/CM4：LLM 重试/限流状态（null = 无重试）。 */
+  retryStatus: RetryStatusInfo | null;
+}
+
+/** CM3/CM4：LLM 重试/限流状态信息（驱动 RetryStatus 组件实时倒计时）。 */
+export interface RetryStatusInfo {
+  /** 事件类型：retry 通用重试 / rate_limit 限流 / overloaded 过载 / fallback 降级。 */
+  kind: "retry" | "rate_limit" | "overloaded" | "fallback";
+  /** 当前尝试次数（1-based）。 */
+  attempt: number;
+  /** 退避延迟（毫秒），用于倒计时。 */
+  delayMs: number;
+  /** 重试预计开始的绝对时间戳（Date.now() + delayMs），组件据此实时倒计时。 */
+  retryAtMs: number;
+  /** 模型名。 */
+  model: string;
+  /** 原始错误描述（可选）。 */
+  error?: string;
+  /** 降级目标模型（kind=fallback 时）。 */
+  fallbackModel?: string;
 }
 
 /** TUI 友好的任务显示信息 */
@@ -167,7 +188,8 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
   const isSubmittingRef = useRef(false);
   const log = getLogger();
   const { getScrollState } = useScrollState();
-  const { toggleRenderMarkdown, setConstrainHeight, setShowIsExpandableHint } = useUIActions();
+  const { toggleRenderMarkdown, cycleExpandLevel, setShowIsExpandableHint } = useUIActions();
+  const { matchBinding } = useKeybindings();
 
   // v2：思考折叠状态（AB 模式默认折叠，Static 模式始终展开不可折叠）
   const defaultCollapsed = alternateBuffer === true;
@@ -262,8 +284,9 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
   useKeypress(KeypressPriority.High, (key: Key) => {
     const b = matchBinding(key);
     if (b?.action === "app:toggleHeight") {
-      log.info("UI:APP", "切换高度限制");
-      setConstrainHeight((prev: boolean) => !prev);
+      log.info("UI:APP", "工具结果阶梯式展开（Ctrl+O）");
+      // TO4：阶梯循环展开级别（0 折叠 → 1 更多 → 2 全展开 → 0）。
+      cycleExpandLevel();
       setShowIsExpandableHint(true);
       setTimeout(() => setShowIsExpandableHint(false), 3000);
       return true;
@@ -514,6 +537,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           keyExtractor={keyExtractor}
           copyModeEnabled={state.copyModeEnabled}
           statusMessage={state.statusMessage}
+          retryStatus={state.retryStatus}
           permissionRequest={state.permissionRequest}
           shellConfirmRequest={state.shellConfirmRequest}
           planApprovalRequest={state.planApprovalRequest}
@@ -553,6 +577,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           rows={rows}
           keyExtractor={keyExtractor}
           statusMessage={state.statusMessage}
+          retryStatus={state.retryStatus}
           permissionRequest={state.permissionRequest}
           shellConfirmRequest={state.shellConfirmRequest}
           planApprovalRequest={state.planApprovalRequest}
@@ -614,7 +639,11 @@ export function TUIApp(props: AppProps) {
             <OverflowProvider>
               <SettingsProvider>
                 <UIStateProvider>
-                  <TUIAppInner {...props} />
+                  <AccessibilityProvider>
+                    <KeybindingProvider>
+                      <TUIAppInner {...props} />
+                    </KeybindingProvider>
+                  </AccessibilityProvider>
                 </UIStateProvider>
               </SettingsProvider>
             </OverflowProvider>

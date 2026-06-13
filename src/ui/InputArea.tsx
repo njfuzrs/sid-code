@@ -23,6 +23,7 @@ import useStdout from "../ink/_vendor/use-stdout.js";
 import { getLogger } from "../debug/logger.ts";
 import { theme } from "./semantic-colors.ts";
 import { useKeypress, KeypressPriority } from "./contexts/KeypressContext.tsx";
+import { useKeybindings } from "./contexts/KeybindingContext.tsx";
 import { useTextBuffer, getVisualLines, getCursorVisualPosition } from "./text-buffer.ts";
 import { useSlashCompletion, type CommandInfo } from "./hooks/useSlashCompletion.ts";
 import { useAtCompletion } from "./hooks/useAtCompletion.ts";
@@ -121,6 +122,47 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, onPermissionMode
 
   // 反向搜索
   const reverseSearch = useReverseSearch({ history: persistedHistory });
+
+  // K5：和弦状态机（Ctrl+K → Ctrl+C 等两键序列）。单键仍走各 handler 内的 matchBinding，
+  // 这里只处理多键和弦，避免双触发。
+  const { chordMachine } = useKeybindings();
+  const [chordPending, setChordPending] = useState(false);
+
+  /** 执行一个和弦 action（示例:编辑器级操作,作用于当前输入框）。 */
+  const runChordAction = useCallback((action: string): boolean => {
+    const row = tb.state.cursorRow;
+    const line = tb.state.lines[row] ?? "";
+    switch (action) {
+      case "editor:uppercase": {
+        // 整行转大写,光标列保持
+        const col = tb.state.cursorCol;
+        tb.moveCursor("home");
+        tb.killLine();
+        tb.insert(line.toUpperCase());
+        tb.moveCursor("home");
+        for (let i = 0; i < col; i++) tb.moveCursor("right");
+        return true;
+      }
+      case "editor:copyLine": {
+        // 复制当前行到行尾(在输入框内即"重复一行"——无系统剪贴板时的可见行为)
+        tb.moveCursor("end");
+        tb.insert("\n" + line);
+        return true;
+      }
+      default:
+        return false;
+    }
+  }, [tb]);
+
+  // K5：和弦前缀超时(1.5s 未按第二键则取消，丢弃前缀)。
+  useEffect(() => {
+    if (!chordPending) return;
+    const timer = setTimeout(() => {
+      chordMachine.expire();
+      setChordPending(false);
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [chordPending, chordMachine]);
 
   // 补全状态
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
@@ -283,6 +325,25 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, onPermissionMode
   // ── 核心键盘处理 ──────────────────────────────────────────────────
   useKeypress(KeypressPriority.Normal, (key) => {
     if (isLoading) return false;
+
+    // ── K5 和弦处理（优先于单键，含 Ctrl+K 前缀）──
+    // 反向搜索激活时不走和弦（搜索框内 Ctrl+K 无意义）。
+    if (!reverseSearch.state.active) {
+      const chord = chordMachine.process(key);
+      if (chord.type === "chord_started") {
+        setChordPending(true);
+        return true; // 吞掉前缀键，等待第二键
+      }
+      if (chord.type === "match") {
+        setChordPending(false);
+        return runChordAction(chord.action);
+      }
+      if (chord.type === "cancel") {
+        // 第二键不匹配：取消和弦，让该键继续走正常分发（落到下方 handler）。
+        setChordPending(false);
+        // 不 return，继续往下处理 replayKey（即当前 key）
+      }
+    }
 
     // ── 反向搜索模式 ──
     if (reverseSearch.state.active) {

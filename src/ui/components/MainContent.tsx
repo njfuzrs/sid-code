@@ -39,6 +39,8 @@ interface MainContentProps {
   copyModeEnabled?: boolean;
   /** v2：思考块折叠状态 */
   thinkCollapsed?: boolean;
+  /** ST8：粘底状态变化回调（true=跟随底部，false=用户滚离暂停）。 */
+  onStickyChange?: (sticky: boolean) => void;
 }
 
 export const MainContent = memo(function MainContent({
@@ -52,6 +54,7 @@ export const MainContent = memo(function MainContent({
   keyExtractor,
   copyModeEnabled,
   thinkCollapsed = false,
+  onStickyChange,
 }: MainContentProps) {
   const renderListItem = useCallback(({ item, index }: { item: HistoryItem; index: number }) => {
     // 流式内容特殊项
@@ -99,6 +102,7 @@ export const MainContent = memo(function MainContent({
       hasFocus={hasFocus}
       copyModeEnabled={copyModeEnabled}
       width={termWidth}
+      onStickyChange={onStickyChange}
     />
     </>
   );

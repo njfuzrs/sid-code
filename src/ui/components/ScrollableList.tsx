@@ -43,6 +43,8 @@ type VirtualizedListProps<T> = {
   initialScrollOffsetInIndex?: number;
   /** Copy Mode：禁用 Ink 滚动，允许终端原生文本选择 */
   copyModeEnabled?: boolean;
+  /** ST8：粘底状态变化回调（true=跟随底部，false=用户滚离暂停）。 */
+  onStickyChange?: (sticky: boolean) => void;
 };
 
 interface ScrollableListProps<T> extends VirtualizedListProps<T> {

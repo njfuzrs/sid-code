@@ -88,5 +88,6 @@ export function getConversationClearedPatch(): Partial<TUIState> {
     activeDialog: null,
     todos: [],
     tasks: [],
+    retryStatus: null,
   };
 }

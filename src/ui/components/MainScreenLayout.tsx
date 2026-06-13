@@ -20,6 +20,7 @@ import { Footer } from "./Footer.tsx";
 import { DialogRenderer } from "./DialogManager.tsx";
 import { HistoryItemDisplay } from "./HistoryItemDisplay.tsx";
 import { StreamingMessage } from "./StreamingMessage.tsx";
+import { RetryStatus } from "./RetryStatus.tsx";
 import { ThinkingMessage } from "./messages/ThinkingMessage.tsx";
 import { Notifications } from "./Notifications.tsx";
 import { ToastDisplay } from "./ToastDisplay.tsx";
@@ -59,6 +60,8 @@ interface MainScreenLayoutProps {
 
   // 底部固定区
   statusMessage: string;
+  /** CM3/CM4：LLM 重试/限流状态（null = 无）。 */
+  retryStatus: import("../App.tsx").RetryStatusInfo | null;
   permissionRequest: PermissionRequestInfo | null;
   shellConfirmRequest: ShellConfirmRequestInfo | null;
   planApprovalRequest: PlanApprovalRequestInfo | null;
@@ -103,6 +106,7 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
   rows,
   keyExtractor,
   statusMessage,
+  retryStatus,
   permissionRequest,
   shellConfirmRequest,
   planApprovalRequest,
@@ -194,6 +198,9 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
         <Notifications />
         <TodoPanel todos={todos} tasks={tasks} termWidth={termWidth} />
         <ToastDisplay />
+
+        {/* CM3/CM4：LLM 重试/限流提示（实时倒计时 + 限流升级建议） */}
+        <RetryStatus status={retryStatus} />
 
         {statusMessage ? (
           <Box paddingX={1}>

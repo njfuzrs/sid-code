@@ -10,27 +10,12 @@
 import React from "react";
 import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
-import { homedir } from "os";
 import type { Usage } from "../../llm/types.ts";
-import { normalizeCacheUsage } from "../../llm/types.ts";
-import { SessionState } from "../../session/state.ts";
 import { theme } from "../semantic-colors.ts";
-import { useUIState } from "../contexts/UIStateContext.tsx";
-import { useConfig } from "../contexts/ConfigContext.tsx";
-import { useSettings } from "../contexts/SettingsContext.tsx";
+import { useStatusLineData } from "../hooks/useStatusLineData.ts";
 
 /** 缩短路径：~ 替换 home，超长时只保留最后两级 */
-function shortenPath(p: string, maxLen = 25): string {
-  const home = homedir();
-  let display = p.startsWith(home) ? "~" + p.slice(home.length) : p;
-  if (display.length > maxLen) {
-    const parts = display.split("/");
-    if (parts.length > 2) {
-      display = "…/" + parts.slice(-2).join("/");
-    }
-  }
-  return display;
-}
+// LY1：shortenPath 等数据派生已移到 useStatusLineData，渲染层不再内联计算。
 
 // ── FooterRow 通用组件 ──
 
@@ -118,23 +103,9 @@ interface FooterProps {
 }
 
 export const Footer = React.memo(function Footer(props: FooterProps) {
-  const {
-    permissionMode,
-    isPlanMode,
-    gitBranch,
-    debug,
-    usage,
-    costUSD,
-    costLimit,
-    contextPercent,
-    model,
-    scrollPercent,
-  } = props;
-  const { renderMarkdown } = useUIState();
-  const config = useConfig();
-  const settings = useSettings();
-
-  const itemColor = theme.ui.comment;
+  // LY1：所有数据派生集中在 useStatusLineData，本组件只负责把数据映射为列。
+  const data = useStatusLineData(props);
+  const { itemColor } = data;
 
   // 构建列
   const potentialColumns: FooterColumn[] = [];
@@ -152,97 +123,62 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
   // 品牌
   addCol("brand", "", <Text bold color={theme.ui.active}>sid-code</Text>, 8, true);
 
-  // CWD（缩短路径：~ 替换 home，只显示最后两级）
-  const cwdDisplay = shortenPath(config.cwd);
-  addCol("cwd", "目录", <Text color={itemColor}>{cwdDisplay}</Text>, cwdDisplay.length);
+  // CWD
+  addCol("cwd", "目录", <Text color={itemColor}>{data.cwdDisplay}</Text>, data.cwdDisplay.length);
 
   // 权限模式
-  const permColor = (() => {
-    switch (permissionMode) {
-      case "plan": return theme.ui.active;
-      case "deny-write": return theme.status.error;
-      case "always-allow": case "dontAsk": case "dangerously-skip-permissions": return theme.status.warning;
-      default: return theme.status.success;
-    }
-  })();
-  const permDisplay = permissionMode === "dangerously-skip-permissions" ? "skip-perms" : permissionMode;
-  addCol("mode", "模式", <Text color={permColor}>{permDisplay}</Text>, permDisplay.length);
+  addCol("mode", "模式", <Text color={data.permission.color}>{data.permission.display}</Text>, data.permission.display.length);
 
   // Plan Mode 标签
-  if (isPlanMode) {
+  if (data.isPlanMode) {
     addCol("plan", "", <Text bold color={theme.ui.active}>[PLAN]</Text>, 6);
   }
 
   // Git 分支
-  if (gitBranch) {
-    addCol("git", "分支", <Text color={itemColor}>{gitBranch}</Text>, gitBranch.length);
+  if (data.gitBranch) {
+    addCol("git", "分支", <Text color={itemColor}>{data.gitBranch}</Text>, data.gitBranch.length);
   }
 
   // Debug 模式
-  if (debug) {
+  if (data.isDebug) {
     addCol("debug", "", <Text color={theme.status.warning}>DEBUG</Text>, 5, true);
   }
 
   // RAW 模式
-  if (!renderMarkdown) {
+  if (data.isRaw) {
     addCol("raw", "", <Text color={theme.status.warning}>RAW</Text>, 3, true);
   }
 
   // Vim 模式
-  if (settings.vimMode) {
+  if (data.isVim) {
     addCol("vim", "", <Text color={theme.text.accent}>VIM</Text>, 3, true);
   }
 
   // Token 统计
-  const tokenStr = `${usage.inputTokens}↓ ${usage.outputTokens}↑`;
-  addCol("tokens", "Tokens", <Text color={itemColor}>{tokenStr}</Text>, tokenStr.length);
+  addCol("tokens", "Tokens", <Text color={itemColor}>{data.tokenText}</Text>, data.tokenText.length);
 
-  // 缓存命中率（模块 B）：经归一化单一事实源派生，命中率 0 或无缓存字段时不显示该列
-  // （避免对 Ollama / 无缓存模型显示 0% 误导）。≥50% 绿、<50% 默认色。
-  {
-    const n = normalizeCacheUsage(usage, SessionState.inferProvider(model));
-    if (n.cacheHitTokens > 0 && n.promptTotal > 0) {
-      const rate = Math.round((n.cacheHitTokens / Math.max(1, n.promptTotal)) * 100);
-      const cacheStr = `⚡${rate}%`;
-      addCol(
-        "cache",
-        "缓存",
-        <Text color={rate >= 50 ? theme.status.success : itemColor}>{cacheStr}</Text>,
-        cacheStr.length,
-      );
-    }
+  // 缓存命中率：命中 0 或无缓存字段时由 hook 返回 null，不显示该列。
+  if (data.cache) {
+    addCol(
+      "cache",
+      "缓存",
+      <Text color={data.cache.color}>{data.cache.text}</Text>,
+      data.cache.text.length,
+    );
   }
 
   // 费用
-  // DISP-2：DeepSeek 官方按 RMB 计价，此处的 $ 是用硬编码汇率折算的**估算值**，
-  // 非官方账单原值。用 ≈ 前缀标注"非精确美元"，避免用户误以为是官方 USD 账单。
-  const isExchangeRateConverted = /deepseek/i.test(model);
-  const costPrefix = isExchangeRateConverted ? "≈$" : "$";
-  const costText = costUSD > 0 ? `${costPrefix}${costUSD.toFixed(4)}` : `${costPrefix}0`;
-  const costColor = (() => {
-    if (costLimit <= 0 || costUSD <= 0) return undefined;
-    const pct = (costUSD / costLimit) * 100;
-    if (pct >= 95) return theme.status.error;
-    if (pct >= 80) return theme.status.warning;
-    return undefined;
-  })();
-  addCol("cost", "费用", <Text color={costColor ?? itemColor}>{costText}</Text>, costText.length);
+  addCol("cost", "费用", <Text color={data.cost.color ?? itemColor}>{data.cost.text}</Text>, data.cost.text.length);
 
   // 上下文
-  const ctxStr = `${contextPercent}%`;
-  let ctxColor = itemColor;
-  if (contextPercent >= 90) ctxColor = theme.status.error;
-  else if (contextPercent >= 70) ctxColor = theme.status.warning;
-  addCol("context", "上下文", <Text color={ctxColor}>{ctxStr}</Text>, ctxStr.length);
+  addCol("context", "上下文", <Text color={data.context.color}>{data.context.text}</Text>, data.context.text.length);
 
   // 模型
-  addCol("model", "模型", <Text color={itemColor}>{model}</Text>, model.length);
+  addCol("model", "模型", <Text color={itemColor}>{data.model}</Text>, data.model.length);
 
   // 滚动位置
-  const showScroll = scrollPercent !== undefined && scrollPercent < 100;
-  if (showScroll) {
-    const scrollStr = `↑${scrollPercent}%`;
-    addCol("scroll", "", <Text color={theme.status.warning}>{scrollStr}</Text>, scrollStr.length, true);
+  if (data.scroll) {
+    addCol("scroll", "", <Text color={theme.status.warning}>{data.scroll.text}</Text>, data.scroll.text.length, true);
   }
 
   // ── 宽度裁剪逻辑 ──

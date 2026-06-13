@@ -99,6 +99,21 @@ export interface AppOptions {
   planManager?: PlanModeManager;
 }
 
+/**
+ * CM3/CM4：从重试错误文本推断重试种类，决定 TUI 提示语气与是否给升级建议。
+ * - 限流(429 / rate limit / quota)→ rate_limit（CM4 附升级建议）
+ * - 过载(529 / overloaded / 503)→ overloaded
+ * - 其余 → retry（通用网络/超时/5xx）
+ */
+export function classifyRetryKind(
+  error: string,
+): "retry" | "rate_limit" | "overloaded" {
+  const e = (error || "").toLowerCase();
+  if (/429|rate.?limit|quota|too many requests/.test(e)) return "rate_limit";
+  if (/529|overload|503|capacity/.test(e)) return "overloaded";
+  return "retry";
+}
+
 export class App {
   private config: Config;
   private provider: Provider;
@@ -226,10 +241,34 @@ export class App {
       onRetry: (attempt, error, delayMs) => {
         const log = getLogger();
         log.info("FALLBACK", `重试 ${attempt}，错误: ${error}，延迟 ${delayMs}ms`);
+        // CM3/CM4：把重试/限流状态推到 TUI，驱动实时倒计时与升级建议。
+        const kind = classifyRetryKind(error);
+        this.tuiStateUpdater?.({
+          retryStatus: {
+            kind,
+            attempt,
+            delayMs,
+            retryAtMs: Date.now() + delayMs,
+            model: this.config.model,
+            error,
+          },
+        });
       },
       onFallback: (reason, model) => {
         const log = getLogger();
         log.warn("FALLBACK", `降级到 ${model}，原因: ${reason}`);
+        // CM3：降级也作为一种重试状态展示（attempt 不适用，置 0）。
+        this.tuiStateUpdater?.({
+          retryStatus: {
+            kind: "fallback",
+            attempt: 0,
+            delayMs: 0,
+            retryAtMs: Date.now(),
+            model: this.config.model,
+            fallbackModel: model,
+            error: reason,
+          },
+        });
       },
     });
 
@@ -1550,6 +1589,7 @@ export class App {
       })),
       todos: [],
       tasks: [],
+      retryStatus: null,
     });
 
     const updateState = (patch: Partial<import("./ui/App.tsx").TUIState>) => {
@@ -1640,7 +1680,7 @@ export class App {
       // 每次重建时刷新后台任务面板
       bridge.updateTasks();
     };
-    const appendCommandOutput = (input: string, output: string | null) => {
+    const appendCommandOutput = (input: string, output: string | null, isError = false) => {
       const displayItem = { kind: "command" as const, input, output };
       const prevDisplayItems = bridge.current.displayItems;
       const displayItems = [...prevDisplayItems, displayItem];
@@ -1651,6 +1691,7 @@ export class App {
         type: "command",
         input,
         output,
+        isError,
       };
       const prevHistoryItems = bridge.current.historyItems;
       const historyItems = [...prevHistoryItems, historyItem];
@@ -1731,6 +1772,10 @@ export class App {
           streamSynced = true;
           syncDisplay();
           streamingFullText = "";
+          // CM3：文本开始流式输出 = 请求已成功，清除任何残留的重试/限流提示。
+          if (bridge.current.retryStatus) {
+            updateState({ retryStatus: null });
+          }
         }
         streamingFullText += text;
         updateState({ streamingText: streamingFullText, isStreaming: true });
@@ -1883,6 +1928,8 @@ export class App {
         usage: { ...this.sessionState.getTotalUsage() },
         costUSD: this.sessionState.totalCostUSD,
         contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / this.ctxMgr.getMaxTokens()) * 100),
+        // CM3：本轮结束，清除残留的重试/限流提示。
+        retryStatus: null,
       });
 
       // 本轮结束 → 标记空闲并冲刷 Cron 忙时积压的提示词
@@ -1997,7 +2044,7 @@ export class App {
         const command = this.commandRegistry.get(cmd);
         if (!command) {
           log.warn("TUI:CMD", `未知命令: /${cmd}`);
-          appendCommandOutput(commandInput, `未知命令: /${cmd}，输入 /help 查看可用命令`);
+          appendCommandOutput(commandInput, `未知命令: /${cmd}，输入 /help 查看可用命令`, true);
           return;
         }
 
@@ -2016,7 +2063,7 @@ export class App {
           updateState({ model: this.config.model, provider: this.config.provider });
         } catch (err: any) {
           log.error("TUI:CMD", `命令执行失败: /${cmd}`, { error: err.message, stack: err.stack });
-          appendCommandOutput(commandInput, `命令执行失败: ${err.message}`);
+          appendCommandOutput(commandInput, `命令执行失败: ${err.message}`, true);
           return;
         }
 
@@ -2061,7 +2108,7 @@ export class App {
             break;
 
           case "error":
-            appendCommandOutput(commandInput, `错误: ${result.message ?? ""}`);
+            appendCommandOutput(commandInput, `错误: ${result.message ?? ""}`, true);
             break;
 
           case "dialog":

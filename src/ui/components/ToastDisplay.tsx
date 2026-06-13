@@ -49,7 +49,13 @@ export const ToastDisplay: React.FC = () => {
   }
 
   if (uiState.showIsExpandableHint) {
-    const action = uiState.constrainHeight ? '显示更多' : '折叠';
+    // TO4：阶梯式展开提示——按当前级别提示下一步动作。
+    const action =
+      uiState.expandLevel === 0
+        ? '显示更多'
+        : uiState.expandLevel === 1
+          ? '全部展开'
+          : '折叠';
     return (
       <Text color={theme.text.accent}>
         按 Ctrl+O {action}最后一条回复的行数

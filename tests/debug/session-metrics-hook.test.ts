@@ -114,6 +114,14 @@ describe("SessionMetricsCollector.registerHooks", () => {
     expect(m.interaction.turnCount).toBe(2);
   });
 
+  test("SubagentStart hook 触发 recordSubAgent", async () => {
+    await hookSystem.fireSubagentStartEvent("agent-1", "explore");
+    await hookSystem.fireSubagentStartEvent("agent-2", "general-purpose");
+
+    const m = collector.getMetrics();
+    expect(m.interaction.subAgentCount).toBe(2);
+  });
+
   test("多轮完整流程", async () => {
     // 2 轮 LLM + 1 次工具调用
     for (let i = 0; i < 2; i++) {

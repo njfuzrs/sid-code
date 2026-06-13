@@ -13,6 +13,7 @@ import Text from "../../ink/components/Text.js";
 import type { HistoryItem } from "../types.ts";
 import { ToolCallStatus } from "../types.ts";
 import { UserMessage } from "./messages/UserMessage.tsx";
+import { CommandMessage } from "./messages/CommandMessage.tsx";
 import { AssistantMessage } from "./messages/AssistantMessage.tsx";
 import { ToolGroupMessage } from "./messages/ToolGroupMessage.tsx";
 import { ThinkingMessage } from "./messages/ThinkingMessage.tsx";
@@ -205,12 +206,12 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
       return (
         <Box flexDirection="column">
           {prevItem && <Separator width={width} />}
-          <UserMessage text={item.input} width={width} />
-          {item.output ? (
-            <Box paddingLeft={2}>
-              <Text dimColor>{item.output}</Text>
-            </Box>
-          ) : null}
+          <CommandMessage
+            input={item.input}
+            output={item.output}
+            width={width}
+            isError={item.isError}
+          />
         </Box>
       );
 
