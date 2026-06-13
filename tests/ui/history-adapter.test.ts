@@ -244,6 +244,57 @@ describe("messagesToHistoryItemsWithMap - assistant 消息", () => {
     expect(items[1].type).toBe("assistant");
     expect(items[2].type).toBe("tool_group");
   });
+
+  // SP1：思考耗时持久化
+  test("thinking 块带 durationMs → thought.durationSeconds（向下取整秒）", () => {
+    const msgs: Message[] = [
+      {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "让我想想这个问题", durationMs: 3500 },
+          { type: "text", text: "答案是 42。" },
+        ],
+      },
+    ];
+    const items = messagesToHistoryItemsWithMap(msgs, new Map());
+    expect(items).toHaveLength(2);
+    expect(items[0].type).toBe("thinking");
+    if (items[0].type === "thinking") {
+      expect(items[0].thought.text).toBe("让我想想这个问题");
+      // 3500ms → 3s
+      expect(items[0].thought.durationSeconds).toBe(3);
+    }
+  });
+
+  test("thinking 块无 durationMs → thought.durationSeconds 缺省（旧数据兼容）", () => {
+    const msgs: Message[] = [
+      {
+        role: "assistant",
+        content: [{ type: "thinking", thinking: "无耗时的旧思考块" }],
+      },
+    ];
+    const items = messagesToHistoryItemsWithMap(msgs, new Map());
+    expect(items).toHaveLength(1);
+    expect(items[0].type).toBe("thinking");
+    if (items[0].type === "thinking") {
+      expect(items[0].thought.text).toBe("无耗时的旧思考块");
+      expect(items[0].thought.durationSeconds).toBeUndefined();
+    }
+  });
+
+  test("thinking durationMs 不足 1 秒 → durationSeconds 为 0", () => {
+    const msgs: Message[] = [
+      {
+        role: "assistant",
+        content: [{ type: "thinking", thinking: "瞬间的念头", durationMs: 800 }],
+      },
+    ];
+    const items = messagesToHistoryItemsWithMap(msgs, new Map());
+    expect(items[0].type).toBe("thinking");
+    if (items[0].type === "thinking") {
+      expect(items[0].thought.durationSeconds).toBe(0);
+    }
+  });
 });
 
 describe("messagesToHistoryItems - 完整对话（合并模式）", () => {

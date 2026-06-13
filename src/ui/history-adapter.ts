@@ -40,6 +40,11 @@ export function buildStaticItems(historyItems: HistoryItem[], version: string): 
 /** 思考摘要（从 thinking block 提取） */
 export interface ThoughtSummary {
   text: string;
+  /**
+   * SP1：思考耗时（秒，向下取整）。来自 ThinkingBlock.durationMs，持久化后
+   * 历史项重渲仍能显示「已思考 Ns」。缺省（旧数据/未测量）时 UI 回退为「思考过程」。
+   */
+  durationSeconds?: number;
 }
 
 /** 占位消息文本常量 */
@@ -191,9 +196,17 @@ function convertAssistantMessage(
     if (block.type === "thinking") {
       // v2：思考块 → 独立 thinking HistoryItem（对标 Claude Code）
       flushText();
+      // SP1：把持久化的 durationMs 折算为秒带入，历史项才能稳定显示耗时。
+      const durationSeconds =
+        typeof block.durationMs === "number"
+          ? Math.floor(block.durationMs / 1000)
+          : undefined;
       items.push({
         type: "thinking",
-        thought: { text: block.thinking },
+        thought: {
+          text: block.thinking,
+          ...(durationSeconds !== undefined ? { durationSeconds } : {}),
+        },
       });
     } else if (block.type === "text") {
       flushText(); // 先 flush 前面的文本（如果有的话）

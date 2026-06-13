@@ -48,6 +48,9 @@ export async function processStream(
   const thinkingBlocks: unknown[] = [];
   // 记录哪些 index 是 thinking 块
   const thinkingIndexes = new Set<number>();
+  // SP1：每个 thinking 块的开始时间戳（首个 delta 到达时记录），用于在
+  // content_block_stop 时算出 durationMs，持久化到 ThinkingBlock 供历史项显示耗时。
+  const thinkingStartMs = new Map<number, number>();
   // 累积 reasoning 文本（DeepSeek reasoning_content 回传用）
   let accumulatedReasoning = "";
 
@@ -122,6 +125,10 @@ export async function processStream(
               block.text += delta.text;
               // 对标 Claude Code：思考块不调 onText，调 onThinking
               if (thinkingIndexes.has(event.index)) {
+                // SP1：首个 thinking delta 到达时记录起点（仅记一次）。
+                if (!thinkingStartMs.has(event.index)) {
+                  thinkingStartMs.set(event.index, Date.now());
+                }
                 onThinking?.(delta.text);
               } else {
                 onText?.(delta.text);
@@ -150,13 +157,24 @@ export async function processStream(
           if (thinkingIndexes.has(event.index)) {
             const block = response.content[event.index];
             if (block?.type === "text" && block.text) {
+              // SP1：算出该思考块耗时（首 delta → stop）；无起点（无 delta）则不附。
+              const startedAt = thinkingStartMs.get(event.index);
+              const durationMs =
+                startedAt !== undefined
+                  ? Math.max(0, Date.now() - startedAt)
+                  : undefined;
               // 原地转型为 ThinkingBlock（保留在 content 中，对标 Claude Code）
-              const thinkingBlock = { type: "thinking" as const, thinking: block.text };
+              const thinkingBlock = {
+                type: "thinking" as const,
+                thinking: block.text,
+                ...(durationMs !== undefined ? { durationMs } : {}),
+              };
               response.content[event.index] = thinkingBlock;
               thinkingBlocks.push(thinkingBlock);
               accumulatedReasoning += block.text;
             }
             thinkingIndexes.delete(event.index);
+            thinkingStartMs.delete(event.index);
           }
           break;
         }

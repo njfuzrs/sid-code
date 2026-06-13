@@ -33,6 +33,12 @@ export interface ThinkingBlock {
   type: "thinking";
   thinking: string;
   signature?: string;  // Anthropic 签名（保留用于回传验证）
+  /**
+   * SP1：思考耗时（毫秒）。流式期间由 stream-processor 测量（从该块首个
+   * delta 到 content_block_stop），用于历史项稳定显示「已思考 Ns」而非
+   * 重渲时回退为无耗时文案。仅 UI 呈现用，不回传给 LLM。
+   */
+  durationMs?: number;
 }
 
 /** 内容块类型 */

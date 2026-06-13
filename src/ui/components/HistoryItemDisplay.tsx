@@ -83,7 +83,12 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
 
     case "thinking":
       return (
-        <ThinkingMessage text={item.thought.text} width={width} collapsed={thinkCollapsed} />
+        <ThinkingMessage
+          text={item.thought.text}
+          width={width}
+          collapsed={thinkCollapsed}
+          thinkingSeconds={item.thought.durationSeconds}
+        />
       );
 
     case "hint":
