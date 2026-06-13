@@ -7,6 +7,10 @@
 
 import type { Message } from "../../llm/types.ts";
 import { getLogger } from "../../debug/index.ts";
+import {
+  checkMessageHistoryIntegrity,
+  describeIntegrityViolation,
+} from "../../agent/message-invariants.ts";
 
 /** snipCompact 配置 */
 export interface SnipCompactOptions {
@@ -102,6 +106,17 @@ export function snipCompact(
   const result = [...preserved, summaryMsg, ...messages.slice(startIdx + snipCount)];
 
   log.info("SNIP_COMPACT", `裁剪了 ${snipCount} 条消息，${messages.length} → ${result.length}`);
+
+  // PROTOCOL-5：snip 按"消息条数"切片，可能切掉 assistant(tool_use) 而留下孤儿/游离。
+  // 发送前的 backfillOrphanToolResults 关卡会兜底修复，故此处只做事后只读校验 + 告警，
+  // 让"压缩产生孤儿"这一事件显形（落到 audit.log），便于排查而非掩盖。不修改数据。
+  const integrity = checkMessageHistoryIntegrity(result);
+  if (!integrity.intact) {
+    log.warn(
+      "SNIP_COMPACT",
+      `裁剪后消息历史出现 tool_use/tool_result 配对破缺（将由发送前关卡兜底修复）：${describeIntegrityViolation(integrity)}`,
+    );
+  }
 
   return { messages: result, snippedCount: snipCount, success: true };
 }

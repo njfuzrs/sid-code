@@ -99,16 +99,22 @@ async function main(): Promise<void> {
     options: {
       provider: { type: "string", default: "sid-code" },
       "max-regression": { type: "string", default: "0.5" },
+      // FUNCVERIFY-6：baseline 缺失时的绝对最低分门禁（分数 0-1 量纲，默认 0.5 及格线）。
+      // 没有此底线时，缺 baseline 的 case 会被无条件放行，门禁形同虚设。
+      "min-score": { type: "string", default: "0.5" },
+      // FUNCVERIFY-6：默认严格——任一 case skip（未产出有效分数）即 block；显式放宽用。
+      "allow-skip": { type: "boolean", default: false },
       "evals-dir": { type: "string", default: "evals" },
     },
   });
 
   const provider = values.provider as string;
   const maxRegression = Number(values["max-regression"]);
+  const minScore = Number(values["min-score"]);
   const evalsDir = resolve(values["evals-dir"] as string);
 
   const cases = loadSmokeCases(evalsDir);
-  console.log(`[smoke] provider=${provider} max-regression=${maxRegression} cases=${cases.length}`);
+  console.log(`[smoke] provider=${provider} max-regression=${maxRegression} min-score=${minScore} cases=${cases.length}`);
 
   // 跑评测
   try {
@@ -137,13 +143,18 @@ async function main(): Promise<void> {
       continue;
     }
     if (baselineScore === null) {
+      // FUNCVERIFY-6：首次跑分（无 baseline）不再无条件放行，改用绝对最低分门禁。
+      // 新分 ≥ minScore 才算通过；低于底线视为回归并 block PR，避免"缺 baseline → 任意低分都过"的漏网。
+      const belowFloor = newScore < minScore;
       results.push({
         caseId,
         newScore,
         baselineScore: null,
         regression: 0,
-        status: "pass",
-        notes: "首次跑分（无 baseline 对比）",
+        status: belowFloor ? "regression" : "pass",
+        notes: belowFloor
+          ? `首次跑分 ${newScore.toFixed(2)} < 最低分 ${minScore}（无 baseline，block PR）`
+          : `首次跑分 ${newScore.toFixed(2)} ≥ 最低分 ${minScore}（无 baseline 对比）`,
       });
       continue;
     }
@@ -185,11 +196,19 @@ async function main(): Promise<void> {
 
   // 退出码
   const failed = results.filter((r) => r.status === "regression");
+  const skipped = results.filter((r) => r.status === "skip");
   if (failed.length > 0) {
-    console.error(`\n[smoke] ❌ ${failed.length}/${results.length} case 回归 > ${maxRegression}`);
+    console.error(`\n[smoke] ❌ ${failed.length}/${results.length} case 回归（> ${maxRegression} 或 < 最低分 ${minScore}）`);
     process.exit(1);
   }
-  console.log(`\n[smoke] ✅ ${results.length} case 全部通过（无 > ${maxRegression} 回归）`);
+  // FUNCVERIFY-6：skip（新分缺失/wrapper 失败）意味着该 case 未产出有效分数，
+  // 不能当作"通过"静默放行——否则评测整体失败时门禁仍变绿。任一 skip 即 block，
+  // 需要时可显式 --allow-skip 放宽（默认严格）。
+  if (skipped.length > 0 && !values["allow-skip"]) {
+    console.error(`\n[smoke] ❌ ${skipped.length}/${results.length} case 未产出有效分数（skip，疑似评测未真正跑成）；如确为预期可加 --allow-skip`);
+    process.exit(1);
+  }
+  console.log(`\n[smoke] ✅ ${results.length} case 全部通过（无 > ${maxRegression} 回归，无低于最低分 ${minScore}）`);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

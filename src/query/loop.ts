@@ -891,6 +891,23 @@ export async function* queryLoop(
           yield { kind: "done", turns: state.turnCount };
           return;
         }
+        // AGENT-2 双重防护：非 abort 异常会 throw 穿透，但此时 assistant(含 tool_use) 已入历史，
+        // 工具结果缺失 → 孤儿 tool_use。发送前的 backfillOrphanToolResults 关卡是主防护，
+        // 这里在 throw 前先就地补齐本轮 tool_use 的 error 占位 result，让 ctxMgr 历史与
+        // sessionStore 落盘当场即满足协议配对，避免异常路径毒化后续 / 恢复时的会话历史。
+        const errorResults = toolBlocks
+          .filter((b): b is typeof b & { type: "tool_use" } => b.type === "tool_use")
+          .map(b => ({
+            type: "tool_result" as const,
+            tool_use_id: b.id,
+            content: `工具执行异常中断：${err?.message ?? String(err)}`,
+            is_error: true,
+          }));
+        if (errorResults.length > 0) {
+          ctxMgr.addMessage({ role: "user", content: errorResults });
+          try { deps.sessionStore?.appendMessage({ role: "user", content: errorResults }); } catch { /* 持久化失败不阻断 */ }
+          log.warn("QUERY_LOOP", `工具执行抛出非 abort 异常，已为 ${errorResults.length} 个 tool_use 补 error result 后再抛出`);
+        }
         throw err;
       }
       const toolBatchElapsed = toolPerfHandle.end();

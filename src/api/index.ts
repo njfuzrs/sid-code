@@ -11,7 +11,6 @@
  *   cost-tracker          → 按模型成本累加 + USD 计算
  *   rate-limit            → 从 HTTP headers 提取真实速率限制
  *   api-log               → 结构化 API 调用日志
- *   message-normalizer    → 发送前消息规范化（tool_use 配对修复等）
  */
 
 // 错误处理
@@ -33,6 +32,3 @@ export * from "./cache-detection.ts";
 export * from "./cost-tracker.ts";
 export * from "./rate-limit.ts";
 export * from "./api-log.ts";
-
-// 消息规范化
-export * from "./message-normalizer.ts";

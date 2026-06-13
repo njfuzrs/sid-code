@@ -805,9 +805,13 @@ export async function main(): Promise<void> {
         try { unregisterSession(config.sessionId); } catch { /* 忽略 */ }
         try { scheduler.stop(); } catch { /* 忽略 */ }
       };
+      // ASYNC-2 修复：只挂 exit 兜底，不再注册同步 process.exit 的信号 handler。
+      // 原先 cli.ts 在此处注册 SIGINT/SIGTERM → cleanup() + 同步 process.exit，
+      // 会抢先于 app.ts:registerSignalHandlers 的异步 SessionEnd 落盘（fireSessionEndEvent
+      // + finalizeSessionStore 需要 await），导致 Ctrl+C 时 trajectory 只剩 metadata、消息丢失。
+      // 现统一由 app.ts 的 onSignal 异步落盘后再 process.exit；其 process.exit 会触发本 'exit'
+      // 事件，cleanup（注销并发会话 + 停止调度器，均为同步操作）仍会被执行，幂等无副作用。
       process.once("exit", cleanup);
-      process.once("SIGINT", () => { cleanup(); process.exit(130); });
-      process.once("SIGTERM", () => { cleanup(); process.exit(143); });
     }
 
     // 启动时自动清理过期会话（后台静默执行）

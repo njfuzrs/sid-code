@@ -269,8 +269,11 @@ export class BashTool implements Tool {
         return { output };
       })();
 
+      // LEAK-2 修复：保存该定时器 id，竞速结束后无论哪条路径都 clear，
+      // 避免命令正常完成后这个冗余 setTimeout 仍空转到 timeout 才触发空回调。
+      let backgroundTimeoutId: ReturnType<typeof setTimeout> | undefined;
       const timeoutPromise = new Promise<ToolResult | null>((resolve) => {
-        setTimeout(() => {
+        backgroundTimeoutId = setTimeout(() => {
           if (!killed && !backgrounded) {
             backgrounded = true;
             resolve(null); // 触发后台化
@@ -283,6 +286,9 @@ export class BashTool implements Tool {
         outputPromise.then(r => ({ type: "done" as const, result: r })),
         timeoutPromise.then(() => ({ type: "timeout" as const, result: null })),
       ]);
+
+      // 竞速已分出胜负，冗余的后台化定时器不再需要，立即清除。
+      if (backgroundTimeoutId !== undefined) clearTimeout(backgroundTimeoutId);
 
       if (raceResult.type === "timeout") {
         const pid = proc.pid;

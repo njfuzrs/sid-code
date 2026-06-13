@@ -233,7 +233,20 @@ class Logger {
   }
 
   private log(level: LogLevel, category: string, message: string, data?: unknown): void {
-    if (!this.options.enabled) return;
+    if (!this.options.enabled) {
+      // OBSERV-4：enabled=false 时也不能静默吞掉 ERROR/WARN——否则生产环境
+      // （未开 --debug、audit:false、或 initLogger 之前 getLogger() 兜底实例的早期错误）
+      // 关键错误将无任何留痕。此处兜底把 ERROR/WARN 输出到 stderr：
+      //   - 走 stderr 而非 stdout，不污染无头模式的结构化输出，也不破坏 TUI 的 Ink 主屏（用 stdout）；
+      //   - 测试环境（NODE_ENV=test）跳过，避免污染单测输出；
+      //   - WARN 仍尊重 mutedCategories，ERROR 始终输出。
+      if (level <= LogLevel.WARN && process.env.NODE_ENV !== "test") {
+        if (level === LogLevel.WARN && this.isMuted(category)) return;
+        const formatted = this.formatMessage(level, category, message, data);
+        process.stderr.write(this.stripAnsi(formatted) + "\n");
+      }
+      return;
+    }
 
     // 静默分类过滤（ERROR 级别不受影响，始终输出）
     if (level > LogLevel.ERROR && this.isMuted(category)) return;
