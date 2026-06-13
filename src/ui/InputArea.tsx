@@ -245,15 +245,19 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, onPermissionMode
   }, [isLoading, tb]);
 
   const handleSubmit = useCallback(() => {
-    const text = tb.submit();
-    if (!text) return;
+    const raw = tb.submit();
+    if (!raw) return;
+
+    // IN3：把粘贴占位引用 [粘贴 #N ...] 还原为真实内容后再提交，随后清空登记表。
+    const text = expandPastedRefs(raw);
+    clearPastes();
 
     if (text === lastSubmittedRef.current) {
       log.warn("UI:INPUT", `重复内容被拦截: "${text.slice(0, 50)}"`);
       return;
     }
 
-    // 持久化历史
+    // 持久化历史（存还原后的真实内容）
     addHistoryEntry(text);
 
     // Shell 模式：! 前缀直接执行 shell 命令
