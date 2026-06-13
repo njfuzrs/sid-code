@@ -1,12 +1,22 @@
 import React, { useMemo } from 'react';
 import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
+import { RawAnsi } from "../../ink/components/RawAnsi.js";
 import crypto from 'node:crypto';
 import { diffWordsWithSpace } from 'diff';
 import { colorizeCode, colorizeLine } from './CodeColorizer.js';
 import { theme as semanticTheme } from '../semantic-colors.js';
+import { buildDiffAnsiLines, type DiffAnsiColors } from './diffAnsiLines.js';
+import type { Color } from '../../ink/styles.js';
 
-interface DiffLine {
+/**
+ * DF3:超过此行数的 diff 走 RawAnsi 单 Yoga leaf 路径(预渲染 ANSI 字符串),
+ * 绕过「每行一棵 React 子树」的 Yoga/squash/重序列化回环。小 diff 仍走 React 路径
+ * (保留可选中文本/无障碍语义)。
+ */
+const RAW_ANSI_LINE_THRESHOLD = 80;
+
+export interface DiffLine {
   type: 'add' | 'del' | 'context' | 'hunk' | 'other';
   oldLine?: number;
   newLine?: number;
@@ -151,6 +161,63 @@ export function computeWordDiffPairs(
     i = addEnd > i ? addEnd : i + 1;
   }
   return pairMap;
+}
+
+/** 连续未变更上下文超过此行数则折叠 */
+const CONTEXT_COLLAPSE_THRESHOLD = 10;
+/** 折叠时首尾各保留的上下文行数 */
+const CONTEXT_KEEP_LINES = 3;
+
+/** diff 渲染计划项:正常行 或 折叠占位 */
+export interface DiffRenderPlanItem {
+  kind: 'line' | 'collapsed';
+  /** kind==='line' 时的原始行 */
+  line?: { type: DiffLine['type']; content: string };
+  /** kind==='line' 时该行在 displayableLines 中的原始下标(供 pairMap 查询) */
+  origIndex?: number;
+  /** kind==='collapsed' 时被折叠隐藏的行数 */
+  hiddenCount?: number;
+}
+
+/**
+ * DF2 大 diff 上下文折叠:把连续的未变更上下文(context)块中超长的部分折叠。
+ * 连续 context run 长度 > threshold 时,保留首尾各 keep 行,中间替换为一个
+ * collapsed 占位(隐藏 run-2*keep 行)。add/del/其它行原样保留。
+ * 抽成纯函数便于单测。
+ */
+export function planDiffWithContextCollapse(
+  lines: { type: DiffLine['type']; content: string }[],
+  threshold = CONTEXT_COLLAPSE_THRESHOLD,
+  keep = CONTEXT_KEEP_LINES,
+): DiffRenderPlanItem[] {
+  const plan: DiffRenderPlanItem[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    if (lines[i].type !== 'context') {
+      plan.push({ kind: 'line', line: lines[i], origIndex: i });
+      i++;
+      continue;
+    }
+    // 收集连续的 context run
+    let runEnd = i;
+    while (runEnd < lines.length && lines[runEnd].type === 'context') runEnd++;
+    const runLen = runEnd - i;
+    if (runLen > threshold && runLen - keep * 2 >= 1) {
+      for (let p = 0; p < keep; p++) {
+        plan.push({ kind: 'line', line: lines[i + p], origIndex: i + p });
+      }
+      plan.push({ kind: 'collapsed', hiddenCount: runLen - keep * 2 });
+      for (let p = runLen - keep; p < runLen; p++) {
+        plan.push({ kind: 'line', line: lines[i + p], origIndex: i + p });
+      }
+    } else {
+      for (let p = 0; p < runLen; p++) {
+        plan.push({ kind: 'line', line: lines[i + p], origIndex: i + p });
+      }
+    }
+    i = runEnd;
+  }
+  return plan;
 }
 
 interface DiffRendererProps {
@@ -325,15 +392,65 @@ const renderDiffContent = (
     })),
   );
 
-  const content = displayableLines.reduce<React.ReactNode[]>(
-    (acc, line, index) => {
+  // DF2:对超长未变更上下文做折叠。plan 保留每行的原始下标(origIndex)以查 pairMap。
+  const renderPlan = planDiffWithContextCollapse(
+    displayableLines.map((l) => ({ type: l.type, content: l.content })),
+  );
+
+  // DF3:大 diff 走 RawAnsi 单 leaf 路径。折叠后的计划行数超阈值时,预渲染 ANSI 字符串,
+  // 绕过 per-line React 子树的 Yoga/squash/重序列化回环。小 diff 仍走下方 React 路径。
+  if (renderPlan.length > RAW_ANSI_LINE_THRESHOLD) {
+    const bg = semanticTheme.background.diff;
+    const colors: DiffAnsiColors = {
+      secondary: semanticTheme.text.secondary as Color,
+      addFg: semanticTheme.status.success as Color,
+      delFg: semanticTheme.status.error as Color,
+      addBg: bg.added as Color,
+      delBg: bg.removed as Color,
+      addEmphasisBg: bg.addedEmphasis as Color,
+      delEmphasisBg: bg.removedEmphasis as Color,
+    };
+    const ansiLines = buildDiffAnsiLines({
+      plan: renderPlan,
+      displayableLines,
+      pairMap,
+      baseIndentation,
+      gutterWidth,
+      terminalWidth,
+      colors,
+    });
+    return (
+      <Box key={key} flexDirection="column" width={terminalWidth}>
+        <RawAnsi lines={ansiLines} width={terminalWidth} />
+      </Box>
+    );
+  }
+
+  const content = renderPlan.reduce<React.ReactNode[]>(
+    (acc, item, planIdx) => {
+      // 折叠占位行:展示被隐藏的上下文行数
+      if (item.kind === 'collapsed') {
+        acc.push(
+          <Box key={`collapse-${planIdx}`} paddingLeft={gutterWidth + 2}>
+            <Text color={semanticTheme.text.secondary} dimColor>
+              {`⋯ ${item.hiddenCount} 行未变更上下文已折叠`}
+            </Text>
+          </Box>,
+        );
+        // 折叠会中断行号连续性,复位 lastLineNumber 避免误插 gap 分隔线
+        lastLineNumber = null;
+        return acc;
+      }
+
+      const index = item.origIndex!;
       // 根据类型确定用于间隔计算的相关行号
       let relevantLineNumberForGapCalc: number | null = null;
-      if (line.type === 'add' || line.type === 'context') {
-        relevantLineNumberForGapCalc = line.newLine ?? null;
-      } else if (line.type === 'del') {
+      const srcLine = displayableLines[index];
+      if (srcLine.type === 'add' || srcLine.type === 'context') {
+        relevantLineNumberForGapCalc = srcLine.newLine ?? null;
+      } else if (srcLine.type === 'del') {
         // 对于删除，间隔通常与原始文件的行号有关
-        relevantLineNumberForGapCalc = line.oldLine ?? null;
+        relevantLineNumberForGapCalc = srcLine.oldLine ?? null;
       }
 
       if (
@@ -360,36 +477,36 @@ const renderDiffContent = (
       let gutterNumStr = '';
       let prefixSymbol = ' ';
 
-      switch (line.type) {
+      switch (srcLine.type) {
         case 'add':
-          gutterNumStr = (line.newLine ?? '').toString();
+          gutterNumStr = (srcLine.newLine ?? '').toString();
           prefixSymbol = '+';
-          lastLineNumber = line.newLine ?? null;
+          lastLineNumber = srcLine.newLine ?? null;
           break;
         case 'del':
-          gutterNumStr = (line.oldLine ?? '').toString();
+          gutterNumStr = (srcLine.oldLine ?? '').toString();
           prefixSymbol = '-';
           // 对于删除，如果 oldLine 在前进，则基于 oldLine 更新 lastLineNumber。
           // 这有助于在有多个连续删除或删除后跟原始文件中远处的上下文行时正确管理间隔。
-          if (line.oldLine !== undefined) {
-            lastLineNumber = line.oldLine;
+          if (srcLine.oldLine !== undefined) {
+            lastLineNumber = srcLine.oldLine;
           }
           break;
         case 'context':
-          gutterNumStr = (line.newLine ?? '').toString();
+          gutterNumStr = (srcLine.newLine ?? '').toString();
           prefixSymbol = ' ';
-          lastLineNumber = line.newLine ?? null;
+          lastLineNumber = srcLine.newLine ?? null;
           break;
         default:
           return acc;
       }
 
-      const displayContent = line.content.substring(baseIndentation);
+      const displayContent = srcLine.content.substring(baseIndentation);
 
       const backgroundColor =
-        line.type === 'add'
+        srcLine.type === 'add'
           ? semanticTheme.background.diff.added
-          : line.type === 'del'
+          : srcLine.type === 'del'
             ? semanticTheme.background.diff.removed
             : undefined;
       acc.push(
@@ -403,7 +520,7 @@ const renderDiffContent = (
           >
             <Text color={semanticTheme.text.secondary}>{gutterNumStr}</Text>
           </Box>
-          {line.type === 'context' ? (
+          {srcLine.type === 'context' ? (
             <>
               <Text>{prefixSymbol} </Text>
               <Text wrap="wrap">{colorizeLine(displayContent, language)}</Text>
@@ -411,7 +528,7 @@ const renderDiffContent = (
           ) : (
             <Text
               backgroundColor={
-                line.type === 'add'
+                srcLine.type === 'add'
                   ? semanticTheme.background.diff.added
                   : semanticTheme.background.diff.removed
               }
@@ -420,7 +537,7 @@ const renderDiffContent = (
               <Text
                 bold
                 color={
-                  line.type === 'add'
+                  srcLine.type === 'add'
                     ? semanticTheme.status.success
                     : semanticTheme.status.error
                 }
@@ -429,9 +546,9 @@ const renderDiffContent = (
               </Text>{' '}
               {pairMap.has(index)
                 ? renderWordDiff(
-                    line.type === 'del' ? displayContent : pairMap.get(index)!,
-                    line.type === 'del' ? pairMap.get(index)! : displayContent,
-                    line.type as 'del' | 'add',
+                    srcLine.type === 'del' ? displayContent : pairMap.get(index)!,
+                    srcLine.type === 'del' ? pairMap.get(index)! : displayContent,
+                    srcLine.type as 'del' | 'add',
                   )
                 : colorizeLine(displayContent, language)}
             </Text>
@@ -443,8 +560,8 @@ const renderDiffContent = (
     [],
   );
 
-  // SlicingMaxSizedBox 需要 text 参数，但我们这里是 ReactNode[]
-  // 所以直接用 Box 包裹，如果需要高度限制可以后续优化
+  // 超长未变更上下文已由 planDiffWithContextCollapse 折叠;整体高度限制
+  // 交由上层 SlicingMaxSizedBox 处理,这里直接用 Box 列布局。
   return (
     <Box key={key} flexDirection="column" width={terminalWidth}>
       {content}

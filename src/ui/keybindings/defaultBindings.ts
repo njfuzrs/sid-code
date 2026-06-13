@@ -30,7 +30,9 @@ export interface KeyBinding {
  * ⚠️ 顺序 = ShortcutsHelp 展示顺序。
  */
 export const DEFAULT_BINDINGS: KeyBinding[] = [
-  // ── InputArea 键（仅登记用于帮助展示，实际触发仍在 InputArea）──
+  // ── InputArea 键 ──
+  // shellMode/filePicker/newline/historyUpDown 是字符级/光标级输入,语义固定不走查表(仅登记供帮助展示);
+  // reverseSearch/permMode 已接入 InputArea 的 matchBinding 查表(K1),用户在 keybindings.json 改这些 action 即生效。
   { action: "input:shellMode",     stroke: { name: "!" },             display: "!",           description: "shell 模式",        showInHelp: true },
   { action: "input:filePicker",    stroke: { name: "@" },             display: "@",           description: "选择文件/目录",     showInHelp: true },
   { action: "input:newline",       stroke: { shift: true, name: "enter" }, display: "Shift+Enter", description: "多行输入",    showInHelp: true },

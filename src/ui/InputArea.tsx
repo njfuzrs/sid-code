@@ -125,7 +125,9 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, onPermissionMode
 
   // K5：和弦状态机（Ctrl+K → Ctrl+C 等两键序列）。单键仍走各 handler 内的 matchBinding，
   // 这里只处理多键和弦，避免双触发。
-  const { chordMachine } = useKeybindings();
+  // K1：matchBinding 让 InputArea 的可配置动作键（反搜 / 权限模式）走运行时键位表，
+  // 用户在 keybindings.json 里改这些 action 即可生效，不再硬编码。
+  const { chordMachine, matchBinding } = useKeybindings();
   const [chordPending, setChordPending] = useState(false);
 
   /** 执行一个和弦 action（示例:编辑器级操作,作用于当前输入框）。 */
@@ -360,8 +362,8 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, onPermissionMode
         reverseSearch.deactivate();
         return true;
       }
-      if (key.ctrl && key.name === "r") {
-        // 继续搜索下一个
+      if (matchBinding(key)?.action === "input:reverseSearch") {
+        // 再次按反搜键：继续搜索下一个（跟随用户配置的同一键）
         reverseSearch.searchNext();
         return true;
       }
@@ -385,8 +387,8 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, onPermissionMode
       return false;
     }
 
-    // Ctrl+R 激活反向搜索
-    if (key.ctrl && key.name === "r") {
+    // 激活反向搜索（K1：键位查表，默认 Ctrl+R，用户可在 keybindings.json 改）
+    if (matchBinding(key)?.action === "input:reverseSearch") {
       reverseSearch.activate();
       return true;
     }
@@ -406,8 +408,8 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, onPermissionMode
     }
 
     // ── 粘贴事件 ──
-    // Shift+Tab：权限模式切换
-    if (key.shift && key.name === "tab") {
+    // 权限模式切换（K1：键位查表，默认 Shift+Tab，用户可在 keybindings.json 改）
+    if (matchBinding(key)?.action === "input:permMode") {
       if (onPermissionModeSwitch) {
         onPermissionModeSwitch();
       }
@@ -459,9 +461,13 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, onPermissionMode
     // 多行输入：Shift+Enter 插入真正的换行
     if (key.name === "enter" && key.shift) { tb.insert("\n"); return true; }
 
-    // 历史记录：仅单行时 ↑↓ 触发历史
+    // 历史记录：
+    // - shell 模式(类 REPL):光标在首行↑ / 末行↓ 时翻历史,否则在多行命令内移光标
+    // - 普通模式:仅单行时 ↑↓ 触发历史,多行时移光标
     if (key.name === "up" && !key.shift) {
-      if (tb.state.lines.length === 1) {
+      const atFirstLine = tb.state.cursorRow === 0;
+      const wantHistory = shellModeActive ? atFirstLine : tb.state.lines.length === 1;
+      if (wantHistory) {
         tb.historyUp();
       } else {
         tb.moveCursor("up");
@@ -469,7 +475,9 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, onPermissionMode
       return true;
     }
     if (key.name === "down" && !key.shift) {
-      if (tb.state.lines.length === 1) {
+      const atLastLine = tb.state.cursorRow === tb.state.lines.length - 1;
+      const wantHistory = shellModeActive ? atLastLine : tb.state.lines.length === 1;
+      if (wantHistory) {
         tb.historyDown();
       } else {
         tb.moveCursor("down");

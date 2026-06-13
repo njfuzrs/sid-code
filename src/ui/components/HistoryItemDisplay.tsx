@@ -146,13 +146,13 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
 
     case "compression":
       return (
-        <Box paddingX={1} justifyContent="center">
+        <Box paddingX={1} gap={1}>
+          <Text color={theme.text.accent}>✻</Text>
           <Text dimColor>
-            {"── 上下文已压缩"}
+            {"对话已压缩"}
             {item.originalTokenCount && item.newTokenCount
               ? ` (${item.originalTokenCount} → ${item.newTokenCount} tokens)`
               : ""}
-            {" ──"}
           </Text>
         </Box>
       );

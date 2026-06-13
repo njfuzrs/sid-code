@@ -9,6 +9,7 @@
 import { useEffect, useRef } from "react";
 import { readdirSync } from "fs";
 import { dirname, basename, resolve } from "path";
+import Fuse from "fuse.js";
 import type { Suggestion } from "../components/SuggestionsDisplay.tsx";
 
 export interface UseAtCompletionProps {
@@ -71,37 +72,53 @@ export function useAtCompletion({ cursorCol, currentLine, cwd, setSuggestions }:
       const absDir = resolve(cwd, searchDir);
       const entries = readdirSync(absDir, { withFileTypes: true });
 
-      const matches: Suggestion[] = [];
+      // 先收集候选项(跳过隐藏文件/node_modules),再决定用 Fuse 模糊还是直接列全部
+      const candidates: { entry: (typeof entries)[number]; displayName: string; valuePath: string }[] = [];
       for (const entry of entries) {
         // 跳过隐藏文件（除非用户输入了 .）
         if (entry.name.startsWith(".") && !searchPrefix.startsWith(".")) continue;
         // 跳过 node_modules
         if (entry.name === "node_modules") continue;
 
-        if (searchPrefix && !entry.name.toLowerCase().startsWith(searchPrefix)) continue;
-
         const isDir = entry.isDirectory();
         const displayName = entry.name + (isDir ? "/" : "");
         // 构建完整的补全值（替换 @ 后的 pattern）
         const valuePath = searchDir === "." ? displayName : `${searchDir}/${displayName}`;
-
-        matches.push({
-          label: displayName,
-          value: valuePath,
-          icon: isDir ? "📁" : "📄",
-          tag: isDir ? "目录" : "文件",
-        });
-
-        if (matches.length >= MAX_SUGGESTIONS) break;
+        candidates.push({ entry, displayName, valuePath });
       }
 
-      // 目录优先，然后按名称排序
-      matches.sort((a, b) => {
-        const aIsDir = a.label.endsWith("/");
-        const bIsDir = b.label.endsWith("/");
-        if (aIsDir !== bIsDir) return aIsDir ? -1 : 1;
-        return a.label.localeCompare(b.label);
-      });
+      // 模糊匹配：有 searchPrefix 时用 Fuse 子序列/容错匹配(与命令补全一致),
+      // 无前缀(目录浏览)时列出全部。
+      let ranked: typeof candidates;
+      if (searchPrefix) {
+        const fuse = new Fuse(candidates, {
+          includeScore: true,
+          threshold: 0.4,
+          ignoreLocation: true,
+          keys: ["entry.name"],
+        });
+        ranked = fuse.search(searchPrefix).map((r) => r.item);
+      } else {
+        ranked = candidates;
+      }
+
+      const matches: Suggestion[] = ranked.slice(0, MAX_SUGGESTIONS).map(({ entry, displayName, valuePath }) => ({
+        label: displayName,
+        value: valuePath,
+        icon: entry.isDirectory() ? "📁" : "📄",
+        tag: entry.isDirectory() ? "目录" : "文件",
+      }));
+
+      // 无前缀(目录浏览)时按「目录优先 + 名称」排序;
+      // 有前缀时保留 Fuse 的相关性排序,不再二次打乱。
+      if (!searchPrefix) {
+        matches.sort((a, b) => {
+          const aIsDir = a.label.endsWith("/");
+          const bIsDir = b.label.endsWith("/");
+          if (aIsDir !== bIsDir) return aIsDir ? -1 : 1;
+          return a.label.localeCompare(b.label);
+        });
+      }
 
       setSuggestions(matches);
     } catch {
