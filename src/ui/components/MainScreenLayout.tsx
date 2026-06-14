@@ -175,12 +175,8 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
 
       {/* 动态区（log-update 只重绘这部分，历史不动） */}
       <Box flexDirection="column" flexShrink={0} width={termWidth} paddingBottom={1}>
-        {/* 空会话：欢迎 Logo（首条消息到达后即随 Static 滚走） */}
-        {isEmpty ? (
-          <Box flexDirection="column" alignItems="center" width={termWidth} paddingY={1}>
-            <EmptyLogo termWidth={termWidth} />
-          </Box>
-        ) : null}
+        {/* 空会话：欢迎屏（首条消息到达后即随 Static 滚走） */}
+        {isEmpty ? <EmptyLogo termWidth={termWidth} /> : null}
 
         {/* v2：流式思考区域 — 独立于 streamingText（对标 Claude Code）
             思考在正文之前渲染（模型先思考后回答），顺序与语义一致。

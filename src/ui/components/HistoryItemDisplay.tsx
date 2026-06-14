@@ -87,16 +87,17 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
 
     case "hint":
       return (
-        <Box paddingX={1}>
-          <Text color={theme.text.secondary} italic>{"💡 "}{item.text}</Text>
+        <Box paddingLeft={2}>
+          <Text color={theme.ui.active}>{"› "}</Text>
+          <Text color={theme.text.secondary} italic>{item.text}</Text>
         </Box>
       );
 
     case "info":
       return (
-        <Box paddingX={1}>
+        <Box paddingLeft={2}>
           <Text color={item.color || theme.text.secondary}>
-            {item.icon ? `${item.icon} ` : "ℹ "}{item.text}
+            {item.icon ? `${item.icon} ` : "· "}{item.text}
           </Text>
           {item.secondaryText && (
             <Text dimColor>{" "}{item.secondaryText}</Text>
@@ -106,7 +107,7 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
 
     case "warning":
       return (
-        <Box paddingX={1}>
+        <Box paddingLeft={2}>
           <Text color={theme.status.warning}>{"⚠ "}{item.text}</Text>
         </Box>
       );
@@ -141,7 +142,7 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
 
     case "compression":
       return (
-        <Box paddingX={1} gap={1}>
+        <Box paddingLeft={2} gap={1}>
           <Text color={theme.text.accent}>✻</Text>
           <Text dimColor>
             {"对话已压缩"}
@@ -154,8 +155,9 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
 
     case "model":
       return (
-        <Box paddingX={1}>
-          <Text color={theme.text.accent}>{"🔄 模型已切换为 "}{item.model}</Text>
+        <Box paddingLeft={2}>
+          <Text color={theme.ui.active}>{"› "}</Text>
+          <Text color={theme.text.secondary}>{"模型已切换为 "}<Text color={theme.text.primary}>{item.model}</Text></Text>
         </Box>
       );
 

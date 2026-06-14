@@ -35,52 +35,56 @@ export interface ColorsTheme {
 
 // 默认不透明度常量
 const DEFAULT_INPUT_BACKGROUND_OPACITY = 0.3;
-const DEFAULT_BACKGROUND_OPACITY = 0.15;
 const DEFAULT_SELECTION_OPACITY = 0.2;
-const DEFAULT_BORDER_OPACITY = 0.5;
 
+// ── Catppuccin Latte（浅色调色板）──
+// 调色板与语义色（semantic-tokens.ts lightSemanticColors）同源，
+// 保证「消息流文字 / 代码块高亮 / 边框留白」共享同一色温，不再各画各的。
 export const lightTheme: ColorsTheme = {
   type: 'light',
-  Background: '#FFFFFF',
-  Foreground: '#000000',
-  LightBlue: '#005FAF',
-  AccentBlue: '#005FAF',
-  AccentPurple: '#5F00FF',
-  AccentCyan: '#005F87',
-  AccentGreen: '#005F00',
-  AccentYellow: '#875F00',
-  AccentRed: '#AF0000',
-  DiffAdded: '#D7FFD7',
-  DiffRemoved: '#FFD7D7',
-  Comment: '#008700',
-  Gray: '#5F5F5F',
-  DarkGray: '#5F5F5F',
-  InputBackground: '#E4E4E4',
-  MessageBackground: '#FAFAFA',
-  FocusBackground: '#D7FFD7',
-  GradientColors: ['#4796E4', '#847ACE', '#C3677F'],
+  Background: '#eff1f5', // Latte base
+  Foreground: '#4c4f69', // Latte text
+  LightBlue: '#7287fd', // lavender
+  AccentBlue: '#1e66f5', // blue（品牌色）
+  AccentPurple: '#8839ef', // mauve
+  AccentCyan: '#179299', // teal
+  AccentGreen: '#40a02b', // green
+  AccentYellow: '#df8e1d', // yellow
+  AccentRed: '#d20f39', // red
+  DiffAdded: '#d4edda',
+  DiffRemoved: '#f8d7da',
+  Comment: '#8c8fa1', // overlay1（代码注释，浅底可读）
+  Gray: '#9ca0b0', // overlay0
+  DarkGray: '#bcc0cc', // surface1（边框）
+  InputBackground: '#ccd0da', // surface0
+  MessageBackground: '#e6e9ef', // mantle
+  FocusBackground: '#dce8ff',
+  GradientColors: ['#1e66f5', '#5a8cf8', '#8cadfb'],
 };
 
+// ── Catppuccin Mocha（深色调色板）──
+// 「安静的深空」：base #1e1e2e 取代刺眼纯黑，text #cdd6f4 柔白取代纯白 #FFFFFF，
+// 品牌色锚定冷蓝 #89b4fa。代码块高亮 token 色直接取这里的 Accent*，与消息流同源。
 export const darkTheme: ColorsTheme = {
   type: 'dark',
-  Background: '#000000',
-  Foreground: '#FFFFFF',
-  LightBlue: '#AFD7D7',
-  AccentBlue: '#87AFFF',
-  AccentPurple: '#D7AFFF',
-  AccentCyan: '#87D7D7',
-  AccentGreen: '#D7FFD7',
-  AccentYellow: '#FFFFAF',
-  AccentRed: '#FF87AF',
-  DiffAdded: '#005F00',
-  DiffRemoved: '#5F0000',
-  Comment: '#AFAFAF',
-  Gray: '#AFAFAF',
-  DarkGray: '#878787',
-  InputBackground: '#5F5F5F',
-  MessageBackground: '#5F5F5F',
-  FocusBackground: '#005F00',
-  GradientColors: ['#4796E4', '#847ACE', '#C3677F'],
+  Background: '#1e1e2e', // Mocha base
+  Foreground: '#cdd6f4', // Mocha text（柔白，不刺眼）
+  LightBlue: '#b4befe', // lavender
+  AccentBlue: '#89b4fa', // blue（品牌色）
+  AccentPurple: '#cba6f7', // mauve
+  AccentCyan: '#94e2d5', // teal
+  AccentGreen: '#a6e3a1', // green
+  AccentYellow: '#f9e2af', // yellow
+  AccentRed: '#f38ba8', // red
+  DiffAdded: '#1e3a2e',
+  DiffRemoved: '#3a1e1e',
+  Comment: '#9399b2', // overlay2（代码注释，深底可读）
+  Gray: '#6c7086', // overlay0（次要文本）
+  DarkGray: '#45475a', // surface1（边框/竖线）
+  InputBackground: '#313244', // surface0
+  MessageBackground: '#181825', // mantle（比 base 略深，做代码/消息底）
+  FocusBackground: '#1e3a5f',
+  GradientColors: ['#74a8f5', '#89b4fa', '#b4d0ff'],
 };
 
 // ── 色盲友好（daltonized）配色 ──

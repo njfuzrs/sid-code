@@ -5,6 +5,7 @@
  */
 
 import { darkTheme, Theme } from '../../theme.ts';
+import { darkSemanticColors } from '../../semantic-tokens.ts';
 
 export const DefaultDark: Theme = new Theme(
   'Default',
@@ -14,7 +15,7 @@ export const DefaultDark: Theme = new Theme(
       display: 'block',
       overflowX: 'auto',
       padding: '0.5em',
-      background: darkTheme.Background,
+      background: darkTheme.MessageBackground,
       color: darkTheme.Foreground,
     },
     'hljs-keyword': {
@@ -146,4 +147,5 @@ export const DefaultDark: Theme = new Theme(
     },
   },
   darkTheme,
+  darkSemanticColors,
 );

@@ -5,6 +5,7 @@
  */
 
 import { lightTheme, Theme } from '../../theme.ts';
+import { lightSemanticColors } from '../../semantic-tokens.ts';
 
 export const DefaultLight: Theme = new Theme(
   'Default Light',
@@ -14,7 +15,7 @@ export const DefaultLight: Theme = new Theme(
       display: 'block',
       overflowX: 'auto',
       padding: '0.5em',
-      background: lightTheme.Background,
+      background: lightTheme.MessageBackground,
       color: lightTheme.Foreground,
     },
     'hljs-comment': {
@@ -103,4 +104,5 @@ export const DefaultLight: Theme = new Theme(
     },
   },
   lightTheme,
+  lightSemanticColors,
 );
