@@ -29,6 +29,7 @@ export class HelpCommand implements Command {
       "  /model list      - 显示所有可用模型",
       "  /cost            - 显示 token 用量和费用",
       "  /cache           - 缓存命中率/省钱长期统计（--period|--model|--breaks|--prune）",
+      "  /trace [id]      - 排查会话:轨迹嚼碎成结构化摘要（--list|--full,默认当前会话）",
       "  /compact         - 压缩对话历史",
       "  /clear           - 清空对话",
       "  /rewind [n]      - 回退最近 n 轮对话（默认 1 轮）",
@@ -137,6 +138,25 @@ export class HelpCommand implements Command {
 示例:
   /model claude-opus-4-20250514
   /model list`,
+
+      "trace": `会话轨迹排查 —— 把当前/指定会话嚼碎成结构化排查摘要
+
+用法:
+  /trace                 分析当前正在跑的会话(进程内拿 sessionId,比时间猜测准)
+  /trace latest          分析最近一次结束的历史会话
+  /trace <id>            指定会话,支持前缀(如 /trace c857)
+  /trace --list          列出最近 20 个会话(异常会话一眼可见)
+  /trace --full          附带更多思维链/工具参数细节
+  /digest                /trace 的别名
+
+输出内容:
+  · 退出状态(end_turn/error/abort/user_interrupt)+ 是否异常
+  · 异常信号(高/中/低):异常退出、孤儿 tool_use、工具失败、疑似循环、
+    成本归零、协议违规、数据格式异常 —— 每条附"该看哪个原始文件"指针
+  · 工具序列(· 正常 / ✗ 报错 / ○ 孤儿)+ 思维链要点 + 崩溃归因
+
+排查 sid-code 自身问题(报错/崩溃/变慢/Agent 跑偏)时第一个该敲的命令,
+读完摘要通常已知根因方向,不必从头翻原始 jsonl。详见 observability-debug skill。`,
     };
 
     const helpText = helpTexts[cmdName];
@@ -1342,12 +1362,90 @@ export class CacheCommand implements Command {
   }
 }
 
+/**
+ * /trace 命令 —— 把当前/指定会话的轨迹嚼碎成结构化排查摘要。
+ * 与 scripts/trace-digest.ts 共用 src/trace/digest.ts 核心逻辑。
+ *
+ *   /trace            分析当前正在跑的会话(ctx.sessionId,比 mtime 猜测准)
+ *   /trace latest     分析最近一次结束的历史会话
+ *   /trace <id>       指定会话(支持前缀)
+ *   /trace --list     列出最近 20 个会话(异常会话优先排查)
+ *   /trace --full     附带更多思维链/参数细节
+ */
+export class TraceCommand implements Command {
+  name() { return "trace"; }
+  aliases() { return ["digest"]; }
+  description() { return "排查会话:把当前/指定会话轨迹嚼碎成结构化摘要(--list 列会话, <id> 指定, --full 详细)"; }
+
+  async execute(args: string, ctx: AppContext): Promise<CommandResult> {
+    const { resolvePaths, listSessions, resolveSession, buildDigest, renderHuman, renderList } =
+      await import("../trace/digest.ts");
+
+    const tokens = args.trim().split(/\s+/).filter(Boolean);
+    const flags = new Set(tokens.filter((t) => t.startsWith("--")));
+    const positional = tokens.filter((t) => !t.startsWith("--"));
+    const full = flags.has("--full");
+    // 命令面板渲染纯文本,固定无 ANSI 颜色码
+    const renderOpts = { noColor: true, invocation: "/trace" };
+
+    const paths = resolvePaths();
+    const all = listSessions(paths);
+
+    if (all.length === 0) {
+      return {
+        kind: "message",
+        message: `未找到任何会话轨迹 (${paths.sessionsDir})。可能还没产生轨迹,或 SID_CODE_HOME 指向了别处。`,
+      };
+    }
+
+    if (flags.has("--list")) {
+      return { kind: "message", message: renderList(all, renderOpts) };
+    }
+
+    // 目标选择:显式参数优先;否则默认当前会话(进程内可靠拿到 ctx.sessionId,
+    // 避免脚本 latest 的 mtime 猜测在并发时选错)。当前会话轨迹还没落盘时回退到 latest。
+    let target = positional[0];
+    let note = "";
+    if (!target) {
+      const hasCurrent = ctx.sessionId && all.some((s) => s.id === ctx.sessionId);
+      if (hasCurrent) {
+        target = ctx.sessionId;
+      } else {
+        target = "latest";
+        note = ctx.sessionId
+          ? `(当前会话 ${ctx.sessionId} 轨迹尚未落盘,改看最近一次历史会话;要指定用 /trace <id>)`
+          : "";
+      }
+    }
+
+    const { ref, warning } = resolveSession(target, all);
+    if (!ref) {
+      return {
+        kind: "message",
+        message: `未找到 session "${target}"。用 /trace --list 看可用会话。`,
+      };
+    }
+
+    const digest = buildDigest(ref, full, paths);
+    if (!digest) {
+      return { kind: "message", message: `无法解析 ${ref.trajPath}(文件损坏?)` };
+    }
+
+    const parts: string[] = [];
+    if (note) parts.push(note);
+    if (warning) parts.push(`⚠ ${warning}`);
+    parts.push(renderHuman(digest, renderOpts));
+    return { kind: "message", message: parts.join("\n") };
+  }
+}
+
 /** 注册所有内置命令 */
 export async function registerBuiltins(registry: import("./registry.ts").Registry): Promise<void> {
   registry.register(new HelpCommand());
   registry.register(new ModelCommand());
   registry.register(new CostCommand());
   registry.register(new CacheCommand());
+  registry.register(new TraceCommand());
   registry.register(new CompactCommand());
   registry.register(new ClearCommand());
   registry.register(new ConfigCommand());
