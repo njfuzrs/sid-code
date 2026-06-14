@@ -123,6 +123,8 @@ async function executeSingleTool(
       tool_use_id: block.id,
       content: truncated,
       is_error: result.isError,
+      // 结构化 diff 透传(edit/write):与主路径一致,供子代理结果在 UI 渲染高亮
+      ...(result.structuredPatch?.length ? { structuredPatch: result.structuredPatch } : {}),
     };
   } catch (err: any) {
     log.error("SUBAGENT:TOOL", `工具执行异常: ${block.name}`, { error: err.message });

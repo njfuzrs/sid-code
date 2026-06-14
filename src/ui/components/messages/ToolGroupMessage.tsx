@@ -33,6 +33,10 @@ export interface ToolCallDisplay {
   progressTotal?: number;
   /** 结果摘要（一行文字） */
   resultSummary?: string;
+  /** 结构化 diff(edit/write):优先于 result 文本渲染高亮 */
+  structuredPatch?: import("diff").StructuredPatchHunk[];
+  /** 文件名(diff 语法高亮用) */
+  filename?: string;
 }
 
 interface ToolGroupMessageProps {
@@ -79,8 +83,10 @@ export const ToolGroupMessage: React.FC<ToolGroupMessageProps> = ({
       paddingRight={TOOL_MESSAGE_HORIZONTAL_MARGIN}
     >
       {visibleTools.map((tool, index) => {
-        const isDiff = tool.result ? isDiffContent(tool.name, tool.result) : false;
-        const filename = getFilenameFromInput(tool.name, tool.input);
+        // 结构化 diff 优先(从 Message[] 重建路径携带);缺失时降级到对 result 文本的正则检测。
+        const hasPatch = !!tool.structuredPatch?.length;
+        const isDiff = hasPatch || (tool.result ? isDiffContent(tool.name, tool.result) : false);
+        const filename = tool.filename ?? getFilenameFromInput(tool.name, tool.input);
 
         return (
           <ToolMessage
@@ -94,6 +100,7 @@ export const ToolGroupMessage: React.FC<ToolGroupMessageProps> = ({
             isError={tool.isError}
             isDiff={isDiff}
             filename={filename}
+            structuredPatch={tool.structuredPatch}
             renderOutputAsMarkdown={tool.renderOutputAsMarkdown}
             progressMessage={tool.progressMessage}
             progress={tool.progress}

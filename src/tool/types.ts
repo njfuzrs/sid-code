@@ -12,6 +12,12 @@ import type { ContentBlock } from "../llm/types.ts";
 export interface LegacyToolResult {
   output: string;
   isError?: boolean;
+  /**
+   * 结构化 diff(edit/write 工具填充)。由 tool-executor 透传到
+   * ToolResultBlock.structuredPatch,供 UI 直接渲染高亮,绕过文本正则解析。
+   * 其余工具不填充,保持 undefined。
+   */
+  structuredPatch?: import("diff").StructuredPatchHunk[];
 }
 
 /** 旧版工具接口 */

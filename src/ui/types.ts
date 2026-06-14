@@ -50,6 +50,11 @@ export interface ToolResultDisplay {
   isDiff?: boolean;
   /** 文件名（用于 diff 语法高亮） */
   filename?: string;
+  /**
+   * 结构化 diff(edit/write 工具)。优先于 content 文本渲染,
+   * 缺失时 DiffRenderer 降级到从 content 正则解析。
+   */
+  structuredPatch?: import("diff").StructuredPatchHunk[];
 }
 
 /** 单个工具调用的展示数据 */

@@ -3,6 +3,8 @@
  * 统一不同 Provider 的消息格式和流式事件
  */
 
+import type { StructuredPatchHunk } from "diff";
+
 /** 消息角色 */
 export type Role = "user" | "assistant";
 
@@ -26,6 +28,14 @@ export interface ToolResultBlock {
   tool_use_id: string;
   content: string;
   is_error?: boolean;
+  /**
+   * 结构化 diff(仅 edit/write 工具填充)。独立于 content 文本,供 UI 直接渲染,
+   * 绕过对 content 的正则解析。
+   * - 不回传给 LLM:provider 序列化 tool_result 时逐字段读取 content/is_error,不含此字段。
+   * - 不受大输出压缩影响:context/manager.ts 的增量压缩只替换 content 为磁盘引用,
+   *   保留其余字段,故大文件 diff 在 UI 仍可完整高亮。
+   */
+  structuredPatch?: StructuredPatchHunk[];
 }
 
 /** 思考块（对标 Claude Code ThinkingBlock） */

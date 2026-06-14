@@ -81,6 +81,8 @@ export interface ToolResultDisplayProps {
   isDiff?: boolean;
   /** 文件名（用于 diff 语法高亮） */
   filename?: string;
+  /** 结构化 diff(edit/write):优先于 resultDisplay 文本渲染 */
+  structuredPatch?: import("diff").StructuredPatchHunk[];
   /** 是否为错误结果 */
   isError?: boolean;
 }
@@ -93,9 +95,25 @@ export const ToolResultDisplay: React.FC<ToolResultDisplayProps> = ({
   overflowDirection = 'top',
   isDiff = false,
   filename,
+  structuredPatch,
   isError = false,
 }) => {
   const { renderMarkdown, expandLevel } = useUIState();
+
+  const hasPatch = !!structuredPatch?.length;
+  // 有结构化 diff 时,即使 resultDisplay 为空(或仅摘要)也要渲染 diff;否则无内容才退出
+  if (!resultDisplay && !hasPatch) return null;
+
+  // 结构化 diff 优先:直接喂 DiffRenderer 的 structuredPatch,绕过文本正则解析
+  if (isDiff && hasPatch) {
+    return (
+      <DiffRenderer
+        structuredPatch={structuredPatch}
+        filename={filename}
+        terminalWidth={terminalWidth}
+      />
+    );
+  }
 
   if (!resultDisplay) return null;
 

@@ -13,7 +13,7 @@ import { coerceSemanticBoolean } from "../utils/semantic-boolean.ts";
 import { mkdirSync, existsSync } from "fs";
 import { dirname, basename } from "path";
 import { normalizeToolPath, formatPathNotFoundError } from "./path-utils.ts";
-import { formatUnifiedDiff } from "./diff-output.ts";
+import { buildStructuredPatch } from "./diff-output.ts";
 
 // ─── 内部类型 ────────────────────────────────────────────────────────────────
 
@@ -480,9 +480,10 @@ export class EditTool implements Tool {
         if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
         await Bun.write(filePath, newString);
         log.info("TOOL", `✓ 创建新文件 ${filePath}`);
-        const newFileDiff = formatUnifiedDiff(filePath, "", newString);
+        // 结构化 diff(全 + 行)直传 UI;output 仅摘要,不含完整内容。
         return {
-          output: `文件已创建: ${filePath}${newFileDiff ? `\n\n${newFileDiff}` : ""}`,
+          output: `文件已创建: ${filePath}`,
+          structuredPatch: buildStructuredPatch(filePath, "", newString),
         };
       }
 
@@ -524,11 +525,11 @@ export class EditTool implements Tool {
         : "";
       log.info("TOOL", `✓ 编辑 ${filePath} 完成 (${result.occurrences}处${strategyNote})`);
 
-      // 生成标准 unified diff(供 TUI DiffRenderer 解析高亮,也帮 LLM 验证编辑结果)
-      const diff = formatUnifiedDiff(filePath, rawContent, finalContent);
-
+      // 结构化 diff 直传 UI 渲染(独立于回传 LLM 的文本);给 LLM 的 output 仅一句话摘要,
+      // 不再拼接完整 diff —— 对标 claude-code 省 token,且大文件 diff 不受 content 压缩影响。
       return {
-        output: `文件已编辑: ${filePath}（替换了 ${result.occurrences} 处${strategyNote}）${diff ? `\n\n${diff}` : ""}`,
+        output: `文件已编辑: ${filePath}（替换了 ${result.occurrences} 处${strategyNote}）`,
+        structuredPatch: buildStructuredPatch(filePath, rawContent, finalContent),
       };
     } catch (err: any) {
       return { output: `编辑文件失败: ${err.message}`, isError: true };

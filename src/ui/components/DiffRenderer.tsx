@@ -3,7 +3,7 @@ import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
 import { RawAnsi } from "../../ink/components/RawAnsi.js";
 import crypto from 'node:crypto';
-import { diffWordsWithSpace } from 'diff';
+import { diffWordsWithSpace, type StructuredPatchHunk } from 'diff';
 import { colorizeCode, colorizeLine } from './CodeColorizer.js';
 import { theme as semanticTheme } from '../semantic-colors.js';
 import { buildDiffAnsiLines, type DiffAnsiColors } from './diffAnsiLines.js';
@@ -135,6 +135,42 @@ function parseDiffWithLineNumbers(diffContent: string): DiffLine[] {
 }
 
 /**
+ * 把结构化 diff hunks 转成 DiffLine[](结构化直传路径)。
+ *
+ * 产出与 parseDiffWithLineNumbers 完全等价的结构(含每个 hunk 的 'hunk' 行 +
+ * 按前缀映射的 add/del/context/other),使 DiffRenderer 后续的折叠/词级/新文件
+ * 检测/RawAnsi 逻辑零改动复用。hunk.lines 已带 ` `/`+`/`-`/`\` 前缀。
+ */
+export function hunksToDiffLines(hunks: StructuredPatchHunk[]): DiffLine[] {
+  const result: DiffLine[] = [];
+  for (const hunk of hunks) {
+    // 重建 @@ 头,供折叠逻辑识别 hunk 边界(与文本路径一致)
+    result.push({
+      type: 'hunk',
+      content: `@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`,
+    });
+    let oldLine = hunk.oldStart - 1;
+    let newLine = hunk.newStart - 1;
+    for (const line of hunk.lines) {
+      if (line.startsWith('+')) {
+        newLine++;
+        result.push({ type: 'add', newLine, content: line.substring(1) });
+      } else if (line.startsWith('-')) {
+        oldLine++;
+        result.push({ type: 'del', oldLine, content: line.substring(1) });
+      } else if (line.startsWith(' ')) {
+        oldLine++;
+        newLine++;
+        result.push({ type: 'context', oldLine, newLine, content: line.substring(1) });
+      } else if (line.startsWith('\\')) {
+        result.push({ type: 'other', content: line });
+      }
+    }
+  }
+  return result;
+}
+
+/**
  * 词级 diff 配对：把连续的 del 块与紧随其后的 add 块按行序一一配对。
  * 返回 index → 对侧行原始内容（未做 baseIndentation 裁剪）的映射。
  * 仅一一对应的位置配对；多出的行无对侧，调用方应回退整行高亮。
@@ -221,7 +257,10 @@ export function planDiffWithContextCollapse(
 }
 
 interface DiffRendererProps {
-  diffContent: string;
+  /** unified diff 文本(降级路径)。与 structuredPatch 二选一,后者优先。 */
+  diffContent?: string;
+  /** 结构化 diff hunks(优先路径,绕过文本正则解析) */
+  structuredPatch?: StructuredPatchHunk[];
   filename?: string;
   tabWidth?: number;
   terminalWidth: number;
@@ -243,16 +282,22 @@ const DEFAULT_TAB_WIDTH = 4; // 每个制表符的空格数
  */
 export const DiffRenderer: React.FC<DiffRendererProps> = ({
   diffContent,
+  structuredPatch,
   filename,
   tabWidth = DEFAULT_TAB_WIDTH,
   terminalWidth,
 }) => {
+  const hasPatch = !!structuredPatch?.length;
   const parsedLines = useMemo(() => {
+    // 结构化优先:直接由 hunks 产 DiffLine[],绕过文本正则解析
+    if (hasPatch) {
+      return hunksToDiffLines(structuredPatch!);
+    }
     if (!diffContent || typeof diffContent !== 'string') {
       return [];
     }
     return parseDiffWithLineNumbers(diffContent);
-  }, [diffContent]);
+  }, [hasPatch, structuredPatch, diffContent]);
 
   const isNewFile = useMemo(() => {
     if (parsedLines.length === 0) return false;
@@ -267,7 +312,8 @@ export const DiffRenderer: React.FC<DiffRendererProps> = ({
   }, [parsedLines]);
 
   const renderedOutput = useMemo(() => {
-    if (!diffContent || typeof diffContent !== 'string') {
+    // 结构化路径下 diffContent 可为空,只要 parsedLines 非空即可渲染
+    if (!hasPatch && (!diffContent || typeof diffContent !== 'string')) {
       return <Text color={semanticTheme.status.warning}>无 diff 内容。</Text>;
     }
 
@@ -309,6 +355,7 @@ export const DiffRenderer: React.FC<DiffRendererProps> = ({
       );
     }
   }, [
+    hasPatch,
     diffContent,
     parsedLines,
     isNewFile,

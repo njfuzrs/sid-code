@@ -127,6 +127,9 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
         renderOutputAsMarkdown: t.renderOutputAsMarkdown,
         progressMessage: t.progressMessage,
         resultSummary: t.resultSummary,
+        // 结构化 diff + 文件名透传(否则在此拍扁丢失,UI 拿不到结构化 patch)
+        structuredPatch: t.resultDisplay?.structuredPatch,
+        filename: t.resultDisplay?.filename,
       }));
       return (
         <ToolGroupMessage

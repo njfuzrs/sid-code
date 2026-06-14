@@ -377,6 +377,9 @@ export async function executeSingleTool(
       tool_use_id: block.id,
       content: finalOutput,
       is_error: result.isError,
+      // 结构化 diff 透传(仅 edit/write 填充)。其它工具为 undefined → 字段不出现,零破坏。
+      // provider 序列化逐字段读取,不会泄漏给 LLM;随 Message 持久化可重放回 UI。
+      ...(result.structuredPatch?.length ? { structuredPatch: result.structuredPatch } : {}),
     };
   } catch (err: any) {
     const elapsed = Date.now() - startTime;

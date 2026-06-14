@@ -13,7 +13,7 @@
  *   避免一次大 write(整文件 + 前缀)把 LLM 上下文撑爆。UI 仍能高亮已展示部分。
  */
 
-import { createPatch } from "diff";
+import { createPatch, structuredPatch, type StructuredPatchHunk } from "diff";
 import { basename } from "path";
 
 /** diff 主体最多保留的行数(超出则截断并标注),约束大改动的 token 开销 */
@@ -54,4 +54,29 @@ export function formatUnifiedDiff(
   }
 
   return body;
+}
+
+/**
+ * 生成结构化 diff hunks(供 TUI 直接渲染,绕过文本正则解析)。
+ * 对标 claude-code utils/diff.ts:getPatchFromContents。
+ *
+ * 与 formatUnifiedDiff 同口径(CRLF→LF 归一、context:3),保证结构化路径与
+ * 文本降级路径视觉一致。新建文件传 oldContent="" 即得全 `+` 行的 hunk。
+ *
+ * 返回的 hunk.lines 已带 ` `/`+`/`-` 前缀,可直接喂 UI 的 hunksToDiffLines。
+ * 大 diff 不在此截断:UI 侧 planDiffWithContextCollapse + RawAnsi 阈值已处理性能。
+ *
+ * @returns StructuredPatchHunk[];无变化时返回空数组。
+ */
+export function buildStructuredPatch(
+  filePath: string,
+  oldContent: string,
+  newContent: string,
+): StructuredPatchHunk[] {
+  const oldNorm = oldContent.replace(/\r\n/g, "\n");
+  const newNorm = newContent.replace(/\r\n/g, "\n");
+  if (oldNorm === newNorm) return [];
+
+  const name = basename(filePath);
+  return structuredPatch(name, name, oldNorm, newNorm, "", "", { context: 3 }).hunks;
 }

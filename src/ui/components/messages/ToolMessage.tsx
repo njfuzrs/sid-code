@@ -38,6 +38,8 @@ export interface ToolMessageProps {
   isError?: boolean;
   isDiff?: boolean;
   filename?: string;
+  /** 结构化 diff(edit/write):优先于 resultDisplay 文本渲染 */
+  structuredPatch?: import("diff").StructuredPatchHunk[];
   renderOutputAsMarkdown?: boolean;
   progressMessage?: string;
   progress?: number;
@@ -55,6 +57,7 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
   isError,
   isDiff = false,
   filename,
+  structuredPatch,
   renderOutputAsMarkdown = false,
   progressMessage,
   progress,
@@ -62,7 +65,9 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
   resultSummary,
 }) => {
   const hasProgress = status === "executing" && progress !== undefined;
-  const shouldExpandContent = (isError && !!resultDisplay) || (isDiff && !!resultDisplay) || hasProgress;
+  const hasPatch = !!structuredPatch?.length;
+  // 有结构化 diff 时即使 resultDisplay 仅为摘要也展开(diff 由 patch 独立渲染)
+  const shouldExpandContent = (isError && !!resultDisplay) || (isDiff && (hasPatch || !!resultDisplay)) || hasProgress;
 
   // Header 行：⏺ bullet + 工具信息（无边框）。
   // 展开模式下结果已在下方树枝区呈现，header 不再重复 resultSummary 避免冗余。
@@ -109,6 +114,7 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
             terminalWidth={Math.max(1, terminalWidth - 4)}
             isDiff={isDiff}
             filename={filename}
+            structuredPatch={structuredPatch}
             isError={isError}
             renderOutputAsMarkdown={renderOutputAsMarkdown}
             maxLines={20}

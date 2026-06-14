@@ -1,12 +1,12 @@
 /**
- * formatUnifiedDiff 测试
+ * diff-output 测试
  *
- * 锁定 Edit/Write 工具产出的 diff 格式:必须含可被 DiffRenderer 解析的 @@ hunk 头,
- * 否则 TUI 的 diff 高亮不会触发(本次 bugfix 的根因)。
+ * - formatUnifiedDiff:unified diff 文本(降级路径),含 @@ hunk 头。
+ * - buildStructuredPatch:结构化 hunks(主路径),供 UI 直接渲染绕过正则解析。
  */
 
 import { describe, test, expect } from "bun:test";
-import { formatUnifiedDiff } from "../../src/tool/diff-output.ts";
+import { formatUnifiedDiff, buildStructuredPatch } from "../../src/tool/diff-output.ts";
 
 describe("formatUnifiedDiff", () => {
   test("修改文件:产出含 @@ hunk 头与 +/- 行", () => {
@@ -56,5 +56,44 @@ describe("formatUnifiedDiff", () => {
     expect(/^@@ -\d/m.test(diff)).toBe(true);
     // 行数受限(上限 500 + 1 行标注)
     expect(diff.split("\n").length).toBeLessThanOrEqual(501);
+  });
+});
+
+describe("buildStructuredPatch", () => {
+  test("修改文件:返回带行号与前缀行的 hunk", () => {
+    const hunks = buildStructuredPatch(
+      "/tmp/foo.ts",
+      "function foo() {\n  return 1;\n}\n",
+      "function foo() {\n  return 42;\n}\n",
+    );
+    expect(hunks.length).toBe(1);
+    const h = hunks[0];
+    // 起始行号正确
+    expect(h.oldStart).toBe(1);
+    expect(h.newStart).toBe(1);
+    // lines 已带 ' '/'+'/'-' 前缀
+    expect(h.lines).toContain("-  return 1;");
+    expect(h.lines).toContain("+  return 42;");
+    expect(h.lines.some((l) => l.startsWith(" function foo"))).toBe(true);
+  });
+
+  test("新建文件:旧内容为空时全部为 + 行,oldLines=0", () => {
+    const hunks = buildStructuredPatch("/tmp/new.ts", "", "const a = 1;\nconst b = 2;\n");
+    expect(hunks.length).toBe(1);
+    const h = hunks[0];
+    // 新文件无旧行:oldLines=0(oldStart 由 diff 库给为 1)
+    expect(h.oldLines).toBe(0);
+    expect(h.lines).toContain("+const a = 1;");
+    expect(h.lines).toContain("+const b = 2;");
+    // 不应有删除行
+    expect(h.lines.some((l) => l.startsWith("-"))).toBe(false);
+  });
+
+  test("无变化:返回空数组", () => {
+    expect(buildStructuredPatch("/tmp/x.ts", "same\n", "same\n")).toEqual([]);
+  });
+
+  test("仅 CRLF/LF 差异:视为无变化返回空数组", () => {
+    expect(buildStructuredPatch("/tmp/x.ts", "a\r\nb\r\n", "a\nb\n")).toEqual([]);
   });
 });

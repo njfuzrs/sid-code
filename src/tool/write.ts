@@ -9,7 +9,7 @@ import { mkdirSync, existsSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
 import { detectOmissionPlaceholders, isDocumentFile } from "./omission-detector.ts";
 import { normalizeToolPath } from "./path-utils.ts";
-import { formatUnifiedDiff } from "./diff-output.ts";
+import { buildStructuredPatch } from "./diff-output.ts";
 
 export class WriteTool implements Tool {
   name(): string {
@@ -108,13 +108,12 @@ export class WriteTool implements Tool {
 
       log.info("TOOL", `✓ 写入 ${filePath} 完成`);
 
-      // 生成标准 unified diff(供 TUI DiffRenderer 解析高亮)。
-      // 新建文件 → 全 `+` 行;覆盖文件 → 增删对照。
-      const diff = formatUnifiedDiff(filePath, oldContent, params.content);
+      // 结构化 diff 直传 UI(新建 → 全 + 行;覆盖 → 增删对照)。
+      // output 仅一句话摘要,不含完整 diff —— 对齐 claude-code 省 token。
       const action = oldContent ? "已写入" : "已创建";
-
       return {
-        output: `文件${action}: ${filePath}${diff ? `\n\n${diff}` : ""}`,
+        output: `文件${action}: ${filePath}`,
+        structuredPatch: buildStructuredPatch(filePath, oldContent, params.content),
       };
     } catch (err: any) {
       return { output: `写入文件失败: ${err.message}`, isError: true };

@@ -141,11 +141,15 @@ function convertUserMessage(
       const isError = !!block.is_error;
       const pending = pendingToolCalls.get(block.tool_use_id);
 
+      // 结构化 diff 优先(edit/write):有 patch 即判定为 diff,UI 直接渲染;
+      // 缺失时(旧会话重放/其它工具)降级到对 content 的正则检测。
+      const hasPatch = !!block.structuredPatch?.length;
       const resultDisplay: ToolResultDisplay = {
         content: block.content,
         isError,
-        isDiff: isDiffContent(toolName, block.content),
+        isDiff: hasPatch || isDiffContent(toolName, block.content),
         filename: getFilenameFromInput(toolName, pending?.input ?? {}),
+        ...(hasPatch ? { structuredPatch: block.structuredPatch } : {}),
       };
 
       // 合并 pending tool_use + tool_result
