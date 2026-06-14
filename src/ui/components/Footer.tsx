@@ -120,9 +120,6 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
     potentialColumns.push({ id, header, element, width: dataWidth, isHighPriority });
   };
 
-  // 品牌
-  addCol("brand", "", <Text bold color={theme.ui.active}>sid-code</Text>, 8, true);
-
   // CWD
   addCol("cwd", "目录", <Text color={itemColor}>{data.cwdDisplay}</Text>, data.cwdDisplay.length);
 
@@ -170,8 +167,10 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
   // 费用
   addCol("cost", "费用", <Text color={data.cost.color ?? itemColor}>{data.cost.text}</Text>, data.cost.text.length);
 
-  // 上下文
-  addCol("context", "上下文", <Text color={data.context.color}>{data.context.text}</Text>, data.context.text.length);
+  // 上下文（没有任何用户交互时隐藏，避免系统开销造成虚假百分比）
+  if (data.context) {
+    addCol("context", "上下文", <Text color={data.context.color}>{data.context.text}</Text>, data.context.text.length);
+  }
 
   // 模型
   addCol("model", "模型", <Text color={itemColor}>{data.model}</Text>, data.model.length);

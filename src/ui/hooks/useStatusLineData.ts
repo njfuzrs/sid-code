@@ -111,7 +111,7 @@ export interface StatusLineData {
   tokenText: string;
   cache: { rate: number; text: string; color: string } | null;
   cost: { text: string; color: string | undefined };
-  context: { text: string; color: string };
+  context: { text: string; color: string } | null;
   model: string;
   scroll: { text: string } | null;
 }
@@ -166,10 +166,14 @@ export function useStatusLineData(input: StatusLineInput): StatusLineData {
       tokenText: `${usage.inputTokens}↓ ${usage.outputTokens}↑`,
       cache: deriveCacheMetrics(usage, model),
       cost: deriveCost(costUSD, costLimit, model),
-      context: {
-        text: `${contextPercent}%`,
-        color: deriveContextColor(contextPercent, itemColor),
-      },
+      // 没有任何用户交互（API 调用）时不显示上下文占用，避免系统开销造成虚假百分比
+      context:
+        usage.inputTokens === 0 && usage.outputTokens === 0
+          ? null
+          : {
+              text: `${contextPercent}%`,
+              color: deriveContextColor(contextPercent, itemColor),
+            },
       model,
       scroll: showScroll ? { text: `↑${scrollPercent}%` } : null,
     };
