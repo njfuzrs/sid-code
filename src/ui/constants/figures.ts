@@ -34,3 +34,16 @@ export const THINKING_MARK = "✻";
 export const SUCCESS_MARK = "✔";
 export const ERROR_MARK = "✘";
 export const ARROW_PROMPT = "›";
+
+/**
+ * Todo / 任务清单 checkbox 字形（同一字形族，靠「填充度」表达状态递进）。
+ * ○ 空心=待办 → ◐ 半填=进行中 → ● 实心=完成。
+ * 比 ⬜✅🔄 emoji 占位稳定、与 ⏺ bullet 语言同构。
+ */
+export const TODO_PENDING = "○";
+export const TODO_IN_PROGRESS = "◐";
+export const TODO_COMPLETED = "●";
+
+/** 进度条字形：▰ 实心(已完成) / ▱ 空心(未完成) */
+export const PROGRESS_FILLED = "▰";
+export const PROGRESS_EMPTY = "▱";
