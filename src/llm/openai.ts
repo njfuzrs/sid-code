@@ -175,10 +175,16 @@ export class OpenAIProvider implements Provider {
         // 提取文本和工具调用
         const textParts: string[] = [];
         const toolCalls: any[] = [];
+        // 思考块文本兜底：reasoning 模型（DeepSeek 等）可能整轮回复都走 reasoning_content，
+        // content 为空 → 历史里只剩 thinking 块。下一轮回放时若 text/tool_calls 皆空，
+        // OpenAI 会判 `content or tool_calls must be set` → 400。收集思考文本作兜底。
+        const thinkingParts: string[] = [];
 
         for (const block of msg.content) {
           if (block.type === "text") {
             textParts.push(block.text);
+          } else if (block.type === "thinking") {
+            if (block.thinking) thinkingParts.push(block.thinking);
           } else if (block.type === "tool_use") {
             // §2.3 fail-fast：空 id 的 tool_use 无法与后续 tool message 配对，
             // 原样转发必然触发 OpenAI 400。在转换层提前抛错，比让服务端 400 更易定位。
@@ -200,9 +206,18 @@ export class OpenAIProvider implements Provider {
           }
         }
 
+        const joinedText = textParts.join("");
+        // content 取值优先级：真实文本 > 思考文本兜底 > null。
+        // 仅当无文本且无工具调用时才用思考兜底——保证 assistant 消息至少有
+        // content 或 tool_calls 之一非空，满足 OpenAI/DeepSeek 协议（避免 400）。
+        let contentValue: string | null = joinedText || null;
+        if (!joinedText && toolCalls.length === 0 && thinkingParts.length > 0) {
+          contentValue = thinkingParts.join("");
+        }
+
         const assistantMsg: any = {
           role: "assistant",
-          content: textParts.join("") || null,
+          content: contentValue,
         };
 
         if (toolCalls.length > 0) {

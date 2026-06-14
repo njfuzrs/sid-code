@@ -63,6 +63,49 @@ describe("§2.2 tool_use.input 兜底为合法 JSON", () => {
   });
 });
 
+describe("thinking-only assistant 消息兜底（reasoning 模型整轮走 reasoning_content）", () => {
+  test("仅 thinking 块 → content 用思考文本兜底，非 null", () => {
+    const result = provider.testConvertMessages([
+      {
+        role: "assistant",
+        content: [{ type: "thinking", thinking: "我先想一下这个问题" }],
+      },
+    ]);
+    expect(result).toHaveLength(1);
+    expect(result[0].role).toBe("assistant");
+    // 关键：content 非空、非 null —— 否则 DeepSeek/OpenAI 报 "content or tool_calls must be set" 400
+    expect(result[0].content).toBe("我先想一下这个问题");
+    expect(result[0].tool_calls).toBeUndefined();
+  });
+
+  test("有 text 时 thinking 不参与兜底（text 优先）", () => {
+    const result = provider.testConvertMessages([
+      {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "思考内容" },
+          { type: "text", text: "正式回答" },
+        ],
+      },
+    ]);
+    expect(result[0].content).toBe("正式回答");
+  });
+
+  test("thinking + tool_use → content 为 null，走 tool_calls（不触发兜底）", () => {
+    const result = provider.testConvertMessages([
+      {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "决定调用工具" },
+          { type: "tool_use", id: "c1", name: "read", input: { path: "/a" } },
+        ],
+      },
+    ]);
+    expect(result[0].content).toBeNull();
+    expect(result[0].tool_calls).toHaveLength(1);
+  });
+});
+
 describe("§2.3 空 id fail-fast", () => {
   test("tool_use 缺 id → 抛错", () => {
     expect(() =>
