@@ -141,6 +141,8 @@ export class TelemetryBus {
   /** 启动定时刷新 */
   start(): void {
     if (!this.config.enabled) return;
+    // 防重复:已有定时器时先清理,避免重复 start() 泄漏 setInterval(LEAK-5)
+    if (this.flushTimer) clearInterval(this.flushTimer);
     this.flushTimer = setInterval(
       () => { this.flush().catch(() => {}); },
       this.config.flushIntervalMs,

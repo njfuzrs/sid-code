@@ -617,14 +617,24 @@ export class App {
     const log = getLogger();
     const onSignal = async (signal: "SIGINT" | "SIGTERM") => {
       log.warn("APP", `收到 ${signal}，触发 SessionEnd(reason=abort) 后退出`);
+      // 兜底退出:无论落盘是否 hang,最多 1.5s 后强制退出。
+      // 提前注册(在 await 之前),避免 fireSessionEndEvent 永久挂起时此兜底永远不执行(ASYNC-7)。
+      const forceExitTimer = setTimeout(
+        () => process.exit(signal === "SIGINT" ? 130 : 143),
+        1500,
+      );
       // 触发 abort 让 LLM 流式请求/工具调用尽快停下
       try { this.abortController?.abort(); } catch { /* ignore */ }
       try {
-        await this.hookSystem.fireSessionEndEvent(
-          "abort",
-          this.buildSessionEndStats(),
-          { error: { message: `process received ${signal}`, name: signal } },
-        );
+        // 给落盘整体一个 1.2s 上限,SessionEnd hook 卡死时不至于拖死整个退出流程(ASYNC-7)
+        await Promise.race([
+          this.hookSystem.fireSessionEndEvent(
+            "abort",
+            this.buildSessionEndStats(),
+            { error: { message: `process received ${signal}`, name: signal } },
+          ),
+          new Promise((resolve) => setTimeout(resolve, 1200)),
+        ]);
       } catch (err: any) {
         process.stderr.write(`[signal] SessionEnd hook 失败: ${err?.message ?? err}\n`);
       }
@@ -633,8 +643,9 @@ export class App {
       // 清理 crash marker（正常退出不残留）
       try { CrashMarker.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
       try { PidManager.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
-      // 给 trajectory 写入一点时间，再强制退出
-      setTimeout(() => process.exit(signal === "SIGINT" ? 130 : 143), 200);
+      // 落盘已完成(或超时),清掉兜底并立即退出
+      clearTimeout(forceExitTimer);
+      process.exit(signal === "SIGINT" ? 130 : 143);
     };
 
     // 用 once 防止 SIGTERM 风暴下重入；fire-and-forget 让 process.on 不卡死

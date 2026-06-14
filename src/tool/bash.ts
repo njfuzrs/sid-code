@@ -10,6 +10,7 @@ import { getLogger } from "../debug/logger.ts";
 import type { Config } from "../config/config.ts";
 import { isReadOnlyCommand, isDestructiveCommand } from "./bash/read-only-validation.ts";
 import { normalizeToolPath } from "./path-utils.ts";
+import { registerCleanup } from "../utils/graceful-shutdown.ts";
 
 /** Bash 输出截断阈值（对标 Claude Code 30000 字符） */
 const MAX_OUTPUT_LENGTH = 30000;
@@ -19,6 +20,22 @@ const BACKGROUND_DELAY_MS = 200;
 
 /** 后台进程 PID 跟踪 */
 const backgroundPids = new Set<number>();
+
+/**
+ * 杀掉所有残留后台进程并清空跟踪表(LEAK-3)。
+ * 退出时由 graceful-shutdown 调用,避免 backgroundPids 无界增长 + 孤儿进程残留。
+ */
+export function killBackgroundProcesses(): void {
+  for (const pid of backgroundPids) {
+    try { process.kill(pid); } catch { /* 进程可能已自行退出 */ }
+  }
+  backgroundPids.clear();
+}
+
+// 自注册到优雅关闭序列(退出时清理后台进程)
+try {
+  registerCleanup(killBackgroundProcesses);
+} catch { /* 测试或非标准入口下可能不可用,忽略 */ }
 
 /** 全局配置（用于环境变量清理） */
 let globalConfig: Config | null = null;

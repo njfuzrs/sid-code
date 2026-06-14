@@ -241,14 +241,19 @@ export class SubAgentTool implements Tool {
       description: params.description,
     });
 
-    // 合并外部 signal
+    // 合并外部 signal:保存 handler 引用,后台任务结束时摘除监听器(LEAK-4)
+    let abortForwardCleanup: (() => void) | undefined;
     if (signal) {
-      signal.addEventListener("abort", () => abortController.abort());
+      const onAbort = () => abortController.abort();
+      signal.addEventListener("abort", onAbort);
+      abortForwardCleanup = () => signal.removeEventListener("abort", onAbort);
     }
 
     // 后台启动子代理（不 await）
     const taskId = taskState.id;
-    void this.executeInBackground(taskId, params, abortController);
+    void this.executeInBackground(taskId, params, abortController).finally(() => {
+      abortForwardCleanup?.();
+    });
 
     log.info("SUBAGENT", `后台子代理已启动: ${taskId} (${params.type})`);
 

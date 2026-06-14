@@ -127,8 +127,16 @@ export class LSPClient {
   stop(): void {
     this.isStopping = true;
     if (this.process && !this.process.killed) {
+      // 先摘掉 stdout/stderr/exit 监听器,避免进程退出后回调残留(LEAK-6)
+      try { this.process.stdout?.removeAllListeners(); } catch { /* ignore */ }
+      try { this.process.stderr?.removeAllListeners(); } catch { /* ignore */ }
+      try { this.process.removeAllListeners("exit"); } catch { /* ignore */ }
       try { this.process.kill(); } catch {}
     }
+    // reject 残留 pending 请求,避免调用方永久挂起
+    const err = new Error(`LSP 服务器 ${this.serverName} 已停止`);
+    for (const [, pending] of this.pendingRequests) pending.reject(err);
+    this.pendingRequests.clear();
     this.process = null;
   }
 

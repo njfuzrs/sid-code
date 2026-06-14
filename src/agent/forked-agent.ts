@@ -136,7 +136,16 @@ export async function runForkedAgent(
     : timeoutController.signal;
 
   // forked 消息序列：主对话历史前缀（缓存友好）+ 追加的提示消息
-  const conversation: Message[] = [...mainContext.messages, ...options.promptMessages];
+  // 对主历史做结构化克隆,隔离于主上下文——避免主循环就地 mutation 污染
+  // forked 正在读取的同一批消息对象(CONTEXT-MEMORY-8)。内容不变,不影响 prompt 缓存。
+  let clonedPrefix: Message[];
+  try {
+    clonedPrefix = structuredClone(mainContext.messages) as Message[];
+  } catch {
+    // 极端情况下消息含不可克隆字段时,退回浅拷贝(至少数组独立)
+    clonedPrefix = [...mainContext.messages];
+  }
+  const conversation: Message[] = [...clonedPrefix, ...options.promptMessages];
   const appended: Message[] = [...options.promptMessages];
   const totalUsage = { inputTokens: 0, outputTokens: 0 };
   let turns = 0;
@@ -201,7 +210,7 @@ export async function runForkedAgent(
         try {
           const input = (decision as { updatedInput?: unknown }).updatedInput ?? tu.input;
           // 注入 _agentId 标记，防止分叉代理调用 enter_plan_mode 形成套娃
-          const res = await tool.execute({ ...input, _agentId: "forked-agent" }, signal);
+          const res = await tool.execute({ ...(input as Record<string, unknown>), _agentId: "forked-agent" }, signal);
           results.push({
             type: "tool_result",
             tool_use_id: tu.id,

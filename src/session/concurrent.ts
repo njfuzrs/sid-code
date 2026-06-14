@@ -16,6 +16,7 @@ import {
 } from "fs";
 import { join } from "path";
 import { sidPaths } from "../config/paths.ts";
+import { getLogger } from "../debug/logger.ts";
 
 /** 会话类型 */
 export type SessionKind = "interactive" | "headless" | "daemon" | "teammate";
@@ -61,8 +62,9 @@ export function registerSession(entry: SessionEntry): void {
   try {
     mkdirSync(sessionsDir(), { recursive: true });
     writeFileSync(sessionPath(entry.sessionId), JSON.stringify(entry, null, 2));
-  } catch {
-    /* 注册失败不应阻塞启动 */
+  } catch (err: any) {
+    // 注册失败不应阻塞启动,但需可观测(ERRH-8)
+    getLogger().warn("SESSION", `会话注册失败: ${err?.message ?? err}`);
   }
 }
 
@@ -71,8 +73,9 @@ export function unregisterSession(sessionId: string): void {
   try {
     const p = sessionPath(sessionId);
     if (existsSync(p)) unlinkSync(p);
-  } catch {
-    /* 忽略 */
+  } catch (err: any) {
+    // 注销失败仅遗留 stale 文件,会被 listActiveSessions 清理,但仍记一笔(ERRH-8)
+    getLogger().warn("SESSION", `会话注销失败: ${err?.message ?? err}`);
   }
 }
 

@@ -335,7 +335,7 @@ export class TraceCollector {
       session_id: input.session_id,
       timestamp: input.timestamp,
       cwd: input.cwd,
-      data: { model: req.model, index },
+      data: { model: req.model, index, msg_count: rawMessages.length },
     });
 
     // 迷你 raw_preview：即使进程在 API 调用期间被 V8 OOM kill，也能知道最后一次请求的关键指标
