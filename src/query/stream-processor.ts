@@ -216,6 +216,47 @@ export async function processStream(
     (response as any)._thinkingBlocks = thinkingBlocks;
   }
 
+  // 第二层兜底：reasoning 模型（DeepSeek 等）有时整轮只产出 reasoning_content、
+  // 普通 content 通道一字未发，且 stop_reason=end_turn —— 即"只思考不答复"。
+  // 此时 content 里只剩 thinking 块：TUI 把它渲染为「✻ 思考过程」而非正文答复气泡，
+  // 且下一轮回放该消息会因 assistant content 为空触发 OpenAI/DeepSeek 400
+  //（见 openai.ts convertMessages 的同源兜底，那是协议层最后防线，这里是体验层主防线）。
+  //
+  // 实现要点（数据纯净性）：把唯一的 thinking 块【原地转型】为 text 块，而非复制一份
+  // text 追加——后者会让同一段文字在 content 数组里出现两次（thinking + text 重复），
+  // 留下"临时拼凑"痕迹。原地转型后 content 仍是单块、结构规范；轨迹采集所需的原始
+  // thinking 已在上方 _thinkingBlocks 捕获（独立数组，不受此转型影响），不丢数据。
+  //
+  // 触发条件极窄：
+  // 1. end_turn/stop —— 模型认为"说完了"（排除 max_tokens 续写、tool_use 等）
+  // 2. 无任何 text、无任何 tool_use —— 正文通道确实空（排除正常的「思考→答复」「思考→工具」）
+  // 3. 恰好 1 个 thinking 块 —— 多块思考语义复杂，不强行合并
+  // 4. 思考文本 ≤ MAX_PROMOTE_LEN —— 长思考链是真正的推理过程，强行当正文展示很怪；
+  //    仅短文本（如"你好"→一句直接回应被误塞进思考通道）才提升，长则保持思考块原样。
+  const isEndTurnLike =
+    response.stopReason === "end_turn" || response.stopReason === "stop";
+  /** 思考提升为正文的字符上限：超过则判定为真思考链，不提升 */
+  const MAX_PROMOTE_LEN = 500;
+  if (isEndTurnLike && totalTextLen === 0 && toolCallCount === 0 && thinkingCount === 1) {
+    const idx = response.content.findIndex((b) => b.type === "thinking");
+    const block = idx >= 0 ? response.content[idx] : undefined;
+    const thinkingText =
+      block && block.type === "thinking" ? block.thinking.trim() : "";
+    if (thinkingText && thinkingText.length <= MAX_PROMOTE_LEN) {
+      // 原地转型：thinking → text（保留 durationMs 已无意义，text 块不带该字段）
+      response.content[idx] = { type: "text", text: thinkingText };
+      log.info(
+        "STREAM",
+        `仅思考无正文(stop=${response.stopReason}, ${thinkingText.length}字符≤${MAX_PROMOTE_LEN})，已将思考块原地转型为正文`,
+      );
+    } else if (thinkingText) {
+      log.info(
+        "STREAM",
+        `仅思考无正文(stop=${response.stopReason})，但思考文本 ${thinkingText.length}字符>${MAX_PROMOTE_LEN}，判定为真思考链，保持思考块原样`,
+      );
+    }
+  }
+
   // DeepSeek reasoning_content: 存到 _meta 供 convertMessages 回传
   if (accumulatedReasoning) {
     response._meta = { ...response._meta, reasoning_content: accumulatedReasoning };

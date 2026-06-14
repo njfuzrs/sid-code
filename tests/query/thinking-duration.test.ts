@@ -30,6 +30,16 @@ describe("processStream — SP1 思考耗时", () => {
       { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "先" } },
       { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "想想" } },
       { type: "content_block_stop", index: 0 },
+      // 思考块后跟一个正文 text 块（真实场景：思考→答复）。
+      // 必须有正文，否则会命中 stream-processor 的"只思考不答复"兜底，
+      // thinking 块被原地转型为 text，本测试就取不到 thinking 块了。
+      {
+        type: "content_block_start",
+        index: 1,
+        content_block: { type: "text", text: "" },
+      },
+      { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "答复" } },
+      { type: "content_block_stop", index: 1 },
       { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { inputTokens: 0, outputTokens: 0 } },
       { type: "message_stop" },
     ];
