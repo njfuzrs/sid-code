@@ -79,7 +79,9 @@ export function SuggestionsDisplay({ suggestions, activeIndex, width }: Suggesti
               </Text>
             ) : (
               <Text>
-                <Text> {labelWithIcon}</Text>
+                <Text> </Text>
+                {iconPrefix ? <Text color={theme.ui.active}>{iconPrefix}</Text> : null}
+                <Text>{label}</Text>
                 <Text dimColor>{descTruncated}</Text>
                 <Text dimColor>{tagSuffix}</Text>
               </Text>

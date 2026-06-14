@@ -105,7 +105,7 @@ export function useAtCompletion({ cursorCol, currentLine, cwd, setSuggestions }:
       const matches: Suggestion[] = ranked.slice(0, MAX_SUGGESTIONS).map(({ entry, displayName, valuePath }) => ({
         label: displayName,
         value: valuePath,
-        icon: entry.isDirectory() ? "📁" : "📄",
+        icon: entry.isDirectory() ? "▸" : "·",
         tag: entry.isDirectory() ? "目录" : "文件",
       }));
 

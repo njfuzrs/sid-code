@@ -30,6 +30,7 @@ import { useLoadingIndicator } from "../hooks/useLoadingIndicator.ts";
 import { useKeypress, KeypressPriority } from "../contexts/KeypressContext.tsx";
 import type { CommandInfo } from "../hooks/useSlashCompletion.ts";
 import { DEFAULT_TERM_WIDTH } from "../markdown.ts";
+import { SUCCESS_MARK, ERROR_MARK } from "../constants/figures.ts";
 
 /** 窄屏阈值 */
 const NARROW_WIDTH_THRESHOLD = 60;
@@ -125,7 +126,7 @@ const ToolResultIndicator: React.FC<{
 
   if (!visible || !lastResult) return null;
 
-  const icon = lastResult.isError ? "✕" : "✓";
+  const icon = lastResult.isError ? ERROR_MARK : SUCCESS_MARK;
   const color = lastResult.isError ? theme.status.error : theme.status.success;
   const elapsed = lastResult.elapsedMs < 1000
     ? `${lastResult.elapsedMs}ms`

@@ -8,6 +8,7 @@ import Box from "../ink/components/Box.js";
 import Text from "../ink/components/Text.js";
 import { getLogger } from "../debug/logger.ts";
 import { theme } from "./semantic-colors.ts";
+import { SUCCESS_MARK, ERROR_MARK } from "./constants/figures.ts";
 
 interface ToolStatusProps {
   toolName: string | null;
@@ -90,7 +91,7 @@ export const ToolStatus = React.memo(function ToolStatus({ toolName, isExecuting
   }
 
   if (showResult && lastResult) {
-    const icon = lastResult.isError ? "✕" : "✓";
+    const icon = lastResult.isError ? ERROR_MARK : SUCCESS_MARK;
     const color = lastResult.isError ? theme.status.error : theme.status.success;
     return (
       <Box>

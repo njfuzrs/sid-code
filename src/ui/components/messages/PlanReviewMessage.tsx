@@ -1,10 +1,8 @@
 /**
  * 计划审阅消息组件
  *
- * 参考 gemini-cli ToolConfirmationQueue 的三段式边框拼接：
- * - 顶部 Box：borderTop + 标题
- * - 中间 Box：左右边框 + 计划内容
- * - 底部 Box：borderBottom
+ * 单一圆角容器 + 内部一条 borderTop 分隔线，取代此前 gemini-cli 遗留的
+ * 四段 Box 拼接边框（顶/分隔/中/底）。结构更干净，无盒子套盒子。
  */
 
 import React from "react";
@@ -30,59 +28,36 @@ export const PlanReviewMessage: React.FC<PlanReviewMessageProps> = ({
   const contentWidth = terminalWidth - 4;
 
   return (
-    <Box flexDirection="column" width={terminalWidth}>
-      {/* 顶部：borderTop + 左右边框 + 标题 */}
+    <Box
+      flexDirection="column"
+      width={terminalWidth}
+      borderStyle="round"
+      borderColor={borderColor}
+      paddingX={1}
+    >
+      {/* 标题行：成功色圆点 + 标题 + 行数 */}
+      <Box justifyContent="space-between">
+        <Box>
+          <Text color={borderColor} bold>{"● 计划审阅"}</Text>
+        </Box>
+        <Text dimColor>{lineCount} 行</Text>
+      </Box>
+      <Text color={theme.text.link}>{planFilePath}</Text>
+
+      {/* 标题与内容之间的分隔线：内部一条 borderTop，不再拼接独立边框段 */}
       <Box
-        borderStyle="round"
-        borderColor={borderColor}
+        width={contentWidth}
+        borderStyle="single"
+        borderColor={theme.ui.dark ?? theme.border.default}
         borderTop={true}
         borderBottom={false}
-        borderLeft={true}
-        borderRight={true}
-        width={terminalWidth}
-        paddingX={1}
-        flexDirection="column"
-      >
-        <Box justifyContent="space-between">
-          <Text color={borderColor} bold>📋 计划审阅</Text>
-          <Text dimColor>{lineCount} 行</Text>
-        </Box>
-        <Text color={theme.text.link}>{planFilePath}</Text>
-      </Box>
+        borderLeft={false}
+        borderRight={false}
+        marginY={0}
+      />
 
-      {/* 标题与内容之间的分隔线 */}
-      <Box
-        borderStyle="round"
-        borderColor={borderColor}
-        borderTop={false}
-        borderBottom={false}
-        borderLeft={true}
-        borderRight={true}
-        width={terminalWidth}
-      >
-        <Box
-          width={terminalWidth - 2}
-          borderStyle="single"
-          borderColor={theme.ui.dark ?? theme.border.default}
-          borderTop={false}
-          borderBottom={true}
-          borderLeft={false}
-          borderRight={false}
-        />
-      </Box>
-
-      {/* 中间：左右边框 + 计划内容 */}
-      <Box
-        borderStyle="round"
-        borderColor={borderColor}
-        borderTop={false}
-        borderBottom={false}
-        borderLeft={true}
-        borderRight={true}
-        width={terminalWidth}
-        paddingX={1}
-        flexDirection="column"
-      >
+      {/* 计划内容 */}
+      <Box flexDirection="column">
         <MarkdownDisplay
           text={planContent}
           isPending={false}
@@ -90,18 +65,6 @@ export const PlanReviewMessage: React.FC<PlanReviewMessageProps> = ({
           renderMarkdown={true}
         />
       </Box>
-
-      {/* 底部：borderBottom + 左右边框 */}
-      <Box
-        height={1}
-        width={terminalWidth}
-        borderStyle="round"
-        borderColor={borderColor}
-        borderTop={false}
-        borderBottom={true}
-        borderLeft={true}
-        borderRight={true}
-      />
     </Box>
   );
 };

@@ -48,7 +48,7 @@ export function useSlashCompletion({ text, cursorCol, commands, setSuggestions }
           label: r.label,
           value: r.value,
           description: r.description,
-          icon: "⌘",
+          icon: "›",
           tag: "命令",
         })),
       );
@@ -65,7 +65,7 @@ export function useSlashCompletion({ text, cursorCol, commands, setSuggestions }
           // 中间位置补全：替换 token 部分，保留前缀
           value: r.value,
           description: r.description,
-          icon: "⌘",
+          icon: "›",
           tag: "命令",
         })),
       );
