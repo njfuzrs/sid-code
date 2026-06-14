@@ -53,10 +53,10 @@ export function getResultSummary(name: string, content: string, isError?: boolea
 /** 检测工具结果是否为 diff 格式 */
 export function isDiffContent(name: string, content: string): boolean {
   const lower = name.toLowerCase();
-  // Edit 工具通常返回 diff 格式
-  if (lower === "edit") {
-    // 检查是否包含 diff 标记
-    return content.includes("@@") || content.includes("---") || content.includes("+++");
+  // Edit / Write 工具成功后会在 output 中附带标准 unified diff。
+  // 统一以「是否含 @@ hunk 头」为判定依据(parseDiffWithLineNumbers 也以此解析)。
+  if (lower === "edit" || lower === "write") {
+    return /^@@ -\d/m.test(content);
   }
   return false;
 }

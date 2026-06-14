@@ -56,12 +56,6 @@ const SHELL_PROMPT = "! ";
 /** InputArea 最大可见行数（超过时 viewport 滚动） */
 const MAX_INPUT_LINES = 8;
 
-// ── 水平分隔线组件 ─────────────────────────────────────────────────
-
-function HorizontalRule({ color, width }: { color: string; width: number }) {
-  return <Text color={color}>{"─".repeat(Math.max(0, width))}</Text>;
-}
-
 /**
  * 清理粘贴文本：
  * - Tab → 2 空格
@@ -94,7 +88,7 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, onPermissionMode
   const prevLoadingRef = useRef(isLoading);
   const { stdout } = useStdout();
   const termWidth = stdout.columns || DEFAULT_TERM_WIDTH;
-  const availableWidth = Math.max(10, termWidth - 2); // paddingX=1 左右各 1
+  const availableWidth = Math.max(10, termWidth - 4); // round 边框左右各 1 + paddingX=1 左右各 1
 
   // Shell 模式状态（! 前缀直接执行 shell 命令）
   const [shellModeActive, setShellModeActive] = useState(false);
@@ -517,38 +511,42 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, onPermissionMode
   if (reverseSearch.state.active) {
     const { query, match } = reverseSearch.state;
     return (
-      <Box flexDirection="column">
-        <HorizontalRule color={theme.status.warning} width={termWidth} />
-        <Box paddingX={1} flexDirection="column">
-          <Box>
-            <Text color={theme.status.warning}>反向搜索: </Text>
-            <Text>{query}</Text>
-            <Text inverse> </Text>
-          </Box>
-          {match ? (
-            <Box>
-              <Text dimColor>匹配: </Text>
-              <Text>{match.length > termWidth - 10 ? match.slice(0, termWidth - 13) + "..." : match}</Text>
-            </Box>
-          ) : query ? (
-            <Box>
-              <Text color={theme.status.error}>无匹配</Text>
-            </Box>
-          ) : null}
+      <Box
+        flexDirection="column"
+        width={termWidth}
+        borderStyle="round"
+        borderColor={theme.status.warning}
+        paddingX={1}
+      >
+        <Box>
+          <Text color={theme.status.warning}>反向搜索: </Text>
+          <Text>{query}</Text>
+          <Text inverse> </Text>
         </Box>
-        <HorizontalRule color={theme.status.warning} width={termWidth} />
+        {match ? (
+          <Box>
+            <Text dimColor>匹配: </Text>
+            <Text>{match.length > termWidth - 10 ? match.slice(0, termWidth - 13) + "..." : match}</Text>
+          </Box>
+        ) : query ? (
+          <Box>
+            <Text color={theme.status.error}>无匹配</Text>
+          </Box>
+        ) : null}
       </Box>
     );
   }
 
   if (isLoading) {
     return (
-      <Box flexDirection="column">
-        <HorizontalRule color={theme.ui.dark} width={termWidth} />
-        <Box paddingX={1}>
-          <Text dimColor>等待响应中...</Text>
-        </Box>
-        <HorizontalRule color={theme.ui.dark} width={termWidth} />
+      <Box
+        width={termWidth}
+        borderStyle="round"
+        borderColor={theme.ui.dark}
+        borderDimColor
+        paddingX={1}
+      >
+        <Text dimColor>等待响应中...</Text>
       </Box>
     );
   }
@@ -560,16 +558,17 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, onPermissionMode
     const currentPlaceholder = shellModeActive ? "输入 shell 命令..." : PLACEHOLDER;
 
     return (
-      <Box flexDirection="column">
-        <HorizontalRule color={theme.ui.active} width={termWidth} />
-        <Box paddingX={1}>
-          <Text>
-            <Text color={theme.ui.active} bold>{currentPrompt}</Text>
-            <Text inverse> </Text>
-            <Text dimColor>{currentPlaceholder}</Text>
-          </Text>
-        </Box>
-        <HorizontalRule color={theme.ui.active} width={termWidth} />
+      <Box
+        width={termWidth}
+        borderStyle="round"
+        borderColor={theme.ui.active}
+        paddingX={1}
+      >
+        <Text>
+          <Text color={theme.ui.active} bold>{currentPrompt}</Text>
+          <Text inverse> </Text>
+          <Text dimColor>{currentPlaceholder}</Text>
+        </Text>
       </Box>
     );
   }
@@ -659,11 +658,15 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, onPermissionMode
           width={termWidth}
         />
       )}
-      <HorizontalRule color={theme.ui.active} width={termWidth} />
-      <Box paddingX={1} flexDirection="column">
+      <Box
+        width={termWidth}
+        borderStyle="round"
+        borderColor={theme.ui.active}
+        paddingX={1}
+        flexDirection="column"
+      >
         {renderedLines}
       </Box>
-      <HorizontalRule color={theme.ui.active} width={termWidth} />
     </Box>
   );
 }

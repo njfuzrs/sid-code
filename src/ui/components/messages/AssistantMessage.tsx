@@ -11,6 +11,7 @@ import Text from "../../../ink/components/Text.js";
 import { MarkdownDisplay } from "../MarkdownDisplay.tsx";
 import { theme } from "../../semantic-colors.ts";
 import { useUIState } from "../../contexts/UIStateContext.tsx";
+import { BULLET } from "../../constants/figures.ts";
 
 interface AssistantMessageProps {
   text: string;
@@ -26,13 +27,13 @@ export const AssistantMessage: React.FC<AssistantMessageProps> = ({
   availableTerminalHeight,
 }) => {
   const { renderMarkdown } = useUIState();
-  const prefix = "✦ ";
-  const prefixWidth = prefix.length;
+  // ⏺ bullet 与工具行同构（品牌蓝），占位宽 2（glyph + 空格）
+  const prefixWidth = 2;
 
   return (
     <Box flexDirection="row">
-      <Box width={prefixWidth}>
-        <Text color={theme.text.accent}>{prefix}</Text>
+      <Box width={prefixWidth} flexShrink={0}>
+        <Text color={theme.ui.active}>{BULLET}</Text>
       </Box>
       <Box flexGrow={1} flexDirection="column">
         <MarkdownDisplay

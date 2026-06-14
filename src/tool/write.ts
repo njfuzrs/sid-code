@@ -9,6 +9,7 @@ import { mkdirSync, existsSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
 import { detectOmissionPlaceholders, isDocumentFile } from "./omission-detector.ts";
 import { normalizeToolPath } from "./path-utils.ts";
+import { formatUnifiedDiff } from "./diff-output.ts";
 
 export class WriteTool implements Tool {
   name(): string {
@@ -95,12 +96,26 @@ export class WriteTool implements Tool {
         mkdirSync(dir, { recursive: true });
       }
 
+      // 读取旧内容(若已存在)以生成 diff;新建文件则旧内容为空
+      let oldContent = "";
+      const target = Bun.file(filePath);
+      if (await target.exists()) {
+        oldContent = await target.text();
+      }
+
       // 写入文件
       await Bun.write(filePath, params.content);
 
       log.info("TOOL", `✓ 写入 ${filePath} 完成`);
 
-      return { output: `文件已写入: ${filePath}` };
+      // 生成标准 unified diff(供 TUI DiffRenderer 解析高亮)。
+      // 新建文件 → 全 `+` 行;覆盖文件 → 增删对照。
+      const diff = formatUnifiedDiff(filePath, oldContent, params.content);
+      const action = oldContent ? "已写入" : "已创建";
+
+      return {
+        output: `文件${action}: ${filePath}${diff ? `\n\n${diff}` : ""}`,
+      };
     } catch (err: any) {
       return { output: `写入文件失败: ${err.message}`, isError: true };
     }

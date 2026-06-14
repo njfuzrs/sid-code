@@ -13,6 +13,7 @@ import { coerceSemanticBoolean } from "../utils/semantic-boolean.ts";
 import { mkdirSync, existsSync } from "fs";
 import { dirname, basename } from "path";
 import { normalizeToolPath, formatPathNotFoundError } from "./path-utils.ts";
+import { formatUnifiedDiff } from "./diff-output.ts";
 
 // ─── 内部类型 ────────────────────────────────────────────────────────────────
 
@@ -479,7 +480,10 @@ export class EditTool implements Tool {
         if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
         await Bun.write(filePath, newString);
         log.info("TOOL", `✓ 创建新文件 ${filePath}`);
-        return { output: `文件已创建: ${filePath}` };
+        const newFileDiff = formatUnifiedDiff(filePath, "", newString);
+        return {
+          output: `文件已创建: ${filePath}${newFileDiff ? `\n\n${newFileDiff}` : ""}`,
+        };
       }
 
       // ── 普通编辑 ──────────────────────────────────────────────────────────
@@ -520,11 +524,11 @@ export class EditTool implements Tool {
         : "";
       log.info("TOOL", `✓ 编辑 ${filePath} 完成 (${result.occurrences}处${strategyNote})`);
 
-      // 生成 diff 上下文片段（帮助 LLM 验证编辑结果）
-      const diffContext = this.getDiffContextSnippet(rawContent, finalContent, oldString);
+      // 生成标准 unified diff(供 TUI DiffRenderer 解析高亮,也帮 LLM 验证编辑结果)
+      const diff = formatUnifiedDiff(filePath, rawContent, finalContent);
 
       return {
-        output: `文件已编辑: ${filePath}（替换了 ${result.occurrences} 处${strategyNote}）${diffContext}`,
+        output: `文件已编辑: ${filePath}（替换了 ${result.occurrences} 处${strategyNote}）${diff ? `\n\n${diff}` : ""}`,
       };
     } catch (err: any) {
       return { output: `编辑文件失败: ${err.message}`, isError: true };
@@ -546,42 +550,5 @@ export class EditTool implements Tool {
       .split("\n")
       .map((line) => line.replace(/^\s*\d+→/, ""))
       .join("\n");
-  }
-
-  /** 生成 diff 上下文片段：显示变更周围 5 行代码 */
-  private getDiffContextSnippet(oldContent: string, newContent: string, searchString: string): string {
-    try {
-      const oldLines = oldContent.split("\n");
-      const newLines = newContent.split("\n");
-
-      // 找到变更位置（简单查找第一个不同的行）
-      let changeStart = 0;
-      for (let i = 0; i < Math.min(oldLines.length, newLines.length); i++) {
-        if (oldLines[i] !== newLines[i]) {
-          changeStart = i;
-          break;
-        }
-      }
-
-      // 提取上下文（变更前后各 5 行）
-      const contextSize = 5;
-      const start = Math.max(0, changeStart - contextSize);
-      const end = Math.min(newLines.length, changeStart + contextSize + 1);
-      const contextLines = newLines.slice(start, end);
-
-      if (contextLines.length === 0) return "";
-
-      const snippet = contextLines
-        .map((line, idx) => {
-          const lineNum = start + idx + 1;
-          const marker = lineNum === changeStart + 1 ? "→" : " ";
-          return `${lineNum}${marker} ${line}`;
-        })
-        .join("\n");
-
-      return `\n\n变更上下文:\n${snippet}`;
-    } catch {
-      return ""; // 生成失败时静默忽略
-    }
   }
 }

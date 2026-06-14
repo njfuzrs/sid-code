@@ -1,24 +1,25 @@
 /**
  * 工具状态指示器共享组件
  *
- * 提供工具执行状态的图标、颜色、信息展示等共享逻辑。
- * 参考 gemini-cli/packages/cli/src/ui/components/messages/ToolShared.tsx
+ * 视觉语言对标 claude-code：状态用单一圆点字形 ⏺，仅靠**颜色**区分状态，
+ * 不再用 ✓ ⟳ ✕ ⋅ ❌ 等粗细不一的多字形。结果区靠 ⎿ 树枝缩进，不画盒子。
  *
- * P1 增强：对齐 gemini-cli 的状态图标
- * - Pending    → ⋅ (success green)
- * - Executing  → ⟳ (spinner)
- * - Success    → ✓ (success green)
- * - Confirming → ❌ (warning)
- * - Canceled   → ✗ (strikethrough)
- * - Error      → ✕ (error red)
+ * 状态 → 颜色：
+ * - Pending    → dim 灰（排队中）
+ * - Executing  → 品牌蓝（进行中）
+ * - Success    → success 绿
+ * - Confirming → warning 黄
+ * - Canceled   → dim + 删除线
+ * - Error      → error 红
  */
 
 import React from "react";
 import Box from "../../../ink/components/Box.js";
 import Text from "../../../ink/components/Text.js";
 import { theme } from "../../semantic-colors.ts";
+import { BULLET } from "../../constants/figures.ts";
 
-export const STATUS_INDICATOR_WIDTH = 3;
+export const STATUS_INDICATOR_WIDTH = 2;
 
 /** 工具执行状态 */
 export type ToolCallStatus = "pending" | "executing" | "success" | "error" | "cancelled" | "confirming";
@@ -26,39 +27,29 @@ export type ToolCallStatus = "pending" | "executing" | "success" | "error" | "ca
 /** 文本强调级别 */
 export type TextEmphasis = "high" | "medium" | "low";
 
-/** 工具状态图标常量（对齐 gemini-cli） */
-const TOOL_STATUS_ICONS = {
-  PENDING: "⋅ ",      // gemini-cli: ⋅ (success green)
-  EXECUTING: "⟳ ",    // gemini-cli: ⟳ (spinner)
-  SUCCESS: "✓ ",      // gemini-cli: ✓ (success green)
-  CONFIRMING: "❌ ",  // gemini-cli: ❌ (warning)
-  CANCELLED: "✗ ",    // gemini-cli: ✗ (strikethrough)
-  ERROR: "✕ ",        // gemini-cli: ✕ (error red)
-};
-
-/** 工具状态指示器 */
+/** 工具状态指示器：统一圆点字形，仅颜色区分状态（对标 cc） */
 export const ToolStatusIndicator: React.FC<{
   status: ToolCallStatus;
 }> = ({ status }) => {
   return (
     <Box minWidth={STATUS_INDICATOR_WIDTH}>
       {status === "pending" && (
-        <Text color={theme.status.success}>{TOOL_STATUS_ICONS.PENDING}</Text>
+        <Text color={theme.text.secondary} dimColor>{BULLET}</Text>
       )}
       {status === "executing" && (
-        <Text color={theme.ui.active}>{TOOL_STATUS_ICONS.EXECUTING}</Text>
+        <Text color={theme.ui.active}>{BULLET}</Text>
       )}
       {status === "success" && (
-        <Text color={theme.status.success}>{TOOL_STATUS_ICONS.SUCCESS}</Text>
+        <Text color={theme.status.success}>{BULLET}</Text>
       )}
       {status === "confirming" && (
-        <Text color={theme.status.warning}>{TOOL_STATUS_ICONS.CONFIRMING}</Text>
+        <Text color={theme.status.warning}>{BULLET}</Text>
       )}
       {status === "cancelled" && (
-        <Text color={theme.text.secondary} strikethrough>{TOOL_STATUS_ICONS.CANCELLED}</Text>
+        <Text color={theme.text.secondary} dimColor strikethrough>{BULLET}</Text>
       )}
       {status === "error" && (
-        <Text color={theme.status.error} bold>{TOOL_STATUS_ICONS.ERROR}</Text>
+        <Text color={theme.status.error} bold>{BULLET}</Text>
       )}
     </Box>
   );

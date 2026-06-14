@@ -88,7 +88,7 @@ export type HistoryItemUser = HistoryItemBase & {
   text: string;
 };
 
-/** 助手消息（带 ✦ 前缀） */
+/** 助手消息（带 ⏺ 前缀） */
 export type HistoryItemAssistant = HistoryItemBase & {
   type: "assistant";
   text: string;

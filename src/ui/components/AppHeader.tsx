@@ -59,9 +59,10 @@ export const AppHeader: React.FC<AppHeaderProps> = ({ version }) => {
         <Text color={theme.text.secondary}> v{version}</Text>
       </Box>
 
-      {/* Tip */}
+      {/* Tip：品牌色小标记 + dim 文本，降低花哨感 */}
       <Box paddingLeft={2} marginTop={1}>
-        <Text color={theme.text.secondary}>💡 {tip}</Text>
+        <Text color={theme.ui.active}>{"› "}</Text>
+        <Text color={theme.text.secondary} dimColor>{tip}</Text>
       </Box>
     </Box>
   );

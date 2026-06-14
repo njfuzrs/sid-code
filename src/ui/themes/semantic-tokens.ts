@@ -70,7 +70,8 @@ export const darkSemanticColors: SemanticColors = {
     active: '#89b4fa',
     dark: '#45475a',
     focus: '#a6e3a1',
-    gradient: ['#89b4fa', '#cba6f7'],
+    // 蓝系单色渐变：Logo 不再紫蓝横跳，品牌色锚定在冷蓝
+    gradient: ['#74a8f5', '#89b4fa', '#b4d0ff'],
   },
   status: {
     error: '#f38ba8',
@@ -109,7 +110,8 @@ export const lightSemanticColors: SemanticColors = {
     active: '#1e66f5',
     dark: '#bcc0cc',
     focus: '#40a02b',
-    gradient: ['#1e66f5', '#8839ef'],
+    // 蓝系单色渐变（浅色对称）：与深色一致锚定品牌蓝
+    gradient: ['#1e66f5', '#5a8cf8', '#8cadfb'],
   },
   status: {
     error: '#d20f39',

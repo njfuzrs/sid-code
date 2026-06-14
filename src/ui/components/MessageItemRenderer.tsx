@@ -20,15 +20,7 @@ import type { Message } from "../../llm/types.ts";
 import { UserMessage } from "./messages/UserMessage.tsx";
 import { AssistantMessage } from "./messages/AssistantMessage.tsx";
 import { ToolGroupMessage, type ToolCallDisplay } from "./messages/ToolGroupMessage.tsx";
-import { getToolSummary, getResultSummary } from "../ui-utils.ts";
 import { DEFAULT_TERM_WIDTH } from "../markdown.ts";
-
-/** 分隔线 */
-function Separator({ width }: { width: number }) {
-  const sepWidth = Math.max(10, width - 4);
-  const sep = "── ".repeat(Math.floor(sepWidth / 3));
-  return <Text dimColor>{sep}</Text>;
-}
 
 /** 构建 tool_use_id → toolName 映射 */
 function buildToolNameMap(message: Message, prevMessage?: Message): Map<string, string> {
@@ -109,8 +101,7 @@ export const MessageItemRenderer = React.memo(function MessageItemRenderer({
   // ── 命令消息 ──
   if (item.kind === "command") {
     return (
-      <Box flexDirection="column">
-        {prevItem && <Separator width={termWidth} />}
+      <Box flexDirection="column" marginTop={prevItem ? 1 : 0}>
         <UserMessage text={item.input} width={termWidth} />
         {item.output ? (
           <Box paddingLeft={2}>
@@ -141,8 +132,7 @@ export const MessageItemRenderer = React.memo(function MessageItemRenderer({
     const textBlocks = msg.content.filter(b => b.type === "text");
     const text = textBlocks.map(b => b.type === "text" ? b.text : "").join("\n");
     return (
-      <Box flexDirection="column">
-        {prevItem && <Separator width={termWidth} />}
+      <Box flexDirection="column" marginTop={prevItem ? 1 : 0}>
         <UserMessage text={text} width={termWidth} />
       </Box>
     );

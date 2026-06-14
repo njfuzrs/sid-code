@@ -32,13 +32,6 @@ interface HistoryItemDisplayProps {
   thinkCollapsed?: boolean;
 }
 
-/** 分隔线 */
-function Separator({ width }: { width: number }) {
-  const sepWidth = Math.max(10, width - 4);
-  const sep = "── ".repeat(Math.floor(sepWidth / 3));
-  return <Text dimColor>{sep}</Text>;
-}
-
 export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
   item,
   prevItem,
@@ -48,6 +41,8 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
   thinkCollapsed = false,
 }) => {
   const width = terminalWidth;
+  // 用户轮边界：靠留白区隔，不画分隔符（对标 cc）。首项不留白。
+  const turnSpacing = prevItem ? 1 : 0;
 
   switch (item.type) {
     case "app_header":
@@ -55,8 +50,7 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
 
     case "user":
       return (
-        <Box flexDirection="column">
-          {prevItem && <Separator width={width} />}
+        <Box flexDirection="column" marginTop={turnSpacing}>
           <UserMessage text={item.text} width={width} />
         </Box>
       );
@@ -138,8 +132,6 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
         <ToolGroupMessage
           tools={tools}
           terminalWidth={width}
-          borderTop={item.borderTop}
-          borderBottom={item.borderBottom}
         />
       );
     }
@@ -209,8 +201,7 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
 
     case "command":
       return (
-        <Box flexDirection="column">
-          {prevItem && <Separator width={width} />}
+        <Box flexDirection="column" marginTop={turnSpacing}>
           <CommandMessage
             input={item.input}
             output={item.output}

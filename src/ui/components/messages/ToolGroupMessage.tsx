@@ -1,17 +1,14 @@
 /**
  * 工具调用分组消息组件
  *
- * 将多个工具调用渲染在一个圆角边框内，边框颜色随执行状态变化。
- * 参考 gemini-cli ToolGroupMessage.tsx
- *
- * 紧凑模式：成功结果只显示一行，整组共享一个边框
+ * 视觉语言对标 claude-code：去掉圆角边框，组内工具纯竖向排列，
+ * 每条工具一个 ⏺ bullet（状态色），组本身不画框。
  */
 
 import React, { useMemo } from "react";
 import Box from "../../../ink/components/Box.js";
 import Text from "../../../ink/components/Text.js";
 import { ToolMessage } from "./ToolMessage.tsx";
-import { getToolGroupBorderAppearance } from "../../utils/borderStyles.ts";
 import type { ToolCallStatus } from "./ToolShared.tsx";
 import { getToolSummary, getResultSummary, isDiffContent, getFilenameFromInput } from "../../ui-utils.ts";
 import { useOverflowState } from "../../contexts/OverflowContext.tsx";
@@ -41,9 +38,9 @@ export interface ToolCallDisplay {
 interface ToolGroupMessageProps {
   tools: ToolCallDisplay[];
   terminalWidth: number;
-  /** 是否渲染顶部边框（覆盖默认行为） */
+  /** @deprecated 去盒子后无边框，保留以兼容调用方（HistoryItemDisplay） */
   borderTop?: boolean;
-  /** 是否渲染底部边框（覆盖默认行为） */
+  /** @deprecated 去盒子后无边框，保留以兼容调用方 */
   borderBottom?: boolean;
   /** 是否可展开（Ctrl+O 展开被截断的输出） */
   isExpandable?: boolean;
@@ -54,19 +51,12 @@ const TOOL_MESSAGE_HORIZONTAL_MARGIN = 4;
 export const ToolGroupMessage: React.FC<ToolGroupMessageProps> = ({
   tools,
   terminalWidth,
-  borderTop: borderTopOverride,
-  borderBottom: borderBottomOverride,
   isExpandable = false,
 }) => {
   // 过滤 confirming 状态的工具（在确认队列中渲染，不在历史中显示）
   const visibleTools = useMemo(
     () => tools.filter(t => t.status !== "confirming"),
     [tools],
-  );
-
-  const { borderColor, borderDimColor } = useMemo(
-    () => getToolGroupBorderAppearance(visibleTools),
-    [visibleTools],
   );
 
   // 检查是否有溢出内容（通过 OverflowContext）
@@ -91,13 +81,6 @@ export const ToolGroupMessage: React.FC<ToolGroupMessageProps> = ({
       {visibleTools.map((tool, index) => {
         const isDiff = tool.result ? isDiffContent(tool.name, tool.result) : false;
         const filename = getFilenameFromInput(tool.name, tool.input);
-        const isFirst = index === 0;
-        const isLast = index === visibleTools.length - 1;
-        const resolvedIsFirst =
-          borderTopOverride !== undefined
-            ? borderTopOverride && isFirst
-            : isFirst;
-        const resolvedIsLast = borderBottomOverride !== false && isLast;
 
         return (
           <ToolMessage
@@ -107,10 +90,7 @@ export const ToolGroupMessage: React.FC<ToolGroupMessageProps> = ({
             resultDisplay={tool.result ? (isDiff ? tool.result : (tool.isError ? tool.result : undefined)) : undefined}
             status={tool.status}
             terminalWidth={contentWidth}
-            isFirst={resolvedIsFirst}
-            isLast={resolvedIsLast}
-            borderColor={borderColor}
-            borderDimColor={borderDimColor}
+            isFirst={index === 0}
             isError={tool.isError}
             isDiff={isDiff}
             filename={filename}

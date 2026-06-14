@@ -149,7 +149,7 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
       hasStatusMessage: !!statusMessage,
     });
     const { thinkingLines, textLines } = computeStreamBudgets(rows, chrome, hasThinking, hasText);
-    // 正文带 "✦ " 前缀，有效宽度略减
+    // 正文带 "⏺ " 前缀，有效宽度略减
     const textWidth = Math.max(1, termWidth - 2);
     return {
       visibleText: hasText ? tailToFit(streamingText, textWidth, textLines) : "",
