@@ -29,14 +29,3 @@ sid-code 是一个**通用 AI 编程基座**，对标 Claude Code 的 Agentic Wh
 第 2 层 工具+集成 商品化：内置工具 + MCP；混合（核心自建 + 长尾用开源）
 第 1 层 Runtime   商品化：Agent loop / Permission / Hook；海外 Buy / 国内 Build 双模
 ```
-
----
-
-## 文件编辑规范
-
-### 7. 禁止三连点省略占位符
-
-- write/edit 工具自动检测并拒绝含 ASCII 三连点 `...` 省略标记的内容（对代码文件）。
-- 代码中：**NEVER** 使用 `// … rest of implementation` 或 `# … existing code` 代替完整代码。
-- Markdown 文档中：用 Unicode 省略号 `…`（U+2026）代替三连点 `...`；代码块中的伪代码用 `[内容省略]` 代替省略号。
-- 如果 write/edit 报 "检测到省略占位符"，不要反复用 edit 修补同一文件。直接重新 Read 后 full rewrite，确保无三连点。
