@@ -7,6 +7,7 @@ import type { Provider } from "./provider.ts";
 import type { Config, ModelConfig } from "../config/config.ts";
 import { getLogger } from "../debug/logger.ts";
 import { ModelAvailabilityService } from "./availability.ts";
+import { TokenEstimator } from "./token-estimator.ts";
 
 /** 子代理模型映射 */
 export interface SubAgentModelMap {
@@ -58,6 +59,13 @@ export class ProviderRegistry {
   /** 获取当前模型名 */
   getCurrentModel(): string {
     return this.config.model;
+  }
+
+  /** 获取当前主模型的上下文窗口大小（tokens）。
+   *  优先用 availableModels 声明的 contextWindow（权威），否则按内置表/启发式推导。
+   *  供子代理派生其 ContextManager 窗口使用，避免子代理被写死 50000 而对大任务过早压缩。 */
+  getContextWindow(): number {
+    return new TokenEstimator().getContextLimit(this.config.model, this.config.availableModels);
   }
 
   /** 获取输出语言偏好 */

@@ -90,8 +90,30 @@ const MAX_DELAY_MS = 32_000;
 /** max_tokens 溢出恢复：安全余量 */
 const SAFETY_BUFFER = 1_000;
 
-/** max_tokens 溢出恢复：最小输出 token 数 */
+/** max_tokens 溢出恢复：最小输出 token 数的绝对下限（兜底）。
+ *  历史固定值 3000——对输出能力 128K 的模型，降到 3K 几乎等于放弃恢复。
+ *  现改为"按 contextLimit 比例算 floor，再与此绝对下限取较大者"（见 resolveFloorOutputTokens），
+ *  可经 SID_RECOVERY_FLOOR_TOKENS 显式覆盖。保成功：让需要大段输出的任务更易从溢出中恢复。 */
 const FLOOR_OUTPUT_TOKENS = 3_000;
+
+/** 溢出恢复 floor 占 contextLimit 的比例（默认 5%）。
+ *  对 1M 窗口模型给出 50K floor，对 200K 给 10K，远比固定 3K 更贴合模型能力。 */
+const FLOOR_OUTPUT_RATIO = 0.05;
+
+/** 解析溢出恢复的最小输出 token 下限。
+ *  优先级：SID_RECOVERY_FLOOR_TOKENS 显式值 > contextLimit × 5%（与绝对下限取大）> 绝对下限 3000。
+ *  非法 env 值（NaN/≤0）静默回退，绝不更紧。 */
+function resolveFloorOutputTokens(contextLimit: number): number {
+  const raw = process.env.SID_RECOVERY_FLOOR_TOKENS;
+  if (raw !== undefined && raw !== "") {
+    const n = Number.parseInt(raw, 10);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  if (contextLimit > 0) {
+    return Math.max(FLOOR_OUTPUT_TOKENS, Math.floor(contextLimit * FLOOR_OUTPUT_RATIO));
+  }
+  return FLOOR_OUTPUT_TOKENS;
+}
 
 /** 连续 529 触发降级的阈值 */
 const MAX_529_CONSECUTIVE = 3;
@@ -730,8 +752,9 @@ export class ModelFallback {
   ): number | null {
     const thinkingCost = thinkingBudget ?? 0;
     const available = Math.max(0, contextLimit - inputTokens - thinkingCost - SAFETY_BUFFER);
-    if (available < FLOOR_OUTPUT_TOKENS) return null;
-    return Math.max(FLOOR_OUTPUT_TOKENS, available);
+    const floor = resolveFloorOutputTokens(contextLimit);
+    if (available < floor) return null;
+    return Math.max(floor, available);
   }
 
   // ═══════════════════════════════════════════════════════════════

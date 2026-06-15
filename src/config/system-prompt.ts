@@ -8,6 +8,7 @@ import type { Attachment } from "./attachments.ts";
 import { platform, homedir } from "os";
 import { cwd } from "process";
 import { estimateTokens, truncateToLimit } from "./token-utils.ts";
+import { TokenEstimator } from "../llm/token-estimator.ts";
 import {
   PRIORITY,
   generateClaudeMdAttachment,
@@ -68,9 +69,13 @@ export interface SystemPromptContext {
   // 模型标识（用于 DeepSeek 等模型的语言策略差异化处理）
   /** 当前使用的模型名（如 "deepseek-chat"、"claude-sonnet-4-20250514"） */
   model?: string;
+  /** 用户配置的模型列表（携带权威 contextWindow），用于动态推导系统提示词预算 */
+  availableModels?: Array<{ name?: string; contextWindow?: number }>;
 
   // 限制
-  /** 系统提示词最大 token 数（默认 180000） */
+  /** 系统提示词最大 token 数。
+   *  不传时按当前模型 contextWindow 的 90% 动态推导（见 resolvePromptMaxTokens），
+   *  而非写死 180000（那是 Claude 200K 窗口时代的预留值，对 1M 窗口模型只用到 18% 就截断）。 */
   maxTokens?: number;
 }
 
@@ -143,6 +148,19 @@ export function clearPromptCache(): void {
  * 构建完整的系统提示词
  * 固定模板（身份、环境、工具指南、约束）+ 动态附件（按优先级排序）+ Token 截断 + 缓存
  */
+/** 推导系统提示词的 token 预算。
+ *  优先用上层显式传入的 ctx.maxTokens；否则按当前模型 contextWindow 的 90% 动态算
+ *  （而非写死 180000——那对 1M 窗口模型只用到 18% 就截断，对未知小窗口模型又可能超限）。
+ *  拿不到模型窗口时（无 model）回退到 180000 这个历史安全值。 */
+function resolvePromptMaxTokens(ctx: SystemPromptContext): number {
+  if (typeof ctx.maxTokens === "number" && ctx.maxTokens > 0) return ctx.maxTokens;
+  if (ctx.model) {
+    const window = new TokenEstimator().getContextLimit(ctx.model, ctx.availableModels);
+    if (window > 0) return Math.floor(window * 0.9);
+  }
+  return 180_000;
+}
+
 export function buildSystemPrompt(ctx: SystemPromptContext): string {
   const log = getLogger();
 
@@ -277,7 +295,7 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
   }
 
   // 5. Token 估算和截断
-  const maxTokens = ctx.maxTokens || 180000;
+  const maxTokens = resolvePromptMaxTokens(ctx);
   const tokens = estimateTokens(content);
 
   if (tokens > maxTokens) {

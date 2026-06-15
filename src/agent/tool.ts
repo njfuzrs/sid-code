@@ -35,7 +35,17 @@ export class SubAgentTool implements Tool {
 
   /** 并发控制 */
   static running = 0;
-  static readonly MAX_CONCURRENT = 3;
+  /** 子代理并发上限：默认 3（工程常量，与模型无关），可经 SID_SUBAGENT_MAX_CONCURRENT 放宽。
+   *  保成功：大任务需并行探索多个子任务（如同时 review + audit + governance）时,
+   *  3 的并发可能成为瓶颈。非法值（NaN/≤0）静默回退默认 3，绝不因配错而更严。 */
+  static readonly MAX_CONCURRENT = SubAgentTool.resolveMaxConcurrent();
+
+  private static resolveMaxConcurrent(): number {
+    const raw = process.env.SID_SUBAGENT_MAX_CONCURRENT;
+    if (raw === undefined || raw === "") return 3;
+    const n = Number.parseInt(raw, 10);
+    return Number.isFinite(n) && n > 0 ? n : 3;
+  }
 
   constructor(providerRegistry: ProviderRegistry, toolRegistry: ToolRegistry, hookSystem?: HookSystem) {
     this.providerRegistry = providerRegistry;

@@ -180,6 +180,40 @@ describe("TokenEstimator", () => {
     test("未知模型返回默认值 128000", () => {
       expect(estimator.getContextLimit("unknown-model")).toBe(128000);
     });
+
+    test("#10：availableModels 声明的 contextWindow 是权威源，覆盖静态表", () => {
+      // 用户自建/代理同名模型可声明真实窗口，不被内置静态表锁死
+      expect(
+        estimator.getContextLimit("gpt-4o", [{ name: "gpt-4o", contextWindow: 256000 }]),
+      ).toBe(256000);
+    });
+
+    test("#10：SID_FALLBACK_CONTEXT_WINDOW 放宽未知模型兜底窗口", () => {
+      const saved = process.env.SID_FALLBACK_CONTEXT_WINDOW;
+      try {
+        process.env.SID_FALLBACK_CONTEXT_WINDOW = "256000";
+        // 未知模型 + 未声明 contextWindow → 走可配置兜底
+        expect(estimator.getContextLimit("totally-unknown-model")).toBe(256000);
+        // deepseek 系仍按 1M，不受兜底 env 影响
+        expect(estimator.getContextLimit("deepseek-unknown-variant")).toBe(1_000_000);
+      } finally {
+        if (saved === undefined) delete process.env.SID_FALLBACK_CONTEXT_WINDOW;
+        else process.env.SID_FALLBACK_CONTEXT_WINDOW = saved;
+      }
+    });
+
+    test("#10：SID_FALLBACK_CONTEXT_WINDOW 非法值静默回退默认 128000", () => {
+      const saved = process.env.SID_FALLBACK_CONTEXT_WINDOW;
+      try {
+        for (const bad of ["0", "-1", "abc", ""]) {
+          process.env.SID_FALLBACK_CONTEXT_WINDOW = bad;
+          expect(estimator.getContextLimit("totally-unknown-model")).toBe(128000);
+        }
+      } finally {
+        if (saved === undefined) delete process.env.SID_FALLBACK_CONTEXT_WINDOW;
+        else process.env.SID_FALLBACK_CONTEXT_WINDOW = saved;
+      }
+    });
   });
 
   // === checkContextFit ===

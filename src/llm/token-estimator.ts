@@ -5,7 +5,10 @@
 
 import type { Message, ToolDefinition } from "./types.ts";
 
-/** 各模型的上下文窗口大小 */
+/** 各模型的上下文窗口大小。
+ *  注意：这是**兜底表**，不是唯一事实源——权威来源是用户配置的 availableModels[].contextWindow
+ *  （见 getContextLimit 优先级 1）。仅当用户未在 availableModels 声明窗口时，才回退到本表/启发式。
+ *  内置模型出新窗口或新增模型时，优先让用户在 availableModels 声明，而非堆积本表。 */
 const MODEL_CONTEXT_LIMITS: Record<string, number> = {
   // Anthropic
   "claude-sonnet-4-20250514": 200000,
@@ -23,6 +26,20 @@ const MODEL_CONTEXT_LIMITS: Record<string, number> = {
 
 /** 超过此长度使用快速近似（性能优化） */
 const MAX_CHARS_FOR_FULL_HEURISTIC = 100_000;
+
+/** 未知模型 + 未声明 contextWindow 时的保守兜底窗口（tokens）。
+ *  默认 128K（主流模型普遍可达），可经 SID_FALLBACK_CONTEXT_WINDOW 放宽。
+ *  非法值（NaN/≤0）静默回退默认，绝不更紧。 */
+const DEFAULT_FALLBACK_CONTEXT_WINDOW = 128_000;
+
+function resolveFallbackWindow(): number {
+  const raw = process.env.SID_FALLBACK_CONTEXT_WINDOW;
+  if (raw !== undefined && raw !== "") {
+    const n = Number.parseInt(raw, 10);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return DEFAULT_FALLBACK_CONTEXT_WINDOW;
+}
 
 /** ASCII 字符：英文散文实测 0.17、代码/JSON 偏高，取 0.20 折中 */
 const ASCII_TOKENS_PER_CHAR = 0.20;
@@ -101,7 +118,7 @@ export class TokenEstimator {
    * 优先级（SSOT）：
    *   1. 用户配置 availableModels[].contextWindow —— 权威来源，用户自己声明的最准
    *   2. 内置静态表精确匹配 / 最长前缀 / 家族匹配
-   *   3. 字符启发式兜底（deepseek 系 1M，其余 128K）
+   *   3. 字符启发式兜底（deepseek 系 1M，其余 SID_FALLBACK_CONTEXT_WINDOW / 默认 128K）
    *
    * @param model 模型名
    * @param availableModels 可选，用户配置的模型列表（携带权威 contextWindow）
@@ -147,9 +164,12 @@ export class TokenEstimator {
     }
     if (bestLimit > 0) return bestLimit;
 
-    // 兜底：含 deepseek 的未知变体按 1M（DeepSeek 全系 1M 上下文），其余保守 128K
+    // 兜底：含 deepseek 的未知变体按 1M（DeepSeek 全系 1M 上下文），其余回退到可配置的保守默认。
+    //   未知模型名 + 用户又没在 availableModels 声明 contextWindow 时才会走到这里；
+    //   想为自建/代理模型放宽兜底窗口，设 SID_FALLBACK_CONTEXT_WINDOW（见 resolveFallbackWindow），
+    //   无需改源码或往静态表里塞条目。
     if (/deepseek/i.test(model)) return 1_000_000;
-    return 128000; // 保守默认值
+    return resolveFallbackWindow();
   }
 
   /**

@@ -281,7 +281,8 @@ export async function buildInitialSystemPrompt(config: Config, tools: import("..
     memorySystemPrompt,
     preferredLanguage: config.language,
     model: config.model,
+    availableModels: config.availableModels,
     ...collectIDEContext(),
-    maxTokens: 180000,
+    // 不再写死 maxTokens：交由 buildSystemPrompt 按模型 contextWindow 的 90% 动态推导
   });
 }

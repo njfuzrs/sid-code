@@ -522,7 +522,8 @@ export class App {
           memorySummary,
           preferredLanguage: this.config.language,
           model: this.config.model,
-          maxTokens: 180000,
+          availableModels: this.config.availableModels,
+          // 不再写死 maxTokens：交由 buildSystemPrompt 按模型 contextWindow 的 90% 动态推导
         });
         this.ctxMgr.setSystemPrompt(newPrompt);
         log.info("APP", `系统提示词已重建: ${newPrompt.length} 字符`);

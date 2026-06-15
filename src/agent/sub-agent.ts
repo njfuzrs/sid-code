@@ -167,6 +167,20 @@ export class SubAgent {
     return agent;
   }
 
+  /** 解析子代理 ContextManager 的窗口大小（tokens）。
+   *  优先级：task.maxTokens 显式值 > 主模型 contextWindow（经 registry 派生）> 历史兜底 50000。
+   *  保成功：子代理过去被写死 50000，1M 窗口模型的主代理下，子代理探索大型代码库会过早压缩；
+   *  现默认跟随主模型窗口，让子代理拥有与主代理同等的上下文容量。
+   *  非法/拿不到时回退 50000，绝不更紧。 */
+  private resolveSubAgentWindow(task: { maxTokens?: number }): number {
+    if (typeof task.maxTokens === "number" && task.maxTokens > 0) return task.maxTokens;
+    try {
+      const window = this.registry?.getContextWindow();
+      if (typeof window === "number" && window > 0) return window;
+    } catch { /* registry 未实现 getContextWindow 或派生失败，回退兜底 */ }
+    return 50_000;
+  }
+
   /** 执行子代理任务 */
   async execute(task: SubAgentTask, signal?: AbortSignal): Promise<SubAgentResult> {
     const log = getLogger();
@@ -570,7 +584,7 @@ export class SubAgent {
     try {
       // 独立的上下文
       const ctxMgr = new ContextManager({
-        maxTokens: task.maxTokens ?? 50000,
+        maxTokens: this.resolveSubAgentWindow(task),
       });
 
       const basePrompt = getSystemPrompt(task.type);
@@ -741,7 +755,7 @@ export class SubAgent {
 
     try {
       const ctxMgr = new ContextManager({
-        maxTokens: task.maxTokens ?? 50000,
+        maxTokens: this.resolveSubAgentWindow(task),
       });
 
       const systemPrompt = await enhanceSubAgentPrompt(task.systemPrompt, this.language, process.cwd());

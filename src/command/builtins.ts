@@ -654,7 +654,8 @@ export class MemoryCommand implements Command {
             memorySummary: freshSummary,
             preferredLanguage: ctx.config.language,
             model: ctx.config.model,
-            maxTokens: 180000,
+            availableModels: ctx.config.availableModels,
+            // 不再写死 maxTokens：交由 buildSystemPrompt 按模型 contextWindow 的 90% 动态推导
           });
           ctx.ctxMgr.setSystemPrompt(newPrompt);
           clearPromptCache();
