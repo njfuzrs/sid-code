@@ -30,7 +30,7 @@ import { useLoadingIndicator } from "../hooks/useLoadingIndicator.ts";
 import { useKeypress, KeypressPriority } from "../contexts/KeypressContext.tsx";
 import type { CommandInfo } from "../hooks/useSlashCompletion.ts";
 import { DEFAULT_TERM_WIDTH } from "../markdown.ts";
-import { SUCCESS_MARK, ERROR_MARK } from "../constants/figures.ts";
+import { SUCCESS_MARK, ERROR_MARK, BULLET } from "../constants/figures.ts";
 import { formatDuration } from "../utils/format-duration.ts";
 
 /** 窄屏阈值 */
@@ -73,7 +73,7 @@ const ApprovalModeIndicator: React.FC<{ permissionMode: string }> = ({ permissio
   return (
     <Box>
       <Text color={textColor}>
-        ● {textContent}
+        {BULLET} {textContent}
         {subText ? <Text color={theme.text.secondary}> {subText}</Text> : null}
       </Text>
     </Box>
@@ -82,7 +82,7 @@ const ApprovalModeIndicator: React.FC<{ permissionMode: string }> = ({ permissio
 
 /** 原始 Markdown 指示器 */
 const RawMarkdownIndicator: React.FC = () => (
-  <Text color={theme.status.warning}>● RAW</Text>
+  <Text color={theme.status.warning}>{BULLET} RAW</Text>
 );
 
 /** 上下文使用量显示 */

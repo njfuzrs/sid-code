@@ -8,7 +8,7 @@ import Box from "../ink/components/Box.js";
 import Text from "../ink/components/Text.js";
 import { getLogger } from "../debug/logger.ts";
 import { theme } from "./semantic-colors.ts";
-import { SUCCESS_MARK, ERROR_MARK } from "./constants/figures.ts";
+import { SUCCESS_MARK, ERROR_MARK, RETRY_MARK } from "./constants/figures.ts";
 import { formatDuration } from "./utils/format-duration.ts";
 
 interface ToolStatusProps {
@@ -79,7 +79,7 @@ export const ToolStatus = React.memo(function ToolStatus({ toolName, isExecuting
     const label = toolInput ? getToolLabel(toolName, toolInput) : toolName;
     return (
       <Box>
-        <Text color={theme.ui.active}>⟳ </Text>
+        <Text color={theme.ui.active}>{RETRY_MARK} </Text>
         <Text>{label}</Text>
       </Box>
     );

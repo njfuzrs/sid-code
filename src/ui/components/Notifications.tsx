@@ -17,6 +17,7 @@ import { theme } from '../semantic-colors.ts';
 import { useUIState } from '../contexts/UIStateContext.tsx';
 import { useStreamingState, StreamingState } from '../contexts/StreamingContext.tsx';
 import { useKeypress, KeypressPriority } from '../contexts/KeypressContext.tsx';
+import { WARNING_MARK } from '../constants/figures.ts';
 
 /** 启动警告 */
 export interface StartupWarning {
@@ -86,7 +87,7 @@ export const Notifications: React.FC<NotificationsProps> = ({
           {visibleWarnings.map((warning, index) => (
             <Box key={index} flexDirection="row">
               <Box width={3}>
-                <Text color={theme.status.warning}>⚠ </Text>
+                <Text color={theme.status.warning}>{`${WARNING_MARK} `}</Text>
               </Box>
               <Box flexGrow={1}>
                 <Text color={theme.status.warning}>{warning.message}</Text>

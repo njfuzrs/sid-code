@@ -33,6 +33,7 @@ import type { DialogType } from "../../command/types.ts";
 import type { Usage } from "../../llm/types.ts";
 import type { TodoItem } from "../../tool/todo-write.ts";
 import { theme } from "../semantic-colors.ts";
+import { PAUSED_MARK } from "../constants/figures.ts";
 import { useFlickerDetector } from "../hooks/useFlickerDetector.ts";
 import { useStreamingScroll } from "../hooks/useStreamingScroll.ts";
 
@@ -134,7 +135,6 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
   todos,
   tasks,
 }) => {
-  const hasDialog = !!(permissionRequest || shellConfirmRequest || planApprovalRequest || activeDialog);
   const rootRef = useRef<DOMElement>(null);
   useFlickerDetector(rootRef, rows);
   const confirmingTool = useConfirmingTool(listData);
@@ -204,7 +204,7 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
           {showFollowPausedHint ? (
             <Box paddingX={1}>
               <Text color={theme.status.warning}>
-                ⏸ 已暂停跟随输出（滚动到底部恢复）
+                {`${PAUSED_MARK} 已暂停跟随输出（滚动到底部恢复）`}
               </Text>
             </Box>
           ) : null}

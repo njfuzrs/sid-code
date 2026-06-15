@@ -14,6 +14,7 @@ import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
 import { theme } from "../semantic-colors.ts";
 import { useAnimationTimer } from "../../ink/hooks/use-interval.ts";
+import { WARNING_MARK, RETRY_MARK, FALLBACK_MARK } from "../constants/figures.ts";
 import type { RetryStatusInfo } from "../App.tsx";
 
 interface RetryStatusProps {
@@ -32,19 +33,19 @@ function headline(status: RetryStatusInfo, secs: number): string {
   switch (status.kind) {
     case "rate_limit":
       return secs > 0
-        ? `⚠ 触发限流（第 ${status.attempt} 次重试），${secs} 秒后重试…`
-        : `⚠ 触发限流，正在重试（第 ${status.attempt} 次）…`;
+        ? `${WARNING_MARK} 触发限流（第 ${status.attempt} 次重试），${secs} 秒后重试…`
+        : `${WARNING_MARK} 触发限流，正在重试（第 ${status.attempt} 次）…`;
     case "overloaded":
       return secs > 0
-        ? `⚠ 服务过载（第 ${status.attempt} 次重试），${secs} 秒后重试…`
-        : `⚠ 服务过载，正在重试（第 ${status.attempt} 次）…`;
+        ? `${WARNING_MARK} 服务过载（第 ${status.attempt} 次重试），${secs} 秒后重试…`
+        : `${WARNING_MARK} 服务过载，正在重试（第 ${status.attempt} 次）…`;
     case "fallback":
-      return `↘ 已降级到备用模型 ${status.fallbackModel ?? ""}`.trimEnd();
+      return `${FALLBACK_MARK} 已降级到备用模型 ${status.fallbackModel ?? ""}`.trimEnd();
     case "retry":
     default:
       return secs > 0
-        ? `⟳ 请求失败（第 ${status.attempt} 次重试），${secs} 秒后重试…`
-        : `⟳ 正在重试（第 ${status.attempt} 次）…`;
+        ? `${RETRY_MARK} 请求失败（第 ${status.attempt} 次重试），${secs} 秒后重试…`
+        : `${RETRY_MARK} 正在重试（第 ${status.attempt} 次）…`;
   }
 }
 

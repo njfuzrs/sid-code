@@ -38,6 +38,17 @@ export const ARROW_PROMPT = "›";
 /** 警告标记（与 ✔/✘ 同族的纤细字形，用于内联警告前缀） */
 export const WARNING_MARK = "⚠";
 
+/**
+ * 重试 / 降级 / 暂停标记（瞬态状态前缀，仅靠颜色区分语义）。
+ * 此前散落在 RetryStatus / ToolStatus 内联字符串里写死，违反 L1.1「字形从 figures.ts 取」，已收口。
+ * - RETRY_MARK    ⟳ 旋转箭头：请求重试 / 正在重试中
+ * - FALLBACK_MARK ↘ 下降箭头：已降级到备用模型
+ * - PAUSED_MARK   ⏸ 暂停：流式跟随已暂停
+ */
+export const RETRY_MARK = "⟳";
+export const FALLBACK_MARK = "↘";
+export const PAUSED_MARK = "⏸";
+
 /** 流式输出光标（块状），逐字渲染时跟在已输出文本尾部 */
 export const CURSOR = "▌";
 
