@@ -50,7 +50,7 @@ export const CommandMessage: React.FC<CommandMessageProps> = ({
       <Box flexDirection="column">
         <UserMessage text={input} width={width} />
         {output ? (
-          <Box paddingLeft={2}>
+          <Box paddingLeft={2} marginTop={1}>
             <Text color={isError ? theme.status.error : undefined} dimColor={!isError}>
               {output}
             </Text>
@@ -78,7 +78,7 @@ export const CommandMessage: React.FC<CommandMessageProps> = ({
         </Box>
       </Box>
       {output ? (
-        <Box paddingLeft={2} flexDirection="column">
+        <Box paddingLeft={2} flexDirection="column" marginTop={1}>
           <Text color={isError ? theme.status.error : theme.text.secondary} wrap="wrap">
             {output}
           </Text>

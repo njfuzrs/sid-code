@@ -25,8 +25,15 @@ import type { AnsiOutput } from '../../types/ansi.ts';
 /** 最大结果字符数（超过此值预先截断，避免性能问题） */
 const MAXIMUM_RESULT_DISPLAY_CHARACTERS = 20_000;
 
-/** 默认最大行数 */
-const DEFAULT_MAX_LINES = 20;
+/**
+ * 默认最大显示行数（视觉行）。
+ * 对标 claude-code: MAX_LINES_TO_SHOW = 3。
+ * 之前是 20，导致工具结果占满屏幕。
+ */
+const DEFAULT_MAX_LINES = 3;
+
+/** 宽度感知换行留出的安全边距（对标 cc PADDING_TO_PREVENT_OVERFLOW=10） */
+const WRAP_WIDTH_PADDING = 8;
 
 /** 尝试解析 JSON 字符串 */
 function tryParseJSON(str: string): object | null {
@@ -126,6 +133,10 @@ export const ToolResultDisplay: React.FC<ToolResultDisplayProps> = ({
       ? undefined // 全展开：不传 maxLines，交由下游不截断
       : Math.max(maxLines, levelMaxLines);
 
+  // 宽度感知换行：对标 claude-code 的 wrapWidth 计算
+  // 终端宽度减去边距（树枝缩进 + 容器 padding），最小 20 列
+  const maxColumnWidth = Math.max(terminalWidth - WRAP_WIDTH_PADDING, 20);
+
   // 0. 预先截断超长内容，避免性能问题
   let content = resultDisplay;
   if (content.length > MAXIMUM_RESULT_DISPLAY_CHARACTERS) {
@@ -154,6 +165,7 @@ export const ToolResultDisplay: React.FC<ToolResultDisplayProps> = ({
         text={content}
         maxLines={effectiveMaxLines}
         overflowDirection="bottom"
+        maxColumnWidth={maxColumnWidth}
       />
     );
   }
@@ -179,6 +191,7 @@ export const ToolResultDisplay: React.FC<ToolResultDisplayProps> = ({
         text={formatted}
         maxLines={effectiveMaxLines}
         overflowDirection={overflowDirection}
+        maxColumnWidth={maxColumnWidth}
       />
     );
   }
@@ -201,6 +214,7 @@ export const ToolResultDisplay: React.FC<ToolResultDisplayProps> = ({
       text={content}
       maxLines={effectiveMaxLines}
       overflowDirection={overflowDirection}
+      maxColumnWidth={maxColumnWidth}
     />
   );
 };

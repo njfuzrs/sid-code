@@ -129,9 +129,11 @@ export const ThinkingMessage: React.FC<ThinkingMessageProps> = ({
   return (
     <Box width={width} flexDirection="column">
       {/* 标题行：secondary 色 italic 弱化，不抢正文注意力 */}
-      <Text color={theme.text.secondary} italic>
-        {title}
-      </Text>
+      <Box marginBottom={1}>
+        <Text color={theme.text.secondary} italic>
+          {title}
+        </Text>
+      </Box>
 
       {/* 正文：左侧竖线引导 + 统一 secondary italic */}
       <Box

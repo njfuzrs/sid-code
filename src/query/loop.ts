@@ -926,9 +926,11 @@ export async function* queryLoop(
       for (const r of toolResults) {
         if (r.type === "tool_result") resultMap.set(r.tool_use_id, r);
       }
-      const perToolDuration = toolBlocks.length > 0
-        ? toolBatchElapsed / toolBlocks.length
-        : toolBatchElapsed;
+      const perToolDuration = Math.round(
+        toolBlocks.length > 0
+          ? toolBatchElapsed / toolBlocks.length
+          : toolBatchElapsed,
+      );
 
       for (const b of toolBlocks) {
         if (b.type !== "tool_use") continue;

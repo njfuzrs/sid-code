@@ -23,7 +23,7 @@ export const ErrorMessage: React.FC<ErrorMessageProps> = ({ text, width }) => {
   return (
     <Box width={width} flexDirection="column">
       {/* 标题行：统一 ✘ 字形 + 标签，与 ⏺ bullet 同列对齐 */}
-      <Box>
+      <Box marginBottom={1}>
         <Text color={theme.status.error} bold>{`${ERROR_MARK} `}</Text>
         <Text color={theme.status.error}>错误</Text>
       </Box>

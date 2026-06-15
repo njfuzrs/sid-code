@@ -14,9 +14,9 @@ import {
 } from "./UIStateContext.tsx";
 
 describe("TO4 — EXPAND_LEVEL_MAX_LINES 映射", () => {
-  test("级别 0/1/2 对应 20/100/Infinity", () => {
-    expect(EXPAND_LEVEL_MAX_LINES[0]).toBe(20);
-    expect(EXPAND_LEVEL_MAX_LINES[1]).toBe(100);
+  test("级别 0/1/2 对应 3/50/Infinity（对标 cc MAX_LINES_TO_SHOW=3）", () => {
+    expect(EXPAND_LEVEL_MAX_LINES[0]).toBe(3);
+    expect(EXPAND_LEVEL_MAX_LINES[1]).toBe(50);
     expect(EXPAND_LEVEL_MAX_LINES[2]).toBe(Infinity);
   });
 });

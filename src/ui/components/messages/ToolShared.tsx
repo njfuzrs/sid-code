@@ -18,6 +18,7 @@ import Box from "../../../ink/components/Box.js";
 import Text from "../../../ink/components/Text.js";
 import { theme } from "../../semantic-colors.ts";
 import { BULLET, ARROW_TRAILING } from "../../constants/figures.ts";
+import { formatDuration } from "../../utils/format-duration.ts";
 
 export const STATUS_INDICATOR_WIDTH = 2;
 
@@ -64,8 +65,11 @@ export const ToolInfo: React.FC<{
   progressMessage?: string;
   /** 结果摘要（成功时显示在 description 后面） */
   resultSummary?: string;
-}> = ({ name, description, status, emphasis = "medium", progressMessage, resultSummary }) => {
+  /** 工具执行耗时（毫秒），完成态时显示在工具名后。缺省时不显示 */
+  elapsedMs?: number;
+}> = ({ name, description, status, emphasis = "medium", progressMessage, resultSummary, elapsedMs }) => {
   const nameColor = emphasis === "low" ? theme.text.secondary : theme.text.primary;
+  const isDone = status === "success" || status === "error";
 
   return (
     <Box overflow="hidden" height={1} flexGrow={1} flexShrink={1}>
@@ -77,7 +81,10 @@ export const ToolInfo: React.FC<{
             <Text color={theme.text.secondary}>{description}</Text>
           </>
         ) : null}
-        {resultSummary && (status === "success" || status === "error") ? (
+        {isDone && elapsedMs !== undefined ? (
+          <Text dimColor> ({formatDuration(elapsedMs)})</Text>
+        ) : null}
+        {resultSummary && isDone ? (
           <>
             <Text dimColor>{" — "}</Text>
             <Text dimColor>{resultSummary}</Text>

@@ -52,34 +52,38 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
 
     case "user":
       return (
-        <Box flexDirection="column" marginTop={turnSpacing}>
+        <Box flexDirection="column" marginTop={turnSpacing} marginBottom={1}>
           <UserMessage text={item.text} width={width} />
         </Box>
       );
 
     case "assistant":
       return (
-        <AssistantMessage
-          text={item.text}
-          width={width}
-          isPending={isPending}
-          availableTerminalHeight={availableTerminalHeight}
-        />
+        <Box marginBottom={1}>
+          <AssistantMessage
+            text={item.text}
+            width={width}
+            isPending={isPending}
+            availableTerminalHeight={availableTerminalHeight}
+          />
+        </Box>
       );
 
     case "assistant_content":
       return (
-        <AssistantMessage
-          text={item.text}
-          width={width}
-          isPending={isPending}
-          availableTerminalHeight={availableTerminalHeight}
-        />
+        <Box marginBottom={1}>
+          <AssistantMessage
+            text={item.text}
+            width={width}
+            isPending={isPending}
+            availableTerminalHeight={availableTerminalHeight}
+          />
+        </Box>
       );
 
     case "thinking":
       return (
-        <Box marginBottom={1}>
+        <Box marginTop={1} marginBottom={1}>
           <ThinkingMessage
             text={item.thought.text}
             width={width}
@@ -91,7 +95,7 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
 
     case "hint":
       return (
-        <Box paddingLeft={2}>
+        <Box paddingLeft={2} marginBottom={1}>
           <Text color={theme.ui.active}>{`${ARROW_PROMPT} `}</Text>
           <Text color={theme.text.secondary} italic>{item.text}</Text>
         </Box>
@@ -99,7 +103,7 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
 
     case "info":
       return (
-        <Box paddingLeft={2}>
+        <Box paddingLeft={2} marginBottom={1}>
           <Text color={item.color || theme.text.secondary}>
             {item.icon ? `${item.icon} ` : "· "}{item.text}
           </Text>
@@ -111,13 +115,17 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
 
     case "warning":
       return (
-        <Box paddingLeft={2}>
+        <Box paddingLeft={2} marginBottom={1}>
           <Text color={theme.status.warning}>{`${WARNING_MARK} `}{item.text}</Text>
         </Box>
       );
 
     case "error":
-      return <ErrorMessage text={item.text} width={width} />;
+      return (
+        <Box marginBottom={1}>
+          <ErrorMessage text={item.text} width={width} />
+        </Box>
+      );
 
     case "tool_group": {
       // 将 IndividualToolCallDisplay 转换为 ToolGroupMessage 需要的格式
@@ -137,7 +145,7 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
         filename: t.resultDisplay?.filename,
       }));
       return (
-        <Box marginTop={1}>
+        <Box marginTop={1} marginBottom={1}>
           <ToolGroupMessage
             tools={tools}
             terminalWidth={width}
@@ -148,7 +156,7 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
 
     case "compression":
       return (
-        <Box paddingLeft={2} gap={1}>
+        <Box paddingLeft={2} gap={1} marginBottom={1}>
           <Text color={theme.text.accent}>{THINKING_MARK}</Text>
           <Text dimColor>
             {"对话已压缩"}
@@ -161,7 +169,7 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
 
     case "model":
       return (
-        <Box paddingLeft={2}>
+        <Box paddingLeft={2} marginBottom={1}>
           <Text color={theme.ui.active}>{`${ARROW_PROMPT} `}</Text>
           <Text color={theme.text.secondary}>{"模型已切换为 "}<Text color={theme.text.primary}>{item.model}</Text></Text>
         </Box>
@@ -169,24 +177,28 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
 
     case "about":
       return (
-        <Box flexDirection="column" paddingX={1}>
+        <Box flexDirection="column" paddingX={1} marginBottom={1}>
           <Text color={theme.text.accent} bold>sid-code {item.cliVersion}</Text>
-          <Text dimColor>模型: {item.model}</Text>
-          <Text dimColor>提供商: {item.provider}</Text>
+          <Box paddingLeft={2} flexDirection="column">
+            <Text dimColor>模型: {item.model}</Text>
+            <Text dimColor>提供商: {item.provider}</Text>
+          </Box>
         </Box>
       );
 
     case "help":
       return (
-        <Box flexDirection="column" paddingX={1}>
+        <Box flexDirection="column" paddingX={1} marginBottom={1}>
           <Text color={theme.text.accent} bold>可用命令：</Text>
           {item.commands.map(cmd => (
-            <Box key={cmd.name}>
-              <Text color={theme.text.primary} bold>{"  /"}{cmd.name}</Text>
-              {cmd.aliases.length > 0 && (
-                <Text dimColor>{" ("}{cmd.aliases.map(a => `/${a}`).join(", ")}{")"}</Text>
-              )}
-              <Text dimColor>{" — "}{cmd.description}</Text>
+            <Box key={cmd.name} paddingLeft={2} flexDirection="column">
+              <Box>
+                <Text color={theme.text.primary} bold>{"/"}{cmd.name}</Text>
+                {cmd.aliases.length > 0 && (
+                  <Text dimColor>{" ("}{cmd.aliases.map(a => `/${a}`).join(", ")}{")"}</Text>
+                )}
+              </Box>
+              <Text dimColor>{cmd.description}</Text>
             </Box>
           ))}
         </Box>
@@ -194,25 +206,27 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
 
     case "stats":
       return (
-        <Box flexDirection="column" paddingX={1}>
+        <Box flexDirection="column" paddingX={1} marginBottom={1}>
           <Text color={theme.text.accent} bold>会话统计</Text>
-          <Text dimColor>时长: {item.duration}</Text>
-          <Text dimColor>输入 tokens: {formatLargeNumber(item.inputTokens)}</Text>
-          <Text dimColor>输出 tokens: {formatLargeNumber(item.outputTokens)}</Text>
-          <Text dimColor>费用: ${item.costUSD.toFixed(4)}</Text>
+          <Box paddingLeft={2}>
+            <Text dimColor>时长: {item.duration}</Text>
+            <Text dimColor>输入 tokens: {formatLargeNumber(item.inputTokens)}</Text>
+            <Text dimColor>输出 tokens: {formatLargeNumber(item.outputTokens)}</Text>
+            <Text dimColor>费用: ${item.costUSD.toFixed(4)}</Text>
+          </Box>
         </Box>
       );
 
     case "quit":
       return (
-        <Box paddingX={1}>
+        <Box paddingX={1} marginBottom={1}>
           <Text dimColor>{"── 会话结束 (时长: "}{item.duration}{") ──"}</Text>
         </Box>
       );
 
     case "command":
       return (
-        <Box flexDirection="column" marginTop={turnSpacing}>
+        <Box flexDirection="column" marginTop={turnSpacing} marginBottom={1}>
           <CommandMessage
             input={item.input}
             output={item.output}
@@ -224,11 +238,13 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
 
     case "plan_review":
       return (
-        <PlanReviewMessage
-          planContent={item.planContent}
-          planFilePath={item.planFilePath}
-          terminalWidth={width}
-        />
+        <Box marginBottom={1}>
+          <PlanReviewMessage
+            planContent={item.planContent}
+            planFilePath={item.planFilePath}
+            terminalWidth={width}
+          />
+        </Box>
       );
 
     default:

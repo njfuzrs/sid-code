@@ -29,10 +29,11 @@ export interface UpdateInfo {
  */
 export type ExpandLevel = 0 | 1 | 2;
 
-/** 各展开级别对应的最大显示行数（2 = 全展开用 Infinity）。 */
+/** 各展开级别对应的最大显示行数（2 = 全展开用 Infinity）。
+ *  对标 claude-code: MAX_LINES_TO_SHOW=3。 */
 export const EXPAND_LEVEL_MAX_LINES: Record<ExpandLevel, number> = {
-  0: 20,
-  1: 100,
+  0: 3,
+  1: 50,
   2: Infinity,
 };
 

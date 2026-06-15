@@ -64,9 +64,11 @@ export const RetryStatus: React.FC<RetryStatusProps> = ({ status, nowMs }) => {
     <Box flexDirection="column" paddingX={1}>
       <Text color={color}>{headline(status, secs)}</Text>
       {status.kind === "rate_limit" ? (
-        <Text color={theme.text.secondary}>
-          建议：用 /model 切换到其它模型，或检查 API 配额 / 升级套餐以提升限流额度。
-        </Text>
+        <Box marginTop={1}>
+          <Text color={theme.text.secondary}>
+            建议：用 /model 切换到其它模型，或检查 API 配额 / 升级套餐以提升限流额度。
+          </Text>
+        </Box>
       ) : null}
     </Box>
   );

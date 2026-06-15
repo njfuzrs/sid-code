@@ -9,6 +9,7 @@ import Text from "../ink/components/Text.js";
 import { getLogger } from "../debug/logger.ts";
 import { theme } from "./semantic-colors.ts";
 import { SUCCESS_MARK, ERROR_MARK } from "./constants/figures.ts";
+import { formatDuration } from "./utils/format-duration.ts";
 
 interface ToolStatusProps {
   toolName: string | null;
@@ -54,12 +55,6 @@ function getToolLabel(name: string, input: unknown): string {
   return name;
 }
 
-/** 格式化耗时 */
-function formatElapsed(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  return `${(ms / 1000).toFixed(1)}s`;
-}
-
 /** @deprecated 使用 Composer 内置的 ToolResultIndicator 替代 */
 export const ToolStatus = React.memo(function ToolStatus({ toolName, isExecuting, toolInput, lastResult }: ToolStatusProps) {
   const log = getLogger();
@@ -97,7 +92,7 @@ export const ToolStatus = React.memo(function ToolStatus({ toolName, isExecuting
       <Box>
         <Text color={color}>{icon} </Text>
         <Text bold>{lastResult.toolName}</Text>
-        <Text dimColor> {formatElapsed(lastResult.elapsedMs)}</Text>
+        <Text dimColor> ({formatDuration(lastResult.elapsedMs)})</Text>
       </Box>
     );
   }

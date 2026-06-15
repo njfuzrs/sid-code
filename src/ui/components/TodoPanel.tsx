@@ -21,6 +21,7 @@ import type { TaskDisplayInfo } from "../App.tsx";
 import { theme } from "../semantic-colors.ts";
 import { stringWidth } from "../../ink/stringWidth.js";
 import { formatLargeNumber } from "../utils/format-number.ts";
+import { formatDuration } from "../utils/format-duration.ts";
 import {
   TODO_PENDING,
   TODO_IN_PROGRESS,
@@ -55,16 +56,6 @@ function truncate(text: string, maxLen: number): string {
     result += ch;
   }
   return result + "…";
-}
-
-/** 格式化毫秒为人类可读的时长 */
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  const sec = Math.round(ms / 1000);
-  if (sec < 60) return `${sec}s`;
-  const min = Math.floor(sec / 60);
-  const remainSec = sec % 60;
-  return remainSec > 0 ? `${min}m${remainSec}s` : `${min}m`;
 }
 
 /** 极简进度条：宽度固定，按完成比例填充 ▰/▱ */
@@ -237,24 +228,31 @@ export const TodoPanel = React.memo(function TodoPanel({
       hiddenCount = total - visibleTodos.length;
     }
 
+    const allDone = completed === total && total > 0;
+
     todoSection = (
       <Box flexDirection="column">
-        {/* 标题行：箭头引导 + 标题 + 进度条 + 计数 */}
-        <Box flexDirection="row">
+        {/* 标题行：箭头引导 + 标题 + 右对齐进度条 + 计数 */}
+        <Box flexDirection="row" marginBottom={1}>
           <Text color={theme.ui.active}>{`${ARROW_PROMPT} `}</Text>
-          <Text bold color={theme.text.primary}>任务</Text>
-          <Text>{"  "}</Text>
+          <Text bold color={theme.text.primary}>任务清单</Text>
+          <Box flexGrow={1} />
           <ProgressBar completed={completed} total={total} />
-          <Text color={theme.text.secondary}>{`  ${completed}/${total}`}</Text>
+          <Text color={allDone ? theme.status.success : theme.text.secondary}>{`  ${completed}/${total}`}</Text>
           {inProgress > 0 && (
             <Text color={theme.ui.active}>{`  ${TODO_IN_PROGRESS}${inProgress}`}</Text>
           )}
           {hiddenCount > 0 && <Text dimColor>{`  …+${hiddenCount}`}</Text>}
         </Box>
         {!compactMode &&
-          visibleTodos.map((item, i) => (
-            <TodoRow key={i} item={item} maxContentLen={maxContentLen} />
-          ))}
+          visibleTodos.map((item, i) => {
+            const isSubItem = inProgress > 0 && item.status !== "in_progress";
+            return (
+              <Box key={i} paddingLeft={isSubItem ? 2 : 0}>
+                <TodoRow item={item} maxContentLen={maxContentLen - (isSubItem ? 2 : 0)} />
+              </Box>
+            );
+          })}
       </Box>
     );
   }
@@ -266,16 +264,19 @@ export const TodoPanel = React.memo(function TodoPanel({
     const terminal = tasks.filter((t) => t.status !== "running");
     const visibleTasks = [...running, ...terminal.slice(-3)];
 
+    const allTerminal = running.length === 0 && tasks.length > 0;
+
     taskSection = (
       <Box flexDirection="column">
-        <Box flexDirection="row">
+        <Box flexDirection="row" marginBottom={1}>
           <Text color={theme.ui.active}>{`${ARROW_PROMPT} `}</Text>
-          <Text bold color={theme.text.primary}>后台</Text>
+          <Text bold color={theme.text.primary}>后台任务</Text>
+          <Box flexGrow={1} />
           {running.length > 0 && (
-            <Text color={theme.text.secondary}>{`  ${running.length} 运行中`}</Text>
+            <Text color={theme.ui.active}>{`${running.length} 运行中`}</Text>
           )}
-          {running.length === 0 && tasks.length > 0 && (
-            <Text color={theme.text.secondary}>{`  ${tasks.length} 已完成`}</Text>
+          {allTerminal && (
+            <Text color={theme.status.success}>{`${tasks.length} 已完成`}</Text>
           )}
         </Box>
         {!compactMode &&
@@ -288,7 +289,7 @@ export const TodoPanel = React.memo(function TodoPanel({
 
   // ── 拼装显示 ──
   return (
-    <Box flexDirection="column" paddingLeft={1}>
+    <Box flexDirection="column" paddingLeft={1} marginTop={1} marginBottom={1}>
       {todoSection}
       {hasTodos && hasTasks && <Box height={1} /> /* 分隔间距 */}
       {taskSection}

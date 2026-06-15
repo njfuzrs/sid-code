@@ -68,6 +68,7 @@ export const ToolConfirmationQueue: React.FC<ToolConfirmationQueueProps> = ({
         borderBottom={false}
         borderLeft={false}
         borderRight={false}
+        marginY={1}
       />
 
       {/* 工具描述 */}

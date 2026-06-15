@@ -37,6 +37,8 @@ export interface ToolCallDisplay {
   structuredPatch?: import("diff").StructuredPatchHunk[];
   /** 文件名(diff 语法高亮用) */
   filename?: string;
+  /** 工具执行耗时（毫秒），完成态时由后端填入。缺省时不显示 */
+  elapsedMs?: number;
 }
 
 interface ToolGroupMessageProps {
@@ -106,6 +108,7 @@ export const ToolGroupMessage: React.FC<ToolGroupMessageProps> = ({
             progress={tool.progress}
             progressTotal={tool.progressTotal}
             resultSummary={tool.resultSummary || (tool.result ? getResultSummary(tool.name, tool.result, tool.isError) : undefined)}
+            elapsedMs={tool.elapsedMs}
           />
         );
       })}

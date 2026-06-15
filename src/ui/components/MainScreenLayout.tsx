@@ -179,80 +179,110 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
       {/* 动态区（log-update 只重绘这部分，历史不动） */}
       <Box flexDirection="column" flexShrink={0} width={termWidth} paddingBottom={1}>
         {/* 空会话：欢迎屏（首条消息到达后即随 Static 滚走） */}
-        {isEmpty ? <EmptyLogo termWidth={termWidth} /> : null}
+        {isEmpty ? (
+          <Box marginBottom={1}>
+            <EmptyLogo termWidth={termWidth} />
+          </Box>
+        ) : null}
 
         {/* v2：流式思考区域 — 独立于 streamingText（对标 Claude Code）
             思考在正文之前渲染（模型先思考后回答），顺序与语义一致。
             同样按视口高度尾部截断，避免与正文叠加把动态区撑高触发闪烁 */}
         {hasThinking && visibleThinking ? (
-          <ThinkingMessage text={visibleThinking} width={termWidth} collapsed={false} streaming={true} />
+          <Box marginBottom={1}>
+            <ThinkingMessage text={visibleThinking} width={termWidth} collapsed={false} streaming={true} />
+          </Box>
         ) : null}
 
         {/* 正在生成的流式消息（完成后由父层并入 staticItems，此处清空）
             注意：visibleText 已按视口高度做尾部截断（防 stock ink 全屏重打闪烁，见 streaming-viewport.ts） */}
         {hasText && visibleText ? (
-          <StreamingMessage fullText={visibleText} maxWidth={termWidth} />
+          <Box marginBottom={1}>
+            <StreamingMessage fullText={visibleText} maxWidth={termWidth} />
+          </Box>
         ) : null}
 
-        <Notifications />
-        <TodoPanel todos={todos} tasks={tasks} termWidth={termWidth} />
-        <ToastDisplay />
+        <Box marginBottom={1}>
+          <Notifications />
+        </Box>
+        <Box marginBottom={1}>
+          <TodoPanel todos={todos} tasks={tasks} termWidth={termWidth} />
+        </Box>
+        <Box marginBottom={1}>
+          <ToastDisplay />
+        </Box>
 
         {/* CM3/CM4：LLM 重试/限流提示（实时倒计时 + 限流升级建议） */}
-        <RetryStatus status={retryStatus} />
+        <Box marginBottom={1}>
+          <RetryStatus status={retryStatus} />
+        </Box>
 
         {statusMessage ? (
-          <Box paddingX={1}>
+          <Box paddingX={1} marginBottom={1}>
             <Text color={theme.status.warning}>{statusMessage}</Text>
           </Box>
         ) : null}
 
         {/* 工具确认队列 */}
         {confirmingTool && (
-          <ToolConfirmationQueue
-            confirmingTool={confirmingTool}
-            terminalWidth={termWidth}
-          />
+          <Box marginBottom={1}>
+            <ToolConfirmationQueue
+              confirmingTool={confirmingTool}
+              terminalWidth={termWidth}
+            />
+          </Box>
         )}
 
         {/* Composer / 权限对话框 / Plan 审批 / 交互式对话框 互斥显示 */}
         {permissionRequest || shellConfirmRequest ? (
-          <DialogRenderer
-            permissionRequest={permissionRequest}
-            shellConfirmRequest={shellConfirmRequest ?? null}
-            planApprovalRequest={null}
-          />
+          <Box marginBottom={1}>
+            <DialogRenderer
+              permissionRequest={permissionRequest}
+              shellConfirmRequest={shellConfirmRequest ?? null}
+              planApprovalRequest={null}
+            />
+          </Box>
         ) : planApprovalRequest ? (
-          <DialogRenderer
-            permissionRequest={null}
-            shellConfirmRequest={null}
-            planApprovalRequest={planApprovalRequest}
-          />
+          <Box marginBottom={1}>
+            <DialogRenderer
+              permissionRequest={null}
+              shellConfirmRequest={null}
+              planApprovalRequest={planApprovalRequest}
+            />
+          </Box>
         ) : activeDialog === "model" ? (
-          <ModelDialog
-            onClose={onDialogClose}
-            currentModel={model}
-            availableModels={availableModels}
-            onModelSelect={onModelSelect}
-          />
+          <Box marginBottom={1}>
+            <ModelDialog
+              onClose={onDialogClose}
+              currentModel={model}
+              availableModels={availableModels}
+              onModelSelect={onModelSelect}
+            />
+          </Box>
         ) : activeDialog === "theme" ? (
-          <ThemeDialog
-            onClose={onDialogClose}
-            currentTheme={currentTheme}
-            availableThemes={availableThemes}
-            onThemeSelect={onThemeSelect}
-          />
+          <Box marginBottom={1}>
+            <ThemeDialog
+              onClose={onDialogClose}
+              currentTheme={currentTheme}
+              availableThemes={availableThemes}
+              onThemeSelect={onThemeSelect}
+            />
+          </Box>
         ) : (
-          <Composer
-            onSubmit={onSubmit}
-            isLoading={isLoading}
-            commands={commands}
-            cwd={cwd}
-            queuedCount={queuedCount}
-          />
+          <Box marginBottom={1}>
+            <Composer
+              onSubmit={onSubmit}
+              isLoading={isLoading}
+              commands={commands}
+              cwd={cwd}
+              queuedCount={queuedCount}
+            />
+          </Box>
         )}
 
-        <ExitWarning />
+        <Box marginBottom={1}>
+          <ExitWarning />
+        </Box>
 
         <Footer
           permissionMode={permissionMode}

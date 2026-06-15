@@ -77,6 +77,8 @@ export interface IndividualToolCallDisplay {
   progressMessage?: string;
   /** 结果摘要（一行文字，如 "862 字符"、"替换完成"） */
   resultSummary?: string;
+  /** 工具执行耗时（毫秒），完成态时由后端填入。缺省时不显示 */
+  elapsedMs?: number;
 }
 
 // ── HistoryItem 基础 ──

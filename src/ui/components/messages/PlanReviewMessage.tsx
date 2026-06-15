@@ -37,13 +37,15 @@ export const PlanReviewMessage: React.FC<PlanReviewMessageProps> = ({
       paddingX={1}
     >
       {/* 标题行：成功色圆点 + 标题 + 行数 */}
-      <Box justifyContent="space-between">
+      <Box justifyContent="space-between" marginBottom={1}>
         <Box>
           <Text color={borderColor} bold>{`${BULLET} 计划审阅`}</Text>
         </Box>
         <Text dimColor>{lineCount} 行</Text>
       </Box>
-      <Text color={theme.text.link}>{planFilePath}</Text>
+      <Box marginBottom={1}>
+        <Text color={theme.text.link}>{planFilePath}</Text>
+      </Box>
 
       {/* 标题与内容之间的分隔线：内部一条 borderTop，不再拼接独立边框段 */}
       <Box
@@ -54,7 +56,7 @@ export const PlanReviewMessage: React.FC<PlanReviewMessageProps> = ({
         borderBottom={false}
         borderLeft={false}
         borderRight={false}
-        marginY={0}
+        marginY={1}
       />
 
       {/* 计划内容 */}

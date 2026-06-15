@@ -45,6 +45,8 @@ export interface ToolMessageProps {
   progress?: number;
   progressTotal?: number;
   resultSummary?: string;
+  /** 工具执行耗时（毫秒），完成态时显示在工具名后。缺省时不显示 */
+  elapsedMs?: number;
 }
 
 export const ToolMessage: React.FC<ToolMessageProps> = ({
@@ -63,6 +65,7 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
   progress,
   progressTotal,
   resultSummary,
+  elapsedMs,
 }) => {
   // 有结果或进度就展开（结果默认通过 ToolResultDisplay 的 maxLines=20 折叠）
   const hasProgress = status === "executing" && progress !== undefined;
@@ -80,6 +83,7 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
         emphasis={emphasis}
         progressMessage={progressMessage}
         resultSummary={shouldExpandContent ? undefined : resultSummary}
+        elapsedMs={elapsedMs}
       />
       {emphasis === "high" && <TrailingIndicator />}
       <FocusHint name={name} status={status} />
@@ -116,8 +120,8 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
             structuredPatch={structuredPatch}
             isError={isError}
             renderOutputAsMarkdown={renderOutputAsMarkdown}
-            maxLines={20}
-            overflowDirection="top"
+            maxLines={3}
+            overflowDirection="bottom"
           />
         </Box>
       </Box>

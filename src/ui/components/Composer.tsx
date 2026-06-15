@@ -31,6 +31,7 @@ import { useKeypress, KeypressPriority } from "../contexts/KeypressContext.tsx";
 import type { CommandInfo } from "../hooks/useSlashCompletion.ts";
 import { DEFAULT_TERM_WIDTH } from "../markdown.ts";
 import { SUCCESS_MARK, ERROR_MARK } from "../constants/figures.ts";
+import { formatDuration } from "../utils/format-duration.ts";
 
 /** 窄屏阈值 */
 const NARROW_WIDTH_THRESHOLD = 60;
@@ -128,15 +129,13 @@ const ToolResultIndicator: React.FC<{
 
   const icon = lastResult.isError ? ERROR_MARK : SUCCESS_MARK;
   const color = lastResult.isError ? theme.status.error : theme.status.success;
-  const elapsed = lastResult.elapsedMs < 1000
-    ? `${lastResult.elapsedMs}ms`
-    : `${(lastResult.elapsedMs / 1000).toFixed(1)}s`;
+  const elapsed = formatDuration(lastResult.elapsedMs);
 
   return (
     <Box>
       <Text color={color}>{icon} </Text>
       <Text bold>{lastResult.toolName}</Text>
-      <Text dimColor> {elapsed}</Text>
+      <Text dimColor> ({elapsed})</Text>
     </Box>
   );
 };

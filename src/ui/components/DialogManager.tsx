@@ -44,19 +44,21 @@ function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={accentColor} paddingX={1}>
       <Text color={accentColor} bold>{title}</Text>
-      <Box marginTop={0}>
-        <Text>  工具: </Text>
-        <Text bold>{request.toolName}</Text>
-      </Box>
-      <Box>
-        <Text>  详情: </Text>
-        <Text color={theme.ui.active}>{detail.length > 60 ? detail.slice(0, 57) + "…" : detail}</Text>
-      </Box>
-      {danger.isDangerous && (
+      <Box marginTop={0} paddingLeft={2} flexDirection="column">
         <Box>
-          <Text color={theme.status.error} bold>  {WARNING_MARK} 此操作不可逆：{danger.label}</Text>
+          <Text color={theme.text.secondary}>工具: </Text>
+          <Text bold>{request.toolName}</Text>
         </Box>
-      )}
+        <Box>
+          <Text color={theme.text.secondary}>详情: </Text>
+          <Text color={theme.ui.active}>{detail.length > 60 ? detail.slice(0, 57) + "…" : detail}</Text>
+        </Box>
+        {danger.isDangerous && (
+          <Box>
+            <Text color={theme.status.error} bold>{WARNING_MARK} 此操作不可逆：{danger.label}</Text>
+          </Box>
+        )}
+      </Box>
       {/* 安全默认：危险操作把「拒绝」放在最前并标红强调，避免手滑误允许 */}
       {danger.isDangerous ? (
         <Box marginTop={0}>
