@@ -17,6 +17,7 @@ import { UserMessage } from "./messages/UserMessage.tsx";
 import { CommandMessage } from "./messages/CommandMessage.tsx";
 import { AssistantMessage } from "./messages/AssistantMessage.tsx";
 import { ToolGroupMessage } from "./messages/ToolGroupMessage.tsx";
+import { isShellTool } from "./messages/ToolShared.tsx";
 import { ThinkingMessage } from "./messages/ThinkingMessage.tsx";
 import { ErrorMessage } from "./messages/ErrorMessage.tsx";
 import { PlanReviewMessage } from "./messages/PlanReviewMessage.tsx";
@@ -143,6 +144,8 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
         // 结构化 diff + 文件名透传(否则在此拍扁丢失,UI 拿不到结构化 patch)
         structuredPatch: t.resultDisplay?.structuredPatch,
         filename: t.resultDisplay?.filename,
+        // bash/shell 工具：从 input 提取完整命令行
+        shellCommand: isShellTool(t.name) ? (t.input as any)?.command || "" : undefined,
       }));
       return (
         <Box marginTop={1} marginBottom={1}>

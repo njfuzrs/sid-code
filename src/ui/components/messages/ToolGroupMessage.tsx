@@ -9,7 +9,7 @@ import React, { useMemo } from "react";
 import Box from "../../../ink/components/Box.js";
 import Text from "../../../ink/components/Text.js";
 import { ToolMessage } from "./ToolMessage.tsx";
-import type { ToolCallStatus } from "./ToolShared.tsx";
+import { isShellTool, type ToolCallStatus } from "./ToolShared.tsx";
 import { getToolSummary, getResultSummary, isDiffContent, getFilenameFromInput } from "../../ui-utils.ts";
 import { useOverflowState } from "../../contexts/OverflowContext.tsx";
 import { theme } from "../../semantic-colors.ts";
@@ -39,6 +39,8 @@ export interface ToolCallDisplay {
   filename?: string;
   /** 工具执行耗时（毫秒），完成态时由后端填入。缺省时不显示 */
   elapsedMs?: number;
+  /** bash/shell 工具的完整命令行文本 */
+  shellCommand?: string;
 }
 
 interface ToolGroupMessageProps {
@@ -90,6 +92,13 @@ export const ToolGroupMessage: React.FC<ToolGroupMessageProps> = ({
         const isDiff = hasPatch || (tool.result ? isDiffContent(tool.name, tool.result) : false);
         const filename = tool.filename ?? getFilenameFromInput(tool.name, tool.input);
 
+        // bash/shell 工具：提取完整命令行供独立换行展示
+        const shellCommand = tool.shellCommand != null
+          ? tool.shellCommand
+          : isShellTool(tool.name)
+            ? (tool.input as any)?.command || ""
+            : undefined;
+
         return (
           <ToolMessage
             key={tool.id}
@@ -109,6 +118,7 @@ export const ToolGroupMessage: React.FC<ToolGroupMessageProps> = ({
             progressTotal={tool.progressTotal}
             resultSummary={tool.resultSummary || (tool.result ? getResultSummary(tool.name, tool.result, tool.isError) : undefined)}
             elapsedMs={tool.elapsedMs}
+            shellCommand={shellCommand}
           />
         );
       })}

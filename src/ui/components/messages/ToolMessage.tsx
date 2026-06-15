@@ -7,6 +7,9 @@
  *
  * 紧凑模式：成功结果只显示一行 header（name + description + 摘要）
  * 展开模式：错误 / diff / 进度 在树枝缩进区展开
+ *
+ * bash/shell 工具特殊处理：命令从 header 单行移到独立区域，以 wrap="wrap"
+ * 自然换行展示完整命令，用户始终能看到 agent 在做什么。
  */
 
 import React from "react";
@@ -18,6 +21,7 @@ import {
   TrailingIndicator,
   McpProgressIndicator,
   FocusHint,
+  isShellTool,
   type ToolCallStatus,
   type TextEmphasis,
 } from "./ToolShared.tsx";
@@ -47,6 +51,8 @@ export interface ToolMessageProps {
   resultSummary?: string;
   /** 工具执行耗时（毫秒），完成态时显示在工具名后。缺省时不显示 */
   elapsedMs?: number;
+  /** bash/shell 工具的完整命令行文本（独立区域自然换行展示） */
+  shellCommand?: string;
 }
 
 export const ToolMessage: React.FC<ToolMessageProps> = ({
@@ -66,19 +72,22 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
   progressTotal,
   resultSummary,
   elapsedMs,
+  shellCommand,
 }) => {
-  // 有结果或进度就展开（结果默认通过 ToolResultDisplay 的 maxLines=20 折叠）
+  const isShell = isShellTool(name);
+  const hasShellCommand = isShell && !!shellCommand;
+
+  // 有结果或进度就展开（结果默认通过 ToolResultDisplay 的 maxLines=3 折叠）
   const hasProgress = status === "executing" && progress !== undefined;
   const shouldExpandContent = !!resultDisplay || hasProgress;
 
-  // Header 行：⏺ bullet + 工具信息（无边框）。
-  // 展开模式下结果已在下方树枝区呈现，header 不再重复 resultSummary 避免冗余。
+  // Header 行：bash 工具不显示长命令（移到下方独立区域自然换行），header 保持简洁
   const header = (
     <Box width={terminalWidth} flexDirection="row">
       <ToolStatusIndicator status={status} />
       <ToolInfo
         name={name}
-        description={description}
+        description={hasShellCommand ? "" : description}
         status={status}
         emphasis={emphasis}
         progressMessage={progressMessage}
@@ -90,41 +99,62 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
     </Box>
   );
 
-  // 紧凑模式：只有 header
-  if (!shouldExpandContent) {
+  // Shell 命令展示区域：完整命令，wrap="wrap" 自然换行，不截断
+  // 2 空格缩进与 header 和结果区的视觉节奏一致
+  const shellCommandSection = hasShellCommand ? (
+    <Box flexDirection="row">
+      <Box flexShrink={0} width={2}>
+        <Text> </Text>
+      </Box>
+      <Box flexGrow={1}>
+        <Text
+          color={status === "executing" ? theme.text.primary : theme.text.secondary}
+          wrap="wrap"
+        >
+          {`$ ${shellCommand}`}
+        </Text>
+      </Box>
+    </Box>
+  ) : null;
+
+  // 无结果也无 shell 命令：紧凑模式只有 header
+  if (!shouldExpandContent && !hasShellCommand) {
     return header;
   }
 
-  // 展开模式：header + 树枝缩进结果区（无边框）
+  // 展开模式：header + shell 命令（如有）+ 树枝缩进结果区（如有）
   return (
     <Box width={terminalWidth} flexDirection="column">
       {header}
-      <Box flexDirection="row">
-        <Box flexShrink={0}>
-          <Text color={theme.text.secondary} dimColor>{`  ${TREE_BRANCH} `}</Text>
-        </Box>
-        <Box flexDirection="column" flexGrow={1}>
-          {hasProgress && (
-            <McpProgressIndicator
-              progress={progress!}
-              total={progressTotal}
-              message={progressMessage}
-              barWidth={20}
+      {shellCommandSection}
+      {shouldExpandContent && (
+        <Box flexDirection="row">
+          <Box flexShrink={0}>
+            <Text color={theme.text.secondary} dimColor>{`  ${TREE_BRANCH} `}</Text>
+          </Box>
+          <Box flexDirection="column" flexGrow={1}>
+            {hasProgress && (
+              <McpProgressIndicator
+                progress={progress!}
+                total={progressTotal}
+                message={progressMessage}
+                barWidth={20}
+              />
+            )}
+            <ToolResultDisplay
+              resultDisplay={resultDisplay}
+              terminalWidth={Math.max(1, terminalWidth - 4)}
+              isDiff={isDiff}
+              filename={filename}
+              structuredPatch={structuredPatch}
+              isError={isError}
+              renderOutputAsMarkdown={renderOutputAsMarkdown}
+              maxLines={3}
+              overflowDirection="bottom"
             />
-          )}
-          <ToolResultDisplay
-            resultDisplay={resultDisplay}
-            terminalWidth={Math.max(1, terminalWidth - 4)}
-            isDiff={isDiff}
-            filename={filename}
-            structuredPatch={structuredPatch}
-            isError={isError}
-            renderOutputAsMarkdown={renderOutputAsMarkdown}
-            maxLines={3}
-            overflowDirection="bottom"
-          />
+          </Box>
         </Box>
-      </Box>
+      )}
     </Box>
   );
 };
