@@ -126,7 +126,7 @@ export const SettingsSchema = lazySchema(() =>
       anthropicKey: z.string().optional(),
       openaiKey: z.string().optional(),
       baseURL: z.string().optional(),
-      maxTokens: z.number().min(1000).max(200000).optional(),
+      maxTokens: z.number().min(1000).optional(),
       availableModels: z.array(ModelConfigSchema()).optional(),
 
       // 输出语言偏好（对标 Claude Code language 配置）

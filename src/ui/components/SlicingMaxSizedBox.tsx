@@ -7,6 +7,8 @@
 import React from "react";
 import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
+import { theme } from "../semantic-colors.ts";
+import { formatCollapsedSummary } from "../constants/collapse.ts";
 
 interface SlicingMaxSizedBoxProps {
   /** 最大字符数 */
@@ -75,7 +77,7 @@ export const SlicingMaxSizedBox = React.memo(function SlicingMaxSizedBox({
   }
 
   const indicator = hiddenCount > 0
-    ? <Text dimColor color="yellow">{`... ${hiddenCount} 行已隐藏 ...`}</Text>
+    ? <Text dimColor color={theme.status.warning}>{formatCollapsedSummary(hiddenCount, { hint: "ctrl+o" })}</Text>
     : null;
 
   return (

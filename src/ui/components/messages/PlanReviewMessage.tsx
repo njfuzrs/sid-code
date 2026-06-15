@@ -10,6 +10,7 @@ import Box from "../../../ink/components/Box.js";
 import Text from "../../../ink/components/Text.js";
 import { MarkdownDisplay } from "../MarkdownDisplay.tsx";
 import { theme } from "../../semantic-colors.ts";
+import { BULLET } from "../../constants/figures.ts";
 
 interface PlanReviewMessageProps {
   planContent: string;
@@ -38,7 +39,7 @@ export const PlanReviewMessage: React.FC<PlanReviewMessageProps> = ({
       {/* 标题行：成功色圆点 + 标题 + 行数 */}
       <Box justifyContent="space-between">
         <Box>
-          <Text color={borderColor} bold>{"● 计划审阅"}</Text>
+          <Text color={borderColor} bold>{`${BULLET} 计划审阅`}</Text>
         </Box>
         <Text dimColor>{lineCount} 行</Text>
       </Box>

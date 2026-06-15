@@ -153,7 +153,10 @@ export function handleContextOverflow(
     return null;
   }
 
-  let contextLimit = 200000;
+  // 解析不出报错文本里的具体上限时，回退到 ctxMgr 的真实上下文窗口
+  // （由当前模型按 availableModels/内置 registry 推导，非硬编码 200000）。
+  // 硬编码 200000 会让 1M 窗口模型的可用空间被严重低估，错误地放弃本可恢复的溢出。
+  let contextLimit = ctxMgr.getMaxTokens();
   let inputTokens = 0;
 
   if (overflowMatch) {

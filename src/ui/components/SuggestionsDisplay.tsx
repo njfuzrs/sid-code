@@ -11,6 +11,22 @@ import React from "react";
 import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
 import { theme } from "../semantic-colors.ts";
+import { stringWidth } from "../../ink/stringWidth.js";
+
+/** 按显示宽度截断（CJK 安全），超出预留 1 列给省略号 */
+function truncateToWidth(text: string, maxWidth: number): string {
+  if (stringWidth(text) <= maxWidth) return text;
+  const budget = Math.max(1, maxWidth - 1);
+  let width = 0;
+  let result = "";
+  for (const ch of text) {
+    const cw = stringWidth(ch);
+    if (width + cw > budget) break;
+    width += cw;
+    result += ch;
+  }
+  return result + "…";
+}
 
 export interface Suggestion {
   /** 显示文本 */
@@ -19,7 +35,7 @@ export interface Suggestion {
   value: string;
   /** 描述（命令补全用） */
   description?: string;
-  /** 分类图标（单字符，如 📁 / 📄 / ⌘），显示在 label 前 */
+  /** 分类图标（单字符，如 ›），显示在 label 前 */
   icon?: string;
   /** 分类标签（如「命令」「文件」「目录」），显示在行尾 dim 色 */
   tag?: string;
@@ -57,18 +73,16 @@ export function SuggestionsDisplay({ suggestions, activeIndex, width }: Suggesti
         const iconPrefix = item.icon ? `${item.icon} ` : "";
         // 行尾标签（如有），dim 色
         const tagSuffix = item.tag ? `  [${item.tag}]` : "";
-        // 截断标签和描述以适应宽度
+        // 截断标签和描述以适应宽度（按显示列宽，CJK 安全）
         const desc = item.description ? `  ${item.description}` : "";
-        const reserved = (desc ? Math.min(desc.length, 30) : 0) + tagSuffix.length + iconPrefix.length;
+        const reserved = (desc ? Math.min(stringWidth(desc), 30) : 0) + stringWidth(tagSuffix) + stringWidth(iconPrefix);
         const maxLabelWidth = Math.max(4, innerWidth - reserved);
-        const label = item.label.length > maxLabelWidth
-          ? item.label.slice(0, maxLabelWidth - 1) + "…"
-          : item.label;
-        const descTruncated = desc.length > 30 ? desc.slice(0, 29) + "…" : desc;
+        const label = truncateToWidth(item.label, maxLabelWidth);
+        const descTruncated = truncateToWidth(desc, 30);
         const labelWithIcon = `${iconPrefix}${label}`;
         const padCount = Math.max(
           0,
-          innerWidth - labelWithIcon.length - descTruncated.length - tagSuffix.length,
+          innerWidth - stringWidth(labelWithIcon) - stringWidth(descTruncated) - stringWidth(tagSuffix),
         );
 
         return (

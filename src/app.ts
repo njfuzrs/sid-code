@@ -170,7 +170,7 @@ export class App {
     const sessionId = opts.config.sessionId || crypto.randomUUID().slice(0, 8);
     // 上下文窗口按模型实际大小初始化（deepseek-v4 为 1M，Claude 200K，gpt-4o 128K）。
     // 硬编码 200000 会让 deepseek 的 contextPercent 高估 5 倍、过早触发自动压缩。
-    const ctxWindow = new TokenEstimator().getContextLimit(opts.config.model);
+    const ctxWindow = new TokenEstimator().getContextLimit(opts.config.model, opts.config.availableModels);
     this.ctxMgr = new ContextManager({ maxTokens: ctxWindow });
     this.ctxMgr.setSessionId(sessionId);
     this.sessionState = new SessionState(sessionId);
@@ -2029,7 +2029,7 @@ export class App {
             // 同步上下文窗口：新模型窗口可能与旧模型不同（如 200k↔1M）。
             // 不更新会让 compact 决策与 Footer 上下文百分比沿用旧窗口作分母而失真。
             try {
-              const newWindow = new TokenEstimator().getContextLimit(m);
+              const newWindow = new TokenEstimator().getContextLimit(m, this.config.availableModels);
               this.ctxMgr.setMaxTokens(newWindow);
             } catch { /* 窗口解析失败不影响切换，沿用旧窗口 */ }
             updateState({ model: m });

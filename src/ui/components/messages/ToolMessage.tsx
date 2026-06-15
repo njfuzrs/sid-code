@@ -64,10 +64,9 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
   progressTotal,
   resultSummary,
 }) => {
+  // 有结果或进度就展开（结果默认通过 ToolResultDisplay 的 maxLines=20 折叠）
   const hasProgress = status === "executing" && progress !== undefined;
-  const hasPatch = !!structuredPatch?.length;
-  // 有结构化 diff 时即使 resultDisplay 仅为摘要也展开(diff 由 patch 独立渲染)
-  const shouldExpandContent = (isError && !!resultDisplay) || (isDiff && (hasPatch || !!resultDisplay)) || hasProgress;
+  const shouldExpandContent = !!resultDisplay || hasProgress;
 
   // Header 行：⏺ bullet + 工具信息（无边框）。
   // 展开模式下结果已在下方树枝区呈现，header 不再重复 resultSummary 避免冗余。

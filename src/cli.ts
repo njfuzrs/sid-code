@@ -450,6 +450,26 @@ export async function main(): Promise<void> {
       });
     }
 
+    // logger 就绪后，统一输出配置校验诊断（loadConfig 阶段暂存的）。
+    // warnings 走 debug（--debug 才显示明细，不刷首屏）；非致命 errors 走 warn（真信号该可见）。
+    // 致命错误已在 loadConfig 内提前抛出，不会走到这里。
+    if (config._validationDiagnostics) {
+      const diag = config._validationDiagnostics;
+      const logger = getLogger();
+      if (diag.warnings.length > 0) {
+        logger.debug("CONFIG", `配置有 ${diag.warnings.length} 条提示:`);
+        for (const w of diag.warnings) {
+          logger.debug("CONFIG", `  ⚠ ${w.path}: ${w.message}`);
+        }
+      }
+      if (diag.errors.length > 0) {
+        logger.warn("CONFIG", `配置验证发现 ${diag.errors.length} 个非致命错误:`);
+        for (const e of diag.errors) {
+          logger.warn("CONFIG", `  ✗ ${e.path}: ${e.message}`);
+        }
+      }
+    }
+
     // 处理会话管理命令（不需要 API Key）
     if (cliArgs["list-sessions"]) {
       const { handleListSessions } = await import("./session/commands.ts");

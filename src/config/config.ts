@@ -184,6 +184,14 @@ export interface Config {
 
   // IDE 集成配置
   ide?: IDEConfig;
+
+  // 配置校验诊断结果（loadConfig 阶段 logger 尚未就绪，暂存于此，
+  // 由上层在 initLogger 之后统一输出：warnings 降 debug、非致命 errors 打 warn）。
+  // 不写入磁盘配置，仅运行时携带。
+  _validationDiagnostics?: {
+    warnings: { path: string; message: string }[];
+    errors: { path: string; message: string }[];
+  };
 }
 
 /** IDE 集成配置 */
@@ -711,7 +719,6 @@ async function loadMCPJson(): Promise<Record<string, MCPServerConfig>> {
 
 /** 加载完整配置 */
 export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config> {
-  const log = getLogger();
   const defaults = defaultConfig();
   const fileConfig = await loadConfigFile();
   const envConfig = loadFromEnv();
@@ -753,27 +760,28 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
   const { validateConfig } = await import("./schema.ts");
   const validation = validateConfig(config);
 
-  // 输出警告
-  if (validation.warnings.length > 0) {
-    log.warn("CONFIG", `配置验证发现 ${validation.warnings.length} 个警告:`);
-    for (const warning of validation.warnings) {
-      log.warn("CONFIG", `  ⚠ ${warning.path}: ${warning.message}`);
-    }
+  // 暂存校验诊断：此刻 logger 尚未 initLogger（仍是 enabled=false 的兜底实例，
+  // 会把 WARN 强制刷到 stderr 污染首屏、又吞掉 INFO/DEBUG 不落盘）。
+  // 故不在此直接打印，挂到 config 上由上层在 logger 就绪后统一输出。
+  if (validation.warnings.length > 0 || validation.errors.length > 0) {
+    config._validationDiagnostics = {
+      warnings: validation.warnings.map(w => ({ path: w.path, message: w.message })),
+      errors: validation.errors.map(e => ({ path: e.path, message: e.message })),
+    };
   }
 
-  // 输出错误
+  // 致命错误：provider / model 无效时必须立即阻止启动（不依赖 logger）。
+  // 这是"不修就跑不起来"的唯一该抛首屏的情形。
   if (validation.errors.length > 0) {
-    log.warn("CONFIG", `配置验证发现 ${validation.errors.length} 个错误:`);
-    for (const error of validation.errors) {
-      log.warn("CONFIG", `  ✗ ${error.path}: ${error.message}`);
-    }
-
-    // 致命错误：provider 无效时阻止启动
     const hasFatalError = validation.errors.some(e =>
       e.path === "provider" || e.path === "model"
     );
     if (hasFatalError) {
-      throw new Error("配置验证失败，存在致命错误，无法启动");
+      const detail = validation.errors
+        .filter(e => e.path === "provider" || e.path === "model")
+        .map(e => `${e.path}: ${e.message}`)
+        .join("; ");
+      throw new Error(`配置验证失败，存在致命错误，无法启动 (${detail})`);
     }
   }
 

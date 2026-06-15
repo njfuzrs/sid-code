@@ -95,9 +95,29 @@ export class TokenEstimator {
     return total;
   }
 
-  /** 获取模型的上下文窗口大小 */
-  getContextLimit(model: string): number {
-    // 精确匹配
+  /**
+   * 获取模型的上下文窗口大小。
+   *
+   * 优先级（SSOT）：
+   *   1. 用户配置 availableModels[].contextWindow —— 权威来源，用户自己声明的最准
+   *   2. 内置静态表精确匹配 / 最长前缀 / 家族匹配
+   *   3. 字符启发式兜底（deepseek 系 1M，其余 128K）
+   *
+   * @param model 模型名
+   * @param availableModels 可选，用户配置的模型列表（携带权威 contextWindow）
+   */
+  getContextLimit(
+    model: string,
+    availableModels?: Array<{ name?: string; contextWindow?: number }>,
+  ): number {
+    // 1. 用户配置优先：availableModels 里同名模型声明的 contextWindow 是权威值，
+    //    避免内置静态表与用户真实部署（自建/代理/新版本）漂移。
+    const userModel = availableModels?.find(m => m.name === model);
+    if (typeof userModel?.contextWindow === "number" && userModel.contextWindow > 0) {
+      return userModel.contextWindow;
+    }
+
+    // 2. 内置静态表：精确匹配
     if (MODEL_CONTEXT_LIMITS[model]) return MODEL_CONTEXT_LIMITS[model];
     // EST-3：正向最长前缀匹配（model 以表项 key 开头）。
     // 旧实现 key.split("-").slice(0,3) 把表项 key 粗暴截成 3 段再做 startsWith，

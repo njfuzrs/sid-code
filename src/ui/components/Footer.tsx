@@ -12,6 +12,7 @@ import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
 import type { Usage } from "../../llm/types.ts";
 import { theme } from "../semantic-colors.ts";
+import { stringWidth } from "../../ink/stringWidth.js";
 import { useStatusLineData } from "../hooks/useStatusLineData.ts";
 
 /** 缩短路径：~ 替换 home，超长时只保留最后两级 */
@@ -121,10 +122,10 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
   };
 
   // CWD
-  addCol("cwd", "目录", <Text color={itemColor}>{data.cwdDisplay}</Text>, data.cwdDisplay.length);
+  addCol("cwd", "目录", <Text color={itemColor}>{data.cwdDisplay}</Text>, stringWidth(data.cwdDisplay));
 
   // 权限模式
-  addCol("mode", "模式", <Text color={data.permission.color}>{data.permission.display}</Text>, data.permission.display.length);
+  addCol("mode", "模式", <Text color={data.permission.color}>{data.permission.display}</Text>, stringWidth(data.permission.display));
 
   // Plan Mode 标签
   if (data.isPlanMode) {
@@ -133,7 +134,7 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
 
   // Git 分支
   if (data.gitBranch) {
-    addCol("git", "分支", <Text color={itemColor}>{data.gitBranch}</Text>, data.gitBranch.length);
+    addCol("git", "分支", <Text color={itemColor}>{data.gitBranch}</Text>, stringWidth(data.gitBranch));
   }
 
   // Debug 模式
@@ -152,7 +153,7 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
   }
 
   // Token 统计
-  addCol("tokens", "Tokens", <Text color={itemColor}>{data.tokenText}</Text>, data.tokenText.length);
+  addCol("tokens", "Tokens", <Text color={itemColor}>{data.tokenText}</Text>, stringWidth(data.tokenText));
 
   // 缓存命中率：命中 0 或无缓存字段时由 hook 返回 null，不显示该列。
   if (data.cache) {
@@ -160,24 +161,24 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
       "cache",
       "缓存",
       <Text color={data.cache.color}>{data.cache.text}</Text>,
-      data.cache.text.length,
+      stringWidth(data.cache.text),
     );
   }
 
   // 费用
-  addCol("cost", "费用", <Text color={data.cost.color ?? itemColor}>{data.cost.text}</Text>, data.cost.text.length);
+  addCol("cost", "费用", <Text color={data.cost.color ?? itemColor}>{data.cost.text}</Text>, stringWidth(data.cost.text));
 
   // 上下文（没有任何用户交互时隐藏，避免系统开销造成虚假百分比）
   if (data.context) {
-    addCol("context", "上下文", <Text color={data.context.color}>{data.context.text}</Text>, data.context.text.length);
+    addCol("context", "上下文", <Text color={data.context.color}>{data.context.text}</Text>, stringWidth(data.context.text));
   }
 
   // 模型
-  addCol("model", "模型", <Text color={itemColor}>{data.model}</Text>, data.model.length);
+  addCol("model", "模型", <Text color={itemColor}>{data.model}</Text>, stringWidth(data.model));
 
   // 滚动位置
   if (data.scroll) {
-    addCol("scroll", "", <Text color={theme.status.warning}>{data.scroll.text}</Text>, data.scroll.text.length, true);
+    addCol("scroll", "", <Text color={theme.status.warning}>{data.scroll.text}</Text>, stringWidth(data.scroll.text), true);
   }
 
   // ── 宽度裁剪逻辑 ──

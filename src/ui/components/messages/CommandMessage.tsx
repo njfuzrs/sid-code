@@ -15,6 +15,7 @@ import Box from "../../../ink/components/Box.js";
 import Text from "../../../ink/components/Text.js";
 import { theme } from "../../semantic-colors.ts";
 import { UserMessage } from "./UserMessage.tsx";
+import { stringWidth } from "../../../ink/stringWidth.js";
 
 interface CommandMessageProps {
   input: string;
@@ -65,7 +66,7 @@ export const CommandMessage: React.FC<CommandMessageProps> = ({
   return (
     <Box flexDirection="column">
       <Box flexDirection="row" width={width}>
-        <Box width={prefix.length} flexShrink={0}>
+        <Box width={stringWidth(prefix)} flexShrink={0}>
           <Text color={theme.status.success} bold>
             {prefix}
           </Text>

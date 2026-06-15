@@ -100,7 +100,7 @@ export function validateConfig(config: Config): ValidationResult {
     });
   }
 
-  // 验证 maxTokens
+  // 验证 maxTokens（单次输出上限，非上下文窗口）
   if (typeof config.maxTokens !== "number") {
     errors.push({
       path: "maxTokens",
@@ -113,11 +113,19 @@ export function validateConfig(config: Config): ValidationResult {
       message: `值 ${config.maxTokens} 低于最小值 1000`,
       value: config.maxTokens,
     });
-  } else if (config.maxTokens > 200000) {
-    warnings.push({
-      path: "maxTokens",
-      message: `值 ${config.maxTokens} 超过推荐最大值 200000`,
-    });
+  } else {
+    // 阈值取当前模型自己声明的上下文窗口，而不是硬编码 200000。
+    // 输出上限唯一真正不合理的情形是"超过模型上下文窗口"（物理上不可能输出比窗口还多）。
+    // 拿不到模型窗口时不告警 —— maxTokens 多由系统按模型 max_output_tokens 自动推导，
+    // 用一个无关的硬编码数去警告系统自己的正确推导，只会制造首屏噪音。
+    const currentModel = config.availableModels?.find(m => m.name === config.model);
+    const ctxWindow = currentModel?.contextWindow;
+    if (typeof ctxWindow === "number" && ctxWindow > 0 && config.maxTokens > ctxWindow) {
+      warnings.push({
+        path: "maxTokens",
+        message: `输出上限 ${config.maxTokens} 超过模型 "${config.model}" 的上下文窗口 ${ctxWindow}`,
+      });
+    }
   }
 
   // 验证 permissionMode

@@ -7,6 +7,7 @@ import { diffWordsWithSpace, type StructuredPatchHunk } from 'diff';
 import { colorizeCode, colorizeLine } from './CodeColorizer.js';
 import { theme as semanticTheme } from '../semantic-colors.js';
 import { buildDiffAnsiLines, type DiffAnsiColors } from './diffAnsiLines.js';
+import { ELLIPSIS } from '../constants/collapse.ts';
 import type { Color } from '../../ink/styles.js';
 
 /**
@@ -480,7 +481,7 @@ const renderDiffContent = (
         acc.push(
           <Box key={`collapse-${planIdx}`} paddingLeft={gutterWidth + 2}>
             <Text color={semanticTheme.text.secondary} dimColor>
-              {`⋯ ${item.hiddenCount} 行未变更上下文已折叠`}
+              {`${ELLIPSIS} ${item.hiddenCount} 行未变更上下文已折叠`}
             </Text>
           </Box>,
         );
@@ -509,7 +510,7 @@ const renderDiffContent = (
         acc.push(
           <Box key={`gap-${index}`}>
             <Box
-              borderStyle="double"
+              borderStyle="single"
               borderLeft={false}
               borderRight={false}
               borderBottom={false}

@@ -8,6 +8,7 @@ import Box from "../../../ink/components/Box.js";
 import Text from "../../../ink/components/Text.js";
 import { theme } from '../../semantic-colors.ts';
 import { useKeypress, KeypressPriority, type Key } from '../../contexts/KeypressContext.tsx';
+import { BULLET } from '../../constants/figures.ts';
 
 export interface SelectionListItem<T> {
   value: T;
@@ -51,7 +52,7 @@ export function BaseSelectionList<
   showScrollArrows = false,
   maxItemsToShow = 10,
   wrapAround = true,
-  selectedIndicator = '●',
+  selectedIndicator = BULLET,
   renderItem,
 }: BaseSelectionListProps<T, TItem>): React.JSX.Element {
   const [activeIndex, setActiveIndex] = useState(initialIndex);

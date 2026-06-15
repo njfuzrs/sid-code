@@ -93,7 +93,7 @@ export const ToolGroupMessage: React.FC<ToolGroupMessageProps> = ({
             key={tool.id}
             name={tool.name}
             description={tool.description || getToolSummary(tool.name, tool.input)}
-            resultDisplay={tool.result ? (isDiff ? tool.result : (tool.isError ? tool.result : undefined)) : undefined}
+            resultDisplay={tool.result || undefined}
             status={tool.status}
             terminalWidth={contentWidth}
             isFirst={index === 0}
@@ -112,7 +112,7 @@ export const ToolGroupMessage: React.FC<ToolGroupMessageProps> = ({
       {showExpandHint && (
         <Box paddingLeft={2}>
           <Text dimColor color={theme.text.secondary}>
-            Ctrl+O 展开完整输出
+            ctrl+o 展开完整输出
           </Text>
         </Box>
       )}

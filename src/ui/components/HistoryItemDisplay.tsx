@@ -21,6 +21,7 @@ import { ErrorMessage } from "./messages/ErrorMessage.tsx";
 import { PlanReviewMessage } from "./messages/PlanReviewMessage.tsx";
 import { AppHeader } from "./AppHeader.tsx";
 import { theme } from "../semantic-colors.ts";
+import { ARROW_PROMPT, WARNING_MARK, THINKING_MARK } from "../constants/figures.ts";
 
 interface HistoryItemDisplayProps {
   item: HistoryItem;
@@ -77,18 +78,20 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
 
     case "thinking":
       return (
-        <ThinkingMessage
-          text={item.thought.text}
-          width={width}
-          collapsed={thinkCollapsed}
-          thinkingSeconds={item.thought.durationSeconds}
-        />
+        <Box marginBottom={1}>
+          <ThinkingMessage
+            text={item.thought.text}
+            width={width}
+            collapsed={thinkCollapsed}
+            thinkingSeconds={item.thought.durationSeconds}
+          />
+        </Box>
       );
 
     case "hint":
       return (
         <Box paddingLeft={2}>
-          <Text color={theme.ui.active}>{"› "}</Text>
+          <Text color={theme.ui.active}>{`${ARROW_PROMPT} `}</Text>
           <Text color={theme.text.secondary} italic>{item.text}</Text>
         </Box>
       );
@@ -108,7 +111,7 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
     case "warning":
       return (
         <Box paddingLeft={2}>
-          <Text color={theme.status.warning}>{"⚠ "}{item.text}</Text>
+          <Text color={theme.status.warning}>{`${WARNING_MARK} `}{item.text}</Text>
         </Box>
       );
 
@@ -133,17 +136,19 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
         filename: t.resultDisplay?.filename,
       }));
       return (
-        <ToolGroupMessage
-          tools={tools}
-          terminalWidth={width}
-        />
+        <Box marginTop={1}>
+          <ToolGroupMessage
+            tools={tools}
+            terminalWidth={width}
+          />
+        </Box>
       );
     }
 
     case "compression":
       return (
         <Box paddingLeft={2} gap={1}>
-          <Text color={theme.text.accent}>✻</Text>
+          <Text color={theme.text.accent}>{THINKING_MARK}</Text>
           <Text dimColor>
             {"对话已压缩"}
             {item.originalTokenCount && item.newTokenCount
@@ -156,7 +161,7 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
     case "model":
       return (
         <Box paddingLeft={2}>
-          <Text color={theme.ui.active}>{"› "}</Text>
+          <Text color={theme.ui.active}>{`${ARROW_PROMPT} `}</Text>
           <Text color={theme.text.secondary}>{"模型已切换为 "}<Text color={theme.text.primary}>{item.model}</Text></Text>
         </Box>
       );

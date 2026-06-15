@@ -17,7 +17,7 @@ import React from "react";
 import Box from "../../../ink/components/Box.js";
 import Text from "../../../ink/components/Text.js";
 import { theme } from "../../semantic-colors.ts";
-import { BULLET } from "../../constants/figures.ts";
+import { BULLET, ARROW_TRAILING } from "../../constants/figures.ts";
 
 export const STATUS_INDICATOR_WIDTH = 2;
 
@@ -97,7 +97,7 @@ export const ToolInfo: React.FC<{
 /** 执行中尾部指示器（← 箭头） */
 export const TrailingIndicator: React.FC = () => (
   <Text color={theme.text.primary} wrap="truncate">
-    {" "}←
+    {` ${ARROW_TRAILING}`}
   </Text>
 );
 

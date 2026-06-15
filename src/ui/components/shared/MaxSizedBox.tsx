@@ -12,6 +12,7 @@ import { ResizeObserver } from "../../../ink/_vendor/resize-observer.js";
 import type { DOMElement } from "../../../ink/dom.js";
 import { theme } from '../../semantic-colors.ts';
 import { useOverflowActions } from '../../contexts/OverflowContext.tsx';
+import { formatCollapsedSummary } from '../../constants/collapse.ts';
 
 /**
  * MaxSizedBox 组件的最小高度
@@ -120,7 +121,7 @@ export const MaxSizedBox: React.FC<MaxSizedBoxProps> = ({
     >
       {totalHiddenLines > 0 && overflowDirection === 'top' && (
         <Text color={theme.text.secondary} wrap="truncate">
-          {`... ${totalHiddenLines} 行已隐藏 (Ctrl+O 显示更多) ...`}
+          {formatCollapsedSummary(totalHiddenLines, { hint: "ctrl+o" })}
         </Text>
       )}
       <Box
@@ -140,7 +141,7 @@ export const MaxSizedBox: React.FC<MaxSizedBoxProps> = ({
       </Box>
       {totalHiddenLines > 0 && overflowDirection === 'bottom' && (
         <Text color={theme.text.secondary} wrap="truncate">
-          {`... ${totalHiddenLines} 行已隐藏 (Ctrl+O 显示更多) ...`}
+          {formatCollapsedSummary(totalHiddenLines, { hint: "ctrl+o" })}
         </Text>
       )}
     </Box>

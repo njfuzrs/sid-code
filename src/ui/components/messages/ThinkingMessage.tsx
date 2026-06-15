@@ -14,6 +14,7 @@ import Box from "../../../ink/components/Box.js";
 import Text from "../../../ink/components/Text.js";
 import { useInterval } from "../../../ink/hooks/use-interval.ts";
 import { theme } from "../../semantic-colors.ts";
+import { THINKING_MARK, CURSOR } from "../../constants/figures.ts";
 
 interface ThinkingMessageProps {
   text: string;
@@ -106,7 +107,7 @@ export const ThinkingMessage: React.FC<ThinkingMessageProps> = ({
     return (
       <Box width={width}>
         <Text color={theme.text.secondary} dimColor>
-          {"✻ 思考过程 · "}{text.length.toLocaleString()}{" 字符 · ctrl+t 展开"}
+          {`${THINKING_MARK} 思考过程 · `}{text.length.toLocaleString()}{" 字符 · ctrl+t 展开"}
         </Text>
       </Box>
     );
@@ -117,10 +118,10 @@ export const ThinkingMessage: React.FC<ThinkingMessageProps> = ({
 
   // 标题：流式中显示「思考中… (Ns)」实时耗时；完成态显示「已思考 Ns」
   const title = streaming
-    ? `✻ 思考中… (${formatThinkingDuration(elapsed)})`
+    ? `${THINKING_MARK} 思考中… (${formatThinkingDuration(elapsed)})`
     : elapsed > 0
-      ? `✻ 已思考 ${formatThinkingDuration(elapsed)}`
-      : "✻ 思考过程";
+      ? `${THINKING_MARK} 已思考 ${formatThinkingDuration(elapsed)}`
+      : `${THINKING_MARK} 思考过程`;
   // 正文容器扣除 marginLeft(1)，其内 border(1)+paddingLeft(1) 由 ink 在该宽度内分配
   const bodyWidth = Math.max(1, width - 1);
 
@@ -157,7 +158,7 @@ export const ThinkingMessage: React.FC<ThinkingMessageProps> = ({
         {/* 流式时在末尾附一个光标提示，暗示仍在输出 */}
         {streaming && (
           <Text color={theme.ui.dark} dimColor>
-            {"▌"}
+            {CURSOR}
           </Text>
         )}
       </Box>

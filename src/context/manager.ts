@@ -912,9 +912,11 @@ export class Manager {
   /**
    * 压缩前清理旧的大型工具输出（函数响应预算）
    * 从最新消息向前遍历，优先保留最近的工具输出
-   * @param budgetChars 工具输出总字符预算（默认 200000）
+   * @param budgetChars 工具输出总字符预算。默认按当前上下文窗口的约 25% 推导
+   *   （maxTokens × 4 字符/token × 0.25），而非硬编码 200000 —— 后者对 1M 窗口模型
+   *   会把工具输出预算锁死在窗口的 5%，过度截断本可保留的工具结果。
    */
-  applyFunctionResponseBudget(budgetChars: number = 200000): void {
+  applyFunctionResponseBudget(budgetChars: number = this.maxTokens * 4 * 0.25): void {
     const log = getLogger();
     let usedChars = 0;
     let cleanedCount = 0;

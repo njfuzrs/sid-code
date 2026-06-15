@@ -12,6 +12,7 @@ import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
 import { useKeypress, KeypressPriority } from "../contexts/KeypressContext.tsx";
 import { theme } from "../semantic-colors.ts";
+import { BULLET } from "../constants/figures.ts";
 
 /** 权限确认请求信息 */
 export interface PermissionPromptRequest {
@@ -74,7 +75,7 @@ export function PermissionPrompt({ request }: { request: PermissionPromptRequest
     >
       {/* 标题行：警告色圆点 + 标题 */}
       <Box>
-        <Text color={theme.status.warning} bold>{"● 权限请求"}</Text>
+        <Text color={theme.status.warning} bold>{`${BULLET} 权限请求`}</Text>
       </Box>
 
       {/* 详情：工具名高亮，参数/原因柔和 */}

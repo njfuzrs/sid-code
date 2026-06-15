@@ -12,6 +12,7 @@ import { useKeypress, KeypressPriority } from "../contexts/KeypressContext.tsx";
 import type { PermissionRequestInfo, ShellConfirmRequestInfo, PlanApprovalRequestInfo } from "../App.tsx";
 import { getToolSummary } from "../ui-utils.ts";
 import { theme } from "../semantic-colors.ts";
+import { BULLET, PLAN_REVIEW } from "../constants/figures.ts";
 import { SettingsDialog } from "./SettingsDialog.tsx";
 import { ModelDialog } from "./ModelDialog.tsx";
 import { ThemeDialog } from "./ThemeDialog.tsx";
@@ -32,8 +33,8 @@ function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
   });
 
   return (
-    <Box flexDirection="column" borderStyle="single" borderColor={theme.status.warning} paddingX={1}>
-      <Text color={theme.status.warning} bold>权限请求</Text>
+    <Box flexDirection="column" borderStyle="round" borderColor={theme.status.warning} paddingX={1}>
+      <Text color={theme.status.warning} bold>{BULLET} 权限请求</Text>
       <Box marginTop={0}>
         <Text>  工具: </Text>
         <Text bold>{request.toolName}</Text>
@@ -65,8 +66,8 @@ function ShellConfirmDialog({ request }: { request: ShellConfirmRequestInfo }) {
   });
 
   return (
-    <Box flexDirection="column" borderStyle="single" borderColor={theme.text.accent} paddingX={1}>
-      <Text color={theme.text.accent} bold>Shell 命令确认</Text>
+    <Box flexDirection="column" borderStyle="round" borderColor={theme.text.accent} paddingX={1}>
+      <Text color={theme.text.accent} bold>{BULLET} Shell 命令确认</Text>
       <Text dimColor>自定义命令将执行以下 Shell 命令：</Text>
       {request.commands.map((cmd, i) => (
         <Box key={i} marginLeft={2}>
@@ -98,8 +99,8 @@ function PlanApprovalDialog({ request }: { request: PlanApprovalRequestInfo }) {
   const lineCount = request.planContent.split("\n").length;
 
   return (
-    <Box flexDirection="column" borderStyle="single" borderColor={theme.text.accent} paddingX={1}>
-      <Text color={theme.text.accent} bold>📋 计划审批</Text>
+    <Box flexDirection="column" borderStyle="round" borderColor={theme.text.accent} paddingX={1}>
+      <Text color={theme.text.accent} bold>{PLAN_REVIEW} 计划审批</Text>
       <Text dimColor>文件: {request.planFilePath} ({lineCount} 行)</Text>
       <Text dimColor>计划内容已显示在上方消息区域，可滚动查看</Text>
       <Box marginTop={0}>

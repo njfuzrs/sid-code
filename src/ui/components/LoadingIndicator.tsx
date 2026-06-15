@@ -11,6 +11,7 @@ import Text from "../../ink/components/Text.js";
 import { theme } from "../semantic-colors.ts";
 import { StreamingState } from "../types.ts";
 import { useIsAccessibilityEnabled } from "../accessibility/AccessibilityContext.tsx";
+import { BULLET } from "../constants/figures.ts";
 
 /** Spinner 帧 */
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -64,7 +65,7 @@ export const LoadingIndicator: React.FC<LoadingIndicatorProps> = ({
   }
 
   // LY2：无障碍模式用静态可朗读标记替代动画 spinner。
-  const spinner = a11y ? "●" : SPINNER_FRAMES[frame];
+  const spinner = a11y ? BULLET : SPINNER_FRAMES[frame];
   const isWaiting = streamingState === StreamingState.WaitingForConfirmation;
 
   // 主文本

@@ -10,6 +10,8 @@ import Box from "../../../ink/components/Box.js";
 import Text from "../../../ink/components/Text.js";
 import { theme } from "../../semantic-colors.ts";
 import { HalfLinePaddedBox } from "../shared/HalfLinePaddedBox.tsx";
+import { stringWidth } from "../../../ink/stringWidth.js";
+import { USER_PROMPT } from "../../constants/figures.ts";
 
 interface UserMessageProps {
   text: string;
@@ -22,8 +24,8 @@ export const UserMessage: React.FC<UserMessageProps> = ({
   width,
   useBackgroundColor = true,
 }) => {
-  const prefix = "> ";
-  const prefixWidth = prefix.length;
+  const prefix = `${USER_PROMPT} `;
+  const prefixWidth = stringWidth(prefix);
   const isSlashCommand = text.startsWith("/");
   const textColor = isSlashCommand ? theme.text.accent : theme.text.primary;
 

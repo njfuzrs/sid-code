@@ -19,6 +19,7 @@ import Text from "../../ink/components/Text.js";
 import type { TodoItem } from "../../tool/todo-write.ts";
 import type { TaskDisplayInfo } from "../App.tsx";
 import { theme } from "../semantic-colors.ts";
+import { stringWidth } from "../../ink/stringWidth.js";
 import {
   TODO_PENDING,
   TODO_IN_PROGRESS,
@@ -39,10 +40,20 @@ interface TodoPanelProps {
   maxDisplay?: number;
 }
 
-/** 截断文本到指定宽度 */
+/** 截断文本到指定显示宽度（CJK 安全：按 stringWidth 列宽累计，非码点数） */
 function truncate(text: string, maxLen: number): string {
-  if (text.length <= maxLen) return text;
-  return text.slice(0, maxLen - 1) + "…";
+  if (stringWidth(text) <= maxLen) return text;
+  // 预留 1 列给省略号，逐字符累计显示宽度
+  const budget = Math.max(1, maxLen - 1);
+  let width = 0;
+  let result = "";
+  for (const ch of text) {
+    const cw = stringWidth(ch);
+    if (width + cw > budget) break;
+    width += cw;
+    result += ch;
+  }
+  return result + "…";
 }
 
 /** 格式化毫秒为人类可读的时长 */

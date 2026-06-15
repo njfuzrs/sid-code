@@ -10,7 +10,7 @@
  * - 行首 +/- 符号加粗(色盲友好,不只靠背景色)
  * - add/del 整行底色;词级强调段额外加粗 + emphasis 底色
  * - context 行无底色
- * - 折叠占位行「⋯ N 行未变更上下文已折叠」
+ * - 折叠占位行「… N 行未变更上下文已折叠」
  *
  * 纯函数(不依赖 React),便于单测。颜色经引擎 colorize/applyTextStyles 生成 ANSI。
  */
@@ -18,6 +18,7 @@
 import { diffWordsWithSpace } from 'diff';
 import { applyColor, colorize, applyTextStyles } from '../../ink/colorize.js';
 import { stringWidth } from '../../ink/stringWidth.js';
+import { ELLIPSIS } from '../constants/collapse.ts';
 import type { Color } from '../../ink/styles.js';
 import type { DiffLine, DiffRenderPlanItem } from './DiffRenderer.js';
 
@@ -116,7 +117,7 @@ export function buildDiffAnsiLines(opts: BuildDiffAnsiLinesOptions): string[] {
 
   for (const item of plan) {
     if (item.kind === 'collapsed') {
-      const text = `⋯ ${item.hiddenCount} 行未变更上下文已折叠`;
+      const text = `${ELLIPSIS} ${item.hiddenCount} 行未变更上下文已折叠`;
       // 折叠提示行:行号槽留白 + dim 次要色
       const indent = ' '.repeat(gutterCols + 1);
       out.push(indent + applyTextStyles(applyColor(text, colors.secondary), { dim: true }));
