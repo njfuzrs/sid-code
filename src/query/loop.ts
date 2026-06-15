@@ -24,7 +24,7 @@ import { TOKEN_THRESHOLDS } from "../context/auto-compact.ts";
 import { ModelFallback } from "../llm/fallback.ts";
 import { SessionState } from "../session/state.ts";
 import { getLogger, getSessionMetrics, getPerfTimer } from "../debug/index.ts";
-import { LoopDetector, LOOP_RECOVERY_PROMPT } from "../agent/loop-detection.ts";
+import { LoopDetector, LOOP_RECOVERY_PROMPT, LOOP_RECOVERY_FINAL_PROMPT } from "../agent/loop-detection.ts";
 import type { LLMLoopCheckResult } from "../agent/loop-detection.ts";
 import {
   checkMessageHistoryIntegrity,
@@ -986,6 +986,34 @@ async function recoverFromLoop(
   const log = getLogger();
   const canRecover = loopDetector.tryRecover();
   if (!canRecover) {
+    // 恢复次数耗尽。按 recoveryExhaustedAction 决定：
+    //  - continue（默认，保成功优先）：注入最终强提示 + 软重置检测器后**继续放行**，
+    //    把"停不停"交给模型自己——避免一次循环误判废掉跑了几十轮的复杂长任务。
+    //  - terminate（opt-in 回退旧行为）：补齐孤儿 tool_result 后终止任务。
+    if (loopDetector.shouldContinueAfterExhausted()) {
+      log.warn("QUERY_LOOP", "循环恢复次数耗尽，注入最终提示后继续放行（不终止任务）");
+      // 仍需补齐未应答 tool_use 的占位 tool_result，与最终提示合并进同一条 user 消息，
+      // 维持 tool_use/tool_result 协议配对 + user/assistant 角色交替（防孤儿 → OpenAI 400）。
+      const orphanResults = buildPendingToolResults(
+        ctxMgr.getMessages(),
+        "[系统] 检测到非生产性循环，此工具调用未执行；这是最后提醒，请改换思路或如实告知用户。",
+      );
+      if (orphanResults.length > 0) {
+        log.warn(
+          "QUERY_LOOP",
+          `耗尽后继续放行时补齐 ${orphanResults.length} 个未应答 tool_use 的占位 tool_result（防孤儿 → 400）`,
+        );
+      }
+      ctxMgr.addMessage({
+        role: "user",
+        content: [...orphanResults, { type: "text", text: LOOP_RECOVERY_FINAL_PROMPT }],
+      });
+      // 软重置：清空各 detector 窗口 + 归零 recoveryAttempts（保留 turnCount），
+      // 避免下一轮立刻又判耗尽刷屏；真死循环会重新累积并再次提示，但永不终止。
+      loopDetector.softResetForContinue();
+      return true;
+    }
+
     log.warn("QUERY_LOOP", "循环恢复次数耗尽，终止循环");
     // 即使放弃恢复，也必须补齐未应答 tool_use 的占位 tool_result——
     // 否则孤儿残留在历史里，下一条用户消息发送时仍会 OpenAI 400。

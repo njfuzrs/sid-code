@@ -15,6 +15,7 @@ import Text from "../../../ink/components/Text.js";
 import { useInterval } from "../../../ink/hooks/use-interval.ts";
 import { theme } from "../../semantic-colors.ts";
 import { THINKING_MARK, CURSOR } from "../../constants/figures.ts";
+import { formatLargeNumber } from "../../utils/format-number.ts";
 
 interface ThinkingMessageProps {
   text: string;
@@ -107,7 +108,7 @@ export const ThinkingMessage: React.FC<ThinkingMessageProps> = ({
     return (
       <Box width={width}>
         <Text color={theme.text.secondary} dimColor>
-          {`${THINKING_MARK} 思考过程 · `}{text.length.toLocaleString()}{" 字符 · ctrl+t 展开"}
+          {`${THINKING_MARK} 思考过程 · `}{formatLargeNumber(text.length)}{" 字符 · ctrl+t 展开"}
         </Text>
       </Box>
     );

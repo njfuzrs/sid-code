@@ -20,6 +20,7 @@ import type { TodoItem } from "../../tool/todo-write.ts";
 import type { TaskDisplayInfo } from "../App.tsx";
 import { theme } from "../semantic-colors.ts";
 import { stringWidth } from "../../ink/stringWidth.js";
+import { formatLargeNumber } from "../utils/format-number.ts";
 import {
   TODO_PENDING,
   TODO_IN_PROGRESS,
@@ -168,7 +169,7 @@ const TaskRow = React.memo(function TaskRow({
 
   const progressText =
     isRunning && task.progress
-      ? ` ${task.progress.toolUseCount}t·${task.progress.tokenCount}tk`
+      ? ` ${task.progress.toolUseCount}t·${formatLargeNumber(task.progress.tokenCount)}`
       : "";
 
   const durationText = ` ${formatDuration(task.durationMs)}`;

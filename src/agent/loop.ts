@@ -22,7 +22,7 @@ import { ThinkingManager } from "../llm/thinking.ts";
 import { SessionState } from "../session/state.ts";
 import { getLogger, getSessionMetrics, getPerfTimer } from "../debug/index.ts";
 import type { HookSystem } from "../hook/system.ts";
-import { LoopDetector, LOOP_RECOVERY_PROMPT } from "./loop-detection.ts";
+import { LoopDetector, LOOP_RECOVERY_PROMPT, LOOP_RECOVERY_FINAL_PROMPT } from "./loop-detection.ts";
 import type { LLMLoopCheckResult } from "./loop-detection.ts";
 import { isAbortError } from "../llm/errors.ts";
 import { yieldMissingToolResults, collectToolResultIdsFromBlocks } from "./tool-result-guard.ts";
@@ -146,6 +146,32 @@ export class AgentLoopRunner {
     // 尝试恢复
     const canRecover = this.loopDetector.tryRecover();
     if (!canRecover) {
+      // 恢复次数耗尽。按 recoveryExhaustedAction 决定（与 query/loop.ts 一致）：
+      //  - continue（默认，保成功优先）：注入最终强提示 + 软重置后继续放行，不终止任务。
+      //  - terminate（opt-in 回退旧行为）：补齐孤儿后终止。
+      if (this.loopDetector.shouldContinueAfterExhausted()) {
+        log.warn("AGENT", "循环恢复次数耗尽，注入最终提示后继续放行（不终止任务）");
+        const integrity = checkMessageHistoryIntegrity(ctxMgr.getMessages());
+        const orphanResults: ContentBlock[] = integrity.orphans.map(o => ({
+          type: "tool_result" as const,
+          tool_use_id: o.id,
+          content: "[系统] 检测到非生产性循环，此工具调用未执行；这是最后提醒，请改换思路或如实告知用户。",
+          is_error: true,
+        }));
+        if (orphanResults.length > 0) {
+          log.warn(
+            "AGENT",
+            `耗尽后继续放行时补齐 ${orphanResults.length} 个未应答 tool_use 的占位 tool_result（防孤儿 → 400）`,
+          );
+        }
+        ctxMgr.addMessage({
+          role: "user",
+          content: [...orphanResults, { type: "text", text: LOOP_RECOVERY_FINAL_PROMPT }],
+        });
+        this.loopDetector.softResetForContinue();
+        return true;
+      }
+
       log.warn("AGENT", "循环恢复次数耗尽，终止循环");
       // 即使放弃恢复，也必须补齐未应答 tool_use 的占位 tool_result——
       // 否则孤儿残留在历史里，下一条用户消息发送时仍会 OpenAI 400。

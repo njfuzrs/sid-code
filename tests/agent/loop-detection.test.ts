@@ -10,6 +10,8 @@ import {
   LoopDetector,
   DEFAULT_LOOP_CONFIG,
   LOOP_RECOVERY_PROMPT,
+  LOOP_RECOVERY_FINAL_PROMPT,
+  resolveLoopConfig,
 } from "../../src/agent/loop-detection.ts";
 
 // 循环检测默认禁用（对齐 claude-code），测试需显式开启
@@ -361,5 +363,113 @@ describe("LoopDetector", () => {
     expect(LOOP_RECOVERY_PROMPT.length).toBeGreaterThan(0);
     expect(LOOP_RECOVERY_PROMPT).toContain("循环");
     expect(LOOP_RECOVERY_PROMPT).toContain("合法的分段读取");
+  });
+});
+
+describe("resolveLoopConfig（env 配置化，保成功优先）", () => {
+  const ENV_KEYS = [
+    "SID_LOOP_MAX_RECOVERY",
+    "SID_LOOP_TOOL_CALL_THRESHOLD",
+    "SID_LOOP_SHAPE_THRESHOLD",
+    "SID_LOOP_SHAPE_WINDOW",
+    "SID_LOOP_EXHAUSTED_ACTION",
+  ];
+  const saved: Record<string, string | undefined> = {};
+  beforeEach(() => {
+    for (const k of ENV_KEYS) {
+      saved[k] = process.env[k];
+      delete process.env[k];
+    }
+  });
+  afterAll(() => {
+    for (const k of ENV_KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
+  test("未设置任何 env 时回退到 DEFAULT_LOOP_CONFIG", () => {
+    expect(resolveLoopConfig()).toEqual(DEFAULT_LOOP_CONFIG);
+  });
+
+  test("默认 recoveryExhaustedAction 为 continue（保成功优先）", () => {
+    expect(resolveLoopConfig().recoveryExhaustedAction).toBe("continue");
+    expect(DEFAULT_LOOP_CONFIG.recoveryExhaustedAction).toBe("continue");
+  });
+
+  test("env 覆盖各阈值", () => {
+    process.env.SID_LOOP_MAX_RECOVERY = "10";
+    process.env.SID_LOOP_TOOL_CALL_THRESHOLD = "8";
+    process.env.SID_LOOP_SHAPE_THRESHOLD = "12";
+    process.env.SID_LOOP_SHAPE_WINDOW = "20";
+    const cfg = resolveLoopConfig();
+    expect(cfg.maxRecoveryAttempts).toBe(10);
+    expect(cfg.toolCallThreshold).toBe(8);
+    expect(cfg.toolShapeThreshold).toBe(12);
+    expect(cfg.toolShapeWindow).toBe(20);
+  });
+
+  test("仅显式 terminate 才回退旧的耗尽即终止", () => {
+    process.env.SID_LOOP_EXHAUSTED_ACTION = "terminate";
+    expect(resolveLoopConfig().recoveryExhaustedAction).toBe("terminate");
+    process.env.SID_LOOP_EXHAUSTED_ACTION = "anything-else";
+    expect(resolveLoopConfig().recoveryExhaustedAction).toBe("continue");
+  });
+
+  test("非法值（NaN / ≤0）静默忽略，不会让限制变得更严", () => {
+    process.env.SID_LOOP_MAX_RECOVERY = "0";
+    process.env.SID_LOOP_TOOL_CALL_THRESHOLD = "-5";
+    process.env.SID_LOOP_SHAPE_THRESHOLD = "abc";
+    const cfg = resolveLoopConfig();
+    expect(cfg.maxRecoveryAttempts).toBe(DEFAULT_LOOP_CONFIG.maxRecoveryAttempts);
+    expect(cfg.toolCallThreshold).toBe(DEFAULT_LOOP_CONFIG.toolCallThreshold);
+    expect(cfg.toolShapeThreshold).toBe(DEFAULT_LOOP_CONFIG.toolShapeThreshold);
+  });
+});
+
+describe("LoopDetector 耗尽处置（continue vs terminate）", () => {
+  test("默认 continue：shouldContinueAfterExhausted 返回 true", () => {
+    const detector = new LoopDetector({ ...DEFAULT_LOOP_CONFIG, maxRecoveryAttempts: 2 });
+    expect(detector.shouldContinueAfterExhausted()).toBe(true);
+  });
+
+  test("terminate：shouldContinueAfterExhausted 返回 false", () => {
+    const detector = new LoopDetector({
+      ...DEFAULT_LOOP_CONFIG,
+      maxRecoveryAttempts: 2,
+      recoveryExhaustedAction: "terminate",
+    });
+    expect(detector.shouldContinueAfterExhausted()).toBe(false);
+  });
+
+  test("循环检测禁用时 shouldContinueAfterExhausted 恒为 true（不误杀）", () => {
+    delete process.env.SID_ENABLE_LOOP_DETECTION;
+    const detector = new LoopDetector({
+      ...DEFAULT_LOOP_CONFIG,
+      recoveryExhaustedAction: "terminate",
+    });
+    expect(detector.shouldContinueAfterExhausted()).toBe(true);
+    process.env.SID_ENABLE_LOOP_DETECTION = "1"; // 恢复，供后续测试用
+  });
+
+  test("softResetForContinue 归零恢复计数但保留 turnCount", () => {
+    const detector = new LoopDetector({ ...DEFAULT_LOOP_CONFIG, maxRecoveryAttempts: 2 });
+    detector.recordTurn();
+    detector.recordTurn();
+    detector.tryRecover();
+    detector.tryRecover();
+    expect(detector.getRecoveryAttempts()).toBe(2);
+    detector.softResetForContinue();
+    // 恢复计数归零 → 可以再次恢复（任务不会因一次耗尽而永久终止）
+    expect(detector.getRecoveryAttempts()).toBe(0);
+    expect(detector.tryRecover()).toBe(true);
+    // turnCount 保留（不打乱 LLM 认知检测节奏）
+    expect(detector.getTurnCount()).toBe(2);
+  });
+
+  test("LOOP_RECOVERY_FINAL_PROMPT 非空且把停止决定权交给模型", () => {
+    expect(LOOP_RECOVERY_FINAL_PROMPT.length).toBeGreaterThan(0);
+    expect(LOOP_RECOVERY_FINAL_PROMPT).toContain("最后");
+    expect(LOOP_RECOVERY_FINAL_PROMPT).toContain("不会强行终止");
   });
 });

@@ -375,7 +375,14 @@ export function defaultConfig(): Config {
     anthropicKey: "",
     openaiKey: "",
     baseURL: "",
-    maxTokens: 16384,
+    // maxTokens 是「最后兜底」：正常路径下会被四重覆盖——
+    //   availableModels.maxOutputTokens（:810）> CLI/env/file 显式值（:744）> 模型推导（:746-748）。
+    // 仅当用户既没配 availableModels、也没在任何地方显式给 maxTokens、且模型推导也失败时，才用到这里。
+    // 旧值 16384 是 Claude 3 时代输出上限，会把今天 32K~128K 输出能力的模型阉割掉；
+    // 不存在对所有模型都"安全且不阉割"的硬编码值（各家 max_output 差异大），故取一个
+    // 主流模型普遍可接受、又不会过度保守的兜底；输出上限低于此值的模型，API 会自行截到合法值。
+    // 想放宽/收紧无需改源码：设 SID_MAX_OUTPUT_TOKENS（见 loadFromEnv）。
+    maxTokens: 32768,
     availableModels: [],
     permissionMode: "default",
     skipPermissions: false,
@@ -659,6 +666,15 @@ function loadFromEnv(): Partial<Config> {
     anthropicKey: env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN,
     openaiKey: env.OPENAI_API_KEY || env.SID_CODE_LLM_API_KEY,
   };
+
+  // maxTokens（输出上限）可经 env 显式配置，无需改源码即可放宽/收紧。
+  // 设置后会被视为"用户显式配置"（:744），从而跳过模型自动推导、以此值为准。
+  // 非法值（NaN / ≤0）静默忽略，回退到默认/推导链路。
+  const envMaxTokens = env.SID_MAX_OUTPUT_TOKENS;
+  if (envMaxTokens !== undefined && envMaxTokens !== "") {
+    const n = Number.parseInt(envMaxTokens, 10);
+    if (Number.isFinite(n) && n > 0) base.maxTokens = n;
+  }
 
   // trace 环境变量
   if (env.SID_CODE_TRACE === "1" || env.SID_CODE_TRACE === "true") {

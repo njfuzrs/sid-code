@@ -22,6 +22,12 @@ export interface LoopDetectionConfig {
   toolShapeThreshold: number;
   /** 工具 shape 滑动窗口大小（最近 N 次内统计 shape 出现次数） */
   toolShapeWindow: number;
+  /** 恢复次数耗尽后的处置策略：
+   *  - "continue"（默认）：注入最终强提示后**继续放行**，把"停不停"交给模型自己。
+   *    真死循环模型会 end_turn / 用户会 ESC / costLimit 会兜底；被误判的正当长任务能存活。
+   *    这是"优先保成功、不首先防坏"的取舍——避免一次循环误判废掉跑了几十轮的复杂任务。
+   *  - "terminate"：旧行为，耗尽即终止整个任务（防失控优先，弱模型场景可 opt-in 回退）。 */
+  recoveryExhaustedAction: "continue" | "terminate";
 }
 
 /** 默认配置 */
@@ -32,7 +38,49 @@ export const DEFAULT_LOOP_CONFIG: LoopDetectionConfig = {
   maxRecoveryAttempts: 3,    // 最多恢复 3 次（方案 C-1: 2→3，避免正当任务被一次误判掐死）
   toolShapeThreshold: 5,     // ADR-020 §2.2: 同 shape 在窗口内出现 5 次即判循环（hrn_006 grep 不同 pattern 探测）
   toolShapeWindow: 8,        // 最近 8 次工具调用窗口
+  recoveryExhaustedAction: "continue", // 默认继续放行（保成功优先），见字段注释
 };
+
+/** 从环境变量解析循环检测配置，未设置的项回退到 DEFAULT_LOOP_CONFIG。
+ *  设计意图：阈值不再写死在代码里——用户面对越来越长的任务 / 越来越强的模型时，
+ *  可放宽限制而无需改源码（CLAUDE.md「有必要的可以做配置化」）。所有默认值保持现状，
+ *  仅在显式设置 env 时覆盖，且对非法值（NaN / ≤0）静默回退默认，绝不因配错而更严。
+ *
+ *  - SID_LOOP_MAX_RECOVERY        → maxRecoveryAttempts（恢复尝试次数）
+ *  - SID_LOOP_TOOL_CALL_THRESHOLD → toolCallThreshold（连续相同调用阈值）
+ *  - SID_LOOP_SHAPE_THRESHOLD     → toolShapeThreshold（同 shape 探测阈值）
+ *  - SID_LOOP_SHAPE_WINDOW        → toolShapeWindow（shape 滑动窗口）
+ *  - SID_LOOP_EXHAUSTED_ACTION    → recoveryExhaustedAction（"terminate" 回退旧的耗尽即终止） */
+export function resolveLoopConfig(): LoopDetectionConfig {
+  const cfg: LoopDetectionConfig = { ...DEFAULT_LOOP_CONFIG };
+
+  const readPositiveInt = (envName: string): number | undefined => {
+    const raw = process.env[envName];
+    if (raw === undefined || raw === "") return undefined;
+    const n = Number.parseInt(raw, 10);
+    // 非法或非正数静默忽略——配错只回退默认，不会让限制变得更严而误杀任务
+    return Number.isFinite(n) && n > 0 ? n : undefined;
+  };
+
+  const maxRecovery = readPositiveInt("SID_LOOP_MAX_RECOVERY");
+  if (maxRecovery !== undefined) cfg.maxRecoveryAttempts = maxRecovery;
+
+  const toolCall = readPositiveInt("SID_LOOP_TOOL_CALL_THRESHOLD");
+  if (toolCall !== undefined) cfg.toolCallThreshold = toolCall;
+
+  const shapeThreshold = readPositiveInt("SID_LOOP_SHAPE_THRESHOLD");
+  if (shapeThreshold !== undefined) cfg.toolShapeThreshold = shapeThreshold;
+
+  const shapeWindow = readPositiveInt("SID_LOOP_SHAPE_WINDOW");
+  if (shapeWindow !== undefined) cfg.toolShapeWindow = shapeWindow;
+
+  // 仅显式设为 "terminate" 才回退旧的耗尽即终止；其余值（含未设置）一律 continue
+  if (process.env.SID_LOOP_EXHAUSTED_ACTION === "terminate") {
+    cfg.recoveryExhaustedAction = "terminate";
+  }
+
+  return cfg;
+}
 
 /** 循环恢复提示词
  *  注：给出**具体**的下一步建议，而不只是"换一种方法"，避免模型反复尝试相同变体。 */
@@ -45,6 +93,18 @@ export const LOOP_RECOVERY_PROMPT = `系统检测到你陷入了非生产性循�
 4. **诚实兜底**：如果反复确认目标文件/函数不存在，直接告诉用户"未找到"，不要继续无效搜索。
 
 如果你其实在对**同一个文件的不同部分**做合法的分段读取、多点编辑或迭代验证（这是正常的开发行为），请明确说明你的当前进展，然后继续完成剩余工作。只有在反复尝试完全相同的参数却无任何进展时才需要换思路。`;
+
+/** 恢复次数耗尽后的「最终提示」（recoveryExhaustedAction = "continue" 时注入）
+ *  与 LOOP_RECOVERY_PROMPT 的区别：这是最后一次提醒，语气更重，并明确把"是否停止"的
+ *  决定权交还模型——不再由系统强行 return 终止任务。这样真死循环模型会自己 end_turn，
+ *  而被误判的正当长任务得以存活，符合「优先保成功、不首先防坏」。 */
+export const LOOP_RECOVERY_FINAL_PROMPT = `系统已多次（达到上限）提示你疑似陷入非生产性循环，但仍检测到等价的重复调用。
+
+这是最后一次提醒，请务必认真对待：
+1. **如果你确实卡住了**：停止重复尝试，直接如实告诉用户当前进展、卡在哪里、你判断为什么走不通，由用户决定下一步。不要再用等价参数重复调用同一工具。
+2. **如果你在做合法的分段/批量/迭代工作**（不同文件、不同区间、不同编辑点）：用一句话说明当前进展，然后继续完成剩余工作。
+
+系统不会强行终止你——是否继续由你判断。但请不要再无意义地重复同一个无效调用。`;
 
 /** 把工具输入规范化为稳定字符串，用于循环检测。
  *  目的：让 {"a":1,"b":2} 和 {"b":2,"a":1} 哈希一致——LLM 输出工具参数顺序经常变化，
@@ -361,7 +421,7 @@ export class LoopDetector {
   /** 循环检测是否已禁用（对齐 claude-code，默认禁用，opt-in 开启） */
   private _disabled = false;
 
-  constructor(config: LoopDetectionConfig = DEFAULT_LOOP_CONFIG) {
+  constructor(config: LoopDetectionConfig = resolveLoopConfig()) {
     if (!isLoopDetectionEnabled()) {
       this._disabled = true;
       this.config = config;
@@ -440,6 +500,18 @@ export class LoopDetector {
     this.lastLLMCheckTurn = 0;
   }
 
+  /** 耗尽后继续放行时的软重置：清空各 detector 窗口 + 归零 recoveryAttempts，
+   *  但**保留 turnCount**（真实轮次不应因循环恢复而清零，否则打乱 LLM 认知检测节奏）。
+   *  用于 recoveryExhaustedAction = "continue"：注入最终提示后让检测器回到干净状态，
+   *  避免下一轮立刻又判耗尽而反复刷屏；真死循环会重新累积、再次提示，但永不终止任务。 */
+  softResetForContinue(): void {
+    if (this._disabled) return;
+    this.toolCallDetector.reset();
+    this.toolShapeDetector.reset();
+    this.contentDetector.reset();
+    this.recoveryAttempts = 0;
+  }
+
   /** 尝试恢复，返回是否可以继续（未超过最大恢复次数） */
   tryRecover(): boolean {
     if (this._disabled) return true;
@@ -469,6 +541,13 @@ export class LoopDetector {
   /** 获取最大恢复次数 */
   getMaxRecoveryAttempts(): number {
     return this._disabled ? 0 : this.config.maxRecoveryAttempts;
+  }
+
+  /** 恢复次数耗尽后是否应继续放行（而非终止任务）。
+   *  默认 "continue"——把"停不停"交给模型自己，优先保成功。 */
+  shouldContinueAfterExhausted(): boolean {
+    if (this._disabled) return true;
+    return this.config.recoveryExhaustedAction !== "terminate";
   }
 
   /** 获取当前轮次数 */

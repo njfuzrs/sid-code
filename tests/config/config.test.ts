@@ -10,7 +10,7 @@ describe("config", () => {
     const cfg = defaultConfig();
     expect(cfg.provider).toBe("anthropic");
     expect(cfg.model).toBe("claude-sonnet-4-20250514");
-    expect(cfg.maxTokens).toBe(16384);
+    expect(cfg.maxTokens).toBe(32768);
     expect(cfg.print).toBe(false);
     expect(cfg.yesMode).toBe(false);
     expect(cfg.hooks).toEqual({});

@@ -18,6 +18,7 @@ import { theme } from "../semantic-colors.ts";
 import { useUIState } from "../contexts/UIStateContext.tsx";
 import { useConfig } from "../contexts/ConfigContext.tsx";
 import { useSettings } from "../contexts/SettingsContext.tsx";
+import { formatLargeNumber } from "../utils/format-number.ts";
 
 /** 缩短路径：~ 替换 home，超长时只保留最后两级。导出供测试与 Footer 复用。 */
 export function shortenPath(p: string, maxLen = 25, home = homedir()): string {
@@ -163,7 +164,7 @@ export function useStatusLineData(input: StatusLineInput): StatusLineData {
       isDebug: debug,
       isRaw: !renderMarkdown,
       isVim: !!settings.vimMode,
-      tokenText: `${usage.inputTokens}↓ ${usage.outputTokens}↑`,
+      tokenText: `${formatLargeNumber(usage.inputTokens)}↓ ${formatLargeNumber(usage.outputTokens)}↑`,
       cache: deriveCacheMetrics(usage, model),
       cost: deriveCost(costUSD, costLimit, model),
       // 没有任何用户交互（API 调用）时不显示上下文占用，避免系统开销造成虚假百分比

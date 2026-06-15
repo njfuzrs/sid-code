@@ -12,6 +12,7 @@ import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
 import type { HistoryItem } from "../types.ts";
 import { ToolCallStatus } from "../types.ts";
+import { formatLargeNumber } from "../utils/format-number.ts";
 import { UserMessage } from "./messages/UserMessage.tsx";
 import { CommandMessage } from "./messages/CommandMessage.tsx";
 import { AssistantMessage } from "./messages/AssistantMessage.tsx";
@@ -196,8 +197,8 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
         <Box flexDirection="column" paddingX={1}>
           <Text color={theme.text.accent} bold>会话统计</Text>
           <Text dimColor>时长: {item.duration}</Text>
-          <Text dimColor>输入 tokens: {item.inputTokens.toLocaleString()}</Text>
-          <Text dimColor>输出 tokens: {item.outputTokens.toLocaleString()}</Text>
+          <Text dimColor>输入 tokens: {formatLargeNumber(item.inputTokens)}</Text>
+          <Text dimColor>输出 tokens: {formatLargeNumber(item.outputTokens)}</Text>
           <Text dimColor>费用: ${item.costUSD.toFixed(4)}</Text>
         </Box>
       );
