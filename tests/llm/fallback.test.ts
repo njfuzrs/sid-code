@@ -443,6 +443,76 @@ describe("ModelFallback 增强", () => {
     expect(adjustedValues[0]).not.toBe(20000);
   });
 
+  // ─── #8 溢出恢复 floor 按 contextLimit 比例 + 可配置 ───
+  test("#8：大窗口下极小剩余空间默认放弃 max_tokens 恢复（floor 按比例提高）", async () => {
+    // contextLimit=1M → floor=max(3000, 1M×5%)=50000。
+    // 溢出后剩余可用仅 ~4000（< 50000）→ tryRecoverMaxTokens 返回 null，不做 max_tokens 调整。
+    let maxTokensAdjusted = false;
+    const provider: Provider = {
+      name: () => "mock",
+      defaultModel: () => "mock-model",
+      async *sendMessageStream(): AsyncIterable<StreamEvent> {
+        yield {
+          type: "error",
+          error: { message: "input length and max_tokens exceed context limit: 995000 + 20000 > 1000000" },
+        };
+      },
+    };
+
+    const fallback = new ModelFallback(
+      { contextLimit: 1_000_000 },
+      { onMaxTokensAdjusted: () => { maxTokensAdjusted = true; } },
+    );
+    const events = await collectEvents(
+      fallback.executeWithFallback(provider, { ...defaultParams, maxTokens: 20000 }),
+    );
+
+    // floor 太高 → 未做 max_tokens 恢复（错误透出，由上层处理）
+    expect(maxTokensAdjusted).toBe(false);
+    expect(events.some(e => e.type === "error")).toBe(true);
+  });
+
+  test("#8：SID_RECOVERY_FLOOR_TOKENS 放宽 floor 后可从同样的溢出中恢复", async () => {
+    const saved = process.env.SID_RECOVERY_FLOOR_TOKENS;
+    try {
+      process.env.SID_RECOVERY_FLOOR_TOKENS = "3000"; // 显式放宽到 3000
+      let callCount = 0;
+      const adjustedValues: number[] = [];
+      const provider: Provider = {
+        name: () => "mock",
+        defaultModel: () => "mock-model",
+        sendMessageStream(params: SendParams): AsyncIterable<StreamEvent> {
+          callCount++;
+          if (callCount === 1) {
+            async function* gen(): AsyncIterable<StreamEvent> {
+              yield {
+                type: "error",
+                error: { message: "input length and max_tokens exceed context limit: 995000 + 20000 > 1000000" },
+              };
+            }
+            return gen();
+          }
+          adjustedValues.push(params.maxTokens);
+          return successProvider().sendMessageStream(defaultParams);
+        },
+      };
+
+      const fallback = new ModelFallback({ contextLimit: 1_000_000 });
+      const events = await collectEvents(
+        fallback.executeWithFallback(provider, { ...defaultParams, maxTokens: 20000 }),
+      );
+
+      // floor 放宽到 3000 后，剩余 ~4000 ≥ 3000 → 恢复成功
+      expect(callCount).toBe(2);
+      expect(events.some(e => e.type === "message_stop")).toBe(true);
+      expect(adjustedValues[0]).toBeGreaterThanOrEqual(3000);
+      expect(adjustedValues[0]).toBeLessThan(20000);
+    } finally {
+      if (saved === undefined) delete process.env.SID_RECOVERY_FLOOR_TOKENS;
+      else process.env.SID_RECOVERY_FLOOR_TOKENS = saved;
+    }
+  });
+
   // ─── 529 连续计数 ───
   test("流式阶段连续 3 次 529 触发降级", async () => {
     let callCount = 0;

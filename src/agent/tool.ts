@@ -40,8 +40,8 @@ export class SubAgentTool implements Tool {
    *  3 的并发可能成为瓶颈。非法值（NaN/≤0）静默回退默认 3，绝不因配错而更严。 */
   static readonly MAX_CONCURRENT = SubAgentTool.resolveMaxConcurrent();
 
-  private static resolveMaxConcurrent(): number {
-    const raw = process.env.SID_SUBAGENT_MAX_CONCURRENT;
+  /** 解析子代理并发上限。导出 raw 入参便于测试（默认读 env）。 */
+  static resolveMaxConcurrent(raw: string | undefined = process.env.SID_SUBAGENT_MAX_CONCURRENT): number {
     if (raw === undefined || raw === "") return 3;
     const n = Number.parseInt(raw, 10);
     return Number.isFinite(n) && n > 0 ? n : 3;

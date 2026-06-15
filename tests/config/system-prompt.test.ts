@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect, beforeEach } from "bun:test";
-import { buildSystemPrompt, clearPromptCache } from "../../src/config/system-prompt.ts";
+import { buildSystemPrompt, clearPromptCache, resolvePromptMaxTokens } from "../../src/config/system-prompt.ts";
 import type { Tool } from "../../src/tool/types.ts";
 
 /** 创建一个简单的测试工具 */
@@ -218,5 +218,32 @@ describe("buildSystemPrompt", () => {
     const prompt2 = buildSystemPrompt(ctx);
     // 内容相同但确实重新构建了（无法直接验证，但至少不报错）
     expect(prompt1).toBe(prompt2);
+  });
+});
+
+describe("#11 resolvePromptMaxTokens（系统提示词预算动态化）", () => {
+  test("显式 ctx.maxTokens 优先", () => {
+    expect(resolvePromptMaxTokens({ tools: [], maxTokens: 12345 })).toBe(12345);
+  });
+
+  test("无显式值时按模型 contextWindow 的 90% 推导（1M 窗口不再卡 180K）", () => {
+    // deepseek 系 1M 窗口 → 0.9M，远大于历史写死的 180000
+    expect(resolvePromptMaxTokens({ tools: [], model: "deepseek-v4-pro" })).toBe(900_000);
+    // Claude 200K → 180K（恰好与历史值一致，验证不退步）
+    expect(resolvePromptMaxTokens({ tools: [], model: "claude-sonnet-4-20250514" })).toBe(180_000);
+  });
+
+  test("availableModels 声明的 contextWindow 是权威源", () => {
+    expect(
+      resolvePromptMaxTokens({
+        tools: [],
+        model: "my-custom",
+        availableModels: [{ name: "my-custom", contextWindow: 500_000 }],
+      }),
+    ).toBe(450_000);
+  });
+
+  test("无 model 时回退历史安全值 180000", () => {
+    expect(resolvePromptMaxTokens({ tools: [] })).toBe(180_000);
   });
 });

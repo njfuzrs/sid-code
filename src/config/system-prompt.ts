@@ -151,8 +151,9 @@ export function clearPromptCache(): void {
 /** 推导系统提示词的 token 预算。
  *  优先用上层显式传入的 ctx.maxTokens；否则按当前模型 contextWindow 的 90% 动态算
  *  （而非写死 180000——那对 1M 窗口模型只用到 18% 就截断，对未知小窗口模型又可能超限）。
- *  拿不到模型窗口时（无 model）回退到 180000 这个历史安全值。 */
-function resolvePromptMaxTokens(ctx: SystemPromptContext): number {
+ *  拿不到模型窗口时（无 model）回退到 180000 这个历史安全值。
+ *  导出供测试直接断言推导逻辑（无需构造超长内容触发截断）。 */
+export function resolvePromptMaxTokens(ctx: SystemPromptContext): number {
   if (typeof ctx.maxTokens === "number" && ctx.maxTokens > 0) return ctx.maxTokens;
   if (ctx.model) {
     const window = new TokenEstimator().getContextLimit(ctx.model, ctx.availableModels);

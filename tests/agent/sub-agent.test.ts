@@ -275,6 +275,19 @@ describe("SubAgent 超时控制", () => {
 // ─── 并发控制 ───
 
 describe("SubAgentTool 并发控制", () => {
+  test("#13：resolveMaxConcurrent 默认 3，env 可放宽，非法值回退默认", () => {
+    // 默认（未设置）
+    expect(SubAgentTool.resolveMaxConcurrent(undefined)).toBe(3);
+    expect(SubAgentTool.resolveMaxConcurrent("")).toBe(3);
+    // 显式放宽
+    expect(SubAgentTool.resolveMaxConcurrent("8")).toBe(8);
+    expect(SubAgentTool.resolveMaxConcurrent("16")).toBe(16);
+    // 非法值静默回退默认 3，绝不因配错而更严
+    expect(SubAgentTool.resolveMaxConcurrent("0")).toBe(3);
+    expect(SubAgentTool.resolveMaxConcurrent("-2")).toBe(3);
+    expect(SubAgentTool.resolveMaxConcurrent("abc")).toBe(3);
+  });
+
   test("超过并发上限时拒绝执行", async () => {
     const provider = new MockProvider();
     const toolRegistry = new Registry();

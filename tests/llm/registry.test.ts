@@ -32,6 +32,22 @@ describe("ProviderRegistry", () => {
     expect(registry.getCurrentModel()).toBe("my-model");
   });
 
+  test("#9：getContextWindow 优先用 availableModels 声明的 contextWindow", () => {
+    const config = testConfig({
+      model: "my-1m-model",
+      availableModels: [{ name: "my-1m-model", provider: "openai", contextWindow: 1_000_000 }],
+    });
+    const registry = new ProviderRegistry(config);
+    // 子代理据此派生窗口，避免被写死 50000 而对大任务过早压缩
+    expect(registry.getContextWindow()).toBe(1_000_000);
+  });
+
+  test("#9：getContextWindow 未声明时回退到内置/启发式（deepseek 系 1M）", () => {
+    const config = testConfig({ model: "deepseek-v4-pro", availableModels: [] });
+    const registry = new ProviderRegistry(config);
+    expect(registry.getContextWindow()).toBe(1_000_000);
+  });
+
   test("getModelForSubAgent 无映射时返回主模型", () => {
     const config = testConfig({ model: "main-model" });
     const registry = new ProviderRegistry(config);
