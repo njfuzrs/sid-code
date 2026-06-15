@@ -1969,6 +1969,7 @@ export class App {
           clearPendingInput();
         } catch (err: any) {
           const aborted = isAbortError(err);
+          let restoredInput = false;
           if (aborted) {
             log.info("TUI:CB", "当前响应已被用户中断");
             // A4：仅"用户主动 ESC 取消"（reason==='user-cancel'，A6）且尚无实质响应时,
@@ -1977,6 +1978,7 @@ export class App {
             if (reason === "user-cancel" && this.shouldRestoreCanceledInput()) {
               this.ctxMgr.rewindTurns(1); // 回退本轮 user 输入及其后残留消息
               markForRestore();
+              restoredInput = true;
               log.info("TUI:CB", "已回退被取消的输入轮次,输入框将自动恢复原文");
             } else {
               clearPendingInput();
@@ -2000,6 +2002,23 @@ export class App {
             contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / this.ctxMgr.getMaxTokens()) * 100),
           });
           addTransientStatusMessage("error", message, aborted ? 1500 : 5000);
+
+          // 中断给出路：用户主动中断后，留一条持久 hint 引导「下一步该做什么」，
+          // 不靠瞬态状态消息（会自动消失，用户回神时已无痕迹）。对标 cc 的
+          // "Request interrupted · Tell Claude what to do differently"。
+          if (aborted) {
+            historyIdCounter += 1;
+            const guideText = restoredInput
+              ? "已中断，并恢复了你刚才的输入 — 可修改后重新发送，或按 esc 清空。"
+              : "已中断 — 直接输入新的指令，或告诉我该怎么调整。";
+            const interruptHint: import("./ui/types.ts").HistoryItem = {
+              id: historyIdCounter,
+              type: "hint",
+              text: guideText,
+            };
+            const prevHistoryItems = bridge.current.historyItems;
+            updateState({ historyItems: [...prevHistoryItems, interruptHint] });
+          }
         } finally {
           this.abortController = null;
         }

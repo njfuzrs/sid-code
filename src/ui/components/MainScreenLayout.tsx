@@ -69,6 +69,8 @@ interface MainScreenLayoutProps {
   commands: Array<{ name: string; aliases: string[]; description: string }>;
   cwd: string;
   onSubmit: (text: string) => void;
+  /** 流式中已排队待接续的输入条数 */
+  queuedCount?: number;
 
   // Footer
   permissionMode: string;
@@ -114,6 +116,7 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
   commands,
   cwd,
   onSubmit,
+  queuedCount = 0,
   permissionMode,
   isPlanMode,
   gitBranch,
@@ -245,6 +248,7 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
             isLoading={isLoading}
             commands={commands}
             cwd={cwd}
+            queuedCount={queuedCount}
           />
         )}
 

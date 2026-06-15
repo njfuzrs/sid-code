@@ -10,6 +10,7 @@ import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
 import { theme } from "../semantic-colors.ts";
 import { useUIState } from "../contexts/UIStateContext.tsx";
+import { ARROW_PROMPT } from "../constants/figures.ts";
 
 export const ExitWarning: React.FC = () => {
   const { dialogsVisible, ctrlCPressedOnce, ctrlDPressedOnce } = useUIState();
@@ -22,12 +23,12 @@ export const ExitWarning: React.FC = () => {
     <>
       {ctrlCPressedOnce && (
         <Box marginTop={0}>
-          <Text color={theme.status.warning}>再次按 Ctrl+C 退出</Text>
+          <Text color={theme.status.warning}>{`${ARROW_PROMPT} 再按一次 Ctrl+C 退出，或继续输入以取消`}</Text>
         </Box>
       )}
       {ctrlDPressedOnce && (
         <Box marginTop={0}>
-          <Text color={theme.status.warning}>再次按 Ctrl+D 退出</Text>
+          <Text color={theme.status.warning}>{`${ARROW_PROMPT} 再按一次 Ctrl+D 退出，或继续输入以取消`}</Text>
         </Box>
       )}
     </>

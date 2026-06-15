@@ -148,6 +148,8 @@ interface ComposerProps {
   isLoading: boolean;
   commands: CommandInfo[];
   cwd: string;
+  /** 流式中已排队待接续的输入条数 */
+  queuedCount?: number;
 }
 
 export const Composer: React.FC<ComposerProps> = ({
@@ -155,6 +157,7 @@ export const Composer: React.FC<ComposerProps> = ({
   isLoading,
   commands,
   cwd,
+  queuedCount = 0,
 }) => {
   const { stdout } = useStdout();
   const termWidth = stdout.columns || DEFAULT_TERM_WIDTH;
@@ -279,6 +282,7 @@ export const Composer: React.FC<ComposerProps> = ({
         isLoading={isLoading}
         commands={commands}
         cwd={cwd}
+        queuedCount={queuedCount}
       />
     </Box>
   );

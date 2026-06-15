@@ -49,22 +49,22 @@ export const SPINNER_VERBS: readonly string[] = [
  *
  * @param previous 上一个返回的动词（含后缀），用于避免连续重复同一词。
  * @param random   随机数生成器，默认 Math.random，便于测试注入。
- * @returns 形如 "思考中..." 的字符串。
+ * @returns 形如 "思考中…" 的字符串。
  */
 export function pickSpinnerVerb(
   previous?: string | null,
   random: () => number = Math.random,
 ): string {
-  if (SPINNER_VERBS.length === 0) return "思考中...";
+  if (SPINNER_VERBS.length === 0) return "思考中…";
 
   // 仅一个候选时直接返回，避免死循环。
   if (SPINNER_VERBS.length === 1) {
-    return `${SPINNER_VERBS[0]}...`;
+    return `${SPINNER_VERBS[0]}…`;
   }
 
   const prevVerb =
-    previous && previous.endsWith("...")
-      ? previous.slice(0, -3)
+    previous && previous.endsWith("…")
+      ? previous.slice(0, -1)
       : previous ?? null;
 
   let verb = SPINNER_VERBS[Math.floor(random() * SPINNER_VERBS.length)];
@@ -72,5 +72,5 @@ export function pickSpinnerVerb(
   for (let i = 0; i < 5 && verb === prevVerb; i++) {
     verb = SPINNER_VERBS[Math.floor(random() * SPINNER_VERBS.length)];
   }
-  return `${verb}...`;
+  return `${verb}…`;
 }

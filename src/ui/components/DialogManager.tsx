@@ -12,7 +12,8 @@ import { useKeypress, KeypressPriority } from "../contexts/KeypressContext.tsx";
 import type { PermissionRequestInfo, ShellConfirmRequestInfo, PlanApprovalRequestInfo } from "../App.tsx";
 import { getToolSummary } from "../ui-utils.ts";
 import { theme } from "../semantic-colors.ts";
-import { BULLET, PLAN_REVIEW } from "../constants/figures.ts";
+import { BULLET, PLAN_REVIEW, WARNING_MARK } from "../constants/figures.ts";
+import { inspectToolCall, inspectCommand } from "../utils/danger-detect.ts";
 import { SettingsDialog } from "./SettingsDialog.tsx";
 import { ModelDialog } from "./ModelDialog.tsx";
 import { ThemeDialog } from "./ThemeDialog.tsx";
@@ -21,6 +22,8 @@ import { ThemeDialog } from "./ThemeDialog.tsx";
 function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
   const detail = getToolSummary(request.toolName, request.toolInput);
   const resolvedRef = useRef(false);
+  // 危险操作差异化：破坏性命令标红 + 警告行 + 仪式感文案（对标 cc destructiveCommandWarning）
+  const danger = inspectToolCall(request.toolName, request.toolInput);
 
   useKeypress(KeypressPriority.Critical, (key) => {
     if (resolvedRef.current) return false;
@@ -32,22 +35,42 @@ function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
     return false;
   });
 
+  // 危险时整体切到 error 红，标题加警告标记；普通时维持 warning 黄。
+  const accentColor = danger.isDangerous ? theme.status.error : theme.status.warning;
+  const title = danger.isDangerous
+    ? `${WARNING_MARK} 危险操作确认`
+    : `${BULLET} 权限请求`;
+
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.status.warning} paddingX={1}>
-      <Text color={theme.status.warning} bold>{BULLET} 权限请求</Text>
+    <Box flexDirection="column" borderStyle="round" borderColor={accentColor} paddingX={1}>
+      <Text color={accentColor} bold>{title}</Text>
       <Box marginTop={0}>
         <Text>  工具: </Text>
         <Text bold>{request.toolName}</Text>
       </Box>
       <Box>
         <Text>  详情: </Text>
-        <Text color={theme.ui.active}>{detail.length > 60 ? detail.slice(0, 57) + "..." : detail}</Text>
+        <Text color={theme.ui.active}>{detail.length > 60 ? detail.slice(0, 57) + "…" : detail}</Text>
       </Box>
-      <Box marginTop={0}>
-        <Text color={theme.status.success} bold> (y)</Text><Text>允许 </Text>
-        <Text color={theme.status.error} bold> (n)</Text><Text>拒绝 </Text>
-        <Text color={theme.status.warning} bold> (a)</Text><Text>始终允许</Text>
-      </Box>
+      {danger.isDangerous && (
+        <Box>
+          <Text color={theme.status.error} bold>  {WARNING_MARK} 此操作不可逆：{danger.label}</Text>
+        </Box>
+      )}
+      {/* 安全默认：危险操作把「拒绝」放在最前并标红强调，避免手滑误允许 */}
+      {danger.isDangerous ? (
+        <Box marginTop={0}>
+          <Text color={theme.status.error} bold> (n)</Text><Text>拒绝（推荐） </Text>
+          <Text color={theme.status.success} bold> (y)</Text><Text>确认执行 </Text>
+          <Text color={theme.status.warning} bold> (a)</Text><Text>始终允许</Text>
+        </Box>
+      ) : (
+        <Box marginTop={0}>
+          <Text color={theme.status.success} bold> (y)</Text><Text>允许 </Text>
+          <Text color={theme.status.error} bold> (n)</Text><Text>拒绝 </Text>
+          <Text color={theme.status.warning} bold> (a)</Text><Text>始终允许</Text>
+        </Box>
+      )}
     </Box>
   );
 }
@@ -55,6 +78,10 @@ function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
 /** Shell 命令确认对话框 */
 function ShellConfirmDialog({ request }: { request: ShellConfirmRequestInfo }) {
   const resolvedRef = useRef(false);
+  // 逐条检测命令危险性，任一命中即整体进入危险态
+  const verdicts = request.commands.map((cmd) => inspectCommand(cmd));
+  const dangerIndex = verdicts.findIndex((v) => v.isDangerous);
+  const isDangerous = dangerIndex >= 0;
 
   useKeypress(KeypressPriority.Critical, (key) => {
     if (resolvedRef.current) return false;
@@ -65,20 +92,37 @@ function ShellConfirmDialog({ request }: { request: ShellConfirmRequestInfo }) {
     return false;
   });
 
+  const accentColor = isDangerous ? theme.status.error : theme.text.accent;
+  const title = isDangerous
+    ? `${WARNING_MARK} 危险 Shell 命令确认`
+    : `${BULLET} Shell 命令确认`;
+
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.text.accent} paddingX={1}>
-      <Text color={theme.text.accent} bold>{BULLET} Shell 命令确认</Text>
+    <Box flexDirection="column" borderStyle="round" borderColor={accentColor} paddingX={1}>
+      <Text color={accentColor} bold>{title}</Text>
       <Text dimColor>自定义命令将执行以下 Shell 命令：</Text>
       {request.commands.map((cmd, i) => (
         <Box key={i} marginLeft={2}>
-          <Text color={theme.ui.active}>$ </Text>
-          <Text>{cmd}</Text>
+          <Text color={verdicts[i].isDangerous ? theme.status.error : theme.ui.active}>$ </Text>
+          <Text color={verdicts[i].isDangerous ? theme.status.error : undefined}>{cmd}</Text>
         </Box>
       ))}
-      <Box marginTop={0}>
-        <Text color={theme.status.success} bold> (y)</Text><Text>确认执行 </Text>
-        <Text color={theme.status.error} bold> (n)</Text><Text>取消</Text>
-      </Box>
+      {isDangerous && (
+        <Box>
+          <Text color={theme.status.error} bold>{WARNING_MARK} 此操作不可逆：{verdicts[dangerIndex].label}</Text>
+        </Box>
+      )}
+      {isDangerous ? (
+        <Box marginTop={0}>
+          <Text color={theme.status.error} bold> (n)</Text><Text>取消（推荐） </Text>
+          <Text color={theme.status.success} bold> (y)</Text><Text>确认执行</Text>
+        </Box>
+      ) : (
+        <Box marginTop={0}>
+          <Text color={theme.status.success} bold> (y)</Text><Text>确认执行 </Text>
+          <Text color={theme.status.error} bold> (n)</Text><Text>取消</Text>
+        </Box>
+      )}
     </Box>
   );
 }

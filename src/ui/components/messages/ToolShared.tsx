@@ -163,7 +163,7 @@ export const FocusHint: React.FC<{
   return (
     <Box marginLeft={1} flexShrink={0}>
       <Text color={theme.ui.active} dimColor>
-        (执行中...)
+        (执行中…)
       </Text>
     </Box>
   );

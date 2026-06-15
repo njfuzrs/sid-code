@@ -31,6 +31,7 @@ import type { Message, Usage } from "../llm/types.ts";
 import type { HistoryItem } from "./types.ts";
 import { StreamingState } from "./types.ts";
 import { useTerminalIntegration } from "./hooks/useTerminalIntegration.ts";
+import { useMessageQueue } from "./hooks/useMessageQueue.ts";
 import { messagesToHistoryItems, isPlaceholderMessage, buildStaticItems } from "./history-adapter.ts";
 import { getLogger } from "../debug/logger.ts";
 import { DEFAULT_TERM_WIDTH } from "./markdown.ts";
@@ -186,6 +187,17 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
   const { exit } = useApp();
   const [state, setState] = useState<TUIState>(initialState);
   const isSubmittingRef = useRef(false);
+  // 流式状态 ref 镜像：供 handleSubmit 闭包读取最新值，决定输入入队还是直送
+  const streamingStateRef = useRef<StreamingState>(StreamingState.Idle);
+
+  // 从 TUIState 派生 StreamingState（上移到 handleSubmit 之前，供输入排队判断）
+  const streamingState = useMemo((): StreamingState => {
+    if (state.permissionRequest || state.shellConfirmRequest || state.planApprovalRequest) return StreamingState.WaitingForConfirmation;
+    if (state.isStreaming || state.isToolExecuting) return StreamingState.Responding;
+    return StreamingState.Idle;
+  }, [state.permissionRequest, state.shellConfirmRequest, state.planApprovalRequest, state.isStreaming, state.isToolExecuting]);
+  // 同步到 ref，供 handleSubmit 闭包读取最新流式态
+  streamingStateRef.current = streamingState;
   const log = getLogger();
   const { getScrollState } = useScrollState();
   const { toggleRenderMarkdown, cycleExpandLevel, setShowIsExpandableHint } = useUIActions();
@@ -323,35 +335,51 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     return true;
   });
 
+  // 底层分发：真正把一条输入送到 App 业务层（斜杠命令 / 普通输入）。
+  // 被 handleSubmit（直送）与消息队列（接续）共用。
+  const dispatchInput = useCallback(async (text: string) => {
+    log.info("UI:INPUT", `dispatchInput: "${text.slice(0, 100)}"`);
+    if (text.startsWith("/")) {
+      const [cmd, ...rest] = text.slice(1).split(" ");
+      if (cmd === "exit" || cmd === "quit") { triggerQuit(); return; }
+      await callbacks.onSlashCommand(cmd, rest.join(" "));
+    } else {
+      await callbacks.onUserInput(text);
+    }
+  }, [callbacks]);
+
+  // 多条输入排队：流式响应中提交的普通输入入队，当前轮结束（Idle）后自动接续。
+  // 对标 cc 的 now>next>later——这里实现 next（用户输入排队），系统通知不抢占。
+  const { enqueue, queueLength } = useMessageQueue({
+    streamingState,
+    onSend: dispatchInput,
+  });
+
   const handleSubmit = useCallback(async (text: string) => {
     log.info("UI:INPUT", `handleSubmit: "${text.slice(0, 100)}"`);
     if (isSubmittingRef.current) return;
+
+    // 流式进行中：斜杠命令仍直送（/exit、/clear 等需即时生效），普通输入入队接续。
+    const busy = streamingStateRef.current !== StreamingState.Idle;
+    if (busy && !text.startsWith("/")) {
+      log.info("UI:INPUT", "流式中，输入入队等待接续");
+      enqueue(text);
+      return;
+    }
+
     isSubmittingRef.current = true;
     try {
-      if (text.startsWith("/")) {
-        const [cmd, ...rest] = text.slice(1).split(" ");
-        if (cmd === "exit" || cmd === "quit") { triggerQuit(); return; }
-        await callbacks.onSlashCommand(cmd, rest.join(" "));
-      } else {
-        await callbacks.onUserInput(text);
-      }
+      await dispatchInput(text);
     } catch (err: any) {
       log.error("UI:INPUT", `handleSubmit 异常`, { error: err.message });
     } finally {
       isSubmittingRef.current = false;
     }
-  }, [callbacks, exit]);
+  }, [dispatchInput, enqueue]);
 
   const isEmpty = state.historyItems.length === 0 && !state.isStreaming;
   // 使用响应式终端尺寸（resize 时自动触发重渲染）
   const { width: termWidth, height: rows } = useTerminalDimensions();
-
-  // 从 TUIState 派生 StreamingState
-  const streamingState = useMemo((): StreamingState => {
-    if (state.permissionRequest || state.shellConfirmRequest || state.planApprovalRequest) return StreamingState.WaitingForConfirmation;
-    if (state.isStreaming || state.isToolExecuting) return StreamingState.Responding;
-    return StreamingState.Idle;
-  }, [state.permissionRequest, state.shellConfirmRequest, state.planApprovalRequest, state.isStreaming, state.isToolExecuting]);
 
   // TM2/TM3/TM4：终端集成接线（标题 / tab 状态圆点 / 响应完成通知）。
   // 以 cwd 末段作为窗口标题提示，便于多窗口区分。
@@ -545,6 +573,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           commands={state.commands}
           cwd={state.cwd}
           onSubmit={handleSubmit}
+          queuedCount={queueLength}
           permissionMode={state.permissionMode}
           isPlanMode={state.isPlanMode}
           gitBranch={state.gitBranch}
@@ -585,6 +614,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           commands={state.commands}
           cwd={state.cwd}
           onSubmit={handleSubmit}
+          queuedCount={queueLength}
           permissionMode={state.permissionMode}
           isPlanMode={state.isPlanMode}
           gitBranch={state.gitBranch}

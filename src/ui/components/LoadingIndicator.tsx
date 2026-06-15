@@ -8,10 +8,12 @@
 import React from "react";
 import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
+import useStdout from "../../ink/_vendor/use-stdout.js";
 import { theme } from "../semantic-colors.ts";
 import { StreamingState } from "../types.ts";
 import { useIsAccessibilityEnabled } from "../accessibility/AccessibilityContext.tsx";
 import { BULLET } from "../constants/figures.ts";
+import { DEFAULT_TERM_WIDTH } from "../markdown.ts";
 
 /** Spinner 帧 */
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -49,6 +51,8 @@ export const LoadingIndicator: React.FC<LoadingIndicatorProps> = ({
 }) => {
   // Spinner 动画
   const a11y = useIsAccessibilityEnabled();
+  const { stdout } = useStdout();
+  const termWidth = stdout?.columns || DEFAULT_TERM_WIDTH;
   const [frame, setFrame] = React.useState(0);
   React.useEffect(() => {
     // LY2：无障碍模式下不跑动画——屏幕阅读器会把每帧字符变化读成噪声。
@@ -68,15 +72,26 @@ export const LoadingIndicator: React.FC<LoadingIndicatorProps> = ({
   const spinner = a11y ? BULLET : SPINNER_FRAMES[frame];
   const isWaiting = streamingState === StreamingState.WaitingForConfirmation;
 
-  // 主文本
+  // 主文本（动词，最高优先级，任何宽度都保留）
   const primaryText = toolName
-    ? `执行 ${toolName}...`
-    : currentLoadingPhrase || "思考中...";
+    ? `执行 ${toolName}…`
+    : currentLoadingPhrase || "思考中…";
 
-  // 取消和计时器
-  const cancelAndTimer = showCancelAndTimer && !isWaiting
-    ? `(esc 取消, ${formatDuration(elapsedTime)})`
-    : null;
+  // 窄终端渐进隐藏：按「动词 > 计时 > 取消提示」优先级降级。
+  // - 宽 (≥60)：esc 取消 + 计时全显示
+  // - 中 (40–59)：仅计时，省去 esc 取消文案
+  // - 窄 (<40)：只留动词 + spinner，计时也隐藏
+  const elapsed = formatDuration(elapsedTime);
+  let cancelAndTimer: string | null = null;
+  if (showCancelAndTimer && !isWaiting) {
+    if (termWidth >= 60) {
+      cancelAndTimer = `(esc 取消, ${elapsed})`;
+    } else if (termWidth >= 40) {
+      cancelAndTimer = `(${elapsed})`;
+    } else {
+      cancelAndTimer = null;
+    }
+  }
 
   if (inline) {
     return (

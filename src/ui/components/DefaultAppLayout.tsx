@@ -34,6 +34,7 @@ import type { Usage } from "../../llm/types.ts";
 import type { TodoItem } from "../../tool/todo-write.ts";
 import { theme } from "../semantic-colors.ts";
 import { useFlickerDetector } from "../hooks/useFlickerDetector.ts";
+import { useStreamingScroll } from "../hooks/useStreamingScroll.ts";
 
 interface DefaultAppLayoutProps {
   // 消息区域
@@ -62,6 +63,8 @@ interface DefaultAppLayoutProps {
   commands: Array<{ name: string; aliases: string[]; description: string }>;
   cwd: string;
   onSubmit: (text: string) => void;
+  /** 流式中已排队待接续的输入条数 */
+  queuedCount?: number;
 
   // Footer
   permissionMode: string;
@@ -110,6 +113,7 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
   commands,
   cwd,
   onSubmit,
+  queuedCount = 0,
   permissionMode,
   isPlanMode,
   gitBranch,
@@ -249,6 +253,7 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
             isLoading={isLoading}
             commands={commands}
             cwd={cwd}
+            queuedCount={queuedCount}
           />
         )}
 

@@ -50,6 +50,10 @@ export interface AppConfig {
   firstStartTime?: string;
   hasCompletedOnboarding?: boolean;
 
+  // 提示渐进衰减（对标 cc：onboarding 提示按已显示次数衰减，看够了就不再打扰）
+  // key = hint 标识（如 "shellMode" / "ctrlOExpand"），value = 已显示次数
+  hints?: Record<string, number>;
+
   // 调试配置
   debug: boolean;
   debugLevel: string;
@@ -356,4 +360,28 @@ export function markTrustDialogAccepted(projectPath: string): void {
 /** 检查项目是否已信任 */
 export function isProjectTrusted(projectPath?: string): boolean {
   return getProjectConfig(projectPath).hasTrustDialogAccepted === true;
+}
+
+// ───────────────────────── 提示渐进衰减 ─────────────────────────
+
+/**
+ * 获取某个 hint 的已显示次数（不存在记为 0）。
+ * 用于「显示 N 次后不再打扰」的 onboarding 提示衰减。
+ */
+export function getHintShownCount(hintKey: string): number {
+  return getAppConfig().hints?.[hintKey] ?? 0;
+}
+
+/** 判断某个 hint 是否仍应显示（已显示次数 < 上限）。 */
+export function shouldShowHint(hintKey: string, maxShows: number): boolean {
+  return getHintShownCount(hintKey) < maxShows;
+}
+
+/** 递增某个 hint 的已显示次数（write-through 持久化）。 */
+export function markHintShown(hintKey: string): void {
+  saveAppConfig((config) => {
+    const hints = { ...config.hints };
+    hints[hintKey] = (hints[hintKey] ?? 0) + 1;
+    return { ...config, hints };
+  });
 }

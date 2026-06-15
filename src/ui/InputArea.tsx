@@ -40,17 +40,28 @@ import {
 import { SuggestionsDisplay, type Suggestion } from "./components/SuggestionsDisplay.tsx";
 import { parseInputForHighlighting, renderHighlightedSegments } from "./utils/inputHighlight.tsx";
 import { DEFAULT_TERM_WIDTH } from "./markdown.ts";
+import { getAppConfig } from "../config/app-config.ts";
+import { ARROW_PROMPT } from "./constants/figures.ts";
 
 interface InputAreaProps {
   onSubmit: (text: string) => void;
   isLoading: boolean;
   commands: CommandInfo[];
   cwd: string;
+  /** 流式中已排队待接续的输入条数（>0 时输入框上方提示） */
+  queuedCount?: number;
   /** Shift+Tab 权限模式切换回调（可选） */
   onPermissionModeSwitch?: () => void;
 }
 
-const PLACEHOLDER = "输入消息或 /help 查看命令...";
+/**
+ * 占位符渐进衰减：新用户显示完整引导（含 /help），用熟后（启动 ≥ 5 次）
+ * 收敛为精简提示，不再重复打扰。对标 cc onboarding 提示衰减。
+ */
+function getPlaceholder(): string {
+  const startups = getAppConfig().numStartups ?? 0;
+  return startups < 5 ? "输入消息或 /help 查看命令…" : "输入消息…";
+}
 const PROMPT = "> ";
 const SHELL_PROMPT = "! ";
 /** InputArea 最大可见行数（超过时 viewport 滚动） */
@@ -82,7 +93,7 @@ function renderFirstLineContent(lineText: string, promptLen: number): React.Reac
 
 // ── 组件 ──────────────────────────────────────────────────────────
 
-export function InputArea({ onSubmit, isLoading, commands, cwd, onPermissionModeSwitch }: InputAreaProps) {
+export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0, onPermissionModeSwitch }: InputAreaProps) {
   const lastSubmittedRef = useRef<string>("");
   const log = getLogger();
   const prevLoadingRef = useRef(isLoading);
@@ -320,7 +331,8 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, onPermissionMode
 
   // ── 核心键盘处理 ──────────────────────────────────────────────────
   useKeypress(KeypressPriority.Normal, (key) => {
-    if (isLoading) return false;
+    // 流式响应中仍允许编辑输入：提交走 onSubmit → App 层入队接续（多条输入排队）。
+    // 中断键（esc）由 App 的 High 优先级处理器先行拦截，不会落到这里。
 
     // ── K5 和弦处理（优先于单键，含 Ctrl+K 前缀）──
     // 反向搜索激活时不走和弦（搜索框内 Ctrl+K 无意义）。
@@ -537,38 +549,37 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, onPermissionMode
     );
   }
 
-  if (isLoading) {
-    return (
-      <Box
-        width={termWidth}
-        borderStyle="round"
-        borderColor={theme.ui.dark}
-        borderDimColor
-        paddingX={1}
-      >
-        <Text dimColor>等待响应中...</Text>
-      </Box>
-    );
-  }
+  // 流式响应中不再阻塞输入：继续走下方可编辑渲染分支，
+  // 用户此时提交的输入会被 App 层入队，当前轮结束后自动接续。
 
   const isEmpty = tb.isEmpty();
 
+  // 队列提示：流式中已排队 N 条输入待接续时，在输入框上方一行提示。
+  const queueHint = queuedCount > 0 ? (
+    <Box paddingLeft={1}>
+      <Text color={theme.status.warning}>{`${ARROW_PROMPT} 已排队 ${queuedCount} 条输入，将在当前响应结束后依次发送`}</Text>
+    </Box>
+  ) : null;
+
   if (isEmpty) {
     const currentPrompt = shellModeActive ? SHELL_PROMPT : PROMPT;
-    const currentPlaceholder = shellModeActive ? "输入 shell 命令..." : PLACEHOLDER;
+    const currentPlaceholder = shellModeActive ? "输入 shell 命令…" : getPlaceholder();
 
     return (
-      <Box
-        width={termWidth}
-        borderStyle="round"
-        borderColor={theme.ui.active}
-        paddingX={1}
-      >
-        <Text>
-          <Text color={theme.ui.active} bold>{currentPrompt}</Text>
-          <Text inverse> </Text>
-          <Text dimColor>{currentPlaceholder}</Text>
-        </Text>
+      <Box flexDirection="column" width={termWidth}>
+        {queueHint}
+        <Box
+          width={termWidth}
+          borderStyle="round"
+          borderColor={theme.ui.active}
+          paddingX={1}
+        >
+          <Text>
+            <Text color={theme.ui.active} bold>{currentPrompt}</Text>
+            <Text inverse> </Text>
+            <Text dimColor>{currentPlaceholder}</Text>
+          </Text>
+        </Box>
       </Box>
     );
   }
@@ -651,6 +662,7 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, onPermissionMode
 
   return (
     <Box flexDirection="column">
+      {queueHint}
       {hasSuggestions && (
         <SuggestionsDisplay
           suggestions={suggestions}
