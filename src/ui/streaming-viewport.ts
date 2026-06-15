@@ -74,8 +74,10 @@ export function tailToFit(text: string, width: number, maxLines: number): string
   return last.slice(cut);
 }
 
-/** 底部固定 chrome（Composer + Footer + padding + slack）的基础预留行数 */
-const BASE_CHROME_LINES = 8;
+/** 底部固定 chrome（Composer + Footer + padding + slack）的基础预留行数。
+ *  含动态区 gap={1} 在「流式内容 ↔ 瞬态块 ↔ 输入框」之间引入的留白行，
+ *  偏保守多留 2 行，确保动态区总高仍 < 终端行数（宁可多扣、少给流式几行）。 */
+const BASE_CHROME_LINES = 10;
 
 /**
  * 估算当前动态区底部 chrome 占用的行数，用于从终端总高度中扣除，

@@ -187,76 +187,81 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
         />
       )}
 
-      {/* 底部固定区域：与 gemini-cli mainControlsRef 对齐 */}
+      {/* 底部固定区域：与 gemini-cli mainControlsRef 对齐
+          间距规范（src/ui/CLAUDE.md L2.2）：瞬态块 + 输入框统一由 gap={1} 提供块间 1 行留白，
+          子组件不带外部 margin；Footer / ExitWarning 紧贴输入框底部。 */}
       <Box flexDirection="column" flexShrink={0} flexGrow={0} width={termWidth}>
-        <CopyModeWarning enabled={copyModeEnabled} />
-        <Notifications />
-        <TodoPanel todos={todos} tasks={tasks} termWidth={termWidth} />
-        <ToastDisplay />
+        <Box flexDirection="column" gap={1}>
+          <CopyModeWarning enabled={copyModeEnabled} />
+          <Notifications />
+          <TodoPanel todos={todos} tasks={tasks} termWidth={termWidth} />
+          <ToastDisplay />
 
-        {/* CM3/CM4：LLM 重试/限流提示 */}
-        <RetryStatus status={retryStatus} />
+          {/* CM3/CM4：LLM 重试/限流提示 */}
+          <RetryStatus status={retryStatus} />
 
-        {/* ST8：流式跟随已暂停提示（用户上滚阅读历史时） */}
-        {showFollowPausedHint ? (
-          <Box paddingX={1}>
-            <Text color={theme.status.warning}>
-              ⏸ 已暂停跟随输出（滚动到底部恢复）
-            </Text>
-          </Box>
-        ) : null}
+          {/* ST8：流式跟随已暂停提示（用户上滚阅读历史时） */}
+          {showFollowPausedHint ? (
+            <Box paddingX={1}>
+              <Text color={theme.status.warning}>
+                ⏸ 已暂停跟随输出（滚动到底部恢复）
+              </Text>
+            </Box>
+          ) : null}
 
-        {statusMessage ? (
-          <Box paddingX={1}>
-            <Text color={theme.status.warning}>{statusMessage}</Text>
-          </Box>
-        ) : null}
+          {statusMessage ? (
+            <Box paddingX={1}>
+              <Text color={theme.status.warning}>{statusMessage}</Text>
+            </Box>
+          ) : null}
 
-        {/* 工具确认队列 */}
-        {confirmingTool && (
-          <ToolConfirmationQueue
-            confirmingTool={confirmingTool}
-            terminalWidth={termWidth}
-          />
-        )}
+          {/* 工具确认队列 */}
+          {confirmingTool && (
+            <ToolConfirmationQueue
+              confirmingTool={confirmingTool}
+              terminalWidth={termWidth}
+            />
+          )}
 
-        {/* Composer / 权限对话框 / Plan 审批对话框 / 交互式对话框 互斥显示 */}
-        {permissionRequest || shellConfirmRequest ? (
-          <DialogRenderer
-            permissionRequest={permissionRequest}
-            shellConfirmRequest={shellConfirmRequest ?? null}
-            planApprovalRequest={null}
-          />
-        ) : planApprovalRequest ? (
-          <DialogRenderer
-            permissionRequest={null}
-            shellConfirmRequest={null}
-            planApprovalRequest={planApprovalRequest}
-          />
-        ) : activeDialog === "model" ? (
-          <ModelDialog
-            onClose={onDialogClose}
-            currentModel={model}
-            availableModels={availableModels}
-            onModelSelect={onModelSelect}
-          />
-        ) : activeDialog === "theme" ? (
-          <ThemeDialog
-            onClose={onDialogClose}
-            currentTheme={currentTheme}
-            availableThemes={availableThemes}
-            onThemeSelect={onThemeSelect}
-          />
-        ) : (
-          <Composer
-            onSubmit={onSubmit}
-            isLoading={isLoading}
-            commands={commands}
-            cwd={cwd}
-            queuedCount={queuedCount}
-          />
-        )}
+          {/* Composer / 权限对话框 / Plan 审批对话框 / 交互式对话框 互斥显示 */}
+          {permissionRequest || shellConfirmRequest ? (
+            <DialogRenderer
+              permissionRequest={permissionRequest}
+              shellConfirmRequest={shellConfirmRequest ?? null}
+              planApprovalRequest={null}
+            />
+          ) : planApprovalRequest ? (
+            <DialogRenderer
+              permissionRequest={null}
+              shellConfirmRequest={null}
+              planApprovalRequest={planApprovalRequest}
+            />
+          ) : activeDialog === "model" ? (
+            <ModelDialog
+              onClose={onDialogClose}
+              currentModel={model}
+              availableModels={availableModels}
+              onModelSelect={onModelSelect}
+            />
+          ) : activeDialog === "theme" ? (
+            <ThemeDialog
+              onClose={onDialogClose}
+              currentTheme={currentTheme}
+              availableThemes={availableThemes}
+              onThemeSelect={onThemeSelect}
+            />
+          ) : (
+            <Composer
+              onSubmit={onSubmit}
+              isLoading={isLoading}
+              commands={commands}
+              cwd={cwd}
+              queuedCount={queuedCount}
+            />
+          )}
+        </Box>
 
+        {/* 输入框下方紧贴：退出警告 + 状态栏，无额外空行 */}
         <ExitWarning />
 
         <Footer

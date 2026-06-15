@@ -176,86 +176,91 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
         )}
       </Static>
 
-      {/* 动态区（log-update 只重绘这部分，历史不动） */}
+      {/* 动态区（log-update 只重绘这部分，历史不动）
+          间距规范（src/ui/CLAUDE.md L2.2）：
+          瞬态块 + 输入框统一由外层 gap={1} 提供「块间恰好 1 行留白」，
+          子组件自身不再带外部 margin（否则与 gap 叠加 → 忽宽忽窄）。
+          Footer / ExitWarning 紧贴输入框底部（对标 cc：状态栏贴着输入框，无空行）。 */}
       <Box flexDirection="column" flexShrink={0} width={termWidth} paddingBottom={1}>
-        {/* 空会话：欢迎屏（首条消息到达后即随 Static 滚走） */}
-        {isEmpty ? <EmptyLogo termWidth={termWidth} /> : null}
+        {/* 留白区：瞬态块与输入框，块间恒为 1 行（gap）；空块返回 null 不产生幻影间距 */}
+        <Box flexDirection="column" gap={1}>
+          {/* 空会话：欢迎屏（首条消息到达后即随 Static 滚走） */}
+          {isEmpty ? <EmptyLogo termWidth={termWidth} /> : null}
 
-        {/* v2：流式思考区域 — 独立于 streamingText（对标 Claude Code）
-            思考在正文之前渲染（模型先思考后回答），顺序与语义一致。
-            同样按视口高度尾部截断，避免与正文叠加把动态区撑高触发闪烁 */}
-        {hasThinking && visibleThinking ? (
-          <ThinkingMessage text={visibleThinking} width={termWidth} collapsed={false} streaming={true} />
-        ) : null}
+          {/* v2：流式思考区域 — 独立于 streamingText（对标 Claude Code）
+              思考在正文之前渲染（模型先思考后回答），顺序与语义一致。
+              同样按视口高度尾部截断，避免与正文叠加把动态区撑高触发闪烁 */}
+          {hasThinking && visibleThinking ? (
+            <ThinkingMessage text={visibleThinking} width={termWidth} collapsed={false} streaming={true} />
+          ) : null}
 
-        {/* 正在生成的流式消息（完成后由父层并入 staticItems，此处清空）
-            注意：visibleText 已按视口高度做尾部截断（防 stock ink 全屏重打闪烁，见 streaming-viewport.ts） */}
-        {hasText && visibleText ? (
-          <StreamingMessage fullText={visibleText} maxWidth={termWidth} />
-        ) : null}
+          {/* 正在生成的流式消息（完成后由父层并入 staticItems，此处清空）
+              注意：visibleText 已按视口高度做尾部截断（防 stock ink 全屏重打闪烁，见 streaming-viewport.ts） */}
+          {hasText && visibleText ? (
+            <StreamingMessage fullText={visibleText} maxWidth={termWidth} />
+          ) : null}
 
-        <Notifications />
-        <TodoPanel todos={todos} tasks={tasks} termWidth={termWidth} />
-        <ToastDisplay />
+          <Notifications />
+          <TodoPanel todos={todos} tasks={tasks} termWidth={termWidth} />
+          <ToastDisplay />
 
-        {/* CM3/CM4：LLM 重试/限流提示（实时倒计时 + 限流升级建议） */}
-        <RetryStatus status={retryStatus} />
+          {/* CM3/CM4：LLM 重试/限流提示（实时倒计时 + 限流升级建议） */}
+          <RetryStatus status={retryStatus} />
 
-        {statusMessage ? (
-          <Box paddingX={1}>
-            <Text color={theme.status.warning}>{statusMessage}</Text>
-          </Box>
-        ) : null}
+          {statusMessage ? (
+            <Box paddingX={1}>
+              <Text color={theme.status.warning}>{statusMessage}</Text>
+            </Box>
+          ) : null}
 
-        {/* 工具确认队列 */}
-        {confirmingTool && (
-          <ToolConfirmationQueue
-            confirmingTool={confirmingTool}
-            terminalWidth={termWidth}
-          />
-        )}
+          {/* 工具确认队列 */}
+          {confirmingTool && (
+            <ToolConfirmationQueue
+              confirmingTool={confirmingTool}
+              terminalWidth={termWidth}
+            />
+          )}
 
-        {/* 分区边界：
-            Composer 自身的状态行（? 快捷键 / LoadingIndicator）自然分隔消息区与输入区，
-            无需额外 margin，符合 L2 排版 > 颜色 > 边框 的优先级 */}
+          {/* Composer / 权限对话框 / Plan 审批 / 交互式对话框 互斥显示
+              作为留白区最后一块，与上方瞬态块自动隔 1 行 */}
+          {permissionRequest || shellConfirmRequest ? (
+            <DialogRenderer
+              permissionRequest={permissionRequest}
+              shellConfirmRequest={shellConfirmRequest ?? null}
+              planApprovalRequest={null}
+            />
+          ) : planApprovalRequest ? (
+            <DialogRenderer
+              permissionRequest={null}
+              shellConfirmRequest={null}
+              planApprovalRequest={planApprovalRequest}
+            />
+          ) : activeDialog === "model" ? (
+            <ModelDialog
+              onClose={onDialogClose}
+              currentModel={model}
+              availableModels={availableModels}
+              onModelSelect={onModelSelect}
+            />
+          ) : activeDialog === "theme" ? (
+            <ThemeDialog
+              onClose={onDialogClose}
+              currentTheme={currentTheme}
+              availableThemes={availableThemes}
+              onThemeSelect={onThemeSelect}
+            />
+          ) : (
+            <Composer
+              onSubmit={onSubmit}
+              isLoading={isLoading}
+              commands={commands}
+              cwd={cwd}
+              queuedCount={queuedCount}
+            />
+          )}
+        </Box>
 
-        {/* Composer / 权限对话框 / Plan 审批 / 交互式对话框 互斥显示 */}
-        {permissionRequest || shellConfirmRequest ? (
-          <DialogRenderer
-            permissionRequest={permissionRequest}
-            shellConfirmRequest={shellConfirmRequest ?? null}
-            planApprovalRequest={null}
-          />
-        ) : planApprovalRequest ? (
-          <DialogRenderer
-            permissionRequest={null}
-            shellConfirmRequest={null}
-            planApprovalRequest={planApprovalRequest}
-          />
-        ) : activeDialog === "model" ? (
-          <ModelDialog
-            onClose={onDialogClose}
-            currentModel={model}
-            availableModels={availableModels}
-            onModelSelect={onModelSelect}
-          />
-        ) : activeDialog === "theme" ? (
-          <ThemeDialog
-            onClose={onDialogClose}
-            currentTheme={currentTheme}
-            availableThemes={availableThemes}
-            onThemeSelect={onThemeSelect}
-          />
-        ) : (
-          <Composer
-            onSubmit={onSubmit}
-            isLoading={isLoading}
-            commands={commands}
-            cwd={cwd}
-            queuedCount={queuedCount}
-          />
-        )}
-
+        {/* 输入框下方紧贴：退出警告 + 状态栏，无额外空行 */}
         <ExitWarning />
 
         <Footer

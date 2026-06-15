@@ -4,6 +4,12 @@
  * 接收 HistoryItem，根据 type 字段分发到对应的专用子组件。
  * 替代原来的 MessageItemRenderer（直接解析 LLM Message）。
  *
+ * 间距规范（src/ui/CLAUDE.md L2.2）：
+ *   历史区由 <Static> 逐项打印进终端 scrollback，Ink 不像 CSS 那样合并相邻 margin。
+ *   故统一只用 marginBottom={1}、绝不叠 marginTop —— 任意两项之间恒为 1 行留白。
+ *   （旧实现给 user/thinking/tool_group 额外加 marginTop=1，与上一项的 marginBottom 叠成
+ *    2 行，造成"有的宽 2 行、有的紧 1 行"的不协调，已废弃。）
+ *
  * 参考 gemini-cli HistoryItemDisplay.tsx
  */
 
@@ -37,23 +43,21 @@ interface HistoryItemDisplayProps {
 
 export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
   item,
-  prevItem,
   terminalWidth,
   isPending = false,
   availableTerminalHeight,
   thinkCollapsed = false,
 }) => {
   const width = terminalWidth;
-  // 用户轮边界：靠留白区隔，不画分隔符（对标 cc）。首项不留白。
-  const turnSpacing = prevItem ? 1 : 0;
 
   switch (item.type) {
     case "app_header":
+      // AppHeader 自带上下留白（首屏 logo 单独成块），不再外包 margin。
       return <AppHeader version={item.version} />;
 
     case "user":
       return (
-        <Box flexDirection="column" marginTop={turnSpacing} marginBottom={1}>
+        <Box flexDirection="column" marginBottom={1}>
           <UserMessage text={item.text} width={width} />
         </Box>
       );
@@ -84,7 +88,7 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
 
     case "thinking":
       return (
-        <Box marginTop={1} marginBottom={1}>
+        <Box marginBottom={1}>
           <ThinkingMessage
             text={item.thought.text}
             width={width}
@@ -148,7 +152,7 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
         shellCommand: isShellTool(t.name) ? (t.input as any)?.command || "" : undefined,
       }));
       return (
-        <Box marginTop={1} marginBottom={1}>
+        <Box marginBottom={1}>
           <ToolGroupMessage
             tools={tools}
             terminalWidth={width}
@@ -229,7 +233,7 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
 
     case "command":
       return (
-        <Box flexDirection="column" marginTop={turnSpacing} marginBottom={1}>
+        <Box flexDirection="column" marginBottom={1}>
           <CommandMessage
             input={item.input}
             output={item.output}
