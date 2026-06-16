@@ -97,11 +97,13 @@ describe("computeStreamBudgets（正文/思考行预算分配）", () => {
     expect(thinkingLines).toBe(32);
   });
 
-  test("正文+思考并存 → 思考约 1/3、正文取其余且二者之和 <= 可用", () => {
+  test("正文+思考并存 → 思考折叠为 1 行，正文独占其余（对标 cc：正文为主体）", () => {
     const rows = 40, chrome = 8;
     const { thinkingLines, textLines } = computeStreamBudgets(rows, chrome, true, true);
-    expect(thinkingLines).toBeGreaterThanOrEqual(2);
-    expect(textLines).toBeGreaterThanOrEqual(3);
+    // 正文已开始 → 思考收为 1 行折叠占位，不再抢正文视口。
+    expect(thinkingLines).toBe(1);
+    // 正文拿到几乎全部可用高度（avail - 1）。
+    expect(textLines).toBe(rows - chrome - 1);
     expect(thinkingLines + textLines).toBeLessThanOrEqual(rows - chrome);
   });
 

@@ -39,6 +39,11 @@ interface HistoryItemDisplayProps {
   availableTerminalHeight?: number;
   /** v2：思考块折叠状态 */
   thinkCollapsed?: boolean;
+  /**
+   * 折叠态是否提示「ctrl+o 展开」。AB 虚拟列表模式可即时重渲 → true；
+   * 主屏 Static 模式已打印项无法重渲 → false（避免误导）。默认 true。
+   */
+  thinkExpandable?: boolean;
 }
 
 export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
@@ -47,6 +52,7 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
   isPending = false,
   availableTerminalHeight,
   thinkCollapsed = false,
+  thinkExpandable = true,
 }) => {
   const width = terminalWidth;
 
@@ -94,6 +100,7 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
             width={width}
             collapsed={thinkCollapsed}
             thinkingSeconds={item.thought.durationSeconds}
+            showExpandHint={thinkExpandable}
           />
         </Box>
       );

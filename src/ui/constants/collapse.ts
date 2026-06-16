@@ -3,20 +3,20 @@
  *
  * 此前各处自编：MaxSizedBox 用 ASCII `... N 行已隐藏 ...`、SlicingMaxSizedBox 用
  * `... N 行已隐藏 ...`（且无展开提示）、DiffRenderer 用 `⋯ N 行...已折叠`、
- * ThinkingMessage 用 `✻ ... ctrl+t 展开`、ToolGroup 用 `Ctrl+O 展开完整输出`。
+ * ThinkingMessage 用 `✻ ... ctrl+o 展开`、ToolGroup 用 `Ctrl+O 展开完整输出`。
  * 省略号有 `...` / `⋯` / `…` 三种，展开提示有的缺、有的大小写不一。
  *
  * 统一规则：
  * - 省略号一律用 Unicode `…`（U+2026），不用 ASCII 三连点、不用 `⋯`。
  * - 摘要格式：`… N 行已折叠`（unit 可换为「字符」等）。
- * - 展开提示统一小写 `ctrl+o`/`ctrl+t`，用 ` · ` 与摘要分隔。
+ * - 展开提示统一小写 `ctrl+o`（对标 cc 单键管所有折叠区），用 ` · ` 与摘要分隔。
  */
 
 /** 统一省略号字形（U+2026），禁用 ASCII `...` 与 `⋯` */
 export const ELLIPSIS = "…";
 
-/** 展开快捷键标识：工具/通用走 ctrl+o，思考块走 ctrl+t */
-export type ExpandHint = "ctrl+o" | "ctrl+t" | null;
+/** 展开快捷键标识：工具/思考/通用折叠区统一走 ctrl+o（对标 cc 单键展开） */
+export type ExpandHint = "ctrl+o" | null;
 
 export interface CollapsedSummaryOptions {
   /** 计量单位，默认「行」（也可「字符」等） */
@@ -31,7 +31,7 @@ export interface CollapsedSummaryOptions {
  * @example
  *   formatCollapsedSummary(12)                          // "… 12 行已折叠"
  *   formatCollapsedSummary(12, { hint: "ctrl+o" })      // "… 12 行已折叠 · ctrl+o 展开"
- *   formatCollapsedSummary(800, { unit: "字符", hint: "ctrl+t" }) // "… 800 字符已折叠 · ctrl+t 展开"
+ *   formatCollapsedSummary(800, { unit: "字符", hint: "ctrl+o" }) // "… 800 字符已折叠 · ctrl+o 展开"
  */
 export function formatCollapsedSummary(
   count: number,

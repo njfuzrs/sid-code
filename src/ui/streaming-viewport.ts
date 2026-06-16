@@ -100,9 +100,15 @@ export function estimateChromeLines(opts: {
 /**
  * 给定终端总行数与 chrome 预留，返回流式正文 / 思考各自的可用行预算。
  *
+ * 对标 claude-code：思考不是主角，正文才是。
  * - 总可用 = max(MIN_STREAM_LINES, rows - chrome)
- * - 思考与正文并存时：思考占约 1/3（至少 2 行），正文占其余；正文优先。
- * - 仅其一存在：独占全部预算。
+ * - 思考与正文并存（正文已开始输出）：思考**折叠为 1 行**，正文独占其余视口。
+ *   这同时解决「思考挤压正文导致正文顶部被 tailToFit 截断」——正文拿到几乎全部预算。
+ * - 仅思考存在（纯思考阶段，正文未开始）：思考独占全部预算，逐字直播 tail。
+ * - 仅正文存在：正文独占全部预算。
+ *
+ * 返回的 thinkingLines=1 是「折叠占位」信号：调用方据此把思考渲染成单行摘要，
+ * 而非对全文做 tailToFit。
  */
 export function computeStreamBudgets(
   rows: number,
@@ -114,8 +120,8 @@ export function computeStreamBudgets(
   const avail = Math.max(MIN_STREAM_LINES, rows - chromeLines);
 
   if (hasThinking && hasText) {
-    const thinkingLines = Math.max(2, Math.floor(avail / 3));
-    return { thinkingLines, textLines: Math.max(MIN_STREAM_LINES, avail - thinkingLines) };
+    // 正文已开始 → 思考折叠成 1 行，正文独占其余。
+    return { thinkingLines: 1, textLines: Math.max(MIN_STREAM_LINES, avail - 1) };
   }
   if (hasThinking) return { thinkingLines: avail, textLines: 0 };
   if (hasText) return { thinkingLines: 0, textLines: avail };

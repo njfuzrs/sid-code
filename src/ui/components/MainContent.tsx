@@ -81,14 +81,17 @@ export const MainContent = memo(function MainContent({
   // ScrollableList 自身容器 Box 有 flexGrow=1，会填充剩余空间
   return (
     <>
-      {/* v2：流式思考区域 — 独立于 streamingText（对标 Claude Code） */}
+      {/* v2：流式思考区域 — 独立于 streamingText（对标 Claude Code）
+          正文一旦开始输出 → 思考折叠为单行摘要，正文为主体不被思考顶开；
+          纯思考阶段（正文未开始）才展开直播逐字思考。 */}
       {isStreaming && streamingThinking && (
         <Box marginTop={1}>
           <ThinkingMessage
             text={streamingThinking}
             width={termWidth}
-            collapsed={false}
+            collapsed={!!streamingText}
             streaming={true}
+            showExpandHint={false}
           />
         </Box>
       )}

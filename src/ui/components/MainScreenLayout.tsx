@@ -144,19 +144,28 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
   // 完成后整条消息进 <Static> → 终端 scrollback，可原生上滚回看完整内容。
   const hasText = isStreaming && !!streamingText;
   const hasThinking = isStreaming && !!streamingThinking;
-  const { visibleText, visibleThinking } = useMemo(() => {
-    if (!hasText && !hasThinking) return { visibleText: "", visibleThinking: "" };
+  const { visibleText, visibleThinking, thinkingCollapsed } = useMemo(() => {
+    if (!hasText && !hasThinking) return { visibleText: "", visibleThinking: "", thinkingCollapsed: false };
     const chrome = estimateChromeLines({
       todoCount: todos.length,
       taskCount: tasks.length,
       hasStatusMessage: !!statusMessage,
     });
     const { thinkingLines, textLines } = computeStreamBudgets(rows, chrome, hasThinking, hasText);
+    // thinkingLines===1（正文已开始）= 折叠信号：思考渲染为单行摘要，不对全文做 tailToFit。
+    const collapsed = hasThinking && hasText && thinkingLines === 1;
     // 正文带 "⏺ " 前缀，有效宽度略减
     const textWidth = Math.max(1, termWidth - 2);
     return {
       visibleText: hasText ? tailToFit(streamingText, textWidth, textLines) : "",
-      visibleThinking: hasThinking ? tailToFit(streamingThinking, Math.max(1, termWidth - 4), thinkingLines) : "",
+      // 折叠态把全文传给 ThinkingMessage（它内部只渲染一行摘要 + 字符数）；
+      // 纯思考阶段（未折叠）才按视口高度 tail 截断直播。
+      visibleThinking: hasThinking
+        ? collapsed
+          ? streamingThinking
+          : tailToFit(streamingThinking, Math.max(1, termWidth - 4), thinkingLines)
+        : "",
+      thinkingCollapsed: collapsed,
     };
   }, [hasText, hasThinking, streamingText, streamingThinking, rows, termWidth, todos.length, tasks.length, statusMessage]);
 
@@ -164,17 +173,18 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
     // 根 Box 不设固定高度 / 不 overflow hidden：让内容顺序增长，Static 落 scrollback、动态区在末尾。
     <Box flexDirection="column" width={termWidth}>
       {/* 历史区：Static print-and-forget → 终端 scrollback（原生可选/可滚） */}
-      <Static items={staticItems}>
-        {(item: HistoryItem, index: number) => (
-          <HistoryItemDisplay
-            key={keyExtractor(item, index)}
-            item={item}
-            prevItem={index > 0 ? staticItems[index - 1] : undefined}
-            terminalWidth={termWidth}
-            thinkCollapsed={thinkCollapsed}
-          />
-        )}
-      </Static>
+        <Static items={staticItems}>
+          {(item: HistoryItem, index: number) => (
+            <HistoryItemDisplay
+              key={keyExtractor(item, index)}
+              item={item}
+              prevItem={index > 0 ? staticItems[index - 1] : undefined}
+              terminalWidth={termWidth}
+              thinkCollapsed={thinkCollapsed}
+              thinkExpandable={false}
+            />
+          )}
+        </Static>
 
       {/* 动态区（log-update 只重绘这部分，历史不动）
           间距规范（src/ui/CLAUDE.md L2.2）：
@@ -189,9 +199,17 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
 
           {/* v2：流式思考区域 — 独立于 streamingText（对标 Claude Code）
               思考在正文之前渲染（模型先思考后回答），顺序与语义一致。
-              同样按视口高度尾部截断，避免与正文叠加把动态区撑高触发闪烁 */}
+              正文一旦开始输出 → 思考折叠为单行摘要（thinkingCollapsed），正文独占视口，
+              不再挤压正文导致顶部被截断；纯思考阶段（正文未开始）才直播 tail 截断的全文。
+              Static 模式 ctrl+o 无法重渲已打印项，故折叠态不显示展开提示（showExpandHint=false）。 */}
           {hasThinking && visibleThinking ? (
-            <ThinkingMessage text={visibleThinking} width={termWidth} collapsed={false} streaming={true} />
+            <ThinkingMessage
+              text={visibleThinking}
+              width={termWidth}
+              collapsed={thinkingCollapsed}
+              streaming={true}
+              showExpandHint={false}
+            />
           ) : null}
 
           {/* 正在生成的流式消息（完成后由父层并入 staticItems，此处清空）

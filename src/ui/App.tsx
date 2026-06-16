@@ -203,8 +203,11 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
   const { toggleRenderMarkdown, cycleExpandLevel, setShowIsExpandableHint } = useUIActions();
   const { matchBinding } = useKeybindings();
 
-  // v2：思考折叠状态（AB 模式默认折叠，Static 模式始终展开不可折叠）
-  const defaultCollapsed = alternateBuffer === true;
+  // v2：思考折叠状态。两种模式默认折叠成一行（对标 claude-code，思考不占满屏）。
+  // ctrl+o 统一切换折叠/展开（与工具结果阶梯展开同键）。
+  // - AB 模式：即时切换，重渲虚拟列表所有项。
+  // - Static 模式：切换影响后续打印的项（已打印进 scrollback 的项无法重渲）。
+  const defaultCollapsed = true;
   const [thinkCollapsed, setThinkCollapsed] = useState(defaultCollapsed);
 
   useEffect(() => {
@@ -292,27 +295,18 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     return false;
   });
 
-  // Ctrl+O 切换高度限制
+  // Ctrl+O 统一展开/收起折叠内容（对标 claude-code：单键管所有折叠区）：
+  // ① 工具结果阶梯展开（0 折叠 → 1 更多 → 2 全展开 → 0）；② 思考块折叠/展开同步切换。
   useKeypress(KeypressPriority.High, (key: Key) => {
     const b = matchBinding(key);
     if (b?.action === "app:toggleHeight") {
-      log.info("UI:APP", "工具结果阶梯式展开（Ctrl+O）");
-      // TO4：阶梯循环展开级别（0 折叠 → 1 更多 → 2 全展开 → 0）。
+      log.info("UI:APP", "统一展开/收起折叠内容（Ctrl+O）");
+      // TO4：工具结果阶梯循环展开级别。
       cycleExpandLevel();
+      // 思考块同步切换折叠/展开。
+      setThinkCollapsed(prev => !prev);
       setShowIsExpandableHint(true);
       setTimeout(() => setShowIsExpandableHint(false), 3000);
-      return true;
-    }
-    return false;
-  });
-
-  // Ctrl+T 切换思考过程折叠/展开（仅 Alternate Buffer 模式生效）
-  useKeypress(KeypressPriority.High, (key: Key) => {
-    const b = matchBinding(key);
-    if (b?.action === "app:toggleThinking") {
-      if (!alternateBuffer) return false;
-      log.info("UI:APP", `思考块 ${thinkCollapsed ? "展开" : "折叠"}`);
-      setThinkCollapsed(prev => !prev);
       return true;
     }
     return false;
@@ -599,7 +593,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           staticItems={staticItems}
           streamingText={state.streamingText}
           streamingThinking={state.streamingThinking}
-          thinkCollapsed={false}
+          thinkCollapsed={thinkCollapsed}
           isStreaming={state.isStreaming}
           isEmpty={isEmpty}
           termWidth={termWidth}

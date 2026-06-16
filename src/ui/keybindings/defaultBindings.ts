@@ -39,8 +39,7 @@ export const DEFAULT_BINDINGS: KeyBinding[] = [
   // ── App.tsx 全局键（实际触发也改为查表）──
   { action: "app:toggleCopyMode",  stroke: { ctrl: true, name: "s" }, display: "Ctrl+S",     description: "Copy Mode",          showInHelp: true },
   { action: "app:toggleMarkdown",  stroke: { alt: true,  name: "m" }, display: "Alt+M",      description: "切换 Markdown 渲染", showInHelp: true },
-  { action: "app:toggleHeight",    stroke: { ctrl: true, name: "o" }, display: "Ctrl+O",     description: "切换高度限制",       showInHelp: true },
-  { action: "app:toggleThinking",  stroke: { ctrl: true, name: "t" }, display: "Ctrl+T",     description: "折叠/展开思考过程",   showInHelp: true },
+  { action: "app:toggleHeight",    stroke: { ctrl: true, name: "o" }, display: "Ctrl+O",     description: "展开/收起折叠内容（工具结果 + 思考）", showInHelp: true },
   { action: "input:historyUpDown", stroke: { name: "up" },           display: "↑/↓",         description: "输入历史",           showInHelp: true },
   // ↑ 只需注册 up，down 同理；display 合并展示
   { action: "input:reverseSearch", stroke: { ctrl: true, name: "r" }, display: "Ctrl+R",     description: "反向搜索历史",       showInHelp: true },

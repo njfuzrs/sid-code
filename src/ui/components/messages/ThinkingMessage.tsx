@@ -26,6 +26,12 @@ interface ThinkingMessageProps {
   streaming?: boolean;
   /** 思考耗时（秒）。流式态由组件自计时；完成态可由外部传入冻结值 */
   thinkingSeconds?: number;
+  /**
+   * 折叠态是否显示「ctrl+o 展开」提示，默认 true。
+   * 仅在 ctrl+o 真能切换的场景（AB 虚拟列表模式）显示；
+   * 主屏 Static 模式（print-and-forget，无法重渲已打印项）传 false，避免误导。
+   */
+  showExpandHint?: boolean;
 }
 
 /** 格式化思考耗时 */
@@ -96,6 +102,7 @@ export const ThinkingMessage: React.FC<ThinkingMessageProps> = ({
   collapsed = false,
   streaming = false,
   thinkingSeconds,
+  showExpandHint = true,
 }) => {
   // 流式态自计时；完成态优先用外部传入的冻结值，无则自计时器最后值。
   const timerSeconds = useThinkingTimer(streaming);
@@ -103,12 +110,21 @@ export const ThinkingMessage: React.FC<ThinkingMessageProps> = ({
 
   if (!text.trim()) return null;
 
-  // 折叠态：单行摘要
+  // 折叠态：单行摘要（对标 claude-code 的 "∴ Thinking" 一行折叠）
+  // 流式中折叠 → 显示实时耗时（思考仍在进行，但不抢正文视口）；
+  // 完成后折叠 → 显示已思考耗时 + 字符数。
   if (collapsed) {
+    const summary = streaming
+      ? `${THINKING_MARK} 思考中… (${formatThinkingDuration(elapsed)})`
+      : elapsed > 0
+        ? `${THINKING_MARK} 已思考 ${formatThinkingDuration(elapsed)} · ${formatLargeNumber(text.length)} 字符`
+        : `${THINKING_MARK} 思考过程 · ${formatLargeNumber(text.length)} 字符`;
     return (
       <Box width={width}>
-        <Text color={theme.text.secondary} dimColor>
-          {`${THINKING_MARK} 思考过程 · `}{formatLargeNumber(text.length)}{" 字符 · ctrl+t 展开"}
+        <Text color={theme.text.secondary} dimColor italic>
+          {summary}
+          {/* 仅在 ctrl+o 真能展开时给提示；流式中不提示（无需打扰） */}
+          {!streaming && showExpandHint ? " · ctrl+o 展开" : ""}
         </Text>
       </Box>
     );
