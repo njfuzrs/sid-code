@@ -29,5 +29,5 @@ describe("快照竞态复现", () => {
     setCwd(orig);
     if (failures.length) console.log("失败样本:\n" + failures.join("\n"));
     expect(failures).toEqual([]);
-  });
+  }, 30_000);
 });

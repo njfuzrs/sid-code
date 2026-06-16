@@ -19,7 +19,7 @@ describe("K1 — ShortcutsHelp 从表生成", () => {
     expect(frame).toContain("退出");
     expect(frame).toContain("Copy Mode");
     expect(frame).toContain("切换 Markdown 渲染");
-    expect(frame).toContain("切换高度限制");
+    expect(frame).toContain("展开/收起折叠内容");
     expect(frame).toContain("取消当前操作");
   });
 

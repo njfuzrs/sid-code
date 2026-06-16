@@ -210,21 +210,23 @@ export const TodoPanel = React.memo(function TodoPanel({
     const inProgress = todos.filter((t) => t.status === "in_progress").length;
     const total = todos.length;
 
+    // 保持原始顺序，仅当超过显示上限时截断（始终保留 in_progress，其余按原始顺序取舍）
+    const maxTodoDisplay = Math.min(maxDisplay, 6);
     let visibleTodos = todos;
     let hiddenCount = 0;
-    const maxTodoDisplay = Math.min(maxDisplay, 6);
     if (!compactMode && todos.length > maxTodoDisplay) {
-      const inProgressItems = todos.filter((t) => t.status === "in_progress");
-      const pendingItems = todos.filter((t) => t.status === "pending");
-      const completedItems = todos.filter((t) => t.status === "completed");
-      const remainingSlots = maxTodoDisplay - inProgressItems.length;
-      const pendingSlots = Math.min(pendingItems.length, Math.max(1, Math.floor(remainingSlots * 0.7)));
-      const completedSlots = remainingSlots - pendingSlots;
-      visibleTodos = [
-        ...inProgressItems,
-        ...pendingItems.slice(0, pendingSlots),
-        ...completedItems.slice(-Math.max(0, completedSlots)),
-      ];
+      const inProgressCount = todos.filter((t) => t.status === "in_progress").length;
+      const maxNonInProgress = maxTodoDisplay - inProgressCount;
+      let nonInProgressTaken = 0;
+      visibleTodos = [];
+      for (const item of todos) {
+        if (item.status === "in_progress") {
+          visibleTodos.push(item);
+        } else if (nonInProgressTaken < maxNonInProgress) {
+          visibleTodos.push(item);
+          nonInProgressTaken++;
+        }
+      }
       hiddenCount = total - visibleTodos.length;
     }
 
@@ -239,20 +241,12 @@ export const TodoPanel = React.memo(function TodoPanel({
           <Box flexGrow={1} />
           <ProgressBar completed={completed} total={total} />
           <Text color={allDone ? theme.status.success : theme.text.secondary}>{`  ${completed}/${total}`}</Text>
-          {inProgress > 0 && (
-            <Text color={theme.ui.active}>{`  ${TODO_IN_PROGRESS}${inProgress}`}</Text>
-          )}
           {hiddenCount > 0 && <Text dimColor>{`  …+${hiddenCount}`}</Text>}
         </Box>
         {!compactMode &&
-          visibleTodos.map((item, i) => {
-            const isSubItem = inProgress > 0 && item.status !== "in_progress";
-            return (
-              <Box key={i} paddingLeft={isSubItem ? 2 : 0}>
-                <TodoRow item={item} maxContentLen={maxContentLen - (isSubItem ? 2 : 0)} />
-              </Box>
-            );
-          })}
+          visibleTodos.map((item, i) => (
+            <TodoRow key={i} item={item} maxContentLen={maxContentLen} />
+          ))}
       </Box>
     );
   }

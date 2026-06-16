@@ -635,6 +635,21 @@ export async function main(): Promise<void> {
     const commandRegistry = new CommandRegistry();
     await registerBuiltins(commandRegistry);
 
+    // 注册 Bundled Skills（编译时内置，如 /commit /review 等）
+    // 通过 adaptUnifiedToLegacy 桥接进旧 Registry，使现有 app.ts 显示/执行路径直接生效
+    try {
+      const { loadBundledSkills } = await import("./skill/bundled/index.ts");
+      const { adaptUnifiedToLegacy } = await import("./command/adapter.ts");
+      const bundledSkills = loadBundledSkills();
+      for (const skill of bundledSkills) {
+        const legacyCmd = await adaptUnifiedToLegacy(skill);
+        commandRegistry.register(legacyCmd, "builtin");
+      }
+      getLogger().debug("CLI", `注册 ${bundledSkills.length} 个 Bundled Skill`);
+    } catch (err: any) {
+      getLogger().warn("CLI", `注册 Bundled Skills 失败: ${err?.message}`);
+    }
+
     // 加载自定义命令（带信任检查）
     const { CustomCommandLoader } = await import("./command/custom.ts");
     const { TrustManager } = await import("./extension/trust.ts");
