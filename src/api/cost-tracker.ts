@@ -33,7 +33,16 @@ export const MODEL_PRICING: Record<string, ModelPricing> = {
   "claude-3-opus-20240229": { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
 };
 
-const FALLBACK_PRICING: ModelPricing = MODEL_PRICING["claude-sonnet-4-20250514"];
+/** 未知模型的保守兜底价（USD/M）。
+ *  不绑定任何特定模型品牌，取中位偏高值（input $2 / output $10 / 缓存读 $0.2 / 写 $2.5），
+ *  介于低价模型（DeepSeek ~$0.14/$0.28）与高价模型（Claude Opus ~$15/$75）之间。
+ *  原则：宁可高估触发预算守卫，也不归零放任烧钱。 */
+const FALLBACK_PRICING: ModelPricing = {
+  input: 2,
+  output: 10,
+  cacheRead: 0.2,
+  cacheWrite: 2.5,
+};
 
 /** 解析模型定价（精确匹配 + 正向最长前缀匹配） */
 export function resolvePricing(model: string): ModelPricing {

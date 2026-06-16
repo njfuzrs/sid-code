@@ -1,8 +1,8 @@
 /**
  * 用户消息组件
  *
- * 渲染用户输入的消息，带 "> " 前缀和半行圆角背景色。
- * 参考 gemini-cli UserMessage.tsx
+ * 渲染用户输入的消息，带 "> " 前缀。
+ * 简洁风格：靠留白区隔，不用背景色盒子包裹（符合 L2.2）。
  */
 
 import React from "react";
@@ -22,7 +22,7 @@ interface UserMessageProps {
 export const UserMessage: React.FC<UserMessageProps> = ({
   text,
   width,
-  useBackgroundColor = true,
+  useBackgroundColor = false,
 }) => {
   const prefix = `${USER_PROMPT} `;
   const prefixWidth = stringWidth(prefix);

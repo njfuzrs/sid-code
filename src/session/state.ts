@@ -355,12 +355,13 @@ export class SessionState {
   }
 
   /**
-   * 未知模型的保守兜底价（USD/M）。取 Claude Sonnet 量级（input 3 / output 15）作中位偏高估，
+   * 未知模型的保守兜底价（USD/M）。不绑定任何特定模型品牌，取中位偏高值
+   * （input $2 / output $10），介于低价模型与高价模型之间。
    * 命中按 input×0.1、写入按 input×1.25 派生。原则：宁可高估触发预算守卫，也不归零放任烧钱。
    */
   private static readonly FALLBACK_PRICING: { input: number; output: number } = {
-    input: 3,
-    output: 15,
+    input: 2,
+    output: 10,
   };
 
   /** 获取汇总的 Usage（兼容旧接口） */

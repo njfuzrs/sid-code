@@ -112,9 +112,9 @@ describe("SessionState.calculateCost — 口径修复", () => {
   test("未知模型不静默归零，用保守兜底价估算（P1-4）", () => {
     const ss = new SessionState("test");
     // P1-4：未知模型不再返回 0（否则换个模型名费用立刻变 0，costLimit 守卫被绕过）。
-    // 用保守兜底价（input $3/M、output $15/M）估算：100/1e6*3 + 10/1e6*15 = 0.00045
+    // 用保守兜底价（input $2/M、output $10/M）估算：100/1e6*2 + 10/1e6*10 = 0.0003
     const cost = ss.calculateCost("unknown-model", { inputTokens: 100, outputTokens: 10 });
-    expect(cost).toBeCloseTo((100 / 1e6) * 3 + (10 / 1e6) * 15, 10);
+    expect(cost).toBeCloseTo((100 / 1e6) * 2 + (10 / 1e6) * 10, 10);
     expect(cost).toBeGreaterThan(0);
   });
 

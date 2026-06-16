@@ -46,6 +46,7 @@ export class OpenAIProvider implements Provider {
   }
 
   defaultModel(): string {
+    // OpenAI Provider 默认模型（仅作内部兜底，正常路径下模型名由 config.model 提供）。
     return "gpt-4o";
   }
 

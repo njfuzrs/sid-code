@@ -36,6 +36,8 @@ export class AnthropicProvider implements Provider {
   }
 
   defaultModel(): string {
+    // Anthropic Provider 只服务于 Claude 系列模型，此为合理的 Provider 内部兜底。
+    // 正常路径下模型名始终由 config.model 提供（经 loadConfig 从 availableModels 解析）。
     return "claude-sonnet-4-20250514";
   }
 

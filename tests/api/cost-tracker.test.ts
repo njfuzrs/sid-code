@@ -19,8 +19,12 @@ describe("resolvePricing", () => {
   test("前缀模糊匹配", () => {
     expect(resolvePricing("claude-sonnet-4-20250514-v2")).toBe(MODEL_PRICING["claude-sonnet-4-20250514"]);
   });
-  test("未知模型 → fallback（sonnet）", () => {
-    expect(resolvePricing("unknown-model")).toBe(MODEL_PRICING["claude-sonnet-4-20250514"]);
+  test("未知模型 → fallback（通用保守兜底价）", () => {
+    const pricing = resolvePricing("unknown-model");
+    expect(pricing.input).toBe(2);
+    expect(pricing.output).toBe(10);
+    expect(pricing.cacheRead).toBe(0.2);
+    expect(pricing.cacheWrite).toBe(2.5);
   });
 });
 

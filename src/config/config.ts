@@ -372,11 +372,14 @@ export interface QuotaFullConfig {
   budgetRules?: BudgetRuleConfig[];
 }
 
-/** 默认配置 */
+/** 默认配置。
+ *  注意：provider 和 model 均不预设值 —— 所有模型选择必须来自用户配置的
+ *  availableModels 或 CLI 显式传参。不绑定任何特定 Provider/模型。
+ *  若加载完成后 model 仍为空但 availableModels 非空，loadConfig 会自动选第一个。 */
 export function defaultConfig(): Config {
   return {
-    provider: "anthropic",
-    model: "claude-sonnet-4-20250514",
+    provider: "",
+    model: "",
     fallbackModel: "",
     anthropicKey: "",
     openaiKey: "",
@@ -763,6 +766,27 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
 
   // 从 availableModels 解析当前模型的连接信息，回填顶层字段
   resolveCurrentModelConfig(config);
+
+  // 如果 model 为空但 availableModels 有配置，自动选第一个作为默认模型
+  if (!config.model && config.availableModels.length > 0) {
+    const first = config.availableModels[0];
+    config.model = first.name;
+    // 从第一个模型回填 provider / baseURL / apiKey
+    if (first.provider) config.provider = first.provider;
+    if (first.baseURL) config.baseURL = first.baseURL;
+    if (first.apiKey) {
+      if (config.provider === "anthropic") config.anthropicKey = first.apiKey;
+      else config.openaiKey = first.apiKey;
+    }
+  }
+
+  // 如果 model 和 availableModels 都为空，给出明确引导
+  if (!config.model && config.availableModels.length === 0) {
+    throw new Error(
+      "未配置任何模型。请在 ~/.sid-code/settings.json 的 availableModels 数组中添加模型配置。\n" +
+      "示例: { \"availableModels\": [{ \"name\": \"deepseek-v4-pro\", \"provider\": \"openai\", \"api_key\": \"sk-xxx\", \"base_url\": \"https://api.deepseek.com\" }] }",
+    );
+  }
 
   // 如果用户未显式配置 maxTokens，从当前模型的 maxOutputTokens 自动推导
   const userExplicitMaxTokens = cliArgs.maxTokens || (fileConfig as any).maxTokens || (envConfig as any).maxTokens;

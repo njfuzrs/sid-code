@@ -6,10 +6,10 @@ import { describe, test, expect } from "bun:test";
 import { defaultConfig, loadConfig } from "../../src/config/config.ts";
 
 describe("config", () => {
-  test("defaultConfig 返回合理的默认值", () => {
+  test("defaultConfig 返回合理的默认值（不绑定特定 Provider/模型）", () => {
     const cfg = defaultConfig();
-    expect(cfg.provider).toBe("anthropic");
-    expect(cfg.model).toBe("claude-sonnet-4-20250514");
+    expect(cfg.provider).toBe("");
+    expect(cfg.model).toBe("");
     expect(cfg.maxTokens).toBe(32768);
     expect(cfg.print).toBe(false);
     expect(cfg.yesMode).toBe(false);

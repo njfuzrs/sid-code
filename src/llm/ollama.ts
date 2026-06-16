@@ -20,6 +20,7 @@ export class OllamaProvider extends OpenAIProvider {
   }
 
   defaultModel(): string {
+    // Ollama Provider 默认模型（仅作内部兜底，正常路径下模型名由 config.model 提供）。
     return "llama3";
   }
 
