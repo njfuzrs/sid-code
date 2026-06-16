@@ -136,7 +136,7 @@ export class HelpCommand implements Command {
   /model <name>       - 切换到指定模型
 
 示例:
-  /model <name>        - 如 /model gpt-4o
+  /model <name>        - 切换为 availableModels 中配置的任意模型名
   /model list`,
 
       "trace": `会话轨迹排查 —— 把当前/指定会话嚼碎成结构化排查摘要

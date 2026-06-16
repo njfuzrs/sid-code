@@ -19,12 +19,41 @@ describe("resolvePricing", () => {
   test("前缀模糊匹配", () => {
     expect(resolvePricing("claude-sonnet-4-20250514-v2")).toBe(MODEL_PRICING["claude-sonnet-4-20250514"]);
   });
-  test("未知模型 → fallback（通用保守兜底价）", () => {
+  test("未知模型 → null（调用方自行走兜底价）", () => {
     const pricing = resolvePricing("unknown-model");
-    expect(pricing.input).toBe(2);
-    expect(pricing.output).toBe(10);
-    expect(pricing.cacheRead).toBe(0.2);
-    expect(pricing.cacheWrite).toBe(2.5);
+    expect(pricing).toBeNull();
+  });
+
+  test("用户配置 pricing 优先于内置表", () => {
+    const userModels = [
+      { name: "my-custom-model", pricing: { input: 1, output: 5, cacheRead: 0.05, cacheWrite: 0.5 } },
+    ];
+    const pricing = resolvePricing("my-custom-model", userModels);
+    expect(pricing).not.toBeNull();
+    expect(pricing!.input).toBe(1);
+    expect(pricing!.output).toBe(5);
+    expect(pricing!.cacheRead).toBe(0.05);
+    expect(pricing!.cacheWrite).toBe(0.5);
+  });
+
+  test("用户配置 pricing 可覆盖同名内置模型价格", () => {
+    const userModels = [
+      { name: "claude-sonnet-4-20250514", pricing: { input: 1, output: 2 } },
+    ];
+    const pricing = resolvePricing("claude-sonnet-4-20250514", userModels);
+    expect(pricing).not.toBeNull();
+    expect(pricing!.input).toBe(1);
+    expect(pricing!.output).toBe(2);
+    // cacheRead/cacheWrite 未在用户 pricing 中声明，应为 undefined（调用方自行衍生）
+    expect(pricing!.cacheRead).toBeUndefined();
+    expect(pricing!.cacheWrite).toBeUndefined();
+  });
+
+  test("未知模型 + calculateUSDCost 仍使用兜底价", () => {
+    const usage: Usage = { inputTokens: 1_000_000, outputTokens: 0 };
+    const cost = calculateUSDCost("unknown-model", usage);
+    // 兜底价 input=$2/M → 期望 $2
+    expect(cost).toBeCloseTo(2, 5);
   });
 });
 

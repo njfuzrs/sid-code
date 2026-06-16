@@ -6,6 +6,7 @@
  */
 
 import React, { createContext, useContext, useMemo } from "react";
+import type { PricingModelEntry } from "../../api/cost-tracker.ts";
 
 export interface ConfigContextValue {
   /** 当前模型 */
@@ -24,6 +25,8 @@ export interface ConfigContextValue {
   cwd: string;
   /** 所有已注册命令（补全用） */
   commands: Array<{ name: string; aliases: string[]; description: string }>;
+  /** 可用模型列表（含 provider 信息，供 inferProvider 优先使用） */
+  availableModels: PricingModelEntry[];
 }
 
 const ConfigCtx = createContext<ConfigContextValue | undefined>(undefined);
@@ -51,6 +54,7 @@ export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children, value 
     value.debug,
     value.cwd,
     value.commands,
+    value.availableModels,
   ]);
 
   return (

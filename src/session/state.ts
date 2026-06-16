@@ -4,11 +4,14 @@
  * - 按模型分开的 token 用量统计
  * - 成本计算（区分缓存 token 计价）
  * - API 耗时 vs 工具耗时分开追踪
+ *
+ * 定价来源：统一委托给 cost-tracker.ts 的 resolvePricing()，不维护独立定价表。
  */
 
 import type { Usage, NormalizedCacheUsage } from "../llm/types.ts";
 import { normalizeCacheUsage } from "../llm/types.ts";
 import { getLogger } from "../debug/logger.ts";
+import { resolvePricing, type PricingModelEntry } from "../api/cost-tracker.ts";
 
 /** 单个模型的用量统计 */
 export interface ModelUsageStats {
@@ -36,51 +39,6 @@ export interface ModelUsageStats {
   provider: string;
 }
 
-/** 模型定价（每百万 token） */
-interface ModelPricing {
-  input: number;   // 未命中输入价格 $/M tokens
-  output: number;  // 输出价格 $/M tokens
-  /**
-   * 缓存命中（读）价格 $/M tokens。
-   * - Anthropic：= input × 0.1（90% 折扣）
-   * - DeepSeek：独立固定价（pro 0.025 元/M → 0.0035 $/M ≈ 未命中的 1/120）
-   * 不填时 calculateCost 兜底按 input × 0.1 计（Anthropic 式近似）。
-   */
-  cacheHit?: number;
-  /**
-   * 缓存写入价格 $/M tokens。
-   * - Anthropic：= input × 1.25（25% 加价，5min TTL）
-   * - DeepSeek：无写入计费概念 → 0
-   * 不填时 calculateCost 兜底按 input × 1.25 计（Anthropic 式近似）。
-   */
-  cacheWrite?: number;
-}
-
-/** 内置模型定价表（单位：USD / 百万 token） */
-const MODEL_PRICING: Record<string, ModelPricing> = {
-  // Claude 系列（官方 USD/M）；命中 = input×0.1、写入 = input×1.25 由 calculateCost 兜底派生
-  "claude-opus-4-20250514": { input: 15, output: 75 },
-  "claude-sonnet-4-20250514": { input: 3, output: 15 },
-  "claude-haiku-4-20250514": { input: 0.25, output: 1.25 },
-  // 旧版兼容
-  "claude-3-5-sonnet-20241022": { input: 3, output: 15 },
-  "claude-3-5-haiku-20241022": { input: 0.8, output: 4 },
-  "claude-3-opus-20240229": { input: 15, output: 75 },
-
-  // DeepSeek 系列：官方价为 RMB/M（见 api-reference/deepseek-api.md「模型 & 价格」），
-  // 按 1 元 ≈ $0.14 折算成 USD（汇率快照 2026-06，随官方调整需复核）。
-  // pro：未命中 3 元 / 输出 6 元 / 命中 0.025 元；flash：未命中 1 元 / 输出 2 元 / 命中 0.02 元。
-  // cacheHit 用 DeepSeek 独立固定价（非 input×0.1 近似），更贴近真实账单；
-  // cacheWrite=0——DeepSeek 无缓存写入计费概念。
-  // 前缀匹配：getPricing 用 startsWith，可命中带后缀的 "deepseek-v4-pro[1m]" 等变体。
-  "deepseek-v4-pro": { input: 0.42, output: 0.84, cacheHit: 0.0035, cacheWrite: 0 },   // 3×0.14 / 6×0.14 / 0.025×0.14
-  "deepseek-v4-flash": { input: 0.14, output: 0.28, cacheHit: 0.0028, cacheWrite: 0 },  // 1×0.14 / 2×0.14 / 0.02×0.14
-
-  // OpenAI 系列（官方 USD/M）；OpenAI 命中价 = input×0.5（缓存读 50% 折扣），无写入计费
-  "gpt-4o": { input: 2.5, output: 10, cacheHit: 1.25, cacheWrite: 0 },
-  "gpt-4o-mini": { input: 0.15, output: 0.6, cacheHit: 0.075, cacheWrite: 0 },
-};
-
 /** 会话状态 */
 export class SessionState {
   readonly sessionId: string;
@@ -97,11 +55,18 @@ export class SessionState {
   modelUsage: Record<string, ModelUsageStats> = {};
   /** 会话级别的临时数据存储（用于命令间共享状态） */
   private sessionData = new Map<string, any>();
+  /** 用户配置的模型列表（携带定价 + provider 信息），用于定价/inferProvider 优先使用 */
+  private availableModels: PricingModelEntry[] = [];
 
   constructor(sessionId: string, cwd?: string) {
     this.sessionId = sessionId;
     this.cwd = cwd ?? process.cwd();
     this.startTime = Date.now();
+  }
+
+  /** 注入用户配置的模型列表（含 pricing/provider），供定价解析和 provider 推断优先使用 */
+  setAvailableModels(models: PricingModelEntry[]): void {
+    this.availableModels = models;
   }
 
   /** 获取会话数据 */
@@ -126,7 +91,7 @@ export class SessionState {
 
   /** 更新 API 调用的用量统计 */
   updateUsage(model: string, usage: Usage, durationMs: number, provider?: string): void {
-    const prov = provider ?? SessionState.inferProvider(model);
+    const prov = provider ?? SessionState.inferProvider(model, this.availableModels);
     // 初始化模型统计
     if (!this.modelUsage[model]) {
       this.modelUsage[model] = {
@@ -193,7 +158,7 @@ export class SessionState {
    * @param provider provider 名（"anthropic"/"openai"/...）。不传时按模型名推断（claude* → anthropic）。
    */
   calculateCost(model: string, usage: Usage, provider?: string): number {
-    const prov = provider ?? SessionState.inferProvider(model);
+    const prov = provider ?? SessionState.inferProvider(model, this.availableModels);
 
     // 本地推理 provider（ollama 等）不产生真金白银费用，恒 0。
     // 否则其模型名不在定价表 → 走 FALLBACK_PRICING 被算出虚高费用，
@@ -202,7 +167,7 @@ export class SessionState {
       return 0;
     }
 
-    const pricing = this.getPricing(model);
+    const pricing = resolvePricing(model, this.availableModels);
     if (!pricing) {
       // P1-4：未知模型不静默归零（否则换个模型名费用立刻变 0，costLimit 守卫被绕过，
       // 用户以为"免费"实际在烧钱）。记 WARN 一次（按模型去重），用保守兜底价估算成本，
@@ -221,7 +186,7 @@ export class SessionState {
     const n = normalizeCacheUsage(usage, prov);
 
     // 命中/写入价：优先用定价表显式值，否则按 Anthropic 式近似派生（input×0.1 / input×1.25）
-    const cacheHitPrice = pricing.cacheHit ?? pricing.input * 0.1;
+    const cacheHitPrice = pricing.cacheRead ?? pricing.input * 0.1;
     const cacheWritePrice = pricing.cacheWrite ?? pricing.input * 1.25;
 
     let cost = 0;
@@ -238,10 +203,10 @@ export class SessionState {
    * 全价假设：把 promptTotal 全部当未命中输入计价。
    */
   calculateSavings(model: string, usage: Usage, provider?: string): number {
-    const prov = provider ?? SessionState.inferProvider(model);
+    const prov = provider ?? SessionState.inferProvider(model, this.availableModels);
     // 本地 provider 无费用 → 无"节省"概念，恒 0
     if (SessionState.isLocalProvider(prov)) return 0;
-    const pricing = this.getPricing(model);
+    const pricing = resolvePricing(model, this.availableModels);
     if (!pricing) return 0;
     const n = normalizeCacheUsage(usage, prov);
     // 全价成本：promptTotal 全按未命中输入 + 输出
@@ -254,11 +219,19 @@ export class SessionState {
 
   /**
    * 按模型名推断 provider，供 calculateCost 在调用方未显式传 provider 时兜底。
-   * - claude* → "anthropic"（input_tokens 是未命中余量口径）
-   * - 其余（deepseek/gpt/ollama 等）→ "openai"（prompt_tokens 含命中口径）
-   * 注：ollama 无缓存字段，归一化后 hit/write 恒 0，归到哪类都不影响结果。
+   *
+   * 优先级：
+   *   1. availableModels 中同名模型的 provider 字段（权威，用户配置）
+   *   2. 内置启发式：模型名 claude* → "anthropic"；其余 → "openai"
+   *   注：ollama 无缓存字段，归一化后 hit/write 恒 0，归到哪类都不影响结果。
    */
-  static inferProvider(model: string): string {
+  static inferProvider(model: string, availableModels?: PricingModelEntry[]): string {
+    // 优先从用户配置的 availableModels 中查找
+    if (availableModels?.length) {
+      const mc = availableModels.find(m => m.name === model);
+      if (mc?.provider) return mc.provider;
+    }
+    // 兜底启发式
     return /^claude/i.test(model) ? "anthropic" : "openai";
   }
 
@@ -319,27 +292,6 @@ export class SessionState {
     return sum;
   }
 
-  /** 获取模型定价，未知模型返回 null */
-  private getPricing(model: string): ModelPricing | null {
-    // 精确匹配
-    if (MODEL_PRICING[model]) return MODEL_PRICING[model];
-
-    // P1-5：只保留正向前缀匹配（model 以表项 key 开头，命中带后缀的变体
-    // 如 "deepseek-v4-pro[1m]"），且取**最长前缀**而非首个命中——
-    // 否则 "deepseek-v4-pro" 可能先撞上更短的 key。
-    // 去掉 key.startsWith(model) 反向匹配：截断/短模型名（如 "deepseek-v4"）
-    // 会错配到表中先定义的更贵表项（"deepseek-v4-pro"），且依赖键顺序、非确定。
-    let best: ModelPricing | null = null;
-    let bestLen = -1;
-    for (const [key, pricing] of Object.entries(MODEL_PRICING)) {
-      if (model.startsWith(key) && key.length > bestLen) {
-        best = pricing;
-        bestLen = key.length;
-      }
-    }
-    return best;
-  }
-
   /** 已告警过的未知模型（按模型名去重，避免每次调用刷屏） */
   private warnedUnknownModels = new Set<string>();
 
@@ -392,6 +344,24 @@ export class SessionState {
     let total = 0;
     for (const stats of Object.values(this.modelUsage)) {
       total += stats.cumulativePromptTokens;
+    }
+    return total;
+  }
+
+  /**
+   * 获取末次输入 token（stock 口径，各模型 stats.inputTokens 之和）。
+   *
+   * stats.inputTokens 每次 API 调用时被覆盖为当次 prompt 总长度（不含历史重复计数），
+   * 与 getTotalUsage().inputTokens（flow 累计）不同：
+   * - **stock**：末次单次调用的 prompt 大小，适合"当前上下文有多大"的展示（如状态栏输入 token）
+   * - **flow**：历次调用的 cumulativePromptTokens 之和，适合命中率/计费统计
+   *
+   * 多模型会话场景：各模型 stock 值简单求和，实践中绝大多数会话只有单一模型。
+   */
+  getStockInputTokens(): number {
+    let total = 0;
+    for (const stats of Object.values(this.modelUsage)) {
+      total += stats.inputTokens;
     }
     return total;
   }

@@ -73,6 +73,7 @@ interface DefaultAppLayoutProps {
   gitBranch: string;
   debug: boolean;
   usage: Usage;
+  stockInputTokens: number;
   costUSD: number;
   costLimit: number;
   contextPercent: number;
@@ -120,6 +121,7 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
   gitBranch,
   debug,
   usage,
+  stockInputTokens,
   costUSD,
   costLimit,
   contextPercent,
@@ -270,6 +272,7 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
           gitBranch={gitBranch}
           debug={debug}
           usage={usage}
+          stockInputTokens={stockInputTokens}
           costUSD={costUSD}
           costLimit={costLimit}
           contextPercent={contextPercent}

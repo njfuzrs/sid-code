@@ -49,6 +49,9 @@ export type HooksConfig = Record<string, HookConfig[]>;
 /** 子代理模型映射（从 registry 重导出，方便配置层使用） */
 export type { SubAgentModelMap } from "../llm/registry.ts";
 
+// 定价类型复用 cost-tracker.ts 的单一真相源
+export type { ModelPricing } from "../api/cost-tracker.ts";
+
 /** 可用模型配置 */
 export interface ModelConfig {
   name: string;
@@ -58,6 +61,8 @@ export interface ModelConfig {
   contextWindow?: number;       // 上下文窗口（tokens）
   maxOutputTokens?: number;     // 最大输出 tokens
   supportsThinking?: boolean;   // 是否支持 Extended Thinking
+  /** 可选：用户自配价格。配了则优先使用，未配则回退内置定价表兜底 */
+  pricing?: ModelPricing;
 }
 
 /** 应用配置 */
@@ -784,7 +789,8 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
   if (!config.model && config.availableModels.length === 0) {
     throw new Error(
       "未配置任何模型。请在 ~/.sid-code/settings.json 的 availableModels 数组中添加模型配置。\n" +
-      "示例: { \"availableModels\": [{ \"name\": \"deepseek-v4-pro\", \"provider\": \"openai\", \"api_key\": \"sk-xxx\", \"base_url\": \"https://api.deepseek.com\" }] }",
+      "示例: { \"availableModels\": [{ \"name\": \"<你的模型名>\", \"provider\": \"openai\", \"api_key\": \"sk-xxx\", \"base_url\": \"https://api.example.com\" }] }\n" +
+      "可选字段: contextWindow (上下文窗口), maxOutputTokens (最大输出), pricing (自定义价格), supportsThinking (是否支持深度思考)",
     );
   }
 

@@ -63,6 +63,16 @@ const MCPServerSchema = lazySchema(() =>
   }),
 );
 
+/** 模型定价（每百万 token，USD） */
+const ModelPricingSchema = lazySchema(() =>
+  z.object({
+    input: z.number().positive(),
+    output: z.number().positive(),
+    cacheRead: z.number().nonnegative().optional(),
+    cacheWrite: z.number().nonnegative().optional(),
+  }),
+);
+
 /** 模型配置 Schema */
 const ModelConfigSchema = lazySchema(() =>
   z.object({
@@ -73,6 +83,8 @@ const ModelConfigSchema = lazySchema(() =>
     contextWindow: z.number().positive().optional(),
     maxOutputTokens: z.number().positive().optional(),
     supportsThinking: z.boolean().optional(),
+    /** 可选：用户自配价格。配了则优先使用，未配则回退内置定价表兜底 */
+    pricing: ModelPricingSchema().optional(),
   }),
 );
 

@@ -96,6 +96,8 @@ export interface TUIState {
   model: string;
   provider: string;
   usage: Usage;
+  /** 末次输入 token（stock 口径），用于状态栏展示当前上下文大小。避免与 usage.inputTokens（flow 累计）混淆。 */
+  stockInputTokens: number;
   costUSD: number;
   costLimit: number;
   contextPercent: number;
@@ -406,7 +408,8 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     debug: state.debug,
     cwd: state.cwd,
     commands: state.commands,
-  }), [state.model, state.provider, state.permissionMode, state.isPlanMode, state.gitBranch, state.debug, state.cwd, state.commands]);
+    availableModels: state.availableModels,
+  }), [state.model, state.provider, state.permissionMode, state.isPlanMode, state.gitBranch, state.debug, state.cwd, state.commands, state.availableModels]);
 
   // 派生 SessionContext 值
   const sessionValue = useMemo((): SessionContextValue => ({
@@ -587,6 +590,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           gitBranch={state.gitBranch}
           debug={state.debug}
           usage={state.usage}
+          stockInputTokens={state.stockInputTokens}
           costUSD={state.costUSD}
           costLimit={state.costLimit}
           contextPercent={state.contextPercent}
@@ -628,6 +632,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           gitBranch={state.gitBranch}
           debug={state.debug}
           usage={state.usage}
+          stockInputTokens={state.stockInputTokens}
           costUSD={state.costUSD}
           costLimit={state.costLimit}
           contextPercent={state.contextPercent}

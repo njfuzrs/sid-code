@@ -6,9 +6,8 @@
  * - 计算 USD 成本（区分 input / output / cache read / cache write 计价）
  * - 格式化会话成本摘要（供 /cost 命令和会话结束显示）
  *
- * 与 session/state.ts 的关系：SessionState 已做按模型成本累加（含缓存计价），
- * 本模块提供一个独立、可注入、纯函数式的成本计算器，便于 api 层与子代理单独计费，
- * 并补齐 SessionState 缺的"USD 成本格式化摘要"能力。
+ * 与 session/state.ts 的关系：本模块是定价的**唯一真相源**。SessionState 的
+ * 成本计算复用 resolvePricing()，不再维护独立定价表。
  */
 
 import type { Usage } from "../llm/types.ts";
@@ -17,14 +16,20 @@ import type { Usage } from "../llm/types.ts";
 export interface ModelPricing {
   input: number;
   output: number;
-  /** 缓存读取价（通常为 input 的 0.1） */
-  cacheRead: number;
-  /** 缓存写入价（通常为 input 的 1.25） */
-  cacheWrite: number;
+  /** 缓存读取价（通常为 input 的 0.1），不填调用方按 input×0.1 近似 */
+  cacheRead?: number;
+  /** 缓存写入价（通常为 input 的 1.25），不填调用方按 input×1.25 近似 */
+  cacheWrite?: number;
 }
 
-/** 内置模型定价表（多 provider，与 session/state.ts 保持同步） */
-export const MODEL_PRICING: Record<string, ModelPricing> = {
+/**
+ * 内置模型定价表 — **仅兜底**。
+ *
+ * 本表只在用户未在 availableModels[].pricing 中声明价格时回退使用。
+ * 优先级：availableModels[].pricing（用户配置） > 内置表（精确/前缀匹配） > FALLBACK_PRICING。
+ * 内置模型出新价格或新增模型时，优先让用户在 availableModels 声明，而非堆积本表。
+ */
+const BUILTIN_PRICING: Record<string, ModelPricing> = {
   // Claude 系列（官方 USD/M）
   "claude-opus-4-20250514": { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
   "claude-sonnet-4-20250514": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
@@ -33,9 +38,7 @@ export const MODEL_PRICING: Record<string, ModelPricing> = {
   "claude-3-5-haiku-20241022": { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 },
   "claude-3-opus-20240229": { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
 
-  // DeepSeek 系列（RMB/M 按 1 元 ≈ $0.14 折算为 USD，汇率快照 2026-06）。
-  // ⚠️ 汇率漂移风险：此处为静态快照，长期维护时如 RMB/USD 汇率变化超过 ±5%，
-  //   成本估算将偏大/偏小。届时考虑引入可配置汇率系数（如 config.forex.rmbToUsd）。
+  // DeepSeek 系列（RMB/M 按 1 元 ≈ $0.14 折算为 USD，汇率快照 2026-06）
   "deepseek-v4-pro": { input: 0.42, output: 0.84, cacheRead: 0.0035, cacheWrite: 0 },
   "deepseek-v4-flash": { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0 },
 
@@ -44,8 +47,11 @@ export const MODEL_PRICING: Record<string, ModelPricing> = {
   "gpt-4o-mini": { input: 0.15, output: 0.6, cacheRead: 0.075, cacheWrite: 0 },
 };
 
+/** 旧导出别名，保持向后兼容（已废弃，新代码勿用） */
+export const MODEL_PRICING = BUILTIN_PRICING;
+
 /** 未知模型的保守兜底价（USD/M）。
- *  不绑定任何特定模型品牌，取中位偏高值（input $2 / output $10 / 缓存读 $0.2 / 写 $2.5），
+ *  不绑定任何特定模型品牌，取中位偏高值（input $2 / output $10），
  *  介于低价模型（DeepSeek ~$0.14/$0.28）与高价模型（Claude Opus ~$15/$75）之间。
  *  原则：宁可高估触发预算守卫，也不归零放任烧钱。 */
 const FALLBACK_PRICING: ModelPricing = {
@@ -55,16 +61,41 @@ const FALLBACK_PRICING: ModelPricing = {
   cacheWrite: 2.5,
 };
 
-/** 解析模型定价（精确匹配 + 正向最长前缀匹配） */
-export function resolvePricing(model: string): ModelPricing {
-  if (MODEL_PRICING[model]) return MODEL_PRICING[model];
-  // P1-5：只保留正向 model.startsWith(key) 并取最长前缀。
-  // 去掉危险的反向 key.startsWith(model)——它会把短/截断模型名（如 "deepseek-v4"）
-  // 错配到表中先定义的更贵表项（"deepseek-v4-pro"），且依赖键顺序、非确定。
-  // 与 session/state.ts:getPricing 口径保持一致（主题 A：消灭多套实现的修复不同步）。
-  let best: ModelPricing = FALLBACK_PRICING;
-  let bestLen = 0;
-  for (const [key, pricing] of Object.entries(MODEL_PRICING)) {
+/** availableModels 中一项的简化类型（仅 resolvePricing / inferProvider 需要的字段） */
+export interface PricingModelEntry {
+  name?: string;
+  provider?: string;
+  pricing?: ModelPricing;
+}
+
+/**
+ * 解析模型定价 — 定价解析的**唯一入口**。
+ *
+ * 优先级：
+ *   1. availableModels[].pricing —— 用户配置优先（权威）
+ *   2. 内置定价表 BUILTIN_PRICING（精确匹配 → 正向最长前缀匹配）
+ *   3. null —— 未知模型，调用方自行走兜底价
+ *
+ * @param model 模型名
+ * @param availableModels 用户配置的模型列表（可选，携带权威 pricing）
+ */
+export function resolvePricing(
+  model: string,
+  availableModels?: PricingModelEntry[],
+): ModelPricing | null {
+  // 1. 用户配置优先：availableModels 里同名模型声明的 pricing 是权威值
+  const userModel = availableModels?.find(m => m.name === model);
+  if (userModel?.pricing && userModel.pricing.input > 0) {
+    return userModel.pricing;
+  }
+
+  // 2. 内置定价表：精确匹配
+  if (BUILTIN_PRICING[model]) return BUILTIN_PRICING[model];
+
+  // 正向最长前缀匹配
+  let best: ModelPricing | null = null;
+  let bestLen = -1;
+  for (const [key, pricing] of Object.entries(BUILTIN_PRICING)) {
     if (model.startsWith(key) && key.length > bestLen) {
       best = pricing;
       bestLen = key.length;
@@ -79,8 +110,12 @@ export function resolvePricing(model: string): ModelPricing {
  * 注意：usage.inputTokens 通常已含 cacheRead + cacheCreation（Anthropic 语义），
  * 因此普通 input = inputTokens - cacheRead - cacheCreation，避免重复计价。
  */
-export function calculateUSDCost(model: string, usage: Usage): number {
-  const p = resolvePricing(model);
+export function calculateUSDCost(
+  model: string,
+  usage: Usage,
+  availableModels?: PricingModelEntry[],
+): number {
+  const p = resolvePricing(model, availableModels) ?? FALLBACK_PRICING;
   const M = 1_000_000;
   const cacheRead = usage.cacheReadInputTokens ?? 0;
   const cacheWrite = usage.cacheCreationInputTokens ?? 0;
@@ -88,8 +123,8 @@ export function calculateUSDCost(model: string, usage: Usage): number {
   return (
     (regularInput * p.input) / M +
     (usage.outputTokens * p.output) / M +
-    (cacheRead * p.cacheRead) / M +
-    (cacheWrite * p.cacheWrite) / M
+    (cacheRead * (p.cacheRead ?? p.input * 0.1)) / M +
+    (cacheWrite * (p.cacheWrite ?? p.input * 1.25)) / M
   );
 }
 
@@ -114,6 +149,12 @@ export class CostTracker {
   totalCostUSD = 0;
   totalAPIDurationMs = 0;
   readonly modelUsage: Record<string, ModelUsageEntry> = {};
+  private availableModels: PricingModelEntry[] = [];
+
+  /** 设置用户配置的模型列表（带定价信息），供成本计算时优先使用 */
+  setAvailableModels(models: PricingModelEntry[]): void {
+    this.availableModels = models;
+  }
 
   /** 累加一次 API 调用的用量与成本 */
   record(model: string, usage: Usage, durationMs = 0): number {
@@ -135,7 +176,7 @@ export class CostTracker {
     mu.cacheCreationInputTokens += usage.cacheCreationInputTokens ?? 0;
     mu.requestCount++;
 
-    const cost = calculateUSDCost(model, usage);
+    const cost = calculateUSDCost(model, usage, this.availableModels);
     mu.costUSD += cost;
     this.totalCostUSD += cost;
     this.totalAPIDurationMs += durationMs;

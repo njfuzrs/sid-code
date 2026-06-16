@@ -8,6 +8,7 @@ import { HookEventName } from "../hook/types.ts";
 import type { HookInput, AfterModelInput, PostToolUseInput } from "../hook/types.ts";
 import { normalizeCacheUsage } from "../llm/types.ts";
 import { SessionState } from "../session/state.ts";
+import type { PricingModelEntry } from "../api/cost-tracker.ts";
 
 export interface SessionMetrics {
   /** 会话开始时间 */
@@ -75,6 +76,8 @@ export interface SessionMetrics {
 export class SessionMetricsCollector {
   private metrics: SessionMetrics;
   private sessionId: string = "";
+  /** 用户配置的模型列表（携带 provider），用于 inferProvider 优先使用 */
+  private availableModels: PricingModelEntry[] = [];
 
   // ── Harness 扩展：通用计数器/仪表 ──
   private customCounters = new Map<string, number>();
@@ -87,6 +90,11 @@ export class SessionMetricsCollector {
   /** 设置当前会话 ID（供会话摘要展示） */
   setSessionId(id: string): void {
     this.sessionId = id;
+  }
+
+  /** 注入用户配置的模型列表（含 provider），供 inferProvider 优先使用 */
+  setAvailableModels(models: PricingModelEntry[]): void {
+    this.availableModels = models;
   }
 
   private createInitial(): SessionMetrics {
@@ -138,7 +146,7 @@ export class SessionMetricsCollector {
     // 命中率分母专用（flow）：累计本次完整 prompt（promptTotal）。
     // 经 normalizeCacheUsage 归一化，消除 Anthropic（input=未命中余量）与
     // OpenAI/DeepSeek（input=含命中全量）的口径差异，与累计命中同口径。
-    const prov = provider ?? SessionState.inferProvider(model);
+    const prov = provider ?? SessionState.inferProvider(model, this.availableModels);
     const norm = normalizeCacheUsage(
       {
         inputTokens,

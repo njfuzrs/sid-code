@@ -10,16 +10,16 @@ import type { Message, ToolDefinition } from "./types.ts";
  *  （见 getContextLimit 优先级 1）。仅当用户未在 availableModels 声明窗口时，才回退到本表/启发式。
  *  内置模型出新窗口或新增模型时，优先让用户在 availableModels 声明，而非堆积本表。 */
 const MODEL_CONTEXT_LIMITS: Record<string, number> = {
-  // Anthropic
+  // Anthropic 系列
   "claude-sonnet-4-20250514": 200000,
   "claude-opus-4-20250514": 200000,
   "claude-haiku-3-5-20241022": 200000,
-  // OpenAI
+  // OpenAI 系列
   "gpt-4o": 128000,
   "gpt-4o-mini": 128000,
   "o1": 200000,
   "o3-mini": 200000,
-  // DeepSeek（doc 实证 1M 上下文，见 api-reference/deepseek-api.md「模型细节」）
+  // DeepSeek 系列（全系 1M 上下文）
   "deepseek-v4-pro": 1_000_000,
   "deepseek-v4-flash": 1_000_000,
 };

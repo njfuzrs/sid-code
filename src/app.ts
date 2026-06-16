@@ -180,7 +180,10 @@ export class App {
     this.ctxMgr = new ContextManager({ maxTokens: ctxWindow });
     this.ctxMgr.setSessionId(sessionId);
     this.sessionState = new SessionState(sessionId);
+    // 注入用户配置的模型列表（含定价/provider），供计费和 provider 推断优先使用
+    this.sessionState.setAvailableModels(opts.config.availableModels);
     getSessionMetrics().setSessionId(sessionId);
+    getSessionMetrics().setAvailableModels(opts.config.availableModels);
     // B1：会话持久化写入端（构造很轻，仅建目录）。startSession/resumeSession 延迟到 doInit 调用，
     // 以便 B6 能根据 resumedSessionId 决定"新建 jsonl"还是"续写旧 jsonl"。
     this.sessionStore = new SessionStore();
@@ -352,7 +355,7 @@ export class App {
       if (!usage) return;
       // 子代理可能用不同 subAgentModel，按其实际 model 分别计费；缺省回退主模型。
       const model = result.model || this.config.model;
-      const provider = result.provider || SessionState.inferProvider(model);
+      const provider = result.provider || SessionState.inferProvider(model, this.config.availableModels);
       // 子代理无独立 API 耗时归集口径，durationMs 计 0（费用/ token 才是归集重点）。
       this.sessionState.updateUsage(model, usage, 0, provider);
     };
@@ -1614,6 +1617,7 @@ export class App {
       model: this.config.model,
       provider: this.config.provider,
       usage: { ...this.sessionState.getTotalUsage() },
+      stockInputTokens: this.sessionState.getStockInputTokens(),
       costUSD: this.sessionState.totalCostUSD,
       costLimit: this.config.costLimit ?? 0,
       contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / this.ctxMgr.getMaxTokens()) * 100),
@@ -1934,6 +1938,7 @@ export class App {
                 lastToolResult: event.result ? { toolName: event.toolName, isError: !!event.result.isError, elapsedMs: event.result.elapsedMs ?? 0 } : null,
                 // 工具结束即刷新统计三件套，不必等下一轮 done（否则工具跑完后 Footer 仍显示上一轮旧值）
                 usage: { ...this.sessionState.getTotalUsage() },
+                stockInputTokens: this.sessionState.getStockInputTokens(),
                 costUSD: this.sessionState.totalCostUSD,
                 contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / this.ctxMgr.getMaxTokens()) * 100),
               });
@@ -2002,6 +2007,7 @@ export class App {
               syncDisplay({
                 isLoading: false,
                 usage: { ...this.sessionState.getTotalUsage() },
+                stockInputTokens: this.sessionState.getStockInputTokens(),
                 costUSD: this.sessionState.totalCostUSD,
                 contextPercent: ctxPct,
                 streamingText: "",
@@ -2047,6 +2053,7 @@ export class App {
       syncDisplay({
         isLoading: false,
         usage: { ...this.sessionState.getTotalUsage() },
+        stockInputTokens: this.sessionState.getStockInputTokens(),
         costUSD: this.sessionState.totalCostUSD,
         contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / this.ctxMgr.getMaxTokens()) * 100),
         // CM3：本轮结束，清除残留的重试/限流提示。
@@ -2110,6 +2117,7 @@ export class App {
             toolInput: null,
             isToolExecuting: false,
             usage: { ...this.sessionState.getTotalUsage() },
+            stockInputTokens: this.sessionState.getStockInputTokens(),
             costUSD: this.sessionState.totalCostUSD,
             contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / this.ctxMgr.getMaxTokens()) * 100),
           });

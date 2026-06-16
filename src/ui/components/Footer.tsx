@@ -96,6 +96,7 @@ interface FooterProps {
   gitBranch: string;
   debug: boolean;
   usage: Usage;
+  stockInputTokens: number;
   costUSD: number;
   costLimit: number;
   contextPercent: number;

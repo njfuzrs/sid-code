@@ -78,6 +78,7 @@ interface MainScreenLayoutProps {
   gitBranch: string;
   debug: boolean;
   usage: Usage;
+  stockInputTokens: number;
   costUSD: number;
   costLimit: number;
   contextPercent: number;
@@ -122,6 +123,7 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
   gitBranch,
   debug,
   usage,
+  stockInputTokens,
   costUSD,
   costLimit,
   contextPercent,
@@ -287,6 +289,7 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
           gitBranch={gitBranch}
           debug={debug}
           usage={usage}
+          stockInputTokens={stockInputTokens}
           costUSD={costUSD}
           costLimit={costLimit}
           contextPercent={contextPercent}
