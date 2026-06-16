@@ -364,11 +364,18 @@ export class SessionState {
     output: 10,
   };
 
-  /** 获取汇总的 Usage（兼容旧接口） */
+  /**
+   * 获取汇总的 Usage（兼容旧接口）。
+   *
+   * DISP-1 FIX：inputTokens 改为 flow 累计口径（cumulativePromptTokens），
+   * 与 cacheReadInputTokens 累加口径一致，确保 deriveCacheMetrics 的命中率计算分母正确。
+   * 此前用 stock 末次值（stats.inputTokens = 每次覆盖仅保留末次），导致分子（flow 累计）≫ 分母（stock 末次），
+   * 命中率经常 >100% 甚至飙升到几千 %。
+   */
   getTotalUsage(): Usage {
     const total: Usage = { inputTokens: 0, outputTokens: 0 };
     for (const stats of Object.values(this.modelUsage)) {
-      total.inputTokens += stats.inputTokens;
+      total.inputTokens += stats.cumulativePromptTokens;
       total.outputTokens += stats.outputTokens;
       total.cacheCreationInputTokens = (total.cacheCreationInputTokens ?? 0) + stats.cacheCreationInputTokens;
       total.cacheReadInputTokens = (total.cacheReadInputTokens ?? 0) + stats.cacheReadInputTokens;
@@ -378,8 +385,8 @@ export class SessionState {
 
   /**
    * 累计输入 prompt token（flow 口径，各模型 cumulativePromptTokens 之和）。
-   * DISP-1：与逐次累加的 totalCostUSD 口径可比（"花了多少钱 ↔ 累计喂了多少 token"）；
-   * getTotalUsage().inputTokens 是末次值（stock），不可与 cost 直接对照。
+   * DISP-1：与逐次累加的 totalCostUSD 口径可比（"花了多少钱 ↔ 累计喂了多少 token"）。
+   * getTotalUsage().inputTokens 现也已改为 flow 累计口径，与此方法一致。
    */
   getCumulativePromptTokens(): number {
     let total = 0;
