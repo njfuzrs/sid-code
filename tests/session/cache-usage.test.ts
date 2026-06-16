@@ -212,9 +212,9 @@ describe("SessionState.getNormalizedCacheUsage — 会话级汇总", () => {
     ss.updateUsage("deepseek-v4-pro", { inputTokens: 7000, outputTokens: 200 }, 100, "openai");
     ss.updateUsage("claude-sonnet-4-20250514", { inputTokens: 1000, outputTokens: 100 }, 100, "anthropic");
     // deepseek flow = 13000，claude flow = 1000
+    // DISP-1 FIX：getTotalUsage().inputTokens 现也改为 flow 累计口径，与此一致
     expect(ss.getCumulativePromptTokens()).toBe(14000);
-    // 末次值(stock)各取最后一次：deepseek 7000 + claude 1000 = 8000
-    expect(ss.getTotalUsage().inputTokens).toBe(8000);
+    expect(ss.getTotalUsage().inputTokens).toBe(14000);
   });
 });
 
