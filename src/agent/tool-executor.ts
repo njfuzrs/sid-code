@@ -10,10 +10,10 @@
  */
 
 import type { ContentBlock } from "../llm/types.ts";
-import type { LegacyTool as Tool } from "../tool/types.ts";
 import type { Registry as ToolRegistry } from "../tool/registry.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
 import { getLogger } from "../debug/logger.ts";
+import { validateToolInput } from "../tool/input-validator.ts";
 
 /**
  * 执行工具调用（子代理版本，无权限检查，支持并行执行）
@@ -113,9 +113,23 @@ async function executeSingleTool(
     };
   }
 
+  // zod 运行时校验：用原始 block.input 校验（不含注入的 _agentId 元字段，
+  // 避免严格 schema 的 additionalProperties:false 把 _agentId 当非法字段拒绝）。
+  // 校验通过后再注入 _agentId 防套娃。
+  const validation = validateToolInput(tool, block.input);
+  if (!validation.ok) {
+    log.info("SUBAGENT:TOOL", `工具 ${block.name} 参数校验失败: ${validation.message}`);
+    return {
+      type: "tool_result",
+      tool_use_id: block.id,
+      content: validation.message,
+      is_error: true,
+    };
+  }
+
   try {
     // 注入 _agentId 标记，防止子代理调用 enter_plan_mode / sub_agent 形成套娃
-    const result = await tool.execute({ ...block.input, _agentId: "sub-agent" }, signal);
+    const result = await tool.execute({ ...(validation.data as Record<string, unknown>), _agentId: "sub-agent" }, signal);
     // 截断超大输出
     const truncated = ContextManager.truncateToolOutput(result.output);
     return {

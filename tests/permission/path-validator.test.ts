@@ -4,7 +4,7 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { PathValidator } from "../../src/permission/path-validator.ts";
+import { PathValidator, normalizeCaseForComparison } from "../../src/permission/path-validator.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -208,5 +208,138 @@ describe("PathValidator - resolveRealPath", () => {
     const realPath = v.resolveRealPath(path.join(workspaceDir, "nonexistent.ts"));
     // 父目录存在，应该基于父目录的 realpath 拼接
     expect(realPath).toContain("nonexistent.ts");
+  });
+});
+
+// ─────────────────────────── 迭代 I：路径安全深化 ───────────────────────────
+
+describe("PathValidator - 大小写归一化（P0-3 迭代 I Step 1）", () => {
+  test("normalizeCaseForComparison 全小写", () => {
+    expect(normalizeCaseForComparison("/Foo/Bar/.ENV")).toBe("/foo/bar/.env");
+  });
+
+  test("大小写混淆的 .ENV 仍被识别为敏感文件", () => {
+    const v = new PathValidator(workspaceDir);
+    const result = v.validateAccess(path.join(workspaceDir, ".ENV"), "write");
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("敏感文件");
+  });
+
+  test("大小写混淆的 Server.PEM 仍被识别为敏感文件", () => {
+    const v = new PathValidator(workspaceDir);
+    const result = v.validateAccess(path.join(workspaceDir, "Server.PEM"), "read");
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("敏感文件");
+  });
+
+  test("大小写混淆的黑名单目录仍被拦截", () => {
+    const blockedDir = path.join(workspaceDir, "Secrets");
+    fs.mkdirSync(blockedDir, { recursive: true });
+    const v = new PathValidator(workspaceDir, [], [blockedDir]);
+    // 用不同大小写访问
+    const result = v.validateAccess(path.join(workspaceDir, "secrets", "x.txt"), "write");
+    // macOS 大小写不敏感文件系统下应被拦截；Linux 下两者是不同目录，realpath 不同
+    // 至少 normalizeCaseForComparison 保证了归一化比较逻辑被走到
+    if (process.platform === "darwin") {
+      expect(result.allowed).toBe(false);
+    }
+    fs.rmSync(blockedDir, { recursive: true, force: true });
+  });
+});
+
+describe("PathValidator - UNC 路径拦截（P0-3 迭代 I Step 2）", () => {
+  test("Windows UNC 共享路径被拦截", () => {
+    const v = new PathValidator(workspaceDir);
+    const result = v.validateAccess("\\\\server\\share\\file.txt", "read");
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("UNC");
+  });
+
+  test("POSIX 变体 UNC 路径被拦截", () => {
+    const v = new PathValidator(workspaceDir);
+    const result = v.validateAccess("//server/share/file.txt", "read");
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("UNC");
+  });
+
+  test("UNC IP 共享路径被拦截", () => {
+    const v = new PathValidator(workspaceDir);
+    const result = v.validateAccess("\\\\192.168.1.1\\c$\\windows", "read");
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("UNC");
+  });
+});
+
+describe("PathValidator - 三点路径混淆拦截（P0-3 迭代 I Step 4）", () => {
+  test("三点段路径被拦截", () => {
+    const v = new PathValidator(workspaceDir);
+    const result = v.validateAccess(path.join(workspaceDir, ".../etc/passwd"), "read");
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("三点");
+  });
+
+  test("四点段路径被拦截", () => {
+    const v = new PathValidator(workspaceDir);
+    const result = v.validateAccess("/foo/..../bar", "read");
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("三点");
+  });
+
+  test("正常的两点 .. 不被三点规则误伤", () => {
+    const v = new PathValidator(workspaceDir);
+    // .. 是合法的目录引用，不应命中三点规则（可能因其他规则拦截，但 reason 不含"三点"）
+    const result = v.validateAccess(path.join(workspaceDir, "src", "..", "test.ts"), "read");
+    if (!result.allowed) {
+      expect(result.reason).not.toContain("三点");
+    }
+  });
+});
+
+describe("PathValidator - 扩展 Windows 绕过模式（P0-3 迭代 I Step 4）", () => {
+  test("DOS 设备名带扩展名变体（NUL.txt）被拦截", () => {
+    const v = new PathValidator(workspaceDir);
+    const result = v.validateAccess(path.join(workspaceDir, "NUL.txt"), "write");
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("DOS 设备名");
+  });
+
+  test("设备路径前缀 \\\\.\\ 被拦截", () => {
+    const v = new PathValidator(workspaceDir);
+    const result = v.validateAccess("\\\\.\\PhysicalDrive0", "write");
+    expect(result.allowed).toBe(false);
+    // 命中设备路径前缀或 UNC（两者都是正确拦截）
+    expect(result.reason).toBeDefined();
+  });
+});
+
+describe("PathValidator - Symlink 多路径链逃逸（P0-3 迭代 I Step 3）", () => {
+  test("getAllResolvedPaths 至少包含原始路径与 realpath", () => {
+    const v = new PathValidator(workspaceDir);
+    const target = path.join(workspaceDir, "test.ts");
+    const chain = v.getAllResolvedPaths(target);
+    expect(chain.length).toBeGreaterThanOrEqual(1);
+    expect(chain).toContain(fs.realpathSync(target));
+  });
+
+  test("中间目录 symlink 逃逸到工作区外被捕获", () => {
+    // 构造：workspace/linkdir -> /tmp 外部目录，再访问 workspace/linkdir/file
+    const outsideDir = path.join(tmpDir, "outside-dir");
+    fs.mkdirSync(outsideDir, { recursive: true });
+    fs.writeFileSync(path.join(outsideDir, "leak.txt"), "secret");
+    const linkDir = path.join(workspaceDir, "linkdir");
+
+    try {
+      fs.symlinkSync(outsideDir, linkDir);
+    } catch {
+      return; // 环境不支持 symlink，跳过
+    }
+
+    const v = new PathValidator(workspaceDir);
+    const result = v.validateAccess(path.join(linkDir, "leak.txt"), "write");
+    expect(result.allowed).toBe(false);
+    expect(result.needsConfirmation).toBe(true);
+
+    fs.unlinkSync(linkDir);
+    fs.rmSync(outsideDir, { recursive: true, force: true });
   });
 });

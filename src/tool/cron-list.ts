@@ -5,8 +5,14 @@
 
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
 import { getScheduler } from "../cron/scheduler.ts";
+import { z } from "zod/v4";
+import { lazySchema } from "../sdk/lazy-schema.ts";
+
+const cronListSchema = lazySchema(() => z.object({}));
 
 export class CronListTool implements Tool {
+  readonly zodSchema = cronListSchema();
+
   name(): string {
     return "cron_list";
   }
@@ -16,7 +22,7 @@ export class CronListTool implements Tool {
   }
 
   inputSchema(): Record<string, unknown> {
-    return { type: "object", properties: {} };
+    return z.toJSONSchema(cronListSchema()) as Record<string, unknown>;
   }
 
   readOnly(): boolean {

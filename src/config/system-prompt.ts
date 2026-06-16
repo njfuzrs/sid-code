@@ -510,7 +510,7 @@ ${langConstraint}
 当用户的描述出现以下情形时，**先列候选 + 反问澄清**，不要先入为主选一个：
 - 模糊代词："那个/这个/它"，没有明确指向
 - 模糊目标："改一下让它更好/优化一下/重构一下"，没有验收标准
-- 仓库中存在 ≥2 个匹配："loop 文件" 在 sid-code 至少 3 处（agent/loop.ts、query/loop.ts、agent/loop-detection.ts）
+- 仓库中存在 ≥2 个匹配："loop 文件" 在 sid-code 至少 2 处（query/loop.ts、agent/loop-detection.ts）
 
 直接 grep/read 任意一个候选就开始解释 = 错误行为。
 

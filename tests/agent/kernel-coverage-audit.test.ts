@@ -46,23 +46,22 @@ interface KernelPath {
 const KERNEL_PATHS: KernelPath[] = [
   {
     path: "中断路径 — executeTools 抛 AbortError 后消息历史完整性",
-    source: "src/agent/loop.ts:591-607",
+    source: "src/query/loop.ts:875-892",
     status: "covered",
     tests: [
-      "tests/agent/interrupt-history-integrity.test.ts",
+      "tests/query/abort-graceful.test.ts",
       "tests/agent/interrupt-abort-e2e.test.ts",
     ],
-    note: "D1-2 + D2-3 已补：真实 loop.run() 驱动 + 落盘重载 + 可恢复断言",
+    note: "A2 + D2-3 已补：真实 queryLoop 优雅收尾（补 cancel result + yield done）+ 落盘重载 + 可恢复断言（原 AgentLoopRunner 死码及其专测已删）",
   },
   {
     path: "followup / plan-mode 时序 — toolResults 必排在 followup 之前",
-    source: "src/agent/loop.ts:609-616 / src/query/tool-executor.ts:255-260",
+    source: "src/query/loop.ts:918-922 / src/query/tool-executor.ts:255-260",
     status: "covered",
     tests: [
-      "tests/agent/followup-ordering-invariant.test.ts",
       "tests/agent/plan-approval-ordering.test.ts",
     ],
-    note: "D1-3 已补：真实 loop 时序断言（plan-approval 为旧的模拟时序）",
+    note: "ADR-019 已补：plan-approval 断言 followup 排在 tool_result 之后（原 followup-ordering-invariant 死码专测已删，不变量由真实 queryLoop:918 强制）",
   },
   {
     path: "tool_result 协议不变量 — executeTools 出口 N tool_use → N tool_result",

@@ -37,10 +37,18 @@ export function spawnShellTask(opts: {
   toolUseId?: string;
   agentId?: string;
   signal?: AbortSignal;
+  /**
+   * 用于展示/通知的原始命令（持久 Shell 会话场景：command 已被包成
+   * `source 快照 && eval '原命令'`，displayCommand 保留干净的原命令用于描述）。
+   * 不传则回退 command。
+   */
+  displayCommand?: string;
 }): LocalShellTaskState {
   const taskId = generateTaskId("local_shell");
   const output = initTaskOutput(taskId);
   const { shell, args } = getPlatformShell();
+  // 展示用命令（干净），与实际执行命令（可能含快照前缀）分离
+  const display = opts.displayCommand ?? opts.command;
 
   const outFd = openSync(output.filePath, "w");
   const child = spawn(shell, [...args, opts.command], {
@@ -56,13 +64,13 @@ export function spawnShellTask(opts: {
     id: taskId,
     type: "local_shell",
     status: "running",
-    description: opts.command.slice(0, 100),
+    description: display.slice(0, 100),
     toolUseId: opts.toolUseId,
     startTime: Date.now(),
     outputFile: output.filePath,
     outputOffset: 0,
     notified: false,
-    command: opts.command,
+    command: display,
     interrupted: false,
     isBackgrounded: true,
     agentId: opts.agentId,
@@ -89,7 +97,7 @@ export function spawnShellTask(opts: {
         toolUseId: opts.toolUseId,
         outputFile: output.filePath,
         status: code === 0 ? "completed" : "failed",
-        summary: `命令 "${opts.command.slice(0, 60)}" ${
+        summary: `命令 "${display.slice(0, 60)}" ${
           code === 0 ? "执行成功" : `失败 (exit code: ${code})`
         }`,
       }),

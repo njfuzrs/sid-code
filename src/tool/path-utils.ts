@@ -12,15 +12,21 @@
 import { homedir } from "os";
 import { resolve, normalize, dirname, basename } from "path";
 import { readdirSync, statSync } from "fs";
+import { getCwd } from "../bootstrap/state.ts";
 
 /**
  * 预处理工具路径：~ 展开 → resolve → NFC 归一化 → null byte 检查
  * @param raw 原始路径（可能含 ~、相对路径、冗余 ..、NFD 编码）
- * @param cwd 当前工作目录（默认 process.cwd()）
+ * @param cwd 当前工作目录（默认读全局 cwd 状态 getCwd()）
  * @returns 规范化后的绝对路径
  * @throws 如果路径含 null byte
+ *
+ * 持久 Shell 会话（P0-2）：默认 cwd 从 process.cwd() 改为 getCwd()。
+ * bash 工具 cd 后写回全局 cwd（bootstrap/state.ts），此处读全局 cwd，
+ * 使 read/edit/write/glob/grep/ls/read-many 全部跟随 bash 的 cd。
+ * getCwd() 初值即 process.cwd()，bash 未改 cwd 前行为与改造前一致。
  */
-export function normalizeToolPath(raw: string, cwd: string = process.cwd()): string {
+export function normalizeToolPath(raw: string, cwd: string = getCwd()): string {
   // null byte 安全检查
   if (raw.includes("\0")) {
     throw new Error("路径包含非法字符 (null byte)");
@@ -77,7 +83,7 @@ export function levenshteinDistance(a: string, b: string): number {
  */
 export function formatPathNotFoundError(
   filePath: string,
-  cwd: string = process.cwd(),
+  cwd: string = getCwd(),
   maxSiblings = 3,
 ): string {
   const parentDir = dirname(filePath);

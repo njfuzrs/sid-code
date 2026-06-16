@@ -72,6 +72,11 @@ export class QueryEngine {
   private streamTextCallback: ((text: string) => void) | null = null;
   /** v2：流式思考回调（对标 Claude Code 的独立思考流通道） */
   private streamThinkingCallback: ((text: string) => void) | null = null;
+  /**
+   * Step 0：Session Memory 句柄（由 App 在 doInit 接线后注入）。
+   * queryLoop 每轮收尾触发提取（updateSessionMemory）+ 工具调用计数（recordToolCall）。
+   */
+  private sessionMemory: import("../session-memory/session-memory.ts").SessionMemoryHandle | null = null;
 
   constructor(deps: QueryEngineDeps) {
     this.deps = deps;
@@ -80,6 +85,13 @@ export class QueryEngine {
   /** 更新 Provider（模型切换时调用） */
   updateProvider(provider: Provider): void {
     this.deps.provider = provider;
+  }
+
+  /** Step 0：注入 Session Memory 句柄（App 接线后调用，可传 null 关闭）。 */
+  setSessionMemory(
+    handle: import("../session-memory/session-memory.ts").SessionMemoryHandle | null,
+  ): void {
+    this.sessionMemory = handle;
   }
 
   /** 更新 TokenMeter（遥测启用后重建） */
@@ -187,6 +199,13 @@ export class QueryEngine {
       getPlanModeReminder: this.deps.getPlanModeReminder,
       getTodoState: this.deps.getTodoState,
       sessionStore: this.deps.sessionStore,
+      // Step 0：Session Memory 每轮收尾钩子（fire-and-forget，内部按双阈值决定是否提取）。
+      updateSessionMemory: this.sessionMemory
+        ? () => this.sessionMemory!.updateSessionMemory()
+        : undefined,
+      recordSessionMemoryToolCall: this.sessionMemory
+        ? () => this.sessionMemory!.recordToolCall()
+        : undefined,
     };
 
     // ─── 启动 queryLoop ───

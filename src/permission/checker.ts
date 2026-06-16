@@ -19,7 +19,7 @@ import { checkRules } from "./rules.ts";
 import { AuditLogger } from "./audit.ts";
 import { getLogger } from "../debug/logger.ts";
 import { splitCompoundCommand, hasSensitiveRedirection } from "./shell-parser.ts";
-import { PathValidator } from "./path-validator.ts";
+import { PathValidator, normalizeCaseForComparison } from "./path-validator.ts";
 import {
   type DenialTrackingState,
   createDenialTrackingState,
@@ -29,6 +29,7 @@ import {
 } from "./denial-tracking.ts";
 import { RuleLoader } from "./rule-loader.ts";
 import type { SandboxManager } from "./sandbox.ts";
+import { BashClassifier } from "./bash-classifier.ts";
 import * as path from "node:path";
 
 /** 危险命令模式（对标 Claude Code 15 种） */
@@ -83,8 +84,29 @@ interface SafetyProtectedPath {
   reason: string;
 }
 
+//
+// ⚠️ 顺序敏感：safetyCheck 首次命中即返回，越具体/越严格的项必须排在越前面。
+// 例如 ".sid-code/commands/"（绝对禁止）必须排在 ".sid-code/"（可审批）之前，
+// 否则 commands 目录会先命中宽松的父目录规则而被错误放行。
+//
 const SAFETY_PROTECTED_PATHS: SafetyProtectedPath[] = [
-  // classifierApprovable: true（分类器可根据上下文判断）
+  // ── classifierApprovable: false（绝对禁止，不可自动审批）——最具体、最危险，排最前 ──
+  { pattern: ".git/hooks/", classifierApprovable: false, reason: "Git hooks 可执行任意代码" },
+  { pattern: ".husky/", classifierApprovable: false, reason: "Husky hooks 可执行任意代码" },
+  // 斜杠命令目录：命令体可执行任意 shell，等同 hooks 风险，绝对禁止自动审批
+  // （对标 claude-code isClaudeConfigFilePath 对 commands/agents/skills 的精细管控）
+  { pattern: ".sid-code/commands/", classifierApprovable: false, reason: "sid-code 斜杠命令可执行任意代码" },
+  { pattern: ".sid-code/agents/", classifierApprovable: false, reason: "sid-code 子代理定义影响执行" },
+  { pattern: ".sid-code/skills/", classifierApprovable: false, reason: "sid-code Skill 可执行任意代码" },
+  { pattern: ".claude/commands/", classifierApprovable: false, reason: "Claude 斜杠命令可执行任意代码" },
+  { pattern: ".claude/agents/", classifierApprovable: false, reason: "Claude 子代理定义影响执行" },
+  { pattern: ".claude/skills/", classifierApprovable: false, reason: "Claude Skill 可执行任意代码" },
+  // 设置文件精细项：项目级 settings 可注入安全敏感字段，需用户/分类器确认（文件级精确匹配）
+  { pattern: ".sid-code/settings.json", classifierApprovable: true, reason: "sid-code 设置文件（可影响安全控制）" },
+  { pattern: ".sid-code/settings.local.json", classifierApprovable: true, reason: "sid-code 本地设置文件" },
+  { pattern: ".claude/settings.json", classifierApprovable: true, reason: "Claude 设置文件" },
+  { pattern: ".claude/settings.local.json", classifierApprovable: true, reason: "Claude 本地设置文件" },
+  // ── classifierApprovable: true（分类器可根据上下文判断）——较宽泛的父目录，排后 ──
   { pattern: ".git/", classifierApprovable: true, reason: "Git 仓库内部文件" },
   { pattern: ".sid-code/", classifierApprovable: true, reason: "sid-code 配置目录" },
   { pattern: ".claude/", classifierApprovable: true, reason: "Claude 配置目录" },
@@ -94,9 +116,6 @@ const SAFETY_PROTECTED_PATHS: SafetyProtectedPath[] = [
   { pattern: ".profile", classifierApprovable: true, reason: "Shell 配置文件" },
   { pattern: ".bash_profile", classifierApprovable: true, reason: "Shell 配置文件" },
   { pattern: ".ssh/", classifierApprovable: true, reason: "SSH 配置目录" },
-  // classifierApprovable: false（绝对禁止，不可自动审批）
-  { pattern: ".git/hooks/", classifierApprovable: false, reason: "Git hooks 可执行任意代码" },
-  { pattern: ".husky/", classifierApprovable: false, reason: "Husky hooks 可执行任意代码" },
 ];
 
 /** 文件工具（需要路径校验） */
@@ -139,6 +158,8 @@ export class PermissionChecker implements Checker {
   private prePlanMode: string | null = null;
   /** 沙箱管理器（可选） */
   private sandboxManager: SandboxManager | null = null;
+  /** LLM 命令风险分类器（第二道防线，默认不启用；通过 setBashClassifier 注入） */
+  private bashClassifier: BashClassifier | null = null;
   /** Bridge 远程权限代理（可选，Bridge 模式下注入；签名对齐 PermissionProxy.requestPermission） */
   private bridgePermissionDelegate: ((req: {
     toolName: string;
@@ -182,6 +203,16 @@ export class PermissionChecker implements Checker {
   /** 获取沙箱管理器 */
   getSandboxManager(): SandboxManager | null {
     return this.sandboxManager;
+  }
+
+  /** 设置 LLM 命令风险分类器（null 清除，回退纯硬编码检测） */
+  setBashClassifier(classifier: BashClassifier | null): void {
+    this.bashClassifier = classifier;
+  }
+
+  /** 获取 LLM 命令风险分类器 */
+  getBashClassifier(): BashClassifier | null {
+    return this.bashClassifier;
   }
 
   /** 获取 denial tracking 状态（供 agent loop 读取） */
@@ -280,9 +311,11 @@ export class PermissionChecker implements Checker {
       }
     }
 
-    // Step 2: 危险命令拦截（25 种模式 + 复合命令拆分 + 重定向检测）
+    // Step 2: 危险命令拦截（硬编码 25 种模式 + 复合命令拆分 + 重定向检测 + LLM 风险分类）
+    //   ⚠️ checkDangerousCommand 已为 async（内含 LLM 分类器调用），调用点必须 await——
+    //   否则返回的 Promise 恒为 truthy，危险命令检测会被错误短路。
     if (req.toolName === "bash") {
-      const dangerResult = this.checkDangerousCommand(req);
+      const dangerResult = await this.checkDangerousCommand(req);
       if (dangerResult) return dangerResult;
     }
 
@@ -455,15 +488,19 @@ export class PermissionChecker implements Checker {
     const resource = (req.input as any)?.file_path || (req.input as any)?.command || "";
 
     // 跳过权限检查模式
-    if (this.config.skipPermissions || this.config.yesMode) {
-      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(skipPermissions/yesMode)`);
+    //   skipPermissions（--dangerously-skip-permissions）：用户显式要求"完全跳过"，原样放行。
+    //   ⚠️ yesMode（--yes）不再在此早退——它的语义是"自动批准需确认操作，但仍阻止危险命令"
+    //   （见 config/attachments.ts yesMode 提示词）。早退会跳过 hasPermissionsInner 的危险命令
+    //   检测与 LLM 风险分类，违背该语义。yesMode 改为在下方 ask 阶段对"普通 ask"自动批准。
+    if (this.config.skipPermissions) {
+      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(skipPermissions)`);
       this.auditLogger.log({
         timestamp: new Date().toISOString(),
         type: "tool_use",
         tool: req.toolName,
         resource,
         decision: "allow",
-        reason: "skipPermissions/yesMode",
+        reason: "skipPermissions",
       });
       return { allowed: true };
     }
@@ -505,11 +542,39 @@ export class PermissionChecker implements Checker {
         decision: "deny",
         reason: result.reason,
         decisionReason: result.decisionReason,
+        classifiedBy: result.metadata?.classifiedBy as ("hardcoded" | "llm" | "both" | undefined),
+        llmRisk: result.metadata?.llmRisk as (string | undefined),
       });
       return result;
     }
 
     // ask → 模式后处理
+
+    // yesMode（--yes）：自动批准"普通 ask"，但危险命令触发的确认仍然拦截
+    //   （见 config/attachments.ts："所有需要确认的操作将自动批准。仍然会阻止危险命令。"）
+    //   文档迭代 III 第 2 点明确针对 bash 命令："LLM 分类器放行的命令才自动执行，高风险仍需确认"。
+    //   不放行来源：dangerousCommand（硬编码/LLM 判定的危险命令）、safetyCheck（.git/hooks 等可执行代码路径）。
+    //   注意：pathValidation（如工作区外写入）属常规确认，yesMode 照常自动批准——不在"危险命令"范畴。
+    if (this.config.yesMode) {
+      const dr = result.decisionReason?.type;
+      const isSafetyConfirmation = dr === "dangerousCommand" || dr === "safetyCheck";
+      if (!isSafetyConfirmation) {
+        log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(yesMode 自动批准普通 ask)`);
+        this.denialTracking = recordSuccess(this.denialTracking);
+        this.auditLogger.log({
+          timestamp: new Date().toISOString(),
+          type: "tool_use",
+          tool: req.toolName,
+          resource,
+          decision: "allow",
+          reason: "yesMode 自动批准",
+          user_confirmed: false,
+        });
+        return { allowed: true, decisionReason: { type: "mode", mode: "yesMode" } };
+      }
+      // 危险来源的确认：yesMode 不放行，落到下方非交互/熔断/正常确认流程（高风险仍拦）
+      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → yesMode 不放行危险命令确认(${dr})`);
+    }
 
     // dontAsk 模式：ask → deny（绝不弹窗，对齐 Claude Code 语义）
     if (this.config.permissionMode === "dontAsk") {
@@ -587,19 +652,24 @@ export class PermissionChecker implements Checker {
    */
   private safetyCheck(filePath: string): { safe: boolean; reason?: string; classifierApprovable: boolean } {
     const resolved = path.resolve(filePath);
-    const basename = path.basename(resolved);
-    const relativePath = resolved; // 用绝对路径匹配
+    // 大小写归一化比较：macOS/Windows 大小写不敏感文件系统下，
+    // ".ClAuDe/settings.json" 与 ".claude/settings.json" 指向同一文件，
+    // 必须归一化后再比对（对标 path-validator normalizeCaseForComparison）。
+    const basename = normalizeCaseForComparison(path.basename(resolved));
+    const relativePath = normalizeCaseForComparison(resolved); // 用绝对路径（全小写）匹配
 
     for (const sp of SAFETY_PROTECTED_PATHS) {
+      const patternLower = normalizeCaseForComparison(sp.pattern);
       // 目录模式：检查路径是否包含该目录
-      if (sp.pattern.endsWith("/")) {
-        const dirName = sp.pattern.slice(0, -1); // 去掉尾部 /
-        if (relativePath.includes(`/${dirName}/`) || relativePath.includes(`${path.sep}${dirName}${path.sep}`)) {
+      if (patternLower.endsWith("/")) {
+        const dirName = patternLower.slice(0, -1); // 去掉尾部 /
+        const sepLower = normalizeCaseForComparison(path.sep);
+        if (relativePath.includes(`/${dirName}/`) || relativePath.includes(`${sepLower}${dirName}${sepLower}`)) {
           return { safe: false, reason: sp.reason, classifierApprovable: sp.classifierApprovable };
         }
       } else {
-        // 文件模式：检查文件名
-        if (basename === sp.pattern || relativePath.endsWith(`/${sp.pattern}`)) {
+        // 文件模式：检查文件名 或 路径尾缀（后者支持 ".sid-code/settings.json" 这类带目录的精确项）
+        if (basename === patternLower || relativePath.endsWith(`/${patternLower}`)) {
           return { safe: false, reason: sp.reason, classifierApprovable: sp.classifierApprovable };
         }
       }
@@ -610,60 +680,78 @@ export class PermissionChecker implements Checker {
 
   /**
    * 危险命令检查（从 check 中提取）
-   * 25 种模式 + 复合命令拆分 + 重定向检测
+   *
+   * 三道防线（对标 claude-code：硬编码只是性能优化，真正决策可由 LLM 做）：
+   *   第一道 硬编码预检（hardcodedDangerCheck）：critical → 直接拒绝（不进 LLM）
+   *   第二道 LLM 风险分类器（可选启用）：理解命令意图，覆盖编码/混淆/间接执行绕过
+   *   第三道 硬编码兜底：LLM 不可用时回退到硬编码 high/medium 检测结果
    */
-  private checkDangerousCommand(req: PermissionRequest): Decision | null {
+  private async checkDangerousCommand(req: PermissionRequest): Promise<Decision | null> {
     const log = getLogger();
     const cmd = (req.input as any)?.command || "";
 
-    // 1a. 先对整条命令检查跨管道的危险模式
-    const pipelinePatterns = DANGEROUS_PATTERNS.filter(dp =>
-      dp.pattern.source.includes("\\|") || dp.name.includes("管道") || dp.name.includes("解码执行") || dp.name.includes("下载并执行")
-    );
-    for (const dp of pipelinePatterns) {
-      if (dp.pattern.test(cmd)) {
-        log.info("PERMISSION", `${req.toolName}(${cmd.slice(0, 80)}) → ${dp.severity === "critical" ? "拒绝" : "需确认"}(危险命令: ${dp.name})`);
-        if (dp.severity === "critical") {
-          return {
-            allowed: false,
-            reason: `[${dp.severity}] 危险命令被拦截 (${dp.name}): ${cmd.slice(0, 80)}`,
-            decisionReason: { type: "dangerousCommand", pattern: dp.name, severity: dp.severity },
-          };
-        }
-        return {
-          allowed: false,
-          reason: `[${dp.severity}] 危险命令需要确认 (${dp.name}): ${cmd.slice(0, 80)}`,
-          needsConfirmation: true,
-          decisionReason: { type: "dangerousCommand", pattern: dp.name, severity: dp.severity },
-        };
-      }
+    // ── 第一道：硬编码预检 ──
+    const hard = this.hardcodedDangerCheck(cmd);
+
+    // critical 命令直接拒绝，绝不交给 LLM（明显危险，省一次调用，且不可被 LLM 误放）
+    if (hard && hard.severity === "critical") {
+      log.info("PERMISSION", `${req.toolName}(${cmd.slice(0, 80)}) → 拒绝(危险命令: ${hard.name})`);
+      return {
+        allowed: false,
+        reason: `[critical] 危险命令被拦截 (${hard.name}): ${cmd.slice(0, 80)}`,
+        decisionReason: { type: "dangerousCommand", pattern: hard.name, severity: "critical" },
+        metadata: { classifiedBy: "hardcoded" },
+      };
     }
 
-    // 1b. 拆分复合命令，对每个子命令检查其他危险模式
-    const subCommands = splitCompoundCommand(cmd);
-    const nonPipelinePatterns = DANGEROUS_PATTERNS.filter(dp => !pipelinePatterns.includes(dp));
-    for (const subCmd of subCommands) {
-      for (const dp of nonPipelinePatterns) {
-        if (dp.pattern.test(subCmd)) {
-          log.info("PERMISSION", `${req.toolName}(${subCmd.slice(0, 80)}) → ${dp.severity === "critical" ? "拒绝" : "需确认"}(危险命令: ${dp.name})`);
-          if (dp.severity === "critical") {
-            return {
-              allowed: false,
-              reason: `[${dp.severity}] 危险命令被拦截 (${dp.name}): ${subCmd.slice(0, 80)}`,
-              decisionReason: { type: "dangerousCommand", pattern: dp.name, severity: dp.severity },
-            };
-          }
+    // ── 第二道：LLM 风险分类器（仅当启用且可用；critical 已在上面拦截，这里只处理"看似不危险/中低危"的命令）──
+    //   plan 模式（只读）不调用分类器：plan 模式下工具本就受限于只读，再花 LLM 成本判风险无意义（迭代 III 集成点 #3）。
+    if (this.config.permissionMode !== "plan" && this.bashClassifier?.isAvailable()) {
+      const classifyResult = await this.bashClassifier.classify({
+        command: cmd,
+        cwd: process.cwd(),
+        description: req.description,
+        signal: (req as any).signal,
+      });
+
+      // 分类器可用且给出明确判断
+      if (!classifyResult.classifierUnavailable) {
+        if (!classifyResult.safe) {
+          const isHard = classifyResult.risk === "critical" || classifyResult.risk === "high";
+          log.info("PERMISSION", `${req.toolName}(${cmd.slice(0, 80)}) → ${isHard ? "拒绝" : "需确认"}(LLM风险分类: ${classifyResult.risk})`);
           return {
             allowed: false,
-            reason: `[${dp.severity}] 危险命令需要确认 (${dp.name}): ${subCmd.slice(0, 80)}`,
-            needsConfirmation: true,
-            decisionReason: { type: "dangerousCommand", pattern: dp.name, severity: dp.severity },
+            reason: `[LLM:${classifyResult.risk}] ${classifyResult.reason}`,
+            needsConfirmation: !isHard, // critical/high → 直接拒绝；medium → 需确认
+            decisionReason: { type: "dangerousCommand", pattern: `LLM:${classifyResult.risk}`, severity: classifyResult.risk },
+            metadata: {
+              classifiedBy: hard ? "both" : "llm",
+              llmRisk: classifyResult.risk,
+              llmReason: classifyResult.reason,
+              latencyMs: classifyResult.latencyMs,
+            },
           };
         }
+        // 分类器判定安全：仍需让硬编码 high/medium 命中走兜底确认（安全底线由硬编码托底，
+        // 避免 LLM 误把硬编码已知危险命令放过）→ 落到下方第三道
+        log.info("PERMISSION", `${req.toolName}(${cmd.slice(0, 80)}) → LLM判定安全(risk=${classifyResult.risk})，继续硬编码兜底`);
       }
+      // classifierUnavailable=true → 静默回退第三道硬编码兜底
     }
 
-    // 1c. 重定向检测
+    // ── 第三道：硬编码兜底（LLM 未启用/不可用，或 LLM 判安全但硬编码命中 high/medium）──
+    if (hard) {
+      log.info("PERMISSION", `${req.toolName}(${cmd.slice(0, 80)}) → 需确认(危险命令: ${hard.name})`);
+      return {
+        allowed: false,
+        reason: `[${hard.severity}] 危险命令需要确认 (${hard.name}): ${cmd.slice(0, 80)}`,
+        needsConfirmation: true,
+        decisionReason: { type: "dangerousCommand", pattern: hard.name, severity: hard.severity },
+        metadata: { classifiedBy: "hardcoded" },
+      };
+    }
+
+    // 重定向检测（独立于上述模式）
     const redirectCheck = hasSensitiveRedirection(cmd);
     if (redirectCheck.sensitive) {
       log.info("PERMISSION", `${req.toolName}(${cmd.slice(0, 80)}) → 需确认(敏感路径重定向: ${redirectCheck.targets.join(", ")})`);
@@ -671,10 +759,44 @@ export class PermissionChecker implements Checker {
         allowed: false,
         reason: `重定向到敏感路径需要确认: ${redirectCheck.targets.join(", ")}`,
         needsConfirmation: true,
+        metadata: { classifiedBy: "hardcoded" },
       };
     }
 
     return null; // 无危险
+  }
+
+  /**
+   * 硬编码危险模式检测（纯逻辑，无副作用）——从原 checkDangerousCommand 的三步内联逻辑抽出。
+   *
+   * 检测流程：
+   *   1a. 整条命令检查跨管道危险模式（curl|bash、base64 -d|sh 等）
+   *   1b. 拆分复合命令，对每个子命令检查其余模式
+   * 返回首个命中的模式（name + severity），未命中返回 null。重定向检测仍由调用方单独处理。
+   */
+  private hardcodedDangerCheck(cmd: string): { name: string; severity: "critical" | "high" | "medium" } | null {
+    // 1a. 跨管道危险模式（对整条命令）
+    const pipelinePatterns = DANGEROUS_PATTERNS.filter(dp =>
+      dp.pattern.source.includes("\\|") || dp.name.includes("管道") || dp.name.includes("解码执行") || dp.name.includes("下载并执行")
+    );
+    for (const dp of pipelinePatterns) {
+      if (dp.pattern.test(cmd)) {
+        return { name: dp.name, severity: dp.severity };
+      }
+    }
+
+    // 1b. 拆分复合命令，对每个子命令检查其余模式
+    const subCommands = splitCompoundCommand(cmd);
+    const nonPipelinePatterns = DANGEROUS_PATTERNS.filter(dp => !pipelinePatterns.includes(dp));
+    for (const subCmd of subCommands) {
+      for (const dp of nonPipelinePatterns) {
+        if (dp.pattern.test(subCmd)) {
+          return { name: dp.name, severity: dp.severity };
+        }
+      }
+    }
+
+    return null;
   }
 
   /**

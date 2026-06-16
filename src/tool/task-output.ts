@@ -11,8 +11,20 @@ import {
   isShellTask,
   isAgentTask,
 } from "../task/index.ts";
+import { z } from "zod/v4";
+import { lazySchema } from "../sdk/lazy-schema.ts";
+
+const taskOutputSchema = lazySchema(() =>
+  z.object({
+    task_id: z.string().describe("任务 ID"),
+    block: z.boolean().optional().describe("是否阻塞等待任务完成（默认 true）"),
+    timeout: z.number().optional().describe("最大等待时间（毫秒），默认 30000"),
+  }),
+);
 
 export class TaskOutputTool implements Tool {
+  readonly zodSchema = taskOutputSchema();
+
   name(): string {
     return "task_output";
   }
@@ -25,24 +37,7 @@ export class TaskOutputTool implements Tool {
   }
 
   inputSchema(): Record<string, unknown> {
-    return {
-      type: "object",
-      properties: {
-        task_id: {
-          type: "string",
-          description: "任务 ID",
-        },
-        block: {
-          type: "boolean",
-          description: "是否阻塞等待任务完成（默认 true）",
-        },
-        timeout: {
-          type: "number",
-          description: "最大等待时间（毫秒），默认 30000",
-        },
-      },
-      required: ["task_id"],
-    };
+    return z.toJSONSchema(taskOutputSchema()) as Record<string, unknown>;
   }
 
   readOnly(): boolean {

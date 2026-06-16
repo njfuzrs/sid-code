@@ -5,8 +5,18 @@
 
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
 import { getScheduler } from "../cron/scheduler.ts";
+import { z } from "zod/v4";
+import { lazySchema } from "../sdk/lazy-schema.ts";
+
+const cronDeleteSchema = lazySchema(() =>
+  z.object({
+    id: z.string().describe("要删除的任务 ID"),
+  }),
+);
 
 export class CronDeleteTool implements Tool {
+  readonly zodSchema = cronDeleteSchema();
+
   name(): string {
     return "cron_delete";
   }
@@ -16,13 +26,7 @@ export class CronDeleteTool implements Tool {
   }
 
   inputSchema(): Record<string, unknown> {
-    return {
-      type: "object",
-      properties: {
-        id: { type: "string", description: "要删除的任务 ID" },
-      },
-      required: ["id"],
-    };
+    return z.toJSONSchema(cronDeleteSchema()) as Record<string, unknown>;
   }
 
   async execute(input: unknown): Promise<ToolResult> {

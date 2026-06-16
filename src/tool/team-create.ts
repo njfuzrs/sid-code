@@ -9,8 +9,28 @@ import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { TeamManager, type TeammateSpec } from "../swarm/team.ts";
 import { colorize } from "../agent/color.ts";
 import { getLogger } from "../debug/logger.ts";
+import { z } from "zod/v4";
+import { lazySchema } from "../sdk/lazy-schema.ts";
+
+const teamCreateSchema = lazySchema(() =>
+  z.object({
+    team_name: z.string().describe("团队名称"),
+    members: z
+      .array(
+        z.object({
+          name: z.string().describe("成员名（团队内唯一）"),
+          type: z.enum(["explore", "task", "summarize", "plan", "verify"]).describe("子代理类型"),
+          task: z.string().describe("分配给该成员的任务"),
+          isolated: z.boolean().optional().describe("是否在独立 Worktree 执行（会改文件的成员应为 true，默认 true）"),
+        }),
+      )
+      .describe("团队成员列表"),
+  }),
+);
 
 export class TeamCreateTool implements Tool {
+  readonly zodSchema = teamCreateSchema();
+
   constructor(
     private providerRegistry: ProviderRegistry,
     private toolRegistry: ToolRegistry,
@@ -28,34 +48,7 @@ export class TeamCreateTool implements Tool {
   }
 
   inputSchema(): Record<string, unknown> {
-    return {
-      type: "object",
-      properties: {
-        team_name: { type: "string", description: "团队名称" },
-        members: {
-          type: "array",
-          description: "团队成员列表",
-          items: {
-            type: "object",
-            properties: {
-              name: { type: "string", description: "成员名（团队内唯一）" },
-              type: {
-                type: "string",
-                enum: ["explore", "task", "summarize", "plan", "verify"],
-                description: "子代理类型",
-              },
-              task: { type: "string", description: "分配给该成员的任务" },
-              isolated: {
-                type: "boolean",
-                description: "是否在独立 Worktree 执行（会改文件的成员应为 true，默认 true）",
-              },
-            },
-            required: ["name", "type", "task"],
-          },
-        },
-      },
-      required: ["team_name", "members"],
-    };
+    return z.toJSONSchema(teamCreateSchema()) as Record<string, unknown>;
   }
 
   async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {

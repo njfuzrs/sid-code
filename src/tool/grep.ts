@@ -9,9 +9,35 @@ import { getLogger } from "../debug/logger.ts";
 import { normalizeToolPath } from "./path-utils.ts";
 import { statSync } from "node:fs";
 import { relative, resolve, normalize } from "node:path";
+import { z } from "zod/v4";
+import { lazySchema } from "../sdk/lazy-schema.ts";
 
 /** 输出截断阈值 */
 const MAX_OUTPUT_LENGTH = 30000;
+
+/** Grep 工具输入 schema —— 运行时校验 + JSON Schema 生成的唯一真相源 */
+const grepSchema = lazySchema(() =>
+  z.object({
+    pattern: z.string().describe("要搜索的正则表达式模式"),
+    path: z.string().optional().describe("要搜索的文件或目录路径，默认为当前目录"),
+    output_mode: z
+      .enum(["files_with_matches", "content", "count"])
+      .optional()
+      .describe("输出模式：files_with_matches（默认，只返回文件路径）、content（显示匹配行）、count（显示匹配数）"),
+    case_insensitive: z.boolean().optional().describe("是否忽略大小写，默认 false"),
+    glob: z.string().optional().describe("文件名过滤模式（如 '*.ts'、'*.{ts,tsx}'）"),
+    type: z.string().optional().describe("按文件类型过滤（如 'ts'、'py'、'js'），比 glob 更高效"),
+    context: z.number().optional().describe("显示匹配行前后的上下文行数（-C 参数），仅 output_mode=content 时有效"),
+    before_context: z.number().optional().describe("显示匹配行之前的行数（-B 参数），仅 output_mode=content 时有效"),
+    after_context: z.number().optional().describe("显示匹配行之后的行数（-A 参数），仅 output_mode=content 时有效"),
+    head_limit: z.number().optional().describe("输出结果数上限，默认 250；显式传 0 表示无限制。替代旧的 total_max_matches"),
+    offset: z.number().optional().describe("分页偏移量（从 0 开始），默认 0"),
+    max_matches_per_file: z.number().optional().describe("单文件结果数上限，用于限制单个文件的匹配数"),
+    fixed_strings: z.boolean().optional().describe("按字面量搜索（不作为正则表达式），默认 false"),
+    // 向后兼容：total_max_matches 作为 head_limit 别名
+    total_max_matches: z.number().optional().describe("已废弃，请使用 head_limit 代替"),
+  }),
+);
 
 /** 默认 head_limit（与 CC 一致） */
 const DEFAULT_HEAD_LIMIT = 250;
@@ -35,6 +61,9 @@ interface StructuredOutput {
 }
 
 export class GrepTool implements Tool {
+  /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
+  readonly zodSchema = grepSchema();
+
   readOnly(): boolean {
     return true;
   }
@@ -64,70 +93,7 @@ export class GrepTool implements Tool {
   }
 
   inputSchema(): Record<string, unknown> {
-    return {
-      type: "object",
-      properties: {
-        pattern: {
-          type: "string",
-          description: "要搜索的正则表达式模式",
-        },
-        path: {
-          type: "string",
-          description: "要搜索的文件或目录路径，默认为当前目录",
-        },
-        output_mode: {
-          type: "string",
-          enum: ["files_with_matches", "content", "count"],
-          description: "输出模式：files_with_matches（默认，只返回文件路径）、content（显示匹配行）、count（显示匹配数）",
-        },
-        case_insensitive: {
-          type: "boolean",
-          description: "是否忽略大小写，默认 false",
-        },
-        glob: {
-          type: "string",
-          description: "文件名过滤模式（如 '*.ts'、'*.{ts,tsx}'）",
-        },
-        type: {
-          type: "string",
-          description: "按文件类型过滤（如 'ts'、'py'、'js'），比 glob 更高效",
-        },
-        context: {
-          type: "number",
-          description: "显示匹配行前后的上下文行数（-C 参数），仅 output_mode=content 时有效",
-        },
-        before_context: {
-          type: "number",
-          description: "显示匹配行之前的行数（-B 参数），仅 output_mode=content 时有效",
-        },
-        after_context: {
-          type: "number",
-          description: "显示匹配行之后的行数（-A 参数），仅 output_mode=content 时有效",
-        },
-        head_limit: {
-          type: "number",
-          description: "输出结果数上限，默认 250；显式传 0 表示无限制。替代旧的 total_max_matches",
-        },
-        offset: {
-          type: "number",
-          description: "分页偏移量（从 0 开始），默认 0",
-        },
-        max_matches_per_file: {
-          type: "number",
-          description: "单文件结果数上限，用于限制单个文件的匹配数",
-        },
-        fixed_strings: {
-          type: "boolean",
-          description: "按字面量搜索（不作为正则表达式），默认 false",
-        },
-        // 向后兼容：total_max_matches 作为 head_limit 别名
-        total_max_matches: {
-          type: "number",
-          description: "已废弃，请使用 head_limit 代替",
-        },
-      },
-      required: ["pattern"],
-    };
+    return z.toJSONSchema(grepSchema()) as Record<string, unknown>;
   }
 
   async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {

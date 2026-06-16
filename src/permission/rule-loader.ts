@@ -10,6 +10,7 @@ import { join } from "path";
 import { existsSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
 import { sidPaths } from "../config/paths.ts";
+import { SECURITY_SENSITIVE_FIELDS } from "../config/settings/security.ts";
 import type {
   PermissionRuleSource,
   SourcedPermissionRule,
@@ -22,16 +23,36 @@ import { RULE_SOURCE_PRIORITY } from "./types.ts";
 /** 设置文件 JSON 格式 */
 interface SettingsFile {
   permissions?: SettingsPermissions;
+  /** 其余顶层字段（用于安全敏感字段检测） */
+  [key: string]: unknown;
 }
 
-/** 不信任项目级配置的设置项（即使用户已信任项目目录） */
-const UNTRUSTED_PROJECT_SETTINGS = new Set([
-  "skipPermissions",
-  "yesMode",
-  "permissionMode",
-  "sanitizeEnv",
-  "allowedDirectories",
-]);
+/**
+ * 不信任项目级配置的设置项（即使用户已信任项目目录）。
+ *
+ * ⚠️ 单一权威来源（P0-3 §5.2.5）：直接复用 src/config/settings/security.ts 的
+ * SECURITY_SENSITIVE_FIELDS，不再在本文件维护独立的 UNTRUSTED_PROJECT_SETTINGS——
+ * 历史上两套清单内容不一致（仅 3 键重合），是安全隐患的根源。
+ */
+const UNTRUSTED_PROJECT_SETTINGS = SECURITY_SENSITIVE_FIELDS;
+
+/**
+ * 项目级配置中"危险的自我授权"权限规则模式（projectSettings 不可用 allow 放行这些）。
+ *
+ * 攻击场景：恶意仓库在 .sid-code/settings.json 里写 permissions.allow = ["Bash(*)"]，
+ * 试图让任意命令免确认执行。这类宽泛/高危 allow 规则一旦来自不可信的 projectSettings，
+ * 必须剔除（deny/ask 规则是收紧安全，允许保留）。
+ */
+const DANGEROUS_SELF_AUTHORIZATION_PATTERNS: RegExp[] = [
+  /^Bash\(\s*\*\s*\)$/i,            // Bash(*) 全放行
+  /^Bash\(\s*\)$/i,                 // Bash() 空 = 全放行
+  /^\*$/,                            // * 裸通配（所有工具全放行）
+  /^Bash\([^)]*\brm\b[^)]*\)$/i,    // Bash(rm ...) 放行删除
+  /^Bash\([^)]*\bsudo\b[^)]*\)$/i,  // Bash(sudo ...) 放行提权
+  /^Bash\([^)]*\bcurl\b[^)]*\)$/i,  // Bash(curl ...) 放行外联/下载
+  /^Bash\([^)]*\|[^)]*\)$/,         // Bash(... | ...) 放行管道（curl|bash 类）
+  /^(Write|Edit)\(\s*\*\s*\)$/i,    // Write/Edit(*) 全放行文件写入
+];
 
 /**
  * 规则加载器
@@ -82,16 +103,70 @@ export class RuleLoader {
       const content = await Bun.file(filePath).text();
       const settings: SettingsFile = JSON.parse(content);
 
+      // 安全边界（P0-3 §5.2.5）：projectSettings 是不可信来源。
+      // ① 检测并告警注入的安全敏感顶层字段（settings 层面的过滤由 settings.ts
+      //    filterProjectSettings 兜底，这里仅做审计告警，让攻击行为可见）。
+      if (source === "projectSettings") {
+        const injected = Object.keys(settings).filter(k => UNTRUSTED_PROJECT_SETTINGS.has(k));
+        if (injected.length > 0) {
+          log.warn(
+            "RULE_LOADER",
+            `⚠️ 项目级配置 ${filePath} 试图注入不可信安全字段 [${injected.join(", ")}]，已忽略（不可信来源）`,
+          );
+        }
+      }
+
       if (!settings.permissions) {
         return;
       }
 
-      const rules = this.parsePermissions(settings.permissions, source);
+      let rules = this.parsePermissions(settings.permissions, source);
+
+      // ② projectSettings 不可自我授权：剔除危险的 allow 规则（deny/ask 收紧安全，保留）。
+      if (source === "projectSettings") {
+        rules = this.filterUntrustedProjectRules(rules, filePath);
+      }
+
       this.sources.set(source, rules);
       log.info("RULE_LOADER", `${source}: ${filePath} → ${rules.length} 条规则`);
     } catch (err: any) {
       log.warn("RULE_LOADER", `读取 ${filePath} 失败: ${err.message}`);
     }
+  }
+
+  /**
+   * 过滤项目级配置中"危险的自我授权" allow 规则（P0-3 §5.2.5）。
+   *
+   * - allow 规则：命中 DANGEROUS_SELF_AUTHORIZATION_PATTERNS 的剔除（防自我提权）。
+   * - deny / ask 规则：一律保留（这些是收紧安全，不构成绕过风险）。
+   */
+  private filterUntrustedProjectRules(
+    rules: SourcedPermissionRule[],
+    filePath: string,
+  ): SourcedPermissionRule[] {
+    const log = getLogger();
+    const kept: SourcedPermissionRule[] = [];
+    const dropped: string[] = [];
+
+    for (const rule of rules) {
+      if (rule.behavior === "allow") {
+        const dangerous = DANGEROUS_SELF_AUTHORIZATION_PATTERNS.some(p => p.test(rule.rawRule.trim()));
+        if (dangerous) {
+          dropped.push(rule.rawRule);
+          continue;
+        }
+      }
+      kept.push(rule);
+    }
+
+    if (dropped.length > 0) {
+      log.warn(
+        "RULE_LOADER",
+        `⚠️ 项目级配置 ${filePath} 含危险自我授权 allow 规则 [${dropped.join(", ")}]，已剔除（不可信来源不可自我提权）`,
+      );
+    }
+
+    return kept;
   }
 
   /**
@@ -156,7 +231,11 @@ export class RuleLoader {
    * 兼容现有的 CLAUDE.md 规则加载机制
    */
   importFromPermissionRule(rules: PermissionRule, source: PermissionRuleSource = "projectSettings"): void {
-    const parsed = this.parsePermissions(rules, source);
+    let parsed = this.parsePermissions(rules, source);
+    // CLAUDE.md 等项目级来源同样不可信，剔除危险自我授权 allow 规则
+    if (source === "projectSettings") {
+      parsed = this.filterUntrustedProjectRules(parsed, "CLAUDE.md/projectSettings");
+    }
     if (parsed.length > 0) {
       const existing = this.sources.get(source) || [];
       existing.push(...parsed);

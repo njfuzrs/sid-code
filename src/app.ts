@@ -157,6 +157,11 @@ export class App {
   private promptInjector: ((text: string) => Promise<void>) | null = null;
   /** Cron 在 REPL 忙时触发的待处理提示词队列 */
   private scheduledPromptQueue: string[] = [];
+  /**
+   * Session Memory 句柄（Step 0）：在压缩前持续维护结构化会话笔记，
+   * autoCompact 优先用它做摘要。doInit 中接线；未启用时为 null，autoCompact 回退 LLM 摘要。
+   */
+  private sessionMemory: import("./session-memory/session-memory.ts").SessionMemoryHandle | null = null;
 
   constructor(opts: AppOptions) {
     this.config = opts.config;
@@ -383,6 +388,7 @@ export class App {
       ctxMgr: this.ctxMgr,
       hookSystem: this.hookSystem,
       getAbortSignal: () => this.abortController?.signal,
+      sessionMemory: this.sessionMemory ?? undefined,
     });
   }
 
@@ -492,6 +498,43 @@ export class App {
       }
     } catch (e) {
       log.warn("APP", `会话持久化启动失败（不阻断）: ${(e as Error)?.message}`);
+    }
+
+    // Layer 2：把会话转录文件路径注入 ctxMgr，供压缩摘要提示模型查阅压缩前细节。
+    // SessionStore 启动后 currentFile 才指向 jsonl，此处读取一次注入即可（resume 同样适用）。
+    try {
+      const transcriptPath = this.sessionStore?.getCurrentFile() ?? undefined;
+      this.ctxMgr.setTranscriptPath(transcriptPath);
+    } catch { /* 注入失败不影响启动，转录路径提示自动省略 */ }
+
+    // Step 0：接线 Session Memory 子系统（压缩前持续维护结构化会话笔记）。
+    // 三处接线之一（① init）——构造 handle 并持有：
+    //   - getMainContext 提供 ForkedAgentContext（共享主对话历史前缀，cache 友好）
+    //   - canUseTool 把提取代理权限收窄到只能编辑 .session_memory.md 单文件
+    // 另两处接线在 query loop 每轮收尾（② updateSessionMemory ③ recordToolCall），见 query/loop.ts。
+    // 失败不阻断启动：sessionMemory 保持 null，autoCompact 回退 LLM 摘要。
+    try {
+      const { initSessionMemory } = await import("./session-memory/session-memory.ts");
+      const { createSessionMemoryPermissions } = await import("./memory/extract/permissions.ts");
+      const { getSessionMemoryPath } = await import("./memory/paths.ts");
+      const sessionMemoryFile = getSessionMemoryPath(process.cwd());
+      this.sessionMemory = initSessionMemory({
+        getMainContext: () => ({
+          systemPrompt: this.ctxMgr.getSystemPrompt(),
+          messages: this.ctxMgr.getMessages(),
+          provider: this.provider,
+          toolRegistry: this.toolRegistry,
+          model: this.config.model,
+        }),
+        canUseTool: createSessionMemoryPermissions(sessionMemoryFile),
+        cwd: process.cwd(),
+      });
+      // 把 handle 暴露给 queryLoop（经 QueryEngine），用于每轮收尾触发提取 + 记录工具调用。
+      this.queryEngine.setSessionMemory(this.sessionMemory);
+      log.info("APP", `Session Memory 子系统已接线: ${sessionMemoryFile}`);
+    } catch (e) {
+      this.sessionMemory = null;
+      log.warn("APP", `Session Memory 接线失败（不阻断，autoCompact 回退 LLM 摘要）: ${(e as Error)?.message}`);
     }
 
     // 启动 CLAUDE.md 文件变化监听（变更时重新加载规则 + 重建系统提示词）

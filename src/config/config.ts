@@ -164,6 +164,12 @@ export interface Config {
   /** 是否在 bash 工具执行时清理环境变量（默认 false） */
   sanitizeEnv?: boolean;
 
+  // LLM 命令风险分类器（P0-3 迭代 II）
+  /** 是否启用 LLM 命令风险分类器（第二道防线，默认 false 保守） */
+  enableLLMClassifier?: boolean;
+  /** LLM 分类器使用的模型（默认复用主循环模型 config.model） */
+  classifierModel?: string;
+
   // 会话保留配置
   sessionRetention?: SessionRetentionConfig;
 
@@ -466,6 +472,8 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     checkpoint: "checkpoint",
     jit_context: "jitContext",
     sanitize_env: "sanitizeEnv",
+    enable_llm_classifier: "enableLLMClassifier",
+    classifier_model: "classifierModel",
     trace: "trace",
     search: "search",
     telemetry: "telemetry",

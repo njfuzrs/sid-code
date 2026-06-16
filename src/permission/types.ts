@@ -58,6 +58,10 @@ export interface AuditEntry {
   user_confirmed?: boolean; // 是否用户确认
   /** 决策原因链 */
   decisionReason?: PermissionDecisionReason;
+  /** 危险命令判定来源：hardcoded（硬编码正则）/ llm（LLM 分类器）/ both（两者都命中） */
+  classifiedBy?: "hardcoded" | "llm" | "both";
+  /** LLM 分类器给出的风险等级（仅 LLM 参与判定时） */
+  llmRisk?: string;
 }
 
 // ── 多来源规则系统类型 ──

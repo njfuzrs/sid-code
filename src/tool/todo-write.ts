@@ -9,6 +9,22 @@
  */
 
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
+import { z } from "zod/v4";
+import { lazySchema } from "../sdk/lazy-schema.ts";
+
+const todoWriteSchema = lazySchema(() =>
+  z.object({
+    todos: z
+      .array(
+        z.object({
+          content: z.string().describe("任务描述（祈使形式），如 '新增 crash-marker.ts'"),
+          activeForm: z.string().describe("进行时形式，如 '正在新增 crash-marker.ts'"),
+          status: z.enum(["pending", "in_progress", "completed"]).describe("任务状态"),
+        }),
+      )
+      .describe("完整的 todo 列表（全量替换）"),
+  }),
+);
 
 export interface TodoItem {
   /** 任务描述（祈使形式），如 "新增 crash-marker.ts" */
@@ -59,6 +75,9 @@ function formatTodoDiff(oldTodos: TodoItem[], newTodos: TodoItem[]): string {
 const VALID_STATUSES = new Set(["pending", "in_progress", "completed"]);
 
 export class TodoWriteTool implements Tool {
+  /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
+  readonly zodSchema = todoWriteSchema();
+
   private currentTodos: TodoItem[] = [];
   /**
    * todo_write 被成功调用的次数（单调递增）。
@@ -227,35 +246,7 @@ print("Hello World")
   }
 
   inputSchema(): Record<string, unknown> {
-    return {
-      type: "object",
-      properties: {
-        todos: {
-          type: "array",
-          description: "完整的 todo 列表（全量替换）",
-          items: {
-            type: "object",
-            properties: {
-              content: {
-                type: "string",
-                description: "任务描述（祈使形式），如 '新增 crash-marker.ts'",
-              },
-              activeForm: {
-                type: "string",
-                description: "进行时形式，如 '正在新增 crash-marker.ts'",
-              },
-              status: {
-                type: "string",
-                enum: ["pending", "in_progress", "completed"],
-                description: "任务状态",
-              },
-            },
-            required: ["content", "activeForm", "status"],
-          },
-        },
-      },
-      required: ["todos"],
-    };
+    return z.toJSONSchema(todoWriteSchema()) as Record<string, unknown>;
   }
 
   readOnly(): boolean {

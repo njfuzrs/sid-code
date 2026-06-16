@@ -10,8 +10,21 @@ import { getLogger } from "../debug/logger.ts";
 import { detectOmissionPlaceholders, isDocumentFile } from "./omission-detector.ts";
 import { normalizeToolPath } from "./path-utils.ts";
 import { buildStructuredPatch } from "./diff-output.ts";
+import { z } from "zod/v4";
+import { lazySchema } from "../sdk/lazy-schema.ts";
+
+/** Write 工具输入 schema —— 运行时校验 + JSON Schema 生成的唯一真相源 */
+const writeSchema = lazySchema(() =>
+  z.object({
+    file_path: z.string().describe("要写入的文件的绝对路径"),
+    content: z.string().describe("要写入的内容"),
+  }),
+);
 
 export class WriteTool implements Tool {
+  /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
+  readonly zodSchema = writeSchema();
+
   name(): string {
     return "write";
   }
@@ -42,20 +55,7 @@ export class WriteTool implements Tool {
   }
 
   inputSchema(): Record<string, unknown> {
-    return {
-      type: "object",
-      properties: {
-        file_path: {
-          type: "string",
-          description: "要写入的文件的绝对路径",
-        },
-        content: {
-          type: "string",
-          description: "要写入的内容",
-        },
-      },
-      required: ["file_path", "content"],
-    };
+    return z.toJSONSchema(writeSchema()) as Record<string, unknown>;
   }
 
   async execute(input: unknown): Promise<ToolResult> {

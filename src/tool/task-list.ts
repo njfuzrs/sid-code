@@ -9,8 +9,21 @@ import {
   isAgentTask,
   isShellTask,
 } from "../task/index.ts";
+import { z } from "zod/v4";
+import { lazySchema } from "../sdk/lazy-schema.ts";
+
+const taskListSchema = lazySchema(() =>
+  z.object({
+    status: z
+      .enum(["running", "completed", "failed", "killed", "all"])
+      .optional()
+      .describe("按状态过滤（默认 all）"),
+  }),
+);
 
 export class TaskListTool implements Tool {
+  readonly zodSchema = taskListSchema();
+
   name(): string {
     return "task_list";
   }
@@ -20,16 +33,7 @@ export class TaskListTool implements Tool {
   }
 
   inputSchema(): Record<string, unknown> {
-    return {
-      type: "object",
-      properties: {
-        status: {
-          type: "string",
-          enum: ["running", "completed", "failed", "killed", "all"],
-          description: "按状态过滤（默认 all）",
-        },
-      },
-    };
+    return z.toJSONSchema(taskListSchema()) as Record<string, unknown>;
   }
 
   readOnly(): boolean {

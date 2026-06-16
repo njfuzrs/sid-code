@@ -98,6 +98,11 @@ export class SessionStore {
     }
   }
 
+  /** 当前会话转录文件（jsonl）路径；未启动会话时为 null。 */
+  getCurrentFile(): string | null {
+    return this.currentFile;
+  }
+
   /** 追加消息（增量写入） */
   appendMessage(message: Message): void {
     if (!this.currentFile) return;

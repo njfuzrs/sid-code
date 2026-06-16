@@ -164,6 +164,9 @@ export const SettingsSchema = lazySchema(() =>
       sanitizeEnv: z.boolean().optional(),
       trustProjectExtensions: z.boolean().optional(),
       jitContext: z.boolean().optional(),
+      // LLM 命令风险分类器（P0-3 迭代 II）
+      enableLLMClassifier: z.boolean().optional(),
+      classifierModel: z.string().optional(),
 
       // 目录控制
       allowedDirectories: z.array(z.string()).optional(),

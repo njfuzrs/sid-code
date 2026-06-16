@@ -8,12 +8,25 @@ import { getScheduler } from "../cron/scheduler.ts";
 import { isValidCron } from "../cron/parser.ts";
 import type { CronTask } from "../cron/types.ts";
 import { randomBytes } from "crypto";
+import { z } from "zod/v4";
+import { lazySchema } from "../sdk/lazy-schema.ts";
 
 function shortId(): string {
   return randomBytes(4).toString("hex");
 }
 
+const cronCreateSchema = lazySchema(() =>
+  z.object({
+    cron: z.string().describe("5 字段 cron 表达式"),
+    prompt: z.string().describe("触发时执行的 prompt"),
+    recurring: z.boolean().optional().describe("是否循环（默认 true）"),
+    durable: z.boolean().optional().describe("是否持久化（默认 false）"),
+  }),
+);
+
 export class CronCreateTool implements Tool {
+  readonly zodSchema = cronCreateSchema();
+
   name(): string {
     return "cron_create";
   }
@@ -31,16 +44,7 @@ durable: true = 持久化到磁盘，跨会话存活（默认 false）`;
   }
 
   inputSchema(): Record<string, unknown> {
-    return {
-      type: "object",
-      properties: {
-        cron: { type: "string", description: "5 字段 cron 表达式" },
-        prompt: { type: "string", description: "触发时执行的 prompt" },
-        recurring: { type: "boolean", description: "是否循环（默认 true）" },
-        durable: { type: "boolean", description: "是否持久化（默认 false）" },
-      },
-      required: ["cron", "prompt"],
-    };
+    return z.toJSONSchema(cronCreateSchema()) as Record<string, unknown>;
   }
 
   async execute(input: unknown): Promise<ToolResult> {

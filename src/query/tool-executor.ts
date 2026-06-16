@@ -13,6 +13,7 @@ import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { getLogger } from "../debug/index.ts";
 import { isAbortError } from "../llm/errors.ts";
 import { processToolResult } from "../tool/result-storage.ts";
+import { validateToolInput } from "../tool/input-validator.ts";
 import { yieldMissingToolResults, collectToolResultIdsFromBlocks } from "../agent/tool-result-guard.ts";
 
 /**
@@ -324,6 +325,22 @@ export async function executeSingleTool(
       effectiveInput = modified;
     }
   }
+
+  // zod 运行时校验（在工具边界拦截畸形参数）
+  // 工具提供 zodSchema 时，safeParse 失败直接返回结构化错误，不带病执行；
+  // 成功则用校验后的 data 替换 input（zod 规整/剥离后的安全值）。
+  // 工具未提供 zodSchema 时原样放行（回退到工具内部手工检查）。
+  const validation = validateToolInput(tool, effectiveInput);
+  if (!validation.ok) {
+    log.info("TOOL", `工具 ${block.name} 参数校验失败: ${validation.message}`);
+    return {
+      type: "tool_result",
+      tool_use_id: block.id,
+      content: validation.message,
+      is_error: true,
+    };
+  }
+  effectiveInput = validation.data;
 
   const startTime = Date.now();
 

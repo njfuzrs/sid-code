@@ -6,23 +6,27 @@
  *   recoverFromLoop 注入纯 text 恢复提示并 continue → executeTools 被跳过 →
  *   assistant 的 tool_use 永远拿不到 tool_result → 孤儿 → 下一次发送 OpenAI 400。
  *
- * 本测试直接驱动**真实 AgentLoopRunner.run()**（app.ts 运行时用的就是它），
+ * 本测试直接驱动**真实 queryLoop**（app.ts 运行时用的就是它，经 QueryEngine 消费），
  * 让 stopReason=tool_use 的轮次触发循环检测 → recoverFromLoop，
  * 再用 D1-4 共享不变量断言 ctxMgr 历史无孤儿（修复前必红，修复后必绿）。
  *
  * 同时覆盖发送前 backstop：即便恢复路径漏补，发送前关卡也会兜底。
  *
+ * 注：原测试驱动已删除的 AgentLoopRunner（生产死代码）；迁移到 queryLoop 后，
+ * 覆盖的是真实生产循环（queryLoop 的 recoverFromLoop + 发送前 backfillOrphanToolResults）。
+ *
  * fix_type: core_code（L3，测试）
  */
 
 import { describe, test, expect } from "bun:test";
-import { AgentLoopRunner, type AgentLoopDeps } from "../../src/agent/loop.ts";
+import { queryLoop } from "../../src/query/loop.ts";
+import type { QueryLoopConfig } from "../../src/query/loop.ts";
+import type { QueryDeps } from "../../src/query/types.ts";
 import { Manager as ContextManager } from "../../src/context/manager.ts";
 import { Registry as ToolRegistry } from "../../src/tool/registry.ts";
 import { ModelFallback } from "../../src/llm/fallback.ts";
-import { ThinkingManager } from "../../src/llm/thinking.ts";
 import { SessionState } from "../../src/session/state.ts";
-import type { Provider } from "../../src/llm/provider.ts";
+import type { Config } from "../../src/config/config.ts";
 import type {
   StreamEvent,
   AccumulatedResponse,
@@ -31,24 +35,13 @@ import type {
 } from "../../src/llm/types.ts";
 import { checkMessageHistoryIntegrity } from "../../src/agent/message-invariants.ts";
 
-function makeProvider(): Provider {
-  const provider: any = {
-    name: () => "mock",
-    defaultModel: () => "mock-model",
-    capabilities: () => ({
-      streaming: true,
-      tools: true,
-      thinking: false,
-      vision: false,
-      promptCaching: false,
-      parallelToolCalls: true,
-    }),
-    // eslint-disable-next-line require-yield
-    async *sendMessageStream(): AsyncIterable<StreamEvent> {
-      yield { type: "message_stop" };
-    },
-  };
-  return provider as Provider;
+function makeConfig(): Config {
+  return { model: "mock-model", provider: "mock", maxTokens: 4096, maxTurns: 30 } as unknown as Config;
+}
+
+/** 空流：abort/循环路径下 processStream 产物由 mock 决定，stream 内容不重要 */
+async function* emptyStream(): AsyncIterable<StreamEvent> {
+  // 不 yield 任何事件
 }
 
 /**
@@ -56,19 +49,12 @@ function makeProvider(): Provider {
  * 让循环检测在 tool_use 轮次必然触发。每次用新的 tool_use id 模拟真实模型行为
  * （真实模型每轮 id 不同，但 name/input 相同 → 触发 exact/shape 检测）。
  */
-function makeDeps(opts: {
+function makeLoopConfig(opts: {
   ctxMgr: ContextManager;
   toolName: string;
   toolInput: unknown;
-  executeTools: AgentLoopDeps["executeTools"];
-}): AgentLoopDeps {
-  const config: any = {
-    provider: "mock",
-    model: "mock-model",
-    maxTokens: 4096,
-    maxTurns: 30,
-  };
-
+  executeTools: QueryDeps["executeTools"];
+}): QueryLoopConfig {
   let callIndex = 0;
   const processStream = async (): Promise<AccumulatedResponse> => {
     callIndex++;
@@ -83,35 +69,31 @@ function makeDeps(opts: {
     };
   };
 
+  const deps: QueryDeps = {
+    sendWithRetry: () => emptyStream(),
+    processStream,
+    executeTools: opts.executeTools,
+    autoCompact: async () => {},
+    handleContextOverflow: () => null,
+    getAbortSignal: () => undefined,
+    uuid: () => "uuid-test",
+  };
+
   return {
-    config,
-    provider: makeProvider(),
+    config: makeConfig(),
     ctxMgr: opts.ctxMgr,
     toolRegistry: new ToolRegistry(),
     sessionState: new SessionState("test-loop-recovery"),
     fallback: new ModelFallback(),
-    thinkingMgr: new ThinkingManager(false),
-    executeTools: opts.executeTools,
-    processStream,
-    autoCompact: async () => {},
-    handleContextOverflow: () => null,
-    getAbortSignal: () => undefined,
-  };
-}
-
-function makeCallbacks() {
-  return {
-    onStreamText: () => {},
-    onToolStart: () => {},
-    onToolEnd: () => {},
-    onCompact: () => {},
-    onComplete: () => {},
+    deps,
   };
 }
 
 describe("第四条孤儿来源 — 循环恢复路径历史完整性", () => {
   test("循环检测在 tool_use 轮次触发 → recoverFromLoop 跳过 executeTools → 历史仍无孤儿", async () => {
     const ctxMgr = new ContextManager({ maxTokens: 100_000 });
+    ctxMgr.setSystemPrompt("test");
+    ctxMgr.addMessage({ role: "user", content: [{ type: "text", text: "反复搜索一个不存在的字符串" }] });
 
     // executeTools 正常返回（让循环能多轮累积，直到检测器触发）
     const executeTools = async (content: ContentBlock[]) => {
@@ -122,16 +104,16 @@ describe("第四条孤儿来源 — 循环恢复路径历史完整性", () => {
     };
 
     // 等价的重复 bash 调用（复刻崩溃现场：反复 rg 同一目标）
-    const runner = new AgentLoopRunner(
-      makeDeps({
-        ctxMgr,
-        toolName: "bash",
-        toolInput: { command: "rg escape src/ui", description: "搜索" },
-        executeTools,
-      }),
-    );
+    const loopConfig = makeLoopConfig({
+      ctxMgr,
+      toolName: "bash",
+      toolInput: { command: "rg escape src/ui", description: "搜索" },
+      executeTools,
+    });
 
-    await runner.run("反复搜索一个不存在的字符串", makeCallbacks());
+    for await (const _ev of queryLoop(loopConfig)) {
+      // drain：跑到 done（恢复耗尽 continue 放行或 max_turns）
+    }
 
     // 关键不变量：无论循环检测在哪一轮触发、是否跳过 executeTools，
     // 最终 ctxMgr 历史都不能残留孤儿 tool_use（否则下一次发送即 400）。
@@ -148,6 +130,8 @@ describe("第四条孤儿来源 — 循环恢复路径历史完整性", () => {
 
   test("多轮工具调用全程无 400 成因：每条 assistant tool_use 都有应答", async () => {
     const ctxMgr = new ContextManager({ maxTokens: 100_000 });
+    ctxMgr.setSystemPrompt("test");
+    ctxMgr.addMessage({ role: "user", content: [{ type: "text", text: "查找" }] });
 
     const executeTools = async (content: ContentBlock[]) => {
       const results: ContentBlock[] = content
@@ -156,16 +140,16 @@ describe("第四条孤儿来源 — 循环恢复路径历史完整性", () => {
       return { results };
     };
 
-    const runner = new AgentLoopRunner(
-      makeDeps({
-        ctxMgr,
-        toolName: "grep",
-        toolInput: { pattern: "escape", path: "src/ui" },
-        executeTools,
-      }),
-    );
+    const loopConfig = makeLoopConfig({
+      ctxMgr,
+      toolName: "grep",
+      toolInput: { pattern: "escape", path: "src/ui" },
+      executeTools,
+    });
 
-    await runner.run("查找", makeCallbacks());
+    for await (const _ev of queryLoop(loopConfig)) {
+      // drain
+    }
 
     // 收集所有 assistant.tool_use id 与所有 tool_result id，断言前者 ⊆ 后者
     const messages = ctxMgr.getMessages();

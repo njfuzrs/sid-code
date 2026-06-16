@@ -6,6 +6,8 @@
 
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResult, ToolUseContext } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
+import { z } from "zod/v4";
+import { lazySchema } from "../sdk/lazy-schema.ts";
 
 const FETCH_TIMEOUT_MS = 10000;
 const MAX_CONTENT_LENGTH = 100000; // 从 50000 提升到 100000
@@ -124,7 +126,18 @@ function htmlToText(html: string): string {
 
 // ─── WebFetchTool 类 ──────────────────────────────────────────────────────────
 
+/** WebFetch 工具输入 schema —— 运行时校验 + JSON Schema 生成的唯一真相源 */
+const webFetchSchema = lazySchema(() =>
+  z.object({
+    url: z.string().describe("要抓取的 URL（必须是 http 或 https）"),
+    prompt: z.string().optional().describe("可选：说明关注哪些内容（仅作提示，不影响抓取行为）"),
+  }),
+);
+
 export class WebFetchTool implements Tool {
+  /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
+  readonly zodSchema = webFetchSchema();
+
   readOnly(): boolean {
     return true;
   }
@@ -151,20 +164,7 @@ export class WebFetchTool implements Tool {
   }
 
   inputSchema(): Record<string, unknown> {
-    return {
-      type: "object",
-      properties: {
-        url: {
-          type: "string",
-          description: "要抓取的 URL（必须是 http 或 https）",
-        },
-        prompt: {
-          type: "string",
-          description: "可选：说明关注哪些内容（仅作提示，不影响抓取行为）",
-        },
-      },
-      required: ["url"],
-    };
+    return z.toJSONSchema(webFetchSchema()) as Record<string, unknown>;
   }
 
   async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {

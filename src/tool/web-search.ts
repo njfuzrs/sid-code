@@ -6,13 +6,26 @@
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResult, ToolUseContext } from "./types.ts";
 import type { SearchBackend, SearchResponse } from "./search-backends/types.ts";
 import { getLogger } from "../debug/logger.ts";
+import { z } from "zod/v4";
+import { lazySchema } from "../sdk/lazy-schema.ts";
 
 /** 全局限流：每分钟最多 20 次搜索 */
 const RATE_LIMIT = 20;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const searchHistory: number[] = [];
 
+/** WebSearch 工具输入 schema —— 运行时校验 + JSON Schema 生成的唯一真相源 */
+const webSearchSchema = lazySchema(() =>
+  z.object({
+    query: z.string().describe("搜索关键词或自然语言问题"),
+    max_results: z.number().optional().describe("最大返回结果数（默认 5，最大 10）"),
+  }),
+);
+
 export class WebSearchTool implements Tool {
+  /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
+  readonly zodSchema = webSearchSchema();
+
   constructor(private backend: SearchBackend) {}
 
   name(): string {
@@ -41,20 +54,7 @@ export class WebSearchTool implements Tool {
   }
 
   inputSchema(): Record<string, unknown> {
-    return {
-      type: "object",
-      properties: {
-        query: {
-          type: "string",
-          description: "搜索关键词或自然语言问题",
-        },
-        max_results: {
-          type: "number",
-          description: "最大返回结果数（默认 5，最大 10）",
-        },
-      },
-      required: ["query"],
-    };
+    return z.toJSONSchema(webSearchSchema()) as Record<string, unknown>;
   }
 
   async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {

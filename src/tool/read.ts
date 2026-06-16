@@ -9,12 +9,26 @@ import type { FileReadTracker } from "./file-read-tracker.ts";
 import { statSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
 import { normalizeToolPath, formatPathNotFoundError } from "./path-utils.ts";
+import { z } from "zod/v4";
+import { lazySchema } from "../sdk/lazy-schema.ts";
 
 /** 未指定 limit 时的默认最大行数，防止超大文件撑爆上下文 */
 const DEFAULT_MAX_LINES = 2000;
 
+/** Read 工具输入 schema —— 运行时校验 + JSON Schema 生成的唯一真相源 */
+const readSchema = lazySchema(() =>
+  z.object({
+    file_path: z.string().describe("要读取的文件的绝对路径"),
+    offset: z.number().optional().describe("起始行号（从 1 开始），默认为 1"),
+    limit: z.number().optional().describe(`读取的最大行数，默认 ${DEFAULT_MAX_LINES} 行`),
+  }),
+);
+
 export class ReadTool implements Tool {
   private tracker: FileReadTracker | null;
+
+  /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
+  readonly zodSchema = readSchema();
 
   constructor(tracker?: FileReadTracker) {
     this.tracker = tracker ?? null;
@@ -46,24 +60,7 @@ export class ReadTool implements Tool {
   }
 
   inputSchema(): Record<string, unknown> {
-    return {
-      type: "object",
-      properties: {
-        file_path: {
-          type: "string",
-          description: "要读取的文件的绝对路径",
-        },
-        offset: {
-          type: "number",
-          description: "起始行号（从 1 开始），默认为 1",
-        },
-        limit: {
-          type: "number",
-          description: `读取的最大行数，默认 ${DEFAULT_MAX_LINES} 行`,
-        },
-      },
-      required: ["file_path"],
-    };
+    return z.toJSONSchema(readSchema()) as Record<string, unknown>;
   }
 
   async execute(input: unknown): Promise<ToolResult> {

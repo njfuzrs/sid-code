@@ -10,8 +10,20 @@ import {
   isAgentTask,
 } from "../task/index.ts";
 import { injectMessageToAgent } from "../agent/message-queue.ts";
+import { z } from "zod/v4";
+import { lazySchema } from "../sdk/lazy-schema.ts";
+
+const sendMessageSchema = lazySchema(() =>
+  z.object({
+    to: z.string().describe("目标 Agent 的 task_id"),
+    message: z.string().describe("要发送的消息内容"),
+    summary: z.string().optional().describe("消息摘要（可选，用于通知显示）"),
+  }),
+);
 
 export class SendMessageTool implements Tool {
+  readonly zodSchema = sendMessageSchema();
+
   name(): string {
     return "send_message";
   }
@@ -21,24 +33,7 @@ export class SendMessageTool implements Tool {
   }
 
   inputSchema(): Record<string, unknown> {
-    return {
-      type: "object",
-      properties: {
-        to: {
-          type: "string",
-          description: "目标 Agent 的 task_id",
-        },
-        message: {
-          type: "string",
-          description: "要发送的消息内容",
-        },
-        summary: {
-          type: "string",
-          description: "消息摘要（可选，用于通知显示）",
-        },
-      },
-      required: ["to", "message"],
-    };
+    return z.toJSONSchema(sendMessageSchema()) as Record<string, unknown>;
   }
 
   async execute(input: unknown): Promise<ToolResult> {

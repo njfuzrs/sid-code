@@ -13,8 +13,18 @@ import {
 } from "../worktree/manager.ts";
 import { generateWordSlug } from "../plan/slug.ts";
 import { getLogger } from "../debug/logger.ts";
+import { z } from "zod/v4";
+import { lazySchema } from "../sdk/lazy-schema.ts";
+
+const enterWorktreeSchema = lazySchema(() =>
+  z.object({
+    name: z.string().optional().describe("Worktree 名称（可选，默认自动生成词汇 slug）"),
+  }),
+);
 
 export class EnterWorktreeTool implements Tool {
+  readonly zodSchema = enterWorktreeSchema();
+
   name(): string {
     return "enter_worktree";
   }
@@ -27,15 +37,7 @@ Worktree 共享 Git 对象库，创建速度快，磁盘开销小。
   }
 
   inputSchema(): Record<string, unknown> {
-    return {
-      type: "object",
-      properties: {
-        name: {
-          type: "string",
-          description: "Worktree 名称（可选，默认自动生成词汇 slug）",
-        },
-      },
-    };
+    return z.toJSONSchema(enterWorktreeSchema()) as Record<string, unknown>;
   }
 
   async execute(input: unknown, _signal?: AbortSignal): Promise<ToolResult> {

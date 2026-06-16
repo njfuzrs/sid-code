@@ -8,6 +8,8 @@ import type { FileReadTracker } from "./file-read-tracker.ts";
 import { glob } from "glob";
 import { getLogger } from "../debug/logger.ts";
 import { normalizeToolPath } from "./path-utils.ts";
+import { z } from "zod/v4";
+import { lazySchema } from "../sdk/lazy-schema.ts";
 
 /** 每文件最大行数 */
 const MAX_LINES_PER_FILE = 400;
@@ -36,8 +38,20 @@ const BINARY_EXTENSIONS = new Set([
   ".woff", ".woff2", ".ttf", ".eot",
 ]);
 
+/** ReadMany 工具输入 schema —— 运行时校验 + JSON Schema 生成的唯一真相源 */
+const readManySchema = lazySchema(() =>
+  z.object({
+    pattern: z.array(z.string()).describe("glob 模式列表，如 [\"src/**/*.ts\", \"config/*.json\"]"),
+    exclude: z.array(z.string()).optional().describe("排除模式列表（可选）"),
+    path: z.string().optional().describe("搜索根目录，默认为当前目录"),
+  }),
+);
+
 export class ReadManyTool implements Tool {
   private tracker: FileReadTracker | null;
+
+  /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
+  readonly zodSchema = readManySchema();
 
   constructor(tracker?: FileReadTracker) {
     this.tracker = tracker ?? null;
@@ -65,26 +79,7 @@ export class ReadManyTool implements Tool {
   }
 
   inputSchema(): Record<string, unknown> {
-    return {
-      type: "object",
-      properties: {
-        pattern: {
-          type: "array",
-          items: { type: "string" },
-          description: "glob 模式列表，如 [\"src/**/*.ts\", \"config/*.json\"]",
-        },
-        exclude: {
-          type: "array",
-          items: { type: "string" },
-          description: "排除模式列表（可选）",
-        },
-        path: {
-          type: "string",
-          description: "搜索根目录，默认为当前目录",
-        },
-      },
-      required: ["pattern"],
-    };
+    return z.toJSONSchema(readManySchema()) as Record<string, unknown>;
   }
 
   async execute(input: unknown): Promise<ToolResult> {
@@ -99,7 +94,8 @@ export class ReadManyTool implements Tool {
       return { output: "错误: 缺少 pattern 参数", isError: true };
     }
 
-    const searchPath = normalizeToolPath(params.path || process.cwd());
+    // 默认基于全局 cwd（"." 交给 normalizeToolPath 用 getCwd() 解析），跟随 bash 的 cd
+    const searchPath = normalizeToolPath(params.path || ".");
     const excludePatterns = [...DEFAULT_EXCLUDES, ...(params.exclude || [])];
 
     log.info("TOOL", `▶ 批量读取 ${params.pattern.join(", ")} in ${searchPath}`);

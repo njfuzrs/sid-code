@@ -8,9 +8,19 @@ import { readdirSync, statSync } from "fs";
 import { join } from "path";
 import { getLogger } from "../debug/logger.ts";
 import { normalizeToolPath } from "./path-utils.ts";
+import { z } from "zod/v4";
+import { lazySchema } from "../sdk/lazy-schema.ts";
 
 /** 默认忽略的文件/目录名 */
 const DEFAULT_IGNORE = new Set(["node_modules", ".git", "dist", ".DS_Store"]);
+
+/** Ls 工具输入 schema —— 运行时校验 + JSON Schema 生成的唯一真相源 */
+const lsSchema = lazySchema(() =>
+  z.object({
+    dir_path: z.string().describe("要列举的目录的绝对路径"),
+    ignore: z.array(z.string()).optional().describe("额外忽略的文件名模式（支持 * 通配符，如 ['*.log', 'tmp']）"),
+  }),
+);
 
 /** 将字节数格式化为人类可读的大小 */
 function formatSize(bytes: number): string {
@@ -34,6 +44,9 @@ function matchesIgnorePattern(name: string, patterns: string[]): boolean {
 }
 
 export class LsTool implements Tool {
+  /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
+  readonly zodSchema = lsSchema();
+
   readOnly(): boolean {
     return true;
   }
@@ -59,21 +72,7 @@ export class LsTool implements Tool {
   }
 
   inputSchema(): Record<string, unknown> {
-    return {
-      type: "object",
-      properties: {
-        dir_path: {
-          type: "string",
-          description: "要列举的目录的绝对路径",
-        },
-        ignore: {
-          type: "array",
-          items: { type: "string" },
-          description: "额外忽略的文件名模式（支持 * 通配符，如 ['*.log', 'tmp']）",
-        },
-      },
-      required: ["dir_path"],
-    };
+    return z.toJSONSchema(lsSchema()) as Record<string, unknown>;
   }
 
   async execute(input: unknown): Promise<ToolResult> {

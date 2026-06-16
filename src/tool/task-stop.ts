@@ -11,8 +11,18 @@ import {
   killShellTask,
   killAgentTask,
 } from "../task/index.ts";
+import { z } from "zod/v4";
+import { lazySchema } from "../sdk/lazy-schema.ts";
+
+const taskStopSchema = lazySchema(() =>
+  z.object({
+    task_id: z.string().describe("要终止的任务 ID"),
+  }),
+);
 
 export class TaskStopTool implements Tool {
+  readonly zodSchema = taskStopSchema();
+
   name(): string {
     return "task_stop";
   }
@@ -22,16 +32,7 @@ export class TaskStopTool implements Tool {
   }
 
   inputSchema(): Record<string, unknown> {
-    return {
-      type: "object",
-      properties: {
-        task_id: {
-          type: "string",
-          description: "要终止的任务 ID",
-        },
-      },
-      required: ["task_id"],
-    };
+    return z.toJSONSchema(taskStopSchema()) as Record<string, unknown>;
   }
 
   async execute(input: unknown): Promise<ToolResult> {

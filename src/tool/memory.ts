@@ -10,9 +10,26 @@ import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResu
 import type { MemoryStore } from "../memory/store.ts";
 import { getLogger } from "../debug/logger.ts";
 import { getSharedSecretRedactHook } from "../llm/hooks/secret-redact.ts";
+import { z } from "zod/v4";
+import { lazySchema } from "../sdk/lazy-schema.ts";
+
+/** Memory 工具输入 schema —— 运行时校验 + JSON Schema 生成的唯一真相源 */
+const memorySchema = lazySchema(() =>
+  z.object({
+    key: z.string().describe("记忆键名（简短描述性名称，如 'coding_style' 或 'test_framework'）"),
+    value: z.string().describe("记忆内容（具体的偏好或约定）"),
+    scope: z
+      .enum(["global", "project"])
+      .optional()
+      .describe("记忆范围：global（全局，所有项目）或 project（当前项目），默认 project"),
+  }),
+);
 
 export class MemoryTool implements Tool {
   private store: MemoryStore;
+
+  /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
+  readonly zodSchema = memorySchema();
 
   constructor(store: MemoryStore) {
     this.store = store;
@@ -41,25 +58,7 @@ export class MemoryTool implements Tool {
   }
 
   inputSchema(): Record<string, unknown> {
-    return {
-      type: "object",
-      properties: {
-        key: {
-          type: "string",
-          description: "记忆键名（简短描述性名称，如 'coding_style' 或 'test_framework'）",
-        },
-        value: {
-          type: "string",
-          description: "记忆内容（具体的偏好或约定）",
-        },
-        scope: {
-          type: "string",
-          enum: ["global", "project"],
-          description: "记忆范围：global（全局，所有项目）或 project（当前项目），默认 project",
-        },
-      },
-      required: ["key", "value"],
-    };
+    return z.toJSONSchema(memorySchema()) as Record<string, unknown>;
   }
 
   async execute(input: unknown): Promise<ToolResult> {

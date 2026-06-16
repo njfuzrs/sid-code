@@ -11,8 +11,19 @@ import {
   clearCwdDependentCaches,
 } from "../worktree/manager.ts";
 import { getLogger } from "../debug/logger.ts";
+import { z } from "zod/v4";
+import { lazySchema } from "../sdk/lazy-schema.ts";
+
+const exitWorktreeSchema = lazySchema(() =>
+  z.object({
+    action: z.enum(["keep", "remove"]).optional().describe("keep 保留 Worktree，remove 删除（默认 keep）"),
+    discard_changes: z.boolean().optional().describe("remove 且存在未提交工作时，设为 true 强制删除"),
+  }),
+);
 
 export class ExitWorktreeTool implements Tool {
+  readonly zodSchema = exitWorktreeSchema();
+
   name(): string {
     return "exit_worktree";
   }
@@ -24,20 +35,7 @@ action 为 "keep" 保留 Worktree（默认），"remove" 删除。
   }
 
   inputSchema(): Record<string, unknown> {
-    return {
-      type: "object",
-      properties: {
-        action: {
-          type: "string",
-          enum: ["keep", "remove"],
-          description: "keep 保留 Worktree，remove 删除（默认 keep）",
-        },
-        discard_changes: {
-          type: "boolean",
-          description: "remove 且存在未提交工作时，设为 true 强制删除",
-        },
-      },
-    };
+    return z.toJSONSchema(exitWorktreeSchema()) as Record<string, unknown>;
   }
 
   async execute(input: unknown, _signal?: AbortSignal): Promise<ToolResult> {

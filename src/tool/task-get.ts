@@ -9,8 +9,18 @@ import {
   isAgentTask,
   isShellTask,
 } from "../task/index.ts";
+import { z } from "zod/v4";
+import { lazySchema } from "../sdk/lazy-schema.ts";
+
+const taskGetSchema = lazySchema(() =>
+  z.object({
+    task_id: z.string().describe("要查询的任务 ID"),
+  }),
+);
 
 export class TaskGetTool implements Tool {
+  readonly zodSchema = taskGetSchema();
+
   name(): string {
     return "task_get";
   }
@@ -20,16 +30,7 @@ export class TaskGetTool implements Tool {
   }
 
   inputSchema(): Record<string, unknown> {
-    return {
-      type: "object",
-      properties: {
-        task_id: {
-          type: "string",
-          description: "要查询的任务 ID",
-        },
-      },
-      required: ["task_id"],
-    };
+    return z.toJSONSchema(taskGetSchema()) as Record<string, unknown>;
   }
 
   readOnly(): boolean {

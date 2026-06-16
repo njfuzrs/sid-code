@@ -8,6 +8,7 @@ import type { Provider } from "../llm/provider.ts";
 import type { ContentBlock, Usage } from "../llm/types.ts";
 import type { ProviderRegistry } from "../llm/registry.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
+import { validateToolInput } from "../tool/input-validator.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { getLogger } from "../debug/logger.ts";
 import type { HookSystem } from "../hook/system.ts";
@@ -557,8 +558,13 @@ export class SubAgent {
     }
 
     try {
+      // zod 运行时校验：用注入 _agentId 之前的原始 input 校验
+      const validation = validateToolInput(tool, input);
+      if (!validation.ok) {
+        return { content: validation.message, is_error: true };
+      }
       // 注入 _agentId 标记，防止子代理调用 enter_plan_mode 形成套娃
-      const result = await tool.execute({ ...input, _agentId: "sub-agent" }, signal);
+      const result = await tool.execute({ ...(validation.data as Record<string, unknown>), _agentId: "sub-agent" }, signal);
       const truncated = ContextManager.truncateToolOutput(result.output);
       return { content: truncated, is_error: result.isError ?? false };
     } catch (err: any) {

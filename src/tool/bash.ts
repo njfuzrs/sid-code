@@ -1,16 +1,40 @@
 /**
  * Bash 工具 - 执行 shell 命令
  * 对标 Claude Code：description 参数、输出截断、AbortSignal 集成、跨平台适配
+ *
+ * 持久 Shell 会话（P0-2）：
+ * - 会话启动时（构造期）创建 shell 环境快照，抓取用户 aliases/functions/options/PATH
+ * - 每条命令前 `source` 快照 + `eval` 命令（使 alias 生效）
+ * - 命令末尾 `pwd -P` 写回全局 cwd 状态，实现 cd 跨命令、跨工具持久化
+ * See: docs/bugfixes/todo/p0-2/持久Shell会话-补齐分析.md
  */
 
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResult, ToolUseContext } from "./types.ts";
 import { spawn } from "bun";
-import { platform } from "os";
+import { platform, tmpdir } from "os";
+import { join } from "path";
+import { readFileSync, unlinkSync, existsSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
 import type { Config } from "../config/config.ts";
 import { isReadOnlyCommand, isDestructiveCommand } from "./bash/read-only-validation.ts";
 import { normalizeToolPath } from "./path-utils.ts";
 import { registerCleanup } from "../utils/graceful-shutdown.ts";
+import { getCwd, setCwd, getOriginalCwd } from "../bootstrap/state.ts";
+import { createAndSaveSnapshot, escapeForShell } from "./bash/shell-snapshot.ts";
+import { z } from "zod/v4";
+import { lazySchema } from "../sdk/lazy-schema.ts";
+
+/** Bash 工具输入 schema —— 运行时校验 + JSON Schema 生成的唯一真相源 */
+const bashSchema = lazySchema(() =>
+  z.object({
+    command: z.string().describe("要执行的 shell 命令"),
+    description: z.string().optional().describe("用自然语言描述这条命令要做什么（会显示给用户审批）"),
+    timeout: z.number().optional().describe("超时时间（毫秒），默认 120000（2 分钟），最长 600000（10 分钟）"),
+    cwd: z.string().optional().describe("工作目录，默认为当前目录"),
+    is_background: z.boolean().optional().describe("是否后台运行（不等待命令完成，立即返回 PID）"),
+    run_in_background: z.boolean().optional().describe("是否以后台任务模式运行（通过 Task 系统管理，完成后通知）"),
+  }),
+);
 
 /** Bash 输出截断阈值（对标 Claude Code 30000 字符） */
 const MAX_OUTPUT_LENGTH = 30000;
@@ -20,6 +44,9 @@ const BACKGROUND_DELAY_MS = 200;
 
 /** 后台进程 PID 跟踪 */
 const backgroundPids = new Set<number>();
+
+/** cwd 临时文件计数器（与 pid 组合保证并发命令的临时文件名唯一） */
+let cwdFileCounter = 0;
 
 /**
  * 杀掉所有残留后台进程并清空跟踪表(LEAK-3)。
@@ -45,13 +72,19 @@ export function setBashToolConfig(config: Config): void {
   globalConfig = config;
 }
 
-/** 获取平台 shell 配置 */
-function getPlatformShell(): { shell: string; args: string[] } {
+/**
+ * 获取平台 shell 配置。
+ * @param opts.login 是否登录模式（加 -l）。无快照时回退登录模式以重新 source 用户配置（对标 claude-code getSpawnArgs）。
+ *                   Windows（powershell）无登录概念，忽略此参数。
+ */
+function getPlatformShell(opts?: { login?: boolean }): { shell: string; args: string[] } {
   if (platform() === "win32") {
     return { shell: "powershell.exe", args: ["-NoProfile", "-Command"] };
   }
   const userShell = process.env.SHELL || "/bin/bash";
-  return { shell: userShell, args: ["-c"] };
+  // -c 后跟 -l：bash/zsh 将命令字符串作为首个操作数，-l 触发登录模式重新 source 配置
+  const args = opts?.login ? ["-c", "-l"] : ["-c"];
+  return { shell: userShell, args };
 }
 
 /** 截断超长输出 */
@@ -89,6 +122,31 @@ function isBinaryOutput(data: string): boolean {
 }
 
 export class BashTool implements Tool {
+  /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
+  readonly zodSchema = bashSchema();
+
+  /** shell 环境快照文件路径（构造期异步创建；undefined 表示无快照，降级登录模式） */
+  private snapshotFilePath: string | undefined;
+  /** 快照创建完成的 Promise（永不 reject，失败时 snapshotFilePath 为 undefined） */
+  private snapshotReady: Promise<void>;
+
+  constructor() {
+    // 构造期异步触发快照创建（BashTool 单例，cli.ts 仅 new 一次，构造期建快照成立）。
+    // 不阻塞构造；execute 首次会 await snapshotReady 确保从第一条命令起就用上快照。
+    this.snapshotReady = this.initSnapshot();
+  }
+
+  /** 异步创建 shell 快照（Windows 跳过，失败降级 undefined，永不抛出） */
+  private async initSnapshot(): Promise<void> {
+    if (platform() === "win32") return;
+    try {
+      const { shell } = getPlatformShell();
+      this.snapshotFilePath = await createAndSaveSnapshot(shell);
+    } catch {
+      this.snapshotFilePath = undefined;
+    }
+  }
+
   name(): string {
     return "bash";
   }
@@ -104,40 +162,14 @@ export class BashTool implements Tool {
 - 设置合理的 timeout，默认 2 分钟，最长 10 分钟
 - 输出超过 30000 字符会被自动截断
 - 长时间运行的进程（如 dev server）可设置 is_background=true 后台运行
-- 后台进程会返回 PID，可用于后续管理`;
+- 后台进程会返回 PID，可用于后续管理
+- 每条命令在独立 shell 进程中执行。cd 后的目录变更会被自动追踪并对所有工具（read/edit/glob 等）生效，无需每次重复传 cwd；
+  但 export、source venv/bin/activate 等动态环境变更不会跨命令保留——需要它们的操作必须写在同一条命令里。
+  例：\`cd src\` 后下一条 \`ls\` 会列 src 目录（可拆两条）；但 \`source venv/bin/activate && python foo.py\` 必须写为一条`;
   }
 
   inputSchema(): Record<string, unknown> {
-    return {
-      type: "object",
-      properties: {
-        command: {
-          type: "string",
-          description: "要执行的 shell 命令",
-        },
-        description: {
-          type: "string",
-          description: "用自然语言描述这条命令要做什么（会显示给用户审批）",
-        },
-        timeout: {
-          type: "number",
-          description: "超时时间（毫秒），默认 120000（2 分钟），最长 600000（10 分钟）",
-        },
-        cwd: {
-          type: "string",
-          description: "工作目录，默认为当前目录",
-        },
-        is_background: {
-          type: "boolean",
-          description: "是否后台运行（不等待命令完成，立即返回 PID）",
-        },
-        run_in_background: {
-          type: "boolean",
-          description: "是否以后台任务模式运行（通过 Task 系统管理，完成后通知）",
-        },
-      },
-      required: ["command"],
-    };
+    return z.toJSONSchema(bashSchema()) as Record<string, unknown>;
   }
 
   /** 基于命令内容判断是否只读（输入感知） */
@@ -167,6 +199,71 @@ export class BashTool implements Tool {
     return isReadOnlyCommand(command);
   }
 
+  /**
+   * 解析命令的工作目录。
+   * 优先级：显式 params.cwd > 全局 cwd（getCwd()）> 原始启动目录（兜底）。
+   * 若目标目录已被删除（如 rm -rf 之后），回退到原始启动目录，对标 claude-code Shell.ts:222-238。
+   */
+  private resolveCwd(rawCwd: string | undefined): string {
+    let cwd = rawCwd ? normalizeToolPath(rawCwd) : getCwd();
+    if (!existsSync(cwd)) {
+      cwd = getOriginalCwd();
+    }
+    return cwd;
+  }
+
+  /**
+   * 构造实际 spawn 的命令字符串（前台/后台三处路径共用，避免只改前台导致后台丢快照）。
+   * - 有快照：`source <快照> 2>/dev/null || true && eval <命令>`（eval 触发二次解析使 alias 生效）
+   * - 无快照：原样命令（spawn 时由 getPlatformShell({login:true}) 加 -l 重新 source 配置）
+   * - trackCwd：命令末尾追加 `pwd -P >| <临时文件>`（>| 绕过 noclobber），仅前台、非 Windows
+   * @returns commandString 拼接后命令；cwdFile 追踪文件路径（undefined 表示不追踪 cwd）
+   */
+  private buildCommand(
+    rawCommand: string,
+    opts: { trackCwd: boolean },
+  ): { commandString: string; cwdFile: string | undefined } {
+    const isWin = platform() === "win32";
+    const parts: string[] = [];
+    let cwdFile: string | undefined;
+
+    if (this.snapshotFilePath && !isWin) {
+      parts.push(`source ${escapeForShell(this.snapshotFilePath)} 2>/dev/null || true`);
+      parts.push(`eval ${escapeForShell(rawCommand)}`);
+    } else {
+      parts.push(rawCommand);
+    }
+
+    // CWD 追踪仅对前台命令、非 Windows 生效（powershell 无 POSIX pwd -P 语义）
+    if (opts.trackCwd && !isWin) {
+      cwdFile = join(tmpdir(), `sid-code-cwd-${process.pid}-${++cwdFileCounter}`);
+      parts.push(`pwd -P >| ${escapeForShell(cwdFile)}`);
+    }
+
+    return { commandString: parts.join(" && "), cwdFile };
+  }
+
+  /**
+   * 命令成功完成后读取 cwd 临时文件并写回全局 cwd 状态；无论成功与否都清理临时文件。
+   * @param success 命令是否成功（exitCode===0 且未被取消）。仅成功时才写回，失败时 pwd -P 未执行。
+   */
+  private applyCwdTracking(cwdFile: string | undefined, success: boolean): void {
+    if (!cwdFile) return;
+    try {
+      if (success) {
+        // 裸 readFileSync 需自行 NFC 归一化（normalizeToolPath 内部已做，但此处直读文件）
+        const newCwd = readFileSync(cwdFile, "utf8").trim().normalize("NFC");
+        if (newCwd && newCwd !== getCwd() && existsSync(newCwd)) {
+          setCwd(newCwd);
+        }
+      }
+    } catch {
+      /* 文件不存在或读取失败（命令失败时 pwd 未执行），忽略 */
+    } finally {
+      try { unlinkSync(cwdFile); } catch { /* 忽略 */ }
+    }
+  }
+
   async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
     const log = getLogger();
     const params = input as {
@@ -182,6 +279,9 @@ export class BashTool implements Tool {
       return { output: "错误: 缺少 command 参数", isError: true };
     }
 
+    // 确保快照创建完成（首条命令可能赶在快照就绪前；snapshotReady 永不 reject）
+    await this.snapshotReady;
+
     log.info("TOOL", `▶ 执行: ${params.command.slice(0, 200)}${params.command.length > 200 ? "..." : ""}`);
 
     // Task 系统后台模式（新）
@@ -196,8 +296,16 @@ export class BashTool implements Tool {
 
     // 超时限制：最短 1 秒，最长 10 分钟
     const timeout = Math.min(Math.max(params.timeout || 120000, 1000), 600000);
-    const cwd = normalizeToolPath(params.cwd || process.cwd());
-    const { shell, args } = getPlatformShell();
+    const cwd = this.resolveCwd(params.cwd);
+    const { shell, args } = getPlatformShell({ login: !this.snapshotFilePath });
+
+    // CWD 追踪范围（缺口 5 并发竞态处理）：只读命令不含 cd，跳过写回。
+    // 只读命令可并发执行（isConcurrencySafe），跳过 cwd 写回既零损失又消除两条并发
+    // bash 互相覆盖全局 cwd 的竞态。非只读命令视为串行，正常追踪 cwd。
+    const trackCwd = !isReadOnlyCommand(params.command);
+
+    // 前台命令：拼接快照注入 + cwd 追踪
+    const { commandString, cwdFile } = this.buildCommand(params.command, { trackCwd });
 
     // 准备环境变量（如果启用了清理）
     let env = process.env;
@@ -209,7 +317,7 @@ export class BashTool implements Tool {
 
     try {
       const proc = spawn({
-        cmd: [shell, ...args, params.command],
+        cmd: [shell, ...args, commandString],
         cwd,
         env,
         stdout: "pipe",
@@ -249,6 +357,12 @@ export class BashTool implements Tool {
         signal?.removeEventListener("abort", abortHandler);
 
         const exitCode = await proc.exited;
+
+        // CWD 追踪写回：仅前台、未取消、未后台化、退出码 0 时写回全局 cwd。
+        // backgrounded 为 true 时跳过写回（命令已转后台，可能尚未执行 pwd -P）。
+        if (!backgrounded) {
+          this.applyCwdTracking(cwdFile, !killed && exitCode === 0);
+        }
 
         // 合并输出
         let output = "";
@@ -312,6 +426,8 @@ export class BashTool implements Tool {
         if (pid) backgroundPids.add(pid);
         clearTimeout(timeoutId);
         signal?.removeEventListener("abort", abortHandler);
+        // 命令转后台，cwd 临时文件不再读取，直接清理（pwd -P 可能稍后才执行，留孤儿可接受）
+        if (cwdFile) { try { unlinkSync(cwdFile); } catch { /* 忽略 */ } }
         log.info("BASH", `命令超时（${timeout / 1000}秒），PID ${pid} 自动转为后台运行`);
         return {
           output: `命令执行超过 ${timeout / 1000} 秒，已自动转为后台运行。PID: ${pid}\n可使用 \`kill ${pid}\` 终止进程。`,
@@ -321,18 +437,23 @@ export class BashTool implements Tool {
 
       return raceResult.result;
     } catch (err: any) {
+      // 异常路径也清理 cwd 临时文件，避免泄漏
+      if (cwdFile) { try { unlinkSync(cwdFile); } catch { /* 忽略 */ } }
       return { output: `执行命令失败: ${err.message}`, isError: true };
     }
   }
 
-  /** 后台执行命令 */
+  /** 后台执行命令（不追踪 cwd：命令未完成，pwd -P 行不应触发写回） */
   private async executeBackground(params: {
     command: string;
     cwd?: string;
   }): Promise<ToolResult> {
     const log = getLogger();
-    const cwd = normalizeToolPath(params.cwd || process.cwd());
-    const { shell, args } = getPlatformShell();
+    await this.snapshotReady;
+    const cwd = this.resolveCwd(params.cwd);
+    const { shell, args } = getPlatformShell({ login: !this.snapshotFilePath });
+    // 后台命令：注入快照但不追踪 cwd
+    const { commandString } = this.buildCommand(params.command, { trackCwd: false });
 
     // 准备环境变量（如果启用了清理）
     let env = process.env;
@@ -344,7 +465,7 @@ export class BashTool implements Tool {
 
     try {
       const proc = spawn({
-        cmd: [shell, ...args, params.command],
+        cmd: [shell, ...args, commandString],
         cwd,
         env,
         stdout: "pipe",
@@ -382,16 +503,20 @@ export class BashTool implements Tool {
     }
   }
 
-  /** Task 系统后台执行（新模式） */
-  private executeWithTaskSystem(params: {
+  /** Task 系统后台执行（新模式，不追踪 cwd） */
+  private async executeWithTaskSystem(params: {
     command: string;
     cwd?: string;
-  }, signal?: AbortSignal): ToolResult {
+  }, signal?: AbortSignal): Promise<ToolResult> {
     const { spawnShellTask } = require("../task/index.ts");
-    const cwd = normalizeToolPath(params.cwd || process.cwd());
+    await this.snapshotReady;
+    const cwd = this.resolveCwd(params.cwd);
+    // 后台任务：注入快照但不追踪 cwd
+    const { commandString } = this.buildCommand(params.command, { trackCwd: false });
 
     const taskState = spawnShellTask({
-      command: params.command,
+      command: commandString,
+      displayCommand: params.command,
       cwd,
       signal,
     });

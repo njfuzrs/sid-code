@@ -4,13 +4,17 @@
  * 对应 ADR-039 Follow-up B-Followup-1 + 系统级查漏补缺方案 D2-3。
  * 串起三道防线，验证完整链路：
  *   中断（executeTools 抛 AbortError）
- *     → loop.ts catch 兜底填齐 tool_result（D1-2）
+ *     → queryLoop 优雅收尾：补 cancel tool_result（A2 / D1-2）
  *     → 退出时把完整历史落 messages.json（D3-1，用真实 TraceWriter）
  *     → 重新加载落盘历史
  *     → 断言：无孤儿 tool_use，且 strict 模式下能再次安全发送（= 可恢复，不会 400）
  *
  * "可恢复"的判据：落盘历史喂回 guardOutgoingMessages(strict) 不抛——
  * 即这段历史可以直接作为 resume 的起点重新发给 provider 而不触发协议 400。
+ *
+ * 注：原测试驱动已删除的 AgentLoopRunner（生产死代码，abort 时 throw 穿透）；
+ * 迁移到真实 queryLoop 后，abort 是"用户主动中断"的正常路径——补 cancel result
+ * 后 yield done 优雅收尾，不抛异常（对标 claude-code）。落盘→重载→可恢复的硬判据不变。
  *
  * fix_type: case_design（L1）
  */
@@ -19,14 +23,16 @@ import { describe, test, expect, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AgentLoopRunner, type AgentLoopDeps } from "../../src/agent/loop.ts";
+import { queryLoop } from "../../src/query/loop.ts";
+import type { QueryLoopConfig } from "../../src/query/loop.ts";
+import type { QueryDeps } from "../../src/query/types.ts";
 import { Manager as ContextManager } from "../../src/context/manager.ts";
 import { Registry as ToolRegistry } from "../../src/tool/registry.ts";
 import { ModelFallback } from "../../src/llm/fallback.ts";
-import { ThinkingManager } from "../../src/llm/thinking.ts";
 import { SessionState } from "../../src/session/state.ts";
 import { TraceWriter } from "../../src/trace/writer.ts";
-import type { Provider } from "../../src/llm/provider.ts";
+import { toAbortError } from "../../src/llm/errors.ts";
+import type { Config } from "../../src/config/config.ts";
 import type {
   StreamEvent,
   AccumulatedResponse,
@@ -46,26 +52,18 @@ afterEach(() => {
   tmpDirs = [];
 });
 
-function makeProvider(): Provider {
-  const p: any = {
-    name: () => "mock",
-    defaultModel: () => "mock-model",
-    capabilities: () => ({
-      streaming: true, tools: true, thinking: false,
-      vision: false, promptCaching: false, parallelToolCalls: true,
-    }),
-    async *sendMessageStream(): AsyncIterable<StreamEvent> {
-      yield { type: "message_stop" };
-    },
-  };
-  return p as Provider;
+function makeConfig(): Config {
+  return { model: "mock-model", provider: "mock", maxTokens: 4096, maxTurns: 10 } as unknown as Config;
 }
 
-function makeDeps(opts: {
+async function* emptyStream(): AsyncIterable<StreamEvent> {
+  // 不 yield 任何事件——真实 abort 时 SDK 已被 signal 中断
+}
+
+function makeLoopConfig(opts: {
   ctxMgr: ContextManager;
   toolResponse: ContentBlock[];
-}): AgentLoopDeps {
-  const config: any = { provider: "mock", model: "mock-model", maxTokens: 4096, maxTurns: 10 };
+}): QueryLoopConfig {
   const processStream = async (): Promise<AccumulatedResponse> => ({
     role: "assistant",
     content: opts.toolResponse,
@@ -74,30 +72,24 @@ function makeDeps(opts: {
   });
   // 中断：executeTools 在执行中被 AbortError 切开
   const executeTools = async () => {
-    const e = new Error("aborted by user");
-    e.name = "AbortError";
-    throw e;
+    throw toAbortError();
+  };
+  const deps: QueryDeps = {
+    sendWithRetry: () => emptyStream(),
+    processStream,
+    executeTools,
+    autoCompact: async () => {},
+    handleContextOverflow: () => null,
+    getAbortSignal: () => undefined,
+    uuid: () => "uuid-test",
   };
   return {
-    config,
-    provider: makeProvider(),
+    config: makeConfig(),
     ctxMgr: opts.ctxMgr,
     toolRegistry: new ToolRegistry(),
     sessionState: new SessionState("test-session-d23"),
     fallback: new ModelFallback(),
-    thinkingMgr: new ThinkingManager(false),
-    executeTools,
-    processStream,
-    autoCompact: async () => {},
-    handleContextOverflow: () => null,
-    getAbortSignal: () => undefined,
-  };
-}
-
-function makeCallbacks() {
-  return {
-    onStreamText: () => {}, onToolStart: () => {}, onToolEnd: () => {},
-    onCompact: () => {}, onComplete: () => {},
+    deps,
   };
 }
 
@@ -106,25 +98,25 @@ describe("D2-3 — 中断 / abort 端到端", () => {
     const baseDir = mkdtempSync(join(tmpdir(), "sid-d23-"));
     tmpDirs.push(baseDir);
 
-    // 1. 真实 loop 跑一轮带 2 个 tool_use 的响应，executeTools 中断
+    // 1. 真实 queryLoop 跑一轮带 2 个 tool_use 的响应，executeTools 中断
     const ctxMgr = new ContextManager({ maxTokens: 100_000 });
+    ctxMgr.setSystemPrompt("test");
     ctxMgr.addMessage({ role: "user", content: [{ type: "text", text: "帮我改两个文件" }] });
     const toolResponse: ContentBlock[] = [
       { type: "text", text: "开始执行" },
       { type: "tool_use", id: "tu_a", name: "edit", input: { file: "a.ts" } },
       { type: "tool_use", id: "tu_b", name: "write", input: { file: "b.ts" } },
     ];
-    const runner = new AgentLoopRunner(makeDeps({ ctxMgr, toolResponse }));
+    const loopConfig = makeLoopConfig({ ctxMgr, toolResponse });
 
-    let aborted = false;
-    try {
-      await runner.run("帮我改两个文件", makeCallbacks());
-    } catch (e) {
-      aborted = (e as Error).name === "AbortError";
+    // queryLoop 对 abort 是优雅收尾（yield done），不抛异常
+    const kinds: string[] = [];
+    for await (const ev of queryLoop(loopConfig)) {
+      kinds.push(ev.kind);
     }
-    expect(aborted).toBe(true);
+    expect(kinds).toContain("done");
 
-    // 2. 中断后历史已被 loop catch 兜底（D1-2）：无孤儿
+    // 2. 中断后历史已被 queryLoop 兜底（A2 / D1-2）：无孤儿
     const liveMessages = ctxMgr.getMessages();
     expect(checkMessageHistoryIntegrity(liveMessages).intact).toBe(true);
 
@@ -154,7 +146,7 @@ describe("D2-3 — 中断 / abort 端到端", () => {
       guardOutgoingMessages(reloadedMessages, { providerName: "mock", strict: true }),
     ).not.toThrow();
 
-    // 7. 进一步坐实：tu_a/tu_b 都有对应 tool_result（兜底填的 error 占位）
+    // 7. 进一步坐实：tu_a/tu_b 都有对应 tool_result（兜底填的 cancel 占位）
     const resultIds = reloadedMessages
       .filter(m => m.role === "user")
       .flatMap(m => m.content)

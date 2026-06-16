@@ -779,6 +779,20 @@ export async function main(): Promise<void> {
     const permissionChecker = new PermissionChecker(config, permissionRules);
     permissionChecker.setPlanManager(planManager);
 
+    // 注入 LLM 命令风险分类器（P0-3 迭代 II，第二道防线；默认关闭，enableLLMClassifier 开启）
+    {
+      const { BashClassifier } = await import("./permission/bash-classifier.ts");
+      const classifier = new BashClassifier({
+        enabled: config.enableLLMClassifier === true,
+        model: config.classifierModel,
+      });
+      if (config.enableLLMClassifier === true) {
+        // 复用主 provider；模型默认跟主循环模型
+        classifier.setProvider(providerRegistry.getProvider(), config.classifierModel || config.model);
+      }
+      permissionChecker.setBashClassifier(classifier);
+    }
+
     if (config.debug && permissionRules) {
       const { getLogger } = await import("./debug/logger.ts");
       const allowCount = permissionRules.allow?.length ?? 0;

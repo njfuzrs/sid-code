@@ -5,8 +5,14 @@
 
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
 import type { PlanModeManager } from "../plan/state.ts";
+import { z } from "zod/v4";
+import { lazySchema } from "../sdk/lazy-schema.ts";
+
+const enterPlanModeSchema = lazySchema(() => z.object({}));
 
 export class EnterPlanModeTool implements Tool {
+  readonly zodSchema = enterPlanModeSchema();
+
   constructor(private planManager: PlanModeManager) {}
 
   name(): string { return "enter_plan_mode"; }
@@ -52,7 +58,7 @@ export class EnterPlanModeTool implements Tool {
   }
 
   inputSchema(): Record<string, unknown> {
-    return { type: "object", properties: {} };
+    return z.toJSONSchema(enterPlanModeSchema()) as Record<string, unknown>;
   }
 
   readOnly(): boolean { return true; }

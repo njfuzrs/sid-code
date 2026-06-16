@@ -16,6 +16,7 @@ import type { Provider } from "../llm/provider.ts";
 import type { Message, ContentBlock, ToolDefinition } from "../llm/types.ts";
 import type { Registry as ToolRegistry } from "../tool/registry.ts";
 import type { PermissionResult } from "../tool/types.ts";
+import { validateToolInput } from "../tool/input-validator.ts";
 import { getLogger } from "../debug/logger.ts";
 
 /** 工具权限控制函数 */
@@ -209,8 +210,19 @@ export async function runForkedAgent(
         }
         try {
           const input = (decision as { updatedInput?: unknown }).updatedInput ?? tu.input;
+          // zod 运行时校验：用注入 _agentId 之前的原始 input 校验
+          const validation = validateToolInput(tool, input);
+          if (!validation.ok) {
+            results.push({
+              type: "tool_result",
+              tool_use_id: tu.id,
+              content: validation.message,
+              is_error: true,
+            });
+            continue;
+          }
           // 注入 _agentId 标记，防止分叉代理调用 enter_plan_mode 形成套娃
-          const res = await tool.execute({ ...(input as Record<string, unknown>), _agentId: "forked-agent" }, signal);
+          const res = await tool.execute({ ...(validation.data as Record<string, unknown>), _agentId: "forked-agent" }, signal);
           results.push({
             type: "tool_result",
             tool_use_id: tu.id,

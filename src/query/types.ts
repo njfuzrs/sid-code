@@ -173,6 +173,15 @@ export interface QueryDeps {
    * 通过它把 tool_result 直接写入 jsonl。可选——未注入则不持久化。
    */
   sessionStore?: import("../session/store.ts").SessionStore;
+  /**
+   * Step 0：Session Memory 提取触发（每轮收尾调用，fire-and-forget）。
+   * 内部按双阈值（token 增长 + 工具调用次数/自然断点）决定是否真正提取。可选。
+   */
+  updateSessionMemory?: () => Promise<void>;
+  /**
+   * Step 0：记录一次工具调用（用于 Session Memory 双阈值计数）。可选。
+   */
+  recordSessionMemoryToolCall?: () => void;
 }
 
 // ─── QueryEngine 配置 ───

@@ -7,6 +7,48 @@
 
 import type { LegacyTool as Tool } from "./types.ts";
 import type { ToolDefinition } from "../llm/types.ts";
+import { z } from "zod/v4";
+import { getLogger } from "../debug/index.ts";
+
+/**
+ * 生成单个工具的 LLM 定义。
+ *
+ * input_schema 来源优先级：
+ * 1. 工具提供了 zodSchema → 用 z.toJSONSchema 自动生成（zod v4 内置，无需第三方库），
+ *    保证"运行时校验器"与"发给 LLM 的描述"同源，杜绝漂移。
+ * 2. 否则回退到手写 inputSchema()（迁移期间未提供 zodSchema 的工具）。
+ *
+ * z.toJSONSchema 失败时（极少数 schema 含不可序列化结构）降级回退 inputSchema()，
+ * 并打 warn 日志，避免单个工具拖垮整个定义列表。
+ */
+function toolToDefinition(t: Tool): ToolDefinition {
+  let desc = t.description();
+  if (t.usageGuide) {
+    const guide = t.usageGuide();
+    if (guide) desc += `\n\n使用指南:\n${guide}`;
+  }
+
+  let inputSchema: Record<string, unknown>;
+  if (t.zodSchema) {
+    try {
+      inputSchema = z.toJSONSchema(t.zodSchema) as Record<string, unknown>;
+    } catch (err: any) {
+      getLogger().warn(
+        "TOOL",
+        `工具 ${t.name()} 的 zodSchema 转 JSON Schema 失败，回退手写 inputSchema(): ${err?.message ?? err}`,
+      );
+      inputSchema = t.inputSchema();
+    }
+  } else {
+    inputSchema = t.inputSchema();
+  }
+
+  return {
+    name: t.name(),
+    description: desc,
+    input_schema: inputSchema,
+  };
+}
 
 /** 工具池组装配置 */
 export interface AssembleOptions {
@@ -92,18 +134,7 @@ export class Registry {
   /** 返回所有工具的 LLM 定义（用于发送给 AI） */
   definitions(options?: AssembleOptions): ToolDefinition[] {
     const tools = options ? this.assembleToolPool(options) : this.all();
-    const defs = tools.map((t) => {
-      let desc = t.description();
-      if (t.usageGuide) {
-        const guide = t.usageGuide();
-        if (guide) desc += `\n\n使用指南:\n${guide}`;
-      }
-      return {
-        name: t.name(),
-        description: desc,
-        input_schema: t.inputSchema(),
-      };
-    });
+    const defs = tools.map(toolToDefinition);
     // D2 前缀稳定性：工具定义按 name 固定字典序输出，杜绝注册顺序抖动（尤其 MCP 异步连接顺序）
     // 废掉工具 schema 缓存前缀。序列化顺序只影响请求载荷的缓存前缀，不影响执行查找（按 name 索引）。
     defs.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
@@ -145,9 +176,22 @@ export class Registry {
     return this.mcpTools.size;
   }
 
-  // ===== Layer 3：延迟发现（预留架构） =====
+  // ===== Layer 3：延迟发现（ToolSearch 基础设施） =====
+  //
+  // 延迟判定双来源（OR 关系）：
+  // 1. 工具实例的 shouldDefer 字段（内置工具静态声明，首选）
+  // 2. deferredTools 运行时名单（MCP 工具无 shouldDefer 字段时的兜底通道，
+  //    以及运行时动态标记）
+  // alwaysLoad=true 的工具强制不延迟（即使被标记），保证核心工具首轮可见。
 
-  /** 标记工具为可延迟加载（未来 ToolSearch 使用） */
+  /** 判定工具是否应延迟加载（不进首轮 LLM 上下文） */
+  private isToolDeferred(tool: Tool): boolean {
+    if (tool.alwaysLoad) return false;
+    if (tool.shouldDefer) return true;
+    return this.deferredTools.has(tool.name());
+  }
+
+  /** 标记工具为可延迟加载（ToolSearch 运行时使用） */
   markDeferred(toolName: string): void {
     this.deferredTools.add(toolName);
   }
@@ -157,8 +201,10 @@ export class Registry {
     this.deferredTools.delete(toolName);
   }
 
-  /** 检查工具是否为延迟加载 */
+  /** 检查工具是否为延迟加载（字段 + 名单双来源） */
   isDeferred(toolName: string): boolean {
+    const tool = this.get(toolName);
+    if (tool) return this.isToolDeferred(tool);
     return this.deferredTools.has(toolName);
   }
 
@@ -166,35 +212,31 @@ export class Registry {
   activeDefinitions(options?: AssembleOptions): ToolDefinition[] {
     const tools = options ? this.assembleToolPool(options) : this.all();
     return tools
-      .filter(t => !this.deferredTools.has(t.name()))
-      .map((t) => {
-        let desc = t.description();
-        if (t.usageGuide) {
-          const guide = t.usageGuide();
-          if (guide) desc += `\n\n使用指南:\n${guide}`;
-        }
-        return {
-          name: t.name(),
-          description: desc,
-          input_schema: t.inputSchema(),
-        };
-      });
+      .filter((t) => !this.isToolDeferred(t))
+      .map(toolToDefinition);
   }
 
-  /** 搜索延迟工具（未来 ToolSearchTool 调用） */
+  /** 搜索延迟工具（ToolSearchTool 调用） */
   searchDeferredTools(query: string): Tool[] {
-    const terms = query.toLowerCase().split(/\s+/);
-    return [...this.deferredTools]
-      .map(name => this.get(name))
-      .filter((t): t is Tool => t !== undefined)
-      .filter(t => {
-        const text = `${t.name()} ${t.description()}`.toLowerCase();
-        return terms.some(term => text.includes(term));
+    const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+    return this.all()
+      .filter((t) => this.isToolDeferred(t))
+      .filter((t) => {
+        // searchHint 提供高信号关键词，参与匹配（claude-code 同款）
+        const hint = t.searchHint ? ` ${t.searchHint}` : "";
+        const text = `${t.name()} ${t.description()}${hint}`.toLowerCase();
+        return terms.some((term) => text.includes(term));
       });
   }
 
-  /** 延迟工具数量 */
+  /** 延迟工具数量（字段 + 名单双来源，去重） */
   deferredSize(): number {
-    return this.deferredTools.size;
+    const names = new Set<string>();
+    for (const t of this.all()) {
+      if (this.isToolDeferred(t)) names.add(t.name());
+    }
+    // 名单里可能有尚未注册的工具名，一并计入
+    for (const name of this.deferredTools) names.add(name);
+    return names.size;
   }
 }

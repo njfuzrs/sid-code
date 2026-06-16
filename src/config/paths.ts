@@ -117,6 +117,9 @@ export const sidPaths = {
   // ── IDE ──
   ideLockDir: () => sidHomePath("ide"),
 
+  // ── 持久 Shell 会话：shell 环境快照 ──
+  shellSnapshots: () => sidHomePath("shell-snapshots"),
+
   // ── 清理水位线 ──
   lastCleanup: () => sidHomePath(".last-cleanup"),
 } as const;

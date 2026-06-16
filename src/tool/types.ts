@@ -5,6 +5,44 @@
  */
 
 import type { ContentBlock } from "../llm/types.ts";
+import type { z } from "zod/v4";
+
+/**
+ * 工具 zod schema 的统一类型。
+ *
+ * 从 `zod/v4` 子路径取（与 `z.toJSONSchema` 同源）——zod 3.25 内部同时打包
+ * v3(classic) 与 v4，`toJSONSchema` 只在 v4 暴露。工具层一律用 v4 schema，
+ * 由执行器 `safeParse` 做运行时校验、registry 用 `z.toJSONSchema` 生成 LLM 定义。
+ */
+export type ToolZodSchema<Input = unknown> = z.ZodType<Input>;
+
+/**
+ * ToolSearch 协议字段 + 中断行为 —— 新旧两版接口共享的"能力声明"。
+ *
+ * 字段先行：`searchHint` / `shouldDefer` / `alwaysLoad` 由 registry 的
+ * activeDefinitions() 消费（按 shouldDefer 过滤首轮上下文），`interruptBehavior`
+ * 为后续接线预留。`zodSchema` 由执行器与 registry 消费（运行时校验 + JSON Schema 生成）。
+ */
+export interface ToolCapabilityFields<Input = unknown> {
+  /**
+   * zod schema（替代手写 JSON Schema，提供运行时校验 + 类型推导）。
+   * 可选：与 inputSchema() 共存。执行器优先 safeParse(zodSchema)，registry 优先
+   * z.toJSONSchema(zodSchema) 生成 LLM 定义；未提供时回退到 inputSchema()。
+   */
+  zodSchema?: ToolZodSchema<Input>;
+
+  /** 给 ToolSearch 做关键词匹配的一句话描述（3-10 词） */
+  searchHint?: string;
+
+  /** 标记为延迟加载——默认不进 LLM 上下文（由 ToolSearch 按需调出） */
+  shouldDefer?: boolean;
+
+  /** 强制不进延迟加载（ToolSearch 启用时仍首轮可见） */
+  alwaysLoad?: boolean;
+
+  /** 用户发新消息时的行为：cancel（取消）或 block（继续运行），默认 block */
+  interruptBehavior?: () => "cancel" | "block";
+}
 
 // ===== 旧版接口（渐进式迁移期间保留） =====
 
@@ -21,7 +59,7 @@ export interface LegacyToolResult {
 }
 
 /** 旧版工具接口 */
-export interface LegacyTool {
+export interface LegacyTool extends ToolCapabilityFields {
   name(): string;
   description(): string;
   inputSchema(): Record<string, unknown>;
@@ -29,6 +67,11 @@ export interface LegacyTool {
   readOnly?(): boolean;
   isConcurrencySafe?(input: unknown): boolean;
   usageGuide?(): string;
+  /**
+   * 工具自身的额外权限逻辑（passthrough 语义）。
+   * 接口未强制，但 checker.ts Step 5.5 以鸭子类型调用；read/write/edit/bash 等已实现。
+   */
+  checkPermissions?(input: unknown, context: ToolUseContext): Promise<PermissionResult>;
 }
 
 // ===== 新版接口 =====
@@ -98,7 +141,7 @@ export interface Tool<
   Input = unknown,
   Output = string,
   Progress extends ToolProgressData = ToolProgressData,
-> {
+> extends ToolCapabilityFields<Input> {
   /** 工具唯一名称 */
   readonly name: string;
 
@@ -111,7 +154,13 @@ export interface Tool<
     onProgress?: (event: Progress) => void,
   ): Promise<ToolResult<Output>>;
 
-  /** 输入校验（在权限检查之前执行） */
+  /**
+   * 输入校验（在权限检查之前执行）。
+   *
+   * @deprecated 全仓零调用，从未被任何 executor 接线。畸形参数的运行时拦截已由
+   * 执行器的 zod `safeParse(zodSchema)` 在工具边界统一完成（见 query/tool-executor.ts
+   * 与 agent/tool-executor.ts）。保留此字段仅为向后兼容，新工具请用 `zodSchema`。
+   */
   validateInput?(input: Input, context: ToolUseContext): Promise<ValidationResult>;
 
   /** 权限检查（工具自身的额外权限逻辑） */
@@ -205,6 +254,16 @@ export function legacyToolAdapter(legacy: LegacyTool): Tool {
       // 回退到 readOnly
       return legacy.readOnly?.() ?? false;
     },
+    // 能力字段透传：适配后不丢失 zod schema / ToolSearch 标记 / 中断行为
+    zodSchema: legacy.zodSchema,
+    searchHint: legacy.searchHint,
+    shouldDefer: legacy.shouldDefer,
+    alwaysLoad: legacy.alwaysLoad,
+    interruptBehavior: legacy.interruptBehavior,
+    // 工具级 checkPermissions 透传（checker Step 5.5 以鸭子类型消费）
+    checkPermissions: legacy.checkPermissions
+      ? legacy.checkPermissions.bind(legacy)
+      : undefined,
     call: async (input: unknown, context: ToolUseContext) => {
       const result = await legacy.execute(input, context.abortSignal);
       return { data: result.output, isError: result.isError };

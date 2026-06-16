@@ -86,6 +86,28 @@ describe("PermissionChecker", () => {
     expect(result.allowed).toBe(true);
   });
 
+  test("yesMode 下危险命令（critical）仍被拦截（迭代 III 集成点 #2）", async () => {
+    const config = { ...defaultConfig(), yesMode: true };
+    const checker = new PermissionChecker(config, undefined, "/tmp");
+    const result = await checker.check({
+      toolName: "bash",
+      input: { command: "rm -rf /" },
+    });
+    // yesMode 不得自动放行危险命令——critical 直接拒绝
+    expect(result.allowed).toBe(false);
+  });
+
+  test("yesMode 下危险命令（需确认级）不自动放行（交由确认流程）", async () => {
+    const config = { ...defaultConfig(), yesMode: true };
+    const checker = new PermissionChecker(config, undefined, "/tmp");
+    const result = await checker.check({
+      toolName: "bash",
+      input: { command: "sudo apt update" },
+    });
+    // sudo 是 high/需确认级危险命令，yesMode 不应自动 allow
+    expect(result.allowed).toBe(false);
+  });
+
   test("deny-write 模式拦截写操作", async () => {
     const config = { ...defaultConfig(), permissionMode: "deny-write" };
     const checker = new PermissionChecker(config, undefined, "/tmp");

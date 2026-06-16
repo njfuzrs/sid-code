@@ -6,8 +6,30 @@
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
 import type { PlanModeManager } from "../plan/state.ts";
 import { existsSync, readFileSync } from "fs";
+import { z } from "zod/v4";
+import { lazySchema } from "../sdk/lazy-schema.ts";
+
+const exitPlanModeSchema = lazySchema(() =>
+  z.object({
+    summary: z.string().optional().describe("计划的简短摘要（1-2 句话）"),
+    allowedPrompts: z
+      .array(
+        z.object({
+          tool: z.enum(["bash"]).optional(),
+          prompt: z.string().describe("语义化的操作描述，如 '运行测试'、'安装依赖'"),
+        }),
+      )
+      .optional()
+      .describe(
+        "执行计划所需的权限声明。用户审批计划时一并审批这些权限，减少执行阶段的弹窗。" +
+          '如 [{ "tool": "bash", "prompt": "运行测试" }, { "tool": "bash", "prompt": "安装依赖" }]',
+      ),
+  }),
+);
 
 export class ExitPlanModeTool implements Tool {
+  readonly zodSchema = exitPlanModeSchema();
+
   constructor(private planManager: PlanModeManager) {}
 
   name(): string { return "exit_plan_mode"; }
@@ -24,32 +46,7 @@ export class ExitPlanModeTool implements Tool {
   }
 
   inputSchema(): Record<string, unknown> {
-    return {
-      type: "object",
-      properties: {
-        summary: {
-          type: "string",
-          description: "计划的简短摘要（1-2 句话）",
-        },
-        allowedPrompts: {
-          type: "array",
-          description:
-            "执行计划所需的权限声明。用户审批计划时一并审批这些权限，减少执行阶段的弹窗。" +
-            '如 [{ "tool": "bash", "prompt": "运行测试" }, { "tool": "bash", "prompt": "安装依赖" }]',
-          items: {
-            type: "object",
-            properties: {
-              tool: { type: "string", enum: ["bash"] },
-              prompt: {
-                type: "string",
-                description: "语义化的操作描述，如 '运行测试'、'安装依赖'",
-              },
-            },
-            required: ["prompt"],
-          },
-        },
-      },
-    };
+    return z.toJSONSchema(exitPlanModeSchema()) as Record<string, unknown>;
   }
 
   readOnly(): boolean { return true; }

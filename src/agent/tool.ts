@@ -18,6 +18,22 @@ import {
 import { ProgressTracker } from "./progress.ts";
 import type { HookSystem } from "../hook/system.ts";
 import type { SubAgentResult } from "./sub-agent.ts";
+import { z } from "zod/v4";
+import { lazySchema } from "../sdk/lazy-schema.ts";
+
+const subAgentSchema = lazySchema(() => {
+  const types = getBuiltInAgentTypes();
+  return z.object({
+    type: z.enum(types as [string, ...string[]]).describe(`子代理类型：${types.join("、")}`),
+    description: z.string().describe("子任务的简短描述"),
+    prompt: z.string().describe("给子代理的详细指令"),
+    run_in_background: z.boolean().optional().describe("是否后台执行（立即返回 task_id，完成后通知）"),
+    isolation: z
+      .enum(["worktree"])
+      .optional()
+      .describe("隔离模式。worktree=在独立 Git Worktree 中执行（文件改动不影响主工作区），完成后自动清理无改动的 Worktree。仅同步模式支持。"),
+  });
+});
 
 /**
  * 子代理 usage 归集回调（P0-1）。
@@ -32,6 +48,9 @@ export class SubAgentTool implements Tool {
   private hookSystem?: HookSystem;
   /** 子代理 usage 归集 sink（由主会话注入；未注入时不归集，仅 spawn 前的早期阶段） */
   private usageSink?: SubAgentUsageSink;
+
+  /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
+  readonly zodSchema = subAgentSchema();
 
   /** 并发控制 */
   static running = 0;
@@ -92,34 +111,7 @@ export class SubAgentTool implements Tool {
   }
 
   inputSchema(): Record<string, unknown> {
-    return {
-      type: "object",
-      properties: {
-        type: {
-          type: "string",
-          enum: getBuiltInAgentTypes(),
-          description: `子代理类型：${getBuiltInAgentTypes().join("、")}`,
-        },
-        description: {
-          type: "string",
-          description: "子任务的简短描述",
-        },
-        prompt: {
-          type: "string",
-          description: "给子代理的详细指令",
-        },
-        run_in_background: {
-          type: "boolean",
-          description: "是否后台执行（立即返回 task_id，完成后通知）",
-        },
-        isolation: {
-          type: "string",
-          enum: ["worktree"],
-          description: "隔离模式。worktree=在独立 Git Worktree 中执行（文件改动不影响主工作区），完成后自动清理无改动的 Worktree。仅同步模式支持。",
-        },
-      },
-      required: ["type", "description", "prompt"],
-    };
+    return z.toJSONSchema(subAgentSchema()) as Record<string, unknown>;
   }
 
   async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {

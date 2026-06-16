@@ -801,6 +801,9 @@ export async function* queryLoop(
       log.info("QUERY_LOOP", `对话结束 (${response.stopReason})，共 ${state.turnCount} 轮，in=${totalUsage.inputTokens} out=${totalUsage.outputTokens}，累计费用 $${sessionState.totalCostUSD.toFixed(4)}`);
       // F1：正常收尾，清零连续退化计数
       state.emptyParamRetryCount = 0;
+      // Step 0：end_turn 是自然断点——触发 Session Memory 提取（fire-and-forget），
+      // 把本轮终态沉淀进笔记，下次压缩可优先用它而非从头 LLM 摘要。
+      deps.updateSessionMemory?.().catch(() => { /* 提取失败不阻断收尾 */ });
       yield { kind: "done", turns: state.turnCount };
       return;
     }
@@ -821,6 +824,8 @@ export async function* queryLoop(
       let loopDetected = false;
       for (const b of toolBlocks) {
         if (b.type === "tool_use") {
+          // Step 0：Session Memory 工具调用计数（双阈值之一）
+          deps.recordSessionMemoryToolCall?.();
           if (loopDetector.recordToolCall(b.name, b.input)) {
             loopDetected = true;
             break;
@@ -941,6 +946,10 @@ export async function* queryLoop(
 
       // F1：工具成功执行 → 模型已恢复正常生成参数的能力，清零连续退化计数
       state.emptyParamRetryCount = 0;
+
+      // Step 0：本轮工具结果已入历史，触发 Session Memory 提取（fire-and-forget，
+      // 内部按双阈值决定是否真正提取，未达阈值/进行中则直接跳过，不阻塞主循环）。
+      deps.updateSessionMemory?.().catch(() => { /* 提取失败不阻断主循环 */ });
 
       state.transition = { type: "tool_use" };
       continue;

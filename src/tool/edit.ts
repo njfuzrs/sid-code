@@ -14,6 +14,18 @@ import { mkdirSync, existsSync } from "fs";
 import { dirname, basename } from "path";
 import { normalizeToolPath, formatPathNotFoundError } from "./path-utils.ts";
 import { buildStructuredPatch } from "./diff-output.ts";
+import { z } from "zod/v4";
+import { lazySchema } from "../sdk/lazy-schema.ts";
+
+/** Edit 工具输入 schema —— 运行时校验 + JSON Schema 生成的唯一真相源 */
+const editSchema = lazySchema(() =>
+  z.object({
+    file_path: z.string().describe("要编辑的文件的绝对路径"),
+    old_string: z.string().describe("要替换的原始字符串。设为空字符串且文件不存在时，创建新文件"),
+    new_string: z.string().describe("替换后的新字符串"),
+    replace_all: z.boolean().optional().describe("是否替换所有匹配项（默认 false，要求唯一匹配）"),
+  }),
+);
 
 // ─── 内部类型 ────────────────────────────────────────────────────────────────
 
@@ -345,6 +357,9 @@ function calculateReplacement(
 export class EditTool implements Tool {
   private tracker: FileReadTracker | null;
 
+  /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
+  readonly zodSchema = editSchema();
+
   constructor(tracker?: FileReadTracker) {
     this.tracker = tracker ?? null;
   }
@@ -381,28 +396,7 @@ export class EditTool implements Tool {
   }
 
   inputSchema(): Record<string, unknown> {
-    return {
-      type: "object",
-      properties: {
-        file_path: {
-          type: "string",
-          description: "要编辑的文件的绝对路径",
-        },
-        old_string: {
-          type: "string",
-          description: "要替换的原始字符串。设为空字符串且文件不存在时，创建新文件",
-        },
-        new_string: {
-          type: "string",
-          description: "替换后的新字符串",
-        },
-        replace_all: {
-          type: "boolean",
-          description: "是否替换所有匹配项（默认 false，要求唯一匹配）",
-        },
-      },
-      required: ["file_path", "old_string", "new_string"],
-    };
+    return z.toJSONSchema(editSchema()) as Record<string, unknown>;
   }
 
   async execute(input: unknown): Promise<ToolResult> {

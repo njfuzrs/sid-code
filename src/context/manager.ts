@@ -92,6 +92,12 @@ export class Manager {
   private tempDir?: string;
   private sessionId?: string;
   private maskingService?: ToolOutputMaskingService;
+  /**
+   * 完整会话转录文件路径（Layer 2）：压缩后摘要里告知模型"压缩前的细节可在此查阅"。
+   * 由上层（App）在会话持久化就绪后通过 setTranscriptPath 注入；未注入时为 undefined，
+   * 转录路径提示自动省略，不影响其余压缩逻辑。
+   */
+  private transcriptPath?: string;
   /** 已调用的 Skill 记录（压缩时保留其 prompt 上下文） */
   private invokedSkills: InvokedSkill[] = [];
   /**
@@ -182,6 +188,19 @@ export class Manager {
   setSessionId(sessionId: string): void {
     this.sessionId = sessionId;
     this.maskingService = new ToolOutputMaskingService(sessionId);
+  }
+
+  /**
+   * 设置完整会话转录文件路径（Layer 2）。
+   * 由 App 在 SessionStore 启动后注入（jsonl 落盘路径），供压缩摘要提示模型查阅压缩前细节。
+   */
+  setTranscriptPath(transcriptPath: string | undefined): void {
+    this.transcriptPath = transcriptPath || undefined;
+  }
+
+  /** 获取完整会话转录文件路径（未注入返回 undefined）。 */
+  getTranscriptPath(): string | undefined {
+    return this.transcriptPath;
   }
 
   /**

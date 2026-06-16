@@ -88,24 +88,23 @@ export async function autoCompact(deps: AutoCompactDeps): Promise<void> {
       }
     }
 
-    // 尝试用 LLM 生成摘要
-    const toSummarize = messages.slice(0, -4);
-    const summaryPrompt = `请用中文简洁地总结以下对话内容，保留关键信息（文件路径、代码修改、决策、待办事项）：\n\n${
-      toSummarize.map(m => {
-        const texts = m.content
-          .filter(b => b.type === "text")
-          .map(b => b.type === "text" ? b.text : "")
-          .join("\n");
-        return `[${m.role}] ${texts.slice(0, 500)}`;
-      }).join("\n\n")
-    }`;
+    // 尝试用 LLM 生成摘要（Layer 1：结构化 9 段 prompt 工程）
+    const PRESERVE_RECENT = 4;
+    const toSummarize = messages.slice(0, -PRESERVE_RECENT);
+    const {
+      COMPACT_SYSTEM_PROMPT,
+      buildCompactUserPrompt,
+      getCompactUserSummaryMessage,
+    } = await import("./compact/auto-compact-prompt.ts");
+
+    const summaryPrompt = buildCompactUserPrompt(toSummarize);
 
     const stream = deps.provider.sendMessageStream(
       {
         model: deps.config.model,
         messages: [{ role: "user", content: [{ type: "text", text: summaryPrompt }] }],
-        system: "你是一个对话摘要助手。请简洁准确地总结对话内容。",
-        maxTokens: 2000,
+        system: COMPACT_SYSTEM_PROMPT,
+        maxTokens: 4000,
       },
       deps.getAbortSignal(),
     );
@@ -118,9 +117,17 @@ export async function autoCompact(deps: AutoCompactDeps): Promise<void> {
     }
 
     if (summary) {
-      deps.ctxMgr.compactWithSummary(summary);
+      // Layer 2：post-compact 消息重组——剥离 analysis 草稿、追加静默续接 +
+      // 保留消息提示 + 转录路径提示，让模型压缩后无缝续接而非"断片"。
+      const formattedSummary = getCompactUserSummaryMessage(summary, {
+        suppressFollowUpQuestions: true,
+        transcriptPath: deps.ctxMgr.getTranscriptPath(),
+        recentMessagesPreserved: true,
+        preservedCount: PRESERVE_RECENT,
+      });
+      deps.ctxMgr.compactWithSummary(formattedSummary);
       circuitBreaker.recordSuccess();
-      log.info("COMPACT", `自动压缩完成，摘要 ${summary.length} 字符，剩余 ${deps.ctxMgr.messageCount()} 条消息`);
+      log.info("COMPACT", `自动压缩完成，摘要 ${formattedSummary.length} 字符，剩余 ${deps.ctxMgr.messageCount()} 条消息`);
       return;
     }
 

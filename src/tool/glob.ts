@@ -9,8 +9,22 @@ import { statSync } from "fs";
 import { join } from "path";
 import { getLogger } from "../debug/logger.ts";
 import { normalizeToolPath } from "./path-utils.ts";
+import { z } from "zod/v4";
+import { lazySchema } from "../sdk/lazy-schema.ts";
+
+/** Glob 工具输入 schema —— 运行时校验 + JSON Schema 生成的唯一真相源 */
+const globSchema = lazySchema(() =>
+  z.object({
+    pattern: z.string().describe("Glob 模式（如 '**/*.ts', 'src/**/*.js'）"),
+    path: z.string().optional().describe("搜索的基础路径，默认为当前目录"),
+    ignore: z.array(z.string()).optional().describe("要忽略的模式列表（如 ['node_modules/**', '.git/**']）"),
+  }),
+);
 
 export class GlobTool implements Tool {
+  /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
+  readonly zodSchema = globSchema();
+
   readOnly(): boolean {
     return true;
   }
@@ -37,25 +51,7 @@ export class GlobTool implements Tool {
   }
 
   inputSchema(): Record<string, unknown> {
-    return {
-      type: "object",
-      properties: {
-        pattern: {
-          type: "string",
-          description: "Glob 模式（如 '**/*.ts', 'src/**/*.js'）",
-        },
-        path: {
-          type: "string",
-          description: "搜索的基础路径，默认为当前目录",
-        },
-        ignore: {
-          type: "array",
-          items: { type: "string" },
-          description: "要忽略的模式列表（如 ['node_modules/**', '.git/**']）",
-        },
-      },
-      required: ["pattern"],
-    };
+    return z.toJSONSchema(globSchema()) as Record<string, unknown>;
   }
 
   async execute(input: unknown): Promise<ToolResult> {
@@ -73,7 +69,8 @@ export class GlobTool implements Tool {
     log.info("TOOL", `▶ 匹配 "${params.pattern}" in ${params.path || "."}`);
 
     try {
-      const cwd = normalizeToolPath(params.path || process.cwd());
+      // 默认基于全局 cwd（"." 交给 normalizeToolPath 用 getCwd() 解析），跟随 bash 的 cd
+      const cwd = normalizeToolPath(params.path || ".");
       const ignore = params.ignore || ["node_modules/**", ".git/**", "dist/**"];
 
       const files = await glob(params.pattern, {

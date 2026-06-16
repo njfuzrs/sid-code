@@ -21,6 +21,8 @@ import { getLogger } from "../../debug/logger.ts";
 /** Bundled Skill 定义 */
 export interface BundledSkillDefinition {
   name: string;
+  /** 别名（如 pr-comments 的 pr_comments，兼容 claude-code 下划线命名） */
+  aliases?: string[];
   description: string;
   whenToUse?: string;
   argumentHint?: string;
@@ -65,6 +67,7 @@ export function registerBundledSkill(definition: BundledSkillDefinition): void {
   const command: UnifiedCommand = {
     type: "prompt",
     name: definition.name,
+    aliases: definition.aliases,
     description: definition.description,
     source: "skill",
     whenToUse: definition.whenToUse,
