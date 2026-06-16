@@ -13,7 +13,7 @@ import type { SendParams, StreamEvent } from "../../src/llm/types.ts";
 
 describe("Provider capabilities", () => {
   describe("AnthropicProvider", () => {
-    const provider = new AnthropicProvider("sk-test");
+    const provider = new AnthropicProvider("sk-test", "claude-sonnet-4-20250514");
 
     test("实现了 capabilities 方法", () => {
       expect(provider.capabilities).toBeDefined();
@@ -46,7 +46,7 @@ describe("Provider capabilities", () => {
   });
 
   describe("OpenAIProvider", () => {
-    const provider = new OpenAIProvider("sk-test");
+    const provider = new OpenAIProvider("sk-test", "gpt-4o");
 
     test("实现了 capabilities 方法", () => {
       expect(provider.capabilities).toBeDefined();
@@ -78,7 +78,7 @@ describe("Provider capabilities", () => {
   });
 
   describe("OllamaProvider", () => {
-    const provider = new OllamaProvider();
+    const provider = new OllamaProvider("llama3");
 
     test("实现了 capabilities 方法", () => {
       expect(provider.capabilities).toBeDefined();
@@ -107,7 +107,7 @@ describe("Provider capabilities", () => {
 
   describe("getCapabilities 辅助函数", () => {
     test("有 capabilities 方法时返回实际能力", () => {
-      const provider = new AnthropicProvider("sk-test");
+      const provider = new AnthropicProvider("sk-test", "claude-sonnet-4-20250514");
       const caps = getCapabilities(provider);
       expect(caps.thinking).toBe(true);
       expect(caps.promptCaching).toBe(true);
@@ -117,7 +117,6 @@ describe("Provider capabilities", () => {
       // 模拟一个没有 capabilities 方法的 Provider
       const bareProvider: Provider = {
         name: () => "bare",
-        defaultModel: () => "bare-model",
         async *sendMessageStream(): AsyncIterable<StreamEvent> {
           yield { type: "message_stop" };
         },

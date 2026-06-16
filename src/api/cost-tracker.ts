@@ -23,14 +23,25 @@ export interface ModelPricing {
   cacheWrite: number;
 }
 
-/** 内置模型定价表 */
+/** 内置模型定价表（多 provider，与 session/state.ts 保持同步） */
 export const MODEL_PRICING: Record<string, ModelPricing> = {
+  // Claude 系列（官方 USD/M）
   "claude-opus-4-20250514": { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
   "claude-sonnet-4-20250514": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   "claude-haiku-4-20250514": { input: 0.25, output: 1.25, cacheRead: 0.025, cacheWrite: 0.3125 },
   "claude-3-5-sonnet-20241022": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   "claude-3-5-haiku-20241022": { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 },
   "claude-3-opus-20240229": { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
+
+  // DeepSeek 系列（RMB/M 按 1 元 ≈ $0.14 折算为 USD，汇率快照 2026-06）。
+  // ⚠️ 汇率漂移风险：此处为静态快照，长期维护时如 RMB/USD 汇率变化超过 ±5%，
+  //   成本估算将偏大/偏小。届时考虑引入可配置汇率系数（如 config.forex.rmbToUsd）。
+  "deepseek-v4-pro": { input: 0.42, output: 0.84, cacheRead: 0.0035, cacheWrite: 0 },
+  "deepseek-v4-flash": { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0 },
+
+  // OpenAI 系列（官方 USD/M）
+  "gpt-4o": { input: 2.5, output: 10, cacheRead: 1.25, cacheWrite: 0 },
+  "gpt-4o-mini": { input: 0.15, output: 0.6, cacheRead: 0.075, cacheWrite: 0 },
 };
 
 /** 未知模型的保守兜底价（USD/M）。

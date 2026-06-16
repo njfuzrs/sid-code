@@ -20,7 +20,7 @@ export class AnthropicProvider implements Provider {
   private client: Anthropic;
   private _model: string;
 
-  constructor(apiKey: string, model?: string, baseURL?: string) {
+  constructor(apiKey: string, model: string, baseURL?: string) {
     this.client = new Anthropic({
       apiKey,
       ...(baseURL && { baseURL }),
@@ -28,17 +28,11 @@ export class AnthropicProvider implements Provider {
       // 这里关掉 SDK 层重试，统一由 fallback.ts 管理重试/退避策略。
       maxRetries: 0,
     });
-    this._model = model || this.defaultModel();
+    this._model = model;
   }
 
   name(): string {
     return "anthropic";
-  }
-
-  defaultModel(): string {
-    // Anthropic Provider 只服务于 Claude 系列模型，此为合理的 Provider 内部兜底。
-    // 正常路径下模型名始终由 config.model 提供（经 loadConfig 从 availableModels 解析）。
-    return "claude-sonnet-4-20250514";
   }
 
   capabilities(): ProviderCapabilities {

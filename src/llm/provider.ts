@@ -19,9 +19,6 @@ export interface Provider {
   /** 提供商名称 */
   name(): string;
 
-  /** 默认模型 */
-  defaultModel(): string;
-
   /** 发送消息并返回流式响应 */
   sendMessageStream(params: SendParams, signal?: AbortSignal): AsyncIterable<StreamEvent>;
 

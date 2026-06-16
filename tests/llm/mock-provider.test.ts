@@ -62,7 +62,6 @@ describe("MockProvider — 配置校验", () => {
   test("createMockProvider 工厂等价于 new", () => {
     const p = createMockProvider({ name: "mock-ok", failPattern: "ok" });
     expect(p.name()).toBe("mock-ok");
-    expect(p.defaultModel()).toBe("mock-model");
   });
 
   test("capabilities() 返回流式 + tools 默认 true", () => {

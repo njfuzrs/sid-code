@@ -35,19 +35,14 @@ export class OpenAIProvider implements Provider {
   private baseURL: string;
   private _model: string;
 
-  constructor(apiKey: string, model?: string, baseURL?: string) {
+  constructor(apiKey: string, model: string, baseURL?: string) {
     this.apiKey = apiKey;
     this.baseURL = baseURL || "https://api.openai.com/v1";
-    this._model = model || this.defaultModel();
+    this._model = model;
   }
 
   name(): string {
     return "openai";
-  }
-
-  defaultModel(): string {
-    // OpenAI Provider 默认模型（仅作内部兜底，正常路径下模型名由 config.model 提供）。
-    return "gpt-4o";
   }
 
   capabilities(): ProviderCapabilities {

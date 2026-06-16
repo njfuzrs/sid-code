@@ -198,6 +198,9 @@ export class BashClassifier {
     if (!this.provider) {
       return { safe: false, risk: "none", reason: "分类器无可用 Provider", classifierUnavailable: true };
     }
+    if (!this.modelName) {
+      return { safe: false, risk: "none", reason: "分类器未指定模型名（需在 setProvider 时传入）", classifierUnavailable: true };
+    }
 
     const startedAt = performance.now();
     try {
@@ -231,13 +234,18 @@ export class BashClassifier {
    * 返回模型输出的纯文本。
    */
   private async callProvider(req: BashClassifyRequest): Promise<string> {
-    const provider = this.provider!;
+    const provider = this.provider;
+    const modelName = this.modelName;
+    // 防御性：classify() 入口已确保非空，此处做局部变量绑定避免后续重构引入空指针
+    if (!provider || !modelName) {
+      throw new Error("BashClassifier 未初始化：provider 或 modelName 为空");
+    }
     const system = buildClassifierSystemPrompt();
     const userPrompt = buildClassifierUserPrompt(req);
     const messages: Message[] = [
       { role: "user", content: [{ type: "text", text: userPrompt }] },
     ];
-    const model = this.modelName || provider.defaultModel();
+    const model = modelName;
     const maxTokens = this.config.maxTokens ?? DEFAULT_MAX_TOKENS;
     const timeoutMs = this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 

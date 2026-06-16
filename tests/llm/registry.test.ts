@@ -165,7 +165,6 @@ describe("ProviderRegistry", () => {
     const registry = new ProviderRegistry(config);
     const provider = registry.getProvider();
     expect(provider.name()).toBe("mock-503");
-    expect(provider.defaultModel()).toBe("test-model");
   });
 
   test("mock-rate-limit provider 名走 rate_limit 失败模式", () => {

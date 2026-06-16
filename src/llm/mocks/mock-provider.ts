@@ -66,10 +66,6 @@ export class MockProvider implements Provider {
     return this.cfg.name;
   }
 
-  defaultModel(): string {
-    return this.cfg.model;
-  }
-
   capabilities(): ProviderCapabilities {
     return {
       streaming: true,

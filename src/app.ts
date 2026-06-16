@@ -1888,6 +1888,9 @@ export class App {
           if (bridge.current.retryStatus) {
             updateState({ retryStatus: null });
           }
+          // 清除 transient system 警告（空参数重试成功 / 超时重试成功等）。
+          // 使用独立 key "system:transient"，不会误清预算/配额等 sticky 警告。
+          removeStatusMessage("system:transient");
         }
         streamingFullText += text;
         updateState({ streamingText: streamingFullText, isStreaming: true });
@@ -1972,7 +1975,13 @@ export class App {
             }
             case "system":
               if (event.level === "warning") {
-                addStatusMessage("system", `⚠️ ${event.text}`);
+                // 空参数/超时重试类是 transient，流式恢复后自动清除，避免一直挂在底部。
+                // 预算/配额/上下文等 sticky 警告继续用 "system" key，不会被误清。
+                if (event.text.includes("重试")) {
+                  addStatusMessage("system:transient", `⚠️ ${event.text}`);
+                } else {
+                  addStatusMessage("system", `⚠️ ${event.text}`);
+                }
               }
               break;
             case "tombstone":
