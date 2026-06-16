@@ -56,6 +56,14 @@ export const CURSOR = "▌";
 export const ARROW_TRAILING = "←";
 
 /**
+ * 底部状态栏 Token 计数方向箭头（↑ 输入 / ↓ 输出）。
+ * 对标 claude-code 的 status line 视觉语言：`↑ 12.4k ↓ 8.2k`，
+ * 单色几何字形，一眼可辨流向且省空间。
+ */
+export const TOKEN_IN = "↑";
+export const TOKEN_OUT = "↓";
+
+/**
  * 计划审批标记。复用 BULLET 字形族(实心圆点)，靠颜色点睛而非引入新字形。
  * 此前曾用 📋 彩色 emoji,违反「单色几何字形」原则,已收口至此。
  */
