@@ -1,7 +1,8 @@
 /**
  * 加载指示器组件
  *
- * 显示 spinner + 加载短语 + 计时器 + esc 取消提示
+ * 显示 spinner + 加载短语 + 计时器 + token 累计 + esc 取消提示。
+ * 对标 claude-code 底部那行 `✻ Recombobulating… (18m 38s · ↑ 11.4k tokens)`。
  * 参考 gemini-cli LoadingIndicator.tsx
  */
 
@@ -14,6 +15,7 @@ import { StreamingState } from "../types.ts";
 import { useIsAccessibilityEnabled } from "../accessibility/AccessibilityContext.tsx";
 import { BULLET } from "../constants/figures.ts";
 import { DEFAULT_TERM_WIDTH } from "../markdown.ts";
+import { formatLargeNumber } from "../utils/format-number.ts";
 
 /** Spinner 帧 */
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -27,6 +29,8 @@ interface LoadingIndicatorProps {
   currentLoadingPhrase?: string | null;
   /** 工具名称（执行工具时显示） */
   toolName?: string | null;
+  /** 本轮新增的输出 token 数（↑ 上行，= 会话累计 − 本轮起点）。0 或缺省时不显示 token 段。 */
+  outputTokens?: number;
   /** 是否内联模式（单行） */
   inline?: boolean;
   /** 是否显示取消和计时器 */
@@ -46,6 +50,7 @@ export const LoadingIndicator: React.FC<LoadingIndicatorProps> = ({
   elapsedTime,
   currentLoadingPhrase,
   toolName,
+  outputTokens = 0,
   inline = false,
   showCancelAndTimer = true,
 }) => {
@@ -77,15 +82,23 @@ export const LoadingIndicator: React.FC<LoadingIndicatorProps> = ({
     ? `执行 ${toolName}…`
     : currentLoadingPhrase || "思考中…";
 
-  // 窄终端渐进隐藏：按「动词 > 计时 > 取消提示」优先级降级。
-  // - 宽 (≥60)：esc 取消 + 计时全显示
-  // - 中 (40–59)：仅计时，省去 esc 取消文案
-  // - 窄 (<40)：只留动词 + spinner，计时也隐藏
+  // 窄终端渐进隐藏：按「动词 > 计时 > token > 取消提示」优先级降级。
+  // - 宽 (≥72)：esc 取消 + 计时 + token（对标 cc 完整形态）
+  // - 中宽 (60–71)：计时 + token（省 esc 文案）
+  // - 中 (40–59)：仅计时
+  // - 窄 (<40)：只留动词 + spinner
+  // token 仅在有实际输出（>0）且非等待态时显示。
   const elapsed = formatDuration(elapsedTime);
+  const tokenStr =
+    !isWaiting && outputTokens > 0 ? `↑ ${formatLargeNumber(outputTokens)} tokens` : null;
   let cancelAndTimer: string | null = null;
   if (showCancelAndTimer && !isWaiting) {
-    if (termWidth >= 60) {
-      cancelAndTimer = `(esc 取消, ${elapsed})`;
+    if (termWidth >= 72) {
+      cancelAndTimer = tokenStr
+        ? `(esc 取消, ${elapsed} · ${tokenStr})`
+        : `(esc 取消, ${elapsed})`;
+    } else if (termWidth >= 60) {
+      cancelAndTimer = tokenStr ? `(${elapsed} · ${tokenStr})` : `(${elapsed})`;
     } else if (termWidth >= 40) {
       cancelAndTimer = `(${elapsed})`;
     } else {
@@ -93,37 +106,29 @@ export const LoadingIndicator: React.FC<LoadingIndicatorProps> = ({
     }
   }
 
+  // inline / block 两种容器复用同一内容片段，避免渲染逻辑重复。
+  const content = (
+    <>
+      <Text color={theme.ui.active}>{isWaiting ? "⠏" : spinner} </Text>
+      <Text color={theme.text.primary} italic wrap="truncate-end">
+        {primaryText}
+      </Text>
+      {cancelAndTimer && (
+        <>
+          <Text> </Text>
+          <Text color={theme.text.secondary}>{cancelAndTimer}</Text>
+        </>
+      )}
+    </>
+  );
+
   if (inline) {
-    return (
-      <Box>
-        <Text color={theme.ui.active}>{isWaiting ? "⠏" : spinner} </Text>
-        <Text color={theme.text.primary} italic wrap="truncate-end">
-          {primaryText}
-        </Text>
-        {cancelAndTimer && (
-          <>
-            <Text> </Text>
-            <Text color={theme.text.secondary}>{cancelAndTimer}</Text>
-          </>
-        )}
-      </Box>
-    );
+    return <Box>{content}</Box>;
   }
 
   return (
     <Box flexDirection="column">
-      <Box>
-        <Text color={theme.ui.active}>{isWaiting ? "⠏" : spinner} </Text>
-        <Text color={theme.text.primary} italic wrap="truncate-end">
-          {primaryText}
-        </Text>
-        {cancelAndTimer && (
-          <>
-            <Text> </Text>
-            <Text color={theme.text.secondary}>{cancelAndTimer}</Text>
-          </>
-        )}
-      </Box>
+      <Box>{content}</Box>
     </Box>
   );
 };

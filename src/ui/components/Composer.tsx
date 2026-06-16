@@ -242,6 +242,10 @@ export const Composer: React.FC<ComposerProps> = ({
               elapsedTime={elapsedTime}
               currentLoadingPhrase={currentLoadingPhrase}
               toolName={streaming.toolName}
+              outputTokens={Math.max(
+                0,
+                session.usage.outputTokens - (session.turnStartOutputTokens ?? 0),
+              )}
             />
           ) : (
             <Box flexDirection={isNarrow ? "column" : "row"} alignItems={isNarrow ? "flex-start" : "center"}>

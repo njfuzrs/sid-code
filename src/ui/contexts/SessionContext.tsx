@@ -9,7 +9,7 @@ import React, { createContext, useContext, useMemo } from "react";
 import type { Usage } from "../../llm/types.ts";
 
 export interface SessionContextValue {
-  /** Token 用量统计 */
+  /** Token 用量统计（会话累计） */
   usage: Usage;
   /** 累计费用（美元） */
   costUSD: number;
@@ -17,6 +17,12 @@ export interface SessionContextValue {
   costLimit: number;
   /** 上下文使用百分比 */
   contextPercent: number;
+  /**
+   * 本轮回合开始时的会话累计 outputTokens 起点。
+   * 底部 spinner 据此算「本轮新增」token（usage.outputTokens − 此值）,
+   * 与 Footer 的「会话总账」区分。
+   */
+  turnStartOutputTokens?: number;
 }
 
 const SessionCtx = createContext<SessionContextValue | undefined>(undefined);
@@ -40,6 +46,7 @@ export const SessionProvider: React.FC<SessionProviderProps> = ({ children, valu
     value.costUSD,
     value.costLimit,
     value.contextPercent,
+    value.turnStartOutputTokens,
   ]);
 
   return (

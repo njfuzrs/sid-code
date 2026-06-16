@@ -58,6 +58,7 @@ import { execSync } from "child_process";
 import { readFile } from "fs/promises";
 import { resolve, extname, join } from "path";
 import { sidPaths } from "./config/paths.ts";
+import { deriveTaskTitle } from "./ui/utils/task-title.ts";
 
 /**
  * 展开用户输入中的 @path 引用为文件内容
@@ -1658,6 +1659,59 @@ export class App {
       bridge.update(patch);
     };
 
+    // ── 会话任务名（终端标题用）──
+    // 首条用户消息时：① 本地启发式即时设标题（零延迟,多窗口立刻可区分）;
+    // ② 后台用小请求生成更凝练的标题覆盖（fire-and-forget,失败静默回退启发式）。
+    // 对标 cc：先启发式占位,Haiku 解析后升级。仅设一次,后续轮次不再改。
+    let sessionTitleSet = false;
+
+    const SESSION_TITLE_PROMPT =
+      "为下面这段编程会话的首条指令起一个 3-7 个词的简短任务名,用于终端标签区分。" +
+      "只输出任务名本身,不要引号、不要标点结尾、不要解释。例:修复登录按钮、添加 OAuth 认证。";
+
+    /** 后台用非流式小请求生成更好的任务名,成功则覆盖标题。不阻塞主流程,任何失败都静默。 */
+    const upgradeSessionTitle = (firstMessage: string): void => {
+      // provider 不支持非流式 → 跳过,保留启发式标题。
+      if (typeof this.provider.sendMessageNonStreaming !== "function") return;
+      const trimmed = firstMessage.trim();
+      if (!trimmed) return;
+
+      void (async () => {
+        try {
+          const resp = await this.provider.sendMessageNonStreaming!(
+            {
+              model: this.config.model,
+              system: SESSION_TITLE_PROMPT,
+              messages: [{ role: "user", content: [{ type: "text", text: trimmed.slice(0, 1000) }] }],
+              maxTokens: 32,
+            },
+            // 15s 超时,且不与主对话的 abortController 关联——后台任务独立。
+            AbortSignal.timeout(15_000),
+          );
+          const raw = resp.content
+            .filter((b): b is import("./llm/types.ts").TextBlock => b.type === "text")
+            .map((b) => b.text)
+            .join("")
+            .trim();
+          // 复用启发式做清洗/截断(去换行、按显示宽度裁剪),保证标题栏不溢出。
+          const title = deriveTaskTitle(raw);
+          if (title) updateState({ sessionTitle: title });
+        } catch {
+          // 超时 / 网络 / 模型不可用 → 静默,启发式标题已经在用,无需回退。
+        }
+      })();
+    };
+
+    /** 首条用户消息触发任务名生成（启发式即时 + 后台升级）。 */
+    const maybeSetSessionTitle = (text: string): void => {
+      if (sessionTitleSet) return;
+      const heuristic = deriveTaskTitle(text);
+      if (!heuristic) return; // 纯命令/空输入不设,保留 cwd 末段。
+      sessionTitleSet = true;
+      updateState({ sessionTitle: heuristic });
+      upgradeSessionTitle(text);
+    };
+
     // 注入 TUI 状态更新器（供 activatePlanMode/deactivatePlanMode 同步 permissionMode）
     this.tuiStateUpdater = (patch) => updateState(patch as any);
 
@@ -1816,6 +1870,9 @@ export class App {
       this.busy = true;
       updateState({
         isLoading: true,
+        // 记下本轮起点 outputTokens：spinner 显示「本轮新增」= 当前累计 − 此起点,
+        // 与 Footer 的「会话总账」区分开,避免两行显示同一个数。
+        turnStartOutputTokens: this.sessionState.getTotalUsage().outputTokens,
       });
 
       let streamSynced = false;
@@ -2002,6 +2059,8 @@ export class App {
     const callbacks: import("./ui/App.tsx").TUICallbacks = {
       onUserInput: async (text) => {
         log.debug("TUI:CB", `onUserInput 被调用: "${text.slice(0, 100)}"`);
+        // 首条用户消息 → 设置会话任务名（终端标题）。启发式即时 + 后台升级。
+        maybeSetSessionTitle(text);
         // A4：暂存本轮原始输入,供"中断后自动回填"使用（仅暂存,是否回填由 ESC 取消时决定）。
         stashPendingInput(text, false);
         try {

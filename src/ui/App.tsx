@@ -127,6 +127,17 @@ export interface TUIState {
   commands: Array<{ name: string; aliases: string[]; description: string }>;
   /** 当前工作目录（@ 文件补全用） */
   cwd: string;
+  /**
+   * 会话任务名（终端标题用）。首条用户消息提交时由本地启发式即时填入,
+   * 之后后台小模型(Haiku)生成更凝练的标题覆盖。null = 尚无会话,标题回退到 cwd 末段。
+   */
+  sessionTitle?: string | null;
+  /**
+   * 本轮回合开始时的会话累计 outputTokens 起点。
+   * 底部 spinner 显示「本轮新增」= usage.outputTokens − 此值,与 Footer 的「会话总账」区分开。
+   * 每个用户回合开始时刷新。
+   */
+  turnStartOutputTokens?: number;
   /** 当前打开的对话框类型，null 表示无对话框 */
   activeDialog: import("../command/types.ts").DialogType | null;
   /** 可用模型列表（对话框用） */
@@ -376,11 +387,13 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
   const { width: termWidth, height: rows } = useTerminalDimensions();
 
   // TM2/TM3/TM4：终端集成接线（标题 / tab 状态圆点 / 响应完成通知）。
-  // 以 cwd 末段作为窗口标题提示，便于多窗口区分。
+  // 标题任务名优先用会话任务名（首条消息启发式 + 后台 Haiku 升级,见 app.ts）,
+  // 尚无会话时回退到 cwd 末段,便于多窗口区分。
   const titleHint = useMemo(() => {
+    if (state.sessionTitle && state.sessionTitle.trim()) return state.sessionTitle.trim();
     const parts = (state.cwd || "").split(/[/\\]/).filter(Boolean);
     return parts.length ? parts[parts.length - 1] : "sid-code";
-  }, [state.cwd]);
+  }, [state.sessionTitle, state.cwd]);
   useTerminalIntegration({ streamingState, titleHint });
 
   // 派生 ConfigContext 值
@@ -401,7 +414,8 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     costUSD: state.costUSD,
     costLimit: state.costLimit,
     contextPercent: state.contextPercent,
-  }), [state.usage, state.costUSD, state.costLimit, state.contextPercent]);
+    turnStartOutputTokens: state.turnStartOutputTokens,
+  }), [state.usage, state.costUSD, state.costLimit, state.contextPercent, state.turnStartOutputTokens]);
 
   // 构建包含流式内容的完整 HistoryItem 数组
   const listData = useMemo((): HistoryItem[] => {

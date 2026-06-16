@@ -73,3 +73,17 @@ export const TODO_COMPLETED = "●";
 /** 进度条字形：▰ 实心(已完成) / ▱ 空心(未完成) */
 export const PROGRESS_FILLED = "▰";
 export const PROGRESS_EMPTY = "▱";
+
+/**
+ * 终端窗口标题状态前缀（写入 OSC 0 标题,非屏幕渲染,但同样禁彩色 emoji——
+ * emoji 在 tab/title 栏跨终端占位不一,且与单色字形语言冲突。对标 claude-code
+ * REPL.tsx 的 TITLE_STATIC_PREFIX / TITLE_ANIMATION_FRAMES）。
+ *
+ * - TITLE_STATIC_PREFIX     ✳ 常驻星号：任务完成 / 中断 / 等待确认 / 空闲——「这个窗口有过会话」。
+ * - TITLE_ANIMATION_FRAMES  ⠂⠐ 盲文点交替：任务进行中,逐帧切换形成「跳动」感。
+ *
+ * 用户诉求原文：小圆点代表进行中,小星号代表任务结束或中断。这里用
+ * 动画点(进行中) vs 静态星(结束/中断)落地该语义,且全为单色几何字形。
+ */
+export const TITLE_STATIC_PREFIX = "✳";
+export const TITLE_ANIMATION_FRAMES = ["⠂", "⠐"];
