@@ -227,11 +227,31 @@ export interface SendParams {
    * 不传则不下发该字段，沿用服务端默认（通常为 true）。
    */
   parallelToolCalls?: boolean;
-  /** Extended Thinking 配置（仅 Anthropic 支持） */
+  /**
+   * Extended Thinking 配置。
+   * - **Anthropic**：`budgetTokens` 作为 `thinking.budget_tokens` 下发，控制思考预算。
+   * - **DeepSeek（OpenAI 兼容端点）**：仅用 `enabled` 映射为请求体顶层
+   *   `thinking: { type: "enabled" | "disabled" }`；`budgetTokens` 在 DeepSeek 无对应字段，
+   *   思考强度改由 {@link reasoningEffort} 控制。DeepSeek 默认 thinking 为 enabled，
+   *   传 `enabled: false` 可显式关闭。
+   */
   thinking?: {
     enabled: boolean;
-    budgetTokens: number;  // 思考预算 token 数
+    budgetTokens: number;  // 思考预算 token 数（仅 Anthropic 生效）
   };
+  /**
+   * 推理强度（DeepSeek 思考模式专用，OpenAI 兼容端点请求体顶层 `reasoning_effort`）。
+   * DeepSeek 仅接受 "high" | "max"（low/medium 会被服务端映射为 high，xhigh 映射为 max）。
+   * 不传则不下发该字段，沿用服务端默认（普通请求 high，Claude Code 类 Agent 请求 max）。
+   * Anthropic provider 忽略此字段（其思考强度走 thinking.budgetTokens）。
+   */
+  reasoningEffort?: "high" | "max";
+  /**
+   * 用户标识（DeepSeek `user_id`，OpenAI 兼容端点请求体顶层字段）。
+   * 用于 KVCache 隔离 / 调度隔离 / 内容安全隔离。须满足正则 `[a-zA-Z0-9\-*]+`、长度 ≤512。
+   * 不传则不下发。其它 provider 忽略。
+   */
+  userId?: string;
 }
 
 /** 累积的流式响应 */

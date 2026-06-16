@@ -41,3 +41,74 @@ export function formatCollapsedSummary(
   const base = `${ELLIPSIS} ${count} ${unit}已折叠`;
   return hint ? `${base} · ${hint} 展开` : base;
 }
+
+/** Shell 命令截断阈值（对标 cc BashTool/UI.tsx: MAX_COMMAND_DISPLAY_LINES=2, MAX_COMMAND_DISPLAY_CHARS=160） */
+export const CMD_MAX_LINES = 2;
+export const CMD_MAX_CHARS = 160;
+
+/** Shell 命令截断结果。text 为截断后的命令正文（不含 `$ ` / `! ` 前缀，由调用方拼接）。 */
+export interface TruncatedShellCommand {
+  /** 截断后的命令正文（已 trim，截断时尾部带 ELLIPSIS）。 */
+  text: string;
+  /** 是否发生了截断。 */
+  truncated: boolean;
+  /** 折叠摘要文案（未截断时为空串）。 */
+  summary: string;
+}
+
+/**
+ * 对 shell 命令做两级截断（先按行、再按字符），对标 cc BashTool/UI.tsx。
+ *
+ * 纯函数，不含前缀：调用方负责拼 `$ ` / `! `。`expanded=true` 时原样返回完整命令。
+ * 统一换行符为 \n（兼容 Windows \r\n），避免字符计数偏大、前缀与命令不对齐。
+ */
+export function truncateShellCommand(
+  command: string,
+  expanded: boolean,
+): TruncatedShellCommand {
+  const normalized = command.replace(/\r\n/g, "\n");
+
+  if (expanded) {
+    return { text: normalized, truncated: false, summary: "" };
+  }
+
+  const lines = normalized.split("\n");
+  const needsLineTruncation = lines.length > CMD_MAX_LINES;
+  const needsCharTruncation = normalized.length > CMD_MAX_CHARS;
+
+  if (!needsLineTruncation && !needsCharTruncation) {
+    return { text: normalized, truncated: false, summary: "" };
+  }
+
+  let truncated = normalized;
+  let unit = "行";
+  let count = 0;
+  let hasLineCut = false;
+
+  // 先按行截断
+  if (needsLineTruncation) {
+    count = lines.length - CMD_MAX_LINES;
+    truncated = lines.slice(0, CMD_MAX_LINES).join("\n");
+    hasLineCut = true;
+  }
+
+  // 再按字符截断（如先行截后仍超字符，说明保留的行中某行本身太长）
+  if (truncated.length > CMD_MAX_CHARS) {
+    const charCut = truncated.length - CMD_MAX_CHARS;
+    if (hasLineCut) {
+      // 双重截断：先去了 N 行，余下行又截了 M 字符，按维度分报告
+      count += charCut;
+      unit = "行/字符";
+    } else {
+      count = charCut;
+      unit = "字符";
+    }
+    truncated = truncated.slice(0, CMD_MAX_CHARS);
+  }
+
+  return {
+    text: `${truncated.trim()}${ELLIPSIS}`,
+    truncated: true,
+    summary: formatCollapsedSummary(count, { unit, hint: "ctrl+o" }),
+  };
+}

@@ -64,27 +64,41 @@ describe("calculateUSDCost", () => {
     expect(cost).toBeCloseTo(3 + 15, 5);
   });
 
-  test("缓存读取按 0.1 折扣（不重复计入普通 input）", () => {
-    // inputTokens 含 cacheRead：1M input 其中 0.5M 是 cache read
+  test("缓存读取按 0.1 折扣（Anthropic：input_tokens 已是未命中余量，命中独立相加）", () => {
+    // Anthropic 语义：inputTokens = 未命中余量（全价），cacheReadInputTokens = 命中（折价），两者相加。
+    // §2.3 修复前的 bug：旧实现把 inputTokens 当含命中、再减一次，对 Anthropic 重复扣减导致费用算低。
+    const usage: Usage = {
+      inputTokens: 500_000,
+      outputTokens: 0,
+      cacheReadInputTokens: 500_000,
+    };
+    const cost = calculateUSDCost("claude-sonnet-4-20250514", usage);
+    // uncached = 500k * 3/M = 1.5；cacheRead = 500k * 0.3/M = 0.15
+    expect(cost).toBeCloseTo(1.5 + 0.15, 5);
+  });
+
+  test("缓存写入按 1.25 加价（Anthropic：input_tokens 不含写入）", () => {
+    const usage: Usage = {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationInputTokens: 1_000_000,
+    };
+    const cost = calculateUSDCost("claude-sonnet-4-20250514", usage);
+    // uncached = 0；cacheWrite = 1M * 3.75/M = 3.75
+    expect(cost).toBeCloseTo(3.75, 5);
+  });
+
+  test("OpenAI/DeepSeek：prompt_tokens 含命中，需扣减命中（与 Anthropic 口径相反）", () => {
+    // deepseek-v4-pro: input 0.42 / cacheRead 0.0035 per M。inputTokens=prompt_tokens 本就含命中，
+    // 归一化后 uncached = input − hit，验证 provider 区分确实生效（同样的原始字段，口径不同结果不同）。
     const usage: Usage = {
       inputTokens: 1_000_000,
       outputTokens: 0,
       cacheReadInputTokens: 500_000,
     };
-    const cost = calculateUSDCost("claude-sonnet-4-20250514", usage);
-    // regular = 500k * 3/M = 1.5；cacheRead = 500k * 0.3/M = 0.15
-    expect(cost).toBeCloseTo(1.5 + 0.15, 5);
-  });
-
-  test("缓存写入按 1.25 加价", () => {
-    const usage: Usage = {
-      inputTokens: 1_000_000,
-      outputTokens: 0,
-      cacheCreationInputTokens: 1_000_000,
-    };
-    const cost = calculateUSDCost("claude-sonnet-4-20250514", usage);
-    // regular = 0；cacheWrite = 1M * 3.75/M = 3.75
-    expect(cost).toBeCloseTo(3.75, 5);
+    const cost = calculateUSDCost("deepseek-v4-pro", usage);
+    // uncached = 1M − 500k = 500k → 500k * 0.42/M = 0.21；hit = 500k * 0.0035/M = 0.00175
+    expect(cost).toBeCloseTo(0.21 + 0.00175, 5);
   });
 });
 

@@ -101,11 +101,14 @@ const SAFETY_PROTECTED_PATHS: SafetyProtectedPath[] = [
   { pattern: ".claude/commands/", classifierApprovable: false, reason: "Claude 斜杠命令可执行任意代码" },
   { pattern: ".claude/agents/", classifierApprovable: false, reason: "Claude 子代理定义影响执行" },
   { pattern: ".claude/skills/", classifierApprovable: false, reason: "Claude Skill 可执行任意代码" },
-  // 设置文件精细项：项目级 settings 可注入安全敏感字段，需用户/分类器确认（文件级精确匹配）
-  { pattern: ".sid-code/settings.json", classifierApprovable: true, reason: "sid-code 设置文件（可影响安全控制）" },
-  { pattern: ".sid-code/settings.local.json", classifierApprovable: true, reason: "sid-code 本地设置文件" },
-  { pattern: ".claude/settings.json", classifierApprovable: true, reason: "Claude 设置文件" },
-  { pattern: ".claude/settings.local.json", classifierApprovable: true, reason: "Claude 本地设置文件" },
+  // 设置文件精细项：settings 可注入 permissionMode/skipPermissions/yesMode 等安全开关，
+  // 风险等同上面的 commands/agents/skills，故 classifierApprovable 同样为 false（绝对禁止
+  // 自动审批，必须人工确认）。⚠️ 该字段目前仅作语义标记，尚无运行时消费者；命中后无论
+  // true/false 结果都是 needsConfirmation。改为 false 是为未来分类器审批接线做前置加固。
+  { pattern: ".sid-code/settings.json", classifierApprovable: false, reason: "sid-code 设置文件（可影响安全控制）" },
+  { pattern: ".sid-code/settings.local.json", classifierApprovable: false, reason: "sid-code 本地设置文件" },
+  { pattern: ".claude/settings.json", classifierApprovable: false, reason: "Claude 设置文件" },
+  { pattern: ".claude/settings.local.json", classifierApprovable: false, reason: "Claude 本地设置文件" },
   // ── classifierApprovable: true（分类器可根据上下文判断）——较宽泛的父目录，排后 ──
   { pattern: ".git/", classifierApprovable: true, reason: "Git 仓库内部文件" },
   { pattern: ".sid-code/", classifierApprovable: true, reason: "sid-code 配置目录" },

@@ -188,6 +188,11 @@ const SENSITIVE_REDIRECT_PATHS = [
   /\.ssh\//,
   /\.env$/,
   /\.env\./,
+  // sid-code / Claude 配置目录：拦截 `echo ... > /abs/path/.sid-code/settings.json` 这类
+  // 用绝对路径重定向覆盖配置文件的写入（bash 无 file_path，不走 safetyCheck，只能在此拦）。
+  // 匹配路径中任意位置的配置目录段，覆盖绝对路径、相对路径两种形态。
+  /(^|\/)\.sid-code\//,
+  /(^|\/)\.claude\//,
 ];
 
 /**

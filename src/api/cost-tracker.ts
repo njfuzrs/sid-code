@@ -11,6 +11,7 @@
  */
 
 import type { Usage } from "../llm/types.ts";
+import { normalizeCacheUsage } from "../llm/types.ts";
 
 /** 模型定价（每百万 token，USD） */
 export interface ModelPricing {
@@ -105,26 +106,48 @@ export function resolvePricing(
 }
 
 /**
- * 计算单次请求的 USD 成本。
+ * 按模型名推断 provider（成本计算口径区分用）。
  *
- * 注意：usage.inputTokens 通常已含 cacheRead + cacheCreation（Anthropic 语义），
- * 因此普通 input = inputTokens - cacheRead - cacheCreation，避免重复计价。
+ * normalizeCacheUsage 的三段拆分依赖 provider：Anthropic 的 inputTokens 是未命中余量，
+ * OpenAI/DeepSeek 的 inputTokens 含命中。与 SessionState.inferProvider 保持同源启发式，
+ * 避免两处口径漂移（此处不反向 import SessionState 以防循环依赖）。
+ *
+ * 优先级：availableModels[].provider（用户配置，权威） > 启发式（claude* → anthropic，其余 → openai）。
+ */
+export function inferPricingProvider(
+  model: string,
+  availableModels?: PricingModelEntry[],
+): string {
+  const mc = availableModels?.find(m => m.name === model);
+  if (mc?.provider) return mc.provider;
+  return /^claude/i.test(model) ? "anthropic" : "openai";
+}
+
+/**
+ * 计算单次请求的 USD 成本（方案 §2.3 口径统一）。
+ *
+ * **修复前的 bug**：旧实现用 `regularInput = inputTokens − cacheRead − cacheWrite`，
+ * 对 Anthropic 会重复扣减——Anthropic 的 inputTokens 本就是未命中余量，再减一次导致
+ * regularInput 偏小、费用算低；对 OpenAI/DeepSeek 才需要减。两家用同一减法即口径分裂。
+ *
+ * **修复后**：统一经 {@link normalizeCacheUsage} 按 provider 归一化为互斥三段
+ * （hit / write / uncached）后分别计价，不再手工做减法，与 session/state.ts 同口径。
  */
 export function calculateUSDCost(
   model: string,
   usage: Usage,
   availableModels?: PricingModelEntry[],
+  provider?: string,
 ): number {
   const p = resolvePricing(model, availableModels) ?? FALLBACK_PRICING;
   const M = 1_000_000;
-  const cacheRead = usage.cacheReadInputTokens ?? 0;
-  const cacheWrite = usage.cacheCreationInputTokens ?? 0;
-  const regularInput = Math.max(0, usage.inputTokens - cacheRead - cacheWrite);
+  const prov = provider ?? inferPricingProvider(model, availableModels);
+  const n = normalizeCacheUsage(usage, prov);
   return (
-    (regularInput * p.input) / M +
-    (usage.outputTokens * p.output) / M +
-    (cacheRead * (p.cacheRead ?? p.input * 0.1)) / M +
-    (cacheWrite * (p.cacheWrite ?? p.input * 1.25)) / M
+    (n.uncachedInputTokens * p.input) / M +
+    (n.outputTokens * p.output) / M +
+    (n.cacheHitTokens * (p.cacheRead ?? p.input * 0.1)) / M +
+    (n.cacheWriteTokens * (p.cacheWrite ?? p.input * 1.25)) / M
   );
 }
 
@@ -157,7 +180,7 @@ export class CostTracker {
   }
 
   /** 累加一次 API 调用的用量与成本 */
-  record(model: string, usage: Usage, durationMs = 0): number {
+  record(model: string, usage: Usage, durationMs = 0, provider?: string): number {
     if (!this.modelUsage[model]) {
       this.modelUsage[model] = {
         inputTokens: 0,
@@ -176,7 +199,7 @@ export class CostTracker {
     mu.cacheCreationInputTokens += usage.cacheCreationInputTokens ?? 0;
     mu.requestCount++;
 
-    const cost = calculateUSDCost(model, usage, this.availableModels);
+    const cost = calculateUSDCost(model, usage, this.availableModels, provider);
     mu.costUSD += cost;
     this.totalCostUSD += cost;
     this.totalAPIDurationMs += durationMs;

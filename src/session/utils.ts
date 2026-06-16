@@ -8,6 +8,7 @@ import { join } from "path";
 import { homedir } from "os";
 import { existsSync, readdirSync, statSync } from "fs";
 import type { SessionData } from "./store.ts";
+import { parseSessionJsonl } from "./store.ts";
 
 /** 文本匹配结果 */
 export interface TextMatch {
@@ -181,8 +182,13 @@ export async function getAllSessionFiles(
       return [];
     }
 
+    // 同时扫描旧 JSON 与新 JSONL 两种格式（Bug1：此前只扫 .json，
+    // 导致已迁移到 jsonl 的会话在列表/清理中完全不可见）。
     const files = readdirSync(sessionDir)
-      .filter((f) => f.endsWith(".json") && !f.startsWith("."))
+      .filter(
+        (f) =>
+          (f.endsWith(".json") || f.endsWith(".jsonl")) && !f.startsWith(".")
+      )
       .sort();
 
     const sessionPromises = files.map(
@@ -190,10 +196,14 @@ export async function getAllSessionFiles(
         const filePath = join(sessionDir, file);
         try {
           const content = await Bun.file(filePath).text();
-          const data = JSON.parse(content) as SessionData;
+          // jsonl 是多行事件流，不能用 JSON.parse 整体解析——走逐行解析器。
+          const data = file.endsWith(".jsonl")
+            ? parseSessionJsonl(content)
+            : (JSON.parse(content) as SessionData);
 
           // 验证必需字段
           if (
+            !data ||
             !data.id ||
             !data.messages ||
             !Array.isArray(data.messages) ||
@@ -238,7 +248,7 @@ export async function getAllSessionFiles(
 
           const sessionInfo: SessionInfo = {
             id: data.id,
-            file: file.replace(".json", ""),
+            file: file.replace(/\.(json|jsonl)$/, ""),
             fileName: file,
             startTime: data.createdAt,
             lastUpdated: data.updatedAt,

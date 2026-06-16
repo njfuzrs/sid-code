@@ -218,6 +218,73 @@ describe("SessionState.getNormalizedCacheUsage — 会话级汇总", () => {
   });
 });
 
+describe("SessionState.getStockPromptTokens — 末次完整输入(stock)", () => {
+  test("Anthropic：stock 取末次归一化 promptTotal(含命中)，而非裸 input_tokens", () => {
+    // 缓存预热后 Anthropic 每次 input_tokens 只剩未命中余量，大头在 cache_read。
+    // 状态栏「输入」要反映当前上下文 → 必须用 promptTotal = input + hit + write，
+    // 而非 getStockInputTokens()(裸 input_tokens)，否则严重低估上下文大小。
+    const ss = new SessionState("test");
+    // 第 1 轮：冷启动，命中为 0
+    ss.updateUsage(
+      "claude-sonnet-4-20250514",
+      { inputTokens: 50000, outputTokens: 200, cacheReadInputTokens: 0, cacheCreationInputTokens: 1000 },
+      100,
+      "anthropic",
+    );
+    // 第 2 轮：缓存预热，input_tokens 骤降至 2500(未命中余量)，命中 80000
+    ss.updateUsage(
+      "claude-sonnet-4-20250514",
+      { inputTokens: 2500, outputTokens: 200, cacheReadInputTokens: 80000, cacheCreationInputTokens: 500 },
+      100,
+      "anthropic",
+    );
+    // stock 完整输入 = 末次 promptTotal = 2500(未命中) + 80000(命中) + 500(写入) = 83000
+    expect(ss.getStockPromptTokens()).toBe(83000);
+    // 对照：裸 input_tokens(旧口径)只有 2500，会把 83k 的上下文显示成 2.5k → 严重低估
+    expect(ss.getStockInputTokens()).toBe(2500);
+  });
+
+  test("DeepSeek/OpenAI：prompt_tokens 本就含命中，stock = 末次 prompt_tokens", () => {
+    const ss = new SessionState("test");
+    ss.updateUsage(
+      "deepseek-v4-pro",
+      { inputTokens: 6000, outputTokens: 200, cacheReadInputTokens: 1000 },
+      100,
+      "openai",
+    );
+    // 末次 prompt_tokens 含命中 → stock 完整输入 = 6000(promptTotal 直接取 input)
+    ss.updateUsage(
+      "deepseek-v4-pro",
+      { inputTokens: 18000, outputTokens: 200, cacheReadInputTokens: 15000 },
+      100,
+      "openai",
+    );
+    expect(ss.getStockPromptTokens()).toBe(18000);
+    // DeepSeek 下裸 input_tokens 与 promptTotal 一致(都含命中)，两口径相等
+    expect(ss.getStockInputTokens()).toBe(18000);
+  });
+
+  test("stock 是末次值(覆盖)，不随轮次 N² 膨胀", () => {
+    const ss = new SessionState("test");
+    // 3 轮，每轮末次完整输入递增；stock 应为最后一轮值，而非累加
+    ss.updateUsage("claude-sonnet-4-20250514", { inputTokens: 1000, outputTokens: 100, cacheReadInputTokens: 10000 }, 100, "anthropic");
+    ss.updateUsage("claude-sonnet-4-20250514", { inputTokens: 1000, outputTokens: 100, cacheReadInputTokens: 30000 }, 100, "anthropic");
+    ss.updateUsage("claude-sonnet-4-20250514", { inputTokens: 1000, outputTokens: 100, cacheReadInputTokens: 60000 }, 100, "anthropic");
+    // 末次 = 1000 + 60000 = 61000，不是 3 轮累加(会 N² 膨胀)
+    expect(ss.getStockPromptTokens()).toBe(61000);
+    // 对照 flow：cumulativePromptTokens 累加 = 3 × 1000 = 3000(Anthropic 累加未命中余量)
+    expect(ss.getCumulativePromptTokens()).toBe(3000);
+  });
+
+  test("多模型会话：stock 各模型末次完整输入简单求和", () => {
+    const ss = new SessionState("test");
+    ss.updateUsage("claude-sonnet-4-20250514", { inputTokens: 2000, outputTokens: 100, cacheReadInputTokens: 40000, cacheCreationInputTokens: 1000 }, 100, "anthropic");
+    ss.updateUsage("deepseek-v4-pro", { inputTokens: 12000, outputTokens: 100, cacheReadInputTokens: 8000 }, 100, "openai");
+    // claude 末次 promptTotal = 2000 + 40000 + 1000 = 43000；deepseek = 12000
+    expect(ss.getStockPromptTokens()).toBe(43000 + 12000);
+  });
+});
+
 describe("accumulateUsage — 单一权威累加（P0/P1-2）", () => {
   test("累加 input/output 并仅在提供时累加缓存字段", () => {
     const target: Usage = { inputTokens: 0, outputTokens: 0 };

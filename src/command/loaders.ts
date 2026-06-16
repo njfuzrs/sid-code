@@ -5,6 +5,7 @@
  * - loadCustomCommands: .sid-code/commands/*.md（适配为 LocalCommand→submit_prompt）
  * - loadSkillCommands:  Skill 系统（适配为 PromptCommand）
  * - loadBuiltinCommands: 内置命令（已迁移的直接用，未迁移的通过 legacy 适配器）
+ * - loadPluginCommands: 插件命令（带 pluginName: 前缀，适配为 LocalCommand）
  */
 
 import type { UnifiedCommand, CommandSource } from "./types.ts";
@@ -85,4 +86,24 @@ export async function loadBuiltinCommands(): Promise<UnifiedCommand[]> {
     .map((cmd) => adaptLegacyCommand(cmd, "builtin"));
 
   return [...migrated, ...legacyAdapted];
+}
+
+/**
+ * 加载插件命令，适配为 UnifiedCommand
+ *
+ * 插件命令是动态来源（可通过 /reload-plugins 刷新），其底层加载（getPluginCommands）
+ * 自带 memoize 缓存，清缓存由 clearAllPluginCaches 负责。因此本函数本身不缓存，
+ * 由调用方（UnifiedCommandRegistry）决定何时重新调用以拿到最新插件命令。
+ *
+ * 插件命令名自带 pluginName: 前缀，天然与内置/自定义命令隔离。
+ */
+export async function loadPluginCommands(): Promise<UnifiedCommand[]> {
+  try {
+    const { getPluginCommands } = await import("../plugin/loadPluginCommands.ts");
+    const pluginCmds = await getPluginCommands();
+    return pluginCmds.map((cmd) => adaptLegacyCommand(cmd, "plugin"));
+  } catch (err: any) {
+    getLogger().debug("COMMAND", `加载插件命令失败: ${err?.message}`);
+    return [];
+  }
 }

@@ -9,7 +9,7 @@ import type { Config } from "../config/config.ts";
 import type { SessionFileEntry } from "./utils.ts";
 import { getAllSessionFiles } from "./utils.ts";
 import { getLogger } from "../debug/logger.ts";
-import { sidHomePath, sidPaths } from "../config/paths.ts";
+import { sidPaths } from "../config/paths.ts";
 
 /** 会话保留配置 */
 export interface SessionRetentionSettings {
@@ -138,6 +138,17 @@ export async function identifySessionsToDelete(
 
 /**
  * 删除会话及关联资源
+ *
+ * P0：此前只删 sessions/{id}.jsonl 与 summaries/，**完全不碰 trajectories/sessions/{id}/**，
+ * 导致轨迹目录沦为孤儿数据持续堆积（实测 95MB）。这里做对称清理：交互会话被清理时，
+ * 连带删除同 id 的 trajectory 目录。
+ *
+ * 保守边界（避免误删评测/训练资产）：
+ * - 只删与被清理「交互会话」**同 id** 的 trajectory 目录。SWE-bench / SFT 等无头评测入口
+ *   通常不写 SessionStore（不会出现在 sessions/ 目录），其 id 不会进入本清理流程，天然隔离。
+ * - resume 场景下 trajectory 写在本进程新 id 下（见 Bug3 桥接），与旧会话 id 不同，
+ *   此处删不到；这类轨迹由 TraceCollector 的 LRU（maxSessionsRetained）兜底回收，不在此强删。
+ * - 删除走 best-effort，失败仅告警不抛——清理不是关键路径。
  */
 async function deleteSessionArtifacts(
   sessionId: string,
@@ -162,33 +173,17 @@ async function deleteSessionArtifacts(
     log.debug("CLEANUP", `已删除摘要文件: ${sessionId}.json`);
   }
 
-  // 删除关联资源（如果有项目哈希）
-  // 注意：这里假设项目哈希存储在配置中
-  // 实际实现可能需要从会话数据中读取
-  const projectHash = config.projectHash;
-  if (projectHash) {
-    const tmpDir = sidHomePath("tmp", projectHash);
-
-    // 删除日志文件
-    const logPath = join(tmpDir, "logs", `session-${sessionId}.jsonl`);
-    if (existsSync(logPath)) {
-      unlinkSync(logPath);
-      log.debug("CLEANUP", `已删除日志文件: session-${sessionId}.jsonl`);
+  // P0：对称清理同 id 的 trajectory 目录（trajectories/sessions/{id}/）。
+  // outputDir 优先取 trace 配置覆盖，回退到默认 trajectories 根目录。
+  try {
+    const trajRoot = config.trace?.outputDir ?? sidPaths.trajectories();
+    const trajDir = join(trajRoot, "sessions", sessionId);
+    if (existsSync(trajDir)) {
+      rmSync(trajDir, { recursive: true, force: true });
+      log.debug("CLEANUP", `已删除轨迹目录: trajectories/sessions/${sessionId}`);
     }
-
-    // 删除工具输出目录
-    const toolOutputDir = join(tmpDir, "tool-outputs", `session-${sessionId}`);
-    if (existsSync(toolOutputDir)) {
-      rmSync(toolOutputDir, { recursive: true, force: true });
-      log.debug("CLEANUP", `已删除工具输出目录: session-${sessionId}`);
-    }
-
-    // 删除会话临时目录
-    const sessionTmpDir = join(tmpDir, sessionId);
-    if (existsSync(sessionTmpDir)) {
-      rmSync(sessionTmpDir, { recursive: true, force: true });
-      log.debug("CLEANUP", `已删除会话临时目录: ${sessionId}`);
-    }
+  } catch (err: any) {
+    log.warn("CLEANUP", `删除轨迹目录失败（不阻断）: ${sessionId} - ${err?.message}`);
   }
 }
 

@@ -635,20 +635,9 @@ export async function main(): Promise<void> {
     const commandRegistry = new CommandRegistry();
     await registerBuiltins(commandRegistry);
 
-    // 注册 Bundled Skills（编译时内置，如 /commit /review 等）
-    // 通过 adaptUnifiedToLegacy 桥接进旧 Registry，使现有 app.ts 显示/执行路径直接生效
-    try {
-      const { loadBundledSkills } = await import("./skill/bundled/index.ts");
-      const { adaptUnifiedToLegacy } = await import("./command/adapter.ts");
-      const bundledSkills = loadBundledSkills();
-      for (const skill of bundledSkills) {
-        const legacyCmd = await adaptUnifiedToLegacy(skill);
-        commandRegistry.register(legacyCmd, "builtin");
-      }
-      getLogger().debug("CLI", `注册 ${bundledSkills.length} 个 Bundled Skill`);
-    } catch (err: any) {
-      getLogger().warn("CLI", `注册 Bundled Skills 失败: ${err?.message}`);
-    }
+    // 注：Bundled Skills（/commit /review 等）不再桥接进旧 Registry。
+    // 它们由新命令体系（UnifiedCommandRegistry → loadSkillCommands → loadBundledSkills）
+    // 原生加载，App 的 TUI 命令获取/执行走新体系。旧 Registry 仅作回退路径。
 
     // 加载自定义命令（带信任检查）
     const { CustomCommandLoader } = await import("./command/custom.ts");
@@ -818,9 +807,23 @@ export async function main(): Promise<void> {
 
     profileCheckpoint("init_end");
 
+    // 创建统一命令注册表（新体系）：承载 custom/skill(含 bundled)/builtin/plugin 四来源。
+    // App 的 TUI 命令获取/执行走此注册表；旧 commandRegistry 仍传入作回退 + /help 摘要数据源。
+    const { UnifiedCommandRegistry } = await import("./command/unified-registry.ts");
+    const unifiedRegistry = new UnifiedCommandRegistry({
+      scanOptions,
+      disabledSkills: config.disabledSkills,
+    });
+    // 预加载插件命令快照（custom/skill/builtin 由 getCommands 按 cwd 懒加载并缓存）
+    try {
+      await unifiedRegistry.loadPlugins();
+    } catch (err: any) {
+      getLogger().warn("CLI", `预加载插件命令失败: ${err?.message}`);
+    }
+
     // 创建 App
     const { App } = await import("./app.ts");
-    const app = new App({ config, provider, providerRegistry, toolRegistry, commandRegistry, permissionChecker, mcpManager, planManager });
+    const app = new App({ config, provider, providerRegistry, toolRegistry, commandRegistry, unifiedRegistry, permissionChecker, mcpManager, planManager });
     // 注册全局 App 弱引用（供 uncaughtException 等异常兜底使用）
     setLastApp(app);
 

@@ -31,6 +31,10 @@ interface SlicingMaxSizedBoxProps {
    * 对标 claude-code: MAX_LINES_TO_SHOW=3 + wrapWidth 感知。
    */
   maxColumnWidth?: number;
+  /** 正文颜色（走 theme.* 语义 token，不传则用终端默认色）。 */
+  color?: string;
+  /** 是否暗淡正文（stdout 等次要输出）。 */
+  dimColor?: boolean;
 }
 
 /** 统计字符串中的换行数（不需要 split 创建数组） */
@@ -50,30 +54,27 @@ function countNewlines(text: string): number {
 function wrapLinesToWidth(
   text: string,
   maxColumnWidth: number,
-): { wrappedLines: string[]; originalVisualLines: number } {
+): string[] {
   const rawLines = text.split("\n");
   const wrappedLines: string[] = [];
-  let visualLineCount = 0;
 
   for (const raw of rawLines) {
     const trimmed = raw.trimEnd();
     const w = stringWidth(trimmed);
     if (w <= maxColumnWidth) {
       wrappedLines.push(trimmed);
-      visualLineCount++;
     } else {
       // 长行按 maxColumnWidth 切段（简单码点切割，工具输出以 ASCII 为主）
       let pos = 0;
       while (pos < w) {
         const chunk = trimmed.slice(pos, pos + maxColumnWidth);
         wrappedLines.push(chunk.trimEnd());
-        visualLineCount++;
         pos += maxColumnWidth;
       }
     }
   }
 
-  return { wrappedLines, originalVisualLines: visualLineCount };
+  return wrappedLines;
 }
 
 export const SlicingMaxSizedBox = React.memo(function SlicingMaxSizedBox({
@@ -82,6 +83,8 @@ export const SlicingMaxSizedBox = React.memo(function SlicingMaxSizedBox({
   overflowDirection = "top",
   text,
   maxColumnWidth,
+  color,
+  dimColor,
 }: SlicingMaxSizedBoxProps) {
   let displayText = text;
   let hiddenCount = 0;
@@ -104,10 +107,7 @@ export const SlicingMaxSizedBox = React.memo(function SlicingMaxSizedBox({
 
   // 宽度感知换行（对标 claude-code）：先折叠长行，再按视觉行截断
   if (maxColumnWidth && maxColumnWidth > 0) {
-    const { wrappedLines, originalVisualLines } = wrapLinesToWidth(
-      displayText,
-      maxColumnWidth,
-    );
+    const wrappedLines = wrapLinesToWidth(displayText, maxColumnWidth);
 
     if (maxLines && wrappedLines.length > maxLines) {
       // 对标 cc: 若仅剩 1 行则直接展示，不占位
@@ -161,7 +161,7 @@ export const SlicingMaxSizedBox = React.memo(function SlicingMaxSizedBox({
     <Box flexDirection="column">
       {truncated && overflowDirection === "top" && indicator}
       {lines.map((line, idx) => (
-        <Text key={idx}>{line}</Text>
+        <Text key={idx} color={color} dimColor={dimColor}>{line}</Text>
       ))}
       {truncated && overflowDirection === "bottom" && indicator}
     </Box>

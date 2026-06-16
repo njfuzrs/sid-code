@@ -17,6 +17,7 @@ import {
   assertMessageHistoryIntact,
   describeIntegrityViolation,
   backfillOrphanToolResults,
+  safeSliceTail,
   MessageHistoryViolationError,
 } from "../../src/agent/message-invariants.ts";
 
@@ -233,5 +234,170 @@ describe("backfillOrphanToolResults — 生产端孤儿兜底", () => {
     backfillOrphanToolResults(messages);
     expect(messages).toHaveLength(before);
     expect(messages[0].content.every(b => b.type === "tool_use")).toBe(true);
+  });
+});
+
+describe("backfillOrphanToolResults — 游离 tool_result 切除（Session 0427d1bd 400 根因）", () => {
+  test("无游离无孤儿 → changed=false 且 stripped 为空", () => {
+    const messages: Message[] = [asst(["c1", "read"]), userResults("c1")];
+    const r = backfillOrphanToolResults(messages);
+    expect(r.changed).toBe(false);
+    expect(r.stripped).toHaveLength(0);
+    expect(r.backfilled).toHaveLength(0);
+  });
+
+  test("首条游离 tool_result（复刻 0427d1bd：slice 起点是 user+游离 tool_result）→ 整条切除", () => {
+    // 切片把 tool_use 切掉了，只留下其 tool_result 在首条 → 游离
+    const messages: Message[] = [
+      userResults("dangling_ref"), // 游离：dangling_ref 的 tool_use 已被切掉
+      asst(["c1", "read"]),
+      userResults("c1"),
+    ];
+    expect(checkMessageHistoryIntegrity(messages).dangling).toHaveLength(1);
+
+    const r = backfillOrphanToolResults(messages);
+    expect(r.changed).toBe(true);
+    expect(r.stripped).toHaveLength(1);
+    expect(r.stripped[0].toolUseId).toBe("dangling_ref");
+    // 切除后历史完整，首条不再是游离
+    expect(checkMessageHistoryIntegrity(r.messages).intact).toBe(true);
+    // 首条游离被整条删除（content 仅含该游离 tool_result，剥空 → 删除）
+    expect(r.messages).toHaveLength(2);
+    expect(r.messages[0].role).toBe("assistant");
+  });
+
+  test("游离在中间位置（snipCompact 挖中段后拼接处）→ 精确切除该 block，保留同消息其它内容", () => {
+    const messages: Message[] = [
+      { role: "user", content: [{ type: "text", text: "start" }] },
+      asst(["c1", "read"]),
+      // 这条 user 同时含 c1 的合法 tool_result + 一个游离 tool_result + 文本
+      {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "c1", content: "ok" },
+          { type: "tool_result", tool_use_id: "dangling_mid", content: "orphaned" },
+          { type: "text", text: "继续" },
+        ],
+      },
+    ];
+    expect(checkMessageHistoryIntegrity(messages).dangling).toHaveLength(1);
+
+    const r = backfillOrphanToolResults(messages);
+    expect(r.changed).toBe(true);
+    expect(r.stripped).toHaveLength(1);
+    expect(r.stripped[0].toolUseId).toBe("dangling_mid");
+    expect(checkMessageHistoryIntegrity(r.messages).intact).toBe(true);
+    // 消息条数不变（只剥 block，不删整条——因为还有合法 tool_result + text）
+    expect(r.messages).toHaveLength(3);
+    const mid = r.messages[2];
+    // c1 合法 tool_result 与文本保留，游离被剥
+    expect(mid.content.filter(b => b.type === "tool_result")).toHaveLength(1);
+    expect(mid.content.some(b => b.type === "tool_result" && b.tool_use_id === "c1")).toBe(true);
+    expect(mid.content.some(b => b.type === "text")).toBe(true);
+  });
+
+  test("游离 + 孤儿共存 → 先切游离再补孤儿，下标不漂移，最终 intact", () => {
+    const messages: Message[] = [
+      userResults("dangling_ref"),       // 游离（首条）
+      asst(["c1", "read"], ["c2", "bash"]), // c2 将成孤儿
+      userResults("c1"),                  // 只应答 c1，c2 缺失
+    ];
+    const integrity = checkMessageHistoryIntegrity(messages);
+    expect(integrity.dangling).toHaveLength(1);
+    expect(integrity.orphans).toHaveLength(1);
+
+    const r = backfillOrphanToolResults(messages);
+    expect(r.changed).toBe(true);
+    expect(r.stripped).toHaveLength(1);   // dangling_ref 被切
+    expect(r.backfilled).toHaveLength(1); // c2 被补占位
+    expect(r.backfilled[0].id).toBe("c2");
+    // 最终完整且无相邻同角色
+    expect(checkMessageHistoryIntegrity(r.messages).intact).toBe(true);
+    for (let i = 1; i < r.messages.length; i++) {
+      expect(r.messages[i].role).not.toBe(r.messages[i - 1].role);
+    }
+  });
+
+  test("幂等：对已切除游离的历史再跑一次 → changed=false", () => {
+    const messages: Message[] = [
+      userResults("dangling_ref"),
+      asst(["c1", "read"]),
+      userResults("c1"),
+    ];
+    const once = backfillOrphanToolResults(messages);
+    expect(once.changed).toBe(true);
+    const twice = backfillOrphanToolResults(once.messages);
+    expect(twice.changed).toBe(false);
+  });
+
+  test("不修改入参数组（切游离也是纯函数）", () => {
+    const messages: Message[] = [userResults("dangling_ref"), asst(["c1", "read"]), userResults("c1")];
+    const beforeLen = messages.length;
+    const beforeFirstBlocks = messages[0].content.length;
+    backfillOrphanToolResults(messages);
+    expect(messages).toHaveLength(beforeLen);
+    expect(messages[0].content).toHaveLength(beforeFirstBlocks);
+  });
+});
+
+describe("safeSliceTail — 安全尾部切片（保证起点不是游离 tool_result）", () => {
+  // 构造一串干净的配对消息：user(text) + N×[asst(tool_use) + user(tool_result)]
+  function buildPairs(n: number): Message[] {
+    const msgs: Message[] = [{ role: "user", content: [{ type: "text", text: "start" }] }];
+    for (let i = 0; i < n; i++) {
+      msgs.push(asst([`c${i}`, "read"]));
+      msgs.push(userResults(`c${i}`));
+    }
+    return msgs;
+  }
+
+  test("消息数 <= n → 原样返回（拷贝）", () => {
+    const messages = buildPairs(2); // 5 条
+    const r = safeSliceTail(messages, 15);
+    expect(r).toHaveLength(messages.length);
+    expect(checkMessageHistoryIntegrity(r).intact).toBe(true);
+  });
+
+  test("起点本就干净（落在 assistant）→ 切片不产生游离", () => {
+    const messages = buildPairs(10); // 1 + 20 = 21 条
+    const r = safeSliceTail(messages, 15);
+    // 切片内无游离（起点可能是 asst 孤儿，但绝不是游离 tool_result）
+    expect(checkMessageHistoryIntegrity(r).dangling).toHaveLength(0);
+  });
+
+  test("slice(-N) 起点恰为 user+tool_result（游离）→ 起点对齐，消除游离", () => {
+    // 构造 16 条，使 slice(-15) 起点落在 user(tool_result) 上
+    const messages: Message[] = [
+      asst(["c0", "read"]),   // 0 ← slice(-15) 会把它切掉
+      userResults("c0"),      // 1 ← slice(-15) 起点（游离！c0 的 tool_use 在第 0 条被切）
+    ];
+    for (let i = 1; i < 8; i++) {
+      messages.push(asst([`c${i}`, "read"]));
+      messages.push(userResults(`c${i}`));
+    }
+    // 共 2 + 14 = 16 条；slice(-15) 起点 = index 1（userResults c0，游离）
+    expect(messages).toHaveLength(16);
+    const naive = messages.slice(-15);
+    expect(checkMessageHistoryIntegrity(naive).dangling.length).toBeGreaterThan(0);
+
+    const safe = safeSliceTail(messages, 15);
+    // 安全切片消除游离（向前扩展纳入 c0 的 tool_use，或收缩跳过游离）
+    expect(checkMessageHistoryIntegrity(safe).dangling).toHaveLength(0);
+  });
+
+  test("向前扩展即可纳入 tool_use（maxExpand 内）→ 保留完整配对而非丢数据", () => {
+    // slice(-3) 起点是 user(tool_result c_last)，其 tool_use 在前一条 → 扩展 1 条即可
+    const messages = buildPairs(5); // 11 条
+    const safe = safeSliceTail(messages, 3);
+    expect(checkMessageHistoryIntegrity(safe).dangling).toHaveLength(0);
+    // 起点应是 assistant（向前扩展纳入了 tool_use），而非被收缩丢弃
+    expect(safe[0].role).toBe("assistant");
+  });
+
+  test("纯函数：不修改入参", () => {
+    const messages = buildPairs(10);
+    const before = messages.length;
+    safeSliceTail(messages, 15);
+    expect(messages).toHaveLength(before);
   });
 });

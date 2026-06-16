@@ -193,13 +193,14 @@ export class HookEventHandler {
   /** SessionStart 事件 */
   async fireSessionStartEvent(
     source: SessionStartInput["source"] = "startup",
-    options?: { model?: string; systemPromptHash?: string },
+    options?: { model?: string; systemPromptHash?: string; resumedFrom?: string },
   ): Promise<AggregatedHookResult> {
     const input: SessionStartInput = {
       ...this.createBaseInput(HookEventName.SessionStart),
       source,
       model: options?.model,
       system_prompt_hash: options?.systemPromptHash,
+      resumed_from: options?.resumedFrom,
     };
     return this.executeHooks(HookEventName.SessionStart, input, { trigger: source });
   }

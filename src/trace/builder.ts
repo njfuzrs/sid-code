@@ -153,6 +153,9 @@ export interface TraceMetadata {
   exit_status?: string;
   start_source?: string;
   end_source?: string;
+  /** Bug3 桥接：resume 时本进程用新 id 写 trajectory，此处记录被恢复的旧会话 id，
+   *  使 trajectory 能反查到 SessionStore 的 sessions/{旧id}.jsonl 对话历史。 */
+  resumed_from?: string;
   /** 错误退出时的简要错误信息（reason="error"） */
   error?: { message: string; name?: string };
   /** D3-3：异常退出自动归因摘要（abnormal 时填充，免去人工翻日志） */
@@ -277,6 +280,8 @@ export interface TrajectoryMetaOutput {
   tool_source: "sid-code";
   start_source?: string;
   end_source?: string;
+  /** Bug3 桥接：被恢复的旧会话 id（resume 场景），用于反查 SessionStore 对话历史。 */
+  resumed_from?: string;
   claude_md_hash?: string;
   /** 错误退出时的简要错误信息（reason="error"） */
   error?: { message: string; name?: string };
@@ -699,6 +704,7 @@ export function buildTrajectory(
     tool_source: "sid-code",
     ...(metadata.start_source ? { start_source: metadata.start_source } : {}),
     ...(metadata.end_source ? { end_source: metadata.end_source } : {}),
+    ...(metadata.resumed_from ? { resumed_from: metadata.resumed_from } : {}),
     ...(claudeMdHash ? { claude_md_hash: claudeMdHash } : {}),
     ...(metadata.error ? { error: metadata.error } : {}),
     ...(metadata.harness ? { harness: metadata.harness } : {}),

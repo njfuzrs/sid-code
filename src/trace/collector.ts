@@ -241,6 +241,7 @@ export class TraceCollector {
       has_thinking: false,
       has_sub_agent: false,
       start_source: input.source,
+      resumed_from: input.resumed_from,
       total_tokens_sent: 0,
       total_tokens_received: 0,
       total_cumulative_prompt_tokens: 0,

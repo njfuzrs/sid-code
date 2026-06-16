@@ -99,6 +99,11 @@ describe("OpenAI convertMessages", () => {
 
   test("user 消息中的 tool_result 拆分为独立 role:tool 消息", () => {
     const result = provider.testConvertMessages([
+      // 前置 assistant.tool_use 持有 call_123，使 tool_result 合法配对（否则被方案 C 兜底丢弃）
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "call_123", name: "read", input: {} }],
+      },
       {
         role: "user",
         content: [
@@ -111,17 +116,24 @@ describe("OpenAI convertMessages", () => {
       },
     ]);
 
-    expect(result).toEqual([
-      {
-        role: "tool",
-        tool_call_id: "call_123",
-        content: "文件内容...",
-      },
-    ]);
+    // result[0] 是 assistant(tool_calls)，result[1] 才是拆出的 role:tool
+    expect(result[1]).toEqual({
+      role: "tool",
+      tool_call_id: "call_123",
+      content: "文件内容...",
+    });
   });
 
   test("user 消息中混合 tool_result 和文本", () => {
     const result = provider.testConvertMessages([
+      // 前置 assistant.tool_use 持有 call_1 / call_2，使两个 tool_result 合法配对
+      {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "call_1", name: "read", input: {} },
+          { type: "tool_use", id: "call_2", name: "read", input: {} },
+        ],
+      },
       {
         role: "user",
         content: [
@@ -140,11 +152,11 @@ describe("OpenAI convertMessages", () => {
       },
     ]);
 
-    // tool_result 先转为 role:tool，文本后面作为 user 消息
-    expect(result).toHaveLength(3);
-    expect(result[0]).toEqual({ role: "tool", tool_call_id: "call_1", content: "结果1" });
-    expect(result[1]).toEqual({ role: "tool", tool_call_id: "call_2", content: "结果2" });
-    expect(result[2]).toEqual({ role: "user", content: "请继续" });
+    // result[0] 是 assistant(tool_calls)，其后是 2×role:tool + 1×user(文本)
+    expect(result).toHaveLength(4);
+    expect(result[1]).toEqual({ role: "tool", tool_call_id: "call_1", content: "结果1" });
+    expect(result[2]).toEqual({ role: "tool", tool_call_id: "call_2", content: "结果2" });
+    expect(result[3]).toEqual({ role: "user", content: "请继续" });
   });
 
   test("完整对话流程转换", () => {
@@ -218,11 +230,17 @@ describe("OpenAI convertMessages — reasoning_content 剥离 (P1-2)", () => {
 
   test("空 tool_result 兜底为有语义占位而非空串", () => {
     const result = provider.testConvertMessages([
+      // 前置 assistant.tool_use 持有 c1，使 tool_result 合法配对
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "c1", name: "bash", input: {} }],
+      },
       {
         role: "user",
         content: [{ type: "tool_result", tool_use_id: "c1", content: "" }],
       },
     ]);
-    expect(result[0]).toEqual({ role: "tool", tool_call_id: "c1", content: "(empty)" });
+    // result[0] 是 assistant(tool_calls)，result[1] 是空内容兜底为 "(empty)" 的 role:tool
+    expect(result[1]).toEqual({ role: "tool", tool_call_id: "c1", content: "(empty)" });
   });
 });

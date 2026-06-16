@@ -109,6 +109,36 @@ export const useUIActions = (): UIActions => {
   return context;
 };
 
+/**
+ * 容错读取当前全局 expandLevel。
+ *
+ * 与 useUIState 不同：无 Provider 时不抛错，回退到折叠档（level 0）。
+ * 供 CommandMessage / ErrorMessage 等展示组件使用——它们生产中始终在
+ * UIStateProvider 下（拿到真实 expandLevel），但单测可不包 Provider 直接渲染。
+ */
+export const useExpandLevel = (): ExpandLevel => {
+  const context = useContext(UIStateContext);
+  return context?.expandLevel ?? 0;
+};
+
+/**
+ * 把当前全局 expandLevel 解析为有效最大显示行数。
+ *
+ * 收口 expandLevel → maxLines 的映射（此前内联在 ToolResultDisplay），
+ * 让任意折叠区（命令输出、错误正文等）都能用同一套 ctrl+o 阶梯展开语义：
+ * - 取 base（折叠档基线）与该级别上限的较大值，确保调用方显式要求更多行时不被缩小；
+ * - 全展开档（Infinity）返回 undefined，交由下游不截断。
+ *
+ * 容错：无 Provider 时回退折叠档（level 0），不抛错（便于展示组件单测）。
+ *
+ * @param base 折叠档（level 0）的基线行数，默认 3（对标 cc MAX_LINES_TO_SHOW）。
+ */
+export const useExpandedMaxLines = (base = 3): number | undefined => {
+  const expandLevel = useExpandLevel();
+  const levelMaxLines = EXPAND_LEVEL_MAX_LINES[expandLevel];
+  return levelMaxLines === Infinity ? undefined : Math.max(base, levelMaxLines);
+};
+
 interface UIStateProviderProps {
   children: React.ReactNode;
 }

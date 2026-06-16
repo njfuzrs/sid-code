@@ -48,6 +48,8 @@ export interface AppContext {
   hookSystem?: HookSystem;
   /** 命令注册表引用（/reload-plugins 重新合并插件命令用） */
   commandRegistry?: import("./registry.ts").Registry;
+  /** 统一命令注册表引用（新体系 /reload-plugins 刷新插件命令用，优先于 commandRegistry） */
+  unifiedRegistry?: import("./unified-registry.ts").UnifiedCommandRegistry;
 }
 
 /** 支持的对话框类型 */
@@ -95,6 +97,7 @@ export type CommandSource =
   | "user"          // 用户自定义（~/.sid-code/commands/）
   | "project"       // 项目自定义（.sid-code/commands/）
   | "skill"         // Skill 系统
+  | "plugin"        // 插件（带 pluginName: 前缀）
   | "mcp";          // MCP 服务器
 
 // ============================================================
@@ -120,6 +123,8 @@ export interface CommandContext {
   confirmShellCommands?: (commands: string[]) => Promise<boolean>;
   /** 自定义命令摘要（/help 显示用） */
   customCommands?: Array<{ name: string; description: string }>;
+  /** 统一命令注册表引用（/reload-plugins 刷新插件命令用） */
+  unifiedRegistry?: import("./unified-registry.ts").UnifiedCommandRegistry;
 }
 
 // ============================================================

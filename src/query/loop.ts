@@ -84,6 +84,14 @@ export interface QueryLoopConfig {
   quotaManager?: QuotaManager;
   tokenMeter?: TokenMeter;
   budgetTracker?: BudgetTracker;
+  /**
+   * Extended Thinking / 推理强度配置（由 engine 从 ThinkingManager 解析后透传）。
+   * 此前 engine 算出 `_thinking` 却从未下传，导致：
+   *   - Anthropic：anthropic.ts 早已读 `params.thinking` 但无人填 → Extended Thinking 全程未生效；
+   *   - DeepSeek：reasoning_effort 无映射源 → `think hard`/`ultrathink` 永不触发更深推理。
+   * 此字段是修复该断链的入口，最终写入每轮的 SendParams.thinking。
+   */
+  thinking?: { enabled: boolean; budgetTokens: number };
   deps: QueryDeps;
 }
 
@@ -103,6 +111,7 @@ export async function* queryLoop(
     toolRegistry,
     sessionState,
     hookSystem,
+    thinking,
     deps,
   } = loopConfig;
 
@@ -209,23 +218,36 @@ export async function* queryLoop(
     }
 
     // ─── 构建请求参数 ───
-    // 生产端发送前孤儿兜底 backstop（系统级查漏补缺方案 防线 1，根因终结关卡）：
-    // 无论孤儿从哪条路径进入历史（循环恢复 / 中断时序 / followup 排序 / plan-mode 转换 / 未来新增），
-    // 发送前统一在 ctxMgr 历史层补 error 占位 tool_result，使其满足 tool_use/tool_result 协议配对。
+    // 生产端发送前协议兜底 backstop（系统级查漏补缺方案 防线 1，根因终结关卡）：
+    // 无论破缺从哪条路径进入历史（循环恢复 / 中断时序 / followup 排序 / plan-mode 转换 /
+    // restoreSession slice / snipCompact / auto-compact / 未来新增），发送前统一在 ctxMgr
+    // 历史层修复——孤儿 tool_use 补 error 占位、游离 tool_result 直接切除，使其满足配对协议。
     // 这是 ADR-039「不变量在出口强制」哲学的终点——executeTools 守生产单点，这里守"所有路径的总出口"。
     // 与消费端只读哨兵（protocol-sentinel）互补：哨兵负责发现+告警+落盘，本关卡负责真正修复，不让 400 发生。
     {
       const backfill = backfillOrphanToolResults(ctxMgr.getMessages());
       if (backfill.changed) {
         ctxMgr.setMessages(backfill.messages);
-        const detail = backfill.backfilled
-          .map(o => `${o.name}(id=${o.id} @msg#${o.messageIndex})`)
-          .join(", ");
-        log.error(
-          "QUERY_LOOP",
-          `发送前孤儿兜底关卡触发：补齐 ${backfill.backfilled.length} 个孤儿 tool_use 的占位 tool_result（已修复，避免 OpenAI 400）：${detail}。` +
-            `孤儿来源应在产生端排查（循环恢复/中断/followup/plan-mode）。`,
-        );
+        if (backfill.backfilled.length > 0) {
+          const detail = backfill.backfilled
+            .map(o => `${o.name}(id=${o.id} @msg#${o.messageIndex})`)
+            .join(", ");
+          log.error(
+            "QUERY_LOOP",
+            `发送前孤儿兜底关卡触发：补齐 ${backfill.backfilled.length} 个孤儿 tool_use 的占位 tool_result（已修复，避免 OpenAI 400）：${detail}。` +
+              `孤儿来源应在产生端排查（循环恢复/中断/followup/plan-mode）。`,
+          );
+        }
+        if (backfill.stripped.length > 0) {
+          const detail = backfill.stripped
+            .map(d => `tool_use_id=${d.toolUseId} @msg#${d.messageIndex}`)
+            .join(", ");
+          log.error(
+            "QUERY_LOOP",
+            `发送前游离切除关卡触发：切除 ${backfill.stripped.length} 个游离 tool_result（无前置 tool_use，已移除，避免 OpenAI 400）：${detail}。` +
+              `游离来源应在产生端排查（restoreSession slice / snipCompact / auto-compact 切断配对）。`,
+          );
+        }
       }
     }
 
@@ -301,6 +323,16 @@ export async function* queryLoop(
       system: ctxMgr.getSystemPrompt(),
       maxTokens: config.maxTokens,
       tools: toolDefs,
+      // Extended Thinking / reasoning_effort 入口：由 engine 透传的 thinking 配置。
+      // - Anthropic provider 读 params.thinking.budgetTokens 开启 Extended Thinking；
+      // - DeepSeek（OpenAI 兼容）provider 在 budgetTokens 上无对应字段，思考强度改走
+      //   reasoningEffort：按预算档位映射（complex 50K 档=think hard/ultrathink → "max"，
+      //   其余 → "high"，DeepSeek 仅接受 high/max 两档）。
+      // 不传则各 provider 维持服务端默认。
+      ...(thinking ? { thinking } : {}),
+      ...(thinking?.enabled
+        ? { reasoningEffort: (thinking.budgetTokens >= 50_000 ? "max" : "high") as "high" | "max" }
+        : {}),
     };
 
     // ─── BeforeModel hook ───
@@ -369,13 +401,50 @@ export async function* queryLoop(
 
     let response: import("../llm/types.ts").AccumulatedResponse;
     try {
-      response = await deps.processStream(stream, (_text) => {
-        if (ttftMs === undefined) {
-          ttftMs = performance.now() - ttftStart;
+      // ─── L1：单轮硬超时兜底（治本，对所有挂起根因成立）───
+      // 根因：底层 generator 链（processStream → fallback for-await → openai parseSSE）
+      // 任一层因 reader.read() 在半开 TCP 上永不 settle、且 reader.cancel() 同样 hang 时，
+      // `await deps.processStream(...)` 永不返回，整个 queryLoop 永久挂死（实测 22 分钟无反应）。
+      //
+      // 为什么用 Promise.race 而非 setTimeout+finally：finally 只在 await settle 后执行，
+      // 若底层永不 settle，finally 永不到达 —— 兜底形同虚设。Promise.race 让超时 Promise
+      // 与 processStream 竞争,超时先 reject 即把控制权交还本循环,hang 的 generator 变悬空
+      // 引用被 GC,不再阻塞主循环。这是唯一不依赖 abort/cancel 链路的真兜底。
+      //
+      // reject 后走下方 catch → isTimeoutError 命中 → 复用现有 timeout 重试分支(continue),
+      // 无需新写 yield done/return,且保留重试机会。
+      // 超时阈值可经 deps 注入覆盖（默认 10 分钟），便于单测用短值触发。
+      const MAX_TURN_DURATION_MS = deps.maxTurnDurationMs ?? 10 * 60 * 1000;
+      let turnTimer: ReturnType<typeof setTimeout> | null = null;
+      const turnTimeoutPromise = new Promise<never>((_resolve, reject) => {
+        turnTimer = setTimeout(() => {
+          log.error("QUERY_LOOP", `单轮硬超时 ${MAX_TURN_DURATION_MS / 1000}s，强制让出控制权`);
+          // 尽力而为：主动 abort 上游 fetch（即便对已 hang 的 reader 无效也无害）。
+          try {
+            deps.abortCurrentRequest?.("turn-timeout");
+          } catch { /* abort 失败不影响 race 让出 */ }
+          reject(new Error(`单轮硬超时：${MAX_TURN_DURATION_MS / 1000}s 无完成`));
+        }, MAX_TURN_DURATION_MS);
+        // unref：此定时器不应阻止进程退出
+        if (turnTimer && typeof turnTimer === "object" && "unref" in turnTimer) {
+          (turnTimer as any).unref();
         }
-        // 流式文本通过 QueryEngine 层的 onStreamText 回调桥接
-      }, undefined);
-      // onThinking 通过 QueryEngine 层的 streamThinkingCallback 桥接，queryLoop 自身无需处理
+      });
+
+      try {
+        response = await Promise.race([
+          deps.processStream(stream, (_text) => {
+            if (ttftMs === undefined) {
+              ttftMs = performance.now() - ttftStart;
+            }
+            // 流式文本通过 QueryEngine 层的 onStreamText 回调桥接
+          }, undefined),
+          turnTimeoutPromise,
+        ]);
+        // onThinking 通过 QueryEngine 层的 streamThinkingCallback 桥接，queryLoop 自身无需处理
+      } finally {
+        if (turnTimer !== null) clearTimeout(turnTimer);
+      }
     } catch (err: any) {
       perfHandle.end({ model: config.model });
 

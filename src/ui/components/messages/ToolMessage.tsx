@@ -29,11 +29,7 @@ import { ToolResultDisplay } from "./ToolResultDisplay.tsx";
 import { theme } from "../../semantic-colors.ts";
 import { TREE_BRANCH } from "../../constants/figures.ts";
 import { useUIState } from "../../contexts/UIStateContext.tsx";
-import { formatCollapsedSummary, ELLIPSIS } from "../../constants/collapse.ts";
-
-// 命令截断常量（对标 cc BashTool/UI.tsx: MAX_COMMAND_DISPLAY_LINES=2, MAX_COMMAND_DISPLAY_CHARS=160）
-const CMD_MAX_LINES = 2;
-const CMD_MAX_CHARS = 160;
+import { truncateShellCommand } from "../../constants/collapse.ts";
 
 export interface ToolMessageProps {
   name: string;
@@ -112,55 +108,15 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
     </Box>
   );
 
-  // 命令截断计算（对标 cc BashTool/UI.tsx）
-  // 非展开时：超过 2 行 / 160 字符则截断，尾部加 …；展开时展示完整命令
+  // 命令截断计算（对标 cc BashTool/UI.tsx）：复用 collapse.ts 的纯函数 truncateShellCommand，
+  // 与 CommandMessage 共用同一套两级截断逻辑（先行后字符）。$ 前缀在此拼接。
   const commandDisplay = React.useMemo(() => {
     if (!shellCommand) return null;
-    if (isFullyExpanded) {
-      return { text: `$ ${shellCommand}`, truncated: false, summary: "" };
-    }
-
-    // 统一换行符为 \n，兼容 Windows 的 \r\n（避免字符计数偏大、$ 与命令不对齐）
-    const normalized = shellCommand.replace(/\r\n/g, "\n");
-    const lines = normalized.split("\n");
-    const needsLineTruncation = lines.length > CMD_MAX_LINES;
-    const needsCharTruncation = normalized.length > CMD_MAX_CHARS;
-
-    if (!needsLineTruncation && !needsCharTruncation) {
-      return { text: `$ ${normalized}`, truncated: false, summary: "" };
-    }
-
-    let truncated = normalized;
-    let unit = "行";
-    let count = 0;
-    let hasLineCut = false;
-
-    // 先按行截断
-    if (needsLineTruncation) {
-      count = lines.length - CMD_MAX_LINES;
-      truncated = lines.slice(0, CMD_MAX_LINES).join("\n");
-      hasLineCut = true;
-    }
-
-    // 再按字符截断（如先行截后仍超字符，说明保留的行中某行本身太长）
-    if (truncated.length > CMD_MAX_CHARS) {
-      const charCut = truncated.length - CMD_MAX_CHARS;
-      if (hasLineCut) {
-        // 双重截断：先去了 N 行，余下行又截了 M 字符，按维度分报告
-        count += charCut;
-        unit = "行/字符";
-      } else {
-        count = charCut;
-        unit = "字符";
-      }
-      truncated = truncated.slice(0, CMD_MAX_CHARS);
-    }
-
-    return {
-      text: `$ ${truncated.trim()}${ELLIPSIS}`,
-      truncated: true,
-      summary: formatCollapsedSummary(count, { unit, hint: "ctrl+o" }),
-    };
+    const { text, truncated, summary } = truncateShellCommand(
+      shellCommand,
+      isFullyExpanded,
+    );
+    return { text: `$ ${text}`, truncated, summary };
   }, [shellCommand, isFullyExpanded]);
 
   // Shell 命令展示区域：非展开时截断 + 折叠提示；展开时换行展示完整命令

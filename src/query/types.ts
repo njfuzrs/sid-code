@@ -155,6 +155,19 @@ export interface QueryDeps {
   handleContextOverflow: (err: any, currentMaxTokens: number) => number | null;
   /** 获取 abort signal */
   getAbortSignal: () => AbortSignal | undefined;
+  /**
+   * 主动中断当前 LLM 请求（abort 当前 AbortController）。可选。
+   * 用途：L1 单轮硬超时触发时，配合 Promise.race 让出控制权的同时，
+   * 主动 abort 上游 fetch，尽量让已 hang 的底层流尽快释放（双保险）。
+   * 注意：即使 abort 对已 hang 的 reader 无效，race 也已让 queryLoop 恢复——
+   * 此回调是"尽力而为"的资源释放，不是兜底的唯一手段。
+   */
+  abortCurrentRequest?: (reason?: string) => void;
+  /**
+   * L1 单轮硬超时阈值（毫秒）。默认 10 分钟。
+   * 仅用于覆盖（如单测传短值快速触发超时路径）。生产无需注入。
+   */
+  maxTurnDurationMs?: number;
   /** UUID 生成（可 mock） */
   uuid: () => string;
   /** 检查本轮是否发生了模型降级（用于 tombstone） */

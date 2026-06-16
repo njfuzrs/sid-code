@@ -170,6 +170,8 @@ export class ReloadPluginsCommand implements Command {
 
   async execute(_args: string, ctx: AppContext): Promise<CommandResult> {
     const result = await refreshActivePlugins({
+      // 新体系优先：app.ts 会注入 unifiedRegistry；旧路径（bridge/headless）回退 commandRegistry
+      unifiedRegistry: ctx.unifiedRegistry,
       commandRegistry: ctx.commandRegistry,
       toolRegistry: ctx.registry,
       hookSystem: ctx.hookSystem,

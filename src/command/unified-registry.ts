@@ -18,6 +18,7 @@ import {
   loadCustomCommands,
   loadSkillCommands,
   loadBuiltinCommands,
+  loadPluginCommands,
 } from "./loaders.ts";
 import type { ScanOptions } from "../extension/types.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -30,6 +31,14 @@ export interface UnifiedRegistryLoadOptions {
 export class UnifiedCommandRegistry {
   private cache = new Map<string, UnifiedCommand[]>();
   private loadOptions: UnifiedRegistryLoadOptions;
+  /**
+   * 插件命令（动态来源，独立于 cwd 缓存）。
+   *
+   * 为什么不进 cwd 缓存：插件命令可通过 /reload-plugins 在运行时刷新，
+   * 与 cwd 无关。这里维护一份独立快照，loadPlugins/reloadPlugins 时更新，
+   * getCommands 时合并。优先级低于内置命令（pluginName: 前缀天然隔离，不会冲突）。
+   */
+  private pluginCommands: UnifiedCommand[] = [];
 
   constructor(loadOptions: UnifiedRegistryLoadOptions = {}) {
     this.loadOptions = loadOptions;
@@ -95,14 +104,54 @@ export class UnifiedCommandRegistry {
       cmd.isEnabled ? cmd.isEnabled() : true,
     );
 
-    // 合并 MCP 命令（去重，已存在的名称不覆盖）
-    if (mcpCommands && mcpCommands.length > 0) {
-      const existingNames = new Set(filtered.map((c) => c.name));
-      const uniqueMcp = mcpCommands.filter((c) => !existingNames.has(c.name));
-      return [...filtered, ...uniqueMcp];
+    // 合并插件命令（动态来源，去重；pluginName: 前缀天然不与内置/自定义冲突）
+    const existingNames = new Set(filtered.map((c) => c.name));
+    const merged: UnifiedCommand[] = [...filtered];
+    for (const pc of this.pluginCommands) {
+      if (existingNames.has(pc.name)) continue;
+      existingNames.add(pc.name);
+      merged.push(pc);
     }
 
-    return filtered;
+    // 合并 MCP 命令（去重，已存在的名称不覆盖）
+    if (mcpCommands && mcpCommands.length > 0) {
+      for (const mc of mcpCommands) {
+        if (existingNames.has(mc.name)) continue;
+        existingNames.add(mc.name);
+        merged.push(mc);
+      }
+    }
+
+    return merged;
+  }
+
+  /**
+   * 加载插件命令到独立快照（首次加载，幂等可重复调用）。
+   * 由应用启动时调用一次；运行时刷新走 reloadPlugins。
+   */
+  async loadPlugins(): Promise<number> {
+    this.pluginCommands = await loadPluginCommands();
+    getLogger().info(
+      "COMMAND",
+      `插件命令加载完成: ${this.pluginCommands.length} 个`,
+    );
+    return this.pluginCommands.length;
+  }
+
+  /**
+   * 重新加载插件命令（/reload-plugins 用）。
+   *
+   * 前置条件：调用方需先执行 clearAllPluginCaches() 清除底层 getPluginCommands
+   * 的 memoize 缓存（由 refreshActivePlugins 负责），否则这里拿到的仍是旧快照。
+   * 本方法只负责把刷新后的插件命令重新拉取进注册表快照。
+   */
+  async reloadPlugins(): Promise<number> {
+    this.pluginCommands = await loadPluginCommands();
+    getLogger().info(
+      "COMMAND",
+      `插件命令已重新加载: ${this.pluginCommands.length} 个`,
+    );
+    return this.pluginCommands.length;
   }
 
   /** 按名称或别名查找命令（精确名称优先，其次别名） */

@@ -235,7 +235,7 @@ export class HookSystem {
 
   async fireSessionStartEvent(
     source: SessionStartInput["source"] = "startup",
-    options?: { model?: string; systemPromptHash?: string },
+    options?: { model?: string; systemPromptHash?: string; resumedFrom?: string },
   ): Promise<AggregatedHookResult> {
     return this.eventHandler.fireSessionStartEvent(source, options);
   }

@@ -4,8 +4,23 @@
  * 避免跨组件重复定义。
  */
 
+import { ELLIPSIS } from "./constants/collapse.ts";
+
 /** 助手消息右侧留白（用于视觉区分） */
 export const ASSISTANT_PADDING_RIGHT = 10;
+
+/** header 摘要的最大显示宽度（超出截断 + ELLIPSIS，避免 header 行被长路径/命令撑爆）。 */
+const SUMMARY_MAX_CHARS = 50;
+/** subagent prompt 摘要的最大显示宽度（比文件/命令更短，header 只给个意向）。 */
+const PROMPT_MAX_CHARS = 30;
+
+/**
+ * 按显示宽度截断摘要文本，超长则保留前 max-1 个码点 + ELLIPSIS（U+2026）。
+ * 统一全项目省略号字形（对标 collapse.ts），不再用 ASCII `...`。
+ */
+function truncateSummary(text: string, max: number): string {
+  return text.length > max ? text.slice(0, max - 1) + ELLIPSIS : text;
+}
 
 /** 从工具输入中提取参数摘要（供 MessageItemRenderer / DialogManager 共用） */
 export function getToolSummary(name: string, input: unknown): string {
@@ -18,20 +33,21 @@ export function getToolSummary(name: string, input: unknown): string {
     let suffix = "";
     if (offset && limit) suffix = ` (行 ${offset}-${offset + limit})`;
     else if (limit) suffix = ` (前 ${limit} 行)`;
-    return `${fp}${suffix}`;
+    // 文件路径可能很长：对齐 bash 分支做显式截断（含 ELLIPSIS），不依赖 header 终端级硬截断。
+    return `${truncateSummary(fp, SUMMARY_MAX_CHARS)}${suffix}`;
   }
   if (lower === "edit") return inp?.file_path || inp?.filePath || "";
   if (lower === "write") return inp?.file_path || inp?.filePath || "";
   if (lower === "bash") {
     const cmd = inp?.command || "";
-    return cmd.length > 50 ? cmd.slice(0, 47) + "..." : cmd;
+    return truncateSummary(cmd, SUMMARY_MAX_CHARS);
   }
   if (lower === "grep") return `"${inp?.pattern || ""}"`;
   if (lower === "glob") return inp?.pattern || "";
   if (lower.startsWith("subagent") || lower.startsWith("agent__") || lower.startsWith("skill__")) {
     const agentType = inp?.type || inp?.agentType || "";
     const prompt = inp?.prompt || inp?.task || "";
-    const short = prompt.length > 30 ? prompt.slice(0, 27) + "..." : prompt;
+    const short = truncateSummary(prompt, PROMPT_MAX_CHARS);
     return agentType ? `${agentType} "${short}"` : short;
   }
   return "";
@@ -39,7 +55,7 @@ export function getToolSummary(name: string, input: unknown): string {
 
 /** 从工具结果中提取结果摘要 */
 export function getResultSummary(name: string, content: string, isError?: boolean): string {
-  if (isError) return content.length > 60 ? content.slice(0, 57) + "..." : content;
+  if (isError) return truncateSummary(content, 60);
   const lower = name.toLowerCase();
   if (lower === "read") return `${content.split("\n").length} 行`;
   if (lower === "edit") return "替换完成";

@@ -125,18 +125,27 @@ describe("§2.3 空 id fail-fast", () => {
 });
 
 describe("§2.1 tool message content 空串兜底", () => {
+  // 前置 assistant.tool_use 持有 c1，使 tool_result 合法配对（否则被方案 C 兜底丢弃）。
+  // result[0] 是 assistant(tool_calls)，result[1] 才是拆出的 role:tool。
+  const asstC1 = {
+    role: "assistant" as const,
+    content: [{ type: "tool_use" as const, id: "c1", name: "bash", input: {} }],
+  };
+
   test("空串 content → (empty)", () => {
     const result = provider.testConvertMessages([
+      asstC1,
       { role: "user", content: [{ type: "tool_result", tool_use_id: "c1", content: "" }] },
     ]);
-    expect(result[0]).toEqual({ role: "tool", tool_call_id: "c1", content: "(empty)" });
+    expect(result[1]).toEqual({ role: "tool", tool_call_id: "c1", content: "(empty)" });
   });
 
   test("非空 content → 原样", () => {
     const result = provider.testConvertMessages([
+      asstC1,
       { role: "user", content: [{ type: "tool_result", tool_use_id: "c1", content: "结果" }] },
     ]);
-    expect(result[0].content).toBe("结果");
+    expect(result[1].content).toBe("结果");
   });
 });
 

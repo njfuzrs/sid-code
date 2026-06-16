@@ -156,6 +156,73 @@ export class OpenAIProvider implements Provider {
   }
 
   /**
+   * 透传 DeepSeek 思考模式相关字段到请求体顶层（§2.1 / §2.2 / §2.6）。
+   * 流式与非流式路径共用，避免降级时行为不一致。
+   *
+   * DeepSeek（OpenAI 兼容端点）的协议约定（见 api-reference/deepseek-api.md）：
+   * - `thinking: { type: "enabled" | "disabled" }`——思考开关，请求体顶层字段。
+   *   注意 OpenAI **SDK** 用法是放进 extra_body，但 SDK 只是把它展开到 HTTP body 顶层；
+   *   sid-code 直发 fetch，故直接写顶层即可。
+   * - `reasoning_effort: "high" | "max"`——思考强度，请求体顶层字段（非 extra_body）。
+   * - `user_id`——KVCache/调度/内容安全隔离，请求体顶层字段。
+   *
+   * 仅对 DeepSeek 模型下发 thinking/reasoning_effort（其它 OpenAI 兼容端点不认这两个字段，
+   * 贸然下发可能 400）。user_id 是通用隔离字段，任意端点都按需下发。
+   */
+  private applyDeepSeekThinking(requestBody: any, params: SendParams, model: string): void {
+    const isDeepSeek = /deepseek/i.test(model);
+
+    if (isDeepSeek) {
+      // 思考开关：显式下发 enabled/disabled。params.thinking 不传时不下发，
+      // 沿用 DeepSeek 服务端默认（enabled）。
+      if (params.thinking) {
+        requestBody.thinking = {
+          type: params.thinking.enabled ? "enabled" : "disabled",
+        };
+      }
+      // 思考强度：思考显式关闭时不下发，避免冲突；其余情况按需下发。
+      const thinkingDisabled = params.thinking?.enabled === false;
+      if (params.reasoningEffort && !thinkingDisabled) {
+        requestBody.reasoning_effort = params.reasoningEffort;
+      }
+    }
+
+    // user_id：通用隔离字段，按需下发（DeepSeek 专有语义，其它端点忽略不报错）。
+    if (params.userId) {
+      requestBody.user_id = params.userId;
+    }
+  }
+
+  /**
+   * 透传工具调用策略（§4.2 / §2.4）。流式与非流式共用。
+   *
+   * §2.4：DeepSeek V4 思考模式**不接受** `tool_choice` 参数（实测会 400，
+   * OMP 官方配置亦标注 `supportsToolChoice: false`）。因此当模型为 DeepSeek
+   * 且思考未显式关闭时，跳过 `tool_choice` 下发并记日志告警，而非冒 400 风险。
+   * `parallel_tool_calls` 未见 DeepSeek 思考模式冲突报告，保持下发。
+   */
+  private applyToolChoice(requestBody: any, params: SendParams, model: string): void {
+    const isDeepSeek = /deepseek/i.test(model);
+    const thinkingActive = isDeepSeek && params.thinking?.enabled !== false;
+    const toolChoice = OpenAIProvider.toToolChoice(params.toolChoice);
+
+    if (toolChoice !== undefined) {
+      if (thinkingActive) {
+        // DeepSeek 思考模式下 tool_choice 会触发 400，跳过下发（保留模型自主调用）。
+        getLogger().warn(
+          "LLM:OPENAI",
+          `DeepSeek 思考模式不支持 tool_choice，已跳过下发（请求的 toolChoice=${JSON.stringify(params.toolChoice)}）`,
+        );
+      } else {
+        requestBody.tool_choice = toolChoice;
+      }
+    }
+    if (params.parallelToolCalls !== undefined) {
+      requestBody.parallel_tool_calls = params.parallelToolCalls;
+    }
+  }
+
+  /**
    * 将 sid-code 内部消息格式转换为 OpenAI API 格式
    *
    * 关键差异：
@@ -165,6 +232,20 @@ export class OpenAIProvider implements Provider {
    */
   private convertMessages(messages: Message[]): any[] {
     const result: any[] = [];
+
+    // 方案 C 最后兜底：预扫所有 assistant 的 tool_use id 集合。
+    // 上游防线（restoreSession 安全切片 + 发送前 backfill 切游离 + guard 哨兵）全部失效的
+    // 极端情况下，仍可能有游离 tool_result（其 id 非空，故躲过下方 §2.3 空 id fail-fast）
+    // 穿透到这里。若原样转成 role:"tool" 且无前置 tool_calls 持有该 id → OpenAI 400。
+    // 这里收集合法 id，生成 role:"tool" 时校验：不在集合中则丢弃 + 告警（而非透传致 400）。
+    const knownToolUseIds = new Set<string>();
+    for (const msg of messages) {
+      if (msg.role === "assistant" && Array.isArray(msg.content)) {
+        for (const block of msg.content) {
+          if (block.type === "tool_use" && block.id) knownToolUseIds.add(block.id);
+        }
+      }
+    }
 
     for (const msg of messages) {
       if (msg.role === "assistant") {
@@ -245,6 +326,16 @@ export class OpenAIProvider implements Provider {
                 `OpenAI convertMessages: tool_result 缺少 tool_use_id，无法构造合法 role:tool 消息`,
               );
             }
+            // 方案 C 最后兜底：游离 tool_result（id 非空但无前置 assistant.tool_calls 持有该 id）
+            // 若透传成 role:"tool" 必然 400。上游防线全失效时在此丢弃 + 告警，避免 400。
+            if (!knownToolUseIds.has(block.tool_use_id)) {
+              getLogger().warn(
+                "LLM:PROTOCOL",
+                `[${this.name()}] convertMessages 兜底丢弃游离 tool_result（tool_use_id=${block.tool_use_id} 无前置 tool_calls）。` +
+                  `正常情况下应被发送前 backfill 关卡切除——走到这里说明上游防线漏网，需排查产生端。`,
+              );
+              continue;
+            }
             toolResults.push({
               tool_call_id: block.tool_use_id,
               // §2.1：规范要求 tool message content 为非空 string。工具返回空串
@@ -304,6 +395,8 @@ export class OpenAIProvider implements Provider {
     };
     // §3.2：o-series 用 max_completion_tokens，其余用 max_tokens
     this.applyMaxTokens(requestBody, params.maxTokens, effectiveModel);
+    // §2.1/§2.2/§2.6：DeepSeek 思考开关 / reasoning_effort / user_id 透传
+    this.applyDeepSeekThinking(requestBody, params, effectiveModel);
 
     if (params.system) {
       // §3.1：o-series 用 developer role，其余 system；并避免重复注入(§4.1)
@@ -312,12 +405,8 @@ export class OpenAIProvider implements Provider {
 
     if (tools && tools.length > 0) {
       requestBody.tools = tools;
-      // §4.2：工具调用策略透传（不传则沿用服务端默认）
-      const toolChoice = OpenAIProvider.toToolChoice(params.toolChoice);
-      if (toolChoice !== undefined) requestBody.tool_choice = toolChoice;
-      if (params.parallelToolCalls !== undefined) {
-        requestBody.parallel_tool_calls = params.parallelToolCalls;
-      }
+      // §4.2/§2.4：工具调用策略透传（DeepSeek 思考模式跳过 tool_choice）
+      this.applyToolChoice(requestBody, params, effectiveModel);
     }
 
     try {
@@ -434,18 +523,17 @@ export class OpenAIProvider implements Provider {
     };
     // §3.2：o-series 用 max_completion_tokens，其余用 max_tokens
     this.applyMaxTokens(requestBody, params.maxTokens, effectiveModel);
+    // §2.1/§2.2/§2.6：DeepSeek 思考开关 / reasoning_effort / user_id 透传
+    // （⚠️ 必须与流式路径同步：网关不支持 SSE 降级到此路径时，开关/强度才不会丢失）
+    this.applyDeepSeekThinking(requestBody, params, effectiveModel);
     if (params.system) {
       // §3.1：o-series 用 developer role，其余 system；并避免重复注入(§4.1)
       this.prependSystemMessage(requestBody.messages, params.system, effectiveModel);
     }
     if (tools && tools.length > 0) {
       requestBody.tools = tools;
-      // §4.2：工具调用策略透传（不传则沿用服务端默认）
-      const toolChoice = OpenAIProvider.toToolChoice(params.toolChoice);
-      if (toolChoice !== undefined) requestBody.tool_choice = toolChoice;
-      if (params.parallelToolCalls !== undefined) {
-        requestBody.parallel_tool_calls = params.parallelToolCalls;
-      }
+      // §4.2/§2.4：工具调用策略透传（DeepSeek 思考模式跳过 tool_choice）
+      this.applyToolChoice(requestBody, params, effectiveModel);
     }
 
     const log = getLogger();
@@ -471,6 +559,16 @@ export class OpenAIProvider implements Provider {
     const msg = choice?.message ?? {};
     const content: ContentBlock[] = [];
 
+    // §2.3：DeepSeek reasoning_content（思考链）。非流式路径此前完全忽略此字段——
+    // 不仅 TUI 丢失思考过程，更关键的是下一轮回放该 assistant 消息时缺 reasoning_content，
+    // 与流式路径行为不一致。这里对齐 stream-processor：思考块放在文本块**之前**入 content
+    //（思考先于答复），并在 _meta 保存原文供 convertMessages 下轮回传。
+    const reasoningContent: string =
+      typeof msg.reasoning_content === "string" ? msg.reasoning_content : "";
+    if (reasoningContent.length > 0) {
+      content.push({ type: "thinking", thinking: reasoningContent });
+    }
+
     if (typeof msg.content === "string" && msg.content.length > 0) {
       content.push({ type: "text", text: msg.content });
     }
@@ -494,6 +592,19 @@ export class OpenAIProvider implements Provider {
     const finishReason = choice?.finish_reason;
     const stopReason = OpenAIProvider.mapFinishReason(finishReason);
 
+    // §2.1：内容审查拒绝。模型触发安全策略时返回 `refusal`（拒绝理由）而非 `content`。
+    // 此前完全未解析——若 refusal 非空而 content 为空，会得到无任何块的空响应，
+    // 表现为"模型莫名没回复"。这里在正文均空时把 refusal 文本兜底为 text 块，
+    // 至少让用户/上层看到拒绝原因，并标注来源。
+    if (
+      content.length === 0 &&
+      typeof msg.refusal === "string" &&
+      msg.refusal.length > 0
+    ) {
+      content.push({ type: "text", text: `[模型拒绝] ${msg.refusal}` });
+      getLogger().warn("LLM:OPENAI", `模型返回 refusal: ${msg.refusal.slice(0, 200)}`);
+    }
+
     // DeepSeek 缓存命中数：顶层 prompt_cache_hit_tokens（DeepSeek 专有），
     // 兜底读 OpenAI 标准的 prompt_tokens_details.cached_tokens。
     // DeepSeek 无缓存写入计费概念，cacheCreationInputTokens 不映射（恒 0）。
@@ -510,6 +621,11 @@ export class OpenAIProvider implements Provider {
         outputTokens: data.usage?.completion_tokens ?? 0,
         ...(cacheHit > 0 ? { cacheReadInputTokens: cacheHit } : {}),
       },
+      // §2.3：reasoning_content 存入 _meta，供 convertMessages 下轮按需回传
+      //（与流式路径 stream-processor 的 response._meta 同源）。
+      ...(reasoningContent.length > 0
+        ? { _meta: { reasoning_content: reasoningContent } }
+        : {}),
     };
   }
 
@@ -564,6 +680,12 @@ export class OpenAIProvider implements Provider {
         let timeoutId: ReturnType<typeof setTimeout> | null = null;
         const timeoutPromise = new Promise<never>((_resolve, reject) => {
           timeoutId = setTimeout(() => {
+            // 升 warn：debug:false 下经 logger 的 ERROR/WARN→stderr 兜底留痕（见 logger.ts log()）。
+            // 空闲超时是关键异常信号，事故复盘必须可见，不能只靠 SID_CODE_DEBUG_SSE 开关。
+            getLogger().warn(
+              "SSE",
+              `空闲超时 ${IDLE_TIMEOUT_MS / 1000}s 无 chunk（chunks=${totalChunks} empty=${emptyChunks}），中断流`,
+            );
             reject(new Error(`SSE 流空闲超时：${IDLE_TIMEOUT_MS / 1000} 秒无 chunk chunks=${totalChunks} empty=${emptyChunks}`));
           }, IDLE_TIMEOUT_MS);
           // 超时后 cancel reader，释放底层 TCP 连接（+100ms 确保 reject 先传播）
@@ -690,6 +812,32 @@ export class OpenAIProvider implements Provider {
                 index: textBlockIndex,
                 delta: { type: "text_delta", text: delta.content },
               };
+            }
+
+            // §2.1：流式内容审查拒绝。模型触发安全策略时在 delta.refusal 推送拒绝理由
+            // 而非 delta.content。此前完全未解析 → 拒绝场景静默丢失，表现为空响应。
+            // 这里复用文本块通道把 refusal 文本透传，让用户看到拒绝原因（与非流式路径一致）。
+            if (delta?.refusal) {
+              if (reasoningBlockStarted && !textBlockStarted) {
+                yield { type: "content_block_stop", index: nextContentIndex - 1 };
+                reasoningBlockStarted = false;
+              }
+              if (!textBlockStarted) {
+                textBlockStarted = true;
+                textBlockIndex = nextContentIndex;
+                yield {
+                  type: "content_block_start",
+                  index: nextContentIndex,
+                  content_block: { type: "text", text: "" },
+                };
+                nextContentIndex++;
+              }
+              yield {
+                type: "content_block_delta",
+                index: textBlockIndex,
+                delta: { type: "text_delta", text: delta.refusal },
+              };
+              lastContentProgressAt = Date.now();
             }
 
             // 工具调用（支持多个并行）

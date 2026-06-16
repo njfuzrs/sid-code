@@ -39,6 +39,7 @@ export function toAppContext(ctx: CommandContext): AppContext {
     customCommands: ctx.customCommands,
     confirmShellCommands: ctx.confirmShellCommands,
     hookSystem: ctx.hookSystem,
+    unifiedRegistry: ctx.unifiedRegistry,
   };
 }
 
@@ -98,6 +99,7 @@ export function toCommandContext(appCtx: AppContext): CommandContext {
     confirmShellCommands: appCtx.confirmShellCommands,
     hookSystem: appCtx.hookSystem,
     cwd: process.cwd(),
+    unifiedRegistry: appCtx.unifiedRegistry,
   };
 }
 

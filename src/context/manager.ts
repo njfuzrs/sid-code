@@ -9,6 +9,10 @@ import { estimateTextTokens } from "./token.ts";
 import { ToolOutputMaskingService, TOOL_RESULT_CLEARED_MESSAGE } from "./tool-output-masking.ts";
 import { persistLargeOutput, isPersistedReference } from "./tool-result-storage.ts";
 import { getLogger, getSessionMetrics } from "../debug/index.ts";
+import {
+  checkMessageHistoryIntegrity,
+  describeIntegrityViolation,
+} from "../agent/message-invariants.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -527,6 +531,17 @@ export class Manager {
     this.messages = [...msgs];
     // 消息集整体替换 → 真实 token 锚点失效，避免沿用旧值误判 compact
     this.invalidateActualTokenAnchor();
+    // 诊断：静默检测配对完整性（不修数据、不阻断主流程）。
+    // setMessages 是 restoreSession / 压缩管线等的整体替换入口，脏数据（游离/孤儿）
+    // 从这里进入历史后，由发送前 backfillOrphanToolResults 关卡兜底修复。
+    // 此处只记录告警，让"脏数据从哪个调用方进来"显形，便于定位产生端。
+    const integrity = checkMessageHistoryIntegrity(this.messages);
+    if (!integrity.intact) {
+      getLogger().warn(
+        "CONTEXT",
+        `setMessages 接收到不完整消息历史（将由发送前关卡兜底）：${describeIntegrityViolation(integrity)}`,
+      );
+    }
   }
 
   /** 清空消息 */

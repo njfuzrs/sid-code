@@ -16,11 +16,21 @@ import { resolvePricing, type PricingModelEntry } from "../api/cost-tracker.ts";
 /** 单个模型的用量统计 */
 export interface ModelUsageStats {
   /**
-   * 末次输入 token（stock 口径）：= 最后一次 API 调用的 prompt 总长度（含全部历史）。
-   * 因含历史，累加会 N² 过计数，故取末次。**仅用于上下文窗口占比展示**。
+   * 末次输入 token（stock 口径，**provider 原始口径**）：= 最后一次 API 调用的 `usage.inputTokens`。
+   * ⚠️ 口径因 provider 而异：Anthropic = 未命中余量（不含命中/写入），OpenAI/DeepSeek = 含命中的全量 prompt。
+   * 因此**不要**直接用它展示「当前上下文大小」——对 Anthropic 会严重低估（只剩 cache miss 增量）。
+   * 展示当前上下文请用 {@link stockPromptTokens}（已归一化为末次完整输入）。
    * 命中率/计费等 flow 统计请用 {@link cumulativePromptTokens}。
    */
   inputTokens: number;
+  /**
+   * 末次完整输入 token（stock 口径，**归一化后的 promptTotal**）：每次 API 调用覆盖写入
+   * `normalizeCacheUsage(usage, provider).promptTotal`，即末次调用的 uncached + hit + write 之和。
+   * - Anthropic：input_tokens（未命中余量）+ cache_read + cache_creation = 真实末次上下文。
+   * - OpenAI/DeepSeek：prompt_tokens（本就含命中）= 完整上下文。
+   * 两家统一为「末次完整 prompt 大小」，**这才是状态栏「输入」该显示的口径**（反映当前上下文有多大）。
+   */
+  stockPromptTokens: number;
   /**
    * 累计输入 token（flow 口径）：每次 API 调用的 inputTokens 之和。
    * - Anthropic：每次的未命中余量之和 → 累计未命中。
@@ -96,6 +106,7 @@ export class SessionState {
     if (!this.modelUsage[model]) {
       this.modelUsage[model] = {
         inputTokens: 0,
+        stockPromptTokens: 0,
         cumulativePromptTokens: 0,
         outputTokens: 0,
         cacheReadInputTokens: 0,
@@ -112,10 +123,12 @@ export class SessionState {
 
     // 累加 token
     // ⚠️ usage.inputTokens 是"本次 API 调用时的 prompt 总长度"（含全部历史），
-    // 累加会 N² 过计数。inputTokens 取最后一次（stock，给上下文占比展示）；
+    // 累加会 N² 过计数。inputTokens 取最后一次（stock，provider 原始口径）；
+    // stockPromptTokens 取最后一次的归一化完整输入（uncached+hit+write，跨 provider 统一，给上下文占比展示）；
     // cumulativePromptTokens 累加（flow，给命中率/省钱统计，与 cacheRead 累加口径一致）。
     // 校准记录见 evals/eval-judge.ts gradeCost 注释。
     stats.inputTokens = usage.inputTokens;
+    stats.stockPromptTokens = normalizeCacheUsage(usage, prov).promptTotal;
     stats.cumulativePromptTokens += usage.inputTokens;
     stats.outputTokens += usage.outputTokens;
     stats.cacheReadInputTokens += usage.cacheReadInputTokens ?? 0;
@@ -349,12 +362,11 @@ export class SessionState {
   }
 
   /**
-   * 获取末次输入 token（stock 口径，各模型 stats.inputTokens 之和）。
+   * 获取末次输入 token（stock 口径，**provider 原始口径**，各模型 stats.inputTokens 之和）。
    *
-   * stats.inputTokens 每次 API 调用时被覆盖为当次 prompt 总长度（不含历史重复计数），
-   * 与 getTotalUsage().inputTokens（flow 累计）不同：
-   * - **stock**：末次单次调用的 prompt 大小，适合"当前上下文有多大"的展示（如状态栏输入 token）
-   * - **flow**：历次调用的 cumulativePromptTokens 之和，适合命中率/计费统计
+   * ⚠️ 口径因 provider 而异（Anthropic=未命中余量 / OpenAI=含命中全量），**不适合直接展示当前上下文**。
+   * 展示状态栏「输入 = 当前上下文大小」请用 {@link getStockPromptTokens}（已归一化为末次完整输入）。
+   * 本方法保留供需要 provider 原始 inputTokens 的场景（调试/对比）使用。
    *
    * 多模型会话场景：各模型 stock 值简单求和，实践中绝大多数会话只有单一模型。
    */
@@ -362,6 +374,26 @@ export class SessionState {
     let total = 0;
     for (const stats of Object.values(this.modelUsage)) {
       total += stats.inputTokens;
+    }
+    return total;
+  }
+
+  /**
+   * 获取末次完整输入 token（stock 口径，**归一化 promptTotal**，各模型 stats.stockPromptTokens 之和）。
+   *
+   * 每次 API 调用覆盖写入 `normalizeCacheUsage(usage, provider).promptTotal`，即末次完整 prompt 大小：
+   * - **Anthropic**：input_tokens（未命中余量）+ cache_read + cache_creation = 真实末次上下文。
+   * - **OpenAI/DeepSeek**：prompt_tokens（本就含命中）= 完整上下文。
+   *
+   * 两家统一为「末次完整输入」，是**状态栏「输入」展示的正确口径**（反映当前上下文有多大）。
+   * 修复了此前直接用 stats.inputTokens 在 Anthropic 下只显示 cache miss 增量、严重低估上下文的问题。
+   *
+   * 多模型会话场景：各模型 stock 值简单求和，实践中绝大多数会话只有单一模型。
+   */
+  getStockPromptTokens(): number {
+    let total = 0;
+    for (const stats of Object.values(this.modelUsage)) {
+      total += stats.stockPromptTokens;
     }
     return total;
   }

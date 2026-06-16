@@ -293,20 +293,6 @@ function normalizeQuotes(str: string): string {
     .replace(/\u2026/g, "...");        // … → ...
 }
 
-// ─── 设置文件保护 ─────────────────────────────────────────────────────────────
-
-/** 受保护的设置文件模式 */
-const PROTECTED_SETTINGS_PATTERNS = [
-  /\.sid-code\/settings\.json$/,
-  /\.sid-code\/config\.json$/,
-  /\.claude\/settings\.json$/,
-];
-
-/** 检查是否为受保护的设置文件 */
-function isProtectedSettingsFile(filePath: string): boolean {
-  return PROTECTED_SETTINGS_PATTERNS.some(p => p.test(filePath));
-}
-
 // ─── 主替换函数 ───────────────────────────────────────────────────────────────
 
 function calculateReplacement(
@@ -420,14 +406,6 @@ export class EditTool implements Tool {
     }
 
     log.info("TOOL", `▶ 编辑 ${filePath}`);
-
-    // 设置文件保护：禁止编辑 sid-code 自身的配置文件
-    if (isProtectedSettingsFile(filePath)) {
-      return {
-        output: `错误: ${filePath} 是受保护的设置文件，不允许通过 edit 工具修改。请使用 /config 命令或手动编辑。`,
-        isError: true,
-      };
-    }
 
     // 先读后改校验
     if (this.tracker) {

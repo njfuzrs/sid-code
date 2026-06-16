@@ -4,6 +4,7 @@
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { SessionStore } from "../../src/session/store.ts";
+import { parseSessionJsonl } from "../../src/session/store.ts";
 import type { SessionData } from "../../src/session/store.ts";
 import { join } from "path";
 import { mkdirSync, rmSync, existsSync } from "fs";
@@ -188,5 +189,67 @@ describe("SessionStore", () => {
     const loaded = await store.load("jsonl-missing");
     expect(loaded).not.toBeNull();
     expect(loaded!.messages.length).toBe(1);
+  });
+
+  test("Bug3: resumeSession 传入 traceSessionId 时落 trace_session_id 元数据", async () => {
+    const store = new SessionStore();
+    store.startSession("old-sess", "m", "p", "/cwd");
+    store.appendMessage({ role: "user", content: [{ type: "text", text: "hi" }] });
+    // 模拟新进程 resume：本进程 trace id 与旧会话 id 不同
+    const store2 = new SessionStore();
+    store2.resumeSession("old-sess", "m", "p", "/cwd", "new-trace-id");
+
+    // 直接读原始 jsonl，确认 metadata 记录已写入
+    const raw = await Bun.file(
+      join(testDir, ".sid-code", "sessions", "old-sess.jsonl")
+    ).text();
+    expect(raw).toContain("\"type\":\"metadata\"");
+    expect(raw).toContain("trace_session_id");
+    expect(raw).toContain("new-trace-id");
+  });
+
+  test("Bug3: traceSessionId 与会话 id 相同时不写冗余元数据", async () => {
+    const store = new SessionStore();
+    store.startSession("same-id", "m", "p", "/cwd");
+    const store2 = new SessionStore();
+    store2.resumeSession("same-id", "m", "p", "/cwd", "same-id");
+
+    const raw = await Bun.file(
+      join(testDir, ".sid-code", "sessions", "same-id.jsonl")
+    ).text();
+    expect(raw).not.toContain("trace_session_id");
+  });
+});
+
+describe("parseSessionJsonl", () => {
+  test("Bug1: 逐行解析多行 jsonl 不抛错（JSON.parse 整体解析会失败）", () => {
+    const content = [
+      JSON.stringify({ type: "session_start", sessionId: "s1", model: "m", provider: "p", cwd: "/c", timestamp: "2026-01-01T00:00:00Z" }),
+      JSON.stringify({ type: "user_message", message: { role: "user", content: [{ type: "text", text: "hi" }] }, timestamp: "2026-01-01T00:00:01Z" }),
+      JSON.stringify({ type: "assistant_message", message: { role: "assistant", content: [{ type: "text", text: "yo" }] }, timestamp: "2026-01-01T00:00:02Z" }),
+    ].join("\n");
+
+    const data = parseSessionJsonl(content);
+    expect(data).not.toBeNull();
+    expect(data!.id).toBe("s1");
+    expect(data!.messages.length).toBe(2);
+    expect(data!.createdAt).toBe("2026-01-01T00:00:00Z");
+    expect(data!.updatedAt).toBe("2026-01-01T00:00:02Z");
+  });
+
+  test("无 session_start 行返回 null", () => {
+    const content = JSON.stringify({ type: "user_message", message: { role: "user", content: [] }, timestamp: "t" });
+    expect(parseSessionJsonl(content)).toBeNull();
+  });
+
+  test("跳过损坏行，保留可解析记录", () => {
+    const content = [
+      JSON.stringify({ type: "session_start", sessionId: "s2", model: "m", provider: "p", cwd: "/c", timestamp: "t0" }),
+      "{ 这不是合法 json",
+      JSON.stringify({ type: "user_message", message: { role: "user", content: [] }, timestamp: "t1" }),
+    ].join("\n");
+    const data = parseSessionJsonl(content);
+    expect(data!.id).toBe("s2");
+    expect(data!.messages.length).toBe(1);
   });
 });

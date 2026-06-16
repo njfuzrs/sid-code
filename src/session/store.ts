@@ -85,8 +85,19 @@ export class SessionStore {
    * 与 startSession 的区别：把 currentFile 指向**已存在**的旧 jsonl，且**不写 session_start**。
    * 这样 `-c` / `--resume` 恢复的会话，后续新消息会续写进原文件，而非另开新文件导致历史碎片化。
    * 若旧文件不存在（极端情况，如手动删了 jsonl），回退为新建会话以免丢失后续写入。
+   *
+   * Bug3 桥接：resume 时 SessionStore 续写旧 id 的 jsonl，而 TraceCollector 用本进程
+   * 新生成的 id 写 trajectories/sessions/{新id}/（避免跨进程冲突，见 app.ts restoreSession）。
+   * 两套存储 sessionId 不一致会导致无法关联。此处传入本进程 id（traceSessionId），
+   * 续写时落一条 metadata 记录，使旧会话 jsonl 能反查到对应的 trajectory 目录。
    */
-  resumeSession(sessionId: string, model: string, provider: string, cwd: string): void {
+  resumeSession(
+    sessionId: string,
+    model: string,
+    provider: string,
+    cwd: string,
+    traceSessionId?: string,
+  ): void {
     const jsonlPath = join(this.sessionDir, `${sessionId}.jsonl`);
     if (existsSync(jsonlPath)) {
       this.currentFile = jsonlPath;
@@ -95,6 +106,10 @@ export class SessionStore {
       // 旧 jsonl 不存在（可能是从旧 JSON 格式恢复的会话）→ 新建 jsonl 续写
       getLogger().info("SESSION", `resume 会话无 jsonl，新建续写文件: ${sessionId}`);
       this.startSession(sessionId, model, provider, cwd);
+    }
+    // 记录本进程 trajectory 目录 id，桥接两套存储（仅当 id 与会话 id 不同才有意义）
+    if (traceSessionId && traceSessionId !== sessionId) {
+      this.appendMetadata("trace_session_id", traceSessionId);
     }
   }
 
@@ -279,66 +294,7 @@ ${summary}
   /** 从 JSONL 文件恢复会话 */
   private async loadFromJsonl(filePath: string): Promise<SessionData | null> {
     const content = await Bun.file(filePath).text();
-    const lines = content.trim().split("\n").filter(Boolean);
-
-    const messages: Message[] = [];
-    const metadata: Record<string, unknown> = {};
-    let sessionId = "";
-    let model = "";
-    let provider = "";
-    let createdAt = "";
-    let updatedAt = "";
-
-    for (const line of lines) {
-      try {
-        const record = JSON.parse(line) as SessionRecord;
-        switch (record.type) {
-          case "session_start":
-            sessionId = record.sessionId;
-            model = record.model;
-            provider = record.provider;
-            createdAt = record.timestamp;
-            updatedAt = record.timestamp;
-            break;
-          case "user_message":
-          case "assistant_message":
-          case "tool_result":
-            messages.push(record.message);
-            updatedAt = record.timestamp;
-            break;
-          case "metadata":
-            metadata[record.key] = record.value;
-            updatedAt = record.timestamp;
-            break;
-          case "context_compact":
-            // B2 方案A：compact 记录退化为纯标记，**不再清空 messages**。
-            // 旧实现 `messages.length = 0` + 只塞一条 `[上下文摘要]` 占位，会导致 resume 时
-            // 历史被清空（bug②）。压缩效果本就已反映在后续写入的真实消息流里——
-            // sid-code 的压缩多为截断/管道压缩而非 LLM 摘要，未必有可用摘要文本，
-            // 保留真实消息流是最忠实、无损的恢复方式。
-            updatedAt = record.timestamp;
-            break;
-          case "session_end":
-            updatedAt = record.timestamp;
-            break;
-        }
-      } catch {
-        continue;
-      }
-    }
-
-    if (!sessionId) return null;
-
-    return {
-      version: CURRENT_VERSION,
-      id: sessionId,
-      model,
-      provider,
-      messages,
-      createdAt,
-      updatedAt,
-      summary: metadata["summary"] as string | undefined,
-    };
+    return parseSessionJsonl(content);
   }
 
   /** 追加一条 JSONL 记录 */
@@ -346,4 +302,78 @@ ${summary}
     if (!this.currentFile) return;
     appendFileSync(this.currentFile, JSON.stringify(record) + "\n");
   }
+}
+
+/**
+ * 解析 JSONL 会话内容为 SessionData（单一真相源）。
+ *
+ * 抽出为模块级纯函数，供 SessionStore.loadFromJsonl 与 session/utils.ts 的
+ * getAllSessionFiles 共用——避免后者用 `JSON.parse(整个文件)` 解析多行 JSONL
+ * 而恒抛错、把所有 jsonl 会话误判为损坏文件（Bug1）。
+ *
+ * @param content JSONL 文件全文（一行一条记录）
+ * @returns 解析出的 SessionData；无 session_start 行时返回 null
+ */
+export function parseSessionJsonl(content: string): SessionData | null {
+  const lines = content.trim().split("\n").filter(Boolean);
+
+  const messages: Message[] = [];
+  const metadata: Record<string, unknown> = {};
+  let sessionId = "";
+  let model = "";
+  let provider = "";
+  let createdAt = "";
+  let updatedAt = "";
+
+  for (const line of lines) {
+    try {
+      const record = JSON.parse(line) as SessionRecord;
+      switch (record.type) {
+        case "session_start":
+          sessionId = record.sessionId;
+          model = record.model;
+          provider = record.provider;
+          createdAt = record.timestamp;
+          updatedAt = record.timestamp;
+          break;
+        case "user_message":
+        case "assistant_message":
+        case "tool_result":
+          messages.push(record.message);
+          updatedAt = record.timestamp;
+          break;
+        case "metadata":
+          metadata[record.key] = record.value;
+          updatedAt = record.timestamp;
+          break;
+        case "context_compact":
+          // B2 方案A：compact 记录退化为纯标记，**不再清空 messages**。
+          // 旧实现 `messages.length = 0` + 只塞一条 `[上下文摘要]` 占位，会导致 resume 时
+          // 历史被清空（bug②）。压缩效果本就已反映在后续写入的真实消息流里——
+          // sid-code 的压缩多为截断/管道压缩而非 LLM 摘要，未必有可用摘要文本，
+          // 保留真实消息流是最忠实、无损的恢复方式。
+          updatedAt = record.timestamp;
+          break;
+        case "session_end":
+          updatedAt = record.timestamp;
+          break;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  if (!sessionId) return null;
+
+  return {
+    version: CURRENT_VERSION,
+    id: sessionId,
+    model,
+    provider,
+    messages,
+    createdAt,
+    updatedAt,
+    kind: metadata["kind"] as "main" | "subagent" | undefined,
+    summary: metadata["summary"] as string | undefined,
+  };
 }

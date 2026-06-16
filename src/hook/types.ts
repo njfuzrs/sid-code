@@ -295,6 +295,8 @@ export interface SessionStartInput extends HookInput {
   model?: string;
   /** system prompt 的 MD5 hash */
   system_prompt_hash?: string;
+  /** Bug3 桥接：source="resume" 时携带被恢复的旧会话 id，使 trajectory 能反查对话历史。 */
+  resumed_from?: string;
 }
 
 /** SessionEnd 输入 */

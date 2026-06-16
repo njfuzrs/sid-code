@@ -18,8 +18,7 @@ import { DiffRenderer } from '../DiffRenderer.tsx';
 import { MarkdownDisplay } from '../MarkdownDisplay.tsx';
 import { AnsiOutputText } from '../AnsiOutput.tsx';
 import { SlicingMaxSizedBox } from '../SlicingMaxSizedBox.tsx';
-import { useUIState } from '../../contexts/UIStateContext.tsx';
-import { EXPAND_LEVEL_MAX_LINES } from '../../contexts/UIStateContext.tsx';
+import { useUIState, useExpandedMaxLines } from '../../contexts/UIStateContext.tsx';
 import type { AnsiOutput } from '../../types/ansi.ts';
 
 /** 最大结果字符数（超过此值预先截断，避免性能问题） */
@@ -105,7 +104,11 @@ export const ToolResultDisplay: React.FC<ToolResultDisplayProps> = ({
   structuredPatch,
   isError = false,
 }) => {
-  const { renderMarkdown, expandLevel } = useUIState();
+  const { renderMarkdown } = useUIState();
+  // TO4：阶梯式展开。expandLevel → maxLines 映射收口到 useExpandedMaxLines hook
+  // （与命令输出、错误正文共享同一套 ctrl+o 阶梯展开语义）。
+  // base 取调用方传入的 maxLines（折叠档基线），全展开档返回 undefined（不截断）。
+  const effectiveMaxLines = useExpandedMaxLines(maxLines);
 
   const hasPatch = !!structuredPatch?.length;
   // 有结构化 diff 时,即使 resultDisplay 为空(或仅摘要)也要渲染 diff;否则无内容才退出
@@ -123,15 +126,6 @@ export const ToolResultDisplay: React.FC<ToolResultDisplayProps> = ({
   }
 
   if (!resultDisplay) return null;
-
-  // TO4：阶梯式展开。调用方传入的 maxLines 视作"折叠档(level 0)"基线；
-  // 当用户用 Ctrl+O 提升展开级别时，按级别放大行数上限（level 2 = 全展开不截断）。
-  // 取两者较大值，确保调用方显式要求更多行时不被缩小。
-  const levelMaxLines = EXPAND_LEVEL_MAX_LINES[expandLevel];
-  const effectiveMaxLines =
-    levelMaxLines === Infinity
-      ? undefined // 全展开：不传 maxLines，交由下游不截断
-      : Math.max(maxLines, levelMaxLines);
 
   // 宽度感知换行：对标 claude-code 的 wrapWidth 计算
   // 终端宽度减去边距（树枝缩进 + 容器 padding），最小 20 列
@@ -198,6 +192,24 @@ export const ToolResultDisplay: React.FC<ToolResultDisplayProps> = ({
 
   // 5. Markdown 渲染
   if (renderOutputAsMarkdown) {
+    // MarkdownDisplay 仅在 isPending 时按 availableTerminalHeight 截断，
+    // 工具结果是已完成内容（isPending=false），其自身不做行数折叠。
+    // 为避免长 markdown 结果占满屏幕：未全展开且超出 effectiveMaxLines 时，
+    // 降级为纯文本走 SlicingMaxSizedBox 截断（保证 ctrl+o 可阶梯展开）；
+    // 全展开（effectiveMaxLines===undefined）或内容本身不超限时，完整渲染 markdown。
+    const exceedsLimit =
+      effectiveMaxLines !== undefined &&
+      content.split('\n').length > effectiveMaxLines;
+    if (exceedsLimit) {
+      return (
+        <SlicingMaxSizedBox
+          text={content}
+          maxLines={effectiveMaxLines}
+          overflowDirection={overflowDirection}
+          maxColumnWidth={maxColumnWidth}
+        />
+      );
+    }
     return (
       <MarkdownDisplay
         text={content}

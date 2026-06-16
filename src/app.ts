@@ -94,6 +94,8 @@ export interface AppOptions {
   providerRegistry?: ProviderRegistry;
   toolRegistry?: ToolRegistry;
   commandRegistry?: CommandRegistry;
+  /** 统一命令注册表（新体系）。TUI 命令获取/执行优先走此注册表 */
+  unifiedRegistry?: import("./command/unified-registry.ts").UnifiedCommandRegistry;
   permissionChecker?: Checker;
   initialPrompt?: string;
   mcpManager?: MCPManager;
@@ -123,6 +125,8 @@ export class App {
   private ctxMgr: ContextManager;
   private toolRegistry: ToolRegistry;
   private commandRegistry: CommandRegistry;
+  /** 统一命令注册表（新体系）。非空时 TUI 命令获取/执行走此注册表 */
+  private unifiedRegistry?: import("./command/unified-registry.ts").UnifiedCommandRegistry;
   private permissionChecker: Checker | null;
   private fallback: ModelFallback;
   private thinkingMgr: ThinkingManager;
@@ -171,6 +175,7 @@ export class App {
     this.mcpManager = opts.mcpManager;
     this.toolRegistry = opts.toolRegistry ?? new ToolRegistry();
     this.commandRegistry = opts.commandRegistry ?? new CommandRegistry();
+    this.unifiedRegistry = opts.unifiedRegistry;
     this.permissionChecker = opts.permissionChecker ?? null;
     this.planManager = opts.planManager ?? null;
     const sessionId = opts.config.sessionId || crypto.randomUUID().slice(0, 8);
@@ -224,8 +229,14 @@ export class App {
         getLogger().warn("BUDGET", `${alert.ruleName}: ${alert.level} (${(alert.percentage * 100).toFixed(0)}%)`);
       });
     }
-    // Extended Thinking 仅 Anthropic 支持
-    this.thinkingMgr = new ThinkingManager(opts.config.provider === "anthropic");
+    // Extended Thinking / 推理强度控制：Anthropic 走 thinking.budgetTokens，
+    // DeepSeek 走 reasoning_effort（high/max）。两者都需要 ThinkingManager 启用，
+    // 否则 parseThinkingHint/getThinkingConfig 恒返回 undefined → think hard/ultrathink 失效。
+    // 其它兼容端点（ollama 等）不认这些字段，保持关闭。
+    const thinkingProvider =
+      opts.config.provider === "anthropic" ||
+      /deepseek/i.test(opts.config.model || opts.config.provider || "");
+    this.thinkingMgr = new ThinkingManager(thinkingProvider);
     // 如果有 providerRegistry，从中获取 availability 服务
     const availability = opts.providerRegistry?.availability;
 
@@ -309,6 +320,10 @@ export class App {
       autoCompact: () => this.autoCompact(),
       handleContextOverflow: (err, max) => this.handleContextOverflow(err, max),
       getAbortSignal: () => this.abortController?.signal,
+      // L1 单轮硬超时触发时主动 abort 上游 fetch（尽力而为的资源释放，配合 loop.ts 的 Promise.race）。
+      abortCurrentRequest: (reason) => {
+        try { this.abortController?.abort(reason ?? "turn-timeout"); } catch { /* ignore */ }
+      },
       getPlanModeReminder: async () => {
         if (!this.planManager?.isPlanning()) return null;
         const { buildPlanModeReminder } = await import("./plan/prompt.ts");
@@ -375,6 +390,132 @@ export class App {
     return this.commandRegistry.all()
       .filter(cmd => !builtinNames.has(cmd.name()))
       .map(cmd => ({ name: cmd.name(), description: cmd.description() }));
+  }
+
+  /**
+   * 加载命令列表（补全/帮助显示用）。
+   * 新体系优先：从 UnifiedCommandRegistry.getCommands 取（含 bundled skills、plugin 命令）；
+   * 无新注册表时回退旧 Registry.all()。
+   */
+  private async loadCommandList(): Promise<Array<{ name: string; aliases: string[]; description: string }>> {
+    if (this.unifiedRegistry) {
+      try {
+        const cmds = await this.unifiedRegistry.getCommands(process.cwd());
+        return cmds
+          // 隐藏命令不进补全列表
+          .filter((c) => !c.isHidden)
+          // 仅用户可调用的进补全（userInvocable 默认 true）
+          .filter((c) => c.userInvocable !== false)
+          .map((c) => ({
+            name: c.name,
+            aliases: c.aliases ?? [],
+            description: c.description,
+          }));
+      } catch (err: any) {
+        getLogger().warn("APP", `统一注册表加载命令列表失败，回退旧 Registry: ${err?.message}`);
+      }
+    }
+    return this.commandRegistry.all().map((cmd) => ({
+      name: cmd.name(),
+      aliases: cmd.aliases(),
+      description: cmd.description(),
+    }));
+  }
+
+  /**
+   * 处理新体系 CommandExecutor 的执行结果（CommandExecutionResult）。
+   *
+   * 覆盖全部分支：message/submit_prompt/dialog/clear/quit/compact/confirm/error/passthrough/skip。
+   * 与旧体系 result.kind 分支语义对齐，新增 compact/passthrough/skip/confirm 处理。
+   */
+  private async handleCommandExecutionResult(
+    result: import("./command/types.ts").CommandExecutionResult,
+    deps: {
+      cmd: string;
+      commandInput: string;
+      callbacks: { onUserInput: (text: string) => Promise<void> };
+      updateState: (patch: Partial<import("./ui/App.tsx").TUIState>) => void;
+      appendCommandOutput: (input: string, output: string | null, isError?: boolean) => void;
+      getConversationClearedPatch: () => Partial<import("./ui/App.tsx").TUIState>;
+      clearPromptCache: () => void;
+      resetSyncState: () => void;
+    },
+  ): Promise<void> {
+    const log = getLogger();
+    const { commandInput, callbacks, updateState, appendCommandOutput, getConversationClearedPatch, clearPromptCache, resetSyncState } = deps;
+
+    switch (result.type) {
+      case "clear":
+        log.info("TUI:CMD", "清空消息历史，重置上下文");
+        this.ctxMgr.clear();
+        clearPromptCache();
+        this.quotaManager?.resetAlertLevel();
+        this.fallback.reset();
+        resetSyncState();
+        updateState(getConversationClearedPatch());
+        break;
+
+      case "quit":
+        appendCommandOutput(commandInput, result.message ?? "再见！");
+        // D3-4：/quit 退出前必须 fireSessionEndEvent，保证 transcript 落盘（纪律不变量第 1 条）。
+        void (async () => {
+          try {
+            await this.hookSystem.fireSessionEndEvent("exit", this.buildSessionEndStats());
+          } catch (err: any) {
+            process.stderr.write(`[quit] SessionEnd hook 失败: ${err?.message ?? err}\n`);
+          }
+          this.finalizeSessionStore();
+          try { CrashMarker.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
+          try { PidManager.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
+          setTimeout(() => process.exit(0), 100);
+        })();
+        break;
+
+      case "submit_prompt":
+        if (result.value) {
+          appendCommandOutput(commandInput, null);
+          await callbacks.onUserInput(result.value);
+        }
+        break;
+
+      case "passthrough":
+        // 不像命令的输入：当作普通文本发给模型
+        appendCommandOutput(commandInput, null);
+        await callbacks.onUserInput(result.value);
+        break;
+
+      case "compact":
+        // 压缩摘要：作为消息显示（compact 命令内部已操作 ctxMgr，这里仅回显摘要）
+        appendCommandOutput(commandInput, result.summary ?? null);
+        break;
+
+      case "dialog":
+        if (result.dialog) {
+          log.info("TUI:CMD", `打开对话框: ${result.dialog}`);
+          updateState({ activeDialog: result.dialog });
+        }
+        break;
+
+      case "confirm": {
+        // 确认型结果：暂以文本提示用户（新体系 confirm 的 UI 接线后续可增强）。
+        // 当前 bundled skills 不产生 confirm，此分支为完整性兜底。
+        appendCommandOutput(commandInput, result.message ?? "需要确认");
+        break;
+      }
+
+      case "error":
+        appendCommandOutput(commandInput, `错误: ${result.message ?? ""}`, true);
+        break;
+
+      case "skip":
+        // 静默完成：不输出
+        break;
+
+      case "message":
+      default:
+        appendCommandOutput(commandInput, result.value ?? null);
+        break;
+    }
   }
 
   /** 处理上下文溢出错误，委托给 auto-compact 模块 */
@@ -489,8 +630,9 @@ export class App {
           this.config.model,
           this.config.provider,
           process.cwd(),
+          this.sessionState.sessionId,
         );
-        log.info("APP", `会话持久化续写已启动（resume）: ${this.resumedSessionId}`);
+        log.info("APP", `会话持久化续写已启动（resume）: ${this.resumedSessionId}（trace=${this.sessionState.sessionId}）`);
       } else {
         this.sessionStore?.startSession(
           this.sessionState.sessionId,
@@ -581,8 +723,13 @@ export class App {
     const { initTraceCollector, initTelemetrySystem } = await import("./query/init-helpers.ts");
     await initTraceCollector(this.config, this.hookSystem);
 
-    // session_start hook（非阻塞）
-    this.hookSystem.fireSessionStartEvent("startup", { model: this.config.model })
+    // session_start hook（非阻塞）。
+    // Bug3 桥接：resume 时上报 source="resume" + resumedFrom=旧会话 id，
+    // 使 trajectory 元数据能反查到 SessionStore 的 sessions/{旧id}.jsonl。
+    this.hookSystem.fireSessionStartEvent(
+      this.resumedSessionId ? "resume" : "startup",
+      { model: this.config.model, resumedFrom: this.resumedSessionId ?? undefined },
+    )
       .catch(err => log.error("HOOK", `session_start hook 失败: ${err.message}`));
 
     // 遥测系统初始化（委托给 init-helpers）
@@ -782,6 +929,9 @@ export class App {
   async restoreSession(sessionData: import("./session/store.ts").SessionData): Promise<void> {
     const log = getLogger();
     const { SessionStore } = await import("./session/store.ts");
+    // 安全尾部切片：保证切片起点不落在游离 tool_result 上（Session 0427d1bd 400 根因）。
+    // slice(-N) 固定数量截断会切断 tool_use/tool_result 配对，留下游离 tool_result → 400。
+    const { safeSliceTail } = await import("./agent/message-invariants.ts");
 
     log.info("APP", `恢复会话: ${sessionData.id}, 消息数 ${sessionData.messages.length}`);
 
@@ -803,8 +953,8 @@ export class App {
     const summary = await store.loadSummary(sessionData.id);
 
     if (summary) {
-      // 有摘要，注入摘要 + 最近消息
-      const recentMessages = sessionData.messages.slice(-10);
+      // 有摘要，注入摘要 + 最近消息（安全切片，避免游离 tool_result）
+      const recentMessages = safeSliceTail(sessionData.messages, 10);
       const resumeMsg = SessionStore.buildResumeMessage(summary.summary);
       this.ctxMgr.addMessage({
         role: "user",
@@ -814,13 +964,15 @@ export class App {
         role: "assistant",
         content: [{ type: "text", text: "好的，我已了解之前的对话内容。请继续。" }],
       });
+      // 此路径用 addMessage 逐条添加（非 setMessages 整体替换）：必须先 safeSliceTail 切干净，
+      // 否则若首条是游离 tool_result，接在上面 assistant(ack) 之后无前置 tool_calls → 400。
       for (const msg of recentMessages) {
         this.ctxMgr.addMessage(msg);
       }
       log.info("APP", `恢复会话：摘要 + 最近 ${recentMessages.length} 条消息`);
     } else {
-      // 无摘要，简单截断
-      const recentMessages = sessionData.messages.slice(-15);
+      // 无摘要，安全截断（保护 tool_use/tool_result 配对原子性）
+      const recentMessages = safeSliceTail(sessionData.messages, 15);
       this.ctxMgr.setMessages(recentMessages);
       log.warn("APP", `无摘要，仅恢复最近 ${recentMessages.length} 条消息`);
     }
@@ -1601,6 +1753,10 @@ export class App {
 
     const { StateBridge, getConversationClearedPatch } = await import("./ui/state-bridge.ts");
 
+    // 命令列表（补全/帮助用）：新体系异步加载（含 bundled skills、plugin 命令），
+    // 在构造 initialState 前 await 一次填入；运行时刷新（/reload-plugins）走 refreshCommandList。
+    const initialCommands = await this.loadCommandList();
+
     // 流式文本累积器（状态驱动）
     let streamingFullText = "";
     // v2：流式思考累积器（独立于 streamingText，对标 Claude Code）
@@ -1617,7 +1773,7 @@ export class App {
       model: this.config.model,
       provider: this.config.provider,
       usage: { ...this.sessionState.getTotalUsage() },
-      stockInputTokens: this.sessionState.getStockInputTokens(),
+      stockInputTokens: this.sessionState.getStockPromptTokens(),
       costUSD: this.sessionState.totalCostUSD,
       costLimit: this.config.costLimit ?? 0,
       contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / this.ctxMgr.getMaxTokens()) * 100),
@@ -1635,11 +1791,7 @@ export class App {
       streamingLine: "",
       isQuitting: false,
       copyModeEnabled: false,
-      commands: this.commandRegistry.all().map(cmd => ({
-        name: cmd.name(),
-        aliases: cmd.aliases(),
-        description: cmd.description(),
-      })),
+      commands: initialCommands,
       cwd: process.cwd(),
       activeDialog: null,
       availableModels: this.config.availableModels.map(m => ({
@@ -1938,7 +2090,7 @@ export class App {
                 lastToolResult: event.result ? { toolName: event.toolName, isError: !!event.result.isError, elapsedMs: event.result.elapsedMs ?? 0 } : null,
                 // 工具结束即刷新统计三件套，不必等下一轮 done（否则工具跑完后 Footer 仍显示上一轮旧值）
                 usage: { ...this.sessionState.getTotalUsage() },
-                stockInputTokens: this.sessionState.getStockInputTokens(),
+                stockInputTokens: this.sessionState.getStockPromptTokens(),
                 costUSD: this.sessionState.totalCostUSD,
                 contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / this.ctxMgr.getMaxTokens()) * 100),
               });
@@ -2007,7 +2159,7 @@ export class App {
               syncDisplay({
                 isLoading: false,
                 usage: { ...this.sessionState.getTotalUsage() },
-                stockInputTokens: this.sessionState.getStockInputTokens(),
+                stockInputTokens: this.sessionState.getStockPromptTokens(),
                 costUSD: this.sessionState.totalCostUSD,
                 contextPercent: ctxPct,
                 streamingText: "",
@@ -2053,7 +2205,7 @@ export class App {
       syncDisplay({
         isLoading: false,
         usage: { ...this.sessionState.getTotalUsage() },
-        stockInputTokens: this.sessionState.getStockInputTokens(),
+        stockInputTokens: this.sessionState.getStockPromptTokens(),
         costUSD: this.sessionState.totalCostUSD,
         contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / this.ctxMgr.getMaxTokens()) * 100),
         // CM3：本轮结束，清除残留的重试/限流提示。
@@ -2117,7 +2269,7 @@ export class App {
             toolInput: null,
             isToolExecuting: false,
             usage: { ...this.sessionState.getTotalUsage() },
-            stockInputTokens: this.sessionState.getStockInputTokens(),
+            stockInputTokens: this.sessionState.getStockPromptTokens(),
             costUSD: this.sessionState.totalCostUSD,
             contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / this.ctxMgr.getMaxTokens()) * 100),
           });
@@ -2155,6 +2307,9 @@ export class App {
           config: this.config,
           sessionId: "",
           provider: this.provider,
+          // providerRegistry 必传：fork 模式的 bundled skill（/review、/commit-push-pr 等 6 个）
+          // 依赖它创建子代理；缺失会让 executor 静默退回 inline，导致 fork 隔离/allowedTools/maxTurns 失效。
+          providerRegistry: this.providerRegistry,
           setModel: (m) => {
             log.info("TUI:CMD", `切换模型: ${this.config.model} → ${m}`);
             this.config.model = m;
@@ -2189,21 +2344,63 @@ export class App {
           },
           hookSystem: this.hookSystem,
           commandRegistry: this.commandRegistry,
+          unifiedRegistry: this.unifiedRegistry,
         };
 
+        // 记录命令使用频率（驱动补全排序的指数衰减统计）
+        try {
+          const { recordUsage } = await import("./command/usage-tracking.ts");
+          recordUsage(cmd);
+        } catch {
+          // 使用追踪失败不影响命令执行
+        }
+
+        // 新体系执行路径：CommandExecutor 分发 UnifiedCommand
+        if (this.unifiedRegistry) {
+          const { CommandExecutor } = await import("./command/executor.ts");
+          const { toCommandContext } = await import("./command/adapter.ts");
+
+          let execResult: import("./command/types.ts").CommandExecutionResult;
+          try {
+            const cmdCtxNew = toCommandContext(cmdCtx);
+            const commands = await this.unifiedRegistry.getCommands(process.cwd());
+            // setToolJSX 回调：本项目当前无真 local-jsx 命令（dialog 走 activeDialog state），
+            // 但保留接线以备未来 JSX 命令；渲染交给 activeDialog 机制，这里仅兜底关闭。
+            const executor = new CommandExecutor(cmdCtxNew, {
+              setToolJSX: () => { /* 预留：当前 dialog 走 activeDialog state，无需 JSX 挂载 */ },
+            });
+            log.debug("TUI:CMD", `执行命令(新体系): /${cmd}`);
+            execResult = await executor.executeSlashCommand(commandInput, commands);
+            updateState({ model: this.config.model, provider: this.config.provider });
+          } catch (err: any) {
+            log.error("TUI:CMD", `命令执行失败: /${cmd}`, { error: err.message, stack: err.stack });
+            appendCommandOutput(commandInput, `命令执行失败: ${err.message}`, true);
+            return;
+          }
+
+          await this.handleCommandExecutionResult(execResult, {
+            cmd,
+            commandInput,
+            callbacks,
+            updateState,
+            appendCommandOutput,
+            getConversationClearedPatch,
+            clearPromptCache,
+            resetSyncState: () => {
+              lastSyncedCount = 0;
+              historyIdCounter = 0;
+              activeStatusMessages.clear();
+            },
+          });
+          return;
+        }
+
+        // 旧体系回退路径（无 unifiedRegistry 时，如部分测试场景）
         const command = this.commandRegistry.get(cmd);
         if (!command) {
           log.warn("TUI:CMD", `未知命令: /${cmd}`);
           appendCommandOutput(commandInput, `未知命令: /${cmd}，输入 /help 查看可用命令`, true);
           return;
-        }
-
-        // 记录命令使用频率（驱动补全排序的指数衰减统计）
-        try {
-          const { recordUsage } = await import("./command/usage-tracking.ts");
-          recordUsage(command.name());
-        } catch {
-          // 使用追踪失败不影响命令执行
         }
 
         let result: import("./command/types.ts").CommandResult;

@@ -17,6 +17,7 @@ import type { Registry as CommandRegistry } from "../command/registry.ts";
 import type { Registry as ToolRegistry } from "../tool/registry.ts";
 import type { HookSystem } from "../hook/system.ts";
 import type { MCPManager } from "../mcp/manager.ts";
+import type { UnifiedCommandRegistry } from "../command/unified-registry.ts";
 import { clearAllPluginCaches } from "./caches.ts";
 import { loadAllPlugins } from "./loader.ts";
 import { mergePluginCommands } from "./merge.ts";
@@ -27,6 +28,13 @@ import type { PluginLoadResult } from "./types.ts";
 
 /** 刷新时可用的运行时系统句柄 */
 export interface RefreshContext {
+  /**
+   * 命令刷新目标（二选一，优先 unifiedRegistry）：
+   * - unifiedRegistry: 新命令体系（清缓存后已由 clearAllPluginCaches 完成，
+   *   这里调 reloadPlugins 重新拉取插件命令快照）
+   * - commandRegistry: 旧命令体系（bridge/headless 等仍用旧 Registry 的路径）
+   */
+  unifiedRegistry?: UnifiedCommandRegistry;
   commandRegistry?: CommandRegistry;
   toolRegistry?: ToolRegistry;
   hookSystem?: HookSystem;
@@ -56,7 +64,16 @@ export async function refreshActivePlugins(ctx: RefreshContext): Promise<Refresh
 
   // 2. 命令
   let commandsLoaded = 0;
-  if (ctx.commandRegistry) {
+  if (ctx.unifiedRegistry) {
+    // 新命令体系：缓存已由 clearAllPluginCaches 清除，重新拉取插件命令快照
+    try {
+      commandsLoaded = await ctx.unifiedRegistry.reloadPlugins();
+    } catch (err: any) {
+      componentErrors.push(`命令刷新失败: ${err.message}`);
+      log.error("PLUGIN", `命令刷新失败: ${err.message}`);
+    }
+  } else if (ctx.commandRegistry) {
+    // 旧命令体系（bridge/headless 等路径）
     try {
       commandsLoaded = await mergePluginCommands(ctx.commandRegistry);
     } catch (err: any) {

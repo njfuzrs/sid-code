@@ -60,6 +60,8 @@ export interface QueryEngineDeps {
   handleContextOverflow: (err: any, currentMaxTokens: number) => number | null;
   /** 获取 abort signal */
   getAbortSignal: () => AbortSignal | undefined;
+  /** 主动中断当前 LLM 请求（abort 当前 AbortController）。L1 单轮硬超时配合使用。可选。 */
+  abortCurrentRequest?: (reason?: string) => void;
   /** Plan Mode 系统提醒（对标 Claude Code 每轮 system-reminder 注入） */
   getPlanModeReminder?: () => Promise<string | null>;
   /** P0-2 / P0-3：读取 todo 状态快照（回注 + 完成度校验用） */
@@ -150,9 +152,12 @@ export class QueryEngine {
     }
 
     // ─── 解析 thinking hint ───
+    // 修复 §2.2：旧实现解析出 _thinking 后从未传递到 sendParams——
+    // think hard / ultrathink 完全失效，DeepSeek reasoning_effort 永不下发。
+    // 现经 queryDeps.getThinkingConfig 注入 queryLoop。
     const { cleaned: cleanedInput, config: thinkingConfig } =
       this.deps.thinkingMgr.parseThinkingHint(finalInput);
-    const _thinking = options?.thinking ?? thinkingConfig ?? this.deps.thinkingMgr.getThinkingConfig(cleanedInput);
+    const thinking = options?.thinking ?? thinkingConfig ?? this.deps.thinkingMgr.getThinkingConfig(cleanedInput);
 
     // ─── 添加用户消息 ───
     // B2：API 调用前先持久化 user 消息（对标 claude-code：进程中途被 kill 也可 resume）。
@@ -193,6 +198,7 @@ export class QueryEngine {
       autoCompact: this.deps.autoCompact,
       handleContextOverflow: this.deps.handleContextOverflow,
       getAbortSignal: this.deps.getAbortSignal,
+      abortCurrentRequest: this.deps.abortCurrentRequest,
       uuid: () => crypto.randomUUID(),
       checkFallbackOccurred: () => this.deps.fallback.checkFallbackOccurred(),
       resetFallbackFlag: () => this.deps.fallback.reset(),
@@ -219,6 +225,8 @@ export class QueryEngine {
       quotaManager: this.deps.quotaManager,
       tokenMeter: this.deps.tokenMeter,
       budgetTracker: this.deps.budgetTracker,
+      // 把解析出的 thinking 配置下传给 queryLoop → SendParams（修复 _thinking 历史断链）。
+      thinking,
       deps: queryDeps,
     });
 
