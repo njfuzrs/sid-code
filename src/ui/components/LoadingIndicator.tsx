@@ -14,6 +14,7 @@ import { theme } from "../semantic-colors.ts";
 import { StreamingState } from "../types.ts";
 import { useIsAccessibilityEnabled } from "../accessibility/AccessibilityContext.tsx";
 import { BULLET } from "../constants/figures.ts";
+import { TOOL_TIMER_THRESHOLD_SEC, formatToolElapsed } from "../constants/loading-phrases.ts";
 import { DEFAULT_TERM_WIDTH } from "../markdown.ts";
 import { formatLargeNumber } from "../utils/format-number.ts";
 
@@ -27,8 +28,12 @@ interface LoadingIndicatorProps {
   elapsedTime: number;
   /** 当前加载短语 */
   currentLoadingPhrase?: string | null;
+  /** 慢响应渐进提示（达阈值才出现）。暗色追加，不抢主文案。 */
+  slowHint?: string | null;
   /** 工具名称（执行工具时显示） */
   toolName?: string | null;
+  /** L3：当前工具已执行秒数。超过阈值时在工具文案后追加「· 已执行 Xs」。 */
+  toolElapsedTime?: number;
   /** 本轮新增的输出 token 数（↑ 上行，= 会话累计 − 本轮起点）。0 或缺省时不显示 token 段。 */
   outputTokens?: number;
   /** 是否内联模式（单行） */
@@ -49,7 +54,9 @@ export const LoadingIndicator: React.FC<LoadingIndicatorProps> = ({
   streamingState,
   elapsedTime,
   currentLoadingPhrase,
+  slowHint,
   toolName,
+  toolElapsedTime = 0,
   outputTokens = 0,
   inline = false,
   showCancelAndTimer = true,
@@ -78,8 +85,13 @@ export const LoadingIndicator: React.FC<LoadingIndicatorProps> = ({
   const isWaiting = streamingState === StreamingState.WaitingForConfirmation;
 
   // 主文本（动词，最高优先级，任何宽度都保留）
+  // L3：工具执行超过阈值时，在工具名后追加「· 已执行 Xs」，让长工具（git clone /
+  // 测试套件 / sub-agent）的内部进展可见，与整轮计时区分。短工具不打扰。
+  const showToolTimer = !!toolName && toolElapsedTime >= TOOL_TIMER_THRESHOLD_SEC;
   const primaryText = toolName
-    ? `执行 ${toolName}…`
+    ? showToolTimer
+      ? `执行 ${toolName}… · ${formatToolElapsed(toolElapsedTime)}`
+      : `执行 ${toolName}…`
     : currentLoadingPhrase || "思考中…";
 
   // 窄终端渐进隐藏：按「动词 > 计时 > token > 取消提示」优先级降级。
@@ -107,6 +119,9 @@ export const LoadingIndicator: React.FC<LoadingIndicatorProps> = ({
   }
 
   // inline / block 两种容器复用同一内容片段，避免渲染逻辑重复。
+  // 慢提示用 status.warning + dimColor 暗色追加，不抢主文案（遵守交互铁律 C 渐进衰减、
+  // D 反馈活而不吵——文字本身不动，达阈值才出现）。等待态不显示慢提示。
+  const showSlowHint = !!slowHint && !isWaiting;
   const content = (
     <>
       <Text color={theme.ui.active}>{isWaiting ? "⠏" : spinner} </Text>
@@ -117,6 +132,12 @@ export const LoadingIndicator: React.FC<LoadingIndicatorProps> = ({
         <>
           <Text> </Text>
           <Text color={theme.text.secondary}>{cancelAndTimer}</Text>
+        </>
+      )}
+      {showSlowHint && (
+        <>
+          <Text> </Text>
+          <Text color={theme.status.warning} dimColor>· {slowHint}</Text>
         </>
       )}
     </>

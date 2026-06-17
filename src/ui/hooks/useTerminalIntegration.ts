@@ -48,7 +48,9 @@ export interface UseTerminalIntegrationProps {
 /** 把流式状态映射为 tab 状态圆点 */
 function toTabStatus(state: StreamingState): TabStatusKind {
   switch (state) {
+    case StreamingState.Connecting:
     case StreamingState.Responding:
+      // Connecting（等首字）也算「忙」——tab 圆点 / 进度环在连接期就要亮起。
       return "busy";
     case StreamingState.WaitingForConfirmation:
       return "waiting";
@@ -71,20 +73,24 @@ export function useTerminalIntegration({
 
   // ── TM2：终端标题 ──
   const baseTitle = titleHint && titleHint.trim() ? titleHint.trim() : "sid-code";
-  const isResponding = streamingState === StreamingState.Responding;
+  // 「活动中」= 连接（等首字）或响应中。标题动画前缀在连接期就开始跳动，
+  // 让用户从回车那刻起就看到窗口在「工作」，而非等首字到达才动。
+  const isActive =
+    streamingState === StreamingState.Connecting ||
+    streamingState === StreamingState.Responding;
 
   // 进行中跑标题动画帧（a11y 下不跑,见文件头说明）。
   const [frame, setFrame] = useState(0);
   useEffect(() => {
-    if (a11y || !isResponding) return;
+    if (a11y || !isActive) return;
     const timer = setInterval(() => {
       setFrame((f) => (f + 1) % TITLE_ANIMATION_FRAMES.length);
     }, TITLE_ANIMATION_INTERVAL_MS);
     return () => clearInterval(timer);
-  }, [a11y, isResponding]);
+  }, [a11y, isActive]);
 
-  // 进行中 → 动画点（a11y 下退化为静态首帧）；其余状态 → 静态星号。
-  const prefix = isResponding
+  // 活动中 → 动画点（a11y 下退化为静态首帧）；其余状态 → 静态星号。
+  const prefix = isActive
     ? (a11y ? TITLE_ANIMATION_FRAMES[0] : TITLE_ANIMATION_FRAMES[frame] ?? TITLE_ANIMATION_FRAMES[0])
     : TITLE_STATIC_PREFIX;
   useTerminalTitle(`${prefix} ${baseTitle}`);
@@ -99,7 +105,11 @@ export function useTerminalIntegration({
     if (!notifyOnComplete || !writeRaw) return;
 
     // 从「忙」回到「闲」视为一轮响应完成 → 提示一次。
-    if (prev === StreamingState.Responding && streamingState === StreamingState.Idle) {
+    // 「忙」含 Connecting 与 Responding：若请求在首字到达前被取消（Connecting→Idle），
+    // 同样视为一轮结束，提示一次。
+    const wasBusy =
+      prev === StreamingState.Connecting || prev === StreamingState.Responding;
+    if (wasBusy && streamingState === StreamingState.Idle) {
       // 原始 BEL：所有终端/tmux 都能 fallback（tmux 触发 window bell flag）。
       writeRaw(BEL);
       // Ghostty 桌面通知；不支持的终端会静默丢弃该 OSC 序列。
@@ -114,7 +124,11 @@ export function useTerminalIntegration({
   const prevProgressRef = useRef<boolean | null>(null);
   useEffect(() => {
     if (!writeRaw || !isProgressReportingAvailable()) return;
-    const busy = streamingState === StreamingState.Responding;
+    // 「忙」含 Connecting 与 Responding——连接期（等首字）进度环也要转，
+    // 让用户在 VSCode tab / iTerm2 进度环上从回车那刻起就看到「正在工作」。
+    const busy =
+      streamingState === StreamingState.Connecting ||
+      streamingState === StreamingState.Responding;
     // 只在「忙」状态翻转时发序列，避免每帧/每 token 重复写。
     if (prevProgressRef.current === busy) return;
     prevProgressRef.current = busy;

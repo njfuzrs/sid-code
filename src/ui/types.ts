@@ -17,6 +17,10 @@ import type { ThoughtSummary } from "./history-adapter.ts";
 export enum StreamingState {
   /** 空闲，等待用户输入 */
   Idle = "idle",
+  /** 已提交请求，等待 LLM 首个 token（首字延迟期间）。
+   *  对标用户感知：从回车到首字到达这段，必须有活动反馈，
+   *  否则用户面对纹丝不动的界面，不知是卡死、出错还是仍在进行。 */
+  Connecting = "connecting",
   /** 正在接收 LLM 响应 */
   Responding = "responding",
   /** 等待用户确认（权限/工具） */

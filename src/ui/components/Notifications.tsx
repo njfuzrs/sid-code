@@ -55,8 +55,11 @@ export const Notifications: React.FC<NotificationsProps> = ({
   const { streamingState } = useStreamingState();
   const [dismissed, setDismissed] = useState(false);
 
-  // 流式响应时隐藏初始化错误
-  const showInitError = initError && streamingState !== StreamingState.Responding;
+  // 流式响应时隐藏初始化错误（含连接期，避免活动指示器与 init error 同屏抢眼）
+  const showInitError =
+    initError &&
+    streamingState !== StreamingState.Responding &&
+    streamingState !== StreamingState.Connecting;
 
   // 过滤可见警告
   const visibleWarnings = useMemo(() => {

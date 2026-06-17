@@ -12,10 +12,10 @@
 
 import { test, expect, describe, beforeEach, afterEach } from "bun:test";
 import React from "react";
-import { render } from "../../ink/_vendor/testing.tsx";
-import { useTerminalIntegration } from "./useTerminalIntegration.ts";
-import { StreamingState } from "../types.ts";
-import { TITLE_STATIC_PREFIX, TITLE_ANIMATION_FRAMES } from "../constants/figures.ts";
+import { render } from "../../../src/ink/_vendor/testing.tsx";
+import { useTerminalIntegration } from "../../../src/ui/hooks/useTerminalIntegration.ts";
+import { StreamingState } from "../../../src/ui/types.ts";
+import { TITLE_STATIC_PREFIX, TITLE_ANIMATION_FRAMES } from "../../../src/ui/constants/figures.ts";
 
 /** 极简宿主组件:只跑 hook,自身不渲染任何可见内容。 */
 function Harness({
@@ -103,6 +103,18 @@ describe("TM2 终端标题(OSC 2 + OSC 0)", () => {
     expect(out).toContain(`${OSC0}${TITLE_STATIC_PREFIX} sid-code\x07`);
     unmount();
   });
+
+  test("连接中(等首字)同样带动画点前缀——标题在连接期就跳动", () => {
+    // Connecting 与 Responding 都属「活动中」,标题动画前缀从回车那刻起就跑,
+    // 不等首字到达。这是消灭首字延迟盲区在终端标题上的体现。
+    const { stdout, unmount } = render(
+      <Harness streamingState={StreamingState.Connecting} titleHint="连接任务" />,
+    );
+    const out = stdout.get();
+    expect(out).toContain(`${OSC2}${TITLE_ANIMATION_FRAMES[0]} 连接任务\x07`);
+    expect(out).toContain(`${OSC0}${TITLE_ANIMATION_FRAMES[0]} 连接任务\x07`);
+    unmount();
+  });
 });
 
 describe("OSC 9;4 进度环", () => {
@@ -112,6 +124,17 @@ describe("OSC 9;4 进度环", () => {
       <Harness streamingState={StreamingState.Responding} titleHint="x" />,
     );
     // ESC]9;4;3; → state=3=indeterminate
+    expect(stdout.get()).toContain(`${OSC94}3;`);
+    unmount();
+  });
+
+  test("gate 可用 + 连接中(等首字) → 也发 indeterminate(;3;)", () => {
+    // Connecting 也算「忙」,进度环在连接期就转,让 VSCode tab / iTerm2 进度环
+    // 从回车那刻起就显示「正在工作」,不等首字到达。
+    enableProgressGate();
+    const { stdout, unmount } = render(
+      <Harness streamingState={StreamingState.Connecting} titleHint="x" />,
+    );
     expect(stdout.get()).toContain(`${OSC94}3;`);
     unmount();
   });

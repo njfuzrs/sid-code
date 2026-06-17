@@ -170,15 +170,16 @@ export const Composer: React.FC<ComposerProps> = ({
   // 快捷键帮助展开状态
   const [shortcutsHelpVisible, setShortcutsHelpVisible] = useState(false);
 
-  const { elapsedTime, currentLoadingPhrase } = useLoadingIndicator({
+  const { elapsedTime, currentLoadingPhrase, slowHint, toolElapsedTime } = useLoadingIndicator({
     streamingState: streaming.streamingState,
     toolName: streaming.toolName,
   });
 
+  const isConnecting = streaming.streamingState === StreamingState.Connecting;
   const isResponding = streaming.streamingState === StreamingState.Responding;
   const isWaiting = streaming.streamingState === StreamingState.WaitingForConfirmation;
   const isIdle = streaming.streamingState === StreamingState.Idle;
-  const showLoadingIndicator = isResponding || isWaiting;
+  const showLoadingIndicator = isConnecting || isResponding || isWaiting;
   const showRawMarkdownIndicator = !uiState.renderMarkdown;
   const showContextUsage = session.contextPercent >= 50;
 
@@ -241,7 +242,9 @@ export const Composer: React.FC<ComposerProps> = ({
               streamingState={streaming.streamingState}
               elapsedTime={elapsedTime}
               currentLoadingPhrase={currentLoadingPhrase}
+              slowHint={slowHint}
               toolName={streaming.toolName}
+              toolElapsedTime={toolElapsedTime}
               outputTokens={Math.max(
                 0,
                 session.usage.outputTokens - (session.turnStartOutputTokens ?? 0),

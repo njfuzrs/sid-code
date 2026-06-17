@@ -30,6 +30,7 @@ import type { StateBridge } from "./state-bridge.ts";
 import type { Message, Usage } from "../llm/types.ts";
 import type { HistoryItem } from "./types.ts";
 import { StreamingState } from "./types.ts";
+import { deriveStreamingState } from "./derive-streaming-state.ts";
 import { useTerminalIntegration } from "./hooks/useTerminalIntegration.ts";
 import { useMessageQueue } from "./hooks/useMessageQueue.ts";
 import { messagesToHistoryItems, isPlaceholderMessage, buildStaticItems } from "./history-adapter.ts";
@@ -203,12 +204,19 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
   // 流式状态 ref 镜像：供 handleSubmit 闭包读取最新值，决定输入入队还是直送
   const streamingStateRef = useRef<StreamingState>(StreamingState.Idle);
 
-  // 从 TUIState 派生 StreamingState（上移到 handleSubmit 之前，供输入排队判断）
+  // 从 TUIState 派生 StreamingState（上移到 handleSubmit 之前，供输入排队判断）。
+  // 派生逻辑抽到 deriveStreamingState 纯函数便于单测；含 isLoading→Connecting 分支
+  // 以消灭「回车后到首字到达」的首字延迟盲区。
   const streamingState = useMemo((): StreamingState => {
-    if (state.permissionRequest || state.shellConfirmRequest || state.planApprovalRequest) return StreamingState.WaitingForConfirmation;
-    if (state.isStreaming || state.isToolExecuting) return StreamingState.Responding;
-    return StreamingState.Idle;
-  }, [state.permissionRequest, state.shellConfirmRequest, state.planApprovalRequest, state.isStreaming, state.isToolExecuting]);
+    return deriveStreamingState({
+      isLoading: state.isLoading,
+      isStreaming: state.isStreaming,
+      isToolExecuting: state.isToolExecuting,
+      permissionRequest: state.permissionRequest,
+      shellConfirmRequest: state.shellConfirmRequest,
+      planApprovalRequest: state.planApprovalRequest,
+    });
+  }, [state.permissionRequest, state.shellConfirmRequest, state.planApprovalRequest, state.isStreaming, state.isToolExecuting, state.isLoading]);
   // 同步到 ref，供 handleSubmit 闭包读取最新流式态
   streamingStateRef.current = streamingState;
   const log = getLogger();
