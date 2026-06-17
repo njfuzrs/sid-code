@@ -153,6 +153,18 @@ export class SessionState {
   }
 
   /**
+   * 重置累计计数器（/clear 时调用）。
+   * 清空 totalCostUSD、totalAPIDuration、totalToolDuration 和所有 modelUsage，
+   * 使状态栏的 token/费用/缓存命中等统计归零，与清空的对话上下文保持一致。
+   */
+  resetCounters(): void {
+    this.totalCostUSD = 0;
+    this.totalAPIDuration = 0;
+    this.totalToolDuration = 0;
+    this.modelUsage = {};
+  }
+
+  /**
    * 计算单次 API 调用的成本（方案 §2.3 口径修复）。
    *
    * **修复前的 bug**：旧实现用 `regularInput = inputTokens − cacheRead − cacheCreation`，

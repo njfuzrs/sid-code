@@ -448,6 +448,7 @@ export class App {
       case "clear":
         log.info("TUI:CMD", "清空消息历史，重置上下文");
         this.ctxMgr.clear();
+        this.sessionState.resetCounters();
         clearPromptCache();
         this.quotaManager?.resetAlertLevel();
         this.fallback.reset();
@@ -2431,6 +2432,7 @@ export class App {
           case "clear":
             log.info("TUI:CMD", "清空消息历史，重置上下文");
             this.ctxMgr.clear();
+            this.sessionState.resetCounters();
             clearPromptCache();
             this.quotaManager?.resetAlertLevel();
             this.fallback.reset();
