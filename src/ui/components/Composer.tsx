@@ -170,17 +170,23 @@ export const Composer: React.FC<ComposerProps> = ({
   // 快捷键帮助展开状态
   const [shortcutsHelpVisible, setShortcutsHelpVisible] = useState(false);
 
-  // 本轮新增 output token（文本 + 思考累计）。既喂给指示器显示，也作为
-  // useLoadingIndicator 的「静默探针」——它一增长就说明模型在产出，慢提示据此归零。
+  // 本轮新增 output token（仅用于 LoadingIndicator 显示「↑ N tokens」）。
+  // ⚠️ 它只在每次 LLM response 结束后更新，不是实时的——不能拿来当静默探针。
   const turnOutputTokens = Math.max(
     0,
     session.usage.outputTokens - (session.turnStartOutputTokens ?? 0),
   );
 
+  // 静默探针：实时流式字符数（文本 + 思考）。streamingText/streamingThinking 每来
+  // 一段 token 就更新，单次长输出期间也持续增长，是判断「模型是否还在产出」的可靠
+  // 实时信号。慢提示据此归零——内容在流就绝不报慢。
+  const progressCount =
+    streaming.streamingText.length + streaming.streamingThinking.length;
+
   const { elapsedTime, currentLoadingPhrase, slowHint, toolElapsedTime } = useLoadingIndicator({
     streamingState: streaming.streamingState,
     toolName: streaming.toolName,
-    outputTokens: turnOutputTokens,
+    progressCount,
   });
 
   const isConnecting = streaming.streamingState === StreamingState.Connecting;

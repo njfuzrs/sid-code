@@ -19,11 +19,17 @@ export interface UseLoadingIndicatorProps {
   streamingState: StreamingState;
   toolName?: string | null;
   /**
-   * 本轮已产出的 output token 数（文本 + 思考累计）。仅作「模型是否在产出」的探针：
-   * 它一旦变化（或文本流式推进），就说明模型在动 → 重置静默计时。
-   * 慢提示据此只在「真正一段时间收不到任何输出」时出现，而非整轮耗时长就报。
+   * 产出进度探针：本轮已流式产出的字符数（streamingText + streamingThinking 长度）。
+   *
+   * ⚠️ 必须用「实时」信号——streamingText/streamingThinking 每来一段 token 就更新，
+   * 单次长输出期间也持续增长。不要用 outputTokens：它只在每次 LLM response 完整
+   * 结束后才更新一次（loop.ts 的 updateUsage），单次流式过程中纹丝不动，
+   * 拿它当探针会导致「模型正在连续输出长回答」时静默计时仍累积 → 误报慢。
+   *
+   * 此值一旦增长就说明模型在产出 → 重置静默计时。慢提示据此只在「真正一段时间
+   * 收不到任何输出」（疑似卡顿）时出现。
    */
-  outputTokens?: number;
+  progressCount?: number;
 }
 
 export interface UseLoadingIndicatorReturn {
@@ -40,7 +46,7 @@ export interface UseLoadingIndicatorReturn {
 export function useLoadingIndicator({
   streamingState,
   toolName,
-  outputTokens = 0,
+  progressCount = 0,
 }: UseLoadingIndicatorProps): UseLoadingIndicatorReturn {
   const [elapsedTime, setElapsedTime] = useState(0);
   const [toolElapsedTime, setToolElapsedTime] = useState(0);
@@ -55,7 +61,12 @@ export function useLoadingIndicator({
   const phraseTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const prevStateRef = useRef<StreamingState>(StreamingState.Idle);
   const prevToolRef = useRef<string | null>(null);
-  const prevTokensRef = useRef<number>(0);
+  const prevProgressRef = useRef<number>(0);
+  // 当前是否在执行工具，供计时器闭包实时读取（避免把 toolName 加进 interval 依赖
+  // 而频繁重建计时器、漂移 elapsedTime）。工具执行 = 模型在「干活」而非「卡住」，
+  // 静默计时此期间应冻结，否则长工具结束后进入下一步会瞬间误报慢。
+  const toolActiveRef = useRef<boolean>(false);
+  toolActiveRef.current = !!toolName;
 
   const isConnecting = streamingState === StreamingState.Connecting;
   const isResponding = streamingState === StreamingState.Responding;
@@ -63,14 +74,18 @@ export function useLoadingIndicator({
   const isActive = isConnecting || isResponding;
 
   // 计时器：每秒递增。活动窗口（Connecting 或 Responding）期间持续运行。
-  // 整轮 elapsedTime 与静默 silenceSec 同一 tick 推进：elapsedTime 只增，
-  // silenceSec 在「检测到产出」时由下方 effect 归零，故二者分工明确——
-  // 前者给用户看「等了多久」，后者只用于判断「是否真的卡住」。
+  // 整轮 elapsedTime 与静默 silenceSec 同一 tick 推进：elapsedTime 只增（给用户看
+  // 「等了多久」），silenceSec 在「检测到产出」时由下方 effect 归零、且工具执行期间
+  // 冻结（工具在干活不是模型卡住），只用于判断「是否真的卡住」。
   useEffect(() => {
     if (isActive) {
       timerRef.current = setInterval(() => {
         setElapsedTime(t => t + 1);
-        setSilenceSec(t => t + 1);
+        // 工具执行期间冻结静默计时——避免长工具（git clone / 测试 / sub-agent）的
+        // 执行耗时被算成「静默」，导致工具结束进入下一步时瞬间误报慢。
+        if (!toolActiveRef.current) {
+          setSilenceSec(t => t + 1);
+        }
       }, 1000);
     } else {
       if (timerRef.current) {
@@ -86,15 +101,22 @@ export function useLoadingIndicator({
     };
   }, [isActive]);
 
-  // 静默归零：只要检测到模型在产出（output token 增长），就把静默计时清零。
-  // 这是慢提示的核心——token 在流就绝不报「慢/卡住」，避免把「整轮耗时长」
-  // 误当成「卡住」（agentic 多步循环里一轮超 10s 再正常不过，不该报警）。
+  // 静默归零：检测到模型在产出（流式字符数变化）就把静默计时清零。
+  // 这是慢提示的核心——内容在流就绝不报「慢」，避免把「耗时长」误当成「卡住」。
+  // 用实时的 progressCount（streamingText+thinking 长度）而非 outputTokens，
+  // 后者单次流式期间不更新，长输出时会假性累积静默 → 误报（见 props 注释）。
+  //
+  // 注意「!==」而非「>」：progressCount 不仅会增长，还会在阶段切换时【回落】——
+  // tool_start 清空 streamingText/streamingThinking 使其从 N 落回 0（app.ts:2095），
+  // 这标志一个新阶段开始（工具执行 / 下一步等待），静默必须重新从 0 计；
+  // 否则上一段已产出的字符数会让回落后的「0 > N 不成立」漏掉归零，
+  // 把工具执行耗时累进静默 → 工具一结束进入下一步 Connecting 时瞬间误报慢。
   useEffect(() => {
-    if (outputTokens > prevTokensRef.current) {
+    if (progressCount !== prevProgressRef.current) {
       setSilenceSec(0);
     }
-    prevTokensRef.current = outputTokens;
-  }, [outputTokens]);
+    prevProgressRef.current = progressCount;
+  }, [progressCount]);
 
   // 计时器归零：仅在「从非活动态进入活动态」的上升沿归零一次，
   // Connecting → Responding 的内部切换不归零（保持连续计时，根治盲区 2）。
@@ -140,9 +162,14 @@ export function useLoadingIndicator({
   // 已很大，但单个工具刚开始，工具级计时让用户看到「这个工具自己跑了多久」。
   useEffect(() => {
     const hasTool = !!toolName;
-    // 换工具 / 进入工具执行 → 归零重计。
+    // 换工具 / 进入工具执行 / 工具结束 → 归零重计。
     if (toolName !== prevToolRef.current) {
       setToolElapsedTime(0);
+      // 工具状态任何切换都是「进入新阶段」，静默计时同步归零：
+      // - 进入工具执行：静默不该在工具干活期间累积（计时器里也已冻结，这里兜底起点）；
+      // - 工具结束进入下一步等待：上一步/工具的耗时不该算进新一轮首字等待，
+      //   否则长工具结束瞬间 silenceSec 仍是大值 → 误报慢。
+      setSilenceSec(0);
       prevToolRef.current = toolName ?? null;
     }
     if (hasTool) {
@@ -164,10 +191,10 @@ export function useLoadingIndicator({
   }, [toolName]);
 
   // 当前文案：Connecting → 「连接中…」（首字未到）或「处理中…」（步间空档，
-  // 本轮已产出过 token，是 agentic 循环的步与步之间，不是真在连接）；
+  // 本轮已产出过内容，是 agentic 循环的步与步之间，不是真在连接）；
   // Responding 无工具 → 动词；有工具 → null（由组件拼 "执行 X…"）。
   const currentLoadingPhrase = isConnecting
-    ? prevTokensRef.current > 0
+    ? prevProgressRef.current > 0
       ? CONTINUATION_PHRASE
       : CONNECTING_PHRASE
     : isResponding && !toolName

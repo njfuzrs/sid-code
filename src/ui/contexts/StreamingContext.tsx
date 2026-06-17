@@ -15,6 +15,8 @@ interface StreamingContextValue {
   streamingState: StreamingState;
   /** 流式输出的完整文本 */
   streamingText: string;
+  /** 流式思考的完整文本（独立于 streamingText，对标 Claude Code 思考通道） */
+  streamingThinking: string;
   /** 当前执行的工具名称 */
   toolName: string | null;
   /** 当前执行的工具输入 */
@@ -41,6 +43,7 @@ interface StreamingProviderProps {
   children: React.ReactNode;
   streamingState: StreamingState;
   streamingText: string;
+  streamingThinking: string;
   toolName: string | null;
   toolInput: unknown;
   isToolExecuting: boolean;
@@ -52,6 +55,7 @@ export const StreamingProvider: React.FC<StreamingProviderProps> = ({
   children,
   streamingState,
   streamingText,
+  streamingThinking,
   toolName,
   toolInput,
   isToolExecuting,
@@ -61,12 +65,13 @@ export const StreamingProvider: React.FC<StreamingProviderProps> = ({
   const value = useMemo<StreamingContextValue>(() => ({
     streamingState,
     streamingText,
+    streamingThinking,
     toolName,
     toolInput,
     isToolExecuting,
     lastToolResult,
     statusMessage,
-  }), [streamingState, streamingText, toolName, toolInput, isToolExecuting, lastToolResult, statusMessage]);
+  }), [streamingState, streamingText, streamingThinking, toolName, toolInput, isToolExecuting, lastToolResult, statusMessage]);
 
   return (
     <StreamingCtx.Provider value={value}>

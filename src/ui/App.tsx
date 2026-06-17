@@ -564,6 +564,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     <StreamingProvider
       streamingState={streamingState}
       streamingText={state.streamingText}
+      streamingThinking={state.streamingThinking}
       toolName={state.toolName}
       toolInput={state.toolInput}
       isToolExecuting={state.isToolExecuting}
