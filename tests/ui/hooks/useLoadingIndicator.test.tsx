@@ -1,5 +1,5 @@
 /**
- * useLoadingIndicator Hook 测试（§6.1）
+ * useLoadingIndicator Hook 测试
  *
  * 用 vendored ink 的 render harness + bun fake timer 驱动 hook 的 setInterval，
  * 通过一个极简 Harness 组件把 hook 返回值渲染成可断言的字节，确定性验证：
@@ -8,7 +8,7 @@
  * 3. Idle→Connecting 上升沿归零。
  * 4. Connecting 文案为「连接中…」。
  * 5. 回到 Idle 计时停止。
- * 6. 慢提示按 elapsedTime 阈值出现。
+ * 6. 慢提示按【静默时长】出现——零产出累积才报；token 在流则永不报（核心回归）。
  */
 
 import { test, expect, describe, afterEach, jest } from "bun:test";
@@ -16,13 +16,21 @@ import React from "react";
 import { render } from "../../../src/ink/_vendor/testing.tsx";
 import { useLoadingIndicator } from "../../../src/ui/hooks/useLoadingIndicator.ts";
 import { StreamingState } from "../../../src/ui/types.ts";
+import { SLOW_RESPONSE_HINTS } from "../../../src/ui/constants/loading-phrases.ts";
 import Text from "../../../src/ink/components/Text.js";
 
 /** 极简宿主：把 hook 返回值渲染成 `E<秒>|<文案>|<慢提示>` 便于字节断言。 */
-function Harness({ s }: { s: StreamingState }): React.ReactElement {
+function Harness({
+  s,
+  outputTokens = 0,
+}: {
+  s: StreamingState;
+  outputTokens?: number;
+}): React.ReactElement {
   const { elapsedTime, currentLoadingPhrase, slowHint } = useLoadingIndicator({
     streamingState: s,
     toolName: null,
+    outputTokens,
   });
   return React.createElement(
     Text,
@@ -122,17 +130,57 @@ describe("useLoadingIndicator", () => {
     expect(after).toBe(3);
   });
 
-  test("慢提示按 elapsedTime 阈值出现（Connecting 期 15s → 第一档）", () => {
+  test("慢提示按【静默时长】出现：零产出累积到首阈值才报", () => {
     jest.useFakeTimers();
+    const first = SLOW_RESPONSE_HINTS[0];
+    // outputTokens 恒为 0（从不产出）→ 静默时长 == 经过时长。
     const { lastFrame, rerender } = render(<Harness s={StreamingState.Connecting} />);
-    // 9s 时还没到首阈值。
-    jest.advanceTimersByTime(9000);
+    // 未达首阈值前：无慢提示。
+    jest.advanceTimersByTime((first.thresholdSec - 1) * 1000);
     rerender(<Harness s={StreamingState.Connecting} />);
     expect(lastFrame() ?? "").toContain("|null"); // slowHint 段为 null
-    // 15s 时命中 10s 档。
-    jest.advanceTimersByTime(6000);
+    // 跨过首阈值：出现第一档文案。
+    jest.advanceTimersByTime(2000);
     rerender(<Harness s={StreamingState.Connecting} />);
-    expect(lastFrame() ?? "").toContain("响应较慢");
+    expect(lastFrame() ?? "").toContain(first.hint);
+  });
+
+  test("核心回归：token 持续产出时，整轮再久也不报慢", () => {
+    jest.useFakeTimers();
+    const first = SLOW_RESPONSE_HINTS[0];
+    let tokens = 0;
+    // 模拟模型在正常流式输出：每秒产出 token，整轮跑很久（远超慢提示阈值）。
+    // 这正是 bug 现场——旧逻辑用整轮 elapsedTime 判定，此时会误报「响应较慢/卡住」；
+    // 新逻辑用静默时长，token 一直在涨 → 静默归零 → 绝不报慢。
+    const { lastFrame, rerender } = render(
+      <Harness s={StreamingState.Responding} outputTokens={tokens} />,
+    );
+    const farPastThreshold = (first.thresholdSec + 30) * 1000;
+    const stepMs = 1000;
+    for (let elapsed = 0; elapsed < farPastThreshold; elapsed += stepMs) {
+      jest.advanceTimersByTime(stepMs);
+      tokens += 50; // 每秒都有新产出
+      rerender(<Harness s={StreamingState.Responding} outputTokens={tokens} />);
+    }
+    // 整轮已远超阈值，但因 token 持续在流，慢提示始终为 null。
+    expect(lastFrame() ?? "").toContain("|null");
+    expect(lastFrame() ?? "").not.toContain(first.hint);
+  });
+
+  test("token 停止产出后，静默累积到阈值才报慢", () => {
+    jest.useFakeTimers();
+    const first = SLOW_RESPONSE_HINTS[0];
+    // 先正常产出几秒（不报慢），然后 token 冻结，开始累积静默。
+    const { lastFrame, rerender } = render(
+      <Harness s={StreamingState.Responding} outputTokens={100} />,
+    );
+    jest.advanceTimersByTime(5000);
+    rerender(<Harness s={StreamingState.Responding} outputTokens={300} />); // 还在产出
+    expect(lastFrame() ?? "").toContain("|null");
+    // token 冻结在 300，静默开始累积；跨过首阈值后报慢。
+    jest.advanceTimersByTime((first.thresholdSec + 1) * 1000);
+    rerender(<Harness s={StreamingState.Responding} outputTokens={300} />);
+    expect(lastFrame() ?? "").toContain(first.hint);
   });
 });
 

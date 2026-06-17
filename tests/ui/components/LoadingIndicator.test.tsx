@@ -52,10 +52,10 @@ describe("LoadingIndicator — 慢提示渲染", () => {
         streamingState={StreamingState.Connecting}
         elapsedTime={15}
         currentLoadingPhrase="连接中…"
-        slowHint="响应较慢，仍在等待…"
+        slowHint="仍在等待响应…"
       />,
     );
-    expect(lastFrame() ?? "").toContain("响应较慢");
+    expect(lastFrame() ?? "").toContain("仍在等待响应");
   });
 
   test("无 slowHint 时不渲染慢提示", () => {
@@ -67,7 +67,7 @@ describe("LoadingIndicator — 慢提示渲染", () => {
         currentLoadingPhrase="连接中…"
       />,
     );
-    expect(lastFrame() ?? "").not.toContain("响应较慢");
+    expect(lastFrame() ?? "").not.toContain("仍在等待");
   });
 
   test("等待态不显示慢提示（即使传入）", () => {
@@ -76,10 +76,10 @@ describe("LoadingIndicator — 慢提示渲染", () => {
         inline
         streamingState={StreamingState.WaitingForConfirmation}
         elapsedTime={60}
-        slowHint="已等待较久，建议 esc 取消后检查网络 / 模型配置"
+        slowHint="等待较久，可按 esc 取消"
       />,
     );
-    expect(lastFrame() ?? "").not.toContain("已等待较久");
+    expect(lastFrame() ?? "").not.toContain("等待较久");
   });
 });
 

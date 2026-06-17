@@ -1787,6 +1787,7 @@ export class App {
       debug: !!this.config.debug,
       lastToolResult: null,
       streamingText: "",
+      streamingThinking: "",
       isStreaming: false,
       streamingLine: "",
       isQuitting: false,
@@ -2055,7 +2056,18 @@ export class App {
       // v2：设置流式思考回调（桥接 processStream 内部的 onThinking，对标 Claude Code）
       this.queryEngine.setStreamThinkingCallback((thinking: string) => {
         streamingThinkingFull += thinking;
-        updateState({ streamingThinking: streamingThinkingFull });
+        // 关键修复：思考也是「模型正在产出」，必须置 isStreaming=true。
+        // 否则推理模型（扩展思考 / DeepSeek-R1 等）在思考阶段持续吐 token 时，
+        // deriveStreamingState 会因 isStreaming=false 误判为 Connecting，
+        // 界面显示「连接中…」并触发慢提示——而模型其实在正常输出（盲区误报）。
+        // 同时 MainContent 的思考渲染条件是 isStreaming && streamingThinking，
+        // 不置位思考内容也不会显示，界面看着就是一片空白。
+        // 首个思考 token 到达 = 请求已成功，清除残留的重试/限流提示（与文本回调对齐）。
+        if (bridge.current.retryStatus) {
+          updateState({ retryStatus: null });
+          removeStatusMessage("system:transient");
+        }
+        updateState({ streamingThinking: streamingThinkingFull, isStreaming: true });
       });
 
       try {

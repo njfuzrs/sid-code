@@ -1,7 +1,8 @@
 /**
- * loading-phrases 慢提示阈值测试（§6.3）
+ * loading-phrases 慢提示阈值测试
  *
- * pickSlowHint 是纯函数：按已等待秒数取命中的最大阈值文案，未达首阈值返回 null。
+ * pickSlowHint 是纯函数：按【静默秒数】（距上次收到模型输出的秒数，非整轮累计耗时）
+ * 取命中的最大阈值文案，未达首阈值返回 null。
  */
 
 import { test, expect, describe } from "bun:test";
@@ -9,39 +10,51 @@ import {
   pickSlowHint,
   SLOW_RESPONSE_HINTS,
   CONNECTING_PHRASE,
+  CONTINUATION_PHRASE,
   formatToolElapsed,
   TOOL_TIMER_THRESHOLD_SEC,
 } from "../../../src/ui/constants/loading-phrases.ts";
 
 describe("pickSlowHint", () => {
-  test("未达首阈值（<10s）返回 null", () => {
+  // 阈值不写死在断言里——从 SLOW_RESPONSE_HINTS 取，调阈值时测试自动跟随。
+  const [first, second] = SLOW_RESPONSE_HINTS;
+
+  test("未达首阈值返回 null（静默时间短 = 模型在产出，不报慢）", () => {
     expect(pickSlowHint(0)).toBeNull();
     expect(pickSlowHint(5)).toBeNull();
-    expect(pickSlowHint(9)).toBeNull();
+    expect(pickSlowHint(first.thresholdSec - 1)).toBeNull();
   });
 
-  test("命中 10s 阈值 → 第一档文案", () => {
-    expect(pickSlowHint(10)).toBe(SLOW_RESPONSE_HINTS[0].hint);
-    expect(pickSlowHint(29)).toBe(SLOW_RESPONSE_HINTS[0].hint);
+  test("命中首阈值 → 第一档文案（仅陈述还在等，不报警）", () => {
+    expect(pickSlowHint(first.thresholdSec)).toBe(first.hint);
+    expect(pickSlowHint(second.thresholdSec - 1)).toBe(first.hint);
   });
 
-  test("命中 30s 阈值 → 第二档文案（给出路）", () => {
-    expect(pickSlowHint(30)).toBe(SLOW_RESPONSE_HINTS[1].hint);
-    expect(pickSlowHint(59)).toBe(SLOW_RESPONSE_HINTS[1].hint);
-  });
-
-  test("命中 60s 阈值 → 第三档文案（建议排查）", () => {
-    expect(pickSlowHint(60)).toBe(SLOW_RESPONSE_HINTS[2].hint);
-    expect(pickSlowHint(120)).toBe(SLOW_RESPONSE_HINTS[2].hint);
+  test("命中次阈值 → 第二档文案（给出路 esc）", () => {
+    expect(pickSlowHint(second.thresholdSec)).toBe(second.hint);
+    expect(pickSlowHint(second.thresholdSec + 100)).toBe(second.hint);
   });
 
   test("阈值递增——取命中的最大阈值，不会越档错配", () => {
-    // 35s 应命中 30s 档而非 10s 档
-    expect(pickSlowHint(35)).toBe(SLOW_RESPONSE_HINTS[1].hint);
+    // 介于两档之间应命中较低档；超过次档命中次档。
+    expect(pickSlowHint(second.thresholdSec - 1)).toBe(first.hint);
+    expect(pickSlowHint(second.thresholdSec + 1)).toBe(second.hint);
+  });
+
+  test("慢提示文案不武断断言网络/卡死（只陈述事实 + 给出口）", () => {
+    // 回归保护：避免重新引入「网络较忙 / 模型卡住」这类推测性、会误导用户的措辞。
+    for (const { hint } of SLOW_RESPONSE_HINTS) {
+      expect(hint).not.toContain("网络");
+      expect(hint).not.toContain("卡");
+    }
   });
 
   test("CONNECTING_PHRASE 是固定的连接文案", () => {
     expect(CONNECTING_PHRASE).toBe("连接中…");
+  });
+
+  test("CONTINUATION_PHRASE 是步间空档文案（已产出 token 时用，非连接）", () => {
+    expect(CONTINUATION_PHRASE).toBe("处理中…");
   });
 });
 

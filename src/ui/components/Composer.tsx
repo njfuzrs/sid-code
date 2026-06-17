@@ -170,9 +170,17 @@ export const Composer: React.FC<ComposerProps> = ({
   // 快捷键帮助展开状态
   const [shortcutsHelpVisible, setShortcutsHelpVisible] = useState(false);
 
+  // 本轮新增 output token（文本 + 思考累计）。既喂给指示器显示，也作为
+  // useLoadingIndicator 的「静默探针」——它一增长就说明模型在产出，慢提示据此归零。
+  const turnOutputTokens = Math.max(
+    0,
+    session.usage.outputTokens - (session.turnStartOutputTokens ?? 0),
+  );
+
   const { elapsedTime, currentLoadingPhrase, slowHint, toolElapsedTime } = useLoadingIndicator({
     streamingState: streaming.streamingState,
     toolName: streaming.toolName,
+    outputTokens: turnOutputTokens,
   });
 
   const isConnecting = streaming.streamingState === StreamingState.Connecting;
@@ -245,10 +253,7 @@ export const Composer: React.FC<ComposerProps> = ({
               slowHint={slowHint}
               toolName={streaming.toolName}
               toolElapsedTime={toolElapsedTime}
-              outputTokens={Math.max(
-                0,
-                session.usage.outputTokens - (session.turnStartOutputTokens ?? 0),
-              )}
+              outputTokens={turnOutputTokens}
             />
           ) : (
             <Box flexDirection={isNarrow ? "column" : "row"} alignItems={isNarrow ? "flex-start" : "center"}>

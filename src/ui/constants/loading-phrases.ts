@@ -10,29 +10,45 @@
  * 避免每次正常的十几秒等待都吓用户。
  */
 
-/** 连接 / 等待首字阶段（Connecting 态）的固定文案 */
+/** 连接 / 等待首字阶段（Connecting 态，本轮尚未产出任何 token）的固定文案 */
 export const CONNECTING_PHRASE = "连接中…";
 
 /**
- * 慢响应提示阈值（秒）与对应文案。按 elapsedTime 命中最大阈值。
- * 阈值递增，文案从「温和告知」升级到「给出路」再到「建议排查」。
+ * 续作 / 步间空档文案（Connecting 态，但本轮已产出过 token）。
+ * agentic 循环里工具执行完到下一次 LLM 首 token 之间会短暂落回 Connecting，
+ * 此时模型并非「在连接」，而是在「接着干」——用中性「处理中…」避免误导用户
+ * 以为又在重新连接。
+ */
+export const CONTINUATION_PHRASE = "处理中…";
+
+/**
+ * 慢响应提示阈值（秒）与对应文案。
+ *
+ * ⚠️ 这里的「秒数」是【静默时长】——距上次收到模型输出（文本/思考 token）的秒数，
+ * 不是整轮累计耗时。只要 token 在流，静默时长一直归零，绝不触发提示；
+ * 只有真正一段时间收不到任何输出（疑似卡顿）才逐级给出。
+ *
+ * 措辞遵守交互铁律 C「提示渐进衰减」+ D「活而不吵」：
+ * 只陈述「还在等」这一客观事实，不武断断言「网络忙 / 模型卡住」——
+ * 那些是推测而非事实，会误导用户误判误操作。给出口（esc）而非下结论。
+ * 阈值取得比旧版更长（12/40s），因为有了静默信号，正常流式期间根本不会进这里，
+ * 一旦进了就说明确实静默了较久，值得更慎重地提示。
  */
 export const SLOW_RESPONSE_HINTS: ReadonlyArray<{ thresholdSec: number; hint: string }> = [
-  { thresholdSec: 10, hint: "响应较慢，仍在等待…" },
-  { thresholdSec: 30, hint: "网络或模型较忙，可按 esc 取消重试" },
-  { thresholdSec: 60, hint: "已等待较久，建议 esc 取消后检查网络 / 模型配置" },
+  { thresholdSec: 12, hint: "仍在等待响应…" },
+  { thresholdSec: 40, hint: "等待较久，可按 esc 取消" },
 ];
 
 /**
- * 根据已等待秒数取慢提示（取命中的最大阈值）；未达首个阈值返回 null。
+ * 根据【静默秒数】取慢提示（取命中的最大阈值）；未达首阈值返回 null。
  *
- * @param elapsedSec 已等待秒数
+ * @param silenceSec 距上次收到模型输出的秒数（不是整轮累计耗时）
  * @returns 命中的慢提示文案，未达首阈值时为 null
  */
-export function pickSlowHint(elapsedSec: number): string | null {
+export function pickSlowHint(silenceSec: number): string | null {
   let hit: string | null = null;
   for (const { thresholdSec, hint } of SLOW_RESPONSE_HINTS) {
-    if (elapsedSec >= thresholdSec) hit = hint;
+    if (silenceSec >= thresholdSec) hit = hint;
   }
   return hit;
 }

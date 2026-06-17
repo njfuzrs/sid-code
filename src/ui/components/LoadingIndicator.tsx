@@ -119,8 +119,10 @@ export const LoadingIndicator: React.FC<LoadingIndicatorProps> = ({
   }
 
   // inline / block 两种容器复用同一内容片段，避免渲染逻辑重复。
-  // 慢提示用 status.warning + dimColor 暗色追加，不抢主文案（遵守交互铁律 C 渐进衰减、
-  // D 反馈活而不吵——文字本身不动，达阈值才出现）。等待态不显示慢提示。
+  // 慢提示用 text.secondary 中性灰追加，不抢主文案、不报警（遵守交互铁律 C 渐进衰减、
+  // D 反馈活而不吵——文字本身不动，达静默阈值才出现）。
+  // ⚠️ 不用 status.warning（黄）：慢提示只陈述「还在等」的客观事实，不是错误/告警，
+  // 黄色会让用户误判为出问题；模型正常输出（含思考）时静默计时归零，根本不会进这里。
   const showSlowHint = !!slowHint && !isWaiting;
   const content = (
     <>
@@ -137,7 +139,7 @@ export const LoadingIndicator: React.FC<LoadingIndicatorProps> = ({
       {showSlowHint && (
         <>
           <Text> </Text>
-          <Text color={theme.status.warning} dimColor>· {slowHint}</Text>
+          <Text color={theme.text.secondary} dimColor>· {slowHint}</Text>
         </>
       )}
     </>
