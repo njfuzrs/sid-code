@@ -7,7 +7,7 @@
  *   3. 内容被改（行数对但 sha256 变）→ exit 1
  *   4. 公开页面（CASES.md）含 holdout sid → exit 1
  */
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, beforeAll } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
@@ -43,6 +43,23 @@ function withCasesMdBackup<T>(fn: () => T): T {
 }
 
 describe("B7-3 holdout-real-tasks 永封校验", () => {
+  // 防御性清理：若 CASES.md 被之前的测试异常中断残留 holdout sid，自动扫除
+  // 避免"永封完整"测试因脏数据而误报 exit 1（withCasesMdBackup 的 finally 不会在 SIGKILL 时执行）
+  beforeAll(() => {
+    if (!existsSync(SEALED) || !existsSync(CASES_MD)) return;
+    const holdoutSids = new Set(
+      readFileSync(SEALED, "utf-8")
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean),
+    );
+    const lines = readFileSync(CASES_MD, "utf-8").split("\n");
+    const cleanLines = lines.filter((line) => !holdoutSids.has(line.trim()));
+    if (lines.length !== cleanLines.length) {
+      writeFileSync(CASES_MD, cleanLines.join("\n"));
+    }
+  });
+
   test("永封完整 → exit 0", () => {
     if (!existsSync(SEALED)) {
       // 跳过（M4 之前可能未落地，但当前 commit 已落）

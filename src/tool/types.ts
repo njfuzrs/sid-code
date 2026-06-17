@@ -58,7 +58,13 @@ export interface LegacyToolResult {
   structuredPatch?: import("diff").StructuredPatchHunk[];
 }
 
-/** 旧版工具接口 */
+/**
+ * 旧版工具接口。
+ *
+ * @deprecated 自 2026-06 工具接口现代化起，新工具请使用新版泛型 `Tool<Input, Output, Progress>`。
+ * 当前 25 个工具类仍是 LegacyTool 实现（渐进式迁移中，尚未完成向新版 Tool 的接口级迁移），
+ * 但已全部接入 zod schema 运行时校验。待全部工具完成接口迁移后，此接口将被删除。
+ */
 export interface LegacyTool extends ToolCapabilityFields {
   name(): string;
   description(): string;
@@ -232,49 +238,3 @@ export function buildTool<Input = unknown, Output = string>(
     ...def,
   } as Tool<Input, Output>;
 }
-
-// ===== 适配器 =====
-
-/**
- * 适配器：将旧 LegacyTool 包装为新 Tool 接口
- * 渐进式迁移期间使用，新旧接口共存
- */
-export function legacyToolAdapter(legacy: LegacyTool): Tool {
-  return buildTool({
-    name: legacy.name(),
-    description: legacy.description.bind(legacy),
-    inputSchema: legacy.inputSchema.bind(legacy),
-    usageGuide: legacy.usageGuide ? legacy.usageGuide.bind(legacy) : undefined,
-    isReadOnly: () => legacy.readOnly?.() ?? false,
-    isConcurrencySafe: (input?: unknown) => {
-      // 优先使用细粒度的 isConcurrencySafe
-      if (legacy.isConcurrencySafe) {
-        return legacy.isConcurrencySafe(input);
-      }
-      // 回退到 readOnly
-      return legacy.readOnly?.() ?? false;
-    },
-    // 能力字段透传：适配后不丢失 zod schema / ToolSearch 标记 / 中断行为
-    zodSchema: legacy.zodSchema,
-    searchHint: legacy.searchHint,
-    shouldDefer: legacy.shouldDefer,
-    alwaysLoad: legacy.alwaysLoad,
-    interruptBehavior: legacy.interruptBehavior,
-    // 工具级 checkPermissions 透传（checker Step 5.5 以鸭子类型消费）
-    checkPermissions: legacy.checkPermissions
-      ? legacy.checkPermissions.bind(legacy)
-      : undefined,
-    call: async (input: unknown, context: ToolUseContext) => {
-      const result = await legacy.execute(input, context.abortSignal);
-      return { data: result.output, isError: result.isError };
-    },
-  });
-}
-
-// ===== 向后兼容的类型别名 =====
-
-/**
- * @deprecated 使用 LegacyToolResult 代替
- * 保留此别名以减少迁移期间的编译错误
- */
-export type ToolResultCompat = LegacyToolResult;

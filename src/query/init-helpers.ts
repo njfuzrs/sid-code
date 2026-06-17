@@ -223,7 +223,7 @@ async function initAnalyticsSink(config: Config, sessionId: string): Promise<voi
 }
 
 /** 构建系统提示词 */
-export async function buildInitialSystemPrompt(config: Config, tools: import("../tool/types.ts").Tool[]): Promise<string> {
+export async function buildInitialSystemPrompt(config: Config, tools: import("../tool/types.ts").LegacyTool[]): Promise<string> {
   const log = getLogger();
 
   if (config.systemPrompt) {
