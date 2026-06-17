@@ -24,6 +24,9 @@ const taskOutputSchema = lazySchema(() =>
 
 export class TaskOutputTool implements Tool {
   readonly zodSchema = taskOutputSchema();
+  /** 长尾工具：仅在有后台任务时使用，延迟加载，由 tool_search 按需调出 */
+  readonly shouldDefer = true;
+  readonly searchHint = "background task output result 后台 任务 输出 结果";
 
   name(): string {
     return "task_output";

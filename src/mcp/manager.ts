@@ -16,7 +16,7 @@ import { buildMcpToolName } from "./normalization.ts";
 import { expandEnvVars } from "./env-expansion.ts";
 import { getLogger } from "../debug/logger.ts";
 import { join } from "path";
-import { tmpdir } from "os";
+import { ensureSidTempDir } from "../utils/temp-dir.ts";
 
 /** 重连配置 */
 const MAX_RECONNECT_ATTEMPTS = 5;
@@ -114,7 +114,7 @@ class MCPToolAdapter implements Tool {
         .join("\n");
 
       if (text.length > MAX_RESULT_SIZE) {
-        const tmpPath = join(tmpdir(), `mcp-result-${Date.now()}.txt`);
+        const tmpPath = join(ensureSidTempDir(), `mcp-result-${Date.now()}.txt`);
         await Bun.write(tmpPath, text);
         return {
           output: `结果过大 (${text.length} 字符)，已保存到: ${tmpPath}\n\n前 2000 字符预览:\n${text.slice(0, 2000)}`,

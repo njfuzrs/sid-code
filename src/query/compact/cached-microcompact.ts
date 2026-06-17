@@ -21,22 +21,24 @@
 
 import type { Message } from "../../llm/types.ts";
 import { getLogger } from "../../debug/index.ts";
-import { microcompactMessages, type MicrocompactOptions } from "./microcompact.ts";
+import {
+  microcompactMessages,
+  isDiscardableTool,
+  type MicrocompactOptions,
+} from "./microcompact.ts";
 
 /**
- * 可压缩工具白名单（对标 claude-code COMPACTABLE_TOOLS）。
- * 只有这些工具的结果会被 microcompact 清空——它们的输出"可重新获取"（重读文件、重跑命令），
- * 清掉不会丢失不可恢复的信息。其余工具（如一次性副作用、用户可见产物）保守保留。
+ * 可压缩工具判定（对标 claude-code COMPACTABLE_TOOLS）。
+ *
+ * ⚠️ 历史上这里维护过一套独立的裸字符串白名单 `COMPACTABLE_TOOLS`，与 microcompact.ts 的
+ * `DISCARDABLE_TOOLS` 不一致：① 漏收 `web_search`/`web_fetch`/`tool_search`，② 混入了不存在的
+ * `list`，③ 不做 normalizeToolName 归一化（裸 `.has()` 无法命中 `read_many` 等带下划线的真实工具名）。
+ * 一旦 cache_edits 路径接入并开启 emitCacheEdits，这三个工具的结果将永远不被删除 → 埋雷。
+ *
+ * 现统一复用 microcompact.ts 的 `isDiscardableTool`（带归一化、与真实注册名一致），
+ * 单一事实源,消除两套白名单漂移的风险。
  */
-export const COMPACTABLE_TOOLS = new Set<string>([
-  "read",
-  "read_many",
-  "glob",
-  "grep",
-  "bash",
-  "list",
-  "ls",
-]);
+export const isCompactableTool = isDiscardableTool;
 
 /** 单个 tool_use 的缓存编辑追踪状态 */
 export interface CachedToolState {
@@ -130,8 +132,8 @@ export function createCacheEditsBlock(
       if (typeof block.content !== "string" || block.content.length <= minContentLength) continue;
 
       const toolState = state.tools.get(block.tool_use_id);
-      // 白名单约束：未登记（拿不到工具名）保守跳过；不在白名单跳过
-      if (!toolState || !COMPACTABLE_TOOLS.has(toolState.toolName)) continue;
+      // 白名单约束：未登记（拿不到工具名）保守跳过；不可丢弃工具跳过
+      if (!toolState || !isCompactableTool(toolState.toolName)) continue;
       if (state.deleted.has(block.tool_use_id)) continue;
 
       edits.push({ type: "delete", tool_use_id: block.tool_use_id });

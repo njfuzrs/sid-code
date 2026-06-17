@@ -3,11 +3,11 @@
  * ADR-030 / S8-T08
  */
 
-import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
 import type { WorkspaceProvider } from "./types.ts";
+import { sidTempPath } from "../utils/temp-dir.ts";
 
 export class LocalWorkspaceProvider implements WorkspaceProvider {
   private workdir: string;
@@ -34,7 +34,8 @@ export class GitCloneWorkspaceProvider implements WorkspaceProvider {
   private baseDir: string;
 
   constructor(baseDir?: string) {
-    this.baseDir = baseDir ?? join(tmpdir(), "sid-code-daemon");
+    // 多用户隔离：默认放进带 UID 的 sid-code 临时根下（getSidTempDir），避免共享 /tmp 串扰
+    this.baseDir = baseDir ?? sidTempPath("daemon");
   }
 
   getWorkdir(): string {
@@ -43,6 +44,8 @@ export class GitCloneWorkspaceProvider implements WorkspaceProvider {
   }
 
   async prepare(opts: { repo: string; branch: string; commit?: string }): Promise<void> {
+    // mkdtempSync 要求父目录已存在；以 0o700 创建隔离 base
+    mkdirSync(this.baseDir, { recursive: true, mode: 0o700 });
     const prefix = join(this.baseDir, "ws-");
     this.workdir = mkdtempSync(prefix);
 

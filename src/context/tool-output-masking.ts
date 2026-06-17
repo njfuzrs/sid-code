@@ -3,9 +3,9 @@
  * 混合后向扫描 FIFO，保护最近 50K token 输出，旧输出保存到临时文件并替换为摘要
  */
 
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { ensureSessionTempDir } from "../utils/temp-dir.ts";
 import { estimateTextTokens } from "./token.ts";
 import { isPersistedReference } from "./tool-result-storage.ts";
 import type { Message } from "../llm/types.ts";
@@ -34,8 +34,8 @@ export class ToolOutputMaskingService {
   private sessionDir: string;
 
   constructor(sessionId?: string) {
-    this.sessionDir = join(tmpdir(), "sid-code", sessionId ?? "default", "masked-outputs");
-    mkdirSync(this.sessionDir, { recursive: true });
+    // 多用户隔离：会话级临时目录带 UID（getSidTempDirName），以 0o700 创建
+    this.sessionDir = ensureSessionTempDir(sessionId, "masked-outputs");
   }
 
   /**

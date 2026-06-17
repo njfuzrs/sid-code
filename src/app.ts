@@ -151,7 +151,7 @@ export class App {
   /** Plan Mode 管理器 */
   private planManager: PlanModeManager | null = null;
   /** TUI 模式下的权限确认回调（由 TUI 注入），返回 "yes" | "no" | "always" */
-  private tuiConfirmCallback: ((toolName: string, toolInput: unknown, desc: string) => Promise<"yes" | "no" | "always">) | null = null;
+  private tuiConfirmCallback: ((toolName: string, toolInput: unknown, desc: string, shadowedRules?: import("./ui/App.tsx").ShadowedRuleInfo[]) => Promise<"yes" | "no" | "always">) | null = null;
   /** TUI 状态更新回调（由 TUI 注入，用于同步 permissionMode 等状态） */
   private tuiStateUpdater: ((patch: Record<string, unknown>) => void) | null = null;
   /** 幂等保护：init() 只执行一次 */
@@ -992,7 +992,7 @@ export class App {
   }
 
   /** 设置 TUI 模式下的权限确认回调 */
-  setTUIConfirmCallback(cb: (toolName: string, toolInput: unknown, desc: string) => Promise<"yes" | "no" | "always">): void {
+  setTUIConfirmCallback(cb: (toolName: string, toolInput: unknown, desc: string, shadowedRules?: import("./ui/App.tsx").ShadowedRuleInfo[]) => Promise<"yes" | "no" | "always">): void {
     this.tuiConfirmCallback = cb;
   }
 
@@ -1005,7 +1005,9 @@ export class App {
   ): Promise<boolean> {
     // TUI 模式：使用注入的回调
     if (this.tuiConfirmCallback) {
-      const answer = await this.tuiConfirmCallback(toolName || "", toolInput, description);
+      // 计算与该工具相关的不可达规则（对标 cc Unreachable Rules），失败不阻断
+      const shadowedRules = this.collectShadowedRulesForUI(toolName);
+      const answer = await this.tuiConfirmCallback(toolName || "", toolInput, description, shadowedRules);
       if (answer === "always") {
         if (req && this.permissionChecker?.rememberDecision) {
           this.permissionChecker.rememberDecision(req, true);
@@ -1017,6 +1019,28 @@ export class App {
 
     // headless 模式：根据权限模式自动决策
     return this.config.permissionMode === "always-allow";
+  }
+
+  /**
+   * 收集指定工具的阴影规则并投影为 UI 展示结构。
+   * 阴影提示是增强信息，任何异常都返回 undefined，绝不阻断权限确认流程。
+   */
+  private collectShadowedRulesForUI(
+    toolName?: string,
+  ): import("./ui/App.tsx").ShadowedRuleInfo[] | undefined {
+    if (!toolName || !this.permissionChecker?.getShadowedRulesForTool) return undefined;
+    try {
+      const shadows = this.permissionChecker.getShadowedRulesForTool(toolName);
+      if (!shadows.length) return undefined;
+      return shadows.map((s) => ({
+        rule: s.shadowed.rawRule,
+        bySource: s.shadowedBy.source,
+        byBehavior: s.shadowedBy.behavior,
+        severity: s.severity,
+      }));
+    } catch {
+      return undefined;
+    }
   }
 
   /** 执行工具调用，委托给 tool-executor */
@@ -1967,7 +1991,7 @@ export class App {
     };
 
     // 设置 TUI 权限确认回调
-    this.setTUIConfirmCallback(async (toolName, toolInput, desc) => {
+    this.setTUIConfirmCallback(async (toolName, toolInput, desc, shadowedRules) => {
       return new Promise<"yes" | "no" | "always">((resolve) => {
         log.info("TUI:PERM", `显示权限对话框: ${toolName} - ${desc}`);
         const wrappedResolve = (answer: "yes" | "no" | "always") => {
@@ -1976,7 +2000,7 @@ export class App {
           resolve(answer);
         };
         updateState({
-          permissionRequest: { toolName, toolInput, description: desc, resolve: wrappedResolve },
+          permissionRequest: { toolName, toolInput, description: desc, resolve: wrappedResolve, shadowedRules },
         });
       });
     });

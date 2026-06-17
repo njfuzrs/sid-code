@@ -7,7 +7,6 @@ import {
   getAutoCompactLevel,
   TOKEN_THRESHOLDS,
   TokenFreedTracker,
-  isCompacting,
   isCompactSourceMessage,
 } from "../../src/context/auto-compact.ts";
 import type { Message } from "../../src/llm/types.ts";

@@ -30,6 +30,9 @@ const teamCreateSchema = lazySchema(() =>
 
 export class TeamCreateTool implements Tool {
   readonly zodSchema = teamCreateSchema();
+  /** 长尾工具：多代理协作低频使用，延迟加载，由 tool_search 按需调出 */
+  readonly shouldDefer = true;
+  readonly searchHint = "team swarm multi-agent collaboration 团队 多代理 协作";
 
   constructor(
     private providerRegistry: ProviderRegistry,

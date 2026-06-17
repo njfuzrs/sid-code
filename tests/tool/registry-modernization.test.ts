@@ -62,13 +62,21 @@ describe("Registry — ToolSearch 字段过滤", () => {
     expect(r.isDeferred("bash")).toBe(false);
   });
 
-  test("markDeferred 运行时名单：MCP 工具无 shouldDefer 字段时的兜底通道", () => {
+  test("MCP 工具默认延迟（无需 markDeferred）", () => {
     const r = new Registry();
     r.register(mkTool("mcp__server__tool"));
-    expect(r.isDeferred("mcp__server__tool")).toBe(false);
-    r.markDeferred("mcp__server__tool");
+    // MCP 工具自动延迟（对标 claude-code isDeferredTool 的 isMcp 规则）
     expect(r.isDeferred("mcp__server__tool")).toBe(true);
     expect(r.activeDefinitions().map((d) => d.name)).not.toContain("mcp__server__tool");
+  });
+
+  test("markDeferred 运行时名单：非 MCP 工具的动态延迟通道", () => {
+    const r = new Registry();
+    r.register(mkTool("custom_tool"));
+    expect(r.isDeferred("custom_tool")).toBe(false);
+    r.markDeferred("custom_tool");
+    expect(r.isDeferred("custom_tool")).toBe(true);
+    expect(r.activeDefinitions().map((d) => d.name)).not.toContain("custom_tool");
   });
 
   test("searchDeferredTools 用 searchHint 参与关键词匹配", () => {

@@ -119,11 +119,13 @@ export async function autoCompact(deps: AutoCompactDeps): Promise<void> {
     if (summary) {
       // Layer 2：post-compact 消息重组——剥离 analysis 草稿、追加静默续接 +
       // 保留消息提示 + 转录路径提示，让模型压缩后无缝续接而非"断片"。
+      // 注意：不传 preservedCount。实际保留条数由 compactWithSummary 内部的
+      // findCompressSplitPoint（按字符比例切分）决定，PRESERVE_RECENT 只用于本函数
+      // 选取摘要输入范围，并非最终保留数 → 传具体数字会对模型谎报。走通用文案即可。
       const formattedSummary = getCompactUserSummaryMessage(summary, {
         suppressFollowUpQuestions: true,
         transcriptPath: deps.ctxMgr.getTranscriptPath(),
         recentMessagesPreserved: true,
-        preservedCount: PRESERVE_RECENT,
       });
       deps.ctxMgr.compactWithSummary(formattedSummary);
       circuitBreaker.recordSuccess();

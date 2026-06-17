@@ -165,6 +165,15 @@ export interface Config {
   /** 是否启用 JIT 上下文发现（默认 true） */
   jitContext?: boolean;
 
+  // 工具延迟加载（ToolSearch）
+  /**
+   * 是否启用工具延迟加载（默认 false）。
+   * 开启后：标记 shouldDefer 的工具不进首轮 LLM 上下文（用 activeDefinitions 替代
+   * definitions），模型通过 tool_search 工具按需搜索并激活。工具数膨胀（50+）时
+   * 显著降低首轮 token。关闭时全部工具照常进上下文，行为与历史一致。
+   */
+  toolSearch?: boolean;
+
   // 环境变量清理
   /** 是否在 bash 工具执行时清理环境变量（默认 false） */
   sanitizeEnv?: boolean;
@@ -479,6 +488,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     trust_project_extensions: "trustProjectExtensions",
     checkpoint: "checkpoint",
     jit_context: "jitContext",
+    tool_search: "toolSearch",
     sanitize_env: "sanitizeEnv",
     enable_llm_classifier: "enableLLMClassifier",
     classifier_model: "classifierModel",

@@ -20,6 +20,9 @@ const taskGetSchema = lazySchema(() =>
 
 export class TaskGetTool implements Tool {
   readonly zodSchema = taskGetSchema();
+  /** 长尾工具：仅在有后台任务时使用，延迟加载，由 tool_search 按需调出 */
+  readonly shouldDefer = true;
+  readonly searchHint = "background task get detail 后台 任务 详情 查询";
 
   name(): string {
     return "task_get";

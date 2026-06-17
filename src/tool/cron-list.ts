@@ -12,6 +12,9 @@ const cronListSchema = lazySchema(() => z.object({}));
 
 export class CronListTool implements Tool {
   readonly zodSchema = cronListSchema();
+  /** 长尾工具：定时调度低频使用，延迟加载，由 tool_search 按需调出 */
+  readonly shouldDefer = true;
+  readonly searchHint = "cron schedule list jobs 定时 调度 列出 任务";
 
   name(): string {
     return "cron_list";

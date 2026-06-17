@@ -23,6 +23,9 @@ const sendMessageSchema = lazySchema(() =>
 
 export class SendMessageTool implements Tool {
   readonly zodSchema = sendMessageSchema();
+  /** 长尾工具:代理间消息低频使用,延迟加载,由 tool_search 按需调出 */
+  readonly shouldDefer = true;
+  readonly searchHint = "send message agent communication 发送 消息 代理 通信";
 
   name(): string {
     return "send_message";

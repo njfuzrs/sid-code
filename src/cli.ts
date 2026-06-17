@@ -599,6 +599,10 @@ export async function main(): Promise<void> {
     const { SubAgentTool } = await import("./agent/tool.ts");
     toolRegistry.register(new SubAgentTool(providerRegistry, toolRegistry));
 
+    // 注册工具搜索工具（延迟加载机制的调出入口，alwaysLoad 强制首轮可见）
+    const { ToolSearchTool } = await import("./tool/tool-search.ts");
+    toolRegistry.register(new ToolSearchTool(toolRegistry));
+
     // 注册后台任务工具（task 系统已就位，此处补齐工具入口）
     const { TaskOutputTool } = await import("./tool/task-output.ts");
     const { TaskStopTool } = await import("./tool/task-stop.ts");

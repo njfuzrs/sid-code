@@ -252,7 +252,14 @@ export async function* queryLoop(
     }
 
     const cleanedMessages = ctxMgr.getCleanedMessages();
-    const toolDefs = toolCount > 0 ? toolRegistry.definitions() : undefined;
+    // 工具延迟加载开启时，首轮只发非延迟工具（activeDefinitions），延迟工具由模型经
+    // tool_search 按需激活后才进上下文；关闭时发全量（definitions），行为与历史一致。
+    const toolDefs =
+      toolCount > 0
+        ? config.toolSearch
+          ? toolRegistry.activeDefinitions()
+          : toolRegistry.definitions()
+        : undefined;
     log.llmRequest(config.provider, config.model, cleanedMessages.length, toolDefs?.length ?? 0, config.maxTokens);
 
     // ─── System Reminder 注入（对标 Claude Code 每轮注入）───
@@ -315,6 +322,21 @@ export async function* queryLoop(
       // 关键：纯 tool_result 轮（plan 探索高频场景）无 text block 时会追加 text block，
       // 不再放弃注入——修复了工具轮漏注入 reminder 的回归。
       finalMessages = injectReminders(finalMessages, reminderParts);
+    }
+
+    // 工具延迟加载：每轮注入 <available-deferred-tools> 提醒，告诉模型有哪些工具
+    // 尚未加载、可经 tool_search 调出。不注入则模型对延迟工具完全无感知，
+    // 整个延迟机制形同虚设（对标 claude-code claude.ts deferredToolList 注入）。
+    // 单独处理（不进 reminderParts）：它每轮都注、非节流，且内容独立成块。
+    if (config.toolSearch) {
+      const deferredNames = toolRegistry.deferredToolNames();
+      if (deferredNames.length > 0) {
+        finalMessages = injectReminders(finalMessages, [
+          `<available-deferred-tools>\n${deferredNames.join("\n")}\n</available-deferred-tools>\n` +
+            `以上工具尚未加载到上下文。需要时用 tool_search 工具按名称（select:<工具名>，多个用逗号分隔）` +
+            `或关键词调出，激活后即可在后续轮次正常调用。`,
+        ]);
+      }
     }
 
     const sendParams: SendParams = {

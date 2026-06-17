@@ -355,6 +355,9 @@ export async function executeSingleTool(
       block.id,
       result.output,
       deps.sessionState.sessionId,
+      // 工具实例若声明 maxResultSizeChars，优先于 result-storage 的 TOOL_MAX_RESULT_SIZE 表。
+      // 让"结果落盘阈值"成为工具自身可控的接口字段（此前是死字段，storage 只认常量表）。
+      tool.maxResultSizeChars,
     );
 
     log.toolEnd(block.name, result.output, !!result.isError, elapsed);

@@ -68,6 +68,23 @@ export interface PermissionRequestInfo {
   toolInput: unknown;
   description: string;
   resolve: (answer: "yes" | "no" | "always") => void;
+  /**
+   * 与该工具相关的不可达规则（对标 cc Unreachable Rules）。
+   * 每条含被阴影规则、覆盖它的规则、严重度(blocked/shadowed)。可选——无阴影时省略。
+   */
+  shadowedRules?: ShadowedRuleInfo[];
+}
+
+/** 传给 UI 的阴影规则展示信息（从 permission 层投影，避免 UI 直接依赖权限内部类型） */
+export interface ShadowedRuleInfo {
+  /** 被阴影的规则字符串，如 "Bash(ls:*)" */
+  rule: string;
+  /** 覆盖它的规则来源，如 "projectSettings" */
+  bySource: string;
+  /** 覆盖它的规则行为 */
+  byBehavior: "allow" | "deny" | "ask";
+  /** blocked=被 deny 完全拦截；shadowed=被 ask 遮蔽仍弹窗 */
+  severity: "blocked" | "shadowed";
 }
 
 /** Shell 命令确认请求信息 */

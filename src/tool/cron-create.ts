@@ -26,6 +26,9 @@ const cronCreateSchema = lazySchema(() =>
 
 export class CronCreateTool implements Tool {
   readonly zodSchema = cronCreateSchema();
+  /** 长尾工具：定时调度低频使用，延迟加载，由 tool_search 按需调出 */
+  readonly shouldDefer = true;
+  readonly searchHint = "cron schedule timer recurring reminder 定时 调度 计划任务 提醒";
 
   name(): string {
     return "cron_create";

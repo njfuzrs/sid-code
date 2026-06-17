@@ -15,6 +15,7 @@ import {
 } from "../agent/message-invariants.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { ensureSidTempDir } from "../utils/temp-dir.ts";
 
 /** 持久化输出阈值（对标 Claude Code 30000 字符，可通过 SID_OUTPUT_THRESHOLD 环境变量覆盖） */
 const OUTPUT_THRESHOLD = parseInt(process.env.SID_OUTPUT_THRESHOLD ?? "30000", 10);
@@ -607,19 +608,20 @@ export class Manager {
   static truncateToolOutputWithSave(
     content: string,
     toolName: string,
-    tempDir: string,
+    tempDir?: string,
     maxChars: number = OUTPUT_THRESHOLD,
   ): TruncationResult {
     if (content.length <= maxChars) {
       return { truncated: content, savedPath: null };
     }
 
-    // 保存完整输出到临时文件
+    // 保存完整输出到临时文件（未指定 tempDir 时用 UID 隔离的 sid-code 临时根，0o700）
     let savedPath: string | null = null;
     try {
-      const dir = path.join(tempDir, "tool-outputs");
+      const base = tempDir ?? ensureSidTempDir();
+      const dir = path.join(base, "tool-outputs");
       if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
+        fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
       }
       const filename = `${toolName}-${Date.now()}.txt`;
       savedPath = path.join(dir, filename);
@@ -986,9 +988,9 @@ export class Manager {
    * 清理工具输出临时文件
    * @param maxAgeMs 最大保留时间（毫秒，默认 1 小时）
    */
-  static cleanupToolOutputs(tempDir: string, maxAgeMs: number = 3600_000): void {
+  static cleanupToolOutputs(tempDir?: string, maxAgeMs: number = 3600_000): void {
     const log = getLogger();
-    const dir = path.join(tempDir, "tool-outputs");
+    const dir = path.join(tempDir ?? ensureSidTempDir(), "tool-outputs");
 
     if (!fs.existsSync(dir)) return;
 

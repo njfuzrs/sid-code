@@ -23,6 +23,9 @@ const exitWorktreeSchema = lazySchema(() =>
 
 export class ExitWorktreeTool implements Tool {
   readonly zodSchema = exitWorktreeSchema();
+  /** 长尾工具：worktree 隔离低频使用，延迟加载，由 tool_search 按需调出 */
+  readonly shouldDefer = true;
+  readonly searchHint = "git worktree exit cleanup 隔离 工作树 退出 清理";
 
   name(): string {
     return "exit_worktree";

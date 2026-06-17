@@ -11,7 +11,7 @@
 
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResult, ToolUseContext } from "./types.ts";
 import { spawn } from "bun";
-import { platform, tmpdir } from "os";
+import { platform } from "os";
 import { join } from "path";
 import { readFileSync, unlinkSync, existsSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
@@ -19,6 +19,7 @@ import type { Config } from "../config/config.ts";
 import { isReadOnlyCommand, isDestructiveCommand } from "./bash/read-only-validation.ts";
 import { normalizeToolPath } from "./path-utils.ts";
 import { registerCleanup } from "../utils/graceful-shutdown.ts";
+import { ensureSidTempDir } from "../utils/temp-dir.ts";
 import { getCwd, setCwd, getOriginalCwd } from "../bootstrap/state.ts";
 import { createAndSaveSnapshot, escapeForShell } from "./bash/shell-snapshot.ts";
 import { z } from "zod/v4";
@@ -236,7 +237,7 @@ export class BashTool implements Tool {
 
     // CWD 追踪仅对前台命令、非 Windows 生效（powershell 无 POSIX pwd -P 语义）
     if (opts.trackCwd && !isWin) {
-      cwdFile = join(tmpdir(), `sid-code-cwd-${process.pid}-${++cwdFileCounter}`);
+      cwdFile = join(ensureSidTempDir(), `sid-code-cwd-${process.pid}-${++cwdFileCounter}`);
       parts.push(`pwd -P >| ${escapeForShell(cwdFile)}`);
     }
 

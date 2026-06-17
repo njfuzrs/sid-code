@@ -23,6 +23,9 @@ const taskListSchema = lazySchema(() =>
 
 export class TaskListTool implements Tool {
   readonly zodSchema = taskListSchema();
+  /** 长尾工具：仅在有后台任务时使用，延迟加载，由 tool_search 按需调出 */
+  readonly shouldDefer = true;
+  readonly searchHint = "background task list status 后台 任务 列出 状态";
 
   name(): string {
     return "task_list";

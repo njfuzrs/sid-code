@@ -12,6 +12,17 @@ import type { ScanOptions } from "../extension/types.ts";
 import { SubAgent } from "./sub-agent.ts";
 import { getLogger } from "../debug/logger.ts";
 import type { ExtensionSource } from "../extension/types.ts";
+import { z } from "zod/v4";
+
+/**
+ * 自定义 Agent 工具输入 schema —— 运行时校验 + JSON Schema 生成的唯一真相源。
+ *
+ * 动态注册（每个自定义 agent 一个实例），所有实例 schema 相同（固定 task 字段），
+ * 故用模块级常量。补上后 executor 的 safeParse 在工具边界拦截畸形 task 参数。
+ */
+const customAgentSchema = z.object({
+  task: z.string().describe("要执行的任务描述"),
+});
 
 /** 自定义 Agent 定义 */
 export interface CustomAgentDefinition {
@@ -77,6 +88,9 @@ export class CustomAgentTool implements Tool {
   /** 子代理 usage 归集 sink（P0-1，由主会话注入） */
   private usageSink?: import("./tool.ts").SubAgentUsageSink;
 
+  /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
+  readonly zodSchema = customAgentSchema;
+
   constructor(def: CustomAgentDefinition, providerRegistry: ProviderRegistry, toolRegistry: ToolRegistry) {
     this.def = def;
     this.providerRegistry = providerRegistry;
@@ -97,16 +111,7 @@ export class CustomAgentTool implements Tool {
   }
 
   inputSchema(): Record<string, unknown> {
-    return {
-      type: "object",
-      properties: {
-        task: {
-          type: "string",
-          description: "要执行的任务描述",
-        },
-      },
-      required: ["task"],
-    };
+    return z.toJSONSchema(customAgentSchema) as Record<string, unknown>;
   }
 
   readOnly(): boolean {

@@ -11,16 +11,35 @@ import { getLogger } from "../debug/logger.ts";
 import type { SkillDefinition } from "./types.ts";
 import { scanSkillResources } from "./resources.ts";
 import { dirname } from "node:path";
+import { z } from "zod/v4";
+
+/**
+ * Skill 工具输入 schema 工厂 —— 运行时校验 + JSON Schema 生成的唯一真相源。
+ *
+ * 动态注册的工具（每个 skill 一个实例）此前绕过执行器的 zod 校验，模型给畸形
+ * 参数（如 input:123）会带病走到 executeDelegate 内部。这里补上 zodSchema 后，
+ * query/agent 两个 executor 的 safeParse 在工具边界统一拦截。
+ * description 取 skill 的 argumentHint（逐 skill 不同），故按实例构造。
+ */
+function buildSkillSchema(argumentHint?: string) {
+  return z.object({
+    input: z.string().describe(argumentHint || "传递给 Skill 的输入参数"),
+  });
+}
 
 export class SkillTool implements Tool {
   private skill: SkillDefinition;
   private providerRegistry: ProviderRegistry;
   private toolRegistry: ToolRegistry;
 
+  /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
+  readonly zodSchema: z.ZodType;
+
   constructor(skill: SkillDefinition, providerRegistry: ProviderRegistry, toolRegistry: ToolRegistry) {
     this.skill = skill;
     this.providerRegistry = providerRegistry;
     this.toolRegistry = toolRegistry;
+    this.zodSchema = buildSkillSchema(skill.argumentHint);
   }
 
   name(): string {
@@ -36,16 +55,7 @@ export class SkillTool implements Tool {
   }
 
   inputSchema(): Record<string, unknown> {
-    return {
-      type: "object",
-      properties: {
-        input: {
-          type: "string",
-          description: this.skill.argumentHint || "传递给 Skill 的输入参数",
-        },
-      },
-      required: ["input"],
-    };
+    return z.toJSONSchema(this.zodSchema) as Record<string, unknown>;
   }
 
   readOnly(): boolean {

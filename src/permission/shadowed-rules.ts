@@ -17,6 +17,12 @@ export interface ShadowedRule {
   shadowedBy: SourcedPermissionRule;
   /** 描述 */
   description: string;
+  /**
+   * 严重度（对标 claude-code Unreachable Rules 的两档）：
+   * - "blocked": 被更高优先级的 deny 规则完全拦截，该 allow 永远不可达（更严重）
+   * - "shadowed": 被更高优先级的 ask 规则遮蔽，仍会弹窗确认、无法自动放行（较温和）
+   */
+  severity: "blocked" | "shadowed";
 }
 
 /**
@@ -45,6 +51,8 @@ export function detectShadowedRules(rules: SourcedPermissionRule[]): ShadowedRul
           shadowed: rule,
           shadowedBy: other,
           description: `${rule.source} 的 ${rule.behavior}(${rule.rawRule}) 被 ${other.source} 的 ${other.behavior}(${other.rawRule}) 覆盖`,
+          // deny 遮蔽 = 完全拦截(blocked)；ask 遮蔽 = 仍弹窗(shadowed)
+          severity: other.behavior === "deny" ? "blocked" : "shadowed",
         });
         break; // 每条规则只报告一次阴影
       }
@@ -108,3 +116,26 @@ function extractPattern(rule: string): string | null {
   const match = rule.match(/\(([^)]+)\)/);
   return match ? match[1] : null;
 }
+
+/**
+ * 筛选出与指定工具相关的阴影规则（供权限确认对话框展示）。
+ *
+ * 只保留"被阴影规则"的工具名与当前请求工具一致的条目——用户在为工具 X 做确认决策时，
+ * 只需看到与 X 相关的不可达规则提示，无关工具的阴影是噪声。
+ *
+ * @param rules    全部带来源的规则
+ * @param toolName 当前请求的工具名（如 "Bash" / "Edit"）
+ */
+export function getShadowedRulesForTool(
+  rules: SourcedPermissionRule[],
+  toolName: string,
+): ShadowedRule[] {
+  if (!toolName) return [];
+  const all = detectShadowedRules(rules);
+  const target = toolName.toLowerCase();
+  return all.filter((s) => {
+    const t = extractToolName(s.shadowed.rawRule);
+    return t != null && t.toLowerCase() === target;
+  });
+}
+

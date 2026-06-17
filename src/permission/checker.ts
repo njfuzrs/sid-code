@@ -28,6 +28,7 @@ import {
   shouldFuse,
 } from "./denial-tracking.ts";
 import { RuleLoader } from "./rule-loader.ts";
+import { getShadowedRulesForTool } from "./shadowed-rules.ts";
 import type { SandboxManager } from "./sandbox.ts";
 import { BashClassifier } from "./bash-classifier.ts";
 import * as path from "node:path";
@@ -251,6 +252,22 @@ export class PermissionChecker implements Checker {
   /** 获取多来源规则加载器（供外部集成） */
   getRuleLoader(): RuleLoader {
     return this.ruleLoader;
+  }
+
+  /**
+   * 获取与指定工具相关的阴影规则（供权限确认对话框展示不可达规则提示）。
+   * 对标 claude-code 的 "Unreachable Rules"：deny 遮蔽=blocked，ask 遮蔽=shadowed。
+   * 异常时返回空数组——阴影提示是增强信息，绝不能因它阻断权限流程。
+   */
+  getShadowedRulesForTool(toolName: string): import("./shadowed-rules.ts").ShadowedRule[] {
+    try {
+      const rules = this.ruleLoader.getAllRules();
+      if (rules.length < 2) return [];
+      return getShadowedRulesForTool(rules, toolName);
+    } catch (err) {
+      getLogger().warn("PERMISSION", `阴影规则检测失败(忽略): ${err}`);
+      return [];
+    }
   }
 
   /** 异步初始化：加载设置文件中的规则 */

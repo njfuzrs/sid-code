@@ -17,6 +17,20 @@ import type { z } from "zod/v4";
 export type ToolZodSchema<Input = unknown> = z.ZodType<Input>;
 
 /**
+ * description() 的上下文入参（对标 claude-code 的入参感知描述）。
+ *
+ * 工具可据此动态调整描述文本——例如非交互模式下隐藏需要 UI 确认的提示，
+ * 或按权限上下文补充约束。全部可选：无参调用（description()）仍然合法，
+ * 既有 25 个工具的零参实现无需改动即满足新签名（可选参数向后兼容）。
+ */
+export interface ToolDescriptionContext {
+  /** 是否非交互模式（SDK/CI）——可据此省略需要 UI 交互的说明 */
+  isNonInteractive?: boolean;
+  /** 当前权限模式（default / plan / acceptEdits 等） */
+  permissionMode?: string;
+}
+
+/**
  * ToolSearch 协议字段 + 中断行为 —— 新旧两版接口共享的"能力声明"。
  *
  * 字段先行：`searchHint` / `shouldDefer` / `alwaysLoad` 由 registry 的
@@ -42,6 +56,15 @@ export interface ToolCapabilityFields<Input = unknown> {
 
   /** 用户发新消息时的行为：cancel（取消）或 block（继续运行），默认 block */
   interruptBehavior?: () => "cancel" | "block";
+
+  /**
+   * 工具结果最大字符数（超过则持久化到磁盘并返回摘要）。Infinity 表示不限制。
+   *
+   * 执行器把它透传给 result-storage 的 processToolResult，优先于 storage 内置的
+   * TOOL_MAX_RESULT_SIZE 常量表——让"落盘阈值"成为工具自身可控的接口字段。
+   * 未声明时回退到常量表 / 默认值。新旧两版接口共享。
+   */
+  maxResultSizeChars?: number;
 }
 
 // ===== 旧版接口（渐进式迁移期间保留） =====
@@ -67,7 +90,8 @@ export interface LegacyToolResult {
  */
 export interface LegacyTool extends ToolCapabilityFields {
   name(): string;
-  description(): string;
+  /** 工具描述（发送给 LLM）。可选入参用于入参/上下文感知（对标 claude-code），无参调用兼容既有实现。 */
+  description(context?: ToolDescriptionContext): string;
   inputSchema(): Record<string, unknown>;
   execute(input: unknown, signal?: AbortSignal): Promise<LegacyToolResult>;
   readOnly?(): boolean;
@@ -188,8 +212,8 @@ export interface Tool<
 
   // ===== 模型交互 =====
 
-  /** 工具描述（发送给 LLM） */
-  description(): string;
+  /** 工具描述（发送给 LLM）。可选入参用于入参/上下文感知（对标 claude-code），无参调用兼容既有实现。 */
+  description(context?: ToolDescriptionContext): string;
 
   /** 参数的 JSON Schema */
   inputSchema(): Record<string, unknown>;
@@ -206,9 +230,6 @@ export interface Tool<
     content: string;
     is_error?: boolean;
   };
-
-  /** 工具结果最大字符数（超过则持久化到磁盘），Infinity 表示不限制 */
-  maxResultSizeChars?: number;
 }
 
 // ===== 工厂函数 =====

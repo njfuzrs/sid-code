@@ -24,6 +24,9 @@ const enterWorktreeSchema = lazySchema(() =>
 
 export class EnterWorktreeTool implements Tool {
   readonly zodSchema = enterWorktreeSchema();
+  /** 长尾工具：worktree 隔离低频使用，延迟加载，由 tool_search 按需调出 */
+  readonly shouldDefer = true;
+  readonly searchHint = "git worktree isolation branch 隔离 工作树 分支";
 
   name(): string {
     return "enter_worktree";

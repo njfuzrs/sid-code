@@ -8,7 +8,7 @@
 import { describe, it, expect } from "bun:test";
 import type { Message } from "../../../src/llm/types.ts";
 import {
-  COMPACTABLE_TOOLS,
+  isCompactableTool,
   createCachedMicrocompactState,
   resetCachedMicrocompactState,
   registerToolUses,
@@ -32,11 +32,29 @@ function buildToolMessages(count: number, toolName = "read", contentLen = 2000):
   return messages;
 }
 
-describe("COMPACTABLE_TOOLS 白名单", () => {
+describe("isCompactableTool 工具判定（与 microcompact 单一事实源）", () => {
   it("包含可重新获取的只读类工具", () => {
-    expect(COMPACTABLE_TOOLS.has("read")).toBe(true);
-    expect(COMPACTABLE_TOOLS.has("bash")).toBe(true);
-    expect(COMPACTABLE_TOOLS.has("grep")).toBe(true);
+    expect(isCompactableTool("read")).toBe(true);
+    expect(isCompactableTool("bash")).toBe(true);
+    expect(isCompactableTool("grep")).toBe(true);
+  });
+
+  it("回归：曾被旧白名单漏掉的 web/搜索类工具现在能命中", () => {
+    // 旧 COMPACTABLE_TOOLS 裸字符串集合漏收这三个 → cache_edits 永远不删它们的结果
+    expect(isCompactableTool("web_search")).toBe(true);
+    expect(isCompactableTool("web_fetch")).toBe(true);
+    expect(isCompactableTool("tool_search")).toBe(true);
+  });
+
+  it("回归：带下划线的真实注册名经归一化后命中", () => {
+    // 旧白名单用裸 .has() 无归一化，read_many 等无法稳定命中
+    expect(isCompactableTool("read_many")).toBe(true);
+  });
+
+  it("回归：不存在的 list / 不可丢弃工具不命中", () => {
+    expect(isCompactableTool("list")).toBe(false); // sid 实际注册名是 ls，无 list
+    expect(isCompactableTool("edit")).toBe(false);
+    expect(isCompactableTool("write")).toBe(false);
   });
 });
 

@@ -58,6 +58,25 @@ function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
             <Text color={theme.status.error} bold>{WARNING_MARK} 此操作不可逆：{danger.label}</Text>
           </Box>
         )}
+        {/* 不可达规则提示（对标 cc Unreachable Rules）：当前工具有被高优先级规则遮蔽的规则时展示 */}
+        {request.shadowedRules && request.shadowedRules.length > 0 && (
+          <Box marginTop={1} flexDirection="column">
+            <Text color={theme.status.warning}>
+              {WARNING_MARK} 不可达规则 ({request.shadowedRules.length})
+            </Text>
+            {request.shadowedRules.map((s, i) => (
+              <Box key={i} flexDirection="column" paddingLeft={2}>
+                <Text color={s.severity === "blocked" ? theme.status.warning : theme.text.secondary}>
+                  {s.rule}
+                </Text>
+                <Text color={theme.text.secondary} dimColor>
+                  {`被 ${s.bySource} 的 ${s.byBehavior} 规则`}
+                  {s.severity === "blocked" ? "完全拦截" : "遮蔽（仍会弹窗）"}
+                </Text>
+              </Box>
+            ))}
+          </Box>
+        )}
       </Box>
       {/* 安全默认：危险操作把「拒绝」放在最前并标红强调，避免手滑误允许 */}
       {danger.isDangerous ? (

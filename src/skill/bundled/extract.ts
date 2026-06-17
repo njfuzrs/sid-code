@@ -12,16 +12,17 @@
 import { constants as fsConstants } from "node:fs";
 import { mkdir, open } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
-import { tmpdir } from "node:os";
 import { join, normalize, isAbsolute, sep, dirname } from "node:path";
 import { getLogger } from "../../debug/logger.ts";
+import { getSidTempDir } from "../../utils/temp-dir.ts";
 
 // 进程级 nonce，防止路径预测
 const PROCESS_NONCE = randomBytes(8).toString("hex");
 
 /** 计算 bundled skill 的提取目录 */
 export function getBundledSkillExtractDir(skillName: string): string {
-  return join(tmpdir(), "sid-code", "bundled-skills", PROCESS_NONCE, skillName);
+  // 多用户隔离：根目录带 UID（getSidTempDir），bundled-skills 仍隔进程级 nonce 子目录
+  return join(getSidTempDir(), "bundled-skills", PROCESS_NONCE, skillName);
 }
 
 /**

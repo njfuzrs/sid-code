@@ -16,6 +16,9 @@ const cronDeleteSchema = lazySchema(() =>
 
 export class CronDeleteTool implements Tool {
   readonly zodSchema = cronDeleteSchema();
+  /** 长尾工具：定时调度低频使用，延迟加载，由 tool_search 按需调出 */
+  readonly shouldDefer = true;
+  readonly searchHint = "cron schedule delete cancel 定时 调度 删除 取消";
 
   name(): string {
     return "cron_delete";

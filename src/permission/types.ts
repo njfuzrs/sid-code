@@ -3,6 +3,8 @@
  * 定义权限检查的请求和决策结构
  */
 
+import type { ShadowedRule } from "./shadowed-rules.ts";
+
 /** 权限决策原因（用于审计和调试） */
 export type PermissionDecisionReason =
   | { type: "rule"; rule: string; behavior: "allow" | "deny" | "ask" }
@@ -37,6 +39,8 @@ export interface Checker {
   check(req: PermissionRequest, tool?: unknown, toolContext?: unknown): Promise<Decision>;
   /** 记住会话内权限决策（可选） */
   rememberDecision?(req: PermissionRequest, allowed: boolean): void;
+  /** 获取与指定工具相关的阴影规则（可选，供权限对话框展示不可达规则提示） */
+  getShadowedRulesForTool?(toolName: string): ShadowedRule[];
 }
 
 /** 权限规则配置 */
