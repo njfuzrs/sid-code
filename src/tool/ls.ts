@@ -8,6 +8,7 @@ import { readdirSync, statSync } from "fs";
 import { join } from "path";
 import { getLogger } from "../debug/logger.ts";
 import { normalizeToolPath } from "./path-utils.ts";
+import { getCwd } from "../bootstrap/state.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
 
@@ -97,7 +98,7 @@ export class LsTool implements Tool {
       try {
         stat = statSync(dirPath);
       } catch {
-        return { output: `错误: 路径不存在: ${dirPath}\n当前工作目录: ${process.cwd()}`, isError: true };
+        return { output: `错误: 路径不存在: ${dirPath}\n当前工作目录: ${getCwd()}`, isError: true };
       }
 
       if (!stat.isDirectory()) {

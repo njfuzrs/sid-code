@@ -68,7 +68,10 @@ export function registerCommitPushPrSkill(): void {
     allowedTools: ["bash", "read", "grep", "glob"],
     context: "fork",
     userInvocable: true,
+    // 强副作用(git push + gh pr create)：禁止模型自动调用，仅用户显式 /commit-push-pr 触发
+    disableModelInvocation: true,
     maxTurns: 25,
+    timeoutMins: 15, // 含 git push + gh pr create，慢网络下 2 分钟可能超时
     async getPromptForCommand(args) {
       return (
         COMMIT_PUSH_PR_PROMPT +

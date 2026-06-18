@@ -69,13 +69,20 @@ export function getAllTasks(): TaskState[] {
   return [...tasks.values()];
 }
 
-/** 驱逐已完成且已通知的任务 */
+/** 驱逐已完成且已通知的任务。
+ *  终止态（completed/failed/killed）任务一旦其完成通知已入队（notified=true），
+ *  在面板上即属冗余——通知会经 dequeuePendingNotifications 注入对话，任务条目应清除，
+ *  否则「后台任务 · N 已完成」会永久驻留（evict 此前从未被调用，是该 bug 的根因）。
+ *  删除发生时通知监听器刷新 TUI（否则面板不会重渲、仍显示已完成条目）。 */
 export function evictTerminalTasks(): void {
+  let evicted = false;
   for (const [id, task] of tasks) {
     if (isTerminalStatus(task.status) && task.notified) {
       tasks.delete(id);
+      evicted = true;
     }
   }
+  if (evicted) notifyTaskChanged();
 }
 
 /** 清理所有任务（会话结束时调用） */

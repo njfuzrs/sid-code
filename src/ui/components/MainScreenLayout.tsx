@@ -14,7 +14,7 @@ import React, { memo, useMemo } from "react";
 import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
 import Static from "../../ink/_vendor/Static.js";
-import { tailToFit, tailToFitByBlocks, estimateChromeLines, computeStreamBudgets } from "../streaming-viewport.ts";
+import { tailToFitByBlocks, estimateChromeLines, computeStreamBudgets } from "../streaming-viewport.ts";
 import { Composer } from "./Composer.tsx";
 import { Footer } from "./Footer.tsx";
 import { DialogRenderer } from "./DialogManager.tsx";
@@ -153,21 +153,17 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
       taskCount: tasks.length,
       hasStatusMessage: !!statusMessage,
     });
-    const { thinkingLines, textLines } = computeStreamBudgets(rows, chrome, hasThinking, hasText);
-    // thinkingLines===1（正文已开始）= 折叠信号：思考渲染为单行摘要，不对全文做 tailToFit。
-    const collapsed = hasThinking && hasText && thinkingLines === 1;
+    const { textLines } = computeStreamBudgets(rows, chrome, hasThinking, hasText);
+    // 思考恒折叠为单行摘要（对标 cc，thinkingLines 恒为 1）：高度稳定、全程零跳动。
+    // 不再分「纯思考逐字直播 → 正文开始时塌缩」两态，避免页面上跳 N-1 行。
+    const collapsed = hasThinking;
     // 正文带 "⏺ " 前缀，有效宽度略减
     const textWidth = Math.max(1, termWidth - 2);
     return {
       // 正文走块级窗口（P1-C）：按 markdown 块边界裁尾部，表格/代码块不被拦腰截断。
       visibleText: hasText ? tailToFitByBlocks(streamingText, textWidth, textLines) : "",
-      // 折叠态把全文传给 ThinkingMessage（它内部只渲染一行摘要 + 字符数）；
-      // 纯思考阶段（未折叠）才按视口高度 tail 截断直播。思考是纯文本，用物理行截断即可。
-      visibleThinking: hasThinking
-        ? collapsed
-          ? streamingThinking
-          : tailToFit(streamingThinking, Math.max(1, termWidth - 4), thinkingLines)
-        : "",
+      // 折叠态把全文传给 ThinkingMessage（它内部只渲染一行摘要 + 字符数 + 实时计时）。
+      visibleThinking: hasThinking ? streamingThinking : "",
       thinkingCollapsed: collapsed,
     };
   }, [hasText, hasThinking, streamingText, streamingThinking, rows, termWidth, todos.length, tasks.length, statusMessage]);
@@ -202,8 +198,8 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
 
           {/* v2：流式思考区域 — 独立于 streamingText（对标 Claude Code）
               思考在正文之前渲染（模型先思考后回答），顺序与语义一致。
-              正文一旦开始输出 → 思考折叠为单行摘要（thinkingCollapsed），正文独占视口，
-              不再挤压正文导致顶部被截断；纯思考阶段（正文未开始）才直播 tail 截断的全文。
+              思考全程折叠为单行摘要（thinkingCollapsed 恒为 true），实时计时原地更新、
+              高度恒定 → 页面零跳动；不再有「纯思考逐字展开 → 正文开始时塌缩」的高度突变。
               Static 模式 ctrl+o 无法重渲已打印项，故折叠态不显示展开提示（showExpandHint=false）。 */}
           {hasThinking && visibleThinking ? (
             <ThinkingMessage

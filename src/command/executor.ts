@@ -240,6 +240,12 @@ export class CommandExecutor {
         userPrompt: prompt,
         allowedTools: cmd.allowedTools ?? [],
         maxTurns: cmd.maxTurns ?? 10,
+        // 超时透传：对齐磁盘 skill 的钳制（默认 2 分钟，最大 30 分钟，见 skill/tool.ts:146）。
+        // 不传 timeoutMins 时 executeCustom 内部默认 120_000ms，与历史行为一致。
+        timeout:
+          cmd.timeoutMins != null
+            ? Math.min(Math.max(cmd.timeoutMins, 1), 30) * 60_000
+            : undefined,
       });
 
       return {

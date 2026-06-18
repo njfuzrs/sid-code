@@ -684,6 +684,29 @@ export async function main(): Promise<void> {
       }
     }
 
+    // Bundled Skill 模型调用路径（Gap 1）：把 fork 模式且未禁止模型调用的
+    // Bundled Skill 注册为工具，使 LLM 可自动调用（与磁盘 Skill 的 SkillTool 对等）。
+    // inline 模式语义是注入主对话、不返回结果，不适合做工具，仅保留斜杠命令。
+    // 带强副作用的 skill（commit-push-pr / pr-workflow / pr-comments）已在各自定义里
+    // 设 disableModelInvocation:true，仅 review(只读) 暴露给模型。
+    try {
+      const { loadBundledSkills } = await import("./skill/bundled/index.ts");
+      const { BundledSkillTool } = await import("./skill/bundled/tool.ts");
+      for (const cmd of loadBundledSkills()) {
+        if (cmd.type !== "prompt") continue;
+        if (cmd.context !== "fork") continue; // inline 不可包装
+        if (cmd.disableModelInvocation) continue;
+        toolRegistry.register(
+          new BundledSkillTool(cmd, providerRegistry, toolRegistry),
+        );
+      }
+    } catch (err: any) {
+      getLogger().debug(
+        "SKILL",
+        `Bundled Skill 工具注册失败: ${err?.message ?? String(err)}`,
+      );
+    }
+
     // 加载自定义 Agents（注册为工具）
     const { CustomAgentLoader, CustomAgentTool } = await import("./agent/custom.ts");
     const customAgents = await new CustomAgentLoader().loadAll(undefined, scanOptions);

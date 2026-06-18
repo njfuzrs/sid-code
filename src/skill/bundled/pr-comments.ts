@@ -72,7 +72,10 @@ export function registerPrCommentsSkill(): void {
     allowedTools: ["bash", "read", "grep", "glob", "edit", "write"],
     context: "fork",
     userInvocable: true,
+    // 强副作用(改代码 + 可能发布回复)：禁止模型自动调用，仅用户显式 /pr-comments 触发
+    disableModelInvocation: true,
     maxTurns: 30,
+    timeoutMins: 15, // 多轮拉取评论 + 改代码 + 验证，2 分钟不够
     async getPromptForCommand(args) {
       return (
         PR_COMMENTS_PROMPT +

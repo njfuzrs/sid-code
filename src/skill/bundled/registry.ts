@@ -31,6 +31,8 @@ export interface BundledSkillDefinition {
   context?: "inline" | "fork";
   model?: string;
   maxTurns?: number;
+  /** 子代理超时(分钟，仅 fork 模式生效)；默认 2，最大 30 */
+  timeoutMins?: number;
   /** 禁止模型自动调用 */
   disableModelInvocation?: boolean;
   /** 动态启用条件（feature flag 门控） */
@@ -77,6 +79,7 @@ export function registerBundledSkill(definition: BundledSkillDefinition): void {
     disableModelInvocation: definition.disableModelInvocation,
     context: definition.context ?? "fork",
     maxTurns: definition.maxTurns,
+    timeoutMins: definition.timeoutMins,
     isEnabled: definition.isEnabled,
     getPromptForCommand,
   };

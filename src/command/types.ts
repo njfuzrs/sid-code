@@ -217,6 +217,7 @@ export interface PromptCommand {
   ): Promise<string>;
   allowedTools?: string[];                 // 限制模型可用的工具集（fork 模式）
   maxTurns?: number;                       // 最大轮次（fork 模式）
+  timeoutMins?: number;                    // 子代理超时(分钟，fork 模式)；默认 2，最大 30
 }
 
 // ============================================================

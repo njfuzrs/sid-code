@@ -135,10 +135,55 @@ describe("extract 安全防护", () => {
 });
 
 describe("loadBundledSkills (内置注册)", () => {
-  test("注册 simplify 与 verify", () => {
+  test("注册全部 7 个内置 Skill", () => {
     const skills = loadBundledSkills();
     const names = skills.map((s) => s.name);
+    // 质量保障类
     expect(names).toContain("simplify");
     expect(names).toContain("verify");
+    // Git/PR 工作流（补齐分析 P0-1）
+    expect(names).toContain("commit");
+    expect(names).toContain("commit-push-pr");
+    expect(names).toContain("review");
+    expect(names).toContain("pr-comments");
+    expect(names).toContain("pr-workflow");
+  });
+
+  test("pr-comments 暴露 pr_comments 别名（兼容下划线命名）", () => {
+    const skills = loadBundledSkills();
+    const prComments = skills.find((s) => s.name === "pr-comments");
+    expect(prComments?.aliases).toContain("pr_comments");
+  });
+
+  test("Git/PR fork 命令配置了 timeoutMins（避免锁死 2 分钟）", () => {
+    const skills = loadBundledSkills();
+    const byName = (n: string) => skills.find((s) => s.name === n);
+    // fork 长流程：均应显式配置 timeoutMins
+    for (const name of ["commit-push-pr", "review", "pr-comments", "pr-workflow"]) {
+      const cmd = byName(name);
+      if (cmd?.type !== "prompt") throw new Error(`${name} 应为 prompt 命令`);
+      expect(cmd.context).toBe("fork");
+      expect(cmd.timeoutMins).toBeGreaterThanOrEqual(15);
+    }
+    // commit 是 inline，超时无意义，不强制配置
+    const commit = byName("commit");
+    if (commit?.type !== "prompt") throw new Error("commit 应为 prompt 命令");
+    expect(commit.context).toBe("inline");
+  });
+
+  test("模型调用暴露策略：只读 review 暴露，强副作用 skill 禁止（Gap 1）", () => {
+    const skills = loadBundledSkills();
+    const byName = (n: string) => skills.find((s) => s.name === n);
+
+    // review：只读 fork，允许模型自动调用（不设 disableModelInvocation）
+    const review = byName("review");
+    if (review?.type !== "prompt") throw new Error("review 应为 prompt 命令");
+    expect(review.context).toBe("fork");
+    expect(review.disableModelInvocation).toBeFalsy();
+
+    // 强副作用 skill：必须禁止模型自动调用，仅斜杠命令
+    for (const name of ["commit-push-pr", "pr-workflow", "pr-comments"]) {
+      expect(byName(name)?.disableModelInvocation).toBe(true);
+    }
   });
 });

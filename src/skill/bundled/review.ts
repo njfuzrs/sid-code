@@ -97,6 +97,7 @@ export function registerReviewSkill(): void {
     context: "fork",
     userInvocable: true,
     maxTurns: 30,
+    timeoutMins: 15, // 逐文件读取 + 多维度审查，2 分钟不够
     async getPromptForCommand(args) {
       const body = (await loadCodeReviewBody()) ?? FALLBACK_REVIEW_PROMPT;
       const extra = args.trim()

@@ -11,6 +11,7 @@ import {
   clearCwdDependentCaches,
 } from "../worktree/manager.ts";
 import { getLogger } from "../debug/logger.ts";
+import { setCwd } from "../bootstrap/state.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
 
@@ -58,6 +59,7 @@ action 为 "keep" 保留 Worktree（默认），"remove" 删除。
       // 必须先切回主工作区，否则无法删除当前所在的 worktree
       try {
         process.chdir(session.originalCwd);
+        setCwd(session.originalCwd); // 同步全局 cwd 状态
       } catch (err: any) {
         return { output: `无法切回主工作区: ${err.message}`, isError: true };
       }
@@ -67,6 +69,7 @@ action 为 "keep" 保留 Worktree（默认），"remove" 删除。
         // 删除失败：恢复到 worktree（保持一致性）
         try {
           process.chdir(session.worktreePath);
+          setCwd(session.worktreePath); // 同步全局 cwd 状态
         } catch {
           /* worktree 可能已部分删除，保持在主工作区 */
         }
@@ -81,6 +84,7 @@ action 为 "keep" 保留 Worktree（默认），"remove" 删除。
     // keep：仅切回 CWD
     try {
       process.chdir(session.originalCwd);
+      setCwd(session.originalCwd); // 同步全局 cwd 状态
     } catch (err: any) {
       return { output: `无法切回主工作区: ${err.message}`, isError: true };
     }

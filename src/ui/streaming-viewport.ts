@@ -104,15 +104,18 @@ export function estimateChromeLines(opts: {
 /**
  * 给定终端总行数与 chrome 预留，返回流式正文 / 思考各自的可用行预算。
  *
- * 对标 claude-code：思考不是主角，正文才是。
- * - 总可用 = max(MIN_STREAM_LINES, rows - chrome)
- * - 思考与正文并存（正文已开始输出）：思考**折叠为 1 行**，正文独占其余视口。
- *   这同时解决「思考挤压正文导致正文顶部被 tailToFit 截断」——正文拿到几乎全部预算。
- * - 仅思考存在（纯思考阶段，正文未开始）：思考独占全部预算，逐字直播 tail。
+ * 对标 claude-code：思考不是主角，正文才是；**思考在主流中恒为一行**。
+ * cc 的 AssistantThinkingMessage 在常规 REPL 视图永远只渲染一行
+ * `∴ Thinking · ctrl+o to expand`，实时「正在思考」反馈交给 spinner 的计时微光，
+ * 思考全文仅在 transcript/verbose 模式展开。这样思考块高度恒定 → 全程零跳动。
+ *
+ * 故本函数对思考一律只给 1 行预算（折叠占位信号），不再分纯思考 / 思考+正文两态：
+ * - 思考存在：thinkingLines=1（单行摘要，实时计时原地更新，高度稳定）；
+ *   正文若也存在则独占其余视口，否则正文预算为 0（纯思考阶段下方暂无正文）。
  * - 仅正文存在：正文独占全部预算。
  *
- * 返回的 thinkingLines=1 是「折叠占位」信号：调用方据此把思考渲染成单行摘要，
- * 而非对全文做 tailToFit。
+ * 关键：思考全程 thinkingLines=1，彻底消除「纯思考逐字展开 → 正文开始时塌缩成
+ * 一行」的高度突变（页面上跳 N-1 行的跳动根因）。
  */
 export function computeStreamBudgets(
   rows: number,
@@ -123,11 +126,13 @@ export function computeStreamBudgets(
   const MIN_STREAM_LINES = 3;
   const avail = Math.max(MIN_STREAM_LINES, rows - chromeLines);
 
-  if (hasThinking && hasText) {
-    // 正文已开始 → 思考折叠成 1 行，正文独占其余。
-    return { thinkingLines: 1, textLines: Math.max(MIN_STREAM_LINES, avail - 1) };
+  if (hasThinking) {
+    // 思考恒折叠为 1 行（对标 cc）：正文存在则独占其余视口，否则正文预算为 0。
+    return {
+      thinkingLines: 1,
+      textLines: hasText ? Math.max(MIN_STREAM_LINES, avail - 1) : 0,
+    };
   }
-  if (hasThinking) return { thinkingLines: avail, textLines: 0 };
   if (hasText) return { thinkingLines: 0, textLines: avail };
   return { thinkingLines: 0, textLines: 0 };
 }

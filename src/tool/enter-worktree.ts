@@ -12,6 +12,7 @@ import {
   clearCwdDependentCaches,
 } from "../worktree/manager.ts";
 import { generateWordSlug } from "../plan/slug.ts";
+import { setCwd, getCwd } from "../bootstrap/state.ts";
 import { getLogger } from "../debug/logger.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
@@ -51,8 +52,8 @@ Worktree 共享 Git 对象库，创建速度快，磁盘开销小。
       return { output: "已经在 Worktree 中，不支持嵌套。请先 exit_worktree。", isError: true };
     }
 
-    // 2. 检测 Git 仓库
-    const gitRoot = findGitRoot(process.cwd());
+    // 2. 检测 Git 仓库（基于逻辑 cwd，bash cd 后 getCwd() 才是真实工作目录）
+    const gitRoot = findGitRoot(getCwd());
     if (!gitRoot) {
       return { output: "当前目录不在 Git 仓库中，无法创建 Worktree", isError: true };
     }
@@ -65,6 +66,7 @@ Worktree 共享 Git 对象库，创建速度快，磁盘开销小。
 
       // 4. 切换 CWD + 记录会话
       process.chdir(session.worktreePath);
+      setCwd(session.worktreePath); // 同步全局 cwd 状态，使路径类工具 getCwd() 解析到 worktree
       setCurrentWorktreeSession(session);
 
       // 5. 清除依赖 CWD 的缓存

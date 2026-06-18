@@ -143,10 +143,21 @@ describe("computeStreamBudgets（正文/思考行预算分配）", () => {
     expect(textLines).toBe(32);
   });
 
-  test("仅思考 → 思考独占", () => {
+  test("仅思考 → 思考恒折叠为 1 行（对标 cc：思考全程单行，零跳动）", () => {
     const { thinkingLines, textLines } = computeStreamBudgets(40, 8, true, false);
+    // 思考全程单行摘要，不再逐字展开独占视口 → 消除「正文开始时塌缩」的高度突变。
+    expect(thinkingLines).toBe(1);
+    // 纯思考阶段下方暂无正文 → 正文预算为 0。
     expect(textLines).toBe(0);
-    expect(thinkingLines).toBe(32);
+  });
+
+  test("思考预算恒为 1（不随有无正文变化）→ 高度稳定不跳动（回归）", () => {
+    // 这是修复「思考自动展开→折叠导致页面跳动」的核心不变量：
+    // 无论纯思考阶段还是思考+正文阶段，思考行预算恒为 1，块高度不变。
+    expect(computeStreamBudgets(40, 8, true, false).thinkingLines).toBe(1);
+    expect(computeStreamBudgets(40, 8, true, true).thinkingLines).toBe(1);
+    expect(computeStreamBudgets(80, 12, true, false).thinkingLines).toBe(1);
+    expect(computeStreamBudgets(80, 12, true, true).thinkingLines).toBe(1);
   });
 
   test("正文+思考并存 → 思考折叠为 1 行，正文独占其余（对标 cc：正文为主体）", () => {

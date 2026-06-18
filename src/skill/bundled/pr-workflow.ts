@@ -87,7 +87,10 @@ export function registerPrWorkflowSkill(): void {
     allowedTools: ["bash", "read", "grep", "glob", "edit", "write"],
     context: "fork",
     userInvocable: true,
+    // 强副作用(push + 建 PR + 改代码)：禁止模型自动调用，仅用户显式 /pr-workflow 触发
+    disableModelInvocation: true,
     maxTurns: 50, // 上限（skill/types.ts:51）
+    timeoutMins: 30, // 上限：五阶段 SOP 含 push/建 PR + 自审，2 分钟远不够
     async getPromptForCommand(args) {
       return (
         PR_WORKFLOW_PROMPT +

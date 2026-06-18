@@ -82,14 +82,14 @@ export const MainContent = memo(function MainContent({
   return (
     <>
       {/* v2：流式思考区域 — 独立于 streamingText（对标 Claude Code）
-          正文一旦开始输出 → 思考折叠为单行摘要，正文为主体不被思考顶开；
-          纯思考阶段（正文未开始）才展开直播逐字思考。 */}
+          思考全程折叠为单行摘要（实时计时原地更新，高度恒定）→ 页面零跳动。
+          cc 的常规视图思考永远只占一行，逐字全文只在 transcript/verbose 展开。 */}
       {isStreaming && streamingThinking && (
         <Box marginTop={1}>
           <ThinkingMessage
             text={streamingThinking}
             width={termWidth}
-            collapsed={!!streamingText}
+            collapsed={true}
             streaming={true}
             showExpandHint={false}
           />

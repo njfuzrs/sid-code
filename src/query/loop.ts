@@ -53,7 +53,7 @@ import {
   persistProgress,
   buildProgressReminder,
 } from "./work-log.ts";
-import { dequeuePendingNotifications } from "../task/index.ts";
+import { dequeuePendingNotifications, evictTerminalTasks } from "../task/index.ts";
 import { injectReminders } from "./reminder-inject.ts";
 import { buildContextPressureReminder } from "./context-pressure.ts";
 import { buildPermissionModeReminder, PERMISSION_MODE_REMINDER_INTERVAL } from "./permission-reminder.ts";
@@ -140,6 +140,11 @@ export async function* queryLoop(
       }
       log.info("QUERY_LOOP", `注入 ${notifications.length} 条后台任务通知`);
     }
+
+    // 通知注入后驱逐已完成且已通知的后台任务：其完成信息已进对话，面板条目即属冗余。
+    // 不在此清除则「后台任务 · N 已完成」会永久驻留（evictTerminalTasks 此前从未被调用）。
+    // 通知队列独立于任务注册表，驱逐不会丢失任何通知。
+    evictTerminalTasks();
 
     // ─── 上下文使用率监控 ───
     const toolCount = toolRegistry.size();
