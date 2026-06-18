@@ -46,6 +46,8 @@ export const PRIORITY = {
   SESSION_MEMORY: 33,
   /** Todo 列表 */
   TODO_LIST: 35,
+  /** 权限约束（deny 规则，配置态稳定，低优先级前置告知） */
+  DENY_RULES: 38,
   /** Git 状态（最低优先级） */
   GIT_STATUS: 40,
   /** 追加提示词 */
@@ -54,16 +56,36 @@ export const PRIORITY = {
   FILE_PROMPT: 60,
 } as const;
 
-/** 权限模式描述映射 */
-const PERMISSION_MODE_DESCRIPTIONS: Record<string, string> = {
+/**
+ * 权限模式描述映射。
+ *
+ * ⚠️ 键必须与 src/permission/mode.ts 的 PermissionMode 联合类型严格对齐——
+ * 此前的键（bypassPermissions / yesMode / readonly / strict）从不匹配任何运行时 mode 值，
+ * 导致 generatePermissionModeAttachment(mode) 对 acceptEdits / always-allow 等所有非 default
+ * mode 都静默回退到 default 描述（缺口 C 排查时发现的潜伏 bug）。现按 mode.ts 实际取值重写。
+ */
+export const PERMISSION_MODE_DESCRIPTIONS: Record<string, string> = {
   default: `# 权限模式: 默认
 执行以下操作前必须请求用户确认：
 - 写入或编辑文件
 - 运行 bash 命令
 - 发起网络请求`,
 
-  bypassPermissions: `# 权限模式: 跳过权限
-所有工具调用自动批准。请谨慎使用。`,
+  "always-allow": `# 权限模式: 全部允许
+所有需要确认的工具调用将自动批准（仍会拦截危险命令）。
+你可以直接读写文件、运行命令，无需逐个等待用户确认。`,
+
+  acceptEdits: `# 权限模式: 自动接受编辑
+文件编辑（write/edit）自动批准，无需逐个确认。
+但 bash 命令、网络请求等非编辑类操作仍需按默认规则确认。`,
+
+  "deny-write": `# 权限模式: 禁止写入
+你只能使用只读工具（read、grep、glob、ls）。
+所有写入文件、编辑、执行命令的操作都会被拒绝。`,
+
+  dontAsk: `# 权限模式: 静默拒绝
+不再弹出确认。需要确认的操作将被直接拒绝（而非询问用户）。
+请只执行明确允许的操作，被拒绝的操作不要反复重试。`,
 
   plan: `# 权限模式: 计划模式已激活
 你当前处于计划模式。用户希望你先制定方案再执行。
@@ -81,16 +103,8 @@ const PERMISSION_MODE_DESCRIPTIONS: Record<string, string> = {
 - 运行 bash 命令
 - 执行任何写入操作`,
 
-  readonly: `# 权限模式: 只读
-你只能使用只读工具（read、grep、glob）。
-不允许写入文件或执行命令。`,
-
-  yesMode: `# 权限模式: 自动确认
-所有需要确认的操作将自动批准。
-仍然会阻止危险命令。`,
-
-  strict: `# 权限模式: 严格
-每个工具调用都需要用户确认，包括只读操作。`,
+  "dangerously-skip-permissions": `# 权限模式: 跳过权限（危险）
+所有工具调用自动批准，包括危险命令。请极其谨慎。`,
 };
 
 /**
@@ -222,6 +236,27 @@ export function generatePermissionModeAttachment(mode: string): Attachment {
     label: `权限模式 (${mode})`,
     content: description,
     priority: PRIORITY.MODE_REMINDER,
+  };
+}
+
+/**
+ * 缺口 D：生成 deny 规则约束附件（前置告知模型哪些操作必被拒绝）。
+ *
+ * summary 来自 PermissionChecker.describeDenyRules()——配置态、会话内稳定，故放 system prompt
+ * （静态、缓存冻结无害），用低优先级（DENY_RULES = GIT_STATUS 级）。空 summary 返回 null。
+ *
+ * @param summary describeDenyRules() 的多行摘要文本
+ */
+export function generateDenyRulesAttachment(summary: string): Attachment | null {
+  if (!summary || !summary.trim()) return null;
+  return {
+    type: "denyRules",
+    label: "权限约束（deny 规则）",
+    content: `<permission-constraints>
+以下操作已被配置禁止，请勿尝试（尝试也会被权限检查拒绝，浪费轮次）：
+${summary.trim()}
+</permission-constraints>`,
+    priority: PRIORITY.DENY_RULES,
   };
 }
 

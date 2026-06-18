@@ -270,6 +270,37 @@ export class PermissionChecker implements Checker {
     }
   }
 
+  /**
+   * 缺口 D：描述当前生效的"前置禁止"约束（deny 规则 + 禁用工具），供 system prompt 注入。
+   *
+   * 根因：deny / disallowedTools 清单从不进任何模型通道，模型只有调用后吃到"权限拒绝"
+   * 才知道，会反复尝试被禁操作、浪费轮次。把这些静态配置态约束前置告知，让模型不再撞墙。
+   *
+   * 只描述"配置态、会话内稳定"的约束（deny 规则 + disallowedTools）；不含运行时危险命令
+   * 分类器（那是动态判定，无法前置枚举）。无任何约束时返回 ""（调用方据此不注入空块）。
+   *
+   * @returns 多行约束摘要文本；无约束时为空字符串
+   */
+  describeDenyRules(): string {
+    const lines: string[] = [];
+
+    // 禁用工具（config.disallowedTools，checker.ts:343 据此拒绝）
+    const disallowed = this.config.disallowedTools ?? [];
+    if (disallowed.length > 0) {
+      lines.push(`- 禁用工具（调用必被拒绝）：${disallowed.join("、")}`);
+    }
+
+    // deny 规则（this.rules.deny，checker.ts:327 据此拒绝）。
+    // 形如 "Edit(.env*)" / "Bash(rm *)"，直接透传给模型即可——这正是它需要避开的模式。
+    const deny = this.rules?.deny ?? [];
+    if (deny.length > 0) {
+      lines.push(`- 禁止的操作模式（匹配即被拒绝）：${deny.join("、")}`);
+    }
+
+    if (lines.length === 0) return "";
+    return lines.join("\n");
+  }
+
   /** 异步初始化：加载设置文件中的规则 */
   async initRules(): Promise<void> {
     await this.ruleLoader.loadAll();

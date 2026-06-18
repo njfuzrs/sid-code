@@ -55,6 +55,8 @@ import {
 } from "./work-log.ts";
 import { dequeuePendingNotifications } from "../task/index.ts";
 import { injectReminders } from "./reminder-inject.ts";
+import { buildContextPressureReminder } from "./context-pressure.ts";
+import { buildPermissionModeReminder, PERMISSION_MODE_REMINDER_INTERVAL } from "./permission-reminder.ts";
 import {
   checkResponseForCacheBreak,
   recordCacheBreak,
@@ -269,6 +271,39 @@ export async function* queryLoop(
 
     // 收集本轮要注入的 system-reminder 片段（plan 提醒 + todo 回注）
     const reminderParts: string[] = [];
+
+    // 缺口 A：上下文压力告知（每轮，使用率超阈值才注入）。
+    // usagePercent / remaining 已在上方"上下文使用率监控"段算出（loop.ts:146-147）。
+    // 走每轮 reminder 通道（随消息流、抗缓存、抗 compact），给模型"落盘窗口"——
+    // 让它在 compact 真正发生前主动收尾 / 落盘关键结论 / 收敛输出，而非被 harness
+    // 背着突然压缩、丢失尚未落盘的中间结论。低于阈值返回 null，不刷屏。
+    {
+      const pressureReminder = buildContextPressureReminder(usagePercent, remaining);
+      if (pressureReminder) reminderParts.push(pressureReminder);
+    }
+
+    // 缺口 C：permission mode 每轮可见（覆盖 plan 之外的所有 mode 切换）。
+    // 根因：mode 指南只进被 5 分钟缓存冻结的 system prompt，运行时切 acceptEdits /
+    // readonly / dontAsk 等不刷新，模型上下文里仍是会话启动时的旧 mode。
+    // plan mode 另有 getPlanModeReminder 每轮注入兜住，故这里跳过 plan 避免重复。
+    // delta 策略：mode 与上轮不同的那一轮强注入（防时机缺失）；非 default mode 持续时
+    // 每 N 轮低频重述一次（防遗忘）。default mode 不注入（无额外约束）。
+    if (deps.getCurrentPermissionMode) {
+      const mode = deps.getCurrentPermissionMode();
+      if (mode && mode !== "default" && mode !== "plan") {
+        const changed = state.lastSeenPermissionMode !== mode;
+        const turnsSinceMode = state.turnCount - (state.lastPermissionModeReminderTurn ?? 0);
+        if (changed || turnsSinceMode >= PERMISSION_MODE_REMINDER_INTERVAL) {
+          const modeReminder = buildPermissionModeReminder(mode, changed);
+          if (modeReminder) {
+            reminderParts.push(modeReminder);
+            state.lastPermissionModeReminderTurn = state.turnCount;
+          }
+        }
+      }
+      // 无论是否注入，都刷新"上轮 mode"基线（含切回 default 的情况，下次再切走能识别为 changed）
+      state.lastSeenPermissionMode = mode;
+    }
 
     // Plan Mode 提醒（既有逻辑）
     if (deps.getPlanModeReminder) {

@@ -223,7 +223,11 @@ async function initAnalyticsSink(config: Config, sessionId: string): Promise<voi
 }
 
 /** 构建系统提示词 */
-export async function buildInitialSystemPrompt(config: Config, tools: import("../tool/types.ts").LegacyTool[]): Promise<string> {
+export async function buildInitialSystemPrompt(
+  config: Config,
+  tools: import("../tool/types.ts").LegacyTool[],
+  denyRulesSummary?: string,
+): Promise<string> {
   const log = getLogger();
 
   if (config.systemPrompt) {
@@ -268,6 +272,7 @@ export async function buildInitialSystemPrompt(config: Config, tools: import("..
 
   const { buildSystemPrompt } = await import("../config/system-prompt.ts");
   const { collectIDEContext } = await import("../ide/integration.ts");
+  const { collectSkillListingEntries } = await import("../skill/tool.ts");
   return buildSystemPrompt({
     tools,
     projectRules: projectRules?.rawContent,
@@ -282,6 +287,10 @@ export async function buildInitialSystemPrompt(config: Config, tools: import("..
     preferredLanguage: config.language,
     model: config.model,
     availableModels: config.availableModels,
+    // 缺口 E：把 SkillTool 摘要收集进 system prompt（接通此前死代码 generateSkillListingAttachment）
+    skillEntries: collectSkillListingEntries(tools),
+    // 缺口 D：deny 规则约束摘要（前置告知模型哪些操作必被拒绝）
+    denyRulesSummary,
     ...collectIDEContext(),
     // 不再写死 maxTokens：交由 buildSystemPrompt 按模型 contextWindow 的 90% 动态推导
   });

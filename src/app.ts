@@ -329,6 +329,10 @@ export class App {
         const { buildPlanModeReminder } = await import("./plan/prompt.ts");
         return buildPlanModeReminder(this.planManager.nextReminderIsFull());
       },
+      // 缺口 C：把运行时可变的 permission mode 暴露给 queryLoop，每轮取最新值。
+      // config.permissionMode 会被 enter_plan_mode / CLAUDE.md 规则 / 斜杠命令运行时改写，
+      // 而 mode 指南只进有缓存的 system prompt——靠这里走每轮 reminder 通道补上时机缺失。
+      getCurrentPermissionMode: () => this.config.permissionMode,
       getTodoState: () => {
         // P0-2 / P0-3：把 TodoWriteTool 的内存状态暴露给 queryLoop，
         // 用于每轮回注完整清单（根因 1）+ end_turn 完成度硬校验（根因 1、2）。
@@ -605,15 +609,30 @@ export class App {
         }
       }
 
+      // 缺口 D：在构建系统提示词之前先加载多来源权限规则（settings.json），
+      // 这样 describeDenyRules() 能拿到完整 deny 规则，前置告知模型。
+      // （原顺序是 initRules 在 buildInitialSystemPrompt 之后，会漏掉文件来源的 deny 规则）
+      if (this.permissionChecker && "initRules" in this.permissionChecker) {
+        await (this.permissionChecker as any).initRules();
+        log.info("APP", "多来源权限规则加载完成");
+      }
+
+      // 缺口 D：收集 deny 规则摘要（无 checker 或 describeDenyRules 时为 undefined）
+      let denyRulesSummary: string | undefined;
+      if (this.permissionChecker && typeof (this.permissionChecker as any).describeDenyRules === "function") {
+        denyRulesSummary = (this.permissionChecker as any).describeDenyRules() || undefined;
+      }
+
       // 构建系统提示词（委托给 init-helpers）
       const { buildInitialSystemPrompt } = await import("./query/init-helpers.ts");
-      systemPrompt = await buildInitialSystemPrompt(this.config, this.toolRegistry.all());
-    }
-
-    // 多来源规则加载（settings.json 文件）
-    if (this.permissionChecker && "initRules" in this.permissionChecker) {
-      await (this.permissionChecker as any).initRules();
-      log.info("APP", "多来源权限规则加载完成");
+      systemPrompt = await buildInitialSystemPrompt(this.config, this.toolRegistry.all(), denyRulesSummary);
+    } else {
+      // 预置 systemPrompt 分支：跳过附件构建，但多来源权限规则仍需加载（原 initRules 在此之外，
+      // 重排后这里补上，避免预置 prompt 时规则不生效的回归）。
+      if (this.permissionChecker && "initRules" in this.permissionChecker) {
+        await (this.permissionChecker as any).initRules();
+        log.info("APP", "多来源权限规则加载完成");
+      }
     }
 
     this.ctxMgr.setSystemPrompt(systemPrompt);
@@ -694,6 +713,7 @@ export class App {
         this.applyProjectRules(newRules);
         // 3. 重建系统提示词
         const { buildSystemPrompt } = await import("./config/system-prompt.ts");
+        const { collectSkillListingEntries } = await import("./skill/tool.ts");
         let memorySummary: string | undefined;
         try {
           const { MemoryStore } = await import("./memory/store.ts");
@@ -713,6 +733,13 @@ export class App {
           preferredLanguage: this.config.language,
           model: this.config.model,
           availableModels: this.config.availableModels,
+          // 缺口 E：CLAUDE.md 重建路径同样收集 skill 摘要，避免重建后丢失 skill 列表
+          skillEntries: collectSkillListingEntries(this.toolRegistry.all()),
+          // 缺口 D：CLAUDE.md 可能改写 deny 规则，重建时刷新约束摘要
+          denyRulesSummary:
+            this.permissionChecker && typeof (this.permissionChecker as any).describeDenyRules === "function"
+              ? (this.permissionChecker as any).describeDenyRules() || undefined
+              : undefined,
           // 不再写死 maxTokens：交由 buildSystemPrompt 按模型 contextWindow 的 90% 动态推导
         });
         this.ctxMgr.setSystemPrompt(newPrompt);
@@ -941,11 +968,37 @@ export class App {
     // 仅让 SessionStore 的 currentFile 指向被恢复会话的旧 jsonl 续写，使历史不碎片化。
     this.resumedSessionId = sessionData.id;
 
+    // 缺口 B：读取被恢复会话的落盘进度（~/.sid-code/progress/<被恢复会话 id>.md）。
+    // 注意用 sessionData.id（被恢复会话），不是本进程新 id——progress 文件按被恢复会话落盘。
+    // 跨会话续做时，这是抗压缩、抗清理的外部进度记忆，恢复时一并回注。失败不阻断。
+    let progressNote: string | undefined;
+    try {
+      const { loadProgressMarkdown } = await import("./query/work-log.ts");
+      progressNote = loadProgressMarkdown(sessionData.id) ?? undefined;
+    } catch { /* 进度回注是增强，失败不阻断恢复 */ }
+
+    /**
+     * 缺口 B：在历史之后追加一条续接标记 user 消息，让模型知道"这是续接、别重新打招呼/重复询问"。
+     * 必须在历史末尾干净（无游离 tool_use）时才安全追加——safeSliceTail 已保证切片边界干净。
+     * 作为独立 user 消息插在历史之后，出现在注意力最强的末尾位置。
+     */
+    const appendResumeMarker = () => {
+      this.ctxMgr.addMessage({
+        role: "user",
+        content: [{ type: "text", text: SessionStore.buildResumeMarker(progressNote) }],
+      });
+    };
+
     // 如果消息数量不多，直接恢复
     const SUMMARY_THRESHOLD = 20;
     if (sessionData.messages.length <= SUMMARY_THRESHOLD) {
+      // 缺口 B 路径 1（最常见的短会话续接）：此前只 setMessages、不注入任何续接提示。
+      // 整体恢复完整历史后追加续接标记。若历史末尾恰是未应答的 tool_use，追加 user marker
+      // 会形成孤儿 tool_use——由发送前的 backfillOrphanToolResults 补占位 tool_result
+      // （它会把占位并入紧邻的下一条 user 消息，即本 marker），协议保持合法。
       this.ctxMgr.setMessages(sessionData.messages);
-      log.info("APP", `直接恢复 ${sessionData.messages.length} 条消息`);
+      appendResumeMarker();
+      log.info("APP", `直接恢复 ${sessionData.messages.length} 条消息 + 续接标记`);
       return;
     }
 
@@ -954,7 +1007,7 @@ export class App {
     const summary = await store.loadSummary(sessionData.id);
 
     if (summary) {
-      // 有摘要，注入摘要 + 最近消息（安全切片，避免游离 tool_result）
+      // 路径 2（有摘要）：已有续接提示（buildResumeMessage 含摘要），保持现状即可。
       const recentMessages = safeSliceTail(sessionData.messages, 10);
       const resumeMsg = SessionStore.buildResumeMessage(summary.summary);
       this.ctxMgr.addMessage({
@@ -972,10 +1025,12 @@ export class App {
       }
       log.info("APP", `恢复会话：摘要 + 最近 ${recentMessages.length} 条消息`);
     } else {
-      // 无摘要，安全截断（保护 tool_use/tool_result 配对原子性）
+      // 缺口 B 路径 3（无摘要长会话）：此前只 setMessages、不注入任何续接提示。
+      // 安全截断后整体替换，再追加续接标记（说明早期消息已因恢复截断）。
       const recentMessages = safeSliceTail(sessionData.messages, 15);
       this.ctxMgr.setMessages(recentMessages);
-      log.warn("APP", `无摘要，仅恢复最近 ${recentMessages.length} 条消息`);
+      appendResumeMarker();
+      log.warn("APP", `无摘要，仅恢复最近 ${recentMessages.length} 条消息 + 续接标记`);
     }
   }
 

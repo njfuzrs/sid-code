@@ -21,6 +21,8 @@ import {
   generateMemoryAttachment,
   generateRecalledMemoryAttachment,
   generateSessionMemoryAttachment,
+  generateSkillListingAttachment,
+  generateDenyRulesAttachment,
 } from "./attachments.ts";
 import { getLogger } from "../debug/logger.ts";
 
@@ -61,6 +63,19 @@ export interface SystemPromptContext {
   recalledMemories?: Array<{ filename: string; content: string }>;
   /** Session Memory 内容（压缩后注入，Task 7） */
   sessionMemoryContent?: string;
+
+  /**
+   * 缺口 E：Skill 摘要条目列表。接通此前的死代码 generateSkillListingAttachment——
+   * 把"有哪些 skill、何时用"的摘要常驻 system prompt（约 1% 窗口），让模型即使在
+   * skill 工具被 defer 时仍能发现 skill 存在，真正调用时再 tool_search 调出 skill__* 工具。
+   */
+  skillEntries?: import("../skill/budget.ts").SkillListingEntry[];
+
+  /**
+   * 缺口 D：deny 规则约束摘要（来自 PermissionChecker.describeDenyRules()）。
+   * 前置告知模型哪些操作必被拒绝，避免反复尝试被禁操作浪费轮次。配置态稳定，放 system prompt。
+   */
+  denyRulesSummary?: string;
 
   // 语言偏好
   /** 首选输出语言: "zh" 中文优先, "en" 英文优先。不设置时默认中文 */
@@ -123,6 +138,10 @@ function generateCacheKey(ctx: SystemPromptContext): string {
       ? simpleHash(ctx.recalledMemories.map((m) => m.filename).join(","))
       : "",
     ctx.sessionMemoryContent ? simpleHash(ctx.sessionMemoryContent) : "",
+    ctx.skillEntries?.length
+      ? simpleHash(ctx.skillEntries.map((s) => s.name).join(","))
+      : "",
+    ctx.denyRulesSummary ? simpleHash(ctx.denyRulesSummary) : "",
     ctx.model || "",
   ].filter(Boolean).join(":");
 }
@@ -201,6 +220,20 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
     attachments.push(generatePermissionModeAttachment(ctx.permissionMode));
   }
 
+  // 缺口 E：Skill 摘要列表（接通此前的死代码）。
+  // 优先级 SKILL_LISTING(8) 排在 CLAUDE.md 之前，确保模型先发现可用 skill。
+  // 预算按模型上下文窗口的 1% 控制（generateSkillListingAttachment 内部处理）。
+  if (ctx.skillEntries && ctx.skillEntries.length > 0) {
+    const contextWindow = ctx.model
+      ? new TokenEstimator().getContextLimit(ctx.model, ctx.availableModels)
+      : undefined;
+    const skillAttachment = generateSkillListingAttachment(
+      ctx.skillEntries,
+      contextWindow && contextWindow > 0 ? contextWindow : undefined,
+    );
+    if (skillAttachment) attachments.push(skillAttachment);
+  }
+
   // CLAUDE.md 项目规则
   if (ctx.projectRules) {
     attachments.push(generateClaudeMdAttachment(ctx.projectRules, ctx.projectRulesPath));
@@ -233,6 +266,13 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
   // Todo 列表
   if (ctx.todoList) {
     attachments.push(generateTodoListAttachment(ctx.todoList));
+  }
+
+  // 缺口 D：deny 规则约束（前置告知模型哪些操作必被拒绝，避免反复撞墙）。
+  // 低优先级（DENY_RULES = 38），空摘要时 generateDenyRulesAttachment 返回 null。
+  if (ctx.denyRulesSummary) {
+    const denyAttachment = generateDenyRulesAttachment(ctx.denyRulesSummary);
+    if (denyAttachment) attachments.push(denyAttachment);
   }
 
   // 记忆（全局/项目双层）

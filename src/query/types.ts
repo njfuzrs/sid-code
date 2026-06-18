@@ -118,6 +118,15 @@ export interface LoopState {
   /** P2-2：上次回注工作日志摘要时的轮次（每 N 轮回注一次） */
   lastProgressReminderTurn?: number;
   /**
+   * 缺口 C：上轮观察到的 permission mode。与本轮不同 → 视为切换，强注入一次 mode 指南。
+   * undefined 表示尚未观察过。
+   */
+  lastSeenPermissionMode?: string;
+  /**
+   * 缺口 C：上次注入 permission mode reminder 的轮次（非 default mode 持续时低频重述节流）。
+   */
+  lastPermissionModeReminderTurn?: number;
+  /**
    * F1：空参数 tool_use 退化的连续重试次数（DeepSeek 大上下文退化兜底）。
    * 工具成功执行或正常 end_turn 收尾后清零，确保只对"连续退化"计数。
    */
@@ -176,6 +185,11 @@ export interface QueryDeps {
   resetFallbackFlag?: () => void;
   /** Plan Mode 系统提醒（对标 Claude Code 每轮 system-reminder 注入） */
   getPlanModeReminder?: () => Promise<string | null>;
+  /**
+   * 缺口 C：读取当前 permission mode（运行时可变）。queryLoop 每轮取最新值，
+   * 切换或长任务低频重述时注入 mode 指南到消息流（system prompt 有缓存、不刷新）。可选。
+   */
+  getCurrentPermissionMode?: () => string | undefined;
   /**
    * P0-2 / P0-3：读取当前 todo 状态快照（用于回注 + 完成度校验）。
    * 返回 null 表示无 todo 工具或无 todo 项。可 mock。

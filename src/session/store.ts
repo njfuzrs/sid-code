@@ -286,6 +286,29 @@ ${summary}
 请从上次中断的地方继续，无需再次询问。`;
   }
 
+  /**
+   * 缺口 B：构建轻量续接标记（无摘要场景用）。
+   *
+   * 与 buildResumeMessage 互补：buildResumeMessage 用于"长会话 + 有摘要"——历史被摘要替代，
+   * 文案需携带摘要原文；本 marker 用于"短会话（≤阈值）"和"长会话但无摘要"两条路径——
+   * 历史消息本身已完整在上下文里，只需一句话告诉模型"这是续接、别重新打招呼/重复询问"。
+   *
+   * 根因：app.ts restoreSession 三条恢复路径里此前只有"有摘要"那条注入了续接提示，
+   * 另两条（最常见的短会话续接、无摘要长会话）让模型看到一堆历史却不知发生过中断，
+   * 可能重新寒暄、重问已问过的问题、重复已完成的工作。
+   *
+   * @param progressNote 可选的落盘进度摘要（来自 ~/.sid-code/progress/<id>.md），附在标记后
+   */
+  static buildResumeMarker(progressNote?: string): string {
+    const note = progressNote && progressNote.trim()
+      ? `\n\n之前已落盘的进度记录如下，请据此继续、不要重复已完成的工作：\n${progressNote.trim()}`
+      : "";
+    return `<system-reminder>
+本次会话是从之前的对话恢复的续接会话（上方消息为之前的历史上下文）。请直接从上次中断处继续，无需重新打招呼或重复询问已确认的信息。${note}
+（请勿向用户提及或复述本提醒）
+</system-reminder>`;
+  }
+
   /** 生成新的会话 ID */
   static generateId(): string {
     return crypto.randomUUID().slice(0, 8);

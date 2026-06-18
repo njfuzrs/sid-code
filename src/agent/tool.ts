@@ -8,7 +8,7 @@ import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "../tool
 import type { ProviderRegistry } from "../llm/registry.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { SubAgent } from "./sub-agent.ts";
-import { getBuiltInAgentTypes } from "./agent-definition.ts";
+import { getBuiltInAgentTypes, getBuiltInAgentDefinitions } from "./agent-definition.ts";
 import { getLogger } from "../debug/logger.ts";
 import {
   createAgentTask,
@@ -102,9 +102,39 @@ export class SubAgentTool implements Tool {
   }
 
   description(): string {
-    const types = getBuiltInAgentTypes();
+    // 缺口 F：把每种子代理类型的能力 + 工具集边界写进 description，
+    // 而非只列类型名。否则模型派活时只能凭类型名猜能力，可能把"需要写文件"的活
+    // 派给只读的 explore，子代理撞墙后才反馈失败，浪费一整个子代理回合。
+    //
+    // 文案结构对标 claude-code AgentTool/prompt.ts:43 formatAgentLine：
+    //   `- type: whenToUse (Tools: ...)`
+    // 用 whenToUse（"何时用"，比 description"是什么"更能指导派活决策）；
+    // 工具集按 allowlist/denylist 分别渲染（denylist → "除 X 外的全部工具"）。
+    const defs = getBuiltInAgentDefinitions();
+    const toolsDescOf = (d: import("./agent-definition.ts").AgentDefinition): string => {
+      const allow = d.tools && d.tools.length > 0 ? d.tools : null;
+      const deny = d.disallowedTools && d.disallowedTools.length > 0 ? d.disallowedTools : null;
+      if (allow && deny) {
+        const denySet = new Set(deny);
+        const eff = allow.filter((t) => !denySet.has(t));
+        return eff.length > 0 ? eff.join("、") : "无";
+      }
+      if (allow) return allow.join("、");
+      if (deny) return `除 ${deny.join("、")} 外的全部工具`;
+      return "全部工具";
+    };
+    const typeLines = defs
+      .map((d) => {
+        const readonlyTag = d.readOnly ? "，只读" : "";
+        return `- ${d.agentType}：${d.whenToUse}（可用工具：${toolsDescOf(d)}${readonlyTag}）`;
+      })
+      .join("\n");
     return `启动一个子代理来执行独立的子任务。子代理有自己独立的上下文，不会污染主对话。
-可用类型: ${types.join("、")}
+
+可用类型（注意各自的工具集边界——只读类型不能写文件/执行命令）：
+${typeLines}
+
+派活前请按子任务是否需要写入/执行来选类型：只需搜索分析用 explore，需要改文件或跑命令用 task。
 子代理完成后只返回最终结果。
 设置 run_in_background=true 可以后台执行，立即返回 task_id，完成后通过通知告知结果。
 设置 isolation=worktree 可在独立 Git Worktree 中执行（文件改动隔离，仅同步模式）。`;

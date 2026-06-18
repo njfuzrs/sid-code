@@ -124,6 +124,19 @@ export function getBuiltInAgentTypes(): string[] {
   return Object.keys(BUILTIN_AGENTS);
 }
 
+/**
+ * 获取内置 Agent 完整定义列表（缺口 F）。
+ *
+ * 与 getBuiltInAgentTypes（仅返回类型名）互补：sub_agent 工具的 description 需要把
+ * 每种类型的能力（description）+ 工具集边界（tools）暴露给模型，否则模型派活时只能
+ * 凭类型名猜能力，可能把"需要写文件"的活派给只读的 explore，撞墙后才反馈失败。
+ *
+ * 返回顺序与 BUILTIN_AGENTS 声明顺序一致（Object.values 保序）。
+ */
+export function getBuiltInAgentDefinitions(): AgentDefinition[] {
+  return Object.values(BUILTIN_AGENTS);
+}
+
 /** 解析 Agent 定义（先查 builtIn，再查 user dir） */
 export function resolveAgent(type: string): AgentDefinition | undefined {
   return BUILTIN_AGENTS[type];

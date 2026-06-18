@@ -54,6 +54,23 @@ export class SkillTool implements Tool {
     return desc;
   }
 
+  /**
+   * 缺口 E：导出 Skill 摘要条目（供 system prompt 的 skill 摘要列表使用）。
+   *
+   * 此前 generateSkillListingAttachment 是死代码，skill 摘要从未进系统提示词；
+   * 一旦 skill 工具被 defer，模型连 whenToUse 都看不到。这里把每个 SkillTool 的
+   * 摘要导出，由调用方收集后注入常驻 system prompt，实现"摘要常驻发现 + 工具按需调出"
+   * 的两层结构（不依赖工具是否被 defer）。
+   */
+  getListingEntry(): import("./budget.ts").SkillListingEntry {
+    return {
+      name: this.skill.name,
+      description: this.skill.description,
+      whenToUse: this.skill.whenToUse,
+      isBundled: this.skill.loadedFrom === "bundled" || this.skill.isBuiltin === true,
+    };
+  }
+
   inputSchema(): Record<string, unknown> {
     return z.toJSONSchema(this.zodSchema) as Record<string, unknown>;
   }
@@ -67,8 +84,7 @@ export class SkillTool implements Tool {
     return true;
   }
 
-  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
-    const mode = this.skill.mode || "delegate";
+  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {    const mode = this.skill.mode || "delegate";
 
     if (mode === "activate") {
       return this.executeActivate(input);
@@ -148,4 +164,20 @@ Skill "${this.skill.name}" 已激活。${userInput ? `\n\n用户输入: ${userIn
       isError: !result.success,
     };
   }
+}
+
+/**
+ * 缺口 E：从工具列表中收集所有 SkillTool 的摘要条目。
+ *
+ * 调用方（buildInitialSystemPrompt / app.ts CLAUDE.md 重建）把 toolRegistry 的工具
+ * 传进来，本函数过滤出 SkillTool 实例并导出其摘要，供 buildSystemPrompt 注入常驻
+ * skill 摘要列表。空列表时返回 undefined（避免给 ctx.skillEntries 喂空数组）。
+ */
+export function collectSkillListingEntries(
+  tools: ReadonlyArray<unknown>,
+): import("./budget.ts").SkillListingEntry[] | undefined {
+  const entries = tools
+    .filter((t): t is SkillTool => t instanceof SkillTool)
+    .map((t) => t.getListingEntry());
+  return entries.length > 0 ? entries : undefined;
 }

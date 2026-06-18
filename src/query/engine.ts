@@ -65,6 +65,8 @@ export interface QueryEngineDeps {
   abortCurrentRequest?: (reason?: string) => void;
   /** Plan Mode 系统提醒（对标 Claude Code 每轮 system-reminder 注入） */
   getPlanModeReminder?: () => Promise<string | null>;
+  /** 缺口 C：读取当前 permission mode（运行时可变，每轮注入 mode 指南到消息流） */
+  getCurrentPermissionMode?: () => string | undefined;
   /** P0-2 / P0-3：读取 todo 状态快照（回注 + 完成度校验用） */
   getTodoState?: () => { todos: import("../tool/todo-write.ts").TodoItem[]; writeVersion: number } | null;
 }
@@ -204,6 +206,7 @@ export class QueryEngine {
       checkFallbackOccurred: () => this.deps.fallback.checkFallbackOccurred(),
       resetFallbackFlag: () => this.deps.fallback.reset(),
       getPlanModeReminder: this.deps.getPlanModeReminder,
+      getCurrentPermissionMode: this.deps.getCurrentPermissionMode,
       getTodoState: this.deps.getTodoState,
       sessionStore: this.deps.sessionStore,
       // Step 0：Session Memory 每轮收尾钩子（fire-and-forget，内部按双阈值决定是否提取）。
