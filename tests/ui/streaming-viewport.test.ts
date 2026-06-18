@@ -9,6 +9,7 @@ import { describe, test, expect } from "bun:test";
 import {
   wrappedHeight,
   tailToFit,
+  tailToFitByBlocks,
   estimateChromeLines,
   computeStreamBudgets,
 } from "../../src/ui/streaming-viewport.ts";
@@ -68,6 +69,57 @@ describe("tailToFit（尾部截断到不超高）", () => {
     const out = tailToFit("old1\nold2\nnew1\nnew2", 80, 2);
     expect(out).toContain("new2");
     expect(out).not.toContain("old1");
+  });
+});
+
+describe("tailToFitByBlocks（块级尾部截断，不打碎表格/代码块）", () => {
+  test("maxLines<=0 或空串 → 空串", () => {
+    expect(tailToFitByBlocks("a\n\nb", 80, 0)).toBe("");
+    expect(tailToFitByBlocks("", 80, 10)).toBe("");
+  });
+
+  test("内容放得下 → 完整保留（含全部块）", () => {
+    const text = "段落一\n\n段落二";
+    const out = tailToFitByBlocks(text, 80, 20);
+    expect(out).toContain("段落一");
+    expect(out).toContain("段落二");
+  });
+
+  test("表格整块保留，不被拦腰截断成裸 | 文本（P1-C 核心）", () => {
+    const table = "| A | B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |";
+    const text = "段落一\n\n段落二\n\n" + table;
+    // 预算只够放表格(4 行) + 少量余量
+    const out = tailToFitByBlocks(text, 80, 6);
+    // separator 行在 → 表格作为完整块被保留
+    expect(out).toContain("|---|");
+    expect(out).toContain("| 3 | 4 |");
+    // 高度不超预算
+    expect(wrappedHeight(out, 80)).toBeLessThanOrEqual(6);
+  });
+
+  test("截断结果渲染高度恒 <= maxLines（关键不变量，对齐 ADR-040）", () => {
+    const blocks = Array.from({ length: 20 }, (_, i) => `段落-${i}`).join("\n\n");
+    for (const maxLines of [1, 3, 5, 10]) {
+      const out = tailToFitByBlocks(blocks, 80, maxLines);
+      expect(wrappedHeight(out, 80)).toBeLessThanOrEqual(maxLines);
+    }
+  });
+
+  test("保留尾部块而非头部（流式显示最新内容）", () => {
+    const text = "最旧段落\n\n中间段落\n\n最新段落";
+    const out = tailToFitByBlocks(text, 80, 1);
+    expect(out).toContain("最新段落");
+    expect(out).not.toContain("最旧段落");
+  });
+
+  test("单块自身超高（超长代码块）→ 退回物理行截断仍不超高", () => {
+    const big =
+      "```js\n" +
+      Array.from({ length: 50 }, (_, i) => `line${i}`).join("\n") +
+      "\n```";
+    const out = tailToFitByBlocks(big, 80, 5);
+    expect(wrappedHeight(out, 80)).toBeLessThanOrEqual(5);
+    expect(out.length).toBeGreaterThan(0);
   });
 });
 

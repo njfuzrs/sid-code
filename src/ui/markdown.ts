@@ -14,11 +14,12 @@
  */
 
 import chalk from "chalk";
-import { marked } from "marked";
+import { marked, type Token } from "marked";
 import { highlight as cliHighlight, supportsLanguage } from "cli-highlight";
 import stringWidth from "string-width";
 import { supportsHyperlinks } from "../ink/supports-hyperlinks.ts";
 import { getLogger } from "../debug/logger.ts";
+import { theme } from "./semantic-colors.ts";
 
 // ── 常量 ────────────────────────────────────────────────────────
 // 终端宽度 fallback（仅在 process.stdout.columns 不可用时使用）
@@ -32,6 +33,85 @@ const MAX_CACHE_SIZE = 100;
 // 这里再修正 chalk 实例的 level，确保样式正常。
 if (chalk.level === 0 && !process.env.NO_COLOR) {
   chalk.level = 3;
+}
+
+// ── marked 一次性配置（P2-I：禁用删除线） ───────────────────────
+// 模型常用 `~100` 表「约 100」，marked 默认会把 ~~...~~ 解析成删除线，
+// 误把约数渲成删除线。对标 claude-code 的 configureMarked()，禁用 del tokenizer。
+let markedConfigured = false;
+export function configureMarked(): void {
+  if (markedConfigured) return;
+  markedConfigured = true;
+  marked.use({
+    tokenizer: {
+      del() {
+        return undefined;
+      },
+    },
+  });
+}
+
+// ── token 级缓存（P1-D，对标 cc Markdown.tsx:22-71） ─────────────
+// marked.lexer 是流式/虚拟滚动重挂载时的热点(~3ms/条)。消息内容在历史里不可变，
+// 同内容→同 token，按 hash key 缓存避免反复 lex。module-level，跨 unmount/remount 存活。
+const TOKEN_CACHE_MAX = 500;
+const tokenCache = new Map<string, Token[]>();
+
+// FNV-1a 32-bit 字符串 hash（本项目无 hash 工具，自带轻量实现，避免引外部依赖）。
+// 用 hash 而非「内容前缀+长度」做 key，规避长内容前缀相同导致的碰撞。
+function hashContent(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    // h *= 16777619，用移位避免溢出为浮点
+    h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+  }
+  // 叠加长度降低碰撞概率
+  return `${h.toString(36)}:${s.length}`;
+}
+
+// markdown 语法特征字符。无任何特征→跳过 ~3ms 的 marked.lexer，直接当单 paragraph。
+// 覆盖大多数纯文本短回复 / 用户输入。对标 cc hasMarkdownSyntax。
+const MD_SYNTAX_RE = /[#*`|[>\-_~]|\n\n|^\d+\. |\n\d+\. /;
+function hasMarkdownSyntax(s: string): boolean {
+  // 采样前 500 字符：markdown 特征通常出现在开头(标题/代码围栏/列表)，
+  // 长工具输出多为纯文本尾巴。
+  return MD_SYNTAX_RE.test(s.length > 500 ? s.slice(0, 500) : s);
+}
+
+/**
+ * 带缓存的 marked.lexer（P1-D）。
+ * - 纯文本快速路径：无 markdown 语法 → 直接构造单 paragraph token，跳过 lexer。
+ *   该 token 不入缓存（重建只是一次对象分配，缓存它反而徒增内存）。
+ * - 其余：按内容 hash 命中缓存(LRU 提升)，未命中则 lex 并写入(满则淘汰最旧)。
+ */
+export function cachedLexer(content: string): Token[] {
+  configureMarked();
+  if (!hasMarkdownSyntax(content)) {
+    return [
+      {
+        type: "paragraph",
+        raw: content,
+        text: content,
+        tokens: [{ type: "text", raw: content, text: content }],
+      } as unknown as Token,
+    ];
+  }
+  const key = hashContent(content);
+  const hit = tokenCache.get(key);
+  if (hit) {
+    // 提升为最近使用，避免 FIFO 淘汰掉正在回看的早期消息
+    tokenCache.delete(key);
+    tokenCache.set(key, hit);
+    return hit;
+  }
+  const tokens = marked.lexer(content);
+  if (tokenCache.size >= TOKEN_CACHE_MAX) {
+    const first = tokenCache.keys().next().value;
+    if (first !== undefined) tokenCache.delete(first);
+  }
+  tokenCache.set(key, tokens);
+  return tokens;
 }
 
 /** 获取终端宽度 */
@@ -444,7 +524,7 @@ function renderLink(label: string, href: string): string {
 // ── 内联 token 递归渲染 ─────────────────────────────────────────
 
 /** 递归渲染内联 token 数组为 ANSI 字符串 */
-function renderInline(tokens: any[]): string {
+export function renderInline(tokens: any[]): string {
   let result = "";
   for (const token of tokens) {
     switch (token.type) {
@@ -487,6 +567,35 @@ function renderInline(tokens: any[]): string {
     }
   }
   return result;
+}
+
+/**
+ * 将一段内联 markdown 文本（如表格单元格）渲染为 ANSI 字符串。
+ * 走 marked 的 inline lexer + renderInline（标准 token），
+ * 取代手写正则 parseMarkdownToANSI（P1-E）。
+ *
+ * defaultColor：整段文本的基础色（如表头用 theme.text.link）。仅对「未被
+ * 内联样式包裹的裸文本」着色，已加粗/链接等片段保留自身样式。这里用 chalk
+ * 对整段结果套一层基础色，chalk 会让内层已有的样式优先（嵌套 SGR）。
+ */
+export function renderInlineMarkdown(text: string, defaultColor?: string): string {
+  if (!text) return "";
+  try {
+    configureMarked();
+    const tokens = marked.Lexer.lexInline(text);
+    const ansi = renderInline(tokens as any[]);
+    if (!defaultColor) return ansi;
+    if (defaultColor.startsWith("#")) {
+      if (/^#[0-9A-Fa-f]{3}([0-9A-Fa-f]{3})?$/.test(defaultColor)) {
+        return chalk.hex(defaultColor)(ansi);
+      }
+      return ansi;
+    }
+    const fn = (chalk as any)[defaultColor.toLowerCase()];
+    return typeof fn === "function" ? fn(ansi) : ansi;
+  } catch {
+    return text;
+  }
 }
 
 // ── 列表渲染 ────────────────────────────────────────────────────
@@ -533,7 +642,7 @@ function renderList(token: any, depth: number = 0): string {
 // ── 块级 token 渲染 ─────────────────────────────────────────────
 
 /** 递归渲染块级 token 数组为 ANSI 字符串 */
-function renderTokens(tokens: any[], renderWidth?: number): string {
+export function renderTokens(tokens: any[], renderWidth?: number): string {
   const blocks: string[] = [];
 
   for (const token of tokens) {
@@ -601,6 +710,19 @@ function renderTokens(tokens: any[], renderWidth?: number): string {
   return blocks.join("\n\n");
 }
 
+/**
+ * 渲染单个块级 token 为 ANSI 字符串（供 MarkdownAnsi 逐 token flush 非表格内容用）。
+ * 表格 token 由调用方分流到 <TableRenderer>，不应进入此函数。
+ */
+export function formatTokenToAnsi(token: any, renderWidth?: number): string {
+  return renderTokens([token], renderWidth);
+}
+
+/** 判断 token 是否为表格（MarkdownAnsi 据此分流到 React 表格组件） */
+export function isTableToken(token: any): boolean {
+  return token?.type === "table";
+}
+
 // ── 渲染缓存 + 宽度检测 ─────────────────────────────────────────
 const renderCache = new Map<string, string>();
 let lastWidth = 0;
@@ -632,9 +754,9 @@ export function renderMarkdown(text: string, maxWidth?: number): string {
 
   try {
     log.debug("UI:MD", `renderMarkdown 开始: textLen=${text.length} effectiveWidth=${effectiveWidth} textPreview=${JSON.stringify(text.slice(0, 100))}`);
-    const tokens = marked.lexer(text);
-    log.debug("UI:MD", `marked.lexer 完成: tokenCount=${tokens.length} tokenTypes=${tokens.map((t: any) => t.type).join(",")}`);
-    const result = renderTokens(tokens, effectiveWidth).trimEnd();
+    const tokens = cachedLexer(text);
+    log.debug("UI:MD", `cachedLexer 完成: tokenCount=${tokens.length} tokenTypes=${tokens.map((t: any) => t.type).join(",")}`);
+    const result = renderTokens(tokens as any[], effectiveWidth).trimEnd();
     log.debug("UI:MD", `renderTokens 完成: resultLen=${result.length} hasAnsi=${/\x1b\[/.test(result)} resultPreview=${JSON.stringify(result.slice(0, 100))}`);
 
     if (renderCache.size >= MAX_CACHE_SIZE) {
@@ -651,233 +773,17 @@ export function renderMarkdown(text: string, maxWidth?: number): string {
   }
 }
 
-// ── React 版本渲染（用于 VirtualizedList）─────────────────────────
+// ── 表格 token 数据提取（供 MarkdownAnsi 分流到 <TableRenderer>） ──
+// 历史上这里还有一套 renderMarkdownToReact（逐行 <Text> 版），已无任何调用方，
+// 与 MarkdownAnsi（marked AST + ANSI 整块）职责重复，整体删除（P2-G 收敛两套实现）。
 
-import React from "react";
-import Text from "../ink/components/Text.js";
-import Box from "../ink/components/Box.js";
-import { colorizeCode } from "./components/CodeColorizer.tsx";
-import { theme } from "./semantic-colors.ts";
-import { TableRenderer } from "./components/TableRenderer.tsx";
-
-/**
- * 将包含 \n 的多行字符串拆成 <Box flexDirection="column"> + 每行一个 <Text>。
- *
- * Ink 的 Output.get() 中 styledCharsToString 会原样输出 char.value，
- * 如果单个 <Text> 内含 \n，会导致 generatedOutput 的行数 > styledOutput 数组行数，
- * 破坏增量渲染的行级差分（lineLength 索引错位 → 旧内容不被清除 → 重影）。
- */
-function multilineText(content: string, key: string | number, textProps?: Record<string, unknown>): React.ReactNode {
-  const lines = content.split("\n");
-  if (lines.length <= 1) {
-    return React.createElement(Text, { key, ...textProps }, content);
-  }
-  return React.createElement(
-    Box, { key, flexDirection: "column" as const },
-    ...lines.map((line, j) =>
-      React.createElement(Text, { key: `${key}-${j}`, ...textProps }, line)
-    ),
+/** 从 marked table token 提取 headers / rows 原始 markdown 文本 */
+export function extractTableData(token: any): { headers: string[]; rows: string[][] } {
+  const headers: string[] = (token.header ?? []).map(
+    (cell: any) => cell.text || "",
   );
-}
-
-/** React 渲染缓存（与 ANSI 版本独立） */
-const reactRenderCache = new Map<string, React.ReactNode>();
-let lastReactWidth = 0;
-
-/** 递归渲染内联 token 为 React 元素 */
-function renderInlineToReact(tokens: any[]): React.ReactNode[] {
-  const nodes: React.ReactNode[] = [];
-  for (let i = 0; i < tokens.length; i++) {
-    const token = tokens[i];
-    switch (token.type) {
-      case "text":
-        nodes.push(token.tokens
-          ? React.createElement(React.Fragment, { key: i }, ...renderInlineToReact(token.tokens))
-          : token.text);
-        break;
-      case "strong":
-        nodes.push(React.createElement(Text, { key: i, bold: true }, ...renderInlineToReact(token.tokens)));
-        break;
-      case "em":
-        nodes.push(React.createElement(Text, { key: i, italic: true }, ...renderInlineToReact(token.tokens)));
-        break;
-      case "codespan":
-        nodes.push(React.createElement(Text, { key: i, color: theme.ui.active }, token.text));
-        break;
-      case "del":
-        nodes.push(React.createElement(Text, { key: i, dimColor: true, strikethrough: true, color: theme.ui.comment }, ...renderInlineToReact(token.tokens)));
-        break;
-      case "link": {
-        const label = token.tokens ? renderInlineToReact(token.tokens) : [token.text];
-        // OSC 8 超链接在 React 模式下降级为蓝色下划线文本
-        nodes.push(React.createElement(Text, { key: i, color: theme.text.link, underline: true }, ...label));
-        break;
-      }
-      case "br":
-        nodes.push("\n");
-        break;
-      default:
-        nodes.push(token.raw || token.text || "");
-        break;
-    }
-  }
-  return nodes;
-}
-
-/** 递归渲染块级 token 为 React 元素 */
-function renderTokensToReact(tokens: any[], maxWidth: number): React.ReactNode[] {
-  const blocks: React.ReactNode[] = [];
-
-  for (let i = 0; i < tokens.length; i++) {
-    const token = tokens[i];
-    switch (token.type) {
-      case "heading": {
-        const inlineNodes = renderInlineToReact(token.tokens);
-        if (token.depth === 1) {
-          blocks.push(React.createElement(Text, { key: i, bold: true, italic: true, underline: true }, ...inlineNodes));
-        } else {
-          blocks.push(React.createElement(Text, { key: i, bold: true }, ...inlineNodes));
-        }
-        break;
-      }
-      case "paragraph":
-        blocks.push(React.createElement(Text, { key: i }, ...renderInlineToReact(token.tokens)));
-        break;
-      case "code": {
-        // 代码块：使用 colorizeCode 渲染（支持行号 + 自动语言检测）
-        const colorized = colorizeCode({
-          code: token.text,
-          language: token.lang || null,
-          maxWidth: maxWidth - 1,
-          showLineNumbers: true,
-        });
-        const codeBlockElements: React.ReactNode[] = [];
-        // 语言标签（如果有）
-        if (token.lang) {
-          codeBlockElements.push(
-            React.createElement(Text, { key: `${i}-lang`, dimColor: true }, token.lang)
-          );
-        }
-        codeBlockElements.push(colorized);
-
-        blocks.push(
-          React.createElement(Box, { key: i, paddingLeft: 1, flexDirection: "column" as const },
-            ...codeBlockElements,
-          )
-        );
-        break;
-      }
-      case "blockquote": {
-        // 引用块：每个子块用 Box 横向排列 "│ " 前缀 + 内容
-        // 不能用 <Text> 包裹子块，因为子块可能是 <Box>
-        const innerBlocks = renderTokensToReact(token.tokens, maxWidth);
-        blocks.push(
-          React.createElement(
-            Box, { key: i, flexDirection: "column" as const },
-            ...innerBlocks.map((block, j) =>
-              React.createElement(Box, { key: `${i}-q-${j}` },
-                React.createElement(Text, { dimColor: true, italic: true }, "│ "),
-                block
-              )
-            )
-          )
-        );
-        break;
-      }
-      case "list": {
-        // 列表：拆成每行一个 <Text>，避免单个 <Text> 内含 \n
-        const listText = renderList(token);
-        blocks.push(multilineText(listText, i));
-        break;
-      }
-      case "table": {
-        // 传原始 markdown 文本给 TableRenderer，由其内部的 parseMarkdownToANSI 统一处理
-        // 避免双重处理：renderInline 生成 ANSI/OSC8 → parseMarkdownToANSI 再次解析 → 宽度计算不准
-        const headers: string[] = token.header.map((cell: any) =>
-          cell.text || "",
-        );
-        const rows: string[][] = token.rows.map((row: any[]) =>
-          row.map((cell: any) =>
-            cell.text || "",
-          ),
-        );
-        blocks.push(
-          React.createElement(TableRenderer, {
-            key: i,
-            headers,
-            rows,
-            terminalWidth: maxWidth,
-          })
-        );
-        break;
-      }
-      case "hr":
-        blocks.push(React.createElement(Text, { key: i, dimColor: true }, "───"));
-        break;
-      case "space":
-        break;
-      default:
-        if (token.raw) blocks.push(React.createElement(Text, { key: i }, token.raw));
-        break;
-    }
-  }
-
-  return blocks;
-}
-
-/**
- * 将 Markdown 文本渲染为 React 元素（用于 VirtualizedList 内的消息渲染）
- *
- * 与 renderMarkdown() 的区别：返回 React.ReactNode 而非 ANSI 字符串，
- * 可直接嵌入 Ink 组件树。代码块和表格仍使用 ANSI 字符串（包裹在 <Text> 中）。
- */
-export function renderMarkdownToReact(text: string, maxWidth?: number): React.ReactNode {
-  const w = getTermWidth();
-  // 关键修复：完全移除硬编码限制，使用动态计算
-  const effectiveWidth = maxWidth ?? w;
-
-  // 终端宽度变化时清空缓存
-  if (w !== lastReactWidth) {
-    reactRenderCache.clear();
-    lastReactWidth = w;
-  }
-
-  // 缓存 key 包含宽度
-  const cacheKey = `${effectiveWidth}:${text}`;
-  if (reactRenderCache.has(cacheKey)) {
-    return reactRenderCache.get(cacheKey)!;
-  }
-
-  try {
-    const tokens = marked.lexer(text);
-    const blocks = renderTokensToReact(tokens, effectiveWidth);
-
-    let result: React.ReactNode;
-    if (blocks.length === 0) {
-      result = null;
-    } else if (blocks.length === 1) {
-      result = blocks[0];
-    } else {
-      // 块间用空行分隔，使用 Box 布局避免在 <Text> 内嵌套 <Box>
-      const nodes: React.ReactNode[] = [];
-      for (let i = 0; i < blocks.length; i++) {
-        if (i > 0) nodes.push(React.createElement(Text, { key: `sep-${i}` }, ""));
-        nodes.push(blocks[i]);
-      }
-      result = React.createElement(Box, { flexDirection: "column" as const }, ...nodes);
-    }
-
-    // 缓存结果（FIFO 淘汰）
-    if (reactRenderCache.size >= MAX_CACHE_SIZE) {
-      const firstKey = reactRenderCache.keys().next().value;
-      if (firstKey !== undefined) reactRenderCache.delete(firstKey);
-    }
-    reactRenderCache.set(cacheKey, result);
-
-    return result;
-  } catch {
-    const fallback = React.createElement(Text, null, text);
-    reactRenderCache.set(cacheKey, fallback);
-    return fallback;
-  }
+  const rows: string[][] = (token.rows ?? []).map((row: any[]) =>
+    row.map((cell: any) => cell.text || ""),
+  );
+  return { headers, rows };
 }

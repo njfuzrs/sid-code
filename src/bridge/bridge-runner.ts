@@ -132,6 +132,9 @@ export class BridgeRunner {
         if (this.stopped) break;
         this.forwardEvent(event);
         if (event.kind === "done") break;
+        // §3.2：queryLoop 异常现封装为 fatal_error 事件（不再穿透）。已在 forwardEvent
+        // 转发给远程，此处结束本轮（与 done 同等收尾）。
+        if (event.kind === "fatal_error") break;
       }
       await this.core.send(formatStatusMessage("turn_complete"));
     } catch (err: any) {
@@ -160,6 +163,10 @@ export class BridgeRunner {
         if (event.level === "warning" || event.level === "error") {
           void this.core.send(formatStatusMessage(event.level, { text: event.text }));
         }
+        break;
+      case "fatal_error":
+        // §3.2：把 queryLoop 致命错误作为 error 状态转发给远程，避免被 default 吞掉。
+        void this.core.send(formatStatusMessage("error", { message: event.message }));
         break;
       // stream_text 已通过 setStreamTextCallback 转发，此处不重复发送
       default:

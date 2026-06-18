@@ -34,4 +34,17 @@ describe("config", () => {
     expect(cfg.provider).toBe("ollama");
     expect(cfg.model).toBe("llama3");
   });
+
+  // §3.6（fdb47f30）：loadConfig 收尾必须保证 sessionId 非空（单一事实源），
+  // 否则 registerSession 写入 active-sessions 的 sessionId 为空字符串（/ps 看不到 id）。
+  test("loadConfig 未指定时自动生成非空 sessionId", async () => {
+    const cfg = await loadConfig({ provider: "ollama", model: "llama3" });
+    expect(cfg.sessionId).toBeTruthy();
+    expect(cfg.sessionId.length).toBeGreaterThan(0);
+  });
+
+  test("loadConfig 显式传入 sessionId 时保留不覆盖", async () => {
+    const cfg = await loadConfig({ provider: "ollama", model: "llama3", sessionId: "myfixed1" });
+    expect(cfg.sessionId).toBe("myfixed1");
+  });
 });

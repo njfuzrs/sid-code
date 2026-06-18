@@ -30,6 +30,7 @@ import { TraceWriter, type RawJsonlEntry } from "./writer.ts";
 import { buildTrajectory, type RequestResponsePair, type TraceMetadata } from "./builder.ts";
 import { getLogger } from "../debug/logger.ts";
 import { sidPaths } from "../config/paths.ts";
+import { estimateTextTokens } from "../context/token.ts";
 import type { Message } from "../llm/types.ts";
 import { checkMessageHistoryIntegrity } from "../agent/message-invariants.ts";
 
@@ -59,6 +60,26 @@ function extractSystemPromptText(system: unknown): string {
       .join("\n");
   }
   return "";
+}
+
+// ─── raw_preview token 估算（§3.5 fdb47f30）───
+// 对 rawMessages 做字符级 token 估算：每条消息的 content 序列化后累加。
+// 纯本地、无外部依赖；用于 raw_preview.jsonl 的 total_tokens_est，OOM/hang 复盘时
+// 能看出"最后一次请求上下文规模"。容错：任何异常返回当前累计值，绝不抛。
+function estimateMessagesTokens(rawMessages: unknown[]): number {
+  let total = 0;
+  try {
+    for (const msg of rawMessages) {
+      if (msg == null) continue;
+      const content = (msg as { content?: unknown }).content;
+      // content 可能是字符串，或 content block 数组，或其他结构——统一序列化估算。
+      const text = typeof content === "string" ? content : JSON.stringify(content ?? msg);
+      total += estimateTextTokens(text);
+    }
+  } catch {
+    // 序列化/估算失败（如循环引用）返回已累计值，不影响 preview 落盘。
+  }
+  return total;
 }
 
 // ─── 主类 ───
@@ -339,16 +360,29 @@ export class TraceCollector {
       data: { model: req.model, index, msg_count: rawMessages.length },
     });
 
+    // §3.4（fdb47f30）：接入审计日志。原先 BeforeModel 只写 events.jsonl，audit.log
+    // 拿不到——会话异常时（如 index 23 无响应）只能解析轨迹文件，无法从审计日志快速定位。
+    // 用 INFO 级写入（writeToFile 写所有级别 → 进 audit.log 文件；fileOnly 下不刷屏）。
+    getLogger().info(
+      "AUDIT:MODEL",
+      `→ BeforeModel index=${index} model=${req.model} msg_count=${rawMessages.length}`,
+    );
+
     // 迷你 raw_preview：即使进程在 API 调用期间被 V8 OOM kill，也能知道最后一次请求的关键指标
     // 约 200 字节一行，不依赖 AfterModel 才能落盘
     try {
       const sessionDir = this.writer.getSessionDir();
+      // §3.5（fdb47f30）：原先硬编码 0，导致 raw_preview 永远显示 total_tokens_est=0，
+      // OOM/hang 复盘时看不出"第 N 次请求上下文有多大"。改为字符级估算 rawMessages：
+      // 对每条消息序列化后累加 estimateTextTokens。纯本地计算、无外部依赖，失败被
+      // 外层 try-catch 静默兜底（preview 非关键路径）。
+      const totalTokensEst = estimateMessagesTokens(rawMessages);
       const previewLine = JSON.stringify({
         ts: input.timestamp,
         index,
         model: req.model,
         msg_count: rawMessages.length,
-        total_tokens_est: 0, // 暂时放 0，estimateTokens 在 ctxMgr 内部，此处仅记录请求结构
+        total_tokens_est: totalTokensEst,
       });
       appendFileSync(join(sessionDir, "raw_preview.jsonl"), previewLine + "\n");
     } catch {
@@ -444,6 +478,13 @@ export class TraceCollector {
         index: pair.index,
       },
     });
+
+    // §3.4：审计日志同步 AfterModel（含 stop_reason + token），与 BeforeModel 配对，
+    // 使审计日志能看出"第 N 次请求是否拿到响应、停止原因、用量"。
+    getLogger().info(
+      "AUDIT:MODEL",
+      `← AfterModel index=${pair.index} stop=${stopReason} in=${inputTokens} out=${outputTokens} cache_read=${cacheRead}`,
+    );
   }
 
   // ─── PreToolUse ───
@@ -460,6 +501,9 @@ export class TraceCollector {
         tool_use_id: input.tool_use_id,
       },
     });
+
+    // §3.4：审计日志同步 PreToolUse（工具开始执行）。
+    getLogger().info("AUDIT:TOOL", `▶ ${input.tool_name} id=${input.tool_use_id ?? "?"}`);
   }
 
   // ─── PostToolUse ───
@@ -498,6 +542,16 @@ export class TraceCollector {
         is_error: input.is_error ?? false,
       },
     });
+
+    // §3.4：审计日志同步 PostToolUse。工具报错（is_error=true）升 WARN 级——
+    // 工具失败是事故复盘关键信号，必须在 audit.log 显式可见；成功用 INFO。
+    const isErr = input.is_error ?? false;
+    const auditMsg = `${isErr ? "✗" : "✓"} ${input.tool_name} id=${input.tool_use_id ?? "?"}${isErr ? " (is_error)" : ""}`;
+    if (isErr) {
+      getLogger().warn("AUDIT:TOOL", auditMsg);
+    } else {
+      getLogger().info("AUDIT:TOOL", auditMsg);
+    }
   }
 
   // ─── PostToolUseFailure ───
@@ -518,6 +572,12 @@ export class TraceCollector {
         is_error: true,
       },
     });
+
+    // §3.4：工具执行失败（PostToolUseFailure）必为 WARN 级，审计日志显式可见。
+    getLogger().warn(
+      "AUDIT:TOOL",
+      `✗ ${input.tool_name} id=${input.tool_use_id ?? "?"} (PostToolUseFailure)`,
+    );
   }
 
   // ─── UserPromptSubmit ───

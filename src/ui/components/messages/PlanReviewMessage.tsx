@@ -8,7 +8,7 @@
 import React from "react";
 import Box from "../../../ink/components/Box.js";
 import Text from "../../../ink/components/Text.js";
-import { MarkdownDisplay } from "../MarkdownDisplay.tsx";
+import { MarkdownAnsi } from "../MarkdownAnsi.tsx";
 import { theme } from "../../semantic-colors.ts";
 import { BULLET } from "../../constants/figures.ts";
 
@@ -61,7 +61,7 @@ export const PlanReviewMessage: React.FC<PlanReviewMessageProps> = ({
 
       {/* 计划内容 */}
       <Box flexDirection="column">
-        <MarkdownDisplay
+        <MarkdownAnsi
           text={planContent}
           isPending={false}
           terminalWidth={contentWidth}

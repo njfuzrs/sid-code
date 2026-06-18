@@ -1,19 +1,23 @@
 /**
  * 主屏 Static 模式流式视口裁剪（ADR-040 防闪烁）
  *
- * 背景：stock @jrichman/ink 主屏渲染路径在「动态区(非 Static)渲染高度 >= 终端行数」时
- * 退化为每帧 clearTerminal + 重打全部内容（node_modules/ink/build/ink.js:276）。
+ * 背景：ink 主屏渲染路径在「动态区(非 Static)渲染高度 >= 终端行数」时，
+ * log-update 的 diff 会命中 fullResetSequence_CAUSES_FLICKER 路径
+ * （见 src/ink/log-update.ts:214/242/266，scrollback 行变化时整屏重打）。
  * 流式回复一旦超过一屏，30fps 下即触发全屏闪烁/疯狂刷屏。
  *
- * 我们用的不是 claude-code 的自研 fork renderer（它自己做行级 diff、从不 clearTerminal），
- * 搬不过来。因此唯一正解：把动态区里会随流式增长的内容（流式正文 / 思考）按可用视口高度
- * 做「尾部截断」—— 只渲染最新的若干行，保证动态区高度始终 < 终端行数。
+ * 注意：本项目渲染底座已是 vendor 进 src/ink 的 claude-code 同款 ink fork
+ * （做行级 diff、blit），但上述「高度 >= 视口 → 整屏重打」的退化路径在 fork 中
+ * 依然存在。因此「动态区高度必须始终 < 终端行数」这一不变量仍需成立，
+ * 正解仍是：把会随流式增长的内容（流式正文 / 思考）按可用视口高度做尾部截断 ——
+ * 只渲染最新的若干行（正文用块级 tailToFitByBlocks，思考用物理行 tailToFit）。
  *
  * 流式完成后整条消息并入 historyItems → 进 <Static> 打印进终端 scrollback（完整内容、可原生上滚回看）。
  * 所以「流式中看尾部、完成后看全文」与 claude-code 的 log-update 小动态区模型一致。
  */
 
 import stringWidth from "string-width";
+import { cachedLexer } from "./markdown.ts";
 
 /**
  * 计算一段文本按指定宽度软换行后的渲染行数。
@@ -126,4 +130,60 @@ export function computeStreamBudgets(
   if (hasThinking) return { thinkingLines: avail, textLines: 0 };
   if (hasText) return { thinkingLines: 0, textLines: avail };
   return { thinkingLines: 0, textLines: 0 };
+}
+
+/**
+ * 块感知的尾部截断（P1-C）：按 markdown 块边界裁出尾部可见内容，
+ * 使其按 width 软换行后渲染高度 <= maxLines，且**不从块中间起头**
+ * （表格 / 代码块 / 段落要么整块保留、要么整块丢弃）。
+ *
+ * 对比 tailToFit（按物理行尾部硬截断，会把表格/代码块拦腰截断退化成裸文本）：
+ * 本函数用 cachedLexer 把文本切成块，从最后一块往前累加整块，直到再加一块就超预算。
+ *
+ * 退化处理：
+ * - maxLines <= 0 或空串 → 空串。
+ * - 一块都放不下（最后一块自身就超高，如超长代码块）→ 对最后一块退回 tailToFit
+ *   做物理行尾部截断，保证仍有内容可见且不超高（瞬时视图，完成后进 Static 看全文）。
+ *
+ * 解析成本：cachedLexer 带 token 缓存，流式中同前缀重复 lex 命中缓存；
+ * 即便未命中，块级窗口也把渲染规模约束到 O(视口高度)。
+ */
+export function tailToFitByBlocks(
+  text: string,
+  width: number,
+  maxLines: number,
+): string {
+  if (maxLines <= 0 || !text) return "";
+  const w = Math.max(1, width);
+
+  // 用 token.raw 还原每个块的原始文本。marked 的 lexer 保证 raw 拼接 == 原文，
+  // 所以按块切分不丢字符。空白 token（type==="space"）也带 raw，原样保留块间空行。
+  let tokens: { raw?: string }[];
+  try {
+    tokens = cachedLexer(text) as { raw?: string }[];
+  } catch {
+    // lexer 异常 → 退回物理行截断，保证健壮
+    return tailToFit(text, width, maxLines);
+  }
+
+  const blocks = tokens.map((t) => t.raw ?? "").filter((r) => r.length > 0);
+  if (blocks.length === 0) return tailToFit(text, width, maxLines);
+
+  // 从最后一块往前累加整块，直到再加一块就超预算。
+  let used = 0;
+  let startIdx = blocks.length;
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const h = wrappedHeight(blocks[i], w);
+    if (used + h > maxLines) break;
+    used += h;
+    startIdx = i;
+  }
+
+  // 至少有一整块能放下：返回尾部若干整块（去掉拼接处可能多出的首尾空白）。
+  if (startIdx < blocks.length) {
+    return blocks.slice(startIdx).join("").replace(/^\n+/, "").replace(/\n+$/, "");
+  }
+
+  // 一块都放不下（最后一块自身超高）：对最后一块退回物理行尾部截断。
+  return tailToFit(blocks[blocks.length - 1], w, maxLines);
 }

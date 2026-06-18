@@ -3,9 +3,10 @@
  * 验证 hook 事件序列 → pairs 配对、增量 messages、metadata 填充
  */
 
-import { describe, test, expect, beforeEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { TraceCollector } from "../../src/trace/collector.ts";
 import { HookSystem } from "../../src/hook/system.ts";
+import { initLogger, LogLevel } from "../../src/debug/logger.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -158,6 +159,24 @@ describe("TraceCollector", () => {
     expect(line.stop_reason).toBe("end_turn");
     // raw.jsonl 中不应包含 raw_messages 字段
     expect(line.request.raw_messages).toBeUndefined();
+  });
+
+  // §3.5（fdb47f30）：raw_preview.jsonl 的 total_tokens_est 不再恒为 0。
+  test("BeforeModel 后 raw_preview.jsonl 写入非零 total_tokens_est", async () => {
+    await fireSessionStart(hookSystem);
+    // 给一条有实质内容的消息，确保估算 > 0
+    await fireModelRound(hookSystem, {
+      messages: [{ role: "user", content: "请帮我详细分析这段代码的性能瓶颈并给出优化建议" }],
+    });
+
+    const previewPath = join(testDir, "sessions", "sess-001", "raw_preview.jsonl");
+    expect(existsSync(previewPath)).toBe(true);
+    const line = JSON.parse(readFileSync(previewPath, "utf-8").trim().split("\n")[0]);
+    expect(line.index).toBe(1);
+    expect(line.msg_count).toBe(1);
+    // 关键：total_tokens_est 应为正数（原 bug 恒为 0）
+    expect(typeof line.total_tokens_est).toBe("number");
+    expect(line.total_tokens_est).toBeGreaterThan(0);
   });
 
   test("AfterModel 后 session.traj 被写入", async () => {
@@ -811,6 +830,108 @@ describe("TraceCollector", () => {
     const traj = JSON.parse(readFileSync(trajPath, "utf-8"));
     expect(traj.metadata.tool_source).toBe("sid-code");
     expect(traj.metadata.harness).toBeUndefined();
+  });
+});
+
+// ─── §3.4（fdb47f30）：审计日志覆盖 ───
+// 验证 BeforeModel/AfterModel/工具事件被写入 audit.log（INFO 写文件、工具失败升 WARN）。
+// 用 initLogger 注入临时文件 audit logger（fileOnly + WARN + 写所有级别到文件），
+// 触发事件后读文件断言 AUDIT 条目存在。fdb47f30 的 audit.log 只有 2 条、看不出第 23
+// 次请求发生了什么，正是因为这些 handler 从不调 logger。
+describe("TraceCollector — §3.4 审计日志覆盖", () => {
+  let testDir: string;
+  let auditFile: string;
+  let hookSystem: HookSystem;
+  let collector: TraceCollector;
+
+  beforeEach(() => {
+    testDir = join(tmpdir(), `trace-audit-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(testDir, { recursive: true });
+    auditFile = join(testDir, "audit.log");
+
+    // 还原生产 audit logger 配置：fileOnly + WARN，文件写所有级别。
+    initLogger({
+      enabled: true,
+      level: LogLevel.WARN,
+      logFile: auditFile,
+      console: false,
+      fileOnly: true,
+      append: true,
+    });
+
+    hookSystem = new HookSystem();
+    hookSystem.setSessionId("sess-audit");
+    hookSystem.setCwd("/tmp/test");
+    collector = new TraceCollector({ outputDir: testDir });
+    collector.registerHooks(hookSystem);
+  });
+
+  afterEach(() => {
+    // 还原为 disabled，避免污染其他测试的全局 logger 单例
+    initLogger({ enabled: false });
+  });
+
+  function readAudit(): string {
+    return existsSync(auditFile) ? readFileSync(auditFile, "utf-8") : "";
+  }
+
+  // WriteStream 异步写入，断言前轮询等待目标内容落盘（最多 ~1s）。
+  async function waitForAudit(needle: string, timeoutMs = 1000): Promise<string> {
+    const start = Date.now();
+    // bun:test 环境无 Date.now 限制，这里用真实时间轮询
+    while (Date.now() - start < timeoutMs) {
+      const content = readAudit();
+      if (content.includes(needle)) return content;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    return readAudit();
+  }
+
+  test("BeforeModel + AfterModel 写入 AUDIT:MODEL 条目（含 index/stop/token）", async () => {
+    await fireSessionStart(hookSystem, "sess-audit");
+    await fireModelRound(hookSystem, { stopReason: "tool_use", inputTokens: 123, outputTokens: 45 });
+
+    const audit = await waitForAudit("AfterModel index=1");
+    expect(audit).toContain("AUDIT:MODEL");
+    // BeforeModel：含 index 与 model
+    expect(audit).toContain("BeforeModel index=1");
+    // AfterModel：含 stop_reason 与 token
+    expect(audit).toContain("AfterModel index=1");
+    expect(audit).toContain("stop=tool_use");
+    expect(audit).toContain("in=123");
+    expect(audit).toContain("out=45");
+  });
+
+  test("工具成功写 INFO AUDIT:TOOL，工具失败升 WARN", async () => {
+    await fireSessionStart(hookSystem, "sess-audit");
+    // 成功工具
+    await hookSystem.firePreToolUseEvent("bash", { command: "ls" }, "toolu_ok");
+    await hookSystem.firePostToolUseEvent("bash", { command: "ls" }, { output: "a.ts" }, false, "toolu_ok");
+    // 失败工具
+    await hookSystem.firePostToolUseEvent("bash", { command: "bad" }, { error: "boom" }, true, "toolu_bad");
+
+    const audit = await waitForAudit("toolu_bad");
+    expect(audit).toContain("AUDIT:TOOL");
+    // 成功条目
+    expect(audit).toContain("✓ bash id=toolu_ok");
+    // 失败条目带 is_error 标记，且为 WARN 级
+    expect(audit).toContain("✗ bash id=toolu_bad");
+    expect(audit).toContain("(is_error)");
+    // 断言失败条目确实是 WARN 级（审计日志关键信号必可见）。WARN 级格式化为 ⚠ 前缀。
+    const failLine = audit.split("\n").find((l) => l.includes("toolu_bad")) ?? "";
+    expect(failLine).toContain("⚠");
+  });
+
+  test("PostToolUseFailure 写 WARN AUDIT:TOOL", async () => {
+    await fireSessionStart(hookSystem, "sess-audit");
+    await hookSystem.firePostToolUseFailureEvent("bash", { command: "rm -rf /" }, "Permission denied", "toolu_fail");
+
+    const audit = await waitForAudit("toolu_fail");
+    expect(audit).toContain("AUDIT:TOOL");
+    expect(audit).toContain("✗ bash id=toolu_fail");
+    expect(audit).toContain("PostToolUseFailure");
+    const failLine = audit.split("\n").find((l) => l.includes("toolu_fail")) ?? "";
+    expect(failLine).toContain("⚠");
   });
 });
 

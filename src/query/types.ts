@@ -211,4 +211,9 @@ export interface SubmitOptions {
 export type QueryEngineEvent =
   | QueryLoopYield
   | { kind: "user_message_added" }
-  | { kind: "hook_blocked"; reason: string };
+  | { kind: "hook_blocked"; reason: string }
+  // §3.2（fdb47f30）：queryLoop 内部抛出的异常（如 processStream throw）原会穿透
+  // engine.ts 的 for-await，跳过 done 收尾。现统一封装为此事件走 yield 通道，
+  // 让 done 收尾可达、app 层把具体错误持久化展示（对标 §3.3）。
+  // recoverable=false 表示本轮已无法继续（与用户 ESC 主动中断区分）。
+  | { kind: "fatal_error"; message: string; stack?: string; recoverable: boolean };

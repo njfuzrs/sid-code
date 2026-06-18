@@ -5,7 +5,13 @@
 import { describe, test, expect } from "bun:test";
 import stripAnsi from "strip-ansi";
 import stringWidth from "string-width";
-import { renderMarkdown } from "../../src/ui/markdown.ts";
+import {
+  renderMarkdown,
+  cachedLexer,
+  renderInlineMarkdown,
+  isTableToken,
+  extractTableData,
+} from "../../src/ui/markdown.ts";
 
 // 每个测试前清空渲染缓存（通过渲染一个不同宽度触发清空，再恢复）
 // renderMarkdown 内部会在宽度变化时清空缓存，这里利用这个机制
@@ -91,11 +97,13 @@ describe("renderMarkdown", () => {
       expect(result).toMatch(/\x1b\[36m/);
     });
 
-    test("strikethrough 含 strikethrough 码", () => {
+    test("删除线被禁用：~~ 原样保留不渲染成 strikethrough（P2-I）", () => {
+      // configureMarked() 禁用了 del tokenizer：模型常用 ~100 表「约 100」，
+      // 不应被误渲染成删除线。~~删除线~~ 此时按普通文本处理，不含 \x1b[9m。
       const result = renderMarkdown("这是 ~~删除线~~ 文本");
       expect(stripAnsi(result)).toContain("删除线");
-      // strikethrough: \x1b[9m
-      expect(result).toMatch(/\x1b\[9m/);
+      // 不应出现 strikethrough 码 \x1b[9m
+      expect(result).not.toMatch(/\x1b\[9m/);
     });
   });
 
@@ -348,5 +356,55 @@ const x = 1;
       expect(plain).toContain("列表项一");
       expect(plain).toContain("引用内容");
     });
+  });
+});
+
+// ── 新管线：cachedLexer / renderInlineMarkdown / 表格 token ──────────
+describe("cachedLexer（token 缓存 + 纯文本快速路径，P1-D）", () => {
+  test("纯文本无 markdown 语法 → 单 paragraph 快速路径", () => {
+    const toks = cachedLexer("这是一段没有任何标记的纯文本");
+    expect(toks.length).toBe(1);
+    expect((toks[0] as any).type).toBe("paragraph");
+  });
+
+  test("含 markdown 语法 → 同内容缓存命中（返回同一引用）", () => {
+    const md = "# 标题\n\n| A | B |\n|---|---|\n| 1 | 2 |";
+    const a = cachedLexer(md);
+    const b = cachedLexer(md);
+    expect(a).toBe(b); // LRU 缓存命中
+  });
+
+  test("解析出表格 token，可被 isTableToken 识别并提取数据", () => {
+    const toks = cachedLexer("| 名称 | 值 |\n|---|---|\n| x | 1 |") as any[];
+    const tableTok = toks.find((t) => isTableToken(t));
+    expect(tableTok).toBeDefined();
+    const { headers, rows } = extractTableData(tableTok);
+    expect(headers).toEqual(["名称", "值"]);
+    expect(rows).toEqual([["x", "1"]]);
+  });
+});
+
+describe("renderInlineMarkdown（表格单元格内联渲染，P1-E）", () => {
+  test("加粗内联生成 bold 码", () => {
+    const out = renderInlineMarkdown("**重点**");
+    expect(out).toMatch(/\x1b\[1m/);
+    expect(stripAnsi(out)).toContain("重点");
+  });
+
+  test("行内代码与链接正确渲染（marked token，非手写正则）", () => {
+    const out = renderInlineMarkdown("`code` 和 [链接](https://x.com)");
+    expect(stripAnsi(out)).toContain("code");
+    expect(stripAnsi(out.replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, ""))).toContain("链接");
+  });
+
+  test("defaultColor 给裸文本套基础色（表头用）", () => {
+    const out = renderInlineMarkdown("标题", "#89b4fa");
+    expect(out).toMatch(/\x1b\[38;2;\d+;\d+;\d+m/);
+    expect(stripAnsi(out)).toContain("标题");
+  });
+
+  test("~~ 不被渲染为删除线（与 P2-I 一致）", () => {
+    const out = renderInlineMarkdown("约 ~~100~~ 个");
+    expect(out).not.toMatch(/\x1b\[9m/);
   });
 });

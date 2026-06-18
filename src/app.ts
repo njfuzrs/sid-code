@@ -1517,10 +1517,18 @@ export class App {
     this.planManager?.endExecution();
     try {
       for await (const event of this.queryEngine.submitMessage(input)) {
-        // 无头模式只关心 done 和 system 消息
+        // 无头模式只关心 done、system 消息和 fatal_error
         if (event.kind === "done") break;
         if (event.kind === "system" && event.level === "warning") {
           streamBuffer += `\n⚠️ ${event.text}\n`;
+        }
+        // §3.2：queryLoop 异常现封装为 fatal_error 事件（不再穿透 for-await）。
+        // 无头模式需显式转成 runError，使 SessionEnd reason=error、错误落盘可见。
+        if (event.kind === "fatal_error") {
+          runError = new Error(event.message);
+          if (event.stack) runError.stack = event.stack;
+          process.stderr.write(`\n[runHeadless] 致命错误: ${event.message}\n${event.stack ?? ""}\n`);
+          break;
         }
       }
     } catch (err: any) {
@@ -2186,6 +2194,31 @@ export class App {
               rebuildDisplay({ streamingThinking: "" });
               addTransientStatusMessage("tombstone", "模型降级，正在使用备用模型重试...", 3000);
               break;
+            case "fatal_error": {
+              // §3.2 + §3.3（fdb47f30）：queryLoop 异常现封装为此事件（不再穿透 for-await）。
+              // 把具体错误原因**持久化**写入 displayItems（永久留存，对标 cc 错误展示），
+              // 而非仅 status bar 瞬态 5 秒——用户回神时仍能看到失败原因，便于排查/重试。
+              completedNormally = true; // 已显式展示错误，避免 finally 再叠加模糊的"任务异常中断"
+              streamingFullText = "";
+              streamingThinkingFull = "";
+              streamSynced = false;
+              log.error("TUI", `queryLoop 致命错误: ${event.message}`, { stack: event.stack });
+              const fatalText = `❌ 任务失败：${event.message}\n可重新输入指令重试，或检查上面的工具输出定位原因。`;
+              const fatalDisplay = [...bridge.current.displayItems, { kind: "system" as const, text: fatalText }];
+              updateState({
+                isLoading: false,
+                isStreaming: false,
+                streamingText: "",
+                streamingThinking: "",
+                streamingLine: "",
+                toolName: null,
+                toolInput: null,
+                isToolExecuting: false,
+                displayItems: fatalDisplay,
+                statusMessage: "任务失败",
+              });
+              break;
+            }
             case "done": {
               completedNormally = true;
               const ctxUsed = this.ctxMgr.estimateTokens(this.toolRegistry.size());
@@ -2311,6 +2344,16 @@ export class App {
             contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / this.ctxMgr.getMaxTokens()) * 100),
           });
           addTransientStatusMessage("error", message, aborted ? 1500 : 5000);
+
+          // §3.3（fdb47f30）：非中断的真异常，除瞬态 status（5s 后消失）外，
+          // 还把具体错误**持久化**写入 displayItems（永久留存，对标 cc 错误展示）。
+          // 这是 engine fatal_error 封装之外的兜底路径（如 submitMessage 之外抛出的异常），
+          // 确保任何真异常用户回神时都能看到原因，而不是只剩一句转瞬即逝的提示。
+          if (!aborted) {
+            const errDisplayText = `❌ 任务失败：${err?.message ?? String(err)}\n可重新输入指令重试，或检查上面的输出定位原因。`;
+            const errDisplay = [...bridge.current.displayItems, { kind: "system" as const, text: errDisplayText }];
+            updateState({ displayItems: errDisplay });
+          }
 
           // 中断给出路：用户主动中断后，留一条持久 hint 引导「下一步该做什么」，
           // 不靠瞬态状态消息（会自动消失，用户回神时已无痕迹）。对标 cc 的

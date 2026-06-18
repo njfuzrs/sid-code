@@ -30,6 +30,27 @@ interface ToolCallState {
   contentIndex: number; // 对应的 content block 索引
 }
 
+/**
+ * 响应头超时（纵深防御，针对 fdb47f30 index 23 hang 根因）。
+ *
+ * 背景：`await fetch(...)` 只挂了外层 signal，自身无连接/响应头超时；SSE 的 idle
+ * 超时（IDLE_TIMEOUT_MS）只在拿到 `response.body` 进入 parseSSE 后才生效。若请求挂在
+ * "请求体已发出、等响应头"阶段，idle 超时不覆盖此处，只能依赖 fallback 的 5min 整体
+ * 超时——而后者经 `unref()` + `AbortSignal.any` 传播，存在被运行时缝隙吞掉的风险
+ * （fdb47f30 实测卡死远超 5min 仍未自愈）。
+ *
+ * 故此处加一道**本地、不依赖外层 signal 传播**的超时：fetch 自身用一个独立的
+ * AbortController，到点直接 abort 这个 controller —— 即使外层 signal 永远不 fire，
+ * 本地超时也能把 hang 转成可重试的 timeout 错误，让 fallback 走重试/降级。
+ *
+ * DeepSeek 大上下文首字节慢 → 给 120s；其他模型 → 60s。仍小于 fallback 的 5min 整体
+ * 超时，确保响应头阶段的 hang 优先由这道更近的防线拦截。
+ */
+const RESPONSE_HEADER_TIMEOUT_MS = {
+  deepseek: 120_000,
+  default: 60_000,
+} as const;
+
 export class OpenAIProvider implements Provider {
   private apiKey: string;
   private baseURL: string;
@@ -104,6 +125,21 @@ export class OpenAIProvider implements Provider {
       default:
         return "end_turn";
     }
+  }
+
+  /**
+   * 解析响应头超时阈值（ms）。DeepSeek 首字节慢 → 更长；其他模型更短。
+   * 支持 SID_CODE_RESPONSE_HEADER_TIMEOUT_MS 环境变量覆盖（运维调参 / 测试注入），
+   * 非法值（非正整数）忽略，回退到按模型区分的默认值。
+   */
+  private static resolveHeaderTimeoutMs(model: string): number {
+    const override = Number(process.env.SID_CODE_RESPONSE_HEADER_TIMEOUT_MS);
+    if (Number.isFinite(override) && override > 0) {
+      return override;
+    }
+    return /deepseek/i.test(model)
+      ? RESPONSE_HEADER_TIMEOUT_MS.deepseek
+      : RESPONSE_HEADER_TIMEOUT_MS.default;
   }
 
   /**
@@ -421,15 +457,58 @@ export class OpenAIProvider implements Provider {
         maxTokens: requestBody.max_completion_tokens ?? requestBody.max_tokens,
       });
 
-      const response = await fetch(`${this.baseURL}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${this.apiKey}`,
-        },
-        body: JSON.stringify(sanitizeStrings(requestBody)),
-        signal,
-      });
+      // ── 响应头超时（纵深防御，见文件顶部 RESPONSE_HEADER_TIMEOUT_MS 注释）──
+      // 用一个独立的本地 AbortController 给 fetch 设"等响应头"超时。到点直接 abort
+      // 本地 controller —— 不依赖外层 signal 的 unref/AbortSignal.any 传播是否完美。
+      // 与外层 signal 用 AbortSignal.any 组合：任一触发都中断 fetch。
+      // 阈值可经 SID_CODE_RESPONSE_HEADER_TIMEOUT_MS 覆盖（运维调参 / 测试注入）。
+      const headerTimeoutMs = OpenAIProvider.resolveHeaderTimeoutMs(this._model);
+      const headerTimeoutCtl = new AbortController();
+      let headerTimedOut = false;
+      let headerTimeoutId: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+        headerTimedOut = true;
+        log.warn(
+          "LLM:OPENAI",
+          `响应头超时 ${headerTimeoutMs / 1000}s 未收到响应头，主动中断 fetch（model=${this._model}）`,
+        );
+        headerTimeoutCtl.abort();
+      }, headerTimeoutMs);
+      // 注意：不调 unref()。fdb47f30 的教训正是 fallback 的整体超时定时器 unref 后
+      // 在 hang 场景疑似未按时 fire；响应头超时是关键防线，宁可让它保持进程活跃。
+      const fetchSignal = signal
+        ? AbortSignal.any([signal, headerTimeoutCtl.signal])
+        : headerTimeoutCtl.signal;
+
+      let response: Response;
+      try {
+        response = await fetch(`${this.baseURL}/chat/completions`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${this.apiKey}`,
+          },
+          body: JSON.stringify(sanitizeStrings(requestBody)),
+          signal: fetchSignal,
+        });
+      } catch (err: any) {
+        // 区分"本地响应头超时"与"外层 signal（用户 ESC / fallback 整体超时）中断"：
+        // - 响应头超时 → 抛 timeout 错误（带"超时"字样），经 classifyError 归为
+        //   RetryableError("timeout")，让 fallback 走重试 → 降级，把 hang 转成自愈。
+        // - 外层 signal 中断 → 原样抛出，由 fallback / 上层按 abort 处理（不重试）。
+        if (headerTimedOut && !signal?.aborted) {
+          throw new Error(
+            `响应头超时：${headerTimeoutMs / 1000}s 未收到响应头（model=${this._model}）`,
+          );
+        }
+        throw err;
+      } finally {
+        // 拿到响应头（或已失败）后立即清掉响应头超时定时器，
+        // 后续 SSE 流由 parseSSE 的 idle 超时接管。
+        if (headerTimeoutId !== null) {
+          clearTimeout(headerTimeoutId);
+          headerTimeoutId = null;
+        }
+      }
 
       if (!response.ok) {
         const error = await response.text();

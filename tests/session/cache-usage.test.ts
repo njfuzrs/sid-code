@@ -310,3 +310,36 @@ describe("accumulateUsage — 单一权威累加（P0/P1-2）", () => {
     expect(target.cacheCreationInputTokens).toBeUndefined();
   });
 });
+
+// §五（fdb47f30）：/clear 调用 SessionState.resetCounters() 清零状态栏统计。
+// 验证累积用量后 resetCounters 把 token/费用/modelUsage 全部归零。
+describe("SessionState.resetCounters — /clear 状态栏清空", () => {
+  test("累积用量后 resetCounters 清零 token/费用/modelUsage", () => {
+    const ss = new SessionState("test-clear");
+    // 模拟两次 API 调用累积用量
+    ss.updateUsage(
+      "deepseek-v4-pro",
+      { inputTokens: 1000, outputTokens: 200, cacheReadInputTokens: 500 } as Usage,
+      1200,
+    );
+    ss.updateUsage(
+      "deepseek-v4-pro",
+      { inputTokens: 1500, outputTokens: 300 } as Usage,
+      900,
+    );
+
+    // 清空前：确有累积
+    expect(ss.totalCostUSD).toBeGreaterThanOrEqual(0); // 费用按定价表，可能为 0（本地）或正
+    expect(Object.keys(ss.modelUsage).length).toBe(1);
+    expect(ss.getTotalUsage().outputTokens).toBe(500);
+
+    // 执行 /clear 的清零
+    ss.resetCounters();
+
+    // 清空后：状态栏三件套全部归零
+    expect(ss.totalCostUSD).toBe(0);
+    expect(Object.keys(ss.modelUsage).length).toBe(0);
+    expect(ss.getTotalUsage()).toEqual({ inputTokens: 0, outputTokens: 0 });
+    expect(ss.getStockPromptTokens()).toBe(0);
+  });
+});

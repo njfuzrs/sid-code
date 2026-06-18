@@ -1,14 +1,14 @@
 /**
  * 助手消息组件
  *
- * 渲染 AI 回复的文本内容，使用 MarkdownDisplay 组件。
+ * 渲染 AI 回复的文本内容，使用 MarkdownAnsi 组件。
  * 参考 gemini-cli GeminiMessage.tsx
  */
 
 import React from "react";
 import Box from "../../../ink/components/Box.js";
 import Text from "../../../ink/components/Text.js";
-import { MarkdownDisplay } from "../MarkdownDisplay.tsx";
+import { MarkdownAnsi } from "../MarkdownAnsi.tsx";
 import { theme } from "../../semantic-colors.ts";
 import { useUIState } from "../../contexts/UIStateContext.tsx";
 import { BULLET } from "../../constants/figures.ts";
@@ -36,7 +36,7 @@ export const AssistantMessage: React.FC<AssistantMessageProps> = ({
         <Text color={theme.ui.active}>{BULLET}</Text>
       </Box>
       <Box flexGrow={1} flexDirection="column">
-        <MarkdownDisplay
+        <MarkdownAnsi
           text={text}
           isPending={isPending}
           availableTerminalHeight={

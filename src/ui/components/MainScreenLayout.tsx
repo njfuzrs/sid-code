@@ -14,7 +14,7 @@ import React, { memo, useMemo } from "react";
 import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
 import Static from "../../ink/_vendor/Static.js";
-import { tailToFit, estimateChromeLines, computeStreamBudgets } from "../streaming-viewport.ts";
+import { tailToFit, tailToFitByBlocks, estimateChromeLines, computeStreamBudgets } from "../streaming-viewport.ts";
 import { Composer } from "./Composer.tsx";
 import { Footer } from "./Footer.tsx";
 import { DialogRenderer } from "./DialogManager.tsx";
@@ -159,9 +159,10 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
     // 正文带 "⏺ " 前缀，有效宽度略减
     const textWidth = Math.max(1, termWidth - 2);
     return {
-      visibleText: hasText ? tailToFit(streamingText, textWidth, textLines) : "",
+      // 正文走块级窗口（P1-C）：按 markdown 块边界裁尾部，表格/代码块不被拦腰截断。
+      visibleText: hasText ? tailToFitByBlocks(streamingText, textWidth, textLines) : "",
       // 折叠态把全文传给 ThinkingMessage（它内部只渲染一行摘要 + 字符数）；
-      // 纯思考阶段（未折叠）才按视口高度 tail 截断直播。
+      // 纯思考阶段（未折叠）才按视口高度 tail 截断直播。思考是纯文本，用物理行截断即可。
       visibleThinking: hasThinking
         ? collapsed
           ? streamingThinking

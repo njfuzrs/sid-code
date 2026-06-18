@@ -6,7 +6,7 @@
  * - 错误 → 红色文本
  * - ANSI 输出 → AnsiOutputText
  * - JSON → pretty-print
- * - Markdown → MarkdownDisplay
+ * - Markdown → MarkdownAnsi
  * - 长文本 → SlicingMaxSizedBox 截断
  * - 短文本 → 直接显示
  *
@@ -15,7 +15,7 @@
 
 import React from 'react';
 import { DiffRenderer } from '../DiffRenderer.tsx';
-import { MarkdownDisplay } from '../MarkdownDisplay.tsx';
+import { MarkdownAnsi } from '../MarkdownAnsi.tsx';
 import { AnsiOutputText } from '../AnsiOutput.tsx';
 import { SlicingMaxSizedBox } from '../SlicingMaxSizedBox.tsx';
 import { useUIState, useExpandedMaxLines } from '../../contexts/UIStateContext.tsx';
@@ -192,7 +192,7 @@ export const ToolResultDisplay: React.FC<ToolResultDisplayProps> = ({
 
   // 5. Markdown 渲染
   if (renderOutputAsMarkdown) {
-    // MarkdownDisplay 仅在 isPending 时按 availableTerminalHeight 截断，
+    // MarkdownAnsi 仅在 isPending 时按 availableTerminalHeight 截断，
     // 工具结果是已完成内容（isPending=false），其自身不做行数折叠。
     // 为避免长 markdown 结果占满屏幕：未全展开且超出 effectiveMaxLines 时，
     // 降级为纯文本走 SlicingMaxSizedBox 截断（保证 ctrl+o 可阶梯展开）；
@@ -211,7 +211,7 @@ export const ToolResultDisplay: React.FC<ToolResultDisplayProps> = ({
       );
     }
     return (
-      <MarkdownDisplay
+      <MarkdownAnsi
         text={content}
         terminalWidth={terminalWidth}
         renderMarkdown={renderMarkdown}

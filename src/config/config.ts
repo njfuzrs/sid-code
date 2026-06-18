@@ -849,6 +849,17 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
     }
   }
 
+  // §3.6（fdb47f30）：确定 sessionId 单一事实源。
+  // 原先 sessionId 默认 "" 一直保留到 App 构造（app.ts）才本地生成，但生成结果不回写
+  // config，导致 cli.ts 的 registerSession(config.sessionId) 写入 active-sessions 的
+  // sessionId 为空字符串（/ps 看不到会话 id）。此处在 loadConfig 收尾时统一回填：
+  // 若未显式指定则生成 8 位短 id，使 config.sessionId 从进程启动起就非空，
+  // App / registerSession / SDK / 遥测全部复用同一值。resume 用独立的 config.resume
+  // 字段，不受此影响。
+  if (!config.sessionId) {
+    config.sessionId = crypto.randomUUID().slice(0, 8);
+  }
+
   return config;
 }
 

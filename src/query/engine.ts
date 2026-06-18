@@ -29,6 +29,7 @@ import { ThinkingManager } from "../llm/thinking.ts";
 import { SessionState } from "../session/state.ts";
 import { getLogger, getSessionMetrics } from "../debug/index.ts";
 import { queryLoop } from "./loop.ts";
+import { isAbortError } from "../llm/errors.ts";
 import type { QueryDeps, QueryEngineEvent } from "./types.ts";
 
 /** QueryEngine 依赖 */
@@ -231,25 +232,48 @@ export class QueryEngine {
     });
 
     // ─── 消费 queryLoop 的 yield，桥接到外部 ───
-    for await (const event of loop) {
-      // B2：持久化 assistant 消息。queryLoop 每次 ctxMgr.addMessage(assistant) 后都紧跟
-      // yield assistant_message，故此处写入与内存历史一一对应（含空参数 sanitized、降级前等
-      // 已入历史的中间态——持久化与内存保持一致，恢复时状态对齐）。tool_result 由 queryLoop
-      // 内部经注入的 sessionStore 直接写入（方案 a），不在此处理。
-      // ⚠️ 修正 bug①：endSession 绝不放在此循环/finally——它每轮用户输入调用一次，
-      // 会写 session_end 并置 currentFile=null，导致第 2 轮起所有消息静默丢失。
-      // endSession 只在 App 退出时调用一次（B3）。
-      if (event.kind === "assistant_message") {
-        try {
-          sessionStore?.appendMessage(event.message);
-        } catch (e) {
-          log.warn("ENGINE", `assistant 消息持久化失败（不阻断）: ${(e as Error)?.message}`);
+    // §3.2（fdb47f30）：外层 try-catch 隔离 queryLoop 内部异常（如 processStream throw）。
+    // 原先无外层 catch，异常会穿透 for-await，跳过下方 done 收尾逻辑——上层 app 只能靠
+    // 模糊的 finally "任务异常中断" 提示，拿不到具体错误。现把底层异常统一封装为
+    // fatal_error 事件走 yield 通道，让 app 层能持久化展示具体原因（联动 §3.3），
+    // 且 abort（用户 ESC）仍原样向上抛出（由 app 的 onUserInput catch 按"已取消"处理）。
+    try {
+      for await (const event of loop) {
+        // B2：持久化 assistant 消息。queryLoop 每次 ctxMgr.addMessage(assistant) 后都紧跟
+        // yield assistant_message，故此处写入与内存历史一一对应（含空参数 sanitized、降级前等
+        // 已入历史的中间态——持久化与内存保持一致，恢复时状态对齐）。tool_result 由 queryLoop
+        // 内部经注入的 sessionStore 直接写入（方案 a），不在此处理。
+        // ⚠️ 修正 bug①：endSession 绝不放在此循环/finally——它每轮用户输入调用一次，
+        // 会写 session_end 并置 currentFile=null，导致第 2 轮起所有消息静默丢失。
+        // endSession 只在 App 退出时调用一次（B3）。
+        if (event.kind === "assistant_message") {
+          try {
+            sessionStore?.appendMessage(event.message);
+          } catch (e) {
+            log.warn("ENGINE", `assistant 消息持久化失败（不阻断）: ${(e as Error)?.message}`);
+          }
+        }
+        yield event;
+        if (event.kind === "done") {
+          return;
         }
       }
-      yield event;
-      if (event.kind === "done") {
-        return;
+    } catch (err) {
+      // 用户主动中断（ESC）：原样向上抛，由 app 的 onUserInput catch 按"已取消"处理，
+      // 不转 fatal_error（中断不是故障）。
+      if (isAbortError(err)) {
+        throw err;
       }
+      // 真异常：封装为 fatal_error 事件 yield（而非穿透），让上层收尾可达 + 展示具体原因。
+      const e = err as Error;
+      log.error("ENGINE", `queryLoop 异常，封装为 fatal_error: ${e?.message}`, { stack: e?.stack });
+      yield {
+        kind: "fatal_error",
+        message: e?.message ?? String(err),
+        stack: e?.stack,
+        recoverable: false,
+      };
+      return;
     }
   }
 

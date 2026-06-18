@@ -1,14 +1,14 @@
 /**
  * 流式消息组件
  *
- * 显示正在生成的助手消息，使用 MarkdownDisplay 支持流式截断。
- * 参考 gemini-cli 方案。
+ * 显示正在生成的助手消息。内部走 StreamingMarkdown（marked AST + ANSI 整块），
+ * 取代旧的逐行 MarkdownDisplay。
  */
 
 import React from "react";
 import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
-import { MarkdownDisplay } from "./MarkdownDisplay.tsx";
+import { StreamingMarkdown } from "./StreamingMarkdown.tsx";
 import { theme } from "../semantic-colors.ts";
 import { BULLET } from "../constants/figures.ts";
 
@@ -38,16 +38,14 @@ export const StreamingMessage = React.memo(function StreamingMessage({
         <Text color={theme.ui.active}>{BULLET}</Text>
       </Box>
       <Box flexGrow={1} flexDirection="column">
-        <MarkdownDisplay
+        <StreamingMarkdown
           text={fullText}
-          isPending={true}
           availableTerminalHeight={
             availableTerminalHeight === undefined
               ? undefined
               : Math.max(availableTerminalHeight - 1, 1)
           }
           terminalWidth={Math.max(terminalWidth - prefixWidth, 0)}
-          renderMarkdown={true}
         />
       </Box>
     </Box>

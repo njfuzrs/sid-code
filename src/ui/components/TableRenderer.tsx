@@ -10,7 +10,7 @@ import type { StyledChar } from "../../ink/_vendor/styled-chars.js";
 import { toStyledCharacters, styledCharsWidth, wrapStyledChars, widestLineFromStyledChars, wordBreakStyledChars } from "../../ink/_vendor/styled-chars.js";
 import { styledCharsToString } from "@alcalzone/ansi-tokenize";
 import { theme } from "../semantic-colors.ts";
-import { parseMarkdownToANSI } from "../../utils/markdownParsingUtils.ts";
+import { renderInlineMarkdown } from "../markdown.ts";
 
 interface TableRendererProps {
   headers: string[];
@@ -24,13 +24,14 @@ const TABLE_MARGIN = 2;
 
 /**
  * 将 markdown 文本转换为 StyledChar 数组
- * 先转成 ANSI，再用 Ink 的 toStyledCharacters 解析
+ * 走 marked 内联 lexer（renderInlineMarkdown）生成 ANSI，再用 Ink 的
+ * toStyledCharacters 解析（P1-E：不再依赖手写正则 parseMarkdownToANSI）。
  */
 const parseMarkdownToStyledChars = (
   text: string,
   defaultColor?: string,
 ): StyledChar[] => {
-  const ansi = parseMarkdownToANSI(text, defaultColor);
+  const ansi = renderInlineMarkdown(text, defaultColor);
   return toStyledCharacters(ansi);
 };
 
@@ -174,7 +175,7 @@ export const TableRenderer: React.FC<TableRendererProps> = ({
     const displayWidth = content.width;
     const paddingNeeded = Math.max(0, contentWidth - displayWidth);
 
-    // 注意：content.text 已经包含 ANSI 颜色码（由 parseMarkdownToANSI 生成）
+    // 注意：content.text 已经包含 ANSI 颜色码（由 renderInlineMarkdown 生成）
     // 不要在外层 <Text> 设置 color 属性，否则会覆盖内部颜色
     return (
       <Text>
