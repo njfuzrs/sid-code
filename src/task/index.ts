@@ -25,6 +25,7 @@ export {
   getAllTasks,
   evictTerminalTasks,
   clearAllTasks,
+  clearInactiveTasks,
   generateTaskStatusAttachment,
   onTaskChanged,
   offTaskChanged,

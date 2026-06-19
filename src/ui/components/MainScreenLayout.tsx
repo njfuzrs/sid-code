@@ -26,10 +26,8 @@ import { Notifications } from "./Notifications.tsx";
 import { ToastDisplay } from "./ToastDisplay.tsx";
 import { ExitWarning } from "./ExitWarning.tsx";
 import { EmptyLogo } from "./EmptyLogo.tsx";
-import { ToolConfirmationQueue } from "./messages/ToolConfirmationQueue.tsx";
 import { ModelDialog } from "./ModelDialog.tsx";
 import { ThemeDialog } from "./ThemeDialog.tsx";
-import { useConfirmingTool } from "../hooks/useConfirmingTool.ts";
 import type { HistoryItem } from "../types.ts";
 import type { PermissionRequestInfo, ShellConfirmRequestInfo, PlanApprovalRequestInfo, TaskDisplayInfo } from "../App.tsx";
 import type { DialogType } from "../../command/types.ts";
@@ -138,8 +136,6 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
   todos,
   tasks,
 }) {
-  const confirmingTool = useConfirmingTool(staticItems);
-
   // 流式动态区视口裁剪（ADR-040 防闪烁，见 streaming-viewport.ts）：
   // stock ink 在「动态区高度 >= 终端行数」时每帧 clearTerminal 重打全部 → 全屏闪烁。
   // 故对会随流式增长的正文/思考做尾部截断，保证动态区高度 < 终端行数。
@@ -229,14 +225,6 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
               <Text color={theme.status.warning}>{statusMessage}</Text>
             </Box>
           ) : null}
-
-          {/* 工具确认队列 */}
-          {confirmingTool && (
-            <ToolConfirmationQueue
-              confirmingTool={confirmingTool}
-              terminalWidth={termWidth}
-            />
-          )}
 
           {/* Composer / 权限对话框 / Plan 审批 / 交互式对话框 互斥显示
               作为留白区最后一块，与上方瞬态块自动隔 1 行 */}

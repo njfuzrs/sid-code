@@ -99,6 +99,9 @@ export function getConversationClearedPatch(): Partial<TUIState> {
     isLoading: false,
     copyModeEnabled: false,
     isPlanMode: false,
+    // /clear 后本轮输出基线归零——否则 Composer 用旧 turnStartOutputTokens 作差，
+    // 清空会话后首条消息的"本轮输出 token"会算出负数或虚高（App.tsx:160 字段，Composer.tsx:177 作差）。
+    turnStartOutputTokens: 0,
     activeDialog: null,
     todos: [],
     tasks: [],

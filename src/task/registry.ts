@@ -86,9 +86,32 @@ export function evictTerminalTasks(): void {
   if (evicted) notifyTaskChanged();
 }
 
-/** 清理所有任务（会话结束时调用） */
+/** 清理所有任务（会话结束时调用）。
+ *  连带清 outputs 内存条目 + 磁盘 .output 文件，并通知监听器刷新面板——
+ *  仅 tasks.clear() 会留下 outputs 孤儿（disk-output 的 Map 与磁盘文件不随之清理）。 */
 export function clearAllTasks(): void {
+  for (const id of tasks.keys()) {
+    evictTaskOutput(id);
+  }
   tasks.clear();
+  notifyTaskChanged();
+}
+
+/** 清理非运行态任务（/clear 时调用）。
+ *  /clear 重置的是「当前会话上下文」，不应杀掉用户正在跑的后台 agent；
+ *  但已完成/失败/被杀的旧任务条目若不清，会残留在面板上（getConversationClearedPatch
+ *  只清 UI 快照 tasks:[]，registry Map 不清 → 下次 notifyTaskChanged 旧条目复活）。
+ *  故只驱逐终止态任务（不论是否 notified），保留 running。 */
+export function clearInactiveTasks(): void {
+  let cleared = false;
+  for (const [id, task] of tasks) {
+    if (isTerminalStatus(task.status)) {
+      evictTaskOutput(id);
+      tasks.delete(id);
+      cleared = true;
+    }
+  }
+  if (cleared) notifyTaskChanged();
 }
 
 /** 生成任务状态附件（注入系统提示词，包含运行中 Agent 的增量输出） */

@@ -411,6 +411,19 @@ export class App {
   }
 
   /**
+   * /clear 时清理 registry 中的非运行态任务条目。
+   * getConversationClearedPatch 只把 UI 快照 tasks 置空，但全局 task registry 的 Map
+   * 不随之清——下次 notifyTaskChanged 会把已完成/失败的旧任务条目重新同步回面板（复活）。
+   * 仅清终止态、保留 running，避免误杀用户正在跑的后台 agent。
+   */
+  private clearInactiveBackgroundTasks(): void {
+    try {
+      const { clearInactiveTasks } = require("./task/index.ts");
+      clearInactiveTasks();
+    } catch { /* task 模块未加载或清理失败不影响 /clear 主流程 */ }
+  }
+
+  /**
    * 加载命令列表（补全/帮助显示用）。
    * 新体系优先：从 UnifiedCommandRegistry.getCommands 取（含 bundled skills、plugin 命令）；
    * 无新注册表时回退旧 Registry.all()。
@@ -471,6 +484,7 @@ export class App {
         this.quotaManager?.resetAlertLevel();
         this.fallback.reset();
         this.resetTodoTool();
+        this.clearInactiveBackgroundTasks();
         resetSyncState();
         updateState(getConversationClearedPatch());
         break;
@@ -2209,6 +2223,13 @@ export class App {
 
       // 设置流式文本回调（桥接 processStream 内部的 onText）
       this.queryEngine.setStreamTextCallback((text: string) => {
+        // 重试进度消息（stream-processor 的 system_api_error → onText(`[重试中] …`)）走状态栏，
+        // 不能累加进 assistant 气泡——否则 "[重试中] 正在重试 (2/4)…" 会残留在正文里
+        // 与模型真实输出同屏混显（段内无剥离逻辑）。分流到 transient 状态消息，文本成功流式时清除。
+        if (text.startsWith("[重试中] ")) {
+          addStatusMessage("system:transient", `⟳ ${text.slice("[重试中] ".length)}`);
+          return;
+        }
         if (!streamSynced) {
           streamSynced = true;
           syncDisplay();
@@ -2420,6 +2441,9 @@ export class App {
         // CM3：本轮结束，清除残留的重试/限流提示。
         retryStatus: null,
       });
+      // 本轮结束兜底清除重试进度消息：重试后若直接进 tool（不走文本/思考流式的清除路径），
+      // sticky 的 "system:transient" 重试提示会残留到下一轮、与新状态串台。done 路径统一清一次。
+      removeStatusMessage("system:transient");
 
       // 本轮结束 → 标记空闲并冲刷 Cron 忙时积压的提示词
       this.busy = false;
@@ -2654,6 +2678,7 @@ export class App {
             this.quotaManager?.resetAlertLevel();
             this.fallback.reset();
             this.resetTodoTool();
+            this.clearInactiveBackgroundTasks();
             lastSyncedCount = 0;
             historyIdCounter = 0;
             activeStatusMessages.clear();

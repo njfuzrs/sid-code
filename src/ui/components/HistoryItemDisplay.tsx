@@ -267,10 +267,9 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
 };
 
 /** 将 types.ts 的 ToolCallStatus 枚举映射为 ToolShared 的字符串状态 */
-function mapToolCallStatus(status: ToolCallStatus): "pending" | "executing" | "success" | "error" | "cancelled" | "confirming" {
+function mapToolCallStatus(status: ToolCallStatus): "pending" | "executing" | "success" | "error" | "cancelled" {
   switch (status) {
     case ToolCallStatus.Pending: return "pending";
-    case ToolCallStatus.Confirming: return "confirming";
     case ToolCallStatus.Executing: return "executing";
     case ToolCallStatus.Success: return "success";
     case ToolCallStatus.Canceled: return "cancelled";

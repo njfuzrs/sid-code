@@ -122,8 +122,10 @@ export function isDestructiveCommand(command: string): boolean {
   // 磁盘操作
   if (/dd\s+if=\/dev\/(zero|random|urandom)/i.test(command)) return true;
   if (/mkfs\./.test(command)) return true;
-  // Fork 炸弹
-  if (/:()\s*\{.*:\|:.*&.*\}\s*;/.test(command)) return true;
+  // Fork 炸弹（经典形式 :(){ :|:& };:）。
+  // 注意旧正则写成 /:()…/，其中 () 是空捕获组而非字面括号 → 实际匹配 ":{"、漏判真正的 ":(){"。
+  // 修正为显式匹配函数名 : + 字面括号 () + 函数体内的 :|: 自调用管道 + & 后台。
+  if (/:\s*\(\s*\)\s*\{[^}]*:\s*\|\s*:[^}]*&[^}]*\}\s*;/.test(command)) return true;
   // 下载并执行
   if (/(curl|wget).*\|\s*(sh|bash|python|perl|ruby)/.test(command)) return true;
 

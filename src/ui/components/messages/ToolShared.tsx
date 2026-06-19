@@ -8,7 +8,6 @@
  * - Pending    → dim 灰（排队中）
  * - Executing  → 品牌蓝（进行中）
  * - Success    → success 绿
- * - Confirming → warning 黄
  * - Canceled   → dim + 删除线
  * - Error      → error 红
  */
@@ -23,7 +22,7 @@ import { formatDuration } from "../../utils/format-duration.ts";
 export const STATUS_INDICATOR_WIDTH = 2;
 
 /** 工具执行状态 */
-export type ToolCallStatus = "pending" | "executing" | "success" | "error" | "cancelled" | "confirming";
+export type ToolCallStatus = "pending" | "executing" | "success" | "error" | "cancelled";
 
 /** 文本强调级别 */
 export type TextEmphasis = "high" | "medium" | "low";
@@ -42,9 +41,6 @@ export const ToolStatusIndicator: React.FC<{
       )}
       {status === "success" && (
         <Text color={theme.status.success}>{BULLET}</Text>
-      )}
-      {status === "confirming" && (
-        <Text color={theme.status.warning}>{BULLET}</Text>
       )}
       {status === "cancelled" && (
         <Text color={theme.text.secondary} dimColor strikethrough>{BULLET}</Text>

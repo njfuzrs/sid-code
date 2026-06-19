@@ -34,4 +34,18 @@ describe("getConversationClearedPatch", () => {
     expect(patch.tasks).toEqual([]);
     expect(patch.retryStatus).toBeNull();
   });
+
+  // 对照完整 TUIState 补齐的高影响残留字段（Harness×LLM 对照评判 §1 矛盾①）：
+  // planApprovalRequest 不清会导致 /clear 后审批框不消失；isLoading/copyModeEnabled/isPlanMode
+  // 残留会让加载态/Copy 模式/plan 模式标志错乱；turnStartOutputTokens 不归零会让 Composer
+  // 用旧基线作差，清空后首条消息的「本轮输出 token」算出负数或虚高。逐条断言防回归。
+  test("应重置审批框 / 加载 / 模式标志 / 本轮输出基线等用户可见残留字段", () => {
+    const patch = getConversationClearedPatch();
+    expect(patch.planApprovalRequest).toBeNull();
+    expect(patch.isLoading).toBe(false);
+    expect(patch.copyModeEnabled).toBe(false);
+    expect(patch.isPlanMode).toBe(false);
+    expect(patch.streamingThinking).toBe("");
+    expect(patch.turnStartOutputTokens).toBe(0);
+  });
 });

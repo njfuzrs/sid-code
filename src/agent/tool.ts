@@ -13,9 +13,7 @@ import { getLogger } from "../debug/logger.ts";
 import {
   createAgentTask,
   failAgentTask,
-  updateAgentProgress,
 } from "../task/index.ts";
-import { ProgressTracker } from "./progress.ts";
 import type { HookSystem } from "../hook/system.ts";
 import type { SubAgentResult } from "./sub-agent.ts";
 import { z } from "zod/v4";
@@ -323,7 +321,6 @@ ${typeLines}
     abortController: AbortController,
   ): Promise<void> {
     const log = getLogger();
-    const tracker = new ProgressTracker();
 
     try {
       const subAgent = SubAgent.fromRegistry(this.providerRegistry, this.toolRegistry, this.hookSystem);
@@ -344,8 +341,9 @@ ${typeLines}
       // P0-1：后台子代理同样要把 usage 回写主会话
       this.collectUsage(result);
 
-      // execute() 内部已调用 completeAgentTask/failAgentTask，这里只更新进度
-      updateAgentProgress(taskId, tracker.getProgress());
+      // execute() 内部 onTurnEnd 每轮已 updateAgentProgress 写入真实累计进度
+      // （tokenCount 来自 totalUsage，见 sub-agent.ts），此处无需再写——
+      // 早前用 tracker.getProgress() 覆盖会把真实终值清成全零（tracker 从未被喂数据）。
     } catch (err: any) {
       log.error("SUBAGENT", `后台子代理失败: ${taskId}`, { error: err.message });
       // execute() 内部 try/catch 已调用 failAgentTask，这里兜底

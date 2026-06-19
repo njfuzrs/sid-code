@@ -5,7 +5,7 @@
  * 每条工具一个 ⏺ bullet（状态色），组本身不画框。
  */
 
-import React, { useMemo } from "react";
+import React from "react";
 import Box from "../../../ink/components/Box.js";
 import Text from "../../../ink/components/Text.js";
 import { ToolMessage } from "./ToolMessage.tsx";
@@ -61,11 +61,9 @@ export const ToolGroupMessage: React.FC<ToolGroupMessageProps> = ({
   terminalWidth,
   isExpandable = false,
 }) => {
-  // 过滤 confirming 状态的工具（在确认队列中渲染，不在历史中显示）
-  const visibleTools = useMemo(
-    () => tools.filter(t => t.status !== "confirming"),
-    [tools],
-  );
+  // 历史区直接渲染全部工具：此前会过滤 confirming 态（在独立确认队列渲染），
+  // 但确认体系已统一走 PermissionPrompt，confirming 态及其队列组件已移除。
+  const visibleTools = tools;
 
   // 检查是否有溢出内容（通过 OverflowContext）
   const overflowState = useOverflowState();

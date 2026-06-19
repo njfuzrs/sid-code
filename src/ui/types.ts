@@ -32,8 +32,6 @@ export enum StreamingState {
 export enum ToolCallStatus {
   /** 等待执行 */
   Pending = "pending",
-  /** 等待用户确认 */
-  Confirming = "confirming",
   /** 正在执行 */
   Executing = "executing",
   /** 执行成功 */

@@ -23,10 +23,8 @@ import { TodoPanel } from "./TodoPanel.tsx";
 import { ToastDisplay } from "./ToastDisplay.tsx";
 import { ExitWarning } from "./ExitWarning.tsx";
 import { EmptyLogo } from "./EmptyLogo.tsx";
-import { ToolConfirmationQueue } from "./messages/ToolConfirmationQueue.tsx";
 import { ModelDialog } from "./ModelDialog.tsx";
 import { ThemeDialog } from "./ThemeDialog.tsx";
-import { useConfirmingTool } from "../hooks/useConfirmingTool.ts";
 import type { HistoryItem } from "../types.ts";
 import type { PermissionRequestInfo, ShellConfirmRequestInfo, PlanApprovalRequestInfo, TaskDisplayInfo } from "../App.tsx";
 import type { DialogType } from "../../command/types.ts";
@@ -139,7 +137,6 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
 }) => {
   const rootRef = useRef<DOMElement>(null);
   useFlickerDetector(rootRef, rows);
-  const confirmingTool = useConfirmingTool(listData);
 
   // ST8：流式↔滚动协调。粘底状态来自 MainContent 的 VirtualizedList；
   // 流式期间用户滚离底部 → paused，显示「跟随已暂停」提示。
@@ -216,14 +213,6 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
               <Text color={theme.status.warning}>{statusMessage}</Text>
             </Box>
           ) : null}
-
-          {/* 工具确认队列 */}
-          {confirmingTool && (
-            <ToolConfirmationQueue
-              confirmingTool={confirmingTool}
-              terminalWidth={termWidth}
-            />
-          )}
 
           {/* Composer / 权限对话框 / Plan 审批对话框 / 交互式对话框 互斥显示 */}
           {permissionRequest || shellConfirmRequest ? (
