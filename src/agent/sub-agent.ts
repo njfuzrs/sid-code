@@ -54,6 +54,9 @@ export interface SubAgentTask {
   _taskId?: string;
   /** 外部预创建的 AbortController（后台执行时使用） */
   _abortController?: AbortController;
+  /** 后台异步执行标记（内部使用）。为 true 时工具过滤额外套用 Layer 4 异步白名单，
+   *  把后台子代理可用工具收敛到安全子集（对标 claude-code ASYNC_AGENT_ALLOWED_TOOLS）。 */
+  _isAsync?: boolean;
 }
 
 /** 子代理执行结果 */
@@ -307,6 +310,7 @@ export class SubAgent {
     const filteredTools = filterToolsForAgent(allTools, {
       isBuiltIn: true,
       builtInType: task.type,
+      isAsync: task._isAsync,
     });
     return filteredTools.map(t => ({
       name: t.name(),
@@ -608,6 +612,7 @@ export class SubAgent {
       const filteredTools = filterToolsForAgent(allTools, {
         isBuiltIn: true,
         builtInType: task.type,
+        isAsync: task._isAsync,
       });
       const tools = new ToolRegistry();
       for (const t of filteredTools) tools.register(t);

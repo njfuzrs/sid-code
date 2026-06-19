@@ -140,6 +140,19 @@ ${typeLines}
 设置 isolation=worktree 可在独立 Git Worktree 中执行（文件改动隔离，仅同步模式）。`;
   }
 
+  usageGuide(): string {
+    // 缺口（子代理从不触发）：description() 只回答「sub_agent 是什么、有哪些类型」，
+    // 不回答「什么时候该派子代理」。对不会自发编排的弱模型，看得见 ≠ 会用。
+    // usageGuide() 会被系统提示词单独拼成「### sub_agent 工具使用指南」段
+    // （system-prompt.ts:455-460），信号比工具清单里的一行 description 强得多，
+    // 是承载「何时派活」触发引导的官方通道。
+    return `- **何时该派**：任务能拆成多个相对独立的子方向时优先分治。判据——子方向 ≥ 3 个（如系统排查要过多个模块、审计要查多个维度、要同时搜索多处来源），或单个方向读起来会撑爆主上下文。满足任一条就派子代理，而不是自己一个个串行读。
+- **怎么选类型**：只读探查（搜代码、读模块、定位实现）派 explore；要改文件 / 跑命令派 task；验证某个已有结论是否成立、需要对抗式复核派 verify。拿不准是否要写入就先按只读派 explore，需要写时子代理会反馈、再改派 task。
+- **分治 vs 并行只读不是一回事**：并行调 read/grep/glob 只是在同一个上下文里多发几个只读调用，结果都回到主对话；分治是把一整段子任务连同它的上下文交给独立子代理，主对话只收最终结论。方向多、每个方向都重（要读很多文件）时，用分治而不是堆并行 read。
+- **并行分治**：多个子方向可以一次发多个 sub_agent 并行执行；需要后台跑设 run_in_background=true。
+- **嵌套限制**：子代理内部不能再派子代理，分治只能由主线程发起。所以要并行就在主线程一次性把多个 sub_agent 发出去，别指望某个子代理内部再 fan-out。`;
+  }
+
   inputSchema(): Record<string, unknown> {
     return z.toJSONSchema(subAgentSchema()) as Record<string, unknown>;
   }
@@ -319,6 +332,7 @@ ${typeLines}
           prompt: params.prompt,
           _taskId: taskId,
           _abortController: abortController,
+          _isAsync: true,
         },
         abortController.signal,
       );

@@ -112,6 +112,67 @@ describe("D4-2 — LoadingIndicator 渲染快照", () => {
     const frame = stripAnsi(lastFrame() ?? "");
     expect(frame).toContain("1m15s");
   });
+
+  // ── §6.2 Connecting 态渲染测试 ──
+
+  test("Connecting 态：显示加载文案「连接中…」+ spinner 字符", () => {
+    const { lastFrame } = render(
+      <LoadingIndicator
+        streamingState={StreamingState.Connecting}
+        elapsedTime={3}
+        currentLoadingPhrase="连接中…"
+      />,
+    );
+    const frame = lastFrame() ?? "";
+    // Connecting 态不等于 Idle，不应 return null
+    expect(frame).not.toBe("");
+    // 应包含文案
+    expect(frame).toContain("连接中…");
+    // 应包含 spinner 字符（⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ 之一）
+    const hasSpinner = /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(frame);
+    expect(hasSpinner).toBe(true);
+  });
+
+  test("Connecting 态：显示慢响应提示", () => {
+    const { lastFrame } = render(
+      <LoadingIndicator
+        streamingState={StreamingState.Connecting}
+        elapsedTime={20}
+        currentLoadingPhrase="连接中…"
+        slowHint="仍在等待响应…"
+      />,
+    );
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("仍在等待响应…");
+  });
+
+  test("Connecting 态 + 工具执行超阈值：显示工具计时", () => {
+    const { lastFrame } = render(
+      <LoadingIndicator
+        streamingState={StreamingState.Responding}
+        elapsedTime={10}
+        toolName="bash"
+        toolElapsedTime={8}
+      />,
+    );
+    const frame = stripAnsi(lastFrame() ?? "");
+    // 8s ≥ 5s 阈值，应显示「已执行 8s」
+    expect(frame).toContain("已执行 8s");
+  });
+
+  test("Connecting 态 + 工具执行未达阈值：不显示工具计时", () => {
+    const { lastFrame } = render(
+      <LoadingIndicator
+        streamingState={StreamingState.Responding}
+        elapsedTime={3}
+        toolName="bash"
+        toolElapsedTime={3}
+      />,
+    );
+    const frame = stripAnsi(lastFrame() ?? "");
+    // 3s < 5s 阈值，不应显示工具计时
+    expect(frame).not.toContain("已执行");
+  });
 });
 
 describe("D4-2 — CopyModeWarning 渲染快照", () => {

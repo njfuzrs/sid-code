@@ -77,6 +77,10 @@ export async function completeAgentTask(taskId: string, result: AgentTaskResult)
   const task = getTask(taskId) as LocalAgentTaskState | undefined;
   if (!task) return;
 
+  // 终态保护：若任务已被 kill（killed 终态），不覆盖成 completed、不重复发通知。
+  // 与 failAgentTask 对称，防 abort 后子代理碰巧返回成功结果反把 killed 改写。
+  if (isTerminalStatus(task.status)) return;
+
   updateTask<LocalAgentTaskState>(taskId, (t) => ({
     ...t,
     status: "completed",
@@ -105,6 +109,12 @@ export async function failAgentTask(taskId: string, error: string): Promise<void
   const task = getTask(taskId) as LocalAgentTaskState | undefined;
   if (!task) return;
 
+  // 终态保护：若任务已是 killed/completed/failed，不覆盖、不重复发通知。
+  // 修复缺口：用户经 task_stop → killAgentTask 主动终止时已设 killed 终态，
+  // 随后后台 execute 因 abort 走 failAgentTask，此前会把 killed 覆盖成 failed
+  // 并误发"执行失败"通知。对标 claude-code：AbortError 走 killed 而非 failed。
+  if (isTerminalStatus(task.status)) return;
+
   updateTask<LocalAgentTaskState>(taskId, (t) => ({
     ...t,
     status: "failed",
@@ -132,6 +142,10 @@ export function killAgentTask(taskId: string): void {
     activeAgentControllers.delete(taskId);
   }
 
+  const task = getTask(taskId) as LocalAgentTaskState | undefined;
+  // 已终态：仅 abort（上面已做），不重复改状态、不重复发通知（幂等）。
+  if (!task || isTerminalStatus(task.status)) return;
+
   updateTask<LocalAgentTaskState>(taskId, (t) => {
     if (isTerminalStatus(t.status)) return t;
     return {
@@ -141,6 +155,22 @@ export function killAgentTask(taskId: string): void {
       notified: true,
     };
   });
+
+  // 补发 killed 通知，与 complete/fail 对称。
+  // 修复缺口：killAgentTask 此前设 notified=true 却从不入队通知，
+  // 导致被 kill 的任务被 evictTerminalTasks 静默驱逐、用户既看不到面板条目
+  // 也收不到任何通知，任务无声消失。落盘输出 fire-and-forget flush（kill 是
+  // 同步语义，task_stop 不 await；通知 enqueue 本身同步，不依赖 flush）。
+  void flushTaskOutput(taskId).catch(() => {});
+  enqueuePendingNotification(
+    formatNotification({
+      taskId,
+      toolUseId: task.toolUseId,
+      outputFile: task.outputFile,
+      status: "killed",
+      summary: `Agent "${task.description}" 已被终止`,
+    }),
+  );
 }
 
 /** 获取 Agent 任务的 AbortSignal */
