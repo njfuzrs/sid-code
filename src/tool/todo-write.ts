@@ -263,6 +263,17 @@ print("Hello World")
   }
 
   /**
+   * 重置内部清单状态（/clear 时调用）。
+   * 仅清 UI 层 todos 不够：本工具内部的 currentTodos 是模块级私有状态，
+   * /clear 后若不重置，下次只看 TodoPanel 不提交新 todo 会看到旧清单"幽灵"。
+   * writeVersion 单调递增、不归零——它是 queryLoop 回注判定的全局时序基准，
+   * 归零会让清空后的首次 todo_write 被误判为"清单没更新过"。
+   */
+  reset(): void {
+    this.currentTodos = [];
+  }
+
+  /**
    * 获取 todo_write 成功调用次数（单调递增）。
    * P0-2：queryLoop 据此判断"距上次更新清单多少轮"，决定是否回注 todo system-reminder。
    */

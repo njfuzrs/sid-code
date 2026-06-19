@@ -225,6 +225,33 @@ describe("messagesToHistoryItemsWithMap - assistant 消息", () => {
     }
   });
 
+  // P2-1 回归守卫：多工具并行执行时（tool_start 时刻 ctxMgr 已含 assistant+tool_use、
+  // 尚无 tool_result），两个工具都必须渲染成 Executing 占位行 —— 这正是「逐个 executing
+  // 中间态」可见的数据基础。曾被误判为「pending 工具不进消息流、看不到哪个在跑」，
+  // 实则 messagesToHistoryItems 的 leftover-pending flush 已把它们输出为 executing group。
+  test("P2-1：多工具并行 pending → 全部渲染为 Executing 中间态（不卡 toolName 单值/spinner）", () => {
+    const msgs: Message[] = [
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "并行读取两个文件" },
+          { type: "tool_use", id: "p1", name: "Read", input: { file_path: "a.ts" } },
+          { type: "tool_use", id: "p2", name: "Bash", input: { command: "ls" } },
+        ],
+      },
+    ];
+    const items = messagesToHistoryItems(msgs);
+    // assistant 文本 + 一个含两条 executing 工具的 tool_group
+    expect(items).toHaveLength(2);
+    expect(items[0].type).toBe("assistant");
+    expect(items[1].type).toBe("tool_group");
+    if (items[1].type === "tool_group") {
+      expect(items[1].tools).toHaveLength(2);
+      expect(items[1].tools.every(t => t.status === ToolCallStatus.Executing)).toBe(true);
+      expect(items[1].tools.map(t => t.name)).toEqual(["Read", "Bash"]);
+    }
+  });
+
   test("文本 → tool_use → 文本（无 result）→ 产出 3 个 HistoryItem", () => {
     const msgs: Message[] = [
       {

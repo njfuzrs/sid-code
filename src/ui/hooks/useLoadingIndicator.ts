@@ -170,6 +170,9 @@ export function useLoadingIndicator({
       // - 工具结束进入下一步等待：上一步/工具的耗时不该算进新一轮首字等待，
       //   否则长工具结束瞬间 silenceSec 仍是大值 → 误报慢。
       setSilenceSec(0);
+      // P2-2：换工具/工具结束也重选 spinner 动词。否则工具结束回到无工具等待期时
+      // 会沿用上一个动词（仅计时归零、动词没换），观感不连贯。
+      setCurrentPhrase(prev => pickSpinnerVerb(prev));
       prevToolRef.current = toolName ?? null;
     }
     if (hasTool) {

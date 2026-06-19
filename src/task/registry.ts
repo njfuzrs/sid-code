@@ -8,7 +8,7 @@ import {
   isTerminalStatus,
   isAgentTask,
 } from "./types.ts";
-import { getTaskOutputTail } from "./disk-output.ts";
+import { getTaskOutputTail, evictTaskOutput } from "./disk-output.ts";
 
 /** 全局任务存储 */
 const tasks = new Map<string, TaskState>();
@@ -78,6 +78,7 @@ export function evictTerminalTasks(): void {
   let evicted = false;
   for (const [id, task] of tasks) {
     if (isTerminalStatus(task.status) && task.notified) {
+      evictTaskOutput(id);   // 连带清磁盘 .output 文件 + 内存 outputs 条目，避免孤儿泄露
       tasks.delete(id);
       evicted = true;
     }

@@ -399,6 +399,18 @@ export class App {
   }
 
   /**
+   * /clear 时重置 TodoWrite 工具的内部清单状态。
+   * UI 层 todos 由 getConversationClearedPatch 清空，但工具内部 currentTodos 是
+   * 模块级私有状态、不随 ctxMgr.clear() 重置——不清会导致 /clear 后 TodoPanel 残留旧清单"幽灵"。
+   */
+  private resetTodoTool(): void {
+    const todoTool = this.toolRegistry.get("todo_write") as
+      | import("./tool/todo-write.ts").TodoWriteTool
+      | undefined;
+    todoTool?.reset?.();
+  }
+
+  /**
    * 加载命令列表（补全/帮助显示用）。
    * 新体系优先：从 UnifiedCommandRegistry.getCommands 取（含 bundled skills、plugin 命令）；
    * 无新注册表时回退旧 Registry.all()。
@@ -458,6 +470,7 @@ export class App {
         clearPromptCache();
         this.quotaManager?.resetAlertLevel();
         this.fallback.reset();
+        this.resetTodoTool();
         resetSyncState();
         updateState(getConversationClearedPatch());
         break;
@@ -2036,6 +2049,25 @@ export class App {
       updateState({ statusMessage: joined });
     }
 
+    // P1-3：把限流状态接到状态栏。rate-limit 模块从 API 响应头实时提取真实配额
+    // （anthropic.ts:158 updateRateLimitStatus），此前写了从不显示 → 真正限流时用户处于盲区。
+    // 每轮结束时读取最新状态：warning/exceeded 用 sticky 状态消息显示，回到 ok 则清除。
+    const syncRateLimitStatus = async (): Promise<void> => {
+      try {
+        const { getCurrentRateLimitStatus, formatRateLimitWarning } = await import("./api/rate-limit.ts");
+        const status = getCurrentRateLimitStatus();
+        const warning = formatRateLimitWarning(status);
+        if (warning) {
+          // 用专属前缀字形与 transient 重试提示区分；sticky（不超时），配额回落到 ok 才清。
+          addStatusMessage("rate_limit", `⚠️ ${warning}`);
+        } else {
+          removeStatusMessage("rate_limit");
+        }
+      } catch {
+        /* 限流状态读取失败不影响主流程 */
+      }
+    };
+
     // HistoryItem 同步：追踪上次同步的 ctxMgr 消息数
     const { messagesToDisplayItems } = await import("./ui/App.tsx");
     const { messagesToHistoryItems } = await import("./ui/history-adapter.ts");
@@ -2391,6 +2423,8 @@ export class App {
 
       // 本轮结束 → 标记空闲并冲刷 Cron 忙时积压的提示词
       this.busy = false;
+      // P1-3：刷新限流状态到状态栏（warning/exceeded 显示，ok 清除）。
+      void syncRateLimitStatus();
       void this.flushScheduledPrompts();
     };
 
@@ -2441,6 +2475,9 @@ export class App {
             isLoading: false,
             isStreaming: false,
             streamingText: "",
+            // P0-2：ESC 取消是用户最高频路径，此前漏清 streamingThinking →
+            // 推理模型思考流式中按 ESC，思考残留动态区，下一轮与新思考同屏混显（范式一+二）。
+            streamingThinking: "",
             streamingLine: "",
             toolName: null,
             toolInput: null,
@@ -2524,8 +2561,14 @@ export class App {
           customCommands: this.getCustomCommandsSummary(),
           confirmShellCommands: async (commands) => {
             return new Promise<boolean>((resolve) => {
+              // 与 permissionRequest / planApprovalRequest 对齐：resolve 前先清 state，
+              // 否则 DialogManager 按键只调 resolve、确认框永远残留在屏幕上（范式一）。
+              const wrappedResolve = (ok: boolean) => {
+                updateState({ shellConfirmRequest: null });
+                resolve(ok);
+              };
               updateState({
-                shellConfirmRequest: { commands, resolve },
+                shellConfirmRequest: { commands, resolve: wrappedResolve },
               });
             });
           },
@@ -2610,6 +2653,7 @@ export class App {
             clearPromptCache();
             this.quotaManager?.resetAlertLevel();
             this.fallback.reset();
+            this.resetTodoTool();
             lastSyncedCount = 0;
             historyIdCounter = 0;
             activeStatusMessages.clear();

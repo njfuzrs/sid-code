@@ -3,7 +3,7 @@
  * 使用写入队列 + 单线程 drain 循环，避免内存膨胀
  */
 
-import { appendFile, mkdir, stat, open } from "fs/promises";
+import { appendFile, mkdir, stat, open, unlink } from "fs/promises";
 import { join } from "path";
 import { sidPaths } from "../config/paths.ts";
 
@@ -134,7 +134,15 @@ export async function getTaskOutputTail(
   }
 }
 
-/** 清理输出引用（驱逐时调用，不删除磁盘文件） */
+/** 清理输出引用（驱逐时调用）。
+ *  除删除内存 Map 条目外，同时删除磁盘 `.output` 文件——否则 `~/.sid-code/tasks/`
+ *  下的输出文件永不清理，长会话堆积到 GB 级；且同一 taskId 被复用时新实例会
+ *  append 到磁盘残留的旧文件、导致输出内容错乱。删除文件是 fire-and-forget，
+ *  失败（文件不存在/权限）忽略，不阻塞驱逐主流程。 */
 export function evictTaskOutput(taskId: string): void {
+  const output = outputs.get(taskId);
   outputs.delete(taskId);
+  if (output) {
+    void unlink(output.filePath).catch(() => { /* 文件可能不存在或已被删，忽略 */ });
+  }
 }
