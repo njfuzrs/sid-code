@@ -9,7 +9,10 @@ import type { ContentBlock, Usage } from "../llm/types.ts";
 import type { ProviderRegistry } from "../llm/registry.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
 import { validateToolInput } from "../tool/input-validator.ts";
+import type { LegacyTool } from "../tool/types.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
+import { FileReadTracker } from "../tool/file-read-tracker.ts";
+import { createStatefulTools, STATEFUL_TOOL_NAMES } from "../tool/stateful-tools.ts";
 import { getLogger } from "../debug/logger.ts";
 import type { HookSystem } from "../hook/system.ts";
 import { LoopDetector } from "./loop-detection.ts";
@@ -614,8 +617,7 @@ export class SubAgent {
         builtInType: task.type,
         isAsync: task._isAsync,
       });
-      const tools = new ToolRegistry();
-      for (const t of filteredTools) tools.register(t);
+      const tools = this.buildIsolatedToolRegistry(filteredTools);
       const maxTurns = task.maxTurns ?? 10;
       const loopDetector = new LoopDetector();
 
@@ -777,7 +779,7 @@ export class SubAgent {
       });
 
       const tools = task.allowedTools.length > 0
-        ? this.toolRegistry.filter(task.allowedTools)
+        ? this.buildIsolatedToolRegistry(this.toolRegistry.filter(task.allowedTools).all())
         : new ToolRegistry();
       const maxTurns = task.maxTurns ?? 10;
       const loopDetector = new LoopDetector();
@@ -862,6 +864,34 @@ export class SubAgent {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /**
+   * 为进程内子代理组装隔离的工具注册表（缺口 1 修复）。
+   *
+   * 关键：read/edit/read_many 持有 FileReadTracker 引用，是「先读后写」校验的状态载体。
+   * 进程内子代理若直接复用主代理的工具实例，会共享同一 tracker——子代理读文件后
+   * 主代理 tracker 也被 markAsRead，造成缓存污染、绕过先读后写护栏、mtime 串扰
+   * （详见 docs/bugfixes/todo/子代理委托机制 §3.1）。
+   *
+   * 这里为子代理建**独立 tracker**，用工厂重建这三个有状态工具；其余无状态工具
+   * （grep/glob/ls/bash/web_* 等）复用传入实例，避免重复构造开销。
+   *
+   * 对标 claude-code：普通子代理 readFileState 全新空初始化（我们无 fork 模式，
+   * 故无需克隆父级，比 cc 更简单）。spawn 路径靠进程隔离天然解决，不经过此方法。
+   */
+  private buildIsolatedToolRegistry(filteredTools: LegacyTool[]): ToolRegistry {
+    const subTracker = new FileReadTracker();
+    const rebuilt = new Map<string, LegacyTool>();
+    for (const t of createStatefulTools(subTracker)) rebuilt.set(t.name(), t);
+
+    const tools = new ToolRegistry();
+    for (const t of filteredTools) {
+      // 有状态工具用子代理独立 tracker 重建；无状态工具直接复用（安全）
+      const replacement = STATEFUL_TOOL_NAMES.has(t.name()) ? rebuilt.get(t.name()) : undefined;
+      tools.register(replacement ?? t);
+    }
+    return tools;
   }
 
   /** 从所有 assistant 消息中回溯提取最终文本输出

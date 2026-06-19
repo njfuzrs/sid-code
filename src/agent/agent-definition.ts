@@ -52,7 +52,8 @@ export const BUILTIN_AGENTS: Record<string, AgentDefinition> = {
 - 使用 grep、glob、read 工具搜索代码
 - 只返回文件路径、行号和关键代码片段
 - 保持输出简洁，不要冗长解释
-- 完成搜索后，以 "## 发现" 开头输出最终报告，包含：关键文件列表、核心发现、建议的下一步行动`,
+- 完成搜索后，以 "## 发现" 开头输出最终报告，包含：关键文件列表、核心发现、建议的下一步行动
+- 标注置信度：对每个关键发现，简短标注确定性（如「已读码确认」「推测，未核实」「未找到，可能不存在」），并显式列出你没能确认的点。不要把推测当事实陈述，让主代理能判断哪些结论需要复核`,
     tools: ["read", "grep", "glob", "ls", "read_many", "task_list"],
     readOnly: true,
     source: "built-in",
@@ -66,7 +67,8 @@ export const BUILTIN_AGENTS: Record<string, AgentDefinition> = {
 规则：
 - 专注于完成指定任务
 - 完成后以 "## 结果" 开头简洁地报告完成状态和关键输出
-- 如果遇到问题，以 "## 问题" 开头说明原因和可能的解决方案`,
+- 如果遇到问题，以 "## 问题" 开头说明原因和可能的解决方案
+- 标注置信度：对关键结论标注确定性（如「已验证」「推测，未确认」），并显式列出你没能确认或留有疑问的点，让主代理能判断哪些结果需要复核。不要把未验证的推测当作已完成的事实陈述`,
     tools: ["read", "write", "edit", "bash", "grep", "glob", "ls", "read_many", "web_fetch", "web_search", "task_list"],
     source: "built-in",
   },

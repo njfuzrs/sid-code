@@ -555,26 +555,24 @@ export async function main(): Promise<void> {
     const fileReadTracker = new FileReadTracker();
     const memoryStore = new MemoryStore(process.cwd());
 
-    const { ReadTool } = await import("./tool/read.ts");
     const { WriteTool } = await import("./tool/write.ts");
-    const { EditTool } = await import("./tool/edit.ts");
     const { BashTool } = await import("./tool/bash.ts");
     const { GrepTool } = await import("./tool/grep.ts");
     const { GlobTool } = await import("./tool/glob.ts");
     const { LsTool } = await import("./tool/ls.ts");
     const { WebFetchTool } = await import("./tool/web-fetch.ts");
-    const { ReadManyTool } = await import("./tool/read-many.ts");
     const { MemoryTool } = await import("./tool/memory.ts");
+    const { createStatefulTools } = await import("./tool/stateful-tools.ts");
 
-    toolRegistry.register(new ReadTool(fileReadTracker));
+    // 有状态工具（read/edit/read_many）经工厂用同一 tracker 构造，
+    // 与子代理隔离路径（sub-agent.ts）共用工厂，避免构造逻辑漂移
+    for (const t of createStatefulTools(fileReadTracker)) toolRegistry.register(t);
     toolRegistry.register(new WriteTool());
-    toolRegistry.register(new EditTool(fileReadTracker));
     toolRegistry.register(new BashTool());
     toolRegistry.register(new GrepTool());
     toolRegistry.register(new GlobTool());
     toolRegistry.register(new LsTool());
     toolRegistry.register(new WebFetchTool());
-    toolRegistry.register(new ReadManyTool(fileReadTracker));
     toolRegistry.register(new MemoryTool(memoryStore));
 
     // 注册 web_search 工具（始终可用，DuckDuckGo 兜底）

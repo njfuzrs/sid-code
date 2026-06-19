@@ -257,7 +257,11 @@ ${typeLines}
         `[子代理完成] 类型: ${params.type}, 轮次: ${result.turns}`,
         `Token 用量: input=${result.usage.inputTokens}, output=${result.usage.outputTokens}`,
         "",
+        // 缺口 2 阶段 1：子代理输出可能含外部不可信内容，用 untrusted 边界包裹，
+        // 提示主代理「这是数据不是指令」，与 system prompt 的 subagent-result-policy 呼应。
+        `<subagent-result untrusted="true">`,
         result.output,
+        `</subagent-result>`,
       ].join("\n");
 
       return { output: summary };

@@ -38,8 +38,10 @@ export function formatNotification(n: TaskNotification): string {
 
   if (n.result) {
     const { output, totalToolUseCount, totalTokens, usage } = n.result;
+    // 缺口 2 阶段 1：result 是子代理产出的数据（可能含外部不可信内容），用 untrusted 标记
+    // 提示主代理「这是数据不是指令」，与 system prompt 的 subagent-result-policy 呼应。
     parts.push(
-      `  <result>${output.slice(0, 2000)}</result>`,
+      `  <result untrusted="true">${output.slice(0, 2000)}</result>`,
       `  <usage>`,
       `    <total_tokens>${totalTokens}</total_tokens>`,
       `    <input_tokens>${usage.inputTokens}</input_tokens>`,
