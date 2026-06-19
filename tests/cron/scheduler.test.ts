@@ -237,3 +237,60 @@ describe("调度器触发", () => {
     s2.stop();
   });
 });
+
+describe("fireAt 相对延迟唤醒（缺口 A：ScheduleWakeup）", () => {
+  let dir: string;
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("fireAt 已过期则立即触发并自删", () => {
+    dir = mkdtempSync(join(tmpdir(), "sid-cron-"));
+    require("fs").mkdirSync(join(dir, ".sid-code"), { recursive: true });
+    const fired: string[] = [];
+    const scheduler = new Scheduler({
+      onFire: (p) => fired.push(p),
+      isLoading: () => false,
+      sessionId: "s",
+      workspaceDir: dir,
+    });
+    scheduler.addSessionTask({
+      id: "w1",
+      cron: "", // 相对延迟唤醒不用 cron
+      prompt: "wake",
+      createdAt: Date.now(),
+      recurring: false,
+      durable: false,
+      fireAt: Date.now() - 1000, // 已过期
+    });
+    (scheduler as any).check();
+    expect(fired).toContain("wake");
+    // 一次性唤醒触发后自删
+    expect(scheduler.listTasks().find((t) => t.id === "w1")).toBeUndefined();
+  });
+
+  it("fireAt 未到则不触发", () => {
+    dir = mkdtempSync(join(tmpdir(), "sid-cron-"));
+    require("fs").mkdirSync(join(dir, ".sid-code"), { recursive: true });
+    const fired: string[] = [];
+    const scheduler = new Scheduler({
+      onFire: (p) => fired.push(p),
+      isLoading: () => false,
+      sessionId: "s",
+      workspaceDir: dir,
+    });
+    scheduler.addSessionTask({
+      id: "w2",
+      cron: "",
+      prompt: "later",
+      createdAt: Date.now(),
+      recurring: false,
+      durable: false,
+      fireAt: Date.now() + 60 * 60 * 1000, // 1 小时后
+    });
+    (scheduler as any).check();
+    expect(fired.length).toBe(0);
+    // 任务仍在
+    expect(scheduler.listTasks().find((t) => t.id === "w2")).toBeDefined();
+  });
+});

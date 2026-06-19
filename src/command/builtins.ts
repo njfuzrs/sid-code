@@ -32,6 +32,7 @@ export class HelpCommand implements Command {
       "  /trace [id]      - 排查会话:轨迹嚼碎成结构化摘要（--list|--full,默认当前会话）",
       "  /compact         - 压缩对话历史",
       "  /btw <问题>      - 旁路提问：基于当前上下文快速回答，不打断主对话",
+      "  /loop [间隔] <任务> - 定时重复任务：/loop 5m <任务>(固定节奏) 或 /loop <任务>(自适应轮询)",
       "  /clear           - 清空对话",
       "  /rewind [n]      - 回退最近 n 轮对话（默认 1 轮）",
       "  /stats           - 显示会话统计",

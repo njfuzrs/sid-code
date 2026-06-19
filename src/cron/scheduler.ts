@@ -122,11 +122,16 @@ export class Scheduler {
       // 计算下次触发时间
       let next = this.nextFireAt.get(task.id);
       if (next === undefined) {
-        const base = task.lastFiredAt ?? task.createdAt;
-        const computed = task.recurring
-          ? jitteredNextFireMs(task.cron, base, task.id)
-          : computeNextCronRun(task.cron, task.createdAt);
-        next = computed ?? Infinity;
+        if (task.fireAt !== undefined) {
+          // 相对延迟一次性唤醒（ScheduleWakeup）：直接用绝对触发时刻，绕过 cron 解析
+          next = task.fireAt;
+        } else {
+          const base = task.lastFiredAt ?? task.createdAt;
+          const computed = task.recurring
+            ? jitteredNextFireMs(task.cron, base, task.id)
+            : computeNextCronRun(task.cron, task.createdAt);
+          next = computed ?? Infinity;
+        }
         this.nextFireAt.set(task.id, next);
       }
 

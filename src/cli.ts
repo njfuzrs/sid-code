@@ -623,9 +623,11 @@ export async function main(): Promise<void> {
     const { CronCreateTool } = await import("./tool/cron-create.ts");
     const { CronDeleteTool } = await import("./tool/cron-delete.ts");
     const { CronListTool } = await import("./tool/cron-list.ts");
+    const { ScheduleWakeupTool } = await import("./tool/schedule-wakeup.ts");
     toolRegistry.register(new CronCreateTool());
     toolRegistry.register(new CronDeleteTool());
     toolRegistry.register(new CronListTool());
+    toolRegistry.register(new ScheduleWakeupTool());
 
     // 注册 Swarm 多代理协作工具
     const { TeamCreateTool } = await import("./tool/team-create.ts");
