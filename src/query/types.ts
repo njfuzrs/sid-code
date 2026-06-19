@@ -209,6 +209,11 @@ export interface QueryDeps {
    * Step 0：记录一次工具调用（用于 Session Memory 双阈值计数）。可选。
    */
   recordSessionMemoryToolCall?: () => void;
+  /**
+   * 后台记忆提取触发（每轮 end_turn 收尾调用，fire-and-forget）。
+   * 内部判断主代理本轮是否已写入记忆（互斥），未写则跑 forked agent 提取。可选。
+   */
+  extractMemories?: () => Promise<void>;
 }
 
 // ─── QueryEngine 配置 ───

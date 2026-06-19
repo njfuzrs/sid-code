@@ -935,6 +935,9 @@ export async function* queryLoop(
       // Step 0：end_turn 是自然断点——触发 Session Memory 提取（fire-and-forget），
       // 把本轮终态沉淀进笔记，下次压缩可优先用它而非从头 LLM 摘要。
       deps.updateSessionMemory?.().catch(() => { /* 提取失败不阻断收尾 */ });
+      // 后台记忆提取：end_turn 后扫描本轮对话，提取值得长期记住的信息写入 MEMORY.md
+      // （fire-and-forget，内部互斥判断本轮主代理是否已写记忆，未写才跑 forked agent）。
+      deps.extractMemories?.().catch(() => { /* 提取失败不阻断收尾 */ });
       yield { kind: "done", turns: state.turnCount };
       return;
     }

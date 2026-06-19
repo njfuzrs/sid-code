@@ -15,7 +15,7 @@
 import type { Provider } from "../llm/provider.ts";
 import type { Message, ContentBlock, ToolDefinition } from "../llm/types.ts";
 import type { Registry as ToolRegistry } from "../tool/registry.ts";
-import type { PermissionResult } from "../tool/types.ts";
+import type { LegacyTool, PermissionResult } from "../tool/types.ts";
 import { validateToolInput } from "../tool/input-validator.ts";
 import { getLogger } from "../debug/logger.ts";
 
@@ -32,6 +32,19 @@ export interface ForkedAgentContext {
   provider: Provider;
   toolRegistry: ToolRegistry;
   model: string;
+  /**
+   * 注入的有状态工具（read / edit / read_many）——FileReadTracker 隔离用。
+   *
+   * forked agent 默认从 `toolRegistry` 取工具实例，会共享主代理的 FileReadTracker：
+   * forked 读文件 A → 主代理 tracker 被 markAsRead → 主代理 edit A 时 validateForEdit
+   * 误放行，绕过「先读后写」护栏（与子代理委托机制 §3 缺口 1 同源）。
+   *
+   * 调用方应传入 `createStatefulTools(new FileReadTracker())` 构造的独立工具实例，
+   * 让 forked agent 用自己的 tracker，不污染主代理缓存。对标 cc `cloneFileStateCache`。
+   * 工具执行时优先查这里，找不到再 fallback 到 toolRegistry（无 tracker 状态的工具）。
+   * 未提供时退回旧行为（共享主注册表实例），保持向后兼容。
+   */
+  statefulTools?: LegacyTool[];
 }
 
 /** Forked Agent 选项 */
@@ -154,6 +167,14 @@ export async function runForkedAgent(
 
   const toolDefs = buildToolDefinitions(mainContext.toolRegistry);
 
+  // FileReadTracker 隔离：注入的有状态工具按名建索引，工具执行时优先查这里，
+  // 找不到再 fallback 到主注册表（grep/glob/ls/bash 等无 tracker 状态，复用无害）。
+  // 未注入时此 Map 为空，所有工具都走 fallback——退回共享主注册表的旧行为。
+  const statefulMap = new Map<string, LegacyTool>();
+  for (const t of mainContext.statefulTools ?? []) {
+    statefulMap.set(t.name(), t);
+  }
+
   try {
     while (turns < options.maxTurns) {
       if (signal.aborted) break;
@@ -198,7 +219,7 @@ export async function runForkedAgent(
           });
           continue;
         }
-        const tool = mainContext.toolRegistry.get(tu.name);
+        const tool = statefulMap.get(tu.name) ?? mainContext.toolRegistry.get(tu.name);
         if (!tool) {
           results.push({
             type: "tool_result",

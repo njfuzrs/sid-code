@@ -167,6 +167,8 @@ export class App {
    * autoCompact 优先用它做摘要。doInit 中接线；未启用时为 null，autoCompact 回退 LLM 摘要。
    */
   private sessionMemory: import("./session-memory/session-memory.ts").SessionMemoryHandle | null = null;
+  /** 后台记忆提取句柄（每轮 end_turn 后 fire-and-forget 提取记忆，会话关闭前 drain）。 */
+  private extractMemories: import("./memory/extract/extractor.ts").ExtractMemoriesHandle | null = null;
 
   constructor(opts: AppOptions) {
     this.config = opts.config;
@@ -683,6 +685,8 @@ export class App {
       const { initSessionMemory } = await import("./session-memory/session-memory.ts");
       const { createSessionMemoryPermissions } = await import("./memory/extract/permissions.ts");
       const { getSessionMemoryPath } = await import("./memory/paths.ts");
+      const { createStatefulTools } = await import("./tool/stateful-tools.ts");
+      const { FileReadTracker } = await import("./tool/file-read-tracker.ts");
       const sessionMemoryFile = getSessionMemoryPath(process.cwd());
       this.sessionMemory = initSessionMemory({
         getMainContext: () => ({
@@ -691,6 +695,10 @@ export class App {
           provider: this.provider,
           toolRegistry: this.toolRegistry,
           model: this.config.model,
+          // FileReadTracker 隔离（缺口 A）：每次提取用独立 tracker 重建有状态工具，
+          // 不共享主代理 tracker——避免 forked agent 读 .session_memory.md 污染主代理
+          // 缓存新鲜度、绕过「先读后写」护栏。对标 cc cloneFileStateCache。
+          statefulTools: createStatefulTools(new FileReadTracker()),
         }),
         canUseTool: createSessionMemoryPermissions(sessionMemoryFile),
         cwd: process.cwd(),
@@ -701,6 +709,50 @@ export class App {
     } catch (e) {
       this.sessionMemory = null;
       log.warn("APP", `Session Memory 接线失败（不阻断，autoCompact 回退 LLM 摘要）: ${(e as Error)?.message}`);
+    }
+
+    // 接线后台记忆提取子系统：每轮 end_turn 后 fire-and-forget 跑 forked agent，
+    // 从对话中提取值得长期记住的信息写入 MEMORY.md（互斥：主代理本轮已写记忆则跳过）。
+    //   - getMainContext 提供 ForkedAgentContext（共享主对话历史前缀，cache 友好）
+    //   - statefulTools 注入独立 FileReadTracker（缺口 A 隔离，不污染主代理缓存）
+    //   - canUseTool 把提取代理权限收窄到只读 + 仅能写 memoryDir
+    //   - appendSystemMessage 把"已保存 N 条记忆"回注主上下文，提示模型
+    // 失败不阻断启动：extractMemories 保持 null，主循环 extractMemories?.() 自动跳过。
+    try {
+      const { initExtractMemories } = await import("./memory/extract/extractor.ts");
+      const { createExtractPermissions } = await import("./memory/extract/permissions.ts");
+      const { ensureAutoMemPath } = await import("./memory/paths.ts");
+      const { createStatefulTools } = await import("./tool/stateful-tools.ts");
+      const { FileReadTracker } = await import("./tool/file-read-tracker.ts");
+      const memoryDir = ensureAutoMemPath(process.cwd());
+      this.extractMemories = initExtractMemories({
+        getMainContext: () => ({
+          systemPrompt: this.ctxMgr.getSystemPrompt(),
+          messages: this.ctxMgr.getMessages(),
+          provider: this.provider,
+          toolRegistry: this.toolRegistry,
+          model: this.config.model,
+          // FileReadTracker 隔离（缺口 A）：提取代理读文件用独立 tracker，
+          // 不污染主代理「先读后写」护栏。
+          statefulTools: createStatefulTools(new FileReadTracker()),
+        }),
+        memoryDir,
+        canUseTool: createExtractPermissions(memoryDir),
+        // 提取保存记忆后，把摘要回注主上下文（作为 system-reminder），让模型知晓已记忆。
+        appendSystemMessage: (msg) => {
+          try { this.ctxMgr.addMessage(msg as import("./llm/types.ts").Message); } catch { /* 回注失败不阻断 */ }
+        },
+      });
+      this.queryEngine.setExtractMemories(this.extractMemories);
+      // 会话关闭前 drain 进行中的提取，避免 fire-and-forget 的写入被强制退出截断。
+      try {
+        const { registerCleanup } = await import("./utils/graceful-shutdown.ts");
+        registerCleanup(() => this.extractMemories?.drainPending(5_000) ?? Promise.resolve());
+      } catch { /* drain 注册失败不阻断启动 */ }
+      log.info("APP", `后台记忆提取子系统已接线: ${memoryDir}`);
+    } catch (e) {
+      this.extractMemories = null;
+      log.warn("APP", `后台记忆提取接线失败（不阻断）: ${(e as Error)?.message}`);
     }
 
     // 启动 CLAUDE.md 文件变化监听（变更时重新加载规则 + 重建系统提示词）

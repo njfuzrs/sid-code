@@ -11,8 +11,10 @@
 import type { UnifiedCommand } from "../types.ts";
 import compact from "./compact/index.ts";
 import model from "./model/index.ts";
+import btw from "./btw/index.ts";
 
 export const BUILTIN_COMMANDS: UnifiedCommand[] = [
   compact,
   model,
+  btw,
 ];

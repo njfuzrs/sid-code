@@ -121,6 +121,109 @@ describe("runForkedAgent", () => {
     });
     expect(result.turns).toBe(3);
   });
+
+  test("缺口 A：注入的 statefulTools 优先于主注册表（FileReadTracker 隔离）", async () => {
+    // 一轮工具调用 read，随后自然结束
+    const provider = mockProvider([
+      [
+        { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "t1", name: "read" } },
+        { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"file_path":"a"}' } },
+        { type: "content_block_stop", index: 0 },
+        { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { outputTokens: 1 } },
+      ],
+      [
+        { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+        { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "ok" } },
+        { type: "content_block_stop", index: 0 },
+        { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { outputTokens: 1 } },
+      ],
+    ]);
+
+    // 主注册表里的 read 工具：被调用即标记（不该被命中）
+    let mainCalled = false;
+    class MainRead {
+      name() { return "read"; }
+      description() { return "main"; }
+      inputSchema() { return { type: "object", properties: { file_path: { type: "string" } } }; }
+      async execute() { mainCalled = true; return { output: "main-read" }; }
+      readOnly() { return true; }
+    }
+    // 注入的独立 read 工具：被调用即标记（应被命中）
+    let injectedCalled = false;
+    class InjectedRead {
+      name() { return "read"; }
+      description() { return "injected"; }
+      inputSchema() { return { type: "object", properties: { file_path: { type: "string" } } }; }
+      async execute() { injectedCalled = true; return { output: "injected-read" }; }
+      readOnly() { return true; }
+    }
+
+    const registry = new ToolRegistry();
+    registry.register(new MainRead() as any);
+    const ctx: ForkedAgentContext = {
+      systemPrompt: "system",
+      messages: [{ role: "user", content: [{ type: "text", text: "原始对话" }] }],
+      provider,
+      toolRegistry: registry,
+      model: "mock-model",
+      statefulTools: [new InjectedRead() as any],
+    };
+
+    await runForkedAgent(ctx, {
+      promptMessages: [{ role: "user", content: [{ type: "text", text: "读文件" }] }],
+      canUseTool: () => ({ behavior: "allow" }),
+      maxTurns: 5,
+      querySource: "test",
+    });
+
+    expect(injectedCalled).toBe(true);   // 命中注入的独立工具
+    expect(mainCalled).toBe(false);      // 主注册表实例未被污染调用
+  });
+
+  test("缺口 A：未注入 statefulTools 时回退主注册表（向后兼容）", async () => {
+    const provider = mockProvider([
+      [
+        { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "t1", name: "read" } },
+        { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"file_path":"a"}' } },
+        { type: "content_block_stop", index: 0 },
+        { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { outputTokens: 1 } },
+      ],
+      [
+        { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+        { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "ok" } },
+        { type: "content_block_stop", index: 0 },
+        { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { outputTokens: 1 } },
+      ],
+    ]);
+
+    let mainCalled = false;
+    class MainRead {
+      name() { return "read"; }
+      description() { return "main"; }
+      inputSchema() { return { type: "object", properties: { file_path: { type: "string" } } }; }
+      async execute() { mainCalled = true; return { output: "main-read" }; }
+      readOnly() { return true; }
+    }
+    const registry = new ToolRegistry();
+    registry.register(new MainRead() as any);
+    const ctx: ForkedAgentContext = {
+      systemPrompt: "system",
+      messages: [{ role: "user", content: [{ type: "text", text: "原始对话" }] }],
+      provider,
+      toolRegistry: registry,
+      model: "mock-model",
+      // 不传 statefulTools
+    };
+
+    await runForkedAgent(ctx, {
+      promptMessages: [{ role: "user", content: [{ type: "text", text: "读文件" }] }],
+      canUseTool: () => ({ behavior: "allow" }),
+      maxTurns: 5,
+      querySource: "test",
+    });
+
+    expect(mainCalled).toBe(true);  // 回退到主注册表
+  });
 });
 
 describe("createExtractPermissions", () => {

@@ -82,6 +82,11 @@ export class QueryEngine {
    * queryLoop 每轮收尾触发提取（updateSessionMemory）+ 工具调用计数（recordToolCall）。
    */
   private sessionMemory: import("../session-memory/session-memory.ts").SessionMemoryHandle | null = null;
+  /**
+   * 后台记忆提取句柄（由 App 在 doInit 接线后注入）。
+   * queryLoop 每轮 end_turn 收尾触发提取（extractMemories）。
+   */
+  private extractMemories: import("../memory/extract/extractor.ts").ExtractMemoriesHandle | null = null;
 
   constructor(deps: QueryEngineDeps) {
     this.deps = deps;
@@ -97,6 +102,13 @@ export class QueryEngine {
     handle: import("../session-memory/session-memory.ts").SessionMemoryHandle | null,
   ): void {
     this.sessionMemory = handle;
+  }
+
+  /** 注入后台记忆提取句柄（App 接线后调用，可传 null 关闭）。 */
+  setExtractMemories(
+    handle: import("../memory/extract/extractor.ts").ExtractMemoriesHandle | null,
+  ): void {
+    this.extractMemories = handle;
   }
 
   /** 更新 TokenMeter（遥测启用后重建） */
@@ -215,6 +227,9 @@ export class QueryEngine {
         : undefined,
       recordSessionMemoryToolCall: this.sessionMemory
         ? () => this.sessionMemory!.recordToolCall()
+        : undefined,
+      extractMemories: this.extractMemories
+        ? () => this.extractMemories!.executeExtract()
         : undefined,
     };
 
