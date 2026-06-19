@@ -86,11 +86,17 @@ export interface ChildToolUseMessage {
   input: Record<string, unknown>;
 }
 
-/** 进度报告（可选，用于长时间任务） */
+/** 进度报告（用于长时间任务的实时进度面板） */
 export interface ChildProgressMessage {
   type: "progress";
   turn: number;
   max_turns: number;
+  /** 截至本轮的累计工具调用次数 */
+  toolUseCount?: number;
+  /** 截至本轮的累计真实 token 数（input + output） */
+  tokenCount?: number;
+  /** 本轮最后一次工具调用的简短活动文案（如「读取 src/foo.ts」） */
+  lastActivity?: string;
 }
 
 /** 子代理执行结果 */

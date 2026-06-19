@@ -250,7 +250,7 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
         name: b.type === "tool_use" ? b.name : "",
         input: b.type === "tool_use" ? (b.input as Record<string, unknown>) : {},
       }));
-      config.onTurnEnd?.({ turn: turns, textOutput: lastTextOutput, tools: turnToolInfo });
+      config.onTurnEnd?.({ turn: turns, textOutput: lastTextOutput, tools: turnToolInfo, tokenCount: totalUsage.inputTokens + totalUsage.outputTokens, toolUseCount });
 
       continue;
     }
@@ -258,7 +258,7 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
     // max_tokens 续写
     if (response.stopReason === "max_tokens" || response.stopReason === "length") {
       log.info("AGENT_LOOP", `输出达到 token 上限，自动续写 (轮次 ${turns})`);
-      config.onTurnEnd?.({ turn: turns, textOutput: lastTextOutput, tools: [] });
+      config.onTurnEnd?.({ turn: turns, textOutput: lastTextOutput, tools: [], tokenCount: totalUsage.inputTokens + totalUsage.outputTokens, toolUseCount });
       continue;
     }
 

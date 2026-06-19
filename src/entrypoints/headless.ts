@@ -23,6 +23,7 @@ import {
   readLineFromStream,
 } from "../agent/sub-agent-protocol.ts";
 import type { Provider } from "../llm/provider.ts";
+import { describeToolActivity } from "../agent/progress.ts";
 import type {
   ContentBlock,
   StreamEvent,
@@ -175,9 +176,6 @@ async function runAgentLoop(
     while (turns < init.max_turns) {
       turns++;
 
-      // 发送进度（可选）
-      writeChildMsg({ type: "progress", turn: turns, max_turns: init.max_turns });
-
       // 调用 LLM
       const toolDefs = init.tool_defs.length > 0
         ? init.tool_defs.map(d => ({
@@ -214,6 +212,25 @@ async function runAgentLoop(
         role: "assistant",
         content: response.content,
       });
+
+      // 实时进度上报：带真实累计 token / 工具次数 / 最后活动文案，供父进程刷新 TUI 面板。
+      // 必须在 accumulateUsage 之后发，token 才是本轮真实值（非伪造估算）。
+      {
+        const turnToolUses = response.content.filter(
+          (b): b is ContentBlock & { type: "tool_use" } => b.type === "tool_use",
+        );
+        const lastTool = turnToolUses[turnToolUses.length - 1];
+        writeChildMsg({
+          type: "progress",
+          turn: turns,
+          max_turns: init.max_turns,
+          toolUseCount: toolUseCount + turnToolUses.length,
+          tokenCount: totalUsage.inputTokens + totalUsage.outputTokens,
+          lastActivity: lastTool
+            ? describeToolActivity(lastTool.name, lastTool.input)
+            : undefined,
+        });
+      }
 
       // 检查停止原因
       if (

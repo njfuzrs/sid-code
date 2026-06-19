@@ -197,8 +197,15 @@ export interface TaskDisplayInfo {
   agentType?: string;
   command?: string;
   progress?: { toolUseCount: number; tokenCount: number };
+  /** 当前/最近一次活动文案（如「读取 src/foo.ts」），运行中实时展示 */
+  lastActivity?: string;
   /** 周期性进度摘要（M5 opt-in） */
   progressSummary?: string;
+  /** 任务起始时间戳（ms）。运行中由前端本地 tick 实时计算耗时，不再依赖快照。 */
+  startTime: number;
+  /** 任务结束时间戳（ms）。终态后耗时定格到此值，避免回看时持续增长。 */
+  endTime?: number;
+  /** 耗时快照（ms）。终态展示用；运行中前端用 startTime 实时计算覆盖。 */
   durationMs: number;
 }
 

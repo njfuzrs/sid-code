@@ -7,6 +7,23 @@ import type { AgentProgress, ToolActivity } from "../task/types.ts";
 
 const MAX_RECENT_ACTIVITIES = 5;
 
+/**
+ * 把一次工具调用描述成简短的中文活动文案（供进度面板的「当前活动」行展示）。
+ * 抽成共享函数，spawn / 进程内两条路径复用同一套文案规则。
+ */
+export function describeToolActivity(toolName: string, input: unknown): string {
+  const inp = (input ?? {}) as Record<string, unknown>;
+  switch (toolName) {
+    case "read": return `读取 ${inp.file_path ?? ""}`;
+    case "write": return `写入 ${inp.file_path ?? ""}`;
+    case "edit": return `编辑 ${inp.file_path ?? ""}`;
+    case "bash": return `执行 ${String(inp.command ?? "").slice(0, 60)}`;
+    case "grep": return `搜索 "${inp.pattern ?? ""}"`;
+    case "glob": return `查找 ${inp.pattern ?? ""}`;
+    default: return toolName;
+  }
+}
+
 export class ProgressTracker {
   toolUseCount = 0;
   latestInputTokens = 0;
@@ -28,26 +45,13 @@ export class ProgressTracker {
         const activity: ToolActivity = {
           toolName: block.name,
           input: (block.input as Record<string, unknown>) ?? {},
-          activityDescription: this.describeActivity(block.name, block.input),
+          activityDescription: describeToolActivity(block.name, block.input),
         };
         this.recentActivities.push(activity);
         while (this.recentActivities.length > MAX_RECENT_ACTIVITIES) {
           this.recentActivities.shift();
         }
       }
-    }
-  }
-
-  private describeActivity(toolName: string, input: unknown): string {
-    const inp = input as Record<string, unknown>;
-    switch (toolName) {
-      case "read": return `读取 ${inp.file_path ?? ""}`;
-      case "write": return `写入 ${inp.file_path ?? ""}`;
-      case "edit": return `编辑 ${inp.file_path ?? ""}`;
-      case "bash": return `执行 ${String(inp.command ?? "").slice(0, 60)}`;
-      case "grep": return `搜索 "${inp.pattern ?? ""}"`;
-      case "glob": return `查找 ${inp.pattern ?? ""}`;
-      default: return toolName;
     }
   }
 

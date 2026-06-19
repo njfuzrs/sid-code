@@ -83,6 +83,23 @@ export const PROGRESS_FILLED = "▰";
 export const PROGRESS_EMPTY = "▱";
 
 /**
+ * 运行中任务的旋转动画帧（后台任务面板用）。
+ *
+ * 沿用 TODO_IN_PROGRESS 的 ◐ 半填字形族，逐帧旋转四个象限形成「转动」感——
+ * 与静态 ◐ 同构（都是半填圆），靠位置变化表达「活着、在动」，不引入粗细不一的杂字形。
+ * a11y 模式下不取帧、直接用静态 ◐（屏幕阅读器会把逐帧字符变化读成噪声，须完全关动画）。
+ */
+export const TASK_SPINNER_FRAMES = ["◐", "◓", "◑", "◒"];
+
+/**
+ * 任务被用户终止（killed）的标记：⊘ 圆形加斜杠 = 取消/中止。
+ *
+ * 与 ● 完成、✘ 失败 形状各异，靠「字形 + 颜色」双通道区分三种终态——
+ * 此前 killed 复用 ● 仅靠颜色区分,色盲/低对比终端下与 completed 无法分辨(违反双通道原则)。
+ */
+export const TASK_KILLED_MARK = "⊘";
+
+/**
  * 终端窗口标题状态前缀（写入 OSC 0 标题,非屏幕渲染,但同样禁彩色 emoji——
  * emoji 在 tab/title 栏跨终端占位不一,且与单色字形语言冲突。对标 claude-code
  * REPL.tsx 的 TITLE_STATIC_PREFIX / TITLE_ANIMATION_FRAMES）。

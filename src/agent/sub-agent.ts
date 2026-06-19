@@ -18,6 +18,7 @@ import type { HookSystem } from "../hook/system.ts";
 import { LoopDetector } from "./loop-detection.ts";
 import { filterToolsForAgent } from "./tool-filter.ts";
 import { runAgentLoop } from "./agentic-loop.ts";
+import { describeToolActivity } from "./progress.ts";
 import {
   createAgentTask,
   completeAgentTask,
@@ -219,7 +220,7 @@ export class SubAgent {
       // 尝试 spawn 模式（独立进程，避免 V8 OOM）
       if (this.shouldUseSpawn()) {
         try {
-          result = await this.executeSpawned(task, signal);
+          result = await this.executeSpawned(task, signal, taskId);
           log.info("SUBAGENT", `[${task.type}] spawn 模式完成`);
         } catch (err: any) {
           log.warn("SUBAGENT", `spawn 模式失败，回退到进程内模式: ${err.message}`);
@@ -333,7 +334,7 @@ export class SubAgent {
   }
 
   /** Spawn 子代理（标准类型） */
-  private async executeSpawned(task: SubAgentTask, signal?: AbortSignal): Promise<SubAgentResult> {
+  private async executeSpawned(task: SubAgentTask, signal?: AbortSignal, taskId?: string): Promise<SubAgentResult> {
     const basePrompt = getSystemPrompt(task.type);
     const systemPrompt = await enhanceSubAgentPrompt(basePrompt, this.language, process.cwd());
     const toolDefs = this.getToolDefs(task);
@@ -365,7 +366,7 @@ export class SubAgent {
       base_url: baseURL,
     };
 
-    return this.executeSpawnedInternal(initMsg, task.tools ?? this.toolRegistry, signal);
+    return this.executeSpawnedInternal(initMsg, task.tools ?? this.toolRegistry, signal, taskId);
   }
 
   /** Spawn 自定义子代理 */
@@ -409,6 +410,7 @@ export class SubAgent {
     initMsg: ParentInitMessage,
     tools: ToolRegistry,
     signal?: AbortSignal,
+    taskId?: string,
   ): Promise<SubAgentResult> {
     const log = getLogger();
     const startTime = Date.now();
@@ -498,6 +500,18 @@ export class SubAgent {
             }
 
             case "progress":
+              // 实时进度回写：spawn 子进程每轮上报真实 token / 工具次数 / 活动文案，
+              // 写进任务注册表 → 触发 onTaskChanged → TUI 面板刷新。
+              if (taskId && (msg.tokenCount != null || msg.toolUseCount != null)) {
+                updateAgentProgress(taskId, {
+                  toolUseCount: msg.toolUseCount ?? 0,
+                  tokenCount: msg.tokenCount ?? 0,
+                  lastActivity: msg.lastActivity
+                    ? { toolName: "", input: {}, activityDescription: msg.lastActivity }
+                    : undefined,
+                  recentActivities: [],
+                });
+              }
               break;
 
             case "result":
@@ -660,26 +674,26 @@ export class SubAgent {
         },
         onTurnEnd: (info) => {
           lastTextOutput = info.textOutput || lastTextOutput;
-          toolUseCount += info.tools.length;
-          // tokenCount 从 ctxMgr 消息中估算（输入 token 在流式响应中累加，此处保守使用 turn 数 * 4096 作为近似值）
-          // 实际精确值在 runAgentLoop 返回后从 loopResult.totalUsage 获取
-          tokenCount += 4096;
+          // 真实进度直接取 runAgentLoop 累计值（token 来自 totalUsage，非伪造估算）
+          toolUseCount = info.toolUseCount;
+          tokenCount = info.tokenCount;
 
           // 实时写输出到磁盘（支持 task_output 增量读取）
           if (taskId && info.textOutput) {
             appendAgentOutput(taskId, `[轮次 ${info.turn}] ${info.textOutput}\n`);
           }
 
-          // 更新任务进度（供 pollTasks 读取实时状态）
-          if (taskId && info.tools.length > 0) {
-            const lastToolEntry = info.tools[info.tools.length - 1];
+          // 更新任务进度（供 pollTasks / TUI 实时读取）。每轮都更新——
+          // 即便本轮无工具调用，token 与耗时也在推进，面板需要随之刷新。
+          if (taskId) {
+            const lastToolEntry = info.tools.length > 0 ? info.tools[info.tools.length - 1] : undefined;
             updateAgentProgress(taskId, {
               toolUseCount,
               tokenCount,
               lastActivity: lastToolEntry ? {
                 toolName: lastToolEntry.name,
                 input: lastToolEntry.input,
-                activityDescription: `${lastToolEntry.name}: ${JSON.stringify(lastToolEntry.input).slice(0, 80)}`,
+                activityDescription: describeToolActivity(lastToolEntry.name, lastToolEntry.input),
               } : undefined,
               recentActivities: [],
             });

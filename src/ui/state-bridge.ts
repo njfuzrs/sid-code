@@ -44,6 +44,8 @@ export class StateBridge extends EventEmitter {
         type: t.type,
         status: t.status,
         description: t.description,
+        startTime: t.startTime,
+        endTime: t.endTime,
         durationMs: (t.endTime ?? Date.now()) - t.startTime,
       };
       if (isAgentTask(t)) {
@@ -53,6 +55,9 @@ export class StateBridge extends EventEmitter {
             toolUseCount: t.progress.toolUseCount,
             tokenCount: t.progress.tokenCount,
           };
+          if (t.progress.lastActivity?.activityDescription) {
+            info.lastActivity = t.progress.lastActivity.activityDescription;
+          }
         }
         if (t.progressSummary) {
           info.progressSummary = t.progressSummary;

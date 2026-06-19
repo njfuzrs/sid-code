@@ -3,23 +3,33 @@
  *
  * 在输入框上方实时显示：
  * 1. TodoWrite 工具的当前任务清单进度
- * 2. 后台 Shell/Agent 任务状态（对标 cc TaskListV2）
+ * 2. 后台 Shell/Agent 任务状态（对标 cc TaskListV2 / TeammateSpinnerLine）
  *
  * 视觉语言（对标 claude-code）：
  * - checkbox 用 ○◐● 几何字形族（填充度表达状态递进），不用彩色 emoji
  * - 完成态 strikethrough + dim，进行中 bold + 品牌色，待办常态
  * - 顶部一行极简进度条 ▰▱，进度一眼可见
  *
- * fix_type: behavior_change（视觉重构，§0.3）
+ * 实时性（本次修复重点）：
+ * - 运行中任务用 useAnimationFrame(keepAlive) 驱动共享时钟，每秒重渲：
+ *   ① 耗时秒数实时跳动（用 startTime 与当前墙钟实算，不再依赖事件快照冻结值）
+ *   ② 旋转字形动画表达「活着、在动」
+ * - 数据层已打通 token/工具次数实时回写（见 sub-agent.ts / headless.ts），
+ *   此处直接展示真实进度，并新增「当前活动」行（⎿ 读取 xxx）。
+ * - a11y 模式完全关动画：静态字形 + 不取帧（屏幕阅读器会把逐帧变化读成噪声）。
+ *
+ * fix_type: behavior_change（视觉重构 + 实时性修复，§0.3）
  */
 
 import React from "react";
 import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
+import { useAnimationFrame } from "../../ink/hooks/use-animation-frame.js";
 import type { TodoItem } from "../../tool/todo-write.ts";
 import type { TaskDisplayInfo } from "../App.tsx";
 import { theme } from "../semantic-colors.ts";
 import { stringWidth } from "../../ink/stringWidth.js";
+import { useIsAccessibilityEnabled } from "../accessibility/AccessibilityContext.tsx";
 import { formatLargeNumber } from "../utils/format-number.ts";
 import { formatDuration } from "../utils/format-duration.ts";
 import {
@@ -30,6 +40,9 @@ import {
   PROGRESS_EMPTY,
   ARROW_PROMPT,
   ERROR_MARK,
+  TREE_BRANCH,
+  TASK_SPINNER_FRAMES,
+  TASK_KILLED_MARK,
 } from "../constants/figures.ts";
 
 interface TodoPanelProps {
@@ -118,7 +131,14 @@ const TodoRow = React.memo(function TodoRow({
   );
 });
 
-/** 单条后台任务渲染 */
+/**
+ * 单条后台任务渲染。
+ *
+ * 运行中任务订阅共享时钟（useAnimationFrame，keepAlive）：
+ * - 每秒重渲 → 耗时用 startTime 与当前墙钟实算（不再冻结在事件快照）
+ * - 旋转字形动画表达「活着」
+ * 终态任务不订阅时钟（intervalMs=null → 不取帧、不驱动时钟），耗时定格。
+ */
 const TaskRow = React.memo(function TaskRow({
   task,
   maxContentLen,
@@ -129,14 +149,26 @@ const TaskRow = React.memo(function TaskRow({
   const isRunning = task.status === "running";
   const isFailed = task.status === "failed";
   const isKilled = task.status === "killed";
+  const a11y = useIsAccessibilityEnabled();
 
-  // 状态字形：运行中 ◐ / 完成 ● / 失败 ✘ / 终止 ●(警告色)
+  // 运行中订阅共享时钟（a11y 关动画 → 不订阅）。250ms 重渲一次：
+  // 旋转字形每帧推进一个象限(平滑转动)，耗时秒数也随之实时刷新。
+  const animate = isRunning && !a11y;
+  const [tickRef, tickTime] = useAnimationFrame(animate ? 250 : null);
+
+  // 旋转字形帧：帧周期与重渲间隔(250ms)一致——每次重渲推进一个象限。
+  // 否则按更短周期取帧、却跨过整数个周期回到同一帧 → 看似静止。
+  const spinnerFrame = animate
+    ? TASK_SPINNER_FRAMES[Math.floor(tickTime / 250) % TASK_SPINNER_FRAMES.length]
+    : TODO_IN_PROGRESS;
+
+  // 状态字形：运行中 旋转◐ / 完成 ● / 失败 ✘ / 终止 ⊘
   const statusIcon = isRunning
-    ? TODO_IN_PROGRESS
+    ? spinnerFrame
     : isFailed
     ? ERROR_MARK
     : isKilled
-    ? TODO_COMPLETED
+    ? TASK_KILLED_MARK
     : TODO_COMPLETED;
 
   const statusColor = isRunning
@@ -158,32 +190,48 @@ const TaskRow = React.memo(function TaskRow({
     task.description ||
     (task.type === "local_shell" && task.command ? truncate(task.command, 40) : "");
 
-  const progressText =
-    isRunning && task.progress
-      ? ` ${task.progress.toolUseCount}t·${formatLargeNumber(task.progress.tokenCount)}`
-      : "";
+  // 耗时：运行中用 startTime 与当前墙钟实算（tickTime 仅触发重渲，不参与计算，
+  // 因其相对时钟起点而非 epoch）；终态用快照 durationMs 定格。
+  // 读取 tickTime 建立依赖，确保动画态每秒重算。
+  void tickTime;
+  const elapsedMs = isRunning ? Date.now() - task.startTime : task.durationMs;
+  const durationText = formatDuration(elapsedMs);
 
-  const durationText = ` ${formatDuration(task.durationMs)}`;
+  // 统计：真实工具次数 + token + 耗时，清晰分隔且带单位（旧版 "0t·0 19s" 含义晦涩）。
+  const stats: string[] = [];
+  if (isRunning && task.progress) {
+    if (task.progress.toolUseCount > 0) stats.push(`${task.progress.toolUseCount} 工具`);
+    if (task.progress.tokenCount > 0) stats.push(`${formatLargeNumber(task.progress.tokenCount)} token`);
+  }
+  stats.push(durationText);
+  const statsText = stats.join(" · ");
 
-  const summaryLine = task.progressSummary ? task.progressSummary : null;
+  // 当前活动行（运行中且有活动文案时）：优先 progressSummary，否则 lastActivity。
+  const activityLine = isRunning
+    ? task.progressSummary || task.lastActivity || null
+    : task.progressSummary || null;
 
   return (
     <Box flexDirection="column">
       <Box flexDirection="row">
-        <Box width={2} flexShrink={0}>
+        <Box width={2} flexShrink={0} ref={tickRef}>
+          {/* ref 挂在字形容器上做视口可见性检测；离屏时动画自动暂停 */}
           <Text color={statusColor} bold={isRunning}>{statusIcon}</Text>
         </Box>
-        <Text>
-          <Text color={theme.ui.active} dimColor>{`[${label}] `}</Text>
-          <Text color={isRunning ? theme.text.primary : theme.text.secondary} dimColor={!isRunning}>
-            {truncate(desc, maxContentLen - 25)}
+        <Box flexGrow={1}>
+          <Text>
+            <Text color={theme.ui.active} dimColor>{`[${label}] `}</Text>
+            <Text color={isRunning ? theme.text.primary : theme.text.secondary} dimColor={!isRunning}>
+              {truncate(desc, Math.max(10, maxContentLen - 24))}
+            </Text>
           </Text>
-          <Text color={theme.text.secondary} dimColor>{progressText}{durationText}</Text>
-        </Text>
+        </Box>
+        <Text color={theme.text.secondary} dimColor>{statsText}</Text>
       </Box>
-      {summaryLine && (
+      {activityLine && (
         <Box flexDirection="row" paddingLeft={2}>
-          <Text color={theme.text.secondary} dimColor>{truncate(summaryLine, maxContentLen - 4)}</Text>
+          <Text color={theme.text.secondary} dimColor>{`${TREE_BRANCH} `}</Text>
+          <Text color={theme.text.secondary} dimColor>{truncate(activityLine, maxContentLen - 6)}</Text>
         </Box>
       )}
     </Box>
@@ -207,7 +255,6 @@ export const TodoPanel = React.memo(function TodoPanel({
   let todoSection: React.ReactNode = null;
   if (hasTodos) {
     const completed = todos.filter((t) => t.status === "completed").length;
-    const inProgress = todos.filter((t) => t.status === "in_progress").length;
     const total = todos.length;
 
     // 保持原始顺序，仅当超过显示上限时截断（始终保留 in_progress，其余按原始顺序取舍）
