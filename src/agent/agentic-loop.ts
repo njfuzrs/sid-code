@@ -48,6 +48,10 @@ export interface AgentLoopConfig {
     textOutput: string;
     /** 本轮工具调用信息 */
     tools: Array<{ name: string; input: Record<string, unknown> }>;
+    /** 截至本轮的累计真实 token 数（input + output，来自 totalUsage），供进度面板展示 */
+    tokenCount: number;
+    /** 截至本轮的累计工具调用次数 */
+    toolUseCount: number;
   }) => void;
   /** 循环恢复提示词（默认使用全局 LOOP_RECOVERY_PROMPT） */
   loopRecoveryPrompt?: string;
@@ -189,7 +193,7 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
     // 停止原因处理
     if (response.stopReason === "end_turn" || response.stopReason === "stop") {
       log.info("AGENT_LOOP", `完成，共 ${turns} 轮`);
-      config.onTurnEnd?.({ turn: turns, textOutput: lastTextOutput, tools: [] });
+      config.onTurnEnd?.({ turn: turns, textOutput: lastTextOutput, tools: [], tokenCount: totalUsage.inputTokens + totalUsage.outputTokens, toolUseCount });
       return {
         success: true,
         turns,

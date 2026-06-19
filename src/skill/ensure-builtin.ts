@@ -16,7 +16,7 @@
  */
 
 import { mkdir, writeFile, readFile, rm, readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { getSidHome } from "../config/paths.ts";
 import { getLogger } from "../debug/logger.ts";
 import {
@@ -64,10 +64,30 @@ export async function ensureBuiltinSkillsReleased(): Promise<string> {
     await cleanBuiltinDir(dir);
     await mkdir(dir, { recursive: true });
 
+    let fileCount = 0;
     for (const skill of EMBEDDED_BUILTIN_SKILLS) {
       const skillDir = join(dir, skill.name);
       await mkdir(skillDir, { recursive: true });
-      await writeFile(join(skillDir, "SKILL.md"), skill.rawContent, "utf-8");
+
+      // 释放 skill 目录下所有文件（含 SKILL.md / references / scripts / validations / evals 等），
+      // 按嵌入时记录的相对路径还原目录结构。delegate 模式的 skill agent 才能用相对路径读到它们。
+      const files =
+        skill.files && skill.files.length > 0
+          ? skill.files
+          : // 向后兼容：旧嵌入数据无 files 字段时，至少释放 SKILL.md
+            [{ relPath: "SKILL.md", content: skill.rawContent, encoding: "utf-8" as const }];
+
+      for (const file of files) {
+        // relPath 用 POSIX 分隔，按段 join 到目标目录（跨平台一致）
+        const dest = join(skillDir, ...file.relPath.split("/"));
+        await mkdir(dirname(dest), { recursive: true });
+        const data =
+          file.encoding === "base64"
+            ? Buffer.from(file.content, "base64")
+            : file.content;
+        await writeFile(dest, data);
+        fileCount++;
+      }
     }
 
     // 最后写哈希标记（写在所有 skill 落盘之后，保证标记存在即内容完整）
@@ -75,7 +95,7 @@ export async function ensureBuiltinSkillsReleased(): Promise<string> {
 
     log.info(
       "SKILL",
-      `已释放 ${EMBEDDED_BUILTIN_SKILLS.length} 个 builtin Skill 到 ${dir}（hash=${EMBEDDED_BUILTIN_SKILLS_HASH}）`,
+      `已释放 ${EMBEDDED_BUILTIN_SKILLS.length} 个 builtin Skill、共 ${fileCount} 个文件到 ${dir}（hash=${EMBEDDED_BUILTIN_SKILLS_HASH}）`,
     );
   } catch (error) {
     // 释放失败不阻断启动：降级为"无 builtin skill"，与旧行为一致
