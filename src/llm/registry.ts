@@ -11,10 +11,14 @@ import { TokenEstimator } from "./token-estimator.ts";
 
 /** 子代理模型映射 */
 export interface SubAgentModelMap {
-  explore?: string;    // 代码探索（默认跟主模型）
-  task?: string;       // 任务执行（默认跟主模型）
-  plan?: string;       // 规划分析（默认跟主模型）
-  summarize?: string;  // 摘要总结（默认跟主模型）
+  /** 兜底默认：所有未单独指定的子代理类型都用它；未配则跟主模型。
+   *  解析优先级：按类型显式配置 > default > 主模型。 */
+  default?: string;
+  explore?: string;    // 代码探索（默认跟 default / 主模型）
+  task?: string;       // 任务执行（默认跟 default / 主模型）
+  plan?: string;       // 规划分析（默认跟 default / 主模型）
+  summarize?: string;  // 摘要总结（默认跟 default / 主模型）
+  verify?: string;     // 对抗式验证（默认跟 default / 主模型）
 }
 
 export class ProviderRegistry {
@@ -82,10 +86,10 @@ export class ProviderRegistry {
     };
   }
 
-  /** 获取子代理模型（按类型查映射，未配置则跟主模型） */
+  /** 获取子代理模型（按类型查映射 > default 兜底 > 主模型） */
   getModelForSubAgent(type: string): string {
     const mapped = this.subAgentModels[type as keyof SubAgentModelMap];
-    return mapped || this.config.model;
+    return mapped || this.subAgentModels.default || this.config.model;
   }
 
   /**

@@ -627,7 +627,11 @@ export class App {
         // D3-4：/quit 退出前必须 fireSessionEndEvent，保证 transcript 落盘（纪律不变量第 1 条）。
         void (async () => {
           try {
-            await this.hookSystem.fireSessionEndEvent("exit", this.buildSessionEndStats());
+            // hook 卡死时不阻塞退出（对齐 signal 路径 1.2s 上限）：SessionEnd 可能跑用户命令长时间无响应。
+            await Promise.race([
+              this.hookSystem.fireSessionEndEvent("exit", this.buildSessionEndStats()),
+              new Promise((resolve) => setTimeout(resolve, 1200)),
+            ]);
           } catch (err: any) {
             process.stderr.write(`[quit] SessionEnd hook 失败: ${err?.message ?? err}\n`);
           }
@@ -2835,7 +2839,11 @@ export class App {
             // 导致 messages.json / trajectory 不落盘（违反纪律不变量第 1 条「transcript 必落盘」）。
             void (async () => {
               try {
-                await this.hookSystem.fireSessionEndEvent("exit", this.buildSessionEndStats());
+                // hook 卡死时不阻塞退出（对齐 signal 路径 1.2s 上限）：SessionEnd 可能跑用户命令长时间无响应。
+                await Promise.race([
+                  this.hookSystem.fireSessionEndEvent("exit", this.buildSessionEndStats()),
+                  new Promise((resolve) => setTimeout(resolve, 1200)),
+                ]);
               } catch (err: any) {
                 process.stderr.write(`[quit] SessionEnd hook 失败: ${err?.message ?? err}\n`);
               }
@@ -2919,7 +2927,26 @@ export class App {
     }
 
     await app.waitUntilExit();
-    await this.hookSystem.fireSessionEndEvent("exit", this.buildSessionEndStats());
+
+    // 兜底退出：正常退出路径(Ctrl+C / /quit / Ctrl+D)此前无 failsafe，也无显式 process.exit——
+    // 完全依赖事件循环自然 drain。任一清理 await(SessionEnd hook / MCP closeAll / 遥测 flush)
+    // hang 住，或有 handle 未释放(MCP 子进程管道 / watcher / 遥测 socket)，进程就会卡在 shell
+    // 不退出(用户已看到会话摘要却回不到提示符)。这正是"Ctrl+C 有时退出卡住"的根因。
+    // 对齐 signal 路径的 forceExitTimer：提前注册(在所有 await 之前),最多 5s 强制退出。
+    const forceExitTimer = setTimeout(() => {
+      try { log.warn("TUI", "退出清理超时(5s)，强制退出"); } catch { /* ignore */ }
+      process.exit(0);
+    }, 5000);
+    forceExitTimer.unref();
+
+    // SessionEnd hook 卡死时不拖死退出(对齐 signal 路径的 Promise.race 1.2s 上限):
+    // hook 可能跑用户自定义命令而长时间无响应,不能让它永久阻塞退出。
+    try {
+      await Promise.race([
+        this.hookSystem.fireSessionEndEvent("exit", this.buildSessionEndStats()),
+        new Promise((resolve) => setTimeout(resolve, 1200)),
+      ]);
+    } catch { /* SessionEnd 落盘失败不阻塞退出 */ }
     // B3：正常退出——唯一的"主路径" endSession。写 session_end 并把 currentFile 置 null，
     // 后续若 emergency 再调一次会安全 no-op（幂等）。
     this.finalizeSessionStore();
@@ -2949,5 +2976,11 @@ export class App {
     // 正常退出（/exit 或 Ctrl+D）不触发 SIGINT/SIGTERM，必须显式刷新，否则缓冲数据丢失
     const { runShutdownSequence } = await import("./utils/graceful-shutdown.ts");
     await runShutdownSequence();
+
+    // 显式退出：清理已完成,主动 process.exit(0) 而非依赖事件循环自然 drain。
+    // 残留 handle(MCP 管道 / 遥测 socket / 未 unref 的 timer)会让进程永久挂起在 shell——
+    // 这是本路径此前缺失的最后一环。clearTimeout 让 failsafe 不再需要(已正常退出)。
+    clearTimeout(forceExitTimer);
+    process.exit(0);
   }
 }

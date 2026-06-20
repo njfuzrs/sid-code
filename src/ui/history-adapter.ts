@@ -58,6 +58,70 @@ export function isPlaceholderMessage(msg: Message): boolean {
 }
 
 /**
+ * 续接标记特征串（与 SessionStore.buildResumeMarker 保持一致）。
+ * 恢复会话时该 marker 作为一条 user 消息注入 ctxMgr，仅供 LLM 感知"这是续接"，
+ * 不应在 TUI 里作为用户消息展示——否则用户会看到一段 <system-reminder>，
+ * 甚至包含"请勿向用户提及"的自相矛盾文案。
+ */
+const RESUME_MARKER_SIGNATURE = "本次会话是从之前的对话恢复的续接会话";
+
+/** 续接标记消息（恢复会话时注入,仅供 LLM,不展示） */
+export function isResumeMarkerMessage(msg: Message): boolean {
+  return msg.role === "user"
+    && msg.content.length === 1
+    && msg.content[0].type === "text"
+    && msg.content[0].text.includes(RESUME_MARKER_SIGNATURE);
+}
+
+/**
+ * 内部文本块特征:这些文本是"仅供 LLM 看"的系统注入,不应作为用户消息展示。
+ *
+ * 背景:除续接 marker 外,主循环(query/loop.ts)与上下文管理器(context/manager.ts)
+ * 还会把多类内部提示作为 user 消息**持久化进 ctxMgr**(注意:经 injectReminders 注入
+ * finalMessages 的那些 reminder 是"喂给 LLM 的临时副本、不写回 ctxMgr",不会泄漏到 TUI,
+ * 不在此列)。持久化进 ctxMgr 的内部文本会被 messagesToHistoryItems 渲染出来,需识别并隐藏:
+ *  - `<system-reminder>` 包裹的:todo gate(buildTodoGateMessage)、空参数重试(buildEmptyParamRetryMessage) 等
+ *  - `[压缩边界]` / `[已释放]`:压缩与 GC 释放的内部标记(context/manager.ts)
+ * 用前缀/包含特征匹配,容忍后续文案微调。
+ */
+function isInternalOnlyText(text: string): boolean {
+  const t = text.trimStart();
+  return t.startsWith("<system-reminder>")
+    || t.startsWith("[压缩边界]")
+    || t.startsWith("[已释放]");
+}
+
+/**
+ * 整条消息是否应从展示中隐藏(占位 / 续接标记 / 纯内部文本消息)。
+ * 仅当消息**只含**内部文本(无真实用户文本、无 tool_result)时才整条隐藏;
+ * 混合内容(如循环恢复:orphan tool_result + 内部提示文本)交给 stripInternalTextBlocks
+ * 仅剥离其中的内部文本块,保留 tool_result 的正常展示。
+ */
+export function isHiddenFromDisplay(msg: Message): boolean {
+  if (isPlaceholderMessage(msg)) return true;
+  if (isResumeMarkerMessage(msg)) return true;
+  // 仅含内部文本块(无其它类型 block)的消息整条隐藏
+  return msg.content.length > 0
+    && msg.content.every(b => b.type === "text" && isInternalOnlyText(b.text));
+}
+
+/**
+ * 从混合内容消息中剥离"仅供 LLM"的内部文本块,保留其余 block(tool_result 等)。
+ * 典型场景:循环恢复消息 = [orphan tool_result..., { text: LOOP_RECOVERY_PROMPT }],
+ * tool_result 需正常展示,但 LOOP_RECOVERY_PROMPT 这段是给模型的内部提示,要隐藏。
+ * 返回 content 全空时调用方应跳过该消息。
+ */
+function stripInternalTextBlocks(msg: Message): Message {
+  if (!msg.content.some(b => b.type === "text" && isInternalOnlyText(b.text))) {
+    return msg;
+  }
+  return {
+    ...msg,
+    content: msg.content.filter(b => !(b.type === "text" && isInternalOnlyText(b.text))),
+  };
+}
+
+/**
  * 从消息数组中构建 tool_use_id → toolName 映射
  * 用于增量同步时传入完整的映射关系
  */
@@ -96,8 +160,13 @@ export function messagesToHistoryItemsWithMap(
   // 暂存 assistant 消息中的 tool_use，等待 tool_result 合并
   const pendingToolCalls = new Map<string, IndividualToolCallDisplay>();
 
-  for (const msg of msgs) {
-    if (isPlaceholderMessage(msg)) continue;
+  for (const rawMsg of msgs) {
+    if (isHiddenFromDisplay(rawMsg)) continue;
+
+    // 混合内容消息(如循环恢复 = orphan tool_result + 内部提示文本):
+    // 剥离仅供 LLM 的内部文本块,保留 tool_result 等正常 block 继续转换。
+    const msg = stripInternalTextBlocks(rawMsg);
+    if (msg.content.length === 0) continue;
 
     // 收集 tool_use 名称映射
     for (const block of msg.content) {

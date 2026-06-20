@@ -64,6 +64,8 @@ interface DefaultAppLayoutProps {
   onSubmit: (text: string) => void;
   /** 流式中已排队待接续的输入条数 */
   queuedCount?: number;
+  /** Ctrl+D（输入框为空时）请求退出的回调，透传给 Composer→InputArea。 */
+  onExitRequest?: () => void;
 
   // Footer
   permissionMode: string;
@@ -114,6 +116,7 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
   cwd,
   onSubmit,
   queuedCount = 0,
+  onExitRequest,
   permissionMode,
   isPlanMode,
   gitBranch,
@@ -248,6 +251,7 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
               commands={commands}
               cwd={cwd}
               queuedCount={queuedCount}
+              onExitRequest={onExitRequest}
             />
           )}
         </Box>

@@ -10,6 +10,8 @@ import {
   messagesToHistoryItemsWithMap,
   buildToolNameMapFromMessages,
   isPlaceholderMessage,
+  isResumeMarkerMessage,
+  isHiddenFromDisplay,
 } from "../../src/ui/history-adapter.ts";
 import type { Message } from "../../src/llm/types.ts";
 import { ToolCallStatus } from "../../src/ui/types.ts";
@@ -40,6 +42,67 @@ describe("isPlaceholderMessage", () => {
       ],
     };
     expect(isPlaceholderMessage(msg)).toBe(false);
+  });
+});
+
+describe("内部消息隐藏（仅供 LLM、不展示给用户）", () => {
+  const mkUser = (text: string): Message => ({ role: "user", content: [{ type: "text", text }] });
+
+  test("续接标记消息被识别并隐藏", () => {
+    const msg = mkUser(
+      "<system-reminder>\n本次会话是从之前的对话恢复的续接会话（上方消息为之前的历史上下文）。\n</system-reminder>",
+    );
+    expect(isResumeMarkerMessage(msg)).toBe(true);
+    expect(isHiddenFromDisplay(msg)).toBe(true);
+  });
+
+  test("system-reminder 包裹的内部提示整条隐藏（todo gate / 空参数重试等）", () => {
+    expect(isHiddenFromDisplay(mkUser("<system-reminder>\n检测到你试图结束本轮对话，但任务清单中仍有 1 项未完成\n</system-reminder>"))).toBe(true);
+    expect(isHiddenFromDisplay(mkUser("<system-reminder>\n检测到工具调用的参数为空\n</system-reminder>"))).toBe(true);
+  });
+
+  test("压缩边界 / GC 释放标记整条隐藏", () => {
+    expect(isHiddenFromDisplay(mkUser("[压缩边界] 这是摘要"))).toBe(true);
+    expect(isHiddenFromDisplay(mkUser("[已释放] user 消息内容已被 GC 回收，详情见 compact_boundary"))).toBe(true);
+  });
+
+  test("真实用户/助手消息不被隐藏", () => {
+    expect(isHiddenFromDisplay(mkUser("帮我修个 bug"))).toBe(false);
+    expect(isHiddenFromDisplay({ role: "assistant", content: [{ type: "text", text: "好的" }] })).toBe(false);
+  });
+
+  test("正文里偶然含 [压缩边界] 字样但非开头，不误判", () => {
+    expect(isHiddenFromDisplay(mkUser("请解释一下 [压缩边界] 这个概念"))).toBe(false);
+  });
+
+  test("混合内容消息（tool_result + 内部提示）不整条隐藏，仅剥离内部文本块", () => {
+    const loopMsg: Message = {
+      role: "user",
+      content: [
+        { type: "tool_result", tool_use_id: "t1", content: "占位结果" },
+        { type: "text", text: "系统检测到你陷入了非生产性循环——连续多次以等价参数调用同一工具但未取得进展。" },
+      ],
+    };
+    // 注意:循环恢复提示文本不以 <system-reminder>/[压缩边界]/[已释放] 开头,故不被 isInternalOnlyText 命中,
+    // 这里仅验证"含 tool_result 的消息不会被整条隐藏"这一关键不变量。
+    expect(isHiddenFromDisplay(loopMsg)).toBe(false);
+    const items = messagesToHistoryItems([
+      { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Read", input: {} }] },
+      loopMsg,
+    ]);
+    // tool_result 仍正常合并为 tool_group 展示
+    expect(items.some((i) => i.type === "tool_group")).toBe(true);
+  });
+
+  test("messagesToHistoryItems 跳过纯内部消息", () => {
+    const items = messagesToHistoryItems([
+      mkUser("帮我看下这个函数"),
+      mkUser("<system-reminder>\n检测到你试图结束本轮对话\n</system-reminder>"),
+      mkUser("[压缩边界] 摘要"),
+    ]);
+    const userItems = items.filter((i) => i.type === "user");
+    expect(userItems.length).toBe(1);
+    expect((userItems[0] as { text: string }).text).toBe("帮我看下这个函数");
   });
 });
 

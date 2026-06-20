@@ -12,6 +12,7 @@ import {
   getNetworkErrorCode,
   isAbortError,
   RequestAbortedError,
+  ABORT_REASONS,
 } from "../../src/llm/errors.ts";
 
 describe("classifyError", () => {
@@ -268,7 +269,37 @@ describe("isAbortError", () => {
     expect(isAbortError({ name: "APIUserAbortError", message: "boom" })).toBe(true);
   });
 
+  test("识别裸字符串 abort reason（回归：ESC 取消崩溃复发根因）", () => {
+    // app.ts onInterrupt 调用 abortController.abort("user-cancel")（A6）。被取消的
+    // fetch / SDK 内部 Promise 会以**裸字符串 reason** 作为 reject 值冒泡到全局
+    // unhandledRejection。若 isAbortError 不认识该字符串 → 兜底当真故障 →
+    // process.exit(1) 崩溃退出（实测 924a0886 会话：deepseek + ESC → SessionEnd error）。
+    expect(isAbortError("user-cancel")).toBe(true);
+    expect(isAbortError("timeout")).toBe(true);
+    expect(isAbortError("turn-timeout")).toBe(true);
+  });
+
+  test("识别带 reason 的 AbortSignal / 对象", () => {
+    const ac = new AbortController();
+    ac.abort("user-cancel");
+    expect(isAbortError(ac.signal)).toBe(true);
+    expect(isAbortError({ reason: "timeout" })).toBe(true);
+  });
+
+  test("ABORT_REASONS 覆盖所有 abort 调用点（防漂移哨兵）", () => {
+    // 凡 abortController.abort("xxx") 用到的 reason 都必须登记在 ABORT_REASONS，
+    // 否则该 reason 的孤儿 rejection 会被当真故障导致进程退出。
+    // 若新增/修改 abort reason，请同步更新 ABORT_REASONS 与本断言。
+    expect([...ABORT_REASONS].sort()).toEqual(["timeout", "turn-timeout", "user-cancel"]);
+    for (const r of ABORT_REASONS) {
+      expect(isAbortError(r)).toBe(true);
+    }
+  });
+
   test("非 abort 错误返回 false", () => {
     expect(isAbortError(new Error("503 Service Unavailable"))).toBe(false);
+    // 非白名单的裸字符串不能被误判为 abort
+    expect(isAbortError("random-error")).toBe(false);
+    expect(isAbortError("network down")).toBe(false);
   });
 });

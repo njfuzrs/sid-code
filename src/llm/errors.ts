@@ -72,6 +72,27 @@ export class RequestAbortedError extends Error {
   }
 }
 
+/**
+ * 项目内部使用的 abort reason 字符串（单一事实源）。
+ *
+ * 背景：`AbortController.abort(reason)` 传入字符串时，被取消的 fetch / SDK 内部 Promise
+ * 会以**这个裸字符串**作为 reject 值（而非 DOMException AbortError）。这些孤儿 Promise
+ * 一旦冒泡到 `process.on("unhandledRejection")`，必须被 `isAbortError` 正确识别为"中断"
+ * 才能短路、避免 `process.exit(1)` 崩溃。
+ *
+ * ⚠️ 凡是 `abortController.abort("xxx")` 用到的新 reason 字符串，都必须登记到这里，
+ * 否则该 reason 触发的孤儿 rejection 会被当成真故障导致进程退出。
+ * 现有调用点：app.ts onInterrupt("user-cancel")、session 超时("timeout")、
+ * 单轮硬超时("turn-timeout")。
+ */
+export const ABORT_REASONS = [
+  "user-cancel",
+  "timeout",
+  "turn-timeout",
+] as const;
+
+export type AbortReason = (typeof ABORT_REASONS)[number];
+
 /** 可重试的网络错误码 */
 const RETRYABLE_NETWORK_CODES = [
   "ECONNRESET", "ETIMEDOUT", "EPIPE", "ENOTFOUND",
@@ -235,6 +256,22 @@ export function parseRateLimitReset(error: unknown): number | undefined {
 export function isAbortError(error: unknown): boolean {
   if (error instanceof RequestAbortedError) return true;
   if (error instanceof DOMException && error.name === "AbortError") return true;
+
+  // 关键：`abortController.abort("user-cancel")` 这类带字符串 reason 的中断，
+  // 会让被取消的 fetch / SDK 内部 Promise 以**裸字符串 reason** 作为 reject 值冒泡上来。
+  // 这类孤儿 rejection 既不是 Error 也没有 name，必须按 ABORT_REASONS 白名单识别，
+  // 否则会被全局 unhandledRejection 兜底当成真故障 → process.exit(1) 崩溃。
+  if (typeof error === "string" && (ABORT_REASONS as readonly string[]).includes(error)) {
+    return true;
+  }
+  // 某些路径会把 AbortSignal 本身或带 .reason 的对象抛出来——一并兜住其 reason。
+  if (error && typeof error === "object" && "reason" in error) {
+    const reason = (error as { reason?: unknown }).reason;
+    if (typeof reason === "string" && (ABORT_REASONS as readonly string[]).includes(reason)) {
+      return true;
+    }
+    if (isAbortError(reason)) return true;
+  }
 
   if (error && typeof error === "object" && "name" in error) {
     const name = String((error as { name?: unknown }).name ?? "");

@@ -18,7 +18,7 @@ import { ScrollProvider, useScrollState } from "./contexts/ScrollProvider.tsx";
 import { TerminalProvider, useTerminalDimensions } from "./contexts/TerminalContext.tsx";
 import { MouseProvider, enableMouseEvents, disableMouseEvents } from "./contexts/MouseContext.tsx";
 import { OverflowProvider } from "./contexts/OverflowContext.tsx";
-import { UIStateProvider, useUIActions } from "./contexts/UIStateContext.tsx";
+import { UIStateProvider, useUIActions, useUIState } from "./contexts/UIStateContext.tsx";
 import { StreamingProvider } from "./contexts/StreamingContext.tsx";
 import { ConfigProvider, type ConfigContextValue } from "./contexts/ConfigContext.tsx";
 import { SessionProvider, type SessionContextValue } from "./contexts/SessionContext.tsx";
@@ -33,7 +33,8 @@ import { StreamingState } from "./types.ts";
 import { deriveStreamingState } from "./derive-streaming-state.ts";
 import { useTerminalIntegration } from "./hooks/useTerminalIntegration.ts";
 import { useMessageQueue } from "./hooks/useMessageQueue.ts";
-import { messagesToHistoryItems, isPlaceholderMessage, buildStaticItems } from "./history-adapter.ts";
+import { useExitConfirm } from "./hooks/useExitConfirm.ts";
+import { messagesToHistoryItems, isPlaceholderMessage, isHiddenFromDisplay, buildStaticItems } from "./history-adapter.ts";
 import { getLogger } from "../debug/logger.ts";
 import { DEFAULT_TERM_WIDTH } from "./markdown.ts";
 
@@ -48,7 +49,7 @@ export type DisplayItem =
 /** @deprecated 使用 messagesToHistoryItems 替代 */
 export function messagesToDisplayItems(msgs: Message[]): DisplayItem[] {
   return msgs
-    .filter(m => !isPlaceholderMessage(m))
+    .filter(m => !isHiddenFromDisplay(m))
     .map(m => ({ kind: "message" as const, message: m }));
 }
 
@@ -256,7 +257,8 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
   streamingStateRef.current = streamingState;
   const log = getLogger();
   const { getScrollState } = useScrollState();
-  const { toggleRenderMarkdown, cycleExpandLevel, setShowIsExpandableHint } = useUIActions();
+  const { toggleRenderMarkdown, cycleExpandLevel, setShowIsExpandableHint, setCtrlCPressedOnce } = useUIActions();
+  const { ctrlCPressedOnce } = useUIState();
   const { matchBinding } = useKeybindings();
 
   // v2：思考折叠状态。两种模式默认折叠成一行（对标 claude-code，思考不占满屏）。
@@ -301,13 +303,46 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     }, 100);
   }, [bridge, exit]);
 
-  // Ctrl+C 退出（Critical 优先级）
+  // Ctrl+C 二次确认退出：按一次提示「再按一次退出」,窗口内再按才真退出,超时/继续输入则取消。
+  // 此前 Ctrl+C 单击即退,误触直接丢会话——ExitWarning 与 setCtrlCPressedOnce 也因无人接线成了死代码。
+  const { press: pressCtrlC, cancel: cancelCtrlCConfirm } = useExitConfirm({
+    pressedOnce: ctrlCPressedOnce,
+    setPressedOnce: setCtrlCPressedOnce,
+    onConfirm: triggerQuit,
+  });
+
+  // Ctrl+C 处理（Critical 优先级）：
+  // ① 正在流式/工具执行 → 第一次 Ctrl+C 先中断当前操作(不退出),让用户能停下跑飞的任务而不丢会话;
+  // ② 空闲(或已中断) → 走二次确认:首次提示、窗口内再按一次才退出。
   useKeypress(KeypressPriority.Critical, (key: Key) => {
     const b = matchBinding(key);
-    if (b?.action === "app:quit") {
-      log.info("UI:APP", "用户按下 Ctrl+C，退出");
-      triggerQuit();
+    if (b?.action !== "app:quit") return false;
+
+    const busy = state.isLoading || state.isStreaming || state.isToolExecuting;
+    if (busy) {
+      log.info("UI:APP", "用户按下 Ctrl+C，正忙——中断当前操作（不退出）");
+      callbacks.onInterrupt();
+      // 中断也清掉可能残留的退出确认态,避免「中断后下一次单击直接退出」的误判。
+      cancelCtrlCConfirm();
       return true;
+    }
+
+    log.info("UI:APP", ctrlCPressedOnce ? "用户二次按下 Ctrl+C，退出" : "用户按下 Ctrl+C，提示再按一次退出");
+    pressCtrlC();
+    return true;
+  });
+
+  // 退出确认态下，用户按任意「非 Ctrl+C」可见字符键 → 立即取消退出意图（对标 ExitWarning「或继续输入以取消」）。
+  // 放在 Critical 之后、其它 handler 之前；只取消、不消费按键（return false），让字符照常进输入框。
+  useKeypress(KeypressPriority.High, (key: Key) => {
+    if (!ctrlCPressedOnce) return false;
+    // Ctrl+C 自身由上面的 handler 处理（二次确认退出），这里不插手。
+    const b = matchBinding(key);
+    if (b?.action === "app:quit") return false;
+    // 任意实际输入（可插入字符或回车）都视为「继续操作」→ 取消退出确认。
+    if (key.insertable || key.name === "return" || key.name === "enter") {
+      log.info("UI:APP", "退出确认态下用户继续输入，取消退出");
+      cancelCtrlCConfirm();
     }
     return false;
   });
@@ -409,6 +444,9 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     log.info("UI:INPUT", `handleSubmit: "${text.slice(0, 100)}"`);
     if (isSubmittingRef.current) return;
 
+    // 用户提交输入 → 取消任何待确认的 Ctrl+C 退出意图（对标 cc：继续操作即视为放弃退出）。
+    cancelCtrlCConfirm();
+
     // 流式进行中：斜杠命令仍直送（/exit、/clear 等需即时生效），普通输入入队接续。
     const busy = streamingStateRef.current !== StreamingState.Idle;
     if (busy && !text.startsWith("/")) {
@@ -425,7 +463,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     } finally {
       isSubmittingRef.current = false;
     }
-  }, [dispatchInput, enqueue]);
+  }, [dispatchInput, enqueue, cancelCtrlCConfirm]);
 
   const isEmpty = state.historyItems.length === 0 && !state.isStreaming;
   // 使用响应式终端尺寸（resize 时自动触发重渲染）
@@ -631,6 +669,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           cwd={state.cwd}
           onSubmit={handleSubmit}
           queuedCount={queueLength}
+          onExitRequest={triggerQuit}
           permissionMode={state.permissionMode}
           isPlanMode={state.isPlanMode}
           gitBranch={state.gitBranch}
@@ -673,6 +712,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           cwd={state.cwd}
           onSubmit={handleSubmit}
           queuedCount={queueLength}
+          onExitRequest={triggerQuit}
           permissionMode={state.permissionMode}
           isPlanMode={state.isPlanMode}
           gitBranch={state.gitBranch}

@@ -24,6 +24,8 @@ import { getLogger } from "../debug/logger.ts";
 import { theme } from "./semantic-colors.ts";
 import { useKeypress, KeypressPriority } from "./contexts/KeypressContext.tsx";
 import { useKeybindings } from "./contexts/KeybindingContext.tsx";
+import { useUIState, useUIActions } from "./contexts/UIStateContext.tsx";
+import { useExitConfirm } from "./hooks/useExitConfirm.ts";
 import { useTextBuffer, getVisualLines, getCursorVisualPosition } from "./text-buffer.ts";
 import { useSlashCompletion, type CommandInfo } from "./hooks/useSlashCompletion.ts";
 import { useAtCompletion } from "./hooks/useAtCompletion.ts";
@@ -52,6 +54,8 @@ interface InputAreaProps {
   queuedCount?: number;
   /** Shift+Tab 权限模式切换回调（可选） */
   onPermissionModeSwitch?: () => void;
+  /** Ctrl+D（输入框为空时）请求退出的回调——由 App 传入 triggerQuit。 */
+  onExitRequest?: () => void;
 }
 
 /**
@@ -93,7 +97,7 @@ function renderFirstLineContent(lineText: string, promptLen: number): React.Reac
 
 // ── 组件 ──────────────────────────────────────────────────────────
 
-export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0, onPermissionModeSwitch }: InputAreaProps) {
+export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0, onPermissionModeSwitch, onExitRequest }: InputAreaProps) {
   const lastSubmittedRef = useRef<string>("");
   const log = getLogger();
   const prevLoadingRef = useRef(isLoading);
@@ -110,6 +114,16 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
   // TextBuffer
   const tb = useTextBuffer({
     viewport: { height: MAX_INPUT_LINES, width: availableWidth - PROMPT.length },
+  });
+
+  // Ctrl+D 二次确认退出（仅输入框为空时;非空时 Ctrl+D 仍是删除光标后字符）。
+  // 读 UIState 的 ctrlDPressedOnce 驱动 ExitWarning,onConfirm 调 App 传入的 triggerQuit。
+  const { ctrlDPressedOnce } = useUIState();
+  const { setCtrlDPressedOnce } = useUIActions();
+  const { press: pressCtrlD, cancel: cancelCtrlDConfirm } = useExitConfirm({
+    pressedOnce: ctrlDPressedOnce,
+    setPressedOnce: setCtrlDPressedOnce,
+    onConfirm: () => { onExitRequest?.(); },
   });
 
   // 挂载时消费早期输入缓冲（启动期间用户按键）
@@ -353,6 +367,12 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
       }
     }
 
+    // Ctrl+D 退出确认态下，任意「非 Ctrl+D」按键 → 取消退出意图（对标 ExitWarning「或继续输入以取消」）。
+    // 放在主分发之前；只取消、不拦截，让该键继续走正常处理。
+    if (ctrlDPressedOnce && !(key.ctrl && key.name === "d")) {
+      cancelCtrlDConfirm();
+    }
+
     // ── 反向搜索模式 ──
     if (reverseSearch.state.active) {
       if (key.name === "escape") {
@@ -505,7 +525,15 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
       if (key.name === "e") { tb.moveCursor("end"); return true; }
       if (key.name === "k") { tb.killLine(); return true; }
       if (key.name === "u") { tb.killToStart(); return true; }
-      if (key.name === "d") { tb.deleteForward(); return true; }
+      if (key.name === "d") {
+        // Ctrl+D：输入框为空 → 二次确认退出（终端 EOF 约定）；非空 → 删除光标后字符。
+        if (tb.isEmpty()) {
+          pressCtrlD();
+        } else {
+          tb.deleteForward();
+        }
+        return true;
+      }
     }
 
     // 可插入字符

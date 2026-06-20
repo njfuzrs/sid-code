@@ -352,6 +352,16 @@ function registerGlobalErrorHandlers(): void {
       const { getLogger } = require("./debug/logger.ts");
       getLogger().error("GLOBAL", `uncaughtException: ${err.message}`, { stack: err.stack });
     } catch { /* logger 可能未初始化 */ }
+
+    // 与 unhandledRejection 对称：abort 类异常 = 用户/超时主动中断，不是真故障。
+    // 多数 abort 走 unhandledRejection，但 setTimeout 回调内的 abort throw、
+    // 无监听器的 EventEmitter error 等场景会以 uncaughtException 形式出现，
+    // 携带裸 reason 字符串（如 "user-cancel"）。此前缺 isAbortError 短路 →
+    // 这些路径仍会 process.exit(1) 崩溃。这里补齐，保持两个全局处理器一致。
+    if (isAbortError(err)) {
+      return;
+    }
+
     process.stderr.write(`[sid-code] uncaughtException: ${err.message}\n`);
     if (err.stack) process.stderr.write(`${err.stack}\n`);
     // 紧急 SessionEnd（在 exit 前做最后一搏）
@@ -946,7 +956,9 @@ export async function main(): Promise<void> {
         }
       }
 
-      console.log(`恢复会话: ${session.id} (${session.messages.length} 条消息)`);
+      // 不再 console.log：TUI 渲染前的裸输出会留在 banner 上方的终端 scrollback 里，
+      // 用户看到一行游离的「恢复会话: …」。恢复进度只写日志，TUI 首屏会自然呈现历史消息。
+      getLogger().info("CLI", `恢复会话: ${session.id} (${session.messages.length} 条消息)`);
       await app.restoreSession(session);
     }
 

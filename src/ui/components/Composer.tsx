@@ -149,6 +149,8 @@ interface ComposerProps {
   cwd: string;
   /** 流式中已排队待接续的输入条数 */
   queuedCount?: number;
+  /** Ctrl+D（输入框为空时）请求退出的回调，透传给 InputArea。 */
+  onExitRequest?: () => void;
 }
 
 export const Composer: React.FC<ComposerProps> = ({
@@ -157,6 +159,7 @@ export const Composer: React.FC<ComposerProps> = ({
   commands,
   cwd,
   queuedCount = 0,
+  onExitRequest,
 }) => {
   const { stdout } = useStdout();
   const termWidth = stdout.columns || DEFAULT_TERM_WIDTH;
@@ -300,6 +303,7 @@ export const Composer: React.FC<ComposerProps> = ({
         commands={commands}
         cwd={cwd}
         queuedCount={queuedCount}
+        onExitRequest={onExitRequest}
       />
     </Box>
   );

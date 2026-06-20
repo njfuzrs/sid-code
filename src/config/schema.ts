@@ -4,6 +4,7 @@
  */
 
 import type { Config } from "./config.ts";
+import { getBuiltInAgentTypes } from "../agent/agent-definition.ts";
 
 /** 验证错误 */
 export interface ValidationError {
@@ -53,13 +54,9 @@ const VALID_HOOK_EVENTS = new Set([
   "notification",
 ]);
 
-/** 有效的子代理类型 */
-const VALID_SUBAGENT_TYPES = new Set([
-  "explore",
-  "task",
-  "plan",
-  "summarize",
-]);
+/** 有效的子代理类型：从 BUILTIN_AGENTS 派生（单一事实源，杜绝与 agent-definition.ts 漂移）。
+ *  额外允许 "default"：subAgentModels 的兜底键，作用于所有未单独指定的类型。 */
+const VALID_SUBAGENT_TYPES = new Set<string>(["default", ...getBuiltInAgentTypes()]);
 
 /** 有效的 MCP 传输类型 */
 const VALID_MCP_TRANSPORTS = new Set(["stdio", "http", "sse"]);
