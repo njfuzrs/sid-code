@@ -55,6 +55,25 @@ describe("CM2 — CommandMessage 渲染", () => {
     expect(frame).toContain("pwd");
   });
 
+  test("内置斜杠命令的多行输出不被折叠（全量展示）", () => {
+    // /think 等内置命令输出是我们自产的 UI 文本，应完整可读，不能像工具结果那样折叠到 3 行。
+    const output = [
+      "当前思考开关: auto",
+      "实际状态(auto 解析): on（跟随默认）",
+      "",
+      "可切换: on / off / auto",
+      "用 /think <on|off|auto> 切换，加 -p 持久化到 settings.json",
+    ].join("\n");
+    const { lastFrame } = render(
+      <CommandMessage input="/think" output={output} width={80} />,
+    );
+    const frame = lastFrame() ?? "";
+    // 末行（第 5 行）必须出现 → 证明没有被折叠到 3 行
+    expect(frame).toContain("持久化到 settings.json");
+    // 不应出现折叠摘要文案
+    expect(frame).not.toContain("已折叠");
+  });
+
   test("错误输出可渲染（isError）", () => {
     const { lastFrame } = render(
       <CommandMessage

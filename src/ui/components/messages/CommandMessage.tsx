@@ -62,20 +62,22 @@ export const CommandMessage: React.FC<CommandMessageProps> = ({
   const outputMaxColumnWidth = Math.max(width - OUTPUT_WIDTH_PADDING, 20);
 
   // ── 普通斜杠命令：沿用 UserMessage ──
+  // 内置斜杠命令（/think、/help、/model 等）的输出是我们自己生产的 UI 文本，
+  // 长度可控、需被完整阅读，不应像工具结果 / bash 输出那样被折叠。
+  // 故此处不套 SlicingMaxSizedBox，直接全量渲染（仍按列宽换行）。
   if (!isBashCommand(input)) {
     return (
       <Box flexDirection="column">
         <UserMessage text={input} width={width} />
         {output ? (
           <Box paddingLeft={2} marginTop={1}>
-            <SlicingMaxSizedBox
-              text={output}
-              maxLines={outputMaxLines}
-              overflowDirection="bottom"
-              maxColumnWidth={outputMaxColumnWidth}
+            <Text
               color={isError ? theme.status.error : undefined}
               dimColor={!isError}
-            />
+              wrap="wrap"
+            >
+              {output}
+            </Text>
           </Box>
         ) : null}
       </Box>
