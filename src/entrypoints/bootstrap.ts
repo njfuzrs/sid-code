@@ -59,6 +59,14 @@ async function main(): Promise<void> {
     return;
   }
 
+  // 快速路径 6: daemon 子命令（缺口 C1）— 本地调度守护进程（start/status/stop/restart/logs/install/uninstall）
+  if (args[0] === "daemon") {
+    profileCheckpoint("bootstrap_route_resolved");
+    const { handleDaemonCommand } = await import("../command/daemon.ts");
+    await handleDaemonCommand(args.slice(1));
+    return;
+  }
+
   // 所有快速路径未命中 → 启动早期输入捕获 → 加载完整 CLI
   profileCheckpoint("bootstrap_route_resolved");
 

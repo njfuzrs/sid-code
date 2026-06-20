@@ -76,11 +76,21 @@ durable: true = 持久化到磁盘，跨会话存活（默认 false）`;
       createdAt: Date.now(),
       recurring: params.recurring ?? true,
       durable: params.durable ?? false,
+      // 缺口 C1 §4.4：记录执行目录，守护进程 fork headless 时用作 cwd。
+      workspaceDir: process.cwd(),
     };
 
     const scheduler = getScheduler();
     if (task.durable) {
       scheduler.addDurableTask(task);
+      // 缺口 C1 §4.5：登记本项目到 durable-projects 注册表，
+      // 守护进程据此发现「所有项目的」durable 任务（自愈剔除失效项）。
+      try {
+        const { registerDurableProject } = await import("../daemon/durable-projects.ts");
+        registerDurableProject(process.cwd());
+      } catch {
+        /* 注册失败不阻塞任务创建 */
+      }
     } else {
       scheduler.addSessionTask(task);
     }

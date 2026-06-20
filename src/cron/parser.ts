@@ -157,6 +157,43 @@ function isWildcard(cronExpr: string, idx: number): boolean {
   return field === "*";
 }
 
+/**
+ * 计算 (fromMs, untilMs] 区间内所有应触发的时刻（升序）。
+ * 缺口 C1 catch-up：守护进程停机后重启，用本函数枚举错过的触发点。
+ * 上限 maxRuns 防止超长停机（如几年）枚举爆炸——只关心最近一次，取尾即可。
+ */
+export function computeMissedRuns(
+  cronExpr: string,
+  fromMs: number,
+  untilMs: number,
+  maxRuns = 10_000,
+): number[] {
+  const runs: number[] = [];
+  if (untilMs <= fromMs) return runs;
+  let cursor = fromMs;
+  for (let i = 0; i < maxRuns; i++) {
+    const next = computeNextCronRun(cronExpr, cursor);
+    if (next === null || next > untilMs) break;
+    runs.push(next);
+    cursor = next;
+  }
+  return runs;
+}
+
+/**
+ * 计算「只补最近一次」的 catch-up 时刻（对齐 cc Desktop「discards anything older」）。
+ * 返回 (fromMs, untilMs] 区间内最后一个应触发时刻；无错过返回 null。
+ * 日任务睡 6 天醒来只补 1 次——丢弃更早的所有错过时刻。
+ */
+export function computeLatestMissedRun(
+  cronExpr: string,
+  fromMs: number,
+  untilMs: number,
+): number | null {
+  const missed = computeMissedRuns(cronExpr, fromMs, untilMs);
+  return missed.length > 0 ? missed[missed.length - 1] : null;
+}
+
 /** 字符串稳定哈希（FNV-1a 变体），用于确定性抖动 */
 function hashString(s: string): number {
   let h = 2166136261;

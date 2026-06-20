@@ -55,6 +55,9 @@ function parseCLIArgs(): CLIArgs {
         "permission-mode": { type: "string" },
         "dangerously-skip-permissions": { type: "boolean" },
         yes: { type: "boolean", short: "y" },
+        // 缺口 C1 §5.3：预授权工具白名单（守护进程无头 job 注入；逗号分隔）
+        "allowed-tools": { type: "string" },
+        "disallowed-tools": { type: "string" },
 
         // 会话配置
         continue: { type: "boolean", short: "c" },
@@ -138,6 +141,13 @@ function parseCLIArgs(): CLIArgs {
     permissionMode: values["permission-mode"],
     skipPermissions: values["dangerously-skip-permissions"],
     yesMode: values.yes,
+    // 缺口 C1 §5.3：逗号分隔 → string[]（守护进程无头 job 预授权白名单）
+    allowedTools: values["allowed-tools"]
+      ? String(values["allowed-tools"]).split(",").map((s: string) => s.trim()).filter(Boolean)
+      : undefined,
+    disallowedTools: values["disallowed-tools"]
+      ? String(values["disallowed-tools"]).split(",").map((s: string) => s.trim()).filter(Boolean)
+      : undefined,
     continue: values.continue,
     resume: values.resume,
     print: values.print,
