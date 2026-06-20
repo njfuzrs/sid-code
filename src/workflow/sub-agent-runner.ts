@@ -108,6 +108,7 @@ export class SubAgentRunner implements AgentRunner {
           model: opts?.model, // executeInner 内再次优先用它
           schema: opts?.schema, // M2: 结构化输出
           cwd, // M4: worktree 真并行
+          effort: opts?.effort, // M4: 推理强度透传(low..max → provider high|max)
         },
         ctx.signal,
       );

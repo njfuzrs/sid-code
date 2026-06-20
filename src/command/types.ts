@@ -36,6 +36,23 @@ export interface AppContext {
   providerRegistry?: ProviderRegistry;
   mcpManager?: MCPManager;
   setModel: (model: string) => void;
+  /** 推理强度旋钮 setter（/effort 用）。persist=true 时写 settings.json。 */
+  setEffort?: (level: import("../llm/effort.ts").EffortSetting, persist?: boolean) => void;
+  /** 思考开关旋钮 setter（/think 用）。persist=true 时写 settings.json。 */
+  setThinking?: (setting: import("../llm/effort.ts").ThinkingSetting, persist?: boolean) => void;
+  /** 读取当前 effort 运行时态 + 能力（/effort 展示用） */
+  getEffortState?: () => {
+    runtime: import("../llm/effort.ts").EffortSetting;
+    applied: import("../llm/effort.ts").EffortLevel | undefined;
+    isAuto: boolean;
+    capability: import("../llm/effort.ts").EffortCapability;
+  };
+  /** 读取当前 thinking 运行时态 + 能力（/think 展示用） */
+  getThinkingState?: () => {
+    runtime: import("../llm/effort.ts").ThinkingSetting;
+    applied: boolean;
+    capability: import("../llm/effort.ts").EffortCapability;
+  };
   exitRequested: boolean;
   sessionState: SessionState;
   /** 将文本注入对话并触发 LLM 响应（自定义命令用） */
@@ -117,6 +134,28 @@ export interface CommandContext {
   cwd: string;
   /** 切换模型回调 */
   setModel?: (model: string) => void;
+  /**
+   * 推理强度旋钮 setter（/effort 用）。level=undefined 表示 auto。
+   * persist=true 时同时写 settings.json（跨会话生效）。
+   */
+  setEffort?: (level: import("../llm/effort.ts").EffortSetting, persist?: boolean) => void;
+  /**
+   * 思考开关旋钮 setter（/think 用）。setting=undefined 表示 auto。
+   * persist=true 时同时写 settings.json。
+   */
+  setThinking?: (setting: import("../llm/effort.ts").ThinkingSetting, persist?: boolean) => void;
+  /** 读取当前 effort/thinking 运行时态 + 能力描述（/effort、/think 无参时展示用） */
+  getEffortState?: () => {
+    runtime: import("../llm/effort.ts").EffortSetting;
+    applied: import("../llm/effort.ts").EffortLevel | undefined;
+    isAuto: boolean;
+    capability: import("../llm/effort.ts").EffortCapability;
+  };
+  getThinkingState?: () => {
+    runtime: import("../llm/effort.ts").ThinkingSetting;
+    applied: boolean;
+    capability: import("../llm/effort.ts").EffortCapability;
+  };
   /** 将文本注入对话并触发 LLM 响应 */
   sendToLLM?: (text: string) => Promise<void>;
   /** Shell 注入确认回调，返回 true 表示用户确认 */

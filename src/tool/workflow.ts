@@ -269,7 +269,39 @@ export class WorkflowTool implements Tool {
     // 8) 跑沙箱
     try {
       log.info("WORKFLOW", `▶ 启动 workflow "${meta.name}" (runId=${runId}, source=${source})`);
-      const { value } = await runInSandbox(src, runtime.buildApi());
+
+      // 内联子 workflow 原语(嵌套仅一层):共享同一 runtime 的调度器/计数器/budget/journal,
+      // 但用子脚本自己的 args,且子脚本里再调 workflow() 抛错(强制单层)。
+      const childWorkflow = async (
+        nameOrRef: string | { scriptPath: string },
+        childArgs?: unknown,
+      ): Promise<unknown> => {
+        // 解析子脚本来源
+        let childSrc: string;
+        if (typeof nameOrRef === "string") {
+          const p = join(workflowScriptsDir(), `${nameOrRef}.js`);
+          if (!existsSync(p)) {
+            throw new Error(`[workflow] 内联子 workflow 未找到: ${nameOrRef}(期望 ${p})`);
+          }
+          childSrc = readFileSync(p, "utf-8");
+        } else if (nameOrRef && typeof nameOrRef === "object" && nameOrRef.scriptPath) {
+          if (!existsSync(nameOrRef.scriptPath)) {
+            throw new Error(`[workflow] 内联子 workflow scriptPath 不存在: ${nameOrRef.scriptPath}`);
+          }
+          childSrc = readFileSync(nameOrRef.scriptPath, "utf-8");
+        } else {
+          throw new Error("[workflow] workflow(nameOrRef) 需要 string 名字或 {scriptPath}");
+        }
+        // 子脚本里再调 workflow() → 抛错(嵌套仅一层)
+        const nestedThrow = () => {
+          throw new Error("[workflow] 嵌套仅一层:子 workflow 内不能再调 workflow()");
+        };
+        const childApi = runtime.buildApi(nestedThrow, { args: childArgs });
+        const { value } = await runInSandbox(childSrc, childApi);
+        return value;
+      };
+
+      const { value } = await runInSandbox(src, runtime.buildApi(childWorkflow));
 
       const outputObj = {
         workflow: meta.name,

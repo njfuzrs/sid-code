@@ -80,6 +80,17 @@ export interface Config {
   /** 输出语言偏好: "zh" 中文优先（默认）, "en" 英文优先。不设置时系统提示词默认中文 */
   language?: "zh" | "en";
 
+  /**
+   * 推理强度档位初值（/effort 持久化端，settings.json effortLevel）。
+   * 缺省 = auto（跟随模型默认，不显式下发）。运行时态在 App.runtimeEffort，本字段仅作启动初值。
+   */
+  effortLevel?: "low" | "medium" | "high" | "max";
+  /**
+   * 思考开关初值（/think 持久化端，settings.json thinkingEnabled）。
+   * 缺省 = auto（跟随模型/provider 默认）。运行时态在 App.runtimeThinking，本字段仅作启动初值。
+   */
+  thinkingEnabled?: boolean;
+
   // 权限配置
   // 支持 6 种模式：default, always-allow, deny-write, acceptEdits, plan, dontAsk
   permissionMode: string;

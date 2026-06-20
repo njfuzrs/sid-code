@@ -191,6 +191,14 @@ export interface QueryDeps {
    */
   getCurrentPermissionMode?: () => string | undefined;
   /**
+   * Effort/Thinking 旋钮：读取当前运行时态（用户经 /effort、/think 切换）。
+   * queryLoop 每轮取最新值，经 effort.ts 能力映射层翻译成各 provider 线格式（照搬
+   * getCurrentPermissionMode 的「每轮取 getter」模式，保证运行时切换当轮生效）。可选——
+   * 未注入则回退到 thinking hint 旧逻辑（向后兼容）。
+   */
+  getEffortSetting?: () => import("../llm/effort.ts").EffortSetting;
+  getThinkingSetting?: () => import("../llm/effort.ts").ThinkingSetting;
+  /**
    * P0-2 / P0-3：读取当前 todo 状态快照（用于回注 + 完成度校验）。
    * 返回 null 表示无 todo 工具或无 todo 项。可 mock。
    */

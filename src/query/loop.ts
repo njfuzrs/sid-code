@@ -31,6 +31,13 @@ import {
   backfillOrphanToolResults,
 } from "../agent/message-invariants.ts";
 import { isAbortError } from "../llm/errors.ts";
+import {
+  resolveEffortCapability,
+  resolveAppliedEffort,
+  resolveThinking,
+  getEffortEnvOverride,
+  getThinkingEnvOverride,
+} from "../llm/effort.ts";
 import { isPromptTooLongError, reactiveCompact, DiminishingReturnsDetector } from "./reactive-compact.ts";
 import { runCompactPipeline } from "./compact/index.ts";
 import {
@@ -385,17 +392,40 @@ export async function* queryLoop(
       system: ctxMgr.getSystemPrompt(),
       maxTokens: config.maxTokens,
       tools: toolDefs,
-      // Extended Thinking / reasoning_effort 入口：由 engine 透传的 thinking 配置。
-      // - Anthropic provider 读 params.thinking.budgetTokens 开启 Extended Thinking；
-      // - DeepSeek（OpenAI 兼容）provider 在 budgetTokens 上无对应字段，思考强度改走
-      //   reasoningEffort：按预算档位映射（complex 50K 档=think hard/ultrathink → "max"，
-      //   其余 → "high"，DeepSeek 仅接受 high/max 两档）。
-      // 不传则各 provider 维持服务端默认。
-      ...(thinking ? { thinking } : {}),
-      ...(thinking?.enabled
-        ? { reasoningEffort: (thinking.budgetTokens >= 50_000 ? "max" : "high") as "high" | "max" }
-        : {}),
     };
+
+    // ─── Effort / Thinking 旋钮 → 各 provider 线格式（能力感知映射层，effort.ts）───
+    // 每轮取最新运行时态（照搬 getCurrentPermissionMode 模式，保证 /effort、/think 切换当轮生效）。
+    // 未注入 getter 时回退旧逻辑（thinking hint 直接写 SendParams），保证向后兼容。
+    if (deps.getEffortSetting || deps.getThinkingSetting) {
+      const modelConfig = config.availableModels?.find(m => m.name === config.model);
+      const cap = resolveEffortCapability({
+        model: config.model,
+        provider: config.provider,
+        baseURL: modelConfig?.baseURL ?? config.baseURL,
+        modelConfig: modelConfig ? { supportsThinking: modelConfig.supportsThinking } : undefined,
+      });
+      const runtimeEffort = deps.getEffortSetting?.();
+      const runtimeThinking = deps.getThinkingSetting?.();
+      let appliedEffort = resolveAppliedEffort(cap, runtimeEffort, getEffortEnvOverride());
+      const appliedThinking = resolveThinking(cap, runtimeThinking, getThinkingEnvOverride());
+
+      // §4.1 单轮关键词提级：ultrathink / think hard 命中（engine 经 thinking 透传 50K 预算）时，
+      // 该轮提到 max（仅这一轮，不改持久基线；状态栏只显示基线，避免困惑）。
+      if (thinking?.enabled && thinking.budgetTokens >= 50_000 && cap.supportsMaxEffort) {
+        appliedEffort = "max";
+      }
+
+      cap.applyToSendParams(sendParams, appliedEffort, appliedThinking);
+    } else {
+      // ── 向后兼容回退：无旋钮 getter 时，沿用 engine 透传的 thinking hint ──
+      // - Anthropic provider 读 params.thinking.budgetTokens 开启 Extended Thinking；
+      // - DeepSeek（OpenAI 兼容）按预算档位映射 reasoningEffort（50K→max，其余→high）。
+      if (thinking) sendParams.thinking = thinking;
+      if (thinking?.enabled) {
+        sendParams.reasoningEffort = (thinking.budgetTokens >= 50_000 ? "max" : "high") as "high" | "max";
+      }
+    }
 
     // ─── BeforeModel hook ───
     if (hookSystem) {

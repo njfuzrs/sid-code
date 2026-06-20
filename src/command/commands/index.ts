@@ -13,10 +13,14 @@ import compact from "./compact/index.ts";
 import model from "./model/index.ts";
 import btw from "./btw/index.ts";
 import loop from "./loop/index.ts";
+import effort from "./effort/index.ts";
+import think from "./think/index.ts";
 
 export const BUILTIN_COMMANDS: UnifiedCommand[] = [
   compact,
   model,
   btw,
   loop,
+  effort,
+  think,
 ];

@@ -240,18 +240,29 @@ export interface SendParams {
     budgetTokens: number;  // 思考预算 token 数（仅 Anthropic 生效）
   };
   /**
-   * 推理强度（DeepSeek 思考模式专用，OpenAI 兼容端点请求体顶层 `reasoning_effort`）。
-   * DeepSeek 仅接受 "high" | "max"（low/medium 会被服务端映射为 high，xhigh 映射为 max）。
-   * 不传则不下发该字段，沿用服务端默认（普通请求 high，Claude Code 类 Agent 请求 max）。
+   * 推理强度（思考模式专用，OpenAI 兼容端点请求体顶层 `reasoning_effort`）。
+   * - **DeepSeek**：仅接受 "high" | "max"（low/medium 会被服务端映射为 high，xhigh 映射为 max）。
+   * - **OpenAI o-series**：接受 "low" | "medium" | "high"（无 max，max 由映射层降为 high）。
+   * 不传则不下发该字段，沿用服务端默认（DeepSeek 普通请求 high，Claude Code 类 Agent 请求 max）。
    * Anthropic provider 忽略此字段（其思考强度走 thinking.budgetTokens）。
    */
-  reasoningEffort?: "high" | "max";
+  reasoningEffort?: "low" | "medium" | "high" | "max";
   /**
    * 用户标识（DeepSeek `user_id`，OpenAI 兼容端点请求体顶层字段）。
    * 用于 KVCache 隔离 / 调度隔离 / 内容安全隔离。须满足正则 `[a-zA-Z0-9\-*]+`、长度 ≤512。
    * 不传则不下发。其它 provider 忽略。
    */
   userId?: string;
+  /**
+   * 输出配置（Anthropic 兼容端点 `output_config`）。
+   * - **DeepSeek-via-Anthropic 端点**：仅 `effort` 被支持（budget_tokens 被忽略），
+   *   强度走 `output_config.effort`（high/max）。由 anthropic.ts 下发。
+   * 原生 Claude 不读此字段（其强度走 thinking.budget_tokens）；OpenAI 端点忽略。
+   * 不传则不下发。
+   */
+  outputConfig?: {
+    effort: "high" | "max";
+  };
 }
 
 /** 累积的流式响应 */

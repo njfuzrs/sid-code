@@ -74,6 +74,10 @@ export interface SubAgentTask {
   /** M4(Dynamic Workflows): 子代理工作目录（worktree 真并行用）。设置时整个执行包在
    *  withAgentCwd 上下文里，文件类工具经 getCwd() 自动以此为基准，并发隔离无需 chdir。 */
   cwd?: string;
+  /** M4(Dynamic Workflows): 推理强度。workflow agent({effort}) 透传而来。
+   *  low|medium|high → provider reasoningEffort "high"；xhigh|max → "max"
+   *  （provider 层仅接受 high|max，对齐 SendParams.reasoningEffort 契约）。 */
+  effort?: "low" | "medium" | "high" | "xhigh" | "max";
 }
 
 /** 子代理执行结果 */
@@ -685,6 +689,17 @@ export class SubAgent {
       let toolUseCount = 0;
       let tokenCount = 0;
 
+      // M4(Dynamic Workflows): effort → provider reasoningEffort（仅 high|max 两档）。
+      // low/medium/high → "high"；xhigh/max → "max"（对齐 SendParams.reasoningEffort 契约）。
+      const sendParamsExtra =
+        task.effort !== undefined
+          ? {
+              reasoningEffort: (task.effort === "xhigh" || task.effort === "max"
+                ? "max"
+                : "high") as "high" | "max",
+            }
+          : undefined;
+
       const loopResult = await runAgentLoop({
         provider: activeProvider,
         model: activeModel,
@@ -693,6 +708,7 @@ export class SubAgent {
         maxTurns,
         signal: mergedSignal,
         loopDetector,
+        sendParamsExtra,
         onBeforeTurn: (turn) => {
           // 消费 SendMessage 注入的消息（从第 2 轮开始检查）
           if (taskId && turn > 1) {

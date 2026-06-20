@@ -169,6 +169,17 @@ export class App {
   private sessionMemory: import("./session-memory/session-memory.ts").SessionMemoryHandle | null = null;
   /** 后台记忆提取句柄（每轮 end_turn 后 fire-and-forget 提取记忆，会话关闭前 drain）。 */
   private extractMemories: import("./memory/extract/extractor.ts").ExtractMemoriesHandle | null = null;
+  /**
+   * 推理强度运行时态（/effort 切换端）。undefined = auto（跟随模型默认）。
+   * 与 config.permissionMode 同级——运行时可变，queryLoop 每轮经注入的 getter 取最新值。
+   * 初值在构造函数解析：env > config.effortLevel(settings) > undefined。
+   */
+  private runtimeEffort: import("./llm/effort.ts").EffortSetting;
+  /**
+   * 思考开关运行时态（/think 切换端）。undefined = auto（跟随模型/provider 默认）。
+   * 初值：env > config.thinkingEnabled(settings) > undefined。
+   */
+  private runtimeThinking: import("./llm/effort.ts").ThinkingSetting;
 
   constructor(opts: AppOptions) {
     this.config = opts.config;
@@ -239,6 +250,26 @@ export class App {
       opts.config.provider === "anthropic" ||
       /deepseek/i.test(opts.config.model || opts.config.provider || "");
     this.thinkingMgr = new ThinkingManager(thinkingProvider);
+
+    // Effort/Thinking 旋钮运行时态初值解析：env > settings(config) > undefined(auto)。
+    // env 覆盖优先级最高且会被 queryLoop 每轮重新读取，这里仅解析 runtime 基线。
+    {
+      const { getEffortEnvOverride, getThinkingEnvOverride } = require("./llm/effort.ts");
+      const effortEnv = getEffortEnvOverride();
+      // env 已设（含强制 auto=undefined）则以 env 为基线；未设(null)才用 settings。
+      this.runtimeEffort = effortEnv !== null ? effortEnv : opts.config.effortLevel;
+      const thinkingEnv = getThinkingEnvOverride();
+      this.runtimeThinking =
+        thinkingEnv !== null
+          ? thinkingEnv
+            ? "on"
+            : "off"
+          : opts.config.thinkingEnabled === undefined
+            ? undefined
+            : opts.config.thinkingEnabled
+              ? "on"
+              : "off";
+    }
     // 如果有 providerRegistry，从中获取 availability 服务
     const availability = opts.providerRegistry?.availability;
 
@@ -335,6 +366,10 @@ export class App {
       // config.permissionMode 会被 enter_plan_mode / CLAUDE.md 规则 / 斜杠命令运行时改写，
       // 而 mode 指南只进有缓存的 system prompt——靠这里走每轮 reminder 通道补上时机缺失。
       getCurrentPermissionMode: () => this.config.permissionMode,
+      // Effort/Thinking 旋钮：把运行时态暴露给 queryLoop，每轮取最新值经 effort.ts 映射到线格式。
+      // 照搬 getCurrentPermissionMode 的「每轮取 getter」模式，保证 /effort、/think 切换当轮生效。
+      getEffortSetting: () => this.runtimeEffort,
+      getThinkingSetting: () => this.runtimeThinking,
       getTodoState: () => {
         // P0-2 / P0-3：把 TodoWriteTool 的内存状态暴露给 queryLoop，
         // 用于每轮回注完整清单（根因 1）+ end_turn 完成度硬校验（根因 1、2）。
@@ -396,6 +431,104 @@ export class App {
     return this.commandRegistry.all()
       .filter(cmd => !builtinNames.has(cmd.name()))
       .map(cmd => ({ name: cmd.name(), description: cmd.description() }));
+  }
+
+  /** 解析当前模型的 effort 能力描述符（/effort、/think 状态读取 + setter 共用）。 */
+  private resolveEffortCap(): import("./llm/effort.ts").EffortCapability {
+    const { resolveEffortCapability } = require("./llm/effort.ts");
+    const mc = this.config.availableModels?.find(m => m.name === this.config.model);
+    return resolveEffortCapability({
+      model: this.config.model,
+      provider: this.config.provider,
+      baseURL: mc?.baseURL ?? this.config.baseURL,
+      modelConfig: mc ? { supportsThinking: mc.supportsThinking } : undefined,
+    });
+  }
+
+  /** 读取 effort 运行时态 + 展示档位（/effort 无参展示用）。 */
+  private getEffortState() {
+    const eff = require("./llm/effort.ts");
+    const cap = this.resolveEffortCap();
+    const envOverride = eff.getEffortEnvOverride();
+    return {
+      runtime: this.runtimeEffort,
+      applied: eff.getDisplayedEffort(cap, this.runtimeEffort, envOverride),
+      isAuto: eff.isEffortAuto(this.runtimeEffort, envOverride),
+      capability: cap,
+    };
+  }
+
+  /** 读取 thinking 运行时态 + 实际开关（/think 无参展示用）。 */
+  private getThinkingState() {
+    const eff = require("./llm/effort.ts");
+    const cap = this.resolveEffortCap();
+    return {
+      runtime: this.runtimeThinking,
+      applied: eff.resolveThinking(cap, this.runtimeThinking, eff.getThinkingEnvOverride()),
+      capability: cap,
+    };
+  }
+
+  /**
+   * 设置 effort 运行时态（/effort 用）。
+   * - 更新 runtimeEffort（queryLoop 下一轮即生效）；
+   * - persist=true 时写 settings.json effortLevel（跨会话）；
+   * - 推送展示态到状态栏（TUIState，对标 model 列经 updateState 流到 ConfigContext）。
+   */
+  private setEffortRuntime(level: import("./llm/effort.ts").EffortSetting, persist?: boolean): void {
+    this.runtimeEffort = level;
+    if (persist) this.persistKnob("effortLevel", level);
+    this.pushKnobDisplay();
+  }
+
+  /** 设置 thinking 运行时态（/think 用）。语义同 setEffortRuntime。 */
+  private setThinkingRuntime(setting: import("./llm/effort.ts").ThinkingSetting, persist?: boolean): void {
+    this.runtimeThinking = setting;
+    if (persist) {
+      // settings.json thinkingEnabled 是 boolean：on→true / off→false / auto→删除字段（回退默认）。
+      this.persistKnob("thinkingEnabled", setting === undefined ? undefined : setting === "on");
+    }
+    this.pushKnobDisplay();
+  }
+
+  /** 写单个旋钮字段到用户 settings.json（value=undefined 表示删除该字段，回退 auto）。 */
+  private persistKnob(key: "effortLevel" | "thinkingEnabled", value: unknown): void {
+    try {
+      const { getSettingsForSource, writeSettingsFile } = require("./config/settings/index.ts");
+      const { settings } = getSettingsForSource("userSettings");
+      const current: Record<string, unknown> = { ...(settings ?? {}) };
+      if (value === undefined) delete current[key];
+      else current[key] = value;
+      writeSettingsFile("userSettings", current);
+    } catch (e) {
+      getLogger().warn("KNOB", `持久化 ${key} 失败（不阻断）: ${(e as Error)?.message}`);
+    }
+  }
+
+  /**
+   * 把 effort/thinking 展示态推到状态栏。
+   * 经 tuiStateUpdater 写 TUIState（effortDisplay/thinkingDisplay），由 App.tsx 派生到
+   * ConfigContext → Footer。无 TUI（无头模式）时 tuiStateUpdater 为 null，安全跳过。
+   */
+  private pushKnobDisplay(): void {
+    if (!this.tuiStateUpdater) return;
+    const eff = require("./llm/effort.ts");
+    const cap = this.resolveEffortCap();
+    const effortEnv = eff.getEffortEnvOverride();
+    this.tuiStateUpdater({
+      effortDisplay: cap.supportsEffort
+        ? {
+            level: eff.getDisplayedEffort(cap, this.runtimeEffort, effortEnv),
+            isAuto: eff.isEffortAuto(this.runtimeEffort, effortEnv),
+          }
+        : null,
+      thinkingDisplay: cap.supportsThinkingToggle
+        ? {
+            on: eff.resolveThinking(cap, this.runtimeThinking, eff.getThinkingEnvOverride()),
+            isAuto: this.runtimeThinking === undefined && eff.getThinkingEnvOverride() === null,
+          }
+        : null,
+    });
   }
 
   /**
@@ -1947,6 +2080,9 @@ export class App {
       permissionMode: this.config.permissionMode || "default",
       isPlanMode: false,
       gitBranch: (() => { try { return execSync("git rev-parse --abbrev-ref HEAD 2>/dev/null", { encoding: "utf-8" }).trim(); } catch { return ""; } })(),
+      // effort/thinking 展示态初值置 null，doInit 末尾 pushKnobDisplay() 会按当前模型能力填充。
+      effortDisplay: null,
+      thinkingDisplay: null,
       statusMessage: "",
       permissionRequest: null,
       shellConfirmRequest: null,
@@ -2038,6 +2174,8 @@ export class App {
 
     // 注入 TUI 状态更新器（供 activatePlanMode/deactivatePlanMode 同步 permissionMode）
     this.tuiStateUpdater = (patch) => updateState(patch as any);
+    // 初次推送 effort/thinking 展示态到状态栏（让会话启动即显示当前旋钮档位）。
+    this.pushKnobDisplay();
 
     // 通知队列：管理 statusMessage 的叠加与去重，解决多条通知互相覆盖的问题
     // - sticky 通知（max_turns/loop_detected/hook_blocked 等）不设超时，持久保留
@@ -2575,7 +2713,13 @@ export class App {
               this.ctxMgr.setMaxTokens(newWindow);
             } catch { /* 窗口解析失败不影响切换，沿用旧窗口 */ }
             updateState({ model: m });
+            // 模型变了，effort/thinking 能力可能随之变（如换到不支持 max 的模型），重推展示态。
+            this.pushKnobDisplay();
           },
+          setEffort: (level, persist) => this.setEffortRuntime(level, persist),
+          setThinking: (setting, persist) => this.setThinkingRuntime(setting, persist),
+          getEffortState: () => this.getEffortState(),
+          getThinkingState: () => this.getThinkingState(),
           exitRequested: false,
           sessionState: this.sessionState,
           mcpManager: this.mcpManager,

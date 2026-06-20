@@ -325,3 +325,77 @@ describe("M1 runtime — 端到端(沙箱 + 运行时联调)", () => {
     expect(value).toBe("R:审查 src/foo.ts");
   });
 });
+
+describe("M4 runtime — agent({effort}) 透传", () => {
+  test("opts.effort 原样传给 runner(由 SubAgentRunner 映射 high|max)", async () => {
+    const seen: Array<string | undefined> = [];
+    const rt = new WorkflowRuntime({
+      runner: makeRunner(async (_p, opts) => {
+        seen.push(opts?.effort);
+        return 1;
+      }),
+    });
+    const api = rt.buildApi();
+    await api.agent("a", { effort: "low" });
+    await api.agent("b", { effort: "max" });
+    await api.agent("c"); // 不传 = undefined
+    expect(seen).toEqual(["low", "max", undefined]);
+  });
+});
+
+describe("M6 runtime — workflow() 内联子 workflow(嵌套仅一层)", () => {
+  test("buildApi 注入 workflowFn 后,脚本里可调 workflow() 跑子脚本", async () => {
+    const rt = new WorkflowRuntime({ runner: makeRunner(async (p: string) => `R:${p}`) });
+    // 子 workflow:直接由 workflowFn 桩实现(模拟 tool 层的 childWorkflow)
+    const childImpl = async (_nameOrRef: unknown, childArgs: unknown) => {
+      // 用同一 runtime 的原语跑一个内联子脚本
+      const childApi = rt.buildApi(
+        () => {
+          throw new Error("嵌套仅一层");
+        },
+        { args: childArgs },
+      );
+      const childScript = `export const meta = { name: 'child', description: 'd' }
+        return await agent('子:' + args.x);`;
+      const { value } = await runInSandbox(childScript, childApi);
+      return value;
+    };
+    const api = rt.buildApi(childImpl);
+    const parentScript = `export const meta = { name: 'parent', description: 'd' }
+      const sub = await workflow('child', { x: 42 });
+      return { sub };`;
+    const { value } = await runInSandbox(parentScript, api);
+    expect(value).toEqual({ sub: "R:子:42" });
+    // 父脚本只调 workflow()(不直接调 agent);子脚本调 1 次 agent。
+    // 共享同一 runtime 计数器 → 总计 1(证明子 workflow 复用父的计数器,而非各自归零)。
+    expect(rt.agentCallCount).toBe(1);
+  });
+
+  test("子 workflow 内再调 workflow() → 抛错(单层约束)", async () => {
+    const rt = new WorkflowRuntime({ runner: makeRunner() });
+    const nestedThrow = () => {
+      throw new Error("[workflow] 嵌套仅一层:子 workflow 内不能再调 workflow()");
+    };
+    const childApi = rt.buildApi(nestedThrow, { args: undefined });
+    const childScript = `export const meta = { name: 'c', description: 'd' }
+      return await workflow('grandchild');`;
+    await expect(runInSandbox(childScript, childApi)).rejects.toThrow(/嵌套仅一层/);
+  });
+
+  test("子 workflow 拿到自己的 args,不是父的 args", async () => {
+    const rt = new WorkflowRuntime({ runner: makeRunner(), args: { parent: true } });
+    const childImpl = async (_ref: unknown, childArgs: unknown) => {
+      const childApi = rt.buildApi(undefined, { args: childArgs });
+      const childScript = `export const meta = { name: 'child', description: 'd' }
+        return args;`;
+      const { value } = await runInSandbox(childScript, childApi);
+      return value;
+    };
+    const api = rt.buildApi(childImpl);
+    const parentScript = `export const meta = { name: 'parent', description: 'd' }
+      return await workflow('child', { child: true });`;
+    const { value } = await runInSandbox(parentScript, api);
+    expect(value).toEqual({ child: true });
+  });
+});
+

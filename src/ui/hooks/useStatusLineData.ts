@@ -19,7 +19,7 @@ import { useUIState } from "../contexts/UIStateContext.tsx";
 import { useConfig } from "../contexts/ConfigContext.tsx";
 import { useSettings } from "../contexts/SettingsContext.tsx";
 import { formatLargeNumber } from "../utils/format-number.ts";
-import { TOKEN_IN, TOKEN_OUT } from "../constants/figures.ts";
+import { TOKEN_IN, TOKEN_OUT, EFFORT_GLYPHS, EFFORT_AUTO, THINKING_ON, THINKING_OFF } from "../constants/figures.ts";
 import type { PricingModelEntry } from "../../api/cost-tracker.ts";
 
 /** 缩短路径：~ 替换 home，超长时只保留最后两级。导出供测试与 Footer 复用。 */
@@ -102,6 +102,44 @@ export function deriveCacheMetrics(
   return null;
 }
 
+/**
+ * 推理强度展示派生（effort 列）：档位 → 字形 + 文本 + 语义色。
+ * - null（模型不支持档位）→ 返回 null，Footer 不渲染该列。
+ * - auto 态 → 空心点 ◌ + 灰色，文本带 (auto) 后缀提示「跟随默认」。
+ * - 显式档位 → 填充方块字形（▁▃▅█）+ 档位名；max 用品牌色点睛，其余用默认灰。
+ */
+export function deriveEffort(
+  effortDisplay: { level: "low" | "medium" | "high" | "max"; isAuto: boolean } | null,
+  defaultColor: string,
+): { glyph: string; text: string; color: string } | null {
+  if (!effortDisplay) return null;
+  const { level, isAuto } = effortDisplay;
+  if (isAuto) {
+    return { glyph: EFFORT_AUTO, text: `${level} (auto)`, color: defaultColor };
+  }
+  // max 档用品牌强调色点睛（最高强度值得一眼可辨），其余档位用默认灰，保持克制。
+  const color = level === "max" ? theme.ui.active : defaultColor;
+  return { glyph: EFFORT_GLYPHS[level], text: level, color };
+}
+
+/**
+ * 思考开关展示派生（thinking 列）：开/关 → 字形 + 文本 + 语义色。
+ * - null（模型不支持思考开关）→ 返回 null，Footer 不渲染该列。
+ * - 开启 → 实心星 ✻ + 成功色（点睛）；关闭 → 空心星 ✧ + 灰色。
+ * - auto 态在文本加 (auto) 后缀，颜色保持灰（不点睛，因非用户显式开启）。
+ */
+export function deriveThinking(
+  thinkingDisplay: { on: boolean; isAuto: boolean } | null,
+  defaultColor: string,
+): { glyph: string; text: string; color: string } | null {
+  if (!thinkingDisplay) return null;
+  const { on, isAuto } = thinkingDisplay;
+  const text = isAuto ? `${on ? "on" : "off"} (auto)` : on ? "on" : "off";
+  const glyph = on ? THINKING_ON : THINKING_OFF;
+  const color = on && !isAuto ? theme.status.success : defaultColor;
+  return { glyph, text, color };
+}
+
 /** 状态栏聚合数据（纯数据，无 React 元素）。 */
 export interface StatusLineData {
   itemColor: string;
@@ -118,6 +156,10 @@ export interface StatusLineData {
   context: { text: string; color: string } | null;
   model: string;
   scroll: { text: string } | null;
+  /** effort 列派生（null = 模型不支持档位，不渲染该列） */
+  effort: { glyph: string; text: string; color: string } | null;
+  /** thinking 列派生（null = 模型不支持思考开关，不渲染该列） */
+  thinking: { glyph: string; text: string; color: string } | null;
 }
 
 export interface StatusLineInput {
@@ -183,9 +225,13 @@ export function useStatusLineData(input: StatusLineInput): StatusLineData {
             },
       model,
       scroll: showScroll ? { text: `↑${scrollPercent}%` } : null,
+      effort: deriveEffort(config.effortDisplay, itemColor),
+      thinking: deriveThinking(config.thinkingDisplay, itemColor),
     };
   }, [
     config.cwd,
+    config.effortDisplay,
+    config.thinkingDisplay,
     permissionMode,
     isPlanMode,
     gitBranch,

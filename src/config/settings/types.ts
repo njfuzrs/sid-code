@@ -180,6 +180,10 @@ export const SettingsSchema = lazySchema(() =>
       enableLLMClassifier: z.boolean().optional(),
       classifierModel: z.string().optional(),
 
+      // 推理强度 / 思考开关旋钮（/effort、/think 持久化端；缺省 = auto 跟随模型默认）
+      effortLevel: z.enum(["low", "medium", "high", "max"]).optional(),
+      thinkingEnabled: z.boolean().optional(),
+
       // 目录控制
       allowedDirectories: z.array(z.string()).optional(),
       blockedDirectories: z.array(z.string()).optional(),

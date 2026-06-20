@@ -274,15 +274,19 @@ export class WorkflowRuntime {
   /**
    * 组装注入沙箱的 API。
    * @param workflowFn  M6 注入的内联子 workflow 实现(可选)
+   * @param argsOverride 覆盖注入的 args(子 workflow 用,传自己的 args 而非父的)
    */
-  buildApi(workflowFn?: WorkflowApi["workflow"]): WorkflowApi {
+  buildApi(
+    workflowFn?: WorkflowApi["workflow"],
+    argsOverride?: { args: unknown },
+  ): WorkflowApi {
     return {
       agent: this.agent,
       parallel: this.parallel,
       pipeline: this.pipeline,
       phase: this.phase,
       log: this.log,
-      args: this.args,
+      args: argsOverride ? argsOverride.args : this.args,
       budget: this.budget,
       workflow: workflowFn,
     };

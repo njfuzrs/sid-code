@@ -227,6 +227,13 @@ export class OpenAIProvider implements Provider {
     if (params.userId) {
       requestBody.user_id = params.userId;
     }
+
+    // OpenAI o-series（o1/o3/o4…）：内置推理，仅透传 reasoning_effort（low/medium/high，无 max）。
+    // 不下发 thinking 开关（o-series 无显式开关）。effort.ts 已把 max 钳为 high，这里原样透传。
+    const isOSeries = /^o[0-9]/i.test(model);
+    if (isOSeries && params.reasoningEffort && params.reasoningEffort !== "max") {
+      requestBody.reasoning_effort = params.reasoningEffort;
+    }
   }
 
   /**

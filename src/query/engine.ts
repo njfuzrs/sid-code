@@ -67,6 +67,9 @@ export interface QueryEngineDeps {
   getPlanModeReminder?: () => Promise<string | null>;
   /** 缺口 C：读取当前 permission mode（运行时可变，每轮注入 mode 指南到消息流） */
   getCurrentPermissionMode?: () => string | undefined;
+  /** Effort/Thinking 旋钮：读取运行时态（用户 /effort、/think 切换），每轮经 effort.ts 映射到线格式 */
+  getEffortSetting?: () => import("../llm/effort.ts").EffortSetting;
+  getThinkingSetting?: () => import("../llm/effort.ts").ThinkingSetting;
   /** P0-2 / P0-3：读取 todo 状态快照（回注 + 完成度校验用） */
   getTodoState?: () => { todos: import("../tool/todo-write.ts").TodoItem[]; writeVersion: number } | null;
 }
@@ -219,6 +222,8 @@ export class QueryEngine {
       resetFallbackFlag: () => this.deps.fallback.reset(),
       getPlanModeReminder: this.deps.getPlanModeReminder,
       getCurrentPermissionMode: this.deps.getCurrentPermissionMode,
+      getEffortSetting: this.deps.getEffortSetting,
+      getThinkingSetting: this.deps.getThinkingSetting,
       getTodoState: this.deps.getTodoState,
       sessionStore: this.deps.sessionStore,
       // Step 0：Session Memory 每轮收尾钩子（fire-and-forget，内部按双阈值决定是否提取）。

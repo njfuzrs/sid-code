@@ -112,3 +112,36 @@ export const TASK_KILLED_MARK = "⊘";
  */
 export const TITLE_STATIC_PREFIX = "✳";
 export const TITLE_ANIMATION_FRAMES = ["⠂", "⠐"];
+
+/**
+ * 状态栏「推理强度档位」字形（effort 列）。
+ *
+ * 遵循 L1.1 元原则「同族递进」：用同一字形族的**填充度**表达 4 档强度递进，
+ * 不为每档引入新形状。沿用进度/电量语义的方块填充族 ▁▃▅█（低→高，柱状升高），
+ * 一眼可辨档位高低，且与 ▰▱ 进度族同构、单色几何、跨终端占位稳定。
+ *
+ * auto 态不取这里的字形，单独用 ◌（空心点，表示「未定/跟随默认」），见 useStatusLineData。
+ */
+export const EFFORT_LOW = "▁";
+export const EFFORT_MEDIUM = "▃";
+export const EFFORT_HIGH = "▅";
+export const EFFORT_MAX = "█";
+/** effort auto 态字形（未显式设档，跟随模型默认）。空心点 = 「未定」。 */
+export const EFFORT_AUTO = "◌";
+
+/** 档位 → 字形映射（供 useStatusLineData 取用，避免渲染层硬编码）。 */
+export const EFFORT_GLYPHS: Record<"low" | "medium" | "high" | "max", string> = {
+  low: EFFORT_LOW,
+  medium: EFFORT_MEDIUM,
+  high: EFFORT_HIGH,
+  max: EFFORT_MAX,
+};
+
+/**
+ * 状态栏「思考开关」字形（thinking 列）。复用思考过程标记 ✻ 字形族：
+ * - 开启：✻（实心星，与消息流思考标记同构，语义一致）。
+ * - 关闭：✧（空心星，同族不同填充，表「思考已关」）。
+ * 靠填充度区分开/关，不引入异形字。
+ */
+export const THINKING_ON = "✻";
+export const THINKING_OFF = "✧";

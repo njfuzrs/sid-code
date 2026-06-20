@@ -122,8 +122,12 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
     potentialColumns.push({ id, header, element, width: dataWidth, isHighPriority });
   };
 
-  // CWD
-  addCol("cwd", "目录", <Text color={itemColor}>{data.cwdDisplay}</Text>, stringWidth(data.cwdDisplay));
+  // 推理强度档位（effort）。替代原 CWD 列：目录信息在标题栏已有，状态栏改露更高频切换的旋钮。
+  // null = 当前模型不支持档位切换，不渲染该列。
+  if (data.effort) {
+    const effortLabel = `${data.effort.glyph} ${data.effort.text}`;
+    addCol("effort", "强度", <Text color={data.effort.color}>{effortLabel}</Text>, stringWidth(effortLabel));
+  }
 
   // 权限模式
   addCol("mode", "模式", <Text color={data.permission.color}>{data.permission.display}</Text>, stringWidth(data.permission.display));
@@ -133,9 +137,11 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
     addCol("plan", "", <Text bold color={theme.ui.active}>[PLAN]</Text>, 6);
   }
 
-  // Git 分支
-  if (data.gitBranch) {
-    addCol("git", "分支", <Text color={itemColor}>{data.gitBranch}</Text>, stringWidth(data.gitBranch));
+  // 思考开关（thinking）。替代原 Git 分支列：分支信息低频，状态栏改露思考开关。
+  // null = 当前模型不支持思考开关，不渲染该列。
+  if (data.thinking) {
+    const thinkingLabel = `${data.thinking.glyph} ${data.thinking.text}`;
+    addCol("thinking", "思考", <Text color={data.thinking.color}>{thinkingLabel}</Text>, stringWidth(thinkingLabel));
   }
 
   // Debug 模式

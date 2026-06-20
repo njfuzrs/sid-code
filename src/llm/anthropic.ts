@@ -140,6 +140,12 @@ export class AnthropicProvider implements Provider {
               budget_tokens: params.thinking.budgetTokens,
             },
           }),
+          // DeepSeek-via-Anthropic 端点：强度走 output_config.effort（budget_tokens 被服务端忽略）。
+          // 原生 Claude 不下发此字段（其强度走上面的 budget_tokens），effort.ts 仅对 deepseek-anthropic
+          // 规则填充 params.outputConfig，故这里按 params 是否含该字段透传即可。
+          ...(params.outputConfig && {
+            output_config: { effort: params.outputConfig.effort },
+          }),
         },
         {
           headers: { "x-client-request-id": clientRequestId },
@@ -343,6 +349,16 @@ export class AnthropicProvider implements Provider {
         system: system as any,
         tools: tools as any,
         stream: false,
+        // 与流式路径一致：Extended Thinking + DeepSeek-via-Anthropic 端点的 output_config.effort。
+        ...(params.thinking?.enabled && {
+          thinking: {
+            type: "enabled",
+            budget_tokens: params.thinking.budgetTokens,
+          },
+        }),
+        ...(params.outputConfig && {
+          output_config: { effort: params.outputConfig.effort },
+        }),
       },
       signal ? { signal } : undefined,
     );
