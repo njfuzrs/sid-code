@@ -46,8 +46,12 @@ const state: BootstrapState = {
 
 // --- 工作目录 ---
 
+import { getAgentCwd } from "./cwd-context.ts";
+
 export function getCwd(): string {
-  return state.cwd;
+  // M4(Dynamic Workflows): 若处于某子代理的 worktree 上下文(withAgentCwd),优先返回其 cwd,
+  // 让文件类工具自动以该 worktree 为基准,实现并发隔离而无需 process.chdir。
+  return getAgentCwd() ?? state.cwd;
 }
 export function setCwd(newCwd: string): void {
   state.cwd = newCwd;

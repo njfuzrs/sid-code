@@ -3,8 +3,8 @@ name: security-audit
 description: "针对 PR diff 输出结构化安全审计报告. 检测 8 类漏洞 (injection / secret_leak / xss / auth_bypass / crypto_weak / cve_dependency / iac_misconfig / data_leak), 引用具体 file:line + CWE/OWASP 引用. 专为 PR-to-Prod 流程的合规卡点设计."
 when-to-use: "当用户说 '安全审计' / 'security review' / '检查漏洞' / 'SAST' / '审计这个 PR' 时触发, 或外部通过 sid-code skill run security-audit 调用. 与 code-review 输入域有重叠 (都看 PR diff) 但目标分层: review 看整体 PR 质量, security-audit 在同输入上做更深入安全分析. 与 ci-self-heal 输入域不重叠 (CI log vs PR diff)."
 mode: delegate
-allowed-tools: read, grep, glob, bash
-max-turns: 25
+allowed-tools: read, grep, glob, bash, sub_agent
+max-turns: 30
 timeout-mins: 3
 sla:
   p50_ms: 60000
@@ -90,6 +90,8 @@ release_metadata:
    - **OWASP**: A01:2021 - Broken Access Control (optional)
    - **Evidence**: <file:line + code snippet, redacted>
    - **Why**: <reasoning>
+   - **Verdict**: <CONFIRMED | PARTIAL | UNVERIFIABLE>（经独立 verify 子代理证伪后的裁定；REFUTED 的不出现在此列表）
+   - **Refutation**: <一次证伪尝试与结果：可利用性是否成立 + 是否在增量行 + file:line 证据>
    - **Fix Direction**: <修复方向, 文字描述, 不直接给 edit 命令>
    - **References**: <CVE / OWASP / 内部规范引用>
 
@@ -113,7 +115,7 @@ release_metadata:
 - **RL-001 不删除用户代码**: allowed-tools 不含 edit/write, 你不能调它们. Fix Direction 必须是文字描述, 不是工具调用.
 - **RL-002 不泄露凭证**: PR diff 中可能含 token / API key, 在输出中必须 redact (替换为 `<REDACTED:reason>`); 与内核 secret-redact hook (ADR-026) 联动, 已被 hook 拦截的内容显示为 `<REDACTED:hook>`
 - **RL-003 不绕过 Permission**: 你只 read/grep/glob/bash; bash 仅用于查询命令 (npm view / git log), 不修改状态
-- **RL-004 不无限循环**: max-turns 25, timeout 3 分钟, 超出 → block (合规类必须 block 不允许 degrade)
+- **RL-004 不无限循环**: max-turns 30, timeout 3 分钟, 超出 → block (合规类必须 block 不允许 degrade)
 - **RL-005 不跨租户泄露**: 仅审计当前 PR 范围内的代码, 不读取其他 repo / 用户私密目录
 - **RL-006 不修改测试断言**: 安全审计涉及测试时, 必须明确标"测试代码与生产代码分别评估"
 - **RL-007 不编造问题**: 每条 finding 必须含 **Evidence** 字段且引用具体行号 (file:line); 不能编造没出现在 diff 里的漏洞 — 这是合规失效的最大风险源
@@ -166,13 +168,32 @@ release_metadata:
 
 误报过滤是降低 false_positive 的关键. block 决策必须基于真增量行 high-severity finding, 不基于历史代码.
 
+### 3.4.1 Step D+: 对抗验证 (find → 强制 refute → synthesize)
+
+Step B–D 产出的是**候选漏洞**, 不是定论. 安全审计 `failure_policy = block` —— 一条 high-severity 误报会卡死 PR (over-block), 一条漏掉的真漏洞会放行风险. 对每条 **high-severity 候选强制走一次独立证伪**, 这是 `block` 判定的前置条件.
+
+1. **find**: Step B–D 已产出候选 findings (每条含类别 / `file:line` / severity / 是否在增量行).
+2. **强制 refute (独立证伪)**: 对每条 high-severity 候选, **委托一个独立的 verify 子代理**去推翻它——
+   - 调 `sub_agent` 工具, `agent_type: "verify"` (内置对抗式提示词: 默认怀疑、读码举证、grep 调用方/数据流、不确定降级).
+   - prompt 给出: 漏洞类别、`file:line` + 代码片段 (已 redact)、初判 severity、CWE/OWASP, 要求子代理**尝试推翻**——重点核对两件事: ① **可利用性** (该路径是否真能被攻击者触达? 输入是否真未经净化? 还是已被上游守护/框架转义兜住?); ② **是否在 PR 增量行** (而非历史代码). 输出四档裁定 (CONFIRMED / REFUTED / PARTIAL / UNVERIFIABLE) + 证据 + 一次证伪尝试.
+   - 多条 high 候选可并发发起多个 `sub_agent` 调用 (受内核并发上限管控).
+   - **降级回退**: 若 `sub_agent` 不可用, 主上下文内换怀疑视角自查——追数据流到 source/sink, grep 是否有现成净化/转义/参数化, 严禁跳过.
+3. **synthesize (裁决合并)**:
+   - **CONFIRMED** → 保留 high, 计入 block 判定.
+   - **REFUTED** → **从 findings 剔除** (或降到 low + 注明"经证伪不可利用"). 这是降 over-block 的关键, 不是漏报.
+   - **PARTIAL** → 按证伪结果校准 severity (常见: 漏洞真实但需特定前置条件, high→medium).
+   - **UNVERIFIABLE** → 不计入 high block 判定, 降为 warn 级并标"需运行时/渗透验证".
+
+> ⚠️ **block 判定 (Step E) 只能基于经 refute 裁定为 CONFIRMED 的 high-severity 增量行 finding**. 未经证伪的候选不得触发 block —— 这是 over-block 控制与 RL-007 (不编造) 的合规前置. medium/low 候选可不强制起子代理, 但仍需主上下文自查证据成立.
+
+
 ### 3.5 Step E: Verdict 决策
 
 | 输入 | Verdict |
 | --- | --- |
-| ≥ 1 条 high-severity 在增量行 | `block` |
-| ≥ 1 条 medium-severity 在增量行 + 0 high | `warn` |
-| 仅 low-severity 或全部 outside-pr-scope | `pass` |
+| ≥ 1 条 high-severity 在增量行 **且经 §3.4.1 refute 裁定 CONFIRMED** | `block` |
+| ≥ 1 条 medium-severity 在增量行 + 0 个 CONFIRMED high | `warn` |
+| 仅 low-severity / 全部 outside-pr-scope / high 候选全被 REFUTED | `pass` |
 | 检测过程异常 / 部分超时 | `block` (合规类不静默放行) |
 
 ---
@@ -244,7 +265,7 @@ release_metadata:
 1. **RL-001 不删除用户代码** — allowed-tools 严格限定 read/grep/glob/bash
 2. **RL-002 不泄露凭证** — diff/log 中的 token / API key 必须 redact 输出, 与 ADR-026 hook 联动
 3. **RL-003 不绕过 Permission** — bash 仅查询命令, 不改文件 / 状态
-4. **RL-004 不无限循环** — max-turns 25 / timeout 3min
+4. **RL-004 不无限循环** — max-turns 30 / timeout 3min
 5. **RL-005 不跨租户泄露** — 仅审计当前 PR 范围, 不读其他 repo
 6. **RL-006 不修改测试断言** — 测试代码与生产代码分别评估
 7. **RL-007 不编造问题** — 每条 finding 必须有 file:line 证据 (合规失效最大风险源)

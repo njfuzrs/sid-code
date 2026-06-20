@@ -13,6 +13,10 @@ import type { LegacyTool } from "../tool/types.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { FileReadTracker } from "../tool/file-read-tracker.ts";
 import { createStatefulTools, STATEFUL_TOOL_NAMES } from "../tool/stateful-tools.ts";
+import {
+  StructuredOutputTool,
+  structuredOutputPromptSuffix,
+} from "../tool/structured-output-tool.ts";
 import { getLogger } from "../debug/logger.ts";
 import type { HookSystem } from "../hook/system.ts";
 import { LoopDetector } from "./loop-detection.ts";
@@ -37,6 +41,7 @@ import { drainAgentMessages } from "./message-queue.ts";
 import { getAgentSystemPrompt, getAgentWhenToUse, type AgentDefinition } from "./agent-definition.ts";
 import { platform, homedir } from "os";
 import { cwd } from "process";
+import { withAgentCwd } from "../bootstrap/cwd-context.ts";
 
 /** 子代理类型 */
 export type SubAgentType = "explore" | "task" | "summarize" | "plan" | "verify";
@@ -61,6 +66,14 @@ export interface SubAgentTask {
   /** 后台异步执行标记（内部使用）。为 true 时工具过滤额外套用 Layer 4 异步白名单，
    *  把后台子代理可用工具收敛到安全子集（对标 claude-code ASYNC_AGENT_ALLOWED_TOOLS）。 */
   _isAsync?: boolean;
+  /** M2(Dynamic Workflows): 结构化输出 JSON Schema。存在时给子代理挂 StructuredOutput 工具，
+   *  强制其按 schema 返回；执行结果旁路 extractFinalText，直接用工具捕获的 JSON。 */
+  schema?: Record<string, unknown>;
+  /** M4(Dynamic Workflows): 显式指定子代理模型，优先于按类型查找的默认模型。 */
+  model?: string;
+  /** M4(Dynamic Workflows): 子代理工作目录（worktree 真并行用）。设置时整个执行包在
+   *  withAgentCwd 上下文里，文件类工具经 getCwd() 自动以此为基准，并发隔离无需 chdir。 */
+  cwd?: string;
 }
 
 /** 子代理执行结果 */
@@ -218,7 +231,14 @@ export class SubAgent {
       ).catch(err => log.error("HOOK", `subagent_start hook 失败: ${err.message}`));
 
       // 尝试 spawn 模式（独立进程，避免 V8 OOM）
-      if (this.shouldUseSpawn()) {
+      // M4: task.cwd 存在时强制进程内模式——ALS cwd 上下文无法跨进程传递,
+      //     必须在本进程内用 withAgentCwd 包裹才能让文件类工具以 worktree 为基准。
+      const runInner = () =>
+        task.cwd
+          ? withAgentCwd(task.cwd, () => this.executeInner(task, signal, taskId))
+          : this.executeInner(task, signal, taskId);
+
+      if (this.shouldUseSpawn() && !task.cwd) {
         try {
           result = await this.executeSpawned(task, signal, taskId);
           log.info("SUBAGENT", `[${task.type}] spawn 模式完成`);
@@ -227,7 +247,7 @@ export class SubAgent {
           result = await this.executeInner(task, signal, taskId);
         }
       } else {
-        result = await this.executeInner(task, signal, taskId);
+        result = await runInner();
       }
 
       // 成功：标记任务完成并发送通知（结构化结果）
@@ -615,7 +635,14 @@ export class SubAgent {
       });
 
       const basePrompt = getSystemPrompt(task.type);
-      const systemPrompt = await enhanceSubAgentPrompt(basePrompt, this.language, process.cwd());
+      let systemPrompt = await enhanceSubAgentPrompt(basePrompt, this.language, process.cwd());
+
+      // M2(Dynamic Workflows): 带 schema 时,系统提示追加结构化输出强制段
+      let structuredTool: StructuredOutputTool | undefined;
+      if (task.schema) {
+        structuredTool = new StructuredOutputTool(task.schema);
+        systemPrompt += structuredOutputPromptSuffix();
+      }
       ctxMgr.setSystemPrompt(systemPrompt);
 
       // 添加任务提示
@@ -632,6 +659,10 @@ export class SubAgent {
         isAsync: task._isAsync,
       });
       const tools = this.buildIsolatedToolRegistry(filteredTools);
+      // M2: 把 StructuredOutput 工具挂进隔离工具集(在过滤之后,确保不被裁剪掉)
+      if (structuredTool) {
+        tools.register(structuredTool);
+      }
       const maxTurns = task.maxTurns ?? 10;
       const loopDetector = new LoopDetector();
 
@@ -639,12 +670,15 @@ export class SubAgent {
       log.info("SUBAGENT", `[${task.type}] 可用工具: ${toolNames.join(", ") || "无"}, 超时: ${timeout / 1000}秒, 最大轮次: ${maxTurns}`);
 
       // 动态获取 provider/model（registry 模式下按子代理类型选择）
+      // M4(Dynamic Workflows): task.model 显式指定时优先于按类型查找的默认模型。
       const activeProvider = this.registry
         ? this.registry.getProviderForSubAgent(task.type)
         : this.provider;
-      const activeModel = this.registry
-        ? this.registry.getModelForSubAgent(task.type)
-        : this.model;
+      const activeModel = task.model
+        ? task.model
+        : this.registry
+          ? this.registry.getModelForSubAgent(task.type)
+          : this.model;
 
       // M5: 使用共享 runAgentLoop() 运行独立 Agent Loop
       let lastTextOutput = "";
@@ -716,7 +750,11 @@ export class SubAgent {
       const totalUsage = loopResult.totalUsage;
 
       // 提取最终结果：从所有 assistant 消息中回溯查找最后一条有文本内容的
-      const finalOutput = this.extractFinalText(ctxMgr.getMessages(), lastTextOutput);
+      // M2: 若带 schema 且 StructuredOutput 工具已捕获合规输出,旁路 extractFinalText,
+      //     直接用工具校验过的 JSON(序列化)作为 output——这是结构化契约的落点。
+      const finalOutput = structuredTool?.hasCapturedOutput
+        ? JSON.stringify(structuredTool.getCapturedOutput())
+        : this.extractFinalText(ctxMgr.getMessages(), lastTextOutput);
       log.info("SUBAGENT", `[${task.type}] 结果: ${finalOutput.slice(0, 200)}`);
       log.info("SUBAGENT", `[${task.type}] 完成，共 ${loopResult.turns} 轮，耗时 ${((Date.now() - startTime) / 1000).toFixed(1)}秒`);
 

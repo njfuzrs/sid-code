@@ -3,8 +3,8 @@ name: incident-rca
 description: "针对线上 incident(P0/P1) 输出结构化根因分析报告. 跨 log / metric / trace / commit / ADR 5 个证据维度构造假设,排序根因,给出 hotfix / mitigation / long-term 三档行动建议. 专为 AI 代码场景下的多 provider 编排故障溯源设计."
 when-to-use: "当用户说 '线上挂了' / 'incident' / '故障复盘' / 'RCA' / '根因分析' / '帮我看下这个故障' 时触发, 或外部通过 sid-code skill run incident-rca 调用. 与 ci-self-heal 输入域明确不重叠 (CI log vs production observability), 与 code-review / security-audit 关注阶段不同 (前者 PR 阶段,本 Skill 故障后)."
 mode: delegate
-allowed-tools: read, grep, glob, bash
-max-turns: 35
+allowed-tools: read, grep, glob, bash, sub_agent
+max-turns: 40
 timeout-mins: 3
 sla:
   p50_ms: 60000
@@ -105,6 +105,7 @@ AI 代码 + 多 provider + 工具调用链长 → 故障责任链复杂, 你必�
      - <关联 commit / ADR / SKILL change>
    - **Likelihood**: <high | medium | low>
    - **Why**: <推理链,≤ 3 句>
+   - **Refutation**: <裁定 CONFIRMED|PARTIAL|UNVERIFIABLE + 一次证伪尝试与结果（priority=1 经独立 verify 子代理；被 REFUTED 的假设不留在此列表）>
    - **Repro Step**(可选): <最小复现路径>
 
 2. **[priority=2]** ...
@@ -134,6 +135,24 @@ AI 代码 + 多 provider + 工具调用链长 → 故障责任链复杂, 你必�
 3. **trace_correlation**:跨服务 / 跨进程串联 trace,识别"哪一跳延迟突增 / 哪一跳错误率突增"
 4. **rca_hypothesis**:基于 1-3 构造 ≤ 3 条假设,按"证据密度 + 修复成本 + 影响半径"排序
 5. **fix_priority**:每条假设给 hotfix / mitigation / long-term 三档行动
+
+### 3.1.1 对抗验证(find → 强制 refute → synthesize)
+
+3.1 第 4 步产出的 ≤ 3 条假设是**候选根因**,不是定论。RCA 最危险的失败是"叙事自洽但根因错位"——值班据此做的 hotfix 全打偏。对**排序第 1 的根因假设(priority=1)强制走一次独立证伪**,priority=2/3 至少主上下文自查一次。
+
+1. **find**:3.1 已产出按"证据密度 + 修复成本 + 影响半径"排序的候选假设。
+2. **强制 refute(独立证伪)**:对 priority=1 假设,**委托一个独立的 verify 子代理**去推翻它——
+   - 调 `sub_agent` 工具,`agent_type: "verify"`(内置对抗式提示词:默认怀疑、读码/读日志举证、grep 调用方、不确定降级)。
+   - prompt 里给出:该假设短标题、关联的 log 行/metric 数值/commit hash、当前 Likelihood,要求子代理**尝试推翻**——重点核对"时间线因果是否真成立"(常见陷阱:相关 ≠ 因果,某 commit 时间巧合但与故障无关),输出四档裁定(CONFIRMED / REFUTED / PARTIAL / UNVERIFIABLE)+ 证据 + 一次证伪尝试。
+   - **降级回退**:若 `sub_agent` 不可用,在主上下文内换一个怀疑视角自查——尝试构造"该假设为假"的反证(有无其它更早偏离的指标?该 commit 是否真改到故障路径?),严禁跳过。
+3. **synthesize(裁决合并)**:
+   - **CONFIRMED** → priority=1 维持,Confidence 可提升。
+   - **REFUTED** → **降级或剔除该假设**,把 priority=2 顶上来重新走 refute。证伪一条错误根因避免误导 hotfix,是高价值产出。
+   - **PARTIAL** → 保留但下调 Likelihood,并在 Why 里注明"因果链部分成立,需 X 进一步确认"。
+   - **UNVERIFIABLE** → 标"需运行时/额外数据验证",写进 Monitoring Gaps。
+
+> 报告 Top Hypotheses 每条假设新增一行 **Refutation**:记录证伪尝试与裁定结果。priority=1 必须有(经独立 verify),priority=2/3 至少有主上下文自查结论。
+
 
 ### 3.2 证据引用强约束(RL-007 不编造)
 
@@ -168,6 +187,7 @@ AI 代码 + 多 provider + 工具调用链长 → 故障责任链复杂, 你必�
 
 - 对偶发抖动(单点 spike,非持续偏离)不给"P0 根因",降级为 monitoring gap
 - 对没有 metric 关联的纯 log 异常,标 likelihood=low
+- priority=1 根因上报前必须经 §3.1.1 独立证伪;相关 ≠ 因果(时间巧合的 commit/事件)经 refute 应被降级或剔除
 
 ---
 

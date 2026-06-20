@@ -6,7 +6,7 @@
 import { randomBytes } from "crypto";
 
 /** 任务类型 */
-export type TaskType = "local_shell" | "local_agent";
+export type TaskType = "local_shell" | "local_agent" | "local_workflow";
 
 /** 任务状态机：pending → running → completed | failed | killed */
 export type TaskStatus = "pending" | "running" | "completed" | "failed" | "killed";
@@ -84,8 +84,28 @@ export interface LocalAgentTaskState extends TaskStateBase {
   progressSummary?: string;
 }
 
+/** Workflow 任务状态（Dynamic Workflows M6:后台运行的编排脚本） */
+export interface LocalWorkflowTaskState extends TaskStateBase {
+  type: "local_workflow";
+  /** workflow 名(来自脚本 meta.name) */
+  workflowName: string;
+  /** 运行 ID(wf_<...>,用于 resume) */
+  runId: string;
+  /** 脚本来源摘要(name / scriptPath / inline) */
+  source: string;
+  /** 已发起的 agent 调用数(进度可观测) */
+  agentCount?: number;
+  /** 当前 phase 标题 */
+  currentPhase?: string;
+  /** 完成后的结构化结果(JSON 序列化) */
+  result?: AgentTaskResult;
+  error?: string;
+  isBackgrounded: boolean;
+  progress?: AgentProgress;
+}
+
 /** 联合类型 */
-export type TaskState = LocalShellTaskState | LocalAgentTaskState;
+export type TaskState = LocalShellTaskState | LocalAgentTaskState | LocalWorkflowTaskState;
 
 /** 类型守卫 */
 export function isShellTask(task: TaskState): task is LocalShellTaskState {
@@ -96,10 +116,15 @@ export function isAgentTask(task: TaskState): task is LocalAgentTaskState {
   return task.type === "local_agent";
 }
 
+export function isWorkflowTask(task: TaskState): task is LocalWorkflowTaskState {
+  return task.type === "local_workflow";
+}
+
 /** Task ID 生成：类型前缀 + 8 位随机字符 */
 const TASK_ID_PREFIXES: Record<TaskType, string> = {
   local_shell: "s",
   local_agent: "a",
+  local_workflow: "w",
 };
 
 const ID_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz";

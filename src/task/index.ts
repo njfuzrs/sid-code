@@ -8,12 +8,14 @@ export {
   type TaskState,
   type LocalShellTaskState,
   type LocalAgentTaskState,
+  type LocalWorkflowTaskState,
   type AgentProgress,
   type AgentTaskResult,
   type ToolActivity,
   isTerminalStatus,
   isShellTask,
   isAgentTask,
+  isWorkflowTask,
   generateTaskId,
 } from "./types.ts";
 
@@ -64,3 +66,13 @@ export {
   killAgentTask,
   getAgentTaskSignal,
 } from "./agent-task.ts";
+
+export {
+  createWorkflowTask,
+  updateWorkflowProgress,
+  appendWorkflowOutput,
+  completeWorkflowTask,
+  failWorkflowTask,
+  killWorkflowTask,
+  getWorkflowTaskSignal,
+} from "./workflow-task.ts";

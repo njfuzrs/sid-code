@@ -3,7 +3,7 @@ name: code-review
 description: 针对 PR diff 输出结构化 Code Review。识别 bug / 安全漏洞 / 设计反模式，引用具体文件行号，给出可执行修改建议。专为 AI 生成代码兜底设计。
 when-to-use: 当用户说 'review 代码' / '代码审查' / 'PR review' / '审一下这个 PR' 时触发；或外部通过 sid-code skill run code-review 调用，输入 PR diff 路径
 mode: delegate
-allowed-tools: read, grep, glob, bash
+allowed-tools: read, grep, glob, bash, sub_agent
 max-turns: 30
 timeout-mins: 15
 sla:
@@ -119,6 +119,28 @@ release_metadata:
 
 > ⚠️ **每条 finding 必须引用 `file:line` 具体位置**——这是 RL-007（不编造问题）的硬约束。
 
+### Step 2.4.1：对抗验证（find → 强制 refute → synthesize，核心质量闸）
+
+Step 2.4 产出的是**候选 finding**，不是结论。AI review 的最大失信源是"看似合理实则误报"。本步对每条 `blocker`/`high` 候选 finding **强制走一次独立证伪**，再决定是否保留。
+
+**find → refute → synthesize 三段：**
+
+1. **find**：Step 2.4 已产出候选 findings（每条含 `file:line` + 初判 severity）。
+2. **强制 refute（独立证伪）**：对每条 `blocker`/`high` 候选，**委托一个独立的 verify 子代理**去推翻它——
+   - 调 `sub_agent` 工具，`agent_type: "verify"`（该类型已内置对抗式系统提示词：默认怀疑、读码举证、grep 调用方、不确定降级）。
+   - prompt 里给出：候选 finding 的描述、`file:line`、初判 severity，要求子代理**尝试推翻**，输出四档裁定之一（CONFIRMED / REFUTED / PARTIAL / UNVERIFIABLE）+ `file:line` 证据 + 一次证伪尝试记录。
+   - **关键**：verify 子代理要用与 find 不同的视角读码（读够上下文、grep 调用方），而不是顺着原 finding 的叙事走。
+   - 多条候选可在同一轮发起多个 `sub_agent` 调用并发证伪（受内核并发上限管控）。
+   - **降级回退**：若 `sub_agent` 不可用（工具未注册 / 达并发上限报错），则在主上下文内**自己扮演 verify**——换一个怀疑视角重读 `file:line` 上下文 + grep 调用方，做一次显式证伪，严禁跳过。
+3. **synthesize（裁决合并）**：按裁定处置每条候选——
+   - **CONFIRMED** → 保留，severity 维持。
+   - **REFUTED** → **从 findings 中剔除**（或降到 `note` 并注明"经证伪不成立"）。这是有价值的产出，不是失败。
+   - **PARTIAL** → 保留但按证伪结果**校准 severity**（常见：现象真但根因/严重度被高估，下调一档）。
+   - **UNVERIFIABLE** → 保留但标注"需运行时验证"，severity 不高于 `medium`。
+
+> `low`/`medium` 候选可不强制起独立子代理（成本考量），但仍需主上下文自查一次证据是否成立。`blocker`/`high` **必须**经独立 refute——它们是会阻断 PR 的结论，误报代价最高。
+
+
 ### Step 2.5：测试覆盖核对
 
 对每个变更函数（或关键变更行），用 `grep` 查找是否有对应测试：
@@ -150,6 +172,8 @@ release_metadata:
 
 #### [blocker] <file>:<line> — <short_description>
 **Why**: <详细说明 + 引用其他相关代码（必须用 file:line 格式）>
+**Verdict**: <CONFIRMED | PARTIAL | UNVERIFIABLE>（经独立 verify 子代理证伪后的裁定；REFUTED 的不出现在此列表）
+**Refutation**: <verify 子代理/自查的一次证伪尝试与结果，含 file:line 证据>
 **Suggestion**:
 ```<lang>
 <可执行的修改方向（如有），或描述性建议>
@@ -259,6 +283,7 @@ release_metadata:
 ## 9. 第一原则提醒
 
 1. **每条 finding 必须有具体位置 + 具体证据**——RL-007 一票否决
-2. **宁可漏报不可误报**——开发者会因为误报失去对你的信任
-3. **AI 代码兜底是核心叙事**——格外关注"看似合理实则错误"的模式
-4. **不替开发者改代码**——本 Skill 是 review 不是 fix；fix 是另一个 Skill 的事
+2. **宁可漏报不可误报**——开发者会因为误报失去对你的信任；高危 finding 必须经独立 verify 子代理证伪后才能上报(§2.4.1)
+3. **证伪是产出不是失败**——REFUTED 一条看似合理实则错误的 finding,与确认一条真问题同样有价值
+4. **AI 代码兜底是核心叙事**——格外关注"看似合理实则错误"的模式
+5. **不替开发者改代码**——本 Skill 是 review 不是 fix;fix 是另一个 Skill 的事

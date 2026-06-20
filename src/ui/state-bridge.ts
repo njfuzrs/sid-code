@@ -5,7 +5,7 @@
 
 import { EventEmitter } from "events";
 import type { TUIState, TaskDisplayInfo } from "./App.tsx";
-import { getAllTasks, isAgentTask, isShellTask, onTaskChanged, offTaskChanged } from "../task/index.ts";
+import { getAllTasks, isAgentTask, isShellTask, isWorkflowTask, onTaskChanged, offTaskChanged } from "../task/index.ts";
 
 export class StateBridge extends EventEmitter {
   current: TUIState;
@@ -65,6 +65,17 @@ export class StateBridge extends EventEmitter {
       }
       if (isShellTask(t)) {
         info.command = t.command;
+      }
+      if (isWorkflowTask(t)) {
+        // workflow 任务:用 agentType 槽位展示 workflow 名,进度展示 agent 调用数 + 当前 phase
+        info.agentType = `workflow:${t.workflowName}`;
+        info.progress = {
+          toolUseCount: t.agentCount ?? 0,
+          tokenCount: t.progress?.tokenCount ?? 0,
+        };
+        if (t.currentPhase) {
+          info.lastActivity = `phase: ${t.currentPhase}`;
+        }
       }
       return info;
     });

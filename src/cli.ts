@@ -633,6 +633,10 @@ export async function main(): Promise<void> {
     const { TeamCreateTool } = await import("./tool/team-create.ts");
     toolRegistry.register(new TeamCreateTool(providerRegistry, toolRegistry));
 
+    // 注册 Dynamic Workflows 编排工具(延迟工具,由 tool_search 在多 agent 编排场景按需调出)
+    const { WorkflowTool } = await import("./tool/workflow.ts");
+    toolRegistry.register(new WorkflowTool(providerRegistry, toolRegistry));
+
     // 注册内置命令
     const { Registry: CommandRegistry } = await import("./command/registry.ts");
     const { registerBuiltins } = await import("./command/builtins.ts");
