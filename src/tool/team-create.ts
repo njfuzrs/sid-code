@@ -7,6 +7,7 @@ import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types
 import type { ProviderRegistry } from "../llm/registry.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { TeamManager, type TeammateSpec } from "../swarm/team.ts";
+import { getActiveAgentTypes } from "../agent/agent-definition.ts";
 import { colorize } from "../agent/color.ts";
 import { getLogger } from "../debug/logger.ts";
 import { z } from "zod/v4";
@@ -19,7 +20,7 @@ const teamCreateSchema = lazySchema(() =>
       .array(
         z.object({
           name: z.string().describe("成员名（团队内唯一）"),
-          type: z.enum(["explore", "task", "summarize", "plan", "verify"]).describe("子代理类型"),
+          type: z.string().describe("子代理类型（见 sub_agent 工具描述中列出的可用类型）"),
           task: z.string().describe("分配给该成员的任务"),
           isolated: z.boolean().optional().describe("是否在独立 Worktree 执行（会改文件的成员应为 true，默认 true）"),
         }),
@@ -65,14 +66,19 @@ export class TeamCreateTool implements Tool {
       return { output: "错误: 缺少必需参数 (team_name, members[])", isError: true };
     }
 
-    // 成员名唯一性校验
+    // 成员名唯一性校验 + 类型有效性校验
     const names = new Set<string>();
+    const validTypes = getActiveAgentTypes();
     for (const m of params.members) {
       if (!m.name || !m.type || !m.task) {
         return { output: "错误: 每个成员需要 name、type、task", isError: true };
       }
       if (names.has(m.name)) {
         return { output: `错误: 成员名重复 "${m.name}"`, isError: true };
+      }
+      // 对标 sub_agent 工具：运行时校验成员类型有效性（支持动态注册的自定义/插件 Agent）
+      if (!validTypes.includes(m.type)) {
+        return { output: `错误: 成员 "${m.name}" 的无效子代理类型 "${m.type}"，可选: ${validTypes.join(", ")}`, isError: true };
       }
       names.add(m.name);
     }

@@ -43,8 +43,17 @@ import { platform, homedir } from "os";
 import { cwd } from "process";
 import { withAgentCwd } from "../bootstrap/cwd-context.ts";
 
-/** 子代理类型 */
-export type SubAgentType = "explore" | "task" | "summarize" | "plan" | "verify";
+/**
+ * 子代理类型（已废弃硬编码枚举，改为开放字符串）。
+ *
+ * 原先 SubAgentType 是硬编码联合类型，新增 Agent（如 general-purpose、自定义/插件 Agent）
+ * 必须改源码。现在改为 string，实际可用类型由 getActiveAgentTypes() 运行时派生，
+ * 与 sub_agent 工具的 z.string() schema 对齐。
+ *
+ * 此处保留类型别名（值为 string）供 swarm/team 等历史引用方平滑过渡，
+ * 新代码直接用 string。
+ */
+export type SubAgentType = string;
 
 /** 子代理任务定义 */
 export interface SubAgentTask {

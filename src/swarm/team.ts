@@ -16,14 +16,12 @@ import { assignAgentColor, type AgentColor } from "../agent/color.ts";
 import { getLogger } from "../debug/logger.ts";
 import type { ProviderRegistry } from "../llm/registry.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
-import type { SubAgentType } from "../agent/sub-agent.ts";
-
 /** 团队成员定义 */
 export interface TeammateSpec {
   /** 成员名（团队内唯一） */
   name: string;
-  /** 子代理类型 */
-  type: SubAgentType;
+  /** 子代理类型（开放字符串，可用类型由 getActiveAgentTypes() 运行时派生） */
+  type: string;
   /** 分配给该成员的任务 */
   task: string;
   /** 是否需要独立 Worktree（默认 true，会改文件的成员需要） */

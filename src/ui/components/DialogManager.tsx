@@ -12,7 +12,7 @@ import { useKeypress, KeypressPriority } from "../contexts/KeypressContext.tsx";
 import type { PermissionRequestInfo, ShellConfirmRequestInfo, PlanApprovalRequestInfo, AskUserQuestionRequestInfo } from "../App.tsx";
 import { getToolSummary } from "../ui-utils.ts";
 import { theme } from "../semantic-colors.ts";
-import { BULLET, PLAN_REVIEW, WARNING_MARK, ARROW_PROMPT, TODO_PENDING, TODO_COMPLETED } from "../constants/figures.ts";
+import { BULLET, PLAN_REVIEW, WARNING_MARK, ARROW_PROMPT, TODO_PENDING, TODO_COMPLETED, CURSOR } from "../constants/figures.ts";
 import { inspectToolCall, inspectCommand } from "../utils/danger-detect.ts";
 import { SettingsDialog } from "./SettingsDialog.tsx";
 import { ModelDialog } from "./ModelDialog.tsx";
@@ -374,7 +374,7 @@ function AskUserQuestionDialog({ request }: { request: AskUserQuestionRequestInf
             <Box paddingLeft={2}>
               <Text color={accent}>{ARROW_PROMPT} </Text>
               <Text>{otherText}</Text>
-              <Text color={accent}>▌</Text>
+              <Text color={accent}>{CURSOR}</Text>
             </Box>
           )}
         </Box>
