@@ -4,7 +4,7 @@
  */
 
 import type { Config } from "./config.ts";
-import { getBuiltInAgentTypes } from "../agent/agent-definition.ts";
+import { getActiveAgentTypes } from "../agent/agent-definition.ts";
 
 /** 验证错误 */
 export interface ValidationError {
@@ -54,9 +54,12 @@ const VALID_HOOK_EVENTS = new Set([
   "notification",
 ]);
 
-/** 有效的子代理类型：从 BUILTIN_AGENTS 派生（单一事实源，杜绝与 agent-definition.ts 漂移）。
- *  额外允许 "default"：subAgentModels 的兜底键，作用于所有未单独指定的类型。 */
-const VALID_SUBAGENT_TYPES = new Set<string>(["default", ...getBuiltInAgentTypes()]);
+/** 有效的子代理类型：从活跃 agent registry 派生（含 built-in + custom + plugin）。
+ *  额外允许 "default"：subAgentModels 的兜底键，作用于所有未单独指定的类型。
+ *  改为函数：动态 agent 在启动后期才注册，模块级常量求值太早拿不到。 */
+function getValidSubagentTypes(): Set<string> {
+  return new Set<string>(["default", ...getActiveAgentTypes()]);
+}
 
 /** 有效的 MCP 传输类型 */
 const VALID_MCP_TRANSPORTS = new Set(["stdio", "http", "sse"]);
@@ -262,11 +265,12 @@ export function validateConfig(config: Config): ValidationResult {
 
   // 验证 subAgentModels
   if (config.subAgentModels && typeof config.subAgentModels === "object") {
+    const validSubagentTypes = getValidSubagentTypes();
     for (const [agentType, modelName] of Object.entries(config.subAgentModels)) {
-      if (!VALID_SUBAGENT_TYPES.has(agentType)) {
+      if (!validSubagentTypes.has(agentType)) {
         warnings.push({
           path: `subAgentModels.${agentType}`,
-          message: `未知的子代理类型 "${agentType}"，有效值为 ${Array.from(VALID_SUBAGENT_TYPES).join(", ")}`,
+          message: `未知的子代理类型 "${agentType}"，有效值为 ${Array.from(validSubagentTypes).join(", ")}`,
         });
       }
 

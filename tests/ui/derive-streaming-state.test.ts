@@ -15,6 +15,7 @@ const base: StreamingStateInput = {
   permissionRequest: null,
   shellConfirmRequest: null,
   planApprovalRequest: null,
+  askUserQuestionRequest: null,
 };
 
 describe("deriveStreamingState", () => {
@@ -56,6 +57,12 @@ describe("deriveStreamingState", () => {
   test("planApprovalRequest → WaitingForConfirmation", () => {
     expect(
       deriveStreamingState({ ...base, planApprovalRequest: { foo: 1 } }),
+    ).toBe(StreamingState.WaitingForConfirmation);
+  });
+
+  test("askUserQuestionRequest → WaitingForConfirmation", () => {
+    expect(
+      deriveStreamingState({ ...base, askUserQuestionRequest: { foo: 1 } }),
     ).toBe(StreamingState.WaitingForConfirmation);
   });
 

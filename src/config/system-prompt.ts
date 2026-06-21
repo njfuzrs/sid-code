@@ -5,6 +5,7 @@
 
 import type { LegacyTool as Tool } from "../tool/types.ts";
 import type { Attachment } from "./attachments.ts";
+import { isCoordinatorMode, getCoordinatorSystemPrompt, COORDINATOR_ONLY_TOOLS } from "../coordinator/mode.ts";
 import { platform, homedir } from "os";
 import { cwd } from "process";
 import { estimateTokens, truncateToLimit } from "./token-utils.ts";
@@ -217,6 +218,17 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
   // 让模型把自然语言时间请求映射到 cron_create / schedule_wakeup。
   if (ctx.tools.some((t) => t.name() === "cron_create")) {
     coreParts.push(buildSchedulingSection());
+  }
+
+  // Coordinator 模式（子 Agent 生态）：开启后把主循环角色从"执行者"切为"协调者"，
+  // 注入编排工作流提示词。worker 工具名从当前活跃的非协调类工具派生，
+  // 让模型知道派生的 worker 能用哪些工具。仅在 sub_agent 工具可用时才注入
+  // （没有 sub_agent 谈不上协调）。
+  if (isCoordinatorMode() && ctx.tools.some((t) => t.name() === "sub_agent")) {
+    const workerToolNames = ctx.tools
+      .map((t) => t.name())
+      .filter((n) => !COORDINATOR_ONLY_TOOLS.has(n));
+    coreParts.push(getCoordinatorSystemPrompt(workerToolNames));
   }
 
   // 记忆系统指令 + MEMORY.md 索引（Task 7，作为核心部分注入）

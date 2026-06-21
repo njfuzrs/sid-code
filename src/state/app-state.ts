@@ -6,7 +6,7 @@
 
 import type { Message, Usage } from "../llm/types.ts";
 import type { HistoryItem } from "../ui/types.ts";
-import type { PermissionRequestInfo, ShellConfirmRequestInfo, PlanApprovalRequestInfo } from "../ui/App.tsx";
+import type { PermissionRequestInfo, ShellConfirmRequestInfo, PlanApprovalRequestInfo, AskUserQuestionRequestInfo } from "../ui/App.tsx";
 import type { DialogType } from "../command/types.ts";
 
 /** 深度不可变类型工具 */
@@ -89,6 +89,7 @@ export type AppState = DeepImmutable<{
   permissionRequest: PermissionRequestInfo | null;
   shellConfirmRequest: ShellConfirmRequestInfo | null;
   planApprovalRequest: PlanApprovalRequestInfo | null;
+  askUserQuestionRequest: AskUserQuestionRequestInfo | null;
 
   mcpConnections: MCPConnectionState[];
   subAgentTasks: Record<string, SubAgentTaskState>;
@@ -131,6 +132,7 @@ export function getDefaultAppState(): AppState {
     permissionRequest: null,
     shellConfirmRequest: null,
     planApprovalRequest: null,
+    askUserQuestionRequest: null,
     mcpConnections: [],
     subAgentTasks: {},
     transientMessage: null,

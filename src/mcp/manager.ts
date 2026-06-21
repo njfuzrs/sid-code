@@ -17,6 +17,12 @@ import { expandEnvVars } from "./env-expansion.ts";
 import { getLogger } from "../debug/logger.ts";
 import { join } from "path";
 import { ensureSidTempDir } from "../utils/temp-dir.ts";
+import {
+  isOAuthEnabled,
+  getValidAccessToken,
+  performOAuthFlow,
+  NeedsAuthorizationError,
+} from "./oauth.ts";
 
 /** 重连配置 */
 const MAX_RECONNECT_ATTEMPTS = 5;
@@ -185,6 +191,12 @@ export class MCPManager {
   private serverStates = new Map<string, ServerState>();
   /** 工具变更时的回调（供外部刷新工具列表） */
   onToolsRefresh?: (serverName: string, tools: Tool[]) => void;
+  /**
+   * OAuth 需要用户授权时的回调（供 UI 展示授权 URL / 打开浏览器）。
+   * 返回的 Promise 由实现方决定何时 resolve（通常立即 resolve，授权在后台完成）。
+   * 未设置时，OAuth 流程会把 URL 写入日志，用户需手动打开。
+   */
+  onOAuthAuthorizationUrl?: (serverName: string, url: string) => void;
 
   /** 连接所有配置的 MCP 服务器（本地/远程分流并发控制） */
   async connectAll(servers: Record<string, MCPServerConfig>): Promise<Tool[]> {
@@ -247,7 +259,27 @@ export class MCPManager {
 
   /** 连接单个 MCP 服务器 */
   async connect(name: string, config: MCPServerConfig): Promise<Tool[]> {
-    const transport = this.createTransport(name, config);
+    // OAuth 服务器：连接前确保拿到有效 token；首连/凭据失效时触发交互式授权
+    if (isOAuthEnabled(config) && config.transport !== "stdio") {
+      await this.ensureOAuthToken(name, config);
+    }
+
+    try {
+      return await this.doConnect(name, config);
+    } catch (err: any) {
+      // 401 / 需授权：触发一次交互式 OAuth 后重连
+      if (isOAuthEnabled(config) && config.transport !== "stdio" && this.isAuthError(err)) {
+        getLogger().info("MCP", `${name} 返回未授权，启动 OAuth 授权流程`);
+        await this.runOAuthFlow(name, config);
+        return await this.doConnect(name, config);
+      }
+      throw err;
+    }
+  }
+
+  /** 实际建立连接（创建传输 + 初始化 + 发现工具/资源/提示词 + 健康检查） */
+  private async doConnect(name: string, config: MCPServerConfig): Promise<Tool[]> {
+    const transport = await this.createTransport(name, config);
     const timeout = config.timeout ?? 30000;
     const retries = config.retries ?? 2;
     const client = new MCPClient(transport, { timeout, retries });
@@ -282,14 +314,72 @@ export class MCPManager {
     return tools;
   }
 
+  /** 判断错误是否为「未授权」（401 / NeedsAuthorizationError） */
+  private isAuthError(err: unknown): boolean {
+    if (err instanceof NeedsAuthorizationError) return true;
+    const msg = (err as Error)?.message ?? "";
+    return /\b401\b/.test(msg) || /unauthorized/i.test(msg);
+  }
+
+  /**
+   * 确保 OAuth 服务器有可用 token。
+   * 已有有效 token（或可静默刷新）→ 直接返回；首连无凭据 → 触发交互式授权。
+   */
+  private async ensureOAuthToken(name: string, config: MCPServerConfig): Promise<void> {
+    try {
+      await getValidAccessToken(name, config);
+    } catch (err) {
+      if (err instanceof NeedsAuthorizationError) {
+        await this.runOAuthFlow(name, config);
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  /** 执行交互式 OAuth 授权流程（展示/打开授权 URL，等待用户完成） */
+  private async runOAuthFlow(name: string, config: MCPServerConfig): Promise<void> {
+    const log = getLogger();
+    await performOAuthFlow(
+      name,
+      config,
+      (url) => {
+        if (this.onOAuthAuthorizationUrl) {
+          this.onOAuthAuthorizationUrl(name, url);
+        } else {
+          log.info("MCP", `请在浏览器打开以下 URL 完成 ${name} 的 OAuth 授权:\n${url}`);
+        }
+      },
+    );
+  }
+
   /** 创建传输层 */
-  private createTransport(name: string, config: MCPServerConfig) {
+  private async createTransport(name: string, config: MCPServerConfig) {
     const timeout = config.timeout ?? 30000;
 
+    // OAuth 服务器：注入 access token 为 Authorization 头（优先于静态 authToken）
+    let oauthHeader: Record<string, string> | undefined;
+    if (isOAuthEnabled(config) && config.transport !== "stdio") {
+      try {
+        const token = await getValidAccessToken(name, config);
+        oauthHeader = { Authorization: `Bearer ${token}` };
+      } catch (err) {
+        // 拿不到 token 时不注入——交给 connect 的 401 重试逻辑触发授权
+        if (!(err instanceof NeedsAuthorizationError)) {
+          getLogger().warn("MCP", `${name} 获取 OAuth token 失败: ${(err as Error).message}`);
+        }
+      }
+    }
+
     // IDE 动态注册场景：authToken 注入为 Authorization 头（对标 Claude Code sse-ide/ws-ide）
-    const headers: Record<string, string> | undefined = config.authToken
-      ? { ...config.headers, Authorization: `Bearer ${config.authToken}` }
-      : config.headers;
+    const headers: Record<string, string> | undefined =
+      oauthHeader || config.authToken || config.headers
+        ? {
+            ...config.headers,
+            ...(config.authToken ? { Authorization: `Bearer ${config.authToken}` } : {}),
+            ...oauthHeader, // OAuth token 优先级最高
+          }
+        : undefined;
 
     if (config.transport === "stdio") {
       if (!config.command) {
@@ -710,5 +800,47 @@ export class MCPManager {
   /** 获取指定服务器的 MCPClient（供 IDE 通知处理器注册等场景） */
   getClient(serverName: string): MCPClient | undefined {
     return this.clients.get(serverName);
+  }
+
+  /**
+   * 手动触发指定服务器的 OAuth 授权（供 /mcp authenticate 命令）。
+   * 跑完交互式授权流程后重连，把真实工具刷新出来。
+   * @returns 授权并重连后注册的工具列表
+   * @throws 服务器未配置 OAuth、或非远程传输时抛错
+   */
+  async authenticate(name: string): Promise<Tool[]> {
+    const config = this.serverConfigs.get(name);
+    if (!config) {
+      throw new Error(`未找到 MCP 服务器 "${name}"`);
+    }
+    if (!isOAuthEnabled(config)) {
+      throw new Error(`MCP 服务器 "${name}" 未配置 OAuth（在配置中添加 oauth 字段）`);
+    }
+    if (config.transport === "stdio") {
+      throw new Error(`stdio 传输的服务器 "${name}" 不支持 OAuth`);
+    }
+
+    // 先断开现有连接
+    this.disconnect(name);
+    this.serverConfigs.set(name, config);
+
+    // 跑授权流程
+    await this.runOAuthFlow(name, config);
+
+    // 重连并刷新工具
+    this.setStatus(name, MCPConnectionStatus.CONNECTING);
+    const tools = await this.doConnect(name, config);
+    this.setStatus(name, MCPConnectionStatus.CONNECTED);
+    this.onToolsRefresh?.(name, tools);
+    return tools;
+  }
+
+  /** 列出所有配置了 OAuth 的服务器名 */
+  listOAuthServers(): string[] {
+    const result: string[] = [];
+    for (const [name, config] of this.serverConfigs) {
+      if (isOAuthEnabled(config)) result.push(name);
+    }
+    return result;
   }
 }

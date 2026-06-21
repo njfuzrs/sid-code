@@ -394,6 +394,11 @@ export async function main(): Promise<void> {
     const config = await loadConfig(cliArgs);
     profileCheckpoint("config_load_end");
 
+    // Coordinator 模式：检查环境变量 SID_CODE_COORDINATOR_MODE=1
+    // 设为 coordinator 后主循环角色切换为"编排者"，注入编排工作流提示词
+    const { checkCoordinatorEnv } = await import("./coordinator/mode.ts");
+    checkCoordinatorEnv();
+
     // 启动期管家：生成配置目录 .gitignore + 按水位线节流的过期清理（幂等、不阻塞）
     try {
       const { runStartupHousekeeping } = await import("./config/startup-housekeeping.ts");
@@ -613,6 +618,12 @@ export async function main(): Promise<void> {
     const { TodoWriteTool } = await import("./tool/todo-write.ts");
     toolRegistry.register(new TodoWriteTool());
 
+    // 注册结构化提问工具（对标 cc AskUserQuestion）：模型遇关键岔路口时向用户抛
+    // 选择题、收集决策。shouldDefer，由 tool_search 按需调出；TUI 模式弹交互对话框，
+    // headless 模式自动降级为"无法提问"提示（见 ask-user-question-bridge.ts）。
+    const { AskUserQuestionTool } = await import("./tool/ask-user-question.ts");
+    toolRegistry.register(new AskUserQuestionTool());
+
     // 注册假设登记表工具（环节③：把"怀疑自己的假设"从模型自律外化为 harness 机制）。
     // register 工具持有 ledger，challenge 工具复用同一实例；turnProvider 暂用占位（轮次仅用于
     // 证据追溯，非关键路径）。queryLoop 经 deps.getHypothesisLedger 读取做矛盾中断 + 交付门禁。
@@ -627,7 +638,8 @@ export async function main(): Promise<void> {
 
     // 注册工具搜索工具（延迟加载机制的调出入口，alwaysLoad 强制首轮可见）
     const { ToolSearchTool } = await import("./tool/tool-search.ts");
-    toolRegistry.register(new ToolSearchTool(toolRegistry));
+    const toolSearchTool = new ToolSearchTool(toolRegistry);
+    toolRegistry.register(toolSearchTool);
 
     // 注册后台任务工具（task 系统已就位，此处补齐工具入口）
     const { TaskOutputTool } = await import("./tool/task-output.ts");
@@ -639,7 +651,7 @@ export async function main(): Promise<void> {
     toolRegistry.register(new TaskStopTool());
     toolRegistry.register(new TaskListTool());
     toolRegistry.register(new TaskGetTool());
-    toolRegistry.register(new SendMessageTool());
+    toolRegistry.register(new SendMessageTool(providerRegistry, toolRegistry));
 
     // 注册 Worktree 隔离工具
     const { EnterWorktreeTool } = await import("./tool/enter-worktree.ts");
@@ -739,9 +751,24 @@ export async function main(): Promise<void> {
       );
     }
 
-    // 加载自定义 Agents（注册为工具）
+    // 加载自定义 Agents（注册为工具 + 注册进统一聚合 registry）
     const { CustomAgentLoader, CustomAgentTool } = await import("./agent/custom.ts");
+    const { registerDynamicAgents } = await import("./agent/agent-definition.ts");
     const customAgents = await new CustomAgentLoader().loadAll(undefined, scanOptions);
+    // 注册进聚合 registry：让 sub_agent 的 type 枚举能发现自定义 agent
+    if (customAgents.length > 0) {
+      registerDynamicAgents(
+        customAgents.map((def) => ({
+          agentType: def.name,
+          description: def.description,
+          whenToUse: def.description,
+          systemPrompt: def.prompt,
+          tools: def.tools.length > 0 ? def.tools : undefined,
+          source: "userSettings" as const,
+          filePath: def.filePath,
+        })),
+      );
+    }
     for (const def of customAgents) {
       toolRegistry.register(new CustomAgentTool(def, providerRegistry, toolRegistry));
     }
@@ -758,8 +785,22 @@ export async function main(): Promise<void> {
       // 插件命令（带 pluginName: 前缀，与内置/自定义命令隔离）
       const pluginCmdCount = await mergePluginCommands(commandRegistry);
 
-      // 插件 Agent（注册为工具）
+      // 插件 Agent（注册为工具 + 注册进聚合 registry，overwrite=false：优先级低于用户自定义）
       const pluginAgents = await loadPluginAgents();
+      if (pluginAgents.length > 0) {
+        registerDynamicAgents(
+          pluginAgents.map((def) => ({
+            agentType: def.name,
+            description: def.description,
+            whenToUse: def.description,
+            systemPrompt: def.prompt,
+            tools: def.tools.length > 0 ? def.tools : undefined,
+            source: "plugin" as const,
+            filePath: def.filePath,
+          })),
+          false,
+        );
+      }
       for (const def of pluginAgents) {
         toolRegistry.register(new CustomAgentTool(def, providerRegistry, toolRegistry));
       }
@@ -788,6 +829,21 @@ export async function main(): Promise<void> {
     if (Object.keys(allMcpServers).length > 0 || ideAutoConnect) {
       const { MCPManager } = await import("./mcp/manager.ts");
       mcpManager = new MCPManager();
+
+      // 回填 tool_search 的 MCP pending 检测：搜索无果时若有 server 仍在连接中，
+      // 提示模型稍后重试（避免启动初期 MCP 异步连接未完成时误判工具不存在）。
+      const { MCPConnectionStatus } = await import("./mcp/types.ts");
+      const mgr = mcpManager;
+      toolSearchTool.setPendingMcpServers(() =>
+        mgr
+          .getStatus()
+          .filter(
+            (s) =>
+              s.status === MCPConnectionStatus.CONNECTING ||
+              s.status === MCPConnectionStatus.RECONNECTING,
+          )
+          .map((s) => s.name),
+      );
 
       mcpManager.onToolsRefresh = (serverName, tools) => {
         const prefix = `mcp__${serverName}__`;

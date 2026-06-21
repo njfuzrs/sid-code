@@ -20,6 +20,7 @@ import type { TokenMeter } from "../telemetry/metrics/token-meter.ts";
 import type { BudgetTracker } from "../telemetry/metrics/budget-tracker.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
+import { resolveToolSearchEnabled } from "../tool/tool-search-auto.ts";
 import { TOKEN_THRESHOLDS } from "../context/auto-compact.ts";
 import { ModelFallback } from "../llm/fallback.ts";
 import { SessionState } from "../session/state.ts";
@@ -128,6 +129,27 @@ export async function* queryLoop(
   const loopDetector = new LoopDetector();
   const state: LoopState = createInitialLoopState(config.maxTurns || Infinity);
   const diminishingDetector = new DiminishingReturnsDetector();
+
+  // ─── 工具延迟加载（ToolSearch）：每会话判定一次 ───
+  // config.toolSearch 支持 boolean | "auto" | number(百分比)：
+  //   - true/false：恒开/恒关
+  //   - "auto"/number：按"延迟工具 token 总数 ≥ 上下文窗口 × 阈值%"自动判定
+  // 只判定一次（不每轮）——避免 MCP 连接完成后工具集增长导致中途从"全量"切到
+  // "延迟"，让模型上下文里工具突然消失（幻觉/重试 churn）。对标 claude-code 的
+  // isToolSearchEnabled（按会话/请求定档）。
+  // 延迟工具定义 = 全量 definitions 减去 activeDefinitions（此时尚无手动激活，差集即全部延迟工具）。
+  const toolSearchEnabled = (() => {
+    if (toolRegistry.size() === 0) return false;
+    const activeNames = new Set(toolRegistry.activeDefinitions().map((d) => d.name));
+    const deferredDefinitions = toolRegistry
+      .definitions()
+      .filter((d) => !activeNames.has(d.name));
+    return resolveToolSearchEnabled(config.toolSearch, {
+      model: config.model,
+      availableModels: config.availableModels,
+      deferredDefinitions,
+    });
+  })();
 
   while (state.turnCount < state.maxTurns) {
     state.turnCount++;
@@ -271,7 +293,7 @@ export async function* queryLoop(
     // tool_search 按需激活后才进上下文；关闭时发全量（definitions），行为与历史一致。
     const toolDefs =
       toolCount > 0
-        ? config.toolSearch
+        ? toolSearchEnabled
           ? toolRegistry.activeDefinitions()
           : toolRegistry.definitions()
         : undefined;
@@ -388,7 +410,7 @@ export async function* queryLoop(
     // 尚未加载、可经 tool_search 调出。不注入则模型对延迟工具完全无感知，
     // 整个延迟机制形同虚设（对标 claude-code claude.ts deferredToolList 注入）。
     // 单独处理（不进 reminderParts）：它每轮都注、非节流，且内容独立成块。
-    if (config.toolSearch) {
+    if (toolSearchEnabled) {
       const deferredNames = toolRegistry.deferredToolNames();
       if (deferredNames.length > 0) {
         finalMessages = injectReminders(finalMessages, [

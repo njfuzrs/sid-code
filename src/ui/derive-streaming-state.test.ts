@@ -25,6 +25,7 @@ describe("deriveStreamingState — 优先级链", () => {
         permissionRequest: undefined,
         shellConfirmRequest: undefined,
         planApprovalRequest: undefined,
+        askUserQuestionRequest: undefined,
       }),
     ).toBe(StreamingState.Idle);
   });
@@ -38,6 +39,7 @@ describe("deriveStreamingState — 优先级链", () => {
         permissionRequest: undefined,
         shellConfirmRequest: undefined,
         planApprovalRequest: undefined,
+        askUserQuestionRequest: undefined,
       }),
     ).toBe(StreamingState.Connecting);
   });
@@ -51,6 +53,7 @@ describe("deriveStreamingState — 优先级链", () => {
         permissionRequest: undefined,
         shellConfirmRequest: undefined,
         planApprovalRequest: undefined,
+        askUserQuestionRequest: undefined,
       }),
     ).toBe(StreamingState.Responding);
   });
@@ -64,6 +67,7 @@ describe("deriveStreamingState — 优先级链", () => {
         permissionRequest: undefined,
         shellConfirmRequest: undefined,
         planApprovalRequest: undefined,
+        askUserQuestionRequest: undefined,
       }),
     ).toBe(StreamingState.Responding);
   });
@@ -77,6 +81,7 @@ describe("deriveStreamingState — 优先级链", () => {
         permissionRequest: { tool: "bash", command: "rm -rf /" },
         shellConfirmRequest: undefined,
         planApprovalRequest: undefined,
+        askUserQuestionRequest: undefined,
       }),
     ).toBe(StreamingState.WaitingForConfirmation);
   });
@@ -90,6 +95,7 @@ describe("deriveStreamingState — 优先级链", () => {
         permissionRequest: undefined,
         shellConfirmRequest: { message: "确认执行?" },
         planApprovalRequest: undefined,
+        askUserQuestionRequest: undefined,
       }),
     ).toBe(StreamingState.WaitingForConfirmation);
   });
@@ -103,6 +109,7 @@ describe("deriveStreamingState — 优先级链", () => {
         permissionRequest: undefined,
         shellConfirmRequest: undefined,
         planApprovalRequest: { planId: "plan-1" },
+        askUserQuestionRequest: undefined,
       }),
     ).toBe(StreamingState.WaitingForConfirmation);
   });
@@ -116,6 +123,7 @@ describe("deriveStreamingState — 优先级链", () => {
         permissionRequest: { tool: "bash" },
         shellConfirmRequest: { message: "确认?" },
         planApprovalRequest: undefined,
+        askUserQuestionRequest: undefined,
       }),
     ).toBe(StreamingState.WaitingForConfirmation);
   });
@@ -129,6 +137,7 @@ describe("deriveStreamingState — 优先级链", () => {
         permissionRequest: undefined,
         shellConfirmRequest: undefined,
         planApprovalRequest: undefined,
+        askUserQuestionRequest: undefined,
       }),
     ).toBe(StreamingState.Responding);
   });

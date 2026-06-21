@@ -44,6 +44,16 @@ const toolSearchSchema = lazySchema(() =>
 export class ToolSearchTool implements Tool {
   private registry: ToolRegistry;
 
+  /**
+   * 可选：返回"仍在连接中"的 MCP server 名列表。
+   *
+   * 注入而非直连 MCP manager——保持工具与 MCP 子系统解耦、便于单测。
+   * CLI 启动初期 MCP 异步连接尚未完成时，搜索无果若不提示 pending，模型会误判
+   * "工具不存在"而放弃；有此回调则追加"稍后重试"提示（对标 claude-code
+   * pending_mcp_servers）。未注入时行为不变。
+   */
+  private pendingMcpServers?: () => string[];
+
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = toolSearchSchema();
 
@@ -57,6 +67,16 @@ export class ToolSearchTool implements Tool {
 
   constructor(registry: ToolRegistry) {
     this.registry = registry;
+  }
+
+  /**
+   * 注入 MCP pending server 检测回调。
+   *
+   * 由 cli.ts 在 MCPManager 创建后回填——ToolSearchTool 注册时 MCP 可能尚未初始化，
+   * 延迟注入避免循环依赖（与 setHookSystem / setUsageSink 同一模式）。
+   */
+  setPendingMcpServers(fn: () => string[]): void {
+    this.pendingMcpServers = fn;
   }
 
   name(): string {
@@ -178,12 +198,13 @@ export class ToolSearchTool implements Tool {
 
     if (matches.length === 0) {
       const total = this.registry.deferredSize();
+      const base =
+        total === 0
+          ? `没有找到匹配 "${query}" 的工具，且当前没有任何延迟工具（所有工具已在上下文中）。`
+          : `没有找到匹配 "${query}" 的延迟工具（共 ${total} 个延迟工具）。请换用其它关键词，` +
+            `或用 "select:<工具名>" 直接激活已知工具。`;
       return {
-        output:
-          total === 0
-            ? `没有找到匹配 "${query}" 的工具，且当前没有任何延迟工具（所有工具已在上下文中）。`
-            : `没有找到匹配 "${query}" 的延迟工具（共 ${total} 个延迟工具）。请换用其它关键词，` +
-              `或用 "select:<工具名>" 直接激活已知工具。`,
+        output: base + this.pendingMcpHint(),
         isError: false,
       };
     }
@@ -198,5 +219,20 @@ export class ToolSearchTool implements Tool {
     }
 
     return { output: lines.join("\n"), isError: false };
+  }
+
+  /**
+   * 生成 MCP pending server 提示（无 pending 或未注入回调时返回空串）。
+   *
+   * 搜索/select 无果时追加，告诉模型"某些 MCP server 仍在连接中，稍后重试可能发现更多工具"——
+   * 避免 CLI 启动初期（MCP 异步连接未完成）模型误判工具不存在而放弃。
+   */
+  private pendingMcpHint(): string {
+    if (!this.pendingMcpServers) return "";
+    const pending = this.pendingMcpServers();
+    if (!pending || pending.length === 0) return "";
+    return (
+      `\n\n注意：以下 MCP 服务器仍在连接中，稍后重试可能发现更多工具：${pending.join(", ")}`
+    );
   }
 }

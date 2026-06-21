@@ -107,6 +107,7 @@ export function getConversationClearedPatch(): Partial<TUIState> {
     // P1-2：对照完整 TUIState 补齐遗漏字段——否则 /clear 时若有待审批计划，
     // 审批框不消失（planApprovalRequest 最该修）；加载态/Copy 模式/plan 模式标志亦可能残留。
     planApprovalRequest: null,
+    askUserQuestionRequest: null,
     isLoading: false,
     copyModeEnabled: false,
     isPlanMode: false,

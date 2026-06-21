@@ -101,6 +101,31 @@ export interface PlanApprovalRequestInfo {
   resolve: (decision: "approve" | "reject") => void;
 }
 
+/** AskUserQuestion 单题（投影给 UI 的展示结构，不直接依赖工具层类型） */
+export interface AskQuestionInfo {
+  question: string;
+  header: string;
+  options: Array<{ label: string; description?: string }>;
+  multiSelect?: boolean;
+}
+
+/**
+ * AskUserQuestion 交互请求信息（对标 cc AskUserQuestionPermissionRequest）。
+ * 模型用 ask_user_question 工具发起结构化提问，TUI 弹出多题多选对话框收集答案。
+ */
+export interface AskUserQuestionRequestInfo {
+  questions: AskQuestionInfo[];
+  /**
+   * 用户作答完成后回灌：answers 按"问题文本 → 答案"映射（多选以 ", " 连接）。
+   * decision="cancelled" 表示用户 ESC 放弃，此时 answers 省略。
+   */
+  resolve: (
+    result:
+      | { decision: "answered"; answers: Record<string, string> }
+      | { decision: "cancelled" },
+  ) => void;
+}
+
 /** TUI 状态（由外部 App 驱动） */
 export interface TUIState {
   messages: Message[];
@@ -139,6 +164,7 @@ export interface TUIState {
   permissionRequest: PermissionRequestInfo | null;
   shellConfirmRequest: ShellConfirmRequestInfo | null;
   planApprovalRequest: PlanApprovalRequestInfo | null;
+  askUserQuestionRequest: AskUserQuestionRequestInfo | null;
   debug: boolean;
   lastToolResult: { toolName: string; isError: boolean; elapsedMs: number } | null;
   /** 流式输出的完整文本 */
@@ -251,8 +277,9 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
       permissionRequest: state.permissionRequest,
       shellConfirmRequest: state.shellConfirmRequest,
       planApprovalRequest: state.planApprovalRequest,
+      askUserQuestionRequest: state.askUserQuestionRequest,
     });
-  }, [state.permissionRequest, state.shellConfirmRequest, state.planApprovalRequest, state.isStreaming, state.isToolExecuting, state.isLoading]);
+  }, [state.permissionRequest, state.shellConfirmRequest, state.planApprovalRequest, state.askUserQuestionRequest, state.isStreaming, state.isToolExecuting, state.isLoading]);
   // 同步到 ref，供 handleSubmit 闭包读取最新流式态
   streamingStateRef.current = streamingState;
   const log = getLogger();
@@ -409,6 +436,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
       (state.isLoading || state.isStreaming || state.isToolExecuting) &&
       !state.permissionRequest &&
       !state.shellConfirmRequest &&
+      !state.askUserQuestionRequest &&
       !state.activeDialog;
 
     if (!isInterruptible) return false;
@@ -664,6 +692,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           permissionRequest={state.permissionRequest}
           shellConfirmRequest={state.shellConfirmRequest}
           planApprovalRequest={state.planApprovalRequest}
+          askUserQuestionRequest={state.askUserQuestionRequest}
           isLoading={state.isLoading}
           commands={state.commands}
           cwd={state.cwd}
@@ -707,6 +736,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           permissionRequest={state.permissionRequest}
           shellConfirmRequest={state.shellConfirmRequest}
           planApprovalRequest={state.planApprovalRequest}
+          askUserQuestionRequest={state.askUserQuestionRequest}
           isLoading={state.isLoading}
           commands={state.commands}
           cwd={state.cwd}

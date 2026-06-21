@@ -19,6 +19,7 @@ import { checkRules } from "./rules.ts";
 import { AuditLogger } from "./audit.ts";
 import { getLogger } from "../debug/logger.ts";
 import { splitCompoundCommand, hasSensitiveRedirection } from "./shell-parser.ts";
+import { checkInjectionPatterns } from "./bash-security.ts";
 import { PathValidator, normalizeCaseForComparison } from "./path-validator.ts";
 import {
   type DenialTrackingState,
@@ -362,7 +363,7 @@ export class PermissionChecker implements Checker {
       }
     }
 
-    // Step 2: 危险命令拦截（硬编码 25 种模式 + 复合命令拆分 + 重定向检测 + LLM 风险分类）
+    // Step 2: 危险命令拦截（硬编码 25 种模式 + 结构性注入防护 + 复合命令拆分 + 重定向检测 + LLM 风险分类）
     //   ⚠️ checkDangerousCommand 已为 async（内含 LLM 分类器调用），调用点必须 await——
     //   否则返回的 Promise 恒为 truthy，危险命令检测会被错误短路。
     if (req.toolName === "bash") {
@@ -752,6 +753,19 @@ export class PermissionChecker implements Checker {
         reason: `[critical] 危险命令被拦截 (${hard.name}): ${cmd.slice(0, 80)}`,
         decisionReason: { type: "dangerousCommand", pattern: hard.name, severity: "critical" },
         metadata: { classifiedBy: "hardcoded" },
+      };
+    }
+
+    // ── 第 1.5 道：结构性注入/混淆校验（纯逻辑、零成本，在 LLM 分类之前拦截 misparsing）──
+    const injectionFinding = checkInjectionPatterns(cmd);
+    if (injectionFinding) {
+      log.info("PERMISSION", `${req.toolName}(${cmd.slice(0, 80)}) → 需确认(注入防护: ${injectionFinding.id})`);
+      return {
+        allowed: false,
+        reason: `[injection:${injectionFinding.id}] ${injectionFinding.message}: ${cmd.slice(0, 80)}`,
+        needsConfirmation: true,
+        decisionReason: { type: "dangerousCommand", pattern: `injection:${injectionFinding.id}`, severity: "high" },
+        metadata: { classifiedBy: "injection-validator", injectionId: injectionFinding.id },
       };
     }
 

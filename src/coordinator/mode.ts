@@ -6,6 +6,19 @@
 
 let sessionMode: "normal" | "coordinator" = "normal";
 
+/**
+ * 协调者专属工具集（worker 不应拥有）。
+ * 派生 worker 时从工具集里剔除这些，避免 worker 再去编排/读写其他任务。
+ */
+export const COORDINATOR_ONLY_TOOLS = new Set<string>([
+  "sub_agent",
+  "send_message",
+  "task_output",
+  "task_stop",
+  "task_list",
+  "task_get",
+]);
+
 export function isCoordinatorMode(): boolean {
   return sessionMode === "coordinator";
 }

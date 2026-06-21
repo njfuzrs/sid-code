@@ -38,7 +38,7 @@ import {
   writeParentMsg,
 } from "./sub-agent-protocol.ts";
 import { drainAgentMessages } from "./message-queue.ts";
-import { getAgentSystemPrompt, getAgentWhenToUse, type AgentDefinition } from "./agent-definition.ts";
+import { getAgentSystemPrompt, resolveAgent, BUILTIN_AGENTS } from "./agent-definition.ts";
 import { platform, homedir } from "os";
 import { cwd } from "process";
 import { withAgentCwd } from "../bootstrap/cwd-context.ts";
@@ -78,6 +78,10 @@ export interface SubAgentTask {
    *  low|medium|high → provider reasoningEffort "high"；xhigh|max → "max"
    *  （provider 层仅接受 high|max，对齐 SendParams.reasoningEffort 契约）。 */
   effort?: "low" | "medium" | "high" | "xhigh" | "max";
+  /** Fork 模式：从主对话继承的初始消息序列（由 buildForkMessages 构建）。
+   *  存在时子代理不从空上下文起步，而是接续这段父对话历史（prompt cache 友好），
+   *  适合"接着主对话往下深钻某个分支"的子任务。对标 cc forkSubagent。 */
+  forkMessages?: { role: string; content: ContentBlock[] }[];
 }
 
 /** 子代理执行结果 */
@@ -705,17 +709,32 @@ export class SubAgent {
       }
       ctxMgr.setSystemPrompt(systemPrompt);
 
-      // 添加任务提示
-      ctxMgr.addMessage({
-        role: "user",
-        content: [{ type: "text", text: task.prompt }],
-      });
+      // 添加任务提示。Fork 模式：先把继承自主对话的消息序列灌入上下文
+      // （buildForkMessages 已保证以 user 开头、无悬空 tool 块），让子代理接续父对话；
+      // 末条已是 fork 子任务提示，故不再额外追加 task.prompt。
+      if (task.forkMessages && task.forkMessages.length > 0) {
+        for (const msg of task.forkMessages) {
+          ctxMgr.addMessage({ role: msg.role as "user" | "assistant", content: msg.content });
+        }
+      } else {
+        ctxMgr.addMessage({
+          role: "user",
+          content: [{ type: "text", text: task.prompt }],
+        });
+      }
 
       const sourceRegistry = task.tools ?? this.toolRegistry;
       const allTools = sourceRegistry.all();
+      // 区分内置类型 vs 动态(自定义/插件)类型：
+      // 内置走 tool-filter 的角色白名单(builtInType)；动态类型该白名单查不到，
+      // 改用其 AgentDefinition 声明的 tools/disallowedTools(对标 cc resolveAgentTools)。
+      const agentDef = resolveAgent(task.type);
+      const isBuiltInType = task.type in BUILTIN_AGENTS;
       const filteredTools = filterToolsForAgent(allTools, {
-        isBuiltIn: true,
-        builtInType: task.type,
+        isBuiltIn: isBuiltInType,
+        builtInType: isBuiltInType ? task.type : undefined,
+        tools: agentDef?.tools,
+        disallowedTools: agentDef?.disallowedTools,
         isAsync: task._isAsync,
       });
       const tools = this.buildIsolatedToolRegistry(filteredTools);

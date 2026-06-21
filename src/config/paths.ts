@@ -117,6 +117,11 @@ export const sidPaths = {
   // ── IDE ──
   ideLockDir: () => sidHomePath("ide"),
 
+  // ── MCP OAuth 凭据存储（access/refresh token、动态注册 client、discovery 缓存） ──
+  mcpOAuth: () => sidHomePath("mcp-oauth.json"),
+  /** MCP token 刷新跨进程互斥锁目录 */
+  mcpOAuthLocks: () => sidHomePath("state", "mcp-oauth-locks"),
+
   // ── 持久 Shell 会话：shell 环境快照 ──
   shellSnapshots: () => sidHomePath("shell-snapshots"),
 

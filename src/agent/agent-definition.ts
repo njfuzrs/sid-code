@@ -32,10 +32,18 @@ export interface AgentDefinition {
   timeout?: number;
   /** 是否只读代理（只读工具不能被误用为写操作） */
   readOnly?: boolean;
-  /** 来源：built-in | userSettings */
-  source?: "built-in" | "userSettings";
+  /** 来源：built-in | userSettings | plugin（对标 cc AgentSource） */
+  source?: "built-in" | "userSettings" | "plugin";
   /** 是否需要在隔离 Worktree 中执行 */
   isolation?: "worktree";
+  /** 上下文窗口大小（tokens，undefined = 跟随主模型窗口）。对标 cc maxTokens。 */
+  maxTokens?: number;
+  /** 是否默认后台异步执行（对标 cc background 字段，coordinator/审计类常驻后台） */
+  background?: boolean;
+  /** 是否省略主代理 CLAUDE.md 上下文（对标 cc omitClaudeMd，只读探查类省 token） */
+  omitClaudeMd?: boolean;
+  /** 来源文件路径（自定义/插件 agent 用于溯源；built-in 为空） */
+  filePath?: string;
 }
 
 // ============================================================
@@ -98,6 +106,21 @@ export const BUILTIN_AGENTS: Record<string, AgentDefinition> = {
 - 完成后以 "## 方案" 开头输出：问题分析、方案设计、涉及文件、实现步骤`,
     tools: ["read", "grep", "glob", "ls", "read_many", "task_list"],
     readOnly: true,
+    source: "built-in",
+  },
+
+  "general-purpose": {
+    agentType: "general-purpose",
+    description: "通用 Agent，拥有全部工具集，适合复杂的多步骤任务",
+    whenToUse: "当需要完成复杂的多步骤研究、搜索或编码任务时使用。拥有全部工具（除 sub_agent 外），是省略 type 时的默认兜底类型。",
+    systemPrompt: `你是一个通用任务执行代理。你拥有完整的工具集来完成复杂任务。
+规则：
+- 分析任务需求，选择合适的工具组合
+- 按步骤执行，每步验证结果
+- 完成后以 "## 结果" 开头简洁地报告完成状态和关键变更
+- 标注置信度：对关键结论标注确定性（如「已验证」「推测，未确认」），并显式列出你没能确认的点`,
+    tools: ["*"],
+    disallowedTools: ["sub_agent"],
     source: "built-in",
   },
 
@@ -165,9 +188,15 @@ export function getBuiltInAgentDefinitions(): AgentDefinition[] {
   return Object.values(BUILTIN_AGENTS);
 }
 
-/** 解析 Agent 定义（先查 builtIn，再查 user dir） */
+/**
+ * 解析 Agent 定义。
+ *
+ * 先查动态聚合 registry（built-in + custom + plugin，见 registerDynamicAgents），
+ * 未命中再回退到 BUILTIN_AGENTS。这样自定义/插件 agent 也能被 sub_agent 的 type 直接解析，
+ * 与内置类型同源——对标 cc：所有 agent 走同一 AgentDefinition，统一经 subagent_type 访问。
+ */
 export function resolveAgent(type: string): AgentDefinition | undefined {
-  return BUILTIN_AGENTS[type];
+  return dynamicAgents.get(type) ?? BUILTIN_AGENTS[type];
 }
 
 /** 获取 Agent 的系统提示词（带 fallback） */
@@ -181,17 +210,69 @@ export function getAgentWhenToUse(type: string): string | undefined {
 }
 
 // ============================================================
-// 用户自定义 Agent 加载（M5 实现磁盘加载）
+// 统一 Agent 聚合 Registry（对标 cc getAgentDefinitionsWithOverrides）
+//
+// cc 把 built-in + custom(user/project settings) + plugin 三类来源聚合成一个
+// "活跃 agent 列表"，按优先级去重覆盖（built-in < plugin < user < project），
+// 主 LLM 通过同一个 Agent 工具的 subagent_type 访问任何一类。
+//
+// sid 此前三条路径割裂：内置走 sub_agent 的 type 枚举；自定义/插件各自包装成
+// 独立的 agent__xxx 工具。割裂的代价：① 自定义 agent 无法复用 sub_agent 的
+// run_in_background / isolation / 并发控制；② 主 LLM 要在"选 sub_agent type"和
+// "调 agent__xxx 工具"两套心智间切换。
+//
+// 这里建立 cc 式聚合：把运行期发现的自定义/插件 agent 注册进 dynamicAgents，
+// resolveAgent / getActiveAgentDefinitions / SubAgentTool 的 type 枚举全部据此派生。
 // ============================================================
 
+/** 运行期注册的动态 agent（自定义 + 插件），key = agentType。 */
+const dynamicAgents = new Map<string, AgentDefinition>();
+
 /**
- * 加载用户自定义 Agent 定义
- * 从 ~/.sid-code/agents/ 或项目 .sid/agents/ 目录加载
- * M5 实现，当前为占位
+ * 注册一批动态 agent 定义（自定义 / 插件）到聚合 registry。
+ *
+ * 优先级（对标 cc getActiveAgentsFromList 的 built-in < plugin < user < project）：
+ * - overwrite=true（默认，用户自定义用）：同名时覆盖已有定义，让用户定义胜出。
+ * - overwrite=false（插件用）：同名时不覆盖——插件优先级低于用户自定义，
+ *   即便插件在用户 agent 之后注册，也不会顶掉用户的同名 agent。
  */
-export async function loadCustomAgents(_dir: string): Promise<AgentDefinition[]> {
-  // TODO M5: 扫描目录中的 YAML/JSON 文件，解析为 AgentDefinition
-  return [];
+export function registerDynamicAgents(defs: AgentDefinition[], overwrite = true): void {
+  for (const def of defs) {
+    if (!def.agentType) continue;
+    if (!overwrite && dynamicAgents.has(def.agentType)) continue;
+    dynamicAgents.set(def.agentType, def);
+  }
+}
+
+/** 清空动态 agent 注册（测试 / 重新发现时用）。 */
+export function clearDynamicAgents(): void {
+  dynamicAgents.clear();
+}
+
+/**
+ * 获取当前活跃的全部 Agent 定义（built-in + 已注册的 custom/plugin）。
+ *
+ * 这是给 SubAgentTool.description() 和 type 枚举用的单一真相源——
+ * 新增任何来源的 agent 都会自动出现在 sub_agent 的可选类型里，无需改 schema 代码。
+ * 保序：built-in 在前（声明序），dynamic 在后（注册序），同名 dynamic 覆盖 built-in 的值
+ * 但保持 built-in 的位置。
+ */
+export function getActiveAgentDefinitions(): AgentDefinition[] {
+  const result: AgentDefinition[] = [];
+  const seen = new Set<string>();
+  for (const def of Object.values(BUILTIN_AGENTS)) {
+    result.push(dynamicAgents.get(def.agentType) ?? def);
+    seen.add(def.agentType);
+  }
+  for (const [type, def] of dynamicAgents) {
+    if (!seen.has(type)) result.push(def);
+  }
+  return result;
+}
+
+/** 获取当前活跃的全部 Agent 类型名（built-in + custom + plugin）。 */
+export function getActiveAgentTypes(): string[] {
+  return getActiveAgentDefinitions().map((d) => d.agentType);
 }
 
 // ============================================================

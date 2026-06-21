@@ -8,11 +8,11 @@
 import { describe, it, expect } from "bun:test";
 import { assignAgentColor, colorize } from "../../src/agent/color.ts";
 import { buildForkMessages } from "../../src/agent/fork.ts";
-import { BUILT_IN_AGENTS } from "../../src/agent/definition.ts";
+import { getBuiltInAgentDefinitions } from "../../src/agent/agent-definition.ts";
 
 describe("verify 内置 Agent 定义", () => {
   it("存在 verify 类型", () => {
-    const verify = BUILT_IN_AGENTS.find((a) => a.agentType === "verify");
+    const verify = getBuiltInAgentDefinitions().find((a) => a.agentType === "verify");
     expect(verify).toBeDefined();
     expect(verify!.tools).toContain("read");
     expect(verify!.tools).toContain("bash");
@@ -20,7 +20,7 @@ describe("verify 内置 Agent 定义", () => {
   });
 
   it("存在 general-purpose 类型", () => {
-    const gp = BUILT_IN_AGENTS.find((a) => a.agentType === "general-purpose");
+    const gp = getBuiltInAgentDefinitions().find((a) => a.agentType === "general-purpose");
     expect(gp).toBeDefined();
   });
 });

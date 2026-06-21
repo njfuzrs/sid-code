@@ -398,6 +398,10 @@ export class App {
     // 否则子代理烧的 token/费用完全不计入总费用、costLimit 守卫对子代理失效。
     this.wireSubAgentUsageSink();
 
+    // Fork 模式接线：给 SubAgentTool 注入主对话上下文提供者，
+    // 让 fork=true 的子代理能继承主对话最近消息（prompt cache 友好）。
+    this.wireSubAgentMainContext();
+
     // 根因修复：把 HookSystem 回填到 spawn-agent 类工具。这些工具在 cli.ts 注册时
     // HookSystem 尚未创建（构造时 hookSystem=undefined），导致子代理/workflow 的
     // 工具级 hook 与 Subagent span 在生产中从未触发。HookSystem 创建后经 setter 接通。
@@ -434,6 +438,21 @@ export class App {
       const maybe = tool as { setUsageSink?: (s: typeof sink) => void };
       if (typeof maybe.setUsageSink === "function") {
         maybe.setUsageSink(sink);
+      }
+    }
+  }
+
+  /**
+   * 注入主对话上下文提供者到 SubAgentTool（fork 模式）。
+   * 提供者返回主对话当前消息历史，buildForkMessages 截取尾部构建 fork 子代理初始上下文。
+   */
+  private wireSubAgentMainContext(): void {
+    const provider = (): { role: string; content: import("./llm/types.ts").ContentBlock[] }[] =>
+      this.ctxMgr.getMessages() as { role: string; content: import("./llm/types.ts").ContentBlock[] }[];
+    for (const tool of this.toolRegistry.all()) {
+      const maybe = tool as { setMainContextProvider?: (p: typeof provider) => void };
+      if (typeof maybe.setMainContextProvider === "function") {
+        maybe.setMainContextProvider(provider);
       }
     }
   }
@@ -2132,6 +2151,7 @@ export class App {
       permissionRequest: null,
       shellConfirmRequest: null,
       planApprovalRequest: null,
+      askUserQuestionRequest: null,
       debug: !!this.config.debug,
       lastToolResult: null,
       streamingText: "",
@@ -2391,6 +2411,47 @@ export class App {
         });
       });
     });
+
+    // 设置 TUI AskUserQuestion 提问回调（结构化选择题，对标 cc AskUserQuestion）
+    {
+      const { setAskUserQuestionHandler } = await import("./tool/ask-user-question-bridge.ts");
+      setAskUserQuestionHandler(async (req, signal) => {
+        return new Promise((resolve) => {
+          log.info("TUI:ASK", `显示提问对话框: ${req.questions.length} 题`);
+          let settled = false;
+          const wrappedResolve = (
+            result:
+              | { decision: "answered"; answers: Record<string, string> }
+              | { decision: "cancelled" },
+          ) => {
+            if (settled) return;
+            settled = true;
+            log.info("TUI:ASK", `提问对话框响应: ${result.decision}`);
+            updateState({ askUserQuestionRequest: null });
+            if (result.decision === "answered") {
+              resolve({ status: "answered", answers: result.answers });
+            } else {
+              resolve({ status: "cancelled" });
+            }
+          };
+          // abort（用户 ESC 中断整轮 / 超时）时清理对话框并按取消处理，避免悬挂
+          if (signal) {
+            if (signal.aborted) {
+              wrappedResolve({ decision: "cancelled" });
+              return;
+            }
+            signal.addEventListener(
+              "abort",
+              () => wrappedResolve({ decision: "cancelled" }),
+              { once: true },
+            );
+          }
+          updateState({
+            askUserQuestionRequest: { questions: req.questions, resolve: wrappedResolve },
+          });
+        });
+      });
+    }
 
     // TUI 版本的 agentLoop（消费 QueryEngine async generator）
     const tuiAgentLoop = async (userInput: string) => {

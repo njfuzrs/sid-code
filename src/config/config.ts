@@ -9,6 +9,7 @@ import { join } from "path";
 import { existsSync, mkdirSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
 import { getSidHome } from "./paths.ts";
+import { parseToolSearchEnv } from "../tool/tool-search-auto.ts";
 
 /** MCP 服务器配置 */
 export interface MCPServerConfig {
@@ -28,6 +29,22 @@ export interface MCPServerConfig {
   ideName?: string;            // IDE 名称（VS Code / Cursor / JetBrains 等）
   ideRunningInWindows?: boolean; // IDE 是否运行在 Windows 上（WSL 场景）
   scope?: "user" | "project" | "local" | "dynamic"; // 配置来源标记
+  // ─── OAuth 2.1 接入（远程 MCP：Linear / Sentry / claude.ai 等，对标 Claude Code auth.ts） ───
+  oauth?: MCPOAuthConfig;      // 启用/配置 OAuth；为对象（含空对象 {}）即视为启用
+}
+
+/** MCP OAuth 配置（远程 HTTP/SSE 服务器） */
+export interface MCPOAuthConfig {
+  /** 预配置 client_id（跳过动态注册，对标 CC oauth.clientId） */
+  clientId?: string;
+  /** 机密客户端的 client_secret（公共客户端留空，走 PKCE） */
+  clientSecret?: string;
+  /** 直接指定授权服务器 metadata URL，跳过 RFC 9728/8414 发现（必须 https） */
+  authServerMetadataUrl?: string;
+  /** 请求的 scope（空格分隔；留空则用授权服务器 metadata 通告的 scope） */
+  scope?: string;
+  /** 固定本地回调端口（默认随机选取空闲端口） */
+  callbackPort?: number;
 }
 
 /** Hook 配置（支持 command 和 url 两种类型） */
@@ -178,12 +195,19 @@ export interface Config {
 
   // 工具延迟加载（ToolSearch）
   /**
-   * 是否启用工具延迟加载（默认 false）。
-   * 开启后：标记 shouldDefer 的工具不进首轮 LLM 上下文（用 activeDefinitions 替代
-   * definitions），模型通过 tool_search 工具按需搜索并激活。工具数膨胀（50+）时
-   * 显著降低首轮 token。关闭时全部工具照常进上下文，行为与历史一致。
+   * 工具延迟加载模式（默认 false 关闭）。对标 claude-code ENABLE_TOOL_SEARCH。
+   *
+   * 取值：
+   *   - false / 不设置：恒关，全部工具照常进首轮上下文（行为与历史一致）。
+   *   - true：恒开，标记 shouldDefer 的工具不进首轮（用 activeDefinitions 替代
+   *     definitions），模型经 tool_search 按需搜索并激活。
+   *   - "auto"：按延迟工具 token 占上下文窗口比例自动判定（默认阈值 10%）——
+   *     工具定义确实"撑爆"上下文时才开延迟，少量工具时全量更方便。
+   *   - number：自定义 auto 阈值百分比（0=恒开，100=恒关，1-99=按比例判定）。
+   *
+   * 环境变量 SID_CODE_TOOL_SEARCH 支持 true/false/auto/auto:N/纯数字 覆盖。
    */
-  toolSearch?: boolean;
+  toolSearch?: boolean | "auto" | number;
 
   // 环境变量清理
   /** 是否在 bash 工具执行时清理环境变量（默认 false） */
@@ -711,6 +735,14 @@ function loadFromEnv(): Partial<Config> {
   if (envMaxTokens !== undefined && envMaxTokens !== "") {
     const n = Number.parseInt(envMaxTokens, 10);
     if (Number.isFinite(n) && n > 0) base.maxTokens = n;
+  }
+
+  // 工具延迟加载（ToolSearch）env 覆盖：SID_CODE_TOOL_SEARCH 支持
+  // true/false/auto/auto:N/纯数字（对标 claude-code ENABLE_TOOL_SEARCH）。
+  // 非法值返回 undefined，不覆盖配置文件/默认值。
+  const toolSearchEnv = parseToolSearchEnv(env.SID_CODE_TOOL_SEARCH);
+  if (toolSearchEnv !== undefined) {
+    base.toolSearch = toolSearchEnv;
   }
 
   // trace 环境变量

@@ -8,7 +8,7 @@ import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "../tool
 import type { ProviderRegistry } from "../llm/registry.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { SubAgent } from "./sub-agent.ts";
-import { getBuiltInAgentTypes, getBuiltInAgentDefinitions } from "./agent-definition.ts";
+import { getActiveAgentTypes, getActiveAgentDefinitions } from "./agent-definition.ts";
 import { getLogger } from "../debug/logger.ts";
 import {
   createAgentTask,
@@ -20,12 +20,21 @@ import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
 
 const subAgentSchema = lazySchema(() => {
-  const types = getBuiltInAgentTypes();
+  // type 用 z.string()（而非 z.enum）：自定义/插件 agent 在本工具注册之后才加载，
+  // lazySchema 一旦求值即固化，无法纳入动态类型。对标 cc：subagent_type 是字符串，
+  // 可选类型在 description() 里实时列出（每次组装工具定义都重新渲染），
+  // 运行时再用 getActiveAgentTypes() 校验，二者配合达成"动态类型 + 严格校验"。
   return z.object({
-    type: z.enum(types as [string, ...string[]]).describe(`子代理类型：${types.join("、")}`),
+    type: z
+      .string()
+      .describe("子代理类型（见工具描述中列出的可用类型，省略时默认 general-purpose）"),
     description: z.string().describe("子任务的简短描述"),
     prompt: z.string().describe("给子代理的详细指令"),
     run_in_background: z.boolean().optional().describe("是否后台执行（立即返回 task_id，完成后通知）"),
+    fork: z
+      .boolean()
+      .optional()
+      .describe("Fork 模式：让子代理继承当前对话的最近上下文（而非空上下文起步），适合『接着当前对话深入钻研某分支』的子任务。仅同步模式支持。"),
     isolation: z
       .enum(["worktree"])
       .optional()
@@ -46,6 +55,9 @@ export class SubAgentTool implements Tool {
   private hookSystem?: HookSystem;
   /** 子代理 usage 归集 sink（由主会话注入；未注入时不归集，仅 spawn 前的早期阶段） */
   private usageSink?: SubAgentUsageSink;
+  /** 主对话上下文提供者（fork 模式用）。由主会话注入，返回主对话当前消息历史。
+   *  未注入时 fork 模式降级为普通子代理（空上下文起步）。 */
+  private mainContextProvider?: () => { role: string; content: import("../llm/types.ts").ContentBlock[] }[];
 
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = subAgentSchema();
@@ -86,6 +98,16 @@ export class SubAgentTool implements Tool {
     this.usageSink = sink;
   }
 
+  /**
+   * 注入主对话上下文提供者（fork 模式用）。主会话构造后调用，
+   * 让 fork 子代理能继承主对话最近的消息历史（prompt cache 友好）。
+   */
+  setMainContextProvider(
+    provider: () => { role: string; content: import("../llm/types.ts").ContentBlock[] }[],
+  ): void {
+    this.mainContextProvider = provider;
+  }
+
   /** 归集子代理 usage 到主会话（仅成功或有实际消耗时）。容错：sink 异常不影响子代理结果。 */
   private collectUsage(result: SubAgentResult): void {
     if (!this.usageSink) return;
@@ -116,7 +138,7 @@ export class SubAgentTool implements Tool {
     //   `- type: whenToUse (Tools: ...)`
     // 用 whenToUse（"何时用"，比 description"是什么"更能指导派活决策）；
     // 工具集按 allowlist/denylist 分别渲染（denylist → "除 X 外的全部工具"）。
-    const defs = getBuiltInAgentDefinitions();
+    const defs = getActiveAgentDefinitions();
     const toolsDescOf = (d: import("./agent-definition.ts").AgentDefinition): string => {
       const allow = d.tools && d.tools.length > 0 ? d.tools : null;
       const deny = d.disallowedTools && d.disallowedTools.length > 0 ? d.disallowedTools : null;
@@ -182,7 +204,11 @@ ${typeLines}
       return { output: "错误: 缺少必需参数 (type, description, prompt)", isError: true };
     }
 
-    const validTypes = getBuiltInAgentTypes();
+    const validTypes = getActiveAgentTypes();
+    // 对标 cc：type 省略时默认 general-purpose（cc 的默认兜底类型）
+    if (!params.type) {
+      params.type = "general-purpose";
+    }
     if (!validTypes.includes(params.type)) {
       return { output: `错误: 无效的子代理类型 "${params.type}"，可选: ${validTypes.join(", ")}`, isError: true };
     }
@@ -201,6 +227,7 @@ ${typeLines}
     type: string;
     description: string;
     prompt: string;
+    fork?: boolean;
     isolation?: "worktree";
   }, signal?: AbortSignal): Promise<ToolResult> {
     const log = getLogger();
@@ -247,11 +274,21 @@ ${typeLines}
     try {
       const subAgent = SubAgent.fromRegistry(this.providerRegistry, this.toolRegistry, this.hookSystem);
 
+      // Fork 模式：继承主对话上下文（prompt cache 友好）
+      let forkMessages: { role: string; content: import("../llm/types.ts").ContentBlock[] }[] | undefined;
+      if (params.fork && this.mainContextProvider) {
+        const { buildForkMessages } = await import("./fork.ts");
+        const parentMessages = this.mainContextProvider();
+        forkMessages = buildForkMessages(parentMessages, params.prompt) as typeof forkMessages;
+        log.info("SUBAGENT", `[fork] 继承主对话 ${parentMessages.length} 条消息，构建 ${forkMessages!.length} 条 fork 消息`);
+      }
+
       const result = await subAgent.execute(
         {
           type: params.type,
           description: params.description,
           prompt: params.prompt,
+          forkMessages,
         },
         signal,
       );

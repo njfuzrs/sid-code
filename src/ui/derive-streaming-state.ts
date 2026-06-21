@@ -24,10 +24,11 @@ export interface StreamingStateInput {
   permissionRequest: unknown;
   shellConfirmRequest: unknown;
   planApprovalRequest: unknown;
+  askUserQuestionRequest: unknown;
 }
 
 export function deriveStreamingState(state: StreamingStateInput): StreamingState {
-  if (state.permissionRequest || state.shellConfirmRequest || state.planApprovalRequest) {
+  if (state.permissionRequest || state.shellConfirmRequest || state.planApprovalRequest || state.askUserQuestionRequest) {
     return StreamingState.WaitingForConfirmation;
   }
   if (state.isStreaming || state.isToolExecuting) {

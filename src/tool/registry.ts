@@ -14,6 +14,7 @@ import type { LegacyTool } from "./types.ts";
 import type { ToolDefinition } from "../llm/types.ts";
 import { z } from "zod/v4";
 import { getLogger } from "../debug/index.ts";
+import { searchToolsWithScoring } from "./tool-search-scoring.ts";
 
 /**
  * 生成单个工具的 LLM 定义。
@@ -258,17 +259,31 @@ export class Registry {
       .map(toolToDefinition);
   }
 
-  /** 搜索延迟工具（ToolSearchTool 调用） */
+  /**
+   * 搜索延迟工具（ToolSearchTool 调用）。
+   *
+   * 委托 tool-search-scoring 的加权评分（对标 claude-code searchToolsWithKeywords）：
+   * 工具名按 CamelCase/mcp__ 拆词，名命中 > searchHint > description，MCP 工具加权，
+   * 支持 "+term" 必需词与 mcp__ 前缀快路径。返回按相关度降序排列的工具实例。
+   *
+   * 内部不截断（取大上限 50），由调用方（ToolSearchTool）按 max_results 截断——
+   * 这样调用方能拿到完整排序、自行决定展示多少。
+   */
   searchDeferredTools(query: string): LegacyTool[] {
-    const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
-    return this.all()
-      .filter((t) => this.isToolDeferred(t))
-      .filter((t) => {
-        // searchHint 提供高信号关键词，参与匹配（claude-code 同款）
-        const hint = t.searchHint ? ` ${t.searchHint}` : "";
-        const text = `${t.name()} ${t.description()}${hint}`.toLowerCase();
-        return terms.some((term) => text.includes(term));
-      });
+    const deferred = this.all().filter((t) => this.isToolDeferred(t));
+    const deferredInfo = deferred.map((t) => ({
+      name: t.name(),
+      description: t.description(),
+      searchHint: t.searchHint,
+    }));
+
+    // 严守"仅搜索延迟工具"契约：deferred 同时作为搜索池与精确名快路径的回退池，
+    // 不外溢到非延迟工具（跨全量池的精确名匹配由 ToolSearchTool 层的 registry.get
+    // 负责，那里语义是"选已加载工具是无害 no-op"）。
+    const scored = searchToolsWithScoring(query, deferredInfo, deferredInfo, 50);
+    return scored
+      .map((s) => this.get(s.name))
+      .filter((t): t is LegacyTool => t !== undefined);
   }
 
   /** 延迟工具数量（字段 + 名单双来源，去重） */

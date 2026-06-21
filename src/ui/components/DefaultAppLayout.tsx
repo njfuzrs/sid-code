@@ -26,7 +26,7 @@ import { EmptyLogo } from "./EmptyLogo.tsx";
 import { ModelDialog } from "./ModelDialog.tsx";
 import { ThemeDialog } from "./ThemeDialog.tsx";
 import type { HistoryItem } from "../types.ts";
-import type { PermissionRequestInfo, ShellConfirmRequestInfo, PlanApprovalRequestInfo, TaskDisplayInfo } from "../App.tsx";
+import type { PermissionRequestInfo, ShellConfirmRequestInfo, PlanApprovalRequestInfo, AskUserQuestionRequestInfo, TaskDisplayInfo } from "../App.tsx";
 import type { DialogType } from "../../command/types.ts";
 import type { Usage } from "../../llm/types.ts";
 import type { TodoItem } from "../../tool/todo-write.ts";
@@ -58,6 +58,7 @@ interface DefaultAppLayoutProps {
   permissionRequest: PermissionRequestInfo | null;
   shellConfirmRequest: ShellConfirmRequestInfo | null;
   planApprovalRequest: PlanApprovalRequestInfo | null;
+  askUserQuestionRequest: AskUserQuestionRequestInfo | null;
   isLoading: boolean;
   commands: Array<{ name: string; aliases: string[]; description: string }>;
   cwd: string;
@@ -111,6 +112,7 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
   permissionRequest,
   shellConfirmRequest,
   planApprovalRequest,
+  askUserQuestionRequest,
   isLoading,
   commands,
   cwd,
@@ -229,6 +231,13 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
               permissionRequest={null}
               shellConfirmRequest={null}
               planApprovalRequest={planApprovalRequest}
+            />
+          ) : askUserQuestionRequest ? (
+            <DialogRenderer
+              permissionRequest={null}
+              shellConfirmRequest={null}
+              planApprovalRequest={null}
+              askUserQuestionRequest={askUserQuestionRequest}
             />
           ) : activeDialog === "model" ? (
             <ModelDialog

@@ -13,7 +13,6 @@
  * - 子进程只跑 LLM 循环，工具执行回传父进程
  */
 
-import type { SubAgentType } from "./sub-agent.ts";
 import type { Usage } from "../llm/types.ts";
 
 // ============================================================
@@ -31,7 +30,8 @@ export interface ToolDef {
 export interface ParentInitMessage {
   type: "init";
   session_id: string;
-  task_type: SubAgentType;
+  /** 子代理类型（内置联合类型 or 动态注册的自定义/插件 agent 类型名） */
+  task_type: string;
   system_prompt: string;
   user_prompt: string;
   /** 工具名列表（日志用） */

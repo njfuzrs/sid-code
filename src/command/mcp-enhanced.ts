@@ -42,6 +42,7 @@ export class MCPEnhancedCommand implements Command {
       new MCPEnableCommand(),
       new MCPDisableCommand(),
       new MCPTestCommand(),
+      new MCPAuthenticateCommand(),
       new MCPPromptsCommand(),
       new MCPResourcesCommand(),
     ];
@@ -387,6 +388,47 @@ class MCPTestCommand implements Command {
     }
 
     return { kind: "message", message: lines.join("\n") };
+  }
+}
+
+/** /mcp authenticate - 触发远程 MCP 服务器的 OAuth 授权 */
+class MCPAuthenticateCommand implements Command {
+  name() { return "authenticate"; }
+  aliases() { return ["auth", "login"]; }
+  description() { return "对配置了 OAuth 的远程 MCP 服务器发起授权"; }
+
+  async execute(args: string, ctx: AppContext): Promise<CommandResult> {
+    const parser = new ArgParser(args);
+    const name = parser.get(0);
+
+    if (!ctx.mcpManager) {
+      return { kind: "error", message: "MCP 管理器未初始化" };
+    }
+
+    const oauthServers = ctx.mcpManager.listOAuthServers();
+
+    if (!name) {
+      if (oauthServers.length === 0) {
+        return {
+          kind: "message",
+          message: "没有配置 OAuth 的 MCP 服务器\n在服务器配置中添加 \"oauth\": {} 即可启用 OAuth",
+        };
+      }
+      return {
+        kind: "message",
+        message: `用法: /mcp authenticate <name>\n可授权的服务器: ${oauthServers.join(", ")}`,
+      };
+    }
+
+    try {
+      const tools = await ctx.mcpManager.authenticate(name);
+      return {
+        kind: "message",
+        message: `${name} OAuth 授权成功，注册了 ${tools.length} 个工具`,
+      };
+    } catch (err: any) {
+      return { kind: "error", message: `授权失败: ${err.message}` };
+    }
   }
 }
 

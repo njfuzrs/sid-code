@@ -146,13 +146,14 @@ export class WorkflowTool implements Tool {
 
   usageGuide(): string {
     // 动态列出可选 agentType(含 verify),让模型知道 agent({agentType:'...'}) 可选哪些类型。
-    // 从 BUILTIN_AGENTS 派生,避免写死漂移(新增内置类型自动出现在指南里)。
+    // 从活跃 agent registry 派生(含 built-in + custom + plugin),避免写死漂移
+    // (新增任何来源的类型自动出现在指南里)。
     let agentTypesLine = "";
     try {
-      const { getBuiltInAgentDefinitions } = require("../agent/agent-definition.ts");
-      const defs = getBuiltInAgentDefinitions() as Array<{ agentType: string; description: string }>;
+      const { getActiveAgentDefinitions } = require("../agent/agent-definition.ts");
+      const defs = getActiveAgentDefinitions() as Array<{ agentType: string; description: string }>;
       const list = defs.map((d) => `${d.agentType}(${d.description})`).join("、");
-      agentTypesLine = `\n- agent({agentType}) 可选内置类型:${list}。对抗校验场景用 agent({agentType:'verify'}) 开对抗式验证子代理(默认怀疑、主动证伪、读码举证)。`;
+      agentTypesLine = `\n- agent({agentType}) 可选类型:${list}。对抗校验场景用 agent({agentType:'verify'}) 开对抗式验证子代理(默认怀疑、主动证伪、读码举证)。`;
     } catch { /* 注册表读取失败不影响指南主体 */ }
 
     return `- 仅当任务需要多 agent 编排(穷尽/对抗/大规模)时用;单点查找用普通工具或单个子代理。
