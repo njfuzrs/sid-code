@@ -130,6 +130,23 @@ describe("M6 workflow-task — 生命周期", () => {
     expect(t.status).toBe("killed");
   });
 
+  test("kill 补发 killed 通知(不再无声消失)", () => {
+    // 回归守卫:此前 killWorkflowTask 设 notified=true 却从不入队通知,
+    // 被 kill 的 workflow 被 evictTerminalTasks 静默驱逐、用户收不到反馈。
+    const { taskState } = createWorkflowTask({
+      workflowName: "my-audit",
+      runId: "wf_kill_notif",
+      source: "inline",
+      description: "d",
+    });
+    killWorkflowTask(taskState.id);
+    const notifs = dequeuePendingNotifications();
+    expect(notifs.length).toBeGreaterThan(0);
+    const joined = notifs.join("");
+    expect(joined).toContain("my-audit"); // 通知里带 workflow 名
+    expect(joined.toLowerCase()).toContain("kill"); // killed 状态
+  });
+
   test("终态保护:complete 后再 fail 不覆盖状态", async () => {
     const { taskState } = createWorkflowTask({
       workflowName: "wf",

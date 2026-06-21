@@ -142,14 +142,30 @@ export function killWorkflowTask(taskId: string): boolean {
   activeWorkflowControllers.delete(taskId);
 
   const task = getTask(taskId) as LocalWorkflowTaskState | undefined;
-  if (task && !isTerminalStatus(task.status)) {
-    updateTask<LocalWorkflowTaskState>(taskId, (t) => ({
-      ...t,
+  if (!task || isTerminalStatus(task.status)) return true;
+
+  updateTask<LocalWorkflowTaskState>(taskId, (t) => ({
+    ...t,
+    status: "killed",
+    endTime: Date.now(),
+    notified: true,
+  }));
+
+  // 补发 killed 通知,与 complete/fail 对称(对齐 killAgentTask)。
+  // 修复缺口:此前设 notified=true 却从不入队通知,导致被 kill 的 workflow 被
+  // evictTerminalTasks 静默驱逐、TUI 面板消失、主代理收不到任何通知,无声消失。
+  // 落盘 fire-and-forget flush(kill 是同步语义,task_stop 不 await;通知 enqueue
+  // 本身同步,不依赖 flush)。
+  void flushTaskOutput(taskId).catch(() => {});
+  enqueuePendingNotification(
+    formatNotification({
+      taskId,
+      toolUseId: task.toolUseId,
+      outputFile: task.outputFile,
       status: "killed",
-      endTime: Date.now(),
-      notified: true,
-    }));
-  }
+      summary: `Workflow "${task.workflowName}" 已被终止`,
+    }),
+  );
   return true;
 }
 

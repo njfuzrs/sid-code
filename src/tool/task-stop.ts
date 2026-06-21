@@ -8,8 +8,10 @@ import {
   isTerminalStatus,
   isShellTask,
   isAgentTask,
+  isWorkflowTask,
   killShellTask,
   killAgentTask,
+  killWorkflowTask,
 } from "../task/index.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
@@ -31,7 +33,7 @@ export class TaskStopTool implements Tool {
   }
 
   description(): string {
-    return "终止一个正在运行的后台任务（Shell 命令或 Agent）。";
+    return "终止一个正在运行的后台任务（Shell 命令、Agent 或 Workflow）。";
   }
 
   inputSchema(): Record<string, unknown> {
@@ -64,6 +66,8 @@ export class TaskStopTool implements Tool {
       killShellTask(task.id);
     } else if (isAgentTask(task)) {
       killAgentTask(task.id);
+    } else if (isWorkflowTask(task)) {
+      killWorkflowTask(task.id);
     }
 
     return {

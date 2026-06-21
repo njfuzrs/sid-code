@@ -214,8 +214,9 @@ export class WorkflowTool implements Tool {
     // 3) runId:resume 复用旧 id,否则新建
     const runId = params.resumeFromRunId ?? newRunId();
 
-    // 4) 注册后台 task(TUI 可见)
-    const { taskState } = createWorkflowTask({
+    // 4) 注册后台 task(TUI 可见)。abortController 由 killWorkflowTask 触发,
+    //    下面 §合并 signal 时接进 runtime,确保 task_stop 能真正中止运行中的子代理。
+    const { taskState, abortController } = createWorkflowTask({
       workflowName: meta.name,
       runId,
       source,
@@ -242,8 +243,13 @@ export class WorkflowTool implements Tool {
       },
     });
 
-    // 合并外部 signal 与 task 自身的 abort
-    const mergedSignal = signal;
+    // 合并外部 signal(工具调用自身)与 task abortController(killWorkflowTask 触发)。
+    // 任一触发都中断 workflow——这是 task_stop 能真正掐断运行中子代理的关键。
+    // 修复缺口:此前 `mergedSignal = signal` 只接了外部 signal,task 的 abortController
+    // 从未接进 runtime,导致 kill 只改状态、发通知,正在跑的子代理仍后台烧 token。
+    const mergedSignal = signal
+      ? AbortSignal.any([signal, abortController.signal])
+      : abortController.signal;
 
     let agentCount = 0;
     const runtime = new WorkflowRuntime({

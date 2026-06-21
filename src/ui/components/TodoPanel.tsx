@@ -184,6 +184,10 @@ const TaskRow = React.memo(function TaskRow({
       ? `AG ${task.agentType}`
       : task.type === "local_shell"
       ? "SH"
+      : task.type === "local_workflow"
+      ? // state-bridge 传入 agentType="workflow:<名字>",剥前缀显示为 "WF <名字>",
+        // 与 "AG"/"SH" 风格统一;无名字时退回 "WF"。
+        `WF ${task.agentType?.replace(/^workflow:/, "") ?? ""}`.trimEnd()
       : task.type;
 
   const desc =
