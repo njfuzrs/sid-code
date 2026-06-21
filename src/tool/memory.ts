@@ -19,9 +19,9 @@ const memorySchema = lazySchema(() =>
     key: z.string().describe("记忆键名（简短描述性名称，如 'coding_style' 或 'test_framework'）"),
     value: z.string().describe("记忆内容（具体的偏好或约定）"),
     scope: z
-      .enum(["global", "project"])
+      .enum(["global", "project", "team"])
       .optional()
-      .describe("记忆范围：global（全局，所有项目）或 project（当前项目），默认 project"),
+      .describe("记忆范围：global（全局，所有项目）/ project（当前项目，默认）/ team（团队共享，同步给所有协作者）"),
   }),
 );
 
@@ -53,6 +53,7 @@ export class MemoryTool implements Tool {
 - 发现用户的编码风格偏好、项目约定、重要决策时，主动保存为记忆
 - 记忆会持久化到磁盘，下次对话时自动加载
 - 项目记忆优先于全局记忆
+- team 范围：团队共享约定/规范，会同步给所有协作者（需启用 teamMemory）；含 secret 会被拒绝
 - 不要主动保存临时信息或已在 CLAUDE.md 中的内容
 - 不适合保存：会话状态、敏感数据（API Key 等）`;
   }
@@ -66,7 +67,7 @@ export class MemoryTool implements Tool {
     const params = input as {
       key: string;
       value: string;
-      scope?: "global" | "project";
+      scope?: "global" | "project" | "team";
     };
 
     if (!params.key || !params.value) {
@@ -110,6 +111,35 @@ export class MemoryTool implements Tool {
     }
 
     log.info("TOOL", `▶ 保存记忆 [${scope}] ${key}`);
+
+    // team scope：写入团队共享记忆目录（落盘后由 watcher 同步到共享目录）
+    if (scope === "team") {
+      const { getTeamMemoryOptions } = await import("../memory/team/runtime.ts");
+      const { isTeamMemoryEnabled } = await import("../memory/team/paths.ts");
+      const teamOpts = getTeamMemoryOptions();
+      if (!isTeamMemoryEnabled(teamOpts)) {
+        return {
+          output:
+            "错误: 团队记忆未启用。请在配置中设置 teamMemory.enabled=true（并配置共享目录 teamMemory.dir）后再用 team 范围。\n" +
+            "或改用 project / global 范围保存到本地记忆。",
+          isError: true,
+        };
+      }
+      try {
+        const { saveTeamMemory } = await import("../memory/team/store.ts");
+        const result = await saveTeamMemory(key, value);
+        if (!result.success) {
+          log.warn("TOOL", `✗ 团队记忆保存失败 ${key}: ${result.error}`);
+          return { output: `错误: ${result.error}`, isError: true };
+        }
+        log.info("TOOL", `✓ 团队记忆已保存 ${key}`);
+        return {
+          output: `记忆已保存到团队共享范围（将同步给所有协作者）:\n键: ${key}\n值: ${value.slice(0, 100)}${value.length > 100 ? "..." : ""}`,
+        };
+      } catch (err: any) {
+        return { output: `保存团队记忆失败: ${err.message}`, isError: true };
+      }
+    }
 
     try {
       await this.store.set(key, value, scope);

@@ -219,6 +219,10 @@ export interface Config {
   /** LLM 分类器使用的模型（默认复用主循环模型 config.model） */
   classifierModel?: string;
 
+  // 团队记忆同步（E.11 协作护城河）
+  /** 团队记忆同步配置（共享目录模型） */
+  teamMemory?: TeamMemoryConfig;
+
   // 会话保留配置
   sessionRetention?: SessionRetentionConfig;
 
@@ -297,6 +301,19 @@ export interface SearchConfig {
   braveApiKey?: string;
   /** Tavily API Key */
   tavilyApiKey?: string;
+}
+
+/** 团队记忆同步配置（E.11，共享目录模型） */
+export interface TeamMemoryConfig {
+  /** 是否启用团队记忆同步（默认 false） */
+  enabled?: boolean;
+  /**
+   * 共享「远端」目录绝对路径（网络盘 / 同步盘 / git 共享路径）。
+   * 所有协作者指向同一物理目录；未配置时团队记忆仅本地可用，不跨成员同步。
+   */
+  dir?: string;
+  /** debounce 推送等待毫秒（默认 2000，最后一次写入后等待再 push） */
+  debounceMs?: number;
 }
 
 /** 轨迹采集配置 */
@@ -527,6 +544,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     sanitize_env: "sanitizeEnv",
     enable_llm_classifier: "enableLLMClassifier",
     classifier_model: "classifierModel",
+    team_memory: "teamMemory",
     trace: "trace",
     search: "search",
     telemetry: "telemetry",

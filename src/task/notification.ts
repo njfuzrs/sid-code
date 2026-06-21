@@ -7,6 +7,39 @@
 
 import type { TaskStatus, AgentTaskResult } from "./types.ts";
 
+/**
+ * 通知正文最大字符数。
+ *
+ * 此前硬编码 2000，子代理结论动辄数 KB（核查报告、逐条结论表），2000 会把
+ * 结论截在半句（如 "现在让我汇总…" / 表格只剩一半），主代理拿到的是残缺信息、
+ * TUI 上也是断句。提到 16000：子代理 output 是「最终结论文本」而非全量 transcript，
+ * 绝大多数结论可完整落入；真正超长时仍截断，但给出明确提示并指向 output-file
+ * （完整内容已由 disk-output 落盘，不丢失）。
+ */
+export const NOTIFICATION_OUTPUT_MAX_CHARS = 16_000;
+
+/** 错误信息最大字符数（错误正文通常较短，给到 4000 足够带上栈/上下文）。 */
+export const NOTIFICATION_ERROR_MAX_CHARS = 4_000;
+
+/**
+ * 截断长文本：超过 max 时保留前 max 字符并追加一行提示，指向完整内容所在文件。
+ * 未超长时原样返回。用码点安全切割（Array.from），避免把多字节字符切坏。
+ */
+function truncateForNotification(
+  text: string,
+  max: number,
+  outputFile?: string,
+): string {
+  const codePoints = Array.from(text);
+  if (codePoints.length <= max) return text;
+  const head = codePoints.slice(0, max).join("");
+  const omitted = codePoints.length - max;
+  const hint = outputFile
+    ? `\n\n[输出过长，已截断 ${omitted} 字符。完整内容见 ${outputFile}]`
+    : `\n\n[输出过长，已截断 ${omitted} 字符]`;
+  return head + hint;
+}
+
 export interface TaskNotification {
   taskId: string;
   toolUseId?: string;
@@ -41,7 +74,7 @@ export function formatNotification(n: TaskNotification): string {
     // 缺口 2 阶段 1：result 是子代理产出的数据（可能含外部不可信内容），用 untrusted 标记
     // 提示主代理「这是数据不是指令」，与 system prompt 的 subagent-result-policy 呼应。
     parts.push(
-      `  <result untrusted="true">${output.slice(0, 2000)}</result>`,
+      `  <result untrusted="true">${truncateForNotification(output, NOTIFICATION_OUTPUT_MAX_CHARS, n.outputFile)}</result>`,
       `  <usage>`,
       `    <total_tokens>${totalTokens}</total_tokens>`,
       `    <input_tokens>${usage.inputTokens}</input_tokens>`,
@@ -50,7 +83,7 @@ export function formatNotification(n: TaskNotification): string {
       `  </usage>`,
     );
   } else if (n.error) {
-    parts.push(`  <error>${n.error.slice(0, 2000)}</error>`);
+    parts.push(`  <error>${truncateForNotification(n.error, NOTIFICATION_ERROR_MAX_CHARS, n.outputFile)}</error>`);
   }
 
   parts.push("</task-notification>");

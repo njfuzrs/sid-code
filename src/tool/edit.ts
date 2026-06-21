@@ -439,6 +439,11 @@ export class EditTool implements Tool {
       const file = Bun.file(filePath);
       const exists = await file.exists();
 
+      // E.11 团队记忆 secret 守卫（写入团队记忆目录的内容含 secret 则拒绝）
+      const { checkTeamMemSecrets } = await import("../memory/team/secret-guard.ts");
+      const { getTeamMemoryOptions } = await import("../memory/team/runtime.ts");
+      const teamOpts = getTeamMemoryOptions();
+
       // ── old_string='' 创建新文件 ──────────────────────────────────────────
       if (oldString === "") {
         if (exists) {
@@ -446,6 +451,12 @@ export class EditTool implements Tool {
             output: `错误: 文件已存在，无法用空 old_string 创建。请用 edit 修改内容，或用 write 覆盖整个文件。`,
             isError: true,
           };
+        }
+
+        const guardErr = checkTeamMemSecrets(filePath, newString, teamOpts);
+        if (guardErr) {
+          log.warn("TOOL", `✗ 拒绝写入含 secret 的团队记忆: ${filePath}`);
+          return { output: `错误: ${guardErr}`, isError: true };
         }
 
         const dir = dirname(filePath);
@@ -484,6 +495,12 @@ export class EditTool implements Tool {
       let finalContent = result.newContent;
       if (lineEnding === "\r\n") {
         finalContent = finalContent.replace(/\r?\n/g, "\r\n");
+      }
+
+      const guardErr = checkTeamMemSecrets(filePath, finalContent, teamOpts);
+      if (guardErr) {
+        log.warn("TOOL", `✗ 拒绝写入含 secret 的团队记忆: ${filePath}`);
+        return { output: `错误: ${guardErr}`, isError: true };
       }
 
       await Bun.write(filePath, finalContent);

@@ -73,6 +73,57 @@ export function isResumeMarkerMessage(msg: Message): boolean {
     && msg.content[0].text.includes(RESUME_MARKER_SIGNATURE);
 }
 
+/** <task-notification> 起始标签（后台任务完成通知，由 query/loop.ts 作为 user 文本消息注入） */
+const TASK_NOTIFICATION_OPEN = "<task-notification>";
+
+/** 从单个 notification 块里提取某标签的文本内容（兼容带属性的开标签，如 <result untrusted="true">）。 */
+function extractNotificationTag(block: string, tag: string): string | undefined {
+  const re = new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</${tag}>`);
+  const m = block.match(re);
+  return m ? m[1].trim() : undefined;
+}
+
+/**
+ * 尝试把一条 user 消息解析为「后台任务通知」专用历史项。
+ *
+ * 背景：后台子代理/shell 完成后，<task-notification> XML 被当作 user 文本消息注入对话。
+ * 此前它走 UserMessage 全量渲染（`>` 前缀、不折叠），与同一任务的 task_output 工具结果
+ * （走折叠路径）视觉割裂。这里把它识别出来，转为 task_notification 历史项（折叠展示）。
+ *
+ * 仅当消息**只含文本块**且文本以 <task-notification> 开头时才解析；一条消息可能含多个
+ * 连续的通知块（批量后台任务同轮完成），每块产出一个历史项。非通知消息返回 null。
+ */
+function tryParseTaskNotifications(msg: Message): HistoryItemWithoutId[] | null {
+  if (msg.role !== "user") return null;
+  if (msg.content.length === 0) return null;
+  if (!msg.content.every(b => b.type === "text")) return null;
+
+  const text = msg.content.map(b => (b.type === "text" ? b.text : "")).join("\n");
+  if (!text.trimStart().startsWith(TASK_NOTIFICATION_OPEN)) return null;
+
+  const blocks = text.match(/<task-notification>[\s\S]*?<\/task-notification>/g);
+  if (!blocks || blocks.length === 0) return null;
+
+  const items: HistoryItemWithoutId[] = [];
+  for (const block of blocks) {
+    const taskId = extractNotificationTag(block, "task-id") ?? "";
+    const status = extractNotificationTag(block, "status") ?? "";
+    const summary = extractNotificationTag(block, "summary") ?? "";
+    const outputFile = extractNotificationTag(block, "output-file");
+    // completed 走 <result>，failed/killed 走 <error>（可能缺省，则正文为空仅显示摘要）。
+    const result = extractNotificationTag(block, "result") ?? extractNotificationTag(block, "error");
+    items.push({
+      type: "task_notification",
+      taskId,
+      status,
+      summary,
+      ...(result ? { result } : {}),
+      ...(outputFile ? { outputFile } : {}),
+    });
+  }
+  return items;
+}
+
 /**
  * 内部文本块特征:这些文本是"仅供 LLM 看"的系统注入,不应作为用户消息展示。
  *
@@ -162,6 +213,14 @@ export function messagesToHistoryItemsWithMap(
 
   for (const rawMsg of msgs) {
     if (isHiddenFromDisplay(rawMsg)) continue;
+
+    // 后台任务通知（<task-notification>）：转为专用折叠历史项，
+    // 不走 UserMessage 全量渲染（否则 `>` 前缀 + 不折叠，与 task_output 工具结果视觉割裂）。
+    const notifications = tryParseTaskNotifications(rawMsg);
+    if (notifications) {
+      items.push(...notifications);
+      continue;
+    }
 
     // 混合内容消息(如循环恢复 = orphan tool_result + 内部提示文本):
     // 剥离仅供 LLM 的内部文本块,保留 tool_result 等正常 block 继续转换。

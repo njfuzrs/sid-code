@@ -446,6 +446,49 @@ export function validateConfig(config: Config): ValidationResult {
     }
   }
 
+  // 团队记忆同步配置校验（E.11）
+  if (config.teamMemory) {
+    const tm = config.teamMemory;
+    if (tm.enabled !== undefined && typeof tm.enabled !== "boolean") {
+      errors.push({
+        path: "teamMemory.enabled",
+        message: "必须是布尔值",
+        value: tm.enabled,
+      });
+    }
+    if (tm.dir !== undefined) {
+      if (typeof tm.dir !== "string" || tm.dir.trim() === "") {
+        errors.push({
+          path: "teamMemory.dir",
+          message: "必须是非空字符串（共享目录绝对路径）",
+          value: tm.dir,
+        });
+      } else if (!tm.dir.startsWith("/") && !/^[a-zA-Z]:[\\/]/.test(tm.dir)) {
+        // 共享目录必须是绝对路径（防止相对路径解析到意外位置）
+        errors.push({
+          path: "teamMemory.dir",
+          message: "团队记忆共享目录必须是绝对路径",
+          value: tm.dir,
+        });
+      }
+    }
+    if (tm.enabled && !tm.dir) {
+      warnings.push({
+        path: "teamMemory.dir",
+        message: "已启用团队记忆但未配置共享目录 dir，团队记忆仅本地可用、不会跨成员同步",
+      });
+    }
+    if (tm.debounceMs !== undefined) {
+      if (typeof tm.debounceMs !== "number" || tm.debounceMs < 0) {
+        errors.push({
+          path: "teamMemory.debounceMs",
+          message: "必须是非负数（毫秒）",
+          value: tm.debounceMs,
+        });
+      }
+    }
+  }
+
   return {
     valid: errors.length === 0,
     errors,

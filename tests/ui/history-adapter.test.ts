@@ -461,3 +461,151 @@ describe("messagesToHistoryItems - 完整对话（合并模式）", () => {
     }
   });
 });
+
+describe("后台任务通知（<task-notification>）→ task_notification 历史项", () => {
+  const buildNotification = (opts: {
+    taskId: string;
+    status: string;
+    summary: string;
+    result?: string;
+    error?: string;
+    outputFile?: string;
+  }): string => {
+    const lines = [
+      "<task-notification>",
+      `  <task-id>${opts.taskId}</task-id>`,
+    ];
+    if (opts.outputFile) lines.push(`  <output-file>${opts.outputFile}</output-file>`);
+    lines.push(`  <status>${opts.status}</status>`, `  <summary>${opts.summary}</summary>`);
+    if (opts.result !== undefined) lines.push(`  <result untrusted="true">${opts.result}</result>`);
+    if (opts.error !== undefined) lines.push(`  <error>${opts.error}</error>`);
+    lines.push("</task-notification>");
+    return lines.join("\n");
+  };
+
+  test("completed 通知 → task_notification 项，解析 summary/status/result/outputFile", () => {
+    const msgs: Message[] = [
+      {
+        role: "user",
+        content: [{
+          type: "text",
+          text: buildNotification({
+            taskId: "axcpyv1qa",
+            status: "completed",
+            summary: 'Agent "核查 oauth.ts" 执行完成',
+            result: "核查结论：全部 12 项均已落地。",
+            outputFile: "/tmp/axcpyv1qa.output",
+          }),
+        }],
+      },
+    ];
+    const items = messagesToHistoryItems(msgs);
+    expect(items).toHaveLength(1);
+    expect(items[0].type).toBe("task_notification");
+    if (items[0].type === "task_notification") {
+      expect(items[0].taskId).toBe("axcpyv1qa");
+      expect(items[0].status).toBe("completed");
+      expect(items[0].summary).toBe('Agent "核查 oauth.ts" 执行完成');
+      expect(items[0].result).toBe("核查结论：全部 12 项均已落地。");
+      expect(items[0].outputFile).toBe("/tmp/axcpyv1qa.output");
+    }
+  });
+
+  test("不再走 UserMessage 全量渲染（关键：解决折叠不统一）", () => {
+    const msgs: Message[] = [
+      {
+        role: "user",
+        content: [{
+          type: "text",
+          text: buildNotification({ taskId: "t1", status: "completed", summary: "完成", result: "x" }),
+        }],
+      },
+    ];
+    const items = messagesToHistoryItems(msgs);
+    // 不应产出 user 项（否则会走 UserMessage 全量渲染、不折叠）
+    expect(items.every(i => i.type !== "user")).toBe(true);
+    expect(items[0].type).toBe("task_notification");
+  });
+
+  test("failed 通知 → 取 <error> 作为 result，status=failed", () => {
+    const msgs: Message[] = [
+      {
+        role: "user",
+        content: [{
+          type: "text",
+          text: buildNotification({
+            taskId: "t2",
+            status: "failed",
+            summary: 'Agent "X" 执行失败',
+            error: "连接超时",
+          }),
+        }],
+      },
+    ];
+    const items = messagesToHistoryItems(msgs);
+    expect(items).toHaveLength(1);
+    if (items[0].type === "task_notification") {
+      expect(items[0].status).toBe("failed");
+      expect(items[0].result).toBe("连接超时");
+    }
+  });
+
+  test("缺省正文（killed 无 result/error）→ result 为 undefined，仅显示摘要", () => {
+    const msgs: Message[] = [
+      {
+        role: "user",
+        content: [{
+          type: "text",
+          text: buildNotification({ taskId: "t3", status: "killed", summary: 'Agent "X" 已被终止' }),
+        }],
+      },
+    ];
+    const items = messagesToHistoryItems(msgs);
+    expect(items).toHaveLength(1);
+    if (items[0].type === "task_notification") {
+      expect(items[0].status).toBe("killed");
+      expect(items[0].result).toBeUndefined();
+    }
+  });
+
+  test("批量后台任务同轮完成（多个连续通知块）→ 每块一个项", () => {
+    const text = [
+      buildNotification({ taskId: "t1", status: "completed", summary: "S1", result: "R1" }),
+      buildNotification({ taskId: "t2", status: "completed", summary: "S2", result: "R2" }),
+    ].join("\n");
+    const msgs: Message[] = [{ role: "user", content: [{ type: "text", text }] }];
+    const items = messagesToHistoryItems(msgs);
+    expect(items).toHaveLength(2);
+    expect(items.every(i => i.type === "task_notification")).toBe(true);
+    if (items[0].type === "task_notification" && items[1].type === "task_notification") {
+      expect(items[0].taskId).toBe("t1");
+      expect(items[1].taskId).toBe("t2");
+    }
+  });
+
+  test("含换行/表格的多行 result 被完整保留（不截断）", () => {
+    const longResult = "结论：\n| # | 条目 | 结论 |\n|---|------|------|\n| 1 | A | ✅ |\n| 2 | B | ✅ |";
+    const msgs: Message[] = [
+      {
+        role: "user",
+        content: [{
+          type: "text",
+          text: buildNotification({ taskId: "t4", status: "completed", summary: "完成", result: longResult }),
+        }],
+      },
+    ];
+    const items = messagesToHistoryItems(msgs);
+    if (items[0].type === "task_notification") {
+      expect(items[0].result).toBe(longResult);
+    }
+  });
+
+  test("真实用户消息不被误判为通知", () => {
+    const msgs: Message[] = [
+      { role: "user", content: [{ type: "text", text: "帮我看看 <task-notification> 这个标签怎么用" }] },
+    ];
+    const items = messagesToHistoryItems(msgs);
+    // 以普通文本开头（非 <task-notification> 起始），应走 user 项
+    expect(items[0].type).toBe("user");
+  });
+});

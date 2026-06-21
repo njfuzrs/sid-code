@@ -27,6 +27,7 @@ import { isShellTool } from "./messages/ToolShared.tsx";
 import { ThinkingMessage } from "./messages/ThinkingMessage.tsx";
 import { ErrorMessage } from "./messages/ErrorMessage.tsx";
 import { PlanReviewMessage } from "./messages/PlanReviewMessage.tsx";
+import { TaskNotificationMessage } from "./messages/TaskNotificationMessage.tsx";
 import { AppHeader } from "./AppHeader.tsx";
 import { theme } from "../semantic-colors.ts";
 import { ARROW_PROMPT, WARNING_MARK, THINKING_MARK } from "../constants/figures.ts";
@@ -256,6 +257,18 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
           <PlanReviewMessage
             planContent={item.planContent}
             planFilePath={item.planFilePath}
+            terminalWidth={width}
+          />
+        </Box>
+      );
+
+    case "task_notification":
+      return (
+        <Box marginBottom={1}>
+          <TaskNotificationMessage
+            summary={item.summary}
+            status={item.status}
+            result={item.result}
             terminalWidth={width}
           />
         </Box>

@@ -214,6 +214,28 @@ export type HistoryItemPlanReview = HistoryItemBase & {
   planFilePath: string;
 };
 
+/**
+ * 后台任务完成通知（<task-notification>）。
+ *
+ * 背景：后台子代理/shell 完成后，主循环把 <task-notification> XML 作为一条
+ * user 文本消息注入对话（query/loop.ts）。此前它走 UserMessage 全量渲染（`>` 前缀、
+ * 不折叠），与同一子代理的 task_output 工具结果（走折叠路径）视觉割裂——
+ * 用户看到「有的折叠、有的不折叠」。本类型让通知走专用折叠组件，统一对齐工具结果样式。
+ */
+export type HistoryItemTaskNotification = HistoryItemBase & {
+  type: "task_notification";
+  /** 任务 ID（如 "axcpyv1qa"） */
+  taskId: string;
+  /** 任务终态：completed / failed / killed 等 */
+  status: string;
+  /** 一行摘要（如 'Agent "核查 X" 执行完成'） */
+  summary: string;
+  /** 结构化结果正文（completed 时为子代理结论；failed/killed 时为错误信息或空） */
+  result?: string;
+  /** 完整输出落盘文件路径（供「展开看完整」指引） */
+  outputFile?: string;
+};
+
 // ── 联合类型 ──
 
 /** 不含 id 的 HistoryItem（用于创建时） */
@@ -235,7 +257,8 @@ export type HistoryItemWithoutId =
   | HistoryItemQuit
   | HistoryItemCommand
   | HistoryItemAppHeader
-  | HistoryItemPlanReview;
+  | HistoryItemPlanReview
+  | HistoryItemTaskNotification;
 
 /** 带 id 的 HistoryItem（渲染用） */
 export type HistoryItem = HistoryItemWithoutId & { id: number };

@@ -87,6 +87,18 @@ export class WriteTool implements Tool {
       };
     }
 
+    // E.11 团队记忆 secret 守卫：写入团队记忆目录的内容若含 secret 直接拒绝
+    // （团队记忆会同步给所有协作者，凭证绝不能进入）
+    {
+      const { checkTeamMemSecrets } = await import("../memory/team/secret-guard.ts");
+      const { getTeamMemoryOptions } = await import("../memory/team/runtime.ts");
+      const guardErr = checkTeamMemSecrets(filePath, params.content, getTeamMemoryOptions());
+      if (guardErr) {
+        log.warn("TOOL", `✗ 拒绝写入含 secret 的团队记忆: ${filePath}`);
+        return { output: `错误: ${guardErr}`, isError: true };
+      }
+    }
+
     log.info("TOOL", `▶ 写入 ${filePath} (${params.content.length}字符)`);
 
     try {

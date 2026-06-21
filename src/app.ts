@@ -979,6 +979,23 @@ export class App {
       log.warn("APP", `后台记忆提取接线失败（不阻断）: ${(e as Error)?.message}`);
     }
 
+    // 团队记忆同步（E.11 协作护城河）：注入运行时配置 + 启动 watcher（含初始同步）。
+    // 仅在 teamMemory.enabled 且共享目录可用时实际启动；未启用时只注入配置（供
+    // write/edit 守卫判断，此时守卫对团队记忆目录不拦截）。
+    try {
+      const { setTeamMemoryOptions } = await import("./memory/team/runtime.ts");
+      setTeamMemoryOptions(this.config.teamMemory);
+      if (this.config.teamMemory?.enabled) {
+        const { startTeamMemoryWatcher, stopTeamMemoryWatcher } = await import("./memory/team/watcher.ts");
+        await startTeamMemoryWatcher(this.config.teamMemory, process.cwd());
+        const { registerCleanup } = await import("./utils/graceful-shutdown.ts");
+        registerCleanup(() => stopTeamMemoryWatcher());
+        log.info("APP", "团队记忆同步已启动（共享目录模型）");
+      }
+    } catch (e) {
+      log.warn("APP", `团队记忆同步接线失败（不阻断）: ${(e as Error)?.message}`);
+    }
+
     // 启动 CLAUDE.md 文件变化监听（变更时重新加载规则 + 重建系统提示词）
     watchCLAUDEmd(process.cwd(), async (changedPath) => {
       log.info("APP", `CLAUDE.md 已变更: ${changedPath}`);
