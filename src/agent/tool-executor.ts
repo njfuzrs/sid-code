@@ -7,6 +7,12 @@
  * - 写入工具串行执行
  * - _agentId 注入（防嵌套）
  * - 输出截断
+ * - Pre/PostToolUse hook 触发（接通可观测性：execute_tool span 与主循环对齐）
+ *
+ * hook 缺口修复：此前子代理工具执行完全不触发 hook，导致 TelemetryHookProbe
+ * 无法为子代理工具创建 execute_tool span（主循环有、子代理没有，可观测性断层）。
+ * 现把 hookSystem 透传进来，在工具前后 firePreToolUseEvent / firePostToolUseEvent，
+ * 与 query/tool-executor.ts 主循环口径一致（含 duration_ms、blocking 决策、输入修改）。
  */
 
 import type { ContentBlock } from "../llm/types.ts";
@@ -14,14 +20,20 @@ import type { Registry as ToolRegistry } from "../tool/registry.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
 import { getLogger } from "../debug/logger.ts";
 import { validateToolInput } from "../tool/input-validator.ts";
+import type { HookSystem } from "../hook/system.ts";
+import { buildHookModifiedNotice } from "../query/tool-executor.ts";
 
 /**
  * 执行工具调用（子代理版本，无权限检查，支持并行执行）
+ *
+ * @param hookSystem 透传的 hook 系统；存在时在每个工具前后触发 Pre/PostToolUse hook
+ *                   （驱动 execute_tool span / 可观测性）。缺省时退化为纯执行（兼容旧测试）。
  */
 export async function executeTools(
   content: ContentBlock[],
   tools: ToolRegistry,
   signal?: AbortSignal,
+  hookSystem?: HookSystem,
 ): Promise<ContentBlock[]> {
   const log = getLogger();
 
@@ -71,7 +83,7 @@ export async function executeTools(
   if (readOnlyBlocks.length > 0) {
     const readResults = await Promise.all(
       readOnlyBlocks.map(({ block, idx }) =>
-        executeSingleTool(block, tools, signal).then(r => ({ idx, result: r }))
+        executeSingleTool(block, tools, signal, hookSystem).then(r => ({ idx, result: r }))
       )
     );
     for (const { idx, result } of readResults) {
@@ -81,7 +93,7 @@ export async function executeTools(
 
   // 写入工具串行执行
   for (const { block, idx } of writingBlocks) {
-    const result = await executeSingleTool(block, tools, signal);
+    const result = await executeSingleTool(block, tools, signal, hookSystem);
     resultMap.set(idx, result);
   }
 
@@ -100,6 +112,7 @@ async function executeSingleTool(
   block: ContentBlock & { type: "tool_use" },
   tools: ToolRegistry,
   signal?: AbortSignal,
+  hookSystem?: HookSystem,
 ): Promise<ContentBlock> {
   const log = getLogger();
   const tool = tools.get(block.name);
@@ -113,10 +126,45 @@ async function executeSingleTool(
     };
   }
 
-  // zod 运行时校验：用原始 block.input 校验（不含注入的 _agentId 元字段，
+  // pre_tool_use hook（子代理工具执行接入 hook 链）。
+  // 与主循环一致：尊重 blocking 决策与输入修改。hook 失败不阻断执行（catch 兜底）。
+  let effectiveInput: Record<string, unknown> = block.input as Record<string, unknown>;
+  // 与主循环口径一致：hook 改写参数后给模型一条前置告知，避免按原参数误判结果。
+  let hookModifiedNotice = "";
+  if (hookSystem) {
+    try {
+      const preToolResult = await hookSystem.firePreToolUseEvent(
+        block.name,
+        block.input as Record<string, unknown>,
+        block.id,
+      );
+      if (preToolResult.finalOutput?.isBlockingDecision()) {
+        const reason = preToolResult.finalOutput.getEffectiveReason();
+        log.info("SUBAGENT:HOOK", `工具 ${block.name} 被 hook 阻止: ${reason}`);
+        return {
+          type: "tool_result",
+          tool_use_id: block.id,
+          content: `Hook 阻止执行: ${reason}`,
+          is_error: true,
+        };
+      }
+      if (preToolResult.finalOutput && "getModifiedToolInput" in preToolResult.finalOutput) {
+        const modified = (preToolResult.finalOutput as any).getModifiedToolInput?.();
+        if (modified) {
+          log.info("SUBAGENT:HOOK", `工具 ${block.name} 输入被 hook 修改`);
+          effectiveInput = modified as Record<string, unknown>;
+          hookModifiedNotice = buildHookModifiedNotice(block.name);
+        }
+      }
+    } catch (err: any) {
+      log.error("SUBAGENT:HOOK", `pre_tool_use hook 失败: ${err.message}`);
+    }
+  }
+
+  // zod 运行时校验：用原始 block.input（或 hook 修改后的）校验（不含注入的 _agentId 元字段，
   // 避免严格 schema 的 additionalProperties:false 把 _agentId 当非法字段拒绝）。
   // 校验通过后再注入 _agentId 防套娃。
-  const validation = validateToolInput(tool, block.input);
+  const validation = validateToolInput(tool, effectiveInput);
   if (!validation.ok) {
     log.info("SUBAGENT:TOOL", `工具 ${block.name} 参数校验失败: ${validation.message}`);
     return {
@@ -127,21 +175,45 @@ async function executeSingleTool(
     };
   }
 
+  const startTime = Date.now();
   try {
     // 注入 _agentId 标记，防止子代理调用 enter_plan_mode / sub_agent 形成套娃
     const result = await tool.execute({ ...(validation.data as Record<string, unknown>), _agentId: "sub-agent" }, signal);
+    const elapsed = Date.now() - startTime;
     // 截断超大输出
     const truncated = ContextManager.truncateToolOutput(result.output);
+
+    // post_tool_use hook（驱动 execute_tool span，带真实 duration_ms）
+    if (hookSystem) {
+      hookSystem.firePostToolUseEvent(
+        block.name,
+        effectiveInput,
+        { output: truncated, isError: result.isError },
+        result.isError,
+        block.id,
+        { duration_ms: elapsed },
+      ).catch((e: any) => log.error("SUBAGENT:HOOK", `post_tool_use hook 失败: ${e.message}`));
+    }
+
     return {
       type: "tool_result",
       tool_use_id: block.id,
-      content: truncated,
+      content: hookModifiedNotice ? hookModifiedNotice + "\n\n" + truncated : truncated,
       is_error: result.isError,
       // 结构化 diff 透传(edit/write):与主路径一致,供子代理结果在 UI 渲染高亮
       ...(result.structuredPatch?.length ? { structuredPatch: result.structuredPatch } : {}),
     };
   } catch (err: any) {
     log.error("SUBAGENT:TOOL", `工具执行异常: ${block.name}`, { error: err.message });
+    // post_tool_use_failure hook（异常路径也接入 hook，与主循环对齐）
+    if (hookSystem) {
+      hookSystem.firePostToolUseFailureEvent(
+        block.name,
+        effectiveInput,
+        err.message,
+        block.id,
+      ).catch((e: any) => log.error("SUBAGENT:HOOK", `post_tool_use_failure hook 失败: ${e.message}`));
+    }
     return {
       type: "tool_result",
       tool_use_id: block.id,

@@ -13,6 +13,7 @@ import {
   resolveThinking,
   getEffortEnvOverride,
   getThinkingEnvOverride,
+  previewWireEffort,
 } from "../../src/llm/effort.ts";
 import type { SendParams } from "../../src/llm/types.ts";
 
@@ -264,5 +265,48 @@ describe("getThinkingEnvOverride", () => {
     expect(getThinkingEnvOverride({ SID_CODE_THINKING: "auto" })).toBeNull();
     expect(getThinkingEnvOverride({})).toBeNull();
     expect(getThinkingEnvOverride({ SID_CODE_THINKING: "xyz" })).toBeNull();
+  });
+});
+
+describe("previewWireEffort — 预演实际下发档（钳制提示用）", () => {
+  const dsOpenAI = resolveEffortCapability({
+    model: "deepseek-v4-pro",
+    provider: "openai",
+    baseURL: "https://api.deepseek.com",
+  });
+  const dsAnthropic = resolveEffortCapability({
+    model: "deepseek-v4-pro",
+    provider: "openai",
+    baseURL: "https://api.deepseek.com/anthropic",
+  });
+  const claudeCap = resolveEffortCapability({ model: "claude-opus-4", provider: "anthropic" });
+  const oCap = resolveEffortCapability({ model: "o1", provider: "openai" });
+  const unknownCap = resolveEffortCapability({ model: "llama3", provider: "openai" });
+
+  test("DeepSeek OpenAI 端点：low/medium 实际下发 high（被钳制）", () => {
+    expect(previewWireEffort(dsOpenAI, "low")).toBe("high");
+    expect(previewWireEffort(dsOpenAI, "medium")).toBe("high");
+  });
+  test("DeepSeek OpenAI 端点：high/max 原样下发（无钳制）", () => {
+    expect(previewWireEffort(dsOpenAI, "high")).toBe("high");
+    expect(previewWireEffort(dsOpenAI, "max")).toBe("max");
+  });
+  test("DeepSeek Anthropic 端点：low/medium→high（走 output_config.effort）", () => {
+    expect(previewWireEffort(dsAnthropic, "low")).toBe("high");
+    expect(previewWireEffort(dsAnthropic, "max")).toBe("max");
+  });
+  test("o-series：max 实际下发 high（被钳制），low/medium 原样", () => {
+    expect(previewWireEffort(oCap, "max")).toBe("high");
+    expect(previewWireEffort(oCap, "low")).toBe("low");
+    expect(previewWireEffort(oCap, "medium")).toBe("medium");
+  });
+  test("原生 Claude：走 budget_tokens 无显式 effort 下发 → 返回原档（视为无钳制）", () => {
+    for (const lv of EFFORT_LEVELS) {
+      expect(previewWireEffort(claudeCap, lv)).toBe(lv);
+    }
+  });
+  test("unknown：no-op → 返回原档", () => {
+    expect(previewWireEffort(unknownCap, "max")).toBe("max");
+    expect(previewWireEffort(unknownCap, "low")).toBe("low");
   });
 });

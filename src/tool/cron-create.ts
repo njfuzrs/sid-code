@@ -21,6 +21,13 @@ const cronCreateSchema = lazySchema(() =>
     prompt: z.string().describe("触发时执行的 prompt"),
     recurring: z.boolean().optional().describe("是否循环（默认 true）"),
     durable: z.boolean().optional().describe("是否持久化（默认 false）"),
+    allowedTools: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "无头执行时预授权的工具白名单（仅 durable 任务有意义）。守护进程无人值守，" +
+          "默认以只读（plan）模式运行；声明此白名单可放行写文件/跑命令等工具。缺省=只读。",
+      ),
   }),
 );
 
@@ -43,7 +50,8 @@ export class CronCreateTool implements Tool {
 
 recurring: true（默认）= 循环触发，7 天后自动过期
 recurring: false = 触发一次后自动删除
-durable: true = 持久化到磁盘，跨会话存活（默认 false）`;
+durable: true = 持久化到磁盘，跨会话存活（默认 false）
+allowedTools: 无头执行时预授权的工具白名单（仅 durable 任务有意义，缺省默认只读）`;
   }
 
   inputSchema(): Record<string, unknown> {
@@ -56,6 +64,7 @@ durable: true = 持久化到磁盘，跨会话存活（默认 false）`;
       prompt?: string;
       recurring?: boolean;
       durable?: boolean;
+      allowedTools?: string[];
     };
 
     if (!params.cron || !params.prompt) {
@@ -69,6 +78,12 @@ durable: true = 持久化到磁盘，跨会话存活（默认 false）`;
       };
     }
 
+    // 任务级预授权白名单（§5.3）：仅 durable 任务无头执行时有意义，去重去空。
+    const allowedTools =
+      Array.isArray(params.allowedTools) && params.allowedTools.length > 0
+        ? [...new Set(params.allowedTools.map((s) => String(s).trim()).filter(Boolean))]
+        : undefined;
+
     const task: CronTask = {
       id: shortId(),
       cron: params.cron,
@@ -78,6 +93,8 @@ durable: true = 持久化到磁盘，跨会话存活（默认 false）`;
       durable: params.durable ?? false,
       // 缺口 C1 §4.4：记录执行目录，守护进程 fork headless 时用作 cwd。
       workspaceDir: process.cwd(),
+      // 缺口 C1 §5.3：任务级预授权白名单（缺省=守护进程默认只读）。
+      ...(allowedTools ? { allowedTools } : {}),
     };
 
     const scheduler = getScheduler();
@@ -97,8 +114,13 @@ durable: true = 持久化到磁盘，跨会话存活（默认 false）`;
 
     const typeLabel = task.recurring ? "循环任务（7 天后过期）" : "一次性任务";
     const durableLabel = task.durable ? "，已持久化" : "";
+    const toolsLabel = allowedTools
+      ? `\n预授权工具: ${allowedTools.join(", ")}`
+      : task.durable
+        ? "\n预授权工具: 无（守护进程将以只读模式执行）"
+        : "";
     return {
-      output: `已创建${typeLabel}${durableLabel}，ID: ${task.id}\ncron: ${task.cron}`,
+      output: `已创建${typeLabel}${durableLabel}，ID: ${task.id}\ncron: ${task.cron}${toolsLabel}`,
     };
   }
 }

@@ -64,6 +64,7 @@ import { dequeuePendingNotifications, evictTerminalTasks } from "../task/index.t
 import { injectReminders } from "./reminder-inject.ts";
 import { buildContextPressureReminder } from "./context-pressure.ts";
 import { buildPermissionModeReminder, PERMISSION_MODE_REMINDER_INTERVAL } from "./permission-reminder.ts";
+import { buildContradictionReminder, buildDeliveryGateReminder } from "./hypothesis-ledger.ts";
 import {
   checkResponseForCacheBreak,
   recordCacheBreak,
@@ -362,6 +363,18 @@ export async function* queryLoop(
           }
         }
       }
+    }
+
+    // 环节③ 机制2（矛盾中断·注入端）：上一轮检出的矛盾命中，本轮注入高优先级提醒，
+    // 逼模型停下来用 hypothesis_challenge 裁决。放在 reminderParts 最前（unshift），
+    // 让它在所有提醒里最先被读到——抗沉没成本的关键时刻不能被淹没。
+    if (state.pendingContradictions && state.pendingContradictions.length > 0) {
+      reminderParts.unshift(buildContradictionReminder(state.pendingContradictions));
+      log.info(
+        "QUERY_LOOP",
+        `注入矛盾中断提醒（${state.pendingContradictions.length} 条假设待裁决）`,
+      );
+      state.pendingContradictions = undefined; // 注入后清空，避免重复
     }
 
     if (reminderParts.length > 0) {
@@ -958,6 +971,41 @@ export async function* queryLoop(
         }
       }
 
+      // 环节③ 机制3（交付门禁）：模型试图收尾，但假设登记表里仍有未确认（open）假设时，
+      // 注入门禁提醒并软续命——逼它先把假设结清（去验证→confirm，或 refute/降级），
+      // 而不是把未证实的假设当结论交付。这是 fdb47f30 那类"把猜测写成根因"的最后一道闸。
+      // 续命有限次：模型确实无法定论时放行，但门禁提醒已要求它在交付物里如实降级。
+      if (deps.getHypothesisLedger) {
+        const ledger = deps.getHypothesisLedger();
+        if (ledger && ledger.hasOpen()) {
+          const retries = state.hypothesisGateRetryCount ?? 0;
+          const MAX_HYPOTHESIS_GATE_RETRIES = 2;
+          if (retries < MAX_HYPOTHESIS_GATE_RETRIES) {
+            state.hypothesisGateRetryCount = retries + 1;
+            const unsettled = ledger.unsettled();
+            ctxMgr.addMessage({
+              role: "user",
+              content: [{ type: "text", text: buildDeliveryGateReminder(unsettled) }],
+            });
+            log.info(
+              "QUERY_LOOP",
+              `环节③ 交付门禁拦截——仍有 ${unsettled.length} 条假设未确认，软续命 ${state.hypothesisGateRetryCount}/${MAX_HYPOTHESIS_GATE_RETRIES}`,
+            );
+            yield {
+              kind: "system",
+              level: "info",
+              text: `检测到 ${unsettled.length} 条假设未结清，请先裁决再收尾 (${state.hypothesisGateRetryCount}/${MAX_HYPOTHESIS_GATE_RETRIES})`,
+            };
+            state.transition = { type: "hypothesis_gate_retry" };
+            continue;
+          }
+          log.warn(
+            "QUERY_LOOP",
+            `环节③ 交付门禁续命已达上限 ${MAX_HYPOTHESIS_GATE_RETRIES}，放行（模型应已在交付物中如实降级未确认假设）`,
+          );
+        }
+      }
+
       const totalUsage = sessionState.getTotalUsage();
       log.info("QUERY_LOOP", `对话结束 (${response.stopReason})，共 ${state.turnCount} 轮，in=${totalUsage.inputTokens} out=${totalUsage.outputTokens}，累计费用 $${sessionState.totalCostUSD.toFixed(4)}`);
       // F1：正常收尾，清零连续退化计数
@@ -1083,6 +1131,33 @@ export async function* queryLoop(
       ctxMgr.addMessage({ role: "user", content: toolResults });
       // B2 方案 a：tool_result 与入历史同步持久化（appendMessage 按 role=user 自动分派为 tool_result 记录）。
       try { deps.sessionStore?.appendMessage({ role: "user", content: toolResults }); } catch { /* 持久化失败不阻断 */ }
+
+      // 环节③ 机制2（矛盾中断·触发端）：把本轮所有 tool_result 文本拼起来，扫描是否与
+      // 任何 open 假设的证伪条件线索矛盾。命中则暂存到 state，下一轮循环开头经 reminder
+      // 通道注入"矛盾中断"，强制模型来 hypothesis_challenge 裁决——这正是 fdb47f30 缺的
+      // 那一下：拿到推翻早期叙事的证据时，主动停下来裁决，而非视而不见继续推进。
+      if (deps.getHypothesisLedger) {
+        try {
+          const ledger = deps.getHypothesisLedger();
+          if (ledger && !ledger.isEmpty()) {
+            const evidenceText = toolResults
+              .filter((r): r is typeof r & { type: "tool_result" } => r.type === "tool_result")
+              .map((r) => (typeof r.content === "string" ? r.content : JSON.stringify(r.content)))
+              .join("\n");
+            const hits = ledger.detectContradictions(evidenceText);
+            if (hits.length > 0) {
+              state.pendingContradictions = [...(state.pendingContradictions ?? []), ...hits];
+              log.info(
+                "QUERY_LOOP",
+                `假设登记表矛盾检测命中 ${hits.length} 条（${hits.map((h) => h.hypothesisId).join(",")}），下一轮注入矛盾中断`,
+              );
+            }
+          }
+        } catch (e: any) {
+          // 矛盾检测不得阻断主循环
+          log.warn("QUERY_LOOP", `假设矛盾检测异常（已忽略）：${e?.message ?? String(e)}`);
+        }
+      }
 
       // ADR-019：plan-approved 等"工具完成后再追加"的 user 消息，必须在 toolResults 之后 enqueue。
       if (toolFollowup && toolFollowup.length > 0) {

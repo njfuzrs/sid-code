@@ -21,6 +21,8 @@ import type {
   SessionEndInput,
   PermissionCheckInput,
   HookExecutionInput,
+  SubagentStartInput,
+  SubagentStopInput,
 } from "../hook/types.ts";
 
 /**
@@ -41,6 +43,9 @@ export class TelemetryHookProbe {
   private permissionSpans = new Map<string, SpanHandle>();
   /** hook_execution span 暂存：key = hook_name */
   private hookSpans = new Map<string, SpanHandle>();
+
+  /** invoke_agent 子 span 暂存：key = agent_id（子代理 start/stop 配对） */
+  private subagentSpans = new Map<string, SpanHandle>();
 
   /** Harness 扩展点：Span 属性注入器列表 */
   private spanEnrichers: SpanEnricher[] = [];
@@ -85,6 +90,9 @@ export class TelemetryHookProbe {
       HookEventName.AfterPermissionCheck,
       HookEventName.BeforeHookExecution,
       HookEventName.AfterHookExecution,
+      // 子代理生命周期：按 model 单独计费 + invoke_agent 子 span
+      HookEventName.SubagentStart,
+      HookEventName.SubagentStop,
     ];
     for (const eventName of events) {
       hookSystem.registerHook(
@@ -130,6 +138,12 @@ export class TelemetryHookProbe {
         break;
       case HookEventName.AfterHookExecution:
         this.handleAfterHookExecution(input as HookExecutionInput);
+        break;
+      case HookEventName.SubagentStart:
+        this.handleSubagentStart(input as SubagentStartInput);
+        break;
+      case HookEventName.SubagentStop:
+        this.handleSubagentStop(input as SubagentStopInput);
         break;
     }
   }
@@ -271,6 +285,62 @@ export class TelemetryHookProbe {
     if (span) {
       span.end();
       this.hookSpans.delete(input.hook_name);
+    }
+  }
+
+  // ---- 子代理生命周期 span（按 model 分类，单独计费） ----
+
+  private handleSubagentStart(input: SubagentStartInput): void {
+    const model = input.model ?? this.config.model;
+    const span = this.bus.startSpan("invoke_agent", `invoke_agent ${input.agent_type}`, {
+      [ATTR.OPERATION_NAME]: "invoke_agent",
+      [ATTR.AGENT_NAME]: `subagent:${input.agent_type}`,
+      [ATTR.CONVERSATION_ID]: this.config.sessionId,
+      [ATTR.REQUEST_MODEL]: model,
+      ...(input.provider ? { [ATTR.PROVIDER_NAME]: input.provider } : {}),
+      "sidcode.subagent.id": input.agent_id,
+      "sidcode.subagent.type": input.agent_type,
+      ...this.collectEnrichedAttributes("invoke_agent", input) as Attributes,
+    });
+    this.subagentSpans.set(input.agent_id, span);
+  }
+
+  private handleSubagentStop(input: SubagentStopInput): void {
+    const key = input.agent_id;
+    const span = key ? this.subagentSpans.get(key) : undefined;
+    const usage = input.usage;
+
+    // 子代理用量记入 TokenMeter（按 model 单独计费，与主循环 chat span 同一口径）。
+    if (usage && this.tokenMeter) {
+      this.tokenMeter.record({
+        model: input.model ?? this.config.model,
+        provider: input.provider ?? this.config.provider,
+        usage: {
+          inputTokens: usage.inputTokens ?? 0,
+          outputTokens: usage.outputTokens ?? 0,
+          cacheReadInputTokens: usage.cacheReadInputTokens,
+          cacheCreationInputTokens: usage.cacheCreationInputTokens,
+        },
+        costUSD: 0, // 子代理无独立 cost 字段，TokenMeter 内部按 model 定价回算
+        sessionId: this.config.sessionId,
+      });
+    }
+
+    if (span) {
+      span.setAttributes({
+        [ATTR.SUCCESS]: input.success ?? true,
+        ...(usage ? {
+          [ATTR.INPUT_TOKENS]: usage.inputTokens ?? 0,
+          [ATTR.OUTPUT_TOKENS]: usage.outputTokens ?? 0,
+          [ATTR.CACHE_READ_TOKENS]: usage.cacheReadInputTokens ?? 0,
+          [ATTR.CACHE_CREATION_TOKENS]: usage.cacheCreationInputTokens ?? 0,
+        } : {}),
+        ...(input.turns !== undefined ? { [ATTR.TOTAL_TURNS]: input.turns } : {}),
+        ...(input.duration_ms !== undefined ? { "sidcode.subagent.duration_ms": input.duration_ms } : {}),
+        ...this.collectEnrichedAttributes("invoke_agent", input) as Attributes,
+      });
+      span.end();
+      if (key) this.subagentSpans.delete(key);
     }
   }
 

@@ -86,6 +86,7 @@ release_metadata:
 1. **[priority=1]** <hypothesis short title>
    - **Evidence**: <stack trace / file:line 引用 / 命令输出>
    - **Why**: <reasoning>
+   - **Refutation**: <一次证伪尝试与裁定 CONFIRMED|PARTIAL|UNVERIFIABLE + file:line/log line 证据；被 REFUTED 的假设不留在此列表。priority=1 必须有；priority=2/3 至少有自查结论>
    - **Suggested Fix**: <可执行步骤,含 diff 草稿/命令/配置改动>
 
 2. **[priority=2]** ...
@@ -160,6 +161,26 @@ release_metadata:
 - Evidence: 必含具体 file:line 或 log line 引用
 - Why: 简短解释为什么这个根因合理
 - Suggested Fix: 可执行步骤(命令 / diff 草稿 / 配置改动); 模板的 `command_or_action` 可作为基线但 LLM 应用本任务上下文调整
+
+### 3.5.1 Step E+: 对抗验证(find → 强制 refute → synthesize)
+
+Step E 产出的 ≤ 3 条根因假设是**候选**, 不是定论. CI 诊断最危险的失败是"叙事自洽但根因错位"——开发者据此改的地方根本不是真因, CI 依旧挂, 反而浪费一轮。对**排序第 1 的根因假设(priority=1)强制走一次独立证伪**, priority=2/3 至少自查一次。
+
+**find → refute → synthesize 三段:**
+
+1. **find**: Step E 已产出候选假设(每条含 Evidence 的 file:line / log line + priority)。
+2. **强制 refute(独立证伪)**: 对 priority=1 假设, **换一个怀疑视角重新举证推翻它**——
+   - 重读 Evidence 指向的 file:line **完整上下文**(不只看 stack trace 那一行), 用 `grep` 查该报错符号 / 函数的调用方与定义, 核对"这个根因是否真能导出 log 里观察到的失败现象"。
+   - 重点核对 CI 场景的两个常见陷阱: ①**相关 ≠ 因果**(某文件恰好在 stack trace 里出现, 但真因在上游); ②**本地通过 ≠ CI 通过**(根因可能是环境/依赖版本差异, 而非代码逻辑)。
+   - 输出四档裁定之一: CONFIRMED / REFUTED / PARTIAL / UNVERIFIABLE + file:line 或 log line 证据 + 一次证伪尝试记录。
+   - **降级说明**: 本 Skill `allowed-tools` 不含 `sub_agent` 且 SLA 紧(P50 30s), 故证伪在**主上下文内自做**(换视角重读 + grep), 不起独立子代理; 严禁跳过。
+3. **synthesize(裁决合并)**: 按裁定处置——
+   - **CONFIRMED** → priority=1 维持, Confidence 可提升。
+   - **REFUTED** → **降级或剔除该假设**, 把 priority=2 顶上来重新走 refute。证伪一条错误根因, 避免开发者改错地方, 是高价值产出, 不是失败。
+   - **PARTIAL** → 保留但按证伪结果校准(常见: 现象真但根因被高估, 下调 Confidence 一档)。
+   - **UNVERIFIABLE** → 保留但标注"需运行时/CI 重跑验证", Verdict 倾向 `needs_human`。
+
+> 报告 Root Cause Hypotheses 中, priority=1 假设新增一行 **Refutation**: 记录证伪尝试与裁定; priority=2/3 至少有自查结论。
 
 ### 3.6 Step F: flaky 识别
 

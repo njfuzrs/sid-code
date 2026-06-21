@@ -263,9 +263,10 @@ export class ModelFallback {
         log.warn("FALLBACK", `流式整体超时: ${streamTimeoutMs / 1000}s，主动中断连接`);
         streamTimeoutCtl.abort();
       }, streamTimeoutMs);
-      if (streamTimeoutId && typeof streamTimeoutId === "object" && "unref" in streamTimeoutId) {
-        (streamTimeoutId as any).unref();
-      }
+      // 不调 unref()：fdb47f30 教训——index 23 请求发出后 hang 死,若定时器被 unref,
+      // 在事件循环空闲时 Node/Bun 不保证它按时 fire,整体超时形同虚设、无法自愈。
+      // 这里是"受管理的非 unref 定时器"：resetStreamTimeout / 正常收尾路径都会 clearTimeout,
+      // 不会泄漏阻止进程退出。宁可让它确实持有事件循环,也要保证超时一定触发。
     };
 
     const resetStreamTimeout = () => {

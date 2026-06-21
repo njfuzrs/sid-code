@@ -71,6 +71,14 @@ export class SubAgentTool implements Tool {
   }
 
   /**
+   * 注入 hook 系统（根因修复）。工具在 cli.ts 注册时 HookSystem 尚未创建，
+   * App 构造 HookSystem 后经此 setter 回填，子代理才能触发 Subagent/工具级 hook 与 span。
+   */
+  setHookSystem(hookSystem: HookSystem): void {
+    this.hookSystem = hookSystem;
+  }
+
+  /**
    * 注入 usage 归集 sink（P0-1）。主会话创建 SessionState 后调用，
    * 把"子代理 usage 回写主会话"的逻辑接上。
    */

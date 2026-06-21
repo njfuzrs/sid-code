@@ -33,6 +33,7 @@ import { getLogger } from "../debug/logger.ts";
 import type { ProviderRegistry } from "../llm/registry.ts";
 import type { Registry as ToolRegistry } from "./registry.ts";
 import type { HookSystem } from "../hook/system.ts";
+import type { SubAgentUsageSink } from "../agent/tool.ts";
 import { runInSandbox, parseAndValidateMeta } from "../workflow/sandbox.ts";
 import { WorkflowRuntime } from "../workflow/runtime.ts";
 import { SubAgentRunner } from "../workflow/sub-agent-runner.ts";
@@ -106,6 +107,24 @@ export class WorkflowTool implements Tool {
     private hookSystem?: HookSystem,
   ) {}
 
+  /** 子代理 usage 归集 sink(由主会话注入,与 SubAgentTool 同一接口)。
+   *  workflow 内每个子 agent 跑完把完整 usage 按其实际 model/provider 回写主会话 SessionState,
+   *  否则 workflow 烧的 token/费用完全不计入 /cost、costLimit 守卫对 workflow 失效。 */
+  private usageSink?: SubAgentUsageSink;
+
+  /** 注入 usage 归集 sink(app.wireSubAgentUsageSink 自动调用)。 */
+  setUsageSink(sink: SubAgentUsageSink): void {
+    this.usageSink = sink;
+  }
+
+  /**
+   * 注入 hook 系统(根因修复)。WorkflowTool 在 cli.ts 注册时 HookSystem 尚未创建,
+   * App 构造 HookSystem 后经此 setter 回填,workflow 内子代理才能触发 Subagent/工具级 hook 与 span。
+   */
+  setHookSystem(hookSystem: HookSystem): void {
+    this.hookSystem = hookSystem;
+  }
+
   readOnly(): boolean {
     return false;
   }
@@ -126,10 +145,20 @@ export class WorkflowTool implements Tool {
   }
 
   usageGuide(): string {
+    // 动态列出可选 agentType(含 verify),让模型知道 agent({agentType:'...'}) 可选哪些类型。
+    // 从 BUILTIN_AGENTS 派生,避免写死漂移(新增内置类型自动出现在指南里)。
+    let agentTypesLine = "";
+    try {
+      const { getBuiltInAgentDefinitions } = require("../agent/agent-definition.ts");
+      const defs = getBuiltInAgentDefinitions() as Array<{ agentType: string; description: string }>;
+      const list = defs.map((d) => `${d.agentType}(${d.description})`).join("、");
+      agentTypesLine = `\n- agent({agentType}) 可选内置类型:${list}。对抗校验场景用 agent({agentType:'verify'}) 开对抗式验证子代理(默认怀疑、主动证伪、读码举证)。`;
+    } catch { /* 注册表读取失败不影响指南主体 */ }
+
     return `- 仅当任务需要多 agent 编排(穷尽/对抗/大规模)时用;单点查找用普通工具或单个子代理。
 - 脚本必须以 \`export const meta = { name, description }\` 纯字面量开头。
 - 原语:agent(prompt, opts?) 开子代理;parallel(thunks) 并发屏障;pipeline(items, ...stages) 无屏障逐项;phase(title) 进度组;log(msg) 叙述;args 入参;budget 预算。
-- agent({schema}) 强制结构化输出,返回校验后的对象;agent({model}) 选模型;agent({isolation:'worktree'}) 并行改文件隔离。
+- agent({schema}) 强制结构化输出,返回校验后的对象;agent({model}) 选模型;agent({isolation:'worktree'}) 并行改文件隔离。${agentTypesLine}
 - 默认 pipeline 而非 parallel:无屏障逐项推进墙钟更短。仅当 stage N 需要全部 stage N-1 结果时才用 parallel 屏障。
 - 迭代:返回的 scriptPath 可编辑后用 {scriptPath, resumeFromRunId} 重跑,已完成的 agent 走缓存。`;
   }
@@ -232,7 +261,10 @@ export class WorkflowTool implements Tool {
     const savedPath = this.persistScript(meta.name, runId, src);
 
     // 7) 组装 runtime + runner
+    //    outputTokens 驱动 budget;inputTokens/outputTokens 累计供 task 结果展示真实用量;
+    //    每个子 agent 的完整 usage 经 usageSink 按其实际 model 回写主会话(计入 /cost)。
     let outputTokens = 0;
+    let inputTokens = 0;
     const runner = new SubAgentRunner({
       providerRegistry: this.providerRegistry,
       toolRegistry: this.toolRegistry,
@@ -240,6 +272,18 @@ export class WorkflowTool implements Tool {
       runId,
       onUsage: (t) => {
         outputTokens += t;
+      },
+      onResult: (result) => {
+        // 累计真实用量(修复此前 inputTokens 恒为 0)
+        inputTokens += result.usage?.inputTokens ?? 0;
+        // 归集到主会话 SessionState(按子代理实际 model/provider 计费)
+        if (this.usageSink) {
+          try {
+            this.usageSink(result);
+          } catch (err) {
+            log.warn("WORKFLOW", `usage 归集失败(不影响 workflow): ${(err as Error).message}`);
+          }
+        }
       },
     });
 
@@ -321,8 +365,8 @@ export class WorkflowTool implements Tool {
       await completeWorkflowTask(taskId, {
         output: outputText,
         totalToolUseCount: runtime.agentCallCount,
-        totalTokens: outputTokens,
-        usage: { inputTokens: 0, outputTokens },
+        totalTokens: inputTokens + outputTokens,
+        usage: { inputTokens, outputTokens },
       });
 
       log.info("WORKFLOW", `✓ workflow "${meta.name}" 完成,共 ${runtime.agentCallCount} 个 agent 调用`);

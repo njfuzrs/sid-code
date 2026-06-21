@@ -85,6 +85,7 @@ export type ContinueReason =
   | { type: "stop_hook_retry" }
   | { type: "timeout_retry" }
   | { type: "todo_gate_retry" }
+  | { type: "hypothesis_gate_retry" }
   | { type: "empty_param_retry" };
 
 // ─── 循环状态 ───
@@ -131,6 +132,17 @@ export interface LoopState {
    * 工具成功执行或正常 end_turn 收尾后清零，确保只对"连续退化"计数。
    */
   emptyParamRetryCount?: number;
+  /**
+   * 环节③ 机制2：上一轮工具结果检出的、与 open 假设矛盾的命中（pending 注入）。
+   * 检测发生在工具结果回流时，注入发生在下一轮循环开头的 reminder 通道——
+   * 用此字段跨轮暂存。注入后清空。
+   */
+  pendingContradictions?: import("./hypothesis-ledger.ts").ContradictionHit[];
+  /**
+   * 环节③ 机制3：假设交付门禁已软续命的次数。模型试图收尾但仍有 open 假设时，
+   * 注入门禁提醒并续命，最多 N 次，避免无限循环。
+   */
+  hypothesisGateRetryCount?: number;
 }
 
 /** 创建初始循环状态 */
@@ -203,6 +215,12 @@ export interface QueryDeps {
    * 返回 null 表示无 todo 工具或无 todo 项。可 mock。
    */
   getTodoState?: () => { todos: import("../tool/todo-write.ts").TodoItem[]; writeVersion: number } | null;
+  /**
+   * 环节③ 假设登记表(Hypothesis Ledger)接入。返回 harness 持有的登记表实例,
+   * queryLoop 每轮工具结果回流后用它做"新证据 vs open 假设证伪条件"匹配(机制2 矛盾中断),
+   * 并在收尾前做交付门禁(机制3)。返回 null 表示未启用(无登记表工具)。可 mock。
+   */
+  getHypothesisLedger?: () => import("./hypothesis-ledger.ts").HypothesisLedger | null;
   /**
    * B2：会话持久化写入端（方案 a）。queryLoop 在 ctxMgr.addMessage(toolResults) 的同时，
    * 通过它把 tool_result 直接写入 jsonl。可选——未注入则不持久化。

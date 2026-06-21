@@ -13,6 +13,7 @@ import { accumulateUsage, normalizeCacheUsage } from "../llm/types.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { getLogger } from "../debug/logger.ts";
+import type { HookSystem } from "../hook/system.ts";
 import { LoopDetector, LOOP_RECOVERY_PROMPT } from "./loop-detection.ts";
 import { processStream } from "./stream-processor.ts";
 import { executeTools } from "./tool-executor.ts";
@@ -57,6 +58,9 @@ export interface AgentLoopConfig {
   loopRecoveryPrompt?: string;
   /** LLM 请求额外参数 */
   sendParamsExtra?: Partial<SendParams>;
+  /** Hook 系统（透传给工具执行，驱动子代理工具的 Pre/PostToolUse hook 与 execute_tool span）。
+   *  缺省时工具执行不触发 hook（兼容无 hook 环境/测试）。 */
+  hookSystem?: HookSystem;
 }
 
 /** Agent 循环结果 */
@@ -242,7 +246,7 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
       toolUseCount += toolUseBlocks.length;
 
       // 执行工具
-      const toolResults = await executeTools(response.content, tools, signal);
+      const toolResults = await executeTools(response.content, tools, signal, config.hookSystem);
       ctxMgr.addMessage({ role: "user", content: toolResults });
 
       // 每轮结束回调（进度追踪 + 磁盘输出）

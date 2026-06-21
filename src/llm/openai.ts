@@ -520,6 +520,12 @@ export class OpenAIProvider implements Provider {
       if (!response.ok) {
         const error = await response.text();
         log.error("LLM:OPENAI", `API 错误: ${response.status}`, error);
+        // 接入审计日志(WARN 级,fileOnly 不刷屏):API 层错误是排查会话异常的关键信号,
+        // 原先只进 LLM:OPENAI 普通日志,audit.log 拿不到 HTTP 码 → 异常时定位慢。
+        getLogger().warn(
+          "AUDIT:API",
+          `✗ OpenAI HTTP ${response.status} model=${effectiveModel} body=${(error ?? "").slice(0, 200)}`,
+        );
         yield {
           type: "error",
           error: { message: `OpenAI API 错误: ${response.status} ${error}` },
@@ -574,6 +580,8 @@ export class OpenAIProvider implements Provider {
     } catch (err: any) {
       const log = getLogger();
       log.error("LLM:OPENAI", `请求异常`, { error: err.message, stack: err.stack });
+      // 接入审计日志:连接/流式异常(含超时中断、ECONNRESET)是会话 hang/中断的关键信号。
+      log.warn("AUDIT:API", `✗ OpenAI 请求异常 model=${effectiveModel} err=${(err?.message ?? String(err)).slice(0, 200)}`);
       yield {
         type: "error",
         error: { message: err.message || String(err) },

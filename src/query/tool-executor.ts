@@ -37,6 +37,24 @@ function describeEmptyOutput(toolName: string): string {
   }
 }
 
+/**
+ * 可见性缺口修复（半盲级）：PreToolUse hook 改写了模型发出的工具参数后，
+ * 模型收到的 tool_result 默认不含任何说明，会按自己原始（已被改掉）的参数去
+ * 理解结果，造成误判。这里生成一条前置告知，提示模型"实际执行用的是 hook
+ * 修改后的参数，请以执行结果为准"。
+ *
+ * 只给"被改过"这一事实，不渲染具体 diff——hook 可能注入敏感值（凭证/路径），
+ * 回灌进 LLM 上下文有泄漏风险；模型只需知道"别按原参数理解结果"即可。
+ * 主循环与子代理两条执行路径共用此函数（统一文案）。
+ */
+export function buildHookModifiedNotice(toolName: string): string {
+  return (
+    `<system-reminder>工具 ${toolName} 的调用参数在执行前被 hook 修改，` +
+    `实际执行使用的是修改后的参数（与你提交的可能不同）。请以下方执行结果为准，` +
+    `不要假设结果对应你最初提交的参数。</system-reminder>`
+  );
+}
+
 /** 工具执行器依赖 */
 export interface ToolExecutorDeps {
   config: Config;
@@ -318,11 +336,16 @@ export async function executeSingleTool(
 
   // 检查 hook 是否修改了工具输入
   let effectiveInput = block.input;
+  // 可见性缺口修复（半盲级）：hook 改写了模型发出的参数后，模型收到的 tool_result
+  // 默认不含任何说明，模型会按自己原始的（已被改掉的）参数去理解结果 → 误判。
+  // 这里记录"被改过"，在最终 tool_result 前置一条告知，让模型据实对齐执行参数。
+  let hookModifiedNotice = "";
   if (preToolResult.finalOutput && "getModifiedToolInput" in preToolResult.finalOutput) {
     const modified = (preToolResult.finalOutput as any).getModifiedToolInput?.();
     if (modified) {
       log.info("HOOK", `工具 ${block.name} 输入被 hook 修改`);
       effectiveInput = modified;
+      hookModifiedNotice = buildHookModifiedNotice(block.name);
     }
   }
 
@@ -385,6 +408,10 @@ export async function executeSingleTool(
     if (additionalCtx) {
       log.info("HOOK", `PostToolUse hook 追加上下文到 ${block.name} 结果`);
       finalOutput = truncatedOutput + "\n\n[Hook 附加上下文]\n" + additionalCtx;
+    }
+    // hook 改参告知前置到结果最前（模型先看到"参数被改过"，再读结果，避免按旧参数误判）
+    if (hookModifiedNotice) {
+      finalOutput = hookModifiedNotice + "\n\n" + finalOutput;
     }
 
     // LSP 文件变更通知（write/edit 工具后异步投递，不阻塞工具返回）

@@ -1,5 +1,12 @@
 import type { LocalCommandModule, LocalCommandResult, CommandContext } from "../../types.ts";
-import { EFFORT_LEVELS, isEffortLevel } from "../../../llm/effort.ts";
+import {
+  EFFORT_LEVELS,
+  isEffortLevel,
+  previewWireEffort,
+  getEffortEnvOverride,
+  type EffortCapability,
+  type EffortLevel,
+} from "../../../llm/effort.ts";
 
 /**
  * /effort 命令实现（按需加载）
@@ -9,6 +16,7 @@ import { EFFORT_LEVELS, isEffortLevel } from "../../../llm/effort.ts";
  *   /effort <level>      - 切换档位：low / medium / high / max
  *   /effort auto         - 恢复 auto（跟随模型默认，不显式下发）
  *   /effort <level> -p   - 切换并持久化到 settings.json（跨会话生效，别名 --persist / save）
+ *   /effort help         - 显示用法
  *
  * 统一标度（low/medium/high/max/auto）与底层模型无关；由 effort.ts 能力层翻译成各
  * provider 线格式。当前模型不支持档位切换时，本命令会提示而不下发。
@@ -19,6 +27,11 @@ const mod: LocalCommandModule = {
     // 解析持久化标志（-p / --persist / save），其余 token 作为档位。
     const persist = tokens.some((t) => t === "-p" || t === "--persist" || t === "save");
     const levelArg = tokens.find((t) => t !== "-p" && t !== "--persist" && t !== "save");
+
+    // help 子命令：显式用法说明。
+    if (levelArg && levelArg.toLowerCase() === "help") {
+      return { type: "text", value: buildHelp() };
+    }
 
     const state = ctx.getEffortState?.();
     // 能力门控：当前模型不支持档位切换时，直接说明（避免静默无效切换）。
@@ -37,9 +50,10 @@ const mod: LocalCommandModule = {
     const norm = levelArg.toLowerCase();
     if (norm === "auto" || norm === "unset") {
       ctx.setEffort?.(undefined, persist);
+      const envNote = buildEnvOverrideNote();
       return {
         type: "text",
-        value: `推理强度已设为 auto（跟随模型默认）${persist ? "，并已保存到 settings.json" : ""}`,
+        value: `推理强度已设为 auto（跟随模型默认）${persist ? "，并已保存到 settings.json" : ""}${envNote}`,
       };
     }
 
@@ -50,19 +64,44 @@ const mod: LocalCommandModule = {
       };
     }
 
-    // max 但模型不支持 → 提示将被钳为 high（仍允许设置，由 effort.ts 钳制）。
-    let note = "";
-    if (norm === "max" && state && !state.capability.supportsMaxEffort) {
-      note = "（注意：当前模型不支持 max，实际下发时将降为 high）";
-    }
+    // 钳制提示：对比「请求档 vs 经能力层映射后实际下发档」，被服务端钳制时诚实告知。
+    // 通用做法（不写死 provider）：DeepSeek low/medium→high、o-series max→high 都由此覆盖。
+    const note = state ? buildClampNote(state.capability, norm) : "";
 
     ctx.setEffort?.(norm, persist);
+    const envNote = buildEnvOverrideNote();
     return {
       type: "text",
-      value: `推理强度已切换为: ${norm}${note}${persist ? "，并已保存到 settings.json" : ""}`,
+      value: `推理强度已切换为: ${norm}${note}${persist ? "，并已保存到 settings.json" : ""}${envNote}`,
     };
   },
 };
+
+/**
+ * 构建钳制提示：若请求档位经能力层映射后实际下发档位不同，告知用户被钳制。
+ * 通用——直接预演 applyToSendParams 的线格式输出，不针对具体 provider 写死规则。
+ */
+function buildClampNote(cap: EffortCapability, requested: EffortLevel): string {
+  const wire = previewWireEffort(cap, requested);
+  if (wire === requested) return "";
+  // 当前模型仅支持有限档位，请求档被钳制到 wire。
+  return `（注意：当前模型不支持 ${requested} 档，实际下发时将按 ${wire} 处理）`;
+}
+
+/**
+ * env 覆盖提示：若 SID_CODE_EFFORT_LEVEL / CLAUDE_CODE_EFFORT_LEVEL 已设，
+ * 则运行时切换不会改变实际下发值，诚实告知用户当前由 env 覆盖。
+ */
+function buildEnvOverrideNote(): string {
+  const env = getEffortEnvOverride();
+  if (env === null) return ""; // env 未设，无覆盖
+  const which =
+    process.env.SID_CODE_EFFORT_LEVEL !== undefined
+      ? "SID_CODE_EFFORT_LEVEL"
+      : "CLAUDE_CODE_EFFORT_LEVEL";
+  const envVal = env === undefined ? "auto" : env;
+  return `\n⚠ 环境变量 ${which}=${envVal} 正在覆盖本会话，运行时切换不会改变实际下发的档位（取消请 unset 该变量）。`;
+}
 
 /** 构建当前 effort 状态文本（无参时展示）。 */
 function buildStatus(ctx: CommandContext): string {
@@ -78,9 +117,28 @@ function buildStatus(ctx: CommandContext): string {
     lines.push(`实际档位(auto 解析): ${state.applied}（跟随模型默认）`);
   }
   lines.push(`模型支持 max: ${state.capability.supportsMaxEffort ? "是" : "否（max 将降为 high）"}`);
+  const envNote = buildEnvOverrideNote();
+  if (envNote) lines.push(envNote.replace(/^\n/, ""));
   lines.push("", `可切换: ${EFFORT_LEVELS.join(" / ")} / auto`);
-  lines.push("用 /effort <档位> 切换，加 -p 持久化到 settings.json");
+  lines.push("用 /effort <档位> 切换，加 -p 持久化到 settings.json；/effort help 查看用法");
   return lines.join("\n");
+}
+
+/** 构建 /effort help 用法文本。 */
+function buildHelp(): string {
+  return [
+    "/effort —— 推理强度档位（统一标度，与底层模型无关）",
+    "",
+    "  /effort              显示当前档位 + 模型能力",
+    `  /effort <level>      切换档位：${EFFORT_LEVELS.join(" / ")}（当会话生效）`,
+    "  /effort auto         恢复 auto（跟随模型默认，不显式下发）",
+    "  /effort <level> -p   切换并持久化到 settings.json（别名 --persist / save）",
+    "  /effort help         显示本用法",
+    "",
+    "说明：",
+    "  · 模型不支持某档位时（如 DeepSeek 仅 high/max），切换仍接受但会提示实际下发档。",
+    "  · 环境变量 SID_CODE_EFFORT_LEVEL（兼容 CLAUDE_CODE_EFFORT_LEVEL）会覆盖运行时切换。",
+  ].join("\n");
 }
 
 export default mod;

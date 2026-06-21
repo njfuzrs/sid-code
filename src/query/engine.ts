@@ -72,6 +72,8 @@ export interface QueryEngineDeps {
   getThinkingSetting?: () => import("../llm/effort.ts").ThinkingSetting;
   /** P0-2 / P0-3：读取 todo 状态快照（回注 + 完成度校验用） */
   getTodoState?: () => { todos: import("../tool/todo-write.ts").TodoItem[]; writeVersion: number } | null;
+  /** 环节③：读取假设登记表实例（矛盾中断 + 交付门禁用） */
+  getHypothesisLedger?: () => import("./hypothesis-ledger.ts").HypothesisLedger | null;
 }
 
 export class QueryEngine {
@@ -225,6 +227,7 @@ export class QueryEngine {
       getEffortSetting: this.deps.getEffortSetting,
       getThinkingSetting: this.deps.getThinkingSetting,
       getTodoState: this.deps.getTodoState,
+      getHypothesisLedger: this.deps.getHypothesisLedger,
       sessionStore: this.deps.sessionStore,
       // Step 0：Session Memory 每轮收尾钩子（fire-and-forget，内部按双阈值决定是否提取）。
       updateSessionMemory: this.sessionMemory

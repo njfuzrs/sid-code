@@ -295,6 +295,29 @@ export function isEffortAuto(
 }
 
 /**
+ * 预演某显式档位经能力层 applyToSendParams 映射后「实际下发」的线格式强度档。
+ *
+ * 用途：命令层对比「请求档 vs 实际下发档」，对被服务端钳制的档位诚实告知用户
+ * （如 DeepSeek 仅 high/max → low/medium 实际按 high 下发；o-series 无 max → max 按 high）。
+ *
+ * 设计：用一次性探针 SendParams 跑真实映射，读出 reasoningEffort（OpenAI/o-series）或
+ * outputConfig.effort（deepseek-anthropic），**不写死任何 provider**——映射规则变了这里自动跟随。
+ * 走 budget_tokens 路径的原生 Claude 无 reasoningEffort 下发，其 4 档与预算一一对应、无钳制概念，
+ * 故返回原档（不提示钳制）。
+ *
+ * @returns 实际下发的强度档；与入参 level 不同即表示发生了钳制。
+ */
+export function previewWireEffort(cap: EffortCapability, level: EffortLevel): EffortLevel {
+  // 思考须开启才会下发 effort（与 applyToSendParams 内的 thinking 门控一致）。
+  const probe: SendParams = { model: "", messages: [], maxTokens: 0 };
+  cap.applyToSendParams(probe, level, true);
+  const wire = probe.reasoningEffort ?? probe.outputConfig?.effort;
+  if (wire !== undefined && isEffortLevel(wire)) return wire;
+  // 无显式 effort 下发（如原生 Claude 走 budget_tokens，或 unknown no-op）→ 视为无钳制。
+  return level;
+}
+
+/**
  * thinking 是否实际开启（优先级 env > runtime > cap.thinkingDefaultOn）。
  * @param envOverride getThinkingEnvOverride() 的返回值：null=env 未设；true/false=env 强制。
  */

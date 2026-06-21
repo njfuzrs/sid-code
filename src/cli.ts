@@ -613,6 +613,14 @@ export async function main(): Promise<void> {
     const { TodoWriteTool } = await import("./tool/todo-write.ts");
     toolRegistry.register(new TodoWriteTool());
 
+    // 注册假设登记表工具（环节③：把"怀疑自己的假设"从模型自律外化为 harness 机制）。
+    // register 工具持有 ledger，challenge 工具复用同一实例；turnProvider 暂用占位（轮次仅用于
+    // 证据追溯，非关键路径）。queryLoop 经 deps.getHypothesisLedger 读取做矛盾中断 + 交付门禁。
+    const { HypothesisRegisterTool, HypothesisChallengeTool } = await import("./tool/hypothesis.ts");
+    const hypothesisRegisterTool = new HypothesisRegisterTool();
+    toolRegistry.register(hypothesisRegisterTool);
+    toolRegistry.register(new HypothesisChallengeTool(hypothesisRegisterTool.getLedger()));
+
     // 注册子代理工具
     const { SubAgentTool } = await import("./agent/tool.ts");
     toolRegistry.register(new SubAgentTool(providerRegistry, toolRegistry));

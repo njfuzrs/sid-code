@@ -42,7 +42,7 @@ import {
 import { SuggestionsDisplay, type Suggestion } from "./components/SuggestionsDisplay.tsx";
 import { parseInputForHighlighting, renderHighlightedSegments } from "./utils/inputHighlight.tsx";
 import { DEFAULT_TERM_WIDTH } from "./markdown.ts";
-import { getAppConfig } from "../config/app-config.ts";
+import { getAppConfig, shouldShowHint, markHintShown } from "../config/app-config.ts";
 import { ARROW_PROMPT } from "./constants/figures.ts";
 
 interface InputAreaProps {
@@ -582,10 +582,31 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
 
   const isEmpty = tb.isEmpty();
 
+  // 队列提示渐进衰减（交互铁律 C）：流式中排队接续是固定行为，完整解释文案
+  // （"将在当前响应结束后依次发送"）教过几次就该收敛，否则每次排队都唠叨。
+  // 显示满 QUEUE_HINT_MAX_SHOWS 次后收敛为精简形态。计数在 0→>0 上升沿 +1（每次排队记一次，
+  // 而非每帧），用 ref 防重复。对标 cc 的 *HintCount < N 衰减。
+  const QUEUE_HINT_KEY = "queueContinuation";
+  const QUEUE_HINT_MAX_SHOWS = 3;
+  const queueHintFullRef = useRef(shouldShowHint(QUEUE_HINT_KEY, QUEUE_HINT_MAX_SHOWS));
+  const prevQueuedCountRef = useRef(0);
+  useEffect(() => {
+    // 0 → >0 上升沿：本次排队出现，记一次显示次数并锁定本轮形态（避免计数过程中文案抖动）。
+    if (prevQueuedCountRef.current === 0 && queuedCount > 0) {
+      queueHintFullRef.current = shouldShowHint(QUEUE_HINT_KEY, QUEUE_HINT_MAX_SHOWS);
+      if (queueHintFullRef.current) markHintShown(QUEUE_HINT_KEY);
+    }
+    prevQueuedCountRef.current = queuedCount;
+  }, [queuedCount]);
+
   // 队列提示：流式中已排队 N 条输入待接续时，在输入框上方一行提示。
   const queueHint = queuedCount > 0 ? (
     <Box paddingLeft={1}>
-      <Text color={theme.status.warning}>{`${ARROW_PROMPT} 已排队 ${queuedCount} 条输入，将在当前响应结束后依次发送`}</Text>
+      <Text color={theme.status.warning}>
+        {queueHintFullRef.current
+          ? `${ARROW_PROMPT} 已排队 ${queuedCount} 条输入，将在当前响应结束后依次发送`
+          : `${ARROW_PROMPT} 已排队 ${queuedCount} 条`}
+      </Text>
     </Box>
   ) : null;
 

@@ -335,9 +335,40 @@ export interface PreCompactInput extends HookInput {
 /** SubagentStart 输入 */
 export interface SubagentStartInput extends HookInput {
   agent_id: string;
-  /** explore / task / plan / summarize / custom */
+  /** explore / task / plan / summarize / verify / custom */
   agent_type: string;
   parent_session_id?: string;
+  /** 子代理实际使用的模型（遥测按 model 分类/计费用；start 时为预期模型） */
+  model?: string;
+  /** 子代理实际使用的 provider（缺省由 model 推断） */
+  provider?: string;
+}
+
+/** SubagentStop 输入（携带子代理实际用量，供遥测单独计费 / 按 model 分类） */
+export interface SubagentStopInput extends HookInput {
+  agent_id?: string;
+  agent_type?: string;
+  /** 子代理实际使用的模型 */
+  model?: string;
+  /** 子代理实际使用的 provider */
+  provider?: string;
+  /** 子代理是否成功结束 */
+  success?: boolean;
+  /** 子代理执行轮次 */
+  turns?: number;
+  /** 子代理工具调用次数 */
+  tool_use_count?: number;
+  /** 子代理 LLM 用量明细 */
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadInputTokens?: number;
+    cacheCreationInputTokens?: number;
+  };
+  /** 子代理执行耗时（毫秒） */
+  duration_ms?: number;
+  /** 兼容旧调用：允许携带任意附加字段（如 toolName） */
+  [key: string]: unknown;
 }
 
 /** Notification 输入 */

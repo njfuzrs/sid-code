@@ -153,6 +153,16 @@ release_metadata:
 - 调 LLM 做 verdict 决策：block 当 license violation > 0 OR pii violation > 0；warn 当 warnings > 0；pass 否则
 - 严格按 §2 模板输出
 
+### 3.6.1 block 前证伪（强制，failure_policy=block 的前置条件）
+
+本 Skill `failure_policy=block`：一条**误报 violation 会卡死 PR**（over-block），代价高。violation 多来自确定性脚本（license-check / pii-scan / audit-trail-check），幻觉风险低，但脚本仍可能在 fixture/示例/已豁免上下文上误命中。发出 `block` verdict **之前**，对每条 `violation` 强制复核一次：
+
+1. **file:line 真实**：用 `read` 工具读到该行原文，确认 violation 描述的内容确实在该位置（对齐 RL-007）。读不到则不能据此 block，降级为 warning 并标注"位置存疑需人工"。
+2. **在增量行**：确认 violation 命中的是本次 PR 的**增量行**，不是仓库历史既有代码（历史问题不应由本次 PR 阻断）。
+3. **未被豁免**：复核 §3.3 的上下文豁免是否本应命中——`tests/` `fixtures/` `*.example.*`、注释含"脱敏/redacted/fake"的 PII，license 检查里的 devDependencies/可选依赖等。命中豁免 → 从 violation 降为 audit note 或剔除。
+
+复核后任一条不成立 → 该条降级（violation→warning 或剔除），并据降级后的计数**重新计算 verdict**。证伪一条误报、避免错误 over-block，与拦住一条真违规同等重要。`warning` 类可只做主上下文自查，不强制逐条 read。
+
 ### 3.7 兜底守护
 
 - 输出不含真 PII（即使在 evidence 字段也走 redact）

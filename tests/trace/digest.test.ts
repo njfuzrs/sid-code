@@ -130,15 +130,23 @@ describe("buildDigest 异常检测", () => {
     expect(d.toolSequence[0].tool).toBe("read");
   });
 
-  it("error 退出 → 高优先级异常", () => {
+  it("error 退出 → L0 事实 + L1 假设(带证伪条件)", () => {
     writeSession("err00001", normalSession({ exit_status: "error" }));
     const all = listSessions(paths);
     const d = buildDigest(all[0], false, paths)!;
     expect(d.abnormal).toBe(true);
-    expect(d.anomalies.some((a) => a.kind === "异常退出" && a.severity === "high")).toBe(true);
+    // L0:exit_status_error 是带出处的纯事实
+    const fact = d.anomalies.find((a) => a.kind === "exit_status_error");
+    expect(fact?.layer).toBe("L0");
+    expect(fact?.severity).toBe("high");
+    expect(fact?.provenance?.length).toBeGreaterThan(0);
+    // L1:运行时异常终止假设,必带 falsifier
+    const hyp = d.anomalies.find((a) => a.kind === "hypothesis_runtime_abend");
+    expect(hyp?.layer).toBe("L1");
+    expect(hyp?.falsifier).toBeTruthy();
   });
 
-  it("孤儿 tool_use → 高优先级异常", () => {
+  it("孤儿 tool_use → L0 客观计数 + L1 崩溃假设(带证伪条件)", () => {
     writeSession("orphan01", {
       trajectory: [
         { message_type: "action", tool_name: "read", tool_input: {} },
@@ -148,11 +156,15 @@ describe("buildDigest 异常检测", () => {
     });
     const all = listSessions(paths);
     const d = buildDigest(all[0], false, paths)!;
-    expect(d.anomalies.some((a) => a.kind === "孤儿 tool_use")).toBe(true);
+    expect(d.anomalies.some((a) => a.kind === "tool_use_without_result" && a.layer === "L0")).toBe(true);
+    // fdb47f30 教训:崩溃判定降为 L1 假设,且证伪条件强制去查进程是否存活
+    const hyp = d.anomalies.find((a) => a.kind === "hypothesis_crash_or_violation");
+    expect(hyp?.layer).toBe("L1");
+    expect(hyp?.falsifier).toContain("存活");
     expect(d.toolSequence[0].orphan).toBe(true);
   });
 
-  it("工具失败 → 标记 isError 并产出异常", () => {
+  it("工具失败 → 标记 isError 并产出 L0 事实", () => {
     writeSession("toolerr1", {
       trajectory: [
         { message_type: "action", tool_name: "bash", tool_input: { command: "x" } },
@@ -163,10 +175,10 @@ describe("buildDigest 异常检测", () => {
     const all = listSessions(paths);
     const d = buildDigest(all[0], false, paths)!;
     expect(d.toolSequence[0].isError).toBe(true);
-    expect(d.anomalies.some((a) => a.kind === "工具执行失败")).toBe(true);
+    expect(d.anomalies.some((a) => a.kind === "tool_result_is_error" && a.layer === "L0")).toBe(true);
   });
 
-  it("连续同形状工具调用 ≥4 次 → 疑似循环", () => {
+  it("连续同形状工具调用 ≥4 次 → L0 计数 + L1 循环假设(带证伪条件)", () => {
     const steps: unknown[] = [];
     for (let i = 0; i < 5; i++) {
       steps.push({ message_type: "action", tool_name: "grep", tool_input: { pattern: "foo" } });
@@ -175,14 +187,17 @@ describe("buildDigest 异常检测", () => {
     writeSession("loop0001", { trajectory: steps, metadata: { exit_status: "end_turn" } });
     const all = listSessions(paths);
     const d = buildDigest(all[0], false, paths)!;
-    expect(d.anomalies.some((a) => a.kind === "疑似循环")).toBe(true);
+    expect(d.anomalies.some((a) => a.kind === "repeated_tool_shape_run" && a.layer === "L0")).toBe(true);
+    const hyp = d.anomalies.find((a) => a.kind === "hypothesis_stuck_loop");
+    expect(hyp?.layer).toBe("L1");
+    expect(hyp?.falsifier).toBeTruthy();
   });
 
   it("schema 漂移(缺 trajectory 和 metadata)→ 高优先级告警,不静默", () => {
     writeSession("badschem", { foo: "bar", baz: 123 });
     const all = listSessions(paths);
     const d = buildDigest(all[0], false, paths)!;
-    expect(d.anomalies.some((a) => a.kind === "数据格式异常" && a.severity === "high")).toBe(true);
+    expect(d.anomalies.some((a) => a.kind === "schema_missing_core_keys" && a.severity === "high")).toBe(true);
   });
 
   it("损坏 JSON → buildDigest 返回 null", () => {
@@ -199,10 +214,10 @@ describe("buildDigest 成本归零(回归:不再 95% 误报)", () => {
     writeSession("noledger", normalSession({ total_tokens_sent: 50000, total_cost_usd: 0 }));
     const all = listSessions(paths);
     const d = buildDigest(all[0], false, paths)!;
-    expect(d.anomalies.some((a) => a.kind === "成本归零存疑")).toBe(false);
+    expect(d.anomalies.some((a) => a.kind === "ledger_cost_zero_with_tokens")).toBe(false);
   });
 
-  it("有 ledger 且账本 costUSD=0 且非本地 → 才报成本归零", () => {
+  it("有 ledger 且账本 costUSD=0 且非本地 → 才报成本归零(L0 事实 + L1 定价假设)", () => {
     writeSession("hasledg1", normalSession({ total_tokens_sent: 50000 }));
     writeFileSync(
       paths.ledgerPath,
@@ -210,7 +225,11 @@ describe("buildDigest 成本归零(回归:不再 95% 误报)", () => {
     );
     const all = listSessions(paths);
     const d = buildDigest(all[0], false, paths)!;
-    expect(d.anomalies.some((a) => a.kind === "成本归零存疑")).toBe(true);
+    expect(d.anomalies.some((a) => a.kind === "ledger_cost_zero_with_tokens" && a.layer === "L0")).toBe(true);
+    // fdb47f30 §11 教训:定价表缺失判定降为 L1 假设,证伪条件指向 grep 定价表
+    const hyp = d.anomalies.find((a) => a.kind === "hypothesis_missing_pricing");
+    expect(hyp?.layer).toBe("L1");
+    expect(hyp?.falsifier).toBeTruthy();
   });
 
   it("本地 provider(ollama)costUSD=0 → 不报(本地本来免费)", () => {
@@ -221,7 +240,7 @@ describe("buildDigest 成本归零(回归:不再 95% 误报)", () => {
     );
     const all = listSessions(paths);
     const d = buildDigest(all[0], false, paths)!;
-    expect(d.anomalies.some((a) => a.kind === "成本归零存疑")).toBe(false);
+    expect(d.anomalies.some((a) => a.kind === "ledger_cost_zero_with_tokens")).toBe(false);
   });
 });
 

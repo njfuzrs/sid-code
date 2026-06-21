@@ -18,6 +18,7 @@ import { randomBytes } from "node:crypto";
 import type { AgentRunner, AgentCallContext } from "../workflow/runtime.ts";
 import type { AgentOpts } from "../workflow/types.ts";
 import { SubAgent } from "../agent/sub-agent.ts";
+import type { SubAgentResult } from "../agent/sub-agent.ts";
 import type { ProviderRegistry } from "../llm/registry.ts";
 import type { Registry as ToolRegistry } from "../tool/registry.ts";
 import type { HookSystem } from "../hook/system.ts";
@@ -34,6 +35,10 @@ export interface SubAgentRunnerOptions {
   runId: string;
   /** usage 回调:每个 agent 跑完把输出 token 回灌(驱动 budget.spent) */
   onUsage?: (outputTokens: number) => void;
+  /** 完整 usage 归集:每个 agent 跑完把完整 SubAgentResult(含 inputTokens/model/provider)
+   *  回传宿主,用于归集到主会话 SessionState(计入 /cost、costLimit 守卫)。
+   *  与 onUsage 分工:onUsage 只喂 budget(输出 token),onResult 喂计费(完整用量)。 */
+  onResult?: (result: SubAgentResult) => void;
   /** 默认子代理类型(opts.agentType 缺省时用) */
   defaultAgentType?: string;
 }
@@ -113,9 +118,10 @@ export class SubAgentRunner implements AgentRunner {
         ctx.signal,
       );
 
-      // 3) usage 回灌 budget
-      if (this.opts.onUsage && result.usage) {
-        this.opts.onUsage(result.usage.outputTokens ?? 0);
+      // 3) usage 回灌:budget(输出 token) + 完整归集(计费)
+      if (result.usage) {
+        this.opts.onUsage?.(result.usage.outputTokens ?? 0);
+        this.opts.onResult?.(result);
       }
 
       if (!result.success) {

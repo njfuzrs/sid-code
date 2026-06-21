@@ -101,11 +101,54 @@ export interface LedgerEntry {
   durationMs: number;
 }
 
+/**
+ * Provenance(出处三元组+) —— 环节②:取证数据强制自带出处与时效。
+ *
+ * fdb47f30 教训:grep 捞出 `must be passed back` 时,这条数据已和"来自哪个文件、
+ * 第几行、文件什么时间写的"剥离 → 模型拿到无主字符串只能猜,把 5/23 的旧日志当成
+ * 本会话的 smoking gun。解法不是提醒模型小心,而是让数据自描述:出处、时效、有损标记
+ * 直接挂在值旁边,时效矛盾一眼可见,不需要模型额外起意去查。
+ */
+export interface Provenance {
+  /** 来源文件(绝对路径或相对 session 目录的文件名) */
+  sourceFile: string;
+  /** 可定位指针:行号 / jsonl 行号 / 字段路径(如 metadata.exit_status) */
+  lineRef?: string;
+  /** 原始值(已截断),让模型一键比对,不必回原文件 */
+  rawValue?: string;
+  /** 文件最后修改时间(ISO 字符串)。时效矛盾的关键证据(如 debug.log mtime=5/23 与本会话无关) */
+  mtime?: string;
+  /** 是否经过有损转换(如 strings 撕中文 / grep 去上下文)。true 表示该值不可作字面采信 */
+  lossy?: boolean;
+}
+
+/**
+ * 异常信号 —— 环节①:强制分两层(L0 事实 / L1 假设),结构上不可混淆。
+ *
+ * fdb47f30 教训:observability 把"信号"和"推测"混在一起输出(`孤儿 tool_use → 可能崩溃`),
+ * 模型拿到的不是中性数据而是带结论倾向的数据,第 0 步就被种下错误锚点。解法是把摘要降维时
+ * 必然发生的"诊断"显式拆开:
+ *
+ * - layer="L0" 纯事实层:只放机器可验证的客观量,**禁止判断词**(异常/孤儿/可疑/可能/疑似),
+ *   **必须带 provenance**,让模型一键回原始数据核对。
+ * - layer="L1" 假设层:允许提出假设,但每条**必须配 falsifier**(证伪条件)——
+ *   "要推翻这个假设,需要看到什么"。没有 falsifier 的假设不许进摘要。模型读到 L1 时,
+ *   拿到的不是结论,而是一张"去验证它"的待办清单。
+ *
+ * 生成/消费职责隔离:本模块(摘要生成器)**不替主模型下诊断**。它的产物是"事实 + 待验证
+ * 假设清单","它意味着什么"留给主模型,且主模型应先消解 L1 的 falsifier 再采信。
+ */
 export interface Anomaly {
+  /** 分层:L0=纯事实(带 provenance,无判断词) / L1=假设(带 falsifier) */
+  layer: "L0" | "L1";
   severity: "high" | "medium" | "low";
   kind: string;
   detail: string;
-  pointer?: string; // 该看哪个原始文件/行
+  /** L0 应填:数据出处(可多条),让时效/归属矛盾直接呈现在数据旁 */
+  provenance?: Provenance[];
+  /** L1 必填:证伪条件——看到什么证据就推翻此假设 */
+  falsifier?: string;
+  pointer?: string; // 该看哪个原始文件/行(保留,向后兼容)
 }
 
 export interface ToolStep {
@@ -196,6 +239,15 @@ function fmtDuration(ms: number | undefined): string {
 function truncate(s: string, n: number): string {
   const clean = s.replace(/\s+/g, " ").trim();
   return clean.length > n ? clean.slice(0, n) + "…" : clean;
+}
+
+/** 取文件 mtime 的 ISO 字符串(用于 provenance 时效)。文件不存在/读不到返回 undefined。 */
+function fileMtimeIso(path: string): string | undefined {
+  try {
+    return new Date(statSync(path).mtimeMs).toISOString();
+  } catch {
+    return undefined;
+  }
 }
 
 // ─────────────────────────── session 定位 ───────────────────────────
@@ -353,12 +405,20 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   const hasMetadata = traj.metadata != null && typeof traj.metadata === "object";
   if (!hasTrajArray && !hasMetadata) {
     anomalies.push({
+      layer: "L0",
       severity: "high",
-      kind: "数据格式异常",
+      kind: "schema_missing_core_keys",
       detail:
-        `session.traj 解析成功但缺 trajectory[] 和 metadata 两个核心字段 —— ` +
-        `可能 src/trace/builder.ts 输出 schema 已变更,本模块的字段映射需同步更新。` +
-        `下面的摘要可能不可信,请直接看原始文件。`,
+        `session.traj 解析成功,但 trajectory[] 与 metadata 两个核心键均不存在。` +
+        `本模块的字段映射依赖这两个键;它们缺失时下面所有提取均为空值。`,
+      provenance: [
+        {
+          sourceFile: join(ref.dir, "session.traj"),
+          lineRef: "trajectory / metadata",
+          rawValue: `hasTrajArray=${hasTrajArray}, hasMetadata=${hasMetadata}`,
+          mtime: fileMtimeIso(ref.trajPath),
+        },
+      ],
       pointer: join(ref.dir, "session.traj"),
     });
   }
@@ -367,14 +427,48 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   const exitStatus = meta.exit_status || traj.info?.exit_status || "unknown";
   const abnormal = ["error", "abort", "user_interrupt"].includes(exitStatus);
   if (exitStatus === "error") {
+    // L0:exit_status 的字面值是客观事实,带出处。
     anomalies.push({
+      layer: "L0",
       severity: "high",
-      kind: "异常退出",
-      detail: `exit_status=error —— 会话因运行时异常终止`,
+      kind: "exit_status_error",
+      detail: `exit_status = "error"`,
+      provenance: [
+        {
+          sourceFile: join(ref.dir, "session.traj"),
+          lineRef: meta.exit_status ? "metadata.exit_status" : "info.exit_status",
+          rawValue: "error",
+          mtime: fileMtimeIso(ref.trajPath),
+        },
+      ],
       pointer: `messages.json (验尸快照,看 attribution) + raw.jsonl 末行`,
     });
+    // L1:由它推断"运行时异常终止",配证伪条件。
+    anomalies.push({
+      layer: "L1",
+      severity: "high",
+      kind: "hypothesis_runtime_abend",
+      detail: `假设:会话因运行时异常而非正常 end_turn 终止。`,
+      falsifier:
+        `若 messages.json.attribution 显示是用户主动中断 / 配额耗尽等可预期原因,` +
+        `或进程仍存活且事件流仍在增长,则推翻"运行时异常终止"。`,
+      pointer: `messages.json (attribution) + raw.jsonl 末行`,
+    });
   } else if (exitStatus === "abort") {
-    anomalies.push({ severity: "medium", kind: "中止", detail: `exit_status=abort —— 收到 SIGINT/SIGTERM` });
+    anomalies.push({
+      layer: "L0",
+      severity: "medium",
+      kind: "exit_status_abort",
+      detail: `exit_status = "abort"`,
+      provenance: [
+        {
+          sourceFile: join(ref.dir, "session.traj"),
+          lineRef: meta.exit_status ? "metadata.exit_status" : "info.exit_status",
+          rawValue: "abort",
+          mtime: fileMtimeIso(ref.trajPath),
+        },
+      ],
+    });
   }
 
   // ── 工具序列 + 错误/孤儿检测 ──
@@ -418,18 +512,50 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   }
 
   if (orphanCount > 0) {
+    // L0:tool_use 无对应 tool_result 是可数的客观事实。
     anomalies.push({
+      layer: "L0",
       severity: "high",
-      kind: "孤儿 tool_use",
-      detail: `${orphanCount} 个 tool_use 无对应 tool_result —— 通常是会话中途崩溃或协议违规`,
+      kind: "tool_use_without_result",
+      detail: `${orphanCount} 个 tool_use 在轨迹中无对应 tool_result`,
+      provenance: [
+        {
+          sourceFile: join(ref.dir, "session.traj"),
+          lineRef: "trajectory[].observation 缺失",
+          rawValue: `orphanCount=${orphanCount}`,
+          mtime: fileMtimeIso(ref.trajPath),
+        },
+      ],
       pointer: `protocol-violations/ 目录 + messages.json`,
+    });
+    // L1:由它推断"中途崩溃/协议违规",配证伪条件。
+    // 这正是 fdb47f30 缺的那条:末个 tool_use 在等响应时会话停住,自然没有 tool_result——
+    // 这是"卡住"的症状,不是"崩溃"的病因。证伪条件强制模型去查进程是否还活着。
+    anomalies.push({
+      layer: "L1",
+      severity: "medium",
+      kind: "hypothesis_crash_or_violation",
+      detail: `假设:tool_use 缺 result 是会话中途崩溃或协议违规所致。`,
+      falsifier:
+        `若产生该 tool_use 的进程仍存活(ps 查 PID)、或它是末次调用且其后正在等模型响应,` +
+        `则它只是"尚未返回",不能据此判定崩溃。需先排除"进程存活/正在等待"再采信。`,
+      pointer: `protocol-violations/ + messages.json + 用 ps 查会话进程是否存活`,
     });
   }
   if (toolErrorCount > 0) {
     anomalies.push({
+      layer: "L0",
       severity: toolErrorCount >= 3 ? "high" : "medium",
-      kind: "工具执行失败",
-      detail: `${toolErrorCount} 次工具调用报错(见工具序列中标 ✗ 的步骤)`,
+      kind: "tool_result_is_error",
+      detail: `${toolErrorCount} 次工具调用的 tool_result 标记 is_error(见工具序列中标 ✗ 的步骤)`,
+      provenance: [
+        {
+          sourceFile: join(ref.dir, "session.traj"),
+          lineRef: "trajectory[].observation.is_error=true",
+          rawValue: `toolErrorCount=${toolErrorCount}`,
+          mtime: fileMtimeIso(ref.trajPath),
+        },
+      ],
     });
   }
 
@@ -452,10 +578,32 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     }
   }
   if (maxRun >= 4) {
+    // L0:连续相同工具形状的次数是客观计数。
     anomalies.push({
+      layer: "L0",
+      severity: "low",
+      kind: "repeated_tool_shape_run",
+      detail: `工具形状 "${maxRunShape}" 连续出现 ${maxRun} 次`,
+      provenance: [
+        {
+          sourceFile: join(ref.dir, "session.traj"),
+          lineRef: "trajectory[].action(连续段)",
+          rawValue: `shape="${maxRunShape}" run=${maxRun}`,
+          mtime: fileMtimeIso(ref.trajPath),
+        },
+      ],
+    });
+    // L1:由它推断"原地打转",配证伪条件。
+    // 对应 memory loop-detection-false-positive-shape:大文件分段读/多点编辑/反复 bash
+    // 都会产生相同 shape 连续段,但都是合法进展,不是循环。
+    anomalies.push({
+      layer: "L1",
       severity: "medium",
-      kind: "疑似循环",
-      detail: `工具形状 "${maxRunShape}" 连续出现 ${maxRun} 次 —— 可能在原地打转(参考循环检测 src/agent/loop-detection.ts)`,
+      kind: "hypothesis_stuck_loop",
+      detail: `假设:相同工具形状连续出现是 Agent 在原地打转。`,
+      falsifier:
+        `若这些调用的参数各不相同(分段读不同 offset / 多点编辑不同位置 / bash 跑不同命令),` +
+        `则是合法进展而非循环。逐条比对参数后再判定;参考 src/agent/loop-detection.ts shape 定义。`,
     });
   }
 
@@ -472,10 +620,32 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   const tokensSent = meta.total_tokens_sent ?? traj.info?.model_stats?.tokens_sent ?? 0;
   const isLocalProvider = ledger?.provider === "ollama" || ledger?.provider === "local";
   if (ledger && tokensSent > 5000 && ledger.costUSD === 0 && !isLocalProvider) {
+    // L0:账本里 input>5000 但 costUSD=0 是客观读数。
     anomalies.push({
+      layer: "L0",
       severity: "low",
-      kind: "成本归零存疑",
-      detail: `账本记录消耗 ${tokensSent} input tokens 但 costUSD=0(非本地 provider)—— 可能定价表缺该模型(见 src/session/state.ts calculateCost 兜底)`,
+      kind: "ledger_cost_zero_with_tokens",
+      detail: `账本记录 ${tokensSent} input tokens 但 costUSD=0(provider=${ledger.provider ?? "?"},非本地)`,
+      provenance: [
+        {
+          sourceFile: paths.ledgerPath,
+          lineRef: `sessionId=${ref.id}`,
+          rawValue: `tokensSent=${tokensSent}, costUSD=0`,
+          mtime: fileMtimeIso(paths.ledgerPath),
+        },
+      ],
+    });
+    // L1:由它推断"定价表缺该模型",配证伪条件。
+    // fdb47f30 §11 误判:deepseek-v4-pro 明明在 cost-tracker.ts 定价表里,skill 却猜"不在表中"。
+    anomalies.push({
+      layer: "L1",
+      severity: "low",
+      kind: "hypothesis_missing_pricing",
+      detail: `假设:costUSD=0 是因定价表缺该模型。`,
+      falsifier:
+        `若 src/api/cost-tracker.ts 的定价表里能 grep 到该模型名,则定价存在,归零另有原因` +
+        `(如 usage 未回填 / 本地 provider 漏标)。先 grep 定价表确认模型是否在表再采信。`,
+      pointer: `src/api/cost-tracker.ts(定价表)+ src/session/state.ts calculateCost`,
     });
   }
 
@@ -483,11 +653,31 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   const crashSnapshot = readJsonSafe<{ reason?: string; attribution?: unknown }>(join(ref.dir, "messages.json"));
   const matchedViolations = matchViolations(ref, meta, paths);
   if (matchedViolations > 0) {
+    // L0:时间窗内的违规文件数是客观计数。但"属于本会话"是按时间戳粗匹配的推断 → 归 L1。
     anomalies.push({
-      severity: "medium",
-      kind: "协议违规记录",
-      detail: `protocol-violations/ 中有 ${matchedViolations} 条疑似与本会话时间相近的记录`,
+      layer: "L0",
+      severity: "low",
+      kind: "violation_files_in_timewindow",
+      detail: `protocol-violations/ 中有 ${matchedViolations} 个文件的时间戳落在本会话时间窗内`,
+      provenance: [
+        {
+          sourceFile: paths.violationsDir,
+          lineRef: "文件名内嵌 13 位 ms 时间戳",
+          rawValue: `matched=${matchedViolations}`,
+          lossy: true, // 仅按时间戳粗匹配,非精确归属
+        },
+      ],
       pointer: `protocol-violations/`,
+    });
+    anomalies.push({
+      layer: "L1",
+      severity: "low",
+      kind: "hypothesis_violations_belong_to_session",
+      detail: `假设:这些违规记录由本会话产生。`,
+      falsifier:
+        `时间窗匹配是粗筛。若违规文件内的 session_id / context_window 指向其他会话,` +
+        `则与本会话无关。打开违规文件核对其 session 归属再采信。`,
+      pointer: `protocol-violations/*.json 内的 session 字段`,
     });
   }
 
@@ -515,9 +705,13 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     });
   }
 
-  // 按严重度排序异常
+  // 按 layer(L0 事实在前、L1 假设在后)再按严重度排序异常。
+  // L0 优先:消费者应先看客观事实,再看建立在事实上的假设。
   const sevRank = { high: 0, medium: 1, low: 2 } as const;
-  anomalies.sort((a, b) => sevRank[a.severity] - sevRank[b.severity]);
+  const layerRank = { L0: 0, L1: 1 } as const;
+  anomalies.sort(
+    (a, b) => layerRank[a.layer] - layerRank[b.layer] || sevRank[a.severity] - sevRank[b.severity],
+  );
 
   return {
     sessionId: ref.id,
@@ -587,17 +781,52 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     d.userPrompts.forEach((p, i) => L.push(`  ${i + 1}. ${p}`));
   }
 
-  // 异常区(最重要,放前面)
+  // 异常区(最重要,放前面)。环节①:L0 事实层 / L1 假设层物理分开渲染,
+  // 不再把"信号"和"推测"混成一锅 —— 让消费者(主模型/人)清楚哪些是客观事实、
+  // 哪些是待验证假设(且每条假设都带证伪条件)。
   L.push("");
+  const sevTagOf = (a: Anomaly) =>
+    a.severity === "high" ? c("red", "[高]") : a.severity === "medium" ? c("yellow", "[中]") : c("gray", "[低]");
+  const renderProvenance = (p: Provenance) => {
+    const bits = [p.sourceFile];
+    if (p.lineRef) bits.push(`@${p.lineRef}`);
+    if (p.rawValue) bits.push(`= ${p.rawValue}`);
+    const tail: string[] = [];
+    if (p.mtime) tail.push(`mtime=${p.mtime}`);
+    if (p.lossy) tail.push("有损/粗匹配");
+    const tailStr = tail.length ? `  (${tail.join(", ")})` : "";
+    return c("gray", `        ⊢ 出处: ${bits.join(" ")}${tailStr}`);
+  };
+
   if (d.anomalies.length === 0) {
     L.push(c("green", "✓ 未检出异常信号"));
   } else {
-    L.push(c("bold", `⚠ 异常信号 (${d.anomalies.length}):`));
-    for (const a of d.anomalies) {
-      const sevTag =
-        a.severity === "high" ? c("red", "[高]") : a.severity === "medium" ? c("yellow", "[中]") : c("gray", "[低]");
-      L.push(`  ${sevTag} ${c("bold", a.kind)}: ${a.detail}`);
-      if (a.pointer) L.push(c("gray", `        → 看: ${a.pointer}`));
+    const facts = d.anomalies.filter((a) => a.layer === "L0");
+    const hyps = d.anomalies.filter((a) => a.layer === "L1");
+
+    // L0 纯事实层:客观量 + 出处,无判断词
+    L.push(c("bold", `L0 事实层 (${facts.length}) — 机器可验证,带出处,不含判断:`));
+    if (facts.length === 0) {
+      L.push(c("gray", "  (无)"));
+    } else {
+      for (const a of facts) {
+        L.push(`  ${sevTagOf(a)} ${c("bold", a.kind)}: ${a.detail}`);
+        for (const p of a.provenance ?? []) L.push(renderProvenance(p));
+        if (a.pointer) L.push(c("gray", `        → 看: ${a.pointer}`));
+      }
+    }
+
+    // L1 假设层:每条假设必带证伪条件,提示消费者"先验证再采信"
+    L.push("");
+    L.push(c("bold", `L1 假设层 (${hyps.length}) — 待验证,先消解证伪条件再采信:`));
+    if (hyps.length === 0) {
+      L.push(c("gray", "  (无)"));
+    } else {
+      for (const a of hyps) {
+        L.push(`  ${sevTagOf(a)} ${c("bold", a.kind)}: ${a.detail}`);
+        if (a.falsifier) L.push(c("yellow", `        ⚖ 证伪条件: ${a.falsifier}`));
+        if (a.pointer) L.push(c("gray", `        → 验证看: ${a.pointer}`));
+      }
     }
   }
 

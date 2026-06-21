@@ -42,6 +42,8 @@ import type { ProjectRules } from "./config/rules.ts";
 import { clearPromptCache } from "./config/system-prompt.ts";
 import { getLogger, getMemoryMonitor, getSessionMetrics } from "./debug/index.ts";
 import { QueryEngine } from "./query/engine.ts";
+import { resetCacheDetection, clearCacheBreaks } from "./api/cache-detection.ts";
+import { resetCircuitBreaker } from "./query/auto-compact.ts";
 import { HookSystem } from "./hook/system.ts";
 import {
   SDKQueryEngine,
@@ -381,12 +383,25 @@ export class App {
         if (todos.length === 0) return null;
         return { todos, writeVersion: todoTool.getWriteVersion() };
       },
+      getHypothesisLedger: () => {
+        // 环节③：把假设登记表暴露给 queryLoop，用于矛盾中断（机制2）+ 交付门禁（机制3）。
+        // 登记表实例由 hypothesis_register 工具持有（与 TodoWriteTool 同构）。
+        const regTool = this.toolRegistry.get("hypothesis_register") as
+          | import("./tool/hypothesis.ts").HypothesisRegisterTool
+          | undefined;
+        return regTool?.getLedger() ?? null;
+      },
     });
 
     // P0-1：把子代理 usage 归集 sink 注入到 SubAgentTool / CustomAgentTool。
     // 子代理执行完毕后按其实际使用的 model/provider 回写主会话 SessionState，
     // 否则子代理烧的 token/费用完全不计入总费用、costLimit 守卫对子代理失效。
     this.wireSubAgentUsageSink();
+
+    // 根因修复：把 HookSystem 回填到 spawn-agent 类工具。这些工具在 cli.ts 注册时
+    // HookSystem 尚未创建（构造时 hookSystem=undefined），导致子代理/workflow 的
+    // 工具级 hook 与 Subagent span 在生产中从未触发。HookSystem 创建后经 setter 接通。
+    this.wireToolHookSystem();
 
     // EST-4：注入工具定义的真实 schema token 数，替代 ContextManager 内 toolCount×80 粗估，
     // 避免 schema 大/工具多时低估上下文占用、compact 触发过晚。
@@ -419,6 +434,18 @@ export class App {
       const maybe = tool as { setUsageSink?: (s: typeof sink) => void };
       if (typeof maybe.setUsageSink === "function") {
         maybe.setUsageSink(sink);
+      }
+    }
+  }
+
+  /** 注入 HookSystem 到 spawn-agent 类工具（根因修复）。遍历工具注册表，给所有带
+   *  setHookSystem 的工具（SubAgentTool / WorkflowTool）回填 hookSystem，使其内部 spawn 的
+   *  子代理能触发 Subagent 生命周期 hook 与工具级 execute_tool span。 */
+  private wireToolHookSystem(): void {
+    for (const tool of this.toolRegistry.all()) {
+      const maybe = tool as { setHookSystem?: (h: HookSystem) => void };
+      if (typeof maybe.setHookSystem === "function") {
+        maybe.setHookSystem(this.hookSystem);
       }
     }
   }
@@ -543,6 +570,14 @@ export class App {
     todoTool?.reset?.();
   }
 
+  /** /clear 时重置假设登记表（环节③） */
+  private resetHypothesisLedger(): void {
+    const regTool = this.toolRegistry.get("hypothesis_register") as
+      | import("./tool/hypothesis.ts").HypothesisRegisterTool
+      | undefined;
+    regTool?.getLedger()?.reset();
+  }
+
   /**
    * /clear 时清理 registry 中的非运行态任务条目。
    * getConversationClearedPatch 只把 UI 快照 tasks 置空，但全局 task registry 的 Map
@@ -617,7 +652,13 @@ export class App {
         this.quotaManager?.resetAlertLevel();
         this.fallback.reset();
         this.resetTodoTool();
+        this.resetHypothesisLedger();
         this.clearInactiveBackgroundTasks();
+        // 缓存检测状态重置：旧基线对新会话无效，不清会产生虚假中断检测
+        resetCacheDetection();
+        clearCacheBreaks();
+        // 压缩熔断器重置：旧会话的失败记录不应阻止新会话的合理压缩
+        resetCircuitBreaker();
         resetSyncState();
         updateState(getConversationClearedPatch());
         break;
@@ -2210,8 +2251,16 @@ export class App {
     // 每轮结束时读取最新状态：warning/exceeded 用 sticky 状态消息显示，回到 ok 则清除。
     const syncRateLimitStatus = async (): Promise<void> => {
       try {
-        const { getCurrentRateLimitStatus, formatRateLimitWarning } = await import("./api/rate-limit.ts");
-        const status = getCurrentRateLimitStatus();
+        const { getCurrentRateLimitStatus, formatRateLimitWarning, resetRateLimitStatus } = await import("./api/rate-limit.ts");
+        let status = getCurrentRateLimitStatus();
+        // 陈旧警告自清：配额重置时间（resetsAt）已过 → 旧的 warning/exceeded 已失效
+        // （服务端配额窗口已滚动），强制重置回 ok，避免限流提示一直 sticky 误导用户。
+        // 这是 resetRateLimitStatus 的唯一合理调用场景：不能无脑在每次成功后重置
+        // （否则会掩盖真实的"接近配额"警告），只在窗口确实过期时清。
+        if (status.status !== "ok" && status.resetsAt && Date.now() > status.resetsAt) {
+          resetRateLimitStatus();
+          status = getCurrentRateLimitStatus();
+        }
         const warning = formatRateLimitWarning(status);
         if (warning) {
           // 用专属前缀字形与 transient 重试提示区分；sticky（不超时），配额回落到 ok 才清。
@@ -2826,7 +2875,13 @@ export class App {
             this.quotaManager?.resetAlertLevel();
             this.fallback.reset();
             this.resetTodoTool();
+            this.resetHypothesisLedger();
             this.clearInactiveBackgroundTasks();
+            // 缓存检测状态重置：旧基线对新会话无效，不清会产生虚假中断检测
+            resetCacheDetection();
+            clearCacheBreaks();
+            // 压缩熔断器重置：旧会话的失败记录不应阻止新会话的合理压缩
+            resetCircuitBreaker();
             lastSyncedCount = 0;
             historyIdCounter = 0;
             activeStatusMessages.clear();

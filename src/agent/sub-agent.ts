@@ -227,11 +227,18 @@ export class SubAgent {
     }
 
     let result: SubAgentResult;
+    // 稳定 agentId：贯穿 start → stop，让遥测能把一个子代理的 start/stop 配对成同一 span。
+    const agentId = `subagent-${task.type}-${taskId}`;
+    const startedAt = Date.now();
     try {
-      // SubagentStart hook
+      // SubagentStart hook（带预期 model/provider，供遥测按 model 分类）
+      const expectedModel = task.model
+        ?? (this.registry ? this.registry.getModelForSubAgent(task.type) : this.model);
       this.hookSystem?.fireSubagentStartEvent(
-        `subagent-${task.type}-${Date.now()}`,
+        agentId,
         task.type,
+        undefined,
+        { model: expectedModel },
       ).catch(err => log.error("HOOK", `subagent_start hook 失败: ${err.message}`));
 
       // 尝试 spawn 模式（独立进程，避免 V8 OOM）
@@ -278,9 +285,21 @@ export class SubAgent {
         toolUseCount: 0,
       };
     } finally {
-      // subagent_stop hook（非阻塞）
+      // subagent_stop hook（非阻塞）。带子代理实际 model/provider/usage/turns，
+      // 供 TelemetryHookProbe 创建 invoke_agent 子 span 并按 model 单独计费。
+      // result 在 try/catch 任一分支都已赋值（catch 兜底构造），此处可安全读取。
+      const r = result!;
       this.hookSystem?.fireSubagentStopEvent({
+        agent_id: agentId,
+        agent_type: task.type,
         toolName: `subagent:${task.type}`,
+        success: r?.success,
+        model: r?.model,
+        provider: r?.provider,
+        turns: r?.turns,
+        tool_use_count: r?.toolUseCount,
+        usage: r?.usage,
+        duration_ms: Date.now() - startedAt,
       }).catch(err => log.error("HOOK", `subagent_stop hook 失败: ${err.message}`));
     }
     return result;
@@ -596,23 +615,60 @@ export class SubAgent {
     tools: ToolRegistry,
     signal?: AbortSignal,
   ): Promise<{ content: string; is_error: boolean }> {
+    const log = getLogger();
     const tool = tools.get(name);
 
     if (!tool) {
       return { content: `工具 "${name}" 未找到`, is_error: true };
     }
 
+    // pre_tool_use hook（spawn 路径同样接入 hook 链，与进程内 / 主循环对齐）。
+    let effectiveInput = input;
+    if (this.hookSystem) {
+      try {
+        const pre = await this.hookSystem.firePreToolUseEvent(name, input, undefined);
+        if (pre.finalOutput?.isBlockingDecision()) {
+          const reason = pre.finalOutput.getEffectiveReason();
+          log.info("SUBAGENT:HOOK", `工具 ${name} 被 hook 阻止: ${reason}`);
+          return { content: `Hook 阻止执行: ${reason}`, is_error: true };
+        }
+        if (pre.finalOutput && "getModifiedToolInput" in pre.finalOutput) {
+          const modified = (pre.finalOutput as any).getModifiedToolInput?.();
+          if (modified) effectiveInput = modified as Record<string, unknown>;
+        }
+      } catch (err: any) {
+        log.error("SUBAGENT:HOOK", `pre_tool_use hook 失败: ${err.message}`);
+      }
+    }
+
+    const startTime = Date.now();
     try {
       // zod 运行时校验：用注入 _agentId 之前的原始 input 校验
-      const validation = validateToolInput(tool, input);
+      const validation = validateToolInput(tool, effectiveInput);
       if (!validation.ok) {
         return { content: validation.message, is_error: true };
       }
       // 注入 _agentId 标记，防止子代理调用 enter_plan_mode 形成套娃
       const result = await tool.execute({ ...(validation.data as Record<string, unknown>), _agentId: "sub-agent" }, signal);
+      const elapsed = Date.now() - startTime;
       const truncated = ContextManager.truncateToolOutput(result.output);
+      // post_tool_use hook（驱动 execute_tool span）
+      if (this.hookSystem) {
+        this.hookSystem.firePostToolUseEvent(
+          name,
+          effectiveInput,
+          { output: truncated, isError: result.isError ?? false },
+          result.isError ?? false,
+          undefined,
+          { duration_ms: elapsed },
+        ).catch((e: any) => log.error("SUBAGENT:HOOK", `post_tool_use hook 失败: ${e.message}`));
+      }
       return { content: truncated, is_error: result.isError ?? false };
     } catch (err: any) {
+      if (this.hookSystem) {
+        this.hookSystem.firePostToolUseFailureEvent(name, effectiveInput, err.message, undefined)
+          .catch((e: any) => log.error("SUBAGENT:HOOK", `post_tool_use_failure hook 失败: ${e.message}`));
+      }
       return { content: `工具执行异常: ${err.message}`, is_error: true };
     }
   }
@@ -709,6 +765,7 @@ export class SubAgent {
         signal: mergedSignal,
         loopDetector,
         sendParamsExtra,
+        hookSystem: this.hookSystem,
         onBeforeTurn: (turn) => {
           // 消费 SendMessage 注入的消息（从第 2 轮开始检查）
           if (taskId && turn > 1) {
@@ -876,6 +933,7 @@ export class SubAgent {
         maxTurns,
         signal: mergedSignal,
         loopDetector,
+        hookSystem: this.hookSystem,
         onTurnEnd: (info) => {
           lastTextOutput = info.textOutput || lastTextOutput;
           toolUseCount += info.tools.length;

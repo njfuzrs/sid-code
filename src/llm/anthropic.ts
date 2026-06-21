@@ -286,6 +286,8 @@ export class AnthropicProvider implements Provider {
     } catch (err: any) {
       const log = getLogger();
       log.error("LLM:ANTHROPIC", `请求异常`, { error: err.message, stack: err.stack });
+      // 接入审计日志:连接/流式异常(含超时中断、ECONNRESET)是会话 hang/中断的关键信号。
+      log.warn("AUDIT:API", `✗ Anthropic 请求异常 model=${this._model} err=${(err?.message ?? String(err)).slice(0, 200)}`);
       yield {
         type: "error",
         error: { message: err.message || String(err) },

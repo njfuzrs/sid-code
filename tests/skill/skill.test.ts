@@ -211,3 +211,80 @@ describe("SkillTool", () => {
     expect(writeTool.readOnly()).toBe(false);
   });
 });
+
+describe("SkillTool - delegate 资源注入（Bug 2 修复）", () => {
+  let skillDir: string;
+
+  beforeEach(() => {
+    // 构造一个带 references/scripts 的临时 skill 目录
+    skillDir = join(tmpdir(), `skilltool-res-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(join(skillDir, "references"), { recursive: true });
+    mkdirSync(join(skillDir, "scripts"), { recursive: true });
+    writeFileSync(join(skillDir, "SKILL.md"), "# t\n正文");
+    writeFileSync(join(skillDir, "references", "output-template.md"), "模板");
+    writeFileSync(join(skillDir, "scripts", "parse.ts"), "// script");
+  });
+
+  afterEach(() => {
+    rmSync(skillDir, { recursive: true, force: true });
+  });
+
+  test("buildResourceHint 注入绝对目录 + 资源树 + 绝对路径读取规则", async () => {
+    const skill = {
+      name: "code-review",
+      description: "审查",
+      prompt: "正文",
+      mode: "delegate" as const,
+      source: "builtin" as const,
+      filePath: join(skillDir, "SKILL.md"),
+      skillRoot: skillDir,
+    };
+    const tool = new SkillTool(skill, {} as any, {} as any);
+    const hint = await (tool as any).buildResourceHint();
+
+    // 注入了 skill 的绝对目录路径
+    expect(hint).toContain(skillDir);
+    // 列出了资源文件
+    expect(hint).toContain("output-template.md");
+    expect(hint).toContain("parse.ts");
+    // 强制绝对路径读取规则，绕开 process.cwd()=项目目录
+    expect(hint).toContain("绝对路径");
+    expect(hint).toContain("切勿");
+  });
+
+  test("无资源目录的 skill 返回空串（不污染 prompt）", async () => {
+    const bareDir = join(tmpdir(), `skilltool-bare-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(bareDir, { recursive: true });
+    writeFileSync(join(bareDir, "SKILL.md"), "# bare\n正文");
+    try {
+      const skill = {
+        name: "bare",
+        description: "无资源",
+        prompt: "正文",
+        mode: "delegate" as const,
+        source: "builtin" as const,
+        filePath: join(bareDir, "SKILL.md"),
+        skillRoot: bareDir,
+      };
+      const tool = new SkillTool(skill, {} as any, {} as any);
+      const hint = await (tool as any).buildResourceHint();
+      expect(hint).toBe("");
+    } finally {
+      rmSync(bareDir, { recursive: true, force: true });
+    }
+  });
+
+  test("filePath 缺失时降级为空串，不抛错", async () => {
+    const skill = {
+      name: "nofile",
+      description: "无路径",
+      prompt: "正文",
+      mode: "delegate" as const,
+      source: "mcp" as const,
+      filePath: "",
+    };
+    const tool = new SkillTool(skill, {} as any, {} as any);
+    const hint = await (tool as any).buildResourceHint();
+    expect(hint).toBe("");
+  });
+});

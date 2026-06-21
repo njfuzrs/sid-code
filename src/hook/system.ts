@@ -259,8 +259,9 @@ export class HookSystem {
     agentId: string,
     agentType: string,
     parentSessionId?: string,
+    extra?: { model?: string; provider?: string },
   ): Promise<AggregatedHookResult> {
-    return this.eventHandler.fireSubagentStartEvent(agentId, agentType, parentSessionId);
+    return this.eventHandler.fireSubagentStartEvent(agentId, agentType, parentSessionId, extra);
   }
 
   async fireSubagentStopEvent(details?: Record<string, unknown>): Promise<AggregatedHookResult> {
