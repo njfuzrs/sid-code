@@ -129,7 +129,8 @@ export async function failWorkflowTask(taskId: string, error: string): Promise<v
       toolUseId: task.toolUseId,
       outputFile: task.outputFile,
       status: "failed",
-      summary: `Workflow "${task.workflowName}" 执行失败: ${error.slice(0, 80)}`,
+      summary: `Workflow "${task.workflowName}" 执行失败`,
+      error,
     }),
   );
 }

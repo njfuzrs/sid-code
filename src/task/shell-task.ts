@@ -120,7 +120,8 @@ export function spawnShellTask(opts: {
         toolUseId: opts.toolUseId,
         outputFile: output.filePath,
         status: "failed",
-        summary: `命令启动失败: ${err.message}`,
+        summary: `命令启动失败`,
+        error: err.message,
       }),
     );
   });

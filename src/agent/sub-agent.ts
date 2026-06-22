@@ -802,7 +802,7 @@ export class SubAgent {
               log.info("SUBAGENT", `[${task.type}] 收到主代理消息: ${msg.slice(0, 100)}`);
               ctxMgr.addMessage({
                 role: "user",
-                content: [{ type: "text", text: `[主代理消息] ${msg}` }],
+                content: [{ type: "text", text: `<system-reminder>\n[主代理消息] ${msg}\n</system-reminder>` }],
               });
             }
           }

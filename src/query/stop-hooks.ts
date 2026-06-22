@@ -66,7 +66,7 @@ export async function* handleStopHooks(
       log.info("STOP_HOOKS", `Stop Hook blocking error: ${reason}`);
 
       // 注入错误消息到对话
-      const errorMsg = `[Stop Hook 检查失败]\n${reason}\n\n请修复上述问题。`;
+      const errorMsg = `<system-reminder>\n[Stop Hook 检查失败]\n${reason}\n\n请修复上述问题。\n</system-reminder>`;
       ctxMgr.addMessage({
         role: "user",
         content: [{ type: "text", text: errorMsg }],
