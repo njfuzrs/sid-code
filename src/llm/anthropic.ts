@@ -403,8 +403,9 @@ export class AnthropicProvider implements Provider {
         input: block.input || {},
       };
     } else if (block.type === "thinking") {
-      // SDK v0.78 Extended Thinking：thinking 块作为文本透传
-      return { type: "text", text: block.thinking || "" };
+      // SDK v0.78 Extended Thinking：保留结构化 ThinkingBlock 类型，
+      // 由 history-adapter 正确转为 ThinkingMessage 渲染（而非混入 AssistantMessage）。
+      return { type: "thinking", thinking: block.thinking || "" };
     }
     // 未知块类型（server_tool_use、redacted_thinking 等）静默忽略
     const log = getLogger();

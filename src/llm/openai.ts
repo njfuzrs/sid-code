@@ -22,6 +22,27 @@ import { guardOutgoingMessages } from "./protocol-sentinel.ts";
 import { estimateTextTokens } from "../context/token.ts";
 import { sanitizeStrings } from "./sanitize-unicode.ts";
 
+/**
+ * 从纯文本中提取内联 <think>...</think> 标签为独立的 thinking 内容。
+ * 部分 OpenAI 兼容模型（GPT-5.4、QwQ 等）以内联标签而非结构化字段返回思考过程。
+ * 若不提取，标签会作为普通文本泄漏到 TUI。
+ *
+ * 返回 { thinking, text }：thinking 为提取的思考内容（可能为空），
+ * text 为剥离 think 标签后的剩余正文（可能为空）。
+ */
+function extractInlineThinkTags(content: string): { thinking: string; text: string } {
+  // 匹配 <think>...</think>（支持多行，贪婪匹配单个最外层块）
+  // 通常 think 标签出现在文本开头，且只有一个块
+  const thinkRegex = /^[\s]*<think>([\s\S]*?)<\/think>/;
+  const match = content.match(thinkRegex);
+  if (!match) {
+    return { thinking: "", text: content };
+  }
+  const thinking = match[1]?.trim() ?? "";
+  const text = content.slice(match[0].length).trim();
+  return { thinking, text };
+}
+
 /** 工具调用追踪状态（用于 SSE 流中多工具并行解析） */
 interface ToolCallState {
   id: string;
@@ -664,7 +685,20 @@ export class OpenAIProvider implements Provider {
     }
 
     if (typeof msg.content === "string" && msg.content.length > 0) {
-      content.push({ type: "text", text: msg.content });
+      // 部分 OpenAI 兼容模型（GPT-5.4 等）以内联 <think>...</think> 标签返回思考过程，
+      // 而非通过结构化 reasoning_content 字段。若不提取，标签会作为普通文本泄漏到 TUI。
+      // 仅在尚未从 reasoning_content 提取到思考块时才尝试（避免重复）。
+      if (reasoningContent.length === 0) {
+        const extracted = extractInlineThinkTags(msg.content);
+        if (extracted.thinking) {
+          content.push({ type: "thinking", thinking: extracted.thinking });
+        }
+        if (extracted.text) {
+          content.push({ type: "text", text: extracted.text });
+        }
+      } else {
+        content.push({ type: "text", text: msg.content });
+      }
     }
     if (Array.isArray(msg.tool_calls)) {
       for (const tc of msg.tool_calls) {

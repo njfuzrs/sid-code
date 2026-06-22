@@ -9,6 +9,7 @@
 import type {
   StreamEvent,
   AccumulatedResponse,
+  ContentBlock,
 } from "../llm/types.ts";
 import { accumulateUsage } from "../llm/types.ts";
 import { getLogger } from "../debug/index.ts";
@@ -260,6 +261,33 @@ export async function processStream(
   // DeepSeek reasoning_content: 存到 _meta 供 convertMessages 回传
   if (accumulatedReasoning) {
     response._meta = { ...response._meta, reasoning_content: accumulatedReasoning };
+  }
+
+  // 内联 <think> 标签后处理：部分 OpenAI 兼容模型（GPT-5.4、QwQ 等）不通过
+  // reasoning_content 字段、也不通过 _raw_block 标记思考块，而是直接在文本中
+  // 内联 <think>...</think> 标签。流式累积完成后统一检测并拆分。
+  // 仅在没有已识别的 thinking 块时处理（避免与 DeepSeek reasoning_content 重复）。
+  if (thinkingBlocks.length === 0) {
+    for (let i = 0; i < response.content.length; i++) {
+      const block = response.content[i];
+      if (block.type !== "text" || !block.text.trimStart().startsWith("<think>")) continue;
+      const thinkMatch = block.text.match(/^[\s]*<think>([\s\S]*?)<\/think>/);
+      if (!thinkMatch) continue;
+      const thinkText = thinkMatch[1]?.trim() ?? "";
+      const remaining = block.text.slice(thinkMatch[0].length).trim();
+      // 拆分：thinking 块插入当前位置，text 块跟在后面
+      const newBlocks: ContentBlock[] = [];
+      if (thinkText) {
+        newBlocks.push({ type: "thinking", thinking: thinkText });
+      }
+      if (remaining) {
+        newBlocks.push({ type: "text", text: remaining });
+      }
+      if (newBlocks.length > 0) {
+        response.content.splice(i, 1, ...newBlocks);
+      }
+      break; // 通常只有一个 think 块在文本开头
+    }
   }
 
   // 思考块已原地转型为 ThinkingBlock 保留在 content 中，不再需要过滤移除

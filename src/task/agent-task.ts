@@ -129,7 +129,7 @@ export async function failAgentTask(taskId: string, error: string): Promise<void
       toolUseId: task.toolUseId,
       outputFile: task.outputFile,
       status: "failed",
-      summary: `Agent "${task.description}" 执行失败: ${error.slice(0, 200)}`,
+      summary: `Agent "${task.description}" 执行失败: ${error.length > 200 ? error.slice(0, 200) + "…[截断]" : error}`,
     }),
   );
 }

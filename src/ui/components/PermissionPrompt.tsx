@@ -109,7 +109,7 @@ export function PermissionPrompt({ request }: { request: PermissionPromptRequest
         {detail && (
           <Box>
             <Text color={theme.text.secondary}>{"参数  "}</Text>
-            <Text color={isDangerous ? theme.status.error : theme.text.secondary} dimColor={!isDangerous}>{String(detail).slice(0, 120)}</Text>
+            <Text color={isDangerous ? theme.status.error : theme.text.secondary} dimColor={!isDangerous}>{String(detail).length > 120 ? String(detail).slice(0, 120) + "…" : String(detail)}</Text>
           </Box>
         )}
         {request.reason && (

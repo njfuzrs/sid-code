@@ -149,6 +149,10 @@ export function killShellTask(taskId: string): void {
   }
   activeProcesses.delete(taskId);
 
+  const task = getTask(taskId) as LocalShellTaskState | undefined;
+  // 已终态：仅 kill 进程（上面已做），不重复改状态、不重复发通知（幂等）。
+  if (!task || isTerminalStatus(task.status)) return;
+
   updateTask<LocalShellTaskState>(taskId, (t) => {
     if (isTerminalStatus(t.status)) return t;
     return {
@@ -159,6 +163,20 @@ export function killShellTask(taskId: string): void {
       notified: true,
     };
   });
+
+  // 补发 killed 通知，与 killAgentTask / killWorkflowTask 对称。
+  // 修复缺口：killShellTask 此前设 notified=true 却从不入队通知，
+  // 导致被 kill 的 shell 任务被 evictTerminalTasks 静默驱逐，主代理
+  // 既看不到面板条目也收不到任何通知，任务无声消失。
+  enqueuePendingNotification(
+    formatNotification({
+      taskId,
+      toolUseId: task.toolUseId,
+      outputFile: task.outputFile,
+      status: "killed",
+      summary: `命令 "${(task.command ?? task.description).slice(0, 60)}" 已被终止`,
+    }),
+  );
 }
 
 // --- 停滞检测 ---
@@ -195,12 +213,15 @@ function startStallWatchdog(taskId: string): void {
       if (Date.now() - lastGrowth < STALL_THRESHOLD_MS) return;
 
       if (tail && PROMPT_PATTERNS.some(p => p.test(tail))) {
+        const tailSnippet = tail.length > 200
+          ? `…${tail.slice(-200)}`
+          : tail;
         enqueuePendingNotification(
           formatNotification({
             taskId,
             outputFile: task.outputFile,
             status: "running",
-            summary: `命令似乎在等待用户输入，末尾：${tail.slice(-200)}`,
+            summary: `命令似乎在等待用户输入，末尾：${tailSnippet}`,
           }),
           "next",
         );
