@@ -15,7 +15,7 @@ import { writeFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { execFileSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { resolveExecutable } from "../bootstrap/resolve-executable.ts";
 
 const SERVICE_LABEL = "cc.ruishan.sid-code.daemon";
 
@@ -31,15 +31,12 @@ function bunPath(): string {
   return process.execPath; // 当前 bun 解释器
 }
 
-/** 定位 bootstrap.ts 绝对路径 */
-function bootstrapPath(): string {
-  const __dirname = dirname(fileURLToPath(import.meta.url));
-  return join(__dirname, "..", "entrypoints", "bootstrap.ts");
-}
-
 /** 拼 daemon start 的参数（注入到服务命令） */
 function daemonArgs(opts: ServiceInstallOptions): string[] {
-  const args = ["run", bootstrapPath(), "daemon", "start"];
+  const { baseArgs } = resolveExecutable();
+  // 编译二进制：baseArgs 为空；开发模式：baseArgs=["run", "<bootstrap.ts>"]
+  // plist/systemd 的 ProgramArguments 第一项由 bunPath()（=process.execPath）提供
+  const args = [...baseArgs, "daemon", "start"];
   if (opts.webhook) args.push("--webhook");
   if (opts.interval) args.push("--interval", String(opts.interval));
   if (opts.maxConcurrent) args.push("--max-concurrent", String(opts.maxConcurrent));

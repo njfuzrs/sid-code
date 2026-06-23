@@ -41,7 +41,18 @@ import { drainAgentMessages } from "./message-queue.ts";
 import { getAgentSystemPrompt, resolveAgent, BUILTIN_AGENTS } from "./agent-definition.ts";
 import { platform, homedir } from "os";
 import { cwd } from "process";
+import { dirname, join } from "path";
+import { fileURLToPath } from "url";
+import { existsSync } from "fs";
 import { withAgentCwd } from "../bootstrap/cwd-context.ts";
+
+/** sid-code 源码根目录（src/）的绝对路径，用于 spawn 子进程时定位 headless.ts。
+ *  编译二进制中 import.meta.url 指向 /$bunfs/root/...（虚拟路径），此时 headless.ts
+ *  不存在于磁盘——shouldUseSpawn 检测到后自动回退进程内模式。 */
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const HEADLESS_ENTRY = join(__dirname, "..", "entrypoints", "headless.ts");
+/** headless 入口是否存在于磁盘（编译二进制中为 false） */
+const HEADLESS_AVAILABLE = existsSync(HEADLESS_ENTRY);
 
 /**
  * 子代理类型（已废弃硬编码枚举，改为开放字符串）。
@@ -359,6 +370,8 @@ export class SubAgent {
   private shouldUseSpawn(): boolean {
     if (process.env.SIDCODE_NO_SPAWN === "1") return false;
     if (!this.spawnConfig) return false;
+    // headless.ts 必须存在于磁盘（编译二进制中为虚拟路径，不可 spawn）
+    if (!HEADLESS_AVAILABLE) return false;
     // 需要 Bun.spawn 可用（Bun 运行时）
     return typeof Bun !== "undefined" && typeof Bun.spawn === "function";
   }
@@ -472,8 +485,8 @@ export class SubAgent {
     const startTime = Date.now();
     const timeout = initMsg.timeout;
 
-    // 构建启动参数
-    const spawnArgs = ["run", "src/entrypoints/headless.ts"];
+    // 构建启动参数——使用绝对路径，避免用户项目 cwd 下找不到 headless.ts
+    const spawnArgs = ["run", HEADLESS_ENTRY];
     // 容器环境设堆限制
     const maxOldSpace = process.env.SIDCODE_MAX_OLD_SPACE_SIZE;
     if (maxOldSpace) {
@@ -482,7 +495,7 @@ export class SubAgent {
 
     log.info("SUBAGENT", `spawn 子进程: bun ${spawnArgs.join(" ")}`);
 
-    // Spawn 子进程
+    // Spawn 子进程（cwd 保持用户项目目录，供子代理文件操作工具正确解析相对路径）
     const subprocess = Bun.spawn(["bun", ...spawnArgs], {
       stdin: "pipe",
       stdout: "pipe",

@@ -21,6 +21,7 @@ import { spawn } from "node:child_process";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { resolveExecutable } from "../bootstrap/resolve-executable.ts";
 
 interface ReviewOptions {
   diffPath?: string;
@@ -124,18 +125,16 @@ ${diffText}
 }
 
 async function spawnSidCode(prompt: string, opts: ReviewOptions): Promise<{ exitCode: number; stdout: string; stderr: string; timedOut: boolean }> {
-  // 找 bootstrap.ts 的绝对路径
-  const __dirname = dirname(fileURLToPath(import.meta.url));
-  const bootstrapPath = join(__dirname, "..", "entrypoints", "bootstrap.ts");
+  const { cmd, baseArgs } = resolveExecutable();
 
-  const cmdArgs: string[] = ["run", bootstrapPath, "-p", "--output-format", "json"];
+  const cmdArgs: string[] = [...baseArgs, "-p", "--output-format", "json"];
   if (opts.model) {
     cmdArgs.push("--model", opts.model);
   }
   cmdArgs.push(prompt);
 
   return new Promise((resolve) => {
-    const child = spawn("bun", cmdArgs, {
+    const child = spawn(cmd, cmdArgs, {
       cwd: process.cwd(),
       env: { ...process.env, FORCE_COLOR: "0", NO_COLOR: "1" },
       stdio: ["ignore", "pipe", "pipe"],

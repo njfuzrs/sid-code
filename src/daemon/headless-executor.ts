@@ -19,10 +19,9 @@
  */
 
 import { spawn } from "node:child_process";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { HeadlessJob, WorkerResult, StorageAdapter } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
+import { resolveExecutable } from "../bootstrap/resolve-executable.ts";
 
 /** 默认超时：30 分钟（对齐 fork 子代理上限） */
 const DEFAULT_TIMEOUT_MS = 30 * 60_000;
@@ -135,10 +134,10 @@ export class HeadlessExecutor {
    * 复用 command/review.ts 的成熟 spawn 模式：定位 bootstrap.ts、SIGTERM→SIGKILL 超时。
    */
   private spawnSidCode(job: HeadlessJob): Promise<HeadlessRunResult> {
-    const bootstrapPath = resolveBootstrapPath();
+    const { cmd, baseArgs } = resolveExecutable();
     const timeoutMs = job.timeoutMs > 0 ? job.timeoutMs : DEFAULT_TIMEOUT_MS;
 
-    const cmdArgs: string[] = ["run", bootstrapPath, "-p", "--output-format", "json"];
+    const cmdArgs: string[] = [...baseArgs, "-p", "--output-format", "json"];
     if (job.model) {
       cmdArgs.push("--model", job.model);
     }
@@ -153,7 +152,7 @@ export class HeadlessExecutor {
 
     const start = Date.now();
     return new Promise<HeadlessRunResult>((resolve) => {
-      const child = spawn("bun", cmdArgs, {
+      const child = spawn(cmd, cmdArgs, {
         cwd: job.workspaceDir,
         env: {
           ...process.env,
@@ -204,12 +203,6 @@ export class HeadlessExecutor {
       });
     });
   }
-}
-
-/** 定位 bootstrap.ts 绝对路径（与 review.ts 一致：相对本文件 ../entrypoints/bootstrap.ts） */
-function resolveBootstrapPath(): string {
-  const __dirname = dirname(fileURLToPath(import.meta.url));
-  return join(__dirname, "..", "entrypoints", "bootstrap.ts");
 }
 
 /**
