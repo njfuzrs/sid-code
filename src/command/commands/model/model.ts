@@ -5,9 +5,12 @@ import type { CommandContext } from "../../types.ts";
  * /model 命令实现（按需加载）
  *
  * 用法:
- *   /model            - 无可用模型列表时显示当前模型；否则打开选择对话框
- *   /model list       - 显示所有可用模型
- *   /model <name>     - 切换到指定模型
+ *   /model                   - 无可用模型列表时显示当前模型；否则打开选择对话框
+ *   /model list              - 显示所有可用模型
+ *   /model discover          - 自动发现模型参数（干跑）
+ *   /model discover --apply  - 发现并写入 settings.json
+ *   /model discover --force  - 强制覆盖已有参数
+ *   /model <name>            - 切换到指定模型
  */
 const mod: LocalCommandModule = {
   async call(args: string, ctx: CommandContext): Promise<LocalCommandResult> {
@@ -15,6 +18,14 @@ const mod: LocalCommandModule = {
 
     if (trimmed === "list" || trimmed === "ls") {
       return { type: "text", value: buildAvailableModels(ctx) };
+    }
+
+    // /model discover [--apply|-a] [--force|-f]
+    if (trimmed.startsWith("discover") || trimmed.startsWith("disc")) {
+      const { discoverModels } = await import("./discover.ts");
+      const apply = trimmed.includes("--apply") || trimmed.includes("-a");
+      const force = trimmed.includes("--force") || trimmed.includes("-f");
+      return discoverModels(ctx, { apply, force });
     }
 
     if (trimmed) {
