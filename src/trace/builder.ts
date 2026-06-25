@@ -170,6 +170,14 @@ export interface TraceMetadata {
     error_name?: string;
   };
 
+  /** §3.6：实时阶段状态——排查时一眼看出"卡在哪个阶段" */
+  last_known_state?: {
+    phase: "before_model" | "streaming" | "post_stream" | "tool_exec" | "done";
+    turn: number;
+    model: string;
+    updated_at: string;
+  };
+
   // ── Harness 扩展（可选，当前不填） ──
   harness?: HarnessTraceMetadata;
 }

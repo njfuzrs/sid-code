@@ -179,6 +179,29 @@ export class TraceWriter {
   }
 
   /**
+   * 追加一行到 errors.jsonl
+   * 任何被 engine/queryLoop/fallback catch 的异常都应落盘于此
+   */
+  appendErrorsJsonl(line: string): void {
+    if (!this.ensureDir()) return;
+    try {
+      const filePath = join(this.sessionDir, "errors.jsonl");
+      appendFileSync(filePath, line.endsWith("\n") ? line : line + "\n");
+    } catch (err) {
+      getLogger().warn("TRACE", `追加 errors.jsonl 失败: ${err}`);
+    }
+  }
+
+  /**
+   * 序列化并追加一行到 errors.jsonl
+   * @param entry - 错误事件数据
+   */
+  appendError(entry: object): void {
+    const line = JSON.stringify(entry);
+    this.appendErrorsJsonl(line);
+  }
+
+  /**
    * 写入/覆盖 messages.json — D3-1 崩溃验尸快照。
    *
    * 落实 CLAUDE.md 评测纪律不变量第 1 条「transcript 必落盘」到真实交互退出路径。

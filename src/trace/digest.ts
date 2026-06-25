@@ -681,6 +681,128 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     });
   }
 
+  // ── §3.7：异常路径诊断信号高亮（events.jsonl + errors.jsonl）──
+  const eventsPath = join(ref.dir, "events.jsonl");
+  const errorsPath = join(ref.dir, "errors.jsonl");
+  const events = readJsonl<{ event?: string; data?: Record<string, unknown> }>(eventsPath);
+  const errors = readJsonl<{ event?: string; data?: Record<string, unknown> }>(errorsPath);
+
+  // 检测未配对的 BeforeModel（有 BeforeModel 但无 AfterModel/AfterModelRaw/TurnError/ModelCallUnpaired）
+  const beforeModels = events.filter(e => e.event === "BeforeModel");
+  const afterEvents = events.filter(e =>
+    e.event === "AfterModel" || e.event === "AfterModelRaw" || e.event === "TurnError" || e.event === "ModelCallUnpaired",
+  );
+  const pairedIndices = new Set(afterEvents.map(e => (e.data as any)?.index ?? (e.data as any)?.turn));
+  const unpairedBefores = beforeModels.filter(b => !pairedIndices.has((b.data as any)?.index));
+  if (unpairedBefores.length > 0) {
+    anomalies.push({
+      layer: "L0",
+      severity: "high",
+      kind: "unpaired_before_model",
+      detail: `${unpairedBefores.length} 个 BeforeModel 在 events.jsonl 中无配对的 AfterModel/AfterModelRaw/TurnError`,
+      provenance: [{
+        sourceFile: eventsPath,
+        lineRef: `BeforeModel indices: ${unpairedBefores.map(b => (b.data as any)?.index).join(",")}`,
+        rawValue: `count=${unpairedBefores.length}`,
+        mtime: fileMtimeIso(eventsPath),
+      }],
+      pointer: `errors.jsonl（若存在）或全局 audit.log`,
+    });
+    anomalies.push({
+      layer: "L1",
+      severity: "high",
+      kind: "hypothesis_model_call_lost",
+      detail: `假设:模型调用发出后未正常返回（hang/崩溃但未被 catch）。`,
+      falsifier:
+        `若 errors.jsonl 有对应 index 的 Error 记录，则是"收到响应但处理崩溃"而非"请求 hang"。` +
+        `若 raw.jsonl 有对应的 request_sent 但无完整记录，确认请求已发出。`,
+    });
+  }
+
+  // 检测 TurnError 事件（queryLoop 内部崩溃）
+  const turnErrors = events.filter(e => e.event === "TurnError");
+  if (turnErrors.length > 0) {
+    for (const te of turnErrors) {
+      anomalies.push({
+        layer: "L0",
+        severity: "high",
+        kind: "turn_error_in_events",
+        detail: `TurnError: ${(te.data as any)?.error ?? "unknown"} (turn=${(te.data as any)?.turn})`,
+        provenance: [{
+          sourceFile: eventsPath,
+          lineRef: `event=TurnError turn=${(te.data as any)?.turn}`,
+          rawValue: truncate(String((te.data as any)?.error ?? ""), 200),
+          mtime: fileMtimeIso(eventsPath),
+        }],
+        pointer: `errors.jsonl（详细 stack）`,
+      });
+    }
+  }
+
+  // 检测 errors.jsonl 中的错误记录
+  if (errors.length > 0) {
+    anomalies.push({
+      layer: "L0",
+      severity: "high",
+      kind: "errors_jsonl_has_entries",
+      detail: `errors.jsonl 包含 ${errors.length} 条错误记录`,
+      provenance: [{
+        sourceFile: errorsPath,
+        lineRef: `${errors.length} entries`,
+        rawValue: errors.slice(0, 3).map(e => truncate(String((e.data as any)?.error ?? ""), 80)).join(" | "),
+        mtime: fileMtimeIso(errorsPath),
+      }],
+      pointer: errorsPath,
+    });
+  }
+
+  // 检测 SessionEnd 缺失（进程可能被强杀或 hang）
+  const hasSessionEnd = events.some(e => e.event === "SessionEnd");
+  if (!hasSessionEnd && events.length > 0) {
+    anomalies.push({
+      layer: "L0",
+      severity: "medium",
+      kind: "session_end_missing",
+      detail: `events.jsonl 有 ${events.length} 条事件但无 SessionEnd`,
+      provenance: [{
+        sourceFile: eventsPath,
+        lineRef: "无 SessionEnd 事件",
+        rawValue: `event_count=${events.length}`,
+        mtime: fileMtimeIso(eventsPath),
+      }],
+      pointer: `heartbeat.txt（看最后心跳时间）`,
+    });
+    anomalies.push({
+      layer: "L1",
+      severity: "medium",
+      kind: "hypothesis_process_killed",
+      detail: `假设:进程被强杀或 hang，未能正常触发 SessionEnd。`,
+      falsifier:
+        `若 heartbeat.txt 的最后时间戳与会话结束时间一致（正常退出只是 SessionEnd hook 漏触发），` +
+        `或进程仍存活（ps 查 PID），则推翻此假设。`,
+    });
+  }
+
+  // 检测 ModelCallUnpaired 事件（看门狗超时触发）
+  const unpairedEvents = events.filter(e => e.event === "ModelCallUnpaired");
+  if (unpairedEvents.length > 0) {
+    for (const ue of unpairedEvents) {
+      anomalies.push({
+        layer: "L0",
+        severity: "high",
+        kind: "model_call_unpaired_watchdog",
+        detail: `配对看门狗超时: index=${(ue.data as any)?.index} model=${(ue.data as any)?.model} elapsed=${(ue.data as any)?.elapsed_ms}ms`,
+        provenance: [{
+          sourceFile: eventsPath,
+          lineRef: `event=ModelCallUnpaired index=${(ue.data as any)?.index}`,
+          rawValue: (ue.data as any)?.hint ?? "",
+          mtime: fileMtimeIso(eventsPath),
+        }],
+        pointer: `raw_preview.jsonl（请求指标）+ audit.log`,
+      });
+    }
+  }
+
   // ── 该看哪个原始文件(指针) ──
   const pointers: Digest["pointers"] = [
     { label: "完整轨迹", path: join(ref.dir, "session.traj"), hint: "TAO 步骤 + history + metadata,SFT/回溯用" },
@@ -701,7 +823,14 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     pointers.push({
       label: "会话事件流",
       path: join(ref.dir, "events.jsonl"),
-      hint: "Hook 事件时间线(SessionStart/BeforeModel/PostToolUse…)",
+      hint: "Hook 事件时间线(SessionStart/BeforeModel/AfterModelRaw/TurnError/PostToolUse…)",
+    });
+  }
+  if (existsSync(join(ref.dir, "errors.jsonl"))) {
+    pointers.push({
+      label: "错误诊断",
+      path: join(ref.dir, "errors.jsonl"),
+      hint: "异常路径持久化记录(phase/index/error/stack),崩溃现场首选",
     });
   }
 

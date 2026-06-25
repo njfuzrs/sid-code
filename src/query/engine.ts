@@ -74,6 +74,8 @@ export interface QueryEngineDeps {
   getTodoState?: () => { todos: import("../tool/todo-write.ts").TodoItem[]; writeVersion: number } | null;
   /** 环节③：读取假设登记表实例（矛盾中断 + 交付门禁用） */
   getHypothesisLedger?: () => import("./hypothesis-ledger.ts").HypothesisLedger | null;
+  /** §3.1/§3.3：轨迹采集器（用于异常路径持久化 errors.jsonl + TurnError 事件） */
+  traceCollector?: import("../trace/collector.ts").TraceCollector;
 }
 
 export class QueryEngine {
@@ -293,6 +295,25 @@ export class QueryEngine {
       // 真异常：封装为 fatal_error 事件 yield（而非穿透），让上层收尾可达 + 展示具体原因。
       const e = err as Error;
       log.error("ENGINE", `queryLoop 异常，封装为 fatal_error: ${e?.message}`, { stack: e?.stack });
+
+      // §3.1 + §3.3：异常路径持久化——直接写入轨迹目录，不依赖全局 audit.log
+      // turn index 从 traceCollector 的 pairs 长度推断（pairs.length + 1 = 当前正在处理的 index）
+      const currentIndex = (this.deps.traceCollector?.getPairs().length ?? 0) + 1;
+      const stackLines = e?.stack?.split("\n").slice(0, 5).join("\n");
+      if (this.deps.traceCollector) {
+        this.deps.traceCollector.recordError({
+          phase: "engine",
+          index: currentIndex,
+          error: e?.message ?? String(err),
+          stack: stackLines,
+        });
+        this.deps.traceCollector.recordTurnError({
+          error: e?.message ?? String(err),
+          stack: stackLines,
+          turn: currentIndex,
+        });
+      }
+
       yield {
         kind: "fatal_error",
         message: e?.message ?? String(err),

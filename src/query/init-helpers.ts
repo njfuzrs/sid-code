@@ -9,13 +9,13 @@ import type { SessionState } from "../session/state.ts";
 import type { TokenMeter } from "../telemetry/metrics/token-meter.ts";
 import { getLogger, getSessionMetrics } from "../debug/index.ts";
 
-/** 初始化轨迹采集 */
+/** 初始化轨迹采集，返回 collector 实例（供 engine 异常路径持久化） */
 export async function initTraceCollector(
   config: Config,
   hookSystem: HookSystem,
-): Promise<void> {
+): Promise<import("../trace/collector.ts").TraceCollector | null> {
   const log = getLogger();
-  if (!config.trace?.enabled) return;
+  if (!config.trace?.enabled) return null;
 
   try {
     const { TraceCollector } = await import("../trace/collector.ts");
@@ -46,8 +46,10 @@ export async function initTraceCollector(
     );
     collector.registerHooks(hookSystem);
     log.info("TRACE", "轨迹采集已启用");
+    return collector;
   } catch (err: any) {
     log.warn("TRACE", `轨迹采集初始化失败: ${err.message}`);
+    return null;
   }
 }
 

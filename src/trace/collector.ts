@@ -11,7 +11,7 @@
 
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, unlinkSync, writeFileSync, readdirSync, statSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, unlinkSync, writeFileSync, readFileSync, readdirSync, statSync, rmSync } from "node:fs";
 import {
   HookEventName,
   type HookInput,
@@ -101,6 +101,14 @@ export class TraceCollector {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   /** 心跳文件路径 */
   private heartbeatPath: string = "";
+  /** §3.4：BeforeModel 配对看门狗（index → timer） */
+  private pendingModelCalls = new Map<number, ReturnType<typeof setTimeout>>();
+  /** 配对超时阈值（10 分钟） */
+  private readonly PAIRING_TIMEOUT_MS = 10 * 60 * 1000;
+  /** §3.8：audit.log 起始行号（SessionStart 时快照） */
+  private auditLogStartLine: number = 0;
+  /** §3.8：audit.log 文件路径（SessionStart 时快照） */
+  private auditLogPath: string = "";
 
   // ── Harness 编辑统计内部计数器 ──
   private harnessEditCount = 0;
@@ -300,6 +308,16 @@ export class TraceCollector {
         permission_mode: input.permission_mode,
       },
     });
+
+    // §3.8：快照 audit.log 起始行号（用于 SessionEnd 写 audit_range.json）
+    try {
+      const logPath = getLogger().getLogFilePath();
+      if (logPath && existsSync(logPath)) {
+        this.auditLogPath = logPath;
+        const content = readFileSync(logPath, "utf8");
+        this.auditLogStartLine = content.split("\n").length;
+      }
+    } catch { /* 静默：索引是辅助功能 */ }
   }
 
   // ─── BeforeModel ───
@@ -360,6 +378,14 @@ export class TraceCollector {
       data: { model: req.model, index, msg_count: rawMessages.length },
     });
 
+    // §3.6：更新 last_known_state → before_model
+    this.metadata.last_known_state = {
+      phase: "before_model",
+      turn: index,
+      model: req.model,
+      updated_at: input.timestamp,
+    };
+
     // §3.4（fdb47f30）：接入审计日志。原先 BeforeModel 只写 events.jsonl，audit.log
     // 拿不到——会话异常时（如 index 23 无响应）只能解析轨迹文件，无法从审计日志快速定位。
     // 用 INFO 级写入（writeToFile 写所有级别 → 进 audit.log 文件；fileOnly 下不刷屏）。
@@ -388,12 +414,59 @@ export class TraceCollector {
     } catch {
       // 静默失败：preview 不是关键路径
     }
+
+    // §3.5：raw.jsonl 预写请求侧——区分"请求没发"vs"发了但没收到响应"vs"收到但处理崩溃"
+    // 排查者看到 raw.jsonl 有 request_sent 但没有对应的完整记录，即可确认请求已发出。
+    try {
+      const totalTokensEst = estimateMessagesTokens(rawMessages);
+      this.writer.appendRawJsonl(JSON.stringify({
+        timestamp: input.timestamp,
+        index,
+        type: "request_sent",
+        model: req.model,
+        msg_count: rawMessages.length,
+        estimated_input_tokens: totalTokensEst,
+      }));
+    } catch {
+      // 静默失败：预写不是关键路径
+    }
+
+    // §3.4：启动配对看门狗——超时未收到 AfterModel/AfterModelRaw/TurnError 则写入 ModelCallUnpaired
+    const pairingTimer = setTimeout(() => {
+      try {
+        this.writer.appendEvent({
+          event: "ModelCallUnpaired",
+          session_id: this.metadata.session_id,
+          timestamp: new Date().toISOString(),
+          data: {
+            index,
+            model: req.model,
+            elapsed_ms: this.PAIRING_TIMEOUT_MS,
+            hint: "BeforeModel 发出后超时未收到 AfterModel/AfterModelRaw/TurnError，可能：1)请求hang 2)处理崩溃但未被catch",
+          },
+        });
+      } catch { /* 看门狗写入失败静默 */ }
+      this.pendingModelCalls.delete(index);
+    }, this.PAIRING_TIMEOUT_MS);
+    // unref 确保看门狗不阻止进程退出
+    if (pairingTimer && typeof pairingTimer === "object" && "unref" in pairingTimer) {
+      (pairingTimer as any).unref();
+    }
+    this.pendingModelCalls.set(index, pairingTimer);
   }
 
   // ─── AfterModel ───
 
   private async handleAfterModel(input: AfterModelInput): Promise<void> {
     if (!this.initialized || !this.currentPair) return;
+
+    // §3.4：清除配对看门狗（AfterModel 到达即证明请求已正常返回并处理）
+    const pairIndex = this.currentPair.index ?? this.pairs.length + 1;
+    const pairingTimer = this.pendingModelCalls.get(pairIndex);
+    if (pairingTimer) {
+      clearTimeout(pairingTimer);
+      this.pendingModelCalls.delete(pairIndex);
+    }
 
     const resp = input.llm_response;
     const usage = resp.usage ?? {};
@@ -404,6 +477,36 @@ export class TraceCollector {
     const stopReason = resp.stop_reason ?? "end_turn";
     const contentBlocks = (resp.content_blocks ?? []) as unknown[];
     const thinkingBlocks = resp.thinking_blocks as Array<{ type: "thinking"; thinking: string }> | undefined;
+
+    // §3.2：AfterModelRaw 事件——processStream 返回即落盘，消除"有 Before 无 After"的诊断盲区。
+    // 即使后续 pair 完成/raw.jsonl/traj 重建崩溃，排查者也能看到响应已到达。
+    const currentIndex = this.currentPair.index ?? this.pairs.length + 1;
+    try {
+      this.writer.appendEvent({
+        event: "AfterModelRaw",
+        session_id: this.metadata.session_id,
+        timestamp: input.timestamp,
+        cwd: input.cwd,
+        data: {
+          index: currentIndex,
+          model: input.llm_request.model,
+          stop_reason: stopReason,
+          usage: { input_tokens: inputTokens, output_tokens: outputTokens, cache_read: cacheRead },
+          content_types: contentBlocks.filter(Boolean).map((b: any) => b.type),
+          elapsed_ms: (resp as any).api_duration_ms,
+        },
+      });
+    } catch {
+      // AfterModelRaw 写入失败不阻断后续处理
+    }
+
+    // §3.6：更新 last_known_state → post_stream
+    this.metadata.last_known_state = {
+      phase: "post_stream",
+      turn: currentIndex,
+      model: input.llm_request.model,
+      updated_at: input.timestamp,
+    };
 
     // 检测 thinking
     if (thinkingBlocks && thinkingBlocks.length > 0) {
@@ -485,12 +588,29 @@ export class TraceCollector {
       "AUDIT:MODEL",
       `← AfterModel index=${pair.index} stop=${stopReason} in=${inputTokens} out=${outputTokens} cache_read=${cacheRead}`,
     );
+
+    // §3.6：更新 last_known_state → done（本轮 AfterModel 处理完毕）
+    this.metadata.last_known_state = {
+      phase: "done",
+      turn: pair.index,
+      model: input.llm_request.model,
+      updated_at: input.timestamp,
+    };
   }
 
   // ─── PreToolUse ───
 
   private handlePreToolUse(input: PreToolUseInput): void {
     if (!this.initialized) return;
+
+    // §3.6：更新 last_known_state → tool_exec
+    this.metadata.last_known_state = {
+      phase: "tool_exec",
+      turn: this.pairs.length,
+      model: this.metadata.model,
+      updated_at: input.timestamp,
+    };
+
     this.writer.appendEvent({
       event: HookEventName.PreToolUse,
       session_id: input.session_id,
@@ -790,6 +910,26 @@ export class TraceCollector {
         unlinkSync(this.heartbeatPath);
       }
     } catch { /* 清理失败静默 */ }
+
+    // §3.8：写 audit_range.json（audit.log 按 session 索引）
+    if (this.auditLogPath && this.auditLogStartLine > 0) {
+      try {
+        let endLine = this.auditLogStartLine;
+        if (existsSync(this.auditLogPath)) {
+          const content = readFileSync(this.auditLogPath, "utf8");
+          endLine = content.split("\n").length;
+        }
+        const rangeData = {
+          audit_log_path: this.auditLogPath,
+          start_line: this.auditLogStartLine,
+          end_line: endLine,
+        };
+        writeFileSync(
+          join(this.writer.getSessionDir(), "audit_range.json"),
+          JSON.stringify(rangeData, null, 2),
+        );
+      } catch { /* 索引写入失败静默 */ }
+    }
   }
 
   // ─── 辅助：增量 messages 计算 ───
@@ -963,6 +1103,56 @@ export class TraceCollector {
       is_partial: pair.is_partial,
       ...(compactBoundary ? { compact_boundary: compactBoundary } : {}),
     };
+  }
+
+  // ─── 异常路径诊断信号（§3.1 errors.jsonl）───
+
+  /**
+   * 将异常持久化到轨迹目录的 errors.jsonl。
+   * 任何被 engine/queryLoop/fallback 的 catch 块捕获的异常都应调用此方法，
+   * 确保排查时 `cat errors.jsonl` 直接看到崩溃现场，无需翻全局 audit.log。
+   */
+  recordError(input: {
+    phase: "connection" | "stream" | "post_stream" | "tool_execution" | "hook" | "engine";
+    index: number;
+    error: string;
+    stack?: string;
+    context?: Record<string, unknown>;
+  }): void {
+    if (!this.initialized) return;
+    try {
+      const entry = {
+        event: "Error",
+        timestamp: new Date().toISOString(),
+        session_id: this.metadata.session_id,
+        data: input,
+      };
+      this.writer.appendError(entry);
+    } catch (err) {
+      getLogger().warn("TRACE", `recordError 失败: ${err}`);
+    }
+  }
+
+  /**
+   * 记录 TurnError 到 events.jsonl（§3.3）。
+   * 当 engine.ts catch 到 queryLoop 异常并 yield fatal_error 时同步调用。
+   */
+  recordTurnError(input: {
+    error: string;
+    stack?: string;
+    turn: number;
+  }): void {
+    if (!this.initialized) return;
+    try {
+      this.writer.appendEvent({
+        event: "TurnError",
+        session_id: this.metadata.session_id,
+        timestamp: new Date().toISOString(),
+        data: input,
+      });
+    } catch (err) {
+      getLogger().warn("TRACE", `recordTurnError 失败: ${err}`);
+    }
   }
 
   // ─── 供测试访问的只读属性 ───

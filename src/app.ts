@@ -1042,7 +1042,11 @@ export class App {
 
     // 轨迹采集初始化（委托给 init-helpers）
     const { initTraceCollector, initTelemetrySystem } = await import("./query/init-helpers.ts");
-    await initTraceCollector(this.config, this.hookSystem);
+    const traceCollector = await initTraceCollector(this.config, this.hookSystem);
+    // §3.1/§3.3：将 traceCollector 注入 QueryEngine，用于异常路径持久化
+    if (traceCollector && this.queryEngine) {
+      (this.queryEngine as any).deps.traceCollector = traceCollector;
+    }
 
     // session_start hook（非阻塞）。
     // Bug3 桥接：resume 时上报 source="resume" + resumedFrom=旧会话 id，
