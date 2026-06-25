@@ -12,7 +12,7 @@
 import React from "react";
 import Box from "../../../ink/components/Box.js";
 import Text from "../../../ink/components/Text.js";
-import { useInterval } from "../../../ink/hooks/use-interval.ts";
+import { ClockContext } from "../../../ink/components/ClockContext.js";
 import { theme } from "../../semantic-colors.ts";
 import { THINKING_MARK, CURSOR } from "../../constants/figures.ts";
 import { formatLargeNumber } from "../../utils/format-number.ts";
@@ -44,11 +44,16 @@ function formatThinkingDuration(seconds: number): string {
 
 /**
  * 思考态计时 Hook：仅在 streaming=true 时累加秒数，停止后冻结当前值。
- * 借共享 Clock（useInterval），不额外开 setInterval。
+ *
+ * 关键：以 keepAlive=true 订阅 Clock，自己驱动时钟。
+ * 纯思考阶段（正文尚未开始、无后台任务）可能没有其他 keepAlive 订阅者，
+ * 若用 keepAlive=false 则 Clock 的 setInterval 不启动，回调永远不触发，
+ * 计时器卡在 0。思考计时是用户正在关注的"活"指标，理应自驱动。
  */
 function useThinkingTimer(streaming: boolean): number {
   const [seconds, setSeconds] = React.useState(0);
   const startRef = React.useRef<number | null>(null);
+  const clock = React.useContext(ClockContext);
 
   // 进入流式态时记录起点并清零；离开流式态时保留最后值（冻结）。
   React.useEffect(() => {
@@ -60,14 +65,25 @@ function useThinkingTimer(streaming: boolean): number {
     }
   }, [streaming]);
 
-  useInterval(
-    () => {
-      if (startRef.current !== null) {
-        setSeconds(Math.floor((Date.now() - startRef.current) / 1000));
+  // 直接订阅 Clock，keepAlive=true 确保时钟自驱动
+  React.useEffect(() => {
+    if (!clock || !streaming) return;
+
+    let lastUpdate = clock.now();
+
+    const onChange = (): void => {
+      const now = clock.now();
+      if (now - lastUpdate >= 1000) {
+        lastUpdate = now;
+        if (startRef.current !== null) {
+          setSeconds(Math.floor((Date.now() - startRef.current) / 1000));
+        }
       }
-    },
-    streaming ? 1000 : null,
-  );
+    };
+
+    // keepAlive=true：思考计时器自驱动 Clock，不依赖其他组件
+    return clock.subscribe(onChange, true);
+  }, [clock, streaming]);
 
   return seconds;
 }
