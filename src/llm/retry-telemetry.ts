@@ -13,7 +13,17 @@ import { getLogger } from "../debug/logger.ts";
 /** 重试 Telemetry 事件类型 */
 export interface RetryTelemetryEvent {
   /** 事件类型 */
-  type: "retry" | "fallback" | "529_dropped" | "max_tokens_adjust" | "persistent_retry_wait" | "auth_refresh";
+  type:
+    | "retry"
+    | "fallback"
+    | "529_dropped"
+    | "max_tokens_adjust"
+    | "persistent_retry_wait"
+    | "auth_refresh"
+    // 流内诊断事件（由 stream-guard.ts 产生）
+    | "stream_stall"
+    | "stream_idle_timeout"
+    | "stream_completed";
   /** 模型名 */
   model: string;
   /** 重试尝试次数（1-based） */
@@ -34,6 +44,17 @@ export interface RetryTelemetryEvent {
   originalTokens?: number;
   /** max_tokens 调整：新值 */
   adjustedTokens?: number;
+  // ── 流内诊断字段（stream_stall / stream_idle_timeout / stream_completed）──
+  /** stall 间隔（毫秒） */
+  gapMs?: number;
+  /** 超时阈值（毫秒） */
+  timeoutMs?: number;
+  /** 总事件数 */
+  totalEvents?: number;
+  /** 流总耗时（毫秒） */
+  elapsedMs?: number;
+  /** 首 token 延迟（毫秒） */
+  ttftMs?: number;
 }
 
 /**
@@ -66,6 +87,18 @@ export function defaultTelemetryHandler(event: RetryTelemetryEvent): void {
 
     case "auth_refresh":
       log.info("TELEMETRY", `[auth_refresh] ${event.model} error=${event.error}`);
+      break;
+
+    case "stream_stall":
+      log.warn("TELEMETRY", `[stream_stall] provider=${event.provider} gap=${event.gapMs}ms events=${event.totalEvents}`);
+      break;
+
+    case "stream_idle_timeout":
+      log.warn("TELEMETRY", `[stream_idle_timeout] provider=${event.provider} timeout=${event.timeoutMs}ms events=${event.totalEvents}`);
+      break;
+
+    case "stream_completed":
+      log.info("TELEMETRY", `[stream_completed] provider=${event.provider} events=${event.totalEvents} elapsed=${event.elapsedMs}ms ttft=${event.ttftMs ?? "N/A"}ms`);
       break;
   }
 }

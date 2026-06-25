@@ -1,6 +1,16 @@
 /**
  * Anthropic Provider 实现
- * 使用 @anthropic-ai/sdk 的流式 API
+ *
+ * § 架构决策（2026-06-26 P1 改造）：
+ * 使用 SDK 的 raw stream 模式 `messages.create({ stream: true })` 而非高层 `messages.stream()`。
+ * SDK 只负责 HTTP 连接建立 + SSE 字节流解码为 typed event 对象（确定性、无状态），
+ * 所有流内业务逻辑（idle timeout、block 拼接、usage 累加、tool input JSON 拼接）由我们自管。
+ *
+ * § 对齐 Claude Code（/claude-code/src/services/api/claude.ts line 1818-1820）：
+ * - 避免 BetaMessageStream 的 O(n²) partialParse() 性能问题
+ * - 自己管理 tool input 拼接（简单 string concat）
+ * - 拿到 Stream.controller 可主动 abort
+ * - .withResponse() 获取 response headers（用于 request-id 关联）
  */
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -15,6 +25,9 @@ import type {
 import { getLogger } from "../debug/logger.ts";
 import { generateClientRequestId } from "../api/api-log.ts";
 import { updateRateLimitStatus } from "../api/rate-limit.ts";
+import { guardOutgoingMessages } from "./protocol-sentinel.ts";
+import { guardedStream } from "./stream-guard.ts";
+import type { StreamGuardTelemetryEvent } from "./stream-guard.ts";
 
 export class AnthropicProvider implements Provider {
   private client: Anthropic;
@@ -50,6 +63,12 @@ export class AnthropicProvider implements Provider {
     params: SendParams,
     signal?: AbortSignal,
   ): AsyncIterable<StreamEvent> {
+    const log = getLogger();
+
+    // § P1: 发送前消息完整性校验（对齐 openai.ts 的 guardOutgoingMessages 调用）
+    // 提前发现 orphan tool_use 问题，比让 SDK 内部报错更可诊断
+    guardOutgoingMessages(params.messages, { providerName: "anthropic" });
+
     // 转换消息格式
     const messages = params.messages.map((msg) => ({
       role: msg.role,
@@ -111,14 +130,13 @@ export class AnthropicProvider implements Provider {
     }
 
     try {
-      const log = getLogger();
       const requestStartTime = Date.now();
       let firstTokenTime: number | null = null;
 
       // 注入客户端请求 ID，用于与服务端日志关联排查（请求超时时仍可追踪）
       const clientRequestId = generateClientRequestId();
 
-      log.debug("LLM:ANTHROPIC", `发送请求（Prompt Caching 已启用）`, {
+      log.debug("LLM:ANTHROPIC", `发送请求（Prompt Caching 已启用，raw stream 模式）`, {
         model: params.model || this._model,
         messageCount: messages.length,
         toolCount: tools?.length ?? 0,
@@ -126,165 +144,245 @@ export class AnthropicProvider implements Provider {
         clientRequestId,
       });
 
-      const stream = this.client.messages.stream(
-        {
-          model: params.model || this._model,
-          max_tokens: params.maxTokens,
-          messages: messages as any,
-          system: system as any,
-          tools: tools as any,
-          // Extended Thinking 支持
-          ...(params.thinking?.enabled && {
-            thinking: {
-              type: "enabled",
-              budget_tokens: params.thinking.budgetTokens,
-            },
-          }),
-          // DeepSeek-via-Anthropic 端点：强度走 output_config.effort（budget_tokens 被服务端忽略）。
-          // 原生 Claude 不下发此字段（其强度走上面的 budget_tokens），effort.ts 仅对 deepseek-anthropic
-          // 规则填充 params.outputConfig，故这里按 params 是否含该字段透传即可。
-          ...(params.outputConfig && {
-            output_config: { effort: params.outputConfig.effort },
-          }),
-        },
-        {
+      const requestParams = {
+        model: params.model || this._model,
+        max_tokens: params.maxTokens,
+        messages: messages as any,
+        system: system as any,
+        tools: tools as any,
+        stream: true as const,
+        // Extended Thinking 支持
+        ...(params.thinking?.enabled && {
+          thinking: {
+            type: "enabled" as const,
+            budget_tokens: params.thinking.budgetTokens,
+          },
+        }),
+        // DeepSeek-via-Anthropic 端点：强度走 output_config.effort（budget_tokens 被服务端忽略）。
+        // 原生 Claude 不下发此字段（其强度走上面的 budget_tokens），effort.ts 仅对 deepseek-anthropic
+        // 规则填充 params.outputConfig，故这里按 params 是否含该字段透传即可。
+        ...(params.outputConfig && {
+          output_config: { effort: params.outputConfig.effort },
+        }),
+      };
+
+      // § 关键改动：create({stream:true}) 替代 messages.stream()
+      // SDK 只负责 HTTP 连接 + SSE 解码，流内状态完全由我们管理
+      const { data: rawStream, response } = await this.client.messages
+        .create(requestParams as any, {
           headers: { "x-client-request-id": clientRequestId },
           // ⭐ 关键：把 signal 透传给 SDK，使 abort() 能真正中断底层 HTTP/TCP 连接。
-          // 缺了它，流 hang 时 fallback.ts 的超时 abort 无法穿透到 fetch 层，
-          // for-await 会永久阻塞 → 进程僵死（会话 11984e23 根因）。
           ...(signal ? { signal } : {}),
-        },
-      );
-
-      // 从响应 headers 提取真实速率限制状态（不阻塞流式迭代）
-      stream
-        .withResponse()
-        .then(({ response }) => {
-          try {
-            updateRateLimitStatus(response.headers);
-          } catch {
-            /* headers 提取失败不影响主流程 */
-          }
         })
-        .catch(() => {
-          /* withResponse 失败（如请求被中止）忽略 */
-        });
+        .withResponse();
 
+      // 从 response headers 提取速率限制状态
+      try {
+        updateRateLimitStatus(response.headers);
+      } catch {
+        /* headers 提取失败不影响主流程 */
+      }
+
+      // § stream-guard 包装：idle timeout + stall detection
+      const guarded = guardedStream(rawStream as unknown as AsyncIterable<any>, {
+        idleTimeoutMs: 90_000,
+        stallWarnMs: 30_000,
+        label: "ANTHROPIC",
+        onTimeout: () => {
+          // § 主动 abort 底层连接（对齐 Claude Code 的 releaseStreamResources）
+          try {
+            (rawStream as any).controller?.abort();
+          } catch { /* ignore */ }
+          try {
+            response.body?.cancel().catch(() => {});
+          } catch { /* ignore */ }
+        },
+        onTelemetry: (evt: StreamGuardTelemetryEvent) => {
+          // 遥测事件通过 logger 记录，接入现有可观测性系统
+          log.debug("TELEMETRY:ANTHROPIC", `${evt.type}`, evt as any);
+        },
+      });
+
+      // § 自建 event 状态机处理 raw events（对齐 Claude Code contentBlocks[] 模式）
+      // PARSE-2：Anthropic 的 message_delta.usage.output_tokens 是**累积值**
       let accumulatedUsage: Usage = { inputTokens: 0, outputTokens: 0 };
-      // PARSE-2：Anthropic 的 message_delta.usage.output_tokens 是**累积值**（每次给当前总数），
-      // 但下游 processStream 走 accumulateUsage **累加** delta。若直接累加累积值，会把
-      // message_start 的种子 + 每个 delta 的累积值叠加 → 固定多算且 delta 越多放大越狠。
-      // 正解：发**每次增量** = 当前累积 − 已发出累积，下游累加后正好等于最终累积值。
       let emittedOutputTokens = 0;
 
-      // 转换 Anthropic SDK 事件到统一格式
-      for await (const event of stream) {
-        if (signal?.aborted) {
-          throw new Error("Request aborted");
-        }
+      // § content block 拼接与 tool input 自管
+      interface InternalBlock {
+        block: ContentBlock;
+        /** tool_use 的 partial_json 累加器 */
+        _inputAccumulator?: string;
+      }
+      const contentBlocks: (InternalBlock | null)[] = [];
 
-        switch (event.type) {
-          case "message_start":
-            accumulatedUsage = this.convertUsage(event.message.usage);
-            // message_start 的 output_tokens 会被下游累加，计入"已发出累积"基线
-            emittedOutputTokens = accumulatedUsage.outputTokens;
-            yield {
-              type: "message_start",
-              message: {
-                usage: accumulatedUsage,
-              },
-            };
-            break;
-
-          case "content_block_start":
-            yield {
-              type: "content_block_start",
-              index: event.index,
-              content_block: this.convertContentBlock(event.content_block),
-              // 保留原始块数据（thinking 块采集用）
-              _raw_block: (event.content_block as any).type === "thinking" ? event.content_block : undefined,
-            };
-            break;
-
-          case "content_block_delta":
-            // 记录首 token 延迟（TTFT）
-            if (!firstTokenTime) {
-              firstTokenTime = Date.now();
-              log.debug("LLM:ANTHROPIC", `首 token 延迟: ${firstTokenTime - requestStartTime}ms`);
-            }
-
-            if (event.delta.type === "text_delta") {
-              yield {
-                type: "content_block_delta",
-                index: event.index,
-                delta: { type: "text_delta", text: event.delta.text },
-              };
-            } else if (event.delta.type === "input_json_delta") {
-              yield {
-                type: "content_block_delta",
-                index: event.index,
-                delta: {
-                  type: "input_json_delta",
-                  partial_json: event.delta.partial_json,
-                },
-              };
-            } else if (event.delta.type === "thinking_delta") {
-              // SDK v0.78 Extended Thinking：thinking_delta 作为 text_delta 透传
-              yield {
-                type: "content_block_delta",
-                index: event.index,
-                delta: { type: "text_delta", text: (event.delta as any).thinking || "" },
-              };
-            }
-            // 其他 delta 类型（signature_delta、citations_delta）静默忽略
-            break;
-
-          case "content_block_stop":
-            yield {
-              type: "content_block_stop",
-              index: event.index,
-            };
-            break;
-
-          case "message_delta": {
-            // output_tokens 是累积值 → 取增量发出，下游累加后等于最终累积，不重复计种子
-            const cumulativeOutput = event.usage.output_tokens || 0;
-            const deltaOutput = Math.max(0, cumulativeOutput - emittedOutputTokens);
-            emittedOutputTokens = Math.max(emittedOutputTokens, cumulativeOutput);
-            accumulatedUsage = {
-              ...accumulatedUsage,
-              outputTokens: accumulatedUsage.outputTokens + deltaOutput,
-            };
-            yield {
-              type: "message_delta",
-              delta: { stop_reason: event.delta.stop_reason || null },
-              // 只发本次增量（下游 accumulateUsage 会累加）
-              usage: { inputTokens: 0, outputTokens: deltaOutput },
-            };
-            break;
+      try {
+        for await (const event of guarded) {
+          if (signal?.aborted) {
+            throw new Error("Request aborted");
           }
 
-          case "message_stop":
-            log.debug("LLM:ANTHROPIC", "请求完成", {
-              totalMs: Date.now() - requestStartTime,
-              usage: accumulatedUsage,
-            });
-            yield { type: "message_stop" };
-            break;
+          switch ((event as any).type) {
+            case "message_start": {
+              const msg = (event as any).message;
+              accumulatedUsage = this.convertUsage(msg.usage);
+              // message_start 的 output_tokens 会被下游累加，计入"已发出累积"基线
+              emittedOutputTokens = accumulatedUsage.outputTokens;
+              yield {
+                type: "message_start",
+                message: {
+                  usage: accumulatedUsage,
+                },
+              };
+              break;
+            }
 
-          default:
-            // 处理未知事件类型（如 error）
-            if ((event as any).type === "error") {
+            case "content_block_start": {
+              const idx = (event as any).index;
+              const rawBlock = (event as any).content_block;
+              const converted = this.convertContentBlock(rawBlock);
+
+              // § content_block null check 策略：fail-safe + 诊断日志
+              // 不 throw（支持第三方代理的跳跃 index），stream-processor 层有兜底
+              contentBlocks[idx] = { block: converted };
+
+              yield {
+                type: "content_block_start",
+                index: idx,
+                content_block: converted,
+                // 保留原始块数据（thinking 块采集用）
+                _raw_block: rawBlock?.type === "thinking" ? rawBlock : undefined,
+              };
+              break;
+            }
+
+            case "content_block_delta": {
+              const idx = (event as any).index;
+              const delta = (event as any).delta;
+
+              // § null check 防御（第三方代理可能返回跳跃 index）
+              const entry = contentBlocks[idx];
+              if (!entry) {
+                log.error("LLM:ANTHROPIC", `content_block_delta 引用不存在的 index=${idx}`, {
+                  totalBlocks: contentBlocks.length, eventIndex: idx,
+                });
+                continue; // fail-safe：跳过而非崩溃
+              }
+
+              // 记录首 token 延迟（TTFT）
+              if (!firstTokenTime) {
+                firstTokenTime = Date.now();
+                log.debug("LLM:ANTHROPIC", `首 token 延迟: ${firstTokenTime - requestStartTime}ms`);
+              }
+
+              if (delta.type === "text_delta") {
+                yield {
+                  type: "content_block_delta",
+                  index: idx,
+                  delta: { type: "text_delta", text: delta.text },
+                };
+              } else if (delta.type === "input_json_delta") {
+                // § tool input 自管拼接（替代 SDK 的 O(n²) partialParse）
+                // 简单 string concat，比 SDK 每次 JSON.parse 高效得多
+                entry._inputAccumulator = (entry._inputAccumulator || "") + delta.partial_json;
+                yield {
+                  type: "content_block_delta",
+                  index: idx,
+                  delta: {
+                    type: "input_json_delta",
+                    partial_json: delta.partial_json,
+                  },
+                };
+              } else if (delta.type === "thinking_delta") {
+                // SDK v0.78 Extended Thinking：thinking_delta 作为 text_delta 透传
+                yield {
+                  type: "content_block_delta",
+                  index: idx,
+                  delta: { type: "text_delta", text: delta.thinking || "" },
+                };
+              }
+              // 其他 delta 类型（signature_delta、citations_delta）静默忽略
+              break;
+            }
+
+            case "content_block_stop": {
+              const idx = (event as any).index;
+
+              // § tool input 拼接完成后一次性 JSON.parse（非每个 delta 都 parse）
+              const entry = contentBlocks[idx];
+              if (entry && entry.block.type === "tool_use" && entry._inputAccumulator) {
+                try {
+                  (entry.block as any).input = JSON.parse(entry._inputAccumulator);
+                } catch (e) {
+                  log.error("LLM:ANTHROPIC", `tool input JSON 解析失败`, {
+                    raw: entry._inputAccumulator.slice(0, 200),
+                  });
+                  (entry.block as any).input = {}; // 兜底空对象，避免下游崩溃
+                }
+                delete entry._inputAccumulator;
+              }
+
+              yield {
+                type: "content_block_stop",
+                index: idx,
+              };
+              break;
+            }
+
+            case "message_delta": {
+              const delta = (event as any).delta;
+              const usage = (event as any).usage;
+              // output_tokens 是累积值 → 取增量发出，下游累加后等于最终累积，不重复计种子
+              const cumulativeOutput = usage?.output_tokens || 0;
+              const deltaOutput = Math.max(0, cumulativeOutput - emittedOutputTokens);
+              emittedOutputTokens = Math.max(emittedOutputTokens, cumulativeOutput);
+              accumulatedUsage = {
+                ...accumulatedUsage,
+                outputTokens: accumulatedUsage.outputTokens + deltaOutput,
+              };
+              yield {
+                type: "message_delta",
+                delta: { stop_reason: delta?.stop_reason || null },
+                // 只发本次增量（下游 accumulateUsage 会累加）
+                usage: { inputTokens: 0, outputTokens: deltaOutput },
+              };
+              break;
+            }
+
+            case "message_stop":
+              log.debug("LLM:ANTHROPIC", "请求完成", {
+                totalMs: Date.now() - requestStartTime,
+                usage: accumulatedUsage,
+              });
+              yield { type: "message_stop" };
+              break;
+
+            case "error":
               yield {
                 type: "error",
                 error: { message: (event as any).error?.message || "Unknown error" },
               };
-            }
-            break;
+              break;
+
+            default:
+              // 处理未知事件类型
+              break;
+          }
         }
+      } finally {
+        // § 显式资源清理（对齐 Claude Code 的 releaseStreamResources）
+        // 防止 TLS/socket 泄漏
+        try {
+          const controller = (rawStream as any).controller;
+          if (controller && !controller.signal?.aborted) {
+            controller.abort();
+          }
+        } catch { /* ignore */ }
+        try {
+          response.body?.cancel().catch(() => {});
+        } catch { /* ignore */ }
       }
     } catch (err: any) {
-      const log = getLogger();
       log.error("LLM:ANTHROPIC", `请求异常`, { error: err.message, stack: err.stack });
       // 接入审计日志:连接/流式异常(含超时中断、ECONNRESET)是会话 hang/中断的关键信号。
       log.warn("AUDIT:API", `✗ Anthropic 请求异常 model=${this._model} err=${(err?.message ?? String(err)).slice(0, 200)}`);
@@ -303,6 +401,9 @@ export class AnthropicProvider implements Provider {
     params: SendParams,
     signal?: AbortSignal,
   ): Promise<AccumulatedResponse> {
+    // § P1: 非流式路径也加入 guardOutgoingMessages（对齐 openai.ts 双路径都有调用）
+    guardOutgoingMessages(params.messages, { providerName: "anthropic" });
+
     const messages = params.messages.map((msg) => ({
       role: msg.role,
       content: msg.content.map((block) => {
@@ -385,10 +486,10 @@ export class AnthropicProvider implements Provider {
 
   private convertUsage(usage: any): Usage {
     return {
-      inputTokens: usage.input_tokens || 0,
-      outputTokens: usage.output_tokens || 0,
-      cacheCreationInputTokens: usage.cache_creation_input_tokens,
-      cacheReadInputTokens: usage.cache_read_input_tokens,
+      inputTokens: usage?.input_tokens || 0,
+      outputTokens: usage?.output_tokens || 0,
+      cacheCreationInputTokens: usage?.cache_creation_input_tokens,
+      cacheReadInputTokens: usage?.cache_read_input_tokens,
     };
   }
 

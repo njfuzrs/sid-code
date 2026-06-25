@@ -19,6 +19,7 @@
  */
 
 import type { SendParams } from "./types.ts";
+import { lookupCatalog } from "./model-params-catalog.ts";
 
 // ─────────────────────────────────────────────────────────────
 // 1. 统一内部标度（与协议无关）
@@ -201,13 +202,27 @@ const CAPABILITY_FLAGS: Record<
 // 4. 能力解析入口
 // ─────────────────────────────────────────────────────────────
 
-/** 判定模型/协议属于哪一类（判定优先级见方案 §2.4） */
+/**
+ * 判定模型/协议属于哪一类。
+ *
+ * 查询优先级（方案 §5.4）：
+ *   1. catalog 中声明的 protocolKind（精确，可预测）
+ *   2. 现有 runtime 推断（兜底，处理未注册模型和 DeepSeek baseURL 判断）
+ */
 function classifyCapability(opts: {
   model: string;
   provider: string;
   baseURL?: string;
 }): CapabilityKind {
   const { model, provider, baseURL } = opts;
+
+  // 优先级 1：查 catalog 中声明的 protocolKind
+  const catalogEntry = lookupCatalog(model);
+  if (catalogEntry?.protocolKind) {
+    return catalogEntry.protocolKind;
+  }
+
+  // 优先级 2：runtime 推断兜底（处理未注册模型和 DeepSeek baseURL 判断）
   const isDeepSeek = /deepseek/i.test(model);
   const isAnthropicEndpoint = !!baseURL && /\/anthropic/i.test(baseURL);
 

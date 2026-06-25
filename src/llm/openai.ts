@@ -19,6 +19,7 @@ import type {
 } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
 import { guardOutgoingMessages } from "./protocol-sentinel.ts";
+import { filterParamsForModel } from "./model-capability-filter.ts";
 import { estimateTextTokens } from "../context/token.ts";
 import { sanitizeStrings } from "./sanitize-unicode.ts";
 
@@ -457,6 +458,12 @@ export class OpenAIProvider implements Provider {
       stream: true,
       stream_options: { include_usage: true },
     };
+
+    // § P1: model-capability-filter 参数过滤（基于 catalog 声明的协议能力自动处理 o-series 等模型）
+    // 注意：filterParamsForModel 与下方 applyMaxTokens/prependSystemMessage 有功能重叠，
+    // 但 filter 只在 catalog 命中且声明了对应字段时才生效，已有逻辑作为 runtime 兜底保留。
+    filterParamsForModel(effectiveModel, requestBody);
+
     // §3.2：o-series 用 max_completion_tokens，其余用 max_tokens
     this.applyMaxTokens(requestBody, params.maxTokens, effectiveModel);
     // §2.1/§2.2/§2.6：DeepSeek 思考开关 / reasoning_effort / user_id 透传
@@ -820,7 +827,7 @@ export class OpenAIProvider implements Provider {
           setTimeout(() => { reader.cancel().catch(() => {}); }, IDLE_TIMEOUT_MS + 100);
         });
 
-        let result: ReadableStreamReadResult<Uint8Array>;
+        let result: Awaited<ReturnType<typeof reader.read>>;
         try {
           result = await Promise.race([readPromise, timeoutPromise]);
         } finally {

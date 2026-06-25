@@ -13,6 +13,19 @@ export interface ModelParamsEntry {
   contextWindow: number;
   maxOutputTokens: number;
   supportsThinking?: boolean;
+
+  // ── 协议能力声明（可选，缺省时走 effort.ts runtime 推断兜底） ──
+
+  /** system prompt 的 role 表示。默认 "system" */
+  systemRole?: "system" | "developer";
+  /** 输出 token 限制字段名。默认 "max_tokens" */
+  maxTokensField?: "max_tokens" | "max_completion_tokens";
+  /** 是否支持 temperature/top_p 采样参数。默认 true */
+  supportsTemperature?: boolean;
+  /** 支持的 reasoning_effort 档位。undefined = 不支持 */
+  reasoningEffortValues?: ("low" | "medium" | "high")[];
+  /** 协议族标识（用于 effort.ts 分发）。undefined = 走现有 runtime 推断 */
+  protocolKind?: "deepseek-openai" | "deepseek-anthropic" | "anthropic-native" | "o-series" | "unknown";
 }
 
 /**
@@ -21,16 +34,17 @@ export interface ModelParamsEntry {
  */
 const CATALOG: Record<string, ModelParamsEntry> = {
   // ── Anthropic ──────────────────────────────────────────────────
-  "claude-opus-4-8": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: true },
-  "claude-opus-4-7": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: true },
-  "claude-opus-4-6": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: true },
-  "claude-sonnet-4-6": { contextWindow: 1_000_000, maxOutputTokens: 64_000, supportsThinking: true },
-  "claude-sonnet-4-5-20250514": { contextWindow: 200_000, maxOutputTokens: 64_000, supportsThinking: true },
-  "claude-haiku-4-5": { contextWindow: 200_000, maxOutputTokens: 64_000, supportsThinking: true },
-  "claude-haiku-4-5-20251001": { contextWindow: 200_000, maxOutputTokens: 64_000, supportsThinking: true },
+  "claude-opus-4-8": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: true, protocolKind: "anthropic-native" },
+  "claude-opus-4-7": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: true, protocolKind: "anthropic-native" },
+  "claude-opus-4-6": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: true, protocolKind: "anthropic-native" },
+  "claude-sonnet-4-6": { contextWindow: 1_000_000, maxOutputTokens: 64_000, supportsThinking: true, protocolKind: "anthropic-native" },
+  "claude-sonnet-4-5-20250514": { contextWindow: 200_000, maxOutputTokens: 64_000, supportsThinking: true, protocolKind: "anthropic-native" },
+  "claude-haiku-4-5": { contextWindow: 200_000, maxOutputTokens: 64_000, supportsThinking: true, protocolKind: "anthropic-native" },
+  "claude-haiku-4-5-20251001": { contextWindow: 200_000, maxOutputTokens: 64_000, supportsThinking: true, protocolKind: "anthropic-native" },
 
   // ── DeepSeek ───────────────────────────────────────────────────
   // V4 全系：1M context, 384K output；wot/maxthink 是同一模型的推理模式变体
+  // protocolKind 由 runtime baseURL 推断更准确（同一模型可走 OpenAI 或 Anthropic 端点），故不声明
   "deepseek-v4-pro": { contextWindow: 1_000_000, maxOutputTokens: 393_216, supportsThinking: true },
   "deepseek-v4-flash": { contextWindow: 1_000_000, maxOutputTokens: 393_216, supportsThinking: true },
   "DeepSeek-V4-Flash": { contextWindow: 1_000_000, maxOutputTokens: 393_216, supportsThinking: true },
@@ -41,8 +55,40 @@ const CATALOG: Record<string, ModelParamsEntry> = {
   "gpt-5.4-nano": { contextWindow: 400_000, maxOutputTokens: 128_000, supportsThinking: true },
   "gpt-4o": { contextWindow: 128_000, maxOutputTokens: 16_384 },
   "gpt-4o-mini": { contextWindow: 128_000, maxOutputTokens: 16_384 },
-  "o1": { contextWindow: 200_000, maxOutputTokens: 100_000, supportsThinking: true },
-  "o3-mini": { contextWindow: 200_000, maxOutputTokens: 100_000, supportsThinking: true },
+
+  // o-series：全部声明协议能力，新增模型只需一行配置
+  "o1": {
+    contextWindow: 200_000, maxOutputTokens: 100_000, supportsThinking: true,
+    systemRole: "developer",
+    maxTokensField: "max_completion_tokens",
+    supportsTemperature: false,
+    reasoningEffortValues: ["low", "medium", "high"],
+    protocolKind: "o-series",
+  },
+  "o3": {
+    contextWindow: 200_000, maxOutputTokens: 100_000, supportsThinking: true,
+    systemRole: "developer",
+    maxTokensField: "max_completion_tokens",
+    supportsTemperature: false,
+    reasoningEffortValues: ["low", "medium", "high"],
+    protocolKind: "o-series",
+  },
+  "o3-mini": {
+    contextWindow: 200_000, maxOutputTokens: 100_000, supportsThinking: true,
+    systemRole: "developer",
+    maxTokensField: "max_completion_tokens",
+    supportsTemperature: false,
+    reasoningEffortValues: ["low", "medium", "high"],
+    protocolKind: "o-series",
+  },
+  "o4-mini": {
+    contextWindow: 200_000, maxOutputTokens: 100_000, supportsThinking: true,
+    systemRole: "developer",
+    maxTokensField: "max_completion_tokens",
+    supportsTemperature: false,
+    reasoningEffortValues: ["low", "medium", "high"],
+    protocolKind: "o-series",
+  },
 
   // ── Kimi (Moonshot) ────────────────────────────────────────────
   "kimi-k2.6": { contextWindow: 262_144, maxOutputTokens: 32_768, supportsThinking: true },
