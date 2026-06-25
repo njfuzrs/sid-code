@@ -54,14 +54,25 @@ export class StructuredOutputTool implements Tool {
   private captured: unknown = undefined;
   /** 是否已捕获到合规输出 */
   private hasCaptured = false;
+  /** 工具被调用次数(用于重试上限计数，对齐 CC QueryEngine.ts maxRetries) */
+  private callCount = 0;
+  /** 最大重试次数(环境变量可配，默认 5 对齐 CC) */
+  private readonly maxRetries: number;
 
-  constructor(schema: Record<string, unknown>) {
+  constructor(schema: Record<string, unknown>, maxRetries?: number) {
     this.schema = schema;
+    this.maxRetries = maxRetries
+      ?? parseInt(process.env.SID_STRUCTURED_OUTPUT_MAX_RETRIES || "5", 10);
   }
 
   /** 是否已捕获到合规的结构化输出 */
   get hasCapturedOutput(): boolean {
     return this.hasCaptured;
+  }
+
+  /** 是否已耗尽重试次数（未捕获到合规输出且调用次数超限） */
+  get isExhausted(): boolean {
+    return this.callCount >= this.maxRetries && !this.hasCaptured;
   }
 
   /** 取最近一次校验通过的结构化输出(对象形态) */
@@ -102,6 +113,17 @@ export class StructuredOutputTool implements Tool {
   }
 
   async execute(input: unknown): Promise<ToolResult> {
+    this.callCount++;
+
+    // 0) 重试上限检查（对齐 CC QueryEngine.ts maxRetries）
+    // 超过上限：返回非 isError 的终止信号（不再触发续轮），workflow 层据此返回 null
+    if (this.callCount > this.maxRetries && !this.hasCaptured) {
+      return {
+        output: `[StructuredOutput] 已重试 ${this.maxRetries} 次仍不合规，放弃。`,
+        isError: false, // 非 error，不触发续轮
+      };
+    }
+
     // 1) schema 本身是否像合法 JSON Schema(带缓存)
     const shapeErr = cachedCheckShape(this.schema);
     if (shapeErr) {

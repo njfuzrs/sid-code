@@ -9,6 +9,8 @@
 
 import type { ContentBlock, StreamEvent, Usage } from "../llm/types.ts";
 import { accumulateUsage } from "../llm/types.ts";
+import { getLogger } from "../debug/index.ts";
+import { normalizeToolInput } from "../llm/normalize-tool-input.ts";
 
 /** 流式处理结果 */
 export interface StreamProcessResult {
@@ -69,9 +71,17 @@ export async function processStream(
         if (jsonStr !== undefined) {
           const block = content[event.index];
           if (block?.type === "tool_use") {
+            // O(n) 设计：拼接字符串 + 最终一次性解析，不做增量 parse（对齐 CC raw stream 策略）
             try {
-              block.input = jsonStr ? JSON.parse(jsonStr) : {};
-            } catch {
+              block.input = normalizeToolInput(jsonStr ? JSON.parse(jsonStr) : {});
+            } catch (e) {
+              // telemetry: 工具输入 JSON 解析失败（对齐 CC tengu_tool_input_json_parse_fail）
+              getLogger().warn("STREAM", `工具输入 JSON 解析失败`, {
+                toolName: block.name,
+                inputLength: jsonStr.length,
+                error: e instanceof Error ? e.message : String(e),
+                inputHead: jsonStr.slice(0, 200),
+              });
               block.input = {};
             }
           }

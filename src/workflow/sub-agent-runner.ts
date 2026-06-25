@@ -132,6 +132,11 @@ export class SubAgentRunner implements AgentRunner {
 
       // 4) 带 schema → 解析为对象返回;否则返回文本
       if (opts?.schema) {
+        // P0-1: StructuredOutput 重试耗尽时 output 为空字符串 → 返回 null
+        if (!result.output) {
+          log.warn("WORKFLOW", `[${ctx.label}] 结构化输出重试耗尽，返回 null`);
+          return null;
+        }
         try {
           return JSON.parse(result.output);
         } catch {

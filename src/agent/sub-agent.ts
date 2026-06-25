@@ -17,6 +17,10 @@ import {
   StructuredOutputTool,
   structuredOutputPromptSuffix,
 } from "../tool/structured-output-tool.ts";
+import {
+  validateAgainstSchema,
+  formatSchemaErrors,
+} from "../workflow/json-schema-validator.ts";
 import { getLogger } from "../debug/logger.ts";
 import type { HookSystem } from "../hook/system.ts";
 import { LoopDetector } from "./loop-detection.ts";
@@ -876,9 +880,30 @@ export class SubAgent {
       // 提取最终结果：从所有 assistant 消息中回溯查找最后一条有文本内容的
       // M2: 若带 schema 且 StructuredOutput 工具已捕获合规输出,旁路 extractFinalText,
       //     直接用工具校验过的 JSON(序列化)作为 output——这是结构化契约的落点。
-      const finalOutput = structuredTool?.hasCapturedOutput
-        ? JSON.stringify(structuredTool.getCapturedOutput())
-        : this.extractFinalText(ctxMgr.getMessages(), lastTextOutput);
+      let finalOutput: string;
+
+      if (structuredTool?.hasCapturedOutput) {
+        finalOutput = JSON.stringify(structuredTool.getCapturedOutput());
+      } else if (structuredTool?.isExhausted) {
+        // P0-1: 重试耗尽，返回空字符串（workflow 层 JSON.parse 失败 → 返回 null）
+        log.warn("SUBAGENT", `[${task.type}] StructuredOutput 重试耗尽，返回空结果`);
+        finalOutput = "";
+      } else if (task.schema) {
+        // P1-1: 工具未被调用的兜底路径（弱模型可能忽略 system prompt 指令直接输出文本）
+        const rawText = this.extractFinalText(ctxMgr.getMessages(), lastTextOutput);
+        log.warn("SUBAGENT", `[${task.type}] 模型未调用 StructuredOutput 工具，尝试从文本兜底解析`);
+
+        const fallbackResult = tryExtractJsonFromText(rawText, task.schema);
+        if (fallbackResult.success) {
+          log.info("SUBAGENT", `[${task.type}] 文本兜底解析成功`);
+          finalOutput = JSON.stringify(fallbackResult.data);
+        } else {
+          log.warn("SUBAGENT", `[${task.type}] 文本兜底解析失败: ${fallbackResult.error}`);
+          finalOutput = rawText; // 最终退化为文本（workflow 层 JSON.parse 失败返回 null）
+        }
+      } else {
+        finalOutput = this.extractFinalText(ctxMgr.getMessages(), lastTextOutput);
+      }
       log.info("SUBAGENT", `[${task.type}] 结果: ${finalOutput.slice(0, 200)}`);
       log.info("SUBAGENT", `[${task.type}] 完成，共 ${loopResult.turns} 轮，耗时 ${((Date.now() - startTime) / 1000).toFixed(1)}秒`);
 
@@ -1114,4 +1139,40 @@ export class SubAgent {
     ];
     return lines.every(l => planningPatterns.some(p => p.test(l.trim())));
   }
+}
+
+// ─── P1-1: 弱模型兜底解析辅助函数 ───────────────────────────────────────────
+
+interface FallbackResult {
+  success: boolean;
+  data?: unknown;
+  error?: string;
+}
+
+/**
+ * 从文本中尝试提取 JSON 并校验 schema（兜底路径）。
+ * 当弱模型忽略 system prompt 中的工具调用指令、直接输出 JSON 文本时，
+ * 此函数尝试恢复结构化数据，避免静默退化为字符串。
+ */
+function tryExtractJsonFromText(text: string, schema: Record<string, unknown>): FallbackResult {
+  let jsonStr = text.trim();
+
+  // 支持 ```json ... ``` 代码块
+  const codeBlockMatch = jsonStr.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+  if (codeBlockMatch) {
+    jsonStr = codeBlockMatch[1].trim();
+  }
+
+  let data: unknown;
+  try {
+    data = JSON.parse(jsonStr);
+  } catch {
+    return { success: false, error: "文本非合法 JSON" };
+  }
+
+  const result = validateAgainstSchema(schema, data);
+  if (!result.valid) {
+    return { success: false, error: formatSchemaErrors(result.errors) };
+  }
+  return { success: true, data };
 }

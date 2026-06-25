@@ -861,6 +861,17 @@ export class App {
       }
     }
 
+    // P3-2: SDK/CLI --json-schema 统一走 StructuredOutput 工具路径（对齐 CC SyntheticOutputTool）
+    // 不再依赖 buildStructuredOutputPrompt + extractStructuredOutput（文本提取），
+    // 而是注入 StructuredOutput 工具 + system prompt suffix，模型可先调其他工具再输出结构化结果。
+    if (this.config.jsonSchema) {
+      const { StructuredOutputTool, structuredOutputPromptSuffix } = await import("./tool/structured-output-tool.ts");
+      const structuredTool = new StructuredOutputTool(this.config.jsonSchema);
+      this.toolRegistry.register(structuredTool);
+      systemPrompt += structuredOutputPromptSuffix();
+      log.info("APP", `--json-schema 模式：注册 StructuredOutput 工具 + system prompt 后缀`);
+    }
+
     this.ctxMgr.setSystemPrompt(systemPrompt);
     log.info("APP", `初始化完成，系统提示词 ${systemPrompt.length} 字符，工具数 ${this.toolRegistry.size()}`);
 

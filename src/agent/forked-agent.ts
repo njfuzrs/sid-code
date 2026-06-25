@@ -18,6 +18,7 @@ import type { Registry as ToolRegistry } from "../tool/registry.ts";
 import type { LegacyTool, PermissionResult } from "../tool/types.ts";
 import { validateToolInput } from "../tool/input-validator.ts";
 import { getLogger } from "../debug/logger.ts";
+import { normalizeToolInput } from "../llm/normalize-tool-input.ts";
 
 /** 工具权限控制函数 */
 export type CanUseToolFn = (
@@ -116,7 +117,19 @@ async function accumulate(
         const block = content[event.index];
         if (block?.type === "tool_use") {
           const raw = partialJson.get(event.index) ?? "";
-          try { block.input = raw ? JSON.parse(raw) : {}; } catch { block.input = {}; }
+          // O(n) 设计：拼接字符串 + 最终一次性解析，不做增量 parse（对齐 CC raw stream 策略）
+          try {
+            block.input = normalizeToolInput(raw ? JSON.parse(raw) : {});
+          } catch (e) {
+            // telemetry: 工具输入 JSON 解析失败（对齐 CC tengu_tool_input_json_parse_fail）
+            getLogger().warn("STREAM", `工具输入 JSON 解析失败`, {
+              toolName: block.name,
+              inputLength: raw.length,
+              error: e instanceof Error ? e.message : String(e),
+              inputHead: raw.slice(0, 200),
+            });
+            block.input = {};
+          }
         }
         break;
       }

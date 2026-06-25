@@ -28,6 +28,7 @@ import { updateRateLimitStatus } from "../api/rate-limit.ts";
 import { guardOutgoingMessages } from "./protocol-sentinel.ts";
 import { guardedStream } from "./stream-guard.ts";
 import type { StreamGuardTelemetryEvent } from "./stream-guard.ts";
+import { normalizeToolInput } from "./normalize-tool-input.ts";
 
 export class AnthropicProvider implements Provider {
   private client: Anthropic;
@@ -105,10 +106,24 @@ export class AnthropicProvider implements Provider {
     }
 
     // 转换工具定义
+    // P1-3: strict 模式（Constrained Decoding）— 仅 Claude 4.x 模型支持
+    // P1-4: FGTS（eager_input_streaming）— 仅 Anthropic 直连时启用
+    // P2-4: Token Efficient Tools 与 strict 互斥
+    const model = params.model || this._model;
+    const enableStrict = !process.env.SID_DISABLE_STRICT_TOOLS && modelSupportsStrict(model);
+    const enableFGTS = isDirectAnthropicEndpoint(this.client.baseURL)
+      && !process.env.SID_DISABLE_FGTS;
+    const tokenEfficientToolsEnabled = !enableStrict
+      && process.env.SID_ENABLE_TOKEN_EFFICIENT_TOOLS === "1";
+
     const tools = params.tools?.map((t) => ({
       name: t.name,
       description: t.description,
       input_schema: t.input_schema,
+      // strict 三重门控：工具声明 + 模型支持 + 环境变量未禁用
+      ...(t.strict && enableStrict && { strict: true }),
+      // FGTS：让 API 在生成过程中就流式发送 JSON 片段（减少大输入的等待时间）
+      ...(enableFGTS && { eager_input_streaming: true }),
     }));
 
     // system prompt 分区缓存：按 DYNAMIC_BOUNDARY 拆分为静态区和动态区
@@ -164,13 +179,26 @@ export class AnthropicProvider implements Provider {
         ...(params.outputConfig && {
           output_config: { effort: params.outputConfig.effort },
         }),
+        // P3-1: API 级结构化输出（output_config.format）— 独立于工具调用的 JSON 约束
+        ...(params.outputFormat && {
+          output_config: {
+            ...(params.outputConfig && { effort: params.outputConfig.effort }),
+            format: params.outputFormat,
+          },
+        }),
       };
 
       // § 关键改动：create({stream:true}) 替代 messages.stream()
       // SDK 只负责 HTTP 连接 + SSE 解码，流内状态完全由我们管理
       const { data: rawStream, response } = await this.client.messages
         .create(requestParams as any, {
-          headers: { "x-client-request-id": clientRequestId },
+          headers: {
+            "x-client-request-id": clientRequestId,
+            // P2-4: Token Efficient Tools beta header（与 strict 互斥）
+            ...(tokenEfficientToolsEnabled && {
+              "anthropic-beta": "token-efficient-tools-2025-02-19",
+            }),
+          },
           // ⭐ 关键：把 signal 透传给 SDK，使 abort() 能真正中断底层 HTTP/TCP 连接。
           ...(signal ? { signal } : {}),
         })
@@ -283,7 +311,7 @@ export class AnthropicProvider implements Provider {
                 };
               } else if (delta.type === "input_json_delta") {
                 // § tool input 自管拼接（替代 SDK 的 O(n²) partialParse）
-                // 简单 string concat，比 SDK 每次 JSON.parse 高效得多
+                // O(n) 设计：简单 string concat + 最终一次性 JSON.parse，不做增量 parse
                 entry._inputAccumulator = (entry._inputAccumulator || "") + delta.partial_json;
                 yield {
                   type: "content_block_delta",
@@ -312,7 +340,7 @@ export class AnthropicProvider implements Provider {
               const entry = contentBlocks[idx];
               if (entry && entry.block.type === "tool_use" && entry._inputAccumulator) {
                 try {
-                  (entry.block as any).input = JSON.parse(entry._inputAccumulator);
+                  (entry.block as any).input = normalizeToolInput(JSON.parse(entry._inputAccumulator));
                 } catch (e) {
                   log.error("LLM:ANTHROPIC", `tool input JSON 解析失败`, {
                     raw: entry._inputAccumulator.slice(0, 200),
@@ -432,6 +460,9 @@ export class AnthropicProvider implements Provider {
       name: t.name,
       description: t.description,
       input_schema: t.input_schema,
+      // 非流式路径同样支持 strict（对齐流式路径门控逻辑）
+      ...(t.strict && !process.env.SID_DISABLE_STRICT_TOOLS
+        && modelSupportsStrict(params.model || this._model) && { strict: true }),
     }));
 
     const system = params.system
@@ -512,5 +543,24 @@ export class AnthropicProvider implements Provider {
     const log = getLogger();
     log.debug("LLM:ANTHROPIC", `忽略未知 content block 类型: ${block.type}`);
     return { type: "text", text: "" };
+  }
+}
+
+// ─── P1-3 / P1-4 / P2-4 辅助函数 ───────────────────────────────────────────
+
+/** 判断模型是否支持 strict tool use（Constrained Decoding） */
+function modelSupportsStrict(model: string): boolean {
+  // 仅 Claude 4.x 系列支持（opus-4, sonnet-4, haiku-4）
+  return /claude-(sonnet|opus|haiku)-4/.test(model);
+}
+
+/** 判断是否为 Anthropic 直连（非代理/非 Bedrock/非 Vertex） */
+function isDirectAnthropicEndpoint(baseUrl?: string): boolean {
+  if (!baseUrl) return true; // 默认 SDK 行为 = 直连 api.anthropic.com
+  try {
+    const url = new URL(baseUrl);
+    return url.hostname.endsWith("anthropic.com");
+  } catch {
+    return false;
   }
 }

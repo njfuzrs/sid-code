@@ -204,6 +204,10 @@ export interface ToolDefinition {
   name: string;
   description: string;
   input_schema: Record<string, unknown>;
+  /** 是否启用 Constrained Decoding（模型保证 100% JSON 合规）。
+   *  仅 Anthropic Claude 4.x + firstParty 连接时生效。
+   *  MCP 工具 / 动态 schema 工具（StructuredOutput）不标记。 */
+  strict?: boolean;
 }
 
 /** 发送消息参数 */
@@ -262,6 +266,19 @@ export interface SendParams {
    */
   outputConfig?: {
     effort: "high" | "max";
+  };
+  /**
+   * Anthropic output_config.format — API 级结构化输出（非工具调用方式）。
+   * 允许整个响应强制为 JSON（类似 OpenAI 的 response_format）。
+   * 仅 Anthropic firstParty + Claude 4.x 支持。不传则不下发。
+   */
+  outputFormat?: {
+    type: "json_schema";
+    json_schema: {
+      name: string;
+      schema: Record<string, unknown>;
+      strict?: boolean;
+    };
   };
 }
 

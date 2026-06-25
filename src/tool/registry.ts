@@ -17,6 +17,26 @@ import { getLogger } from "../debug/index.ts";
 import { searchToolsWithScoring } from "./tool-search-scoring.ts";
 
 /**
+ * Zod→JSON Schema 的 identity cache（对齐 CC zodToJsonSchema.ts）。
+ * 同一 Zod 对象引用（由 lazySchema 保证稳定）只转换一次。
+ * WeakMap 允许工具被移除时 GC 自动清理。
+ *
+ * ⚠️ 注意：此缓存仅用于 zodSchema 路径。
+ * StructuredOutput 工具走 inputSchema() 方法（每次返回动态 schema），
+ * 不经过此缓存。如果未来统一路径，需要用 schema 内容（非工具名）做 key。
+ * 参见 CC PR#25424：只用名称做 key → 错误率 5.4% → 51%。
+ */
+const zodJsonSchemaCache = new WeakMap<object, Record<string, unknown>>();
+
+function cachedZodToJsonSchema(zodSchema: object): Record<string, unknown> {
+  const cached = zodJsonSchemaCache.get(zodSchema);
+  if (cached) return cached;
+  const result = z.toJSONSchema(zodSchema as any) as Record<string, unknown>;
+  zodJsonSchemaCache.set(zodSchema, result);
+  return result;
+}
+
+/**
  * 生成单个工具的 LLM 定义。
  *
  * input_schema 来源优先级：
@@ -37,7 +57,7 @@ function toolToDefinition(t: LegacyTool): ToolDefinition {
   let inputSchema: Record<string, unknown>;
   if (t.zodSchema) {
     try {
-      inputSchema = z.toJSONSchema(t.zodSchema) as Record<string, unknown>;
+      inputSchema = cachedZodToJsonSchema(t.zodSchema);
     } catch (err: any) {
       getLogger().warn(
         "TOOL",
@@ -53,6 +73,10 @@ function toolToDefinition(t: LegacyTool): ToolDefinition {
     name: t.name(),
     description: desc,
     input_schema: inputSchema,
+    // P1-3: 内置工具默认启用 strict（schema 已固定，适合 Constrained Decoding）。
+    // MCP 工具暂不启用（schema 可能不完全符合 strict 要求）。
+    // StructuredOutput 工具走 inputSchema() 路径（动态 schema），也不标记。
+    strict: !t.name().startsWith("mcp__") && t.name() !== "StructuredOutput" ? true : undefined,
   };
 }
 
@@ -150,9 +174,14 @@ export class Registry {
   definitions(options?: AssembleOptions): ToolDefinition[] {
     const tools = options ? this.assembleToolPool(options) : this.all();
     const defs = tools.map(toolToDefinition);
-    // D2 前缀稳定性：工具定义按 name 固定字典序输出，杜绝注册顺序抖动（尤其 MCP 异步连接顺序）
-    // 废掉工具 schema 缓存前缀。序列化顺序只影响请求载荷的缓存前缀，不影响执行查找（按 name 索引）。
-    defs.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    // D2 前缀稳定性：工具定义按 name 固定字典序输出，杜绝注册顺序抖动（尤其 MCP 异步连接顺序）。
+    // P2-2: StructuredOutput 始终排最后——其动态 schema 变化只影响自身的 cache 命中，
+    // 不影响前面所有工具的 Anthropic Prompt Cache prefix 匹配。
+    defs.sort((a, b) => {
+      if (a.name === "StructuredOutput") return 1;
+      if (b.name === "StructuredOutput") return -1;
+      return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+    });
     return defs;
   }
 

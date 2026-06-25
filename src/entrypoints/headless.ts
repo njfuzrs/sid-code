@@ -31,6 +31,7 @@ import type {
   ToolDefinition,
 } from "../llm/types.ts";
 import { accumulateUsage } from "../llm/types.ts";
+import { normalizeToolInput } from "../llm/normalize-tool-input.ts";
 
 // ============================================================
 // 主线
@@ -382,9 +383,12 @@ async function processStream(stream: AsyncIterable<StreamEvent>): Promise<{
         if (jsonStr !== undefined) {
           const block = content[event.index];
           if (block?.type === "tool_use") {
+            // O(n) 设计：拼接字符串 + 最终一次性解析，不做增量 parse（对齐 CC raw stream 策略）
             try {
-              block.input = jsonStr ? JSON.parse(jsonStr) : {};
-            } catch {
+              block.input = normalizeToolInput(jsonStr ? JSON.parse(jsonStr) : {});
+            } catch (e) {
+              // telemetry: 工具输入 JSON 解析失败（对齐 CC tengu_tool_input_json_parse_fail）
+              process.stderr.write(`[STREAM] 工具输入 JSON 解析失败: tool=${block.name} len=${jsonStr.length} err=${e instanceof Error ? e.message : String(e)}\n`);
               block.input = {};
             }
           }

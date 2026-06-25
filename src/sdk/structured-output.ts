@@ -6,10 +6,12 @@
  * - extractStructuredOutput：从助手消息提取并解析 JSON（支持 ```json 包裹）
  *
  * 对齐 Claude Code structured_output 能力（spec §5.5）。
- * JSON Schema 的深度校验留作后续（可接 ajv）；当前做解析 + 顶层类型检查。
+ * P0-2: 校验升级——复用 json-schema-validator 做完整 JSON Schema 递归校验，
+ * 替代原有的顶层类型+required 浅层检查。
  */
 
 import type { Message } from "../llm/types.ts";
+import { validateAgainstSchema, formatSchemaErrors } from "../workflow/json-schema-validator.ts";
 
 export interface StructuredOutputConfig {
   /** JSON Schema 约束 */
@@ -59,25 +61,14 @@ export function extractStructuredOutput(
     };
   }
 
-  // 顶层类型检查（schema.type 为 object/array 时校验）
-  const expectedType = schema["type"];
-  if (expectedType === "object") {
-    if (typeof data !== "object" || data === null || Array.isArray(data)) {
-      return { success: false, error: "期望 object 类型" };
-    }
-    // 必填字段检查
-    const required = schema["required"];
-    if (Array.isArray(required)) {
-      const obj = data as Record<string, unknown>;
-      const missing = required.filter((k) => typeof k === "string" && !(k in obj));
-      if (missing.length > 0) {
-        return { success: false, error: `缺失必填字段: ${missing.join(", ")}` };
-      }
-    }
-  } else if (expectedType === "array") {
-    if (!Array.isArray(data)) {
-      return { success: false, error: "期望 array 类型" };
-    }
+  // P0-2: 完整 JSON Schema 递归校验（替换原有的浅层 type+required 检查）
+  // 复用 workflow 路径同一校验器，保证 SDK 和 Workflow 路径校验深度一致
+  const result = validateAgainstSchema(schema, data);
+  if (!result.valid) {
+    return {
+      success: false,
+      error: `Schema 校验失败: ${formatSchemaErrors(result.errors)}`,
+    };
   }
 
   return { success: true, data };
