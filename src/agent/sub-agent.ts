@@ -152,6 +152,16 @@ async function enhanceSubAgentPrompt(
     );
   }
 
+  // 结论输出约束（防止 max_turns 退出时 result 是 thinking 碎片）
+  // 对标 CC：Anthropic 模型 thinking 有独立 block type 自然被过滤，
+  // 但第三方模型（DeepSeek 等）reasoning 混在 text block 中无法靠 type 过滤，
+  // 必须在 prompt 层面预防性约束。
+  notes.push(
+    "【关键约束】你的最后一条消息必须是结构化总结/结论，不能是规划或思考过程。" +
+      "如果你感觉快要达到轮次限制，请立即停止探索并输出目前已有的结论。" +
+      "格式要求：以「## 结论」或「## 发现」开头，用表格/列表组织发现内容。",
+  );
+
   // 环境信息
   const dir = workingDir ?? cwd();
   const home = homedir();
@@ -1065,7 +1075,10 @@ export class SubAgent {
    *  参考 claude-code finalizeAgentTool 回退逻辑：
    *  优先取最后一条有 text content 的 assistant 消息，
    *  如果最后一条 assistant 是纯 tool_use block（无文本），向前查找最近的有文本的，
-   *  只有在完全没有文本时才回退到 lastTextOutput */
+   *  只有在完全没有文本时才回退到 lastTextOutput。
+   *
+   *  增强：跳过纯 thinking/planning 文本（第三方模型 reasoning 混在 text block 中，
+   *  CC 靠 thinking type 过滤，sid-code 需启发式判断）。 */
   private extractFinalText(messages: Array<{ role: string; content: ContentBlock[] }>, fallback: string): string {
     // 倒序遍历所有消息
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -1076,8 +1089,29 @@ export class SubAgent {
         .map(b => b.type === "text" ? b.text : "")
         .join("\n")
         .trim();
-      if (texts) return texts;
+      if (!texts) continue;
+      // 跳过纯 thinking/planning 文本（无实质结论）
+      if (this.isLikelyThinking(texts)) continue;
+      return texts;
     }
     return fallback;
+  }
+
+  /** 启发式判断文本是否为纯 thinking/planning（无结构化结论内容）。
+   *  特征：短文本（<= 5 行有效行）且每行都是规划性开头。
+   *  长文本（> 5 行）或含结构化标记（## / | / - ）的一般都包含结论，不过滤。 */
+  private isLikelyThinking(text: string): boolean {
+    const lines = text.split("\n").filter(l => l.trim());
+    // 长文本通常包含结论（有实质内容）
+    if (lines.length > 5) return false;
+    // 含结构化标记（标题 / 表格 / 列表）的不是纯 thinking
+    if (lines.some(l => /^#{1,3}\s|^\||\*\*/.test(l.trim()))) return false;
+    // 全部是规划性开头才判定为 thinking
+    const planningPatterns = [
+      /^(Now |Let me |I need to |I should |I'll |I have |Also,? |Next,? )/i,
+      /^(Let me check|Let me verify|Let me look|I have a complete|I want to )/i,
+      /^(Looking at |Checking |This |The |So |OK |Alright )/i,
+    ];
+    return lines.every(l => planningPatterns.some(p => p.test(l.trim())));
   }
 }

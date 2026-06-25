@@ -84,44 +84,84 @@ function extractNotificationTag(block: string, tag: string): string | undefined 
 }
 
 /**
- * 尝试把一条 user 消息解析为「后台任务通知」专用历史项。
+ * 尝试把一条 user 消息中的「后台任务通知」块解析为专用历史项。
  *
  * 背景：后台子代理/shell 完成后，<task-notification> XML 被当作 user 文本消息注入对话。
  * 此前它走 UserMessage 全量渲染（`>` 前缀、不折叠），与同一任务的 task_output 工具结果
  * （走折叠路径）视觉割裂。这里把它识别出来，转为 task_notification 历史项（折叠展示）。
  *
- * 仅当消息**只含文本块**且文本以 <task-notification> 开头时才解析；一条消息可能含多个
- * 连续的通知块（批量后台任务同轮完成），每块产出一个历史项。非通知消息返回 null。
+ * 鲁棒性增强（对标 CC 多层防泄漏）：
+ * - 不再要求消息"只含文本块"，支持 notification text block 与 tool_result 混合的场景
+ *   （角色交替合并 addMessage 会把 notification 追加到含 tool_result 的消息中）
+ * - 返回 { notifications, remaining } 结构：notifications 是解析出的历史项，
+ *   remaining 是非 notification 的剩余 blocks（供调用侧继续走正常渲染路径）
+ * - 也支持 _meta.origin === "task-notification" 标记的快速识别（中期加固路径）
  */
-function tryParseTaskNotifications(msg: Message): HistoryItemWithoutId[] | null {
+function tryParseTaskNotifications(msg: Message): {
+  notifications: HistoryItemWithoutId[];
+  remaining: import("../llm/types.ts").ContentBlock[] | null;
+} | null {
   if (msg.role !== "user") return null;
   if (msg.content.length === 0) return null;
-  if (!msg.content.every(b => b.type === "text")) return null;
 
-  const text = msg.content.map(b => (b.type === "text" ? b.text : "")).join("\n");
-  if (!text.trimStart().startsWith(TASK_NOTIFICATION_OPEN)) return null;
-
-  const blocks = text.match(/<task-notification>[\s\S]*?<\/task-notification>/g);
-  if (!blocks || blocks.length === 0) return null;
-
-  const items: HistoryItemWithoutId[] = [];
-  for (const block of blocks) {
-    const taskId = extractNotificationTag(block, "task-id") ?? "";
-    const status = extractNotificationTag(block, "status") ?? "";
-    const summary = extractNotificationTag(block, "summary") ?? "";
-    const outputFile = extractNotificationTag(block, "output-file");
-    // completed 走 <result>，failed/killed 走 <error>（可能缺省，则正文为空仅显示摘要）。
-    const result = extractNotificationTag(block, "result") ?? extractNotificationTag(block, "error");
-    items.push({
-      type: "task_notification",
-      taskId,
-      status,
-      summary,
-      ...(result ? { result } : {}),
-      ...(outputFile ? { outputFile } : {}),
-    });
+  // 快速路径：_meta 标记识别（中期加固后优先走此路径）
+  if (msg._meta?.origin === "task-notification") {
+    const text = msg.content.map(b => (b.type === "text" ? b.text : "")).join("\n");
+    const blocks = text.match(/<task-notification>[\s\S]*?<\/task-notification>/g);
+    if (!blocks || blocks.length === 0) return null;
+    const items: HistoryItemWithoutId[] = [];
+    for (const block of blocks) {
+      items.push(parseOneNotificationBlock(block));
+    }
+    return { notifications: items, remaining: null };
   }
-  return items;
+
+  // 通用路径：从 content blocks 中分离 notification text blocks 与其它 blocks
+  const notifTexts: string[] = [];
+  const otherBlocks: import("../llm/types.ts").ContentBlock[] = [];
+
+  for (const block of msg.content) {
+    if (block.type === "text" && block.text.trimStart().startsWith(TASK_NOTIFICATION_OPEN)) {
+      notifTexts.push(block.text);
+    } else {
+      otherBlocks.push(block);
+    }
+  }
+
+  if (notifTexts.length === 0) return null;
+
+  // 解析 notification text blocks
+  const items: HistoryItemWithoutId[] = [];
+  const fullText = notifTexts.join("\n");
+  const xmlBlocks = fullText.match(/<task-notification>[\s\S]*?<\/task-notification>/g);
+  if (!xmlBlocks || xmlBlocks.length === 0) return null;
+
+  for (const block of xmlBlocks) {
+    items.push(parseOneNotificationBlock(block));
+  }
+
+  return {
+    notifications: items,
+    remaining: otherBlocks.length > 0 ? otherBlocks : null,
+  };
+}
+
+/** 解析单个 <task-notification> XML 块为历史项 */
+function parseOneNotificationBlock(block: string): HistoryItemWithoutId {
+  const taskId = extractNotificationTag(block, "task-id") ?? "";
+  const status = extractNotificationTag(block, "status") ?? "";
+  const summary = extractNotificationTag(block, "summary") ?? "";
+  const outputFile = extractNotificationTag(block, "output-file");
+  // completed 走 <result>，failed/killed 走 <error>（可能缺省，则正文为空仅显示摘要）。
+  const result = extractNotificationTag(block, "result") ?? extractNotificationTag(block, "error");
+  return {
+    type: "task_notification",
+    taskId,
+    status,
+    summary,
+    ...(result ? { result } : {}),
+    ...(outputFile ? { outputFile } : {}),
+  };
 }
 
 /**
@@ -216,9 +256,22 @@ export function messagesToHistoryItemsWithMap(
 
     // 后台任务通知（<task-notification>）：转为专用折叠历史项，
     // 不走 UserMessage 全量渲染（否则 `>` 前缀 + 不折叠，与 task_output 工具结果视觉割裂）。
-    const notifications = tryParseTaskNotifications(rawMsg);
-    if (notifications) {
-      items.push(...notifications);
+    // 鲁棒性增强：支持 notification 与 tool_result 混合的场景（角色交替合并导致）。
+    const notifResult = tryParseTaskNotifications(rawMsg);
+    if (notifResult) {
+      items.push(...notifResult.notifications);
+      if (notifResult.remaining) {
+        // 剩余 blocks（tool_result 等）继续走正常渲染路径
+        const remainingMsg = { ...rawMsg, content: notifResult.remaining };
+        const strippedRemaining = stripInternalTextBlocks(remainingMsg);
+        if (strippedRemaining.content.length > 0) {
+          if (strippedRemaining.role === "assistant") {
+            items.push(...convertAssistantMessage(strippedRemaining, pendingToolCalls));
+          } else {
+            items.push(...convertUserMessage(strippedRemaining, toolNameMap, pendingToolCalls));
+          }
+        }
+      }
       continue;
     }
 

@@ -166,6 +166,10 @@ export async function* queryLoop(
         ctxMgr.addMessage({
           role: "user",
           content: [{ type: "text", text: notification }],
+          // 多层防泄漏标记（对标 CC AttachmentMessage + isMeta + origin）：
+          // 即使 addMessage 角色交替合并把 notification 追加到 tool_result 消息，
+          // history-adapter 仍能通过 _meta.origin 快速识别并走折叠渲染路径。
+          _meta: { origin: "task-notification", isMeta: true },
         });
       }
       log.info("QUERY_LOOP", `注入 ${notifications.length} 条后台任务通知`);

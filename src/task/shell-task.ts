@@ -11,7 +11,7 @@ import {
   type LocalShellTaskState,
   isTerminalStatus,
 } from "./types.ts";
-import { registerTask, updateTask, getTask } from "./registry.ts";
+import { registerTask, updateTask, getTask, EVICT_GRACE_MS } from "./registry.ts";
 import { initTaskOutput, getTaskOutputTail } from "./disk-output.ts";
 import {
   formatNotification,
@@ -88,6 +88,7 @@ export function spawnShellTask(opts: {
       exitCode: code ?? -1,
       interrupted: signal !== null,
       endTime: Date.now(),
+      evictAfter: Date.now() + EVICT_GRACE_MS,
       notified: true,
     }));
 
@@ -111,6 +112,7 @@ export function spawnShellTask(opts: {
       ...t,
       status: "failed",
       endTime: Date.now(),
+      evictAfter: Date.now() + EVICT_GRACE_MS,
       notified: true,
     }));
 
@@ -160,6 +162,7 @@ export function killShellTask(taskId: string): void {
       status: "killed",
       interrupted: true,
       endTime: Date.now(),
+      evictAfter: Date.now() + EVICT_GRACE_MS,
       notified: true,
     };
   });

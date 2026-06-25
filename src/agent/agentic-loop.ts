@@ -271,7 +271,49 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
     break;
   }
 
-  // 达到最大轮次
+  // 达到最大轮次——强制请求总结（额外一轮，不计入 maxTurns）。
+  // 问题：子代理达到 max_turns 被强制终止时，最后一条 assistant 消息可能是
+  // "Let me check..." 这类 thinking/planning 文本，extractFinalText 取到它就
+  // 导致 result 无法被主循环利用。对标 CC 的策略（Anthropic 模型 thinking 有独立 type
+  // 自然被过滤），但 sid-code 支持第三方模型（DeepSeek 等），其 reasoning 混在 text block 中，
+  // 无法靠 type 过滤。解法：在退出前追加一轮"请总结"，让模型输出结构化结论再退出。
+  if (!signal.aborted) {
+    log.info("AGENT_LOOP", `达到最大轮次 ${maxTurns}，请求强制总结`);
+    ctxMgr.addMessage({
+      role: "user",
+      content: [{ type: "text", text: "你已达到最大轮次限制，无法继续调用工具。请立即输出你到目前为止的所有发现和结论，以结构化格式（表格/列表）呈现。不要再调用任何工具，直接输出结论。" }],
+    });
+
+    try {
+      const summaryStream = provider.sendMessageStream({
+        model,
+        messages: ctxMgr.getMessages(),
+        system: ctxMgr.getSystemPrompt(),
+        maxTokens: 4096,
+        // 不传 tools，禁止模型继续调工具
+        ...config.sendParamsExtra,
+      }, signal);
+
+      const summaryResponse = await processStream(summaryStream);
+      accumulateUsage(totalUsage, summaryResponse.usage);
+
+      // 提取总结文本
+      const summaryTexts = summaryResponse.content.filter(b => b.type === "text");
+      if (summaryTexts.length > 0) {
+        lastTextOutput = summaryTexts
+          .map(b => b.type === "text" ? b.text : "")
+          .join("\n");
+      }
+
+      // 添加总结到历史
+      ctxMgr.addMessage({ role: "assistant", content: summaryResponse.content });
+      config.onTurnEnd?.({ turn: turns + 1, textOutput: lastTextOutput, tools: [], tokenCount: totalUsage.inputTokens + totalUsage.outputTokens, toolUseCount });
+    } catch (err: any) {
+      // 强制总结失败不影响整体返回（降级到 extractFinalText 的启发式过滤）
+      log.warn("AGENT_LOOP", `强制总结轮失败: ${err.message}`);
+    }
+  }
+
   return {
     success: true,
     turns,

@@ -10,7 +10,7 @@ import {
   type AgentTaskResult,
   isTerminalStatus,
 } from "./types.ts";
-import { registerTask, updateTask, getTask } from "./registry.ts";
+import { registerTask, updateTask, getTask, EVICT_GRACE_MS } from "./registry.ts";
 import { initTaskOutput, appendTaskOutput, flushTaskOutput } from "./disk-output.ts";
 import {
   formatNotification,
@@ -86,6 +86,7 @@ export async function completeAgentTask(taskId: string, result: AgentTaskResult)
     status: "completed",
     result,
     endTime: Date.now(),
+    evictAfter: Date.now() + EVICT_GRACE_MS,  // 对标 CC: 60s 缓冲期后才允许驱逐
     notified: true,
   }));
 
@@ -120,6 +121,7 @@ export async function failAgentTask(taskId: string, error: string): Promise<void
     status: "failed",
     error,
     endTime: Date.now(),
+    evictAfter: Date.now() + EVICT_GRACE_MS,  // 对标 CC: 60s 缓冲期后才允许驱逐
     notified: true,
   }));
 
@@ -152,6 +154,7 @@ export function killAgentTask(taskId: string): void {
       ...t,
       status: "killed",
       endTime: Date.now(),
+      evictAfter: Date.now() + EVICT_GRACE_MS,  // 对标 CC: 60s 缓冲期后才允许驱逐
       notified: true,
     };
   });

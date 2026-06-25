@@ -13,7 +13,7 @@ import {
   type AgentTaskResult,
   isTerminalStatus,
 } from "./types.ts";
-import { registerTask, updateTask, getTask } from "./registry.ts";
+import { registerTask, updateTask, getTask, EVICT_GRACE_MS } from "./registry.ts";
 import { initTaskOutput, appendTaskOutput, flushTaskOutput } from "./disk-output.ts";
 import { formatNotification, enqueuePendingNotification } from "./notification.ts";
 
@@ -91,6 +91,7 @@ export async function completeWorkflowTask(
     status: "completed",
     result,
     endTime: Date.now(),
+    evictAfter: Date.now() + EVICT_GRACE_MS,
     notified: true,
   }));
 
@@ -120,6 +121,7 @@ export async function failWorkflowTask(taskId: string, error: string): Promise<v
     status: "failed",
     error,
     endTime: Date.now(),
+    evictAfter: Date.now() + EVICT_GRACE_MS,
     notified: true,
   }));
 
@@ -149,6 +151,7 @@ export function killWorkflowTask(taskId: string): boolean {
     ...t,
     status: "killed",
     endTime: Date.now(),
+    evictAfter: Date.now() + EVICT_GRACE_MS,
     notified: true,
   }));
 

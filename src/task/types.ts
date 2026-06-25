@@ -57,6 +57,10 @@ export interface TaskStateBase {
   outputFile: string;
   outputOffset: number;
   notified: boolean;
+  /** 驱逐缓冲期截止时间（对标 CC PANEL_GRACE_MS）。
+   *  evictTerminalTasks 只在 Date.now() > evictAfter 时才清除任务，
+   *  给主循环模型留足窗口通过 task_output 再次查询结果。 */
+  evictAfter?: number;
 }
 
 /** Shell 任务状态 */
