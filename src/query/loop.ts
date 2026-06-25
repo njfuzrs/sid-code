@@ -556,10 +556,9 @@ export async function* queryLoop(
           } catch { /* abort 失败不影响 race 让出 */ }
           reject(new Error(`单轮硬超时：${MAX_TURN_DURATION_MS / 1000}s 无完成`));
         }, MAX_TURN_DURATION_MS);
-        // unref：此定时器不应阻止进程退出
-        if (turnTimer && typeof turnTimer === "object" && "unref" in turnTimer) {
-          (turnTimer as any).unref();
-        }
+        // P3（9bc92c2c + fdb47f30 教训）：不 unref——Bun 中 unref timer 在事件循环被
+        // 底层 IO hang 占满时不保证按时 fire，导致硬超时形同虚设。
+        // 正常路径的 finally { clearTimeout(turnTimer) } 保证不会泄漏阻止退出。
       });
 
       try {
@@ -736,6 +735,14 @@ export async function* queryLoop(
     }
 
     log.llmResponse(response.stopReason || "unknown", response.usage, apiDuration, sessionState.totalCostUSD);
+
+    // ─── P2（9bc92c2c）：processStream 成功返回后立即记录原始 AfterModel 事件 ───
+    // 确保即使后续 content 解析/hook 触发崩溃，events.jsonl 中也有 AfterModel 痕迹，
+    // 消除"有 BeforeModel 无 AfterModel"的诊断盲区。
+    try {
+      getSessionMetrics()?.incrementCounter("after_model_raw", 1);
+      log.info("QUERY_LOOP", `AfterModelRaw: stop=${response.stopReason}, in=${response.usage.inputTokens} out=${response.usage.outputTokens}, blocks=${response.content.length}`);
+    } catch { /* 纯观测，不影响主循环 */ }
 
     // ─── 提取响应文本 ───
     const responseText = response.content

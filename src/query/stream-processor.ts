@@ -55,6 +55,12 @@ export async function processStream(
   // 累积 reasoning 文本（DeepSeek reasoning_content 回传用）
   let accumulatedReasoning = "";
 
+  // P1（9bc92c2c 根因修复）：SSE event.index → content 数组实际位置的映射。
+  // 某些第三方代理返回的 content_block index 不从 0 开始或不连续（如直接调用工具时
+  // index=1 跳过 0），用 index 做数组下标会产生 undefined 空洞导致下游 TypeError。
+  // 改为 push 到末尾 + 映射表查找，保证 content 数组始终密集。
+  const indexToPosition = new Map<number, number>();
+
   // 超时配置（心跳 + 整体超时共用一个定时器，每 5 秒检查一次）
   const HEARTBEAT_TIMEOUT = options?.heartbeatTimeoutMs ?? 60_000;
   const OVERALL_TIMEOUT = options?.overallTimeoutMs ?? 300_000;
@@ -101,27 +107,32 @@ export async function processStream(
           accumulateUsage(response.usage, event.message.usage);
           break;
 
-        case "content_block_start":
+        case "content_block_start": {
+          const pos = response.content.length; // push 到末尾，保证数组密集
+          indexToPosition.set(event.index, pos);
           if (event.content_block.type === "text") {
-            response.content[event.index] = { type: "text", text: "" };
+            response.content.push({ type: "text", text: "" });
             if (event._raw_block && (event._raw_block as any).type === "thinking") {
               thinkingIndexes.add(event.index);
             }
           } else if (event.content_block.type === "tool_use") {
-            response.content[event.index] = {
+            response.content.push({
               type: "tool_use",
               id: event.content_block.id,
               name: event.content_block.name,
               input: {},
-            };
+            });
             jsonAccumulators.set(event.index, "");
           }
           break;
+        }
 
         case "content_block_delta": {
+          const pos = indexToPosition.get(event.index);
+          if (pos === undefined) break; // 未知 index 的 delta，忽略
           const delta = event.delta;
           if (delta.type === "text_delta") {
-            const block = response.content[event.index];
+            const block = response.content[pos];
             if (block?.type === "text") {
               block.text += delta.text;
               // 对标 Claude Code：思考块不调 onText，调 onThinking
@@ -143,9 +154,11 @@ export async function processStream(
         }
 
         case "content_block_stop": {
+          const pos = indexToPosition.get(event.index);
+          if (pos === undefined) break; // 未知 index，忽略
           const jsonStr = jsonAccumulators.get(event.index);
           if (jsonStr !== undefined) {
-            const block = response.content[event.index];
+            const block = response.content[pos];
             if (block?.type === "tool_use") {
               try {
                 block.input = jsonStr ? JSON.parse(jsonStr) : {};
@@ -156,7 +169,7 @@ export async function processStream(
             jsonAccumulators.delete(event.index);
           }
           if (thinkingIndexes.has(event.index)) {
-            const block = response.content[event.index];
+            const block = response.content[pos];
             if (block?.type === "text" && block.text) {
               // SP1：算出该思考块耗时（首 delta → stop）；无起点（无 delta）则不附。
               const startedAt = thinkingStartMs.get(event.index);
@@ -170,7 +183,7 @@ export async function processStream(
                 thinking: block.text,
                 ...(durationMs !== undefined ? { durationMs } : {}),
               };
-              response.content[event.index] = thinkingBlock;
+              response.content[pos] = thinkingBlock;
               thinkingBlocks.push(thinkingBlock);
               accumulatedReasoning += block.text;
             }
@@ -291,6 +304,10 @@ export async function processStream(
   }
 
   // 思考块已原地转型为 ThinkingBlock 保留在 content 中，不再需要过滤移除
+
+  // P0-1（9bc92c2c 根因修复最终防线）：过滤掉可能残余的 undefined 空洞。
+  // 正常情况下 P1 的 push + indexToPosition 已保证数组密集，此处为纵深防御。
+  response.content = response.content.filter(Boolean);
 
   return response;
 }
