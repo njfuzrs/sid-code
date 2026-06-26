@@ -27,8 +27,6 @@ interface StreamingMarkdownProps {
   text: string;
   /** 渲染宽度 */
   terminalWidth: number;
-  /** 可用终端高度（仅 unstable 块的代码块流式截断用，主屏当前不传） */
-  availableTerminalHeight?: number;
 }
 
 export interface StreamSplit {
@@ -93,7 +91,6 @@ export function computeStreamSplit(text: string, committed: number): StreamSplit
 const StreamingMarkdownInternal: React.FC<StreamingMarkdownProps> = ({
   text,
   terminalWidth,
-  availableTerminalHeight,
 }) => {
   // 'use no memo'：本组件在 render 期间读写 ref（边界单调推进，幂等安全），
   // 但 react-compiler 无法证明这点。项目当前无 react-compiler（no-op），
@@ -128,8 +125,6 @@ const StreamingMarkdownInternal: React.FC<StreamingMarkdownProps> = ({
       {stablePrefix ? (
         <MarkdownAnsi
           text={stablePrefix}
-          isPending={false}
-          availableTerminalHeight={undefined}
           terminalWidth={terminalWidth}
           renderMarkdown={true}
         />
@@ -137,8 +132,6 @@ const StreamingMarkdownInternal: React.FC<StreamingMarkdownProps> = ({
       {unstableSuffix ? (
         <MarkdownAnsi
           text={unstableSuffix}
-          isPending={true}
-          availableTerminalHeight={availableTerminalHeight}
           terminalWidth={terminalWidth}
           renderMarkdown={true}
         />

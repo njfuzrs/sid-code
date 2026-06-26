@@ -2,8 +2,8 @@
  * 同步输出能力探测 — P0-5 / §3.1
  *
  * 重要说明:
- * 实际的同步输出帧包裹(BSU/ESU `\x1b[?2026h/l`)已由渲染依赖
- * `@jrichman/ink` fork 在 log-update 层负责(enableSynchronizedOutput=true),
+ * 实际的同步输出帧包裹(BSU/ESU `\x1b[?2026h/l`)已由 vendor 进 `src/ink/` 的
+ * claude-code ink fork 在 log-update 层负责(enableSynchronizedOutput=true),
  * sid-code 无需也不应在应用层重复包裹帧 —— 那会与 fork 双重发送转义序列。
  *
  * 本模块只提供"当前终端是否声称支持同步输出"的**纯逻辑判断**,

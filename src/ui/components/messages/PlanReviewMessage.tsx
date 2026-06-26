@@ -63,7 +63,6 @@ export const PlanReviewMessage: React.FC<PlanReviewMessageProps> = ({
       <Box flexDirection="column">
         <MarkdownAnsi
           text={planContent}
-          isPending={false}
           terminalWidth={contentWidth}
           renderMarkdown={true}
         />

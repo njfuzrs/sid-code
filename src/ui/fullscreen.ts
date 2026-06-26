@@ -1,10 +1,10 @@
 /**
  * TUI 渲染模块（双模式）
  *
- * - alternateBuffer=true：Ink 原生 alternateBuffer + incrementalRendering（全屏 TUI，虚拟滚动）
+ * - alternateBuffer=true：进 alternate screen 全屏 TUI（<AlternateScreen> 组件 + 虚拟滚动）
  * - alternateBuffer=false（默认，ADR-040）：主屏渲染，历史进终端 scrollback，支持原生文本选择
  * 鼠标事件启用/禁用由 MouseContext 管理（仅 alternateBuffer 模式启用）
- * 退出时 Ink fork 会自动将最终帧渲染到主缓冲区（由 AlternateBufferQuittingDisplay 提供内容）
+ * 退出时 src/ink fork 会自动将最终帧渲染到主缓冲区（由 AlternateBufferQuittingDisplay 提供内容）
  */
 
 import render from "../ink/root.js";

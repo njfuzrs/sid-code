@@ -36,8 +36,6 @@ interface HistoryItemDisplayProps {
   item: HistoryItem;
   prevItem?: HistoryItem;
   terminalWidth: number;
-  isPending?: boolean;
-  availableTerminalHeight?: number;
   /** v2：思考块折叠状态 */
   thinkCollapsed?: boolean;
   /**
@@ -50,8 +48,6 @@ interface HistoryItemDisplayProps {
 export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
   item,
   terminalWidth,
-  isPending = false,
-  availableTerminalHeight,
   thinkCollapsed = false,
   thinkExpandable = true,
 }) => {
@@ -75,8 +71,6 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
           <AssistantMessage
             text={item.text}
             width={width}
-            isPending={isPending}
-            availableTerminalHeight={availableTerminalHeight}
           />
         </Box>
       );
@@ -87,8 +81,6 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
           <AssistantMessage
             text={item.text}
             width={width}
-            isPending={isPending}
-            availableTerminalHeight={availableTerminalHeight}
           />
         </Box>
       );

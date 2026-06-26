@@ -17,14 +17,11 @@ interface StreamingMessageProps {
   fullText: string;
   /** 渲染宽度 */
   maxWidth?: number;
-  /** 可用终端高度（用于流式截断） */
-  availableTerminalHeight?: number;
 }
 
 export const StreamingMessage = React.memo(function StreamingMessage({
   fullText,
   maxWidth,
-  availableTerminalHeight,
 }: StreamingMessageProps) {
   if (!fullText) return null;
 
@@ -40,11 +37,6 @@ export const StreamingMessage = React.memo(function StreamingMessage({
       <Box flexGrow={1} flexDirection="column">
         <StreamingMarkdown
           text={fullText}
-          availableTerminalHeight={
-            availableTerminalHeight === undefined
-              ? undefined
-              : Math.max(availableTerminalHeight - 1, 1)
-          }
           terminalWidth={Math.max(terminalWidth - prefixWidth, 0)}
         />
       </Box>

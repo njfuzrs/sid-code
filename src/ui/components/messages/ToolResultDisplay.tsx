@@ -192,8 +192,7 @@ export const ToolResultDisplay: React.FC<ToolResultDisplayProps> = ({
 
   // 5. Markdown 渲染
   if (renderOutputAsMarkdown) {
-    // MarkdownAnsi 仅在 isPending 时按 availableTerminalHeight 截断，
-    // 工具结果是已完成内容（isPending=false），其自身不做行数折叠。
+    // 工具结果是已完成内容，MarkdownAnsi 自身不做行数折叠。
     // 为避免长 markdown 结果占满屏幕：未全展开且超出 effectiveMaxLines 时，
     // 降级为纯文本走 SlicingMaxSizedBox 截断（保证 ctrl+o 可阶梯展开）；
     // 全展开（effectiveMaxLines===undefined）或内容本身不超限时，完整渲染 markdown。
@@ -215,7 +214,6 @@ export const ToolResultDisplay: React.FC<ToolResultDisplayProps> = ({
         text={content}
         terminalWidth={terminalWidth}
         renderMarkdown={renderMarkdown}
-        isPending={false}
       />
     );
   }

@@ -16,15 +16,11 @@ import { BULLET } from "../../constants/figures.ts";
 interface AssistantMessageProps {
   text: string;
   width: number;
-  isPending?: boolean;
-  availableTerminalHeight?: number;
 }
 
 export const AssistantMessage: React.FC<AssistantMessageProps> = ({
   text,
   width,
-  isPending = false,
-  availableTerminalHeight,
 }) => {
   const { renderMarkdown } = useUIState();
   // ⏺ bullet 与工具行同构（品牌蓝），占位宽 2（glyph + 空格）
@@ -38,12 +34,6 @@ export const AssistantMessage: React.FC<AssistantMessageProps> = ({
       <Box flexGrow={1} flexDirection="column">
         <MarkdownAnsi
           text={text}
-          isPending={isPending}
-          availableTerminalHeight={
-            availableTerminalHeight === undefined
-              ? undefined
-              : Math.max(availableTerminalHeight - 1, 1)
-          }
           terminalWidth={Math.max(width - prefixWidth, 0)}
           renderMarkdown={renderMarkdown}
         />

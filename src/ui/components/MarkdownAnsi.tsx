@@ -13,14 +13,11 @@
  *
  * 与旧组件行为对齐点：
  * - renderMarkdown=false（原始模式）：整段按 markdown 语言高亮显示，不渲染结构。
- * - isPending + availableTerminalHeight：仅代码块在流式时按高度截断（首屏防闪烁）。
  */
 
 import React, { useMemo } from "react";
 import Box from "../../ink/components/Box.js";
-import Text from "../../ink/components/Text.js";
 import { Ansi as AnsiRaw } from "../../ink/Ansi.js";
-import { theme } from "../semantic-colors.ts";
 import { colorizeCode } from "./CodeColorizer.tsx";
 import { TableRenderer } from "./TableRenderer.tsx";
 import { useSettings } from "../contexts/SettingsContext.tsx";
@@ -37,10 +34,6 @@ const Ansi = AnsiRaw as unknown as React.FC<{ children: string; dimColor?: boole
 
 interface MarkdownAnsiProps {
   text: string;
-  /** 是否为流式中内容（影响代码块高度截断） */
-  isPending?: boolean;
-  /** 可用终端高度（仅代码块流式截断用） */
-  availableTerminalHeight?: number;
   /** 渲染宽度 */
   terminalWidth: number;
   /** false 时显示原始 markdown 语法高亮，不渲染结构 */
@@ -51,8 +44,6 @@ const CODE_BLOCK_PREFIX_PADDING = 1;
 
 const MarkdownAnsiInternal: React.FC<MarkdownAnsiProps> = ({
   text,
-  isPending = false,
-  availableTerminalHeight,
   terminalWidth,
   renderMarkdown = true,
 }) => {
@@ -100,15 +91,13 @@ const MarkdownAnsiInternal: React.FC<MarkdownAnsiProps> = ({
           />,
         );
       } else if (token.type === "code") {
-        // 代码块单独走 colorizeCode：语法高亮 + 行号 + 流式高度截断。
+        // 代码块单独走 colorizeCode：语法高亮 + 行号。
         flushAnsi();
         out.push(
           <RenderCodeBlock
             key={`code-${out.length}`}
             code={token.text ?? ""}
             lang={token.lang || null}
-            isPending={isPending}
-            availableTerminalHeight={availableTerminalHeight}
             terminalWidth={terminalWidth}
             hideLineNumbers={settings.hideLineNumbers}
           />,
@@ -124,8 +113,6 @@ const MarkdownAnsiInternal: React.FC<MarkdownAnsiProps> = ({
     renderMarkdown,
     text,
     terminalWidth,
-    isPending,
-    availableTerminalHeight,
     settings.hideLineNumbers,
   ]);
 
@@ -152,8 +139,6 @@ const MarkdownAnsiInternal: React.FC<MarkdownAnsiProps> = ({
 interface RenderCodeBlockProps {
   code: string;
   lang: string | null;
-  isPending: boolean;
-  availableTerminalHeight?: number;
   terminalWidth: number;
   hideLineNumbers: boolean;
 }
@@ -161,47 +146,12 @@ interface RenderCodeBlockProps {
 const RenderCodeBlockInternal: React.FC<RenderCodeBlockProps> = ({
   code,
   lang,
-  isPending,
-  availableTerminalHeight,
   terminalWidth,
   hideLineNumbers,
 }) => {
-  const MIN_LINES_FOR_MESSAGE = 1;
-  const RESERVED_LINES = 2;
-  const content = code.split("\n");
-
-  // 流式代码块截断：避免在非 alternate buffer 模式下触发闪烁（与旧组件一致）。
-  if (isPending && availableTerminalHeight !== undefined) {
-    const maxCodeLines = Math.max(0, availableTerminalHeight - RESERVED_LINES);
-    if (content.length > maxCodeLines) {
-      if (maxCodeLines < MIN_LINES_FOR_MESSAGE) {
-        return (
-          <Box paddingLeft={CODE_BLOCK_PREFIX_PADDING}>
-            <Text color={theme.text.secondary}>... code is being written ...</Text>
-          </Box>
-        );
-      }
-      const truncated = content.slice(0, maxCodeLines).join("\n");
-      const colorized = colorizeCode({
-        code: truncated,
-        language: lang,
-        availableHeight: availableTerminalHeight,
-        maxWidth: terminalWidth - CODE_BLOCK_PREFIX_PADDING,
-        hideLineNumbers,
-      });
-      return (
-        <Box paddingLeft={CODE_BLOCK_PREFIX_PADDING} flexDirection="column">
-          {colorized}
-          <Text color={theme.text.secondary}>... generating more ...</Text>
-        </Box>
-      );
-    }
-  }
-
   const colorized = colorizeCode({
     code: code,
     language: lang,
-    availableHeight: availableTerminalHeight,
     maxWidth: terminalWidth - CODE_BLOCK_PREFIX_PADDING,
     hideLineNumbers,
   });
