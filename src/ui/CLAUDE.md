@@ -113,7 +113,7 @@ L1 视觉原子    字形、颜色、主题                          ← 最小�
 
 - 行首字形占位宽统一（一般 `<Box width={2}>` 包字形 + 空格），让多行字形/文本各自成列，不参差。
 - 同类消息（hint/info/model 等）统一 `paddingLeft={2}`，与 bullet 行对齐。
-- **宽度计算用 `stringWidth` 不用 `.length`** ✅：含 CJK / emoji / 全角字符时 `.length` 给的是码点数，不是终端列宽，会导致对齐漂移和换行错位。项目已装 `string-width@7`（`text-buffer.ts`、`streaming-viewport.ts` 已在用）。任何"算某段文本占几列 / 要不要换行 / 怎么 pad 对齐"的地方，用 `stringWidth(text)`。
+- **宽度计算用 `stringWidth` 不用 `.length`** ✅：含 CJK / emoji / 全角字符时 `.length` 给的是码点数，不是终端列宽，会导致对齐漂移和换行错位。项目已装 `string-width@7`（`text-buffer.ts` 已在用）。任何"算某段文本占几列 / 要不要换行 / 怎么 pad 对齐"的地方，用 `stringWidth(text)`。
 
 ---
 

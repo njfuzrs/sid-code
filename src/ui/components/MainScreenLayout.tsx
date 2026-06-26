@@ -10,11 +10,10 @@
  * 与 DefaultAppLayout（--alternate-buffer 全屏虚拟滚动）互斥；不抢鼠标、无 Copy Mode。
  */
 
-import React, { memo, useMemo } from "react";
+import React, { memo } from "react";
 import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
 import Static from "../../ink/_vendor/Static.js";
-import { tailToFitByBlocks, estimateChromeLines, computeStreamBudgets } from "../streaming-viewport.ts";
 import { Composer } from "./Composer.tsx";
 import { Footer } from "./Footer.tsx";
 import { DialogRenderer } from "./DialogManager.tsx";
@@ -51,8 +50,6 @@ interface MainScreenLayoutProps {
   isEmpty: boolean;
   /** 终端宽度 */
   termWidth: number;
-  /** 终端高度（行数）——用于流式动态区视口裁剪，防止 stock ink clearTerminal 全屏重打 */
-  rows: number;
   /** key 提取器（供 Static 子项 key） */
   keyExtractor: (item: HistoryItem, index: number) => string;
 
@@ -107,7 +104,6 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
   isStreaming,
   isEmpty,
   termWidth,
-  rows,
   keyExtractor,
   statusMessage,
   retryStatus,
@@ -141,33 +137,15 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
   todos,
   tasks,
 }) {
-  // 流式动态区视口裁剪（ADR-040 防闪烁，见 streaming-viewport.ts）：
-  // stock ink 在「动态区高度 >= 终端行数」时每帧 clearTerminal 重打全部 → 全屏闪烁。
-  // 故对会随流式增长的正文/思考做尾部截断，保证动态区高度 < 终端行数。
-  // 完成后整条消息进 <Static> → 终端 scrollback，可原生上滚回看完整内容。
+  // 流式正文**不做视口裁剪**：渲染完整 streamingText，靠 StreamingMarkdown 的
+  // 稳定前缀切分 + log-update fork 的增量增长路径防闪烁（见 StreamingMarkdown.tsx）。
+  // 旧的 tailToFitByBlocks 视口窗口已废弃——那是 stock ink 时代的 workaround，
+  // 导致流式中只见尾部一小段。完成后整条进 <Static> → scrollback，原生上滚回看。
   const hasText = isStreaming && !!streamingText;
   const hasThinking = isStreaming && !!streamingThinking;
-  const { visibleText, visibleThinking, thinkingCollapsed } = useMemo(() => {
-    if (!hasText && !hasThinking) return { visibleText: "", visibleThinking: "", thinkingCollapsed: false };
-    const chrome = estimateChromeLines({
-      todoCount: todos.length,
-      taskCount: tasks.length,
-      hasStatusMessage: !!statusMessage,
-    });
-    const { textLines } = computeStreamBudgets(rows, chrome, hasThinking, hasText);
-    // 思考恒折叠为单行摘要（对标 cc，thinkingLines 恒为 1）：高度稳定、全程零跳动。
-    // 不再分「纯思考逐字直播 → 正文开始时塌缩」两态，避免页面上跳 N-1 行。
-    const collapsed = hasThinking;
-    // 正文带 "⏺ " 前缀，有效宽度略减
-    const textWidth = Math.max(1, termWidth - 2);
-    return {
-      // 正文走块级窗口（P1-C）：按 markdown 块边界裁尾部，表格/代码块不被拦腰截断。
-      visibleText: hasText ? tailToFitByBlocks(streamingText, textWidth, textLines) : "",
-      // 折叠态把全文传给 ThinkingMessage（它内部只渲染一行摘要 + 字符数 + 实时计时）。
-      visibleThinking: hasThinking ? streamingThinking : "",
-      thinkingCollapsed: collapsed,
-    };
-  }, [hasText, hasThinking, streamingText, streamingThinking, rows, termWidth, todos.length, tasks.length, statusMessage]);
+  // 思考恒折叠为单行摘要（对标 cc）：ThinkingMessage 内部只渲染一行摘要 + 字符数 + 实时计时，
+  // 高度稳定、全程零跳动。把全文传给它即可，由它自行折叠。
+  const thinkingCollapsed = true;
 
   return (
     // 根 Box 不设固定高度 / 不 overflow hidden：让内容顺序增长，Static 落 scrollback、动态区在末尾。
@@ -202,9 +180,9 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
               思考全程折叠为单行摘要（thinkingCollapsed 恒为 true），实时计时原地更新、
               高度恒定 → 页面零跳动；不再有「纯思考逐字展开 → 正文开始时塌缩」的高度突变。
               Static 模式 ctrl+o 无法重渲已打印项，故折叠态不显示展开提示（showExpandHint=false）。 */}
-          {hasThinking && visibleThinking ? (
+          {hasThinking && streamingThinking ? (
             <ThinkingMessage
-              text={visibleThinking}
+              text={streamingThinking}
               width={termWidth}
               collapsed={thinkingCollapsed}
               streaming={true}
@@ -213,9 +191,9 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
           ) : null}
 
           {/* 正在生成的流式消息（完成后由父层并入 staticItems，此处清空）
-              注意：visibleText 已按视口高度做尾部截断（防 stock ink 全屏重打闪烁，见 streaming-viewport.ts） */}
-          {hasText && visibleText ? (
-            <StreamingMessage fullText={visibleText} maxWidth={termWidth} />
+              渲染完整 streamingText，不做视口裁剪；防闪烁由 StreamingMarkdown 的稳定前缀切分负责。 */}
+          {hasText && streamingText ? (
+            <StreamingMessage fullText={streamingText} maxWidth={termWidth} />
           ) : null}
 
           <Notifications />
