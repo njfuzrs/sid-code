@@ -4,6 +4,8 @@
  * 纯 getter/setter 函数访问，非响应式，任何模块可安全 import
  */
 
+import { generateSessionId } from "../session/id.ts";
+
 /** 模型用量统计 */
 export interface ModelUsage {
   inputTokens: number;
@@ -40,7 +42,7 @@ interface BootstrapState {
 }
 
 const STATE: BootstrapState = {
-  sessionId: crypto.randomUUID().slice(0, 8),
+  sessionId: generateSessionId(),
   originalCwd: process.cwd(),
   cwd: process.cwd(),
   totalCostUSD: 0,

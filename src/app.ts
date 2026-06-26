@@ -23,6 +23,7 @@ import { TokenEstimator } from "./llm/token-estimator.ts";
 import { ThinkingManager } from "./llm/thinking.ts";
 import { SessionState } from "./session/state.ts";
 import { SessionStore } from "./session/store.ts";
+import { generateSessionId } from "./session/id.ts";
 import {
   stashPendingInput,
   markForRestore,
@@ -193,7 +194,7 @@ export class App {
     this.unifiedRegistry = opts.unifiedRegistry;
     this.permissionChecker = opts.permissionChecker ?? null;
     this.planManager = opts.planManager ?? null;
-    const sessionId = opts.config.sessionId || crypto.randomUUID().slice(0, 8);
+    const sessionId = opts.config.sessionId || generateSessionId();
     // 上下文窗口按模型实际大小初始化（deepseek-v4 为 1M，Claude 200K，gpt-4o 128K）。
     // 硬编码 200000 会让 deepseek 的 contextPercent 高估 5 倍、过早触发自动压缩。
     const ctxWindow = new TokenEstimator().getContextLimit(opts.config.model, opts.config.availableModels);

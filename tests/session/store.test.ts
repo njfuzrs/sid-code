@@ -66,7 +66,9 @@ describe("SessionStore", () => {
 
   test("生成会话 ID", () => {
     const id = SessionStore.generateId();
-    expect(id.length).toBe(8);
+    // 新格式：YYYYMMDD-HHMMSS-<8位hex>，可排序 + 抗碰撞（见 session/id.ts）
+    expect(id).toMatch(/^\d{8}-\d{6}-[0-9a-f]{8}$/);
+    expect(id.length).toBe(24);
   });
 
   test("列出会话", async () => {

@@ -8,7 +8,7 @@ import { TraceCollector } from "../../src/trace/collector.ts";
 import { HookSystem } from "../../src/hook/system.ts";
 import { initLogger, LogLevel } from "../../src/debug/logger.ts";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -667,6 +667,12 @@ describe("TraceCollector", () => {
     collectorWithUpload.registerHooks(hs);
 
     await hs.fireSessionStartEvent("startup");
+    // 必须发生至少一次真实 LLM 轮次，否则会被「空白轨迹」清理逻辑判定为空壳，
+    // 跳过上传（修复问题二的有意行为）。补一轮 Before/AfterModel 使会话非空壳。
+    await fireModelRound(hs, {
+      messages: [{ role: "user", content: "hi" }],
+      contentBlocks: [{ type: "text", text: "hello" }],
+    });
     await hs.fireSessionEndEvent("exit");
 
     expect(uploadCalled).toBe(true);
@@ -847,6 +853,125 @@ describe("TraceCollector", () => {
     const traj = JSON.parse(readFileSync(trajPath, "utf-8"));
     expect(traj.metadata.tool_source).toBe("sid-code");
     expect(traj.metadata.harness).toBeUndefined();
+  });
+
+  // ─── 修复问题二：空白轨迹清理 ───
+
+  test("空白会话（无任何 LLM 调用）退出时删除整个 trajectory 目录", async () => {
+    await fireSessionStart(hookSystem); // sess-001
+    const dir = join(testDir, "sessions", "sess-001");
+    // SessionStart 已落 events.jsonl，目录此刻存在
+    expect(existsSync(dir)).toBe(true);
+
+    // 直接退出，从未发生 Before/AfterModel → 纯空壳
+    await hookSystem.fireSessionEndEvent("exit");
+
+    // 空壳目录应被整体清理
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  test("有真实 LLM 轮次的会话退出时保留 trajectory 目录", async () => {
+    await fireSessionStart(hookSystem); // sess-001
+    await fireModelRound(hookSystem, {
+      messages: [{ role: "user", content: "hi" }],
+      contentBlocks: [{ type: "text", text: "hello" }],
+    });
+    const dir = join(testDir, "sessions", "sess-001");
+    expect(existsSync(dir)).toBe(true);
+
+    await hookSystem.fireSessionEndEvent("exit");
+
+    // 非空壳，目录必须保留
+    expect(existsSync(dir)).toBe(true);
+    expect(existsSync(join(dir, "raw.jsonl"))).toBe(true);
+  });
+
+  // ─── 修复问题一：resume 复用原 trajectory 目录 ───
+
+  test("resume 续接复用 resumed_from 目录，且 index 接续历史轮次", async () => {
+    // 第一轮：原始会话 orig-sess，发生 1 轮 LLM 调用并退出
+    const hs1 = new HookSystem();
+    hs1.setSessionId("orig-sess");
+    hs1.setCwd("/tmp/test");
+    const c1 = new TraceCollector({ outputDir: testDir });
+    c1.registerHooks(hs1);
+    await hs1.fireSessionStartEvent("startup");
+    await fireModelRound(hs1, {
+      messages: [{ role: "user", content: "first" }],
+      contentBlocks: [{ type: "text", text: "r1" }],
+    });
+    await hs1.fireSessionEndEvent("exit");
+
+    const origDir = join(testDir, "sessions", "orig-sess");
+    const rawPath = join(origDir, "raw.jsonl");
+    expect(existsSync(rawPath)).toBe(true);
+    // raw.jsonl 每轮写 2 行：request_sent 预写行 + 完整 pair 行。只数完整 pair（type 缺省）。
+    const countPairs = () =>
+      readFileSync(rawPath, "utf-8")
+        .trim()
+        .split("\n")
+        .map((l) => JSON.parse(l) as { type?: string; index?: number })
+        .filter((r) => r.type === undefined);
+    const pairsAfterFirst = countPairs();
+    expect(pairsAfterFirst.length).toBe(1); // 历史 1 轮
+    expect(pairsAfterFirst[0].index).toBe(1);
+
+    // 第二轮：新进程 -c 恢复，进程 id 为 new-proc，但 resumed_from=orig-sess
+    const hs2 = new HookSystem();
+    hs2.setSessionId("new-proc");
+    hs2.setCwd("/tmp/test");
+    const c2 = new TraceCollector({ outputDir: testDir });
+    c2.registerHooks(hs2);
+    await hs2.fireSessionStartEvent("resume", { resumedFrom: "orig-sess" });
+    await fireModelRound(hs2, {
+      messages: [{ role: "user", content: "second" }],
+      contentBlocks: [{ type: "text", text: "r2" }],
+    });
+    await hs2.fireSessionEndEvent("exit");
+
+    // 不应另建 new-proc 目录
+    expect(existsSync(join(testDir, "sessions", "new-proc"))).toBe(false);
+    // 续接写入同一 orig-sess/raw.jsonl，完整 pair 现在 2 轮
+    const pairsAfterResume = countPairs();
+    expect(pairsAfterResume.length).toBe(2);
+    // 续接轮 index 接续为 2（而非从 1 重号）
+    expect(pairsAfterResume[1].index).toBe(2);
+  });
+
+  test("resume 复用已上传清理的目录：从 metadata.json 恢复 index 偏移", async () => {
+    // 模拟「上传成功后清理」的目录状态：raw.jsonl/session.traj/events.jsonl 已被删，
+    // 仅剩 .uploaded 标记 + metadata.json（含 total_api_calls=3 表示历史 3 轮）。
+    const dir = join(testDir, "sessions", "uploaded-sess");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, ".uploaded"), JSON.stringify({ session_id: "uploaded-sess" }));
+    writeFileSync(
+      join(dir, "metadata.json"),
+      JSON.stringify({ session_id: "uploaded-sess", total_api_calls: 3 }),
+    );
+
+    // -c 恢复该已清理目录
+    const hs = new HookSystem();
+    hs.setSessionId("proc-x");
+    hs.setCwd("/tmp/test");
+    const c = new TraceCollector({ outputDir: testDir });
+    c.registerHooks(hs);
+    await hs.fireSessionStartEvent("resume", { resumedFrom: "uploaded-sess" });
+    await fireModelRound(hs, {
+      messages: [{ role: "user", content: "after-upload" }],
+      contentBlocks: [{ type: "text", text: "r4" }],
+    });
+    await hs.fireSessionEndEvent("exit");
+
+    // 续接轮 index 应接续历史 3 轮 → 第 4 轮（而非从 1 重号、与远端历史冲突）
+    const rawPath = join(dir, "raw.jsonl");
+    expect(existsSync(rawPath)).toBe(true);
+    const pairs = readFileSync(rawPath, "utf-8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l) as { type?: string; index?: number })
+      .filter((r) => r.type === undefined);
+    expect(pairs.length).toBe(1);
+    expect(pairs[0].index).toBe(4);
   });
 });
 

@@ -89,6 +89,8 @@ export class TraceCollector {
   private metadata!: TraceMetadata;
   private currentPair: Partial<RequestResponsePair> | null = null;
   private prevMessageCount: number = 0;
+  /** 修复问题一：resume 续接时，已存在 raw.jsonl 的历史轮次数；新轮 index 在此基础上接续。 */
+  private resumedPairOffset: number = 0;
   private writer!: TraceWriter;
   private uploader: TraceUploaderInterface | null;
   private readonly outputDir: string;
@@ -167,6 +169,50 @@ export class TraceCollector {
     } catch (err) {
       getLogger().warn("TRACE", `LRU 清理失败（不影响采集）: ${err}`);
     }
+  }
+
+  /**
+   * 修复问题一：统计已存在历史「完整轮次」数（resume 续接时用，使新轮 index 接续）。
+   *
+   * 两种来源，按优先级：
+   *   1. raw.jsonl 存在（未上传/未清理）：逐行数「完整 pair 行」（无 type 字段）。
+   *      `type:"request_sent"` 预写行只有请求侧、不计。
+   *   2. raw.jsonl 不存在但 metadata.json 存在（已上传成功 → uploader.cleanupLocal
+   *      删除了 raw/traj/events，仅留 .uploaded + metadata snapshot）：回退读
+   *      metadata.json 的 total_api_calls 作为历史轮次数。
+   *      ——否则复用已上传目录续接时 index 会从 1 重号、与远端历史冲突。
+   * 全部失败返回 0（视为全新会话），绝不抛。
+   */
+  private countExistingPairs(sessionDir: string): number {
+    const rawPath = join(sessionDir, "raw.jsonl");
+    if (existsSync(rawPath)) {
+      let count = 0;
+      try {
+        const content = readFileSync(rawPath, "utf8");
+        for (const line of content.split("\n")) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          try {
+            const rec = JSON.parse(trimmed) as { type?: string };
+            // 完整 pair 行没有 type 字段；request_sent 预写行有 type，跳过。
+            if (rec.type === undefined) count++;
+          } catch { /* 跳过损坏行 */ }
+        }
+        return count;
+      } catch { /* 读失败转下方 metadata 回退 */ }
+    }
+
+    // 回退：已上传清理场景，从 metadata snapshot 读历史轮次数
+    try {
+      const metaPath = join(sessionDir, "metadata.json");
+      if (existsSync(metaPath)) {
+        const meta = JSON.parse(readFileSync(metaPath, "utf8")) as { total_api_calls?: number };
+        if (typeof meta.total_api_calls === "number" && meta.total_api_calls > 0) {
+          return meta.total_api_calls;
+        }
+      }
+    } catch { /* 读失败视为全新会话 */ }
+    return 0;
   }
 
   // ─── Hook 注册 ───
@@ -256,8 +302,16 @@ export class TraceCollector {
     this.prevMessageCount = 0;
     this.currentPair = null;
 
+    // 修复问题一：-c/--resume 续接同一 trajectory 目录，而非每次恢复都新建。
+    // input.resumed_from 是被恢复会话的旧 id；resume 时用它作 trajectory session_id，
+    // 使多轮 -c 续接全部落在 sessions/<旧id>/ 同一目录，历史不再碎成多个目录。
+    // 注意：PID 文件 / crash marker 仍用本进程新 id（见 app.ts），避免跨进程文件名冲突——
+    // 复用的只是「逻辑会话轨迹目录」，进程级唯一标识不受影响。
+    const isResume = input.source === "resume" && !!input.resumed_from;
+    const traceSessionId = isResume ? input.resumed_from! : input.session_id;
+
     this.metadata = {
-      session_id: input.session_id,
+      session_id: traceSessionId,
       model: input.model ?? "",
       start_time: input.timestamp,
       working_directory: input.cwd,
@@ -280,8 +334,30 @@ export class TraceCollector {
       total_api_calls: 0,
     };
 
-    this.writer = new TraceWriter(this.outputDir, input.session_id);
+    this.writer = new TraceWriter(this.outputDir, traceSessionId);
     this.initialized = true;
+
+    // 修复问题一续：resume 复用旧目录时，把已存在的历史 pair 数读回，
+    // 使本次续接的 index 从历史末尾接续（而非从 1 重号、与已落盘/已上传的历史冲突）。
+    // 仅恢复计数（轻量、崩溃安全），完整 pair 对象不载回内存。
+    //
+    // 数据完整性说明（已知局限，非本次回归）：
+    //   - raw.jsonl 靠 append 语义天然保留全部历史轮次 → 评测/训练的权威全量数据源完整。
+    //   - session.traj 是 rebuildTraj 用「本进程新 pairs」覆盖写的派生视图，跨进程续接时
+    //     只反映本次轮次、不含历史轮次。这与改动前「resume 每次新建目录」时 traj 本就只有
+    //     新轮次的行为一致，未变坏。如需 traj 全量历史，应从 raw.jsonl 重建（另行处理）。
+    if (isResume) {
+      try {
+        const restored = this.countExistingPairs(this.writer.getSessionDir());
+        if (restored > 0) {
+          this.prevMessageCount = 0; // 续接首个请求的 messages 视为全量基线
+          this.resumedPairOffset = restored;
+          getLogger().info("TRACE", `resume 续接 trajectory 目录 ${traceSessionId}，已有 ${restored} 轮，index 从 ${restored + 1} 接续`);
+        }
+      } catch (err) {
+        getLogger().warn("TRACE", `读取历史 pair 数失败（不影响续接）: ${err}`);
+      }
+    }
 
     // 启动心跳：每 10 秒写 heartbeat.txt（用于下次启动诊断 session hang）
     this.heartbeatPath = join(this.writer.getSessionDir(), "heartbeat.txt");
@@ -289,7 +365,7 @@ export class TraceCollector {
       try {
         const content = JSON.stringify({
           ts: new Date().toISOString(),
-          session_id: input.session_id,
+          session_id: traceSessionId,
         });
         writeFileSync(this.heartbeatPath, content);
       } catch { /* 心跳失败静默 */ }
@@ -299,13 +375,15 @@ export class TraceCollector {
 
     this.writer.appendEvent({
       event: HookEventName.SessionStart,
-      session_id: input.session_id,
+      session_id: traceSessionId,
       timestamp: input.timestamp,
       cwd: input.cwd,
       data: {
         source: input.source,
         model: input.model,
         permission_mode: input.permission_mode,
+        // resume 续接时记录本进程真实 id，便于跨进程排查（trajectory 目录名=旧id，进程=新id）
+        ...(isResume ? { resumed_from: input.resumed_from, process_session_id: input.session_id } : {}),
       },
     });
 
@@ -327,7 +405,8 @@ export class TraceCollector {
 
     const req = input.llm_request;
     const rawMessages = (req.raw_messages ?? req.messages ?? []) as unknown[];
-    const index = this.pairs.length + 1;
+    // resume 续接时 index 在历史轮次（resumedPairOffset）之上接续，避免与旧 raw.jsonl 行 index 重号。
+    const index = this.resumedPairOffset + this.pairs.length + 1;
 
     // 首次请求提取 system prompt
     if (index === 1 && req.system !== undefined) {
@@ -372,7 +451,7 @@ export class TraceCollector {
 
     this.writer.appendEvent({
       event: HookEventName.BeforeModel,
-      session_id: input.session_id,
+      session_id: this.metadata.session_id,
       timestamp: input.timestamp,
       cwd: input.cwd,
       data: { model: req.model, index, msg_count: rawMessages.length },
@@ -461,7 +540,7 @@ export class TraceCollector {
     if (!this.initialized || !this.currentPair) return;
 
     // §3.4：清除配对看门狗（AfterModel 到达即证明请求已正常返回并处理）
-    const pairIndex = this.currentPair.index ?? this.pairs.length + 1;
+    const pairIndex = this.currentPair.index ?? this.resumedPairOffset + this.pairs.length + 1;
     const pairingTimer = this.pendingModelCalls.get(pairIndex);
     if (pairingTimer) {
       clearTimeout(pairingTimer);
@@ -480,7 +559,7 @@ export class TraceCollector {
 
     // §3.2：AfterModelRaw 事件——processStream 返回即落盘，消除"有 Before 无 After"的诊断盲区。
     // 即使后续 pair 完成/raw.jsonl/traj 重建崩溃，排查者也能看到响应已到达。
-    const currentIndex = this.currentPair.index ?? this.pairs.length + 1;
+    const currentIndex = this.currentPair.index ?? this.resumedPairOffset + this.pairs.length + 1;
     try {
       this.writer.appendEvent({
         event: "AfterModelRaw",
@@ -572,7 +651,7 @@ export class TraceCollector {
 
     this.writer.appendEvent({
       event: HookEventName.AfterModel,
-      session_id: input.session_id,
+      session_id: this.metadata.session_id,
       timestamp: input.timestamp,
       cwd: input.cwd,
       data: {
@@ -613,7 +692,7 @@ export class TraceCollector {
 
     this.writer.appendEvent({
       event: HookEventName.PreToolUse,
-      session_id: input.session_id,
+      session_id: this.metadata.session_id,
       timestamp: input.timestamp,
       cwd: input.cwd,
       data: {
@@ -653,7 +732,7 @@ export class TraceCollector {
 
     this.writer.appendEvent({
       event: HookEventName.PostToolUse,
-      session_id: input.session_id,
+      session_id: this.metadata.session_id,
       timestamp: input.timestamp,
       cwd: input.cwd,
       data: {
@@ -683,7 +762,7 @@ export class TraceCollector {
 
     this.writer.appendEvent({
       event: HookEventName.PostToolUseFailure,
-      session_id: input.session_id,
+      session_id: this.metadata.session_id,
       timestamp: input.timestamp,
       cwd: input.cwd,
       data: {
@@ -711,7 +790,7 @@ export class TraceCollector {
 
     this.writer.appendEvent({
       event: HookEventName.UserPromptSubmit,
-      session_id: input.session_id,
+      session_id: this.metadata.session_id,
       timestamp: input.timestamp,
       cwd: input.cwd,
       data: { prompt: input.prompt },
@@ -740,7 +819,7 @@ export class TraceCollector {
 
     this.writer.appendEvent({
       event: HookEventName.PreCompact,
-      session_id: input.session_id,
+      session_id: this.metadata.session_id,
       timestamp: input.timestamp,
       cwd: input.cwd,
       data: { trigger: input.trigger },
@@ -761,7 +840,7 @@ export class TraceCollector {
 
     this.writer.appendEvent({
       event: HookEventName.SubagentStart,
-      session_id: input.session_id,
+      session_id: this.metadata.session_id,
       timestamp: input.timestamp,
       cwd: input.cwd,
       data: {
@@ -787,7 +866,7 @@ export class TraceCollector {
 
     this.writer.appendEvent({
       event: HookEventName.SubagentStop,
-      session_id: input.session_id,
+      session_id: this.metadata.session_id,
       timestamp: input.timestamp,
       cwd: input.cwd,
     });
@@ -858,7 +937,7 @@ export class TraceCollector {
     // 最终写入 events.jsonl
     this.writer.appendEvent({
       event: HookEventName.SessionEnd,
-      session_id: input.session_id,
+      session_id: this.metadata.session_id,
       timestamp: input.timestamp,
       cwd: input.cwd,
       data: {
@@ -875,12 +954,24 @@ export class TraceCollector {
     // 尤其 abnormal / user_interrupt 退出时，此前只有 metadata.json 无法验尸。
     this.persistMessagesSnapshot(input);
 
+    // 修复问题二：空白轨迹（无任何 LLM 调用的纯空壳）既不上传也不保留——
+    // 上传空目录纯属浪费，且会把噪音同步到远端。提前判定，空壳直接清理并返回。
+    if (this.isBlankSession()) {
+      // 停止心跳（下面正常路径也会停，这里提前停避免删目录后定时器再写）
+      if (this.heartbeatTimer) {
+        clearInterval(this.heartbeatTimer);
+        this.heartbeatTimer = null;
+      }
+      this.cleanupIfBlankSession();
+      return;
+    }
+
     // 触发上传（有限等待）
     if (this.uploader) {
       try {
         const uploadPromise = this.uploader.uploadSession(
           this.writer.getSessionDir(),
-          input.session_id,
+          this.metadata.session_id,
         );
         // 最多等 10 秒，超时后上传继续在后台运行
         const result = await Promise.race([
@@ -930,6 +1021,42 @@ export class TraceCollector {
         );
       } catch { /* 索引写入失败静默 */ }
     }
+
+    // 修复问题二：空白轨迹已在上传前提前判定+清理（见函数前段 isBlankSession 分支），
+    // 走到这里说明本会话有真实 LLM 轮次，正常收尾即可。
+  }
+
+  /**
+   * 判定当前会话是否「空白轨迹」——打开即退、从未发生任何 LLM 调用的纯空壳。
+   *
+   * 空白判据（三者同时成立才算空壳，任一不满足都视为有效会话）：
+   *   1. 本进程从未完成任何 LLM 轮次：pairs.length === 0；
+   *   2. 权威统计也确认零调用：metadata.total_api_calls === 0（SessionEnd 已用 SessionState 覆盖）；
+   *   3. 非 resume 续接：resumedPairOffset === 0——续接目录即便本进程空跑也含历史轮次，绝不能删。
+   */
+  private isBlankSession(): boolean {
+    return (
+      this.pairs.length === 0 &&
+      (this.metadata.total_api_calls ?? 0) === 0 &&
+      this.resumedPairOffset === 0
+    );
+  }
+
+  /**
+   * 确认空壳时删除整个 trajectory 目录。best-effort：失败只告警，不抛
+   * （退出路径不能被采集副作用阻断）。
+   */
+  private cleanupIfBlankSession(): void {
+    try {
+      if (!this.isBlankSession()) return;
+      const dir = this.writer.getSessionDir();
+      if (existsSync(dir)) {
+        rmSync(dir, { recursive: true, force: true });
+        getLogger().info("TRACE", `清理空白轨迹（无任何 LLM 调用）: ${this.metadata.session_id}`);
+      }
+    } catch (err) {
+      getLogger().warn("TRACE", `空白轨迹清理失败（不影响退出）: ${err}`);
+    }
   }
 
   // ─── 辅助：增量 messages 计算 ───
@@ -955,7 +1082,7 @@ export class TraceCollector {
 
       const snapshot = {
         kind: "messages-snapshot",
-        session_id: input.session_id,
+        session_id: this.metadata.session_id,
         reason: input.reason,
         exit_status: this.metadata.exit_status,
         timestamp: input.timestamp,

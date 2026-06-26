@@ -54,7 +54,9 @@ export class PsCommand implements Command {
       for (const s of sessions) {
         const age = fmtAge(Date.now() - s.startedAt);
         const team = s.team ? ` team=${s.team}` : "";
-        lines.push(`  ${s.sessionId.slice(0, 8)}  pid=${s.pid}  ${s.kind.padEnd(11)} ${age.padStart(4)}  ${s.cwd}${team}`);
+        // 完整展示 sessionId（新格式 YYYYMMDD-HHMMSS-<hex> 仅 24 字符，便于直接复制去 -r 恢复）。
+        // 旧实现 slice(0,8) 在新格式下只剩日期串、无法区分同日会话。
+        lines.push(`  ${s.sessionId.padEnd(24)}  pid=${s.pid}  ${s.kind.padEnd(11)} ${age.padStart(4)}  ${s.cwd}${team}`);
       }
     }
 

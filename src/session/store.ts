@@ -10,6 +10,7 @@ import { join } from "path";
 import { existsSync, mkdirSync, readdirSync, statSync, appendFileSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
 import { sidPaths } from "../config/paths.ts";
+import { generateSessionId } from "./id.ts";
 
 /** 当前会话数据格式版本 */
 const CURRENT_VERSION = "2.0";
@@ -311,7 +312,7 @@ ${summary}
 
   /** 生成新的会话 ID */
   static generateId(): string {
-    return crypto.randomUUID().slice(0, 8);
+    return generateSessionId();
   }
 
   /** 从 JSONL 文件恢复会话 */

@@ -227,8 +227,12 @@ export async function getAllSessionFiles(
           }
 
           const firstUserMessage = extractFirstUserMessage(data.messages);
+          // 是否当前会话：按解析出的 data.id 精确相等判断。
+          // 旧实现 file.includes(currentSessionId.slice(0,8)) 依赖「id 恒为 8 位 hex」，
+          // 新 id 格式为 YYYYMMDD-HHMMSS-<hex>，截前 8 位会得到日期串（如 20260627）
+          // 从而把「同一天的所有会话」全部误判为当前会话。改用 id 相等彻底规避。
           const isCurrentSession = currentSessionId
-            ? file.includes(currentSessionId.slice(0, 8))
+            ? data.id === currentSessionId
             : false;
 
           let fullContent: string | undefined;
