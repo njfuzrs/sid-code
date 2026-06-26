@@ -112,3 +112,64 @@ describe("evictTerminalTasks（终止态任务驱逐）", () => {
     expect(getAllTasks().map((t) => t.id).sort()).toEqual(["done-unnotified", "running"]);
   });
 });
+
+// ─── Bug 3 回归：驱逐缓冲期（三层门控第三层 evictAfter）───
+// 背景：任务完成后立即被驱逐，主循环模型无法在多轮中再次 task_output 查询同一任务 →
+// "任务 xxx 不存在"。修复：completeAgentTask/failAgentTask/killAgentTask 均设
+// evictAfter = Date.now() + EVICT_GRACE_MS，evictTerminalTasks 只在 evictAfter <= now 时驱逐。
+// 这些用例显式设置 evictAfter，触达三层门控的第三层（其余用例走「未设视为 0」兼容分支）。
+describe("evictTerminalTasks（驱逐缓冲期 evictAfter）", () => {
+  test("缓冲期未过（evictAfter 在未来）→ 已完成且已通知的任务仍保留", () => {
+    registerTask(
+      makeShellTask("buffered", {
+        status: "completed",
+        notified: true,
+        endTime: Date.now(),
+        evictAfter: Date.now() + 60_000, // 60s 后才允许驱逐
+      }),
+    );
+    evictTerminalTasks();
+    // 缓冲期内：模型仍能 task_output 查到，不得驱逐
+    expect(getAllTasks().map((t) => t.id)).toEqual(["buffered"]);
+  });
+
+  test("缓冲期已过（evictAfter 在过去）→ 任务被驱逐", () => {
+    registerTask(
+      makeShellTask("expired", {
+        status: "completed",
+        notified: true,
+        endTime: Date.now() - 120_000,
+        evictAfter: Date.now() - 1_000, // 缓冲期已过
+      }),
+    );
+    evictTerminalTasks();
+    expect(getAllTasks().map((t) => t.id)).toEqual([]);
+  });
+
+  test("缓冲期内即使已通知也不驱逐，过期后再调用才清除", () => {
+    registerTask(
+      makeShellTask("two-phase", {
+        status: "completed",
+        notified: true,
+        endTime: Date.now(),
+        evictAfter: Date.now() + 50, // 50ms 后过期
+      }),
+    );
+    // 第一次：缓冲期内，保留
+    evictTerminalTasks();
+    expect(getAllTasks().map((t) => t.id)).toEqual(["two-phase"]);
+
+    // 手动把 evictAfter 推到过去，模拟缓冲期已过（避免测试真实 sleep）
+    updateTask<LocalShellTaskState>("two-phase", (t) => ({ ...t, evictAfter: Date.now() - 1 }));
+    evictTerminalTasks();
+    expect(getAllTasks().map((t) => t.id)).toEqual([]);
+  });
+
+  test("evictAfter 未设置（旧任务兼容）→ 视为 0，立即可驱逐", () => {
+    registerTask(makeShellTask("legacy", { status: "completed", notified: true, endTime: 1 }));
+    // 显式确认未设 evictAfter
+    expect(getAllTasks()[0].evictAfter).toBeUndefined();
+    evictTerminalTasks();
+    expect(getAllTasks().map((t) => t.id)).toEqual([]);
+  });
+});

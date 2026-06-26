@@ -267,7 +267,23 @@ export async function buildInitialSystemPrompt(
     // Task 7：记忆系统指令 + MEMORY.md 索引
     const { buildMemorySystemPrompt } = await import("../memory/prompt.ts");
     const indexContent = await memStore.getIndexContent();
-    memorySystemPrompt = buildMemorySystemPrompt(indexContent);
+
+    // E.11：团队记忆启用时，把团队 MEMORY.md 索引一并注入，模型才能 Read 团队记忆。
+    // 否则团队记忆只写不读，模型在会话里根本不知道团队知识存在。
+    // 注意：直接读 config.teamMemory，不走 runtime 单例——本函数早于 app.ts
+    // 的 setTeamMemoryOptions 执行，此刻单例尚未注入。
+    let teamIndexContent: string | null = null;
+    try {
+      const { isTeamMemoryEnabled } = await import("../memory/team/paths.ts");
+      if (isTeamMemoryEnabled(config.teamMemory)) {
+        const { getTeamIndexContent } = await import("../memory/team/store.ts");
+        teamIndexContent = await getTeamIndexContent(process.cwd());
+      }
+    } catch (err) {
+      log.debug("APP", `团队记忆索引注入跳过: ${(err as Error)?.message}`);
+    }
+
+    memorySystemPrompt = buildMemorySystemPrompt(indexContent, teamIndexContent);
   } catch (err) {
     log.warn("APP", `加载记忆失败: ${err}`);
   }

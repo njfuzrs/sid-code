@@ -1321,10 +1321,15 @@ export class App {
       this.ctxMgr.addMessage({
         role: "user",
         content: [{ type: "text", text: resumeMsg }],
+        // 恢复提示(含摘要原文)仅供 LLM 续接,不在 TUI 渲染。buildResumeMessage 为
+        // 裸文本(非 <system-reminder> 包裹,也不含 RESUME_MARKER_SIGNATURE),
+        // 故用 _meta.origin 标记隐藏,避免作为 `> ...` 用户消息泄漏。
+        _meta: { origin: "resume-summary" },
       });
       this.ctxMgr.addMessage({
         role: "assistant",
         content: [{ type: "text", text: "好的，我已了解之前的对话内容。请继续。" }],
+        _meta: { origin: "resume-summary" },
       });
       // 此路径用 addMessage 逐条添加（非 setMessages 整体替换）：必须先 safeSliceTail 切干净，
       // 否则若首条是游离 tool_result，接在上面 assistant(ack) 之后无前置 tool_calls → 400。

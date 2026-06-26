@@ -47,4 +47,55 @@ describe("config", () => {
     const cfg = await loadConfig({ provider: "ollama", model: "llama3", sessionId: "myfixed1" });
     expect(cfg.sessionId).toBe("myfixed1");
   });
+
+  // E.11：SID_CODE_TEAM_MEMORY 环境变量覆盖团队记忆配置（文档 §5 承诺的便捷入口）
+  describe("SID_CODE_TEAM_MEMORY env 覆盖", () => {
+    const ENV_KEY = "SID_CODE_TEAM_MEMORY";
+    const orig = process.env[ENV_KEY];
+    const restore = () => {
+      if (orig === undefined) delete process.env[ENV_KEY];
+      else process.env[ENV_KEY] = orig;
+    };
+
+    test("合法 JSON 对象被解析进 config.teamMemory", async () => {
+      process.env[ENV_KEY] = JSON.stringify({ enabled: true, dir: "/nas/team-memory", debounceMs: 1500 });
+      try {
+        const cfg = await loadConfig({ provider: "ollama", model: "llama3" });
+        expect(cfg.teamMemory).toEqual({ enabled: true, dir: "/nas/team-memory", debounceMs: 1500 });
+      } finally {
+        restore();
+      }
+    });
+
+    test("非法 JSON 静默忽略，不污染 config", async () => {
+      process.env[ENV_KEY] = "not-json{";
+      try {
+        const cfg = await loadConfig({ provider: "ollama", model: "llama3" });
+        expect(cfg.teamMemory).toBeUndefined();
+      } finally {
+        restore();
+      }
+    });
+
+    test("数组等非对象 JSON 被拒绝", async () => {
+      process.env[ENV_KEY] = JSON.stringify(["enabled", true]);
+      try {
+        const cfg = await loadConfig({ provider: "ollama", model: "llama3" });
+        expect(cfg.teamMemory).toBeUndefined();
+      } finally {
+        restore();
+      }
+    });
+
+    test("只收形状正确的字段，丢弃错误类型", async () => {
+      process.env[ENV_KEY] = JSON.stringify({ enabled: "yes", dir: 123, debounceMs: 2000 });
+      try {
+        const cfg = await loadConfig({ provider: "ollama", model: "llama3" });
+        // enabled/dir 类型错被丢，仅 debounceMs 合法
+        expect(cfg.teamMemory).toEqual({ debounceMs: 2000 });
+      } finally {
+        restore();
+      }
+    });
+  });
 });

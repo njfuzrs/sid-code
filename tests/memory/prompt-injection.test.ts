@@ -39,6 +39,30 @@ describe("buildMemorySystemPrompt", () => {
     expect(prompt).toContain("MEMORY.md");
     expect(prompt).toContain("coding_style");
   });
+
+  test("E.11：团队索引被注入且与私有索引区分", () => {
+    const priv = "# Memory Index\n- [my_pref](feedback_my-pref.md) — 个人偏好";
+    const team = "# 团队共享记忆\n- [pr_convention](project_pr.md) — PR 规范";
+    const prompt = buildMemorySystemPrompt(priv, team);
+    expect(prompt).toContain("团队共享记忆索引");
+    expect(prompt).toContain("pr_convention");
+    expect(prompt).toContain("my_pref"); // 私有索引仍在
+  });
+
+  test("E.11：仅团队索引（无私有索引）也注入", () => {
+    const team = "# 团队共享记忆\n- [arch](project_arch.md) — 架构决策";
+    const prompt = buildMemorySystemPrompt(null, team);
+    expect(prompt).toContain("团队共享记忆索引");
+    expect(prompt).toContain("arch");
+    expect(prompt).not.toContain("已保存的记忆索引"); // 私有 section 不出现
+  });
+
+  test("E.11：团队索引为 null 时向后兼容（不注入团队 section）", () => {
+    const priv = "# Memory Index\n- [my_pref](feedback_my-pref.md) — 个人偏好";
+    const prompt = buildMemorySystemPrompt(priv);
+    expect(prompt).not.toContain("团队共享记忆索引");
+    expect(prompt).toContain("my_pref");
+  });
 });
 
 describe("generateRecalledMemoryAttachment", () => {

@@ -183,6 +183,27 @@ function isInternalOnlyText(text: string): boolean {
 }
 
 /**
+ * 内部消息来源标记(写入 Message._meta.origin),用于按来源隐藏内部注入的消息对,
+ * 而非依赖脆弱的文案前缀匹配。
+ *
+ * 背景:压缩(compactWithSummary)与会话恢复(restoreSession 有摘要路径)会注入
+ * "摘要 user 消息 + 固定 ack assistant 消息"这一对仅供 LLM 的上下文锚点。它们既非
+ * 真实用户输入、也非模型真实答复,不应在 TUI 渲染——否则用户会看到一段
+ * 「> [对话摘要]...」和一句凭空的「好的,我已了解...请继续」。这类消息的文案会随
+ * 迭代微调(摘要前缀、ack 措辞),用 `_meta.origin` 标记比前缀匹配更稳。
+ */
+const INTERNAL_ORIGINS = new Set([
+  "compact-summary", // compactWithSummary 注入的摘要 / skill 保留 / ack
+  "resume-summary",  // restoreSession 有摘要路径注入的恢复提示 / ack
+]);
+
+/** 消息是否带内部来源标记(整条隐藏)。 */
+function hasInternalOrigin(msg: Message): boolean {
+  const origin = msg._meta?.origin;
+  return typeof origin === "string" && INTERNAL_ORIGINS.has(origin);
+}
+
+/**
  * 整条消息是否应从展示中隐藏(占位 / 续接标记 / 纯内部文本消息)。
  * 仅当消息**只含**内部文本(无真实用户文本、无 tool_result)时才整条隐藏;
  * 混合内容(如循环恢复:orphan tool_result + 内部提示文本)交给 stripInternalTextBlocks
@@ -191,6 +212,9 @@ function isInternalOnlyText(text: string): boolean {
 export function isHiddenFromDisplay(msg: Message): boolean {
   if (isPlaceholderMessage(msg)) return true;
   if (isResumeMarkerMessage(msg)) return true;
+  // 压缩 / 恢复注入的摘要+ack 消息对:按 _meta.origin 标记整条隐藏
+  //(含 assistant ack——前缀匹配无法覆盖 assistant 侧,故用来源标记)。
+  if (hasInternalOrigin(msg)) return true;
   // 仅含内部文本块(无其它类型 block)的消息整条隐藏
   return msg.content.length > 0
     && msg.content.every(b => b.type === "text" && isInternalOnlyText(b.text));

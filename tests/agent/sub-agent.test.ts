@@ -365,3 +365,72 @@ describe("SubAgent plan 类型", () => {
     expect(result.output).toContain("无效的子代理类型");
   });
 });
+
+// ─── extractFinalText / isLikelyThinking 启发式过滤（Bug 2 第三道防线）───
+// 背景：子代理达 max_turns 被强制退出时，最后一条 assistant text 可能是规划碎片
+// （"现在我来看看…" / "Let me check…"），不是结论。extractFinalText 跳过这类纯
+// planning 文本，回退到更早的有结论的 assistant 消息。
+// 关键回归：enhanceSubAgentPrompt 强制中文输出 → 规划碎片多为中文，正则必须覆盖中文。
+describe("isLikelyThinking 启发式过滤（中英双语）", () => {
+  // private 方法，测试经 as any 访问（无侵入，避免为测试改可见性）
+  const makeAgent = () => new SubAgent(new MockProvider(), "test-model", new Registry()) as any;
+
+  const thinkingSamples = [
+    // 中文规划碎片（本项目主场景）
+    "现在我对整体有了清晰的认识。让我再检查一下通知格式。",
+    "让我检查一下\n接下来分析一下结果",
+    "首先看看这个函数\n然后确认一下调用链",
+    "我需要再核对几个文件\n目前为止还没有完整结论",
+    // 英文规划碎片
+    "Now I have a complete picture. Let me check the notification format.",
+    "Let me verify the truncation logic\nLooking at the disk output",
+  ];
+
+  const conclusionSamples = [
+    // 含结构化标记 → 不是 thinking
+    "## 结论\n全部 12 项均已落地",
+    "| 项 | 状态 |\n| A | 已落地 |\n| B | 已落地 |",
+    "**核查结论**：三层门控完整",
+    // 长文本（> 5 行）→ 默认有实质内容
+    "第一行结论\n第二行细节\n第三行证据\n第四行佐证\n第五行补充\n第六行总结",
+    // 正常陈述句 → 不应误杀
+    "数据库连接池配置在 config.ts 第 30 行，最大连接数 20。",
+  ];
+
+  test("中英文规划碎片被判定为 thinking", () => {
+    const agent = makeAgent();
+    for (const s of thinkingSamples) {
+      expect(agent.isLikelyThinking(s)).toBe(true);
+    }
+  });
+
+  test("结论 / 结构化 / 长文本 / 正常陈述不被误判", () => {
+    const agent = makeAgent();
+    for (const s of conclusionSamples) {
+      expect(agent.isLikelyThinking(s)).toBe(false);
+    }
+  });
+
+  test("extractFinalText 跳过中文规划碎片，回退到更早的结论消息", () => {
+    const agent = makeAgent();
+    const messages = [
+      { role: "assistant", content: [{ type: "text", text: "## 发现\n- oauth.ts 缺少过期校验\n- 已定位到第 88 行" }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "x", content: "ok" }] },
+      // 最后一条是中文规划碎片（max_turns 截断的典型形态）
+      { role: "assistant", content: [{ type: "text", text: "现在让我再确认一下另一个文件。" }] },
+    ];
+    const result = agent.extractFinalText(messages, "fallback");
+    // 应跳过末尾规划碎片，取到含结论的更早消息
+    expect(result).toContain("## 发现");
+    expect(result).not.toContain("现在让我再确认");
+  });
+
+  test("extractFinalText 全为规划碎片时回退到 fallback", () => {
+    const agent = makeAgent();
+    const messages = [
+      { role: "assistant", content: [{ type: "text", text: "让我先看看代码。" }] },
+      { role: "assistant", content: [{ type: "text", text: "现在我需要检查配置。" }] },
+    ];
+    expect(agent.extractFinalText(messages, "兜底结论")).toBe("兜底结论");
+  });
+});

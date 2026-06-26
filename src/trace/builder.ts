@@ -294,6 +294,14 @@ export interface TrajectoryMetaOutput {
   /** 错误退出时的简要错误信息（reason="error"） */
   error?: { message: string; name?: string };
 
+  /** §3.6：实时阶段状态——排查时一眼看出"卡在哪个阶段" */
+  last_known_state?: {
+    phase: "before_model" | "streaming" | "post_stream" | "tool_exec" | "done";
+    turn: number;
+    model: string;
+    updated_at: string;
+  };
+
   // ── Harness 扩展 ──
   harness?: HarnessTraceMetadata;
 }
@@ -716,6 +724,7 @@ export function buildTrajectory(
     ...(claudeMdHash ? { claude_md_hash: claudeMdHash } : {}),
     ...(metadata.error ? { error: metadata.error } : {}),
     ...(metadata.harness ? { harness: metadata.harness } : {}),
+    ...(metadata.last_known_state ? { last_known_state: metadata.last_known_state } : {}),
   };
 
   return {

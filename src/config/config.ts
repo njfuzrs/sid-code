@@ -780,6 +780,26 @@ function loadFromEnv(): Partial<Config> {
     base.trace = traceConfig;
   }
 
+  // 团队记忆同步（E.11）env 覆盖：SID_CODE_TEAM_MEMORY 接受一个 JSON 对象,
+  // 如 '{"enabled":true,"dir":"/nas/shared/sid-team-memory","debounceMs":2000}'。
+  // 解析失败/非对象静默忽略(回退到 settings.json/默认),与 toolSearch/trace 容错风格一致。
+  // 字段最终仍会过 schema 校验(dir 必须绝对路径、debounceMs 非负),此处仅做形状收敛。
+  const teamMemEnv = env.SID_CODE_TEAM_MEMORY;
+  if (teamMemEnv !== undefined && teamMemEnv.trim() !== "") {
+    try {
+      const parsed = JSON.parse(teamMemEnv);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const tm: TeamMemoryConfig = {};
+        if (typeof parsed.enabled === "boolean") tm.enabled = parsed.enabled;
+        if (typeof parsed.dir === "string") tm.dir = parsed.dir;
+        if (typeof parsed.debounceMs === "number") tm.debounceMs = parsed.debounceMs;
+        if (Object.keys(tm).length > 0) base.teamMemory = tm;
+      }
+    } catch {
+      /* 非法 JSON 静默忽略,不覆盖配置文件/默认值 */
+    }
+  }
+
   return base;
 }
 

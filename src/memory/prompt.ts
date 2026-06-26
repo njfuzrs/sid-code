@@ -34,19 +34,41 @@ ${typeList}
 }
 
 /**
- * 构建完整的记忆系统提示词（指令 + MEMORY.md 索引）。
- * @param indexContent MEMORY.md 索引内容（可为 null）
+ * 构建完整的记忆系统提示词（指令 + 私有 MEMORY.md 索引 + 团队 MEMORY.md 索引）。
+ *
+ * 团队记忆是「半黑洞」的反面：写入并同步到协作者本机后，必须把团队 MEMORY.md
+ * 索引也注入会话，模型才能在需要时 Read 团队记忆文件——否则团队知识永远进不了
+ * 上下文（对标 claude-code「team MEMORY.md 注入每个会话」）。
+ *
+ * @param indexContent     私有（global/project scope）MEMORY.md 索引内容（可为 null）
+ * @param teamIndexContent 团队共享 MEMORY.md 索引内容（可为 null，未启用团队记忆时为 null）
  */
-export function buildMemorySystemPrompt(indexContent: string | null): string {
+export function buildMemorySystemPrompt(
+  indexContent: string | null,
+  teamIndexContent: string | null = null,
+): string {
   const instructions = buildMemoryInstructions();
-  if (!indexContent || !indexContent.trim()) {
-    return instructions;
-  }
-  return `${instructions}
+  const sections: string[] = [instructions];
 
-### 已保存的记忆索引（MEMORY.md）
+  if (indexContent && indexContent.trim()) {
+    sections.push(
+      `### 已保存的记忆索引（MEMORY.md）
 
 下面是当前已保存记忆的索引。需要某条记忆的完整内容时，用 Read 工具读取对应文件：
 
-${indexContent}`;
+${indexContent}`,
+    );
+  }
+
+  if (teamIndexContent && teamIndexContent.trim()) {
+    sections.push(
+      `### 团队共享记忆索引（团队 MEMORY.md）
+
+下面是团队所有协作者共享的记忆索引（编码规范 / 架构决策 / PR 规则等）。需要完整内容时，用 Read 工具读取团队记忆目录下对应文件：
+
+${teamIndexContent}`,
+    );
+  }
+
+  return sections.join("\n\n");
 }

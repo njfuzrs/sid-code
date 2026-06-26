@@ -77,6 +77,21 @@ async function rebuildIndex(dir: string): Promise<void> {
 }
 
 /**
+ * 读取团队记忆 MEMORY.md 索引内容（供 system prompt 注入）。
+ * 未启用 / 目录或索引不存在 / 读失败均返回 null。
+ */
+export async function getTeamIndexContent(cwd: string = process.cwd()): Promise<string | null> {
+  const indexPath = join(getTeamMemPath(cwd), INDEX_FILE);
+  if (!existsSync(indexPath)) return null;
+  try {
+    const text = await readFile(indexPath, "utf8");
+    return text.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * 写入一条团队记忆。
  * @returns 成功 / 因 secret 被拒 / IO 失败。
  */

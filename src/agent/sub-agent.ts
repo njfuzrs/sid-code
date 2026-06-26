@@ -1124,7 +1124,11 @@ export class SubAgent {
 
   /** 启发式判断文本是否为纯 thinking/planning（无结构化结论内容）。
    *  特征：短文本（<= 5 行有效行）且每行都是规划性开头。
-   *  长文本（> 5 行）或含结构化标记（## / | / - ）的一般都包含结论，不过滤。 */
+   *  长文本（> 5 行）或含结构化标记（## / | / - ）的一般都包含结论，不过滤。
+   *
+   *  中英双语：enhanceSubAgentPrompt 强制子代理按用户语言（默认中文）输出，
+   *  故规划文本多为中文（"现在我来看看…" / "让我检查一下…"）。仅匹配英文开头会
+   *  让本项目最常见的中文子代理完全绕过这道防线，必须同时覆盖中文规划句式。 */
   private isLikelyThinking(text: string): boolean {
     const lines = text.split("\n").filter(l => l.trim());
     // 长文本通常包含结论（有实质内容）
@@ -1133,9 +1137,14 @@ export class SubAgent {
     if (lines.some(l => /^#{1,3}\s|^\||\*\*/.test(l.trim()))) return false;
     // 全部是规划性开头才判定为 thinking
     const planningPatterns = [
+      // 英文规划句式
       /^(Now |Let me |I need to |I should |I'll |I have |Also,? |Next,? )/i,
       /^(Let me check|Let me verify|Let me look|I have a complete|I want to )/i,
       /^(Looking at |Checking |This |The |So |OK |Alright )/i,
+      // 中文规划句式（子代理默认中文输出，这是本项目主场景）
+      /^(现在|接下来|然后|首先|让我|我需要|我应该|我来|我先|我还需要|我想)/,
+      /^(让我们|我会|我可以|下一步|继续|那么|好的|接着|另外|此外)/,
+      /^(检查一下|看一下|看看|确认一下|分析一下|我已经|目前为止|综上)/,
     ];
     return lines.every(l => planningPatterns.some(p => p.test(l.trim())));
   }

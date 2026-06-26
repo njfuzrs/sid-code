@@ -6,7 +6,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { saveTeamMemory } from "../../../src/memory/team/store.ts";
+import { saveTeamMemory, getTeamIndexContent } from "../../../src/memory/team/store.ts";
 import { getTeamMemPath } from "../../../src/memory/team/paths.ts";
 import { _resetWatcherStateForTesting } from "../../../src/memory/team/watcher.ts";
 
@@ -71,5 +71,23 @@ describe("saveTeamMemory", () => {
     const content = readFileSync(r.filePath!, "utf8");
     // 含 URL → reference
     expect(content).toContain("type: reference");
+  });
+});
+
+describe("getTeamIndexContent（E.11 索引注入）", () => {
+  test("目录无索引时返回 null", async () => {
+    expect(await getTeamIndexContent(cwd)).toBeNull();
+  });
+
+  test("写入记忆后能读回团队索引内容", async () => {
+    await saveTeamMemory("pr_rule", "PR 标题不超过 70 字符", {
+      type: "feedback",
+      description: "PR 标题规范",
+      cwd,
+    });
+    const index = await getTeamIndexContent(cwd);
+    expect(index).not.toBeNull();
+    expect(index).toContain("pr_rule");
+    expect(index).toContain("PR 标题规范");
   });
 });

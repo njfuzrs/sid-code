@@ -748,8 +748,17 @@ export class Manager {
     if (splitPoint > 0) {
       const truncatedSummary = `[紧急压缩] 前 ${splitPoint} 条消息已被截断以防止上下文溢出`;
       this.messages = [
-        { role: "user", content: [{ type: "text", text: truncatedSummary }] },
-        { role: "assistant", content: [{ type: "text", text: "了解，继续。" }] },
+        {
+          role: "user",
+          content: [{ type: "text", text: truncatedSummary }],
+          // 紧急截断锚点仅供 LLM 维持角色交替,不在 TUI 渲染(按 _meta.origin 隐藏)。
+          _meta: { origin: "compact-summary" },
+        },
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "了解，继续。" }],
+          _meta: { origin: "compact-summary" },
+        },
         ...this.messages.slice(splitPoint),
       ];
       // Bug #3 修复：记录截断次数到 SessionMetrics
@@ -891,10 +900,14 @@ export class Manager {
     const summaryMsg: Message = {
       role: "user",
       content: [{ type: "text", text: `[对话摘要]\n${summary}` }],
+      // 标记内部来源:此摘要 user 消息仅供 LLM 续接上下文,不应在 TUI 渲染
+      //(history-adapter.isHiddenFromDisplay 按 _meta.origin 隐藏)。
+      _meta: { origin: "compact-summary" },
     };
     const ackMsg: Message = {
       role: "assistant",
       content: [{ type: "text", text: "好的，我已了解之前的对话内容。请继续。" }],
+      _meta: { origin: "compact-summary" },
     };
 
     // 保留已调用的 Skill 上下文（压缩会丢弃旧消息，Skill 工作流指令必须重新注入）
@@ -935,12 +948,15 @@ export class Manager {
         type: "text" as const,
         text: `[已调用 Skill: ${s.name}]\n${s.content}`,
       })),
+      // 压缩时重注入的 Skill 上下文仅供 LLM,不在 TUI 渲染(按 _meta.origin 隐藏)。
+      _meta: { origin: "compact-summary" },
     };
     const skillAckMsg: Message = {
       role: "assistant",
       content: [
         { type: "text", text: "好的，我已重新加载之前调用的 Skill 上下文，会继续遵循。" },
       ],
+      _meta: { origin: "compact-summary" },
     };
     return [skillUserMsg, skillAckMsg];
   }

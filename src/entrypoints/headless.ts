@@ -18,7 +18,6 @@ import {
   type ParentInitMessage,
   type ParentToolResultMessage,
   type ParentSignalMessage,
-  type ChildMessage,
   writeChildMsg,
   readLineFromStream,
 } from "../agent/sub-agent-protocol.ts";
@@ -28,10 +27,10 @@ import type {
   ContentBlock,
   StreamEvent,
   Usage,
-  ToolDefinition,
 } from "../llm/types.ts";
 import { accumulateUsage } from "../llm/types.ts";
 import { normalizeToolInput } from "../llm/normalize-tool-input.ts";
+import { getLogger } from "../debug/index.ts";
 
 // ============================================================
 // 主线
@@ -264,7 +263,7 @@ async function runAgentLoop(
             type: "tool_use",
             id: tu.id,
             name: tu.name,
-            input: tu.input,
+            input: tu.input as Record<string, unknown>,
           });
         }
 
@@ -388,7 +387,13 @@ async function processStream(stream: AsyncIterable<StreamEvent>): Promise<{
               block.input = normalizeToolInput(jsonStr ? JSON.parse(jsonStr) : {});
             } catch (e) {
               // telemetry: 工具输入 JSON 解析失败（对齐 CC tengu_tool_input_json_parse_fail）
-              process.stderr.write(`[STREAM] 工具输入 JSON 解析失败: tool=${block.name} len=${jsonStr.length} err=${e instanceof Error ? e.message : String(e)}\n`);
+              getLogger().warn("STREAM", `工具输入 JSON 解析失败`, {
+                toolName: block.name,
+                inputLength: jsonStr.length,
+                error: e instanceof Error ? e.message : String(e),
+                // 取前 200 字符辅助调试（不泄露完整输入，可能含敏感数据）
+                inputHead: jsonStr.slice(0, 200),
+              });
               block.input = {};
             }
           }

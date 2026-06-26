@@ -66,6 +66,56 @@ describe("内部消息隐藏（仅供 LLM、不展示给用户）", () => {
     expect(isHiddenFromDisplay(mkUser("[已释放] user 消息内容已被 GC 回收，详情见 compact_boundary"))).toBe(true);
   });
 
+  test("压缩注入的摘要/skill/ack 消息对按 _meta.origin 整条隐藏", () => {
+    // compactWithSummary 注入的 [对话摘要] user 消息
+    expect(isHiddenFromDisplay({
+      role: "user",
+      content: [{ type: "text", text: "[对话摘要]\n之前聊了很多" }],
+      _meta: { origin: "compact-summary" },
+    })).toBe(true);
+    // 配套的固定 ack assistant 消息(前缀匹配无法覆盖 assistant 侧,必须靠 _meta)
+    expect(isHiddenFromDisplay({
+      role: "assistant",
+      content: [{ type: "text", text: "好的，我已了解之前的对话内容。请继续。" }],
+      _meta: { origin: "compact-summary" },
+    })).toBe(true);
+    // 压缩时重注入的 [已调用 Skill] user 消息
+    expect(isHiddenFromDisplay({
+      role: "user",
+      content: [{ type: "text", text: "[已调用 Skill: code-review]\n..." }],
+      _meta: { origin: "compact-summary" },
+    })).toBe(true);
+  });
+
+  test("恢复会话(有摘要)注入的 buildResumeMessage/ack 消息对按 _meta.origin 整条隐藏", () => {
+    // buildResumeMessage 是裸文本(非 system-reminder、不含 RESUME_MARKER_SIGNATURE),
+    // 仅靠 _meta.origin 隐藏——回归此前作为 `> ...` 泄漏的缺口。
+    expect(isHiddenFromDisplay({
+      role: "user",
+      content: [{ type: "text", text: "本次会话是从之前的对话中恢复的，之前的对话因上下文窗口限制而中断。" }],
+      _meta: { origin: "resume-summary" },
+    })).toBe(true);
+    expect(isHiddenFromDisplay({
+      role: "assistant",
+      content: [{ type: "text", text: "好的，我已了解之前的对话内容。请继续。" }],
+      _meta: { origin: "resume-summary" },
+    })).toBe(true);
+  });
+
+  test("无 _meta.origin 的同款 ack 文案不被误隐藏(只认标记,不认文案)", () => {
+    // 模型真的说了这句话(无标记)时,不应被隐藏——隐藏只针对带来源标记的内部注入。
+    expect(isHiddenFromDisplay({
+      role: "assistant",
+      content: [{ type: "text", text: "好的，我已了解之前的对话内容。请继续。" }],
+    })).toBe(false);
+    // 未知 origin 不命中白名单
+    expect(isHiddenFromDisplay({
+      role: "user",
+      content: [{ type: "text", text: "随便什么" }],
+      _meta: { origin: "some-other-origin" },
+    })).toBe(false);
+  });
+
   test("真实用户/助手消息不被隐藏", () => {
     expect(isHiddenFromDisplay(mkUser("帮我修个 bug"))).toBe(false);
     expect(isHiddenFromDisplay({ role: "assistant", content: [{ type: "text", text: "好的" }] })).toBe(false);
@@ -607,5 +657,81 @@ describe("后台任务通知（<task-notification>）→ task_notification 历�
     const items = messagesToHistoryItems(msgs);
     // 以普通文本开头（非 <task-notification> 起始），应走 user 项
     expect(items[0].type).toBe("user");
+  });
+
+  // ─── Bug 1 根因回归：notification 与 tool_result 混合消息分离 ───
+  // 背景：ctxMgr.addMessage 角色交替合并会把 notification text block 追加到含 tool_result
+  // 的 user 消息里，形成 [tool_result, text(<task-notification>)] 混合结构。旧实现要求
+  // 消息「只含文本块」，混合后匹配失败 → notification 走 UserMessage 裸 XML 泄漏到 TUI。
+  // 修复：tryParseTaskNotifications 放宽匹配，分离出 notifications + remaining。
+  test("混合消息 [tool_result, text(notification)] → 分离为 task_notification + tool_group", () => {
+    const notif = buildNotification({
+      taskId: "algff7z4w",
+      status: "completed",
+      summary: 'Agent "验证截断保护层次" 执行完成',
+      result: "结论：截断保护三层均已落地。",
+    });
+    const msgs: Message[] = [
+      // 先有 tool_use，让后续 tool_result 能合并成 tool_group
+      { role: "assistant", content: [{ type: "tool_use", id: "call_x", name: "task_output", input: {} }] },
+      // 角色交替合并后的真实形态：tool_result 与 notification 同处一条 user 消息
+      {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "call_x", content: "task output ..." },
+          { type: "text", text: notif },
+        ],
+      },
+    ];
+    const items = messagesToHistoryItems(msgs);
+    // notification 被分离为专用折叠项（不再裸 XML 泄漏）
+    const notifItems = items.filter((i) => i.type === "task_notification");
+    expect(notifItems).toHaveLength(1);
+    if (notifItems[0].type === "task_notification") {
+      expect(notifItems[0].taskId).toBe("algff7z4w");
+      expect(notifItems[0].result).toBe("结论：截断保护三层均已落地。");
+    }
+    // 剩余 tool_result 仍正常合并展示，且绝不产出裸 user 项
+    expect(items.some((i) => i.type === "tool_group")).toBe(true);
+    expect(items.every((i) => i.type !== "user")).toBe(true);
+  });
+
+  test("混合消息中多个 notification block + tool_result 全部分离", () => {
+    const text = [
+      buildNotification({ taskId: "t1", status: "completed", summary: "S1", result: "R1" }),
+      buildNotification({ taskId: "t2", status: "failed", summary: "S2", error: "E2" }),
+    ].join("\n");
+    const msgs: Message[] = [
+      { role: "assistant", content: [{ type: "tool_use", id: "c1", name: "task_output", input: {} }] },
+      {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "c1", content: "out" },
+          { type: "text", text },
+        ],
+      },
+    ];
+    const items = messagesToHistoryItems(msgs);
+    const notifItems = items.filter((i) => i.type === "task_notification");
+    expect(notifItems).toHaveLength(2);
+    expect(items.some((i) => i.type === "tool_group")).toBe(true);
+  });
+
+  // ─── 中期加固回归：_meta.origin 快速路径 ───
+  // queryLoop 注入 notification 时打 _meta.origin="task-notification" 标记，
+  // history-adapter 优先走快速路径识别，不依赖内容前缀匹配。
+  test("_meta.origin='task-notification' 快速路径识别（即使前面有非通知文本块）", () => {
+    const notif = buildNotification({ taskId: "meta1", status: "completed", summary: "完成", result: "R" });
+    const msg: Message = {
+      role: "user",
+      content: [{ type: "text", text: notif }],
+      _meta: { origin: "task-notification", isMeta: true },
+    };
+    const items = messagesToHistoryItems([msg]);
+    expect(items).toHaveLength(1);
+    expect(items[0].type).toBe("task_notification");
+    if (items[0].type === "task_notification") {
+      expect(items[0].taskId).toBe("meta1");
+    }
   });
 });

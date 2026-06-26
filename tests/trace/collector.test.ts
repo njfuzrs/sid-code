@@ -154,7 +154,13 @@ describe("TraceCollector", () => {
 
     const rawPath = join(testDir, "sessions", "sess-001", "raw.jsonl");
     expect(existsSync(rawPath)).toBe(true);
-    const line = JSON.parse(readFileSync(rawPath, "utf-8").trim());
+    // §3.5：BeforeModel 预写 request_sent 行，完整 pair 是第二行
+    const lines = readFileSync(rawPath, "utf-8").trim().split("\n");
+    const pairLine = lines.find(l => {
+      const parsed = JSON.parse(l);
+      return parsed.type !== "request_sent";
+    })!;
+    const line = JSON.parse(pairLine);
     expect(line.index).toBe(1);
     expect(line.stop_reason).toBe("end_turn");
     // raw.jsonl 中不应包含 raw_messages 字段
@@ -593,7 +599,13 @@ describe("TraceCollector", () => {
     });
 
     const rawPath = join(testDir, "sessions", "sess-001", "raw.jsonl");
-    const line = JSON.parse(readFileSync(rawPath, "utf-8").trim());
+    const lines = readFileSync(rawPath, "utf-8").trim().split("\n");
+    // §3.5：BeforeModel 时会预写 request_sent 行，完整 pair 是第二行
+    const pairLine = lines.find(l => {
+      const parsed = JSON.parse(l);
+      return parsed.type !== "request_sent";
+    })!;
+    const line = JSON.parse(pairLine);
 
     expect(line.request.system).toBe("你是助手");
     expect(line.request.tools).toHaveLength(1);
@@ -619,9 +631,14 @@ describe("TraceCollector", () => {
 
     const rawPath = join(testDir, "sessions", "sess-001", "raw.jsonl");
     const lines = readFileSync(rawPath, "utf-8").trim().split("\n");
-    expect(lines).toHaveLength(2);
+    // §3.5：每次 BeforeModel 预写 request_sent，故总行数 = 2 pair + 2 request_sent = 4
+    const pairLines = lines.filter(l => {
+      const parsed = JSON.parse(l);
+      return parsed.type !== "request_sent";
+    });
+    expect(pairLines).toHaveLength(2);
 
-    const line2 = JSON.parse(lines[1]);
+    const line2 = JSON.parse(pairLines[1]);
     expect(line2.index).toBe(2);
     expect(line2.request.system).toBeUndefined();
     expect(line2.request.tools).toBeUndefined();
