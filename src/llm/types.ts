@@ -280,7 +280,25 @@ export interface SendParams {
       strict?: boolean;
     };
   };
+  /**
+   * 流内诊断遥测回调（由 fallback.ts 注入，provider 在 stream-guard 包装时转发）。
+   * 让 stream_stall / stream_idle_timeout / stream_completed 等流内信号能进入
+   * 统一的 RetryTelemetry 通道（events.jsonl），被 trace-digest.ts 消费。
+   * provider 不直接依赖 RetryTelemetry，只产出与协议无关的 {@link StreamTelemetrySignal}。
+   */
+  onStreamTelemetry?: (signal: StreamTelemetrySignal) => void;
 }
+
+/**
+ * 流内诊断遥测信号 — provider 层与遥测系统之间的协议无关契约。
+ *
+ * 单一事实源：stream-guard.ts 产出此类型，anthropic.ts 转发，fallback.ts 转成
+ * RetryTelemetryEvent。任何 provider 都可复用，不耦合具体遥测实现。
+ */
+export type StreamTelemetrySignal =
+  | { type: "stream_stall"; provider: string; gapMs: number; totalEvents: number }
+  | { type: "stream_idle_timeout"; provider: string; timeoutMs: number; totalEvents: number }
+  | { type: "stream_completed"; provider: string; totalEvents: number; elapsedMs: number; ttftMs?: number };
 
 /** 累积的流式响应 */
 export interface AccumulatedResponse {

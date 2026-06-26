@@ -228,6 +228,11 @@ export class AnthropicProvider implements Provider {
         onTelemetry: (evt: StreamGuardTelemetryEvent) => {
           // 遥测事件通过 logger 记录，接入现有可观测性系统
           log.debug("TELEMETRY:ANTHROPIC", `${evt.type}`, evt as any);
+          // § 转发到统一的 RetryTelemetry 通道（由 fallback.ts 注入 onStreamTelemetry）
+          // 让 stream_stall / idle_timeout / completed 进 events.jsonl，被 trace-digest.ts 消费
+          try {
+            params.onStreamTelemetry?.(evt);
+          } catch { /* 遥测失败不影响主流程 */ }
         },
       });
 

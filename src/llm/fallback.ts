@@ -243,6 +243,18 @@ export class ModelFallback {
       throw new RequestAbortedError("Request aborted");
     }
 
+    // § 注入流内遥测转发：把 provider 产出的协议无关 StreamTelemetrySignal
+    // 转成 RetryTelemetryEvent，进入统一遥测通道（events.jsonl / trace-digest.ts）。
+    // 链式保留调用方可能已传入的回调（通常为空）。
+    const upstreamStreamTelemetry = params.onStreamTelemetry;
+    params = {
+      ...params,
+      onStreamTelemetry: (sig) => {
+        try { upstreamStreamTelemetry?.(sig); } catch { /* ignore */ }
+        this.emitTelemetry({ ...sig, model: params.model });
+      },
+    };
+
     // 检查模型可用性
     const availCheck = this.availability.isAvailable(params.model);
     if (!availCheck.available) {

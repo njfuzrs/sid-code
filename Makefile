@@ -1,7 +1,7 @@
 BINARY=sid-code
 BUN=bun
 
-.PHONY: build run test clean deps lint
+.PHONY: build run test test-providers clean deps lint
 
 build:
 	$(BUN) run scripts/bump-version.ts
@@ -13,6 +13,15 @@ run:
 
 test:
 	$(BUN) test
+
+# Provider 层一致性测试快速入口（方案 §8.3）。
+# make test 已通过 bun test 全量覆盖这些用例，此 target 用于聚焦 provider 层回归。
+test-providers:
+	$(BUN) test tests/llm/provider-conformance.test.ts \
+		tests/llm/provider-anthropic-conformance.test.ts \
+		tests/llm/provider-protocol-contract.test.ts \
+		tests/llm/openai-protocol-edge.test.ts \
+		tests/llm/fallback.test.ts
 
 clean:
 	rm -f $(BINARY)

@@ -12,6 +12,7 @@
  */
 
 import { getLogger } from "../debug/logger.ts";
+import type { StreamTelemetrySignal } from "./types.ts";
 
 export interface StreamGuardOptions {
   /** 无事件超时（毫秒）。超时后触发 onTimeout 回调中断流 */
@@ -26,11 +27,12 @@ export interface StreamGuardOptions {
   onTelemetry?: (event: StreamGuardTelemetryEvent) => void;
 }
 
-/** 流内诊断遥测事件 */
-export type StreamGuardTelemetryEvent =
-  | { type: "stream_stall"; provider: string; gapMs: number; totalEvents: number }
-  | { type: "stream_idle_timeout"; provider: string; timeoutMs: number; totalEvents: number }
-  | { type: "stream_completed"; provider: string; totalEvents: number; elapsedMs: number; ttftMs?: number };
+/**
+ * 流内诊断遥测事件。
+ * 复用 types.ts 的 {@link StreamTelemetrySignal} 作为单一事实源，
+ * 避免与 SendParams.onStreamTelemetry 的契约漂移。
+ */
+export type StreamGuardTelemetryEvent = StreamTelemetrySignal;
 
 /**
  * 包装 AsyncIterable，加入 idle timeout + stall 告警 + 流统计。
