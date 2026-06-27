@@ -10,7 +10,7 @@ import { estimateTextTokens } from "../context/token.ts";
  * 估算文本的 token 数。
  *
  * EST-1：收敛为单一权威实现——直接复用 context/token.ts 的 estimateTextTokens
- * （字符级逐个分类：ASCII 0.20、非 ASCII 0.55 tok/char，经 DeepSeek 官方 tokenizer 实测校准）。
+ * （字符级逐个分类：ASCII 0.20、非 ASCII 0.65 tok/char，偏保守以防长中文对话低估）。
  * 此前本函数自带一套粗比例系数（中文 2.0 / 代码 3.0 / 英文 3.5 字符每 token），
  * 与权威实现口径打架（英文 3.5≈0.286 vs 0.20，同段文本估出不同值）。统一改调消灭分叉。
  */

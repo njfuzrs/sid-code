@@ -208,7 +208,52 @@ export class LSPClient {
           try { handler(msg.params); } catch {}
         }
       }
+    } else if (msg.method && msg.id != null) {
+      // G8：服务器→客户端的请求。此前被忽略（服务器永远等不到响应），部分服务器
+      // 会因此阻塞初始化或反复重发。这里给出最小可用应答，让服务器继续工作：
+      this.handleServerRequest(msg);
     }
-    // 服务器→客户端的请求（msg.method && msg.id != null）暂不处理
+  }
+
+  /**
+   * G8：处理服务器→客户端请求。
+   *
+   * 我们不维护完整的客户端能力（无 UI / 配置面板），故对常见请求给出"无害默认值"，
+   * 其余一律回 MethodNotFound——这比静默丢弃更合规，避免服务器无限等待响应。
+   * - workspace/configuration：返回与请求项数等长的空配置数组（多数服务器接受 null/空）
+   * - window/workDoneProgress/create：返回 null（同意创建进度令牌，但我们不渲染）
+   * - client/registerCapability、client/unregisterCapability：返回 null（接受动态注册）
+   * - workspace/semanticTokens/refresh 等 refresh 类：返回 null（确认收到）
+   * - 其余未知请求：回 -32601 MethodNotFound
+   */
+  private handleServerRequest(msg: any): void {
+    const respond = (result: unknown) =>
+      this.writeMessage({ jsonrpc: "2.0", id: msg.id, result });
+
+    switch (msg.method) {
+      case "workspace/configuration": {
+        // 请求形如 { items: [{ section?, scopeUri? }, ...] }，按项数返回等长空配置数组。
+        const items = Array.isArray(msg.params?.items) ? msg.params.items : [];
+        respond(items.length > 0 ? items.map(() => ({})) : [{}]);
+        break;
+      }
+      case "window/workDoneProgress/create":
+      case "client/registerCapability":
+      case "client/unregisterCapability":
+      case "workspace/semanticTokens/refresh":
+      case "workspace/inlayHint/refresh":
+      case "workspace/diagnostic/refresh":
+      case "workspace/codeLens/refresh":
+        respond(null);
+        break;
+      default:
+        // 未知请求：返回 MethodNotFound，而非静默丢弃。
+        this.writeMessage({
+          jsonrpc: "2.0",
+          id: msg.id,
+          error: { code: -32601, message: `Method not found: ${msg.method}` },
+        });
+        break;
+    }
   }
 }

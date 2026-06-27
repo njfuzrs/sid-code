@@ -237,13 +237,16 @@ ${typeLines}
       return { output: `子代理并发数已达上限(${SubAgentTool.MAX_CONCURRENT})，请等待其他子代理完成`, isError: true };
     }
 
-    // Worktree 隔离：在独立工作区执行，结束后清理无改动的 Worktree
+    // Worktree 隔离：在独立工作区执行，结束后清理无改动的 Worktree。
+    // B7：通过 SubAgentTask.cwd 走 withAgentCwd（AsyncLocalStorage）而非 process.chdir，
+    // 与 workflow/swarm 一致，避免并发 agent 间 chdir 竞态。
     let isolationCleanup: (() => Promise<void>) | null = null;
-    let originalCwd: string | null = null;
+    let isolatedCwd: string | undefined;
     if (params.isolation === "worktree") {
       try {
-        const { WorktreeManager, findGitRoot } = await import("../worktree/manager.ts");
-        const gitRoot = findGitRoot(process.cwd());
+        const { WorktreeManager, findGitRootForAgent } = await import("../worktree/manager.ts");
+        // 用 canonical root 防嵌套（P0-2/B1）：在 worktree 内再隔离时落到主仓
+        const gitRoot = findGitRootForAgent(process.cwd());
         if (!gitRoot) {
           return { output: "错误: isolation=worktree 需要在 Git 仓库中执行", isError: true };
         }
@@ -251,12 +254,10 @@ ${typeLines}
         const wtName = `agent-${randomBytes(4).toString("hex")}`;
         const manager = new WorktreeManager(gitRoot);
         const session = await manager.create(wtName);
-        originalCwd = process.cwd();
-        process.chdir(session.worktreePath);
+        isolatedCwd = session.worktreePath;
+        // D14：记录 slug ↔ 任务描述映射，便于事后追溯孤儿 worktree 归属
+        log.info("SUBAGENT", `隔离 Worktree ${wtName} ← 任务: ${params.description}`);
         isolationCleanup = async () => {
-          if (originalCwd) {
-            try { process.chdir(originalCwd); } catch { /* 忽略 */ }
-          }
           // 无改动则自动删除；有改动则保留（fail-closed，不强删）
           try {
             await manager.remove(session, false);
@@ -289,6 +290,7 @@ ${typeLines}
           description: params.description,
           prompt: params.prompt,
           forkMessages,
+          cwd: isolatedCwd, // B7: 经 withAgentCwd 隔离，并发安全
         },
         signal,
       );

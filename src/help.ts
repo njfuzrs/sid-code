@@ -58,6 +58,9 @@ Bridge 远程控制:
   --bridge <ws-url>           进入 Bridge 模式，连接中继服务器接受远程客户端操控（ws:// 或 wss://）
   --bridge-token <token>      Bridge 连接认证令牌
 
+Worktree 隔离:
+  --worktree[=<name>]         启动即创建并进入隔离 Git Worktree（省略 name 自动命名为 brave-eagle-42 形态）
+
 其他:
   -h, --help                  显示帮助信息
   -v, --version               显示版本信息

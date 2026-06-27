@@ -30,6 +30,12 @@ export class JitContextManager {
   private loadedFiles = new Set<string>();
   /** 已扫描的目录路径集合 */
   private scannedDirs = new Set<string>();
+  /**
+   * §9.5：已加载的 JIT 上下文正文（path → 格式化后的块）。
+   * JIT 上下文被追加到系统提示词；压缩后系统提示词重建会丢失这些追加内容。
+   * 保留正文，供压缩后重新注入仍在作用域内的规则（类似 Skill 保留逻辑）。
+   */
+  private loadedContexts = new Map<string, string>();
 
   /**
    * 根据工具访问的路径，发现新的上下文。
@@ -111,16 +117,29 @@ export class JitContextManager {
     // 格式化上下文内容
     const formattedContexts = foundContexts.map(({ path, content }) => {
       const relativePath = relative(projectRoot, path);
-      return `--- 新发现的项目上下文 (${relativePath}) ---\n${content}\n--- 上下文结束 ---`;
+      const formatted = `--- 新发现的项目上下文 (${relativePath}) ---\n${content}\n--- 上下文结束 ---`;
+      // §9.5：保留正文，供压缩后重新注入
+      this.loadedContexts.set(path.toLowerCase(), formatted);
+      return formatted;
     });
 
     return formattedContexts.join("\n\n");
+  }
+
+  /**
+   * §9.5：返回所有已加载 JIT 上下文的合并正文（压缩后重新注入用）。
+   * 无已加载上下文返回 null。
+   */
+  getLoadedContexts(): string | null {
+    if (this.loadedContexts.size === 0) return null;
+    return Array.from(this.loadedContexts.values()).join("\n\n");
   }
 
   /** 重置缓存（会话重启时调用） */
   reset(): void {
     this.loadedFiles.clear();
     this.scannedDirs.clear();
+    this.loadedContexts.clear();
   }
 
   /** 获取已加载的文件数量（用于调试） */

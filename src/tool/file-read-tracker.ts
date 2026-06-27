@@ -12,6 +12,7 @@ interface ReadRecord {
   path: string;
   readTime: number;  // 读取时的时间戳
   mtime: number;     // 读取时文件的 mtime
+  lastAccessTime: number; // 最近一次访问（读/写/编辑）的时间戳（§2.1 post-compact 文件恢复用）
 }
 
 export class FileReadTracker {
@@ -20,16 +21,38 @@ export class FileReadTracker {
   /** 标记文件已被读取 */
   markAsRead(filePath: string, mtime: number): void {
     const resolved = resolve(filePath).normalize("NFC");
+    const now = Date.now();
     this.readFiles.set(resolved, {
       path: resolved,
-      readTime: Date.now(),
+      readTime: now,
       mtime,
+      lastAccessTime: now,
     });
   }
 
   /** 检查文件是否已被读取过 */
   hasBeenRead(filePath: string): boolean {
     return this.readFiles.has(resolve(filePath).normalize("NFC"));
+  }
+
+  /**
+   * §2.1：按 lastAccessTime 降序返回最近访问的文件路径（最多 limit 个）。
+   * 用于压缩后主动恢复模型最近在操作的文件内容，避免压缩后"断片"重读。
+   */
+  getRecentFiles(limit: number = 5): string[] {
+    return Array.from(this.readFiles.values())
+      .sort((a, b) => b.lastAccessTime - a.lastAccessTime)
+      .slice(0, limit)
+      .map((r) => r.path);
+  }
+
+  /**
+   * §2.1：返回记录的 mtime（读取时刻的文件 mtime），用于 post-compact 恢复时比对磁盘是否已变更。
+   * 未追踪过返回 null。
+   */
+  getRecordedMtime(filePath: string): number | null {
+    const record = this.readFiles.get(resolve(filePath).normalize("NFC"));
+    return record ? record.mtime : null;
   }
 
   /**
@@ -65,6 +88,7 @@ export class FileReadTracker {
       try {
         record.mtime = statSync(resolved).mtimeMs;
         record.readTime = Date.now();
+        record.lastAccessTime = Date.now(); // §2.1：写/编辑也算一次访问
       } catch {
         // 忽略
       }

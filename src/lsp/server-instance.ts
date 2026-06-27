@@ -38,6 +38,16 @@ export class LSPServerInstance {
     return this._state;
   }
 
+  /** 已发生的崩溃恢复次数（G4：健康状态展示用） */
+  get crashCount(): number {
+    return this.crashRecoveryCount;
+  }
+
+  /** 崩溃次数是否已耗尽重启上限（G4：耗尽后服务器不再自动重启，对用户不可用） */
+  get restartsExhausted(): boolean {
+    return this.crashRecoveryCount >= (this.config.maxRestarts ?? 3) && this._state === "error";
+  }
+
   /** 懒启动：确保服务器已启动 */
   async ensureStarted(): Promise<void> {
     if (this._state === "running") return;
@@ -77,8 +87,20 @@ export class LSPServerInstance {
           textDocument: {
             synchronization: { didSave: true, dynamicRegistration: false },
             publishDiagnostics: { relatedInformation: true },
+            // G7：声明查询能力，否则服务器可能不返回 definition/references/hover 等结果。
+            hover: { contentFormat: ["markdown", "plaintext"] },
+            definition: { linkSupport: true },
+            references: {},
+            implementation: { linkSupport: true },
+            documentSymbol: { hierarchicalDocumentSymbolSupport: true },
+            callHierarchy: { dynamicRegistration: false },
           },
-          workspace: { workspaceFolders: true },
+          workspace: {
+            workspaceFolders: true,
+            symbol: { dynamicRegistration: false },
+            // G8：声明支持 configuration 请求，与 client.ts 的 workspace/configuration 应答配套。
+            configuration: true,
+          },
         },
       }, timeout);
 

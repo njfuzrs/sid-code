@@ -377,6 +377,15 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
       log.info("PROMPT", `附件被丢弃: ${name}(priority=${att.priority})`);
     }
     log.info("PROMPT", `截断后 ${estimateTokens(content)} tokens, 包含${result.included.length}个附件, 丢弃${result.discarded.length}个`);
+
+    // §9.1：裁剪降级通知——在动态区末尾追加一行,告知模型哪些上下文因空间限制被省略/截断,
+    // 否则模型不知道 GIT_STATUS 等附件已缺失,可能基于"应该有但其实没有"的假设做出错误操作。
+    const omittedNames: string[] = [];
+    for (const att of result.discarded) omittedNames.push(att.label || att.type);
+    if (result.truncated) omittedNames.push(`${result.truncated.label || result.truncated.type}(部分截断)`);
+    if (omittedNames.length > 0) {
+      content += `\n\n[注意：以下上下文因空间限制被省略或截断，相关信息可能不完整，必要时请通过工具主动获取：${omittedNames.join("、")}]`;
+    }
   }
 
   log.info("PROMPT", `系统提示词构建完成: ${content.length}字符, ~${estimateTokens(content)} tokens, ${attachments.length}个附件`);

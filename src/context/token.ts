@@ -7,9 +7,17 @@ import { memoizeWithLRU } from "../utils/memoize-lru.ts";
 
 /** ASCII 字符：英文散文实测 0.17、代码/JSON 偏高,取 0.20 折中 */
 const ASCII_TOKENS_PER_CHAR = 0.20;
-/** 非 ASCII 字符（中文/日文/韩文等）：DeepSeek 官方 tokenizer 实测中文 ≈0.52 tok/字符，
- *  留少量余量取 0.55（旧值 1.3 是错的，会把中文高估 ~2.5 倍并触发过早压缩） */
-const NON_ASCII_TOKENS_PER_CHAR = 0.55;
+/** 非 ASCII 字符（中文/日文/韩文等）：取 0.65 tok/字符。
+ *
+ *  口径权衡（9.4）：DeepSeek 官方 tokenizer 实测中文 ≈0.52，但 Claude/Anthropic tokenizer
+ *  对中文约 0.6-0.7、日文约 0.8。本基座多 provider 共用，按"宁可早压缩不要晚溢出"取偏保守的
+ *  0.65（旧值 0.55 偏向 DeepSeek，长中文对话对 Claude 会累积 10-15% 低估，使 compact 触发过晚）。
+ *
+ *  注意：estimateTokens 之上还有 calibrationFactor 校准回路（recordActualTokens 用真实 usage
+ *  反推系数并 EMA 平滑），因此此处的启发式系数仅在"首次真实 usage 校准前"生效；校准后误差收敛 < 5%。
+ *  纯字符 tokenizer（@anthropic-ai/tokenizer）只对 Anthropic 准确、对其它 provider 反而引入新偏差，
+ *  且校准回路已达成精度目标，故不引入该重依赖。 */
+const NON_ASCII_TOKENS_PER_CHAR = 0.65;
 /** 超过此长度使用快速近似（性能优化） */
 const MAX_CHARS_FOR_FULL_HEURISTIC = 100_000;
 /** LRU 缓存键长度上限——超长文本不缓存（key 本身就贵，且命中率低） */

@@ -100,6 +100,59 @@ export class LSPServerManager {
     });
   }
 
+  /**
+   * G6：发送 didSave 通知（write/edit 工具变更后调用）。
+   *
+   * 部分 LSP 服务器依赖 didSave 而非 didChange 触发完整诊断刷新。仅对已打开文件
+   * （openFiles 中有记录）发送——未 didOpen 的文件发 didSave 不合协议。最佳努力，
+   * 静默失败。
+   */
+  saveFile(filePath: string): void {
+    const instance = this.getServerForFile(filePath);
+    if (!instance || !this.openFiles.has(filePath)) return;
+    void import("url").then(({ pathToFileURL }) => {
+      instance.sendNotification("textDocument/didSave", {
+        textDocument: { uri: pathToFileURL(filePath).href },
+      });
+    });
+  }
+
+  /**
+   * 打开文件（LSP 查询工具用，确保文件已 didOpen）。
+   *
+   * 与 changeFile 的区别：仅在文件**首次**见到时发送 didOpen，已打开则直接返回
+   * （不发 didChange）。LSP 查询（definition/references/hover 等）要求目标文件
+   * 已在服务器侧打开，否则服务器无该文件的 AST。工具执行前先调用此方法确保打开。
+   */
+  async openFile(filePath: string, content: string): Promise<void> {
+    const instance = this.getServerForFile(filePath);
+    if (!instance) return; // 无对应 LSP 服务器，静默跳过
+
+    if (this.openFiles.has(filePath)) return; // 已打开，无需重复 didOpen
+
+    await instance.ensureStarted();
+    const { pathToFileURL } = await import("url");
+    const uri = pathToFileURL(filePath).href;
+    const languageId = this.getLanguageId(filePath, instance);
+
+    this.openFiles.set(filePath, 1);
+    instance.sendNotification("textDocument/didOpen", {
+      textDocument: { uri, languageId, version: 1, text: content },
+    });
+  }
+
+  /**
+   * 通过文件对应的 LSP 服务器发送请求（LSP 查询工具用）。
+   *
+   * 路由到 getServerForFile 命中的实例并转发请求（带 ContentModified 重试）。
+   * 无对应服务器时抛错，由调用方（LSP 工具）转为友好错误信息。
+   */
+  async sendRequest<T = unknown>(filePath: string, method: string, params?: unknown): Promise<T> {
+    const instance = this.getServerForFile(filePath);
+    if (!instance) throw new Error(`无对应 LSP 服务器: ${filePath}`);
+    return instance.sendRequest<T>(method, params);
+  }
+
   /** 关闭所有服务器 */
   async shutdown(): Promise<void> {
     await Promise.all(

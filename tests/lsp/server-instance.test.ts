@@ -51,6 +51,19 @@ process.stdin.on("data", (chunk) => {
       }});
     } else if (msg.method === "echo") {
       send({ jsonrpc: "2.0", id: msg.id, result: { echoed: msg.params } });
+    } else if (msg.method === "askConfig") {
+      // 测试 G8：mock server 主动向客户端发 workspace/configuration 请求，
+      // 把客户端的响应回传给测试（通过 echoBack 通知）。
+      send({ jsonrpc: "2.0", id: 9001, method: "workspace/configuration", params: { items: [{ section: "foo" }, { section: "bar" }] } });
+    } else if (msg.method === "askUnknown") {
+      // 测试 G8：未知的服务器→客户端请求，应收到 MethodNotFound 错误响应。
+      send({ jsonrpc: "2.0", id: 9002, method: "some/unknownServerRequest", params: {} });
+    } else if (msg.id === 9001) {
+      // 收到客户端对 workspace/configuration 的响应，回传给测试
+      send({ jsonrpc: "2.0", method: "echoBack", params: { kind: "config", response: msg.result, error: msg.error } });
+    } else if (msg.id === 9002) {
+      // 收到客户端对未知请求的响应
+      send({ jsonrpc: "2.0", method: "echoBack", params: { kind: "unknown", response: msg.result, error: msg.error } });
     }
     // 通知（initialized/exit）无需响应
   }
@@ -128,5 +141,48 @@ describe("LSPServerInstance", () => {
     await inst.start();
     await inst.stop();
     expect(inst.state).toBe("stopped");
+  });
+
+  test("G8：响应服务器的 workspace/configuration 请求（按项数返回等长数组）", async () => {
+    makeInstance();
+    await inst.start();
+
+    const echoes: any[] = [];
+    inst.onNotification("echoBack", (p) => echoes.push(p));
+
+    // 触发 mock server 发起 workspace/configuration 请求
+    inst.sendNotification("askConfig", {});
+    await new Promise((r) => setTimeout(r, 400));
+
+    const configEcho = echoes.find((e) => e.kind === "config");
+    expect(configEcho).toBeDefined();
+    expect(configEcho.error).toBeUndefined();
+    // 请求 2 个 items，应返回长度 2 的数组
+    expect(Array.isArray(configEcho.response)).toBe(true);
+    expect(configEcho.response.length).toBe(2);
+  });
+
+  test("G8：未知服务器请求返回 MethodNotFound 错误", async () => {
+    makeInstance();
+    await inst.start();
+
+    const echoes: any[] = [];
+    inst.onNotification("echoBack", (p) => echoes.push(p));
+
+    inst.sendNotification("askUnknown", {});
+    await new Promise((r) => setTimeout(r, 400));
+
+    const unknownEcho = echoes.find((e) => e.kind === "unknown");
+    expect(unknownEcho).toBeDefined();
+    expect(unknownEcho.error).toBeDefined();
+    expect(unknownEcho.error.code).toBe(-32601); // MethodNotFound
+  });
+
+  test("G4：crashCount 与 restartsExhausted 健康字段", async () => {
+    makeInstance();
+    await inst.start();
+    // 正常运行时无崩溃、未耗尽
+    expect(inst.crashCount).toBe(0);
+    expect(inst.restartsExhausted).toBe(false);
   });
 });

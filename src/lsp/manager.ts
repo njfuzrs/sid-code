@@ -74,6 +74,62 @@ export function getLSPInitState(): InitState {
   return initState;
 }
 
+/** 单个 LSP 服务器的健康快照（G4） */
+export interface LSPServerHealth {
+  name: string;
+  state: import("./types.ts").LSPServerState;
+  crashCount: number;
+  /** 崩溃重启已耗尽——服务器不再自动恢复，对用户不可用 */
+  restartsExhausted: boolean;
+}
+
+/** 整个 LSP 系统的健康快照（G4） */
+export interface LSPHealth {
+  initState: InitState;
+  servers: LSPServerHealth[];
+}
+
+/**
+ * 获取 LSP 系统健康快照（G4：可观测性）。
+ *
+ * 供 `/doctor` 式命令或状态展示消费——让"服务器启动失败 / 崩溃超限"对用户可见，
+ * 而非静默降级后无从排查。无实例时返回当前 initState + 空服务器列表。
+ */
+export function getLSPHealth(): LSPHealth {
+  if (!instance) return { initState, servers: [] };
+  const servers: LSPServerHealth[] = [];
+  for (const [name, inst] of instance.getAllServers()) {
+    servers.push({
+      name,
+      state: inst.state,
+      crashCount: inst.crashCount,
+      restartsExhausted: inst.restartsExhausted,
+    });
+  }
+  return { initState, servers };
+}
+
+/**
+ * 生成一句话的 LSP 健康告警（G4），无异常时返回 null。
+ *
+ * "异常"= 初始化失败，或任一服务器崩溃重启耗尽 / 处于 error 态。供上层（TUI 状态栏 /
+ * 启动后一次性提示）在有问题时才打扰用户，正常时静默。
+ */
+export function getLSPHealthWarning(): string | null {
+  const health = getLSPHealth();
+  if (health.initState === "failed") {
+    return "LSP 系统初始化失败，代码智能功能不可用（可用 LSP 工具时也会降级）。";
+  }
+  const broken = health.servers.filter((s) => s.restartsExhausted || s.state === "error");
+  if (broken.length > 0) {
+    const detail = broken
+      .map((s) => `${s.name}（崩溃 ${s.crashCount} 次${s.restartsExhausted ? "，已停止重启" : ""}）`)
+      .join("、");
+    return `LSP 服务器异常：${detail}。相关语言的代码智能功能可能不可用。`;
+  }
+  return null;
+}
+
 /**
  * 通知 LSP 文件变更（write/edit 工具后调用）。
  * LSP 未就绪时静默跳过。
@@ -86,8 +142,13 @@ export async function notifyFileChanged(filePath: string, content: string): Prom
 
 /**
  * 收集待投递的诊断，格式化为附件文本。
- * 供 buildSystemPrompt 的 diagnostics 字段使用。
- * @returns 格式化文本，无诊断时返回 null
+ * 供主循环每轮注入 system-reminder 使用。
+ *
+ * 严重度过滤（对标方案风险缓解项）：仅当本批诊断含 Error / Warning 时才注入，
+ * 纯 Hint / Info 不注入——避免对模型刷无关紧要的提示、浪费 token。过滤后若只剩
+ * Hint/Info 则整批跳过（返回 null），保持"有真问题才打扰"的克制。
+ *
+ * @returns 格式化文本，无诊断或仅含 Hint/Info 时返回 null
  */
 export function collectDiagnosticText(): string | null {
   const registry = getDiagnosticRegistry();
@@ -96,7 +157,59 @@ export function collectDiagnosticText(): string | null {
   const files = registry.collectDiagnostics();
   if (files.length === 0) return null;
 
+  // 仅保留含 Error/Warning 的文件；Hint/Info 不足以构成注入理由。
+  const hasActionable = files.some((f) =>
+    f.diagnostics.some((d) => d.severity === "Error" || d.severity === "Warning"),
+  );
+  if (!hasActionable) return null;
+
   return formatDiagnostics(files);
+}
+
+/**
+ * 清除指定文件的已投递诊断记录（write/edit 工具编辑文件后调用）。
+ *
+ * 对标 Claude Code 的 clearDeliveredDiagnosticsForFile：编辑后旧诊断可能已失效，
+ * 清除 delivered 缓存让服务器重新推送的诊断能作为"新诊断"再次投递，避免
+ * 修复后的诊断被跨轮次去重永久过滤、或过时错误持续驻留。LSP 未就绪时静默跳过。
+ */
+export function clearDiagnosticsForFile(filePath: string): void {
+  const registry = getDiagnosticRegistry();
+  if (!registry) return;
+  try {
+    const { pathToFileURL } = require("url");
+    registry.clearForFile(pathToFileURL(filePath).href);
+  } catch {
+    // 路径转 URL 失败（极少数畸形路径）静默忽略，绝不影响主流程
+  }
+}
+
+/**
+ * 等待 LSP 系统就绪（LSP 查询工具执行前调用）。
+ *
+ * 工具调用时服务器可能仍在初始化（initState=pending），直接发请求会失败。
+ * 此函数轮询 initState：success 立即返回 true；failed / not-started 立即返回 false；
+ * pending 则等待至 success 或超时。对标 Claude Code 的 waitForInitialization。
+ *
+ * @param timeoutMs 最长等待毫秒数（默认 10s）
+ * @returns 是否就绪
+ */
+export function waitForLSPReady(timeoutMs = 10000): Promise<boolean> {
+  if (initState === "success") return Promise.resolve(true);
+  if (initState === "failed" || initState === "not-started") return Promise.resolve(false);
+
+  return new Promise((resolve) => {
+    const start = Date.now();
+    const timer = setInterval(() => {
+      if (initState === "success") {
+        clearInterval(timer);
+        resolve(true);
+      } else if (initState === "failed" || Date.now() - start > timeoutMs) {
+        clearInterval(timer);
+        resolve(false);
+      }
+    }, 100);
+  });
 }
 
 /** 重新初始化（插件刷新时调用） */

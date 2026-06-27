@@ -155,26 +155,55 @@ export function buildCompactUserPrompt(messages: Message[], customInstructions?:
 /**
  * 剥离 <analysis> 块、把 <summary> 标签转成可读内容（对标 claude-code formatCompactSummary）。
  *
- * - <analysis>…</analysis>：草稿，整段删除
- * - <summary>…</summary>：保留内部内容，去掉 XML 标签
- * - 模型若未按格式输出（无标签）：原样返回 trim 后的文本（鲁棒回退）
+ * 多重回退（12.1：LLM 输出格式抖动时正则单路径会失效，导致 analysis 草稿泄漏进最终摘要）：
+ *   1. 正则剥离闭合的 <analysis>…</analysis>（可能多个）
+ *   2. indexOf 回退：处理未闭合 <analysis>（只有开标签）——从该位置切到下一个 <summary>，
+ *      若无 <summary> 则切到文末，整段丢弃。
+ *   3. 提取 <summary>…</summary> 内容；无闭合 summary 标签时用 indexOf 从 <summary> 切到文末。
+ *   4. 全部失败（无任何标签）：原样返回 trim 后的文本（鲁棒回退，宁可多留不要清空）。
  */
 export function formatCompactSummary(summary: string): string {
   let formatted = summary;
 
-  // 1. 剥离 analysis 草稿块（可能有多个，全部移除）
+  // 1. 剥离闭合的 analysis 草稿块（可能有多个，全部移除）
   formatted = formatted.replace(/<analysis>[\s\S]*?<\/analysis>/gi, "");
 
-  // 2. 提取 summary 块内容（若存在）
+  // 2. indexOf 回退：处理"未闭合 <analysis>"（开标签无闭合）。
+  //    残留的开标签说明上面的正则没匹配上 → 从开标签切到下一个 <summary>（或文末）整段丢弃。
+  const lcForAnalysis = formatted.toLowerCase();
+  const openAnalysis = lcForAnalysis.indexOf("<analysis>");
+  if (openAnalysis !== -1) {
+    const nextSummary = lcForAnalysis.indexOf("<summary>", openAnalysis);
+    if (nextSummary !== -1) {
+      // 丢弃 [openAnalysis, nextSummary)，保留 <summary> 起的后续内容
+      formatted = formatted.slice(0, openAnalysis) + formatted.slice(nextSummary);
+    } else {
+      // 没有 summary 标签：从 analysis 开标签到文末全部丢弃
+      formatted = formatted.slice(0, openAnalysis);
+    }
+  }
+
+  // 3. 提取 summary 块内容
   const summaryMatch = formatted.match(/<summary>([\s\S]*?)<\/summary>/i);
   if (summaryMatch) {
     formatted = summaryMatch[1];
   } else {
-    // 无闭合 summary 标签：尝试剥离可能残留的开/闭标签
+    // 无闭合 summary 标签：indexOf 回退——找到开标签则取其后全部内容
+    const lc = formatted.toLowerCase();
+    const openSummary = lc.indexOf("<summary>");
+    if (openSummary !== -1) {
+      formatted = formatted.slice(openSummary + "<summary>".length);
+    }
+    // 剥离可能残留的开/闭标签
     formatted = formatted.replace(/<\/?summary>/gi, "");
   }
 
-  return formatted.trim();
+  // 4. 兜底：剥离后若为空（标签处理意外清空），回退到剥离 analysis 后的原文
+  const trimmed = formatted.trim();
+  if (trimmed.length === 0) {
+    return summary.replace(/<analysis>[\s\S]*?<\/analysis>/gi, "").replace(/<\/?(analysis|summary)>/gi, "").trim();
+  }
+  return trimmed;
 }
 
 /** post-compact 消息重组选项 */

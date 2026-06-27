@@ -81,19 +81,41 @@ export class WorktreeCommand implements Command {
 
     if (trimmed === "clean") {
       const { cleanupStaleWorktrees } = await import("../worktree/cleanup.ts");
-      const n = await cleanupStaleWorktrees(gitRoot);
+      const current = getCurrentWorktreeSession();
+      const n = await cleanupStaleWorktrees(gitRoot, 30, current?.worktreePath);
       return { kind: "message", message: `已清理 ${n} 个过期临时 Worktree` };
     }
 
-    // 默认 list
-    const { readdirSync, existsSync } = await import("fs");
+    // 默认 list（P2-7：显示 branch / age / 变更状态）
+    const { readdirSync, existsSync, statSync } = await import("fs");
     const { join } = await import("path");
+    const { execFileSync } = await import("child_process");
+    const { isEphemeralWorktree } = await import("../worktree/cleanup.ts");
     const wtDir = join(gitRoot, ".sid-code", "worktrees");
     const lines: string[] = ["Worktrees:"];
 
+    /** 读取某 worktree 的 branch + 是否有未提交变更 */
+    const describe = (path: string): { branch: string; dirty: boolean } => {
+      let branch = "?";
+      let dirty = false;
+      try {
+        branch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+          cwd: path, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
+        }).trim() || "?";
+      } catch { /* 忽略 */ }
+      try {
+        const status = execFileSync("git", ["status", "--porcelain"], {
+          cwd: path, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
+        }).trim();
+        dirty = status.length > 0;
+      } catch { /* 忽略 */ }
+      return { branch, dirty };
+    };
+
     const current = getCurrentWorktreeSession();
     if (current) {
-      lines.push(`  * ${current.worktreeName} (当前) → ${current.worktreePath}`);
+      const d = describe(current.worktreePath);
+      lines.push(`  * ${current.worktreeName} (当前) [${d.branch}]${d.dirty ? " ✎未提交" : ""} → ${current.worktreePath}`);
     }
 
     if (existsSync(wtDir)) {
@@ -103,9 +125,16 @@ export class WorktreeCommand implements Command {
       } catch {
         dirs = [];
       }
-      for (const d of dirs) {
-        if (current && d === current.worktreeName) continue;
-        lines.push(`    ${d}`);
+      for (const dirName of dirs) {
+        if (current && dirName === current.worktreeName) continue;
+        const full = join(wtDir, dirName);
+        let age = "";
+        try {
+          age = fmtAge(Date.now() - statSync(full).mtimeMs);
+        } catch { /* 忽略 */ }
+        const d = describe(full);
+        const tag = isEphemeralWorktree(dirName) ? "临时" : "命名";
+        lines.push(`    ${dirName} [${d.branch}] ${tag} ${age}${d.dirty ? " ✎未提交" : ""}`);
       }
       if (dirs.length === 0 && !current) lines.push("  (无)");
     } else if (!current) {

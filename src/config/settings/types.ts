@@ -127,6 +127,22 @@ const SearchSchema = lazySchema(() =>
   }),
 );
 
+/** Worktree 配置 Schema（Git Worktree 隔离系统） */
+const WorktreeSettingsSchema = lazySchema(() =>
+  z.object({
+    /** 创建 worktree 时额外 symlink 的目录（默认 ["node_modules"]） */
+    symlinkDirectories: z.array(z.string()).optional(),
+    /** sparse-checkout 路径（monorepo 大仓只检出指定子树） */
+    sparsePaths: z.array(z.string()).optional(),
+    /** 基准 ref：fresh=origin/<default-branch>，head=当前 HEAD（默认 fresh） */
+    baseRef: z.enum(["fresh", "head"]).optional(),
+    /** 是否在 worktree 内安装 commit 归因 hook */
+    commitAttribution: z.boolean().optional(),
+    /** 自动复制到 worktree 的本地配置文件相对路径（默认 settings.local.json） */
+    copyLocalSettings: z.boolean().optional(),
+  }),
+);
+
 /** 完整 Settings Schema */
 export const SettingsSchema = lazySchema(() =>
   z
@@ -187,6 +203,9 @@ export const SettingsSchema = lazySchema(() =>
       // 目录控制
       allowedDirectories: z.array(z.string()).optional(),
       blockedDirectories: z.array(z.string()).optional(),
+
+      // Worktree 隔离配置
+      worktree: WorktreeSettingsSchema().optional(),
     })
     .passthrough(), // 保留未知字段（向前兼容）
 );

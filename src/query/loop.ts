@@ -29,7 +29,7 @@ import { LoopDetector, LOOP_RECOVERY_PROMPT, LOOP_RECOVERY_FINAL_PROMPT } from "
 import type { LLMLoopCheckResult } from "../agent/loop-detection.ts";
 import {
   checkMessageHistoryIntegrity,
-  backfillOrphanToolResults,
+  finalizeMessagesForSend,
 } from "../agent/message-invariants.ts";
 import { isAbortError } from "../llm/errors.ts";
 import {
@@ -64,6 +64,7 @@ import {
 import { dequeuePendingNotifications, evictTerminalTasks } from "../task/index.ts";
 import { injectReminders } from "./reminder-inject.ts";
 import { buildContextPressureReminder } from "./context-pressure.ts";
+import { collectDiagnosticText, getLSPHealthWarning } from "../lsp/manager.ts";
 import { buildPermissionModeReminder, PERMISSION_MODE_REMINDER_INTERVAL } from "./permission-reminder.ts";
 import { buildContradictionReminder, buildDeliveryGateReminder } from "./hypothesis-ledger.ts";
 import {
@@ -180,6 +181,19 @@ export async function* queryLoop(
     // 通知队列独立于任务注册表，驱逐不会丢失任何通知。
     evictTerminalTasks();
 
+    // ─── G4：LSP 健康告警（一次性，懒触发）───
+    // LSP 后台异步初始化，首轮可能仍 pending；这里每轮检查直到出结果，有异常则
+    // yield 一次 system 警告（用户可见、不进 LLM 上下文）并置位，避免每轮刷屏。
+    // 正常（无异常）时 getLSPHealthWarning 返回 null，不打扰用户。
+    if (!state.lspHealthWarned) {
+      const lspWarning = getLSPHealthWarning();
+      if (lspWarning) {
+        state.lspHealthWarned = true;
+        log.warn("QUERY_LOOP", `G4：LSP 健康告警 — ${lspWarning}`);
+        yield { kind: "system", level: "warning", text: lspWarning };
+      }
+    }
+
     // ─── 上下文使用率监控 ───
     const toolCount = toolRegistry.size();
     const currentTokens = ctxMgr.estimateTokens(toolCount);
@@ -237,8 +251,25 @@ export async function* queryLoop(
         }
 
         if (pipelineResult.needsAutoCompact) {
-          log.warn("QUERY_LOOP", "轻量压缩不足，触发 LLM 摘要压缩");
-          await deps.autoCompact();
+          // §2.2：autoCompact 前先尝试 Context Collapse（分段摘要老消息，中等成本）。
+          // collapse 成功（usage 降到目标）→ 跳过昂贵的全量 autoCompact；不够 → 继续 autoCompact。
+          let collapsed = false;
+          if (deps.contextCollapse) {
+            try {
+              const ratioAfterPipeline = estimateUsageRatioForCollapse(ctxMgr, contextMax, toolCount);
+              collapsed = await deps.contextCollapse(ratioAfterPipeline);
+              if (collapsed) {
+                log.info("QUERY_LOOP", "Context Collapse 成功，跳过 autoCompact");
+                yield { kind: "system", level: "info", text: "上下文分段压缩完成" };
+              }
+            } catch (err: any) {
+              log.warn("QUERY_LOOP", `Context Collapse 异常，回退 autoCompact: ${err.message}`);
+            }
+          }
+          if (!collapsed) {
+            log.warn("QUERY_LOOP", "轻量压缩不足，触发 LLM 摘要压缩");
+            await deps.autoCompact();
+          }
         }
 
         ctxMgr.addCompactBoundary(`渐进式压缩: ${pipelineResult.steps.join(" → ")}`, msgCountBefore);
@@ -266,7 +297,7 @@ export async function* queryLoop(
     // 这是 ADR-039「不变量在出口强制」哲学的终点——executeTools 守生产单点，这里守"所有路径的总出口"。
     // 与消费端只读哨兵（protocol-sentinel）互补：哨兵负责发现+告警+落盘，本关卡负责真正修复，不让 400 发生。
     {
-      const backfill = backfillOrphanToolResults(ctxMgr.getMessages());
+      const backfill = finalizeMessagesForSend(ctxMgr.getMessages());
       if (backfill.changed) {
         ctxMgr.setMessages(backfill.messages);
         if (backfill.backfilled.length > 0) {
@@ -287,6 +318,14 @@ export async function* queryLoop(
             "QUERY_LOOP",
             `发送前游离切除关卡触发：切除 ${backfill.stripped.length} 个游离 tool_result（无前置 tool_use，已移除，避免 OpenAI 400）：${detail}。` +
               `游离来源应在产生端排查（restoreSession slice / snipCompact / auto-compact 切断配对）。`,
+          );
+        }
+        // §9.6：backfill 仍修不好 → 截断到最后完整配对的硬兜底已触发
+        if (backfill.truncated) {
+          log.error(
+            "QUERY_LOOP",
+            `发送前最终完整性兜底触发：backfill 后仍有配对破缺，已截断尾部 ${backfill.truncatedCount} 条消息到最后完整配对处（保证不发生 OpenAI 400）。` +
+              `这是极端兜底，正常路径不应到达——请排查产生端。`,
           );
         }
       }
@@ -348,6 +387,25 @@ export async function* queryLoop(
     if (deps.getPlanModeReminder) {
       const reminder = await deps.getPlanModeReminder();
       if (reminder) reminderParts.push(reminder);
+    }
+
+    // G1：LSP 诊断注入（对标 Claude Code 的诊断 Attachment 通道）。
+    // 根因修复——collectDiagnosticText() 此前定义了却无人调用，语言服务器推送的实时
+    // 诊断（类型错误/未定义符号等）从未进入模型上下文，整条 LSP 被动反馈链断在最后一公里。
+    // 走每轮 reminder 通道（随消息流、抗缓存、抗 compact），与 todo/pressure 提醒同机制。
+    // collectDiagnosticText 内部已做严重度过滤（仅 Error/Warning 注入）+ 跨轮次去重
+    // （已投递的诊断不重复注入），故这里直接 push 即可，无需额外节流。
+    // LSP 未配置 / 未就绪 / 无诊断时返回 null，不注入、不报错（降级正常）。
+    {
+      const diagnosticText = collectDiagnosticText();
+      if (diagnosticText) {
+        reminderParts.push(
+          `# LSP 诊断（来自语言服务器的实时反馈）\n\n${diagnosticText}\n\n` +
+            `以上是语言服务器对你刚编辑文件的实时分析结果。请关注其中的 Error / Warning，` +
+            `在后续工作中修复这些问题；若与当前任务无关可暂不处理，但不要无视真实的类型/语法错误。`,
+        );
+        log.info("QUERY_LOOP", "G1：注入 LSP 诊断反馈");
+      }
     }
 
     // P0-2：todo 每隔 N 轮回注完整清单（对标 claude-code attachments.ts）。

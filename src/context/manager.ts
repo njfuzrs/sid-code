@@ -16,6 +16,7 @@ import {
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { ensureSidTempDir } from "../utils/temp-dir.ts";
+import { REATTACH_PLAN_PREFIX, REATTACH_ORIGIN } from "../query/compact/reattach-markers.ts";
 
 /** 持久化输出阈值（对标 Claude Code 30000 字符，可通过 SID_OUTPUT_THRESHOLD 环境变量覆盖） */
 const OUTPUT_THRESHOLD = parseInt(process.env.SID_OUTPUT_THRESHOLD ?? "30000", 10);
@@ -36,6 +37,29 @@ export interface TruncationResult {
   truncated: string;
   /** 完整输出保存的文件路径（null 表示未截断） */
   savedPath: string | null;
+}
+
+/**
+ * 9.3：把 tool_use.input 概括为一行摘要，用于被清理占位符的"重读指引"。
+ * 优先取关键字段（file_path / path / command / pattern / url / query），
+ * 否则回退到 JSON 序列化前 100 字符。空 input 返回空串。
+ */
+function summarizeToolInput(input: unknown): string {
+  if (!input || typeof input !== "object") return "";
+  const obj = input as Record<string, unknown>;
+  const keyFields = ["file_path", "path", "command", "pattern", "url", "query", "prompt"];
+  for (const k of keyFields) {
+    const v = obj[k];
+    if (typeof v === "string" && v.length > 0) {
+      return v.length > 100 ? `${k}=${v.slice(0, 100)}…` : `${k}=${v}`;
+    }
+  }
+  try {
+    const json = JSON.stringify(obj);
+    return json.length > 100 ? `${json.slice(0, 100)}…` : json;
+  } catch {
+    return "";
+  }
 }
 
 /**
@@ -122,10 +146,54 @@ export class Manager {
    */
   private toolSchemaTokens: number | null = null;
 
+  /**
+   * 压缩互斥锁（§6 并发守卫）。true 表示有一个压缩流程正在执行。
+   * 子代理并发压缩、Context Collapse 与 autoCompact 同时触发、手动 /compact 与自动压缩
+   * 同时发生等场景下，acquireCompactLock 让只有第一个进入者执行，其余直接跳过，避免
+   * 同一份消息历史被两条压缩路径竞态改写（产生孤儿配对 / 重复摘要）。
+   */
+  private isCompacting = false;
+
+  /**
+   * 可选 Plan 提供方（§3.3 压缩后 Plan 重注入）。
+   * 由上层注入；提供时 compactWithSummary 会把活跃 Plan 正文重注入为消息，
+   * 避免压缩后模型只剩 reminder 提示却看不到 Plan 具体步骤而偏离计划。
+   */
+  private planContentProvider: (() => string | null) | null = null;
+
   constructor(opts: ManagerOptions) {
     this.maxTokens = opts.maxTokens;
     this.compactThreshold = opts.compactThreshold ?? 0.7;
     this.tempDir = opts.tempDir;
+  }
+
+  /**
+   * §6：尝试获取压缩锁。返回 true 表示成功（调用方可执行压缩），
+   * 返回 false 表示已有压缩在进行中（调用方应跳过本次压缩）。
+   * 配对使用：成功后必须在 try/finally 的 finally 中调用 releaseCompactLock。
+   */
+  acquireCompactLock(): boolean {
+    if (this.isCompacting) return false;
+    this.isCompacting = true;
+    return true;
+  }
+
+  /** §6：释放压缩锁。 */
+  releaseCompactLock(): void {
+    this.isCompacting = false;
+  }
+
+  /** §6：当前是否有压缩流程正在执行。 */
+  isCompactionInProgress(): boolean {
+    return this.isCompacting;
+  }
+
+  /**
+   * §3.3：注入 Plan 正文提供方。返回当前活跃 Plan 的正文（无活跃 Plan 返回 null）。
+   * 由 App 接线（读 planManager 状态 + plan 文件）。压缩时用于把 Plan 正文重注入消息历史。
+   */
+  setPlanContentProvider(provider: (() => string | null) | null): void {
+    this.planContentProvider = provider;
   }
 
   /**
@@ -315,19 +383,19 @@ export class Manager {
   }
 
   /**
-   * P1-3：从消息历史构建 tool_use_id → {toolName, filePath} 映射。
+   * P1-3：从消息历史构建 tool_use_id → {toolName, filePath, inputSummary} 映射。
    * 用于（a）识别哪些大 tool_result 对应"正在编辑的文件"应豁免清理；
-   *      （b）为被清理的占位符附带"重读指引"。
+   *      （b）为被清理的占位符附带"重读指引"（9.3：含工具名 + input 摘要，精准而非通用文案）。
    */
-  private buildToolUseIndex(messages: Message[]): Map<string, { toolName: string; filePath?: string }> {
-    const index = new Map<string, { toolName: string; filePath?: string }>();
+  private buildToolUseIndex(messages: Message[]): Map<string, { toolName: string; filePath?: string; inputSummary?: string }> {
+    const index = new Map<string, { toolName: string; filePath?: string; inputSummary?: string }>();
     for (const msg of messages) {
       if (msg.role !== "assistant") continue;
       for (const block of msg.content) {
         if (block.type === "tool_use" && block.id) {
-          const input = (block.input ?? {}) as { file_path?: string; path?: string };
+          const input = (block.input ?? {}) as { file_path?: string; path?: string; command?: string };
           const filePath = input.file_path ?? input.path;
-          index.set(block.id, { toolName: block.name, filePath });
+          index.set(block.id, { toolName: block.name, filePath, inputSummary: summarizeToolInput(block.input) });
         }
       }
     }
@@ -373,12 +441,14 @@ export class Manager {
     const toolIndex = this.buildToolUseIndex(cleaned);
     const activeFiles = this.collectActiveFiles(toolIndex);
 
-    // 找到所有大输出的位置（从后往前扫描），并标注是否豁免（活跃文件）+ 重读指引
+    // 找到所有大输出的位置（从后往前扫描），并标注是否豁免（活跃文件）+ 重读指引元信息
     const largeOutputPositions: {
       msgIdx: number;
       blockIdx: number;
       exempt: boolean;
       filePath?: string;
+      toolName?: string;
+      inputSummary?: string;
     }[] = [];
 
     for (let i = 0; i < cleaned.length; i++) {
@@ -390,7 +460,14 @@ export class Manager {
           const filePath = meta?.filePath;
           // P1-3：read 了活跃（被 write/edit 过）文件的大输出 → 豁免清理
           const exempt = !!(filePath && meta?.toolName === "read" && activeFiles.has(filePath));
-          largeOutputPositions.push({ msgIdx: i, blockIdx: j, exempt, filePath });
+          largeOutputPositions.push({
+            msgIdx: i,
+            blockIdx: j,
+            exempt,
+            filePath,
+            toolName: meta?.toolName,
+            inputSummary: meta?.inputSummary,
+          });
         }
       }
     }
@@ -412,22 +489,33 @@ export class Manager {
 
     // 需要清理的旧输出（保留最近 N 个），活跃文件已被排除在 cleanable 之外
     const toClean = cleanable.slice(0, -KEEP_RECENT_OUTPUTS);
-    // key → filePath，用于占位符重读指引
-    const cleanMap = new Map<string, string | undefined>(
-      toClean.map(p => [`${p.msgIdx}:${p.blockIdx}`, p.filePath]),
+    // key → {filePath, toolName, inputSummary}，用于占位符精准重读指引（9.3）
+    const cleanMap = new Map<string, { filePath?: string; toolName?: string; inputSummary?: string }>(
+      toClean.map(p => [
+        `${p.msgIdx}:${p.blockIdx}`,
+        { filePath: p.filePath, toolName: p.toolName, inputSummary: p.inputSummary },
+      ]),
     );
 
-    // 深拷贝并清理（P1-3：占位符附带重读指引）
+    // 深拷贝并清理（P1-3 + 9.3：占位符附带精准重读指引——含工具名 + input 摘要）
     const result = cleaned.map((msg, msgIdx) => ({
       role: msg.role,
       content: msg.content.map((block, blockIdx) => {
         const key = `${msgIdx}:${blockIdx}`;
-        if (cleanMap.has(key) && block.type === "tool_result") {
-          const filePath = cleanMap.get(key);
-          // 若能识别出文件路径，提示模型如何精准重读，而不是盲目从头再读一遍
-          const guidance = filePath
-            ? `${TOOL_RESULT_CLEARED_MESSAGE}\n（此处原为文件 ${filePath} 的内容，已清理以节省上下文。如需该内容，请用 read("${filePath}", offset=...) 精准重读你需要的行段，不要从头整文件重读。）`
-            : TOOL_RESULT_CLEARED_MESSAGE;
+        const meta = cleanMap.get(key);
+        if (meta && block.type === "tool_result") {
+          const { filePath, toolName, inputSummary } = meta;
+          let guidance: string;
+          if (filePath) {
+            // 已知文件路径：提示精准重读，而不是盲目从头整文件重读
+            guidance = `[已清理: ${toolName ?? "tool"}(${filePath}), 原始 ${block.content.length} 字符。已清理以节省上下文。如需该内容，请用 read("${filePath}", offset=...) 精准重读你需要的行段，不要从头整文件重读。]`;
+          } else if (toolName) {
+            // 无文件路径但有工具名/参数：告知用什么调用产生的，便于按需重新执行
+            const summary = inputSummary ? `(${inputSummary})` : "";
+            guidance = `[已清理: ${toolName}${summary}, 原始 ${block.content.length} 字符。已清理以节省上下文。如需该内容，重新执行该工具调用即可恢复。]`;
+          } else {
+            guidance = TOOL_RESULT_CLEARED_MESSAGE;
+          }
           return {
             ...block,
             content: guidance,
@@ -728,12 +816,22 @@ export class Manager {
       return "none";
     }
 
-    // 标准窗口模型：三层渐进压缩（绝对 buffer）
+    // 标准/大窗口模型：三层渐进压缩。
+    // §12.6 阈值相对化：纯绝对 buffer 对超大窗口（如 1M）触发过晚——
+    //   1M 窗口剩 80K 才开始 masking = 已用 92%，留给压缩的腾挪空间过小。
+    // 故每层取「绝对 buffer」与「窗口百分比」中更早触发（更大）的那个作为剩余阈值。
+    //   masking: max(80K, 18% window)、compression: max(60K, 12% window)、emergency: max(40K, 7% window)
+    //   对 200K 窗口：18%=36K < 80K → 仍用绝对值（行为不变，兼容老模型）。
+    //   对 1M 窗口：18%=180K > 80K → 用相对值（剩 180K≈82% 用量即开始 masking，留足腾挪空间）。
+    const maskingThreshold = Math.max(BUFFER_THRESHOLDS.masking, this.maxTokens * 0.18);
+    const compressionThreshold = Math.max(BUFFER_THRESHOLDS.compression, this.maxTokens * 0.12);
+    const emergencyThreshold = Math.max(BUFFER_THRESHOLDS.emergency, this.maxTokens * 0.07);
+
     // 按剩余空间从紧到松检查：剩余越少 → 响应越激进
-    if (remaining <= BUFFER_THRESHOLDS.emergency) return "emergency";    // ≤ 40K → 紧急截断
-    if (remaining <= BUFFER_THRESHOLDS.compression) return "hard";       // ≤ 60K → LLM 摘要压缩
-    if (remaining <= BUFFER_THRESHOLDS.masking) return "soft";           // ≤ 80K → 工具输出遮罩
-    return "none";                                                        // > 80K → 不需要压缩
+    if (remaining <= emergencyThreshold) return "emergency";    // 紧急截断
+    if (remaining <= compressionThreshold) return "hard";       // LLM 摘要压缩
+    if (remaining <= maskingThreshold) return "soft";           // 工具输出遮罩
+    return "none";                                              // 充裕 → 不需要压缩
   }
 
   /**
@@ -746,11 +844,14 @@ export class Manager {
     const splitPoint = this.findCompressSplitPoint(0.3);
 
     if (splitPoint > 0) {
-      const truncatedSummary = `[紧急压缩] 前 ${splitPoint} 条消息已被截断以防止上下文溢出`;
+      // §12.4：紧急截断也保留一份"极简摘要"——纯本地提取，不调 LLM（紧急路径不能再花一次 API 往返）。
+      // 提取被截断段的：消息条数 / 涉及文件 / 最后工作方向，让模型截断后不至于完全断片。
+      const truncatedSegment = this.messages.slice(0, splitPoint);
+      const miniSummary = this.buildEmergencyMiniSummary(truncatedSegment, splitPoint);
       this.messages = [
         {
           role: "user",
-          content: [{ type: "text", text: truncatedSummary }],
+          content: [{ type: "text", text: miniSummary }],
           // 紧急截断锚点仅供 LLM 维持角色交替,不在 TUI 渲染(按 _meta.origin 隐藏)。
           _meta: { origin: "compact-summary" },
         },
@@ -768,6 +869,38 @@ export class Manager {
     // 真实 token 锚点失效：截断后 prompt 骤降，旧锚点会让下一轮 compact 决策误判
     this.invalidateActualTokenAnchor();
     log.warn("CONTEXT", `紧急压缩: ${before} → ${this.messages.length} 条消息`);
+  }
+
+  /**
+   * §12.4：从被紧急截断的消息段提取极简摘要（纯本地，零 LLM 调用）。
+   * 包含：截断条数 + 涉及文件（write/edit/read 的路径）+ 最后一条 user 文本方向。
+   */
+  private buildEmergencyMiniSummary(segment: Message[], count: number): string {
+    const files = new Set<string>();
+    let lastUserText = "";
+    for (const msg of segment) {
+      for (const block of msg.content) {
+        if (block.type === "tool_use") {
+          const input = (block.input ?? {}) as { file_path?: string; path?: string };
+          const fp = input.file_path ?? input.path;
+          if (fp) files.add(fp);
+        } else if (block.type === "text" && msg.role === "user") {
+          const t = block.text.trim();
+          // 跳过内部摘要/占位消息，只取真实用户意图
+          if (t && !t.startsWith("[") && !msg._meta?.origin) lastUserText = t;
+        }
+      }
+    }
+    const parts = [`[紧急压缩] 前 ${count} 条消息已被截断以防止上下文溢出。`];
+    if (files.size > 0) {
+      const fileList = Array.from(files).slice(0, 10).join(", ");
+      parts.push(`涉及文件：${fileList}${files.size > 10 ? ` 等 ${files.size} 个` : ""}。`);
+    }
+    if (lastUserText) {
+      parts.push(`最近的用户意图：${lastUserText.slice(0, 300)}${lastUserText.length > 300 ? "…" : ""}`);
+    }
+    parts.push("如需被截断的细节，可读取完整转录文件或重新读取上述文件。");
+    return parts.join("\n");
   }
 
   /** 消息数量 */
@@ -808,6 +941,17 @@ export class Manager {
       removed++;
     }
     return removed;
+  }
+
+  /**
+   * §2.1：压缩完成后向消息历史**末尾**追加重注入消息（文件恢复等）。
+   * 与 compactWithSummary 的 extraReattach 不同：那是插在摘要后、保留消息前；
+   * 本方法用于"压缩腾出空间后再注入"的场景（文件恢复要先压缩再注入并守预算）。
+   * 追加到末尾即"最近"，模型最易看到。这些消息应自带 _meta.origin 以便 TUI 隐藏 + 下次 strip。
+   */
+  appendReattachMessages(msgs: Message[]): void {
+    if (!msgs || msgs.length === 0) return;
+    this.messages.push(...msgs);
   }
 
   /**
@@ -889,8 +1033,12 @@ export class Manager {
    * 2. 预处理待压缩部分
    * 3. 用摘要替换
    * 4. 验证压缩效果
+   *
+   * @param summary 压缩摘要正文
+   * @param extraReattach 可选的压缩后重注入消息（文件恢复 / 决策点恢复等，§2.1 / §4.3）。
+   *   插入到 Skill 消息之后、保留消息之前。这些消息应自带 _meta.origin 标记以便 TUI 隐藏。
    */
-  compactWithSummary(summary: string): void {
+  compactWithSummary(summary: string, extraReattach?: Message[]): void {
     const splitPoint = this.findCompressSplitPoint();
     if (splitPoint <= 0) return; // 没有安全分割点
 
@@ -913,7 +1061,13 @@ export class Manager {
     // 保留已调用的 Skill 上下文（压缩会丢弃旧消息，Skill 工作流指令必须重新注入）
     const skillMsgs = this.buildInvokedSkillMessages();
 
-    this.messages = [summaryMsg, ackMsg, ...skillMsgs, ...kept];
+    // §3.3：活跃 Plan 正文重注入（Skill 消息之后），让模型压缩后仍能引用 Plan 的具体步骤
+    const planMsgs = this.buildPlanReattachMessages();
+
+    // §2.1 / §4.3：外部传入的重注入消息（文件恢复 / 决策点恢复）
+    const reattachMsgs = extraReattach ?? [];
+
+    this.messages = [summaryMsg, ackMsg, ...skillMsgs, ...planMsgs, ...reattachMsgs, ...kept];
 
     // 真实 token 锚点失效：摘要压缩后真实 prompt 骤降，必须在 estimateTokens 验证前重置，
     // 否则 tokensAfter 仍被旧锚点钉在高位（既污染验证日志，也让后续 compact 决策误判）。
@@ -931,6 +1085,33 @@ export class Manager {
 
     // 记录压缩到会话指标
     getSessionMetrics().recordCompact();
+  }
+
+  /**
+   * §3.3：构造活跃 Plan 正文的重注入消息对（无活跃 Plan 返回空数组）。
+   * Plan 内容不限制预算（Plan 文件通常几百到几千字）。
+   */
+  private buildPlanReattachMessages(): Message[] {
+    if (!this.planContentProvider) return [];
+    let planContent: string | null = null;
+    try {
+      planContent = this.planContentProvider();
+    } catch {
+      return [];
+    }
+    if (!planContent || !planContent.trim()) return [];
+
+    const planUserMsg: Message = {
+      role: "user",
+      content: [{ type: "text", text: `${REATTACH_PLAN_PREFIX}\n${planContent}` }],
+      _meta: { origin: REATTACH_ORIGIN },
+    };
+    const planAckMsg: Message = {
+      role: "assistant",
+      content: [{ type: "text", text: "好的，已重新加载当前 Plan，我会继续按计划执行。" }],
+      _meta: { origin: REATTACH_ORIGIN },
+    };
+    return [planUserMsg, planAckMsg];
   }
 
   /**

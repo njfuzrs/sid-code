@@ -80,6 +80,33 @@ export class DiagnosticRegistry {
     this.deliveredOrder = [];
   }
 
+  /**
+   * 清除指定文件的已投递诊断记录（文件编辑后调用）。
+   *
+   * 对标 Claude Code 的 clearDeliveredDiagnosticsForFile：文件被编辑后，旧诊断可能
+   * 已失效（如错误已修复），但跨轮次去重缓存仍记着"这些诊断投递过"，会过滤掉服务器
+   * 重新推送的同位置诊断——导致修复后的诊断永远不再出现，或反过来过时错误一直驻留。
+   * 编辑后清除该文件的 delivered 记录，让下一轮的 publishDiagnostics 重新作为新诊断投递。
+   *
+   * 同时清除 pending 中该文件的待投递诊断（编辑前服务器基于旧内容推的诊断已无意义）。
+   */
+  clearForFile(uri: string): void {
+    this.delivered.delete(uri);
+    const idx = this.deliveredOrder.indexOf(uri);
+    if (idx >= 0) this.deliveredOrder.splice(idx, 1);
+
+    // 清除 pending 中只属于该文件的诊断条目（保留其它文件的诊断）。
+    // registerPending 以 server-seq 为 key、files 为值，需逐条目过滤其 files 数组。
+    for (const [id, entry] of this.pending) {
+      const remaining = entry.files.filter((f) => f.uri !== uri);
+      if (remaining.length === 0) {
+        this.pending.delete(id);
+      } else if (remaining.length !== entry.files.length) {
+        entry.files = remaining;
+      }
+    }
+  }
+
   // ─── 内部方法 ───
 
   /** 批内去重：合并同 uri 文件，去除重复诊断 */

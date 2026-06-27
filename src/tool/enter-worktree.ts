@@ -1,6 +1,7 @@
 /**
  * EnterWorktreeTool（Spec 18 §3.4.2）
  * 创建一个隔离的 Git Worktree 工作区并切换当前 CWD 进入。
+ * 支持 name（新建/进入同名）与 path（进入已存在的 worktree 目录）两种模式。
  */
 
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
@@ -9,17 +10,30 @@ import {
   findGitRoot,
   getCurrentWorktreeSession,
   setCurrentWorktreeSession,
-  clearCwdDependentCaches,
 } from "../worktree/manager.ts";
+import { findCanonicalGitRoot, enterWorktreeCwd } from "../worktree/canonical.ts";
+import { validateWorktreeSlug, branchNameForSlug } from "../worktree/slug.ts";
+import { saveWorktreeState } from "../worktree/persistence.ts";
+import { logWorktreeEvent } from "../worktree/analytics.ts";
+import {
+  generateTmuxSessionName,
+  createTmuxSessionForWorktree,
+} from "../worktree/tmux.ts";
+import type { WorktreeSession } from "../worktree/types.ts";
 import { generateWordSlug } from "../plan/slug.ts";
-import { setCwd, getCwd } from "../bootstrap/state.ts";
+import { getCwd } from "../bootstrap/state.ts";
 import { getLogger } from "../debug/logger.ts";
+import { existsSync, readFileSync } from "fs";
+import { join, basename, resolve } from "path";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
 
 const enterWorktreeSchema = lazySchema(() =>
   z.object({
-    name: z.string().optional().describe("Worktree 名称（可选，默认自动生成词汇 slug）"),
+    name: z.string().optional().describe("Worktree 名称（可选，默认自动生成词汇 slug；与 path 互斥）"),
+    path: z.string().optional().describe("进入已存在的 Worktree 目录路径（与 name 互斥）"),
+    pr: z.number().int().positive().optional().describe("PR 编号：fetch pull/<n>/head 后创建 worktree review"),
+    tmux: z.boolean().optional().describe("同时创建关联的 tmux session（便于独立终端接入）"),
   }),
 );
 
@@ -35,9 +49,13 @@ export class EnterWorktreeTool implements Tool {
 
   description(): string {
     return `创建一个隔离的 Git Worktree 工作区并进入。
-用于需要在独立环境中工作的场景，如并行实验、多方案对比。
+用于需要在独立环境中工作的场景，如并行实验、多方案对比、PR review。
 Worktree 共享 Git 对象库，创建速度快，磁盘开销小。
-进入后当前会话的工作目录会切换到该 Worktree，使用 exit_worktree 返回主工作区。`;
+进入后当前会话的工作目录会切换到该 Worktree，使用 exit_worktree 返回主工作区。
+- name: 新建或进入同名 worktree
+- path: 进入一个已存在的 worktree 目录
+- pr: fetch 指定 PR 分支并在 worktree 中 checkout
+- tmux: 同时创建关联 tmux session`;
   }
 
   inputSchema(): Record<string, unknown> {
@@ -46,39 +64,154 @@ Worktree 共享 Git 对象库，创建速度快，磁盘开销小。
 
   async execute(input: unknown, _signal?: AbortSignal): Promise<ToolResult> {
     const log = getLogger();
+    const params = (input ?? {}) as {
+      name?: string;
+      path?: string;
+      pr?: number;
+      tmux?: boolean;
+    };
 
     // 1. 防止嵌套 worktree
     if (getCurrentWorktreeSession()) {
       return { output: "已经在 Worktree 中，不支持嵌套。请先 exit_worktree。", isError: true };
     }
 
-    // 2. 检测 Git 仓库（基于逻辑 cwd，bash cd 后 getCwd() 才是真实工作目录）
-    const gitRoot = findGitRoot(getCwd());
+    // name / path 互斥
+    if (params.name && params.path) {
+      return { output: "name 与 path 互斥，只能指定其一", isError: true };
+    }
+
+    // path 模式：进入已存在的 worktree（P2-6）
+    if (params.path) {
+      return this.enterExisting(params.path, params.tmux);
+    }
+
+    // 2. 检测 Git 仓库（用 canonical root 防嵌套，B1/P0-2）
+    const gitRoot = findCanonicalGitRoot(getCwd()) ?? findGitRoot(getCwd());
     if (!gitRoot) {
       return { output: "当前目录不在 Git 仓库中，无法创建 Worktree", isError: true };
     }
 
-    // 3. 创建 worktree
-    const slug = (input as { name?: string } | null)?.name || generateWordSlug();
+    // 3. slug 校验（用户传入的 name 必须校验，P0-4/B5）
+    const slug = params.name || generateWordSlug();
+    if (params.name) {
+      const v = validateWorktreeSlug(params.name);
+      if (!v.valid) {
+        return { output: `非法 Worktree 名称: ${v.error}`, isError: true };
+      }
+    }
+
     try {
       const manager = new WorktreeManager(gitRoot);
-      const session = await manager.create(slug);
+      const session = await manager.create(slug, { prNumber: params.pr });
 
-      // 4. 切换 CWD + 记录会话
-      process.chdir(session.worktreePath);
-      setCwd(session.worktreePath); // 同步全局 cwd 状态，使路径类工具 getCwd() 解析到 worktree
+      // 4. tmux（可选，P2-1）
+      if (params.tmux) {
+        const tmuxName = generateTmuxSessionName(basename(gitRoot), session.worktreeName);
+        const created = createTmuxSessionForWorktree(session.worktreePath, tmuxName);
+        if (created) session.tmuxSession = created;
+      }
+
+      // 5. 原子切换 CWD + 清缓存（B2）
+      await enterWorktreeCwd(session.worktreePath);
       setCurrentWorktreeSession(session);
 
-      // 5. 清除依赖 CWD 的缓存
-      await clearCwdDependentCaches();
+      // 6. 持久化（P0-1）
+      saveWorktreeState(session);
+
+      // 7. analytics（P2-10）
+      logWorktreeEvent("worktree_created", {
+        slug: session.worktreeName,
+        hookBased: !!session.hookBased,
+        prNumber: params.pr,
+        durationMs: session.creationDurationMs,
+        usedSparsePaths: session.usedSparsePaths,
+      });
 
       log.info("WORKTREE", `进入 Worktree: ${session.worktreePath}`);
+      const tmuxLine = session.tmuxSession ? `\ntmux: ${session.tmuxSession}（可用 tmux attach -t ${session.tmuxSession} 接入）` : "";
       return {
-        output: `已创建并进入 Worktree。\n路径: ${session.worktreePath}\n分支: ${session.worktreeBranch}`,
+        output: `已创建并进入 Worktree。\n路径: ${session.worktreePath}\n分支: ${session.worktreeBranch}${tmuxLine}`,
       };
     } catch (err: any) {
       log.error("WORKTREE", `创建 Worktree 失败: ${err.message}`);
       return { output: `创建 Worktree 失败: ${err.message}`, isError: true };
     }
+  }
+
+  /** 进入一个已存在的 worktree 目录（P2-6） */
+  private async enterExisting(rawPath: string, tmux?: boolean): Promise<ToolResult> {
+    const log = getLogger();
+    const worktreePath = resolve(rawPath);
+
+    // 1. 验证目录存在且是 worktree（.git 是 pointer file）
+    const gitPointer = join(worktreePath, ".git");
+    if (!existsSync(worktreePath) || !existsSync(gitPointer)) {
+      return { output: `路径不存在或不是 Git worktree: ${worktreePath}`, isError: true };
+    }
+    let pointerContent = "";
+    try {
+      pointerContent = readFileSync(gitPointer, "utf-8").trim();
+    } catch {
+      /* 忽略 */
+    }
+    if (!pointerContent.startsWith("gitdir:")) {
+      return { output: `${worktreePath} 的 .git 不是 worktree pointer（可能是主仓或普通目录）`, isError: true };
+    }
+
+    // 2. 验证属于当前仓库（canonical root 一致）
+    const targetRoot = findCanonicalGitRoot(worktreePath);
+    const currentRoot = findCanonicalGitRoot(getCwd());
+    if (!targetRoot) {
+      return { output: "无法定位该 worktree 所属的主仓", isError: true };
+    }
+    if (currentRoot && resolve(targetRoot) !== resolve(currentRoot)) {
+      return { output: "目标 worktree 不属于当前仓库", isError: true };
+    }
+
+    // 3. 推导 branch / head 信息
+    const name = basename(worktreePath);
+    let headCommit = "";
+    let branch = branchNameForSlug(name);
+    try {
+      const { execFileSync } = await import("child_process");
+      headCommit = execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: worktreePath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
+      }).trim();
+      const b = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+        cwd: worktreePath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
+      }).trim();
+      if (b && b !== "HEAD") branch = b;
+    } catch {
+      /* 忽略 */
+    }
+
+    const session: WorktreeSession = {
+      originalCwd: targetRoot,
+      worktreePath,
+      worktreeName: name,
+      sessionId: "",
+      worktreeBranch: branch,
+      originalHeadCommit: headCommit,
+    };
+
+    // 4. tmux（可选）
+    if (tmux) {
+      const tmuxName = generateTmuxSessionName(basename(targetRoot), name);
+      const created = createTmuxSessionForWorktree(worktreePath, tmuxName);
+      if (created) session.tmuxSession = created;
+    }
+
+    // 5. 切 cwd + 记录 + 持久化（不执行 postCreationSetup，已存在的不重复设置）
+    await enterWorktreeCwd(worktreePath);
+    setCurrentWorktreeSession(session);
+    saveWorktreeState(session);
+
+    logWorktreeEvent("worktree_resume", { slug: name, success: true });
+    log.info("WORKTREE", `进入已存在的 Worktree: ${worktreePath}`);
+    const tmuxLine = session.tmuxSession ? `\ntmux: ${session.tmuxSession}` : "";
+    return {
+      output: `已进入已存在的 Worktree。\n路径: ${worktreePath}\n分支: ${branch}${tmuxLine}`,
+    };
   }
 }

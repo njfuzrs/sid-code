@@ -7,6 +7,7 @@
 import type { Provider } from "../llm/provider.ts";
 import type { Config } from "../config/config.ts";
 import type { HookSystem } from "../hook/system.ts";
+import type { ToolDefinition, Message } from "../llm/types.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
 import { getLogger } from "../debug/index.ts";
 import { AutoCompactCircuitBreaker } from "./circuit-breaker.ts";
@@ -39,6 +40,35 @@ export interface AutoCompactDeps {
    * 提供时优先用结构化会话笔记压缩，为空则回退到 LLM 摘要。
    */
   sessionMemory?: import("../session-memory/compact.ts").SessionMemoryProvider;
+  /**
+   * §3.1 压缩继承工具集：主对话的工具定义。传入后摘要请求复用主对话已缓存的工具前缀
+   * （Anthropic prompt cache hit），并让 COMPACT_SYSTEM_PROMPT 显式禁止调用工具。
+   * 不传则不下发 tools（行为同旧版）。
+   */
+  toolSchemas?: ToolDefinition[];
+  /**
+   * §12.3 摘要用低成本模型：覆盖摘要请求所用模型（默认 config.model）。
+   * 由调用方解析（subAgentModels.summarize ?? default ?? model）。
+   */
+  compactModel?: string;
+  /**
+   * §2.1 Post-compact 文件恢复：共享的 FileReadTracker，用于压缩后恢复最近访问的文件。
+   */
+  fileReadTracker?: import("../tool/file-read-tracker.ts").FileReadTracker;
+  /**
+   * §12.5 子代理熔断器隔离：是否为主代理。
+   * 仅主代理的压缩失败计入全局熔断器；子代理压缩失败不污染主代理的熔断状态。
+   */
+  isMainAgent?: boolean;
+  /**
+   * §5 压缩通知重置 MC state：缓存 microcompact 状态机。
+   * 压缩成功后重置——压缩重组了消息历史，旧的"已删除 tool_use_id"映射全部失效。
+   */
+  cachedMicrocompactState?: import("./compact/cached-microcompact.ts").CachedMicrocompactState;
+  /**
+   * 会话级临时目录（§4.1 质量报告 / §4.3 决策外化落盘）。不传则跳过落盘。
+   */
+  sessionDir?: string;
 }
 
 /**
@@ -49,17 +79,53 @@ export async function autoCompact(deps: AutoCompactDeps): Promise<void> {
   const log = getLogger();
   const messages = deps.ctxMgr.getMessages();
   const circuitBreaker = getCircuitBreaker();
+  // §12.5：子代理压缩失败不计入全局熔断器（默认按主代理处理，未显式标记时保持旧行为）
+  const isMainAgent = deps.isMainAgent !== false;
+  const recordFailure = () => {
+    if (isMainAgent) circuitBreaker.recordFailure();
+    else log.debug("COMPACT", "子代理压缩失败，不计入全局熔断器");
+  };
+  const recordSuccess = () => {
+    if (isMainAgent) circuitBreaker.recordSuccess();
+  };
 
   if (messages.length <= 4) {
     log.debug("COMPACT", "消息太少，跳过压缩");
     return;
   }
 
+  // §6 压缩互斥锁：已有压缩在进行 → 跳过，避免同一消息历史被两条压缩路径竞态改写
+  if (!deps.ctxMgr.acquireCompactLock()) {
+    log.warn("COMPACT", "已有压缩流程在进行中，跳过本次 autoCompact");
+    return;
+  }
+
+  try {
+    await doAutoCompact(deps, messages, circuitBreaker, isMainAgent, recordFailure, recordSuccess);
+  } finally {
+    deps.ctxMgr.releaseCompactLock();
+  }
+}
+
+/** autoCompact 主体（已持有压缩锁） */
+async function doAutoCompact(
+  deps: AutoCompactDeps,
+  messages: Message[],
+  circuitBreaker: AutoCompactCircuitBreaker,
+  _isMainAgent: boolean,
+  recordFailure: () => void,
+  recordSuccess: () => void,
+): Promise<void> {
+  const log = getLogger();
+  const messagesBefore = messages.length;
+  const tokensBefore = deps.ctxMgr.estimateTokens();
+
   // 熔断器检查：如果熔断中，直接降级为简单截断
   if (!circuitBreaker.canExecute()) {
     log.warn("COMPACT", "autoCompact 熔断中，降级为简单截断");
     const simpleSummary = `[自动截断] 之前有 ${messages.length - 4} 条消息被截断以释放上下文空间。（autoCompact 熔断中）`;
     deps.ctxMgr.compactWithSummary(simpleSummary);
+    await postCompactReattachAndNotify(deps, messages, simpleSummary, messagesBefore, tokensBefore, false);
     return;
   }
 
@@ -78,8 +144,9 @@ export async function autoCompact(deps: AutoCompactDeps): Promise<void> {
         const smResult = await trySessionMemoryCompaction(deps.sessionMemory);
         if (smResult) {
           deps.ctxMgr.compactWithSummary(smResult.summary);
-          circuitBreaker.recordSuccess();
+          recordSuccess();
           log.info("COMPACT", `Session Memory 压缩完成，剩余 ${deps.ctxMgr.messageCount()} 条消息`);
+          await postCompactReattachAndNotify(deps, messages, smResult.summary, messagesBefore, tokensBefore, false);
           return;
         }
         // smResult 为 null：Session Memory 为空，回退到 LLM 摘要（不计失败）
@@ -89,8 +156,15 @@ export async function autoCompact(deps: AutoCompactDeps): Promise<void> {
     }
 
     // 尝试用 LLM 生成摘要（Layer 1：结构化 9 段 prompt 工程）
-    const PRESERVE_RECENT = 4;
-    const toSummarize = messages.slice(0, -PRESERVE_RECENT);
+    // §4.2 自适应：保留范围按历史压缩质量动态推荐
+    const { recommendParams } = await import("./compact/adaptive-strategy.ts");
+    const PRESERVE_RECENT = recommendParams().preserveRecent;
+
+    // §3.4 Strip：摘要输入前剥离图片块 + 上次 post-compact 重注入的恢复消息（避免重复累积）
+    const { stripImages, stripReinjectedAttachments } = await import("./compact/strip.ts");
+    const summarizeBase = stripReinjectedAttachments(stripImages(messages));
+    const toSummarize = summarizeBase.slice(0, -PRESERVE_RECENT);
+
     const {
       COMPACT_SYSTEM_PROMPT,
       buildCompactUserPrompt,
@@ -101,10 +175,15 @@ export async function autoCompact(deps: AutoCompactDeps): Promise<void> {
 
     const stream = deps.provider.sendMessageStream(
       {
-        model: deps.config.model,
+        // §12.3：摘要走低成本模型（未指定则跟主模型）
+        model: deps.compactModel || deps.config.model,
         messages: [{ role: "user", content: [{ type: "text", text: summaryPrompt }] }],
         system: COMPACT_SYSTEM_PROMPT,
         maxTokens: 4000,
+        // §3.1：携带主对话工具定义（命中已缓存前缀）；toolChoice=none 禁止摘要时调用工具
+        ...(deps.toolSchemas && deps.toolSchemas.length > 0
+          ? { tools: deps.toolSchemas, toolChoice: "none" as const }
+          : {}),
       },
       deps.getAbortSignal(),
     );
@@ -119,31 +198,113 @@ export async function autoCompact(deps: AutoCompactDeps): Promise<void> {
     if (summary) {
       // Layer 2：post-compact 消息重组——剥离 analysis 草稿、追加静默续接 +
       // 保留消息提示 + 转录路径提示，让模型压缩后无缝续接而非"断片"。
-      // 注意：不传 preservedCount。实际保留条数由 compactWithSummary 内部的
-      // findCompressSplitPoint（按字符比例切分）决定，PRESERVE_RECENT 只用于本函数
-      // 选取摘要输入范围，并非最终保留数 → 传具体数字会对模型谎报。走通用文案即可。
       const formattedSummary = getCompactUserSummaryMessage(summary, {
         suppressFollowUpQuestions: true,
         transcriptPath: deps.ctxMgr.getTranscriptPath(),
         recentMessagesPreserved: true,
       });
-      deps.ctxMgr.compactWithSummary(formattedSummary);
-      circuitBreaker.recordSuccess();
+      // §2.1 / §4.3：构造文件恢复 + 决策点重注入消息，随摘要一起注入
+      const extraReattach = await buildExtraReattach(deps, toSummarize);
+      deps.ctxMgr.compactWithSummary(formattedSummary, extraReattach);
+      recordSuccess();
       log.info("COMPACT", `自动压缩完成，摘要 ${formattedSummary.length} 字符，剩余 ${deps.ctxMgr.messageCount()} 条消息`);
+      await postCompactReattachAndNotify(deps, toSummarize, formattedSummary, messagesBefore, tokensBefore, true);
       return;
     }
 
     // 空摘要也算失败
-    circuitBreaker.recordFailure();
+    recordFailure();
   } catch (err: any) {
     log.warn("COMPACT", `LLM 摘要失败，使用简单截断: ${err.message}`);
-    circuitBreaker.recordFailure();
+    recordFailure();
   }
 
   // 降级：简单截断
   const simpleSummary = `[自动截断] 之前有 ${messages.length - 4} 条消息被截断以释放上下文空间。`;
   deps.ctxMgr.compactWithSummary(simpleSummary);
   log.info("COMPACT", `简单截断完成，剩余 ${deps.ctxMgr.messageCount()} 条消息`);
+  await postCompactReattachAndNotify(deps, messages, simpleSummary, messagesBefore, tokensBefore, false);
+}
+
+/**
+ * §2.1 + §4.3：构造"随摘要一起注入"的额外消息——决策点重注入（文件恢复在 postCompact 阶段单独做，
+ * 因为它要在压缩完成、token 腾出后再注入并守预算）。
+ * 这里只做决策点：决策点很短，随摘要一起注入信息密度最高。
+ */
+async function buildExtraReattach(deps: AutoCompactDeps, toSummarize: Message[]): Promise<Message[] | undefined> {
+  try {
+    const { extractDecisions, persistDecisions, buildDecisionReattachMessages } = await import("./compact/decisions.ts");
+    const decisions = extractDecisions(toSummarize);
+    if (decisions.length === 0) return undefined;
+    const decisionsPath = deps.sessionDir ? persistDecisions(decisions, deps.sessionDir) : null;
+    return buildDecisionReattachMessages(decisions, decisionsPath);
+  } catch (err: any) {
+    getLogger().debug("COMPACT", `决策点外化跳过: ${err.message}`);
+    return undefined;
+  }
+}
+
+/**
+ * 压缩后统一收尾：文件恢复（§2.1）、MC state 重置（§5）、质量校验（§4.1）、
+ * 自适应记录（§4.2）、PostCompact hook（§3.2）。全部 best-effort，异常不影响主流程。
+ */
+async function postCompactReattachAndNotify(
+  deps: AutoCompactDeps,
+  originalMessages: Message[],
+  summary: string,
+  messagesBefore: number,
+  tokensBefore: number,
+  usedLLM: boolean,
+): Promise<void> {
+  const log = getLogger();
+
+  // §2.1：恢复最近访问文件（压缩已腾出空间，这里再注入并守 50K 预算）
+  if (deps.fileReadTracker) {
+    try {
+      const { buildReattachFileMessages } = await import("./compact/reattach-files.ts");
+      const fileMsgs = buildReattachFileMessages(deps.fileReadTracker);
+      if (fileMsgs.length > 0) {
+        deps.ctxMgr.appendReattachMessages(fileMsgs);
+        log.info("COMPACT", `Post-compact 文件恢复注入 ${fileMsgs.length} 条消息`);
+      }
+    } catch (err: any) {
+      log.debug("COMPACT", `Post-compact 文件恢复跳过: ${err.message}`);
+    }
+  }
+
+  // §5：压缩重组了消息历史，缓存 microcompact 状态机的"已删除 tool_use_id"映射全部失效，重置
+  if (deps.cachedMicrocompactState) {
+    try {
+      const { resetCachedMicrocompactState } = await import("./compact/cached-microcompact.ts");
+      resetCachedMicrocompactState(deps.cachedMicrocompactState);
+      log.debug("COMPACT", "已重置 cached microcompact 状态机");
+    } catch { /* 忽略 */ }
+  }
+
+  // §4.1：质量校验（覆盖率）
+  let coverage = 1;
+  try {
+    const { recordCompactQuality } = await import("./compact/quality-check.ts");
+    const report = recordCompactQuality(originalMessages, summary, deps.sessionDir);
+    coverage = report.coverage;
+  } catch { /* 忽略 */ }
+
+  const tokensAfter = deps.ctxMgr.estimateTokens();
+  const messagesAfter = deps.ctxMgr.messageCount();
+  const savedRatio = tokensBefore > 0 ? Math.max(0, (tokensBefore - tokensAfter) / tokensBefore) : 0;
+
+  // §4.2：记录压缩特征供后续自适应
+  try {
+    const { recordCompactFeature } = await import("./compact/adaptive-strategy.ts");
+    recordCompactFeature({ tokensBefore, tokensAfter, savedRatio, usedLLM, coverage });
+  } catch { /* 忽略 */ }
+
+  // §3.2：PostCompact hook 接线
+  try {
+    await deps.hookSystem.firePostCompactEvent("auto", messagesBefore, messagesAfter, Math.max(0, tokensBefore - tokensAfter));
+  } catch (err: any) {
+    log.debug("HOOK", `PostCompact hook 执行异常（不影响压缩）: ${err.message}`);
+  }
 }
 
 /**

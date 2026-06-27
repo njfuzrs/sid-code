@@ -76,32 +76,20 @@ export class TeamManager {
    * @param stampMs 时间戳（由调用方传入，避免内部依赖 Date.now 便于测试）
    */
   async run(signal?: AbortSignal, stampMs?: number): Promise<TeammateResult[]> {
-    const { findGitRoot } = await import("../worktree/manager.ts");
-    const gitRoot = findGitRoot(process.cwd());
+    const { findGitRootForAgent } = await import("../worktree/manager.ts");
+    // canonical root 防嵌套（P0-2/B1）
+    const gitRoot = findGitRootForAgent(process.cwd());
     const ts = stampMs ?? 0;
 
-    const isolated: TeammateSpec[] = [];
-    const concurrent: TeammateSpec[] = [];
-    for (const m of this.opts.members) {
-      if (m.isolated !== false && gitRoot) isolated.push(m);
-      else concurrent.push(m);
-    }
-
-    // 非隔离成员并发跑
-    const concurrentResults = Promise.all(
-      concurrent.map((m) => this.runMember(m, gitRoot, ts, signal)),
+    // B7：隔离成员经 SubAgentTask.cwd 走 withAgentCwd（AsyncLocalStorage），
+    // 不再用 process.chdir，因此隔离成员也可与非隔离成员一起并发执行（无 chdir 竞态）。
+    const results = await Promise.all(
+      this.opts.members.map((m) => this.runMember(m, gitRoot, ts, signal)),
     );
 
-    // 隔离成员串行跑（避免 chdir 竞态）
-    const isolatedResults: TeammateResult[] = [];
-    for (const m of isolated) {
-      isolatedResults.push(await this.runMember(m, gitRoot, ts, signal));
-    }
-
-    const others = await concurrentResults;
     // 保持成员定义顺序
     const byName = new Map<string, TeammateResult>();
-    for (const r of [...isolatedResults, ...others]) byName.set(r.name, r);
+    for (const r of results) byName.set(r.name, r);
     return this.opts.members.map((m) => byName.get(m.name)!);
   }
 
@@ -136,7 +124,7 @@ export class TeamManager {
     const needsIsolation = member.isolated !== false && !!gitRoot;
     let worktreeSession: import("../worktree/manager.ts").WorktreeSession | null = null;
     let manager: import("../worktree/manager.ts").WorktreeManager | null = null;
-    let restoreCwd: string | null = null;
+    let isolatedCwd: string | undefined;
 
     try {
       if (needsIsolation && gitRoot) {
@@ -144,8 +132,7 @@ export class TeamManager {
         const wtName = `swarm-${this.safeName(this.teamName)}-${member.name}-${randomBytes(3).toString("hex")}`;
         worktreeSession = await manager.create(wtName);
         result.worktreePath = worktreeSession.worktreePath;
-        restoreCwd = process.cwd();
-        process.chdir(worktreeSession.worktreePath);
+        isolatedCwd = worktreeSession.worktreePath;
       }
 
       const sub = SubAgent.fromRegistry(
@@ -153,7 +140,12 @@ export class TeamManager {
         this.opts.toolRegistry,
       );
       const exec = await sub.execute(
-        { type: member.type, description: `[${this.teamName}] ${member.name}`, prompt: member.task },
+        {
+          type: member.type,
+          description: `[${this.teamName}] ${member.name}`,
+          prompt: member.task,
+          cwd: isolatedCwd, // B7: withAgentCwd 隔离，并发安全
+        },
         signal,
       );
       result.success = exec.success;
@@ -171,9 +163,6 @@ export class TeamManager {
       result.output = `成员 ${member.name} 执行失败: ${err.message}`;
       log.error("SWARM", result.output);
     } finally {
-      if (restoreCwd) {
-        try { process.chdir(restoreCwd); } catch { /* 忽略 */ }
-      }
       if (manager && worktreeSession) {
         try {
           await manager.remove(worktreeSession, false); // 无改动才删

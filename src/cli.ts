@@ -37,6 +37,8 @@ type CLIArgs = Partial<Config> & {
   bridgeUrl?: string;
   /** Bridge 远程控制：认证令牌 */
   bridgeToken?: string;
+  /** --worktree [name]：启动时自动创建并进入 worktree（缺省值表示自动命名） */
+  worktree?: string | boolean;
 };
 
 /** 解析命令行参数 */
@@ -106,6 +108,9 @@ function parseCLIArgs(): CLIArgs {
 
         // UI 渲染（ADR-040）
         "alternate-buffer": { type: "boolean" }, // 启用全屏 alt-screen；缺省走主屏 Static 模式（原生文本选择）
+
+        // Worktree 隔离（P1-2）：启动时直接进入 worktree
+        worktree: { type: "string" }, // --worktree[=name]；不带值时自动命名
       },
       allowPositionals: true,
       allowNegative: true,
@@ -169,6 +174,8 @@ function parseCLIArgs(): CLIArgs {
     "upload-traces": values["upload-traces"],
     bridgeUrl: values.bridge,
     bridgeToken: values["bridge-token"],
+    // Worktree 启动 flag（P1-2）：--worktree=name 指定名称；--worktree= 或空串则自动命名
+    worktree: values.worktree !== undefined ? (values.worktree || true) : undefined,
     // UI 渲染模式（ADR-040）：--alternate-buffer 显式开全屏；缺省 undefined → 主屏 Static
     alternateBuffer: values["alternate-buffer"] === true ? true : undefined,
     // 轨迹采集配置（默认启用，--no-trace 关闭整个采集；--trace-upload-disabled 仅禁上传保留本地落盘）
@@ -600,6 +607,11 @@ export async function main(): Promise<void> {
     toolRegistry.register(new WebFetchTool());
     toolRegistry.register(new MemoryTool(memoryStore));
 
+    // 注册 LSP 代码智能查询工具（goToDefinition/findReferences/hover/documentSymbol 等 9 操作）。
+    // isEnabled 自动检测：LSP 初始化成功/进行中才进上下文，无配置时不暴露给模型（零配置体验）。
+    const { LSPTool } = await import("./tool/lsp.ts");
+    toolRegistry.register(new LSPTool());
+
     // 注册 web_search 工具（始终可用，DuckDuckGo 兜底）
     const { createSearchBackend } = await import("./tool/search-backends/factory.ts");
     const { WebSearchTool } = await import("./tool/web-search.ts");
@@ -938,7 +950,7 @@ export async function main(): Promise<void> {
 
     // 创建 App
     const { App } = await import("./app.ts");
-    const app = new App({ config, provider, providerRegistry, toolRegistry, commandRegistry, unifiedRegistry, permissionChecker, mcpManager, planManager });
+    const app = new App({ config, provider, providerRegistry, toolRegistry, commandRegistry, unifiedRegistry, permissionChecker, mcpManager, planManager, fileReadTracker });
     // 注册全局 App 弱引用（供 uncaughtException 等异常兜底使用）
     setLastApp(app);
 
@@ -997,6 +1009,80 @@ export async function main(): Promise<void> {
               getLogger().error("CLEANUP", `自动清理失败: ${err.message}`);
             }
           });
+      }
+    }
+
+    // 启动时恢复并清理 Worktree（P0-1 / P1-9 / D16），以及 --worktree 启动 flag（P1-2）
+    if (!config.print) {
+      try {
+        const { findGitRoot, restoreWorktreeSession, setCurrentWorktreeSession } =
+          await import("./worktree/index.ts");
+        const gitRoot = findGitRoot(process.cwd());
+        if (gitRoot) {
+          let activeWtPath: string | undefined;
+
+          // P1-2：--worktree [name] 启动即创建并进入（优先于 resume）
+          if (cliArgs.worktree !== undefined) {
+            try {
+              const { WorktreeManager } = await import("./worktree/manager.ts");
+              const { enterWorktreeCwd } = await import("./worktree/canonical.ts");
+              const { saveWorktreeState } = await import("./worktree/persistence.ts");
+              const { logWorktreeEvent } = await import("./worktree/analytics.ts");
+              const { generateWordSlug } = await import("./plan/slug.ts");
+              const name =
+                typeof cliArgs.worktree === "string" && cliArgs.worktree
+                  ? cliArgs.worktree
+                  : generateWordSlug();
+              const manager = new WorktreeManager(gitRoot);
+              const wtSession = await manager.create(name);
+              await enterWorktreeCwd(wtSession.worktreePath);
+              setCurrentWorktreeSession(wtSession);
+              saveWorktreeState(wtSession);
+              activeWtPath = wtSession.worktreePath;
+              logWorktreeEvent("worktree_created", {
+                slug: wtSession.worktreeName,
+                hookBased: !!wtSession.hookBased,
+                durationMs: wtSession.creationDurationMs,
+                viaFlag: true,
+              });
+              getLogger().info("WORKTREE", `--worktree 启动进入: ${wtSession.worktreePath}`);
+            } catch (err: any) {
+              getLogger().error("WORKTREE", `--worktree 创建失败: ${err.message}`);
+              console.error(`错误: --worktree 创建失败: ${err.message}`);
+              process.exit(1);
+            }
+          } else {
+            // P0-1：恢复上次会话的 worktree（进程重启/crash 后）
+            const { session, cleared } = restoreWorktreeSession(gitRoot);
+            if (session) {
+              const { enterWorktreeCwd } = await import("./worktree/canonical.ts");
+              const { logWorktreeEvent } = await import("./worktree/analytics.ts");
+              try {
+                await enterWorktreeCwd(session.worktreePath);
+                setCurrentWorktreeSession(session);
+                activeWtPath = session.worktreePath;
+                logWorktreeEvent("worktree_resume", { slug: session.worktreeName, success: true });
+                getLogger().info("WORKTREE", `已恢复 worktree 会话: ${session.worktreeName}`);
+              } catch (err: any) {
+                getLogger().warn("WORKTREE", `恢复 worktree cwd 失败: ${err.message}`);
+              }
+            } else if (cleared && config.debug) {
+              getLogger().info("WORKTREE", "持久化的 worktree 已失效，已清除状态");
+            }
+          }
+
+          // D16：后台清理过期临时 worktree（跳过当前活跃 session）
+          const { cleanupStaleWorktrees } = await import("./worktree/cleanup.ts");
+          cleanupStaleWorktrees(gitRoot, 30, activeWtPath)
+            .then((n) => {
+              if (n > 0 && config.debug) {
+                getLogger().info("WORKTREE", `自动清理: 删除 ${n} 个过期临时 Worktree`);
+              }
+            })
+            .catch(() => {/* 忽略 */});
+        }
+      } catch (err: any) {
+        getLogger().warn("WORKTREE", `worktree 启动处理失败（不阻断）: ${err.message}`);
       }
     }
 

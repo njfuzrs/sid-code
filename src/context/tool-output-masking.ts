@@ -97,9 +97,14 @@ export class ToolOutputMaskingService {
         // 离线存储完整内容
         const filePath = this.saveToFile(candidate);
 
+        // 9.2：占位符附带元信息（工具名 / 原始长度 / 原因），帮助模型判断是否需要重新执行该工具，
+        // 而不是只看到一个无信息的 [tool_output_masked]。
         return {
           ...block,
-          content: `${MASKING_TAG}\n${preview}\n[完整输出已保存到: ${filePath}]`,
+          content:
+            `${MASKING_TAG} tool=${candidate.toolName}, 原始长度=${candidate.content.length}字符, ` +
+            `原因=上下文空间回收（旧工具输出超出 ${PROTECTION_THRESHOLD / 1000}K token 保护窗口）。如仍需该内容可重新调用该工具，或读取下方完整输出文件。\n` +
+            `${preview}\n[完整输出已保存到: ${filePath}]`,
         };
       }),
     }));

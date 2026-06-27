@@ -45,7 +45,7 @@ import { drainAgentMessages } from "./message-queue.ts";
 import { getAgentSystemPrompt, resolveAgent, BUILTIN_AGENTS } from "./agent-definition.ts";
 import { platform, homedir } from "os";
 import { cwd } from "process";
-import { dirname, join } from "path";
+import { dirname, join, sep } from "path";
 import { fileURLToPath } from "url";
 import { existsSync } from "fs";
 import { withAgentCwd } from "../bootstrap/cwd-context.ts";
@@ -175,6 +175,15 @@ async function enhanceSubAgentPrompt(
   notes.push(`用户主目录: ${home}`);
   notes.push(`操作系统: ${os}`);
   notes.push(`当前日期: ${date}`);
+
+  // D13：若工作目录落在隔离 worktree 内，明确告知子代理，避免它输出主仓路径或误判仓库状态。
+  if (dir.includes(`${sep}.sid-code${sep}worktrees${sep}`)) {
+    notes.push(
+      "【隔离环境提示】你当前运行在一个隔离的 Git Worktree 中（独立工作区，与主仓共享对象库）。" +
+        "你的文件改动只影响此工作区，不会污染主仓。请使用上面的「当前工作目录」作为项目根，" +
+        "不要假设自己在主仓库目录下，也不要引用主仓的绝对路径。",
+    );
+  }
 
   return `${basePrompt}\n\n---\n\n${notes.join("\n")}`;
 }

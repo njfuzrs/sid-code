@@ -60,7 +60,8 @@ export function snipCompact(
     return { messages, snippedCount: 0, success: false };
   }
 
-  // 检查第一条消息是否是压缩摘要（以 [自动截断] 或 [响应式压缩] 开头）
+  // 检查第一条消息是否是压缩摘要 / 摘要边界（应跳过，不能裁掉）
+  // 摘要消息（[对话摘要] / compact_boundary）是前次压缩的信息浓缩，裁掉等于两次压缩累积信息全丢。
   let startIdx = 0;
   if (messages.length > 0 && messages[0].role === "user") {
     const firstText = messages[0].content
@@ -69,8 +70,11 @@ export function snipCompact(
       .join("");
     if (firstText.startsWith("[自动截断]") ||
         firstText.startsWith("[响应式压缩]") ||
-        firstText.startsWith("[snipCompact]")) {
-      startIdx = 1; // 跳过摘要消息
+        firstText.startsWith("[snipCompact]") ||
+        firstText.startsWith("[对话摘要]") ||
+        firstText.startsWith("[压缩边界]") ||
+        messages[0]._meta?.compact_boundary) {
+      startIdx = 1; // 跳过摘要 / 边界消息
     }
   }
 

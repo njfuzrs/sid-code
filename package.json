@@ -1,6 +1,6 @@
 {
   "name": "sid-code",
-  "version": "0.1.345",
+  "version": "0.1.348",
   "description": "AI 编程 CLI 工具 (TypeScript + Bun + Ink)",
   "type": "module",
   "main": "src/entrypoints/bootstrap.ts",

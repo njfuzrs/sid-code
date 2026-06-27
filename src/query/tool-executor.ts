@@ -484,12 +484,20 @@ async function notifyLSPFileChange(input: Record<string, unknown>): Promise<void
   const filePath = (input?.file_path ?? input?.path) as string | undefined;
   if (!filePath) return;
   try {
-    const { getLSPManager } = await import("../lsp/manager.ts");
+    const { getLSPManager, clearDiagnosticsForFile, notifyFileChanged } = await import("../lsp/manager.ts");
     if (!getLSPManager()) return; // LSP 未启用，避免无谓读盘
     const { readFile } = await import("fs/promises");
     const content = await readFile(filePath, "utf-8");
-    const { notifyFileChanged } = await import("../lsp/manager.ts");
+    // G3：先清除该文件的旧诊断记录，再投递变更。
+    // 否则跨轮次去重缓存会过滤掉服务器基于新内容重新推送的同位置诊断，
+    // 导致"修复后诊断不消失"或"过时错误持续驻留"。
+    clearDiagnosticsForFile(filePath);
     await notifyFileChanged(filePath, content);
+    // G6：变更同步后额外发 didSave 通知——部分 LSP 服务器（如 pylsp、gopls 的某些配置）
+    // 依赖 didSave 而非 didChange 触发完整诊断刷新。didChange 已让服务器看到最新内容，
+    // didSave 再补一次"已保存"语义，最大化兼容不同服务器的诊断触发策略。
+    const manager = getLSPManager();
+    manager?.saveFile(filePath);
   } catch {
     // 静默忽略：LSP 是可选增强
   }

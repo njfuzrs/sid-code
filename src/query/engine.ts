@@ -57,6 +57,12 @@ export interface QueryEngineDeps {
   ) => Promise<AccumulatedResponse>;
   /** 自动压缩 */
   autoCompact: () => Promise<void>;
+  /**
+   * §2.2 Context Collapse：autoCompact 的前置层。对最老的若干段消息做分段摘要。
+   * 返回 true 表示 collapse 后已达目标（可跳过 autoCompact），false 表示仍需 autoCompact。
+   * 可选——未提供时 hard 级压缩直接走 autoCompact（行为同旧版）。
+   */
+  contextCollapse?: (currentUsageRatio: number) => Promise<boolean>;
   /** 处理上下文溢出 */
   handleContextOverflow: (err: any, currentMaxTokens: number) => number | null;
   /** 获取 abort signal */
@@ -218,6 +224,7 @@ export class QueryEngine {
       },
       executeTools: this.deps.executeTools,
       autoCompact: this.deps.autoCompact,
+      contextCollapse: this.deps.contextCollapse,
       handleContextOverflow: this.deps.handleContextOverflow,
       getAbortSignal: this.deps.getAbortSignal,
       abortCurrentRequest: this.deps.abortCurrentRequest,

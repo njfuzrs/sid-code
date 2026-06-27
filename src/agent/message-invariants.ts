@@ -304,6 +304,62 @@ export function backfillOrphanToolResults(messages: Message[]): BackfillResult {
   return { changed: true, messages: out, backfilled: orphans, stripped };
 }
 
+/** finalizeMessagesForSend 结果 */
+export interface FinalizeResult extends BackfillResult {
+  /** 是否触发了"最终截断到最后完整配对"的兜底（backfill 之后仍有破缺时） */
+  truncated: boolean;
+  /** 因最终截断被丢弃的消息数 */
+  truncatedCount: number;
+}
+
+/**
+ * §9.6：发送前最终消息完整性强修复（防御纵深的最后一环）。
+ *
+ * 流程：
+ *   1. 先跑 backfillOrphanToolResults（切游离 + 补孤儿占位）——覆盖绝大多数破缺。
+ *   2. 修复后再做一次完整性检查：若仍有任何 orphan / dangling（理论上不该发生，
+ *      但 backfill 若有未覆盖的 content-block 级边角，这里兜底），
+ *      则**截断到最后一个完整配对处**——从尾部向前找到最近一条"自身完整且其后无破缺"的边界，
+ *      丢弃该边界之后的破缺尾巴。宁可少发几条消息，也不让 API 400。
+ *
+ * 与 backfillOrphanToolResults 的关系：backfill 是"尽量保全+修复"，本函数在其之上加一道
+ * "修不好就截断"的硬兜底，保证返回的消息**一定**满足配对协议。
+ *
+ * 纯函数：不修改入参。
+ */
+export function finalizeMessagesForSend(messages: Message[]): FinalizeResult {
+  const backfill = backfillOrphanToolResults(messages);
+  let working = backfill.messages;
+
+  const afterBackfill = checkMessageHistoryIntegrity(working);
+  if (afterBackfill.intact) {
+    return { ...backfill, truncated: false, truncatedCount: 0 };
+  }
+
+  // backfill 之后仍有破缺：截断到最后一个完整前缀。
+  // 从完整数组开始，逐步去掉尾部消息，直到剩余前缀完整为止。
+  const before = working.length;
+  let cut = working.length;
+  while (cut > 0) {
+    const prefix = working.slice(0, cut);
+    if (checkMessageHistoryIntegrity(prefix).intact) break;
+    cut--;
+  }
+  // 再补一次 backfill：截断点可能产生新的孤儿 tool_use（assistant 在前缀内但 result 被截掉）
+  const truncatedPrefix = working.slice(0, cut);
+  const reBackfill = backfillOrphanToolResults(truncatedPrefix);
+  working = reBackfill.messages;
+
+  return {
+    changed: true,
+    messages: working,
+    backfilled: backfill.backfilled,
+    stripped: backfill.stripped,
+    truncated: true,
+    truncatedCount: before - cut,
+  };
+}
+
 /**
  * 安全尾部切片：取尾部约 N 条消息，但保证切片起点不会落在"游离 tool_result"上。
  *

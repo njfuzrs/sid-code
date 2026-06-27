@@ -99,6 +99,54 @@ describe("DiagnosticRegistry", () => {
     reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("err1")] }]);
     expect(reg.collectDiagnostics().length).toBe(1);
   });
+
+  test("clearForFile：清除指定文件 delivered 记录后同诊断可再投递（G3）", () => {
+    const reg = new DiagnosticRegistry();
+    reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("err1")] }]);
+    expect(reg.collectDiagnostics().length).toBe(1);
+
+    // 未清除时，同诊断被跨轮次去重过滤
+    reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("err1")] }]);
+    expect(reg.collectDiagnostics()).toEqual([]);
+
+    // 清除该文件 delivered 记录后，同诊断重新作为新诊断投递
+    reg.clearForFile("file:///a.ts");
+    reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("err1")] }]);
+    expect(reg.collectDiagnostics().length).toBe(1);
+  });
+
+  test("clearForFile：只清目标文件，其它文件 delivered 记录不受影响", () => {
+    const reg = new DiagnosticRegistry();
+    reg.registerPending("ts", [
+      { uri: "file:///a.ts", diagnostics: [diag("erra")] },
+      { uri: "file:///b.ts", diagnostics: [diag("errb")] },
+    ]);
+    expect(reg.collectDiagnostics().length).toBe(2);
+
+    reg.clearForFile("file:///a.ts");
+    // a.ts 同诊断可再投递；b.ts 仍被去重
+    reg.registerPending("ts", [
+      { uri: "file:///a.ts", diagnostics: [diag("erra")] },
+      { uri: "file:///b.ts", diagnostics: [diag("errb")] },
+    ]);
+    const files = reg.collectDiagnostics();
+    expect(files.length).toBe(1);
+    expect(files[0]!.uri).toBe("file:///a.ts");
+  });
+
+  test("clearForFile：清除 pending 中该文件的待投递诊断，保留其它文件", () => {
+    const reg = new DiagnosticRegistry();
+    // 注册两个文件的 pending（尚未 collect）
+    reg.registerPending("ts", [
+      { uri: "file:///a.ts", diagnostics: [diag("erra")] },
+      { uri: "file:///b.ts", diagnostics: [diag("errb")] },
+    ]);
+    // 编辑 a.ts → 清除其 pending（基于旧内容的诊断已失效）
+    reg.clearForFile("file:///a.ts");
+    const files = reg.collectDiagnostics();
+    expect(files.length).toBe(1);
+    expect(files[0]!.uri).toBe("file:///b.ts");
+  });
 });
 
 describe("formatDiagnostics", () => {

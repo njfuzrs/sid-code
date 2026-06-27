@@ -143,6 +143,11 @@ export interface LoopState {
    * 注入门禁提醒并续命，最多 N 次，避免无限循环。
    */
   hypothesisGateRetryCount?: number;
+  /**
+   * G4：LSP 健康告警是否已向用户展示过（一次性，避免每轮刷屏）。
+   * 首轮检查 getLSPHealthWarning()，有异常则 yield 一次 system 警告并置位。
+   */
+  lspHealthWarned?: boolean;
 }
 
 /** 创建初始循环状态 */
@@ -172,6 +177,11 @@ export interface QueryDeps {
   executeTools: (content: ContentBlock[]) => Promise<{ results: ContentBlock[]; followup?: ContentBlock[] }>;
   /** 自动压缩 */
   autoCompact: () => Promise<void>;
+  /**
+   * §2.2 Context Collapse：autoCompact 前置层（分段摘要老消息）。
+   * 返回 true 表示已达目标可跳过 autoCompact。可选——不提供则 hard 级压缩直接走 autoCompact。
+   */
+  contextCollapse?: (currentUsageRatio: number) => Promise<boolean>;
   /** 处理上下文溢出，返回调整后的 maxTokens 或 null */
   handleContextOverflow: (err: any, currentMaxTokens: number) => number | null;
   /** 获取 abort signal */

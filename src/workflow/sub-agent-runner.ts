@@ -22,7 +22,7 @@ import type { SubAgentResult } from "../agent/sub-agent.ts";
 import type { ProviderRegistry } from "../llm/registry.ts";
 import type { Registry as ToolRegistry } from "../tool/registry.ts";
 import type { HookSystem } from "../hook/system.ts";
-import { WorktreeManager, findGitRoot } from "../worktree/manager.ts";
+import { WorktreeManager, findGitRootForAgent } from "../worktree/manager.ts";
 import { getCwd } from "../bootstrap/state.ts";
 import { getLogger } from "../debug/logger.ts";
 
@@ -69,7 +69,7 @@ export class SubAgentRunner implements AgentRunner {
     let cwd: string | undefined;
     let worktreeCleanup: (() => Promise<void>) | undefined;
     if (opts?.isolation === "worktree") {
-      const gitRoot = findGitRoot(getCwd());
+      const gitRoot = findGitRootForAgent(getCwd());
       if (gitRoot) {
         const idx = this.worktreeSeq++;
         const manager = new WorktreeManager(gitRoot);

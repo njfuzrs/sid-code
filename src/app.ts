@@ -103,6 +103,8 @@ export interface AppOptions {
   initialPrompt?: string;
   mcpManager?: MCPManager;
   planManager?: PlanModeManager;
+  /** 共享的 FileReadTracker 实例（§2.1 post-compact 文件恢复需要它取最近访问文件）。 */
+  fileReadTracker?: import("./tool/file-read-tracker.ts").FileReadTracker;
 }
 
 /**
@@ -153,6 +155,12 @@ export class App {
   private telemetryProbe?: import("./telemetry/hook-probe.ts").TelemetryHookProbe;
   /** Plan Mode 管理器 */
   private planManager: PlanModeManager | null = null;
+  /** §2.1：共享 FileReadTracker，autoCompact 后用于恢复最近访问文件。 */
+  private fileReadTracker: import("./tool/file-read-tracker.ts").FileReadTracker | null = null;
+  /** §5：共享 cached microcompact 状态机，压缩后重置。延迟创建。 */
+  private cachedMicrocompactState: import("./query/compact/cached-microcompact.ts").CachedMicrocompactState | null = null;
+  /** 会话 ID（§4.1/§4.3 落盘目录用）。 */
+  private sessionIdForCompact = "";
   /** TUI 模式下的权限确认回调（由 TUI 注入），返回 "yes" | "no" | "always" */
   private tuiConfirmCallback: ((toolName: string, toolInput: unknown, desc: string, shadowedRules?: import("./ui/App.tsx").ShadowedRuleInfo[]) => Promise<"yes" | "no" | "always">) | null = null;
   /** TUI 状态更新回调（由 TUI 注入，用于同步 permissionMode 等状态） */
@@ -194,12 +202,17 @@ export class App {
     this.unifiedRegistry = opts.unifiedRegistry;
     this.permissionChecker = opts.permissionChecker ?? null;
     this.planManager = opts.planManager ?? null;
+    this.fileReadTracker = opts.fileReadTracker ?? null;
     const sessionId = opts.config.sessionId || generateSessionId();
+    this.sessionIdForCompact = sessionId;
     // 上下文窗口按模型实际大小初始化（deepseek-v4 为 1M，Claude 200K，gpt-4o 128K）。
     // 硬编码 200000 会让 deepseek 的 contextPercent 高估 5 倍、过早触发自动压缩。
     const ctxWindow = new TokenEstimator().getContextLimit(opts.config.model, opts.config.availableModels);
     this.ctxMgr = new ContextManager({ maxTokens: ctxWindow });
     this.ctxMgr.setSessionId(sessionId);
+    // §3.3：注入 Plan 正文提供方——压缩时把活跃 Plan 正文重注入消息历史。
+    // 仅在 plan 执行/规划阶段返回正文，否则返回 null（不注入）。
+    this.ctxMgr.setPlanContentProvider(() => this.readActivePlanContent());
     this.sessionState = new SessionState(sessionId);
     // 注入用户配置的模型列表（含定价/provider），供计费和 provider 推断优先使用
     this.sessionState.setAvailableModels(opts.config.availableModels);
@@ -756,9 +769,47 @@ export class App {
     return impl(err, currentMaxTokens, this.ctxMgr, this.toolRegistry.size());
   }
 
+  /**
+   * §3.3：读取当前活跃 Plan 的正文（仅 planning / executing 阶段；否则 null）。
+   * 供 ctxMgr.setPlanContentProvider 在压缩时重注入 Plan 内容。
+   */
+  private readActivePlanContent(): string | null {
+    try {
+      const pm = this.planManager;
+      if (!pm) return null;
+      if (!pm.isPlanning() && !pm.isExecuting()) return null;
+      const planPath = pm.getPlanFilePath();
+      if (!planPath) return null;
+      const fs = require("node:fs");
+      if (!fs.existsSync(planPath)) return null;
+      const content = fs.readFileSync(planPath, "utf-8");
+      // 限制 Plan 注入上限，避免异常大的 plan 文件撑爆压缩后空间
+      return content.length > 20_000 ? content.slice(0, 20_000) + "\n\n[Plan 内容已截断]" : content;
+    } catch {
+      return null;
+    }
+  }
+
   /** 自动压缩，委托给 auto-compact 模块 */
   private async autoCompact(): Promise<void> {
     const { autoCompact: impl } = await import("./query/auto-compact.ts");
+    // §3.1：传入主对话工具定义，让压缩请求复用主对话已缓存的工具前缀（cache hit）。
+    const toolSchemas = this.toolRegistry.activeDefinitions();
+    // §12.3：摘要走低成本模型（subAgentModels.summarize），未配则跟主模型。
+    const compactModel = this.config.subAgentModels?.summarize || this.config.subAgentModels?.default;
+    // §5：延迟创建共享 cached microcompact 状态机
+    if (!this.cachedMicrocompactState) {
+      const { createCachedMicrocompactState } = await import("./query/compact/cached-microcompact.ts");
+      this.cachedMicrocompactState = createCachedMicrocompactState();
+    }
+    // §4.1/§4.3：会话级落盘目录
+    let sessionDir: string | undefined;
+    try {
+      const { ensureSessionTempDir } = await import("./utils/temp-dir.ts");
+      sessionDir = ensureSessionTempDir(this.sessionIdForCompact, "compact");
+    } catch {
+      sessionDir = undefined;
+    }
     return impl({
       provider: this.provider,
       config: this.config,
@@ -766,6 +817,38 @@ export class App {
       hookSystem: this.hookSystem,
       getAbortSignal: () => this.abortController?.signal,
       sessionMemory: this.sessionMemory ?? undefined,
+      toolSchemas,
+      compactModel: compactModel || undefined,
+      fileReadTracker: this.fileReadTracker ?? undefined,
+      isMainAgent: true,
+      cachedMicrocompactState: this.cachedMicrocompactState ?? undefined,
+      sessionDir,
+    }).then(() => {
+      // §12.7：压缩后清除系统提示词缓存——压缩后话题可能已转变，
+      // 下次构建 system prompt 时应重新召回相关记忆（recall 无独立缓存，仅经 prompt 缓存生效），
+      // 不清缓存会让 recalledMemories 停留在旧话题。clearPromptCache 同时刷新 JIT/git 等动态区。
+      try {
+        clearPromptCache();
+      } catch { /* 忽略 */ }
+
+      // §9.5：压缩后重新注入仍在作用域内的 JIT 规则（CLAUDE.md）。
+      // JIT 上下文被追加到系统提示词，但摘要后的消息历史不再提及这些规则，
+      // 模型可能"忘记"它们仍然有效。把已加载的 JIT 正文重新附加到系统提示词末尾。
+      try {
+        if (this.config.jitContext !== false) {
+          const jitContexts = this.jitContextMgr.getLoadedContexts();
+          if (jitContexts) {
+            const currentPrompt = this.ctxMgr.getSystemPrompt();
+            // 避免重复追加：仅当当前提示词不含该正文时才追加
+            if (!currentPrompt.includes(jitContexts)) {
+              this.ctxMgr.setSystemPrompt(currentPrompt + "\n\n" + jitContexts);
+              getLogger().info("JIT", `压缩后重新注入 JIT 上下文 (${jitContexts.length} 字符)`);
+            }
+          }
+        }
+      } catch (err: any) {
+        getLogger().debug("JIT", `压缩后 JIT 重注入跳过: ${err.message}`);
+      }
     });
   }
 
