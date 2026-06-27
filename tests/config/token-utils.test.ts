@@ -13,7 +13,7 @@ describe("estimateTokens", () => {
   });
 
   // EST-1：estimateTokens 已收敛为复用 context/token.ts 的权威字符级估算
-  // （ASCII 0.20 tok/char、非 ASCII 0.55 tok/char），不再自带分内容类型的系数。
+  // （ASCII 0.20 tok/char、非 ASCII 0.65 tok/char），不再自带分内容类型的系数。
   // 以下用例验证收敛后的统一口径，而非旧的"中文2.0/代码3.0/英文3.5字符每token"分档。
 
   test("英文文本：ASCII ~0.20 tok/char", () => {
@@ -24,12 +24,12 @@ describe("estimateTokens", () => {
     expect(tokens).toBeLessThan(18);
   });
 
-  test("中文文本：非 ASCII ~0.55 tok/char", () => {
+  test("中文文本：非 ASCII ~0.65 tok/char", () => {
     const text = "你好世界，这是一个用于测试的中文字符串，包含足够多的中文字符来触发中文检测。";
     const tokens = estimateTokens(text);
-    // 约 38 个非 ASCII 字符 × 0.55 ≈ 20 上下
+    // 约 38 个非 ASCII 字符 × 0.65 ≈ 25 上下
     expect(tokens).toBeGreaterThan(15);
-    expect(tokens).toBeLessThan(30);
+    expect(tokens).toBeLessThan(35);
   });
 
   test("代码文本：ASCII ~0.20 tok/char", () => {

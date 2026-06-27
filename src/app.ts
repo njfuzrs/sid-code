@@ -367,6 +367,7 @@ export class App {
       executeTools: (content) => this.executeTools(content),
       processStream: (stream, onText, onThinking) => this.processStream(stream, onText, onThinking),
       autoCompact: () => this.autoCompact(),
+      contextCollapse: (ratio) => this.contextCollapse(ratio),
       handleContextOverflow: (err, max) => this.handleContextOverflow(err, max),
       getAbortSignal: () => this.abortController?.signal,
       // L1 单轮硬超时触发时主动 abort 上游 fetch（尽力而为的资源释放，配合 loop.ts 的 Promise.race）。
@@ -852,7 +853,41 @@ export class App {
     });
   }
 
-  /** 初始化：加载系统提示词（幂等，多次调用只执行一次） */
+  /**
+   * §2.2 Context Collapse：autoCompact 前置层。对最老的若干段消息做分段摘要。
+   * 返回 true 表示 collapse 后已达目标（可跳过 autoCompact），false 表示仍需 autoCompact。
+   * 受压缩锁保护（与 autoCompact 互斥）；摘要走低成本模型。
+   */
+  private async contextCollapse(_currentUsageRatio: number): Promise<boolean> {
+    const log = getLogger();
+    // §6：与 autoCompact 互斥
+    if (!this.ctxMgr.acquireCompactLock()) {
+      log.warn("CONTEXT_COLLAPSE", "已有压缩流程在进行中，跳过 collapse");
+      return false;
+    }
+    try {
+      const { contextCollapse: impl } = await import("./query/compact/context-collapse.ts");
+      const compactModel = this.config.subAgentModels?.summarize || this.config.subAgentModels?.default || this.config.model;
+      const result = await impl(this.ctxMgr.getMessages(), {
+        targetRatio: 0.7,
+        maxTokens: this.ctxMgr.getMaxTokens(),
+        provider: this.provider,
+        model: compactModel,
+        signal: this.abortController?.signal,
+      });
+      if (result.collapsedSegments > 0) {
+        this.ctxMgr.setMessages(result.messages);
+        this.ctxMgr.invalidateActualTokenAnchor();
+        log.info("CONTEXT_COLLAPSE", `collapse ${result.collapsedSegments} 段，节省 ~${result.savedTokens} token，success=${result.success}`);
+      }
+      return result.success;
+    } catch (err: any) {
+      log.warn("CONTEXT_COLLAPSE", `collapse 异常: ${err.message}`);
+      return false;
+    } finally {
+      this.ctxMgr.releaseCompactLock();
+    }
+  }
   async init(): Promise<void> {
     if (this.initPromise) return this.initPromise;
     this.initPromise = this.doInit();

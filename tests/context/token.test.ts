@@ -17,17 +17,17 @@ describe("estimateTextTokens", () => {
     expect(tokens).toBe(3);
   });
 
-  test("纯中文文本：约 0.55 token/char", () => {
+  test("纯中文文本：约 0.65 token/char", () => {
     const text = "你好世界"; // 4 chars
     const tokens = estimateTextTokens(text);
-    // 4 * 0.55 = 2.2 → ceil = 3（校准后中文系数 0.55，旧 1.3 高估 ~2.5 倍）
+    // 4 * 0.65 = 2.6 → ceil = 3（9.4：中文系数 0.65，偏保守防长中文对话低估）
     expect(tokens).toBe(3);
   });
 
   test("中英文混合文本", () => {
     const text = "hello你好"; // 5 ASCII + 2 CJK
     const tokens = estimateTextTokens(text);
-    // 5 * 0.20 + 2 * 0.55 = 1.0 + 1.1 = 2.1 → ceil = 3
+    // 5 * 0.20 + 2 * 0.65 = 1.0 + 1.3 = 2.3 → ceil = 3
     expect(tokens).toBe(3);
   });
 
@@ -35,7 +35,7 @@ describe("estimateTextTokens", () => {
     const chineseText = "这是一段中文测试文本用于验证精确估算";
     const oldEstimate = Math.ceil(chineseText.length / 4);
     const newEstimate = estimateTextTokens(chineseText);
-    // 中文场景下新估算（0.55/字）仍高于旧的 length/4（0.25/字）
+    // 中文场景下新估算（0.65/字）仍高于旧的 length/4（0.25/字）
     expect(newEstimate).toBeGreaterThan(oldEstimate);
   });
 
@@ -57,9 +57,9 @@ describe("estimateTextTokens", () => {
   test("超长纯中文文本按非 ASCII 系数估算", () => {
     const longChinese = "中".repeat(200_000);
     const tokens = estimateTextTokens(longChinese);
-    // EST-6：全中文 → 0.55/char。200000 * 0.55 = 110000，ceil 后 110000（旧固定 0.35 会低估到 70000）
-    expect(tokens).toBeGreaterThanOrEqual(110_000);
-    expect(tokens).toBeLessThanOrEqual(110_001);
+    // 9.4：全中文 → 0.65/char。200000 * 0.65 = 130000（旧 0.55 为 110000，更保守防低估）
+    expect(tokens).toBeGreaterThanOrEqual(130_000);
+    expect(tokens).toBeLessThanOrEqual(130_001);
   });
 
   test("刚好在阈值边界的文本使用精确计算", () => {

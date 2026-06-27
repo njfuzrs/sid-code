@@ -43,13 +43,13 @@ function resolveFallbackWindow(): number {
 
 /** ASCII 字符：英文散文实测 0.17、代码/JSON 偏高，取 0.20 折中 */
 const ASCII_TOKENS_PER_CHAR = 0.20;
-/** 非 ASCII 字符（中文等）：DeepSeek 官方 tokenizer 实测中文 ≈0.52，取 0.55（旧值 1.3 高估 ~2.5 倍） */
-const NON_ASCII_TOKENS_PER_CHAR = 0.55;
+/** 非 ASCII 字符（中文等）：取 0.65 tok/char（9.4：偏保守，防长中文对话对 Claude 累积低估） */
+const NON_ASCII_TOKENS_PER_CHAR = 0.65;
 
 /**
  * 对超长文本抽样估算"每字符 token 数"（EST-6）。
  * 等距抽样若干字符，按 ASCII / 非 ASCII 占比加权得到混合系数，
- * 比固定 0.35 对大段中文（应为 0.55）准确得多，同时保持 O(样本数) 性能。
+ * 比固定 0.35 对大段中文（应为 0.65）准确得多，同时保持 O(样本数) 性能。
  */
 function sampledTokensPerChar(text: string): number {
   const SAMPLE_SIZE = 2_000;
@@ -70,7 +70,7 @@ export class TokenEstimator {
   estimateText(text: string): number {
     if (text.length === 0) return 0;
     // 超长文本用快速近似：EST-6 改为按抽样的非 ASCII 占比估算，
-    // 旧固定 0.35 对大段中文低估约 36%（中文 0.55 远高于 0.35）。
+    // 旧固定 0.35 对大段中文低估（中文 0.65 远高于 0.35）。
     if (text.length > MAX_CHARS_FOR_FULL_HEURISTIC) {
       return Math.ceil(text.length * sampledTokensPerChar(text));
     }
