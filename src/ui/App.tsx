@@ -143,6 +143,8 @@ export interface TUIState {
   /** 末次输入 token（stock 口径），用于状态栏展示当前上下文大小。避免与 usage.inputTokens（flow 累计）混淆。 */
   stockInputTokens: number;
   costUSD: number;
+  /** 10.3：会话累计缓存节省金额（美元） */
+  cacheSavingsUSD: number;
   costLimit: number;
   contextPercent: number;
   permissionMode: string;
@@ -706,6 +708,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           usage={state.usage}
           stockInputTokens={state.stockInputTokens}
           costUSD={state.costUSD}
+          cacheSavingsUSD={state.cacheSavingsUSD}
           costLimit={state.costLimit}
           contextPercent={state.contextPercent}
           model={state.model}
@@ -749,6 +752,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           usage={state.usage}
           stockInputTokens={state.stockInputTokens}
           costUSD={state.costUSD}
+          cacheSavingsUSD={state.cacheSavingsUSD}
           costLimit={state.costLimit}
           contextPercent={state.contextPercent}
           model={state.model}

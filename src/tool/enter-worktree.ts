@@ -93,7 +93,8 @@ Worktree 共享 Git 对象库，创建速度快，磁盘开销小。
     }
 
     // 3. slug 校验（用户传入的 name 必须校验，P0-4/B5）
-    const slug = params.name || generateWordSlug();
+    const worktreesDir = join(gitRoot, ".sid-code", "worktrees");
+    const slug = params.name || generateWordSlug(worktreesDir);
     if (params.name) {
       const v = validateWorktreeSlug(params.name);
       if (!v.valid) {

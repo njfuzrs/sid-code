@@ -76,6 +76,8 @@ interface DefaultAppLayoutProps {
   usage: Usage;
   stockInputTokens: number;
   costUSD: number;
+  /** 10.3：会话累计缓存节省金额（美元） */
+  cacheSavingsUSD?: number;
   costLimit: number;
   contextPercent: number;
   model: string;
@@ -126,6 +128,7 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
   usage,
   stockInputTokens,
   costUSD,
+  cacheSavingsUSD,
   costLimit,
   contextPercent,
   model,
@@ -276,6 +279,7 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
           usage={usage}
           stockInputTokens={stockInputTokens}
           costUSD={costUSD}
+          cacheSavingsUSD={cacheSavingsUSD}
           costLimit={costLimit}
           contextPercent={contextPercent}
           model={model}

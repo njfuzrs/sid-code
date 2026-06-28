@@ -351,9 +351,21 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
     log.info("PROMPT", `附件: ${displayName}(${(attTokens / 1000).toFixed(1)}K tok, priority=${att.priority})`);
   }
 
-  // 4. 拼接所有部分（静态区 + DYNAMIC_BOUNDARY + 动态区）
-  const staticContent = coreParts.join("\n\n");
-  const dynamicParts = attachments.map((a) => a.content);
+  // 4. 按 cacheStability 分拣附件：stable 进静态区享受长 TTL 缓存，dynamic/未标记进动态区
+  const stableParts: string[] = [];
+  const dynamicParts: string[] = [];
+  for (const att of attachments) {
+    const stability = (att as { cacheStability?: string }).cacheStability;
+    if (stability === "stable") {
+      stableParts.push(att.content);
+    } else {
+      // dynamic 或未标记（保守策略：当作 dynamic）
+      dynamicParts.push(att.content);
+    }
+  }
+
+  // 拼接：coreParts + stable 附件 → DYNAMIC_BOUNDARY → dynamic 附件
+  const staticContent = [...coreParts, ...stableParts].join("\n\n");
 
   // 插入 DYNAMIC_BOUNDARY 标记（提示 LLM provider 在此处设置 cache_control: ephemeral）
   const DYNAMIC_BOUNDARY = "\n\n<!-- DYNAMIC_BOUNDARY -->\n\n";

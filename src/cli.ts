@@ -665,11 +665,18 @@ export async function main(): Promise<void> {
     toolRegistry.register(new TaskGetTool());
     toolRegistry.register(new SendMessageTool(providerRegistry, toolRegistry));
 
-    // 注册 Worktree 隔离工具
-    const { EnterWorktreeTool } = await import("./tool/enter-worktree.ts");
-    const { ExitWorktreeTool } = await import("./tool/exit-worktree.ts");
-    toolRegistry.register(new EnterWorktreeTool());
-    toolRegistry.register(new ExitWorktreeTool());
+    // 注册 Worktree 隔离工具（D27: 仅在 git 仓库或配置了 WorktreeCreate/Remove hook 时注册）
+    {
+      const { findGitRoot } = await import("./worktree/manager.ts");
+      const { hasWorktreeCreateHook, hasWorktreeRemoveHook } = await import("./worktree/hooks.ts");
+      const gitRoot = findGitRoot(process.cwd());
+      if (gitRoot || hasWorktreeCreateHook() || hasWorktreeRemoveHook()) {
+        const { EnterWorktreeTool } = await import("./tool/enter-worktree.ts");
+        const { ExitWorktreeTool } = await import("./tool/exit-worktree.ts");
+        toolRegistry.register(new EnterWorktreeTool());
+        toolRegistry.register(new ExitWorktreeTool());
+      }
+    }
 
     // 注册 Cron 调度工具
     const { CronCreateTool } = await import("./tool/cron-create.ts");
@@ -1029,10 +1036,12 @@ export async function main(): Promise<void> {
               const { saveWorktreeState } = await import("./worktree/persistence.ts");
               const { logWorktreeEvent } = await import("./worktree/analytics.ts");
               const { generateWordSlug } = await import("./plan/slug.ts");
+              const { join } = await import("path");
+              const worktreesDir = join(gitRoot, ".sid-code", "worktrees");
               const name =
                 typeof cliArgs.worktree === "string" && cliArgs.worktree
                   ? cliArgs.worktree
-                  : generateWordSlug();
+                  : generateWordSlug(worktreesDir);
               const manager = new WorktreeManager(gitRoot);
               const wtSession = await manager.create(name);
               await enterWorktreeCwd(wtSession.worktreePath);

@@ -2316,6 +2316,7 @@ export class App {
       usage: { ...this.sessionState.getTotalUsage() },
       stockInputTokens: this.sessionState.getStockPromptTokens(),
       costUSD: this.sessionState.totalCostUSD,
+      cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
       costLimit: this.config.costLimit ?? 0,
       contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / this.ctxMgr.getMaxTokens()) * 100),
       permissionMode: this.config.permissionMode || "default",
@@ -2726,6 +2727,7 @@ export class App {
                 usage: { ...this.sessionState.getTotalUsage() },
                 stockInputTokens: this.sessionState.getStockPromptTokens(),
                 costUSD: this.sessionState.totalCostUSD,
+                cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
                 contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / this.ctxMgr.getMaxTokens()) * 100),
               });
               // TodoWrite 工具执行后同步 todo 列表到 TUI
@@ -2820,6 +2822,7 @@ export class App {
                 usage: { ...this.sessionState.getTotalUsage() },
                 stockInputTokens: this.sessionState.getStockPromptTokens(),
                 costUSD: this.sessionState.totalCostUSD,
+                cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
                 contextPercent: ctxPct,
                 streamingText: "",
                 streamingThinking: "",
@@ -2866,6 +2869,7 @@ export class App {
         usage: { ...this.sessionState.getTotalUsage() },
         stockInputTokens: this.sessionState.getStockPromptTokens(),
         costUSD: this.sessionState.totalCostUSD,
+        cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
         contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / this.ctxMgr.getMaxTokens()) * 100),
         // CM3：本轮结束，清除残留的重试/限流提示。
         retryStatus: null,
@@ -2938,6 +2942,7 @@ export class App {
             usage: { ...this.sessionState.getTotalUsage() },
             stockInputTokens: this.sessionState.getStockPromptTokens(),
             costUSD: this.sessionState.totalCostUSD,
+            cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
             contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / this.ctxMgr.getMaxTokens()) * 100),
           });
           addTransientStatusMessage("error", message, aborted ? 1500 : 5000);

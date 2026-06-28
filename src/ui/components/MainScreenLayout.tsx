@@ -78,6 +78,8 @@ interface MainScreenLayoutProps {
   usage: Usage;
   stockInputTokens: number;
   costUSD: number;
+  /** 10.3：会话累计缓存节省金额（美元） */
+  cacheSavingsUSD?: number;
   costLimit: number;
   contextPercent: number;
   model: string;
@@ -124,6 +126,7 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
   usage,
   stockInputTokens,
   costUSD,
+  cacheSavingsUSD,
   costLimit,
   contextPercent,
   model,
@@ -267,6 +270,7 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
           usage={usage}
           stockInputTokens={stockInputTokens}
           costUSD={costUSD}
+          cacheSavingsUSD={cacheSavingsUSD}
           costLimit={costLimit}
           contextPercent={contextPercent}
           model={model}

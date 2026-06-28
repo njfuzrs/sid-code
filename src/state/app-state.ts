@@ -66,6 +66,8 @@ export type AppState = DeepImmutable<{
   // ═══ 会话统计（替代 SessionContext） ═══
   usage: Usage;
   costUSD: number;
+  /** 10.3：会话累计缓存节省金额（美元） */
+  cacheSavingsUSD: number;
   costLimit: number;
   contextPercent: number;
 
@@ -114,6 +116,7 @@ export function getDefaultAppState(): AppState {
 
     usage: { inputTokens: 0, outputTokens: 0 },
     costUSD: 0,
+    cacheSavingsUSD: 0,
     costLimit: 0,
     contextPercent: 0,
 

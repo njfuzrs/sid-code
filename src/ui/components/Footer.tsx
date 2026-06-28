@@ -102,6 +102,8 @@ interface FooterProps {
   contextPercent: number;
   model: string;
   scrollPercent?: number;
+  /** 10.3：会话累计缓存节省金额（美元） */
+  cacheSavingsUSD?: number;
 }
 
 export const Footer = React.memo(function Footer(props: FooterProps) {
@@ -174,6 +176,16 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
 
   // 费用
   addCol("cost", "费用", <Text color={data.cost.color ?? itemColor}>{data.cost.text}</Text>, stringWidth(data.cost.text));
+
+  // 10.3：缓存节省金额（节省 < $0.01 时由 hook 返回 null，不显示该列）
+  if (data.cacheSavings) {
+    addCol(
+      "savings",
+      "节省",
+      <Text color={data.cacheSavings.color}>{data.cacheSavings.text}</Text>,
+      stringWidth(data.cacheSavings.text),
+    );
+  }
 
   // 上下文（没有任何用户交互时隐藏，避免系统开销造成虚假百分比）
   if (data.context) {

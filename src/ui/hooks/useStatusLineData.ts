@@ -172,6 +172,8 @@ export interface StatusLineData {
   isVim: boolean;
   tokenText: string;
   cache: { rate: number; text: string; color: string } | null;
+  /** 10.3：缓存节省金额（null = 节省为 0 或不足阈值，不渲染该列） */
+  cacheSavings: { text: string; color: string } | null;
   cost: { text: string; color: string | undefined };
   context: { text: string; color: string } | null;
   model: string;
@@ -195,6 +197,8 @@ export interface StatusLineInput {
   contextPercent: number;
   model: string;
   scrollPercent?: number;
+  /** 10.3：会话累计缓存节省金额（美元） */
+  cacheSavingsUSD?: number;
 }
 
 /**
@@ -218,6 +222,7 @@ export function useStatusLineData(input: StatusLineInput): StatusLineData {
     contextPercent,
     model,
     scrollPercent,
+    cacheSavingsUSD,
   } = input;
 
   return useMemo<StatusLineData>(() => {
@@ -234,6 +239,7 @@ export function useStatusLineData(input: StatusLineInput): StatusLineData {
       isVim: !!settings.vimMode,
       tokenText: `${TOKEN_IN} ${formatLargeNumber(stockInputTokens)}  ${TOKEN_OUT} ${formatLargeNumber(usage.outputTokens)}`,
       cache: deriveCacheMetrics(usage, model, config.availableModels),
+      cacheSavings: deriveCacheSavings(cacheSavingsUSD ?? 0),
       cost: deriveCost(costUSD, costLimit, model),
       // 没有任何用户交互（API 调用）时不显示上下文占用，避免系统开销造成虚假百分比
       context:
@@ -265,5 +271,6 @@ export function useStatusLineData(input: StatusLineInput): StatusLineData {
     contextPercent,
     model,
     scrollPercent,
+    cacheSavingsUSD,
   ]);
 }
