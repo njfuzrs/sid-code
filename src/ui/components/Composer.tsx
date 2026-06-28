@@ -151,6 +151,8 @@ interface ComposerProps {
   queuedCount?: number;
   /** Ctrl+D（输入框为空时）请求退出的回调，透传给 InputArea。 */
   onExitRequest?: () => void;
+  /** 空会话时 EmptyLogo 已显示快捷键提示，Composer 不再重复 */
+  hideShortcutsHint?: boolean;
 }
 
 export const Composer: React.FC<ComposerProps> = ({
@@ -160,6 +162,7 @@ export const Composer: React.FC<ComposerProps> = ({
   cwd,
   queuedCount = 0,
   onExitRequest,
+  hideShortcutsHint = false,
 }) => {
   const { stdout } = useStdout();
   const termWidth = stdout.columns || DEFAULT_TERM_WIDTH;
@@ -292,7 +295,7 @@ export const Composer: React.FC<ComposerProps> = ({
               <ContextUsageDisplay contextPercent={session.contextPercent} />
             </Box>
           )}
-          {isIdle && <ShortcutsHint expanded={shortcutsHelpVisible} />}
+          {isIdle && !hideShortcutsHint && <ShortcutsHint expanded={shortcutsHelpVisible} />}
         </Box>
       </Box>
 

@@ -25,6 +25,7 @@ import {
   generateSessionMemoryAttachment,
   generateSkillListingAttachment,
   generateDenyRulesAttachment,
+  DANGEROUS_dynamicAttachment,
 } from "./attachments.ts";
 import { getLogger } from "../debug/logger.ts";
 
@@ -204,7 +205,7 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
   ];
 
   if (ctx.tools.length > 0) {
-    coreParts.push(buildToolGuideSection(ctx.tools));
+    coreParts.push(buildToolGuideSection(ctx.tools, { excludeMcp: true }));
   }
 
   coreParts.push(buildConstraintsSection(ctx.preferredLanguage));
@@ -243,6 +244,18 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
   // 当前日期（P0：易变值移出静态区，消除跨天缓存击穿）。
   // priority=DATE_CONTEXT(2) 让它稳定处于动态区最前部，紧跟静态前缀。
   attachments.push(generateDateAttachment(new Date().toISOString().split("T")[0]));
+
+  // G11：MCP 工具列表（动态区）。MCP 工具随 server 连接/断开动态变化，
+  // 放入静态区会击穿 prompt cache 前缀，单独作为动态附件注入。
+  const mcpToolSection = buildMcpToolGuideSection(ctx.tools);
+  if (mcpToolSection) {
+    attachments.push(DANGEROUS_dynamicAttachment(
+      "mcpToolGuide",
+      mcpToolSection,
+      PRIORITY.DATE_CONTEXT + 1,  // 优先级 3，紧跟日期
+      "MCP 工具列表随 server 连接/断开动态变化，放入静态区会击穿 prompt cache 前缀",
+    ));
+  }
 
   // 权限模式提示词
   if (ctx.permissionMode && ctx.permissionMode !== "default") {
@@ -496,10 +509,14 @@ function buildEnvironmentSection(workingDir?: string): string {
 }
 
 /** 构建工具使用指南部分 */
-function buildToolGuideSection(tools: Tool[]): string {
+function buildToolGuideSection(tools: Tool[], options?: { excludeMcp?: boolean }): string {
   // P1a：工具列表只保留首句摘要（一行简介），完整 description 已在 tools 数组里。
   // 消除"system prompt toolList + tools 数组"的双重注入（实测省 ~12k 字符 / ~4k token）。
-  const toolList = tools.map((t) => {
+  const filtered = options?.excludeMcp
+    ? tools.filter((t) => !t.name().startsWith("mcp__"))
+    : tools;
+
+  const toolList = filtered.map((t) => {
     const desc = t.description();
     // 取首句：第一个句号/换行/分号前的内容，或截取前 80 字符
     const firstSentence = desc.split(/[。\n;；]/)[0].trim();
@@ -509,7 +526,7 @@ function buildToolGuideSection(tools: Tool[]): string {
 
   // 收集工具自带的使用指南
   const customGuides: string[] = [];
-  for (const tool of tools) {
+  for (const tool of filtered) {
     if (tool.usageGuide) {
       const guide = tool.usageGuide();
       if (guide) {
@@ -550,6 +567,35 @@ ${customGuides.length > 0 ? "\n" + customGuides.join("\n") : ""}
 - **方案不确定先规划**: 当实现路径存在真实架构歧义（多种合理方案、需求不明确、高风险重构）时，用 enter_plan_mode 先对齐方案再编码。日常任务拿不准时倾向于直接开始工作，遇到具体选择点再问用户——「先动手再问」比「每个任务都 plan」更高效
 - **大任务先分治**: 当任务可拆成多个相对独立的子方向（如系统排查要过多个模块、审计要查多个维度、需要同时搜索多处来源）时，用 sub_agent 工具分派多个子代理并行深挖，每个子代理有独立上下文、互不污染。判据：子方向 ≥ 3 个，或单个方向读起来会撑爆主上下文时，优先分治，而不是自己一个个串行读。类型选择：只读探查派 explore，要改文件 / 跑命令派 task，验证某个结论是否成立派 verify。注意这与上面「并行调只读工具」是两回事——并行 read/grep 只是同一上下文里多发几个只读调用，分治是把整段子任务连同其上下文交给独立子代理；方向多、单方向重时用分治。子代理内部不能再派子代理，分治只能由主线程发起
 </tool-guide>`;
+}
+
+/**
+ * G11：构建 MCP 工具列表（动态区）。
+ * MCP 工具随 server 连接/断开动态变化，放入静态区会击穿 prompt cache 前缀。
+ * 单独输出为动态附件，与内置工具列表（静态区）分离。
+ */
+function buildMcpToolGuideSection(tools: Tool[]): string | null {
+  const mcpTools = tools.filter((t) => t.name().startsWith("mcp__"));
+  if (mcpTools.length === 0) return null;
+
+  const toolList = mcpTools.map((t) => {
+    const desc = t.description();
+    const firstSentence = desc.split(/[。\n;；]/)[0].trim();
+    const brief = firstSentence.length > 80 ? firstSentence.slice(0, 80) + "…" : firstSentence;
+    return `  - ${t.name()}: ${brief}`;
+  }).join("\n");
+
+  const customGuides: string[] = [];
+  for (const tool of mcpTools) {
+    if (tool.usageGuide) {
+      const guide = tool.usageGuide();
+      if (guide) {
+        customGuides.push(`\n### ${tool.name()} 工具使用指南\n${guide}`);
+      }
+    }
+  }
+
+  return `<mcp-tools>\n## MCP 工具\n以下工具来自已连接的 MCP Server（动态变化）：\n\n${toolList}${customGuides.length > 0 ? "\n" + customGuides.join("\n") : ""}\n</mcp-tools>`;
 }
 
 /**

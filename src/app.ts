@@ -44,6 +44,8 @@ import { clearPromptCache } from "./config/system-prompt.ts";
 import { getLogger, getMemoryMonitor, getSessionMetrics } from "./debug/index.ts";
 import { QueryEngine } from "./query/engine.ts";
 import { resetCacheDetection, clearCacheBreaks } from "./api/cache-detection.ts";
+import { resetTTLLatch } from "./api/cache-ttl-latch.ts";
+import { resetBetaHeaders } from "./api/beta-header-latch.ts";
 import { resetCircuitBreaker } from "./query/auto-compact.ts";
 import { HookSystem } from "./hook/system.ts";
 import {
@@ -702,6 +704,9 @@ export class App {
         clearCacheBreaks();
         // 压缩熔断器重置：旧会话的失败记录不应阻止新会话的合理压缩
         resetCircuitBreaker();
+        // G5/G7：TTL 决策和 beta header 集合不应跨 /clear 泄漏
+        resetTTLLatch();
+        resetBetaHeaders();
         resetSyncState();
         updateState(getConversationClearedPatch());
         break;
@@ -3125,6 +3130,9 @@ export class App {
             clearCacheBreaks();
             // 压缩熔断器重置：旧会话的失败记录不应阻止新会话的合理压缩
             resetCircuitBreaker();
+            // G5/G7：TTL 决策和 beta header 集合不应跨 /clear 泄漏
+            resetTTLLatch();
+            resetBetaHeaders();
             lastSyncedCount = 0;
             historyIdCounter = 0;
             activeStatusMessages.clear();

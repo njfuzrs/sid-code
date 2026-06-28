@@ -196,3 +196,41 @@ describe("中断记录环形缓冲 + 健康度建议（D3）", () => {
     expect(getRecentCacheBreaks()).toEqual([]);
   });
 });
+
+describe("G1 suppressNext 抑制机制", () => {
+  test("notifyCompaction 抑制下一次检测", () => {
+    const d = new CacheBreakDetector();
+    d.checkResponse(params({ cacheReadTokens: 50000 }));
+    d.notifyCompaction();
+    // 骤降但应被抑制
+    const report = d.checkResponse(params({ cacheReadTokens: 5000 }));
+    expect(report).toBeNull();
+  });
+
+  test("notifyCacheDeletion 抑制下一次检测", () => {
+    const d = new CacheBreakDetector();
+    d.checkResponse(params({ cacheReadTokens: 50000 }));
+    d.notifyCacheDeletion(3);
+    const report = d.checkResponse(params({ cacheReadTokens: 5000 }));
+    expect(report).toBeNull();
+  });
+
+  test("抑制仅作用一次，下次恢复正常检测", () => {
+    const d = new CacheBreakDetector();
+    d.checkResponse(params({ cacheReadTokens: 50000 }));
+    d.notifyCompaction();
+    // 第一次：被抑制，基线更新为 30000
+    d.checkResponse(params({ cacheReadTokens: 30000 }));
+    // 第二次：无抑制，30000 → 5000 骤降应报告
+    const report = d.checkResponse(params({ cacheReadTokens: 5000 }));
+    expect(report).not.toBeNull();
+  });
+
+  test("未调用 notify 时正常检测不受影响", () => {
+    const d = new CacheBreakDetector();
+    d.checkResponse(params({ cacheReadTokens: 50000 }));
+    // 不调 notify，直接骤降 → 应检测到
+    const report = d.checkResponse(params({ cacheReadTokens: 5000 }));
+    expect(report).not.toBeNull();
+  });
+});

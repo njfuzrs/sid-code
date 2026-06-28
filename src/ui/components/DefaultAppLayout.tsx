@@ -176,7 +176,7 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
       {/* 消息区域：直接作为根 Box 子元素，ScrollableList 自身 flexGrow=1 会填充剩余空间 */}
       {isEmpty ? (
         <Box flexGrow={1} flexDirection="column" justifyContent="center" alignItems="center" width={termWidth}>
-          <EmptyLogo termWidth={termWidth} />
+          <EmptyLogo termWidth={termWidth} cwd={cwd} gitBranch={gitBranch} model={model} />
         </Box>
       ) : (
         <MainContent
@@ -264,6 +264,7 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
               cwd={cwd}
               queuedCount={queuedCount}
               onExitRequest={onExitRequest}
+              hideShortcutsHint={isEmpty}
             />
           )}
         </Box>

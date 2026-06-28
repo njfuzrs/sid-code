@@ -176,7 +176,7 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
         {/* 留白区：瞬态块与输入框，块间恒为 1 行（gap）；空块返回 null 不产生幻影间距 */}
         <Box flexDirection="column" gap={1}>
           {/* 空会话：欢迎屏（首条消息到达后即随 Static 滚走） */}
-          {isEmpty ? <EmptyLogo termWidth={termWidth} /> : null}
+          {isEmpty ? <EmptyLogo termWidth={termWidth} cwd={cwd} gitBranch={gitBranch} model={model} /> : null}
 
           {/* v2：流式思考区域 — 独立于 streamingText（对标 Claude Code）
               思考在正文之前渲染（模型先思考后回答），顺序与语义一致。
@@ -255,6 +255,7 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
               cwd={cwd}
               queuedCount={queuedCount}
               onExitRequest={onExitRequest}
+              hideShortcutsHint={isEmpty}
             />
           )}
         </Box>
