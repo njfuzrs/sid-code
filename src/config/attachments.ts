@@ -26,6 +26,12 @@ export interface Attachment {
 export const PRIORITY = {
   /** 关键系统提醒 */
   CRITICAL_REMINDER: 1,
+  /**
+   * 当前日期等每日变化的易变值。必须落在 DYNAMIC_BOUNDARY 之后（动态区），
+   * 否则跨天首次请求会击穿静态前缀缓存（cache_creation 全价重算）。
+   * 放在动态区最前部，紧跟静态区，注意力位置最优。
+   */
+  DATE_CONTEXT: 2,
   /** Plan/Delegate 模式提醒 */
   MODE_REMINDER: 5,
   /** Skill 摘要列表（在 CLAUDE.md 之前，确保模型能发现 Skill） */
@@ -55,6 +61,53 @@ export const PRIORITY = {
   /** 文件提示词 */
   FILE_PROMPT: 60,
 } as const;
+
+// ─── G6：DANGEROUS_ 命名约定守护缓存正确性边界 ───
+
+/**
+ * 系统提示词附件的缓存属性声明。
+ * - stable: 内容跨请求/跨会话稳定（可进静态区，享受长 TTL 缓存）
+ * - dynamic: 内容每请求/每天可能变化（必须放 DYNAMIC_BOUNDARY 之后，否则击穿缓存）
+ */
+export interface SystemPromptAttachment extends Attachment {
+  /** 缓存稳定性标记——dynamic 意味着放入静态区会破坏 prompt cache */
+  cacheStability: "stable" | "dynamic";
+}
+
+/**
+ * G6：标记一个附件为"会破坏缓存的动态内容"。
+ *
+ * 使用此函数创建的附件将被放入 DYNAMIC_BOUNDARY 之后（动态区），
+ * 每次请求内容可能不同。开发者必须传入 _reason 说明为什么需要动态。
+ *
+ * 命名约定：DANGEROUS_ 前缀表示"有隐性代价（击穿缓存）"，reviewer 看到要重点审视。
+ * 返回的 Attachment 带 cacheStability: "dynamic" 标记，system-prompt.ts 据此分拣。
+ *
+ * @param type 附件类型标识
+ * @param content 附件内容
+ * @param priority 优先级
+ * @param _reason 运行时不使用，但强制调用者写下"为什么这段必须是动态的"理由（审计用）
+ */
+export function DANGEROUS_dynamicAttachment(
+  type: string,
+  content: string,
+  priority: number,
+  _reason: string,
+): SystemPromptAttachment {
+  return { type, content, priority, cacheStability: "dynamic" };
+}
+
+/**
+ * 创建一个稳定附件（可安全进入静态缓存区）。
+ * 与 DANGEROUS_dynamicAttachment 对称，不需要 reason——默认是安全的。
+ */
+export function stableAttachment(
+  type: string,
+  content: string,
+  priority: number,
+): SystemPromptAttachment {
+  return { type, content, priority, cacheStability: "stable" };
+}
 
 /**
  * 权限模式描述映射。
@@ -270,6 +323,25 @@ export function generateDiagnosticsAttachment(diagnostics: string): Attachment {
     content: `<diagnostics>\n${diagnostics}\n</diagnostics>`,
     priority: PRIORITY.DIAGNOSTICS,
   };
+}
+
+/**
+ * 生成当前日期附件（动态区）。
+ *
+ * 日期每天变化，绝不能进静态核心区（coreParts）——否则跨天首次请求会让整个静态
+ * 前缀缓存失效、cache_creation 全价重算。本附件经 DYNAMIC_BOUNDARY 之后注入，
+ * 跨天只击穿动态区（本就是会话内缓存），静态前缀缓存得以跨会话保全。
+ *
+ * @param date YYYY-MM-DD 格式日期字符串（由调用方传入，便于测试与避免本模块直接读时钟）。
+ */
+export function generateDateAttachment(date: string): Attachment {
+  // G6：日期每天变化，放进静态区会跨天击穿缓存。用 DANGEROUS_ 工厂标记为动态。
+  return DANGEROUS_dynamicAttachment(
+    "date",
+    `<current-date>\n当前日期: ${date}\n</current-date>`,
+    PRIORITY.DATE_CONTEXT,
+    "日期每天变化，放入静态区会击穿 prompt cache 前缀",
+  );
 }
 
 /**

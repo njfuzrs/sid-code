@@ -250,6 +250,16 @@ export interface QueryDeps {
    * 内部判断主代理本轮是否已写入记忆（互斥），未写则跑 forked agent 提取。可选。
    */
   extractMemories?: () => Promise<void>;
+  /**
+   * G2：获取 cachedMicrocompact 状态机（provider 感知的缓存友好压缩）。
+   * queryLoop 每轮发送前调用 cachedMicrocompact(messages, {state, ...})，
+   * 将产出的 pendingCacheEdits 注入 sendParams.cacheEdits。可选——未注入则跳过。
+   */
+  getCachedMicrocompactState?: () => import("./compact/cached-microcompact.ts").CachedMicrocompactState | undefined;
+  /**
+   * G2：当前 provider 名称（用于 cachedMicrocompact 路径判断）。可选。
+   */
+  getProviderName?: () => string;
 }
 
 // ─── QueryEngine 配置 ───

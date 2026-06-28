@@ -283,9 +283,17 @@ export class Registry {
   /** 获取非延迟工具的定义（用于初始 prompt，减少 token 消耗） */
   activeDefinitions(options?: AssembleOptions): ToolDefinition[] {
     const tools = options ? this.assembleToolPool(options) : this.all();
-    return tools
+    const defs = tools
       .filter((t) => !this.isToolDeferred(t))
       .map(toolToDefinition);
+    // 10.2：与 definitions() 保持一致的字典序排列，杜绝注册顺序导致的 prompt cache 失效。
+    // StructuredOutput 始终排最后（其动态 schema 不影响前面工具的缓存前缀匹配）。
+    defs.sort((a, b) => {
+      if (a.name === "StructuredOutput") return 1;
+      if (b.name === "StructuredOutput") return -1;
+      return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+    });
+    return defs;
   }
 
   /**

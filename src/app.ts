@@ -406,6 +406,15 @@ export class App {
           | undefined;
         return regTool?.getLedger() ?? null;
       },
+      // G2：暴露 cachedMicrocompact 状态机给 queryLoop，让主循环每轮可产出 cache_edits。
+      getCachedMicrocompactState: () => {
+        if (!this.cachedMicrocompactState) {
+          const { createCachedMicrocompactState } = require("./query/compact/cached-microcompact.ts");
+          this.cachedMicrocompactState = createCachedMicrocompactState();
+        }
+        return this.cachedMicrocompactState ?? undefined;
+      },
+      getProviderName: () => this.provider.name(),
     });
 
     // P0-1：把子代理 usage 归集 sink 注入到 SubAgentTool / CustomAgentTool。
@@ -951,6 +960,18 @@ export class App {
         if (projectRules) {
           log.debug("APP", `加载 CLAUDE.md 规则 (${projectRules.rawContent.length} 字符)`);
           this.applyProjectRules(projectRules);
+        }
+
+        // P1-UI：预填充 JIT 已加载文件列表，避免后续 discoverContext 重复注入首轮已含的 CLAUDE.md。
+        // loadAllCLAUDEmd 加载了根 CLAUDE.md（+ 全局），JIT 不知道，首次触达任何 src/ 文件时会
+        // 向上找到根 CLAUDE.md 再注入一次。预标记消除此重复。
+        const { findCLAUDEmd, findGlobalCLAUDEmd } = await import("./config/rules.ts");
+        const rootClaudeMd = await findCLAUDEmd(process.cwd());
+        const globalClaudeMd = findGlobalCLAUDEmd();
+        const preloaded = [rootClaudeMd, globalClaudeMd].filter(Boolean) as string[];
+        if (preloaded.length > 0) {
+          this.jitContextMgr.markLoaded(preloaded);
+          log.debug("APP", `JIT 预标记 ${preloaded.length} 个已加载 CLAUDE.md`);
         }
       }
 

@@ -16,6 +16,7 @@ import {
   generateGitStatusAttachment,
   generatePermissionModeAttachment,
   generateDiagnosticsAttachment,
+  generateDateAttachment,
   generateIDESelectionAttachment,
   generateIDEMentionAttachment,
   generateTodoListAttachment,
@@ -238,6 +239,10 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
 
   // 2. 收集动态附件
   const attachments: Attachment[] = [];
+
+  // 当前日期（P0：易变值移出静态区，消除跨天缓存击穿）。
+  // priority=DATE_CONTEXT(2) 让它稳定处于动态区最前部，紧跟静态前缀。
+  attachments.push(generateDateAttachment(new Date().toISOString().split("T")[0]));
 
   // 权限模式提示词
   if (ctx.permissionMode && ctx.permissionMode !== "default") {
@@ -464,7 +469,8 @@ function buildEnvironmentSection(workingDir?: string): string {
   const homeDir = homedir();
   const os = platform();
   const shell = process.env.SHELL || "unknown";
-  const date = new Date().toISOString().split("T")[0]; // YYYY-MM-DD
+  // 注意：当前日期【刻意不在此处】注入。日期每天变化，若放进静态核心区会跨天击穿
+  // 静态前缀缓存。日期改由 generateDateAttachment 注入到 DYNAMIC_BOUNDARY 之后的动态区。
 
   return `
 <environment>
@@ -473,14 +479,21 @@ function buildEnvironmentSection(workingDir?: string): string {
 - 用户主目录: ${homeDir}
 - 操作系统: ${os}
 - Shell: ${shell}
-- 当前日期: ${date}
 - 路径提示: 如果读取文件时报告"文件不存在"，请先检查路径是否为绝对路径、是否与上述工作目录/主目录一致，然后重试。不要预设"文件已被删除"。
 </environment>`;
 }
 
 /** 构建工具使用指南部分 */
 function buildToolGuideSection(tools: Tool[]): string {
-  const toolList = tools.map((t) => `  - ${t.name()}: ${t.description()}`).join("\n");
+  // P1a：工具列表只保留首句摘要（一行简介），完整 description 已在 tools 数组里。
+  // 消除"system prompt toolList + tools 数组"的双重注入（实测省 ~12k 字符 / ~4k token）。
+  const toolList = tools.map((t) => {
+    const desc = t.description();
+    // 取首句：第一个句号/换行/分号前的内容，或截取前 80 字符
+    const firstSentence = desc.split(/[。\n;；]/)[0].trim();
+    const brief = firstSentence.length > 80 ? firstSentence.slice(0, 80) + "…" : firstSentence;
+    return `  - ${t.name()}: ${brief}`;
+  }).join("\n");
 
   // 收集工具自带的使用指南
   const customGuides: string[] = [];

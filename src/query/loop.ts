@@ -69,8 +69,10 @@ import { buildPermissionModeReminder, PERMISSION_MODE_REMINDER_INTERVAL } from "
 import { buildContradictionReminder, buildDeliveryGateReminder } from "./hypothesis-ledger.ts";
 import {
   checkResponseForCacheBreak,
+  recordPromptState,
   recordCacheBreak,
   formatCacheBreakReport,
+  notifyCompaction,
 } from "../api/cache-detection.ts";
 import type {
   QueryLoopYield,
@@ -256,7 +258,7 @@ export async function* queryLoop(
           let collapsed = false;
           if (deps.contextCollapse) {
             try {
-              const ratioAfterPipeline = estimateUsageRatioForCollapse(ctxMgr, contextMax, toolCount);
+              const ratioAfterPipeline = ctxMgr.estimateTokens(toolCount) / contextMax;
               collapsed = await deps.contextCollapse(ratioAfterPipeline);
               if (collapsed) {
                 log.info("QUERY_LOOP", "Context Collapse 成功，跳过 autoCompact");
@@ -552,6 +554,49 @@ export async function* queryLoop(
     // ─── 发送请求（含上下文溢出 + prompt-too-long 自动恢复）───
     let stream: AsyncIterable<import("../llm/types.ts").StreamEvent>;
     const signal = deps.getAbortSignal();
+
+    // ─── G2：cachedMicrocompact — 缓存友好压缩产出 cache_edits ───
+    // 每轮发送前，对当前消息执行供应商感知的"缓存友好 microcompact"：
+    // - Anthropic + 缓存温热 → 不改消息内容（保持前缀字节一致 → cache hit），产出 cache_edits
+    // - 其它情况 → 跳过（由 autoCompact pipeline 处理）
+    // 产出的 pendingCacheEdits 注入 sendParams.cacheEdits，由 anthropic.ts 携带到请求体。
+    try {
+      const microState = deps.getCachedMicrocompactState?.();
+      if (microState && deps.getProviderName?.() === "anthropic") {
+        const { cachedMicrocompact } = await import("./compact/cached-microcompact.ts");
+        const result = cachedMicrocompact(sendParams.messages, {
+          providerName: "anthropic",
+          cacheWarm: true,
+          state: microState,
+          emitCacheEdits: !process.env.SID_DISABLE_CACHE_EDITS,
+        });
+        if (result.pendingCacheEdits && result.pendingCacheEdits.edits.length > 0) {
+          sendParams.cacheEdits = result.pendingCacheEdits.edits;
+          log.debug("CACHE_EDITS", `注入 ${sendParams.cacheEdits.length} 条 cache_edits`);
+          // G1：cache_edits 删除后下次 cache_read 可能下降——通知检测器抑制
+          const { notifyCacheDeletion } = await import("../api/cache-detection.ts");
+          notifyCacheDeletion(sendParams.cacheEdits.length, "main");
+        }
+      }
+    } catch (err: any) {
+      log.debug("CACHE_EDITS", `cachedMicrocompact 失败（非阻断）: ${err?.message?.slice(0, 100)}`);
+    }
+
+    // ─── G9：请求前快照 prompt 状态（与响应后 checkResponse 配对的两阶段检测） ───
+    // 必须在发送前记录，否则检测器无基线可比，cache break 归因永远为空。
+    // agentId="main"：主循环源，与子代理（独立上下文）的基线隔离（G10）。
+    try {
+      recordPromptState({
+        cacheReadTokens: 0, // 快照阶段不关心 token，仅记录状态指纹
+        systemPrompt: typeof sendParams.system === "string" ? sendParams.system : "",
+        toolSchemas: (sendParams.tools ?? []).map((t) => ({ ...t, name: t.name })),
+        model: config.model,
+        messageCount: sendParams.messages.length,
+        betaHeaders: [],
+        agentId: "main",
+      });
+    } catch { /* 快照失败绝不影响主循环 */ }
+
     try {
       stream = deps.sendWithRetry(sendParams, signal);
     } catch (err: any) {
@@ -562,6 +607,7 @@ export async function* queryLoop(
         if (compactResult.success) {
           state.hasAttemptedReactiveCompact = true;
           state.transition = { type: "reactive_compact" };
+          notifyCompaction("main"); // G1：抑制紧接的 cache break 检测
           yield { kind: "compact" };
           yield { kind: "system", level: "info", text: `响应式压缩: ${compactResult.messageCountBefore} → ${compactResult.messageCountAfter} 条消息` };
           continue; // 重试
@@ -576,6 +622,7 @@ export async function* queryLoop(
         stream = deps.sendWithRetry(sendParams, signal);
       } else {
         log.warn("QUERY_LOOP", "上下文溢出且无法调整 maxTokens，触发自动压缩");
+        notifyCompaction("main"); // G1：抑制紧接的 cache break 检测
         await deps.autoCompact();
         yield { kind: "compact" };
         state.transition = { type: "context_overflow_retry" };
@@ -659,6 +706,7 @@ export async function* queryLoop(
         if (compactResult.success) {
           state.hasAttemptedReactiveCompact = true;
           state.transition = { type: "reactive_compact" };
+          notifyCompaction("main"); // G1：抑制紧接的 cache break 检测
           yield { kind: "compact" };
           yield { kind: "system", level: "info", text: `响应式压缩: ${compactResult.messageCountBefore} → ${compactResult.messageCountAfter} 条消息` };
           continue;
@@ -668,6 +716,7 @@ export async function* queryLoop(
 
       // prompt-too-long 兜底：autoCompact 后重试
       if (isPromptTooLongError(err)) {
+        notifyCompaction("main"); // G1：抑制紧接的 cache break 检测
         await deps.autoCompact();
         yield { kind: "compact" };
         state.transition = { type: "context_overflow_retry" };
@@ -732,6 +781,9 @@ export async function* queryLoop(
         systemPrompt: typeof sendParams.system === "string" ? sendParams.system : "",
         toolSchemas: (sendParams.tools ?? []).map((t) => ({ ...t, name: t.name })),
         model: config.model,
+        messageCount: sendParams.messages.length,
+        betaHeaders: [],
+        agentId: "main",
       });
       if (breakReport) {
         recordCacheBreak({

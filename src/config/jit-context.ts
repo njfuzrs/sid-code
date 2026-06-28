@@ -142,6 +142,17 @@ export class JitContextManager {
     this.loadedContexts.clear();
   }
 
+  /**
+   * 预填充已加载的 CLAUDE.md 路径（避免 JIT 重复发现首轮已注入的文件）。
+   * app 初始化时调用：把 loadAllCLAUDEmd 已加载的文件路径标记为"已处理"，
+   * 后续 discoverContext 向上查找时遇到这些文件会跳过。
+   */
+  markLoaded(filePaths: string[]): void {
+    for (const p of filePaths) {
+      this.loadedFiles.add(p.toLowerCase());
+    }
+  }
+
   /** 获取已加载的文件数量（用于调试） */
   getLoadedCount(): number {
     return this.loadedFiles.size;

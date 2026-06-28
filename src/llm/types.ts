@@ -281,6 +281,13 @@ export interface SendParams {
     };
   };
   /**
+   * G2：cache_edits 删除指令（Anthropic 私有字段）。
+   * cachedMicrocompact 走缓存友好路径时产出的"服务器侧删除旧工具结果"指令，
+   * 由 anthropic.ts 在 provider.name()==="anthropic" 时携带到请求体顶层 `cache_edits`。
+   * 其它 provider 完全忽略（不下发）。不传则不下发。
+   */
+  cacheEdits?: { type: "delete"; tool_use_id: string }[];
+  /**
    * 流内诊断遥测回调（由 fallback.ts 注入，provider 在 stream-guard 包装时转发）。
    * 让 stream_stall / stream_idle_timeout / stream_completed 等流内信号能进入
    * 统一的 RetryTelemetry 通道（events.jsonl），被 trace-digest.ts 消费。

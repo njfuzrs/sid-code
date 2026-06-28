@@ -28,7 +28,7 @@ export class HelpCommand implements Command {
       "  /model [name]    - 显示/切换模型",
       "  /model list      - 显示所有可用模型",
       "  /cost            - 显示 token 用量和费用",
-      "  /cache           - 缓存命中率/省钱长期统计（--period|--model|--breaks|--prune）",
+      "  /cache           - 缓存命中率/省钱长期统计（--period|--model|--breaks|--history|--prune）",
       "  /trace [id]      - 排查会话:轨迹嚼碎成结构化摘要（--list|--full,默认当前会话）",
       "  /compact         - 压缩对话历史",
       "  /btw <问题>      - 旁路提问：基于当前上下文快速回答，不打断主对话",
@@ -1256,7 +1256,7 @@ function sparkline(values: number[]): string {
 export class CacheCommand implements Command {
   name() { return "cache"; }
   aliases() { return []; }
-  description() { return "显示缓存命中率/省钱长期统计（--period day|week|month --model <name> --breaks --prune <N>）"; }
+  description() { return "显示缓存命中率/省钱长期统计（--period day|week|month --model <name> --breaks --history --prune <N>）"; }
 
   async execute(args: string, _ctx: AppContext): Promise<CommandResult> {
     const { aggregateUsage, aggregateOverall } = await import("../telemetry/usage-aggregator.ts");
@@ -1270,6 +1270,7 @@ export class CacheCommand implements Command {
     let granularity: "day" | "week" | "month" = "day";
     let model: string | undefined;
     let showBreaks = false;
+    let showHistory = false;
     let pruneN: number | undefined;
     for (let i = 0; i < tokens.length; i++) {
       const t = tokens[i];
@@ -1280,6 +1281,8 @@ export class CacheCommand implements Command {
         model = tokens[++i];
       } else if (t === "--breaks") {
         showBreaks = true;
+      } else if (t === "--history") {
+        showHistory = true;
       } else if (t === "--prune" && tokens[i + 1]) {
         pruneN = parseInt(tokens[++i], 10);
       }
@@ -1313,6 +1316,42 @@ export class CacheCommand implements Command {
       if (advice.length > 0) {
         lines.push("", "健康度建议:");
         for (const a of advice) lines.push(`  ⚠ ${a}`);
+      }
+      return { kind: "message", message: lines.join("\n") };
+    }
+
+    // ── --history：跨会话缓存中断遥测历史聚合（G13） ──
+    if (showHistory) {
+      const { queryCacheBreakHistory, summarizeCacheBreakHistory } =
+        await import("../telemetry/cache-telemetry.ts");
+      const recent = queryCacheBreakHistory(20);
+      const summary = summarizeCacheBreakHistory(500);
+      const lines: string[] = ["缓存中断历史（跨会话，最近 20 条）:"];
+      if (recent.length === 0) {
+        lines.push("  （暂无历史中断记录。中断检测到时落 ~/.sid-code/cache-breaks.jsonl）");
+        return { kind: "message", message: lines.join("\n") };
+      }
+      for (const e of recent) {
+        const time = new Date(e.ts * 1000).toLocaleString();
+        lines.push(`  [${time}] ${e.model}: 下降 ${e.dropPercent}% (${e.dropTokens} tok): ${e.changes.join("; ")}`);
+      }
+      const cats = Object.entries(summary.byCategory).sort(([, a], [, b]) => b - a);
+      if (cats.length > 0) {
+        const labelOf: Record<string, string> = {
+          model: "模型切换",
+          system_prompt: "System prompt 变化",
+          tool_order: "工具顺序变化",
+          tools: "工具增删改",
+          cache_policy: "缓存策略变化",
+          beta_headers: "Beta headers 变化",
+          compact: "压缩(消息骤减)",
+          ttl_expiry: "TTL 过期",
+          unknown: "未知",
+        };
+        lines.push("", `归因分布（最近 ${summary.total} 条中断）:`);
+        for (const [cat, n] of cats) {
+          lines.push(`  ${labelOf[cat] ?? cat}: ${n} 次`);
+        }
       }
       return { kind: "message", message: lines.join("\n") };
     }

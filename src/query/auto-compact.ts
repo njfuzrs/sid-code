@@ -281,6 +281,13 @@ async function postCompactReattachAndNotify(
     } catch { /* 忽略 */ }
   }
 
+  // G1：压缩重组消息历史后，下一次请求 cache_read 必然骤降（前缀变了），这是预期的——
+  // 通知检测器抑制紧接的一次检测，避免误报 cache break 淹没真实告警。
+  try {
+    const { notifyCompaction } = await import("../api/cache-detection.ts");
+    notifyCompaction("main");
+  } catch { /* 忽略 */ }
+
   // §4.1：质量校验（覆盖率）
   let coverage = 1;
   try {

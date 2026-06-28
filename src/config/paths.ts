@@ -100,6 +100,8 @@ export const sidPaths = {
   telemetry: () => sidHomePath("telemetry"),
   /** 用量账本（缓存命中长期统计底座，append-only，默认开、不轮转） */
   usageLedger: () => sidHomePath("usage-ledger.jsonl"),
+  /** 缓存中断遥测（G13，append-only，跨会话缓存健康度历史） */
+  cacheBreaks: () => sidHomePath("cache-breaks.jsonl"),
 
   // ── 计划 ──
   plans: () => sidHomePath("plans"),

@@ -103,6 +103,26 @@ export function deriveCacheMetrics(
 }
 
 /**
+ * 10.3：缓存节省金额展示派生。
+ * 展示本次会话累计因缓存命中而节省的美元金额，比单纯命中率更直观有说服力。
+ * 返回 null 表示节省为 0 或无数据（不显示）。
+ */
+export function deriveCacheSavings(
+  cacheSavingsUSD: number,
+): { text: string; color: string } | null {
+  if (cacheSavingsUSD <= 0) return null;
+  // 格式化：< $0.01 不显示（避免精度误导），>= $1 只保留 2 位小数
+  if (cacheSavingsUSD < 0.01) return null;
+  const formatted = cacheSavingsUSD >= 1
+    ? `$${cacheSavingsUSD.toFixed(2)}`
+    : `$${cacheSavingsUSD.toFixed(3)}`;
+  return {
+    text: `${formatted} saved`,
+    color: theme.status.success,
+  };
+}
+
+/**
  * 推理强度展示派生（effort 列）：档位 → 字形 + 文本 + 语义色。
  * - null（模型不支持档位）→ 返回 null，Footer 不渲染该列。
  * - auto 态 → 空心点 ◌ + 灰色，文本带 (auto) 后缀提示「跟随默认」。

@@ -29,6 +29,8 @@ import { guardOutgoingMessages } from "./protocol-sentinel.ts";
 import { guardedStream } from "./stream-guard.ts";
 import type { StreamGuardTelemetryEvent } from "./stream-guard.ts";
 import { normalizeToolInput } from "./normalize-tool-input.ts";
+import { buildSystemBlocks } from "../api/cache-strategy.ts";
+import { getEffectiveBetaHeaders } from "../api/beta-header-latch.ts";
 
 export class AnthropicProvider implements Provider {
   private client: Anthropic;
@@ -128,21 +130,10 @@ export class AnthropicProvider implements Provider {
 
     // system prompt 分区缓存：按 DYNAMIC_BOUNDARY 拆分为静态区和动态区
     // 静态区跨会话可缓存，动态区会话内缓存，分别标记 cache_control
-    const DYNAMIC_BOUNDARY = "\n\n<!-- DYNAMIC_BOUNDARY -->\n\n";
-    let system: Array<{ type: "text"; text: string; cache_control?: { type: "ephemeral" } }> | undefined;
-    if (params.system) {
-      const boundaryIdx = params.system.indexOf(DYNAMIC_BOUNDARY);
-      if (boundaryIdx !== -1) {
-        const staticPart = params.system.slice(0, boundaryIdx);
-        const dynamicPart = params.system.slice(boundaryIdx + DYNAMIC_BOUNDARY.length);
-        system = [
-          { type: "text" as const, text: staticPart, cache_control: { type: "ephemeral" as const } },
-          { type: "text" as const, text: dynamicPart, cache_control: { type: "ephemeral" as const } },
-        ];
-      } else {
-        system = [{ type: "text" as const, text: params.system, cache_control: { type: "ephemeral" as const } }];
-      }
-    }
+    // G4：Anthropic 直连且未禁用时，静态区用 global scope（跨用户共享 KV Cache）。
+    const useGlobalScope = isDirectAnthropicEndpoint(this.client.baseURL)
+      && !process.env.SID_DISABLE_GLOBAL_CACHE;
+    const system = buildSystemBlocks(params.system, { globalScopeEnabled: useGlobalScope });
 
     try {
       const requestStartTime = Date.now();
@@ -186,17 +177,28 @@ export class AnthropicProvider implements Provider {
             format: params.outputFormat,
           },
         }),
+        // G2: cache_edits — 服务器侧删除旧工具结果（Anthropic 私有字段，缓存友好压缩产出）。
+        // SID_DISABLE_CACHE_EDITS=1 时一键关闭降级（见方案 §12 风险表）。
+        ...(params.cacheEdits && params.cacheEdits.length > 0
+          && !process.env.SID_DISABLE_CACHE_EDITS && {
+          cache_edits: params.cacheEdits,
+        }),
       };
 
       // § 关键改动：create({stream:true}) 替代 messages.stream()
       // SDK 只负责 HTTP 连接 + SSE 解码，流内状态完全由我们管理
+      // G7: beta header sticky-on — 一旦启用某 header，整个会话不移除（移除会破坏 prompt cache）。
+      const neededBetaHeaders = tokenEfficientToolsEnabled
+        ? ["token-efficient-tools-2025-02-19"]
+        : [];
+      const effectiveBetaHeaders = getEffectiveBetaHeaders(neededBetaHeaders);
       const { data: rawStream, response } = await this.client.messages
         .create(requestParams as any, {
           headers: {
             "x-client-request-id": clientRequestId,
-            // P2-4: Token Efficient Tools beta header（与 strict 互斥）
-            ...(tokenEfficientToolsEnabled && {
-              "anthropic-beta": "token-efficient-tools-2025-02-19",
+            // P2-4: Token Efficient Tools beta header（与 strict 互斥）+ G7 sticky-on
+            ...(effectiveBetaHeaders.length > 0 && {
+              "anthropic-beta": effectiveBetaHeaders.join(","),
             }),
           },
           // ⭐ 关键：把 signal 透传给 SDK，使 abort() 能真正中断底层 HTTP/TCP 连接。
@@ -470,9 +472,22 @@ export class AnthropicProvider implements Provider {
         && modelSupportsStrict(params.model || this._model) && { strict: true }),
     }));
 
-    const system = params.system
-      ? [{ type: "text" as const, text: params.system }]
-      : undefined;
+    // G8: 非流式路径缓存标记对齐流式路径——
+    // ① system 按 DYNAMIC_BOUNDARY 分区打 cache_control（含 G4 global scope）；
+    // ② 在最后一条 user 消息末块打 cache_control（与流式路径同策略）；
+    // ③ 携带 cache_edits（G2）。否则非流式降级路径完全不命中缓存，每次全价重算前缀。
+    const useGlobalScope = isDirectAnthropicEndpoint(this.client.baseURL)
+      && !process.env.SID_DISABLE_GLOBAL_CACHE;
+    const system = buildSystemBlocks(params.system, { globalScopeEnabled: useGlobalScope });
+
+    // 在最后一条 user 消息的最后一个 content block 上标记 cache_control（与流式路径一致）
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "user" && messages[i].content.length > 0) {
+        const lastBlock = messages[i].content[messages[i].content.length - 1];
+        (lastBlock as any).cache_control = { type: "ephemeral" };
+        break;
+      }
+    }
 
     const log = getLogger();
     log.debug("LLM:ANTHROPIC", "非流式请求", {
@@ -497,6 +512,11 @@ export class AnthropicProvider implements Provider {
         }),
         ...(params.outputConfig && {
           output_config: { effort: params.outputConfig.effort },
+        }),
+        // G2: cache_edits（同流式路径门控）
+        ...(params.cacheEdits && params.cacheEdits.length > 0
+          && !process.env.SID_DISABLE_CACHE_EDITS && {
+          cache_edits: params.cacheEdits,
         }),
       },
       signal ? { signal } : undefined,

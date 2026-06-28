@@ -82,6 +82,10 @@ export interface QueryEngineDeps {
   getHypothesisLedger?: () => import("./hypothesis-ledger.ts").HypothesisLedger | null;
   /** §3.1/§3.3：轨迹采集器（用于异常路径持久化 errors.jsonl + TurnError 事件） */
   traceCollector?: import("../trace/collector.ts").TraceCollector;
+  /** G2：获取 cachedMicrocompact 状态机（缓存友好压缩产出 cache_edits）。可选 */
+  getCachedMicrocompactState?: () => import("./compact/cached-microcompact.ts").CachedMicrocompactState | undefined;
+  /** G2：当前 provider 名称（用于 cachedMicrocompact 路径判断）。可选 */
+  getProviderName?: () => string;
 }
 
 export class QueryEngine {
@@ -238,6 +242,9 @@ export class QueryEngine {
       getTodoState: this.deps.getTodoState,
       getHypothesisLedger: this.deps.getHypothesisLedger,
       sessionStore: this.deps.sessionStore,
+      // G2：cachedMicrocompact 状态机 + provider 名称（缓存友好压缩产出 cache_edits）
+      getCachedMicrocompactState: this.deps.getCachedMicrocompactState,
+      getProviderName: this.deps.getProviderName,
       // Step 0：Session Memory 每轮收尾钩子（fire-and-forget，内部按双阈值决定是否提取）。
       updateSessionMemory: this.sessionMemory
         ? () => this.sessionMemory!.updateSessionMemory()
