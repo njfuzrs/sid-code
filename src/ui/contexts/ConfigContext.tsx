@@ -31,6 +31,8 @@ export interface ConfigContextValue {
   effortDisplay: { level: import("../../llm/effort.ts").EffortLevel; isAuto: boolean } | null;
   /** 思考开关展示态（状态栏 thinking 列）。null = 模型不支持思考开关 */
   thinkingDisplay: { on: boolean; isAuto: boolean } | null;
+  /** /goal：目标状态展示态（状态栏 goal 列）。null = 无活跃目标 */
+  goalDisplay: { turnsUsed: number; maxTurns: number; progress?: number; status: string } | null;
 }
 
 const ConfigCtx = createContext<ConfigContextValue | undefined>(undefined);
@@ -61,6 +63,7 @@ export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children, value 
     value.availableModels,
     value.effortDisplay,
     value.thinkingDisplay,
+    value.goalDisplay,
   ]);
 
   return (

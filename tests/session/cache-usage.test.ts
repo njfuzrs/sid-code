@@ -101,11 +101,11 @@ describe("SessionState.calculateCost — 口径修复", () => {
       cacheReadInputTokens: 5000, // 命中
     };
     const cost = ss.calculateCost("deepseek-v4-pro", usage, "openai");
-    // deepseek-v4-pro: input=0.42, output=0.84, cacheHit=0.0035, cacheWrite=0
+    // deepseek-v4-pro: input=0.435, output=0.87, cacheHit=0.0036, cacheWrite=0
     const expected =
-      (1000 / 1e6) * 0.42 +    // uncached = 6000 − 5000
-      (5000 / 1e6) * 0.0035 +  // 命中固定价
-      (200 / 1e6) * 0.84;      // 输出
+      (1000 / 1e6) * 0.435 +   // uncached = 6000 − 5000
+      (5000 / 1e6) * 0.0036 +  // 命中固定价
+      (200 / 1e6) * 0.87;      // 输出
     expect(cost).toBeCloseTo(expected, 10);
   });
 

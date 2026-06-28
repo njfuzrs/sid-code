@@ -162,6 +162,8 @@ export interface TUIState {
    * on = 实际是否开启；isAuto = 是否 auto 态（跟随 provider 默认）。
    */
   thinkingDisplay: { on: boolean; isAuto: boolean } | null;
+  /** /goal：目标状态展示态（状态栏 goal 列）。null = 无活跃目标 */
+  goalDisplay: { turnsUsed: number; maxTurns: number; progress?: number; status: string } | null;
   statusMessage: string;
   permissionRequest: PermissionRequestInfo | null;
   shellConfirmRequest: ShellConfirmRequestInfo | null;
@@ -522,7 +524,8 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     availableModels: state.availableModels,
     effortDisplay: state.effortDisplay,
     thinkingDisplay: state.thinkingDisplay,
-  }), [state.model, state.provider, state.permissionMode, state.isPlanMode, state.gitBranch, state.debug, state.cwd, state.commands, state.availableModels, state.effortDisplay, state.thinkingDisplay]);
+    goalDisplay: state.goalDisplay,
+  }), [state.model, state.provider, state.permissionMode, state.isPlanMode, state.gitBranch, state.debug, state.cwd, state.commands, state.availableModels, state.effortDisplay, state.thinkingDisplay, state.goalDisplay]);
 
   // 派生 SessionContext 值
   const sessionValue = useMemo((): SessionContextValue => ({

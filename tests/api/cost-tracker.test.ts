@@ -8,16 +8,21 @@ import {
   calculateUSDCost,
   resolvePricing,
   CostTracker,
-  MODEL_PRICING,
 } from "../../src/api/cost-tracker.ts";
 import type { Usage } from "../../src/llm/types.ts";
 
 describe("resolvePricing", () => {
   test("精确匹配", () => {
-    expect(resolvePricing("claude-opus-4-20250514")).toBe(MODEL_PRICING["claude-opus-4-20250514"]);
+    const pricing = resolvePricing("claude-opus-4-20250514");
+    expect(pricing).not.toBeNull();
+    expect(pricing!.input).toBe(15);
+    expect(pricing!.output).toBe(75);
   });
   test("前缀模糊匹配", () => {
-    expect(resolvePricing("claude-sonnet-4-20250514-v2")).toBe(MODEL_PRICING["claude-sonnet-4-20250514"]);
+    const pricing = resolvePricing("claude-sonnet-4-20250514-v2");
+    expect(pricing).not.toBeNull();
+    expect(pricing!.input).toBe(3);
+    expect(pricing!.output).toBe(15);
   });
   test("未知模型 → null（调用方自行走兜底价）", () => {
     const pricing = resolvePricing("unknown-model");
@@ -89,7 +94,7 @@ describe("calculateUSDCost", () => {
   });
 
   test("OpenAI/DeepSeek：prompt_tokens 含命中，需扣减命中（与 Anthropic 口径相反）", () => {
-    // deepseek-v4-pro: input 0.42 / cacheRead 0.0035 per M。inputTokens=prompt_tokens 本就含命中，
+    // deepseek-v4-pro: input 0.435 / cacheRead 0.0036 per M。inputTokens=prompt_tokens 本就含命中，
     // 归一化后 uncached = input − hit，验证 provider 区分确实生效（同样的原始字段，口径不同结果不同）。
     const usage: Usage = {
       inputTokens: 1_000_000,
@@ -97,8 +102,8 @@ describe("calculateUSDCost", () => {
       cacheReadInputTokens: 500_000,
     };
     const cost = calculateUSDCost("deepseek-v4-pro", usage);
-    // uncached = 1M − 500k = 500k → 500k * 0.42/M = 0.21；hit = 500k * 0.0035/M = 0.00175
-    expect(cost).toBeCloseTo(0.21 + 0.00175, 5);
+    // uncached = 1M − 500k = 500k → 500k * 0.435/M = 0.2175；hit = 500k * 0.0036/M = 0.0018
+    expect(cost).toBeCloseTo(0.2175 + 0.0018, 5);
   });
 });
 

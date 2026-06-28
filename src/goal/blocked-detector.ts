@@ -5,6 +5,10 @@
  * 使用评估者返回的结构化 blockerKey 做精确匹配，而非纯文本关键词交集。
  */
 
+import { getLogger } from "../debug/logger.ts";
+
+const log = getLogger();
+
 export class BlockedDetector {
   private recentBlockerKeys: string[] = [];
   private threshold: number;
@@ -32,7 +36,11 @@ export class BlockedDetector {
     if (this.recentBlockerKeys.length < this.threshold) return false;
 
     const recent = this.recentBlockerKeys.slice(-this.threshold);
-    return recent.every((k) => k === recent[0]);
+    const isBlocked = recent.every((k) => k === recent[0]);
+    if (isBlocked) {
+      log.warn("GOAL_BLOCKED", `卡住检测触发: key="${blockerKey}", 连续 ${this.threshold} 轮相同阻塞原因`);
+    }
+    return isBlocked;
   }
 
   reset(): void {

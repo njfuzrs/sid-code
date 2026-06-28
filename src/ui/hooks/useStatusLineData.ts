@@ -160,6 +160,26 @@ export function deriveThinking(
   return { glyph, text, color };
 }
 
+/** /goal：目标进度派生。null = 无活跃目标。 */
+function deriveGoal(
+  goalDisplay: { turnsUsed: number; maxTurns: number; progress?: number; status: string } | null,
+  defaultColor: string,
+): { text: string; color: string } | null {
+  if (!goalDisplay) return null;
+  const { turnsUsed, maxTurns, progress, status } = goalDisplay;
+  if (status !== "active" && status !== "paused") return null;
+  const pct = progress ?? Math.round((turnsUsed / maxTurns) * 100);
+  const text = status === "paused"
+    ? `⏸ ${turnsUsed}/${maxTurns}`
+    : `${turnsUsed}/${maxTurns} ~${pct}%`;
+  const color = status === "paused"
+    ? theme.status.warning
+    : pct >= 80
+      ? theme.status.warning
+      : defaultColor;
+  return { text, color };
+}
+
 /** 状态栏聚合数据（纯数据，无 React 元素）。 */
 export interface StatusLineData {
   itemColor: string;
@@ -182,6 +202,8 @@ export interface StatusLineData {
   effort: { glyph: string; text: string; color: string } | null;
   /** thinking 列派生（null = 模型不支持思考开关，不渲染该列） */
   thinking: { glyph: string; text: string; color: string } | null;
+  /** /goal 列派生（null = 无活跃目标，不渲染该列） */
+  goal: { text: string; color: string } | null;
 }
 
 export interface StatusLineInput {
@@ -253,11 +275,13 @@ export function useStatusLineData(input: StatusLineInput): StatusLineData {
       scroll: showScroll ? { text: `↑${scrollPercent}%` } : null,
       effort: deriveEffort(config.effortDisplay, itemColor),
       thinking: deriveThinking(config.thinkingDisplay, itemColor),
+      goal: deriveGoal(config.goalDisplay, itemColor),
     };
   }, [
     config.cwd,
     config.effortDisplay,
     config.thinkingDisplay,
+    config.goalDisplay,
     permissionMode,
     isPlanMode,
     gitBranch,

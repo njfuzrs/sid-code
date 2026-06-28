@@ -155,6 +155,11 @@ export interface LoopState {
    * 0/undefined 表示尚未回注过。
    */
   lastGoalReminderTurn?: number;
+  /**
+   * /goal：compact 后强制下一轮注入 Goal reminder（防止目标意识断裂）。
+   * 每次 compact 后设为 true，reminder 注入后消费（设回 false）。
+   */
+  goalReminderPendingAfterCompact?: boolean;
 }
 
 /** 创建初始循环状态 */
@@ -277,6 +282,11 @@ export interface QueryDeps {
    * G2：当前 provider 名称（用于 cachedMicrocompact 路径判断）。可选。
    */
   getProviderName?: () => string;
+  /**
+   * Trace 事件写入（Goal Gate、评估器等关键决策写入结构化事件到 events.jsonl）。
+   * 可选——未注入则不写 trace 事件。
+   */
+  traceAppendEvent?: (event: { event: string; session_id: string; timestamp: string; data?: Record<string, unknown> }) => void;
 }
 
 // ─── QueryEngine 配置 ───

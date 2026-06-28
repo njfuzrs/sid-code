@@ -234,7 +234,8 @@ export async function* queryLoop(
       ctxMgr.emergencyTruncate();
       ctxMgr.addCompactBoundary(`阻塞级压缩：剩余 ${remainingTokens} tokens`, msgCountBefore);
       ctxMgr.releaseBeforeBoundary();
-      yield { kind: "compact" };
+      state.goalReminderPendingAfterCompact = true;
+        yield { kind: "compact" };
     } else {
       switch (compactionLevel) {
       case "emergency":
@@ -244,6 +245,7 @@ export async function* queryLoop(
           ctxMgr.emergencyTruncate();
           ctxMgr.addCompactBoundary(`紧急压缩：使用率 ${usagePercent.toFixed(0)}%`, msgCountBefore);
         }
+        state.goalReminderPendingAfterCompact = true;
         yield { kind: "compact" };
         break;
       case "hard": {
@@ -285,6 +287,7 @@ export async function* queryLoop(
 
         ctxMgr.addCompactBoundary(`渐进式压缩: ${pipelineResult.steps.join(" → ")}`, msgCountBefore);
         ctxMgr.releaseBeforeBoundary();
+        state.goalReminderPendingAfterCompact = true;
         yield { kind: "compact" };
         break;
       }
@@ -483,11 +486,15 @@ export async function* queryLoop(
         goal.updatedAt = Date.now();
         deps.updateGoalState?.(g => { g.turnsUsed = goal.turnsUsed; g.updatedAt = goal.updatedAt; });
 
-        // 按间隔回注（首轮必注入，之后每 N 轮）
+        // 按间隔回注（首轮必注入，之后每 N 轮，compact 后强制注入）
         const turnsSinceGoalReminder = state.turnCount - (state.lastGoalReminderTurn ?? 0);
-        if (goal.turnsUsed === 1 || turnsSinceGoalReminder >= DEFAULT_GOAL_CONFIG.reminderInterval) {
+        const shouldInject = goal.turnsUsed === 1
+          || turnsSinceGoalReminder >= DEFAULT_GOAL_CONFIG.reminderInterval
+          || state.goalReminderPendingAfterCompact;
+        if (shouldInject) {
           reminderParts.push(buildGoalReminder(goal));
           state.lastGoalReminderTurn = state.turnCount;
+          state.goalReminderPendingAfterCompact = false;
           log.info("QUERY_LOOP", `Goal 状态回注（第 ${goal.turnsUsed} 轮）`);
         }
       }
@@ -638,7 +645,8 @@ export async function* queryLoop(
           state.hasAttemptedReactiveCompact = true;
           state.transition = { type: "reactive_compact" };
           notifyCompaction("main"); // G1：抑制紧接的 cache break 检测
-          yield { kind: "compact" };
+          state.goalReminderPendingAfterCompact = true;
+        yield { kind: "compact" };
           yield { kind: "system", level: "info", text: `响应式压缩: ${compactResult.messageCountBefore} → ${compactResult.messageCountAfter} 条消息` };
           continue; // 重试
         }
@@ -654,6 +662,7 @@ export async function* queryLoop(
         log.warn("QUERY_LOOP", "上下文溢出且无法调整 maxTokens，触发自动压缩");
         notifyCompaction("main"); // G1：抑制紧接的 cache break 检测
         await deps.autoCompact();
+        state.goalReminderPendingAfterCompact = true;
         yield { kind: "compact" };
         state.transition = { type: "context_overflow_retry" };
         continue;
@@ -737,7 +746,8 @@ export async function* queryLoop(
           state.hasAttemptedReactiveCompact = true;
           state.transition = { type: "reactive_compact" };
           notifyCompaction("main"); // G1：抑制紧接的 cache break 检测
-          yield { kind: "compact" };
+          state.goalReminderPendingAfterCompact = true;
+        yield { kind: "compact" };
           yield { kind: "system", level: "info", text: `响应式压缩: ${compactResult.messageCountBefore} → ${compactResult.messageCountAfter} 条消息` };
           continue;
         }
@@ -748,6 +758,7 @@ export async function* queryLoop(
       if (isPromptTooLongError(err)) {
         notifyCompaction("main"); // G1：抑制紧接的 cache break 检测
         await deps.autoCompact();
+        state.goalReminderPendingAfterCompact = true;
         yield { kind: "compact" };
         state.transition = { type: "context_overflow_retry" };
         continue;
@@ -980,7 +991,8 @@ export async function* queryLoop(
             "QUERY_LOOP",
             `F1：空参数重试前压缩上下文 ${compactResult.messageCountBefore} → ${compactResult.messageCountAfter} 条`,
           );
-          yield { kind: "compact" };
+          state.goalReminderPendingAfterCompact = true;
+        yield { kind: "compact" };
         }
 
         // 注入"参数为空请重试"提示
@@ -1217,6 +1229,8 @@ export async function* queryLoop(
               evalConfig,
               goalConfig: DEFAULT_GOAL_CONFIG,
               blockedDetector: goalBlockedDetector,
+              traceAppendEvent: deps.traceAppendEvent,
+              sessionId: sessionState.sessionId,
             });
 
             // 注入消息

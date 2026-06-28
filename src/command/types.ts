@@ -67,6 +67,12 @@ export interface AppContext {
   commandRegistry?: import("./registry.ts").Registry;
   /** 统一命令注册表引用（新体系 /reload-plugins 刷新插件命令用，优先于 commandRegistry） */
   unifiedRegistry?: import("./unified-registry.ts").UnifiedCommandRegistry;
+  /** /goal：读取当前目标状态 */
+  getGoalState?: () => import("../goal/state.ts").GoalState | null;
+  /** /goal：设置目标状态（null 表示清除） */
+  setGoalState?: (goal: import("../goal/state.ts").GoalState | null) => void;
+  /** /goal：更新目标状态（原地修改） */
+  updateGoalState?: (updater: (goal: import("../goal/state.ts").GoalState) => void) => void;
 }
 
 /** 支持的对话框类型 */

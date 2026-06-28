@@ -9,6 +9,9 @@
  */
 
 import type { EvidenceEntry } from "./state.ts";
+import { getLogger } from "../debug/logger.ts";
+
+const log = getLogger();
 
 /** 从工具调用结果中提取证据（自动，无需模型配合） */
 export function collectEvidence(
@@ -20,45 +23,53 @@ export function collectEvidence(
   if (toolName === "bash" || toolName === "Bash") {
     // 测试结果模式
     if (hasTestPattern(toolResult)) {
-      return {
+      const entry: EvidenceEntry = {
         turn,
         timestamp: Date.now(),
         type: "test_result",
         summary: extractTestSummary(toolResult),
         raw: truncate(toolResult, 2000),
       };
+      log.debug("GOAL_EVIDENCE", `提取证据: type=${entry.type}, tool=${toolName}, summary=${entry.summary.slice(0, 100)}`);
+      return entry;
     }
     // 构建结果模式
     if (hasBuildPattern(toolResult)) {
-      return {
+      const entry: EvidenceEntry = {
         turn,
         timestamp: Date.now(),
         type: "build_result",
         summary: extractBuildSummary(toolResult),
         raw: truncate(toolResult, 2000),
       };
+      log.debug("GOAL_EVIDENCE", `提取证据: type=${entry.type}, tool=${toolName}, summary=${entry.summary.slice(0, 100)}`);
+      return entry;
     }
     // 其他有内容的命令输出
     const lines = toolResult.split("\n").filter((l) => l.trim().length > 0);
     if (lines.length > 0) {
-      return {
+      const entry: EvidenceEntry = {
         turn,
         timestamp: Date.now(),
         type: "command_output",
         summary: lines.slice(-3).join(" | ").slice(0, 500),
         raw: truncate(toolResult, 2000),
       };
+      log.debug("GOAL_EVIDENCE", `提取证据: type=${entry.type}, tool=${toolName}, summary=${entry.summary.slice(0, 100)}`);
+      return entry;
     }
   }
 
   // 文件写入操作
   if (toolName === "Write" || toolName === "Edit") {
-    return {
+    const entry: EvidenceEntry = {
       turn,
       timestamp: Date.now(),
       type: "file_change",
       summary: `文件修改: ${extractFilePath(toolResult)}`,
     };
+    log.debug("GOAL_EVIDENCE", `提取证据: type=${entry.type}, tool=${toolName}, summary=${entry.summary.slice(0, 100)}`);
+    return entry;
   }
 
   return null;

@@ -108,6 +108,10 @@ export function toCommandContext(appCtx: AppContext): CommandContext {
     hookSystem: appCtx.hookSystem,
     cwd: process.cwd(),
     unifiedRegistry: appCtx.unifiedRegistry,
+    // /goal：目标驱动持续执行——桥接到新体系 CommandContext
+    getGoalState: appCtx.getGoalState,
+    setGoalState: appCtx.setGoalState,
+    updateGoalState: appCtx.updateGoalState,
   };
 }
 

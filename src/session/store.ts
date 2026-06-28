@@ -38,6 +38,8 @@ export interface SessionData {
   projectHash?: string;
   directories?: string[];
   summary?: string;
+  /** 会话元数据（metadata 记录的累积结果，用于恢复 goalState 等运行时状态） */
+  metadata?: Record<string, unknown>;
 }
 
 /** 会话摘要数据 */
@@ -399,5 +401,6 @@ export function parseSessionJsonl(content: string): SessionData | null {
     updatedAt,
     kind: metadata["kind"] as "main" | "subagent" | undefined,
     summary: metadata["summary"] as string | undefined,
+    metadata,
   };
 }

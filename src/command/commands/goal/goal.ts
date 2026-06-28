@@ -11,8 +11,15 @@ import { createGoal } from "../../../goal/state.ts";
 import type { GoalState } from "../../../goal/state.ts";
 import { buildFirstTurnPrompt, buildResumeTurnPrompt } from "../../../goal/reminder.ts";
 import { DEFAULT_GOAL_CONFIG } from "../../../goal/config.ts";
+import { getLogger } from "../../../debug/logger.ts";
 
+const log = getLogger();
 const MAX_OBJECTIVE_CHARS = 4000;
+
+/** 记录 Goal 生命周期事件（结构化日志，方便后续分析/回放） */
+function logLifecycle(action: string, goal: GoalState, extra?: Record<string, unknown>): void {
+  log.info("GOAL_LIFECYCLE", `${action}: id=${goal.id}, objective="${goal.objective.slice(0, 60)}", status=${goal.status}, turns=${goal.turnsUsed}/${goal.maxTurns}, tokens=${goal.tokensUsed}${goal.tokenBudget ? `/${goal.tokenBudget}` : ""}, evidence=${goal.evidenceLog.length}`, { action, goalId: goal.id, ...extra });
+}
 
 const mod: LocalCommandModule = {
   async call(args: string, ctx: CommandContext): Promise<LocalCommandResult> {
@@ -62,6 +69,7 @@ async function doSetGoal(objective: string, ctx: CommandContext): Promise<LocalC
 
   // 注入到运行时
   ctx.setGoalState?.(goal);
+  logLifecycle("create", goal);
 
   // 返回 submit_prompt，第一轮直接以目标作为指令
   return {
@@ -118,6 +126,7 @@ function pauseGoal(ctx: CommandContext): LocalCommandResult {
 
   goal.status = "paused";
   ctx.updateGoalState?.((g: GoalState) => { g.status = "paused"; });
+  logLifecycle("pause", goal);
   return { type: "text", value: `⏸️ 目标已暂停。使用 \`/goal resume\` 恢复。` };
 }
 
@@ -136,6 +145,7 @@ function resumeGoal(ctx: CommandContext): LocalCommandResult {
   // 恢复目标
   goal.status = "active";
   ctx.updateGoalState?.((g: GoalState) => { g.status = "active"; });
+  logLifecycle("resume", goal);
 
   return {
     type: "submit_prompt",
@@ -168,6 +178,7 @@ function editGoal(newObjective: string, ctx: CommandContext): LocalCommandResult
     g.status = "active";
     g.lastEvalReason = undefined;
   });
+  logLifecycle("edit", goal, { newObjective: trimmed.slice(0, 200) });
 
   return { type: "text", value: `✏️ 目标已更新为: "${trimmed.slice(0, 80)}${trimmed.length > 80 ? "..." : ""}"\n证据日志已重置，继续推进新目标。` };
 }
@@ -194,6 +205,7 @@ function setBudget(budgetStr: string, ctx: CommandContext): LocalCommandResult {
 
   goal.tokenBudget = budget;
   ctx.updateGoalState?.((g: GoalState) => { g.tokenBudget = budget; });
+  logLifecycle("budget", goal, { newBudget: budget });
   return { type: "text", value: `💰 Token 预算已设为 ${budget.toLocaleString()}（已用 ${goal.tokensUsed.toLocaleString()}）` };
 }
 
@@ -203,6 +215,7 @@ function clearGoal(ctx: CommandContext): LocalCommandResult {
     return { type: "text", value: "当前无目标。" };
   }
 
+  logLifecycle("clear", goal);
   ctx.setGoalState?.(null);
   return { type: "text", value: `目标已清除: "${goal.objective.slice(0, 60)}${goal.objective.length > 60 ? "..." : ""}"` };
 }

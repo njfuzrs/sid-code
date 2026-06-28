@@ -83,20 +83,27 @@ export async function evaluateGoal(
   // 1. 先尝试快速路径
   const fastResult = tryFastPathEval(goal);
   if (fastResult) {
-    log.info("GOAL_EVAL", `快速路径命中: ${fastResult.reason}`);
+    log.info("GOAL_EVAL", `快速路径命中: ${fastResult.reason}`, { goalId: goal.id, type: fastResult.satisfied ? "satisfied" : "not_satisfied" });
     return fastResult;
   }
 
   // 2. 调用 LLM 评估
   const systemPrompt = buildEvalSystemPrompt();
   const userPrompt = buildEvalUserPrompt(goal, conversationContext);
+  const startTime = Date.now();
+
+  log.info("GOAL_EVAL", `开始评估: objective="${goal.objective.slice(0, 60)}", evidenceCount=${goal.evidenceLog.length}, contextChars=${conversationContext.length}, model=${config.model}`);
 
   try {
     const response = await callEvaluatorModel(systemPrompt, userPrompt, config);
-    return parseEvalResponse(response);
+    const result = parseEvalResponse(response);
+    const durationMs = Date.now() - startTime;
+    log.info("GOAL_EVAL", `评估完成: satisfied=${result.satisfied}, reason="${result.reason?.slice(0, 100)}", progress=${result.progress ?? "N/A"}, impossible=${result.impossible ?? false}, blockerKey=${result.blockerKey ?? "N/A"}, durationMs=${durationMs}`);
+    return result;
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error);
-    log.warn("GOAL_EVAL", `评估者调用失败: ${msg}`);
+    const durationMs = Date.now() - startTime;
+    log.warn("GOAL_EVAL", `评估者调用失败: ${msg}`, { goalId: goal.id, durationMs, model: config.model });
     // 降级：评估失败不阻止循环，视为"未满足"并继续
     return {
       satisfied: false,

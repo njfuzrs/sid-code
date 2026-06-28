@@ -124,6 +124,12 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
     potentialColumns.push({ id, header, element, width: dataWidth, isHighPriority });
   };
 
+  // /goal：目标进度（活跃目标存在时显示）
+  if (data.goal) {
+    const goalLabel = `🎯 ${data.goal.text}`;
+    addCol("goal", "目标", <Text color={data.goal.color}>{goalLabel}</Text>, stringWidth(goalLabel), true);
+  }
+
   // 推理强度档位（effort）。替代原 CWD 列：目录信息在标题栏已有，状态栏改露更高频切换的旋钮。
   // null = 当前模型不支持档位切换，不渲染该列。
   if (data.effort) {

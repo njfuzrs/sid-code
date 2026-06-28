@@ -968,11 +968,17 @@ export function resolveCurrentModelConfig(config: Config): void {
   if (mc.maxOutputTokens) config.maxTokens = mc.maxOutputTokens;
 }
 
-/** 从 availableModels 中查找当前模型的 maxOutputTokens */
+/** 从 availableModels 中查找当前模型的 maxOutputTokens，
+ *  若用户未配置则从内置注册表兜底 */
 export function resolveModelMaxOutputTokens(config: Config): number | undefined {
-  if (!config.availableModels?.length) return undefined;
-  const modelConfig = config.availableModels.find(m => m.name === config.model);
-  return modelConfig?.maxOutputTokens || undefined;
+  if (config.availableModels?.length) {
+    const modelConfig = config.availableModels.find(m => m.name === config.model);
+    if (modelConfig?.maxOutputTokens) return modelConfig.maxOutputTokens;
+  }
+  // 兜底：从内置模型注册表获取（避免用户未配置时退化到硬编码 32768）
+  const { lookupRegistry } = require("../llm/model-registry.ts");
+  const entry = lookupRegistry(config.model);
+  return entry?.maxOutputTokens || undefined;
 }
 
 /** 确保配置目录存在 */

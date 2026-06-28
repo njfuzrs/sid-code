@@ -207,6 +207,8 @@ export class App {
    * 初值：env > config.thinkingEnabled(settings) > undefined。
    */
   private runtimeThinking: import("./llm/effort.ts").ThinkingSetting;
+  /** /goal：目标驱动持续执行的运行时状态（由 /goal 命令设置，queryLoop Gate 链消费） */
+  private goalState: import("./goal/state.ts").GoalState | null = null;
 
   constructor(opts: AppOptions) {
     this.config = opts.config;
@@ -431,6 +433,15 @@ export class App {
         return this.cachedMicrocompactState ?? undefined;
       },
       getProviderName: () => this.provider.name(),
+      // /goal：目标驱动持续执行——把运行时 goalState 暴露给 queryLoop（Goal Gate + Evidence 收集 + Reminder 注入）。
+      getGoalState: () => this.goalState,
+      updateGoalState: (updater) => {
+        if (this.goalState) {
+          updater(this.goalState);
+          this.persistGoalState();
+          this.tuiStateUpdater?.({ goalDisplay: this.buildGoalDisplay() });
+        }
+      },
     });
 
     // P0-1：把子代理 usage 归集 sink 注入到 SubAgentTool / CustomAgentTool。
@@ -1435,6 +1446,21 @@ export class App {
     // 仅让 SessionStore 的 currentFile 指向被恢复会话的旧 jsonl 续写，使历史不碎片化。
     this.resumedSessionId = sessionData.id;
 
+    // /goal：从 JSONL metadata 恢复目标状态（跨会话续做时保持目标意识不断）
+    if (sessionData.metadata?.["goal_state"]) {
+      try {
+        const { deserializeGoalState } = await import("./goal/state.ts");
+        const restored = deserializeGoalState(sessionData.metadata["goal_state"] as string);
+        // 仅恢复非终态目标（complete/impossible 不恢复，已无意义）
+        if (restored.status !== "complete" && restored.status !== "impossible") {
+          this.goalState = restored;
+          log.info("APP", `恢复 goal state: "${restored.objective.slice(0, 60)}" (status=${restored.status})`);
+        }
+      } catch (e) {
+        log.warn("APP", `goal state 恢复失败（不阻断）: ${(e as Error)?.message}`);
+      }
+    }
+
     // 缺口 B：读取被恢复会话的落盘进度（~/.sid-code/progress/<被恢复会话 id>.md）。
     // 注意用 sessionData.id（被恢复会话），不是本进程新 id——progress 文件按被恢复会话落盘。
     // 跨会话续做时，这是抗压缩、抗清理的外部进度记忆，恢复时一并回注。失败不阻断。
@@ -1905,6 +1931,29 @@ export class App {
   }
 
   /**
+   * /goal：将当前 goalState 持久化到 session JSONL（增量 metadata 记录）。
+   * 每次 goalState 变更时调用（set/update），失败不阻断。
+   */
+  private persistGoalState(): void {
+    if (!this.goalState || !this.sessionStore) return;
+    try {
+      const { serializeGoalState } = require("./goal/state.ts");
+      this.sessionStore.appendMetadata("goal_state", serializeGoalState(this.goalState));
+    } catch { /* 持久化失败不阻断 */ }
+  }
+
+  /**
+   * /goal：构建 TUI 状态栏所需的 goalDisplay 数据。
+   * null = 无活跃目标（不显示）。
+   */
+  private buildGoalDisplay(): { turnsUsed: number; maxTurns: number; progress?: number; status: string } | null {
+    if (!this.goalState) return null;
+    const { turnsUsed, maxTurns, status } = this.goalState;
+    if (status === "complete" || status === "impossible") return null;
+    return { turnsUsed, maxTurns, status };
+  }
+
+  /**
    * B3：结束会话持久化（唯一的 endSession 调用封装）。
    *
    * - 在所有退出路径调用（正常退出 / /quit / SIGINT|SIGTERM / runHeadless / emergencySessionEnd）。
@@ -2368,6 +2417,7 @@ export class App {
       todos: [],
       tasks: [],
       retryStatus: null,
+      goalDisplay: null,
     });
 
     const updateState = (patch: Partial<import("./ui/App.tsx").TUIState>) => {
@@ -3060,6 +3110,20 @@ export class App {
           hookSystem: this.hookSystem,
           commandRegistry: this.commandRegistry,
           unifiedRegistry: this.unifiedRegistry,
+          // /goal：目标驱动持续执行——命令层读写 goalState 的三个回调
+          getGoalState: () => this.goalState,
+          setGoalState: (goal) => {
+            this.goalState = goal;
+            this.persistGoalState();
+            updateState({ goalDisplay: this.buildGoalDisplay() });
+          },
+          updateGoalState: (updater) => {
+            if (this.goalState) {
+              updater(this.goalState);
+              this.persistGoalState();
+              updateState({ goalDisplay: this.buildGoalDisplay() });
+            }
+          },
         };
 
         // 记录命令使用频率（驱动补全排序的指数衰减统计）
