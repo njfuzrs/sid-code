@@ -86,6 +86,8 @@ export type ContinueReason =
   | { type: "timeout_retry" }
   | { type: "todo_gate_retry" }
   | { type: "hypothesis_gate_retry" }
+  | { type: "goal_gate_retry" }
+  | { type: "goal_budget_warning" }
   | { type: "empty_param_retry" };
 
 // ─── 循环状态 ───
@@ -148,6 +150,11 @@ export interface LoopState {
    * 首轮检查 getLSPHealthWarning()，有异常则 yield 一次 system 警告并置位。
    */
   lspHealthWarned?: boolean;
+  /**
+   * /goal：上次注入 Goal reminder 的轮次（周期回注节流用）。
+   * 0/undefined 表示尚未回注过。
+   */
+  lastGoalReminderTurn?: number;
 }
 
 /** 创建初始循环状态 */
@@ -250,6 +257,16 @@ export interface QueryDeps {
    * 内部判断主代理本轮是否已写入记忆（互斥），未写则跑 forked agent 提取。可选。
    */
   extractMemories?: () => Promise<void>;
+  /**
+   * /goal：读取当前活跃目标状态。返回 null 表示无目标。
+   * queryLoop 在 reminder 管道和 end_turn Gate 链中使用。可选——未注入则跳过所有 goal 逻辑。
+   */
+  getGoalState?: () => import("../goal/state.ts").GoalState | null;
+  /**
+   * /goal：更新目标状态（由 Goal Gate 在判定 complete/blocked/budget_limited 时调用）。
+   * 可选。
+   */
+  updateGoalState?: (updater: (goal: import("../goal/state.ts").GoalState) => void) => void;
   /**
    * G2：获取 cachedMicrocompact 状态机（provider 感知的缓存友好压缩）。
    * queryLoop 每轮发送前调用 cachedMicrocompact(messages, {state, ...})，

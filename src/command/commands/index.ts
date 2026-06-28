@@ -15,6 +15,7 @@ import btw from "./btw/index.ts";
 import loop from "./loop/index.ts";
 import effort from "./effort/index.ts";
 import think from "./think/index.ts";
+import goal from "./goal/index.ts";
 
 export const BUILTIN_COMMANDS: UnifiedCommand[] = [
   compact,
@@ -23,4 +24,5 @@ export const BUILTIN_COMMANDS: UnifiedCommand[] = [
   loop,
   effort,
   think,
+  goal,
 ];

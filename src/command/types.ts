@@ -164,6 +164,12 @@ export interface CommandContext {
   customCommands?: Array<{ name: string; description: string }>;
   /** 统一命令注册表引用（/reload-plugins 刷新插件命令用） */
   unifiedRegistry?: import("./unified-registry.ts").UnifiedCommandRegistry;
+  /** /goal：读取当前目标状态 */
+  getGoalState?: () => import("../goal/state.ts").GoalState | null;
+  /** /goal：设置目标状态（null 表示清除） */
+  setGoalState?: (goal: import("../goal/state.ts").GoalState | null) => void;
+  /** /goal：更新目标状态（原地修改） */
+  updateGoalState?: (updater: (goal: import("../goal/state.ts").GoalState) => void) => void;
 }
 
 // ============================================================

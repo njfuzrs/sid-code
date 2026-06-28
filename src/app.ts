@@ -66,29 +66,43 @@ import { sidPaths } from "./config/paths.ts";
 import { deriveTaskTitle } from "./ui/utils/task-title.ts";
 
 /**
- * 展开用户输入中的 @path 引用为文件内容
- * 匹配 @path（不含空格，支持相对/绝对路径）
- * 文件不存在时保留原文，不报错
+ * 展开用户输入中的 @path 引用为文件内容。
+ *
+ * 返回结构化结果：
+ * - displayText: 用户原始输入（TUI 展示用，保留 @path 标记）
+ * - injectedContent: 读取到的文件内容，用 <system-reminder> 包裹（给模型的隐藏上下文）
+ *
+ * TUI 渲染时 history-adapter 会剥离 <system-reminder> 块，只展示用户原始输入。
  */
-async function expandAtReferences(input: string): Promise<string> {
+interface AtExpansionResult {
+  displayText: string;
+  injectedContent: string | null;
+}
+
+async function expandAtReferences(input: string): Promise<AtExpansionResult> {
   const AT_PATTERN = /@([\w./\-]+)/g;
   const matches = [...input.matchAll(AT_PATTERN)];
-  if (matches.length === 0) return input;
+  if (matches.length === 0) return { displayText: input, injectedContent: null };
 
-  let result = input;
+  const fileContents: string[] = [];
   for (const match of matches) {
     const filePath = match[1];
     try {
       const absPath = resolve(process.cwd(), filePath);
       const content = await readFile(absPath, "utf-8");
       const ext = extname(filePath).slice(1);
-      const replacement = `以下是文件 \`${filePath}\` 的内容：\n\`\`\`${ext}\n${content}\n\`\`\``;
-      result = result.replace(match[0], replacement);
+      fileContents.push(`以下是文件 \`${filePath}\` 的内容：\n\`\`\`${ext}\n${content}\n\`\`\``);
     } catch {
-      // 文件不存在时保留原文
+      // 文件不存在时跳过
     }
   }
-  return result;
+
+  return {
+    displayText: input,
+    injectedContent: fileContents.length > 0
+      ? `<system-reminder>\n${fileContents.join("\n\n")}\n</system-reminder>`
+      : null,
+  };
 }
 
 
@@ -2907,8 +2921,10 @@ export class App {
         try {
           this.abortController = new AbortController();
           // @ 文件注入：展开用户输入中的 @path 引用
-          const expanded = await expandAtReferences(text);
-          await tuiAgentLoop(expanded);
+          // 文件内容用 <system-reminder> 包裹，TUI 渲染时剥离，模型正常读取
+          const { displayText, injectedContent } = await expandAtReferences(text);
+          const finalInput = injectedContent ? `${displayText}\n\n${injectedContent}` : displayText;
+          await tuiAgentLoop(finalInput);
           // 正常完成 → 丢弃暂存,不回填
           clearPendingInput();
         } catch (err: any) {

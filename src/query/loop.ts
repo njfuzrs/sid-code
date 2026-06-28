@@ -67,6 +67,11 @@ import { buildContextPressureReminder } from "./context-pressure.ts";
 import { collectDiagnosticText, getLSPHealthWarning } from "../lsp/manager.ts";
 import { buildPermissionModeReminder, PERMISSION_MODE_REMINDER_INTERVAL } from "./permission-reminder.ts";
 import { buildContradictionReminder, buildDeliveryGateReminder } from "./hypothesis-ledger.ts";
+import { buildGoalReminder } from "../goal/reminder.ts";
+import { collectEvidenceFromTurn } from "../goal/evidence-collector.ts";
+import { handleGoalGate } from "./goal-gate.ts";
+import { BlockedDetector } from "../goal/blocked-detector.ts";
+import { DEFAULT_GOAL_CONFIG } from "../goal/config.ts";
 import {
   checkResponseForCacheBreak,
   recordPromptState,
@@ -132,6 +137,10 @@ export async function* queryLoop(
   const loopDetector = new LoopDetector();
   const state: LoopState = createInitialLoopState(config.maxTurns || Infinity);
   const diminishingDetector = new DiminishingReturnsDetector();
+  // /goal：卡住检测器（基于评估者返回的 blockerKey 精确匹配）
+  const goalBlockedDetector = new BlockedDetector(
+    DEFAULT_GOAL_CONFIG.blockedThreshold,
+  );
 
   // ─── 工具延迟加载（ToolSearch）：每会话判定一次 ───
   // config.toolSearch 支持 boolean | "auto" | number(百分比)：
@@ -461,6 +470,27 @@ export async function* queryLoop(
         `注入矛盾中断提醒（${state.pendingContradictions.length} 条假设待裁决）`,
       );
       state.pendingContradictions = undefined; // 注入后清空，避免重复
+    }
+
+    // ─── /goal：目标状态周期回注（对标 Codex continuation.md）───
+    // 通过 reminderParts 管道注入，不影响 system prompt → Prompt Cache 命中率不变。
+    // 首轮必注入，之后每 N 轮回注一次。
+    if (deps.getGoalState) {
+      const goal = deps.getGoalState();
+      if (goal && goal.status === "active") {
+        // 更新轮次计数
+        goal.turnsUsed++;
+        goal.updatedAt = Date.now();
+        deps.updateGoalState?.(g => { g.turnsUsed = goal.turnsUsed; g.updatedAt = goal.updatedAt; });
+
+        // 按间隔回注（首轮必注入，之后每 N 轮）
+        const turnsSinceGoalReminder = state.turnCount - (state.lastGoalReminderTurn ?? 0);
+        if (goal.turnsUsed === 1 || turnsSinceGoalReminder >= DEFAULT_GOAL_CONFIG.reminderInterval) {
+          reminderParts.push(buildGoalReminder(goal));
+          state.lastGoalReminderTurn = state.turnCount;
+          log.info("QUERY_LOOP", `Goal 状态回注（第 ${goal.turnsUsed} 轮）`);
+        }
+      }
     }
 
     if (reminderParts.length > 0) {
@@ -1149,6 +1179,77 @@ export async function* queryLoop(
         }
       }
 
+      // ─── /goal：Goal Gate（独立评估者判定目标是否满足）───
+      // 位于 Gate 链最末——只有前三道 Gate 全部放行，才轮到 Goal Gate 做最终判定。
+      // Plan Mode 中暂停 Goal Gate（计划模式不执行操作，不应评估完成度）。
+      if (deps.getGoalState) {
+        const goal = deps.getGoalState();
+        const inPlanMode = deps.getCurrentPermissionMode?.() === "plan";
+        if (goal && goal.status === "active" && !inPlanMode) {
+          try {
+            // 获取评估者配置（复用 subAgentModels.verify）
+            const evalConfig = {
+              model: config.subAgentModels?.verify || config.subAgentModels?.default || config.model,
+              provider: (() => {
+                // 尝试获取评估者对应的 provider（简化：直接用主 provider）
+                // 完整实现应通过 ProviderRegistry.getProviderForSubAgent("verify")
+                // 这里的 deps.sendWithRetry 内部已封装了 provider，我们直接构造一个轻量 provider 接口
+                const { AnthropicProvider } = require("../llm/anthropic.ts");
+                const { OpenAIProvider } = require("../llm/openai.ts");
+                if (config.provider === "anthropic") {
+                  return new AnthropicProvider(config.anthropicKey, config.subAgentModels?.verify || config.model, config.baseURL);
+                }
+                return new OpenAIProvider(config.openaiKey, config.subAgentModels?.verify || config.model, config.baseURL);
+              })(),
+              timeout: DEFAULT_GOAL_CONFIG.evaluatorTimeout,
+              minTurnsBeforeEval: DEFAULT_GOAL_CONFIG.minTurnsBeforeEval,
+            };
+
+            const lastTurnUsage = {
+              inputTokens: response.usage?.inputTokens ?? 0,
+              outputTokens: response.usage?.outputTokens ?? 0,
+              cacheCreationTokens: response.usage?.cacheCreationInputTokens ?? 0,
+            };
+            const goalGateOutput = await handleGoalGate({
+              goal,
+              messages: ctxMgr.getMessages(),
+              turnUsage: lastTurnUsage,
+              evalConfig,
+              goalConfig: DEFAULT_GOAL_CONFIG,
+              blockedDetector: goalBlockedDetector,
+            });
+
+            // 注入消息
+            for (const msg of goalGateOutput.injectMessages) {
+              ctxMgr.addMessage(msg);
+            }
+            // yield 系统消息
+            for (const sysMsg of goalGateOutput.systemMessages) {
+              yield { kind: "system", level: sysMsg.level, text: sysMsg.text };
+            }
+
+            const { result } = goalGateOutput;
+            if (result.completed) {
+              deps.updateGoalState?.(g => { g.status = "complete"; });
+              log.info("GOAL_GATE", "目标已达成，正常收尾");
+              // 落入下方正常收尾
+            } else if (result.impossible) {
+              deps.updateGoalState?.(g => { g.status = "impossible"; });
+              log.info("GOAL_GATE", "目标不可能达成，正常收尾");
+              // 落入下方正常收尾
+            } else if (result.shouldContinue) {
+              deps.updateGoalState?.(g => { g.lastEvalReason = result.evalResult?.reason; });
+              state.transition = { type: "goal_gate_retry" };
+              continue;
+            }
+            // shouldContinue=false && !completed && !impossible → 轮次/预算超限，放行收尾
+          } catch (e: any) {
+            // Goal Gate 不得阻断主循环
+            log.warn("GOAL_GATE", `Goal Gate 异常（已忽略，正常收尾）：${e?.message ?? String(e)}`);
+          }
+        }
+      }
+
       const totalUsage = sessionState.getTotalUsage();
       log.info("QUERY_LOOP", `对话结束 (${response.stopReason})，共 ${state.turnCount} 轮，in=${totalUsage.inputTokens} out=${totalUsage.outputTokens}，累计费用 $${sessionState.totalCostUSD.toFixed(4)}`);
       // F1：正常收尾，清零连续退化计数
@@ -1299,6 +1400,36 @@ export async function* queryLoop(
         } catch (e: any) {
           // 矛盾检测不得阻断主循环
           log.warn("QUERY_LOOP", `假设矛盾检测异常（已忽略）：${e?.message ?? String(e)}`);
+        }
+      }
+
+      // ─── /goal：从工具结果自动收集证据（Evidence Log）───
+      // 不依赖模型配合，自动从 tool_result 中提取关键操作结果。
+      // Evidence Log 独立于对话历史，Compact 不影响证据完整性。
+      if (deps.getGoalState) {
+        const goal = deps.getGoalState();
+        if (goal && goal.status === "active") {
+          try {
+            const toolResultTexts = toolResults
+              .filter((r): r is typeof r & { type: "tool_result" } => r.type === "tool_result")
+              .map((r) => {
+                // 从对应的 tool_use 块找出工具名
+                const toolUseBlock = response.content.find(
+                  (b) => b.type === "tool_use" && b.id === (r as any).tool_use_id,
+                );
+                const toolName = toolUseBlock && toolUseBlock.type === "tool_use" ? toolUseBlock.name : "unknown";
+                return { toolName, result: typeof r.content === "string" ? r.content : JSON.stringify(r.content) };
+              });
+            const newEvidence = collectEvidenceFromTurn(toolResultTexts, goal.turnsUsed);
+            if (newEvidence.length > 0) {
+              goal.evidenceLog.push(...newEvidence);
+              deps.updateGoalState?.(g => { g.evidenceLog.push(...newEvidence); });
+              log.debug("GOAL_EVIDENCE", `收集 ${newEvidence.length} 条证据（第 ${goal.turnsUsed} 轮）`);
+            }
+          } catch (e: any) {
+            // 证据收集不得阻断主循环
+            log.warn("GOAL_EVIDENCE", `证据收集异常（已忽略）：${e?.message ?? String(e)}`);
+          }
         }
       }
 

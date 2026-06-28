@@ -374,9 +374,14 @@ function convertUserMessage(
   }
 
   // 文本内容 → HistoryItemUser
+  // 剥离 <system-reminder>...</system-reminder> 块（@ 文件引用注入的隐藏内容），
+  // 只展示用户原始输入。模型侧仍能读到完整文件内容。
   if (textBlocks.length > 0) {
     const text = textBlocks.join("\n");
-    items.push({ type: "user", text });
+    const displayText = stripSystemReminderBlocks(text);
+    if (displayText) {
+      items.push({ type: "user", text: displayText });
+    }
   }
 
   // 合并后的工具结果 → HistoryItemToolGroup
@@ -385,6 +390,11 @@ function convertUserMessage(
   }
 
   return items;
+}
+
+/** 从文本中移除 <system-reminder>...</system-reminder> 块（@ 文件引用注入的隐藏内容） */
+function stripSystemReminderBlocks(text: string): string {
+  return text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
 }
 
 function convertAssistantMessage(

@@ -23,8 +23,6 @@ export interface UseAtCompletionProps {
   setSuggestions: (suggestions: Suggestion[]) => void;
 }
 
-const MAX_SUGGESTIONS = 8;
-
 /**
  * 从光标位置向前查找最近的 @ 符号，返回 @ 后的 pattern
  * 如果 @ 前面是字母/数字（如 email），则不触发补全
@@ -102,7 +100,9 @@ export function useAtCompletion({ cursorCol, currentLine, cwd, setSuggestions }:
         ranked = candidates;
       }
 
-      const matches: Suggestion[] = ranked.slice(0, MAX_SUGGESTIONS).map(({ entry, displayName, valuePath }) => ({
+      // 不在数据层截断——由 SuggestionsDisplay 的 MAX_VISIBLE 虚拟滚动窗口控制可见行数，
+      // 用户可 ↑↓ 翻页看到全部候选。
+      const matches: Suggestion[] = ranked.map(({ entry, displayName, valuePath }) => ({
         label: displayName,
         value: valuePath,
         icon: entry.isDirectory() ? "▸" : "·",
