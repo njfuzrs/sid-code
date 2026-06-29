@@ -18,6 +18,7 @@ import {
 } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
 import { sanitizeStrings } from "../llm/sanitize-unicode.ts";
+import { recordSideCall } from "../trace/side-call-sink.ts";
 
 /** 默认超时 60 秒 */
 const DEFAULT_TIMEOUT = 60_000;
@@ -678,10 +679,25 @@ export class HookRunner {
     signal?: AbortSignal,
   ): Promise<string> {
     let text = "";
+    let streamUsage: any = null;
     for await (const event of provider.sendMessageStream(params, signal)) {
       if (event.type === "content_block_delta" && "text" in event.delta) {
         text += event.delta.text;
+      } else if (event.type === "message_stop" && event.usage) {
+        streamUsage = event.usage;
       }
+    }
+    // 记录辅助调用用量
+    if (streamUsage) {
+      recordSideCall({
+        label: "hook-runner",
+        model: params.model ?? "",
+        inputTokens: streamUsage.inputTokens ?? 0,
+        outputTokens: streamUsage.outputTokens ?? 0,
+        cacheReadTokens: streamUsage.cacheReadInputTokens ?? 0,
+        cacheCreationTokens: streamUsage.cacheCreationInputTokens ?? 0,
+        durationMs: 0,
+      });
     }
     return text;
   }

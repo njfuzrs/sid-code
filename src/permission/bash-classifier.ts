@@ -279,14 +279,29 @@ export class BashClassifier {
 
       // 流式累积兜底（ollama 等无非流式接口的 provider）
       let text = "";
+      let streamUsage: any = null;
       const caps = getCapabilities(provider);
       void caps; // 仅用于显式表明已考虑能力差异
       for await (const ev of provider.sendMessageStream({ model, messages, system, maxTokens }, signal)) {
         if (ev.type === "content_block_delta" && ev.delta.type === "text_delta") {
           text += ev.delta.text;
+        } else if (ev.type === "message_stop" && (ev as any).usage) {
+          streamUsage = (ev as any).usage;
         } else if (ev.type === "error") {
           throw new Error(ev.error.message);
         }
+      }
+      // 记录辅助调用用量（流式兜底路径）
+      if (streamUsage) {
+        recordSideCall({
+          label: "bash-classifier",
+          model,
+          inputTokens: streamUsage.inputTokens ?? 0,
+          outputTokens: streamUsage.outputTokens ?? 0,
+          cacheReadTokens: streamUsage.cacheReadInputTokens ?? 0,
+          cacheCreationTokens: streamUsage.cacheCreationInputTokens ?? 0,
+          durationMs: 0,
+        });
       }
       return text;
     } finally {

@@ -19,6 +19,7 @@ import type { Message } from "../../llm/types.ts";
 import type { Provider } from "../../llm/provider.ts";
 import { getLogger } from "../../debug/index.ts";
 import { estimateTextTokens } from "../../context/token.ts";
+import { recordSideCall } from "../../trace/side-call-sink.ts";
 
 /** 每段消息条数 */
 const SEGMENT_SIZE = 10;
@@ -130,10 +131,25 @@ async function summarizeSegment(
     opts.signal,
   );
   let summary = "";
+  let streamUsage: any = null;
   for await (const event of stream) {
     if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
       summary += event.delta.text;
+    } else if (event.type === "message_stop" && (event as any).usage) {
+      streamUsage = (event as any).usage;
     }
+  }
+  // 记录辅助调用用量
+  if (streamUsage) {
+    recordSideCall({
+      label: "context-collapse",
+      model: opts.model,
+      inputTokens: streamUsage.inputTokens ?? 0,
+      outputTokens: streamUsage.outputTokens ?? 0,
+      cacheReadTokens: streamUsage.cacheReadInputTokens ?? 0,
+      cacheCreationTokens: streamUsage.cacheCreationInputTokens ?? 0,
+      durationMs: 0,
+    });
   }
   return summary.trim();
 }
