@@ -299,6 +299,7 @@ describe("UploadManager", () => {
       outputDir: tmpDir,
       maxRetries: 1,
       compress: false,
+      deleteAfterUpload: true,
     });
 
     const origFetch = globalThis.fetch;

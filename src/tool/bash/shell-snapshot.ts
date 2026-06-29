@@ -31,6 +31,9 @@ const SNAPSHOT_CREATION_TIMEOUT_MS = 10_000;
 /** execFile 输出缓冲上限（1MB，对标 claude-code） */
 const SNAPSHOT_MAX_BUFFER = 1024 * 1024;
 
+/** 模块级单例：同一进程中多个 BashTool 实例共享同一个快照创建 Promise（避免并发写同一文件竞态） */
+let snapshotCreatePromise: Promise<string | undefined> | null = null;
+
 /**
  * POSIX 单引号转义：把字符串包成可安全放进 shell 单引号的形式。
  *
@@ -162,6 +165,9 @@ let activeSnapshotPath: string | undefined;
 export async function createAndSaveSnapshot(
   shellPath: string,
 ): Promise<string | undefined> {
+  // 模块级单例：多个 BashTool 实例并发构造时，只创建一次快照，避免并发写同一文件破坏快照内容
+  if (snapshotCreatePromise) return snapshotCreatePromise;
+
   const log = getLogger();
 
   // Windows 不支持（powershell 无法 source POSIX 脚本）
@@ -169,6 +175,17 @@ export async function createAndSaveSnapshot(
     log.debug("BASH", "Windows 平台跳过 shell 快照创建");
     return undefined;
   }
+
+  // 发起创建（先占位 Promise，防止并发调用重入）
+  snapshotCreatePromise = doCreateSnapshot(shellPath, log);
+  return snapshotCreatePromise;
+}
+
+/** 实际执行快照创建（由单例保护，保证同一进程只跑一次） */
+async function doCreateSnapshot(
+  shellPath: string,
+  log: ReturnType<typeof getLogger>,
+): Promise<string | undefined> {
 
   try {
     const snapshotDir = sidPaths.shellSnapshots();
