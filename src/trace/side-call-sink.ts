@@ -34,6 +34,7 @@ export interface SideCallStats {
 
 let _calls: SideCallRecord[] = [];
 let _costCalculator: ((model: string, usage: any) => number) | null = null;
+let _costObserver: ((costUSD: number) => void) | null = null;
 
 /**
  * 注册成本计算函数（由 app.ts 在启动时注入，复用 SessionState.calculateCost）。
@@ -41,6 +42,14 @@ let _costCalculator: ((model: string, usage: any) => number) | null = null;
  */
 export function setSideCostCalculator(fn: (model: string, usage: any) => number): void {
   _costCalculator = fn;
+}
+
+/**
+ * 注册成本观察者（由 app.ts 在启动时注入，回调 SessionState.addSideCost）。
+ * 使辅助调用花费实时反映到 TUI 费用列 / /cost 命令 / quota 守卫。
+ */
+export function setSideCostObserver(fn: (costUSD: number) => void): void {
+  _costObserver = fn;
 }
 
 /**
@@ -58,6 +67,10 @@ export function recordSideCall(record: Omit<SideCallRecord, "costUSD"> & { costU
       : 0
   );
   _calls.push({ ...record, costUSD: cost });
+  // 实时通知观察者（SessionState.addSideCost），使展示层和 quota 守卫看到真实总花费
+  if (_costObserver && cost > 0) {
+    try { _costObserver(cost); } catch { /* 观察者异常不影响记录 */ }
+  }
 }
 
 /**

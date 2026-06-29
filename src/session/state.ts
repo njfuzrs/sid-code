@@ -57,6 +57,13 @@ export class SessionState {
 
   /** 总花费（美元） */
   totalCostUSD: number = 0;
+  /**
+   * 辅助调用（side call）花费（美元）——标题生成/记忆召回/bash分类/摘要压缩/缓存预热等
+   * 不经主循环的影子调用。与 totalCostUSD 分开累加，避免污染 traj 的 total/side 分离语义。
+   * 展示层（TUI 费用列 / /cost）和 quota 守卫读 totalCostUSD + sideCostUSD = 真实总花费。
+   * 注意：辅助调用的 token 不并入 modelUsage，避免污染 stock 口径（"当前上下文大小"展示）。
+   */
+  sideCostUSD: number = 0;
   /** API 调用总耗时（毫秒） */
   totalAPIDuration: number = 0;
   /** 工具执行总耗时（毫秒） */
@@ -159,9 +166,27 @@ export class SessionState {
    */
   resetCounters(): void {
     this.totalCostUSD = 0;
+    this.sideCostUSD = 0;
     this.totalAPIDuration = 0;
     this.totalToolDuration = 0;
     this.modelUsage = {};
+  }
+
+  /**
+   * 累加辅助调用花费（影子调用：标题生成/记忆召回/bash分类/摘要压缩/缓存预热等）。
+   * 只累加费用，不并入 modelUsage（避免污染 stock 口径的"当前上下文大小"展示）。
+   * 由 side-call-sink 在每次 recordSideCall 时回调。
+   */
+  addSideCost(costUSD: number): void {
+    this.sideCostUSD += costUSD;
+  }
+
+  /**
+   * 获取真实总花费 = 主循环 + 辅助调用。
+   * 用于 TUI 费用列展示、/cost 命令、quota/costLimit 守卫。
+   */
+  getEffectiveTotalCostUSD(): number {
+    return this.totalCostUSD + this.sideCostUSD;
   }
 
   /**

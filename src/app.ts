@@ -64,7 +64,7 @@ import { readFile } from "fs/promises";
 import { resolve, extname, join } from "path";
 import { sidPaths } from "./config/paths.ts";
 import { deriveTaskTitle } from "./ui/utils/task-title.ts";
-import { recordSideCall, setSideCostCalculator } from "./trace/side-call-sink.ts";
+import { recordSideCall, setSideCostCalculator, setSideCostObserver } from "./trace/side-call-sink.ts";
 
 /**
  * 展开用户输入中的 @path 引用为文件内容。
@@ -237,6 +237,9 @@ export class App {
     this.sessionState.setAvailableModels(opts.config.availableModels);
     // 注册辅助调用成本计算函数（复用 SessionState.calculateCost）
     setSideCostCalculator((model, usage) => this.sessionState.calculateCost(model, usage));
+    // 注册辅助调用成本观察者：实时累加到 SessionState.sideCostUSD，
+    // 使 TUI 费用列 / /cost 命令 / quota 守卫看到主+辅助的真实总花费
+    setSideCostObserver((costUSD) => this.sessionState.addSideCost(costUSD));
     getSessionMetrics().setSessionId(sessionId);
     getSessionMetrics().setAvailableModels(opts.config.availableModels);
     // B1：会话持久化写入端（构造很轻，仅建目录）。startSession/resumeSession 延迟到 doInit 调用，
@@ -1968,7 +1971,7 @@ export class App {
   private finalizeSessionStore(): void {
     try {
       this.sessionStore?.endSession(
-        this.sessionState.totalCostUSD,
+        this.sessionState.getEffectiveTotalCostUSD(),
         this.ctxMgr.getMessages().length,
       );
     } catch { /* 文件系统可能已不可用 */ }
@@ -2005,7 +2008,7 @@ export class App {
         cacheWrite: n.cacheWriteTokens,
         uncachedInput: n.uncachedInputTokens,
         output: n.outputTokens,
-        costUSD: this.sessionState.totalCostUSD,
+        costUSD: this.sessionState.getEffectiveTotalCostUSD(),
         savingsUSD: this.sessionState.getTotalCacheSavings(),
         durationMs: this.sessionState.getElapsedMs(),
       });
@@ -2252,7 +2255,7 @@ export class App {
     return {
       submitMessage: (input: string) => this.queryEngine.submitMessage(input),
       getUsage: () => this.sessionState.getTotalUsage(),
-      getCostUsd: () => this.sessionState.totalCostUSD,
+      getCostUsd: () => this.sessionState.getEffectiveTotalCostUSD(),
       getMessages: () => this.ctxMgr.getMessages(),
       listTools: () =>
         this.toolRegistry.all().map((t) => ({
@@ -2386,7 +2389,7 @@ export class App {
       provider: this.config.provider,
       usage: { ...this.sessionState.getTotalUsage() },
       stockInputTokens: this.sessionState.getStockPromptTokens(),
-      costUSD: this.sessionState.totalCostUSD,
+      costUSD: this.sessionState.getEffectiveTotalCostUSD(),
       cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
       costLimit: this.config.costLimit ?? 0,
       contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / this.ctxMgr.getMaxTokens()) * 100),
@@ -2810,7 +2813,7 @@ export class App {
                 // 工具结束即刷新统计三件套，不必等下一轮 done（否则工具跑完后 Footer 仍显示上一轮旧值）
                 usage: { ...this.sessionState.getTotalUsage() },
                 stockInputTokens: this.sessionState.getStockPromptTokens(),
-                costUSD: this.sessionState.totalCostUSD,
+                costUSD: this.sessionState.getEffectiveTotalCostUSD(),
                 cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
                 contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / this.ctxMgr.getMaxTokens()) * 100),
               });
@@ -2905,7 +2908,7 @@ export class App {
                 isLoading: false,
                 usage: { ...this.sessionState.getTotalUsage() },
                 stockInputTokens: this.sessionState.getStockPromptTokens(),
-                costUSD: this.sessionState.totalCostUSD,
+                costUSD: this.sessionState.getEffectiveTotalCostUSD(),
                 cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
                 contextPercent: ctxPct,
                 streamingText: "",
@@ -2952,7 +2955,7 @@ export class App {
         isLoading: false,
         usage: { ...this.sessionState.getTotalUsage() },
         stockInputTokens: this.sessionState.getStockPromptTokens(),
-        costUSD: this.sessionState.totalCostUSD,
+        costUSD: this.sessionState.getEffectiveTotalCostUSD(),
         cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
         contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / this.ctxMgr.getMaxTokens()) * 100),
         // CM3：本轮结束，清除残留的重试/限流提示。
@@ -3027,7 +3030,7 @@ export class App {
             isToolExecuting: false,
             usage: { ...this.sessionState.getTotalUsage() },
             stockInputTokens: this.sessionState.getStockPromptTokens(),
-            costUSD: this.sessionState.totalCostUSD,
+            costUSD: this.sessionState.getEffectiveTotalCostUSD(),
             cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
             contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / this.ctxMgr.getMaxTokens()) * 100),
           });

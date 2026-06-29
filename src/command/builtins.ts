@@ -260,7 +260,10 @@ export class CostCommand implements Command {
 
     const lines = [
       `会话时长: ${SessionState.formatDuration(ss.getElapsedMs())}`,
-      `总费用: $${ss.totalCostUSD.toFixed(4)}`,
+      `总费用: $${ss.getEffectiveTotalCostUSD().toFixed(4)}`,
+      ...(ss.sideCostUSD > 0
+        ? [`  其中辅助调用: $${ss.sideCostUSD.toFixed(4)}（标题/记忆/分类/摘要等）`]
+        : []),
       `API 耗时: ${SessionState.formatDuration(ss.totalAPIDuration)}`,
       `工具耗时: ${SessionState.formatDuration(ss.totalToolDuration)}`,
       "",
@@ -848,7 +851,7 @@ export class StatsCommand implements Command {
       `消息总数：${ctx.ctxMgr.messageCount()}`,
       `Token 用量：输入 ${totalUsage.inputTokens} / 输出 ${totalUsage.outputTokens}`,
       `API 请求：${totalToolCalls} 次`,
-      `预估费用：$${ss.totalCostUSD.toFixed(4)}`,
+      `预估费用：$${ss.getEffectiveTotalCostUSD().toFixed(4)}`,
       `会话时长：${SessionState.formatDuration(ss.getElapsedMs())}`,
     ];
     return { kind: "message", message: lines.join("\n") };

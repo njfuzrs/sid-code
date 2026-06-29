@@ -893,7 +893,8 @@ export async function* queryLoop(
 
     // ─── 成本配额检查 ───
     if (loopConfig.quotaManager) {
-      const quotaResult = loopConfig.quotaManager.check(sessionState.totalCostUSD);
+      // 纳入辅助调用花费（标题/记忆/分类/摘要/预热等），避免影子调用烧钱不受限。
+      const quotaResult = loopConfig.quotaManager.check(sessionState.getEffectiveTotalCostUSD());
       if (quotaResult) {
         if (quotaResult.level === "exceeded") {
           yield { kind: "system", level: "warning", text: quotaResult.message };

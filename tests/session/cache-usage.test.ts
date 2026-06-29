@@ -343,3 +343,42 @@ describe("SessionState.resetCounters — /clear 状态栏清空", () => {
     expect(ss.getStockPromptTokens()).toBe(0);
   });
 });
+
+describe("辅助调用费用（sideCostUSD）", () => {
+  test("addSideCost 累加到 sideCostUSD，不影响 totalCostUSD 和 modelUsage", () => {
+    const ss = new SessionState("test-side");
+    ss.updateUsage("deepseek-v4-pro", { inputTokens: 1000, outputTokens: 100 } as Usage, 500, "openai");
+    const mainCost = ss.totalCostUSD;
+
+    ss.addSideCost(0.05);
+    ss.addSideCost(0.03);
+
+    // sideCostUSD 独立累加
+    expect(ss.sideCostUSD).toBeCloseTo(0.08, 6);
+    // totalCostUSD 不受影响（仍是主循环口径）
+    expect(ss.totalCostUSD).toBe(mainCost);
+    // modelUsage 不被辅助调用污染（stock 口径不变，保证"当前上下文大小"展示正确）
+    expect(Object.keys(ss.modelUsage).length).toBe(1);
+    expect(ss.modelUsage["deepseek-v4-pro"].inputTokens).toBe(1000);
+  });
+
+  test("getEffectiveTotalCostUSD = 主循环 + 辅助调用", () => {
+    const ss = new SessionState("test-eff");
+    ss.updateUsage("deepseek-v4-pro", { inputTokens: 2000, outputTokens: 200 } as Usage, 500, "openai");
+    const mainCost = ss.totalCostUSD;
+    ss.addSideCost(0.1);
+
+    expect(ss.getEffectiveTotalCostUSD()).toBeCloseTo(mainCost + 0.1, 6);
+  });
+
+  test("resetCounters 同时清零 sideCostUSD", () => {
+    const ss = new SessionState("test-reset-side");
+    ss.addSideCost(0.2);
+    expect(ss.sideCostUSD).toBeCloseTo(0.2, 6);
+
+    ss.resetCounters();
+
+    expect(ss.sideCostUSD).toBe(0);
+    expect(ss.getEffectiveTotalCostUSD()).toBe(0);
+  });
+});
