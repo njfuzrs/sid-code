@@ -64,6 +64,7 @@ import {
 import { dequeuePendingNotifications, evictTerminalTasks } from "../task/index.ts";
 import { injectReminders } from "./reminder-inject.ts";
 import { buildContextPressureReminder } from "./context-pressure.ts";
+import { detectInvestigationContext, buildHypothesisGuideReminder } from "./hypothesis-guide.ts";
 import { collectDiagnosticText, getLSPHealthWarning } from "../lsp/manager.ts";
 import { buildPermissionModeReminder, PERMISSION_MODE_REMINDER_INTERVAL } from "./permission-reminder.ts";
 import { buildContradictionReminder, buildDeliveryGateReminder } from "./hypothesis-ledger.ts";
@@ -137,9 +138,11 @@ export async function* queryLoop(
   const loopDetector = new LoopDetector();
   const state: LoopState = createInitialLoopState(config.maxTurns || Infinity);
   const diminishingDetector = new DiminishingReturnsDetector();
+  // /goal：合并用户 config.goal 与内置默认值（用户未配则全走默认）
+  const effectiveGoalConfig = { ...DEFAULT_GOAL_CONFIG, ...config.goal };
   // /goal：卡住检测器（基于评估者返回的 blockerKey 精确匹配）
   const goalBlockedDetector = new BlockedDetector(
-    DEFAULT_GOAL_CONFIG.blockedThreshold,
+    effectiveGoalConfig.blockedThreshold,
   );
 
   // ─── 工具延迟加载（ToolSearch）：每会话判定一次 ───
@@ -463,6 +466,23 @@ export async function* queryLoop(
       }
     }
 
+    // 假设纪律首轮引导（修复"防线零触发"）：检测到调查性上下文时，在本条用户消息的
+    // 首轮注入一次性强推提醒，让模型在任务开头就想到用 hypothesis_register 登记判断。
+    // 时序关键：queryLoop 由 engine.submitMessage 每条用户消息调用一次、state 每次新建、
+    // turnCount 首轮自增为 1，故 turnCount===1 即"本条用户消息的首轮"，extractLastUserInput
+    // 取到的正是当前这条消息——天然覆盖"对话中途才下达核查任务"的场景。
+    // hypothesisGuideInjected 与 turnCount===1 双保险，保证同一条消息内不重复注入。
+    // AND 检测（路径+动词）+ system-prompt 常驻引导兜底，详见
+    // docs/bugfixes/todo/最终结论与TODO-彻底修复防线零触发.md。
+    if (state.turnCount === 1 && !state.hypothesisGuideInjected) {
+      const userText = extractLastUserInput(ctxMgr);
+      if (detectInvestigationContext(userText)) {
+        reminderParts.push(buildHypothesisGuideReminder());
+        state.hypothesisGuideInjected = true;
+        log.info("QUERY_LOOP", "注入假设纪律首轮引导（命中调查性上下文）");
+      }
+    }
+
     // 环节③ 机制2（矛盾中断·注入端）：上一轮检出的矛盾命中，本轮注入高优先级提醒，
     // 逼模型停下来用 hypothesis_challenge 裁决。放在 reminderParts 最前（unshift），
     // 让它在所有提醒里最先被读到——抗沉没成本的关键时刻不能被淹没。
@@ -489,7 +509,7 @@ export async function* queryLoop(
         // 按间隔回注（首轮必注入，之后每 N 轮，compact 后强制注入）
         const turnsSinceGoalReminder = state.turnCount - (state.lastGoalReminderTurn ?? 0);
         const shouldInject = goal.turnsUsed === 1
-          || turnsSinceGoalReminder >= DEFAULT_GOAL_CONFIG.reminderInterval
+          || turnsSinceGoalReminder >= effectiveGoalConfig.reminderInterval
           || state.goalReminderPendingAfterCompact;
         if (shouldInject) {
           reminderParts.push(buildGoalReminder(goal));
@@ -1199,9 +1219,14 @@ export async function* queryLoop(
         const inPlanMode = deps.getCurrentPermissionMode?.() === "plan";
         if (goal && goal.status === "active" && !inPlanMode) {
           try {
-            // 获取评估者配置（复用 subAgentModels.verify）
+            // 评估者模型优先级：config.goal.evaluatorModel > subAgentModels.verify > default > 主模型
+            const evaluatorModel =
+              effectiveGoalConfig.evaluatorModel ||
+              config.subAgentModels?.verify ||
+              config.subAgentModels?.default ||
+              config.model;
             const evalConfig = {
-              model: config.subAgentModels?.verify || config.subAgentModels?.default || config.model,
+              model: evaluatorModel,
               provider: (() => {
                 // 尝试获取评估者对应的 provider（简化：直接用主 provider）
                 // 完整实现应通过 ProviderRegistry.getProviderForSubAgent("verify")
@@ -1209,12 +1234,12 @@ export async function* queryLoop(
                 const { AnthropicProvider } = require("../llm/anthropic.ts");
                 const { OpenAIProvider } = require("../llm/openai.ts");
                 if (config.provider === "anthropic") {
-                  return new AnthropicProvider(config.anthropicKey, config.subAgentModels?.verify || config.model, config.baseURL);
+                  return new AnthropicProvider(config.anthropicKey, evaluatorModel, config.baseURL);
                 }
-                return new OpenAIProvider(config.openaiKey, config.subAgentModels?.verify || config.model, config.baseURL);
+                return new OpenAIProvider(config.openaiKey, evaluatorModel, config.baseURL);
               })(),
-              timeout: DEFAULT_GOAL_CONFIG.evaluatorTimeout,
-              minTurnsBeforeEval: DEFAULT_GOAL_CONFIG.minTurnsBeforeEval,
+              timeout: effectiveGoalConfig.evaluatorTimeout,
+              minTurnsBeforeEval: effectiveGoalConfig.minTurnsBeforeEval,
             };
 
             const lastTurnUsage = {
@@ -1227,7 +1252,7 @@ export async function* queryLoop(
               messages: ctxMgr.getMessages(),
               turnUsage: lastTurnUsage,
               evalConfig,
-              goalConfig: DEFAULT_GOAL_CONFIG,
+              goalConfig: effectiveGoalConfig,
               blockedDetector: goalBlockedDetector,
               traceAppendEvent: deps.traceAppendEvent,
               sessionId: sessionState.sessionId,
@@ -1255,8 +1280,19 @@ export async function* queryLoop(
               deps.updateGoalState?.(g => { g.lastEvalReason = result.evalResult?.reason; });
               state.transition = { type: "goal_gate_retry" };
               continue;
+            } else {
+              // shouldContinue=false && !completed && !impossible
+              //   → 轮次超限 / 预算耗尽 / blocked：handleGoalGate 已直接改了 goal.status
+              //     （同一对象引用），但必须显式触发 updateGoalState 才能落盘持久化 + 刷新 TUI 状态栏。
+              //     缺这一步会导致终态不写 JSONL（resume 时仍显示 active）、状态栏不更新。
+              const terminalStatus = goal.status;
+              deps.updateGoalState?.(g => {
+                g.status = terminalStatus;
+                if (result.evalResult?.reason) g.lastEvalReason = result.evalResult.reason;
+              });
+              log.info("GOAL_GATE", `目标终止（${terminalStatus}），正常收尾`);
+              // 落入下方正常收尾
             }
-            // shouldContinue=false && !completed && !impossible → 轮次/预算超限，放行收尾
           } catch (e: any) {
             // Goal Gate 不得阻断主循环
             log.warn("GOAL_GATE", `Goal Gate 异常（已忽略，正常收尾）：${e?.message ?? String(e)}`);
@@ -1437,7 +1473,9 @@ export async function* queryLoop(
             const newEvidence = collectEvidenceFromTurn(toolResultTexts, goal.turnsUsed);
             if (newEvidence.length > 0) {
               goal.evidenceLog.push(...newEvidence);
-              deps.updateGoalState?.(g => { g.evidenceLog.push(...newEvidence); });
+              // 幂等同步：赋数组引用而非再 push（getGoalState/updateGoalState 在生产中
+              // 操作同一对象，若此处再 push 会导致证据被重复记录两次）。
+              deps.updateGoalState?.(g => { g.evidenceLog = goal.evidenceLog; });
               log.debug("GOAL_EVIDENCE", `收集 ${newEvidence.length} 条证据（第 ${goal.turnsUsed} 轮）`);
             }
           } catch (e: any) {

@@ -33,6 +33,7 @@ import { sidPaths } from "../config/paths.ts";
 import { estimateTextTokens } from "../context/token.ts";
 import type { Message } from "../llm/types.ts";
 import { checkMessageHistoryIntegrity } from "../agent/message-invariants.ts";
+import { resetSideCallStats, getSideStats } from "./side-call-sink.ts";
 
 // ─── 最小化上传器接口（避免循环依赖，Task 8 实现后注入） ───
 
@@ -302,6 +303,9 @@ export class TraceCollector {
     this.prevMessageCount = 0;
     this.currentPair = null;
 
+    // 重置辅助调用统计（避免跨会话污染）
+    resetSideCallStats();
+
     // 修复问题一：-c/--resume 续接同一 trajectory 目录，而非每次恢复都新建。
     // input.resumed_from 是被恢复会话的旧 id；resume 时用它作 trajectory session_id，
     // 使多轮 -c 续接全部落在 sessions/<旧id>/ 同一目录，历史不再碎成多个目录。
@@ -332,6 +336,11 @@ export class TraceCollector {
       total_cache_creation_tokens: 0,
       total_cost_usd: 0,
       total_api_calls: 0,
+      // 辅助 LLM 调用统计（影子调用：标题生成/记忆召回/权限分类/摘要压缩/预热/目标评估等）
+      side_api_calls: 0,
+      side_cost_usd: 0,
+      side_tokens_sent: 0,
+      side_tokens_received: 0,
     };
 
     this.writer = new TraceWriter(this.outputDir, traceSessionId);
@@ -604,6 +613,12 @@ export class TraceCollector {
     this.metadata.total_cache_read_tokens += cacheRead;
     this.metadata.total_cache_creation_tokens += cacheCreate;
     this.metadata.total_api_calls += 1;
+    // 成本增量落盘（flow，与 SessionState.totalCostUSD 同口径累加）。
+    // 此前 total_cost_usd 只在 SessionEnd 用 stats 覆盖一次（见 handleSessionEnd），
+    // 若 SessionEnd 未干净触发（进程被杀 / 仍存活，heartbeat.txt 残留），
+    // session.traj.total_cost_usd 会永远停在初始 0。这里每轮 AfterModel 增量累加，
+    // 使 traj 在中断场景也保留已发生的成本；SessionEnd 触发时仍以 SessionState 权威值覆盖。
+    this.metadata.total_cost_usd += resp.cost_usd ?? 0;
     if (this.metadata.model === "" && input.llm_request.model) {
       this.metadata.model = input.llm_request.model;
     }
@@ -880,6 +895,25 @@ export class TraceCollector {
     this.metadata.end_time = input.timestamp;
     this.metadata.end_source = input.reason;
 
+    // ── 在途请求收尾：BeforeModel 已发但 AfterModel 未到（被中断/超时/异常退出） ──
+    // 将在途 pair 标记为 partial 塞进 pairs，使 rebuildTraj 能写出 traj（哪怕只有请求侧）。
+    // 若不处理，中断会话 pairs.length=0 → traj 无任何轮次信息，诊断全盲。
+    if (this.currentPair) {
+      const partialPair: RequestResponsePair = {
+        ...(this.currentPair as RequestResponsePair),
+        response: {
+          content: [],
+          stop_reason: "interrupted",
+          usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        },
+        usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        stop_reason: "interrupted",
+        is_partial: true,
+      };
+      this.pairs.push(partialPair);
+      this.currentPair = null;
+    }
+
     // 用 SessionState 统计值覆盖采集器自己累积的（SessionState 更准确）
     if (input.stats) {
       const s = input.stats;
@@ -932,6 +966,15 @@ export class TraceCollector {
           protocols_used: this.harnessProtocols,
         },
       };
+    }
+
+    // 辅助 LLM 调用统计汇总（影子调用 sink → metadata）
+    const sideStats = getSideStats();
+    if (sideStats.apiCalls > 0) {
+      this.metadata.side_api_calls = sideStats.apiCalls;
+      this.metadata.side_cost_usd = sideStats.costUSD;
+      this.metadata.side_tokens_sent = sideStats.tokensSent;
+      this.metadata.side_tokens_received = sideStats.tokensReceived;
     }
 
     // 最终写入 events.jsonl
@@ -1038,7 +1081,10 @@ export class TraceCollector {
     return (
       this.pairs.length === 0 &&
       (this.metadata.total_api_calls ?? 0) === 0 &&
-      this.resumedPairOffset === 0
+      this.resumedPairOffset === 0 &&
+      // 有在途请求（BeforeModel 已发但 AfterModel 未到）时不算空壳——
+      // 中断会话仍需保留目录供诊断，否则网关侧有计费但本地连 events.jsonl 都被删。
+      !this.currentPair
     );
   }
 

@@ -64,6 +64,7 @@ import { readFile } from "fs/promises";
 import { resolve, extname, join } from "path";
 import { sidPaths } from "./config/paths.ts";
 import { deriveTaskTitle } from "./ui/utils/task-title.ts";
+import { recordSideCall, setSideCostCalculator } from "./trace/side-call-sink.ts";
 
 /**
  * 展开用户输入中的 @path 引用为文件内容。
@@ -234,6 +235,8 @@ export class App {
     this.sessionState = new SessionState(sessionId);
     // 注入用户配置的模型列表（含定价/provider），供计费和 provider 推断优先使用
     this.sessionState.setAvailableModels(opts.config.availableModels);
+    // 注册辅助调用成本计算函数（复用 SessionState.calculateCost）
+    setSideCostCalculator((model, usage) => this.sessionState.calculateCost(model, usage));
     getSessionMetrics().setSessionId(sessionId);
     getSessionMetrics().setAvailableModels(opts.config.availableModels);
     // B1：会话持久化写入端（构造很轻，仅建目录）。startSession/resumeSession 延迟到 doInit 调用，
@@ -2460,6 +2463,18 @@ export class App {
             // 15s 超时,且不与主对话的 abortController 关联——后台任务独立。
             AbortSignal.timeout(15_000),
           );
+          // 记录辅助调用用量
+          if (resp.usage) {
+            recordSideCall({
+              label: "title-generation",
+              model: this.config.model,
+              inputTokens: resp.usage.inputTokens ?? 0,
+              outputTokens: resp.usage.outputTokens ?? 0,
+              cacheReadTokens: (resp.usage as any).cacheReadInputTokens ?? 0,
+              cacheCreationTokens: (resp.usage as any).cacheCreationInputTokens ?? 0,
+              durationMs: 0,
+            });
+          }
           const raw = resp.content
             .filter((b): b is import("./llm/types.ts").TextBlock => b.type === "text")
             .map((b) => b.text)

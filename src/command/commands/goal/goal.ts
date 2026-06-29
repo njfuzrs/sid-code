@@ -62,9 +62,11 @@ async function setGoal(objective: string, ctx: CommandContext): Promise<LocalCom
 }
 
 async function doSetGoal(objective: string, ctx: CommandContext): Promise<LocalCommandResult> {
+  // 合并用户 config.goal 与内置默认值（用户未配则全走默认）
+  const goalCfg = { ...DEFAULT_GOAL_CONFIG, ...ctx.config?.goal };
   const goal = createGoal(objective, {
-    tokenBudget: DEFAULT_GOAL_CONFIG.defaultTokenBudget || undefined,
-    maxTurns: DEFAULT_GOAL_CONFIG.defaultMaxTurns,
+    tokenBudget: goalCfg.defaultTokenBudget || undefined,
+    maxTurns: goalCfg.defaultMaxTurns,
   });
 
   // 注入到运行时

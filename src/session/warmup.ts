@@ -18,6 +18,7 @@ import type { Provider } from "../llm/provider.ts";
 import type { ToolDefinition } from "../llm/types.ts";
 import type { Message } from "../llm/types.ts";
 import { getLogger } from "../debug/logger.ts";
+import { recordSideCall } from "../trace/side-call-sink.ts";
 
 export interface WarmupParams {
   provider: Provider;
@@ -56,13 +57,26 @@ export async function warmupPromptCache(params: WarmupParams): Promise<boolean> 
       content: [{ type: "text", text: "." }],
     }];
 
-    await params.provider.sendMessageNonStreaming({
+    const resp = await params.provider.sendMessageNonStreaming({
       model: "", // 使用 provider 默认模型
       system: params.systemPrompt,
       tools: params.tools,
       messages: warmupMessages,
       maxTokens: 1, // 最小化输出 token 开销
     });
+
+    // 记录辅助调用用量
+    if (resp?.usage) {
+      recordSideCall({
+        label: "cache-warmup",
+        model: "",
+        inputTokens: resp.usage.inputTokens ?? 0,
+        outputTokens: resp.usage.outputTokens ?? 0,
+        cacheReadTokens: (resp.usage as any).cacheReadInputTokens ?? 0,
+        cacheCreationTokens: (resp.usage as any).cacheCreationInputTokens ?? 0,
+        durationMs: 0,
+      });
+    }
 
     log.info("CACHE_WARMUP", "预热完成（system+tools 已缓存）");
     return true;

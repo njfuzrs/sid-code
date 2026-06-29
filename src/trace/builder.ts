@@ -150,6 +150,12 @@ export interface TraceMetadata {
   total_cache_creation_tokens: number;
   total_cost_usd: number;
   total_api_calls: number;
+  // 辅助 LLM 调用统计（影子调用：标题生成/记忆召回/权限分类/摘要压缩/预热/目标评估等，
+  // 不经过主循环 BeforeModel/AfterModel 的调用）
+  side_api_calls: number;
+  side_cost_usd: number;
+  side_tokens_sent: number;
+  side_tokens_received: number;
   exit_status?: string;
   start_source?: string;
   end_source?: string;
@@ -276,6 +282,11 @@ export interface TrajectoryMetaOutput {
   total_cache_creation_tokens: number;
   total_tokens: number;
   total_cost_usd: number;
+  // 辅助 LLM 调用统计（影子调用）
+  side_api_calls?: number;
+  side_cost_usd?: number;
+  side_tokens_sent?: number;
+  side_tokens_received?: number;
   exit_status: string;
   tools_used: string[];
   files_edited: string[];
@@ -497,6 +508,35 @@ export function buildTrajectory(
   // ─── 遍历每个 pair，构建 trajectory 和 history ───
   for (let i = 0; i < pairs.length; i++) {
     const pair = pairs[i];
+
+    // 在途请求（is_partial）：只有请求侧，无真实响应。
+    // 记录一条 "interrupted" 步骤到 trajectory + history，跳过 response 解析。
+    if (pair.is_partial) {
+      const partialStep: TrajectoryStep = {
+        message_type: "action",
+        role: "assistant",
+        content: "[请求已发出但未收到响应（中断/超时）]",
+        thought: "",
+        action: "interrupted",
+        agent: "primary",
+        timestamp: pair.timestamp,
+      };
+      trajectory.push(partialStep);
+      history.push({
+        role: "assistant",
+        content: [],
+        message_type: "action",
+        agent: "primary",
+        thought: "",
+        thinking_blocks: null,
+        tool_calls: [],
+        usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        stop_reason: "interrupted",
+        timestamp: pair.timestamp,
+      } as AssistantHistoryEntry);
+      continue;
+    }
+
     const contentBlocks = pair.response.content as Array<Record<string, unknown>>;
     const thinkingBlocks = pair.thinking_blocks;
 
@@ -725,6 +765,13 @@ export function buildTrajectory(
     ...(metadata.error ? { error: metadata.error } : {}),
     ...(metadata.harness ? { harness: metadata.harness } : {}),
     ...(metadata.last_known_state ? { last_known_state: metadata.last_known_state } : {}),
+    // 辅助 LLM 调用统计（仅在有值时输出，避免污染历史 traj 解析）
+    ...(metadata.side_api_calls ? {
+      side_api_calls: metadata.side_api_calls,
+      side_cost_usd: metadata.side_cost_usd,
+      side_tokens_sent: metadata.side_tokens_sent,
+      side_tokens_received: metadata.side_tokens_received,
+    } : {}),
   };
 
   return {

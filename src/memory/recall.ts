@@ -16,6 +16,7 @@ import { scanMemoryFiles, formatMemoryManifest, stripFrontmatter } from "./scan.
 import { buildFreshnessWarning } from "./freshness.ts";
 import { MEMORY_LIMITS, type RelevantMemory } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
+import { recordSideCall } from "../trace/side-call-sink.ts";
 
 /** 轻量 LLM 调用签名（依赖注入，便于测试） */
 export type SideQueryFn = (opts: {
@@ -146,10 +147,25 @@ export function makeSideQuery(
       signal,
     );
     let text = "";
+    let streamUsage: any = null;
     for await (const event of stream) {
       if (event.type === "content_block_delta" && event.delta?.type === "text_delta") {
         text += event.delta.text;
+      } else if (event.type === "message_stop" && (event as any).usage) {
+        streamUsage = (event as any).usage;
       }
+    }
+    // 记录辅助调用用量
+    if (streamUsage) {
+      recordSideCall({
+        label: "memory-recall",
+        model,
+        inputTokens: streamUsage.inputTokens ?? 0,
+        outputTokens: streamUsage.outputTokens ?? 0,
+        cacheReadTokens: streamUsage.cacheReadInputTokens ?? 0,
+        cacheCreationTokens: streamUsage.cacheCreationInputTokens ?? 0,
+        durationMs: 0,
+      });
     }
     return text;
   };

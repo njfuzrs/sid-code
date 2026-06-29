@@ -11,6 +11,7 @@ import type { ToolDefinition, Message } from "../llm/types.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
 import { getLogger } from "../debug/index.ts";
 import { AutoCompactCircuitBreaker } from "./circuit-breaker.ts";
+import { recordSideCall } from "../trace/side-call-sink.ts";
 
 /** 全局熔断器实例（跨调用共享状态） */
 let globalCircuitBreaker: AutoCompactCircuitBreaker | null = null;
@@ -189,10 +190,26 @@ async function doAutoCompact(
     );
 
     let summary = "";
+    let streamUsage: any = null;
     for await (const event of stream) {
       if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
         summary += event.delta.text;
+      } else if (event.type === "message_stop" && (event as any).usage) {
+        streamUsage = (event as any).usage;
       }
+    }
+
+    // 记录辅助调用用量
+    if (streamUsage) {
+      recordSideCall({
+        label: "auto-compact",
+        model: deps.compactModel || deps.config.model,
+        inputTokens: streamUsage.inputTokens ?? 0,
+        outputTokens: streamUsage.outputTokens ?? 0,
+        cacheReadTokens: streamUsage.cacheReadInputTokens ?? 0,
+        cacheCreationTokens: streamUsage.cacheCreationInputTokens ?? 0,
+        durationMs: 0,
+      });
     }
 
     if (summary) {

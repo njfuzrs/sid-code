@@ -160,6 +160,11 @@ export interface LoopState {
    * 每次 compact 后设为 true，reminder 注入后消费（设回 false）。
    */
   goalReminderPendingAfterCompact?: boolean;
+  /**
+   * 假设纪律首轮引导是否已注入（每条用户消息内仅一次）。
+   * queryLoop 每条用户消息新建 state，此字段保证同一条消息多轮里不重复注入。
+   */
+  hypothesisGuideInjected?: boolean;
 }
 
 /** 创建初始循环状态 */

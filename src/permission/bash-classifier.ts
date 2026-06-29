@@ -13,6 +13,7 @@ import type { Provider } from "../llm/provider.ts";
 import type { Message } from "../llm/types.ts";
 import { getCapabilities } from "../llm/provider.ts";
 import { getLogger } from "../debug/logger.ts";
+import { recordSideCall } from "../trace/side-call-sink.ts";
 
 /** 风险等级（由低到高） */
 export type RiskLevel = "none" | "low" | "medium" | "high" | "critical";
@@ -261,6 +262,18 @@ export class BashClassifier {
           { model, messages, system, maxTokens },
           signal,
         );
+        // 记录辅助调用用量
+        if (resp.usage) {
+          recordSideCall({
+            label: "bash-classifier",
+            model,
+            inputTokens: resp.usage.inputTokens ?? 0,
+            outputTokens: resp.usage.outputTokens ?? 0,
+            cacheReadTokens: (resp.usage as any).cacheReadInputTokens ?? 0,
+            cacheCreationTokens: (resp.usage as any).cacheCreationInputTokens ?? 0,
+            durationMs: 0,
+          });
+        }
         return extractText(resp.content);
       }
 

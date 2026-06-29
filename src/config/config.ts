@@ -67,7 +67,9 @@ export type HooksConfig = Record<string, HookConfig[]>;
 export type { SubAgentModelMap } from "../llm/registry.ts";
 
 // 定价类型复用 cost-tracker.ts 的单一真相源
-export type { ModelPricing } from "../api/cost-tracker.ts";
+// 用 import 引入本地作用域（下方 ModelConfig.pricing 要用），再 re-export 对外暴露
+import type { ModelPricing } from "../api/cost-tracker.ts";
+export type { ModelPricing };
 
 /** 可用模型配置 */
 export interface ModelConfig {
@@ -159,6 +161,9 @@ export interface Config {
 
   // 子代理模型映射
   subAgentModels?: import("../llm/registry.ts").SubAgentModelMap;
+
+  // /goal 目标驱动持续执行配置（缺省走 DEFAULT_GOAL_CONFIG）
+  goal?: Partial<import("../goal/config.ts").GoalConfig>;
 
   // 成本配额（美元）
   costLimit?: number;
@@ -533,6 +538,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     hooks: "hooks",
     mcp_servers: "mcpServers",
     sub_agent_models: "subAgentModels",
+    goal: "goal",
     cost_limit: "costLimit",
     show_line_numbers: "showLineNumbers",
     quota: "quota",

@@ -10,6 +10,7 @@ import type { GoalState, EvidenceEntry } from "./state.ts";
 import type { Provider } from "../llm/provider.ts";
 import type { Message } from "../llm/types.ts";
 import { getLogger } from "../debug/logger.ts";
+import { recordSideCall } from "../trace/side-call-sink.ts";
 
 const log = getLogger();
 
@@ -213,6 +214,17 @@ async function callEvaluatorModel(
     for await (const event of stream) {
       if (event.type === "content_block_delta" && "text" in event.delta) {
         responseText += event.delta.text;
+      } else if (event.type === "message_stop" && (event as any).usage) {
+        const u = (event as any).usage;
+        recordSideCall({
+          label: "goal-evaluator",
+          model,
+          inputTokens: u.inputTokens ?? 0,
+          outputTokens: u.outputTokens ?? 0,
+          cacheReadTokens: u.cacheReadInputTokens ?? 0,
+          cacheCreationTokens: u.cacheCreationInputTokens ?? 0,
+          durationMs: 0,
+        });
       }
     }
 
