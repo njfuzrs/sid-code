@@ -48,6 +48,23 @@ export interface UploadOptions {
    * 默认 ~/.sid-code/trajectories
    */
   outputDir?: string;
+  /**
+   * 上传成功后是否删除本地文件（默认 false = 保留本地全量副本）。
+   * false: 云端 + 本地各保留一份完整数据（开发调试阶段推荐）。
+   * true: 上传确认后清理本地数据文件（仅保留 metadata snapshot + .uploaded 标记）。
+   */
+  deleteAfterUpload?: boolean;
+  /**
+   * §6.4:上传前是否据 events.jsonl 重算校正 traj cost。默认 true。
+   * 修复前的历史会话 cost=0,上传到远端也是 0——开启后在上传前从 events.jsonl 的
+   * AfterModelRaw.usage 重算 cost 并补写 traj,再上传校正后的值。
+   */
+  recomputeCostBeforeUpload?: boolean;
+  /**
+   * §6.4:重算 cost 所需的模型定价列表(携带权威 pricing/provider)。
+   * 不传时只能走 model-registry 内置定价表。
+   */
+  availableModels?: import("../api/cost-tracker.ts").PricingModelEntry[];
 }
 
 export interface FileUploadResult {
@@ -101,6 +118,9 @@ export class UploadManager implements TraceUploaderInterface {
       userId: "",
       deviceId: "",
       outputDir: sidPaths.trajectories(),
+      deleteAfterUpload: false,
+      recomputeCostBeforeUpload: true,
+      availableModels: [],
       ...options,
     };
     this.retryQueuePath = sidPaths.uploadQueue();
@@ -149,6 +169,10 @@ export class UploadManager implements TraceUploaderInterface {
    * - 所有文件确认后才清理本地（原子性）
    */
   async uploadSession(sessionDir: string, sessionId: string): Promise<UploadResult> {
+    // §6.4：上传前据 events.jsonl 重算校正 traj cost（修复前历史会话 cost=0 / 中断会话偏低）。
+    // best-effort：失败只告警不阻断上传。
+    this.recomputeCostIfNeeded(sessionDir);
+
     // 服务端不可达，直接进重试队列
     if (!this.serverReachable) {
       getLogger().warn("TRACE", "服务端不可达，上传任务进入重试队列");
@@ -179,9 +203,16 @@ export class UploadManager implements TraceUploaderInterface {
       }
     }
 
-    // 所有文件都确认后才清理本地
+    // 所有文件都确认后，按配置决定是否清理本地。
+    // deleteAfterUpload=false（默认）：保留本地全量副本，云端 + 本地各一份。
+    // deleteAfterUpload=true：上传确认后清理本地数据文件（保留 metadata snapshot + .uploaded 标记）。
     if (allConfirmed) {
-      this.cleanupLocal(sessionDir, sessionId);
+      if (this.opts.deleteAfterUpload) {
+        this.cleanupLocal(sessionDir, sessionId);
+      } else {
+        // 不删本地，但仍写 .uploaded 标记 + metadata snapshot，供 wrapper/评测识别"已上传"
+        this.markUploadedKeepLocal(sessionDir, sessionId);
+      }
     }
 
     return { sessionId, files: results, allConfirmed };
@@ -303,6 +334,32 @@ export class UploadManager implements TraceUploaderInterface {
     };
   }
 
+  // ─── §6.4 上传前 cost 校正 ───
+
+  /**
+   * §6.4：据 events.jsonl 的 AfterModelRaw.usage 重算 cost，在 traj 缺失/cost 偏低时补写。
+   *
+   * 调用时机：uploadSession 上传前、processRetryQueue 重传 traj 前。
+   * 幂等：backfillTrajCost 内部用 metadata.cost_recomputed_from_events 标记去重。
+   * best-effort：任何异常只告警，绝不阻断上传主流程。
+   */
+  private recomputeCostIfNeeded(sessionDir: string): void {
+    if (!this.opts.recomputeCostBeforeUpload) return;
+    try {
+      // 同步 require 形式动态加载，避免上传器与 cost-recompute 形成顶层循环依赖
+      const { backfillTrajCost } = require("./cost-recompute.ts") as typeof import("./cost-recompute.ts");
+      const result = backfillTrajCost(sessionDir, this.opts.availableModels);
+      if (result.backfilled) {
+        getLogger().info(
+          "TRACE",
+          `§6.4 上传前 cost 校正: ${sessionDir} ${result.reason}（$${(result.oldCost ?? 0).toFixed(4)} → $${(result.recomputedCost ?? 0).toFixed(4)}）`,
+        );
+      }
+    } catch (err) {
+      getLogger().warn("TRACE", `§6.4 上传前 cost 校正失败（不阻断上传）: ${err}`);
+    }
+  }
+
   // ─── 持久化重试队列 ───
 
   /**
@@ -373,6 +430,11 @@ export class UploadManager implements TraceUploaderInterface {
           continue;
         }
 
+        // §6.4：重传 traj 前先据 events.jsonl 校正 cost（历史队列里的 cost=0 会话）
+        if (fileType === "traj") {
+          this.recomputeCostIfNeeded(sessionDir);
+        }
+
         const result = await this.uploadFileWithRetry(filePath, entry.session_id, fileType);
 
         if (result.status === "uploaded" || result.status === "skipped") {
@@ -437,6 +499,28 @@ export class UploadManager implements TraceUploaderInterface {
       }
     } catch (err) {
       getLogger().warn("TRACE", `清理本地文件失败: ${err}`);
+    }
+  }
+
+  /**
+   * 标记"已上传"但保留本地全量数据文件（deleteAfterUpload=false 时调用）。
+   * 写 .uploaded 标记 + metadata snapshot，供 wrapper/评测识别该会话已同步到云端，
+   * 但不删除 session.traj / raw.jsonl / events.jsonl 等数据文件——本地继续可读。
+   */
+  private markUploadedKeepLocal(sessionDir: string, sessionId: string): void {
+    try {
+      this.persistMetadataSnapshot(sessionDir);
+      const marker = join(sessionDir, ".uploaded");
+      writeFileSync(
+        marker,
+        JSON.stringify({
+          confirmed_at: new Date().toISOString(),
+          session_id: sessionId,
+          kept_local: true,
+        }),
+      );
+    } catch (err) {
+      getLogger().warn("TRACE", `写入 .uploaded 标记失败: ${err}`);
     }
   }
 

@@ -63,11 +63,19 @@ function extractSystemPromptText(system: unknown): string {
   return "";
 }
 
-// ─── raw_preview token 估算（§3.5 fdb47f30）───
-// 对 rawMessages 做字符级 token 估算：每条消息的 content 序列化后累加。
-// 纯本地、无外部依赖；用于 raw_preview.jsonl 的 total_tokens_est，OOM/hang 复盘时
-// 能看出"最后一次请求上下文规模"。容错：任何异常返回当前累计值，绝不抛。
-function estimateMessagesTokens(rawMessages: unknown[]): number {
+// ─── raw_preview token 估算（§3.5 fdb47f30 / §6.1 修复）───
+// 对一次请求做字符级 token 估算。OOM/hang 复盘时能看出"最后一次请求上下文规模"。
+//
+// §6.1 修复：旧实现只序列化 rawMessages 的 content，漏掉了 system prompt 与 tools 定义——
+// 实测一次请求的真实 token（27424）里，messages 往往只占很小一部分，system（2-5k）+
+// tools 定义（10-20k）才是大头，导致旧估算低估 ~380 倍。现把 system / tools 一并计入。
+//
+// 纯本地、无外部依赖；容错：任何异常返回当前累计值，绝不抛。
+function estimateMessagesTokens(
+  rawMessages: unknown[],
+  system?: unknown,
+  tools?: unknown,
+): number {
   let total = 0;
   try {
     for (const msg of rawMessages) {
@@ -76,6 +84,15 @@ function estimateMessagesTokens(rawMessages: unknown[]): number {
       // content 可能是字符串，或 content block 数组，或其他结构——统一序列化估算。
       const text = typeof content === "string" ? content : JSON.stringify(content ?? msg);
       total += estimateTextTokens(text);
+    }
+    // §6.1：system prompt（字符串或 text block 数组）
+    if (system !== undefined && system !== null) {
+      const systemText = extractSystemPromptText(system) || JSON.stringify(system);
+      total += estimateTextTokens(systemText);
+    }
+    // §6.1：tools 定义（name/description/input_schema 都计入 prompt token）
+    if (tools !== undefined && tools !== null) {
+      total += estimateTextTokens(JSON.stringify(tools));
     }
   } catch {
     // 序列化/估算失败（如循环引用）返回已累计值，不影响 preview 落盘。
@@ -490,7 +507,8 @@ export class TraceCollector {
       // OOM/hang 复盘时看不出"第 N 次请求上下文有多大"。改为字符级估算 rawMessages：
       // 对每条消息序列化后累加 estimateTextTokens。纯本地计算、无外部依赖，失败被
       // 外层 try-catch 静默兜底（preview 非关键路径）。
-      const totalTokensEst = estimateMessagesTokens(rawMessages);
+      // §6.1：system + tools 一并计入（system/tools 仅首次请求在 req 上完整提供）。
+      const totalTokensEst = estimateMessagesTokens(rawMessages, req.system, req.tools);
       const previewLine = JSON.stringify({
         ts: input.timestamp,
         index,
@@ -506,7 +524,7 @@ export class TraceCollector {
     // §3.5：raw.jsonl 预写请求侧——区分"请求没发"vs"发了但没收到响应"vs"收到但处理崩溃"
     // 排查者看到 raw.jsonl 有 request_sent 但没有对应的完整记录，即可确认请求已发出。
     try {
-      const totalTokensEst = estimateMessagesTokens(rawMessages);
+      const totalTokensEst = estimateMessagesTokens(rawMessages, req.system, req.tools);
       this.writer.appendRawJsonl(JSON.stringify({
         timestamp: input.timestamp,
         index,

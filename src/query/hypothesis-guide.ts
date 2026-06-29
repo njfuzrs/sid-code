@@ -144,6 +144,43 @@ export function detectInvestigationContext(userMessage: string): boolean {
 }
 
 /**
+ * 诊断用：拆解检测结果到「四象限 + 命中层」。仅供离线验证脚本/复盘用，
+ * 不在主循环热路径调用。导出此函数是为了让验证脚本复用同一份词表/正则，
+ * 避免脚本自己复制词表导致与 detectInvestigationContext 漂移。
+ *
+ * @returns
+ *   - hasPath / hasVerb：原始消息在 Layer 1 两侧的命中情况（用于四象限分类）
+ *   - highSignal：原始消息是否命中 Layer 2 高信号短语
+ *   - jsonTitleHit：是否经 Layer 3（JSON title）才命中
+ *   - triggered：最终是否触发（= detectInvestigationContext 的返回值）
+ *   - quadrant：基于原始消息 Layer 1 两侧的四象限（TRIGGER/PATH_ONLY/INV_ONLY/NEITHER）
+ */
+export function diagnoseInvestigationContext(userMessage: string): {
+  hasPath: boolean;
+  hasVerb: boolean;
+  highSignal: boolean;
+  jsonTitleHit: boolean;
+  triggered: boolean;
+  quadrant: "TRIGGER" | "PATH_ONLY" | "INV_ONLY" | "NEITHER";
+} {
+  const text = userMessage || "";
+  const hasPath = PATH_CUES.some((re) => re.test(text));
+  const hasVerb = INVESTIGATION_CUES.some((cue) => text.includes(cue));
+  const highSignal = HIGH_SIGNAL_PHRASES.some((re) => re.test(text));
+  const triggered = detectInvestigationContext(text);
+  // Layer 3：原始消息未命中 Layer 1/2，但 JSON title 命中
+  const jsonTitleHit = triggered && !matchesInvestigationPattern(text);
+
+  let quadrant: "TRIGGER" | "PATH_ONLY" | "INV_ONLY" | "NEITHER";
+  if (hasPath && hasVerb) quadrant = "TRIGGER";
+  else if (hasPath) quadrant = "PATH_ONLY";
+  else if (hasVerb) quadrant = "INV_ONLY";
+  else quadrant = "NEITHER";
+
+  return { hasPath, hasVerb, highSignal, jsonTitleHit, triggered, quadrant };
+}
+
+/**
  * 构造假设纪律 system-reminder（一次性强推）。
  *
  * 措辞为"建议"而非"强制"——不阻断、不等待、不打回，模型仍有裁量权决定用不用。

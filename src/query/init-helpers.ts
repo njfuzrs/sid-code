@@ -33,7 +33,10 @@ export async function initTraceCollector(
         maxRetries: traceConfig.upload.maxRetries ?? 5,
         retryBaseMs: traceConfig.upload.retryBaseMs ?? 2000,
         compress: traceConfig.upload.compress ?? true,
+        deleteAfterUpload: traceConfig.upload.deleteAfterUpload ?? false,
         outputDir: traceConfig.outputDir,
+        // §6.4：传入模型定价列表，使上传前 cost 校正能用权威 pricing 重算
+        availableModels: config.availableModels,
       });
       uploadMgr.startHealthCheck(traceConfig.upload.healthCheckIntervalMs ?? 60_000);
       uploader = uploadMgr;

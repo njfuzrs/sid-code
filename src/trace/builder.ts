@@ -281,6 +281,13 @@ export interface TrajectoryMetaOutput {
   total_cache_read_tokens: number;
   total_cache_creation_tokens: number;
   total_tokens: number;
+  /**
+   * DISP-1 / §6.3：累计输入 prompt token（flow 口径，逐次累加）。
+   * total_tokens_sent 是末次值（stock，含全历史），与逐次累加的 total_cost_usd 口径不可比；
+   * 此字段与 cost 同为 flow，外部系统应用它和 total_cost_usd 做"每 token 花费"的可比除法，
+   * 切勿用 total_cost_usd / total_tokens_sent（stock÷flow 会得到错误单价）。
+   */
+  total_cumulative_prompt_tokens: number;
   total_cost_usd: number;
   // 辅助 LLM 调用统计（影子调用）
   side_api_calls?: number;
@@ -747,6 +754,8 @@ export function buildTrajectory(
     total_cache_read_tokens: cacheReadTokens,
     total_cache_creation_tokens: cacheCreationTokens,
     total_tokens: tokensSent + tokensReceived,
+    // §6.3：累计 prompt（flow），与 total_cost_usd 同口径，供外部做可比单价除法
+    total_cumulative_prompt_tokens: metadata.total_cumulative_prompt_tokens,
     total_cost_usd: metadata.total_cost_usd,
     exit_status: exitStatus,
     tools_used: Array.from(metadata.tools_used),

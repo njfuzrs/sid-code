@@ -1,0 +1,212 @@
+/**
+ * cost-recompute 单测 —— §6.2（僵尸会话补写）+ §6.4（远端对账校正）
+ *
+ * 覆盖：
+ * - recomputeCostFromEvents：从 events.jsonl 的 AfterModelRaw 重算 cost
+ * - backfillTrajCost 情形 A：traj 缺失 → 据 events 构造最小 traj
+ * - backfillTrajCost 情形 B：traj cost=0 → 据 events 补写
+ * - backfillTrajCost 情形 C：traj cost 偏低 → 据 events 校正
+ * - 幂等：补写过的 traj 再次调用跳过
+ * - 不覆盖：traj cost 合理（≥ events）时不动
+ */
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { join } from "node:path";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import {
+  recomputeCostFromEvents,
+  backfillTrajCost,
+  readTrajCost,
+} from "../../src/trace/cost-recompute.ts";
+
+let tmpRoot: string;
+let sessionDir: string;
+
+/** 用户配置：给 deepseek-v4-pro 一个明确定价，使重算结果可预期 */
+const AVAILABLE_MODELS = [
+  {
+    name: "deepseek-v4-pro",
+    provider: "openai",
+    pricing: { input: 0.435, output: 0.87, cacheRead: 0.0036, cacheWrite: 0 },
+  },
+];
+
+/** 写一行 AfterModelRaw 事件 */
+function afterModelRaw(index: number, model: string, input: number, output: number, cacheRead = 0): string {
+  return JSON.stringify({
+    event: "AfterModelRaw",
+    session_id: "test-sess",
+    timestamp: "2026-06-29T10:14:25.000Z",
+    data: {
+      index,
+      model,
+      stop_reason: "end_turn",
+      usage: { input_tokens: input, output_tokens: output, cache_read: cacheRead },
+    },
+  });
+}
+
+beforeEach(() => {
+  tmpRoot = mkdtempSync(join(tmpdir(), "cost-recompute-"));
+  sessionDir = join(tmpRoot, "sessions", "20260629-101436-test");
+  mkdirSync(sessionDir, { recursive: true });
+});
+
+afterEach(() => {
+  try { rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+});
+
+describe("recomputeCostFromEvents", () => {
+  test("从 AfterModelRaw 重算非零 cost 与 token 汇总", () => {
+    const events = [
+      afterModelRaw(1, "deepseek-v4-pro", 27424, 74),
+      afterModelRaw(2, "deepseek-v4-pro", 27909, 68),
+    ].join("\n");
+    writeFileSync(join(sessionDir, "events.jsonl"), events + "\n");
+
+    const r = recomputeCostFromEvents(sessionDir, AVAILABLE_MODELS);
+    expect(r).not.toBeNull();
+    expect(r!.apiCalls).toBe(2);
+    expect(r!.totalCostUSD).toBeGreaterThan(0);
+    // 末次 input（stock）
+    expect(r!.lastInputTokens).toBe(27909);
+    // 累计 input（flow）= 27424 + 27909
+    expect(r!.cumulativeInputTokens).toBe(27424 + 27909);
+    expect(r!.totalOutputTokens).toBe(74 + 68);
+    expect(r!.model).toBe("deepseek-v4-pro");
+    expect(r!.source).toBe("events-recompute");
+  });
+
+  test("events.jsonl 不存在返回 null", () => {
+    expect(recomputeCostFromEvents(sessionDir, AVAILABLE_MODELS)).toBeNull();
+  });
+
+  test("无 AfterModelRaw 事件返回 null", () => {
+    writeFileSync(
+      join(sessionDir, "events.jsonl"),
+      JSON.stringify({ event: "SessionStart", session_id: "x", timestamp: "t" }) + "\n",
+    );
+    expect(recomputeCostFromEvents(sessionDir, AVAILABLE_MODELS)).toBeNull();
+  });
+
+  test("损坏行被跳过，不影响其余重算", () => {
+    const events = [
+      afterModelRaw(1, "deepseek-v4-pro", 100, 10),
+      "{ 这是损坏的 JSON",
+      afterModelRaw(2, "deepseek-v4-pro", 200, 20),
+    ].join("\n");
+    writeFileSync(join(sessionDir, "events.jsonl"), events + "\n");
+    const r = recomputeCostFromEvents(sessionDir, AVAILABLE_MODELS);
+    expect(r!.apiCalls).toBe(2);
+  });
+});
+
+describe("backfillTrajCost 情形 A：traj 缺失", () => {
+  test("僵尸会话无 traj → 据 events 构造最小 traj", () => {
+    writeFileSync(
+      join(sessionDir, "events.jsonl"),
+      afterModelRaw(1, "deepseek-v4-pro", 27424, 74) + "\n",
+    );
+    expect(existsSync(join(sessionDir, "session.traj"))).toBe(false);
+
+    const result = backfillTrajCost(sessionDir, AVAILABLE_MODELS);
+    expect(result.backfilled).toBe(true);
+    expect(existsSync(join(sessionDir, "session.traj"))).toBe(true);
+
+    const traj = JSON.parse(readFileSync(join(sessionDir, "session.traj"), "utf-8"));
+    expect(traj.metadata.total_cost_usd).toBeGreaterThan(0);
+    expect(traj.metadata.cost_recomputed_from_events).toBe(true);
+    expect(traj.metadata.exit_status).toBe("interrupted");
+    // §6.3 字段也应在最小 traj 中
+    expect(traj.metadata.total_cumulative_prompt_tokens).toBe(27424);
+  });
+});
+
+describe("backfillTrajCost 情形 B：traj cost=0", () => {
+  test("历史会话 cost=0 → 据 events 补写非零", () => {
+    writeFileSync(
+      join(sessionDir, "events.jsonl"),
+      afterModelRaw(1, "deepseek-v4-pro", 27424, 74) + "\n",
+    );
+    // 写一个 cost=0 的 traj（模拟修复前历史会话）
+    writeFileSync(
+      join(sessionDir, "session.traj"),
+      JSON.stringify({
+        trajectory: [],
+        history: [],
+        info: { model_stats: { total_cost_usd: 0 } },
+        metadata: { session_id: "x", model: "deepseek-v4-pro", total_cost_usd: 0 },
+      }),
+    );
+
+    expect(readTrajCost(sessionDir)).toBe(0);
+    const result = backfillTrajCost(sessionDir, AVAILABLE_MODELS);
+    expect(result.backfilled).toBe(true);
+    expect(readTrajCost(sessionDir)!).toBeGreaterThan(0);
+
+    const traj = JSON.parse(readFileSync(join(sessionDir, "session.traj"), "utf-8"));
+    expect(traj.metadata.cost_recomputed_from_events).toBe(true);
+    // info.model_stats 也同步更新
+    expect(traj.info.model_stats.total_cost_usd).toBeGreaterThan(0);
+  });
+});
+
+describe("backfillTrajCost 情形 C：traj cost 偏低", () => {
+  test("traj cost 明显低于 events 重算 → 校正为 events 值", () => {
+    writeFileSync(
+      join(sessionDir, "events.jsonl"),
+      [afterModelRaw(1, "deepseek-v4-pro", 27424, 74), afterModelRaw(2, "deepseek-v4-pro", 27909, 68)].join("\n") + "\n",
+    );
+    const recomputed = recomputeCostFromEvents(sessionDir, AVAILABLE_MODELS)!;
+    // traj 只记了一半（少采）
+    const halfCost = recomputed.totalCostUSD / 2;
+    writeFileSync(
+      join(sessionDir, "session.traj"),
+      JSON.stringify({
+        info: { model_stats: { total_cost_usd: halfCost } },
+        metadata: { session_id: "x", model: "deepseek-v4-pro", total_cost_usd: halfCost },
+      }),
+    );
+
+    const result = backfillTrajCost(sessionDir, AVAILABLE_MODELS);
+    expect(result.backfilled).toBe(true);
+    expect(readTrajCost(sessionDir)!).toBeCloseTo(recomputed.totalCostUSD, 6);
+  });
+});
+
+describe("backfillTrajCost 幂等与不覆盖", () => {
+  test("补写过的 traj 再次调用跳过（幂等）", () => {
+    writeFileSync(
+      join(sessionDir, "events.jsonl"),
+      afterModelRaw(1, "deepseek-v4-pro", 27424, 74) + "\n",
+    );
+    writeFileSync(
+      join(sessionDir, "session.traj"),
+      JSON.stringify({ metadata: { session_id: "x", model: "deepseek-v4-pro", total_cost_usd: 0 } }),
+    );
+    const first = backfillTrajCost(sessionDir, AVAILABLE_MODELS);
+    expect(first.backfilled).toBe(true);
+
+    const second = backfillTrajCost(sessionDir, AVAILABLE_MODELS);
+    expect(second.backfilled).toBe(false);
+    expect(second.reason).toContain("幂等");
+  });
+
+  test("traj cost 合理（≥ events 重算）时不覆盖", () => {
+    writeFileSync(
+      join(sessionDir, "events.jsonl"),
+      afterModelRaw(1, "deepseek-v4-pro", 100, 10) + "\n",
+    );
+    const recomputed = recomputeCostFromEvents(sessionDir, AVAILABLE_MODELS)!;
+    // traj cost 比 events 更高（含 cache_creation，更权威）
+    const higherCost = recomputed.totalCostUSD * 2;
+    writeFileSync(
+      join(sessionDir, "session.traj"),
+      JSON.stringify({ metadata: { session_id: "x", model: "deepseek-v4-pro", total_cost_usd: higherCost } }),
+    );
+
+    const result = backfillTrajCost(sessionDir, AVAILABLE_MODELS);
+    expect(result.backfilled).toBe(false);
+    expect(readTrajCost(sessionDir)!).toBeCloseTo(higherCost, 6);
+  });
+});

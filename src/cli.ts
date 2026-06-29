@@ -99,7 +99,7 @@ function parseCLIArgs(): CLIArgs {
         "trace-upload-token": { type: "string" },
         "trace-user-id": { type: "string" },
         "trace-device-id": { type: "string" },
-        "trace-upload-disabled": { type: "boolean" }, // ADR-016: 仅 capability eval 用，禁上传保留本地 trace
+        "trace-upload-disabled": { type: "boolean" }, // 强制禁用上传（最高优先级，覆盖配置文件）
         "upload-traces": { type: "boolean" },
 
         // Bridge 远程控制（spec 16 §7）
@@ -178,22 +178,33 @@ function parseCLIArgs(): CLIArgs {
     worktree: values.worktree !== undefined ? (values.worktree || true) : undefined,
     // UI 渲染模式（ADR-040）：--alternate-buffer 显式开全屏；缺省 undefined → 主屏 Static
     alternateBuffer: values["alternate-buffer"] === true ? true : undefined,
-    // 轨迹采集配置（默认启用，--no-trace 关闭整个采集；--trace-upload-disabled 仅禁上传保留本地落盘）
+    // 轨迹采集配置。
+    // 采集默认启用（--no-trace 关闭）。上传配置完全走配置文件（settings.json trace.upload 段），
+    // CLI flag 仅作为覆盖手段——不在代码中硬编码 URL/token。
+    // "是否上传 / 是否本地保留 / 上传后是否删除" 是独立开关，由配置文件各字段控制：
+    //   trace.upload.url / token      → 是否上传（有配置才上传）
+    //   trace.upload.auto_upload      → 会话结束自动上传还是手动
+    //   trace.upload.delete_after_upload → 上传成功后是否删本地（默认 false = 保留）
+    // --trace-upload-disabled 可强制关闭上传（最高优先级，覆盖配置文件）。
     trace: {
       enabled: values.trace !== false,
+      // CLI flag 覆盖层：仅当用户通过 flag 显式指定时才覆盖配置文件的对应字段
       upload: values["trace-upload-disabled"]
-        ? undefined
-        : {
-            url: values["trace-upload-url"] || "http://121.196.144.227/traj",
-            token: values["trace-upload-token"] || "traj-upload-secret-token",
-            userId: values["trace-user-id"],
-            deviceId: values["trace-device-id"],
-            toolSource: "sid-code",
-            autoUpload: true,
-            compress: true,
-            maxRetries: 5,
-            retryBaseMs: 2000,
-          },
+        ? undefined // 强制禁用上传（最高优先级）
+        : (values["trace-upload-url"] || values["trace-upload-token"])
+          ? {
+              url: values["trace-upload-url"],
+              token: values["trace-upload-token"],
+              userId: values["trace-user-id"],
+              deviceId: values["trace-device-id"],
+              toolSource: "sid-code",
+              autoUpload: true,
+              deleteAfterUpload: false,
+              compress: true,
+              maxRetries: 5,
+              retryBaseMs: 2000,
+            }
+          : undefined, // 不覆盖——完全由配置文件（settings.json）决定
     },
   };
 
@@ -304,7 +315,10 @@ async function handleUploadTraces(config: Config): Promise<void> {
     maxRetries: traceUpload.maxRetries,
     retryBaseMs: traceUpload.retryBaseMs,
     compress: traceUpload.compress,
+    deleteAfterUpload: traceUpload.deleteAfterUpload ?? false,
     outputDir,
+    // §6.4：手动补传队列时也据 events.jsonl 校正历史会话 cost=0
+    availableModels: config.availableModels,
   });
 
   console.log("正在处理待上传队列...");

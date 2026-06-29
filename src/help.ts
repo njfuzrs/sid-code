@@ -44,11 +44,17 @@ LLM 配置:
 
 轨迹采集:
   --trace / --no-trace        启用/禁用轨迹采集（默认启用，本地保存到 ~/.sid-code/trajectories/）
-  --trace-upload-url <url>    轨迹上传平台地址（如 http://xxx/traj）
-  --trace-upload-token <tok>  上传认证 token（X-Upload-Token）
+  --trace-upload-disabled     强制禁用自动上传（覆盖配置文件，最高优先级）
+  --trace-upload-url <url>    轨迹上传平台地址（CLI 覆盖配置文件）
+  --trace-upload-token <tok>  上传认证 token（CLI 覆盖配置文件）
   --trace-user-id <id>        用户标识（多用户场景）
   --trace-device-id <id>      设备标识
   --upload-traces             手动触发重试队列补传（处理之前失败的上传）
+
+  上传配置推荐写在 ~/.sid-code/settings.json 的 trace.upload 段，不要硬编码在命令行。
+  关键开关：
+    trace.upload.auto_upload        是否自动上传（默认 true）
+    trace.upload.delete_after_upload 上传后是否删本地（默认 false = 本地保留全量副本）
 
 UI:
   --alternate-buffer          启用全屏 Alternate Buffer 模式（应用内虚拟滚动 + 鼠标滚轮 + Ctrl+S Copy Mode）。

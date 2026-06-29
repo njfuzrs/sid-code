@@ -53,10 +53,15 @@ function makeMetadata(overrides: Partial<TraceMetadata> = {}): TraceMetadata {
     has_sub_agent: false,
     total_tokens_sent: 100,
     total_tokens_received: 50,
+    total_cumulative_prompt_tokens: 100,
     total_cache_read_tokens: 0,
     total_cache_creation_tokens: 0,
     total_cost_usd: 0.001,
     total_api_calls: 1,
+    side_api_calls: 0,
+    side_cost_usd: 0,
+    side_tokens_sent: 0,
+    side_tokens_received: 0,
     ...overrides,
   };
 }
@@ -472,6 +477,20 @@ describe("buildTrajectory", () => {
     expect(result.metadata.total_tokens).toBe(450);
     expect(result.metadata.total_tokens_sent).toBe(300);
     expect(result.metadata.total_tokens_received).toBe(150);
+  });
+
+  // §6.3：total_cumulative_prompt_tokens（flow 口径）应输出到 traj，供外部与 cost 做可比除法。
+  test("§6.3 metadata 输出 total_cumulative_prompt_tokens（flow 累计 prompt）", () => {
+    const metadata = makeMetadata({
+      total_cumulative_prompt_tokens: 54321,
+      total_cost_usd: 0.5,
+    });
+    const result = buildTrajectory([], metadata);
+
+    // 关键：此前该字段在 metaOutput 输出块被遗漏（只累加不输出）
+    expect(result.metadata.total_cumulative_prompt_tokens).toBe(54321);
+    // 与 cost 同为 flow，可做可比除法（不会是 undefined）
+    expect(typeof result.metadata.total_cumulative_prompt_tokens).toBe("number");
   });
 
   test("metadata 包含 total_steps（trajectory 步骤数）", () => {

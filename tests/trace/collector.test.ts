@@ -185,6 +185,33 @@ describe("TraceCollector", () => {
     expect(line.total_tokens_est).toBeGreaterThan(0);
   });
 
+  // §6.1：total_tokens_est 应计入 system prompt + tools 定义（旧实现只算 messages，低估 ~380 倍）。
+  test("§6.1 raw_preview.total_tokens_est 计入 system+tools（大 tools 定义显著抬高估算）", async () => {
+    await fireSessionStart(hookSystem);
+
+    // 构造一个很大的 tools 定义（模拟真实 ~10-20k token 的工具集），
+    // 以及一条很短的 user 消息。若估算只算 messages，结果会很小；
+    // 计入 tools 后应显著变大。
+    const bigTools = Array.from({ length: 30 }, (_, i) => ({
+      name: `tool_${i}`,
+      description: "这是一个功能非常详细的工具，".repeat(20),
+      input_schema: { type: "object", properties: { arg: { type: "string", description: "参数说明".repeat(10) } } },
+    }));
+    const bigSystem = "你是一个专业的编程助手。".repeat(50);
+
+    await fireModelRound(hookSystem, {
+      messages: [{ role: "user", content: "hi" }],
+      system: bigSystem,
+      tools: bigTools,
+    });
+
+    const previewPath = join(testDir, "sessions", "sess-001", "raw_preview.jsonl");
+    const line = JSON.parse(readFileSync(previewPath, "utf-8").trim().split("\n")[0]);
+    // 短消息 "hi" 本身只有几个 token；计入 system(~大段中文) + 30 个工具定义后，
+    // 估算应远超 1000，证明 system/tools 已被计入。
+    expect(line.total_tokens_est).toBeGreaterThan(1000);
+  });
+
   test("AfterModel 后 session.traj 被写入", async () => {
     await fireSessionStart(hookSystem);
     await fireModelRound(hookSystem);

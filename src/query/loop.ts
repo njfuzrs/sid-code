@@ -480,6 +480,22 @@ export async function* queryLoop(
         reminderParts.push(buildHypothesisGuideReminder());
         state.hypothesisGuideInjected = true;
         log.info("QUERY_LOOP", "注入假设纪律首轮引导（命中调查性上下文）");
+        // 可观测性：把"首轮引导注入命中"落成结构化 trace 事件（events.jsonl），
+        // 让命中率可被 trace-digest 自动统计——否则只能离线 grep raw.jsonl。
+        // 与 GoalGateDecision 同机制（goal-gate.ts:67），try/catch 兜底不阻断主循环。
+        if (deps.traceAppendEvent) {
+          try {
+            deps.traceAppendEvent({
+              event: "HypothesisGuideInjected",
+              session_id: sessionState.sessionId,
+              timestamp: new Date().toISOString(),
+              data: {
+                turn: state.turnCount,
+                userTextPreview: userText.slice(0, 200),
+              },
+            });
+          } catch { /* trace 写入失败不阻断 */ }
+        }
       }
     }
 
@@ -1371,6 +1387,23 @@ export async function* queryLoop(
       for (const b of toolBlocks) {
         if (b.type === "tool_use") {
           yield { kind: "tool_start", toolName: b.name, toolInput: b.input };
+          // 可观测性：把 hypothesis_register / hypothesis_challenge 的实际调用落成 trace 事件
+          // （events.jsonl），与 HypothesisGuideInjected 配对——前者记"注入命中"、后者记"模型采纳"，
+          // 两者相除即「防线采纳率」，可被 trace-digest 自动统计，无需离线 grep。
+          if (deps.traceAppendEvent && (b.name === "hypothesis_register" || b.name === "hypothesis_challenge")) {
+            try {
+              deps.traceAppendEvent({
+                event: "HypothesisToolUsed",
+                session_id: sessionState.sessionId,
+                timestamp: new Date().toISOString(),
+                data: {
+                  tool: b.name,
+                  turn: state.turnCount,
+                  guideInjected: state.hypothesisGuideInjected === true,
+                },
+              });
+            } catch { /* trace 写入失败不阻断 */ }
+          }
         }
       }
 

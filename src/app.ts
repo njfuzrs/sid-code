@@ -1305,6 +1305,27 @@ export class App {
           `发现 ${stale.length} 个疑似 hang/僵尸会话（有心跳无 crash.json，最后心跳 >30s）:`,
           ...stale.map(s => `  session ${s.session_id}, 最后心跳 ${s.last_heartbeat_ts}, 进程状态 ${s.is_process_alive ? "存活" : "已退出"}`),
         ].join("\n"));
+
+        // §6.2：对进程已退出的僵尸会话（kill -9 / OOM 等），从 events.jsonl 的
+        // AfterModelRaw.usage 重算 cost 并补写 traj。SessionEnd 未触发时 traj 可能缺失或 cost=0，
+        // 这里据最接近 provider 的原始 usage 做 best-effort 补偿（幂等：补写后打标记，下次跳过）。
+        try {
+          const { backfillTrajCost } = await import("./trace/cost-recompute.ts");
+          const sessionsRoot = join(sidPaths.trajectories(), "sessions");
+          let backfilledCount = 0;
+          for (const s of stale) {
+            if (s.is_process_alive) continue; // 进程还活着，可能正常会话仍在跑，不动
+            const sessionDir = join(sessionsRoot, s.session_id);
+            const result = backfillTrajCost(sessionDir, this.config.availableModels);
+            if (result.backfilled) {
+              backfilledCount++;
+              log.info("DIAG", `  └ session ${s.session_id} traj 已补写: ${result.reason}（cost=$${(result.recomputedCost ?? 0).toFixed(4)}）`);
+            }
+          }
+          if (backfilledCount > 0) {
+            log.warn("DIAG", `§6.2：已为 ${backfilledCount} 个僵尸会话据 events.jsonl 重算补写 traj cost`);
+          }
+        } catch (err) { log.warn("DIAG", `僵尸会话 cost 补写失败: ${err}`); }
       }
     } catch { /* 诊断失败不影响启动 */ }
 

@@ -276,6 +276,12 @@ export interface TraceUploadConfig {
   token: string;
   /** 是否自动上传（默认 true，false 则仅本地保存） */
   autoUpload?: boolean;
+  /**
+   * 上传成功后是否删除本地文件（默认 false = 保留本地全量副本）。
+   * false: 云端 + 本地各保留一份完整数据（开发调试阶段推荐）。
+   * true: 上传确认后清理本地数据文件（仅保留 metadata snapshot）。
+   */
+  deleteAfterUpload?: boolean;
   /** 用户标识（多用户场景区分来源） */
   userId?: string;
   /** 设备标识 */
@@ -482,9 +488,10 @@ export function defaultConfig(): Config {
     systemPrompt: "",
     appendSystemPrompt: "",
     systemPromptFile: "",
-    debug: false,
-    debugLevel: "INFO",
+    debug: true,
+    debugLevel: "DEBUG",
     debugLogFile: "~/.sid-code/debug.log",
+    trace: { enabled: true },
     audit: true,
     auditLogFile: "~/.sid-code/audit.log",
     hooks: {},
@@ -618,6 +625,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
           maxRetries: upload.max_retries || upload.maxRetries,
           retryBaseMs: upload.retry_base_ms || upload.retryBaseMs,
           compress: upload.compress,
+          deleteAfterUpload: upload.delete_after_upload ?? upload.deleteAfterUpload,
           healthCheckIntervalMs: upload.health_check_interval_ms || upload.healthCheckIntervalMs,
           maxQueueRetries: upload.max_queue_retries || upload.maxQueueRetries,
           queueScanIntervalMs: upload.queue_scan_interval_ms || upload.queueScanIntervalMs,
