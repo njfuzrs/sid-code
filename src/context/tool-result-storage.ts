@@ -180,11 +180,12 @@ export class ContentReplacementState {
   }
 }
 
-// ─── 工具输出预算控制（TODO: 待接入） ───
-// 注意：enforceToolResultBudget 当前未在生产代码中调用。
-// 其功能（per-message 聚合 token 预算控制）与 getCleanedMessages 的 KEEP_RECENT_OUTPUTS
-// 机制部分重叠但互补——前者按 token 总量控制，后者按条数控制。
-// 未来可在 getCleanedMessages 中作为"硬预算兜底"接入（当上下文极端膨胀时）。
+// ─── 工具输出预算控制（设计预留，当前无需接入） ───
+// enforceToolResultBudget 提供 per-message 聚合 token 预算控制（按总量而非条数）。
+// 当前三层防线（addMessage 持久化 + 遮罩服务 50K token 保护窗口 + KEEP_RECENT_OUTPUTS=6）
+// 已覆盖所有真实场景，不存在溢出风险。
+// 详细分析见：docs/bugfixes/todo/enforceToolResultBudget-待接入分析.md
+// 接入条件：KEEP_RECENT_OUTPUTS 被调高 / 豁免名单扩大 / 遮罩服务被绕过 / 小窗口模型使用增多
 
 /** 预算控制选项 */
 export interface ToolResultBudgetOptions {
