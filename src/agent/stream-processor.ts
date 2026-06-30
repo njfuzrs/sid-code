@@ -26,6 +26,7 @@ export interface StreamProcessResult {
  */
 export async function processStream(
   stream: AsyncIterable<StreamEvent>,
+  signal?: AbortSignal,
 ): Promise<StreamProcessResult> {
   const content: ContentBlock[] = [];
   let stopReason: string | null = null;
@@ -33,6 +34,16 @@ export async function processStream(
   const jsonAccumulators = new Map<number, string>();
 
   for await (const event of stream) {
+    // B1 纵深防御：子代理流消费中检查 signal，防止 abort 无法穿透到底层时挂死
+    if (signal?.aborted) {
+      return {
+        content,
+        stopReason: "error",
+        usage,
+        errorMessage: "Request aborted",
+      };
+    }
+
     switch (event.type) {
       case "message_start":
         accumulateUsage(usage, event.message.usage);

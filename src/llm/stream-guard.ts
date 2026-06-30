@@ -25,6 +25,8 @@ export interface StreamGuardOptions {
   onTimeout?: () => void;
   /** 遥测回调（流内诊断事件） */
   onTelemetry?: (event: StreamGuardTelemetryEvent) => void;
+  /** A5: 外部 abort signal，流消费中检查以支持用户中断穿透 */
+  signal?: AbortSignal;
 }
 
 /**
@@ -42,7 +44,7 @@ export async function* guardedStream<T>(
   source: AsyncIterable<T>,
   opts: StreamGuardOptions,
 ): AsyncGenerator<T> {
-  const { idleTimeoutMs, stallWarnMs = 30_000, label, onTimeout, onTelemetry } = opts;
+  const { idleTimeoutMs, stallWarnMs = 30_000, label, onTimeout, onTelemetry, signal } = opts;
   const log = getLogger();
 
   let totalEvents = 0;
@@ -82,6 +84,8 @@ export async function* guardedStream<T>(
   try {
     for await (const event of source) {
       if (timedOut) break;
+      // A5 纵深防御：流消费中检查 signal，支持用户中断穿透
+      if (signal?.aborted) break;
       totalEvents++;
       if (!firstEventTime) firstEventTime = Date.now();
       resetIdle();

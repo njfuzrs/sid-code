@@ -347,19 +347,34 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
 
   // Ctrl+C 处理（Critical 优先级）：
   // ① 正在流式/工具执行 → 第一次 Ctrl+C 先中断当前操作(不退出),让用户能停下跑飞的任务而不丢会话;
+  //    如果 abort 无效（如 openai parseSSE hang），第二次 Ctrl+C 直接强制退出（逃生口）;
   // ② 空闲(或已中断) → 走二次确认:首次提示、窗口内再按一次才退出。
+  const abortAlreadyFired = useRef(false);
   useKeypress(KeypressPriority.Critical, (key: Key) => {
     const b = matchBinding(key);
     if (b?.action !== "app:quit") return false;
 
     const busy = state.isLoading || state.isStreaming || state.isToolExecuting;
     if (busy) {
+      // Fix 3: 如果上一次中断后仍然 busy（abort 无效），直接走强制退出逃生口
+      if (abortAlreadyFired.current) {
+        log.warn("UI:APP", "abort 无效，强制退出（逃生口）");
+        triggerQuit();
+        return true;
+      }
+
       log.info("UI:APP", "用户按下 Ctrl+C，正忙——中断当前操作（不退出）");
       callbacks.onInterrupt();
+      abortAlreadyFired.current = true;
+      // 3s 后自动重置（如果 abort 生效了，状态会变 idle，重置也无害）
+      setTimeout(() => { abortAlreadyFired.current = false; }, 3000);
       // 中断也清掉可能残留的退出确认态,避免「中断后下一次单击直接退出」的误判。
       cancelCtrlCConfirm();
       return true;
     }
+
+    // 从 busy→idle 时重置 abort 标记
+    abortAlreadyFired.current = false;
 
     log.info("UI:APP", ctrlCPressedOnce ? "用户二次按下 Ctrl+C，退出" : "用户按下 Ctrl+C，提示再按一次退出");
     pressCtrlC();

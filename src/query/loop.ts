@@ -1725,6 +1725,10 @@ async function runLLMLoopCheck(
 
     let resultText = "";
     for await (const event of stream) {
+      // A8 纵深防御：认知检测 side-call 检查 signal
+      if (controller.signal.aborted) {
+        throw new Error("Request aborted");
+      }
       if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
         resultText += event.delta.text;
       }

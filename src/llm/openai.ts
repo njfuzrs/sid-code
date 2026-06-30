@@ -567,7 +567,11 @@ export class OpenAIProvider implements Provider {
       let accumulatedUsage: Usage = { inputTokens: 0, outputTokens: 0 };
       // PARSE-4：累积输出文本，供"端点不返回 usage"（Ollama 等）时估算兜底
       let accumulatedOutputText = "";
-      for await (const event of this.parseSSE(response.body!)) {
+      for await (const event of this.parseSSE(response.body!, signal)) {
+        // Fix 1 纵深防御：每次事件到达后检查 signal（覆盖 parseSSE 内 race 的盲区）
+        if (signal?.aborted) {
+          throw new Error("Request aborted");
+        }
         // 记录首 token 延迟（TTFT）
         if (event.type === "content_block_delta" && !firstTokenTime) {
           firstTokenTime = Date.now();
@@ -768,7 +772,7 @@ export class OpenAIProvider implements Provider {
    * 解析 SSE 流，转换为统一的 StreamEvent
    * 支持多工具并行调用：用 Map<index, ToolCallState> 追踪每个工具调用
    */
-  private async *parseSSE(stream: ReadableStream<Uint8Array>): AsyncIterable<StreamEvent> {
+  private async *parseSSE(stream: ReadableStream<Uint8Array>, signal?: AbortSignal): AsyncIterable<StreamEvent> {
     const reader = stream.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
@@ -799,6 +803,11 @@ export class OpenAIProvider implements Provider {
     const isDeepSeek = /deepseek/i.test(this._model);
     const IDLE_TIMEOUT_MS = isDeepSeek ? 180_000 : 90_000;
 
+    /** Fix 2: content progress timeout — 区分 TCP keep-alive 与业务进展
+     *  即使 reader.read() 持续 settle（空行/ping），只要无有效内容进展就超时中断。
+     *  DeepSeek 思考模型给 5min（思考期间 reasoning_content 算进展）；其他 2min。 */
+    const CONTENT_PROGRESS_TIMEOUT_MS = isDeepSeek ? 300_000 : 120_000;
+
     /** 30s stall 日志（只记不杀，对齐 claude-code，给弱模型喘息空间） */
     const STALL_LOG_MS = 30_000;
     const stallLogger = setInterval(() => {
@@ -808,8 +817,26 @@ export class OpenAIProvider implements Provider {
       }
     }, STALL_LOG_MS);
 
+    // Fix 1: signal abort promise — 让用户 ESC/Ctrl+C 能打断已进入 SSE 消费的流
+    // 在外部创建一次，避免每次循环创建新 listener 导致泄漏
+    let signalAbortHandler: (() => void) | null = null;
+    const abortPromise = signal ? new Promise<never>((_, reject) => {
+      if (signal.aborted) {
+        reject(new Error("Request aborted"));
+        return;
+      }
+      signalAbortHandler = () => reject(new Error("Request aborted"));
+      signal.addEventListener("abort", signalAbortHandler, { once: true });
+    }) : null;
+
     try {
       while (true) {
+        // 前置检查：循环顶部快速判断（方案 B 补充，覆盖 reader.read() settle 后的盲区）
+        if (signal?.aborted) {
+          reader.cancel().catch(() => {});
+          throw new Error("Request aborted");
+        }
+
         // idle timeout 默认启用：reader 超时后 reject + cancel 释放底层 TCP 连接
         const readPromise = reader.read();
         let timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -829,7 +856,9 @@ export class OpenAIProvider implements Provider {
 
         let result: Awaited<ReturnType<typeof reader.read>>;
         try {
-          result = await Promise.race([readPromise, timeoutPromise]);
+          const racers: Promise<any>[] = [readPromise, timeoutPromise];
+          if (abortPromise) racers.push(abortPromise);
+          result = await Promise.race(racers);
         } finally {
           if (timeoutId !== null) clearTimeout(timeoutId);
         }
@@ -896,11 +925,12 @@ export class OpenAIProvider implements Provider {
 
             if (!delta && !finishReason) continue;
 
-            // 跟踪有效内容进展（供 stall 日志使用）
-            // 仅 content/tool_calls/finish_reason 视为有效进展，reasoning 和空 chunk 不算
+            // 跟踪有效内容进展（供 stall 日志 + content progress timeout 使用）
+            // content/tool_calls/finish_reason/reasoning_content 均视为有效进展
             const hasContent = typeof delta?.content === "string" && delta.content.length > 0;
             const hasToolCalls = Array.isArray(delta?.tool_calls) && delta.tool_calls.length > 0;
-            if (hasContent || hasToolCalls || finishReason) {
+            const hasReasoning = typeof delta?.reasoning_content === "string" && delta.reasoning_content.length > 0;
+            if (hasContent || hasToolCalls || hasReasoning || finishReason) {
               lastContentProgressAt = Date.now();
             } else {
               emptyChunks++;
@@ -1090,9 +1120,25 @@ export class OpenAIProvider implements Provider {
             // 跳过无法解析的行
           }
         }
+
+        // Fix 2: content progress timeout — 每次 reader.read() settle 后检查
+        // 即使 TCP 层有字节到达（空行/ping），只要无有效内容进展就超时中断
+        const contentElapsed = Date.now() - lastContentProgressAt;
+        if (contentElapsed >= CONTENT_PROGRESS_TIMEOUT_MS) {
+          getLogger().warn(
+            "SSE",
+            `内容进展超时 ${CONTENT_PROGRESS_TIMEOUT_MS / 1000}s 无有效内容（chunks=${totalChunks} empty=${emptyChunks}），中断流`,
+          );
+          reader.cancel().catch(() => {});
+          throw new Error(`SSE 内容进展超时：${CONTENT_PROGRESS_TIMEOUT_MS / 1000}s 无有效内容`);
+        }
       }
     } finally {
       clearInterval(stallLogger);
+      // 清理 signal listener，避免 Promise 泄漏
+      if (signal && signalAbortHandler) {
+        signal.removeEventListener("abort", signalAbortHandler);
+      }
       try { reader.cancel(); } catch {}
       try { reader.releaseLock(); } catch {}
     }

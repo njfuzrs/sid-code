@@ -662,6 +662,10 @@ export class ModelFallback {
 
       const fallbackParams = { ...params, model: fallbackModel };
       for await (const event of this.config.fallbackProvider.sendMessageStream(fallbackParams, signal)) {
+        // A4 纵深防御：fallback provider 流消费中检查 signal
+        if (signal?.aborted) {
+          throw new RequestAbortedError("请求已中止");
+        }
         yield event;
       }
       return;

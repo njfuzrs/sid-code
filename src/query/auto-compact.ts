@@ -191,7 +191,12 @@ async function doAutoCompact(
 
     let summary = "";
     let streamUsage: any = null;
+    const compactSignal = deps.getAbortSignal();
     for await (const event of stream) {
+      // A6 纵深防御：压缩 side-call 检查 signal，防止主循环 abort 后压缩仍挂起
+      if (compactSignal?.aborted) {
+        throw new Error("Request aborted");
+      }
       if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
         summary += event.delta.text;
       } else if (event.type === "message_stop" && (event as any).usage) {

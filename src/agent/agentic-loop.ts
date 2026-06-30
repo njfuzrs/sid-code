@@ -8,14 +8,14 @@
  */
 
 import type { Provider } from "../llm/provider.ts";
-import type { ContentBlock, Usage, StreamEvent, SendParams } from "../llm/types.ts";
+import type { ContentBlock, Usage, SendParams } from "../llm/types.ts";
 import { accumulateUsage, normalizeCacheUsage } from "../llm/types.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { getLogger } from "../debug/logger.ts";
 import type { HookSystem } from "../hook/system.ts";
 import { LoopDetector, LOOP_RECOVERY_PROMPT } from "./loop-detection.ts";
-import { processStream } from "./stream-processor.ts";
+import { processStream, type StreamProcessResult } from "./stream-processor.ts";
 import { executeTools } from "./tool-executor.ts";
 
 // ============================================================
@@ -127,8 +127,31 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
 
     const stream = provider.sendMessageStream(sendParams, signal);
 
+    // B2: 子代理硬超时保护（对齐主循环 L1），防止 processStream 无限挂起
+    const AGENT_STREAM_TIMEOUT_MS = 5 * 60 * 1000; // 5min
+    const timeoutPromise = new Promise<StreamProcessResult>((_, reject) => {
+      setTimeout(() => {
+        reject(new Error(`子代理流式超时：${AGENT_STREAM_TIMEOUT_MS / 1000}s 无响应`));
+      }, AGENT_STREAM_TIMEOUT_MS);
+    });
+
     // 处理流式响应
-    const response = await processStream(stream);
+    let response: StreamProcessResult;
+    try {
+      response = await Promise.race([processStream(stream, signal), timeoutPromise]);
+    } catch (err: any) {
+      // 超时或 abort 都走错误返回
+      log.error("AGENT_LOOP", `流式处理异常: ${err.message}`);
+      return {
+        success: false,
+        turns,
+        totalUsage,
+        toolUseCount,
+        lastTextOutput,
+        messages: ctxMgr.getMessages(),
+        errorMessage: err.message || "流式处理超时",
+      };
+    }
     if (config.onStreamText) {
       const responseText = response.content
         .filter(b => b.type === "text")
