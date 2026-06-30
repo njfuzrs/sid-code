@@ -43,6 +43,13 @@ export class ToolOutputMaskingService {
    * 返回遮罩后的消息列表（深拷贝，不修改原始数据）
    */
   mask(messages: Message[]): Message[] {
+    // 当前 turn 保护：最后一条 assistant 之后的 tool_result 不遮罩
+    // （模型下一轮才能看到它们，遮罩掉等于模型从未看到过工具结果）
+    let lastAssistantIdx = -1;
+    for (let k = messages.length - 1; k >= 0; k--) {
+      if (messages[k].role === "assistant") { lastAssistantIdx = k; break; }
+    }
+
     // 第一遍：后向扫描，收集保护窗口外的可修剪候选
     let protectedTokens = 0;
     const candidates: MaskCandidate[] = [];
@@ -52,6 +59,9 @@ export class ToolOutputMaskingService {
       for (let j = msg.content.length - 1; j >= 0; j--) {
         const block = msg.content[j];
         if (block.type !== "tool_result") continue;
+
+        // 当前 turn 保护：最后一条 assistant 之后的 tool_result 不遮罩
+        if (lastAssistantIdx >= 0 && i > lastAssistantIdx) continue;
 
         // 已是持久化引用（约 200 字节），跳过遮罩（无需再压缩）
         if (typeof block.content === "string" && isPersistedReference(block.content)) {

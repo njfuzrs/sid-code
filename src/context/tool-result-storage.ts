@@ -180,7 +180,11 @@ export class ContentReplacementState {
   }
 }
 
-// ─── 工具输出预算控制 ───
+// ─── 工具输出预算控制（TODO: 待接入） ───
+// 注意：enforceToolResultBudget 当前未在生产代码中调用。
+// 其功能（per-message 聚合 token 预算控制）与 getCleanedMessages 的 KEEP_RECENT_OUTPUTS
+// 机制部分重叠但互补——前者按 token 总量控制，后者按条数控制。
+// 未来可在 getCleanedMessages 中作为"硬预算兜底"接入（当上下文极端膨胀时）。
 
 /** 预算控制选项 */
 export interface ToolResultBudgetOptions {
@@ -258,9 +262,9 @@ export function enforceToolResultBudget(
  * 清理过期的工具输出临时文件
  *
  * @param sessionId 会话 ID
- * @param maxAgeMs 最大保留时间（毫秒，默认 1 小时）
+ * @param maxAgeMs 最大保留时间（毫秒，默认 7 天——与会话恢复周期对齐，避免 -c 续接时引用变死链）
  */
-export function cleanupPersistedOutputs(sessionId: string, maxAgeMs: number = 3600_000): void {
+export function cleanupPersistedOutputs(sessionId: string, maxAgeMs: number = 7 * 24 * 3600_000): void {
   const log = getLogger();
 
   const dir = join(

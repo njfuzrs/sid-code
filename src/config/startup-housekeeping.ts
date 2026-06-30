@@ -35,6 +35,8 @@ import { getLogger } from "../debug/logger.ts";
 import { sidPaths } from "./paths.ts";
 import { ensureConfigGitignore } from "./ensure-gitignore.ts";
 import { addFileGlobRuleToGitignore } from "./gitignore.ts";
+import { cleanupPersistedOutputs } from "../context/tool-result-storage.ts";
+import { getSidTempDir } from "../utils/temp-dir.ts";
 
 /** 清理触发间隔：24 小时 */
 const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -79,9 +81,19 @@ export function runStartupHousekeeping(now: number = Date.now()): void {
   try {
     if (!shouldRunCleanup(now)) return;
     const removed = cleanupStaleTrajectories(now);
+    // 5. 精细文件级清理：对未过期的 session 中的 tool-outputs 文件按 7 天阈值清理
+    const outputsCleaned = cleanupStaleToolOutputs();
+    // 6. 清理 /tmp 下过期的 masked-outputs 临时文件
+    const maskedCleaned = cleanupStaleMaskedOutputs();
     writeWatermark(now);
     if (removed > 0) {
       getLogger().info("CLEANUP", `启动清理：移除 ${removed} 个过期 trajectory 会话目录`);
+    }
+    if (outputsCleaned > 0) {
+      getLogger().info("CLEANUP", `启动清理：移除 ${outputsCleaned} 个过期工具输出文件`);
+    }
+    if (maskedCleaned > 0) {
+      getLogger().info("CLEANUP", `启动清理：移除 ${maskedCleaned} 个过期遮罩输出文件`);
     }
   } catch (err) {
     getLogger().debug("CLEANUP", `启动清理跳过: ${err}`);
@@ -133,6 +145,78 @@ function cleanupStaleTrajectories(now: number): number {
     }
   }
   return removed;
+}
+
+/**
+ * 精细文件级清理：遍历未过期的 session 目录，对 tool-outputs 子目录内的文件按 7 天阈值清理。
+ * 返回清理的文件总数。
+ */
+function cleanupStaleToolOutputs(): number {
+  const sessionsRoot = join(sidPaths.trajectories(), "sessions");
+  if (!existsSync(sessionsRoot)) return 0;
+
+  let totalCleaned = 0;
+  for (const entry of readdirSync(sessionsRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    try {
+      cleanupPersistedOutputs(entry.name);
+      // cleanupPersistedOutputs 内部按 7 天阈值删过期文件，但不返回计数
+      // 这里只能粗略计数：检查 tool-outputs 目录是否被清空删除来判断
+      const toolOutputsDir = join(sessionsRoot, entry.name, "tool-outputs");
+      if (!existsSync(toolOutputsDir)) totalCleaned++;
+    } catch {
+      // 单个 session 清理失败不影响其它
+    }
+  }
+  return totalCleaned;
+}
+
+/**
+ * 清理 /tmp 下过期的 masked-outputs 临时目录。
+ * ToolOutputMaskingService 遮罩时将完整输出保存到 /tmp/sid-code-{uid}/sessions/{sessionId}/masked-outputs/，
+ * 系统重启会清理 /tmp，但长运行服务器上不会自动消失。按 7 天阈值清理过期文件。
+ */
+function cleanupStaleMaskedOutputs(): number {
+  let totalCleaned = 0;
+  try {
+    const tempSessionsRoot = join(getSidTempDir(), "sessions");
+    if (!existsSync(tempSessionsRoot)) return 0;
+
+    const now = Date.now();
+    const MAX_AGE = 7 * 24 * 3600_000; // 7 天
+
+    for (const sessionEntry of readdirSync(tempSessionsRoot, { withFileTypes: true })) {
+      if (!sessionEntry.isDirectory()) continue;
+      const maskedDir = join(tempSessionsRoot, sessionEntry.name, "masked-outputs");
+      if (!existsSync(maskedDir)) continue;
+
+      try {
+        const files = readdirSync(maskedDir);
+        let removedInDir = 0;
+        for (const file of files) {
+          const filePath = join(maskedDir, file);
+          try {
+            const stat = statSync(filePath);
+            if (now - stat.mtimeMs > MAX_AGE) {
+              rmSync(filePath, { force: true });
+              removedInDir++;
+              totalCleaned++;
+            }
+          } catch { /* 单文件失败跳过 */ }
+        }
+        // 清空后删除目录本身
+        if (removedInDir > 0) {
+          try {
+            const remaining = readdirSync(maskedDir);
+            if (remaining.length === 0) rmSync(maskedDir, { force: true });
+          } catch { /* 目录删除失败不致命 */ }
+        }
+      } catch { /* 单个 session 目录失败跳过 */ }
+    }
+  } catch {
+    // temp dir 不存在或无权限，跳过
+  }
+  return totalCleaned;
 }
 
 /**

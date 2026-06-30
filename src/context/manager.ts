@@ -7,7 +7,7 @@ import type { Message } from "../llm/types.ts";
 import { MessageValidator } from "./validator.ts";
 import { estimateTextTokens } from "./token.ts";
 import { ToolOutputMaskingService, TOOL_RESULT_CLEARED_MESSAGE } from "./tool-output-masking.ts";
-import { persistLargeOutput, isPersistedReference } from "./tool-result-storage.ts";
+import { persistLargeOutput, isPersistedReference, ContentReplacementState } from "./tool-result-storage.ts";
 import { getLogger, getSessionMetrics } from "../debug/index.ts";
 import {
   checkMessageHistoryIntegrity,
@@ -153,6 +153,12 @@ export class Manager {
    * 同一份消息历史被两条压缩路径竞态改写（产生孤儿配对 / 重复摘要）。
    */
   private isCompacting = false;
+
+  /**
+   * 跨 turn 稳定替换状态：确保 getCleanedMessages 对同一 tool_use_id 的清理占位文本
+   * 在多次调用中字节级一致，保持 prompt cache 前缀稳定（不因占位文本微变而 cache miss）。
+   */
+  private replacementState = new ContentReplacementState();
 
   /**
    * 可选 Plan 提供方（§3.3 压缩后 Plan 重注入）。
@@ -334,16 +340,29 @@ export class Manager {
     }
 
     // 增量压缩：tool_result 内容在添加时即持久化到磁盘，防止上下文膨胀
+    // 豁免 read/edit/write 工具——它们的输出是模型调用目的所在，立即持久化会导致
+    // 模型下一轮只看到引用、被迫重读。这些工具依赖 getCleanedMessages 的分级保护。
     const sessionId = this.sessionId ?? "default";
     const compressed: Message = {
       ...msg,
       content: msg.content.map(block => {
         if (block.type === "tool_result" && typeof block.content === "string" && block.content.length > OUTPUT_THRESHOLD) {
-          log.debug("CONTEXT", `增量持久化 tool_result: ${block.content.length} → 磁盘`);
+          // 跳过已是持久化引用的内容（会话恢复路径 2 逐条 addMessage 时，避免对引用二次持久化）
+          if (isPersistedReference(block.content)) {
+            return block;
+          }
+          const toolName = this.resolveToolName(block.tool_use_id);
+          // read/edit/write/read_many 工具不在入队时持久化——依赖 getCleanedMessages 的分级保护
+          // OOM 安全：read 工具自身有 2000 行限制，单次最大 ~200K；保留 6 条 ≈ 1.2MB 可接受
+          if (toolName === "read" || toolName === "edit" || toolName === "write" || toolName === "read_many") {
+            log.debug("CONTEXT", `豁免持久化 tool_result (${toolName}): ${block.content.length} 字符保留在内存`);
+            return block;
+          }
+          log.debug("CONTEXT", `增量持久化 tool_result (${toolName}): ${block.content.length} → 磁盘`);
           const { reference } = persistLargeOutput(
             block.content,
             block.tool_use_id,
-            "unknown", // tool_name 在 addMessage 时不可知，后续可从工具执行处注入
+            toolName,
             sessionId,
             OUTPUT_THRESHOLD,
           );
@@ -380,6 +399,24 @@ export class Manager {
   /** 获取所有消息（发送给 LLM 前调用，会自动清理旧的大输出） */
   getMessages(): Message[] {
     return [...this.messages];
+  }
+
+  /**
+   * 从 this.messages 中按 tool_use_id 精确反查工具名。
+   * 全量扫描所有 assistant 消息（从后往前），防止角色合并场景下只扫最近一条而漏找。
+   * tool_use_id 是全局唯一的，精确匹配不会误命中。
+   */
+  private resolveToolName(toolUseId: string): string {
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      const msg = this.messages[i];
+      if (msg.role !== "assistant") continue;
+      for (const block of msg.content) {
+        if (block.type === "tool_use" && block.id === toolUseId) {
+          return block.name;
+        }
+      }
+    }
+    return "unknown";
   }
 
   /**
@@ -441,7 +478,7 @@ export class Manager {
     const toolIndex = this.buildToolUseIndex(cleaned);
     const activeFiles = this.collectActiveFiles(toolIndex);
 
-    // 找到所有大输出的位置（从后往前扫描），并标注是否豁免（活跃文件）+ 重读指引元信息
+    // 找到所有大输出的位置（从后往前扫描），并标注是否豁免（活跃文件 / 当前 turn）+ 重读指引元信息
     const largeOutputPositions: {
       msgIdx: number;
       blockIdx: number;
@@ -451,6 +488,13 @@ export class Manager {
       inputSummary?: string;
     }[] = [];
 
+    // 当前 turn 保护：最后一条 assistant 消息之后的 tool_result 属于刚调用的工具结果，
+    // 模型下一轮才能看到它们，不应在本次 getCleanedMessages 中被清理。
+    let lastAssistantIdx = -1;
+    for (let k = cleaned.length - 1; k >= 0; k--) {
+      if (cleaned[k].role === "assistant") { lastAssistantIdx = k; break; }
+    }
+
     for (let i = 0; i < cleaned.length; i++) {
       const msg = cleaned[i];
       for (let j = 0; j < msg.content.length; j++) {
@@ -459,7 +503,10 @@ export class Manager {
           const meta = toolIndex.get(block.tool_use_id);
           const filePath = meta?.filePath;
           // P1-3：read 了活跃（被 write/edit 过）文件的大输出 → 豁免清理
-          const exempt = !!(filePath && meta?.toolName === "read" && activeFiles.has(filePath));
+          const isActiveFile = !!(filePath && meta?.toolName === "read" && activeFiles.has(filePath));
+          // 当前 turn 保护：最后一条 assistant 之后的 tool_result 不清理
+          const isCurrentTurn = (lastAssistantIdx >= 0 && i > lastAssistantIdx);
+          const exempt = isActiveFile || isCurrentTurn;
           largeOutputPositions.push({
             msgIdx: i,
             blockIdx: j,
@@ -498,24 +545,25 @@ export class Manager {
     );
 
     // 深拷贝并清理（P1-3 + 9.3：占位符附带精准重读指引——含工具名 + input 摘要）
+    // 使用 replacementState 保证同一 tool_use_id 的占位文本跨调用字节级一致（prompt cache 稳定）
     const result = cleaned.map((msg, msgIdx) => ({
       role: msg.role,
       content: msg.content.map((block, blockIdx) => {
         const key = `${msgIdx}:${blockIdx}`;
         const meta = cleanMap.get(key);
         if (meta && block.type === "tool_result") {
-          const { filePath, toolName, inputSummary } = meta;
-          let guidance: string;
-          if (filePath) {
-            // 已知文件路径：提示精准重读，而不是盲目从头整文件重读
-            guidance = `[已清理: ${toolName ?? "tool"}(${filePath}), 原始 ${block.content.length} 字符。已清理以节省上下文。如需该内容，请用 read("${filePath}", offset=...) 精准重读你需要的行段，不要从头整文件重读。]`;
-          } else if (toolName) {
-            // 无文件路径但有工具名/参数：告知用什么调用产生的，便于按需重新执行
-            const summary = inputSummary ? `(${inputSummary})` : "";
-            guidance = `[已清理: ${toolName}${summary}, 原始 ${block.content.length} 字符。已清理以节省上下文。如需该内容，重新执行该工具调用即可恢复。]`;
-          } else {
-            guidance = TOOL_RESULT_CLEARED_MESSAGE;
-          }
+          const guidance = this.replacementState.getOrCreate(block.tool_use_id, () => {
+            const { filePath, toolName, inputSummary } = meta;
+            if (filePath) {
+              // 已知文件路径：提示精准重读，而不是盲目从头整文件重读
+              return `[已清理: ${toolName ?? "tool"}(${filePath}), 原始 ${block.content.length} 字符。已清理以节省上下文。如需该内容，请用 read("${filePath}", offset=...) 精准重读你需要的行段，不要从头整文件重读。]`;
+            } else if (toolName) {
+              // 无文件路径但有工具名/参数：告知用什么调用产生的，便于按需重新执行
+              const summary = inputSummary ? `(${inputSummary})` : "";
+              return `[已清理: ${toolName}${summary}, 原始 ${block.content.length} 字符。已清理以节省上下文。如需该内容，重新执行该工具调用即可恢复。]`;
+            }
+            return TOOL_RESULT_CLEARED_MESSAGE;
+          });
           return {
             ...block,
             content: guidance,
@@ -524,6 +572,32 @@ export class Manager {
         return block;
       }),
     }));
+
+    // 旧持久化引用折叠：引用约 200 字节，不会被上面的大输出清理逻辑触及（永远 < OUTPUT_THRESHOLD），
+    // 但累积数十个后仍占上下文。保留最近 REFERENCE_KEEP_RECENT 个完整引用，更旧的折叠为极简占位。
+    const REFERENCE_KEEP_RECENT = 20;
+    const persistedRefPositions: { msgIdx: number; blockIdx: number }[] = [];
+    for (let i = 0; i < result.length; i++) {
+      const msg = result[i];
+      for (let j = 0; j < msg.content.length; j++) {
+        const block = msg.content[j];
+        if (block.type === "tool_result" && typeof block.content === "string" && isPersistedReference(block.content)) {
+          persistedRefPositions.push({ msgIdx: i, blockIdx: j });
+        }
+      }
+    }
+    if (persistedRefPositions.length > REFERENCE_KEEP_RECENT) {
+      const toCollapse = persistedRefPositions.slice(0, -REFERENCE_KEEP_RECENT);
+      for (const { msgIdx, blockIdx } of toCollapse) {
+        const block = result[msgIdx].content[blockIdx];
+        if (block.type === "tool_result") {
+          (result[msgIdx].content as any[])[blockIdx] = {
+            ...block,
+            content: "[旧工具输出，如需查阅请重新执行对应工具]",
+          };
+        }
+      }
+    }
 
     // 验证消息格式（仅警告，不阻塞）
     const errors = MessageValidator.validate(result);
@@ -636,6 +710,7 @@ export class Manager {
   /** 清空消息 */
   clear(): void {
     this.messages = [];
+    this.replacementState.clear();
     this.invalidateActualTokenAnchor();
   }
 
@@ -868,6 +943,8 @@ export class Manager {
 
     // 真实 token 锚点失效：截断后 prompt 骤降，旧锚点会让下一轮 compact 决策误判
     this.invalidateActualTokenAnchor();
+    // 截断后旧占位缓存失效（消息索引已变）
+    this.replacementState.clear();
     log.warn("CONTEXT", `紧急压缩: ${before} → ${this.messages.length} 条消息`);
   }
 
@@ -1068,6 +1145,9 @@ export class Manager {
     const reattachMsgs = extraReattach ?? [];
 
     this.messages = [summaryMsg, ackMsg, ...skillMsgs, ...planMsgs, ...reattachMsgs, ...kept];
+
+    // 压缩后旧占位缓存失效（消息已被截断替换）
+    this.replacementState.clear();
 
     // 真实 token 锚点失效：摘要压缩后真实 prompt 骤降，必须在 estimateTokens 验证前重置，
     // 否则 tokensAfter 仍被旧锚点钉在高位（既污染验证日志，也让后续 compact 决策误判）。

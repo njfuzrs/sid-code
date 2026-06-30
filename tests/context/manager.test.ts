@@ -221,7 +221,41 @@ describe("truncateToolOutput 智能截断", () => {
 });
 
 describe("增量压缩", () => {
-  test("addMessage 自动截断超大 tool_result", () => {
+  test("addMessage 自动截断超大 tool_result (非豁免工具)", () => {
+    const mgr = new Manager({ maxTokens: 100000 });
+    const bigContent = "x".repeat(50000);
+
+    mgr.addMessage({
+      role: "user",
+      content: [{ type: "text", text: "test" }],
+    });
+    mgr.addMessage({
+      role: "assistant",
+      content: [{ type: "tool_use", id: "c1", name: "bash", input: {} }],
+    });
+    mgr.addMessage({
+      role: "user",
+      content: [{
+        type: "tool_result",
+        tool_use_id: "c1",
+        content: bigContent,
+        is_error: false,
+      }],
+    });
+
+    const msgs = mgr.getMessages();
+    const toolResult = msgs[2].content[0];
+    expect(toolResult.type).toBe("tool_result");
+    if (toolResult.type === "tool_result") {
+      // 应该被持久化到磁盘，content 变为 ~200 字节的轻量引用
+      expect(toolResult.content.length).toBeLessThan(bigContent.length);
+      expect(toolResult.content).toContain("[持久化输出]");
+      expect(toolResult.content).toContain("tool_use_id=c1");
+      expect(toolResult.content).toContain("tool=bash");
+    }
+  });
+
+  test("addMessage 豁免 read/edit/write 工具的大输出（不立即持久化）", () => {
     const mgr = new Manager({ maxTokens: 100000 });
     const bigContent = "x".repeat(50000);
 
@@ -247,10 +281,9 @@ describe("增量压缩", () => {
     const toolResult = msgs[2].content[0];
     expect(toolResult.type).toBe("tool_result");
     if (toolResult.type === "tool_result") {
-      // 应该被持久化到磁盘，content 变为 ~200 字节的轻量引用
-      expect(toolResult.content.length).toBeLessThan(bigContent.length);
-      expect(toolResult.content).toContain("[持久化输出]");
-      expect(toolResult.content).toContain("tool_use_id=c1");
+      // read 工具豁免即时持久化，内容应保持原样
+      expect(toolResult.content.length).toBe(bigContent.length);
+      expect(toolResult.content).not.toContain("[持久化输出]");
     }
   });
 
