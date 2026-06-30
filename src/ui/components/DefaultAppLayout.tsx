@@ -41,6 +41,8 @@ interface DefaultAppLayoutProps {
   streamingText: string;
   /** v2：流式思考内容（独立于 streamingText） */
   streamingThinking: string;
+  /** v2：流式思考开始时间戳（ms），透传给 MainContent → ThinkingMessage */
+  streamingThinkingStartMs?: number;
   /** v2：思考块折叠状态 */
   thinkCollapsed: boolean;
   isStreaming: boolean;
@@ -101,6 +103,7 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
   listData,
   streamingText,
   streamingThinking,
+  streamingThinkingStartMs,
   thinkCollapsed,
   isStreaming,
   isEmpty,
@@ -183,6 +186,7 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
           listData={listData}
           streamingText={streamingText}
           streamingThinking={streamingThinking}
+          streamingThinkingStartMs={streamingThinkingStartMs}
           isStreaming={isStreaming}
           termWidth={termWidth}
           hasFocus={true}

@@ -175,6 +175,9 @@ export interface TUIState {
   streamingText: string;
   /** 新增：流式思考内容（独立于 streamingText，对标 Claude Code） */
   streamingThinking: string;
+  /** 流式思考开始时间戳（ms）。首个 thinking token 到达时记录，用于计时器起点对齐。
+   *  undefined = 尚未开始思考或已清零 */
+  streamingThinkingStartMs?: number;
   /** 是否正在流式输出 */
   isStreaming: boolean;
   /** 兼容旧接口：流式输出的未完成行预览 */
@@ -684,6 +687,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           listData={listData}
           streamingText={state.streamingText}
           streamingThinking={state.streamingThinking}
+          streamingThinkingStartMs={state.streamingThinkingStartMs}
           thinkCollapsed={thinkCollapsed}
           isStreaming={state.isStreaming}
           isEmpty={isEmpty}
@@ -731,6 +735,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           staticItems={staticItems}
           streamingText={state.streamingText}
           streamingThinking={state.streamingThinking}
+          streamingThinkingStartMs={state.streamingThinkingStartMs}
           thinkCollapsed={thinkCollapsed}
           isStreaming={state.isStreaming}
           isEmpty={isEmpty}

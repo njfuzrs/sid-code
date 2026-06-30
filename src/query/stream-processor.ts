@@ -115,6 +115,9 @@ export async function processStream(
             response.content.push({ type: "text", text: "" });
             if (event._raw_block && (event._raw_block as any).type === "thinking") {
               thinkingIndexes.add(event.index);
+              // SP1：起点在 block_start 而非首 delta，把开头等待时间计入耗时，
+              // 与 content_block_stop 的时间差才是真实思考时长。
+              thinkingStartMs.set(event.index, Date.now());
             }
           } else if (event.content_block.type === "tool_use") {
             response.content.push({
@@ -138,10 +141,6 @@ export async function processStream(
               block.text += delta.text;
               // 对标 Claude Code：思考块不调 onText，调 onThinking
               if (thinkingIndexes.has(event.index)) {
-                // SP1：首个 thinking delta 到达时记录起点（仅记一次）。
-                if (!thinkingStartMs.has(event.index)) {
-                  thinkingStartMs.set(event.index, Date.now());
-                }
                 onThinking?.(delta.text);
               } else {
                 onText?.(delta.text);
@@ -180,7 +179,7 @@ export async function processStream(
           if (thinkingIndexes.has(event.index)) {
             const block = response.content[pos];
             if (block?.type === "text" && block.text) {
-              // SP1：算出该思考块耗时（首 delta → stop）；无起点（无 delta）则不附。
+              // SP1：算出该思考块耗时（block_start → stop）；无起点则不附。
               const startedAt = thinkingStartMs.get(event.index);
               const durationMs =
                 startedAt !== undefined

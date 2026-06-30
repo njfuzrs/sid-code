@@ -27,6 +27,12 @@ interface ThinkingMessageProps {
   /** 思考耗时（秒）。流式态由组件自计时；完成态可由外部传入冻结值 */
   thinkingSeconds?: number;
   /**
+   * 思考开始的绝对时间戳（ms，来自 app.ts onThinking 首帧）。
+   * 传入后计时器以此为起点，与 stream-processor 的 durationMs 同源，
+   * 避免流式→历史项转换时秒数跳变。不传则退回组件挂载时刻（旧行为）。
+   */
+  thinkingStartMs?: number;
+  /**
    * 折叠态是否显示「ctrl+o 展开」提示，默认 true。
    * 仅在 ctrl+o 真能切换的场景（AB 虚拟列表模式）显示；
    * 主屏 Static 模式（print-and-forget，无法重渲已打印项）传 false，避免误导。
@@ -45,25 +51,30 @@ function formatThinkingDuration(seconds: number): string {
 /**
  * 思考态计时 Hook：仅在 streaming=true 时累加秒数，停止后冻结当前值。
  *
+ * thinkingStartMs：外部传入的起点时间戳（来自 onThinking 首帧，与 stream-processor
+ * 的 durationMs 同源）。传入则用之；不传则退回组件挂载时刻（旧行为，误差 < 1 帧）。
+ *
  * 关键：以 keepAlive=true 订阅 Clock，自己驱动时钟。
  * 纯思考阶段（正文尚未开始、无后台任务）可能没有其他 keepAlive 订阅者，
  * 若用 keepAlive=false 则 Clock 的 setInterval 不启动，回调永远不触发，
  * 计时器卡在 0。思考计时是用户正在关注的"活"指标，理应自驱动。
  */
-function useThinkingTimer(streaming: boolean): number {
+function useThinkingTimer(streaming: boolean, thinkingStartMs?: number): number {
   const [seconds, setSeconds] = React.useState(0);
   const startRef = React.useRef<number | null>(null);
   const clock = React.useContext(ClockContext);
 
   // 进入流式态时记录起点并清零；离开流式态时保留最后值（冻结）。
+  // 优先用外部传入的 thinkingStartMs（与 stream-processor durationMs 同源），
+  // 无则退回 Date.now()（组件挂载时刻，旧行为）。
   React.useEffect(() => {
     if (streaming) {
-      startRef.current = Date.now();
-      setSeconds(0);
+      startRef.current = thinkingStartMs ?? Date.now();
+      setSeconds(Math.floor((Date.now() - startRef.current) / 1000));
     } else {
       startRef.current = null;
     }
-  }, [streaming]);
+  }, [streaming, thinkingStartMs]);
 
   // 直接订阅 Clock，keepAlive=true 确保时钟自驱动
   React.useEffect(() => {
@@ -118,10 +129,11 @@ export const ThinkingMessage: React.FC<ThinkingMessageProps> = ({
   collapsed = false,
   streaming = false,
   thinkingSeconds,
+  thinkingStartMs,
   showExpandHint = true,
 }) => {
   // 流式态自计时；完成态优先用外部传入的冻结值，无则自计时器最后值。
-  const timerSeconds = useThinkingTimer(streaming);
+  const timerSeconds = useThinkingTimer(streaming, thinkingStartMs);
   const elapsed = thinkingSeconds ?? timerSeconds;
 
   if (!text.trim()) return null;

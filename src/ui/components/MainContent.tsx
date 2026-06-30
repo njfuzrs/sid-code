@@ -25,6 +25,8 @@ interface MainContentProps {
   streamingText: string;
   /** v2：流式思考内容（独立于 streamingText） */
   streamingThinking: string;
+  /** v2：流式思考开始时间戳（ms），与 stream-processor durationMs 同源，供计时器对齐 */
+  streamingThinkingStartMs?: number;
   /** 是否正在流式输出 */
   isStreaming: boolean;
   /** 终端宽度 */
@@ -47,6 +49,7 @@ export const MainContent = memo(function MainContent({
   listData,
   streamingText,
   streamingThinking,
+  streamingThinkingStartMs,
   isStreaming,
   termWidth,
   hasFocus,
@@ -90,7 +93,8 @@ export const MainContent = memo(function MainContent({
             text={streamingThinking}
             width={termWidth}
             collapsed={true}
-            streaming={true}
+            streaming={isStreaming}
+            thinkingStartMs={streamingThinkingStartMs}
             showExpandHint={false}
           />
         </Box>

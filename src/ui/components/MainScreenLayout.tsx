@@ -42,6 +42,8 @@ interface MainScreenLayoutProps {
   streamingText: string;
   /** v2：流式思考内容（独立于 streamingText） */
   streamingThinking: string;
+  /** v2：流式思考开始时间戳（ms），透传给 ThinkingMessage 计时器 */
+  streamingThinkingStartMs?: number;
   /** v2：思考块折叠状态（Static 模式始终 false） */
   thinkCollapsed: boolean;
   /** 是否正在流式输出 */
@@ -102,6 +104,7 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
   staticItems,
   streamingText,
   streamingThinking,
+  streamingThinkingStartMs,
   thinkCollapsed,
   isStreaming,
   isEmpty,
@@ -188,7 +191,8 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
               text={streamingThinking}
               width={termWidth}
               collapsed={thinkingCollapsed}
-              streaming={true}
+              streaming={isStreaming}
+              thinkingStartMs={streamingThinkingStartMs}
               showExpandHint={false}
             />
           ) : null}

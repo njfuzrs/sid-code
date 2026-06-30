@@ -2429,6 +2429,7 @@ export class App {
       lastToolResult: null,
       streamingText: "",
       streamingThinking: "",
+      streamingThinkingStartMs: undefined,
       isStreaming: false,
       streamingLine: "",
       isQuitting: false,
@@ -2772,6 +2773,8 @@ export class App {
           streamSynced = true;
           syncDisplay();
           streamingFullText = "";
+          // 正文首帧到来 = 思考阶段已结束，清空思考流式内容，停止思考计时。
+          streamingThinkingFull = "";
           // CM3：文本开始流式输出 = 请求已成功，清除任何残留的重试/限流提示。
           if (bridge.current.retryStatus) {
             updateState({ retryStatus: null });
@@ -2781,11 +2784,12 @@ export class App {
           removeStatusMessage("system:transient");
         }
         streamingFullText += text;
-        updateState({ streamingText: streamingFullText, isStreaming: true });
+        updateState({ streamingText: streamingFullText, streamingThinking: streamingThinkingFull, streamingThinkingStartMs: undefined, isStreaming: true });
       });
 
       // v2：设置流式思考回调（桥接 processStream 内部的 onThinking，对标 Claude Code）
       this.queryEngine.setStreamThinkingCallback((thinking: string) => {
+        const isFirst = streamingThinkingFull === "";
         streamingThinkingFull += thinking;
         // 关键修复：思考也是「模型正在产出」，必须置 isStreaming=true。
         // 否则推理模型（扩展思考 / DeepSeek-R1 等）在思考阶段持续吐 token 时，
@@ -2798,7 +2802,10 @@ export class App {
           updateState({ retryStatus: null });
           removeStatusMessage("system:transient");
         }
-        updateState({ streamingThinking: streamingThinkingFull, isStreaming: true });
+        // P2-2：首帧记录起点时间戳，与 stream-processor 的 block_start 对齐，
+        // 避免流式计时器与历史项 durationSeconds 因起点不同而数字跳变。
+        const startMsPatch = isFirst ? { streamingThinkingStartMs: Date.now() } : {};
+        updateState({ streamingThinking: streamingThinkingFull, isStreaming: true, ...startMsPatch });
       });
 
       try {
@@ -2819,11 +2826,13 @@ export class App {
               break;
             }
             case "tool_start":
-              // 工具开始前，结束当前流式输出
+              // 工具开始前，结束当前流式输出。
+              // 不变量：tool_start 始终在 LLM 串行完成后到达，不会与 onThinking/onText 并发，
+              // 因此此处清零 streamingThinkingFull 是安全的——下一轮 LLM 思考会重新累积。
               streamingFullText = "";
               streamingThinkingFull = "";
               streamSynced = false;
-              syncDisplay({ toolName: event.toolName, toolInput: event.toolInput ?? null, isToolExecuting: true, streamingText: "", streamingThinking: "", isStreaming: false, streamingLine: "" });
+              syncDisplay({ toolName: event.toolName, toolInput: event.toolInput ?? null, isToolExecuting: true, streamingText: "", streamingThinking: "", streamingThinkingStartMs: undefined, isStreaming: false, streamingLine: "" });
               break;
             case "tool_end":
               syncDisplay({
@@ -2890,7 +2899,7 @@ export class App {
               streamingFullText = "";
               streamingThinkingFull = "";
               streamSynced = false;
-              rebuildDisplay({ streamingThinking: "" });
+              rebuildDisplay({ streamingThinking: "", streamingText: "", isStreaming: false });
               addTransientStatusMessage("tombstone", "模型降级，正在使用备用模型重试...", 3000);
               break;
             case "fatal_error": {
@@ -2909,6 +2918,7 @@ export class App {
                 isStreaming: false,
                 streamingText: "",
                 streamingThinking: "",
+                streamingThinkingStartMs: undefined,
                 streamingLine: "",
                 toolName: null,
                 toolInput: null,
@@ -2934,6 +2944,7 @@ export class App {
                 contextPercent: ctxPct,
                 streamingText: "",
                 streamingThinking: "",
+                streamingThinkingStartMs: undefined,
                 isStreaming: false,
                 streamingLine: "",
               });
@@ -2956,17 +2967,21 @@ export class App {
         // 清理 session 超时定时器
         clearTimeout(sessionTimer);
 
-        // 兜底：确保异常路径也能正确清理
+        // 兜底：确保异常路径也能正确清理（回调置 null 防止 stale 闭包追加 delta）
         streamingFullText = "";
         streamingThinkingFull = "";
         this.queryEngine.setStreamTextCallback(null);
         this.queryEngine.setStreamThinkingCallback(null);
 
+        // 无论 completedNormally 与否，流式状态都必须清零——
+        // done/fatal_error 路径已在事件处理里清，这里是双重保险（防止未来新路径遗漏）。
+        updateState({ isStreaming: false, streamingText: "", streamingThinking: "", streamingThinkingStartMs: undefined });
+
         // 检查是否正常完成（通过 done 事件标记）
         if (!completedNormally) {
           const warningDisplay = [...bridge.current.displayItems,
             { kind: "system" as const, text: "⚠️ 任务异常中断，部分操作可能未完成" }];
-          updateState({ isLoading: false, isStreaming: false,
+          updateState({ isLoading: false,
             displayItems: warningDisplay,
             statusMessage: "任务异常中断" });
         }
@@ -3045,6 +3060,7 @@ export class App {
             // P0-2：ESC 取消是用户最高频路径，此前漏清 streamingThinking →
             // 推理模型思考流式中按 ESC，思考残留动态区，下一轮与新思考同屏混显（范式一+二）。
             streamingThinking: "",
+            streamingThinkingStartMs: undefined,
             streamingLine: "",
             toolName: null,
             toolInput: null,
