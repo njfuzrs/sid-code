@@ -191,42 +191,59 @@ describe("OpenAI convertMessages", () => {
   });
 });
 
-// ─── P1-2：sub_agent reasoning_content 剥离 ───
-// 根因 5.2：含 tool_calls 的 assistant 消息携带 reasoning_content 会触发 DeepSeek 400
-// （实测 sub_agent 35.9% 失败、13 次精确命中）。断言：有 tool_calls → 剥离；无 tool_calls → 保留。
-describe("OpenAI convertMessages — reasoning_content 剥离 (P1-2)", () => {
-  const provider = new TestableOpenAIProvider("test-key", "gpt-4o-mini");
+// ─── 方案⓪：reasoning_content 回传按模型协议能力分叉（真因修复） ───
+// deepseek-reasoning-leak-as-text-任务中断.md 方案⓪：
+//   - DeepSeek V4 thinking 系：tool-call 轮**必须**回传 reasoning_content（否则 400 + 思维链断裂）。
+//   - 旧 deepseek-reasoner / 其它模型：tool-call 轮回传会触发旧协议 400 → 剥离。
+// 判据取自 model-registry 的 requiresReasoningContentForToolCalls 能力标志。
+describe("OpenAI convertMessages — reasoning_content 回传分叉 (方案⓪)", () => {
+  const withToolCalls = {
+    role: "assistant" as const,
+    content: [
+      { type: "text" as const, text: "让我调用工具" },
+      { type: "tool_use" as const, id: "c1", name: "read", input: { file_path: "/a.ts" } },
+    ],
+    _meta: { reasoning_content: "我应该先读文件再分析" },
+  };
 
-  test("含 tool_calls 的 assistant 消息不携带 reasoning_content", () => {
-    const result = provider.testConvertMessages([
-      {
-        role: "assistant",
-        content: [
-          { type: "text", text: "让我调用工具" },
-          { type: "tool_use", id: "c1", name: "read", input: { file_path: "/a.ts" } },
-        ],
-        _meta: { reasoning_content: "我应该先读文件再分析" },
-      },
-    ]);
+  test("DeepSeek V4：含 tool_calls 仍回传 reasoning_content（真因修复核心）", () => {
+    const provider = new TestableOpenAIProvider("test-key", "deepseek-v4-pro");
+    const result = provider.testConvertMessages([withToolCalls]);
+    expect(result[0].tool_calls).toHaveLength(1);
+    expect(result[0].reasoning_content).toBe("我应该先读文件再分析");
+  });
 
-    expect(result).toHaveLength(1);
+  test("旧 deepseek-reasoner：含 tool_calls 剥离 reasoning_content（旧协议 400 规避）", () => {
+    const provider = new TestableOpenAIProvider("test-key", "deepseek-reasoner");
+    const result = provider.testConvertMessages([withToolCalls]);
     expect(result[0].tool_calls).toHaveLength(1);
     expect(result[0].reasoning_content).toBeUndefined();
   });
 
-  test("无 tool_calls 的 assistant 消息保留 reasoning_content", () => {
-    const result = provider.testConvertMessages([
-      {
-        role: "assistant",
-        content: [{ type: "text", text: "结论是 X" }],
-        _meta: { reasoning_content: "推理过程……" },
-      },
-    ]);
-
-    expect(result).toHaveLength(1);
-    expect(result[0].reasoning_content).toBe("推理过程……");
-    expect(result[0].tool_calls).toBeUndefined();
+  test("非 DeepSeek 模型（gpt-4o-mini）：含 tool_calls 剥离（保守默认）", () => {
+    const provider = new TestableOpenAIProvider("test-key", "gpt-4o-mini");
+    const result = provider.testConvertMessages([withToolCalls]);
+    expect(result[0].tool_calls).toHaveLength(1);
+    expect(result[0].reasoning_content).toBeUndefined();
   });
+
+  test("无 tool_calls：所有模型都保留 reasoning_content", () => {
+    const noTool = {
+      role: "assistant" as const,
+      content: [{ type: "text" as const, text: "结论是 X" }],
+      _meta: { reasoning_content: "推理过程……" },
+    };
+    for (const model of ["deepseek-v4-pro", "deepseek-reasoner", "gpt-4o-mini"]) {
+      const provider = new TestableOpenAIProvider("test-key", model);
+      const result = provider.testConvertMessages([noTool]);
+      expect(result[0].reasoning_content).toBe("推理过程……");
+      expect(result[0].tool_calls).toBeUndefined();
+    }
+  });
+});
+
+describe("OpenAI convertMessages — 其它兜底", () => {
+  const provider = new TestableOpenAIProvider("test-key", "gpt-4o-mini");
 
   test("空 tool_result 兜底为有语义占位而非空串", () => {
     const result = provider.testConvertMessages([

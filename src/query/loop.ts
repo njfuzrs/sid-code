@@ -50,9 +50,11 @@ import {
 import {
   TODO_REMINDER_CONFIG,
   MAX_TODO_GATE_RETRIES,
+  MAX_UNANSWERED_RETRIES,
   buildTodoReminder,
   buildTodoGateMessage,
   buildTodoGateExhaustedMessage,
+  buildUnansweredEndTurnMessage,
   countUnfinished,
 } from "./todo-reminder.ts";
 import {
@@ -62,6 +64,13 @@ import {
   buildProgressReminder,
 } from "./work-log.ts";
 import { dequeuePendingNotifications, evictTerminalTasks } from "../task/index.ts";
+import {
+  measureThinkingLen,
+  isThinkingDiverging,
+  pushThinkingLen,
+  buildThinkingDivergenceMessage,
+  MAX_THINKING_DIVERGENCE_INTERVENTIONS,
+} from "./thinking-divergence.ts";
 import { injectReminders } from "./reminder-inject.ts";
 import { buildContextPressureReminder } from "./context-pressure.ts";
 import { detectInvestigationContext, buildHypothesisGuideReminder } from "./hypothesis-guide.ts";
@@ -517,6 +526,14 @@ export async function* queryLoop(
         `注入矛盾中断提醒（${state.pendingContradictions.length} 条假设待裁决）`,
       );
       state.pendingContradictions = undefined; // 注入后清空，避免重复
+    }
+
+    // 方案③（思考发散·注入端）：上一轮检出的思考发散，本轮经 reminder 通道注入收敛提示。
+    // 放在 unshift 高优先级——分析瘫痪时越早读到越好。注入后清空 pending 标记。
+    if (state.pendingThinkingDivergenceReminder) {
+      reminderParts.unshift(buildThinkingDivergenceMessage(state.thinkingLenHistory ?? []));
+      log.info("QUERY_LOOP", "方案③：注入思考发散收敛提示");
+      state.pendingThinkingDivergenceReminder = false;
     }
 
     // ─── /goal：目标状态周期回注（对标 Codex continuation.md）───
@@ -1126,6 +1143,35 @@ export async function* queryLoop(
       continue;
     }
 
+    // ─── 方案③：思考发散熔断（早期哨兵，deepseek-reasoning-leak 修复 5.3）───
+    // 统计本轮思考字符数并入历史，检测"连续 N 轮单调递增且末轮超阈值"（分析瘫痪的
+    // 最早信号）。命中则置 pending 标记，下一轮循环开头经 reminderParts 注入收敛提示
+    //（不在此直接插消息，避免破坏 assistant/tool_result 配对——同 pendingContradictions）。
+    // 真因⓪修好后此路径应极少触发，留作回归指标。
+    {
+      const thinkingLen = measureThinkingLen(response.content as any);
+      state.thinkingLenHistory = pushThinkingLen(state.thinkingLenHistory, thinkingLen);
+      const interventions = state.thinkingDivergenceInterventions ?? 0;
+      if (
+        isThinkingDiverging(state.thinkingLenHistory) &&
+        interventions < MAX_THINKING_DIVERGENCE_INTERVENTIONS &&
+        !state.pendingThinkingDivergenceReminder
+      ) {
+        state.pendingThinkingDivergenceReminder = true;
+        state.thinkingDivergenceInterventions = interventions + 1;
+        log.warn(
+          "QUERY_LOOP",
+          `方案③：检测到思考发散（近${state.thinkingLenHistory.length}轮思考字符 ${state.thinkingLenHistory.join("→")}），` +
+            `将于下一轮注入收敛提示 (${state.thinkingDivergenceInterventions}/${MAX_THINKING_DIVERGENCE_INTERVENTIONS})`,
+        );
+        yield {
+          kind: "system",
+          level: "warning",
+          text: `检测到思考量持续激增（可能陷入分析瘫痪），自动引导收敛 (${state.thinkingDivergenceInterventions}/${MAX_THINKING_DIVERGENCE_INTERVENTIONS})`,
+        };
+      }
+    }
+
     // ─── 检查停止原因 ───
     // F2：end_turn 兜底——模型有时 stop_reason=end_turn 却在 content 里留下正常参数的 tool_use。
     // 此处的 tool_use 必为非空参数（空参数已被上方 F1 拦截：要么 continue 重试，要么 return）。
@@ -1173,6 +1219,43 @@ export async function* queryLoop(
         if (stopResult?.forceStop) {
           log.info("QUERY_LOOP", "Stop Hook preventContinuation，强制结束");
         }
+      }
+
+      // ─── 方案②：「未答复的 end_turn」兜底（不依赖 todo，deepseek-reasoning-leak 修复）───
+      // stream-processor 判定本轮思考漂移进正文 / 只思考不答复（response._unansweredEndTurn）时，
+      // 无论有没有 todo，都回注一次收敛提示并软续命——这是例③"重试无反应"的机制级破局点：
+      // 完成度校验/重试链原本全以 todo 存在为前提，模型不建 todo 就彻底失效。
+      // 放在 todo gate 之前，因为它不依赖 todo，且要在"假性完成"最早处拦下、驱动模型换策略。
+      if ((response as any)._unansweredEndTurn === true) {
+        const retries = state.unansweredRetryCount ?? 0;
+        if (retries < MAX_UNANSWERED_RETRIES) {
+          state.unansweredRetryCount = retries + 1;
+          ctxMgr.addMessage({
+            role: "user",
+            content: [{ type: "text", text: buildUnansweredEndTurnMessage() }],
+          });
+          log.warn(
+            "QUERY_LOOP",
+            `方案②：检测到未答复的 end_turn（思考漂移/只思考不答复），回注收敛提示并软续命 ${state.unansweredRetryCount}/${MAX_UNANSWERED_RETRIES}`,
+          );
+          yield {
+            kind: "system",
+            level: "warning",
+            text: `上一轮未产出有效答复（疑似思考泄漏到正文），自动引导重新推进 (${state.unansweredRetryCount}/${MAX_UNANSWERED_RETRIES})`,
+          };
+          state.transition = { type: "unanswered_retry" };
+          continue;
+        }
+        // 续命耗尽：放行，但如实告知用户模型未能正常答复（不假装完成）
+        log.warn(
+          "QUERY_LOOP",
+          `方案②：未答复续命已达上限 ${MAX_UNANSWERED_RETRIES}，放行但如实呈现`,
+        );
+        yield {
+          kind: "system",
+          level: "warning",
+          text: `模型连续 ${MAX_UNANSWERED_RETRIES} 次未产出有效答复（可能陷入思考发散）。建议换个更具体的提问方式，或切换模型重试。`,
+        };
       }
 
       // ─── P0-3：end_turn 完成度硬校验（对标 claude-code stopHooks.ts）───
@@ -1343,6 +1426,8 @@ export async function* queryLoop(
       log.info("QUERY_LOOP", `对话结束 (${response.stopReason})，共 ${state.turnCount} 轮，in=${totalUsage.inputTokens} out=${totalUsage.outputTokens}，累计费用 $${sessionState.totalCostUSD.toFixed(4)}`);
       // F1：正常收尾，清零连续退化计数
       state.emptyParamRetryCount = 0;
+      // 方案②：正常收尾（含续命耗尽放行），清零未答复连续计数
+      state.unansweredRetryCount = 0;
       // Step 0：end_turn 是自然断点——触发 Session Memory 提取（fire-and-forget），
       // 把本轮终态沉淀进笔记，下次压缩可优先用它而非从头 LLM 摘要。
       deps.updateSessionMemory?.().catch(() => { /* 提取失败不阻断收尾 */ });
@@ -1567,6 +1652,8 @@ export async function* queryLoop(
 
       // F1：工具成功执行 → 模型已恢复正常生成参数的能力，清零连续退化计数
       state.emptyParamRetryCount = 0;
+      // 方案②：工具成功执行 → 模型已在正常推进（非"只思考不答复"），清零未答复计数
+      state.unansweredRetryCount = 0;
 
       // Step 0：本轮工具结果已入历史，触发 Session Memory 提取（fire-and-forget，
       // 内部按双阈值决定是否真正提取，未达阈值/进行中则直接跳过，不阻塞主循环）。

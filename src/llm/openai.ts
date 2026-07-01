@@ -20,6 +20,7 @@ import type {
 import { getLogger } from "../debug/logger.ts";
 import { guardOutgoingMessages } from "./protocol-sentinel.ts";
 import { filterParamsForModel } from "./model-capability-filter.ts";
+import { lookupCatalog } from "./model-params-catalog.ts";
 import { estimateTextTokens } from "../context/token.ts";
 import { sanitizeStrings } from "./sanitize-unicode.ts";
 
@@ -111,6 +112,18 @@ export class OpenAIProvider implements Provider {
    */
   private isReasoningModel(model: string): boolean {
     return /^o[0-9]/.test(model);
+  }
+
+  /**
+   * 当前模型在多轮工具调用时是否要求回传 reasoning_content（方案⓪真因修复）。
+   *
+   * 判据取自 model-registry 的 requiresReasoningContentForToolCalls 能力标志：
+   *   - DeepSeek V4 thinking 系 → true（tool-call 轮必回传，否则 400 + 思维链断裂）
+   *   - 旧 deepseek-reasoner → false（回传会触发旧协议 400）
+   *   - 未知模型 / 无 reasoning 概念 → false（保守：仅无 tool_calls 时回传，维持旧行为）
+   */
+  private requiresReasoningContentForToolCalls(): boolean {
+    return lookupCatalog(this._model)?.requiresReasoningContentForToolCalls === true;
   }
 
   /**
@@ -366,13 +379,25 @@ export class OpenAIProvider implements Provider {
           assistantMsg.tool_calls = toolCalls;
         }
 
-        // DeepSeek: 回传 reasoning_content（思考链）。
-        // 根因 5.2 修复（P1-2）：含 tool_calls 的 assistant 消息**不能**携带 reasoning_content——
-        // DeepSeek reasoning 模型在多轮工具调用回传该字段会触发
-        // `The reasoning_content ... must be ...` 类 400（实测 sub_agent 35.9% 失败、13 次精确命中）。
-        // 仅在无 tool_calls 时回传，规避协议冲突。
-        if (msg._meta?.reasoning_content && toolCalls.length === 0) {
-          assistantMsg.reasoning_content = msg._meta.reasoning_content;
+        // DeepSeek: 回传 reasoning_content（思考链）。按模型协议能力分叉——
+        //
+        // 真因修复（方案⓪，deepseek-reasoning-leak-as-text-任务中断.md）：
+        //   DeepSeek V4（V3.2 起）thinking 模式下，**tool-call 轮的 reasoning_content
+        //   必须原样回传**给 API，模型才能接续上一轮的思考（deepseek-api.md:1012/1055/1057
+        //   + 官方样例 1160-1174 行一律 messages.append(带 reasoning_content 的整条消息)）。
+        //   否则思维链被切断 → 思考量雪崩 → 漂移进 content 当正文 / 600s hang。
+        //
+        //   旧 `deepseek-reasoner`（R1 系，2026/07/24 弃用前）：输入携带 reasoning_content
+        //   会触发旧协议 400（即旧注释"实测 13 次命中"的来源，DeepSeek 在 V3.2 反转了规则）。
+        //   这类模型 requiresReasoningContentForToolCalls=false → 仅无 tool_calls 时回传。
+        //
+        //   分叉判据取自 model-registry 的 requiresReasoningContentForToolCalls 能力标志
+        //   （而非散落的模型名 if），避免协议演进时漂移。
+        if (msg._meta?.reasoning_content) {
+          const carryOnToolCalls = this.requiresReasoningContentForToolCalls();
+          if (toolCalls.length === 0 || carryOnToolCalls) {
+            assistantMsg.reasoning_content = msg._meta.reasoning_content;
+          }
         }
 
         result.push(assistantMsg);
@@ -586,20 +611,41 @@ export class OpenAIProvider implements Provider {
         // 累积 usage
         if (event.type === "message_delta") {
           accumulatedUsage = event.usage;
-          // PARSE-4：端点未返回 usage（in=out=0）时用字符估算兜底，
-          // 否则本地/兼容模型全程零 token、零成本，污染统计与上下文百分比。
           const u = event.usage;
-          if (u && (u.inputTokens ?? 0) === 0 && (u.outputTokens ?? 0) === 0) {
-            const estIn = OpenAIProvider.estimatePromptTokens(params);
+          // 5.1：记录 provider **原始** output 是否为 0（在任何估算兜底之前捕获）。
+          // 这是方案① 判"未答复 end_turn"的最硬结构信号——必须与下方估算兜底解耦：
+          // 估算会把 outputTokens 补成非零，若下游只看补后的值就永远判不出"原始为 0"。
+          // 故用独立 _rawOutputTokensZero 标记透传，估算只修账面、不污染该判据。
+          const rawOutputZero = (u?.outputTokens ?? 0) === 0;
+          // PARSE-4 + 5.1 扩展：output 为 0 但实际有内容时用字符估算兜底。
+          // 旧版仅在 in=out 皆 0 时触发（Ollama 等）；本 case（DeepSeek 思考泄漏、
+          // usage 全 0 却吐了数万字符）同样命中——避免 token 成本落成账面黑洞。
+          // input 已非零则保留原值，仅补 output；两者皆零才一并估算 input。
+          if (u && rawOutputZero) {
             const estOut = estimateTextTokens(accumulatedOutputText);
-            if (estIn > 0 || estOut > 0) {
-              const patched: Usage = { inputTokens: estIn, outputTokens: estOut };
+            if (estOut > 0) {
+              const inputZero = (u.inputTokens ?? 0) === 0;
+              const estIn = inputZero
+                ? OpenAIProvider.estimatePromptTokens(params)
+                : u.inputTokens;
+              const patched: Usage = {
+                ...u,
+                inputTokens: estIn,
+                outputTokens: estOut,
+              };
               accumulatedUsage = patched;
-              log.debug("LLM:OPENAI", `端点未返回 usage，已用估算兜底`, patched);
-              yield { ...event, usage: patched };
+              log.debug(
+                "LLM:OPENAI",
+                `output usage 为 0 但有内容(${accumulatedOutputText.length}字符)，已用估算兜底`,
+                patched,
+              );
+              yield { ...event, usage: patched, _rawOutputTokensZero: true };
               continue;
             }
           }
+          // 未触发估算：仍把原始 output 是否为 0 的事实透传给下游
+          yield { ...event, _rawOutputTokensZero: rawOutputZero };
+          continue;
         }
 
         yield event;

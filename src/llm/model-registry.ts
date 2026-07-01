@@ -30,6 +30,20 @@ export interface ModelRegistryEntry {
   reasoningEffortValues?: ("low" | "medium" | "high")[];
   protocolKind?: "deepseek-openai" | "deepseek-anthropic" | "anthropic-native" | "o-series" | "unknown";
 
+  /**
+   * 多轮工具调用时，是否要求把该轮 assistant 的 reasoning_content 原样回传给 API。
+   *
+   * - DeepSeek V4（V3.2 起）thinking 模式：`true`——tool-call 轮的 reasoning_content
+   *   **必须**回传，否则 API 400（deepseek-api.md:1012/1055/1057）；官方样例（1160-1174 行）
+   *   一律 `messages.append(response.choices[0].message)`，含 reasoning_content。
+   * - 旧 `deepseek-reasoner`（R1 系，2026/07/24 弃用前）：`false` 或 undefined——
+   *   输入携带 reasoning_content 会触发旧协议 400，必须落掉。
+   * - 其它模型（无 reasoning_content 概念）：字段无意义，缺省 undefined。
+   *
+   * 详见 docs/bugfixes/todo/deepseek-reasoning-leak-as-text-任务中断.md 方案⓪。
+   */
+  requiresReasoningContentForToolCalls?: boolean;
+
   // ── 定价（可选，USD/百万 token） ──
   pricing?: RegistryPricing;
 }
@@ -57,12 +71,14 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
   // ══════════════════════════════════════════════════════════════════
   // DeepSeek
   // ══════════════════════════════════════════════════════════════════
-  "deepseek-v4-pro": { contextWindow: 1_000_000, maxOutputTokens: 384_000, supportsThinking: true, pricing: { input: 0.435, output: 0.87, cacheRead: 0.0036, cacheWrite: 0 } },
-  "deepseek-v4-flash": { contextWindow: 1_000_000, maxOutputTokens: 384_000, supportsThinking: true, pricing: { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0 } },
-  "DeepSeek-V4-Flash": { contextWindow: 1_000_000, maxOutputTokens: 384_000, supportsThinking: true, pricing: { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0 } },
-  "DeepSeek-V4-Pro": { contextWindow: 1_000_000, maxOutputTokens: 384_000, supportsThinking: true, pricing: { input: 0.435, output: 0.87, cacheRead: 0.0036, cacheWrite: 0 } },
+  // DeepSeek V4（V3.2 起）：thinking 模式支持工具调用，tool-call 轮必须回传 reasoning_content。
+  "deepseek-v4-pro": { contextWindow: 1_000_000, maxOutputTokens: 384_000, supportsThinking: true, requiresReasoningContentForToolCalls: true, pricing: { input: 0.435, output: 0.87, cacheRead: 0.0036, cacheWrite: 0 } },
+  "deepseek-v4-flash": { contextWindow: 1_000_000, maxOutputTokens: 384_000, supportsThinking: true, requiresReasoningContentForToolCalls: true, pricing: { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0 } },
+  "DeepSeek-V4-Flash": { contextWindow: 1_000_000, maxOutputTokens: 384_000, supportsThinking: true, requiresReasoningContentForToolCalls: true, pricing: { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0 } },
+  "DeepSeek-V4-Pro": { contextWindow: 1_000_000, maxOutputTokens: 384_000, supportsThinking: true, requiresReasoningContentForToolCalls: true, pricing: { input: 0.435, output: 0.87, cacheRead: 0.0036, cacheWrite: 0 } },
   "deepseek-chat": { contextWindow: 1_000_000, maxOutputTokens: 384_000, supportsThinking: false, pricing: { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0 } },
-  "deepseek-reasoner": { contextWindow: 1_000_000, maxOutputTokens: 384_000, supportsThinking: true, pricing: { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0 } },
+  // 旧 deepseek-reasoner（R1 系）：输入携带 reasoning_content 会触发旧协议 400，保持不回传（缺省 false）。
+  "deepseek-reasoner": { contextWindow: 1_000_000, maxOutputTokens: 384_000, supportsThinking: true, requiresReasoningContentForToolCalls: false, pricing: { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0 } },
 
   // ══════════════════════════════════════════════════════════════════
   // OpenAI / GPT

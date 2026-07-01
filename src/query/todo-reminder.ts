@@ -26,6 +26,30 @@ export const TODO_REMINDER_CONFIG = {
 /** P0-3：end_turn 完成度硬校验的最大软续命次数 */
 export const MAX_TODO_GATE_RETRIES = 3;
 
+/**
+ * 方案②（deepseek-reasoning-leak 修复）：「未答复的 end_turn」最大软续命次数。
+ * stream-processor 判定本轮思考漂移进正文 / 只思考不答复（无 todo 也生效）时，
+ * 回注收敛提示并续命。上限比 todo gate 略小——连续 N 次仍未答复说明模型确实卡死，
+ * 放行如实呈现，避免无限循环烧 token（例③ 就是重试链失效导致用户反复无反应）。
+ */
+export const MAX_UNANSWERED_RETRIES = 2;
+
+/**
+ * 方案②：构造「未答复的 end_turn」软续命提示（不依赖 todo）。
+ * 逼模型换一种方式推进：先建 todo 拆解，再逐步执行，且**不要把思考过程当正文输出**。
+ * 这是例③"请你修复→吐一堆思考→空手 end_turn→再请你修复"死循环的破局点。
+ */
+export function buildUnansweredEndTurnMessage(): string {
+  return `<system-reminder>
+上一轮没有产出面向用户的有效答复，也没有调用任何工具（疑似把内部思考过程当成了正文输出，或只思考未答复）。这不是完成任务的有效方式。
+请立即改变策略：
+1. 不要把分析、推演、独白当作答复直接输出——思考应当收敛为具体行动。
+2. 先用 todo_write 把任务拆成可执行的小步骤，再逐步执行（调用工具去读代码 / 改文件 / 跑命令）。
+3. 如果卡在某个判断上无法收敛，直接说明卡点并给出下一步最小可行动作，而不是反复推演。
+请勿向用户提及本提醒。
+</system-reminder>`;
+}
+
 /** 状态文案（与 claude-code messages.ts 的 `[status] content` 渲染对齐） */
 function statusLabel(s: string): string {
   return s === "completed"

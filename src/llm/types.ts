@@ -194,7 +194,7 @@ export type StreamEvent =
   | { type: "content_block_start"; index: number; content_block: ContentBlock; _raw_block?: unknown }
   | { type: "content_block_delta"; index: number; delta: TextDelta | InputJsonDelta }
   | { type: "content_block_stop"; index: number }
-  | { type: "message_delta"; delta: { stop_reason: string | null }; usage: Usage }
+  | { type: "message_delta"; delta: { stop_reason: string | null }; usage: Usage; _rawOutputTokensZero?: boolean }
   | { type: "message_stop" }
   | { type: "error"; error: { message: string } }
   | { type: "system_api_error"; content: string; delayMs: number; attempt: number; maxRetries: number; category: string };
@@ -314,4 +314,11 @@ export interface AccumulatedResponse {
   stopReason: string | null;
   usage: Usage;
   _meta?: Record<string, unknown>;
+  /**
+   * 方案①/②（deepseek-reasoning-leak 修复）：本轮以 end_turn 收尾，但没有面向用户的
+   * 有效答复（思考漂移进 content 当正文 / 只思考不答复 / usage 原始为 0）。
+   * 由 stream-processor 判定并置位，loop.ts 据此回注收敛提示 + 软续命（驱动重试而非假性结束）。
+   * 注意：此字段**不进** _meta，不持久化到历史，仅供本轮 loop 决策。
+   */
+  _unansweredEndTurn?: boolean;
 }

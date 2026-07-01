@@ -26,6 +26,12 @@ export interface ModelParamsEntry {
   reasoningEffortValues?: ("low" | "medium" | "high")[];
   /** 协议族标识（用于 effort.ts 分发）。undefined = 走现有 runtime 推断 */
   protocolKind?: "deepseek-openai" | "deepseek-anthropic" | "anthropic-native" | "o-series" | "unknown";
+  /**
+   * 多轮工具调用时是否要求回传 reasoning_content。
+   * DeepSeek V4 thinking 系为 true（tool-call 轮必须回传，否则 400）；
+   * 旧 deepseek-reasoner 为 false。详见 model-registry.ts 同名字段。
+   */
+  requiresReasoningContentForToolCalls?: boolean;
 }
 
 /** 从 ModelRegistryEntry 投影为 ModelParamsEntry（去掉 pricing） */

@@ -85,6 +85,7 @@ export type ContinueReason =
   | { type: "stop_hook_retry" }
   | { type: "timeout_retry" }
   | { type: "todo_gate_retry" }
+  | { type: "unanswered_retry" }
   | { type: "hypothesis_gate_retry" }
   | { type: "goal_gate_retry" }
   | { type: "goal_budget_warning" }
@@ -118,6 +119,27 @@ export interface LoopState {
   lastSeenTodoWriteVersion?: number;
   /** P0-3：end_turn 完成度硬校验已软续命的次数 */
   todoGateRetryCount?: number;
+  /**
+   * 方案②（deepseek-reasoning-leak 修复）：「未答复的 end_turn」已软续命的次数。
+   * stream-processor 置 response._unansweredEndTurn（思考漂移进正文 / 只思考不答复）时，
+   * 不依赖 todo 也回注一次收敛提示并续命，兜住例③"重试无反应"的机制级根因。
+   * 有效答复或工具执行后清零，只对"连续未答复"计数。
+   */
+  unansweredRetryCount?: number;
+  /**
+   * 方案③（deepseek-reasoning-leak 修复）：近几轮的思考字符数历史（用于检测"思考发散"）。
+   * 思考量连续单调递增且末轮超阈值时，回注收敛提示（早期哨兵 + 真因⓪的回归指标）。
+   * 只保留最近 THINKING_DIVERGENCE_WINDOW 轮，滚动淘汰最旧的。
+   */
+  thinkingLenHistory?: number[];
+  /** 方案③：思考发散熔断已触发的次数（限次，避免每轮刷屏） */
+  thinkingDivergenceInterventions?: number;
+  /**
+   * 方案③：检测到思考发散，待下一轮循环开头经 reminderParts 注入收敛提示（pending）。
+   * 与 pendingContradictions 同机制——不在 assistant/tool_result 之间插消息（破坏配对），
+   * 而是跨轮暂存、下一轮 model 调用前经 reminder 通道注入。注入后清空。
+   */
+  pendingThinkingDivergenceReminder?: boolean;
   /** P2-2：上次回注工作日志摘要时的轮次（每 N 轮回注一次） */
   lastProgressReminderTurn?: number;
   /**
