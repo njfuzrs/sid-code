@@ -149,6 +149,10 @@ export function makeSideQuery(
     let text = "";
     let streamUsage: any = null;
     for await (const event of stream) {
+      // 纵深防御：记忆召回 side-call 检查 signal，防止 provider 层超时失效时挂死
+      if (signal?.aborted) {
+        throw new Error("Request aborted");
+      }
       if (event.type === "content_block_delta" && event.delta?.type === "text_delta") {
         text += event.delta.text;
       } else if (event.type === "message_stop" && (event as any).usage) {

@@ -222,18 +222,26 @@ export class MCPManager {
       this.serverConfigs.set(name, config);
       this.setStatus(name, MCPConnectionStatus.CONNECTING);
       const connectTimeout = config.timeout ?? 30000;
+      // 连接超时孤儿清理：超时时 abort，让 doConnect 主动 close 传输层
+      // （kill stdio 子进程 / abort HTTP·SSE 连接），避免 connect 变孤儿后子进程泄漏。
+      const connectCtl = new AbortController();
+      let connectTimer: ReturnType<typeof setTimeout> | null = null;
       try {
         log.debug("MCP", `连接服务器: ${name}`, config);
         const tools = await Promise.race([
-          this.connect(name, config),
+          this.connect(name, config, connectCtl.signal),
           new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error(`连接超时 (${connectTimeout}ms)`)), connectTimeout)
+            connectTimer = setTimeout(() => {
+              connectCtl.abort();
+              reject(new Error(`连接超时 (${connectTimeout}ms)`));
+            }, connectTimeout)
           ),
         ]);
         this.setStatus(name, MCPConnectionStatus.CONNECTED);
         log.info("MCP", `${name} 连接成功，注册 ${tools.length} 个工具`);
         return tools;
       } catch (err: any) {
+        if (!connectCtl.signal.aborted) connectCtl.abort();
         const client = this.clients.get(name);
         if (client) {
           client.close();
@@ -242,6 +250,8 @@ export class MCPManager {
         log.error("MCP", `连接 ${name} 失败`, { error: err.message, stack: err.stack });
         this.setStatus(name, MCPConnectionStatus.FAILED, err.message);
         return [];
+      } finally {
+        if (connectTimer !== null) clearTimeout(connectTimer);
       }
     };
 
@@ -258,60 +268,74 @@ export class MCPManager {
   }
 
   /** 连接单个 MCP 服务器 */
-  async connect(name: string, config: MCPServerConfig): Promise<Tool[]> {
+  async connect(name: string, config: MCPServerConfig, signal?: AbortSignal): Promise<Tool[]> {
     // OAuth 服务器：连接前确保拿到有效 token；首连/凭据失效时触发交互式授权
     if (isOAuthEnabled(config) && config.transport !== "stdio") {
       await this.ensureOAuthToken(name, config);
     }
 
     try {
-      return await this.doConnect(name, config);
+      return await this.doConnect(name, config, signal);
     } catch (err: any) {
       // 401 / 需授权：触发一次交互式 OAuth 后重连
       if (isOAuthEnabled(config) && config.transport !== "stdio" && this.isAuthError(err)) {
         getLogger().info("MCP", `${name} 返回未授权，启动 OAuth 授权流程`);
         await this.runOAuthFlow(name, config);
-        return await this.doConnect(name, config);
+        return await this.doConnect(name, config, signal);
       }
       throw err;
     }
   }
 
   /** 实际建立连接（创建传输 + 初始化 + 发现工具/资源/提示词 + 健康检查） */
-  private async doConnect(name: string, config: MCPServerConfig): Promise<Tool[]> {
+  private async doConnect(name: string, config: MCPServerConfig, signal?: AbortSignal): Promise<Tool[]> {
+    // 已 abort（上层超时）→ 直接放弃，不创建任何资源
+    if (signal?.aborted) throw new Error(`连接已取消: ${name}`);
     const transport = await this.createTransport(name, config);
-    const timeout = config.timeout ?? 30000;
-    const retries = config.retries ?? 2;
-    const client = new MCPClient(transport, { timeout, retries });
-
-    client.onToolsChanged = () => this.refreshTools(name);
-    client.onResourcesChanged = () => this.refreshResources(name);
-    client.onPromptsChanged = () => this.refreshPrompts(name);
-    client.onDisconnected = () => this.handleDisconnect(name);
-
-    const initResult = await client.initialize();
-    this.clients.set(name, client);
-
-    // 保存 Server instructions
-    const state = this.getState(name);
-    state.instructions = truncateInstructions(initResult.instructions);
-
-    // 发现工具（带过滤）
-    const toolDefs = filterTools(await client.listTools(), config);
-    const tools = toolDefs.map((def) => new MCPToolAdapter(client, def, name));
-    state.toolCount = tools.length;
-
-    // 发现资源
-    await this.refreshResources(name);
-    // 发现提示词
-    await this.refreshPrompts(name);
-
-    // 启动健康检查（仅有状态连接）
-    if (config.transport === "stdio" || config.transport === "sse" || config.transport === "ws") {
-      this.startHeartbeat(name);
+    // 超时/取消孤儿清理：abort 触发时主动 close 传输层，kill 启动中的 stdio 子进程
+    // 或 abort HTTP·SSE 连接。此时 client 可能尚未 set 进 this.clients，
+    // 靠 catch 里的 client.close() 兜不住，必须在这里直接 close transport。
+    const onAbort = () => { try { transport.close(); } catch {} };
+    if (signal) {
+      if (signal.aborted) { onAbort(); throw new Error(`连接已取消: ${name}`); }
+      signal.addEventListener("abort", onAbort, { once: true });
     }
+    try {
+      const timeout = config.timeout ?? 30000;
+      const retries = config.retries ?? 2;
+      const client = new MCPClient(transport, { timeout, retries });
 
-    return tools;
+      client.onToolsChanged = () => this.refreshTools(name);
+      client.onResourcesChanged = () => this.refreshResources(name);
+      client.onPromptsChanged = () => this.refreshPrompts(name);
+      client.onDisconnected = () => this.handleDisconnect(name);
+
+      const initResult = await client.initialize();
+      this.clients.set(name, client);
+
+      // 保存 Server instructions
+      const state = this.getState(name);
+      state.instructions = truncateInstructions(initResult.instructions);
+
+      // 发现工具（带过滤）
+      const toolDefs = filterTools(await client.listTools(), config);
+      const tools = toolDefs.map((def) => new MCPToolAdapter(client, def, name));
+      state.toolCount = tools.length;
+
+      // 发现资源
+      await this.refreshResources(name);
+      // 发现提示词
+      await this.refreshPrompts(name);
+
+      // 启动健康检查（仅有状态连接）
+      if (config.transport === "stdio" || config.transport === "sse" || config.transport === "ws") {
+        this.startHeartbeat(name);
+      }
+
+      return tools;
+    } finally {
+      if (signal) signal.removeEventListener("abort", onAbort);
+    }
   }
 
   /** 判断错误是否为「未授权」（401 / NeedsAuthorizationError） */
@@ -735,11 +759,16 @@ export class MCPManager {
     this.setStatus(name, MCPConnectionStatus.CONNECTING);
 
     const connectTimeout = config.timeout ?? 30000;
+    const connectCtl = new AbortController();
+    let connectTimer: ReturnType<typeof setTimeout> | null = null;
     try {
       const tools = await Promise.race([
-        this.connect(name, config),
+        this.connect(name, config, connectCtl.signal),
         new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`连接超时 (${connectTimeout}ms)`)), connectTimeout),
+          connectTimer = setTimeout(() => {
+            connectCtl.abort();
+            reject(new Error(`连接超时 (${connectTimeout}ms)`));
+          }, connectTimeout),
         ),
       ]);
       this.setStatus(name, MCPConnectionStatus.CONNECTED);
@@ -747,6 +776,7 @@ export class MCPManager {
       this.onToolsRefresh?.(name, tools);
       return tools;
     } catch (err: any) {
+      if (!connectCtl.signal.aborted) connectCtl.abort();
       this.setStatus(name, MCPConnectionStatus.FAILED, err.message);
       const client = this.clients.get(name);
       if (client) {
@@ -755,6 +785,8 @@ export class MCPManager {
       }
       log.error("MCP", `动态注册 ${name} 失败: ${err.message}`);
       return [];
+    } finally {
+      if (connectTimer !== null) clearTimeout(connectTimer);
     }
   }
 

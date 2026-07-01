@@ -73,8 +73,10 @@ interface ZodIssueLike {
 /** 单条 issue → 中文描述。优先用 expected/received，回退原始 message */
 function translateIssue(issue: ZodIssueLike): string {
   if (issue.code === "invalid_type" && issue.expected) {
-    const received = issue.received ?? "undefined";
-    return `期望 ${issue.expected}，实际收到 ${received}`;
+    const received = issue.received ?? "unknown";
+    // 附加 zod 原始 message 作为补充信息，帮助模型自我纠正
+    const suffix = issue.message ? `（${issue.message}）` : "";
+    return `期望 ${issue.expected}，实际收到 ${received}${suffix}`;
   }
   if (issue.code === "unrecognized_keys" && issue.keys?.length) {
     return `存在未识别的字段: ${issue.keys.join(", ")}`;

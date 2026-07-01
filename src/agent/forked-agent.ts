@@ -81,6 +81,7 @@ function buildToolDefinitions(registry: ToolRegistry): ToolDefinition[] {
 /** 累积一次流式响应 */
 async function accumulate(
   stream: AsyncIterable<any>,
+  signal?: AbortSignal,
 ): Promise<{ content: ContentBlock[]; stopReason: string | null; usage: { inputTokens: number; outputTokens: number } }> {
   const content: ContentBlock[] = [];
   let stopReason: string | null = null;
@@ -88,6 +89,11 @@ async function accumulate(
   const partialJson = new Map<number, string>();
 
   for await (const event of stream) {
+    // B3 纵深防御：forked-agent 流消费中检查 signal，防止 abort 无法穿透底层时挂死
+    // （对齐 agent/stream-processor.ts 的 B1 模式）
+    if (signal?.aborted) {
+      return { content: content.filter(Boolean), stopReason: "error", usage };
+    }
     switch (event.type) {
       case "message_start":
         usage.inputTokens += event.message?.usage?.inputTokens ?? 0;
@@ -204,7 +210,7 @@ export async function runForkedAgent(
         signal,
       );
 
-      const { content, stopReason, usage } = await accumulate(stream);
+      const { content, stopReason, usage } = await accumulate(stream, signal);
       totalUsage.inputTokens += usage.inputTokens;
       totalUsage.outputTokens += usage.outputTokens;
 

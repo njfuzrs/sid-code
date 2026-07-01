@@ -27,15 +27,15 @@ const grepSchema = lazySchema(() =>
     case_insensitive: z.boolean().optional().describe("是否忽略大小写，默认 false"),
     glob: z.string().optional().describe("文件名过滤模式（如 '*.ts'、'*.{ts,tsx}'）"),
     type: z.string().optional().describe("按文件类型过滤（如 'ts'、'py'、'js'），比 glob 更高效"),
-    context: z.number().optional().describe("显示匹配行前后的上下文行数（-C 参数），仅 output_mode=content 时有效"),
-    before_context: z.number().optional().describe("显示匹配行之前的行数（-B 参数），仅 output_mode=content 时有效"),
-    after_context: z.number().optional().describe("显示匹配行之后的行数（-A 参数），仅 output_mode=content 时有效"),
-    head_limit: z.number().optional().describe("输出结果数上限，默认 250；显式传 0 表示无限制。替代旧的 total_max_matches"),
-    offset: z.number().optional().describe("分页偏移量（从 0 开始），默认 0"),
-    max_matches_per_file: z.number().optional().describe("单文件结果数上限，用于限制单个文件的匹配数"),
+    context: z.coerce.number().int().min(0).optional().describe("显示匹配行前后的上下文行数（-C 参数），仅 output_mode=content 时有效"),
+    before_context: z.coerce.number().int().min(0).optional().describe("显示匹配行之前的行数（-B 参数），仅 output_mode=content 时有效"),
+    after_context: z.coerce.number().int().min(0).optional().describe("显示匹配行之后的行数（-A 参数），仅 output_mode=content 时有效"),
+    head_limit: z.coerce.number().int().min(0).optional().describe("输出结果数上限，默认 250；显式传 0 表示无限制。替代旧的 total_max_matches"),
+    offset: z.coerce.number().int().min(0).optional().describe("分页偏移量（从 0 开始），默认 0"),
+    max_matches_per_file: z.coerce.number().int().min(0).optional().describe("单文件结果数上限，用于限制单个文件的匹配数"),
     fixed_strings: z.boolean().optional().describe("按字面量搜索（不作为正则表达式），默认 false"),
     // 向后兼容：total_max_matches 作为 head_limit 别名
-    total_max_matches: z.number().optional().describe("已废弃，请使用 head_limit 代替"),
+    total_max_matches: z.coerce.number().int().min(0).optional().describe("已废弃，请使用 head_limit 代替"),
   }),
 );
 

@@ -348,7 +348,12 @@ export class HookRunner {
     try {
       const timeoutPromise = new Promise<never>((_, reject) => {
         timeoutHandle = setTimeout(
-          () => reject(new Error(`Runtime hook 超时 (${timeout}ms)`)),
+          () => {
+            // 立即 abort:让 action 内部尽早收到取消信号释放资源(网络/子进程),
+            // 而非等到 catch 才 abort —— 缩短孤儿 action 的存活窗口。
+            controller.abort();
+            reject(new Error(`Runtime hook 超时 (${timeout}ms)`));
+          },
           timeout,
         );
       });
@@ -374,6 +379,9 @@ export class HookRunner {
       };
     } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle);
+      // 兜底:无论正常/异常退出都 abort,确保孤儿 action(如超时后仍运行的 Promise)
+      // 收到取消信号 —— abort 幂等,已 abort 再调无副作用。
+      if (!controller.signal.aborted) controller.abort();
     }
   }
 
@@ -681,6 +689,10 @@ export class HookRunner {
     let text = "";
     let streamUsage: any = null;
     for await (const event of provider.sendMessageStream(params, signal)) {
+      // 纵深防御:hook-runner side-call 检查 signal,防止 provider 层超时失效时挂死
+      if (signal?.aborted) {
+        throw new Error("Request aborted");
+      }
       if (event.type === "content_block_delta" && "text" in event.delta) {
         text += event.delta.text;
       } else if (event.type === "message_stop" && event.usage) {

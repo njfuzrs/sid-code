@@ -283,6 +283,10 @@ export class BashClassifier {
       const caps = getCapabilities(provider);
       void caps; // 仅用于显式表明已考虑能力差异
       for await (const ev of provider.sendMessageStream({ model, messages, system, maxTokens }, signal)) {
+        // 纵深防御:bash-classifier side-call 检查 signal(已组合超时+外部取消),防止 provider 层超时失效时挂死
+        if (signal.aborted) {
+          throw new Error("Request aborted");
+        }
         if (ev.type === "content_block_delta" && ev.delta.type === "text_delta") {
           text += ev.delta.text;
         } else if (ev.type === "message_stop" && (ev as any).usage) {

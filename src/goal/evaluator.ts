@@ -212,6 +212,10 @@ async function callEvaluatorModel(
     );
 
     for await (const event of stream) {
+      // 纵深防御:goal-evaluator side-call 检查 signal(controller.signal),防止 provider 层超时失效时挂死
+      if (controller.signal.aborted) {
+        throw new Error("Request aborted");
+      }
       if (event.type === "content_block_delta" && "text" in event.delta) {
         responseText += event.delta.text;
       } else if (event.type === "message_stop" && (event as any).usage) {

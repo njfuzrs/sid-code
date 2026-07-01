@@ -725,7 +725,14 @@ export async function* queryLoop(
       // reject 后走下方 catch → isTimeoutError 命中 → 复用现有 timeout 重试分支(continue),
       // 无需新写 yield done/return,且保留重试机会。
       // 超时阈值可经 deps 注入覆盖（默认 10 分钟），便于单测用短值触发。
-      const MAX_TURN_DURATION_MS = deps.maxTurnDurationMs ?? 10 * 60 * 1000;
+      // Fix 4: 模型感知硬超时 — DeepSeek 思考模型给 5min（Fix 1+2 已保证可中断，不需要 10min 兜底）；
+      // 其他模型保持 10min。支持 SID_CODE_MAX_TURN_DURATION_MS 环境变量覆盖（运维调参 / 测试注入）。
+      const resolvedMaxTurnMs = (() => {
+        const override = Number(process.env.SID_CODE_MAX_TURN_DURATION_MS);
+        if (Number.isFinite(override) && override > 0) return override;
+        return /deepseek/i.test(config.model) ? 5 * 60 * 1000 : 10 * 60 * 1000;
+      })();
+      const MAX_TURN_DURATION_MS = deps.maxTurnDurationMs ?? resolvedMaxTurnMs;
       let turnTimer: ReturnType<typeof setTimeout> | null = null;
       const turnTimeoutPromise = new Promise<never>((_resolve, reject) => {
         turnTimer = setTimeout(() => {
@@ -760,7 +767,8 @@ export async function* queryLoop(
 
       // timeout 错误直接重试（不需要压缩上下文，最多 2 次）
       if (isTimeoutError(err)) {
-        const maxTimeoutRetries = 2;
+        // Fix 4: DeepSeek 只重试 1 次（Fix 1+2 已保证中断生效，额外重试只增加等待时间）；其他模型 2 次。
+        const maxTimeoutRetries = /deepseek/i.test(config.model) ? 1 : 2;
         const timeoutRetryCount = (state as any).timeoutRetryCount ?? 0;
 
         if (timeoutRetryCount < maxTimeoutRetries) {
