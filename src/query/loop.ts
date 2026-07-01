@@ -1064,6 +1064,7 @@ export async function* queryLoop(
                 state.emptyParamRetryCount,
                 MAX_EMPTY_PARAM_RETRIES,
                 compactResult.success,
+                response.stopReason ?? undefined,
               ),
             },
           ],
@@ -1588,6 +1589,26 @@ export async function* queryLoop(
 
       state.maxOutputTokensRecoveryCount++;
       log.info("QUERY_LOOP", `输出达到 token 上限 (maxTokens=${config.maxTokens})，自动续写 #${state.maxOutputTokensRecoveryCount} (轮次 ${state.turnCount})`);
+
+      // 注入截断通知：告知模型上一次响应因输出长度上限被截断，请从中断处继续。
+      // 不注入则模型对"为何被打断、从哪里续"完全无感知——续写时可能重头再来或跳过内容，
+      // 甚至（当截断发生在工具调用参数中途时）反复重发同一个超大调用。对齐 claude-code
+      // 的 [Response clipped] 提示。走 user 消息通道，随历史流入下一轮请求。
+      {
+        const clipNotice =
+          `<system-reminder>\n` +
+          `你的上一次响应因达到输出长度上限（max_tokens）被截断，尚未完成。请直接从被截断处继续，` +
+          `不要重复已经输出的内容。\n` +
+          `如果你正在写入大文件或长内容，请改用分段策略：单次工具调用的参数（如 write 的 content）` +
+          `不要超过输出上限，先写一部分，再用 edit / bash 追加剩余部分。\n` +
+          `（自动续写 ${state.maxOutputTokensRecoveryCount} 次）\n` +
+          `</system-reminder>`;
+        ctxMgr.addMessage({ role: "user", content: [{ type: "text", text: clipNotice }] });
+        try {
+          deps.sessionStore?.appendMessage({ role: "user", content: [{ type: "text", text: clipNotice }] });
+        } catch { /* 持久化失败不阻断续写 */ }
+      }
+
       state.transition = { type: "max_tokens_continuation" };
       continue;
     }

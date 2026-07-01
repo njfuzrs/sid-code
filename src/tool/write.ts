@@ -8,6 +8,7 @@ import { dirname, basename } from "path";
 import { mkdirSync, existsSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
 import { detectOmissionPlaceholders, isDocumentFile } from "./omission-detector.ts";
+import { detectTruncation } from "./truncation-detector.ts";
 import { normalizeToolPath } from "./path-utils.ts";
 import { buildStructuredPatch } from "./diff-output.ts";
 import { z } from "zod/v4";
@@ -51,7 +52,8 @@ export class WriteTool implements Tool {
 - 会自动创建不存在的父目录
 - 如果文件已存在会被覆盖，修改已有文件请用 edit 工具
 - file_path 必须是绝对路径
-- 内容必须完整，禁止使用三个英文点号 ... 作为省略标记。Markdown 文档中用 Unicode 省略号 …（U+2026）代替`;
+- 内容必须完整，禁止使用三个英文点号 ... 作为省略标记。Markdown 文档中用 Unicode 省略号 …（U+2026）代替
+- ⚠️ 大文件分段写入：当内容超过约 300 行或预计很长时，不要一次性写入全部内容（会因输出上限截断导致写入失败）。正确做法：先 write 文件的前半部分，然后用 edit 工具或 bash 的 cat >> 逐段追加剩余内容。每段控制在 200-300 行以内`;
   }
 
   inputSchema(): Record<string, unknown> {
@@ -83,6 +85,21 @@ export class WriteTool implements Tool {
       const details = omissions.map(m => `  行 ${m.line}: ${m.text}`).join("\n");
       return {
         output: `错误: 检测到省略占位符，请提供完整代码而非省略标记:\n${details}\n\n请重新生成完整的文件内容。`,
+        isError: true,
+      };
+    }
+
+    // 内容截断检测（文档文件跳过）：检测括号严重不平衡 / 末尾突然中断等高置信度信号。
+    // 典型场景：LLM 输出撞 max_tokens，content 字段是半截代码/HTML。宁可漏报不误杀，
+    // 命中即返回 isError 让模型改用分段写入，而非写入残破文件后自以为完成。
+    const truncation = detectTruncation(params.content, filePath);
+    if (truncation.isTruncated) {
+      log.warn("TOOL", `✗ 疑似截断内容，拒绝写入 ${filePath}: ${truncation.reason}`);
+      return {
+        output:
+          `错误: 内容疑似被截断（${truncation.reason}）。这通常是因为一次性写入的内容超过了输出长度上限。\n` +
+          `请改用分段策略：先 write 文件的前一部分，再用 edit 或 bash 的 cat >> 逐段追加剩余内容，` +
+          `每段控制在 200-300 行以内。若确认内容本就完整（如含大量括号的正常代码），请重新完整写入一次。`,
         isError: true,
       };
     }

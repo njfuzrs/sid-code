@@ -146,6 +146,33 @@ describe("empty-param — buildEmptyParamRetryMessage", () => {
     const msg = buildEmptyParamRetryMessage(hits, 1, MAX_EMPTY_PARAM_RETRIES, false);
     expect(msg).not.toContain("精简");
   });
+
+  it("stop_reason=max_tokens → 截断措辞 + 分段写入建议（区分退化）", () => {
+    const msg = buildEmptyParamRetryMessage(hits, 1, MAX_EMPTY_PARAM_RETRIES, false, "max_tokens");
+    expect(msg).toContain("<system-reminder>");
+    expect(msg).toContain("截断");
+    expect(msg).toContain("max_tokens");
+    expect(msg).toContain("分段");
+    // 关键：不能再给出"重新发起完整调用"的退化提示（否则模型原样重发超大调用死循环）
+    expect(msg).not.toContain("大上下文下的模型退化");
+  });
+
+  it("stop_reason=length → 同样走截断分支（OpenAI 映射）", () => {
+    const msg = buildEmptyParamRetryMessage(hits, 1, MAX_EMPTY_PARAM_RETRIES, false, "length");
+    expect(msg).toContain("截断");
+    expect(msg).toContain("分段");
+  });
+
+  it("stop_reason=end_turn（非截断）→ 走退化分支", () => {
+    const msg = buildEmptyParamRetryMessage(hits, 1, MAX_EMPTY_PARAM_RETRIES, false, "end_turn");
+    expect(msg).toContain("大上下文下的模型退化");
+    expect(msg).not.toContain("分段");
+  });
+
+  it("不传 stop_reason → 保持退化分支（向后兼容）", () => {
+    const msg = buildEmptyParamRetryMessage(hits, 1, MAX_EMPTY_PARAM_RETRIES, false);
+    expect(msg).toContain("大上下文下的模型退化");
+  });
 });
 
 describe("empty-param — toolHasRequiredParams（误杀防护核心判据）", () => {

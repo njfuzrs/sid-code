@@ -148,17 +148,40 @@ export function replaceEmptyParamToolUses(
  * @param attempt 当前是第几次重试（1-based）
  * @param maxAttempts 最大重试次数
  * @param compacted 本轮是否已执行上下文压缩（用于措辞）
+ * @param stopReason 本轮响应的 stop_reason（用于区分"截断"与"大上下文退化"两种根因）
  */
 export function buildEmptyParamRetryMessage(
   hits: EmptyParamHit[],
   attempt: number,
   maxAttempts: number,
   compacted: boolean,
+  stopReason?: string,
 ): string {
   const toolList = hits.map((h) => h.name).join("、");
   const compactNote = compacted
     ? "系统已为你精简对话上下文以释放空间。"
     : "";
+
+  // 截断场景（关键）：stop_reason=max_tokens/length 说明上一次响应因输出长度上限被截断，
+  // tool_use 的参数 JSON（如 write 的 content 字段）只生成了一半、无法解析 → 在
+  // stream-processor 落成 input={}。这与"大上下文退化"是完全不同的根因：若仍按退化提示
+  // "重新发起完整调用"，模型会原样重发同一个超大 write，再次撞上限被截断 → 死循环
+  // （用户实测反复卡死的正是此路径）。因此必须给出针对性的分段写入建议。
+  const isTruncation = stopReason === "max_tokens" || stopReason === "length";
+  if (isTruncation) {
+    return (
+      `<system-reminder>\n` +
+      `工具调用「${toolList}」的参数为空（input={}）。根因：上一次响应达到输出长度上限（max_tokens）被截断，` +
+      `参数 JSON（如 content 字段）只生成了一半、无法解析，该调用未执行。${compactNote}\n` +
+      `这通常发生在一次性写入/替换超大内容时。请改用分段策略，切勿原样重发同一个超大调用（否则会再次被截断，陷入死循环）：\n` +
+      `1. 先用 write 写入文件的第一部分（例如前 1/3），确保本次调用参数完整可解析；\n` +
+      `2. 再用 edit（或 bash 的 cat >> 文件）逐段追加剩余内容；\n` +
+      `3. 每段控制在数百行以内，使单次工具调用的参数不超过输出上限。\n` +
+      `（自动重试 ${attempt}/${maxAttempts}）\n` +
+      `</system-reminder>`
+    );
+  }
+
   return (
     `<system-reminder>\n` +
     `检测到工具调用「${toolList}」的参数为空（input={}），这是大上下文下的模型退化，该调用未执行。${compactNote}\n` +

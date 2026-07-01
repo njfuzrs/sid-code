@@ -8,7 +8,7 @@ import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "../tool
 import type { ProviderRegistry } from "../llm/registry.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { SubAgent } from "./sub-agent.ts";
-import { getActiveAgentTypes, getActiveAgentDefinitions } from "./agent-definition.ts";
+import { getActiveAgentTypes, getActiveAgentDefinitions, resolveAgent } from "./agent-definition.ts";
 import { getLogger } from "../debug/logger.ts";
 import {
   createAgentTask,
@@ -179,6 +179,24 @@ ${typeLines}
 - **分治 vs 并行只读不是一回事**：并行调 read/grep/glob 只是在同一个上下文里多发几个只读调用，结果都回到主对话；分治是把一整段子任务连同它的上下文交给独立子代理，主对话只收最终结论。方向多、每个方向都重（要读很多文件）时，用分治而不是堆并行 read。
 - **并行分治**：多个子方向可以一次发多个 sub_agent 并行执行；需要后台跑设 run_in_background=true。
 - **嵌套限制**：子代理内部不能再派子代理，分治只能由主线程发起。所以要并行就在主线程一次性把多个 sub_agent 发出去，别指望某个子代理内部再 fan-out。`;
+  }
+
+  /**
+   * 并发安全判断（输入感知）。
+   *
+   * 子代理的并发安全性取决于其类型对应的 AgentDefinition.readOnly 字段：
+   * - readOnly=true（explore/plan/verify）：只读操作，多个可安全并行
+   * - readOnly=false/undefined（task/general-purpose）：可能写文件/执行命令，串行执行
+   *
+   * 这解决了"模型一次发多个 explore 子代理却被串行执行"的问题——
+   * tool-executor 的分区逻辑优先调用 isConcurrencySafe(input)，
+   * 现在只读子代理会被正确归入并行队列。
+   */
+  isConcurrencySafe(input: unknown): boolean {
+    const params = input as { type?: string };
+    if (!params?.type) return false;
+    const def = resolveAgent(params.type);
+    return def?.readOnly === true;
   }
 
   inputSchema(): Record<string, unknown> {

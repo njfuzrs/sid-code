@@ -23,6 +23,9 @@ export interface ReactiveCompactResult {
  * 1. 先尝试 snipCompact（裁剪最早的消息）
  * 2. 如果不够，尝试 emergencyTruncate
  * 3. 保留最近 4 条消息（2 轮对话）
+ *
+ * 关键改进：从被裁剪的消息中提取原始任务语义，保留到摘要中，
+ * 避免模型压缩后"完全不记得在干什么"而目标跑偏。
  */
 export function reactiveCompact(ctxMgr: ContextManager): ReactiveCompactResult {
   const log = getLogger();
@@ -38,7 +41,9 @@ export function reactiveCompact(ctxMgr: ContextManager): ReactiveCompactResult {
   const snipCount = messageCountBefore - keepCount;
 
   if (snipCount > 0) {
-    const summary = `[响应式压缩] 因 prompt-too-long 错误，裁剪了最早的 ${snipCount} 条消息。`;
+    // 从即将被裁剪的消息中提取任务语义，避免压缩后模型丢失工作方向
+    const taskContext = extractTaskContext(ctxMgr.getMessages(), snipCount);
+    const summary = buildReactiveCompactSummary(snipCount, taskContext);
     ctxMgr.compactWithSummary(summary);
     const messageCountAfter = ctxMgr.messageCount();
     log.info("REACTIVE_COMPACT", `snipCompact: ${messageCountBefore} → ${messageCountAfter} 条消息`);
@@ -50,6 +55,88 @@ export function reactiveCompact(ctxMgr: ContextManager): ReactiveCompactResult {
   const messageCountAfter = ctxMgr.messageCount();
   log.info("REACTIVE_COMPACT", `emergencyTruncate: ${messageCountBefore} → ${messageCountAfter} 条消息`);
   return { success: messageCountAfter < messageCountBefore, messageCountBefore, messageCountAfter };
+}
+
+/**
+ * 从被裁剪的消息中提取任务语义上下文。
+ *
+ * 提取逻辑（无 LLM 参与，纯文本提取，适合错误恢复路径的同步场景）：
+ * 1. 第一条 user 消息 = 原始任务指令（最关键）
+ * 2. 最后一条 assistant 消息中的文本 = 当前工作进度
+ *
+ * 各段有长度上限防止摘要本身过大。
+ */
+function extractTaskContext(
+  messages: { role: string; content: any[] }[],
+  snipCount: number,
+): { originalTask: string; lastProgress: string } {
+  const snipped = messages.slice(0, snipCount);
+
+  // 1. 找第一条 user 消息文本（原始任务）
+  let originalTask = "";
+  for (const msg of snipped) {
+    if (msg.role !== "user") continue;
+    const text = extractTextFromContent(msg.content);
+    // 跳过系统注入的内部消息（compact-summary / system-reminder 等）
+    if (text.startsWith("[对话摘要]") || text.startsWith("<system-reminder>")) continue;
+    originalTask = text;
+    break;
+  }
+
+  // 2. 找被裁剪部分中最后一条 assistant 的文本（当前进度）
+  let lastProgress = "";
+  for (let i = snipped.length - 1; i >= 0; i--) {
+    if (snipped[i].role !== "assistant") continue;
+    lastProgress = extractTextFromContent(snipped[i].content);
+    break;
+  }
+
+  // 截断保护：任务指令最多 500 字符，进度最多 300 字符
+  const MAX_TASK_LEN = 500;
+  const MAX_PROGRESS_LEN = 300;
+  if (originalTask.length > MAX_TASK_LEN) {
+    originalTask = originalTask.slice(0, MAX_TASK_LEN) + "…";
+  }
+  if (lastProgress.length > MAX_PROGRESS_LEN) {
+    lastProgress = lastProgress.slice(0, MAX_PROGRESS_LEN) + "…";
+  }
+
+  return { originalTask, lastProgress };
+}
+
+/** 从 ContentBlock[] 中提取纯文本 */
+function extractTextFromContent(content: any[]): string {
+  if (!Array.isArray(content)) return "";
+  const texts: string[] = [];
+  for (const block of content) {
+    if (block.type === "text" && block.text) {
+      texts.push(block.text);
+    }
+  }
+  return texts.join("\n").trim();
+}
+
+/**
+ * 构建带语义的响应式压缩摘要。
+ * 结构：操作说明 + 原始任务（让模型知道"在干什么"）+ 最近进度（让模型知道"干到哪了"）
+ */
+function buildReactiveCompactSummary(
+  snipCount: number,
+  ctx: { originalTask: string; lastProgress: string },
+): string {
+  const parts: string[] = [
+    `[响应式压缩] 因 prompt-too-long 错误，裁剪了最早的 ${snipCount} 条消息。`,
+  ];
+
+  if (ctx.originalTask) {
+    parts.push(`\n[原始任务] ${ctx.originalTask}`);
+  }
+
+  if (ctx.lastProgress) {
+    parts.push(`\n[压缩前进度] ${ctx.lastProgress}`);
+  }
+
+  return parts.join("");
 }
 
 /**

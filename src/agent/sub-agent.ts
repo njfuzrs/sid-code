@@ -933,9 +933,15 @@ export class SubAgent {
           provider: activeProvider.name(),
         };
       } else {
+        // 超时检测：runAgentLoop 内部消化了 abort 异常（不抛出），
+        // 返回 success=false + 原始 AbortError message。此处补充友好超时提示。
+        const isTimeout = timeoutCtrl.signal.aborted;
+        const output = isTimeout
+          ? `子代理执行超时 (${Math.round(timeout / 1000)}秒)`
+          : (loopResult.errorMessage || "子代理执行未成功");
         return {
           success: false,
-          output: loopResult.errorMessage || "子代理执行未成功",
+          output,
           usage: totalUsage,
           turns: loopResult.turns,
           toolUseCount,

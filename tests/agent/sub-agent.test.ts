@@ -246,9 +246,9 @@ describe("SubAgent 嵌套防护（已移除 static depth）", () => {
     const agent = new SubAgent(new ErrorProvider(), "test-model", new Registry());
     const result = await agent.execute({ type: "explore", description: "异常测试", prompt: "测试" });
 
-    // execute() 内部 try/catch 兜底：success=false、输出含异常信息
+    // execute() 内部 runAgentLoop 消化了异常：success=false、输出含原始错误信息
     expect(result.success).toBe(false);
-    expect(result.output).toContain("子代理执行异常");
+    expect(result.output).toContain("模拟错误");
   });
 });
 
@@ -346,7 +346,8 @@ describe("SubAgent plan 类型", () => {
       prompt: "分析代码",
     });
 
-    expect(result.isError).toBeUndefined();
+    // 成功时 isError 为 false（非 undefined），因为 runSync 显式设置 isError: !result.success
+    expect(result.isError).toBe(false);
     expect(result.output).toContain("plan");
   });
 
