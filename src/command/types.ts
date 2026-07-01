@@ -76,7 +76,7 @@ export interface AppContext {
 }
 
 /** 支持的对话框类型 */
-export type DialogType = "model" | "theme" | "settings";
+export type DialogType = "model" | "theme" | "settings" | "onboarding";
 
 /** 命令执行结果类型 */
 export type CommandResultKind =

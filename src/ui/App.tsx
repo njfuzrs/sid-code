@@ -61,6 +61,8 @@ export interface TUICallbacks {
   onUserInput: (text: string) => Promise<void>;
   onSlashCommand: (cmd: string, args: string) => Promise<void>;
   onInterrupt: () => void;
+  /** 首次启动引导完成：写 settings.json + 热加载 Provider（见 app.ts） */
+  onCompleteOnboarding?: (result: import("./components/OnboardingDialog.tsx").OnboardingResult) => void;
 }
 
 /** 权限请求信息 */
@@ -213,6 +215,11 @@ export interface TUIState {
   tasks: TaskDisplayInfo[];
   /** CM3/CM4：LLM 重试/限流状态（null = 无重试）。 */
   retryStatus: RetryStatusInfo | null;
+  /**
+   * 首次启动引导标记：为 true 时 EmptyLogo 显示配置引导、自动弹出 OnboardingDialog。
+   * 用户完成配置（onCompleteOnboarding）后置 false。
+   */
+  needsOnboarding?: boolean;
 }
 
 /** CM3/CM4：LLM 重试/限流状态信息（驱动 RetryStatus 组件实时倒计时）。 */
@@ -643,6 +650,21 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     bridge.update({ activeDialog: null });
   }, [callbacks, bridge]);
 
+  // 首次启动引导完成：交给 app.ts 回调写盘 + 热加载 Provider
+  const handleCompleteOnboarding = useCallback(
+    (result: import("./components/OnboardingDialog.tsx").OnboardingResult) => {
+      callbacks.onCompleteOnboarding?.(result);
+    },
+    [callbacks],
+  );
+
+  // 首次启动引导：needsOnboarding 且当前无其它对话框时，自动弹出 OnboardingDialog
+  useEffect(() => {
+    if (state.needsOnboarding && !state.activeDialog) {
+      bridge.update({ activeDialog: "onboarding" });
+    }
+  }, [state.needsOnboarding, state.activeDialog, bridge]);
+
   // 可用模型列表（从 config 中获取）
   const availableModels = useMemo(() => {
     return state.availableModels ?? [];
@@ -742,6 +764,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           availableThemes={availableThemes}
           currentTheme={currentTheme}
           onThemeSelect={handleThemeSelect}
+          onCompleteOnboarding={handleCompleteOnboarding}
           todos={state.todos}
           tasks={state.tasks}
         />
@@ -786,6 +809,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           availableThemes={availableThemes}
           currentTheme={currentTheme}
           onThemeSelect={handleThemeSelect}
+          onCompleteOnboarding={handleCompleteOnboarding}
           todos={state.todos}
           tasks={state.tasks}
         />

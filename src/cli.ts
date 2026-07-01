@@ -542,14 +542,23 @@ export async function main(): Promise<void> {
       return;
     }
 
-    // 验证 API Key
-    if (config.provider === "anthropic" && !config.anthropicKey) {
-      console.error("错误: 未设置 ANTHROPIC_API_KEY 环境变量");
-      process.exit(1);
-    }
-    if (config.provider === "openai" && !config.openaiKey) {
-      console.error("错误: 未设置 OPENAI_API_KEY 环境变量");
-      process.exit(1);
+    // 验证 API Key。
+    // - headless（print）模式：缺 key 无法交互，按原样报错退出（文案指向配置位置）。
+    // - TUI 模式：缺 key 不退出，标记 _needsOnboarding，进界面后由 OnboardingDialog 引导。
+    //   （config.ts loadConfig 已处理"完全空配置"分支；此处覆盖"provider 有值但缺 key"。）
+    const missingKey =
+      (config.provider === "anthropic" && !config.anthropicKey) ||
+      (config.provider === "openai" && !config.openaiKey);
+    if (missingKey) {
+      if (config.print) {
+        const keyName = config.provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
+        console.error(
+          `错误: 未配置 ${keyName}。\n` +
+          `请在 ~/.sid-code/settings.json 配置 availableModels[].api_key，或设置环境变量 ${keyName}。`,
+        );
+        process.exit(1);
+      }
+      config._needsOnboarding = true;
     }
 
     // Settings 系统：Phase 2 全量环境变量（信任边界之后）+ 启动文件变更监听。
@@ -577,13 +586,25 @@ export async function main(): Promise<void> {
 
     // 创建 ProviderRegistry（Provider 工厂 + 缓存 + 子代理模型映射）
     const { ProviderRegistry } = await import("./llm/registry.ts");
+    // _needsOnboarding 时 provider 可能为空，给兜底名使 registry 可构造占位 Provider
+    // （registry 仅对未知 provider 名 throw；空 model/key 构造 OpenAIProvider 无碍）。
+    // 该 Provider 永不实际发起 LLM 调用（TUI 弹 OnboardingDialog 收集配置前不进查询循环）。
+    if (config._needsOnboarding && !config.provider) {
+      config.provider = "openai";
+    }
     const providerRegistry = new ProviderRegistry(config, config.subAgentModels);
     let provider: import("./llm/provider.ts").Provider;
     try {
       provider = providerRegistry.getProvider();
     } catch (err: any) {
-      console.error(`创建 Provider 失败: ${err.message}`);
-      process.exit(1);
+      if (config._needsOnboarding) {
+        // 兜底：构造失败也不退出，创建一个最简 OpenAI Provider 占位
+        const { OpenAIProvider } = await import("./llm/openai.ts");
+        provider = new OpenAIProvider("", config.model || "placeholder");
+      } else {
+        console.error(`创建 Provider 失败: ${err.message}`);
+        process.exit(1);
+      }
     }
 
     // 记录 Provider 信息

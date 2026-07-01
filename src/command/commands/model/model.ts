@@ -37,7 +37,8 @@ const mod: LocalCommandModule = {
       return { type: "dialog", dialog: "model" };
     }
 
-    return { type: "text", value: buildCurrentModel(ctx) };
+    // 无可用模型时（首次启动未配置），打开 onboarding 引导
+    return { type: "dialog", dialog: "onboarding" };
   },
 };
 

@@ -25,6 +25,8 @@ import { ExitWarning } from "./ExitWarning.tsx";
 import { EmptyLogo } from "./EmptyLogo.tsx";
 import { ModelDialog } from "./ModelDialog.tsx";
 import { ThemeDialog } from "./ThemeDialog.tsx";
+import { OnboardingDialog } from "./OnboardingDialog.tsx";
+import type { OnboardingResult } from "./OnboardingDialog.tsx";
 import type { HistoryItem } from "../types.ts";
 import type { PermissionRequestInfo, ShellConfirmRequestInfo, PlanApprovalRequestInfo, AskUserQuestionRequestInfo, TaskDisplayInfo } from "../App.tsx";
 import type { DialogType } from "../../command/types.ts";
@@ -93,6 +95,8 @@ interface DefaultAppLayoutProps {
   availableThemes: Array<{ name: string; type: "light" | "dark"; description?: string }>;
   currentTheme: string;
   onThemeSelect: (themeName: string) => void;
+  /** 首次启动引导完成回调（写 settings.json + 热加载 Provider） */
+  onCompleteOnboarding?: (result: OnboardingResult) => void;
   /** 当前 todo 列表（来自 TodoWrite 工具） */
   todos: TodoItem[];
   /** 当前后台任务列表（Shell/Agent） */
@@ -143,6 +147,7 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
   availableThemes,
   currentTheme,
   onThemeSelect,
+  onCompleteOnboarding,
   todos,
   tasks,
 }) => {
@@ -179,7 +184,7 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
       {/* 消息区域：直接作为根 Box 子元素，ScrollableList 自身 flexGrow=1 会填充剩余空间 */}
       {isEmpty ? (
         <Box flexGrow={1} flexDirection="column" justifyContent="center" alignItems="center" width={termWidth}>
-          <EmptyLogo termWidth={termWidth} cwd={cwd} gitBranch={gitBranch} model={model} />
+          <EmptyLogo termWidth={termWidth} cwd={cwd} gitBranch={gitBranch} model={model} needsOnboarding={activeDialog === "onboarding"} />
         </Box>
       ) : (
         <MainContent
@@ -259,6 +264,11 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
               currentTheme={currentTheme}
               availableThemes={availableThemes}
               onThemeSelect={onThemeSelect}
+            />
+          ) : activeDialog === "onboarding" && onCompleteOnboarding ? (
+            <OnboardingDialog
+              onComplete={onCompleteOnboarding}
+              onClose={onDialogClose}
             />
           ) : (
             <Composer

@@ -2442,6 +2442,7 @@ export class App {
       tasks: [],
       retryStatus: null,
       goalDisplay: null,
+      needsOnboarding: !!this.config._needsOnboarding,
     });
 
     const updateState = (patch: Partial<import("./ui/App.tsx").TUIState>) => {
@@ -3339,6 +3340,65 @@ export class App {
         // A6：带 reason 区分中断场景。对标 claude-code 的 signal.reason === 'user-cancel'：
         // 仅"用户主动 ESC 取消"这一场景才触发 A4 的输入框自动回填；超时/信号等不回填。
         this.abortController.abort("user-cancel");
+      },
+      onCompleteOnboarding: (result) => {
+        log.info("TUI:ONBOARD", `首次引导完成: provider=${result.provider} model=${result.model}`);
+        const { patchSettingsFile } = require("./config/settings/settings.ts");
+        const { resolveCurrentModelConfig } = require("./config/config.ts");
+
+        // 构造 ModelConfig 对象
+        const modelEntry: Record<string, unknown> = {
+          name: result.model,
+          provider: result.provider,
+        };
+        if (result.baseURL) modelEntry.base_url = result.baseURL;
+        if (result.apiKey) modelEntry.api_key = result.apiKey;
+
+        // 1. 写入 settings.json（外科式补丁，保留 env 占位符安全）
+        patchSettingsFile("userSettings", "availableModels", [modelEntry]);
+        patchSettingsFile("userSettings", "model", result.model);
+
+        // 2. 更新内存 config
+        this.config.availableModels = [{
+          name: result.model,
+          provider: result.provider,
+          baseURL: result.baseURL || undefined,
+          apiKey: result.apiKey || undefined,
+        }];
+        this.config.model = result.model;
+        this.config.provider = result.provider;
+        if (result.baseURL) this.config.baseURL = result.baseURL;
+        delete this.config._needsOnboarding;
+
+        // 3. 回填 key 到顶层 + 热加载 Provider
+        resolveCurrentModelConfig(this.config);
+        if (this.providerRegistry) {
+          this.providerRegistry.clearCache();
+          this.provider = this.providerRegistry.getProvider();
+          if (this.queryEngine) this.queryEngine.updateProvider(this.provider);
+        }
+
+        // 4. 同步上下文窗口
+        try {
+          const { TokenEstimator } = require("./llm/token-estimator.ts");
+          const newWindow = new TokenEstimator().getContextLimit(result.model, this.config.availableModels);
+          this.ctxMgr.setMaxTokens(newWindow);
+        } catch { /* 窗口解析失败不影响配置，沿用旧窗口 */ }
+
+        // 5. 刷新状态栏
+        this.pushKnobDisplay();
+        updateState({
+          activeDialog: null,
+          needsOnboarding: false,
+          model: result.model,
+          provider: result.provider,
+          availableModels: [{
+            name: result.model,
+            provider: result.provider,
+            description: result.baseURL ? `${result.provider} (${result.baseURL})` : undefined,
+          }],
+        });
+        log.info("TUI:ONBOARD", "配置已写入 settings.json，Provider 热加载成功");
       },
     };
 

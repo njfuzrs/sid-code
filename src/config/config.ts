@@ -256,6 +256,14 @@ export interface Config {
     warnings: { path: string; message: string }[];
     errors: { path: string; message: string }[];
   };
+
+  /**
+   * 首次启动引导标记：TUI 模式下检测到"完全未配置模型/API Key"时置 true。
+   * loadConfig 遇此情形不再 throw（避免首启崩溃），而是放行进 TUI，由
+   * OnboardingDialog 引导用户配置。headless 模式（print）恒 false —— 无头
+   * 场景仍按原样报错退出。不写入磁盘配置，仅运行时携带。
+   */
+  _needsOnboarding?: boolean;
 }
 
 /** IDE 集成配置 */
@@ -890,13 +898,26 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
     }
   }
 
-  // 如果 model 和 availableModels 都为空，给出明确引导
+  // 如果 model 和 availableModels 都为空：
+  //   - headless（print）模式：仍按原样 throw，无头场景无法交互引导，必须显式报错
+  //   - TUI 模式：不 throw，标记 _needsOnboarding，放行进界面由 OnboardingDialog 引导。
+  //     跳过后续 validateConfig 的 provider/model 致命校验（占位空值本就通不过，
+  //     但这是预期的"待引导"状态而非配置错误）。
   if (!config.model && config.availableModels.length === 0) {
-    throw new Error(
-      "未配置任何模型。请在 ~/.sid-code/settings.json 的 availableModels 数组中添加模型配置。\n" +
-      "示例: { \"availableModels\": [{ \"name\": \"<你的模型名>\", \"provider\": \"openai\", \"api_key\": \"sk-xxx\", \"base_url\": \"https://api.example.com\" }] }\n" +
-      "可选字段: contextWindow (上下文窗口), maxOutputTokens (最大输出), pricing (自定义价格), supportsThinking (是否支持深度思考)",
-    );
+    if (config.print) {
+      throw new Error(
+        "未配置任何模型。请在 ~/.sid-code/settings.json 的 availableModels 数组中添加模型配置。\n" +
+        "示例: { \"availableModels\": [{ \"name\": \"<你的模型名>\", \"provider\": \"openai\", \"api_key\": \"sk-xxx\", \"base_url\": \"https://api.example.com\" }] }\n" +
+        "可选字段: contextWindow (上下文窗口), maxOutputTokens (最大输出), pricing (自定义价格), supportsThinking (是否支持深度思考)",
+      );
+    }
+    config._needsOnboarding = true;
+    // 收尾 sessionId 后提前返回，跳过 provider/model 致命校验（详见下方 return 前逻辑）
+    if (!config.sessionId) {
+      const { generateSessionId } = await import("../session/id.ts");
+      config.sessionId = generateSessionId();
+    }
+    return config;
   }
 
   // 如果用户未显式配置 maxTokens，从当前模型的 maxOutputTokens 自动推导

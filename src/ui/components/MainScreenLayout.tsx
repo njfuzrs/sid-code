@@ -27,6 +27,8 @@ import { ExitWarning } from "./ExitWarning.tsx";
 import { EmptyLogo } from "./EmptyLogo.tsx";
 import { ModelDialog } from "./ModelDialog.tsx";
 import { ThemeDialog } from "./ThemeDialog.tsx";
+import { OnboardingDialog } from "./OnboardingDialog.tsx";
+import type { OnboardingResult } from "./OnboardingDialog.tsx";
 import type { HistoryItem } from "../types.ts";
 import type { PermissionRequestInfo, ShellConfirmRequestInfo, PlanApprovalRequestInfo, AskUserQuestionRequestInfo, TaskDisplayInfo } from "../App.tsx";
 import type { DialogType } from "../../command/types.ts";
@@ -94,6 +96,8 @@ interface MainScreenLayoutProps {
   availableThemes: Array<{ name: string; type: "light" | "dark"; description?: string }>;
   currentTheme: string;
   onThemeSelect: (themeName: string) => void;
+  /** 首次启动引导完成回调 */
+  onCompleteOnboarding?: (result: OnboardingResult) => void;
   /** 当前 todo 列表（来自 TodoWrite 工具） */
   todos: TodoItem[];
   /** 当前后台任务列表（Shell/Agent） */
@@ -140,6 +144,7 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
   availableThemes,
   currentTheme,
   onThemeSelect,
+  onCompleteOnboarding,
   todos,
   tasks,
 }) {
@@ -179,7 +184,7 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
         {/* 留白区：瞬态块与输入框，块间恒为 1 行（gap）；空块返回 null 不产生幻影间距 */}
         <Box flexDirection="column" gap={1}>
           {/* 空会话：欢迎屏（首条消息到达后即随 Static 滚走） */}
-          {isEmpty ? <EmptyLogo termWidth={termWidth} cwd={cwd} gitBranch={gitBranch} model={model} /> : null}
+          {isEmpty ? <EmptyLogo termWidth={termWidth} cwd={cwd} gitBranch={gitBranch} model={model} needsOnboarding={activeDialog === "onboarding"} /> : null}
 
           {/* v2：流式思考区域 — 独立于 streamingText（对标 Claude Code）
               思考在正文之前渲染（模型先思考后回答），顺序与语义一致。
@@ -250,6 +255,11 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
               currentTheme={currentTheme}
               availableThemes={availableThemes}
               onThemeSelect={onThemeSelect}
+            />
+          ) : activeDialog === "onboarding" && onCompleteOnboarding ? (
+            <OnboardingDialog
+              onComplete={onCompleteOnboarding}
+              onClose={onDialogClose}
             />
           ) : (
             <Composer

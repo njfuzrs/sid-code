@@ -77,9 +77,11 @@ interface EmptyLogoProps {
   gitBranch?: string;
   /** 当前模型名 */
   model?: string;
+  /** 首次启动引导标记：为 true 时 Tip 区替换为配置引导 */
+  needsOnboarding?: boolean;
 }
 
-export function EmptyLogo({ termWidth, cwd, gitBranch, model }: EmptyLogoProps) {
+export function EmptyLogo({ termWidth, cwd, gitBranch, model, needsOnboarding }: EmptyLogoProps) {
   const version = require("../../../package.json").version;
   const displayCwd = cwd ? shortenPath(cwd) : "";
   const displayProject = cwd ? projectName(cwd) : "sid-code";
@@ -108,7 +110,12 @@ export function EmptyLogo({ termWidth, cwd, gitBranch, model }: EmptyLogoProps) 
             </Box>
           ))}
         </Box>
-        {SESSION_TIP ? (
+        {needsOnboarding ? (
+          <Box marginTop={1}>
+            <Text color={theme.ui.active}>{`${ARROW_PROMPT} `}</Text>
+            <Text color={theme.ui.active}>尚未配置 API Key，正在打开配置向导…</Text>
+          </Box>
+        ) : SESSION_TIP ? (
           <Box marginTop={1}>
             <Text color={theme.ui.active}>{`${ARROW_PROMPT} `}</Text>
             <Text color={theme.text.secondary} dimColor>{SESSION_TIP}</Text>
@@ -149,7 +156,12 @@ export function EmptyLogo({ termWidth, cwd, gitBranch, model }: EmptyLogoProps) 
       {/* 底部 Tip + 快捷键提示（合为一行） */}
       <Box marginTop={1} justifyContent="space-between" width={termWidth - 4}>
         <Box>
-          {SESSION_TIP ? (
+          {needsOnboarding ? (
+            <>
+              <Text color={theme.ui.active}>{`${ARROW_PROMPT} `}</Text>
+              <Text color={theme.ui.active}>尚未配置 API Key，正在打开配置向导…</Text>
+            </>
+          ) : SESSION_TIP ? (
             <>
               <Text color={theme.ui.active}>{`${ARROW_PROMPT} `}</Text>
               <Text color={theme.text.secondary} dimColor>{SESSION_TIP}</Text>
