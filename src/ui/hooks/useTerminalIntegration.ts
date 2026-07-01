@@ -9,9 +9,6 @@
  *   全为单色几何字形,不用彩色 emoji（项目 L1.1 铁律）。
  * - TM4 tab 状态（OSC 21337）：idle/busy/waiting 彩色圆点。
  * - TM3 桌面通知 / bell（OSC 777 + BEL）：响应从「忙」回到「闲」时提醒一次。
- * - OSC 9;4 进度环：进行中发 indeterminate、回合结束发 clear。这是 VSCode
- *   集成终端里唯一能在 tab 上体现「正在工作」的原生序列（OSC 21337 不支持、
- *   OSC 0 标题默认也不显示），同时 iTerm2 3.6.6+/Ghostty 1.2+/ConEmu 也吃。
  *
  * 设计原则：
  * - 纯 app 层接线,底层发送逻辑由 ink hook / context 封装,终端不支持时静默丢弃。
@@ -27,8 +24,7 @@ import { useTerminalTitle } from "../../ink/hooks/use-terminal-title.ts";
 import { useTabStatus, type TabStatusKind } from "../../ink/hooks/use-tab-status.ts";
 import { TerminalWriteContext } from "../../ink/useTerminalNotification.ts";
 import { BEL } from "../../ink/termio/ansi.ts";
-import { ITERM2, OSC, osc, PROGRESS, wrapForMultiplexer } from "../../ink/termio/osc.ts";
-import { isProgressReportingAvailable } from "../../ink/terminal.ts";
+import { OSC, osc, wrapForMultiplexer } from "../../ink/termio/osc.ts";
 import { useIsAccessibilityEnabled } from "../accessibility/AccessibilityContext.tsx";
 import { TITLE_STATIC_PREFIX, TITLE_ANIMATION_FRAMES } from "../constants/figures.ts";
 
@@ -50,7 +46,7 @@ function toTabStatus(state: StreamingState): TabStatusKind {
   switch (state) {
     case StreamingState.Connecting:
     case StreamingState.Responding:
-      // Connecting（等首字）也算「忙」——tab 圆点 / 进度环在连接期就要亮起。
+      // Connecting（等首字）也算「忙」——tab 圆点在连接期就要亮起。
       return "busy";
     case StreamingState.WaitingForConfirmation:
       return "waiting";
@@ -116,36 +112,4 @@ export function useTerminalIntegration({
       writeRaw(wrapForMultiplexer(osc(OSC.GHOSTTY, "notify", baseTitle, "响应完成")));
     }
   }, [streamingState, notifyOnComplete, writeRaw, baseTitle]);
-
-  // ── OSC 9;4 进度环（对标 cc Messages.tsx 的 hasToolsInProgress 驱动）──
-  // 进行中 → indeterminate（VSCode tab 转圈、iTerm2/Ghostty/ConEmu 进度环）；
-  // 其余状态 → clear。终端不支持时 isProgressReportingAvailable() 返回 false，
-  // 整体降级为 no-op，不会写出任何序列。
-  const prevProgressRef = useRef<boolean | null>(null);
-  useEffect(() => {
-    if (!writeRaw || !isProgressReportingAvailable()) return;
-    // 「忙」含 Connecting 与 Responding——连接期（等首字）进度环也要转，
-    // 让用户在 VSCode tab / iTerm2 进度环上从回车那刻起就看到「正在工作」。
-    const busy =
-      streamingState === StreamingState.Connecting ||
-      streamingState === StreamingState.Responding;
-    // 只在「忙」状态翻转时发序列，避免每帧/每 token 重复写。
-    if (prevProgressRef.current === busy) return;
-    prevProgressRef.current = busy;
-    writeRaw(
-      wrapForMultiplexer(
-        busy
-          ? osc(OSC.ITERM2, ITERM2.PROGRESS, PROGRESS.INDETERMINATE, "")
-          : osc(OSC.ITERM2, ITERM2.PROGRESS, PROGRESS.CLEAR, ""),
-      ),
-    );
-  }, [streamingState, writeRaw]);
-
-  // 卸载时清掉进度环，避免退出后 tab 上残留转圈。
-  useEffect(() => {
-    return () => {
-      if (!writeRaw || !isProgressReportingAvailable()) return;
-      writeRaw(wrapForMultiplexer(osc(OSC.ITERM2, ITERM2.PROGRESS, PROGRESS.CLEAR, "")));
-    };
-  }, [writeRaw]);
 }
