@@ -451,7 +451,7 @@ export class SubAgent {
       model,
       max_turns: task.maxTurns ?? 10,
       max_tokens: task.maxTokens ?? 50000,
-      timeout: task.timeout ?? 120_000,
+      timeout: task.timeout ?? resolveAgent(task.type)?.timeout ?? 120_000,
       workdir: process.cwd(),
       provider_name: providerName,
       api_key: apiKey,
@@ -487,7 +487,7 @@ export class SubAgent {
       model,
       max_turns: task.maxTurns ?? 10,
       max_tokens: task.maxTokens ?? 50000,
-      timeout: task.timeout ?? 120_000,
+      timeout: task.timeout ?? 120_000,  // 自定义代理无 AgentDefinition，保留 120s 默认
       workdir: process.cwd(),
       provider_name: providerName,
       api_key: apiKey,
@@ -551,6 +551,11 @@ export class SubAgent {
       let result: SubAgentResult | null = null;
 
       while (true) {
+        // 纵深防御：signal abort 后主动 break，防止 kill 信号被忽略时 reader 永久阻塞
+        if (signal?.aborted) {
+          log.info("SUBAGENT", "signal aborted，退出 stdout 读取循环");
+          break;
+        }
         const { done, value } = await stdoutReader.read();
         if (done) break;
 
@@ -729,8 +734,9 @@ export class SubAgent {
     const startTime = Date.now();
     log.info("SUBAGENT", `启动子代理 [${task.type}]: ${task.description}`);
 
-    // 超时控制（默认 120 秒）
-    const timeout = task.timeout ?? 120_000;
+    // 超时控制：task.timeout > AgentDefinition.timeout > 默认 120 秒
+    const agentDefForTimeout = resolveAgent(task.type);
+    const timeout = task.timeout ?? agentDefForTimeout?.timeout ?? 120_000;
     const timeoutCtrl = new AbortController();
     const timer = setTimeout(() => timeoutCtrl.abort(), timeout);
     const mergedSignal = signal

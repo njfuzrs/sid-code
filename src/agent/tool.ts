@@ -309,7 +309,9 @@ ${typeLines}
         `</subagent-result>`,
       ].join("\n");
 
-      return { output: summary };
+      // 修复问题2：子代理 success=false（超时/loopDetect/异常）时标记 isError，
+      // 让 TUI ToolStatusIndicator 正确显示红色终态（而非绿色成功）。
+      return { output: summary, isError: !result.success };
     } catch (err: any) {
       log.error("SUBAGENT", `子代理执行失败`, { error: err.message, stack: err.stack });
       return { output: `子代理执行失败: ${err.message}`, isError: true };

@@ -859,12 +859,25 @@ export class MCPManager {
     // 跑授权流程
     await this.runOAuthFlow(name, config);
 
-    // 重连并刷新工具
+    // 重连并刷新工具（传入超时 signal，防止 doConnect 变孤儿）
     this.setStatus(name, MCPConnectionStatus.CONNECTING);
-    const tools = await this.doConnect(name, config);
-    this.setStatus(name, MCPConnectionStatus.CONNECTED);
-    this.onToolsRefresh?.(name, tools);
-    return tools;
+    const connectTimeout = config.timeout ?? 30000;
+    const connectCtl = new AbortController();
+    const connectTimer = setTimeout(() => { connectCtl.abort(); }, connectTimeout);
+    try {
+      const tools = await this.doConnect(name, config, connectCtl.signal);
+      this.setStatus(name, MCPConnectionStatus.CONNECTED);
+      this.onToolsRefresh?.(name, tools);
+      return tools;
+    } catch (err: any) {
+      if (!connectCtl.signal.aborted) connectCtl.abort();
+      const client = this.clients.get(name);
+      if (client) { client.close(); this.clients.delete(name); }
+      this.setStatus(name, MCPConnectionStatus.FAILED, err.message);
+      throw err;
+    } finally {
+      clearTimeout(connectTimer);
+    }
   }
 
   /** 列出所有配置了 OAuth 的服务器名 */

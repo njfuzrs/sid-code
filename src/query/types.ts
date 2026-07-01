@@ -161,6 +161,11 @@ export interface LoopState {
    */
   goalReminderPendingAfterCompact?: boolean;
   /**
+   * todo：compact 后强制下一轮注入 todo reminder（防止任务列表在压缩后丢失）。
+   * 每次 compact 后设为 true，reminder 注入后消费（设回 false）。
+   */
+  todoReminderPendingAfterCompact?: boolean;
+  /**
    * 假设纪律首轮引导是否已注入（每条用户消息内仅一次）。
    * queryLoop 每条用户消息新建 state，此字段保证同一条消息多轮里不重复注入。
    */

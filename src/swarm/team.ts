@@ -83,9 +83,17 @@ export class TeamManager {
 
     // B7：隔离成员经 SubAgentTask.cwd 走 withAgentCwd（AsyncLocalStorage），
     // 不再用 process.chdir，因此隔离成员也可与非隔离成员一起并发执行（无 chdir 竞态）。
-    const results = await Promise.all(
-      this.opts.members.map((m) => this.runMember(m, gitRoot, ts, signal)),
-    );
+    // D 模式兜底：team 级硬超时 15 分钟，防止单个成员 hang 导致整个 Promise.all 永久阻塞
+    const TEAM_HARD_TIMEOUT_MS = 15 * 60 * 1000;
+    const teamTimeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error(`Swarm team 整体超时 (${TEAM_HARD_TIMEOUT_MS / 1000}s)`)), TEAM_HARD_TIMEOUT_MS).unref();
+    });
+    const results = await Promise.race([
+      Promise.all(
+        this.opts.members.map((m) => this.runMember(m, gitRoot, ts, signal)),
+      ),
+      teamTimeoutPromise,
+    ]);
 
     // 保持成员定义顺序
     const byName = new Map<string, TeammateResult>();

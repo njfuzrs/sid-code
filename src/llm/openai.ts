@@ -805,8 +805,11 @@ export class OpenAIProvider implements Provider {
 
     /** Fix 2: content progress timeout — 区分 TCP keep-alive 与业务进展
      *  即使 reader.read() 持续 settle（空行/ping），只要无有效内容进展就超时中断。
-     *  DeepSeek 思考模型给 5min（思考期间 reasoning_content 算进展）；其他 2min。 */
-    const CONTENT_PROGRESS_TIMEOUT_MS = isDeepSeek ? 300_000 : 120_000;
+     *  DeepSeek 思考模型给 5min（思考期间 reasoning_content 算进展）；其他 2min。
+     *  支持环境变量覆盖（测试用）。 */
+    const CONTENT_PROGRESS_TIMEOUT_MS = process.env.SID_CODE_CONTENT_PROGRESS_TIMEOUT_MS
+      ? parseInt(process.env.SID_CODE_CONTENT_PROGRESS_TIMEOUT_MS, 10)
+      : (isDeepSeek ? 300_000 : 120_000);
 
     /** 30s stall 日志（只记不杀，对齐 claude-code，给弱模型喘息空间） */
     const STALL_LOG_MS = 30_000;
@@ -819,12 +822,9 @@ export class OpenAIProvider implements Provider {
 
     // Fix 1: signal abort promise — 让用户 ESC/Ctrl+C 能打断已进入 SSE 消费的流
     // 在外部创建一次，避免每次循环创建新 listener 导致泄漏
+    // 预先 abort 走循环顶部快速检查（第 838 行），不在此创建 reject Promise（避免 unhandled rejection）
     let signalAbortHandler: (() => void) | null = null;
-    const abortPromise = signal ? new Promise<never>((_, reject) => {
-      if (signal.aborted) {
-        reject(new Error("Request aborted"));
-        return;
-      }
+    const abortPromise = (signal && !signal.aborted) ? new Promise<never>((_, reject) => {
       signalAbortHandler = () => reject(new Error("Request aborted"));
       signal.addEventListener("abort", signalAbortHandler, { once: true });
     }) : null;

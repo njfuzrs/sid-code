@@ -17,6 +17,7 @@ import type { HookSystem } from "../hook/system.ts";
 import { LoopDetector, LOOP_RECOVERY_PROMPT } from "./loop-detection.ts";
 import { processStream, type StreamProcessResult } from "./stream-processor.ts";
 import { executeTools } from "./tool-executor.ts";
+import { isEmptyToolInput, toolHasRequiredParams } from "../query/empty-param.ts";
 
 // ============================================================
 // 配置接口
@@ -267,6 +268,27 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
       // 统计工具调用次数
       const toolUseBlocks = response.content.filter(b => b.type === "tool_use");
       toolUseCount += toolUseBlocks.length;
+
+      // 空参数检测（对标主循环 F1）：弱模型退化时输出 input={} 的 tool_use，
+      // 直接执行会报参数缺失错误，浪费工具执行 token。检测到后替换为错误提示让模型重试。
+      const emptyParamBlocks = toolUseBlocks.filter(b => {
+        if (b.type !== "tool_use") return false;
+        if (!isEmptyToolInput(b.input)) return false;
+        const schema = tools.get(b.name)?.inputSchema?.();
+        return toolHasRequiredParams(schema);
+      });
+      if (emptyParamBlocks.length > 0) {
+        log.warn("AGENT_LOOP", `检测到 ${emptyParamBlocks.length} 个空参数 tool_use，注入重试提示`);
+        // 构造 tool_result 错误响应 + 重试提示
+        const errorResults: ContentBlock[] = emptyParamBlocks.map(b => ({
+          type: "tool_result" as const,
+          tool_use_id: (b as { type: "tool_use"; id: string }).id,
+          content: "错误：工具参数为空。请检查工具定义，提供完整的必需参数后重新调用。",
+          is_error: true,
+        }));
+        ctxMgr.addMessage({ role: "user", content: errorResults });
+        continue;
+      }
 
       // 执行工具
       const toolResults = await executeTools(response.content, tools, signal, config.hookSystem);

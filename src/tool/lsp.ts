@@ -116,11 +116,15 @@ async function filterGitignored(paths: string[], cwd: string): Promise<Set<strin
     });
     child.stdin.write(paths.join("\n"));
     child.stdin.end();
-    // 5s 超时兜底
+    // 5s 超时兜底：超时后 kill 子进程，防止孤儿进程占用资源
+    let timedOut = false;
     await Promise.race([
       exitPromise,
-      new Promise<void>((resolve) => setTimeout(resolve, 5000)),
+      new Promise<void>((resolve) => setTimeout(() => { timedOut = true; resolve(); }, 5000)),
     ]);
+    if (timedOut && !child.killed) {
+      child.kill();
+    }
     for (const line of stdout.trim().split("\n")) {
       if (line) ignored.add(line);
     }

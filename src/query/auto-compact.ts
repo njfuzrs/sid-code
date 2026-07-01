@@ -249,21 +249,53 @@ async function doAutoCompact(
 }
 
 /**
- * §2.1 + §4.3：构造"随摘要一起注入"的额外消息——决策点重注入（文件恢复在 postCompact 阶段单独做，
- * 因为它要在压缩完成、token 腾出后再注入并守预算）。
- * 这里只做决策点：决策点很短，随摘要一起注入信息密度最高。
+ * §2.1 + §4.3：构造"随摘要一起注入"的额外消息——决策点重注入 + 原始任务锚点。
+ * 文件恢复在 postCompact 阶段单独做（要在压缩完成、token 腾出后再注入并守预算）。
+ * 决策点和原始任务锚点都很短，随摘要一起注入信息密度最高。
  */
 async function buildExtraReattach(deps: AutoCompactDeps, toSummarize: Message[]): Promise<Message[] | undefined> {
+  const results: Message[] = [];
+
+  // 决策点重注入
   try {
     const { extractDecisions, persistDecisions, buildDecisionReattachMessages } = await import("./compact/decisions.ts");
     const decisions = extractDecisions(toSummarize);
-    if (decisions.length === 0) return undefined;
-    const decisionsPath = deps.sessionDir ? persistDecisions(decisions, deps.sessionDir) : null;
-    return buildDecisionReattachMessages(decisions, decisionsPath);
+    if (decisions.length > 0) {
+      const decisionsPath = deps.sessionDir ? persistDecisions(decisions, deps.sessionDir) : null;
+      results.push(...buildDecisionReattachMessages(decisions, decisionsPath));
+    }
   } catch (err: any) {
     getLogger().debug("COMPACT", `决策点外化跳过: ${err.message}`);
-    return undefined;
   }
+
+  // 原始任务锚点：把第一条用户消息原文保留（防止弱模型摘要丢失目标）。
+  // 只有当第一条用户消息确实在被压缩的范围内时才需要重注入。
+  try {
+    const { REATTACH_ORIGINAL_TASK_PREFIX, REATTACH_ORIGIN } = await import("./compact/reattach-markers.ts");
+    const firstUserMsg = toSummarize.find(m => m.role === "user" && m.content.some(b => b.type === "text"));
+    if (firstUserMsg) {
+      const userText = firstUserMsg.content
+        .filter(b => b.type === "text")
+        .map(b => (b as { type: "text"; text: string }).text)
+        .join("\n");
+      // 截断到 2000 字符，避免超长用户消息占满恢复预算
+      const truncated = userText.length > 2000 ? userText.slice(0, 2000) + "\n[截断]" : userText;
+      results.push({
+        role: "user",
+        content: [{ type: "text", text: `${REATTACH_ORIGINAL_TASK_PREFIX}\n以下是用户最初的请求（原始任务），即使摘要遗漏也务必遵循：\n\n${truncated}` }],
+        _meta: { origin: REATTACH_ORIGIN },
+      });
+      results.push({
+        role: "assistant",
+        content: [{ type: "text", text: "好的，我已重新加载原始任务目标，会继续围绕它执行。" }],
+        _meta: { origin: REATTACH_ORIGIN },
+      });
+    }
+  } catch (err: any) {
+    getLogger().debug("COMPACT", `原始任务锚点跳过: ${err.message}`);
+  }
+
+  return results.length > 0 ? results : undefined;
 }
 
 /**

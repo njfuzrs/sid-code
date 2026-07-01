@@ -2855,10 +2855,21 @@ export class App {
                 }
               }
               break;
-            case "compact":
+            case "compact": {
               rebuildDisplay();
-              addTransientStatusMessage("compact", "上下文已自动压缩", 3000);
+              // 修复问题3：压缩后 TUI 被"清空"——摘要消息被 isHiddenFromDisplay 隐藏，
+              // 用户只看到少量保留消息（或完全空白）。追加一条持久可见的 compression
+              // 历史项作为视觉锚点，告诉用户"之前的对话已被压缩"。
+              historyIdCounter += 1;
+              const compressionItem: import("./ui/types.ts").HistoryItem = {
+                id: historyIdCounter,
+                type: "compression",
+              };
+              const updatedHistoryItems = [...bridge.current.historyItems, compressionItem];
+              const compressionDisplay = [...bridge.current.displayItems, { kind: "system" as const, text: "对话已压缩" }];
+              updateState({ historyItems: updatedHistoryItems, displayItems: compressionDisplay });
               break;
+            }
             case "context_warning":
               addStatusMessage("context_warning", `⚠ 上下文剩余 ${event.remaining.toFixed(0)}%，即将自动压缩`);
               break;

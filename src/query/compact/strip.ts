@@ -16,6 +16,7 @@ import {
   REATTACH_FILE_PREFIX,
   REATTACH_PLAN_PREFIX,
   REATTACH_DECISIONS_PREFIX,
+  REATTACH_ORIGINAL_TASK_PREFIX,
 } from "./reattach-markers.ts";
 
 /**
@@ -58,7 +59,8 @@ export function stripReinjectedAttachments(messages: Message[]): Message[] {
       if (
         t.startsWith(REATTACH_FILE_PREFIX) ||
         t.startsWith(REATTACH_PLAN_PREFIX) ||
-        t.startsWith(REATTACH_DECISIONS_PREFIX)
+        t.startsWith(REATTACH_DECISIONS_PREFIX) ||
+        t.startsWith(REATTACH_ORIGINAL_TASK_PREFIX)
       ) {
         return false;
       }

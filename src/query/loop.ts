@@ -238,6 +238,7 @@ export async function* queryLoop(
       ctxMgr.addCompactBoundary(`阻塞级压缩：剩余 ${remainingTokens} tokens`, msgCountBefore);
       ctxMgr.releaseBeforeBoundary();
       state.goalReminderPendingAfterCompact = true;
+      state.todoReminderPendingAfterCompact = true;
         yield { kind: "compact" };
     } else {
       switch (compactionLevel) {
@@ -249,6 +250,7 @@ export async function* queryLoop(
           ctxMgr.addCompactBoundary(`紧急压缩：使用率 ${usagePercent.toFixed(0)}%`, msgCountBefore);
         }
         state.goalReminderPendingAfterCompact = true;
+        state.todoReminderPendingAfterCompact = true;
         yield { kind: "compact" };
         break;
       case "hard": {
@@ -291,6 +293,7 @@ export async function* queryLoop(
         ctxMgr.addCompactBoundary(`渐进式压缩: ${pipelineResult.steps.join(" → ")}`, msgCountBefore);
         ctxMgr.releaseBeforeBoundary();
         state.goalReminderPendingAfterCompact = true;
+        state.todoReminderPendingAfterCompact = true;
         yield { kind: "compact" };
         break;
       }
@@ -442,11 +445,16 @@ export async function* queryLoop(
         if (state.lastSeenTodoWriteVersion !== todoState.writeVersion) {
           state.lastSeenTodoWriteVersion = todoState.writeVersion;
           state.lastTodoReminderTurn = state.turnCount;
+          state.todoReminderPendingAfterCompact = false;
         } else {
           const turnsSinceReminder = state.turnCount - (state.lastTodoReminderTurn ?? 0);
-          if (turnsSinceReminder >= TODO_REMINDER_CONFIG.TURNS_BETWEEN_REMINDERS) {
+          // 压缩后强制回注（与 goalReminderPendingAfterCompact 同机制）
+          const shouldInjectTodo = turnsSinceReminder >= TODO_REMINDER_CONFIG.TURNS_BETWEEN_REMINDERS
+            || state.todoReminderPendingAfterCompact;
+          if (shouldInjectTodo) {
             reminderParts.push(buildTodoReminder(todoState.todos));
             state.lastTodoReminderTurn = state.turnCount;
+            state.todoReminderPendingAfterCompact = false;
             log.info("QUERY_LOOP", `P0-2：回注 todo 清单（${countUnfinished(todoState.todos)} 项未完成）`);
           }
         }
@@ -682,6 +690,7 @@ export async function* queryLoop(
           state.transition = { type: "reactive_compact" };
           notifyCompaction("main"); // G1：抑制紧接的 cache break 检测
           state.goalReminderPendingAfterCompact = true;
+          state.todoReminderPendingAfterCompact = true;
         yield { kind: "compact" };
           yield { kind: "system", level: "info", text: `响应式压缩: ${compactResult.messageCountBefore} → ${compactResult.messageCountAfter} 条消息` };
           continue; // 重试
@@ -699,6 +708,7 @@ export async function* queryLoop(
         notifyCompaction("main"); // G1：抑制紧接的 cache break 检测
         await deps.autoCompact();
         state.goalReminderPendingAfterCompact = true;
+        state.todoReminderPendingAfterCompact = true;
         yield { kind: "compact" };
         state.transition = { type: "context_overflow_retry" };
         continue;
@@ -791,6 +801,7 @@ export async function* queryLoop(
           state.transition = { type: "reactive_compact" };
           notifyCompaction("main"); // G1：抑制紧接的 cache break 检测
           state.goalReminderPendingAfterCompact = true;
+          state.todoReminderPendingAfterCompact = true;
         yield { kind: "compact" };
           yield { kind: "system", level: "info", text: `响应式压缩: ${compactResult.messageCountBefore} → ${compactResult.messageCountAfter} 条消息` };
           continue;
@@ -803,6 +814,7 @@ export async function* queryLoop(
         notifyCompaction("main"); // G1：抑制紧接的 cache break 检测
         await deps.autoCompact();
         state.goalReminderPendingAfterCompact = true;
+        state.todoReminderPendingAfterCompact = true;
         yield { kind: "compact" };
         state.transition = { type: "context_overflow_retry" };
         continue;
@@ -1037,6 +1049,7 @@ export async function* queryLoop(
             `F1：空参数重试前压缩上下文 ${compactResult.messageCountBefore} → ${compactResult.messageCountAfter} 条`,
           );
           state.goalReminderPendingAfterCompact = true;
+          state.todoReminderPendingAfterCompact = true;
         yield { kind: "compact" };
         }
 

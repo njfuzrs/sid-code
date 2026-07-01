@@ -64,6 +64,9 @@ export const BUILTIN_AGENTS: Record<string, AgentDefinition> = {
 - 标注置信度：对每个关键发现，简短标注确定性（如「已读码确认」「推测，未核实」「未找到，可能不存在」），并显式列出你没能确认的点。不要把推测当事实陈述，让主代理能判断哪些结论需要复核`,
     tools: ["read", "grep", "glob", "ls", "read_many", "task_list"],
     readOnly: true,
+    // explore 常被派去读 7-11 个文件 + 多轮 grep，每轮都要等 LLM 响应；
+    // 慢模型（glm/deepseek 等）下 120s 明显不够，给足 300s。
+    timeout: 300_000,
     source: "built-in",
   },
 
@@ -78,6 +81,8 @@ export const BUILTIN_AGENTS: Record<string, AgentDefinition> = {
 - 如果遇到问题，以 "## 问题" 开头说明原因和可能的解决方案
 - 标注置信度：对关键结论标注确定性（如「已验证」「推测，未确认」），并显式列出你没能确认或留有疑问的点，让主代理能判断哪些结果需要复核。不要把未验证的推测当作已完成的事实陈述`,
     tools: ["read", "write", "edit", "bash", "grep", "glob", "ls", "read_many", "web_fetch", "web_search", "task_list"],
+    // task 常做多步编码 + 命令执行，比 explore 更重；给足 300s。
+    timeout: 300_000,
     source: "built-in",
   },
 
@@ -106,6 +111,8 @@ export const BUILTIN_AGENTS: Record<string, AgentDefinition> = {
 - 完成后以 "## 方案" 开头输出：问题分析、方案设计、涉及文件、实现步骤`,
     tools: ["read", "grep", "glob", "ls", "read_many", "task_list"],
     readOnly: true,
+    // plan 只读但需要大量阅读代码，给足 240s。
+    timeout: 240_000,
     source: "built-in",
   },
 
@@ -121,6 +128,8 @@ export const BUILTIN_AGENTS: Record<string, AgentDefinition> = {
 - 标注置信度：对关键结论标注确定性（如「已验证」「推测，未确认」），并显式列出你没能确认的点`,
     tools: ["*"],
     disallowedTools: ["sub_agent"],
+    // 通用代理执行多步骤复杂任务，给足 360s。
+    timeout: 360_000,
     source: "built-in",
   },
 
