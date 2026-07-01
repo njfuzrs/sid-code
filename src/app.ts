@@ -726,6 +726,8 @@ export class App {
         this.resetTodoTool();
         this.resetHypothesisLedger();
         this.clearInactiveBackgroundTasks();
+        // /clear 后 goal 目标状态清空：旧 /goal 不应跨会话残留
+        this.goalState = null;
         // 缓存检测状态重置：旧基线对新会话无效，不清会产生虚假中断检测
         resetCacheDetection();
         clearCacheBreaks();
@@ -3268,6 +3270,8 @@ export class App {
             this.resetTodoTool();
             this.resetHypothesisLedger();
             this.clearInactiveBackgroundTasks();
+            // /clear 后 goal 目标状态清空：旧 /goal 不应跨会话残留
+            this.goalState = null;
             // 缓存检测状态重置：旧基线对新会话无效，不清会产生虚假中断检测
             resetCacheDetection();
             clearCacheBreaks();

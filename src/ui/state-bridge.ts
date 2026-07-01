@@ -95,6 +95,7 @@ export function getConversationClearedPatch(): Partial<TUIState> {
     usage: { inputTokens: 0, outputTokens: 0 },
     stockInputTokens: 0,
     costUSD: 0,
+    cacheSavingsUSD: 0,
     contextPercent: 0,
     statusMessage: "",
     lastToolResult: null,
@@ -115,6 +116,14 @@ export function getConversationClearedPatch(): Partial<TUIState> {
     // 清空会话后首条消息的"本轮输出 token"会算出负数或虚高（App.tsx:160 字段，Composer.tsx:177 作差）。
     turnStartOutputTokens: 0,
     activeDialog: null,
+    // /clear 后 goal 状态栏列归零：否则旧 /goal 目标进度残留
+    goalDisplay: null,
+    // /clear 后流式思考时间戳归零：否则下次思考计时起点漂移
+    streamingThinkingStartMs: undefined,
+    // /clear 后滚动位置重置：回到底部
+    scrollPercent: undefined,
+    // /clear 后会话标题重置：新对话不应沿用旧标题
+    sessionTitle: null,
     todos: [],
     tasks: [],
     retryStatus: null,
