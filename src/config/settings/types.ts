@@ -7,6 +7,8 @@
  * 关键设计点（见 Spec 15 §3.2）：
  * 1. lazySchema() 延迟求值——避免模块加载阶段的 CPU 开销
  * 2. .passthrough() 保留未知字段——向前兼容（旧版本不认识的新字段不被删除）
+ *    ⚠ 所有嵌套 schema 也必须加 .passthrough()，否则 safeParse 后写回时会
+ *    strip 掉用户在嵌套对象中的自定义字段（如 api_key/base_url snake_case 写法）。
  * 3. 类型从 Schema 推导——消除手动维护接口与验证逻辑不同步的风险
  */
 
@@ -28,7 +30,7 @@ const PermissionsSchema = lazySchema(() =>
     allow: z.array(z.string()).optional(),
     deny: z.array(z.string()).optional(),
     ask: z.array(z.string()).optional(),
-  }),
+  }).passthrough(),
 );
 
 /** Hook 配置 Schema */
@@ -43,7 +45,7 @@ const HookEntrySchema = lazySchema(() =>
     timeout: z.number().positive().optional(),
     blocking: z.boolean().optional(),
     matcher: z.string().optional(),
-  }),
+  }).passthrough(),
 );
 
 /** MCP 服务器 Schema */
@@ -60,7 +62,7 @@ const MCPServerSchema = lazySchema(() =>
     retries: z.number().nonnegative().optional(),
     includeTools: z.array(z.string()).optional(),
     excludeTools: z.array(z.string()).optional(),
-  }),
+  }).passthrough(),
 );
 
 /** 模型定价（每百万 token，USD） */
@@ -70,7 +72,7 @@ const ModelPricingSchema = lazySchema(() =>
     output: z.number().positive(),
     cacheRead: z.number().nonnegative().optional(),
     cacheWrite: z.number().nonnegative().optional(),
-  }),
+  }).passthrough(),
 );
 
 /** 模型配置 Schema */
@@ -85,7 +87,7 @@ const ModelConfigSchema = lazySchema(() =>
     supportsThinking: z.boolean().optional(),
     /** 可选：用户自配价格。配了则优先使用，未配则回退内置定价表兜底 */
     pricing: ModelPricingSchema().optional(),
-  }),
+  }).passthrough(),
 );
 
 /** 预算规则 Schema */
@@ -95,16 +97,17 @@ const BudgetRuleSchema = lazySchema(() =>
     name: z.string(),
     period: z.enum(["session", "hourly", "daily", "weekly", "monthly"]),
     limit_usd: z.number().positive(),
-    scope: z.object({ model: z.string().optional() }).optional(),
+    scope: z.object({ model: z.string().optional() }).passthrough().optional(),
     thresholds: z
       .object({
         warning: z.number().optional(),
         critical: z.number().optional(),
         exceeded: z.number().optional(),
       })
+      .passthrough()
       .optional(),
     action: z.enum(["alert", "downgrade", "block"]).optional(),
-  }),
+  }).passthrough(),
 );
 
 /** 配额 Schema */
@@ -114,7 +117,7 @@ const QuotaSchema = lazySchema(() =>
     requestsPerMinute: z.number().positive().optional(),
     tokensPerMinute: z.number().positive().optional(),
     budgetRules: z.array(BudgetRuleSchema()).optional(),
-  }),
+  }).passthrough(),
 );
 
 /** 搜索配置 Schema */
@@ -124,7 +127,7 @@ const SearchSchema = lazySchema(() =>
     searxngUrl: z.string().optional(),
     braveApiKey: z.string().optional(),
     tavilyApiKey: z.string().optional(),
-  }),
+  }).passthrough(),
 );
 
 /** Worktree 配置 Schema（Git Worktree 隔离系统） */
@@ -140,7 +143,7 @@ const WorktreeSettingsSchema = lazySchema(() =>
     commitAttribution: z.boolean().optional(),
     /** 自动复制到 worktree 的本地配置文件相对路径（默认 settings.local.json） */
     copyLocalSettings: z.boolean().optional(),
-  }),
+  }).passthrough(),
 );
 
 /** 完整 Settings Schema */

@@ -597,12 +597,8 @@ export class App {
   /** 写单个旋钮字段到用户 settings.json（value=undefined 表示删除该字段，回退 auto）。 */
   private persistKnob(key: "effortLevel" | "thinkingEnabled", value: unknown): void {
     try {
-      const { getSettingsForSource, writeSettingsFile } = require("./config/settings/index.ts");
-      const { settings } = getSettingsForSource("userSettings");
-      const current: Record<string, unknown> = { ...(settings ?? {}) };
-      if (value === undefined) delete current[key];
-      else current[key] = value;
-      writeSettingsFile("userSettings", current);
+      const { patchSettingsFile } = require("./config/settings/index.ts");
+      patchSettingsFile("userSettings", key, value);
     } catch (e) {
       getLogger().warn("KNOB", `持久化 ${key} 失败（不阻断）: ${(e as Error)?.message}`);
     }

@@ -43,6 +43,7 @@ export {
   loadSettingsFromDisk,
   setFlagSettings,
   writeSettingsFile,
+  patchSettingsFile,
   type SettingsWithErrors,
 } from "./settings.ts";
 

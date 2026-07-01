@@ -10,7 +10,7 @@ import { getLogger } from "../debug/logger.ts";
 import {
   getSettings,
   getSettingsForSource,
-  writeSettingsFile,
+  patchSettingsFile,
 } from "../config/settings/index.ts";
 
 /** /skills 命令 */
@@ -130,19 +130,20 @@ class SkillsEnableCommand implements Command {
     // user → 用户全局 settings.json；project → 项目 .sid-code/settings.json
     const source = scope === "project" ? "projectSettings" : "userSettings";
 
-    // 读取该来源的现有内容（不合并其他来源，避免写回时污染单一文件）
+    // 读取该来源的现有内容（仅为拿到 disabledSkills 当前值做增删；
+    // 不能整体写回——见 patchSettingsFile 说明：writeSettingsFile 会经 Zod
+    // 有损 round-trip + env 明文展开，抹掉密钥字段）。
     const { settings } = getSettingsForSource(source);
-    const current = { ...(settings ?? {}) };
-    const disabled = new Set(current.disabledSkills ?? []);
+    const disabled = new Set(settings?.disabledSkills ?? []);
 
     if (action === "enable") {
       disabled.delete(name);
     } else {
       disabled.add(name);
     }
-    current.disabledSkills = [...disabled];
 
-    writeSettingsFile(source, current);
+    // 外科式补丁：只改 disabledSkills 单字段，其余原样保留。
+    patchSettingsFile(source, "disabledSkills", [...disabled]);
     log.info("SKILLS", `已更新 ${scope} settings.json: ${name} → ${action}`);
   }
 }

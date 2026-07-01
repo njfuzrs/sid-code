@@ -10,7 +10,7 @@ import { readFileSync, writeFileSync, existsSync } from "fs";
 import { resolve } from "path";
 import {
   getSettingsForSource,
-  writeSettingsFile,
+  patchSettingsFile,
 } from "../config/settings/index.ts";
 
 /** MCP 服务器配置 */
@@ -199,14 +199,15 @@ class MCPAddCommand implements Command {
       writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 2), "utf-8");
       log.info("MCP_ADD", `已写入 ${mcpJsonPath}`);
     } else {
-      // 写入用户级 ~/.sid-code/settings.json 的 mcpServers
+      // 写入用户级 ~/.sid-code/settings.json 的 mcpServers。
+      // 仅读现有 mcpServers 做增量，再用 patchSettingsFile 只写这一个字段——
+      // 不能整体 writeSettingsFile：会经 Zod 有损解析 strip 掉 MCP 自定义字段 +
+      // 把 env 占位符展开成明文密钥落盘。
       const { settings } = getSettingsForSource("userSettings");
-      const current = { ...(settings ?? {}) };
-      const servers = { ...(current.mcpServers ?? {}) };
+      const servers = { ...(settings?.mcpServers ?? {}) };
       servers[name] = config as any;
-      current.mcpServers = servers;
 
-      writeSettingsFile("userSettings", current);
+      patchSettingsFile("userSettings", "mcpServers", servers);
       log.info("MCP_ADD", `已写入用户 settings.json: ${name}`);
     }
   }
@@ -260,16 +261,15 @@ class MCPRemoveCommand implements Command {
       log.info("MCP_REMOVE", `已从 ${mcpJsonPath} 移除 ${name}`);
     } else {
       const { settings } = getSettingsForSource("userSettings");
-      const current = { ...(settings ?? {}) };
-      const servers = { ...(current.mcpServers ?? {}) };
+      const servers = { ...(settings?.mcpServers ?? {}) };
 
       if (!servers[name]) {
         throw new Error(`服务器 "${name}" 不存在于用户配置中`);
       }
 
       delete servers[name];
-      current.mcpServers = servers;
-      writeSettingsFile("userSettings", current);
+      // 外科式补丁：只写 mcpServers，避免整体覆盖丢字段/明文化密钥。
+      patchSettingsFile("userSettings", "mcpServers", servers);
       log.info("MCP_REMOVE", `已从用户 settings.json 移除 ${name}`);
     }
   }

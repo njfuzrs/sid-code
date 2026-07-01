@@ -15,8 +15,7 @@ import type { ModelConfig } from "../../../config/config.ts";
 import { lookupCatalog } from "../../../llm/model-params-catalog.ts";
 import {
   getSettingsForSource,
-  writeSettingsFile,
-  type SettingsJson,
+  patchSettingsFile,
 } from "../../../config/settings/index.ts";
 import { getLogger } from "../../../debug/logger.ts";
 
@@ -249,10 +248,7 @@ function applyUpdates(updates: DiscoverResult[]): string | null {
       return "无法读取 userSettings";
     }
 
-    const current = { ...settings } as SettingsJson & {
-      availableModels?: ModelConfig[];
-    };
-    const models = [...(current.availableModels ?? [])];
+    const models = [...(settings.availableModels ?? [])];
 
     for (const update of updates) {
       const idx = models.findIndex((m) => m.name === update.model.name);
@@ -268,8 +264,8 @@ function applyUpdates(updates: DiscoverResult[]): string | null {
       }
     }
 
-    current.availableModels = models;
-    writeSettingsFile("userSettings", current as SettingsJson);
+    // 外科式补丁：只写 availableModels，避免整体覆盖丢 api_key/base_url + env 明文化。
+    patchSettingsFile("userSettings", "availableModels", models);
     return null;
   } catch (err) {
     return String(err);

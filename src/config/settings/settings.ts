@@ -36,6 +36,7 @@ import {
   setCachedSource,
   getCachedParsedFile,
   setCachedParsedFile,
+  clearCachedParsedFile,
   type MergedSettings,
 } from "./cache.ts";
 
@@ -219,11 +220,23 @@ export function getSettingsForSource(
 /**
  * 写入单个来源的 Settings 文件（write-through + 内部写入抑制 + 0o600）。
  *
- * 在写文件前调用 markInternalWrite()，使变更检测器跳过本次（自身）写入的通知；
- * 写入后清空会话/单来源缓存，下次 getSettings() 重新合并。
+ * ⚠️ **危险 API——绝大多数场景应使用 patchSettingsFile() 替代。**
+ *
+ * 本函数接收完整 Settings 对象并整体覆盖文件。若入参来自
+ * getSettingsForSource()（经 Zod safeParse 有损解析 + resolveEnvVars 明文展开），
+ * 会产生两类严重副作用：
+ *   1. Zod strip：嵌套 schema 未声明的字段被删除（如 api_key snake_case 写法）
+ *   2. env 明文化：`"${API_KEY}"` 占位符被展开成明文密钥落盘
+ *
+ * 仅在以下罕见场景使用：
+ *   - 首次创建文件（源为空，不存在 round-trip 问题）
+ *   - 迁移脚本需要完整重写整个文件结构
+ *
+ * 对于修改单个或少数顶层字段，**必须**使用 patchSettingsFile()。
  *
  * @param source 目标来源（flagSettings 无文件，直接忽略）
  * @param settings 完整 Settings 内容（写入语义为整体替换文件）
+ * @deprecated 优先使用 patchSettingsFile()，避免有损 round-trip。
  */
 export function writeSettingsFile(
   source: SettingSource,
@@ -240,6 +253,59 @@ export function writeSettingsFile(
   writeFileSync(path, JSON.stringify(settings, null, 2), { mode: 0o600 });
 
   // 失效缓存，下次读取重新合并
+  setCachedSource(source, null);
+  setSessionCache(null);
+}
+
+/**
+ * 外科式补丁：只改文件里的单个顶层字段，其余原样保留。
+ *
+ * 与 writeSettingsFile 的关键区别：**不经过 Zod round-trip**。
+ * writeSettingsFile 的入参通常来自 getSettingsForSource() → parseSettingsFile() →
+ * SettingsSchema().safeParse()，而 ModelConfigSchema 无 .passthrough()，会 strip 掉
+ * availableModels[] 里的 api_key/base_url（及其它 schema 未声明的嵌套字段），再整体覆盖
+ * 写回就会永久丢失密钥——正是 `/effort -p` / `/think -p` 持久化后启动报“未设置
+ * OPENAI_API_KEY”的根因。
+ *
+ * 另一重风险：parseSettingsFile 读取时会 resolveEnvVars 把 "${DEEPSEEK_API_KEY}" 展开成
+ * 明文，若走 round-trip 写回会把明文密钥落盘。本函数直接读原始 JSON 文本、只改目标字段，
+ * 从根上规避这两类问题。
+ *
+ * @param source 目标来源（仅文件型来源有效；flagSettings 等内存来源直接忽略）
+ * @param key    要写入的顶层字段名
+ * @param value  字段值；传 undefined 表示删除该字段（回退默认，如 effort → auto）
+ */
+export function patchSettingsFile(
+  source: SettingSource,
+  key: string,
+  value: unknown,
+  workspacePath?: string,
+): void {
+  const path = getSettingsFilePath(source, workspacePath);
+  if (!path) return; // flagSettings 等内存来源无文件
+
+  // 读原始 JSON 文本（不展开 env 占位符、不做 Zod 校验），保留用户所有原始字段。
+  let raw: Record<string, unknown> = {};
+  if (existsSync(path)) {
+    try {
+      raw = JSON.parse(readFileSync(path, "utf-8"));
+    } catch (err) {
+      // 文件损坏时不要静默覆盖用户配置——直接抛出，让上层决定是否吞掉。
+      throw new Error(`settings 文件解析失败，已跳过补丁写入以免覆盖: ${err}`);
+    }
+  }
+
+  if (value === undefined) delete raw[key];
+  else raw[key] = value;
+
+  const dir = dirname(path);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+
+  markInternalWrite(path); // 抑制自身写入触发的变更通知
+  writeFileSync(path, JSON.stringify(raw, null, 2), { mode: 0o600 });
+
+  // 失效缓存，下次读取重新合并
+  clearCachedParsedFile(path);
   setCachedSource(source, null);
   setSessionCache(null);
 }

@@ -55,6 +55,11 @@ export function setCachedParsedFile(path: string, value: ParsedSettings): void {
   parseFileCache.set(path, value);
 }
 
+/** 失效单个文件的解析缓存（补丁写入后强制下次重新读盘） */
+export function clearCachedParsedFile(path: string): void {
+  parseFileCache.delete(path);
+}
+
 /** 获取单来源缓存（undefined = 未缓存；null = 缓存了"该来源无设置"） */
 export function getCachedSource(
   source: SettingSource,
