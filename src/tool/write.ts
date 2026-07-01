@@ -92,16 +92,22 @@ export class WriteTool implements Tool {
     // 内容截断检测（文档文件跳过）：检测括号严重不平衡 / 末尾突然中断等高置信度信号。
     // 典型场景：LLM 输出撞 max_tokens，content 字段是半截代码/HTML。宁可漏报不误杀，
     // 命中即返回 isError 让模型改用分段写入，而非写入残破文件后自以为完成。
-    const truncation = detectTruncation(params.content, filePath);
-    if (truncation.isTruncated) {
-      log.warn("TOOL", `✗ 疑似截断内容，拒绝写入 ${filePath}: ${truncation.reason}`);
-      return {
-        output:
-          `错误: 内容疑似被截断（${truncation.reason}）。这通常是因为一次性写入的内容超过了输出长度上限。\n` +
-          `请改用分段策略：先 write 文件的前一部分，再用 edit 或 bash 的 cat >> 逐段追加剩余内容，` +
-          `每段控制在 200-300 行以内。若确认内容本就完整（如含大量括号的正常代码），请重新完整写入一次。`,
-        isError: true,
-      };
+    // ⚠️ 仅对「覆盖已有文件」时检测——新建文件可能是分段写入的第一段（第一段
+    // 嵌套 depth>=3 是正常的），如果此时拒绝会与分段建议自相矛盾导致死循环。
+    const targetFile = Bun.file(filePath);
+    const fileAlreadyExists = await targetFile.exists();
+    if (fileAlreadyExists) {
+      const truncation = detectTruncation(params.content, filePath);
+      if (truncation.isTruncated) {
+        log.warn("TOOL", `✗ 疑似截断内容，拒绝写入 ${filePath}: ${truncation.reason}`);
+        return {
+          output:
+            `错误: 内容疑似被截断（${truncation.reason}）。这通常是因为一次性写入的内容超过了输出长度上限。\n` +
+            `请改用分段策略：先 write 文件的前一部分，再用 edit 或 bash 的 cat >> 逐段追加剩余内容，` +
+            `每段控制在 200-300 行以内。若确认内容本就完整（如含大量括号的正常代码），请重新完整写入一次。`,
+          isError: true,
+        };
+      }
     }
 
     // E.11 团队记忆 secret 守卫：写入团队记忆目录的内容若含 secret 直接拒绝
@@ -125,11 +131,11 @@ export class WriteTool implements Tool {
         mkdirSync(dir, { recursive: true });
       }
 
-      // 读取旧内容(若已存在)以生成 diff;新建文件则旧内容为空
+      // 读取旧内容(若已存在)以生成 diff;新建文件则旧内容为空。
+      // fileAlreadyExists 已在上方截断检测处求过值，复用以避免重复 stat。
       let oldContent = "";
-      const target = Bun.file(filePath);
-      if (await target.exists()) {
-        oldContent = await target.text();
+      if (fileAlreadyExists) {
+        oldContent = await targetFile.text();
       }
 
       // 写入文件
@@ -137,11 +143,30 @@ export class WriteTool implements Tool {
 
       log.info("TOOL", `✓ 写入 ${filePath} 完成`);
 
+      // P3：行数骤降警告（edit-guard 模式）——覆盖已有文件时，若新内容行数比旧内容
+      // 少 20% 以上（且旧文件 >50 行），在 output 里追加警告。这是 lost-in-the-middle
+      // 的确定性兜底：模型自以为完成但实际丢了一大段。
+      // 注意：这里不 reject（内容已写入）而是 warn——给模型一个"你可能丢了内容"的信号，
+      // 让它自行检查。如果 reject 会导致已写入的文件状态与模型认知不一致。
+      let lineDropWarning = "";
+      if (oldContent) {
+        const oldLines = oldContent.split("\n").length;
+        const newLines = params.content.split("\n").length;
+        if (oldLines > 50 && newLines < oldLines * 0.8) {
+          const dropPct = Math.round((1 - newLines / oldLines) * 100);
+          lineDropWarning =
+            `\n⚠️ 警告：文件行数从 ${oldLines} 行降至 ${newLines} 行（减少 ${dropPct}%）。` +
+            `请确认是否遗漏了原文件中的代码段（lost-in-the-middle）。` +
+            `如果确实需要缩短文件则忽略此警告。`;
+          log.warn("TOOL", `行数骤降警告: ${filePath} ${oldLines} → ${newLines} (↓${dropPct}%)`);
+        }
+      }
+
       // 结构化 diff 直传 UI(新建 → 全 + 行;覆盖 → 增删对照)。
       // output 仅一句话摘要,不含完整 diff —— 对齐 claude-code 省 token。
       const action = oldContent ? "已写入" : "已创建";
       return {
-        output: `文件${action}: ${filePath}`,
+        output: `文件${action}: ${filePath}${lineDropWarning}`,
         structuredPatch: buildStructuredPatch(filePath, oldContent, params.content),
       };
     } catch (err: any) {
