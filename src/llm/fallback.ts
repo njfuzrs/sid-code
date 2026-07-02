@@ -19,7 +19,7 @@
 import type { Provider } from "./provider.ts";
 import type { SendParams, StreamEvent } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
-import { emitTimeoutFired } from "../trace/stream-observer.ts";
+import { emitTimeoutFired, armIneffectiveCheck } from "../trace/stream-observer.ts";
 import { currentSseDumpContext } from "./sse-chunk-dumper.ts";
 import {
   classifyError,
@@ -271,6 +271,9 @@ export class ModelFallback {
     const streamTimeoutMs = this.config.streamTimeoutMs ?? DEFAULT_STREAM_TIMEOUT_MS;
     let streamTimeoutCtl = new AbortController();
     let streamTimeoutId: ReturnType<typeof setTimeout> | null = null;
+    // 缺口 2 进阶：fallback 整体超时 fire 后武装未生效检查；abort 被流循环观察到时 disarm。
+    // 若 5s 内 abort 未能中断已进入的 SSE 消费（parseSSE hang 场景）→ TimeoutIneffective。
+    let disarmStreamIneffective: (() => void) | null = null;
 
     const startStreamTimeout = () => {
       streamTimeoutId = setTimeout(() => {
@@ -280,6 +283,12 @@ export class ModelFallback {
           threshold_ms: streamTimeoutMs,
           model: params.model,
         });
+        // 缺口 2 进阶：武装未生效检查（abort 后若流循环 5s 内未抛出 → TimeoutIneffective）
+        disarmStreamIneffective = armIneffectiveCheck(
+          currentSseDumpContext().turnIndex,
+          "fallback_stream_timeout",
+          "abort_not_observed_by_stream_after_5s",
+        );
         streamTimeoutCtl.abort();
       }, streamTimeoutMs);
       // 不调 unref()：fdb47f30 教训——index 23 请求发出后 hang 死,若定时器被 unref,
@@ -293,6 +302,9 @@ export class ModelFallback {
         clearTimeout(streamTimeoutId);
         streamTimeoutId = null;
       }
+      // 缺口 2 进阶：旧超时窗口作废 → disarm 其未生效检查（避免误报）。
+      (disarmStreamIneffective as (() => void) | null)?.();
+      disarmStreamIneffective = null;
       streamTimeoutCtl = new AbortController();
       startStreamTimeout();
     };
@@ -531,6 +543,11 @@ export class ModelFallback {
           //   走正常重试 → fallback 路径（对标文档承诺的「超时 → 流重试 → fallback」）
           // - 其他 abort（非用户、非超时，理论上少见）仍传播
           const isTimeoutAbort = isAbortError(err) && streamTimeoutCtl.signal.aborted;
+          // 缺口 2 进阶：流循环观察到超时 abort → 超时确实生效，disarm 未生效检查。
+          if (isTimeoutAbort) {
+            (disarmStreamIneffective as (() => void) | null)?.();
+            disarmStreamIneffective = null;
+          }
           if (isAbortError(err) && !isTimeoutAbort) {
             throw toAbortError(err);
           }
@@ -635,6 +652,9 @@ export class ModelFallback {
         clearTimeout(streamTimeoutId);
         streamTimeoutId = null;
       }
+      // 缺口 2 进阶：流式阶段收尾（正常/异常/fallback）→ disarm 未生效检查兜底。
+      (disarmStreamIneffective as (() => void) | null)?.();
+      disarmStreamIneffective = null;
     }
 
     // ═══════════════════════════════════════════════════════════════

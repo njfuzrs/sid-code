@@ -18,7 +18,7 @@ import type {
   ContentBlock,
 } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
-import { emitStreamPhase, emitTimeoutFired, updateStreamStats, emitStreamStall } from "../trace/stream-observer.ts";
+import { emitStreamPhase, emitTimeoutFired, updateStreamStats, emitStreamStall, armIneffectiveCheck, emitHttpConnected } from "../trace/stream-observer.ts";
 import { guardOutgoingMessages } from "./protocol-sentinel.ts";
 import { filterParamsForModel } from "./model-capability-filter.ts";
 import { lookupCatalog } from "./model-params-catalog.ts";
@@ -569,6 +569,8 @@ export class OpenAIProvider implements Provider {
       const headerTimeoutMs = OpenAIProvider.resolveHeaderTimeoutMs(this._model);
       const headerTimeoutCtl = new AbortController();
       let headerTimedOut = false;
+      // 缺口 2 进阶：header 超时 fire 后武装未生效检查；拿到响应头/失败时 disarm。
+      let disarmHeaderIneffective: (() => void) | null = null;
       // 获取当前 turn index 用于可观测性事件
       const obsIndex = currentSseDumpContext().turnIndex;
       let headerTimeoutId: ReturnType<typeof setTimeout> | null = setTimeout(() => {
@@ -579,6 +581,12 @@ export class OpenAIProvider implements Provider {
         );
         // 缺口 2：记录响应头超时触发
         emitTimeoutFired(obsIndex, "header_timeout", { threshold_ms: headerTimeoutMs, model: effectiveModel });
+        // 缺口 2 进阶：武装未生效检查（abort 后若 fetch 未在 5s 内 settle → TimeoutIneffective）
+        disarmHeaderIneffective = armIneffectiveCheck(
+          obsIndex,
+          "header_timeout",
+          "fetch_not_settled_after_5s",
+        );
         headerTimeoutCtl.abort();
       }, headerTimeoutMs);
       // 注意：不调 unref()。fdb47f30 的教训正是 fallback 的整体超时定时器 unref 后
@@ -618,6 +626,8 @@ export class OpenAIProvider implements Provider {
           clearTimeout(headerTimeoutId);
           headerTimeoutId = null;
         }
+        // 缺口 2 进阶：fetch 已 settle（返回或抛出）→ disarm header 未生效检查。
+        (disarmHeaderIneffective as (() => void) | null)?.();
       }
 
       if (!response.ok) {
@@ -639,10 +649,19 @@ export class OpenAIProvider implements Provider {
       }
 
       log.debug("LLM:OPENAI", `开始接收 SSE 流`);
-      // 缺口 1/6：记录 headers_received 阶段（含 HTTP 状态码和 TTFB）
+      // 缺口 1/6：记录 headers_received 阶段（含 HTTP 状态码、Content-Type 和 TTFB）
       const ttfbMs = Date.now() - requestStartTime;
+      const contentType = response.headers.get("content-type") ?? undefined;
       emitStreamPhase(obsIndex, "headers_received", {
         http_status: response.status,
+        content_type: contentType,
+        ttfb_ms: ttfbMs,
+        model: effectiveModel,
+      });
+      // 缺口 6：独立 HttpConnected 事件（按 `HttpConnected` 检索一致性；确认网络层状态）
+      emitHttpConnected(obsIndex, {
+        status: response.status,
+        content_type: contentType,
         ttfb_ms: ttfbMs,
         model: effectiveModel,
       });
@@ -983,6 +1002,8 @@ export class OpenAIProvider implements Provider {
         // idle timeout 默认启用：reader 超时后 reject + cancel 释放底层 TCP 连接
         const readPromise = reader.read();
         let timeoutId: ReturnType<typeof setTimeout> | null = null;
+        // 缺口 2 进阶：idle 超时 fire 后武装未生效检查；race settle 时 disarm。
+        let disarmIdleIneffective: (() => void) | null = null;
         const timeoutPromise = new Promise<never>((_resolve, reject) => {
           timeoutId = setTimeout(() => {
             // 升 warn：debug:false 下经 logger 的 ERROR/WARN→stderr 兜底留痕（见 logger.ts log()）。
@@ -998,6 +1019,12 @@ export class OpenAIProvider implements Provider {
               empty_chunks: emptyChunks,
               model: this._model,
             });
+            // 缺口 2 进阶：武装未生效检查（reject 后若 race 未 settle → TimeoutIneffective）
+            disarmIdleIneffective = armIneffectiveCheck(
+              parseObsIndex,
+              "idle_timeout",
+              "read_race_not_settled_after_5s",
+            );
             reject(new Error(`SSE 流空闲超时：${IDLE_TIMEOUT_MS / 1000} 秒无 chunk chunks=${totalChunks} empty=${emptyChunks}`));
           }, IDLE_TIMEOUT_MS);
           // 超时后 cancel reader，释放底层 TCP 连接（+100ms 确保 reject 先传播）
@@ -1011,6 +1038,8 @@ export class OpenAIProvider implements Provider {
           result = await Promise.race(racers);
         } finally {
           if (timeoutId !== null) clearTimeout(timeoutId);
+          // race 已 settle（read 返回 / idle reject / abort reject）→ disarm idle 未生效检查。
+          (disarmIdleIneffective as (() => void) | null)?.();
         }
 
         const { done, value } = result;

@@ -250,6 +250,9 @@ async function doCreateSnapshot(
 
 /** 清理当前会话的快照文件（会话退出时调用） */
 export function cleanupSnapshot(): void {
+  // 重置单例：清理后快照文件已不存在，需允许后续重新创建（会话退出兜底 + 测试隔离）。
+  // 无条件重置，覆盖"创建失败从未设置 activeSnapshotPath"的情况。
+  snapshotCreatePromise = null;
   if (!activeSnapshotPath) return;
   try {
     unlinkSync(activeSnapshotPath);

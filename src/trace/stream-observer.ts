@@ -193,6 +193,75 @@ export function emitTimeoutIneffective(
   } catch { /* 可观测性不影响正常流程 */ }
 }
 
+/** 超时未生效检查的默认宽限期（缺口 2 进阶）。 */
+export const INEFFECTIVE_CHECK_DELAY_MS = 5_000;
+
+/**
+ * 超时 fire 后武装一个「未生效」检查（缺口 2 进阶，本次事故的根因指纹）。
+ *
+ * 用法：在超时 setTimeout 回调里 abort/reject 后立即调用，拿到 `disarm`；
+ * 在超时真正生效的位置（Promise.race 已 settle / reject 已传播 / 正常清理路径）
+ * 调用 `disarm()`。若 `delayMs`（默认 5s）内未 disarm，说明超时 fire 了却没能
+ * 让 race settle —— 发出 `TimeoutIneffective` 事件，把「触发了却没生效」直接写进轨迹。
+ *
+ * 返回的 disarm 幂等，多次调用无副作用。
+ */
+export function armIneffectiveCheck(
+  index: number,
+  layer: TimeoutLayer,
+  reason: string,
+  delayMs: number = INEFFECTIVE_CHECK_DELAY_MS,
+): () => void {
+  let disarmed = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    timer = setTimeout(() => {
+      if (disarmed) return;
+      emitTimeoutIneffective(index, layer, reason);
+    }, delayMs);
+    // unref：这只是诊断探针，绝不能阻止进程退出。
+    if (timer && typeof timer === "object" && "unref" in timer) {
+      (timer as { unref: () => void }).unref();
+    }
+  } catch { /* 探针创建失败静默 */ }
+  return () => {
+    if (disarmed) return;
+    disarmed = true;
+    if (timer !== null) {
+      try { clearTimeout(timer); } catch { /* 静默 */ }
+      timer = null;
+    }
+  };
+}
+
+// ─── HttpConnected 事件（缺口 6） ───
+
+/**
+ * 记录 HTTP 连接建立（收到响应头）。
+ * 与 StreamPhase("headers_received") 信息重叠，但作为独立事件保证按 `HttpConnected`
+ * 检索一致性（文档缺口 6 的理想事件名）。调用点：openai.ts 收到响应头后。
+ */
+export function emitHttpConnected(
+  index: number,
+  data: {
+    status: number;
+    content_type?: string;
+    ttfb_ms?: number;
+    model?: string;
+  },
+): void {
+  try {
+    if (_eventWriter && _sessionId) {
+      _eventWriter({
+        event: "HttpConnected",
+        session_id: _sessionId,
+        timestamp: new Date().toISOString(),
+        data: { index, ...data },
+      });
+    }
+  } catch { /* 可观测性不影响正常流程 */ }
+}
+
 // ─── TimeoutRetry 事件（缺口 4） ───
 
 /**

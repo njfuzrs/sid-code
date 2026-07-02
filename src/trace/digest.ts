@@ -787,18 +787,126 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   const unpairedEvents = events.filter(e => e.event === "ModelCallUnpaired");
   if (unpairedEvents.length > 0) {
     for (const ue of unpairedEvents) {
+      const d = (ue.data as any) ?? {};
+      const snap = d.stream_snapshot as Record<string, unknown> | null | undefined;
+      // 缺口 3：把流状态快照直接铺进 detail —— 一条异常讲完整个 hang 故事，无需再翻原始 jsonl。
+      const snapDetail = snap
+        ? ` | 快照: phase=${snap.last_known_phase} http=${snap.http_status_received ? snap.http_status : "未收到"}` +
+          ` chunks=${snap.chunks_received} empty=${snap.empty_chunks}` +
+          ` 上次进展前=${snap.last_content_progress_ms ?? "?"}ms` +
+          ` 超时触发=[${Array.isArray(snap.timeouts_fired) ? (snap.timeouts_fired as unknown[]).join(",") : ""}]` +
+          ` abort=${snap.abort_signal_aborted}`
+        : ` | 无流快照（hang 发生在 fetch 发出前，或 stream-observer 未初始化）`;
       anomalies.push({
         layer: "L0",
         severity: "high",
         kind: "model_call_unpaired_watchdog",
-        detail: `配对看门狗超时: index=${(ue.data as any)?.index} model=${(ue.data as any)?.model} elapsed=${(ue.data as any)?.elapsed_ms}ms`,
+        detail: `配对看门狗超时: index=${d.index} model=${d.model} elapsed=${d.elapsed_ms}ms${snapDetail}`,
         provenance: [{
           sourceFile: eventsPath,
-          lineRef: `event=ModelCallUnpaired index=${(ue.data as any)?.index}`,
-          rawValue: (ue.data as any)?.hint ?? "",
+          lineRef: `event=ModelCallUnpaired index=${d.index}`,
+          rawValue: snap ? JSON.stringify(snap) : (d.hint ?? ""),
           mtime: fileMtimeIso(eventsPath),
         }],
-        pointer: `raw_preview.jsonl（请求指标）+ audit.log`,
+        pointer: `warn.log（超时相关 WARN）+ raw_preview.jsonl（请求指标）`,
+      });
+    }
+  }
+
+  // ── 缺口 1/2/4：hang 诊断事件消费（StreamPhase/TimeoutFired/TimeoutIneffective/TimeoutRetry/StreamStall）──
+  // 目标：打开 digest 摘要即可在 <1 分钟内定位"卡在哪层 + 超时是否生效"，无需手工 grep events.jsonl。
+  const timeoutFired = events.filter(e => e.event === "TimeoutFired");
+  const timeoutIneffective = events.filter(e => e.event === "TimeoutIneffective");
+  const timeoutRetry = events.filter(e => e.event === "TimeoutRetry");
+  const timeoutRetryExhausted = events.filter(e => e.event === "TimeoutRetryExhausted");
+  const streamStalls = events.filter(e => e.event === "StreamStall");
+
+  // 缺口 2 进阶（本次事故指纹）：超时 fire 了却没生效 —— 最高价值信号，单列 high 异常。
+  if (timeoutIneffective.length > 0) {
+    for (const ie of timeoutIneffective) {
+      const d = (ie.data as any) ?? {};
+      anomalies.push({
+        layer: "L0",
+        severity: "high",
+        kind: "timeout_ineffective",
+        detail: `超时触发但未生效: layer=${d.layer} index=${d.index} 原因=${d.reason}`,
+        provenance: [{
+          sourceFile: eventsPath,
+          lineRef: `event=TimeoutIneffective layer=${d.layer} index=${d.index}`,
+          rawValue: String(d.reason ?? ""),
+          mtime: fileMtimeIso(eventsPath),
+        }],
+        pointer: `事件循环被底层 IO 阻塞导致 Promise.race 无法 settle —— 需不依赖 microtask 的强制中断`,
+      });
+    }
+    anomalies.push({
+      layer: "L1",
+      severity: "high",
+      kind: "hypothesis_event_loop_blocked",
+      detail: `假设: 超时定时器 fire 了但 Promise.race 未 settle，事件循环被底层 IO（hang 的 reader.read）占满。`,
+      falsifier:
+        `若 heartbeat.txt 的 event_loop_lag_ms 持续 >100ms，佐证事件循环阻塞；` +
+        `若 lag 正常则是 abort 信号未能中断底层 read（reader.cancel 在 Bun 上不释放 socket）。`,
+    });
+  }
+
+  // 缺口 2：超时防线触发汇总（哪层 fire 了）
+  if (timeoutFired.length > 0) {
+    const byLayer = new Map<string, number>();
+    for (const tf of timeoutFired) {
+      const layer = String((tf.data as any)?.layer ?? "unknown");
+      byLayer.set(layer, (byLayer.get(layer) ?? 0) + 1);
+    }
+    const layerSummary = Array.from(byLayer.entries()).map(([l, c]) => `${l}×${c}`).join(", ");
+    anomalies.push({
+      layer: "L0",
+      severity: "medium",
+      kind: "timeout_fired",
+      detail: `超时防线触发: ${layerSummary}`,
+      provenance: [{
+        sourceFile: eventsPath,
+        lineRef: `event=TimeoutFired count=${timeoutFired.length}`,
+        rawValue: layerSummary,
+        mtime: fileMtimeIso(eventsPath),
+      }],
+      pointer: `若同 index 无对应 TimeoutIneffective，说明超时正常生效（触发即中断）`,
+    });
+  }
+
+  // 缺口 4：超时重试轨迹（重试了几次 / 是否耗尽）
+  if (timeoutRetry.length > 0 || timeoutRetryExhausted.length > 0) {
+    const exhausted = timeoutRetryExhausted.length > 0;
+    anomalies.push({
+      layer: "L0",
+      severity: exhausted ? "high" : "medium",
+      kind: "timeout_retry",
+      detail: `超时重试: ${timeoutRetry.length} 次${exhausted ? `，最终耗尽（${timeoutRetryExhausted.map(e => (e.data as any)?.model).join(",")}）` : ""}`,
+      provenance: [{
+        sourceFile: eventsPath,
+        lineRef: `event=TimeoutRetry×${timeoutRetry.length}${exhausted ? " + TimeoutRetryExhausted" : ""}`,
+        rawValue: timeoutRetry.map(e => `attempt=${(e.data as any)?.attempt}/${(e.data as any)?.max}`).join(" "),
+        mtime: fileMtimeIso(eventsPath),
+      }],
+      pointer: exhausted ? `重试耗尽后请求彻底失败，看后续 TurnError/errors.jsonl` : `重试后是否恢复看后续 AfterModel`,
+    });
+  }
+
+  // 缺口 1：流 stall（长时间无内容进展）—— 定位 hang 在 SSE 消费阶段
+  if (streamStalls.length > 0) {
+    for (const st of streamStalls) {
+      const d = (st.data as any) ?? {};
+      anomalies.push({
+        layer: "L0",
+        severity: "medium",
+        kind: "stream_stall",
+        detail: `流 stall: index=${d.index} ${Math.round((d.no_content_progress_ms ?? 0) / 1000)}s 无内容进展 chunks=${d.total_chunks} empty=${d.empty_chunks}`,
+        provenance: [{
+          sourceFile: eventsPath,
+          lineRef: `event=StreamStall index=${d.index}`,
+          rawValue: JSON.stringify(d),
+          mtime: fileMtimeIso(eventsPath),
+        }],
+        pointer: `empty_chunks>0 说明网关在发 keepalive 但无业务内容（路径 A：keepalive 绕过 idle 超时）`,
       });
     }
   }
@@ -831,6 +939,22 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
       label: "错误诊断",
       path: join(ref.dir, "errors.jsonl"),
       hint: "异常路径持久化记录(phase/index/error/stack),崩溃现场首选",
+    });
+  }
+  // 缺口 7：per-session warn.log（WARN/ERROR 不被后续会话覆盖，hang 排查关键日志）
+  if (existsSync(join(ref.dir, "warn.log"))) {
+    pointers.push({
+      label: "关键日志",
+      path: join(ref.dir, "warn.log"),
+      hint: "本会话 WARN/ERROR 持久化(空闲超时/内容进展超时/流式整体超时等),hang 排查首选,不被覆盖",
+    });
+  }
+  // 缺口 5：heartbeat 增强(event_loop_lag_ms + active_request 快照,区分正常等待 vs hang)
+  if (existsSync(join(ref.dir, "heartbeat.txt"))) {
+    pointers.push({
+      label: "心跳快照",
+      path: join(ref.dir, "heartbeat.txt"),
+      hint: "最后心跳: event_loop_lag_ms>100 说明事件循环阻塞; active_request.elapsed_ms 大且仍在跳=hang",
     });
   }
 

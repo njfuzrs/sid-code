@@ -24,7 +24,7 @@ import { resolveToolSearchEnabled } from "../tool/tool-search-auto.ts";
 import { TOKEN_THRESHOLDS } from "../context/auto-compact.ts";
 import { ModelFallback } from "../llm/fallback.ts";
 import { setSseDumpContext } from "../llm/sse-chunk-dumper.ts";
-import { emitTimeoutFired, emitTimeoutRetry, emitTimeoutRetryExhausted } from "../trace/stream-observer.ts";
+import { emitTimeoutFired, emitTimeoutRetry, emitTimeoutRetryExhausted, armIneffectiveCheck } from "../trace/stream-observer.ts";
 import { SessionState } from "../session/state.ts";
 import { getLogger, getSessionMetrics, getPerfTimer } from "../debug/index.ts";
 import { LoopDetector, LOOP_RECOVERY_PROMPT, LOOP_RECOVERY_FINAL_PROMPT } from "../agent/loop-detection.ts";
@@ -766,6 +766,9 @@ export async function* queryLoop(
       })();
       const MAX_TURN_DURATION_MS = deps.maxTurnDurationMs ?? resolvedMaxTurnMs;
       let turnTimer: ReturnType<typeof setTimeout> | null = null;
+      // 缺口 2 进阶：turn_hard 超时 fire 后武装「未生效」检查；race settle 时 disarm。
+      // 若 5s 内未 disarm，说明超时 fire 了却没让 Promise.race settle（本次事故指纹）。
+      let disarmTurnIneffective: (() => void) | null = null;
       const turnTimeoutPromise = new Promise<never>((_resolve, reject) => {
         turnTimer = setTimeout(() => {
           log.error("QUERY_LOOP", `单轮硬超时 ${MAX_TURN_DURATION_MS / 1000}s，强制让出控制权`);
@@ -774,6 +777,12 @@ export async function* queryLoop(
             threshold_ms: MAX_TURN_DURATION_MS,
             model: config.model,
           });
+          // 缺口 2 进阶：武装未生效检查（reject 后若 race 未 settle → TimeoutIneffective）
+          disarmTurnIneffective = armIneffectiveCheck(
+            state.turnCount,
+            "turn_hard_timeout",
+            "promise_race_not_settled_after_5s",
+          ) as (() => void);
           // 尽力而为：主动 abort 上游 fetch（即便对已 hang 的 reader 无效也无害）。
           try {
             deps.abortCurrentRequest?.("turn-timeout");
@@ -798,6 +807,9 @@ export async function* queryLoop(
         // onThinking 通过 QueryEngine 层的 streamThinkingCallback 桥接，queryLoop 自身无需处理
       } finally {
         if (turnTimer !== null) clearTimeout(turnTimer);
+        // race 已 settle（正常返回或 catch 到 reject）→ disarm，证明超时确实生效。
+        // 断言读取：disarm 仅在闭包内赋值，TS 线性流会把变量窄化成 null，故显式转型。
+        (disarmTurnIneffective as (() => void) | null)?.();
       }
     } catch (err: any) {
       perfHandle.end({ model: config.model });
