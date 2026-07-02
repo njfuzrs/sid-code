@@ -275,6 +275,11 @@ export class ModelFallback {
     const startStreamTimeout = () => {
       streamTimeoutId = setTimeout(() => {
         log.warn("FALLBACK", `流式整体超时: ${streamTimeoutMs / 1000}s，主动中断连接`);
+        // 缺口 2：记录 fallback 流式整体超时触发
+        emitTimeoutFired(currentSseDumpContext().turnIndex, "fallback_stream_timeout", {
+          threshold_ms: streamTimeoutMs,
+          model: params.model,
+        });
         streamTimeoutCtl.abort();
       }, streamTimeoutMs);
       // 不调 unref()：fdb47f30 教训——index 23 请求发出后 hang 死,若定时器被 unref,

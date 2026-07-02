@@ -3,7 +3,7 @@
  * 支持分级日志、文件输出、格式化输出
  */
 
-import { createWriteStream, existsSync, mkdirSync, renameSync, unlinkSync, type WriteStream } from 'node:fs';
+import { createWriteStream, existsSync, mkdirSync, renameSync, unlinkSync, appendFileSync, type WriteStream } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { maskSensitiveData } from '../permission/sensitive.ts';
@@ -79,6 +79,8 @@ class Logger {
   private jsonStream?: WriteStream;
   private readonly maxLogSize = 10 * 1024 * 1024; // 10MB
   private currentLogSize = 0;
+  /** 缺口 7：per-session WARN/ERROR 日志路径（由 collector 注入） */
+  private sessionWarnLogPath?: string;
 
   constructor(options: Partial<LoggerOptions> = {}) {
     this.options = {
@@ -256,6 +258,19 @@ class Logger {
     // 文件始终写入所有级别，确保日志文件包含完整信息
     this.writeToFile(formatted);
 
+    // 缺口 7：WARN/ERROR 级别同步追加到 per-session warn.log（不被后续会话覆盖）
+    if (level <= LogLevel.WARN && this.sessionWarnLogPath) {
+      try {
+        const ts = new Date().toISOString();
+        const levelName = level === LogLevel.ERROR ? "ERROR" : "WARN";
+        const dataStr = data !== undefined ? ` ${JSON.stringify(data)}` : "";
+        appendFileSync(
+          this.sessionWarnLogPath,
+          `[${ts}] [${levelName}] [${category}] ${message}${dataStr}\n`,
+        );
+      } catch { /* per-session 日志写入失败静默 */ }
+    }
+
     // JSON Lines 输出
     this.logJson(level, category, message, data);
 
@@ -363,6 +378,19 @@ class Logger {
   // 更新配置
   updateOptions(options: Partial<LoggerOptions>): void {
     this.options = { ...this.options, ...options };
+  }
+
+  /**
+   * 缺口 7：设置 per-session WARN/ERROR 日志文件路径。
+   * 由 TraceCollector.handleSessionStart 注入 session 目录下的 warn.log 路径。
+   * 不被后续会话覆盖（每个 session 独立文件）。
+   */
+  setSessionWarnLogPath(path: string | undefined): void {
+    this.sessionWarnLogPath = path;
+  }
+
+  getSessionWarnLogPath(): string | undefined {
+    return this.sessionWarnLogPath;
   }
 
   // 获取日志文件路径

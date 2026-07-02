@@ -24,6 +24,7 @@ import { resolveToolSearchEnabled } from "../tool/tool-search-auto.ts";
 import { TOKEN_THRESHOLDS } from "../context/auto-compact.ts";
 import { ModelFallback } from "../llm/fallback.ts";
 import { setSseDumpContext } from "../llm/sse-chunk-dumper.ts";
+import { emitTimeoutFired, emitTimeoutRetry, emitTimeoutRetryExhausted } from "../trace/stream-observer.ts";
 import { SessionState } from "../session/state.ts";
 import { getLogger, getSessionMetrics, getPerfTimer } from "../debug/index.ts";
 import { LoopDetector, LOOP_RECOVERY_PROMPT, LOOP_RECOVERY_FINAL_PROMPT } from "../agent/loop-detection.ts";
@@ -768,6 +769,11 @@ export async function* queryLoop(
       const turnTimeoutPromise = new Promise<never>((_resolve, reject) => {
         turnTimer = setTimeout(() => {
           log.error("QUERY_LOOP", `单轮硬超时 ${MAX_TURN_DURATION_MS / 1000}s，强制让出控制权`);
+          // 缺口 2：记录单轮硬超时触发
+          emitTimeoutFired(state.turnCount, "turn_hard_timeout", {
+            threshold_ms: MAX_TURN_DURATION_MS,
+            model: config.model,
+          });
           // 尽力而为：主动 abort 上游 fetch（即便对已 hang 的 reader 无效也无害）。
           try {
             deps.abortCurrentRequest?.("turn-timeout");
@@ -806,10 +812,24 @@ export async function* queryLoop(
           (state as any).timeoutRetryCount = timeoutRetryCount + 1;
           state.transition = { type: "timeout_retry" };
           log.warn("QUERY_LOOP", `流式超时，重试 ${timeoutRetryCount + 1}/${maxTimeoutRetries}`);
+          // 缺口 4：记录超时重试事件
+          emitTimeoutRetry({
+            index: state.turnCount,
+            attempt: timeoutRetryCount + 1,
+            max: maxTimeoutRetries,
+            elapsed_ms: deps.maxTurnDurationMs ?? (/deepseek/i.test(config.model) ? 5 * 60 * 1000 : 10 * 60 * 1000),
+            model: config.model,
+          });
           yield { kind: "system", level: "info",
             text: `请求超时，正在重试 (${timeoutRetryCount + 1}/${maxTimeoutRetries})...` };
           continue;
         }
+        // 缺口 4：记录超时重试耗尽事件
+        emitTimeoutRetryExhausted({
+          index: state.turnCount,
+          attempts: maxTimeoutRetries,
+          model: config.model,
+        });
         log.error("QUERY_LOOP", `流式超时重试耗尽`);
       }
 

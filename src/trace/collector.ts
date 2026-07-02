@@ -450,6 +450,10 @@ export class TraceCollector {
       (event) => { try { this.writer.appendEvent(event); } catch { /* 静默 */ } },
     );
 
+    // 缺口 7：注入 per-session warn.log 路径（WARN/ERROR 级别日志追加到此，不被后续会话覆盖）
+    const sessionWarnLogPath = join(this.writer.getSessionDir(), "warn.log");
+    getLogger().setSessionWarnLogPath(sessionWarnLogPath);
+
     // §3.8：快照 audit.log 起始行号（用于 SessionEnd 写 audit_range.json）
     try {
       const logPath = getLogger().getLogFilePath();
@@ -1120,6 +1124,9 @@ export class TraceCollector {
 
     // 缺口 1/2/3：重置流状态观测器
     resetStreamObserver();
+
+    // 缺口 7：清除 per-session warn.log 路径（避免下个会话启动前的日志误写入此 session）
+    getLogger().setSessionWarnLogPath(undefined);
 
     // §3.8：写 audit_range.json（audit.log 按 session 索引）
     if (this.auditLogPath && this.auditLogStartLine > 0) {
