@@ -32,6 +32,8 @@ export interface CustomAgentDefinition {
   prompt: string;
   source: ExtensionSource;
   filePath: string;
+  /** 超时时间（毫秒），默认 300_000（5 分钟，对齐 task 类型） */
+  timeout?: number;
 }
 
 /** 自定义 Agent 加载器 */
@@ -67,6 +69,7 @@ export class CustomAgentLoader {
         prompt: file.body,
         source: file.source,
         filePath: file.filePath,
+        timeout: typeof fm.timeout === "number" ? fm.timeout : undefined,
       });
     }
 
@@ -133,7 +136,8 @@ export class CustomAgentTool implements Tool {
       userPrompt: task,
       allowedTools: this.def.tools,
       maxTurns: 10,
-      timeout: 120_000,
+      // 三级回退：Frontmatter 声明 > 默认 300s（对齐 task 类型，自定义 agent 执行复杂任务）
+      timeout: this.def.timeout ?? 300_000,
     }, signal);
 
     // P0-1：把自定义子代理消耗的 token/费用回写主会话

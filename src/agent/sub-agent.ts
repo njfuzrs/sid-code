@@ -743,9 +743,12 @@ export class SubAgent {
       ? AbortSignal.any([signal, timeoutCtrl.signal])
       : timeoutCtrl.signal;
 
+    // try 块外部声明 ctxMgr，以便 catch 块在超时时能读取部分进度信息
+    let ctxMgr: ContextManager | undefined;
+
     try {
       // 独立的上下文
-      const ctxMgr = new ContextManager({
+      ctxMgr = new ContextManager({
         maxTokens: this.resolveSubAgentWindow(task),
       });
 
@@ -842,7 +845,7 @@ export class SubAgent {
             const injected = drainAgentMessages(taskId);
             for (const msg of injected) {
               log.info("SUBAGENT", `[${task.type}] 收到主代理消息: ${msg.slice(0, 100)}`);
-              ctxMgr.addMessage({
+              ctxMgr!.addMessage({
                 role: "user",
                 content: [{ type: "text", text: `<system-reminder>\n[主代理消息] ${msg}\n</system-reminder>` }],
               });
@@ -934,10 +937,14 @@ export class SubAgent {
         };
       } else {
         // 超时检测：runAgentLoop 内部消化了 abort 异常（不抛出），
-        // 返回 success=false + 原始 AbortError message。此处补充友好超时提示。
+        // 返回 success=false + 原始 AbortError message。此处补充友好超时提示，
+        // 包含已完成轮次和工具调用数，帮助用户判断是否"只差一点"还是完全没进展。
         const isTimeout = timeoutCtrl.signal.aborted;
+        const donePart = loopResult.turns > 0
+          ? `，已完成 ${loopResult.turns} 轮、${toolUseCount} 次工具调用`
+          : "";
         const output = isTimeout
-          ? `子代理执行超时 (${Math.round(timeout / 1000)}秒)`
+          ? `子代理执行超时 (${Math.round(timeout / 1000)}秒${donePart})`
           : (loopResult.errorMessage || "子代理执行未成功");
         return {
           success: false,
@@ -950,12 +957,15 @@ export class SubAgent {
         };
       }
     } catch (err: any) {
-      // 超时中断时返回友好提示
+      // 超时中断时返回友好提示，包含部分进度信息
       if (timeoutCtrl.signal.aborted) {
         log.warn("SUBAGENT", `[${task.type}] 超时 (${timeout}ms)`);
+        // 从 ctxMgr 获取部分进度：子代理已完成的消息对数 ≈ 已执行轮次
+        const msgCount = ctxMgr?.messageCount() ?? 0;
+        const partialInfo = msgCount > 2 ? `，已执行约 ${Math.round((msgCount - 1) / 2)} 轮` : "";
         return {
           success: false,
-          output: `子代理执行超时 (${Math.round(timeout / 1000)}秒)`,
+          output: `子代理执行超时 (${Math.round(timeout / 1000)}秒${partialInfo})`,
           usage: { inputTokens: 0, outputTokens: 0 },
           turns: 0,
           toolUseCount: 0,
@@ -981,7 +991,8 @@ export class SubAgent {
     const startTime = Date.now();
     log.info("SUBAGENT", `启动自定义子代理`);
 
-    const timeout = task.timeout ?? 120_000;
+    // 三级回退：task.timeout > 默认 300s（自定义 agent 执行复杂任务，与 task 类型对齐）
+    const timeout = task.timeout ?? 300_000;
     const timeoutCtrl = new AbortController();
     const timer = setTimeout(() => timeoutCtrl.abort(), timeout);
     const mergedSignal = signal
@@ -1054,9 +1065,16 @@ export class SubAgent {
           provider: activeProvider.name(),
         };
       } else {
+        const isTimeout = timeoutCtrl.signal.aborted;
+        const donePart = loopResult.turns > 0
+          ? `，已完成 ${loopResult.turns} 轮、${toolUseCount} 次工具调用`
+          : "";
+        const output = isTimeout
+          ? `子代理执行超时 (${Math.round(timeout / 1000)}秒${donePart})`
+          : (loopResult.errorMessage || "子代理执行未成功");
         return {
           success: false,
-          output: loopResult.errorMessage || "子代理执行未成功",
+          output,
           usage: totalUsage,
           turns: loopResult.turns,
           toolUseCount,

@@ -97,6 +97,7 @@ export const BUILTIN_AGENTS: Record<string, AgentDefinition> = {
 - 保持简洁
 - 完成后以 "## 摘要" 开头输出结构化摘要`,
     // summarize 不需要工具
+    timeout: 180_000,
     source: "built-in",
   },
 
@@ -171,6 +172,8 @@ export const BUILTIN_AGENTS: Record<string, AgentDefinition> = {
 - **严重度校准**：原定级是否准确，是否高估/低估`,
     tools: ["read", "grep", "glob", "ls", "read_many", "bash", "task_list"],
     readOnly: true,
+    // verify 需要多轮文件读取 + grep + 逐一读码举证，与 explore 同级，给足 300s。
+    timeout: 300_000,
     source: "built-in",
   },
 };

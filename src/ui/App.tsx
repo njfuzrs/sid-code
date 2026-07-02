@@ -299,7 +299,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
   const log = getLogger();
   const { getScrollState } = useScrollState();
   const { toggleRenderMarkdown, cycleExpandLevel, setShowIsExpandableHint, setCtrlCPressedOnce } = useUIActions();
-  const { ctrlCPressedOnce } = useUIState();
+  const { ctrlCPressedOnce, expandLevel } = useUIState();
   const { matchBinding } = useKeybindings();
 
   // v2：思考折叠状态。两种模式默认折叠成一行（对标 claude-code，思考不占满屏）。
@@ -443,21 +443,27 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
   });
 
   // Ctrl+O 统一展开/收起折叠内容（对标 claude-code：单键管所有折叠区）：
-  // ① 工具结果阶梯展开（0 折叠 → 1 更多 → 2 全展开 → 0）；② 思考块折叠/展开同步切换。
+  // 工具结果阶梯展开（0 折叠 → 1 更多 → 2 全展开 → 0），思考块与 expandLevel 同步：
+  // expandLevel=0 时折叠思考，≥1 时展开思考。两者周期对齐，不再割裂。
   useKeypress(KeypressPriority.High, (key: Key) => {
     const b = matchBinding(key);
     if (b?.action === "app:toggleHeight") {
       log.info("UI:APP", "统一展开/收起折叠内容（Ctrl+O）");
       // TO4：工具结果阶梯循环展开级别。
       cycleExpandLevel();
-      // 思考块同步切换折叠/展开。
-      setThinkCollapsed(prev => !prev);
+      // 思考块由 useEffect 跟随 expandLevel 同步，此处不再独立切换。
       setShowIsExpandableHint(true);
       setTimeout(() => setShowIsExpandableHint(false), 3000);
       return true;
     }
     return false;
   });
+
+  // 思考块折叠状态跟随 expandLevel 同步：level=0 折叠，≥1 展开。
+  // 用 useEffect 保证单一事实源，消除三值/二值周期不对齐问题。
+  useEffect(() => {
+    setThinkCollapsed(expandLevel === 0);
+  }, [expandLevel]);
 
   // Esc 中断当前流式响应/工具执行
   useKeypress(KeypressPriority.High, (key: Key) => {
