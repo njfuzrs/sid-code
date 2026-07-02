@@ -23,6 +23,7 @@ import { filterParamsForModel } from "./model-capability-filter.ts";
 import { lookupCatalog } from "./model-params-catalog.ts";
 import { estimateTextTokens } from "../context/token.ts";
 import { sanitizeStrings } from "./sanitize-unicode.ts";
+import { SseChunkDumper, currentSseDumpContext } from "./sse-chunk-dumper.ts";
 
 /**
  * 从纯文本中提取内联 <think>...</think> 标签为独立的 thinking 内容。
@@ -115,15 +116,20 @@ export class OpenAIProvider implements Provider {
   }
 
   /**
-   * 当前模型在多轮工具调用时是否要求回传 reasoning_content（方案⓪真因修复）。
+   * 指定模型在多轮工具调用时是否要求回传 reasoning_content（方案⓪真因修复）。
    *
    * 判据取自 model-registry 的 requiresReasoningContentForToolCalls 能力标志：
    *   - DeepSeek V4 thinking 系 → true（tool-call 轮必回传，否则 400 + 思维链断裂）
    *   - 旧 deepseek-reasoner → false（回传会触发旧协议 400）
    *   - 未知模型 / 无 reasoning 概念 → false（保守：仅无 tool_calls 时回传，维持旧行为）
+   *
+   * ⚠️ 必须按**本次请求实际发往的模型**判定，而非构造时固化的 this._model：
+   * fallback 链切换模型后（fallback.ts 构造 `{ ...params, model: fallbackModel }`，
+   * 但 provider 仍用主模型名构造），this._model 与 params.model 会分裂。若用 this._model，
+   * 主/备模型的回传规则不同（V4 必回传 vs 旧 reasoner 禁回传）时会错发/漏发 → 400 或思维链断裂。
    */
-  private requiresReasoningContentForToolCalls(): boolean {
-    return lookupCatalog(this._model)?.requiresReasoningContentForToolCalls === true;
+  private requiresReasoningContentForToolCalls(model: string): boolean {
+    return lookupCatalog(model)?.requiresReasoningContentForToolCalls === true;
   }
 
   /**
@@ -142,10 +148,13 @@ export class OpenAIProvider implements Provider {
 
   /**
    * 把 OpenAI finish_reason 映射为 sid-code 内部 stop_reason（§4.4）。
-   * 规范枚举 5 值：stop / length / tool_calls / content_filter / function_call。
+   * 规范枚举 5+1 值：stop / length / tool_calls / content_filter / function_call
+   *   + insufficient_system_resource（DeepSeek 特有，deepseek-api.md:2094）。
    *   - tool_calls / function_call → tool_use
    *   - length → max_tokens
    *   - content_filter → content_filter（不再误并入 end_turn，掩盖内容审查）
+   *   - insufficient_system_resource → insufficient_system_resource（保留原值，
+   *     供上层 queryLoop 识别为可重试异常触发 fallback 重试链）
    *   - stop / 其它 → end_turn
    */
   private static mapFinishReason(finishReason: string | null | undefined): string {
@@ -157,6 +166,8 @@ export class OpenAIProvider implements Provider {
         return "max_tokens";
       case "content_filter":
         return "content_filter";
+      case "insufficient_system_resource":
+        return "insufficient_system_resource";
       default:
         return "end_turn";
     }
@@ -227,47 +238,63 @@ export class OpenAIProvider implements Provider {
   }
 
   /**
-   * 透传 DeepSeek 思考模式相关字段到请求体顶层（§2.1 / §2.2 / §2.6）。
+   * 透传思考/推理相关字段到请求体顶层（§2.1 / §2.2 / §2.6）。
    * 流式与非流式路径共用，避免降级时行为不一致。
    *
-   * DeepSeek（OpenAI 兼容端点）的协议约定（见 api-reference/deepseek-api.md）：
-   * - `thinking: { type: "enabled" | "disabled" }`——思考开关，请求体顶层字段。
+   * 按协议族分叉下发（判据取自 model-registry 的 protocolKind，缺省走模型名正则兜底）：
+   * - **DeepSeek**（OpenAI 兼容端点，deepseek-api.md）：
+   *   `thinking:{type:enabled/disabled}` 思考开关 + `reasoning_effort`(high/max) 强度，均顶层字段。
    *   注意 OpenAI **SDK** 用法是放进 extra_body，但 SDK 只是把它展开到 HTTP body 顶层；
    *   sid-code 直发 fetch，故直接写顶层即可。
-   * - `reasoning_effort: "high" | "max"`——思考强度，请求体顶层字段（非 extra_body）。
-   * - `user_id`——KVCache/调度/内容安全隔离，请求体顶层字段。
+   * - **GLM**（智谱，OpenAI 兼容端点，glm-api.md:144-147,189）：与 DeepSeek 同构——
+   *   `thinking:{type}` 思考开关（GLM-4.5+）+ `reasoning_effort`（仅 GLM-5.2 生效，含 max）。
+   * - **Grok**（xAI，OpenAI 兼容端点，grok-api.md:30,157,277）：无思考开关，仅 `reasoning_effort`
+   *   （none/low/medium/high，无 max；effort.ts 已把 max 钳为 high）。
+   * - **OpenAI o-series**：无思考开关，仅 `reasoning_effort`（low/medium/high）。
+   * - `user_id`——KVCache/调度/内容安全隔离，通用字段，任意端点按需下发（他端忽略不报错）。
    *
-   * 仅对 DeepSeek 模型下发 thinking/reasoning_effort（其它 OpenAI 兼容端点不认这两个字段，
-   * 贸然下发可能 400）。user_id 是通用隔离字段，任意端点都按需下发。
+   * 仅对声明/识别为支持的协议族下发 thinking/reasoning_effort（未知端点不认这两个字段,
+   * 贸然下发可能 400）。
    */
   private applyDeepSeekThinking(requestBody: any, params: SendParams, model: string): void {
-    const isDeepSeek = /deepseek/i.test(model);
+    const kind = lookupCatalog(model)?.protocolKind;
+    const isDeepSeek = kind === "deepseek-openai" || (kind === undefined && /deepseek/i.test(model));
+    const isGLM = kind === "glm-openai" || (kind === undefined && /^glm/i.test(model));
+    const isGrok = kind === "grok-openai" || (kind === undefined && /grok/i.test(model));
+    const isOSeries = kind === "o-series" || (kind === undefined && /^o[0-9]/i.test(model));
 
-    if (isDeepSeek) {
-      // 思考开关：显式下发 enabled/disabled。params.thinking 不传时不下发，
-      // 沿用 DeepSeek 服务端默认（enabled）。
+    const thinkingDisabled = params.thinking?.enabled === false;
+
+    // DeepSeek / GLM：同构的 thinking 开关 + reasoning_effort（顶层字段）。
+    // GLM 见 glm-api.md:144-147,189；DeepSeek 见 deepseek-api.md:2003-2004。
+    if (isDeepSeek || isGLM) {
+      // 思考开关：显式下发 enabled/disabled。params.thinking 不传时不下发，沿用服务端默认。
       if (params.thinking) {
         requestBody.thinking = {
           type: params.thinking.enabled ? "enabled" : "disabled",
         };
       }
       // 思考强度：思考显式关闭时不下发，避免冲突；其余情况按需下发。
-      const thinkingDisabled = params.thinking?.enabled === false;
       if (params.reasoningEffort && !thinkingDisabled) {
         requestBody.reasoning_effort = params.reasoningEffort;
       }
     }
 
-    // user_id：通用隔离字段，按需下发（DeepSeek 专有语义，其它端点忽略不报错）。
-    if (params.userId) {
-      requestBody.user_id = params.userId;
+    // Grok：无思考开关；仅透传 reasoning_effort（无 max，effort.ts 已钳 max→high）。
+    // grok-api.md:30,157,277。
+    if (isGrok && params.reasoningEffort && params.reasoningEffort !== "max" && !thinkingDisabled) {
+      requestBody.reasoning_effort = params.reasoningEffort;
     }
 
     // OpenAI o-series（o1/o3/o4…）：内置推理，仅透传 reasoning_effort（low/medium/high，无 max）。
-    // 不下发 thinking 开关（o-series 无显式开关）。effort.ts 已把 max 钳为 high，这里原样透传。
-    const isOSeries = /^o[0-9]/i.test(model);
+    // 不下发 thinking 开关（o-series 无显式开关）。effort.ts 已把 max 钳为 high，这里再兜一道。
     if (isOSeries && params.reasoningEffort && params.reasoningEffort !== "max") {
       requestBody.reasoning_effort = params.reasoningEffort;
+    }
+
+    // user_id：通用隔离字段，按需下发（DeepSeek 专有语义，其它端点忽略不报错）。
+    if (params.userId) {
+      requestBody.user_id = params.userId;
     }
   }
 
@@ -277,10 +304,14 @@ export class OpenAIProvider implements Provider {
    * §2.4：DeepSeek V4 思考模式**不接受** `tool_choice` 参数（实测会 400，
    * OMP 官方配置亦标注 `supportsToolChoice: false`）。因此当模型为 DeepSeek
    * 且思考未显式关闭时，跳过 `tool_choice` 下发并记日志告警，而非冒 400 风险。
-   * `parallel_tool_calls` 未见 DeepSeek 思考模式冲突报告，保持下发。
+   * §GLM：`tool_choice` 默认且仅支持 `auto`（glm-api.md:147,276）——required/none/指定函数
+   * 会被拒绝，统一降级为 auto（即不下发）。
+   * `parallel_tool_calls` 未见冲突报告，保持下发。
    */
   private applyToolChoice(requestBody: any, params: SendParams, model: string): void {
-    const isDeepSeek = /deepseek/i.test(model);
+    const kind = lookupCatalog(model)?.protocolKind;
+    const isDeepSeek = kind === "deepseek-openai" || (kind === undefined && /deepseek/i.test(model));
+    const isGLM = kind === "glm-openai" || (kind === undefined && /^glm/i.test(model));
     const thinkingActive = isDeepSeek && params.thinking?.enabled !== false;
     const toolChoice = OpenAIProvider.toToolChoice(params.toolChoice);
 
@@ -290,6 +321,13 @@ export class OpenAIProvider implements Provider {
         getLogger().warn(
           "LLM:OPENAI",
           `DeepSeek 思考模式不支持 tool_choice，已跳过下发（请求的 toolChoice=${JSON.stringify(params.toolChoice)}）`,
+        );
+      } else if (isGLM && toolChoice !== "auto") {
+        // §GLM：tool_choice 默认且仅支持 auto，不支持 none/required/指定函数（glm-api.md:147,276,431）。
+        // 下发 required/指定函数会被 GLM 拒绝，降级为 auto（不下发即等价服务端默认 auto）而非冒错。
+        getLogger().warn(
+          "LLM:OPENAI",
+          `GLM 仅支持 tool_choice=auto，已将 ${JSON.stringify(params.toolChoice)} 降级为 auto（不下发）`,
         );
       } else {
         requestBody.tool_choice = toolChoice;
@@ -308,7 +346,8 @@ export class OpenAIProvider implements Provider {
    * 2. OpenAI 的 tool_result 不在 user 消息的 content 里，而是独立的 role:"tool" 消息
    * 3. OpenAI 的 content 字段对于纯文本消息应该是字符串，不是数组
    */
-  private convertMessages(messages: Message[]): any[] {
+  private convertMessages(messages: Message[], effectiveModel?: string): any[] {
+    const model = effectiveModel || this._model;
     const result: any[] = [];
 
     // 方案 C 最后兜底：预扫所有 assistant 的 tool_use id 集合。
@@ -394,7 +433,7 @@ export class OpenAIProvider implements Provider {
         //   分叉判据取自 model-registry 的 requiresReasoningContentForToolCalls 能力标志
         //   （而非散落的模型名 if），避免协议演进时漂移。
         if (msg._meta?.reasoning_content) {
-          const carryOnToolCalls = this.requiresReasoningContentForToolCalls();
+          const carryOnToolCalls = this.requiresReasoningContentForToolCalls(model);
           if (toolCalls.length === 0 || carryOnToolCalls) {
             assistantMsg.reasoning_content = msg._meta.reasoning_content;
           }
@@ -463,8 +502,10 @@ export class OpenAIProvider implements Provider {
   ): AsyncIterable<StreamEvent> {
     // D1-1：发送前协议完整性关卡（只读校验 + 告警 + 落盘，不修数据，尊重 ADR-039）
     guardOutgoingMessages(params.messages, { providerName: this.name() });
-    // 转换消息格式
-    const messages = this.convertMessages(params.messages);
+
+    const effectiveModel = params.model || this._model;
+    // 转换消息格式（传入 effectiveModel 供 reasoning_content 回传分叉判据使用）
+    const messages = this.convertMessages(params.messages, effectiveModel);
 
     // 转换工具定义
     const tools = params.tools?.map((t) => ({
@@ -476,18 +517,12 @@ export class OpenAIProvider implements Provider {
       },
     }));
 
-    const effectiveModel = params.model || this._model;
     const requestBody: any = {
       model: effectiveModel,
       messages,
       stream: true,
       stream_options: { include_usage: true },
     };
-
-    // § P1: model-capability-filter 参数过滤（基于 catalog 声明的协议能力自动处理 o-series 等模型）
-    // 注意：filterParamsForModel 与下方 applyMaxTokens/prependSystemMessage 有功能重叠，
-    // 但 filter 只在 catalog 命中且声明了对应字段时才生效，已有逻辑作为 runtime 兜底保留。
-    filterParamsForModel(effectiveModel, requestBody);
 
     // §3.2：o-series 用 max_completion_tokens，其余用 max_tokens
     this.applyMaxTokens(requestBody, params.maxTokens, effectiveModel);
@@ -504,6 +539,14 @@ export class OpenAIProvider implements Provider {
       // §4.2/§2.4：工具调用策略透传（DeepSeek 思考模式跳过 tool_choice）
       this.applyToolChoice(requestBody, params, effectiveModel);
     }
+
+    // § P1: model-capability-filter 参数过滤（基于 catalog 声明的协议能力兜底纠偏）。
+    // ⚠️ 必须在 applyMaxTokens / applyDeepSeekThinking / prependSystemMessage **之后**执行：
+    // filter 处理的字段（max_tokens→max_completion_tokens、system→developer、reasoning_effort
+    // 钳制、剔除 temperature/top_p）依赖这些字段先被写入 requestBody。若在赋值前执行则全是
+    // no-op（历史 bug）。典型受益：Grok 推理模型声明 maxTokensField=max_completion_tokens 但
+    // 不匹配 /^o[0-9]/，applyMaxTokens 会误写 max_tokens，靠此 filter 纠正为 max_completion_tokens。
+    filterParamsForModel(effectiveModel, requestBody);
 
     try {
       const log = getLogger();
@@ -677,7 +720,8 @@ export class OpenAIProvider implements Provider {
   ): Promise<AccumulatedResponse> {
     // D1-1：发送前协议完整性关卡（非流式路径同样校验）
     guardOutgoingMessages(params.messages, { providerName: this.name() });
-    const messages = this.convertMessages(params.messages);
+    const effectiveModel = params.model || this._model;
+    const messages = this.convertMessages(params.messages, effectiveModel);
     const tools = params.tools?.map((t) => ({
       type: "function",
       function: {
@@ -687,7 +731,6 @@ export class OpenAIProvider implements Provider {
       },
     }));
 
-    const effectiveModel = params.model || this._model;
     const requestBody: any = {
       model: effectiveModel,
       messages,
@@ -707,6 +750,9 @@ export class OpenAIProvider implements Provider {
       // §4.2/§2.4：工具调用策略透传（DeepSeek 思考模式跳过 tool_choice）
       this.applyToolChoice(requestBody, params, effectiveModel);
     }
+
+    // § P1: model-capability-filter 参数过滤（与流式路径对齐，须在字段赋值之后执行才生效）。
+    filterParamsForModel(effectiveModel, requestBody);
 
     const log = getLogger();
     log.debug("LLM:OPENAI", "非流式请求", { model: requestBody.model });
@@ -777,6 +823,15 @@ export class OpenAIProvider implements Provider {
     const finishReason = choice?.finish_reason;
     const stopReason = OpenAIProvider.mapFinishReason(finishReason);
 
+    // §4.4：DeepSeek 特有 insufficient_system_resource（deepseek-api.md:2094-2096）。
+    // 非流式路径同样须视为可重试——抛错让上层（stream-handler 降级路径 / warmup 等）经
+    // classifyError 归为 overloaded 触发重试，而非返回一个静默截断的 end_turn 式响应。
+    if (finishReason === "insufficient_system_resource") {
+      throw new Error(
+        "DeepSeek insufficient_system_resource（推理系统资源不足，可重试）",
+      );
+    }
+
     // §2.1：内容审查拒绝。模型触发安全策略时返回 `refusal`（拒绝理由）而非 `content`。
     // 此前完全未解析——若 refusal 非空而 content 为空，会得到无任何块的空响应，
     // 表现为"模型莫名没回复"。这里在正文均空时把 refusal 文本兜底为 text 块，
@@ -843,11 +898,19 @@ export class OpenAIProvider implements Provider {
     let reasoningBlockStarted = false;
     let reasoningContent = "";
 
+    // 5.2：逐 chunk 采样落盘（默认关闭，SID_CODE_DEBUG_SSE_DUMP=1 启用）。
+    // 用于排查"思考走哪个字段、哪个 chunk 从 reasoning_content 切到 content"。
+    const dumpCtx = currentSseDumpContext();
+    const chunkDumper = new SseChunkDumper(dumpCtx.sessionId, dumpCtx.turnIndex, requestStartAt);
+
     /** 流式空闲超时（默认启用，不再依赖环境变量开关）
      *  仅 1 级 idle timeout：N 秒内 reader 无任何 chunk → 断开
-     *  按模型区分：DeepSeek 大上下文处理慢 → 180s；Claude/OpenAI 等 → 90s */
+     *  按模型区分：DeepSeek 大上下文处理慢 → 180s；Claude/OpenAI 等 → 90s
+     *  支持环境变量覆盖（SID_CODE_IDLE_TIMEOUT_MS，测试注入用；与 CONTENT_PROGRESS 对齐）。 */
     const isDeepSeek = /deepseek/i.test(this._model);
-    const IDLE_TIMEOUT_MS = isDeepSeek ? 180_000 : 90_000;
+    const IDLE_TIMEOUT_MS = process.env.SID_CODE_IDLE_TIMEOUT_MS
+      ? parseInt(process.env.SID_CODE_IDLE_TIMEOUT_MS, 10)
+      : (isDeepSeek ? 180_000 : 90_000);
 
     /** Fix 2: content progress timeout — 区分 TCP keep-alive 与业务进展
      *  即使 reader.read() 持续 settle（空行/ping），只要无有效内容进展就超时中断。
@@ -941,6 +1004,7 @@ export class OpenAIProvider implements Provider {
 
           try {
             const chunk = JSON.parse(data);
+            chunkDumper.record(chunk); // 5.2：采样（未启用时空转）
 
             // §3.3：流中途的 API error chunk（配额超限/内容过滤/上游中断）。
             // 此前只看 choices/usage，error 被 `!delta && !finishReason` 静默跳过，
@@ -1160,6 +1224,21 @@ export class OpenAIProvider implements Provider {
                 yield { type: "content_block_stop", index: state.contentIndex };
               }
 
+              // §4.4：DeepSeek 特有 insufficient_system_resource（推理系统资源不足中断，
+              // deepseek-api.md:2094-2096 明确要求 openai.ts 视为可重试）。此前落 default→end_turn
+              // 被当成正常结束，回答静默截断且不重试。这里显式转成 error 事件，让 fallback.ts
+              // 的 classifyError 归为 overloaded → 触发重试/降级链，而非吞掉。
+              if (finishReason === "insufficient_system_resource") {
+                dbg(`finish_reason=insufficient_system_resource → 转可重试 error`);
+                yield {
+                  type: "error",
+                  error: {
+                    message: "DeepSeek insufficient_system_resource（推理系统资源不足，可重试）",
+                  },
+                };
+                return;
+              }
+
               pendingFinishReason = finishReason;
             }
           } catch (parseErr) {
@@ -1181,6 +1260,7 @@ export class OpenAIProvider implements Provider {
       }
     } finally {
       clearInterval(stallLogger);
+      chunkDumper.flush(); // 5.2：流结束（正常/异常/取消）都 flush 采样
       // 清理 signal listener，避免 Promise 泄漏
       if (signal && signalAbortHandler) {
         signal.removeEventListener("abort", signalAbortHandler);

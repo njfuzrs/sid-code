@@ -27,8 +27,8 @@ export interface ModelRegistryEntry {
   systemRole?: "system" | "developer";
   maxTokensField?: "max_tokens" | "max_completion_tokens";
   supportsTemperature?: boolean;
-  reasoningEffortValues?: ("low" | "medium" | "high")[];
-  protocolKind?: "deepseek-openai" | "deepseek-anthropic" | "anthropic-native" | "o-series" | "unknown";
+  reasoningEffortValues?: ("low" | "medium" | "high" | "max")[];
+  protocolKind?: "deepseek-openai" | "deepseek-anthropic" | "anthropic-native" | "o-series" | "glm-openai" | "grok-openai" | "unknown";
 
   /**
    * 多轮工具调用时，是否要求把该轮 assistant 的 reasoning_content 原样回传给 API。
@@ -146,25 +146,30 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
   // ══════════════════════════════════════════════════════════════════
   // 智谱 GLM
   // ══════════════════════════════════════════════════════════════════
-  "glm-5.2": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: true, reasoningEffortValues: ["low", "medium", "high"], pricing: { input: 1.4, output: 4.2, cacheRead: 0.7, cacheWrite: 0 } },
-  "glm-5.1": { contextWindow: 200_000, maxOutputTokens: 128_000, supportsThinking: true, pricing: { input: 0.7, output: 2.1, cacheRead: 0.35, cacheWrite: 0 } },
-  "glm-5": { contextWindow: 200_000, maxOutputTokens: 128_000, supportsThinking: true, pricing: { input: 0.7, output: 2.1, cacheRead: 0.35, cacheWrite: 0 } },
-  "glm-5-turbo": { contextWindow: 200_000, maxOutputTokens: 128_000, supportsThinking: true, pricing: { input: 0.42, output: 1.26, cacheRead: 0.21, cacheWrite: 0 } },
-  "glm-4.7": { contextWindow: 200_000, maxOutputTokens: 128_000, supportsThinking: true, pricing: { input: 0.28, output: 0.84, cacheRead: 0.14, cacheWrite: 0 } },
-  "glm-4.7-flashx": { contextWindow: 200_000, maxOutputTokens: 128_000, supportsThinking: true },
-  "glm-4.7-flash": { contextWindow: 200_000, maxOutputTokens: 128_000, supportsThinking: true, pricing: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } },
-  "glm-4.6": { contextWindow: 200_000, maxOutputTokens: 128_000, supportsThinking: true },
-  "glm-4.5": { contextWindow: 128_000, maxOutputTokens: 96_000, supportsThinking: true },
-  "glm-4.5-air": { contextWindow: 128_000, maxOutputTokens: 96_000, supportsThinking: true },
-  "glm-4.5-flash": { contextWindow: 128_000, maxOutputTokens: 96_000, supportsThinking: true },
+  // 智谱 GLM（OpenAI 兼容端点）。protocolKind=glm-openai：有 thinking 开关；仅 GLM-5.2 支持
+  // reasoning_effort（含 max）。tool_choice 仅 auto（openai.ts applyToolChoice 对 glm 降级）。
+  // [来源: glm-api.md:144-147,189-201,276]
+  "glm-5.2": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: true, protocolKind: "glm-openai", reasoningEffortValues: ["low", "medium", "high", "max"], pricing: { input: 1.4, output: 4.2, cacheRead: 0.7, cacheWrite: 0 } },
+  "glm-5.1": { contextWindow: 200_000, maxOutputTokens: 128_000, supportsThinking: true, protocolKind: "glm-openai", pricing: { input: 0.7, output: 2.1, cacheRead: 0.35, cacheWrite: 0 } },
+  "glm-5": { contextWindow: 200_000, maxOutputTokens: 128_000, supportsThinking: true, protocolKind: "glm-openai", pricing: { input: 0.7, output: 2.1, cacheRead: 0.35, cacheWrite: 0 } },
+  "glm-5-turbo": { contextWindow: 200_000, maxOutputTokens: 128_000, supportsThinking: true, protocolKind: "glm-openai", pricing: { input: 0.42, output: 1.26, cacheRead: 0.21, cacheWrite: 0 } },
+  "glm-4.7": { contextWindow: 200_000, maxOutputTokens: 128_000, supportsThinking: true, protocolKind: "glm-openai", pricing: { input: 0.28, output: 0.84, cacheRead: 0.14, cacheWrite: 0 } },
+  "glm-4.7-flashx": { contextWindow: 200_000, maxOutputTokens: 128_000, supportsThinking: true, protocolKind: "glm-openai" },
+  "glm-4.7-flash": { contextWindow: 200_000, maxOutputTokens: 128_000, supportsThinking: true, protocolKind: "glm-openai", pricing: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } },
+  "glm-4.6": { contextWindow: 200_000, maxOutputTokens: 128_000, supportsThinking: true, protocolKind: "glm-openai" },
+  "glm-4.5": { contextWindow: 128_000, maxOutputTokens: 96_000, supportsThinking: true, protocolKind: "glm-openai" },
+  "glm-4.5-air": { contextWindow: 128_000, maxOutputTokens: 96_000, supportsThinking: true, protocolKind: "glm-openai" },
+  "glm-4.5-flash": { contextWindow: 128_000, maxOutputTokens: 96_000, supportsThinking: true, protocolKind: "glm-openai" },
   "glm-4-flash-250414": { contextWindow: 128_000, maxOutputTokens: 32_000, supportsThinking: false },
 
   // ══════════════════════════════════════════════════════════════════
   // xAI Grok
   // ══════════════════════════════════════════════════════════════════
-  "grok-4.3": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: true, maxTokensField: "max_completion_tokens", reasoningEffortValues: ["low", "medium", "high"], pricing: { input: 1.25, output: 2.5, cacheRead: 0.2, cacheWrite: 0 } },
-  "grok-build-0.1": { contextWindow: 262_144, maxOutputTokens: 128_000, supportsThinking: true, maxTokensField: "max_completion_tokens", reasoningEffortValues: ["low", "medium", "high"], pricing: { input: 1, output: 2, cacheRead: 0.2, cacheWrite: 0 } },
-  "grok-4.20-0309-reasoning": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: true, maxTokensField: "max_completion_tokens", reasoningEffortValues: ["low", "medium", "high"], pricing: { input: 1.25, output: 2.5, cacheRead: 0.2, cacheWrite: 0 } },
+  // xAI Grok（OpenAI 兼容端点）。protocolKind=grok-openai：无 thinking 开关；reasoning_effort
+  // 无 max（max→high）；推理模型用 max_completion_tokens。[来源: grok-api.md:30,32,157,277,487]
+  "grok-4.3": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: true, protocolKind: "grok-openai", maxTokensField: "max_completion_tokens", reasoningEffortValues: ["low", "medium", "high"], pricing: { input: 1.25, output: 2.5, cacheRead: 0.2, cacheWrite: 0 } },
+  "grok-build-0.1": { contextWindow: 262_144, maxOutputTokens: 128_000, supportsThinking: true, protocolKind: "grok-openai", maxTokensField: "max_completion_tokens", reasoningEffortValues: ["low", "medium", "high"], pricing: { input: 1, output: 2, cacheRead: 0.2, cacheWrite: 0 } },
+  "grok-4.20-0309-reasoning": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: true, protocolKind: "grok-openai", maxTokensField: "max_completion_tokens", reasoningEffortValues: ["low", "medium", "high"], pricing: { input: 1.25, output: 2.5, cacheRead: 0.2, cacheWrite: 0 } },
   "grok-4.20-0309-non-reasoning": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: false, pricing: { input: 1.25, output: 2.5, cacheRead: 0.2, cacheWrite: 0 } },
 
   // ══════════════════════════════════════════════════════════════════

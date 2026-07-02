@@ -394,7 +394,8 @@ export function classifyError(error: unknown): TerminalError | RetryableError | 
     const retryAfter = parseRetryAfter(error);
     return new RetryableError(msg, "rate_limit", retryAfter);
   }
-  if (lowerMsg.includes("overloaded") || lowerMsg.includes("529") || lowerMsg.includes("503")) {
+  if (lowerMsg.includes("overloaded") || lowerMsg.includes("529") || lowerMsg.includes("503") ||
+      lowerMsg.includes("insufficient_system_resource")) {
     const retryAfter = parseRetryAfter(error);
     return new RetryableError(msg, "overloaded", retryAfter);
   }

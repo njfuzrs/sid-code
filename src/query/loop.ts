@@ -23,6 +23,7 @@ import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { resolveToolSearchEnabled } from "../tool/tool-search-auto.ts";
 import { TOKEN_THRESHOLDS } from "../context/auto-compact.ts";
 import { ModelFallback } from "../llm/fallback.ts";
+import { setSseDumpContext } from "../llm/sse-chunk-dumper.ts";
 import { SessionState } from "../session/state.ts";
 import { getLogger, getSessionMetrics, getPerfTimer } from "../debug/index.ts";
 import { LoopDetector, LOOP_RECOVERY_PROMPT, LOOP_RECOVERY_FINAL_PROMPT } from "../agent/loop-detection.ts";
@@ -696,6 +697,9 @@ export async function* queryLoop(
     } catch { /* 快照失败绝不影响主循环 */ }
 
     try {
+      // 5.2：登记当前会话 id + 轮次，供 provider 的 SSE 逐 chunk 采样落盘定位
+      //（默认关闭，SID_CODE_DEBUG_SSE_DUMP=1 才真正落盘）。
+      setSseDumpContext(sessionState.sessionId, state.turnCount);
       stream = deps.sendWithRetry(sendParams, signal);
     } catch (err: any) {
       // prompt-too-long 错误扣留：自动触发响应式压缩重试

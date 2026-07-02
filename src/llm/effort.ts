@@ -84,6 +84,8 @@ type CapabilityKind =
   | "deepseek-anthropic"
   | "anthropic-native"
   | "o-series"
+  | "glm-openai"
+  | "grok-openai"
   | "unknown";
 
 // ─────────────────────────────────────────────────────────────
@@ -148,11 +150,40 @@ function applyNoop(_params: SendParams, _effort: EffortSetting, _thinking: boole
   /* no-op */
 }
 
+/**
+ * 规则 6：智谱 GLM（OpenAI 兼容端点）。
+ * - thinking → params.thinking（openai.ts 转请求体顶层 `thinking:{type:enabled/disabled}`，GLM-4.5+）。
+ * - effort   → params.reasoningEffort（仅 GLM-5.2 生效；GLM 内部钳制：low/medium→high，max→max）。
+ *   GLM 支持 max，故 supportsMaxEffort=true，直接透传统一档位由 GLM 服务端按上表收敛。
+ *   [来源: glm-api.md:144-147,189-201]
+ */
+function applyGLMOpenAI(params: SendParams, effort: EffortSetting, thinking: boolean): void {
+  params.thinking = { enabled: thinking, budgetTokens: 0 };
+  // 思考关闭时不下发 effort（与 DeepSeek 一致，避免与 disabled 冲突）。
+  if (thinking && effort !== undefined) {
+    params.reasoningEffort = effort;
+  }
+}
+
+/**
+ * 规则 7：xAI Grok（OpenAI 兼容端点，推理模型 grok-4.3 / grok-4.20 / grok-build）。
+ * - 无显式思考开关（配置化推理，内置），thinking no-op。
+ * - effort → reasoning_effort（none/low/medium/high，**无 max**：max→high）。
+ *   openai.ts 需对 grok 透传 reasoning_effort。[来源: grok-api.md:30,157,277,487]
+ */
+function applyGrokOpenAI(params: SendParams, effort: EffortSetting, _thinking: boolean): void {
+  if (effort !== undefined) {
+    params.reasoningEffort = effort === "max" ? "high" : effort;
+  }
+}
+
 const APPLIERS: Record<CapabilityKind, EffortCapability["applyToSendParams"]> = {
   "deepseek-openai": applyDeepSeekOpenAI,
   "deepseek-anthropic": applyDeepSeekAnthropic,
   "anthropic-native": applyAnthropicNative,
   "o-series": applyOSeries,
+  "glm-openai": applyGLMOpenAI,
+  "grok-openai": applyGrokOpenAI,
   unknown: applyNoop,
 };
 
@@ -188,6 +219,25 @@ const CAPABILITY_FLAGS: Record<
     supportsThinkingToggle: false,
     thinkingDefaultOn: true,
     defaultEffort: "medium",
+  },
+  "glm-openai": {
+    // GLM-4.5+ 有显式思考开关，GLM-5.2 支持 reasoning_effort（含 max）。
+    // 注：effort 仅 GLM-5.2 生效，其余 GLM 无 reasoning_effort 粒度——但下发对它们无害
+    // （非 5.2 会忽略该字段），故统一声明 supportsEffort=true。[来源: glm-api.md:144-147,189]
+    supportsEffort: true,
+    supportsMaxEffort: true,
+    supportsThinkingToggle: true,
+    thinkingDefaultOn: true,
+    defaultEffort: "high",
+  },
+  "grok-openai": {
+    // Grok 推理模型配置化推理，无显式思考开关；reasoning_effort 无 max（max→high）。
+    // grok-4.3 默认 low。[来源: grok-api.md:30,277]
+    supportsEffort: true,
+    supportsMaxEffort: false,
+    supportsThinkingToggle: false,
+    thinkingDefaultOn: true,
+    defaultEffort: "low",
   },
   unknown: {
     supportsEffort: false,
@@ -236,6 +286,14 @@ function classifyCapability(opts: {
   // OpenAI o-series（o1 / o3 / o4 …）。
   if (/^o[0-9]/i.test(model)) {
     return "o-series";
+  }
+  // 智谱 GLM（OpenAI 兼容端点）。
+  if (/^glm/i.test(model)) {
+    return "glm-openai";
+  }
+  // xAI Grok（OpenAI 兼容端点）。
+  if (/grok/i.test(model)) {
+    return "grok-openai";
   }
   return "unknown";
 }
