@@ -204,4 +204,47 @@ describe("ripGrep", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 30000); // 30s 超时
+
+  test("无效 flag（exit code 2）不应误报为超时", async () => {
+    // 这个测试覆盖 Bun child.killed 语义差异的 bug：
+    // rg 遇到无效 flag 立即退出（exit 2），但旧代码用 child.killed 判断超时，
+    // 在 Bun 中 child.killed 恒为 true → 误报 RipgrepTimeoutError
+    const dir = createTempDir();
+    try {
+      createFile(dir, "test.css", `:root { --node-entity-bg: #fff; }\n`);
+      const controller = new AbortController();
+
+      // 传入一个会被 rg 当作无效 flag 的 pattern（不带 -- 分隔符）
+      try {
+        await ripGrep(["--files-with-matches", "--node-entity-bg"], dir, controller.signal);
+        // 不应到达这里
+        throw new Error("应该抛出错误但没有");
+      } catch (err: unknown) {
+        // 关键断言：不应该是 RipgrepTimeoutError
+        expect(err).not.toBeInstanceOf(RipgrepTimeoutError);
+        // 应该是普通 Error，包含退出码信息
+        expect(err).toBeInstanceOf(Error);
+        expect((err as Error).message).toContain("ripgrep 退出码");
+        expect((err as Error).message).toContain("unrecognized");
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("使用 -- 分隔符可以搜索以 - 开头的 pattern", async () => {
+    const dir = createTempDir();
+    try {
+      createFile(dir, "vars.css", `:root {\n  --node-entity-bg: #f0f0f0;\n  --node-attr-stroke: #333;\n}\n`);
+      const controller = new AbortController();
+
+      // 用 -- 分隔符，rg 不会把 --node-entity-bg 当 flag
+      const lines = await ripGrep(["--files-with-matches", "--", "--node-entity-bg"], dir, controller.signal);
+
+      expect(lines.length).toBe(1);
+      expect(lines[0]).toContain("vars.css");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

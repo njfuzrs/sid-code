@@ -3,21 +3,39 @@
  * 对标 claude-code/src/utils/ripgrep.ts，提供健壮的 rg 调用封装。
  *
  * 核心能力：
- * - 超时控制（20s macOS/Linux）→ SIGTERM → 5s → SIGKILL 两级终止
+ * - 超时控制（默认 20s，WSL 60s，可通过 SID_GREP_TIMEOUT_SECONDS 环境变量配置）
+ * - 两级终止：SIGTERM → 5s → SIGKILL
  * - EAGAIN 自动重试（单线程 -j 1）
  * - 超时时返回部分结果（丢弃可能不完整的最后一行）
  * - 退出码 1 = 无匹配（正常返回 []，不是 error）
  * - 关键错误（ENOENT/EACCES/EPERM）直接 reject
  * - MAX_BUFFER = 20MB
+ * - 缓冲区溢出时返回部分结果
  */
 
 import { spawn } from "bun";
+import { platform } from "node:os";
 
 /** stdout 最大缓冲区大小（与 claude-code 一致） */
 const MAX_BUFFER_SIZE = 20_000_000; // 20MB
 
-/** 默认超时（毫秒） */
-const DEFAULT_TIMEOUT_MS = 20_000;
+/**
+ * 超时配置（毫秒）
+ * - 优先读取环境变量 SID_GREP_TIMEOUT_SECONDS（秒）
+ * - WSL 环境性能较差，默认 60s
+ * - 其他平台默认 20s
+ */
+function getTimeoutMs(): number {
+  const envSeconds = parseInt(process.env.SID_GREP_TIMEOUT_SECONDS || "", 10) || 0;
+  if (envSeconds > 0) return envSeconds * 1000;
+
+  // WSL 文件 I/O 比原生慢 3-5x
+  const isWsl = platform() === "linux" && (
+    process.env.WSL_DISTRO_NAME !== undefined ||
+    process.env.WSLENV !== undefined
+  );
+  return isWsl ? 60_000 : 20_000;
+}
 
 /** 超时错误 */
 export class RipgrepTimeoutError extends Error {
@@ -122,17 +140,22 @@ async function ripGrepInternal(
   const { promise, cleanup } = collectOutput(child);
 
   // 超时控制：两级终止（SIGTERM → 5s → SIGKILL）
+  // 注意：Bun 的 child.killed 在进程退出后恒为 true（与 Node.js 语义不同），
+  // 因此必须用显式 flag 判断是否真正超时，不能依赖 child.killed。
+  const timeoutMs = getTimeoutMs();
+  let timedOut = false;
   let killTimeoutId: ReturnType<typeof setTimeout> | undefined;
   const timeoutId = setTimeout(() => {
+    timedOut = true;
     child.kill("SIGTERM");
     killTimeoutId = setTimeout(() => {
       child.kill("SIGKILL");
     }, 5_000);
-  }, DEFAULT_TIMEOUT_MS);
+  }, timeoutMs);
 
   try {
     const exitCode = await child.exited;
-    const { stdout, stderr } = await promise;
+    const { stdout, stderr, truncatedStdout } = await promise;
 
     cleanup();
     clearTimeout(timeoutId);
@@ -146,15 +169,29 @@ async function ripGrepInternal(
         .split("\n")
         .map((line) => line.replace(/\r$/, ""))
         .filter(Boolean);
+
+      // 缓冲区溢出时丢弃最后一行（可能不完整）
+      if (truncatedStdout && lines.length > 0) {
+        lines.pop();
+      }
+
       return lines;
     }
 
-    // EAGAIN 重试
+    // 关键错误：直接抛出
+    const CRITICAL_ERROR_CODES = ["ENOENT", "EACCES", "EPERM"];
+    for (const code of CRITICAL_ERROR_CODES) {
+      if (stderr.includes(code)) {
+        throw new Error(`ripgrep 关键错误 (${code}): ${stderr.trim()}`);
+      }
+    }
+
+    // EAGAIN 重试（仅限首次）
     if (!isRetry && isEagainError(stderr)) {
       return ripGrepInternal(args, target, abortSignal, true);
     }
 
-    // 其他错误
+    // 其他错误（如 exit code 2: 无效参数/flag）
     throw new Error(
       `ripgrep 退出码 ${exitCode}${stderr ? `: ${stderr.trim()}` : ""}`,
     );
@@ -170,11 +207,10 @@ async function ripGrepInternal(
       return [];
     }
 
-    // 检查子进程是否被超时杀死
-    const { stdout } = await promise; // 此时已终止，promise 应已 resolve
+    // 只有真正超时才走超时路径（用显式 timedOut flag，不依赖 Bun 的 child.killed）
+    if (timedOut) {
+      const { stdout } = await promise; // 此时已终止，promise 应已 resolve
 
-    const isKilled = child.killed;
-    if (isKilled) {
       let lines = stdout
         .trim()
         .split("\n")
@@ -191,23 +227,39 @@ async function ripGrepInternal(
       }
 
       throw new RipgrepTimeoutError(
-        `ripgrep 搜索超时（${DEFAULT_TIMEOUT_MS / 1000}秒）。请尝试缩小搜索范围（指定更具体的 path 或 pattern）。`,
+        `ripgrep 搜索超时（${timeoutMs / 1000}秒）。请尝试缩小搜索范围（指定更具体的 path 或 pattern）。`,
         lines,
       );
     }
 
+    // 非超时错误（如 exit code 2: unrecognized flag）→ 直接抛出原始错误
     throw err;
   }
 }
 
 /**
- * 执行 ripgrep 搜索，返回结果行列表。
+ * 检查系统是否安装了 ripgrep
+ */
+export async function hasRipgrep(): Promise<boolean> {
+  try {
+    const child = spawn(["rg", "--version"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const exitCode = await child.exited;
+    return exitCode === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 主入口：执行 ripgrep 搜索
  *
- * @param args - rg 命令行参数（不含 "rg" 本身和 target）
- * @param target - 搜索目标路径
- * @param abortSignal - 中止信号
- * @returns 匹配行列表，无匹配时返回空数组
- * @throws {RipgrepTimeoutError} 超时且无任何结果
+ * @param args ripgrep 参数（不含 target 路径）
+ * @param target 搜索路径
+ * @param abortSignal 中止信号
+ * @returns 匹配行数组
  */
 export async function ripGrep(
   args: string[],
@@ -215,26 +267,4 @@ export async function ripGrep(
   abortSignal: AbortSignal,
 ): Promise<string[]> {
   return ripGrepInternal(args, target, abortSignal, false);
-}
-
-/**
- * 检查系统是否安装了 ripgrep
- */
-let _hasRipgrep: boolean | null = null;
-
-export async function hasRipgrep(): Promise<boolean> {
-  if (_hasRipgrep !== null) return _hasRipgrep;
-
-  try {
-    const child = spawn(["rg", "--version"], {
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const exitCode = await child.exited;
-    _hasRipgrep = exitCode === 0;
-    return _hasRipgrep;
-  } catch {
-    _hasRipgrep = false;
-    return false;
-  }
 }

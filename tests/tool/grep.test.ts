@@ -297,7 +297,10 @@ describe("GrepTool", () => {
     expect(parsed).toHaveProperty("content");
     expect(parsed).toHaveProperty("numLines");
     expect(parsed).toHaveProperty("numMatches");
-    expect(parsed).toHaveProperty("appliedOffset");
+    // appliedOffset 只在 offset > 0 时输出；appliedLimit 只在真正截断时输出
+    // 此处 offset=0 且结果未超限，故两者不应出现
+    expect(parsed).not.toHaveProperty("appliedOffset");
+    expect(parsed).not.toHaveProperty("appliedLimit");
   });
 
   test("name/description/usageGuide/inputSchema 方法", () => {
@@ -312,5 +315,78 @@ describe("GrepTool", () => {
     expect(schema.properties).toHaveProperty("head_limit");
     expect(schema.properties).toHaveProperty("offset");
     expect(schema.properties).not.toHaveProperty("exclude_pattern"); // 已移除
+  });
+
+  test("以 -- 开头的 pattern（如 CSS 变量）能正常搜索", async () => {
+    // 这个测试覆盖 Bug #2：pattern 以 -- 开头时被 rg 当作 flag 解析
+    // 修复前：rg 报 "unrecognized flag"，然后被误报为超时
+    // 修复后：grep.ts 在 pattern 前加 "--" 分隔符，rg 正确搜索
+    createFile("theme.css", `:root {\n  --node-entity-bg: #f0f0f0;\n  --node-attr-stroke: blue;\n}\n`);
+
+    const tool = new GrepTool();
+    const result = await tool.execute({
+      pattern: "--node-entity-bg",
+      path: tempDir,
+      output_mode: "content",
+    });
+
+    expect(result.isError).toBeFalsy();
+    const parsed = parseOutput(result.output);
+    expect(parsed.numMatches).toBe(1);
+    expect(parsed.content).toContain("--node-entity-bg");
+  });
+
+  test("以单 - 开头的 pattern 能正常搜索", async () => {
+    createFile("config.yml", `server:\n  -port: 8080\n  -host: localhost\n`);
+
+    const tool = new GrepTool();
+    const result = await tool.execute({
+      pattern: "-port",
+      path: tempDir,
+      output_mode: "content",
+    });
+
+    expect(result.isError).toBeFalsy();
+    const parsed = parseOutput(result.output);
+    expect(parsed.numMatches).toBe(1);
+    expect(parsed.content).toContain("-port");
+  });
+
+  test("以 -- 开头的 pattern 配合 fixed_strings 也能工作", async () => {
+    createFile("vars.css", `.node { color: var(--node-entity-bg); }\n`);
+
+    const tool = new GrepTool();
+    const result = await tool.execute({
+      pattern: "--node-entity-bg",
+      path: tempDir,
+      output_mode: "files_with_matches",
+      fixed_strings: true,
+    });
+
+    expect(result.isError).toBeFalsy();
+    const parsed = parseOutput(result.output);
+    expect(parsed.numFiles).toBe(1);
+    expect(parsed.filenames).toContain("vars.css");
+  });
+
+  test("rg 退出码非 0/1 时返回搜索失败（非超时）", async () => {
+    // 测试当 rg 因非法参数退出时，错误信息应该是"搜索失败"而非"超时"
+    // 注意：由于我们已经加了 -- 分隔符，正常流程不会触发此 bug。
+    // 但如果未来有其他原因导致 rg exit 2，确保不会误报超时。
+    const tool = new GrepTool();
+
+    // 用无效的 type 参数触发 rg 错误（type 值不存在）
+    const result = await tool.execute({
+      pattern: "hello",
+      path: tempDir,
+      type: "nonexistent_type_xyz_99",
+    });
+
+    // 应该返回错误但不是超时错误
+    if (result.isError) {
+      expect(result.output).toContain("搜索失败");
+      expect(result.output).not.toContain("搜索超时");
+    }
+    // 如果 rg 不报错只是返回空结果也 OK
   });
 });
