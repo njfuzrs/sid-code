@@ -19,6 +19,8 @@
 import type { Provider } from "./provider.ts";
 import type { SendParams, StreamEvent } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
+import { emitTimeoutFired } from "../trace/stream-observer.ts";
+import { currentSseDumpContext } from "./sse-chunk-dumper.ts";
 import {
   classifyError,
   TerminalError,

@@ -34,6 +34,13 @@ import { estimateTextTokens } from "../context/token.ts";
 import type { Message } from "../llm/types.ts";
 import { checkMessageHistoryIntegrity } from "../agent/message-invariants.ts";
 import { resetSideCallStats, getSideStats } from "./side-call-sink.ts";
+import {
+  initStreamObserver,
+  resetStreamObserver,
+  getStreamSnapshot,
+  getActiveStreamSnapshots,
+  clearStreamSnapshot,
+} from "./stream-observer.ts";
 
 // ─── 最小化上传器接口（避免循环依赖，Task 8 实现后注入） ───
 
@@ -386,14 +393,37 @@ export class TraceCollector {
     }
 
     // 启动心跳：每 10 秒写 heartbeat.txt（用于下次启动诊断 session hang）
+    // 缺口 5 增强：增加 event_loop_lag_ms + active_request 快照，区分"正常等待"vs"异常 hang"
     this.heartbeatPath = join(this.writer.getSessionDir(), "heartbeat.txt");
     this.heartbeatTimer = setInterval(() => {
       try {
-        const content = JSON.stringify({
-          ts: new Date().toISOString(),
-          session_id: traceSessionId,
-        });
-        writeFileSync(this.heartbeatPath, content);
+        const lagStart = performance.now();
+        setTimeout(() => {
+          try {
+            const lagMs = Math.round(performance.now() - lagStart);
+            // 从 stream-observer 获取活跃请求快照
+            const activeSnapshots = getActiveStreamSnapshots();
+            const activeRequest = activeSnapshots.length > 0
+              ? {
+                  index: activeSnapshots[0].index,
+                  model: activeSnapshots[0].model,
+                  phase: activeSnapshots[0].phase,
+                  elapsed_ms: Date.now() - activeSnapshots[0].startedAt,
+                  last_progress_ms: Date.now() - activeSnapshots[0].lastContentProgressAt,
+                  chunks: activeSnapshots[0].chunksReceived,
+                  empty_chunks: activeSnapshots[0].emptyChunks,
+                  timeouts_fired: activeSnapshots[0].timeoutsFired,
+                }
+              : null;
+            const content = JSON.stringify({
+              ts: new Date().toISOString(),
+              session_id: traceSessionId,
+              event_loop_lag_ms: lagMs,
+              active_request: activeRequest,
+            });
+            writeFileSync(this.heartbeatPath, content);
+          } catch { /* 心跳失败静默 */ }
+        }, 0);
       } catch { /* 心跳失败静默 */ }
     }, 10_000);
     // unref 确保心跳定时器不阻止进程退出
@@ -412,6 +442,13 @@ export class TraceCollector {
         ...(isResume ? { resumed_from: input.resumed_from, process_session_id: input.session_id } : {}),
       },
     });
+
+    // 缺口 1/2/3：初始化流状态观测器（注入 session_id 和事件写入器）
+    initStreamObserver(
+      traceSessionId,
+      this.writer.getSessionDir(),
+      (event) => { try { this.writer.appendEvent(event); } catch { /* 静默 */ } },
+    );
 
     // §3.8：快照 audit.log 起始行号（用于 SessionEnd 写 audit_range.json）
     try {
@@ -540,6 +577,21 @@ export class TraceCollector {
     // §3.4：启动配对看门狗——超时未收到 AfterModel/AfterModelRaw/TurnError 则写入 ModelCallUnpaired
     const pairingTimer = setTimeout(() => {
       try {
+        // 缺口 3：从 stream-observer 获取流状态快照，附加到 ModelCallUnpaired 事件
+        const snapshot = getStreamSnapshot(index);
+        const streamDiag = snapshot ? {
+          last_known_phase: snapshot.phase,
+          http_status_received: snapshot.httpStatusReceived,
+          http_status: snapshot.httpStatus,
+          chunks_received: snapshot.chunksReceived,
+          empty_chunks: snapshot.emptyChunks,
+          last_content_progress_ms: snapshot.lastContentProgressAt
+            ? Date.now() - snapshot.lastContentProgressAt
+            : null,
+          timeouts_fired: snapshot.timeoutsFired,
+          abort_signal_aborted: snapshot.abortSignalAborted,
+        } : null;
+
         this.writer.appendEvent({
           event: "ModelCallUnpaired",
           session_id: this.metadata.session_id,
@@ -549,6 +601,7 @@ export class TraceCollector {
             model: req.model,
             elapsed_ms: this.PAIRING_TIMEOUT_MS,
             hint: "BeforeModel 发出后超时未收到 AfterModel/AfterModelRaw/TurnError，可能：1)请求hang 2)处理崩溃但未被catch",
+            stream_snapshot: streamDiag,
           },
         });
       } catch { /* 看门狗写入失败静默 */ }
@@ -573,6 +626,8 @@ export class TraceCollector {
       clearTimeout(pairingTimer);
       this.pendingModelCalls.delete(pairIndex);
     }
+    // 缺口 3：清除流状态快照（正常完成，不再需要诊断数据）
+    clearStreamSnapshot(pairIndex);
 
     const resp = input.llm_response;
     const usage = resp.usage ?? {};
@@ -1062,6 +1117,9 @@ export class TraceCollector {
         unlinkSync(this.heartbeatPath);
       }
     } catch { /* 清理失败静默 */ }
+
+    // 缺口 1/2/3：重置流状态观测器
+    resetStreamObserver();
 
     // §3.8：写 audit_range.json（audit.log 按 session 索引）
     if (this.auditLogPath && this.auditLogStartLine > 0) {

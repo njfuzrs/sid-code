@@ -133,7 +133,7 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
   // 推理强度档位（effort）。替代原 CWD 列：目录信息在标题栏已有，状态栏改露更高频切换的旋钮。
   // null = 当前模型不支持档位切换，不渲染该列。
   if (data.effort) {
-    const effortLabel = `${data.effort.glyph} ${data.effort.text}`;
+    const effortLabel = data.effort.text;
     addCol("effort", "强度", <Text color={data.effort.color}>{effortLabel}</Text>, stringWidth(effortLabel));
   }
 

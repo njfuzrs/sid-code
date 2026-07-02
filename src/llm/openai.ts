@@ -18,6 +18,7 @@ import type {
   ContentBlock,
 } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
+import { emitStreamPhase, emitTimeoutFired, updateStreamStats, emitStreamStall } from "../trace/stream-observer.ts";
 import { guardOutgoingMessages } from "./protocol-sentinel.ts";
 import { filterParamsForModel } from "./model-capability-filter.ts";
 import { lookupCatalog } from "./model-params-catalog.ts";
@@ -568,12 +569,16 @@ export class OpenAIProvider implements Provider {
       const headerTimeoutMs = OpenAIProvider.resolveHeaderTimeoutMs(this._model);
       const headerTimeoutCtl = new AbortController();
       let headerTimedOut = false;
+      // 获取当前 turn index 用于可观测性事件
+      const obsIndex = currentSseDumpContext().turnIndex;
       let headerTimeoutId: ReturnType<typeof setTimeout> | null = setTimeout(() => {
         headerTimedOut = true;
         log.warn(
           "LLM:OPENAI",
           `响应头超时 ${headerTimeoutMs / 1000}s 未收到响应头，主动中断 fetch（model=${this._model}）`,
         );
+        // 缺口 2：记录响应头超时触发
+        emitTimeoutFired(obsIndex, "header_timeout", { threshold_ms: headerTimeoutMs, model: effectiveModel });
         headerTimeoutCtl.abort();
       }, headerTimeoutMs);
       // 注意：不调 unref()。fdb47f30 的教训正是 fallback 的整体超时定时器 unref 后
@@ -583,6 +588,8 @@ export class OpenAIProvider implements Provider {
         : headerTimeoutCtl.signal;
 
       let response: Response;
+      // 缺口 1：记录 fetch 发出阶段
+      emitStreamPhase(obsIndex, "fetch_sent", { model: effectiveModel });
       try {
         response = await fetch(`${this.baseURL}/chat/completions`, {
           method: "POST",
@@ -616,6 +623,8 @@ export class OpenAIProvider implements Provider {
       if (!response.ok) {
         const error = await response.text();
         log.error("LLM:OPENAI", `API 错误: ${response.status}`, error);
+        // 缺口 1：HTTP 错误也记录阶段（含状态码）
+        emitStreamPhase(obsIndex, "error", { http_status: response.status, model: effectiveModel });
         // 接入审计日志(WARN 级,fileOnly 不刷屏):API 层错误是排查会话异常的关键信号,
         // 原先只进 LLM:OPENAI 普通日志,audit.log 拿不到 HTTP 码 → 异常时定位慢。
         getLogger().warn(
@@ -630,6 +639,13 @@ export class OpenAIProvider implements Provider {
       }
 
       log.debug("LLM:OPENAI", `开始接收 SSE 流`);
+      // 缺口 1/6：记录 headers_received 阶段（含 HTTP 状态码和 TTFB）
+      const ttfbMs = Date.now() - requestStartTime;
+      emitStreamPhase(obsIndex, "headers_received", {
+        http_status: response.status,
+        ttfb_ms: ttfbMs,
+        model: effectiveModel,
+      });
 
       // 解析 SSE 流
       let accumulatedUsage: Usage = { inputTokens: 0, outputTokens: 0 };
@@ -638,6 +654,8 @@ export class OpenAIProvider implements Provider {
       for await (const event of this.parseSSE(response.body!, signal)) {
         // Fix 1 纵深防御：每次事件到达后检查 signal（覆盖 parseSSE 内 race 的盲区）
         if (signal?.aborted) {
+          // 缺口 1：用户中断记录 aborted 阶段
+          emitStreamPhase(obsIndex, "aborted", { reason: "signal_aborted", model: effectiveModel });
           throw new Error("Request aborted");
         }
         // 记录首 token 延迟（TTFT）
@@ -902,6 +920,8 @@ export class OpenAIProvider implements Provider {
     // 用于排查"思考走哪个字段、哪个 chunk 从 reasoning_content 切到 content"。
     const dumpCtx = currentSseDumpContext();
     const chunkDumper = new SseChunkDumper(dumpCtx.sessionId, dumpCtx.turnIndex, requestStartAt);
+    // 缺口 1：parseSSE 内的 turn index（用于 StreamPhase/TimeoutFired/StreamStall 事件）
+    const parseObsIndex = dumpCtx.turnIndex;
 
     /** 流式空闲超时（默认启用，不再依赖环境变量开关）
      *  仅 1 级 idle timeout：N 秒内 reader 无任何 chunk → 断开
@@ -922,10 +942,22 @@ export class OpenAIProvider implements Provider {
 
     /** 30s stall 日志（只记不杀，对齐 claude-code，给弱模型喘息空间） */
     const STALL_LOG_MS = 30_000;
+    let stallEmitted = false; // 缺口 1：每次流只发一次 StreamStall 事件（避免 events.jsonl 膨胀）
     const stallLogger = setInterval(() => {
       const elapsed = Date.now() - lastContentProgressAt;
       if (elapsed >= STALL_LOG_MS) {
         dbg(`stall: ${(elapsed / 1000).toFixed(0)}s 无内容进展 chunks=${totalChunks} empty=${emptyChunks}`);
+        // 缺口 1：每 60s 记录一次 StreamStall 事件（首次 30s 触发后不重复）
+        if (!stallEmitted) {
+          stallEmitted = true;
+          emitStreamStall(parseObsIndex, {
+            no_content_progress_ms: elapsed,
+            total_chunks: totalChunks,
+            empty_chunks: emptyChunks,
+          });
+        }
+        // 更新快照统计
+        updateStreamStats(parseObsIndex, { chunksReceived: totalChunks, emptyChunks, lastContentProgressAt });
       }
     }, STALL_LOG_MS);
 
@@ -939,6 +971,8 @@ export class OpenAIProvider implements Provider {
     }) : null;
 
     try {
+      // 缺口 1：记录进入 SSE 消费阶段
+      emitStreamPhase(parseObsIndex, "sse_consuming", { model: this._model });
       while (true) {
         // 前置检查：循环顶部快速判断（方案 B 补充，覆盖 reader.read() settle 后的盲区）
         if (signal?.aborted) {
@@ -957,6 +991,13 @@ export class OpenAIProvider implements Provider {
               "SSE",
               `空闲超时 ${IDLE_TIMEOUT_MS / 1000}s 无 chunk（chunks=${totalChunks} empty=${emptyChunks}），中断流`,
             );
+            // 缺口 2：记录 idle 超时触发
+            emitTimeoutFired(parseObsIndex, "idle_timeout", {
+              threshold_ms: IDLE_TIMEOUT_MS,
+              chunks: totalChunks,
+              empty_chunks: emptyChunks,
+              model: this._model,
+            });
             reject(new Error(`SSE 流空闲超时：${IDLE_TIMEOUT_MS / 1000} 秒无 chunk chunks=${totalChunks} empty=${emptyChunks}`));
           }, IDLE_TIMEOUT_MS);
           // 超时后 cancel reader，释放底层 TCP 连接（+100ms 确保 reject 先传播）
@@ -987,6 +1028,14 @@ export class OpenAIProvider implements Provider {
           if (data === "[DONE]") {
             lastContentProgressAt = Date.now();
             dbg(`[DONE] received after ${Date.now() - requestStartAt}ms chunks=${totalChunks} empty=${emptyChunks}`);
+            // 缺口 1：记录流正常完成 + 更新最终统计
+            emitStreamPhase(parseObsIndex, "completed", {
+              chunks: totalChunks,
+              empty_chunks: emptyChunks,
+              duration_ms: Date.now() - requestStartAt,
+              model: this._model,
+            });
+            updateStreamStats(parseObsIndex, { chunksReceived: totalChunks, emptyChunks, lastContentProgressAt });
             // [DONE] 前 flush 延迟的 message_delta（此时 usage 已更新）
             if (pendingFinishReason) {
               yield {
@@ -1254,6 +1303,13 @@ export class OpenAIProvider implements Provider {
             "SSE",
             `内容进展超时 ${CONTENT_PROGRESS_TIMEOUT_MS / 1000}s 无有效内容（chunks=${totalChunks} empty=${emptyChunks}），中断流`,
           );
+          // 缺口 2：记录内容进展超时触发
+          emitTimeoutFired(parseObsIndex, "content_progress_timeout", {
+            threshold_ms: CONTENT_PROGRESS_TIMEOUT_MS,
+            chunks: totalChunks,
+            empty_chunks: emptyChunks,
+            model: this._model,
+          });
           reader.cancel().catch(() => {});
           throw new Error(`SSE 内容进展超时：${CONTENT_PROGRESS_TIMEOUT_MS / 1000}s 无有效内容`);
         }
