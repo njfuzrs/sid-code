@@ -92,6 +92,21 @@ export class AnthropicProvider implements Provider {
             content: block.content,
             is_error: block.is_error,
           };
+        } else if (block.type === "thinking") {
+          // 多轮回传 thinking 块（含 signature）—— 丢失/修改 → 400
+          // [来源: anthropic-api.md:358; tavily 确认]
+          return {
+            type: "thinking" as const,
+            thinking: block.thinking,
+            signature: block.signature,
+          };
+        } else if (block.type === "redacted_thinking") {
+          // 多轮回传 redacted_thinking 块 —— 必须原样回传以维持推理链
+          // [来源: anthropic-api.md:356-357]
+          return {
+            type: "redacted_thinking" as const,
+            data: (block as any).data,
+          };
         }
         throw new Error(`Unknown content block type: ${(block as any).type}`);
       }),
@@ -157,17 +172,11 @@ export class AnthropicProvider implements Provider {
         system: system as any,
         tools: tools as any,
         stream: true as const,
-        // Extended Thinking 支持
-        ...(params.thinking?.enabled && {
-          thinking: {
-            type: "enabled" as const,
-            budget_tokens: params.thinking.budgetTokens,
-          },
-        }),
-        // DeepSeek-via-Anthropic 端点：强度走 output_config.effort（budget_tokens 被服务端忽略）。
-        // 原生 Claude 不下发此字段（其强度走上面的 budget_tokens），effort.ts 仅对 deepseek-anthropic
-        // 规则填充 params.outputConfig，故这里按 params 是否含该字段透传即可。
-        ...(params.outputConfig && {
+        // Extended Thinking 支持：根据 outputConfig.thinkingType 分发 adaptive/manual
+        ...(params.thinking?.enabled && buildThinkingParam(params)),
+        // output_config.effort：adaptive 模型 + DeepSeek-via-Anthropic 端点均走此字段。
+        // adaptive 模型由 effort.ts 填充 params.outputConfig；DeepSeek-via-Anthropic 同理。
+        ...(params.outputConfig && !params.outputFormat && {
           output_config: { effort: params.outputConfig.effort },
         }),
         // P3-1: API 级结构化输出（output_config.format）— 独立于工具调用的 JSON 约束
@@ -335,8 +344,15 @@ export class AnthropicProvider implements Provider {
                   index: idx,
                   delta: { type: "text_delta", text: delta.thinking || "" },
                 };
+              } else if (delta.type === "signature_delta") {
+                // 多轮回传必需：把 signature 累积到对应 thinking block
+                // [来源: anthropic-messages-api.md:104-111; tavily 确认丢失 → 400]
+                const entry = contentBlocks[idx];
+                if (entry) {
+                  (entry as any)._signature = ((entry as any)._signature || "") + ((delta as any).signature || "");
+                }
               }
-              // 其他 delta 类型（signature_delta、citations_delta）静默忽略
+              // citations_delta 等非关键 delta 静默忽略
               break;
             }
 
@@ -355,6 +371,11 @@ export class AnthropicProvider implements Provider {
                   (entry.block as any).input = {}; // 兜底空对象，避免下游崩溃
                 }
                 delete entry._inputAccumulator;
+              }
+
+              // § 把累积的 signature 写入 thinking block（多轮回传必需）
+              if (entry && entry.block.type === "thinking" && (entry as any)._signature) {
+                (entry.block as any).signature = (entry as any)._signature;
               }
 
               yield {
@@ -458,6 +479,19 @@ export class AnthropicProvider implements Provider {
             content: block.content,
             is_error: block.is_error,
           };
+        } else if (block.type === "thinking") {
+          // 多轮回传 thinking 块（含 signature）
+          return {
+            type: "thinking" as const,
+            thinking: block.thinking,
+            signature: block.signature,
+          };
+        } else if (block.type === "redacted_thinking") {
+          // 多轮回传 redacted_thinking 块
+          return {
+            type: "redacted_thinking" as const,
+            data: (block as any).data,
+          };
         }
         throw new Error(`Unknown content block type: ${(block as any).type}`);
       }),
@@ -503,13 +537,8 @@ export class AnthropicProvider implements Provider {
         system: system as any,
         tools: tools as any,
         stream: false,
-        // 与流式路径一致：Extended Thinking + DeepSeek-via-Anthropic 端点的 output_config.effort。
-        ...(params.thinking?.enabled && {
-          thinking: {
-            type: "enabled",
-            budget_tokens: params.thinking.budgetTokens,
-          },
-        }),
+        // 与流式路径一致：Extended Thinking（adaptive/manual 双模式）
+        ...(params.thinking?.enabled && buildThinkingParam(params)),
         ...(params.outputConfig && {
           output_config: { effort: params.outputConfig.effort },
         }),
@@ -560,11 +589,14 @@ export class AnthropicProvider implements Provider {
         input: block.input || {},
       };
     } else if (block.type === "thinking") {
-      // SDK v0.78 Extended Thinking：保留结构化 ThinkingBlock 类型，
-      // 由 history-adapter 正确转为 ThinkingMessage 渲染（而非混入 AssistantMessage）。
-      return { type: "thinking", thinking: block.thinking || "" };
+      // SDK v0.78 Extended Thinking：保留结构化 ThinkingBlock 类型 + signature
+      return { type: "thinking", thinking: block.thinking || "", signature: block.signature };
+    } else if (block.type === "redacted_thinking") {
+      // 被编辑的思考块：必须原样保留，丢弃会静默破坏推理链
+      // [来源: anthropic-api.md:356-357]
+      return { type: "redacted_thinking" as any, data: block.data };
     }
-    // 未知块类型（server_tool_use、redacted_thinking 等）静默忽略
+    // 未知块类型（server_tool_use 等）静默忽略
     const log = getLogger();
     log.debug("LLM:ANTHROPIC", `忽略未知 content block 类型: ${block.type}`);
     return { type: "text", text: "" };
@@ -572,6 +604,25 @@ export class AnthropicProvider implements Provider {
 }
 
 // ─── P1-3 / P1-4 / P2-4 辅助函数 ───────────────────────────────────────────
+
+/**
+ * 根据 outputConfig.thinkingType 构建 thinking 请求参数。
+ * - adaptive 模型（Opus 4.7+/Sonnet 4.6/Fable 5）→ `{ thinking: { type: "adaptive" } }`
+ * - manual 模型（旧）→ `{ thinking: { type: "enabled", budget_tokens: N } }`
+ * [来源: anthropic-api.md:316-323]
+ */
+function buildThinkingParam(params: SendParams): Record<string, unknown> {
+  if (params.outputConfig?.thinkingType === "adaptive") {
+    return { thinking: { type: "adaptive" } };
+  }
+  // manual 模式（旧模型）：下发 budget_tokens
+  return {
+    thinking: {
+      type: "enabled",
+      budget_tokens: params.thinking!.budgetTokens,
+    },
+  };
+}
 
 /** 判断模型是否支持 strict tool use（Constrained Decoding） */
 function modelSupportsStrict(model: string): boolean {

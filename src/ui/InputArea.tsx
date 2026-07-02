@@ -185,10 +185,19 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
     return () => clearTimeout(timer);
   }, [chordPending, chordMachine]);
 
-  // 补全状态
-  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
-  const [activeIndex, setActiveIndex] = useState(0);
-  const completionModeRef = useRef<"none" | "slash" | "at" | "shell">("none");
+  // 补全状态（合并为单一对象，保证原子更新，防止快速连键时 suggestions/activeIndex/mode 不同步）
+  type CompletionMode = "none" | "slash" | "at" | "shell";
+  interface CompletionState {
+    suggestions: Suggestion[];
+    activeIndex: number;
+    mode: CompletionMode;
+  }
+  const [completion, setCompletion] = useState<CompletionState>({
+    suggestions: [], activeIndex: 0, mode: "none",
+  });
+  // 兼容层：解构出旧变量名供渲染和交互使用
+  const { suggestions, activeIndex } = completion;
+  const completionMode = completion.mode;
 
   // 当前行文本和光标位置
   const currentLine = tb.state.lines[tb.state.cursorRow] ?? "";
@@ -196,15 +205,14 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
 
   // / 命令补全
   const setSlashSuggestions = useCallback((items: Suggestion[]) => {
-    if (items.length > 0) {
-      completionModeRef.current = "slash";
-      setSuggestions(items);
-      setActiveIndex(0);
-    } else if (completionModeRef.current === "slash") {
-      completionModeRef.current = "none";
-      setSuggestions([]);
-      setActiveIndex(0);
-    }
+    setCompletion(prev => {
+      if (items.length > 0) {
+        return { suggestions: items, activeIndex: 0, mode: "slash" };
+      } else if (prev.mode === "slash") {
+        return { suggestions: [], activeIndex: 0, mode: "none" };
+      }
+      return prev;
+    });
   }, []);
 
   useSlashCompletion({
@@ -216,15 +224,14 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
 
   // @ 文件补全
   const setAtSuggestions = useCallback((items: Suggestion[]) => {
-    if (items.length > 0) {
-      completionModeRef.current = "at";
-      setSuggestions(items);
-      setActiveIndex(0);
-    } else if (completionModeRef.current === "at") {
-      completionModeRef.current = "none";
-      setSuggestions([]);
-      setActiveIndex(0);
-    }
+    setCompletion(prev => {
+      if (items.length > 0) {
+        return { suggestions: items, activeIndex: 0, mode: "at" };
+      } else if (prev.mode === "at") {
+        return { suggestions: [], activeIndex: 0, mode: "none" };
+      }
+      return prev;
+    });
   }, []);
 
   useAtCompletion({
@@ -236,15 +243,14 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
 
   // ! Shell 命令补全
   const setShellSuggestions = useCallback((items: Suggestion[]) => {
-    if (items.length > 0) {
-      completionModeRef.current = "shell";
-      setSuggestions(items);
-      setActiveIndex(0);
-    } else if (completionModeRef.current === "shell") {
-      completionModeRef.current = "none";
-      setSuggestions([]);
-      setActiveIndex(0);
-    }
+    setCompletion(prev => {
+      if (items.length > 0) {
+        return { suggestions: items, activeIndex: 0, mode: "shell" };
+      } else if (prev.mode === "shell") {
+        return { suggestions: [], activeIndex: 0, mode: "none" };
+      }
+      return prev;
+    });
   }, []);
 
   useShellCompletion({
@@ -258,7 +264,7 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
 
   // 应用补全：替换触发文本为选中的补全值
   const applyCompletion = useCallback((suggestion: Suggestion) => {
-    const mode = completionModeRef.current;
+    const mode = completionMode;
     if (mode === "slash" || mode === "shell") {
       // 替换整行为命令（shell 模式保留 ! 前缀）
       tb.moveCursor("home");
@@ -283,10 +289,8 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
         tb.insert(suggestion.value);
       }
     }
-    setSuggestions([]);
-    setActiveIndex(0);
-    completionModeRef.current = "none";
-  }, [tb]);
+    setCompletion({ suggestions: [], activeIndex: 0, mode: "none" });
+  }, [tb, completionMode]);
 
   useEffect(() => {
     if (prevLoadingRef.current !== isLoading) {
@@ -462,9 +466,7 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
     // ── 补全列表交互 ──
     if (hasSuggestions) {
       if (key.name === "escape") {
-        setSuggestions([]);
-        setActiveIndex(0);
-        completionModeRef.current = "none";
+        setCompletion({ suggestions: [], activeIndex: 0, mode: "none" });
         return true;
       }
       if (key.name === "tab" || (key.name === "enter" && !key.shift)) {
@@ -472,11 +474,11 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
         return true;
       }
       if (key.name === "up" && !key.shift) {
-        setActiveIndex(i => (i - 1 + suggestions.length) % suggestions.length);
+        setCompletion(prev => ({ ...prev, activeIndex: (prev.activeIndex - 1 + prev.suggestions.length) % prev.suggestions.length }));
         return true;
       }
       if (key.name === "down" && !key.shift) {
-        setActiveIndex(i => (i + 1) % suggestions.length);
+        setCompletion(prev => ({ ...prev, activeIndex: (prev.activeIndex + 1) % prev.suggestions.length }));
         return true;
       }
     }

@@ -132,6 +132,18 @@ export async function processStream(
               input: {},
             });
             jsonAccumulators.set(event.index, "");
+          } else if ((event.content_block as any).type === "thinking") {
+            // Anthropic SDK 直接发来 thinking 类型块（非通过 text + _raw_block 通道）
+            response.content.push({ type: "text", text: "" });
+            thinkingIndexes.add(event.index);
+            thinkingStartMs.set(event.index, Date.now());
+          } else if ((event.content_block as any).type === "redacted_thinking") {
+            // redacted_thinking 块：必须原样保留用于多轮回传
+            // [来源: anthropic-api.md:356-357]
+            response.content.push({
+              type: "redacted_thinking" as any,
+              data: (event.content_block as any).data || "",
+            });
           }
           break;
         }
@@ -191,9 +203,13 @@ export async function processStream(
                   ? Math.max(0, Date.now() - startedAt)
                   : undefined;
               // 原地转型为 ThinkingBlock（保留在 content 中，对标 Claude Code）
+              // § 把 anthropic.ts 累积的 signature 从 _raw_block 中提取
+              const rawBlock = (event as any)._raw_block;
+              const signature = rawBlock?.signature;
               const thinkingBlock = {
                 type: "thinking" as const,
                 thinking: block.text,
+                ...(signature ? { signature } : {}),
                 ...(durationMs !== undefined ? { durationMs } : {}),
               };
               response.content[pos] = thinkingBlock;

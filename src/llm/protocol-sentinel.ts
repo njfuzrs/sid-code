@@ -126,13 +126,16 @@ function summarizeBlocks(msg: Message): Array<Record<string, unknown>> {
     if (b.type === "tool_use") {
       return { type: "tool_use", id: b.id, name: b.name };
     }
-    // tool_result
-    return {
-      type: "tool_result",
-      tool_use_id: b.tool_use_id,
-      is_error: b.is_error ?? false,
-      content_preview: typeof b.content === "string" ? b.content.slice(0, 200) : "",
-    };
+    if (b.type === "tool_result") {
+      return {
+        type: "tool_result",
+        tool_use_id: b.tool_use_id,
+        is_error: b.is_error ?? false,
+        content_preview: typeof b.content === "string" ? b.content.slice(0, 200) : "",
+      };
+    }
+    // thinking / redacted_thinking — 不含敏感信息，只记类型
+    return { type: b.type };
   });
 }
 

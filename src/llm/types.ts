@@ -42,7 +42,7 @@ export interface ToolResultBlock {
 export interface ThinkingBlock {
   type: "thinking";
   thinking: string;
-  signature?: string;  // Anthropic 签名（保留用于回传验证）
+  signature?: string;  // Anthropic 签名（多轮回传必需，丢失/修改 → 400）
   /**
    * SP1：思考耗时（毫秒）。流式期间由 stream-processor 测量（从该块首个
    * delta 到 content_block_stop），用于历史项稳定显示「已思考 Ns」而非
@@ -51,8 +51,18 @@ export interface ThinkingBlock {
   durationMs?: number;
 }
 
+/**
+ * 被编辑的思考块（Anthropic 安全审查触发时返回）。
+ * 多轮对话中**必须原样回传**，否则静默破坏推理链。
+ * [来源: anthropic-api.md:166,356-357]
+ */
+export interface RedactedThinkingBlock {
+  type: "redacted_thinking";
+  data: string;
+}
+
 /** 内容块类型 */
-export type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock | ThinkingBlock;
+export type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock | ThinkingBlock | RedactedThinkingBlock;
 
 /** 消息 */
 export interface Message {
@@ -258,14 +268,17 @@ export interface SendParams {
    */
   userId?: string;
   /**
-   * 输出配置（Anthropic 兼容端点 `output_config`）。
-   * - **DeepSeek-via-Anthropic 端点**：仅 `effort` 被支持（budget_tokens 被忽略），
-   *   强度走 `output_config.effort`（high/max）。由 anthropic.ts 下发。
-   * 原生 Claude 不读此字段（其强度走 thinking.budget_tokens）；OpenAI 端点忽略。
+   * 输出配置（Anthropic `output_config`）。
+   * - **DeepSeek-via-Anthropic 端点**：仅 `effort` 被支持（budget_tokens 被忽略）。
+   * - **原生 Claude adaptive 模型（Opus 4.7+/Sonnet 4.6/Fable 5）**：`effort` 控制思考深度，
+   *   `thinkingType: "adaptive"` 指示 anthropic.ts 下发 `thinking:{type:"adaptive"}`。
+   * - **原生 Claude manual 模型（旧）**：不读此字段（强度走 thinking.budgetTokens）。
    * 不传则不下发。
    */
   outputConfig?: {
-    effort: "high" | "max";
+    effort: "low" | "medium" | "high" | "max";
+    /** 区分 adaptive（Opus 4.7+）和 enabled（旧 manual 模型）两种 thinking 下发模式 */
+    thinkingType?: "adaptive" | "enabled";
   };
   /**
    * Anthropic output_config.format — API 级结构化输出（非工具调用方式）。

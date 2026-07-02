@@ -44,6 +44,17 @@ export interface ModelRegistryEntry {
    */
   requiresReasoningContentForToolCalls?: boolean;
 
+  /**
+   * Extended Thinking 模式（Anthropic 协议族专用）。
+   *
+   * - `"adaptive"`：Opus 4.7+/Sonnet 4.6/Fable 5 — 下发 `thinking:{type:"adaptive"}` + `output_config.effort`
+   * - `"always-on"`：Fable 5/Mythos 5 — 自适应始终开启，不可关闭（`thinking:{type:"disabled"}` 返回 400）
+   * - undefined（= "manual" 兜底）：旧模型 — 下发 `thinking:{type:"enabled", budget_tokens:N}`
+   *
+   * [来源: anthropic-api.md:320-323]
+   */
+  thinkingMode?: "adaptive" | "always-on";
+
   // ── 定价（可选，USD/百万 token） ──
   pricing?: RegistryPricing;
 }
@@ -52,13 +63,13 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
   // ══════════════════════════════════════════════════════════════════
   // Anthropic Claude
   // ══════════════════════════════════════════════════════════════════
-  "claude-fable-5": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: true, protocolKind: "anthropic-native", pricing: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 } },
-  "claude-mythos-5": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: true, protocolKind: "anthropic-native", pricing: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 } },
-  "claude-opus-4-8": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: true, protocolKind: "anthropic-native", pricing: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } },
-  "claude-opus-4-7": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: true, protocolKind: "anthropic-native", pricing: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } },
-  "claude-opus-4-6": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: true, protocolKind: "anthropic-native", pricing: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } },
+  "claude-fable-5": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: true, protocolKind: "anthropic-native", thinkingMode: "always-on", pricing: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 } },
+  "claude-mythos-5": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: true, protocolKind: "anthropic-native", thinkingMode: "always-on", pricing: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 } },
+  "claude-opus-4-8": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: true, protocolKind: "anthropic-native", thinkingMode: "adaptive", pricing: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } },
+  "claude-opus-4-7": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: true, protocolKind: "anthropic-native", thinkingMode: "adaptive", pricing: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } },
+  "claude-opus-4-6": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: true, protocolKind: "anthropic-native", thinkingMode: "adaptive", pricing: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } },
   "claude-opus-4-20250514": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: true, protocolKind: "anthropic-native", pricing: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 } },
-  "claude-sonnet-4-6": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: true, protocolKind: "anthropic-native", pricing: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } },
+  "claude-sonnet-4-6": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: true, protocolKind: "anthropic-native", thinkingMode: "adaptive", pricing: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } },
   "claude-sonnet-4-5-20250514": { contextWindow: 200_000, maxOutputTokens: 64_000, supportsThinking: true, protocolKind: "anthropic-native", pricing: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } },
   "claude-sonnet-4-20250514": { contextWindow: 200_000, maxOutputTokens: 64_000, supportsThinking: true, protocolKind: "anthropic-native", pricing: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } },
   "claude-haiku-4-5": { contextWindow: 200_000, maxOutputTokens: 64_000, supportsThinking: true, protocolKind: "anthropic-native", pricing: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 } },

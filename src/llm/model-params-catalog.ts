@@ -32,6 +32,12 @@ export interface ModelParamsEntry {
    * 旧 deepseek-reasoner 为 false。详见 model-registry.ts 同名字段。
    */
   requiresReasoningContentForToolCalls?: boolean;
+  /**
+   * Extended Thinking 模式（Anthropic 协议族专用）。
+   * "adaptive" = Opus 4.7+/Sonnet 4.6；"always-on" = Fable 5/Mythos 5；
+   * undefined = manual（旧模型，用 budget_tokens）。
+   */
+  thinkingMode?: "adaptive" | "always-on";
 }
 
 /** 从 ModelRegistryEntry 投影为 ModelParamsEntry（去掉 pricing） */

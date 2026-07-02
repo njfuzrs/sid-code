@@ -1704,6 +1704,46 @@ export async function* queryLoop(
       continue;
     }
 
+    // ─── refusal（模型安全策略拒答，Opus 4.7+ 新增）───
+    // [来源: anthropic-api.md:556,752]
+    if (response.stopReason === "refusal") {
+      const refusalText = response.content
+        .filter(b => b.type === "text")
+        .map(b => b.type === "text" ? b.text : "")
+        .join("")
+        .trim() || "模型基于安全策略拒绝回答";
+      log.warn("QUERY_LOOP", `模型安全拒答: ${refusalText.slice(0, 200)}`);
+      yield { kind: "system", level: "warning", text: `[安全策略拒答] ${refusalText}` };
+      yield { kind: "done", turns: state.turnCount };
+      return;
+    }
+
+    // ─── model_context_window_exceeded（撞模型 context window 上限，Claude 4.5+ 新增）───
+    // 区别于 max_tokens（主动设的输出上限），这是输入+输出总和撞到模型硬上限。
+    // 处理策略：压缩上下文后续写。[来源: anthropic-api.md:553,559]
+    if (response.stopReason === "model_context_window_exceeded") {
+      log.warn("QUERY_LOOP", "撞到模型 context window 上限，触发上下文压缩后续写");
+      yield { kind: "system", level: "info", text: "输出因撞到模型上下文窗口上限被中断，正在压缩上下文后续写" };
+
+      // 尝试压缩上下文释放空间
+      const compactResult = reactiveCompact(ctxMgr);
+      if (compactResult.success) {
+        log.info("QUERY_LOOP", `context_window_exceeded 压缩成功: ${compactResult.messageCountBefore} → ${compactResult.messageCountAfter} 条`);
+      }
+
+      state.maxOutputTokensRecoveryCount++;
+      state.transition = { type: "max_tokens_continuation" };
+      continue;
+    }
+
+    // ─── pause_turn（server tool 暂停，需续接）───
+    // [来源: anthropic-api.md:557]
+    if (response.stopReason === "pause_turn") {
+      log.info("QUERY_LOOP", "收到 pause_turn（server tool 暂停），作为 tool_use 续接");
+      state.transition = { type: "tool_use" };
+      continue;
+    }
+
     // ─── 其他停止原因 ───
     log.warn("QUERY_LOOP", `未知停止原因: ${response.stopReason}`);
     yield { kind: "done", turns: state.turnCount };

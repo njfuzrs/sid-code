@@ -120,18 +120,44 @@ function applyDeepSeekAnthropic(params: SendParams, effort: EffortSetting, think
 
 /**
  * 规则 3：Anthropic 原生 Claude。
- * - thinking + effort → thinking.budget_tokens（anthropic.ts:137 已消费）。
- * - effort 档位映射预算：low=2K / medium=10K / high=20K / max=50K。
+ *
+ * 根据 thinkingMode 分两条路径：
+ * - adaptive（Opus 4.7+/Sonnet 4.6/Fable 5）→ `thinking:{type:"adaptive"}` + `output_config.effort`
+ * - always-on（Fable 5/Mythos 5）→ 同 adaptive 但不允许关闭思考
+ * - manual（旧模型，thinkingMode 为 undefined）→ `thinking:{type:"enabled", budget_tokens:N}`
+ *
+ * [来源: anthropic-api.md:316-323,325-332]
  */
 function applyAnthropicNative(params: SendParams, effort: EffortSetting, thinking: boolean): void {
-  if (!thinking) {
-    // 显式关闭：不开 Extended Thinking（anthropic.ts 仅在 enabled 时下发 thinking 块）。
-    params.thinking = { enabled: false, budgetTokens: 0 };
-    return;
+  const catalogEntry = lookupCatalog(params.model || "");
+  const thinkingMode = catalogEntry?.thinkingMode;
+
+  if (thinkingMode === "always-on" || thinkingMode === "adaptive") {
+    // ── adaptive / always-on 路径 ──
+    // always-on 模型不可关闭思考（关也按低 effort 下发），avoid 400
+    const effectiveThinking = thinkingMode === "always-on" ? true : thinking;
+
+    if (!effectiveThinking) {
+      // adaptive 模型显式关闭思考：不下发 thinking 参数（省略 = 不思考）
+      params.thinking = { enabled: false, budgetTokens: 0 };
+      return;
+    }
+
+    // auto（effort=undefined）→ 走模型默认（Opus 4.8 默认 high）
+    const level: EffortLevel = effort ?? "high";
+    // 标记为 adaptive 模式：anthropic.ts 据此下发 {type:"adaptive"} 而非 {type:"enabled"}
+    params.thinking = { enabled: true, budgetTokens: 0 };
+    params.outputConfig = { effort: level, thinkingType: "adaptive" };
+  } else {
+    // ── manual 路径（旧模型：Opus 4-20250514/Sonnet 4.5/Haiku 4.5 等）──
+    if (!thinking) {
+      params.thinking = { enabled: false, budgetTokens: 0 };
+      return;
+    }
+    // auto（effort=undefined）兜底用 medium 预算，保证开思考时有合理预算。
+    const level: EffortLevel = effort ?? "medium";
+    params.thinking = { enabled: true, budgetTokens: ANTHROPIC_EFFORT_BUDGET[level] };
   }
-  // auto（effort=undefined）兜底用 medium 预算，保证开思考时有合理预算。
-  const level: EffortLevel = effort ?? "medium";
-  params.thinking = { enabled: true, budgetTokens: ANTHROPIC_EFFORT_BUDGET[level] };
 }
 
 /**

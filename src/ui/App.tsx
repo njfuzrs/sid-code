@@ -357,6 +357,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
   //    如果 abort 无效（如 openai parseSSE hang），第二次 Ctrl+C 直接强制退出（逃生口）;
   // ② 空闲(或已中断) → 走二次确认:首次提示、窗口内再按一次才退出。
   const abortAlreadyFired = useRef(false);
+  const abortResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useKeypress(KeypressPriority.Critical, (key: Key) => {
     const b = matchBinding(key);
     if (b?.action !== "app:quit") return false;
@@ -374,7 +375,12 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
       callbacks.onInterrupt();
       abortAlreadyFired.current = true;
       // 3s 后自动重置（如果 abort 生效了，状态会变 idle，重置也无害）
-      setTimeout(() => { abortAlreadyFired.current = false; }, 3000);
+      // 清理旧定时器防止快速连按累积
+      if (abortResetTimerRef.current) clearTimeout(abortResetTimerRef.current);
+      abortResetTimerRef.current = setTimeout(() => {
+        abortAlreadyFired.current = false;
+        abortResetTimerRef.current = null;
+      }, 3000);
       // 中断也清掉可能残留的退出确认态,避免「中断后下一次单击直接退出」的误判。
       cancelCtrlCConfirm();
       return true;
@@ -382,11 +388,19 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
 
     // 从 busy→idle 时重置 abort 标记
     abortAlreadyFired.current = false;
+    if (abortResetTimerRef.current) {
+      clearTimeout(abortResetTimerRef.current);
+      abortResetTimerRef.current = null;
+    }
 
     log.info("UI:APP", ctrlCPressedOnce ? "用户二次按下 Ctrl+C，退出" : "用户按下 Ctrl+C，提示再按一次退出");
     pressCtrlC();
     return true;
   });
+  // 卸载时清理 abort 重置定时器
+  useEffect(() => () => {
+    if (abortResetTimerRef.current) clearTimeout(abortResetTimerRef.current);
+  }, []);
 
   // 退出确认态下，用户按任意「非 Ctrl+C」可见字符键 → 立即取消退出意图（对标 ExitWarning「或继续输入以取消」）。
   // 放在 Critical 之后、其它 handler 之前；只取消、不消费按键（return false），让字符照常进输入框。
@@ -445,6 +459,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
   // Ctrl+O 统一展开/收起折叠内容（对标 claude-code：单键管所有折叠区）：
   // 工具结果阶梯展开（0 折叠 → 1 更多 → 2 全展开 → 0），思考块与 expandLevel 同步：
   // expandLevel=0 时折叠思考，≥1 时展开思考。两者周期对齐，不再割裂。
+  const showHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useKeypress(KeypressPriority.High, (key: Key) => {
     const b = matchBinding(key);
     if (b?.action === "app:toggleHeight") {
@@ -453,11 +468,20 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
       cycleExpandLevel();
       // 思考块由 useEffect 跟随 expandLevel 同步，此处不再独立切换。
       setShowIsExpandableHint(true);
-      setTimeout(() => setShowIsExpandableHint(false), 3000);
+      // 快速连按时清旧定时器再启新，防止定时器累积
+      if (showHintTimerRef.current) clearTimeout(showHintTimerRef.current);
+      showHintTimerRef.current = setTimeout(() => {
+        setShowIsExpandableHint(false);
+        showHintTimerRef.current = null;
+      }, 3000);
       return true;
     }
     return false;
   });
+  // 卸载时清理定时器
+  useEffect(() => () => {
+    if (showHintTimerRef.current) clearTimeout(showHintTimerRef.current);
+  }, []);
 
   // 思考块折叠状态跟随 expandLevel 同步：level=0 折叠，≥1 展开。
   // 用 useEffect 保证单一事实源，消除三值/二值周期不对齐问题。
