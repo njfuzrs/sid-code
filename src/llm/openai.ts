@@ -22,6 +22,7 @@ import { emitStreamPhase, emitTimeoutFired, updateStreamStats, emitStreamStall, 
 import { guardOutgoingMessages } from "./protocol-sentinel.ts";
 import { filterParamsForModel } from "./model-capability-filter.ts";
 import { lookupCatalog } from "./model-params-catalog.ts";
+import { splitSystemByDynamicBoundary } from "../api/cache-strategy.ts";
 import { estimateTextTokens } from "../context/token.ts";
 import { sanitizeStrings } from "./sanitize-unicode.ts";
 import { SseChunkDumper, currentSseDumpContext } from "./sse-chunk-dumper.ts";
@@ -216,6 +217,15 @@ export class OpenAIProvider implements Provider {
   /**
    * 统一注入 system 消息：o-series 用 `developer` role，其余用 `system`（§3.1）。
    * 仅在历史首条尚不是 system/developer 时注入，避免重复（§4.1）。
+   *
+   * 缓存命中率修复：OpenAI/DeepSeek 均为"从 token 0 开始的整体前缀匹配"，
+   * 不支持 Anthropic 那样的 content block 级 cache_control 分段。若把
+   * system 字符串（含 DYNAMIC_BOUNDARY 之后的日期/git status 等动态内容）
+   * 整段塞进 messages[0]，动态内容的任何变化都会让前缀在这条消息内部断裂，
+   * 导致其后全部历史消息（即使字节未变）本轮全部无法复用缓存。
+   * 因此静态区留在 messages[0]，动态区搬到消息序列末尾，新增一条独立消息
+   * 承载（而非改写已有末尾消息——convertMessages 结尾可能是 assistant 或
+   * role:"tool"，未必是 user），沿用项目里 <system-reminder> 的注入风格。
    */
   private prependSystemMessage(messages: any[], system: string, model: string): void {
     const first = messages[0];
@@ -223,7 +233,15 @@ export class OpenAIProvider implements Provider {
       return; // 已有，避免双 system（§4.1）
     }
     const role = this.isReasoningModel(model) ? "developer" : "system";
-    messages.unshift({ role, content: system });
+    const { staticContent, dynamicContent } = splitSystemByDynamicBoundary(system);
+    messages.unshift({ role, content: staticContent });
+
+    if (dynamicContent) {
+      messages.push({
+        role: "user",
+        content: `<system-reminder>\n${dynamicContent}\n</system-reminder>`,
+      });
+    }
   }
 
   /**

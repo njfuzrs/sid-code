@@ -12,6 +12,7 @@
 
 import { describe, test, expect } from "bun:test";
 import { OpenAIProvider } from "../../src/llm/openai.ts";
+import { DYNAMIC_BOUNDARY } from "../../src/api/cache-strategy.ts";
 
 class TestableOpenAIProvider extends OpenAIProvider {
   testConvertMessages(messages: any[]) {
@@ -173,6 +174,68 @@ describe("§3.1 / §3.2 o-series 协议差异", () => {
   test("o-series → max_completion_tokens；非 o-series → max_tokens", () => {
     expect(provider.testApplyMaxTokens("o1", 1000)).toEqual({ max_completion_tokens: 1000 });
     expect(provider.testApplyMaxTokens("gpt-4o", 1000)).toEqual({ max_tokens: 1000 });
+  });
+});
+
+describe("缓存命中率修复：prependSystemMessage 按 DYNAMIC_BOUNDARY 拆分静态/动态区", () => {
+  test("含 DYNAMIC_BOUNDARY → messages[0] 只含静态内容，不含边界标记字面量", () => {
+    const system = `STATIC${DYNAMIC_BOUNDARY}DYNAMIC`;
+    const out = provider.testPrependSystem([], system, "gpt-4o");
+    expect(out[0]).toEqual({ role: "system", content: "STATIC" });
+    expect(out[0].content).not.toContain("DYNAMIC_BOUNDARY");
+  });
+
+  test("动态区被追加为末尾新增的 role:user 消息，用 <system-reminder> 包裹", () => {
+    const system = `STATIC${DYNAMIC_BOUNDARY}Today's date is 2026-07-03`;
+    const out = provider.testPrependSystem(
+      [{ role: "user", content: "hello" }],
+      system,
+      "gpt-4o",
+    );
+    // [system(static), user(hello), user(reminder)]
+    expect(out).toHaveLength(3);
+    expect(out[2]).toEqual({
+      role: "user",
+      content: "<system-reminder>\nToday's date is 2026-07-03\n</system-reminder>",
+    });
+  });
+
+  test("不含 DYNAMIC_BOUNDARY → 向后兼容，整段进 messages[0]，不追加任何消息", () => {
+    const out = provider.testPrependSystem([{ role: "user", content: "hi" }], "plain sys", "gpt-4o");
+    expect(out).toHaveLength(2);
+    expect(out[0]).toEqual({ role: "system", content: "plain sys" });
+  });
+
+  test("原 messages 为空数组 → 动态区仍正确追加在最后", () => {
+    const system = `STATIC${DYNAMIC_BOUNDARY}DYNAMIC`;
+    const out = provider.testPrependSystem([], system, "gpt-4o");
+    expect(out).toHaveLength(2);
+    expect(out[0]).toEqual({ role: "system", content: "STATIC" });
+    expect(out[1]).toEqual({
+      role: "user",
+      content: "<system-reminder>\nDYNAMIC\n</system-reminder>",
+    });
+  });
+
+  test("原 messages 以 role:tool 结尾（并行工具结果轮）→ 动态区仍新增而非改写", () => {
+    const assistantMsg = { role: "assistant", content: null, tool_calls: [{ id: "c1" }] };
+    const toolMsg = { role: "tool", tool_call_id: "c1", content: "ok" };
+    const system = `STATIC${DYNAMIC_BOUNDARY}DYNAMIC`;
+    const out = provider.testPrependSystem([assistantMsg, toolMsg], system, "gpt-4o");
+    expect(out).toHaveLength(4);
+    expect(out[1]).toEqual({ role: "assistant", content: null, tool_calls: [{ id: "c1" }] });
+    expect(out[2]).toEqual({ role: "tool", tool_call_id: "c1", content: "ok" });
+    expect(out[3]).toEqual({
+      role: "user",
+      content: "<system-reminder>\nDYNAMIC\n</system-reminder>",
+    });
+  });
+
+  test("o-series（developer role）静态区同样正确拆分，动态区仍以 role:user 追加", () => {
+    const system = `STATIC${DYNAMIC_BOUNDARY}DYNAMIC`;
+    const out = provider.testPrependSystem([], system, "o1");
+    expect(out[0]).toEqual({ role: "developer", content: "STATIC" });
+    expect(out[1].role).toBe("user");
   });
 });
 

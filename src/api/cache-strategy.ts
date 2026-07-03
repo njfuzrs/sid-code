@@ -74,6 +74,24 @@ const EPHEMERAL_GLOBAL: CacheControl = { type: "ephemeral", scope: "global" };
 export const DYNAMIC_BOUNDARY = "\n\n<!-- DYNAMIC_BOUNDARY -->\n\n";
 
 /**
+ * 按 DYNAMIC_BOUNDARY 拆分 system 字符串为静态/动态两段。
+ *
+ * 供不支持"消息级 cache_control 分段"的协议（如 OpenAI/DeepSeek）使用——
+ * 这类协议只能做整体前缀匹配，动态区必须搬离 system message 单独处理，
+ * 否则动态内容的任何变化都会打断其后全部历史消息的缓存复用。
+ */
+export function splitSystemByDynamicBoundary(
+  system: string,
+): { staticContent: string; dynamicContent?: string } {
+  const idx = system.indexOf(DYNAMIC_BOUNDARY);
+  if (idx === -1) return { staticContent: system };
+  return {
+    staticContent: system.slice(0, idx),
+    dynamicContent: system.slice(idx + DYNAMIC_BOUNDARY.length),
+  };
+}
+
+/**
  * 将 system prompt 字符串拆分为带 cache_control 的 SystemBlock 数组。
  * 含 DYNAMIC_BOUNDARY 时拆静态/动态两区，分别打标（跨会话缓存 + 会话内缓存）。
  *
@@ -86,16 +104,16 @@ export function buildSystemBlocks(
 ): SystemBlock[] | undefined {
   if (!system) return undefined;
   const staticControl = options?.globalScopeEnabled ? EPHEMERAL_GLOBAL : EPHEMERAL;
-  const idx = system.indexOf(DYNAMIC_BOUNDARY);
-  if (idx !== -1) {
+  const { staticContent, dynamicContent } = splitSystemByDynamicBoundary(system);
+  if (dynamicContent !== undefined) {
     return [
-      { type: "text", text: system.slice(0, idx), cache_control: staticControl },
+      { type: "text", text: staticContent, cache_control: staticControl },
       // 动态区始终 org 级（含用户特定内容），不用 global scope
-      { type: "text", text: system.slice(idx + DYNAMIC_BOUNDARY.length), cache_control: EPHEMERAL },
+      { type: "text", text: dynamicContent, cache_control: EPHEMERAL },
     ];
   }
   // 无边界：整段视为静态区
-  return [{ type: "text", text: system, cache_control: staticControl }];
+  return [{ type: "text", text: staticContent, cache_control: staticControl }];
 }
 
 /**

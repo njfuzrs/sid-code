@@ -10,6 +10,7 @@ import {
   clearCacheBreakpoints,
   addMessageCacheBreakpoint,
   addCacheBreakpoints,
+  splitSystemByDynamicBoundary,
   DYNAMIC_BOUNDARY,
   type CacheableMessage,
 } from "../../src/api/cache-strategy.ts";
@@ -34,6 +35,24 @@ describe("buildSystemBlocks", () => {
     expect(blocks[1].text).toBe("DYNAMIC");
     expect(blocks[0].cache_control).toEqual({ type: "ephemeral" });
     expect(blocks[1].cache_control).toEqual({ type: "ephemeral" });
+  });
+});
+
+describe("splitSystemByDynamicBoundary", () => {
+  test("无边界 → 整段为 staticContent，dynamicContent 为 undefined", () => {
+    const result = splitSystemByDynamicBoundary("plain system prompt");
+    expect(result.staticContent).toBe("plain system prompt");
+    expect(result.dynamicContent).toBeUndefined();
+  });
+  test("含边界 → 按边界拆分为 staticContent / dynamicContent 两段", () => {
+    const result = splitSystemByDynamicBoundary(`STATIC${DYNAMIC_BOUNDARY}DYNAMIC`);
+    expect(result.staticContent).toBe("STATIC");
+    expect(result.dynamicContent).toBe("DYNAMIC");
+  });
+  test("拆分结果不含边界标记字面量", () => {
+    const result = splitSystemByDynamicBoundary(`STATIC${DYNAMIC_BOUNDARY}DYNAMIC`);
+    expect(result.staticContent).not.toContain("DYNAMIC_BOUNDARY");
+    expect(result.dynamicContent).not.toContain("DYNAMIC_BOUNDARY");
   });
 });
 
