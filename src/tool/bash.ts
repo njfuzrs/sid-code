@@ -530,15 +530,30 @@ export class BashTool implements Tool {
       backgroundPids.add(pid);
 
       // 尝试读取初始输出（非阻塞）
+      // T5-B4：旧实现用 `new Response(proc.stdout).text()` 与 100ms race——超时后
+      // Response 仍持有 reader 消费整个 stdout（后台进程可能输出很久），reader 被
+      // abandon 不 cancel → 孤儿读取。改用显式 getReader + 超时 cancel，只读首个 chunk。
       let initialOutput = "";
+      const reader = proc.stdout.getReader();
+      let readTimedOut = false;
+      const readTimer = setTimeout(() => {
+        readTimedOut = true;
+        // cancel 会解除 reader 对 stdout 的占用，后台进程继续运行（stdout 变为无消费者）
+        reader.cancel().catch(() => { /* 已释放 */ });
+      }, 100);
       try {
-        const stdout = await Promise.race([
-          new Response(proc.stdout).text(),
-          new Promise<string>(resolve => setTimeout(() => resolve(""), 100)),
-        ]);
-        if (stdout) initialOutput = stdout.slice(0, 500); // 只取前 500 字符
+        const { value } = await reader.read();
+        if (value && !readTimedOut) {
+          initialOutput = new TextDecoder().decode(value).slice(0, 500); // 只取前 500 字符
+        }
       } catch {
         // 忽略读取失败
+      } finally {
+        clearTimeout(readTimer);
+        // T5-B4：读完首 chunk 或超时后释放锁，让 stdout pipe 不再被本函数占用，
+        // 后台进程可继续独立运行、输出被系统丢弃（不阻塞、不泄漏）。
+        try { await reader.cancel(); } catch { /* 已 cancel */ }
+        try { reader.releaseLock(); } catch { /* 已释放 */ }
       }
 
       log.info("TOOL", `✓ 命令已在后台运行 PID=${pid}`);

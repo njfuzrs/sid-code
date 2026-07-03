@@ -32,7 +32,9 @@ export type TimeoutLayer =
   | "idle_timeout"
   | "content_progress_timeout"
   | "fallback_stream_timeout"
-  | "turn_hard_timeout";
+  | "turn_hard_timeout"
+  | "agent_heartbeat_timeout"
+  | "agent_overall_timeout";
 
 // ─── 流状态快照（per-index） ───
 

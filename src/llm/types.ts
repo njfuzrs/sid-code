@@ -206,7 +206,7 @@ export type StreamEvent =
   | { type: "content_block_stop"; index: number }
   | { type: "message_delta"; delta: { stop_reason: string | null }; usage: Usage; _rawOutputTokensZero?: boolean }
   | { type: "message_stop" }
-  | { type: "error"; error: { message: string } }
+  | { type: "error"; error: { message: string; type?: string; statusCode?: number; streamLevel?: boolean } }
   | { type: "system_api_error"; content: string; delayMs: number; attempt: number; maxRetries: number; category: string };
 
 /** 工具定义 */

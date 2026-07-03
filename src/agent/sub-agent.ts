@@ -553,89 +553,120 @@ export class SubAgent {
       let stdoutBuffer = "";
       let result: SubAgentResult | null = null;
 
-      while (true) {
-        // 纵深防御：signal abort 后主动 break，防止 kill 信号被忽略时 reader 永久阻塞
-        if (signal?.aborted) {
-          log.info("SUBAGENT", "signal aborted，退出 stdout 读取循环");
-          break;
-        }
-        const { done, value } = await stdoutReader.read();
-        if (done) break;
+      // T5-B1：abort race。signal 在 .read() await 期间触发、且 subprocess kill
+      // 延迟时，裸 .read() 会一直阻塞。用 Promise.race 让 abort 立刻让出控制权，
+      // 避免 reader 永久挂死。once:true 复用同一 abort 事件（onAbort 已负责 kill）。
+      const readWithAbort = (): Promise<
+        ReadableStreamReadResult<Uint8Array> | { done: true; value: undefined }
+      > => {
+        if (!signal) return stdoutReader.read();
+        if (signal.aborted) return Promise.resolve({ done: true, value: undefined });
+        return Promise.race([
+          stdoutReader.read(),
+          new Promise<{ done: true; value: undefined }>((resolve) => {
+            signal.addEventListener(
+              "abort",
+              () => resolve({ done: true, value: undefined }),
+              { once: true },
+            );
+          }),
+        ]);
+      };
 
-        stdoutBuffer += decoder.decode(value, { stream: true });
-        // 按行分割
-        const lines = stdoutBuffer.split("\n");
-        stdoutBuffer = lines.pop() || ""; // 保留不完整的最后一行
-
-        for (const line of lines) {
-          if (!line.trim()) continue;
-
-          let msg: ChildMessage;
-          try {
-            msg = JSON.parse(line);
-          } catch {
-            log.warn("SUBAGENT", `子进程 stdout 非 JSON: ${line.slice(0, 100)}`);
-            continue;
+      try {
+        while (true) {
+          // 纵深防御：signal abort 后主动 break，防止 kill 信号被忽略时 reader 永久阻塞
+          if (signal?.aborted) {
+            log.info("SUBAGENT", "signal aborted，退出 stdout 读取循环");
+            break;
           }
+          const { done, value } = await readWithAbort();
+          if (done) break;
 
-          switch (msg.type) {
-            case "ready":
-              break;
+          stdoutBuffer += decoder.decode(value, { stream: true });
+          // 按行分割
+          const lines = stdoutBuffer.split("\n");
+          stdoutBuffer = lines.pop() || ""; // 保留不完整的最后一行
 
-            case "tool_use": {
-              // 父进程执行工具并返回结果
-              const toolResult = await this.executeToolForChild(
-                msg.name,
-                msg.input,
-                tools,
-                signal,
-              );
-              writeParentMsg(subprocess.stdin, {
-                type: "tool_result",
-                tool_use_id: msg.id,
-                content: toolResult.content,
-                is_error: toolResult.is_error,
-              });
-              break;
+          for (const line of lines) {
+            if (!line.trim()) continue;
+
+            let msg: ChildMessage;
+            try {
+              msg = JSON.parse(line);
+            } catch {
+              log.warn("SUBAGENT", `子进程 stdout 非 JSON: ${line.slice(0, 100)}`);
+              continue;
             }
 
-            case "progress":
-              // 实时进度回写：spawn 子进程每轮上报真实 token / 工具次数 / 活动文案，
-              // 写进任务注册表 → 触发 onTaskChanged → TUI 面板刷新。
-              if (taskId && (msg.tokenCount != null || msg.toolUseCount != null)) {
-                updateAgentProgress(taskId, {
-                  toolUseCount: msg.toolUseCount ?? 0,
-                  tokenCount: msg.tokenCount ?? 0,
-                  lastActivity: msg.lastActivity
-                    ? { toolName: "", input: {}, activityDescription: msg.lastActivity }
-                    : undefined,
-                  recentActivities: [],
+            switch (msg.type) {
+              case "ready":
+                break;
+
+              case "tool_use": {
+                // 父进程执行工具并返回结果
+                const toolResult = await this.executeToolForChild(
+                  msg.name,
+                  msg.input,
+                  tools,
+                  signal,
+                );
+                writeParentMsg(subprocess.stdin, {
+                  type: "tool_result",
+                  tool_use_id: msg.id,
+                  content: toolResult.content,
+                  is_error: toolResult.is_error,
                 });
+                break;
               }
-              break;
 
-            case "result":
-              result = {
-                success: msg.success,
-                output: msg.output,
-                usage: msg.usage,
-                turns: msg.turns,
-                toolUseCount: msg.toolUseCount ?? 0,
-                // P0-1：spawn 子进程的 result 消息可能不带 model/provider，
-                // 父进程用 initMsg 已知值兜底（子进程必用 initMsg.model + provider_name）
-                model: msg.model ?? initMsg.model,
-                provider: msg.provider ?? initMsg.provider_name,
-              };
-              break;
+              case "progress":
+                // 实时进度回写：spawn 子进程每轮上报真实 token / 工具次数 / 活动文案，
+                // 写进任务注册表 → 触发 onTaskChanged → TUI 面板刷新。
+                if (taskId && (msg.tokenCount != null || msg.toolUseCount != null)) {
+                  updateAgentProgress(taskId, {
+                    toolUseCount: msg.toolUseCount ?? 0,
+                    tokenCount: msg.tokenCount ?? 0,
+                    lastActivity: msg.lastActivity
+                      ? { toolName: "", input: {}, activityDescription: msg.lastActivity }
+                      : undefined,
+                    recentActivities: [],
+                  });
+                }
+                break;
 
-            case "crash":
-              throw new Error(
-                `子代理崩溃: ${msg.error}${msg.stack ? `\n${msg.stack}` : ""}`,
-              );
+              case "result":
+                result = {
+                  success: msg.success,
+                  output: msg.output,
+                  usage: msg.usage,
+                  turns: msg.turns,
+                  toolUseCount: msg.toolUseCount ?? 0,
+                  // P0-1：spawn 子进程的 result 消息可能不带 model/provider，
+                  // 父进程用 initMsg 已知值兜底（子进程必用 initMsg.model + provider_name）
+                  model: msg.model ?? initMsg.model,
+                  provider: msg.provider ?? initMsg.provider_name,
+                };
+                break;
+
+              case "crash":
+                throw new Error(
+                  `子代理崩溃: ${msg.error}${msg.stack ? `\n${msg.stack}` : ""}`,
+                );
+            }
           }
-        }
 
-        if (result) break;
+          if (result) break;
+        }
+      } finally {
+        // T5-B1：无论正常结束 / abort / 抛错，都释放 reader 锁，防止 stdout 流锁泄漏。
+        // cancel 会同时丢弃底层缓冲并解锁；已被 kill 的进程 cancel 静默失败即可。
+        try {
+          await stdoutReader.cancel();
+        } catch { /* reader 可能已释放 */ }
+        try {
+          stdoutReader.releaseLock();
+        } catch { /* 已释放 */ }
       }
 
       // 等待子进程退出

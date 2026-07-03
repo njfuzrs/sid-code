@@ -64,6 +64,28 @@ export type StreamValidationReason =
   | "malformed_tool_call"      // 工具调用 JSON 解析失败
   | "empty_response";          // 响应为空
 
+/**
+ * 流内错误（T6）：HTTP 200 但流内事件携带的服务端错误（如 Anthropic 的
+ * overloaded_error、OpenAI 的 error chunk）。继承 RetryableError，让 fallback.ts
+ * 的流式重试链天然识别为可重试，而无需依赖错误消息文本关键词匹配。
+ *
+ * 与普通 RetryableError 的区别：streamLevel=true 标记它来自"伪装成功的流"
+ * （fail-fast 依据），并保留 provider / errorType / statusCode 供可观测性归因。
+ */
+export class StreamLevelError extends RetryableError {
+  readonly streamLevel = true;
+  constructor(
+    public readonly provider: string,
+    public readonly statusCode: number,
+    message: string,
+    reason: RetryableReason = "overloaded",
+    retryAfterMs?: number,
+  ) {
+    super(message, reason, retryAfterMs);
+    this.name = "StreamLevelError";
+  }
+}
+
 /** 用户或系统主动中断请求 */
 export class RequestAbortedError extends Error {
   constructor(message = "Request aborted") {
@@ -417,4 +439,54 @@ export function classifyError(error: unknown): TerminalError | RetryableError | 
 
   // 4. 无法分类，返回原始错误
   return error instanceof Error ? error : new Error(msg);
+}
+
+/**
+ * T6：把「流内错误」的结构化字段（provider + 上游 error.type/status + message）
+ * 映射为 StreamLevelError。相比 classifyError(new Error(message)) 仅靠消息文本
+ * 关键词匹配，这里优先用 provider 明确给出的错误类型（如 anthropic overloaded_error），
+ * 消息不含关键词时也能正确判成 overloaded → 触发重试而非静默降级。
+ *
+ * @param provider  provider 名称（"anthropic" / "openai" / ...）
+ * @param message   展示用错误消息
+ * @param errorType 上游结构化错误类型（Anthropic: overloaded_error / api_error / rate_limit_error；OpenAI error.type / code）
+ * @param statusCode 若上游附带 HTTP 语义状态码
+ */
+export function classifyStreamError(
+  provider: string,
+  message: string,
+  errorType?: string,
+  statusCode?: number,
+): StreamLevelError | TerminalError {
+  const type = (errorType ?? "").toLowerCase();
+  const lowerMsg = message.toLowerCase();
+
+  // 1. 结构化 error.type 优先（不依赖消息文本）
+  if (type.includes("overloaded") || type === "overloaded_error") {
+    return new StreamLevelError(provider, statusCode ?? 529, message, "overloaded");
+  }
+  if (type.includes("rate_limit")) {
+    const retryAfter = parseRetryAfter(new Error(message));
+    return new StreamLevelError(provider, statusCode ?? 429, message, "rate_limit", retryAfter);
+  }
+  // 认证 / 模型不存在 / 无效请求：流内也可能出现，归 Terminal（不重试）
+  if (type.includes("authentication") || type === "authentication_error") {
+    return new TerminalError(message, "auth_failed");
+  }
+  if (type.includes("not_found")) {
+    return new TerminalError(message, "model_not_found");
+  }
+  if (type.includes("invalid_request")) {
+    return new TerminalError(message, "invalid_request");
+  }
+
+  // 2. 回退：复用 classifyError 的消息文本关键词匹配
+  const classified = classifyError(new Error(message));
+  if (classified instanceof TerminalError) return classified;
+  if (classified instanceof RetryableError) {
+    return new StreamLevelError(provider, statusCode ?? 0, message, classified.reason, classified.retryAfterMs);
+  }
+  // 3. 兜底：无法归类的流内错误默认按 server_error 重试（流已 200，倾向瞬态）
+  const finalStatus = statusCode ?? (lowerMsg.includes("529") ? 529 : 500);
+  return new StreamLevelError(provider, finalStatus, message, "server_error");
 }

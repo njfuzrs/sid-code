@@ -1137,7 +1137,16 @@ export class OpenAIProvider implements Provider {
             if (chunk.error) {
               const msg = chunk.error.message || JSON.stringify(chunk.error);
               dbg(`stream error chunk: ${msg}`);
-              yield { type: "error", error: { message: `OpenAI 流内错误: ${msg}` } };
+              // T6：透传结构化 error.type/code + streamLevel 标记，让 fallback.ts 按
+              // 结构化字段判定重试（OpenAI 族 error 对象常带 type/code 但 message 无关键词）。
+              yield {
+                type: "error",
+                error: {
+                  message: `OpenAI 流内错误: ${msg}`,
+                  type: chunk.error.type || chunk.error.code,
+                  streamLevel: true,
+                },
+              };
               return;
             }
 

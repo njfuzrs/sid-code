@@ -23,6 +23,7 @@ import { emitTimeoutFired, armIneffectiveCheck } from "../trace/stream-observer.
 import { currentSseDumpContext } from "./sse-chunk-dumper.ts";
 import {
   classifyError,
+  classifyStreamError,
   TerminalError,
   RetryableError,
   StreamValidationError,
@@ -457,7 +458,14 @@ export class ModelFallback {
                 throw new RetryableError(event.error.message, "server_error");
               }
 
-              const classified = classifyError(new Error(event.error.message));
+              const classified = event.error.streamLevel
+                ? classifyStreamError(
+                    params.model.split(":")[0] || params.model,
+                    event.error.message,
+                    event.error.type,
+                    event.error.statusCode,
+                  )
+                : classifyError(new Error(event.error.message));
 
               if (classified instanceof TerminalError) {
                 this.availability.markTerminal(params.model, classified.reason);

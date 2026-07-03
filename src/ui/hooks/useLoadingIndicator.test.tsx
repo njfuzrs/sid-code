@@ -73,6 +73,28 @@ async function waitForCounter(
   return seen;
 }
 
+/**
+ * 轮询等待某段文本出现在帧里(或超时后返回 false)。
+ *
+ * 用于「归零/重置」类断言:重置是 React 的 setState,高负载下单个 macrotask
+ * (setTimeout 0) 未必够 React 提交完成 → 立刻断言会读到旧值 → flaky(见 toolElapsed 归零)。
+ * 轮询「直到重置提交」对提交延迟鲁棒;而重置值(0)在下一次 1000ms 计时 tick 前一直成立,
+ * 用短轮询间隔(默认 20ms)能在它被重新递增前稳定命中,不会误判方向。
+ */
+async function waitForText(
+  lastFrame: () => string | undefined,
+  needle: string,
+  timeoutMs = 3000,
+  pollMs = 20,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (stripAnsi(lastFrame() ?? "").includes(needle)) return true;
+    await new Promise(r => setTimeout(r, pollMs));
+  }
+  return false;
+}
+
 describe("useLoadingIndicator — 状态文案", () => {
   test("Idle 态：计时为 0，无文案", () => {
     const { lastFrame } = render(
@@ -211,10 +233,8 @@ describe("useLoadingIndicator — 计时器生命周期（异步真实计时器�
 
     // 第二轮：从 Idle 再次进入 Connecting → 上升沿归零(effect 同步置 0,确定性,不 flaky)
     rerender(<TestHarness streamingState={StreamingState.Connecting} />);
-    // 等一个微任务让 React 处理 useEffect 中的 setState
-    await new Promise(r => setTimeout(r, 0));
-    const frame = stripAnsi(lastFrame() ?? "");
-    expect(frame).toContain("elapsed=0");
+    // 轮询等归零提交:高负载下单个 macrotask 不够 React 提交,固定睡眠后立刻断言会 flaky。
+    expect(await waitForText(lastFrame, "elapsed=0")).toBe(true);
   });
 });
 
@@ -269,10 +289,8 @@ describe("useLoadingIndicator — 慢提示与工具计时", () => {
         toolName="read"
       />,
     );
-    // 等 React 处理 useEffect 中的 setState
-    await new Promise(r => setTimeout(r, 0));
-    let frame = stripAnsi(lastFrame() ?? "");
-    expect(frame).toContain("toolElapsed=0");
+    // 轮询等归零提交(见 waitForText 注释):固定睡眠后立刻断言在高负载下 flaky。
+    expect(await waitForText(lastFrame, "toolElapsed=0")).toBe(true);
 
     // read 执行后计时重新递增到 ≥1
     const readElapsed = await waitForCounter(lastFrame, "toolElapsed", 1);
@@ -291,14 +309,12 @@ describe("useLoadingIndicator — 慢提示与工具计时", () => {
 
     // 工具结束
     rerender(<TestHarness streamingState={StreamingState.Responding} toolName={null} />);
-    // 等 React 处理 useEffect 中的 setState
-    await new Promise(r => setTimeout(r, 0));
-    let frame = stripAnsi(lastFrame() ?? "");
-    expect(frame).toContain("toolElapsed=0");
+    // 轮询等归零提交(见 waitForText 注释)。
+    expect(await waitForText(lastFrame, "toolElapsed=0")).toBe(true);
 
     // 再等 1.5 秒 — toolElapsed 不应增长
     await new Promise(r => setTimeout(r, 1500));
-    frame = stripAnsi(lastFrame() ?? "");
+    const frame = stripAnsi(lastFrame() ?? "");
     expect(frame).toContain("toolElapsed=0");
   });
 });

@@ -99,17 +99,30 @@ const lspSchema = lazySchema(() =>
  * 过滤掉被 .gitignore 忽略的文件路径（G9）。
  * 用 `git check-ignore --stdin` 批量检查；git 不可用或出错时不过滤（返回原列表）。
  */
-async function filterGitignored(paths: string[], cwd: string): Promise<Set<string>> {
+async function filterGitignored(
+  paths: string[],
+  cwd: string,
+  signal?: AbortSignal,
+): Promise<Set<string>> {
   const ignored = new Set<string>();
   if (paths.length === 0) return ignored;
+  // T5-B3：入口快速退出——signal 已 abort 时不再 spawn git 子进程
+  if (signal?.aborted) return ignored;
   try {
     const { spawn } = await import("child_process");
     const child = spawn("git", ["check-ignore", "--stdin"], {
       cwd,
       stdio: ["pipe", "pipe", "ignore"],
     });
+    // T5-B3：signal abort 时也 kill git 子进程，防止孤儿进程
+    const onAbort = () => { if (!child.killed) child.kill(); };
+    signal?.addEventListener("abort", onAbort, { once: true });
     let stdout = "";
-    child.stdout.on("data", (c: Buffer) => { stdout += c.toString(); });
+    // T5-B3：stdout 累积加 1MB 上限，防止异常大输出撑爆内存
+    const STDOUT_CAP = 1_048_576;
+    child.stdout.on("data", (c: Buffer) => {
+      if (stdout.length < STDOUT_CAP) stdout += c.toString();
+    });
     const exitPromise = new Promise<void>((resolve) => {
       child.on("close", () => resolve());
       child.on("error", () => resolve());
@@ -122,6 +135,7 @@ async function filterGitignored(paths: string[], cwd: string): Promise<Set<strin
       exitPromise,
       new Promise<void>((resolve) => setTimeout(() => { timedOut = true; resolve(); }, 5000)),
     ]);
+    signal?.removeEventListener("abort", onAbort);
     if (timedOut && !child.killed) {
       child.kill();
     }
@@ -266,7 +280,7 @@ export class LSPTool implements Tool {
     const workspaceFolder = server.config.workspaceFolder ?? process.cwd();
 
     try {
-      return await this.dispatch(params, manager, workspaceFolder);
+      return await this.dispatch(params, manager, workspaceFolder, _signal);
     } catch (err: any) {
       log.warn("LSP", `${params.operation} 执行失败: ${err.message}`);
       return { output: `LSP ${params.operation} 失败: ${err.message}`, isError: true };
@@ -278,6 +292,7 @@ export class LSPTool implements Tool {
     params: LSPToolInput,
     manager: import("../lsp/server-manager.ts").LSPServerManager,
     workspaceFolder: string,
+    signal?: AbortSignal,
   ): Promise<ToolResult> {
     const { pathToFileURL } = await import("url");
     const uri = pathToFileURL(params.filePath).href;
@@ -294,7 +309,7 @@ export class LSPTool implements Tool {
           textDocument,
           position,
         });
-        const filtered = await this.filterLocationResult(result, workspaceFolder);
+        const filtered = await this.filterLocationResult(result, workspaceFolder, signal);
         return { output: formatLocations(filtered, workspaceFolder, "未找到定义") };
       }
       case "goToImplementation": {
@@ -302,7 +317,7 @@ export class LSPTool implements Tool {
           textDocument,
           position,
         });
-        const filtered = await this.filterLocationResult(result, workspaceFolder);
+        const filtered = await this.filterLocationResult(result, workspaceFolder, signal);
         return { output: formatLocations(filtered, workspaceFolder, "未找到实现") };
       }
       case "findReferences": {
@@ -311,7 +326,7 @@ export class LSPTool implements Tool {
           position,
           context: { includeDeclaration: true },
         });
-        const filtered = await this.filterLocationResult(result, workspaceFolder);
+        const filtered = await this.filterLocationResult(result, workspaceFolder, signal);
         return { output: formatLocations(filtered, workspaceFolder, "未找到引用") };
       }
       case "hover": {
@@ -380,7 +395,7 @@ export class LSPTool implements Tool {
    * 把结果归一化为 Location[]，提取磁盘路径批量交给 git check-ignore，
    * 剔除被忽略项后返回过滤后的原始结果数组。
    */
-  private async filterLocationResult(result: unknown, workspaceFolder: string): Promise<unknown> {
+  private async filterLocationResult(result: unknown, workspaceFolder: string, signal?: AbortSignal): Promise<unknown> {
     if (!result) return result;
     const arr = Array.isArray(result) ? result : [result];
     if (arr.length === 0) return result;
@@ -401,7 +416,7 @@ export class LSPTool implements Tool {
     const absPaths = locations
       .map((l) => pathOf(l.uri))
       .filter((p): p is string => p !== null);
-    const ignored = await filterGitignored(absPaths, workspaceFolder);
+    const ignored = await filterGitignored(absPaths, workspaceFolder, signal);
     if (ignored.size === 0) return result; // 无忽略项，原样返回
 
     // 过滤原始数组：保留 uri 对应磁盘路径不在 ignored 中的项

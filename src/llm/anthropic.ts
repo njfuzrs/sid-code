@@ -436,9 +436,15 @@ export class AnthropicProvider implements Provider {
               break;
 
             case "error":
+              // T6：透传上游结构化 error.type（如 overloaded_error）+ streamLevel 标记，
+              // 让 fallback.ts 按结构化字段而非消息文本关键词判定重试。
               yield {
                 type: "error",
-                error: { message: (event as any).error?.message || "Unknown error" },
+                error: {
+                  message: (event as any).error?.message || "Unknown error",
+                  type: (event as any).error?.type,
+                  streamLevel: true,
+                },
               };
               break;
 

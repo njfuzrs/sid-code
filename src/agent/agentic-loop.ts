@@ -126,9 +126,14 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
       ...config.sendParamsExtra,
     };
 
-    const stream = provider.sendMessageStream(sendParams, signal);
+    // T4：per-turn AbortController，与父 signal 合并后传给上游流。
+    // 让 processStream 的心跳/整体超时在触发时能主动 abort 上游（而非仅靠外层
+    // 5min Promise.race——它在 Bun 事件循环阻塞时可能延迟数分钟才 fire）。
+    const turnAbort = new AbortController();
+    const combinedSignal = AbortSignal.any([signal, turnAbort.signal]);
+    const stream = provider.sendMessageStream(sendParams, combinedSignal);
 
-    // B2: 子代理硬超时保护（对齐主循环 L1），防止 processStream 无限挂起
+    // B2: 子代理硬超时保护（对齐主循环 L1），作为 T4 setInterval 心跳之上的最后兜底
     const AGENT_STREAM_TIMEOUT_MS = 5 * 60 * 1000; // 5min
     const timeoutPromise = new Promise<StreamProcessResult>((_, reject) => {
       setTimeout(() => {
@@ -136,10 +141,16 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
       }, AGENT_STREAM_TIMEOUT_MS);
     });
 
-    // 处理流式响应
+    // 处理流式响应（T4：传入心跳 + 整体超时 + turnAbort 引用）
     let response: StreamProcessResult;
     try {
-      response = await Promise.race([processStream(stream, signal), timeoutPromise]);
+      response = await Promise.race([
+        processStream(stream, {
+          signal: combinedSignal,
+          getAbortController: () => turnAbort,
+        }),
+        timeoutPromise,
+      ]);
     } catch (err: any) {
       // 超时或 abort 都走错误返回
       log.error("AGENT_LOOP", `流式处理异常: ${err.message}`);

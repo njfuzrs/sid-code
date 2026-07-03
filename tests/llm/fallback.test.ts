@@ -693,3 +693,101 @@ describe("ModelFallback 增强", () => {
     ).rejects.toBeInstanceOf(RequestAbortedError);
   }, 10_000);
 });
+
+describe("T6 — 流内错误提前检测（stream-level error）", () => {
+  /** 首事件即 overloaded_error（消息不含关键词），首次调用 fail、第二次成功 */
+  function streamOverloadedThenSuccess(): Provider {
+    let attempts = 0;
+    return {
+      name: () => "mock",
+      defaultModel: () => "mock-model",
+      async *sendMessageStream(): AsyncIterable<StreamEvent> {
+        attempts++;
+        if (attempts === 1) {
+          // HTTP 200 但流内首事件是伪装成功的错误：消息文本无 "overloaded"/"529" 关键词，
+          // 只有结构化 type 字段——靠 T6 的 classifyStreamError 才能判成可重试。
+          yield { type: "error", error: { message: "服务暂时不可用", type: "overloaded_error", streamLevel: true } } as StreamEvent;
+          return;
+        }
+        yield { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "recovered" } };
+        yield { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { inputTokens: 1, outputTokens: 1 } };
+        yield { type: "message_stop" };
+      },
+    };
+  }
+
+  test("Anthropic 200 + overloaded_error 首事件（消息无关键词）→ 重试后成功", async () => {
+    const fallback = new ModelFallback({ maxRetries: 2, streamTimeoutMs: 60_000 });
+    const events = await collectEvents(
+      fallback.executeWithFallback(streamOverloadedThenSuccess(), { ...defaultParams, model: "anthropic:claude-x" }),
+    );
+    // 重试后成功消费到内容 + 正常收尾
+    expect(events.some(e => e.type === "content_block_delta")).toBe(true);
+    expect(events.some(e => e.type === "message_stop")).toBe(true);
+  }, 10_000);
+
+  test("OpenAI 200 + error chunk 首事件 → 重试后成功", async () => {
+    let attempts = 0;
+    const provider: Provider = {
+      name: () => "mock",
+      defaultModel: () => "mock-model",
+      async *sendMessageStream(): AsyncIterable<StreamEvent> {
+        attempts++;
+        if (attempts === 1) {
+          yield { type: "error", error: { message: "OpenAI 流内错误: upstream busy", type: "server_error", streamLevel: true } } as StreamEvent;
+          return;
+        }
+        yield { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "ok" } };
+        yield { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { inputTokens: 1, outputTokens: 1 } };
+        yield { type: "message_stop" };
+      },
+    };
+    const fallback = new ModelFallback({ maxRetries: 2, streamTimeoutMs: 60_000 });
+    const events = await collectEvents(
+      fallback.executeWithFallback(provider, { ...defaultParams, model: "openai:gpt-x" }),
+    );
+    expect(events.some(e => e.type === "content_block_delta")).toBe(true);
+    expect(attempts).toBeGreaterThanOrEqual(2);
+  }, 10_000);
+
+  test("正常首事件 → 正常消费（不误触发重试）", async () => {
+    let attempts = 0;
+    const provider: Provider = {
+      name: () => "mock",
+      defaultModel: () => "mock-model",
+      async *sendMessageStream(): AsyncIterable<StreamEvent> {
+        attempts++;
+        yield { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hi" } };
+        yield { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { inputTokens: 1, outputTokens: 1 } };
+        yield { type: "message_stop" };
+      },
+    };
+    const fallback = new ModelFallback({ maxRetries: 2 });
+    const events = await collectEvents(fallback.executeWithFallback(provider, defaultParams));
+    expect(events.some(e => e.type === "message_stop")).toBe(true);
+    expect(attempts).toBe(1); // 未重试
+  });
+
+  test("流内认证错误（terminal）不重试 → 进 fallback", async () => {
+    const availability = new ModelAvailabilityService();
+    const failing: Provider = {
+      name: () => "mock",
+      defaultModel: () => "mock-model",
+      async *sendMessageStream(): AsyncIterable<StreamEvent> {
+        yield { type: "error", error: { message: "凭证无效", type: "authentication_error", streamLevel: true } } as StreamEvent;
+      },
+    };
+    const fallback = new ModelFallback({
+      availability,
+      fallbackProvider: successProvider(),
+      fallbackModel: "fallback-model",
+      maxRetries: 2,
+    });
+    const events = await collectEvents(
+      fallback.executeWithFallback(failing, { ...defaultParams, model: "anthropic:claude-x" }),
+    );
+    // 认证错误归 Terminal：原模型标记不可用 + 走 fallback 成功收尾
+    expect(availability.isAvailable("anthropic:claude-x").available).toBe(false);
+    expect(events.some(e => e.type === "message_stop")).toBe(true);
+  });
+});

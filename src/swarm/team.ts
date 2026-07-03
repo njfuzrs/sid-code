@@ -85,20 +85,35 @@ export class TeamManager {
     // 不再用 process.chdir，因此隔离成员也可与非隔离成员一起并发执行（无 chdir 竞态）。
     // D 模式兜底：team 级硬超时 15 分钟，防止单个成员 hang 导致整个 Promise.all 永久阻塞
     const TEAM_HARD_TIMEOUT_MS = 15 * 60 * 1000;
+    // T5-B2：超时时不仅 reject，还要 abort 所有成员的执行——否则底层子代理进程/流
+    // 仍在后台跑，泄漏资源。teamAbortCtl 的 signal 会合并进每个成员的 signal。
+    const teamAbortCtl = new AbortController();
+    let teamTimer: ReturnType<typeof setTimeout> | null = null;
     const teamTimeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error(`Swarm team 整体超时 (${TEAM_HARD_TIMEOUT_MS / 1000}s)`)), TEAM_HARD_TIMEOUT_MS).unref();
+      teamTimer = setTimeout(() => {
+        teamAbortCtl.abort("team-hard-timeout");
+        reject(new Error(`Swarm team 整体超时 (${TEAM_HARD_TIMEOUT_MS / 1000}s)`));
+      }, TEAM_HARD_TIMEOUT_MS);
+      teamTimer.unref();
     });
-    const results = await Promise.race([
-      Promise.all(
-        this.opts.members.map((m) => this.runMember(m, gitRoot, ts, signal)),
-      ),
-      teamTimeoutPromise,
-    ]);
+    try {
+      const results = await Promise.race([
+        Promise.all(
+          this.opts.members.map((m) =>
+            this.runMember(m, gitRoot, ts, signal, teamAbortCtl.signal),
+          ),
+        ),
+        teamTimeoutPromise,
+      ]);
 
-    // 保持成员定义顺序
-    const byName = new Map<string, TeammateResult>();
-    for (const r of results) byName.set(r.name, r);
-    return this.opts.members.map((m) => byName.get(m.name)!);
+      // 保持成员定义顺序
+      const byName = new Map<string, TeammateResult>();
+      for (const r of results) byName.set(r.name, r);
+      return this.opts.members.map((m) => byName.get(m.name)!);
+    } finally {
+      // 正常完成路径清掉定时器（unref 已保证不阻塞退出，这里避免多余 fire）
+      if (teamTimer) clearTimeout(teamTimer);
+    }
   }
 
   /** 执行单个成员任务 */
@@ -107,6 +122,7 @@ export class TeamManager {
     gitRoot: string | null,
     ts: number,
     signal?: AbortSignal,
+    teamSignal?: AbortSignal,
   ): Promise<TeammateResult> {
     const log = getLogger();
     const { SubAgent } = await import("../agent/sub-agent.ts");
@@ -147,6 +163,12 @@ export class TeamManager {
         this.opts.providerRegistry,
         this.opts.toolRegistry,
       );
+      // T5-B2：合并成员自身 signal 与 team 级 signal——team 超时时 teamSignal abort，
+      // 成员执行随之中断，不再留后台孤儿。任一 signal 缺省则退化为另一个。
+      const memberSignal =
+        signal && teamSignal
+          ? AbortSignal.any([signal, teamSignal])
+          : (signal ?? teamSignal);
       const exec = await sub.execute(
         {
           type: member.type,
@@ -154,7 +176,7 @@ export class TeamManager {
           prompt: member.task,
           cwd: isolatedCwd, // B7: withAgentCwd 隔离，并发安全
         },
-        signal,
+        memberSignal,
       );
       result.success = exec.success;
       result.output = exec.output;
