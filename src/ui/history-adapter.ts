@@ -18,6 +18,9 @@ import {
 } from "./types.ts";
 import type { Message } from "../llm/types.ts";
 import { getToolSummary, getResultSummary, isDiffContent, getFilenameFromInput } from "./ui-utils.ts";
+// 直接复用产生端的 origin 常量,而非在此重复字符串字面量——避免"注入端打了 origin、
+// 隐藏端白名单漏登记"的漂移(compact-reattach 泄漏正是此类接线遗漏)。
+import { REATTACH_ORIGIN } from "../query/compact/reattach-markers.ts";
 
 /**
  * 构建主屏 Static 模式的历史项数组（ADR-040）。
@@ -193,8 +196,9 @@ function isInternalOnlyText(text: string): boolean {
  * 迭代微调(摘要前缀、ack 措辞),用 `_meta.origin` 标记比前缀匹配更稳。
  */
 const INTERNAL_ORIGINS = new Set([
-  "compact-summary", // compactWithSummary 注入的摘要 / skill 保留 / ack
+  "compact-summary", // compactWithSummary 注入的摘要 / skill 保留 / ack；snipCompact 裁剪摘要
   "resume-summary",  // restoreSession 有摘要路径注入的恢复提示 / ack
+  REATTACH_ORIGIN,   // "compact-reattach"：压缩后重注入的文件正文/Plan/决策/原始任务锚点 + 各自 ack
 ]);
 
 /** 消息是否带内部来源标记(整条隐藏)。 */

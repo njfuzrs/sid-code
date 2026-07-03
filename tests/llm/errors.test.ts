@@ -291,7 +291,18 @@ describe("isAbortError", () => {
     // 凡 abortController.abort("xxx") 用到的 reason 都必须登记在 ABORT_REASONS，
     // 否则该 reason 的孤儿 rejection 会被当真故障导致进程退出。
     // 若新增/修改 abort reason，请同步更新 ABORT_REASONS 与本断言。
-    expect([...ABORT_REASONS].sort()).toEqual(["timeout", "turn-timeout", "user-cancel", "watchdog-timeout"]);
+    // 现有 reason：user-cancel(app.ts onInterrupt)、timeout(session 超时)、
+    // turn-timeout(单轮硬超时)、watchdog-timeout(loop.ts 看门狗)、
+    // side-call-timeout(side-call-timeout.ts：auto-compact/context-collapse/recall/warmup)。
+    // 转 string[] 断言:ABORT_REASONS 是 as const 字面量联合,直接 toEqual 会因
+    // NoInfer 把期望数组收窄到该联合而报重载不匹配;比较值本身即可,不需比字面量类型。
+    expect([...ABORT_REASONS].map(String).sort()).toEqual([
+      "side-call-timeout",
+      "timeout",
+      "turn-timeout",
+      "user-cancel",
+      "watchdog-timeout",
+    ]);
     for (const r of ABORT_REASONS) {
       expect(isAbortError(r)).toBe(true);
     }

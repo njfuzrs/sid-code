@@ -101,8 +101,12 @@ export function snipCompact(
     role: "user",
     content: [{
       type: "text",
+      // 文案前缀 "[snipCompact]" 是再压缩防重入的承重标识(见上方 startsWith 判定),勿改。
       text: `[snipCompact] 裁剪了 ${snipCount} 条早期消息：\n${summaryParts.join("\n")}`,
     }],
+    // 内部裁剪摘要仅供 LLM 续接,不应作为 `> [snipCompact]…` 泄漏到 TUI。
+    // 打 compact-summary origin,与其它压缩摘要一致被 history-adapter 整条隐藏。
+    _meta: { origin: "compact-summary" },
   };
 
   // 组装结果：摘要 + 保留的消息

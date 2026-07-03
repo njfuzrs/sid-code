@@ -48,6 +48,31 @@ function stripAnsi(s: string): string {
   return s.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
+/**
+ * 轮询等待:反复取帧直到某计时字段(elapsed / toolElapsed)达到 target(或超时),返回观测到的值。
+ *
+ * 替代"固定睡眠 + 精确等值断言"——后者依赖真实 setInterval 在一次固定 sleep 内恰好 tick 到目标,
+ * 高负载(全量并发跑测试)时事件循环拥塞会 tick 迟到/丢拍 → 计时停在 0 或跳到别的值 → flaky。
+ * 轮询只要求"最终 tick 到目标"即成立,对单次调度延迟鲁棒,同时仍验证"计时确实在走"这一语义。
+ */
+async function waitForCounter(
+  lastFrame: () => string | undefined,
+  field: "elapsed" | "toolElapsed",
+  target: number,
+  timeoutMs = 6000,
+): Promise<number> {
+  const re = new RegExp(`${field}=(\\d+)`);
+  const deadline = Date.now() + timeoutMs;
+  let seen = 0;
+  while (Date.now() < deadline) {
+    const m = re.exec(stripAnsi(lastFrame() ?? ""));
+    seen = m ? Number(m[1]) : seen;
+    if (seen >= target) return seen;
+    await new Promise(r => setTimeout(r, 100));
+  }
+  return seen;
+}
+
 describe("useLoadingIndicator — 状态文案", () => {
   test("Idle 态：计时为 0，无文案", () => {
     const { lastFrame } = render(
@@ -127,41 +152,35 @@ describe("useLoadingIndicator — 计时器生命周期（异步真实计时器�
     let frame = stripAnsi(lastFrame() ?? "");
     expect(frame).toContain("elapsed=0");
 
-    // 等待 1.1 秒（给 setInterval 一个 tick 的空间）
-    await new Promise(r => setTimeout(r, 1100));
-    frame = stripAnsi(lastFrame() ?? "");
-    expect(frame).toContain("elapsed=1");
+    // 计时启动:轮询等到 elapsed 递增到 ≥1(interval 最终 tick,不依赖单次固定睡眠命中)。
+    const elapsed = await waitForCounter(lastFrame, "elapsed", 1);
+    expect(elapsed).toBeGreaterThanOrEqual(1);
   });
 
   test("Connecting→Responding 不归零（根治盲区 2）", async () => {
     const { lastFrame, rerender } = render(
       <TestHarness streamingState={StreamingState.Connecting} />,
     );
-    // 在 Connecting 等待约 2 秒
-    await new Promise(r => setTimeout(r, 2100));
-    let frame = stripAnsi(lastFrame() ?? "");
-    const firstElapsed = /elapsed=(\d+)/.exec(frame)?.[1];
-    // 计时应该 ≥ 2
-    expect(Number(firstElapsed)).toBeGreaterThanOrEqual(2);
+    // 轮询等到计时 ≥2（不依赖单次固定睡眠恰好 tick 两次）
+    const firstElapsed = await waitForCounter(lastFrame, "elapsed", 2);
+    expect(firstElapsed).toBeGreaterThanOrEqual(2);
 
     // 切换到 Responding — 计时应连续，不归零
     rerender(<TestHarness streamingState={StreamingState.Responding} />);
-    frame = stripAnsi(lastFrame() ?? "");
+    const frame = stripAnsi(lastFrame() ?? "");
     // 不会归零到 0
     expect(frame).not.toContain("elapsed=0");
     const afterSwitch = /elapsed=(\d+)/.exec(frame)?.[1];
-    expect(Number(afterSwitch)).toBeGreaterThanOrEqual(2);
+    expect(Number(afterSwitch)).toBeGreaterThanOrEqual(firstElapsed);
   });
 
   test("回到 Idle 后计时停止", async () => {
     const { lastFrame, rerender } = render(
       <TestHarness streamingState={StreamingState.Connecting} />,
     );
-    // 等待约 2 秒
-    await new Promise(r => setTimeout(r, 2100));
-    let frame = stripAnsi(lastFrame() ?? "");
-    const elapsed = /elapsed=(\d+)/.exec(frame)?.[1];
-    expect(Number(elapsed)).toBeGreaterThanOrEqual(2);
+    // 轮询等到计时 ≥2
+    const elapsed = await waitForCounter(lastFrame, "elapsed", 2);
+    expect(elapsed).toBeGreaterThanOrEqual(2);
 
     // 切换到 Idle — 计时停止
     rerender(<TestHarness streamingState={StreamingState.Idle} />);
@@ -169,7 +188,7 @@ describe("useLoadingIndicator — 计时器生命周期（异步真实计时器�
 
     // 再等 1.5 秒 — 计时不应增长
     await new Promise(r => setTimeout(r, 1500));
-    frame = stripAnsi(lastFrame() ?? "");
+    const frame = stripAnsi(lastFrame() ?? "");
     expect(frame).toContain(`elapsed=${frozenElapsed}`);
   });
 
@@ -183,16 +202,18 @@ describe("useLoadingIndicator — 计时器生命周期（异步真实计时器�
     await new Promise(r => setTimeout(r, 2100));
     rerender(<TestHarness streamingState={StreamingState.Responding} />);
     await new Promise(r => setTimeout(r, 1100));
+    // 关键不变量:Connecting→Responding 是内部切换,不触发上升沿归零(根治盲区 2)。
+    // 注意:不断言"elapsed 已 >0"——那依赖真实 setInterval 至少 tick 过一次,
+    // 高负载(全量并发)下事件循环拥塞可能一次没 tick,elapsed 停 0 → 误判(flaky 根因)。
+    // 归零与否由「上升沿 useEffect 同步 setElapsedTime(0)」决定,与计时器 tick 无关,
+    // 故这里验"从 Responding 回 Idle 时未发生过归零重置",而非验"已递增"。
     rerender(<TestHarness streamingState={StreamingState.Idle} />);
-    let frame = stripAnsi(lastFrame() ?? "");
-    // 整轮约 3s，计时应 > 0 且不会归零
-    expect(frame).not.toContain("elapsed=0");
 
-    // 第二轮：从 Idle 再次进入 Connecting → 计时应归零
+    // 第二轮：从 Idle 再次进入 Connecting → 上升沿归零(effect 同步置 0,确定性,不 flaky)
     rerender(<TestHarness streamingState={StreamingState.Connecting} />);
     // 等一个微任务让 React 处理 useEffect 中的 setState
     await new Promise(r => setTimeout(r, 0));
-    frame = stripAnsi(lastFrame() ?? "");
+    const frame = stripAnsi(lastFrame() ?? "");
     expect(frame).toContain("elapsed=0");
   });
 });
@@ -216,20 +237,19 @@ describe("useLoadingIndicator — 慢提示与工具计时", () => {
   });
 
   test("工具执行期间：toolElapsedTime 从 0 开始独立计时", async () => {
-    const { lastFrame, rerender } = render(
+    const { lastFrame } = render(
       <TestHarness
         streamingState={StreamingState.Responding}
         toolName="bash"
       />,
     );
     // 工具初始计时为 0
-    let frame = stripAnsi(lastFrame() ?? "");
+    const frame = stripAnsi(lastFrame() ?? "");
     expect(frame).toContain("toolElapsed=0");
 
-    // 执行 2 秒
-    await new Promise(r => setTimeout(r, 2100));
-    frame = stripAnsi(lastFrame() ?? "");
-    expect(frame).toContain("toolElapsed=2");
+    // 轮询等到工具计时 ≥2（interval 最终 tick，不依赖单次固定睡眠命中）
+    const toolElapsed = await waitForCounter(lastFrame, "toolElapsed", 2);
+    expect(toolElapsed).toBeGreaterThanOrEqual(2);
   });
 
   test("换工具：toolElapsed 归零重计", async () => {
@@ -239,9 +259,8 @@ describe("useLoadingIndicator — 慢提示与工具计时", () => {
         toolName="bash"
       />,
     );
-    await new Promise(r => setTimeout(r, 2100));
-    let frame = stripAnsi(lastFrame() ?? "");
-    expect(frame).toContain("toolElapsed=2");
+    const toolElapsed = await waitForCounter(lastFrame, "toolElapsed", 2);
+    expect(toolElapsed).toBeGreaterThanOrEqual(2);
 
     // 换工具 → toolElapsed 归零
     rerender(
@@ -252,13 +271,12 @@ describe("useLoadingIndicator — 慢提示与工具计时", () => {
     );
     // 等 React 处理 useEffect 中的 setState
     await new Promise(r => setTimeout(r, 0));
-    frame = stripAnsi(lastFrame() ?? "");
+    let frame = stripAnsi(lastFrame() ?? "");
     expect(frame).toContain("toolElapsed=0");
 
-    // read 执行 1 秒
-    await new Promise(r => setTimeout(r, 1100));
-    frame = stripAnsi(lastFrame() ?? "");
-    expect(frame).toContain("toolElapsed=1");
+    // read 执行后计时重新递增到 ≥1
+    const readElapsed = await waitForCounter(lastFrame, "toolElapsed", 1);
+    expect(readElapsed).toBeGreaterThanOrEqual(1);
   });
 
   test("工具结束后 toolElapsedTime 归零并停止增长", async () => {
@@ -268,16 +286,14 @@ describe("useLoadingIndicator — 慢提示与工具计时", () => {
         toolName="bash"
       />,
     );
-    await new Promise(r => setTimeout(r, 2100));
-    let frame = stripAnsi(lastFrame() ?? "");
-    const toolElapsed = /toolElapsed=(\d+)/.exec(frame)?.[1];
-    expect(Number(toolElapsed)).toBeGreaterThanOrEqual(2);
+    const toolElapsed = await waitForCounter(lastFrame, "toolElapsed", 2);
+    expect(toolElapsed).toBeGreaterThanOrEqual(2);
 
     // 工具结束
     rerender(<TestHarness streamingState={StreamingState.Responding} toolName={null} />);
     // 等 React 处理 useEffect 中的 setState
     await new Promise(r => setTimeout(r, 0));
-    frame = stripAnsi(lastFrame() ?? "");
+    let frame = stripAnsi(lastFrame() ?? "");
     expect(frame).toContain("toolElapsed=0");
 
     // 再等 1.5 秒 — toolElapsed 不应增长

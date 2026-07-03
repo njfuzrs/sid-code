@@ -14,6 +14,7 @@ import {
   isHiddenFromDisplay,
 } from "../../src/ui/history-adapter.ts";
 import type { Message } from "../../src/llm/types.ts";
+import { REATTACH_ORIGIN } from "../../src/query/compact/reattach-markers.ts";
 import { ToolCallStatus } from "../../src/ui/types.ts";
 
 describe("isPlaceholderMessage", () => {
@@ -116,6 +117,31 @@ describe("内部消息隐藏（仅供 LLM、不展示给用户）", () => {
     })).toBe(false);
   });
 
+  test("压缩后重注入锚点(compact-reattach)整条隐藏——文件正文/Plan/决策/原始任务 + ack", () => {
+    // 回归:这四类 reattach 消息都打了 _meta.origin="compact-reattach",但 INTERNAL_ORIGINS
+    // 曾漏登记该 origin → 整段文件正文/Plan 正文以 `> [压缩后…]…` 泄漏到屏幕(长任务每次压缩必现)。
+    expect(isHiddenFromDisplay({
+      role: "user",
+      content: [{ type: "text", text: "[压缩后自动恢复] 以下是你压缩前最近访问的 3 个文件的当前内容：\n\n<大段文件正文>" }],
+      _meta: { origin: "compact-reattach" },
+    })).toBe(true);
+    expect(isHiddenFromDisplay({
+      role: "assistant",
+      content: [{ type: "text", text: "好的，已重新加载最近的文件内容，我会继续之前的工作。" }],
+      _meta: { origin: "compact-reattach" },
+    })).toBe(true);
+  });
+
+  test("snipCompact 裁剪摘要按 _meta.origin 隐藏(文案前缀是防重入承重标识,不能靠它隐藏)", () => {
+    // 回归:snipCompact 摘要曾无 _meta.origin,且 [snipCompact] 前缀不在 isInternalOnlyText,
+    // → 以 `> [snipCompact] 裁剪了 N 条…` 泄漏。改为打 compact-summary origin 隐藏。
+    expect(isHiddenFromDisplay({
+      role: "user",
+      content: [{ type: "text", text: "[snipCompact] 裁剪了 8 条早期消息：\n[user] 早期消息..." }],
+      _meta: { origin: "compact-summary" },
+    })).toBe(true);
+  });
+
   test("真实用户/助手消息不被隐藏", () => {
     expect(isHiddenFromDisplay(mkUser("帮我修个 bug"))).toBe(false);
     expect(isHiddenFromDisplay({ role: "assistant", content: [{ type: "text", text: "好的" }] })).toBe(false);
@@ -123,6 +149,18 @@ describe("内部消息隐藏（仅供 LLM、不展示给用户）", () => {
 
   test("正文里偶然含 [压缩边界] 字样但非开头，不误判", () => {
     expect(isHiddenFromDisplay(mkUser("请解释一下 [压缩边界] 这个概念"))).toBe(false);
+  });
+
+  test("防漂移哨兵:产生端 origin 常量必须被隐藏端登记(杜绝'注入打 origin、隐藏漏登记')", () => {
+    // 直接引产生端常量,而非硬编码字符串——若有人改了 REATTACH_ORIGIN 值或新增同类 origin
+    // 却忘了在 history-adapter 的 INTERNAL_ORIGINS 登记,此断言立即红灯。
+    // compact-reattach 泄漏(整段文件正文当 `> …` 显示)正是此类接线遗漏,本哨兵防其复发。
+    const mkTagged = (origin: string): Message => ({
+      role: "user",
+      content: [{ type: "text", text: "任意内部锚点正文" }],
+      _meta: { origin },
+    });
+    expect(isHiddenFromDisplay(mkTagged(REATTACH_ORIGIN))).toBe(true);
   });
 
   test("混合内容消息（tool_result + 内部提示）不整条隐藏，仅剥离内部文本块", () => {
