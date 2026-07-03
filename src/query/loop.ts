@@ -24,7 +24,7 @@ import { resolveToolSearchEnabled } from "../tool/tool-search-auto.ts";
 import { TOKEN_THRESHOLDS } from "../context/auto-compact.ts";
 import { ModelFallback } from "../llm/fallback.ts";
 import { setSseDumpContext } from "../llm/sse-chunk-dumper.ts";
-import { emitTimeoutFired, emitTimeoutRetry, emitTimeoutRetryExhausted, armIneffectiveCheck } from "../trace/stream-observer.ts";
+import { emitTimeoutFired, emitTimeoutRetry, emitTimeoutRetryExhausted, armIneffectiveCheck, emitWatchdogKill, getStreamSnapshot } from "../trace/stream-observer.ts";
 import { SessionState } from "../session/state.ts";
 import { getLogger, getSessionMetrics, getPerfTimer } from "../debug/index.ts";
 import { LoopDetector, LOOP_RECOVERY_PROMPT, LOOP_RECOVERY_FINAL_PROMPT } from "../agent/loop-detection.ts";
@@ -794,6 +794,63 @@ export async function* queryLoop(
         // 正常路径的 finally { clearTimeout(turnTimer) } 保证不会泄漏阻止退出。
       });
 
+      // ─── T1：setInterval 看门狗（turn_hard_timeout 的补位防线）───
+      // 根因：上面的 turnTimeoutPromise 用 setTimeout，在 Bun 事件循环被半开 TCP IO
+      // 占满时可能延迟数分钟才 fire（实测 setTimeout 回调延迟 193s → 流 hang 死 35min）。
+      // 而 setInterval 在 Bun 中已被 heartbeat 证明可靠（周期性重排，不受单次长任务饿死）。
+      // 策略：每 5s 读一次当轮流状态快照 getStreamSnapshot(state.turnCount)，
+      // 若 lastContentProgressAt 已 90s 无业务进展（text_delta / tool_use / reasoning）
+      // → abort 上游 + reject，把 hang 转成 timeout 重试（远早于 5-10min 硬超时）。
+      //
+      // 为什么快照够用：openai.ts 的 parseSSE 每收到有效内容就 updateStreamStats
+      // 刷新 lastContentProgressAt（见 openai.ts:1116-1125），watchdog 只读不写，
+      // 无侵入。快照缺失（Anthropic 路径当前不写快照 / 请求刚起未建快照）时降级为
+      // "用 watchdog 自身启动时间兜底"——保证任何 provider 都有 90s 无快照即触发的下限。
+      const WATCHDOG_CHECK_INTERVAL_MS = (() => {
+        const override = Number(process.env.SID_CODE_WATCHDOG_CHECK_INTERVAL_MS);
+        if (Number.isFinite(override) && override > 0) return override;
+        return 5_000;
+      })();
+      const WATCHDOG_NO_PROGRESS_MS = (() => {
+        const override = Number(process.env.SID_CODE_WATCHDOG_NO_PROGRESS_MS);
+        if (Number.isFinite(override) && override > 0) return override;
+        return 90_000;
+      })();
+      let watchdogTimer: ReturnType<typeof setInterval> | null = null;
+      const watchdogStartedAt = Date.now();
+      const watchdogPromise = new Promise<never>((_resolve, reject) => {
+        watchdogTimer = setInterval(() => {
+          try {
+            const snapshot = getStreamSnapshot(state.turnCount);
+            // 快照存在用 lastContentProgressAt；缺失则退化为 watchdog 启动时间兜底。
+            const lastProgressAt = snapshot?.lastContentProgressAt ?? watchdogStartedAt;
+            const noProgressMs = Date.now() - lastProgressAt;
+            if (noProgressMs < WATCHDOG_NO_PROGRESS_MS) return;
+
+            log.error(
+              "QUERY_LOOP",
+              `看门狗：${(noProgressMs / 1000).toFixed(0)}s 无业务进展，强制中断流（补位 turn_hard）`,
+            );
+            // 记录 watchdog 强杀事件（含当轮流状态快照）
+            emitWatchdogKill(state.turnCount, {
+              phase: snapshot?.phase ?? "unknown",
+              last_content_progress_ms: noProgressMs,
+              total_chunks: snapshot?.chunksReceived ?? 0,
+              empty_chunks: snapshot?.emptyChunks ?? 0,
+              elapsed_ms: Date.now() - watchdogStartedAt,
+              model: config.model,
+            });
+            // 尽力而为：主动 abort 上游 fetch（即便对已 hang 的 reader 无效也无害）。
+            try {
+              deps.abortCurrentRequest?.("watchdog-timeout");
+            } catch { /* abort 失败不影响 race 让出 */ }
+            // reject 带 "timeout" 字样 → 下方 catch 命中 isTimeoutError → 复用超时重试分支。
+            reject(new Error(`看门狗超时：${(WATCHDOG_NO_PROGRESS_MS / 1000).toFixed(0)}s 无业务进展`));
+          } catch { /* 看门狗自身异常绝不影响主流程 */ }
+        }, WATCHDOG_CHECK_INTERVAL_MS);
+        // 同 turnTimer：不 unref——它是关键防线，宁可保持进程活跃直到 finally 清理。
+      });
+
       try {
         response = await Promise.race([
           deps.processStream(stream, (_text) => {
@@ -803,10 +860,12 @@ export async function* queryLoop(
             // 流式文本通过 QueryEngine 层的 onStreamText 回调桥接
           }, undefined),
           turnTimeoutPromise,
+          watchdogPromise,
         ]);
         // onThinking 通过 QueryEngine 层的 streamThinkingCallback 桥接，queryLoop 自身无需处理
       } finally {
         if (turnTimer !== null) clearTimeout(turnTimer);
+        if (watchdogTimer !== null) clearInterval(watchdogTimer);
         // race 已 settle（正常返回或 catch 到 reject）→ disarm，证明超时确实生效。
         // 断言读取：disarm 仅在闭包内赋值，TS 线性流会把变量窄化成 null，故显式转型。
         (disarmTurnIneffective as (() => void) | null)?.();

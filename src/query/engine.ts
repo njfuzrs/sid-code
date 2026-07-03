@@ -153,7 +153,16 @@ export class QueryEngine {
    */
   async *submitMessage(
     userInput: string,
-    options?: { thinking?: { enabled: boolean; budgetTokens: number } },
+    options?: {
+      thinking?: { enabled: boolean; budgetTokens: number };
+      /**
+       * 斜杠命令展开来源标记：inline prompt 命令（如 /commit）把展开后的完整提示词
+       * 作为 user 消息喂给 LLM，但 TUI 不该把整段提示词渲染成 `> ...` 用户输入
+       * （泄漏 + 干扰视线）。设此值时给 user 消息打 _meta 标记，history-adapter 只
+       * 渲染触发命令本身（此字段值，如 `/commit`），提示词内容仅 LLM 可见。
+       */
+      displayCommand?: string;
+    },
   ): AsyncGenerator<QueryEngineEvent> {
     const log = getLogger();
     const { config, ctxMgr, toolRegistry, sessionState, hookSystem, sessionStore } = this.deps;
@@ -201,6 +210,17 @@ export class QueryEngine {
     const userMessage = {
       role: "user" as const,
       content: [{ type: "text" as const, text: cleanedInput }],
+      // 斜杠命令展开：打来源标记，history-adapter 据此把这条 user 消息渲染为
+      // 「命令历史项」（只显示 /commit 触发命令），而非把整段展开提示词当 `> ...`
+      // 用户输入泄漏到屏幕。标记只影响展示，不影响喂给 LLM 的内容。
+      ...(options?.displayCommand
+        ? {
+            _meta: {
+              origin: "command-expansion",
+              displayCommand: options.displayCommand,
+            },
+          }
+        : {}),
     };
     try {
       sessionStore?.appendMessage(userMessage);

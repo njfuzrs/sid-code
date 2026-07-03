@@ -351,6 +351,47 @@ export function clearStreamSnapshot(index: number): void {
   _snapshots.delete(index);
 }
 
+// ─── WatchdogKill 事件（T1：setInterval 看门狗强杀） ───
+
+/**
+ * 记录 setInterval watchdog 触发强制中断。
+ *
+ * 与 TimeoutFired("turn_hard_timeout") 的区别：turn_hard 是 Promise.race 里的
+ * setTimeout，在 Bun 事件循环被半开 TCP IO 占满时可能延迟数分钟才 fire；watchdog
+ * 用 setInterval（Bun 中已被 heartbeat 证明可靠）每 5s 检查流快照，是 turn_hard 的
+ * 补位防线。触发时把当轮流状态快照（phase / lastContentProgressAt / chunks / 已耗时）
+ * 一并写进 events.jsonl，供事后分析"为什么 turn_hard 没先生效"。
+ *
+ * 调用点：loop.ts 的 watchdog setInterval 回调中 abort 前。
+ */
+export function emitWatchdogKill(
+  index: number,
+  data: {
+    phase: StreamPhase | "unknown";
+    last_content_progress_ms: number;
+    total_chunks: number;
+    empty_chunks: number;
+    elapsed_ms: number;
+    model: string;
+  },
+): void {
+  try {
+    const snapshot = _snapshots.get(index);
+    if (snapshot) {
+      // 复用 turn_hard_timeout 层标记，便于 digest 统一按超时层聚合
+      snapshot.timeoutsFired.push("turn_hard_timeout");
+    }
+    if (_eventWriter && _sessionId) {
+      _eventWriter({
+        event: "WatchdogKill",
+        session_id: _sessionId,
+        timestamp: new Date().toISOString(),
+        data: { index, ...data },
+      });
+    }
+  } catch { /* 可观测性不影响正常流程 */ }
+}
+
 // ─── StreamStall 事件（大间隔无进展时主动发出） ───
 
 /**

@@ -58,7 +58,7 @@ export { isPlaceholderMessage, messagesToHistoryItems };
 
 /** TUI 回调接口 */
 export interface TUICallbacks {
-  onUserInput: (text: string) => Promise<void>;
+  onUserInput: (text: string, opts?: { displayCommand?: string }) => Promise<void>;
   onSlashCommand: (cmd: string, args: string) => Promise<void>;
   onInterrupt: () => void;
   /** 首次启动引导完成：写 settings.json + 热加载 Provider（见 app.ts） */

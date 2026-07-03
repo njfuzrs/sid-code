@@ -277,6 +277,7 @@ describe("isAbortError", () => {
     expect(isAbortError("user-cancel")).toBe(true);
     expect(isAbortError("timeout")).toBe(true);
     expect(isAbortError("turn-timeout")).toBe(true);
+    expect(isAbortError("watchdog-timeout")).toBe(true);
   });
 
   test("识别带 reason 的 AbortSignal / 对象", () => {
@@ -290,7 +291,7 @@ describe("isAbortError", () => {
     // 凡 abortController.abort("xxx") 用到的 reason 都必须登记在 ABORT_REASONS，
     // 否则该 reason 的孤儿 rejection 会被当真故障导致进程退出。
     // 若新增/修改 abort reason，请同步更新 ABORT_REASONS 与本断言。
-    expect([...ABORT_REASONS].sort()).toEqual(["timeout", "turn-timeout", "user-cancel"]);
+    expect([...ABORT_REASONS].sort()).toEqual(["timeout", "turn-timeout", "user-cancel", "watchdog-timeout"]);
     for (const r of ABORT_REASONS) {
       expect(isAbortError(r)).toBe(true);
     }

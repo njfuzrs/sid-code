@@ -318,6 +318,10 @@ export interface SendParams {
 export type StreamTelemetrySignal =
   | { type: "stream_stall"; provider: string; gapMs: number; totalEvents: number }
   | { type: "stream_idle_timeout"; provider: string; timeoutMs: number; totalEvents: number }
+  // T2：业务内容进展超时。区别于 idle_timeout（任何数据包间隔，含 ping keep-alive）：
+  // content_progress_timeout 只在"有意义的业务内容"（content_block_delta / message_delta）
+  // 长时间未到达时触发——即便 ping 还在续命 idle timer，也能识破"只有 keep-alive、无真内容"。
+  | { type: "stream_content_progress_timeout"; provider: string; timeoutMs: number; totalEvents: number }
   | { type: "stream_completed"; provider: string; totalEvents: number; elapsedMs: number; ttftMs?: number };
 
 /** 累积的流式响应 */

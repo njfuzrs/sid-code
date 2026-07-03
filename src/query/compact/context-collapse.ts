@@ -20,6 +20,7 @@ import type { Provider } from "../../llm/provider.ts";
 import { getLogger } from "../../debug/index.ts";
 import { estimateTextTokens } from "../../context/token.ts";
 import { recordSideCall } from "../../trace/side-call-sink.ts";
+import { withSideCallDeadline } from "../../llm/side-call-timeout.ts";
 
 /** 每段消息条数 */
 const SEGMENT_SIZE = 10;
@@ -121,28 +122,44 @@ async function summarizeSegment(
     "保留涉及的文件、关键决策、用户纠正、已完成与待办。仅输出摘要纯文本，不要调用工具。";
   const user = `请摘要以下对话片段（保留文件路径、决策、用户纠正等关键信息）：${prevContext}\n\n${segmentText}`;
 
-  const stream = opts.provider.sendMessageStream(
-    {
-      model: opts.model,
-      messages: [{ role: "user", content: [{ type: "text", text: user }] }],
-      system,
-      maxTokens: 1500,
+  // T3.3：给单段摘要套 45s 硬超时（单段比整体 compact 更短）。超时后 throw
+  // SideCallTimeoutError，由外层 catch 处理（跳过该段 / 返回已成功部分）。
+  const SEGMENT_TIMEOUT_MS = (() => {
+    const override = Number(process.env.SID_CODE_COLLAPSE_SEGMENT_TIMEOUT_MS);
+    if (Number.isFinite(override) && override > 0) return override;
+    return 45_000;
+  })();
+
+  const { summary, streamUsage } = await withSideCallDeadline(
+    "context-collapse",
+    SEGMENT_TIMEOUT_MS,
+    async (signal) => {
+      const stream = opts.provider.sendMessageStream(
+        {
+          model: opts.model,
+          messages: [{ role: "user", content: [{ type: "text", text: user }] }],
+          system,
+          maxTokens: 1500,
+        },
+        signal,
+      );
+      let s = "";
+      let usage: any = null;
+      for await (const event of stream) {
+        // A7 纵深防御：上下文折叠 side-call 检查 signal
+        if (signal.aborted) {
+          throw new Error("Request aborted");
+        }
+        if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+          s += event.delta.text;
+        } else if (event.type === "message_stop" && (event as any).usage) {
+          usage = (event as any).usage;
+        }
+      }
+      return { summary: s, streamUsage: usage };
     },
     opts.signal,
   );
-  let summary = "";
-  let streamUsage: any = null;
-  for await (const event of stream) {
-    // A7 纵深防御：上下文折叠 side-call 检查 signal
-    if (opts.signal?.aborted) {
-      throw new Error("Request aborted");
-    }
-    if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
-      summary += event.delta.text;
-    } else if (event.type === "message_stop" && (event as any).usage) {
-      streamUsage = (event as any).usage;
-    }
-  }
   // 记录辅助调用用量
   if (streamUsage) {
     recordSideCall({

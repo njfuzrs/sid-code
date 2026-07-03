@@ -19,6 +19,7 @@ import type { ToolDefinition } from "../llm/types.ts";
 import type { Message } from "../llm/types.ts";
 import { getLogger } from "../debug/logger.ts";
 import { recordSideCall } from "../trace/side-call-sink.ts";
+import { withSideCallDeadline } from "../llm/side-call-timeout.ts";
 
 export interface WarmupParams {
   provider: Provider;
@@ -57,13 +58,24 @@ export async function warmupPromptCache(params: WarmupParams): Promise<boolean> 
       content: [{ type: "text", text: "." }],
     }];
 
-    const resp = await params.provider.sendMessageNonStreaming({
-      model: "", // 使用 provider 默认模型
-      system: params.systemPrompt,
-      tools: params.tools,
-      messages: warmupMessages,
-      maxTokens: 1, // 最小化输出 token 开销
-    });
+    // T3：warmup 是非流式 side-call，此前无 signal 也无 timeout——若网关 hang 则永久阻塞
+    // 会话启动。套 10s 硬超时（Promise.race + 合并 signal），超时/失败都走下方 catch 静默降级。
+    const WARMUP_TIMEOUT_MS = (() => {
+      const override = Number(process.env.SID_CODE_WARMUP_TIMEOUT_MS);
+      if (Number.isFinite(override) && override > 0) return override;
+      return 10_000;
+    })();
+    const resp = await withSideCallDeadline(
+      "cache-warmup",
+      WARMUP_TIMEOUT_MS,
+      (signal) => params.provider.sendMessageNonStreaming!({
+        model: "", // 使用 provider 默认模型
+        system: params.systemPrompt,
+        tools: params.tools,
+        messages: warmupMessages,
+        maxTokens: 1, // 最小化输出 token 开销
+      }, signal),
+    );
 
     // 记录辅助调用用量
     if (resp?.usage) {

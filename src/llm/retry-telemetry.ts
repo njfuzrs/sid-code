@@ -23,6 +23,7 @@ export interface RetryTelemetryEvent {
     // 流内诊断事件（由 stream-guard.ts 产生）
     | "stream_stall"
     | "stream_idle_timeout"
+    | "stream_content_progress_timeout"
     | "stream_completed";
   /** 模型名 */
   model: string;
@@ -95,6 +96,10 @@ export function defaultTelemetryHandler(event: RetryTelemetryEvent): void {
 
     case "stream_idle_timeout":
       log.warn("TELEMETRY", `[stream_idle_timeout] provider=${event.provider} timeout=${event.timeoutMs}ms events=${event.totalEvents}`);
+      break;
+
+    case "stream_content_progress_timeout":
+      log.warn("TELEMETRY", `[stream_content_progress_timeout] provider=${event.provider} timeout=${event.timeoutMs}ms events=${event.totalEvents}`);
       break;
 
     case "stream_completed":

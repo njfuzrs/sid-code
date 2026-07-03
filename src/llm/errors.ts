@@ -83,12 +83,15 @@ export class RequestAbortedError extends Error {
  * ⚠️ 凡是 `abortController.abort("xxx")` 用到的新 reason 字符串，都必须登记到这里，
  * 否则该 reason 触发的孤儿 rejection 会被当成真故障导致进程退出。
  * 现有调用点：app.ts onInterrupt("user-cancel")、session 超时("timeout")、
- * 单轮硬超时("turn-timeout")。
+ * 单轮硬超时("turn-timeout")、watchdog 看门狗("watchdog-timeout")、
+ * side-call 硬超时("side-call-timeout"：auto-compact / context-collapse / recall / warmup)。
  */
 export const ABORT_REASONS = [
   "user-cancel",
   "timeout",
   "turn-timeout",
+  "watchdog-timeout",
+  "side-call-timeout",
 ] as const;
 
 export type AbortReason = (typeof ABORT_REASONS)[number];

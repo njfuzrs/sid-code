@@ -17,6 +17,7 @@ import { buildFreshnessWarning } from "./freshness.ts";
 import { MEMORY_LIMITS, type RelevantMemory } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
 import { recordSideCall } from "../trace/side-call-sink.ts";
+import { withSideCallDeadline } from "../llm/side-call-timeout.ts";
 
 /** 轻量 LLM 调用签名（依赖注入，便于测试） */
 export type SideQueryFn = (opts: {
@@ -137,28 +138,44 @@ export function makeSideQuery(
   model: string,
 ): SideQueryFn {
   return async ({ system, user, maxTokens, signal }) => {
-    const stream = provider.sendMessageStream(
-      {
-        model,
-        system,
-        messages: [{ role: "user", content: [{ type: "text", text: user }] }],
-        maxTokens,
+    // T3.4：记忆召回是轻量初筛（≤256 tokens），15s 硬超时足够。超时后 throw
+    // SideCallTimeoutError，由 recall 调用方 catch（召回失败不阻断会话启动）。
+    const RECALL_TIMEOUT_MS = (() => {
+      const override = Number(process.env.SID_CODE_RECALL_TIMEOUT_MS);
+      if (Number.isFinite(override) && override > 0) return override;
+      return 15_000;
+    })();
+
+    const { text, streamUsage } = await withSideCallDeadline(
+      "memory-recall",
+      RECALL_TIMEOUT_MS,
+      async (mergedSignal) => {
+        const stream = provider.sendMessageStream(
+          {
+            model,
+            system,
+            messages: [{ role: "user", content: [{ type: "text", text: user }] }],
+            maxTokens,
+          },
+          mergedSignal,
+        );
+        let t = "";
+        let usage: any = null;
+        for await (const event of stream) {
+          // 纵深防御：记忆召回 side-call 检查 signal，防止 provider 层超时失效时挂死
+          if (mergedSignal.aborted) {
+            throw new Error("Request aborted");
+          }
+          if (event.type === "content_block_delta" && event.delta?.type === "text_delta") {
+            t += event.delta.text;
+          } else if (event.type === "message_stop" && (event as any).usage) {
+            usage = (event as any).usage;
+          }
+        }
+        return { text: t, streamUsage: usage };
       },
       signal,
     );
-    let text = "";
-    let streamUsage: any = null;
-    for await (const event of stream) {
-      // 纵深防御：记忆召回 side-call 检查 signal，防止 provider 层超时失效时挂死
-      if (signal?.aborted) {
-        throw new Error("Request aborted");
-      }
-      if (event.type === "content_block_delta" && event.delta?.type === "text_delta") {
-        text += event.delta.text;
-      } else if (event.type === "message_stop" && (event as any).usage) {
-        streamUsage = (event as any).usage;
-      }
-    }
     // 记录辅助调用用量
     if (streamUsage) {
       recordSideCall({

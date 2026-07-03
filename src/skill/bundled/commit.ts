@@ -19,32 +19,46 @@ import { registerBundledSkill } from "./registry.ts";
 
 const COMMIT_PROMPT = `# Commit: 生成提交信息并提交
 
-你的任务是基于当前 git 变更，生成规范的 commit message 并完成提交。
+基于当前 git 变更生成规范 commit message 并提交。**追求快捷**：能推断的就直接做，
+需要用户拍板的岔路口一律用 \`ask_user_question\` 工具弹结构化选项，不要在正文里写一段
+问话等用户自由回答（那样用户还得手敲第二遍，慢且啰嗦）。
 
-## 阶段 1: 查看变更
-1. 运行 \`git status\` 了解工作区状态（哪些已暂存、哪些未暂存、哪些未跟踪）
-2. 运行 \`git diff --staged\` 查看暂存区变更
-3. 如果暂存区为空但有未暂存变更，提示用户：当前没有已暂存的改动，是否需要先 \`git add\`（不要擅自 \`git add -A\` 把无关文件也提交进去）
-4. 运行 \`git log --oneline -10\` 参考本仓库已有的 commit message 风格
+## 阶段 1: 查看变更（并行跑，输出简明）
+并行运行以下命令摸清状态，不要逐条复述输出，只在心里记住结论：
+- \`git status\`：哪些已暂存 / 未暂存 / 未跟踪
+- \`git diff --staged\`：暂存区变更
+- \`git diff\`：未暂存变更（暂存区为空时据此判断该 add 什么）
+- \`git log --oneline -10\`：参考本仓库 commit 风格与语言
 
-## 阶段 2: 生成 commit message
-按 **conventional commits** 规范生成：
-- 格式：\`<type>(<scope>): <subject>\`
-- type 取值：feat / fix / chore / docs / refactor / test / perf / style / build / ci
-- scope 可选；涉及多模块时建议标明
-- subject 用祈使句、简明扼要；与本仓库历史 commit 的语言保持一致（中文仓库写中文）
-- 改动复杂时，在 body 里补充"做了什么 / 为什么"，每行不超过 72 字符
+## 阶段 2: 处理暂存区（暂存区为空时）
+若暂存区为空但有改动，用 \`ask_user_question\` 让用户选如何暂存（不要擅自 \`git add -A\`
+吞入无关文件）。给出类似选项：
+- "暂存全部改动"（列出将 add 的文件）
+- "只暂存本次相关文件"（你判断出的相关文件）
+- "手动指定"（让用户补充）
+按用户选择执行 \`git add\`。若暂存区已非空，跳过本阶段。
 
-## 阶段 3: 确认后提交
-1. 把生成的 commit message **完整展示**给用户
-2. 等用户确认（或要求调整）后，再执行 \`git commit -m "..."\`
-3. **不要**自动 \`git push\`——推送是 /commit-push-pr 的职责
-4. 提交后运行 \`git log --oneline -1\` 回显结果
+## 阶段 3: 生成 commit message
+按 **conventional commits** 规范：
+- 格式：\`<type>(<scope>): <subject>\`，type ∈ feat/fix/chore/docs/refactor/test/perf/style/build/ci
+- scope 可选，多模块时标明；subject 用祈使句、简明；语言跟随仓库历史（中文仓库写中文）
+- 改动复杂时 body 补"做了什么 / 为什么"，每行 ≤72 字符
+
+## 阶段 4: 确认后提交
+先把生成的 message 用代码块**完整展示**一次，紧接着用 \`ask_user_question\` 让用户拍板，
+选项固定为：
+- "确认提交"（推荐）
+- "调整信息"（选后请用户说明怎么改，改完再走一次本阶段确认）
+- "取消"（放弃提交，流程结束）
+用户选"确认提交"才执行 \`git commit\`；选"取消"则不提交并简报"已取消"。
+提交后运行 \`git log --oneline -1\` 回显结果。
 
 ## 约束
-- 只提交已暂存的内容；不擅自扩大提交范围
-- 不修改任何代码文件，只生成 message 并提交
-- 如发现暂存区疑似包含密钥文件（.env / credentials / *.key 等），先警示用户再继续`;
+- 只提交已暂存内容，不擅自扩大范围；不修改任何代码文件，只生成 message 并提交
+- **不要**自动 \`git push\`——推送是 /commit-push-pr 的职责
+- 若暂存区疑似含密钥文件（.env / credentials / *.key 等），先用 \`ask_user_question\`
+  警示并让用户确认是否继续，再往下走
+- 全程保持简洁：不复述命令原始输出，不写长表格，把交互交给 ask_user_question`;
 
 export function registerCommitSkill(): void {
   registerBundledSkill({

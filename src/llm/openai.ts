@@ -591,9 +591,20 @@ export class OpenAIProvider implements Provider {
       }, headerTimeoutMs);
       // 注意：不调 unref()。fdb47f30 的教训正是 fallback 的整体超时定时器 unref 后
       // 在 hang 场景疑似未按时 fire；响应头超时是关键防线，宁可让它保持进程活跃。
+      // T1.2：fetch 兜底硬超时（300s）。header timeout 是"等响应头"的第一道防线（60/120s），
+      // 但一旦响应头已到、SSE 流进入半开 TCP 且底层 reader 永不 settle 时，header timeout
+      // 已被 clearTimeout 释放，不再保护。这里用 AbortSignal.timeout(300s) 给整个 fetch
+      // 生命周期加一个绝对上限——即便 SSE 流 hang，300s 后底层 fetch 也会被 runtime abort，
+      // 让 reader.read() 以 AbortError settle，打破 hang。与 header timeout 独立并存：
+      // header timeout 的 AbortController 仍是第一道防线，不受此兜底影响。
+      const FETCH_ABSOLUTE_TIMEOUT_MS = (() => {
+        const override = Number(process.env.SID_CODE_FETCH_ABSOLUTE_TIMEOUT_MS);
+        if (Number.isFinite(override) && override > 0) return override;
+        return 300_000;
+      })();
       const fetchSignal = signal
-        ? AbortSignal.any([signal, headerTimeoutCtl.signal])
-        : headerTimeoutCtl.signal;
+        ? AbortSignal.any([signal, headerTimeoutCtl.signal, AbortSignal.timeout(FETCH_ABSOLUTE_TIMEOUT_MS)])
+        : AbortSignal.any([headerTimeoutCtl.signal, AbortSignal.timeout(FETCH_ABSOLUTE_TIMEOUT_MS)]);
 
       let response: Response;
       // 缺口 1：记录 fetch 发出阶段

@@ -704,7 +704,7 @@ export class App {
     deps: {
       cmd: string;
       commandInput: string;
-      callbacks: { onUserInput: (text: string) => Promise<void> };
+      callbacks: { onUserInput: (text: string, opts?: { displayCommand?: string }) => Promise<void> };
       updateState: (patch: Partial<import("./ui/App.tsx").TUIState>) => void;
       appendCommandOutput: (input: string, output: string | null, isError?: boolean) => void;
       getConversationClearedPatch: () => Partial<import("./ui/App.tsx").TUIState>;
@@ -762,8 +762,10 @@ export class App {
 
       case "submit_prompt":
         if (result.value) {
-          appendCommandOutput(commandInput, null);
-          await callbacks.onUserInput(result.value);
+          // 不再 appendCommandOutput（那条命令项会被 syncDisplay 从 ctxMgr 全量重建时冲掉）。
+          // 改由 displayCommand 让展开的提示词以「命令历史项」形式渲染（只显示 /commit
+          // 触发命令本身），提示词全文仅喂 LLM、不泄漏到屏幕。
+          await callbacks.onUserInput(result.value, { displayCommand: commandInput });
         }
         break;
 
@@ -2740,7 +2742,7 @@ export class App {
     }
 
     // TUI 版本的 agentLoop（消费 QueryEngine async generator）
-    const tuiAgentLoop = async (userInput: string) => {
+    const tuiAgentLoop = async (userInput: string, displayCommand?: string) => {
       const SESSION_TIMEOUT_MS = 30 * 60 * 1000; // 单次 session 最长 30 分钟
       const sessionTimer = setTimeout(() => {
         log.warn("TUI", "Session 超时，触发 abort");
@@ -2810,7 +2812,7 @@ export class App {
       try {
         // 新用户回合开始：清执行阶段标志（同 runHeadless，详见该处注释）。
         this.planManager?.endExecution();
-        for await (const event of this.queryEngine.submitMessage(userInput)) {
+        for await (const event of this.queryEngine.submitMessage(userInput, displayCommand ? { displayCommand } : undefined)) {
           switch (event.kind) {
             case "user_message_added":
               syncDisplay();
@@ -3026,19 +3028,21 @@ export class App {
 
     // 回调
     const callbacks: import("./ui/App.tsx").TUICallbacks = {
-      onUserInput: async (text) => {
+      onUserInput: async (text, opts) => {
         log.debug("TUI:CB", `onUserInput 被调用: "${text.slice(0, 100)}"`);
         // 首条用户消息 → 设置会话任务名（终端标题）。启发式即时 + 后台升级。
-        maybeSetSessionTitle(text);
+        // 命令展开（displayCommand）用触发命令而非整段提示词做标题启发式。
+        maybeSetSessionTitle(opts?.displayCommand ?? text);
         // A4：暂存本轮原始输入,供"中断后自动回填"使用（仅暂存,是否回填由 ESC 取消时决定）。
-        stashPendingInput(text, false);
+        // 命令展开的提示词不回填输入框（用户没敲过它），故 displayCommand 时跳过暂存。
+        if (!opts?.displayCommand) stashPendingInput(text, false);
         try {
           this.abortController = new AbortController();
           // @ 文件注入：展开用户输入中的 @path 引用
           // 文件内容用 <system-reminder> 包裹，TUI 渲染时剥离，模型正常读取
           const { displayText, injectedContent } = await expandAtReferences(text);
           const finalInput = injectedContent ? `${displayText}\n\n${injectedContent}` : displayText;
-          await tuiAgentLoop(finalInput);
+          await tuiAgentLoop(finalInput, opts?.displayCommand);
           // 正常完成 → 丢弃暂存,不回填
           clearPendingInput();
         } catch (err: any) {
@@ -3311,8 +3315,10 @@ export class App {
 
           case "submit_prompt":
             if (result.prompt) {
-              appendCommandOutput(commandInput, null);
-              await callbacks.onUserInput(result.prompt);
+              // 同 handleCommandExecutionResult 的 submit_prompt：以 displayCommand 渲染
+              // 命令历史项，展开提示词只喂 LLM、不泄漏到屏幕（不再 appendCommandOutput，
+              // 那条项会被 syncDisplay 全量重建冲掉）。
+              await callbacks.onUserInput(result.prompt, { displayCommand: commandInput });
             }
             break;
 

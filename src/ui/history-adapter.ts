@@ -299,6 +299,20 @@ export function messagesToHistoryItemsWithMap(
       continue;
     }
 
+    // 斜杠命令展开（inline prompt 命令，如 /commit）：这条 user 消息的正文是展开后的
+    // 完整提示词，只该喂 LLM，不该作为 `> <整段提示词>` 泄漏到屏幕。渲染为「命令历史项」
+    // 只显示触发命令本身（_meta.displayCommand，如 /commit），提示词内容不展示。
+    if (rawMsg._meta?.origin === "command-expansion") {
+      const displayCommand =
+        typeof rawMsg._meta.displayCommand === "string"
+          ? rawMsg._meta.displayCommand
+          : "";
+      if (displayCommand) {
+        items.push({ type: "command", input: displayCommand, output: null });
+      }
+      continue;
+    }
+
     // 混合内容消息(如循环恢复 = orphan tool_result + 内部提示文本):
     // 剥离仅供 LLM 的内部文本块,保留 tool_result 等正常 block 继续转换。
     const msg = stripInternalTextBlocks(rawMsg);

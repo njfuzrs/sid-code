@@ -12,6 +12,7 @@ import { Manager as ContextManager } from "../context/manager.ts";
 import { getLogger } from "../debug/index.ts";
 import { AutoCompactCircuitBreaker } from "./circuit-breaker.ts";
 import { recordSideCall } from "../trace/side-call-sink.ts";
+import { withSideCallDeadline } from "../llm/side-call-timeout.ts";
 
 /** 全局熔断器实例（跨调用共享状态） */
 let globalCircuitBreaker: AutoCompactCircuitBreaker | null = null;
@@ -174,35 +175,53 @@ async function doAutoCompact(
 
     const summaryPrompt = buildCompactUserPrompt(toSummarize);
 
-    const stream = deps.provider.sendMessageStream(
-      {
-        // §12.3：摘要走低成本模型（未指定则跟主模型）
-        model: deps.compactModel || deps.config.model,
-        messages: [{ role: "user", content: [{ type: "text", text: summaryPrompt }] }],
-        system: COMPACT_SYSTEM_PROMPT,
-        maxTokens: 4000,
-        // §3.1：携带主对话工具定义（命中已缓存前缀）；toolChoice=none 禁止摘要时调用工具
-        ...(deps.toolSchemas && deps.toolSchemas.length > 0
-          ? { tools: deps.toolSchemas, toolChoice: "none" as const }
-          : {}),
-      },
-      deps.getAbortSignal(),
-    );
+    // T3.1/T3.2：给整个"建流 + 流消费"套 60s 硬超时（Promise.race，不依赖 signal 传播）。
+    // 摘要不应超过 1 分钟；超时后走下方 catch → recordFailure + 降级为简单截断。
+    // withSideCallDeadline 内部把合并后的 signal（外部 signal + 超时 signal）传给 provider，
+    // 让底层 fetch/流在超时时也尽力被 abort（双保险）。
+    const COMPACT_TIMEOUT_MS = (() => {
+      const override = Number(process.env.SID_CODE_COMPACT_TIMEOUT_MS);
+      if (Number.isFinite(override) && override > 0) return override;
+      return 60_000;
+    })();
 
     let summary = "";
     let streamUsage: any = null;
-    const compactSignal = deps.getAbortSignal();
-    for await (const event of stream) {
-      // A6 纵深防御：压缩 side-call 检查 signal，防止主循环 abort 后压缩仍挂起
-      if (compactSignal?.aborted) {
-        throw new Error("Request aborted");
-      }
-      if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
-        summary += event.delta.text;
-      } else if (event.type === "message_stop" && (event as any).usage) {
-        streamUsage = (event as any).usage;
-      }
-    }
+    ({ summary, streamUsage } = await withSideCallDeadline(
+      "auto-compact",
+      COMPACT_TIMEOUT_MS,
+      async (signal) => {
+        const stream = deps.provider.sendMessageStream(
+          {
+            // §12.3：摘要走低成本模型（未指定则跟主模型）
+            model: deps.compactModel || deps.config.model,
+            messages: [{ role: "user", content: [{ type: "text", text: summaryPrompt }] }],
+            system: COMPACT_SYSTEM_PROMPT,
+            maxTokens: 4000,
+            // §3.1：携带主对话工具定义（命中已缓存前缀）；toolChoice=none 禁止摘要时调用工具
+            ...(deps.toolSchemas && deps.toolSchemas.length > 0
+              ? { tools: deps.toolSchemas, toolChoice: "none" as const }
+              : {}),
+          },
+          signal,
+        );
+        let s = "";
+        let usage: any = null;
+        for await (const event of stream) {
+          // A6 纵深防御：压缩 side-call 检查 signal，防止主循环 abort 后压缩仍挂起
+          if (signal.aborted) {
+            throw new Error("Request aborted");
+          }
+          if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+            s += event.delta.text;
+          } else if (event.type === "message_stop" && (event as any).usage) {
+            usage = (event as any).usage;
+          }
+        }
+        return { summary: s, streamUsage: usage };
+      },
+      deps.getAbortSignal(),
+    ));
 
     // 记录辅助调用用量
     if (streamUsage) {
