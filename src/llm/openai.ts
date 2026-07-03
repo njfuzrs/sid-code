@@ -48,6 +48,28 @@ function extractInlineThinkTags(content: string): { thinking: string; text: stri
   return { thinking, text };
 }
 
+/**
+ * 从 OpenAI 兼容响应的 usage 提取"缓存命中(读)token 数"——流式/非流式共用的单一事实源。
+ *
+ * 各家字段差异（依据 api-reference 各家文档实测）按优先级兜底：
+ *   ① `prompt_cache_hit_tokens` —— DeepSeek 官方直连的顶层专有字段；
+ *   ② `prompt_tokens_details.cached_tokens` —— OpenAI 标准字段。公司网关(uni-api)
+ *      对所有 OpenAI 族后端(deepseek/glm/gemini/qwen 隐式/grok/kimi)统一归一化到此
+ *      （实测 curl 各家均返回此形状，官方顶层扩展字段被网关吃掉）；
+ *   ③ `cached_tokens` —— Kimi 官方直连的顶层扩展字段(标准端点顶层无此字段，
+ *      放兜底链末尾不会误伤其它家)。
+ *
+ * 缓存写入(cacheCreationInputTokens)：OpenAI 族均无自动写入计费概念(恒 0)；
+ * Qwen 显式缓存的 `cache_creation_input_tokens` 需客户端主动打 cache_control 标记，
+ * 当前 openai 协议路径不发该标记，不会产生，故不映射。
+ */
+export function extractOpenAICacheHit(usage: any): number {
+  return usage?.prompt_cache_hit_tokens
+    ?? usage?.prompt_tokens_details?.cached_tokens
+    ?? usage?.cached_tokens
+    ?? 0;
+}
+
 /** 工具调用追踪状态（用于 SSE 流中多工具并行解析） */
 interface ToolCallState {
   id: string;
@@ -911,12 +933,8 @@ export class OpenAIProvider implements Provider {
       getLogger().warn("LLM:OPENAI", `模型返回 refusal: ${msg.refusal.slice(0, 200)}`);
     }
 
-    // DeepSeek 缓存命中数：顶层 prompt_cache_hit_tokens（DeepSeek 专有），
-    // 兜底读 OpenAI 标准的 prompt_tokens_details.cached_tokens。
-    // DeepSeek 无缓存写入计费概念，cacheCreationInputTokens 不映射（恒 0）。
-    const cacheHit = data.usage?.prompt_cache_hit_tokens
-      ?? data.usage?.prompt_tokens_details?.cached_tokens
-      ?? 0;
+    // 缓存命中数：见 extractOpenAICacheHit 的字段兜底说明（流式/非流式单一事实源）。
+    const cacheHit = extractOpenAICacheHit(data.usage);
 
     return {
       role: "assistant",
@@ -1131,12 +1149,8 @@ export class OpenAIProvider implements Provider {
             if (chunk.usage) {
               usage.inputTokens = chunk.usage.prompt_tokens || 0;
               usage.outputTokens = chunk.usage.completion_tokens || 0;
-              // DeepSeek 缓存命中数：顶层 prompt_cache_hit_tokens（DeepSeek 专有），
-              // 兜底读 OpenAI 标准的 prompt_tokens_details.cached_tokens。
-              // 不映射 cacheCreationInputTokens——DeepSeek 无缓存写入计费概念（恒 0）。
-              const cacheHit = chunk.usage.prompt_cache_hit_tokens
-                ?? chunk.usage.prompt_tokens_details?.cached_tokens
-                ?? 0;
+              // 缓存命中数：见 extractOpenAICacheHit 的字段兜底说明（与非流式共用）。
+              const cacheHit = extractOpenAICacheHit(chunk.usage);
               if (cacheHit > 0) usage.cacheReadInputTokens = cacheHit;
             }
 

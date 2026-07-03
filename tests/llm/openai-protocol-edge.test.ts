@@ -11,7 +11,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { OpenAIProvider } from "../../src/llm/openai.ts";
+import { OpenAIProvider, extractOpenAICacheHit } from "../../src/llm/openai.ts";
 import { DYNAMIC_BOUNDARY } from "../../src/api/cache-strategy.ts";
 
 class TestableOpenAIProvider extends OpenAIProvider {
@@ -278,6 +278,57 @@ describe("§4.2 tool_choice 映射", () => {
 describe("§3.4 vision 能力如实声明", () => {
   test("capabilities.vision = false（无图片输入管线时不虚标）", () => {
     expect(provider.capabilities().vision).toBe(false);
+  });
+});
+
+describe("extractOpenAICacheHit：各家缓存命中字段兜底链（依据 api-reference 各家文档）", () => {
+  test("① DeepSeek 官方直连：顶层 prompt_cache_hit_tokens 优先", () => {
+    expect(extractOpenAICacheHit({
+      prompt_tokens: 100,
+      prompt_cache_hit_tokens: 64,
+      prompt_cache_miss_tokens: 36,
+    })).toBe(64);
+  });
+
+  test("② OpenAI 标准 / 公司网关归一化：prompt_tokens_details.cached_tokens", () => {
+    // gpt/glm/gemini/qwen隐式/grok 及公司网关统一归一化后的 deepseek/kimi 均走此形状
+    expect(extractOpenAICacheHit({
+      prompt_tokens: 2000,
+      prompt_tokens_details: { cached_tokens: 1024 },
+    })).toBe(1024);
+  });
+
+  test("③ Kimi 官方直连：顶层 cached_tokens 兜底命中", () => {
+    // 修复点：旧兜底链只查 ①② → kimi 官方顶层 cached_tokens 会漏采恒 0
+    expect(extractOpenAICacheHit({
+      prompt_tokens: 19,
+      completion_tokens: 21,
+      cached_tokens: 10,
+    })).toBe(10);
+  });
+
+  test("优先级：prompt_cache_hit_tokens > prompt_tokens_details.cached_tokens > cached_tokens", () => {
+    expect(extractOpenAICacheHit({
+      prompt_cache_hit_tokens: 1,
+      prompt_tokens_details: { cached_tokens: 2 },
+      cached_tokens: 3,
+    })).toBe(1);
+    expect(extractOpenAICacheHit({
+      prompt_tokens_details: { cached_tokens: 2 },
+      cached_tokens: 3,
+    })).toBe(2);
+  });
+
+  test("无任何缓存字段 → 0（无缓存模型 / ollama 不误报）", () => {
+    expect(extractOpenAICacheHit({ prompt_tokens: 100, completion_tokens: 20 })).toBe(0);
+    expect(extractOpenAICacheHit(undefined)).toBe(0);
+    expect(extractOpenAICacheHit({})).toBe(0);
+  });
+
+  test("命中为 0 显式返回 0（不因 ?? 短路误判 falsy）", () => {
+    // 0 是合法命中值(冷启动)，?? 只在 null/undefined 时下探，不会把 0 当缺失
+    expect(extractOpenAICacheHit({ prompt_tokens_details: { cached_tokens: 0 } })).toBe(0);
+    expect(extractOpenAICacheHit({ prompt_cache_hit_tokens: 0 })).toBe(0);
   });
 });
 
