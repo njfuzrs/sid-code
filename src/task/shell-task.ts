@@ -51,10 +51,13 @@ export function spawnShellTask(opts: {
   const display = opts.displayCommand ?? opts.command;
 
   const outFd = openSync(output.filePath, "w");
+  // detached（仅 POSIX）→ 子进程成进程组组长，killShellTask 的 process.kill(-child.pid) 才能
+  // 清理整棵进程树（含 `sleep 30 &` 类孙子进程）。若为 false，负 pid kill 会打到错误的
+  // 进程组或落入单进程 fallback，导致孤儿泄漏（已复现）。Windows 无进程组，走 taskkill /T。
   const child = spawn(shell, [...args, opts.command], {
     cwd: opts.cwd,
     stdio: ["ignore", outFd, outFd],
-    detached: false,
+    detached: platform() !== "win32",
   });
 
   // fd 交给子进程后关闭父进程引用
@@ -143,10 +146,19 @@ export function spawnShellTask(opts: {
 export function killShellTask(taskId: string): void {
   const child = activeProcesses.get(taskId);
   if (child?.pid) {
-    try {
-      process.kill(-child.pid, "SIGKILL");
-    } catch {
-      try { child.kill("SIGKILL"); } catch { /* ignore */ }
+    if (platform() === "win32") {
+      // Windows 无进程组：taskkill /T 递归杀子进程，/F 强制
+      try {
+        spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+      } catch {
+        try { child.kill("SIGKILL"); } catch { /* ignore */ }
+      }
+    } else {
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch {
+        try { child.kill("SIGKILL"); } catch { /* ignore */ }
+      }
     }
   }
   activeProcesses.delete(taskId);

@@ -62,18 +62,86 @@ export class SubAgentTool implements Tool {
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = subAgentSchema();
 
-  /** 并发控制 */
+  /** 并发控制：当前占用 slot 数（同步 + 后台子代理统一计入） */
   static running = 0;
   /** 子代理并发上限：默认 3（工程常量，与模型无关），可经 SID_SUBAGENT_MAX_CONCURRENT 放宽。
    *  保成功：大任务需并行探索多个子任务（如同时 review + audit + governance）时,
    *  3 的并发可能成为瓶颈。非法值（NaN/≤0）静默回退默认 3，绝不因配错而更严。 */
   static readonly MAX_CONCURRENT = SubAgentTool.resolveMaxConcurrent();
 
+  /**
+   * 信号量等待队列（G1 修复：超上限时排队而非拒绝）。
+   *
+   * 对标 CC：CC 的子代理并发完全由主循环 generators.all(gens, cap=10) 统一排队治理，
+   * Agent 工具层零拒绝逻辑（toolOrchestration.ts:158-176）。sid-code 主循环
+   * Promise.allSettled 无 cap 一次性全发，若工具层硬拒绝，模型一次派 >3 个只读子代理
+   * 时第 4+ 个直接失败——与 usageGuide"方向≥3 并行分治"的引导自相矛盾。
+   *
+   * 改为信号量排队：超上限的调用 await 一个 resolver，待有 slot 释放时按 FIFO 唤醒。
+   * 前台(runSync)、后台(runAsync) 共用同一信号量，控制口径统一（G2 修复）。
+   */
+  private static waiters: Array<() => void> = [];
+
   /** 解析子代理并发上限。导出 raw 入参便于测试（默认读 env）。 */
   static resolveMaxConcurrent(raw: string | undefined = process.env.SID_SUBAGENT_MAX_CONCURRENT): number {
     if (raw === undefined || raw === "") return 3;
     const n = Number.parseInt(raw, 10);
     return Number.isFinite(n) && n > 0 ? n : 3;
+  }
+
+  /**
+   * 获取一个并发 slot（G1/G2/G5 修复）。
+   *
+   * - 有空位：立即占位并返回。
+   * - 无空位：把 resolver 推入 waiters，await 到有 slot 释放时被 releaseSlot 按 FIFO 唤醒。
+   *
+   * 关键：占位（running++）在返回前完成，调用方拿到后再做 worktree 创建等 await 操作，
+   * 消除 gate 检查与 running++ 之间的 TOCTOU 竞态（G5）——此前二者被 worktree await 隔开，
+   * N 个并发 worktree 子代理可全部越过 gate 才各自 ++，导致实际并发超限。
+   *
+   * @param signal 可选中止信号。等待期间被 abort 则移除 waiter 并抛出，避免泄漏。
+   */
+  static async acquireSlot(signal?: AbortSignal): Promise<void> {
+    if (SubAgentTool.running < SubAgentTool.MAX_CONCURRENT) {
+      SubAgentTool.running++;
+      return;
+    }
+    // 排队等待：入队一个 resolver，被唤醒时视为已持有 slot（running 由唤醒方转移，不重复 ++）
+    await new Promise<void>((resolve, reject) => {
+      const waiter = () => {
+        cleanup();
+        resolve();
+      };
+      const onAbort = () => {
+        cleanup();
+        const idx = SubAgentTool.waiters.indexOf(waiter);
+        if (idx >= 0) SubAgentTool.waiters.splice(idx, 1);
+        reject(signal?.reason ?? new Error("等待并发 slot 时被中止"));
+      };
+      const cleanup = () => signal?.removeEventListener("abort", onAbort);
+      if (signal?.aborted) {
+        reject(signal.reason ?? new Error("等待并发 slot 时被中止"));
+        return;
+      }
+      signal?.addEventListener("abort", onAbort, { once: true });
+      SubAgentTool.waiters.push(waiter);
+    });
+  }
+
+  /**
+   * 释放一个并发 slot（与 acquireSlot 配对，必须在 finally 中调用）。
+   *
+   * 有排队者：不递减 running，直接把 slot 转移给队首 waiter（唤醒它）。
+   * 无排队者：递减 running。这样 running 恒等于"实际持有 slot 的子代理数"。
+   */
+  static releaseSlot(): void {
+    const next = SubAgentTool.waiters.shift();
+    if (next) {
+      // slot 转移给下一个等待者，running 不变（该 waiter 继承本 slot）
+      next();
+    } else {
+      SubAgentTool.running = Math.max(0, SubAgentTool.running - 1);
+    }
   }
 
   constructor(providerRegistry: ProviderRegistry, toolRegistry: ToolRegistry, hookSystem?: HookSystem) {
@@ -250,47 +318,51 @@ ${typeLines}
   }, signal?: AbortSignal): Promise<ToolResult> {
     const log = getLogger();
 
-    // 并发控制
-    if (SubAgentTool.running >= SubAgentTool.MAX_CONCURRENT) {
-      return { output: `子代理并发数已达上限(${SubAgentTool.MAX_CONCURRENT})，请等待其他子代理完成`, isError: true };
-    }
-
-    // Worktree 隔离：在独立工作区执行，结束后清理无改动的 Worktree。
-    // B7：通过 SubAgentTask.cwd 走 withAgentCwd（AsyncLocalStorage）而非 process.chdir，
-    // 与 workflow/swarm 一致，避免并发 agent 间 chdir 竞态。
-    let isolationCleanup: (() => Promise<void>) | null = null;
-    let isolatedCwd: string | undefined;
-    if (params.isolation === "worktree") {
-      try {
-        const { WorktreeManager, findGitRootForAgent } = await import("../worktree/manager.ts");
-        // 用 canonical root 防嵌套（P0-2/B1）：在 worktree 内再隔离时落到主仓
-        const gitRoot = findGitRootForAgent(process.cwd());
-        if (!gitRoot) {
-          return { output: "错误: isolation=worktree 需要在 Git 仓库中执行", isError: true };
-        }
-        const { randomBytes } = await import("crypto");
-        const wtName = `agent-${randomBytes(4).toString("hex")}`;
-        const manager = new WorktreeManager(gitRoot);
-        const session = await manager.create(wtName);
-        isolatedCwd = session.worktreePath;
-        // D14：记录 slug ↔ 任务描述映射，便于事后追溯孤儿 worktree 归属
-        log.info("SUBAGENT", `隔离 Worktree ${wtName} ← 任务: ${params.description}`);
-        isolationCleanup = async () => {
-          // 无改动则自动删除；有改动则保留（fail-closed，不强删）
-          try {
-            await manager.remove(session, false);
-            log.info("SUBAGENT", `已清理隔离 Worktree: ${session.worktreeName}`);
-          } catch {
-            log.info("SUBAGENT", `保留有改动的隔离 Worktree: ${session.worktreePath}`);
-          }
-        };
-      } catch (err: any) {
-        return { output: `创建隔离 Worktree 失败: ${err.message}`, isError: true };
-      }
-    }
-
-    SubAgentTool.running++;
+    // 并发控制（G1/G5 修复）：超上限时排队等待 slot 而非拒绝；占位在 worktree 创建等
+    // await 操作之前完成，消除 gate 检查与占位之间的 TOCTOU 竞态。等待期间被 abort 则抛出。
     try {
+      await SubAgentTool.acquireSlot(signal);
+    } catch (err: any) {
+      return { output: `子代理等待并发 slot 时被中止: ${err?.message ?? err}`, isError: true };
+    }
+
+    // slot 已持有，此后所有出口（含 worktree 失败 early return / 执行异常）都必须经 finally
+    // 释放 slot，否则 slot 泄漏会让后续子代理永久排队饿死。
+    let isolationCleanup: (() => Promise<void>) | null = null;
+    try {
+      // Worktree 隔离：在独立工作区执行，结束后清理无改动的 Worktree。
+      // B7：通过 SubAgentTask.cwd 走 withAgentCwd（AsyncLocalStorage）而非 process.chdir，
+      // 与 workflow/swarm 一致，避免并发 agent 间 chdir 竞态。
+      let isolatedCwd: string | undefined;
+      if (params.isolation === "worktree") {
+        try {
+          const { WorktreeManager, findGitRootForAgent } = await import("../worktree/manager.ts");
+          // 用 canonical root 防嵌套（P0-2/B1）：在 worktree 内再隔离时落到主仓
+          const gitRoot = findGitRootForAgent(process.cwd());
+          if (!gitRoot) {
+            return { output: "错误: isolation=worktree 需要在 Git 仓库中执行", isError: true };
+          }
+          const { randomBytes } = await import("crypto");
+          const wtName = `agent-${randomBytes(4).toString("hex")}`;
+          const manager = new WorktreeManager(gitRoot);
+          const session = await manager.create(wtName);
+          isolatedCwd = session.worktreePath;
+          // D14：记录 slug ↔ 任务描述映射，便于事后追溯孤儿 worktree 归属
+          log.info("SUBAGENT", `隔离 Worktree ${wtName} ← 任务: ${params.description}`);
+          isolationCleanup = async () => {
+            // 无改动则自动删除；有改动则保留（fail-closed，不强删）
+            try {
+              await manager.remove(session, false);
+              log.info("SUBAGENT", `已清理隔离 Worktree: ${session.worktreeName}`);
+            } catch {
+              log.info("SUBAGENT", `保留有改动的隔离 Worktree: ${session.worktreePath}`);
+            }
+          };
+        } catch (err: any) {
+          return { output: `创建隔离 Worktree 失败: ${err.message}`, isError: true };
+        }
+      }
+
       const subAgent = SubAgent.fromRegistry(this.providerRegistry, this.toolRegistry, this.hookSystem);
 
       // Fork 模式：继承主对话上下文（prompt cache 友好）
@@ -334,7 +406,8 @@ ${typeLines}
       log.error("SUBAGENT", `子代理执行失败`, { error: err.message, stack: err.stack });
       return { output: `子代理执行失败: ${err.message}`, isError: true };
     } finally {
-      SubAgentTool.running--;
+      // G1/G2 修复：释放 slot（有排队者则转移，否则递减 running），任何出口都必经此处。
+      SubAgentTool.releaseSlot();
       if (isolationCleanup) {
         await isolationCleanup();
       }
@@ -389,6 +462,17 @@ ${typeLines}
   ): Promise<void> {
     const log = getLogger();
 
+    // G2 修复：后台子代理同样纳入并发信号量，与前台统一口径（此前 runAsync 完全不计数，
+    // 导致同步限 3、后台无限）。acquire 在此处而非 runAsync，避免阻塞 task_id 的立即返回。
+    // 等待期间被 abort（用户取消后台任务）则直接失败退出，不再进入执行。
+    try {
+      await SubAgentTool.acquireSlot(abortController.signal);
+    } catch (err: any) {
+      log.info("SUBAGENT", `后台子代理等待并发 slot 时被中止: ${taskId}`);
+      await failAgentTask(taskId, `等待并发 slot 时被中止: ${err?.message ?? err}`).catch(() => {});
+      return;
+    }
+
     try {
       const subAgent = SubAgent.fromRegistry(this.providerRegistry, this.toolRegistry, this.hookSystem);
 
@@ -415,6 +499,9 @@ ${typeLines}
       log.error("SUBAGENT", `后台子代理失败: ${taskId}`, { error: err.message });
       // execute() 内部 try/catch 已调用 failAgentTask，这里兜底
       await failAgentTask(taskId, err.message).catch(() => {});
+    } finally {
+      // G2：释放 slot（有排队者则转移给它），与前台共用同一信号量。
+      SubAgentTool.releaseSlot();
     }
   }
 }

@@ -124,11 +124,13 @@ async function ripGrepInternal(
   target: string,
   abortSignal: AbortSignal,
   isRetry: boolean,
+  cwd?: string,
 ): Promise<string[]> {
   const fullArgs = isRetry ? ["-j", "1", ...args, target] : [...args, target];
   const child = spawn(["rg", ...fullArgs], {
     stdout: "pipe",
     stderr: "pipe",
+    ...(cwd ? { cwd } : {}),
   });
 
   // 中止信号处理
@@ -188,7 +190,7 @@ async function ripGrepInternal(
 
     // EAGAIN 重试（仅限首次）
     if (!isRetry && isEagainError(stderr)) {
-      return ripGrepInternal(args, target, abortSignal, true);
+      return ripGrepInternal(args, target, abortSignal, true, cwd);
     }
 
     // 其他错误（如 exit code 2: 无效参数/flag）
@@ -259,12 +261,16 @@ export async function hasRipgrep(): Promise<boolean> {
  * @param args ripgrep 参数（不含 target 路径）
  * @param target 搜索路径
  * @param abortSignal 中止信号
+ * @param cwd 可选：子进程工作目录。设置后 rg 的 --glob 模式锚定到此目录
+ *            （rg 的 --glob 相对 spawn cwd 而非 target 位置参数），glob 工具据此
+ *            把搜索根设为 cwd、target 传 "."，使相对 glob 正确匹配 + 输出相对路径。
  * @returns 匹配行数组
  */
 export async function ripGrep(
   args: string[],
   target: string,
   abortSignal: AbortSignal,
+  cwd?: string,
 ): Promise<string[]> {
-  return ripGrepInternal(args, target, abortSignal, false);
+  return ripGrepInternal(args, target, abortSignal, false, cwd);
 }

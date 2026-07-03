@@ -17,6 +17,7 @@ import { readFileSync, unlinkSync, existsSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
 import type { Config } from "../config/config.ts";
 import { isReadOnlyCommand, isDestructiveCommand } from "./bash/read-only-validation.ts";
+import { interpretExitCode } from "./bash/command-semantics.ts";
 import { normalizeToolPath } from "./path-utils.ts";
 import { registerCleanup } from "../utils/graceful-shutdown.ts";
 import { ensureSidTempDir } from "../utils/temp-dir.ts";
@@ -43,6 +44,13 @@ const MAX_OUTPUT_LENGTH = 30000;
 /** 后台进程延迟时间（200ms 后切换到后台） */
 const BACKGROUND_DELAY_MS = 200;
 
+/**
+ * 是否以 detached 模式 spawn（子进程独立进程组，便于进程树 kill）。
+ * 仅 POSIX 启用：Windows 下 detached 会弹出可见控制台窗口，且无进程组概念，
+ * 其进程树清理依赖 killProcessTree 内的 taskkill /T（走真实父子关系），无需 detached。
+ */
+const DETACH = platform() !== "win32";
+
 /** 后台进程 PID 跟踪 */
 const backgroundPids = new Set<number>();
 
@@ -50,12 +58,55 @@ const backgroundPids = new Set<number>();
 let cwdFileCounter = 0;
 
 /**
+ * 杀掉整棵进程树（缺口 3 修复，对标 claude-code treeKill）。
+ *
+ * POSIX：前台命令以 `detached:true` spawn，子进程成为进程组组长（pgid===pid）。
+ * `process.kill(-pid, signal)` 向整个进程组发信号，连带清理 `sleep 30 &` 类孙子进程，
+ * 避免旧实现 `proc.kill()` 只杀 shell 父进程、子进程成孤儿的泄漏（见 shell-task.ts 同款用法）。
+ *
+ * Windows：无进程组概念，`process.kill(-pid)` 不生效。改用 `taskkill /T /F` 杀进程树。
+ *
+ * @param pid 进程组组长 pid（= detached spawn 返回的 pid）
+ * @param signal 默认 SIGKILL（超时/取消场景需要确定性终止）
+ * @param fallbackKill 进程组 kill 失败时的兜底（如 proc.kill()），用于未 detached 的场景
+ */
+export function killProcessTree(
+  pid: number | undefined,
+  signal: NodeJS.Signals = "SIGKILL",
+  fallbackKill?: () => void,
+): void {
+  if (!pid) {
+    fallbackKill?.();
+    return;
+  }
+  // Windows：taskkill /T 递归杀子进程，/F 强制
+  if (platform() === "win32") {
+    try {
+      spawn({ cmd: ["taskkill", "/pid", String(pid), "/T", "/F"], stdout: "ignore", stderr: "ignore" });
+    } catch {
+      try { fallbackKill ? fallbackKill() : process.kill(pid, signal); } catch { /* 已退出 */ }
+    }
+    return;
+  }
+  try {
+    // 负 pid = 向进程组发信号，清理整棵树
+    process.kill(-pid, signal);
+  } catch {
+    // 进程组不存在（未 detached）或已退出，回退到单进程 kill
+    try {
+      fallbackKill ? fallbackKill() : process.kill(pid, signal);
+    } catch { /* 进程可能已自行退出 */ }
+  }
+}
+
+/**
  * 杀掉所有残留后台进程并清空跟踪表(LEAK-3)。
  * 退出时由 graceful-shutdown 调用,避免 backgroundPids 无界增长 + 孤儿进程残留。
+ * 用进程组 kill 清理整棵树（后台命令也以 detached 启动）。
  */
 export function killBackgroundProcesses(): void {
   for (const pid of backgroundPids) {
-    try { process.kill(pid); } catch { /* 进程可能已自行退出 */ }
+    killProcessTree(pid);
   }
   backgroundPids.clear();
 }
@@ -120,6 +171,21 @@ function isBinaryOutput(data: string): boolean {
 
   // 如果超过 30% 是不可打印字符，视为二进制
   return nonPrintable / sampleSize > 0.3;
+}
+
+/**
+ * 格式化 spawn 异常信息（缺口 5 修复）。
+ *
+ * Bun 在 cwd 不存在时抛出 `ENOENT: no such file or directory, posix_spawn '/bin/zsh'`——
+ * 错误指向 shell 二进制，实际根因却是工作目录不存在，对模型极具误导性。
+ * 此处优先检测 cwd 是否存在，给出对标 claude-code Shell.ts:234 的友好信息。
+ */
+function formatSpawnError(err: any, cwd: string): string {
+  const msg = String(err?.message ?? err);
+  if (/ENOENT/.test(msg) && !existsSync(cwd)) {
+    return `执行命令失败: 工作目录 "${cwd}" 不存在。请确认目录未被删除，或从有效目录重试。`;
+  }
+  return `执行命令失败: ${msg}`;
 }
 
 export class BashTool implements Tool {
@@ -280,6 +346,13 @@ export class BashTool implements Tool {
       return { output: "错误: 缺少 command 参数", isError: true };
     }
 
+    // 预先取消守卫：若 signal 在进入时已 abort，直接返回而不 spawn。
+    // 否则 addEventListener("abort") 晚于 abort 事件 → handler 永不触发 → 命令照常执行
+    // （已复现：用户 ESC 后排队的 bash 调用会无视取消）。
+    if (signal?.aborted) {
+      return { output: "命令已取消（执行前 signal 已中止）", isError: true };
+    }
+
     // 确保快照创建完成（首条命令可能赶在快照就绪前；snapshotReady 永不 reject）
     await this.snapshotReady;
 
@@ -317,60 +390,52 @@ export class BashTool implements Tool {
     }
 
     try {
+      // detached（仅 POSIX）→ 子进程成为进程组组长，超时/取消时可 process.kill(-pid) 清理整棵树
       const proc = spawn({
         cmd: [shell, ...args, commandString],
         cwd,
         env,
         stdout: "pipe",
         stderr: "pipe",
+        detached: DETACH,
       });
 
-      // 超时控制 + AbortSignal 集成
-      let killed = false;
-      let killReason = "";
-      let backgrounded = false;
+      let timedOut = false;
+      let aborted = false;
 
+      // 单一超时定时器：到点直接杀进程树并标记 timedOut（对标 claude-code #handleTimeout → #doKill）。
+      // 不再玩"两个同延时定时器 + backgrounded 标志"的竞态把戏——旧实现里
+      // timeoutId 先把 backgrounded 置 true，导致 timeoutPromise 的 resolve 永不触发，
+      // Promise.race 只能等命令自然结束，超时保护形同虚设（实测 timeout=60s 命令跑满 87.5s）。
       const timeoutId = setTimeout(() => {
-        // 超时自动后台化：不终止进程，而是转为后台任务
-        backgrounded = true;
-        killReason = `命令超时（${timeout / 1000}秒），已自动转为后台运行`;
-        const pid = proc.pid;
-        if (pid) backgroundPids.add(pid);
-        log.info("BASH", `命令超时，PID ${pid} 自动转为后台运行`);
+        timedOut = true;
+        killProcessTree(proc.pid, "SIGKILL", () => proc.kill());
+        log.info("BASH", `命令超时（${timeout / 1000}秒），已终止 PID ${proc.pid} 及其进程树`);
       }, timeout);
 
-      // AbortSignal 监听
+      // AbortSignal 监听：用户 ESC / 上游取消 → 同样杀进程树
       const abortHandler = () => {
-        killed = true;
-        killReason = "用户取消";
-        proc.kill();
+        aborted = true;
+        killProcessTree(proc.pid, "SIGKILL", () => proc.kill());
       };
       signal?.addEventListener("abort", abortHandler);
 
-      // 使用 Promise.race 实现超时后台化：超时时立即返回，进程继续后台运行
-      const outputPromise = (async () => {
+      try {
         const [stdout, stderr] = await Promise.all([
           new Response(proc.stdout).text(),
           new Response(proc.stderr).text(),
         ]);
-
-        clearTimeout(timeoutId);
-        signal?.removeEventListener("abort", abortHandler);
-
         const exitCode = await proc.exited;
 
-        // CWD 追踪写回：仅前台、未取消、未后台化、退出码 0 时写回全局 cwd。
-        // backgrounded 为 true 时跳过写回（命令已转后台，可能尚未执行 pwd -P）。
-        if (!backgrounded) {
-          this.applyCwdTracking(cwdFile, !killed && exitCode === 0);
-        }
+        // CWD 追踪写回：仅前台、未取消、未超时、退出码 0 时写回全局 cwd。
+        this.applyCwdTracking(cwdFile, !aborted && !timedOut && exitCode === 0);
 
         // 合并输出
         let output = "";
         if (stdout) output += stdout;
         if (stderr) {
           if (output && !output.endsWith("\n")) output += "\n";
-          if (stderr) output += stderr;
+          output += stderr;
         }
         if (!output) output = "(命令无输出)";
 
@@ -382,14 +447,26 @@ export class BashTool implements Tool {
           output = truncateOutput(output);
         }
 
-        if (killed) {
+        // 超时（缺口 1/2 修复）：杀掉进程树后给出明确的 kill 语义，
+        // 并引导模型改用 run_in_background 而非无谓重试。
+        if (timedOut) {
           return {
-            output: `${killReason}，已终止命令。\n部分输出:\n${output}`,
+            output: `命令执行超过 ${timeout / 1000} 秒被终止（超时）。\n如需长时间运行，请用 run_in_background=true 重试。\n部分输出:\n${output}`,
             isError: true,
           };
         }
 
-        if (exitCode !== 0) {
+        if (aborted) {
+          return {
+            output: `用户取消，已终止命令。\n部分输出:\n${output}`,
+            isError: true,
+          };
+        }
+
+        // 退出码语义解释（缺口 4 修复）：grep 无匹配 / diff 有差异 / find 部分不可访问
+        // / test 条件为假 等，退出码非 0 但不是错误，不再误标 isError。
+        const interp = interpretExitCode(params.command, exitCode);
+        if (interp.isError) {
           log.info("TOOL", `✓ 命令完成 code=${exitCode} stdout=${stdout.length}字符 stderr=${stderr.length}字符`);
           return {
             output: `命令执行失败（退出码 ${exitCode}）:\n${output}`,
@@ -397,50 +474,21 @@ export class BashTool implements Tool {
           };
         }
 
-        log.info("TOOL", `✓ 命令完成 code=0 stdout=${stdout.length}字符 stderr=${stderr.length}字符`);
+        log.info("TOOL", `✓ 命令完成 code=${exitCode} stdout=${stdout.length}字符 stderr=${stderr.length}字符`);
+        // 非 0 但语义上非错误：附注语义提示（如 "无匹配"），帮助模型正确理解
+        if (exitCode !== 0 && interp.message) {
+          const note = output === "(命令无输出)" ? interp.message : `${output}\n(${interp.message})`;
+          return { output: note };
+        }
         return { output };
-      })();
-
-      // LEAK-2 修复：保存该定时器 id，竞速结束后无论哪条路径都 clear，
-      // 避免命令正常完成后这个冗余 setTimeout 仍空转到 timeout 才触发空回调。
-      let backgroundTimeoutId: ReturnType<typeof setTimeout> | undefined;
-      const timeoutPromise = new Promise<ToolResult | null>((resolve) => {
-        backgroundTimeoutId = setTimeout(() => {
-          if (!killed && !backgrounded) {
-            backgrounded = true;
-            resolve(null); // 触发后台化
-          }
-        }, timeout);
-      });
-
-      // 正常完成 vs 超时后台化
-      const raceResult = await Promise.race([
-        outputPromise.then(r => ({ type: "done" as const, result: r })),
-        timeoutPromise.then(() => ({ type: "timeout" as const, result: null })),
-      ]);
-
-      // 竞速已分出胜负，冗余的后台化定时器不再需要，立即清除。
-      if (backgroundTimeoutId !== undefined) clearTimeout(backgroundTimeoutId);
-
-      if (raceResult.type === "timeout") {
-        const pid = proc.pid;
-        if (pid) backgroundPids.add(pid);
+      } finally {
         clearTimeout(timeoutId);
         signal?.removeEventListener("abort", abortHandler);
-        // 命令转后台，cwd 临时文件不再读取，直接清理（pwd -P 可能稍后才执行，留孤儿可接受）
-        if (cwdFile) { try { unlinkSync(cwdFile); } catch { /* 忽略 */ } }
-        log.info("BASH", `命令超时（${timeout / 1000}秒），PID ${pid} 自动转为后台运行`);
-        return {
-          output: `命令执行超过 ${timeout / 1000} 秒，已自动转为后台运行。PID: ${pid}\n可使用 \`kill ${pid}\` 终止进程。`,
-          isError: false,
-        };
       }
-
-      return raceResult.result;
     } catch (err: any) {
       // 异常路径也清理 cwd 临时文件，避免泄漏
       if (cwdFile) { try { unlinkSync(cwdFile); } catch { /* 忽略 */ } }
-      return { output: `执行命令失败: ${err.message}`, isError: true };
+      return { output: formatSpawnError(err, cwd), isError: true };
     }
   }
 
@@ -465,12 +513,14 @@ export class BashTool implements Tool {
     }
 
     try {
+      // detached（仅 POSIX）→ 子进程成进程组组长，退出时 killBackgroundProcesses 可 process.kill(-pid) 清理整棵树
       const proc = spawn({
         cmd: [shell, ...args, commandString],
         cwd,
         env,
         stdout: "pipe",
         stderr: "pipe",
+        detached: DETACH,
       });
 
       // 等待一小段时间收集初始输出

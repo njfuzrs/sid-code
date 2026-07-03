@@ -15,23 +15,27 @@ import { FileReadTracker } from "./file-read-tracker.ts";
 import { ReadTool } from "./read.ts";
 import { EditTool } from "./edit.ts";
 import { ReadManyTool } from "./read-many.ts";
+import { WriteTool } from "./write.ts";
 
 /**
  * 持有 FileReadTracker 状态的工具名集合。
  * 子代理隔离时据此判断「哪些工具需用独立 tracker 重建、哪些可安全复用父实例」。
  */
-export const STATEFUL_TOOL_NAMES: ReadonlySet<string> = new Set(["read", "edit", "read_many"]);
+export const STATEFUL_TOOL_NAMES: ReadonlySet<string> = new Set(["read", "edit", "read_many", "write"]);
 
 /**
- * 用指定 tracker 构造一组有状态工具（read / edit / read_many）。
+ * 用指定 tracker 构造一组有状态工具（read / edit / read_many / write）。
  *
- * 这三个工具持有 tracker 引用，是「先读后写」校验的状态载体。grep/glob/ls/bash/web_*
- * 等无 per-session 可变状态，不在此工厂内——复用单例实例即可，无需重建。
+ * 这四个工具持有 tracker 引用，是「先读后写」校验的状态载体。write 与 edit 共享
+ * 同一 tracker：write 写入后回写 tracker（后续 edit 不被"没读过"拒绝），且覆盖
+ * 已有文件前做先读后写 + 陈旧检测。grep/glob/ls/bash/web_* 等无 per-session 可变
+ * 状态，不在此工厂内——复用单例实例即可，无需重建。
  */
 export function createStatefulTools(tracker: FileReadTracker): Tool[] {
   return [
     new ReadTool(tracker),
     new EditTool(tracker),
     new ReadManyTool(tracker),
+    new WriteTool(tracker),
   ];
 }

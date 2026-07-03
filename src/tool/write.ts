@@ -5,18 +5,19 @@
 
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResult, ToolUseContext } from "./types.ts";
 import { dirname, basename } from "path";
-import { mkdirSync, existsSync } from "fs";
+import { mkdirSync, existsSync, statSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
 import { detectOmissionPlaceholders, isDocumentFile } from "./omission-detector.ts";
 import { detectTruncation } from "./truncation-detector.ts";
 import { normalizeToolPath } from "./path-utils.ts";
 import { buildStructuredPatch } from "./diff-output.ts";
+import type { FileReadTracker } from "./file-read-tracker.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
 
 /** Write 工具输入 schema —— 运行时校验 + JSON Schema 生成的唯一真相源 */
 const writeSchema = lazySchema(() =>
-  z.object({
+  z.strictObject({
     file_path: z.string().describe("要写入的文件的绝对路径"),
     content: z.string().describe("要写入的内容"),
   }),
@@ -25,6 +26,17 @@ const writeSchema = lazySchema(() =>
 export class WriteTool implements Tool {
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = writeSchema();
+
+  /**
+   * FileReadTracker：与 read/edit/read_many 共享同一实例，承载「先读后写」校验状态。
+   * 未注入（null）时退回旧行为（不校验、不回写），保证测试与旧构造路径兼容。
+   * 对标 claude-code FileWriteTool.validateInput / readFileState.set。
+   */
+  private tracker: FileReadTracker | null;
+
+  constructor(tracker?: FileReadTracker) {
+    this.tracker = tracker ?? null;
+  }
 
   name(): string {
     return "write";
@@ -110,6 +122,29 @@ export class WriteTool implements Tool {
       }
     }
 
+    // 先读后写 + 陈旧检测守卫（对标 claude-code FileWriteTool.validateInput errorCode 2/3）。
+    // ⚠️ 仅对「覆盖已有文件」生效——新建文件（fileAlreadyExists=false）无条件放行，
+    // 否则 write 无法用来创建文件。覆盖已有文件必须满足：
+    //   1. 已用 read 读取过（防凭空覆盖没看过的文件）
+    //   2. 是完整读取而非部分视图（防冲掉未读区域）
+    //   3. 读后未被外部修改（mtime 变且内容确实不同才拦，touch/formatter 不误伤）
+    // 这三条与 edit 的护栏共用 FileReadTracker.validateForWrite/validateForEdit 同一实现，
+    // 保证 write 与 edit 的先读后写语义永不漂移。
+    // tracker 为 null（旧构造路径/测试）时整段跳过，退回改造前行为。
+    if (fileAlreadyExists && this.tracker) {
+      const freshErr = this.tracker.validateForWrite(filePath);
+      if (freshErr) {
+        log.warn("TOOL", `✗ 覆盖被拒: ${freshErr}`);
+        return {
+          output:
+            `错误: ${freshErr}\n` +
+            `（覆盖已存在文件前必须先完整 read，以免冲掉你未看过的内容或他人改动。` +
+            `若只想改动其中一部分，请优先用 edit 工具。）`,
+          isError: true,
+        };
+      }
+    }
+
     // E.11 团队记忆 secret 守卫：写入团队记忆目录的内容若含 secret 直接拒绝
     // （团队记忆会同步给所有协作者，凭证绝不能进入）
     {
@@ -141,6 +176,28 @@ export class WriteTool implements Tool {
       // 写入文件
       await Bun.write(filePath, params.content);
 
+      // BUG1 修复 + 内容快照同步：写入后回写 tracker，让紧接的 edit 不因"没读过"被拒，
+      // 且记录刚写入的完整内容——否则下次 validateForWrite/validateForEdit 的内容比对会
+      // 拿旧内容比对，把"模型自己刚写的新内容"误判为外部修改。对标 claude-code 写后
+      // readFileState.set({content,...})。
+      // 已有记录 → updateMtime(带 content) 刷新 mtime+内容+清 isPartialView；
+      // 新建文件（首次写、无记录）→ markAsRead 建立完整视图记录。
+      if (this.tracker) {
+        try {
+          const mtime = statSync(filePath).mtimeMs;
+          if (this.tracker.hasBeenRead(filePath)) {
+            this.tracker.updateMtime(filePath, params.content);
+          } else {
+            this.tracker.markAsRead(filePath, mtime, {
+              isPartialView: false,
+              content: params.content,
+            });
+          }
+        } catch {
+          // stat 失败不阻断（文件已成功写入），仅丢失本次新鲜度记录。
+        }
+      }
+
       log.info("TOOL", `✓ 写入 ${filePath} 完成`);
 
       // P3：行数骤降警告（edit-guard 模式）——覆盖已有文件时，若新内容行数比旧内容
@@ -170,7 +227,30 @@ export class WriteTool implements Tool {
         structuredPatch: buildStructuredPatch(filePath, oldContent, params.content),
       };
     } catch (err: any) {
-      return { output: `写入文件失败: ${err.message}`, isError: true };
+      // errno 友好化：把裸系统错误翻译成模型可操作的中文提示，避免弱模型
+      // 对 EISDIR/ENOTDIR/EACCES 反复猜测。对标 claude-code 靠读前守卫提前
+      // 拦掉大部分此类错误，这里作为兜底再补一层可读性。
+      const code = err?.code as string | undefined;
+      let hint = "";
+      switch (code) {
+        case "EISDIR":
+          hint = `：目标路径是一个已存在的目录，无法作为文件写入。请检查 file_path 是否写成了目录路径。`;
+          break;
+        case "ENOTDIR":
+          hint = `：路径中某一级父目录实际是文件而非目录，无法在其下创建文件。请检查 file_path 各级路径。`;
+          break;
+        case "EACCES":
+        case "EPERM":
+          hint = `：权限不足，无法写入。目标文件或其目录可能是只读的。`;
+          break;
+        case "EROFS":
+          hint = `：目标位于只读文件系统，无法写入。`;
+          break;
+        case "ENOSPC":
+          hint = `：磁盘空间不足，无法写入。`;
+          break;
+      }
+      return { output: `写入文件失败${hint || `: ${err.message}`}`, isError: true };
     }
   }
 }

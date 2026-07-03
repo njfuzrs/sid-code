@@ -487,7 +487,7 @@ export class SubAgent {
       model,
       max_turns: task.maxTurns ?? 10,
       max_tokens: task.maxTokens ?? 50000,
-      timeout: task.timeout ?? 120_000,  // 自定义代理无 AgentDefinition，保留 120s 默认
+      timeout: task.timeout ?? 300_000,  // G4：与进程内 executeCustomInner 对齐为 300s，消除同一自定义代理走 spawn/进程内两条路径超时值不一致（此前 spawn=120s、进程内=300s）
       workdir: process.cwd(),
       provider_name: providerName,
       api_key: apiKey,
@@ -530,8 +530,11 @@ export class SubAgent {
     // 发送 init 消息
     writeParentMsg(subprocess.stdin, initMsg);
 
-    // 超时控制
+    // 超时控制（G3 修复）：用 timedOut 标志区分"超时 kill"与"崩溃/意外退出"，
+    // 否则超时后 result=null 会误报为"子代理意外退出 (exit code)"，模型无法得知是超时。
+    let timedOut = false;
     const timeoutId = setTimeout(() => {
+      timedOut = true;
       log.warn("SUBAGENT", `spawn 子进程超时 (${Math.round(timeout / 1000)}秒)，kill`);
       if (!subprocess.killed) subprocess.kill();
     }, timeout);
@@ -639,6 +642,28 @@ export class SubAgent {
       await subprocess.exited;
 
       if (!result) {
+        // G3：区分超时 vs 意外退出。超时给友好文案（与进程内模式 942 行口径一致），
+        // 让模型知道是"跑太久被中断"而非"子进程崩溃"，便于决策（简化任务重试 vs 报错）。
+        if (timedOut) {
+          log.warn("SUBAGENT", `spawn 子代理超时 (${Math.round(timeout / 1000)}秒)`);
+          return {
+            success: false,
+            output: `子代理执行超时 (${Math.round(timeout / 1000)}秒)`,
+            usage: { inputTokens: 0, outputTokens: 0 },
+            turns: 0,
+            toolUseCount: 0,
+          };
+        }
+        // 父进程主动 abort（用户取消）导致的退出，也给明确文案而非裸 exit code。
+        if (signal?.aborted) {
+          return {
+            success: false,
+            output: "子代理被中止",
+            usage: { inputTokens: 0, outputTokens: 0 },
+            turns: 0,
+            toolUseCount: 0,
+          };
+        }
         const exitCode = subprocess.exitCode;
         return {
           success: false,

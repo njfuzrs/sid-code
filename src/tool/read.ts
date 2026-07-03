@@ -307,7 +307,13 @@ export class ReadTool implements Tool {
           isPartialView,
         });
       } else if (this.tracker) {
-        this.tracker.markAsRead(filePath, mtime);
+        // 对标 claude-code：部分视图（分段/截断）不足以安全 edit，记录 isPartialView；
+        // 完整读取时连内容一起记，供 edit 前的外部修改内容比对兜底（避免假误报）。
+        const isPartialView = isTruncated || startIdx > 0;
+        this.tracker.markAsRead(filePath, mtime, {
+          isPartialView,
+          content: isPartialView ? null : text,
+        });
       }
 
       // P3: 空文件提示

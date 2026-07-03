@@ -36,11 +36,11 @@ afterEach(() => {
 });
 
 describe("createStatefulTools 工厂", () => {
-  test("返回 read/edit/read_many 三个工具，且共享同一 tracker", async () => {
+  test("返回 read/edit/read_many/write 四个工具，且共享同一 tracker", async () => {
     const tracker = new FileReadTracker();
     const tools = createStatefulTools(tracker);
     const names = tools.map(t => t.name()).sort();
-    expect(names).toEqual(["edit", "read", "read_many"]);
+    expect(names).toEqual(["edit", "read", "read_many", "write"]);
 
     const filePath = makeTmpFile("line1\nline2\n");
     const readTool = tools.find(t => t.name() === "read")!;
@@ -50,8 +50,20 @@ describe("createStatefulTools 工厂", () => {
     expect(tracker.hasBeenRead(filePath)).toBe(true);
   });
 
-  test("STATEFUL_TOOL_NAMES 恰好覆盖三个有状态工具", () => {
-    expect([...STATEFUL_TOOL_NAMES].sort()).toEqual(["edit", "read", "read_many"]);
+  test("write 与工厂内其它工具共享同一 tracker（写后回写，先读后写护栏生效）", async () => {
+    const tracker = new FileReadTracker();
+    const tools = createStatefulTools(tracker);
+    const writeTool = tools.find(t => t.name() === "write")!;
+
+    // write 新建文件后，tracker 应记录该文件（写后回写），供后续 edit 校验通过
+    const filePath = makeTmpFile("");
+    rmSync(filePath, { force: true }); // 删掉让 write 走"新建"路径
+    await writeTool.execute({ file_path: filePath, content: "const x = 1;\n" });
+    expect(tracker.hasBeenRead(filePath)).toBe(true);
+  });
+
+  test("STATEFUL_TOOL_NAMES 恰好覆盖四个有状态工具", () => {
+    expect([...STATEFUL_TOOL_NAMES].sort()).toEqual(["edit", "read", "read_many", "write"]);
   });
 });
 

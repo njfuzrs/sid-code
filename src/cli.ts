@@ -622,7 +622,6 @@ export async function main(): Promise<void> {
     const fileReadTracker = new FileReadTracker();
     const memoryStore = new MemoryStore(process.cwd());
 
-    const { WriteTool } = await import("./tool/write.ts");
     const { BashTool } = await import("./tool/bash.ts");
     const { GrepTool } = await import("./tool/grep.ts");
     const { GlobTool } = await import("./tool/glob.ts");
@@ -631,10 +630,10 @@ export async function main(): Promise<void> {
     const { MemoryTool } = await import("./tool/memory.ts");
     const { createStatefulTools } = await import("./tool/stateful-tools.ts");
 
-    // 有状态工具（read/edit/read_many）经工厂用同一 tracker 构造，
-    // 与子代理隔离路径（sub-agent.ts）共用工厂，避免构造逻辑漂移
+    // 有状态工具（read/edit/read_many/write）经工厂用同一 tracker 构造，
+    // 与子代理隔离路径（sub-agent.ts）共用工厂，避免构造逻辑漂移。
+    // write 已并入工厂（与 edit 共享 tracker 做先读后写 + 写后回写），不再单独注册。
     for (const t of createStatefulTools(fileReadTracker)) toolRegistry.register(t);
-    toolRegistry.register(new WriteTool());
     toolRegistry.register(new BashTool());
     toolRegistry.register(new GrepTool());
     toolRegistry.register(new GlobTool());

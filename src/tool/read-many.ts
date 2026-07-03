@@ -255,7 +255,12 @@ export class ReadManyTool implements Tool {
                 isPartialView: truncated,
               });
             } else if (this.tracker) {
-              this.tracker.markAsRead(filePath, mtime);
+              // 对标 claude-code：截断视图不足以安全 edit，记 isPartialView；
+              // 完整读取时连内容一起记供 edit 前内容比对兜底。
+              this.tracker.markAsRead(filePath, mtime, {
+                isPartialView: truncated,
+                content: truncated ? null : text,
+              });
             }
           } catch {
             // 忽略 stat 失败

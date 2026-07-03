@@ -288,21 +288,48 @@ describe("SubAgentTool 并发控制", () => {
     expect(SubAgentTool.resolveMaxConcurrent("abc")).toBe(3);
   });
 
-  test("超过并发上限时拒绝执行", async () => {
-    const provider = new MockProvider();
-    const toolRegistry = new Registry();
-    const tool = new SubAgentTool(mockProviderRegistry(provider), toolRegistry);
+  test("超过并发上限时排队等待而非拒绝（G1）", async () => {
+    SubAgentTool.running = 0;
+    SubAgentTool["waiters"] = [];
 
-    SubAgentTool.running = 3; // 模拟已满
+    // 占满 3 个 slot
+    for (let i = 0; i < SubAgentTool.MAX_CONCURRENT; i++) {
+      await SubAgentTool.acquireSlot();
+    }
+    expect(SubAgentTool.running).toBe(SubAgentTool.MAX_CONCURRENT);
 
-    const result = await tool.execute({
-      type: "explore",
-      description: "并发测试",
-      prompt: "测试",
-    });
+    // 第 4 个 acquire 应挂起排队，而不是立即完成/拒绝
+    let acquired = false;
+    const pending = SubAgentTool.acquireSlot().then(() => { acquired = true; });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(acquired).toBe(false); // 仍在排队
+    expect(SubAgentTool["waiters"].length).toBe(1);
 
-    expect(result.isError).toBe(true);
-    expect(result.output).toContain("并发数已达上限");
+    // 释放一个 slot → 队首被唤醒，running 不变（slot 转移）
+    SubAgentTool.releaseSlot();
+    await pending;
+    expect(acquired).toBe(true);
+    expect(SubAgentTool.running).toBe(SubAgentTool.MAX_CONCURRENT);
+
+    // 清理
+    for (let i = 0; i < SubAgentTool.MAX_CONCURRENT; i++) SubAgentTool.releaseSlot();
+    expect(SubAgentTool.running).toBe(0);
+  });
+
+  test("等待并发 slot 期间被 abort 则抛出且不泄漏 waiter（G1）", async () => {
+    SubAgentTool.running = SubAgentTool.MAX_CONCURRENT; // 占满
+    SubAgentTool["waiters"] = [];
+
+    const ac = new AbortController();
+    const p = SubAgentTool.acquireSlot(ac.signal);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(SubAgentTool["waiters"].length).toBe(1);
+
+    ac.abort();
+    await expect(p).rejects.toBeDefined();
+    expect(SubAgentTool["waiters"].length).toBe(0); // waiter 已移除，无泄漏
+
+    SubAgentTool.running = 0; // 复位供后续用例
   });
 
   test("执行完成后并发计数器正确递减", async () => {

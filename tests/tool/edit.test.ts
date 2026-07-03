@@ -4,7 +4,9 @@
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { EditTool } from "../../src/tool/edit.ts";
-import { writeFileSync, unlinkSync, existsSync, mkdirSync } from "fs";
+import { ReadTool } from "../../src/tool/read.ts";
+import { FileReadTracker } from "../../src/tool/file-read-tracker.ts";
+import { writeFileSync, unlinkSync, existsSync, mkdirSync, utimesSync } from "fs";
 import { join } from "path";
 import os from "os";
 
@@ -210,6 +212,159 @@ describe("EditTool - 行号前缀剥离", () => {
     expect(result.isError).toBeFalsy();
     const content = await Bun.file(file).text();
     expect(content).toContain("const a = 10;");
+    cleanup([file]);
+  });
+
+  test("old_string 含 tab 分隔行号前缀时自动剥离（对齐 read 的 cat -n 输出）", async () => {
+    const file = join(TMP, "linenum-tab.ts");
+    writeFileSync(file, "const a = 1;\nconst b = 2;\n");
+    // read 工具实际输出格式：`${n}\t${line}`（tab 分隔）
+    const result = await tool.execute({
+      file_path: file,
+      old_string: "1\tconst a = 1;\n2\tconst b = 2;",
+      new_string: "const a = 10;\nconst b = 20;",
+    });
+    expect(result.isError).toBeFalsy();
+    const content = await Bun.file(file).text();
+    expect(content).toContain("const a = 10;");
+    cleanup([file]);
+  });
+});
+
+describe("EditTool - no-op 拦截（old===new）", () => {
+  const tool = new EditTool();
+  beforeEach(setup);
+
+  test("old_string 与 new_string 相同时拒绝且不写盘", async () => {
+    const file = join(TMP, "noop.ts");
+    writeFileSync(file, "const a = 1;\n");
+    const before = (await import("fs")).statSync(file).mtimeMs;
+    await new Promise((r) => setTimeout(r, 20));
+    const result = await tool.execute({
+      file_path: file,
+      old_string: "const a = 1;",
+      new_string: "const a = 1;",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("完全相同");
+    // 不应写盘（mtime 不变）
+    const after = (await import("fs")).statSync(file).mtimeMs;
+    expect(after).toBe(before);
+    cleanup([file]);
+  });
+});
+
+describe("EditTool - 未找到时回显 old_string", () => {
+  const tool = new EditTool();
+  beforeEach(setup);
+
+  test("未匹配错误信息包含 old_string 摘要", async () => {
+    const file = join(TMP, "nomatch.ts");
+    writeFileSync(file, "hello world\n");
+    const result = await tool.execute({
+      file_path: file,
+      old_string: "this_string_definitely_does_not_exist_anywhere",
+      new_string: "x",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("this_string_definitely_does_not_exist_anywhere");
+    cleanup([file]);
+  });
+});
+
+describe("EditTool - 模糊匹配歧义守卫", () => {
+  const tool = new EditTool();
+  beforeEach(setup);
+
+  test("old_string 拼错且多处近似匹配时拒绝（避免静默错位）", async () => {
+    const file = join(TMP, "ambig.ts");
+    // 两个几乎完全相同的块
+    writeFileSync(
+      file,
+      "function handleA() {\n  doSomethingImportant();\n  return true;\n}\n\nfunction handleB() {\n  doSomethingImportant();\n  return true;\n}\n",
+    );
+    const result = await tool.execute({
+      file_path: file,
+      old_string: "function handleX() {\n  doSomethingImportant();\n  return true;\n}",
+      new_string: "function handleA() {\n  CHANGED();\n  return true;\n}",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("歧义");
+    cleanup([file]);
+  });
+});
+
+describe("EditTool - 先读后改校验（FileReadTracker 增强）", () => {
+  beforeEach(setup);
+
+  test("部分读取（offset/limit）后不能编辑未读区域", async () => {
+    const tracker = new FileReadTracker();
+    const read = new ReadTool(tracker);
+    const edit = new EditTool(tracker);
+    const file = join(TMP, "partial.ts");
+    writeFileSync(file, Array.from({ length: 50 }, (_, i) => `line${i}`).join("\n"));
+    await read.execute({ file_path: file, offset: 1, limit: 10 });
+    const result = await edit.execute({ file_path: file, old_string: "line40", new_string: "LINE40" });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("部分内容");
+    cleanup([file]);
+  });
+
+  test("完整读取后可以编辑", async () => {
+    const tracker = new FileReadTracker();
+    const read = new ReadTool(tracker);
+    const edit = new EditTool(tracker);
+    const file = join(TMP, "full-read.ts");
+    writeFileSync(file, "const a = 1;\nconst b = 2;\n");
+    await read.execute({ file_path: file });
+    const result = await edit.execute({ file_path: file, old_string: "const a = 1;", new_string: "const a = 9;" });
+    expect(result.isError).toBeFalsy();
+    cleanup([file]);
+  });
+
+  test("touch 改 mtime 但内容不变时放行（内容比对兜底，避免假外部修改误报）", async () => {
+    const tracker = new FileReadTracker();
+    const read = new ReadTool(tracker);
+    const edit = new EditTool(tracker);
+    const file = join(TMP, "touch.ts");
+    writeFileSync(file, "const a = 1;\n");
+    await read.execute({ file_path: file });
+    const future = new Date(Date.now() + 10000);
+    utimesSync(file, future, future); // mtime 变，内容不变
+    const result = await edit.execute({ file_path: file, old_string: "const a = 1;", new_string: "const a = 2;" });
+    expect(result.isError).toBeFalsy();
+    cleanup([file]);
+  });
+
+  test("内容真被外部修改时拒绝", async () => {
+    const tracker = new FileReadTracker();
+    const read = new ReadTool(tracker);
+    const edit = new EditTool(tracker);
+    const file = join(TMP, "realmod.ts");
+    writeFileSync(file, "const a = 1;\n");
+    await read.execute({ file_path: file });
+    await new Promise((r) => setTimeout(r, 5));
+    writeFileSync(file, "const a = 999;\n"); // 真改内容
+    const result = await edit.execute({ file_path: file, old_string: "const a = 999;", new_string: "const a = 2;" });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("外部修改");
+    cleanup([file]);
+  });
+
+  test("连续两次编辑：第二次不因自己刚写的内容误判为外部修改", async () => {
+    const tracker = new FileReadTracker();
+    const read = new ReadTool(tracker);
+    const edit = new EditTool(tracker);
+    const file = join(TMP, "consecutive.ts");
+    writeFileSync(file, "const a = 1;\nconst b = 2;\n");
+    await read.execute({ file_path: file });
+    const r1 = await edit.execute({ file_path: file, old_string: "const a = 1;", new_string: "const a = 10;" });
+    expect(r1.isError).toBeFalsy();
+    // 不重新 read，直接第二次编辑：应放行（updateMtime 已刷新内容快照）
+    const r2 = await edit.execute({ file_path: file, old_string: "const b = 2;", new_string: "const b = 20;" });
+    expect(r2.isError).toBeFalsy();
+    const content = await Bun.file(file).text();
+    expect(content).toBe("const a = 10;\nconst b = 20;\n");
     cleanup([file]);
   });
 });

@@ -31,6 +31,12 @@ const editSchema = lazySchema(() =>
 
 type MatchStrategy = "exact" | "flexible" | "regex" | "fuzzy";
 
+/**
+ * 可编辑文件大小上限（字节）。edit 需把整个文件载入内存做字符串替换，
+ * 超大文件会 OOM。对标 claude-code 的 1 GiB 上限。
+ */
+const MAX_EDIT_FILE_SIZE_BYTES = 1024 * 1024 * 1024; // 1 GiB
+
 interface ReplacementResult {
   newContent: string;
   occurrences: number;
@@ -89,7 +95,7 @@ function tryExactMatch(
   }
   const newContent = replaceAll
     ? content.split(search).join(replace)
-    : content.replace(search, replace);
+    : content.replace(search, () => replace);
   return {
     newContent: restoreTrailingNewline(content, newContent),
     occurrences: count,
@@ -210,6 +216,12 @@ const FUZZY_THRESHOLD = 0.1;          // 允许 10% 差异
 const WHITESPACE_PENALTY = 0.1;       // 空白差异权重
 const FUZZY_MIN_LENGTH = 10;          // 最短触发长度
 const FUZZY_COMPLEXITY_LIMIT = 4e8;   // 复杂度保护
+/**
+ * 模糊匹配歧义边界：单处替换时，若次优候选分数与最优候选之差小于此值，
+ * 判定为"歧义"（old_string 可能命中错误的相似块）并拒绝，避免静默错位替换。
+ * 值越大越保守（越容易判歧义）。0.05 ≈ 次优与最优的差异度需拉开 5% 才放行。
+ */
+const FUZZY_AMBIGUITY_MARGIN = 0.05;
 
 function tryFuzzyMatch(
   content: string,
@@ -259,6 +271,21 @@ function tryFuzzyMatch(
   }
 
   if (selected.length === 0) return null;
+
+  // 歧义守卫：单处替换时，若存在另一处不重叠候选且分数与最优接近，
+  // 说明 old_string 可能命中了错误的相似块（模糊匹配最危险的静默错位）。
+  // 此时宁可拒绝、让模型提供更精确的 old_string，也不赌一个可能改错地方的替换。
+  if (!replaceAll) {
+    const best = selected[0];
+    const runnerUp = candidates.find(
+      (c) => Math.abs(c.index - best.index) >= N,
+    );
+    if (runnerUp && runnerUp.score - best.score < FUZZY_AMBIGUITY_MARGIN) {
+      // 用 occurrences=-1 作为"模糊歧义"信号，上层据此报专门的错误
+      return { newContent: content, occurrences: -1, strategy: "fuzzy" };
+    }
+  }
+
   if (!replaceAll && selected.length > 1) {
     return { newContent: content, occurrences: selected.length, strategy: "fuzzy" };
   }
@@ -283,14 +310,18 @@ function tryFuzzyMatch(
 
 // ─── 引号规范化 ─────────────────────────────────────────────────────────────
 
-/** 将弯引号规范化为直引号（LLM 常见行为） */
+/**
+ * 将弯引号规范化为直引号（LLM 常见行为：把代码里的直引号输出成弯引号）。
+ *
+ * 必须保持长度不变（1:1 字符映射）：calculateReplacement 的引号匹配路径会用
+ * quotedContent 的下标去 slice normalizedContent 定位原始子串，一旦规范化改变了
+ * 字符串长度，下标就会错位、slice 出错误子串导致替换污染前后文。
+ * 故这里只做单字符到单字符映射；破折号/省略号等变长归一化一律不做（CC 同）。
+ */
 function normalizeQuotes(str: string): string {
   return str
-    .replace(/[\u201C\u201D]/g, '"')   // "" → "
-    .replace(/[\u2018\u2019]/g, "'")   // '' → '
-    .replace(/\u2014/g, "--")          // — → --
-    .replace(/\u2013/g, "-")           // – → -
-    .replace(/\u2026/g, "...");        // … → ...
+    .replace(/[\u201C\u201D]/g, '"')   // curly double quotes -> "
+    .replace(/[\u2018\u2019]/g, "'");  // curly single quotes -> '
 }
 
 // ─── 主替换函数 ───────────────────────────────────────────────────────────────
@@ -309,20 +340,17 @@ function calculateReplacement(
   const exact = tryExactMatch(normalizedContent, normalizedSearch, normalizedReplace, replaceAll);
   if (exact) return exact;
 
-  // 引号规范化后重试精确匹配（LLM 常将直引号替换为弯引号）
+  // 引号规范化后重试精确匹配（LLM 常将直引号替换为弯引号）。
+  // normalizeQuotes 保证长度不变（1:1 映射），故 indexOf 偏移可直接用于原串 slice。
   const quotedSearch = normalizeQuotes(normalizedSearch);
   const quotedContent = normalizeQuotes(normalizedContent);
   if (quotedSearch !== normalizedSearch || quotedContent !== normalizedContent) {
-    const quotedExact = tryExactMatch(quotedContent, quotedSearch, normalizedReplace, replaceAll);
-    if (quotedExact) {
-      // 在原始内容上用规范化后的匹配位置做替换
-      const origExact = tryExactMatch(normalizedContent, normalizedContent.slice(
-        quotedContent.indexOf(quotedSearch),
-        quotedContent.indexOf(quotedSearch) + quotedSearch.length,
-      ), normalizedReplace, replaceAll);
+    const idx = quotedContent.indexOf(quotedSearch);
+    if (idx !== -1) {
+      // 长度不变 → 偏移直接映射回原串
+      const actualOld = normalizedContent.slice(idx, idx + quotedSearch.length);
+      const origExact = tryExactMatch(normalizedContent, actualOld, normalizedReplace, replaceAll);
       if (origExact && origExact.occurrences > 0) return origExact;
-      // 回退：直接在规范化内容上替换
-      return quotedExact;
     }
   }
 
@@ -415,12 +443,22 @@ export class EditTool implements Tool {
       }
     }
 
-    // 行号前缀剥离（如 "123→content" → "content"）
+    // 行号前缀剥离（如 "123\tcontent" / "123→content" → "content"）
     const oldString = this.stripLineNumbers(params.old_string);
     const newString = params.new_string;
     // LLM 可能把布尔写成字符串 "false"——JS truthiness 会误判为 true，
     // 导致本该替换一处却替换全部。用语义化布尔归一化兜底。
     const replaceAll = coerceSemanticBoolean(params.replace_all, false);
+
+    // no-op 拦截：old===new 无实际变更。对标 claude-code（errorCode 1）提前拒绝，
+    // 避免无谓写盘扰动 mtime（进而误触发下一次 edit 的"外部修改"判定）。
+    // 仅对非创建场景检查（oldString==='' 是创建/覆盖语义，走下方分支）。
+    if (oldString !== "" && oldString === newString) {
+      return {
+        output: "错误: old_string 与 new_string 完全相同，没有需要修改的内容。",
+        isError: true,
+      };
+    }
 
     // 省略占位符检测（文档文件完全不检测；代码文件仅对 > 10 行的 new_string 检测）
     const isDoc = isDocumentFile(filePath);
@@ -444,13 +482,18 @@ export class EditTool implements Tool {
       const { getTeamMemoryOptions } = await import("../memory/team/runtime.ts");
       const teamOpts = getTeamMemoryOptions();
 
-      // ── old_string='' 创建新文件 ──────────────────────────────────────────
+      // ── old_string='' 创建新文件或填充空文件 ─────────────────────────────
       if (oldString === "") {
         if (exists) {
-          return {
-            output: `错误: 文件已存在，无法用空 old_string 创建。请用 edit 修改内容，或用 write 覆盖整个文件。`,
-            isError: true,
-          };
+          // 对标 CC：空文件 + old_string='' → 等价于"用 new_string 替换空内容"（合法）
+          const rawContent = await file.text();
+          if (rawContent.trim() !== "") {
+            return {
+              output: `错误: 文件已存在且非空，无法用空 old_string 创建。请用 edit 修改内容，或用 write 覆盖整个文件。`,
+              isError: true,
+            };
+          }
+          // 空文件：当作"替换空内容"处理，与创建新文件逻辑复用
         }
 
         const guardErr = checkTeamMemSecrets(filePath, newString, teamOpts);
@@ -475,13 +518,47 @@ export class EditTool implements Tool {
         return { output: formatPathNotFoundError(filePath), isError: true };
       }
 
+      // 大文件保护：超过上限拒绝编辑，避免把整个文件读进内存做字符串替换而 OOM。
+      // 对标 claude-code（1 GiB / errorCode 10）。edit 需全量载入替换，故必须预检。
+      const fileSize = file.size;
+      if (fileSize > MAX_EDIT_FILE_SIZE_BYTES) {
+        const sizeMB = (fileSize / (1024 * 1024)).toFixed(1);
+        const limitMB = (MAX_EDIT_FILE_SIZE_BYTES / (1024 * 1024)).toFixed(0);
+        return {
+          output: `错误: 文件过大 (${sizeMB} MB，超过 ${limitMB} MB 编辑上限)，无法安全编辑。请用 bash 的 sed 等流式工具处理超大文件。`,
+          isError: true,
+        };
+      }
+
       const rawContent = await file.text();
       const lineEnding = detectLineEnding(rawContent);
 
       const result = calculateReplacement(rawContent, oldString, newString, replaceAll);
 
+      // 模糊匹配歧义信号（occurrences=-1）：old_string 拼写偏差过大，
+      // 有多个相似度接近的候选块，无法确定该改哪个。拒绝而非静默赌一个。
+      if (result.occurrences === -1) {
+        const preview = oldString.length > 200 ? oldString.slice(0, 200) + " …[已截断]" : oldString;
+        return {
+          output:
+            `错误: old_string 与文件中多个位置都近似匹配（模糊匹配歧义），无法确定要修改哪一处。` +
+            `请提供更精确、更长的 old_string（包含唯一的上下文行）以消除歧义。\n` +
+            `你提供的 old_string:\n${preview}`,
+          isError: true,
+        };
+      }
+
       if (result.occurrences === 0) {
-        return { output: "错误: 未找到要替换的字符串", isError: true };
+        // 回显 old_string 摘要，帮模型定位失配（对标 claude-code 的 "String: ..."）。
+        // 4 级策略（精确/灵活/正则/模糊）全落空，说明与磁盘内容差异较大。
+        const preview = oldString.length > 200 ? oldString.slice(0, 200) + " …[已截断]" : oldString;
+        return {
+          output:
+            `错误: 未找到要替换的字符串（精确/灵活/正则/模糊匹配均未命中）。` +
+            `请重新 read 该文件确认最新内容后再编辑，注意保留精确的缩进与空白。\n` +
+            `未匹配的 old_string:\n${preview}`,
+          isError: true,
+        };
       }
 
       if (!replaceAll && result.occurrences > 1) {
@@ -506,7 +583,9 @@ export class EditTool implements Tool {
       await Bun.write(filePath, finalContent);
 
       if (this.tracker) {
-        this.tracker.updateMtime(filePath);
+        // 传入新内容，让 tracker 刷新内容快照 —— 否则下次 edit 的外部修改内容比对
+        // 会拿旧内容比对，把自己刚写的内容误判为外部修改。
+        this.tracker.updateMtime(filePath, finalContent);
       }
 
       const strategyNote = result.strategy !== "exact"
@@ -534,11 +613,16 @@ export class EditTool implements Tool {
     return labels[strategy] ?? strategy;
   }
 
-  /** 剥离行号前缀（如 "  123→content" → "content"） */
+  /**
+   * 剥离行号前缀。兼容 read 工具两种输出格式：
+   *   - tab 分隔（现行 read.ts 用 `${n}\t${line}`，对齐 cat -n）："123\tcontent"
+   *   - 箭头分隔（历史/其它来源）："  123→content"
+   * 模型直接粘贴 read 输出当 old_string 时,若不剥离会因行号前缀失配。
+   */
   private stripLineNumbers(str: string): string {
     return str
       .split("\n")
-      .map((line) => line.replace(/^\s*\d+→/, ""))
+      .map((line) => line.replace(/^\s*\d+(?:\t|→)/, ""))
       .join("\n");
   }
 }
