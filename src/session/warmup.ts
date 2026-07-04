@@ -95,6 +95,19 @@ export async function warmupPromptCache(params: WarmupParams): Promise<boolean> 
   } catch (err: any) {
     // 预热失败完全无害——只意味着首轮请求会 cache_creation 而非 cache_read
     log.debug("CACHE_WARMUP", `预热失败（非阻断）: ${err?.message?.slice(0, 100)}`);
+    // T13.3：记录失败的 side-call
+    recordSideCall({
+      label: "cache-warmup",
+      model: "",
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      durationMs: 0,
+      success: false,
+      error: err?.message?.slice(0, 200),
+      timedOut: /timeout|超时|timed out/i.test(err?.message ?? ""),
+    });
     return false;
   }
 }

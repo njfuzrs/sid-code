@@ -19,6 +19,7 @@ import { Manager as ContextManager } from "./context/manager.ts";
 import { Registry as ToolRegistry } from "./tool/registry.ts";
 import { Registry as CommandRegistry } from "./command/registry.ts";
 import { ModelFallback } from "./llm/fallback.ts";
+import type { RetryTelemetryEvent } from "./llm/retry-telemetry.ts";
 import { TokenEstimator } from "./llm/token-estimator.ts";
 import { ThinkingManager } from "./llm/thinking.ts";
 import { SessionState } from "./session/state.ts";
@@ -172,6 +173,8 @@ export class App {
   private telemetryProbe?: import("./telemetry/hook-probe.ts").TelemetryHookProbe;
   /** Plan Mode 管理器 */
   private planManager: PlanModeManager | null = null;
+  /** T12：RetryTelemetry 事件写入器（延迟绑定，doInit 后由 traceCollector 注入） */
+  private _retryTelemetryWriter: ((event: RetryTelemetryEvent) => void) | null = null;
   /** §2.1：共享 FileReadTracker，autoCompact 后用于恢复最近访问文件。 */
   private fileReadTracker: import("./tool/file-read-tracker.ts").FileReadTracker | null = null;
   /** §5：共享 cached microcompact 状态机，压缩后重置。延迟创建。 */
@@ -330,7 +333,10 @@ export class App {
       }
     }
 
-    this.fallback = new ModelFallback({ availability, fallbackProvider, fallbackModel }, {
+    this.fallback = new ModelFallback({
+      availability, fallbackProvider, fallbackModel,
+      onTelemetry: (event) => { this._retryTelemetryWriter?.(event); },
+    }, {
       onRetry: (attempt, error, delayMs) => {
         const log = getLogger();
         log.info("FALLBACK", `重试 ${attempt}，错误: ${error}，延迟 ${delayMs}ms`);
@@ -1233,6 +1239,13 @@ export class App {
     // §3.1/§3.3：将 traceCollector 注入 QueryEngine，用于异常路径持久化
     if (traceCollector && this.queryEngine) {
       (this.queryEngine as any).deps.traceCollector = traceCollector;
+    }
+
+    // T12：绑定 RetryTelemetry 事件写入器（延迟绑定，此时 writer 已就绪）
+    if (traceCollector) {
+      this._retryTelemetryWriter = (event) => {
+        traceCollector.writeRetryTelemetry(event as unknown as Record<string, unknown>);
+      };
     }
 
     // session_start hook（非阻塞）。
@@ -3410,6 +3423,9 @@ export class App {
         });
         log.info("TUI:ONBOARD", "配置已写入 settings.json，Provider 热加载成功");
       },
+      // /mcp 交互面板依赖的稳定引用（非响应式，直接透传实例）
+      mcpManager: this.mcpManager,
+      sessionState: this.sessionState,
     };
 
     // 恢复会话首屏渲染：restoreSession 仅把历史灌入 ctxMgr（LLM 上下文），

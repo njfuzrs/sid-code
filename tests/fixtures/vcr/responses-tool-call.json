@@ -1,0 +1,32 @@
+{
+  "description": "OpenAI Responses API — 工具调用流",
+  "provider": "openai-responses",
+  "model": "gpt-4o-mini",
+  "request": {
+    "method": "POST",
+    "url": "/v1/responses",
+    "body": {
+      "model": "gpt-4o-mini",
+      "input": "What is the weather in Tokyo?",
+      "tools": [{"type": "function", "name": "get_weather"}],
+      "stream": true
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "text/event-stream"
+    },
+    "chunks": [
+      { "data": "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_002\",\"status\":\"in_progress\"},\"sequence_number\":0}\n\n", "delayMs": 0 },
+      { "data": "event: response.in_progress\ndata: {\"type\":\"response.in_progress\",\"response\":{\"id\":\"resp_002\",\"status\":\"in_progress\"},\"sequence_number\":1}\n\n", "delayMs": 10 },
+      { "data": "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"fc_001\",\"type\":\"function_call\",\"call_id\":\"call_abc123\",\"name\":\"get_weather\",\"arguments\":\"\",\"status\":\"in_progress\"},\"sequence_number\":2}\n\n", "delayMs": 50 },
+      { "data": "event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_001\",\"output_index\":0,\"delta\":\"{\\\"lo\",\"sequence_number\":3}\n\n", "delayMs": 30 },
+      { "data": "event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_001\",\"output_index\":0,\"delta\":\"cation\",\"sequence_number\":4}\n\n", "delayMs": 20 },
+      { "data": "event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_001\",\"output_index\":0,\"delta\":\"\\\":\\\"Tokyo\\\"}\",\"sequence_number\":5}\n\n", "delayMs": 20 },
+      { "data": "event: response.function_call_arguments.done\ndata: {\"type\":\"response.function_call_arguments.done\",\"item_id\":\"fc_001\",\"output_index\":0,\"name\":\"get_weather\",\"arguments\":\"{\\\"location\\\":\\\"Tokyo\\\"}\",\"sequence_number\":6}\n\n", "delayMs": 10 },
+      { "data": "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"fc_001\",\"type\":\"function_call\",\"call_id\":\"call_abc123\",\"name\":\"get_weather\",\"arguments\":\"{\\\"location\\\":\\\"Tokyo\\\"}\",\"status\":\"completed\"},\"sequence_number\":7}\n\n", "delayMs": 5 },
+      { "data": "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_002\",\"status\":\"completed\",\"usage\":{\"input_tokens\":25,\"output_tokens\":12,\"total_tokens\":37}},\"sequence_number\":8}\n\n", "delayMs": 5 }
+    ]
+  }
+}

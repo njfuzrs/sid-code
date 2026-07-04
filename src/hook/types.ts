@@ -281,6 +281,8 @@ export interface AfterModelInput extends HookInput {
     cache_savings_usd?: number;
     /** 首 token 延迟（毫秒），供 telemetry probe 消费 */
     ttft_ms?: number;
+    /** T12.3：Provider 名称（"anthropic" | "openai" | "ollama" 等） */
+    provider?: string;
   };
 
   // ── Harness 扩展点 ──

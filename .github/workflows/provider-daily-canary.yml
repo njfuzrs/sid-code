@@ -1,0 +1,96 @@
+# Daily Provider Canary + VCR 回放（T9.3 持续回归看板）
+#
+# 触发：每天 UTC 00:00（北京时间 08:00）；可手动触发。
+# 设计：
+#   1. canary 冒烟——对每个已配置 provider 发极简请求，验证流式正常
+#   2. VCR 离线回放——无网络/密钥依赖，确认解析器行为不退化
+#   3. provider-health 看板——聚合最近 24h 健康指标，退化时告警
+#
+# 退出码非零 → 标记 Job 失败 → GitHub/GitLab 自动邮件通知
+# 如需接入飞书/Slack webhook：设置 SID_CODE_ALERT_WEBHOOK_URL secret
+
+name: Daily Provider Canary
+
+on:
+  schedule:
+    # 每天 UTC 00:00（北京时间 08:00）
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: "指定 provider（默认全部已配置的）"
+        default: ""
+        required: false
+
+jobs:
+  canary-and-vcr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+      SID_CODE_ALERT_WEBHOOK_URL: ${{ secrets.SID_CODE_ALERT_WEBHOOK_URL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install deps
+        run: bun install --frozen-lockfile
+
+      - name: Build
+        run: make build
+
+      # ── L2 Provider 冒烟 ──
+      - name: Provider Canary
+        id: canary
+        run: |
+          PROVIDER_ARG=""
+          if [ -n "${{ github.event.inputs.provider }}" ]; then
+            PROVIDER_ARG="--provider ${{ github.event.inputs.provider }}"
+          fi
+          bun run scripts/provider-canary.ts --verbose $PROVIDER_ARG | tee canary-results.jsonl
+
+      # ── VCR 离线回放（无网络依赖）──
+      - name: VCR Replay Tests
+        run: bun test tests/llm/vcr/
+
+      # ── Provider 健康看板（聚合 24h）──
+      - name: Provider Health Report
+        if: always()
+        run: bun run scripts/provider-health.ts --period 24h || true
+
+      # ── 退化告警通知 ──
+      - name: Alert on Failure
+        if: failure() && env.SID_CODE_ALERT_WEBHOOK_URL != ''
+        run: |
+          SUMMARY="Provider Canary 失败"
+          if [ -f canary-results.jsonl ]; then
+            FAILED=$(grep '"status":"fail"' canary-results.jsonl | head -3)
+            SUMMARY="$SUMMARY: $FAILED"
+          fi
+          curl -s -X POST "$SID_CODE_ALERT_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"msg_type\": \"text\",
+              \"content\": {
+                \"text\": \"⚠️ [sid-code] $SUMMARY\nRun: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+              }
+            }" || echo "Webhook 通知发送失败（非阻塞）"
+
+      # ── 结果归档 ──
+      - name: Upload Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: canary-results-${{ github.run_number }}
+          path: canary-results.jsonl
+          retention-days: 30

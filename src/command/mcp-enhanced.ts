@@ -49,7 +49,11 @@ export class MCPEnhancedCommand implements Command {
   }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
-    // 默认显示状态
+    // 无参数时打开交互式面板
+    if (!args.trim()) {
+      return { kind: "dialog", dialog: "mcp" };
+    }
+    // 有参数时仍走子命令文本模式（兜底：未匹配子命令走 list）
     return new MCPListCommand().execute(args, ctx);
   }
 }

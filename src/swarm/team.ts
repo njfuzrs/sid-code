@@ -44,6 +44,8 @@ export interface TeamOptions {
   toolRegistry: ToolRegistry;
   /** 团队根目录基准（默认 cwd） */
   baseDir?: string;
+  /** team 级硬超时（毫秒），默认 15 分钟。测试时可注入短值触发。 */
+  timeoutMs?: number;
 }
 
 export class TeamManager {
@@ -83,8 +85,9 @@ export class TeamManager {
 
     // B7：隔离成员经 SubAgentTask.cwd 走 withAgentCwd（AsyncLocalStorage），
     // 不再用 process.chdir，因此隔离成员也可与非隔离成员一起并发执行（无 chdir 竞态）。
-    // D 模式兜底：team 级硬超时 15 分钟，防止单个成员 hang 导致整个 Promise.all 永久阻塞
-    const TEAM_HARD_TIMEOUT_MS = 15 * 60 * 1000;
+    // D 模式兜底：team 级硬超时，防止单个成员 hang 导致整个 Promise.all 永久阻塞
+    // T5-B2：支持从 opts.timeoutMs 注入（测试用短值触发），默认 15 分钟
+    const TEAM_HARD_TIMEOUT_MS = this.opts.timeoutMs ?? 15 * 60 * 1000;
     // T5-B2：超时时不仅 reject，还要 abort 所有成员的执行——否则底层子代理进程/流
     // 仍在后台跑，泄漏资源。teamAbortCtl 的 signal 会合并进每个成员的 signal。
     const teamAbortCtl = new AbortController();

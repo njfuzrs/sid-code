@@ -888,4 +888,32 @@ export class MCPManager {
     }
     return result;
   }
+
+  /**
+   * 手动重连指定服务器（断开后重新连接）。
+   * 用于用户在交互面板点"重连"的场景。
+   */
+  async reconnectServer(name: string): Promise<Tool[]> {
+    const config = this.serverConfigs.get(name);
+    if (!config) {
+      throw new Error(`未找到 MCP 服务器配置: ${name}`);
+    }
+    this.disconnect(name);
+    return this.addServer(name, config);
+  }
+
+  /**
+   * 列出指定服务器的工具定义（含 name/description/inputSchema）。
+   * 用于交互面板展示工具列表与详情。
+   * @returns 服务器未连接或无工具时返回空数组
+   */
+  async listServerTools(name: string): Promise<MCPToolDefinition[]> {
+    const client = this.clients.get(name);
+    if (!client) return [];
+    try {
+      return await client.listTools();
+    } catch {
+      return [];
+    }
+  }
 }

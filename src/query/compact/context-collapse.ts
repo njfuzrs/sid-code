@@ -242,6 +242,19 @@ export async function contextCollapse(
       prevSummary = summary;
     } catch (err: any) {
       log.warn("CONTEXT_COLLAPSE", `段 [${seg.start},${seg.end}) 摘要失败: ${err.message}`);
+      // T13.3：记录失败的 side-call
+      recordSideCall({
+        label: "context-collapse",
+        model: options.model,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        durationMs: 0,
+        success: false,
+        error: err.message,
+        timedOut: /timeout|超时|timed out/i.test(err.message),
+      });
       // 单段失败不影响其它段
     }
   }

@@ -13,6 +13,7 @@ import { accumulateUsage, normalizeCacheUsage } from "../llm/types.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { getLogger } from "../debug/logger.ts";
+import { emitStreamPhase } from "../trace/stream-observer.ts";
 import type { HookSystem } from "../hook/system.ts";
 import { LoopDetector, LOOP_RECOVERY_PROMPT } from "./loop-detection.ts";
 import { processStream, type StreamProcessResult } from "./stream-processor.ts";
@@ -131,6 +132,12 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
     // 5min Promise.race——它在 Bun 事件循环阻塞时可能延迟数分钟才 fire）。
     const turnAbort = new AbortController();
     const combinedSignal = AbortSignal.any([signal, turnAbort.signal]);
+
+    // T13.1：子代理 LLM 调用 StreamPhase 事件（fetch_sent）
+    const agentStreamIndex = 10000 + turns;
+    const turnStartTime = Date.now();
+    emitStreamPhase(agentStreamIndex, "fetch_sent", { caller: "sub-agent", model });
+
     const stream = provider.sendMessageStream(sendParams, combinedSignal);
 
     // B2: 子代理硬超时保护（对齐主循环 L1），作为 T4 setInterval 心跳之上的最后兜底
@@ -151,7 +158,11 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
         }),
         timeoutPromise,
       ]);
+      // T13.1：子代理 LLM 调用完成
+      emitStreamPhase(agentStreamIndex, "completed", { caller: "sub-agent", model, elapsed_ms: Date.now() - turnStartTime });
     } catch (err: any) {
+      // T13.1：子代理 LLM 调用失败
+      emitStreamPhase(agentStreamIndex, "error", { caller: "sub-agent", model, error: err.message, elapsed_ms: Date.now() - turnStartTime });
       // 超时或 abort 都走错误返回
       log.error("AGENT_LOOP", `流式处理异常: ${err.message}`);
       return {
@@ -340,6 +351,12 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
       content: [{ type: "text", text: "你已达到最大轮次限制，无法继续调用工具。请立即输出你到目前为止的所有发现和结论，以结构化格式（表格/列表）呈现。不要再调用任何工具，直接输出结论。" }],
     });
 
+    // T13.1：强制总结轮同样发射 StreamPhase 事件（与主循环轮对齐，避免总结轮 LLM 调用不可见）。
+    // 用独立命名空间 20000+turns，与主循环轮 10000+turns 区分，避免 index 撞车。
+    const summaryStreamIndex = 20000 + turns;
+    const summaryStartTime = Date.now();
+    emitStreamPhase(summaryStreamIndex, "fetch_sent", { caller: "sub-agent-summary", model });
+
     try {
       const summaryStream = provider.sendMessageStream({
         model,
@@ -352,6 +369,7 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
 
       const summaryResponse = await processStream(summaryStream);
       accumulateUsage(totalUsage, summaryResponse.usage);
+      emitStreamPhase(summaryStreamIndex, "completed", { caller: "sub-agent-summary", model, elapsed_ms: Date.now() - summaryStartTime });
 
       // 提取总结文本
       const summaryTexts = summaryResponse.content.filter(b => b.type === "text");
@@ -366,6 +384,7 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
       config.onTurnEnd?.({ turn: turns + 1, textOutput: lastTextOutput, tools: [], tokenCount: totalUsage.inputTokens + totalUsage.outputTokens, toolUseCount });
     } catch (err: any) {
       // 强制总结失败不影响整体返回（降级到 extractFinalText 的启发式过滤）
+      emitStreamPhase(summaryStreamIndex, "error", { caller: "sub-agent-summary", model, error: err.message, elapsed_ms: Date.now() - summaryStartTime });
       log.warn("AGENT_LOOP", `强制总结轮失败: ${err.message}`);
     }
   }

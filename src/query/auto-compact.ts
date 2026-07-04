@@ -271,6 +271,19 @@ async function doAutoCompact(
   } catch (err: any) {
     log.warn("COMPACT", `LLM 摘要失败，使用简单截断: ${err.message}`);
     recordFailure();
+    // T13.3：记录失败的 side-call
+    recordSideCall({
+      label: "auto-compact",
+      model: deps.compactModel || deps.config.model,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      durationMs: 0,
+      success: false,
+      error: err.message,
+      timedOut: /timeout|超时|timed out/i.test(err.message),
+    });
   }
 
   // 降级：简单截断

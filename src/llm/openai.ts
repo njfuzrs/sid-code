@@ -28,6 +28,8 @@ import { splitSystemByDynamicBoundary } from "../api/cache-strategy.ts";
 import { estimateTextTokens } from "../context/token.ts";
 import { sanitizeStrings } from "./sanitize-unicode.ts";
 import { SseChunkDumper, currentSseDumpContext } from "./sse-chunk-dumper.ts";
+import { buildResponsesRequest } from "./openai-responses-request.ts";
+import { parseResponsesStream } from "./openai-responses.ts";
 
 /**
  * 从纯文本中提取内联 <think>...</think> 标签为独立的 thinking 内容。
@@ -547,6 +549,13 @@ export class OpenAIProvider implements Provider {
     guardOutgoingMessages(params.messages, { providerName: this.name() });
 
     const effectiveModel = params.model || this._model;
+
+    // A3：Responses API 分派——GPT-5.x 系列走新协议
+    if (this.shouldUseResponsesAPI(effectiveModel)) {
+      yield* this.sendViaResponsesAPI(params, effectiveModel, signal);
+      return;
+    }
+
     // 转换消息格式（传入 effectiveModel 供 reasoning_content 回传分叉判据使用）
     const messages = this.convertMessages(params.messages, effectiveModel);
 
@@ -740,6 +749,16 @@ export class OpenAIProvider implements Provider {
         })(),
         stallWarnMs: 30_000,
         label: "OPENAI",
+        // T14.6：收敛 first_content emit 到 lifecycle 层
+        isFirstContent: (ev) => ev.type === "content_block_delta",
+        requestStartTimeMs: requestStartTime,
+        onFirstContentProgress: (ttftMs) => {
+          if (!firstTokenTime) {
+            firstTokenTime = Date.now();
+            log.debug("LLM:OPENAI", `首 token 延迟: ${ttftMs}ms`);
+            emitStreamPhase(obsIndex, "first_content", { ttft_ms: ttftMs, model: effectiveModel });
+          }
+        },
         // § 行为等价（T7）：abort 由 parseSSE（内部 abortPromise race）+ 下方消费循环
         // （`if (signal?.aborted) throw`）owns，不交给 lifecycle 早退，保持迁移前语义。
         onTimeout: (layer) => {
@@ -765,11 +784,8 @@ export class OpenAIProvider implements Provider {
           emitStreamPhase(obsIndex, "aborted", { reason: "signal_aborted", model: effectiveModel });
           throw new Error("Request aborted");
         }
-        // 记录首 token 延迟（TTFT）
-        if (event.type === "content_block_delta" && !firstTokenTime) {
-          firstTokenTime = Date.now();
-          log.debug("LLM:OPENAI", `首 token 延迟: ${firstTokenTime - requestStartTime}ms`);
-        }
+        // T14.1/T14.6：首 token 延迟（TTFT）已收敛到 lifecycle 的 onFirstContentProgress 回调，
+        // 在 first-content 事件到达时统一 emit first_content。此处不再重复检测。
 
         // PARSE-4：累积文本增量（仅文本，工具调用 JSON 不计入输出估算的主体）
         if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
@@ -828,6 +844,225 @@ export class OpenAIProvider implements Provider {
       log.error("LLM:OPENAI", `请求异常`, { error: err.message, stack: err.stack });
       // 接入审计日志:连接/流式异常(含超时中断、ECONNRESET)是会话 hang/中断的关键信号。
       log.warn("AUDIT:API", `✗ OpenAI 请求异常 model=${effectiveModel} err=${(err?.message ?? String(err)).slice(0, 200)}`);
+      yield {
+        type: "error",
+        error: { message: err.message || String(err) },
+      };
+    }
+  }
+
+  // ─── A3: Responses API 分派方法 ────────────────────────────────────────────
+
+  /**
+   * 判断当前模型是否应走 Responses API（POST /v1/responses）。
+   *
+   * 优先级：
+   *   1. 环境变量 SID_CODE_OPENAI_PROTOCOL 强制开关（灰度/回滚）
+   *   2. model-registry 的 protocolKind 字段（精确声明）
+   *   3. 非官方 OpenAI 端点 → false（DeepSeek/Kimi/Qwen 永不触发）
+   *   4. /^gpt-5\./i 启发式兜底（未注册的新 GPT-5.x 模型）
+   */
+  private shouldUseResponsesAPI(model: string): boolean {
+    try {
+      // 优先级 1：环境变量强制开关
+      const envForce = process.env.SID_CODE_OPENAI_PROTOCOL;
+      if (envForce === "responses") return true;
+      if (envForce === "chat") return false;
+
+      // 优先级 2：catalog protocolKind 声明
+      const catalog = lookupCatalog(model);
+      if (catalog?.protocolKind === "openai-responses") return true;
+
+      // 优先级 3：非官方端点绝不走 Responses
+      if (!this.isOfficialOpenAIEndpoint()) return false;
+
+      // 优先级 4：GPT-5.x 启发式兜底
+      return /^gpt-5\./i.test(model);
+    } catch {
+      // 任何异常 fallback 到 Chat Completions（安全护栏）
+      return false;
+    }
+  }
+
+  /**
+   * 判断当前 baseURL 是否为官方 OpenAI 端点。
+   * 仅 api.openai.com 走 Responses API，兼容端点（DeepSeek/Kimi/GLM/Grok 等）永不触发。
+   */
+  private isOfficialOpenAIEndpoint(): boolean {
+    try {
+      const url = new URL(this.baseURL);
+      return url.hostname === "api.openai.com";
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 通过 Responses API（POST /v1/responses）发送请求并产出 StreamEvent。
+   * 结构对标 sendMessageStream 的 Chat Completions 路径：
+   *   构造请求 → fetch（含 header/absolute timeout）→ StreamLifecycle 包装 → 消费循环
+   */
+  private async *sendViaResponsesAPI(
+    params: SendParams,
+    effectiveModel: string,
+    signal?: AbortSignal,
+  ): AsyncGenerator<StreamEvent> {
+    const log = getLogger();
+    const requestStartTime = Date.now();
+    let firstTokenTime: number | null = null;
+
+    // 构造 Responses API 请求体
+    const requestBody = buildResponsesRequest(params, effectiveModel);
+    log.debug("LLM:OPENAI:RESPONSES", `发送请求到 ${this.baseURL}/responses`, {
+      model: requestBody.model,
+      inputCount: requestBody.input.length,
+      toolCount: requestBody.tools?.length ?? 0,
+      maxOutputTokens: requestBody.max_output_tokens,
+    });
+
+    // ── 响应头超时（对标 Chat Completions 路径） ──
+    const headerTimeoutMs = OpenAIProvider.resolveHeaderTimeoutMs(effectiveModel);
+    const headerTimeoutCtl = new AbortController();
+    let headerTimedOut = false;
+    const obsIndex = currentSseDumpContext().turnIndex;
+    let disarmHeaderIneffective: (() => void) | null = null;
+    let headerTimeoutId: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+      headerTimedOut = true;
+      log.warn(
+        "LLM:OPENAI:RESPONSES",
+        `响应头超时 ${headerTimeoutMs / 1000}s（model=${effectiveModel}）`,
+      );
+      emitTimeoutFired(obsIndex, "header_timeout", { threshold_ms: headerTimeoutMs, model: effectiveModel });
+      disarmHeaderIneffective = armIneffectiveCheck(obsIndex, "header_timeout", "fetch_not_settled_after_5s");
+      headerTimeoutCtl.abort();
+    }, headerTimeoutMs);
+
+    // fetch 绝对上限兜底
+    const FETCH_ABSOLUTE_TIMEOUT_MS = (() => {
+      const override = Number(process.env.SID_CODE_FETCH_ABSOLUTE_TIMEOUT_MS);
+      if (Number.isFinite(override) && override > 0) return override;
+      return 300_000;
+    })();
+    const fetchSignal = signal
+      ? AbortSignal.any([signal, headerTimeoutCtl.signal, AbortSignal.timeout(FETCH_ABSOLUTE_TIMEOUT_MS)])
+      : AbortSignal.any([headerTimeoutCtl.signal, AbortSignal.timeout(FETCH_ABSOLUTE_TIMEOUT_MS)]);
+
+    let response: Response;
+    emitStreamPhase(obsIndex, "fetch_sent", { model: effectiveModel });
+    try {
+      // Responses API 端点：/responses（baseURL 已含 /v1）
+      response = await fetch(`${this.baseURL}/responses`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify(sanitizeStrings(requestBody)),
+        signal: fetchSignal,
+      });
+    } catch (err: any) {
+      if (headerTimedOut) {
+        (disarmHeaderIneffective as (() => void) | null)?.();
+        throw new Error(`OpenAI Responses API 响应头超时 ${headerTimeoutMs / 1000}s（model=${effectiveModel}）`);
+      }
+      throw err;
+    } finally {
+      if (headerTimeoutId !== null) { clearTimeout(headerTimeoutId); headerTimeoutId = null; }
+      (disarmHeaderIneffective as (() => void) | null)?.();
+    }
+
+    // 响应头已到达
+    emitHttpConnected(obsIndex, { status: response.status, model: effectiveModel });
+
+    if (!response.ok) {
+      const errorBody = await response.text().catch(() => "");
+      log.error("LLM:OPENAI:RESPONSES", `HTTP ${response.status}`, { body: errorBody.slice(0, 500) });
+      yield {
+        type: "error",
+        error: {
+          message: `OpenAI Responses API HTTP ${response.status}: ${errorBody.slice(0, 200)}`,
+          statusCode: response.status,
+        },
+      };
+      return;
+    }
+
+    if (!response.body) {
+      yield { type: "error", error: { message: "OpenAI Responses API 返回空 body" } };
+      return;
+    }
+
+    try {
+      // 累积变量
+      let accumulatedUsage: Usage = { inputTokens: 0, outputTokens: 0 };
+      let accumulatedOutputText = "";
+
+      // StreamLifecycle 事件级兜底（对标 Chat Completions 路径）
+      const lifecycle = createStreamLifecycle<StreamEvent>({
+        idleTimeoutMs: LIFECYCLE_PRESETS.mainLoop.overallTimeoutMs,
+        overallTimeoutMs: (() => {
+          const override = Number(process.env.SID_CODE_OPENAI_OVERALL_TIMEOUT_MS);
+          if (Number.isFinite(override) && override > 0) return override;
+          return LIFECYCLE_PRESETS.mainLoop.overallTimeoutMs;
+        })(),
+        stallWarnMs: 30_000,
+        label: "OPENAI-RESPONSES",
+        // T14.6：收敛 first_content emit 到 lifecycle 层
+        isFirstContent: (ev) => ev.type === "content_block_delta",
+        requestStartTimeMs: requestStartTime,
+        onFirstContentProgress: (ttftMs) => {
+          if (!firstTokenTime) {
+            firstTokenTime = Date.now();
+            log.debug("LLM:OPENAI:RESPONSES", `首 token 延迟: ${ttftMs}ms`);
+            emitStreamPhase(obsIndex, "first_content", { ttft_ms: ttftMs, model: effectiveModel });
+          }
+        },
+        onTimeout: (layer) => {
+          try {
+            emitTimeoutFired(obsIndex, layer === "overall" ? "turn_hard_timeout" : "idle_timeout", {
+              threshold_ms: LIFECYCLE_PRESETS.mainLoop.overallTimeoutMs,
+              model: effectiveModel,
+            });
+          } catch { /* 可观测性不影响主流程 */ }
+        },
+        onTelemetry: (evt: StreamTelemetrySignal) => {
+          log.debug("TELEMETRY:OPENAI-RESPONSES", `${evt.type}`, evt as any);
+          try { params.onStreamTelemetry?.(evt); } catch { /* 安全 */ }
+        },
+        isContentProgress: (ev) =>
+          ev.type === "content_block_delta" || ev.type === "content_block_start",
+      });
+
+      // 消费 parseResponsesStream + StreamLifecycle 包装
+      for await (const event of lifecycle.guard(parseResponsesStream(response.body, signal))) {
+        // 纵深防御：signal abort 检查
+        if (signal?.aborted) {
+          emitStreamPhase(obsIndex, "aborted", { reason: "signal_aborted", model: effectiveModel });
+          throw new Error("Request aborted");
+        }
+
+        // T14.6：TTFT 已收敛到 lifecycle 的 onFirstContentProgress 回调，此处不再重复检测。
+
+        // 累积文本
+        if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+          accumulatedOutputText += event.delta.text;
+        }
+
+        // 累积 usage
+        if (event.type === "message_delta") {
+          accumulatedUsage = event.usage;
+        }
+
+        yield event;
+      }
+
+      log.debug("LLM:OPENAI:RESPONSES", "请求完成", {
+        totalMs: Date.now() - requestStartTime,
+        usage: accumulatedUsage,
+      });
+    } catch (err: any) {
+      log.error("LLM:OPENAI:RESPONSES", `请求异常`, { error: err.message, stack: err.stack });
+      log.warn("AUDIT:API", `✗ OpenAI Responses API 请求异常 model=${effectiveModel} err=${(err?.message ?? String(err)).slice(0, 200)}`);
       yield {
         type: "error",
         error: { message: err.message || String(err) },

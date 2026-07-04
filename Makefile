@@ -1,7 +1,7 @@
 BINARY=sid-code
 BUN=bun
 
-.PHONY: build run test test-providers clean deps lint
+.PHONY: build run test test-providers clean deps lint canary stability-test stress-test provider-health
 
 build:
 	$(BUN) run scripts/bump-version.ts
@@ -34,3 +34,23 @@ lint:
 
 check-tavily:
 	bun run scripts/check-tavily.ts
+
+# ─── Provider 稳定性 / 健康度（T9.2 / T9.3 / T9.4）───
+
+# L2 冒烟：每个已配置 provider 发一个极简请求，验证流式消费正常完成
+canary:
+	$(BUN) run scripts/provider-canary.ts --verbose
+
+# T9.2 L4 长时间稳定性测试：连续 1h、每 30s 一次请求；成功率 <95% 或内存增长 >20MB 判失败
+# 退出码：0=通过 1=成功率不达标 2=内存增长超阈值
+stability-test:
+	$(BUN) run scripts/provider-stress.ts --mode stability --duration 3600 --interval 30 --verbose
+
+# T9.4 压力 / 混沌测试：并发 10 请求 + 随机注入 abort/超时/并发突增
+stress-test:
+	$(BUN) run scripts/provider-stress.ts --mode stress --concurrency 10 --rounds 5 --verbose
+	$(BUN) run scripts/provider-stress.ts --mode chaos --duration 120 --verbose
+
+# T15 Provider 健康度看板：从 events.jsonl 聚合成功率/延迟/超时/重试
+provider-health:
+	$(BUN) run scripts/provider-health.ts --period 24h

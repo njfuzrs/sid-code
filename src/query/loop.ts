@@ -1101,6 +1101,7 @@ export async function* queryLoop(
           api_duration_ms: apiDuration,
           cache_savings_usd: cacheSavingsUSD,
           ttft_ms: ttftMs,
+          provider: config.provider,  // T12.3：Provider 维度标记
         },
       );
       if (afterModelResult.finalOutput?.isBlockingDecision()) {

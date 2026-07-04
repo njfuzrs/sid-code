@@ -86,6 +86,7 @@ type CapabilityKind =
   | "o-series"
   | "glm-openai"
   | "grok-openai"
+  | "openai-responses"
   | "unknown";
 
 // ─────────────────────────────────────────────────────────────
@@ -210,6 +211,7 @@ const APPLIERS: Record<CapabilityKind, EffortCapability["applyToSendParams"]> = 
   "o-series": applyOSeries,
   "glm-openai": applyGLMOpenAI,
   "grok-openai": applyGrokOpenAI,
+  "openai-responses": applyNoop,
   unknown: applyNoop,
 };
 
@@ -264,6 +266,15 @@ const CAPABILITY_FLAGS: Record<
     supportsThinkingToggle: false,
     thinkingDefaultOn: true,
     defaultEffort: "low",
+  },
+  "openai-responses": {
+    // GPT-5.x Responses API：当前不支持 reasoning_effort / thinking 开关。
+    // 未来 o-series 迁移到 Responses API 时再扩展。
+    supportsEffort: false,
+    supportsMaxEffort: false,
+    supportsThinkingToggle: false,
+    thinkingDefaultOn: false,
+    defaultEffort: "high",
   },
   unknown: {
     supportsEffort: false,

@@ -63,6 +63,10 @@ export interface TUICallbacks {
   onInterrupt: () => void;
   /** 首次启动引导完成：写 settings.json + 热加载 Provider（见 app.ts） */
   onCompleteOnboarding?: (result: import("./components/OnboardingDialog.tsx").OnboardingResult) => void;
+  /** MCP 管理器引用（/mcp 交互面板用；稳定引用，非响应式状态） */
+  mcpManager?: import("../mcp/manager.ts").MCPManager;
+  /** 会话状态引用（/mcp 面板启用/禁用用；稳定引用） */
+  sessionState?: import("../session/state.ts").SessionState;
 }
 
 /** 权限请求信息 */
@@ -795,6 +799,8 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           currentTheme={currentTheme}
           onThemeSelect={handleThemeSelect}
           onCompleteOnboarding={handleCompleteOnboarding}
+          mcpManager={callbacks.mcpManager}
+          sessionState={callbacks.sessionState}
           todos={state.todos}
           tasks={state.tasks}
         />
@@ -840,6 +846,8 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           currentTheme={currentTheme}
           onThemeSelect={handleThemeSelect}
           onCompleteOnboarding={handleCompleteOnboarding}
+          mcpManager={callbacks.mcpManager}
+          sessionState={callbacks.sessionState}
           todos={state.todos}
           tasks={state.tasks}
         />

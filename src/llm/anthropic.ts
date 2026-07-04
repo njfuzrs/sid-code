@@ -28,7 +28,7 @@ import { updateRateLimitStatus } from "../api/rate-limit.ts";
 import { guardOutgoingMessages } from "./protocol-sentinel.ts";
 import { createStreamLifecycle, LIFECYCLE_PRESETS } from "./stream-lifecycle.ts";
 import type { StreamTelemetrySignal } from "./types.ts";
-import { emitTimeoutFired } from "../trace/stream-observer.ts";
+import { emitTimeoutFired, emitStreamPhase } from "../trace/stream-observer.ts";
 import { currentSseDumpContext } from "./sse-chunk-dumper.ts";
 import { normalizeToolInput } from "./normalize-tool-input.ts";
 import { buildSystemBlocks } from "../api/cache-strategy.ts";
@@ -249,6 +249,19 @@ export class AnthropicProvider implements Provider {
           event?.type === "content_block_delta" || event?.type === "message_delta",
         stallWarnMs: 30_000,
         label: "ANTHROPIC",
+        // T14.6：收敛 first_content emit 到 lifecycle 层。first content 专指首个 content_block_delta
+        // （与迁移前的 TTFT 口径一致，message_delta 不算首内容）。
+        isFirstContent: (event: any) => event?.type === "content_block_delta",
+        requestStartTimeMs: requestStartTime,
+        onFirstContentProgress: (ttftMs) => {
+          if (!firstTokenTime) {
+            firstTokenTime = Date.now();
+            log.debug("LLM:ANTHROPIC", `首 token 延迟: ${ttftMs}ms`);
+            try {
+              emitStreamPhase(currentSseDumpContext().turnIndex, "first_content", { ttft_ms: ttftMs, model: this._model });
+            } catch { /* 可观测性不影响主流程 */ }
+          }
+        },
         // § 行为等价（T7）：不把 signal 交给 lifecycle 做早退——abort 语义完全保留在下方
         // 消费循环（`if (signal?.aborted) throw`）+ SDK signal 透传，与迁移前 guardedStream
         // 完全一致（旧 guardedStream 调用同样未传 signal）。若交给 lifecycle 早退，pre-abort
@@ -357,11 +370,8 @@ export class AnthropicProvider implements Provider {
                 continue; // fail-safe：跳过而非崩溃
               }
 
-              // 记录首 token 延迟（TTFT）
-              if (!firstTokenTime) {
-                firstTokenTime = Date.now();
-                log.debug("LLM:ANTHROPIC", `首 token 延迟: ${firstTokenTime - requestStartTime}ms`);
-              }
+              // T14.2/T14.6：首 token 延迟（TTFT）已收敛到 lifecycle 的 onFirstContentProgress
+              // 回调，在首个 content_block_delta 到达时统一 emit first_content。此处不再重复检测。
 
               if (delta.type === "text_delta") {
                 yield {

@@ -28,10 +28,13 @@ import { EmptyLogo } from "./EmptyLogo.tsx";
 import { ModelDialog } from "./ModelDialog.tsx";
 import { ThemeDialog } from "./ThemeDialog.tsx";
 import { OnboardingDialog } from "./OnboardingDialog.tsx";
+import { McpDialog } from "./McpDialog.tsx";
 import type { OnboardingResult } from "./OnboardingDialog.tsx";
 import type { HistoryItem } from "../types.ts";
 import type { PermissionRequestInfo, ShellConfirmRequestInfo, PlanApprovalRequestInfo, AskUserQuestionRequestInfo, TaskDisplayInfo } from "../App.tsx";
 import type { DialogType } from "../../command/types.ts";
+import type { MCPManager } from "../../mcp/manager.ts";
+import type { SessionState } from "../../session/state.ts";
 import type { Usage } from "../../llm/types.ts";
 import type { TodoItem } from "../../tool/todo-write.ts";
 import { TodoPanel } from "./TodoPanel.tsx";
@@ -98,6 +101,10 @@ interface MainScreenLayoutProps {
   onThemeSelect: (themeName: string) => void;
   /** 首次启动引导完成回调 */
   onCompleteOnboarding?: (result: OnboardingResult) => void;
+  /** MCP 管理器引用（/mcp 面板用） */
+  mcpManager?: MCPManager;
+  /** 会话状态引用（/mcp 面板启用/禁用用） */
+  sessionState?: SessionState;
   /** 当前 todo 列表（来自 TodoWrite 工具） */
   todos: TodoItem[];
   /** 当前后台任务列表（Shell/Agent） */
@@ -145,6 +152,8 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
   currentTheme,
   onThemeSelect,
   onCompleteOnboarding,
+  mcpManager,
+  sessionState,
   todos,
   tasks,
 }) {
@@ -260,6 +269,12 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
             <OnboardingDialog
               onComplete={onCompleteOnboarding}
               onClose={onDialogClose}
+            />
+          ) : activeDialog === "mcp" && mcpManager && sessionState ? (
+            <McpDialog
+              onClose={onDialogClose}
+              mcpManager={mcpManager}
+              sessionState={sessionState}
             />
           ) : (
             <Composer

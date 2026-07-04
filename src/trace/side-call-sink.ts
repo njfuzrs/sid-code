@@ -22,6 +22,12 @@ export interface SideCallRecord {
   cacheCreationTokens: number;
   durationMs: number;
   costUSD: number;
+  /** T13.2：调用是否成功（默认 true，向后兼容） */
+  success: boolean;
+  /** T13.2：失败原因 */
+  error?: string;
+  /** T13.2：是否超时 */
+  timedOut?: boolean;
 }
 
 export interface SideCallStats {
@@ -30,6 +36,10 @@ export interface SideCallStats {
   tokensSent: number;
   tokensReceived: number;
   details: Array<{ label: string; model: string; inputTokens: number; outputTokens: number; costUSD: number }>;
+  /** T13.4：失败统计 */
+  failed: number;
+  timedOut: number;
+  byLabel: Record<string, { success: number; failed: number }>;
 }
 
 let _calls: SideCallRecord[] = [];
@@ -54,8 +64,9 @@ export function setSideCostObserver(fn: (costUSD: number) => void): void {
 
 /**
  * 记录一次辅助 LLM 调用的用量。影子调用点在收到响应后调用。
+ * T13.2：扩展支持 success/error/timedOut 字段记录失败调用。
  */
-export function recordSideCall(record: Omit<SideCallRecord, "costUSD"> & { costUSD?: number }): void {
+export function recordSideCall(record: Omit<SideCallRecord, "costUSD" | "success"> & { costUSD?: number; success?: boolean; error?: string; timedOut?: boolean }): void {
   const cost = record.costUSD ?? (
     _costCalculator
       ? _costCalculator(record.model, {
@@ -66,7 +77,7 @@ export function recordSideCall(record: Omit<SideCallRecord, "costUSD"> & { costU
         })
       : 0
   );
-  _calls.push({ ...record, costUSD: cost });
+  _calls.push({ ...record, costUSD: cost, success: record.success ?? true });
   // 实时通知观察者（SessionState.addSideCost），使展示层和 quota 守卫看到真实总花费
   if (_costObserver && cost > 0) {
     try { _costObserver(cost); } catch { /* 观察者异常不影响记录 */ }
@@ -80,6 +91,9 @@ export function getSideStats(): SideCallStats {
   let costUSD = 0;
   let tokensSent = 0;
   let tokensReceived = 0;
+  let failed = 0;
+  let timedOut = 0;
+  const byLabel: Record<string, { success: number; failed: number }> = {};
   const details: SideCallStats["details"] = [];
 
   for (const c of _calls) {
@@ -93,6 +107,14 @@ export function getSideStats(): SideCallStats {
       outputTokens: c.outputTokens,
       costUSD: c.costUSD,
     });
+    // T13.4：累计失败统计
+    if (!c.success) {
+      failed++;
+      if (c.timedOut) timedOut++;
+    }
+    if (!byLabel[c.label]) byLabel[c.label] = { success: 0, failed: 0 };
+    if (c.success) byLabel[c.label].success++;
+    else byLabel[c.label].failed++;
   }
 
   return {
@@ -101,6 +123,9 @@ export function getSideStats(): SideCallStats {
     tokensSent,
     tokensReceived,
     details,
+    failed,
+    timedOut,
+    byLabel,
   };
 }
 

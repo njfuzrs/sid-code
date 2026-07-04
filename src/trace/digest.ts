@@ -159,6 +159,22 @@ export interface ToolStep {
   orphan: boolean;
 }
 
+/** T12.5：Provider 维度聚合统计 */
+export interface ProviderDigestStats {
+  provider: string;
+  requests: number;
+  failed: number;
+  timedOut: number;
+  retried: number;
+  avgLatencyMs: number;
+  /** T14.5：TTFT 分位数 */
+  ttft_p50?: number;
+  ttft_p95?: number;
+  ttft_p99?: number;
+  /** 超时率 > 10% 时标记 warning */
+  warning?: string;
+}
+
 export interface Digest {
   sessionId: string;
   model: string;
@@ -180,6 +196,8 @@ export interface Digest {
   pointers: { label: string; path: string; hint: string }[];
   ledger?: LedgerEntry;
   crash?: { reason?: string; attribution?: unknown };
+  /** T12.5：按 Provider 聚合的健康诊断 */
+  providerStats?: ProviderDigestStats[];
 }
 
 export interface SessionRef {
@@ -911,6 +929,38 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     }
   }
 
+  // ── T13.5：Side-call 健康诊断 ──
+  // 判据（对齐 roadmap 规格）：失败率 = failed/total。失败率 > 20% 标记 warning，
+  // pointer 只列 top-3 失败最多的 label（而非全量），避免 label 多时刷屏。
+  const sessionEndEvent = events.find(e => e.event === "SessionEnd");
+  const sideCallData = (sessionEndEvent?.data as any)?.sideCallStats;
+  if (sideCallData && sideCallData.failed > 0) {
+    const total = sideCallData.total || 0;
+    const failRate = total > 0 ? sideCallData.failed / total : 0;
+    // top-3：按各 label 失败次数降序取前三
+    const top3 = Object.entries(sideCallData.byLabel || {})
+      .filter(([, v]: [string, any]) => v.failed > 0)
+      .sort(([, a]: [string, any], [, b]: [string, any]) => b.failed - a.failed)
+      .slice(0, 3)
+      .map(([k, v]: [string, any]) => `${k}(${v.failed}失败)`);
+    const failLabelCount = Object.values(sideCallData.byLabel || {}).filter((v: any) => v.failed > 0).length;
+    const overflow = failLabelCount > 3 ? ` 等 ${failLabelCount} 类` : "";
+    anomalies.push({
+      layer: "L0",
+      // 失败率 > 20% 视为高严重度（规格判据），否则中等
+      severity: failRate > 0.2 ? "high" : "medium",
+      kind: "side_call_failures",
+      detail: `Side-call 失败 ${sideCallData.failed}/${total}（失败率 ${(failRate * 100).toFixed(1)}%，超时 ${sideCallData.timedOut} 次）${failRate > 0.2 ? " ⚠ 失败率 > 20%" : ""}`,
+      provenance: [{
+        sourceFile: eventsPath,
+        lineRef: `event=SessionEnd sideCallStats`,
+        rawValue: JSON.stringify(sideCallData.byLabel),
+        mtime: fileMtimeIso(eventsPath),
+      }],
+      pointer: `失败最多的 side-call（top-3）: ${top3.join(", ")}${overflow}`,
+    });
+  }
+
   // ── 该看哪个原始文件(指针) ──
   const pointers: Digest["pointers"] = [
     { label: "完整轨迹", path: join(ref.dir, "session.traj"), hint: "TAO 步骤 + history + metadata,SFT/回溯用" },
@@ -966,6 +1016,9 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     (a, b) => layerRank[a.layer] - layerRank[b.layer] || sevRank[a.severity] - sevRank[b.severity],
   );
 
+  // ── T12.5：按 Provider 聚合诊断信号 ──
+  const providerStats = aggregateProviderStats(events);
+
   return {
     sessionId: ref.id,
     model: ledger?.model || meta.model || "unknown",
@@ -987,6 +1040,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     pointers,
     ledger: ledger || undefined,
     crash: crashSnapshot ? { reason: crashSnapshot.reason, attribution: crashSnapshot.attribution } : undefined,
+    providerStats: providerStats.length > 0 ? providerStats : undefined,
   };
 }
 
@@ -1110,6 +1164,18 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     L.push(c("gray", `  ${truncate(JSON.stringify(d.crash.attribution), 400)}`));
   }
 
+  // T15.4：Provider 健康摘要
+  if (d.providerStats && d.providerStats.length > 0) {
+    L.push("");
+    L.push(c("bold", "Provider 健康:"));
+    for (const ps of d.providerStats) {
+      const successRate = ps.requests > 0 ? ((ps.requests - ps.failed - ps.timedOut) / ps.requests * 100).toFixed(0) : "N/A";
+      const ttft = ps.ttft_p50 ? `TTFT P50=${(ps.ttft_p50 / 1000).toFixed(1)}s` : "";
+      const warn = ps.warning ? c("yellow", ` ⚡${ps.warning}`) : "";
+      L.push(`  ${c("cyan", ps.provider.padEnd(12))} 请求:${ps.requests} 成功率:${successRate}% 延迟:${ps.avgLatencyMs}ms ${ttft}${warn}`);
+    }
+  }
+
   // 原始文件指针
   L.push("");
   L.push(c("bold", "深挖原始数据:"));
@@ -1138,4 +1204,84 @@ export function renderList(all: SessionRef[], opts: RenderOptions = {}): string 
   L.push("");
   L.push(c("gray", `  用 \`${invocation} <id前缀>\` 看某个会话的详细摘要`));
   return L.join("\n");
+}
+
+// ─────────────────────────── T12.5：Provider 聚合 ───────────────────────────
+
+/** 从 events.jsonl 事件列表聚合 per-provider 统计（导出供测试 + provider-health 使用） */
+export function aggregateProviderStats(events: Array<{ event?: string; data?: Record<string, unknown> }>): ProviderDigestStats[] {
+  const map = new Map<string, { requests: number; failed: number; timedOut: number; retried: number; totalLatencyMs: number; ttfts: number[] }>();
+
+  const ensure = (p: string) => {
+    if (!map.has(p)) map.set(p, { requests: 0, failed: 0, timedOut: 0, retried: 0, totalLatencyMs: 0, ttfts: [] });
+    return map.get(p)!;
+  };
+
+  // 从 AfterModelRaw 事件统计每 provider 的请求数和延迟
+  for (const e of events) {
+    if (e.event === "AfterModelRaw" && e.data) {
+      const provider = (e.data.provider as string) || "unknown";
+      const stats = ensure(provider);
+      stats.requests++;
+      const elapsed = (e.data.elapsed_ms as number) || 0;
+      stats.totalLatencyMs += elapsed;
+      // T14.5：收集 TTFT
+      const ttft = e.data.ttft_ms as number | undefined;
+      if (ttft && ttft > 0) stats.ttfts.push(ttft);
+    }
+    // 从 RetryTelemetry 事件统计重试/超时
+    if (e.event === "RetryTelemetry" && e.data) {
+      const provider = (e.data.provider as string) || (e.data.model as string) || "unknown";
+      const stats = ensure(provider);
+      const type = e.data.type as string;
+      if (type === "retry") {
+        stats.retried++;
+      } else if (type === "stream_idle_timeout" || type === "stream_content_progress_timeout" || type === "stream_overall_timeout") {
+        stats.timedOut++;
+      } else if (type === "529_dropped") {
+        stats.failed++;
+      }
+    }
+    // 从 TimeoutFired 事件补充超时计数
+    if (e.event === "TimeoutFired" && e.data) {
+      const model = (e.data.model as string) || "";
+      // TimeoutFired 没有 provider 字段，用 model 推断
+      if (model) {
+        const stats = ensure(model.includes("deepseek") ? "openai" : model.includes("claude") ? "anthropic" : "unknown");
+        stats.timedOut++;
+      }
+    }
+  }
+
+  const result: ProviderDigestStats[] = [];
+  for (const [provider, stats] of map) {
+    const timeoutRate = stats.requests > 0 ? stats.timedOut / stats.requests : 0;
+    const sortedTtfts = stats.ttfts.sort((a, b) => a - b);
+    let warning: string | undefined;
+    if (timeoutRate > 0.1) warning = `超时率 ${(timeoutRate * 100).toFixed(1)}% > 10%`;
+    // T14.5：TTFT > 30s 标记 warning
+    const ttftP95 = percentile(sortedTtfts, 0.95);
+    if (ttftP95 && ttftP95 > 30000 && !warning) warning = `TTFT P95 ${(ttftP95 / 1000).toFixed(1)}s > 30s`;
+
+    result.push({
+      provider,
+      requests: stats.requests,
+      failed: stats.failed,
+      timedOut: stats.timedOut,
+      retried: stats.retried,
+      avgLatencyMs: stats.requests > 0 ? Math.round(stats.totalLatencyMs / stats.requests) : 0,
+      ttft_p50: percentile(sortedTtfts, 0.5),
+      ttft_p95: ttftP95,
+      ttft_p99: percentile(sortedTtfts, 0.99),
+      warning,
+    });
+  }
+  return result;
+}
+
+/** 计算已排序数组的百分位数（导出供 provider-health 等模块共用，避免逻辑重复） */
+export function percentile(sorted: number[], p: number): number | undefined {
+  if (sorted.length === 0) return undefined;
+  const idx = Math.ceil(sorted.length * p) - 1;
+  return sorted[Math.max(0, Math.min(idx, sorted.length - 1))];
 }

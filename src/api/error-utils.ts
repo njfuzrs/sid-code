@@ -5,7 +5,7 @@
  * - 遍历错误的 cause 链，提取根因（网络错误码 / HTTP 状态 / SSL 详情）
  * - SSL/TLS 错误诊断（企业代理场景常见）
  *
- * 设计原则：纯函数、无副作用，可被 errors.ts / retry-engine.ts 复用。
+ * 设计原则：纯函数、无副作用，可被 errors.ts / llm/fallback.ts 复用。
  */
 
 /** cause 链遍历的最大深度（防御循环引用） */

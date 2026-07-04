@@ -659,6 +659,8 @@ export class TraceCollector {
           usage: { input_tokens: inputTokens, output_tokens: outputTokens, cache_read: cacheRead },
           content_types: contentBlocks.filter(Boolean).map((b: any) => b.type),
           elapsed_ms: (resp as any).api_duration_ms,
+          provider: resp.provider,  // T12.4：Provider 维度标记
+          ttft_ms: (resp as any).ttft_ms,  // T14.4：TTFT 持久化
         },
       });
     } catch {
@@ -1063,6 +1065,14 @@ export class TraceCollector {
       data: {
         reason: input.reason,
         exit_status: this.metadata.exit_status,
+        // T13.4：side-call 失败统计
+        sideCallStats: sideStats.apiCalls > 0 ? {
+          total: sideStats.apiCalls,
+          succeeded: sideStats.apiCalls - sideStats.failed,
+          failed: sideStats.failed,
+          timedOut: sideStats.timedOut,
+          byLabel: sideStats.byLabel,
+        } : undefined,
       },
     });
 
@@ -1426,5 +1436,18 @@ export class TraceCollector {
   /** 当前 prevMessageCount（供测试检查增量逻辑） */
   getPrevMessageCount(): number {
     return this.prevMessageCount;
+  }
+
+  /** T12：写入 RetryTelemetry 事件到 events.jsonl */
+  writeRetryTelemetry(event: Record<string, unknown>): void {
+    if (!this.initialized) return;
+    try {
+      this.writer.appendEvent({
+        event: "RetryTelemetry",
+        session_id: this.metadata.session_id,
+        timestamp: new Date().toISOString(),
+        data: event,
+      });
+    } catch { /* 遥测写入失败不影响主流程 */ }
   }
 }

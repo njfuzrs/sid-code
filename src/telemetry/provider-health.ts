@@ -1,0 +1,324 @@
+/**
+ * T15：Provider 健康度聚合
+ *
+ * 从 events.jsonl 聚合各 provider 的健康指标：成功率/延迟/超时/重试。
+ * 供 CLI 看板和 digest 集成使用。
+ */
+
+import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { sidPaths } from "../config/paths.ts";
+import { percentile } from "../trace/digest.ts";
+
+// ─── 接口定义 ───
+
+export interface ProviderHealthMetrics {
+  provider: string;
+  period: { start: number; end: number };
+  requests: {
+    total: number;
+    succeeded: number;
+    failed: number;
+    timedOut: number;
+    retried: number;
+  };
+  latency: {
+    ttft_p50?: number;
+    ttft_p95?: number;
+    ttft_p99?: number;
+    total_p50?: number;
+    total_p95?: number;
+  };
+  timeouts: {
+    byLayer: Record<string, number>;
+  };
+  retries: {
+    total: number;
+    exhausted: number;
+    fallbackTriggered: number;
+  };
+}
+
+export interface HealthReport {
+  generatedAt: string;
+  periodLabel: string;
+  providers: ProviderHealthMetrics[];
+  alerts: HealthAlert[];
+}
+
+export interface HealthAlert {
+  provider: string;
+  severity: "warning" | "critical";
+  message: string;
+}
+
+// ─── 核心聚合逻辑 ───
+
+interface RawEvent {
+  event?: string;
+  timestamp?: string;
+  data?: Record<string, unknown>;
+}
+
+interface ProviderAccumulator {
+  totalLatencies: number[];
+  ttfts: number[];
+  requests: number;
+  failed: number;
+  timedOut: number;
+  retried: number;
+  exhausted: number;
+  fallbackTriggered: number;
+  timeoutsByLayer: Record<string, number>;
+  timestamps: number[];
+}
+
+/**
+ * 从指定时间范围内的 events.jsonl 文件聚合 provider 健康指标。
+ */
+export function aggregateProviderHealth(options: {
+  periodMs?: number;
+  provider?: string;
+  sessionsDir?: string;
+}): HealthReport {
+  const {
+    periodMs = 3600_000, // 默认 1h
+    provider: filterProvider,
+    sessionsDir,
+  } = options;
+
+  const trajDir = sessionsDir || join(sidPaths.trajectories(), "sessions");
+  const cutoffTs = Date.now() - periodMs;
+
+  // 收集所有符合时间范围的 session 目录
+  const events = collectEvents(trajDir, cutoffTs);
+
+  // 按 provider 聚合
+  const accumulators = new Map<string, ProviderAccumulator>();
+  const ensure = (p: string): ProviderAccumulator => {
+    if (!accumulators.has(p)) {
+      accumulators.set(p, {
+        totalLatencies: [],
+        ttfts: [],
+        requests: 0,
+        failed: 0,
+        timedOut: 0,
+        retried: 0,
+        exhausted: 0,
+        fallbackTriggered: 0,
+        timeoutsByLayer: {},
+        timestamps: [],
+      });
+    }
+    return accumulators.get(p)!;
+  };
+
+  for (const e of events) {
+    if (e.event === "AfterModelRaw" && e.data) {
+      const prov = (e.data.provider as string) || "unknown";
+      if (filterProvider && prov !== filterProvider) continue;
+      const acc = ensure(prov);
+      acc.requests++;
+      const elapsed = (e.data.elapsed_ms as number) || 0;
+      if (elapsed > 0) acc.totalLatencies.push(elapsed);
+      const ttft = e.data.ttft_ms as number | undefined;
+      if (ttft && ttft > 0) acc.ttfts.push(ttft);
+      const ts = e.timestamp ? new Date(e.timestamp).getTime() : 0;
+      if (ts > 0) acc.timestamps.push(ts);
+    }
+
+    if (e.event === "RetryTelemetry" && e.data) {
+      const prov = (e.data.provider as string) || (e.data.model as string) || "unknown";
+      if (filterProvider && prov !== filterProvider) continue;
+      const acc = ensure(prov);
+      const type = e.data.type as string;
+      if (type === "retry") acc.retried++;
+      else if (type === "529_dropped") acc.failed++;
+      else if (type === "fallback") acc.fallbackTriggered++;
+      else if (type === "persistent_failure") acc.exhausted++;
+      else if (type?.includes("timeout")) acc.timedOut++;
+    }
+
+    if (e.event === "TimeoutFired" && e.data) {
+      const layer = (e.data.layer as string) || "unknown";
+      const model = (e.data.model as string) || "";
+      const prov = model.includes("deepseek") ? "openai" : model.includes("claude") ? "anthropic" : "unknown";
+      if (filterProvider && prov !== filterProvider) continue;
+      const acc = ensure(prov);
+      acc.timeoutsByLayer[layer] = (acc.timeoutsByLayer[layer] || 0) + 1;
+      acc.timedOut++;
+    }
+  }
+
+  // 生成报告
+  const providers: ProviderHealthMetrics[] = [];
+  const alerts: HealthAlert[] = [];
+
+  for (const [prov, acc] of accumulators) {
+    const sortedLatencies = acc.totalLatencies.sort((a, b) => a - b);
+    const sortedTtfts = acc.ttfts.sort((a, b) => a - b);
+    const succeeded = acc.requests - acc.failed - acc.timedOut;
+    const minTs = acc.timestamps.length > 0 ? Math.min(...acc.timestamps) : cutoffTs;
+    const maxTs = acc.timestamps.length > 0 ? Math.max(...acc.timestamps) : Date.now();
+
+    const metrics: ProviderHealthMetrics = {
+      provider: prov,
+      period: { start: minTs, end: maxTs },
+      requests: {
+        total: acc.requests,
+        succeeded: Math.max(0, succeeded),
+        failed: acc.failed,
+        timedOut: acc.timedOut,
+        retried: acc.retried,
+      },
+      latency: {
+        ttft_p50: percentile(sortedTtfts, 0.5),
+        ttft_p95: percentile(sortedTtfts, 0.95),
+        ttft_p99: percentile(sortedTtfts, 0.99),
+        total_p50: percentile(sortedLatencies, 0.5),
+        total_p95: percentile(sortedLatencies, 0.95),
+      },
+      timeouts: { byLayer: acc.timeoutsByLayer },
+      retries: {
+        total: acc.retried,
+        exhausted: acc.exhausted,
+        fallbackTriggered: acc.fallbackTriggered,
+      },
+    };
+    providers.push(metrics);
+
+    // 生成告警
+    const successRate = acc.requests > 0 ? (Math.max(0, succeeded) / acc.requests) : 1;
+    const timeoutRate = acc.requests > 0 ? acc.timedOut / acc.requests : 0;
+    const ttftP95 = metrics.latency.ttft_p95;
+
+    if (successRate < 0.9) {
+      alerts.push({ provider: prov, severity: "critical", message: `成功率 ${(successRate * 100).toFixed(1)}% < 90%` });
+    } else if (successRate < 0.95) {
+      alerts.push({ provider: prov, severity: "warning", message: `成功率 ${(successRate * 100).toFixed(1)}% < 95%` });
+    }
+    if (timeoutRate > 0.1) {
+      alerts.push({ provider: prov, severity: "critical", message: `超时率 ${(timeoutRate * 100).toFixed(1)}% > 10%` });
+    } else if (timeoutRate > 0.05) {
+      alerts.push({ provider: prov, severity: "warning", message: `超时率 ${(timeoutRate * 100).toFixed(1)}% > 5%` });
+    }
+    if (ttftP95 && ttftP95 > 60000) {
+      alerts.push({ provider: prov, severity: "critical", message: `TTFT P95 ${(ttftP95 / 1000).toFixed(1)}s > 60s` });
+    } else if (ttftP95 && ttftP95 > 30000) {
+      alerts.push({ provider: prov, severity: "warning", message: `TTFT P95 ${(ttftP95 / 1000).toFixed(1)}s > 30s` });
+    }
+  }
+
+  const periodLabel = periodMs >= 86400_000 * 7 ? "7d"
+    : periodMs >= 86400_000 ? "24h"
+    : periodMs >= 3600_000 ? "1h"
+    : `${Math.round(periodMs / 60_000)}min`;
+
+  return {
+    generatedAt: new Date().toISOString(),
+    periodLabel,
+    providers,
+    alerts,
+  };
+}
+
+// ─── 辅助函数 ───
+
+function collectEvents(sessionsDir: string, cutoffTs: number): RawEvent[] {
+  if (!existsSync(sessionsDir)) return [];
+  const events: RawEvent[] = [];
+
+  try {
+    const entries = readdirSync(sessionsDir);
+    for (const entry of entries) {
+      const sessionDir = join(sessionsDir, entry);
+      try {
+        const stat = statSync(sessionDir);
+        if (!stat.isDirectory()) continue;
+        // 按目录修改时间过滤
+        if (stat.mtimeMs < cutoffTs) continue;
+      } catch { continue; }
+
+      const eventsPath = join(sessionDir, "events.jsonl");
+      if (!existsSync(eventsPath)) continue;
+
+      try {
+        const content = readFileSync(eventsPath, "utf-8");
+        for (const line of content.split("\n")) {
+          if (!line.trim()) continue;
+          try {
+            const parsed = JSON.parse(line) as RawEvent;
+            // 时间过滤
+            if (parsed.timestamp) {
+              const ts = new Date(parsed.timestamp).getTime();
+              if (ts < cutoffTs) continue;
+            }
+            events.push(parsed);
+          } catch { /* 跳过格式错误行 */ }
+        }
+      } catch { /* 读取失败跳过 */ }
+    }
+  } catch { /* 目录不存在或无权限 */ }
+
+  return events;
+}
+
+// percentile 函数已收敛到 src/trace/digest.ts 统一导出，此处通过 import 复用
+
+// ─── 退化告警通知（T9.3）───
+
+/**
+ * 将健康报告中的告警推送到 webhook（飞书/钉钉/Slack 兼容的 text 消息体）。
+ *
+ * webhook URL 来源（优先级）：
+ *   1. 显式传入的 opts.webhookUrl
+ *   2. 环境变量 SID_CODE_ALERT_WEBHOOK_URL
+ *
+ * 无 URL 或无告警时静默跳过（返回 { sent: false }）。
+ * 网络失败不抛异常（返回 { sent: false, error }），避免告警本身成为故障源。
+ */
+export async function sendHealthAlerts(
+  report: HealthReport,
+  opts?: { webhookUrl?: string; signal?: AbortSignal; timeoutMs?: number },
+): Promise<{ sent: boolean; error?: string }> {
+  const webhookUrl = opts?.webhookUrl ?? process.env.SID_CODE_ALERT_WEBHOOK_URL;
+  if (!webhookUrl) return { sent: false };
+  if (report.alerts.length === 0) return { sent: false };
+
+  const text = formatAlertText(report);
+
+  const timeoutMs = opts?.timeoutMs ?? 10_000;
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort("alert-webhook-timeout"), timeoutMs);
+  if (opts?.signal) {
+    opts.signal.addEventListener("abort", () => ctl.abort("external-abort"), { once: true });
+  }
+
+  try {
+    const res = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      // 飞书自定义机器人格式；钉钉/Slack 亦兼容 text 字段结构
+      body: JSON.stringify({ msg_type: "text", content: { text } }),
+      signal: ctl.signal,
+    });
+    if (!res.ok) {
+      return { sent: false, error: `HTTP ${res.status}` };
+    }
+    return { sent: true };
+  } catch (err) {
+    return { sent: false, error: err instanceof Error ? err.message : String(err) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** 把告警渲染成纯文本消息体（webhook 用）。 */
+export function formatAlertText(report: HealthReport): string {
+  const lines = [`⚠️ [sid-code] Provider 健康告警 · 周期 ${report.periodLabel}`];
+  for (const a of report.alerts) {
+    const icon = a.severity === "critical" ? "✘" : "⚡";
+    lines.push(`${icon} [${a.provider}] ${a.message}`);
+  }
+  return lines.join("\n");
+}

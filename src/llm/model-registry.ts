@@ -28,7 +28,7 @@ export interface ModelRegistryEntry {
   maxTokensField?: "max_tokens" | "max_completion_tokens";
   supportsTemperature?: boolean;
   reasoningEffortValues?: ("low" | "medium" | "high" | "max")[];
-  protocolKind?: "deepseek-openai" | "deepseek-anthropic" | "anthropic-native" | "o-series" | "glm-openai" | "grok-openai" | "unknown";
+  protocolKind?: "deepseek-openai" | "deepseek-anthropic" | "anthropic-native" | "o-series" | "glm-openai" | "grok-openai" | "openai-responses" | "unknown";
 
   /**
    * 多轮工具调用时，是否要求把该轮 assistant 的 reasoning_content 原样回传给 API。
@@ -94,13 +94,13 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
   // ══════════════════════════════════════════════════════════════════
   // OpenAI / GPT
   // ══════════════════════════════════════════════════════════════════
-  "gpt-5.5": { contextWindow: 1_050_000, maxOutputTokens: 128_000, supportsThinking: false, pricing: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 } },
-  "gpt-5.5-pro": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: false, pricing: { input: 30, output: 180, cacheRead: 0, cacheWrite: 0 } },
-  "gpt-5.4": { contextWindow: 1_050_000, maxOutputTokens: 128_000, supportsThinking: false, pricing: { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 0 } },
-  "gpt-5.4-mini": { contextWindow: 400_000, maxOutputTokens: 128_000, supportsThinking: false, pricing: { input: 0.75, output: 4.5, cacheRead: 0.075, cacheWrite: 0 } },
-  "gpt-5.4-nano": { contextWindow: 400_000, maxOutputTokens: 128_000, supportsThinking: false, pricing: { input: 0.2, output: 1.25, cacheRead: 0.02, cacheWrite: 0 } },
-  "gpt-5.4-pro": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: false, pricing: { input: 30, output: 180, cacheRead: 0, cacheWrite: 0 } },
-  "gpt-5.2": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: false, pricing: { input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 0 } },
+  "gpt-5.5": { contextWindow: 1_050_000, maxOutputTokens: 128_000, supportsThinking: false, protocolKind: "openai-responses", pricing: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 } },
+  "gpt-5.5-pro": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: false, protocolKind: "openai-responses", pricing: { input: 30, output: 180, cacheRead: 0, cacheWrite: 0 } },
+  "gpt-5.4": { contextWindow: 1_050_000, maxOutputTokens: 128_000, supportsThinking: false, protocolKind: "openai-responses", pricing: { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 0 } },
+  "gpt-5.4-mini": { contextWindow: 400_000, maxOutputTokens: 128_000, supportsThinking: false, protocolKind: "openai-responses", pricing: { input: 0.75, output: 4.5, cacheRead: 0.075, cacheWrite: 0 } },
+  "gpt-5.4-nano": { contextWindow: 400_000, maxOutputTokens: 128_000, supportsThinking: false, protocolKind: "openai-responses", pricing: { input: 0.2, output: 1.25, cacheRead: 0.02, cacheWrite: 0 } },
+  "gpt-5.4-pro": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: false, protocolKind: "openai-responses", pricing: { input: 30, output: 180, cacheRead: 0, cacheWrite: 0 } },
+  "gpt-5.2": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: false, protocolKind: "openai-responses", pricing: { input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 0 } },
   "gpt-4.1": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: false },
   "gpt-4.1-mini": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: false, pricing: { input: 0.4, output: 1.6, cacheRead: 0.1, cacheWrite: 0 } },
   "gpt-4.1-nano": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: false, pricing: { input: 0.1, output: 0.4, cacheRead: 0, cacheWrite: 0 } },

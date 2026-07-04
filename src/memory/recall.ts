@@ -97,6 +97,19 @@ export async function findRelevantMemories(
     selectedNames = parseSelection(out, validFilenames);
   } catch (err: any) {
     log.debug("MEMORY", `记忆召回 sideQuery 失败，跳过: ${err.message}`);
+    // T13.3：记录失败的 side-call
+    recordSideCall({
+      label: "memory-recall",
+      model: "unknown",
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      durationMs: 0,
+      success: false,
+      error: err.message,
+      timedOut: /timeout|超时|timed out/i.test(err.message),
+    });
     return [];
   }
 

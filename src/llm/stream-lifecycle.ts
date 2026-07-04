@@ -13,6 +13,9 @@
  *   Layer 3  overall timeout       —— 整个请求从开始超过硬上限 → 中断（对齐官方 SDK request timeout）
  *   signal   abort 穿透            —— 用户 ESC / 上层超时 → 立即退出
  *   telemetry stream_stall/idle/content/overall/completed —— 统一诊断事件
+ *   TTFT     first-content 回调     —— 首个真实内容事件到达时回调一次（T14.6），
+ *                                     provider 据此统一 emit first_content StreamPhase，
+ *                                     新 provider 白嫖 TTFT 追踪，无需各自手写检测
  *
  * § 关键设计决策：provider 提供"进展判定"，通用层管定时器
  * openai 的 keep-alive 判定发生在 SSE 原始字节层，anthropic 的事件已结构化——两者对
@@ -53,6 +56,26 @@ export interface StreamLifecycleOptions<T = unknown> {
    * 不传则所有事件都算进展（退化为纯 idle 保护，兼容旧行为）。
    */
   isContentProgress?: (event: T) => boolean;
+  /**
+   * T14.6：判定一个事件是否为"首个真实内容"（TTFT 判据）。与 isContentProgress 解耦——
+   * content progress 用于 keep-alive 检测（可较宽，如含 content_block_start），
+   * 而 first content 专指首个真实内容 token（各 provider 通常收敛为 content_block_delta），
+   * 语义更窄以保证 TTFT 口径与迁移前一致。不传则回退到 isContentProgress。
+   */
+  isFirstContent?: (event: T) => boolean;
+  /**
+   * T14.6：TTFT 基准时间戳（ms）。首个 first-content 事件到达时，
+   * 以 `Date.now() - requestStartTimeMs` 计算 ttft_ms。不传则退回 lifecycle 内部 startedAt
+   * （注意：startedAt 是 createStreamLifecycle 调用时刻，通常在 headers 之后，会低估真实 TTFT；
+   * 需要包含连接/首字节时延的真 TTFT 时，provider 应传入 fetch 之前的 requestStartTime）。
+   */
+  requestStartTimeMs?: number;
+  /**
+   * T14.6：首个 first-content 事件到达时回调一次（幂等，只触发一次）。
+   * 入参 ttftMs = 到达时刻 - TTFT 基准时间。provider 接到此回调后 emitStreamPhase("first_content")，
+   * 从而把 TTFT 追踪统一收敛到 lifecycle 层——所有接入 lifecycle 的 provider 自动获得 first_content emit。
+   */
+  onFirstContentProgress?: (ttftMs: number) => void;
   /** stall 告警阈值（毫秒）。超过此间隔记录 warning 但不中断。默认 30_000 */
   stallWarnMs?: number;
   /** provider / 消费点标签（日志/遥测用），如 "ANTHROPIC" | "OPENAI" | "SUB-AGENT" | "SIDE-CALL" */
@@ -173,6 +196,9 @@ async function* streamLifecycleImpl<T>(
     contentProgressTimeoutMs,
     overallTimeoutMs,
     isContentProgress,
+    isFirstContent,
+    requestStartTimeMs,
+    onFirstContentProgress,
     stallWarnMs = 30_000,
     label,
     onTimeout,
@@ -258,6 +284,9 @@ async function* streamLifecycleImpl<T>(
     }
   }, stallWarnMs);
 
+  // T14.6：first-content 只触发一次的幂等标记
+  let firstContentFired = false;
+
   resetIdle();
   resetContentProgress(); // 启动 content progress 计时（未启用时空转）
   startOverall();         // 启动 overall 计时（未启用时空转）
@@ -273,6 +302,17 @@ async function* streamLifecycleImpl<T>(
       // content progress timer 只对"业务进展"事件 reset（ping 不续命）
       if (contentProgressEnabled && isContentProgress!(event)) {
         resetContentProgress();
+      }
+      // T14.6：首个 first-content 事件到达时回调一次（幂等）。
+      // isFirstContent 不传则回退 isContentProgress；两者都不传则首个事件即触发。
+      if (onFirstContentProgress && !firstContentFired) {
+        const predicate = isFirstContent ?? isContentProgress ?? (() => true);
+        if (predicate(event)) {
+          firstContentFired = true;
+          const baseTime = requestStartTimeMs ?? snapshot.startedAt;
+          const ttftMs = Date.now() - baseTime;
+          try { onFirstContentProgress(ttftMs); } catch { /* 回调异常不影响流 */ }
+        }
       }
       yield event;
     }

@@ -108,27 +108,28 @@ async function filterGitignored(
   if (paths.length === 0) return ignored;
   // T5-B3：入口快速退出——signal 已 abort 时不再 spawn git 子进程
   if (signal?.aborted) return ignored;
+  let child: import("child_process").ChildProcess | null = null;
   try {
     const { spawn } = await import("child_process");
-    const child = spawn("git", ["check-ignore", "--stdin"], {
+    child = spawn("git", ["check-ignore", "--stdin"], {
       cwd,
       stdio: ["pipe", "pipe", "ignore"],
     });
     // T5-B3：signal abort 时也 kill git 子进程，防止孤儿进程
-    const onAbort = () => { if (!child.killed) child.kill(); };
+    const onAbort = () => { if (!child!.killed) child!.kill(); };
     signal?.addEventListener("abort", onAbort, { once: true });
     let stdout = "";
     // T5-B3：stdout 累积加 1MB 上限，防止异常大输出撑爆内存
     const STDOUT_CAP = 1_048_576;
-    child.stdout.on("data", (c: Buffer) => {
+    child.stdout!.on("data", (c: Buffer) => {
       if (stdout.length < STDOUT_CAP) stdout += c.toString();
     });
     const exitPromise = new Promise<void>((resolve) => {
-      child.on("close", () => resolve());
-      child.on("error", () => resolve());
+      child!.on("close", () => resolve());
+      child!.on("error", () => resolve());
     });
-    child.stdin.write(paths.join("\n"));
-    child.stdin.end();
+    child.stdin!.write(paths.join("\n"));
+    child.stdin!.end();
     // 5s 超时兜底：超时后 kill 子进程，防止孤儿进程占用资源
     let timedOut = false;
     await Promise.race([
@@ -144,6 +145,11 @@ async function filterGitignored(
     }
   } catch {
     // git 不可用：不过滤
+  } finally {
+    // T5-B3 兜底：无论正常退出、超时还是异常，确保子进程不成孤儿
+    if (child && !child.killed) {
+      try { child.kill(); } catch { /* 进程已退出，kill 是 no-op */ }
+    }
   }
   return ignored;
 }
