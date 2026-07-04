@@ -322,6 +322,10 @@ export type StreamTelemetrySignal =
   // content_progress_timeout 只在"有意义的业务内容"（content_block_delta / message_delta）
   // 长时间未到达时触发——即便 ping 还在续命 idle timer，也能识破"只有 keep-alive、无真内容"。
   | { type: "stream_content_progress_timeout"; provider: string; timeoutMs: number; totalEvents: number }
+  // T7：请求级整体超时。从流开始到现在超过硬上限（不因任何事件重置），对齐官方 SDK 的
+  // request-level timeout。区别于 idle/content_progress（都会在事件到达时重置）：overall 是
+  // 绝对上限，防"持续吐 keep-alive 或缓慢有效内容但永不结束"的流无限占用一次请求配额。
+  | { type: "stream_overall_timeout"; provider: string; timeoutMs: number; totalEvents: number }
   | { type: "stream_completed"; provider: string; totalEvents: number; elapsedMs: number; ttftMs?: number };
 
 /** 累积的流式响应 */

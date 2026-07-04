@@ -1,0 +1,24 @@
+{
+  "provider": "deepseek",
+  "scenario": "keep-alive-heavy",
+  "request": {
+    "model": "deepseek-chat",
+    "url": "https://api.deepseek.com/v1/chat/completions"
+  },
+  "response": {
+    "status": 200,
+    "headers": { "content-type": "text/event-stream" },
+    "chunks": [
+      { "data": ": keep-alive\n\n", "delayMs": 0 },
+      { "data": ": keep-alive\n\n", "delayMs": 5 },
+      { "data": "data: {\"id\":\"ds-1\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}\n\n", "delayMs": 5 },
+      { "data": ": keep-alive\n\n", "delayMs": 5 },
+      { "data": "data: {\"id\":\"ds-1\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"Let me think...\"}}]}\n\n", "delayMs": 5 },
+      { "data": ": keep-alive\n\n", "delayMs": 5 },
+      { "data": "data: {\"id\":\"ds-1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"42\"}}]}\n\n", "delayMs": 5 },
+      { "data": "data: {\"id\":\"ds-1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n", "delayMs": 5 },
+      { "data": "data: {\"id\":\"ds-1\",\"choices\":[],\"usage\":{\"prompt_tokens\":30,\"completion_tokens\":10,\"total_tokens\":40}}\n\n", "delayMs": 5 },
+      { "data": "data: [DONE]\n\n", "delayMs": 2 }
+    ]
+  }
+}

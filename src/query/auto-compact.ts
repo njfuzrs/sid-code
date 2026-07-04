@@ -13,6 +13,7 @@ import { getLogger } from "../debug/index.ts";
 import { AutoCompactCircuitBreaker } from "./circuit-breaker.ts";
 import { recordSideCall } from "../trace/side-call-sink.ts";
 import { withSideCallDeadline } from "../llm/side-call-timeout.ts";
+import { createStreamLifecycle, LIFECYCLE_PRESETS } from "../llm/stream-lifecycle.ts";
 
 /** 全局熔断器实例（跨调用共享状态） */
 let globalCircuitBreaker: AutoCompactCircuitBreaker | null = null;
@@ -207,7 +208,19 @@ async function doAutoCompact(
         );
         let s = "";
         let usage: any = null;
-        for await (const event of stream) {
+        // T7：给 side-call 流消费叠加 StreamLifecycle（sideCall preset：idle 30s / content 60s /
+        // overall 60s），在 withSideCallDeadline 的 60s 硬 deadline 之内提供更细粒度的 stall 检测。
+        // 超时触发时 abort 合并 signal → 下方 signal.aborted 检查退出（不依赖底层 reader settle）。
+        const lifecycle = createStreamLifecycle({
+          idleTimeoutMs: LIFECYCLE_PRESETS.sideCall.idleTimeoutMs,
+          contentProgressTimeoutMs: LIFECYCLE_PRESETS.sideCall.contentProgressTimeoutMs,
+          overallTimeoutMs: LIFECYCLE_PRESETS.sideCall.overallTimeoutMs,
+          isContentProgress: (e: any) =>
+            e?.type === "content_block_delta" || e?.type === "message_delta",
+          label: "SIDE-CALL:auto-compact",
+          signal,
+        });
+        for await (const event of lifecycle.guard(stream)) {
           // A6 纵深防御：压缩 side-call 检查 signal，防止主循环 abort 后压缩仍挂起
           if (signal.aborted) {
             throw new Error("Request aborted");

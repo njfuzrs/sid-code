@@ -4,7 +4,6 @@
  * 分层职责（对标 Claude Code 的 API 服务架构）：
  *   errors / error-utils  → 错误分类 + 用户消息 + SSL 诊断
  *   retry-engine          → @deprecated 已迁移至 llm/fallback.ts（保留兼容层）
- *   stream-watchdog       → 流式停滞检测 + 性能指标
  *   stream-handler        → 流式→非流式降级
  *   cache-strategy        → Prompt Cache breakpoint 放置
  *   cache-detection       → Cache 失效检测与归因
@@ -21,7 +20,6 @@ export * from "./errors.ts";
 export * from "./retry-engine.ts";
 
 // 流式处理
-export * from "./stream-watchdog.ts";
 export * from "./stream-handler.ts";
 
 // Prompt Cache

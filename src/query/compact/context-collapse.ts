@@ -21,6 +21,7 @@ import { getLogger } from "../../debug/index.ts";
 import { estimateTextTokens } from "../../context/token.ts";
 import { recordSideCall } from "../../trace/side-call-sink.ts";
 import { withSideCallDeadline } from "../../llm/side-call-timeout.ts";
+import { createStreamLifecycle, LIFECYCLE_PRESETS } from "../../llm/stream-lifecycle.ts";
 
 /** 每段消息条数 */
 const SEGMENT_SIZE = 10;
@@ -145,7 +146,21 @@ async function summarizeSegment(
       );
       let s = "";
       let usage: any = null;
-      for await (const event of stream) {
+      // T7：叠加 StreamLifecycle（sideCall preset），overall 收敛到 45s 段超时之内。
+      // 提供比 45s 硬 deadline 更细粒度的 idle/content stall 检测。
+      const lifecycle = createStreamLifecycle({
+        idleTimeoutMs: LIFECYCLE_PRESETS.sideCall.idleTimeoutMs,
+        contentProgressTimeoutMs: Math.min(
+          LIFECYCLE_PRESETS.sideCall.contentProgressTimeoutMs,
+          SEGMENT_TIMEOUT_MS,
+        ),
+        overallTimeoutMs: SEGMENT_TIMEOUT_MS,
+        isContentProgress: (e: any) =>
+          e?.type === "content_block_delta" || e?.type === "message_delta",
+        label: "SIDE-CALL:context-collapse",
+        signal,
+      });
+      for await (const event of lifecycle.guard(stream)) {
         // A7 纵深防御：上下文折叠 side-call 检查 signal
         if (signal.aborted) {
           throw new Error("Request aborted");

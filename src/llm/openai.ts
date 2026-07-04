@@ -20,6 +20,8 @@ import type {
 import { getLogger } from "../debug/logger.ts";
 import { emitStreamPhase, emitTimeoutFired, updateStreamStats, emitStreamStall, armIneffectiveCheck, emitHttpConnected } from "../trace/stream-observer.ts";
 import { guardOutgoingMessages } from "./protocol-sentinel.ts";
+import { createStreamLifecycle, LIFECYCLE_PRESETS } from "./stream-lifecycle.ts";
+import type { StreamTelemetrySignal } from "./types.ts";
 import { filterParamsForModel } from "./model-capability-filter.ts";
 import { lookupCatalog } from "./model-params-catalog.ts";
 import { splitSystemByDynamicBoundary } from "../api/cache-strategy.ts";
@@ -721,7 +723,42 @@ export class OpenAIProvider implements Provider {
       let accumulatedUsage: Usage = { inputTokens: 0, outputTokens: 0 };
       // PARSE-4：累积输出文本，供"端点不返回 usage"（Ollama 等）时估算兜底
       let accumulatedOutputText = "";
-      for await (const event of this.parseSSE(response.body!, signal)) {
+      // § StreamLifecycle 包装（T7）：parseSSE 保留其**字节级** idle/content 超时核心
+      // （检测"零字节到达"的 TCP 半开——比事件级更细的信号，经 fdb47f30/9bc92c2c 淬炼，
+      // 不下移以免降级检测能力）；这里叠加两项 parseSSE 原先缺失的能力：
+      //   1) 统一 onStreamTelemetry 遥测（对齐 anthropic：stream_stall/completed 进 events.jsonl）；
+      //   2) Layer 3 请求级整体超时兜底（overallTimeoutMs，事件级绝对上限）。
+      // idleTimeoutMs 设为一个宽松上限（parseSSE 的字节级 idle 更严格、先触发），避免与之竞争。
+      const lifecycle = createStreamLifecycle<StreamEvent>({
+        // 事件级 idle 放宽到 overall 同量级：字节级 idle（parseSSE 内）才是权威的空闲判据，
+        // 这层只作"连事件都彻底停了"的粗粒度兜底，不与字节级 idle 争抢触发。
+        idleTimeoutMs: LIFECYCLE_PRESETS.mainLoop.overallTimeoutMs,
+        overallTimeoutMs: (() => {
+          const override = Number(process.env.SID_CODE_OPENAI_OVERALL_TIMEOUT_MS);
+          if (Number.isFinite(override) && override > 0) return override;
+          return LIFECYCLE_PRESETS.mainLoop.overallTimeoutMs;
+        })(),
+        stallWarnMs: 30_000,
+        label: "OPENAI",
+        // § 行为等价（T7）：abort 由 parseSSE（内部 abortPromise race）+ 下方消费循环
+        // （`if (signal?.aborted) throw`）owns，不交给 lifecycle 早退，保持迁移前语义。
+        onTimeout: (layer) => {
+          // parseSSE 的字节级超时是第一道防线；这里的事件级超时是叠加兜底。
+          try {
+            emitTimeoutFired(obsIndex, layer === "overall" ? "turn_hard_timeout" : "idle_timeout", {
+              threshold_ms: LIFECYCLE_PRESETS.mainLoop.overallTimeoutMs,
+              model: effectiveModel,
+            });
+          } catch { /* 可观测性不影响主流程 */ }
+        },
+        onTelemetry: (evt: StreamTelemetrySignal) => {
+          log.debug("TELEMETRY:OPENAI", `${evt.type}`, evt as any);
+          try {
+            params.onStreamTelemetry?.(evt);
+          } catch { /* 遥测失败不影响主流程 */ }
+        },
+      });
+      for await (const event of lifecycle.guard(this.parseSSE(response.body!, signal))) {
         // Fix 1 纵深防御：每次事件到达后检查 signal（覆盖 parseSSE 内 race 的盲区）
         if (signal?.aborted) {
           // 缺口 1：用户中断记录 aborted 阶段

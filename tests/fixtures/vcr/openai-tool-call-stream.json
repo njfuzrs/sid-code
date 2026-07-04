@@ -1,0 +1,21 @@
+{
+  "provider": "openai",
+  "scenario": "tool-call-stream",
+  "request": {
+    "model": "gpt-4o-mini",
+    "url": "https://api.openai.com/v1/chat/completions"
+  },
+  "response": {
+    "status": 200,
+    "headers": { "content-type": "text/event-stream" },
+    "chunks": [
+      { "data": "data: {\"id\":\"chatcmpl-2\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null}}]}\n\n", "delayMs": 0 },
+      { "data": "data: {\"id\":\"chatcmpl-2\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_abc\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"\"}}]}}]}\n\n", "delayMs": 10 },
+      { "data": "data: {\"id\":\"chatcmpl-2\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"city\\\":\"}}]}}]}\n\n", "delayMs": 10 },
+      { "data": "data: {\"id\":\"chatcmpl-2\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"Paris\\\"}\"}}]}}]}\n\n", "delayMs": 10 },
+      { "data": "data: {\"id\":\"chatcmpl-2\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n", "delayMs": 10 },
+      { "data": "data: {\"id\":\"chatcmpl-2\",\"choices\":[],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":8,\"total_tokens\":28}}\n\n", "delayMs": 5 },
+      { "data": "data: [DONE]\n\n", "delayMs": 2 }
+    ]
+  }
+}

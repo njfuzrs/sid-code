@@ -12,6 +12,7 @@ import { accumulateUsage } from "../llm/types.ts";
 import { getLogger } from "../debug/index.ts";
 import { normalizeToolInput } from "../llm/normalize-tool-input.ts";
 import { emitTimeoutFired } from "../trace/stream-observer.ts";
+import { createStreamLifecycle, LIFECYCLE_PRESETS } from "../llm/stream-lifecycle.ts";
 
 /** 流式处理结果 */
 export interface StreamProcessResult {
@@ -65,43 +66,41 @@ export async function processStream(
   const usage: Usage = { inputTokens: 0, outputTokens: 0 };
   const jsonAccumulators = new Map<number, string>();
 
-  // ── T4：心跳 + 整体超时（对标 query/stream-processor.ts） ──
-  const HEARTBEAT_TIMEOUT = options.heartbeatTimeoutMs ?? 60_000;
-  const OVERALL_TIMEOUT = options.overallTimeoutMs ?? 180_000;
-  const CHECK_INTERVAL = options.heartbeatCheckIntervalMs ?? 5_000;
-  const startTime = Date.now();
-  let lastActivityTime = Date.now();
+  // ── T7：心跳 + 整体超时改由 StreamLifecycle 统一管理（替代原 setInterval 手写心跳）──
+  // idle（心跳）= 60s 无事件 → abort；overall = 180s 请求级绝对上限。子代理阈值比主循环短。
+  // 行为与迁移前 setInterval 版等价：超时触发 → abort 上游 + 返回 stopReason="error"（不抛异常）。
+  const HEARTBEAT_TIMEOUT = options.heartbeatTimeoutMs ?? LIFECYCLE_PRESETS.subAgent.idleTimeoutMs;
+  const OVERALL_TIMEOUT = options.overallTimeoutMs ?? LIFECYCLE_PRESETS.subAgent.overallTimeoutMs;
   let timeoutError: Error | null = null;
 
-  const checkInterval = setInterval(() => {
-    const now = Date.now();
-    // 整体超时检测
-    if (now - startTime > OVERALL_TIMEOUT) {
-      timeoutError = new Error(
-        `sub-agent stream overall timeout: ${OVERALL_TIMEOUT / 1000}s 总时长超限`,
-      );
-      getLogger().warn("AGENT_STREAM", `整体超时: ${OVERALL_TIMEOUT / 1000}s`);
-      emitTimeoutFired(-1, "agent_overall_timeout", { elapsed_ms: now - startTime });
-      options.getAbortController?.()?.abort("agent-stream-overall-timeout");
-      clearInterval(checkInterval);
-      return;
-    }
-    // 心跳超时检测
-    if (now - lastActivityTime > HEARTBEAT_TIMEOUT) {
-      timeoutError = new Error(
-        `sub-agent stream heartbeat timeout: ${HEARTBEAT_TIMEOUT / 1000}s 无数据`,
-      );
-      getLogger().warn("AGENT_STREAM", `心跳超时: ${HEARTBEAT_TIMEOUT / 1000}s 无数据`);
-      emitTimeoutFired(-1, "agent_heartbeat_timeout", { idle_ms: now - lastActivityTime });
-      options.getAbortController?.()?.abort("agent-stream-heartbeat-timeout");
-      clearInterval(checkInterval);
-    }
-  }, CHECK_INTERVAL);
+  const lifecycle = createStreamLifecycle<StreamEvent>({
+    idleTimeoutMs: HEARTBEAT_TIMEOUT,
+    overallTimeoutMs: OVERALL_TIMEOUT,
+    // stall 告警阈值——不小于心跳超时，避免超时前的噪音告警（测试短超时下亦不误报）。
+    stallWarnMs: Math.max(HEARTBEAT_TIMEOUT, 30_000),
+    label: "SUB-AGENT",
+    onTimeout: (layer) => {
+      if (layer === "overall") {
+        timeoutError = new Error(
+          `sub-agent stream overall timeout: ${OVERALL_TIMEOUT / 1000}s 总时长超限`,
+        );
+        getLogger().warn("AGENT_STREAM", `整体超时: ${OVERALL_TIMEOUT / 1000}s`);
+        emitTimeoutFired(-1, "agent_overall_timeout", { elapsed_ms: OVERALL_TIMEOUT });
+        options.getAbortController?.()?.abort("agent-stream-overall-timeout");
+      } else {
+        // idle 层等价于原"心跳超时"（content_progress 未启用，不会走到该分支）
+        timeoutError = new Error(
+          `sub-agent stream heartbeat timeout: ${HEARTBEAT_TIMEOUT / 1000}s 无数据`,
+        );
+        getLogger().warn("AGENT_STREAM", `心跳超时: ${HEARTBEAT_TIMEOUT / 1000}s 无数据`);
+        emitTimeoutFired(-1, "agent_heartbeat_timeout", { idle_ms: HEARTBEAT_TIMEOUT });
+        options.getAbortController?.()?.abort("agent-stream-heartbeat-timeout");
+      }
+    },
+  });
 
   try {
-    for await (const event of stream) {
-      lastActivityTime = Date.now();
-
+    for await (const event of lifecycle.guard(stream)) {
       // T4：一旦超时标志置位，主动退出循环返回错误（不再消费残余事件）
       if (timeoutError) {
         return {
@@ -200,7 +199,7 @@ export async function processStream(
       }
     }
   } finally {
-    clearInterval(checkInterval);
+    // T7：StreamLifecycle 在其 finally 中自清理全部定时器，此处无需额外清理。
   }
 
   // T4：循环正常结束后仍需检查超时标志（stream 自然 end 与超时 abort 竞态时）

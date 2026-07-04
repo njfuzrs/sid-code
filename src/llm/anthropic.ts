@@ -26,8 +26,8 @@ import { getLogger } from "../debug/logger.ts";
 import { generateClientRequestId } from "../api/api-log.ts";
 import { updateRateLimitStatus } from "../api/rate-limit.ts";
 import { guardOutgoingMessages } from "./protocol-sentinel.ts";
-import { guardedStream } from "./stream-guard.ts";
-import type { StreamGuardTelemetryEvent } from "./stream-guard.ts";
+import { createStreamLifecycle, LIFECYCLE_PRESETS } from "./stream-lifecycle.ts";
+import type { StreamTelemetrySignal } from "./types.ts";
 import { emitTimeoutFired } from "../trace/stream-observer.ts";
 import { currentSseDumpContext } from "./sse-chunk-dumper.ts";
 import { normalizeToolInput } from "./normalize-tool-input.ts";
@@ -224,30 +224,51 @@ export class AnthropicProvider implements Provider {
         /* headers 提取失败不影响主流程 */
       }
 
-      // § stream-guard 包装：idle timeout + content progress timeout + stall detection
-      const guarded = guardedStream(rawStream as unknown as AsyncIterable<any>, {
+      // § StreamLifecycle 包装（T7）：三层超时 idle / content progress / overall + stall detection。
+      // 从 guardedStream 升级为 createStreamLifecycle，额外获得 Layer 3 请求级整体超时
+      // （mainLoop preset 的 overallTimeoutMs=10min），对齐官方 SDK 的 request-level timeout。
+      const lifecycle = createStreamLifecycle<any>({
         // idle timeout（90s）：任何数据包（含 ping keep-alive）都 reset，保护"TCP 彻底断开"场景。
-        idleTimeoutMs: 90_000,
-        // T2：content progress timeout（5min）：只在 content_block_delta / message_delta 到达时 reset。
+        idleTimeoutMs: LIFECYCLE_PRESETS.mainLoop.idleTimeoutMs,
+        // content progress timeout（5min）：只在 content_block_delta / message_delta 到达时 reset。
         // ping / message_start / content_block_start 不续命——识破"只有 keep-alive、无真内容"的僵死流。
         // 阈值可经 SID_CODE_ANTHROPIC_CONTENT_PROGRESS_TIMEOUT_MS 覆盖（测试注入）。
         contentProgressTimeoutMs: (() => {
           const override = Number(process.env.SID_CODE_ANTHROPIC_CONTENT_PROGRESS_TIMEOUT_MS);
           if (Number.isFinite(override) && override > 0) return override;
-          return 300_000;
+          return LIFECYCLE_PRESETS.mainLoop.contentProgressTimeoutMs;
+        })(),
+        // T7 overall timeout（10min）：请求级绝对上限，不因任何事件重置。
+        // 阈值可经 SID_CODE_ANTHROPIC_OVERALL_TIMEOUT_MS 覆盖（测试注入）。
+        overallTimeoutMs: (() => {
+          const override = Number(process.env.SID_CODE_ANTHROPIC_OVERALL_TIMEOUT_MS);
+          if (Number.isFinite(override) && override > 0) return override;
+          return LIFECYCLE_PRESETS.mainLoop.overallTimeoutMs;
         })(),
         isContentProgress: (event: any) =>
           event?.type === "content_block_delta" || event?.type === "message_delta",
         stallWarnMs: 30_000,
         label: "ANTHROPIC",
+        // § 行为等价（T7）：不把 signal 交给 lifecycle 做早退——abort 语义完全保留在下方
+        // 消费循环（`if (signal?.aborted) throw`）+ SDK signal 透传，与迁移前 guardedStream
+        // 完全一致（旧 guardedStream 调用同样未传 signal）。若交给 lifecycle 早退，pre-abort
+        // 场景会在 yield 前 break 导致外层不再抛 "Request aborted"，破坏既有契约。
         onTimeout: (layer) => {
-          // T2：记录超时触发事件（区分 idle vs content_progress 层）到 events.jsonl。
+          // T2/T7：记录超时触发事件（区分 idle / content_progress / overall 层）到 events.jsonl。
           // Anthropic 路径此前不写 stream-observer，这里补上超时可观测性（对齐 openai.ts）。
           try {
+            const timeoutLayer =
+              layer === "content_progress" ? "content_progress_timeout"
+              : layer === "overall" ? "turn_hard_timeout"
+              : "idle_timeout";
+            const threshold =
+              layer === "content_progress" ? LIFECYCLE_PRESETS.mainLoop.contentProgressTimeoutMs
+              : layer === "overall" ? LIFECYCLE_PRESETS.mainLoop.overallTimeoutMs
+              : LIFECYCLE_PRESETS.mainLoop.idleTimeoutMs;
             emitTimeoutFired(
               currentSseDumpContext().turnIndex,
-              layer === "content_progress" ? "content_progress_timeout" : "idle_timeout",
-              { threshold_ms: layer === "content_progress" ? 300_000 : 90_000, model: this._model },
+              timeoutLayer,
+              { threshold_ms: threshold, model: this._model },
             );
           } catch { /* 可观测性不影响主流程 */ }
           // § 主动 abort 底层连接（对齐 Claude Code 的 releaseStreamResources）
@@ -258,7 +279,7 @@ export class AnthropicProvider implements Provider {
             response.body?.cancel().catch(() => {});
           } catch { /* ignore */ }
         },
-        onTelemetry: (evt: StreamGuardTelemetryEvent) => {
+        onTelemetry: (evt: StreamTelemetrySignal) => {
           // 遥测事件通过 logger 记录，接入现有可观测性系统
           log.debug("TELEMETRY:ANTHROPIC", `${evt.type}`, evt as any);
           // § 转发到统一的 RetryTelemetry 通道（由 fallback.ts 注入 onStreamTelemetry）
@@ -268,6 +289,7 @@ export class AnthropicProvider implements Provider {
           } catch { /* 遥测失败不影响主流程 */ }
         },
       });
+      const guarded = lifecycle.guard(rawStream as unknown as AsyncIterable<any>);
 
       // § 自建 event 状态机处理 raw events（对齐 Claude Code contentBlocks[] 模式）
       // PARSE-2：Anthropic 的 message_delta.usage.output_tokens 是**累积值**

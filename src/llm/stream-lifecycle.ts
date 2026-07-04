@@ -1,0 +1,286 @@
+/**
+ * 流式生命周期统一抽象层 — stream-lifecycle.ts（T7）
+ *
+ * § 定位
+ * 这是 `stream-guard.ts` 的架构升级版：把分散在三处的流超时保护（stream-guard 仅
+ * Anthropic 用 / openai.ts parseSSE 自建 / fallback.ts 独立整体超时）收敛为**一套**
+ * 三层超时机制，供所有 provider（anthropic/openai/ollama + 未来）+ 子代理 + side-call
+ * 共用。新增 provider 只需实现协议适配 + 声明 `isContentProgress` 回调即可白嫖全套保护。
+ *
+ * § 三层超时（借鉴 Vercel AI SDK 的超时分级 + 本项目的事故淬炼）
+ *   Layer 1  idle timeout          —— N 秒无**任何事件** → 中断（TCP 连接彻底断开）
+ *   Layer 2  content progress      —— N 秒无**有效业务内容** → 中断（防 keep-alive/ping 续命）
+ *   Layer 3  overall timeout       —— 整个请求从开始超过硬上限 → 中断（对齐官方 SDK request timeout）
+ *   signal   abort 穿透            —— 用户 ESC / 上层超时 → 立即退出
+ *   telemetry stream_stall/idle/content/overall/completed —— 统一诊断事件
+ *
+ * § 关键设计决策：provider 提供"进展判定"，通用层管定时器
+ * openai 的 keep-alive 判定发生在 SSE 原始字节层，anthropic 的事件已结构化——两者对
+ * "什么算业务进展"定义不同。解法：通用层管定时器和 signal，provider 通过 `isContentProgress`
+ * 回调告诉通用层"这个事件算不算进展"。
+ *
+ * § 行为等价铁律
+ * idle / content timer 用 setTimeout（与 stream-guard.ts 完全一致的语义与精度），
+ * **不**改成 setInterval 轮询——既有单测依赖细粒度定时（idle=100ms 在 500ms 间隔上触发）。
+ * overall timer 作为**新增**的第三层，是纯粹的叠加，不改变原有两层的任何行为。
+ * finally 统一清理全部定时器 + removeEventListener（承袭 fdb47f30 的"不 unref"教训）。
+ */
+
+import { getLogger } from "../debug/logger.ts";
+import type { StreamTelemetrySignal } from "./types.ts";
+
+/** 超时层枚举（onTimeout 回调用于区分是哪一层触发） */
+export type StreamTimeoutLayer = "idle" | "content_progress" | "overall";
+
+export interface StreamLifecycleOptions<T = unknown> {
+  /** Layer 1：无任何事件超时（毫秒）。超时后触发 onTimeout("idle") 中断流。必填。 */
+  idleTimeoutMs: number;
+  /**
+   * Layer 2：业务内容进展超时（毫秒）。只在 `isContentProgress(event)` 返回 true 时重置。
+   * 与 idleTimeoutMs 的关键区别：idle timer 对**任何事件**（含 ping keep-alive）都 reset，
+   * 高频 ping 会永远续命 idle timer；content progress timer 只对有真内容的事件 reset，
+   * 因此能识破"只有 ping、无真内容"的僵死流。不传则不启用此层（向后兼容）。
+   */
+  contentProgressTimeoutMs?: number;
+  /**
+   * Layer 3：请求级整体超时（毫秒）。从流开始计时，**不因任何事件重置**（绝对上限）。
+   * 对齐官方 SDK 的 request-level timeout，覆盖"持续吐 keep-alive 或缓慢有效内容但永不结束"
+   * 的盲区。不传则不启用此层。
+   */
+  overallTimeoutMs?: number;
+  /**
+   * 判断一个事件是否算"业务内容进展"。仅在传了 contentProgressTimeoutMs 时使用。
+   * 不传则所有事件都算进展（退化为纯 idle 保护，兼容旧行为）。
+   */
+  isContentProgress?: (event: T) => boolean;
+  /** stall 告警阈值（毫秒）。超过此间隔记录 warning 但不中断。默认 30_000 */
+  stallWarnMs?: number;
+  /** provider / 消费点标签（日志/遥测用），如 "ANTHROPIC" | "OPENAI" | "SUB-AGENT" | "SIDE-CALL" */
+  label: string;
+  /**
+   * 中断回调（超时触发时执行，如 abort 上游流 / reader.cancel()）。
+   * 入参 layer 区分是哪一层超时触发，便于调用方按层记录不同的可观测性事件。
+   */
+  onTimeout?: (layer: StreamTimeoutLayer) => void;
+  /** 遥测回调（流内诊断事件） */
+  onTelemetry?: (event: StreamTelemetrySignal) => void;
+  /** 外部 abort signal，流消费中检查以支持用户中断穿透 */
+  signal?: AbortSignal;
+}
+
+/**
+ * 流状态快照——供外层 watchdog（loop.ts:797 setInterval）只读查询，
+ * 与 trace/stream-observer.ts 的 StreamSnapshot 概念对齐但更轻量（无 session 耦合）。
+ */
+export interface StreamLifecycleSnapshot {
+  /** 标签 */
+  label: string;
+  /** 流开始时间戳（ms） */
+  startedAt: number;
+  /** 累计事件数 */
+  totalEvents: number;
+  /** 首个事件时间戳（ms），null 表示尚未收到 */
+  firstEventAt: number | null;
+  /** 最近一次任何事件时间戳（ms）——idle 判据 */
+  lastEventAt: number;
+  /** 最近一次业务进展事件时间戳（ms）——content progress 判据 */
+  lastProgressAt: number;
+  /** 是否已因超时中断 */
+  timedOut: boolean;
+  /** 触发过的超时层 */
+  timeoutLayer: StreamTimeoutLayer | null;
+}
+
+/**
+ * 三层超时预设配置（按场景分级：主循环宽松 / 子代理适中 / side-call 激进）。
+ * 阈值来源：roadmap T7.3 + 各路径既有实测值（openai.ts DeepSeek 180s/300s、
+ * agent/stream-processor.ts 60s/180s、auto-compact 60s）。
+ */
+export const LIFECYCLE_PRESETS = {
+  /** 主循环：DeepSeek 大上下文处理慢，idle 90s / content 5min / overall 10min */
+  mainLoop: { idleTimeoutMs: 90_000, contentProgressTimeoutMs: 300_000, overallTimeoutMs: 600_000 },
+  /** 子代理：应比主循环短，idle 60s / content 3min / overall 3min */
+  subAgent: { idleTimeoutMs: 60_000, contentProgressTimeoutMs: 180_000, overallTimeoutMs: 180_000 },
+  /** side-call（recall/compact 等轻量调用）：激进，idle 30s / content 60s / overall 60s */
+  sideCall: { idleTimeoutMs: 30_000, contentProgressTimeoutMs: 60_000, overallTimeoutMs: 60_000 },
+} as const;
+
+/**
+ * 创建流生命周期管理器。返回 `guard`（包装 AsyncIterable，注入三层超时）+
+ * `getSnapshot`（供外层 watchdog 只读查询流状态）。
+ *
+ * 用法：
+ * ```ts
+ * const lc = createStreamLifecycle({ ...LIFECYCLE_PRESETS.mainLoop, label: "OPENAI",
+ *   isContentProgress: (e) => e.type === "content_block_delta", signal, onTimeout, onTelemetry });
+ * for await (const ev of lc.guard(rawStream)) { ... }
+ * ```
+ */
+export function createStreamLifecycle<T>(opts: StreamLifecycleOptions<T>): {
+  guard: (source: AsyncIterable<T>) => AsyncGenerator<T>;
+  getSnapshot: () => StreamLifecycleSnapshot;
+} {
+  const now = Date.now();
+  const snapshot: StreamLifecycleSnapshot = {
+    label: opts.label,
+    startedAt: now,
+    totalEvents: 0,
+    firstEventAt: null,
+    lastEventAt: now,
+    lastProgressAt: now,
+    timedOut: false,
+    timeoutLayer: null,
+  };
+
+  const guard = (source: AsyncIterable<T>) => streamLifecycleImpl(source, opts, snapshot);
+  return { guard, getSnapshot: () => ({ ...snapshot }) };
+}
+
+/**
+ * 便捷函数：直接包装一个 AsyncIterable（不需要 getSnapshot 时用）。
+ * 语义与 stream-guard.ts 的 guardedStream 完全一致（idle + content + stall），
+ * 额外支持 overallTimeoutMs 第三层。stream-guard.ts 将 delegate 到此实现。
+ */
+export async function* streamLifecycle<T>(
+  source: AsyncIterable<T>,
+  opts: StreamLifecycleOptions<T>,
+): AsyncGenerator<T> {
+  const now = Date.now();
+  const snapshot: StreamLifecycleSnapshot = {
+    label: opts.label,
+    startedAt: now,
+    totalEvents: 0,
+    firstEventAt: null,
+    lastEventAt: now,
+    lastProgressAt: now,
+    timedOut: false,
+    timeoutLayer: null,
+  };
+  yield* streamLifecycleImpl(source, opts, snapshot);
+}
+
+/**
+ * 内部实现——三层超时 + stall 告警 + signal 穿透 + 快照维护。
+ * snapshot 由调用方持有引用，实现边消费边更新（供 getSnapshot 读取）。
+ */
+async function* streamLifecycleImpl<T>(
+  source: AsyncIterable<T>,
+  opts: StreamLifecycleOptions<T>,
+  snapshot: StreamLifecycleSnapshot,
+): AsyncGenerator<T> {
+  const {
+    idleTimeoutMs,
+    contentProgressTimeoutMs,
+    overallTimeoutMs,
+    isContentProgress,
+    stallWarnMs = 30_000,
+    label,
+    onTimeout,
+    onTelemetry,
+    signal,
+  } = opts;
+  const log = getLogger();
+  const providerTag = label.toLowerCase();
+
+  // 只有同时传了阈值 + 判定函数才启用 content progress 层（与 stream-guard.ts 一致）。
+  const contentProgressEnabled =
+    typeof contentProgressTimeoutMs === "number" &&
+    contentProgressTimeoutMs > 0 &&
+    typeof isContentProgress === "function";
+  const overallEnabled = typeof overallTimeoutMs === "number" && overallTimeoutMs > 0;
+
+  const streamStartTime = snapshot.startedAt;
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  let contentTimer: ReturnType<typeof setTimeout> | null = null;
+  let overallTimer: ReturnType<typeof setTimeout> | null = null;
+  let stallTimer: ReturnType<typeof setInterval> | null = null;
+
+  const clearTimers = () => {
+    if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+    if (contentTimer) { clearTimeout(contentTimer); contentTimer = null; }
+    if (overallTimer) { clearTimeout(overallTimer); overallTimer = null; }
+    if (stallTimer) { clearInterval(stallTimer); stallTimer = null; }
+  };
+
+  const fireTimeout = (layer: StreamTimeoutLayer): boolean => {
+    if (snapshot.timedOut) return false; // 只触发一次：任何一层先触发后，其余层不再回调
+    snapshot.timedOut = true;
+    snapshot.timeoutLayer = layer;
+    return true;
+  };
+
+  const resetIdle = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    snapshot.lastEventAt = Date.now();
+    idleTimer = setTimeout(() => {
+      if (!fireTimeout("idle")) return;
+      log.warn(`LLM:${label}`, `流式空闲超时 ${idleTimeoutMs / 1000}s，中断`, { totalEvents: snapshot.totalEvents });
+      onTelemetry?.({ type: "stream_idle_timeout", provider: providerTag, timeoutMs: idleTimeoutMs, totalEvents: snapshot.totalEvents });
+      onTimeout?.("idle");
+    }, idleTimeoutMs);
+  };
+
+  // content progress timer——独立于 idle timer，只在业务内容到达时重置。
+  // ping / message_start 等 keep-alive 事件不会重置它。
+  const resetContentProgress = () => {
+    if (!contentProgressEnabled) return;
+    if (contentTimer) clearTimeout(contentTimer);
+    snapshot.lastProgressAt = Date.now();
+    contentTimer = setTimeout(() => {
+      if (!fireTimeout("content_progress")) return;
+      log.warn(
+        `LLM:${label}`,
+        `业务内容进展超时 ${contentProgressTimeoutMs! / 1000}s（可能只有 keep-alive/ping，无实际内容），中断`,
+        { totalEvents: snapshot.totalEvents },
+      );
+      onTelemetry?.({ type: "stream_content_progress_timeout", provider: providerTag, timeoutMs: contentProgressTimeoutMs!, totalEvents: snapshot.totalEvents });
+      onTimeout?.("content_progress");
+    }, contentProgressTimeoutMs!);
+  };
+
+  // overall timer——请求级整体上限，从流开始计时，**不因任何事件重置**。
+  const startOverall = () => {
+    if (!overallEnabled) return;
+    overallTimer = setTimeout(() => {
+      if (!fireTimeout("overall")) return;
+      log.warn(`LLM:${label}`, `流式整体超时 ${overallTimeoutMs! / 1000}s（请求级硬上限），中断`, { totalEvents: snapshot.totalEvents });
+      onTelemetry?.({ type: "stream_overall_timeout", provider: providerTag, timeoutMs: overallTimeoutMs!, totalEvents: snapshot.totalEvents });
+      onTimeout?.("overall");
+    }, overallTimeoutMs!);
+  };
+
+  // stall 心跳：每 stallWarnMs 检查一次，如果期间无事件则告警（只记不杀）。
+  stallTimer = setInterval(() => {
+    const gap = Date.now() - snapshot.lastEventAt;
+    if (gap >= stallWarnMs) {
+      log.warn(`LLM:${label}`, `事件间隔 ${(gap / 1000).toFixed(0)}s（stall）`, { totalEvents: snapshot.totalEvents });
+      onTelemetry?.({ type: "stream_stall", provider: providerTag, gapMs: gap, totalEvents: snapshot.totalEvents });
+    }
+  }, stallWarnMs);
+
+  resetIdle();
+  resetContentProgress(); // 启动 content progress 计时（未启用时空转）
+  startOverall();         // 启动 overall 计时（未启用时空转）
+  try {
+    for await (const event of source) {
+      if (snapshot.timedOut) break;
+      // signal 纵深防御：流消费中检查 signal，支持用户中断穿透
+      if (signal?.aborted) break;
+      snapshot.totalEvents++;
+      if (snapshot.firstEventAt === null) snapshot.firstEventAt = Date.now();
+      // idle timer 对任何事件都 reset（保护"TCP 连接彻底断开"场景，含 ping）
+      resetIdle();
+      // content progress timer 只对"业务进展"事件 reset（ping 不续命）
+      if (contentProgressEnabled && isContentProgress!(event)) {
+        resetContentProgress();
+      }
+      yield event;
+    }
+  } finally {
+    clearTimers();
+    const elapsedMs = Date.now() - streamStartTime;
+    const ttftMs = snapshot.firstEventAt ? snapshot.firstEventAt - streamStartTime : undefined;
+    log.debug(`LLM:${label}`, `流结束`, { totalEvents: snapshot.totalEvents, elapsedMs, ttftMs });
+    onTelemetry?.({ type: "stream_completed", provider: providerTag, totalEvents: snapshot.totalEvents, elapsedMs, ttftMs });
+  }
+}

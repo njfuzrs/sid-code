@@ -24,6 +24,7 @@ export interface RetryTelemetryEvent {
     | "stream_stall"
     | "stream_idle_timeout"
     | "stream_content_progress_timeout"
+    | "stream_overall_timeout"
     | "stream_completed";
   /** 模型名 */
   model: string;
@@ -100,6 +101,10 @@ export function defaultTelemetryHandler(event: RetryTelemetryEvent): void {
 
     case "stream_content_progress_timeout":
       log.warn("TELEMETRY", `[stream_content_progress_timeout] provider=${event.provider} timeout=${event.timeoutMs}ms events=${event.totalEvents}`);
+      break;
+
+    case "stream_overall_timeout":
+      log.warn("TELEMETRY", `[stream_overall_timeout] provider=${event.provider} timeout=${event.timeoutMs}ms events=${event.totalEvents}`);
       break;
 
     case "stream_completed":
