@@ -103,6 +103,22 @@ const RESPONSE_HEADER_TIMEOUT_MS = {
   default: 60_000,
 } as const;
 
+/**
+ * Fix 6：暴露 header timeout 阈值供 loop.ts 看门狗读取。
+ * 看门狗在快照缺失（尚未收到首字节）时应以此阈值兜底，而非固定 90s——
+ * 否则 DeepSeek 大上下文请求（首字节需 90-120s 属正常）会被看门狗抢先误杀。
+ * 支持 SID_CODE_RESPONSE_HEADER_TIMEOUT_MS 环境变量覆盖，与 resolveHeaderTimeoutMs 共用同一套值。
+ */
+export function getHeaderTimeoutMs(model: string): number {
+  const override = Number(process.env.SID_CODE_RESPONSE_HEADER_TIMEOUT_MS);
+  if (Number.isFinite(override) && override > 0) {
+    return override;
+  }
+  return /deepseek/i.test(model)
+    ? RESPONSE_HEADER_TIMEOUT_MS.deepseek
+    : RESPONSE_HEADER_TIMEOUT_MS.default;
+}
+
 export class OpenAIProvider implements Provider {
   private apiKey: string;
   private baseURL: string;
@@ -207,13 +223,7 @@ export class OpenAIProvider implements Provider {
    * 非法值（非正整数）忽略，回退到按模型区分的默认值。
    */
   private static resolveHeaderTimeoutMs(model: string): number {
-    const override = Number(process.env.SID_CODE_RESPONSE_HEADER_TIMEOUT_MS);
-    if (Number.isFinite(override) && override > 0) {
-      return override;
-    }
-    return /deepseek/i.test(model)
-      ? RESPONSE_HEADER_TIMEOUT_MS.deepseek
-      : RESPONSE_HEADER_TIMEOUT_MS.default;
+    return getHeaderTimeoutMs(model);
   }
 
   /**

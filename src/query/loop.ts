@@ -24,7 +24,8 @@ import { resolveToolSearchEnabled } from "../tool/tool-search-auto.ts";
 import { TOKEN_THRESHOLDS } from "../context/auto-compact.ts";
 import { ModelFallback } from "../llm/fallback.ts";
 import { setSseDumpContext } from "../llm/sse-chunk-dumper.ts";
-import { emitTimeoutFired, emitTimeoutRetry, emitTimeoutRetryExhausted, armIneffectiveCheck, emitWatchdogKill, getStreamSnapshot } from "../trace/stream-observer.ts";
+import { getHeaderTimeoutMs } from "../llm/openai.ts";
+import { emitTimeoutFired, emitTimeoutRetry, emitTimeoutRetryExhausted, armIneffectiveCheck, emitWatchdogKill, getStreamSnapshot, clearStreamSnapshot, clearAllSnapshots } from "../trace/stream-observer.ts";
 import { SessionState } from "../session/state.ts";
 import { getLogger, getSessionMetrics, getPerfTimer } from "../debug/index.ts";
 import { LoopDetector, LOOP_RECOVERY_PROMPT, LOOP_RECOVERY_FINAL_PROMPT } from "../agent/loop-detection.ts";
@@ -79,6 +80,7 @@ import { detectInvestigationContext, buildHypothesisGuideReminder } from "./hypo
 import { collectDiagnosticText, getLSPHealthWarning } from "../lsp/manager.ts";
 import { buildPermissionModeReminder, PERMISSION_MODE_REMINDER_INTERVAL } from "./permission-reminder.ts";
 import { buildContradictionReminder, buildDeliveryGateReminder } from "./hypothesis-ledger.ts";
+import { detectPartialReadFailures, buildPartialReadReminder } from "./partial-read-reminder.ts";
 import { buildGoalReminder } from "../goal/reminder.ts";
 import { collectEvidenceFromTurn } from "../goal/evidence-collector.ts";
 import { handleGoalGate } from "./goal-gate.ts";
@@ -149,6 +151,8 @@ export async function* queryLoop(
   const loopDetector = new LoopDetector();
   const state: LoopState = createInitialLoopState(config.maxTurns || Infinity);
   const diminishingDetector = new DiminishingReturnsDetector();
+  // Fix 1：每次 queryLoop 生成唯一 loopId，用于 snapshot namespace 隔离
+  const loopId = `loop-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   // /goal：合并用户 config.goal 与内置默认值（用户未配则全走默认）
   const effectiveGoalConfig = { ...DEFAULT_GOAL_CONFIG, ...config.goal };
   // /goal：卡住检测器（基于评估者返回的 blockerKey 精确匹配）
@@ -177,6 +181,10 @@ export async function* queryLoop(
     });
   })();
 
+  // Fix 1：try/finally 包裹整个 while 循环，确保 queryLoop 结束时（正常/异常/
+  // 外部 .return() 中止）都能批量清理本次 loopId 下的所有残留快照，避免孤儿
+  // generator 写入的脏数据无限累积，也避免内存泄漏。
+  try {
   while (state.turnCount < state.maxTurns) {
     state.turnCount++;
     loopDetector.recordTurn();
@@ -530,6 +538,18 @@ export async function* queryLoop(
       state.pendingContradictions = undefined; // 注入后清空，避免重复
     }
 
+    // Fix 5（方案 C·注入端）：上一轮工具结果检出的 partial-read 保护拦截，本轮
+    // 注入强制收敛提醒，打断"读局部 → 被拒 → 再读局部"的无效循环。同 pendingContradictions
+    // 放在 unshift 高优先级——指令跟随较弱的模型更需要提前读到。
+    if (state.pendingPartialReadFailures && state.pendingPartialReadFailures.length > 0) {
+      reminderParts.unshift(buildPartialReadReminder(state.pendingPartialReadFailures));
+      log.info(
+        "QUERY_LOOP",
+        `Fix 5：注入 partial-read 收敛提醒（${state.pendingPartialReadFailures.length} 个文件命中）`,
+      );
+      state.pendingPartialReadFailures = undefined; // 注入后清空，避免重复
+    }
+
     // 方案③（思考发散·注入端）：上一轮检出的思考发散，本轮经 reminder 通道注入收敛提示。
     // 放在 unshift 高优先级——分析瘫痪时越早读到越好。注入后清空 pending 标记。
     if (state.pendingThinkingDivergenceReminder) {
@@ -698,9 +718,10 @@ export async function* queryLoop(
     } catch { /* 快照失败绝不影响主循环 */ }
 
     try {
-      // 5.2：登记当前会话 id + 轮次，供 provider 的 SSE 逐 chunk 采样落盘定位
+      // 5.2：登记当前会话 id + 轮次 + loopId，供 provider 的 SSE 逐 chunk 采样落盘定位
       //（默认关闭，SID_CODE_DEBUG_SSE_DUMP=1 才真正落盘）。
-      setSseDumpContext(sessionState.sessionId, state.turnCount);
+      // Fix 1：loopId 传入 ambientCtx，使 emitStreamPhase 写入的快照带有正确的 namespace。
+      setSseDumpContext(sessionState.sessionId, state.turnCount, loopId);
       stream = deps.sendWithRetry(sendParams, signal);
     } catch (err: any) {
       // prompt-too-long 错误扣留：自动触发响应式压缩重试
@@ -816,16 +837,34 @@ export async function* queryLoop(
         if (Number.isFinite(override) && override > 0) return override;
         return 90_000;
       })();
+      // Fix 6（隐患 4）：快照缺失（等首字节）时，看门狗阈值 = headerTimeoutMs + 余量。
+      // 余量可覆盖，便于运维调参 / 单测注入短值触发。默认 10s。
+      const WATCHDOG_HEADER_GRACE_MS = (() => {
+        const override = Number(process.env.SID_CODE_WATCHDOG_HEADER_GRACE_MS);
+        if (Number.isFinite(override) && override >= 0) return override;
+        return 10_000;
+      })();
       let watchdogTimer: ReturnType<typeof setInterval> | null = null;
+      // Fix 2：看门狗启动前主动清除可能残留的旧快照（防止孤儿 generator 写入的脏数据误杀）
+      clearStreamSnapshot(state.turnCount);
       const watchdogStartedAt = Date.now();
       const watchdogPromise = new Promise<never>((_resolve, reject) => {
         watchdogTimer = setInterval(() => {
           try {
+            // Fix 3/隐患 7：race 已 settle 后不再触发 abort（防冗余）
+            if (raceSettled) return;
             const snapshot = getStreamSnapshot(state.turnCount);
+            // Fix 6（隐患 4）：快照缺失 = 还在等首字节，用 headerTimeoutMs（+10s 余量）
+            // 而非固定 90s 阈值兜底——否则 DeepSeek 大上下文请求（首字节需 90-120s 属正常）
+            // 会被看门狗抢先于 header timeout 之前误杀，浪费一次本可正常返回的重试机会。
+            // 快照存在（已收到首字节）时仍用 WATCHDOG_NO_PROGRESS_MS 判定无进展。
+            const effectiveThresholdMs = snapshot
+              ? WATCHDOG_NO_PROGRESS_MS
+              : getHeaderTimeoutMs(config.model) + WATCHDOG_HEADER_GRACE_MS;
             // 快照存在用 lastContentProgressAt；缺失则退化为 watchdog 启动时间兜底。
             const lastProgressAt = snapshot?.lastContentProgressAt ?? watchdogStartedAt;
             const noProgressMs = Date.now() - lastProgressAt;
-            if (noProgressMs < WATCHDOG_NO_PROGRESS_MS) return;
+            if (noProgressMs < effectiveThresholdMs) return;
 
             log.error(
               "QUERY_LOOP",
@@ -845,11 +884,14 @@ export async function* queryLoop(
               deps.abortCurrentRequest?.("watchdog-timeout");
             } catch { /* abort 失败不影响 race 让出 */ }
             // reject 带 "timeout" 字样 → 下方 catch 命中 isTimeoutError → 复用超时重试分支。
-            reject(new Error(`看门狗超时：${(WATCHDOG_NO_PROGRESS_MS / 1000).toFixed(0)}s 无业务进展`));
+            reject(new Error(`看门狗超时：${(effectiveThresholdMs / 1000).toFixed(0)}s 无业务进展`));
           } catch { /* 看门狗自身异常绝不影响主流程 */ }
         }, WATCHDOG_CHECK_INTERVAL_MS);
         // 同 turnTimer：不 unref——它是关键防线，宁可保持进程活跃直到 finally 清理。
       });
+
+      // Fix 3：settled flag — 防止 race settle 后看门狗/超时 interval 冗余 abort（隐患 7）
+      let raceSettled = false;
 
       try {
         response = await Promise.race([
@@ -864,11 +906,27 @@ export async function* queryLoop(
         ]);
         // onThinking 通过 QueryEngine 层的 streamThinkingCallback 桥接，queryLoop 自身无需处理
       } finally {
+        raceSettled = true;
         if (turnTimer !== null) clearTimeout(turnTimer);
         if (watchdogTimer !== null) clearInterval(watchdogTimer);
         // race 已 settle（正常返回或 catch 到 reject）→ disarm，证明超时确实生效。
         // 断言读取：disarm 仅在闭包内赋值，TS 线性流会把变量窄化成 null，故显式转型。
         (disarmTurnIneffective as (() => void) | null)?.();
+
+        // Fix 3：主动终止 stream generator，防止孤儿继续在后台发请求写入 _snapshots
+        if (stream && typeof (stream as any).return === "function") {
+          try {
+            (stream as AsyncGenerator).return(undefined);
+          } catch { /* 忽略已终止的 generator 的错误 */ }
+        }
+
+        // Fix 3：abort 当前请求（确保底层 fetch 被中断，stallLogger interval 经 finally 清理）
+        try {
+          deps.abortCurrentRequest?.("race-settled");
+        } catch { /* 忽略 */ }
+
+        // Fix 3：清除本轮快照（即使 processStream 没有正常完成）
+        clearStreamSnapshot(state.turnCount);
       }
     } catch (err: any) {
       perfHandle.end({ model: config.model });
@@ -877,10 +935,10 @@ export async function* queryLoop(
       if (isTimeoutError(err)) {
         // Fix 4: DeepSeek 只重试 1 次（Fix 1+2 已保证中断生效，额外重试只增加等待时间）；其他模型 2 次。
         const maxTimeoutRetries = /deepseek/i.test(config.model) ? 1 : 2;
-        const timeoutRetryCount = (state as any).timeoutRetryCount ?? 0;
+        const timeoutRetryCount = state.timeoutRetryCount;
 
         if (timeoutRetryCount < maxTimeoutRetries) {
-          (state as any).timeoutRetryCount = timeoutRetryCount + 1;
+          state.timeoutRetryCount = timeoutRetryCount + 1;
           state.transition = { type: "timeout_retry" };
           log.warn("QUERY_LOOP", `流式超时，重试 ${timeoutRetryCount + 1}/${maxTimeoutRetries}`);
           // 缺口 4：记录超时重试事件
@@ -893,6 +951,8 @@ export async function* queryLoop(
           });
           yield { kind: "system", level: "info",
             text: `请求超时，正在重试 (${timeoutRetryCount + 1}/${maxTimeoutRetries})...` };
+          // Fix 2：重试前清除本轮旧快照，防止看门狗读到上次失败的脏 lastContentProgressAt 立即误杀
+          clearStreamSnapshot(state.turnCount);
           continue;
         }
         // 缺口 4：记录超时重试耗尽事件
@@ -902,6 +962,16 @@ export async function* queryLoop(
           model: config.model,
         });
         log.error("QUERY_LOOP", `流式超时重试耗尽`);
+
+        // Fix 4：重试耗尽时 yield 用户可见的错误提示，而非静默终止
+        yield {
+          kind: "system",
+          level: "error",
+          text: `⚠️ 模型请求超时（已重试 ${maxTimeoutRetries} 次），本轮对话中断。请重新发送消息继续。`,
+        };
+        // 优雅退出：yield done 让 TUI 正确切换回"等待输入"状态
+        yield { kind: "done", turns: state.turnCount };
+        return;
       }
 
       // 流式阶段的 prompt-too-long 错误恢复（与连接阶段逻辑一致）
@@ -935,6 +1005,13 @@ export async function* queryLoop(
       throw err;
     }
     const apiDuration = perfHandle.end({ model: config.model });
+    // Fix 7：本轮成功拿到 response（未抛出 timeout 异常）→ 重置超时重试计数。
+    // 注意：不能放在 while 循环顶部——timeout continue 也会回到那里，导致每次
+    // 重试后立即被清零，使"连续超时重试"永远达不到 maxTimeoutRetries（变成无限
+    // 重试直到 maxTurns 耗尽而非按预期判定超时失败）。只有真正跳出 timeout 循环、
+    // 拿到有效 response 时重置，才能同时满足"当前请求重试计数正确递增"与
+    // "跨轮次不会永久丧失重试能力"（隐患 6）两个要求。
+    state.timeoutRetryCount = 0;
 
     // ─── A2：流式响应后检测 abort，优雅收尾 ───
     // 对标 claude-code：用户在流式输出期间按 ESC，此处已拿到 response 但尚未做任何后续处理。
@@ -1663,6 +1740,22 @@ export async function* queryLoop(
       // B2 方案 a：tool_result 与入历史同步持久化（appendMessage 按 role=user 自动分派为 tool_result 记录）。
       try { deps.sessionStore?.appendMessage({ role: "user", content: toolResults }); } catch { /* 持久化失败不阻断 */ }
 
+      // Fix 5（方案 C·触发端）：扫描本轮 tool_result 是否命中 partial-read 保护拦截
+      // （edit/write 因"只读取了文件的部分内容"被拒）。命中则暂存文件路径，下一轮
+      // 循环开头经 reminder 通道强制注入收敛指令，打断指令跟随较弱模型的无效重试循环。
+      {
+        const partialReadHits = detectPartialReadFailures(toolResults);
+        if (partialReadHits.length > 0) {
+          state.pendingPartialReadFailures = [
+            ...new Set([...(state.pendingPartialReadFailures ?? []), ...partialReadHits]),
+          ];
+          log.info(
+            "QUERY_LOOP",
+            `Fix 5：检出 partial-read 拦截 ${partialReadHits.length} 个文件，下一轮注入收敛提醒`,
+          );
+        }
+      }
+
       // 环节③ 机制2（矛盾中断·触发端）：把本轮所有 tool_result 文本拼起来，扫描是否与
       // 任何 open 假设的证伪条件线索矛盾。命中则暂存到 state，下一轮循环开头经 reminder
       // 通道注入"矛盾中断"，强制模型来 hypothesis_challenge 裁决——这正是 fdb47f30 缺的
@@ -1840,6 +1933,10 @@ export async function* queryLoop(
     log.warn("QUERY_LOOP", `未知停止原因: ${response.stopReason}`);
     yield { kind: "done", turns: state.turnCount };
     return;
+  }
+  } finally {
+    // Fix 1：queryLoop 结束时批量清理本次 loopId 下所有快照残留
+    clearAllSnapshots(loopId);
   }
 
   // 达到最大轮次

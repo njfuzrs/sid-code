@@ -79,8 +79,8 @@ describe("L1 — queryLoop 单轮硬超时", () => {
     const kinds: string[] = [];
     const systemTexts: string[] = [];
     let thrown: Error | null = null;
-    // 关键断言：循环必须能让出控制权（最终 throw 而非永久挂死）。
-    // hang 不会自愈，重试 2 次耗尽后向上抛超时错误——这正是"不挂死"的体现。
+    // 关键断言：循环必须能让出控制权（不再永久挂死）。
+    // hang 不会自愈，重试 2 次耗尽后 Fix 4：yield 用户可见的错误提示 + done 优雅收尾（不再 throw）。
     try {
       for await (const ev of queryLoop(loopConfig)) {
         kinds.push(ev.kind);
@@ -94,12 +94,13 @@ describe("L1 — queryLoop 单轮硬超时", () => {
     expect(systemTexts.some((t) => t.includes("超时") && t.includes("重试"))).toBe(true);
     // 超时时尝试主动 abort（尽力而为）。重试 2 次 + 最终一次 = 至少触发 1 次。
     expect(abortCalled).toBeGreaterThanOrEqual(1);
-    // 重试耗尽后向上抛超时错误（控制权已交还，不再挂死）
-    expect(thrown).not.toBeNull();
-    expect(/超时|timeout/i.test(thrown!.message)).toBe(true);
+    // Fix 4：重试耗尽后不再 throw，而是 yield 用户可见的错误提示 + done 优雅收尾
+    expect(thrown).toBeNull();
+    expect(kinds).toContain("done");
+    expect(systemTexts.some((t) => t.includes("超时") && t.includes("中断"))).toBe(true);
   });
 
-  test("超时重试耗尽（2 次）后向上抛超时错误", async () => {
+  test("超时重试耗尽（2 次）后 yield 错误提示并优雅收尾（不再 throw）", async () => {
     const hangForever = () => new Promise<never>(() => {});
     const { loopConfig } = makeLoopConfig({
       processStream: hangForever as any,
@@ -107,16 +108,20 @@ describe("L1 — queryLoop 单轮硬超时", () => {
     });
 
     let thrown: Error | null = null;
+    const kinds: string[] = [];
+    const systemTexts: string[] = [];
     try {
-      for await (const _ev of queryLoop(loopConfig)) {
-        // drain
+      for await (const ev of queryLoop(loopConfig)) {
+        kinds.push(ev.kind);
+        if (ev.kind === "system" && "text" in ev) systemTexts.push(ev.text);
       }
     } catch (e) {
       thrown = e as Error;
     }
-    // 重试 2 次后仍 hang → 最终抛出超时错误（被 isTimeoutError 识别后耗尽重试 → throw）
-    expect(thrown).not.toBeNull();
-    expect(/超时|timeout/i.test(thrown!.message)).toBe(true);
+    // Fix 4：重试 2 次后仍 hang → 不再向上抛异常，而是 yield 错误提示 + done
+    expect(thrown).toBeNull();
+    expect(kinds).toContain("done");
+    expect(systemTexts.some((t) => /超时|timeout/i.test(t))).toBe(true);
   });
 
   test("processStream 正常返回时 race 不误伤（清掉定时器，正常走完）", async () => {

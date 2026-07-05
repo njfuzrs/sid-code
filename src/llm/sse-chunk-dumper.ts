@@ -43,21 +43,24 @@ const HEAD_KEEP = 8;
 const TAIL_KEEP = 12;
 
 /**
- * 环境上下文（sessionId + turnIndex）。
+ * 环境上下文（sessionId + turnIndex + loopId）。
  *
  * provider 的 parseSSE 拿不到 sessionId/turnIndex（不在其参数里），逐层透传对一个
  * 默认关闭的 debug 采集功能而言过重。改用模块级环境变量：主循环在每次发请求前
  * setSseDumpContext，parseSSE new 采样器时读取。未设置时采样器退化为空转。
+ *
+ * loopId（Fix 1）：每次 queryLoop 分配唯一 ID，用于 snapshot namespace 隔离，
+ * 防止跨 queryLoop 的孤儿 generator 写入脏数据污染新循环的看门狗。
  */
-let ambientCtx: { sessionId?: string; turnIndex: number } = { turnIndex: 0 };
+let ambientCtx: { sessionId?: string; turnIndex: number; loopId: string } = { turnIndex: 0, loopId: "default" };
 
-/** 主循环在每轮 sendWithRetry 前调用，登记当前会话 id 与轮次。 */
-export function setSseDumpContext(sessionId: string | undefined, turnIndex: number): void {
-  ambientCtx = { sessionId, turnIndex };
+/** 主循环在每轮 sendWithRetry 前调用，登记当前会话 id、轮次与 loopId。 */
+export function setSseDumpContext(sessionId: string | undefined, turnIndex: number, loopId?: string): void {
+  ambientCtx = { sessionId, turnIndex, loopId: loopId ?? ambientCtx.loopId };
 }
 
 /** parseSSE 内构造采样器时读取当前环境上下文。 */
-export function currentSseDumpContext(): { sessionId?: string; turnIndex: number } {
+export function currentSseDumpContext(): { sessionId?: string; turnIndex: number; loopId: string } {
   return ambientCtx;
 }
 

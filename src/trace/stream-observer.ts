@@ -66,7 +66,19 @@ type EventWriter = (event: {
 
 let _sessionId: string = "";
 let _eventWriter: EventWriter | null = null;
-const _snapshots = new Map<number, StreamSnapshot>();
+const _snapshots = new Map<string, StreamSnapshot>();
+
+// ─── Snapshot Key 管理（Fix 1：namespace 隔离）───
+
+import { currentSseDumpContext } from "../llm/sse-chunk-dumper.ts";
+
+/**
+ * 构造复合 key：`${loopId}:${index}`
+ * 跨 queryLoop 的孤儿 generator 使用旧 loopId，新 queryLoop 用新 loopId 查询时永远读不到脏数据。
+ */
+function makeSnapshotKey(loopId: string, index: number): string {
+  return `${loopId}:${index}`;
+}
 
 // ─── 初始化 / 重置 ───
 
@@ -104,8 +116,10 @@ export function emitStreamPhase(
   extra?: Record<string, unknown>,
 ): void {
   try {
-    // 更新快照
-    let snapshot = _snapshots.get(index);
+    // Fix 1：使用复合 key（loopId:index）隔离跨 queryLoop 的快照
+    const { loopId } = currentSseDumpContext();
+    const key = makeSnapshotKey(loopId, index);
+    let snapshot = _snapshots.get(key);
     if (!snapshot) {
       snapshot = {
         index,
@@ -119,7 +133,7 @@ export function emitStreamPhase(
         timeoutsFired: [],
         abortSignalAborted: false,
       };
-      _snapshots.set(index, snapshot);
+      _snapshots.set(key, snapshot);
     }
     snapshot.phase = phase;
 
@@ -158,7 +172,9 @@ export function emitTimeoutFired(
   extra?: Record<string, unknown>,
 ): void {
   try {
-    const snapshot = _snapshots.get(index);
+    const { loopId } = currentSseDumpContext();
+    const key = makeSnapshotKey(loopId, index);
+    const snapshot = _snapshots.get(key);
     if (snapshot) {
       snapshot.timeoutsFired.push(layer);
     }
@@ -320,7 +336,9 @@ export function updateStreamStats(
   update: Partial<Pick<StreamSnapshot, "chunksReceived" | "emptyChunks" | "lastContentProgressAt" | "abortSignalAborted">>,
 ): void {
   try {
-    const snapshot = _snapshots.get(index);
+    const { loopId } = currentSseDumpContext();
+    const key = makeSnapshotKey(loopId, index);
+    const snapshot = _snapshots.get(key);
     if (snapshot) {
       if (update.chunksReceived !== undefined) snapshot.chunksReceived = update.chunksReceived;
       if (update.emptyChunks !== undefined) snapshot.emptyChunks = update.emptyChunks;
@@ -334,9 +352,11 @@ export function updateStreamStats(
 
 /**
  * 获取指定 index 的流状态快照。
+ * loopId 可选——不传时使用当前 ambient context 的 loopId。
  */
-export function getStreamSnapshot(index: number): StreamSnapshot | undefined {
-  return _snapshots.get(index);
+export function getStreamSnapshot(index: number, loopId?: string): StreamSnapshot | undefined {
+  const effectiveLoopId = loopId ?? currentSseDumpContext().loopId;
+  return _snapshots.get(makeSnapshotKey(effectiveLoopId, index));
 }
 
 /**
@@ -347,10 +367,23 @@ export function getActiveStreamSnapshots(): StreamSnapshot[] {
 }
 
 /**
- * 清除指定 index 的快照（AfterModel 正常完成后）。
+ * 清除指定 index 的快照（AfterModel 正常完成后 / 看门狗启动前 / 重试前）。
+ * loopId 可选——不传时使用当前 ambient context 的 loopId。
  */
-export function clearStreamSnapshot(index: number): void {
-  _snapshots.delete(index);
+export function clearStreamSnapshot(index: number, loopId?: string): void {
+  const effectiveLoopId = loopId ?? currentSseDumpContext().loopId;
+  _snapshots.delete(makeSnapshotKey(effectiveLoopId, index));
+}
+
+/**
+ * Fix 1：批量清理指定 loopId 下所有快照（queryLoop 结束时调用，防止内存泄漏）。
+ */
+export function clearAllSnapshots(loopId: string): void {
+  for (const key of _snapshots.keys()) {
+    if (key.startsWith(`${loopId}:`)) {
+      _snapshots.delete(key);
+    }
+  }
 }
 
 // ─── WatchdogKill 事件（T1：setInterval 看门狗强杀） ───
@@ -378,7 +411,9 @@ export function emitWatchdogKill(
   },
 ): void {
   try {
-    const snapshot = _snapshots.get(index);
+    const { loopId } = currentSseDumpContext();
+    const key = makeSnapshotKey(loopId, index);
+    const snapshot = _snapshots.get(key);
     if (snapshot) {
       // 复用 turn_hard_timeout 层标记，便于 digest 统一按超时层聚合
       snapshot.timeoutsFired.push("turn_hard_timeout");

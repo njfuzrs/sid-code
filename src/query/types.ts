@@ -108,6 +108,14 @@ export interface LoopState {
   /** Stop Hook 重试次数 */
   stopHookRetryCount?: number;
   /**
+   * Fix 7：当前请求的连续超时重试次数。替代此前的 (state as any).timeoutRetryCount 旁路。
+   * 在 timeout catch 分支递增；成功拿到 response（未抛出 timeout 异常）后重置为 0。
+   * 注意：不能在 while 循环顶部重置——timeout continue 也会回到那里，会导致每次
+   * 重试后立即被清零、永远达不到 maxTimeoutRetries。只在"成功"路径重置，才能同时
+   * 保证当前请求的重试计数正确递增、且不会"一次超时永久丧失后续轮次的重试能力"。
+   */
+  timeoutRetryCount: number;
+  /**
    * P0-2：上次回注 todo system-reminder 时的轮次（两次回注间隔节流用）。
    * 0/undefined 表示尚未回注过。
    */
@@ -163,6 +171,12 @@ export interface LoopState {
    */
   pendingContradictions?: import("./hypothesis-ledger.ts").ContradictionHit[];
   /**
+   * Fix 5（方案 C）：上一轮工具结果检出的 partial-read 保护拦截（is_error 且匹配
+   * "只读取了文件的部分内容"）命中的文件路径列表，待下一轮循环开头经 reminder
+   * 通道强制注入收敛指令。与 pendingContradictions 同机制。注入后清空。
+   */
+  pendingPartialReadFailures?: string[];
+  /**
    * 环节③ 机制3：假设交付门禁已软续命的次数。模型试图收尾但仍有 open 假设时，
    * 注入门禁提醒并续命，最多 N 次，避免无限循环。
    */
@@ -202,6 +216,7 @@ export function createInitialLoopState(maxTurns: number): LoopState {
     maxOutputTokensRecoveryCount: 0,
     hasAttemptedReactiveCompact: false,
     transition: undefined,
+    timeoutRetryCount: 0,
   };
 }
 
