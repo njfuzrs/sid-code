@@ -231,6 +231,14 @@ export interface QueryDeps {
     stream: AsyncIterable<StreamEvent>,
     onText?: (text: string) => void,
     onThinking?: (text: string) => void,
+    /**
+     * Fix 3（同类路径根治）：本轮 turn 级 AbortController。stream-processor 内部的
+     * 心跳（60s）/ 整体（300s）超时触发时应 abort 这个 turn 级 controller，而非会话级
+     * 共享 controller——否则正常完成/超时重试后会话 signal 被毒化，后续 turn 出生即死、
+     * 整条用户消息被误报"已取消"（与 loop.ts 已修的 finally abort 同源）。可选：不传时
+     * stream-processor 退化为旧行为（abort 会话级），保持向后兼容。
+     */
+    turnAbortController?: AbortController,
   ) => Promise<AccumulatedResponse>;
   /** 执行工具调用（含权限检查）。返回 results + 可选 followup（ADR-019） */
   executeTools: (content: ContentBlock[]) => Promise<{ results: ContentBlock[]; followup?: ContentBlock[] }>;

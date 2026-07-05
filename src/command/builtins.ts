@@ -105,6 +105,8 @@ export class HelpCommand implements Command {
   /trace <id>            指定会话,支持前缀(如 /trace c857)
   /trace --list          列出最近 20 个会话(异常会话一眼可见)
   /trace --full          附带更多思维链/工具参数细节
+  /trace --health        Provider 健康度看板(成功率/超时/TTFT,跨会话聚合)
+  /trace --health 1h     指定聚合周期(1h|24h|7d,默认 24h)
   /digest                /trace 的别名
 
 输出内容:
@@ -1407,6 +1409,22 @@ export class TraceCommand implements Command {
     const full = flags.has("--full");
     // 命令面板渲染纯文本,固定无 ANSI 颜色码
     const renderOpts = { noColor: true, invocation: "/trace" };
+
+    // T15.5：/trace --health 展示 Provider 健康度看板（跨会话聚合，独立于单会话轨迹）。
+    // 支持 --period 1h|24h|7d（默认 24h）与 --provider NAME 过滤。
+    if (flags.has("--health")) {
+      const { aggregateProviderHealth, renderHealthText } =
+        await import("../telemetry/provider-health.ts");
+      const periodTok = positional.find((t) => /^(1h|24h|7d)$/.test(t));
+      const periodMs =
+        periodTok === "1h" ? 3600_000 :
+        periodTok === "7d" ? 86400_000 * 7 :
+        86400_000; // 默认 24h
+      // --provider 后跟的值（positional 里排除周期 token 后的第一个）
+      const provTok = positional.find((t) => t !== periodTok);
+      const report = aggregateProviderHealth({ periodMs, provider: provTok });
+      return { kind: "message", message: renderHealthText(report) };
+    }
 
     const paths = resolvePaths();
     const all = listSessions(paths);

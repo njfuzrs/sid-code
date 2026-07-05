@@ -54,6 +54,7 @@ export interface QueryEngineDeps {
     stream: AsyncIterable<StreamEvent>,
     onText?: (text: string) => void,
     onThinking?: (text: string) => void,
+    turnAbortController?: AbortController,
   ) => Promise<AccumulatedResponse>;
   /** 自动压缩 */
   autoCompact: () => Promise<void>;
@@ -236,8 +237,9 @@ export class QueryEngine {
         this.deps.fallback.reset();
         return this.deps.fallback.executeWithFallback(this.deps.provider, params, signal);
       },
-      processStream: (stream, onText, onThinking) => {
+      processStream: (stream, onText, onThinking, turnAbortController) => {
         // 桥接：将 processStream 内部的 onText/onThinking 回调转发给外部
+        // Fix 3：turnAbortController 原样透传，让底层 stream-processor 超时只 abort turn 级。
         return this.deps.processStream(
           stream,
           (text) => {
@@ -248,6 +250,7 @@ export class QueryEngine {
             this.streamThinkingCallback?.(thinking);
             onThinking?.(thinking);
           },
+          turnAbortController,
         );
       },
       executeTools: this.deps.executeTools,

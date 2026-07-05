@@ -293,11 +293,18 @@ describe("isAbortError", () => {
     // 若新增/修改 abort reason，请同步更新 ABORT_REASONS 与本断言。
     // 现有 reason：user-cancel(app.ts onInterrupt)、timeout(session 超时)、
     // turn-timeout(单轮硬超时)、watchdog-timeout(loop.ts 看门狗)、
-    // side-call-timeout(side-call-timeout.ts：auto-compact/context-collapse/recall/warmup)。
+    // side-call-timeout(side-call-timeout.ts：auto-compact/context-collapse/recall/warmup)、
+    // race-settled(loop.ts finally：每轮 race settle 后 abort turn 级子 controller 清理孤儿 fetch)。
     // 转 string[] 断言:ABORT_REASONS 是 as const 字面量联合,直接 toEqual 会因
     // NoInfer 把期望数组收窄到该联合而报重载不匹配;比较值本身即可,不需比字面量类型。
     expect([...ABORT_REASONS].map(String).sort()).toEqual([
+      "agent-stream-heartbeat-timeout",
+      "agent-stream-overall-timeout",
+      "alert-webhook-timeout",
+      "external-abort",
+      "race-settled",
       "side-call-timeout",
+      "team-hard-timeout",
       "timeout",
       "turn-timeout",
       "user-cancel",
@@ -306,6 +313,61 @@ describe("isAbortError", () => {
     for (const r of ABORT_REASONS) {
       expect(isAbortError(r)).toBe(true);
     }
+  });
+
+  test("机械防漂移：src/ 中所有 .abort(\"字面量\") 的 reason 必须已登记 ABORT_REASONS", async () => {
+    // 上面的哨兵靠手工维护期望数组，仍可能漏登记新调用点。此测试直接扫源码：
+    // 抓取全 src/ 下 `.abort("xxx")` / `.abort(reason ?? "xxx")` 里的**字符串字面量** reason，
+    // 断言每一个都在 ABORT_REASONS 白名单里——把「凡 abort reason 必须登记」从约定升级为
+    // 机械强约束。新增未登记 reason 时此测试立即失败，杜绝孤儿 rejection 崩溃隐患复发。
+    const { readdirSync, readFileSync, statSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const srcRoot = join(import.meta.dir, "..", "..", "src");
+
+    // 递归收集 .ts 文件
+    const tsFiles: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir)) {
+        const full = join(dir, entry);
+        const st = statSync(full);
+        if (st.isDirectory()) walk(full);
+        else if (full.endsWith(".ts") && !full.endsWith(".d.ts")) tsFiles.push(full);
+      }
+    };
+    walk(srcRoot);
+
+    const whitelist = new Set<string>(ABORT_REASONS.map(String));
+    // errors.ts 注释里的示例串 "xxx"（`abortController.abort("xxx")`）不是真实调用点，排除。
+    const KNOWN_NON_CALLS = new Set(["xxx"]);
+    // 匹配 .abort( ... ) 整个实参串，再从中抽取字符串字面量（单/双引号）。
+    const abortCallRe = /\.abort\(([^)]*)\)/g;
+    const literalRe = /["']([a-z][a-z0-9-]*)["']/g;
+
+    const offenders: Array<{ file: string; reason: string }> = [];
+    for (const file of tsFiles) {
+      const src = readFileSync(file, "utf8");
+      let m: RegExpExecArray | null;
+      while ((m = abortCallRe.exec(src)) !== null) {
+        const argExpr = m[1];
+        let lm: RegExpExecArray | null;
+        while ((lm = literalRe.exec(argExpr)) !== null) {
+          const reason = lm[1];
+          if (KNOWN_NON_CALLS.has(reason)) continue;
+          if (!whitelist.has(reason)) {
+            offenders.push({ file: file.replace(srcRoot, "src"), reason });
+          }
+        }
+      }
+    }
+
+    if (offenders.length > 0) {
+      const detail = offenders.map((o) => `  ${o.file}: abort("${o.reason}")`).join("\n");
+      throw new Error(
+        `发现未登记到 ABORT_REASONS 的 abort reason（会导致孤儿 rejection 崩溃）:\n${detail}\n` +
+        `请把这些 reason 加入 src/llm/errors.ts 的 ABORT_REASONS。`,
+      );
+    }
+    expect(offenders).toEqual([]);
   });
 
   test("非 abort 错误返回 false", () => {

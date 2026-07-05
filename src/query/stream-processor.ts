@@ -67,9 +67,12 @@ export async function processStream(
   // 改为 push 到末尾 + 映射表查找，保证 content 数组始终密集。
   const indexToPosition = new Map<number, number>();
 
-  // 超时配置（心跳 + 整体超时共用一个定时器，每 5 秒检查一次）
+  // 超时配置（心跳 + 整体超时共用一个定时器）
   const HEARTBEAT_TIMEOUT = options?.heartbeatTimeoutMs ?? 60_000;
   const OVERALL_TIMEOUT = options?.overallTimeoutMs ?? 300_000;
+  // 检查间隔：此前硬编码 5s，heartbeatCheckIntervalMs 声明了却未接线（死选项）。
+  // 接上它——生产默认仍 5s，测试可注入短值快速触发心跳/整体超时路径。
+  const CHECK_INTERVAL = options?.heartbeatCheckIntervalMs ?? 5_000;
   const startTime = Date.now();
   let lastActivityTime = Date.now();
   let timeoutError: Error | null = null;
@@ -97,7 +100,7 @@ export async function processStream(
       options?.getAbortController?.()?.abort();
       clearInterval(checkInterval);
     }
-  }, 5_000);
+  }, CHECK_INTERVAL);
 
   try {
     for await (const event of stream) {

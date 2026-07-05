@@ -69,11 +69,16 @@ describe("L1 — queryLoop 单轮硬超时", () => {
     // 永不 resolve 的 processStream，模拟底层 generator 链 hang
     const hangForever = () => new Promise<never>(() => { /* 永不 settle */ });
 
-    let abortCalled = 0;
+    // Fix 3 根治后，turn 级 abort 走每轮独立子 controller（abortThisTurn），不再经
+    // deps.abortCurrentRequest。捕获传给 sendWithRetry 的 composedSignal，验证其被 abort。
+    const capturedSignals: AbortSignal[] = [];
     const { loopConfig } = makeLoopConfig({
+      sendWithRetry: (_params: any, signal?: AbortSignal) => {
+        if (signal) capturedSignals.push(signal);
+        return emptyStream();
+      },
       processStream: hangForever as any,
       maxTurnDurationMs: 50, // 50ms 快速触发
-      abortCurrentRequest: () => { abortCalled++; },
     });
 
     const kinds: string[] = [];
@@ -92,8 +97,12 @@ describe("L1 — queryLoop 单轮硬超时", () => {
 
     // 走了 timeout 重试分支（isTimeoutError 命中），有重试提示
     expect(systemTexts.some((t) => t.includes("超时") && t.includes("重试"))).toBe(true);
-    // 超时时尝试主动 abort（尽力而为）。重试 2 次 + 最终一次 = 至少触发 1 次。
-    expect(abortCalled).toBeGreaterThanOrEqual(1);
+    // 超时时尝试主动 abort（尽力而为）：turn 级子 controller 的 composedSignal 被 abort，
+    // reason 为 turn-timeout（硬超时）或 race-settled（finally 清理）。至少有一个被 abort。
+    expect(capturedSignals.some((s) => s.aborted)).toBe(true);
+    expect(
+      capturedSignals.some((s) => s.aborted && ["turn-timeout", "race-settled"].includes(String(s.reason))),
+    ).toBe(true);
     // Fix 4：重试耗尽后不再 throw，而是 yield 用户可见的错误提示 + done 优雅收尾
     expect(thrown).toBeNull();
     expect(kinds).toContain("done");

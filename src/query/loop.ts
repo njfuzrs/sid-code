@@ -673,7 +673,32 @@ export async function* queryLoop(
 
     // ─── 发送请求（含上下文溢出 + prompt-too-long 自动恢复）───
     let stream: AsyncIterable<import("../llm/types.ts").StreamEvent>;
-    const signal = deps.getAbortSignal();
+    // Fix 3（回归根治）：每轮创建独立的「turn 级子 AbortController」，级联父（会话级）signal。
+    //
+    // 根因：此前 finally 里无条件 deps.abortCurrentRequest("race-settled") 直接 abort 了
+    // 会话级共享 controller（app.ts 每条用户消息一个，贯穿整个 queryLoop 所有轮次）。正常
+    // 完成的一轮也会把它 abort → 下方 A2 检测 getAbortSignal()?.aborted 命中 → 误判为
+    // "用户取消" → 任务在第一轮后就被中止（单轮 end_turn / 多轮 tool_use 均必现）。
+    //
+    // 正解：turn 级中断（超时 / 看门狗 / race settle 后的孤儿清理）只作用于本轮子 controller，
+    // 绝不回写会话级 signal；而父 signal（用户 ESC / 会话超时）经 AbortSignal.any 级联下来，
+    // 仍能中断本轮请求。A2 检测仍读父 signal（deps.getAbortSignal），故只有「真正的用户/会话
+    // 级取消」才会触发优雅收尾，turn 级自我清理不再污染它。
+    const parentSignal = deps.getAbortSignal();
+    const turnAbortController = new AbortController();
+    // 父已 abort（例如用户在本轮开始前就按了 ESC）→ 立刻把状态透传给子 controller。
+    if (parentSignal?.aborted) {
+      try { turnAbortController.abort(parentSignal.reason); } catch { /* ignore */ }
+    }
+    // 级联：父 signal 与子 signal 任一 abort，composedSignal 即 abort（reason 取先触发者）。
+    // 传给底层 fetch/SDK 的用这个复合 signal，既响应用户级取消，也响应 turn 级自我中断。
+    const composedSignal: AbortSignal = parentSignal
+      ? AbortSignal.any([parentSignal, turnAbortController.signal])
+      : turnAbortController.signal;
+    // turn 级主动中断上游（超时/看门狗/清理）—— 只 abort 本轮子 controller，不碰会话级。
+    const abortThisTurn = (reason: string) => {
+      try { turnAbortController.abort(reason); } catch { /* ignore */ }
+    };
 
     // ─── G2：cachedMicrocompact — 缓存友好压缩产出 cache_edits ───
     // 每轮发送前，对当前消息执行供应商感知的"缓存友好 microcompact"：
@@ -722,7 +747,7 @@ export async function* queryLoop(
       //（默认关闭，SID_CODE_DEBUG_SSE_DUMP=1 才真正落盘）。
       // Fix 1：loopId 传入 ambientCtx，使 emitStreamPhase 写入的快照带有正确的 namespace。
       setSseDumpContext(sessionState.sessionId, state.turnCount, loopId);
-      stream = deps.sendWithRetry(sendParams, signal);
+      stream = deps.sendWithRetry(sendParams, composedSignal);
     } catch (err: any) {
       // prompt-too-long 错误扣留：自动触发响应式压缩重试
       if (isPromptTooLongError(err) && !state.hasAttemptedReactiveCompact) {
@@ -745,7 +770,7 @@ export async function* queryLoop(
       if (adjusted !== null) {
         log.info("QUERY_LOOP", `上下文溢出，自动调整 maxTokens: ${sendParams.maxTokens} → ${adjusted}`);
         sendParams.maxTokens = adjusted;
-        stream = deps.sendWithRetry(sendParams, signal);
+        stream = deps.sendWithRetry(sendParams, composedSignal);
       } else {
         log.warn("QUERY_LOOP", "上下文溢出且无法调整 maxTokens，触发自动压缩");
         notifyCompaction("main"); // G1：抑制紧接的 cache break 检测
@@ -805,9 +830,8 @@ export async function* queryLoop(
             "promise_race_not_settled_after_5s",
           ) as (() => void);
           // 尽力而为：主动 abort 上游 fetch（即便对已 hang 的 reader 无效也无害）。
-          try {
-            deps.abortCurrentRequest?.("turn-timeout");
-          } catch { /* abort 失败不影响 race 让出 */ }
+          // Fix 3 根治：只 abort 本轮子 controller，不碰会话级 signal。
+          abortThisTurn("turn-timeout");
           reject(new Error(`单轮硬超时：${MAX_TURN_DURATION_MS / 1000}s 无完成`));
         }, MAX_TURN_DURATION_MS);
         // P3（9bc92c2c + fdb47f30 教训）：不 unref——Bun 中 unref timer 在事件循环被
@@ -880,9 +904,8 @@ export async function* queryLoop(
               model: config.model,
             });
             // 尽力而为：主动 abort 上游 fetch（即便对已 hang 的 reader 无效也无害）。
-            try {
-              deps.abortCurrentRequest?.("watchdog-timeout");
-            } catch { /* abort 失败不影响 race 让出 */ }
+            // Fix 3 根治：只 abort 本轮子 controller，不碰会话级 signal。
+            abortThisTurn("watchdog-timeout");
             // reject 带 "timeout" 字样 → 下方 catch 命中 isTimeoutError → 复用超时重试分支。
             reject(new Error(`看门狗超时：${(effectiveThresholdMs / 1000).toFixed(0)}s 无业务进展`));
           } catch { /* 看门狗自身异常绝不影响主流程 */ }
@@ -900,7 +923,11 @@ export async function* queryLoop(
               ttftMs = performance.now() - ttftStart;
             }
             // 流式文本通过 QueryEngine 层的 onStreamText 回调桥接
-          }, undefined),
+          }, undefined,
+          // Fix 3（同类路径根治）：把本轮 turn 级 controller 透传进 stream-processor，
+          // 让其心跳/整体超时只 abort turn 级（经 composedSignal 级联中断上游 fetch），
+          // 不再污染会话级共享 signal。
+          turnAbortController),
           turnTimeoutPromise,
           watchdogPromise,
         ]);
@@ -920,10 +947,10 @@ export async function* queryLoop(
           } catch { /* 忽略已终止的 generator 的错误 */ }
         }
 
-        // Fix 3：abort 当前请求（确保底层 fetch 被中断，stallLogger interval 经 finally 清理）
-        try {
-          deps.abortCurrentRequest?.("race-settled");
-        } catch { /* 忽略 */ }
+        // Fix 3（回归根治）：abort 本轮子 controller（确保底层 fetch 被中断，stallLogger
+        // interval 经 finally 清理）。仅作用于 turn 级子 signal，不碰会话级共享 controller，
+        // 正常完成的一轮不再污染 A2 检测（根治回归）。
+        abortThisTurn("race-settled");
 
         // Fix 3：清除本轮快照（即使 processStream 没有正常完成）
         clearStreamSnapshot(state.turnCount);

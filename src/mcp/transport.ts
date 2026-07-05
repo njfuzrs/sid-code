@@ -32,6 +32,9 @@ export class StdioTransport implements Transport {
   private pendingRequests = new Map<number | string, {
     resolve: (resp: JsonRpcResponse) => void;
     reject: (err: Error) => void;
+    // 修:请求 settle 时移除 signal 的 abort 监听器,防止成功/超时路径下监听器在
+    // 共享(会话级)signal 上线性累加(每次 MCP 调用泄漏一个)。
+    cleanup?: () => void;
   }>();
   private buffer = "";
   private closed = false;
@@ -55,6 +58,7 @@ export class StdioTransport implements Transport {
         this.closed = true;
         const err = new Error(`MCP 子进程退出 (code=${code})`);
         for (const [, pending] of this.pendingRequests) {
+          pending.cleanup?.();
           pending.reject(err);
         }
         this.pendingRequests.clear();
@@ -106,6 +110,7 @@ export class StdioTransport implements Transport {
         const pending = this.pendingRequests.get(response.id);
         if (pending) {
           this.pendingRequests.delete(response.id);
+          pending.cleanup?.(); // 成功路径:移除 abort 监听器,防泄漏
           pending.resolve(response);
         }
       } catch {
@@ -120,16 +125,20 @@ export class StdioTransport implements Transport {
     }
 
     return new Promise((resolve, reject) => {
-      this.pendingRequests.set(request.id, { resolve, reject });
+      // 外部取消信号:监听器 + 其清理函数一并登记,任何 settle 路径都能移除监听器。
+      let onAbort: (() => void) | undefined;
+      const cleanup = () => {
+        if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+      };
+      this.pendingRequests.set(request.id, { resolve, reject, cleanup });
 
-      // 外部取消信号
       if (signal) {
         if (signal.aborted) {
           this.pendingRequests.delete(request.id);
           reject(new Error("用户取消"));
           return;
         }
-        const onAbort = () => {
+        onAbort = () => {
           if (this.pendingRequests.has(request.id)) {
             this.pendingRequests.delete(request.id);
             reject(new Error("用户取消"));
@@ -144,8 +153,10 @@ export class StdioTransport implements Transport {
 
       // 超时
       setTimeout(() => {
-        if (this.pendingRequests.has(request.id)) {
+        const pending = this.pendingRequests.get(request.id);
+        if (pending) {
           this.pendingRequests.delete(request.id);
+          pending.cleanup?.(); // 超时路径:移除 abort 监听器,防泄漏
           reject(new Error(`MCP 请求超时: ${request.method}`));
         }
       }, this.timeout);
@@ -163,6 +174,7 @@ export class StdioTransport implements Transport {
     this.closed = true;
     this.proc.kill();
     for (const [, pending] of this.pendingRequests) {
+      pending.cleanup?.();
       pending.reject(new Error("传输已关闭"));
     }
     this.pendingRequests.clear();
@@ -218,6 +230,8 @@ export class SSETransport implements Transport {
   private pendingRequests = new Map<number | string, {
     resolve: (resp: JsonRpcResponse) => void;
     reject: (err: Error) => void;
+    // 修:请求 settle 时移除 signal 的 abort 监听器,防止在共享(会话级)signal 上累加。
+    cleanup?: () => void;
   }>();
   private abortController: AbortController | null = null;
   /** SSE 握手后服务器返回的 POST 端点（可能是相对路径） */
@@ -332,6 +346,7 @@ export class SSETransport implements Transport {
       const pending = this.pendingRequests.get(response.id);
       if (pending) {
         this.pendingRequests.delete(response.id);
+        pending.cleanup?.(); // 成功路径:移除 abort 监听器,防泄漏
         pending.resolve(response);
       }
     } catch {
@@ -350,16 +365,20 @@ export class SSETransport implements Transport {
     const endpoint = this.postEndpoint || this.url;
 
     return new Promise((resolve, reject) => {
-      this.pendingRequests.set(request.id, { resolve, reject });
+      // 外部取消信号:监听器 + 其清理函数一并登记,任何 settle 路径都能移除监听器。
+      let onAbort: (() => void) | undefined;
+      const cleanup = () => {
+        if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+      };
+      this.pendingRequests.set(request.id, { resolve, reject, cleanup });
 
-      // 外部取消信号
       if (signal) {
         if (signal.aborted) {
           this.pendingRequests.delete(request.id);
           reject(new Error("用户取消"));
           return;
         }
-        const onAbort = () => {
+        onAbort = () => {
           if (this.pendingRequests.has(request.id)) {
             this.pendingRequests.delete(request.id);
             reject(new Error("用户取消"));
@@ -382,16 +401,20 @@ export class SSETransport implements Transport {
         body: JSON.stringify(sanitizeStrings(request)),
         signal: combinedSignal,
       }).catch((err) => {
-        if (this.pendingRequests.has(request.id)) {
+        const pending = this.pendingRequests.get(request.id);
+        if (pending) {
           this.pendingRequests.delete(request.id);
+          pending.cleanup?.(); // POST 失败路径:移除 abort 监听器,防泄漏
           reject(new Error(`MCP SSE POST 失败: ${err.message}`));
         }
       });
 
       // 超时
       setTimeout(() => {
-        if (this.pendingRequests.has(request.id)) {
+        const pending = this.pendingRequests.get(request.id);
+        if (pending) {
           this.pendingRequests.delete(request.id);
+          pending.cleanup?.(); // 超时路径:移除 abort 监听器,防泄漏
           reject(new Error(`MCP SSE 请求超时: ${request.method}`));
         }
       }, this.timeout);
@@ -415,6 +438,7 @@ export class SSETransport implements Transport {
     this.closed = true;
     this.abortController?.abort();
     for (const [, pending] of this.pendingRequests) {
+      pending.cleanup?.();
       pending.reject(new Error("传输已关闭"));
     }
     this.pendingRequests.clear();

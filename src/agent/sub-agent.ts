@@ -555,22 +555,25 @@ export class SubAgent {
 
       // T5-B1：abort race。signal 在 .read() await 期间触发、且 subprocess kill
       // 延迟时，裸 .read() 会一直阻塞。用 Promise.race 让 abort 立刻让出控制权，
-      // 避免 reader 永久挂死。once:true 复用同一 abort 事件（onAbort 已负责 kill）。
+      // 避免 reader 永久挂死。
+      //
+      // 修（监听器泄漏）：此前每次循环都 addEventListener("abort", ..., {once:true})，
+      // 但 once:true 仅在 abort **触发后**自动移除；正常读取路径（每收到一个 chunk）abort
+      // 不触发，监听器永不移除，在**共享父 signal** 上随 chunk 数线性累加。改为：全程只挂
+      // 一个 abort 监听器（abortPromise 单次创建），循环内复用；退出循环时 finally 统一移除。
+      let onAbortListener: (() => void) | undefined;
+      const abortPromise = signal
+        ? new Promise<{ done: true; value: undefined }>((resolve) => {
+            onAbortListener = () => resolve({ done: true, value: undefined });
+            signal.addEventListener("abort", onAbortListener, { once: true });
+          })
+        : null;
       const readWithAbort = (): Promise<
         ReadableStreamReadResult<Uint8Array> | { done: true; value: undefined }
       > => {
         if (!signal) return stdoutReader.read();
         if (signal.aborted) return Promise.resolve({ done: true, value: undefined });
-        return Promise.race([
-          stdoutReader.read(),
-          new Promise<{ done: true; value: undefined }>((resolve) => {
-            signal.addEventListener(
-              "abort",
-              () => resolve({ done: true, value: undefined }),
-              { once: true },
-            );
-          }),
-        ]);
+        return Promise.race([stdoutReader.read(), abortPromise!]);
       };
 
       try {
@@ -667,6 +670,11 @@ export class SubAgent {
         try {
           stdoutReader.releaseLock();
         } catch { /* 已释放 */ }
+        // 修（监听器泄漏）：移除挂在共享父 signal 上的 abort 监听器。未 abort 时它不会
+        // 自动移除（once:true 仅在触发后移除），退出循环时必须显式清理。
+        if (signal && onAbortListener) {
+          try { signal.removeEventListener("abort", onAbortListener); } catch { /* ignore */ }
+        }
       }
 
       // 等待子进程退出

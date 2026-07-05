@@ -575,6 +575,106 @@ describe("ModelFallback 增强", () => {
     expect(events.some(e => e.type === "message_stop")).toBe(true);
   });
 
+  // ─── persistent retry + heartbeat（T8.7）───
+  //
+  // 控制流关键点（读 fallback.ts 得出）：
+  //  · persistent 无限等待块只在**流迭代抛异常**的 catch 分支(attempt>=max)触发，
+  //    不在 error-event 分支(那里走 tryFallback)。故 provider 必须 throw 而非 yield error。
+  //  · 用 maxRetries:0 让"首次尝试即最终尝试"，跳过指数退避(1s/2s...)，测试快速确定。
+  //  · persistent 等待调用 sleepWithProgress(300s)，先 emit persistent_retry_wait 遥测，
+  //    再进入可被 signal 中断的 10s 分段心跳睡眠。用短延时 abort 打断，无需真睡满。
+
+  /** 抛可重试错误(503→overloaded)的流：迭代即 throw */
+  function throwRetryableProvider(counter?: { n: number }): Provider {
+    return {
+      name: () => "anthropic",
+      // eslint-disable-next-line require-yield
+      async *sendMessageStream(): AsyncIterable<StreamEvent> {
+        if (counter) counter.n++;
+        throw new Error("503 Service Unavailable");
+      },
+    } as unknown as Provider;
+  }
+
+  test("persistent 模式：重试耗尽后进入无限等待(persistent_retry_wait)而非降级", async () => {
+    const counter = { n: 0 };
+    const telemetry: RetryTelemetryEvent[] = [];
+    const fallback = new ModelFallback({
+      // 无 fallbackProvider：非 persistent 时会 yield error 结束；persistent 时应无限等待
+      persistent: true,
+      maxRetries: 0, // 首次即最终尝试，跳过退避
+      querySource: "main_thread",
+      onTelemetry: (e) => telemetry.push(e),
+    });
+
+    const ctl = new AbortController();
+    const abortTimer = setTimeout(() => ctl.abort(), 150); // 打断 persistent 长睡眠
+
+    let aborted = false;
+    try {
+      await collectEvents(
+        fallback.executeWithFallback(throwRetryableProvider(counter), defaultParams, ctl.signal),
+      );
+    } catch (err) {
+      aborted = err instanceof RequestAbortedError || (err as Error)?.name === "RequestAbortedError";
+    } finally {
+      clearTimeout(abortTimer);
+    }
+
+    // 进入了 persistent 无限等待：emit persistent_retry_wait，未降级 fallback
+    expect(telemetry.some(e => e.type === "persistent_retry_wait")).toBe(true);
+    expect(telemetry.some(e => e.type === "fallback")).toBe(false);
+    // 卡在等待中被 signal 打断(证明确实无限等待而非静默结束)
+    expect(aborted).toBe(true);
+    expect(counter.n).toBeGreaterThanOrEqual(1);
+  });
+
+  test("非 persistent(默认)：重试耗尽后降级到备用 provider，不进入 persistent 等待", async () => {
+    const telemetry: RetryTelemetryEvent[] = [];
+    const fallback = new ModelFallback({
+      fallbackProvider: successProvider(),
+      fallbackModel: "backup",
+      maxRetries: 0,
+      querySource: "main_thread",
+      onTelemetry: (e) => telemetry.push(e),
+      // persistent 默认 false
+    });
+
+    const events = await collectEvents(
+      fallback.executeWithFallback(throwRetryableProvider(), defaultParams),
+    );
+
+    // 降级成功拿到 message_stop，且从未进入 persistent 等待
+    expect(events.some(e => e.type === "message_stop")).toBe(true);
+    expect(fallback.checkFallbackOccurred()).toBe(true);
+    expect(telemetry.some(e => e.type === "persistent_retry_wait")).toBe(false);
+  });
+
+  test("persistent 心跳：长睡眠拆成 10s 分段并 yield 剩余时间进度事件", async () => {
+    // 真实观测心跳：persistent 等待 5min 被拆成 10s 块，首个心跳进度事件在 ~10s 后到达。
+    // 收到即 abort，避免睡满。此测试有意较慢(约 10s)，是心跳机制的正回归。
+    const fallback = new ModelFallback({
+      persistent: true,
+      maxRetries: 0,
+      querySource: "main_thread",
+    });
+
+    const ctl = new AbortController();
+    let sawHeartbeat = false;
+    try {
+      for await (const e of fallback.executeWithFallback(throwRetryableProvider(), defaultParams, ctl.signal)) {
+        if (e.type === "system_api_error" && (e as any).category === "persistent_retry") {
+          sawHeartbeat = true;
+          ctl.abort(); // 收到首个心跳进度即中断
+        }
+      }
+    } catch {
+      /* abort 抛 RequestAbortedError，预期内 */
+    }
+
+    expect(sawHeartbeat).toBe(true);
+  }, 20_000);
+
   // ─── QuerySource 工具函数 ───
   test("shouldRetry529: 前台 true, 后台 false", () => {
     const { shouldRetry529 } = require("../../src/llm/fallback.ts");

@@ -395,7 +395,7 @@ export class App {
       budgetTracker: this.budgetTracker,
       sessionStore: this.sessionStore ?? undefined,
       executeTools: (content) => this.executeTools(content),
-      processStream: (stream, onText, onThinking) => this.processStream(stream, onText, onThinking),
+      processStream: (stream, onText, onThinking, turnAbortController) => this.processStream(stream, onText, onThinking, turnAbortController),
       autoCompact: () => this.autoCompact(),
       contextCollapse: (ratio) => this.contextCollapse(ratio),
       handleContextOverflow: (err, max) => this.handleContextOverflow(err, max),
@@ -1577,10 +1577,16 @@ export class App {
     stream: AsyncIterable<StreamEvent>,
     onText?: (text: string) => void,
     onThinking?: (text: string) => void,
+    turnAbortController?: AbortController,
   ): Promise<AccumulatedResponse> {
     const { processStream: processStreamImpl } = await import("./query/stream-processor.ts");
     return processStreamImpl(stream, onText, onThinking, {
-      getAbortController: () => this.abortController,
+      // Fix 3（同类路径根治）：优先 abort 本轮 turn 级 controller（loop.ts 透传），只在
+      // 未提供时才回退到会话级 this.abortController。turn 级 controller 经 loop.ts 的
+      // composedSignal（AbortSignal.any）级联到底层 fetch，中断效果不变，但心跳/整体超时
+      // 不再污染会话级共享 signal——杜绝「60-90s 流卡顿 → 会话 signal 被毒化 → 后续 turn
+      // 出生即死 → 整条消息误报已取消」的回归（与 loop.ts finally 的 race-settled 同源）。
+      getAbortController: () => turnAbortController ?? this.abortController,
     });
   }
 

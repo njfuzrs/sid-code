@@ -106,7 +106,15 @@ export class RequestAbortedError extends Error {
  * 否则该 reason 触发的孤儿 rejection 会被当成真故障导致进程退出。
  * 现有调用点：app.ts onInterrupt("user-cancel")、session 超时("timeout")、
  * 单轮硬超时("turn-timeout")、watchdog 看门狗("watchdog-timeout")、
- * side-call 硬超时("side-call-timeout"：auto-compact / context-collapse / recall / warmup)。
+ * side-call 硬超时("side-call-timeout"：auto-compact / context-collapse / recall / warmup)、
+ * 每轮 race settle 后的 turn 级子 controller 清理("race-settled"：loop.ts finally 主动
+ * abort 本轮子 controller 以终止孤儿 fetch，仅作用于 turn 级子 signal，不回写会话级)、
+ * swarm team 整体硬超时("team-hard-timeout"：swarm/team.ts)、
+ * 子代理流整体/心跳超时("agent-stream-overall-timeout" / "agent-stream-heartbeat-timeout"：
+ * agent/stream-processor.ts，combinedSignal 会传给子代理 LLM SDK，超时 abort 后底层 fetch
+ * 以裸字符串 reject，若成孤儿 rejection 同样会崩溃)、
+ * provider 健康告警 webhook 超时/外部中断("alert-webhook-timeout" / "external-abort"：
+ * telemetry/provider-health.ts，虽当前 fetch 在 try/catch 内，登记以纵深防御)。
  */
 export const ABORT_REASONS = [
   "user-cancel",
@@ -114,6 +122,12 @@ export const ABORT_REASONS = [
   "turn-timeout",
   "watchdog-timeout",
   "side-call-timeout",
+  "race-settled",
+  "team-hard-timeout",
+  "agent-stream-overall-timeout",
+  "agent-stream-heartbeat-timeout",
+  "alert-webhook-timeout",
+  "external-abort",
 ] as const;
 
 export type AbortReason = (typeof ABORT_REASONS)[number];

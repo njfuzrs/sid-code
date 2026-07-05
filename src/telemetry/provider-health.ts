@@ -322,3 +322,65 @@ export function formatAlertText(report: HealthReport): string {
   }
   return lines.join("\n");
 }
+
+/**
+ * T15.5：把健康报告渲染成**无 ANSI 颜色**的纯文本看板，供 `/trace --health`
+ * 命令面板复用（与 scripts/provider-health.ts 的彩色版共享同一数据结构，
+ * 但命令面板固定纯文本，避免 ANSI 码污染）。
+ */
+export function renderHealthText(report: HealthReport): string {
+  const out: string[] = [];
+  out.push(`Provider 健康度 · 周期 ${report.periodLabel} · 生成 ${report.generatedAt.slice(11, 19)}`);
+
+  if (report.providers.length === 0) {
+    out.push("  无数据（指定时间范围内无 events.jsonl 事件）");
+    return out.join("\n");
+  }
+
+  // 告警区
+  if (report.alerts.length > 0) {
+    out.push("  ⚠ 告警:");
+    for (const a of report.alerts) {
+      const icon = a.severity === "critical" ? "✘" : "⚡";
+      out.push(`    ${icon} [${a.provider}] ${a.message}`);
+    }
+  }
+
+  // 表格
+  out.push(
+    `  ${"Provider".padEnd(14)} ${"请求".padStart(5)} ${"成功率".padStart(7)} ` +
+    `${"超时".padStart(4)} ${"重试".padStart(4)} ${"TTFT P50".padStart(9)} ${"TTFT P95".padStart(9)} ${"P95延迟".padStart(9)}`,
+  );
+  out.push("  " + "─".repeat(70));
+
+  for (const p of report.providers) {
+    const successRate = p.requests.total > 0
+      ? (p.requests.succeeded / p.requests.total * 100).toFixed(1) + "%"
+      : "N/A";
+    const s = (ms?: number) => (ms ? `${(ms / 1000).toFixed(1)}s` : "-");
+    out.push(
+      `  ${p.provider.padEnd(14)} ` +
+      `${String(p.requests.total).padStart(5)} ` +
+      `${successRate.padStart(7)} ` +
+      `${String(p.requests.timedOut).padStart(4)} ` +
+      `${String(p.requests.retried).padStart(4)} ` +
+      `${s(p.latency.ttft_p50).padStart(9)} ` +
+      `${s(p.latency.ttft_p95).padStart(9)} ` +
+      `${s(p.latency.total_p95).padStart(9)}`,
+    );
+    if (Object.keys(p.timeouts.byLayer).length > 0) {
+      const layers = Object.entries(p.timeouts.byLayer).map(([k, v]) => `${k}:${v}`).join(" ");
+      out.push(`    超时分布: ${layers}`);
+    }
+  }
+
+  // 重试/降级汇总
+  const totalRetries = report.providers.reduce((s, p) => s + p.retries.total, 0);
+  const totalFallbacks = report.providers.reduce((s, p) => s + p.retries.fallbackTriggered, 0);
+  const totalExhausted = report.providers.reduce((s, p) => s + p.retries.exhausted, 0);
+  if (totalRetries > 0 || totalFallbacks > 0) {
+    out.push(`  重试: ${totalRetries}  降级: ${totalFallbacks}  重试耗尽: ${totalExhausted}`);
+  }
+
+  return out.join("\n");
+}

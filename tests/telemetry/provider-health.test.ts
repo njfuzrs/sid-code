@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { aggregateProviderHealth } from "../../src/telemetry/provider-health.ts";
+import { aggregateProviderHealth, renderHealthText } from "../../src/telemetry/provider-health.ts";
 
 describe("T15: Provider 健康度聚合", () => {
   let tempDir: string;
@@ -117,5 +117,30 @@ describe("T15: Provider 健康度聚合", () => {
     expect(openai!.latency.ttft_p95).toBe(9500);
     // P99 ~ 9900 (index 98)
     expect(openai!.latency.ttft_p99).toBe(9900);
+  });
+
+  // T15.5：/trace --health 复用的纯文本渲染器
+  it("renderHealthText: 纯文本看板含 provider/成功率, 无 ANSI 码", () => {
+    const now = new Date().toISOString();
+    const events: object[] = [];
+    for (let i = 0; i < 10; i++) {
+      events.push({ event: "AfterModelRaw", timestamp: now, data: { provider: "openai", elapsed_ms: 2000, ttft_ms: 500 } });
+    }
+    writeSession("session-render", events);
+
+    const report = aggregateProviderHealth({ periodMs: 3600_000, sessionsDir });
+    const text = renderHealthText(report);
+
+    expect(text).toContain("Provider 健康度");
+    expect(text).toContain("openai");
+    expect(text).toContain("%"); // 成功率
+    // 命令面板固定纯文本：不得含 ANSI 转义序列
+    expect(/\x1b\[/.test(text)).toBe(false);
+  });
+
+  it("renderHealthText: 无数据时给出提示而非崩溃", () => {
+    const report = aggregateProviderHealth({ periodMs: 3600_000, sessionsDir });
+    const text = renderHealthText(report);
+    expect(text).toContain("无数据");
   });
 });
