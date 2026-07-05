@@ -70,6 +70,11 @@ export class PermissionsCommand implements Command {
   description() { return "查看当前权限规则和模式"; }
 
   async execute(_args: string, ctx: AppContext): Promise<CommandResult> {
+    // 无参数 → 打开交互式权限管理面板
+    if (!_args.trim()) {
+      return { kind: "dialog", dialog: "permissions" };
+    }
+
     const checker = this.getChecker(ctx);
     if (!checker) {
       return { kind: "error", message: "权限检查器未初始化" };

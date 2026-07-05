@@ -76,7 +76,23 @@ export interface AppContext {
 }
 
 /** 支持的对话框类型 */
-export type DialogType = "model" | "theme" | "settings" | "onboarding" | "mcp";
+export type DialogType =
+  | "model"
+  | "theme"
+  | "settings"
+  | "onboarding"
+  | "mcp"
+  | "effort"
+  | "think"
+  | "permissions"
+  | "memory"
+  | "config"
+  | "hooks"
+  | "stats"
+  | "skills"
+  | "agents"
+  | "commands"
+  | "help";
 
 /** 命令执行结果类型 */
 export type CommandResultKind =

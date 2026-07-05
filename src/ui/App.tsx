@@ -67,6 +67,29 @@ export interface TUICallbacks {
   mcpManager?: import("../mcp/manager.ts").MCPManager;
   /** 会话状态引用（/mcp 面板启用/禁用用；稳定引用） */
   sessionState?: import("../session/state.ts").SessionState;
+  /** 推理强度旋钮 setter（/effort 面板用） */
+  setEffort?: (level: import("../llm/effort.ts").EffortSetting, persist?: boolean) => void;
+  /** 思考开关旋钮 setter（/think 面板用） */
+  setThinking?: (setting: import("../llm/effort.ts").ThinkingSetting, persist?: boolean) => void;
+  /** 读取当前 effort 运行时态 + 能力（/effort 面板展示用） */
+  getEffortState?: () => {
+    runtime: import("../llm/effort.ts").EffortSetting;
+    applied: import("../llm/effort.ts").EffortLevel | undefined;
+    isAuto: boolean;
+    capability: import("../llm/effort.ts").EffortCapability;
+  };
+  /** 读取当前 thinking 运行时态 + 能力（/think 面板展示用） */
+  getThinkingState?: () => {
+    runtime: import("../llm/effort.ts").ThinkingSetting;
+    applied: boolean;
+    capability: import("../llm/effort.ts").EffortCapability;
+  };
+  /** Hook 系统引用（/hooks 面板用；稳定引用） */
+  hookSystem?: import("../hook/system.ts").HookSystem;
+  /** 应用配置引用（/config 面板用；稳定引用） */
+  config?: import("../config/config.ts").Config;
+  /** 统一命令注册表引用（/commands、/help 面板用；稳定引用） */
+  unifiedRegistry?: import("../command/unified-registry.ts").UnifiedCommandRegistry;
 }
 
 /** 权限请求信息 */
@@ -801,6 +824,8 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           onCompleteOnboarding={handleCompleteOnboarding}
           mcpManager={callbacks.mcpManager}
           sessionState={callbacks.sessionState}
+          callbacks={callbacks}
+          provider={state.provider}
           todos={state.todos}
           tasks={state.tasks}
         />
@@ -848,6 +873,8 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           onCompleteOnboarding={handleCompleteOnboarding}
           mcpManager={callbacks.mcpManager}
           sessionState={callbacks.sessionState}
+          callbacks={callbacks}
+          provider={state.provider}
           todos={state.todos}
           tasks={state.tasks}
         />

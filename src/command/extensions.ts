@@ -28,7 +28,11 @@ export class SkillsCommand implements Command {
   }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
-    // 默认显示列表
+    // 无参数 → 打开交互式 Skills 浏览面板
+    if (!args.trim()) {
+      return { kind: "dialog", dialog: "skills" };
+    }
+    // 有参数 → 走子命令（list/enable/disable）
     return new SkillsListCommand().execute(args, ctx);
   }
 }
@@ -243,6 +247,11 @@ export class CommandsListCommand implements Command {
   description() { return "列出所有自定义命令"; }
 
   async execute(_args: string, _ctx: AppContext): Promise<CommandResult> {
+    // 无参数 → 打开交互式命令浏览面板
+    if (!_args.trim()) {
+      return { kind: "dialog", dialog: "commands" };
+    }
+
     const loader = new ExtensionLoader();
     const files = await loader.scan("commands", process.cwd());
 

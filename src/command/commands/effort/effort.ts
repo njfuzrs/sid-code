@@ -42,9 +42,9 @@ const mod: LocalCommandModule = {
       };
     }
 
-    // 无参数 → 展示当前状态。
+    // 无参数 → 打开快捷切换面板（交互式）。
     if (!levelArg) {
-      return { type: "text", value: buildStatus(ctx) };
+      return { type: "dialog", dialog: "effort" };
     }
 
     const norm = levelArg.toLowerCase();
@@ -101,27 +101,6 @@ function buildEnvOverrideNote(): string {
       : "CLAUDE_CODE_EFFORT_LEVEL";
   const envVal = env === undefined ? "auto" : env;
   return `\n⚠ 环境变量 ${which}=${envVal} 正在覆盖本会话，运行时切换不会改变实际下发的档位（取消请 unset 该变量）。`;
-}
-
-/** 构建当前 effort 状态文本（无参时展示）。 */
-function buildStatus(ctx: CommandContext): string {
-  const state = ctx.getEffortState?.();
-  const lines: string[] = [];
-  if (!state) {
-    lines.push("推理强度: 未知（运行环境未注入 effort 状态）");
-    return lines.join("\n");
-  }
-  const runtimeText = state.runtime ?? "auto";
-  lines.push(`当前推理强度: ${runtimeText}`);
-  if (state.isAuto) {
-    lines.push(`实际档位(auto 解析): ${state.applied}（跟随模型默认）`);
-  }
-  lines.push(`模型支持 max: ${state.capability.supportsMaxEffort ? "是" : "否（max 将降为 high）"}`);
-  const envNote = buildEnvOverrideNote();
-  if (envNote) lines.push(envNote.replace(/^\n/, ""));
-  lines.push("", `可切换: ${EFFORT_LEVELS.join(" / ")} / auto`);
-  lines.push("用 /effort <档位> 切换，加 -p 持久化到 settings.json；/effort help 查看用法");
-  return lines.join("\n");
 }
 
 /** 构建 /effort help 用法文本。 */

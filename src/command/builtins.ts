@@ -21,52 +21,8 @@ export class HelpCommand implements Command {
       return this.showCommandHelp(trimmed, ctx);
     }
 
-    // 显示所有命令列表
-    const lines = [
-      "可用命令:",
-      "  /help [command]  - 显示帮助信息（可指定命令查看详情）",
-      "  /model [name]    - 显示/切换模型",
-      "  /model list      - 显示所有可用模型",
-      "  /cost            - 显示 token 用量和费用",
-      "  /cache           - 缓存命中率/省钱长期统计（--period|--model|--breaks|--history|--prune）",
-      "  /trace [id]      - 排查会话:轨迹嚼碎成结构化摘要（--list|--full,默认当前会话）",
-      "  /compact         - 压缩对话历史",
-      "  /btw <问题>      - 旁路提问：基于当前上下文快速回答，不打断主对话",
-      "  /loop [间隔] <任务> - 定时重复任务：/loop 5m <任务>(固定节奏) 或 /loop <任务>(自适应轮询)",
-      "  /clear           - 清空对话",
-      "  /rewind [n]      - 回退最近 n 轮对话（默认 1 轮）",
-      "  /stats           - 显示会话统计",
-      "  /telemetry       - 显示遥测摘要（Span 树 + Metric 汇总）",
-      "  /sessions        - 列出历史会话",
-      "  /config          - 显示当前配置",
-      "  /undo [file]     - 撤销最近一次文件修改（可指定文件路径）",
-      "  /checkpoints     - 查看快照历史",
-      "  /restore <id>    - 恢复到指定快照点",
-      "  /memory          - 管理记忆 (set/get/delete/list/search/show/reload)",
-      "  /mcp             - MCP 服务器管理 (list/add/remove/enable/disable)",
-      "  /skills          - Skills 管理 (list/enable/disable)",
-      "  /agents          - 自定义 Agents 管理 (list)",
-      "  /commands        - 列出自定义命令",
-      "  /hooks           - Hook 管理 (list/enable/disable/enable-all/disable-all)",
-      "  /plugin          - 插件管理 (list/info/install/uninstall/enable/disable)",
-      "  /reload-plugins  - 重新加载所有插件组件",
-      "  /plan            - 进入计划模式（先规划后执行）",
-      "  /theme           - 显示或切换主题",
-      "  /init            - 初始化项目 .sid-code/ 配置目录",
-      "  /exit            - 退出",
-    ];
-
-    if (ctx.customCommands && ctx.customCommands.length > 0) {
-      lines.push("", "自定义命令:");
-      for (const cmd of ctx.customCommands) {
-        const desc = cmd.description ? ` - ${cmd.description}` : "";
-        lines.push(`  /${cmd.name}${desc}`);
-      }
-    }
-
-    lines.push("", "提示: 使用 /help <command> 查看命令详情（如 /help mcp）");
-
-    return { kind: "message", message: lines.join("\n") };
+    // 无参数 → 打开交互式帮助面板
+    return { kind: "dialog", dialog: "help" };
   }
 
   private showCommandHelp(cmdName: string, ctx: AppContext): CommandResult {
@@ -346,6 +302,12 @@ export class ConfigCommand implements Command {
   description() { return "显示当前配置"; }
 
   async execute(_args: string, ctx: AppContext): Promise<CommandResult> {
+    // 无参数 → 打开结构化配置浏览面板
+    if (!_args.trim()) {
+      return { kind: "dialog", dialog: "config" };
+    }
+
+    // 有参数（向后兼容文本模式）
     const lines = [
       `提供商: ${ctx.config.provider}`,
       `模型: ${ctx.config.model}`,
@@ -562,6 +524,11 @@ export class MemoryCommand implements Command {
   description() { return "管理记忆（set/get/delete/list/search/show/reload）"; }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
+    // 无参数 → 打开交互式记忆文件浏览面板（CLAUDE.md 列表 + 预览）
+    if (!args.trim()) {
+      return { kind: "dialog", dialog: "memory" };
+    }
+
     const { MemoryStore } = await import("../memory/store.ts");
     const store = new MemoryStore(process.cwd());
     await store.load();
@@ -839,6 +806,12 @@ export class StatsCommand implements Command {
   description() { return "显示当前会话统计信息"; }
 
   async execute(_args: string, ctx: AppContext): Promise<CommandResult> {
+    // 无参数 → 打开结构化统计面板（交互式）
+    if (!_args.trim()) {
+      return { kind: "dialog", dialog: "stats" };
+    }
+
+    // 有参数（如 /stats text）→ 文本模式（向后兼容脚本化场景）
     const { SessionState } = await import("../session/state.ts");
     const ss = ctx.sessionState;
     const totalUsage = ss.getTotalUsage();
@@ -928,6 +901,8 @@ export class HooksCommand implements Command {
 
     switch (subCmd) {
       case "":
+        // 无参数 → 打开交互式 Hooks 管理面板
+        return { kind: "dialog", dialog: "hooks" };
       case "list":
         return this.listHooks(ctx);
       case "enable":

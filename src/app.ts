@@ -3426,6 +3426,15 @@ export class App {
       // /mcp 交互面板依赖的稳定引用（非响应式，直接透传实例）
       mcpManager: this.mcpManager,
       sessionState: this.sessionState,
+      // /effort、/think 面板：运行时旋钮 setter/getter（复用 cmdCtx 已有的同名实现）
+      setEffort: (level, persist) => this.setEffortRuntime(level, persist),
+      setThinking: (setting, persist) => this.setThinkingRuntime(setting, persist),
+      getEffortState: () => this.getEffortState(),
+      getThinkingState: () => this.getThinkingState(),
+      // /hooks、/config、/permissions、/skills、/commands、/help 面板依赖的稳定引用
+      hookSystem: this.hookSystem,
+      config: this.config,
+      unifiedRegistry: this.unifiedRegistry,
     };
 
     // 恢复会话首屏渲染：restoreSession 仅把历史灌入 ctxMgr（LLM 上下文），

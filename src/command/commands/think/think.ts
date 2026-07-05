@@ -36,7 +36,7 @@ const mod: LocalCommandModule = {
     }
 
     if (!arg) {
-      return { type: "text", value: buildStatus(ctx) };
+      return { type: "dialog", dialog: "think" };
     }
 
     const norm = arg.toLowerCase();
@@ -65,26 +65,6 @@ function buildEnvOverrideNote(): string {
   const env = getThinkingEnvOverride();
   if (env === null) return ""; // env 未设或为 auto，无强制覆盖
   return `\n⚠ 环境变量 SID_CODE_THINKING=${env ? "on" : "off"} 正在覆盖本会话，运行时切换不会改变实际思考开关（取消请 unset 该变量）。`;
-}
-
-/** 构建当前 thinking 状态文本（无参时展示）。 */
-function buildStatus(ctx: CommandContext): string {
-  const state = ctx.getThinkingState?.();
-  const lines: string[] = [];
-  if (!state) {
-    lines.push("思考开关: 未知（运行环境未注入 thinking 状态）");
-    return lines.join("\n");
-  }
-  const runtimeText = state.runtime ?? "auto";
-  lines.push(`当前思考开关: ${runtimeText}`);
-  if (state.runtime === undefined) {
-    lines.push(`实际状态(auto 解析): ${state.applied ? "on" : "off"}（跟随默认）`);
-  }
-  const envNote = buildEnvOverrideNote();
-  if (envNote) lines.push(envNote.replace(/^\n/, ""));
-  lines.push("", "可切换: on / off / auto");
-  lines.push("用 /think <on|off|auto> 切换，加 -p 持久化到 settings.json；/think help 查看用法");
-  return lines.join("\n");
 }
 
 /** 构建 /think help 用法文本。 */

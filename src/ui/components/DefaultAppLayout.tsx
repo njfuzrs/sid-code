@@ -12,9 +12,8 @@ import React, { useRef, useCallback, useEffect } from "react";
 import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
 import type { DOMElement } from "../../ink/dom.js";
-import { Composer } from "./Composer.tsx";
 import { Footer } from "./Footer.tsx";
-import { DialogRenderer } from "./DialogManager.tsx";
+import { DialogSwitch } from "./DialogSwitch.tsx";
 import { MainContent } from "./MainContent.tsx";
 import { CopyModeWarning } from "./CopyModeWarning.tsx";
 import { Notifications } from "./Notifications.tsx";
@@ -23,13 +22,9 @@ import { TodoPanel } from "./TodoPanel.tsx";
 import { ToastDisplay } from "./ToastDisplay.tsx";
 import { ExitWarning } from "./ExitWarning.tsx";
 import { EmptyLogo } from "./EmptyLogo.tsx";
-import { ModelDialog } from "./ModelDialog.tsx";
-import { ThemeDialog } from "./ThemeDialog.tsx";
-import { OnboardingDialog } from "./OnboardingDialog.tsx";
-import { McpDialog } from "./McpDialog.tsx";
 import type { OnboardingResult } from "./OnboardingDialog.tsx";
 import type { HistoryItem } from "../types.ts";
-import type { PermissionRequestInfo, ShellConfirmRequestInfo, PlanApprovalRequestInfo, AskUserQuestionRequestInfo, TaskDisplayInfo } from "../App.tsx";
+import type { PermissionRequestInfo, ShellConfirmRequestInfo, PlanApprovalRequestInfo, AskUserQuestionRequestInfo, TaskDisplayInfo, TUICallbacks } from "../App.tsx";
 import type { DialogType } from "../../command/types.ts";
 import type { MCPManager } from "../../mcp/manager.ts";
 import type { SessionState } from "../../session/state.ts";
@@ -104,6 +99,10 @@ interface DefaultAppLayoutProps {
   mcpManager?: MCPManager;
   /** 会话状态引用（/mcp 面板启用/禁用用） */
   sessionState?: SessionState;
+  /** TUI 回调集合（各交互面板所需的 setter/getter/引用，稳定引用） */
+  callbacks: TUICallbacks;
+  /** 当前 provider（/stats 面板展示用） */
+  provider: string;
   /** 当前 todo 列表（来自 TodoWrite 工具） */
   todos: TodoItem[];
   /** 当前后台任务列表（Shell/Agent） */
@@ -157,6 +156,8 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
   onCompleteOnboarding,
   mcpManager,
   sessionState,
+  callbacks,
+  provider,
   todos,
   tasks,
 }) => {
@@ -240,62 +241,39 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
             </Box>
           ) : null}
 
-          {/* Composer / 权限对话框 / Plan 审批对话框 / 交互式对话框 互斥显示 */}
-          {permissionRequest || shellConfirmRequest ? (
-            <DialogRenderer
-              permissionRequest={permissionRequest}
-              shellConfirmRequest={shellConfirmRequest ?? null}
-              planApprovalRequest={null}
-            />
-          ) : planApprovalRequest ? (
-            <DialogRenderer
-              permissionRequest={null}
-              shellConfirmRequest={null}
-              planApprovalRequest={planApprovalRequest}
-            />
-          ) : askUserQuestionRequest ? (
-            <DialogRenderer
-              permissionRequest={null}
-              shellConfirmRequest={null}
-              planApprovalRequest={null}
-              askUserQuestionRequest={askUserQuestionRequest}
-            />
-          ) : activeDialog === "model" ? (
-            <ModelDialog
-              onClose={onDialogClose}
-              currentModel={model}
-              availableModels={availableModels}
-              onModelSelect={onModelSelect}
-            />
-          ) : activeDialog === "theme" ? (
-            <ThemeDialog
-              onClose={onDialogClose}
-              currentTheme={currentTheme}
-              availableThemes={availableThemes}
-              onThemeSelect={onThemeSelect}
-            />
-          ) : activeDialog === "onboarding" && onCompleteOnboarding ? (
-            <OnboardingDialog
-              onComplete={onCompleteOnboarding}
-              onClose={onDialogClose}
-            />
-          ) : activeDialog === "mcp" && mcpManager && sessionState ? (
-            <McpDialog
-              onClose={onDialogClose}
-              mcpManager={mcpManager}
-              sessionState={sessionState}
-            />
-          ) : (
-            <Composer
-              onSubmit={onSubmit}
-              isLoading={isLoading}
-              commands={commands}
-              cwd={cwd}
-              queuedCount={queuedCount}
-              onExitRequest={onExitRequest}
-              hideShortcutsHint={isEmpty}
-            />
-          )}
+          {/* Composer / 权限对话框 / Plan 审批对话框 / 交互式对话框 互斥显示（收口到 DialogSwitch） */}
+          <DialogSwitch
+            permissionRequest={permissionRequest}
+            shellConfirmRequest={shellConfirmRequest}
+            planApprovalRequest={planApprovalRequest}
+            askUserQuestionRequest={askUserQuestionRequest}
+            activeDialog={activeDialog}
+            onDialogClose={onDialogClose}
+            availableModels={availableModels}
+            onModelSelect={onModelSelect}
+            availableThemes={availableThemes}
+            currentTheme={currentTheme}
+            onThemeSelect={onThemeSelect}
+            onCompleteOnboarding={onCompleteOnboarding}
+            model={model}
+            mcpManager={mcpManager}
+            sessionState={sessionState}
+            callbacks={callbacks}
+            usage={usage}
+            stockInputTokens={stockInputTokens}
+            costUSD={costUSD}
+            cacheSavingsUSD={cacheSavingsUSD}
+            costLimit={costLimit}
+            contextPercent={contextPercent}
+            provider={provider}
+            onSubmit={onSubmit}
+            isLoading={isLoading}
+            commands={commands}
+            cwd={cwd}
+            queuedCount={queuedCount}
+            onExitRequest={onExitRequest}
+            isEmpty={isEmpty}
+          />
         </Box>
 
         {/* 输入框下方紧贴：退出警告 + 状态栏，无额外空行 */}
