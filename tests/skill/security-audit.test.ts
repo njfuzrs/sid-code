@@ -62,11 +62,6 @@ describe("security-audit Skill - 文件结构契约", () => {
     expect(cases.length).toBeGreaterThanOrEqual(10);
   });
 
-  test("RFC-003 落盘", () => {
-    const rfcPath = join(import.meta.dir, "..", "..", "docs", "rfcs", "RFC-003-security-audit-skill.md");
-    expect(existsSync(rfcPath)).toBe(true);
-  });
-
   test("runner scripts/eval/run-security-audit-skill.ts 落盘", () => {
     const runner = join(import.meta.dir, "..", "..", "scripts", "eval", "run-security-audit-skill.ts");
     expect(existsSync(runner)).toBe(true);

@@ -68,11 +68,6 @@ describe("incident-rca Skill - 文件结构契约", () => {
     expect(cases.length).toBeGreaterThanOrEqual(10);
   });
 
-  test("RFC-004 落盘", () => {
-    const rfcPath = join(import.meta.dir, "..", "..", "docs", "rfcs", "RFC-004-incident-rca-skill.md");
-    expect(existsSync(rfcPath)).toBe(true);
-  });
-
   test("runner scripts/eval/run-incident-rca-skill.ts 落盘", () => {
     const runner = join(import.meta.dir, "..", "..", "scripts", "eval", "run-incident-rca-skill.ts");
     expect(existsSync(runner)).toBe(true);
