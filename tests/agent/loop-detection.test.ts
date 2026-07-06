@@ -495,17 +495,28 @@ describe("LoopDetector 耗尽处置（continue vs terminate）", () => {
   });
 });
 
-describe("P0-1: isLoopDetectionEnabled 全局默认启用（不按模型分级）", () => {
+describe("isLoopDetectionEnabled 全局默认关闭（对齐 CC，仅 =1 显式开启）", () => {
   const saved = process.env.SID_ENABLE_LOOP_DETECTION;
   afterAll(() => {
     if (saved === undefined) delete process.env.SID_ENABLE_LOOP_DETECTION;
     else process.env.SID_ENABLE_LOOP_DETECTION = saved;
   });
 
-  test("未设置 env 时默认启用（不需要任何 opt-in，也不查模型名）", () => {
+  test("未设置 env 时默认关闭（对齐 CC 不做工具循环检测）", () => {
     delete process.env.SID_ENABLE_LOOP_DETECTION;
+    expect(isLoopDetectionEnabled()).toBe(false);
+    // LoopDetector 实例应处于禁用状态：即使连续相同调用也不触发（无启发式误判风险）
+    const detector = new LoopDetector({ ...DEFAULT_LOOP_CONFIG, toolCallThreshold: 3 });
+    const input = { path: "/a.ts" };
+    expect(detector.recordToolCall("read", input)).toBe(false);
+    expect(detector.recordToolCall("read", input)).toBe(false);
+    expect(detector.recordToolCall("read", input)).toBe(false);
+  });
+
+  test('仅显式设为 "1" 才开启检测', () => {
+    process.env.SID_ENABLE_LOOP_DETECTION = "1";
     expect(isLoopDetectionEnabled()).toBe(true);
-    // LoopDetector 实例本身也应处于启用状态：工具调用循环能被正常检测到
+    // 显式开启后工具调用循环能被正常检测到
     const detector = new LoopDetector({ ...DEFAULT_LOOP_CONFIG, toolCallThreshold: 3 });
     const input = { path: "/a.ts" };
     expect(detector.recordToolCall("read", input)).toBe(false);
@@ -513,26 +524,17 @@ describe("P0-1: isLoopDetectionEnabled 全局默认启用（不按模型分级�
     expect(detector.recordToolCall("read", input)).toBe(true);
   });
 
-  test('显式设为 "1" 保持启用（幂等，兼容旧用法）', () => {
-    process.env.SID_ENABLE_LOOP_DETECTION = "1";
-    expect(isLoopDetectionEnabled()).toBe(true);
-  });
-
-  test('仅显式设为 "0" 才关闭', () => {
+  test('显式设为 "0" 保持关闭', () => {
     process.env.SID_ENABLE_LOOP_DETECTION = "0";
     expect(isLoopDetectionEnabled()).toBe(false);
-    const detector = new LoopDetector({ ...DEFAULT_LOOP_CONFIG, toolCallThreshold: 3 });
-    const input = { path: "/a.ts" };
-    // 关闭后即使连续相同调用也不应触发
-    expect(detector.recordToolCall("read", input)).toBe(false);
-    expect(detector.recordToolCall("read", input)).toBe(false);
-    expect(detector.recordToolCall("read", input)).toBe(false);
   });
 
-  test('其他任意值（非 "0"）都不应关闭，只有精确匹配 "0" 才关闭', () => {
-    process.env.SID_ENABLE_LOOP_DETECTION = "false";
-    expect(isLoopDetectionEnabled()).toBe(true);
-    process.env.SID_ENABLE_LOOP_DETECTION = "no";
-    expect(isLoopDetectionEnabled()).toBe(true);
+  test('其他任意值（非 "1"）都不开启，只有精确匹配 "1" 才开启', () => {
+    process.env.SID_ENABLE_LOOP_DETECTION = "true";
+    expect(isLoopDetectionEnabled()).toBe(false);
+    process.env.SID_ENABLE_LOOP_DETECTION = "yes";
+    expect(isLoopDetectionEnabled()).toBe(false);
+    process.env.SID_ENABLE_LOOP_DETECTION = "2";
+    expect(isLoopDetectionEnabled()).toBe(false);
   });
 });

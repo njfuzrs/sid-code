@@ -117,14 +117,14 @@ describe("Write 护栏：覆盖已有文件", () => {
     expect(readFileSync(f, "utf-8")).toBe("读后覆盖\n");
   });
 
-  test("GAP-A：部分视图（offset/limit）读取后覆盖被拒", async () => {
+  test("部分视图（offset/limit）读取后仍可覆盖（对齐 CC，不再因 partial-view 拒绝）", async () => {
     const { write, read } = makeToolset();
     const f = join(makeTmpDir(), "big.ts");
     writeFileSync(f, Array.from({ length: 100 }, (_, i) => `line ${i}`).join("\n") + "\n");
     await read.execute({ file_path: f, offset: 1, limit: 10 }); // 部分读
     const res = await write.execute({ file_path: f, content: "覆盖\n" });
-    expect(res.isError).toBe(true);
-    expect(res.output).toContain("部分");
+    expect(res.isError).toBeFalsy();
+    expect(readFileSync(f, "utf-8")).toBe("覆盖\n");
   });
 
   test("GAP-B：mtime 变但内容不变（touch/formatter）时覆盖放行，不误报外部修改", async () => {

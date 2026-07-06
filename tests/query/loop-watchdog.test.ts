@@ -80,12 +80,20 @@ describe("T1 — setInterval 看门狗", () => {
     // 避免用生产默认值（60s/120s + 10s）导致测试超时。
     process.env.SID_CODE_RESPONSE_HEADER_TIMEOUT_MS = "40";
     process.env.SID_CODE_WATCHDOG_HEADER_GRACE_MS = "20";
+    // 统一放宽后重试默认 4 次、退避 2s→30s。测试收敛重试次数并把退避压到近 0，
+    // 否则真实退避等待会拖爆测试超时（见 network-profile.ts DEFAULTS）。
+    process.env.SID_CODE_MAX_TIMEOUT_RETRIES = "2";
+    process.env.SID_CODE_RETRY_BACKOFF_BASE_MS = "1";
+    process.env.SID_CODE_RETRY_BACKOFF_MAX_MS = "1";
   });
   afterEach(() => {
     delete process.env.SID_CODE_WATCHDOG_CHECK_INTERVAL_MS;
     delete process.env.SID_CODE_WATCHDOG_NO_PROGRESS_MS;
     delete process.env.SID_CODE_RESPONSE_HEADER_TIMEOUT_MS;
     delete process.env.SID_CODE_WATCHDOG_HEADER_GRACE_MS;
+    delete process.env.SID_CODE_MAX_TIMEOUT_RETRIES;
+    delete process.env.SID_CODE_RETRY_BACKOFF_BASE_MS;
+    delete process.env.SID_CODE_RETRY_BACKOFF_MAX_MS;
   });
 
   test("流 hang 且有快照进展记录 → 看门狗按 WATCHDOG_NO_PROGRESS_MS 判定，先于 turn_hard fire", async () => {

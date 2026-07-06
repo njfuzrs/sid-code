@@ -440,7 +440,7 @@ export class LoopDetector {
   private recoveryAttempts = 0;
   private turnCount = 0;
   private lastLLMCheckTurn = 0;
-  /** 循环检测是否已禁用（P0-1：默认全局启用，仅 SID_ENABLE_LOOP_DETECTION=0 可显式关闭） */
+  /** 循环检测是否已禁用（默认全局关闭对齐 CC，仅 SID_ENABLE_LOOP_DETECTION=1 可显式开启） */
   private _disabled = false;
 
   constructor(config: LoopDetectionConfig = resolveLoopConfig()) {
@@ -578,20 +578,26 @@ export class LoopDetector {
   }
 }
 
-/** 检查循环检测是否启用（P0-1：默认全局启用，不做模型分级判断）。
+/** 检查循环检测是否启用（默认全局关闭，对齐 Claude Code；仅 SID_ENABLE_LOOP_DETECTION=1 显式开启）。
  *
- *  为什么不按模型分级（"强模型关、弱模型开"）：模型名单和能力会持续变化——今天判定
- *  "可信"的模型可能明天就上线新版本、换了行为特征，甚至同一个模型在不同任务类型下
- *  循环概率也不同。把"哪些模型可信"这种会随时间漂移的判断写死进代码，判断迟早会
- *  过时或覆盖不到新模型，属于隐患而非防御。
+ *  为什么默认关闭（2026-07-07 决策，推翻此前 P0-1 的"默认全局启用"）：
+ *  启发式循环检测（尤其 ToolShapeLoopDetector）存在**结构性、无法根治的误判**。
+ *  shape 检测把工具调用降维成"toolName + key-set + anchor 字段"的形状指纹，故意丢弃
+ *  参数 value——这让它天然无法区分两类语义相反的行为：
+ *    - 真死循环："反复用不同 pattern 探测同一个不存在的目标"
+ *    - 正当推进："系统性操作同类目标下的多个不同对象"（如 /commit 连跑 git diff/add/
+ *      commit/log、系统性 grep 多个不同 symbol、连续跑测试/构建命令）
+ *  对 bash 尤其严重：bash 的 command 值不进 shape key、又没有 path/cwd 等 anchor 字段，
+ *  于是**所有 bash 调用的 shape key 全退化成同一个字符串**，检测器实际变成"滑动窗口内
+ *  bash 调用数 ≥ 阈值就误判循环"，完全无视命令内容。真实案例：session 38428f6e 执行
+ *  /commit 时，一串完全不同的 git 命令被判为"bash shape 探测循环"，反复注入恢复提示刷屏。
  *
- *  能承受"全局打开"的原因是触发后果很轻：命中只是注入一条提醒
- *  （LOOP_RECOVERY_PROMPT/LOOP_RECOVERY_FINAL_PROMPT），明确允许模型说明"这是正当的
- *  分段/多点操作"后继续；recoveryExhaustedAction 默认 "continue"，不会硬终止任务。
- *  即使对本来就不太会循环的模型，误报代价也只是一次可忽略的提醒，不是任务失败。
+ *  这类精度/召回权衡是启发式的固有缺陷，做不到零误判。Claude Code 源码也**不做**任何
+ *  agent 工具调用循环检测（已核实），它依赖强模型自身收敛 + costLimit/轮次上限 +
+ *  用户随时 ESC 兜底，实践证明足够。我们对齐此做法：默认关闭全部循环检测。
  *
- *  通过环境变量 SID_ENABLE_LOOP_DETECTION=0 可显式全局关闭（例如只用单一高度信任的
- *  模型、想完全对齐 CC 不做循环检测的选择）。 */
+ *  代码不删除、仅默认关闭（env 门控），保留可逆性：通过 SID_ENABLE_LOOP_DETECTION=1
+ *  可为特定场景（如接入行为不稳定的弱模型）显式开启。 */
 export function isLoopDetectionEnabled(): boolean {
-  return process.env.SID_ENABLE_LOOP_DETECTION !== "0";
+  return process.env.SID_ENABLE_LOOP_DETECTION === "1";
 }

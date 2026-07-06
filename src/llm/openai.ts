@@ -28,6 +28,7 @@ import { splitSystemByDynamicBoundary } from "../api/cache-strategy.ts";
 import { estimateTextTokens } from "../context/token.ts";
 import { sanitizeStrings } from "./sanitize-unicode.ts";
 import { SseChunkDumper, currentSseDumpContext } from "./sse-chunk-dumper.ts";
+import { resolveHeaderTimeoutMs } from "../config/network-profile.ts";
 import { buildResponsesRequest } from "./openai-responses-request.ts";
 import { parseResponsesStream } from "./openai-responses.ts";
 
@@ -98,25 +99,16 @@ interface ToolCallState {
  * DeepSeek 大上下文首字节慢 → 给 120s；其他模型 → 60s。仍小于 fallback 的 5min 整体
  * 超时，确保响应头阶段的 hang 优先由这道更近的防线拦截。
  */
-const RESPONSE_HEADER_TIMEOUT_MS = {
-  deepseek: 120_000,
-  default: 60_000,
-} as const;
-
 /**
- * Fix 6：暴露 header timeout 阈值供 loop.ts 看门狗读取。
- * 看门狗在快照缺失（尚未收到首字节）时应以此阈值兜底，而非固定 90s——
- * 否则 DeepSeek 大上下文请求（首字节需 90-120s 属正常）会被看门狗抢先误杀。
- * 支持 SID_CODE_RESPONSE_HEADER_TIMEOUT_MS 环境变量覆盖，与 resolveHeaderTimeoutMs 共用同一套值。
+ * 暴露 header timeout 阈值（首字节超时）。委托统一配置 network-profile.ts，
+ * 保证 provider 的 fetch 级 header 超时 与 loop.ts 看门狗的 header 兜底阈值一致
+ * ——否则 fetch 会在看门狗阈值之前先把连接杀掉，放宽看门狗形同虚设。
+ * 不再按模型分档（deepseek/default）：统一的宽松默认值对所有模型都成立。
+ * 支持 SID_CODE_RESPONSE_HEADER_TIMEOUT_MS 环境变量覆盖。
+ * 保留 model 参数仅为兼容既有调用点签名，内部不再使用。
  */
-export function getHeaderTimeoutMs(model: string): number {
-  const override = Number(process.env.SID_CODE_RESPONSE_HEADER_TIMEOUT_MS);
-  if (Number.isFinite(override) && override > 0) {
-    return override;
-  }
-  return /deepseek/i.test(model)
-    ? RESPONSE_HEADER_TIMEOUT_MS.deepseek
-    : RESPONSE_HEADER_TIMEOUT_MS.default;
+export function getHeaderTimeoutMs(_model?: string): number {
+  return resolveHeaderTimeoutMs();
 }
 
 export class OpenAIProvider implements Provider {

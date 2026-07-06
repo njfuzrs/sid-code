@@ -147,12 +147,8 @@ export class FileStateCache {
       return `文件必须先用 read 工具读取后才能编辑: ${path}`;
     }
 
-    // 2. 部分视图不允许编辑
-    if (state.isPartialView) {
-      return `只读取了文件的部分内容，无法安全编辑。请先完整读取文件: ${path}`;
-    }
-
-    // 3. 检测外部修改
+    // 2. 检测外部修改
+    //    （不再校验 partial-view：对齐 claude-code，编辑安全性由 edit 的磁盘重读+串匹配保证）
     try {
       const resolved = resolve(path);
       const currentMtime = statSync(resolved).mtimeMs;

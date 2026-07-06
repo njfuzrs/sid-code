@@ -197,12 +197,6 @@ export interface LoopState {
    */
   pendingContradictions?: import("./hypothesis-ledger.ts").ContradictionHit[];
   /**
-   * Fix 5（方案 C）：上一轮工具结果检出的 partial-read 保护拦截（is_error 且匹配
-   * "只读取了文件的部分内容"）命中的文件路径列表，待下一轮循环开头经 reminder
-   * 通道强制注入收敛指令。与 pendingContradictions 同机制。注入后清空。
-   */
-  pendingPartialReadFailures?: string[];
-  /**
    * 环节③ 机制3：假设交付门禁已软续命的次数。模型试图收尾但仍有 open 假设时，
    * 注入门禁提醒并续命，最多 N 次，避免无限循环。
    */

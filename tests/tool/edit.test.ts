@@ -2,7 +2,7 @@
  * Edit 工具测试 - 4 级匹配策略 + old_string='' + CRLF 保留
  */
 
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect, beforeEach } from "bun:test";
 import { EditTool } from "../../src/tool/edit.ts";
 import { ReadTool } from "../../src/tool/read.ts";
 import { FileReadTracker } from "../../src/tool/file-read-tracker.ts";
@@ -297,16 +297,51 @@ describe("EditTool - 模糊匹配歧义守卫", () => {
 describe("EditTool - 先读后改校验（FileReadTracker 增强）", () => {
   beforeEach(setup);
 
-  test("部分读取（offset/limit）后不能编辑未读区域", async () => {
+  test("部分读取（offset/limit）后仍可编辑：old_string 在磁盘全文精确命中即放行（对齐 CC，不再因 partial-view 拒绝）", async () => {
     const tracker = new FileReadTracker();
     const read = new ReadTool(tracker);
     const edit = new EditTool(tracker);
     const file = join(TMP, "partial.ts");
     writeFileSync(file, Array.from({ length: 50 }, (_, i) => `line${i}`).join("\n"));
+    // 只读了前 10 行，但 edit 会从磁盘重读全文做精确串匹配，line40 能命中 → 放行
     await read.execute({ file_path: file, offset: 1, limit: 10 });
     const result = await edit.execute({ file_path: file, old_string: "line40", new_string: "LINE40" });
+    expect(result.isError).toBeFalsy();
+    expect(await Bun.file(file).text()).toContain("LINE40");
+    cleanup([file]);
+  });
+
+  test("回归：读全文 → 编辑 → 定向读定位 → 再编辑，全程放行（原 partial-view 误杀场景）", async () => {
+    const tracker = new FileReadTracker();
+    const read = new ReadTool(tracker);
+    const edit = new EditTool(tracker);
+    const file = join(TMP, "readfull-edit-readpartial-edit.md");
+    // 用带尾缀的唯一行，避免 "段落 5" 同时命中 "段落 50~59" 的歧义
+    writeFileSync(file, Array.from({ length: 60 }, (_, i) => `## 段落 ${i} 号`).join("\n") + "\n");
+    // 1) 完整读取
+    await read.execute({ file_path: file });
+    // 2) 编辑成功
+    const r1 = await edit.execute({ file_path: file, old_string: "## 段落 5 号", new_string: "## 段落 五 号" });
+    expect(r1.isError).toBeFalsy();
+    // 3) 为定位下一个锚点做定向读取（带 offset）—— 曾把状态覆盖成 partial-view
+    await read.execute({ file_path: file, offset: 40, limit: 10 });
+    // 4) 再次编辑：不应再被 partial-view 拒绝
+    const r2 = await edit.execute({ file_path: file, old_string: "## 段落 45 号", new_string: "## 段落 四五 号" });
+    expect(r2.isError).toBeFalsy();
+    const content = await Bun.file(file).text();
+    expect(content).toContain("## 段落 五 号");
+    expect(content).toContain("## 段落 四五 号");
+    cleanup([file]);
+  });
+
+  test("从没 read 直接编辑仍被拒绝（先读后改护栏保留）", async () => {
+    const tracker = new FileReadTracker();
+    const edit = new EditTool(tracker);
+    const file = join(TMP, "never-read.ts");
+    writeFileSync(file, "const a = 1;\n");
+    const result = await edit.execute({ file_path: file, old_string: "const a = 1;", new_string: "const a = 2;" });
     expect(result.isError).toBe(true);
-    expect(result.output).toContain("部分内容");
+    expect(result.output).toContain("先用 read");
     cleanup([file]);
   });
 

@@ -10,6 +10,7 @@ import { existsSync, mkdirSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
 import { getSidHome } from "./paths.ts";
 import { parseToolSearchEnv } from "../tool/tool-search-auto.ts";
+import type { NetworkTimeoutSettings } from "./network-profile.ts";
 
 /** MCP 服务器配置 */
 export interface MCPServerConfig {
@@ -96,6 +97,8 @@ export interface Config {
   baseURL: string;
   maxTokens: number;
   availableModels: ModelConfig[];
+  /** 网络超时/重试配置（统一单套保活优先默认值，见 network-profile.ts） */
+  network?: NetworkTimeoutSettings;
   /** 输出语言偏好: "zh" 中文优先（默认）, "en" 英文优先。不设置时系统提示词默认中文 */
   language?: "zh" | "en";
 

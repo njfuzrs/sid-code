@@ -13,7 +13,7 @@
  * fix_type: case_design
  */
 
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { queryLoop } from "../../src/query/loop.ts";
 import type { QueryLoopConfig } from "../../src/query/loop.ts";
 import type { QueryDeps } from "../../src/query/types.ts";
@@ -23,6 +23,19 @@ import { ModelFallback } from "../../src/llm/fallback.ts";
 import { SessionState } from "../../src/session/state.ts";
 import type { Config } from "../../src/config/config.ts";
 import type { StreamEvent } from "../../src/llm/types.ts";
+
+// 统一超时默认值放宽后：重试次数默认 4、退避 2s→30s。单测里必须经环境变量把
+// 重试次数收敛、退避压到近乎 0，否则真实退避等待会拖爆测试超时（见 network-profile.ts）。
+beforeAll(() => {
+  process.env.SID_CODE_MAX_TIMEOUT_RETRIES = "2";
+  process.env.SID_CODE_RETRY_BACKOFF_BASE_MS = "1";
+  process.env.SID_CODE_RETRY_BACKOFF_MAX_MS = "1";
+});
+afterAll(() => {
+  delete process.env.SID_CODE_MAX_TIMEOUT_RETRIES;
+  delete process.env.SID_CODE_RETRY_BACKOFF_BASE_MS;
+  delete process.env.SID_CODE_RETRY_BACKOFF_MAX_MS;
+});
 
 function makeConfig(): Config {
   return { model: "test-model", provider: "anthropic", maxTurns: 5 } as unknown as Config;

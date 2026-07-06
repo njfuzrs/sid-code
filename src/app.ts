@@ -2952,6 +2952,12 @@ export class App {
                 // 导致"内容消失+无任何提示"。仿照 fatal_error 持久化到 displayItems。
                 const errorDisplay = [...bridge.current.displayItems, { kind: "system" as const, text: event.text }];
                 updateState({ displayItems: errorDisplay });
+              } else {
+                // 根因修复：此前 info 级别没有分支 = 被静默丢弃。看门狗/超时重试、
+                // 压缩进度、续写提示等 info 事件全部凭空消失，用户只见流式卡住无任何提示
+                // （"死循环"观感的直接来源）。info 走 transient 状态条：可见但不占主视图，
+                // 流式恢复后自动清除（复用 "system:transient" key，与重试提示同键）。
+                addStatusMessage("system:transient", event.text);
               }
               break;
             case "tombstone":

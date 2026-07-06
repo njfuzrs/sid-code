@@ -15,8 +15,12 @@ interface ReadRecord {
   lastAccessTime: number; // 最近一次访问（读/写/编辑）的时间戳（§2.1 post-compact 文件恢复用）
   /**
    * 是否只读取了文件的部分内容（offset/limit 分段读、或超默认行数被截断）。
-   * 对标 claude-code：部分视图不足以安全 edit —— 模型只看到片段却可能改到未读区域，
-   * 造成静默错改。edit 前 validateForEdit 据此拦截，要求完整重读。
+   * 仅用于决定是否记录 content 快照（部分视图无完整内容，记 null）。
+   *
+   * ⚠️ 不再作为 edit/write 的拒绝依据（对齐 claude-code）：CC 的普通 read 从不因
+   * offset/limit 置此标志，编辑安全性由 edit 自身「从磁盘重读全文 + old_string 精确
+   * 串匹配（匹配不到即报错）」保证——模型改到未读区域本就不可能发生。曾据此拒绝会
+   * 误杀「读全文 → 编辑 → 定向读定位 → 再编辑」这一改大文件的自然工作流。
    */
   isPartialView: boolean;
   /**
@@ -29,13 +33,6 @@ interface ReadRecord {
 
 export class FileReadTracker {
   private readFiles = new Map<string, ReadRecord>();
-  /**
-   * Fix 5：追踪同一文件连续因 partial-read 被拒绝编辑/写入的次数。
-   * 指令跟随较弱的模型（如 DeepSeek）可能无视第一次的错误提示，继续用
-   * offset/limit 读取后重试 edit——同一文件连续第 2 次起强化错误措辞，
-   * 打断"读局部 → 被拒 → 再读局部"的无效循环。完整读取通过校验后清零。
-   */
-  private partialReadFailures = new Map<string, number>();
 
   /**
    * 标记文件已被读取。
@@ -110,8 +107,11 @@ export class FileReadTracker {
   /**
    * 「先读后改」新鲜度校验的单一事实源，供 edit/write 共用，杜绝两条护栏逻辑漂移。
    *   1. 从没读过 → 拒绝
-   *   2. 只读了部分内容（offset/limit/截断）→ 拒绝（可能改到/冲掉未读区域）
-   *   3. 读后被外部修改（mtime 变且内容确实不同）→ 拒绝
+   *   2. 读后被外部修改（mtime 变且内容确实不同）→ 拒绝
+   *
+   * ⚠️ 不再校验 partial-view（对齐 claude-code）：曾据 isPartialView 拒绝部分读取后的
+   * 编辑，会误杀「读全文 → 编辑 → 定向读定位 → 再编辑」的自然工作流。编辑安全性由 edit
+   * 自身「从磁盘重读全文 + old_string 精确串匹配」保证，无需此门禁。
    * @param action 错误文案里的动作词（"编辑" / "覆盖写入"）
    */
   private validateFresh(filePath: string, action: string): string | null {
@@ -121,22 +121,6 @@ export class FileReadTracker {
     if (!record) {
       return `文件必须先用 read 工具读取后才能${action}: ${filePath}`;
     }
-
-    // 部分视图不足以安全操作：模型只看到片段却可能改到/冲掉未读区域，会静默出错。
-    // 对标 claude-code：要求先完整读取（清掉 offset/limit）。
-    if (record.isPartialView) {
-      const failCount = (this.partialReadFailures.get(resolved) ?? 0) + 1;
-      this.partialReadFailures.set(resolved, failCount);
-      const baseMsg = `只读取了文件的部分内容，无法安全${action}。请先用 read（不带 offset/limit）完整读取该文件: ${filePath}`;
-      // Fix 5：第 2 次及以上连续失败 → 强化措辞 + 显式指令，打断"读局部→被拒→再读局部"循环。
-      if (failCount >= 2) {
-        return `${baseMsg}\n\n⛔ 这是第 ${failCount} 次因相同原因失败。你必须执行: read ${filePath}（不带任何 offset/limit 参数），然后再重试${action}。不要再使用 offset/limit 读取此文件。`;
-      }
-      return baseMsg;
-    }
-
-    // 通过 partial-read 检查（完整视图）→ 清零该文件的连续失败计数
-    this.partialReadFailures.delete(resolved);
 
     // 检查文件是否在读取后被外部修改
     try {
@@ -188,6 +172,5 @@ export class FileReadTracker {
   /** 清空所有记录 */
   clear(): void {
     this.readFiles.clear();
-    this.partialReadFailures.clear();
   }
 }

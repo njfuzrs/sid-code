@@ -130,6 +130,24 @@ const SearchSchema = lazySchema(() =>
   }).passthrough(),
 );
 
+/**
+ * 网络超时/重试配置 Schema（统一单套值，不分 direct/gateway，见 network-profile.ts）。
+ * 各字段可对统一默认值做具体覆盖，同名环境变量（SID_CODE_*）优先级更高
+ * （供运维/测试注入，向后兼容）。全部留空则用 DEFAULTS 的保活优先默认值。
+ */
+const NetworkTimeoutsSchema = lazySchema(() =>
+  z.object({
+    headerTimeoutMs: z.number().positive().optional(),
+    watchdogNoProgressMs: z.number().positive().optional(),
+    watchdogCheckIntervalMs: z.number().positive().optional(),
+    watchdogHeaderGraceMs: z.number().nonnegative().optional(),
+    maxTurnDurationMs: z.number().positive().optional(),
+    maxTimeoutRetries: z.number().nonnegative().optional(),
+    retryBackoffBaseMs: z.number().nonnegative().optional(),
+    retryBackoffMaxMs: z.number().positive().optional(),
+  }).passthrough(),
+);
+
 /** Worktree 配置 Schema（Git Worktree 隔离系统） */
 const WorktreeSettingsSchema = lazySchema(() =>
   z.object({
@@ -209,6 +227,9 @@ export const SettingsSchema = lazySchema(() =>
 
       // Worktree 隔离配置
       worktree: WorktreeSettingsSchema().optional(),
+
+      // 网络超时/重试配置（direct/gateway 场景适配）
+      network: NetworkTimeoutsSchema().optional(),
     })
     .passthrough(), // 保留未知字段（向前兼容）
 );

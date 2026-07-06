@@ -24,7 +24,7 @@ import { resolveToolSearchEnabled } from "../tool/tool-search-auto.ts";
 import { TOKEN_THRESHOLDS } from "../context/auto-compact.ts";
 import { ModelFallback } from "../llm/fallback.ts";
 import { setSseDumpContext } from "../llm/sse-chunk-dumper.ts";
-import { getHeaderTimeoutMs } from "../llm/openai.ts";
+import { resolveLoopTimeouts, computeBackoffMs } from "../config/network-profile.ts";
 import { emitTimeoutFired, emitTimeoutRetry, emitTimeoutRetryExhausted, armIneffectiveCheck, emitWatchdogKill, getStreamSnapshot, clearStreamSnapshot, clearAllSnapshots } from "../trace/stream-observer.ts";
 import { SessionState } from "../session/state.ts";
 import { getLogger, getSessionMetrics, getPerfTimer } from "../debug/index.ts";
@@ -94,7 +94,6 @@ import { detectInvestigationContext, buildHypothesisGuideReminder } from "./hypo
 import { collectDiagnosticText, getLSPHealthWarning } from "../lsp/manager.ts";
 import { buildPermissionModeReminder, PERMISSION_MODE_REMINDER_INTERVAL } from "./permission-reminder.ts";
 import { buildContradictionReminder, buildDeliveryGateReminder } from "./hypothesis-ledger.ts";
-import { detectPartialReadFailures, buildPartialReadReminder } from "./partial-read-reminder.ts";
 import { buildGoalReminder } from "../goal/reminder.ts";
 import { collectEvidenceFromTurn } from "../goal/evidence-collector.ts";
 import { handleGoalGate } from "./goal-gate.ts";
@@ -568,18 +567,6 @@ export async function* queryLoop(
       state.pendingContradictions = undefined; // 注入后清空，避免重复
     }
 
-    // Fix 5（方案 C·注入端）：上一轮工具结果检出的 partial-read 保护拦截，本轮
-    // 注入强制收敛提醒，打断"读局部 → 被拒 → 再读局部"的无效循环。同 pendingContradictions
-    // 放在 unshift 高优先级——指令跟随较弱的模型更需要提前读到。
-    if (state.pendingPartialReadFailures && state.pendingPartialReadFailures.length > 0) {
-      reminderParts.unshift(buildPartialReadReminder(state.pendingPartialReadFailures));
-      log.info(
-        "QUERY_LOOP",
-        `Fix 5：注入 partial-read 收敛提醒（${state.pendingPartialReadFailures.length} 个文件命中）`,
-      );
-      state.pendingPartialReadFailures = undefined; // 注入后清空，避免重复
-    }
-
     // 方案③（思考发散·注入端）：上一轮检出的思考发散，本轮经 reminder 通道注入收敛提示。
     // 放在 unshift 高优先级——分析瘫痪时越早读到越好。注入后清空 pending 标记。
     if (state.pendingThinkingDivergenceReminder) {
@@ -829,6 +816,11 @@ export async function* queryLoop(
     const ttftStart = performance.now();
 
     let response: import("../llm/types.ts").AccumulatedResponse;
+    // 网络超时体系统一由 resolveLoopTimeouts 解析（单套保活优先默认值，可经
+    // settings.json network.* 或 SID_CODE_* 环境变量覆盖），详见
+    // src/config/network-profile.ts 的优先级链说明。声明在 try 之外，
+    // 使下方 catch 块（超时重试分支）也能读到同一份解析结果。
+    const netTimeouts = resolveLoopTimeouts({ network: config.network });
     try {
       // ─── L1：单轮硬超时兜底（治本，对所有挂起根因成立）───
       // 根因：底层 generator 链（processStream → fallback for-await → openai parseSSE）
@@ -843,14 +835,7 @@ export async function* queryLoop(
       // reject 后走下方 catch → isTimeoutError 命中 → 复用现有 timeout 重试分支(continue),
       // 无需新写 yield done/return,且保留重试机会。
       // 超时阈值可经 deps 注入覆盖（默认 10 分钟），便于单测用短值触发。
-      // Fix 4: 模型感知硬超时 — DeepSeek 思考模型给 5min（Fix 1+2 已保证可中断，不需要 10min 兜底）；
-      // 其他模型保持 10min。支持 SID_CODE_MAX_TURN_DURATION_MS 环境变量覆盖（运维调参 / 测试注入）。
-      const resolvedMaxTurnMs = (() => {
-        const override = Number(process.env.SID_CODE_MAX_TURN_DURATION_MS);
-        if (Number.isFinite(override) && override > 0) return override;
-        return /deepseek/i.test(config.model) ? 5 * 60 * 1000 : 10 * 60 * 1000;
-      })();
-      const MAX_TURN_DURATION_MS = deps.maxTurnDurationMs ?? resolvedMaxTurnMs;
+      const MAX_TURN_DURATION_MS = deps.maxTurnDurationMs ?? netTimeouts.maxTurnDurationMs;
       let turnTimer: ReturnType<typeof setTimeout> | null = null;
       // 缺口 2 进阶：turn_hard 超时 fire 后武装「未生效」检查；race settle 时 disarm。
       // 若 5s 内未 disarm，说明超时 fire 了却没让 Promise.race settle（本次事故指纹）。
@@ -884,30 +869,19 @@ export async function* queryLoop(
       // 占满时可能延迟数分钟才 fire（实测 setTimeout 回调延迟 193s → 流 hang 死 35min）。
       // 而 setInterval 在 Bun 中已被 heartbeat 证明可靠（周期性重排，不受单次长任务饿死）。
       // 策略：每 5s 读一次当轮流状态快照 getStreamSnapshot(state.turnCount)，
-      // 若 lastContentProgressAt 已 90s 无业务进展（text_delta / tool_use / reasoning）
-      // → abort 上游 + reject，把 hang 转成 timeout 重试（远早于 5-10min 硬超时）。
+      // 若 lastContentProgressAt 已达 netTimeouts.watchdogNoProgressMs 无业务进展
+      // （text_delta / tool_use / reasoning）→ abort 上游 + reject，把 hang 转成
+      // timeout 重试（远早于单轮硬超时）。
       //
       // 为什么快照够用：openai.ts 的 parseSSE 每收到有效内容就 updateStreamStats
       // 刷新 lastContentProgressAt（见 openai.ts:1116-1125），watchdog 只读不写，
       // 无侵入。快照缺失（Anthropic 路径当前不写快照 / 请求刚起未建快照）时降级为
-      // "用 watchdog 自身启动时间兜底"——保证任何 provider 都有 90s 无快照即触发的下限。
-      const WATCHDOG_CHECK_INTERVAL_MS = (() => {
-        const override = Number(process.env.SID_CODE_WATCHDOG_CHECK_INTERVAL_MS);
-        if (Number.isFinite(override) && override > 0) return override;
-        return 5_000;
-      })();
-      const WATCHDOG_NO_PROGRESS_MS = (() => {
-        const override = Number(process.env.SID_CODE_WATCHDOG_NO_PROGRESS_MS);
-        if (Number.isFinite(override) && override > 0) return override;
-        return 90_000;
-      })();
+      // "用 watchdog 自身启动时间兜底"——保证任何 provider 都有无快照即触发的下限。
+      const WATCHDOG_CHECK_INTERVAL_MS = netTimeouts.watchdogCheckIntervalMs;
+      const WATCHDOG_NO_PROGRESS_MS = netTimeouts.watchdogNoProgressMs;
       // Fix 6（隐患 4）：快照缺失（等首字节）时，看门狗阈值 = headerTimeoutMs + 余量。
-      // 余量可覆盖，便于运维调参 / 单测注入短值触发。默认 10s。
-      const WATCHDOG_HEADER_GRACE_MS = (() => {
-        const override = Number(process.env.SID_CODE_WATCHDOG_HEADER_GRACE_MS);
-        if (Number.isFinite(override) && override >= 0) return override;
-        return 10_000;
-      })();
+      // 余量可覆盖，便于运维调参 / 单测注入短值触发。
+      const WATCHDOG_HEADER_GRACE_MS = netTimeouts.watchdogHeaderGraceMs;
       let watchdogTimer: ReturnType<typeof setInterval> | null = null;
       // Fix 2：看门狗启动前主动清除可能残留的旧快照（防止孤儿 generator 写入的脏数据误杀）
       clearStreamSnapshot(state.turnCount);
@@ -924,7 +898,7 @@ export async function* queryLoop(
             // 快照存在（已收到首字节）时仍用 WATCHDOG_NO_PROGRESS_MS 判定无进展。
             const effectiveThresholdMs = snapshot
               ? WATCHDOG_NO_PROGRESS_MS
-              : getHeaderTimeoutMs(config.model) + WATCHDOG_HEADER_GRACE_MS;
+              : netTimeouts.headerTimeoutMs + WATCHDOG_HEADER_GRACE_MS;
             // 快照存在用 lastContentProgressAt；缺失则退化为 watchdog 启动时间兜底。
             const lastProgressAt = snapshot?.lastContentProgressAt ?? watchdogStartedAt;
             const noProgressMs = Date.now() - lastProgressAt;
@@ -1000,24 +974,26 @@ export async function* queryLoop(
 
       // timeout 错误直接重试（不需要压缩上下文，最多 2 次）
       if (isTimeoutError(err)) {
-        // Fix 4: DeepSeek 只重试 1 次（Fix 1+2 已保证中断生效，额外重试只增加等待时间）；其他模型 2 次。
-        const maxTimeoutRetries = /deepseek/i.test(config.model) ? 1 : 2;
+        const maxRetries = netTimeouts.maxTimeoutRetries;
         const timeoutRetryCount = state.timeoutRetryCount;
 
-        if (timeoutRetryCount < maxTimeoutRetries) {
+        if (timeoutRetryCount < maxRetries) {
           state.timeoutRetryCount = timeoutRetryCount + 1;
           setTransition(state, { type: "timeout_retry" }, deps, sessionState.sessionId);
-          log.warn("QUERY_LOOP", `流式超时，重试 ${timeoutRetryCount + 1}/${maxTimeoutRetries}`);
+          log.warn("QUERY_LOOP", `流式超时，重试 ${timeoutRetryCount + 1}/${maxRetries}`);
           // 缺口 4：记录超时重试事件
           emitTimeoutRetry({
             index: state.turnCount,
             attempt: timeoutRetryCount + 1,
-            max: maxTimeoutRetries,
-            elapsed_ms: deps.maxTurnDurationMs ?? (/deepseek/i.test(config.model) ? 5 * 60 * 1000 : 10 * 60 * 1000),
+            max: maxRetries,
+            elapsed_ms: netTimeouts.maxTurnDurationMs,
             model: config.model,
           });
-          yield { kind: "system", level: "info",
-            text: `请求超时，正在重试 (${timeoutRetryCount + 1}/${maxTimeoutRetries})...` };
+          // 指数退避 + jitter，避免零延迟重试恶化网关排队
+          const backoffMs = computeBackoffMs(timeoutRetryCount, netTimeouts.retryBackoffBaseMs, netTimeouts.retryBackoffMaxMs);
+          yield { kind: "system", level: "warning",
+            text: `请求超时，${(backoffMs / 1000).toFixed(1)}s 后重试 (${timeoutRetryCount + 1}/${maxRetries})...` };
+          await new Promise(resolve => setTimeout(resolve, backoffMs));
           // Fix 2：重试前清除本轮旧快照，防止看门狗读到上次失败的脏 lastContentProgressAt 立即误杀
           clearStreamSnapshot(state.turnCount);
           continue;
@@ -1025,16 +1001,20 @@ export async function* queryLoop(
         // 缺口 4：记录超时重试耗尽事件
         emitTimeoutRetryExhausted({
           index: state.turnCount,
-          attempts: maxTimeoutRetries,
+          attempts: maxRetries,
           model: config.model,
         });
         log.error("QUERY_LOOP", `流式超时重试耗尽`);
 
-        // Fix 4：重试耗尽时 yield 用户可见的错误提示，而非静默终止
+        // 重试耗尽：yield 用户可见的错误提示，含配置逃生通道
         yield {
           kind: "system",
           level: "error",
-          text: `⚠️ 模型请求超时（已重试 ${maxTimeoutRetries} 次），本轮对话中断。请重新发送消息继续。`,
+          text: `⚠️ 模型请求超时（已重试 ${maxRetries} 次），本轮对话中断。\n`
+            + `当前无进展超时阈值: ${netTimeouts.watchdogNoProgressMs / 1000}s，首字节超时: ${netTimeouts.headerTimeoutMs / 1000}s\n`
+            + `可在 ~/.sid-code/settings.json 的 network.watchdogNoProgressMs / network.headerTimeoutMs 放宽，`
+            + `或设置环境变量 SID_CODE_WATCHDOG_NO_PROGRESS_MS / SID_CODE_RESPONSE_HEADER_TIMEOUT_MS 覆盖。\n`
+            + `请重新发送消息继续。`,
         };
         // 优雅退出：yield done 让 TUI 正确切换回"等待输入"状态
         yield { kind: "done", turns: state.turnCount };
@@ -1903,22 +1883,6 @@ export async function* queryLoop(
       ctxMgr.addMessage({ role: "user", content: toolResults });
       // B2 方案 a：tool_result 与入历史同步持久化（appendMessage 按 role=user 自动分派为 tool_result 记录）。
       try { deps.sessionStore?.appendMessage({ role: "user", content: toolResults }); } catch { /* 持久化失败不阻断 */ }
-
-      // Fix 5（方案 C·触发端）：扫描本轮 tool_result 是否命中 partial-read 保护拦截
-      // （edit/write 因"只读取了文件的部分内容"被拒）。命中则暂存文件路径，下一轮
-      // 循环开头经 reminder 通道强制注入收敛指令，打断指令跟随较弱模型的无效重试循环。
-      {
-        const partialReadHits = detectPartialReadFailures(toolResults);
-        if (partialReadHits.length > 0) {
-          state.pendingPartialReadFailures = [
-            ...new Set([...(state.pendingPartialReadFailures ?? []), ...partialReadHits]),
-          ];
-          log.info(
-            "QUERY_LOOP",
-            `Fix 5：检出 partial-read 拦截 ${partialReadHits.length} 个文件，下一轮注入收敛提醒`,
-          );
-        }
-      }
 
       // 环节③ 机制2（矛盾中断·触发端）：把本轮所有 tool_result 文本拼起来，扫描是否与
       // 任何 open 假设的证伪条件线索矛盾。命中则暂存到 state，下一轮循环开头经 reminder
