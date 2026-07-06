@@ -34,11 +34,25 @@ export class TeamCreateTool implements Tool {
   /** 长尾工具：多代理协作低频使用，延迟加载，由 tool_search 按需调出 */
   readonly shouldDefer = true;
   readonly searchHint = "team swarm multi-agent collaboration 团队 多代理 协作";
+  /** 权限检查器（子代理 dontAsk 语义，由主会话注入） */
+  private permissionChecker?: import("../permission/types.ts").Checker;
+  /** leader 权限确认回调（由主会话注入） */
+  private permissionConfirm?: (desc: string) => Promise<boolean>;
 
   constructor(
     private providerRegistry: ProviderRegistry,
     private toolRegistry: ToolRegistry,
   ) {}
+
+  /** 注入权限检查器（子代理 dontAsk 语义） */
+  setPermissionChecker(checker: import("../permission/types.ts").Checker): void {
+    this.permissionChecker = checker;
+  }
+
+  /** 注入 leader 权限确认回调（swarm teammate 需确认时转发给 leader） */
+  setPermissionConfirm(confirm: (desc: string) => Promise<boolean>): void {
+    this.permissionConfirm = confirm;
+  }
 
   name(): string {
     return "team_create";
@@ -89,6 +103,14 @@ export class TeamCreateTool implements Tool {
         members: params.members,
         providerRegistry: this.providerRegistry,
         toolRegistry: this.toolRegistry,
+        subAgentChecker: this.permissionChecker,
+        permissionArbiter: this.permissionConfirm
+          ? async (req) => {
+              const desc = `[${req.teammate}] 请求执行 ${req.toolName}: ${req.description}`;
+              const allowed = await this.permissionConfirm!(desc);
+              return allowed ? "allow" : "deny";
+            }
+          : undefined,
       });
 
       log.info("SWARM", `团队 "${params.team_name}" 启动，成员数: ${params.members.length}`);

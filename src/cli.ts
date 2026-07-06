@@ -973,6 +973,22 @@ export async function main(): Promise<void> {
       getLogger().info("CONFIG", `权限规则: ${allowCount}条 allow, ${denyCount}条 deny, ${askCount}条 ask`);
     }
 
+    // 沙箱初始化（macOS Seatbelt，默认关闭）
+    if (config.enableSandbox) {
+      const { SandboxManager, defaultSandboxConfig } = await import("./permission/sandbox.ts");
+      const sandboxConfig = { ...defaultSandboxConfig(), enabled: true };
+      const sandboxManager = new SandboxManager(sandboxConfig, process.cwd());
+      permissionChecker.setSandboxManager(sandboxManager);
+      // 注入到 bash 工具（遍历工具注册表找 BashTool）
+      for (const tool of toolRegistry.all()) {
+        const maybeBash = tool as { setSandboxManager?: (m: typeof sandboxManager) => void };
+        if (typeof maybeBash.setSandboxManager === "function") {
+          maybeBash.setSandboxManager(sandboxManager);
+        }
+      }
+      getLogger().info("CONFIG", "macOS Seatbelt 沙箱已启用");
+    }
+
     profileCheckpoint("init_end");
 
     // 创建统一命令注册表（新体系）：承载 custom/skill(含 bundled)/builtin/plugin 四来源。

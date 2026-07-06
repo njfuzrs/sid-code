@@ -11,11 +11,12 @@
 import { join } from "path";
 import { randomBytes } from "crypto";
 import { Mailbox } from "./mailbox.ts";
-import { PermissionSync } from "./permission-sync.ts";
+import { PermissionSync, type PermissionArbiter } from "./permission-sync.ts";
 import { assignAgentColor, type AgentColor } from "../agent/color.ts";
 import { getLogger } from "../debug/logger.ts";
 import type { ProviderRegistry } from "../llm/registry.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
+import type { Checker, PermissionRequest, Decision } from "../permission/types.ts";
 /** 团队成员定义 */
 export interface TeammateSpec {
   /** 成员名（团队内唯一） */
@@ -46,6 +47,10 @@ export interface TeamOptions {
   baseDir?: string;
   /** team 级硬超时（毫秒），默认 15 分钟。测试时可注入短值触发。 */
   timeoutMs?: number;
+  /** leader 的权限裁决回调（teammate 需确认操作时转发给 leader） */
+  permissionArbiter?: PermissionArbiter;
+  /** 子代理 checker（dontAsk 语义基底，teammate 在其基础上加 escalate） */
+  subAgentChecker?: Checker;
 }
 
 export class TeamManager {
@@ -60,10 +65,46 @@ export class TeamManager {
     this.teamDir = join(base, ".sid-code", "swarm", this.safeName(opts.teamName));
     this.mailbox = new Mailbox(this.teamDir);
     this.permissionSync = new PermissionSync();
+    // 接入 leader 权限裁决回调
+    if (opts.permissionArbiter) {
+      this.permissionSync.setArbiter(opts.permissionArbiter);
+    }
   }
 
   private safeName(s: string): string {
     return s.replace(/[^a-zA-Z0-9_-]/g, "_");
+  }
+
+  /**
+   * 为 swarm teammate 创建带 escalate 的权限 checker wrapper。
+   *
+   * 逻辑：底层 checker(dontAsk 语义) 判定 deny 时直接拒绝；
+   * 判定 needsConfirmation(ask) 时不直接 deny，而是通过 PermissionSync 转发给 leader 裁决。
+   * leader allow → 放行；leader deny → 拒绝。
+   */
+  private createEscalateChecker(baseChecker: Checker, teammateName: string): Checker {
+    const permSync = this.permissionSync;
+    return {
+      async check(req: PermissionRequest, tool?: unknown, toolContext?: unknown): Promise<Decision> {
+        const decision = await baseChecker.check(req, tool, toolContext);
+
+        // 直接允许或直接拒绝(非 ask) → 照常
+        if (decision.allowed) return decision;
+        if (!decision.needsConfirmation) return decision;
+
+        // needsConfirmation → 转发给 leader
+        const verdict = await permSync.requestPermission({
+          teammate: teammateName,
+          toolName: req.toolName,
+          description: req.description || `${req.toolName}: ${JSON.stringify(req.input).slice(0, 120)}`,
+        });
+
+        if (verdict === "allow" || verdict === "allow-always") {
+          return { allowed: true, reason: `leader 批准 (${verdict})` };
+        }
+        return { allowed: false, reason: decision.reason || "leader 拒绝" };
+      },
+    };
   }
 
   /**
@@ -166,6 +207,14 @@ export class TeamManager {
         this.opts.providerRegistry,
         this.opts.toolRegistry,
       );
+      // 注入权限检查器：基于主 checker 的 dontAsk 语义 + escalate 到 leader
+      if (this.opts.subAgentChecker) {
+        const escalateChecker = this.createEscalateChecker(
+          this.opts.subAgentChecker,
+          member.name,
+        );
+        sub.setPermissionChecker(escalateChecker);
+      }
       // T5-B2：合并成员自身 signal 与 team 级 signal——team 超时时 teamSignal abort，
       // 成员执行随之中断，不再留后台孤儿。任一 signal 缺省则退化为另一个。
       const memberSignal =

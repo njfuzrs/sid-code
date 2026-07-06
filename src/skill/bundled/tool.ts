@@ -39,6 +39,8 @@ type BundledPromptCommand = UnifiedCommand & PromptCommand;
 
 export class BundledSkillTool implements Tool {
   readonly zodSchema = inputSchema;
+  /** 权限检查器（子代理 dontAsk 语义，由主会话注入） */
+  private permissionChecker?: import("../../permission/types.ts").Checker;
 
   constructor(
     private cmd: BundledPromptCommand,
@@ -46,6 +48,11 @@ export class BundledSkillTool implements Tool {
     private toolRegistry: ToolRegistry,
     private hookSystem?: HookSystem,
   ) {}
+
+  /** 注入权限检查器（子代理 dontAsk 语义） */
+  setPermissionChecker(checker: import("../../permission/types.ts").Checker): void {
+    this.permissionChecker = checker;
+  }
 
   name(): string {
     return `skill__${this.cmd.name}`;
@@ -86,6 +93,7 @@ export class BundledSkillTool implements Tool {
       this.toolRegistry,
       this.hookSystem,
     );
+    if (this.permissionChecker) subAgent.setPermissionChecker(this.permissionChecker);
 
     const timeoutMins = this.cmd.timeoutMins;
     const result = await subAgent.executeCustom(

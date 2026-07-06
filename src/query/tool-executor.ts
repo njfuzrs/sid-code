@@ -164,19 +164,53 @@ export async function executeTools(
       if (!decision.allowed) {
         if (decision.needsConfirmation) {
           const desc = decision.reason || `工具 "${block.name}" 需要用户确认`;
-          log.info("PERMISSION", `请求用户确认: ${desc}`);
-          const confirmed = await deps.requestUserConfirmation(desc, permReq, block.name, block.input);
-          if (!confirmed) {
-            log.info("PERMISSION", `用户拒绝: ${block.name}`);
+          log.info("PERMISSION", `请求权限决策(三路竞争): ${desc}`);
+
+          // 三路竞争：hook / classifier / 用户交互
+          const { resolvePermission } = await import("../permission/async-decision.ts");
+          const result = await resolvePermission(
+            { toolName: block.name, input: block.input as Record<string, unknown>, description: desc },
+            {
+              isInteractive: true,
+              isSubAgent: false,
+              hookDecision: deps.hookSystem
+                ? async () => {
+                    try {
+                      const hookResult = await deps.hookSystem.firePermissionRequestEvent?.(
+                        block.name, block.input as Record<string, unknown>, deps.config.permissionMode,
+                      );
+                      if (!hookResult?.finalOutput) return null;
+                      if (hookResult.finalOutput.isBlockingDecision()) {
+                        return { allowed: false, reason: hookResult.finalOutput.getEffectiveReason() };
+                      }
+                      // hook 未阻止 → 不干预，留给其他路径决策
+                      return null;
+                    } catch {}
+                    return null;
+                  }
+                : undefined,
+              userDecision: (req, resolve) => {
+                void deps.requestUserConfirmation(desc, permReq, block.name, block.input).then((confirmed) => {
+                  if (!resolve.isResolved()) {
+                    resolve.resolve({ allowed: confirmed, reason: confirmed ? "用户批准" : "用户拒绝" }, /* alwaysAllow handled by tuiConfirmCallback */);
+                  }
+                });
+              },
+              gracePeriodMs: 200,
+            },
+          );
+
+          if (!result.decision.allowed) {
+            log.info("PERMISSION", `权限拒绝(${result.source}): ${block.name}`);
             rejectedResults.set(idx, {
               type: "tool_result",
               tool_use_id: block.id,
-              content: `用户拒绝执行工具 "${block.name}"`,
+              content: `${result.source === "user" ? "用户" : result.source === "timeout" ? "超时" : result.source}拒绝执行工具 "${block.name}"`,
               is_error: true,
             });
             continue;
           }
-          log.info("PERMISSION", `用户批准: ${block.name}`);
+          log.info("PERMISSION", `权限批准(${result.source}): ${block.name}`);
         } else {
           log.warn("PERMISSION", `权限拒绝: ${block.name} - ${decision.reason}`);
           rejectedResults.set(idx, {

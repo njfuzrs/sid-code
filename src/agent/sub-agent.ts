@@ -23,6 +23,7 @@ import {
 } from "../workflow/json-schema-validator.ts";
 import { getLogger } from "../debug/logger.ts";
 import type { HookSystem } from "../hook/system.ts";
+import type { Checker, PermissionRequest } from "../permission/types.ts";
 import { LoopDetector } from "./loop-detection.ts";
 import { filterToolsForAgent } from "./tool-filter.ts";
 import { runAgentLoop } from "./agentic-loop.ts";
@@ -203,6 +204,8 @@ export class SubAgent {
   private model: string;
   private toolRegistry: ToolRegistry;
   private hookSystem?: HookSystem;
+  /** 权限检查器（dontAsk 语义：危险命令/safetyCheck 拦截，ask→deny） */
+  private permissionChecker: Checker | null = null;
   /** ProviderRegistry 引用（fromRegistry 创建时设置） */
   private registry?: ProviderRegistry;
   /** 模型覆盖（自定义 Agent/Skill 指定模型时使用） */
@@ -218,6 +221,16 @@ export class SubAgent {
     this.model = model;
     this.toolRegistry = toolRegistry;
     this.hookSystem = hookSystem;
+  }
+
+  /** 设置权限检查器（dontAsk 语义，由外部工厂创建后注入） */
+  setPermissionChecker(checker: Checker | null): void {
+    this.permissionChecker = checker;
+  }
+
+  /** 获取权限检查器（供 runAgentLoop config 透传） */
+  getPermissionChecker(): Checker | null {
+    return this.permissionChecker;
   }
 
   /** 从 ProviderRegistry 创建（子代理类型决定 model/provider） */
@@ -759,6 +772,21 @@ export class SubAgent {
       }
     }
 
+    // 权限检查（dontAsk 语义：危险命令/safetyCheck 拦截，ask→deny）
+    if (this.permissionChecker) {
+      const permReq: PermissionRequest = {
+        toolName: name,
+        input: effectiveInput,
+        description: `${name}: ${JSON.stringify(effectiveInput).slice(0, 120)}`,
+      };
+      const decision = await this.permissionChecker.check(permReq, tool);
+      if (!decision.allowed) {
+        const reason = decision.reason || "子代理不允许此操作";
+        log.info("SUBAGENT:PERM", `权限拒绝 ${name}: ${reason}`);
+        return { content: `权限拒绝: ${reason}`, is_error: true };
+      }
+    }
+
     const startTime = Date.now();
     try {
       // zod 运行时校验：用注入 _agentId 之前的原始 input 校验
@@ -903,6 +931,7 @@ export class SubAgent {
         loopDetector,
         sendParamsExtra,
         hookSystem: this.hookSystem,
+        permissionChecker: this.permissionChecker ?? undefined,
         onBeforeTurn: (turn) => {
           // 消费 SendMessage 注入的消息（从第 2 轮开始检查）
           if (taskId && turn > 1) {

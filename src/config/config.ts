@@ -223,6 +223,8 @@ export interface Config {
   enableLLMClassifier?: boolean;
   /** LLM 分类器使用的模型（默认复用主循环模型 config.model） */
   classifierModel?: string;
+  /** 是否启用 macOS Seatbelt 沙箱（限制 bash 命令的文件系统和网络访问，默认 false） */
+  enableSandbox?: boolean;
 
   // 团队记忆同步（E.11 协作护城河）
   /** 团队记忆同步配置（共享目录模型） */
@@ -873,11 +875,26 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
   merged = mergeConfig(merged, envConfig);
   merged = mergeConfig(merged, cliArgs);
 
-  // 合并项目级 .mcp.json（项目级覆盖全局）
+  // 合并项目级 .mcp.json（项目级覆盖全局，需审批）
   const mcpJsonServers = await loadMCPJson();
   if (Object.keys(mcpJsonServers).length > 0) {
+    const { getProjectServerApproval } = await import("../mcp/approval.ts");
+    const projectPath = process.cwd();
+    const approvedServers: Record<string, MCPServerConfig> = {};
+    for (const [name, serverConfig] of Object.entries(mcpJsonServers)) {
+      const status = getProjectServerApproval(name, projectPath);
+      if (status === "rejected") {
+        getLogger().info("CONFIG", `项目 MCP 服务器 "${name}" 已被拒绝，跳过`);
+        continue;
+      }
+      if (status === "pending") {
+        // pending 状态的服务器标记为需审批（由 App 启动后交互确认）
+        (serverConfig as any)._pendingApproval = true;
+      }
+      approvedServers[name] = serverConfig;
+    }
     const existing = (merged as Config).mcpServers || {};
-    (merged as any).mcpServers = { ...existing, ...mcpJsonServers };
+    (merged as any).mcpServers = { ...existing, ...approvedServers };
   }
 
   const config = merged as Config;

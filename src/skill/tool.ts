@@ -31,6 +31,8 @@ export class SkillTool implements Tool {
   private skill: SkillDefinition;
   private providerRegistry: ProviderRegistry;
   private toolRegistry: ToolRegistry;
+  /** 权限检查器（子代理 dontAsk 语义，由主会话注入） */
+  private permissionChecker?: import("../permission/types.ts").Checker;
 
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema: z.ZodType;
@@ -40,6 +42,11 @@ export class SkillTool implements Tool {
     this.providerRegistry = providerRegistry;
     this.toolRegistry = toolRegistry;
     this.zodSchema = buildSkillSchema(skill.argumentHint);
+  }
+
+  /** 注入权限检查器（子代理 dontAsk 语义） */
+  setPermissionChecker(checker: import("../permission/types.ts").Checker): void {
+    this.permissionChecker = checker;
   }
 
   name(): string {
@@ -182,6 +189,7 @@ ${folderStructure}
       undefined,
       this.skill.model,
     );
+    if (this.permissionChecker) subAgent.setPermissionChecker(this.permissionChecker);
 
     // 使用配置的 maxTurns 和 timeout
     const maxTurns = Math.min(this.skill.maxTurns || 10, 50);

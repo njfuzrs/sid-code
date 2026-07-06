@@ -11,6 +11,7 @@ export type PermissionMode =
   | "acceptEdits"
   | "plan"
   | "dontAsk"
+  | "auto"
   | "dangerously-skip-permissions";
 
 /** 权限模式上下文 */
@@ -39,6 +40,8 @@ export function getNextPermissionMode(ctx: PermissionModeContext): PermissionMod
     case "acceptEdits":
       return "plan";
     case "plan":
+      return "auto";
+    case "auto":
       if (ctx.isBypassAvailable) return "always-allow";
       return "default";
     case "always-allow":
@@ -61,6 +64,7 @@ export function getModeName(mode: PermissionMode): string {
     case "acceptEdits": return "自动接受编辑";
     case "plan": return "计划模式";
     case "dontAsk": return "静默拒绝";
+    case "auto": return "自动模式";
     case "dangerously-skip-permissions": return "跳过权限(危险)";
     default: return mode;
   }

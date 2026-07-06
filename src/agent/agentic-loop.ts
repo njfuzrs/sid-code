@@ -63,6 +63,9 @@ export interface AgentLoopConfig {
   /** Hook 系统（透传给工具执行，驱动子代理工具的 Pre/PostToolUse hook 与 execute_tool span）。
    *  缺省时工具执行不触发 hook（兼容无 hook 环境/测试）。 */
   hookSystem?: HookSystem;
+  /** 权限检查器（子代理用 dontAsk 语义：危险命令拦截 + safetyCheck 照常生效，ask→deny）。
+   *  缺省时不做权限检查（兼容旧测试 / 纯只读子代理）。 */
+  permissionChecker?: import("../permission/types.ts").Checker;
 }
 
 /** Agent 循环结果 */
@@ -313,7 +316,7 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
       }
 
       // 执行工具
-      const toolResults = await executeTools(response.content, tools, signal, config.hookSystem);
+      const toolResults = await executeTools(response.content, tools, signal, config.hookSystem, config.permissionChecker);
       ctxMgr.addMessage({ role: "user", content: toolResults });
 
       // 每轮结束回调（进度追踪 + 磁盘输出）

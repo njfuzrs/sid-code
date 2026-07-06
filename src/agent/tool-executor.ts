@@ -21,19 +21,22 @@ import { Manager as ContextManager } from "../context/manager.ts";
 import { getLogger } from "../debug/logger.ts";
 import { validateToolInput } from "../tool/input-validator.ts";
 import type { HookSystem } from "../hook/system.ts";
+import type { Checker, PermissionRequest } from "../permission/types.ts";
 import { buildHookModifiedNotice } from "../query/tool-executor.ts";
 
 /**
- * 执行工具调用（子代理版本，无权限检查，支持并行执行）
+ * 执行工具调用（子代理版本，支持权限检查与并行执行）
  *
  * @param hookSystem 透传的 hook 系统；存在时在每个工具前后触发 Pre/PostToolUse hook
  *                   （驱动 execute_tool span / 可观测性）。缺省时退化为纯执行（兼容旧测试）。
+ * @param permissionChecker 权限检查器（子代理用 dontAsk 语义）。缺省时不做权限检查。
  */
 export async function executeTools(
   content: ContentBlock[],
   tools: ToolRegistry,
   signal?: AbortSignal,
   hookSystem?: HookSystem,
+  permissionChecker?: Checker,
 ): Promise<ContentBlock[]> {
   const log = getLogger();
 
@@ -83,7 +86,7 @@ export async function executeTools(
   if (readOnlyBlocks.length > 0) {
     const readResults = await Promise.all(
       readOnlyBlocks.map(({ block, idx }) =>
-        executeSingleTool(block, tools, signal, hookSystem).then(r => ({ idx, result: r }))
+        executeSingleTool(block, tools, signal, hookSystem, permissionChecker).then(r => ({ idx, result: r }))
       )
     );
     for (const { idx, result } of readResults) {
@@ -93,7 +96,7 @@ export async function executeTools(
 
   // 写入工具串行执行
   for (const { block, idx } of writingBlocks) {
-    const result = await executeSingleTool(block, tools, signal, hookSystem);
+    const result = await executeSingleTool(block, tools, signal, hookSystem, permissionChecker);
     resultMap.set(idx, result);
   }
 
@@ -113,6 +116,7 @@ async function executeSingleTool(
   tools: ToolRegistry,
   signal?: AbortSignal,
   hookSystem?: HookSystem,
+  permissionChecker?: Checker,
 ): Promise<ContentBlock> {
   const log = getLogger();
   const tool = tools.get(block.name);
@@ -158,6 +162,27 @@ async function executeSingleTool(
       }
     } catch (err: any) {
       log.error("SUBAGENT:HOOK", `pre_tool_use hook 失败: ${err.message}`);
+    }
+  }
+
+  // 权限检查（子代理 dontAsk 语义：危险命令/safetyCheck 直接拦截，ask 场景自动 deny）
+  if (permissionChecker) {
+    const permReq: PermissionRequest = {
+      toolName: block.name,
+      input: effectiveInput,
+      description: `${block.name}: ${JSON.stringify(effectiveInput).slice(0, 120)}`,
+    };
+    const decision = await permissionChecker.check(permReq, tool);
+    if (!decision.allowed) {
+      // 子代理无 UI 通道，needsConfirmation 也直接 deny（dontAsk 语义）
+      const reason = decision.reason || "子代理不允许此操作";
+      log.info("SUBAGENT:PERM", `权限拒绝 ${block.name}: ${reason}`);
+      return {
+        type: "tool_result",
+        tool_use_id: block.id,
+        content: `权限拒绝: ${reason}`,
+        is_error: true,
+      };
     }
   }
 

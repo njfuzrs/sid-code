@@ -1,6 +1,8 @@
 /**
- * 多路并发权限决策框架
- * 支持用户交互、PermissionRequest Hook、Bash 分类器三路竞争
+ * @deprecated 使用 src/permission/async-decision.ts 的 resolvePermission() 替代。
+ *
+ * 多路并发权限决策框架（旧版，未接入生产路径）。
+ * 保留代码供参考，新功能应使用 async-decision.ts 的统一三路竞争框架。
  */
 
 import { createResolveOnce } from "./resolve-once.ts";

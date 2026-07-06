@@ -165,6 +165,10 @@ export class PermissionChecker implements Checker {
   private sandboxManager: SandboxManager | null = null;
   /** LLM 命令风险分类器（第二道防线，默认不启用；通过 setBashClassifier 注入） */
   private bashClassifier: BashClassifier | null = null;
+  /** 泛化工具分类器（auto 模式核心，通过 setToolClassifier 注入） */
+  private toolClassifier: import("./tool-classifier.ts").ToolClassifier | null = null;
+  /** 工作区路径（供 auto 模式分类器使用） */
+  private workspacePath: string;
   /** Bridge 远程权限代理（可选，Bridge 模式下注入；签名对齐 PermissionProxy.requestPermission） */
   private bridgePermissionDelegate: ((req: {
     toolName: string;
@@ -220,6 +224,16 @@ export class PermissionChecker implements Checker {
     return this.bashClassifier;
   }
 
+  /** 设置泛化工具分类器（auto 模式核心） */
+  setToolClassifier(classifier: import("./tool-classifier.ts").ToolClassifier | null): void {
+    this.toolClassifier = classifier;
+  }
+
+  /** 获取泛化工具分类器 */
+  getToolClassifier(): import("./tool-classifier.ts").ToolClassifier | null {
+    return this.toolClassifier;
+  }
+
   /** 获取 denial tracking 状态（供 agent loop 读取） */
   getDenialTracking(): DenialTrackingState {
     return this.denialTracking;
@@ -233,9 +247,10 @@ export class PermissionChecker implements Checker {
   constructor(config: Config, rules?: PermissionRule, workspacePath?: string) {
     this.config = config;
     this.rules = rules || null;
+    this.workspacePath = workspacePath || process.cwd();
     this.auditLogger = new AuditLogger();
     this.pathValidator = new PathValidator(
-      workspacePath || process.cwd(),
+      this.workspacePath,
       config.allowedDirectories || [],
       config.blockedDirectories || [],
     );
@@ -253,6 +268,11 @@ export class PermissionChecker implements Checker {
   /** 获取多来源规则加载器（供外部集成） */
   getRuleLoader(): RuleLoader {
     return this.ruleLoader;
+  }
+
+  /** 获取配置（只读，供子代理 checker 工厂复制配置） */
+  getConfig(): Readonly<Config> {
+    return this.config;
   }
 
   /**
@@ -628,6 +648,38 @@ export class PermissionChecker implements Checker {
       log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → yesMode 不放行危险命令确认(${dr})`);
     }
 
+    // auto 模式：分类器判安全则自动批准，否则落到交互确认（needsConfirmation）
+    if (this.config.permissionMode === "auto") {
+      const toolClassifier = this.getToolClassifier();
+      if (toolClassifier?.isAvailable()) {
+        try {
+          const classifyResult = await toolClassifier.classify({
+            toolName: req.toolName,
+            input: (req.input || {}) as Record<string, unknown>,
+            cwd: this.workspacePath,
+          });
+          if (!classifyResult.classifierUnavailable && classifyResult.safe) {
+            log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(auto 模式分类器批准: ${classifyResult.reason})`);
+            this.denialTracking = recordSuccess(this.denialTracking);
+            this.auditLogger.log({
+              timestamp: new Date().toISOString(),
+              type: "tool_use",
+              tool: req.toolName,
+              resource,
+              decision: "allow",
+              reason: `auto 模式分类器批准: ${classifyResult.reason}`,
+            });
+            return { allowed: true, decisionReason: { type: "mode", mode: "auto" } };
+          }
+          // 分类器判不安全或不可用：落到下方正常确认流程（needsConfirmation）
+          log.info("PERMISSION", `${req.toolName} → auto 模式分类器未放行(${classifyResult.reason})，回退人工确认`);
+        } catch (err: any) {
+          log.warn("PERMISSION", `auto 模式分类器异常(${err.message})，回退人工确认`);
+        }
+      }
+      // 分类器不可用或未放行 → 返回 needsConfirmation，让上层三路竞争/用户弹窗处理
+    }
+
     // dontAsk 模式：ask → deny（绝不弹窗，对齐 Claude Code 语义）
     if (this.config.permissionMode === "dontAsk") {
       log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(dontAsk模式下ask→deny)`);
@@ -670,12 +722,14 @@ export class PermissionChecker implements Checker {
       return nonInteractiveDecision;
     }
 
-    // denial tracking 熔断检查
+    // denial tracking 熔断检查：回退人工确认（而非直接 deny）
+    // 让用户知道模型在重复尝试同一操作，但仍允许人工审慎判断放行
     if (shouldFuse(this.denialTracking)) {
-      log.warn("PERMISSION", `连续 ${this.denialTracking.consecutiveDenials} 次被拒绝，触发熔断`);
+      log.warn("PERMISSION", `连续 ${this.denialTracking.consecutiveDenials} 次被拒绝，熔断→回退人工确认`);
       const fuseDecision: Decision = {
         allowed: false,
-        reason: `连续 ${this.denialTracking.consecutiveDenials} 次被拒绝，请换一种方式完成任务`,
+        needsConfirmation: true,
+        reason: `⚠️ 连续 ${this.denialTracking.consecutiveDenials} 次被拒绝。模型可能在重复尝试同一操作，请审慎判断。`,
         metadata: { denialTrackingTriggered: true },
         decisionReason: {
           type: "denialTracking",

@@ -99,6 +99,8 @@ import type {
   LoopState,
 } from "./types.ts";
 import { createInitialLoopState } from "./types.ts";
+import { setTransition } from "./transition.ts";
+import { lookupRegistry } from "../llm/model-registry.ts";
 
 /** 判断是否为超时类错误（用于 timeout 重试逻辑） */
 function isTimeoutError(err: unknown): boolean {
@@ -609,7 +611,7 @@ export async function* queryLoop(
       model: config.model,
       messages: finalMessages,
       system: ctxMgr.getSystemPrompt(),
-      maxTokens: config.maxTokens,
+      maxTokens: state.maxOutputTokensOverride ?? config.maxTokens,
       tools: toolDefs,
     };
 
@@ -755,7 +757,7 @@ export async function* queryLoop(
         const compactResult = reactiveCompact(ctxMgr);
         if (compactResult.success) {
           state.hasAttemptedReactiveCompact = true;
-          state.transition = { type: "reactive_compact" };
+          setTransition(state, { type: "reactive_compact" }, deps, sessionState.sessionId);
           notifyCompaction("main"); // G1：抑制紧接的 cache break 检测
           state.goalReminderPendingAfterCompact = true;
           state.todoReminderPendingAfterCompact = true;
@@ -778,7 +780,7 @@ export async function* queryLoop(
         state.goalReminderPendingAfterCompact = true;
         state.todoReminderPendingAfterCompact = true;
         yield { kind: "compact" };
-        state.transition = { type: "context_overflow_retry" };
+        setTransition(state, { type: "context_overflow_retry" }, deps, sessionState.sessionId);
         continue;
       }
     }
@@ -966,7 +968,7 @@ export async function* queryLoop(
 
         if (timeoutRetryCount < maxTimeoutRetries) {
           state.timeoutRetryCount = timeoutRetryCount + 1;
-          state.transition = { type: "timeout_retry" };
+          setTransition(state, { type: "timeout_retry" }, deps, sessionState.sessionId);
           log.warn("QUERY_LOOP", `流式超时，重试 ${timeoutRetryCount + 1}/${maxTimeoutRetries}`);
           // 缺口 4：记录超时重试事件
           emitTimeoutRetry({
@@ -1007,7 +1009,7 @@ export async function* queryLoop(
         const compactResult = reactiveCompact(ctxMgr);
         if (compactResult.success) {
           state.hasAttemptedReactiveCompact = true;
-          state.transition = { type: "reactive_compact" };
+          setTransition(state, { type: "reactive_compact" }, deps, sessionState.sessionId);
           notifyCompaction("main"); // G1：抑制紧接的 cache break 检测
           state.goalReminderPendingAfterCompact = true;
           state.todoReminderPendingAfterCompact = true;
@@ -1025,7 +1027,7 @@ export async function* queryLoop(
         state.goalReminderPendingAfterCompact = true;
         state.todoReminderPendingAfterCompact = true;
         yield { kind: "compact" };
-        state.transition = { type: "context_overflow_retry" };
+        setTransition(state, { type: "context_overflow_retry" }, deps, sessionState.sessionId);
         continue;
       }
 
@@ -1297,7 +1299,7 @@ export async function* queryLoop(
           level: "warning",
           text: `检测到工具调用参数为空（模型退化），自动重试 (${state.emptyParamRetryCount}/${MAX_EMPTY_PARAM_RETRIES})`,
         };
-        state.transition = { type: "empty_param_retry" };
+        setTransition(state, { type: "empty_param_retry" }, deps, sessionState.sessionId);
         continue;
       }
 
@@ -1339,7 +1341,7 @@ export async function* queryLoop(
       }
       yield { kind: "loop_detected", detail: "内容重复模式" };
       yield { kind: "loop_recovery", attempt: loopDetector.getRecoveryAttempts(), maxAttempts: loopDetector.getMaxRecoveryAttempts() };
-      state.transition = { type: "loop_recovery" };
+      setTransition(state, { type: "loop_recovery" }, deps, sessionState.sessionId);
       continue;
     }
 
@@ -1412,7 +1414,7 @@ export async function* queryLoop(
         if (stopResult?.shouldContinue) {
           // blocking error → 注入错误消息后继续循环让模型修复
           state.stopHookRetryCount = (state.stopHookRetryCount ?? 0) + 1;
-          state.transition = { type: "stop_hook_retry" };
+          setTransition(state, { type: "stop_hook_retry" }, deps, sessionState.sessionId);
           continue;
         }
 
@@ -1443,7 +1445,7 @@ export async function* queryLoop(
             level: "warning",
             text: `上一轮未产出有效答复（疑似思考泄漏到正文），自动引导重新推进 (${state.unansweredRetryCount}/${MAX_UNANSWERED_RETRIES})`,
           };
-          state.transition = { type: "unanswered_retry" };
+          setTransition(state, { type: "unanswered_retry" }, deps, sessionState.sessionId);
           continue;
         }
         // 续命耗尽：放行，但如实告知用户模型未能正常答复（不假装完成）
@@ -1482,7 +1484,7 @@ export async function* queryLoop(
               level: "info",
               text: `检测到 ${unfinished} 项任务未完成，自动继续推进 (${state.todoGateRetryCount}/${MAX_TODO_GATE_RETRIES})`,
             };
-            state.transition = { type: "todo_gate_retry" };
+            setTransition(state, { type: "todo_gate_retry" }, deps, sessionState.sessionId);
             continue;
           }
           // 续命耗尽：放行但如实呈现未完成项
@@ -1523,7 +1525,7 @@ export async function* queryLoop(
               level: "info",
               text: `检测到 ${unsettled.length} 条假设未结清，请先裁决再收尾 (${state.hypothesisGateRetryCount}/${MAX_HYPOTHESIS_GATE_RETRIES})`,
             };
-            state.transition = { type: "hypothesis_gate_retry" };
+            setTransition(state, { type: "hypothesis_gate_retry" }, deps, sessionState.sessionId);
             continue;
           }
           log.warn(
@@ -1600,7 +1602,7 @@ export async function* queryLoop(
               // 落入下方正常收尾
             } else if (result.shouldContinue) {
               deps.updateGoalState?.(g => { g.lastEvalReason = result.evalResult?.reason; });
-              state.transition = { type: "goal_gate_retry" };
+              setTransition(state, { type: "goal_gate_retry" }, deps, sessionState.sessionId);
               continue;
             } else {
               // shouldContinue=false && !completed && !impossible
@@ -1670,7 +1672,7 @@ export async function* queryLoop(
         }
         yield { kind: "loop_detected", detail: "工具调用重复" };
         yield { kind: "loop_recovery", attempt: loopDetector.getRecoveryAttempts(), maxAttempts: loopDetector.getMaxRecoveryAttempts() };
-        state.transition = { type: "loop_recovery" };
+        setTransition(state, { type: "loop_recovery" }, deps, sessionState.sessionId);
         continue;
       }
 
@@ -1685,7 +1687,7 @@ export async function* queryLoop(
           }
           yield { kind: "loop_detected", detail: "LLM 认知检测到循环模式" };
           yield { kind: "loop_recovery", attempt: loopDetector.getRecoveryAttempts(), maxAttempts: loopDetector.getMaxRecoveryAttempts() };
-          state.transition = { type: "loop_recovery" };
+          setTransition(state, { type: "loop_recovery" }, deps, sessionState.sessionId);
           continue;
         }
       }
@@ -1875,11 +1877,11 @@ export async function* queryLoop(
       // 内部按双阈值决定是否真正提取，未达阈值/进行中则直接跳过，不阻塞主循环）。
       deps.updateSessionMemory?.().catch(() => { /* 提取失败不阻断主循环 */ });
 
-      state.transition = { type: "tool_use" };
+      setTransition(state, { type: "tool_use" }, deps, sessionState.sessionId);
       continue;
     }
 
-    // ─── max_tokens 续写（含递减收益检测）───
+    // ─── max_tokens 续写（含递减收益检测 + 分级恢复）───
     if (response.stopReason === "max_tokens" || response.stopReason === "length") {
       diminishingDetector.record(response.usage.outputTokens);
 
@@ -1890,8 +1892,21 @@ export async function* queryLoop(
         return;
       }
 
+      // Stage 1：首次截断且当前上限低于模型硬上限 → 提升上限重试，不注入续写提示
+      // 当用户显式设了较低 maxTokens 或 effort 模式压低输出时，直接提升上限通常一步解决
+      const modelMax = lookupRegistry(config.model)?.maxOutputTokens;
+      const currentCeiling = state.maxOutputTokensOverride ?? config.maxTokens;
+      if (modelMax && currentCeiling < modelMax && state.maxOutputTokensRecoveryCount === 0) {
+        state.maxOutputTokensOverride = modelMax;
+        state.maxOutputTokensRecoveryCount++;
+        log.info("QUERY_LOOP", `输出截断，提升 maxTokens 上限: ${currentCeiling} → ${modelMax}`);
+        setTransition(state, { type: "max_tokens_escalate" }, deps, sessionState.sessionId);
+        continue;
+      }
+
+      // Stage 2：已至模型上限或提升无效 → 注入续写提示
       state.maxOutputTokensRecoveryCount++;
-      log.info("QUERY_LOOP", `输出达到 token 上限 (maxTokens=${config.maxTokens})，自动续写 #${state.maxOutputTokensRecoveryCount} (轮次 ${state.turnCount})`);
+      log.info("QUERY_LOOP", `输出达到 token 上限 (maxTokens=${state.maxOutputTokensOverride ?? config.maxTokens})，自动续写 #${state.maxOutputTokensRecoveryCount} (轮次 ${state.turnCount})`);
 
       // 注入截断通知：告知模型上一次响应因输出长度上限被截断，请从中断处继续。
       // 不注入则模型对"为何被打断、从哪里续"完全无感知——续写时可能重头再来或跳过内容，
@@ -1900,8 +1915,9 @@ export async function* queryLoop(
       {
         const clipNotice =
           `<system-reminder>\n` +
-          `你的上一次响应因达到输出长度上限（max_tokens）被截断，尚未完成。请直接从被截断处继续，` +
-          `不要重复已经输出的内容。\n` +
+          `你的上一次响应因达到输出长度上限（max_tokens）被截断，尚未完成。请直接从被截断处继续——` +
+          `不要道歉，不要重新开场，不要重复已经输出的内容。` +
+          `如果被截断时正在写代码或文本中途，直接从断点处接续。\n` +
           `如果你正在写入大文件或长内容，请改用分段策略：单次工具调用的参数（如 write 的 content）` +
           `不要超过输出上限，先写一部分，再用 edit / bash 追加剩余部分。\n` +
           `（自动续写 ${state.maxOutputTokensRecoveryCount} 次）\n` +
@@ -1912,7 +1928,7 @@ export async function* queryLoop(
         } catch { /* 持久化失败不阻断续写 */ }
       }
 
-      state.transition = { type: "max_tokens_continuation" };
+      setTransition(state, { type: "max_tokens_continuation" }, deps, sessionState.sessionId);
       continue;
     }
 
@@ -1944,7 +1960,7 @@ export async function* queryLoop(
       }
 
       state.maxOutputTokensRecoveryCount++;
-      state.transition = { type: "max_tokens_continuation" };
+      setTransition(state, { type: "max_tokens_continuation" }, deps, sessionState.sessionId);
       continue;
     }
 
@@ -1952,7 +1968,7 @@ export async function* queryLoop(
     // [来源: anthropic-api.md:557]
     if (response.stopReason === "pause_turn") {
       log.info("QUERY_LOOP", "收到 pause_turn（server tool 暂停），作为 tool_use 续接");
-      state.transition = { type: "tool_use" };
+      setTransition(state, { type: "tool_use" }, deps, sessionState.sessionId);
       continue;
     }
 

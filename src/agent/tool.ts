@@ -55,6 +55,8 @@ export class SubAgentTool implements Tool {
   private hookSystem?: HookSystem;
   /** 子代理 usage 归集 sink（由主会话注入；未注入时不归集，仅 spawn 前的早期阶段） */
   private usageSink?: SubAgentUsageSink;
+  /** 权限检查器（子代理 dontAsk 语义，由主会话注入） */
+  private permissionChecker?: import("../permission/types.ts").Checker;
   /** 主对话上下文提供者（fork 模式用）。由主会话注入，返回主对话当前消息历史。
    *  未注入时 fork 模式降级为普通子代理（空上下文起步）。 */
   private mainContextProvider?: () => { role: string; content: import("../llm/types.ts").ContentBlock[] }[];
@@ -174,6 +176,11 @@ export class SubAgentTool implements Tool {
     provider: () => { role: string; content: import("../llm/types.ts").ContentBlock[] }[],
   ): void {
     this.mainContextProvider = provider;
+  }
+
+  /** 注入权限检查器（子代理 dontAsk 语义）。主会话创建 PermissionChecker 后调用。 */
+  setPermissionChecker(checker: import("../permission/types.ts").Checker): void {
+    this.permissionChecker = checker;
   }
 
   /** 归集子代理 usage 到主会话（仅成功或有实际消耗时）。容错：sink 异常不影响子代理结果。 */
@@ -364,6 +371,7 @@ ${typeLines}
       }
 
       const subAgent = SubAgent.fromRegistry(this.providerRegistry, this.toolRegistry, this.hookSystem);
+      if (this.permissionChecker) subAgent.setPermissionChecker(this.permissionChecker);
 
       // Fork 模式：继承主对话上下文（prompt cache 友好）
       let forkMessages: { role: string; content: import("../llm/types.ts").ContentBlock[] }[] | undefined;
@@ -475,6 +483,7 @@ ${typeLines}
 
     try {
       const subAgent = SubAgent.fromRegistry(this.providerRegistry, this.toolRegistry, this.hookSystem);
+      if (this.permissionChecker) subAgent.setPermissionChecker(this.permissionChecker);
 
       // 传递预创建的 task 信息，execute() 内部不再重复创建
       const result = await subAgent.execute(

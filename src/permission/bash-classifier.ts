@@ -107,12 +107,9 @@ export function buildClassifierUserPrompt(req: BashClassifyRequest): string {
     `命令: ${req.command}`,
     `工作目录: ${req.cwd}`,
   ];
-  if (req.description) {
-    lines.push(`命令描述（来自调用方）: ${req.description}`);
-  }
-  if (req.recentContext) {
-    lines.push(`最近上下文: ${req.recentContext}`);
-  }
+  // 推理盲设计：不传 description 和 recentContext
+  // description 是模型自己提供的理由（可被措辞说服），recentContext 包含模型意图推理。
+  // 分类器应仅基于命令本身和工作目录做独立判断，不受模型的"解释"影响。
   lines.push(``, `输出 JSON：`);
   return lines.join("\n");
 }

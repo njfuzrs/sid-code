@@ -196,11 +196,18 @@ export class BashTool implements Tool {
   private snapshotFilePath: string | undefined;
   /** 快照创建完成的 Promise（永不 reject，失败时 snapshotFilePath 为 undefined） */
   private snapshotReady: Promise<void>;
+  /** macOS Seatbelt 沙箱管理器（可选，通过 setter 注入） */
+  private sandboxManager: import("../permission/sandbox.ts").SandboxManager | null = null;
 
   constructor() {
     // 构造期异步触发快照创建（BashTool 单例，cli.ts 仅 new 一次，构造期建快照成立）。
     // 不阻塞构造；execute 首次会 await snapshotReady 确保从第一条命令起就用上快照。
     this.snapshotReady = this.initSnapshot();
+  }
+
+  /** 注入沙箱管理器（macOS Seatbelt） */
+  setSandboxManager(manager: import("../permission/sandbox.ts").SandboxManager | null): void {
+    this.sandboxManager = manager;
   }
 
   /** 异步创建 shell 快照（Windows 跳过，失败降级 undefined，永不抛出） */
@@ -379,7 +386,11 @@ export class BashTool implements Tool {
     const trackCwd = !isReadOnlyCommand(params.command);
 
     // 前台命令：拼接快照注入 + cwd 追踪
-    const { commandString, cwdFile } = this.buildCommand(params.command, { trackCwd });
+    const { commandString: rawCommand, cwdFile } = this.buildCommand(params.command, { trackCwd });
+    // 沙箱包裹（macOS Seatbelt，启用时限制文件系统和网络访问）
+    const commandString = this.sandboxManager?.isEnabled()
+      ? this.sandboxManager.wrapCommand(rawCommand)
+      : rawCommand;
 
     // 准备环境变量（如果启用了清理）
     let env = process.env;
@@ -502,7 +513,10 @@ export class BashTool implements Tool {
     const cwd = this.resolveCwd(params.cwd);
     const { shell, args } = getPlatformShell({ login: !this.snapshotFilePath });
     // 后台命令：注入快照但不追踪 cwd
-    const { commandString } = this.buildCommand(params.command, { trackCwd: false });
+    const { commandString: rawBgCommand } = this.buildCommand(params.command, { trackCwd: false });
+    const commandString = this.sandboxManager?.isEnabled()
+      ? this.sandboxManager.wrapCommand(rawBgCommand)
+      : rawBgCommand;
 
     // 准备环境变量（如果启用了清理）
     let env = process.env;
@@ -578,7 +592,10 @@ export class BashTool implements Tool {
     await this.snapshotReady;
     const cwd = this.resolveCwd(params.cwd);
     // 后台任务：注入快照但不追踪 cwd
-    const { commandString } = this.buildCommand(params.command, { trackCwd: false });
+    const { commandString: rawTaskCommand } = this.buildCommand(params.command, { trackCwd: false });
+    const commandString = this.sandboxManager?.isEnabled()
+      ? this.sandboxManager.wrapCommand(rawTaskCommand)
+      : rawTaskCommand;
 
     const taskState = spawnShellTask({
       command: commandString,

@@ -245,6 +245,19 @@ export class RuleLoader {
   }
 
   /**
+   * 从另一个 RuleLoader 实例复制全部规则（用于子代理 checker 复用主 checker 的规则）。
+   * 安全：直接复制已过滤的规则，不重新解析（来源信息保持不变）。
+   */
+  importFromRuleLoader(other: RuleLoader): void {
+    for (const [source, rules] of other.sources.entries()) {
+      const existing = this.sources.get(source) || [];
+      existing.push(...rules);
+      this.sources.set(source, existing);
+    }
+    this.invalidateCache();
+  }
+
+  /**
    * 获取所有规则（按优先级排序，高优先级在前）
    */
   getAllRules(): SourcedPermissionRule[] {

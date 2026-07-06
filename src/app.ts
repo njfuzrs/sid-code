@@ -469,6 +469,7 @@ export class App {
     // HookSystem 尚未创建（构造时 hookSystem=undefined），导致子代理/workflow 的
     // 工具级 hook 与 Subagent span 在生产中从未触发。HookSystem 创建后经 setter 接通。
     this.wireToolHookSystem();
+    this.wireToolPermissionChecker();
 
     // EST-4：注入工具定义的真实 schema token 数，替代 ContextManager 内 toolCount×80 粗估，
     // 避免 schema 大/工具多时低估上下文占用、compact 触发过晚。
@@ -528,6 +529,28 @@ export class App {
       const maybe = tool as { setHookSystem?: (h: HookSystem) => void };
       if (typeof maybe.setHookSystem === "function") {
         maybe.setHookSystem(this.hookSystem);
+      }
+    }
+  }
+
+  /** 注入权限检查器到子代理类工具（SubAgentTool / SkillTool / BundledSkillTool）。
+   *  子代理使用 dontAsk 语义的 checker：危险命令/safetyCheck 拦截，ask→deny。 */
+  private wireToolPermissionChecker(): void {
+    if (!this.permissionChecker) return;
+    // 延迟导入工厂函数（避免循环依赖）
+    const { createSubAgentChecker } = require("./permission/sub-agent-checker.ts");
+    const subChecker = createSubAgentChecker(this.permissionChecker);
+    for (const tool of this.toolRegistry.all()) {
+      const maybe = tool as {
+        setPermissionChecker?: (c: import("./permission/types.ts").Checker) => void;
+        setPermissionConfirm?: (fn: (desc: string) => Promise<boolean>) => void;
+      };
+      if (typeof maybe.setPermissionChecker === "function") {
+        maybe.setPermissionChecker(subChecker);
+      }
+      // TeamCreateTool 需要额外注入 leader 确认回调（swarm teammate escalate 用）
+      if (typeof maybe.setPermissionConfirm === "function") {
+        maybe.setPermissionConfirm((desc: string) => this.requestUserConfirmation(desc));
       }
     }
   }

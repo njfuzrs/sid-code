@@ -79,6 +79,7 @@ export type QueryLoopYield =
 export type ContinueReason =
   | { type: "tool_use" }
   | { type: "max_tokens_continuation" }
+  | { type: "max_tokens_escalate" }
   | { type: "reactive_compact" }
   | { type: "loop_recovery" }
   | { type: "context_overflow_retry" }
@@ -101,6 +102,8 @@ export interface LoopState {
   maxTurns: number;
   /** max_output_tokens 恢复次数 */
   maxOutputTokensRecoveryCount: number;
+  /** max_tokens 上限提升覆盖值（首次截断时提升到模型硬上限） */
+  maxOutputTokensOverride?: number;
   /** 是否已尝试过响应式压缩 */
   hasAttemptedReactiveCompact: boolean;
   /** 上一次 continue 的原因 */
