@@ -191,8 +191,9 @@ ${folderStructure}
     );
     if (this.permissionChecker) subAgent.setPermissionChecker(this.permissionChecker);
 
-    // 使用配置的 maxTurns 和 timeout
-    const maxTurns = Math.min(this.skill.maxTurns || 10, 50);
+    // 使用配置的 maxTurns 和 timeout（P2-2：未声明 max-turns 时默认从 10 提到 30，
+    // 与 sub-agent.ts 的常规子代理默认对齐；已声明的 skill 值不受影响，仍钳制在 50 上限内）
+    const maxTurns = Math.min(this.skill.maxTurns || 30, 50);
     const timeoutMins = Math.min(this.skill.timeoutMins || 2, 30);
     const timeout = timeoutMins * 60_000;
 

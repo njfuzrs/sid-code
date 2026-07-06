@@ -4,7 +4,7 @@
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { Registry } from "../../src/tool/registry.ts";
-import { SubAgent } from "../../src/agent/sub-agent.ts";
+import { SubAgent, resolveSubAgentMaxTurns } from "../../src/agent/sub-agent.ts";
 import { SubAgentTool } from "../../src/agent/tool.ts";
 import type { Tool, ToolResult } from "../../src/tool/types.ts";
 import type { Provider } from "../../src/llm/provider.ts";
@@ -460,5 +460,26 @@ describe("isLikelyThinking 启发式过滤（中英双语）", () => {
       { role: "assistant", content: [{ type: "text", text: "现在我需要检查配置。" }] },
     ];
     expect(agent.extractFinalText(messages, "兜底结论")).toBe("兜底结论");
+  });
+});
+
+// ─── P2-2: resolveSubAgentMaxTurns ───
+
+describe("resolveSubAgentMaxTurns（子代理 maxTurns 默认值：fork=200，常规=30）", () => {
+  test("显式指定 task.maxTurns 时始终优先，忽略 fork 状态", () => {
+    expect(resolveSubAgentMaxTurns({ maxTurns: 20 })).toBe(20);
+    expect(resolveSubAgentMaxTurns({ maxTurns: 20, forkMessages: [{ role: "user", content: [] }] })).toBe(20);
+    expect(resolveSubAgentMaxTurns({ maxTurns: 0 })).toBe(0); // 0 是合法显式值，不应被 ?? 吞掉
+  });
+
+  test("无 forkMessages（常规子代理：explore/task/verify 等）默认 30", () => {
+    expect(resolveSubAgentMaxTurns({})).toBe(30);
+    expect(resolveSubAgentMaxTurns({ forkMessages: undefined })).toBe(30);
+    expect(resolveSubAgentMaxTurns({ forkMessages: [] })).toBe(30); // 空数组视为未 fork
+  });
+
+  test("forkMessages 非空（继承主对话上下文）默认 200，对齐 CC fork 子代理", () => {
+    expect(resolveSubAgentMaxTurns({ forkMessages: [{ role: "user", content: [] }] })).toBe(200);
+    expect(resolveSubAgentMaxTurns({ forkMessages: [{ role: "user" }, { role: "assistant" }] })).toBe(200);
   });
 });

@@ -135,7 +135,8 @@ export class CustomAgentTool implements Tool {
       systemPrompt: this.def.prompt,
       userPrompt: task,
       allowedTools: this.def.tools,
-      maxTurns: 10,
+      // P2-2：自定义 Agent 无独立 maxTurns 声明字段，与常规非 fork 子代理同档，默认从 10 提到 30
+      maxTurns: 30,
       // 三级回退：Frontmatter 声明 > 默认 300s（对齐 task 类型，自定义 agent 执行复杂任务）
       timeout: this.def.timeout ?? 300_000,
     }, signal);

@@ -239,7 +239,9 @@ export class CommandExecutor {
         systemPrompt: "你是一个专注的助手，请完成以下任务。",
         userPrompt: prompt,
         allowedTools: cmd.allowedTools ?? [],
-        maxTurns: cmd.maxTurns ?? 10,
+        // P2-2：fork 命令无 forkMessages/继承主对话概念（systemPrompt 是全新的“专注助手”提示词），
+        // 与常规非 fork 子代理同档：默认从 10 提到 30。
+        maxTurns: cmd.maxTurns ?? 30,
         // 超时透传：对齐磁盘 skill 的钳制（默认 2 分钟，最大 30 分钟，见 skill/tool.ts:146）。
         // 不传 timeoutMins 时 executeCustom 内部默认 120_000ms，与历史行为一致。
         timeout:

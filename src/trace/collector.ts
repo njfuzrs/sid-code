@@ -579,6 +579,13 @@ export class TraceCollector {
     }
 
     // §3.4：启动配对看门狗——超时未收到 AfterModel/AfterModelRaw/TurnError 则写入 ModelCallUnpaired
+    // 根因修复：index 由"已完成 pair 数 + 1"计算，同一轮请求超时重试时 index 不变，
+    // handleBeforeModel 会被多次调用。若不先清除旧定时器就 set() 覆盖，旧定时器仍存活，
+    // 在重试已成功之后的 PAIRING_TIMEOUT_MS 触发误报的 ModelCallUnpaired（幽灵超时）。
+    const staleTimer = this.pendingModelCalls.get(index);
+    if (staleTimer) {
+      clearTimeout(staleTimer);
+    }
     const pairingTimer = setTimeout(() => {
       try {
         // 缺口 3：从 stream-observer 获取流状态快照，附加到 ModelCallUnpaired 事件

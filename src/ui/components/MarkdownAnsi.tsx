@@ -67,15 +67,19 @@ const MarkdownAnsiInternal: React.FC<MarkdownAnsiProps> = ({
 
     const tokens = cachedLexer(text) as any[];
     const out: React.ReactNode[] = [];
-    let ansiBuffer = "";
+    // 累积同一 flush 区间内的块，flush 时统一用 "\n\n" 拼接（与 renderTokens
+    // 的 blocks.join("\n\n") 语义一致）。此前直接 += 拼接会丢失块间换行，
+    // 导致标题/段落/分割线之间的文本连成一片。
+    let ansiParts: string[] = [];
 
     const flushAnsi = () => {
-      if (ansiBuffer.trim()) {
+      const joined = ansiParts.join("\n\n").trim();
+      if (joined) {
         out.push(
-          <Ansi key={`ansi-${out.length}`}>{ansiBuffer.trim()}</Ansi>,
+          <Ansi key={`ansi-${out.length}`}>{joined}</Ansi>,
         );
       }
-      ansiBuffer = "";
+      ansiParts = [];
     };
 
     for (const token of tokens) {
@@ -103,8 +107,9 @@ const MarkdownAnsiInternal: React.FC<MarkdownAnsiProps> = ({
           />,
         );
       } else {
-        // 非表格/非代码：累积 ANSI（一个 token 一段，块间用 \n 分隔由下个 flush 处理）。
-        ansiBuffer += formatTokenToAnsi(token, terminalWidth);
+        // 非表格/非代码：单独渲染后按块收集，flush 时统一插入块间距。
+        const rendered = formatTokenToAnsi(token, terminalWidth);
+        if (rendered) ansiParts.push(rendered);
       }
     }
     flushAnsi();

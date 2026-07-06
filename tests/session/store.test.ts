@@ -201,7 +201,8 @@ describe("SessionStore", () => {
     const store2 = new SessionStore();
     store2.resumeSession("old-sess", "m", "p", "/cwd", "new-trace-id");
 
-    // 直接读原始 jsonl，确认 metadata 记录已写入
+    // P0-3：写入已改为缓冲批量落盘，直接读原始文件前需先同步刷新
+    SessionStore.flushPendingWrites();
     const raw = await Bun.file(
       join(testDir, ".sid-code", "sessions", "old-sess.jsonl")
     ).text();
@@ -213,9 +214,12 @@ describe("SessionStore", () => {
   test("Bug3: traceSessionId 与会话 id 相同时不写冗余元数据", async () => {
     const store = new SessionStore();
     store.startSession("same-id", "m", "p", "/cwd");
+    // P2-9：startSession 延迟到首条真实记录才创建文件，先写一条消息 materialize
+    store.appendMessage({ role: "user", content: [{ type: "text", text: "hi" }] });
     const store2 = new SessionStore();
     store2.resumeSession("same-id", "m", "p", "/cwd", "same-id");
 
+    SessionStore.flushPendingWrites();
     const raw = await Bun.file(
       join(testDir, ".sid-code", "sessions", "same-id.jsonl")
     ).text();

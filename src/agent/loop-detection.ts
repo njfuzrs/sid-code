@@ -36,8 +36,13 @@ export const DEFAULT_LOOP_CONFIG: LoopDetectionConfig = {
   contentThreshold: 10,      // 相同内容块出现 10 次
   contentChunkSize: 50,      // 50 字符一块
   maxRecoveryAttempts: 3,    // 最多恢复 3 次（方案 C-1: 2→3，避免正当任务被一次误判掐死）
-  toolShapeThreshold: 5,     // ADR-020 §2.2: 同 shape 在窗口内出现 5 次即判循环（hrn_006 grep 不同 pattern 探测）
-  toolShapeWindow: 8,        // 最近 8 次工具调用窗口
+  // ADR-020 §2.2 原始值 5/8（62.5%）；差距分析 P1-3 发现该比例对"同 path 下连续多个
+  // 不同主题的正当探索"（如系统性 grep 5-6 个不同 symbol）误报率偏高——这类场景与
+  // hrn_006（反复变换 pattern 探测同一个不存在字符串）在 shape 层面无法区分，只能靠
+  // 放宽窗口/阈值换取更多"免费"探索次数。放宽到 7/10（70%）后，hrn_006 仍能在其
+  // max_steps=12 预算内被兜住（第 7 次触发），但常规 5-6 次探索性搜索不再被误杀。
+  toolShapeThreshold: 7,
+  toolShapeWindow: 10,
   recoveryExhaustedAction: "continue", // 默认继续放行（保成功优先），见字段注释
 };
 
@@ -211,10 +216,19 @@ export class ToolCallLoopDetector {
  *  策略：
  *  - 对每次工具调用提取一个稳定的 shape key（例如 grep:cwd=/x:keys=case_insensitive,pattern,path）
  *  - 在最近 N 次工具调用滑动窗口内统计同 shape 出现次数
- *  - 出现 ≥ threshold 次即判循环（默认窗口 8 / 阈值 5）
+ *  - 出现 ≥ threshold 次即判循环（默认窗口 10 / 阈值 7，见 DEFAULT_LOOP_CONFIG 注释）
  *
  *  与 ToolCallLoopDetector 的关系：互补。ToolCallLoopDetector 看完全相同；
- *  ToolShapeLoopDetector 看"同形状的反复探测"，对参数变体不敏感的探测循环兜底。 */
+ *  ToolShapeLoopDetector 看"同形状的反复探测"，对参数变体不敏感的探测循环兜底。
+ *
+ *  已知残余假阳性（差距分析 P1-3）：纯 shape 层面无法区分"反复探测同一个不存在目标"
+ *  和"系统性搜索同目录下多个不同 symbol"——两者都是同 toolName + 同 path + 不同 value。
+ *  这是 shape 检测固有的精度/召回权衡（CC 选择完全不做此类检测的原因之一）。缓解依赖
+ *  两层保护而非试图让 shape 判定本身做到零误报：
+ *  1) 阈值/窗口已放宽到给常规 5-6 次探索性搜索留出空间（见上方阈值注释）；
+ *  2) 触发后果很轻——recoveryExhaustedAction 默认 "continue"，命中只是注入一条可被
+ *     模型说明后忽略的提醒（LOOP_RECOVERY_PROMPT 明确允许"正当分段/多点操作"继续），
+ *     不会硬终止任务。误报的代价是一次多余的提醒，不是任务失败。 */
 export class ToolShapeLoopDetector {
   private config: LoopDetectionConfig;
   private window: string[] = [];
@@ -426,7 +440,7 @@ export class LoopDetector {
   private recoveryAttempts = 0;
   private turnCount = 0;
   private lastLLMCheckTurn = 0;
-  /** 循环检测是否已禁用（对齐 claude-code，默认禁用，opt-in 开启） */
+  /** 循环检测是否已禁用（P0-1：默认全局启用，仅 SID_ENABLE_LOOP_DETECTION=0 可显式关闭） */
   private _disabled = false;
 
   constructor(config: LoopDetectionConfig = resolveLoopConfig()) {
@@ -564,9 +578,20 @@ export class LoopDetector {
   }
 }
 
-/** 检查循环检测是否启用（对齐 claude-code，默认不启用）
- *  通过环境变量 SID_ENABLE_LOOP_DETECTION=1 开启，
- *  供弱模型（DeepSeek/Ollama）场景使用。 */
+/** 检查循环检测是否启用（P0-1：默认全局启用，不做模型分级判断）。
+ *
+ *  为什么不按模型分级（"强模型关、弱模型开"）：模型名单和能力会持续变化——今天判定
+ *  "可信"的模型可能明天就上线新版本、换了行为特征，甚至同一个模型在不同任务类型下
+ *  循环概率也不同。把"哪些模型可信"这种会随时间漂移的判断写死进代码，判断迟早会
+ *  过时或覆盖不到新模型，属于隐患而非防御。
+ *
+ *  能承受"全局打开"的原因是触发后果很轻：命中只是注入一条提醒
+ *  （LOOP_RECOVERY_PROMPT/LOOP_RECOVERY_FINAL_PROMPT），明确允许模型说明"这是正当的
+ *  分段/多点操作"后继续；recoveryExhaustedAction 默认 "continue"，不会硬终止任务。
+ *  即使对本来就不太会循环的模型，误报代价也只是一次可忽略的提醒，不是任务失败。
+ *
+ *  通过环境变量 SID_ENABLE_LOOP_DETECTION=0 可显式全局关闭（例如只用单一高度信任的
+ *  模型、想完全对齐 CC 不做循环检测的选择）。 */
 export function isLoopDetectionEnabled(): boolean {
-  return process.env.SID_ENABLE_LOOP_DETECTION === "1";
+  return process.env.SID_ENABLE_LOOP_DETECTION !== "0";
 }

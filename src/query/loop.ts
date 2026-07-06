@@ -43,6 +43,20 @@ import {
   getThinkingEnvOverride,
 } from "../llm/effort.ts";
 import { isPromptTooLongError, reactiveCompact, DiminishingReturnsDetector } from "./reactive-compact.ts";
+import {
+  parseTokenBudgetDirective,
+  buildBudgetContinuationMessage,
+  buildBudgetExhaustedNotice,
+  buildBudgetDiminishingNotice,
+} from "./token-budget-continuation.ts";
+import {
+  measureTurnOutputVolume,
+  isOutputStalling,
+  pushOutputVolume,
+  buildOutputStallMessage,
+  MAX_OUTPUT_STALL_INTERVENTIONS,
+  OUTPUT_STALL_WINDOW,
+} from "./output-stall.ts";
 import { runCompactPipeline } from "./compact/index.ts";
 import {
   MAX_EMPTY_PARAM_RETRIES,
@@ -153,6 +167,20 @@ export async function* queryLoop(
   const loopDetector = new LoopDetector();
   const state: LoopState = createInitialLoopState(config.maxTurns || Infinity);
   const diminishingDetector = new DiminishingReturnsDetector();
+  // P0-3：Token Budget 续写——解析本条用户消息里的 "+500k" 类预算指令（一次性，
+  // 随每条新用户消息的新 state 天然重置，见 LoopState.tokenBudgetTarget 注释）。
+  // 命中则记录目标值与当前累计 usage 基线；复用 DiminishingReturnsDetector 判断
+  // "产出是否递减"，但续写次数上限调宽到 1000——真正的停止条件是预算耗尽，不是
+  // 次数（见 token-budget-continuation.ts 顶部注释）。
+  const parsedTokenBudget = parseTokenBudgetDirective(extractLastUserInput(ctxMgr));
+  if (parsedTokenBudget !== undefined) {
+    state.tokenBudgetTarget = parsedTokenBudget;
+    const baseline = sessionState.getTotalUsage();
+    state.tokenBudgetBaselineUsage =
+      baseline.inputTokens + baseline.outputTokens + (baseline.cacheCreationInputTokens ?? 0);
+    log.info("QUERY_LOOP", `P0-3：检测到 Token Budget 指令，目标 ${parsedTokenBudget.toLocaleString()} tokens`);
+  }
+  const budgetDiminishingDetector = new DiminishingReturnsDetector({ maxRecoveryCount: 1000, diminishingThreshold: 500 });
   // Fix 1：每次 queryLoop 生成唯一 loopId，用于 snapshot namespace 隔离
   const loopId = `loop-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   // /goal：合并用户 config.goal 与内置默认值（用户未配则全走默认）
@@ -560,6 +588,14 @@ export async function* queryLoop(
       state.pendingThinkingDivergenceReminder = false;
     }
 
+    // P2-1（产出量停滞·注入端）：上一轮检出连续低产出，本轮经 reminder 通道注入软提醒。
+    // 优先级低于思考发散（push 而非 unshift）——分析瘫痪比"可能卡住"更紧急。注入后清空 pending 标记。
+    if (state.pendingOutputStallReminder) {
+      reminderParts.push(buildOutputStallMessage(state.outputVolumeHistory ?? []));
+      log.info("QUERY_LOOP", "P2-1：注入产出停滞提醒");
+      state.pendingOutputStallReminder = false;
+    }
+
     // ─── /goal：目标状态周期回注（对标 Codex continuation.md）───
     // 通过 reminderParts 管道注入，不影响 system prompt → Prompt Cache 命中率不变。
     // 首轮必注入，之后每 N 轮回注一次。
@@ -756,6 +792,8 @@ export async function* queryLoop(
         log.warn("QUERY_LOOP", "检测到 prompt-too-long 错误，触发响应式压缩");
         const compactResult = reactiveCompact(ctxMgr);
         if (compactResult.success) {
+          // P0-2：one-shot 标志位，只在此成功路径置真；不得在任何 continue 分支重置为
+          // false（见 types.ts LoopState.hasAttemptedReactiveCompact 注释的 CC 教训）。
           state.hasAttemptedReactiveCompact = true;
           setTransition(state, { type: "reactive_compact" }, deps, sessionState.sessionId);
           notifyCompaction("main"); // G1：抑制紧接的 cache break 检测
@@ -1008,6 +1046,8 @@ export async function* queryLoop(
         log.warn("QUERY_LOOP", "流式阶段检测到 prompt-too-long 错误，触发响应式压缩");
         const compactResult = reactiveCompact(ctxMgr);
         if (compactResult.success) {
+          // P0-2：one-shot 标志位，只在此成功路径置真；不得在任何 continue 分支重置为
+          // false（见 types.ts LoopState.hasAttemptedReactiveCompact 注释的 CC 教训）。
           state.hasAttemptedReactiveCompact = true;
           setTransition(state, { type: "reactive_compact" }, deps, sessionState.sessionId);
           notifyCompaction("main"); // G1：抑制紧接的 cache break 检测
@@ -1031,6 +1071,11 @@ export async function* queryLoop(
         continue;
       }
 
+      // P0-2：未识别的错误一律重新抛出，绝不吞掉后继续走到下面的 response 处理逻辑。
+      // 本 catch 块的每条路径要么 continue（重试）、要么 yield done 后 return（重试耗尽，
+      // 见上面的超时分支）、要么在此 throw——没有任何路径会"降级"出一个假的 response
+      // 对象混进正常流程，这正是下面 isEndTurnLike 白名单判断天然不会被 API 错误触发的
+      // 另一半保证。
       throw err;
     }
     const apiDuration = perfHandle.end({ model: config.model });
@@ -1374,6 +1419,39 @@ export async function* queryLoop(
       }
     }
 
+    // ─── P2-1：产出量停滞检测（对齐 CC diminishing-returns 哲学，从产出量而非内容重复角度）───
+    // 每轮都记录（tool_use 轮和 end_turn 轮都要，停滞常发生在连续 tool_use 轮），不要求
+    // 单调、不要求重复——只要连续 OUTPUT_STALL_WINDOW 轮产出量持续很小就命中。
+    // 命中则置 pending 标记，下一轮循环开头经 reminderParts 注入软提醒（同 pendingThinkingDivergenceReminder
+    // 机制，不在此直接插消息，避免破坏 assistant/tool_result 配对）。只作提醒，不占用
+    // LoopDetector 恢复计数、不会 terminate——这是"可能卡住"的软信号，不是判定循环。
+    {
+      const toolUseCount = response.content.filter((b) => b.type === "tool_use").length;
+      const outputVolume = measureTurnOutputVolume(responseText, toolUseCount);
+      state.outputVolumeHistory = pushOutputVolume(state.outputVolumeHistory, outputVolume);
+      const stallInterventions = state.outputStallInterventions ?? 0;
+      if (
+        isOutputStalling(state.outputVolumeHistory) &&
+        stallInterventions < MAX_OUTPUT_STALL_INTERVENTIONS &&
+        !state.pendingOutputStallReminder
+      ) {
+        state.pendingOutputStallReminder = true;
+        state.outputStallInterventions = stallInterventions + 1;
+        // 命中后清空历史，避免刚提醒完又因窗口里还残留着旧的低产出值而连续多轮反复触发。
+        state.outputVolumeHistory = [];
+        log.warn(
+          "QUERY_LOOP",
+          `P2-1：检测到产出停滞（近 ${OUTPUT_STALL_WINDOW} 轮产出量持续偏低），` +
+            `将于下一轮注入提醒 (${state.outputStallInterventions}/${MAX_OUTPUT_STALL_INTERVENTIONS})`,
+        );
+        yield {
+          kind: "system",
+          level: "info",
+          text: `检测到最近几轮产出量偏低（可能陷入停滞），自动引导确认 (${state.outputStallInterventions}/${MAX_OUTPUT_STALL_INTERVENTIONS})`,
+        };
+      }
+    }
+
     // ─── 检查停止原因 ───
     // F2：end_turn 兜底——模型有时 stop_reason=end_turn 却在 content 里留下正常参数的 tool_use。
     // 此处的 tool_use 必为非空参数（空参数已被上方 F1 拦截：要么 continue 重试，要么 return）。
@@ -1382,6 +1460,16 @@ export async function* queryLoop(
     const hasPendingToolUse = response.content.some((b) => b.type === "tool_use");
     // F2 fall-through 标记：仅 end_turn/stop 且含（非空）tool_use 时为真。
     // 限定 stopReason 避免影响 max_tokens 续写 / content_filter 等其他分支的既有语义。
+    //
+    // P0-2（对齐 CC 死亡螺旋防御）：isEndTurnLike 是白名单匹配（=== "end_turn" || === "stop"），
+    // 不是黑名单匹配（!== "error" 之类）。这是下面 AfterAgent hook / Stop Hooks 只在模型真正
+    // 产出正常响应时才执行的关键前提——API 错误（无论是上面的 catch 块里被 continue/return/
+    // throw 处理掉的异常，还是 processStream 非抛出式返回的 stopReason="error"）都不会匹配这个
+    // 白名单，天然不会流入 Stop Hooks。CC 的教训是：error → hook blocking → retry → error → …
+    // 的死亡螺旋，根源就是"模型从未真正产出过响应"时仍跑了基于响应内容的验证/修复流程。
+    // 如果未来要重构这里的停止原因判断逻辑，必须保持"白名单枚举可继续的情况"这个方向，
+    // 不要改成"排除已知的错误情况"——后者每新增一种未识别的错误 stopReason 都会重新
+    // 打开这个口子（fail-open），而白名单天然对未知值 fail-closed。
     const isEndTurnLike = response.stopReason === "end_turn" || response.stopReason === "stop";
     const f2FallThrough = isEndTurnLike && hasPendingToolUse;
     if (isEndTurnLike && !hasPendingToolUse) {
@@ -1532,6 +1620,53 @@ export async function* queryLoop(
             "QUERY_LOOP",
             `环节③ 交付门禁续命已达上限 ${MAX_HYPOTHESIS_GATE_RETRIES}，放行（模型应已在交付物中如实降级未确认假设）`,
           );
+        }
+      }
+
+      // ─── P0-3：Token Budget 续写 Gate ───
+      // 只在本条用户消息带了 "+500k" 类预算指令时生效；与 /goal 互斥——goal 处于 active
+      // 状态时跳过，交给下面的 Goal Gate 自己的预算/评估逻辑判定（两套"要不要继续"的
+      // 机制不叠加，避免互相打架）。位置在 Hypothesis Gate 之后、Goal Gate 之前：
+      // 前面几道 Gate 已经确认"完成度"层面没问题，这里再看"预算还有没有、值不值得继续"。
+      if (state.tokenBudgetTarget !== undefined) {
+        const activeGoal = deps.getGoalState?.();
+        const goalIsActive = activeGoal != null && activeGoal.status === "active";
+        if (!goalIsActive) {
+          const currentUsage = sessionState.getTotalUsage();
+          const consumed =
+            currentUsage.inputTokens + currentUsage.outputTokens + (currentUsage.cacheCreationInputTokens ?? 0) -
+            (state.tokenBudgetBaselineUsage ?? 0);
+          const remaining = state.tokenBudgetTarget - consumed;
+
+          if (remaining <= 0) {
+            log.info("QUERY_LOOP", `P0-3：预算已用完（目标 ${state.tokenBudgetTarget}），正常收尾`);
+            yield { kind: "system", level: "info", text: buildBudgetExhaustedNotice(state.tokenBudgetTarget) };
+            // 落入下方正常收尾
+          } else {
+            budgetDiminishingDetector.record(response.usage.outputTokens);
+            if (budgetDiminishingDetector.shouldStop()) {
+              log.info("QUERY_LOOP", `P0-3：产出递减收益，提前收尾（预算剩余约 ${remaining}）`);
+              yield { kind: "system", level: "info", text: buildBudgetDiminishingNotice(remaining) };
+              // 落入下方正常收尾
+            } else {
+              state.tokenBudgetContinuationCount = (state.tokenBudgetContinuationCount ?? 0) + 1;
+              ctxMgr.addMessage({
+                role: "user",
+                content: [{ type: "text", text: buildBudgetContinuationMessage(consumed, remaining) }],
+              });
+              log.info(
+                "QUERY_LOOP",
+                `P0-3：预算续写 #${state.tokenBudgetContinuationCount}（剩余约 ${remaining} tokens）`,
+              );
+              yield {
+                kind: "system",
+                level: "info",
+                text: `预算续写中 (#${state.tokenBudgetContinuationCount}，剩余约 ${remaining.toLocaleString()} tokens)`,
+              };
+              setTransition(state, { type: "token_budget_continuation" }, deps, sessionState.sessionId);
+              continue;
+            }
+          }
         }
       }
 
@@ -1980,6 +2115,43 @@ export async function* queryLoop(
   } finally {
     // Fix 1：queryLoop 结束时批量清理本次 loopId 下所有快照残留
     clearAllSnapshots(loopId);
+  }
+
+  // ─── P1-1：主循环达到 maxTurns——强制请求总结（额外一轮，不计入 maxTurns）───
+  // 对齐 src/agent/agentic-loop.ts:344-393 子代理版的同一做法：硬停在 maxTurns 时，
+  // 最后一条 assistant 消息很可能是工具调用中途、或"让我先看看…"这类未收尾文本，直接
+  // 把它当结果丢给用户体验很差。这里追加一轮不带工具的调用，逼模型输出结构化总结。
+  // 用 deps.sendWithRetry/processStream（而非直连 provider）保持与 loop.ts 其余部分
+  // 一致的可测试性；调用失败不阻断收尾（降级为下面按 turnCount 正常提示 max_turns）。
+  if (state.turnCount >= state.maxTurns && !deps.getAbortSignal?.()?.aborted) {
+    log.info("QUERY_LOOP", `P1-1：达到最大轮次 ${state.maxTurns}，请求强制总结`);
+    ctxMgr.addMessage({
+      role: "user",
+      content: [{
+        type: "text",
+        text: "你已达到最大轮次限制，无法继续调用工具。请立即总结你目前为止的所有发现和已完成的工作，以及尚未完成的部分，用结构化格式（列表/表格）呈现。不要再调用任何工具。",
+      }],
+    });
+    try {
+      const summaryStream = deps.sendWithRetry(
+        {
+          model: config.model,
+          messages: ctxMgr.getMessages(),
+          system: ctxMgr.getSystemPrompt(),
+          maxTokens: config.maxTokens,
+          // 不传 tools，禁止模型继续调工具（对齐 agentic-loop.ts 强制总结轮的做法）。
+        },
+        deps.getAbortSignal?.(),
+      );
+      const summaryResponse = await deps.processStream(summaryStream);
+      if (summaryResponse.content.length > 0) {
+        const summaryMessage = { role: "assistant" as const, content: summaryResponse.content };
+        ctxMgr.addMessage(summaryMessage);
+        yield { kind: "assistant_message", message: summaryMessage };
+      }
+    } catch (err: any) {
+      log.warn("QUERY_LOOP", `P1-1：强制总结轮失败（不影响收尾）: ${err?.message ?? String(err)}`);
+    }
   }
 
   // 达到最大轮次

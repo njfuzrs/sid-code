@@ -153,17 +153,38 @@ export function isPromptTooLongError(err: any): boolean {
   );
 }
 
+/** DiminishingReturnsDetector 可选构造配置 */
+export interface DiminishingReturnsOptions {
+  /** 最大续写次数（默认 MAX_RECOVERY_COUNT=3） */
+  maxRecoveryCount?: number;
+  /** 递减收益阈值，token 数（默认 DIMINISHING_THRESHOLD=500） */
+  diminishingThreshold?: number;
+}
+
 /**
  * max_tokens 续写的递减收益检测器
  * 连续续写时，如果增量越来越小，说明模型在重复/填充，应该停止
+ *
+ * P0-3：maxRecoveryCount/diminishingThreshold 现可通过构造函数覆盖，供 Token Budget
+ * 续写场景复用同一套"连续两次增量过小即停"判定逻辑，但用更宽松的续写次数上限
+ * （该场景的真实上限是预算耗尽，不是续写次数——见 token-budget-continuation.ts）。
+ * 不传参数时行为与此前完全一致（两个静态默认值不变，现有 max_tokens 续写调用点无需改动）。
  */
 export class DiminishingReturnsDetector {
   /** 每次续写的输出 token 数 */
   private outputTokenHistory: number[] = [];
-  /** 最大续写次数 */
+  /** 最大续写次数（默认） */
   static readonly MAX_RECOVERY_COUNT = 3;
-  /** 递减收益阈值（token 数） */
+  /** 递减收益阈值，token 数（默认） */
   static readonly DIMINISHING_THRESHOLD = 500;
+
+  private readonly maxRecoveryCount: number;
+  private readonly diminishingThreshold: number;
+
+  constructor(options?: DiminishingReturnsOptions) {
+    this.maxRecoveryCount = options?.maxRecoveryCount ?? DiminishingReturnsDetector.MAX_RECOVERY_COUNT;
+    this.diminishingThreshold = options?.diminishingThreshold ?? DiminishingReturnsDetector.DIMINISHING_THRESHOLD;
+  }
 
   /** 记录一次续写的输出 token 数 */
   record(outputTokens: number): void {
@@ -180,7 +201,7 @@ export class DiminishingReturnsDetector {
     const history = this.outputTokenHistory;
 
     // 条件 1：达到最大次数
-    if (history.length >= DiminishingReturnsDetector.MAX_RECOVERY_COUNT) {
+    if (history.length >= this.maxRecoveryCount) {
       return true;
     }
 
@@ -188,8 +209,8 @@ export class DiminishingReturnsDetector {
     if (history.length >= 2) {
       const last = history[history.length - 1];
       const prev = history[history.length - 2];
-      if (last < DiminishingReturnsDetector.DIMINISHING_THRESHOLD &&
-          prev < DiminishingReturnsDetector.DIMINISHING_THRESHOLD) {
+      if (last < this.diminishingThreshold &&
+          prev < this.diminishingThreshold) {
         return true;
       }
     }

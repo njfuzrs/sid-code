@@ -2946,6 +2946,12 @@ export class App {
                 } else {
                   addStatusMessage("system", `⚠️ ${event.text}`);
                 }
+              } else if (event.level === "error") {
+                // 根因修复：此前 error 级别被 switch 完全忽略——loop.ts 重试耗尽等场景
+                // yield 的用户可见错误提示从未展示，紧随其后的 done 又清空了流式内容，
+                // 导致"内容消失+无任何提示"。仿照 fatal_error 持久化到 displayItems。
+                const errorDisplay = [...bridge.current.displayItems, { kind: "system" as const, text: event.text }];
+                updateState({ displayItems: errorDisplay });
               }
               break;
             case "tombstone":

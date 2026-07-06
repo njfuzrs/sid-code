@@ -181,7 +181,7 @@ describe("emergencyTruncate", () => {
   });
 });
 
-describe("LoopDetector LLM 认知检测（需 SID_ENABLE_LOOP_DETECTION=1）", () => {
+describe("LoopDetector LLM 认知检测（循环检测默认全局启用，此处显式设置仅为隔离其他用例）", () => {
   beforeAll(() => {
     process.env.SID_ENABLE_LOOP_DETECTION = "1";
   });

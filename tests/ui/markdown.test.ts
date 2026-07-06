@@ -162,6 +162,49 @@ describe("renderMarkdown", () => {
       expect(innerLine).toBeDefined();
       expect(innerLine!.startsWith("  ")).toBe(true);
     });
+
+    // 根因同 MarkdownAnsi 块拼接 bug（见 markdown-ansi-block-spacing.test.tsx）：
+    // renderList 曾用 parts.join("") 直接拼接列表项内的多个子块（松散列表多段落 /
+    // 段落+代码块 / 段落+引用），块之间零分隔符导致文本粘连成一片。
+    test("松散列表（段落间有空行）不应粘连", () => {
+      const md = "- 项目一第一段\n\n  项目一第二段\n\n- 项目二";
+      const plain = stripAnsi(renderMarkdown(md, 80));
+      expect(plain).not.toContain("项目一第一段项目一第二段");
+      expect(plain).toContain("项目一第一段");
+      expect(plain).toContain("项目一第二段");
+    });
+
+    test("列表项含段落+代码块不应粘连", () => {
+      const md = "- 说明文字\n\n  ```js\n  const x = 1;\n  ```\n- 下一项";
+      const plain = stripAnsi(renderMarkdown(md, 80));
+      expect(plain).not.toContain("说明文字  const x = 1;");
+      expect(plain).toContain("说明文字");
+      expect(plain).toContain("const x = 1;");
+    });
+
+    test("列表项含段落+引用不应粘连", () => {
+      const md = "- 说明文字\n\n  > 引用内容\n- 下一项";
+      const plain = stripAnsi(renderMarkdown(md, 80));
+      expect(plain).not.toContain("说明文字│ 引用内容");
+      expect(plain).toContain("说明文字");
+      expect(plain).toContain("引用内容");
+    });
+
+    test("列表项续行悬挂缩进对齐到文本列，不只是列表符号列", () => {
+      const md = "- 项目一第一段\n\n  项目一第二段";
+      const plain = stripAnsi(renderMarkdown(md, 80));
+      const lines = plain.split("\n");
+      const contLine = lines.find(l => l.includes("项目一第二段"));
+      expect(contLine).toBeDefined();
+      // "- " 前缀宽度为 2，续行应悬挂缩进 2 空格对齐到 "项目一第一段" 的文本列
+      expect(contLine!.startsWith("  ")).toBe(true);
+    });
+
+    test("紧凑嵌套列表悬挂缩进修复后不应引入多余空行（回归）", () => {
+      const md = "- 外层\n  - 内层一\n  - 内层二";
+      const plain = stripAnsi(renderMarkdown(md, 80));
+      expect(plain).toBe("- 外层\n  - 内层一\n  - 内层二");
+    });
   });
 
   // ── 引用 ──────────────────────────────────────────────────────

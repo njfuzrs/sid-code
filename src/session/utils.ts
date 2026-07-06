@@ -8,7 +8,7 @@ import { join } from "path";
 import { homedir } from "os";
 import { existsSync, readdirSync, statSync } from "fs";
 import type { SessionData } from "./store.ts";
-import { parseSessionJsonl } from "./store.ts";
+import { parseSessionJsonl, flushPendingSessionWrites } from "./store.ts";
 
 /** 文本匹配结果 */
 export interface TextMatch {
@@ -181,6 +181,10 @@ export async function getAllSessionFiles(
     if (!existsSync(sessionDir)) {
       return [];
     }
+
+    // P0-3：SessionStore 写入已改为缓冲批量落盘（100ms 窗口），直接读文件系统可能
+    // 读到落后于内存状态的内容——扫描前先把所有会话的待写入缓冲同步落盘。
+    flushPendingSessionWrites();
 
     // 同时扫描旧 JSON 与新 JSONL 两种格式（Bug1：此前只扫 .json，
     // 导致已迁移到 jsonl 的会话在列表/清理中完全不可见）。

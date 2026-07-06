@@ -12,9 +12,11 @@ import {
   LOOP_RECOVERY_PROMPT,
   LOOP_RECOVERY_FINAL_PROMPT,
   resolveLoopConfig,
+  isLoopDetectionEnabled,
 } from "../../src/agent/loop-detection.ts";
 
-// 循环检测默认禁用（对齐 claude-code），测试需显式开启
+// P0-1：循环检测默认全局启用；此处显式设置为 "1" 只是为了与其他文件的用例隔离，
+// 防止某个用例把 env 设为 "0"（显式关闭）后残留影响本文件的测试顺序。
 beforeAll(() => {
   process.env.SID_ENABLE_LOOP_DETECTION = "1";
 });
@@ -259,6 +261,25 @@ describe("ToolShapeLoopDetector (ADR-020 §2.2 — hrn_006 grep 不同 pattern �
 
     // 全序列无触发 —— 方案 A/B/C 修复后误杀消除
   });
+
+  test("P1-3 回归：DEFAULT_LOOP_CONFIG 下 6 次同目录不同主题的正当探索性 grep 不应触发", () => {
+    // 差距分析 P1-3 指出的残余假阳性场景：agent 系统性搜索同一目录下多个不相关 symbol
+    // （不是反复探测同一个不存在目标），阈值放宽到 7/10 后应有足够空间容纳此类正当操作。
+    const defaultDetector = new ToolShapeLoopDetector(DEFAULT_LOOP_CONFIG);
+    const topics = ["authenticate", "login", "session", "token", "credential", "authorize"];
+    for (const topic of topics) {
+      expect(defaultDetector.record("grep", { pattern: topic, path: "/repo/src" })).toBe(false);
+    }
+  });
+
+  test("P1-3 回归：DEFAULT_LOOP_CONFIG 下 hrn_006 式持续同 shape 探测仍在预算内触发（第 7 次）", () => {
+    // 放宽阈值后必须验证真循环依然被兜住，且在 case_hrn_006 的 max_steps=12 预算内完成
+    const defaultDetector = new ToolShapeLoopDetector(DEFAULT_LOOP_CONFIG);
+    for (let i = 0; i < 6; i++) {
+      expect(defaultDetector.record("grep", { pattern: `zzz_${i}`, path: "/repo", case_insensitive: i % 2 === 0 })).toBe(false);
+    }
+    expect(defaultDetector.record("grep", { pattern: "zzz_6", path: "/repo", case_insensitive: false })).toBe(true); // 第 7 次 = 阈值，仍在 12 步预算内
+  });
 });
 
 describe("ContentLoopDetector", () => {
@@ -442,8 +463,8 @@ describe("LoopDetector 耗尽处置（continue vs terminate）", () => {
     expect(detector.shouldContinueAfterExhausted()).toBe(false);
   });
 
-  test("循环检测禁用时 shouldContinueAfterExhausted 恒为 true（不误杀）", () => {
-    delete process.env.SID_ENABLE_LOOP_DETECTION;
+  test("循环检测显式关闭（SID_ENABLE_LOOP_DETECTION=0）时 shouldContinueAfterExhausted 恒为 true（不误杀）", () => {
+    process.env.SID_ENABLE_LOOP_DETECTION = "0"; // P0-1：显式关闭；仅 delete 已不再等价于关闭（新默认是全局启用）
     const detector = new LoopDetector({
       ...DEFAULT_LOOP_CONFIG,
       recoveryExhaustedAction: "terminate",
@@ -471,5 +492,47 @@ describe("LoopDetector 耗尽处置（continue vs terminate）", () => {
     expect(LOOP_RECOVERY_FINAL_PROMPT.length).toBeGreaterThan(0);
     expect(LOOP_RECOVERY_FINAL_PROMPT).toContain("最后");
     expect(LOOP_RECOVERY_FINAL_PROMPT).toContain("不会强行终止");
+  });
+});
+
+describe("P0-1: isLoopDetectionEnabled 全局默认启用（不按模型分级）", () => {
+  const saved = process.env.SID_ENABLE_LOOP_DETECTION;
+  afterAll(() => {
+    if (saved === undefined) delete process.env.SID_ENABLE_LOOP_DETECTION;
+    else process.env.SID_ENABLE_LOOP_DETECTION = saved;
+  });
+
+  test("未设置 env 时默认启用（不需要任何 opt-in，也不查模型名）", () => {
+    delete process.env.SID_ENABLE_LOOP_DETECTION;
+    expect(isLoopDetectionEnabled()).toBe(true);
+    // LoopDetector 实例本身也应处于启用状态：工具调用循环能被正常检测到
+    const detector = new LoopDetector({ ...DEFAULT_LOOP_CONFIG, toolCallThreshold: 3 });
+    const input = { path: "/a.ts" };
+    expect(detector.recordToolCall("read", input)).toBe(false);
+    expect(detector.recordToolCall("read", input)).toBe(false);
+    expect(detector.recordToolCall("read", input)).toBe(true);
+  });
+
+  test('显式设为 "1" 保持启用（幂等，兼容旧用法）', () => {
+    process.env.SID_ENABLE_LOOP_DETECTION = "1";
+    expect(isLoopDetectionEnabled()).toBe(true);
+  });
+
+  test('仅显式设为 "0" 才关闭', () => {
+    process.env.SID_ENABLE_LOOP_DETECTION = "0";
+    expect(isLoopDetectionEnabled()).toBe(false);
+    const detector = new LoopDetector({ ...DEFAULT_LOOP_CONFIG, toolCallThreshold: 3 });
+    const input = { path: "/a.ts" };
+    // 关闭后即使连续相同调用也不应触发
+    expect(detector.recordToolCall("read", input)).toBe(false);
+    expect(detector.recordToolCall("read", input)).toBe(false);
+    expect(detector.recordToolCall("read", input)).toBe(false);
+  });
+
+  test('其他任意值（非 "0"）都不应关闭，只有精确匹配 "0" 才关闭', () => {
+    process.env.SID_ENABLE_LOOP_DETECTION = "false";
+    expect(isLoopDetectionEnabled()).toBe(true);
+    process.env.SID_ENABLE_LOOP_DETECTION = "no";
+    expect(isLoopDetectionEnabled()).toBe(true);
   });
 });

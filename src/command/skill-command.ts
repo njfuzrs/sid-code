@@ -87,7 +87,8 @@ export class SkillCommand implements Command {
         systemPrompt: "你是一个专注的助手，请完成以下任务。",
         userPrompt: prompt,
         allowedTools: this.skill.allowedTools ?? [],
-        maxTurns: this.skill.maxTurns ?? 10,
+        // P2-2：与 command/executor.ts 的 fork 命令同档，默认从 10 提到 30
+        maxTurns: this.skill.maxTurns ?? 30,
       });
 
       return {

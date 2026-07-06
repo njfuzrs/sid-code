@@ -90,7 +90,8 @@ export type ContinueReason =
   | { type: "hypothesis_gate_retry" }
   | { type: "goal_gate_retry" }
   | { type: "goal_budget_warning" }
-  | { type: "empty_param_retry" };
+  | { type: "empty_param_retry" }
+  | { type: "token_budget_continuation" };
 
 // ─── 循环状态 ───
 
@@ -104,7 +105,15 @@ export interface LoopState {
   maxOutputTokensRecoveryCount: number;
   /** max_tokens 上限提升覆盖值（首次截断时提升到模型硬上限） */
   maxOutputTokensOverride?: number;
-  /** 是否已尝试过响应式压缩 */
+  /** 是否已尝试过响应式压缩。
+   *
+   *  P0-2（对齐 CC 死亡螺旋防御）：这是一个 one-shot 标志位，只允许在触发响应式压缩的两处
+   *  （src/query/loop.ts 连接阶段 + 流式阶段的 prompt-too-long 分支）设为 `true`。
+   *  **绝不能在任何 continue 分支中把它重置回 `false`**——CC 曾有过前车之鉴：
+   *  有人在 stop hook blocking 分支里重置了同类一次性标志位，导致同一个不可恢复的
+   *  prompt-too-long 场景每轮都重新触发压缩重试，"烧掉数千次 API 调用"才被发现。
+   *  新增类似的"只能尝试一次"的恢复机制时，遵循同一模式：只有成功路径才置真，
+   *  任何软重试/continue 路径都不得清零。 */
   hasAttemptedReactiveCompact: boolean;
   /** 上一次 continue 的原因 */
   transition: ContinueReason | undefined;
@@ -151,6 +160,20 @@ export interface LoopState {
    * 而是跨轮暂存、下一轮 model 调用前经 reminder 通道注入。注入后清空。
    */
   pendingThinkingDivergenceReminder?: boolean;
+  /**
+   * P2-1：近几轮的产出量历史（assistant 文本长度 + 工具调用数加权，见 output-stall.ts）。
+   * 连续 OUTPUT_STALL_WINDOW 轮都低于阈值时，回注一次"是否卡住"的软提醒。
+   * 只保留最近 OUTPUT_STALL_WINDOW 轮，滚动淘汰最旧的。
+   */
+  outputVolumeHistory?: number[];
+  /** P2-1：产出停滞提醒已触发的次数（限次，避免每轮刷屏） */
+  outputStallInterventions?: number;
+  /**
+   * P2-1：检测到产出停滞，待下一轮循环开头经 reminderParts 注入提醒（pending）。
+   * 与 pendingThinkingDivergenceReminder 同机制——不在 assistant/tool_result 之间插消息
+   * （破坏配对），而是跨轮暂存、下一轮 model 调用前经 reminder 通道注入。注入后清空。
+   */
+  pendingOutputStallReminder?: boolean;
   /** P2-2：上次回注工作日志摘要时的轮次（每 N 轮回注一次） */
   lastProgressReminderTurn?: number;
   /**
@@ -209,6 +232,20 @@ export interface LoopState {
    * queryLoop 每条用户消息新建 state，此字段保证同一条消息多轮里不重复注入。
    */
   hypothesisGuideInjected?: boolean;
+  /**
+   * P0-3：本条用户消息解析出的 Token Budget 目标（如 "+500k" → 500000）。
+   * undefined 表示本条消息未带预算指令，Budget Continuation Gate 直接跳过。
+   * 在 queryLoop 顶部解析一次（state 创建后），随每条新用户消息的新 state 天然重置。
+   */
+  tokenBudgetTarget?: number;
+  /**
+   * P0-3：设置预算目标那一刻的累计 usage 基线（inputTokens+outputTokens+cacheCreation）。
+   * 之后每次判定"还剩多少预算"都用当前累计值减去这个基线，而不是从 0 算——
+   * sessionState.getTotalUsage() 是整个会话的累计口径，不是"这次任务"专属的。
+   */
+  tokenBudgetBaselineUsage?: number;
+  /** P0-3：预算续写已触发的次数（供日志/可观测性使用，真正的停止条件是预算耗尽或递减检测） */
+  tokenBudgetContinuationCount?: number;
 }
 
 /** 创建初始循环状态 */

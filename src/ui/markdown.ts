@@ -611,30 +611,49 @@ function renderList(token: any, depth: number = 0): string {
       ? `${formatOrderedPrefix((token.start || 1) + i, depth)} `
       : "- ";
 
-    // 收集当前列表项的内容
-    const parts: string[] = [];
+    // 收集当前列表项的内容。同一列表项可能有多个子块（松散列表的多段落、
+    // 段落+代码块、段落+引用等，见 marked 对 "loose list" 的解析）。
+    // 每个子块按自身的 "\n" 拆成行，并标记该行是否已自带完整缩进：
+    // - 嵌套列表（type=list）递归产出的每一行已经是 "深一级 indent + 前缀 + 文本"，
+    //   自身完整，不需要也不能再叠加悬挂缩进（否则会被重复缩进）。
+    // - 其余子块（段落续行、代码块、引用等）的续行只带各自局部缩进（如代码块固定
+    //   TAB_INDENT），还没对齐到"当前列表项文本"的起始列，需要补悬挂缩进。
+    // "space" token（对应源码中的空行）不产生内容，只贡献一个空行占位，
+    // 用来还原松散列表段落之间的空行间距。
+    type ItemLine = { text: string; selfIndented: boolean };
+    const itemLines: ItemLine[] = [];
+    const pushBlock = (text: string, selfIndented: boolean) => {
+      for (const line of text.split("\n")) itemLines.push({ text: line, selfIndented });
+    };
     for (const child of item.tokens) {
       if (child.type === "text") {
-        parts.push(child.tokens ? renderInline(child.tokens) : child.text);
+        pushBlock(child.tokens ? renderInline(child.tokens) : child.text, false);
       } else if (child.type === "paragraph") {
-        parts.push(renderInline(child.tokens));
+        pushBlock(renderInline(child.tokens), false);
       } else if (child.type === "list") {
-        // 嵌套列表单独处理
-        parts.push("\n" + renderList(child, depth + 1));
+        pushBlock(renderList(child, depth + 1), true);
+      } else if (child.type === "space") {
+        itemLines.push({ text: "", selfIndented: true });
       } else {
         // 其他块级元素（代码块等）
-        parts.push(renderTokens([child]));
+        pushBlock(renderTokens([child]), false);
       }
     }
 
-    const content = parts.join("");
-    // 第一行带前缀，后续行直接追加（嵌套列表已有自己的缩进）
-    const contentLines = content.split("\n");
-    lines.push(`${indent}${prefix}${contentLines[0]}`);
-    if (contentLines.length > 1) {
-      lines.push(...contentLines.slice(1));
-    }
+    // 悬挂缩进 = 当前层级缩进 + 前缀可见宽度，让续行对齐到列表项文本的起始列
+    // （而不仅仅是列表符号那一列），提升可读性。
+    const hangIndent = indent + " ".repeat(visibleWidth(prefix));
+    itemLines.forEach((line, idx) => {
+      if (idx === 0) {
+        lines.push(`${indent}${prefix}${line.text}`);
+      } else if (line.selfIndented || line.text === "") {
+        lines.push(line.text);
+      } else {
+        lines.push(`${hangIndent}${line.text}`);
+      }
+    });
   }
+
 
   return lines.join("\n");
 }

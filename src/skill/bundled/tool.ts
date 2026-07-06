@@ -101,7 +101,9 @@ export class BundledSkillTool implements Tool {
         systemPrompt: "你是一个专注的助手，请完成以下任务。",
         userPrompt: prompt,
         allowedTools: this.cmd.allowedTools ?? [],
-        maxTurns: this.cmd.maxTurns ?? 10,
+        // P2-2：内置 skill 若忘记声明 maxTurns 时的兜底默认，从 10 提到 30
+        // （与 sub-agent.ts/skill/tool.ts 的常规子代理默认对齐；现有内置 skill 均已显式声明，不受影响）
+        maxTurns: this.cmd.maxTurns ?? 30,
         timeout:
           timeoutMins != null
             ? Math.min(Math.max(timeoutMins, 1), 30) * 60_000

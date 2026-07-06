@@ -78,7 +78,7 @@ export interface SubAgentTask {
   prompt: string;
   /** 子代理可用的工具（默认继承主代理的工具） */
   tools?: ToolRegistry;
-  /** 子代理最大轮次（默认 10） */
+  /** 子代理最大轮次（默认见 resolveSubAgentMaxTurns：fork 任务 200，常规任务 30） */
   maxTurns?: number;
   /** 子代理上下文窗口大小（默认 50000） */
   maxTokens?: number;
@@ -107,6 +107,25 @@ export interface SubAgentTask {
    *  存在时子代理不从空上下文起步，而是接续这段父对话历史（prompt cache 友好），
    *  适合"接着主对话往下深钻某个分支"的子任务。对标 cc forkSubagent。 */
   forkMessages?: { role: string; content: ContentBlock[] }[];
+}
+
+/** P2-2：计算子代理默认 maxTurns（未显式指定 task.maxTurns 时）。
+ *
+ *  - fork 任务（task.forkMessages 非空，继承主对话上下文）：200，对齐 CC fork 子代理——
+ *    继承完整父对话意味着任务复杂度约等于继续该对话，200 是"几乎不会触发，只防真正
+ *    无限循环"的安全阀。
+ *  - 常规任务（explore/task/verify 等独立窄范围任务）：30——比旧值 10 宽松，覆盖真实
+ *    存在的"复杂子任务被过早截断"场景，但不直接照搬 200：这类任务上下文独立、范围
+ *    较窄，跑到 200 轮更可能是卡住而非正当进展。
+ *
+ *  只对携带 forkMessages 字段的调用方（executeInner，进程内路径）生效 fork 档位；
+ *  spawn 路径（ParentInitMessage 协议）不透传 forkMessages，跨进程边界后 fork 上下文
+ *  已丢失，不适用 200 档位，调用方应始终传非 fork 语境的 task。
+ *  导出供单测直接验证，避免依赖端到端跑满 30/200 轮 mock 循环。 */
+export function resolveSubAgentMaxTurns(task: { maxTurns?: number; forkMessages?: unknown[] }): number {
+  if (task.maxTurns !== undefined) return task.maxTurns;
+  const isForkTask = Boolean(task.forkMessages && task.forkMessages.length > 0);
+  return isForkTask ? 200 : 30;
 }
 
 /** 子代理执行结果 */
@@ -462,7 +481,10 @@ export class SubAgent {
       allowed_tools: toolDefs.map(t => t.name),
       tool_defs: toolDefs,
       model,
-      max_turns: task.maxTurns ?? 10,
+      // P2-2：与 executeInner 的常规子代理默认对齐为 30（旧值 10 过于保守）。
+      // 注：ParentInitMessage 协议不透传 task.forkMessages（跨进程边界），fork 模式
+      // 走 spawn 时上下文本就无法继承，不适用 fork=200 的档位，统一按非 fork 默认处理。
+      max_turns: task.maxTurns ?? 30,
       max_tokens: task.maxTokens ?? 50000,
       timeout: task.timeout ?? resolveAgent(task.type)?.timeout ?? 120_000,
       workdir: process.cwd(),
@@ -498,7 +520,8 @@ export class SubAgent {
       allowed_tools: task.allowedTools,
       tool_defs: toolDefs,
       model,
-      max_turns: task.maxTurns ?? 10,
+      // P2-2：与 executeCustomInner 对齐为 30（旧值 10 过于保守，CustomSubAgentTask 无 fork 概念）。
+      max_turns: task.maxTurns ?? 30,
       max_tokens: task.maxTokens ?? 50000,
       timeout: task.timeout ?? 300_000,  // G4：与进程内 executeCustomInner 对齐为 300s，消除同一自定义代理走 spawn/进程内两条路径超时值不一致（此前 spawn=120s、进程内=300s）
       workdir: process.cwd(),
@@ -888,7 +911,8 @@ export class SubAgent {
       if (structuredTool) {
         tools.register(structuredTool);
       }
-      const maxTurns = task.maxTurns ?? 10;
+      // P2-2：fork 任务默认 200、常规任务默认 30，见 resolveSubAgentMaxTurns 注释。
+      const maxTurns = resolveSubAgentMaxTurns(task);
       const loopDetector = new LoopDetector();
 
       const toolNames = filteredTools.map(t => t.name());
@@ -1107,7 +1131,8 @@ export class SubAgent {
       const tools = task.allowedTools.length > 0
         ? this.buildIsolatedToolRegistry(this.toolRegistry.filter(task.allowedTools).all())
         : new ToolRegistry();
-      const maxTurns = task.maxTurns ?? 10;
+      // P2-2：CustomSubAgentTask 无 forkMessages，resolveSubAgentMaxTurns 自然落到常规档 30。
+      const maxTurns = resolveSubAgentMaxTurns(task);
       const loopDetector = new LoopDetector();
 
       log.info("SUBAGENT", `[custom] 可用工具: ${task.allowedTools.join(", ") || "无"}, 超时: ${timeout / 1000}秒, 最大轮次: ${maxTurns}`);
