@@ -21,6 +21,8 @@ export interface GoalConfig {
   minTurnsBeforeEval: number;
   /** 评估者调用超时（毫秒） */
   evaluatorTimeout: number;
+  /** 评估者上下文最大字符数（用于 extractEvalContext 截断上限） */
+  evalContextMaxChars: number;
 }
 
 export const DEFAULT_GOAL_CONFIG: GoalConfig = {
@@ -30,5 +32,6 @@ export const DEFAULT_GOAL_CONFIG: GoalConfig = {
   enableBlockedDetection: true,
   blockedThreshold: 3,         // 连续 3 轮相同 blockerKey → blocked
   minTurnsBeforeEval: 2,       // 前 2 轮跳过评估
-  evaluatorTimeout: 8000,      // 8 秒超时
+  evaluatorTimeout: 25000,     // 25 秒超时（deepseek-v4-pro 首字节 5-15s，8s 必超）
+  evalContextMaxChars: 12000,  // 评估器上下文上限（保证长报告不被截断）
 };

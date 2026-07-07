@@ -35,6 +35,11 @@ function hashString(s: string): string {
   return createHash("sha256").update(s).digest("hex").slice(0, 16);
 }
 
+/** P2-1：组合 system prompt + tool schemas + tool order 为单一前缀 hash，用于缓存断裂诊断 */
+function combinePrefixHash(sysHash: string, toolHash: string, orderHash: string): string {
+  return hashString(`${sysHash}|${toolHash}|${orderHash}`);
+}
+
 /** 请求前的状态快照（G3：15+ 维度归因，对齐 CC） */
 interface PromptState {
   systemPromptHash: string;
@@ -69,6 +74,10 @@ export interface CacheBreakReport {
   previousCacheReadTokens: number;
   /** 本次的 cache_read tokens */
   currentCacheReadTokens: number;
+  /** P2-1 诊断：上次请求的 system prompt + tools 前缀 hash（判定本地断裂 vs 服务端波动） */
+  previousPrefixHash?: string;
+  /** P2-1 诊断：本次请求的 system prompt + tools 前缀 hash */
+  currentPrefixHash?: string;
 }
 
 /** 输入参数 */
@@ -231,8 +240,19 @@ export class CacheBreakDetector {
       changes.push(`TTL 可能已过期 (间隔 ${Math.round(gapMs / 60000)} 分钟)`);
     }
 
+    // P2-1 诊断：计算 system prompt + tools 组合前缀 hash（下次复现即可判本地断裂 vs 服务端波动）
+    const prevPrefixHash = combinePrefixHash(prev.systemPromptHash, prev.toolSchemasHash, prev.toolOrderHash);
+    const currPrefixHash = combinePrefixHash(curr.systemPromptHash, curr.toolSchemasHash, curr.toolOrderHash);
+
     if (changes.length === 0) {
-      changes.push("未知原因（命中下降但状态无变化，可能服务端缓存波动）");
+      // P2-1：把前缀 hash 是否变化写进归因——hash 变=本地前缀断裂；hash 未变=服务端波动。
+      // 此前一律归"未知原因"，缺的正是这个判据字段。
+      const prefixChanged = prevPrefixHash !== currPrefixHash;
+      changes.push(
+        prefixChanged
+          ? `本地前缀 hash 变化（${prevPrefixHash} → ${currPrefixHash}），命中下降由本地 prompt 前缀断裂导致`
+          : `本地前缀 hash 未变（${currPrefixHash}），命中下降疑为服务端缓存波动`,
+      );
     }
 
     const report: CacheBreakReport = {
@@ -241,6 +261,8 @@ export class CacheBreakDetector {
       changes,
       previousCacheReadTokens: prevTokens,
       currentCacheReadTokens: params.cacheReadTokens,
+      previousPrefixHash: prevPrefixHash,
+      currentPrefixHash: currPrefixHash,
     };
 
     // 更新状态

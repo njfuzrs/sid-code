@@ -130,8 +130,10 @@ export class TraceCollector {
   private heartbeatPath: string = "";
   /** §3.4：BeforeModel 配对看门狗（index → timer） */
   private pendingModelCalls = new Map<number, ReturnType<typeof setTimeout>>();
-  /** 配对超时阈值（10 分钟） */
-  private readonly PAIRING_TIMEOUT_MS = 10 * 60 * 1000;
+  /** 配对超时阈值（2 分钟）——作为 fallback/stream-processor abort race 都失效时的最后兜底。
+   * P0-2：原 10 分钟太长（真实 hang 时用户白等 600s）。abort race 修复后主路径应在秒级收尾，
+   * 此看门狗仅在极端情况兜底，缩短到 120s 限制最坏等待时间。 */
+  private readonly PAIRING_TIMEOUT_MS = 2 * 60 * 1000;
   /** §3.8：audit.log 起始行号（SessionStart 时快照） */
   private auditLogStartLine: number = 0;
   /** §3.8：audit.log 文件路径（SessionStart 时快照） */
@@ -759,6 +761,10 @@ export class TraceCollector {
         stop_reason: stopReason,
         usage: usageNormalized,
         index: pair.index,
+        // P1-3: 填充 elapsed_ms/ttft_ms/content_types（此前恒 null，已在 AfterModelRaw 有值但此处缺失导致复盘误判）
+        elapsed_ms: (resp as any).api_duration_ms ?? null,
+        ttft_ms: (resp as any).ttft_ms ?? null,
+        content_types: contentBlocks.filter(Boolean).map((b: any) => b.type),
       },
     });
 
@@ -965,11 +971,22 @@ export class TraceCollector {
       }
     }
 
+    // P1-3: SubagentStop 补全 data（此前 data 恒为空，子代理开销无法从轨迹核算）
+    const stopInput = input as any; // SubagentStopInput 字段
     this.writer.appendEvent({
       event: HookEventName.SubagentStop,
       session_id: this.metadata.session_id,
       timestamp: input.timestamp,
       cwd: input.cwd,
+      data: {
+        agent_id: stopInput.agent_id ?? null,
+        agent_type: stopInput.agent_type ?? null,
+        elapsed_ms: stopInput.duration_ms ?? null,
+        output_tokens: stopInput.usage?.outputTokens ?? null,
+        input_tokens: stopInput.usage?.inputTokens ?? null,
+        turns: stopInput.turns ?? null,
+        status: stopInput.success === true ? "completed" : stopInput.success === false ? "error" : "unknown",
+      },
     });
   }
 

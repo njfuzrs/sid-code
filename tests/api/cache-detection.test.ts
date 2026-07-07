@@ -110,13 +110,17 @@ describe("归因分析", () => {
     expect(report!.changes.some((c) => c.includes("TTL"))).toBe(true);
   });
 
-  test("命中下降但状态无变化 → 未知原因兜底", () => {
+  test("命中下降但状态无变化 → 前缀 hash 未变归因为服务端波动", () => {
     let t = 0;
     const d = new CacheBreakDetector(() => t);
     d.checkResponse(params({ cacheReadTokens: 50000 }));
     t = 1000; // 1s 内，无 TTL 警告
     const report = d.checkResponse(params({ cacheReadTokens: 5000 }));
-    expect(report!.changes.some((c) => c.includes("未知原因"))).toBe(true);
+    // P2-1: 改进归因——前缀 hash 未变时明确标注为"服务端缓存波动"
+    expect(report!.changes.some((c) => c.includes("服务端缓存波动"))).toBe(true);
+    expect(report!.previousPrefixHash).toBeTruthy();
+    expect(report!.currentPrefixHash).toBeTruthy();
+    expect(report!.previousPrefixHash).toBe(report!.currentPrefixHash);
   });
 });
 

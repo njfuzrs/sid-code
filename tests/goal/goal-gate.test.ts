@@ -34,6 +34,17 @@ function mockProvider(responseText: string): Provider {
   };
 }
 
+/** P0-1：模拟必失败的评估者 provider（抛错），用于验证评估器熔断路径 */
+function failingProvider(): Provider {
+  return {
+    name: () => "mock-fail",
+    // eslint-disable-next-line require-yield
+    async *sendMessageStream(): AsyncIterable<StreamEvent> {
+      throw new Error("Request aborted");
+    },
+  };
+}
+
 function evalConfig(provider: Provider): EvalConfig {
   return { model: "haiku-test", provider, timeout: 1000, minTurnsBeforeEval: 2 };
 }
@@ -241,6 +252,102 @@ describe("handleGoalGate · blocked 检测", () => {
       if (saved === undefined) delete process.env.SID_ENABLE_GOAL_HARD_STOP;
       else process.env.SID_ENABLE_GOAL_HARD_STOP = saved;
     }
+  });
+});
+
+// ─── P0-1：评估器故障熔断 ───
+
+describe("handleGoalGate · 评估器故障熔断（P0-1）", () => {
+  test("评估器连续失败达阈值（硬停止模式）→ blocked 放行 shouldContinue=false", async () => {
+    // 文档 P0-1 验证方式：注入必失败的评估者，跑 3 轮 goalGate，断言第 3 轮 blocked 放行。
+    const saved = process.env.SID_ENABLE_GOAL_HARD_STOP;
+    process.env.SID_ENABLE_GOAL_HARD_STOP = "1";
+    try {
+      const detector = new BlockedDetector(3);
+      const runOnce = async (turn: number) => {
+        const ctx: GoalGateContext = {
+          goal: (() => {
+            const g = createGoal("完成一份代码审计报告并汇总告诉我");
+            g.objective = "完成一份代码审计报告并汇总告诉我";
+            g.turnsUsed = turn;
+            return g;
+          })(),
+          messages: [],
+          turnUsage: { inputTokens: 100, outputTokens: 50 },
+          // 必失败 provider → catch 分支设 blockerKey=__evaluator_unavailable__
+          evalConfig: { model: "haiku-test", provider: failingProvider(), timeout: 1000, minTurnsBeforeEval: 2 },
+          goalConfig: DEFAULT_GOAL_CONFIG,
+          blockedDetector: detector,
+        };
+        return handleGoalGate(ctx);
+      };
+
+      // 前两轮：评估器失败但未达阈值 → 继续
+      const out1 = await runOnce(5);
+      expect(out1.result.shouldContinue).toBe(true);
+      const out2 = await runOnce(6);
+      expect(out2.result.shouldContinue).toBe(true);
+
+      // 第三轮：连续 3 次 __evaluator_unavailable__ → blocked 硬停止放行
+      const out3 = await runOnce(7);
+      expect(out3.result.shouldContinue).toBe(false);
+      expect(out3.result.completed).toBe(false);
+    } finally {
+      if (saved === undefined) delete process.env.SID_ENABLE_GOAL_HARD_STOP;
+      else process.env.SID_ENABLE_GOAL_HARD_STOP = saved;
+    }
+  });
+
+  test("评估器失败时推 warning 系统消息（TUI 可见）", async () => {
+    const ctx: GoalGateContext = {
+      goal: (() => {
+        const g = createGoal("完成迁移工作");
+        g.objective = "完成迁移工作";
+        g.turnsUsed = 5;
+        return g;
+      })(),
+      messages: [],
+      turnUsage: { inputTokens: 100, outputTokens: 50 },
+      evalConfig: { model: "haiku-test", provider: failingProvider(), timeout: 1000, minTurnsBeforeEval: 2 },
+      goalConfig: DEFAULT_GOAL_CONFIG,
+      blockedDetector: new BlockedDetector(3),
+    };
+    const out = await handleGoalGate(ctx);
+    const warnMsg = out.systemMessages.find((m) => m.level === "warning" && m.text.includes("评估器连续失败"));
+    expect(warnMsg).toBeDefined();
+  });
+});
+
+// ─── P1-1：报告型任务 fast-path ───
+
+describe("evaluateGoal · 报告型任务 fast-path（P1-1）", () => {
+  test("目标含'汇总/报告' + end_turn + 实质文本 → 快速满足（不调 LLM）", async () => {
+    const { evaluateGoal } = await import("../../src/goal/evaluator.ts");
+    const goal = createGoal("检查文档一致性并汇总告诉我审计结果");
+    goal.objective = "检查文档一致性并汇总告诉我审计结果";
+    // provider 抛错——若命中 fast-path 就不会走到 LLM，故此处不应抛出
+    const result = await evaluateGoal(
+      goal,
+      "占位上下文",
+      { model: "x", provider: failingProvider(), timeout: 1000, minTurnsBeforeEval: 2 },
+      { stopReason: "end_turn", assistantTextLength: 3000 },
+    );
+    expect(result.satisfied).toBe(true);
+    expect(result.progress).toBe(100);
+  });
+
+  test("报告型目标但 assistant 文本过短 → 不命中 fast-path", async () => {
+    const { evaluateGoal } = await import("../../src/goal/evaluator.ts");
+    const goal = createGoal("汇总告诉我结果");
+    goal.objective = "汇总告诉我结果";
+    // 文本仅 100 字符 < 500 阈值 → 不命中 fast-path → 走 LLM（失败降级为未满足）
+    const result = await evaluateGoal(
+      goal,
+      "占位",
+      { model: "x", provider: failingProvider(), timeout: 1000, minTurnsBeforeEval: 2 },
+      { stopReason: "end_turn", assistantTextLength: 100 },
+    );
+    expect(result.satisfied).toBe(false);
   });
 });
 

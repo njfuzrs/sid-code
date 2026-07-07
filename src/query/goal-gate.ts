@@ -79,6 +79,8 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
           status: goal.status,
           tokensUsed: goal.tokensUsed,
           tokenBudget: goal.tokenBudget,
+          // P1-3: 记录本次评估器调用消耗的 token（evalResult 可能尚未赋值，延迟读取）
+          evalTokensUsed: (extra as any)?.evalTokensUsed ?? 0,
           ...extra,
         },
       });
@@ -138,18 +140,44 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
   }
 
   // 4. 调用独立评估者
-  const conversationContext = extractEvalContext(messages);
+  const conversationContext = extractEvalContext(messages, goalConfig.evalContextMaxChars);
+  // P1-1: Goal Gate 只在 end_turn 处理链触发，故 stopReason 恒为 "end_turn"。
+  // 取最后一条 assistant 消息的文本长度供报告型 fast-path 判据。
+  const lastAssistantTextLength = (() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role !== "assistant") continue;
+      let len = 0;
+      for (const block of messages[i].content) {
+        if (block.type === "text" && block.text.trim()) len += block.text.length;
+      }
+      return len;
+    }
+    return 0;
+  })();
   let evalResult: GoalEvalResult;
   try {
-    evalResult = await evaluateGoal(goal, conversationContext, evalConfig);
+    evalResult = await evaluateGoal(goal, conversationContext, evalConfig, {
+      stopReason: "end_turn",
+      assistantTextLength: lastAssistantTextLength,
+    });
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error);
-    log.warn("GOAL_GATE", `评估者调用失败: ${msg}`);
+    log.warn("GOAL_GATE", `评估者调用失败（未被 evaluateGoal 捕获的异常）: ${msg}`);
     evalResult = {
       satisfied: false,
       reason: "（评估器暂时不可用，继续工作）",
       progress: undefined,
+      blockerKey: "__evaluator_unavailable__",
     };
+  }
+
+  // P0-1/P1-2: 评估器降级时（blockerKey=__evaluator_unavailable__）推 warning 到 TUI
+  if (evalResult.blockerKey === "__evaluator_unavailable__") {
+    const failCount = blockedDetector["recentBlockerKeys"].filter(k => k === "__evaluator_unavailable__").length + 1;
+    systemMessages.push({
+      level: "warning",
+      text: `⚠️ Goal 评估器连续失败 ${failCount}/${goalConfig.blockedThreshold} 次，第 ${goalConfig.blockedThreshold} 次将自动放行。可 /goal clear 手动结束。`,
+    });
   }
 
   // 5. 目标不可能达成
@@ -159,7 +187,7 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
       goal.status = "impossible";
       log.warn("GOAL_GATE", `目标不可能达成（硬停止）: reason="${evalResult.reason}", turn=${goal.turnsUsed}`);
       systemMessages.push({ level: "warning", text: `Goal 被判定为不可能达成: ${evalResult.reason}` });
-      emitTraceEvent("impossible", false, { evalReason: evalResult.reason });
+      emitTraceEvent("impossible", false, { evalReason: evalResult.reason, evalTokensUsed: evalResult.evalTokensUsed ?? 0 });
       return {
         result: { shouldContinue: false, completed: false, impossible: true, evalResult },
         injectMessages,
@@ -172,7 +200,7 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
     const impossibleReminder = buildImpossibleReminder(goal, evalResult);
     injectMessages.push({ role: "user", content: [{ type: "text", text: impossibleReminder }] });
     systemMessages.push({ level: "warning", text: `评估者认为目标可能无法达成（${evalResult.reason?.slice(0, 60)}），已提醒模型自行决定` });
-    emitTraceEvent("impossible_soft", true, { evalReason: evalResult.reason });
+    emitTraceEvent("impossible_soft", true, { evalReason: evalResult.reason, evalTokensUsed: evalResult.evalTokensUsed ?? 0 });
     return {
       result: { shouldContinue: true, completed: false, impossible: false, feedback: impossibleReminder, evalResult },
       injectMessages,
@@ -185,7 +213,7 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
     goal.status = "complete";
     log.info("GOAL_GATE", `目标达成: reason="${evalResult.reason}", turn=${goal.turnsUsed}, progress=100`);
     systemMessages.push({ level: "info", text: `✓ 目标达成: ${evalResult.reason}` });
-    emitTraceEvent("satisfied", false, { evalReason: evalResult.reason, progress: 100 });
+    emitTraceEvent("satisfied", false, { evalReason: evalResult.reason, progress: 100, evalTokensUsed: evalResult.evalTokensUsed ?? 0 });
     return {
       result: { shouldContinue: false, completed: true, impossible: false, evalResult },
       injectMessages,
@@ -203,7 +231,7 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
         level: "warning",
         text: `Goal 检测到卡住（连续 ${goalConfig.blockedThreshold} 轮相同阻塞原因: ${evalResult.blockerKey}），已暂停`,
       });
-      emitTraceEvent("blocked", false, { blockerKey: evalResult.blockerKey, threshold: goalConfig.blockedThreshold });
+      emitTraceEvent("blocked", false, { blockerKey: evalResult.blockerKey, threshold: goalConfig.blockedThreshold, evalTokensUsed: evalResult.evalTokensUsed ?? 0 });
       return {
         result: { shouldContinue: false, completed: false, impossible: false, evalResult },
         injectMessages,
@@ -221,7 +249,7 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
       level: "warning",
       text: `Goal 疑似卡住（连续 ${goalConfig.blockedThreshold} 轮相同阻塞原因），已提醒模型换思路`,
     });
-    emitTraceEvent("blocked_soft", true, { blockerKey: evalResult.blockerKey, threshold: goalConfig.blockedThreshold });
+    emitTraceEvent("blocked_soft", true, { blockerKey: evalResult.blockerKey, threshold: goalConfig.blockedThreshold, evalTokensUsed: evalResult.evalTokensUsed ?? 0 });
     return {
       result: { shouldContinue: true, completed: false, impossible: false, feedback: blockedReminder, evalResult },
       injectMessages,
@@ -232,7 +260,7 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
   // 8. 未达成 → 注入反馈 + continue
   goal.lastEvalReason = evalResult.reason;
   log.info("GOAL_GATE", `决策: shouldContinue=true, progress=${evalResult.progress ?? "?"}, reason="${evalResult.reason?.slice(0, 80)}", turn=${goal.turnsUsed}`);
-  emitTraceEvent("continue", true, { progress: evalResult.progress, evalReason: evalResult.reason?.slice(0, 200), blockerKey: evalResult.blockerKey });
+  emitTraceEvent("continue", true, { progress: evalResult.progress, evalReason: evalResult.reason?.slice(0, 200), blockerKey: evalResult.blockerKey, evalTokensUsed: evalResult.evalTokensUsed ?? 0 });
   const feedback = buildGoalGateFeedback(goal, evalResult);
   injectMessages.push({
     role: "user",

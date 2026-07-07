@@ -435,7 +435,30 @@ export class ModelFallback {
         try {
           log.debug("FALLBACK", `流式阶段尝试 ${attempt + 1}/${streamMaxRetries + 1}`);
 
-          for await (const event of stream) {
+          // P0-2 修复：将 `for await` 改为手动迭代 + Promise.race(abortPromise)。
+          // 当 SSE 半开（TCP 连接在、服务端不再发 event）时，`for await` 内的 reader.read()
+          // 永不 settle，signal?.aborted 检查永远执行不到。通过 race abort，abort 触发时
+          // 立即 reject，不等下一个 event。参考模板：openai.ts:1291-1343。
+          const abortPromise: Promise<never> | null = (() => {
+            if (!signal || signal.aborted) return null;
+            return new Promise<never>((_, reject) => {
+              const onAbort = () => reject(new RequestAbortedError("请求已中止（abort race）"));
+              signal.addEventListener("abort", onAbort, { once: true });
+            });
+          })();
+
+          const iterator = stream[Symbol.asyncIterator]();
+          let iterDone = false;
+          while (!iterDone) {
+            const racers: Promise<IteratorResult<StreamEvent>>[] = [iterator.next()];
+            if (abortPromise) racers.push(abortPromise as any);
+            const iterResult = await Promise.race(racers);
+            if (iterResult.done) {
+              iterDone = true;
+              break;
+            }
+            const event = iterResult.value;
+
             if (signal?.aborted) {
               throw new RequestAbortedError("请求已中止");
             }

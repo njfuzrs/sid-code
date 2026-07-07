@@ -1677,10 +1677,12 @@ export async function* queryLoop(
         const inPlanMode = deps.getCurrentPermissionMode?.() === "plan";
         if (goal && goal.status === "active" && !inPlanMode) {
           try {
-            // 评估者模型优先级：config.goal.evaluatorModel > subAgentModels.verify > default > 主模型
+            // 评估者模型优先级：config.goal.evaluatorModel > subAgentModels.default > 主模型
+            // 注意：刻意跳过 subAgentModels.verify —— verify 语义是"对抗验证子代理"（需强模型、慢），
+            // 而 goal 评估是"快速判是否完成"（需快模型、512 token JSON）。复用 verify 会让强慢模型
+            // 撞上短超时必然失败（见 20260707 排查 P0-1/P1-4）。两者解耦。
             const evaluatorModel =
               effectiveGoalConfig.evaluatorModel ||
-              config.subAgentModels?.verify ||
               config.subAgentModels?.default ||
               config.model;
             const evalConfig = {

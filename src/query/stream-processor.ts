@@ -103,7 +103,31 @@ export async function processStream(
   }, CHECK_INTERVAL);
 
   try {
-    for await (const event of stream) {
+    // P0-2 修复：将 `for await` 改为手动迭代 + Promise.race(abortPromise)。
+    // 当 SSE 半开时 reader.read() 永不 settle，timeoutError 检查永远执行不到。
+    // 通过 race abort（来自 getAbortController），abort 触发时立即 reject。
+    const abortCtl = options?.getAbortController?.();
+    const abortSignal = abortCtl?.signal;
+    const abortPromise: Promise<never> | null = (() => {
+      if (!abortSignal || abortSignal.aborted) return null;
+      return new Promise<never>((_, reject) => {
+        const onAbort = () => reject(new Error("Stream aborted (abort race)"));
+        abortSignal.addEventListener("abort", onAbort, { once: true });
+      });
+    })();
+
+    const iterator = stream[Symbol.asyncIterator]();
+    let iterDone = false;
+    while (!iterDone) {
+      const racers: Promise<IteratorResult<StreamEvent>>[] = [iterator.next()];
+      if (abortPromise) racers.push(abortPromise as any);
+      const iterResult = await Promise.race(racers);
+      if (iterResult.done) {
+        iterDone = true;
+        break;
+      }
+      const event = iterResult.value;
+
       lastActivityTime = Date.now();
 
       // 关键修复：每次事件前检查超时标志，一旦超时就抛错主动退出循环
