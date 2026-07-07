@@ -56,8 +56,7 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
   ];
   if (data.isRaw) identity.push(<Text key="raw" color={theme.ui.comment}> ·r</Text>);
   if (data.isVim) identity.push(<Text key="vim" color={theme.ui.comment}> ·v</Text>);
-  // DEBUG 降噪：不再常驻 warning 黄，缩为暗角灰标 ·d（警示色只留给真危险态）。
-  if (data.isDebug) identity.push(<Text key="debug" color={theme.ui.comment}> ·d</Text>);
+  // DEBUG 不在状态栏展示：debug 是开发者自己开的开关，不必常驻占位（一个 ·d 字母角标既丑又无信息量）。
 
   // ── 旋钮区：effort · thinking · 非常规权限模式 ──
   const knobs: React.ReactNode[] = [];
