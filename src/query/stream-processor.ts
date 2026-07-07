@@ -15,6 +15,7 @@ import { accumulateUsage } from "../llm/types.ts";
 import { getLogger } from "../debug/index.ts";
 import { normalizeToolInput } from "../llm/normalize-tool-input.ts";
 import { detectUnansweredEndTurn } from "./unanswered-end-turn.ts";
+import { RequestAbortedError } from "../llm/errors.ts";
 
 /** 流式处理器配置 */
 export interface StreamProcessorOptions {
@@ -111,7 +112,7 @@ export async function processStream(
     const abortPromise: Promise<never> | null = (() => {
       if (!abortSignal || abortSignal.aborted) return null;
       return new Promise<never>((_, reject) => {
-        const onAbort = () => reject(new Error("Stream aborted (abort race)"));
+        const onAbort = () => reject(new RequestAbortedError("Stream aborted (abort race)"));
         abortSignal.addEventListener("abort", onAbort, { once: true });
       });
     })();

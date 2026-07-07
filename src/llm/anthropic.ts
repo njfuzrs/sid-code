@@ -34,6 +34,7 @@ import { currentSseDumpContext } from "./sse-chunk-dumper.ts";
 import { normalizeToolInput } from "./normalize-tool-input.ts";
 import { buildSystemBlocks } from "../api/cache-strategy.ts";
 import { getEffectiveBetaHeaders } from "../api/beta-header-latch.ts";
+import { RequestAbortedError } from "./errors.ts";
 
 export class AnthropicProvider implements Provider {
   private client: Anthropic;
@@ -313,9 +314,35 @@ export class AnthropicProvider implements Provider {
       const contentBlocks: (InternalBlock | null)[] = [];
 
       try {
-        for await (const event of guarded) {
+        // §7.3 修复：与 fallback.ts/stream-processor.ts/stream-lifecycle.ts 同理，
+        // `for await` 内 signal?.aborted 检查只在下一个事件到达时执行——SDK signal 透传
+        // 虽会中断 fetch，但若 SDK 内部缓冲/未及时释放 reader，guarded 仍可能永不 yield，
+        // 使这层检查形同虚设。补 abortPromise race，abort 触发时不等下一个事件立即退出。
+        const abortPromise: Promise<never> | null = (() => {
+          if (!signal || signal.aborted) return null;
+          return new Promise<never>((_, reject) => {
+            const onAbort = () => reject(new RequestAbortedError("请求已中止（anthropic consume race）"));
+            signal.addEventListener("abort", onAbort, { once: true });
+          });
+        })();
+
+        const iterator = guarded[Symbol.asyncIterator]();
+        let iterDone = false;
+        while (!iterDone) {
           if (signal?.aborted) {
-            throw new Error("Request aborted");
+            throw new RequestAbortedError("Request aborted");
+          }
+          const racers: Promise<IteratorResult<any>>[] = [iterator.next()];
+          if (abortPromise) racers.push(abortPromise as any);
+          const iterResult = await Promise.race(racers);
+          if (iterResult.done) {
+            iterDone = true;
+            break;
+          }
+          const event = iterResult.value;
+
+          if (signal?.aborted) {
+            throw new RequestAbortedError("Request aborted");
           }
 
           switch ((event as any).type) {

@@ -116,3 +116,55 @@ describe("回归：stream-processor 心跳超时只 abort turn 级，不污染�
     expect(turnController.signal.aborted).toBe(false);
   }, 15_000);
 });
+
+/**
+ * P0-2 §7.1 回归：真半开流场景——stream 的 next() 对 abort 一无所知（不监听 signal，
+ * 永不 resolve/reject），完全模拟"SSE 半开：TCP 连接在、服务端不再发 event，
+ * reader.read() 永不 settle"。此前的 `for await` 只在收到事件后才检查 timeoutError，
+ * 若 next() 本身不响应 abort，会永久卡住——这正是修复前 P0-2 的真实故障模式。
+ * 修复后（processStream 内 Promise.race(iterator.next(), abortPromise)）必须能在
+ * abort 触发后立即退出，不必等 next() 自己 settle。
+ */
+function trulyHangingStream(): AsyncIterable<StreamEvent> {
+  return {
+    [Symbol.asyncIterator]() {
+      return {
+        next() {
+          // 永不 resolve、永不 reject、完全不监听 signal —— 唯一能救出来的只有
+          // processStream 内部的外层 Promise.race(abortPromise)。
+          return new Promise<IteratorResult<StreamEvent>>(() => { /* 有意永不 settle */ });
+        },
+      };
+    },
+  };
+}
+
+describe("P0-2 §7.1 回归：真半开流（stream 自身不感知 abort）", () => {
+  test("stream.next() 永不 settle 且不监听 signal → processStream 仍需在 abort 后快速退出", async () => {
+    const turnController = new AbortController();
+
+    const start = Date.now();
+    let thrown: Error | null = null;
+    // 100ms 后模拟看门狗/超时机制 abort turn 级 controller（与生产中 heartbeat/overall
+    // 定时器调用 getAbortController()?.abort() 语义一致，但这里直接手动 abort，
+    // 排除定时器精度干扰，聚焦验证 for-await 层是否真的 race 了 abort）。
+    setTimeout(() => turnController.abort(), 100);
+
+    try {
+      await processStream(trulyHangingStream(), undefined, undefined, {
+        // 心跳/整体超时给得很长，确保退出只可能是 abort race 生效，不是超时兜底凑巧命中。
+        heartbeatTimeoutMs: 60_000,
+        overallTimeoutMs: 60_000,
+        heartbeatCheckIntervalMs: 10,
+        getAbortController: () => turnController,
+      });
+    } catch (e) {
+      thrown = e as Error;
+    }
+    const elapsed = Date.now() - start;
+
+    expect(thrown).not.toBeNull();
+    // 必须远早于 60s 的心跳/整体超时，证明是外层 abortPromise race 生效
+    expect(elapsed).toBeLessThan(2_000);
+  }, 10_000);
+});

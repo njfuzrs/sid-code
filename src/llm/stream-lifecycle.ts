@@ -313,7 +313,41 @@ async function* streamLifecycleImpl<T>(
   resetContentProgress(); // 启动 content progress 计时（未启用时空转）
   startOverall();         // 启动 overall 计时（未启用时空转）
   try {
-    for await (const event of source) {
+    // P0-2 §7.3 修复：与 fallback.ts/stream-processor.ts 同理，将 for-await 改为
+    // 手动迭代 + Promise.race(abortPromise)。当 source（SDK raw stream）半开时，
+    // reader.read() 永不 settle，signal?.aborted / snapshot.timedOut 检查永远执行不到。
+    // 通过 race signal + timedOut，超时/abort 触发时立即退出。
+    const abortPromise: Promise<never> | null = (() => {
+      if (!signal || signal.aborted) return null;
+      return new Promise<never>((_, reject) => {
+        const onAbort = () => reject(new Error("Stream aborted (lifecycle abort race)"));
+        signal.addEventListener("abort", onAbort, { once: true });
+      });
+    })();
+
+    const iterator = source[Symbol.asyncIterator]();
+    let iterDone = false;
+    while (!iterDone) {
+      if (snapshot.timedOut) break;
+      if (signal?.aborted) break;
+      const racers: Promise<IteratorResult<T>>[] = [iterator.next()];
+      if (abortPromise) racers.push(abortPromise as any);
+      let iterResult: IteratorResult<T>;
+      try {
+        iterResult = await Promise.race(racers);
+      } catch (e) {
+        // 关键：只有"abort race 主动 reject"才静默退出；source 抛出的真实错误
+        // （如 parseSSE 字节级超时、网络错误）必须原样抛出，保持与旧 for-await 一致的语义，
+        // 否则会把超时/错误吞成"流正常结束"。
+        if (signal?.aborted) break;
+        throw e;
+      }
+      if (iterResult.done) {
+        iterDone = true;
+        break;
+      }
+      const event = iterResult.value;
+
       if (snapshot.timedOut) break;
       // signal 纵深防御：流消费中检查 signal，支持用户中断穿透
       if (signal?.aborted) break;

@@ -797,6 +797,46 @@ describe("ModelFallback 增强", () => {
       ),
     ).rejects.toBeInstanceOf(RequestAbortedError);
   }, 10_000);
+
+  // ─── P0-2 §7.1 回归：真半开流（provider 内部完全不感知 signal）必须靠外层 race 逃逸 ───
+  test("P0-2: provider 流内部完全不感知 abort（真半开）→ 外层 race 仍需在 1s 内 reject，不 hang 到 streamTimeoutMs", async () => {
+    // 关键区别于上面两个既有用例：此 mock 的生成器 yield 一个事件后，挂在一个
+    // **永不 resolve/reject 且不监听 signal** 的 Promise 上——完全模拟"SSE 半开：
+    // TCP 连接在、服务端不再发 event，reader.read() 永不 settle"，且 provider 自身
+    // 对 signal 一无所知（不像旧测试里 mock 主动监听 abort 来自救）。
+    // 若 fallback.ts 的 for-await 仍是旧模式（无外层 Promise.race），本用例会真实 hang
+    // 到 streamTimeoutMs（这里特意设置得很长）才被动触发，从而暴露回归。
+    let neverSettles: () => void = () => {};
+    const hangProvider: Provider = {
+      name: () => "mock-real-hang",
+      defaultModel: () => "mock-model",
+      async *sendMessageStream(): AsyncIterable<StreamEvent> {
+        yield { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "partial" } };
+        // 挂起：不监听 signal，不 resolve，不 reject —— 唯一能救出来的只有外层 race。
+        await new Promise<void>((_resolve, _reject) => {
+          neverSettles = () => { /* 有意留空：证明此 Promise 永不 settle */ };
+        });
+        yield { type: "message_stop" };
+      },
+    };
+
+    const userController = new AbortController();
+    // streamTimeoutMs 故意设得很长（60s），确保测试只可能因为"外层 abort race"提前退出，
+    // 而不是因为 fallback 自己的整体超时兜底凑巧也在合理时间内触发。
+    const fallback = new ModelFallback({ streamTimeoutMs: 60_000 });
+    setTimeout(() => userController.abort(), 100);
+
+    const start = Date.now();
+    await expect(
+      collectEvents(
+        fallback.executeWithFallback(hangProvider, defaultParams, userController.signal),
+      ),
+    ).rejects.toBeInstanceOf(RequestAbortedError);
+    const elapsed = Date.now() - start;
+    // 必须远早于 60s 的 streamTimeoutMs，证明是外层 race 生效而非兜底超时
+    expect(elapsed).toBeLessThan(2_000);
+    neverSettles(); // 消除 "unused variable" 顾虑，语义上标记该 promise 本就设计为不 settle
+  }, 10_000);
 });
 
 describe("T6 — 流内错误提前检测（stream-level error）", () => {
