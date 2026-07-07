@@ -4,7 +4,7 @@
  * 配置来源（优先级从高到低）：
  * 1. 项目级 .sid-code/lsp.json
  * 2. 全局 ~/.sid-code/lsp.json
- * 3. 内置默认配置（TypeScript，如果 typescript-language-server 可用）
+ * 3. 内置常见语言目录（builtin-servers.ts）—— 命令在 PATH 中即自动注册（零配置）
  */
 
 import type { LSPServerConfig } from "./types.ts";
@@ -12,6 +12,7 @@ import { getLogger } from "../debug/logger.ts";
 import { readFile } from "fs/promises";
 import { join } from "path";
 import { sidPaths } from "../config/paths.ts";
+import { BUILTIN_LSP_SERVERS } from "./builtin-servers.ts";
 
 /** lsp.json 文件格式：服务器名 → 部分配置（workspaceFolder/name 自动填充） */
 type LSPConfigFile = Record<string, Partial<LSPServerConfig> & {
@@ -25,24 +26,31 @@ export async function loadLSPConfigs(
   const log = getLogger();
   const configs: Record<string, LSPServerConfig> = {};
 
-  // 1. 内置 TypeScript 支持（如果命令可用）
-  if (await isCommandAvailable("typescript-language-server")) {
-    configs["typescript"] = {
-      name: "typescript",
-      command: "typescript-language-server",
-      args: ["--stdio"],
+  // 1. 内置常见语言：并行探测各 language server 是否在 PATH 中，可用即自动注册。
+  //    这是"企业级开箱即用"的核心——用户装了对应 language server 就零配置可用，
+  //    不必再手写 lsp.json。探测并行执行，避免逐个 which 串行拖慢启动。
+  const availability = await Promise.all(
+    BUILTIN_LSP_SERVERS.map((s) => isCommandAvailable(s.command)),
+  );
+  const registered: string[] = [];
+  BUILTIN_LSP_SERVERS.forEach((server, i) => {
+    if (!availability[i]) return;
+    configs[server.name] = {
+      name: server.name,
+      command: server.command,
+      args: server.args,
       workspaceFolder,
-      extensionToLanguage: {
-        ".ts": "typescript",
-        ".tsx": "typescriptreact",
-        ".js": "javascript",
-        ".jsx": "javascriptreact",
-        ".mjs": "javascript",
-        ".cjs": "javascript",
-      },
+      extensionToLanguage: server.extensionToLanguage,
+      ...(server.initializationOptions
+        ? { initializationOptions: server.initializationOptions }
+        : {}),
       startupTimeout: 30000,
       maxRestarts: 3,
     };
+    registered.push(server.name);
+  });
+  if (registered.length > 0) {
+    log.info("LSP", `内置语言目录自动注册 ${registered.length} 个可用服务器：${registered.join("、")}`);
   }
 
   // 2. 全局配置覆盖

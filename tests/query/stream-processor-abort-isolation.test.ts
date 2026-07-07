@@ -20,6 +20,7 @@
 import { describe, test, expect } from "bun:test";
 import { processStream } from "../../src/query/stream-processor.ts";
 import type { StreamEvent } from "../../src/llm/types.ts";
+import { RequestAbortedError, isInternalTimeoutAbortReason } from "../../src/llm/errors.ts";
 
 /**
  * 无数据的流，但**响应 abort**——模拟真实 fetch：turn controller 被 abort 时迭代器 reject，
@@ -114,6 +115,73 @@ describe("回归：stream-processor 心跳超时只 abort turn 级，不污染�
     // 正常累积到文本 + end_turn，且 turn controller 未被误 abort
     expect(resp.stopReason).toBe("end_turn");
     expect(turnController.signal.aborted).toBe(false);
+  }, 15_000);
+});
+
+/**
+ * 根治（2026-07，session 20260707-143411 事故复盘）：stream-processor 心跳/整体超时
+ * abort 时必须携带**具体 reason**（stream-heartbeat-timeout / stream-overall-timeout），
+ * 且该 reason 在首次 abort() 时被 AbortSignal 永久锁定。这是 query/loop.ts 结构性识别
+ * "内部超时自愈中断"（而非误判为用户 ESC 取消静默吞掉）的唯一可靠依据——不依赖
+ * 易被 abort-race 通用错误消息覆盖的文本匹配。
+ */
+describe("回归：stream-processor 超时 abort 携带具体 reason（根治静默中断）", () => {
+  test("心跳超时 → signal.reason === 'stream-heartbeat-timeout' 且属内部超时白名单", async () => {
+    const turnController = new AbortController();
+    try {
+      await processStream(hangingStream(turnController.signal), undefined, undefined, {
+        heartbeatTimeoutMs: 30,
+        heartbeatCheckIntervalMs: 10,
+        getAbortController: () => turnController,
+      });
+    } catch { /* 超时抛错，此处只关心 reason */ }
+
+    expect(turnController.signal.aborted).toBe(true);
+    expect(turnController.signal.reason).toBe("stream-heartbeat-timeout");
+    // 结构性识别：该 reason 必须被上层判为"内部超时自愈"而非用户取消
+    expect(isInternalTimeoutAbortReason(turnController.signal.reason)).toBe(true);
+  }, 15_000);
+
+  test("整体超时 → signal.reason === 'stream-overall-timeout' 且属内部超时白名单", async () => {
+    const turnController = new AbortController();
+    try {
+      await processStream(hangingStream(turnController.signal), undefined, undefined, {
+        heartbeatTimeoutMs: 10_000,
+        overallTimeoutMs: 30,
+        heartbeatCheckIntervalMs: 10,
+        getAbortController: () => turnController,
+      });
+    } catch { /* 超时抛错，此处只关心 reason */ }
+
+    expect(turnController.signal.aborted).toBe(true);
+    expect(turnController.signal.reason).toBe("stream-overall-timeout");
+    expect(isInternalTimeoutAbortReason(turnController.signal.reason)).toBe(true);
+  }, 15_000);
+
+  test("abort-race 错误携带 abortReason（即便通用错误消息抢先赢下 race 也能识别超时）", async () => {
+    // 复现事故指纹：真半开流的 iterator.next() 永不 settle，唯一能救出的是内部
+    // abortPromise —— 它 reject 的 RequestAbortedError 消息通用（不含 timeout 字样），
+    // 但必须携带 signal.reason 供下游结构性识别为超时。
+    const turnController = new AbortController();
+    let thrown: unknown = null;
+    try {
+      await processStream(trulyHangingStream(), undefined, undefined, {
+        heartbeatTimeoutMs: 30,
+        overallTimeoutMs: 60_000,
+        heartbeatCheckIntervalMs: 10,
+        getAbortController: () => turnController,
+      });
+    } catch (e) {
+      thrown = e;
+    }
+
+    expect(thrown).toBeInstanceOf(RequestAbortedError);
+    // 消息本身通用、不含 timeout 字样（正是旧 isTimeoutError 文本匹配漏判的根因）
+    expect((thrown as Error).message).not.toMatch(/timeout|超时/i);
+    // 但 abortReason 携带了具体超时 reason → 下游可结构性识别
+    const abortReason = (thrown as RequestAbortedError).abortReason;
+    expect(abortReason).toBe("stream-heartbeat-timeout");
+    expect(isInternalTimeoutAbortReason(abortReason)).toBe(true);
   }, 15_000);
 });
 

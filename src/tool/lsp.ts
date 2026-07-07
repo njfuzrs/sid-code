@@ -189,7 +189,7 @@ export class LSPTool implements Tool {
 - documentSymbol 只需 filePath（列出文件内所有符号）
 - workspaceSymbol 用 query 搜索符号名（filePath 仅用于定位语言服务器，可传项目内任意文件）
 - 调用层级两步走：先 prepareCallHierarchy 获取层级项，确认位置有效后再 incomingCalls（谁调用我）/ outgoingCalls（我调用谁）
-- 仅对已配置 LSP 服务器的语言生效（内置 TypeScript/JavaScript，其它语言需在 ~/.sid-code/lsp.json 配置）
+- 内置支持 TypeScript/JavaScript/Vue/Python/Go/Rust/JSON/YAML/HTML/CSS/Shell：装好对应 language server 即自动生效；未安装时工具会返回精准安装引导。长尾语言可在 ~/.sid-code/lsp.json 自行配置
 - 优先用它而非 grep 做符号级导航：grep 只匹配文本，lsp 理解语义`;
   }
 
@@ -241,7 +241,7 @@ export class LSPTool implements Tool {
     const ready = await waitForLSPReady();
     if (!ready) {
       return {
-        output: "LSP 服务器未就绪或未配置。请确认对应语言的 language server 已安装（TypeScript 需 typescript-language-server）。",
+        output: "LSP 服务器未就绪或未配置。请确认对应语言的 language server 已安装并在 PATH 中（内置支持 TypeScript/Vue/Python/Go/Rust 等，装好即自动生效）。",
         isError: true,
       };
     }
@@ -253,8 +253,12 @@ export class LSPTool implements Tool {
     // ── 路由检查：该文件有无对应服务器 ──
     const server = manager.getServerForFile(params.filePath);
     if (!server) {
+      // 路由未命中：给出精准引导（内置支持则告知装什么、怎么装；长尾语言则引导配置），
+      // 而非笼统的"未配置"。参见 builtin-servers.describeMissingServer。
+      const { describeMissingServer } = await import("../lsp/builtin-servers.ts");
+      const { sidPaths } = await import("../config/paths.ts");
       return {
-        output: `没有为该文件类型配置 LSP 服务器: ${params.filePath}`,
+        output: describeMissingServer(params.filePath, sidPaths.lspConfig()),
         isError: true,
       };
     }

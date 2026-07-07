@@ -34,7 +34,7 @@ import {
   checkMessageHistoryIntegrity,
   finalizeMessagesForSend,
 } from "../agent/message-invariants.ts";
-import { isAbortError } from "../llm/errors.ts";
+import { isAbortError, isInternalTimeoutAbortReason, RequestAbortedError } from "../llm/errors.ts";
 import {
   resolveEffortCapability,
   resolveAppliedEffort,
@@ -91,6 +91,7 @@ import {
   isThinkingDivergenceDetectionEnabled,
 } from "./thinking-divergence.ts";
 import { injectReminders } from "./reminder-inject.ts";
+import { decideNagInjection, MAX_NO_PROGRESS_NAGS } from "./reminder-throttle.ts";
 import { buildContextPressureReminder } from "./context-pressure.ts";
 import { detectInvestigationContext, buildHypothesisGuideReminder } from "./hypothesis-guide.ts";
 import { collectDiagnosticText, getLSPHealthWarning } from "../lsp/manager.ts";
@@ -117,10 +118,38 @@ import { createInitialLoopState } from "./types.ts";
 import { setTransition } from "./transition.ts";
 import { lookupRegistry } from "../llm/model-registry.ts";
 
-/** 判断是否为超时类错误（用于 timeout 重试逻辑） */
-function isTimeoutError(err: unknown): boolean {
-  if (!(err instanceof Error)) return false;
-  return /timeout|超时|timed out/i.test(err.message);
+/**
+ * 判断是否为超时类错误（用于 timeout 重试逻辑）。
+ *
+ * 三条判据（任一命中即为超时，按可靠性从高到低）：
+ *
+ * 1. **结构性 reason（最可靠，2026-07 根治）**：turn 级 AbortController 被 abort 时
+ *    锁定的 reason 属于 INTERNAL_TIMEOUT_ABORT_REASONS（单轮硬超时 / 看门狗 /
+ *    流式心跳-整体超时）。reason 在首次 abort() 时被 AbortSignal 永久锁定，
+ *    天然免疫"更具体的 timeoutError 被更通用的 abort-race 错误在 Promise.race
+ *    中抢先覆盖"这一整类问题。同时兜住 err 自身携带的 abortReason
+ *    （RequestAbortedError.abortReason），即便调用方没传 turnSignal 也能识别。
+ *
+ * 2. **错误消息文本（回退）**：/timeout|超时|timed out/i。保留以兼容那些不经由
+ *    turn signal、直接以文本抛出的超时（如底层 SDK 的原生超时错误）。
+ *
+ * @param turnSignal 本轮 turn 级 AbortController 的 signal（可选）。传入后可读其
+ *   已锁定的 reason 做结构性判定，不依赖易被覆盖的错误消息文本。
+ */
+function isTimeoutError(err: unknown, turnSignal?: AbortSignal | null): boolean {
+  // 判据 1a：turn signal 已 abort 且 reason 属于内部超时白名单
+  if (turnSignal?.aborted && isInternalTimeoutAbortReason(turnSignal.reason)) {
+    return true;
+  }
+  // 判据 1b：错误自身携带的 abortReason（stream-processor 的 abort-race 错误会挂载）
+  if (err instanceof RequestAbortedError && isInternalTimeoutAbortReason(err.abortReason)) {
+    return true;
+  }
+  // 判据 2：错误消息文本回退
+  if (err instanceof Error && /timeout|超时|timed out/i.test(err.message)) {
+    return true;
+  }
+  return false;
 }
 
 /** queryLoop 配置 */
@@ -505,16 +534,47 @@ export async function* queryLoop(
           state.lastSeenTodoWriteVersion = todoState.writeVersion;
           state.lastTodoReminderTurn = state.turnCount;
           state.todoReminderPendingAfterCompact = false;
+          // 对话重播幻觉修复（Fix 2/3）：writeVersion 变化 = 模型确实更新了清单 = 有进展。
+          // 清零"无进展催促"计数（恢复注入能力），并刷新 end_turn todo gate 预算——
+          // 同一条用户消息内模型完成部分项后，gate 不该继续消耗上一段停滞攒下的续命额度。
+          state.noProgressNagCount = 0;
+          state.todoGateRetryCount = 0;
         } else {
           const turnsSinceReminder = state.turnCount - (state.lastTodoReminderTurn ?? 0);
           // 压缩后强制回注（与 goalReminderPendingAfterCompact 同机制）
+          const afterCompact = state.todoReminderPendingAfterCompact === true;
           const shouldInjectTodo = turnsSinceReminder >= TODO_REMINDER_CONFIG.TURNS_BETWEEN_REMINDERS
-            || state.todoReminderPendingAfterCompact;
+            || afterCompact;
           if (shouldInjectTodo) {
-            reminderParts.push(buildTodoReminder(todoState.todos));
-            state.lastTodoReminderTurn = state.turnCount;
-            state.todoReminderPendingAfterCompact = false;
-            log.info("QUERY_LOOP", `P0-2：回注 todo 清单（${countUnfinished(todoState.todos)} 项未完成）`);
+            // 去重 + 封顶（对话重播幻觉修复 Fix 1/2）：与上次注入内容逐字节相同（无进展）
+            // 或连续催促已达上限时跳过——避免把"内容近似、无新用户指令"的提醒反复注入成
+            // 幻影用户消息，正是弱模型误判"消息被截断/上一轮重播"的根因。
+            // 例外：compact 后强制回注（afterCompact）必须绕过去重 + 封顶——历史被压缩后，
+            // 模型上下文里的 todo 清单已丢失，必须恢复一次，否则任务列表永久消失（违背
+            // todoReminderPendingAfterCompact 的设计意图）；且不计入封顶（真实上下文事件，非无进展催促）。
+            const candidate = buildTodoReminder(todoState.todos);
+            const decision = afterCompact
+              ? { inject: true, countedAsNoProgress: false }
+              : decideNagInjection({
+                  candidate,
+                  lastInjectedText: state.lastInjectedTodoReminderText,
+                  noProgressNagCount: state.noProgressNagCount ?? 0,
+                });
+            if (decision.inject) {
+              reminderParts.push(candidate);
+              state.lastTodoReminderTurn = state.turnCount;
+              state.todoReminderPendingAfterCompact = false;
+              state.lastInjectedTodoReminderText = candidate;
+              // 本轮 writeVersion 未变化（进入 else 分支即代表无进展），计入封顶计数
+              if (decision.countedAsNoProgress) {
+                state.noProgressNagCount = (state.noProgressNagCount ?? 0) + 1;
+              }
+              log.info("QUERY_LOOP", `P0-2：回注 todo 清单（${countUnfinished(todoState.todos)} 项未完成，无进展催促 ${state.noProgressNagCount}/${MAX_NO_PROGRESS_NAGS}）`);
+            } else {
+              // 仍推进 cadence，避免下一轮立刻又算"到期"反复重算
+              state.lastTodoReminderTurn = state.turnCount;
+              state.todoReminderPendingAfterCompact = false;
+            }
           }
         }
 
@@ -524,10 +584,25 @@ export async function* queryLoop(
         if (turnsSinceProgress >= PROGRESS_REMINDER_INTERVAL) {
           const snap = snapshotFromTodos(sessionState.sessionId, todoState.todos);
           const progressReminder = buildProgressReminder(snap);
-          if (progressReminder) {
+          // 去重 + 封顶（对话重播幻觉修复 Fix 1/2）：与 todo 回注同机制。P2-2 摘要在
+          // todo 长期停滞时内容几乎逐字节相同（idx 41/87/112 就是这样的三连重复），
+          // 是造"幻影用户消息"的重灾区，必须去重 + 封顶。
+          const decision = decideNagInjection({
+            candidate: progressReminder,
+            lastInjectedText: state.lastInjectedProgressReminderText,
+            noProgressNagCount: state.noProgressNagCount ?? 0,
+          });
+          if (decision.inject && progressReminder) {
             reminderParts.push(progressReminder);
             state.lastProgressReminderTurn = state.turnCount;
-            log.info("QUERY_LOOP", `P2-2：回注工作日志摘要（已完成 ${snap.completed.length} / 待办 ${snap.pending.length}）`);
+            state.lastInjectedProgressReminderText = progressReminder;
+            if (decision.countedAsNoProgress) {
+              state.noProgressNagCount = (state.noProgressNagCount ?? 0) + 1;
+            }
+            log.info("QUERY_LOOP", `P2-2：回注工作日志摘要（已完成 ${snap.completed.length} / 待办 ${snap.pending.length}，无进展催促 ${state.noProgressNagCount}/${MAX_NO_PROGRESS_NAGS}）`);
+          } else {
+            // 跳过注入仍推进 cadence，避免每轮重算
+            state.lastProgressReminderTurn = state.turnCount;
           }
         }
       }
@@ -984,7 +1059,11 @@ export async function* queryLoop(
       perfHandle.end({ model: config.model });
 
       // timeout 错误直接重试（不需要压缩上下文，最多 2 次）
-      if (isTimeoutError(err)) {
+      // 根治（2026-07）：传入 turnAbortController.signal，使 isTimeoutError 能读到
+      // 首次 abort() 锁定的 reason 做结构性判定——内部心跳/整体/看门狗/硬超时
+      // 触发的 abort 即便冒泡上来的是"措辞通用的 abort-race 错误"（不含 timeout
+      // 字样），也能被正确识别为超时并走重试/错误卡片分支，而非静默当成用户取消。
+      if (isTimeoutError(err, turnAbortController.signal)) {
         const maxRetries = netTimeouts.maxTimeoutRetries;
         const timeoutRetryCount = state.timeoutRetryCount;
 
@@ -2157,9 +2236,25 @@ export async function* queryLoop(
       );
       const summaryResponse = await deps.processStream(summaryStream);
       if (summaryResponse.content.length > 0) {
-        const summaryMessage = { role: "assistant" as const, content: summaryResponse.content };
-        ctxMgr.addMessage(summaryMessage);
-        yield { kind: "assistant_message", message: summaryMessage };
+        // P1-1 是"禁止调工具的总结轮"（sendWithRetry 未传 tools），但响应仍可能含
+        // tool_use（mock 忽略 tools 参数 / 模型异常）。tool_use 在此轮无法执行（既不走
+        // executeTools，也不在 while 循环内的发送前 finalizeMessagesForSend 兜底范围内），
+        // 入历史会形成孤儿 → 下次发送 OpenAI 400。剥离 tool_use，只保留 text/reasoning
+        // 等非工具块。这是产生端修复（对齐"孤儿来源应在产生端排查"原则）。
+        const summaryContent = summaryResponse.content.filter(
+          (b) => b.type !== "tool_use",
+        );
+        if (summaryContent.length < summaryResponse.content.length) {
+          log.warn(
+            "QUERY_LOOP",
+            `P1-1：强制总结轮响应含 ${summaryResponse.content.length - summaryContent.length} 个 tool_use（本轮未传 tools，无法执行），已剥离以防孤儿 → 400`,
+          );
+        }
+        if (summaryContent.length > 0) {
+          const summaryMessage = { role: "assistant" as const, content: summaryContent };
+          ctxMgr.addMessage(summaryMessage);
+          yield { kind: "assistant_message", message: summaryMessage };
+        }
       }
     } catch (err: any) {
       log.warn("QUERY_LOOP", `P1-1：强制总结轮失败（不影响收尾）: ${err?.message ?? String(err)}`);

@@ -59,7 +59,7 @@ import {
   formatHeadlessEvent,
 } from "./sdk/index.ts";
 import { JitContextManager } from "./config/jit-context.ts";
-import { isAbortError } from "./llm/errors.ts";
+import { isAbortError, isInternalTimeoutAbortReason } from "./llm/errors.ts";
 import * as CrashMarker from "./trace/crash-marker.ts";
 import * as PidManager from "./trace/pid-manager.ts";
 import { execSync } from "child_process";
@@ -3077,11 +3077,32 @@ export class App {
         // A3：区分 abort 与真异常。用户按 ESC 触发的 abort 是"主动结束"而非故障，
         // 标记 completedNormally=true 避免 finally 误报"⚠️ 任务异常中断"。
         // 不重新 throw——交给 onUserInput 的 catch 显示"已取消当前响应"，让 TUI 继续等待下一轮输入。
-        if (isAbortError(err)) {
+        //
+        // 根治（2026-07，防御纵深第二层）：内部超时自愈中断（turn 级心跳/整体/看门狗/
+        // 硬超时）若漏到此处，绝不能被当成"用户主动结束"而 completedNormally=true 静默
+        // 吞掉——那正是"任务中断、无报错、无反应"事故的最后一环。必须 throw 让 onUserInput
+        // 的 catch 走"故障"分支（持久错误卡片 + 5s 提示）。主根因已在 query/loop.ts 修复，
+        // 此处仅作纵深兜底：用 reason 结构性识别内部超时，与真正的用户 ESC 区分。
+        const errReason =
+          err && typeof err === "object" && "abortReason" in err
+            ? (err as { abortReason?: unknown }).abortReason
+            : undefined;
+        const internalTimeoutLeaked =
+          isAbortError(err) &&
+          (isInternalTimeoutAbortReason(errReason) ||
+            isInternalTimeoutAbortReason(this.abortController?.signal?.reason));
+        if (isAbortError(err) && !internalTimeoutLeaked) {
           completedNormally = true;
           log.info("TUI", "用户中断当前响应");
         } else {
-          log.error("TUI", `agent loop 异常: ${err?.message}`, { stack: err?.stack });
+          if (internalTimeoutLeaked) {
+            log.error("TUI", `agent loop 内部超时中断漏出（按故障 throw，交由上层展示）`, {
+              errReason: String(errReason ?? this.abortController?.signal?.reason ?? "unknown"),
+              message: err?.message,
+            });
+          } else {
+            log.error("TUI", `agent loop 异常: ${err?.message}`, { stack: err?.stack });
+          }
           throw err;
         }
       } finally {
@@ -3155,7 +3176,31 @@ export class App {
           // 正常完成 → 丢弃暂存,不回填
           clearPendingInput();
         } catch (err: any) {
-          const aborted = isAbortError(err);
+          // 根治（2026-07，防御纵深第二层）：区分"用户主动 ESC 取消"与"内部超时自愈
+          // 中断漏到此处"。两者 isAbortError 都为 true（reason 均登记于 ABORT_REASONS），
+          // 但语义相反——前者是用户意图，只需 1.5s 瞬时提示；后者是故障，必须持久错误卡片
+          // + 5s 提示，否则重演"任务中断、无报错、无反应"事故。
+          //
+          // 主根因已在 query/loop.ts 修复（内部超时被识别为 timeout 并走重试/done 分支，
+          // 不会 throw 到这里）。此层是纵深防御：万一某条路径仍以 abort 形式冒泡上来，
+          // 用 reason 结构性识别，避免再次被误当成用户取消而静默。
+          const rawAborted = isAbortError(err);
+          // 内部超时漏出的判据：错误自身携带内部超时 reason，或会话级 signal 虽未被
+          // 用户 abort、但错误却是 abort 类（说明是 turn 级自我中断穿透上来）。
+          const errReason =
+            err && typeof err === "object" && "abortReason" in err
+              ? (err as { abortReason?: unknown }).abortReason
+              : undefined;
+          const convSignal = this.abortController?.signal;
+          const internalTimeoutLeaked =
+            rawAborted &&
+            (isInternalTimeoutAbortReason(errReason) ||
+              isInternalTimeoutAbortReason(convSignal?.reason) ||
+              // 会话级 signal 根本没被 abort（用户没按 ESC），却收到 abort 类错误
+              // → 必然是 turn 级内部中断穿透，按故障处理而非用户取消。
+              !convSignal?.aborted);
+          // 真正的"用户主动取消"：是 abort 类错误，且不是内部超时漏出。
+          const aborted = rawAborted && !internalTimeoutLeaked;
           let restoredInput = false;
           if (aborted) {
             log.info("TUI:CB", "当前响应已被用户中断");
@@ -3171,11 +3216,22 @@ export class App {
               clearPendingInput();
             }
           } else {
-            log.error("TUI:CB", `onUserInput 异常`, { error: err.message, stack: err.stack });
+            if (internalTimeoutLeaked) {
+              log.error("TUI:CB", `onUserInput 内部超时中断漏出（按故障处理）`, {
+                errReason: String(errReason ?? convSignal?.reason ?? "unknown"),
+                message: err?.message,
+              });
+            } else {
+              log.error("TUI:CB", `onUserInput 异常`, { error: err.message, stack: err.stack });
+            }
             clearPendingInput();
           }
 
-          const message = aborted ? "已取消当前响应" : `错误: ${err.message ?? String(err)}`;
+          const message = aborted
+            ? "已取消当前响应"
+            : internalTimeoutLeaked
+              ? `请求超时中断：${err?.message ?? String(err)}`
+              : `错误: ${err.message ?? String(err)}`;
           updateState({
             isLoading: false,
             isStreaming: false,

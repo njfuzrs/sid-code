@@ -125,4 +125,81 @@ describe("formatPathNotFoundError", () => {
     expect(msg).toContain("错误: 文件不存在");
     expect(msg).toContain("当前工作目录");
   });
+
+  it("文件名拼错（父目录存在）→ 给出相似文件名", () => {
+    const cwd = process.cwd();
+    // path-util.ts 少一个 s，真实文件是 path-utils.ts
+    const msg = formatPathNotFoundError(
+      resolve(cwd, "src/tool/path-util.ts"),
+      cwd,
+      3,
+    );
+    expect(msg).toContain("目录中存在相似文件");
+    expect(msg).toContain("path-utils.ts");
+  });
+
+  it("目录段拼错（父目录不存在）→ 向上回溯并给出正确目录段候选", () => {
+    const cwd = process.cwd();
+    // src 写成 srcc（多一个 c），后续段全都不存在 → 父目录不存在分支
+    const msg = formatPathNotFoundError(
+      resolve(cwd, "srcc/tool/path-utils.ts"),
+      cwd,
+      3,
+    );
+    expect(msg).toContain("也不存在");
+    expect(msg).toContain('路径段 "srcc" 疑似应为 "src"');
+    // 给出可尝试的完整路径（把正确段拼回去）
+    expect(msg).toContain("可尝试完整路径");
+    expect(msg).toContain(resolve(cwd, "src/tool/path-utils.ts"));
+  });
+
+  it("目录段被吞掉分隔符（& 被终端吞掉的症状）→ 归一后精确命中", () => {
+    // 构造一个真实存在的祖先 + 一个"去掉 & 后"的错误段。
+    // 用 tests 目录建一个临时子目录名带 &，再用去掉 & 的名字查询。
+    const { mkdtempSync, mkdirSync, rmSync } = require("fs") as typeof import("fs");
+    const os = require("os") as typeof import("os");
+    const base = mkdtempSync(resolve(os.tmpdir(), "pathfix-"));
+    try {
+      // 真实目录名带 &
+      mkdirSync(resolve(base, "本体&管道&数据 (2)(2)"));
+      // 查询时 & 被吞掉
+      const msg = formatPathNotFoundError(
+        resolve(base, "本体管道数据 (2)(2)/a.tsx"),
+        base,
+        3,
+      );
+      expect(msg).toContain("也不存在");
+      expect(msg).toContain('疑似应为 "本体&管道&数据 (2)(2)"');
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("完全乱写、无任何相似段 → 回退到通用提示，不误报候选", () => {
+    const msg = formatPathNotFoundError(
+      "/zzz-nonexistent-qqq-9876/xxx/yyy.ts",
+      "/home/user",
+    );
+    expect(msg).toContain("路径可能整体有误");
+    expect(msg).not.toContain("疑似应为");
+  });
+
+  it("极深路径：存在的祖先超出回溯上限（8 层）→ 放弃建议，退回通用提示", () => {
+    const { mkdtempSync, rmSync } = require("fs") as typeof import("fs");
+    const os = require("os") as typeof import("os");
+    // base 存在，但在它下面接 >8 层全不存在的段，最深处的文件报错时
+    // 向上回溯到 base 需要超过 8 层 → 应放弃建议
+    const base = mkdtempSync(resolve(os.tmpdir(), "pathfix-deep-"));
+    try {
+      // base/a1/a2/.../a10/file.ts —— base 之上有 10 层不存在的段
+      const deep = resolve(base, Array.from({ length: 10 }, (_, i) => `a${i + 1}`).join("/"), "file.ts");
+      const msg = formatPathNotFoundError(deep, base, 3);
+      expect(msg).toContain("也不存在");
+      // 回溯上限内探不到 base（唯一存在的祖先），故不应给出"疑似应为"
+      expect(msg).toContain("路径可能整体有误");
+      expect(msg).not.toContain("疑似应为");
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
 });

@@ -37,13 +37,22 @@ describe("LY1 — derivePermission", () => {
   test("deny-write → error 色", () => {
     expect(derivePermission("deny-write").color).toBe(theme.status.error);
   });
-  test("dangerously-skip-permissions → skip-perms + warning 色", () => {
+  test("dangerously-skip-permissions → skip-perms + warning 色 + isDanger", () => {
     const r = derivePermission("dangerously-skip-permissions");
     expect(r.display).toBe("skip-perms");
     expect(r.color).toBe(theme.status.warning);
+    expect(r.isDanger).toBe(true);
   });
-  test("默认 → success 色", () => {
-    expect(derivePermission("default").color).toBe(theme.status.success);
+  test("deny-write 也是危险态", () => {
+    expect(derivePermission("deny-write").isDanger).toBe(true);
+  });
+  test("默认 → success 色，非危险态", () => {
+    const r = derivePermission("default");
+    expect(r.color).toBe(theme.status.success);
+    expect(r.isDanger).toBe(false);
+  });
+  test("plan → 非危险态", () => {
+    expect(derivePermission("plan").isDanger).toBe(false);
   });
 });
 

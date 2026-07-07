@@ -127,7 +127,9 @@ export function initExtractMemories(ctx: ExtractContext): ExtractMemoriesHandle 
       timeoutMs: 60_000,
     });
 
-    const written = extractWrittenPaths(result.messages, ctx.memoryDir);
+    // 去重（对话重播幻觉修复 Fix 4）：同一 key/文件在一次提取中被 save_memory 多次
+    // （或 write+edit 混用）会重复出现，导致"已保存 N 条记忆: x, x"这类误导文案。
+    const written = [...new Set(extractWrittenPaths(result.messages, ctx.memoryDir))];
     if (written.length > 0 && ctx.appendSystemMessage) {
       ctx.appendSystemMessage({
         role: "user",

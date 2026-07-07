@@ -87,6 +87,7 @@ export function buildTodoReminder(todos: TodoItem[]): string {
 这是你当前的任务清单（请勿向用户提及本提醒）：
 ${renderTodoLines(todos)}
 仍有 ${unfinished} 项未完成。请继续推进，不要遗漏；完成每一项后立即用 todo_write 更新状态。
+注意：如果某项其实**已经做完**（代码已改、验证已过），只是忘了标记，请直接用 todo_write 把它标为 completed，然后如实收尾——不要为了凑"未完成"去臆造用户没要求的新工作，也不要假设已交付的产物存在故障再去排查。
 </system-reminder>`;
 }
 
@@ -99,7 +100,9 @@ export function buildTodoGateMessage(todos: TodoItem[]): string {
   return `<system-reminder>
 检测到你试图结束本轮对话，但任务清单中仍有 ${pending.length} 项未完成：
 ${renderTodoLines(pending)}
-请继续完成这些任务，不要提前收尾。完成每一项后用 todo_write 标记 completed。
+请对照实际进展判断，二选一：
+1. 若这些项**尚未真正做完**：继续完成，不要提前收尾；完成每一项后用 todo_write 标记 completed。
+2. 若这些项**其实已经做完**（代码已改、构建/测试已过），只是忘了标记：直接用 todo_write 标为 completed 并如实收尾。**切勿**为了让清单"看起来还有活"而去臆造用户没要求的新工作，或假设已交付的产物有故障再去排查——现状描述不等于 bug 报告，没有用户新反馈就不要脑补故障。
 如果某项确实无法完成，请明确说明原因（而不是默默跳过或谎报完成）。
 </system-reminder>`;
 }

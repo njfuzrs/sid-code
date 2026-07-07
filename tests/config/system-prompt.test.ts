@@ -4,10 +4,12 @@
 
 import { describe, test, expect, beforeEach } from "bun:test";
 import { buildSystemPrompt, clearPromptCache, resolvePromptMaxTokens } from "../../src/config/system-prompt.ts";
-import type { Tool } from "../../src/tool/types.ts";
-
-/** 创建一个简单的测试工具 */
-function makeTool(opts: { name: string; desc: string; guide?: string }): Tool {
+/**
+ * 创建一个简单的测试工具。返回结构化对象（含 name()/description()/usageGuide()），
+ * 不标注具体接口类型——buildSystemPrompt 只按结构消费 name/description/usageGuide，
+ * 避免依赖已废弃的 LegacyTool 接口，也不误用不匹配的新版泛型 Tool。
+ */
+function makeTool(opts: { name: string; desc: string; guide?: string }) {
   return {
     name: () => opts.name,
     description: () => opts.desc,

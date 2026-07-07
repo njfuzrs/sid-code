@@ -38,7 +38,11 @@ export function shortenPath(p: string, maxLen = 25, home = homedir()): string {
 export function derivePermission(permissionMode: string): {
   display: string;
   color: string;
+  isDanger: boolean;
 } {
+  const isDanger =
+    permissionMode === "dangerously-skip-permissions" ||
+    permissionMode === "deny-write";
   const color = (() => {
     switch (permissionMode) {
       case "plan":
@@ -55,7 +59,7 @@ export function derivePermission(permissionMode: string): {
   })();
   const display =
     permissionMode === "dangerously-skip-permissions" ? "skip-perms" : permissionMode;
-  return { display, color };
+  return { display, color, isDanger };
 }
 
 /** 上下文百分比 → 语义色（≥90 红 / ≥70 黄 / 其余默认）。 */
@@ -135,7 +139,8 @@ export function deriveEffort(
   if (!effortDisplay) return null;
   const { level, isAuto } = effortDisplay;
   if (isAuto) {
-    return { glyph: EFFORT_AUTO, text: `${level} (auto)`, color: defaultColor };
+    // auto 态：空心点 ◌ 前缀 + 档位名。◌ 字形自解释「跟随默认」，不再写 (auto) 文字后缀（冗余）。
+    return { glyph: EFFORT_AUTO, text: `${EFFORT_AUTO} ${level}`, color: defaultColor };
   }
   // max 档用品牌强调色点睛（最高强度值得一眼可辨），其余档位用默认灰，保持克制。
   const color = level === "max" ? theme.ui.active : defaultColor;
@@ -154,7 +159,9 @@ export function deriveThinking(
 ): { glyph: string; text: string; color: string } | null {
   if (!thinkingDisplay) return null;
   const { on, isAuto } = thinkingDisplay;
-  const text = isAuto ? `${on ? "on" : "off"} (auto)` : on ? "on" : "off";
+  // 去掉 (auto) 文字后缀：字形已自解释(✻ 开 / ✧ 关)，Footer 旋钮区只渲染 glyph。
+  // 保留 text 供其它场景/测试使用，但不再堆 (auto) 冗余文字。
+  const text = on ? "on" : "off";
   const glyph = on ? THINKING_ON : THINKING_OFF;
   const color = on && !isAuto ? theme.status.success : defaultColor;
   return { glyph, text, color };
@@ -184,13 +191,14 @@ function deriveGoal(
 export interface StatusLineData {
   itemColor: string;
   cwdDisplay: string;
-  permission: { display: string; color: string };
+  permission: { display: string; color: string; isDanger: boolean };
   isPlanMode: boolean;
   gitBranch: string;
   isDebug: boolean;
   isRaw: boolean;
   isVim: boolean;
-  tokenText: string;
+  /** token 计量（null = 会话尚无输入/输出，隐藏该列，避免 ↑0 ↓0 噪音） */
+  tokens: { text: string } | null;
   cache: { rate: number; text: string; color: string } | null;
   /** 10.3：缓存节省金额（null = 节省为 0 或不足阈值，不渲染该列） */
   cacheSavings: { text: string; color: string } | null;
@@ -259,7 +267,13 @@ export function useStatusLineData(input: StatusLineInput): StatusLineData {
       isDebug: debug,
       isRaw: !renderMarkdown,
       isVim: !!settings.vimMode,
-      tokenText: `${TOKEN_IN} ${formatLargeNumber(stockInputTokens)}  ${TOKEN_OUT} ${formatLargeNumber(usage.outputTokens)}`,
+      // 零值隐藏：会话尚无输入/输出时不显示 ↑0 ↓0（纯噪音），与 context 隐藏条件一致。
+      tokens:
+        stockInputTokens === 0 && usage.outputTokens === 0
+          ? null
+          : {
+              text: `${TOKEN_IN} ${formatLargeNumber(stockInputTokens)}  ${TOKEN_OUT} ${formatLargeNumber(usage.outputTokens)}`,
+            },
       cache: deriveCacheMetrics(usage, model, config.availableModels),
       cacheSavings: deriveCacheSavings(cacheSavingsUSD ?? 0),
       cost: deriveCost(costUSD, costLimit, model),

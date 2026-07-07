@@ -303,4 +303,16 @@ describe("hasMemoryWritesSince / extractWrittenPaths", () => {
     ];
     expect(extractWrittenPaths(messages, memDir)).toEqual(["coding_style"]);
   });
+
+  test("同一 key 多次 save_memory → Set 去重后只列一次（对话重播幻觉 Fix 4）", () => {
+    // 复刻会话 20260707 的 "已保存 2 条记忆: x, x" 误导文案：同一 key 被写两次。
+    const messages: Message[] = [
+      { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "save_memory", input: { key: "publish-preview-history-api-doc", value: "v1" } }] },
+      { role: "assistant", content: [{ type: "tool_use", id: "t2", name: "save_memory", input: { key: "publish-preview-history-api-doc", value: "v2" } }] },
+    ];
+    const raw = extractWrittenPaths(messages, memDir);
+    expect(raw).toEqual(["publish-preview-history-api-doc", "publish-preview-history-api-doc"]);
+    // 调用侧（extractor.ts）用 [...new Set(...)] 去重，最终提醒文案只列一次
+    expect([...new Set(raw)]).toEqual(["publish-preview-history-api-doc"]);
+  });
 });

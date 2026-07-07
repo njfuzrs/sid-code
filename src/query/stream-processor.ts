@@ -87,7 +87,12 @@ export async function processStream(
         `Stream overall timeout: ${OVERALL_TIMEOUT / 1000}s 总时长超限`,
       );
       log.warn("STREAM", `整体超时: ${OVERALL_TIMEOUT / 1000}s`);
-      options?.getAbortController?.()?.abort();
+      // 根治（2026-07）：abort 时携带 reason。AbortSignal.reason 在首次 abort() 时被
+      // 永久锁定，不受"abortPromise 与 timeoutError 谁赢得 Promise.race"影响——上层
+      // query/loop.ts 据此结构性判定"该按超时重试"，而非依赖易被 abort-race 通用错误
+      // 消息覆盖的文本匹配。reason 已登记于 llm/errors.ts ABORT_REASONS，避免孤儿
+      // rejection 被 isAbortError 漏识别导致 process.exit(1)。
+      options?.getAbortController?.()?.abort("stream-overall-timeout");
       clearInterval(checkInterval);
       return;
     }
@@ -98,7 +103,8 @@ export async function processStream(
         `Stream heartbeat timeout: ${HEARTBEAT_TIMEOUT / 1000}s 无数据`,
       );
       log.warn("STREAM", `心跳超时: ${HEARTBEAT_TIMEOUT / 1000}s 无数据`);
-      options?.getAbortController?.()?.abort();
+      // 根治（2026-07）：同上，abort 时携带 reason（心跳超时）。
+      options?.getAbortController?.()?.abort("stream-heartbeat-timeout");
       clearInterval(checkInterval);
     }
   }, CHECK_INTERVAL);
@@ -112,7 +118,12 @@ export async function processStream(
     const abortPromise: Promise<never> | null = (() => {
       if (!abortSignal || abortSignal.aborted) return null;
       return new Promise<never>((_, reject) => {
-        const onAbort = () => reject(new RequestAbortedError("Stream aborted (abort race)"));
+        // 根治（2026-07）：把 signal.reason 一并挂到 RequestAbortedError 上。
+        // 这样即使这个"措辞通用的 abort-race 错误"抢先赢下 Promise.race（真正 hang 死的
+        // iterator.next() 永远不会 resolve），下游 query/loop.ts 仍能从 err.abortReason
+        // 结构性识别出这是"内部超时自愈中断"而非"用户 ESC 取消"，不再依赖错误消息文本。
+        const onAbort = () =>
+          reject(new RequestAbortedError("Stream aborted (abort race)", abortSignal.reason));
         abortSignal.addEventListener("abort", onAbort, { once: true });
       });
     })();

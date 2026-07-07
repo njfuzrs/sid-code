@@ -88,7 +88,13 @@ export class StreamLevelError extends RetryableError {
 
 /** 用户或系统主动中断请求 */
 export class RequestAbortedError extends Error {
-  constructor(message = "Request aborted") {
+  /**
+   * 触发中断的 abort reason（若可得）。用于下游结构性区分"内部超时自愈中断"
+   * 与"用户主动取消"——见 INTERNAL_TIMEOUT_ABORT_REASONS。stream-processor 的
+   * abort-race Promise 在 signal 被 abort 时 reject 本错误，携带此 reason 让
+   * query/loop.ts 无需依赖错误消息文本即可正确分类。
+   */
+  constructor(message = "Request aborted", public readonly abortReason?: unknown) {
     super(message);
     this.name = "RequestAbortedError";
   }
@@ -110,6 +116,8 @@ export class RequestAbortedError extends Error {
  * 每轮 race settle 后的 turn 级子 controller 清理("race-settled"：loop.ts finally 主动
  * abort 本轮子 controller 以终止孤儿 fetch，仅作用于 turn 级子 signal，不回写会话级)、
  * swarm team 整体硬超时("team-hard-timeout"：swarm/team.ts)、
+ * 主循环流式心跳/整体超时("stream-heartbeat-timeout" / "stream-overall-timeout"：
+ * query/stream-processor.ts，对齐子代理版的 agent-stream-* 命名，见下）、
  * 子代理流整体/心跳超时("agent-stream-overall-timeout" / "agent-stream-heartbeat-timeout"：
  * agent/stream-processor.ts，combinedSignal 会传给子代理 LLM SDK，超时 abort 后底层 fetch
  * 以裸字符串 reject，若成孤儿 rejection 同样会崩溃)、
@@ -124,6 +132,8 @@ export const ABORT_REASONS = [
   "side-call-timeout",
   "race-settled",
   "team-hard-timeout",
+  "stream-heartbeat-timeout",
+  "stream-overall-timeout",
   "agent-stream-overall-timeout",
   "agent-stream-heartbeat-timeout",
   "alert-webhook-timeout",
@@ -131,6 +141,42 @@ export const ABORT_REASONS = [
 ] as const;
 
 export type AbortReason = (typeof ABORT_REASONS)[number];
+
+/**
+ * ABORT_REASONS 的子集：代表"内部自愈机制的自我中断"（单轮硬超时 / 看门狗 /
+ * 流式心跳-整体超时），而非用户主动取消（"user-cancel"）或外部/会话级中断。
+ *
+ * 背景（2026-07 根治修复，session 20260707-143411-6f4bfcc3 事故复盘）：
+ * query/loop.ts 曾仅凭错误消息文本正则（/timeout|超时|timed out/i）判断是否该走
+ * "超时重试"分支——但 query/stream-processor.ts 的 P0-2 abort-race 修复引入了
+ * 一个措辞通用的 `RequestAbortedError("Stream aborted (abort race)")`，它在
+ * `Promise.race` 中必然抢先于更具体的 `timeoutError`（消息含"timeout"）被
+ * 抛出/传播——因为真正 hang 死的 `iterator.next()` 永远不会赢得这场 race。
+ * 于是文本匹配落空，本该重试的超时被误判为"用户 ESC 取消"，一路静默传播到
+ * app.ts：TUI 只剩 1.5s 瞬时提示"已取消当前响应"，无重试、无持久错误卡片、
+ * 无 SessionEnd —— 用户体感"任务中断，没有报错，没有反应"。
+ *
+ * 根治：判断"是否该按超时重试"不再依赖任何错误消息文本，而是看 turn 级
+ * AbortController 被 abort 时锁定的 reason 是否属于这个白名单——reason 在
+ * **首次** `abort()` 调用时即被 AbortSignal 永久锁定，不受"哪个 Promise 赢得
+ * race"影响，天然免疫"更具体的错误消息被更通用的错误覆盖"这整类问题。
+ */
+export const INTERNAL_TIMEOUT_ABORT_REASONS: ReadonlySet<AbortReason> = new Set<AbortReason>([
+  "turn-timeout",
+  "watchdog-timeout",
+  "stream-heartbeat-timeout",
+  "stream-overall-timeout",
+]);
+
+/**
+ * 判断某个 abort reason 是否代表"内部超时自愈机制的自我中断"（见
+ * INTERNAL_TIMEOUT_ABORT_REASONS 的背景说明）。用于 query/loop.ts 在
+ * `err` 的消息文本无法识别为超时时，退回到结构性的 reason 判定，而不是
+ * 把它当成用户取消静默吞掉。
+ */
+export function isInternalTimeoutAbortReason(reason: unknown): boolean {
+  return typeof reason === "string" && INTERNAL_TIMEOUT_ABORT_REASONS.has(reason as AbortReason);
+}
 
 /** 可重试的网络错误码 */
 const RETRYABLE_NETWORK_CODES = [

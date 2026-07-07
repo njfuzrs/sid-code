@@ -184,6 +184,24 @@ export interface LoopState {
   /** P2-2：上次回注工作日志摘要时的轮次（每 N 轮回注一次） */
   lastProgressReminderTurn?: number;
   /**
+   * 去重（对话重播幻觉修复）：上次注入的 todo 回注 reminder 文本。
+   * 本轮候选与之逐字节相同 → 期间无进展 → 跳过注入，避免造"幻影用户消息"。
+   * 见 reminder-throttle.ts decideNagInjection。
+   */
+  lastInjectedTodoReminderText?: string;
+  /**
+   * 去重（对话重播幻觉修复）：上次注入的工作日志摘要 reminder 文本。
+   * 语义同 lastInjectedTodoReminderText，针对 P2-2 progress 摘要通道。
+   */
+  lastInjectedProgressReminderText?: string;
+  /**
+   * 封顶（对话重播幻觉修复）：连续注入 todo/progress 催促而 todo 无进展
+   * （writeVersion 未变化）的累计次数。达 MAX_NO_PROGRESS_NAGS 后本条用户消息
+   * 剩余轮次停止注入催促——模型显然不会再改 todo，继续催只会造更多幻影。
+   * writeVersion 变化（模型确实更新了清单=有进展）时清零。
+   */
+  noProgressNagCount?: number;
+  /**
    * 缺口 C：上轮观察到的 permission mode。与本轮不同 → 视为切换，强注入一次 mode 指南。
    * undefined 表示尚未观察过。
    */

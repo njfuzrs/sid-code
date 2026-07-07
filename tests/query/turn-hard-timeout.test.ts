@@ -23,6 +23,7 @@ import { ModelFallback } from "../../src/llm/fallback.ts";
 import { SessionState } from "../../src/session/state.ts";
 import type { Config } from "../../src/config/config.ts";
 import type { StreamEvent } from "../../src/llm/types.ts";
+import { RequestAbortedError } from "../../src/llm/errors.ts";
 
 // 统一超时默认值放宽后：重试次数默认 4、退避 2s→30s。单测里必须经环境变量把
 // 重试次数收敛、退避压到近乎 0，否则真实退避等待会拖爆测试超时（见 network-profile.ts）。
@@ -164,5 +165,68 @@ describe("L1 — queryLoop 单轮硬超时", () => {
     // 正常 end_turn 收尾
     expect(kinds).toContain("assistant_message");
     expect(kinds).toContain("done");
+  });
+});
+
+/**
+ * 根治回归（2026-07，session 20260707-143411 事故复盘）：
+ *   stream-processor 心跳/整体超时 abort turn 级 controller 后，其内部 abort-race
+ *   Promise 以**措辞通用的** RequestAbortedError("Stream aborted (abort race)") reject
+ *   （消息不含 timeout 字样）——它在 Promise.race 中必然抢先于更具体的 timeoutError。
+ *   旧 isTimeoutError 只做消息文本匹配 → 判为 false → 不走超时重试分支 → 一路静默
+ *   传播成"用户 ESC 取消"，TUI 只剩 1.5s 瞬时提示，无重试、无错误卡片、无 SessionEnd。
+ *
+ * 修复：isTimeoutError 改看 turn 级 AbortController 首次 abort() 锁定的 reason
+ *   （及错误自身的 abortReason），结构性识别内部超时，不再依赖易被覆盖的消息文本。
+ *
+ * 本测试直接复现该事故指纹：processStream 抛"通用 abort 错误"（无 timeout 字样），
+ *   但在抛出前先 abort turn signal 并锁定内部超时 reason —— 断言 queryLoop 正确走
+ *   超时重试分支（有重试提示），而非静默素通被误判为用户取消。
+ */
+describe("根治回归 — abort-race 通用错误 + turn reason → 仍识别为超时", () => {
+  test("processStream 抛无 timeout 字样的 RequestAbortedError（但 turn reason=stream-heartbeat-timeout）→ 走超时重试", async () => {
+    // 捕获 turnAbortController 的 composedSignal，模拟 stream-processor 在抛错前
+    // 先 abort turn signal（reason 锁定为内部心跳超时）。
+    const capturedSignals: AbortSignal[] = [];
+    const { loopConfig } = makeLoopConfig({
+      sendWithRetry: (_params: any, signal?: AbortSignal) => {
+        if (signal) capturedSignals.push(signal);
+        return emptyStream();
+      },
+      // 模拟 stream-processor 真实行为：心跳超时 → abort(reason) → abort-race Promise
+      // 以通用消息 reject（消息里绝无 timeout/超时 字样，正是旧文本匹配漏判的根因）。
+      processStream: (async (_stream: any, _onText: any, _onThinking: any, turnAc?: AbortController) => {
+        // stream-processor 内部：心跳定时器 fire → abort turn 级 controller 带 reason
+        try { turnAc?.abort("stream-heartbeat-timeout"); } catch { /* ignore */ }
+        throw new RequestAbortedError("Stream aborted (abort race)", "stream-heartbeat-timeout");
+      }) as any,
+      // 硬超时给足够长，确保退出只可能来自 processStream 抛的 abort-race 错误，
+      // 而不是 turnTimeoutPromise 凑巧先 fire（那会绕过被测路径）。
+      maxTurnDurationMs: 60_000,
+    });
+
+    const kinds: string[] = [];
+    const systemTexts: string[] = [];
+    let thrown: Error | null = null;
+    try {
+      for await (const ev of queryLoop(loopConfig)) {
+        kinds.push(ev.kind);
+        if (ev.kind === "system" && "text" in ev) systemTexts.push(ev.text);
+      }
+    } catch (e) {
+      thrown = e as Error;
+    }
+
+    // 核心断言：即便错误消息无 timeout 字样，仍被 isTimeoutError（reason 判据）命中，
+    // 走超时重试分支 → 有重试提示（旧代码此处为 false → 直接 throw 静默传播）。
+    expect(systemTexts.some((t) => t.includes("超时") && t.includes("重试"))).toBe(true);
+    // 重试耗尽后优雅收尾：yield done + 错误提示，绝不 throw 到上层被误当"用户取消"。
+    expect(thrown).toBeNull();
+    expect(kinds).toContain("done");
+    expect(systemTexts.some((t) => t.includes("超时") && t.includes("中断"))).toBe(true);
+    // turn signal 的 reason 确实被锁定为内部心跳超时（首次 abort 锁定，不被 race-settled 覆盖）
+    expect(
+      capturedSignals.some((s) => s.aborted && String(s.reason) === "stream-heartbeat-timeout"),
+    ).toBe(true);
   });
 });

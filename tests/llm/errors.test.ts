@@ -11,8 +11,10 @@ import {
   StreamValidationError,
   getNetworkErrorCode,
   isAbortError,
+  isInternalTimeoutAbortReason,
   RequestAbortedError,
   ABORT_REASONS,
+  INTERNAL_TIMEOUT_ABORT_REASONS,
 } from "../../src/llm/errors.ts";
 
 describe("classifyError", () => {
@@ -304,6 +306,8 @@ describe("isAbortError", () => {
       "external-abort",
       "race-settled",
       "side-call-timeout",
+      "stream-heartbeat-timeout",
+      "stream-overall-timeout",
       "team-hard-timeout",
       "timeout",
       "turn-timeout",
@@ -375,5 +379,53 @@ describe("isAbortError", () => {
     // 非白名单的裸字符串不能被误判为 abort
     expect(isAbortError("random-error")).toBe(false);
     expect(isAbortError("network down")).toBe(false);
+  });
+});
+
+describe("isInternalTimeoutAbortReason（内部超时自愈中断 vs 用户取消）", () => {
+  test("识别所有内部超时 reason（单轮硬超时/看门狗/流式心跳-整体）", () => {
+    // 根治（2026-07，session 20260707 事故复盘）：这些 reason 代表"内部自愈机制的
+    // 自我中断"，query/loop.ts 据此结构性判定"该按超时重试"，不依赖易被 abort-race
+    // 通用错误消息覆盖的文本匹配。
+    expect(isInternalTimeoutAbortReason("turn-timeout")).toBe(true);
+    expect(isInternalTimeoutAbortReason("watchdog-timeout")).toBe(true);
+    expect(isInternalTimeoutAbortReason("stream-heartbeat-timeout")).toBe(true);
+    expect(isInternalTimeoutAbortReason("stream-overall-timeout")).toBe(true);
+  });
+
+  test("用户取消 / 会话超时 / 其它 reason 不算内部超时自愈", () => {
+    // user-cancel 是用户意图（不该按超时重试）；timeout 是会话级 30 分钟超时（现行
+    // 语义按"非故障"处理，不纳入 turn 级内部超时自愈白名单）。
+    expect(isInternalTimeoutAbortReason("user-cancel")).toBe(false);
+    expect(isInternalTimeoutAbortReason("timeout")).toBe(false);
+    expect(isInternalTimeoutAbortReason("race-settled")).toBe(false);
+    expect(isInternalTimeoutAbortReason("side-call-timeout")).toBe(false);
+    expect(isInternalTimeoutAbortReason("external-abort")).toBe(false);
+  });
+
+  test("非字符串 / 未知值返回 false（不误判 undefined/null/对象）", () => {
+    expect(isInternalTimeoutAbortReason(undefined)).toBe(false);
+    expect(isInternalTimeoutAbortReason(null)).toBe(false);
+    expect(isInternalTimeoutAbortReason(123)).toBe(false);
+    expect(isInternalTimeoutAbortReason("random-string")).toBe(false);
+    expect(isInternalTimeoutAbortReason({ reason: "turn-timeout" })).toBe(false);
+  });
+
+  test("INTERNAL_TIMEOUT_ABORT_REASONS 是 ABORT_REASONS 的子集（防漂移）", () => {
+    // 内部超时白名单里的每个 reason 都必须同时登记在 ABORT_REASONS，
+    // 否则其孤儿 rejection 会被 isAbortError 漏识别导致进程退出。
+    const allReasons = new Set<string>(ABORT_REASONS.map(String));
+    for (const r of INTERNAL_TIMEOUT_ABORT_REASONS) {
+      expect(allReasons.has(r)).toBe(true);
+    }
+  });
+
+  test("RequestAbortedError 携带 abortReason，用于下游结构性识别", () => {
+    // stream-processor 的 abort-race Promise 会以此形式 reject，携带 signal.reason。
+    const err = new RequestAbortedError("Stream aborted (abort race)", "stream-heartbeat-timeout");
+    expect(err.abortReason).toBe("stream-heartbeat-timeout");
+    expect(isInternalTimeoutAbortReason(err.abortReason)).toBe(true);
+    // 仍是标准 abort 错误（isAbortError 必中，避免孤儿 rejection 崩溃）
+    expect(isAbortError(err)).toBe(true);
   });
 });

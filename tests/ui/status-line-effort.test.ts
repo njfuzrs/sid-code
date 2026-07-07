@@ -39,10 +39,11 @@ describe("deriveEffort", () => {
     expect(high?.color).toBe(GRAY);
   });
 
-  test("auto 态 → 空心点字形 + (auto) 后缀 + 灰色", () => {
+  test("auto 态 → 空心点字形前缀 + 档位名（去掉 (auto) 文字后缀）+ 灰色", () => {
     const r = deriveEffort({ level: "high", isAuto: true }, GRAY);
     expect(r?.glyph).toBe(EFFORT_AUTO);
-    expect(r?.text).toBe("high (auto)");
+    expect(r?.text).toBe(`${EFFORT_AUTO} high`);
+    expect(r?.text).not.toContain("(auto)");
     expect(r?.color).toBe(GRAY);
   });
 });
@@ -66,11 +67,12 @@ describe("deriveThinking", () => {
     expect(r?.color).toBe(GRAY);
   });
 
-  test("auto 态 → (auto) 后缀，颜色保持灰（不点睛）", () => {
+  test("auto 态 → 去掉 (auto) 文字后缀（字形自解释），颜色保持灰（不点睛）", () => {
     const on = deriveThinking({ on: true, isAuto: true }, GRAY);
-    expect(on?.text).toBe("on (auto)");
+    expect(on?.text).toBe("on");
+    expect(on?.text).not.toContain("(auto)");
     expect(on?.color).toBe(GRAY); // auto 不点睛
     const off = deriveThinking({ on: false, isAuto: true }, GRAY);
-    expect(off?.text).toBe("off (auto)");
+    expect(off?.text).toBe("off");
   });
 });
