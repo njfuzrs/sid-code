@@ -20,6 +20,7 @@ import stringWidth from "string-width";
 import { supportsHyperlinks } from "../ink/supports-hyperlinks.ts";
 import { getLogger } from "../debug/logger.ts";
 import { theme } from "./semantic-colors.ts";
+import { themeManager } from "./themes/theme-manager.ts";
 
 // ── 常量 ────────────────────────────────────────────────────────
 // 终端宽度 fallback（仅在 process.stdout.columns 不可用时使用）
@@ -120,50 +121,56 @@ function getTermWidth(): number {
 }
 
 // ── 代码高亮 ────────────────────────────────────────────────────
-const codeHighlightTheme: Record<string, (s: string) => string> = {
-  keyword: chalk.blue,
-  built_in: chalk.cyan,
-  type: chalk.cyan.dim,
-  literal: chalk.blue,
-  number: chalk.green,
-  regexp: chalk.red,
-  string: chalk.green,
-  subst: chalk.white,
-  symbol: chalk.green,
-  class: chalk.blue,
-  function: chalk.yellow,
-  title: chalk.yellow,
-  params: chalk.white,
-  comment: chalk.gray,
-  doctag: chalk.green,
-  meta: chalk.gray,
-  "meta-keyword": chalk.gray,
-  "meta-string": chalk.gray,
-  section: chalk.green,
-  tag: chalk.gray,
-  name: chalk.blue,
-  "builtin-name": chalk.blue,
-  attr: chalk.cyan,
-  attribute: chalk.cyan,
-  variable: chalk.red,
-  bullet: chalk.green,
-  code: chalk.green,
-  emphasis: chalk.italic,
-  strong: chalk.bold,
-  formula: chalk.green,
-  link: chalk.blue.underline,
-  quote: chalk.gray.italic,
-  "selector-tag": chalk.blue,
-  "selector-id": chalk.blue,
-  "selector-class": chalk.blue,
-  "selector-attr": chalk.cyan,
-  "selector-pseudo": chalk.cyan,
-  "template-tag": chalk.cyan,
-  "template-variable": chalk.cyan,
-  addition: chalk.green,
-  deletion: chalk.red,
-  default: chalk.white,
-};
+// 使用主题 hex 色（通过 chalk.hex）替代 ANSI 16 色名，确保浅色/深色终端下均可读。
+// chalk.blue/cyan/white 等在浅色终端下的实际颜色完全取决于终端配色方案，不可控。
+function getCodeHighlightTheme(): Record<string, (s: string) => string> {
+  const colors = theme;
+  const t = themeManager.getActiveTheme().colors;
+  return {
+    keyword: chalk.hex(t.AccentBlue),
+    built_in: chalk.hex(t.AccentCyan),
+    type: chalk.hex(t.AccentCyan),
+    literal: chalk.hex(t.AccentBlue),
+    number: chalk.hex(t.AccentGreen),
+    regexp: chalk.hex(t.AccentRed),
+    string: chalk.hex(t.AccentGreen),
+    subst: chalk.hex(t.Foreground),
+    symbol: chalk.hex(t.AccentGreen),
+    class: chalk.hex(t.AccentBlue),
+    function: chalk.hex(t.AccentYellow),
+    title: chalk.hex(t.AccentYellow),
+    params: chalk.hex(t.Foreground),
+    comment: chalk.hex(t.Comment),
+    doctag: chalk.hex(t.AccentGreen),
+    meta: chalk.hex(t.Comment),
+    "meta-keyword": chalk.hex(t.Comment),
+    "meta-string": chalk.hex(t.Comment),
+    section: chalk.hex(t.AccentGreen),
+    tag: chalk.hex(t.Comment),
+    name: chalk.hex(t.AccentBlue),
+    "builtin-name": chalk.hex(t.AccentBlue),
+    attr: chalk.hex(t.AccentCyan),
+    attribute: chalk.hex(t.AccentCyan),
+    variable: chalk.hex(t.AccentRed),
+    bullet: chalk.hex(t.AccentGreen),
+    code: chalk.hex(t.AccentGreen),
+    emphasis: chalk.italic,
+    strong: chalk.bold,
+    formula: chalk.hex(t.AccentGreen),
+    link: chalk.hex(colors.text.link).underline,
+    quote: chalk.hex(t.Comment).italic,
+    "selector-tag": chalk.hex(t.AccentBlue),
+    "selector-id": chalk.hex(t.AccentBlue),
+    "selector-class": chalk.hex(t.AccentBlue),
+    "selector-attr": chalk.hex(t.AccentCyan),
+    "selector-pseudo": chalk.hex(t.AccentCyan),
+    "template-tag": chalk.hex(t.AccentCyan),
+    "template-variable": chalk.hex(t.AccentCyan),
+    addition: chalk.hex(t.AccentGreen),
+    deletion: chalk.hex(t.AccentRed),
+    default: chalk.hex(t.Foreground),
+  };
+}
 
 /** 代码块高亮：指定语言时使用指定语言，未指定时尝试自动检测 */
 function highlightCode(code: string, lang?: string): string {
@@ -172,13 +179,13 @@ function highlightCode(code: string, lang?: string): string {
       return cliHighlight(code, {
         language: lang,
         ignoreIllegals: true,
-        theme: codeHighlightTheme,
+        theme: getCodeHighlightTheme(),
       });
     }
     // 未指定语言时尝试自动检测
     return cliHighlight(code, {
       ignoreIllegals: true,
-      theme: codeHighlightTheme,
+      theme: getCodeHighlightTheme(),
     });
   } catch {
     return code;
@@ -445,7 +452,7 @@ function renderTable(token: any, width: number): string {
 
 /** key-value 竖排降级格式 */
 function renderKeyValue(headers: string[], rows: string[][], termWidth: number): string {
-  const separator = chalk.gray("─".repeat(Math.min(termWidth - 2, 40)));
+  const separator = chalk.hex(theme.text.secondary)("─".repeat(Math.min(termWidth - 2, 40)));
   const lines: string[] = [""];
 
   for (let r = 0; r < rows.length; r++) {
@@ -538,10 +545,11 @@ export function renderInline(tokens: any[]): string {
         result += chalk.italic(renderInline(token.tokens));
         break;
       case "codespan":
-        result += chalk.cyan(token.text);
+        // 用主题 AccentCyan hex 替代 ANSI 16 色 cyan（浅色终端下不可读）
+        result += chalk.hex(themeManager.getActiveTheme().colors.AccentCyan)(token.text);
         break;
       case "del":
-        result += chalk.dim.gray.strikethrough(renderInline(token.tokens));
+        result += chalk.hex(theme.text.secondary).strikethrough(renderInline(token.tokens));
         break;
       case "link":
         result += renderLink(
@@ -711,7 +719,7 @@ export function renderTokens(tokens: any[], renderWidth?: number): string {
       }
       case "html": {
         const trimmed = token.text.trim();
-        if (trimmed) blocks.push(chalk.gray(trimmed));
+        if (trimmed) blocks.push(chalk.hex(theme.text.secondary)(trimmed));
         break;
       }
       case "space": {

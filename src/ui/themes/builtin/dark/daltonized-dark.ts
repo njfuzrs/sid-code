@@ -7,6 +7,7 @@
  */
 
 import { daltonizedDarkTheme, Theme } from '../../theme.ts';
+import { daltonizedDarkSemanticColors } from '../../semantic-tokens.ts';
 
 const c = daltonizedDarkTheme;
 
@@ -71,4 +72,5 @@ export const DaltonizedDark: Theme = new Theme(
     },
   },
   c,
+  daltonizedDarkSemanticColors,
 );

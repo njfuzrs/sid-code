@@ -80,13 +80,171 @@ export const darkSemanticColors: SemanticColors = {
   },
 };
 
+// ── 色盲友好（Daltonized）语义颜色 ──
+// 策略：蓝(active/link) vs 蓝绿(success/focus) vs 橙(error) vs 黄(warning)，
+// 四色对色盲用户均可分辨（Okabe-Ito 色板论证）。
+export const daltonizedDarkSemanticColors: SemanticColors = {
+  text: {
+    primary: '#FFFFFF',
+    secondary: '#AFAFAF',
+    link: '#56B4E9', // sky blue
+    accent: '#CC79A7', // reddish purple
+    response: '#FFFFFF',
+  },
+  background: {
+    primary: '#000000',
+    message: '#5F5F5F',
+    input: '#4A4A4A', // 比 message 深一档，可区分
+    focus: '#003A5C',
+    diff: {
+      added: '#003A5C',
+      removed: '#4A3000',
+      addedEmphasis: '#005580',
+      removedEmphasis: '#6B4400',
+    },
+  },
+  border: {
+    default: '#878787',
+  },
+  ui: {
+    comment: '#AFAFAF',
+    symbol: '#AFAFAF', // 与 secondary 同级（非 AccentCyan）
+    active: '#56B4E9', // sky blue = 品牌色/进行中
+    dark: '#878787',
+    focus: '#009E73', // bluish green（与 active 蓝可分辨）
+    gradient: ['#56B4E9', '#F0E442', '#E69F00'],
+  },
+  status: {
+    error: '#E69F00', // 橙（错误/删除）
+    success: '#009E73', // 蓝绿（成功，与 active 蓝区分）
+    warning: '#F0E442', // 黄
+  },
+};
+
+export const daltonizedLightSemanticColors: SemanticColors = {
+  text: {
+    primary: '#000000',
+    secondary: '#5F5F5F',
+    link: '#0072B2', // deep blue
+    accent: '#CC79A7',
+    response: '#000000',
+  },
+  background: {
+    primary: '#FFFFFF',
+    message: '#FAFAFA',
+    input: '#E4E4E4',
+    focus: '#CCE5FF',
+    diff: {
+      added: '#CCE5FF',
+      removed: '#FFE0CC',
+      addedEmphasis: '#99CCFF',
+      removedEmphasis: '#FFCC99',
+    },
+  },
+  border: {
+    default: '#878787',
+  },
+  ui: {
+    comment: '#5F5F5F',
+    symbol: '#5F5F5F',
+    active: '#0072B2', // deep blue = 品牌色
+    dark: '#878787',
+    focus: '#007754', // 加深 bluish green（白底对比度 ~5.5:1）
+    gradient: ['#0072B2', '#9A7D0A', '#D55E00'],
+  },
+  status: {
+    error: '#B04A00', // 加深朱橙（白底对比度 ~5.5:1）
+    success: '#007754', // 加深蓝绿（白底对比度 ~5.5:1）
+    warning: '#7A6300', // 加深暗黄（白底对比度 ~5.1:1）
+  },
+};
+
+// GitHub Dark 语义颜色（显式定义，不走 fallback）
+export const githubDarkSemanticColors: SemanticColors = {
+  text: {
+    primary: '#c0c4c8',
+    secondary: '#6A737D',
+    link: '#79B8FF',
+    accent: '#B392F0',
+    response: '#c0c4c8',
+  },
+  background: {
+    primary: '#24292e',
+    message: '#1f2428',
+    input: '#2f363d',
+    focus: '#044289',
+    diff: {
+      added: '#3C4636',
+      removed: '#502125',
+      addedEmphasis: '#4C6340',
+      removedEmphasis: '#6B2D31',
+    },
+  },
+  border: {
+    default: '#444d56',
+  },
+  ui: {
+    comment: '#6A737D',
+    symbol: '#6A737D', // 与 secondary 同级
+    active: '#79B8FF',
+    dark: '#444d56',
+    focus: '#85E89D',
+    gradient: ['#79B8FF', '#85E89D'],
+  },
+  status: {
+    error: '#F97583',
+    success: '#85E89D',
+    warning: '#FFAB70',
+  },
+};
+
+// GitHub Light 语义颜色（显式定义）
+export const githubLightSemanticColors: SemanticColors = {
+  text: {
+    primary: '#24292e',
+    secondary: '#6a737d',
+    link: '#005cc5',
+    accent: '#6f42c1',
+    response: '#24292e',
+  },
+  background: {
+    primary: '#ffffff',
+    message: '#f6f8fa',
+    input: '#e1e4e8',
+    focus: '#dbeeff',
+    diff: {
+      added: '#e6ffed',
+      removed: '#ffeef0',
+      addedEmphasis: '#acf2bd',
+      removedEmphasis: '#fdb8c0',
+    },
+  },
+  border: {
+    default: '#e1e4e8',
+  },
+  ui: {
+    comment: '#6a737d',
+    symbol: '#6a737d',
+    active: '#005cc5',
+    dark: '#e1e4e8',
+    focus: '#22863a',
+    gradient: ['#005cc5', '#22863a'],
+  },
+  status: {
+    error: '#d73a49',
+    success: '#22863a',
+    warning: '#c45300', // 加深橙（白底对比度 ~4.6:1）
+  },
+};
+
 // 浅色主题语义颜色
+// 所有文字色确保在 #eff1f5 浅背景上对比度 ≥ 4.5:1（WCAG AA）。
 export const lightSemanticColors: SemanticColors = {
   text: {
-    primary: '#4c4f69',
-    secondary: '#9ca0b0',
-    link: '#1e66f5',
-    accent: '#8839ef',
+    primary: '#4c4f69', // Latte text，对比度 ~7.7:1
+    secondary: '#5c5f77', // subtext1 加深，对比度 ~5.5:1
+    link: '#1e66f5', // 品牌蓝，对比度 ~4.3:1（大号文本 AA 达标）
+    accent: '#8839ef', // mauve，对比度 ~5.8:1
     response: '#4c4f69',
   },
   background: {
@@ -102,20 +260,20 @@ export const lightSemanticColors: SemanticColors = {
     },
   },
   border: {
-    default: '#bcc0cc',
+    default: '#acb0be', // surface2，装饰性边框
   },
   ui: {
-    comment: '#9ca0b0',
-    symbol: '#9ca0b0',
-    active: '#1e66f5',
-    dark: '#bcc0cc',
+    comment: '#6c6f85', // subtext0，代码注释，对比度 ~4.4:1
+    symbol: '#5c5f77', // 与 secondary 同级
+    active: '#1e66f5', // 品牌蓝
+    dark: '#acb0be', // surface2
     focus: '#40a02b',
     // 蓝系单色渐变（浅色对称）：与深色一致锚定品牌蓝
     gradient: ['#1e66f5', '#5a8cf8', '#8cadfb'],
   },
   status: {
-    error: '#d20f39',
-    success: '#40a02b',
-    warning: '#df8e1d',
+    error: '#d20f39', // 对比度 ~7.8:1
+    success: '#347d2a', // 加深绿，对比度 ~4.6:1（原 #40a02b 仅 ~3.0:1）
+    warning: '#9a6700', // 加深棕橙，对比度 ~4.8:1（原 #df8e1d 仅 ~2.3:1）
   },
 };

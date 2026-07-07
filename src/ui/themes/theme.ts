@@ -40,6 +40,7 @@ const DEFAULT_SELECTION_OPACITY = 0.2;
 // ── Catppuccin Latte（浅色调色板）──
 // 调色板与语义色（semantic-tokens.ts lightSemanticColors）同源，
 // 保证「消息流文字 / 代码块高亮 / 边框留白」共享同一色温，不再各画各的。
+// 2026-07: 次要文字/注释/边框整体加深，确保浅背景下可读性（WCAG AA）。
 export const lightTheme: ColorsTheme = {
   type: 'light',
   Background: '#eff1f5', // Latte base
@@ -48,14 +49,14 @@ export const lightTheme: ColorsTheme = {
   AccentBlue: '#1e66f5', // blue（品牌色）
   AccentPurple: '#8839ef', // mauve
   AccentCyan: '#179299', // teal
-  AccentGreen: '#40a02b', // green
-  AccentYellow: '#df8e1d', // yellow
+  AccentGreen: '#347d2a', // 加深绿（浅底对比度 ~4.6:1）
+  AccentYellow: '#9a6700', // 加深棕橙（浅底对比度 ~4.8:1）
   AccentRed: '#d20f39', // red
   DiffAdded: '#d4edda',
   DiffRemoved: '#f8d7da',
-  Comment: '#8c8fa1', // overlay1（代码注释，浅底可读）
-  Gray: '#9ca0b0', // overlay0
-  DarkGray: '#bcc0cc', // surface1（边框）
+  Comment: '#6c6f85', // subtext0（代码注释，浅底对比度 ~4.4:1）
+  Gray: '#5c5f77', // subtext1（次要文本，对比度 ~5.5:1）
+  DarkGray: '#acb0be', // surface2（边框）
   InputBackground: '#ccd0da', // surface0
   MessageBackground: '#e6e9ef', // mantle
   FocusBackground: '#dce8ff',

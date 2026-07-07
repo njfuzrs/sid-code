@@ -6,6 +6,7 @@
 
 import { type ColorsTheme, Theme } from '../../theme.ts';
 import { interpolateColor } from '../../color-utils.ts';
+import { githubDarkSemanticColors } from '../../semantic-tokens.ts';
 
 const githubDarkColors: ColorsTheme = {
   type: 'dark',
@@ -137,4 +138,5 @@ export const GitHubDark: Theme = new Theme(
     },
   },
   githubDarkColors,
+  githubDarkSemanticColors,
 );

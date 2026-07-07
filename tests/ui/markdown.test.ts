@@ -90,11 +90,11 @@ describe("renderMarkdown", () => {
       expect(stripAnsi(result)).toContain("斜体");
     });
 
-    test("codespan 含 cyan 色", () => {
+    test("codespan 含主题色（hex RGB）", () => {
       const result = renderMarkdown("使用 `code` 命令");
       expect(stripAnsi(result)).toContain("code");
-      // cyan: \x1b[36m
-      expect(result).toMatch(/\x1b\[36m/);
+      // 改用主题 hex 色后，输出为 24-bit RGB 格式: \x1b[38;2;R;G;Bm
+      expect(result).toMatch(/\x1b\[38;2;\d+;\d+;\d+m/);
     });
 
     test("删除线被禁用：~~ 原样保留不渲染成 strikethrough（P2-I）", () => {

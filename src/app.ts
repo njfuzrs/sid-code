@@ -760,10 +760,11 @@ export class App {
       getConversationClearedPatch: () => Partial<import("./ui/App.tsx").TUIState>;
       clearPromptCache: () => void;
       resetSyncState: () => void;
+      rebuildDisplay: () => void;
     },
   ): Promise<void> {
     const log = getLogger();
-    const { commandInput, callbacks, updateState, appendCommandOutput, getConversationClearedPatch, clearPromptCache, resetSyncState } = deps;
+    const { commandInput, callbacks, updateState, appendCommandOutput, getConversationClearedPatch, clearPromptCache, resetSyncState, rebuildDisplay } = deps;
 
     switch (result.type) {
       case "clear":
@@ -826,7 +827,11 @@ export class App {
         break;
 
       case "compact":
-        // 压缩摘要：作为消息显示（compact 命令内部已操作 ctxMgr，这里仅回显摘要）
+        // 压缩摘要：compact 命令内部已 ctxMgr.setMessages(压缩后消息)，
+        // 必须 rebuildDisplay 让 historyItems 与 ctxMgr 同步（重置 lastSyncedCount），
+        // 否则后续 syncDisplay 因 newCount<=0 被 early return 跳过，historyItems 永远停在旧快照。
+        resetSyncState();
+        rebuildDisplay();
         appendCommandOutput(commandInput, result.summary ?? null);
         break;
 
@@ -2848,8 +2853,23 @@ export class App {
       }, SESSION_TIMEOUT_MS);
 
       this.busy = true;
+
+      // 乐观更新：用户消息立即追加到 historyItems，不等 queryEngine.submitMessage
+      // 内部 hook/thinking 解析完毕 yield user_message_added。修复 ESC 中断后重发消息
+      // 时「新消息不可见、直接进思考/连接态」的体验问题。
+      // syncDisplay() 在 user_message_added 事件触发时会从 ctxMgr 完整重建 historyItems，
+      // 自然覆盖此处的乐观版本（historyIdCounter 重置+全量重建）。
+      const optimisticUserText = displayCommand || userInput;
+      historyIdCounter += 1;
+      const optimisticUserItem: import("./ui/types.ts").HistoryItem = displayCommand
+        ? { id: historyIdCounter, type: "command", input: displayCommand, output: null }
+        : { id: historyIdCounter, type: "user", text: optimisticUserText };
+      const prevHistoryItems = bridge.current.historyItems;
+      const optimisticHistoryItems = [...prevHistoryItems, optimisticUserItem];
+
       updateState({
         isLoading: true,
+        historyItems: optimisticHistoryItems,
         // 记下本轮起点 outputTokens：spinner 显示「本轮新增」= 当前累计 − 此起点,
         // 与 Footer 的「会话总账」区分开,避免两行显示同一个数。
         turnStartOutputTokens: this.sessionState.getTotalUsage().outputTokens,
@@ -3209,6 +3229,11 @@ export class App {
             const reason = this.abortController?.signal?.reason;
             if (reason === "user-cancel" && this.shouldRestoreCanceledInput()) {
               this.ctxMgr.rewindTurns(1); // 回退本轮 user 输入及其后残留消息
+              // 立即重建 historyItems：rewindTurns 物理删除了 ctxMgr 中的消息，
+              // 但 bridge.current.historyItems 仍是回退前的旧快照。不重建会导致：
+              // ① 被取消的消息残留在屏幕上直到下一次 syncDisplay；
+              // ② 多次 ESC+重发时旧消息叠加（乐观更新基于过时的 prevHistoryItems）。
+              rebuildDisplay();
               markForRestore();
               restoredInput = true;
               log.info("TUI:CB", "已回退被取消的输入轮次,输入框将自动恢复原文");
@@ -3404,6 +3429,7 @@ export class App {
               historyIdCounter = 0;
               activeStatusMessages.clear();
             },
+            rebuildDisplay,
           });
           return;
         }

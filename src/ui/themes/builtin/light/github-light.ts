@@ -6,6 +6,7 @@
 
 import { type ColorsTheme, Theme } from '../../theme.ts';
 import { interpolateColor } from '../../color-utils.ts';
+import { githubLightSemanticColors } from '../../semantic-tokens.ts';
 
 const githubLightColors: ColorsTheme = {
   type: 'light',
@@ -137,4 +138,5 @@ export const GitHubLight: Theme = new Theme(
     },
   },
   githubLightColors,
+  githubLightSemanticColors,
 );
