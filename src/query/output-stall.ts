@@ -31,8 +31,36 @@ export const OUTPUT_STALL_VOLUME_THRESHOLD = 60;
 /** 熔断最多介入次数（避免每轮刷屏；超过说明模型确实卡死，交由其他兜底处理） */
 export const MAX_OUTPUT_STALL_INTERVENTIONS = 2;
 
-/** 每次工具调用为"产出量"贡献的固定权重（工具调用本身即是实质性动作，权重明显高于纯文本字符）。 */
-const TOOL_USE_WEIGHT = 40;
+/**
+ * 每次工具调用为"产出量"贡献的固定权重。
+ *
+ * 2026-07-07 约束型误伤修复（Top 1）：权重从 40 提到 60，使**任意一次工具调用**
+ * （60 ≥ OUTPUT_STALL_VOLUME_THRESHOLD）都不再低于阈值。此前 40 < 60，导致"单工具、
+ * 无文本"的正常串行探索（逐个 read 文件、逐步单点 edit）连续 5 轮被误判"停滞"——
+ * 而这正是日常最高频的合法工作流。提权后，只有**连续多轮既没什么文本、也完全没有
+ * 工具调用**（纯空转 / 极短闲聊）才会持续低于阈值，与注释自述的语义对齐。
+ */
+const TOOL_USE_WEIGHT = 60;
+
+/**
+ * 产出停滞检测是否启用（默认关闭，对齐 Claude Code——CC 无此机制）。
+ *
+ * 为什么默认关闭 + 独立 env 门控（2026-07-07 决策，约束型误伤排查清单发现一）：
+ * 产出停滞是启发式"纠偏"类约束，拦的是"模型可能走的弯路"而非"不可逆危害"。随模型
+ * 能力提升，这类启发式正从"保护"退化成"负担"。更关键的是：此前它是 loop.ts 里独立的
+ * state 字段逻辑，**绕过了 `SID_ENABLE_LOOP_DETECTION` 全局 gate**——用户以为关掉循环
+ * 检测就关掉了所有启发式纠偏，实际它仍每轮在跑。现纳入独立、可逆的 env 开关，与
+ * 循环检测样板一致：代码不删、仅默认关，需要时（如接入行为不稳定的弱模型）显式开启。
+ *
+ * 复用 SID_ENABLE_LOOP_DETECTION 作为总开关的一部分：开启循环检测时一并开启产出停滞
+ * 检测（二者同属"防跑偏"启发式）；也可用 SID_ENABLE_OUTPUT_STALL=1 单独开启。
+ */
+export function isOutputStallDetectionEnabled(): boolean {
+  return (
+    process.env.SID_ENABLE_OUTPUT_STALL === "1" ||
+    process.env.SID_ENABLE_LOOP_DETECTION === "1"
+  );
+}
 
 /**
  * 计算本轮的产出量：assistant 文本长度（trim 后）+ 工具调用数 × 固定权重。

@@ -130,16 +130,45 @@ describe("handleGoalGate · 评估决策", () => {
     expect(ctx.goal.status).toBe("complete");
   });
 
-  test("评估 impossible → impossible=true + status=impossible", async () => {
-    const ctx = makeCtx({
-      goalOverrides: { turnsUsed: 3 },
-      evalResponse: JSON.stringify({ satisfied: false, reason: "文件不存在", impossible: true }),
-    });
-    ctx.goal.objective = "修复 nonexistent.ts";
-    const out = await handleGoalGate(ctx);
-    expect(out.result.impossible).toBe(true);
-    expect(out.result.shouldContinue).toBe(false);
-    expect(ctx.goal.status).toBe("impossible");
+  test("评估 impossible（默认降级模式）→ 不终止，注入软提醒 + shouldContinue=true", async () => {
+    const saved = process.env.SID_ENABLE_GOAL_HARD_STOP;
+    delete process.env.SID_ENABLE_GOAL_HARD_STOP;
+    try {
+      const ctx = makeCtx({
+        goalOverrides: { turnsUsed: 3 },
+        evalResponse: JSON.stringify({ satisfied: false, reason: "文件不存在", impossible: true }),
+      });
+      ctx.goal.objective = "修复 nonexistent.ts";
+      const out = await handleGoalGate(ctx);
+      // 降级：不再终止，也不再标 impossible，而是继续并把判断交还模型
+      expect(out.result.impossible).toBe(false);
+      expect(out.result.shouldContinue).toBe(true);
+      expect(ctx.goal.status).not.toBe("impossible");
+      expect(out.injectMessages.length).toBeGreaterThan(0);
+      expect(out.injectMessages[0]!.content[0]!.text).toContain("无法达成");
+    } finally {
+      if (saved === undefined) delete process.env.SID_ENABLE_GOAL_HARD_STOP;
+      else process.env.SID_ENABLE_GOAL_HARD_STOP = saved;
+    }
+  });
+
+  test("评估 impossible（SID_ENABLE_GOAL_HARD_STOP=1 硬停止模式）→ impossible=true + status=impossible", async () => {
+    const saved = process.env.SID_ENABLE_GOAL_HARD_STOP;
+    process.env.SID_ENABLE_GOAL_HARD_STOP = "1";
+    try {
+      const ctx = makeCtx({
+        goalOverrides: { turnsUsed: 3 },
+        evalResponse: JSON.stringify({ satisfied: false, reason: "文件不存在", impossible: true }),
+      });
+      ctx.goal.objective = "修复 nonexistent.ts";
+      const out = await handleGoalGate(ctx);
+      expect(out.result.impossible).toBe(true);
+      expect(out.result.shouldContinue).toBe(false);
+      expect(ctx.goal.status).toBe("impossible");
+    } finally {
+      if (saved === undefined) delete process.env.SID_ENABLE_GOAL_HARD_STOP;
+      else process.env.SID_ENABLE_GOAL_HARD_STOP = saved;
+    }
   });
 
   test("评估未满足 → 注入反馈 + shouldContinue=true + 记录 lastEvalReason", async () => {
@@ -160,24 +189,58 @@ describe("handleGoalGate · 评估决策", () => {
 // ─── Blocked 检测 ───
 
 describe("handleGoalGate · blocked 检测", () => {
-  test("连续相同 blockerKey 达阈值 → blocked + shouldContinue=false", async () => {
-    const detector = new BlockedDetector(3);
-    const response = JSON.stringify({ satisfied: false, reason: "卡在同一处", blockerKey: "stuck-key" });
+  test("连续相同 blockerKey 达阈值（默认降级模式）→ 不终止，注入换思路提醒 + shouldContinue=true", async () => {
+    const saved = process.env.SID_ENABLE_GOAL_HARD_STOP;
+    delete process.env.SID_ENABLE_GOAL_HARD_STOP;
+    try {
+      const detector = new BlockedDetector(3);
+      const response = JSON.stringify({ satisfied: false, reason: "卡在同一处", blockerKey: "stuck-key" });
 
-    // 前两次：未满足但未达阈值 → 继续
-    for (let i = 0; i < 2; i++) {
-      const ctx = makeCtx({ goalOverrides: { turnsUsed: 5 + i }, evalResponse: response, blockedDetector: detector });
-      ctx.goal.objective = "完成迁移工作";
-      const out = await handleGoalGate(ctx);
-      expect(out.result.shouldContinue).toBe(true);
+      // 前两次：未满足但未达阈值 → 继续
+      for (let i = 0; i < 2; i++) {
+        const ctx = makeCtx({ goalOverrides: { turnsUsed: 5 + i }, evalResponse: response, blockedDetector: detector });
+        ctx.goal.objective = "完成迁移工作";
+        const out = await handleGoalGate(ctx);
+        expect(out.result.shouldContinue).toBe(true);
+      }
+
+      // 第三次：连续 3 次相同 blockerKey → 降级模式下仍继续，但注入"换思路"软提醒、不标 blocked
+      const ctx3 = makeCtx({ goalOverrides: { turnsUsed: 7 }, evalResponse: response, blockedDetector: detector });
+      ctx3.goal.objective = "完成迁移工作";
+      const out3 = await handleGoalGate(ctx3);
+      expect(out3.result.shouldContinue).toBe(true);
+      expect(ctx3.goal.status).not.toBe("blocked");
+      expect(out3.injectMessages.length).toBeGreaterThan(0);
+      expect(out3.injectMessages[0]!.content[0]!.text).toContain("换一种思路");
+    } finally {
+      if (saved === undefined) delete process.env.SID_ENABLE_GOAL_HARD_STOP;
+      else process.env.SID_ENABLE_GOAL_HARD_STOP = saved;
     }
+  });
 
-    // 第三次：连续 3 次相同 blockerKey → blocked
-    const ctx3 = makeCtx({ goalOverrides: { turnsUsed: 7 }, evalResponse: response, blockedDetector: detector });
-    ctx3.goal.objective = "完成迁移工作";
-    const out3 = await handleGoalGate(ctx3);
-    expect(out3.result.shouldContinue).toBe(false);
-    expect(ctx3.goal.status).toBe("blocked");
+  test("连续相同 blockerKey 达阈值（SID_ENABLE_GOAL_HARD_STOP=1 硬停止模式）→ blocked + shouldContinue=false", async () => {
+    const saved = process.env.SID_ENABLE_GOAL_HARD_STOP;
+    process.env.SID_ENABLE_GOAL_HARD_STOP = "1";
+    try {
+      const detector = new BlockedDetector(3);
+      const response = JSON.stringify({ satisfied: false, reason: "卡在同一处", blockerKey: "stuck-key" });
+
+      for (let i = 0; i < 2; i++) {
+        const ctx = makeCtx({ goalOverrides: { turnsUsed: 5 + i }, evalResponse: response, blockedDetector: detector });
+        ctx.goal.objective = "完成迁移工作";
+        const out = await handleGoalGate(ctx);
+        expect(out.result.shouldContinue).toBe(true);
+      }
+
+      const ctx3 = makeCtx({ goalOverrides: { turnsUsed: 7 }, evalResponse: response, blockedDetector: detector });
+      ctx3.goal.objective = "完成迁移工作";
+      const out3 = await handleGoalGate(ctx3);
+      expect(out3.result.shouldContinue).toBe(false);
+      expect(ctx3.goal.status).toBe("blocked");
+    } finally {
+      if (saved === undefined) delete process.env.SID_ENABLE_GOAL_HARD_STOP;
+      else process.env.SID_ENABLE_GOAL_HARD_STOP = saved;
+    }
   });
 });
 

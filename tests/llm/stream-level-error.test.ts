@@ -122,6 +122,8 @@ describe("T6 — 首事件即 error 的端到端重试/降级路径", () => {
       fallbackProvider: okProvider(),
       fallbackModel: "backup",
       querySource: "main_thread", // 前台：529 会重试
+      retryBackoffBaseMs: 1,
+      retryBackoffMaxMs: 5,
     });
 
     const events = await collect(fallback.executeWithFallback(overloadedPrimary, e2eParams));
@@ -147,6 +149,8 @@ describe("T6 — 首事件即 error 的端到端重试/降级路径", () => {
       fallbackProvider: okProvider(),
       fallbackModel: "backup",
       querySource: "main_thread",
+      retryBackoffBaseMs: 1,
+      retryBackoffMaxMs: 5,
     });
 
     const events = await collect(fallback.executeWithFallback(errChunkPrimary, { ...e2eParams, model: "openai:deepseek" }));

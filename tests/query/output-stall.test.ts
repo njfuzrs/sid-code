@@ -13,6 +13,7 @@ import {
   buildOutputStallMessage,
   OUTPUT_STALL_WINDOW,
   OUTPUT_STALL_VOLUME_THRESHOLD,
+  isOutputStallDetectionEnabled,
 } from "../../src/query/output-stall.ts";
 
 describe("measureTurnOutputVolume", () => {
@@ -20,16 +21,27 @@ describe("measureTurnOutputVolume", () => {
     expect(measureTurnOutputVolume("  hello  ", 0)).toBe(5);
   });
 
-  test("有工具调用：文本长度 + 工具数 × 权重（40）", () => {
-    expect(measureTurnOutputVolume("ok", 2)).toBe(2 + 2 * 40);
+  test("有工具调用：文本长度 + 工具数 × 权重（60）", () => {
+    expect(measureTurnOutputVolume("ok", 2)).toBe(2 + 2 * 60);
+  });
+
+  test("单工具无文本轮不再低于阈值（Top 1 误伤修复：权重 60 ≥ 阈值 60）", () => {
+    // 此前权重 40 < 阈值 60，单工具串行探索连续 5 轮被误判停滞；提权后不再计入停滞窗口。
+    expect(measureTurnOutputVolume("", 1)).toBeGreaterThanOrEqual(OUTPUT_STALL_VOLUME_THRESHOLD);
+  });
+
+  test("连续 5 轮单工具无文本 → 不再判停滞（Top 1 核心误伤场景）", () => {
+    const history = [1, 2, 3, 4, 5].map(() => measureTurnOutputVolume("", 1));
+    expect(isOutputStalling(history)).toBe(false);
   });
 
   test("空文本 + 无工具调用 → 0", () => {
     expect(measureTurnOutputVolume("", 0)).toBe(0);
   });
 
-  test("单次工具调用即可轻松超过阈值", () => {
-    expect(measureTurnOutputVolume("", 1)).toBeGreaterThan(OUTPUT_STALL_VOLUME_THRESHOLD);
+  test("单次工具调用即达到阈值（不再低于阈值 → 不计入停滞）", () => {
+    // 权重 60 = 阈值 60；判定用 `< 阈值`，故 60 不算停滞。单工具轮=实质进展。
+    expect(measureTurnOutputVolume("", 1)).toBeGreaterThanOrEqual(OUTPUT_STALL_VOLUME_THRESHOLD);
   });
 });
 
@@ -85,5 +97,52 @@ describe("buildOutputStallMessage", () => {
     const msg = buildOutputStallMessage([1, 2, 3, 4, 5]);
     expect(msg).toContain("1, 2, 3, 4, 5");
     expect(msg).toContain("请勿向用户提及本提醒");
+  });
+});
+
+describe("isOutputStallDetectionEnabled（Top 1：默认关闭 + env 门控）", () => {
+  const KEYS = ["SID_ENABLE_OUTPUT_STALL", "SID_ENABLE_LOOP_DETECTION"] as const;
+  const saved: Record<string, string | undefined> = {};
+
+  function clearAll() {
+    for (const k of KEYS) {
+      saved[k] = process.env[k];
+      delete process.env[k];
+    }
+  }
+  function restore() {
+    for (const k of KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  }
+
+  test("默认（两个开关都未设）→ 关闭", () => {
+    clearAll();
+    try {
+      expect(isOutputStallDetectionEnabled()).toBe(false);
+    } finally {
+      restore();
+    }
+  });
+
+  test("SID_ENABLE_OUTPUT_STALL=1 → 单独开启", () => {
+    clearAll();
+    try {
+      process.env.SID_ENABLE_OUTPUT_STALL = "1";
+      expect(isOutputStallDetectionEnabled()).toBe(true);
+    } finally {
+      restore();
+    }
+  });
+
+  test("SID_ENABLE_LOOP_DETECTION=1 → 一并开启（同属防跑偏启发式）", () => {
+    clearAll();
+    try {
+      process.env.SID_ENABLE_LOOP_DETECTION = "1";
+      expect(isOutputStallDetectionEnabled()).toBe(true);
+    } finally {
+      restore();
+    }
   });
 });

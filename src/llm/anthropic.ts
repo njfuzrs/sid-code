@@ -27,6 +27,7 @@ import { generateClientRequestId } from "../api/api-log.ts";
 import { updateRateLimitStatus } from "../api/rate-limit.ts";
 import { guardOutgoingMessages } from "./protocol-sentinel.ts";
 import { createStreamLifecycle, LIFECYCLE_PRESETS } from "./stream-lifecycle.ts";
+import { resolveProviderStreamTimeouts } from "../config/network-profile.ts";
 import type { StreamTelemetrySignal } from "./types.ts";
 import { emitTimeoutFired, emitStreamPhase } from "../trace/stream-observer.ts";
 import { currentSseDumpContext } from "./sse-chunk-dumper.ts";
@@ -225,26 +226,20 @@ export class AnthropicProvider implements Provider {
       }
 
       // § StreamLifecycle 包装（T7）：三层超时 idle / content progress / overall + stall detection。
-      // 从 guardedStream 升级为 createStreamLifecycle，额外获得 Layer 3 请求级整体超时
-      // （mainLoop preset 的 overallTimeoutMs=10min），对齐官方 SDK 的 request-level timeout。
+      // 从 guardedStream 升级为 createStreamLifecycle，额外获得 Layer 3 请求级整体超时，
+      // 对齐官方 SDK 的 request-level timeout。
+      // 配置-3：content-progress / overall 阈值走 network-profile 统一解析（不再就地读 env）。
+      const anthropicStreamTimeouts = resolveProviderStreamTimeouts({ providerKind: "anthropic" });
       const lifecycle = createStreamLifecycle<any>({
         // idle timeout（90s）：任何数据包（含 ping keep-alive）都 reset，保护"TCP 彻底断开"场景。
         idleTimeoutMs: LIFECYCLE_PRESETS.mainLoop.idleTimeoutMs,
-        // content progress timeout（5min）：只在 content_block_delta / message_delta 到达时 reset。
+        // content progress timeout：只在 content_block_delta / message_delta 到达时 reset。
         // ping / message_start / content_block_start 不续命——识破"只有 keep-alive、无真内容"的僵死流。
-        // 阈值可经 SID_CODE_ANTHROPIC_CONTENT_PROGRESS_TIMEOUT_MS 覆盖（测试注入）。
-        contentProgressTimeoutMs: (() => {
-          const override = Number(process.env.SID_CODE_ANTHROPIC_CONTENT_PROGRESS_TIMEOUT_MS);
-          if (Number.isFinite(override) && override > 0) return override;
-          return LIFECYCLE_PRESETS.mainLoop.contentProgressTimeoutMs;
-        })(),
-        // T7 overall timeout（10min）：请求级绝对上限，不因任何事件重置。
-        // 阈值可经 SID_CODE_ANTHROPIC_OVERALL_TIMEOUT_MS 覆盖（测试注入）。
-        overallTimeoutMs: (() => {
-          const override = Number(process.env.SID_CODE_ANTHROPIC_OVERALL_TIMEOUT_MS);
-          if (Number.isFinite(override) && override > 0) return override;
-          return LIFECYCLE_PRESETS.mainLoop.overallTimeoutMs;
-        })(),
+        // 配置-3：阈值走 network-profile 统一解析（env override > 默认），不再就地 Number(process.env)。
+        // env 名保留 SID_CODE_ANTHROPIC_CONTENT_PROGRESS_TIMEOUT_MS / SID_CODE_ANTHROPIC_OVERALL_TIMEOUT_MS。
+        contentProgressTimeoutMs: anthropicStreamTimeouts.contentProgressTimeoutMs,
+        // T7 overall timeout：请求级绝对上限，不因任何事件重置。
+        overallTimeoutMs: anthropicStreamTimeouts.overallTimeoutMs,
         isContentProgress: (event: any) =>
           event?.type === "content_block_delta" || event?.type === "message_delta",
         stallWarnMs: 30_000,

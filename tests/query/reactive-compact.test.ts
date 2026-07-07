@@ -16,32 +16,44 @@ describe("DiminishingReturnsDetector — 默认配置（向后兼容）", () => 
     expect(d.shouldStop()).toBe(false);
   });
 
-  test("达到默认最大次数（3 次）→ 应停止", () => {
+  test("达到默认最大次数（8 次，Top 3 从 3 放宽）→ 应停止", () => {
     const d = new DiminishingReturnsDetector();
-    d.record(2000);
-    d.record(2000);
-    d.record(2000);
+    for (let i = 0; i < 8; i++) d.record(2000);
     expect(d.shouldStop()).toBe(true);
   });
 
-  test("连续两次增量 < 默认阈值（500）→ 应停止", () => {
+  test("续写 7 次（未达 8 次上限）且增量正常 → 不应停止（分段写大文件留足空间）", () => {
     const d = new DiminishingReturnsDetector();
-    d.record(400);
-    d.record(300);
+    for (let i = 0; i < 7; i++) d.record(2000);
+    expect(d.shouldStop()).toBe(false);
+  });
+
+  test("连续两次增量 < 默认阈值（150，Top 3 从 500 收紧）→ 应停止", () => {
+    const d = new DiminishingReturnsDetector();
+    d.record(100);
+    d.record(50);
     expect(d.shouldStop()).toBe(true);
+  });
+
+  test("分段写入常见段大小（各 300 token，≥ 新阈值 150）→ 不再误判递减停止", () => {
+    // 此前阈值 500 时，连续两段各 300 会命中"两次 <500"被误终止；收紧到 150 后不再误伤。
+    const d = new DiminishingReturnsDetector();
+    d.record(300);
+    d.record(300);
+    expect(d.shouldStop()).toBe(false);
   });
 
   test("连续两次增量中有一次 ≥ 阈值 → 不应停止", () => {
     const d = new DiminishingReturnsDetector();
-    d.record(400);
-    d.record(600);
+    d.record(100);
+    d.record(200);
     expect(d.shouldStop()).toBe(false);
   });
 
   test("reset 后计数清零", () => {
     const d = new DiminishingReturnsDetector();
-    d.record(100);
-    d.record(100);
+    d.record(50);
+    d.record(50);
     expect(d.shouldStop()).toBe(true);
     d.reset();
     expect(d.count).toBe(0);

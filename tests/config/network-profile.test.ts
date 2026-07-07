@@ -9,8 +9,12 @@
 import { describe, test, expect, afterEach } from "bun:test";
 import {
   DEFAULTS,
+  PROVIDER_STREAM_DEFAULTS,
+  SIDE_CALL_DEFAULTS,
   resolveLoopTimeouts,
   resolveHeaderTimeoutMs,
+  resolveProviderStreamTimeouts,
+  resolveSideCallTimeouts,
   computeBackoffMs,
 } from "../../src/config/network-profile.ts";
 
@@ -23,6 +27,16 @@ const ENV_KEYS = [
   "SID_CODE_MAX_TIMEOUT_RETRIES",
   "SID_CODE_RETRY_BACKOFF_BASE_MS",
   "SID_CODE_RETRY_BACKOFF_MAX_MS",
+  "SID_CODE_IDLE_TIMEOUT_MS",
+  "SID_CODE_CONTENT_PROGRESS_TIMEOUT_MS",
+  "SID_CODE_ANTHROPIC_CONTENT_PROGRESS_TIMEOUT_MS",
+  "SID_CODE_FETCH_ABSOLUTE_TIMEOUT_MS",
+  "SID_CODE_OPENAI_OVERALL_TIMEOUT_MS",
+  "SID_CODE_ANTHROPIC_OVERALL_TIMEOUT_MS",
+  "SID_CODE_WARMUP_TIMEOUT_MS",
+  "SID_CODE_COMPACT_TIMEOUT_MS",
+  "SID_CODE_COLLAPSE_SEGMENT_TIMEOUT_MS",
+  "SID_CODE_RECALL_TIMEOUT_MS",
 ];
 
 afterEach(() => {
@@ -83,6 +97,82 @@ describe("resolveHeaderTimeoutMs — provider 内部两层", () => {
   test("环境变量覆盖", () => {
     process.env.SID_CODE_RESPONSE_HEADER_TIMEOUT_MS = "99000";
     expect(resolveHeaderTimeoutMs()).toBe(99_000);
+  });
+});
+
+describe("resolveProviderStreamTimeouts — provider 流式看门狗（配置-3 / 必删-1/-2）", () => {
+  test("无覆盖 → 全部取统一默认值（不按模型分档）", () => {
+    const t = resolveProviderStreamTimeouts({ providerKind: "openai" });
+    expect(t).toEqual({ ...PROVIDER_STREAM_DEFAULTS });
+    // 回归保护：不再有 deepseek(180/300) vs default(90/120) 的分档，一律取够宽的 300s
+    expect(t.idleTimeoutMs).toBe(300_000);
+    expect(t.contentProgressTimeoutMs).toBe(300_000);
+  });
+
+  test("openai idle / content-progress env 覆盖", () => {
+    process.env.SID_CODE_IDLE_TIMEOUT_MS = "150";
+    process.env.SID_CODE_CONTENT_PROGRESS_TIMEOUT_MS = "200";
+    const t = resolveProviderStreamTimeouts({ providerKind: "openai" });
+    expect(t.idleTimeoutMs).toBe(150);
+    expect(t.contentProgressTimeoutMs).toBe(200);
+  });
+
+  test("anthropic content-progress / overall 用各自 env 名", () => {
+    process.env.SID_CODE_ANTHROPIC_CONTENT_PROGRESS_TIMEOUT_MS = "111";
+    process.env.SID_CODE_ANTHROPIC_OVERALL_TIMEOUT_MS = "222";
+    const t = resolveProviderStreamTimeouts({ providerKind: "anthropic" });
+    expect(t.contentProgressTimeoutMs).toBe(111);
+    expect(t.overallTimeoutMs).toBe(222);
+    // openai 的 content-progress env 不应串味到 anthropic
+    process.env.SID_CODE_CONTENT_PROGRESS_TIMEOUT_MS = "999";
+    const t2 = resolveProviderStreamTimeouts({ providerKind: "anthropic" });
+    expect(t2.contentProgressTimeoutMs).toBe(111); // 仍取 anthropic 专用 env
+  });
+
+  test("fetch-absolute env 两 provider 共用", () => {
+    process.env.SID_CODE_FETCH_ABSOLUTE_TIMEOUT_MS = "333";
+    expect(resolveProviderStreamTimeouts({ providerKind: "openai" }).fetchAbsoluteTimeoutMs).toBe(333);
+    expect(resolveProviderStreamTimeouts({ providerKind: "anthropic" }).fetchAbsoluteTimeoutMs).toBe(333);
+  });
+
+  test("非法 env（负数/非数字）被忽略，回退默认", () => {
+    process.env.SID_CODE_IDLE_TIMEOUT_MS = "-5";
+    process.env.SID_CODE_CONTENT_PROGRESS_TIMEOUT_MS = "abc";
+    const t = resolveProviderStreamTimeouts({ providerKind: "openai" });
+    expect(t.idleTimeoutMs).toBe(PROVIDER_STREAM_DEFAULTS.idleTimeoutMs);
+    expect(t.contentProgressTimeoutMs).toBe(PROVIDER_STREAM_DEFAULTS.contentProgressTimeoutMs);
+  });
+
+  test("默认 providerKind 为 openai", () => {
+    const t = resolveProviderStreamTimeouts();
+    expect(t).toEqual({ ...PROVIDER_STREAM_DEFAULTS });
+  });
+});
+
+describe("resolveSideCallTimeouts — side-call 子表（配置-4）", () => {
+  test("无覆盖 → 全部取默认值", () => {
+    const t = resolveSideCallTimeouts();
+    expect(t).toEqual({ ...SIDE_CALL_DEFAULTS });
+  });
+
+  test("各 env 独立覆盖", () => {
+    process.env.SID_CODE_WARMUP_TIMEOUT_MS = "5000";
+    process.env.SID_CODE_COMPACT_TIMEOUT_MS = "30000";
+    process.env.SID_CODE_COLLAPSE_SEGMENT_TIMEOUT_MS = "20000";
+    process.env.SID_CODE_RECALL_TIMEOUT_MS = "8000";
+    const t = resolveSideCallTimeouts();
+    expect(t.warmupMs).toBe(5000);
+    expect(t.compactMs).toBe(30000);
+    expect(t.collapseSegmentMs).toBe(20000);
+    expect(t.recallMs).toBe(8000);
+  });
+
+  test("非法 env 被忽略，回退默认", () => {
+    process.env.SID_CODE_WARMUP_TIMEOUT_MS = "abc";
+    process.env.SID_CODE_RECALL_TIMEOUT_MS = "-1";
+    const t = resolveSideCallTimeouts();
+    expect(t.warmupMs).toBe(SIDE_CALL_DEFAULTS.warmupMs);
+    expect(t.recallMs).toBe(SIDE_CALL_DEFAULTS.recallMs);
   });
 });
 

@@ -150,10 +150,37 @@ export function convertToSDKMessage(
         type: "system",
         subtype: "status",
         message: event.text,
+        // 静默-7：透传 level（info/warning/error），让 SDK 消费者能区分严重级别。
+        level: event.level,
       };
 
     case "tombstone":
-      return null; // 内部控制信号，不转发
+      // 静默-7：模型降级信号。此前 return null 完全丢弃——SDK 消费者感知不到"正在切换备用模型"。
+      // 转为 status 消息（warning 级），让 stream-json 消费者能观测到降级发生。
+      return {
+        type: "system",
+        subtype: "status",
+        message: `模型降级，正在使用备用模型重试（${event.reason}）`,
+        level: "warning",
+      };
+
+    case "fatal_error":
+      // queryLoop/engine 层封装的致命错误（engine.ts:365 正常 yield，非抛出异常）。
+      // 若无此 case 会落到 default:return null → query-engine 因未捕获异常（runError 恒 null）
+      // 走 !terminalEmitted 分支合成 success，把致命错误谎报为"成功但结果为空"（静默-1）。
+      // 映射为 error_during_execution 终止消息，让 SDK 调用者拿到真实错误（含 message/stack）。
+      return {
+        type: "result",
+        subtype: "error_during_execution",
+        errors: event.stack
+          ? [`${event.message}\n${event.stack}`]
+          : [event.message],
+        duration_ms: nowOf(ctx) - ctx.startTime,
+        num_turns: ctx.turnCount,
+        total_cost_usd: ctx.totalCostUsd,
+        usage: { ...ctx.totalUsage },
+        session_id: ctx.sessionId,
+      };
 
     default:
       return null;

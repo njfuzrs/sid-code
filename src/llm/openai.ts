@@ -28,7 +28,7 @@ import { splitSystemByDynamicBoundary } from "../api/cache-strategy.ts";
 import { estimateTextTokens } from "../context/token.ts";
 import { sanitizeStrings } from "./sanitize-unicode.ts";
 import { SseChunkDumper, currentSseDumpContext } from "./sse-chunk-dumper.ts";
-import { resolveHeaderTimeoutMs } from "../config/network-profile.ts";
+import { resolveHeaderTimeoutMs, resolveProviderStreamTimeouts } from "../config/network-profile.ts";
 import { buildResponsesRequest } from "./openai-responses-request.ts";
 import { parseResponsesStream } from "./openai-responses.ts";
 
@@ -644,17 +644,16 @@ export class OpenAIProvider implements Provider {
       }, headerTimeoutMs);
       // 注意：不调 unref()。fdb47f30 的教训正是 fallback 的整体超时定时器 unref 后
       // 在 hang 场景疑似未按时 fire；响应头超时是关键防线，宁可让它保持进程活跃。
-      // T1.2：fetch 兜底硬超时（300s）。header timeout 是"等响应头"的第一道防线（60/120s），
+      // T1.2：fetch 兜底硬超时。header timeout 是"等响应头"的第一道防线，
       // 但一旦响应头已到、SSE 流进入半开 TCP 且底层 reader 永不 settle 时，header timeout
-      // 已被 clearTimeout 释放，不再保护。这里用 AbortSignal.timeout(300s) 给整个 fetch
-      // 生命周期加一个绝对上限——即便 SSE 流 hang，300s 后底层 fetch 也会被 runtime abort，
-      // 让 reader.read() 以 AbortError settle，打破 hang。与 header timeout 独立并存：
-      // header timeout 的 AbortController 仍是第一道防线，不受此兜底影响。
-      const FETCH_ABSOLUTE_TIMEOUT_MS = (() => {
-        const override = Number(process.env.SID_CODE_FETCH_ABSOLUTE_TIMEOUT_MS);
-        if (Number.isFinite(override) && override > 0) return override;
-        return 300_000;
-      })();
+      // 已被 clearTimeout 释放，不再保护。这里用 AbortSignal.timeout 给整个 fetch
+      // 生命周期加一个绝对上限——即便 SSE 流 hang，超时后底层 fetch 也会被 runtime abort，
+      // 让 reader.read() 以 AbortError settle，打破 hang。与 header timeout 独立并存。
+      // 配置-3：阈值走 network-profile 统一解析（与 headerTimeoutMs 同值），
+      // 不再是独立字面量 300_000（原"改一个不改另一个"的隐患）。
+      // 一次解析，fetch 硬顶与下方 lifecycle overall 复用。
+      const streamTimeouts = resolveProviderStreamTimeouts({ providerKind: "openai" });
+      const FETCH_ABSOLUTE_TIMEOUT_MS = streamTimeouts.fetchAbsoluteTimeoutMs;
       const fetchSignal = signal
         ? AbortSignal.any([signal, headerTimeoutCtl.signal, AbortSignal.timeout(FETCH_ABSOLUTE_TIMEOUT_MS)])
         : AbortSignal.any([headerTimeoutCtl.signal, AbortSignal.timeout(FETCH_ABSOLUTE_TIMEOUT_MS)]);
@@ -744,11 +743,9 @@ export class OpenAIProvider implements Provider {
         // 事件级 idle 放宽到 overall 同量级：字节级 idle（parseSSE 内）才是权威的空闲判据，
         // 这层只作"连事件都彻底停了"的粗粒度兜底，不与字节级 idle 争抢触发。
         idleTimeoutMs: LIFECYCLE_PRESETS.mainLoop.overallTimeoutMs,
-        overallTimeoutMs: (() => {
-          const override = Number(process.env.SID_CODE_OPENAI_OVERALL_TIMEOUT_MS);
-          if (Number.isFinite(override) && override > 0) return override;
-          return LIFECYCLE_PRESETS.mainLoop.overallTimeoutMs;
-        })(),
+        // 配置-3：overall 阈值走 network-profile 统一解析（env override > 默认），
+        // 不再就地 Number(process.env)。env 名保留 SID_CODE_OPENAI_OVERALL_TIMEOUT_MS。
+        overallTimeoutMs: streamTimeouts.overallTimeoutMs,
         stallWarnMs: 30_000,
         label: "OPENAI",
         // T14.6：收敛 first_content emit 到 lifecycle 层
@@ -939,12 +936,9 @@ export class OpenAIProvider implements Provider {
       headerTimeoutCtl.abort();
     }, headerTimeoutMs);
 
-    // fetch 绝对上限兜底
-    const FETCH_ABSOLUTE_TIMEOUT_MS = (() => {
-      const override = Number(process.env.SID_CODE_FETCH_ABSOLUTE_TIMEOUT_MS);
-      if (Number.isFinite(override) && override > 0) return override;
-      return 300_000;
-    })();
+    // fetch 绝对上限兜底（配置-3：走 network-profile 统一解析，Responses 路径与 overall 复用）
+    const streamTimeouts = resolveProviderStreamTimeouts({ providerKind: "openai" });
+    const FETCH_ABSOLUTE_TIMEOUT_MS = streamTimeouts.fetchAbsoluteTimeoutMs;
     const fetchSignal = signal
       ? AbortSignal.any([signal, headerTimeoutCtl.signal, AbortSignal.timeout(FETCH_ABSOLUTE_TIMEOUT_MS)])
       : AbortSignal.any([headerTimeoutCtl.signal, AbortSignal.timeout(FETCH_ABSOLUTE_TIMEOUT_MS)]);
@@ -1002,11 +996,8 @@ export class OpenAIProvider implements Provider {
       // StreamLifecycle 事件级兜底（对标 Chat Completions 路径）
       const lifecycle = createStreamLifecycle<StreamEvent>({
         idleTimeoutMs: LIFECYCLE_PRESETS.mainLoop.overallTimeoutMs,
-        overallTimeoutMs: (() => {
-          const override = Number(process.env.SID_CODE_OPENAI_OVERALL_TIMEOUT_MS);
-          if (Number.isFinite(override) && override > 0) return override;
-          return LIFECYCLE_PRESETS.mainLoop.overallTimeoutMs;
-        })(),
+        // 配置-3：overall 阈值走 network-profile 统一解析（复用上方 streamTimeouts）
+        overallTimeoutMs: streamTimeouts.overallTimeoutMs,
         stallWarnMs: 30_000,
         label: "OPENAI-RESPONSES",
         // T14.6：收敛 first_content emit 到 lifecycle 层
@@ -1263,22 +1254,15 @@ export class OpenAIProvider implements Provider {
     // 缺口 1：parseSSE 内的 turn index（用于 StreamPhase/TimeoutFired/StreamStall 事件）
     const parseObsIndex = dumpCtx.turnIndex;
 
-    /** 流式空闲超时（默认启用，不再依赖环境变量开关）
-     *  仅 1 级 idle timeout：N 秒内 reader 无任何 chunk → 断开
-     *  按模型区分：DeepSeek 大上下文处理慢 → 180s；Claude/OpenAI 等 → 90s
-     *  支持环境变量覆盖（SID_CODE_IDLE_TIMEOUT_MS，测试注入用；与 CONTENT_PROGRESS 对齐）。 */
-    const isDeepSeek = /deepseek/i.test(this._model);
-    const IDLE_TIMEOUT_MS = process.env.SID_CODE_IDLE_TIMEOUT_MS
-      ? parseInt(process.env.SID_CODE_IDLE_TIMEOUT_MS, 10)
-      : (isDeepSeek ? 180_000 : 90_000);
-
-    /** Fix 2: content progress timeout — 区分 TCP keep-alive 与业务进展
-     *  即使 reader.read() 持续 settle（空行/ping），只要无有效内容进展就超时中断。
-     *  DeepSeek 思考模型给 5min（思考期间 reasoning_content 算进展）；其他 2min。
-     *  支持环境变量覆盖（测试用）。 */
-    const CONTENT_PROGRESS_TIMEOUT_MS = process.env.SID_CODE_CONTENT_PROGRESS_TIMEOUT_MS
-      ? parseInt(process.env.SID_CODE_CONTENT_PROGRESS_TIMEOUT_MS, 10)
-      : (isDeepSeek ? 300_000 : 120_000);
+    // 流式看门狗阈值统一走 network-profile（必删-1/-2 + 配置-3）：
+    //   - idle：N 秒内 reader 无任何 chunk → 断开（半开 TCP 兜底）
+    //   - content progress：即使 reader 持续 settle（空行/ping），无有效内容进展也超时中断
+    // 不再按 /deepseek/i 分档（原 90/180s、120/300s 违反 network-profile 顶部原则，
+    // 且非 deepseek 慢模型 qwen/kimi/glm 长文会被偏紧的 90s 误杀）。统一取够宽的默认值
+    // （300s），env 覆盖保留：SID_CODE_IDLE_TIMEOUT_MS / SID_CODE_CONTENT_PROGRESS_TIMEOUT_MS。
+    const streamTimeouts = resolveProviderStreamTimeouts({ providerKind: "openai" });
+    const IDLE_TIMEOUT_MS = streamTimeouts.idleTimeoutMs;
+    const CONTENT_PROGRESS_TIMEOUT_MS = streamTimeouts.contentProgressTimeoutMs;
 
     /** 30s stall 日志（只记不杀，对齐 claude-code，给弱模型喘息空间） */
     const STALL_LOG_MS = 30_000;

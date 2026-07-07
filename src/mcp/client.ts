@@ -5,6 +5,7 @@
  */
 
 import type { Transport, JsonRpcNotification } from "./transport.ts";
+import { computeBackoffMs } from "../config/network-profile.ts";
 import type {
   JsonRpcRequest,
   JsonRpcResponse,
@@ -292,9 +293,10 @@ export class MCPClient {
         }
         lastError = err;
         if (attempt < this.retries) {
-          const baseDelay = 1000 * Math.pow(2, attempt); // 1s, 2s, 4s...
-          const jitter = baseDelay * (0.7 + Math.random() * 0.6); // ±30%
-          await new Promise(resolve => setTimeout(resolve, jitter));
+          // 配置-5：退避改用 network-profile 的 computeBackoffMs（与 loop/fallback 层同一实现，
+          // 指数退避 + jitter），不再就地 `1000 * 2^attempt`。基数 1s、上限 30s 保持原有量级。
+          const delay = computeBackoffMs(attempt, 1_000, 30_000);
+          await new Promise(resolve => setTimeout(resolve, delay));
         }
       }
     }

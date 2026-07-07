@@ -18,6 +18,7 @@ import { MEMORY_LIMITS, type RelevantMemory } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
 import { recordSideCall } from "../trace/side-call-sink.ts";
 import { withSideCallDeadline } from "../llm/side-call-timeout.ts";
+import { resolveSideCallTimeouts } from "../config/network-profile.ts";
 
 /** 轻量 LLM 调用签名（依赖注入，便于测试） */
 export type SideQueryFn = (opts: {
@@ -153,11 +154,8 @@ export function makeSideQuery(
   return async ({ system, user, maxTokens, signal }) => {
     // T3.4：记忆召回是轻量初筛（≤256 tokens），15s 硬超时足够。超时后 throw
     // SideCallTimeoutError，由 recall 调用方 catch（召回失败不阻断会话启动）。
-    const RECALL_TIMEOUT_MS = (() => {
-      const override = Number(process.env.SID_CODE_RECALL_TIMEOUT_MS);
-      if (Number.isFinite(override) && override > 0) return override;
-      return 15_000;
-    })();
+    // 配置-4：走 network-profile 的 side-call 子表统一解析（env override > 默认 15s）
+    const RECALL_TIMEOUT_MS = resolveSideCallTimeouts().recallMs;
 
     const { text, streamUsage } = await withSideCallDeadline(
       "memory-recall",

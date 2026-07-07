@@ -8,7 +8,7 @@
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResult, ToolUseContext } from "./types.ts";
 import type { FileReadTracker } from "./file-read-tracker.ts";
 import { getLogger } from "../debug/logger.ts";
-import { detectOmissionPlaceholders, isDocumentFile } from "./omission-detector.ts";
+import { detectOmissionPlaceholders, isDocumentFile, isPythonFile } from "./omission-detector.ts";
 import { coerceSemanticBoolean } from "../utils/semantic-boolean.ts";
 import { mkdirSync, existsSync } from "fs";
 import { dirname, basename } from "path";
@@ -463,7 +463,7 @@ export class EditTool implements Tool {
     // 省略占位符检测（文档文件完全不检测；代码文件仅对 > 10 行的 new_string 检测）
     const isDoc = isDocumentFile(filePath);
     if (!isDoc && newString.split("\n").length > 10) {
-      const omissions = detectOmissionPlaceholders(newString, false);
+      const omissions = detectOmissionPlaceholders(newString, false, isPythonFile(filePath));
       if (omissions.length > 0) {
         const details = omissions.map(m => `  行 ${m.line}: ${m.text}`).join("\n");
         return {

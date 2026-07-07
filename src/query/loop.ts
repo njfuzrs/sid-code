@@ -56,6 +56,7 @@ import {
   buildOutputStallMessage,
   MAX_OUTPUT_STALL_INTERVENTIONS,
   OUTPUT_STALL_WINDOW,
+  isOutputStallDetectionEnabled,
 } from "./output-stall.ts";
 import { runCompactPipeline } from "./compact/index.ts";
 import {
@@ -87,6 +88,7 @@ import {
   pushThinkingLen,
   buildThinkingDivergenceMessage,
   MAX_THINKING_DIVERGENCE_INTERVENTIONS,
+  isThinkingDivergenceDetectionEnabled,
 } from "./thinking-divergence.ts";
 import { injectReminders } from "./reminder-inject.ts";
 import { buildContextPressureReminder } from "./context-pressure.ts";
@@ -334,7 +336,16 @@ export async function* queryLoop(
           }
           if (!collapsed) {
             log.warn("QUERY_LOOP", "轻量压缩不足，触发 LLM 摘要压缩");
-            await deps.autoCompact();
+            const outcome = await deps.autoCompact();
+            // 静默-9：LLM 摘要失败/熔断降级为简单截断时（有损，丢弃老消息），
+            // 原来无声无息——用户观感是"上下文突然失忆"却无提示。这里 yield warning 显式告知。
+            if (outcome === "truncated") {
+              yield {
+                kind: "system",
+                level: "warning",
+                text: "上下文摘要压缩失败，已降级为简单截断（丢弃部分历史消息）。若后续回答缺失上下文，请重述关键信息。",
+              };
+            }
           }
         }
 
@@ -1091,7 +1102,11 @@ export async function* queryLoop(
           try {
             deps.sessionStore?.appendMessage({ role: "assistant", content: response.content });
             deps.sessionStore?.appendMessage({ role: "user", content: cancelResults });
-          } catch { /* 持久化失败不阻断 */ }
+          } catch (e) {
+            // 静默-5：持久化失败不阻断收尾，但不再空吞——记 warn 以便排查
+            // "abort 后 jsonl 缺失 assistant/cancel 配对"这类问题（恢复时可能 tool_use/result 不匹配）。
+            log.warn("QUERY_LOOP", `abort 收尾持久化失败（不阻断）: ${(e as Error)?.message}`);
+          }
         }
         log.info("QUERY_LOOP", "流式响应后检测到 abort，优雅收尾（reason=aborted_streaming）");
         yield { kind: "system", level: "info", text: "请求已被取消" };
@@ -1375,7 +1390,9 @@ export async function* queryLoop(
     // 最早信号）。命中则置 pending 标记，下一轮循环开头经 reminderParts 注入收敛提示
     //（不在此直接插消息，避免破坏 assistant/tool_result 配对——同 pendingContradictions）。
     // 真因⓪修好后此路径应极少触发，留作回归指标。
-    {
+    // 2026-07-07：整段受 isThinkingDivergenceDetectionEnabled() gate 保护，默认关闭（对齐 CC）。
+    // 此前这段绕过 SID_ENABLE_LOOP_DETECTION 全局 gate，用户关不掉；现纳入统一治理。
+    if (isThinkingDivergenceDetectionEnabled()) {
       const thinkingLen = measureThinkingLen(response.content as any);
       state.thinkingLenHistory = pushThinkingLen(state.thinkingLenHistory, thinkingLen);
       const interventions = state.thinkingDivergenceInterventions ?? 0;
@@ -1405,7 +1422,9 @@ export async function* queryLoop(
     // 命中则置 pending 标记，下一轮循环开头经 reminderParts 注入软提醒（同 pendingThinkingDivergenceReminder
     // 机制，不在此直接插消息，避免破坏 assistant/tool_result 配对）。只作提醒，不占用
     // LoopDetector 恢复计数、不会 terminate——这是"可能卡住"的软信号，不是判定循环。
-    {
+    // 2026-07-07：整段受 isOutputStallDetectionEnabled() gate 保护，默认关闭（对齐 CC）。
+    // 此前这段绕过 SID_ENABLE_LOOP_DETECTION 全局 gate，用户关不掉；现纳入统一治理。
+    if (isOutputStallDetectionEnabled()) {
       const toolUseCount = response.content.filter((b) => b.type === "tool_use").length;
       const outputVolume = measureTurnOutputVolume(responseText, toolUseCount);
       state.outputVolumeHistory = pushOutputVolume(state.outputVolumeHistory, outputVolume);
@@ -1985,7 +2004,34 @@ export async function* queryLoop(
       diminishingDetector.record(response.usage.outputTokens);
 
       if (diminishingDetector.shouldStop()) {
-        log.warn("QUERY_LOOP", `max_tokens 续写递减收益检测触发（已续写 ${diminishingDetector.count} 次），停止续写`);
+        // Top 3（2026-07-07 约束型误伤修复）：递减收益命中不再直接 `return` 终止整轮——
+        // 那会在模型"没说完"时静默掐断，且与"分段小步写大文件"的续写引导自相矛盾。
+        // 改为：第一次命中 → 停止自动续写，注入一次"让手提示"把决定权交还模型（它可以
+        // 收尾、换分段策略、或调工具继续），continue 让模型自己走下一轮；仅当让手后仍
+        // 撞 max_tokens 且再次命中递减收益时，才真正终止（避免无限续写烧 token）。
+        if (!state.diminishingReturnsHandoffDone) {
+          state.diminishingReturnsHandoffDone = true;
+          diminishingDetector.reset(); // 让手后重新计数，给模型一个干净的续写窗口
+          log.warn("QUERY_LOOP", `max_tokens 续写递减收益命中（已续写 ${diminishingDetector.count} 次），停止自动续写并让手给模型自行决定`);
+          yield { kind: "system", level: "info", text: `连续续写产出递减，已停止自动续写，交由模型决定下一步` };
+          const handoffNotice =
+            `<system-reminder>\n` +
+            `连续自动续写多次后每次产出都很少，已停止自动续写。请你自己决定下一步：\n` +
+            `1. 如果内容已基本完成，直接收尾并说明结论，不要为了"继续"而继续。\n` +
+            `2. 如果确实还有大量内容要写，改用分段策略：单次工具调用（如 write 的 content）` +
+            `不要超过输出上限，先写一部分落盘，再用 edit / bash 追加剩余部分。\n` +
+            `3. 如果卡在某处，明确说出卡点，或改调其他工具去推进。\n` +
+            `请勿向用户提及本提醒。\n` +
+            `</system-reminder>`;
+          ctxMgr.addMessage({ role: "user", content: [{ type: "text", text: handoffNotice }] });
+          try {
+            deps.sessionStore?.appendMessage({ role: "user", content: [{ type: "text", text: handoffNotice }] });
+          } catch { /* 持久化失败不阻断让手 */ }
+          setTransition(state, { type: "max_tokens_continuation" }, deps, sessionState.sessionId);
+          continue;
+        }
+        // 让手后仍收敛不了 → 终止，避免无限续写
+        log.warn("QUERY_LOOP", `max_tokens 续写递减收益二次命中（让手后仍未收敛，已续写 ${diminishingDetector.count} 次），停止续写`);
         yield { kind: "system", level: "info", text: `输出续写已达上限（${diminishingDetector.count} 次），自动停止` };
         yield { kind: "done", turns: state.turnCount };
         return;

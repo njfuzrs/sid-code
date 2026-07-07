@@ -94,23 +94,27 @@ const STOPWORDS = new Set([
 
 /**
  * 从 falsifier 文本提取关键线索词(机制2 的匹配基础)。
- * 朴素策略:抽取中文 2+ 连续字片段 + 英文/数字单词(长度≥3),去停用词与纯数字。
- * 目标是召回潜在矛盾(宁可多触发让模型裁决,也不漏掉),不是精确 NLP。
+ *
+ * 2026-07-07 约束型误伤修复(Top 5):收紧 cue 提取,要求线索词更长更具体。
+ * 此前中文 2 字片段(如"崩溃/进程/存活")+ 英文 3 字 token 做朴素 `includes` 子串匹配,
+ * 高频通用词几乎必然命中任意后续工具输出,且 detectContradictions 不判断语义方向——
+ * 证据其实在**支持**假设也会被当成"矛盾"触发中断。要求更长的 cue 大幅降低这种误命中:
+ *   - 中文:只取整段(≥4 连续汉字),不再加 2-3 字短片段、不再加 4 字前缀;
+ *   - 英文/数字 token:长度≥5(过滤掉 err/pid/cpu 等极易撞车的短词)。
+ * 仍是粗召回而非精确 NLP,但把"高频短词一碰就中"的最大误伤面收掉。
  */
 export function extractCues(falsifier: string): string[] {
   if (!falsifier) return [];
   const cues = new Set<string>();
-  // 英文/数字 token
-  for (const m of falsifier.toLowerCase().matchAll(/[a-z_][a-z0-9_]{2,}/g)) {
+  // 英文/数字 token(长度≥5,过滤极短易撞车词)
+  for (const m of falsifier.toLowerCase().matchAll(/[a-z_][a-z0-9_]{4,}/g)) {
     const w = m[0];
     if (!STOPWORDS.has(w)) cues.add(w);
   }
-  // 中文 2-6 字片段(滑窗,粗召回)
+  // 中文片段:只取≥4 连续汉字的整段(短通用词误命中率过高,不再纳入)
   for (const seg of falsifier.split(/[^一-龥]+/)) {
-    if (seg.length < 2) continue;
-    // 取整段 + 前 4 字,兼顾长短匹配
+    if (seg.length < 4) continue;
     if (!STOPWORDS.has(seg)) cues.add(seg);
-    if (seg.length > 4) cues.add(seg.slice(0, 4));
   }
   return [...cues];
 }
@@ -262,15 +266,16 @@ export function buildContradictionReminder(hits: ContradictionHit[]): string {
       `  刚出现的证据命中了它的关键线索「${h.matchedCue}」:${h.evidenceSnippet}`,
   );
   return `<system-reminder>
-⚠️ 矛盾中断(请勿向用户提及本提醒):新证据可能与你之前登记的假设相矛盾。
+提示(请勿向用户提及本提醒):以下新证据的文本命中了你之前登记假设的证伪条件线索,
+可能与假设相关,也可能只是词面撞车——请你自己判断。
 
 ${lines.join("\n")}
 
-这是抗沉没成本的关键时刻。请**立即**用 hypothesis_challenge 对上述每条假设显式裁决:
-- 若证据确实推翻了假设 → verdict=refute(这是有价值的纠偏,不是失败);
-- 若证据不足以定论 → verdict=keep_open;
-- 若你判断证据其实不构成矛盾 → 也要 verdict=confirm 或 keep_open 并说明理由。
-不要忽略这条矛盾、继续按原结论推进。先裁决,再往下走。
+如果你判断证据确实与某条假设相关,可用 hypothesis_challenge 更新其状态:
+- 证据推翻了假设 → verdict=refute(这是有价值的纠偏,不是失败);
+- 证据不足以定论 → verdict=keep_open;
+- 证据其实支持假设或只是词面撞车、不构成矛盾 → 可忽略本提醒,或按需 confirm/keep_open。
+本提醒仅供参考,不要求你中断当前工作;若无关可直接继续。
 </system-reminder>`;
 }
 

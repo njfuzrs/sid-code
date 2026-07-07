@@ -21,13 +21,19 @@ describe("convertToSDKMessage", () => {
     expect(convertToSDKMessage({ kind: "user_message_added" }, ctx)).toBeNull();
   });
 
-  test("tombstone → null（内部信号）", () => {
+  test("tombstone → status warning（模型降级可见，静默-7）", () => {
     const ev: QueryEngineEvent = {
       kind: "tombstone",
       message: { role: "assistant", content: [] },
       reason: "downgrade",
     };
-    expect(convertToSDKMessage(ev, ctx)).toBeNull();
+    const out = convertToSDKMessage(ev, ctx);
+    expect(out).toMatchObject({
+      type: "system",
+      subtype: "status",
+      level: "warning",
+    });
+    expect((out as any).message).toContain("降级");
   });
 
   test("assistant_message → assistant", () => {
@@ -133,11 +139,44 @@ describe("convertToSDKMessage", () => {
     expect(out).toMatchObject({ type: "system", subtype: "status" });
   });
 
-  test("system → status", () => {
+  test("system → status（含 level 透传，静默-7）", () => {
     const out = convertToSDKMessage(
       { kind: "system", level: "info", text: "note" },
       ctx,
     );
-    expect(out).toMatchObject({ type: "system", subtype: "status", message: "note" });
+    expect(out).toMatchObject({ type: "system", subtype: "status", message: "note", level: "info" });
+    // 验证 warning/error 也正确透传
+    const warn = convertToSDKMessage({ kind: "system", level: "warning", text: "w" }, ctx);
+    expect((warn as any).level).toBe("warning");
+    const err = convertToSDKMessage({ kind: "system", level: "error", text: "e" }, ctx);
+    expect((err as any).level).toBe("error");
+  });
+
+  test("fatal_error → result(error_during_execution)（不再谎报 success）", () => {
+    const out = convertToSDKMessage(
+      { kind: "fatal_error", message: "boom", recoverable: false },
+      ctx,
+    );
+    expect(out).toMatchObject({
+      type: "result",
+      subtype: "error_during_execution",
+      num_turns: 2,
+      session_id: "s1",
+      total_cost_usd: 0.05,
+    });
+    // 关键回归断言：不能是 success
+    expect((out as { subtype: string }).subtype).not.toBe("success");
+    expect((out as { errors: string[] }).errors).toEqual(["boom"]);
+    // 注入的 now() = 2000, startTime = 1000
+    expect((out as { duration_ms: number }).duration_ms).toBe(1000);
+  });
+
+  test("fatal_error 带 stack → errors 含堆栈", () => {
+    const out = convertToSDKMessage(
+      { kind: "fatal_error", message: "boom", stack: "at foo\nat bar", recoverable: false },
+      ctx,
+    );
+    expect((out as { errors: string[] }).errors[0]).toContain("boom");
+    expect((out as { errors: string[] }).errors[0]).toContain("at foo");
   });
 });

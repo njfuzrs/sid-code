@@ -154,12 +154,27 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
 
   // 5. 目标不可能达成
   if (evalResult.impossible) {
-    goal.status = "impossible";
-    log.warn("GOAL_GATE", `目标不可能达成: reason="${evalResult.reason}", turn=${goal.turnsUsed}`);
-    systemMessages.push({ level: "warning", text: `Goal 被判定为不可能达成: ${evalResult.reason}` });
-    emitTraceEvent("impossible", false, { evalReason: evalResult.reason });
+    if (isGoalHardStopEnabled()) {
+      // 硬停止模式（需 SID_ENABLE_GOAL_HARD_STOP=1 显式开启）：保留旧的"即终止"行为。
+      goal.status = "impossible";
+      log.warn("GOAL_GATE", `目标不可能达成（硬停止）: reason="${evalResult.reason}", turn=${goal.turnsUsed}`);
+      systemMessages.push({ level: "warning", text: `Goal 被判定为不可能达成: ${evalResult.reason}` });
+      emitTraceEvent("impossible", false, { evalReason: evalResult.reason });
+      return {
+        result: { shouldContinue: false, completed: false, impossible: true, evalResult },
+        injectMessages,
+        systemMessages,
+      };
+    }
+    // 默认（降级模式）：不终止，注入软提醒把判断交还模型，继续循环（由 maxTurns/budget 兜底）。
+    goal.lastEvalReason = evalResult.reason;
+    log.info("GOAL_GATE", `目标疑似不可能达成（降级为提醒，不终止）: reason="${evalResult.reason?.slice(0, 80)}", turn=${goal.turnsUsed}`);
+    const impossibleReminder = buildImpossibleReminder(goal, evalResult);
+    injectMessages.push({ role: "user", content: [{ type: "text", text: impossibleReminder }] });
+    systemMessages.push({ level: "warning", text: `评估者认为目标可能无法达成（${evalResult.reason?.slice(0, 60)}），已提醒模型自行决定` });
+    emitTraceEvent("impossible_soft", true, { evalReason: evalResult.reason });
     return {
-      result: { shouldContinue: false, completed: false, impossible: true, evalResult },
+      result: { shouldContinue: true, completed: false, impossible: false, feedback: impossibleReminder, evalResult },
       injectMessages,
       systemMessages,
     };
@@ -180,15 +195,35 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
 
   // 7. 未达成 → blocked 检测
   if (goalConfig.enableBlockedDetection && blockedDetector.record(evalResult.blockerKey)) {
-    goal.status = "blocked";
-    log.warn("GOAL_GATE", `blocked 检测触发: blockerKey="${evalResult.blockerKey}", threshold=${goalConfig.blockedThreshold}, turn=${goal.turnsUsed}`);
+    if (isGoalHardStopEnabled()) {
+      // 硬停止模式（需 SID_ENABLE_GOAL_HARD_STOP=1 显式开启）：保留旧的"即暂停"行为。
+      goal.status = "blocked";
+      log.warn("GOAL_GATE", `blocked 检测触发（硬停止）: blockerKey="${evalResult.blockerKey}", threshold=${goalConfig.blockedThreshold}, turn=${goal.turnsUsed}`);
+      systemMessages.push({
+        level: "warning",
+        text: `Goal 检测到卡住（连续 ${goalConfig.blockedThreshold} 轮相同阻塞原因: ${evalResult.blockerKey}），已暂停`,
+      });
+      emitTraceEvent("blocked", false, { blockerKey: evalResult.blockerKey, threshold: goalConfig.blockedThreshold });
+      return {
+        result: { shouldContinue: false, completed: false, impossible: false, evalResult },
+        injectMessages,
+        systemMessages,
+      };
+    }
+    // 默认（降级模式）：不终止，注入软提醒逼模型换思路，继续循环（由 maxTurns/budget 兜底）。
+    // 注意：命中后 blockedDetector 内部计数不重置——若模型换路后仍卡在同一 blockerKey，
+    // 下一轮会再次命中并再提醒一次，直到换出新 blockerKey（重置）或触及轮次/预算上限。
+    goal.lastEvalReason = evalResult.reason;
+    log.info("GOAL_GATE", `blocked 检测触发（降级为提醒，不终止）: blockerKey="${evalResult.blockerKey}", turn=${goal.turnsUsed}`);
+    const blockedReminder = buildBlockedReminder(goal, evalResult.blockerKey, goalConfig.blockedThreshold);
+    injectMessages.push({ role: "user", content: [{ type: "text", text: blockedReminder }] });
     systemMessages.push({
       level: "warning",
-      text: `Goal 检测到卡住（连续 ${goalConfig.blockedThreshold} 轮相同阻塞原因: ${evalResult.blockerKey}），已暂停`,
+      text: `Goal 疑似卡住（连续 ${goalConfig.blockedThreshold} 轮相同阻塞原因），已提醒模型换思路`,
     });
-    emitTraceEvent("blocked", false, { blockerKey: evalResult.blockerKey, threshold: goalConfig.blockedThreshold });
+    emitTraceEvent("blocked_soft", true, { blockerKey: evalResult.blockerKey, threshold: goalConfig.blockedThreshold });
     return {
-      result: { shouldContinue: false, completed: false, impossible: false, evalResult },
+      result: { shouldContinue: true, completed: false, impossible: false, feedback: blockedReminder, evalResult },
       injectMessages,
       systemMessages,
     };
@@ -232,5 +267,58 @@ ${evalResult.progress != null ? `当前进度: ${evalResult.progress}%` : ""}
 - 确保执行的命令输出可见（评估者只能看到对话中的内容）
 - 如果遇到阻塞，尝试不同的方法而不是重复失败的操作
 - 若确认目标无法达成，请明确说明原因
+</system-reminder>`;
+}
+
+/**
+ * 目标"硬停止"是否启用（默认关闭 = 降级为"提醒 + 继续"）。
+ *
+ * 为什么默认把 blocked/impossible 从"终止"降为"提醒"（2026-07-07 决策，
+ * 约束型误伤排查清单 §3.5 #7 + §8）：
+ * - blocked 判据是"连续 N 轮相同 blockerKey"，但这未必真卡住——模型可能正稳步攻克
+ *   同一个难点，评估者却因表层现象相同持续报同一 blockerKey，于是把"正在攻坚"误判成
+ *   "卡死"直接终止整个 /goal 任务。
+ * - impossible 是评估者 LLM 的主观判定，本身有误判风险；一次误判就终止，代价过重。
+ * - 二者拦的都是"模型可能走的弯路"而非"不可逆危害"，且已有 maxTurns / tokenBudget 双重
+ *   硬上限兜底、用户可随时 ESC 介入。让评估者的"卡住/不可能"判断从"替用户拍板终止"降为
+ *   "把判断告知模型、让它自己决定换路还是收尾"，更符合"信任模型能力"的设计哲学。
+ *
+ * 代码不删、仅默认降级（env 门控可逆）：SID_ENABLE_GOAL_HARD_STOP=1 可恢复旧的
+ * "blocked/impossible 即终止"行为（例如批处理/无人值守场景希望尽早止损）。
+ */
+export function isGoalHardStopEnabled(): boolean {
+  return process.env.SID_ENABLE_GOAL_HARD_STOP === "1";
+}
+
+/** 构造 impossible 软提醒（降级模式下注入，让模型自己决定换路/收尾，而非直接终止）。 */
+function buildImpossibleReminder(goal: GoalState, evalResult: GoalEvalResult): string {
+  return `<system-reminder>
+[Goal 评估提示 — 第 ${goal.turnsUsed} 轮 / 最多 ${goal.maxTurns} 轮]
+
+目标条件: ${goal.objective}
+
+评估者认为当前目标可能无法达成，理由：${evalResult.reason}
+
+这只是评估者的判断，可能不准。请你自己决定下一步：
+- 如果确实无法达成，明确向用户说明原因和已尝试过的路径，然后收尾；
+- 如果你判断仍有别的思路没试过，换一种方法继续推进；
+- 不要因为这条提示就机械放弃一个其实还能推进的目标。
+（已达最大轮次或预算耗尽时会自动停止，用户也可随时介入。）
+</system-reminder>`;
+}
+
+/** 构造 blocked 软提醒（降级模式下注入，让模型换思路，而非直接终止）。 */
+function buildBlockedReminder(goal: GoalState, blockerKey: string | undefined, threshold: number): string {
+  return `<system-reminder>
+[Goal 卡住提示 — 第 ${goal.turnsUsed} 轮 / 最多 ${goal.maxTurns} 轮]
+
+目标条件: ${goal.objective}
+
+评估者连续 ${threshold} 轮报告相同的阻塞原因${blockerKey ? `（${blockerKey}）` : ""}，你可能在同一处反复受阻。
+请换一种思路：
+- 回顾前几轮到底卡在哪，不要重复已经失败的同一操作；
+- 尝试从不同角度切入，或用不同工具去验证假设；
+- 如果确实无法突破，明确说明卡点和已尝试的路径，再决定是否收尾。
+（这只是提示，不会强制终止；达最大轮次或预算耗尽时会自动停止，用户也可随时介入。）
 </system-reminder>`;
 }

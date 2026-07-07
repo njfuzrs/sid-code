@@ -10,6 +10,7 @@ import type { HookSystem } from "../hook/system.ts";
 import type { ToolDefinition, Message } from "../llm/types.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
 import { getLogger } from "../debug/index.ts";
+import { resolveSideCallTimeouts } from "../config/network-profile.ts";
 import { AutoCompactCircuitBreaker } from "./circuit-breaker.ts";
 import { recordSideCall } from "../trace/side-call-sink.ts";
 import { withSideCallDeadline } from "../llm/side-call-timeout.ts";
@@ -78,7 +79,15 @@ export interface AutoCompactDeps {
  * 自动压缩：上下文接近上限时，用 LLM 生成摘要并压缩消息历史
  * 如果 LLM 不可用或熔断器打开，则使用简单截断策略
  */
-export async function autoCompact(deps: AutoCompactDeps): Promise<void> {
+/**
+ * autoCompact 的结果，供 loop 层区分处置（静默-9）：
+ *   - "summarized"：LLM 摘要压缩成功（无损语义，无需提示）
+ *   - "truncated"：摘要失败/熔断，降级为简单截断（**有损**，丢弃老消息，需 yield warning 提示用户）
+ *   - "skipped"：消息太少 / 已有压缩在进行，未做任何压缩
+ */
+export type AutoCompactOutcome = "summarized" | "truncated" | "skipped";
+
+export async function autoCompact(deps: AutoCompactDeps): Promise<AutoCompactOutcome> {
   const log = getLogger();
   const messages = deps.ctxMgr.getMessages();
   const circuitBreaker = getCircuitBreaker();
@@ -94,17 +103,17 @@ export async function autoCompact(deps: AutoCompactDeps): Promise<void> {
 
   if (messages.length <= 4) {
     log.debug("COMPACT", "消息太少，跳过压缩");
-    return;
+    return "skipped";
   }
 
   // §6 压缩互斥锁：已有压缩在进行 → 跳过，避免同一消息历史被两条压缩路径竞态改写
   if (!deps.ctxMgr.acquireCompactLock()) {
     log.warn("COMPACT", "已有压缩流程在进行中，跳过本次 autoCompact");
-    return;
+    return "skipped";
   }
 
   try {
-    await doAutoCompact(deps, messages, circuitBreaker, isMainAgent, recordFailure, recordSuccess);
+    return await doAutoCompact(deps, messages, circuitBreaker, isMainAgent, recordFailure, recordSuccess);
   } finally {
     deps.ctxMgr.releaseCompactLock();
   }
@@ -118,7 +127,7 @@ async function doAutoCompact(
   _isMainAgent: boolean,
   recordFailure: () => void,
   recordSuccess: () => void,
-): Promise<void> {
+): Promise<AutoCompactOutcome> {
   const log = getLogger();
   const messagesBefore = messages.length;
   const tokensBefore = deps.ctxMgr.estimateTokens();
@@ -129,14 +138,14 @@ async function doAutoCompact(
     const simpleSummary = `[自动截断] 之前有 ${messages.length - 4} 条消息被截断以释放上下文空间。（autoCompact 熔断中）`;
     deps.ctxMgr.compactWithSummary(simpleSummary);
     await postCompactReattachAndNotify(deps, messages, simpleSummary, messagesBefore, tokensBefore, false);
-    return;
+    return "truncated";
   }
 
   // pre_compact hook（blocking 时可阻止压缩）
   const preCompactResult = await deps.hookSystem.firePreCompactEvent("auto");
   if (preCompactResult.finalOutput?.isBlockingDecision()) {
     log.info("HOOK", `压缩被 hook 阻止: ${preCompactResult.finalOutput.getEffectiveReason()}`);
-    return;
+    return "skipped";
   }
 
   try {
@@ -150,7 +159,8 @@ async function doAutoCompact(
           recordSuccess();
           log.info("COMPACT", `Session Memory 压缩完成，剩余 ${deps.ctxMgr.messageCount()} 条消息`);
           await postCompactReattachAndNotify(deps, messages, smResult.summary, messagesBefore, tokensBefore, false);
-          return;
+          // Session Memory 压缩是结构化笔记，语义无损，等同摘要成功。
+          return "summarized";
         }
         // smResult 为 null：Session Memory 为空，回退到 LLM 摘要（不计失败）
       } catch (err: any) {
@@ -180,11 +190,8 @@ async function doAutoCompact(
     // 摘要不应超过 1 分钟；超时后走下方 catch → recordFailure + 降级为简单截断。
     // withSideCallDeadline 内部把合并后的 signal（外部 signal + 超时 signal）传给 provider，
     // 让底层 fetch/流在超时时也尽力被 abort（双保险）。
-    const COMPACT_TIMEOUT_MS = (() => {
-      const override = Number(process.env.SID_CODE_COMPACT_TIMEOUT_MS);
-      if (Number.isFinite(override) && override > 0) return override;
-      return 60_000;
-    })();
+    // 配置-4：走 network-profile 的 side-call 子表统一解析（env override > 默认 60s）
+    const COMPACT_TIMEOUT_MS = resolveSideCallTimeouts().compactMs;
 
     let summary = "";
     let streamUsage: any = null;
@@ -263,7 +270,7 @@ async function doAutoCompact(
       recordSuccess();
       log.info("COMPACT", `自动压缩完成，摘要 ${formattedSummary.length} 字符，剩余 ${deps.ctxMgr.messageCount()} 条消息`);
       await postCompactReattachAndNotify(deps, toSummarize, formattedSummary, messagesBefore, tokensBefore, true);
-      return;
+      return "summarized";
     }
 
     // 空摘要也算失败
@@ -286,11 +293,12 @@ async function doAutoCompact(
     });
   }
 
-  // 降级：简单截断
+  // 降级：简单截断（有损——丢弃老消息，仅留一句占位）
   const simpleSummary = `[自动截断] 之前有 ${messages.length - 4} 条消息被截断以释放上下文空间。`;
   deps.ctxMgr.compactWithSummary(simpleSummary);
   log.info("COMPACT", `简单截断完成，剩余 ${deps.ctxMgr.messageCount()} 条消息`);
   await postCompactReattachAndNotify(deps, messages, simpleSummary, messagesBefore, tokensBefore, false);
+  return "truncated";
 }
 
 /**

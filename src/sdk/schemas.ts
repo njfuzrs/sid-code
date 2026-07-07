@@ -173,6 +173,9 @@ export const SDKStatusSchema = lazySchema(() =>
     type: z.literal("system"),
     subtype: z.literal("status"),
     message: z.string(),
+    // 静默-7：透传严重级别（info/warning/error），此前 converter 丢弃 level，
+    // SDK 消费者无法区分"预算耗尽的 error"和"普通进度 info"。可选以保持向后兼容。
+    level: z.enum(["info", "warning", "error"]).optional(),
   }),
 );
 

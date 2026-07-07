@@ -185,7 +185,12 @@ export async function executeTools(
                       }
                       // hook 未阻止 → 不干预，留给其他路径决策
                       return null;
-                    } catch {}
+                    } catch (e) {
+                      // 静默-6：权限 hook 抛异常时返回 null = 降级到交互确认（非放行），行为安全。
+                      // 但原空吞无任何痕迹——hook 因 bug 持续抛错时，用户只觉"权限 hook 从未生效"却无从排查。
+                      // 补 warn 记录异常（不改变降级语义）。
+                      log.warn("PERMISSION", `权限 hook 执行异常，降级到交互确认: ${(e as Error)?.message}`);
+                    }
                     return null;
                   }
                 : undefined,
@@ -532,7 +537,9 @@ async function notifyLSPFileChange(input: Record<string, unknown>): Promise<void
     // didSave 再补一次"已保存"语义，最大化兼容不同服务器的诊断触发策略。
     const manager = getLSPManager();
     manager?.saveFile(filePath);
-  } catch {
-    // 静默忽略：LSP 是可选增强
+  } catch (e) {
+    // 静默-8：LSP 同步是 best-effort（失败不阻断工具执行），但补 debug 日志便于排查
+    // "LSP 诊断不更新"这类问题（此前无任何痕迹）。
+    getLogger().debug("LSP", `文件变更同步失败（不影响工具执行）: ${(e as Error)?.message}`);
   }
 }

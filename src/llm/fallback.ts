@@ -40,6 +40,7 @@ import {
 } from "./errors.ts";
 import { ModelAvailabilityService } from "./availability.ts";
 import type { RetryTelemetryEvent } from "./retry-telemetry.ts";
+import { computeBackoffMs, DEFAULTS as NETWORK_DEFAULTS } from "../config/network-profile.ts";
 
 // ═══════════════════════════════════════════════════════════════════
 // 查询来源分类（从 retry-engine.ts 吸收）
@@ -84,8 +85,9 @@ const STREAM_RETRY = {
   maxDelayMs: 10000,
 };
 
-/** 默认流超时（毫秒） */
-const DEFAULT_STREAM_TIMEOUT_MS = 300_000; // 5 分钟
+/** 默认流超时（毫秒）。配置-1：不再独立硬编码 300_000，从 network-profile 统一默认值派生
+ *  （生产路径由 app.ts 注入 streamTimeoutMs；此默认仅在未注入时兜底，如直接 new ModelFallback() 的测试）。 */
+const DEFAULT_STREAM_TIMEOUT_MS = NETWORK_DEFAULTS.watchdogNoProgressMs; // 300s
 
 /** 退避延迟上限 */
 const MAX_DELAY_MS = 32_000;
@@ -145,6 +147,10 @@ export interface FallbackConfig {
   maxRetries?: number;
   /** 流式整体超时（毫秒，默认 5 分钟） */
   streamTimeoutMs?: number;
+  /** 配置-1：退避基数（毫秒）。默认由 network-profile 的 retryBackoffBaseMs 注入 */
+  retryBackoffBaseMs?: number;
+  /** 配置-1：退避上限（毫秒）。默认由 network-profile 的 retryBackoffMaxMs 注入 */
+  retryBackoffMaxMs?: number;
   /** 上下文窗口大小（用于 max_tokens 溢出恢复） */
   contextLimit?: number;
   /** 是否禁用 keep-alive（ECONNRESET 后自动置位） */
@@ -212,6 +218,8 @@ export class ModelFallback {
       querySource: config.querySource,
       maxRetries: config.maxRetries,
       streamTimeoutMs: config.streamTimeoutMs,
+      retryBackoffBaseMs: config.retryBackoffBaseMs,
+      retryBackoffMaxMs: config.retryBackoffMaxMs,
       contextLimit: config.contextLimit,
       disableKeepAlive: config.disableKeepAlive,
       persistent: config.persistent,
@@ -744,19 +752,22 @@ export class ModelFallback {
       if (waitMs > 0 && waitMs <= MAX_DELAY_MS) return waitMs;
     }
 
-    // 4. 指数退避 + 25% jitter
+    // 4. 指数退避（配置-1：基数走 network-profile 注入的 retryBackoffBaseMs，
+    //    不再硬编码 1000。上限取"本阶段 maxDelayMs 与注入 retryBackoffMaxMs 的较小者"，
+    //    既保留连接/流式两阶段各自的更紧上限，又受统一配置约束）。
+    const baseMs = this.config.retryBackoffBaseMs ?? NETWORK_DEFAULTS.retryBackoffBaseMs;
+    const cappedMaxMs = Math.min(maxDelayMs, this.config.retryBackoffMaxMs ?? NETWORK_DEFAULTS.retryBackoffMaxMs);
     const isRateLimit = classified instanceof RetryableError && classified.reason === "rate_limit";
-    const baseDelay = Math.min(1000 * Math.pow(2, attempt), maxDelayMs);
 
     if (isRateLimit) {
-      // 限流错误：+20% 正向抖动（尊重服务器最小延迟）
+      // 限流错误：+20% 正向抖动（尊重服务器最小延迟，不用双向 jitter 以免早于服务器最小延迟）。
+      const baseDelay = Math.min(baseMs * Math.pow(2, attempt), cappedMaxMs);
       const jitter = baseDelay * 0.2 * Math.random();
       return Math.round(baseDelay + jitter);
     }
 
-    // 其他错误：±30% 双向抖动（避免惊群效应）
-    const jitter = baseDelay * 0.3;
-    return Math.round(baseDelay + Math.random() * jitter * 2 - jitter);
+    // 其他错误：computeBackoffMs（指数退避 + ±15% 双向 jitter），与 loop 层退避同一实现。
+    return computeBackoffMs(attempt, baseMs, cappedMaxMs);
   }
 
   // ═══════════════════════════════════════════════════════════════

@@ -13,6 +13,7 @@ import {
   buildThinkingDivergenceMessage,
   THINKING_DIVERGENCE_WINDOW,
   THINKING_DIVERGENCE_LEN,
+  isThinkingDivergenceDetectionEnabled,
 } from "../../src/query/thinking-divergence.ts";
 
 describe("measureThinkingLen", () => {
@@ -76,5 +77,52 @@ describe("buildThinkingDivergenceMessage", () => {
     expect(msg).toContain("<system-reminder>");
     expect(msg).toContain("5741 → 12720 → 55468");
     expect(msg).toContain("todo_write");
+  });
+});
+
+describe("isThinkingDivergenceDetectionEnabled（Top 4：默认关闭 + env 门控）", () => {
+  const KEYS = ["SID_ENABLE_THINKING_DIVERGENCE", "SID_ENABLE_LOOP_DETECTION"] as const;
+  const saved: Record<string, string | undefined> = {};
+
+  function clearAll() {
+    for (const k of KEYS) {
+      saved[k] = process.env[k];
+      delete process.env[k];
+    }
+  }
+  function restore() {
+    for (const k of KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  }
+
+  test("默认（两个开关都未设）→ 关闭", () => {
+    clearAll();
+    try {
+      expect(isThinkingDivergenceDetectionEnabled()).toBe(false);
+    } finally {
+      restore();
+    }
+  });
+
+  test("SID_ENABLE_THINKING_DIVERGENCE=1 → 单独开启", () => {
+    clearAll();
+    try {
+      process.env.SID_ENABLE_THINKING_DIVERGENCE = "1";
+      expect(isThinkingDivergenceDetectionEnabled()).toBe(true);
+    } finally {
+      restore();
+    }
+  });
+
+  test("SID_ENABLE_LOOP_DETECTION=1 → 一并开启（同属防跑偏启发式）", () => {
+    clearAll();
+    try {
+      process.env.SID_ENABLE_LOOP_DETECTION = "1";
+      expect(isThinkingDivergenceDetectionEnabled()).toBe(true);
+    } finally {
+      restore();
+    }
   });
 });

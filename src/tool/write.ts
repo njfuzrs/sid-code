@@ -7,7 +7,7 @@ import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResu
 import { dirname, basename } from "path";
 import { mkdirSync, existsSync, statSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
-import { detectOmissionPlaceholders, isDocumentFile } from "./omission-detector.ts";
+import { detectOmissionPlaceholders, isDocumentFile, isPythonFile } from "./omission-detector.ts";
 import { detectTruncation } from "./truncation-detector.ts";
 import { normalizeToolPath } from "./path-utils.ts";
 import { buildStructuredPatch } from "./diff-output.ts";
@@ -91,8 +91,8 @@ export class WriteTool implements Tool {
       return { output: `路径无效: ${err.message}`, isError: true };
     }
 
-    // 省略占位符检测（文档文件跳过易误伤规则）
-    const omissions = detectOmissionPlaceholders(params.content, isDocumentFile(filePath));
+    // 省略占位符检测（文档文件跳过易误伤规则；Python 源码放行合法 `...` Ellipsis）
+    const omissions = detectOmissionPlaceholders(params.content, isDocumentFile(filePath), isPythonFile(filePath));
     if (omissions.length > 0) {
       const details = omissions.map(m => `  行 ${m.line}: ${m.text}`).join("\n");
       return {

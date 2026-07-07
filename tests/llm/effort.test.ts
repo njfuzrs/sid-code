@@ -81,6 +81,22 @@ describe("resolveEffortCapability — 协议分类", () => {
     expect(cap.supportsThinkingToggle).toBe(false);
   });
 
+  // 必删-3 回归：GLM/Grok 同样支持 thinking，此前 app.ts 用 /deepseek/i 判定
+  // ThinkingManager 启用，把它们静默排除。这里锁定它们 supportsThinkingToggle=true，
+  // 保证 app.ts 改用能力标志后 GLM/Grok 的思考能力不再被无声关闭。
+  test("必删-3：GLM（OpenAI 兼容）supportsThinkingToggle=true", () => {
+    const cap = resolveEffortCapability({ model: "glm-4.6", provider: "openai" });
+    expect(cap.supportsThinkingToggle).toBe(true);
+  });
+
+  test("必删-3：Grok（OpenAI 兼容）无 thinking 开关但 reasoning_effort 独立生效", () => {
+    const cap = resolveEffortCapability({ model: "grok-4", provider: "openai" });
+    // Grok 配置化推理、无显式 thinking 开关 → supportsThinkingToggle=false（ThinkingManager 关，正确）。
+    // 但 reasoning_effort 经 loop.ts 的 applyToSendParams 独立下发，不受 ThinkingManager 门控。
+    expect(cap.supportsThinkingToggle).toBe(false);
+    expect(cap.supportsEffort).toBe(true);
+  });
+
   test("优先级1：modelConfig.supportsThinking=false 强制全不支持", () => {
     const cap = resolveEffortCapability({
       model: "deepseek-v4-pro",

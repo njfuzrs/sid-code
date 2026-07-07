@@ -31,6 +31,7 @@
 
 import { getLogger } from "../debug/logger.ts";
 import type { StreamTelemetrySignal } from "./types.ts";
+import { DEFAULTS as NETWORK_DEFAULTS } from "../config/network-profile.ts";
 
 /** 超时层枚举（onTimeout 回调用于区分是哪一层触发） */
 export type StreamTimeoutLayer = "idle" | "content_progress" | "overall";
@@ -116,16 +117,37 @@ export interface StreamLifecycleSnapshot {
 
 /**
  * 三层超时预设配置（按场景分级：主循环宽松 / 子代理适中 / side-call 激进）。
- * 阈值来源：roadmap T7.3 + 各路径既有实测值（openai.ts DeepSeek 180s/300s、
- * agent/stream-processor.ts 60s/180s、auto-compact 60s）。
+ *
+ * 配置-2：基准量级从 network-profile 的统一默认值 `DEFAULTS.watchdogNoProgressMs`（BASE=300s）
+ * 派生，不再是独立硬编码字面量——把"保活优先"的基准锚点收敛到单一真相源，改基准只需改
+ * network-profile 一处，三档同步跟随。**分级比例（tiering policy）**留在本层，因为"主循环 vs
+ * 子代理 vs side-call 谁该更激进"是 lifecycle 的职责，与网络超时基准是两个正交维度。
+ *
+ * 派生关系（相对 BASE=watchdogNoProgressMs 的倍率，与迁移前既有实测值一一对应）：
+ *   mainLoop : idle 0.3× (90s)  / content 1.0× (5min)  / overall 2.0× (10min)
+ *   subAgent : idle 0.2× (60s)  / content 0.6× (3min)  / overall 0.6× (3min)
+ *   sideCall : idle 0.1× (30s)  / content 0.2× (60s)   / overall 0.2× (60s)
  */
+const BASE = NETWORK_DEFAULTS.watchdogNoProgressMs; // 300_000（保活优先基准，唯一真相源）
 export const LIFECYCLE_PRESETS = {
-  /** 主循环：DeepSeek 大上下文处理慢，idle 90s / content 5min / overall 10min */
-  mainLoop: { idleTimeoutMs: 90_000, contentProgressTimeoutMs: 300_000, overallTimeoutMs: 600_000 },
-  /** 子代理：应比主循环短，idle 60s / content 3min / overall 3min */
-  subAgent: { idleTimeoutMs: 60_000, contentProgressTimeoutMs: 180_000, overallTimeoutMs: 180_000 },
-  /** side-call（recall/compact 等轻量调用）：激进，idle 30s / content 60s / overall 60s */
-  sideCall: { idleTimeoutMs: 30_000, contentProgressTimeoutMs: 60_000, overallTimeoutMs: 60_000 },
+  /** 主循环：大上下文/慢模型处理慢，最宽松。idle 0.3× / content 1.0× / overall 2.0× */
+  mainLoop: {
+    idleTimeoutMs: BASE * 0.3,
+    contentProgressTimeoutMs: BASE * 1.0,
+    overallTimeoutMs: BASE * 2.0,
+  },
+  /** 子代理：应比主循环短。idle 0.2× / content 0.6× / overall 0.6× */
+  subAgent: {
+    idleTimeoutMs: BASE * 0.2,
+    contentProgressTimeoutMs: BASE * 0.6,
+    overallTimeoutMs: BASE * 0.6,
+  },
+  /** side-call（recall/compact 等轻量调用）：最激进。idle 0.1× / content 0.2× / overall 0.2× */
+  sideCall: {
+    idleTimeoutMs: BASE * 0.1,
+    contentProgressTimeoutMs: BASE * 0.2,
+    overallTimeoutMs: BASE * 0.2,
+  },
 } as const;
 
 /**

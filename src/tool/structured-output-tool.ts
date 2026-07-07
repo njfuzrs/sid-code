@@ -62,7 +62,8 @@ export class StructuredOutputTool implements Tool {
   constructor(schema: Record<string, unknown>, maxRetries?: number) {
     this.schema = schema;
     this.maxRetries = maxRetries
-      ?? parseInt(process.env.SID_STRUCTURED_OUTPUT_MAX_RETRIES || "5", 10);
+      // 配置-5：env 前缀统一为 SID_CODE_（保留旧名兼容，优先新名）。
+      ?? parseInt(process.env.SID_CODE_STRUCTURED_OUTPUT_MAX_RETRIES || process.env.SID_STRUCTURED_OUTPUT_MAX_RETRIES || "5", 10);
   }
 
   /** 是否已捕获到合规的结构化输出 */

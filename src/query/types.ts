@@ -105,6 +105,13 @@ export interface LoopState {
   maxOutputTokensRecoveryCount: number;
   /** max_tokens 上限提升覆盖值（首次截断时提升到模型硬上限） */
   maxOutputTokensOverride?: number;
+  /**
+   * Top 3（2026-07-07 约束型误伤修复）：max_tokens 续写递减收益检测命中后，是否已经做过
+   * 一次"优雅让手"（停止自动续写、注入让手提示、把决定权交还模型）。one-shot 标志：
+   * 第一次命中不再硬 `return` 终止整轮，而是让手让模型自己决定继续/收尾；若让手后模型
+   * 仍撞 max_tokens 且再次命中递减收益，则说明确实收敛不了，此时才终止，避免无限续写。
+   */
+  diminishingReturnsHandoffDone?: boolean;
   /** 是否已尝试过响应式压缩。
    *
    *  P0-2（对齐 CC 死亡螺旋防御）：这是一个 one-shot 标志位，只允许在触发响应式压缩的两处
@@ -276,8 +283,10 @@ export interface QueryDeps {
   ) => Promise<AccumulatedResponse>;
   /** 执行工具调用（含权限检查）。返回 results + 可选 followup（ADR-019） */
   executeTools: (content: ContentBlock[]) => Promise<{ results: ContentBlock[]; followup?: ContentBlock[] }>;
-  /** 自动压缩 */
-  autoCompact: () => Promise<void>;
+  /** 自动压缩。返回压缩结果：summarized=摘要成功 / truncated=降级为有损截断 / skipped=未压缩。
+   *  静默-9：loop 侧据此对 truncated 结果 yield warning 提示用户上下文有损。
+   *  用宽松的 string 返回类型以避免 types.ts 反向依赖 auto-compact.ts（保持底层模块无依赖）。 */
+  autoCompact: () => Promise<"summarized" | "truncated" | "skipped" | void>;
   /**
    * §2.2 Context Collapse：autoCompact 前置层（分段摘要老消息）。
    * 返回 true 表示已达目标可跳过 autoCompact。可选——不提供则 hard 级压缩直接走 autoCompact。

@@ -26,6 +26,26 @@ export const THINKING_DIVERGENCE_LEN = 20_000;
 export const MAX_THINKING_DIVERGENCE_INTERVENTIONS = 2;
 
 /**
+ * 思考发散熔断是否启用（默认关闭，对齐 Claude Code——CC 无思考量监控/发散熔断）。
+ *
+ * 为什么默认关闭 + 独立 env 门控（2026-07-07 决策，约束型误伤排查清单 Top 4 + 发现一）：
+ * 本熔断器早已自认从"治本"降级为"早期哨兵 + 回归指标"（真因⓪ reasoning_content 回传修好
+ * 后应极少触发）。它拦的是"模型可能走的弯路"（深度推理任务思考量天然递增），属启发式
+ * 纠偏而非不可逆危害；措辞"陷入分析瘫痪/立即改变策略"是替模型下判断，随模型能力提升
+ * 误伤面扩大。更关键：此前它是 loop.ts 里独立 state 字段逻辑，**绕过了
+ * `SID_ENABLE_LOOP_DETECTION` 全局 gate**——用户以为关掉循环检测即关掉所有启发式纠偏，
+ * 实际它仍每轮在跑。现纳入独立、可逆 env 开关，与循环检测/产出停滞样板一致：代码不删、
+ * 仅默认关；作为回归指标需要观察时，用 SID_ENABLE_THINKING_DIVERGENCE=1 或随
+ * SID_ENABLE_LOOP_DETECTION=1 一并开启。
+ */
+export function isThinkingDivergenceDetectionEnabled(): boolean {
+  return (
+    process.env.SID_ENABLE_THINKING_DIVERGENCE === "1" ||
+    process.env.SID_ENABLE_LOOP_DETECTION === "1"
+  );
+}
+
+/**
  * 计算一次响应里所有 thinking 块的总字符数。
  * 思考块已由 stream-processor 原地转型为 { type:"thinking", thinking }。
  */

@@ -5,7 +5,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { detectOmissionPlaceholders, hasOmissionPlaceholders, isDocumentFile } from "../../src/tool/omission-detector.ts";
+import { detectOmissionPlaceholders, hasOmissionPlaceholders, isDocumentFile, isPythonFile } from "../../src/tool/omission-detector.ts";
 
 describe("detectOmissionPlaceholders - JavaScript/TypeScript", () => {
   test("检测 // ... rest of 注释", () => {
@@ -39,14 +39,13 @@ describe("detectOmissionPlaceholders - JavaScript/TypeScript", () => {
     expect(matches[0].text).toContain("existing");
   });
 
-  test("检测 TODO 占位符", () => {
+  test("TODO 注释不再误报（合法注释非省略占位符，2026-07-07 移除该规则）", () => {
     const code = `function process() {
   // TODO: implement this
   return null;
 }`;
     const matches = detectOmissionPlaceholders(code);
-    expect(matches.length).toBeGreaterThan(0);
-    expect(matches[0].text).toContain("TODO");
+    expect(matches.length).toBe(0);
   });
 
   test("正常注释不误报", () => {
@@ -171,7 +170,7 @@ describe("detectOmissionPlaceholders - 边界情况", () => {
     const code = `function foo() {
   // ... rest of implementation
   console.log("middle");
-  // TODO: complete this
+  // ... remaining logic
   return true;
 }`;
     const matches = detectOmissionPlaceholders(code);
@@ -270,13 +269,6 @@ describe("detectOmissionPlaceholders - 文档文件分级检测", () => {
     expect(matches[0].pattern).toBe("JS comment ellipsis");
   });
 
-  test("文档仍检测 TODO 占位符", () => {
-    const content = "// TODO: implement this";
-    const matches = detectOmissionPlaceholders(content, true);
-    expect(matches.length).toBeGreaterThan(0);
-    expect(matches[0].pattern).toBe("TODO placeholder");
-  });
-
   test("文档仍检测 Python/Shell 注释省略", () => {
     const content = "# ... rest of implementation";
     const matches = detectOmissionPlaceholders(content, true);
@@ -357,5 +349,66 @@ describe("hasOmissionPlaceholders - 文档文件兼容", () => {
   test("不传 isDoc 向后兼容", () => {
     const content = "// ... rest of code";
     expect(hasOmissionPlaceholders(content)).toBe(true);
+  });
+});
+
+describe("isPythonFile", () => {
+  test("识别 .py 文件", () => {
+    expect(isPythonFile("/path/to/mod.py")).toBe(true);
+  });
+
+  test("识别 .pyi stub 文件", () => {
+    expect(isPythonFile("/path/to/mod.pyi")).toBe(true);
+  });
+
+  test("识别 .pyw 文件", () => {
+    expect(isPythonFile("/path/to/app.pyw")).toBe(true);
+  });
+
+  test("大小写不敏感", () => {
+    expect(isPythonFile("/path/to/MOD.PY")).toBe(true);
+  });
+
+  test("不识别 .ts / .js 文件", () => {
+    expect(isPythonFile("/path/to/code.ts")).toBe(false);
+    expect(isPythonFile("/path/to/code.js")).toBe(false);
+  });
+});
+
+describe("detectOmissionPlaceholders - Python 源码放行合法 Ellipsis（2026-07-07 误伤修复）", () => {
+  test("Python 抽象方法体独立 `...` 放行（isPython=true）", () => {
+    const content = `def foo():
+    ...`;
+    const matches = detectOmissionPlaceholders(content, false, true);
+    expect(matches.length).toBe(0);
+  });
+
+  test(".pyi stub 里独立 `...` 放行", () => {
+    const content = `class C:
+    def method(self) -> int: ...
+    x: int
+    ...`;
+    const matches = detectOmissionPlaceholders(content, false, true);
+    expect(matches.length).toBe(0);
+  });
+
+  test("非 Python 文件的独立 `...` 仍被检测（isPython=false）", () => {
+    const content = `function foo() {
+  ...
+  return true;
+}`;
+    const matches = detectOmissionPlaceholders(content, false, false);
+    expect(matches.length).toBeGreaterThan(0);
+    expect(matches[0].pattern).toBe("Standalone ellipsis");
+  });
+
+  test("Python 文件里真正的偷懒省略仍被检测（`# ... rest of` 不属 pySafe 规则）", () => {
+    const content = `def foo():
+    print("start")
+    # ... rest of implementation
+    return True`;
+    const matches = detectOmissionPlaceholders(content, false, true);
+    expect(matches.length).toBeGreaterThan(0);
+    expect(matches[0].pattern).toBe("Python/Shell ellipsis");
   });
 });

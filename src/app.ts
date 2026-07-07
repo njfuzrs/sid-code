@@ -55,6 +55,8 @@ import {
   StructuredIO,
   CommandQueue,
   runHeadless as sdkRunHeadless,
+  classifyHeadlessStreamText,
+  formatHeadlessEvent,
 } from "./sdk/index.ts";
 import { JitContextManager } from "./config/jit-context.ts";
 import { isAbortError } from "./llm/errors.ts";
@@ -286,13 +288,21 @@ export class App {
       });
     }
     // Extended Thinking / 推理强度控制：Anthropic 走 thinking.budgetTokens，
-    // DeepSeek 走 reasoning_effort（high/max）。两者都需要 ThinkingManager 启用，
-    // 否则 parseThinkingHint/getThinkingConfig 恒返回 undefined → think hard/ultrathink 失效。
-    // 其它兼容端点（ollama 等）不认这些字段，保持关闭。
-    const thinkingProvider =
-      opts.config.provider === "anthropic" ||
-      /deepseek/i.test(opts.config.model || opts.config.provider || "");
-    this.thinkingMgr = new ThinkingManager(thinkingProvider);
+    // DeepSeek/GLM/Grok/o-series 走 reasoning_effort / thinking 开关。都需要 ThinkingManager
+    // 启用，否则 parseThinkingHint/getThinkingConfig 恒返回 undefined → think hard/ultrathink 失效。
+    // 必删-3：改按 model-registry 的能力标志（resolveEffortCapability → supportsThinkingToggle）
+    // 判定，而非 /deepseek/i 正则——原正则把同样支持 thinking 的 GLM/Grok 静默排除，
+    // 它们的思考能力被无声关闭。能力标志由 catalog(protocolKind) 精确驱动，不随模型改名漂移。
+    // （见 memory feedback-no-hardcoded-model-tier-rules.md）
+    const { resolveEffortCapability } = require("./llm/effort.ts");
+    const thinkingModelConfig = opts.config.availableModels?.find(m => m.name === opts.config.model);
+    const thinkingCap = resolveEffortCapability({
+      model: opts.config.model,
+      provider: opts.config.provider,
+      baseURL: thinkingModelConfig?.baseURL ?? opts.config.baseURL,
+      modelConfig: thinkingModelConfig ? { supportsThinking: thinkingModelConfig.supportsThinking } : undefined,
+    });
+    this.thinkingMgr = new ThinkingManager(thinkingCap.supportsThinkingToggle);
 
     // Effort/Thinking 旋钮运行时态初值解析：env > settings(config) > undefined(auto)。
     // env 覆盖优先级最高且会被 queryLoop 每轮重新读取，这里仅解析 runtime 基线。
@@ -333,8 +343,19 @@ export class App {
       }
     }
 
+    // 配置-1：统一超时/重试解析（与 loop.ts 同一 resolveLoopTimeouts 入口，env > settings > 默认）。
+    const { resolveLoopTimeouts: resolveFallbackTimeouts } = require("./config/network-profile.ts");
+    const fallbackNetTimeouts = resolveFallbackTimeouts({ network: opts.config.network });
+
     this.fallback = new ModelFallback({
       availability, fallbackProvider, fallbackModel,
+      // 配置-1：streamTimeoutMs/maxRetries 从 resolveLoopTimeouts 注入（此前未传，fallback 各自
+      // 维护平行常量 CONNECTION_RETRY.maxRetries=3 / DEFAULT_STREAM_TIMEOUT_MS=300s）。
+      // 注入后 fallback 与 loop 层超时/重试对齐——改 settings.json 的 network.* 或 env 一处生效。
+      streamTimeoutMs: fallbackNetTimeouts.watchdogNoProgressMs,
+      maxRetries: fallbackNetTimeouts.maxTimeoutRetries,
+      retryBackoffBaseMs: fallbackNetTimeouts.retryBackoffBaseMs,
+      retryBackoffMaxMs: fallbackNetTimeouts.retryBackoffMaxMs,
       onTelemetry: (event) => { this._retryTelemetryWriter?.(event); },
     }, {
       onRetry: (attempt, error, delayMs) => {
@@ -865,8 +886,8 @@ export class App {
     }
   }
 
-  /** 自动压缩，委托给 auto-compact 模块 */
-  private async autoCompact(): Promise<void> {
+  /** 自动压缩，委托给 auto-compact 模块（返回压缩结果，静默-9：truncated=有损降级） */
+  private async autoCompact(): Promise<"summarized" | "truncated" | "skipped" | void> {
     const { autoCompact: impl } = await import("./query/auto-compact.ts");
     // §3.1：传入主对话工具定义，让压缩请求复用主对话已缓存的工具前缀（cache hit）。
     const toolSchemas = this.toolRegistry.activeDefinitions();
@@ -898,7 +919,7 @@ export class App {
       isMainAgent: true,
       cachedMicrocompactState: this.cachedMicrocompactState ?? undefined,
       sessionDir,
-    }).then(() => {
+    }).then((outcome) => {
       // §12.7：压缩后清除系统提示词缓存——压缩后话题可能已转变，
       // 下次构建 system prompt 时应重新召回相关记忆（recall 无独立缓存，仅经 prompt 缓存生效），
       // 不清缓存会让 recalledMemories 停留在旧话题。clearPromptCache 同时刷新 JIT/git 等动态区。
@@ -924,6 +945,8 @@ export class App {
       } catch (err: any) {
         getLogger().debug("JIT", `压缩后 JIT 重注入跳过: ${err.message}`);
       }
+      // 静默-9：把压缩结果透传给 loop 层，truncated 时提示用户上下文有损。
+      return outcome;
     });
   }
 
@@ -1931,9 +1954,25 @@ export class App {
   /** 冲刷忙时积压的调度提示词（空闲时调用） */
   private async flushScheduledPrompts(): Promise<void> {
     if (this.busy || !this.promptInjector) return;
+    // 静默-4：splice(0) 先把整个队列出队，若 promptInjector 中途抛错，原代码无 try/catch
+    // → 剩余（含当前）prompt 已脱离队列、直接丢失，且无任何日志（Cron 定时注入的任务凭空消失）。
+    // 现每条独立 try/catch：失败的 prompt 记 error 并重新入队队首，后续 prompt 继续尝试，
+    // 保证"注入器临时抛错"不静默吞掉待执行任务。
     const pending = this.scheduledPromptQueue.splice(0);
-    for (const p of pending) {
-      await this.promptInjector(p);
+    const log = getLogger();
+    for (let i = 0; i < pending.length; i++) {
+      const p = pending[i];
+      try {
+        await this.promptInjector(p);
+      } catch (e) {
+        // 把失败的这条 + 尚未处理的剩余 prompt 放回队首，避免丢失；下次 flush 重试。
+        this.scheduledPromptQueue.unshift(...pending.slice(i));
+        log.warn(
+          "CRON",
+          `定时 prompt 注入失败，已重新入队 ${pending.length - i} 条待重试: ${(e as Error)?.message}`,
+        );
+        return;
+      }
     }
   }
 
@@ -2152,7 +2191,16 @@ export class App {
     }
 
     let streamBuffer = "";
-    this.queryEngine.setStreamTextCallback((text) => { streamBuffer += text; });
+    this.queryEngine.setStreamTextCallback((text) => {
+      // 静默-3：重试进度消息（stream-processor 的 `[重试中] …`）不能拼进最终答案，
+      // 否则会污染 headless/管道消费者的结构化输出。与 TUI 回调对齐：分流到 stderr。
+      const c = classifyHeadlessStreamText(text);
+      if (c.isRetryProgress) {
+        process.stderr.write(`\r${c.stderr}\n`);
+        return;
+      }
+      streamBuffer += text;
+    });
 
     this.abortController = new AbortController();
     let runError: Error | null = null;
@@ -2162,11 +2210,7 @@ export class App {
     this.planManager?.endExecution();
     try {
       for await (const event of this.queryEngine.submitMessage(input)) {
-        // 无头模式只关心 done、system 消息和 fatal_error
         if (event.kind === "done") break;
-        if (event.kind === "system" && event.level === "warning") {
-          streamBuffer += `\n⚠️ ${event.text}\n`;
-        }
         // §3.2：queryLoop 异常现封装为 fatal_error 事件（不再穿透 for-await）。
         // 无头模式需显式转成 runError，使 SessionEnd reason=error、错误落盘可见。
         if (event.kind === "fatal_error") {
@@ -2174,6 +2218,17 @@ export class App {
           if (event.stack) runError.stack = event.stack;
           process.stderr.write(`\n[runHeadless] 致命错误: ${event.message}\n${event.stack ?? ""}\n`);
           break;
+        }
+        // 静默-2 / 静默-7：非交互路径事件覆盖对齐交互式 TUI（app.ts system/tombstone/…）。
+        // 此前只认 system/warning，丢弃 system/error（超时重试耗尽的用户可见提示，紧接着
+        // done 就 break → 用户只见输出戛然而止）与 system/info（预算/压缩/续写/门禁/停滞等），
+        // 以及 tombstone/hook_blocked/max_turns/loop_detected/loop_recovery 全被静默丢。
+        // 映射逻辑收敛到 formatHeadlessEvent 纯函数：stderr 写进度/状态（不污染 stdout 答案），
+        // error 级额外拼入正文兜底可见。
+        const out = formatHeadlessEvent(event);
+        if (out) {
+          if (out.stderr) process.stderr.write(`${out.stderr}\n`);
+          if (out.appendToBuffer) streamBuffer += out.appendToBuffer;
         }
       }
     } catch (err: any) {

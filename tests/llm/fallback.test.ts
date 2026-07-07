@@ -174,7 +174,8 @@ describe("ModelFallback", () => {
       },
     };
 
-    const fallback = new ModelFallback();
+    // 退避基数压到 1ms：本测试只验证重试逻辑，不测真实退避时长（避免 2s 基数 × 指数退避超时）。
+    const fallback = new ModelFallback({ retryBackoffBaseMs: 1, retryBackoffMaxMs: 5 });
     const events = await collectEvents(
       fallback.executeWithFallback(emptyProvider, defaultParams),
     );
@@ -190,7 +191,7 @@ describe("ModelFallback", () => {
   test("重试时触发 onRetry 回调", async () => {
     const retries: { attempt: number; error: string }[] = [];
 
-    const fallback = new ModelFallback({}, {
+    const fallback = new ModelFallback({ retryBackoffBaseMs: 1, retryBackoffMaxMs: 5 }, {
       onRetry: (attempt, error) => {
         retries.push({ attempt, error });
       },
@@ -460,7 +461,7 @@ describe("ModelFallback 增强", () => {
     };
 
     const fallback = new ModelFallback(
-      { contextLimit: 1_000_000 },
+      { contextLimit: 1_000_000, retryBackoffBaseMs: 1, retryBackoffMaxMs: 5 },
       { onMaxTokensAdjusted: () => { maxTokensAdjusted = true; } },
     );
     const events = await collectEvents(
@@ -497,7 +498,7 @@ describe("ModelFallback 增强", () => {
         },
       };
 
-      const fallback = new ModelFallback({ contextLimit: 1_000_000 });
+      const fallback = new ModelFallback({ contextLimit: 1_000_000, retryBackoffBaseMs: 1, retryBackoffMaxMs: 5 });
       const events = await collectEvents(
         fallback.executeWithFallback(provider, { ...defaultParams, maxTokens: 20000 }),
       );
@@ -530,6 +531,8 @@ describe("ModelFallback 增强", () => {
         fallbackProvider: successProvider(),
         fallbackModel: "fallback",
         querySource: "main_thread",
+        retryBackoffBaseMs: 1,
+        retryBackoffMaxMs: 5,
       },
     );
 
@@ -704,6 +707,8 @@ describe("ModelFallback 增强", () => {
         fallbackProvider: successProvider(),
         fallbackModel: "fallback",
         onTelemetry: (e) => events.push(e),
+        retryBackoffBaseMs: 1,
+        retryBackoffMaxMs: 5,
       },
     );
 

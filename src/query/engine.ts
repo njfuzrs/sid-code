@@ -56,8 +56,8 @@ export interface QueryEngineDeps {
     onThinking?: (text: string) => void,
     turnAbortController?: AbortController,
   ) => Promise<AccumulatedResponse>;
-  /** 自动压缩 */
-  autoCompact: () => Promise<void>;
+  /** 自动压缩（返回压缩结果，静默-9：truncated 表示有损降级） */
+  autoCompact: () => Promise<"summarized" | "truncated" | "skipped" | void>;
   /**
    * §2.2 Context Collapse：autoCompact 的前置层。对最老的若干段消息做分段摘要。
    * 返回 true 表示 collapse 后已达目标（可跳过 autoCompact），false 表示仍需 autoCompact。

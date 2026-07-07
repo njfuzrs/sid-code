@@ -22,6 +22,7 @@ import { estimateTextTokens } from "../../context/token.ts";
 import { recordSideCall } from "../../trace/side-call-sink.ts";
 import { withSideCallDeadline } from "../../llm/side-call-timeout.ts";
 import { createStreamLifecycle, LIFECYCLE_PRESETS } from "../../llm/stream-lifecycle.ts";
+import { resolveSideCallTimeouts } from "../../config/network-profile.ts";
 
 /** 每段消息条数 */
 const SEGMENT_SIZE = 10;
@@ -125,11 +126,8 @@ async function summarizeSegment(
 
   // T3.3：给单段摘要套 45s 硬超时（单段比整体 compact 更短）。超时后 throw
   // SideCallTimeoutError，由外层 catch 处理（跳过该段 / 返回已成功部分）。
-  const SEGMENT_TIMEOUT_MS = (() => {
-    const override = Number(process.env.SID_CODE_COLLAPSE_SEGMENT_TIMEOUT_MS);
-    if (Number.isFinite(override) && override > 0) return override;
-    return 45_000;
-  })();
+  // 配置-4：走 network-profile 的 side-call 子表统一解析（env override > 默认 45s）
+  const SEGMENT_TIMEOUT_MS = resolveSideCallTimeouts().collapseSegmentMs;
 
   const { summary, streamUsage } = await withSideCallDeadline(
     "context-collapse",

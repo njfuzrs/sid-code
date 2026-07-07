@@ -124,6 +124,8 @@ describe("T9.1 流式中断 & 恢复", () => {
         maxRetries: 3,
         streamTimeoutMs: 5000,
         availability: new ModelAvailabilityService(),
+        retryBackoffBaseMs: 1,
+        retryBackoffMaxMs: 5,
       });
 
       const events = await collectEvents(
@@ -181,6 +183,8 @@ describe("T9.1 流式中断 & 恢复", () => {
         availability: new ModelAvailabilityService(),
         fallbackProvider,
         fallbackModel: "fallback-model",
+        retryBackoffBaseMs: 1,
+        retryBackoffMaxMs: 5,
       });
 
       const events = await collectEvents(

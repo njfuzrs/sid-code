@@ -173,10 +173,23 @@ export interface DiminishingReturnsOptions {
 export class DiminishingReturnsDetector {
   /** 每次续写的输出 token 数 */
   private outputTokenHistory: number[] = [];
-  /** 最大续写次数（默认） */
-  static readonly MAX_RECOVERY_COUNT = 3;
-  /** 递减收益阈值，token 数（默认） */
-  static readonly DIMINISHING_THRESHOLD = 500;
+  /**
+   * 最大续写次数（默认）。
+   *
+   * 2026-07-07 约束型误伤修复（Top 3）：从 3 放宽到 8。此前 3 次上限与"分段小步写大文件"
+   * 的续写提示词自相矛盾——续写提示恰恰引导模型"单次调用别超上限、分多段写"，而 3 次
+   * 上限又把"连续几段小步"判为递减收益掐断，正常分段写大文件高概率被误终止。放宽到 8
+   * 给分段写入留足空间；真正的失控由 maxTurns/costLimit 兜底，不靠这个次数。
+   */
+  static readonly MAX_RECOVERY_COUNT = 8;
+  /**
+   * 递减收益阈值，token 数（默认）。
+   *
+   * 2026-07-07 约束型误伤修复（Top 3）：从 500 收紧到 150。分段写入时每段本就不大
+   * （几百 token 很正常），500 阈值下"连续两段各 <500"极易命中，把正常分段误判为
+   * "重复/填充"。降到 150 只在模型真的在吐极少量内容（几乎没进展）时才判递减收益。
+   */
+  static readonly DIMINISHING_THRESHOLD = 150;
 
   private readonly maxRecoveryCount: number;
   private readonly diminishingThreshold: number;

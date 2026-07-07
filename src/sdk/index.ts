@@ -47,3 +47,9 @@ export {
 } from "./structured-output.ts";
 export type { StructuredOutputConfig } from "./structured-output.ts";
 export { runHeadless, runHeadlessStreaming } from "./headless-runner.ts";
+export {
+  classifyHeadlessStreamText,
+  formatHeadlessEvent,
+  RETRY_TEXT_PREFIX,
+} from "./headless-event-format.ts";
+export type { HeadlessEventOutput } from "./headless-event-format.ts";

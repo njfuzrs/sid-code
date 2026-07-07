@@ -72,6 +72,37 @@ export const DEFAULTS: Readonly<ResolvedLoopTimeouts> = {
   retryBackoffMaxMs: 30_000,
 };
 
+/**
+ * Provider 层流式超时默认值（parseSSE 字节级看门狗 + fetch 生命周期硬顶）。
+ *
+ * 设计原则同上：**不按模型名分档**（原 openai.ts 按 /deepseek/i 分 90/180s、120/300s，
+ * 直接违反本文件顶部原则，见 memory `feedback-no-hardcoded-model-tier-rules.md`）。
+ * 一套够宽的值对所有模型成立：慢模型（deepseek/qwen/kimi/glm 长文思考）不会被误杀，
+ * 快模型顶多"多等一会才判超时"，真卡死由重试兜底且全程可见。
+ *
+ * 各项与 loop/lifecycle 层的对齐关系：
+ *   - idleTimeoutMs 300s：字节级"reader 无任何 chunk"上限，与 watchdogNoProgressMs 同量级。
+ *     （原 90/180s 偏紧，网关排队+慢模型思考期首字节可达数分钟。）
+ *   - contentProgressTimeoutMs 300s：字节级"有 chunk 但无有效内容进展"（keep-alive/ping 续命）
+ *     上限，与 watchdogNoProgressMs 一致。
+ *   - fetchAbsoluteTimeoutMs 300s：整个 fetch 生命周期的绝对上限（AbortSignal.timeout），
+ *     与 headerTimeoutMs 同值——原 openai.ts 是独立字面量 300_000，改一个不改另一个的隐患。
+ *   - overallTimeoutMs 600s：请求级事件流硬顶（lifecycle Layer 3），单轮 30min 硬顶之下的更严一档。
+ */
+export interface ProviderStreamTimeouts {
+  idleTimeoutMs: number;
+  contentProgressTimeoutMs: number;
+  fetchAbsoluteTimeoutMs: number;
+  overallTimeoutMs: number;
+}
+
+export const PROVIDER_STREAM_DEFAULTS: Readonly<ProviderStreamTimeouts> = {
+  idleTimeoutMs: 300_000,
+  contentProgressTimeoutMs: 300_000,
+  fetchAbsoluteTimeoutMs: 300_000,
+  overallTimeoutMs: 600_000,
+};
+
 /** 指数退避 + ±15% jitter（避免多次重试同时撞线的惊群效应），封顶 maxMs。 */
 export function computeBackoffMs(attempt: number, baseMs: number, maxMs: number): number {
   const capped = Math.min(baseMs * Math.pow(2, attempt), maxMs);
@@ -81,6 +112,83 @@ export function computeBackoffMs(attempt: number, baseMs: number, maxMs: number)
 function readEnvMs(name: string): number | undefined {
   const v = Number(process.env[name]);
   return Number.isFinite(v) && v > 0 ? v : undefined;
+}
+
+/**
+ * Side-call 超时子表（配置-4）：warmup/compact/collapse/recall 四类轻量旁路调用的硬超时。
+ *
+ * 与主循环/provider 超时不同：这些是"锦上添花、失败即静默降级"的旁路（缓存预热、
+ * 上下文压缩、分段折叠、记忆召回），语义各异故**保留分档**（不强行统一到一个值），
+ * 但收敛此前散落 4 个文件、各自 IIFE `Number(process.env)` 的重复解析——统一走 readEnvMs
+ * 校验 + 单一默认值表，消除"四份重复 + 数值各异又与 LIFECYCLE_PRESETS.sideCall 概念重叠"的碎裂。
+ *
+ * env 命名保留向后兼容：SID_CODE_WARMUP_TIMEOUT_MS / _COMPACT_TIMEOUT_MS /
+ * _COLLAPSE_SEGMENT_TIMEOUT_MS / _RECALL_TIMEOUT_MS。
+ */
+export interface SideCallTimeouts {
+  /** 缓存预热（会话启动，最短） */
+  warmupMs: number;
+  /** auto-compact LLM 摘要（最长，摘要不应超过 1 分钟） */
+  compactMs: number;
+  /** context-collapse 单段摘要 */
+  collapseSegmentMs: number;
+  /** 记忆召回初筛（轻量） */
+  recallMs: number;
+}
+
+export const SIDE_CALL_DEFAULTS: Readonly<SideCallTimeouts> = {
+  warmupMs: 10_000,
+  compactMs: 60_000,
+  collapseSegmentMs: 45_000,
+  recallMs: 15_000,
+};
+
+/** 解析 side-call 超时子表：env override（readEnvMs 校验）> 统一默认值。 */
+export function resolveSideCallTimeouts(): SideCallTimeouts {
+  return {
+    warmupMs: readEnvMs("SID_CODE_WARMUP_TIMEOUT_MS") ?? SIDE_CALL_DEFAULTS.warmupMs,
+    compactMs: readEnvMs("SID_CODE_COMPACT_TIMEOUT_MS") ?? SIDE_CALL_DEFAULTS.compactMs,
+    collapseSegmentMs:
+      readEnvMs("SID_CODE_COLLAPSE_SEGMENT_TIMEOUT_MS") ?? SIDE_CALL_DEFAULTS.collapseSegmentMs,
+    recallMs: readEnvMs("SID_CODE_RECALL_TIMEOUT_MS") ?? SIDE_CALL_DEFAULTS.recallMs,
+  };
+}
+
+/**
+ * 面向 provider 内部（openai/anthropic）的流式看门狗解析：env override > 统一默认值。
+ * 统一入口替代此前散落在 openai.ts/anthropic.ts 的 `Number(process.env.X)`/`parseInt` 就地解析
+ * （配置-3）。所有 env 都走 readEnvMs 校验（非法值静默回退默认，而非把 NaN 传给定时器）。
+ *
+ * env 命名保留向后兼容（运维/测试注入）：
+ *   - SID_CODE_IDLE_TIMEOUT_MS：字节级 idle（openai parseSSE）
+ *   - SID_CODE_CONTENT_PROGRESS_TIMEOUT_MS：字节级 content progress（openai parseSSE）
+ *   - SID_CODE_ANTHROPIC_CONTENT_PROGRESS_TIMEOUT_MS：anthropic lifecycle content progress
+ *   - SID_CODE_FETCH_ABSOLUTE_TIMEOUT_MS：fetch 生命周期硬顶（两 provider 共用）
+ *   - SID_CODE_OPENAI_OVERALL_TIMEOUT_MS / SID_CODE_ANTHROPIC_OVERALL_TIMEOUT_MS：lifecycle overall
+ */
+export function resolveProviderStreamTimeouts(opts?: {
+  /** anthropic 与 openai 的 content-progress / overall 用不同 env 名，用此区分 */
+  providerKind?: "openai" | "anthropic";
+}): ProviderStreamTimeouts {
+  const kind = opts?.providerKind ?? "openai";
+  const contentProgressEnv =
+    kind === "anthropic"
+      ? "SID_CODE_ANTHROPIC_CONTENT_PROGRESS_TIMEOUT_MS"
+      : "SID_CODE_CONTENT_PROGRESS_TIMEOUT_MS";
+  const overallEnv =
+    kind === "anthropic"
+      ? "SID_CODE_ANTHROPIC_OVERALL_TIMEOUT_MS"
+      : "SID_CODE_OPENAI_OVERALL_TIMEOUT_MS";
+  return {
+    idleTimeoutMs:
+      readEnvMs("SID_CODE_IDLE_TIMEOUT_MS") ?? PROVIDER_STREAM_DEFAULTS.idleTimeoutMs,
+    contentProgressTimeoutMs:
+      readEnvMs(contentProgressEnv) ?? PROVIDER_STREAM_DEFAULTS.contentProgressTimeoutMs,
+    fetchAbsoluteTimeoutMs:
+      readEnvMs("SID_CODE_FETCH_ABSOLUTE_TIMEOUT_MS") ?? PROVIDER_STREAM_DEFAULTS.fetchAbsoluteTimeoutMs,
+    overallTimeoutMs:
+      readEnvMs(overallEnv) ?? PROVIDER_STREAM_DEFAULTS.overallTimeoutMs,
+  };
 }
 
 function readEnvNonNegative(name: string): number | undefined {
