@@ -127,5 +127,6 @@ export function getConversationClearedPatch(): Partial<TUIState> {
     todos: [],
     tasks: [],
     retryStatus: null,
+    errorPanel: [],
   };
 }

@@ -155,6 +155,22 @@ export interface AskUserQuestionRequestInfo {
   ) => void;
 }
 
+/** 统一错误面板条目 */
+export interface ErrorPanelItem {
+  /** 去重键（同 id 替换旧的） */
+  id: string;
+  /** 错误分类码（映射 error-messages.ts 文案表） */
+  code?: string;
+  /** 简短错误标题 */
+  title: string;
+  /** 详细信息（可折叠展示） */
+  detail?: string;
+  /** 建议解决方案 */
+  suggestion: string;
+  /** 出现时间戳 */
+  timestamp: number;
+}
+
 /** TUI 状态（由外部 App 驱动） */
 export interface TUIState {
   messages: Message[];
@@ -242,6 +258,8 @@ export interface TUIState {
   tasks: TaskDisplayInfo[];
   /** CM3/CM4：LLM 重试/限流状态（null = 无重试）。 */
   retryStatus: RetryStatusInfo | null;
+  /** 统一错误面板：常驻底部直到用户手动关闭（Ctrl+E） */
+  errorPanel: ErrorPanelItem[];
   /**
    * 首次启动引导标记：为 true 时 EmptyLogo 显示配置引导、自动弹出 OnboardingDialog。
    * 用户完成配置（onCompleteOnboarding）后置 false。
@@ -696,6 +714,10 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     bridge.update({ activeDialog: null });
   }, [bridge]);
 
+  const handleDismissErrorPanel = useCallback(() => {
+    bridge.update({ errorPanel: [] });
+  }, [bridge]);
+
   const handleModelSelect = useCallback((modelName: string) => {
     // 通过斜杠命令切换模型（复用已有逻辑）
     callbacks.onSlashCommand("model", modelName);
@@ -792,6 +814,8 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           copyModeEnabled={state.copyModeEnabled}
           statusMessage={state.statusMessage}
           retryStatus={state.retryStatus}
+          errorPanel={state.errorPanel}
+          onDismissErrorPanel={handleDismissErrorPanel}
           permissionRequest={state.permissionRequest}
           shellConfirmRequest={state.shellConfirmRequest}
           planApprovalRequest={state.planApprovalRequest}
@@ -842,6 +866,8 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           keyExtractor={keyExtractor}
           statusMessage={state.statusMessage}
           retryStatus={state.retryStatus}
+          errorPanel={state.errorPanel}
+          onDismissErrorPanel={handleDismissErrorPanel}
           permissionRequest={state.permissionRequest}
           shellConfirmRequest={state.shellConfirmRequest}
           planApprovalRequest={state.planApprovalRequest}

@@ -183,6 +183,12 @@ export class SubAgentTool implements Tool {
     this.permissionChecker = checker;
   }
 
+  /** 注入子代理错误回调（推入统一错误面板）。主会话 TUI 就绪后调用。 */
+  private onErrorCallback?: (message: string) => void;
+  setErrorCallback(cb: (message: string) => void): void {
+    this.onErrorCallback = cb;
+  }
+
   /** 归集子代理 usage 到主会话（仅成功或有实际消耗时）。容错：sink 异常不影响子代理结果。 */
   private collectUsage(result: SubAgentResult): void {
     if (!this.usageSink) return;
@@ -409,6 +415,10 @@ ${typeLines}
 
       // 修复问题2：子代理 success=false（超时/loopDetect/异常）时标记 isError，
       // 让 TUI ToolStatusIndicator 正确显示红色终态（而非绿色成功）。
+      // 同时通知统一错误面板（常驻展示，用户可排查原因）。
+      if (!result.success && this.onErrorCallback) {
+        this.onErrorCallback(result.output);
+      }
       return { output: summary, isError: !result.success };
     } catch (err: any) {
       log.error("SUBAGENT", `子代理执行失败`, { error: err.message, stack: err.stack });

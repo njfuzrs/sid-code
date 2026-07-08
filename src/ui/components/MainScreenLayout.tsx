@@ -19,6 +19,7 @@ import { DialogSwitch } from "./DialogSwitch.tsx";
 import { HistoryItemDisplay } from "./HistoryItemDisplay.tsx";
 import { StreamingMessage } from "./StreamingMessage.tsx";
 import { RetryStatus } from "./RetryStatus.tsx";
+import { ErrorPanel } from "./ErrorPanel.tsx";
 import { ThinkingMessage } from "./messages/ThinkingMessage.tsx";
 import { Notifications } from "./Notifications.tsx";
 import { ToastDisplay } from "./ToastDisplay.tsx";
@@ -59,6 +60,10 @@ interface MainScreenLayoutProps {
   statusMessage: string;
   /** CM3/CM4：LLM 重试/限流状态（null = 无）。 */
   retryStatus: import("../App.tsx").RetryStatusInfo | null;
+  /** 统一错误面板条目列表 */
+  errorPanel: import("../App.tsx").ErrorPanelItem[];
+  /** 关闭错误面板回调 */
+  onDismissErrorPanel: () => void;
   permissionRequest: PermissionRequestInfo | null;
   shellConfirmRequest: ShellConfirmRequestInfo | null;
   planApprovalRequest: PlanApprovalRequestInfo | null;
@@ -122,6 +127,8 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
   keyExtractor,
   statusMessage,
   retryStatus,
+  errorPanel,
+  onDismissErrorPanel,
   permissionRequest,
   shellConfirmRequest,
   planApprovalRequest,
@@ -224,6 +231,9 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
 
           {/* CM3/CM4：LLM 重试/限流提示（实时倒计时 + 限流升级建议） */}
           <RetryStatus status={retryStatus} />
+
+          {/* 统一错误面板：常驻直到 Ctrl+E 关闭 */}
+          <ErrorPanel items={errorPanel} onDismiss={onDismissErrorPanel} width={termWidth} />
 
           {statusMessage ? (
             <Box paddingX={1}>

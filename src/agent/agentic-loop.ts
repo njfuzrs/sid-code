@@ -105,6 +105,7 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
   let turns = 0;
   let toolUseCount = 0;
   let lastTextOutput = "";
+  let unknownStopWarning: string | undefined;
   const totalUsage: Usage = {
     inputTokens: 0,
     outputTokens: 0,
@@ -358,7 +359,11 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
         errorMessage: `模型返回空响应（停止原因: ${response.stopReason ?? "null"}），疑似模型不可用或网关返回非流式错误页`,
       };
     }
+    // 非空响应但停止原因未识别（罕见，可能是新协议字段）：内容已在 lastTextOutput 中，
+    // 交给下方强制总结收尾。但必须设 errorMessage 让父级感知"异常收尾"——此前只 log.warn
+    // 就 break，父级（sub-agent.ts）无法区分"正常完成"和"异常停止"。
     log.warn("AGENT_LOOP", `未知停止原因: ${response.stopReason}`);
+    unknownStopWarning = `模型以未识别的停止原因结束（stopReason: ${response.stopReason ?? "null"}）`;
     break;
   }
 
@@ -420,5 +425,7 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
     toolUseCount,
     lastTextOutput,
     messages: ctxMgr.getMessages(),
+    // 非空但未知停止原因：内容已返回（success:true），但附带警告让父级可感知异常收尾
+    errorMessage: unknownStopWarning,
   };
 }

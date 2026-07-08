@@ -45,6 +45,7 @@ export const DEFAULT_BINDINGS: KeyBinding[] = [
   { action: "input:reverseSearch", stroke: { ctrl: true, name: "r" }, display: "Ctrl+R",     description: "反向搜索历史",       showInHelp: true },
   { action: "app:quit",            stroke: { ctrl: true, name: "c" }, display: "Ctrl+C",     description: "退出",               showInHelp: true },
   { action: "app:interrupt",       stroke: { name: "escape" },        display: "Esc",         description: "取消当前操作",       showInHelp: true },
+  { action: "app:dismissError",    stroke: { ctrl: true, name: "e" }, display: "Ctrl+E",     description: "关闭错误面板",       showInHelp: true },
   { action: "input:permMode",      stroke: { shift: true, name: "tab" }, display: "Shift+Tab", description: "切换权限模式",     showInHelp: true },
 ];
 

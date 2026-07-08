@@ -22,6 +22,7 @@ import { ModelFallback } from "./llm/fallback.ts";
 import type { RetryTelemetryEvent } from "./llm/retry-telemetry.ts";
 import { TokenEstimator } from "./llm/token-estimator.ts";
 import { ThinkingManager } from "./llm/thinking.ts";
+import { lookupErrorMessage, inferErrorCode } from "./llm/error-messages.ts";
 import { SessionState } from "./session/state.ts";
 import { SessionStore } from "./session/store.ts";
 import { generateSessionId } from "./session/id.ts";
@@ -572,6 +573,27 @@ export class App {
       // TeamCreateTool 需要额外注入 leader 确认回调（swarm teammate escalate 用）
       if (typeof maybe.setPermissionConfirm === "function") {
         maybe.setPermissionConfirm((desc: string) => this.requestUserConfirmation(desc));
+      }
+    }
+  }
+
+  /** 注入子代理错误回调到 SubAgentTool（推入统一错误面板）。 */
+  private wireToolErrorCallback(pushFn: (item: import("./ui/App.tsx").ErrorPanelItem) => void): void {
+    for (const tool of this.toolRegistry.all()) {
+      const maybe = tool as { setErrorCallback?: (cb: (msg: string) => void) => void };
+      if (typeof maybe.setErrorCallback === "function") {
+        maybe.setErrorCallback((msg: string) => {
+          const code = inferErrorCode(msg) || "subagent_failed";
+          const userMsg = lookupErrorMessage(msg, code);
+          pushFn({
+            id: `subagent-${code}`,
+            code,
+            title: userMsg.title,
+            detail: msg,
+            suggestion: userMsg.suggestion,
+            timestamp: Date.now(),
+          });
+        });
       }
     }
   }
@@ -2547,6 +2569,7 @@ export class App {
       todos: [],
       tasks: [],
       retryStatus: null,
+      errorPanel: [],
       goalDisplay: null,
       needsOnboarding: !!this.config._needsOnboarding,
     });
@@ -2649,6 +2672,17 @@ export class App {
       addStatusMessage(id, text);
       setTimeout(() => removeStatusMessage(id), delayMs);
     }
+
+    /** 统一错误面板：推入一条错误，同 id 去重替换，最多保留 5 条 */
+    function pushErrorPanel(item: import("./ui/App.tsx").ErrorPanelItem): void {
+      const current = bridge.current.errorPanel;
+      const filtered = current.filter(e => e.id !== item.id);
+      const next = [...filtered, item].slice(-5);
+      bridge.update({ errorPanel: next });
+    }
+
+    // 接线：子代理错误回调 → 统一错误面板
+    this.wireToolErrorCallback(pushErrorPanel);
 
     function removeStatusMessage(id: string): void {
       activeStatusMessages.delete(id);
@@ -3027,6 +3061,17 @@ export class App {
                 // 导致"内容消失+无任何提示"。仿照 fatal_error 持久化到 displayItems。
                 const errorDisplay = [...bridge.current.displayItems, { kind: "system" as const, text: event.text }];
                 updateState({ displayItems: errorDisplay });
+                // 同时推入统一错误面板（常驻，用户手动关闭）
+                const code = inferErrorCode(event.text);
+                const msg = lookupErrorMessage(event.text, code);
+                pushErrorPanel({
+                  id: code || `system-error-${Date.now()}`,
+                  code,
+                  title: msg.title,
+                  detail: event.text,
+                  suggestion: msg.suggestion,
+                  timestamp: Date.now(),
+                });
               } else {
                 // 根因修复：此前 info 级别没有分支 = 被静默丢弃。看门狗/超时重试、
                 // 压缩进度、续写提示等 info 事件全部凭空消失，用户只见流式卡住无任何提示
@@ -3052,8 +3097,19 @@ export class App {
               streamingThinkingFull = "";
               streamSynced = false;
               log.error("TUI", `queryLoop 致命错误: ${event.message}`, { stack: event.stack });
-              const fatalText = `❌ 任务失败：${event.message}\n可重新输入指令重试，或检查上面的工具输出定位原因。`;
+              const fatalText = `任务失败：${event.message}\n可重新输入指令重试，或检查上面的工具输出定位原因。`;
               const fatalDisplay = [...bridge.current.displayItems, { kind: "system" as const, text: fatalText }];
+              // 推入统一错误面板（常驻，用户手动关闭）
+              const fatalCode = inferErrorCode(event.message);
+              const fatalMsg = lookupErrorMessage(event.message, fatalCode);
+              pushErrorPanel({
+                id: fatalCode || "fatal",
+                code: fatalCode,
+                title: fatalMsg.title,
+                detail: event.message,
+                suggestion: fatalMsg.suggestion,
+                timestamp: Date.now(),
+              });
               updateState({
                 isLoading: false,
                 isStreaming: false,

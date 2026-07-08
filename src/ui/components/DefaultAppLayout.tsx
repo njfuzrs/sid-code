@@ -18,6 +18,7 @@ import { MainContent } from "./MainContent.tsx";
 import { CopyModeWarning } from "./CopyModeWarning.tsx";
 import { Notifications } from "./Notifications.tsx";
 import { RetryStatus } from "./RetryStatus.tsx";
+import { ErrorPanel } from "./ErrorPanel.tsx";
 import { TodoPanel } from "./TodoPanel.tsx";
 import { ToastDisplay } from "./ToastDisplay.tsx";
 import { ExitWarning } from "./ExitWarning.tsx";
@@ -57,6 +58,10 @@ interface DefaultAppLayoutProps {
   statusMessage: string;
   /** CM3/CM4：LLM 重试/限流状态（null = 无）。 */
   retryStatus: import("../App.tsx").RetryStatusInfo | null;
+  /** 统一错误面板条目列表 */
+  errorPanel: import("../App.tsx").ErrorPanelItem[];
+  /** 关闭错误面板回调 */
+  onDismissErrorPanel: () => void;
   permissionRequest: PermissionRequestInfo | null;
   shellConfirmRequest: ShellConfirmRequestInfo | null;
   planApprovalRequest: PlanApprovalRequestInfo | null;
@@ -124,6 +129,8 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
   copyModeEnabled,
   statusMessage,
   retryStatus,
+  errorPanel,
+  onDismissErrorPanel,
   permissionRequest,
   shellConfirmRequest,
   planApprovalRequest,
@@ -225,6 +232,9 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
 
           {/* CM3/CM4：LLM 重试/限流提示 */}
           <RetryStatus status={retryStatus} />
+
+          {/* 统一错误面板：常驻直到 Ctrl+E 关闭 */}
+          <ErrorPanel items={errorPanel} onDismiss={onDismissErrorPanel} width={termWidth} />
 
           {/* ST8：流式跟随已暂停提示（用户上滚阅读历史时） */}
           {showFollowPausedHint ? (
