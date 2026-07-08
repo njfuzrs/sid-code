@@ -372,3 +372,90 @@ describe("OpenAI 响应头超时（§3.1 hang 纵深防御）", () => {
     }
   });
 });
+
+// ── Content-Type 守卫回归测试（事故复盘 session 20260708-102143）──
+// 背景：网关对不可用模型/渠道有时回 HTTP 200 + text/html 错误页（而非 4xx/5xx）。
+// 此前该响应逐行进 SSE 解析器 → 0 个 data 行 → 读到流尾静默收尾（stopReason=null），
+// 上层把它当"空回复 end_turn"，用户界面毫无提示（"任务一闪而过"）。
+// 修复：headers_received 后校验 Content-Type，非 SSE 的 text/html 直接 yield 结构化
+// error（streamLevel + server_error），让 fallback / 上层能如实呈现失败原因。
+describe("OpenAI Content-Type 守卫（伪装成功的错误页 fail-fast）", () => {
+  test("HTTP 200 + text/html 错误页 → yield 结构化 error，不静默空流收尾", async () => {
+    const origFetch = globalThis.fetch;
+    // 模拟网关错误页：200 状态码，但 Content-Type 是 text/html，body 是 HTML/JSON 错误信息
+    const htmlErrorBody =
+      '{"error":{"code":"model_not_found","message":"No available channel for model claude-sonnet-4-8 under group 个人"}}';
+    globalThis.fetch = ((_url: any, _init?: any) => {
+      return Promise.resolve(
+        new Response(htmlErrorBody, {
+          status: 200,
+          headers: { "content-type": "text/html; charset=utf-8" },
+        }),
+      );
+    }) as typeof fetch;
+
+    try {
+      const provider = new OpenAIProvider("test-key", "claude-sonnet-4-8");
+      const events: any[] = [];
+      for await (const ev of provider.sendMessageStream({
+        model: "claude-sonnet-4-8",
+        messages: [{ role: "user", content: "hi" }],
+        maxTokens: 16,
+      } as any)) {
+        events.push(ev);
+      }
+
+      // 关键断言 1：必须产出一个 error 事件（而非 0 事件静默结束）
+      const errorEvents = events.filter((e) => e.type === "error");
+      expect(errorEvents.length).toBeGreaterThan(0);
+
+      const err = errorEvents[0];
+      // 关键断言 2：错误标记为 streamLevel + server_error，让 fallback.ts 走结构化重试/降级
+      expect(err.error.streamLevel).toBe(true);
+      expect(err.error.type).toBe("server_error");
+      // 关键断言 3：错误信息含 Content-Type，便于用户/排查定位为网关错误页
+      expect(err.error.message).toContain("text/html");
+
+      // 关键断言 4：绝不能出现"看似正常"的 message_stop（伪装成功）
+      const stopEvents = events.filter((e) => e.type === "message_stop");
+      expect(stopEvents.length).toBe(0);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  test("HTTP 200 + text/event-stream 正常流 → 不被守卫误伤", async () => {
+    const origFetch = globalThis.fetch;
+    // 正常 SSE 流：一个文本增量 + [DONE]
+    const sseBody =
+      'data: {"choices":[{"delta":{"content":"你好"},"finish_reason":null}]}\n\n' +
+      'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n' +
+      "data: [DONE]\n\n";
+    globalThis.fetch = ((_url: any, _init?: any) => {
+      return Promise.resolve(
+        new Response(sseBody, {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        }),
+      );
+    }) as typeof fetch;
+
+    try {
+      const provider = new OpenAIProvider("test-key", "gpt-4o-mini");
+      const events: any[] = [];
+      for await (const ev of provider.sendMessageStream({
+        model: "gpt-4o-mini",
+        messages: [{ role: "user", content: "hi" }],
+        maxTokens: 16,
+      } as any)) {
+        events.push(ev);
+      }
+
+      // 正常流不应产出 error 事件；应有内容增量与正常收尾
+      expect(events.filter((e) => e.type === "error").length).toBe(0);
+      expect(events.some((e) => e.type === "content_block_delta")).toBe(true);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+});

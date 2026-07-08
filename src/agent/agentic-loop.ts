@@ -336,7 +336,28 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
       continue;
     }
 
-    // 其他未知停止原因
+    // 其他未知停止原因（含 null）
+    // 背景（事故复盘 session 20260708-102143）：伪装成功的空流（网关对不可用模型
+    // 回 200 + text/html 错误页，被解析成 0 事件）会让 stopReason=null 且 content 为空。
+    // 此前本分支直接 break 落到"强制总结"路径，把空响应当成正常收尾返回给父级——
+    // 掩盖真实故障。现在区分：空响应 → success:false 显式报错（对齐上方 stopReason==="error"
+    // 的返回模式，让父级 loop 能如实呈现）；非空但停止原因未识别 → 保留原 break（内容已在
+    // lastTextOutput 中，交给下方强制总结收尾）。
+    if (response.content.length === 0) {
+      log.error(
+        "AGENT_LOOP",
+        `空响应且停止原因异常（stopReason=${response.stopReason}），判定为伪装成功的空流，子代理中断`,
+      );
+      return {
+        success: false,
+        turns,
+        totalUsage,
+        toolUseCount,
+        lastTextOutput,
+        messages: ctxMgr.getMessages(),
+        errorMessage: `模型返回空响应（停止原因: ${response.stopReason ?? "null"}），疑似模型不可用或网关返回非流式错误页`,
+      };
+    }
     log.warn("AGENT_LOOP", `未知停止原因: ${response.stopReason}`);
     break;
   }

@@ -187,6 +187,66 @@ describe("ModelFallback", () => {
     expect(hasError || hasStop).toBe(true);
   });
 
+  // === fallback 空响应校验（事故复盘 session 20260708-102143）===
+  // 背景：主模型 terminal 失败触发降级，但 fallback provider 返回空流（0 内容事件，
+  // 如网关回 text/html 错误页）。此前 tryFallback 直接透传空流 → 上层 stopReason=null
+  // 静默收尾，用户界面毫无提示。修复：tryFallback 补齐与主路径对齐的空响应校验，
+  // fallback 空流也必须抛 StreamValidationError（经上层转成可见错误）。
+  test("fallback provider 返回空响应 → 抛 StreamValidationError（不静默透传空流）", async () => {
+    // 主 provider terminal 失败（触发降级）
+    const primary = errorEventProvider("401 Unauthorized");
+    // fallback provider 返回空流（只有 message_stop，无任何内容/工具/error 事件）
+    const emptyFallback: Provider = {
+      name: () => "mock-fallback",
+      defaultModel: () => "fallback-model",
+      async *sendMessageStream(): AsyncIterable<StreamEvent> {
+        yield { type: "message_stop" };
+      },
+    };
+
+    const fallback = new ModelFallback({
+      fallbackProvider: emptyFallback,
+      fallbackModel: "fallback-model",
+      retryBackoffBaseMs: 1,
+      retryBackoffMaxMs: 5,
+    });
+
+    const events = await collectEvents(
+      fallback.executeWithFallback(primary, defaultParams),
+    );
+
+    // 关键断言：fallback 空流必须产出 error 事件（经上层转 throw 展示），而非静默成功收尾。
+    // 用 error 事件而非 throw，避免被流式重试循环 recatch 重分类成语焉不详的"无可用 fallback"。
+    const errorEvent = events.find(e => e.type === "error");
+    expect(errorEvent).toBeDefined();
+    expect((errorEvent as any).error.type).toBe("empty_response");
+    expect((errorEvent as any).error.streamLevel).toBe(true);
+    expect((errorEvent as any).error.message).toContain("空响应");
+  });
+
+  // === fallback 流内 error 事件透传（不叠加"响应为空"掩盖真实原因）===
+  test("fallback provider 产出 error 事件 → 透传该 error，不误报空响应", async () => {
+    const primary = errorEventProvider("401 Unauthorized");
+    // fallback provider 产出显式 error（如 openai.ts 的 Content-Type 守卫）
+    const erroringFallback = errorEventProvider("网关返回非流式响应（Content-Type: text/html）");
+
+    const fallback = new ModelFallback({
+      fallbackProvider: erroringFallback,
+      fallbackModel: "fallback-model",
+      retryBackoffBaseMs: 1,
+      retryBackoffMaxMs: 5,
+    });
+
+    const events = await collectEvents(
+      fallback.executeWithFallback(primary, defaultParams),
+    );
+
+    // 应透传 fallback 的具体 error，而非抛"响应为空"掩盖真实原因
+    const errorEvent = events.find(e => e.type === "error");
+    expect(errorEvent).toBeDefined();
+    expect((errorEvent as any).error.message).toContain("Content-Type");
+  });
+
   // === Listener 回调 ===
   test("重试时触发 onRetry 回调", async () => {
     const retries: { attempt: number; error: string }[] = [];

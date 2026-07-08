@@ -2198,8 +2198,38 @@ export async function* queryLoop(
       continue;
     }
 
-    // ─── 其他停止原因 ───
-    log.warn("QUERY_LOOP", `未知停止原因: ${response.stopReason}`);
+    // ─── 其他停止原因（含 null）───
+    // 背景（事故复盘 session 20260708-102143）：当上游返回"伪装成功的空流"
+    // （如网关对不可用模型回 HTTP 200 + text/html 错误页，被 SSE 解析成 0 事件），
+    // stopReason 会是 null 且 content 为空，一路穿透上面所有停止原因分支落到这里。
+    // 此前本分支只写 warn.log + 静默 yield done——用户界面毫无提示，表现为"任务
+    // 一闪而过就没了"。现在必须把这类静默失败暴露给用户（yield system error），
+    // 且区分"空响应"（真故障）与"非空但停止原因未识别"（罕见，可能是新协议字段）。
+    const hasAnyContent = response.content.length > 0;
+    if (!hasAnyContent) {
+      // 空响应 + 未知/空停止原因 = 伪装成功的空流。如实报错，不假装完成。
+      log.error(
+        "QUERY_LOOP",
+        `空响应且停止原因异常（stopReason=${response.stopReason}），判定为伪装成功的空流，本轮中断`,
+      );
+      yield {
+        kind: "system",
+        level: "error",
+        text:
+          `⚠️ 模型返回空响应（停止原因: ${response.stopReason ?? "null"}），本轮对话中断。\n` +
+          `常见原因：主模型不可用触发降级、网关返回非流式错误页、或所配模型 ID 与网关实际可用模型不一致。\n` +
+          `请检查 ~/.sid-code/settings.json 的 model / fallbackModel 是否为网关真实可用的模型，然后重新发送消息。`,
+      };
+    } else {
+      // 有内容但停止原因未识别（罕见）：内容已通过 assistant_message 呈现，这里补一条
+      // 提示说明本轮为何提前收尾，避免用户困惑"为什么突然停了"。
+      log.warn("QUERY_LOOP", `未知停止原因: ${response.stopReason}`);
+      yield {
+        kind: "system",
+        level: "warning",
+        text: `模型以未识别的停止原因结束本轮（stopReason: ${response.stopReason ?? "null"}）。若回答不完整，请重新发送消息继续。`,
+      };
+    }
     yield { kind: "done", turns: state.turnCount };
     return;
   }

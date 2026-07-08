@@ -727,12 +727,45 @@ export class ModelFallback {
       });
 
       const fallbackParams = { ...params, model: fallbackModel };
+      // 流完整性校验：与主路径（上方 hasYieldedContent 校验）对齐。
+      // 背景（事故复盘 session 20260708-102143）：tryFallback 此前直接透传 fallback
+      // 流，缺了主路径那道空响应校验——fallback provider 返回 0 内容事件（如网关回
+      // text/html 错误页被 openai.ts 拦成 error，或真返回空流）时不会 throw，空流
+      // 被原样透传给上层，最终以 stopReason=null 静默收尾，用户界面毫无提示。
+      // 这里补齐：fallback 流也必须产出过内容/工具调用，否则抛 StreamValidationError
+      // （error 事件本身已是显式失败信号，放行让上层 stream-processor 转 throw 展示）。
+      let fbYieldedContent = false;
+      let fbYieldedError = false;
       for await (const event of this.config.fallbackProvider.sendMessageStream(fallbackParams, signal)) {
         // A4 纵深防御：fallback provider 流消费中检查 signal
         if (signal?.aborted) {
           throw new RequestAbortedError("请求已中止");
         }
+        if (event.type === "content_block_delta") {
+          fbYieldedContent = true;
+        } else if (event.type === "error") {
+          // fallback 流内已有显式 error（含 openai.ts 的 Content-Type 守卫）→ 透传，
+          // 由上层 stream-processor 转 throw 展示；不再叠加"响应为空"掩盖真实原因。
+          fbYieldedError = true;
+        }
         yield event;
+      }
+      // fallback 流跑完却既无内容事件、也无显式 error → 判定空响应（伪装成功的空流）。
+      // 用 yield error 事件（而非 throw）暴露：与下方"无可用 fallback"分支一致，error
+      // 事件经 yield* 直达消费者（stream-processor 转 throw → engine → fatal_error），
+      // 不会被上方流式重试循环的 catch recatch/重分类（throw 会被 line 574 catch 吞掉、
+      // 重试耗尽后落到 line 702 的二次 tryFallback，因 hasFallenBack=true 变成语焉不详的
+      // "无可用 fallback"，反而掩盖了"fallback 返回空响应"这个真实原因）。
+      if (!fbYieldedContent && !fbYieldedError) {
+        log.error("FALLBACK", `fallback 模型 ${fallbackModel} 返回空响应（0 内容事件），判定失败`);
+        yield {
+          type: "error",
+          error: {
+            message: `fallback 模型 ${fallbackModel} 返回空响应（0 内容事件），疑似模型不可用或网关返回非流式错误页`,
+            type: "empty_response",
+            streamLevel: true,
+          },
+        };
       }
       return;
     }

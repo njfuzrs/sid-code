@@ -729,6 +729,49 @@ export class OpenAIProvider implements Provider {
         model: effectiveModel,
       });
 
+      // ─── Content-Type 守卫（fail-fast 伪装成功的错误页）───
+      // 背景（事故复盘 session 20260708-102143）：网关对不可用模型/渠道有时不返回
+      // 4xx/5xx，而是回 HTTP 200 + `text/html` 的错误页（"No available channel"）。
+      // 这个响应逐行进 parseSSE 后没有任何 `data: ` 行 → 0 事件读到流尾 → 被当成
+      // "空回复 end_turn"静默收尾（stopReason=null），用户界面毫无提示。
+      // 这里在开始解析前拦下：SSE 必须是 text/event-stream；明确是 HTML（或其它
+      // 非流式文本页）时直接判错终止。归为 streamLevel 错误让 fallback.ts 按结构化
+      // 字段处理（server_error → 重试 / 再降级），而非静默吐一个空流。
+      // 保守策略：只拦 text/html（错误页的确定信号）；缺失 content-type、
+      // text/event-stream、application/json（部分兼容网关如此标注合法流）均放行，
+      // 避免误伤正常但 header 标注不规范的网关。
+      if (contentType && contentType.toLowerCase().includes("text/html")) {
+        // 读取少量响应体用于诊断（截断，避免把整页 HTML 灌进日志/上下文）。
+        let bodySnippet = "";
+        try {
+          bodySnippet = (await response.text()).slice(0, 300).replace(/\s+/g, " ").trim();
+        } catch { /* 读 body 失败不影响判错 */ }
+        emitStreamPhase(obsIndex, "error", {
+          http_status: response.status,
+          content_type: contentType,
+          model: effectiveModel,
+        });
+        getLogger().warn(
+          "AUDIT:API",
+          `✗ OpenAI 响应 Content-Type=${contentType}（非 SSE，疑似网关错误页）model=${effectiveModel} body=${bodySnippet}`,
+        );
+        log.error(
+          "LLM:OPENAI",
+          `响应 Content-Type 为 ${contentType}（非 text/event-stream），判定为伪装成功的错误页，终止本次流`,
+        );
+        yield {
+          type: "error",
+          error: {
+            message: `网关返回非流式响应（Content-Type: ${contentType}，HTTP ${response.status}），疑似模型/渠道不可用的错误页：${bodySnippet || "(空)"}`,
+            // 结构化标记：让 fallback.ts 走 classifyStreamError → StreamLevelError（可重试/降级），
+            // 而非落到"空流静默收尾"。type 用 server_error 语义（200 但内容非法，倾向瞬态/配置）。
+            type: "server_error",
+            streamLevel: true,
+          },
+        };
+        return;
+      }
+
       // 解析 SSE 流
       let accumulatedUsage: Usage = { inputTokens: 0, outputTokens: 0 };
       // PARSE-4：累积输出文本，供"端点不返回 usage"（Ollama 等）时估算兜底
