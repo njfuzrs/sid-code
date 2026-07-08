@@ -1,10 +1,16 @@
 BINARY=sid-code
 BUN=bun
 
-.PHONY: build release run test test-providers clean deps lint canary stability-test stress-test provider-health
+.PHONY: build rebuild release run test test-providers clean deps lint canary stability-test stress-test provider-health
 
 build:
 	$(BUN) run scripts/bump-version.ts
+	$(BUN) run scripts/embed-builtin-skills.ts
+	$(BUN) build --compile --outfile $(BINARY) src/entrypoints/bootstrap.ts
+
+# 本地快速重建：跳过 bump-version，保持当前版本号不变
+# 适用场景：拉取最新代码后只需更新二进制，不想改变版本号
+rebuild:
 	$(BUN) run scripts/embed-builtin-skills.ts
 	$(BUN) build --compile --outfile $(BINARY) src/entrypoints/bootstrap.ts
 
