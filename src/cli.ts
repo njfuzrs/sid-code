@@ -516,6 +516,26 @@ export async function main(): Promise<void> {
       }
     }
 
+    // headless(--print) 模式：诊断默认可见（不依赖 --debug），有问题才输出、无问题零输出；
+    // 固定走 stderr，不碰 stdout（--output-format json/stream-json 靠 stdout 输出结构化数据）。
+    // 门控在 config.print 上，天然排除 TUI —— Ink 接管终端前的裸 console 输出会在正式渲染
+    // 上方留下游离行（同一原因，恢复会话提示此前已从 console.log 改为 logger）。
+    if (config.print && config._validationDiagnostics) {
+      const diag = config._validationDiagnostics;
+      const total = diag.warnings.length + diag.errors.length;
+      if (total > 0) {
+        console.error(`配置检查发现 ${total} 项提示（不影响本次启动，可能导致部分功能未按预期工作）:`);
+        for (const e of diag.errors) {
+          console.error(`  ✗ [错误] ${e.path}: ${e.message}`);
+        }
+        for (const w of diag.warnings) {
+          console.error(`  ⚠ [提示] ${w.path}: ${w.message}`);
+        }
+        const logPath = config.debug ? config.debugLogFile : (config.auditLogFile ?? "~/.sid-code/audit.log");
+        console.error(`详情见 ${logPath}`);
+      }
+    }
+
     // 处理会话管理命令（不需要 API Key）
     if (cliArgs["list-sessions"]) {
       const { handleListSessions } = await import("./session/commands.ts");

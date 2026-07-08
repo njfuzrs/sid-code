@@ -84,9 +84,22 @@ export function validateConfig(config: Config): ValidationResult {
 
   // 验证 provider
   if (!VALID_PROVIDERS.has(config.provider)) {
+    let message = `无效值 "${config.provider}"，有效值为 ${Array.from(VALID_PROVIDERS).join("/")}`;
+    // provider 由 resolveCurrentModelConfig 按 config.model === availableModels[].name 匹配回填，
+    // 从不由用户直接填写。所以 provider 为空的最常见诱因不是"值本身填错"，而是重命名/改错了
+    // availableModels 条目的 name 后，忘记同步顶层 model（或 fallbackModel/subAgentModels）里的旧引用，
+    // 导致按名查找落空、从未回填。这里补一句定位提示，避免误诊为 provider 校验规则本身有问题。
+    if (config.model && config.availableModels?.length) {
+      const found = config.availableModels.some(m => m.name === config.model);
+      if (!found) {
+        const available = config.availableModels.map(m => m.name).join(", ");
+        message += `；模型 "${config.model}" 未在 availableModels 中找到（可用: ${available}）。` +
+          `如果重命名过 availableModels 条目，请同步更新顶层 model / fallbackModel / subAgentModels 中的引用`;
+      }
+    }
     errors.push({
       path: "provider",
-      message: `无效值 "${config.provider}"，有效值为 ${Array.from(VALID_PROVIDERS).join("/")}`,
+      message,
       value: config.provider,
     });
   }
@@ -280,7 +293,35 @@ export function validateConfig(config: Config): ValidationResult {
           message: "模型名称不能为空",
           value: modelName,
         });
+      } else if (config.availableModels?.length && !config.availableModels.some(m => m.name === modelName)) {
+        // 非致命：registry.getSpawnConfigForSubAgent 找不到时会静默退回主 provider 配置，
+        // 但仍把这个不存在的模型名发给网关，多半在运行时才报"模型不可用"，难定位。
+        // 提前告警，指向最可能的诱因（重命名 availableModels 条目后忘记同步这里）。
+        warnings.push({
+          path: `subAgentModels.${agentType}`,
+          message: `模型 "${modelName}" 未在 availableModels 中找到，运行时会退回主 provider 配置但仍使用该模型名请求网关，可能导致"模型不可用"报错。如果重命名过 availableModels 条目，请同步更新这里的引用`,
+        });
       }
+    }
+  }
+
+  // 验证模型引用类字段：fallbackModel / classifierModel / goal.evaluatorModel 均应
+  // 能在 availableModels 中找到，否则运行时会静默退回主 provider 但仍携带该模型名请求
+  // 网关，消费点分别是 app.ts（fallback）/ cli.ts（classifier）/ query/loop.ts（goal 评估）。
+  // 不加任何功能开关前置条件（如 enableLLMClassifier）——尽早暴露配置漂移，好过等真正
+  // 启用功能那一刻才发现模型名早已失效，体验上和静默没有本质区别。
+  const modelRefFields: Array<{ path: string; value: string | undefined; hint: string }> = [
+    { path: "fallbackModel", value: config.fallbackModel, hint: "降级功能不会生效（app.ts 静默忽略）" },
+    { path: "classifierModel", value: config.classifierModel, hint: "启用 enableLLMClassifier 后会携带此模型名请求网关" },
+    { path: "goal.evaluatorModel", value: config.goal?.evaluatorModel, hint: "/goal 评估会携带此模型名请求网关" },
+  ];
+  for (const ref of modelRefFields) {
+    if (ref.value && ref.value.trim() !== "" &&
+        config.availableModels?.length && !config.availableModels.some(m => m.name === ref.value)) {
+      warnings.push({
+        path: ref.path,
+        message: `模型 "${ref.value}" 未在 availableModels 中找到，${ref.hint}，可能导致"模型不可用"报错。如果重命名过 availableModels 条目，请同步更新这里的引用`,
+      });
     }
   }
 
@@ -327,6 +368,24 @@ export function validateConfig(config: Config): ValidationResult {
     });
   }
 
+  // availableModels 内部重名检查：resolveCurrentModelConfig 用 find() 按 name 精确匹配，
+  // 只命中第一条同名条目，后续重名条目的 provider/apiKey/baseURL/maxOutputTokens 配置
+  // 永远不会被使用，且没有任何提示。
+  if (config.availableModels?.length) {
+    const nameCount = new Map<string, number>();
+    for (const m of config.availableModels) {
+      if (m.name) nameCount.set(m.name, (nameCount.get(m.name) ?? 0) + 1);
+    }
+    for (const [name, count] of nameCount) {
+      if (count > 1) {
+        warnings.push({
+          path: "availableModels",
+          message: `模型名 "${name}" 重复出现 ${count} 次，按名查找只命中第一条，其余同名条目的配置永远不会被使用`,
+        });
+      }
+    }
+  }
+
   // 验证 costLimit
   if (config.costLimit !== undefined) {
     if (typeof config.costLimit !== "number" || config.costLimit <= 0) {
@@ -334,6 +393,86 @@ export function validateConfig(config: Config): ValidationResult {
         path: "costLimit",
         message: "costLimit 必须是正数",
         value: config.costLimit,
+      });
+    }
+  }
+
+  // 验证 quota（配额管控增强版；注意与顶层 costLimit 是不同字段，互不影响）
+  if (config.quota) {
+    const q = config.quota;
+    if (q.costLimit !== undefined && (typeof q.costLimit !== "number" || q.costLimit <= 0)) {
+      warnings.push({ path: "quota.costLimit", message: "必须是正数" });
+    }
+    if (q.requestsPerMinute !== undefined && (typeof q.requestsPerMinute !== "number" || q.requestsPerMinute <= 0)) {
+      warnings.push({ path: "quota.requestsPerMinute", message: "必须是正数" });
+    }
+    if (q.tokensPerMinute !== undefined && (typeof q.tokensPerMinute !== "number" || q.tokensPerMinute <= 0)) {
+      warnings.push({ path: "quota.tokensPerMinute", message: "必须是正数" });
+    }
+
+    if (Array.isArray(q.budgetRules)) {
+      const VALID_BUDGET_PERIODS = new Set(["session", "hourly", "daily", "weekly", "monthly"]);
+      const VALID_BUDGET_ACTIONS = new Set(["alert", "downgrade", "block"]);
+      const seenRuleIds = new Set<string>();
+
+      q.budgetRules.forEach((rule, index) => {
+        const prefix = `quota.budgetRules[${index}]`;
+
+        if (!rule.id || rule.id.trim() === "") {
+          warnings.push({ path: `${prefix}.id`, message: "不能为空" });
+        } else if (seenRuleIds.has(rule.id)) {
+          warnings.push({ path: `${prefix}.id`, message: `与其它规则重复 ("${rule.id}")` });
+        } else {
+          seenRuleIds.add(rule.id);
+        }
+
+        if (!rule.name || rule.name.trim() === "") {
+          warnings.push({ path: `${prefix}.name`, message: "不能为空" });
+        }
+
+        if (!VALID_BUDGET_PERIODS.has(rule.period)) {
+          warnings.push({
+            path: `${prefix}.period`,
+            message: `无效值 "${rule.period}"，有效值为 ${Array.from(VALID_BUDGET_PERIODS).join("/")}`,
+          });
+        }
+
+        if (typeof rule.limit_usd !== "number" || rule.limit_usd <= 0) {
+          warnings.push({ path: `${prefix}.limit_usd`, message: "必须是正数，否则该预算规则无意义" });
+        }
+
+        if (rule.action !== undefined && !VALID_BUDGET_ACTIONS.has(rule.action)) {
+          warnings.push({
+            path: `${prefix}.action`,
+            message: `无效值 "${rule.action}"，有效值为 ${Array.from(VALID_BUDGET_ACTIONS).join("/")}`,
+          });
+        }
+
+        // 关键检查：budget-tracker.ts 用字符串精确匹配用量事件的 model 字段，
+        // scope.model 一旦引用失效的模型名，这条预算规则会永久静默失效——
+        // 用户以为设了限额，实际从未生效，属于财务/安全相关的真实风险。
+        if (rule.scope?.model && config.availableModels?.length &&
+            !config.availableModels.some(m => m.name === rule.scope!.model)) {
+          warnings.push({
+            path: `${prefix}.scope.model`,
+            message: `模型 "${rule.scope.model}" 未在 availableModels 中找到，此预算规则永远不会命中用量匹配，等同于已失效。如果重命名过 availableModels 条目，请同步更新这里的引用`,
+          });
+        }
+
+        const th = rule.thresholds;
+        if (th) {
+          for (const [key, val] of Object.entries(th)) {
+            if (val !== undefined && (typeof val !== "number" || val <= 0)) {
+              warnings.push({ path: `${prefix}.thresholds.${key}`, message: "必须是正数（0-1 之间的比例，如 0.8 = 80%）" });
+            }
+          }
+          if (th.warning !== undefined && th.critical !== undefined && th.warning > th.critical) {
+            warnings.push({ path: `${prefix}.thresholds`, message: "warning 阈值应小于等于 critical 阈值" });
+          }
+          if (th.critical !== undefined && th.exceeded !== undefined && th.critical > th.exceeded) {
+            warnings.push({ path: `${prefix}.thresholds`, message: "critical 阈值应小于等于 exceeded 阈值" });
+          }
+        }
       });
     }
   }
@@ -486,6 +625,85 @@ export function validateConfig(config: Config): ValidationResult {
           value: tm.debounceMs,
         });
       }
+    }
+  }
+
+  // 验证 search 配置：backend 枚举 + 组合一致性
+  if (config.search) {
+    const s = config.search;
+    const VALID_SEARCH_BACKENDS = new Set(["searxng", "brave", "tavily", "duckduckgo"]);
+    if (s.backend !== undefined) {
+      if (!VALID_SEARCH_BACKENDS.has(s.backend)) {
+        warnings.push({
+          path: "search.backend",
+          message: `无效值 "${s.backend}"，有效值为 ${Array.from(VALID_SEARCH_BACKENDS).join("/")}，将回退到自动检测/DuckDuckGo`,
+        });
+      } else if (s.backend === "brave" || s.backend === "tavily") {
+        // search-backends/factory.ts 里这两个分支整个被注释掉（"Phase 2: 取消注释即可启用"），
+        // 配了这两个值实际会静默换成 DuckDuckGo，没有任何报错或警告。
+        warnings.push({
+          path: "search.backend",
+          message: `后端 "${s.backend}" 尚未实现，实际会静默回退到 DuckDuckGo`,
+        });
+      } else if (s.backend === "searxng" && !s.searxngUrl && !process.env.SEARXNG_URL) {
+        warnings.push({
+          path: "search.searxngUrl",
+          message: `backend 设为 "searxng" 但未配置 searxngUrl（环境变量 SEARXNG_URL 也未设置），实际会静默回退到 DuckDuckGo`,
+        });
+      }
+    }
+  }
+
+  // 验证 telemetry 导出器：类型不匹配实现分支时会被静默跳过（createExporter 返回 null）
+  if (config.telemetry?.exporters?.length) {
+    const VALID_EXPORTER_TYPES = new Set(["console", "jsonl"]);
+    config.telemetry.exporters.forEach((exp, index) => {
+      if (!VALID_EXPORTER_TYPES.has(exp.type)) {
+        warnings.push({
+          path: `telemetry.exporters[${index}].type`,
+          message: `无效值 "${exp.type}"，有效值为 ${Array.from(VALID_EXPORTER_TYPES).join("/")}，该导出器会被静默跳过`,
+        });
+      }
+    });
+  }
+
+  // 验证 analytics 后端：type 目前只支持 "http"，其它值或缺失 endpoint 都会被静默跳过
+  if (config.analytics?.backends?.length) {
+    config.analytics.backends.forEach((b, index) => {
+      const prefix = `analytics.backends[${index}]`;
+      if (b.type !== "http") {
+        warnings.push({ path: `${prefix}.type`, message: `无效值 "${b.type}"，目前仅支持 "http"，该后端会被静默跳过` });
+      }
+      if (!b.endpoint || b.endpoint.trim() === "") {
+        warnings.push({ path: `${prefix}.endpoint`, message: "不能为空，否则该后端初始化会失败" });
+      }
+      if (!b.name || b.name.trim() === "") {
+        warnings.push({ path: `${prefix}.name`, message: "不能为空" });
+      }
+    });
+  }
+
+  // 验证 sessionRetention：格式需与 session/cleanup.ts 的 parseRetentionPeriod 正则一致
+  // （刻意内联同款正则而非跨模块导入 —— cleanup.ts 目前只在少数 cli.ts 分支按需动态加载，
+  // schema.ts 静态 import 会把它提升为每次 loadConfig 都加载，与项目现有的惰性加载习惯冲突。
+  // 改动 parseRetentionPeriod 的格式时记得同步这里）。
+  if (config.sessionRetention) {
+    const RETENTION_FORMAT = /^\d+[hdwm]$/;
+    const sr = config.sessionRetention;
+    if (sr.maxAge !== undefined && !RETENTION_FORMAT.test(sr.maxAge)) {
+      warnings.push({
+        path: "sessionRetention.maxAge",
+        message: `格式无效 ("${sr.maxAge}")，应为 数字+h/d/w/m（如 "30d"），否则启动时自动清理会静默失败`,
+      });
+    }
+    if (sr.minRetention !== undefined && !RETENTION_FORMAT.test(sr.minRetention)) {
+      warnings.push({
+        path: "sessionRetention.minRetention",
+        message: `格式无效 ("${sr.minRetention}")，应为 数字+h/d/w/m（如 "1d"），否则启动时自动清理会静默失败`,
+      });
+    }
+    if (sr.maxCount !== undefined && (typeof sr.maxCount !== "number" || sr.maxCount <= 0)) {
+      warnings.push({ path: "sessionRetention.maxCount", message: "必须是正整数" });
     }
   }
 

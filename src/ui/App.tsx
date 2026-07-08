@@ -26,6 +26,7 @@ import { SettingsProvider } from "./contexts/SettingsContext.tsx";
 import { AlternateBufferQuittingDisplay } from "./components/AlternateBufferQuittingDisplay.tsx";
 import { DefaultAppLayout } from "./components/DefaultAppLayout.tsx";
 import { MainScreenLayout } from "./components/MainScreenLayout.tsx";
+import type { StartupWarning } from "./components/Notifications.tsx";
 import type { StateBridge } from "./state-bridge.ts";
 import type { Message, Usage } from "../llm/types.ts";
 import type { HistoryItem } from "./types.ts";
@@ -265,6 +266,12 @@ export interface TUIState {
    * 用户完成配置（onCompleteOnboarding）后置 false。
    */
   needsOnboarding?: boolean;
+  /**
+   * 配置校验诊断（见 config._validationDiagnostics）转换成的启动横幅列表。
+   * App 构造时算好的一次性初始值，不随会话更新；由 Notifications 组件渲染、
+   * 按任意键关闭。needsOnboarding 为真时为空数组（避免和引导对话框重复提示）。
+   */
+  startupWarnings?: StartupWarning[];
 }
 
 /** CM3/CM4：LLM 重试/限流状态信息（驱动 RetryStatus 组件实时倒计时）。 */
@@ -863,6 +870,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           provider={state.provider}
           todos={state.todos}
           tasks={state.tasks}
+          startupWarnings={state.startupWarnings}
         />
       ) : (
         <MainScreenLayout
@@ -914,6 +922,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           provider={state.provider}
           todos={state.todos}
           tasks={state.tasks}
+          startupWarnings={state.startupWarnings}
         />
       )}
     </StreamingProvider>

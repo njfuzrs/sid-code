@@ -67,6 +67,14 @@ async function main(): Promise<void> {
     return;
   }
 
+  // 快速路径 7: update 子命令 — 复用 install.sh 下载并替换二进制，不碰 ~/.sid-code/ 数据
+  if (args[0] === "update") {
+    profileCheckpoint("bootstrap_route_resolved");
+    const { handleUpdateCommand } = await import("../command/update.ts");
+    await handleUpdateCommand(args.slice(1));
+    return;
+  }
+
   // 所有快速路径未命中 → 启动早期输入捕获 → 加载完整 CLI
   profileCheckpoint("bootstrap_route_resolved");
 

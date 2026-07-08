@@ -1,12 +1,17 @@
 BINARY=sid-code
 BUN=bun
 
-.PHONY: build run test test-providers clean deps lint canary stability-test stress-test provider-health
+.PHONY: build release run test test-providers clean deps lint canary stability-test stress-test provider-health
 
 build:
 	$(BUN) run scripts/bump-version.ts
 	$(BUN) run scripts/embed-builtin-skills.ts
 	$(BUN) build --compile --outfile $(BINARY) src/entrypoints/bootstrap.ts
+
+# 跨平台发布构建：macOS + Linux（arm64/x64 共 4 个目标），打包 + sha256 校验文件到 dist/release/
+# 加 --upload 上传到服务器（需要 DEPLOY_SSH_USER 环境变量），详见 scripts/release.sh 头部注释
+release:
+	./scripts/release.sh $(ARGS)
 
 run:
 	$(BUN) run src/cli.ts

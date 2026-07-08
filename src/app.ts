@@ -2096,6 +2096,26 @@ export class App {
   }
 
   /**
+   * 把 config._validationDiagnostics（loadConfig 阶段产出）转成 TUI 启动横幅列表。
+   * _needsOnboarding 为真时返回空数组——避免和 OnboardingDialog 重复提示同一件事
+   * （比如 API Key 未设置，onboarding 已经在引导了）。
+   * 非致命 errors 排在 warnings 前面，并加 [配置错误] 前缀区分严重度。
+   */
+  private buildStartupWarnings(): import("./ui/components/Notifications.tsx").StartupWarning[] {
+    if (this.config._needsOnboarding) return [];
+    const diag = this.config._validationDiagnostics;
+    if (!diag) return [];
+    const warnings: import("./ui/components/Notifications.tsx").StartupWarning[] = [];
+    diag.errors.forEach((e, i) => {
+      warnings.push({ id: `startup-error-${i}-${e.path}`, message: `[配置错误] ${e.path}: ${e.message}` });
+    });
+    diag.warnings.forEach((w, i) => {
+      warnings.push({ id: `startup-warning-${i}-${w.path}`, message: `${w.path}: ${w.message}` });
+    });
+    return warnings;
+  }
+
+  /**
    * B3：结束会话持久化（唯一的 endSession 调用封装）。
    *
    * - 在所有退出路径调用（正常退出 / /quit / SIGINT|SIGTERM / runHeadless / emergencySessionEnd）。
@@ -2579,6 +2599,7 @@ export class App {
       errorPanel: [],
       goalDisplay: null,
       needsOnboarding: !!this.config._needsOnboarding,
+      startupWarnings: this.buildStartupWarnings(),
     });
 
     const updateState = (patch: Partial<import("./ui/App.tsx").TUIState>) => {

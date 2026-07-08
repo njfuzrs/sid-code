@@ -1,0 +1,60 @@
+{
+  "model": "ali-deepseek-v4-pro",
+  "fallbackModel": "ali-deepseek-v4-flash",
+  "availableModels": [
+    {
+      "name": "ali-deepseek-v4-pro",
+      "provider": "openai",
+      "baseURL": "https://gateway.example.com/v1",
+      "apiKey": "__YOUR_API_KEY__"
+    },
+    {
+      "name": "ali-deepseek-v4-flash",
+      "provider": "openai",
+      "baseURL": "https://gateway.example.com/v1",
+      "apiKey": "__YOUR_API_KEY__"
+    },
+    {
+      "name": "gpt-5.4",
+      "provider": "openai",
+      "baseURL": "https://gateway.example.com/v1",
+      "apiKey": "__YOUR_API_KEY__"
+    },
+    {
+      "name": "claude-sonnet-4-8",
+      "provider": "anthropic",
+      "baseURL": "https://gateway.example.com",
+      "apiKey": "__YOUR_API_KEY__"
+    },
+    {
+      "name": "claude-sonnet-4-6",
+      "provider": "anthropic",
+      "baseURL": "https://gateway.example.com",
+      "apiKey": "__YOUR_API_KEY__"
+    },
+    {
+      "name": "glm-5.2",
+      "provider": "openai",
+      "baseURL": "https://gateway.example.com/v1",
+      "apiKey": "__YOUR_API_KEY__"
+    },
+    {
+      "name": "gemini-3.5-flash",
+      "provider": "openai",
+      "baseURL": "https://gateway.example.com/v1",
+      "apiKey": "__YOUR_API_KEY__"
+    },
+    {
+      "name": "kimi-k2.6",
+      "provider": "openai",
+      "baseURL": "https://gateway.example.com/v1",
+      "apiKey": "__YOUR_API_KEY__"
+    },
+    {
+      "name": "qwen3.7-max",
+      "provider": "openai",
+      "baseURL": "https://gateway.example.com/v1",
+      "apiKey": "__YOUR_API_KEY__"
+    }
+  ]
+}

@@ -16,7 +16,7 @@ import { Footer } from "./Footer.tsx";
 import { DialogSwitch } from "./DialogSwitch.tsx";
 import { MainContent } from "./MainContent.tsx";
 import { CopyModeWarning } from "./CopyModeWarning.tsx";
-import { Notifications } from "./Notifications.tsx";
+import { Notifications, type StartupWarning } from "./Notifications.tsx";
 import { RetryStatus } from "./RetryStatus.tsx";
 import { ErrorPanel } from "./ErrorPanel.tsx";
 import { TodoPanel } from "./TodoPanel.tsx";
@@ -112,6 +112,8 @@ interface DefaultAppLayoutProps {
   todos: TodoItem[];
   /** 当前后台任务列表（Shell/Agent） */
   tasks: TaskDisplayInfo[];
+  /** 配置校验诊断转换成的启动警告列表（App 构造时算好的一次性初始值，见 App.tsx TUIState.startupWarnings） */
+  startupWarnings?: StartupWarning[];
 }
 
 export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
@@ -167,6 +169,7 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
   provider,
   todos,
   tasks,
+  startupWarnings,
 }) => {
   const rootRef = useRef<DOMElement>(null);
   useFlickerDetector(rootRef, rows);
@@ -226,7 +229,7 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
       <Box flexDirection="column" flexShrink={0} flexGrow={0} width={termWidth}>
         <Box flexDirection="column" gap={1}>
           <CopyModeWarning enabled={copyModeEnabled} />
-          <Notifications />
+          <Notifications startupWarnings={startupWarnings} />
           <TodoPanel todos={todos} tasks={tasks} termWidth={termWidth} />
           <ToastDisplay />
 

@@ -21,7 +21,7 @@ import { StreamingMessage } from "./StreamingMessage.tsx";
 import { RetryStatus } from "./RetryStatus.tsx";
 import { ErrorPanel } from "./ErrorPanel.tsx";
 import { ThinkingMessage } from "./messages/ThinkingMessage.tsx";
-import { Notifications } from "./Notifications.tsx";
+import { Notifications, type StartupWarning } from "./Notifications.tsx";
 import { ToastDisplay } from "./ToastDisplay.tsx";
 import { ExitWarning } from "./ExitWarning.tsx";
 import { EmptyLogo } from "./EmptyLogo.tsx";
@@ -113,6 +113,8 @@ interface MainScreenLayoutProps {
   todos: TodoItem[];
   /** 当前后台任务列表（Shell/Agent） */
   tasks: TaskDisplayInfo[];
+  /** 配置校验诊断转换成的启动警告列表（App 构造时算好的一次性初始值，见 App.tsx TUIState.startupWarnings） */
+  startupWarnings?: StartupWarning[];
 }
 
 export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function MainScreenLayout({
@@ -164,6 +166,7 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
   provider,
   todos,
   tasks,
+  startupWarnings,
 }) {
   // 流式正文**不做视口裁剪**：渲染完整 streamingText，靠 StreamingMarkdown 的
   // 稳定前缀切分 + log-update fork 的增量增长路径防闪烁（见 StreamingMarkdown.tsx）。
@@ -225,7 +228,7 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
             <StreamingMessage fullText={streamingText} maxWidth={termWidth} />
           ) : null}
 
-          <Notifications />
+          <Notifications startupWarnings={startupWarnings} />
           <TodoPanel todos={todos} tasks={tasks} termWidth={termWidth} />
           <ToastDisplay />
 

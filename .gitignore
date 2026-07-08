@@ -1,6 +1,7 @@
 # sid-code build output
 /sid-code
 /sid-code-go
+/dist
 .playwright-mcp
 
 # Go (保留作参考)
@@ -38,6 +39,9 @@ chat_session*.json
 # MCP config (contains API keys)
 .mcp.json
 /.sid-code/tool-results/
+
+# 团队默认配置真实值（含共享 API key，只保留占位模板 team-defaults.template.json 入库）
+/scripts/team-defaults.json
 
 # 临时文件
 _template
