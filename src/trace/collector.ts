@@ -33,7 +33,7 @@ import { sidPaths } from "../config/paths.ts";
 import { estimateTextTokens } from "../context/token.ts";
 import type { Message } from "../llm/types.ts";
 import { checkMessageHistoryIntegrity } from "../agent/message-invariants.ts";
-import { resetSideCallStats, getSideStats } from "./side-call-sink.ts";
+import { resetSideCallStats, getSideStats, setSideStatsObserver } from "./side-call-sink.ts";
 import {
   initStreamObserver,
   resetStreamObserver,
@@ -151,6 +151,13 @@ export class TraceCollector {
     this.uploader = uploader;
     // 启动时做一次 LRU 清理，回收已上传/旧会话目录，防止本地无限堆积
     this.pruneOldSessions();
+    // 辅助调用（标题生成/记忆召回等）用量落定的瞬间即同步进 trajectory，
+    // 不必等待（可能因崩溃/被杀而永远不会到来的）SessionEnd——见 syncSideCallMetadata 注释。
+    setSideStatsObserver(() => {
+      if (!this.initialized) return;
+      this.syncSideCallMetadata();
+      void this.rebuildTraj();
+    });
   }
 
   /**
@@ -1072,15 +1079,10 @@ export class TraceCollector {
     }
 
     // 辅助 LLM 调用统计汇总（影子调用 sink → metadata）
-    const sideStats = getSideStats();
-    if (sideStats.apiCalls > 0) {
-      this.metadata.side_api_calls = sideStats.apiCalls;
-      this.metadata.side_cost_usd = sideStats.costUSD;
-      this.metadata.side_tokens_sent = sideStats.tokensSent;
-      this.metadata.side_tokens_received = sideStats.tokensReceived;
-    }
+    this.syncSideCallMetadata();
 
     // 最终写入 events.jsonl
+    const sideStats = getSideStats();
     this.writer.appendEvent({
       event: HookEventName.SessionEnd,
       session_id: this.metadata.session_id,
@@ -1372,6 +1374,29 @@ export class TraceCollector {
       await this.writer.writeTraj(traj);
     } catch (err) {
       getLogger().warn("TRACE", `重建 session.traj 失败: ${err}`);
+    }
+  }
+
+  /**
+   * 把 side-call-sink 的累计用量同步进 trajectory metadata（不落盘，只更新内存态；
+   * 落盘由调用方紧跟着触发的 rebuildTraj() 完成）。
+   *
+   * 背景：此前只有 handleSessionEnd 调用一次，若会话未走到 SessionEnd（崩溃/被杀/挂起），
+   * 已经产生的辅助调用（标题生成/记忆召回等）用量会从 trajectory 永久丢失——即便
+   * provider 已经计费。现由 setSideStatsObserver 注册的观察者在每次 recordSideCall
+   * 后立即调用本方法，不再仅依赖 SessionEnd。
+   *
+   * 未初始化（SessionStart 尚未跑完）时静默跳过——理论上不会发生（side-call 都在会话内
+   * 触发），纯防御性判断，避免 this.metadata 访问报错。
+   */
+  private syncSideCallMetadata(): void {
+    if (!this.initialized) return;
+    const sideStats = getSideStats();
+    if (sideStats.apiCalls > 0) {
+      this.metadata.side_api_calls = sideStats.apiCalls;
+      this.metadata.side_cost_usd = sideStats.costUSD;
+      this.metadata.side_tokens_sent = sideStats.tokensSent;
+      this.metadata.side_tokens_received = sideStats.tokensReceived;
     }
   }
 

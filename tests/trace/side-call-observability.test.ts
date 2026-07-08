@@ -2,11 +2,12 @@
  * T13.6：Side-call 可观测性单测
  * 覆盖：recordSideCall 失败聚合、getSideStats、SessionEnd sideCallStats、digest side_call_failures
  */
-import { describe, it, expect, beforeEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import {
   recordSideCall,
   getSideStats,
   resetSideCallStats,
+  setSideStatsObserver,
 } from "../../src/trace/side-call-sink.ts";
 import { aggregateProviderStats } from "../../src/trace/digest.ts";
 
@@ -76,6 +77,74 @@ describe("T13.2/T13.4: recordSideCall 失败字段与 getSideStats 聚合", () =
     const stats = getSideStats();
     expect(stats.apiCalls).toBe(0);
     expect(stats.failed).toBe(0);
+  });
+});
+
+// 对账修复回归测试：side-call 统计此前只在 SessionEnd 才被读入 trajectory metadata，
+// 若会话未走到 SessionEnd（崩溃/被杀/挂起）用量会永久丢失。setSideStatsObserver 让
+// TraceCollector 在每次 recordSideCall 落定的瞬间就同步，见 collector.ts 的构造函数
+// 与 syncSideCallMetadata；本描述块只验证 sink 侧的观察者通知契约本身。
+describe("side-call-sink: setSideStatsObserver 增量同步观察者", () => {
+  beforeEach(() => {
+    resetSideCallStats();
+  });
+
+  afterEach(() => {
+    // 观察者是模块级单例，用例结束后清空为 no-op，避免泄漏进其它用例/文件——
+    // 生产路径由 TraceCollector 构造函数重新注册（见 collector.test.ts 的等效验证）。
+    setSideStatsObserver(() => {});
+  });
+
+  it("每次 recordSideCall 后同步触发一次", () => {
+    let notified = 0;
+    setSideStatsObserver(() => { notified++; });
+
+    recordSideCall({ label: "title-generation", model: "m", inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheCreationTokens: 0, durationMs: 0 });
+    expect(notified).toBe(1);
+
+    recordSideCall({ label: "memory-recall", model: "m", inputTokens: 20, outputTokens: 8, cacheReadTokens: 0, cacheCreationTokens: 0, durationMs: 0 });
+    expect(notified).toBe(2);
+  });
+
+  it("观察者回调时 getSideStats() 已反映本次调用（同步、非下一轮才可见）", () => {
+    const snapshots: number[] = [];
+    setSideStatsObserver(() => { snapshots.push(getSideStats().apiCalls); });
+
+    recordSideCall({ label: "title-generation", model: "m", inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, durationMs: 0 });
+    recordSideCall({ label: "title-generation", model: "m", inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, durationMs: 0 });
+
+    expect(snapshots).toEqual([1, 2]);
+  });
+
+  it("观察者内部抛异常不影响 recordSideCall 正常记录（try/catch 隔离）", () => {
+    setSideStatsObserver(() => { throw new Error("boom"); });
+
+    expect(() => recordSideCall({
+      label: "title-generation", model: "m", inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, durationMs: 0,
+    })).not.toThrow();
+
+    expect(getSideStats().apiCalls).toBe(1);
+  });
+
+  it("失败调用（success:false）同样触发观察者，供 trajectory 感知曾发生过失败", () => {
+    let notified = 0;
+    setSideStatsObserver(() => { notified++; });
+
+    recordSideCall({
+      label: "title-generation",
+      model: "m",
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      durationMs: 0,
+      success: false,
+      error: "side-call 超时：title-generation 超过 15s 未完成",
+      timedOut: true,
+    });
+
+    expect(notified).toBe(1);
+    expect(getSideStats().failed).toBe(1);
   });
 });
 

@@ -105,6 +105,12 @@ export class CustomAgentTool implements Tool {
     this.usageSink = sink;
   }
 
+  /** 注入错误回调（推入统一错误面板），由 wireToolErrorCallback 鸭子类型接线注入。 */
+  private onErrorCallback?: (message: string) => void;
+  setErrorCallback(cb: (message: string) => void): void {
+    this.onErrorCallback = cb;
+  }
+
   name(): string {
     return `agent__${this.def.name}`;
   }
@@ -156,6 +162,10 @@ export class CustomAgentTool implements Tool {
       success: result.success,
       turns: result.turns,
     });
+
+    if (!result.success && this.onErrorCallback) {
+      this.onErrorCallback(result.output);
+    }
 
     return {
       output: result.output,

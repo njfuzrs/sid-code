@@ -514,10 +514,20 @@ ${typeLines}
       // execute() 内部 onTurnEnd 每轮已 updateAgentProgress 写入真实累计进度
       // （tokenCount 来自 totalUsage，见 sub-agent.ts），此处无需再写——
       // 早前用 tracker.getProgress() 覆盖会把真实终值清成全零（tracker 从未被喂数据）。
+
+      // 后台子代理失败同样要通知统一错误面板（对齐 runSync 的处理）。
+      // 此前只有 failAgentTask 更新任务面板状态为 failed，但面板不带失败原因，
+      // 用户只能看到一个红色 chip，看不到"为什么失败"——这里补上原因可见性。
+      if (!result.success && this.onErrorCallback) {
+        this.onErrorCallback(result.output);
+      }
     } catch (err: any) {
       log.error("SUBAGENT", `后台子代理失败: ${taskId}`, { error: err.message });
       // execute() 内部 try/catch 已调用 failAgentTask，这里兜底
       await failAgentTask(taskId, err.message).catch(() => {});
+      if (this.onErrorCallback) {
+        this.onErrorCallback(err.message ?? String(err));
+      }
     } finally {
       // G2：释放 slot（有排队者则转移给它），与前台共用同一信号量。
       SubAgentTool.releaseSlot();

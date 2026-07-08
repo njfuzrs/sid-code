@@ -1171,3 +1171,127 @@ describe("TraceCollector — maxSessionsRetained LRU 清理", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 });
+
+// ─── 辅助调用（side-call）增量同步 —— 对账修复回归测试 ───
+//
+// 背景：side-call（标题生成/记忆召回等 fire-and-forget 影子调用）此前只在 SessionEnd
+// 时才把 getSideStats() 汇总写入 trajectory metadata。若会话未走到 SessionEnd（崩溃/
+// 被杀/挂起），已经产生的用量会从 trajectory 永久丢失——即便 provider 已经计费。
+// 现由 side-call-sink 的 setSideStatsObserver 在每次 recordSideCall 后立即同步。
+
+describe("TraceCollector — 辅助调用(side-call)增量同步", () => {
+  let testDir: string;
+  let hookSystem: HookSystem;
+  let collector: TraceCollector;
+
+  beforeEach(async () => {
+    testDir = join(tmpdir(), `trace-sidecall-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(testDir, { recursive: true });
+
+    hookSystem = new HookSystem();
+    hookSystem.setSessionId("sess-side");
+    hookSystem.setCwd("/tmp/test");
+
+    collector = new TraceCollector({ outputDir: testDir });
+    collector.registerHooks(hookSystem);
+
+    // 隔离：每个测试前清空累计用量，避免跨用例污染（成本计算器/观察者由
+    // TraceCollector 构造函数重新注册，见 registerHooks 之前的 constructor）。
+    const { resetSideCallStats } = await import("../../src/trace/side-call-sink.ts");
+    resetSideCallStats();
+  });
+
+  // WriteTraj 异步写入，断言前轮询等待落盘（最多 ~1s），同一套路见上方 waitForAudit。
+  async function waitForSideStats(timeoutMs = 1000): Promise<any> {
+    const trajPath = join(testDir, "sessions", "sess-side", "session.traj");
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (existsSync(trajPath)) {
+        const traj = JSON.parse(readFileSync(trajPath, "utf-8"));
+        if (traj.metadata?.side_api_calls > 0) return traj;
+      }
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    return existsSync(trajPath) ? JSON.parse(readFileSync(trajPath, "utf-8")) : undefined;
+  }
+
+  test("recordSideCall 后立即同步进内存 metadata，无需等待 SessionEnd", async () => {
+    await fireSessionStart(hookSystem, "sess-side");
+    await fireModelRound(hookSystem);
+
+    const { recordSideCall } = await import("../../src/trace/side-call-sink.ts");
+    recordSideCall({
+      label: "title-generation",
+      model: "claude-test",
+      inputTokens: 40,
+      outputTokens: 5,
+      cacheReadTokens: 10,
+      cacheCreationTokens: 0,
+      durationMs: 0,
+    });
+
+    // 同步断言：syncSideCallMetadata 在观察者回调内同步执行，不涉及任何 I/O 等待。
+    const meta = collector.getMetadata();
+    expect(meta!.side_api_calls).toBe(1);
+    expect(meta!.side_tokens_sent).toBe(40);
+    expect(meta!.side_tokens_received).toBe(5);
+  });
+
+  test("recordSideCall 后 session.traj 落盘也反映最新用量（未触发 SessionEnd）", async () => {
+    await fireSessionStart(hookSystem, "sess-side");
+    await fireModelRound(hookSystem);
+
+    const { recordSideCall } = await import("../../src/trace/side-call-sink.ts");
+    recordSideCall({
+      label: "title-generation",
+      model: "claude-test",
+      inputTokens: 40,
+      outputTokens: 5,
+      cacheReadTokens: 10,
+      cacheCreationTokens: 0,
+      durationMs: 0,
+    });
+
+    // 不触发 fireSessionEndEvent —— 模拟进程被杀/挂起，从未走到清理路径。
+    const traj = await waitForSideStats();
+    expect(traj).toBeDefined();
+    expect(traj.metadata.side_api_calls).toBe(1);
+    expect(traj.metadata.side_tokens_sent).toBe(40);
+    expect(traj.metadata.side_tokens_received).toBe(5);
+  });
+
+  test("多次 recordSideCall 累加，且与 SessionEnd 最终值一致", async () => {
+    await fireSessionStart(hookSystem, "sess-side");
+    await fireModelRound(hookSystem);
+
+    const { recordSideCall } = await import("../../src/trace/side-call-sink.ts");
+    recordSideCall({
+      label: "title-generation",
+      model: "claude-test",
+      inputTokens: 40,
+      outputTokens: 5,
+      cacheReadTokens: 10,
+      cacheCreationTokens: 0,
+      durationMs: 0,
+    });
+    recordSideCall({
+      label: "memory-recall",
+      model: "claude-test",
+      inputTokens: 20,
+      outputTokens: 8,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      durationMs: 0,
+    });
+
+    expect(collector.getMetadata()!.side_api_calls).toBe(2);
+    expect(collector.getMetadata()!.side_tokens_sent).toBe(60);
+    expect(collector.getMetadata()!.side_tokens_received).toBe(13);
+
+    // 正常路径走到 SessionEnd 时，两条链路（观察者增量 vs SessionEnd 兜底）汇总值须一致。
+    await hookSystem.fireSessionEndEvent("exit");
+    expect(collector.getMetadata()!.side_api_calls).toBe(2);
+    expect(collector.getMetadata()!.side_tokens_sent).toBe(60);
+    expect(collector.getMetadata()!.side_tokens_received).toBe(13);
+  });
+});

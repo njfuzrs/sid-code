@@ -37,6 +37,7 @@ const ENV_KEYS = [
   "SID_CODE_COMPACT_TIMEOUT_MS",
   "SID_CODE_COLLAPSE_SEGMENT_TIMEOUT_MS",
   "SID_CODE_RECALL_TIMEOUT_MS",
+  "SID_CODE_TITLE_TIMEOUT_MS",
 ];
 
 afterEach(() => {
@@ -160,19 +161,23 @@ describe("resolveSideCallTimeouts — side-call 子表（配置-4）", () => {
     process.env.SID_CODE_COMPACT_TIMEOUT_MS = "30000";
     process.env.SID_CODE_COLLAPSE_SEGMENT_TIMEOUT_MS = "20000";
     process.env.SID_CODE_RECALL_TIMEOUT_MS = "8000";
+    process.env.SID_CODE_TITLE_TIMEOUT_MS = "12000";
     const t = resolveSideCallTimeouts();
     expect(t.warmupMs).toBe(5000);
     expect(t.compactMs).toBe(30000);
     expect(t.collapseSegmentMs).toBe(20000);
     expect(t.recallMs).toBe(8000);
+    expect(t.titleMs).toBe(12000);
   });
 
   test("非法 env 被忽略，回退默认", () => {
     process.env.SID_CODE_WARMUP_TIMEOUT_MS = "abc";
     process.env.SID_CODE_RECALL_TIMEOUT_MS = "-1";
+    process.env.SID_CODE_TITLE_TIMEOUT_MS = "0";
     const t = resolveSideCallTimeouts();
     expect(t.warmupMs).toBe(SIDE_CALL_DEFAULTS.warmupMs);
     expect(t.recallMs).toBe(SIDE_CALL_DEFAULTS.recallMs);
+    expect(t.titleMs).toBe(SIDE_CALL_DEFAULTS.titleMs);
   });
 });
 

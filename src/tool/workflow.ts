@@ -125,6 +125,12 @@ export class WorkflowTool implements Tool {
     this.hookSystem = hookSystem;
   }
 
+  /** 注入错误回调（推入统一错误面板），由 app.ts 的 wireToolErrorCallback 鸭子类型接线注入。 */
+  private onErrorCallback?: (message: string) => void;
+  setErrorCallback(cb: (message: string) => void): void {
+    this.onErrorCallback = cb;
+  }
+
   readOnly(): boolean {
     return false;
   }
@@ -380,6 +386,9 @@ export class WorkflowTool implements Tool {
       const msg = (err as Error).message;
       await failWorkflowTask(taskId, msg);
       log.error("WORKFLOW", `✗ workflow "${meta.name}" 失败: ${msg}`);
+      if (this.onErrorCallback) {
+        this.onErrorCallback(msg);
+      }
       return { output: `[workflow] "${meta.name}" 执行失败: ${msg}`, isError: true };
     }
   }

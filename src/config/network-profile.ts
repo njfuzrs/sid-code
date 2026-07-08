@@ -115,15 +115,15 @@ function readEnvMs(name: string): number | undefined {
 }
 
 /**
- * Side-call 超时子表（配置-4）：warmup/compact/collapse/recall 四类轻量旁路调用的硬超时。
+ * Side-call 超时子表（配置-4）：warmup/compact/collapse/recall/title 五类轻量旁路调用的硬超时。
  *
  * 与主循环/provider 超时不同：这些是"锦上添花、失败即静默降级"的旁路（缓存预热、
- * 上下文压缩、分段折叠、记忆召回），语义各异故**保留分档**（不强行统一到一个值），
- * 但收敛此前散落 4 个文件、各自 IIFE `Number(process.env)` 的重复解析——统一走 readEnvMs
- * 校验 + 单一默认值表，消除"四份重复 + 数值各异又与 LIFECYCLE_PRESETS.sideCall 概念重叠"的碎裂。
+ * 上下文压缩、分段折叠、记忆召回、标题生成），语义各异故**保留分档**（不强行统一到一个值），
+ * 但收敛此前散落多个文件、各自 IIFE `Number(process.env)` 的重复解析——统一走 readEnvMs
+ * 校验 + 单一默认值表，消除"多份重复 + 数值各异又与 LIFECYCLE_PRESETS.sideCall 概念重叠"的碎裂。
  *
  * env 命名保留向后兼容：SID_CODE_WARMUP_TIMEOUT_MS / _COMPACT_TIMEOUT_MS /
- * _COLLAPSE_SEGMENT_TIMEOUT_MS / _RECALL_TIMEOUT_MS。
+ * _COLLAPSE_SEGMENT_TIMEOUT_MS / _RECALL_TIMEOUT_MS / _TITLE_TIMEOUT_MS。
  */
 export interface SideCallTimeouts {
   /** 缓存预热（会话启动，最短） */
@@ -134,6 +134,9 @@ export interface SideCallTimeouts {
   collapseSegmentMs: number;
   /** 记忆召回初筛（轻量） */
   recallMs: number;
+  /** 会话标题生成（非流式，与 recall 同档——生成前须显式关闭 thinking，否则思考模型
+   *  可能超时；见 app.ts upgradeSessionTitle 的 thinking:{enabled:false}） */
+  titleMs: number;
 }
 
 export const SIDE_CALL_DEFAULTS: Readonly<SideCallTimeouts> = {
@@ -141,6 +144,7 @@ export const SIDE_CALL_DEFAULTS: Readonly<SideCallTimeouts> = {
   compactMs: 60_000,
   collapseSegmentMs: 45_000,
   recallMs: 15_000,
+  titleMs: 15_000,
 };
 
 /** 解析 side-call 超时子表：env override（readEnvMs 校验）> 统一默认值。 */
@@ -151,6 +155,7 @@ export function resolveSideCallTimeouts(): SideCallTimeouts {
     collapseSegmentMs:
       readEnvMs("SID_CODE_COLLAPSE_SEGMENT_TIMEOUT_MS") ?? SIDE_CALL_DEFAULTS.collapseSegmentMs,
     recallMs: readEnvMs("SID_CODE_RECALL_TIMEOUT_MS") ?? SIDE_CALL_DEFAULTS.recallMs,
+    titleMs: readEnvMs("SID_CODE_TITLE_TIMEOUT_MS") ?? SIDE_CALL_DEFAULTS.titleMs,
   };
 }
 

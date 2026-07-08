@@ -2,7 +2,10 @@
  * 统一错误面板组件
  *
  * 底部常驻区域，显示所有运行时错误的原因 + 建议方案。
- * 只手动关闭（Ctrl+E），不自动消失。
+ * 只手动关闭（对应 app:dismissError 键位，默认 Ctrl+E），不自动消失。
+ *
+ * 关闭键位由 App.tsx 统一派发（走 matchBinding，与项目其它 app: 全局键一致，
+ * 保证用户在 keybindings.json 重绑该 action 后依然生效），本组件只负责展示。
  *
  * 视觉语言（遵循 src/ui/CLAUDE.md）：
  * - 红色 borderLeft 竖线（不用 round 边框盒子）
@@ -11,12 +14,12 @@
  * - 关闭提示渐进衰减（显示 3 次后不再提示）
  */
 
-import React, { useCallback } from "react";
+import React from "react";
 import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
 import { theme } from "../semantic-colors.ts";
 import { ERROR_MARK } from "../constants/figures.ts";
-import { useKeypress, KeypressPriority } from "../contexts/KeypressContext.tsx";
+import { useKeybindings } from "../contexts/KeybindingContext.tsx";
 import type { ErrorPanelItem } from "../App.tsx";
 
 interface ErrorPanelProps {
@@ -32,18 +35,10 @@ const DISMISS_HINT_MAX_SHOWS = 3;
 
 export const ErrorPanel: React.FC<ErrorPanelProps> = ({
   items,
-  onDismiss,
   width,
   showCount = 0,
 }) => {
-  // Ctrl+E 关闭错误面板（范式参照 Notifications.tsx:73）
-  useKeypress(KeypressPriority.High, useCallback((key: { ctrl?: boolean; name?: string }) => {
-    if (key.ctrl && key.name === "e" && items.length > 0) {
-      onDismiss();
-      return true; // 消费按键，阻止冒泡
-    }
-    return false;
-  }, [items.length, onDismiss]));
+  const { bindingFor } = useKeybindings();
 
   if (items.length === 0) {
     return null;
@@ -51,6 +46,9 @@ export const ErrorPanel: React.FC<ErrorPanelProps> = ({
 
   const bodyWidth = Math.max(1, width - 2);
   const showDismissHint = showCount < DISMISS_HINT_MAX_SHOWS;
+  // 关闭键位展示动态跟随 keybindings 配置（用户重绑后此处同步更新），
+  // 找不到绑定时兜底显示默认值，避免 undefined 泄漏到 UI。
+  const dismissDisplay = bindingFor("app:dismissError")?.display ?? "Ctrl+E";
 
   return (
     <Box
@@ -88,7 +86,7 @@ export const ErrorPanel: React.FC<ErrorPanelProps> = ({
       {/* 关闭提示（渐进衰减） */}
       {showDismissHint && (
         <Box marginTop={1}>
-          <Text dimColor>按 Ctrl+E 关闭</Text>
+          <Text dimColor>{`按 ${dismissDisplay} 关闭`}</Text>
         </Box>
       )}
     </Box>

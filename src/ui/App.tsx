@@ -552,6 +552,17 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     return true;
   });
 
+  // 关闭统一错误面板（对齐项目惯例：走 matchBinding 派发而非组件内硬编码按键判断，
+  // 保证用户在 keybindings.json 重绑该 action 后依然生效）。
+  useKeypress(KeypressPriority.High, (key: Key) => {
+    if (state.errorPanel.length === 0) return false;
+    const b = matchBinding(key);
+    if (b?.action !== "app:dismissError") return false;
+    log.info("UI:APP", "用户关闭统一错误面板");
+    handleDismissErrorPanel();
+    return true;
+  });
+
   // 底层分发：真正把一条输入送到 App 业务层（斜杠命令 / 普通输入）。
   // 被 handleSubmit（直送）与消息队列（接续）共用。
   const dispatchInput = useCallback(async (text: string) => {

@@ -167,3 +167,30 @@ export function lookupErrorMessage(message: string, code?: string): ErrorUserMes
     suggestion: "请检查错误详情，或重新发送消息重试。若持续出现，请检查配置或网络连接",
   };
 }
+
+/**
+ * 为无法归类 code 的错误生成稳定的去重 id（基于错误文本内容归一化后哈希）。
+ *
+ * 背景：此前 app.ts 对无 code 的错误用 `Date.now()` 兜底做 id——每次都不同，
+ * 导致同一条反复出现的错误无法去重（面板持续堆叠新卡片直到 slice(-5) 截断），
+ * 且可能与其它路径（如 fatal_error 的固定 "fatal" id）产生视觉重复。
+ *
+ * 归一化策略：剥离常见的易变部分（时间戳、UUID、数字），只保留错误消息的
+ * 结构性主干做哈希——同一类错误（哪怕具体数值不同）会得到同一个稳定 id。
+ */
+export function stableErrorId(prefix: string, message: string): string {
+  const normalized = message
+    .replace(/\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?/g, "") // ISO 时间戳
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "") // UUID
+    .replace(/\d+/g, "") // 剩余数字（端口、耗时、计数等易变值）
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+
+  // 简单稳定哈希（djb2），避免引入额外依赖；仅用于去重展示，非安全用途。
+  let hash = 5381;
+  for (let i = 0; i < normalized.length; i++) {
+    hash = ((hash << 5) + hash + normalized.charCodeAt(i)) | 0;
+  }
+  return `${prefix}-${(hash >>> 0).toString(36)}`;
+}

@@ -1249,6 +1249,7 @@ export async function* queryLoop(
           yield {
             kind: "system",
             level: "warning",
+            terminal: true,
             text: `预算规则 "${budgetAlert.ruleName}" 已超限（$${budgetAlert.currentUSD.toFixed(4)} / $${budgetAlert.limitUSD.toFixed(2)}），自动停止`,
           };
           yield { kind: "done", turns: state.turnCount };
@@ -1270,7 +1271,7 @@ export async function* queryLoop(
       const quotaResult = loopConfig.quotaManager.check(sessionState.getEffectiveTotalCostUSD());
       if (quotaResult) {
         if (quotaResult.level === "exceeded") {
-          yield { kind: "system", level: "warning", text: quotaResult.message };
+          yield { kind: "system", level: "warning", terminal: true, text: quotaResult.message };
           yield { kind: "done", turns: state.turnCount };
           return;
         } else if (quotaResult.level === "critical" || quotaResult.level === "warning") {
@@ -2167,7 +2168,7 @@ export async function* queryLoop(
         .join("")
         .trim() || "模型基于安全策略拒绝回答";
       log.warn("QUERY_LOOP", `模型安全拒答: ${refusalText.slice(0, 200)}`);
-      yield { kind: "system", level: "warning", text: `[安全策略拒答] ${refusalText}` };
+      yield { kind: "system", level: "warning", terminal: true, text: `[安全策略拒答] ${refusalText}` };
       yield { kind: "done", turns: state.turnCount };
       return;
     }
@@ -2227,6 +2228,7 @@ export async function* queryLoop(
       yield {
         kind: "system",
         level: "warning",
+        terminal: true,
         text: `模型以未识别的停止原因结束本轮（stopReason: ${response.stopReason ?? "null"}）。若回答不完整，请重新发送消息继续。`,
       };
     }

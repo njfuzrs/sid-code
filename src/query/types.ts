@@ -70,7 +70,18 @@ export type QueryLoopYield =
   | { kind: "loop_detected"; detail: string }
   | { kind: "loop_recovery"; attempt: number; maxAttempts: number }
   | { kind: "tombstone"; message: Message; reason: string }
-  | { kind: "system"; level: "info" | "warning" | "error"; text: string }
+  | {
+      kind: "system";
+      level: "info" | "warning" | "error";
+      text: string;
+      /**
+       * 是否为"强制终止本轮"的系统消息（预算超限/配额耗尽/安全拒答等，紧跟 done 收尾）。
+       * true 时即使 level 只是 warning，app.ts 也会推入统一错误面板常驻展示——
+       * 否则这类"非正常结束"信息只在状态栏一闪而过，用户很容易错过（GAP-3）。
+       * 未设置默认为 false（沿用原有 sticky/transient 状态栏行为，不影响既有分支）。
+       */
+      terminal?: boolean;
+    }
   | { kind: "done"; turns: number };
 
 // ─── 循环继续原因 ───

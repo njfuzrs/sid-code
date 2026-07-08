@@ -22,7 +22,7 @@ import { ModelFallback } from "./llm/fallback.ts";
 import type { RetryTelemetryEvent } from "./llm/retry-telemetry.ts";
 import { TokenEstimator } from "./llm/token-estimator.ts";
 import { ThinkingManager } from "./llm/thinking.ts";
-import { lookupErrorMessage, inferErrorCode } from "./llm/error-messages.ts";
+import { lookupErrorMessage, inferErrorCode, stableErrorId } from "./llm/error-messages.ts";
 import { SessionState } from "./session/state.ts";
 import { SessionStore } from "./session/store.ts";
 import { generateSessionId } from "./session/id.ts";
@@ -69,6 +69,8 @@ import { resolve, extname, join } from "path";
 import { sidPaths } from "./config/paths.ts";
 import { deriveTaskTitle } from "./ui/utils/task-title.ts";
 import { recordSideCall, setSideCostCalculator, setSideCostObserver } from "./trace/side-call-sink.ts";
+import { withSideCallDeadline } from "./llm/side-call-timeout.ts";
+import { resolveSideCallTimeouts } from "./config/network-profile.ts";
 
 /**
  * 展开用户输入中的 @path 引用为文件内容。
@@ -583,10 +585,15 @@ export class App {
       const maybe = tool as { setErrorCallback?: (cb: (msg: string) => void) => void };
       if (typeof maybe.setErrorCallback === "function") {
         maybe.setErrorCallback((msg: string) => {
-          const code = inferErrorCode(msg) || "subagent_failed";
+          const inferredCode = inferErrorCode(msg);
+          const code = inferredCode || "subagent_failed";
           const userMsg = lookupErrorMessage(msg, code);
           pushFn({
-            id: `subagent-${code}`,
+            // 推断失败时若仍用固定字符串 "subagent_failed" 拼 id，会导致不同根因的
+            // 子代理失败共用同一个 id——pushErrorPanel 同 id 去重替换，后一个会静默
+            // 覆盖前一个（用户只能看到最后一次失败，之前的原因彻底丢失）。
+            // 改用 stableErrorId 按内容哈希区分，未推断出的错误也能各自留存展示。
+            id: inferredCode ? `subagent-${inferredCode}` : stableErrorId("subagent-failed", msg),
             code,
             title: userMsg.title,
             detail: msg,
@@ -2595,24 +2602,35 @@ export class App {
       "为下面这段编程会话的首条指令起一个 3-7 个词的简短任务名,用于终端标签区分。" +
       "只输出任务名本身,不要引号、不要标点结尾、不要解释。例:修复登录按钮、添加 OAuth 认证。";
 
-    /** 后台用非流式小请求生成更好的任务名,成功则覆盖标题。不阻塞主流程,任何失败都静默。 */
+    /** 后台用非流式小请求生成更好的任务名,成功则覆盖标题。不阻塞主流程,任何失败都静默(但记录 side-call 供诊断)。 */
     const upgradeSessionTitle = (firstMessage: string): void => {
       // provider 不支持非流式 → 跳过,保留启发式标题。
       if (typeof this.provider.sendMessageNonStreaming !== "function") return;
       const trimmed = firstMessage.trim();
       if (!trimmed) return;
 
+      const TITLE_TIMEOUT_MS = resolveSideCallTimeouts().titleMs;
+
       void (async () => {
         try {
-          const resp = await this.provider.sendMessageNonStreaming!(
-            {
-              model: this.config.model,
-              system: SESSION_TITLE_PROMPT,
-              messages: [{ role: "user", content: [{ type: "text", text: trimmed.slice(0, 1000) }] }],
-              maxTokens: 32,
-            },
-            // 15s 超时,且不与主对话的 abortController 关联——后台任务独立。
-            AbortSignal.timeout(15_000),
+          const resp = await withSideCallDeadline(
+            "title-generation",
+            TITLE_TIMEOUT_MS,
+            (signal) => this.provider.sendMessageNonStreaming!(
+              {
+                model: this.config.model,
+                system: SESSION_TITLE_PROMPT,
+                messages: [{ role: "user", content: [{ type: "text", text: trimmed.slice(0, 1000) }] }],
+                maxTokens: 32,
+                // 标题生成是"起 3-7 个词的名字"这类轻量分类任务，不需要扩展思考。
+                // 不显式关闭时会沿用模型服务端默认——DeepSeek 思考模型默认 thinking=enabled，
+                // 非流式调用下思考+生成耗时常超过硬超时，导致 provider 已计费但客户端拿不到
+                // 响应（recordSideCall 也就不会触发），造成 trajectory/账单对不上。
+                thinking: { enabled: false, budgetTokens: 0 },
+              },
+              signal,
+            ),
+            // 不与主对话的 abortController 关联——后台任务独立。
           );
           // 记录辅助调用用量
           if (resp.usage) {
@@ -2634,8 +2652,22 @@ export class App {
           // 复用启发式做清洗/截断(去换行、按显示宽度裁剪),保证标题栏不溢出。
           const title = deriveTaskTitle(raw);
           if (title) updateState({ sessionTitle: title });
-        } catch {
-          // 超时 / 网络 / 模型不可用 → 静默,启发式标题已经在用,无需回退。
+        } catch (err: any) {
+          // 超时 / 网络 / 模型不可用 → 静默降级,启发式标题已经在用,无需回退 UI。
+          // 但仍记录失败的 side-call（T13.2 同款：success:false + error + timedOut），
+          // 使 trajectory 能看到"发生过一次失败/超时的标题生成"，而非完全没有痕迹。
+          recordSideCall({
+            label: "title-generation",
+            model: this.config.model,
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+            durationMs: 0,
+            success: false,
+            error: err?.message ?? String(err),
+            timedOut: /timeout|超时|timed out/i.test(err?.message ?? ""),
+          });
         }
       })();
     };
@@ -3055,6 +3087,22 @@ export class App {
                 } else {
                   addStatusMessage("system", `⚠️ ${event.text}`);
                 }
+                // GAP-3 修复：预算超限/配额耗尽/安全拒答/未识别停止原因这类"强制终止
+                // 本轮"的警告（loop.ts 标记 terminal:true），此前只走状态栏一闪而过——
+                // 用户很容易在忙别的事时错过，回神时已被后续状态覆盖。这类非正常结束
+                // 同样需要常驻面板呈现，不能只靠瞬态/sticky 状态行。
+                if (event.terminal) {
+                  const termCode = inferErrorCode(event.text);
+                  const termMsg = lookupErrorMessage(event.text, termCode);
+                  pushErrorPanel({
+                    id: termCode || stableErrorId("system-terminal", event.text),
+                    code: termCode,
+                    title: termMsg.title === "运行错误" ? "本轮已强制终止" : termMsg.title,
+                    detail: event.text,
+                    suggestion: termMsg.suggestion,
+                    timestamp: Date.now(),
+                  });
+                }
               } else if (event.level === "error") {
                 // 根因修复：此前 error 级别被 switch 完全忽略——loop.ts 重试耗尽等场景
                 // yield 的用户可见错误提示从未展示，紧随其后的 done 又清空了流式内容，
@@ -3065,7 +3113,7 @@ export class App {
                 const code = inferErrorCode(event.text);
                 const msg = lookupErrorMessage(event.text, code);
                 pushErrorPanel({
-                  id: code || `system-error-${Date.now()}`,
+                  id: code || stableErrorId("system-error", event.text),
                   code,
                   title: msg.title,
                   detail: event.text,
@@ -3103,7 +3151,7 @@ export class App {
               const fatalCode = inferErrorCode(event.message);
               const fatalMsg = lookupErrorMessage(event.message, fatalCode);
               pushErrorPanel({
-                id: fatalCode || "fatal",
+                id: fatalCode || stableErrorId("fatal", event.message),
                 code: fatalCode,
                 title: fatalMsg.title,
                 detail: event.message,
@@ -3335,12 +3383,27 @@ export class App {
 
           // §3.3（fdb47f30）：非中断的真异常，除瞬态 status（5s 后消失）外，
           // 还把具体错误**持久化**写入 displayItems（永久留存，对标 cc 错误展示）。
-          // 这是 engine fatal_error 封装之外的兜底路径（如 submitMessage 之外抛出的异常），
-          // 确保任何真异常用户回神时都能看到原因，而不是只剩一句转瞬即逝的提示。
+          // 这是 engine fatal_error 封装之外的兜底路径（如 submitMessage 之外抛出的异常，
+          // 或内部超时自愈中断意外漏出此处——GAP-1 修复），确保任何真异常用户回神时
+          // 都能看到原因，而不是只剩一句转瞬即逝的提示。
           if (!aborted) {
-            const errDisplayText = `❌ 任务失败：${err?.message ?? String(err)}\n可重新输入指令重试，或检查上面的输出定位原因。`;
+            const errDisplayText = `任务失败：${err?.message ?? String(err)}\n可重新输入指令重试，或检查上面的输出定位原因。`;
             const errDisplay = [...bridge.current.displayItems, { kind: "system" as const, text: errDisplayText }];
             updateState({ displayItems: errDisplay });
+            // 推入统一错误面板（常驻，用户手动关闭）——此前只有 5s 瞬态提示 + displayItems，
+            // 与 fatal_error 的处理不一致，导致这类真故障（含内部超时泄漏）用户在
+            // 常驻面板里完全看不到，回神时无从排查。
+            const rawMessage = err?.message ?? String(err);
+            const gapCode = inferErrorCode(rawMessage);
+            const gapMsg = lookupErrorMessage(rawMessage, gapCode);
+            pushErrorPanel({
+              id: gapCode || stableErrorId("onuserinput-error", rawMessage),
+              code: gapCode,
+              title: internalTimeoutLeaked ? "内部超时中断（异常路径）" : gapMsg.title,
+              detail: rawMessage,
+              suggestion: gapMsg.suggestion,
+              timestamp: Date.now(),
+            });
           }
 
           // 中断给出路：用户主动中断后，留一条持久 hint 引导「下一步该做什么」，
