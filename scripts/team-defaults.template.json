@@ -21,7 +21,7 @@
       "apiKey": "__YOUR_API_KEY__"
     },
     {
-      "name": "claude-sonnet-4-8",
+      "name": "claude-sonnet-5",
       "provider": "anthropic",
       "baseURL": "https://gateway.example.com",
       "apiKey": "__YOUR_API_KEY__"

@@ -386,6 +386,29 @@ export function validateConfig(config: Config): ValidationResult {
     }
   }
 
+  // availableModels 逐条检查模板占位符 Key（如 team-defaults.json 用的 __YOUR_API_KEY__）：
+  // 上面 validateApiKey 只查当前激活模型解析到顶层的 anthropicKey/openaiKey，覆盖不到
+  // "现在没被选中、以后可能被 /model 切过去"的其它条目——/model 切换（app.ts setModel）
+  // 只重建 provider，不会重新跑 validateConfig，静默切到另一个占位符 Key 的模型会复现
+  // 同一个坑。这里用 __xxx__ 这种模板专用形状精确匹配（真实 Key 不会长这样，零误判），
+  // errors 级别确保启动横幅置顶展示——一键安装装完不填真实 Key，发消息 100% 认证失败，
+  // 不是"可能"，应该跟 provider/model 缺失一样显眼（但 path 特意不用 "provider"/"model"，
+  // 不触发 config.ts 里那条按 path 精确匹配的致命 throw，仍然允许先进 TUI 再让用户去改）。
+  const TEMPLATE_PLACEHOLDER_PATTERN = /^__.+__$/;
+  if (config.availableModels?.length) {
+    const placeholderModels = config.availableModels.filter(
+      m => m.provider !== "ollama" && m.apiKey && TEMPLATE_PLACEHOLDER_PATTERN.test(m.apiKey)
+    );
+    if (placeholderModels.length > 0) {
+      const detail = placeholderModels.map(m => `${m.name}(${m.apiKey})`).join(", ");
+      errors.push({
+        path: "availableModels",
+        message: `以下模型的 apiKey 仍是模板占位符，发消息时会认证失败：${detail}。请编辑 settings.json 替换为真实 Key`,
+        value: placeholderModels.map(m => m.apiKey),
+      });
+    }
+  }
+
   // 验证 costLimit
   if (config.costLimit !== undefined) {
     if (typeof config.costLimit !== "number" || config.costLimit <= 0) {
