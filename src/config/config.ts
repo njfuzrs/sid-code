@@ -753,7 +753,18 @@ async function loadNewFormatAsConfig(
     try {
       const raw = JSON.parse(await Bun.file(p).text());
       if (raw && typeof raw === "object") {
-        Object.assign(merged, raw);
+        // 深合并嵌套对象（如 trace/telemetry/checkpoint），避免 app.json 的
+        // { trace: { enabled: true } } 覆盖 settings.json 的完整 trace 配置。
+        for (const [key, value] of Object.entries(raw)) {
+          if (
+            value !== null && typeof value === "object" && !Array.isArray(value) &&
+            merged[key] !== null && typeof merged[key] === "object" && !Array.isArray(merged[key])
+          ) {
+            merged[key] = { ...(merged[key] as Record<string, unknown>), ...value };
+          } else {
+            merged[key] = value;
+          }
+        }
       }
     } catch (err) {
       log.warn("CONFIG", `读取 ${p} 失败，跳过: ${err}`);

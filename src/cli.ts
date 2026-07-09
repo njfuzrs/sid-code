@@ -186,26 +186,30 @@ function parseCLIArgs(): CLIArgs {
     //   trace.upload.auto_upload      → 会话结束自动上传还是手动
     //   trace.upload.delete_after_upload → 上传成功后是否删本地（默认 false = 保留）
     // --trace-upload-disabled 可强制关闭上传（最高优先级，覆盖配置文件）。
-    trace: {
-      enabled: values.trace !== false,
-      // CLI flag 覆盖层：仅当用户通过 flag 显式指定时才覆盖配置文件的对应字段
-      upload: values["trace-upload-disabled"]
-        ? undefined // 强制禁用上传（最高优先级）
-        : (values["trace-upload-url"] || values["trace-upload-token"])
-          ? {
-              url: values["trace-upload-url"],
-              token: values["trace-upload-token"],
-              userId: values["trace-user-id"],
-              deviceId: values["trace-device-id"],
-              toolSource: "sid-code",
-              autoUpload: true,
-              deleteAfterUpload: false,
-              compress: true,
-              maxRetries: 5,
-              retryBaseMs: 2000,
-            }
-          : undefined, // 不覆盖——完全由配置文件（settings.json）决定
-    },
+    //
+    // 关键：仅当用户通过 CLI flag 显式指定 trace 相关参数时才构造 trace 对象。
+    // 否则不覆盖配置文件中的 trace 配置（避免浅合并把 settings.json 的完整 trace 吃掉）。
+    trace: (values.trace === false || values["trace-upload-disabled"] || values["trace-upload-url"] || values["trace-upload-token"])
+      ? {
+          enabled: values.trace !== false,
+          upload: values["trace-upload-disabled"]
+            ? undefined // 强制禁用上传（最高优先级）
+            : (values["trace-upload-url"] || values["trace-upload-token"])
+              ? {
+                  url: values["trace-upload-url"],
+                  token: values["trace-upload-token"],
+                  userId: values["trace-user-id"],
+                  deviceId: values["trace-device-id"],
+                  toolSource: "sid-code",
+                  autoUpload: true,
+                  deleteAfterUpload: false,
+                  compress: true,
+                  maxRetries: 5,
+                  retryBaseMs: 2000,
+                }
+              : undefined,
+        }
+      : undefined, // 不覆盖——完全由配置文件（settings.json）决定
   };
 
   // 位置参数作为初始提示词
