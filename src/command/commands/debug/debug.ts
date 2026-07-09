@@ -92,8 +92,9 @@ const mod: LocalCommandModule = {
             lines.push(`状态       : ✗ 上传失败: ${result.error || "未知错误"}`);
             lines.push("            轨迹已保存在本地，会话结束后自动重试");
           }
-        } catch (err: any) {
-          lines.push(`状态       : ✗ 上传异常: ${err.message}`);
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          lines.push(`状态       : ✗ 上传异常: ${msg}`);
           lines.push("            轨迹已保存在本地，会话结束后自动重试");
         }
         lines.push(`平台地址   : ${uploadUrl}`);

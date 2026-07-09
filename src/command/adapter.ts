@@ -47,6 +47,7 @@ export function toAppContext(ctx: CommandContext): AppContext {
     confirmShellCommands: ctx.confirmShellCommands,
     hookSystem: ctx.hookSystem,
     unifiedRegistry: ctx.unifiedRegistry,
+    traceCollector: ctx.traceCollector,
   };
 }
 

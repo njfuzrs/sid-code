@@ -753,8 +753,10 @@ async function loadNewFormatAsConfig(
     try {
       const raw = JSON.parse(await Bun.file(p).text());
       if (raw && typeof raw === "object") {
-        // 深合并嵌套对象（如 trace/telemetry/checkpoint），避免 app.json 的
+        // 一层深合并嵌套对象（如 trace/telemetry/checkpoint），避免 app.json 的
         // { trace: { enabled: true } } 覆盖 settings.json 的完整 trace 配置。
+        // 注意：仅一层深合并（非递归）。嵌套 >2 层的对象仍是后者整体覆盖前者。
+        // 当前所有配置结构（trace.upload、telemetry.exporters 等）实际只需一层即可。
         for (const [key, value] of Object.entries(raw)) {
           if (
             value !== null && typeof value === "object" && !Array.isArray(value) &&

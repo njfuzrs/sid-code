@@ -46,6 +46,8 @@ import {
 
 export interface TraceUploaderInterface {
   uploadSession(sessionDir: string, sessionId: string): Promise<{ allConfirmed: boolean }>;
+  /** 获取上传平台基础 URL（/debug 显示用，可选实现） */
+  getBaseUrl?(): string;
 }
 
 // ─── 采集器选项 ───
@@ -1441,8 +1443,7 @@ export class TraceCollector {
 
   /** 获取上传平台 URL（/debug 显示用） */
   getUploadUrl(): string | undefined {
-    if (!this.uploader) return undefined;
-    return (this.uploader as any).getBaseUrl?.() as string | undefined;
+    return this.uploader?.getBaseUrl?.();
   }
 
   // ─── 辅助：pair → RawJsonlEntry（不含 raw_messages） ───
