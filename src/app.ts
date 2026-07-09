@@ -19,6 +19,7 @@ import { Manager as ContextManager } from "./context/manager.ts";
 import { Registry as ToolRegistry } from "./tool/registry.ts";
 import { Registry as CommandRegistry } from "./command/registry.ts";
 import { ModelFallback } from "./llm/fallback.ts";
+import type { FallbackDecision } from "./llm/fallback.ts";
 import type { RetryTelemetryEvent } from "./llm/retry-telemetry.ts";
 import { TokenEstimator } from "./llm/token-estimator.ts";
 import { ThinkingManager } from "./llm/thinking.ts";
@@ -376,6 +377,10 @@ export class App {
       maxRetries: fallbackNetTimeouts.maxTimeoutRetries,
       retryBackoffBaseMs: fallbackNetTimeouts.retryBackoffBaseMs,
       retryBackoffMaxMs: fallbackNetTimeouts.retryBackoffMaxMs,
+      // 降级模式：生产默认 "ask"（询问用户），config 未设时兜底询问。
+      fallbackSwitchMode: opts.config.fallbackSwitchMode ?? "ask",
+      // 降级决策钩子（ask 模式生效）：弹选择题让用户决定切哪个模型 / 不切。
+      onFallbackDecision: (ctx) => this.decideFallback(ctx),
       onTelemetry: (event) => { this._retryTelemetryWriter?.(event); },
     }, {
       onRetry: (attempt, error, delayMs) => {
@@ -497,6 +502,16 @@ export class App {
           this.persistGoalState();
           this.tuiStateUpdater?.({ goalDisplay: this.buildGoalDisplay() });
         }
+      },
+      // TUI 去重：超时重试（loop.ts）上报同一个 retryStatus 通道，与 fallback 引擎的
+      // onRetry/onFallback（line 381 附近）共用 RetryStatus 组件，不再各自 yield 消息流文本。
+      reportRetryStatus: (info) => {
+        this.tuiStateUpdater?.({
+          retryStatus: {
+            ...info,
+            retryAtMs: Date.now() + info.delayMs,
+          },
+        });
       },
     });
 
@@ -736,14 +751,9 @@ export class App {
     this.config.fallbackModel = model ?? "";
 
     // 热更新 ModelFallback 降级目标：从 availableModels 解析 provider/apiKey/baseURL。
-    if (model && this.providerRegistry) {
-      const fb = this.config.availableModels.find((m) => m.name === model);
-      if (fb && fb.provider) {
-        const fbProvider = this.providerRegistry.getProviderFor(
-          fb.provider,
-          fb.apiKey || "",
-          fb.baseURL,
-        );
+    if (model) {
+      const fbProvider = this.buildFallbackProvider(model);
+      if (fbProvider) {
         this.fallback.setFallbackTarget(model, fbProvider);
       } else {
         // 目标不在 availableModels 或缺 provider：运行时无法构建降级 provider，仅记录 config 值。
@@ -757,6 +767,113 @@ export class App {
 
     if (persist) this.persistModelField("fallbackModel", model);
     updateState?.({ fallbackModel: model });
+  }
+
+  /**
+   * 从 availableModels 按模型名构建对应的 Provider（三段式：provider/apiKey/baseURL）。
+   * setFallbackModelRuntime（/model fallback 切换）与 onFallbackDecision 钩子（fallback 询问
+   * 后切任意模型）共用。返回 undefined 表示模型不存在、缺 provider 或无 providerRegistry。
+   */
+  private buildFallbackProvider(modelName: string): Provider | undefined {
+    if (!this.providerRegistry) return undefined;
+    const fb = this.config.availableModels.find((m) => m.name === modelName);
+    if (!fb || !fb.provider) return undefined;
+    return this.providerRegistry.getProviderFor(fb.provider, fb.apiKey || "", fb.baseURL);
+  }
+
+  /**
+   * Fallback 询问决策（fallbackSwitchMode=ask 时由 ModelFallback.tryFallback 惰性调用）。
+   *
+   * 弹出选择题让用户决定：切到配置的默认备用模型 / 切到 availableModels 中任意其它模型 /
+   * 不切换终止本轮。边界处理：
+   * - headless / 无交互通道（askUserQuestion 返回 unavailable）→ 降级为 auto 语义：
+   *   有默认 fallback 则切、无则 abort，绝不阻塞无头进程。
+   * - 用户 ESC / 整轮 abort（cancelled）→ abort。
+   * - 选中模型无法构建 provider（不在 availableModels / 缺 provider）→ abort。
+   */
+  private async decideFallback(ctx: {
+    failedModel: string;
+    reason: string;
+    defaultFallbackModel?: string;
+    signal?: AbortSignal;
+  }): Promise<FallbackDecision> {
+    const log = getLogger();
+    const { askUserQuestion, hasAskUserQuestionHandler } = await import("./tool/ask-user-question-bridge.ts");
+
+    // auto 兜底：切默认 fallback（有则 switch，无则 abort）。headless 与各类失败路径共用。
+    const autoFallback = (): FallbackDecision => {
+      const def = ctx.defaultFallbackModel;
+      if (def) {
+        const provider = this.buildFallbackProvider(def);
+        if (provider) return { action: "switch", model: def, provider };
+      }
+      return { action: "abort" };
+    };
+
+    // 无交互通道（headless/SDK/CI）→ 直接 auto 兜底，不弹窗。
+    if (!hasAskUserQuestionHandler()) {
+      log.info("FALLBACK", "无交互通道，降级为自动切换默认 fallback");
+      return autoFallback();
+    }
+
+    // 构造选项：默认备用置顶（标注）+ 其它 availableModels（排除主模型与默认备用）+ 不切换。
+    const options: { label: string; description?: string }[] = [];
+    if (ctx.defaultFallbackModel && this.buildFallbackProvider(ctx.defaultFallbackModel)) {
+      options.push({
+        label: ctx.defaultFallbackModel,
+        description: "配置的备用模型（推荐）",
+      });
+    }
+    for (const m of this.config.availableModels) {
+      if (m.name === ctx.failedModel) continue; // 排除刚失败的主模型
+      if (m.name === ctx.defaultFallbackModel) continue; // 已置顶
+      if (!m.provider) continue; // 无法构建 provider
+      options.push({ label: m.name, description: m.provider });
+    }
+    const NO_SWITCH = "不切换，终止本轮";
+    options.push({ label: NO_SWITCH, description: "保持当前状态，可稍后重发消息或用 /model 切换" });
+
+    const question = `主模型 ${ctx.failedModel} 请求失败（${ctx.reason}），是否切换到备用模型继续？`;
+    let result;
+    try {
+      result = await askUserQuestion(
+        {
+          questions: [
+            {
+              question,
+              header: "备用模型",
+              // 选项可能超过 4 个（availableModels 较多时），askUserQuestion 支持任意数量选项。
+              options,
+            },
+          ],
+        },
+        ctx.signal,
+      );
+    } catch (err) {
+      // 提问本身异常 → auto 兜底（保任务不中断）。
+      log.warn("FALLBACK", `askUserQuestion 异常，降级为自动切换: ${err}`);
+      return autoFallback();
+    }
+
+    if (result.status === "unavailable") return autoFallback();
+    if (result.status === "cancelled") {
+      log.info("FALLBACK", "用户取消 fallback 询问，终止本轮");
+      return { action: "abort" };
+    }
+
+    // answered：取用户选中的答案（answers 按"问题文本 → 答案"映射）。
+    const answer = result.answers[question];
+    if (!answer || answer === NO_SWITCH) {
+      log.info("FALLBACK", "用户选择不切换，终止本轮");
+      return { action: "abort" };
+    }
+    const provider = this.buildFallbackProvider(answer);
+    if (!provider) {
+      log.warn("FALLBACK", `用户选中的模型 "${answer}" 无法构建 provider，终止本轮`);
+      return { action: "abort" };
+    }
+    log.info("FALLBACK", `用户选择切换到 ${answer}`);
+    return { action: "switch", model: answer, provider };
   }
 
   /**

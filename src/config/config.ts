@@ -92,6 +92,11 @@ export interface Config {
   model: string;
   /** 主模型失败时的降级模型（必须在 availableModels 中存在），为空字符串则不降级 */
   fallbackModel: string;
+  /**
+   * 主模型重试耗尽后的降级模式：ask 询问用户 / auto 自动切默认 / off 不降级直接报错。
+   * 可选——未设时消费点（app.ts）按 "ask" 兜底（生产默认询问）。
+   */
+  fallbackSwitchMode?: "ask" | "auto" | "off";
   anthropicKey: string;
   openaiKey: string;
   baseURL: string;
@@ -533,6 +538,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     provider: "provider",
     model: "model",
     fallback_model: "fallbackModel",
+    fallback_switch_mode: "fallbackSwitchMode",
     anthropic_key: "anthropicKey",
     openai_api_key: "openaiKey",
     base_url: "baseURL",

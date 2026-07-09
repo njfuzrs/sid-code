@@ -3,8 +3,14 @@
  * 覆盖：正常搜索、无匹配、超时场景、EAGAIN 重试、hasRipgrep 检查
  */
 
-import { describe, test, expect } from "bun:test";
-import { ripGrep, hasRipgrep, RipgrepTimeoutError } from "../../src/tool/ripgrep.ts";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import {
+  ripGrep,
+  hasRipgrep,
+  RipgrepTimeoutError,
+  resolveRgCommand,
+  __resetRgCommandCacheForTest,
+} from "../../src/tool/ripgrep.ts";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
@@ -246,5 +252,45 @@ describe("ripGrep", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("resolveRgCommand", () => {
+  // beforeEach 而非只 afterEach：前面 describe("hasRipgrep")/describe("ripGrep") 的用例
+  // 已经触发过 resolveRgCommand() 并把模块级缓存填成 "rg"，若只在 afterEach 重置，
+  // 本 describe 块的第一个测试仍会命中残留缓存、读不到本次设置的环境变量。
+  beforeEach(() => {
+    delete process.env.SID_RIPGREP_PATH;
+    __resetRgCommandCacheForTest();
+  });
+
+  afterEach(() => {
+    delete process.env.SID_RIPGREP_PATH;
+    __resetRgCommandCacheForTest();
+  });
+
+  test("SID_RIPGREP_PATH 环境变量优先级最高，直接返回不做探测", async () => {
+    process.env.SID_RIPGREP_PATH = "/definitely/not/a/real/path/rg";
+    const cmd = await resolveRgCommand();
+    expect(cmd).toBe("/definitely/not/a/real/path/rg");
+  });
+
+  test("dev 模式（bun test 直接跑源码）下回退系统 PATH 的 rg", async () => {
+    // 测试环境是 bun test 直接跑 .ts 源码，IS_DEV_MODE 为 true，
+    // ensureRipgrepReleased() 应直接返回 null，回退探测系统 "rg"（本机已装）。
+    const cmd = await resolveRgCommand();
+    expect(cmd).toBe("rg");
+  });
+
+  test("结果被缓存：连续调用只解析一次", async () => {
+    const first = await resolveRgCommand();
+    const second = await resolveRgCommand();
+    expect(first).toBe(second);
+  });
+
+  test("hasRipgrep 与 resolveRgCommand 结果一致", async () => {
+    const cmd = await resolveRgCommand();
+    const has = await hasRipgrep();
+    expect(has).toBe(cmd !== null);
   });
 });

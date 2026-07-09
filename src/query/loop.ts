@@ -1081,8 +1081,15 @@ export async function* queryLoop(
           });
           // 指数退避 + jitter，避免零延迟重试恶化网关排队
           const backoffMs = computeBackoffMs(timeoutRetryCount, netTimeouts.retryBackoffBaseMs, netTimeouts.retryBackoffMaxMs);
-          yield { kind: "system", level: "warning",
-            text: `请求超时，${(backoffMs / 1000).toFixed(1)}s 后重试 (${timeoutRetryCount + 1}/${maxRetries})...` };
+          // TUI 去重：不再 yield system 文本打进消息流，改上报 RetryStatus 通道（带实时倒计时），
+          // 与 fallback 引擎的 onRetry/onFallback 共用同一个组件，避免消息流出现重复提示行。
+          deps.reportRetryStatus?.({
+            kind: "retry",
+            attempt: timeoutRetryCount + 1,
+            delayMs: backoffMs,
+            model: config.model,
+            error: "请求超时",
+          });
           await new Promise(resolve => setTimeout(resolve, backoffMs));
           // Fix 2：重试前清除本轮旧快照，防止看门狗读到上次失败的脏 lastContentProgressAt 立即误杀
           clearStreamSnapshot(state.turnCount);

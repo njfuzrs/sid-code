@@ -172,6 +172,9 @@ export const SettingsSchema = lazySchema(() =>
       provider: z.string().optional(),
       model: z.string().optional(),
       fallbackModel: z.string().optional(),
+      // 主模型重试耗尽后的降级模式：ask 询问用户 / auto 自动切默认 / off 不降级直接报错。
+      // 缺省（未设）时消费点按 "ask" 兜底（生产默认询问）。
+      fallbackSwitchMode: z.enum(["ask", "auto", "off"]).optional(),
       anthropicKey: z.string().optional(),
       openaiKey: z.string().optional(),
       baseURL: z.string().optional(),

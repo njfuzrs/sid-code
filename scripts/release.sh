@@ -7,10 +7,24 @@
 #   ./scripts/release.sh --no-bump               # 复用当前版本号，不再 bump（配合先跑过 make build 的场景）
 #   ./scripts/release.sh --skip-test             # 跳过发布前 bun test 门禁（不推荐，仅救急）
 #   ./scripts/release.sh --upload-team-defaults <file>  # 单独上传团队默认配置（不打版本号）
+#   ./scripts/release.sh --upload-ripgrep <dir> <version>  # 单独上传预编译 ripgrep 二进制（不打版本号）
 #
 # 发布前门禁：默认先跑 `bun test` 全量单测，失败即中止（坏版本不会推到 latest.txt）。
 #   构建完成后还会对「当前平台」的产物做一次 --version 冒烟，挡住产物损坏/无法执行的情况。
 #   加 --skip-test 可跳过单测（救急用），冒烟测试始终执行、不可跳过。
+#
+# 内嵌 ripgrep（best-effort，不阻断发布）：
+#   构建前会尝试 `fetch-ripgrep.ts --all` 从服务器拉取 4 平台预编译 rg 二进制，
+#   每个 target 编译前把对应平台的二进制放到 vendor/rg-embed（bun --compile 的固定嵌入
+#   import 路径，见 src/tool/rg-embedded.ts）。服务器上还没有对应二进制/版本时不阻断发布，
+#   仅让该 target 的产物不含内嵌 rg（运行时透明回退系统 rg，与本功能上线前行为一致）。
+#   首次让此功能生效：用 --upload-ripgrep 把 4 平台二进制传到服务器。
+#
+# Changelog + Git Tag：bump 版本号之后、构建之前，脚本会自动
+#   ① 跑 scripts/generate-changelog.ts 从 git 历史生成 CHANGELOG.md（仓库根，累积追踪）
+#   ② 打 annotated tag vX.Y.Z 到当前 HEAD
+#   --upload 时额外把 CHANGELOG.md 传到服务器顶层、并在上传成功后 push tag。
+#   两者失败都不阻断发布（非致命 warn）；tag/changelog 幂等，--no-bump 复用版本安全。
 #
 # 版本号 bump 规则：release.sh 默认自增 patch 版本号一次。若你已经先跑过 make build
 #   （它内部也会 bump），再直接 release 会导致版本号 +2；此时加 --no-bump 复用现有版本号。
@@ -22,6 +36,9 @@
 #   DEPLOY_SSH_PASSWORD     SSH 密码（可选，配置后用 sshpass 免交互上传；留空则交互式输入）
 #   DEPLOY_PATH             服务器上的发布目录（默认 /var/www/html/releases/sid-code，
 #                           对齐 nginx sites-enabled/default 的 root /var/www/html;）
+#   DEPLOY_RG_PATH          服务器上预编译 ripgrep 二进制目录
+#                           （默认 /var/www/html/vendor-bin/ripgrep，与 releases 版本目录隔离，
+#                           不受旧版本清理逻辑影响；对应 fetch-ripgrep.ts 的下载根）
 #   RELEASE_KEEP_VERSIONS   服务器端保留的历史版本数（默认 5，上传后清理更旧的版本目录）
 #
 #   凭据来源：脚本启动时自动 source scripts/deploy.env（不入库，见 deploy.env.example 模板）。
@@ -34,6 +51,7 @@
 #   - install.sh 的 RELEASE_BASE 由 DEPLOY_SSH_HOST 在拷贝时注入，服务器地址只需改一处
 #   - team-defaults.json 不随常规发布上传，避免用仓库里的占位模板覆盖服务器上的真实配置；
 #     只能通过 --upload-team-defaults 显式单独推送
+#   - vendor/rg-<platform> 同理不随常规发布上传/下载版本化，只能通过 --upload-ripgrep 显式推送
 
 set -euo pipefail
 
@@ -52,6 +70,7 @@ if [ -f "$ENV_FILE" ]; then
     _pre_user="${DEPLOY_SSH_USER:-}"
     _pre_pass="${DEPLOY_SSH_PASSWORD:-}"
     _pre_path="${DEPLOY_PATH:-}"
+    _pre_rg_path="${DEPLOY_RG_PATH:-}"
     # shellcheck disable=SC1090
     set -a; . "$ENV_FILE"; set +a
     # 恢复调用方显式导出的值（环境变量优先级更高）
@@ -59,12 +78,14 @@ if [ -f "$ENV_FILE" ]; then
     [ -n "$_pre_user" ] && DEPLOY_SSH_USER="$_pre_user"
     [ -n "$_pre_pass" ] && DEPLOY_SSH_PASSWORD="$_pre_pass"
     [ -n "$_pre_path" ] && DEPLOY_PATH="$_pre_path"
+    [ -n "$_pre_rg_path" ] && DEPLOY_RG_PATH="$_pre_rg_path"
 fi
 
 DEPLOY_SSH_HOST="${DEPLOY_SSH_HOST:-121.196.144.227}"
 DEPLOY_SSH_USER="${DEPLOY_SSH_USER:-}"
 DEPLOY_SSH_PASSWORD="${DEPLOY_SSH_PASSWORD:-}"
 DEPLOY_PATH="${DEPLOY_PATH:-/var/www/html/releases/sid-code}"
+DEPLOY_RG_PATH="${DEPLOY_RG_PATH:-/var/www/html/vendor-bin/ripgrep}"
 RELEASE_KEEP_VERSIONS="${RELEASE_KEEP_VERSIONS:-5}"
 
 # bun-<os>-<arch> target → 打包命名用的 <os>-<arch>
@@ -78,6 +99,9 @@ TARGETS=(
 DO_UPLOAD=false
 DO_UPLOAD_TEAM_DEFAULTS=false
 TEAM_DEFAULTS_FILE=""
+DO_UPLOAD_RIPGREP=false
+RIPGREP_DIR=""
+RIPGREP_VERSION=""
 DO_BUMP=true
 DO_TEST=true
 
@@ -91,6 +115,14 @@ while [ $# -gt 0 ]; do
             TEAM_DEFAULTS_FILE="${2:-}"
             [ -n "$TEAM_DEFAULTS_FILE" ] || { echo "错误: --upload-team-defaults 需要传入文件路径"; exit 1; }
             shift 2
+            ;;
+        --upload-ripgrep)
+            DO_UPLOAD_RIPGREP=true
+            RIPGREP_DIR="${2:-}"
+            RIPGREP_VERSION="${3:-}"
+            [ -n "$RIPGREP_DIR" ] && [ -n "$RIPGREP_VERSION" ] \
+                || { echo "错误: --upload-ripgrep 需要传入目录路径和版本号: --upload-ripgrep <dir> <version>"; exit 1; }
+            shift 3
             ;;
         *) echo "未知参数: $1"; exit 1 ;;
     esac
@@ -164,6 +196,39 @@ if [ "$DO_UPLOAD_TEAM_DEFAULTS" = true ]; then
     exit 0
 fi
 
+# ─── 单独上传预编译 ripgrep 二进制（不涉及版本构建）───
+# 目录内按平台命名：rg-darwin-arm64 / rg-darwin-x64 / rg-linux-x64 / rg-linux-arm64。
+# 上传到 ${DEPLOY_RG_PATH}/<version>/，与 fetch-ripgrep.ts 的下载路径约定一致；
+# 同时生成 .sha256 供下载时完整性校验。目录内缺某个平台文件时跳过该平台（非致命）。
+
+if [ "$DO_UPLOAD_RIPGREP" = true ]; then
+    [ -d "$RIPGREP_DIR" ] || fail "目录不存在: $RIPGREP_DIR"
+    require_ssh_user
+    echo ">>> 上传 ripgrep 二进制 v${RIPGREP_VERSION}（来自 $RIPGREP_DIR）..."
+    RG_REMOTE_DIR="${DEPLOY_RG_PATH}/${RIPGREP_VERSION}"
+    run_ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" "mkdir -p '${RG_REMOTE_DIR}'"
+
+    _rg_uploaded=0
+    for plat in darwin-arm64 darwin-x64 linux-x64 linux-arm64; do
+        f="$RIPGREP_DIR/rg-${plat}"
+        if [ ! -f "$f" ]; then
+            warn "跳过缺失: rg-${plat}（目录内未找到）"
+            continue
+        fi
+        SHA="$(sha256_of "$f")"
+        echo "$SHA" > "${f}.sha256"
+        info "上传 rg-${plat} ..."
+        run_scp "$f" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${RG_REMOTE_DIR}/rg-${plat}"
+        run_scp "${f}.sha256" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${RG_REMOTE_DIR}/rg-${plat}.sha256"
+        _rg_uploaded=$((_rg_uploaded + 1))
+    done
+
+    [ "$_rg_uploaded" -gt 0 ] || fail "目录内没有找到任何 rg-<platform> 文件（期望文件名如 rg-darwin-arm64）"
+    ok "ripgrep v${RIPGREP_VERSION} 已上传（${_rg_uploaded}/4 平台）"
+    echo "  下次 release.sh / make build 会自动通过 fetch-ripgrep.ts 拉取并嵌入"
+    exit 0
+fi
+
 echo "=== sid-code 发布构建 ==="
 echo ""
 
@@ -192,6 +257,26 @@ VERSION="$(bun -e "console.log(require('./package.json').version)")"
 echo "  版本: v$VERSION"
 echo ""
 
+# ─── 生成 changelog + 打 annotated tag（bump 之后、构建之前）───
+# tag 打在当前 HEAD（已提交的功能代码）上，符合"发布产物对应确切 commit"的铁律。
+# bump 提交由用户在 release.sh 结束后补做；tag 的 push 推迟到上传成功之后（见下方 --upload 块），
+# 避免为一个尚未上传成功的版本对外广播 tag。
+TAG="v$VERSION"
+
+echo ">>> 生成 changelog (v$VERSION) ..."
+bun run scripts/generate-changelog.ts "$VERSION" || warn "changelog 生成失败（不阻断发布）"
+
+if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
+    warn "tag $TAG 已存在，跳过创建（--no-bump 复用场景）"
+else
+    if git tag -a "$TAG" -m "Release $TAG"; then
+        ok "已创建 tag $TAG（HEAD=$(git rev-parse --short HEAD)）"
+    else
+        warn "tag 创建失败（不阻断发布）"
+    fi
+fi
+echo ""
+
 # ─── --no-bump 覆盖同版本告警：上传前先探测服务器是否已存在该版本 ───
 
 if [ "$DO_UPLOAD" = true ] && [ "$DO_BUMP" = false ]; then
@@ -212,6 +297,18 @@ fi
 
 echo ">>> 生成内嵌 skill..."
 bun run scripts/embed-builtin-skills.ts
+echo ""
+
+# ─── 拉取内嵌 ripgrep（best-effort：服务器暂无对应二进制时不阻断发布）───
+# 产物退化为「无内嵌 rg，运行时回退系统 rg」——与本功能上线前的行为完全一致。
+# 首次让此功能真正生效：用 --upload-ripgrep 把 4 平台二进制传到服务器。
+
+echo ">>> 拉取内嵌 ripgrep（4 平台，best-effort）..."
+if bun run scripts/fetch-ripgrep.ts --all; then
+    ok "ripgrep 二进制就绪"
+else
+    warn "拉取 ripgrep 二进制失败（服务器可能尚未上传，见 --upload-ripgrep）。本次产物不含内嵌 rg，运行时回退系统 rg，不影响发布。"
+fi
 echo ""
 
 # ─── 清理旧产物 ───
@@ -235,6 +332,18 @@ for entry in "${TARGETS[@]}"; do
     echo ">>> 构建 $PLATFORM ($BUN_TARGET) ..."
     OUT_DIR="$BUILD_DIR/$PLATFORM"
     mkdir -p "$OUT_DIR"
+
+    # ─── 切换嵌入的 rg 二进制为当前 target 对应平台 ───
+    # vendor/rg-embed 是 bun --compile 的固定嵌入 import 路径（见 src/tool/rg-embedded.ts）。
+    # 明确置空（而非跳过）以避免复用上一个 target 残留的错误平台二进制。
+    RG_VENDOR_FILE="$ROOT/vendor/rg-${PLATFORM}"
+    if [ -f "$RG_VENDOR_FILE" ]; then
+        cp "$RG_VENDOR_FILE" "$ROOT/vendor/rg-embed"
+        chmod +x "$ROOT/vendor/rg-embed"
+    else
+        : > "$ROOT/vendor/rg-embed"
+        warn "未找到 vendor/rg-${PLATFORM}，本次 ${PLATFORM} 产物不含内嵌 rg（运行时回退系统 rg）"
+    fi
 
     bun build --compile --target="$BUN_TARGET" \
         --outfile "$OUT_DIR/sid-code" \
@@ -286,6 +395,12 @@ sed "s#121\.196\.144\.227#${DEPLOY_SSH_HOST}#g" \
 chmod +x "$RELEASE_DIR/install.sh"
 echo "$VERSION" > "$RELEASE_DIR/latest.txt"
 
+# 把仓库根 CHANGELOG.md 纳入发布产物（服务器顶层），让 file://$RELEASE_DIR 本地验证
+# 与真实上传走同一套相对路径逻辑。
+if [ -f "$ROOT/CHANGELOG.md" ]; then
+    cp "$ROOT/CHANGELOG.md" "$RELEASE_DIR/CHANGELOG.md"
+fi
+
 echo "=== 发布产物（${RELEASE_DIR}）==="
 ls -1 "$RELEASE_DIR"
 echo "  --- v$VERSION ---"
@@ -310,6 +425,12 @@ if [ "$DO_UPLOAD" = true ]; then
 
     run_scp "$RELEASE_DIR/install.sh" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_PATH}/install.sh"
 
+    # 上传顶层 CHANGELOG.md（供用户通过链接查看版本变更）
+    if [ -f "$RELEASE_DIR/CHANGELOG.md" ]; then
+        info "上传 CHANGELOG.md ..."
+        run_scp "$RELEASE_DIR/CHANGELOG.md" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_PATH}/CHANGELOG.md"
+    fi
+
     # latest.txt 放最后：确保它指向的版本此时已经完整上传
     run_scp "$RELEASE_DIR/latest.txt" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_PATH}/latest.txt"
 
@@ -328,9 +449,19 @@ ls -1dt */ 2>/dev/null | tail -n +${_keep_plus_one} | while IFS= read -r d; do
 done"
     run_ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" "$CLEANUP_CMD" || warn "旧版本清理失败（不影响本次发布）"
 
+    # ─── 上传成功后推送 tag ───
+    # 推到 origin，让发布产物对应的 commit 在远端有确切 tag 标记。失败非致命：
+    # 用户在铁律最后一步的 git push 也会把本地 tag 一并推上去。
+    if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
+        info "推送 tag $TAG 到 origin ..."
+        git push origin "$TAG" || warn "tag 推送失败，可稍后手动 git push origin $TAG"
+    fi
+
     echo ""
     ok "发布完成！安装命令："
     echo "    curl -fsSL http://${DEPLOY_SSH_HOST}/releases/sid-code/install.sh | bash"
+    echo ""
+    echo "  📄 Changelog: http://${DEPLOY_SSH_HOST}/releases/sid-code/CHANGELOG.md"
 else
     echo ""
     echo "  提示：加 --upload 参数可上传到服务器（凭据读自 scripts/deploy.env）"

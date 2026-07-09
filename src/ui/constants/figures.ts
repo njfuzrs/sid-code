@@ -85,6 +85,19 @@ export const TODO_PENDING = "○";
 export const TODO_IN_PROGRESS = "◐";
 export const TODO_COMPLETED = "●";
 
+/**
+ * 选择题字形：靠「形状」区分选择语义——圆圈=单选(radio)、方框=多选(checkbox)，
+ * 再靠「填充度」表达选中态。这样用户一眼能看出这题是单选还是多选（AskUserQuestion 用）。
+ * - RADIO ○/●     单选：同一时刻只能选一项
+ * - CHECKBOX ☐/☑  多选:可勾选多项
+ * 注：不用 ☐/☑(U+2610/2611)——实测 ☑ 宽度=2 而 ☐ 宽度=1,勾选前后对齐漂移。
+ * 改用 □/■(U+25A1/25A0),两者宽度均=1,方框(多选) vs 圆圈(单选) 形状对比依然清晰。
+ */
+export const RADIO_EMPTY = "○";
+export const RADIO_SELECTED = "●";
+export const CHECKBOX_EMPTY = "□";
+export const CHECKBOX_CHECKED = "■";
+
 /** 进度条字形：▰ 实心(已完成) / ▱ 空心(未完成) */
 export const PROGRESS_FILLED = "▰";
 export const PROGRESS_EMPTY = "▱";

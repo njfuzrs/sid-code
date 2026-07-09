@@ -6,12 +6,14 @@ BUN=bun
 build:
 	$(BUN) run scripts/bump-version.ts
 	$(BUN) run scripts/embed-builtin-skills.ts
+	-$(BUN) run scripts/fetch-ripgrep.ts --as-embed
 	$(BUN) build --compile --outfile $(BINARY) src/entrypoints/bootstrap.ts
 
 # 本地快速重建：跳过 bump-version，保持当前版本号不变
 # 适用场景：拉取最新代码后只需更新二进制，不想改变版本号
 rebuild:
 	$(BUN) run scripts/embed-builtin-skills.ts
+	-$(BUN) run scripts/fetch-ripgrep.ts --as-embed
 	$(BUN) build --compile --outfile $(BINARY) src/entrypoints/bootstrap.ts
 
 # 跨平台发布构建：macOS + Linux（arm64/x64 共 4 个目标），打包 + sha256 校验文件到 dist/release/

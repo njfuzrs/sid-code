@@ -325,6 +325,11 @@ describe("T9.1 流式中断 & 恢复", () => {
       const fallback = new ModelFallback({
         maxRetries: 3,
         streamTimeoutMs: 5000,
+        // 显式覆盖退避基数/上限：本用例会真实触发一次流阶段重试等待，若吃生产
+        // NETWORK_DEFAULTS（retryBackoffBaseMs 5000ms）会与 bun 默认 5s 测试超时打平，
+        // 导致抖动（jitter）落在不同区间时随机超时。
+        retryBackoffBaseMs: 1,
+        retryBackoffMaxMs: 5,
         availability: new ModelAvailabilityService(),
       });
 
@@ -364,6 +369,10 @@ describe("T9.1 流式中断 & 恢复", () => {
       const fallback = new ModelFallback({
         streamTimeoutMs: 80, // 极短超时
         maxRetries: 2,
+        // 显式覆盖退避基数/上限为极小值：与本文件其它用例一致，保持测试快速、
+        // 与生产 NETWORK_DEFAULTS（retryBackoffBaseMs 已提到 5000ms）解耦。
+        retryBackoffBaseMs: 1,
+        retryBackoffMaxMs: 5,
         availability: new ModelAvailabilityService(),
       });
 

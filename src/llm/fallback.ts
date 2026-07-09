@@ -71,26 +71,33 @@ export function shouldRetry529(querySource?: QuerySource): boolean {
 // 重试常量
 // ═══════════════════════════════════════════════════════════════════
 
-/** 连接阶段重试配置 */
+/** 连接阶段重试配置。
+ *  maxDelayMs 从 30s 抬到 120s：与 network-profile 的 retryBackoffMaxMs 对齐，否则本阶段
+ *  退避会被更紧的 30s 上限截断，架空统一配置。maxRetries 仅在未注入 config.maxRetries 时
+ *  兜底（生产由 app.ts 注入 maxTimeoutRetries=10）。 */
 const CONNECTION_RETRY = {
   maxRetries: 3,
   initialDelayMs: 1000,
-  maxDelayMs: 30000,
+  maxDelayMs: 120000,
 };
 
-/** 流式阶段重试配置 */
+/** 流式阶段重试配置。
+ *  maxDelayMs 从 10s 抬到 120s（最关键）：旧值 10s 把流式退避硬砍到 10 秒内，遇限流/过载时
+ *  几次重试全挤在十几秒内打完，未给服务恢复窗口。现与 network-profile.retryBackoffMaxMs 对齐。 */
 const STREAM_RETRY = {
   maxRetries: 2,
   initialDelayMs: 1000,
-  maxDelayMs: 10000,
+  maxDelayMs: 120000,
 };
 
 /** 默认流超时（毫秒）。配置-1：不再独立硬编码 300_000，从 network-profile 统一默认值派生
  *  （生产路径由 app.ts 注入 streamTimeoutMs；此默认仅在未注入时兜底，如直接 new ModelFallback() 的测试）。 */
 const DEFAULT_STREAM_TIMEOUT_MS = NETWORK_DEFAULTS.watchdogNoProgressMs; // 300s
 
-/** 退避延迟上限 */
-const MAX_DELAY_MS = 32_000;
+/** 退避延迟上限（用于封顶服务端 Retry-After / rate-limit-reset）。
+ *  从 32s 抬到 120s：旧值会把服务端明确要求的更长等待（如限流 60s）截断到 32s，
+ *  导致提前重试撞在仍未恢复的服务上。与 network-profile.retryBackoffMaxMs 对齐。 */
+const MAX_DELAY_MS = 120_000;
 
 /** max_tokens 溢出恢复：安全余量 */
 const SAFETY_BUFFER = 1_000;
@@ -133,12 +140,43 @@ const PERSISTENT_HEARTBEAT_MS = 30_000;
 // 类型定义
 // ═══════════════════════════════════════════════════════════════════
 
+/**
+ * Fallback 切换决策结果（onFallbackDecision 钩子返回）。
+ * - switch：切换到指定模型（含已构建好的 provider）。
+ * - abort：不切换，终止本轮（yield error 让上层展示"已终止，可重发/换模型"）。
+ */
+export type FallbackDecision =
+  | { action: "switch"; model: string; provider: Provider }
+  | { action: "abort" };
+
+/** Fallback 切换模式：ask 询问用户 / auto 自动切默认 / off 不降级直接报错。 */
+export type FallbackSwitchMode = "ask" | "auto" | "off";
+
 /** 回退配置 */
 export interface FallbackConfig {
   /** 降级 Provider */
   fallbackProvider?: Provider;
   /** 降级模型 */
   fallbackModel?: string;
+  /**
+   * 切换模式（默认 "auto"，保护直接 new ModelFallback() 的测试不被弹窗阻塞；
+   * 生产由 app.ts 从 config.fallbackSwitchMode ?? "ask" 注入——即生产默认询问）。
+   * - "ask"：主模型失败且有 onFallbackDecision 钩子时，询问用户是否切换、切到哪个模型。
+   * - "auto"：保持旧行为，重试耗尽直接切 fallbackModel。
+   * - "off"：不降级，直接 yield error 终止本轮。
+   */
+  fallbackSwitchMode?: FallbackSwitchMode;
+  /**
+   * 切换决策钩子（ask 模式生效）。由 app.ts 注入，内部弹出选择题并阻塞等用户作答。
+   * 惰性执行：仅在真正触发降级那一刻调用（此时 TUI handler 早已就绪）。
+   * headless/无交互通道时应内部降级为 auto 语义（切默认或 abort），绝不阻塞无头进程。
+   */
+  onFallbackDecision?: (ctx: {
+    failedModel: string;
+    reason: string;
+    defaultFallbackModel?: string;
+    signal?: AbortSignal;
+  }) => Promise<FallbackDecision>;
   /** 模型可用性服务 */
   availability?: ModelAvailabilityService;
   /** 查询来源（前台/后台），影响 529 重试策略 */
@@ -714,7 +752,16 @@ export class ModelFallback {
     yield* this.tryFallback(params, signal);
   }
 
-  /** 尝试使用 fallback Provider */
+  /**
+   * 尝试使用 fallback Provider。
+   *
+   * 三态切换（fallbackSwitchMode，默认 auto）：
+   * - "off"：不降级，直接 yield error 终止本轮。
+   * - "auto"（或无 onFallbackDecision 钩子）：保持旧行为，直接切 config.fallbackModel。
+   * - "ask"：调 onFallbackDecision 钩子（app.ts 注入，弹选择题）决定切哪个模型 / 不切。
+   *
+   * 所有降级路径都汇聚到本方法，故三态决策在此单点生效即全覆盖。
+   */
   private async *tryFallback(
     params: SendParams,
     signal?: AbortSignal,
@@ -725,69 +772,140 @@ export class ModelFallback {
       throw new RequestAbortedError("Request aborted");
     }
 
-    if (this.config.fallbackProvider && this.config.fallbackModel && !this.hasFallenBack) {
-      this.hasFallenBack = true;
-      const fallbackModel = this.config.fallbackModel;
-
-      log.warn("FALLBACK", `切换到 fallback 模型: ${fallbackModel}`);
-      this.listener?.onFallback?.("主模型失败", fallbackModel);
-      this.emitTelemetry({
-        type: "fallback",
-        model: params.model,
-        fallbackModel,
-        error: "主模型失败",
-      });
-
-      const fallbackParams = { ...params, model: fallbackModel };
-      // 流完整性校验：与主路径（上方 hasYieldedContent 校验）对齐。
-      // 背景（事故复盘 session 20260708-102143）：tryFallback 此前直接透传 fallback
-      // 流，缺了主路径那道空响应校验——fallback provider 返回 0 内容事件（如网关回
-      // text/html 错误页被 openai.ts 拦成 error，或真返回空流）时不会 throw，空流
-      // 被原样透传给上层，最终以 stopReason=null 静默收尾，用户界面毫无提示。
-      // 这里补齐：fallback 流也必须产出过内容/工具调用，否则抛 StreamValidationError
-      // （error 事件本身已是显式失败信号，放行让上层 stream-processor 转 throw 展示）。
-      let fbYieldedContent = false;
-      let fbYieldedError = false;
-      for await (const event of this.config.fallbackProvider.sendMessageStream(fallbackParams, signal)) {
-        // A4 纵深防御：fallback provider 流消费中检查 signal
-        if (signal?.aborted) {
-          throw new RequestAbortedError("请求已中止");
-        }
-        if (event.type === "content_block_delta") {
-          fbYieldedContent = true;
-        } else if (event.type === "error") {
-          // fallback 流内已有显式 error（含 openai.ts 的 Content-Type 守卫）→ 透传，
-          // 由上层 stream-processor 转 throw 展示；不再叠加"响应为空"掩盖真实原因。
-          fbYieldedError = true;
-        }
-        yield event;
-      }
-      // fallback 流跑完却既无内容事件、也无显式 error → 判定空响应（伪装成功的空流）。
-      // 用 yield error 事件（而非 throw）暴露：与下方"无可用 fallback"分支一致，error
-      // 事件经 yield* 直达消费者（stream-processor 转 throw → engine → fatal_error），
-      // 不会被上方流式重试循环的 catch recatch/重分类（throw 会被 line 574 catch 吞掉、
-      // 重试耗尽后落到 line 702 的二次 tryFallback，因 hasFallenBack=true 变成语焉不详的
-      // "无可用 fallback"，反而掩盖了"fallback 返回空响应"这个真实原因）。
-      if (!fbYieldedContent && !fbYieldedError) {
-        log.error("FALLBACK", `fallback 模型 ${fallbackModel} 返回空响应（0 内容事件），判定失败`);
-        yield {
-          type: "error",
-          error: {
-            message: `fallback 模型 ${fallbackModel} 返回空响应（0 内容事件），疑似模型不可用或网关返回非流式错误页`,
-            type: "empty_response",
-            streamLevel: true,
-          },
-        };
-      }
+    // 已经用过 fallback（二次降级）→ 不再重复切换，直接报错。
+    if (this.hasFallenBack) {
+      log.error("FALLBACK", "主 Provider 失败且 fallback 已用尽");
+      yield {
+        type: "error",
+        error: { message: "模型请求失败，已达最大重试次数且 fallback 已用尽" },
+      };
       return;
     }
 
-    // 没有 fallback 或已经用过 fallback
-    log.error("FALLBACK", "主 Provider 失败且无可用 fallback");
-    yield {
-      type: "error",
-      error: { message: "模型请求失败，已达最大重试次数且无可用 fallback" },
-    };
+    const mode = this.config.fallbackSwitchMode ?? "auto";
+
+    // ── "off"：禁用降级，直接报错终止本轮 ──
+    if (mode === "off") {
+      log.warn("FALLBACK", "fallbackSwitchMode=off，不降级，直接终止本轮");
+      yield {
+        type: "error",
+        error: { message: "模型请求失败，已达最大重试次数（降级已禁用 fallbackSwitchMode=off）" },
+      };
+      return;
+    }
+
+    // ── 决定切换目标：ask 走钩子，auto 走 config.fallbackModel ──
+    let targetModel: string | undefined;
+    let targetProvider: Provider | undefined;
+
+    if (mode === "ask" && this.config.onFallbackDecision) {
+      let decision: FallbackDecision;
+      try {
+        decision = await this.config.onFallbackDecision({
+          failedModel: params.model,
+          reason: "主模型重试耗尽",
+          defaultFallbackModel: this.config.fallbackModel || undefined,
+          signal,
+        });
+      } catch (err) {
+        // 钩子抛错 → fail-open 到 auto 语义（保任务不中断，切默认 fallback）。
+        log.warn("FALLBACK", `onFallbackDecision 钩子异常，fail-open 到默认降级: ${err}`);
+        decision = { action: "abort" };
+        if (this.config.fallbackProvider && this.config.fallbackModel) {
+          decision = {
+            action: "switch",
+            model: this.config.fallbackModel,
+            provider: this.config.fallbackProvider,
+          };
+        }
+      }
+      if (decision.action === "abort") {
+        log.warn("FALLBACK", "用户/钩子选择不切换，终止本轮");
+        yield {
+          type: "error",
+          error: { message: "主模型请求失败，已终止本轮。可重新发送消息重试，或用 /model 切换模型。" },
+        };
+        return;
+      }
+      targetModel = decision.model;
+      targetProvider = decision.provider;
+    } else {
+      // auto（或 ask 但无钩子）：切 config 里的默认 fallback。
+      targetModel = this.config.fallbackModel || undefined;
+      targetProvider = this.config.fallbackProvider;
+    }
+
+    // ── 无可用目标 → 报错 ──
+    if (!targetProvider || !targetModel) {
+      log.error("FALLBACK", "主 Provider 失败且无可用 fallback");
+      yield {
+        type: "error",
+        error: { message: "模型请求失败，已达最大重试次数且无可用 fallback" },
+      };
+      return;
+    }
+
+    // ── 执行切换 ──
+    this.hasFallenBack = true;
+    log.warn("FALLBACK", `切换到 fallback 模型: ${targetModel}`);
+    this.listener?.onFallback?.("主模型失败", targetModel);
+    this.emitTelemetry({
+      type: "fallback",
+      model: params.model,
+      fallbackModel: targetModel,
+      error: "主模型失败",
+    });
+
+    yield* this.streamFromFallback(params, targetModel, targetProvider, signal);
+  }
+
+  /**
+   * 从指定 fallback provider/model 拉流并做完整性校验。
+   *
+   * 流完整性校验：与主路径（executeWithFallback 的 hasYieldedContent 校验）对齐。
+   * 背景（事故复盘 session 20260708-102143）：tryFallback 此前直接透传 fallback 流，
+   * 缺了主路径那道空响应校验——fallback provider 返回 0 内容事件（如网关回 text/html
+   * 错误页被 openai.ts 拦成 error，或真返回空流）时不会 throw，空流被原样透传给上层，
+   * 最终以 stopReason=null 静默收尾，用户界面毫无提示。这里补齐：fallback 流也必须产出
+   * 过内容/工具调用，否则 yield error 事件（error 本身即显式失败信号，放行让上层
+   * stream-processor 转 throw 展示）。
+   */
+  private async *streamFromFallback(
+    params: SendParams,
+    fallbackModel: string,
+    fallbackProvider: Provider,
+    signal?: AbortSignal,
+  ): AsyncGenerator<StreamEvent> {
+    const log = getLogger();
+    const fallbackParams = { ...params, model: fallbackModel };
+    let fbYieldedContent = false;
+    let fbYieldedError = false;
+    for await (const event of fallbackProvider.sendMessageStream(fallbackParams, signal)) {
+      // A4 纵深防御：fallback provider 流消费中检查 signal
+      if (signal?.aborted) {
+        throw new RequestAbortedError("请求已中止");
+      }
+      if (event.type === "content_block_delta") {
+        fbYieldedContent = true;
+      } else if (event.type === "error") {
+        // fallback 流内已有显式 error（含 openai.ts 的 Content-Type 守卫）→ 透传，
+        // 由上层 stream-processor 转 throw 展示；不再叠加"响应为空"掩盖真实原因。
+        fbYieldedError = true;
+      }
+      yield event;
+    }
+    // fallback 流跑完却既无内容事件、也无显式 error → 判定空响应（伪装成功的空流）。
+    if (!fbYieldedContent && !fbYieldedError) {
+      log.error("FALLBACK", `fallback 模型 ${fallbackModel} 返回空响应（0 内容事件），判定失败`);
+      yield {
+        type: "error",
+        error: {
+          message: `fallback 模型 ${fallbackModel} 返回空响应（0 内容事件），疑似模型不可用或网关返回非流式错误页`,
+          type: "empty_response",
+          streamLevel: true,
+        },
+      };
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════

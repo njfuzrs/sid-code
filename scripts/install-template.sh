@@ -230,6 +230,8 @@ echo "    sid-code             # 启动"
 echo "    sid-code --version   # 确认版本"
 echo "    sid-code update      # 以后升级到最新版本"
 echo ""
+echo "  📄 更新日志: ${RELEASE_BASE}/CHANGELOG.md"
+echo ""
 
 if [ -n "$PATH_SNIPPET_RC" ]; then
     echo "  当前 shell 还未加载 PATH，请先执行一次："

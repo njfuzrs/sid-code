@@ -15,9 +15,66 @@
 
 import { spawn } from "bun";
 import { platform } from "node:os";
+import { ensureRipgrepReleased } from "./ensure-ripgrep.ts";
 
 /** stdout 最大缓冲区大小（与 claude-code 一致） */
 const MAX_BUFFER_SIZE = 20_000_000; // 20MB
+
+/**
+ * rg 命令解析缓存。
+ * undefined = 未解析；null = 不可用（触发 JS fallback）；string = 可执行 rg 命令/路径。
+ */
+let cachedRgCommand: string | null | undefined;
+
+/**
+ * 探测某个 rg 命令是否可执行（`rg --version` 退出码为 0）。
+ */
+async function probeRg(cmd: string): Promise<boolean> {
+  try {
+    const child = spawn([cmd, "--version"], { stdout: "pipe", stderr: "pipe" });
+    return (await child.exited) === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 解析可用的 rg 命令（带模块级缓存）。
+ *
+ * 优先级：
+ * 1. SID_RIPGREP_PATH 环境变量（用户/测试显式指定）
+ * 2. 嵌入释放的 ~/.sid-code/bin/rg（编译产物自带，不依赖系统 PATH）
+ * 3. 系统 PATH 里的 rg（dev 模式 / 释放失败时的回退）
+ * 4. null（都不可用，调用方回退到 JS/系统 grep 实现）
+ *
+ * 结果缓存到 cachedRgCommand，后续调用不再重复 spawn 探测。
+ */
+export async function resolveRgCommand(): Promise<string | null> {
+  if (cachedRgCommand !== undefined) return cachedRgCommand;
+
+  const override = process.env.SID_RIPGREP_PATH?.trim();
+  if (override) {
+    return (cachedRgCommand = override);
+  }
+
+  // 编译产物：优先用嵌入释放的 rg（dev 模式 ensureRipgrepReleased 返回 null）
+  const released = await ensureRipgrepReleased();
+  if (released && (await probeRg(released))) {
+    return (cachedRgCommand = released);
+  }
+
+  // 回退系统 PATH 里的 rg
+  if (await probeRg("rg")) {
+    return (cachedRgCommand = "rg");
+  }
+
+  return (cachedRgCommand = null);
+}
+
+/** 仅供测试：重置 rg 命令解析缓存 */
+export function __resetRgCommandCacheForTest(): void {
+  cachedRgCommand = undefined;
+}
 
 /**
  * 超时配置（毫秒）
@@ -127,7 +184,8 @@ async function ripGrepInternal(
   cwd?: string,
 ): Promise<string[]> {
   const fullArgs = isRetry ? ["-j", "1", ...args, target] : [...args, target];
-  const child = spawn(["rg", ...fullArgs], {
+  const rgCmd = (await resolveRgCommand()) ?? "rg";
+  const child = spawn([rgCmd, ...fullArgs], {
     stdout: "pipe",
     stderr: "pipe",
     ...(cwd ? { cwd } : {}),
@@ -240,19 +298,11 @@ async function ripGrepInternal(
 }
 
 /**
- * 检查系统是否安装了 ripgrep
+ * 检查 ripgrep 是否可用（嵌入释放的 / 系统 PATH 的 / SID_RIPGREP_PATH 指定的）。
+ * 基于 resolveRgCommand 的缓存，不再每次 spawn 探测。
  */
 export async function hasRipgrep(): Promise<boolean> {
-  try {
-    const child = spawn(["rg", "--version"], {
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const exitCode = await child.exited;
-    return exitCode === 0;
-  } catch {
-    return false;
-  }
+  return (await resolveRgCommand()) !== null;
 }
 
 /**

@@ -55,7 +55,13 @@ export interface ResolvedLoopTimeouts {
  *   - watchdogNoProgressMs 300s：已建连后中途静默（网关缓冲/限速）同样给足 5 分钟，
  *     真·半开 TCP 卡死才会等满这个阈值后转重试——但重试可见，不再是死循环。
  *   - maxTurnDurationMs 30min：单轮硬顶兜底（覆盖任何挂起根因），远大于正常单轮耗时。
- *   - maxTimeoutRetries 4 + 指数退避：网关抖动往往是暂时的，多给几次带退避的重试机会。
+ *   - maxTimeoutRetries 10 + 指数退避：网关抖动/厂商限流往往需要几十秒到数分钟才恢复，
+ *     旧值 4 次 + 30s 上限约 1 分钟就把机会耗尽。现按"保任务成功"取 10 次，配合下面
+ *     放宽的退避基数/上限，名义累计退避约 12+ 分钟，足够扛过短时限流与网关抖动。
+ *   - retryBackoffBaseMs 5s / retryBackoffMaxMs 120s：退避基数从 2s 抬到 5s（首次重试就
+ *     给足恢复窗口，避免"几秒就重试一次"打在仍未恢复的服务上），上限从 30s 抬到 120s
+ *     （指数退避到第 5-6 次即封顶 2 分钟）。注意 fallback.ts 的 STREAM_RETRY/CONNECTION_RETRY
+ *     两阶段各有 maxDelayMs，已同步放宽到 120s，否则会架空这里的上限。
  *   - watchdogCheckIntervalMs 5s / watchdogHeaderGraceMs 15s：检查频率与首字节余量，
  *     不是"能否容忍慢"的核心变量，取稳健值即可。
  *
@@ -67,9 +73,9 @@ export const DEFAULTS: Readonly<ResolvedLoopTimeouts> = {
   watchdogCheckIntervalMs: 5_000,
   watchdogHeaderGraceMs: 15_000,
   maxTurnDurationMs: 30 * 60_000,
-  maxTimeoutRetries: 4,
-  retryBackoffBaseMs: 2_000,
-  retryBackoffMaxMs: 30_000,
+  maxTimeoutRetries: 10,
+  retryBackoffBaseMs: 5_000,
+  retryBackoffMaxMs: 120_000,
 };
 
 /**

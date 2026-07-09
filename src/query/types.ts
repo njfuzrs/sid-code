@@ -414,6 +414,19 @@ export interface QueryDeps {
    * 可选——未注入则不写 trace 事件。
    */
   traceAppendEvent?: (event: { event: string; session_id: string; timestamp: string; data?: Record<string, unknown> }) => void;
+  /**
+   * 上报重试状态到 TUI（app.ts 注入 → 写 TUIState.retryStatus，由 RetryStatus 组件渲染，
+   * 带实时倒计时 + 限流建议）。超时重试用它替代此前 yield system 文本，与 fallback 引擎的
+   * onRetry/onFallback 统一走同一个 RetryStatus 通道，避免消息流里出现重复的重试提示行。
+   * 可选——未注入（如无头模式）则不上报，超时重试仍照常执行。
+   */
+  reportRetryStatus?: (info: {
+    kind: "retry" | "rate_limit" | "overloaded" | "fallback";
+    attempt: number;
+    delayMs: number;
+    model: string;
+    error?: string;
+  }) => void;
 }
 
 // ─── QueryEngine 配置 ───

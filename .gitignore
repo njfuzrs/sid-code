@@ -46,3 +46,8 @@ chat_session*.json
 # 临时文件
 _template
 scheduled_tasks.lock
+
+# 构建时下载的预编译 ripgrep 二进制（不入库，按需从服务器拉；见 scripts/fetch-ripgrep.ts）
+# 但保留 vendor/rg-embed 的 0 字节占位入库，使未跑 fetch 时 bun build 不因缺文件报错。
+/vendor/rg-*
+!/vendor/rg-embed

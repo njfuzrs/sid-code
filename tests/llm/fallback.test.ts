@@ -449,7 +449,9 @@ describe("ModelFallback 增强", () => {
       },
     };
 
-    const fallback = new ModelFallback();
+    // 显式覆盖退避基数/上限为极小值：与本文件其它用例一致，保持测试快速、
+    // 与生产 NETWORK_DEFAULTS（retryBackoffBaseMs 已提到 5000ms）解耦。
+    const fallback = new ModelFallback({ retryBackoffBaseMs: 1, retryBackoffMaxMs: 5 });
     const events = await collectEvents(
       fallback.executeWithFallback(provider, defaultParams),
     );
@@ -815,11 +817,15 @@ describe("ModelFallback 增强", () => {
       },
     };
 
-    // 50ms 超时即触发中断；fallback provider 兜底返回正常结果
+    // 50ms 超时即触发中断；fallback provider 兜底返回正常结果。
+    // 显式覆盖退避基数/上限为极小值：流式阶段默认重试 2 次，若吃生产 NETWORK_DEFAULTS
+    // （retryBackoffBaseMs 5000ms）会累计 ~15s 退避等待，超出本用例的 10s 超时。
     const fallback = new ModelFallback({
       streamTimeoutMs: 50,
       fallbackProvider: successProvider(),
       fallbackModel: "fallback-model",
+      retryBackoffBaseMs: 1,
+      retryBackoffMaxMs: 5,
     });
 
     // 必须在合理时间内完成（不会永久卡死），且最终拿到 fallback 的 message_stop

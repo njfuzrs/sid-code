@@ -278,9 +278,10 @@ export async function processStream(
           throw new Error(`LLM 错误: ${event.error.message}`);
 
         case "system_api_error":
-          // 对标 claude-code：通过 onText 将重试进度消息传递给 TUI 渲染
-          // 格式："[重试中] 正在重试 (2/4)…" 等用户可见文案
-          onText?.(`[重试中] ${event.content}`);
+          // 重试进度提示统一由 RetryStatus 组件承载（app.ts onRetry/onFallback 回调 →
+          // TUIState.retryStatus，带实时倒计时 + 限流升级建议 + 按 kind 分色）。此处不再
+          // 经 onText 打进消息流，避免与 RetryStatus 组件双行重复（见去重方案）。
+          // 与子代理侧 agent/stream-processor.ts 的静默处理对齐。
           break;
       }
     }

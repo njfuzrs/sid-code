@@ -116,6 +116,10 @@ export const sidPaths = {
   skills: () => sidHomePath("skills"),
   extensionDir: (type: string) => sidHomePath(type),
 
+  // ── 自带二进制（编译期嵌入、运行时释放的工具，如 ripgrep）──
+  binDir: () => sidHomePath("bin"),
+  rgBinary: () => sidHomePath("bin", process.platform === "win32" ? "rg.exe" : "rg"),
+
   // ── IDE ──
   ideLockDir: () => sidHomePath("ide"),
 

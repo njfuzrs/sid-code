@@ -91,6 +91,18 @@ export interface QueryEngineDeps {
   getGoalState?: () => import("../goal/state.ts").GoalState | null;
   /** /goal：更新目标状态（由 Goal Gate 在判定 complete/blocked/budget_limited 时调用）。 */
   updateGoalState?: (updater: (goal: import("../goal/state.ts").GoalState) => void) => void;
+  /**
+   * 上报重试状态到 TUI（app.ts 注入 → 写 TUIState.retryStatus，由 RetryStatus 组件渲染）。
+   * queryLoop 的超时重试路径用它替代 yield system 文本，与 fallback 引擎的 onRetry/onFallback
+   * 统一走同一个 RetryStatus 通道，避免消息流出现重复的重试提示（见 TUI 去重方案）。可选。
+   */
+  reportRetryStatus?: (info: {
+    kind: "retry" | "rate_limit" | "overloaded" | "fallback";
+    attempt: number;
+    delayMs: number;
+    model: string;
+    error?: string;
+  }) => void;
 }
 
 export class QueryEngine {
@@ -275,6 +287,8 @@ export class QueryEngine {
       // /goal：目标驱动持续执行——转发到 queryLoop deps
       getGoalState: this.deps.getGoalState,
       updateGoalState: this.deps.updateGoalState,
+      // TUI 去重：超时重试上报 RetryStatus 通道（转发到 queryLoop deps）
+      reportRetryStatus: this.deps.reportRetryStatus,
       // /goal：Trace 事件写入端（Goal Gate 决策事件）
       traceAppendEvent: this.deps.traceCollector
         ? (event) => (this.deps.traceCollector as any).writer?.appendEvent?.(event)
