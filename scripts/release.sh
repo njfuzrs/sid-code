@@ -13,12 +13,14 @@
 #   构建完成后还会对「当前平台」的产物做一次 --version 冒烟，挡住产物损坏/无法执行的情况。
 #   加 --skip-test 可跳过单测（救急用），冒烟测试始终执行、不可跳过。
 #
-# 内嵌 ripgrep（best-effort，不阻断发布）：
-#   构建前会尝试 `fetch-ripgrep.ts --all` 从服务器拉取 4 平台预编译 rg 二进制，
+# 内嵌 ripgrep（仓库本地优先，联网仅作缺失时回退，best-effort 不阻断发布）：
+#   vendor/ripgrep/<version>/rg-<platform> 已 git 提交入库，`fetch-ripgrep.ts --all`
+#   优先直接复用（全程不联网）；仓库内缺失（如刚 bump 版本号还没提交）才回退联网下载。
 #   每个 target 编译前把对应平台的二进制放到 vendor/rg-embed（bun --compile 的固定嵌入
-#   import 路径，见 src/tool/rg-embedded.ts）。服务器上还没有对应二进制/版本时不阻断发布，
-#   仅让该 target 的产物不含内嵌 rg（运行时透明回退系统 rg，与本功能上线前行为一致）。
-#   首次让此功能生效：用 --upload-ripgrep 把 4 平台二进制传到服务器。
+#   import 路径，见 src/tool/rg-embedded.ts）。仓库内和服务器都没有对应二进制/版本时不
+#   阻断发布，仅让该 target 的产物不含内嵌 rg（运行时透明回退系统 rg，与本功能上线前行为一致）。
+#   升级 rg 版本：改 fetch-ripgrep.ts 的 DEFAULT_RG_VERSION → 跑 --all 下载新版本
+#   → git add vendor/ripgrep/<新版本>/ 提交入库（可选再用 --upload-ripgrep 同步一份到服务器作为团队备用源）。
 #
 # Changelog + Git Tag：bump 版本号之后、构建之前，脚本会自动
 #   ① 跑 scripts/generate-changelog.ts 从 git 历史生成 CHANGELOG.md（仓库根，累积追踪）
@@ -51,7 +53,9 @@
 #   - install.sh 的 RELEASE_BASE 由 DEPLOY_SSH_HOST 在拷贝时注入，服务器地址只需改一处
 #   - team-defaults.json 不随常规发布上传，避免用仓库里的占位模板覆盖服务器上的真实配置；
 #     只能通过 --upload-team-defaults 显式单独推送
-#   - vendor/rg-<platform> 同理不随常规发布上传/下载版本化，只能通过 --upload-ripgrep 显式推送
+#   - vendor/ripgrep/<version>/rg-<platform> 已 git 提交入库随仓库版本化，常规发布无需联网；
+#     升级 rg 版本才需要 --upload-ripgrep 把新版本同步一份到服务器，供他人 fetch-ripgrep.ts
+#     首次下载填充本地仓库副本时使用
 
 set -euo pipefail
 
@@ -87,6 +91,9 @@ DEPLOY_SSH_PASSWORD="${DEPLOY_SSH_PASSWORD:-}"
 DEPLOY_PATH="${DEPLOY_PATH:-/var/www/html/releases/sid-code}"
 DEPLOY_RG_PATH="${DEPLOY_RG_PATH:-/var/www/html/vendor-bin/ripgrep}"
 RELEASE_KEEP_VERSIONS="${RELEASE_KEEP_VERSIONS:-5}"
+
+# ripgrep 版本号从 fetch-ripgrep.ts 的 DEFAULT_RG_VERSION 读取（唯一事实源，避免两处硬编码漂移）
+RG_VERSION="$(bun run "$SCRIPT_DIR/fetch-ripgrep.ts" --print-version)"
 
 # bun-<os>-<arch> target → 打包命名用的 <os>-<arch>
 TARGETS=(
@@ -299,15 +306,16 @@ echo ">>> 生成内嵌 skill..."
 bun run scripts/embed-builtin-skills.ts
 echo ""
 
-# ─── 拉取内嵌 ripgrep（best-effort：服务器暂无对应二进制时不阻断发布）───
+# ─── 准备内嵌 ripgrep（4 平台，best-effort）───
+# vendor/ripgrep/<version>/rg-<platform> 已 git 提交入库，优先直接复用（全程不联网）；
+# 仓库内缺失（如刚 bump 版本号还没提交）才回退联网下载服务器。服务器缺文件不阻断发布，
 # 产物退化为「无内嵌 rg，运行时回退系统 rg」——与本功能上线前的行为完全一致。
-# 首次让此功能真正生效：用 --upload-ripgrep 把 4 平台二进制传到服务器。
 
-echo ">>> 拉取内嵌 ripgrep（4 平台，best-effort）..."
+echo ">>> 准备内嵌 ripgrep（4 平台，best-effort）..."
 if bun run scripts/fetch-ripgrep.ts --all; then
     ok "ripgrep 二进制就绪"
 else
-    warn "拉取 ripgrep 二进制失败（服务器可能尚未上传，见 --upload-ripgrep）。本次产物不含内嵌 rg，运行时回退系统 rg，不影响发布。"
+    warn "准备 ripgrep 二进制失败（仓库内缺失且服务器也拉不到，见 --upload-ripgrep）。本次产物不含内嵌 rg，运行时回退系统 rg，不影响发布。"
 fi
 echo ""
 
@@ -336,13 +344,13 @@ for entry in "${TARGETS[@]}"; do
     # ─── 切换嵌入的 rg 二进制为当前 target 对应平台 ───
     # vendor/rg-embed 是 bun --compile 的固定嵌入 import 路径（见 src/tool/rg-embedded.ts）。
     # 明确置空（而非跳过）以避免复用上一个 target 残留的错误平台二进制。
-    RG_VENDOR_FILE="$ROOT/vendor/rg-${PLATFORM}"
+    RG_VENDOR_FILE="$ROOT/vendor/ripgrep/${RG_VERSION}/rg-${PLATFORM}"
     if [ -f "$RG_VENDOR_FILE" ]; then
         cp "$RG_VENDOR_FILE" "$ROOT/vendor/rg-embed"
         chmod +x "$ROOT/vendor/rg-embed"
     else
         : > "$ROOT/vendor/rg-embed"
-        warn "未找到 vendor/rg-${PLATFORM}，本次 ${PLATFORM} 产物不含内嵌 rg（运行时回退系统 rg）"
+        warn "未找到 vendor/ripgrep/${RG_VERSION}/rg-${PLATFORM}，本次 ${PLATFORM} 产物不含内嵌 rg（运行时回退系统 rg）"
     fi
 
     bun build --compile --target="$BUN_TARGET" \

@@ -47,7 +47,8 @@ chat_session*.json
 _template
 scheduled_tasks.lock
 
-# 构建时下载的预编译 ripgrep 二进制（不入库，按需从服务器拉；见 scripts/fetch-ripgrep.ts）
-# 但保留 vendor/rg-embed 的 0 字节占位入库，使未跑 fetch 时 bun build 不因缺文件报错。
+# ripgrep 二进制：vendor/ripgrep/<version>/ 是入库的规范存放位置（离线可用，见
+# scripts/fetch-ripgrep.ts），不忽略。vendor/rg-embed 是构建时从中拷贝出的固定嵌入
+# import 路径产物（bun --compile 用，见 src/tool/rg-embedded.ts），纯本地构建物、不入库；
+# 旧的扁平缓存路径 vendor/rg-<platform> 一并忽略（如本机残留不会被误加入库）。
 /vendor/rg-*
-!/vendor/rg-embed
