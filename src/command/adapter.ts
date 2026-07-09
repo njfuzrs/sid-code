@@ -217,6 +217,7 @@ export function adaptLegacyCommand(
     name: cmd.name(),
     aliases: cmd.aliases(),
     description: cmd.description(),
+    argumentHint: cmd.argumentHint?.(),
     source,
     subCommands: cmd.subCommands
       ? () => cmd.subCommands!().map((sub) => adaptLegacyCommand(sub, source))

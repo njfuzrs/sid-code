@@ -74,7 +74,8 @@ function persistPermissionRule(
 export class AllowCommand implements Command {
   name() { return "allow"; }
   aliases() { return []; }
-  description() { return "添加 allow 权限规则（当前会话）"; }
+  description() { return "添加 allow 权限规则（默认当前会话，-p 持久化）"; }
+  argumentHint() { return "<规则> [-p] [--scope user|project]"; }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     const { rule, persist, scope } = parseRuleArgs(args);
@@ -108,7 +109,8 @@ export class AllowCommand implements Command {
 export class DenyCommand implements Command {
   name() { return "deny"; }
   aliases() { return []; }
-  description() { return "添加 deny 权限规则（当前会话）"; }
+  description() { return "添加 deny 权限规则（默认当前会话，-p 持久化）"; }
+  argumentHint() { return "<规则> [-p] [--scope user|project]"; }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     const { rule, persist, scope } = parseRuleArgs(args);

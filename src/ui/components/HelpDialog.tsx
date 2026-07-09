@@ -12,9 +12,11 @@ interface HelpDialogProps {
 }
 
 const COMMON_COMMANDS = [
-  { name: "model", desc: "切换模型" },
+  { name: "model", desc: "切换模型（-p 持久化）" },
   { name: "effort", desc: "调整推理强度" },
   { name: "think", desc: "思考模式开关" },
+  { name: "theme", desc: "切换主题（-p 持久化）" },
+  { name: "language", desc: "切换输出语言（-p 持久化）" },
   { name: "config", desc: "查看/修改配置" },
   { name: "memory", desc: "管理记忆文件" },
   { name: "stats", desc: "会话统计" },

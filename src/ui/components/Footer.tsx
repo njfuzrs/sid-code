@@ -71,9 +71,13 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
     // 旋钮区只渲染字形（✻/✧），去掉 on/off 文字——字形自解释开关态。
     pushKnob(<Text key="thinking" color={data.thinking.color}>{data.thinking.glyph}</Text>);
   }
-  // 非危险的常规权限模式（plan / default 等）放旋钮区随大流；危险态移到最右角。
-  if (!data.permission.isDanger && data.permission.display !== "default") {
-    pushKnob(<Text key="mode" color={data.permission.color}>{data.permission.display}</Text>);
+  // 非危险的常规权限模式常驻旋钮区，让用户随时知道处于什么模式；危险态移到最右角。
+  // default 用暗灰（theme.ui.comment）降噪——常驻但不喧宾夺主（L2.1 克制点睛），
+  // 非 default 常规态才用 derivePermission 的语义色。
+  if (!data.permission.isDanger) {
+    const modeColor =
+      data.permission.display === "default" ? theme.ui.comment : data.permission.color;
+    pushKnob(<Text key="mode" color={modeColor}>{data.permission.display}</Text>);
   }
   if (data.isPlanMode) {
     pushKnob(<Text key="plan" bold color={theme.ui.active}>[PLAN]</Text>);

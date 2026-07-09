@@ -22,6 +22,7 @@ export class LanguageCommand implements Command {
   name() { return "language"; }
   aliases() { return ["lang"]; }
   description() { return "显示或切换输出语言偏好（-p 持久化）"; }
+  argumentHint() { return "[zh|en|auto] [-p]"; }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     const tokens = args.trim().split(/\s+/).filter(Boolean);

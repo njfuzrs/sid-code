@@ -79,6 +79,8 @@ export interface DialogSwitchProps {
   cwd: string;
   queuedCount?: number;
   onExitRequest?: () => void;
+  /** Shift+Tab 权限模式循环切换回调，透传给 Composer→InputArea。 */
+  onCyclePermissionMode?: () => void;
   isEmpty: boolean;
 }
 
@@ -112,6 +114,7 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
   cwd,
   queuedCount,
   onExitRequest,
+  onCyclePermissionMode,
   isEmpty,
 }) => {
   if (permissionRequest || shellConfirmRequest) {
@@ -234,6 +237,7 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
       cwd={cwd}
       queuedCount={queuedCount}
       onExitRequest={onExitRequest}
+      onCyclePermissionMode={onCyclePermissionMode}
       hideShortcutsHint={isEmpty}
     />
   );

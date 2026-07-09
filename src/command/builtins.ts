@@ -90,13 +90,84 @@ export class HelpCommand implements Command {
       "model": `模型管理
 
 用法:
-  /model              - 显示当前模型
-  /model list         - 显示所有可用模型
-  /model <name>       - 切换到指定模型
+  /model                          - 打开模型选择对话框
+  /model list                     - 显示所有可用模型 + 当前 fallback / 子代理映射
+  /model <name> [-p]              - 切换主模型（-p 持久化到 settings.json）
+  /model fallback <name> [-p]     - 切换 fallback 降级模型
+  /model fallback clear [-p]      - 清除 fallback
+  /model sub <type> <name> [-p]   - 切换子代理模型（type: default/explore/task/plan/summarize/verify）
+  /model sub clear <type> [-p]    - 清除某类型子代理映射
+  /model discover [--apply]       - 自动发现模型参数
+
+持久化: 默认仅当会话生效；加 -p（别名 --persist / save）才写入 settings.json 跨会话保留。
+对话框选择模型会自动持久化。
 
 示例:
-  /model <name>        - 切换为 availableModels 中配置的任意模型名
-  /model list`,
+  /model glm-5.2 -p
+  /model fallback deepseek-v4-flash -p
+  /model sub verify glm-5.2 -p`,
+
+      "theme": `主题管理
+
+用法:
+  /theme              - 打开主题选择对话框
+  /theme list         - 显示当前主题和可用主题列表
+  /theme <name> [-p]  - 切换主题（-p 持久化到 settings.json）
+
+持久化: 默认仅当会话生效；加 -p 才跨会话保留。对话框选择主题会自动持久化。
+注意: 多词主题名直接写，如 /theme "Default Light" 或 /theme Default Light`,
+
+      "language": `输出语言偏好
+
+用法:
+  /language           - 显示当前语言偏好
+  /language zh [-p]   - 中文优先
+  /language en [-p]   - 英文优先
+  /language auto [-p] - 回退默认（系统提示词默认中文）
+
+别名: /lang
+持久化: 默认仅当会话生效；加 -p 才写入 settings.json 跨会话保留。
+切换后立即重建系统提示词，下一轮对话即用新语言。`,
+
+      "hooks": `Hook 管理
+
+子命令:
+  /hooks                    - 打开 Hook 管理面板
+  /hooks list               - 列出所有已注册 hook 及启用状态
+  /hooks enable <name> [-p] - 启用指定 hook
+  /hooks disable <name> [-p]- 禁用指定 hook
+  /hooks enable-all [-p]    - 启用所有 hook
+  /hooks disable-all [-p]   - 禁用所有 hook
+
+持久化: 默认仅当会话生效；加 -p 写入 settings.json disabledHooks 跨会话保留。`,
+
+      "allow": `添加 allow 权限规则
+
+用法:
+  /allow <规则> [-p] [--scope user|project]
+
+持久化: 默认仅当会话生效；加 -p 写入 settings.json permissions.allow。
+  --scope user      写入用户级配置（默认）
+  --scope project   写入项目级配置
+
+示例:
+  /allow Bash(npm *)
+  /allow Bash(npm *) -p
+  /allow Read(*) -p --scope project`,
+
+      "deny": `添加 deny 权限规则
+
+用法:
+  /deny <规则> [-p] [--scope user|project]
+
+持久化: 默认仅当会话生效；加 -p 写入 settings.json permissions.deny。
+  --scope user      写入用户级配置（默认）
+  --scope project   写入项目级配置
+
+示例:
+  /deny Bash(rm -rf *)
+  /deny Bash(rm -rf *) -p
+  /deny Bash(curl *) -p --scope project`,
 
       "trace": `会话轨迹排查 —— 把当前/指定会话嚼碎成结构化排查摘要
 
@@ -892,6 +963,7 @@ export class HooksCommand implements Command {
   name() { return "hooks"; }
   aliases() { return []; }
   description() { return "管理 Hook (list/enable/disable/enable-all/disable-all，-p 持久化)"; }
+  argumentHint() { return "[list|enable|disable|enable-all|disable-all] [name] [-p]"; }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     if (!ctx.hookSystem) {

@@ -128,6 +128,8 @@ export interface Command {
   name(): string;
   aliases(): string[];
   description(): string;
+  /** 参数提示（可选，展示在 /commands 面板；如 "<zh|en|auto> [-p]"） */
+  argumentHint?(): string;
   /** 子命令列表（可选） */
   subCommands?(): Command[];
   execute(args: string, ctx: AppContext): Promise<CommandResult>;

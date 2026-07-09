@@ -91,6 +91,8 @@ export interface TUICallbacks {
   config?: import("../config/config.ts").Config;
   /** 统一命令注册表引用（/commands、/help 面板用；稳定引用） */
   unifiedRegistry?: import("../command/unified-registry.ts").UnifiedCommandRegistry;
+  /** Shift+Tab 权限模式循环切换（切 config.permissionMode + 刷状态栏 + 瞬时提示） */
+  onCyclePermissionMode?: () => void;
 }
 
 /** 权限请求信息 */
@@ -751,6 +753,11 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     bridge.update({ activeDialog: null });
   }, [callbacks, bridge]);
 
+  // Shift+Tab 权限模式循环切换：转交 app.ts 的 cyclePermissionMode（切模式 + 刷状态栏 + 提示）。
+  const handleCyclePermissionMode = useCallback(() => {
+    callbacks.onCyclePermissionMode?.();
+  }, [callbacks]);
+
   // 首次启动引导完成：交给 app.ts 回调写盘 + 热加载 Provider
   const handleCompleteOnboarding = useCallback(
     (result: import("./components/OnboardingDialog.tsx").OnboardingResult) => {
@@ -848,6 +855,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           onSubmit={handleSubmit}
           queuedCount={queueLength}
           onExitRequest={triggerQuit}
+          onCyclePermissionMode={handleCyclePermissionMode}
           permissionMode={state.permissionMode}
           isPlanMode={state.isPlanMode}
           gitBranch={state.gitBranch}
@@ -901,6 +909,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           onSubmit={handleSubmit}
           queuedCount={queueLength}
           onExitRequest={triggerQuit}
+          onCyclePermissionMode={handleCyclePermissionMode}
           permissionMode={state.permissionMode}
           isPlanMode={state.isPlanMode}
           gitBranch={state.gitBranch}

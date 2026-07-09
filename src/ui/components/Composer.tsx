@@ -151,6 +151,8 @@ interface ComposerProps {
   queuedCount?: number;
   /** Ctrl+D（输入框为空时）请求退出的回调，透传给 InputArea。 */
   onExitRequest?: () => void;
+  /** Shift+Tab 权限模式循环切换回调，透传给 InputArea。 */
+  onCyclePermissionMode?: () => void;
   /** 空会话时 EmptyLogo 已显示快捷键提示，Composer 不再重复 */
   hideShortcutsHint?: boolean;
 }
@@ -162,6 +164,7 @@ export const Composer: React.FC<ComposerProps> = ({
   cwd,
   queuedCount = 0,
   onExitRequest,
+  onCyclePermissionMode,
   hideShortcutsHint = false,
 }) => {
   const { stdout } = useStdout();
@@ -307,6 +310,7 @@ export const Composer: React.FC<ComposerProps> = ({
         cwd={cwd}
         queuedCount={queuedCount}
         onExitRequest={onExitRequest}
+        onPermissionModeSwitch={onCyclePermissionMode}
       />
     </Box>
   );

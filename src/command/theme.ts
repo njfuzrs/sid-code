@@ -18,6 +18,7 @@ export class ThemeCommand implements Command {
   name() { return "theme"; }
   aliases() { return []; }
   description() { return "显示或切换主题（-p 持久化）"; }
+  argumentHint() { return "[name|list] [-p]"; }
 
   async execute(args: string, _ctx: AppContext): Promise<CommandResult> {
     const tokens = args.trim().split(/\s+/).filter(Boolean);

@@ -76,6 +76,8 @@ interface MainScreenLayoutProps {
   queuedCount?: number;
   /** Ctrl+D（输入框为空时）请求退出的回调，透传给 Composer→InputArea。 */
   onExitRequest?: () => void;
+  /** Shift+Tab 权限模式循环切换回调，透传给 Composer→InputArea。 */
+  onCyclePermissionMode?: () => void;
 
   // Footer
   permissionMode: string;
@@ -141,6 +143,7 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
   onSubmit,
   queuedCount = 0,
   onExitRequest,
+  onCyclePermissionMode,
   permissionMode,
   isPlanMode,
   gitBranch,
@@ -276,6 +279,7 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
             cwd={cwd}
             queuedCount={queuedCount}
             onExitRequest={onExitRequest}
+            onCyclePermissionMode={onCyclePermissionMode}
             isEmpty={isEmpty}
           />
         </Box>
