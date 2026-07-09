@@ -44,11 +44,27 @@ ok()    { echo "  ✅ $*"; }
 warn()  { echo "  ⚠️  $*"; }
 fail()  { echo "  ❌ $*" >&2; exit 1; }
 
+# 返回应该写入 PATH/alias 的 RC 文件
+# 策略：只写一个最优先的 RC 文件，避免多文件重复和副作用
+# - zsh: .zshrc（macOS login+interactive 都会读）
+# - bash: macOS 写 .bash_profile（login shell 必读）；Linux 写 .bashrc（interactive 必读）
 detect_shell_rc() {
     case "$(basename "${SHELL:-}")" in
-        zsh)  echo "$HOME/.zshrc" ;;
-        bash) echo "$HOME/.bashrc" ;;
-        *)    echo "" ;;
+        zsh)
+            echo "$HOME/.zshrc"
+            ;;
+        bash)
+            if [ "$(uname -s)" = "Darwin" ]; then
+                # macOS Terminal.app 开 login bash，只读 .bash_profile
+                echo "$HOME/.bash_profile"
+            else
+                # Linux 桌面终端开 non-login interactive bash，读 .bashrc
+                echo "$HOME/.bashrc"
+            fi
+            ;;
+        *)
+            echo ""
+            ;;
     esac
 }
 
@@ -60,6 +76,28 @@ sha256_of() {
     else
         fail "找不到 sha256sum 或 shasum，无法校验下载完整性"
     fi
+}
+
+# 安全地向 RC 文件插入内容（保留原文件权限）
+# 用法: safe_insert_before_marker <file> <marker> <content_line>
+safe_insert_before_marker() {
+    local file="$1" marker="$2" content="$3"
+    local orig_mode
+    orig_mode="$(stat -f '%A' "$file" 2>/dev/null || stat -c '%a' "$file" 2>/dev/null || echo '644')"
+    awk -v line="$content" -v m="$marker" '$0 ~ m {print line} 1' "$file" > "${file}.sid-tmp"
+    mv "${file}.sid-tmp" "$file"
+    chmod "$orig_mode" "$file"
+}
+
+# 安全地向 RC 文件在标记后插入内容（保留原文件权限）
+# 用法: safe_insert_after_marker <file> <marker> <content_line>
+safe_insert_after_marker() {
+    local file="$1" marker="$2" content="$3"
+    local orig_mode
+    orig_mode="$(stat -f '%A' "$file" 2>/dev/null || stat -c '%a' "$file" 2>/dev/null || echo '644')"
+    awk -v line="$content" -v m="$marker" '1; $0 ~ m {print line}' "$file" > "${file}.sid-tmp"
+    mv "${file}.sid-tmp" "$file"
+    chmod "$orig_mode" "$file"
 }
 
 echo ""
@@ -162,24 +200,77 @@ ln -sfn "$NEW_DIR/sid-code" "$TMP_LINK"
 mv -f "$TMP_LINK" "$BIN_SYMLINK"
 ok "命令入口: $BIN_SYMLINK -> $NEW_DIR/sid-code"
 
-# ─── 确保 PATH ───
+# ─── 确保 PATH + 快捷命令 ───
+#
+# 安全原则：
+# 1. 只追加，绝不覆盖/删除用户已有内容
+# 2. 只写一个 RC 文件（zsh→.zshrc，bash→.bash_profile/.bashrc），不多写以避免重复
+# 3. 不创建用户原本不存在的文件（文件不存在则只追加到已存在的文件）
+# 4. 修改已有文件时保留原始权限（chmod 恢复）
+# 5. 如果用户已有同名 alias，尊重用户配置不覆盖
+# 6. PATH 使用追加式 $HOME/.local/bin:$PATH，不影响用户原有 PATH
+#
+# 对 zsh 独立终端找不到命令的修复：
+# - 旧版只写 .zshrc，且依赖运行时 $PATH 判断是否跳过（curl|bash 子 shell PATH 不准确）
+# - 新版直接检查文件内容，确保 PATH 配置存在
 
-PATH_SNIPPET_RC=""
-if ! echo "$PATH" | tr ':' '\n' | grep -qx "$BIN_DIR"; then
-    RC_FILE="$(detect_shell_rc)"
-    if [ -z "$RC_FILE" ]; then
-        warn "未识别当前 shell，请手动加入 PATH: export PATH=\"\$HOME/.local/bin:\$PATH\""
+echo ""
+echo "=== 注册命令 ==="
+
+PATH_WRITTEN=false
+RC_FILE="$(detect_shell_rc)"
+
+if [ -z "$RC_FILE" ]; then
+    warn "未识别当前 shell（${SHELL:-未设置}），请手动配置："
+    warn "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+    warn "  alias sc='sid-code --dangerously-skip-permissions'"
+elif [ ! -f "$RC_FILE" ]; then
+    # RC 文件不存在 — 不替用户创建新文件，只输出提示
+    # 理由：创建不存在的 .bash_profile/.zshrc 可能影响用户 shell 的默认加载行为
+    warn "$(basename "$RC_FILE") 不存在，请手动创建或添加以下内容："
+    warn "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+    warn "  alias sc='sid-code --dangerously-skip-permissions'"
+else
+    # RC 文件已存在，安全追加
+    if grep -qF '# >>> sid-code >>>' "$RC_FILE"; then
+        # 已有 sid-code 块 — 只做增量补充，不重写整块
+        if ! grep -qF "alias sc=" "$RC_FILE"; then
+            safe_insert_before_marker "$RC_FILE" '# <<< sid-code <<<' "alias sc='sid-code --dangerously-skip-permissions'"
+            ok "已补充 sc 快捷命令到 $(basename "$RC_FILE")"
+        fi
+        # 检查 PATH export 是否还在（防止用户手动删了中间内容导致命令找不到）
+        if ! grep -qF '.local/bin' "$RC_FILE"; then
+            safe_insert_after_marker "$RC_FILE" '# >>> sid-code >>>' 'export PATH="$HOME/.local/bin:$PATH"'
+            ok "已修复 PATH 配置到 $(basename "$RC_FILE")"
+        fi
     else
-        touch "$RC_FILE"
-        if ! grep -qF '# >>> sid-code >>>' "$RC_FILE"; then
-            cat >> "$RC_FILE" <<'EOF'
+        # 全新写入完整块（追加到文件末尾，不影响文件前面的任何内容）
+        cat >> "$RC_FILE" <<'EOF'
 
 # >>> sid-code >>>
 export PATH="$HOME/.local/bin:$PATH"
+alias sc='sid-code --dangerously-skip-permissions'
 # <<< sid-code <<<
 EOF
-            PATH_SNIPPET_RC="$RC_FILE"
-            ok "已写入命令 PATH 到 $RC_FILE"
+        PATH_WRITTEN=true
+        ok "已写入 PATH + sc 到 $(basename "$RC_FILE")"
+    fi
+
+    # bash 特殊处理：macOS 写了 .bash_profile，但如果用户有 .bashrc 且 .bash_profile
+    # 不 source .bashrc，非 login 场景（如 VSCode 终端）可能读不到。
+    # 如果 .bash_profile 里没有 source .bashrc，在 .bashrc 也补一份（仅当 .bashrc 已存在时）
+    if [ "$(basename "${SHELL:-}")" = "bash" ] && [ "$(uname -s)" = "Darwin" ]; then
+        if [ -f "$HOME/.bashrc" ] && [ "$RC_FILE" = "$HOME/.bash_profile" ]; then
+            if ! grep -qF '.local/bin' "$HOME/.bashrc" && ! grep -qF '# >>> sid-code >>>' "$HOME/.bashrc"; then
+                cat >> "$HOME/.bashrc" <<'EOF'
+
+# >>> sid-code >>>
+export PATH="$HOME/.local/bin:$PATH"
+alias sc='sid-code --dangerously-skip-permissions'
+# <<< sid-code <<<
+EOF
+                ok "已同步到 .bashrc（VSCode 终端兼容）"
+            fi
         fi
     fi
 fi
@@ -226,15 +317,16 @@ echo "║   安装完成！v$VERSION"
 echo "╚══════════════════════════════════════╝"
 echo ""
 echo "  现在可以运行："
-echo "    sid-code             # 启动"
+echo "    sc                   # 启动（推荐，跳过权限确认）"
+echo "    sid-code             # 启动（需逐条确认权限）"
 echo "    sid-code --version   # 确认版本"
 echo "    sid-code update      # 以后升级到最新版本"
 echo ""
 echo "  📄 更新日志: ${RELEASE_BASE}/CHANGELOG.md"
 echo ""
 
-if [ -n "$PATH_SNIPPET_RC" ]; then
-    echo "  当前 shell 还未加载 PATH，请先执行一次："
-    echo "    source $PATH_SNIPPET_RC"
+if [ "$PATH_WRITTEN" = true ]; then
+    echo "  ⚡ 请重新打开终端，或在当前窗口执行："
+    echo "    source $(detect_shell_rc)"
     echo ""
 fi
