@@ -235,7 +235,7 @@ export interface TUIState {
   /** Copy Mode：禁用鼠标事件，允许终端原生文本选择 */
   copyModeEnabled: boolean;
   /** 所有已注册命令（补全用） */
-  commands: Array<{ name: string; aliases: string[]; description: string }>;
+  commands: Array<{ name: string; aliases: string[]; description: string; requiresArgs?: boolean }>;
   /** 当前工作目录（@ 文件补全用） */
   cwd: string;
   /**

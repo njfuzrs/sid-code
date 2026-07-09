@@ -13,7 +13,16 @@
 
 import { execFileSync } from "node:child_process";
 
-const INSTALL_URL = process.env.SID_CODE_INSTALL_URL || "http://121.196.144.227/releases/sid-code/install.sh";
+/**
+ * 发布服务器地址的唯一权威（客户端编译进二进制，用户机器无 deploy.env，故需内置默认值）。
+ * 换服务器时改这一处即可；也可用环境变量覆盖：
+ *   - SID_CODE_RELEASE_HOST  仅覆盖 host（推荐，路径结构不变）
+ *   - SID_CODE_INSTALL_URL   覆盖完整 install.sh URL（需要非标准路径时用）
+ */
+const DEFAULT_RELEASE_HOST = "121.196.144.227";
+const RELEASE_HOST = process.env.SID_CODE_RELEASE_HOST || DEFAULT_RELEASE_HOST;
+const INSTALL_URL =
+  process.env.SID_CODE_INSTALL_URL || `http://${RELEASE_HOST}/releases/sid-code/install.sh`;
 
 function printHelp(): void {
   console.log(`sid-code update — 更新到最新版本

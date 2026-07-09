@@ -347,6 +347,22 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
     setTimeout(() => { lastSubmittedRef.current = ""; }, 1000);
   }, [tb, onSubmit, shellModeActive, addHistoryEntry]);
 
+  // 从补全列表直接提交一条命令文本（无需经过 tb.submit()——避免"插入后同帧提交"读到
+  // reducer 旧 state）。仅用于「无参命令回车直接执行」路径：清空输入框 + 走历史/去重 + 提交。
+  const submitCommandText = useCallback((commandText: string) => {
+    tb.setText("");
+    setShellModeActive(false);
+    if (commandText === lastSubmittedRef.current) {
+      log.warn("UI:INPUT", `重复内容被拦截: "${commandText.slice(0, 50)}"`);
+      return;
+    }
+    addHistoryEntry(commandText);
+    log.info("UI:INPUT", `补全列表直接执行命令: "${commandText}"`);
+    lastSubmittedRef.current = commandText;
+    onSubmit(commandText);
+    setTimeout(() => { lastSubmittedRef.current = ""; }, 1000);
+  }, [tb, onSubmit, addHistoryEntry]);
+
   // ── 核心键盘处理 ──────────────────────────────────────────────────
   useKeypress(KeypressPriority.Normal, (key) => {
     // 流式响应中仍允许编辑输入：提交走 onSubmit → App 层入队接续（多条输入排队）。
@@ -469,8 +485,22 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
         setCompletion({ suggestions: [], activeIndex: 0, mode: "none" });
         return true;
       }
-      if (key.name === "tab" || (key.name === "enter" && !key.shift)) {
+      // Tab：始终仅回填（想给命令补参数时的逃生口，也用于 @ / shell 补全）。
+      if (key.name === "tab") {
         applyCompletion(suggestions[activeIndex]);
+        return true;
+      }
+      if (key.name === "enter" && !key.shift) {
+        const picked = suggestions[activeIndex];
+        // 斜杠命令 + 不需要参数 → 单次回车直接执行（对齐 claude-code，省掉"回填再回车"）。
+        // 用补全项的规范命令名（value 去掉尾随空格）提交，忽略用户输入的模糊查询。
+        if (completionMode === "slash" && picked && !picked.requiresArgs) {
+          setCompletion({ suggestions: [], activeIndex: 0, mode: "none" });
+          submitCommandText(picked.value.trim());
+          return true;
+        }
+        // 需要参数的命令（如 /btw）/ @ 文件 / shell 补全 → 回填，等待用户继续输入。
+        applyCompletion(picked);
         return true;
       }
       if (key.name === "up" && !key.shift) {

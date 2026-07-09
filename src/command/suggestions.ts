@@ -236,6 +236,8 @@ export interface RankableCommandInfo {
   name: string;
   aliases: string[];
   description: string;
+  /** 无参数就无法工作（如 /btw）——补全列表回车仅回填等待输入，不直接执行 */
+  requiresArgs?: boolean;
 }
 
 export interface RankedCommandSuggestion {
@@ -244,6 +246,8 @@ export interface RankedCommandSuggestion {
   description: string;
   /** 命中的别名（若通过别名匹配），用于在描述中提示 */
   matchedAlias?: string;
+  /** 无参数就无法工作——透传给 UI 决定回车是执行还是回填 */
+  requiresArgs?: boolean;
 }
 
 // 按引用缓存轻量索引
@@ -314,6 +318,7 @@ export function rankCommandInfos(
         ? `(${matchedAlias}) ${item.description}`
         : item.description,
       matchedAlias,
+      requiresArgs: item.requiresArgs,
     };
   };
 

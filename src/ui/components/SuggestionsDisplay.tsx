@@ -39,6 +39,8 @@ export interface Suggestion {
   icon?: string;
   /** 分类标签（如「命令」「文件」「目录」），显示在行尾 dim 色 */
   tag?: string;
+  /** 斜杠命令专用：该命令无参数就无法工作，补全列表回车仅回填等待输入而非直接执行 */
+  requiresArgs?: boolean;
 }
 
 interface SuggestionsDisplayProps {

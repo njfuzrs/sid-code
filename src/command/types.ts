@@ -213,6 +213,8 @@ export interface CommandBase {
   userInvocable?: boolean;            // 用户能否通过 /name 调用（false = 仅模型可用）
   disableModelInvocation?: boolean;   // 模型能否通过 SkillTool 调用
   immediate?: boolean;                // 是否绕过队列立即执行（模型运行时可用）
+  requiresArgs?: boolean;             // 无参数就无法工作（如 /btw）。true = 补全列表回车仅回填等待输入；
+                                      // 默认 false = 补全列表回车直接执行（无参开对话框/显示状态的命令）
 
   // === 来源追踪 ===
   source?: CommandSource;             // 来源标记

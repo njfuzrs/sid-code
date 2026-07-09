@@ -19,6 +19,8 @@ export interface CommandInfo {
   name: string;
   aliases: string[];
   description: string;
+  /** 无参数就无法工作（如 /btw）——补全列表回车仅回填等待输入 */
+  requiresArgs?: boolean;
 }
 
 export interface UseSlashCompletionProps {
@@ -50,6 +52,7 @@ export function useSlashCompletion({ text, cursorCol, commands, setSuggestions }
           description: r.description,
           icon: "›",
           tag: "命令",
+          requiresArgs: r.requiresArgs,
         })),
       );
       return;
@@ -67,6 +70,7 @@ export function useSlashCompletion({ text, cursorCol, commands, setSuggestions }
           description: r.description,
           icon: "›",
           tag: "命令",
+          requiresArgs: r.requiresArgs,
         })),
       );
       return;

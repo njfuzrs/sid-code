@@ -12,6 +12,8 @@ const btw: UnifiedCommand = {
   aliases: ["by-the-way", "ask"],
   description: "旁路提问：基于当前对话上下文快速回答，不打断也不写入主对话",
   argumentHint: "你的问题",
+  // 无参数（问题）就只能打印用法，故补全列表回车仅回填等待用户输入问题。
+  requiresArgs: true,
   source: "builtin",
   // 仅用户可调用——这是 UX 快捷入口，模型不应自行触发。
   userInvocable: true,

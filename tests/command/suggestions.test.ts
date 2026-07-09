@@ -63,4 +63,26 @@ describe("rankCommandInfos", () => {
     const r = rankCommandInfos(COMMANDS, "zzzzzznotacommand");
     expect(r.length).toBe(0);
   });
+
+  test("requiresArgs 透传（匹配路径）——决定补全列表回车是执行还是回填", () => {
+    const cmds: RankableCommandInfo[] = [
+      { name: "btw", aliases: [], description: "旁路提问", requiresArgs: true },
+      { name: "model", aliases: [], description: "切换模型" }, // 未标记 = undefined
+    ];
+    const btw = rankCommandInfos(cmds, "btw")[0];
+    expect(btw.requiresArgs).toBe(true);
+    const model = rankCommandInfos(cmds, "model")[0];
+    // 无参命令：undefined（falsy）→ UI 视为可直接执行
+    expect(model.requiresArgs).toBeFalsy();
+  });
+
+  test("requiresArgs 透传（空查询路径）", () => {
+    const cmds: RankableCommandInfo[] = [
+      { name: "btw", aliases: [], description: "旁路提问", requiresArgs: true },
+      { name: "clear", aliases: [], description: "清空对话" },
+    ];
+    const all = rankCommandInfos(cmds, "");
+    expect(all.find((s) => s.label === "/btw")?.requiresArgs).toBe(true);
+    expect(all.find((s) => s.label === "/clear")?.requiresArgs).toBeFalsy();
+  });
 });

@@ -747,7 +747,7 @@ export class App {
    * 新体系优先：从 UnifiedCommandRegistry.getCommands 取（含 bundled skills、plugin 命令）；
    * 无新注册表时回退旧 Registry.all()。
    */
-  private async loadCommandList(): Promise<Array<{ name: string; aliases: string[]; description: string }>> {
+  private async loadCommandList(): Promise<Array<{ name: string; aliases: string[]; description: string; requiresArgs?: boolean }>> {
     if (this.unifiedRegistry) {
       try {
         const cmds = await this.unifiedRegistry.getCommands(process.cwd());
@@ -760,6 +760,7 @@ export class App {
             name: c.name,
             aliases: c.aliases ?? [],
             description: c.description,
+            requiresArgs: c.requiresArgs,
           }));
       } catch (err: any) {
         getLogger().warn("APP", `统一注册表加载命令列表失败，回退旧 Registry: ${err?.message}`);

@@ -283,7 +283,7 @@ export interface IDEConfig {
 
 /** 轨迹上传配置 */
 export interface TraceUploadConfig {
-  /** trajectory-platform URL，含路径前缀，如 http://121.196.144.227/traj */
+  /** trajectory-platform URL，含路径前缀，如 http://<your-server>/traj */
   url: string;
   /** X-Upload-Token 认证 token */
   token: string;
