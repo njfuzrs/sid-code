@@ -34,7 +34,9 @@ function printHelp(): void {
 说明:
   等价于重新执行安装命令：
     curl -fsSL ${INSTALL_URL} | bash
-  已有的 ~/.sid-code/ 配置与会话数据不受影响，只替换二进制本身。`);
+  已有的 ~/.sid-code/ 配置与会话数据不受影响，只替换二进制本身。
+  更新后首次启动时，会把新增的团队默认配置字段（如 subAgentModels/search/trace 等）
+  自动补进 settings.json —— 仅追加你尚未拥有的顶层字段，绝不覆盖你已有的任何配置。`);
 }
 
 export async function handleUpdateCommand(args: string[]): Promise<void> {

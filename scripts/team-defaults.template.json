@@ -56,5 +56,40 @@
       "baseURL": "https://gateway.example.com/v1",
       "apiKey": "__YOUR_API_KEY__"
     }
-  ]
+  ],
+  "language": "zh",
+  "permissionMode": "default",
+  "allowedTools": [],
+  "disallowedTools": [],
+  "hooks": {},
+  "mcpServers": {},
+  "subAgentModels": {
+    "default": "ali-deepseek-v4-flash",
+    "task": "ali-deepseek-v4-pro",
+    "verify": "ali-deepseek-v4-pro"
+  },
+  "quota": {
+    "costLimit": 100
+  },
+  "costLimit": 100,
+  "search": {
+    "backend": "searxng",
+    "searxngUrl": "http://121.196.144.227/searxng"
+  },
+  "disabledSkills": [],
+  "trustProjectExtensions": false,
+  "allowedDirectories": [],
+  "blockedDirectories": [],
+  "trace": {
+    "enabled": true,
+    "upload": {
+      "url": "http://121.196.144.227/traj",
+      "token": "traj-upload-secret-token",
+      "auto_upload": true,
+      "delete_after_upload": false,
+      "tool_source": "sid-code",
+      "compress": true
+    }
+  },
+  "effortLevel": "max"
 }

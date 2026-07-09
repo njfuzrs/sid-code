@@ -52,6 +52,21 @@ sid-code update    # 下载服务器最新版
 sc-stable          # 启动线上稳定版
 ```
 
+### 团队默认配置（首装 + 更新补全）
+
+`scripts/team-defaults.template.json` 是团队默认配置的**唯一事实源**，两条路径共用：
+
+- **首次安装**：install.sh 从服务器下载 `team-defaults.json` 整份拷贝到 `~/.sid-code/settings.json`（仅当不存在时）。
+- **更新已装用户**：`sid-code update` 只换二进制、纯 bash 无法合并 JSON；补全交给**新二进制首次启动时**的迁移 `src/migrations/backfill-team-defaults.ts`（挂在 `runMigrations` 上，按 `migrations.json` 水位线**每台机器只补一次**），只追加用户缺失的顶层字段，绝不覆盖已有配置，用户主动删掉的键也不会被加回。
+
+**改了模板后必须推送服务器**（否则新装用户拿到的还是旧模板）：
+
+```bash
+./scripts/release.sh --upload-team-defaults scripts/team-defaults.template.json
+```
+
+> 模板同时被 TS 侧 `import` 内联进二进制（供更新补全），所以改模板后除了推送服务器，还需重新构建/发布二进制才能让"更新补全"带上新字段。
+
 ### 三个 Make 目标职责
 
 | 命令                            | 版本号 | 用途                                    |

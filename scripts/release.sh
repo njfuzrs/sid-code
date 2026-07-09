@@ -197,12 +197,12 @@ echo ""
 if [ "$DO_UPLOAD" = true ] && [ "$DO_BUMP" = false ]; then
     require_ssh_user
     if run_ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" "test -d '${DEPLOY_PATH}/${VERSION}'" 2>/dev/null; then
-        warn "服务器上已存在版本 v$VERSION，继续将【覆盖】该版本的现有产物。"
+        warn "服务器上已存在版本 v${VERSION}，继续将【覆盖】该版本的现有产物。"
         printf "  确认覆盖？(y/N) "
         read -r _ans </dev/tty || _ans=""
         case "$_ans" in
             y|Y|yes|YES) info "已确认，继续覆盖 v$VERSION" ;;
-            *) fail "已取消（避免误覆盖 v$VERSION）。如需新版本，去掉 --no-bump 重跑。" ;;
+            *) fail "已取消（避免误覆盖 v${VERSION}）。如需新版本，去掉 --no-bump 重跑。" ;;
         esac
         echo ""
     fi
@@ -248,7 +248,7 @@ for entry in "${TARGETS[@]}"; do
     if [ -n "$SELF_PLATFORM" ] && [ "$PLATFORM" = "$SELF_PLATFORM" ]; then
         SMOKE_VER="$("$OUT_DIR/sid-code" --version 2>/dev/null)" \
             || fail "冒烟测试失败：$PLATFORM 产物无法执行 --version，发布中止"
-        ok "冒烟测试通过（$PLATFORM）: $SMOKE_VER"
+        ok "冒烟测试通过（${PLATFORM}）: $SMOKE_VER"
         SELF_SMOKE_DONE=true
     fi
 

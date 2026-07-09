@@ -311,6 +311,69 @@ export function patchSettingsFile(
 }
 
 /**
+ * 浅合并：只把 defaults 里「用户尚未拥有的顶层键」补进 settings 文件，其余原样保留。
+ *
+ * 用于 `sid-code update` 后首次启动的团队默认配置补全（见
+ * src/migrations/backfill-team-defaults.ts）。与 patchSettingsFile 共享同一套安全写入
+ * 语义——直接读原始 JSON 文本（不展开 env 占位符、不过 Zod round-trip），因此不会把
+ * ${API_KEY} 展开成明文落盘、也不会 strip 掉 availableModels[].api_key 这类嵌套字段。
+ *
+ * "缺失"的判定只看顶层 key 是否 `in` 用户对象：用户把某数组显式设成 `[]`、某对象设成
+ * `{}` 都算「用户已表态」，一律不覆盖。这保证：用户主动删掉某个键后，本函数确实会再补
+ * 回来——但真正的「只补一次」幂等由上层迁移水位线（migrations.json 的 migrationVersion）
+ * 保证，本函数只负责单次浅合并的正确性。
+ *
+ * @param source        目标来源（仅文件型来源有效；内存来源直接忽略）
+ * @param defaults      完整默认配置对象（团队模板）
+ * @param workspacePath 工作区路径（项目级来源用；userSettings 忽略）
+ * @returns 实际补入的顶层键名数组（空数组表示无缺失、未写文件）
+ */
+export function mergeMissingTopLevelKeys(
+  source: SettingSource,
+  defaults: Record<string, unknown>,
+  workspacePath?: string,
+): string[] {
+  const path = getSettingsFilePath(source, workspacePath);
+  if (!path) return []; // flagSettings 等内存来源无文件
+
+  // 文件不存在 = 首次安装场景（install.sh 已负责整份拷贝团队默认配置），不在此创建，避免
+  // 与安装脚本职责重叠、也避免在无配置机器上凭空生成半份配置。
+  if (!existsSync(path)) return [];
+
+  // 读原始 JSON 文本（不展开 env 占位符、不做 Zod 校验），保留用户所有原始字段。
+  let raw: Record<string, unknown>;
+  try {
+    raw = JSON.parse(readFileSync(path, "utf-8"));
+  } catch (err) {
+    // 文件损坏时不要静默覆盖用户配置——直接抛出，让上层（迁移 runner）记录警告并跳过。
+    throw new Error(`settings 文件解析失败，已跳过默认配置补全以免覆盖: ${err}`);
+  }
+
+  const added: string[] = [];
+  for (const [key, value] of Object.entries(defaults)) {
+    if (!(key in raw)) {
+      raw[key] = value;
+      added.push(key);
+    }
+  }
+
+  if (added.length === 0) return []; // 无缺失，不写文件
+
+  const dir = dirname(path);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+
+  markInternalWrite(path); // 抑制自身写入触发的变更通知
+  writeFileSync(path, JSON.stringify(raw, null, 2), { mode: 0o600 });
+
+  // 失效缓存，下次读取重新合并
+  clearCachedParsedFile(path);
+  setCachedSource(source, null);
+  setSessionCache(null);
+
+  return added;
+}
+
+/**
  * 核心加载函数：从所有来源加载、验证、合并（读取语义：数组拼接去重）。
  * 不读缓存——总是重新合并（缓存逻辑在 getSettings 层）。
  */

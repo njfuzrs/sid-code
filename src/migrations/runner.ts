@@ -11,6 +11,7 @@
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
 import { sidPaths } from "../config/paths.ts";
+import { migrate as backfillTeamDefaults } from "./backfill-team-defaults.ts";
 
 interface Migration {
   version: number;
@@ -20,12 +21,11 @@ interface Migration {
 
 /** 迁移注册表——后续迁移在此追加 */
 const migrations: Migration[] = [
-  // 示例迁移（当前无需执行，作为框架占位）
-  // {
-  //   version: 1,
-  //   name: 'migrate-legacy-model-names',
-  //   migrate: () => { migrateLegacyModelNames(); },
-  // },
+  {
+    version: 1,
+    name: "backfill-team-defaults",
+    migrate: backfillTeamDefaults,
+  },
 ];
 
 const CURRENT_VERSION = migrations.length;

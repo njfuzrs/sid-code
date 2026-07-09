@@ -44,6 +44,7 @@ export {
   setFlagSettings,
   writeSettingsFile,
   patchSettingsFile,
+  mergeMissingTopLevelKeys,
   type SettingsWithErrors,
 } from "./settings.ts";
 
