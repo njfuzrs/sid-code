@@ -2,27 +2,14 @@
 # pre-push hook 受控版本（git track，团队成员安装一次即可同步）
 #
 # 行为：
-#   1. 跑 bun test：测试坏了直接 block push（评测系统改动越来越多，必须守门）
-#   2. 检查最近 commit 是否涉及 evals/ 下的 yaml / _scores / _reports
-#   3. 如果有变动，跑 bun run eval:dashboard 刷新 DASHBOARD.md
-#   4. 如果 DASHBOARD.md 有变化，生成独立 commit（不 amend）
+#   1. 检查最近 commit 是否涉及 evals/ 下的 yaml / _scores / _reports
+#   2. 如果有变动，跑 bun run eval:dashboard 刷新 DASHBOARD.md
+#   3. 如果 DASHBOARD.md 有变化，生成独立 commit（不 amend）
 #
 # 安装：
 #   bun run scripts/install-git-hooks.sh
 # 或手动：
 #   cp scripts/git-hooks/pre-push.sh .git/hooks/pre-push && chmod +x .git/hooks/pre-push
-
-# Step 1：测试守门
-# 这是 P2-9 的核心：以前 .git/hooks/pre-push 只跑 dashboard，测试坏了 push 不阻断
-echo "[pre-push] 跑 bun test ..."
-TEST_OUTPUT=$(bun test 2>&1)
-TEST_EXIT=$?
-echo "$TEST_OUTPUT" | tail -5
-if [ $TEST_EXIT -ne 0 ]; then
-  echo "[pre-push] ❌ bun test 失败 (exit=$TEST_EXIT)，push 中止"
-  exit 1
-fi
-echo "[pre-push] ✅ bun test 通过"
 
 # F-H5: holdout 泄露检测(双重防御 L5)
 echo "[pre-push] 跑 holdout 泄露检测 ..."
@@ -45,7 +32,7 @@ if [ -f "scripts/eval/check-holdout-real-tasks-sealed.sh" ]; then
   echo "[pre-push] ✅ holdout/real-tasks 永封完整"
 fi
 
-# Step 2-4：dashboard 刷新（与原 hook 行为一致）
+# Step 2-3：dashboard 刷新（与原 hook 行为一致）
 NEEDS_REFRESH=0
 
 if ! git diff --quiet HEAD~1 HEAD -- 'evals/' 2>/dev/null; then

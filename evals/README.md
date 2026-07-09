@@ -154,7 +154,7 @@ bun run eval:run --provider sid-code,claude-code
 **新建 case 流程**：
 
 ```bash
-bun run eval:new-case          # 用模板生成
+cp evals/_template.yaml evals/general/<priority>/case_NNN.yaml   # 手动复制模板命名
 # → 编辑 yaml 填字段
 bun run eval:list              # 验证识别
 bun run eval:run --cases case_NNN --provider sid-code   # 单跑验证

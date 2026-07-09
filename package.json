@@ -20,7 +20,6 @@
     "eval:run": "bun run node_modules/eval-framework/core/runner.ts",
     "eval:list": "bun run scripts/eval/list-evals.ts",
     "eval:tally": "bun run scripts/eval/tally-baseline.ts",
-    "eval:new-case": "bun run scripts/eval/new-case.ts",
     "eval:bench": "bun run scripts/eval/run-bench.ts",
     "eval:bench-report": "bun run scripts/eval/bench-report.ts",
     "eval:plan-capability": "bun run scripts/eval/run-plan-capability.ts",

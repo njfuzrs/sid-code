@@ -3,7 +3,7 @@
  * scan-trajectory-secrets.ts —— B6-4 批量脱敏二审扫描器
  *
  * 用途：
- *   批量扫 trajectory-platform/bench/tasks/<id>/task.yaml，复用 importer scanSecrets/scanContamination
+ *   批量扫 trajectory-platform/bench/tasks/<id>/task.yaml，复用 lib/security-scan.ts scanSecrets/scanContamination
  *   输出报告：哪些 task 命中 private_key / api_key / email / ip / contamination
  *   标注：unsafe_for_holdout（任何 secret 命中或 ≥ 1 contamination）/ needs_sanitization（仅 email/ip）/ safe
  *
@@ -29,7 +29,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { scanSecrets, scanContamination } from "../../evals/scripts/import-trajectory-platform.ts";
+import { scanSecrets, scanContamination } from "./lib/security-scan.ts";
 
 const SID_CODE_ROOT = resolve(import.meta.dir, "..", "..");
 const DEFAULT_BENCH_ROOT = resolve(SID_CODE_ROOT, "..", "trajectory-platform");

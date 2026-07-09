@@ -7,7 +7,7 @@
  *   （tool_result_content / response_content / patch_content / observation_content / completion_text）
  *   命中 → 退出码 1，列出违规位置，阻止合入。
  *
- * 复用 evals/scripts/import-trajectory-platform.ts 的 scanContamination
+ * 复用 scripts/eval/lib/security-scan.ts 的 scanContamination
  * （不重复实现关键词，避免漂移）。
  *
  * 使用：
@@ -22,7 +22,7 @@
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { scanContamination } from "../../evals/scripts/import-trajectory-platform.ts";
+import { scanContamination } from "./lib/security-scan.ts";
 
 const REPO_ROOT = resolve(import.meta.dir, "..", "..");
 const REAL_TASKS_DIR = join(REPO_ROOT, "evals", "real-tasks");
