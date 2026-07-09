@@ -88,6 +88,23 @@ sc-stable          # 启动线上稳定版
 
 > 模板同时被 TS 侧 `import` 内联进二进制（供更新补全），所以改模板后除了推送服务器，还需重新构建/发布二进制才能让"更新补全"带上新字段。
 
+### 内嵌 ripgrep 二进制（摆脱用户系统 PATH 依赖）
+
+sid-code 的 grep/glob 工具优先用 ripgrep，但不依赖用户系统装没装 `rg`：构建时把 4 平台预编译 rg 二进制嵌进 `bun --compile` 产物，运行时释放到 `~/.sid-code/bin/rg` 并使用（对标 claude-code 的 builtin ripgrep 模式）。用户没装 rg 时不再降级到慢的系统 grep。
+
+**服务器是唯一二进制源**，`scripts/fetch-ripgrep.ts` 在构建时从服务器下载，`vendor/` 目录不入库（只有 0 字节占位 `vendor/rg-embed` 入库，保证没跑 fetch 时 `bun build` 也不报错）：
+
+- **首次 / 升级版本后必须上传**（否则构建时服务器没有对应文件，产物退化为不含内嵌 rg，运行时静默回退系统 rg）：
+  ```bash
+  # 目录内文件名固定：rg-darwin-arm64 / rg-darwin-x64 / rg-linux-x64 / rg-linux-arm64
+  ./scripts/release.sh --upload-ripgrep <本地目录> <版本号，如 14.1.1>
+  ```
+- 升级版本时同步改 `scripts/fetch-ripgrep.ts` 里的 `DEFAULT_RG_VERSION`，否则构建拉的还是旧版本号。
+- `make build`/`make rebuild` 会 best-effort 拉当前平台（`fetch-ripgrep.ts --as-embed`，`-` 前缀不阻断构建失败）；`release.sh` 会 best-effort 拉全部 4 平台，每个 target 编译前切换 `vendor/rg-embed` 为对应平台二进制。**服务器缺文件不阻断发布**，只是该平台产物没有内嵌 rg。
+- dev 模式（`bun run src` / `bun test`）不走释放逻辑，直接用系统 `rg`。
+- 运行时优先级：`SID_RIPGREP_PATH` 环境变量 > 嵌入释放的 `~/.sid-code/bin/rg` > 系统 PATH 的 `rg`。
+- 服务器存放路径由 `DEPLOY_RG_PATH` 控制（默认 `/var/www/html/vendor-bin/ripgrep`，与 `DEPLOY_PATH` 的发布版本目录隔离，不受旧版本清理逻辑影响），走同一份 `scripts/deploy.env` 凭据。
+
 ### 三个 Make 目标职责
 
 | 命令                            | 版本号 | 用途                                    |

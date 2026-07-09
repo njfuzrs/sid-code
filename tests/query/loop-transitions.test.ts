@@ -191,6 +191,12 @@ describe("queryLoop recovery transitions", () => {
     let processCall = 0;
     const { loopConfig, transitions } = setup({
       responses: [normalResp()],
+      // 显式覆盖退避基数/上限为极小值：本用例会真实触发一次超时重试 sleep，
+      // 若吃生产 DEFAULTS（retryBackoffBaseMs 已提到 5000ms）会与 bun 默认 5s
+      // 测试超时打平，导致随机超时。
+      configOverrides: {
+        network: { retryBackoffBaseMs: 1, retryBackoffMaxMs: 5 },
+      },
       depsOverrides: {
         processStream: async () => {
           processCall++;

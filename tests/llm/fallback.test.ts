@@ -487,7 +487,14 @@ describe("ModelFallback 增强", () => {
     };
 
     const fallback = new ModelFallback(
-      { contextLimit: 200000 },
+      {
+        contextLimit: 200000,
+        // 显式覆盖退避基数/上限为极小值：本用例会真实触发一次连接阶段重试等待，
+        // 若吃生产 NETWORK_DEFAULTS（retryBackoffBaseMs 已提到 5000ms）会与 bun
+        // 默认 5s 测试超时打平，导致抖动（jitter）落在不同区间时随机超时。
+        retryBackoffBaseMs: 1,
+        retryBackoffMaxMs: 5,
+      },
       {
         onMaxTokensAdjusted: (orig, adj) => {
           maxTokensAdjusted = true;
@@ -1000,5 +1007,170 @@ describe("T6 — 流内错误提前检测（stream-level error）", () => {
     // 认证错误归 Terminal：原模型标记不可用 + 走 fallback 成功收尾
     expect(availability.isAvailable("anthropic:claude-x").available).toBe(false);
     expect(events.some(e => e.type === "message_stop")).toBe(true);
+  });
+});
+
+// ─── fallbackSwitchMode 三态切换（询问用户 / 自动 / 禁用降级） ───
+describe("ModelFallback — fallbackSwitchMode", () => {
+  test("off：不降级，直接报错终止本轮，即使配置了 fallbackProvider", async () => {
+    const primary = errorEventProvider("401 Unauthorized"); // terminal，直入 tryFallback
+    const fallback = new ModelFallback({
+      fallbackSwitchMode: "off",
+      fallbackProvider: successProvider(),
+      fallbackModel: "backup",
+    });
+
+    const events = await collectEvents(fallback.executeWithFallback(primary, defaultParams));
+
+    expect(events.some(e => e.type === "message_stop")).toBe(false);
+    const errorEvent = events.find(e => e.type === "error");
+    expect(errorEvent).toBeDefined();
+    expect((errorEvent as any).error.message).toContain("off");
+    expect(fallback.checkFallbackOccurred()).toBe(false);
+  });
+
+  test("auto（默认，无 onFallbackDecision 钩子）：保持旧行为，直接切 fallbackModel", async () => {
+    const primary = errorEventProvider("401 Unauthorized");
+    const fallback = new ModelFallback({
+      fallbackSwitchMode: "auto",
+      fallbackProvider: successProvider(),
+      fallbackModel: "backup",
+    });
+
+    const events = await collectEvents(fallback.executeWithFallback(primary, defaultParams));
+
+    expect(events.some(e => e.type === "message_stop")).toBe(true);
+    expect(fallback.checkFallbackOccurred()).toBe(true);
+  });
+
+  test("ask + 钩子返回 switch(默认模型)：切到钩子指定的 provider/model", async () => {
+    const primary = errorEventProvider("401 Unauthorized");
+    const backupProvider = successProvider();
+    let decisionCtx: any = null;
+
+    const fallback = new ModelFallback({
+      fallbackSwitchMode: "ask",
+      fallbackModel: "backup", // 仅作为 defaultFallbackModel 透传给钩子，不直接使用
+      onFallbackDecision: async (ctx) => {
+        decisionCtx = ctx;
+        return { action: "switch", model: "backup", provider: backupProvider };
+      },
+    });
+
+    const events = await collectEvents(fallback.executeWithFallback(primary, defaultParams));
+
+    expect(decisionCtx).not.toBeNull();
+    expect(decisionCtx.failedModel).toBe(defaultParams.model);
+    expect(decisionCtx.defaultFallbackModel).toBe("backup");
+    expect(events.some(e => e.type === "message_stop")).toBe(true);
+    expect(fallback.checkFallbackOccurred()).toBe(true);
+  });
+
+  test("ask + 钩子返回 switch(任意 availableModels 模型)：不受 config.fallbackModel 限制", async () => {
+    const primary = errorEventProvider("401 Unauthorized");
+    const otherProvider = successProvider();
+
+    const fallback = new ModelFallback({
+      fallbackSwitchMode: "ask",
+      fallbackModel: "backup", // 钩子选了别的模型，不应受此限制
+      onFallbackDecision: async () => ({ action: "switch", model: "some-other-model", provider: otherProvider }),
+    });
+
+    const events = await collectEvents(fallback.executeWithFallback(primary, defaultParams));
+
+    expect(events.some(e => e.type === "message_stop")).toBe(true);
+    expect(fallback.checkFallbackOccurred()).toBe(true);
+  });
+
+  test("ask + 钩子返回 abort：不切换，yield error 终止本轮", async () => {
+    const primary = errorEventProvider("401 Unauthorized");
+    const fallback = new ModelFallback({
+      fallbackSwitchMode: "ask",
+      fallbackProvider: successProvider(),
+      fallbackModel: "backup",
+      onFallbackDecision: async () => ({ action: "abort" }),
+    });
+
+    const events = await collectEvents(fallback.executeWithFallback(primary, defaultParams));
+
+    expect(events.some(e => e.type === "message_stop")).toBe(false);
+    const errorEvent = events.find(e => e.type === "error");
+    expect(errorEvent).toBeDefined();
+    expect(fallback.checkFallbackOccurred()).toBe(false);
+  });
+
+  test("ask + 无 onFallbackDecision 钩子：退化为 auto 行为（headless 场景）", async () => {
+    const primary = errorEventProvider("401 Unauthorized");
+    const fallback = new ModelFallback({
+      fallbackSwitchMode: "ask",
+      // 未注入 onFallbackDecision（headless/SDK 模式不会注入 handler）
+      fallbackProvider: successProvider(),
+      fallbackModel: "backup",
+    });
+
+    const events = await collectEvents(fallback.executeWithFallback(primary, defaultParams));
+
+    expect(events.some(e => e.type === "message_stop")).toBe(true);
+    expect(fallback.checkFallbackOccurred()).toBe(true);
+  });
+
+  test("ask + 钩子抛异常：fail-open 到 auto（切默认 fallbackModel，不中断任务）", async () => {
+    const primary = errorEventProvider("401 Unauthorized");
+    const fallback = new ModelFallback({
+      fallbackSwitchMode: "ask",
+      fallbackProvider: successProvider(),
+      fallbackModel: "backup",
+      onFallbackDecision: async () => {
+        throw new Error("askUserQuestion 内部异常（模拟 TUI 未就绪）");
+      },
+    });
+
+    const events = await collectEvents(fallback.executeWithFallback(primary, defaultParams));
+
+    // fail-open：钩子异常不应中断任务，应回退到切默认 fallbackModel
+    expect(events.some(e => e.type === "message_stop")).toBe(true);
+    expect(fallback.checkFallbackOccurred()).toBe(true);
+  });
+
+  test("ask + 钩子抛异常 + 无默认 fallbackModel：fail-open 后仍无可用目标 → abort", async () => {
+    const primary = errorEventProvider("401 Unauthorized");
+    const fallback = new ModelFallback({
+      fallbackSwitchMode: "ask",
+      // 无 fallbackProvider/fallbackModel：fail-open 的 auto 兜底也找不到目标
+      onFallbackDecision: async () => {
+        throw new Error("模拟异常");
+      },
+    });
+
+    const events = await collectEvents(fallback.executeWithFallback(primary, defaultParams));
+
+    expect(events.some(e => e.type === "message_stop")).toBe(false);
+    const errorEvent = events.find(e => e.type === "error");
+    expect(errorEvent).toBeDefined();
+    expect(fallback.checkFallbackOccurred()).toBe(false);
+  });
+
+  test("二次降级（已用过 fallback）：不再重复调用 onFallbackDecision，直接报错", async () => {
+    // 主 provider 每次都失败 → 第一次触发 tryFallback 切换成功后，fallback provider
+    // 本身若也失败，第二次进 tryFallback 应直接因 hasFallenBack 短路，不再问用户。
+    let decisionCalls = 0;
+    const alwaysFailing = errorEventProvider("401 Unauthorized");
+    const alsoFailingBackup = errorEventProvider("401 Unauthorized");
+
+    const fallback = new ModelFallback({
+      fallbackSwitchMode: "ask",
+      onFallbackDecision: async () => {
+        decisionCalls++;
+        return { action: "switch", model: "backup", provider: alsoFailingBackup };
+      },
+    });
+
+    const events = await collectEvents(fallback.executeWithFallback(alwaysFailing, defaultParams));
+
+    // fallback provider 本身也是 terminal 错误 → streamFromFallback 透传其 error 事件，
+    // 不会再次进 tryFallback（terminal 错误走的是 errorEventProvider 的裸 error 事件，
+    // 由 streamFromFallback 判定 fbYieldedError=true 后原样收尾，不触发二次决策）。
+    expect(decisionCalls).toBe(1);
+    expect(events.some(e => e.type === "message_stop")).toBe(false);
   });
 });

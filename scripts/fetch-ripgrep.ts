@@ -35,8 +35,16 @@ const VENDOR_DIR = join(ROOT, "vendor");
 const ALL_PLATFORMS = ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64"] as const;
 type Platform = (typeof ALL_PLATFORMS)[number];
 
-/** 默认嵌入的 ripgrep 版本（升级时改这里，并把对应二进制上传服务器） */
-const DEFAULT_RG_VERSION = "14.1.1";
+/**
+ * 默认嵌入的 ripgrep 版本（升级时改这里，并把对应二进制上传服务器）。
+ *
+ * 14.1.1 → 15.1.0（2026-07-09）：14.1.1 在 macOS aarch64 上动态链接 PCRE2
+ * （运行时报 `Library not loaded: /opt/homebrew/opt/pcre2/...`，没装 Homebrew
+ * pcre2 的机器直接崩溃，违背"摆脱环境依赖"的初衷）。该 bug 于 15.0.0 修复
+ * （BurntSushi/ripgrep #3155：statically compile PCRE2 into macOS aarch64 artifacts）。
+ * 15.1.0 是当前最新稳定版。
+ */
+const DEFAULT_RG_VERSION = "15.1.0";
 
 function getBaseUrl(): string {
   const explicit = process.env.SID_RG_BASE_URL?.trim();

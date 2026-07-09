@@ -252,6 +252,8 @@ export class ModelFallback {
     this.config = {
       fallbackProvider: config.fallbackProvider,
       fallbackModel: config.fallbackModel,
+      fallbackSwitchMode: config.fallbackSwitchMode,
+      onFallbackDecision: config.onFallbackDecision,
       availability: config.availability,
       querySource: config.querySource,
       maxRetries: config.maxRetries,

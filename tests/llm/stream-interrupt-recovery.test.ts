@@ -153,6 +153,10 @@ describe("T9.1 流式中断 & 恢复", () => {
       const fallback = new ModelFallback({
         maxRetries: 3,
         streamTimeoutMs: 5000,
+        // 显式覆盖退避基数/上限：本用例会真实触发一次连接阶段重试等待，若吃生产
+        // NETWORK_DEFAULTS（retryBackoffBaseMs 5000ms）会与 bun 默认 5s 测试超时打平。
+        retryBackoffBaseMs: 1,
+        retryBackoffMaxMs: 5,
         availability: new ModelAvailabilityService(),
         onTelemetry: (e) => telemetryEvents.push(e),
       });

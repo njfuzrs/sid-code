@@ -204,7 +204,7 @@ fi
 if [ "$DO_UPLOAD_RIPGREP" = true ]; then
     [ -d "$RIPGREP_DIR" ] || fail "目录不存在: $RIPGREP_DIR"
     require_ssh_user
-    echo ">>> 上传 ripgrep 二进制 v${RIPGREP_VERSION}（来自 $RIPGREP_DIR）..."
+    echo ">>> 上传 ripgrep 二进制 v${RIPGREP_VERSION}（来自 ${RIPGREP_DIR}）..."
     RG_REMOTE_DIR="${DEPLOY_RG_PATH}/${RIPGREP_VERSION}"
     run_ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" "mkdir -p '${RG_REMOTE_DIR}'"
 
@@ -270,7 +270,7 @@ if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
     warn "tag $TAG 已存在，跳过创建（--no-bump 复用场景）"
 else
     if git tag -a "$TAG" -m "Release $TAG"; then
-        ok "已创建 tag $TAG（HEAD=$(git rev-parse --short HEAD)）"
+        ok "已创建 tag ${TAG}（HEAD=$(git rev-parse --short HEAD)）"
     else
         warn "tag 创建失败（不阻断发布）"
     fi
