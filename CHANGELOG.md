@@ -2,6 +2,17 @@
 
 本文件由 scripts/generate-changelog.ts 自动生成，请勿手改。
 
+## v0.1.583 (2026-07-09)
+
+### 修复
+- (test): 修复 change-detector 测试写文件前的 fs.watch 武装时序竞态
+
+### 其他
+- (eval): refresh dashboard 2026-07-09T10:28Z
+- (eval): refresh dashboard 2026-07-09T10:27Z
+- (eval): refresh dashboard 2026-07-09T10:27Z
+- (eval,hooks): 下线 case 生成脚本 + 移除 pre-push 的 bun test 门禁
+
 ## v0.1.582 (2026-07-09)
 
 ### 新功能
