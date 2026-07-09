@@ -21,6 +21,11 @@ export interface AskQuestionOption {
   label: string;
   /** 选项说明 / 权衡解释（可选） */
   description?: string;
+  /**
+   * 选项预览内容（可选，仅单选题生效）。markdown / ASCII mockup / 代码片段等，
+   * 选中该项时在对话框右侧并排渲染，供用户可视化对比几种方案。对标 cc 的 option.preview。
+   */
+  preview?: string;
 }
 
 /** 单个问题 */
@@ -42,12 +47,13 @@ export interface AskUserQuestionRequest {
 
 /**
  * 提问结果。
- * - answered：用户作答，answers 按"问题文本 → 答案"映射（多选答案以 ", " 连接）。
+ * - answered：用户作答，answers 按"问题文本 → 答案"映射（多选答案以 ", " 连接）；
+ *   notes（可选）按"问题文本 → 备注"映射，仅当用户给某题补了自由备注时存在。
  * - cancelled：用户主动放弃回答（ESC）。
  * - unavailable：当前无交互通道（headless/SDK/CI），无法提问。
  */
 export type AskUserQuestionResult =
-  | { status: "answered"; answers: Record<string, string> }
+  | { status: "answered"; answers: Record<string, string>; notes?: Record<string, string> }
   | { status: "cancelled" }
   | { status: "unavailable" };
 

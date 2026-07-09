@@ -299,6 +299,7 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
           costLimit={costLimit}
           contextPercent={contextPercent}
           model={model}
+          termWidth={termWidth}
         />
       </Box>
     </Box>

@@ -137,7 +137,7 @@ export interface PlanApprovalRequestInfo {
 export interface AskQuestionInfo {
   question: string;
   header: string;
-  options: Array<{ label: string; description?: string }>;
+  options: Array<{ label: string; description?: string; preview?: string }>;
   multiSelect?: boolean;
 }
 
@@ -149,11 +149,12 @@ export interface AskUserQuestionRequestInfo {
   questions: AskQuestionInfo[];
   /**
    * 用户作答完成后回灌：answers 按"问题文本 → 答案"映射（多选以 ", " 连接）。
-   * decision="cancelled" 表示用户 ESC 放弃，此时 answers 省略。
+   * notes（可选）按"问题文本 → 备注"映射，仅当用户补了自由备注时存在。
+   * decision="cancelled" 表示用户 ESC 放弃，此时 answers/notes 省略。
    */
   resolve: (
     result:
-      | { decision: "answered"; answers: Record<string, string> }
+      | { decision: "answered"; answers: Record<string, string>; notes?: Record<string, string> }
       | { decision: "cancelled" },
   ) => void;
 }

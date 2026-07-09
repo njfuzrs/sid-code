@@ -46,6 +46,12 @@ const askUserQuestionSchema = lazySchema(() =>
                   .string()
                   .optional()
                   .describe("该选项的说明或权衡解释（可选）"),
+                preview: z
+                  .string()
+                  .optional()
+                  .describe(
+                    "选项预览内容（可选，仅单选题生效）。用 markdown / ASCII mockup / 代码片段展示该选项对应的具体产物，供用户可视化对比。选中该项时在右侧并排渲染。仅在用户需要「看到实物才能决策」时提供（如对比两种 UI 布局、两段实现代码），简单偏好题不要用。",
+                  ),
               }),
             )
             .min(MIN_OPTIONS)
@@ -94,8 +100,15 @@ export class AskUserQuestionTool implements Tool {
 - 若推荐某个选项，把它放在第一个，并在 label 末尾标注"(推荐)"。
 - 选项之间不互斥时设 multiSelect: true（允许用户多选）。
 - 无需提供"其他"选项——UI 会自动追加，允许用户自定义输入。
+- 用户可以给选择附加自由备注（notes），备注会连同答案一起回灌给你。
 
-用户作答后，答案会以"问题 → 答案"的形式回灌给你。请严格按用户的选择继续，不要无视用户的决策。`;
+## preview 预览功能
+当选项代表用户需要**看到实物才能对比**的具体产物时（如两种 UI 布局 ASCII mockup、两段代码实现、两种配置方案），给 option 的 \`preview\` 字段填入 markdown 内容。UI 会切换为左右分栏：左侧选项列表，右侧渲染当前聚焦选项的 preview。
+- 仅单选题（非 multiSelect）生效。
+- 多行文本和换行符正常渲染。
+- 不要为简单偏好题使用 preview——label + description 足矣时别浪费屏幕空间。
+
+用户作答后，答案会以"问题 → 答案"的形式回灌给你（若用户附加了备注，会追加在答案后）。请严格按用户的选择继续，不要无视用户的决策。`;
   }
 
   inputSchema(): Record<string, unknown> {
@@ -146,12 +159,29 @@ export class AskUserQuestionTool implements Tool {
       };
     }
 
-    // answered：把"问题 → 答案"格式化回灌模型
-    const lines: string[] = ["用户已作答："];
-    for (const q of params.questions) {
-      const answer = result.answers[q.question];
-      lines.push(`· ${q.question} → ${answer ?? "(未作答)"}`);
-    }
-    return { output: lines.join("\n") };
+    // answered：把"问题 → 答案（备注）"格式化回灌模型
+    return {
+      output: formatAnsweredOutput(params.questions, result.answers, result.notes),
+    };
   }
+}
+
+/**
+ * 把用户作答结果格式化为回灌模型的文本。抽成纯函数便于单测。
+ *
+ * 格式：每题一行 `· {question} → {answer}`；若该题有非空备注，追加 `（备注：{notes}）`。
+ */
+export function formatAnsweredOutput(
+  questions: AskQuestion[],
+  answers: Record<string, string>,
+  notes?: Record<string, string>,
+): string {
+  const lines: string[] = ["用户已作答："];
+  for (const q of questions) {
+    const answer = answers[q.question];
+    const note = notes?.[q.question]?.trim();
+    const noteSuffix = note ? `（备注：${note}）` : "";
+    lines.push(`· ${q.question} → ${answer ?? "(未作答)"}${noteSuffix}`);
+  }
+  return lines.join("\n");
 }

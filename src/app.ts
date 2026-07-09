@@ -3146,7 +3146,7 @@ export class App {
           let settled = false;
           const wrappedResolve = (
             result:
-              | { decision: "answered"; answers: Record<string, string> }
+              | { decision: "answered"; answers: Record<string, string>; notes?: Record<string, string> }
               | { decision: "cancelled" },
           ) => {
             if (settled) return;
@@ -3154,7 +3154,7 @@ export class App {
             log.info("TUI:ASK", `提问对话框响应: ${result.decision}`);
             updateState({ askUserQuestionRequest: null });
             if (result.decision === "answered") {
-              resolve({ status: "answered", answers: result.answers });
+              resolve({ status: "answered", answers: result.answers, notes: result.notes });
             } else {
               resolve({ status: "cancelled" });
             }

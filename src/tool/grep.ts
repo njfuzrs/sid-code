@@ -533,12 +533,14 @@ export class GrepTool implements Tool {
       const { spawn } = await import("bun");
       const proc = spawn({ cmd: args, stdout: "pipe", stderr: "pipe" });
 
-      const [stdout, stderr] = await Promise.all([
+      // 必须先 await proc.exited 再读 exitCode。Bun 的 proc.exitCode 是同步属性，
+      // 进程未退出时返回 null——stdout/stderr 为空时 Response.text() 可能先于进程退出 resolve，
+      // 导致 exitCode 读到 null 报出「退出码 null」假错误。
+      const [stdout, stderr, exitCode] = await Promise.all([
         new Response(proc.stdout).text(),
         new Response(proc.stderr).text(),
+        proc.exited,
       ]);
-
-      const exitCode = proc.exitCode;
 
       if (exitCode === 1 || stdout.trim() === "") {
         return { output: "未找到匹配的内容" };

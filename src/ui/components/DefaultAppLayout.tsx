@@ -309,6 +309,7 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
           contextPercent={contextPercent}
           model={model}
           scrollPercent={scrollPercent}
+          termWidth={termWidth}
         />
       </Box>
     </Box>

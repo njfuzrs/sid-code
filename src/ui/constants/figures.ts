@@ -35,6 +35,13 @@ export const SUCCESS_MARK = "✔";
 export const ERROR_MARK = "✘";
 export const ARROW_PROMPT = "›";
 
+/**
+ * 聚焦指针（实心三角，比 ARROW_PROMPT 更重）。用于左右分栏列表里标记「当前聚焦项」，
+ * 与「已选中」区分开：聚焦=光标停留处（驱动右侧预览切换），选中=已提交的答案。
+ * 对标 cc 的 figures.pointer。
+ */
+export const POINTER = "▸";
+
 /** 警告标记（与 ✔/✘ 同族的纤细字形，用于内联警告前缀） */
 export const WARNING_MARK = "⚠";
 

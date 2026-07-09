@@ -8,12 +8,23 @@
 import React, { useRef, useState } from "react";
 import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
+import { Ansi } from "../../ink/Ansi.js";
 import { useKeypress, KeypressPriority } from "../contexts/KeypressContext.tsx";
+import { useTerminalDimensions } from "../contexts/TerminalContext.tsx";
 import type { PermissionRequestInfo, ShellConfirmRequestInfo, PlanApprovalRequestInfo, AskUserQuestionRequestInfo } from "../App.tsx";
 import { getToolDetailFull } from "../ui-utils.ts";
 import { theme } from "../semantic-colors.ts";
-import { BULLET, PLAN_REVIEW, WARNING_MARK, ARROW_PROMPT, TODO_PENDING, TODO_COMPLETED, CURSOR } from "../constants/figures.ts";
+import { BULLET, PLAN_REVIEW, WARNING_MARK, ARROW_PROMPT, TODO_PENDING, TODO_COMPLETED, CURSOR, POINTER } from "../constants/figures.ts";
+import { renderMarkdown } from "../markdown.ts";
 import { inspectToolCall, inspectCommand } from "../utils/danger-detect.ts";
+
+/**
+ * 识别选项 label 是否带「推荐」后缀（(推荐) / (Recommended)，大小写不敏感、容忍首尾空白）。
+ * 抽成纯函数便于单测。返回 true 表示该项应加视觉强调（对标 cc 的 (Recommended) 约定）。
+ */
+export function isRecommendedLabel(label: string): boolean {
+  return /[（(]\s*(推荐|recommended)\s*[)）]\s*$/i.test(label.trim());
+}
 
 /** 权限确认对话框 */
 function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
@@ -186,6 +197,9 @@ function PlanApprovalDialog({ request }: { request: PlanApprovalRequestInfo }) {
  * - 多选：↑↓ 移动 + Space 勾选 / 取消，Enter 确认本题（至少选一项）。
  * - 每题末尾自动追加"其他…"项：选中后进入文本输入，键入自定义答案，Enter 确认。
  * - ESC 取消整个问卷（回灌 cancelled，模型据此走默认方案，不会卡住）。
+ * - preview：单选题选项带 preview 时切换为左右分栏（左选项 + 右预览框）。
+ * - notes：单选题按 n 可给选择附加自由备注，与答案一起回灌模型。
+ * - Recommended：label 后缀 (推荐)/(Recommended) 的选项加品牌蓝强调。
  *
  * 视觉遵循 src/ui/CLAUDE.md：单 round 容器、品牌蓝点睛、字形从 figures.ts 取、
  * 多选用 ○/● 填充度双通道表达勾选态（非仅靠颜色）。
@@ -193,11 +207,14 @@ function PlanApprovalDialog({ request }: { request: PlanApprovalRequestInfo }) {
 function AskUserQuestionDialog({ request }: { request: AskUserQuestionRequestInfo }) {
   const resolvedRef = useRef(false);
   const questions = request.questions;
+  const { width: termWidth } = useTerminalDimensions();
 
   // 当前题目索引
   const [qIndex, setQIndex] = useState(0);
   // 已收集答案：问题文本 → 答案串（多选以 ", " 连接）
   const [answers, setAnswers] = useState<Record<string, string>>({});
+  // 所有题的备注：问题文本 → 备注
+  const [notes, setNotes] = useState<Record<string, string>>({});
   // 当前题的高亮项索引（含末尾"其他"项）
   const [cursor, setCursor] = useState(0);
   // 多选模式下当前题已勾选的选项 label 集合
@@ -205,39 +222,63 @@ function AskUserQuestionDialog({ request }: { request: AskUserQuestionRequestInf
   // 是否处于"其他"自定义文本输入态
   const [editingOther, setEditingOther] = useState(false);
   const [otherText, setOtherText] = useState("");
+  // notes 输入态
+  const [editingNotes, setEditingNotes] = useState(false);
+  const [notesText, setNotesText] = useState("");
 
   const current = questions[qIndex];
   // 末尾追加"其他"项：索引 = options.length
   const otherIndex = current.options.length;
   const totalRows = current.options.length + 1;
   const isMulti = !!current.multiSelect;
+  // 是否为 preview 分栏模式：单选 + 任一选项带 preview
+  const hasPreview = !isMulti && current.options.some((o) => !!o.preview);
 
-  const finish = (finalAnswers: Record<string, string>) => {
+  const finish = (finalAnswers: Record<string, string>, finalNotes: Record<string, string>) => {
     if (resolvedRef.current) return;
     resolvedRef.current = true;
-    request.resolve({ decision: "answered", answers: finalAnswers });
+    // 只传非空 notes
+    const filteredNotes = Object.fromEntries(
+      Object.entries(finalNotes).filter(([, v]) => v.trim().length > 0),
+    );
+    request.resolve({
+      decision: "answered",
+      answers: finalAnswers,
+      ...(Object.keys(filteredNotes).length > 0 && { notes: filteredNotes }),
+    });
   };
 
   // 记录一题答案并推进到下一题（或在最后一题时提交）
   const commitAnswer = (answer: string) => {
-    const next = { ...answers, [current.question]: answer };
-    setAnswers(next);
+    const nextAnswers = { ...answers, [current.question]: answer };
+    // 合并当前题的 notes（如果有）
+    const nextNotes = notesText.trim()
+      ? { ...notes, [current.question]: notesText.trim() }
+      : notes;
+    setAnswers(nextAnswers);
+    setNotes(nextNotes);
     if (qIndex < questions.length - 1) {
       setQIndex(qIndex + 1);
       setCursor(0);
       setChecked(new Set());
       setEditingOther(false);
       setOtherText("");
+      setEditingNotes(false);
+      setNotesText("");
     } else {
-      finish(next);
+      finish(nextAnswers, nextNotes);
     }
   };
 
   useKeypress(KeypressPriority.Critical, (key) => {
     if (resolvedRef.current) return false;
 
-    // ESC：整卷取消（文本输入态下先退出输入态，再次 ESC 才取消整卷）
+    // ESC：分层退出——notes 输入态先退 → "其他"输入态再退 → 最后取消整卷
     if (key.name === "escape") {
+      if (editingNotes) {
+        setEditingNotes(false);
+        return true;
+      }
       if (editingOther) {
         setEditingOther(false);
         setOtherText("");
@@ -248,7 +289,25 @@ function AskUserQuestionDialog({ request }: { request: AskUserQuestionRequestInf
       return true;
     }
 
-    // ── 文本输入态（选了"其他"）──
+    // ── notes 文本输入态 ──
+    if (editingNotes) {
+      if (key.name === "return" || key.name === "enter") {
+        // Enter 退出 notes 输入（保留内容，提交时会随答案一起走）
+        setEditingNotes(false);
+        return true;
+      }
+      if (key.name === "backspace" || key.name === "delete") {
+        setNotesText((t) => t.slice(0, -1));
+        return true;
+      }
+      if (key.insertable && key.sequence) {
+        setNotesText((t) => t + key.sequence);
+        return true;
+      }
+      return true; // 吞掉其它按键
+    }
+
+    // ── "其他"文本输入态 ──
     if (editingOther) {
       if (key.name === "return" || key.name === "enter") {
         const text = otherText.trim();
@@ -264,7 +323,7 @@ function AskUserQuestionDialog({ request }: { request: AskUserQuestionRequestInf
         setOtherText((t) => t + key.sequence);
         return true;
       }
-      return true; // 输入态吞掉其它按键
+      return true;
     }
 
     // ── 列表选择态 ──
@@ -285,6 +344,12 @@ function AskUserQuestionDialog({ request }: { request: AskUserQuestionRequestInf
         else next.add(cursor);
         return next;
       });
+      return true;
+    }
+
+    // n 键：单选题进入 notes 输入态（不在多选里提供——多选用 Space 已占了语义）
+    if (key.name === "n" && !isMulti && cursor < otherIndex) {
+      setEditingNotes(true);
       return true;
     }
 
@@ -315,6 +380,111 @@ function AskUserQuestionDialog({ request }: { request: AskUserQuestionRequestInf
 
   const accent = theme.ui.active;
 
+  // ── preview 分栏视图 ──
+  if (hasPreview) {
+    const leftWidth = Math.min(32, Math.floor(termWidth * 0.35));
+    const previewWidth = Math.max(20, termWidth - leftWidth - 6); // 6 = border + gap + padding
+    const focusedOption = current.options[cursor < otherIndex ? cursor : 0];
+    const previewContent = focusedOption?.preview
+      ? renderMarkdown(focusedOption.preview, previewWidth - 4) // 4 for inner padding
+      : "";
+    // tail 截断超高 preview
+    const previewLines = previewContent.split("\n");
+    const maxPreviewLines = 12;
+    const isTruncated = previewLines.length > maxPreviewLines;
+    const displayPreview = isTruncated
+      ? [...previewLines.slice(0, maxPreviewLines), `\x1b[2m… +${previewLines.length - maxPreviewLines} 行已折叠\x1b[0m`].join("\n")
+      : previewContent;
+
+    return (
+      <Box flexDirection="column" borderStyle="round" borderColor={accent} paddingX={1}>
+        {/* 标题行 */}
+        <Box>
+          <Text color={accent} bold>{BULLET} {current.header}</Text>
+          {questions.length > 1 && (
+            <Text color={theme.text.secondary}>  ({qIndex + 1}/{questions.length})</Text>
+          )}
+        </Box>
+        <Box paddingLeft={2} marginTop={0}>
+          <Text>{current.question}</Text>
+        </Box>
+
+        {/* 左右分栏 */}
+        <Box flexDirection="row" marginTop={1} gap={1}>
+          {/* 左栏：选项列表 */}
+          <Box flexDirection="column" width={leftWidth} flexShrink={0}>
+            {current.options.map((opt, i) => {
+              const isCursor = cursor === i;
+              const recommended = isRecommendedLabel(opt.label);
+              const pointer = isCursor ? POINTER : " ";
+              const labelColor = isCursor ? accent : recommended ? accent : theme.text.primary;
+              return (
+                <Box key={i}>
+                  <Box width={2} flexShrink={0}>
+                    <Text color={isCursor ? accent : theme.text.secondary}>{pointer}</Text>
+                  </Box>
+                  <Text color={labelColor} bold={isCursor || recommended}>{opt.label}</Text>
+                </Box>
+              );
+            })}
+            {/* "其他"项 */}
+            <Box>
+              <Box width={2} flexShrink={0}>
+                <Text color={cursor === otherIndex ? accent : theme.text.secondary}>
+                  {cursor === otherIndex ? POINTER : " "}
+                </Text>
+              </Box>
+              <Text color={cursor === otherIndex ? accent : theme.text.secondary} bold={cursor === otherIndex}>
+                其他…
+              </Text>
+            </Box>
+            {editingOther && (
+              <Box paddingLeft={2}>
+                <Text color={accent}>{ARROW_PROMPT} </Text>
+                <Text>{otherText}</Text>
+                <Text color={accent}>{CURSOR}</Text>
+              </Box>
+            )}
+          </Box>
+
+          {/* 右栏：预览框 */}
+          <Box flexDirection="column" flexGrow={1} borderStyle="round" borderColor={theme.border.default} paddingX={1}>
+            {displayPreview ? (
+              <Ansi>{displayPreview}</Ansi>
+            ) : (
+              <Text color={theme.text.secondary} dimColor>无预览</Text>
+            )}
+          </Box>
+        </Box>
+
+        {/* notes 区 */}
+        {editingNotes ? (
+          <Box paddingLeft={2} marginTop={0}>
+            <Text color={accent}>备注: {ARROW_PROMPT} </Text>
+            <Text>{notesText}</Text>
+            <Text color={accent}>{CURSOR}</Text>
+          </Box>
+        ) : notesText.trim() ? (
+          <Box paddingLeft={2} marginTop={0}>
+            <Text color={theme.text.secondary}>备注: {notesText}</Text>
+          </Box>
+        ) : null}
+
+        {/* 操作提示 */}
+        <Box marginTop={1}>
+          {editingOther ? (
+            <Text color={theme.text.secondary}>输入自定义答案，Enter 确认，Esc 返回</Text>
+          ) : editingNotes ? (
+            <Text color={theme.text.secondary}>输入备注，Enter 确认，Esc 返回</Text>
+          ) : (
+            <Text color={theme.text.secondary}>↑↓ 选择 · Enter 确认 · n 备注 · Esc 取消</Text>
+          )}
+        </Box>
+      </Box>
+    );
+  }
+
+  // ── 列表视图（标准路径：单选 / 多选） ──
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={accent} paddingX={1}>
       {/* 标题行：chip 标签 + 进度 */}
@@ -331,8 +501,9 @@ function AskUserQuestionDialog({ request }: { request: AskUserQuestionRequestInf
       {/* 选项列表 */}
       <Box flexDirection="column" marginTop={1} paddingLeft={2}>
         {current.options.map((opt, i) => {
-          const isCursor = cursor === i && !editingOther;
+          const isCursor = cursor === i && !editingOther && !editingNotes;
           const isChecked = isMulti && checked.has(i);
+          const recommended = isRecommendedLabel(opt.label);
           // 多选用填充度字形双通道表达勾选（○ 未选 / ● 已选）；单选用光标 BULLET
           const marker = isMulti
             ? (isChecked ? TODO_COMPLETED : TODO_PENDING)
@@ -342,14 +513,14 @@ function AskUserQuestionDialog({ request }: { request: AskUserQuestionRequestInf
             : isCursor
               ? accent
               : theme.text.secondary;
-          const labelColor = isCursor ? accent : theme.text.primary;
+          const labelColor = isCursor ? accent : recommended ? accent : theme.text.primary;
           return (
             <Box key={i} flexDirection="column">
               <Box>
                 <Box width={2} flexShrink={0}>
                   <Text color={markerColor}>{marker}</Text>
                 </Box>
-                <Text color={labelColor} bold={isCursor}>{opt.label}</Text>
+                <Text color={labelColor} bold={isCursor || recommended}>{opt.label}</Text>
               </Box>
               {isCursor && opt.description && (
                 <Box paddingLeft={2}>
@@ -365,7 +536,7 @@ function AskUserQuestionDialog({ request }: { request: AskUserQuestionRequestInf
           <Box>
             <Box width={2} flexShrink={0}>
               <Text color={cursor === otherIndex ? accent : theme.text.secondary}>
-                {cursor === otherIndex && !editingOther ? BULLET : " "}
+                {cursor === otherIndex && !editingOther && !editingNotes ? BULLET : " "}
               </Text>
             </Box>
             <Text color={cursor === otherIndex ? accent : theme.text.secondary} bold={cursor === otherIndex}>
@@ -382,14 +553,31 @@ function AskUserQuestionDialog({ request }: { request: AskUserQuestionRequestInf
         </Box>
       </Box>
 
+      {/* notes 区（仅单选题可用） */}
+      {!isMulti && (
+        editingNotes ? (
+          <Box paddingLeft={2} marginTop={0}>
+            <Text color={accent}>备注: {ARROW_PROMPT} </Text>
+            <Text>{notesText}</Text>
+            <Text color={accent}>{CURSOR}</Text>
+          </Box>
+        ) : notesText.trim() ? (
+          <Box paddingLeft={2} marginTop={0}>
+            <Text color={theme.text.secondary}>备注: {notesText}</Text>
+          </Box>
+        ) : null
+      )}
+
       {/* 操作提示行：随模式切换 */}
       <Box marginTop={1}>
         {editingOther ? (
           <Text color={theme.text.secondary}>输入自定义答案，Enter 确认，Esc 返回</Text>
+        ) : editingNotes ? (
+          <Text color={theme.text.secondary}>输入备注，Enter 确认，Esc 返回</Text>
         ) : isMulti ? (
           <Text color={theme.text.secondary}>↑↓ 移动 · Space 勾选 · Enter 确认本题 · Esc 取消</Text>
         ) : (
-          <Text color={theme.text.secondary}>↑↓ 选择 · Enter 确认 · Esc 取消</Text>
+          <Text color={theme.text.secondary}>↑↓ 选择 · Enter 确认 · n 备注 · Esc 取消</Text>
         )}
       </Box>
     </Box>
