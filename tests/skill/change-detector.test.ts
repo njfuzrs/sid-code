@@ -32,7 +32,10 @@ describe("SkillChangeDetector", () => {
     detector.watchDirs([dir]);
 
     if (detector.isWatching()) {
-      // 写入 .md 文件触发变更
+      // fs.watch(recursive) 底层依赖 FSEvents，watcher 建立后需要短暂时间才能"武装"就绪。
+      // 若紧接着写文件，可能在 watcher 就绪前发生，导致本次变更事件被漏掉（竞态）。
+      // 先等一小段时间让 watcher 就绪，再写入 .md 文件触发变更。
+      await new Promise((r) => setTimeout(r, 50));
       writeFileSync(join(dir, "my-skill", "SKILL.md"), "---\nname: x\ndescription: d\n---\nbody");
       // 等待防抖窗口
       await new Promise((r) => setTimeout(r, 250));
