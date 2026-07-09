@@ -106,6 +106,22 @@ export class HookSystem {
     this.registry.setAllEnabled(enabled);
   }
 
+  /**
+   * 批量应用禁用列表（settings.json disabledHooks 启动恢复用）。
+   * 先全启用再按名禁用,保证与配置一致（幂等）；对插件 hook 也生效,故 loadPluginHooks 后需再调一次。
+   */
+  applyDisabledHooks(disabledNames: string[] | undefined): void {
+    if (!disabledNames || disabledNames.length === 0) return;
+    for (const name of disabledNames) {
+      this.registry.setHookEnabled(name, false);
+    }
+  }
+
+  /** 获取 hook 的显示名（name > command > url），供管理命令与持久化按名匹配复用。 */
+  getHookName(entry: HookRegistryEntry): string {
+    return this.registry.getHookName(entry);
+  }
+
   /** 获取所有 hook（用于管理命令） */
   getAllHooks(): HookRegistryEntry[] {
     return this.registry.getAllHooks();

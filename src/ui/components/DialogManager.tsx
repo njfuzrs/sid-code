@@ -10,17 +10,15 @@ import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
 import { useKeypress, KeypressPriority } from "../contexts/KeypressContext.tsx";
 import type { PermissionRequestInfo, ShellConfirmRequestInfo, PlanApprovalRequestInfo, AskUserQuestionRequestInfo } from "../App.tsx";
-import { getToolSummary } from "../ui-utils.ts";
+import { getToolDetailFull } from "../ui-utils.ts";
 import { theme } from "../semantic-colors.ts";
 import { BULLET, PLAN_REVIEW, WARNING_MARK, ARROW_PROMPT, TODO_PENDING, TODO_COMPLETED, CURSOR } from "../constants/figures.ts";
 import { inspectToolCall, inspectCommand } from "../utils/danger-detect.ts";
-import { SettingsDialog } from "./SettingsDialog.tsx";
-import { ModelDialog } from "./ModelDialog.tsx";
-import { ThemeDialog } from "./ThemeDialog.tsx";
 
 /** 权限确认对话框 */
 function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
-  const detail = getToolSummary(request.toolName, request.toolInput);
+  // 权限框是授权决策入口，必须让用户看清完整命令/路径，不截断（长则换行）。
+  const detail = getToolDetailFull(request.toolName, request.toolInput);
   const resolvedRef = useRef(false);
   // 危险操作差异化：破坏性命令标红 + 警告行 + 仪式感文案（对标 cc destructiveCommandWarning）
   const danger = inspectToolCall(request.toolName, request.toolInput);
@@ -49,9 +47,13 @@ function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
           <Text color={theme.text.secondary}>工具: </Text>
           <Text bold>{request.toolName}</Text>
         </Box>
-        <Box>
-          <Text color={theme.text.secondary}>详情: </Text>
-          <Text color={theme.ui.active}>{detail.length > 60 ? detail.slice(0, 57) + "…" : detail}</Text>
+        <Box flexDirection="row">
+          <Box flexShrink={0}>
+            <Text color={theme.text.secondary}>详情: </Text>
+          </Box>
+          <Box flexGrow={1}>
+            <Text color={theme.ui.active} wrap="wrap">{detail}</Text>
+          </Box>
         </Box>
         {danger.isDangerous && (
           <Box>

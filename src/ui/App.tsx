@@ -737,13 +737,17 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
   }, [bridge]);
 
   const handleModelSelect = useCallback((modelName: string) => {
-    // 通过斜杠命令切换模型（复用已有逻辑）
-    callbacks.onSlashCommand("model", modelName);
+    // 通过斜杠命令切换模型（复用已有逻辑）。附加 -p 持久化到 settings.json：
+    // 对话框选择是用户主动、有意的模型选择（区别于临时试用），理应跨会话保留——
+    // 这正是"切了模型重开却回退"痛点的正解。命令行快捷切换仍默认不持久化，需显式 -p。
+    callbacks.onSlashCommand("model", `${modelName} -p`);
     bridge.update({ activeDialog: null });
   }, [callbacks, bridge]);
 
   const handleThemeSelect = useCallback((themeName: string) => {
-    callbacks.onSlashCommand("theme", themeName);
+    // 附加 -p 持久化：对话框选主题是用户主动、有意的偏好选择，理应跨会话保留
+    // （与 handleModelSelect 同构）。命令行 /theme <name> 仍默认不持久化，需显式 -p。
+    callbacks.onSlashCommand("theme", `${themeName} -p`);
     bridge.update({ activeDialog: null });
   }, [callbacks, bridge]);
 

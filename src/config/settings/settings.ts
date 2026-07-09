@@ -34,6 +34,7 @@ import {
   setSessionCache,
   getCachedSource,
   setCachedSource,
+  clearCachedSource,
   getCachedParsedFile,
   setCachedParsedFile,
   clearCachedParsedFile,
@@ -252,8 +253,10 @@ export function writeSettingsFile(
   markInternalWrite(path); // 抑制自身写入触发的变更通知
   writeFileSync(path, JSON.stringify(settings, null, 2), { mode: 0o600 });
 
-  // 失效缓存，下次读取重新合并
-  setCachedSource(source, null);
+  // 失效缓存，下次读取重新读盘（必须 clear 删键，不能 setCachedSource(source,null)——
+  // 后者会被 getCachedSource 当"已缓存且无设置"命中，导致同会话内后续 read-then-patch
+  // 从空对象起步、覆盖掉本次补丁写入的字段）。
+  clearCachedSource(source);
   setSessionCache(null);
 }
 
@@ -304,9 +307,11 @@ export function patchSettingsFile(
   markInternalWrite(path); // 抑制自身写入触发的变更通知
   writeFileSync(path, JSON.stringify(raw, null, 2), { mode: 0o600 });
 
-  // 失效缓存，下次读取重新合并
+  // 失效缓存，下次读取重新读盘（必须 clear 删键，不能 setCachedSource(source,null)——
+  // 后者会被 getCachedSource 当"已缓存且无设置"命中，导致同会话内后续 read-then-patch
+  // 从空对象起步、覆盖掉本次补丁写入的字段）。
   clearCachedParsedFile(path);
-  setCachedSource(source, null);
+  clearCachedSource(source);
   setSessionCache(null);
 }
 
@@ -365,9 +370,11 @@ export function mergeMissingTopLevelKeys(
   markInternalWrite(path); // 抑制自身写入触发的变更通知
   writeFileSync(path, JSON.stringify(raw, null, 2), { mode: 0o600 });
 
-  // 失效缓存，下次读取重新合并
+  // 失效缓存，下次读取重新读盘（必须 clear 删键，不能 setCachedSource(source,null)——
+  // 后者会被 getCachedSource 当"已缓存且无设置"命中，导致同会话内后续 read-then-patch
+  // 从空对象起步、覆盖掉本次补丁写入的字段）。
   clearCachedParsedFile(path);
-  setCachedSource(source, null);
+  clearCachedSource(source);
   setSessionCache(null);
 
   return added;

@@ -35,11 +35,17 @@ export interface AppContext {
   provider: Provider;
   providerRegistry?: ProviderRegistry;
   mcpManager?: MCPManager;
-  setModel: (model: string) => void;
+  setModel: (model: string, persist?: boolean) => void;
+  /** 切换 fallback 模型（/model fallback 用）。persist=true 时写 settings.json。 */
+  setFallbackModel?: (model: string | undefined, persist?: boolean) => void;
+  /** 切换子代理模型（/model sub 用）。persist=true 时写 settings.json。 */
+  setSubAgentModel?: (type: string, model: string | undefined, persist?: boolean) => void;
   /** 推理强度旋钮 setter（/effort 用）。persist=true 时写 settings.json。 */
   setEffort?: (level: import("../llm/effort.ts").EffortSetting, persist?: boolean) => void;
   /** 思考开关旋钮 setter（/think 用）。persist=true 时写 settings.json。 */
   setThinking?: (setting: import("../llm/effort.ts").ThinkingSetting, persist?: boolean) => void;
+  /** 输出语言 setter（/language 用）。persist=true 时写 settings.json；lang=undefined 回退默认。 */
+  setLanguage?: (lang: "zh" | "en" | undefined, persist?: boolean) => void | Promise<void>;
   /** 读取当前 effort 运行时态 + 能力（/effort 展示用） */
   getEffortState?: () => {
     runtime: import("../llm/effort.ts").EffortSetting;
@@ -154,8 +160,21 @@ export interface CommandContext {
   sessionState: SessionState;
   hookSystem?: HookSystem;
   cwd: string;
-  /** 切换模型回调 */
-  setModel?: (model: string) => void;
+  /**
+   * 切换主模型回调。persist=true 时同时写 settings.json 顶层 model（跨会话生效）。
+   * 对齐 /effort 的 -p 语义：默认仅当会话生效，-p 才落盘。
+   */
+  setModel?: (model: string, persist?: boolean) => void;
+  /**
+   * 切换 fallback 模型回调（/model fallback 用）。model=undefined 表示清除 fallback。
+   * persist=true 时写 settings.json 顶层 fallbackModel。
+   */
+  setFallbackModel?: (model: string | undefined, persist?: boolean) => void;
+  /**
+   * 切换子代理模型回调（/model sub 用）。model=undefined 表示清除该类型映射（回退 default/主模型）。
+   * persist=true 时写 settings.json subAgentModels[type]。
+   */
+  setSubAgentModel?: (type: string, model: string | undefined, persist?: boolean) => void;
   /**
    * 推理强度旋钮 setter（/effort 用）。level=undefined 表示 auto。
    * persist=true 时同时写 settings.json（跨会话生效）。
@@ -166,6 +185,8 @@ export interface CommandContext {
    * persist=true 时同时写 settings.json。
    */
   setThinking?: (setting: import("../llm/effort.ts").ThinkingSetting, persist?: boolean) => void;
+  /** 输出语言 setter（/language 用）。persist=true 时写 settings.json；lang=undefined 回退默认。 */
+  setLanguage?: (lang: "zh" | "en" | undefined, persist?: boolean) => void | Promise<void>;
   /** 读取当前 effort/thinking 运行时态 + 能力描述（/effort、/think 无参时展示用） */
   getEffortState?: () => {
     runtime: import("../llm/effort.ts").EffortSetting;

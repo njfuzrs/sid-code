@@ -1,13 +1,75 @@
 /**
  * 权限管理斜杠命令
- * /allow <rule>     — 添加 allow 规则（session 级）
- * /deny <rule>      — 添加 deny 规则（session 级）
- * /permissions      — 查看当前所有权限规则
+ * /allow <rule> [-p] [--scope user|project]  — 添加 allow 规则（默认 session 级，-p 持久化）
+ * /deny  <rule> [-p] [--scope user|project]  — 添加 deny 规则（默认 session 级，-p 持久化）
+ * /permissions                                — 查看当前所有权限规则
  */
 
 import type { Command, CommandResult, AppContext } from "./types.ts";
 import type { PermissionChecker } from "../permission/checker.ts";
 import { detectShadowedRules } from "../permission/shadowed-rules.ts";
+
+/** 解析 /allow /deny 的参数：剥离 -p/--persist/save 与 --scope，剩余拼回规则文本。 */
+function parseRuleArgs(args: string): {
+  rule: string;
+  persist: boolean;
+  scope: "user" | "project";
+} {
+  const tokens = args.trim().split(/\s+/).filter(Boolean);
+  let persist = false;
+  let scope: "user" | "project" = "user";
+  const rest: string[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t === "-p" || t === "--persist" || t === "save") {
+      persist = true;
+    } else if (t === "--scope" || t === "-s") {
+      // 下一个 token 是 scope 值（user / project）。
+      const val = tokens[i + 1];
+      if (val === "project" || val === "user") {
+        scope = val;
+        i++; // 跳过已消费的值
+      }
+    } else if (t === "--project") {
+      scope = "project";
+    } else if (t === "--user") {
+      scope = "user";
+    } else {
+      rest.push(t);
+    }
+  }
+  return { rule: rest.join(" "), persist, scope };
+}
+
+/**
+ * 把 allow/deny 规则持久化到 settings.json 的 permissions.allow / permissions.deny 数组。
+ * 复用 /skills 的读-合并-补丁范式：只改 permissions 单顶层字段，其余原样保留
+ * （禁整体覆盖 writeSettingsFile——见 settings 有损 round-trip 陷阱）。
+ * 返回持久化结果描述（成功/已存在/失败），供命令拼进回显。
+ */
+function persistPermissionRule(
+  behavior: "allow" | "deny",
+  rule: string,
+  scope: "user" | "project",
+): string {
+  try {
+    const source = scope === "project" ? "projectSettings" : "userSettings";
+    const { getSettingsForSource, patchSettingsFile } = require("../config/settings/index.ts");
+    const { settings } = getSettingsForSource(source);
+    // 保留用户已有的 allow/deny/ask/defaultMode，仅在对应数组里增量追加。
+    const perms: Record<string, unknown> = { ...(settings?.permissions ?? {}) };
+    const list: string[] = Array.isArray(perms[behavior]) ? [...(perms[behavior] as string[])] : [];
+    if (list.includes(rule)) {
+      return `（${scope} settings.json 中已存在该 ${behavior} 规则，未重复写入）`;
+    }
+    list.push(rule);
+    perms[behavior] = list;
+    patchSettingsFile(source, "permissions", perms);
+    return `，并已保存到 ${scope} settings.json（跨会话生效）`;
+  } catch (e) {
+    return `（⚠ 持久化失败: ${(e as Error)?.message}，仅当前会话生效）`;
+  }
+}
 
 export class AllowCommand implements Command {
   name() { return "allow"; }
@@ -15,9 +77,12 @@ export class AllowCommand implements Command {
   description() { return "添加 allow 权限规则（当前会话）"; }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
-    const rule = args.trim();
+    const { rule, persist, scope } = parseRuleArgs(args);
     if (!rule) {
-      return { kind: "error", message: "用法: /allow <规则>\n示例: /allow Bash(npm *)" };
+      return {
+        kind: "error",
+        message: "用法: /allow <规则> [-p] [--scope user|project]\n示例: /allow Bash(npm *)\n      /allow Bash(npm *) -p          持久化到 user settings.json\n      /allow Read(*) -p --scope project  持久化到项目 settings.json",
+      };
     }
 
     const checker = this.getChecker(ctx);
@@ -29,7 +94,10 @@ export class AllowCommand implements Command {
     // 同步到旧版 rules
     checker.setRules(checker.getRuleLoader().toPermissionRule());
 
-    return { kind: "message", message: `已添加 allow 规则: ${rule}` };
+    const persistNote = persist
+      ? persistPermissionRule("allow", rule, scope)
+      : "（仅当前会话，加 -p 可持久化）";
+    return { kind: "message", message: `已添加 allow 规则: ${rule}${persistNote}` };
   }
 
   private getChecker(ctx: AppContext): PermissionChecker | null {
@@ -43,9 +111,12 @@ export class DenyCommand implements Command {
   description() { return "添加 deny 权限规则（当前会话）"; }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
-    const rule = args.trim();
+    const { rule, persist, scope } = parseRuleArgs(args);
     if (!rule) {
-      return { kind: "error", message: "用法: /deny <规则>\n示例: /deny Bash(rm -rf *)" };
+      return {
+        kind: "error",
+        message: "用法: /deny <规则> [-p] [--scope user|project]\n示例: /deny Bash(rm -rf *)\n      /deny Bash(rm -rf *) -p          持久化到 user settings.json\n      /deny Bash(curl *) -p --scope project  持久化到项目 settings.json",
+      };
     }
 
     const checker = this.getChecker(ctx);
@@ -56,7 +127,10 @@ export class DenyCommand implements Command {
     checker.getRuleLoader().addCommandRule("deny", rule);
     checker.setRules(checker.getRuleLoader().toPermissionRule());
 
-    return { kind: "message", message: `已添加 deny 规则: ${rule}` };
+    const persistNote = persist
+      ? persistPermissionRule("deny", rule, scope)
+      : "（仅当前会话，加 -p 可持久化）";
+    return { kind: "message", message: `已添加 deny 规则: ${rule}${persistNote}` };
   }
 
   private getChecker(ctx: AppContext): PermissionChecker | null {

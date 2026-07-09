@@ -236,6 +236,18 @@ export class ModelFallback {
   }
 
   /**
+   * 运行时更新 fallback 目标（/model fallback 切换用）。
+   * fallback 的 provider/model 原本只在构造时定死；/model 切换 fallbackModel 后若不同步更新，
+   * 主模型出错降级仍会走旧目标。传 undefined 表示清除 fallback（回退到"无降级"）。
+   */
+  setFallbackTarget(fallbackModel: string | undefined, fallbackProvider: Provider | undefined): void {
+    this.config.fallbackModel = fallbackModel;
+    this.config.fallbackProvider = fallbackProvider;
+    // 已发生过的降级状态重置，避免旧降级标志影响新目标判定。
+    this.hasFallenBack = false;
+  }
+
+  /**
    * 执行带回退的操作
    *
    * 分阶段：

@@ -53,6 +53,38 @@ export function getToolSummary(name: string, input: unknown): string {
   return "";
 }
 
+/**
+ * 提取工具参数的**完整**详情（不截断），供权限确认框等需要用户看清全貌再决策的场景使用。
+ *
+ * 与 getToolSummary 的区别：getToolSummary 面向 header 单行摘要，对长命令/长路径做截断以免撑爆行；
+ * 权限框是安全决策入口——用户要看清完整命令/路径/prompt 才能判断是否授权，绝不能截断。
+ * 展示端配合 wrap="wrap" 换行呈现即可。
+ */
+export function getToolDetailFull(name: string, input: unknown): string {
+  const inp = input as any;
+  const lower = name.toLowerCase();
+  if (lower === "read") {
+    const fp = inp?.file_path || inp?.filePath || "";
+    const offset = inp?.offset;
+    const limit = inp?.limit;
+    let suffix = "";
+    if (offset && limit) suffix = ` (行 ${offset}-${offset + limit})`;
+    else if (limit) suffix = ` (前 ${limit} 行)`;
+    return `${fp}${suffix}`;
+  }
+  if (lower === "edit" || lower === "write") return inp?.file_path || inp?.filePath || "";
+  if (lower === "bash") return inp?.command || "";
+  if (lower === "grep") return `"${inp?.pattern || ""}"`;
+  if (lower === "glob") return inp?.pattern || "";
+  if (lower.startsWith("subagent") || lower.startsWith("agent__") || lower.startsWith("skill__")) {
+    const agentType = inp?.type || inp?.agentType || "";
+    const prompt = inp?.prompt || inp?.task || "";
+    return agentType ? `${agentType} "${prompt}"` : prompt;
+  }
+  // 兜底：回退到摘要（覆盖不到的工具类型仍有信息展示）
+  return getToolSummary(name, input);
+}
+
 /** 从工具结果中提取结果摘要 */
 export function getResultSummary(name: string, content: string, isError?: boolean): string {
   if (isError) return truncateSummary(content, 60);

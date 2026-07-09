@@ -192,7 +192,7 @@ Worktree 隔离:
   settings.json 支持的主要配置段:
     provider / model / baseURL / maxTokens / fallbackModel / availableModels
     permissionMode / allowedTools / disallowedTools
-    effortLevel / thinkingEnabled / language
+    effortLevel / thinkingEnabled / language / theme
     subAgentModels              子代理模型映射（按类型分级）
     mcpServers                  MCP 服务器配置
     hooks                       Hook 事件配置
@@ -207,6 +207,7 @@ Worktree 隔离:
     quota                       配额管控（costLimit/requestsPerMinute/tokensPerMinute/budgetRules）
     toolSearch                  工具延迟加载模式
     disabledSkills              禁用的 Skill 列表
+    disabledHooks               禁用的 Hook 列表
     pluginDirs                  插件目录
     sanitizeEnv                 bash 执行时清理环境变量
     enableLLMClassifier         LLM 命令风险分类器（第二道防线）

@@ -76,6 +76,16 @@ export function setCachedSource(
 }
 
 /**
+ * 失效单来源缓存（删除键，使下次读取重新读盘）。
+ * 与 setCachedSource(source, null) 的区别：null 是"已缓存且该来源无设置"，会被
+ * getCachedSource 当命中返回；delete 才是"未缓存",触发重新读盘。补丁写入后必须用这个——
+ * 否则同会话内后续 read-then-patch 会读到 null、从空对象起步，覆盖掉前一次补丁的字段。
+ */
+export function clearCachedSource(source: SettingSource): void {
+  perSourceCache.delete(source);
+}
+
+/**
  * 全部清除——由 fanOut（变更检测器）统一调用。
  * 也用于测试隔离。
  */

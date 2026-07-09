@@ -186,6 +186,8 @@ export class App {
   private cachedMicrocompactState: import("./query/compact/cached-microcompact.ts").CachedMicrocompactState | null = null;
   /** 会话 ID（§4.1/§4.3 落盘目录用）。 */
   private sessionIdForCompact = "";
+  /** 当前生效的项目规则（CLAUDE.md）内存缓存，供运行时重建系统提示词复用 */
+  private currentProjectRules: ProjectRules | null = null;
   /** TUI 模式下的权限确认回调（由 TUI 注入），返回 "yes" | "no" | "always" */
   private tuiConfirmCallback: ((toolName: string, toolInput: unknown, desc: string, shadowedRules?: import("./ui/App.tsx").ShadowedRuleInfo[]) => Promise<"yes" | "no" | "always">) | null = null;
   /** TUI 状态更新回调（由 TUI 注入，用于同步 permissionMode 等状态） */
@@ -326,6 +328,17 @@ export class App {
               ? "on"
               : "off";
     }
+    // 主题运行时态初值：从 settings.json theme 恢复用户偏好。
+    // themeManager 构造时硬编码 DEFAULT_THEME、启动不读 config，故此处显式恢复——
+    // 否则 /theme 切换即便持久化了，重开会话也仍显示默认主题（持久化白做）。
+    if (opts.config.theme) {
+      const { themeManager } = require("./ui/themes/theme-manager.ts");
+      const ok = themeManager.setActiveTheme(opts.config.theme);
+      if (!ok) {
+        getLogger().warn("THEME", `settings.json 中的主题 "${opts.config.theme}" 不存在，已回退默认主题`);
+      }
+    }
+
     // 如果有 providerRegistry，从中获取 availability 服务
     const availability = opts.providerRegistry?.availability;
 
@@ -403,6 +416,9 @@ export class App {
     this.hookSystem.initializeFromLegacy(this.config.hooks);
     this.hookSystem.setSessionId(sessionId);
     this.hookSystem.setCwd(process.cwd());
+    // 恢复 settings.json disabledHooks（/hooks disable -p 持久化端）。
+    // 插件 hook 在 loadPluginHooks 后才注册，故那里会再应用一次（见下方 loadPluginHooks 调用点）。
+    this.hookSystem.applyDisabledHooks(this.config.disabledHooks);
 
     // 初始化 QueryEngine（两层架构：QueryEngine → queryLoop）
     this.queryEngine = new QueryEngine({
@@ -680,6 +696,96 @@ export class App {
       patchSettingsFile("userSettings", key, value);
     } catch (e) {
       getLogger().warn("KNOB", `持久化 ${key} 失败（不阻断）: ${(e as Error)?.message}`);
+    }
+  }
+
+  /**
+   * 写模型相关顶层字段到用户 settings.json（/model -p 用）。
+   * 必用 patchSettingsFile：整体覆盖会 Zod strip 未声明字段（如 availableModels[].api_key
+   * snake_case）+ 展开 env 占位符明文，抹掉密钥（见 settings 有损 round-trip 陷阱）。
+   * value=undefined 表示删除该字段。
+   */
+  private persistModelField(key: "model" | "fallbackModel", value: string | undefined): void {
+    try {
+      const { patchSettingsFile } = require("./config/settings/index.ts");
+      patchSettingsFile("userSettings", key, value);
+    } catch (e) {
+      getLogger().warn("MODEL", `持久化 ${key} 失败（不阻断）: ${(e as Error)?.message}`);
+    }
+  }
+
+  /**
+   * 切换 fallback 模型运行时态（/model fallback 用）。
+   * - 更新 config.fallbackModel；
+   * - 从 availableModels 解析对应 provider，热更新 ModelFallback 的降级目标（不重建 queryEngine）；
+   * - persist=true 时写 settings.json fallbackModel（跨会话）。
+   * model=undefined 表示清除 fallback（回退到"无降级"）。
+   */
+  private setFallbackModelRuntime(
+    model: string | undefined,
+    persist?: boolean,
+    updateState?: (patch: Record<string, unknown>) => void,
+  ): void {
+    const log = getLogger();
+    log.info("TUI:CMD", `切换 fallback 模型: ${this.config.fallbackModel || "(无)"} → ${model ?? "(无)"}${persist ? "（持久化）" : ""}`);
+    // config.fallbackModel 是 string（默认 ""），清除时用空串而非 undefined。
+    this.config.fallbackModel = model ?? "";
+
+    // 热更新 ModelFallback 降级目标：从 availableModels 解析 provider/apiKey/baseURL。
+    if (model && this.providerRegistry) {
+      const fb = this.config.availableModels.find((m) => m.name === model);
+      if (fb && fb.provider) {
+        const fbProvider = this.providerRegistry.getProviderFor(
+          fb.provider,
+          fb.apiKey || "",
+          fb.baseURL,
+        );
+        this.fallback.setFallbackTarget(model, fbProvider);
+      } else {
+        // 目标不在 availableModels 或缺 provider：运行时无法构建降级 provider，仅记录 config 值。
+        log.warn("FALLBACK", `fallback 模型 "${model}" 不在 availableModels 中或缺少 provider，运行时降级已禁用`);
+        this.fallback.setFallbackTarget(undefined, undefined);
+      }
+    } else {
+      // 清除 fallback。
+      this.fallback.setFallbackTarget(undefined, undefined);
+    }
+
+    if (persist) this.persistModelField("fallbackModel", model);
+    updateState?.({ fallbackModel: model });
+  }
+
+  /**
+   * 切换子代理模型运行时态（/model sub 用）。
+   * - 原地 mutate config.subAgentModels：ProviderRegistry 构造时持有的是同一对象引用
+   *   （cli.ts 传的就是 config.subAgentModels），mutate 即对后续子代理派活生效；
+   * - 清 registry provider 缓存，确保新模型对应的 provider 被重建；
+   * - persist=true 时写 settings.json subAgentModels（整个 record，patchSettingsFile 写顶层字段）。
+   * model=undefined 表示删除该类型映射（回退 default/主模型）。
+   */
+  private setSubAgentModelRuntime(type: string, model: string | undefined, persist?: boolean): void {
+    const log = getLogger();
+    if (!this.config.subAgentModels) this.config.subAgentModels = {};
+    const map = this.config.subAgentModels as Record<string, string>;
+    const prev = map[type];
+    if (model === undefined) {
+      delete map[type];
+    } else {
+      map[type] = model;
+    }
+    log.info("TUI:CMD", `切换子代理模型[${type}]: ${prev ?? "(未设)"} → ${model ?? "(删除)"}${persist ? "（持久化）" : ""}`);
+
+    // registry 持有同一对象引用，mutate 已生效；清缓存确保新模型 provider 被重建。
+    this.providerRegistry?.clearCache();
+
+    if (persist) {
+      try {
+        const { patchSettingsFile } = require("./config/settings/index.ts");
+        // 写整个 record（patchSettingsFile 只操作顶层字段，子键增删都随 map 走）。
+        patchSettingsFile("userSettings", "subAgentModels", { ...map });
+      } catch (e) {
+        log.warn("MODEL", `持久化 subAgentModels 失败（不阻断）: ${(e as Error)?.message}`);
+      }
     }
   }
 
@@ -1043,6 +1149,8 @@ export class App {
     try {
       const { loadPluginHooks } = await import("./plugin/index.ts");
       await loadPluginHooks(this.hookSystem);
+      // 插件 hook 刚注册,重新应用 disabledHooks,让持久化的禁用状态覆盖插件 hook。
+      this.hookSystem.applyDisabledHooks(this.config.disabledHooks);
     } catch (err: any) {
       log.warn("APP", `插件 Hooks 加载失败: ${err.message}`);
     }
@@ -1479,8 +1587,75 @@ export class App {
    * 应用 CLAUDE.md 中解析出的结构化规则到运行时配置
    * 只覆盖 CLAUDE.md 中明确指定的字段，不影响命令行参数和配置文件的设置
    */
+  /**
+   * 重建系统提示词并写回 ctxMgr（运行时偏好变更后调用，让改动即时生效而非等下次会话）。
+   * 与 CLAUDE.md watcher 的重建路径同源（同一 buildSystemPrompt 入参），供 /language 等
+   * 影响系统提示词的运行时切换复用。当前项目规则从内存缓存 this.currentProjectRules 取。
+   */
+  private async rebuildSystemPrompt(): Promise<void> {
+    const log = getLogger();
+    try {
+      const { buildSystemPrompt } = await import("./config/system-prompt.ts");
+      const { collectSkillListingEntries } = await import("./skill/tool.ts");
+      let memorySummary: string | undefined;
+      try {
+        const { MemoryStore } = await import("./memory/store.ts");
+        const memStore = new MemoryStore(process.cwd());
+        memorySummary = await memStore.generateSummary() || undefined;
+      } catch { /* 忽略 */ }
+
+      const rules = this.currentProjectRules;
+      const newPrompt = buildSystemPrompt({
+        tools: this.toolRegistry.all(),
+        projectRules: rules?.rawContent,
+        projectRulesPath: rules?.sourcePath,
+        appendPrompt: this.config.appendSystemPrompt || undefined,
+        workingDir: process.cwd(),
+        permissionMode: this.config.permissionMode,
+        gitStatus: true,
+        memorySummary,
+        preferredLanguage: this.config.language,
+        model: this.config.model,
+        availableModels: this.config.availableModels,
+        skillEntries: collectSkillListingEntries(this.toolRegistry.all()),
+        denyRulesSummary:
+          this.permissionChecker && typeof (this.permissionChecker as any).describeDenyRules === "function"
+            ? (this.permissionChecker as any).describeDenyRules() || undefined
+            : undefined,
+      });
+      this.ctxMgr.setSystemPrompt(newPrompt);
+      log.info("APP", `系统提示词已重建（运行时偏好变更）: ${newPrompt.length} 字符`);
+    } catch (e) {
+      log.warn("APP", `重建系统提示词失败（不阻断）: ${(e as Error)?.message}`);
+    }
+  }
+
+  /**
+   * 切换输出语言运行时态（/language 用）。
+   * - 更新 config.language，立即重建系统提示词（下一轮 LLM 调用即用新语言）；
+   * - persist=true 时写 settings.json language（跨会话）。
+   * lang=undefined 表示回退默认（删除字段，系统提示词默认中文）。
+   */
+  async setLanguageRuntime(lang: "zh" | "en" | undefined, persist?: boolean): Promise<void> {
+    const log = getLogger();
+    log.info("TUI:CMD", `切换输出语言: ${this.config.language ?? "(默认)"} → ${lang ?? "(默认)"}${persist ? "（持久化）" : ""}`);
+    this.config.language = lang;
+    await this.rebuildSystemPrompt();
+    if (persist) {
+      try {
+        const { patchSettingsFile } = require("./config/settings/index.ts");
+        patchSettingsFile("userSettings", "language", lang);
+      } catch (e) {
+        log.warn("LANG", `持久化 language 失败（不阻断）: ${(e as Error)?.message}`);
+      }
+    }
+  }
+
   private applyProjectRules(rules: ProjectRules): void {
     const log = getLogger();
+
+    // 缓存当前项目规则，供运行时重建系统提示词（/language 等）复用。
+    this.currentProjectRules = rules;
 
     // 工具白名单（合并，不覆盖命令行配置）
     if (rules.allowedTools?.length) {
@@ -1948,6 +2123,55 @@ export class App {
 
   /** 原始权限模式（Plan Mode 退出时恢复） */
   private _originalPermissionMode: string | null = null;
+
+  /**
+   * 状态栏瞬时通知通道（由 createFullScreen 闭包在 TUI 就绪后回填，无头模式为 null）。
+   * 参照 wireToolErrorCallback 的「闭包内回填实例字段」套路，让实例方法（如
+   * cyclePermissionMode）也能推送一次性状态栏提示。未就绪时安全跳过。
+   */
+  private statusNotifier: ((baseId: string, text: string, delayMs: number) => void) | null = null;
+
+  /**
+   * Shift+Tab 权限模式循环切换（对齐 claude-code）。
+   *
+   * 复用 getNextPermissionMode 纯函数，但**跳过 plan 档**：plan 是独立状态机
+   * （planManager + 审批流 + plan 文件 + 每轮工作流提醒），只能经 enter_plan_mode 工具
+   * 或 /plan 进入；键盘只改 config.permissionMode 会造出「假 plan 态」（约束提醒不触发）。
+   * 故遇 plan 再跳一档。等价循环：default → acceptEdits → auto →〔always-allow〕→ default。
+   *
+   * bypass（always-allow）是否纳入循环由 config.skipPermissions 门控——只有显式开了
+   * skip-perms 的会话才让键盘循环到全放行，避免手滑切到危险态。
+   *
+   * config 引用与 PermissionChecker 共享（cli.ts 构造时同一对象），故改写即时生效。
+   */
+  private cyclePermissionMode(): void {
+    const log = getLogger();
+
+    // plan 态不参与键盘循环：切到/切出 plan 只能走工具或斜杠命令的状态机入口。
+    if (this.planManager?.isActive() || this.config.permissionMode === "plan") {
+      this.statusNotifier?.("perm_mode_switch", "计划模式请用 exit_plan_mode 退出", 2500);
+      return;
+    }
+
+    const { getNextPermissionMode, getModeName } = require("./permission/mode.ts");
+    const ctx = {
+      mode: this.config.permissionMode,
+      prePlanMode: this._originalPermissionMode || undefined,
+      isBypassAvailable: this.config.skipPermissions === true,
+    };
+    let next = getNextPermissionMode(ctx);
+    // 跳过 plan：acceptEdits 的下一档是 plan，用跳过后的结果续算（→ auto）。
+    if (next === "plan") {
+      next = getNextPermissionMode({ ...ctx, mode: "plan" });
+    }
+
+    if (next === this.config.permissionMode) return; // 无变化不刷屏
+
+    this.config.permissionMode = next;
+    this.tuiStateUpdater?.({ permissionMode: next });
+    this.statusNotifier?.("perm_mode_switch", `权限模式 → ${getModeName(next)}`, 2500);
+    log.info("PERMISSION", `Shift+Tab 切换权限模式 → ${next}`);
+  }
 
   /** TUI 模式下的 Plan Mode 审批回调，返回 "approve" | "reject" */
   private tuiPlanApprovalCallback: ((planFilePath: string) => Promise<"approve" | "reject">) | null = null;
@@ -2727,6 +2951,9 @@ export class App {
       setTimeout(() => removeStatusMessage(id), delayMs);
     }
 
+    // 回填实例通道：让实例方法（cyclePermissionMode 等）也能推送一次性状态栏提示。
+    this.statusNotifier = addTransientStatusMessage;
+
     /** 统一错误面板：推入一条错误，同 id 去重替换，最多保留 5 条 */
     function pushErrorPanel(item: import("./ui/App.tsx").ErrorPanelItem): void {
       const current = bridge.current.errorPanel;
@@ -3463,8 +3690,8 @@ export class App {
           // providerRegistry 必传：fork 模式的 bundled skill（/review、/commit-push-pr 等 6 个）
           // 依赖它创建子代理；缺失会让 executor 静默退回 inline，导致 fork 隔离/allowedTools/maxTurns 失效。
           providerRegistry: this.providerRegistry,
-          setModel: (m) => {
-            log.info("TUI:CMD", `切换模型: ${this.config.model} → ${m}`);
+          setModel: (m, persist) => {
+            log.info("TUI:CMD", `切换模型: ${this.config.model} → ${m}${persist ? "（持久化）" : ""}`);
             this.config.model = m;
             const { resolveCurrentModelConfig } = require("./config/config.ts");
             resolveCurrentModelConfig(this.config);
@@ -3482,9 +3709,14 @@ export class App {
             updateState({ model: m });
             // 模型变了，effort/thinking 能力可能随之变（如换到不支持 max 的模型），重推展示态。
             this.pushKnobDisplay();
+            // -p 持久化：写顶层 model。必用 patchSettingsFile（禁整体覆盖，见 settings 有损 round-trip 陷阱）。
+            if (persist) this.persistModelField("model", m);
           },
+          setFallbackModel: (m, persist) => this.setFallbackModelRuntime(m, persist, updateState),
+          setSubAgentModel: (type, m, persist) => this.setSubAgentModelRuntime(type, m, persist),
           setEffort: (level, persist) => this.setEffortRuntime(level, persist),
           setThinking: (setting, persist) => this.setThinkingRuntime(setting, persist),
+          setLanguage: (lang, persist) => this.setLanguageRuntime(lang, persist),
           getEffortState: () => this.getEffortState(),
           getThinkingState: () => this.getThinkingState(),
           exitRequested: false,
@@ -3754,6 +3986,8 @@ export class App {
       hookSystem: this.hookSystem,
       config: this.config,
       unifiedRegistry: this.unifiedRegistry,
+      // Shift+Tab 权限模式循环切换（复用 cyclePermissionMode 实例方法）
+      onCyclePermissionMode: () => this.cyclePermissionMode(),
     };
 
     // 恢复会话首屏渲染：restoreSession 仅把历史灌入 ctxMgr（LLM 上下文），

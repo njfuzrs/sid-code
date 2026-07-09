@@ -115,4 +115,35 @@ describe("patchSettingsFile", () => {
     const after = JSON.parse(readFileSync(SETTINGS_PATH, "utf-8"));
     expect(after.customField).toBe("should-survive");
   });
+
+  test("同会话内连续两次 patch 不丢字段（单来源缓存失效回归）", async () => {
+    // 根因回归：patchSettingsFile 收尾曾用 setCachedSource(source, null)，而 getCachedSource
+    // 把 null 当作"已缓存且该来源无设置"命中返回。于是同会话第二次 read-then-patch 读到 null、
+    // 从空对象起步，整体覆盖掉第一次写入的字段（/skills、/mcp、/allow、/hooks 等 read-then-patch
+    // 命令连续两次 -p 就会丢数据）。修复：改用 clearCachedSource 删键，强制下次读盘。
+    const { patchSettingsFile, getSettingsForSource } = await import("../../src/config/settings/index.ts");
+
+    // 第一次：追加 skill-a
+    {
+      const { settings } = getSettingsForSource("userSettings");
+      const disabled = new Set<string>(settings?.disabledSkills ?? []);
+      disabled.add("skill-a");
+      patchSettingsFile("userSettings", "disabledSkills", [...disabled]);
+    }
+    // 第二次：追加 skill-b（关键：这里 read 必须读到含 skill-a 的最新盘内容，而非缓存的 null）
+    {
+      const { settings } = getSettingsForSource("userSettings");
+      const disabled = new Set<string>(settings?.disabledSkills ?? []);
+      disabled.add("skill-b");
+      patchSettingsFile("userSettings", "disabledSkills", [...disabled]);
+    }
+
+    const after = JSON.parse(readFileSync(SETTINGS_PATH, "utf-8"));
+    // 两个 skill 都在 —— 修复前 skill-a 会被第二次写入覆盖丢失
+    expect(after.disabledSkills).toContain("skill-a");
+    expect(after.disabledSkills).toContain("skill-b");
+    // 原有字段照旧完好
+    expect(after.customField).toBe("should-survive");
+    expect(after.availableModels[0].api_key).toBe("${DEEPSEEK_API_KEY}");
+  });
 });

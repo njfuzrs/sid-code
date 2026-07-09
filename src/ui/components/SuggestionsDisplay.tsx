@@ -4,29 +4,14 @@
  * 在 InputArea 上方渲染补全列表，支持：
  * - ↑↓ 选择高亮
  * - 最多显示 8 条
- * - 使用 inverse 样式高亮选中项
+ * - 品牌蓝 + bold 双通道高亮选中项（不靠 inverse 铺背景，兼容多行换行）
+ * - 描述完整展示，过长自动换行（不截断），第二行悬挂对齐到描述起点
  */
 
 import React from "react";
 import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
 import { theme } from "../semantic-colors.ts";
-import { stringWidth } from "../../ink/stringWidth.js";
-
-/** 按显示宽度截断（CJK 安全），超出预留 1 列给省略号 */
-function truncateToWidth(text: string, maxWidth: number): string {
-  if (stringWidth(text) <= maxWidth) return text;
-  const budget = Math.max(1, maxWidth - 1);
-  let width = 0;
-  let result = "";
-  for (const ch of text) {
-    const cw = stringWidth(ch);
-    if (width + cw > budget) break;
-    width += cw;
-    result += ch;
-  }
-  return result + "…";
-}
 
 export interface Suggestion {
   /** 显示文本 */
@@ -64,44 +49,49 @@ export function SuggestionsDisplay({ suggestions, activeIndex, width }: Suggesti
   const endIdx = Math.min(startIdx + MAX_VISIBLE, total);
   const visible = suggestions.slice(startIdx, endIdx);
 
-  const innerWidth = Math.max(20, width - 4); // paddingX=2 左右各 1
-
   return (
-    <Box flexDirection="column" paddingX={1}>
+    <Box flexDirection="column" width={width} paddingX={1}>
       {visible.map((item, i) => {
         const realIndex = startIdx + i;
         const isActive = realIndex === activeIndex;
         // 图标前缀（如有），label 前显示
         const iconPrefix = item.icon ? `${item.icon} ` : "";
         // 行尾标签（如有），dim 色
-        const tagSuffix = item.tag ? `  [${item.tag}]` : "";
-        // 截断标签和描述以适应宽度（按显示列宽，CJK 安全）
-        const desc = item.description ? `  ${item.description}` : "";
-        const reserved = (desc ? Math.min(stringWidth(desc), 30) : 0) + stringWidth(tagSuffix) + stringWidth(iconPrefix);
-        const maxLabelWidth = Math.max(4, innerWidth - reserved);
-        const label = truncateToWidth(item.label, maxLabelWidth);
-        const descTruncated = truncateToWidth(desc, 30);
-        const labelWithIcon = `${iconPrefix}${label}`;
-        const padCount = Math.max(
-          0,
-          innerWidth - stringWidth(labelWithIcon) - stringWidth(descTruncated) - stringWidth(tagSuffix),
-        );
+        const tagText = item.tag ? `[${item.tag}]` : "";
 
+        // 选中态：品牌蓝 + bold；非选中：正文色，描述与标签 dim
+        const labelColor = isActive ? theme.ui.active : undefined;
         return (
-          <Box key={`suggestion-${realIndex}`}>
-            {isActive ? (
-              <Text inverse color={theme.ui.active}>
-                {" "}{labelWithIcon}{descTruncated}{tagSuffix}{" ".repeat(padCount)}
+          <Box key={`suggestion-${realIndex}`} flexDirection="row">
+            {/* 行首空格 1 列，保持与其它消息缩进对齐 */}
+            <Text> </Text>
+            {/* label 列：不换行、不收缩，保证命令名完整 */}
+            <Box flexShrink={0}>
+              {iconPrefix ? (
+                <Text color={theme.ui.active} bold={isActive}>
+                  {iconPrefix}
+                </Text>
+              ) : null}
+              <Text color={labelColor} bold={isActive}>
+                {item.label}
               </Text>
+            </Box>
+            {/* 描述列：flexGrow 吃满剩余宽度，wrap 换行完整展示，不截断 */}
+            {item.description ? (
+              <Box flexGrow={1} paddingLeft={2}>
+                <Text color={isActive ? theme.ui.active : theme.text.secondary} wrap="wrap">
+                  {item.description}
+                </Text>
+              </Box>
             ) : (
-              <Text>
-                <Text> </Text>
-                {iconPrefix ? <Text color={theme.ui.active}>{iconPrefix}</Text> : null}
-                <Text>{label}</Text>
-                <Text dimColor>{descTruncated}</Text>
-                <Text dimColor>{tagSuffix}</Text>
-              </Text>
+              <Box flexGrow={1} />
             )}
+            {/* 行尾标签列：不收缩，始终可见 */}
+            {tagText ? (
+              <Box flexShrink={0} paddingLeft={2}>
+                <Text dimColor>{tagText}</Text>
+              </Box>
+            ) : null}
           </Box>
         );
       })}

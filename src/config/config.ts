@@ -101,6 +101,8 @@ export interface Config {
   network?: NetworkTimeoutSettings;
   /** 输出语言偏好: "zh" 中文优先（默认）, "en" 英文优先。不设置时系统提示词默认中文 */
   language?: "zh" | "en";
+  /** UI 主题名（/theme 持久化端，settings.json theme）。不设置时用内置默认暗色主题 */
+  theme?: string;
 
   /**
    * 推理强度档位初值（/effort 持久化端，settings.json effortLevel）。
@@ -185,6 +187,8 @@ export interface Config {
   // Skill 配置
   /** 禁用的 Skill 名称列表 */
   disabledSkills?: string[];
+  /** 禁用的 Hook 名列表（/hooks disable -p 持久化端） */
+  disabledHooks?: string[];
 
   // 扩展安全配置
   /** 是否信任项目级扩展（跳过信任检查，默认 false） */
@@ -563,6 +567,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     show_line_numbers: "showLineNumbers",
     quota: "quota",
     disabled_skills: "disabledSkills",
+    disabled_hooks: "disabledHooks",
     trust_project_extensions: "trustProjectExtensions",
     checkpoint: "checkpoint",
     jit_context: "jitContext",
@@ -576,6 +581,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     telemetry: "telemetry",
     analytics: "analytics",
     language: "language",
+    theme: "theme",
   };
 
   const result: any = {};

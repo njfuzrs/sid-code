@@ -74,7 +74,7 @@ export const ErrorPanel: React.FC<ErrorPanelProps> = ({
           {/* 详细信息（如有） */}
           {item.detail && (
             <Box marginLeft={2}>
-              <Text color={theme.text.secondary} wrap="truncate-end">{item.detail}</Text>
+              <Text color={theme.text.secondary} wrap="wrap">{item.detail}</Text>
             </Box>
           )}
           {/* 建议方案 */}

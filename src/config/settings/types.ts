@@ -181,6 +181,9 @@ export const SettingsSchema = lazySchema(() =>
       // 输出语言偏好（对标 Claude Code language 配置）
       language: z.enum(["zh", "en"]).optional(),
 
+      // UI 主题偏好（/theme 持久化端；缺省 = 内置默认暗色主题）
+      theme: z.string().optional(),
+
       // 权限配置
       permissions: PermissionsSchema().optional(),
       permissionMode: z.string().optional(),
@@ -208,6 +211,8 @@ export const SettingsSchema = lazySchema(() =>
 
       // Skills
       disabledSkills: z.array(z.string()).optional(),
+      // 禁用的 Hook 名列表（/hooks disable -p 持久化端；按 hook name/command/url 匹配）
+      disabledHooks: z.array(z.string()).optional(),
 
       // 安全/行为
       sanitizeEnv: z.boolean().optional(),
