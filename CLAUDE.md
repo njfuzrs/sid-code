@@ -27,14 +27,32 @@ sc                # 启动开发版
 
 ### 发布上线
 
+**⚠️ 铁律：先提交功能代码，再发布，最后补 bump 提交。禁止先发布后提交。**
+发布产物必须能对应到一个确切 git commit。先发布后提交会开一个「已发布但未提交」的窗口——期间任何源码改动都会让线上二进制与 commit 对不上，出线上问题无法定位到确切代码版本；且 `release.sh` 首次失败时也会残留一个已 bump 但未发布的脏版本号。
+
+标准顺序：
+
 ```bash
-# 直接发布（不需要先跑 make build！release.sh 内部会 bump 一次版本号）
+# 1. 验证（不可跳过）
+bun test && make rebuild
+
+# 2. 先提交功能代码（此时版本号还没动，固化「功能」这个逻辑单元）
+git add <改动文件>
+git commit -m "feat: ..."
+
+# 3. 发布（release.sh 内部会 bump 一次版本号 + 重新生成 builtin-embedded.generated.ts）
+#    不需要先跑 make build！
 ./scripts/release.sh --upload
 
-# 发布后提交版本号变更
-git add package.json
+# 4. 补提交版本号变更
+git add package.json src/skill/builtin-embedded.generated.ts
 git commit -m "bump vX.Y.Z"
+
+# 5. 推送
+git push
 ```
+
+> `release.sh` 若首次失败已 bump 过版本号（如上传阶段报错），第二次用 `--no-bump --upload` 复用现有版本号，避免版本号 +2。
 
 **上传凭据**：SSH 信息读自 `scripts/deploy.env`（不入库，见 `deploy.env.example` 模板）。
 配了 `DEPLOY_SSH_PASSWORD` 后用 sshpass 免交互上传，无需每次输密码。首次配置：
