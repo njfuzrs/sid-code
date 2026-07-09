@@ -79,6 +79,8 @@ export interface AppContext {
   setGoalState?: (goal: import("../goal/state.ts").GoalState | null) => void;
   /** /goal：更新目标状态（原地修改） */
   updateGoalState?: (updater: (goal: import("../goal/state.ts").GoalState) => void) => void;
+  /** 轨迹采集器（可选，trace.enabled=false 时为 undefined）—— /debug 命令用 */
+  traceCollector?: import("../trace/collector.ts").TraceCollector;
 }
 
 /** 支持的对话框类型 */
@@ -215,6 +217,8 @@ export interface CommandContext {
   setGoalState?: (goal: import("../goal/state.ts").GoalState | null) => void;
   /** /goal：更新目标状态（原地修改） */
   updateGoalState?: (updater: (goal: import("../goal/state.ts").GoalState) => void) => void;
+  /** 轨迹采集器（可选，trace.enabled=false 时为 undefined）—— /debug 命令用 */
+  traceCollector?: import("../trace/collector.ts").TraceCollector;
 }
 
 // ============================================================

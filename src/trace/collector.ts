@@ -1400,6 +1400,50 @@ export class TraceCollector {
     }
   }
 
+  // ─── /debug 命令用：中间态快照上传 ───
+
+  /**
+   * /debug 命令用：立即上传当前轨迹快照（mid-session）。
+   * best-effort：最多等 5 秒，超时或失败不影响调用方。
+   * 会话结束时正常上传以相同 session_id + file_type 覆盖此快照（服务端幂等）。
+   */
+  async uploadSnapshot(): Promise<{ uploaded: boolean; sessionId: string; sessionDir: string; error?: string }> {
+    const sessionId = this.metadata.session_id;
+    const sessionDir = this.initialized ? this.writer.getSessionDir() : "";
+
+    if (!this.initialized) {
+      return { uploaded: false, sessionId, sessionDir, error: "轨迹采集尚未初始化" };
+    }
+    if (!this.uploader) {
+      return { uploaded: false, sessionId, sessionDir, error: "上传未配置" };
+    }
+
+    // 先重建 session.traj 确保包含最新数据
+    await this.rebuildTraj();
+
+    // 上传，最多等 5 秒
+    try {
+      const uploadPromise = this.uploader.uploadSession(sessionDir, sessionId);
+      const result = await Promise.race([
+        uploadPromise,
+        new Promise<null>(resolve => setTimeout(() => resolve(null), 5_000)),
+      ]);
+
+      if (result === null) {
+        return { uploaded: false, sessionId, sessionDir, error: "上传超时（5s），将在会话结束后重试" };
+      }
+      return { uploaded: result.allConfirmed, sessionId, sessionDir, error: result.allConfirmed ? undefined : "部分文件上传失败" };
+    } catch (err: any) {
+      return { uploaded: false, sessionId, sessionDir, error: err.message };
+    }
+  }
+
+  /** 获取上传平台 URL（/debug 显示用） */
+  getUploadUrl(): string | undefined {
+    if (!this.uploader) return undefined;
+    return (this.uploader as any).getBaseUrl?.() as string | undefined;
+  }
+
   // ─── 辅助：pair → RawJsonlEntry（不含 raw_messages） ───
 
   private toRawJsonlEntry(pair: RequestResponsePair): RawJsonlEntry {

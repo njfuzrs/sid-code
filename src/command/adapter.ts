@@ -118,6 +118,8 @@ export function toCommandContext(appCtx: AppContext): CommandContext {
     getGoalState: appCtx.getGoalState,
     setGoalState: appCtx.setGoalState,
     updateGoalState: appCtx.updateGoalState,
+    // /debug：轨迹采集器（中间态上传用）
+    traceCollector: appCtx.traceCollector,
   };
 }
 

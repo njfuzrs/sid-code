@@ -107,6 +107,9 @@ export class UploadManager implements TraceUploaderInterface {
   private serverReachable = true;
   private healthCheckTimer: ReturnType<typeof setInterval> | null = null;
   /** 持久化重试队列文件路径 */
+
+  /** 获取上传平台 URL（/debug 显示用） */
+  getBaseUrl(): string { return this.opts.baseUrl; }
   private readonly retryQueuePath: string;
 
   constructor(options: UploadOptions) {

@@ -181,6 +181,8 @@ export class App {
   private planManager: PlanModeManager | null = null;
   /** T12：RetryTelemetry 事件写入器（延迟绑定，doInit 后由 traceCollector 注入） */
   private _retryTelemetryWriter: ((event: RetryTelemetryEvent) => void) | null = null;
+  /** /debug 命令用：轨迹采集器实例（doInit 后赋值） */
+  private traceCollector: import("./trace/collector.ts").TraceCollector | null = null;
   /** §2.1：共享 FileReadTracker，autoCompact 后用于恢复最近访问文件。 */
   private fileReadTracker: import("./tool/file-read-tracker.ts").FileReadTracker | null = null;
   /** §5：共享 cached microcompact 状态机，压缩后重置。延迟创建。 */
@@ -1545,16 +1547,17 @@ export class App {
 
     // 轨迹采集初始化（委托给 init-helpers）
     const { initTraceCollector, initTelemetrySystem } = await import("./query/init-helpers.ts");
-    const traceCollector = await initTraceCollector(this.config, this.hookSystem);
+    const traceCollectorInstance = await initTraceCollector(this.config, this.hookSystem);
+    this.traceCollector = traceCollectorInstance;
     // §3.1/§3.3：将 traceCollector 注入 QueryEngine，用于异常路径持久化
-    if (traceCollector && this.queryEngine) {
-      (this.queryEngine as any).deps.traceCollector = traceCollector;
+    if (traceCollectorInstance && this.queryEngine) {
+      (this.queryEngine as any).deps.traceCollector = traceCollectorInstance;
     }
 
     // T12：绑定 RetryTelemetry 事件写入器（延迟绑定，此时 writer 已就绪）
-    if (traceCollector) {
+    if (traceCollectorInstance) {
       this._retryTelemetryWriter = (event) => {
-        traceCollector.writeRetryTelemetry(event as unknown as Record<string, unknown>);
+        traceCollectorInstance.writeRetryTelemetry(event as unknown as Record<string, unknown>);
       };
     }
 
@@ -3893,6 +3896,7 @@ export class App {
               updateState({ goalDisplay: this.buildGoalDisplay() });
             }
           },
+          traceCollector: this.traceCollector ?? undefined,
         };
 
         // 记录命令使用频率（驱动补全排序的指数衰减统计）

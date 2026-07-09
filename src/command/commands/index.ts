@@ -16,6 +16,7 @@ import loop from "./loop/index.ts";
 import effort from "./effort/index.ts";
 import think from "./think/index.ts";
 import goal from "./goal/index.ts";
+import debug from "./debug/index.ts";
 
 export const BUILTIN_COMMANDS: UnifiedCommand[] = [
   compact,
@@ -25,4 +26,5 @@ export const BUILTIN_COMMANDS: UnifiedCommand[] = [
   effort,
   think,
   goal,
+  debug,
 ];
