@@ -45,51 +45,54 @@ describe("getNextPermissionMode", () => {
   });
 });
 
-describe("键盘循环跳过 plan 的逻辑", () => {
+describe("键盘循环跳过 plan + auto 的逻辑", () => {
   /**
-   * 模拟 app.ts cyclePermissionMode 的跳过逻辑：
-   * 取 getNextPermissionMode 结果，若为 plan 则再跳一档。
+   * 复刻 app.ts cyclePermissionMode 的跳过逻辑：取 getNextPermissionMode 结果，
+   * 若为 plan 或 auto 则继续跳（最多 2 次，覆盖 acceptEdits→plan→auto 连续两档）。
+   * - plan：独立状态机，键盘只改字符串会造假 plan 态；
+   * - auto：classifier 从未注入（死档），行为等价 default，放进循环只会困惑用户。
    */
-  function cycleSkipPlan(mode: PermissionMode, isBypassAvailable: boolean): PermissionMode {
+  function cycleSkip(mode: PermissionMode, isBypassAvailable: boolean): PermissionMode {
     const ctx: PermissionModeContext = { mode, isBypassAvailable };
     let next = getNextPermissionMode(ctx);
-    if (next === "plan") {
-      next = getNextPermissionMode({ ...ctx, mode: "plan" });
+    for (let i = 0; i < 2 && (next === "plan" || next === "auto"); i++) {
+      next = getNextPermissionMode({ ...ctx, mode: next });
     }
     return next;
   }
 
-  it("完整循环序列（bypass 不可用）: default→acceptEdits→auto→default", () => {
+  it("完整循环序列（bypass 不可用）: default↔acceptEdits", () => {
     const seq: string[] = [];
     let mode: PermissionMode = "default";
     for (let i = 0; i < 10; i++) {
-      mode = cycleSkipPlan(mode, false);
+      mode = cycleSkip(mode, false);
       seq.push(mode);
       if (mode === "default") break;
     }
-    expect(seq).toEqual(["acceptEdits", "auto", "default"]);
+    expect(seq).toEqual(["acceptEdits", "default"]);
   });
 
-  it("完整循环序列（bypass 可用）: default→acceptEdits→auto→always-allow→default", () => {
+  it("完整循环序列（bypass 可用）: default→acceptEdits→always-allow→default", () => {
     const seq: string[] = [];
     let mode: PermissionMode = "default";
     for (let i = 0; i < 10; i++) {
-      mode = cycleSkipPlan(mode, true);
+      mode = cycleSkip(mode, true);
       seq.push(mode);
       if (mode === "default") break;
     }
-    expect(seq).toEqual(["acceptEdits", "auto", "always-allow", "default"]);
+    expect(seq).toEqual(["acceptEdits", "always-allow", "default"]);
   });
 
   it("从 deny-write 循环直接回 default", () => {
-    expect(cycleSkipPlan("deny-write", false)).toBe("default");
+    expect(cycleSkip("deny-write", false)).toBe("default");
   });
 
-  it("plan 不出现在序列中", () => {
+  it("plan 与 auto 都不出现在序列中", () => {
     const modes: PermissionMode[] = ["default", "acceptEdits", "auto", "always-allow", "deny-write", "dontAsk"];
     for (const m of modes) {
-      const next = cycleSkipPlan(m, true);
+      const next = cycleSkip(m, true);
       expect(next).not.toBe("plan");
+      expect(next).not.toBe("auto");
     }
   });
 });

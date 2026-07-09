@@ -84,6 +84,17 @@ describe("generatePermissionModeAttachment", () => {
     const attachment = generatePermissionModeAttachment("unknown_mode");
     expect(attachment.content).toContain("默认");
   });
+
+  // 键盘 Shift+Tab 循环会切到 acceptEdits / auto / always-allow，这些模式必须有专属描述，
+  // 否则 generatePermissionModeAttachment / buildPermissionModeReminder 会静默回退到 default，
+  // 导致模型收到的约束与实际模式不符。
+  test("键盘循环涉及的模式均有专属描述（非 default 回退）", () => {
+    for (const mode of ["acceptEdits", "auto", "always-allow"]) {
+      const attachment = generatePermissionModeAttachment(mode);
+      // 专属描述的标题含模式自身语义，且不等同于 default 的“执行以下操作前必须请求用户确认”
+      expect(attachment.content).not.toBe(generatePermissionModeAttachment("default").content);
+    }
+  });
 });
 
 describe("generateDiagnosticsAttachment", () => {
