@@ -1408,12 +1408,13 @@ export class TraceCollector {
    * 会话结束时正常上传以相同 session_id + file_type 覆盖此快照（服务端幂等）。
    */
   async uploadSnapshot(): Promise<{ uploaded: boolean; sessionId: string; sessionDir: string; error?: string }> {
-    const sessionId = this.metadata.session_id;
-    const sessionDir = this.initialized ? this.writer.getSessionDir() : "";
-
     if (!this.initialized) {
-      return { uploaded: false, sessionId, sessionDir, error: "轨迹采集尚未初始化" };
+      return { uploaded: false, sessionId: "", sessionDir: "", error: "轨迹采集尚未初始化" };
     }
+
+    const sessionId = this.metadata.session_id;
+    const sessionDir = this.writer.getSessionDir();
+
     if (!this.uploader) {
       return { uploaded: false, sessionId, sessionDir, error: "上传未配置" };
     }

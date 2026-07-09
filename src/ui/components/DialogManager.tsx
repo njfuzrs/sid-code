@@ -190,7 +190,7 @@ function PlanApprovalDialog({ request }: { request: PlanApprovalRequestInfo }) {
 }
 
 /** "其他…"行（选中后进入自定义文本输入）。preview 视图与列表视图共用。 */
-function OtherRow({ focused, editing, text, accent }: { focused: boolean; editing: boolean; text: string; accent: string }) {
+function OtherRow({ focused, editing, text, accent, showConfirmHint }: { focused: boolean; editing: boolean; text: string; accent: string; showConfirmHint?: boolean }) {
   return (
     <Box flexDirection="column">
       <Box>
@@ -198,6 +198,9 @@ function OtherRow({ focused, editing, text, accent }: { focused: boolean; editin
           <Text color={focused ? accent : theme.text.secondary}>{focused && !editing ? POINTER : " "}</Text>
         </Box>
         <Text color={focused ? accent : theme.text.secondary} bold={focused}>其他…</Text>
+        {showConfirmHint && !editing && text.trim() && (
+          <Text color={theme.text.secondary}>  ({text}) (再按 Enter 确认)</Text>
+        )}
       </Box>
       {editing && (
         <Box paddingLeft={2}>
@@ -246,7 +249,7 @@ function hintText(editingOther: boolean, editingNotes: boolean, isMulti: boolean
   if (editingOther) return "输入自定义答案，Enter 确认，Esc 返回";
   if (editingNotes) return "输入备注，Enter 确认，Esc 返回";
   if (isMulti) return "↑↓ 移动 · Enter/Space 勾选 · 到\"确认提交\"按 Enter · Esc 取消";
-  return "↑↓ 移动 · Enter 选择 · 到\"确认提交\"按 Enter · n 备注 · Esc 取消";
+  return "↑↓ 移动 · Enter 选择/确认 · n 备注 · Esc 取消";
 }
 
 /**
@@ -276,9 +279,9 @@ export function assembleAnswer(
  * AskUserQuestion 交互对话框（对标 cc AskUserQuestionPermissionRequest）。
  *
  * 模型用 ask_user_question 工具发起 1-4 道结构化选择题，本组件逐题收集答案：
- * - 单选：radio ○/●，↑↓ 移动 + Enter 选中某项（不提交）。
+ * - 单选：radio ○/●，↑↓ 移动 + Enter 选中某项，已选中状态再按 Enter 直接提交（双击确认）。
  * - 多选：checkbox □/■，↑↓ 移动 + Enter/Space 勾选/取消（不提交）。
- * - 提交是独立第二步：光标移到末尾"确认提交"行按 Enter 才真正提交（防手滑）。
+ *   多选提交是独立第二步：光标移到末尾"确认提交"行按 Enter 才真正提交（防手滑）。
  * - 每题末尾"其他…"项：选中后进入文本输入，键入自定义答案。
  * - ESC 取消整个问卷（回灌 cancelled，模型据此走默认方案，不会卡住）。
  * - preview：单选题选项带 preview 时切换为左右分栏（左选项 + 右预览框）。
@@ -312,10 +315,10 @@ function AskUserQuestionDialog({ request }: { request: AskUserQuestionRequestInf
 
   const current = questions[qIndex];
   const isMulti = !!current.multiSelect;
-  // 行索引布局：0..n-1 选项 → otherIndex "其他" → confirmIndex "确认提交"
+  // 行索引布局：0..n-1 选项 → otherIndex "其他" → (多选才有) confirmIndex "确认提交"
   const otherIndex = current.options.length;
-  const confirmIndex = current.options.length + 1;
-  const totalRows = current.options.length + 2;
+  const confirmIndex = isMulti ? current.options.length + 1 : -1; // 单选无确认行
+  const totalRows = current.options.length + 1 + (isMulti ? 1 : 0); // 单选少一行
   // 是否为 preview 分栏模式：单选 + 任一选项带 preview
   const hasPreview = !isMulti && current.options.some((o) => !!o.preview);
 
@@ -459,18 +462,26 @@ function AskUserQuestionDialog({ request }: { request: AskUserQuestionRequestInf
     }
 
     if (key.name === "return" || key.name === "enter") {
-      if (cursor === confirmIndex) {
-        // 确认提交行：组装并提交（无选择则不生效）
-        submitCurrent();
+      // 多选模式：保持原逻辑（确认提交行 + 勾选）
+      if (isMulti) {
+        if (cursor === confirmIndex) { submitCurrent(); return true; }
+        if (cursor === otherIndex) { setEditingOther(true); return true; }
+        toggleOption(cursor);
         return true;
       }
+      // 单选模式：双击 Enter 确认（已选中再按 Enter → 直接提交）
       if (cursor === otherIndex) {
-        // "其他"行：进入文本输入
-        setEditingOther(true);
+        // "其他"行：有文本时直接提交（等同"已选中再按 Enter"），无文本时进入输入
+        if (otherText.trim()) { submitCurrent(); } else { setEditingOther(true); }
         return true;
       }
-      // 选项行：Enter 选中/勾选，绝不提交
-      toggleOption(cursor);
+      if (selected.has(cursor)) {
+        // 已选中 → 直接提交
+        submitCurrent();
+      } else {
+        // 未选中 → 选中它
+        toggleOption(cursor);
+      }
       return true;
     }
 
@@ -519,14 +530,19 @@ function AskUserQuestionDialog({ request }: { request: AskUserQuestionRequestInf
               const glyph = isSel ? RADIO_SELECTED : RADIO_EMPTY;
               const labelColor = isCursor ? accent : recommended ? accent : theme.text.primary;
               return (
-                <Box key={i}>
-                  <Box width={2} flexShrink={0}>
-                    <Text color={isCursor ? accent : theme.text.secondary}>{isCursor ? POINTER : " "}</Text>
+                <Box key={i} flexDirection="column">
+                  <Box>
+                    <Box width={2} flexShrink={0}>
+                      <Text color={isCursor ? accent : theme.text.secondary}>{isCursor ? POINTER : " "}</Text>
+                    </Box>
+                    <Box width={2} flexShrink={0}>
+                      <Text color={isSel ? theme.status.success : theme.text.secondary}>{glyph}</Text>
+                    </Box>
+                    <Text color={labelColor} bold={isCursor || recommended}>{opt.label}</Text>
+                    {isSel && (
+                      <Text color={theme.text.secondary}>  (再按 Enter 确认)</Text>
+                    )}
                   </Box>
-                  <Box width={2} flexShrink={0}>
-                    <Text color={isSel ? theme.status.success : theme.text.secondary}>{glyph}</Text>
-                  </Box>
-                  <Text color={labelColor} bold={isCursor || recommended}>{opt.label}</Text>
                 </Box>
               );
             })}
@@ -536,15 +552,7 @@ function AskUserQuestionDialog({ request }: { request: AskUserQuestionRequestInf
               editing={editingOther}
               text={otherText}
               accent={accent}
-            />
-            {/* 确认提交行 */}
-            <ConfirmRow
-              focused={cursor === confirmIndex}
-              enabled={hasSelection}
-              summary={currentAnswer}
-              isMulti={isMulti}
-              selectedCount={selected.size + (otherText.trim() ? 1 : 0)}
-              accent={accent}
+              showConfirmHint={true}
             />
           </Box>
 
@@ -615,6 +623,9 @@ function AskUserQuestionDialog({ request }: { request: AskUserQuestionRequestInf
                   <Text color={glyphColor}>{glyph}</Text>
                 </Box>
                 <Text color={labelColor} bold={isCursor || recommended}>{opt.label}</Text>
+                {isSel && !isMulti && (
+                  <Text color={theme.text.secondary}>  (再按 Enter 确认)</Text>
+                )}
               </Box>
               {isCursor && opt.description && (
                 <Box paddingLeft={4}>
@@ -631,17 +642,20 @@ function AskUserQuestionDialog({ request }: { request: AskUserQuestionRequestInf
           editing={editingOther}
           text={otherText}
           accent={accent}
+          showConfirmHint={!isMulti}
         />
 
-        {/* 确认提交行 */}
-        <ConfirmRow
-          focused={cursor === confirmIndex && !editingOther && !editingNotes}
-          enabled={hasSelection}
-          summary={currentAnswer}
-          isMulti={isMulti}
-          selectedCount={selected.size + (otherText.trim() ? 1 : 0)}
-          accent={accent}
-        />
+        {/* 确认提交行：仅多选模式显示 */}
+        {isMulti && (
+          <ConfirmRow
+            focused={cursor === confirmIndex && !editingOther && !editingNotes}
+            enabled={hasSelection}
+            summary={currentAnswer}
+            isMulti={isMulti}
+            selectedCount={selected.size + (otherText.trim() ? 1 : 0)}
+            accent={accent}
+          />
+        )}
       </Box>
 
       {/* notes 区（仅单选题可用） */}
