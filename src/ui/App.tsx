@@ -35,7 +35,7 @@ import { deriveStreamingState } from "./derive-streaming-state.ts";
 import { useTerminalIntegration } from "./hooks/useTerminalIntegration.ts";
 import { useMessageQueue } from "./hooks/useMessageQueue.ts";
 import { useExitConfirm } from "./hooks/useExitConfirm.ts";
-import { messagesToHistoryItems, isPlaceholderMessage, isHiddenFromDisplay, buildStaticItems } from "./history-adapter.ts";
+import { messagesToHistoryItems, isPlaceholderMessage, isHiddenFromDisplay, buildStaticItems, splitLiveToolItems } from "./history-adapter.ts";
 import { getLogger } from "../debug/logger.ts";
 import { DEFAULT_TERM_WIDTH } from "./markdown.ts";
 
@@ -214,7 +214,7 @@ export interface TUIState {
    */
   thinkingDisplay: { on: boolean; isAuto: boolean } | null;
   /** /goal：目标状态展示态（状态栏 goal 列）。null = 无活跃目标 */
-  goalDisplay: { turnsUsed: number; maxTurns: number; progress?: number; status: string } | null;
+  goalDisplay: { turnsUsed: number; maxTurns: number; status: string } | null;
   statusMessage: string;
   permissionRequest: PermissionRequestInfo | null;
   shellConfirmRequest: ShellConfirmRequestInfo | null;
@@ -685,11 +685,20 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     return items;
   }, [state.historyItems, state.isStreaming, state.streamingText]);
 
-  // 主屏 Static 模式专用：仅已完成历史（含 app_header，不含流式虚拟项）。
-  // 流式内容在 MainScreenLayout 动态区单独渲染，完成后才并入 historyItems → 进 Static（ADR-040）
-  const staticItems = useMemo(
-    (): HistoryItem[] => buildStaticItems(state.historyItems, require("../../package.json").version),
+  // 主屏 Static 模式专用：仅**已终结**历史（含 app_header，不含流式虚拟项、不含执行中活项）。
+  // 流式内容在 MainScreenLayout 动态区单独渲染，完成后才并入 historyItems → 进 Static（ADR-040）。
+  //
+  // 关键：executing 状态的工具组（tool_use 已入 ctxMgr、tool_result 未到的中间态）必须
+  // 从 Static 剥离——否则它被一次性打印进 scrollback，工具完成后 log-update 的 cell diff
+  // 擦不掉已滚出视口的旧行，导致 `⏺ task_list`/`⏺ task_output` 幽灵行永久残留。
+  // 剥出的 live 项改由动态区渲染（每帧重绘、永不提交 scrollback）。
+  const { committed: committedHistoryItems, live: liveToolItems } = useMemo(
+    () => splitLiveToolItems(state.historyItems),
     [state.historyItems],
+  );
+  const staticItems = useMemo(
+    (): HistoryItem[] => buildStaticItems(committedHistoryItems, require("../../package.json").version),
+    [committedHistoryItems],
   );
 
   // key 提取器
@@ -890,6 +899,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
       ) : (
         <MainScreenLayout
           staticItems={staticItems}
+          liveToolItems={liveToolItems}
           streamingText={state.streamingText}
           streamingThinking={state.streamingThinking}
           streamingThinkingStartMs={state.streamingThinkingStartMs}

@@ -1350,6 +1350,10 @@ export class OpenAIProvider implements Provider {
         // idle timeout 默认启用：reader 超时后 reject + cancel 释放底层 TCP 连接
         const readPromise = reader.read();
         let timeoutId: ReturnType<typeof setTimeout> | null = null;
+        // 性能修复：此前 cancelTimeoutId 无句柄、永不 clearTimeout，每次 reader.read()
+        // 泄漏一个存活 IDLE_TIMEOUT_MS+100ms 的定时器。token 级流式下每秒泄漏数百个，
+        // Bun 定时器堆膨胀 → 高频 timer syscall + 调度抢占（实测 7700/s involuntary ctx switch）。
+        let cancelTimeoutId: ReturnType<typeof setTimeout> | null = null;
         // 缺口 2 进阶：idle 超时 fire 后武装未生效检查；race settle 时 disarm。
         let disarmIdleIneffective: (() => void) | null = null;
         const timeoutPromise = new Promise<never>((_resolve, reject) => {
@@ -1376,7 +1380,7 @@ export class OpenAIProvider implements Provider {
             reject(new Error(`SSE 流空闲超时：${IDLE_TIMEOUT_MS / 1000} 秒无 chunk chunks=${totalChunks} empty=${emptyChunks}`));
           }, IDLE_TIMEOUT_MS);
           // 超时后 cancel reader，释放底层 TCP 连接（+100ms 确保 reject 先传播）
-          setTimeout(() => { reader.cancel().catch(() => {}); }, IDLE_TIMEOUT_MS + 100);
+          cancelTimeoutId = setTimeout(() => { reader.cancel().catch(() => {}); }, IDLE_TIMEOUT_MS + 100);
         });
 
         let result: Awaited<ReturnType<typeof reader.read>>;
@@ -1386,6 +1390,7 @@ export class OpenAIProvider implements Provider {
           result = await Promise.race(racers);
         } finally {
           if (timeoutId !== null) clearTimeout(timeoutId);
+          if (cancelTimeoutId !== null) clearTimeout(cancelTimeoutId);
           // race 已 settle（read 返回 / idle reject / abort reject）→ disarm idle 未生效检查。
           (disarmIdleIneffective as (() => void) | null)?.();
         }

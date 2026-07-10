@@ -319,9 +319,13 @@ export class CostCommand implements Command {
 
     const models = Object.entries(ss.modelUsage);
     if (models.length > 1) {
-      lines.push("", "按模型统计:");
+      lines.push("", "按模型统计（input 为 flow 累计口径，与上方汇总一致）:");
       for (const [model, stats] of models) {
-        lines.push(`  ${model}: ${stats.requests} 次请求, $${stats.costUSD.toFixed(4)}, input=${stats.inputTokens}, output=${stats.outputTokens}`);
+        // ⚠️ 必须用 cumulativePromptTokens（flow 累计）而非 inputTokens（stock 末次值）。
+        // 汇总 input 走 getTotalUsage() = ΣcumulativePromptTokens（flow），若此处用末次 stock，
+        // 两者口径不一致：分模型之和 ≪ 汇总（末次值只保留最后一次请求的 prompt 长度），
+        // 用户会看到"汇总 input 远大于分模型 input 之和"的诡异对不上。统一为 flow 口径。
+        lines.push(`  ${model}: ${stats.requests} 次请求, $${stats.costUSD.toFixed(4)}, input=${stats.cumulativePromptTokens}, output=${stats.outputTokens}`);
       }
     }
 

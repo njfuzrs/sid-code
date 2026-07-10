@@ -46,6 +46,12 @@ export const POINTER = "▸";
 export const WARNING_MARK = "⚠";
 
 /**
+ * 目标标记（/goal 状态栏前缀）。◎ 同心圆 = 瞄准/靶心，单色几何字形，宽度=1。
+ * 替代此前状态栏用的彩色 🎯 emoji（违反 L1.1「禁彩色 emoji」，且跨终端占位不一致）。
+ */
+export const GOAL_MARK = "◎";
+
+/**
  * 重试 / 降级 / 暂停标记（瞬态状态前缀，仅靠颜色区分语义）。
  * 此前散落在 RetryStatus / ToolStatus 内联字符串里写死，违反 L1.1「字形从 figures.ts 取」，已收口。
  * - RETRY_MARK    ⟳ 旋转箭头：请求重试 / 正在重试中

@@ -140,6 +140,10 @@ export class TraceCollector {
   private auditLogStartLine: number = 0;
   /** §3.8：audit.log 文件路径（SessionStart 时快照） */
   private auditLogPath: string = "";
+  /** 性能优化：rebuildTraj 节流（最多每 30s 重写一次 session.traj，session end 时强制刷） */
+  private trajDirty = false;
+  private trajThrottleTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly TRAJ_THROTTLE_MS = 30_000;
 
   // ── Harness 编辑统计内部计数器 ──
   private harnessEditCount = 0;
@@ -155,10 +159,11 @@ export class TraceCollector {
     this.pruneOldSessions();
     // 辅助调用（标题生成/记忆召回等）用量落定的瞬间即同步进 trajectory，
     // 不必等待（可能因崩溃/被杀而永远不会到来的）SessionEnd——见 syncSideCallMetadata 注释。
+    // 用 forceRebuildTraj（非节流版）——side-call 稀少（一两次/会话），崩溃安全优先。
     setSideStatsObserver(() => {
       if (!this.initialized) return;
       this.syncSideCallMetadata();
-      void this.rebuildTraj();
+      void this.forceRebuildTraj();
     });
   }
 
@@ -758,8 +763,15 @@ export class TraceCollector {
     const rawEntry = this.toRawJsonlEntry(pair);
     this.writer.appendRaw(rawEntry);
 
-    // 重建 session.traj
-    await this.rebuildTraj();
+    // 性能优化：剥离旧 pair 的 raw_messages 引用，消除 O(N²) 内存驻留。
+    // 每个 pair.request.raw_messages 持有该轮请求时的**全量**会话历史引用，而每轮请求
+    // 历史都在增长 → N 个 pair 累计驻留 O(N²) 消息。raw.jsonl 已剥离 raw_messages 落盘，
+    // buildTrajectory.findToolResult 现回退到 new_messages（增量），故仅需为其 lookahead
+    // 窗口（3）保留最近几轮的 raw_messages，更旧的可安全置空释放。
+    this.pruneOldRawMessages();
+
+    // 重建 session.traj（节流：最多 30s 一次，不再每轮全量覆盖）
+    this.rebuildTraj();
 
     this.writer.appendEvent({
       event: HookEventName.AfterModel,
@@ -1104,8 +1116,8 @@ export class TraceCollector {
       },
     });
 
-    // 最终重建 session.traj（确保包含所有数据）
-    await this.rebuildTraj();
+    // 最终重建 session.traj（强制刷，确保包含所有数据，取消未 fire 的节流定时器）
+    await this.forceRebuildTraj();
 
     // D3-1 + D3-3：退出时落 messages.json（完整消息历史 + 退出归因）。
     // 落实 CLAUDE.md 评测纪律不变量第 1 条「transcript 必落盘」到真实交互退出路径。
@@ -1370,12 +1382,69 @@ export class TraceCollector {
 
   // ─── 辅助：重建 session.traj ───
 
-  private async rebuildTraj(): Promise<void> {
+  /**
+   * 节流版重建：短会话（前 5 轮）立即写，之后标记脏 + 节流。
+   *
+   * 背景（性能修复 2026-07）：旧实现每轮 AfterModel 都 buildTrajectory(全部 pairs) +
+   * JSON.stringify(全文) + Bun.write 全量覆盖 session.traj，长会话写放大 O(N²)
+   * （实测 190 轮累计写盘 30MB）。而 session.traj 是**派生视图**，权威数据是 append
+   * 语义的 raw.jsonl（每轮已实时追加，崩溃安全）。故长会话 traj 无需每轮落盘——节流到
+   * 30s 一次即可满足"复盘时大致最新"，session end / snapshot 上传前再 forceRebuildTraj
+   * 保证完整。前 5 轮立即写保证：① 短会话/测试行为不变 ② 用户打开 traj 能尽快看到首轮。
+   */
+  private rebuildTraj(): void {
+    // 短会话：前几轮直接写（成本低且保证测试/短会话行为不变）
+    if (this.pairs.length <= 5) {
+      void this.flushTraj();
+      return;
+    }
+    // 长会话：节流
+    this.trajDirty = true;
+    if (this.trajThrottleTimer !== null) return; // 已排程，等它 fire
+    this.trajThrottleTimer = setTimeout(() => {
+      this.trajThrottleTimer = null;
+      if (this.trajDirty) void this.flushTraj();
+    }, this.TRAJ_THROTTLE_MS);
+    // unref：不因这个定时器阻止进程退出（session end 有 forceRebuildTraj 兜底）。
+    this.trajThrottleTimer?.unref?.();
+  }
+
+  /** 强制立即重建 session.traj（session end / snapshot 上传 / 侧调用用量落定时调用）。 */
+  private async forceRebuildTraj(): Promise<void> {
+    if (this.trajThrottleTimer !== null) {
+      clearTimeout(this.trajThrottleTimer);
+      this.trajThrottleTimer = null;
+    }
+    await this.flushTraj();
+  }
+
+  /** 实际执行 buildTrajectory + 落盘（节流与强制路径共用）。 */
+  private async flushTraj(): Promise<void> {
+    this.trajDirty = false;
     try {
       const traj = buildTrajectory(this.pairs, this.metadata);
       await this.writer.writeTraj(traj);
     } catch (err) {
       getLogger().warn("TRACE", `重建 session.traj 失败: ${err}`);
+    }
+  }
+
+  /**
+   * 剥离旧 pair 的 raw_messages 引用，消除 O(N²) 内存驻留。
+   *
+   * findToolResult 的 maxLookahead=3，即从当前 pair 向后最多查 3 个 pair。
+   * 保留最近 KEEP_RAW_WINDOW 个 pair 的 raw_messages 供 findToolResult 兜底，
+   * 更旧的置 undefined 释放内存（buildTrajectory 回退到 new_messages）。
+   * 首轮（index=1）始终保留（含 system prompt + tools）。
+   */
+  private static readonly KEEP_RAW_WINDOW = 4; // maxLookahead(3) + 1 余量
+  private pruneOldRawMessages(): void {
+    const cutoff = this.pairs.length - TraceCollector.KEEP_RAW_WINDOW;
+    for (let i = 1; i < cutoff; i++) { // i=0 首轮始终保留
+      const req = this.pairs[i]?.request;
+      if (req && req.raw_messages) {
+        req.raw_messages = undefined;
+      }
     }
   }
 
@@ -1421,8 +1490,8 @@ export class TraceCollector {
       return { uploaded: false, sessionId, sessionDir, error: "上传未配置" };
     }
 
-    // 先重建 session.traj 确保包含最新数据
-    await this.rebuildTraj();
+    // 先重建 session.traj 确保包含最新数据（快照上传前强制刷）
+    await this.forceRebuildTraj();
 
     // 上传，最多等 5 秒
     try {

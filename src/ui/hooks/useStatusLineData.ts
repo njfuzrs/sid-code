@@ -19,7 +19,7 @@ import { useUIState } from "../contexts/UIStateContext.tsx";
 import { useConfig } from "../contexts/ConfigContext.tsx";
 import { useSettings } from "../contexts/SettingsContext.tsx";
 import { formatLargeNumber } from "../utils/format-number.ts";
-import { TOKEN_IN, TOKEN_OUT, EFFORT_GLYPHS, EFFORT_AUTO, THINKING_ON, THINKING_OFF } from "../constants/figures.ts";
+import { TOKEN_IN, TOKEN_OUT, EFFORT_GLYPHS, EFFORT_AUTO, THINKING_ON, THINKING_OFF, GOAL_MARK, PAUSED_MARK } from "../constants/figures.ts";
 import type { PricingModelEntry } from "../../api/cost-tracker.ts";
 
 /** 缩短路径：~ 替换 home，超长时只保留最后两级。导出供测试与 Footer 复用。 */
@@ -167,23 +167,29 @@ export function deriveThinking(
   return { glyph, text, color };
 }
 
-/** /goal：目标进度派生。null = 无活跃目标。 */
+/**
+ * /goal：目标进度派生。null = 无活跃目标（不显示该列）。
+ *
+ * 显示语义（去歧义要点）：
+ * - 展示的是「已用轮次 / 最大轮次」，是**任务消耗的执行轮数**，不是"任务完成度"。
+ *   历史版本额外显示过 `~6%`，那只是 turnsUsed/maxTurns 的百分比换算（与 N/M 同一个数
+ *   重复表达），却容易被误读成"完成进度",故彻底移除,只保留带中文标签的 `目标 N/M 轮`。
+ * - 加「目标」中文标签 + 「轮」单位,让分子分母语义自解释,不再是无锚点的裸 `3/50`。
+ * - 前缀单色字形 GOAL_MARK（◎），替代违反规范的彩色 🎯 emoji。
+ * - 接近上限（≥80%）转黄预警,提示快到轮次上限;paused 用 ⏸ 前缀 + 黄色。
+ */
 function deriveGoal(
-  goalDisplay: { turnsUsed: number; maxTurns: number; progress?: number; status: string } | null,
+  goalDisplay: { turnsUsed: number; maxTurns: number; status: string } | null,
   defaultColor: string,
 ): { text: string; color: string } | null {
   if (!goalDisplay) return null;
-  const { turnsUsed, maxTurns, progress, status } = goalDisplay;
+  const { turnsUsed, maxTurns, status } = goalDisplay;
   if (status !== "active" && status !== "paused") return null;
-  const pct = progress ?? Math.round((turnsUsed / maxTurns) * 100);
+  const nearLimit = maxTurns > 0 && turnsUsed / maxTurns >= 0.8;
   const text = status === "paused"
-    ? `⏸ ${turnsUsed}/${maxTurns}`
-    : `${turnsUsed}/${maxTurns} ~${pct}%`;
-  const color = status === "paused"
-    ? theme.status.warning
-    : pct >= 80
-      ? theme.status.warning
-      : defaultColor;
+    ? `${PAUSED_MARK} 目标已暂停 ${turnsUsed}/${maxTurns} 轮`
+    : `${GOAL_MARK} 目标 ${turnsUsed}/${maxTurns} 轮`;
+  const color = status === "paused" || nearLimit ? theme.status.warning : defaultColor;
   return { text, color };
 }
 

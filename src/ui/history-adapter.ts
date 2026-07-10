@@ -40,6 +40,47 @@ export function buildStaticItems(historyItems: HistoryItem[], version: string): 
   ];
 }
 
+/**
+ * 判断一个历史项是否为"执行中"的活项（含尚未完成的工具调用）。
+ *
+ * `messagesToHistoryItems` 在 tool_use 已入 ctxMgr、tool_result 尚未到达的中间窗口，
+ * 会把该 tool_use 输出为 status=executing 的 tool_group（P2-1 语义：并行多工具时
+ * 逐个可见）。这类活项**绝不能进 `<Static>`**——Static 一次性打印进终端 scrollback，
+ * `log-update` 的 cell diff 只能擦视口内的行、擦不掉已滚出视口的 scrollback 行；
+ * 于是每次 syncDisplay 重建出的 executing 中间态一旦溢出视口，就永久残留
+ *（现象：屏幕底部堆积 `⏺ task_list` / `⏺ task_output` 之类无 `⎿` 结果的幽灵行）。
+ */
+export function isLiveToolItem(item: HistoryItem): boolean {
+  return (
+    item.type === "tool_group" &&
+    item.tools.some(t => t.status === ToolCallStatus.Executing)
+  );
+}
+
+/**
+ * 把历史项拆成「已终结(committed)」与「执行中(live)」两部分。
+ *
+ * - committed：状态已固化（工具全部 success/error/cancelled，或非工具项）→ 可安全进
+ *   `<Static>` → scrollback，永不重写。
+ * - live：含 executing 工具的活项 → 交由动态区（log-update 每帧重绘、永不提交 scrollback）
+ *   渲染，工具一旦完成，下一帧它会以终态并入 committed，动态区自然清空。
+ *
+ * 保持原有相对顺序。这是纯数据拆分，不改 `messagesToHistoryItems` 的产出（那 5 个
+ * pending→executing 单测锁定的纯函数行为保持不变），只在消费端决定"进 Static 还是进动态区"。
+ */
+export function splitLiveToolItems(historyItems: HistoryItem[]): {
+  committed: HistoryItem[];
+  live: HistoryItem[];
+} {
+  const committed: HistoryItem[] = [];
+  const live: HistoryItem[] = [];
+  for (const item of historyItems) {
+    if (isLiveToolItem(item)) live.push(item);
+    else committed.push(item);
+  }
+  return { committed, live };
+}
+
 /** 思考摘要（从 thinking block 提取） */
 export interface ThoughtSummary {
   text: string;

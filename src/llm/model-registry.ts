@@ -193,8 +193,30 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
 };
 
 /**
+ * 已知供应商路由前缀白名单（连字符式，非 "/" 分隔）。
+ *
+ * 网关/聚合服务常给同一底层模型加供应商前缀（阿里百炼 `ali-`、火山方舟 `volc-` /
+ * `volcengine-`、硅基流动 `siliconflow-`、腾讯 `hunyuan-`/`tencent-` 等）。这些前缀不在
+ * 注册表 key 中，导致定价/参数匹配全部落空。此处**显式白名单**精确剥离，绝不按通用
+ * "-" 拆分——否则会误伤 `claude-`、`gpt-`、`glm-`、`grok-` 等本就以连字符构成的正规名。
+ *
+ * 新增网关前缀时在此追加即可（保持全小写，含末尾连字符）。
+ */
+const ROUTE_PREFIXES = [
+  "ali-",
+  "aliyun-",
+  "bailian-",
+  "dashscope-",
+  "volc-",
+  "volcengine-",
+  "siliconflow-",
+  "hunyuan-",
+  "tencent-",
+] as const;
+
+/**
  * 统一查找引擎。
- * 匹配策略：精确 → 最长前缀 → 剥离路由前缀重试 → 大小写不敏感 → 家族匹配 → null
+ * 匹配策略：精确 → 最长前缀 → 剥离 "/" 路由前缀 → 剥离供应商连字符前缀 → 大小写不敏感 → 家族匹配 → null
  */
 export function lookupRegistry(model: string): ModelRegistryEntry | null {
   // 1. 精确匹配
@@ -223,6 +245,19 @@ export function lookupRegistry(model: string): ModelRegistryEntry | null {
       }
     }
     if (best) return best;
+  }
+
+  // 3.5 剥离已知供应商路由前缀后重试（如 "ali-deepseek-v4-pro" → "deepseek-v4-pro"）
+  // 某些网关/聚合服务给模型名加连字符供应商前缀（阿里百炼 ali-、火山 volc- 等），
+  // 这些前缀不在注册表 key 里 → 前缀匹配(startsWith)与家族匹配全部 miss → 费用误落
+  // FALLBACK 高估数倍，且 calculateSavings 遇 pricing=null 直接返回 0（"省钱恒 $0"）。
+  // 用白名单精确剥离，绝不盲目按 "-" 拆分（否则会误伤 claude-/gpt-/glm- 等本就以连字符
+  // 构成的正规模型名）。剥离后递归复用完整匹配策略；bare 每次严格变短，必然终止。
+  for (const prefix of ROUTE_PREFIXES) {
+    if (model.startsWith(prefix) && model.length > prefix.length) {
+      const hit = lookupRegistry(model.slice(prefix.length));
+      if (hit) return hit;
+    }
   }
 
   // 4. 大小写不敏感匹配

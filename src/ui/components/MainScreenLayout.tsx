@@ -37,8 +37,14 @@ import { TodoPanel } from "./TodoPanel.tsx";
 import { theme } from "../semantic-colors.ts";
 
 interface MainScreenLayoutProps {
-  /** 已完成历史项（含 app_header，但不含流式虚拟项）；进 <Static> 打印到 scrollback */
+  /** 已终结历史项（含 app_header，但不含流式虚拟项、不含执行中活项）；进 <Static> 打印到 scrollback */
   staticItems: HistoryItem[];
+  /**
+   * 执行中的活项（含 status=executing 工具的 tool_group）。**不进 Static**，改在动态区
+   * （log-update 每帧重绘、永不提交 scrollback）渲染——工具一完成即以终态并入 staticItems，
+   * 动态区自然清空。这是根治 `⏺ task_list`/`⏺ task_output` 幽灵行残留的关键分流。
+   */
+  liveToolItems: HistoryItem[];
   /** 流式输出文本 */
   streamingText: string;
   /** v2：流式思考内容（独立于 streamingText） */
@@ -121,6 +127,7 @@ interface MainScreenLayoutProps {
 
 export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function MainScreenLayout({
   staticItems,
+  liveToolItems,
   streamingText,
   streamingThinking,
   streamingThinkingStartMs,
@@ -208,6 +215,21 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
         <Box flexDirection="column" gap={1}>
           {/* 空会话：欢迎屏（首条消息到达后即随 Static 滚走） */}
           {isEmpty ? <EmptyLogo termWidth={termWidth} cwd={cwd} gitBranch={gitBranch} model={model} needsOnboarding={activeDialog === "onboarding"} /> : null}
+
+          {/* 执行中的工具活项（status=executing 的 tool_group）：在动态区渲染而非 Static。
+              log-update 每帧重绘这部分、绝不提交 scrollback；工具一完成，该项以终态并入
+              staticItems（Static），此处随即清空。这样并行多工具的「逐个 executing 中间态」
+              仍可见（P2-1 语义保留），又根除了 executing 行溢出 scrollback 后擦不掉的幽灵残留。 */}
+          {liveToolItems.map((item, index) => (
+            <HistoryItemDisplay
+              key={keyExtractor(item, index)}
+              item={item}
+              prevItem={undefined}
+              terminalWidth={termWidth}
+              thinkCollapsed={thinkingCollapsed}
+              thinkExpandable={false}
+            />
+          ))}
 
           {/* v2：流式思考区域 — 独立于 streamingText（对标 Claude Code）
               思考在正文之前渲染（模型先思考后回答），顺序与语义一致。

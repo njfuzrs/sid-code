@@ -45,7 +45,7 @@ export interface GoalState {
   tokensUsed: number;
   /** 已执行轮次 */
   turnsUsed: number;
-  /** 最大轮次（goal 级别，默认 50） */
+  /** 最大轮次（goal 级别，默认 150） */
   maxTurns: number;
   /** 创建时间戳 */
   createdAt: number;
@@ -78,7 +78,7 @@ export function createGoal(objective: string, options?: CreateGoalOptions): Goal
     tokenBudget: options?.tokenBudget || undefined,
     tokensUsed: 0,
     turnsUsed: 0,
-    maxTurns: options?.maxTurns ?? 50,
+    maxTurns: options?.maxTurns ?? 150,
     createdAt: now,
     updatedAt: now,
     evidenceLog: [],
@@ -103,7 +103,7 @@ export function deserializeGoalState(json: string): GoalState {
     tokenBudget: parsed.tokenBudget,
     tokensUsed: parsed.tokensUsed ?? 0,
     turnsUsed: parsed.turnsUsed ?? 0,
-    maxTurns: parsed.maxTurns ?? 50,
+    maxTurns: parsed.maxTurns ?? 150,
     createdAt: parsed.createdAt ?? Date.now(),
     updatedAt: parsed.updatedAt ?? Date.now(),
     lastEvalReason: parsed.lastEvalReason,

@@ -20,7 +20,7 @@ describe("createGoal", () => {
     expect(goal.status).toBe("active");
     expect(goal.tokensUsed).toBe(0);
     expect(goal.turnsUsed).toBe(0);
-    expect(goal.maxTurns).toBe(50);
+    expect(goal.maxTurns).toBe(150);
     expect(goal.evidenceLog).toEqual([]);
     expect(goal.createdAt).toBeGreaterThan(0);
     expect(goal.updatedAt).toBeGreaterThan(0);

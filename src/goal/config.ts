@@ -27,7 +27,11 @@ export interface GoalConfig {
 
 export const DEFAULT_GOAL_CONFIG: GoalConfig = {
   defaultTokenBudget: 0,       // 无限制
-  defaultMaxTurns: 50,
+  // 150：goal 是"目标达成前不停"的长任务模式，复杂审计/多文件重构/深度排查动辄
+  // 几十轮起步，50 轮对这类任务偏紧（常在收尾阶段被 turns_limited 掐断）。默认无
+  // tokenBudget 时 maxTurns 是唯一硬上限，故放宽到 150 给长任务留足空间；用户随时可
+  // ESC 介入，也可用 /goal turns <n> 按需临时调整，不会真跑满 150 轮而失控。
+  defaultMaxTurns: 150,
   reminderInterval: 4,         // 每 4 轮回注一次目标状态
   enableBlockedDetection: true,
   blockedThreshold: 3,         // 连续 3 轮相同 blockerKey → blocked

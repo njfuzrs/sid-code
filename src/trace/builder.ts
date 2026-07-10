@@ -407,8 +407,14 @@ function findToolResult(
   const lookaheadPairs = pairs.slice(startIndex, startIndex + maxLookahead);
 
   for (const pair of lookaheadPairs) {
-    // 优先搜索 raw_messages（完整 messages），其次 messages
-    const messages = (pair.request.raw_messages ?? pair.request.messages ?? []) as Array<Record<string, unknown>>;
+    // 优先搜索 raw_messages（完整 messages），其次 new_messages（增量），再次 messages。
+    // 内存优化：collector 会剥离旧 pair 的 raw_messages（O(N²) 驻留），此时回退到
+    // new_messages。tool_result 恒出现在 tool_use 之后一轮的 user turn → 落在下一个
+    // pair 的 new_messages（增量）里，故增量足以覆盖 maxLookahead 窗口内的查找。
+    const messages = (pair.request.raw_messages
+      ?? pair.request.new_messages
+      ?? pair.request.messages
+      ?? []) as Array<Record<string, unknown>>;
 
     for (const msg of messages) {
       if (msg.role !== "user") continue;

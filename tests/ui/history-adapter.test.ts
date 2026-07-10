@@ -12,8 +12,11 @@ import {
   isPlaceholderMessage,
   isResumeMarkerMessage,
   isHiddenFromDisplay,
+  isLiveToolItem,
+  splitLiveToolItems,
 } from "../../src/ui/history-adapter.ts";
 import type { Message } from "../../src/llm/types.ts";
+import type { HistoryItem } from "../../src/ui/types.ts";
 import { REATTACH_ORIGIN } from "../../src/query/compact/reattach-markers.ts";
 import { ToolCallStatus } from "../../src/ui/types.ts";
 
@@ -771,5 +774,68 @@ describe("后台任务通知（<task-notification>）→ task_notification 历�
     if (items[0].type === "task_notification") {
       expect(items[0].taskId).toBe("meta1");
     }
+  });
+});
+
+// 回归守卫：执行中工具活项必须从 Static 分流到动态区，根治 `⏺ task_list` 幽灵行残留。
+// 关键约束：splitLiveToolItems 不改 messagesToHistoryItems 的产出（上面 5 个 pending→executing
+// 单测锁定的纯函数行为不变），只在消费端把「含 executing 工具的 tool_group」剥出 Static。
+describe("splitLiveToolItems / isLiveToolItem — 执行中活项分流（防 scrollback 残留）", () => {
+  const mkTool = (name: string, status: ToolCallStatus) => ({
+    callId: `id-${name}-${status}`,
+    name,
+    description: "",
+    status,
+    resultDisplay: undefined,
+  });
+  const executingGroup = (names: string[]): HistoryItem => ({
+    id: 10,
+    type: "tool_group",
+    tools: names.map(n => mkTool(n, ToolCallStatus.Executing)),
+  }) as HistoryItem;
+  const successGroup = (names: string[]): HistoryItem => ({
+    id: 11,
+    type: "tool_group",
+    tools: names.map(n => mkTool(n, ToolCallStatus.Success)),
+  }) as HistoryItem;
+  const assistant = (): HistoryItem => ({ id: 1, type: "assistant", text: "hi" }) as HistoryItem;
+
+  test("isLiveToolItem：含 executing 工具的 tool_group 判为活项", () => {
+    expect(isLiveToolItem(executingGroup(["task_list"]))).toBe(true);
+    expect(isLiveToolItem(successGroup(["Read"]))).toBe(false);
+    expect(isLiveToolItem(assistant())).toBe(false);
+  });
+
+  test("混合状态 tool_group：只要有一个 executing 就算活项（并行多工具，部分已完成部分在跑）", () => {
+    const mixed: HistoryItem = {
+      id: 12,
+      type: "tool_group",
+      tools: [mkTool("Read", ToolCallStatus.Success), mkTool("Bash", ToolCallStatus.Executing)],
+    } as HistoryItem;
+    expect(isLiveToolItem(mixed)).toBe(true);
+  });
+
+  test("splitLiveToolItems：committed 不含任何 executing 活项，live 只含活项，顺序保持", () => {
+    const items = [assistant(), successGroup(["Read"]), executingGroup(["task_list", "task_output"])];
+    const { committed, live } = splitLiveToolItems(items);
+    expect(committed).toHaveLength(2);
+    expect(committed.every(i => !isLiveToolItem(i))).toBe(true);
+    expect(live).toHaveLength(1);
+    expect(live[0].type).toBe("tool_group");
+    if (live[0].type === "tool_group") {
+      expect(live[0].tools.map(t => t.name)).toEqual(["task_list", "task_output"]);
+    }
+  });
+
+  test("全部已终结时 live 为空（工具完成后一帧，动态区自然清空）", () => {
+    const { committed, live } = splitLiveToolItems([assistant(), successGroup(["Read"])]);
+    expect(live).toHaveLength(0);
+    expect(committed).toHaveLength(2);
+  });
+
+  test("空历史：committed/live 均为空", () => {
+    const { committed, live } = splitLiveToolItems([]);
+    expect(committed).toHaveLength(0);
+    expect(live).toHaveLength(0);
   });
 });

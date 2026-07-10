@@ -2477,7 +2477,7 @@ export class App {
    * /goal：构建 TUI 状态栏所需的 goalDisplay 数据。
    * null = 无活跃目标（不显示）。
    */
-  private buildGoalDisplay(): { turnsUsed: number; maxTurns: number; progress?: number; status: string } | null {
+  private buildGoalDisplay(): { turnsUsed: number; maxTurns: number; status: string } | null {
     if (!this.goalState) return null;
     const { turnsUsed, maxTurns, status } = this.goalState;
     if (status === "complete" || status === "impossible") return null;

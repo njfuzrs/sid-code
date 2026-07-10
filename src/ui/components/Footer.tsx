@@ -102,10 +102,17 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
   if (data.isVim) identity.push(<Text key="vim" color={theme.ui.comment}> ·v</Text>);
   // DEBUG 不在状态栏展示：debug 是开发者自己开的开关，不必常驻占位。
 
-  // ── 旋钮区：thinking · effort · [PLAN]（先小后大：先开关字形，再档位大小）──
+  // ── 旋钮区：goal · thinking · effort · [PLAN]（先模式后旋钮：goal/[PLAN] 是"当前模式"，
+  //    thinking/effort 是开关档位）──
   // 收集字符串（供测宽）与渲染项（供输出），保持索引对应，窄屏时整区一起丢。
   const knobStrs: string[] = [];
   const knobNodes: React.ReactNode[] = [];
+  // /goal 目标进度：进入 goal 模式时最关键的上下文，放旋钮区最前（与 [PLAN] 同为模式标识）。
+  // 文案已带「目标 N/M 轮」中文标签，语义自解释，不用彩色 emoji。
+  if (data.goal) {
+    knobStrs.push(data.goal.text);
+    knobNodes.push(<Text key="goal" color={data.goal.color}>{data.goal.text}</Text>);
+  }
   if (data.thinking) {
     // 旋钮区只渲染字形（✻/✧），去掉 on/off 文字——字形自解释开关态。
     knobStrs.push(data.thinking.glyph);
