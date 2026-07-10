@@ -210,6 +210,8 @@ export class App {
   private sessionMemory: import("./session-memory/session-memory.ts").SessionMemoryHandle | null = null;
   /** 后台记忆提取句柄（每轮 end_turn 后 fire-and-forget 提取记忆，会话关闭前 drain）。 */
   private extractMemories: import("./memory/extract/extractor.ts").ExtractMemoriesHandle | null = null;
+  /** G10：autoDream 自主记忆巩固句柄（默认 null，仅 settings.autoDream 开启时接线） */
+  private autoDream: import("./memory/dream/dream.ts").AutoDreamHandle | null = null;
   /**
    * 推理强度运行时态（/effort 切换端）。undefined = auto（跟随模型默认）。
    * 与 config.permissionMode 同级——运行时可变，queryLoop 每轮经注入的 getter 取最新值。
@@ -1479,6 +1481,39 @@ export class App {
         registerCleanup(() => this.extractMemories?.drainPending(5_000) ?? Promise.resolve());
       } catch { /* drain 注册失败不阻断启动 */ }
       log.info("APP", `后台记忆提取子系统已接线: ${memoryDir}`);
+
+      // G10：autoDream 自主记忆巩固（默认关闭，settings.autoDream 开启）。
+      // 复用提取子系统的 getMainContext + memoryDir + 权限（dream 代理同样只读 + 仅写 memoryDir）。
+      // 会话结束经三级 gate 判断是否跑后台巩固/剪枝，让记忆库不再只增不理。
+      if (this.config.autoDream) {
+        try {
+          const { initAutoDream } = await import("./memory/dream/dream.ts");
+          this.autoDream = initAutoDream({
+            getMainContext: () => ({
+              systemPrompt: this.ctxMgr.getSystemPrompt(),
+              messages: this.ctxMgr.getMessages(),
+              provider: this.provider,
+              toolRegistry: this.toolRegistry,
+              model: this.config.model,
+              statefulTools: createStatefulTools(new FileReadTracker()),
+            }),
+            memoryDir,
+            canUseTool: createExtractPermissions(memoryDir),
+            config: { enabled: true },
+          });
+          this.autoDream.recordSession();
+          const { registerCleanup } = await import("./utils/graceful-shutdown.ts");
+          registerCleanup(async () => {
+            // 会话关闭时尝试触发一次 dream，并 drain 进行中的巩固
+            await this.autoDream?.maybeDream();
+            await this.autoDream?.drainPending(8_000);
+          });
+          log.info("APP", "autoDream 自主记忆巩固已接线");
+        } catch (e) {
+          this.autoDream = null;
+          log.warn("APP", `autoDream 接线失败（不阻断）: ${(e as Error)?.message}`);
+        }
+      }
     } catch (e) {
       this.extractMemories = null;
       log.warn("APP", `后台记忆提取接线失败（不阻断）: ${(e as Error)?.message}`);

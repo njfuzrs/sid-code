@@ -112,6 +112,11 @@ export interface Config {
    * 不设置时不注入任何风格约束。
    */
   outputStyle?: string;
+  /**
+   * G10：autoDream 自主记忆巩固开关（settings.json autoDream）。
+   * 默认关闭——开启后会话结束经三级 gate 判断是否跑后台记忆巩固/剪枝。
+   */
+  autoDream?: boolean;
   /** UI 主题名（/theme 持久化端，settings.json theme）。不设置时用内置默认暗色主题 */
   theme?: string;
 
@@ -595,6 +600,8 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     language: "language",
     output_style: "outputStyle",
     outputStyle: "outputStyle",
+    auto_dream: "autoDream",
+    autoDream: "autoDream",
     theme: "theme",
   };
 
