@@ -1653,10 +1653,11 @@ export async function registerBuiltins(registry: import("./registry.ts").Registr
   registry.register(new LanguageCommand());
 
   // 权限管理命令
-  const { AllowCommand, DenyCommand, PermissionsCommand } = await import("./permissions.ts");
+  const { AllowCommand, DenyCommand, PermissionsCommand, AddDirCommand } = await import("./permissions.ts");
   registry.register(new AllowCommand());
   registry.register(new DenyCommand());
   registry.register(new PermissionsCommand());
+  registry.register(new AddDirCommand());
 
   // 插件管理命令
   const { PluginCommand, ReloadPluginsCommand } = await import("./plugin.ts");

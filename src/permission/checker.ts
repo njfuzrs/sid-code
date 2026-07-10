@@ -342,6 +342,49 @@ export class PermissionChecker implements Checker {
     return lines.join("\n");
   }
 
+  /**
+   * G21：判断某绝对路径是否被 deny 规则隐藏（供 glob/ls 列举结果过滤用）。
+   *
+   * 背景：glob/ls 只有文件系统级 ignore（node_modules/.git/dist），不接权限 deny 规则，
+   * 被 deny 的敏感文件（如 .env、secrets/**）仍会出现在列表里，只是后续 Read 才被拦。
+   * 对标 claude-code：deny 规则让被拒文件从列举结果里隐藏，模型根本看不到。
+   *
+   * 只做**静态 deny 规则匹配**（read 族），不走完整 check()（无 LLM/交互/副作用），
+   * 因此可高频调用于列举过滤而无性能/成本负担。无 deny 规则时恒返回 false（零开销）。
+   *
+   * 路径形态：deny 模式可能写成相对（`.env*` / `secrets/**`）或绝对，故同时用
+   * 绝对路径与工作区相对路径两种形态去匹配，任一命中即视为隐藏。
+   *
+   * @param absPath 待判定的绝对路径
+   * @returns true = 被 deny 规则命中，应从列举结果隐藏
+   */
+  isPathHidden(absPath: string): boolean {
+    const deny = this.rules?.deny;
+    if (!deny || deny.length === 0) return false;
+
+    const denyOnly = { deny, allow: [], ask: [] };
+    const candidates = [absPath];
+    try {
+      const rel = path.relative(this.workspacePath, absPath);
+      // 仅当相对路径落在工作区内（不以 .. 开头、非绝对）时才作为候选，
+      // 避免把工作区外路径错误地按相对模式匹配。
+      if (rel && !rel.startsWith("..") && !path.isAbsolute(rel)) {
+        candidates.push(rel);
+      }
+    } catch {
+      /* path.relative 失败（跨盘等）：仅用绝对路径匹配 */
+    }
+
+    // 用 "read" 工具名匹配：隐藏语义 = "读不到的文件不该出现在列表里"，
+    // 与 deny 规则里最常见的 Read(...) / *(...) 形态一致（matchRule 大小写不敏感、
+    // 支持 * 通配符工具名）。deny 规则里的 file_path 走 minimatch(dot:true)。
+    for (const fp of candidates) {
+      const decision = checkRules(denyOnly, { toolName: "read", input: { file_path: fp } });
+      if (decision && !decision.allowed) return true;
+    }
+    return false;
+  }
+
   /** 异步初始化：加载设置文件中的规则 */
   async initRules(): Promise<void> {
     await this.ruleLoader.loadAll();

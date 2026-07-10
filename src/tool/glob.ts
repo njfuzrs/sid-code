@@ -98,6 +98,22 @@ export class GlobTool implements Tool {
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = globSchema();
 
+  /**
+   * G21：可选的"路径隐藏"判定回调（给定绝对路径 → 是否被权限 deny 规则命中）。
+   * 命中的路径从列举结果剔除，对齐 claude-code「deny 文件不出现在 glob 列表」。
+   * 未注入时行为完全不变（向后兼容）。
+   */
+  private isPathHidden?: (absPath: string) => boolean;
+
+  constructor(isPathHidden?: (absPath: string) => boolean) {
+    this.isPathHidden = isPathHidden;
+  }
+
+  /** G21：运行时注入/更新路径隐藏判定（构造时权限检查器尚未创建，故支持后置注入）。 */
+  setPathHiddenFilter(fn: (absPath: string) => boolean): void {
+    this.isPathHidden = fn;
+  }
+
   readOnly(): boolean {
     return true;
   }

@@ -36,6 +36,52 @@ import { buildSystemBlocks } from "../api/cache-strategy.ts";
 import { getEffectiveBetaHeaders } from "../api/beta-header-latch.ts";
 import { RequestAbortedError } from "./errors.ts";
 
+/**
+ * G6：把内部 tool_result 块序列化为 Anthropic SDK 的 tool_result param。
+ *
+ * 若带 mediaBlocks（图片/PDF），拼成多部件 content（text + image/document），
+ * 让 Claude vision 直接看图/读 PDF；否则回退纯文本 content。收敛到单一函数供
+ * 流式/非流式两条序列化路径共用，避免逻辑漂移。
+ */
+function serializeToolResultBlock(block: {
+  tool_use_id: string;
+  content: string;
+  is_error?: boolean;
+  mediaBlocks?: import("./types.ts").ToolResultMediaBlock[];
+}): any {
+  if (block.mediaBlocks && block.mediaBlocks.length > 0) {
+    const parts: any[] = [];
+    if (block.content) {
+      parts.push({ type: "text", text: block.content });
+    }
+    for (const mb of block.mediaBlocks) {
+      if (mb.kind === "image") {
+        parts.push({
+          type: "image",
+          source: { type: "base64", media_type: mb.mediaType, data: mb.data },
+        });
+      } else if (mb.kind === "document") {
+        parts.push({
+          type: "document",
+          source: { type: "base64", media_type: mb.mediaType, data: mb.data },
+        });
+      }
+    }
+    return {
+      type: "tool_result" as const,
+      tool_use_id: block.tool_use_id,
+      content: parts,
+      is_error: block.is_error,
+    };
+  }
+  return {
+    type: "tool_result" as const,
+    tool_use_id: block.tool_use_id,
+    content: block.content,
+    is_error: block.is_error,
+  };
+}
+
 export class AnthropicProvider implements Provider {
   private client: Anthropic;
   private _model: string;
@@ -90,12 +136,7 @@ export class AnthropicProvider implements Provider {
             input: block.input,
           };
         } else if (block.type === "tool_result") {
-          return {
-            type: "tool_result" as const,
-            tool_use_id: block.tool_use_id,
-            content: block.content,
-            is_error: block.is_error,
-          };
+          return serializeToolResultBlock(block); // G6：支持富媒体多部件 content
         } else if (block.type === "thinking") {
           // 多轮回传 thinking 块（含 signature）—— 丢失/修改 → 400
           // [来源: anthropic-api.md:358; tavily 确认]
@@ -555,12 +596,7 @@ export class AnthropicProvider implements Provider {
             input: block.input,
           };
         } else if (block.type === "tool_result") {
-          return {
-            type: "tool_result" as const,
-            tool_use_id: block.tool_use_id,
-            content: block.content,
-            is_error: block.is_error,
-          };
+          return serializeToolResultBlock(block); // G6：支持富媒体多部件 content
         } else if (block.type === "thinking") {
           // 多轮回传 thinking 块（含 signature）
           return {

@@ -140,6 +140,87 @@ export class DenyCommand implements Command {
   }
 }
 
+/**
+ * /add-dir <目录> — 运行时把一个目录加入当前会话的可访问白名单（对标 claude-code /add-dir）。
+ *
+ * 这是**用户主动交互授权**：仅当前会话生效、不落盘、不扩大项目配置白名单，
+ * 与 security.ts 禁止的"项目配置自动扩大目录白名单"性质不同。
+ * /add-dir --list 查看当前白名单，/add-dir --remove <目录> 移除。
+ */
+export class AddDirCommand implements Command {
+  name() { return "add-dir"; }
+  aliases() { return []; }
+  description() { return "运行时把目录加入当前会话可访问白名单（用户级授权，仅本会话）"; }
+  argumentHint() { return "<目录路径> | --list | --remove <目录>"; }
+
+  async execute(args: string, ctx: AppContext): Promise<CommandResult> {
+    const checker = this.getChecker(ctx);
+    if (!checker) {
+      return { kind: "error", message: "权限检查器未初始化" };
+    }
+    // 运行时增删仅 PermissionChecker 实现（子代理 checker 等不一定有），做能力探测。
+    if (typeof (checker as any).addAllowedDirectory !== "function") {
+      return { kind: "error", message: "当前权限检查器不支持运行时目录白名单增删" };
+    }
+
+    const tokens = args.trim().split(/\s+/).filter(Boolean);
+    const first = tokens[0];
+
+    // /add-dir --list：展示当前白名单
+    if (!first || first === "--list" || first === "-l") {
+      const dirs = checker.getAllowedDirectories();
+      if (dirs.length === 0) {
+        return {
+          kind: "message",
+          message: "当前会话未配置目录白名单（未限制到特定目录）。\n用法: /add-dir <目录路径>  将目录加入白名单（仅本会话生效）",
+        };
+      }
+      return {
+        kind: "message",
+        message: `当前会话可访问目录白名单（${dirs.length} 个）:\n${dirs.map((d) => `  · ${d}`).join("\n")}`,
+      };
+    }
+
+    // /add-dir --remove <目录>：移除
+    if (first === "--remove" || first === "-r") {
+      const target = tokens.slice(1).join(" ");
+      if (!target) {
+        return { kind: "error", message: "用法: /add-dir --remove <目录路径>" };
+      }
+      const removed = checker.removeAllowedDirectory(target);
+      return removed
+        ? { kind: "message", message: `已从当前会话白名单移除目录: ${target}` }
+        : { kind: "message", message: `目录不在白名单中（未移除）: ${target}` };
+    }
+
+    // /add-dir <目录>：新增（args 整体作为路径，容许路径含空格）
+    const dir = args.trim();
+    const { existsSync, statSync } = require("fs");
+    const { resolve } = require("path");
+    const resolved = resolve(dir);
+    if (!existsSync(resolved)) {
+      return { kind: "error", message: `目录不存在: ${resolved}` };
+    }
+    try {
+      if (!statSync(resolved).isDirectory()) {
+        return { kind: "error", message: `不是目录: ${resolved}` };
+      }
+    } catch (e) {
+      return { kind: "error", message: `无法访问目录: ${resolved}（${(e as Error)?.message}）` };
+    }
+
+    checker.addAllowedDirectory(resolved);
+    return {
+      kind: "message",
+      message: `✓ 已将目录加入当前会话可访问白名单: ${resolved}\n（用户级运行时授权，仅本会话生效，不写入配置文件）`,
+    };
+  }
+
+  private getChecker(ctx: AppContext): PermissionChecker | null {
+    return (ctx as any).permissionChecker ?? null;
+  }
+}
+
 export class PermissionsCommand implements Command {
   name() { return "permissions"; }
   aliases() { return ["perms"]; }
