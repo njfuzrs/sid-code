@@ -1,0 +1,25 @@
+#!/usr/bin/env expect
+# 驱动真实 TUI：发送一个会产生大量流式输出的 prompt，测量渲染路径的 CPU 消耗。
+set timeout 90
+set prompt [lindex $argv 0]
+
+# 用 unbuffer/直接 spawn 给 TUI 一个 PTY
+spawn ./sid-code
+# 等待输入框出现
+expect {
+  "输入消息" {}
+  timeout { puts "TIMEOUT waiting for prompt box"; exit 1 }
+}
+sleep 1
+# 逐字发送 prompt
+send -- "$prompt"
+sleep 0.5
+send -- "\r"
+# 等待流式输出跑一段时间
+sleep 60
+# 退出：Ctrl+C 两次
+send -- "\003"
+sleep 0.3
+send -- "\003"
+sleep 0.5
+expect eof
