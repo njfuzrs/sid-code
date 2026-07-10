@@ -248,12 +248,21 @@ export async function executeTools(
 
     // 权限检查
     if (deps.permissionChecker) {
+      // G14：观测输入回填——权限/hook 看到展开后的规范化视图（如 ~ → 绝对路径），
+      // 工具实际执行仍用原始 input（保持 prompt cache 前缀稳定）。
+      let observableInput: unknown = block.input;
+      if (typeof tool.backfillObservableInput === "function") {
+        try {
+          const expanded = tool.backfillObservableInput(block.input);
+          if (expanded !== undefined) observableInput = expanded;
+        } catch { /* 回填钩子异常静默回退原始 input */ }
+      }
       const permReq: PermissionRequest = {
         toolName: block.name,
-        input: block.input,
-        description: (block.input as any)?.description
-          ? `${block.name}: ${(block.input as any).description}`
-          : `${block.name}: ${JSON.stringify(block.input).slice(0, 120)}`,
+        input: observableInput,
+        description: (observableInput as any)?.description
+          ? `${block.name}: ${(observableInput as any).description}`
+          : `${block.name}: ${JSON.stringify(observableInput).slice(0, 120)}`,
       };
       const decision = await deps.permissionChecker.check(permReq, tool);
 
@@ -265,7 +274,7 @@ export async function executeTools(
           // 三路竞争：hook / classifier / 用户交互
           const { resolvePermission } = await import("../permission/async-decision.ts");
           const result = await resolvePermission(
-            { toolName: block.name, input: block.input as Record<string, unknown>, description: desc },
+            { toolName: block.name, input: observableInput as Record<string, unknown>, description: desc },
             {
               isInteractive: true,
               isSubAgent: false,
@@ -273,7 +282,7 @@ export async function executeTools(
                 ? async () => {
                     try {
                       const hookResult = await deps.hookSystem.firePermissionRequestEvent?.(
-                        block.name, block.input as Record<string, unknown>, deps.config.permissionMode,
+                        block.name, observableInput as Record<string, unknown>, deps.config.permissionMode,
                       );
                       if (!hookResult?.finalOutput) return null;
                       if (hookResult.finalOutput.isBlockingDecision()) {
@@ -369,7 +378,17 @@ export async function executeTools(
     try {
       const readResults = await withConcurrencyLimit(
         concurrent.map(({ block, tool, idx }) =>
-          () => executeSingleTool(block, tool, deps, siblingController.signal).then(r => ({ idx, result: r }))
+          () => {
+            // G24 interruptBehavior：工具声明 "block" = 用户中断时它选择继续跑完（不被 sibling-abort
+            // 联动取消），此类工具用父信号（仅真正的顶层 abort 能停）而非可被兄弟触发的子信号；
+            // 默认 "cancel"（含未声明）走子信号，参与 sibling-abort 联动。
+            let behavior: "cancel" | "block" = "cancel";
+            try {
+              behavior = tool.interruptBehavior?.() ?? "cancel";
+            } catch { behavior = "cancel"; }
+            const sig = behavior === "block" ? deps.getAbortSignal() : siblingController.signal;
+            return executeSingleTool(block, tool, deps, sig).then(r => ({ idx, result: r }));
+          }
         ),
         MAX_TOOL_CONCURRENCY,
         {
@@ -602,6 +621,8 @@ export async function executeSingleTool(
       // 结构化 diff 透传(仅 edit/write 填充)。其它工具为 undefined → 字段不出现,零破坏。
       // provider 序列化逐字段读取,不会泄漏给 LLM;随 Message 持久化可重放回 UI。
       ...(result.structuredPatch?.length ? { structuredPatch: result.structuredPatch } : {}),
+      // G6：富媒体块透传(仅 Read 读图片/PDF 填充)。支持 vision 的 provider 据此拼多部件 content。
+      ...(result.mediaBlocks?.length ? { mediaBlocks: result.mediaBlocks } : {}),
     };
   } catch (err: any) {
     const elapsed = Date.now() - startTime;

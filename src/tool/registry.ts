@@ -10,7 +10,7 @@
  * `Tool` 接口后，此处一并升级，deprecation 自然消除。
  */
 
-import type { LegacyTool } from "./types.ts";
+import type { LegacyTool, ToolDescriptionContext } from "./types.ts";
 import type { ToolDefinition } from "../llm/types.ts";
 import { z } from "zod/v4";
 import { getLogger } from "../debug/index.ts";
@@ -47,8 +47,8 @@ function cachedZodToJsonSchema(zodSchema: object): Record<string, unknown> {
  * z.toJSONSchema 失败时（极少数 schema 含不可序列化结构）降级回退 inputSchema()，
  * 并打 warn 日志，避免单个工具拖垮整个定义列表。
  */
-function toolToDefinition(t: LegacyTool): ToolDefinition {
-  let desc = t.description();
+function toolToDefinition(t: LegacyTool, descCtx?: ToolDescriptionContext): ToolDefinition {
+  let desc = t.description(descCtx);
   if (t.usageGuide) {
     const guide = t.usageGuide();
     if (guide) desc += `\n\n使用指南:\n${guide}`;
@@ -88,6 +88,12 @@ export interface AssembleOptions {
   mode?: "normal" | "plan" | "simple";
   /** 子代理类型 */
   agentType?: string;
+  /**
+   * G24：description() 的上下文（对标 claude-code 入参感知描述）。
+   * 透传给 toolToDefinition → t.description(ctx)，让工具据交互模式/权限模式动态调整描述。
+   * 未提供时按零参调用 description()，与既有实现完全兼容。
+   */
+  descriptionContext?: ToolDescriptionContext;
 }
 
 /** simple 模式下可用的工具 */
@@ -173,7 +179,8 @@ export class Registry {
   /** 返回所有工具的 LLM 定义（用于发送给 AI） */
   definitions(options?: AssembleOptions): ToolDefinition[] {
     const tools = options ? this.assembleToolPool(options) : this.all();
-    const defs = tools.map(toolToDefinition);
+    const descCtx = options?.descriptionContext;
+    const defs = tools.map((t) => toolToDefinition(t, descCtx));
     // D2 前缀稳定性：工具定义按 name 固定字典序输出，杜绝注册顺序抖动（尤其 MCP 异步连接顺序）。
     // P2-2: StructuredOutput 始终排最后——其动态 schema 变化只影响自身的 cache 命中，
     // 不影响前面所有工具的 Anthropic Prompt Cache prefix 匹配。
@@ -283,9 +290,10 @@ export class Registry {
   /** 获取非延迟工具的定义（用于初始 prompt，减少 token 消耗） */
   activeDefinitions(options?: AssembleOptions): ToolDefinition[] {
     const tools = options ? this.assembleToolPool(options) : this.all();
+    const descCtx = options?.descriptionContext;
     const defs = tools
       .filter((t) => !this.isToolDeferred(t))
-      .map(toolToDefinition);
+      .map((t) => toolToDefinition(t, descCtx));
     // 10.2：与 definitions() 保持一致的字典序排列，杜绝注册顺序导致的 prompt cache 失效。
     // StructuredOutput 始终排最后（其动态 schema 不影响前面工具的缓存前缀匹配）。
     defs.sort((a, b) => {

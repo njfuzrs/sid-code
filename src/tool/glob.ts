@@ -261,11 +261,31 @@ export class GlobTool implements Tool {
     // 搜索目录作 spawn cwd，target 传 "."（见上方注释）
     const lines = await ripGrep(args, ".", abortSignal, cwd);
     // rg 输出形如 "./src/a.ts"，去掉 "./" 前缀
-    const rel = lines.map(p => (p.startsWith("./") ? p.slice(2) : p));
+    let rel = lines.map(p => (p.startsWith("./") ? p.slice(2) : p));
+    // G21：deny 规则隐藏——在截断之前过滤，避免被隐藏项占用结果配额
+    rel = this.filterHidden(rel, cwd);
     // 截断到上限
     const truncated = rel.length > DEFAULT_RESULT_LIMIT;
     const files = rel.slice(0, DEFAULT_RESULT_LIMIT);
     return { files, truncated };
+  }
+
+  /**
+   * G21：按注入的 isPathHidden 回调过滤掉被 deny 规则命中的路径。
+   * files 为相对 cwd 的路径，join(cwd, f) 还原绝对路径再判定。
+   * 未注入回调时原样返回（零开销、行为不变）。
+   */
+  private filterHidden(files: string[], cwd: string): string[] {
+    if (!this.isPathHidden) return files;
+    const fn = this.isPathHidden;
+    return files.filter(f => {
+      try {
+        return !fn(join(cwd, f));
+      } catch {
+        // 判定异常绝不吞结果：保守保留该项（宁可多显示也不因过滤器 bug 丢文件）
+        return true;
+      }
+    });
   }
 
   /**
@@ -297,8 +317,10 @@ export class GlobTool implements Tool {
     });
     withMtime.sort((a, b) => b.mtime - a.mtime);
 
-    const truncated = withMtime.length > DEFAULT_RESULT_LIMIT;
-    const files = withMtime.slice(0, DEFAULT_RESULT_LIMIT).map(f => f.file);
+    // G21：deny 规则隐藏——在截断之前过滤（同 ripgrep 路径）
+    const visible = this.filterHidden(withMtime.map(f => f.file), cwd);
+    const truncated = visible.length > DEFAULT_RESULT_LIMIT;
+    const files = visible.slice(0, DEFAULT_RESULT_LIMIT);
     return { files, truncated };
   }
 }

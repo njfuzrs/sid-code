@@ -3939,6 +3939,10 @@ export class App {
             }
           },
           traceCollector: this.traceCollector ?? undefined,
+          // G25：权限检查器实例注入命令上下文（/allow /deny /add-dir /permissions 使用）。
+          // 旧体系命令通过 (ctx as any).permissionChecker 读取——AppContext 类型不含此字段，
+          // 但对象字面量可以携带额外属性。这里补齐实际传值，修复先前的漏传（运行时永远 null）。
+          permissionChecker: this.permissionChecker,
         };
 
         // 记录命令使用频率（驱动补全排序的指数衰减统计）

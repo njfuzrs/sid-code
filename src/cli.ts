@@ -660,8 +660,12 @@ export async function main(): Promise<void> {
     for (const t of createStatefulTools(fileReadTracker)) toolRegistry.register(t);
     toolRegistry.register(new BashTool());
     toolRegistry.register(new GrepTool());
-    toolRegistry.register(new GlobTool());
-    toolRegistry.register(new LsTool());
+    // G21：glob/ls 需接权限 deny 规则做列举过滤，但 permissionChecker 此刻尚未创建，
+    // 先留引用，待 checker 就绪后 setPathHiddenFilter 后置注入（见下方权限检查器创建处）。
+    const globTool = new GlobTool();
+    const lsTool = new LsTool();
+    toolRegistry.register(globTool);
+    toolRegistry.register(lsTool);
     toolRegistry.register(new WebFetchTool());
     toolRegistry.register(new MemoryTool(memoryStore));
 
@@ -986,6 +990,16 @@ export async function main(): Promise<void> {
     const permissionRules = await loadPermissionRules();
     const permissionChecker = new PermissionChecker(config, permissionRules);
     permissionChecker.setPlanManager(planManager);
+
+    // G21：把权限 deny 规则接入 glob/ls 列举过滤——被 deny 的敏感文件（.env / secrets/**）
+    // 不再出现在列举结果里（对标 claude-code），而非仅在后续 Read 时才被拦。
+    // isPathHidden 仅做静态 deny 规则匹配（无 LLM/交互/副作用），高频调用无成本；
+    // 无 deny 规则时恒 false（零开销、行为不变）。绑定实例方法保留 this。
+    {
+      const hidden = (absPath: string) => permissionChecker.isPathHidden(absPath);
+      globTool.setPathHiddenFilter(hidden);
+      lsTool.setPathHiddenFilter(hidden);
+    }
 
     // 注入 LLM 命令风险分类器（P0-3 迭代 II，第二道防线；默认关闭，enableLLMClassifier 开启）
     {

@@ -642,6 +642,34 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
     </Box>
   ) : null;
 
+  // Shell 模式退出提示渐进衰减（交互铁律 C，G23）：首次进入 shell 模式的新用户需要知道
+  // "怎么退出"（删掉行首 ! 即回普通模式），但老手每次进 shell 都被提醒就是唠叨。
+  // 复用 app-config 通用 hint 计数：显示满 SHELL_HINT_MAX_SHOWS 次后不再显示。
+  // 计数在 false→true 上升沿 +1（每次进入 shell 记一次），用 ref 锁定本次形态防抖动。
+  const SHELL_HINT_KEY = "shellModeExit";
+  const SHELL_HINT_MAX_SHOWS = 3;
+  const shellHintRef = useRef(false);
+  const prevShellModeRef = useRef(false);
+  useEffect(() => {
+    // false → true 上升沿：本次进入 shell 模式，判定是否仍应提示并记一次显示次数。
+    if (!prevShellModeRef.current && shellModeActive) {
+      shellHintRef.current = shouldShowHint(SHELL_HINT_KEY, SHELL_HINT_MAX_SHOWS);
+      if (shellHintRef.current) markHintShown(SHELL_HINT_KEY);
+    } else if (!shellModeActive) {
+      shellHintRef.current = false;
+    }
+    prevShellModeRef.current = shellModeActive;
+  }, [shellModeActive]);
+
+  // Shell 模式提示：进入 shell 模式且未看够次数时，输入框上方一行引导退出方式。
+  const shellHint = shellModeActive && shellHintRef.current ? (
+    <Box paddingLeft={1}>
+      <Text color={theme.text.secondary} dimColor>
+        {`${ARROW_PROMPT} Shell 模式：命令将直接在终端执行，删除行首 ! 可退出`}
+      </Text>
+    </Box>
+  ) : null;
+
   if (isEmpty) {
     const currentPrompt = shellModeActive ? SHELL_PROMPT : PROMPT;
     const currentPlaceholder = shellModeActive ? "输入 shell 命令…" : getPlaceholder();
@@ -649,6 +677,7 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
     return (
       <Box flexDirection="column" width={termWidth}>
         {queueHint}
+        {shellHint}
         <Box
           width={termWidth}
           borderStyle="round"
@@ -744,6 +773,7 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
   return (
     <Box flexDirection="column">
       {queueHint}
+      {shellHint}
       {hasSuggestions && (
         <SuggestionsDisplay
           suggestions={suggestions}

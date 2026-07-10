@@ -34,8 +34,10 @@ export interface ToolDescriptionContext {
  * ToolSearch 协议字段 + 中断行为 —— 新旧两版接口共享的"能力声明"。
  *
  * 字段先行：`searchHint` / `shouldDefer` / `alwaysLoad` 由 registry 的
- * activeDefinitions() 消费（按 shouldDefer 过滤首轮上下文），`interruptBehavior`
- * 为后续接线预留。`zodSchema` 由执行器与 registry 消费（运行时校验 + JSON Schema 生成）。
+ * activeDefinitions() 消费（按 shouldDefer 过滤首轮上下文）。`interruptBehavior`
+ * 由 tool-executor 并发路径消费（G24）：声明 "block" 的工具在 sibling-abort 时用父信号
+ * 而非可联动取消的子信号，即用户中断兄弟工具时它选择继续跑完。`zodSchema` 由执行器与
+ * registry 消费（运行时校验 + JSON Schema 生成）。
  */
 export interface ToolCapabilityFields<Input = unknown> {
   /**
@@ -77,6 +79,20 @@ export interface ToolCapabilityFields<Input = unknown> {
    * 纯读取语义、无副作用——分类器只读它，不据此改变执行输入。
    */
   toAutoClassifierInput?(input: Input): string | undefined;
+
+  /**
+   * G14：给权限校验/hook 看的"观测输入视图"回填（对标 claude-code backfillObservableInput）。
+   *
+   * 背景：模型发出的原始 input 可能是未展开的形态（如 `~/.ssh/config`、相对路径 `../x`），
+   * 工具内部执行前才 normalize 成绝对路径。若权限 deny 规则/hook 直接吃原始 input，
+   * `~` 形态可能绕过对绝对路径写的 deny 规则。此钩子让工具"预展开"出一份规范化视图
+   * （如把 file_path 展开为绝对路径），**仅供权限校验与 hook 观测**。
+   *
+   * 关键：返回值不回灌进 tool.execute 的执行输入——执行仍用原始 input，
+   * 以保持 Anthropic Prompt Cache 前缀稳定（input 变动会击穿缓存）。观测视图与执行视图分离。
+   * 返回 `undefined` 表示无需回填（回退原始 input 观测）。纯函数、无副作用。
+   */
+  backfillObservableInput?(input: Input): Input | undefined;
 }
 
 // ===== 旧版接口（渐进式迁移期间保留） =====
@@ -91,6 +107,12 @@ export interface LegacyToolResult {
    * 其余工具不填充,保持 undefined。
    */
   structuredPatch?: import("diff").StructuredPatchHunk[];
+  /**
+   * G6：富媒体块（图片/PDF base64）。仅 Read 读图片/PDF 时填充。
+   * 由 tool-executor 透传到 ToolResultBlock.mediaBlocks，支持 vision 的 provider
+   * 据此拼多部件 content 让模型看图/读 PDF。其余工具不填充，保持 undefined。
+   */
+  mediaBlocks?: import("../llm/types.ts").ToolResultMediaBlock[];
 }
 
 /**

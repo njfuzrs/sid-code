@@ -76,6 +76,22 @@ export class LsTool implements Tool {
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = lsSchema();
 
+  /**
+   * G21：可选的"路径隐藏"判定回调（给定绝对路径 → 是否被权限 deny 规则命中）。
+   * 命中的子项从列举结果剔除，对齐 claude-code「deny 文件不出现在 ls 列表」。
+   * 未注入时行为完全不变（向后兼容）。
+   */
+  private isPathHidden?: (absPath: string) => boolean;
+
+  constructor(isPathHidden?: (absPath: string) => boolean) {
+    this.isPathHidden = isPathHidden;
+  }
+
+  /** G21：运行时注入/更新路径隐藏判定（构造时权限检查器尚未创建，故支持后置注入）。 */
+  setPathHiddenFilter(fn: (absPath: string) => boolean): void {
+    this.isPathHidden = fn;
+  }
+
   readOnly(): boolean {
     return true;
   }
@@ -166,6 +182,15 @@ export class LsTool implements Tool {
         if (DEFAULT_IGNORE.has(name)) continue;
         // 用户自定义忽略
         if (extraIgnore.length > 0 && matchesIgnorePattern(name, extraIgnore)) continue;
+        // G21：权限 deny 规则隐藏——被拒的敏感文件不出现在列表里（对标 claude-code）。
+        // 判定异常绝不吞结果：保守保留该项（宁可多显示也不因过滤器 bug 丢文件）。
+        if (this.isPathHidden) {
+          try {
+            if (this.isPathHidden(join(dirPath, name))) continue;
+          } catch {
+            /* 判定失败则保留该项 */
+          }
+        }
 
         items.push(this.classifyEntry(dirPath, dirent));
       }

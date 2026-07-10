@@ -220,6 +220,7 @@ const readSchema = lazySchema(() =>
     file_path: z.string().describe("要读取的文件的绝对路径"),
     offset: z.number().optional().describe("起始行号（从 1 开始），默认为 1"),
     limit: z.number().optional().describe(`读取的最大行数，默认 ${DEFAULT_MAX_LINES} 行`),
+    pages: z.string().optional().describe("PDF 文件的页码范围（如 \"1-5\" 或 \"3\"），仅对 .pdf 生效，一次最多 20 页"),
   }),
 );
 
@@ -261,6 +262,21 @@ export class ReadTool implements Tool {
     return { behavior: "passthrough" };
   }
 
+  /**
+   * G14：观测输入回填——把 file_path 展开为绝对路径，供权限校验/hook 观测。
+   * 执行输入不变（保持 prompt cache 前缀稳定）。read 是只读工具，回填让 deny 规则
+   * 能正确命中 ~/相对路径 形态（否则规则只写绝对路径时会被绕过）。
+   */
+  backfillObservableInput(input: unknown): unknown | undefined {
+    const filePath = (input as any)?.file_path;
+    if (!filePath || typeof filePath !== "string") return undefined;
+    try {
+      const expanded = normalizeToolPath(filePath);
+      if (expanded === filePath) return undefined;
+      return { ...(input as any), file_path: expanded };
+    } catch { return undefined; }
+  }
+
   name(): string {
     return "read";
   }
@@ -275,7 +291,10 @@ export class ReadTool implements Tool {
 - 对于大文件，使用 offset 和 limit 参数只读取需要的部分
 - 修改文件前必须先用 read 读取，确保了解当前内容
 - file_path 必须是绝对路径
-- 不支持读取二进制文件（如图片、压缩包等），请使用其他工具
+- 支持读取图片（png/jpg/jpeg/gif/webp）——以视觉内容块返回，可直接看图
+- 支持读取 PDF（.pdf）——以文档块返回，可用 pages 参数提示关注页码
+- 支持读取 Jupyter Notebook（.ipynb）——返回带 cell id 的结构，可配合 notebook_edit 编辑
+- 仍不支持其它二进制文件（压缩包、可执行文件等）
 - 超过 10MB 的文件需要指定 offset/limit 分段读取`;
   }
 
@@ -309,6 +328,17 @@ export class ReadTool implements Tool {
         output: `错误: 无法读取 '${filePath}': 该设备文件会阻塞进程或产生无限输出。`,
         isError: true,
       };
+    }
+
+    // G6：富媒体分支（图片/Notebook/PDF）——在二进制拒绝之前处理
+    if (isImageExtension(filePath)) {
+      return this.readImage(filePath);
+    }
+    if (isNotebookExtension(filePath)) {
+      return this.readNotebook(filePath);
+    }
+    if (isPdfExtension(filePath)) {
+      return this.readPdf(filePath, params as any);
     }
 
     // P1: 二进制扩展名检测 — 防止垃圾灌入上下文
@@ -449,6 +479,109 @@ export class ReadTool implements Tool {
         return { output: `错误: 无权限读取文件: ${filePath}`, isError: true };
       }
       return { output: `读取文件失败: ${err.message}`, isError: true };
+    }
+  }
+
+  /**
+   * G6：读取图片文件 → base64 mediaBlock（vision 内容块）。
+   * 支持 vision 的 provider（Anthropic）序列化时把图片喂给模型；不支持的
+   * provider 忽略 mediaBlocks、只见文本摘要（优雅降级）。
+   */
+  private async readImage(filePath: string): Promise<ToolResult> {
+    const log = getLogger();
+    try {
+      const stat = statSync(filePath);
+      if (stat.isDirectory()) {
+        return { output: `错误: '${filePath}' 是一个目录。`, isError: true };
+      }
+      if (stat.size > MAX_IMAGE_BYTES) {
+        const sizeMB = (stat.size / (1024 * 1024)).toFixed(1);
+        return {
+          output: `错误: 图片过大 (${sizeMB} MB，超过 ${(MAX_IMAGE_BYTES / (1024 * 1024)).toFixed(1)} MB 上限)。请压缩后再读取。`,
+          isError: true,
+        };
+      }
+      const ext = extname(filePath).toLowerCase();
+      const mediaType = IMAGE_MEDIA_TYPES[ext] || "image/png";
+      const buffer = await Bun.file(filePath).arrayBuffer();
+      const base64 = Buffer.from(buffer).toString("base64");
+
+      log.info("TOOL", `✓ 读取图片 ${filePath} (${(stat.size / 1024).toFixed(0)} KB, ${mediaType})`);
+      return {
+        output: `[图片: ${filePath} (${mediaType}, ${(stat.size / 1024).toFixed(0)} KB)]`,
+        mediaBlocks: [{ kind: "image", mediaType, data: base64 }],
+      };
+    } catch (err: any) {
+      if (err.code === "ENOENT") return { output: formatPathNotFoundError(filePath), isError: true };
+      return { output: `读取图片失败: ${err.message}`, isError: true };
+    }
+  }
+
+  /**
+   * G6：读取 Notebook（.ipynb）→ 带 cell id 的文本视图（供 notebook_edit 按 id 编辑）。
+   */
+  private async readNotebook(filePath: string): Promise<ToolResult> {
+    const log = getLogger();
+    try {
+      const stat = statSync(filePath);
+      if (stat.isDirectory()) {
+        return { output: `错误: '${filePath}' 是一个目录。`, isError: true };
+      }
+      if (stat.size > MAX_FILE_SIZE_BYTES) {
+        const sizeMB = (stat.size / (1024 * 1024)).toFixed(1);
+        return { output: `错误: notebook 过大 (${sizeMB} MB)。`, isError: true };
+      }
+      const raw = await Bun.file(filePath).text();
+      const rendered = renderNotebook(raw);
+
+      // 记录已读（notebook 作为整体，非部分视图——供后续 notebook_edit 前的存在性判断）
+      if (this.stateCache) {
+        this.stateCache.set(filePath, { content: raw, mtime: stat.mtimeMs, isPartialView: false });
+      } else if (this.tracker) {
+        this.tracker.markAsRead(filePath, stat.mtimeMs, { isPartialView: false, content: raw });
+      }
+
+      log.info("TOOL", `✓ 读取 notebook ${filePath}`);
+      return { output: rendered };
+    } catch (err: any) {
+      if (err.code === "ENOENT") return { output: formatPathNotFoundError(filePath), isError: true };
+      return { output: `读取 notebook 失败: ${err.message}`, isError: true };
+    }
+  }
+
+  /**
+   * G6：读取 PDF → base64 document mediaBlock（Claude 原生支持 PDF 文档块）。
+   *
+   * 不在本地做 PDF 解析/分页（无 PDF 库依赖）——直接把整份 PDF 以 base64 document 块
+   * 交给支持 PDF 的 provider（Anthropic）。pages 参数当前仅作提示透传给模型，不做本地裁剪。
+   */
+  private async readPdf(filePath: string, params: { pages?: string }): Promise<ToolResult> {
+    const log = getLogger();
+    try {
+      const stat = statSync(filePath);
+      if (stat.isDirectory()) {
+        return { output: `错误: '${filePath}' 是一个目录。`, isError: true };
+      }
+      // PDF 走 document 块，Anthropic 限制约 32MB / 100 页；这里用文件大小上限兜底
+      if (stat.size > MAX_FILE_SIZE_BYTES) {
+        const sizeMB = (stat.size / (1024 * 1024)).toFixed(1);
+        return {
+          output: `错误: PDF 过大 (${sizeMB} MB，超过 ${(MAX_FILE_SIZE_BYTES / (1024 * 1024)).toFixed(0)} MB 上限)。请拆分后再读取。`,
+          isError: true,
+        };
+      }
+      const buffer = await Bun.file(filePath).arrayBuffer();
+      const base64 = Buffer.from(buffer).toString("base64");
+      const pagesHint = params.pages ? `，关注页码 ${params.pages}` : "";
+
+      log.info("TOOL", `✓ 读取 PDF ${filePath} (${(stat.size / 1024).toFixed(0)} KB)`);
+      return {
+        output: `[PDF 文档: ${filePath} (${(stat.size / 1024).toFixed(0)} KB)${pagesHint}]`,
+        mediaBlocks: [{ kind: "document", mediaType: "application/pdf", data: base64 }],
+      };
+    } catch (err: any) {
+      if (err.code === "ENOENT") return { output: formatPathNotFoundError(filePath), isError: true };
+      return { output: `读取 PDF 失败: ${err.message}`, isError: true };
     }
   }
 }

@@ -136,14 +136,18 @@ describe("Read 工具 — 设备文件拦截 (P1)", () => {
 });
 
 describe("Read 工具 — 二进制扩展名拦截 (P1)", () => {
-  test(".png 文件被拒绝", async () => {
+  // G6：.png 现在以图片 mediaBlock 返回，不再拒绝
+  test(".png 文件以图片 mediaBlock 返回（G6）", async () => {
     const filePath = makeTmpFile("fake png content", "image.png");
     const tool = new ReadTool();
     const result = await tool.execute({ file_path: filePath });
 
-    expect(result.isError).toBe(true);
-    expect(result.output).toContain("二进制文件");
-    expect(result.output).toContain(".png");
+    expect(result.isError).toBeUndefined();
+    expect(result.mediaBlocks).toBeDefined();
+    expect(result.mediaBlocks!.length).toBe(1);
+    expect(result.mediaBlocks![0].kind).toBe("image");
+    expect(result.mediaBlocks![0].mediaType).toBe("image/png");
+    expect(result.output).toContain("图片");
   });
 
   test(".zip 文件被拒绝", async () => {
@@ -330,6 +334,64 @@ describe("Read 工具 — AbortSignal 中止 (P0)", () => {
 
     expect(result.isError).toBe(true);
     expect(result.output).toContain("操作已取消");
+  });
+});
+
+describe("Read 工具 — G6 富媒体", () => {
+  test(".jpg 以图片 mediaBlock 返回，mediaType=image/jpeg", async () => {
+    const filePath = makeTmpFile("fake jpg", "photo.jpg");
+    const tool = new ReadTool();
+    const result = await tool.execute({ file_path: filePath });
+    expect(result.isError).toBeUndefined();
+    expect(result.mediaBlocks![0].kind).toBe("image");
+    expect(result.mediaBlocks![0].mediaType).toBe("image/jpeg");
+    // base64 数据非空
+    expect(result.mediaBlocks![0].data.length).toBeGreaterThan(0);
+  });
+
+  test(".ipynb 返回带 cell id 的文本视图（无 mediaBlock）", async () => {
+    const notebook = {
+      cells: [
+        { cell_type: "markdown", source: ["# 标题\n"], metadata: { id: "md1" } },
+        {
+          cell_type: "code",
+          source: ["print(1)\n"],
+          metadata: { id: "code1" },
+          outputs: [{ output_type: "stream", text: ["1\n"] }],
+          execution_count: 1,
+        },
+      ],
+      metadata: { kernelspec: { language: "python" } },
+      nbformat: 4,
+      nbformat_minor: 5,
+    };
+    const filePath = makeTmpFile(JSON.stringify(notebook), "analysis.ipynb");
+    const tool = new ReadTool();
+    const result = await tool.execute({ file_path: filePath });
+    expect(result.isError).toBeUndefined();
+    expect(result.mediaBlocks).toBeUndefined();
+    expect(result.output).toContain('<cell id="md1" type="markdown">');
+    expect(result.output).toContain('<cell id="code1" type="code">');
+    expect(result.output).toContain("--- 输出 ---");
+    expect(result.output).toContain("kernel=python");
+  });
+
+  test(".ipynb 格式无效时返回错误提示（不崩溃）", async () => {
+    const filePath = makeTmpFile("not json", "broken.ipynb");
+    const tool = new ReadTool();
+    const result = await tool.execute({ file_path: filePath });
+    // 渲染层容错：JSON 解析失败在 output 里提示，不抛
+    expect(result.output).toContain("解析失败");
+  });
+
+  test(".pdf 以 document mediaBlock 返回", async () => {
+    const filePath = makeTmpFile("%PDF-1.4 fake", "doc.pdf");
+    const tool = new ReadTool();
+    const result = await tool.execute({ file_path: filePath, pages: "1-3" });
+    expect(result.isError).toBeUndefined();
+    expect(result.mediaBlocks![0].kind).toBe("document");
+    expect(result.mediaBlocks![0].mediaType).toBe("application/pdf");
+    expect(result.output).toContain("页码 1-3");
   });
 });
 

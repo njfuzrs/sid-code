@@ -81,6 +81,8 @@ export interface AppContext {
   updateGoalState?: (updater: (goal: import("../goal/state.ts").GoalState) => void) => void;
   /** 轨迹采集器（可选，trace.enabled=false 时为 undefined）—— /debug 命令用 */
   traceCollector?: import("../trace/collector.ts").TraceCollector;
+  /** 权限检查器实例（/allow /deny /add-dir /permissions 用；运行时注入，可能为 null） */
+  permissionChecker?: import("../permission/types.ts").Checker | null;
 }
 
 /** 支持的对话框类型 */

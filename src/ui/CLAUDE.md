@@ -202,8 +202,17 @@ L1 视觉原子    字形、颜色、主题                          ← 最小�
 新手需要引导，老手嫌烦。同一条 onboarding 提示**不要每次都显示**。
 
 - cc 用持久化计数器/布尔位：`queuedCommandUpHintCount < 3` 才显示某提示，`hasSeenXxxHint` 标记一次性提示已读，存在 `~/.claude/claude.json`。
-- ⚠️ 本项目可复用 `app-config.ts` 存这类 `hasSeen*` / `*HintCount` 标志（计数器型用 `< N` 上限，一次性型用 boolean）。
-- **占位符 / footer hint 按场景切换** ✅，不是固定一句：空输入时给示例，查看 teammate 时给 `Message @x…`，有队列时给"按 ↑ 编辑"。上下文感知 > 一成不变。
+- **通用 hint 计数已落地** ✅：`app-config.ts` 提供按任意 `hintKey` 计数的持久化 API（存 `app.json` 的 `hints: Record<string, number>`）：
+  - `shouldShowHint(hintKey, maxShows)` — 已显示次数 `< maxShows` 时返回 true（计数器型上限判定）；
+  - `markHintShown(hintKey)` — 显示一次即 +1（write-through 持久化）；
+  - `getHintShownCount(hintKey)` — 读当前已显示次数。
+  - 一次性提示 = `maxShows: 1`；看 N 次收敛 = `maxShows: N`。
+- **接线套路**（对标 cc `*HintCount < N`）：用 `useRef` 在提示"出现的上升沿"锁定本次形态并 `markHintShown` 记一次，避免每帧重复计数或文案抖动。已接的提示点：
+  - 队列接续提示（`InputArea.tsx` `queueContinuation`，满 3 次收敛为精简形态）；
+  - Shell 模式退出引导（`InputArea.tsx` `shellModeExit`，满 3 次不再显示）；
+  - 错误面板关闭提示（`ErrorPanel.tsx` `DISMISS_HINT_MAX_SHOWS`，prop 驱动的同型衰减）。
+  - 新增"每次都提示、应衰减"的提示点 → 复用这套 API，别自造计数存储。
+- **占位符 / footer hint 按场景切换** ✅，不是固定一句：空输入时给示例，查看 teammate 时给 `Message @x…`，有队列时给"按 ↑ 编辑"。上下文感知 > 一成不变。占位符另按 `numStartups < 5` 做启动次数衰减（`getPlaceholder()`）。
 
 ### D. 反馈要"活"但不吵
 

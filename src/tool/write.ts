@@ -54,6 +54,20 @@ export class WriteTool implements Tool {
     return `写入文件 ${filePath}${preview ? `: ${preview}` : ""}`;
   }
 
+  /**
+   * G14：观测输入回填——把 file_path 展开为绝对路径，供权限校验/hook 观测。
+   * 执行输入不变（保持 prompt cache 前缀稳定）。
+   */
+  backfillObservableInput(input: unknown): unknown | undefined {
+    const filePath = (input as any)?.file_path;
+    if (!filePath || typeof filePath !== "string") return undefined;
+    try {
+      const expanded = normalizeToolPath(filePath);
+      if (expanded === filePath) return undefined; // 已是绝对路径，无需回填
+      return { ...(input as any), file_path: expanded };
+    } catch { return undefined; }
+  }
+
   /** 工具级权限检查：敏感文件路径要求确认，其余 passthrough */
   async checkPermissions(input: unknown, _context: ToolUseContext): Promise<PermissionResult> {
     const filePath = (input as any)?.file_path;

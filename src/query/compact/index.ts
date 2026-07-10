@@ -126,3 +126,11 @@ function estimateRatio(messages: Message[], maxTokens: number): number {
 export { microcompactMessages } from "./microcompact.ts";
 export { snipCompact } from "./snip-compact.ts";
 export { applyToolResultBudget } from "./tool-result-budget.ts";
+// G22：部分压缩（compact-up-to）——新增能力，可显式调用
+export {
+  partialCompact,
+  resolvePartialSplitIndex,
+  PARTIAL_COMPACT_PREFIX,
+  type PartialCompactOptions,
+  type PartialCompactResult,
+} from "./partial-compact.ts";
