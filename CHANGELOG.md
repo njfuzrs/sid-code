@@ -2,6 +2,16 @@
 
 本文件由 scripts/generate-changelog.ts 自动生成，请勿手改。
 
+## v0.1.585 (2026-07-10)
+
+### 修复
+- **install** · 更新提示优化——抑制无谓 source 提示 + 补全 HTML 更新日志链接 `b27e6bb`
+  - source 提示改为条件触发：仅当刚写入 PATH 块且当前 shell 的 PATH 里还没有 ~/.local/bin 时才提示。sid-code update 场景下命令本就从 PATH 找到才跑起来， 当前 shell 已含 bin 目录、二进制原地换掉即刻生效，旧逻辑无脑提示纯属噪声
+  - 完成提示补上 CHANGELOG.html 网页链接（可直接点开，放在文本链接之前作为推荐）
+
+### 其他
+- doc：更新文档 `abe5613`
+
 ## v0.1.584 (2026-07-10)
 
 ### 新功能
