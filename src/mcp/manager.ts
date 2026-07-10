@@ -197,6 +197,12 @@ export class MCPManager {
    * 未设置时，OAuth 流程会把 URL 写入日志，用户需手动打开。
    */
   onOAuthAuthorizationUrl?: (serverName: string, url: string) => void;
+  /**
+   * G3 接线：Elicitation 处理器。MCP 服务器向客户端请求额外信息（表单/OAuth URL）时调用。
+   * 由 App 层注入（路由到 cliElicitationHandler / DialogManager）；
+   * 未设置时服务器 elicitation 请求全部被 cancel（defaultElicitationHandler）。
+   */
+  elicitationHandler?: import("./elicitation.ts").ElicitationHandler;
 
   /** 连接所有配置的 MCP 服务器（本地/远程分流并发控制） */
   async connectAll(servers: Record<string, MCPServerConfig>): Promise<Tool[]> {
@@ -304,6 +310,15 @@ export class MCPManager {
       const timeout = config.timeout ?? 30000;
       const retries = config.retries ?? 2;
       const client = new MCPClient(transport, { timeout, retries });
+
+      // G3 接线：注册 elicitation/create 请求处理器（在 initialize 前注册，
+      // 使 initialize 时能声明 capabilities.elicitation 给服务器）。
+      client.onRequestMethod("elicitation/create", async (params: unknown) => {
+        const { defaultElicitationHandler } = await import("./elicitation.ts");
+        const handler = this.elicitationHandler ?? defaultElicitationHandler;
+        const result = await handler(name, params as any);
+        return result;
+      });
 
       client.onToolsChanged = () => this.refreshTools(name);
       client.onResourcesChanged = () => this.refreshResources(name);

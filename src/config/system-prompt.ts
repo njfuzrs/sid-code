@@ -36,6 +36,7 @@ import {
   generateSessionMemoryAttachment,
   generateSkillListingAttachment,
   generateDenyRulesAttachment,
+  generateOutputStyleAttachment,
   DANGEROUS_dynamicAttachment,
 } from "./attachments.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -53,6 +54,11 @@ export interface SystemPromptContext {
   appendPrompt?: string;
   /** 从文件加载的系统提示词 */
   filePrompt?: string;
+  /**
+   * G12：激活的输出风格内容（已由 output-styles.ts 包裹 <output-style> 标签）。
+   * 配置态稳定，注入静态缓存区。
+   */
+  outputStyleContent?: string;
 
   // 动态上下文
   /** 工作目录 */
@@ -142,6 +148,7 @@ function generateCacheKey(ctx: SystemPromptContext): string {
     ctx.projectRules ? simpleHash(ctx.projectRules) : "",
     ctx.appendPrompt ? simpleHash(ctx.appendPrompt) : "",
     ctx.filePrompt ? simpleHash(ctx.filePrompt) : "",
+    ctx.outputStyleContent ? simpleHash(ctx.outputStyleContent) : "",
     ctx.ideSelection ? simpleHash(ctx.ideSelection) : "",
     ctx.ideMention ? simpleHash(ctx.ideMention) : "",
     ctx.diagnostics ? simpleHash(ctx.diagnostics) : "",
@@ -290,6 +297,12 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
   // CLAUDE.md 项目规则
   if (ctx.projectRules) {
     attachments.push(generateClaudeMdAttachment(ctx.projectRules, ctx.projectRulesPath));
+  }
+
+  // G12：输出风格（用户可插拔，优先级 12——CLAUDE.md 之后、诊断之前）
+  if (ctx.outputStyleContent) {
+    const styleAttachment = generateOutputStyleAttachment(ctx.outputStyleContent);
+    if (styleAttachment) attachments.push(styleAttachment);
   }
 
   // Git 状态

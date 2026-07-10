@@ -27,6 +27,9 @@ export interface MCPClientOptions {
   retries?: number;   // 重试次数，默认 2
 }
 
+/** 服务器请求处理器类型（method → handler） */
+type RequestHandler = (params: unknown) => Promise<unknown>;
+
 export class MCPClient {
   private transport: Transport;
   private nextId = 1;
@@ -45,6 +48,8 @@ export class MCPClient {
 
   /** 通用通知处理器注册表（method → handlers） */
   private notificationHandlers = new Map<string, Array<(params: unknown) => void>>();
+  /** 服务器请求处理器注册表（method → handler）(G3 Elicitation 接线) */
+  private requestHandlers = new Map<string, RequestHandler>();
 
   constructor(transport: Transport, options?: MCPClientOptions) {
     this.transport = transport;
@@ -55,12 +60,45 @@ export class MCPClient {
       this.handleNotification(notification);
     };
 
+    // G3 接线：监听服务器发起的请求（elicitation/create 等），路由到 requestHandlers
+    this.transport.onRequest = async (request: import("./types.ts").JsonRpcRequest) => {
+      const handler = this.requestHandlers.get(request.method);
+      if (!handler) {
+        return { jsonrpc: "2.0" as const, id: request.id, error: { code: -32601, message: `方法未找到: ${request.method}` } };
+      }
+      try {
+        const result = await handler(request.params);
+        return { jsonrpc: "2.0" as const, id: request.id, result };
+      } catch (err: any) {
+        return { jsonrpc: "2.0" as const, id: request.id, error: { code: -32603, message: err?.message ?? "内部错误" } };
+      }
+    };
+
     // 监听传输层断线
     if (this.transport.onClose) {
       this.transport.onClose = () => {
         this.onDisconnected?.();
       };
     }
+  }
+
+  /**
+   * 注册服务器请求处理器（G3 Elicitation 接线）。
+   * 同一 method 只保留最后注册的 handler（如 elicitation/create）。
+   * @returns 取消注册函数
+   */
+  onRequestMethod(method: string, handler: RequestHandler): () => void {
+    this.requestHandlers.set(method, handler);
+    return () => {
+      if (this.requestHandlers.get(method) === handler) {
+        this.requestHandlers.delete(method);
+      }
+    };
+  }
+
+  /** 是否已注册某 method 的请求处理器（用于 initialize 声明 capability） */
+  private hasRequestHandler(method: string): boolean {
+    return this.requestHandlers.has(method);
   }
 
   /**
@@ -114,9 +152,15 @@ export class MCPClient {
 
   /** 初始化 MCP 连接 */
   async initialize(): Promise<InitializeResult> {
+    // G3：注册了 elicitation/create 处理器时向服务器声明 elicitation 能力，
+    // 服务器据此才会发起 elicitation 请求（未声明则服务器不应发）。
+    const capabilities: Record<string, unknown> = {};
+    if (this.hasRequestHandler("elicitation/create")) {
+      capabilities.elicitation = {};
+    }
     const response = await this.sendWithRetry(this.makeRequest("initialize", {
       protocolVersion: "2024-11-05",
-      capabilities: {},
+      capabilities,
       clientInfo: { name: "sid-code", version: "0.1.0" },
     }));
 

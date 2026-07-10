@@ -928,6 +928,13 @@ export async function main(): Promise<void> {
         for (const tool of tools) toolRegistry.register(tool);
       };
 
+      // G3 接线：注入 Elicitation 处理器（服务器请求额外信息时用终端交互处理）。
+      // App 就绪后可用 UI 版覆盖（见 App）；此处提供 CLI 版兜底，避免默认 cancel 一切。
+      {
+        const { cliElicitationHandler } = await import("./mcp/elicitation.ts");
+        mcpManager.elicitationHandler = cliElicitationHandler;
+      }
+
       if (Object.keys(allMcpServers).length > 0) {
         mcpManager.connectAll(allMcpServers).then((mcpTools) => {
           for (const tool of mcpTools) toolRegistry.register(tool);

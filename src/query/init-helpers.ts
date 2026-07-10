@@ -294,12 +294,19 @@ export async function buildInitialSystemPrompt(
   const { buildSystemPrompt } = await import("../config/system-prompt.ts");
   const { collectIDEContext } = await import("../ide/integration.ts");
   const { collectSkillListingEntries } = await import("../skill/tool.ts");
+  // G12：加载激活的输出风格（配置态稳定，注入静态缓存区）
+  let outputStyleContent: string | undefined;
+  try {
+    const { getActiveOutputStyleContent } = await import("../config/output-styles.ts");
+    outputStyleContent = getActiveOutputStyleContent(config.outputStyle) || undefined;
+  } catch { /* 加载失败静默降级 */ }
   return buildSystemPrompt({
     tools,
     projectRules: projectRules?.rawContent,
     projectRulesPath: projectRules?.sourcePath,
     appendPrompt: config.appendSystemPrompt || undefined,
     filePrompt,
+    outputStyleContent,
     workingDir: process.cwd(),
     permissionMode: config.permissionMode,
     gitStatus: true,

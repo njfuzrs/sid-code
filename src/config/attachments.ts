@@ -56,6 +56,12 @@ export const PRIORITY = {
   DENY_RULES: 38,
   /** Git 状态（最低优先级） */
   GIT_STATUS: 40,
+  /**
+   * G12：输出风格（用户可插拔）。放在 CLAUDE.md 之后、诊断之前——
+   * 优先级高于大多数动态上下文，确保"按什么风格输出"的约束获得足够注意力，
+   * 但不越过项目规则（CLAUDE.md）。配置态稳定，进静态缓存区。
+   */
+  OUTPUT_STYLE: 12,
   /** 追加提示词 */
   APPEND_PROMPT: 50,
   /** 文件提示词 */
@@ -361,6 +367,17 @@ ${summary.trim()}
 </permission-constraints>`,
     priority: PRIORITY.DENY_RULES,
   };
+}
+
+/**
+ * G12：生成输出风格附件（用户可插拔）。
+ *
+ * content 已由 output-styles.ts 包裹为 <output-style> 标签。配置态稳定，
+ * 用 stableAttachment 进静态缓存区（同一风格跨请求不变，可享长 TTL 缓存）。
+ */
+export function generateOutputStyleAttachment(content: string): SystemPromptAttachment | null {
+  if (!content || !content.trim()) return null;
+  return stableAttachment("outputStyle", content, PRIORITY.OUTPUT_STYLE);
 }
 
 /**

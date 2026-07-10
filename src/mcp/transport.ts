@@ -276,6 +276,7 @@ export class SSETransport implements Transport {
   private postEndpoint: string | null = null;
   private connectPromise: Promise<void>;
   onNotification?: (notification: JsonRpcNotification) => void;
+  onRequest?: (request: JsonRpcRequest) => Promise<JsonRpcResponse>;
   onClose?: () => void;
 
   constructor(url: string, headers?: Record<string, string>, timeout?: number) {
@@ -380,6 +381,12 @@ export class SSETransport implements Transport {
         return;
       }
 
+      // 含 id + method 的是服务器发起的请求（G3：elicitation/create 等）
+      if (msg.jsonrpc === "2.0" && "id" in msg && msg.method) {
+        this.handleServerRequest(msg as JsonRpcRequest);
+        return;
+      }
+
       const response = msg as JsonRpcResponse;
       const pending = this.pendingRequests.get(response.id);
       if (pending) {
@@ -390,6 +397,31 @@ export class SSETransport implements Transport {
     } catch {
       // 跳过非 JSON 数据
     }
+  }
+
+  /**
+   * 处理服务器发起的请求（G3）：调用 onRequest 拿响应，经 POST 端点回传。
+   * 未注册 onRequest 时用「方法未找到」(-32601) 应答。
+   */
+  private handleServerRequest(request: JsonRpcRequest): void {
+    const respond = (response: JsonRpcResponse) => {
+      if (this.closed) return;
+      const endpoint = this.postEndpoint || this.url;
+      fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...this.headers },
+        body: JSON.stringify(sanitizeStrings(response)),
+      }).catch(() => { /* 回传失败忽略 */ });
+    };
+    if (!this.onRequest) {
+      respond({ jsonrpc: "2.0", id: request.id, error: { code: -32601, message: `方法未找到: ${request.method}` } });
+      return;
+    }
+    this.onRequest(request)
+      .then(respond)
+      .catch((err) => {
+        respond({ jsonrpc: "2.0", id: request.id, error: { code: -32603, message: `内部错误: ${err?.message ?? err}` } });
+      });
   }
 
   async send(request: JsonRpcRequest, signal?: AbortSignal): Promise<JsonRpcResponse> {

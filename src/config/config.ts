@@ -106,6 +106,12 @@ export interface Config {
   network?: NetworkTimeoutSettings;
   /** 输出语言偏好: "zh" 中文优先（默认）, "en" 英文优先。不设置时系统提示词默认中文 */
   language?: "zh" | "en";
+  /**
+   * G12：输出风格名（settings.json outputStyle / CLI --output-style）。
+   * 匹配 .sid-code/output-styles/ 或 ~/.sid-code/output-styles/ 下 .md 文件的 name 字段。
+   * 不设置时不注入任何风格约束。
+   */
+  outputStyle?: string;
   /** UI 主题名（/theme 持久化端，settings.json theme）。不设置时用内置默认暗色主题 */
   theme?: string;
 
@@ -587,6 +593,8 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     telemetry: "telemetry",
     analytics: "analytics",
     language: "language",
+    output_style: "outputStyle",
+    outputStyle: "outputStyle",
     theme: "theme",
   };
 
