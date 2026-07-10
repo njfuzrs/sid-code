@@ -10,6 +10,8 @@ import { describe, test, expect } from "bun:test";
 import { z } from "zod/v4";
 import { Registry } from "../../src/tool/registry.ts";
 import type { LegacyTool } from "../../src/tool/types.ts";
+import { buildTool } from "../../src/tool/types.ts";
+import { toLegacyTool } from "../../src/tool/bridge.ts";
 
 function mkTool(name: string, extra: Partial<LegacyTool> = {}): LegacyTool {
   return {
@@ -96,5 +98,88 @@ describe("Registry — ToolSearch 字段过滤", () => {
     r.markDeferred("b");
     r.markDeferred("a"); // a 同时被字段和名单标记，去重后仍计 1 次
     expect(r.deferredSize()).toBe(2);
+  });
+});
+
+// ===== G19：新泛型 Tool → LegacyTool 桥接适配器 =====
+
+describe("Registry — G19 bridge (toLegacyTool)", () => {
+  test("buildTool → toLegacyTool → register → definitions 完整闭环", () => {
+    const newTool = buildTool({
+      name: "echo",
+      description: () => "回显输入",
+      inputSchema: () => ({ type: "object", properties: { text: { type: "string" } } }),
+      call: async (input: { text: string }) => ({ data: input.text }),
+      isReadOnly: () => true,
+      isConcurrencySafe: () => true,
+    });
+
+    const legacy = toLegacyTool(newTool);
+
+    // 接口适配正确
+    expect(legacy.name()).toBe("echo");
+    expect(legacy.description()).toBe("回显输入");
+    expect(legacy.readOnly?.()).toBe(true);
+    expect(legacy.isConcurrencySafe?.({})).toBe(true);
+    expect(legacy.inputSchema()).toHaveProperty("type", "object");
+
+    // 可注册到 Registry
+    const r = new Registry();
+    r.register(legacy);
+    const def = r.definitions().find((d) => d.name === "echo");
+    expect(def).toBeDefined();
+    expect(def!.description).toBe("回显输入");
+  });
+
+  test("execute 正确适配 call() → LegacyToolResult", async () => {
+    const newTool = buildTool({
+      name: "upper",
+      description: () => "大写",
+      inputSchema: () => ({ type: "object", properties: {} }),
+      call: async (input: { text: string }) => ({ data: input.text.toUpperCase() }),
+      isReadOnly: () => true,
+      isConcurrencySafe: () => true,
+    });
+
+    const legacy = toLegacyTool(newTool);
+    const result = await legacy.execute({ text: "hello" });
+    expect(result.output).toBe("HELLO");
+    expect(result.isError).toBeFalsy();
+  });
+
+  test("execute 透传 isError", async () => {
+    const newTool = buildTool({
+      name: "fail",
+      description: () => "总是失败",
+      inputSchema: () => ({ type: "object", properties: {} }),
+      call: async () => ({ data: "boom", isError: true }),
+      isReadOnly: () => true,
+      isConcurrencySafe: () => true,
+    });
+
+    const legacy = toLegacyTool(newTool);
+    const result = await legacy.execute({});
+    expect(result.output).toBe("boom");
+    expect(result.isError).toBe(true);
+  });
+
+  test("ToolCapabilityFields 透传（zodSchema/searchHint/interruptBehavior）", () => {
+    const schema = z.object({ path: z.string() });
+    const newTool = buildTool({
+      name: "picker",
+      description: () => "选文件",
+      inputSchema: () => ({ type: "object", properties: {} }),
+      call: async () => ({ data: "" }),
+      isReadOnly: () => true,
+      isConcurrencySafe: () => true,
+      zodSchema: schema,
+      searchHint: "file picker",
+      interruptBehavior: () => "block" as const,
+    });
+
+    const legacy = toLegacyTool(newTool);
+    expect(legacy.zodSchema).toBe(schema);
+    expect(legacy.searchHint).toBe("file picker");
+    expect(legacy.interruptBehavior?.()).toBe("block");
   });
 });

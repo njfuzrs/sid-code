@@ -121,6 +121,10 @@ export interface LegacyToolResult {
  * @deprecated 自 2026-06 工具接口现代化起，新工具请使用新版泛型 `Tool<Input, Output, Progress>`。
  * 当前 25 个工具类仍是 LegacyTool 实现（渐进式迁移中，尚未完成向新版 Tool 的接口级迁移），
  * 但已全部接入 zod schema 运行时校验。待全部工具完成接口迁移后，此接口将被删除。
+ *
+ * G19 迁移路径：新工具直接用 `buildTool()` 写成 `Tool<Input, Output>`，再经
+ * `tool/bridge.ts` 的 `toLegacyTool()` 适配后 `registry.register()`——无需等全量迁移，
+ * 也无需改 registry 内部类型。既有工具改到时逐一切换，不做大爆炸重写。
  */
 export interface LegacyTool extends ToolCapabilityFields {
   name(): string;
