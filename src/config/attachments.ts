@@ -235,17 +235,17 @@ export function generateGitStatusAttachment(workingDir: string): Attachment | nu
       branch = "unknown";
     }
 
-    // 获取简短状态
+    // 获取简短状态（对标 CC context.ts:64 —— git status --short）
     const status = execSync("git status --short", {
       cwd: workingDir,
       stdio: "pipe",
       timeout: 5000,
     }).toString().trim();
 
-    // 获取最近 3 条提交
+    // 获取最近 5 条提交（对标 CC context.ts:68 —— git log --oneline -n 5）
     let recentCommits = "";
     try {
-      recentCommits = execSync("git log --oneline -3", {
+      recentCommits = execSync("git log --oneline -5", {
         cwd: workingDir,
         stdio: "pipe",
         timeout: 5000,
@@ -254,20 +254,66 @@ export function generateGitStatusAttachment(workingDir: string): Attachment | nu
       // 新仓库可能没有提交
     }
 
-    const parts = [`当前分支: ${branch}`];
-    if (status) {
-      parts.push(`\n变更文件:\n${status}`);
-    } else {
-      parts.push("\n工作区干净，无未提交变更");
-    }
-    if (recentCommits) {
-      parts.push(`\n最近提交:\n${recentCommits}`);
-    }
+    // 获取 git 用户名（对标 CC context.ts:74）
+    let userName = "";
+    try {
+      userName = execSync("git config user.name", {
+        cwd: workingDir,
+        stdio: "pipe",
+        timeout: 3000,
+      }).toString().trim();
+    } catch { /* 未配置时静默 */ }
+
+    // 获取默认主分支（对标 CC context.ts:63 —— getDefaultBranch()）
+    let mainBranch = "";
+    try {
+      // 优先从 remote HEAD 推断
+      mainBranch = execSync("git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null || echo ''", {
+        cwd: workingDir,
+        stdio: "pipe",
+        timeout: 3000,
+      }).toString().trim().replace("refs/remotes/origin/", "");
+      if (!mainBranch) {
+        // 回退：检查常见分支名
+        for (const candidate of ["main", "master"]) {
+          try {
+            execSync(`git rev-parse --verify ${candidate}`, { cwd: workingDir, stdio: "pipe", timeout: 2000 });
+            mainBranch = candidate;
+            break;
+          } catch { /* 不存在，继续 */ }
+        }
+      }
+    } catch { /* 静默 */ }
+
+    // ── 对标 CC context.ts:96-103 的输出格式 ──
+    // CC 的格式设计原则:
+    //   1. 首行显式声明"这是启动快照、不会更新"（第 97 行,弱模型的仲裁锚点）
+    //   2. 数据用结构化标签（Status:\n / Recent commits:\n）而非自然语言断言
+    //      ── "(clean)" 是数据标记,弱模型不会当成"当前事实";
+    //      ── "工作区干净，无未提交变更" 是自然语言声明,弱模型会当成权威断言
+    //   3. 超长 status 截断后指向 BashTool（第 88 行,"run git status using BashTool"）
+    const MAX_STATUS_CHARS = 2000;
+    const truncatedStatus = status.length > MAX_STATUS_CHARS
+      ? status.substring(0, MAX_STATUS_CHARS)
+        + '\n... (截断：超过 2000 字符。如需完整信息请用 bash 工具执行 "git status")'
+      : status;
+
+    const lines: string[] = [
+      // 首行=仲裁锚点（对标 CC 第 97 行）:
+      "This is the git status at the start of the conversation. Note that this status is a snapshot in time, "
+        + "and will not update during the conversation. "
+        + "工作区实时状态请以 bash 工具执行 `git status` 的返回为准。",
+      `Current branch: ${branch}`,
+    ];
+    if (mainBranch) lines.push(`Main branch (you will usually use this for PRs): ${mainBranch}`);
+    if (userName) lines.push(`Git user: ${userName}`);
+    lines.push(`Status:\n${truncatedStatus || "(clean)"}`);
+    if (recentCommits) lines.push(`Recent commits:\n${recentCommits}`);
 
     const result: Attachment = {
       type: "gitStatus",
       label: `Git 状态 (${branch})`,
-      content: `<git-status>\n${parts.join("\n")}\n</git-status>`,
+      content: `<git-status>\n${lines.join("\n\n")}\n</git-status>`,
       priority: PRIORITY.GIT_STATUS,
     };
 

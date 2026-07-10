@@ -653,10 +653,20 @@ export class PermissionChecker implements Checker {
       const toolClassifier = this.getToolClassifier();
       if (toolClassifier?.isAvailable()) {
         try {
+          // G7：工具可自报精简语义视图，供分类器降噪/跳过。钩子异常不阻断（回退原始 input）。
+          let classifierInput: string | undefined;
+          if (typeof tool?.toAutoClassifierInput === "function") {
+            try {
+              classifierInput = tool.toAutoClassifierInput(req.input);
+            } catch {
+              classifierInput = undefined;
+            }
+          }
           const classifyResult = await toolClassifier.classify({
             toolName: req.toolName,
             input: (req.input || {}) as Record<string, unknown>,
             cwd: this.workspacePath,
+            classifierInput,
           });
           if (!classifyResult.classifierUnavailable && classifyResult.safe) {
             log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(auto 模式分类器批准: ${classifyResult.reason})`);
@@ -821,6 +831,46 @@ export class PermissionChecker implements Checker {
         decisionReason: { type: "dangerousCommand", pattern: `injection:${injectionFinding.id}`, severity: "high" },
         metadata: { classifiedBy: "injection-validator", injectionId: injectionFinding.id },
       };
+    }
+
+    // ── 第 1.6 道（G4 修复）：sed 权限门 ──
+    // 对标 claude-code sedValidation.ts checkSedConstraints：
+    //   - s///e / e / w / W / r / R 表达式 → 直接拒绝（执行 shell / 写任意文件）
+    //   - sed -i → 把目标文件当**文件写入**做路径校验（PathValidator），
+    //     敏感文件/工作区外文件走权限门（同 edit/write），而非仅走"普通 bash 确认"。
+    {
+      const { detectDangerousSed, detectSedWrite } = await import("../tool/bash/sed-validation.ts");
+
+      // 1) 危险 sed 标志：拒绝（严重性等同 critical/high 硬编码命令）
+      const dangerousSed = detectDangerousSed(cmd);
+      if (dangerousSed.dangerous) {
+        log.info("PERMISSION", `${req.toolName}(${cmd.slice(0, 80)}) → 需确认(危险sed: ${dangerousSed.reason})`);
+        return {
+          allowed: false,
+          reason: `[sed-danger] ${dangerousSed.reason}: ${cmd.slice(0, 80)}`,
+          needsConfirmation: true,
+          decisionReason: { type: "dangerousCommand", pattern: `sed:${dangerousSed.reason}`, severity: "high" },
+          metadata: { classifiedBy: "sed-validator" },
+        };
+      }
+
+      // 2) sed -i → 目标文件路径校验（同 write/edit 走 PathValidator）
+      const sedWrite = detectSedWrite(cmd);
+      if (sedWrite.isSedWrite && sedWrite.targetFile) {
+        const { resolve } = await import("node:path");
+        const targetPath = resolve(process.cwd(), sedWrite.targetFile);
+        const pathResult = this.pathValidator.validateAccess(targetPath, "write");
+        if (!pathResult.allowed) {
+          log.info("PERMISSION", `${req.toolName}(sed -i → ${targetPath.slice(0, 80)}) → ${pathResult.needsConfirmation ? "需确认" : "拒绝"}(路径验证: ${pathResult.reason})`);
+          return {
+            allowed: false,
+            reason: `sed -i 目标路径受限: ${pathResult.reason}`,
+            needsConfirmation: pathResult.needsConfirmation,
+            decisionReason: { type: "pathValidation", reason: pathResult.reason || "" },
+            metadata: { classifiedBy: "sed-path-validator", targetFile: sedWrite.targetFile },
+          };
+        }
+      }
     }
 
     // ── 第二道：LLM 风险分类器（仅当启用且可用；critical 已在上面拦截，这里只处理"看似不危险/中低危"的命令）──

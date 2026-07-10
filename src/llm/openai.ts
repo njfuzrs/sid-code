@@ -25,6 +25,7 @@ import type { StreamTelemetrySignal } from "./types.ts";
 import { filterParamsForModel } from "./model-capability-filter.ts";
 import { lookupCatalog } from "./model-params-catalog.ts";
 import { splitSystemByDynamicBoundary } from "../api/cache-strategy.ts";
+import { updateRateLimitStatus } from "../api/rate-limit.ts";
 import { estimateTextTokens } from "../context/token.ts";
 import { sanitizeStrings } from "./sanitize-unicode.ts";
 import { SseChunkDumper, currentSseDumpContext } from "./sse-chunk-dumper.ts";
@@ -712,6 +713,9 @@ export class OpenAIProvider implements Provider {
       }
 
       log.debug("LLM:OPENAI", `开始接收 SSE 流`);
+      // G8：提取 OpenAI 系 rate-limit header（此前只有 anthropic.ts 提取，OpenAI-wire
+      // provider 限流状态永远显示 ok）。extractRateLimitFromHeaders 已兼容 x-ratelimit-*。
+      updateRateLimitStatus(response.headers);
       // 缺口 1/6：记录 headers_received 阶段（含 HTTP 状态码、Content-Type 和 TTFB）
       const ttfbMs = Date.now() - requestStartTime;
       const contentType = response.headers.get("content-type") ?? undefined;
@@ -1012,6 +1016,8 @@ export class OpenAIProvider implements Provider {
 
     // 响应头已到达
     emitHttpConnected(obsIndex, { status: response.status, model: effectiveModel });
+    // G8：Responses API 路径同样提取 rate-limit header
+    updateRateLimitStatus(response.headers);
 
     if (!response.ok) {
       const errorBody = await response.text().catch(() => "");
@@ -1162,6 +1168,9 @@ export class OpenAIProvider implements Provider {
       body: JSON.stringify(sanitizeStrings(requestBody)),
       signal,
     });
+
+    // G8：非流式路径同样提取 rate-limit header
+    updateRateLimitStatus(response.headers);
 
     if (!response.ok) {
       const errText = await response.text();

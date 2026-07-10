@@ -2043,6 +2043,13 @@ export class App {
         return buildPlanModeReminder(this.planManager.nextReminderIsFull());
       },
       discoverJitContext: (toolBlocks) => this.discoverJitContext(toolBlocks),
+      // G5 接线：长跑工具的中间进度路由到状态栏（无头模式下 statusNotifier 为 null，安全跳过）。
+      onToolProgress: (toolName, toolUseId, event) => {
+        const msg = typeof (event as any).message === "string"
+          ? (event as any).message
+          : (typeof (event as any).text === "string" ? (event as any).text : event.type);
+        this.statusNotifier?.(`tool_progress_${toolUseId}`, `${toolName}: ${msg}`, 2000);
+      },
     });
   }
 
@@ -2264,8 +2271,8 @@ export class App {
    * 复用 getNextPermissionMode 纯函数，但**跳过 plan 档**：plan 是独立状态机
    * （planManager + 审批流 + plan 文件 + 每轮工作流提醒），只能经 enter_plan_mode 工具
    * 或 /plan 进入；键盘只改 config.permissionMode 会造出「假 plan 态」（约束提醒不触发）。
-   * auto 依赖 toolClassifier 但生产从未注入（死档，等价 default），也跳过（见下方循环处注释）。
-   * 等价循环：无 bypass 时 default↔acceptEdits；有 bypass 时 default→acceptEdits→always-allow→default。
+   * auto 档现已接线（cli.ts 注入 ToolClassifier），键盘循环放开 auto。
+   * 等价循环：无 bypass 时 default↔acceptEdits↔auto；有 bypass 时 …→always-allow→default。
    *
    * bypass（always-allow）是否纳入循环由「启动时」是否开 skip-perms 门控——只有显式开了
    * skip-perms 的会话才让键盘循环到全放行，避免手滑切到危险态。
@@ -2288,13 +2295,10 @@ export class App {
       // bypass 用启动快照,不用实时 config.skipPermissions(下方会被本方法改写)。
       isBypassAvailable: this.bypassAvailableAtLaunch,
     };
-    // 跳过 plan 与 auto（最多跳 2 次，覆盖 acceptEdits→plan→auto 连续两档）：
-    // - plan 是独立状态机（见上），键盘只改字符串会造假 plan 态；
-    // - auto 依赖 toolClassifier，但生产代码从未调 setToolClassifier(checker.ts:228 仅定义)，
-    //   classifier 恒 null → auto 分支整段短路、行为等价 default，是「死档」。放进循环只会给用户
-    //   一个「切了但没变化」的困惑档位，故一并跳过。将来接了 classifier 再放开。
+    // 仅跳过 plan 档：plan 是独立状态机（见上），键盘只改字符串会造假 plan 态。
+    // auto 档已接线 ToolClassifier（cli.ts），可正常进入键盘循环。
     let next = getNextPermissionMode(ctx);
-    for (let i = 0; i < 2 && (next === "plan" || next === "auto"); i++) {
+    for (let i = 0; i < 2 && next === "plan"; i++) {
       next = getNextPermissionMode({ ...ctx, mode: next });
     }
 

@@ -28,6 +28,11 @@ function projectsRoot(): string {
   return join(getSidHome(), "projects");
 }
 
+/** 按 agent 类型的记忆根目录：~/.sid-code/memory/agents/ */
+function agentsMemRoot(): string {
+  return join(getSidHome(), "memory", "agents");
+}
+
 /**
  * 把项目根路径转成文件系统安全的目录名。
  * 用 git canonical root 派生，去掉分隔符与特殊字符。
@@ -108,6 +113,48 @@ export function getSessionMemoryPath(cwd: string = process.cwd()): string {
   const root = resolveProjectRoot(cwd);
   const key = sanitizeProjectKey(root);
   return join(projectsRoot(), key, ".session_memory.md");
+}
+
+/**
+ * 把 agent 类型名转成文件系统安全的目录 slug，防路径穿越。
+ * 只保留 [a-z0-9._-]，其余（含 / \ .. 空格 中文等）替换为 -，截断到 64 字符。
+ * 空 / 全非法字符时回退 "unknown"。
+ */
+export function sanitizeAgentType(raw: string): string {
+  const slug = String(raw ?? "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^[-.]+|[-.]+$/g, "")
+    .replace(/-+/g, "-")
+    .slice(0, 64);
+  return slug || "unknown";
+}
+
+/**
+ * 获取按 agent 类型的记忆目录路径（不自动创建）。
+ * 布局：~/.sid-code/memory/agents/<sanitized-agentType>/
+ *   ├── MEMORY.md   (该类型累积记忆索引)
+ *   └── *.md        (记忆条目)
+ * 与 getAutoMemPath 风格一致；agentType 做 slug 安全化，防路径穿越。
+ */
+export function getAgentMemPath(agentType: string): string {
+  const slug = sanitizeAgentType(agentType);
+  return join(agentsMemRoot(), slug);
+}
+
+/** 获取 agent 类型记忆目录并确保存在 */
+export function ensureAgentMemPath(agentType: string): string {
+  const dir = getAgentMemPath(agentType);
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+  return dir;
+}
+
+/** 某 agent 类型的 MEMORY.md 索引文件路径 */
+export function getAgentMemoryIndexPath(agentType: string): string {
+  return join(getAgentMemPath(agentType), "MEMORY.md");
 }
 
 /**

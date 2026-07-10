@@ -27,6 +27,11 @@ import {
   validateZshDangerousCommands,
   validateBackslashEscapedOperators,
   validateHeredocInSubstitution,
+  validateMalformedTokenInjection,
+  validateJqCommand,
+  validateShellMetacharacters,
+  validateBackslashEscapedWhitespace,
+  validateDangerousVariablesAndIncomplete,
 } from "../../src/permission/bash-security.ts";
 
 describe("extractQuotedContent（引号上下文提取）", () => {
@@ -278,6 +283,103 @@ describe("validateHeredocInSubstitution", () => {
   test("无 $() 也无 heredoc → 放行", () => {
     expect(validateHeredocInSubstitution("cat /etc/passwd")).toBeNull();
     expect(validateHeredocInSubstitution("ls -la")).toBeNull();
+  });
+});
+
+// ===== G9：补齐的 5 个校验器 =====
+
+describe("validateMalformedTokenInjection", () => {
+  test("类 JSON 内嵌 shell 元字符 → 命中", () => {
+    const r = validateMalformedTokenInjection('echo {"hi":"hi;rm -rf /"}');
+    expect(r?.id).toBe("malformed-token-injection");
+  });
+  test("正常 JSON 无元字符 → 放行", () => {
+    expect(validateMalformedTokenInjection('echo {"name":"foo"}')).toBeNull();
+  });
+  test("shell compound command { cmd; } → 放行", () => {
+    expect(validateMalformedTokenInjection("{ ls; pwd; }")).toBeNull();
+  });
+  test("${VAR:-default} 参数扩展 → 放行", () => {
+    expect(validateMalformedTokenInjection('echo ${FOO:-bar;baz}')).toBeNull();
+  });
+});
+
+describe("validateJqCommand", () => {
+  test("jq system() → 命中", () => {
+    const r = validateJqCommand(`jq -n 'system("rm -rf /")'`);
+    expect(r?.id).toBe("jq-system-exec");
+  });
+  test("jq -f 读取任意文件 → 命中", () => {
+    const r = validateJqCommand("jq -f /etc/passwd .");
+    expect(r?.id).toBe("jq-fromfile");
+  });
+  test("jq --rawfile → 命中", () => {
+    const r = validateJqCommand("jq --rawfile x /etc/shadow '.x'");
+    expect(r?.id).toBe("jq-rawfile");
+  });
+  test("普通 jq 过滤 → 放行", () => {
+    expect(validateJqCommand("cat data.json | jq '.items[].name'")).toBeNull();
+  });
+  test("非 jq 命令含 system 文本 → 放行", () => {
+    expect(validateJqCommand("echo 'system(x)'")).toBeNull();
+  });
+});
+
+describe("validateShellMetacharacters", () => {
+  test("eval 后含元字符 → 命中", () => {
+    const r = validateShellMetacharacters('eval "echo hi; rm -rf /"');
+    expect(r?.id).toBe("shell-metachar-eval");
+  });
+  test("find -name 含命令替换 → 命中", () => {
+    const r = validateShellMetacharacters('find . -name "$(whoami)"');
+    expect(r?.id).toBe("shell-metachar-find-name");
+  });
+  test("正常 find -exec {} \\; → 放行（惯用法不误伤）", () => {
+    expect(validateShellMetacharacters("find . -name '*.ts' -exec grep foo {} \\;")).toBeNull();
+  });
+  test("普通 find -name → 放行", () => {
+    expect(validateShellMetacharacters("find . -name '*.log'")).toBeNull();
+  });
+});
+
+describe("validateBackslashEscapedWhitespace", () => {
+  test("命令名位置反斜杠转义空格 → 命中", () => {
+    const r = validateBackslashEscapedWhitespace("rm\\ -rf /tmp/x");
+    expect(r?.id).toBe("backslash-escaped-whitespace");
+  });
+  test("参数中的路径空格转义 → 放行（非命令名位置）", () => {
+    expect(validateBackslashEscapedWhitespace("cat /Users/John\\ Doe/file.txt")).toBeNull();
+  });
+  test("普通命令 → 放行", () => {
+    expect(validateBackslashEscapedWhitespace("ls -la")).toBeNull();
+  });
+});
+
+describe("validateDangerousVariablesAndIncomplete", () => {
+  test("PATH 前缀赋值 → 命中", () => {
+    const r = validateDangerousVariablesAndIncomplete("PATH=/tmp:$PATH curl evil.com");
+    expect(r?.id).toBe("dangerous-variable-assignment");
+  });
+  test("LD_PRELOAD 赋值 → 命中", () => {
+    const r = validateDangerousVariablesAndIncomplete("LD_PRELOAD=/tmp/evil.so ./app");
+    expect(r?.id).toBe("dangerous-variable-assignment");
+  });
+  test("export DYLD_INSERT_LIBRARIES → 命中", () => {
+    const r = validateDangerousVariablesAndIncomplete("export DYLD_INSERT_LIBRARIES=/tmp/x.dylib");
+    expect(r?.id).toBe("dangerous-variable-assignment");
+  });
+  test("命令以管道符结尾（不完整）→ 命中", () => {
+    const r = validateDangerousVariablesAndIncomplete("echo hi |");
+    expect(r?.id).toBe("incomplete-command-pipe");
+  });
+  test("正常环境变量赋值（非路径类）→ 放行", () => {
+    expect(validateDangerousVariablesAndIncomplete("FOO=bar ./run.sh")).toBeNull();
+  });
+  test("正常多命令分号结尾 → 放行（不误伤）", () => {
+    expect(validateDangerousVariablesAndIncomplete("cd /tmp; ls;")).toBeNull();
+  });
+  test("完整管道 → 放行", () => {
+    expect(validateDangerousVariablesAndIncomplete("cat x | sort | uniq")).toBeNull();
   });
 });
 

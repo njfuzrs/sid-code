@@ -65,6 +65,18 @@ export interface ToolCapabilityFields<Input = unknown> {
    * 未声明时回退到常量表 / 默认值。新旧两版接口共享。
    */
   maxResultSizeChars?: number;
+
+  /**
+   * G7：给 auto 模式安全分类器（tool-classifier.ts）看的"精简语义视图"。
+   *
+   * 对标 claude-code Tool.ts:556 `toAutoClassifierInput`。分类器默认吃原始完整 input，
+   * 上下文臃肿且噪声大；工具可实现此钩子自报"最能反映风险的关键片段"（如 Edit 报
+   * `/tmp/x: new content`）。返回 `undefined` 表示无自定义视图（分类器回退原始 input）；
+   * 返回空字符串 `""` 表示该工具与安全无关、可跳过 LLM 判断（分类器据此走保守放行/降噪）。
+   *
+   * 纯读取语义、无副作用——分类器只读它，不据此改变执行输入。
+   */
+  toAutoClassifierInput?(input: Input): string | undefined;
 }
 
 // ===== 旧版接口（渐进式迁移期间保留） =====
@@ -93,7 +105,14 @@ export interface LegacyTool extends ToolCapabilityFields {
   /** 工具描述（发送给 LLM）。可选入参用于入参/上下文感知（对标 claude-code），无参调用兼容既有实现。 */
   description(context?: ToolDescriptionContext): string;
   inputSchema(): Record<string, unknown>;
-  execute(input: unknown, signal?: AbortSignal): Promise<LegacyToolResult>;
+  /**
+   * 执行工具。
+   *
+   * @param onProgress 可选进度回调（G5 接线）。长跑工具（大 bash、大 web_fetch）可在执行
+   *   期间多次调用，把中间进度桥接到 UI；执行器负责把它路由到状态栏。既有工具不实现即忽略，
+   *   向后兼容（可选参数）。对标 claude-code toolExecution.ts 的 progress 流桥接。
+   */
+  execute(input: unknown, signal?: AbortSignal, onProgress?: (event: ToolProgressData) => void): Promise<LegacyToolResult>;
   readOnly?(): boolean;
   isConcurrencySafe?(input: unknown): boolean;
   usageGuide?(): string;

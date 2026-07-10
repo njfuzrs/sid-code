@@ -754,6 +754,204 @@ export function validateHeredocInSubstitution(command: string): InjectionFinding
   return null;
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// G9：补 5 个注入校验器（对标 claude-code bashSecurity.ts 缺口）
+// ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * G9-1: malformed-token 注入（HackerOne 实战 CVE 绕过记录）。
+ *
+ * 攻击向量：当 JSON/token 类字符串作为 shell 参数传递时，嵌入的 `;`/`&`/`|` 等在
+ * eval-reparse 场景中会被 shell 二次解析为命令分隔符：
+ *   echo {"hi":"hi;rm -rf /"}
+ * 如果上层用 eval 或 xargs sh -c 包裹，分号后的内容作为独立命令执行。
+ *
+ * 检测策略：在剥离引号后的内容中，寻找类 JSON 大括号内含 shell 元字符的模式。
+ * 仅在大括号/方括号内出现时告警（纯 `cmd ; cmd` 由其他校验器或危险命令层处理）。
+ */
+export function validateMalformedTokenInjection(command: string): InjectionFinding | null {
+  // 关键：在【原始命令】上扫描——攻击特征正是"引号内藏 shell 元字符"，
+  // 剥离引号会把攻击载荷一并抹掉。因此不能用 fullyUnquoted。
+  //
+  // 排除正常 shell 构造，避免误伤：
+  //   - ${VAR:-def} / ${VAR:+x} 参数扩展（$ 前缀）
+  //   - { cmd1; cmd2; } 复合命令（左花括号后紧跟空格）
+  //   - {a,b,c} brace expansion（内部只有逗号、无元字符，由 validateBraceExpansion 覆盖）
+  //
+  // 匹配：大括号/方括号内含 shell 元字符（; & | `），且大括号非 ${ 且非 "{ "
+  const braceContent = /(?<!\$)\{[^{}]*[;&|`][^{}]*\}/g;
+  let m: RegExpExecArray | null;
+  while ((m = braceContent.exec(command)) !== null) {
+    const matched = m[0];
+    // 复合命令 { ls; pwd; } —— 左花括号后有空白
+    if (/^\{\s/.test(matched)) continue;
+    return {
+      id: "malformed-token-injection",
+      severity: "ask",
+      message: "命令参数含类 JSON/token 结构内嵌 shell 元字符，可能在 eval-reparse 时注入",
+    };
+  }
+  return null;
+}
+
+/**
+ * G9-2: jq 命令任意执行/文件读取。
+ *
+ * jq 的 `system()` 函数和 `--rawfile`/`-f` 参数可执行任意命令或读取任意文件：
+ *   jq -n 'system("rm -rf /")'
+ *   jq -f /etc/passwd .
+ *   jq --rawfile x /etc/shadow '.x'
+ * 检测：命令中含 jq 且带危险子串。
+ */
+export function validateJqCommand(command: string): InjectionFinding | null {
+  const { fullyUnquoted } = extractQuotedContent(command);
+  // 仅在 base command 或管道中包含 jq 时检测
+  if (!/(?:^|\||;|&)\s*jq\b/.test(fullyUnquoted) && !/^\s*jq\b/.test(command.trim())) {
+    return null;
+  }
+  // 危险模式 1: system() 函数调用
+  if (/system\s*\(/.test(command)) {
+    return {
+      id: "jq-system-exec",
+      severity: "ask",
+      message: "jq 表达式中使用 system() 可执行任意命令",
+    };
+  }
+  // 危险模式 2: -f / --fromfile 读取任意文件作为 jq 程序
+  if (/\bjq\b.*(?:-f\s+|--fromfile[\s=])/.test(command)) {
+    return {
+      id: "jq-fromfile",
+      severity: "ask",
+      message: "jq -f/--fromfile 可读取任意文件作为程序执行",
+    };
+  }
+  // 危险模式 3: --rawfile / --slurpfile 读取任意文件
+  if (/\bjq\b.*(?:--rawfile|--slurpfile)\s/.test(command)) {
+    // 允许从工作区内读取的安全模式放行（但此处无法确定工作区，保守告警）
+    return {
+      id: "jq-rawfile",
+      severity: "ask",
+      message: "jq --rawfile/--slurpfile 可读取任意文件内容",
+    };
+  }
+  return null;
+}
+
+/**
+ * G9-3: 引号内 shell 元字符（eval / find -name 命令替换）。
+ *
+ * 场景：
+ * (a) eval 后接含元字符的字符串 —— eval 会把参数当命令重新解析：
+ *     eval "echo hi; rm -rf /"
+ * (b) find -name/-iname 的 glob 模式内嵌命令替换 `$(...)` 或反引号 —— 模式在
+ *     构造时被 shell 展开，可执行任意命令：
+ *     find . -name "$(rm -rf /)"
+ *
+ * 注意：find -exec 的 `{}` 由 find 运行时替换、不经 shell 二次解析，因此 `{} \;`
+ * 这一最常见惯用法不是命令串层面的注入向量，不在此拦截（避免误伤）。
+ */
+export function validateShellMetacharacters(command: string): InjectionFinding | null {
+  // (a) eval 内嵌元字符
+  if (/\beval\b/.test(command)) {
+    const afterEval = command.slice(command.indexOf("eval") + 4);
+    if (/[;&|`]/.test(afterEval)) {
+      return {
+        id: "shell-metachar-eval",
+        severity: "ask",
+        message: "eval 后包含 shell 元字符，可能导致注入执行",
+      };
+    }
+  }
+  // (b) find -name/-iname 模式内含命令替换
+  if (/\bfind\b/.test(command) && /-i?name\b/.test(command)) {
+    // 取 -name/-iname 后紧跟的参数（含引号），检测命令替换
+    const nameMatch = command.match(/-i?name\s+(("[^"]*")|('[^']*')|(\S+))/);
+    if (nameMatch) {
+      const pattern = nameMatch[1];
+      if (/\$\(|`/.test(pattern)) {
+        return {
+          id: "shell-metachar-find-name",
+          severity: "ask",
+          message: "find -name 模式中含命令替换，可能执行任意命令",
+        };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * G9-4: 反斜杠转义空白（token 差异攻击）。
+ *
+ * `rm\ -rf` 在视觉上看起来像 `rm -rf`（空格被转义，实际是单 token `rm -rf` 作为
+ * 文件名），但某些安全正则只看空格拆词，误判为 `rm` + `-rf`。反过来，
+ * `cat /etc/passw\d` 的 `\d` 在 shell 中等于 `d`，绕过关键词匹配。
+ *
+ * 检测：非引号区域内出现 `\ `（反斜杠空格）或 `\t`（反斜杠 tab）。
+ * 排除：行末续行 `\<LF>` 由 validateNewlines 处理。
+ */
+export function validateBackslashEscapedWhitespace(command: string): InjectionFinding | null {
+  const { fullyUnquoted } = extractQuotedContent(command);
+  // 反斜杠后跟空格或 tab（非行末续行）
+  if (/\\[ \t]/.test(fullyUnquoted)) {
+    // 常见安全用法豁免：文件路径中空格（如 /Users/John\ Doe/file）
+    // 但不豁免命令名位置的反斜杠空格
+    const tokens = fullyUnquoted.split(/(?<!\\)\s+/);
+    const firstToken = tokens[0]?.trim() || "";
+    if (/\\[ \t]/.test(firstToken)) {
+      return {
+        id: "backslash-escaped-whitespace",
+        severity: "ask",
+        message: "命令名位置含反斜杠转义空白，可能构成 token 差异攻击",
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * G9-5: 危险变量赋值 + 不完整命令检测。
+ *
+ * 覆盖两类风险：
+ * (a) 赋值 PATH/LD_PRELOAD/LD_LIBRARY_PATH 等控制执行路径的变量，导致命令劫持：
+ *     PATH=/tmp:$PATH; curl ...  → /tmp/curl 可能是恶意脚本
+ * (b) 不完整命令（以 `|`、`&&`、`||`、`;` 结尾）可能是上下文截断后拼接注入：
+ *     模型输出被截断时，残余 `echo hi |` 会等待下一条输入作为管道右端
+ */
+export function validateDangerousVariablesAndIncomplete(command: string): InjectionFinding | null {
+  const { fullyUnquoted } = extractQuotedContent(command);
+
+  // (a) 危险环境变量赋值（命令前缀或 export）
+  const dangerousVars = /(?:^|;|&&|\|\|)\s*(?:export\s+)?(?:PATH|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_INSERT_LIBRARIES|DYLD_LIBRARY_PATH|PYTHONPATH|NODE_PATH|RUBYLIB|PERL5LIB)\s*=/;
+  if (dangerousVars.test(fullyUnquoted)) {
+    return {
+      id: "dangerous-variable-assignment",
+      severity: "ask",
+      message: "修改执行路径相关环境变量，可能导致命令劫持",
+    };
+  }
+
+  // (b) 不完整命令（以操作符结尾，暗示截断拼接风险）
+  const trimmed = fullyUnquoted.trimEnd();
+  if (/[|&;]$/.test(trimmed) && !/\|\|$/.test(trimmed) && !/&&$/.test(trimmed)) {
+    // 排除安全的管道尾：`| sort` 等完整管道不会以 `|` 结尾到达这里
+    // 也排除 heredoc delimiter 行（以 ; 结尾但跟 heredoc body）
+    if (/\|$/.test(trimmed)) {
+      return {
+        id: "incomplete-command-pipe",
+        severity: "ask",
+        message: "命令以管道符结尾（不完整），可能是截断后的注入拼接",
+      };
+    }
+    if (/[^|&];$/.test(trimmed)) {
+      // 单独分号结尾：可能正常（多命令最后一条）但也可能截断
+      // 不告警——太多误报（cd /tmp; ls; 是合法的）
+    }
+  }
+
+  return null;
+}
+
 /**
  * 提取命令的 base command（首个非赋值、非包装词），用于 echo 豁免等判断。
  */
@@ -795,6 +993,12 @@ export function checkInjectionPatterns(command: string): InjectionFinding | null
     () => validateCommentQuoteDesync(command),
     () => validateQuotedNewline(command),
     () => validateBackslashEscapedOperators(command),
+    // G9：补齐的 5 个校验器
+    () => validateMalformedTokenInjection(command),
+    () => validateJqCommand(command),
+    () => validateShellMetacharacters(command),
+    () => validateBackslashEscapedWhitespace(command),
+    () => validateDangerousVariablesAndIncomplete(command),
   ];
 
   for (const run of validators) {

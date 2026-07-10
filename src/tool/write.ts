@@ -42,6 +42,18 @@ export class WriteTool implements Tool {
     return "write";
   }
 
+  /**
+   * G7：给 auto 模式安全分类器的精简语义视图——只报"写哪个文件 + 内容前 200 字"，
+   * 而非整段可能上万字的 content（降噪、聚焦风险路径判断）。
+   */
+  toAutoClassifierInput(input: unknown): string | undefined {
+    const filePath = (input as any)?.file_path;
+    if (!filePath || typeof filePath !== "string") return undefined;
+    const content = typeof (input as any)?.content === "string" ? (input as any).content : "";
+    const preview = content.slice(0, 200);
+    return `写入文件 ${filePath}${preview ? `: ${preview}` : ""}`;
+  }
+
   /** 工具级权限检查：敏感文件路径要求确认，其余 passthrough */
   async checkPermissions(input: unknown, _context: ToolUseContext): Promise<PermissionResult> {
     const filePath = (input as any)?.file_path;

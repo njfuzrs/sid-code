@@ -382,6 +382,18 @@ export class EditTool implements Tool {
     return "edit";
   }
 
+  /**
+   * G7：给 auto 模式安全分类器的精简语义视图——报文件路径 + 替换摘要，
+   * 不含完整 old_string/new_string（分类器只需判路径风险）。
+   */
+  toAutoClassifierInput(input: unknown): string | undefined {
+    const filePath = (input as any)?.file_path;
+    if (!filePath || typeof filePath !== "string") return undefined;
+    const oldStr = typeof (input as any)?.old_string === "string" ? (input as any).old_string : "";
+    const newStr = typeof (input as any)?.new_string === "string" ? (input as any).new_string : "";
+    return `编辑 ${filePath}: "${oldStr.slice(0, 60)}" → "${newStr.slice(0, 60)}"`;
+  }
+
   /** 工具级权限检查：敏感文件路径要求确认，其余 passthrough */
   async checkPermissions(input: unknown, _context: ToolUseContext): Promise<PermissionResult> {
     const filePath = (input as any)?.file_path;

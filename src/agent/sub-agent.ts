@@ -160,6 +160,7 @@ async function enhanceSubAgentPrompt(
   basePrompt: string,
   preferredLanguage?: "zh" | "en",
   workingDir?: string,
+  agentType?: string,
 ): Promise<string> {
   const notes: string[] = [];
 
@@ -205,7 +206,20 @@ async function enhanceSubAgentPrompt(
     );
   }
 
-  return `${basePrompt}\n\n---\n\n${notes.join("\n")}`;
+  // G13：按 agent 类型注入历史积累记忆（跨会话领域经验）。
+  // 无该类型记忆时返回空串，行为与改动前一致（向后兼容）。
+  let agentMemorySection = "";
+  if (agentType) {
+    try {
+      const { buildAgentMemoryInjection } = await import("../memory/agent-store.ts");
+      agentMemorySection = await buildAgentMemoryInjection(agentType);
+    } catch {
+      // 记忆读取失败不阻断子代理启动
+    }
+  }
+
+  const enhanced = `${basePrompt}\n\n---\n\n${notes.join("\n")}`;
+  return agentMemorySection ? `${enhanced}\n\n${agentMemorySection}` : enhanced;
 }
 
 /** 自定义子代理任务（Skills/Agents 用） */
@@ -460,7 +474,7 @@ export class SubAgent {
   /** Spawn 子代理（标准类型） */
   private async executeSpawned(task: SubAgentTask, signal?: AbortSignal, taskId?: string): Promise<SubAgentResult> {
     const basePrompt = getSystemPrompt(task.type);
-    const systemPrompt = await enhanceSubAgentPrompt(basePrompt, this.language, process.cwd());
+    const systemPrompt = await enhanceSubAgentPrompt(basePrompt, this.language, process.cwd(), task.type);
     const toolDefs = this.getToolDefs(task);
 
     // 计费口径对齐：spawn 模式按子代理类型解析模型 + 对应 provider 配置，
@@ -868,7 +882,7 @@ export class SubAgent {
       });
 
       const basePrompt = getSystemPrompt(task.type);
-      let systemPrompt = await enhanceSubAgentPrompt(basePrompt, this.language, process.cwd());
+      let systemPrompt = await enhanceSubAgentPrompt(basePrompt, this.language, process.cwd(), task.type);
 
       // M2(Dynamic Workflows): 带 schema 时,系统提示追加结构化输出强制段
       let structuredTool: StructuredOutputTool | undefined;

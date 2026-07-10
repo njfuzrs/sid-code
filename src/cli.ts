@@ -989,6 +989,24 @@ export async function main(): Promise<void> {
       permissionChecker.setBashClassifier(classifier);
     }
 
+    // G2 修复：注入泛化工具安全分类器（auto 权限模式核心）。
+    // 此前 tool-classifier.ts + checker auto 分支写好了但生产从未调 setToolClassifier，
+    // 导致 classifier 恒 null → auto 分支整段短路、行为等价 default（死档），
+    // 且 Shift+Tab 循环主动跳过 auto 档。这里补上接线，让 auto 模式对用户可达。
+    //
+    // 分类器仅在 permissionMode === "auto" 时被 checker 调用（checker.ts:652），
+    // 非 auto 模式下不产生任何 API 成本，故默认 enabled=true 恒设 provider 无副作用。
+    // 复用主 provider + 主循环模型（与 BashClassifier 一致的注入路径）。
+    {
+      const { ToolClassifier } = await import("./permission/tool-classifier.ts");
+      const toolClassifier = new ToolClassifier({
+        enabled: true,
+        model: config.classifierModel,
+      });
+      toolClassifier.setProvider(providerRegistry.getProvider(), config.classifierModel || config.model);
+      permissionChecker.setToolClassifier(toolClassifier);
+    }
+
     if (config.debug && permissionRules) {
       const { getLogger } = await import("./debug/logger.ts");
       const allowCount = permissionRules.allow?.length ?? 0;

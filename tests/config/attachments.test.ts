@@ -55,7 +55,15 @@ describe("generateGitStatusAttachment", () => {
     expect(attachment!.type).toBe("gitStatus");
     expect(attachment!.priority).toBe(PRIORITY.GIT_STATUS);
     expect(attachment!.content).toContain("<git-status>");
-    expect(attachment!.content).toContain("当前分支:");
+    expect(attachment!.content).toContain("Current branch:");
+    expect(attachment!.content).toContain("Status:");
+    // 防死锁哨兵：git-status 必须显式标注"这是启动快照、以实时 git status 为准"。
+    // 缺此标注会让弱模型把过期快照当实时事实，与 bash 实时结果打架陷入认知死锁
+    // （根因分析-git状态快照冻结导致认知死锁.md）。误删标注即回归。
+    // 文案对标 claude-code context.ts:97 的仲裁锚点句 + 中文补充"以实时 git status 为准"。
+    expect(attachment!.content).toContain("snapshot in time");
+    expect(attachment!.content).toContain("will not update during the conversation");
+    expect(attachment!.content).toContain("以 bash 工具执行 `git status` 的返回为准");
   });
 
   test("非 Git 仓库返回 null", () => {

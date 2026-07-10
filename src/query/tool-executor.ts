@@ -17,6 +17,49 @@ import { validateToolInput } from "../tool/input-validator.ts";
 import { yieldMissingToolResults, collectToolResultIdsFromBlocks } from "../agent/tool-result-guard.ts";
 
 /**
+ * G1 修复：主循环工具并发 cap。
+ * 对标 claude-code toolOrchestration.ts:8 getMaxToolUseConcurrency() 默认 10。
+ * 主循环普通工具并发此前无限制（Promise.allSettled 一次性全发），模型一次派 10+ 个
+ * grep/read 时全部同时打，可能耗尽文件句柄或触发 rate-limit。
+ * 信号量限流：超上限的调用排队等待，有 slot 释放时按 FIFO 唤醒。
+ */
+const MAX_TOOL_CONCURRENCY = (() => {
+  const raw = process.env.SID_TOOL_MAX_CONCURRENT;
+  if (raw === undefined || raw === "") return 10;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : 10;
+})();
+
+/** 信号量：限流并发工具执行 */
+async function withConcurrencyLimit<T>(
+  tasks: Array<() => Promise<T>>,
+  limit: number,
+): Promise<PromiseSettledResult<T>[]> {
+  const results: PromiseSettledResult<T>[] = new Array(tasks.length);
+  let nextIdx = 0;
+
+  async function runNext(): Promise<void> {
+    while (nextIdx < tasks.length) {
+      const idx = nextIdx++;
+      try {
+        const value = await tasks[idx]();
+        results[idx] = { status: "fulfilled", value };
+      } catch (reason: any) {
+        results[idx] = { status: "rejected", reason };
+      }
+    }
+  }
+
+  // 启动 min(limit, tasks.length) 个 worker 并行消费任务队列
+  const workers = Array.from(
+    { length: Math.min(limit, tasks.length) },
+    () => runNext(),
+  );
+  await Promise.all(workers);
+  return results;
+}
+
+/**
  * P2-1（占位消息治理）：为成功但输出为空的工具生成有语义的"无输出"描述。
  * 让模型能区分"命令成功但无输出"与"出错/未执行"，并避免空 tool_result 在协议层
  * 被兜底成无信息的 "(empty)" 进而触发占位污染。
@@ -84,6 +127,11 @@ export interface ToolExecutorDeps {
   getPlanModeReminder?: () => Promise<string | null>;
   /** JIT 上下文发现 */
   discoverJitContext?: (toolBlocks: ToolUseBlock[]) => Promise<void>;
+  /**
+   * 工具进度回调（G5 接线）。长跑工具在执行期间吐出的中间进度经此上报 UI（如状态栏）。
+   * 未注入（无头模式）时安全跳过——执行器传给 tool.execute 的 onProgress 变为 no-op。
+   */
+  onToolProgress?: (toolName: string, toolUseId: string, event: import("../tool/types.ts").ToolProgressData) => void;
 }
 
 /**
@@ -255,12 +303,16 @@ export async function executeTools(
   // 结果收集（按原始顺序索引存储）
   const resultMap: Map<number, ContentBlock> = new Map(rejectedResults);
 
-  // 并发安全的工具：并行执行
+  // 并发安全的工具：并行执行（G1：信号量限流，默认 cap=10，对齐 claude-code）
   if (concurrent.length > 0) {
-    const readResults = await Promise.allSettled(
+    if (concurrent.length > MAX_TOOL_CONCURRENCY) {
+      log.debug("TOOL", `并行工具 ${concurrent.length} 个超过并发上限 ${MAX_TOOL_CONCURRENCY}，超出部分排队`);
+    }
+    const readResults = await withConcurrencyLimit(
       concurrent.map(({ block, tool, idx }) =>
-        executeSingleTool(block, tool, deps).then(r => ({ idx, result: r }))
+        () => executeSingleTool(block, tool, deps).then(r => ({ idx, result: r }))
       ),
+      MAX_TOOL_CONCURRENCY,
     );
     // abort 优先：任一工具被取消，立即向上抛（由 loop.ts catch 兜底补齐）
     for (const r of readResults) {
@@ -407,7 +459,12 @@ export async function executeSingleTool(
   const startTime = Date.now();
 
   try {
-    const result = await tool.execute(effectiveInput, deps.getAbortSignal());
+    // G5 修复：把 onProgress 桥接给 tool.execute，让长跑工具能在执行中报告进度。
+    // deps.onToolProgress 由 App 注入（路由到状态栏/TUI），无头模式下为 undefined → 无副作用。
+    const progressCallback = deps.onToolProgress
+      ? (event: import("../tool/types.ts").ToolProgressData) => deps.onToolProgress!(block.name, block.id, event)
+      : undefined;
+    const result = await tool.execute(effectiveInput, deps.getAbortSignal(), progressCallback);
     const elapsed = Date.now() - startTime;
 
     deps.sessionState.addToolDuration(elapsed);

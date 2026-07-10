@@ -21,6 +21,12 @@ export interface Transport {
   sendNotification?(notification: JsonRpcNotification): void;
   /** 通知回调（处理无 id 的 JSON-RPC 消息） */
   onNotification?: (notification: JsonRpcNotification) => void;
+  /**
+   * 服务器发起请求的回调（G3 Elicitation 接线）。
+   * 服务器可主动发请求（含 id + method，如 `elicitation/create`），传输层调用此回调
+   * 拿到响应后回传给服务器。未注册时传输层用「方法未找到」错误应答，避免服务器悬挂。
+   */
+  onRequest?: (request: JsonRpcRequest) => Promise<JsonRpcResponse>;
   /** 连接关闭回调（用于断线检测） */
   onClose?: () => void;
   close(): void;
@@ -40,6 +46,7 @@ export class StdioTransport implements Transport {
   private closed = false;
   private timeout: number;
   onNotification?: (notification: JsonRpcNotification) => void;
+  onRequest?: (request: JsonRpcRequest) => Promise<JsonRpcResponse>;
   onClose?: () => void;
 
   constructor(command: string, args: string[] = [], env?: Record<string, string>, timeout?: number) {
@@ -106,6 +113,12 @@ export class StdioTransport implements Transport {
           continue;
         }
 
+        // 含 id + method 的是服务器发起的请求（G3：elicitation/create 等）
+        if (msg.jsonrpc === "2.0" && "id" in msg && msg.method) {
+          this.handleServerRequest(msg as JsonRpcRequest);
+          continue;
+        }
+
         const response = msg as JsonRpcResponse;
         const pending = this.pendingRequests.get(response.id);
         if (pending) {
@@ -117,6 +130,31 @@ export class StdioTransport implements Transport {
         // 跳过非 JSON 行
       }
     }
+  }
+
+  /**
+   * 处理服务器发起的请求（G3）：调用 onRequest 拿响应写回 stdin。
+   * 未注册 onRequest 时用 JSON-RPC「方法未找到」(-32601) 应答，避免服务器悬挂等待。
+   */
+  private handleServerRequest(request: JsonRpcRequest): void {
+    const respond = (response: JsonRpcResponse) => {
+      if (this.closed) return;
+      try {
+        this.proc.stdin.write(JSON.stringify(response) + "\n");
+        this.proc.stdin.flush();
+      } catch {
+        // 写回失败（进程已退出等），忽略
+      }
+    };
+    if (!this.onRequest) {
+      respond({ jsonrpc: "2.0", id: request.id, error: { code: -32601, message: `方法未找到: ${request.method}` } });
+      return;
+    }
+    this.onRequest(request)
+      .then(respond)
+      .catch((err) => {
+        respond({ jsonrpc: "2.0", id: request.id, error: { code: -32603, message: `内部错误: ${err?.message ?? err}` } });
+      });
   }
 
   async send(request: JsonRpcRequest, signal?: AbortSignal): Promise<JsonRpcResponse> {

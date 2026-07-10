@@ -91,6 +91,47 @@ describe("extractRateLimitFromHeaders", () => {
     });
     expect(s.utilization).toBeCloseTo(0.9, 5);
   });
+
+  // G8：OpenAI 系 header 兼容
+  test("OpenAI x-ratelimit-*（limit-tokens 词序）", () => {
+    const s = extractRateLimitFromHeaders({
+      "x-ratelimit-limit-tokens": "100000",
+      "x-ratelimit-remaining-tokens": "15000", // 用了 85%
+      "x-ratelimit-limit-requests": "1000",
+      "x-ratelimit-remaining-requests": "900", // 10%
+    });
+    expect(s.remainingTokens).toBe(15000);
+    expect(s.remainingRequests).toBe(900);
+    expect(s.utilization).toBeCloseTo(0.85, 5);
+    expect(s.status).toBe("warning");
+  });
+
+  test("OpenAI x-ratelimit-*（tokens-remaining 词序也兼容）", () => {
+    const s = extractRateLimitFromHeaders({
+      "x-ratelimit-tokens-limit": "100000",
+      "x-ratelimit-tokens-remaining": "0",
+    });
+    expect(s.status).toBe("exceeded");
+  });
+
+  test("OpenAI x-ratelimit-reset-tokens（Unix 秒）", () => {
+    const s = extractRateLimitFromHeaders({
+      "x-ratelimit-reset-tokens": "1700000000",
+    });
+    expect(s.resetsAt).toBe(1700000000 * 1000);
+  });
+
+  test("Anthropic 命名优先于 OpenAI 命名（两族并存时）", () => {
+    const s = extractRateLimitFromHeaders({
+      "anthropic-ratelimit-tokens-limit": "1000",
+      "anthropic-ratelimit-tokens-remaining": "500", // 50%
+      "x-ratelimit-limit-tokens": "1000",
+      "x-ratelimit-remaining-tokens": "0", // 100%
+    });
+    // 取 anthropic 的 500 剩余 → 50%
+    expect(s.remainingTokens).toBe(500);
+    expect(s.utilization).toBeCloseTo(0.5, 5);
+  });
 });
 
 describe("全局状态", () => {

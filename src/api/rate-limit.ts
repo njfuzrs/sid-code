@@ -48,20 +48,69 @@ function parseIntOrNaN(v: string | null): number {
 /**
  * 从 API 响应 headers 中提取速率限制信息。
  *
+ * 兼容两族 header 命名（G8：OpenAI 系此前完全不提取，跑 OpenAI-wire provider 时
+ * 限流状态永远显示 ok，用户在网关限流时处于盲区）：
+ *
  * Anthropic API headers:
  *   anthropic-ratelimit-requests-limit / -remaining / -reset
  *   anthropic-ratelimit-tokens-limit / -remaining / -reset
  *   retry-after
+ *
+ * OpenAI（及兼容网关）headers:
+ *   x-ratelimit-limit-requests / x-ratelimit-remaining-requests / x-ratelimit-reset-requests
+ *   x-ratelimit-limit-tokens / x-ratelimit-remaining-tokens / x-ratelimit-reset-tokens
+ *   （部分网关用 x-ratelimit-*-requests 与 x-ratelimit-requests-* 两种词序，均兼容）
+ *   retry-after
+ *
+ * 同一响应两族 header 不会共存；取两族中"有值"的一族。reset 词序差异见 firstNumber。
  */
 export function extractRateLimitFromHeaders(headers: HeaderSource): RateLimitStatus {
   const get = makeGetter(headers);
 
-  const requestsRemaining = parseIntOrNaN(get("anthropic-ratelimit-requests-remaining"));
-  const tokensRemaining = parseIntOrNaN(get("anthropic-ratelimit-tokens-remaining"));
-  const requestsLimit = parseIntOrNaN(get("anthropic-ratelimit-requests-limit"));
-  const tokensLimit = parseIntOrNaN(get("anthropic-ratelimit-tokens-limit"));
-  const resetStr =
-    get("anthropic-ratelimit-requests-reset") ?? get("anthropic-ratelimit-tokens-reset");
+  // 两族 header 择一读取：优先 Anthropic 命名，缺失则回退 OpenAI 命名。
+  const firstNumber = (...keys: string[]): number => {
+    for (const k of keys) {
+      const n = parseIntOrNaN(get(k));
+      if (!isNaN(n)) return n;
+    }
+    return NaN;
+  };
+  const firstString = (...keys: string[]): string | null => {
+    for (const k of keys) {
+      const v = get(k);
+      if (v) return v;
+    }
+    return null;
+  };
+
+  const requestsRemaining = firstNumber(
+    "anthropic-ratelimit-requests-remaining",
+    "x-ratelimit-remaining-requests",
+    "x-ratelimit-requests-remaining",
+  );
+  const tokensRemaining = firstNumber(
+    "anthropic-ratelimit-tokens-remaining",
+    "x-ratelimit-remaining-tokens",
+    "x-ratelimit-tokens-remaining",
+  );
+  const requestsLimit = firstNumber(
+    "anthropic-ratelimit-requests-limit",
+    "x-ratelimit-limit-requests",
+    "x-ratelimit-requests-limit",
+  );
+  const tokensLimit = firstNumber(
+    "anthropic-ratelimit-tokens-limit",
+    "x-ratelimit-limit-tokens",
+    "x-ratelimit-tokens-limit",
+  );
+  const resetStr = firstString(
+    "anthropic-ratelimit-requests-reset",
+    "anthropic-ratelimit-tokens-reset",
+    "x-ratelimit-reset-requests",
+    "x-ratelimit-reset-tokens",
+    "x-ratelimit-requests-reset",
+    "x-ratelimit-tokens-reset",
+  );
   const retryAfter = parseIntOrNaN(get("retry-after"));
 
   // 利用率（取请求和 token 中较高的）

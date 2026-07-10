@@ -25,6 +25,13 @@ export interface ToolClassifyRequest {
   input: Record<string, unknown>;
   cwd: string;
   signal?: AbortSignal;
+  /**
+   * G7：工具自报的"精简语义视图"（来自 Tool.toAutoClassifierInput）。
+   * - 非空字符串：优先作为分类器输入（替代原始 input，降噪 + 聚焦风险片段）
+   * - 空字符串 ""：工具声明与安全无关，分类器直接判安全跳过 LLM
+   * - undefined：无自定义视图，分类器回退原始 input
+   */
+  classifierInput?: string;
 }
 
 /** 分类结果 */
@@ -98,6 +105,11 @@ export class ToolClassifier {
    * 返回 null 表示需要调 API
    */
   fastPath(req: ToolClassifyRequest): ToolClassifyResult | null {
+    // Level 0（G7）：工具通过 toAutoClassifierInput 返回空串，声明与安全无关 → 跳过 LLM
+    if (req.classifierInput === "") {
+      return { safe: true, risk: "none", reason: "工具声明无安全关联，跳过分类" };
+    }
+
     // Level 1: 只读工具 → 直接安全
     if (AUTO_ALLOW_TOOLS.has(req.toolName)) {
       return { safe: true, risk: "none", reason: "只读工具，无副作用" };
@@ -138,9 +150,11 @@ export class ToolClassifier {
         : abortCtl.signal;
 
       // 推理盲设计：只传 toolName + input + cwd，不传 description/recentContext
+      // G7：工具若提供精简语义视图（classifierInput 非空），优先用它替代原始 input——
+      // 降噪、聚焦风险片段，同时仍保持"推理盲"（不含模型自述的 description）。
       const userPrompt = JSON.stringify({
         tool: req.toolName,
-        input: req.input,
+        input: req.classifierInput ? req.classifierInput : req.input,
         cwd: req.cwd,
       });
 
