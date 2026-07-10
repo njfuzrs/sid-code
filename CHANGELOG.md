@@ -2,9 +2,17 @@
 
 本文件由 scripts/generate-changelog.ts 自动生成，请勿手改。
 
-## v0.1.583 (2026-07-10)
+## v0.1.584 (2026-07-10)
 
 ### 新功能
+- **changelog** · 富化 changelog 生成——commit body 细节 + 科技风 HTML 页面 `6ad242b`
+  - generate-changelog.ts 重写为「git 是唯一事实源，每次从 git 完整重建」， 产出 CHANGELOG.md（文本事实源）+ CHANGELOG.html（可直接点开的网页）两份
+  - 抓取 commit body 细节：subject 下挂 body 里的 bullet/编号列表作为子条目， 让用户看得懂每个版本到底改了什么，不再只是一句标题
+  - 过滤机器噪声：bump 记账 / Merge / eval dashboard 刷盘 / Co-Authored-By 尾注
+  - HTML 页面：分组徽章 + commit 细节可折叠 + 实时搜索过滤 + 侧栏版本导航， commit hash 链到 gitlab commit 页（从 origin remote 推导）
+  - HTML 采用明亮浅色主题（浅灰背景 + 白卡片 + 高对比文字），科技感但清晰易读
+  - release.sh 接线：MD + HTML 一并纳入发布产物、上传服务器顶层，完成提示给出双链接
+  - CLAUDE.md 发布铁律同步：bump 提交步骤补上 CHANGELOG.html
 - **command** · 实现 /export 斜杠命令——导出对话到剪贴板或文件 `6492665`
   - 新增 /export 命令（export/index.ts），支持 clipboard/file 目标与 md/json/both 格式
   - 新增 ExportDialog 对话框组件，提供目标/格式选择 UI
@@ -60,6 +68,23 @@
   - uploader.ts: getBaseUrl() 从字段区移到方法区
   - adapter.ts: toAppContext 补全 traceCollector 桥接（对称性）
   - config.ts: 深合并注释补充说明仅一层深
+
+## v0.1.583 (2026-07-09)
+
+### 修复
+- **test** · 修复 change-detector 测试写文件前的 fs.watch 武装时序竞态 `e976106`
+  - fs.watch(recursive) 依赖 FSEvents，watcher 建立后需要短暂时间才能就绪；
+  - 测试原先 watchDirs() 后立即 writeFileSync，若 watcher 未就绪则本次变更
+  - 事件被漏掉。全量测试负载下该竞态窗口命中率明显升高（Bun 1.3.11→1.3.14
+  - 升级后自测连续复现）。修复：写文件前先 sleep 50ms 等 watcher 就绪。
+
+### 其他
+- **eval,hooks** · 下线 case 生成脚本 + 移除 pre-push 的 bun test 门禁 `75d6ab9`
+  - 删除 evals/scripts/import-trajectory-platform.ts / scripts/eval/new-case.ts / scripts/eval/select-real-tasks-30.ts 三个 case 生成/导入脚本（不再需要）
+  - scanContamination/scanSecrets 抽到新增 scripts/eval/lib/security-scan.ts， 供 check-real-tasks-pollution.ts / scan-trajectory-secrets.ts 复用，避免连带 删除安全扫描能力
+  - pre-push hook 去掉 bun test 门禁段落，保留 holdout 泄露检测 + real-tasks 永封 校验 + dashboard 自动刷新提交
+  - 同步更新 evals/README.md / docs/eval/TODO.md / package.json 中对已删命令的引用
+  - 删除对应测试 tests/eval/import-trajectory-platform.test.ts
 
 ## v0.1.582 (2026-07-09)
 
