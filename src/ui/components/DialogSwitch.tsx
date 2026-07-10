@@ -27,6 +27,7 @@ import { SkillsDialog } from "./SkillsDialog.tsx";
 import { AgentsDialog } from "./AgentsDialog.tsx";
 import { CommandsDialog } from "./CommandsDialog.tsx";
 import { HelpDialog } from "./HelpDialog.tsx";
+import { ExportDialog } from "./ExportDialog.tsx";
 import type { OnboardingResult } from "./OnboardingDialog.tsx";
 import type {
   PermissionRequestInfo,
@@ -228,6 +229,14 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
   }
   if (activeDialog === "help" && callbacks.unifiedRegistry) {
     return <HelpDialog onClose={onDialogClose} registry={callbacks.unifiedRegistry} />;
+  }
+  if (activeDialog === "export" && callbacks.onExportConversation) {
+    return (
+      <ExportDialog
+        onClose={onDialogClose}
+        onExport={callbacks.onExportConversation}
+      />
+    );
   }
   return (
     <Composer

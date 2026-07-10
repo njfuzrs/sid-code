@@ -93,6 +93,8 @@ export interface TUICallbacks {
   unifiedRegistry?: import("../command/unified-registry.ts").UnifiedCommandRegistry;
   /** Shift+Tab 权限模式循环切换（切 config.permissionMode + 刷状态栏 + 瞬时提示） */
   onCyclePermissionMode?: () => void;
+  /** /export 面板选择后执行导出 */
+  onExportConversation?: (target: "clipboard" | "file", format: "md" | "json" | "both") => void;
 }
 
 /** 权限请求信息 */

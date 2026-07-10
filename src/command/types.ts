@@ -100,7 +100,8 @@ export type DialogType =
   | "skills"
   | "agents"
   | "commands"
-  | "help";
+  | "help"
+  | "export";
 
 /** 命令执行结果类型 */
 export type CommandResultKind =

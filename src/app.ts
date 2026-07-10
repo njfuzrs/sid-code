@@ -2316,6 +2316,30 @@ export class App {
   /** TUI 模式下的 Plan Mode 审批回调，返回 "approve" | "reject" */
   private tuiPlanApprovalCallback: ((planFilePath: string) => Promise<"approve" | "reject">) | null = null;
 
+  /** /export 面板执行导出（Dialog 回调） */
+  private exportConversation(target: "clipboard" | "file", format: "md" | "json" | "both"): void {
+    // 异步执行，不阻塞 Dialog 关闭
+    (async () => {
+      const { executeExport } = await import("./command/commands/export/export.ts");
+      const result = await executeExport(
+        { target, format },
+        {
+          ctxMgr: this.ctxMgr,
+          toolRegistry: this.toolRegistry,
+          config: this.config,
+          sessionId: this.sessionState.sessionId,
+          provider: this.provider,
+          sessionState: this.sessionState,
+          cwd: process.cwd(),
+        } as import("./command/types.ts").CommandContext,
+      );
+      // 将结果显示为命令输出
+      if (result.type === "text") {
+        this.tuiStateUpdater?.({ commandOutput: result.value });
+      }
+    })().catch(() => { /* 静默 */ });
+  }
+
   /** 设置 Plan Mode 审批回调（由 TUI 注入） */
   setPlanApprovalCallback(cb: (planFilePath: string) => Promise<"approve" | "reject">): void {
     this.tuiPlanApprovalCallback = cb;
@@ -4129,6 +4153,8 @@ export class App {
       unifiedRegistry: this.unifiedRegistry,
       // Shift+Tab 权限模式循环切换（复用 cyclePermissionMode 实例方法）
       onCyclePermissionMode: () => this.cyclePermissionMode(),
+      // /export 面板：导出对话到剪贴板或文件
+      onExportConversation: (target, format) => this.exportConversation(target, format),
     };
 
     // 恢复会话首屏渲染：restoreSession 仅把历史灌入 ctxMgr（LLM 上下文），
