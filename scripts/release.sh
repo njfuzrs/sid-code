@@ -23,9 +23,10 @@
 #   → git add vendor/ripgrep/<新版本>/ 提交入库（可选再用 --upload-ripgrep 同步一份到服务器作为团队备用源）。
 #
 # Changelog + Git Tag：bump 版本号之后、构建之前，脚本会自动
-#   ① 跑 scripts/generate-changelog.ts 从 git 历史生成 CHANGELOG.md（仓库根，累积追踪）
+#   ① 跑 scripts/generate-changelog.ts 从 git 历史生成 CHANGELOG.md（文本事实源，仓库根，
+#      累积追踪）+ CHANGELOG.html（科技风网页，可直接点开，含 commit body 细节/分组/搜索）
 #   ② 打 annotated tag vX.Y.Z 到当前 HEAD
-#   --upload 时额外把 CHANGELOG.md 传到服务器顶层、并在上传成功后 push tag。
+#   --upload 时额外把 CHANGELOG.md + CHANGELOG.html 传到服务器顶层、并在上传成功后 push tag。
 #   两者失败都不阻断发布（非致命 warn）；tag/changelog 幂等，--no-bump 复用版本安全。
 #
 # 版本号 bump 规则：release.sh 默认自增 patch 版本号一次。若你已经先跑过 make build
@@ -403,10 +404,13 @@ sed "s#121\.196\.144\.227#${DEPLOY_SSH_HOST}#g" \
 chmod +x "$RELEASE_DIR/install.sh"
 echo "$VERSION" > "$RELEASE_DIR/latest.txt"
 
-# 把仓库根 CHANGELOG.md 纳入发布产物（服务器顶层），让 file://$RELEASE_DIR 本地验证
-# 与真实上传走同一套相对路径逻辑。
+# 把仓库根 CHANGELOG.md + CHANGELOG.html 纳入发布产物（服务器顶层），让 file://$RELEASE_DIR
+# 本地验证与真实上传走同一套相对路径逻辑。MD 是文本事实源，HTML 是可直接点开的科技风页面。
 if [ -f "$ROOT/CHANGELOG.md" ]; then
     cp "$ROOT/CHANGELOG.md" "$RELEASE_DIR/CHANGELOG.md"
+fi
+if [ -f "$ROOT/CHANGELOG.html" ]; then
+    cp "$ROOT/CHANGELOG.html" "$RELEASE_DIR/CHANGELOG.html"
 fi
 
 echo "=== 发布产物（${RELEASE_DIR}）==="
@@ -433,10 +437,14 @@ if [ "$DO_UPLOAD" = true ]; then
 
     run_scp "$RELEASE_DIR/install.sh" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_PATH}/install.sh"
 
-    # 上传顶层 CHANGELOG.md（供用户通过链接查看版本变更）
+    # 上传顶层 CHANGELOG.md + CHANGELOG.html（供用户通过链接查看版本变更）
     if [ -f "$RELEASE_DIR/CHANGELOG.md" ]; then
         info "上传 CHANGELOG.md ..."
         run_scp "$RELEASE_DIR/CHANGELOG.md" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_PATH}/CHANGELOG.md"
+    fi
+    if [ -f "$RELEASE_DIR/CHANGELOG.html" ]; then
+        info "上传 CHANGELOG.html ..."
+        run_scp "$RELEASE_DIR/CHANGELOG.html" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_PATH}/CHANGELOG.html"
     fi
 
     # latest.txt 放最后：确保它指向的版本此时已经完整上传
@@ -469,7 +477,8 @@ done"
     ok "发布完成！安装命令："
     echo "    curl -fsSL http://${DEPLOY_SSH_HOST}/releases/sid-code/install.sh | bash"
     echo ""
-    echo "  📄 Changelog: http://${DEPLOY_SSH_HOST}/releases/sid-code/CHANGELOG.md"
+    echo "  📄 Changelog（网页）: http://${DEPLOY_SSH_HOST}/releases/sid-code/CHANGELOG.html"
+    echo "  📄 Changelog（文本）: http://${DEPLOY_SSH_HOST}/releases/sid-code/CHANGELOG.md"
 else
     echo ""
     echo "  提示：加 --upload 参数可上传到服务器（凭据读自 scripts/deploy.env）"

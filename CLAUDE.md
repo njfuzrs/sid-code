@@ -40,13 +40,13 @@ bun test && make rebuild
 git add <改动文件>
 git commit -m "feat: ..."
 
-# 3. 发布（release.sh 内部会 bump 版本号 + 生成 CHANGELOG.md + 打 tag vX.Y.Z
-#    + 重新生成 builtin-embedded.generated.ts，上传成功后推 tag 并传 CHANGELOG.md 到服务器顶层）
+# 3. 发布（release.sh 内部会 bump 版本号 + 生成 CHANGELOG.md/.html + 打 tag vX.Y.Z
+#    + 重新生成 builtin-embedded.generated.ts，上传成功后推 tag 并传 CHANGELOG.md/.html 到服务器顶层）
 #    不需要先跑 make build！
 ./scripts/release.sh --upload
 
-# 4. 补提交版本号变更 + changelog（CHANGELOG.md 由 release.sh 生成，必须一并提交）
-git add package.json src/skill/builtin-embedded.generated.ts CHANGELOG.md
+# 4. 补提交版本号变更 + changelog（CHANGELOG.md/.html 由 release.sh 生成，必须一并提交）
+git add package.json src/skill/builtin-embedded.generated.ts CHANGELOG.md CHANGELOG.html
 git commit -m "bump vX.Y.Z"
 
 # 5. 推送（tag 已在 release.sh 上传后推过；此处 git push 兜底补推本地 tag）
@@ -55,7 +55,7 @@ git push
 
 > `release.sh` 若首次失败已 bump 过版本号（如上传阶段报错），第二次用 `--no-bump --upload` 复用现有版本号，避免版本号 +2。tag 与 CHANGELOG.md 均幂等：`--no-bump` 复用同版本时 tag 已存在会跳过创建、changelog 同版本块原地替换，不会重复。
 >
-> **Changelog + Tag**：release.sh 在 bump 后自动从 git 历史（上个 semver tag → HEAD，按 feat/fix/… 分组）生成仓库根 `CHANGELOG.md`（累积追踪、不删除），并打 annotated tag `vX.Y.Z`。用户可通过 `http://<host>/releases/sid-code/CHANGELOG.md` 查看版本变更；install/update 完成提示里也会带这个链接。
+> **Changelog + Tag**：release.sh 在 bump 后自动从 git 历史（上个 semver tag → HEAD，按 feat/fix/… 分组）生成两份产物——`CHANGELOG.md`（文本事实源，累积追踪、不删除）+ `CHANGELOG.html`（科技风网页，可直接点开，含 commit body 细节展开/分组徽章/搜索过滤），并打 annotated tag `vX.Y.Z`。两份都是「git 历史的渲染视图」，每次运行从 git 完整重建（历史 tag 指向不可变提交 → 历史块稳定，只有正在发布的版本块每次变化，确定性且幂等）。用户可通过 `http://<host>/releases/sid-code/CHANGELOG.html`（网页，推荐）或 `.../CHANGELOG.md`（文本）查看版本变更。
 
 **上传凭据**：SSH 信息读自 `scripts/deploy.env`（不入库，见 `deploy.env.example` 模板）。
 配了 `DEPLOY_SSH_PASSWORD` 后用 sshpass 免交互上传，无需每次输密码。首次配置：
