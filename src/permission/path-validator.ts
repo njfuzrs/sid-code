@@ -381,4 +381,49 @@ export class PathValidator {
     return lower === this.workspacePathLower ||
       lower.startsWith(this.workspacePathLower + "/");
   }
+
+  // ── G25：运行时动态增删目录白名单（对标 claude-code /add-dir 扩展工作目录）──
+  //
+  // 构造时 allowedDirectories 一次性归一化后固定，无运行时入口。下列方法让 /add-dir
+  // 这类"用户主动交互授权"能在会话内扩展白名单。归一化口径与构造函数完全一致
+  // （path.resolve → realpathSync，失败回退 resolve），确保与 validateAccess 的
+  // startsWith 比较一致；去重防重复 push。
+
+  /** 归一化单个目录路径（与构造函数口径一致） */
+  private normalizeDir(dir: string): string {
+    const r = path.resolve(dir);
+    try {
+      return fs.existsSync(r) ? fs.realpathSync(r) : r;
+    } catch {
+      return r;
+    }
+  }
+
+  /**
+   * 运行时新增一个允许访问的目录（去重）。
+   * 归一化后若已在白名单则不重复添加。
+   */
+  addAllowedDirectory(dir: string): void {
+    const normalized = this.normalizeDir(dir);
+    if (!this.allowedDirectories.includes(normalized)) {
+      this.allowedDirectories.push(normalized);
+    }
+  }
+
+  /**
+   * 运行时移除一个允许访问的目录。
+   * @returns 是否命中并移除（未找到返回 false）
+   */
+  removeAllowedDirectory(dir: string): boolean {
+    const normalized = this.normalizeDir(dir);
+    const idx = this.allowedDirectories.indexOf(normalized);
+    if (idx === -1) return false;
+    this.allowedDirectories.splice(idx, 1);
+    return true;
+  }
+
+  /** 获取当前允许目录白名单（返回副本，防外部篡改内部数组） */
+  getAllowedDirectories(): string[] {
+    return [...this.allowedDirectories];
+  }
 }

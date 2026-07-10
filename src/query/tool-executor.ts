@@ -30,22 +30,46 @@ const MAX_TOOL_CONCURRENCY = (() => {
   return Number.isFinite(n) && n > 0 ? n : 10;
 })();
 
+/** withConcurrencyLimit 可选行为钩子 */
+interface ConcurrencyLimitOptions {
+  /** 某个任务 reject 时回调（在结果写入 results 之后触发） */
+  onReject?: (reason: unknown, idx: number) => void;
+  /**
+   * 某任务 reject 后是否停止启动"尚未开始"的队列任务。
+   * 用于 G20 sibling-abort：一旦检测到中断，不再消费剩余队列（已在跑的由共享信号取消）。
+   */
+  stopOnReject?: (reason: unknown) => boolean;
+}
+
 /** 信号量：限流并发工具执行 */
 async function withConcurrencyLimit<T>(
   tasks: Array<() => Promise<T>>,
   limit: number,
+  opts?: ConcurrencyLimitOptions,
 ): Promise<PromiseSettledResult<T>[]> {
   const results: PromiseSettledResult<T>[] = new Array(tasks.length);
   let nextIdx = 0;
+  let stopped = false;
 
   async function runNext(): Promise<void> {
     while (nextIdx < tasks.length) {
       const idx = nextIdx++;
+      // G20：已触发 sibling-abort 时，跳过尚未启动的队列任务（占位为 rejected，
+      // 由上层协议兜底补齐 tool_result；若停止原因是 abort，上层会先向上抛不会用到占位）。
+      if (stopped) {
+        results[idx] = {
+          status: "rejected",
+          reason: new Error("sibling-abort: 兄弟工具已中断，跳过未启动的并发任务"),
+        };
+        continue;
+      }
       try {
         const value = await tasks[idx]();
         results[idx] = { status: "fulfilled", value };
       } catch (reason: any) {
         results[idx] = { status: "rejected", reason };
+        opts?.onReject?.(reason, idx);
+        if (opts?.stopOnReject?.(reason)) stopped = true;
       }
     }
   }
@@ -57,6 +81,30 @@ async function withConcurrencyLimit<T>(
   );
   await Promise.all(workers);
   return results;
+}
+
+/**
+ * 创建一个"子 AbortController"，链接到父信号：
+ * - 父信号已 abort → 子立即 abort（透传 reason）
+ * - 父信号后续 abort → 子跟随 abort
+ * 子控制器可被 sibling-abort 独立触发（不影响父信号）。
+ * 返回 dispose 用于解绑监听，避免长生命周期父信号累积监听器泄漏。
+ */
+function createLinkedAbortController(
+  parent: AbortSignal | undefined,
+): { controller: AbortController; dispose: () => void } {
+  const controller = new AbortController();
+  if (!parent) return { controller, dispose: () => {} };
+  if (parent.aborted) {
+    controller.abort((parent as any).reason);
+    return { controller, dispose: () => {} };
+  }
+  const onParentAbort = () => controller.abort((parent as any).reason);
+  parent.addEventListener("abort", onParentAbort, { once: true });
+  return {
+    controller,
+    dispose: () => parent.removeEventListener("abort", onParentAbort),
+  };
 }
 
 /**
@@ -265,11 +313,15 @@ export async function executeTools(
           }
           log.info("PERMISSION", `权限批准(${result.source}): ${block.name}`);
         } else {
-          log.warn("PERMISSION", `权限拒绝: ${block.name} - ${decision.reason}`);
+          // G15：用 explainDecision 产出结构化中文解释（命中哪条规则/哪个模式/哪个来源），
+          // 让模型收到的拒绝反馈更明确，减少反复撞同一堵墙。无 decisionReason 时回退到 reason 文本。
+          const { explainDecision } = await import("../permission/explainer.ts");
+          const explanation = explainDecision(decision);
+          log.warn("PERMISSION", `权限拒绝: ${block.name} - ${explanation}`);
           rejectedResults.set(idx, {
             type: "tool_result",
             tool_use_id: block.id,
-            content: `权限拒绝: ${decision.reason}`,
+            content: `权限拒绝: ${explanation}`,
             is_error: true,
           });
           continue;
@@ -308,35 +360,57 @@ export async function executeTools(
     if (concurrent.length > MAX_TOOL_CONCURRENCY) {
       log.debug("TOOL", `并行工具 ${concurrent.length} 个超过并发上限 ${MAX_TOOL_CONCURRENCY}，超出部分排队`);
     }
-    const readResults = await withConcurrencyLimit(
-      concurrent.map(({ block, tool, idx }) =>
-        () => executeSingleTool(block, tool, deps).then(r => ({ idx, result: r }))
-      ),
-      MAX_TOOL_CONCURRENCY,
-    );
-    // abort 优先：任一工具被取消，立即向上抛（由 loop.ts catch 兜底补齐）
-    for (const r of readResults) {
-      if (r.status === "rejected" && isAbortError(r.reason)) {
-        throw r.reason;
+    // G20 sibling-abort：为这一批并发工具建一个链接到父信号的子 AbortController。
+    // 任一兄弟工具被取消（用户 ESC / 上游 abort）时，主动 abort 子信号，
+    // 让其余仍在跑的兄弟工具立即收到取消而非白跑到底（浪费时间/产生多余副作用）。
+    // 子信号独立于父信号：sibling-abort 触发时不反向 abort 父信号。
+    const { controller: siblingController, dispose: disposeSibling } =
+      createLinkedAbortController(deps.getAbortSignal());
+    try {
+      const readResults = await withConcurrencyLimit(
+        concurrent.map(({ block, tool, idx }) =>
+          () => executeSingleTool(block, tool, deps, siblingController.signal).then(r => ({ idx, result: r }))
+        ),
+        MAX_TOOL_CONCURRENCY,
+        {
+          // 某个兄弟工具因 abort 结束 → 立即取消其余在跑的兄弟 + 停止启动未开始的队列任务。
+          stopOnReject: (reason) => {
+            if (isAbortError(reason) && !siblingController.signal.aborted) {
+              log.info("TOOL", "并发工具中断：联动取消其余兄弟工具（sibling-abort）");
+              siblingController.abort((reason as any)?.reason ?? reason);
+              return true;
+            }
+            return false;
+          },
+        },
+      );
+      // abort 优先：任一工具被取消，立即向上抛（由 loop.ts catch 兜底补齐）
+      for (const r of readResults) {
+        if (r.status === "rejected" && isAbortError(r.reason)) {
+          throw r.reason;
+        }
       }
-    }
-    for (let i = 0; i < readResults.length; i++) {
-      const r = readResults[i];
-      if (r.status === "fulfilled") {
-        resultMap.set(r.value.idx, r.value.result);
-      } else {
-        // 非 abort 的 rejected（如 hook 异常）：executeSingleTool 的 catch 理论上会
-        // 返回 error tool_result，走不到这里；但若异常发生在 catch 之外（pre hook 等），
-        // Promise 会 rejected。此处把它转成 error tool_result，避免孤儿 tool_use。
-        const { block, idx } = concurrent[i];
-        log.error("TOOL", `并行工具 ${block.name} 异常未被内部捕获: ${r.reason?.message ?? r.reason}`);
-        resultMap.set(idx, {
-          type: "tool_result",
-          tool_use_id: block.id,
-          content: `工具执行异常: ${r.reason?.message ?? String(r.reason)}`,
-          is_error: true,
-        });
+      for (let i = 0; i < readResults.length; i++) {
+        const r = readResults[i];
+        if (r.status === "fulfilled") {
+          resultMap.set(r.value.idx, r.value.result);
+        } else {
+          // 非 abort 的 rejected（如 hook 异常）：executeSingleTool 的 catch 理论上会
+          // 返回 error tool_result，走不到这里；但若异常发生在 catch 之外（pre hook 等），
+          // Promise 会 rejected。此处把它转成 error tool_result，避免孤儿 tool_use。
+          const { block, idx } = concurrent[i];
+          log.error("TOOL", `并行工具 ${block.name} 异常未被内部捕获: ${r.reason?.message ?? r.reason}`);
+          resultMap.set(idx, {
+            type: "tool_result",
+            tool_use_id: block.id,
+            content: `工具执行异常: ${r.reason?.message ?? String(r.reason)}`,
+            is_error: true,
+          });
+        }
       }
+    } finally {
+      // 解绑父信号监听，避免长生命周期父信号累积监听器泄漏
+      disposeSibling();
     }
   }
 
@@ -398,11 +472,16 @@ export async function executeTools(
   return { results, followup };
 }
 
-/** 执行单个工具 */
+/** 执行单个工具
+ *
+ * signalOverride：G20 sibling-abort 场景下，并发工具使用链接到父信号的子信号，
+ * 以便某个兄弟工具被取消时联动取消其余在跑的兄弟。未传则回退 deps.getAbortSignal()。
+ */
 export async function executeSingleTool(
   block: ToolUseBlock,
   tool: Tool,
   deps: ToolExecutorDeps,
+  signalOverride?: AbortSignal,
 ): Promise<ContentBlock> {
   const log = getLogger();
 
@@ -464,7 +543,7 @@ export async function executeSingleTool(
     const progressCallback = deps.onToolProgress
       ? (event: import("../tool/types.ts").ToolProgressData) => deps.onToolProgress!(block.name, block.id, event)
       : undefined;
-    const result = await tool.execute(effectiveInput, deps.getAbortSignal(), progressCallback);
+    const result = await tool.execute(effectiveInput, signalOverride ?? deps.getAbortSignal(), progressCallback);
     const elapsed = Date.now() - startTime;
 
     deps.sessionState.addToolDuration(elapsed);

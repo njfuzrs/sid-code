@@ -54,4 +54,22 @@ describe("detectDangerousSed", () => {
     const r = detectDangerousSed("echo hello world");
     expect(r.dangerous).toBe(false);
   });
+
+  // 误报边界：替换内容含 e/w 字母、以 e/w 开头的词、其他分隔符——都不应误判为危险
+  test.each([
+    "sed 's/exit/quit/g' file.txt",
+    "sed 's/error/warning/g' log.txt",
+    "sed -i 's/enable/disable/g' cfg",
+    "sed 's/world/web/g' f",
+    "sed -n '1,5p' file.txt",
+    "sed 's|old|new|g' file",
+    "echo 'sed test' && ls",
+    "grep sed file.txt",
+  ])("普通/含 e·w 字母的 sed 不误报: %s", (cmd) => {
+    expect(detectDangerousSed(cmd).dangerous).toBe(false);
+  });
+
+  test("s///ge 组合标志仍识别为危险", () => {
+    expect(detectDangerousSed("sed 's/a/b/ge' f").dangerous).toBe(true);
+  });
 });

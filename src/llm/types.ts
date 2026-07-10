@@ -22,6 +22,23 @@ export interface ToolUseBlock {
   input: unknown;
 }
 
+/**
+ * G6：工具结果的富媒体块（图片 / PDF 文档）。
+ *
+ * 设计为**附加字段**而非改 content 类型：content 仍是 string（UI 渲染、大输出压缩、
+ * 磁盘存储全部沿用文本摘要不变），mediaBlocks 独立携带 base64 媒体，仅支持 vision 的
+ * provider（当前 Anthropic）在序列化 tool_result 时读取并拼成多部件 content。
+ * 不支持 vision 的 provider 忽略此字段、只发 content 文本（优雅降级）。
+ */
+export interface ToolResultMediaBlock {
+  /** image = 图片（base64），document = PDF 等文档（base64） */
+  kind: "image" | "document";
+  /** MIME 媒体类型，如 image/png、application/pdf */
+  mediaType: string;
+  /** base64 编码的原始数据（不含 data: 前缀） */
+  data: string;
+}
+
 /** 工具结果块 */
 export interface ToolResultBlock {
   type: "tool_result";
@@ -36,6 +53,12 @@ export interface ToolResultBlock {
    *   保留其余字段,故大文件 diff 在 UI 仍可完整高亮。
    */
   structuredPatch?: StructuredPatchHunk[];
+  /**
+   * G6：富媒体块（图片/PDF）。仅 Read 工具读图片/PDF 时填充。
+   * 支持 vision 的 provider 序列化时把它拼进 tool_result 的多部件 content；
+   * 其余 provider 忽略。不进磁盘压缩（压缩只替换 content 文本）。
+   */
+  mediaBlocks?: ToolResultMediaBlock[];
 }
 
 /** 思考块（对标 Claude Code ThinkingBlock） */

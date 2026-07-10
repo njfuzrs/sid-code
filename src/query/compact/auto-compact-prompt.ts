@@ -258,3 +258,62 @@ export function getCompactUserSummaryMessage(
 
   return base;
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// G22：部分压缩（partial-compact / compact-up-to）专用 prompt
+//
+// 与全量摘要的区别：全量摘要假设"整段对话都被压缩、其后只有保留的最近几条"；
+// 部分压缩只压缩对话的**前半段**，被压缩段之后**还有完整的原文后半段**继续。
+// 因此摘要要为"后续原文延续"服务，而不是替代整段对话——不能给"下一步"结论
+// （下一步在保留的原文里），重点是把前半段的**背景、决策、文件、纠正**沉淀下来，
+// 让模型读到保留的后半段原文时不缺前情。
+// ────────────────────────────────────────────────────────────────────────────
+
+/** 部分压缩系统提示词：强调这是"前半段"的背景摘要，后半段原文仍在 */
+export const PARTIAL_COMPACT_SYSTEM_PROMPT =
+  "你是一个专业的对话摘要助手。你收到的是一段较长对话的**前半段**——它之后还保留着完整的对话后半段原文。" +
+  "你的任务是把前半段沉淀成一份背景摘要，让读者在直接阅读后半段原文时不缺任何前情。" +
+  "重点保留：用户意图与约束、已做决策、涉及的关键文件与代码片段、用户的纠正。" +
+  "不要给出'下一步该做什么'的结论（后续动作在保留的原文里）。仅输出纯文本，不要调用任何工具。";
+
+/** 部分压缩摘要要求（比全量摘要精简：无"当前工作/下一步"段，因为那些在保留的原文里） */
+const PARTIAL_COMPACT_PROMPT = `你的任务是：为下面这段对话的**前半段**生成一份背景摘要。这段之后还保留着完整的对话后半段原文，你的摘要只是为了让读者读后半段时不缺前情，不能替代后半段。
+
+请在 <summary> 块中按以下固定段落输出（无需 <analysis> 草稿）：
+
+<summary>
+1. 主要请求与意图 (Primary Request and Intent)
+   完整记录用户在这段内表达的核心请求、目标和约束。
+
+2. 关键技术概念与决策 (Key Technical Concepts & Decisions)
+   列出涉及的关键技术、框架、库，以及已经拍板的架构/实现决策。
+
+3. 文件与代码段 (Files and Code Sections)
+   枚举这段内检查、修改或创建过的具体文件及关键代码段，说明其重要性。
+
+4. 错误与用户纠正 (Errors and User Corrections)
+   记录遇到的错误及修复方式，以及用户明确的反馈与纠正（"不要这样做"必须保留）。
+
+5. 未决事项 (Open Threads)
+   这段结束时仍悬而未决、可能在后半段被继续处理的事项。
+</summary>
+
+输出要求：
+- 只输出一个 <summary> 块，包含上述 5 个编号段落，即使某段无内容也写"（无）"。
+- 使用中文，高信号密度，不要客套话，不要推断"下一步"。`;
+
+/**
+ * 组装"部分压缩"用户 prompt（指令 + 前半段对话内容）。
+ * 复用 renderMessageForSummary 的差异化截断策略。
+ * @param messages 待压缩的前半段消息
+ * @param customInstructions 可选自定义指令
+ */
+export function buildPartialCompactUserPrompt(messages: Message[], customInstructions?: string): string {
+  let instruction = PARTIAL_COMPACT_PROMPT;
+  if (customInstructions && customInstructions.trim() !== "") {
+    instruction += `\n\n额外指令:\n${customInstructions.trim()}`;
+  }
+  instruction += `\n\n提醒：请只用纯文本回复一个 <summary> 块，不要调用任何工具。`;
+  const transcript = messages.map(renderMessageForSummary).join("\n\n");
+  return `${instruction}\n\n--- 以下是需要摘要的对话前半段 ---\n\n${transcript}`;
+}

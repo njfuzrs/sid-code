@@ -694,6 +694,11 @@ export async function main(): Promise<void> {
     const { AskUserQuestionTool } = await import("./tool/ask-user-question.ts");
     toolRegistry.register(new AskUserQuestionTool());
 
+    // G11：注册 NotebookEdit 工具（cell 级 .ipynb 编辑，与 Read 的 notebook 支持配套）。
+    // shouldDefer，由 tool_search 按需调出——多数会话不涉及 notebook。
+    const { NotebookEditTool } = await import("./tool/notebook-edit.ts");
+    toolRegistry.register(new NotebookEditTool());
+
     // 注册假设登记表工具（环节③：把"怀疑自己的假设"从模型自律外化为 harness 机制）。
     // register 工具持有 ledger，challenge 工具复用同一实例；turnProvider 暂用占位（轮次仅用于
     // 证据追溯，非关键路径）。queryLoop 经 deps.getHypothesisLedger 读取做矛盾中断 + 交付门禁。

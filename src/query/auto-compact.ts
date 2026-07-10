@@ -15,6 +15,12 @@ import { AutoCompactCircuitBreaker } from "./circuit-breaker.ts";
 import { recordSideCall } from "../trace/side-call-sink.ts";
 import { withSideCallDeadline } from "../llm/side-call-timeout.ts";
 import { createStreamLifecycle, LIFECYCLE_PRESETS } from "../llm/stream-lifecycle.ts";
+import { isPromptTooLongError } from "./reactive-compact.ts";
+
+/** G17：摘要请求 PTL 截头重试的最大次数（每次截掉更多最早消息，达到上限后降级简单截断） */
+const MAX_PTL_RETRIES = 4;
+/** G17：截头重试时待摘要消息的最少保留条数（低于此值不再截，直接降级），保证不死循环 */
+const PTL_RETRY_MIN_KEEP = 4;
 
 /** 全局熔断器实例（跨调用共享状态） */
 let globalCircuitBreaker: AutoCompactCircuitBreaker | null = null;
@@ -179,12 +185,9 @@ async function doAutoCompact(
     const toSummarize = summarizeBase.slice(0, -PRESERVE_RECENT);
 
     const {
-      COMPACT_SYSTEM_PROMPT,
       buildCompactUserPrompt,
       getCompactUserSummaryMessage,
     } = await import("./compact/auto-compact-prompt.ts");
-
-    const summaryPrompt = buildCompactUserPrompt(toSummarize);
 
     // T3.1/T3.2：给整个"建流 + 流消费"套 60s 硬超时（Promise.race，不依赖 signal 传播）。
     // 摘要不应超过 1 分钟；超时后走下方 catch → recordFailure + 降级为简单截断。
@@ -193,55 +196,35 @@ async function doAutoCompact(
     // 配置-4：走 network-profile 的 side-call 子表统一解析（env override > 默认 60s）
     const COMPACT_TIMEOUT_MS = resolveSideCallTimeouts().compactMs;
 
+    // G17：摘要请求本身 PTL 截头重试。
+    // 待摘要历史可能大到连"摘要请求"这一个 user 消息都超上限（prompt-too-long）。
+    // 对标 claude-code truncateHeadForPTLRetry：逐轮截掉最早的消息后重试摘要请求，
+    // 而不是一步跌到有损的简单截断。全部重试都失败才降级到 catch 里的简单截断兜底。
     let summary = "";
     let streamUsage: any = null;
-    ({ summary, streamUsage } = await withSideCallDeadline(
-      "auto-compact",
-      COMPACT_TIMEOUT_MS,
-      async (signal) => {
-        const stream = deps.provider.sendMessageStream(
-          {
-            // §12.3：摘要走低成本模型（未指定则跟主模型）
-            model: deps.compactModel || deps.config.model,
-            messages: [{ role: "user", content: [{ type: "text", text: summaryPrompt }] }],
-            system: COMPACT_SYSTEM_PROMPT,
-            maxTokens: 4000,
-            // §3.1：携带主对话工具定义（命中已缓存前缀）；toolChoice=none 禁止摘要时调用工具
-            ...(deps.toolSchemas && deps.toolSchemas.length > 0
-              ? { tools: deps.toolSchemas, toolChoice: "none" as const }
-              : {}),
-          },
-          signal,
-        );
-        let s = "";
-        let usage: any = null;
-        // T7：给 side-call 流消费叠加 StreamLifecycle（sideCall preset：idle 30s / content 60s /
-        // overall 60s），在 withSideCallDeadline 的 60s 硬 deadline 之内提供更细粒度的 stall 检测。
-        // 超时触发时 abort 合并 signal → 下方 signal.aborted 检查退出（不依赖底层 reader settle）。
-        const lifecycle = createStreamLifecycle({
-          idleTimeoutMs: LIFECYCLE_PRESETS.sideCall.idleTimeoutMs,
-          contentProgressTimeoutMs: LIFECYCLE_PRESETS.sideCall.contentProgressTimeoutMs,
-          overallTimeoutMs: LIFECYCLE_PRESETS.sideCall.overallTimeoutMs,
-          isContentProgress: (e: any) =>
-            e?.type === "content_block_delta" || e?.type === "message_delta",
-          label: "SIDE-CALL:auto-compact",
-          signal,
-        });
-        for await (const event of lifecycle.guard(stream)) {
-          // A6 纵深防御：压缩 side-call 检查 signal，防止主循环 abort 后压缩仍挂起
-          if (signal.aborted) {
-            throw new Error("Request aborted");
-          }
-          if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
-            s += event.delta.text;
-          } else if (event.type === "message_stop" && (event as any).usage) {
-            usage = (event as any).usage;
-          }
+    let ptlSummarizeBase = toSummarize;
+    for (let ptlAttempt = 0; ; ptlAttempt++) {
+      const summaryPrompt = buildCompactUserPrompt(ptlSummarizeBase);
+      try {
+        ({ summary, streamUsage } = await runSummaryRequest(deps, summaryPrompt, COMPACT_TIMEOUT_MS));
+        break; // 成功（含空摘要，交由下方判定）
+      } catch (err: any) {
+        // 仅对 PTL 错误做截头重试；其它错误（超时/网络/abort）直接上抛给外层 catch 降级
+        if (!isPromptTooLongError(err) || ptlAttempt >= MAX_PTL_RETRIES) {
+          throw err;
         }
-        return { summary: s, streamUsage: usage };
-      },
-      deps.getAbortSignal(),
-    ));
+        const truncated = truncateHeadForPTLRetry(ptlSummarizeBase, ptlAttempt);
+        if (!truncated || truncated.length >= ptlSummarizeBase.length) {
+          // 无法再截（已到最小保留 / 找不到更靠后的安全边界）→ 上抛降级，避免死循环
+          throw err;
+        }
+        log.warn(
+          "COMPACT",
+          `摘要请求 prompt-too-long，截头重试 #${ptlAttempt + 1}：待摘要 ${ptlSummarizeBase.length} → ${truncated.length} 条`,
+        );
+        ptlSummarizeBase = truncated;
+      }
+    }
 
     // 记录辅助调用用量
     if (streamUsage) {
@@ -299,6 +282,109 @@ async function doAutoCompact(
   log.info("COMPACT", `简单截断完成，剩余 ${deps.ctxMgr.messageCount()} 条消息`);
   await postCompactReattachAndNotify(deps, messages, simpleSummary, messagesBefore, tokensBefore, false);
   return "truncated";
+}
+
+/**
+ * G17：发出一次摘要 LLM 请求（建流 + 流消费 + 超时守护）。
+ * 从 doAutoCompact 内联提取，便于 PTL 截头重试循环复用。
+ * 抛出的错误由调用方分类：PTL → 截头重试；其它 → 降级简单截断。
+ */
+async function runSummaryRequest(
+  deps: AutoCompactDeps,
+  summaryPrompt: string,
+  timeoutMs: number,
+): Promise<{ summary: string; streamUsage: any }> {
+  const { COMPACT_SYSTEM_PROMPT } = await import("./compact/auto-compact-prompt.ts");
+  return withSideCallDeadline(
+    "auto-compact",
+    timeoutMs,
+    async (signal) => {
+      const stream = deps.provider.sendMessageStream(
+        {
+          // §12.3：摘要走低成本模型（未指定则跟主模型）
+          model: deps.compactModel || deps.config.model,
+          messages: [{ role: "user", content: [{ type: "text", text: summaryPrompt }] }],
+          system: COMPACT_SYSTEM_PROMPT,
+          maxTokens: 4000,
+          // §3.1：携带主对话工具定义（命中已缓存前缀）；toolChoice=none 禁止摘要时调用工具
+          ...(deps.toolSchemas && deps.toolSchemas.length > 0
+            ? { tools: deps.toolSchemas, toolChoice: "none" as const }
+            : {}),
+        },
+        signal,
+      );
+      let s = "";
+      let usage: any = null;
+      // T7：给 side-call 流消费叠加 StreamLifecycle（sideCall preset：idle 30s / content 60s /
+      // overall 60s），在 withSideCallDeadline 的 60s 硬 deadline 之内提供更细粒度的 stall 检测。
+      // 超时触发时 abort 合并 signal → 下方 signal.aborted 检查退出（不依赖底层 reader settle）。
+      const lifecycle = createStreamLifecycle({
+        idleTimeoutMs: LIFECYCLE_PRESETS.sideCall.idleTimeoutMs,
+        contentProgressTimeoutMs: LIFECYCLE_PRESETS.sideCall.contentProgressTimeoutMs,
+        overallTimeoutMs: LIFECYCLE_PRESETS.sideCall.overallTimeoutMs,
+        isContentProgress: (e: any) =>
+          e?.type === "content_block_delta" || e?.type === "message_delta",
+        label: "SIDE-CALL:auto-compact",
+        signal,
+      });
+      for await (const event of lifecycle.guard(stream)) {
+        // A6 纵深防御：压缩 side-call 检查 signal，防止主循环 abort 后压缩仍挂起
+        if (signal.aborted) {
+          throw new Error("Request aborted");
+        }
+        if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+          s += event.delta.text;
+        } else if (event.type === "message_stop" && (event as any).usage) {
+          usage = (event as any).usage;
+        }
+      }
+      return { summary: s, streamUsage: usage };
+    },
+    deps.getAbortSignal(),
+  );
+}
+
+/**
+ * G17：为 PTL 截头重试截掉待摘要历史里最早的消息。
+ *
+ * 策略：按重试轮次递增截掉比例（第 1 次砍 ~25%、第 2 次 ~40% …），
+ * 且截断点对齐到"安全边界"（user 消息且不含 tool_result），避免把 tool_use/tool_result
+ * 配对切碎——虽然这里是给"摘要请求"用（其本身只有一个 user 消息，不会触发 400），
+ * 但对齐轮次边界能让保留下来的片段语义更完整（不从半个工具往返开始）。
+ *
+ * 返回截断后的消息；若无法再截（已到最小保留 / 找不到更靠后的安全边界）返回 null。
+ */
+function truncateHeadForPTLRetry(messages: Message[], attempt: number): Message[] | null {
+  if (messages.length <= PTL_RETRY_MIN_KEEP) return null;
+
+  // 递增砍头比例：0.25 / 0.40 / 0.55 / 0.70 …（每轮多砍 15%，封顶 0.85）
+  const dropRatio = Math.min(0.85, 0.25 + attempt * 0.15);
+  let dropTarget = Math.floor(messages.length * dropRatio);
+  // 至少砍 1 条，保证有进展
+  if (dropTarget < 1) dropTarget = 1;
+
+  // 从 dropTarget 起向后找第一个安全边界（user 消息、无 tool_result、非内部注入消息），
+  // 让保留段从一个干净的轮次开头开始。
+  let start = -1;
+  for (let i = dropTarget; i < messages.length; i++) {
+    const msg = messages[i];
+    if (!msg || !Array.isArray(msg.content)) continue;
+    const hasToolResult = msg.content.some((b) => b.type === "tool_result");
+    if (msg.role === "user" && !hasToolResult && !msg._meta?.origin) {
+      start = i;
+      break;
+    }
+  }
+  // 找不到更靠后的安全边界 → 退回按条数硬切（发给摘要请求的单 user 消息不受配对约束）
+  if (start === -1) start = dropTarget;
+
+  // 保证最少保留
+  if (messages.length - start < PTL_RETRY_MIN_KEEP) {
+    start = messages.length - PTL_RETRY_MIN_KEEP;
+  }
+  if (start <= 0) return null;
+
+  return messages.slice(start);
 }
 
 /**

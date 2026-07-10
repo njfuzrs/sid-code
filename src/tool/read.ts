@@ -90,6 +90,109 @@ function hasBinaryExtension(filePath: string): boolean {
 }
 
 /**
+ * G6：图片扩展名集合。这些文件此前被当二进制拒读，现改为以 vision 内容块返回，
+ * 让支持视觉的模型能直接看图（截图、图表、UI 稿等）。
+ */
+const IMAGE_EXTENSIONS = new Set([
+  ".png", ".jpg", ".jpeg", ".gif", ".webp",
+]);
+
+/** 图片扩展名 → MIME 媒体类型 */
+const IMAGE_MEDIA_TYPES: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+};
+
+/**
+ * G6：图片 base64 编码后的体积上限（约 3.75 MB 原始 → ~5MB base64）。
+ * 对标 Anthropic API 单图 5MB 限制，超过则拒绝（提示用户压缩）。
+ */
+const MAX_IMAGE_BYTES = 3.75 * 1024 * 1024;
+
+function isImageExtension(filePath: string): boolean {
+  return IMAGE_EXTENSIONS.has(extname(filePath).toLowerCase());
+}
+
+function isPdfExtension(filePath: string): boolean {
+  return extname(filePath).toLowerCase() === ".pdf";
+}
+
+function isNotebookExtension(filePath: string): boolean {
+  return extname(filePath).toLowerCase() === ".ipynb";
+}
+
+/**
+ * G6：把 Jupyter Notebook（.ipynb）渲染为带 cell id 的文本视图。
+ *
+ * 输出格式对齐 NotebookEdit 工具的定位约定（<cell id="..."> ... </cell>），
+ * 让模型读完就能直接用 notebook_edit 按 id 编辑。code cell 附带输出（stdout/
+ * 文本结果/错误），图片类输出以占位标注（不内联 base64，避免撑爆上下文）。
+ */
+function renderNotebook(raw: string): string {
+  let nb: any;
+  try {
+    nb = JSON.parse(raw);
+  } catch (err: any) {
+    return `[错误: notebook JSON 解析失败: ${err.message}]`;
+  }
+  if (!Array.isArray(nb.cells)) {
+    return "[错误: notebook 格式无效（缺少 cells 数组）]";
+  }
+
+  const joinSource = (source: unknown): string => {
+    if (Array.isArray(source)) return source.join("");
+    if (typeof source === "string") return source;
+    return "";
+  };
+
+  const parts: string[] = [];
+  const lang = nb.metadata?.kernelspec?.language || nb.metadata?.language_info?.name || "";
+  parts.push(`[Jupyter Notebook: ${nb.cells.length} cells${lang ? `, kernel=${lang}` : ""}]`);
+
+  nb.cells.forEach((cell: any, idx: number) => {
+    const id = cell.id || cell.metadata?.id || String(idx);
+    const type = cell.cell_type || "unknown";
+    const src = joinSource(cell.source);
+    parts.push(`\n<cell id="${id}" type="${type}">`);
+    parts.push(src || "(空)");
+
+    // code cell 的输出
+    if (type === "code" && Array.isArray(cell.outputs) && cell.outputs.length > 0) {
+      const outLines: string[] = [];
+      for (const out of cell.outputs) {
+        switch (out.output_type) {
+          case "stream":
+            outLines.push(joinSource(out.text));
+            break;
+          case "execute_result":
+          case "display_data": {
+            const textData = out.data?.["text/plain"];
+            if (textData) outLines.push(joinSource(textData));
+            // 图片输出：仅标注，不内联 base64
+            if (out.data?.["image/png"] || out.data?.["image/jpeg"]) {
+              outLines.push("[图片输出，已省略 base64]");
+            }
+            break;
+          }
+          case "error":
+            outLines.push(`[错误: ${out.ename}: ${out.evalue}]`);
+            break;
+        }
+      }
+      if (outLines.length > 0) {
+        parts.push(`--- 输出 ---\n${outLines.join("\n")}`);
+      }
+    }
+    parts.push(`</cell>`);
+  });
+
+  return parts.join("\n");
+}
+
+/**
  * 检查缓冲区是否包含二进制内容（null 字节或高比例不可打印字符）
  * 仅检查前 8192 字节
  */

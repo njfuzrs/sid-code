@@ -270,6 +270,26 @@ export class PermissionChecker implements Checker {
     return this.ruleLoader;
   }
 
+  // ── G25：运行时目录白名单增删（转发到内部 pathValidator）──
+  // 对标 claude-code /add-dir。用户主动交互（斜杠命令）扩展当前会话可访问目录，
+  // 属"用户级授权"，与"项目配置自动扩大白名单"（security.ts:39 禁止）性质不同——
+  // 前者是用户显式操作、仅本会话生效，后者是不可信配置自动放大，故此处可做。
+
+  /** 运行时新增允许访问的目录（当前会话生效，去重） */
+  addAllowedDirectory(dir: string): void {
+    this.pathValidator.addAllowedDirectory(dir);
+  }
+
+  /** 运行时移除允许访问的目录，返回是否命中并移除 */
+  removeAllowedDirectory(dir: string): boolean {
+    return this.pathValidator.removeAllowedDirectory(dir);
+  }
+
+  /** 获取当前允许目录白名单（副本） */
+  getAllowedDirectories(): string[] {
+    return this.pathValidator.getAllowedDirectories();
+  }
+
   /** 获取配置（只读，供子代理 checker 工厂复制配置） */
   getConfig(): Readonly<Config> {
     return this.config;
@@ -857,8 +877,25 @@ export class PermissionChecker implements Checker {
       // 2) sed -i → 目标文件路径校验（同 write/edit 走 PathValidator）
       const sedWrite = detectSedWrite(cmd);
       if (sedWrite.isSedWrite && sedWrite.targetFile) {
-        const { resolve } = await import("node:path");
-        const targetPath = resolve(process.cwd(), sedWrite.targetFile);
+        const { resolve, isAbsolute } = await import("node:path");
+        // 相对路径按 bash 实际 cwd 解析：优先 input.cwd（bash 显式 cwd 参数），
+        // 否则用全局 getCwd()（追踪 cd 跨命令的目录），与 bash.resolveCwd 一致。
+        // 避免 cd subdir 后相对目标被误按启动目录校验。
+        let baseCwd: string;
+        const inputCwd = (req.input as any)?.cwd;
+        if (typeof inputCwd === "string" && inputCwd) {
+          baseCwd = inputCwd;
+        } else {
+          try {
+            const { getCwd } = await import("../bootstrap/state.ts");
+            baseCwd = getCwd();
+          } catch {
+            baseCwd = process.cwd();
+          }
+        }
+        const targetPath = isAbsolute(sedWrite.targetFile)
+          ? sedWrite.targetFile
+          : resolve(baseCwd, sedWrite.targetFile);
         const pathResult = this.pathValidator.validateAccess(targetPath, "write");
         if (!pathResult.allowed) {
           log.info("PERMISSION", `${req.toolName}(sed -i → ${targetPath.slice(0, 80)}) → ${pathResult.needsConfirmation ? "需确认" : "拒绝"}(路径验证: ${pathResult.reason})`);

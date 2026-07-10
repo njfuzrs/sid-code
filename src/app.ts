@@ -1519,11 +1519,18 @@ export class App {
           memorySummary = await memStore.generateSummary() || undefined;
         } catch { /* 忽略 */ }
 
+        // G12：CLAUDE.md 重建路径同样刷新输出风格
+        let outputStyleContent: string | undefined;
+        try {
+          const { getActiveOutputStyleContent } = await import("./config/output-styles.ts");
+          outputStyleContent = getActiveOutputStyleContent(this.config.outputStyle) || undefined;
+        } catch { /* 静默降级 */ }
         const newPrompt = buildSystemPrompt({
           tools: this.toolRegistry.all(),
           projectRules: newRules.rawContent,
           projectRulesPath: newRules.sourcePath,
           appendPrompt: this.config.appendSystemPrompt || undefined,
+          outputStyleContent,
           workingDir: process.cwd(),
           permissionMode: this.config.permissionMode,
           gitStatus: true,
@@ -1729,11 +1736,18 @@ export class App {
       } catch { /* 忽略 */ }
 
       const rules = this.currentProjectRules;
+      // G12：重建时刷新输出风格（用户可能改了 settings.outputStyle 或风格文件）
+      let outputStyleContent: string | undefined;
+      try {
+        const { getActiveOutputStyleContent } = await import("./config/output-styles.ts");
+        outputStyleContent = getActiveOutputStyleContent(this.config.outputStyle) || undefined;
+      } catch { /* 静默降级 */ }
       const newPrompt = buildSystemPrompt({
         tools: this.toolRegistry.all(),
         projectRules: rules?.rawContent,
         projectRulesPath: rules?.sourcePath,
         appendPrompt: this.config.appendSystemPrompt || undefined,
+        outputStyleContent,
         workingDir: process.cwd(),
         permissionMode: this.config.permissionMode,
         gitStatus: true,

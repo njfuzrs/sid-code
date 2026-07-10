@@ -18,6 +18,8 @@ import think from "./think/index.ts";
 import goal from "./goal/index.ts";
 import debug from "./debug/index.ts";
 import exportCmd from "./export/index.ts";
+import diff from "./diff/index.ts";
+import doctor from "./doctor/index.ts";
 
 export const BUILTIN_COMMANDS: UnifiedCommand[] = [
   compact,
@@ -29,4 +31,6 @@ export const BUILTIN_COMMANDS: UnifiedCommand[] = [
   goal,
   debug,
   exportCmd,
+  diff,
+  doctor,
 ];
