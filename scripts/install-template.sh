@@ -322,11 +322,24 @@ echo "    sid-code             # 启动（需逐条确认权限）"
 echo "    sid-code --version   # 确认版本"
 echo "    sid-code update      # 以后升级到最新版本"
 echo ""
-echo "  📄 更新日志: ${RELEASE_BASE}/CHANGELOG.md"
+echo "  📄 更新日志（网页）: ${RELEASE_BASE}/CHANGELOG.html"
+echo "  📄 更新日志（文本）: ${RELEASE_BASE}/CHANGELOG.md"
 echo ""
 
+# 仅当「刚写入 PATH 块」且「当前 shell 的 PATH 里还没有该 bin 目录」时才提示 source。
+# 典型场景区分：
+#   - 首次安装：RC 文件里此前没有 sid-code 块 → 新写入(PATH_WRITTEN=true)，且当前 shell
+#     PATH 通常还不含 ~/.local/bin → 需要 source 才能立刻用上。
+#   - sid-code update：命令本就从 PATH 里找到才跑起来，当前 shell 的 PATH 已含 bin 目录 →
+#     二进制原地换掉即刻生效，无需 source（旧逻辑无脑提示，纯噪声）。
 if [ "$PATH_WRITTEN" = true ]; then
-    echo "  ⚡ 请重新打开终端，或在当前窗口执行："
-    echo "    source $(detect_shell_rc)"
-    echo ""
+    case ":$PATH:" in
+        *":$BIN_DIR:"*)
+            : ;; # 当前 shell 已能找到命令，无需任何额外操作
+        *)
+            echo "  ⚡ 请重新打开终端，或在当前窗口执行："
+            echo "    source $(detect_shell_rc)"
+            echo ""
+            ;;
+    esac
 fi
