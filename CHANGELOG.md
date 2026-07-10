@@ -2,6 +2,34 @@
 
 本文件由 scripts/generate-changelog.ts 自动生成，请勿手改。
 
+## v0.1.586 (2026-07-10)
+
+### 新功能
+- goal 轮次动态调整与显示去歧义，及多项修复 `2abd47e`
+  - 新增 /goal turns <n> 子命令：运行时调整最大轮次上限（1~1000）
+  - 默认 maxTurns 50→150：长任务模式留足空间，用户可随时 ESC 介入
+  - 状态栏 goal 列去歧义：移除易误读的百分比，改为"目标 N/M 轮"中文标签
+  - 全链路去彩色 emoji：goal 改用单色几何字形（◎/⏸/⚠/✔），与 figures.ts 一致
+  - 活项分流机制：含 executing 工具的 tool_group 从 Static 移入动态区，根治 scrollback 幽灵行残留
+  - model-registry 路由前缀白名单：剥离 ali-/volc-/siliconflow- 等网关前缀后重试匹配
+  - openai idle 超时定时器泄漏修复：cancelTimeoutId 此前无句柄，每秒泄漏数百个
+  - trace 内存优化：builder 新增 new_messages 回退，collector 剥离旧 raw_messages
+
+### 性能
+- 新增 TUI CPU/内存性能诊断与验证脚本 `6a1815c`
+  - perf-probe.sh          PTY 下采样真实 TUI 的 CPU%/RSS/线程
+  - perf-tui-drive.exp     expect 驱动 TUI 流式输出
+  - perf-md-bench.ts       块闭合粒度 O(N²) markdown 重解析基准
+  - perf-stream-token.ts   逐 token 流式渲染成本增长基准
+  - perf-lex-vs-format.ts  拆分 lex vs format 成本（证实瓶颈在 marked.lexer）
+  - traj-bench.ts          rebuildTraj 每轮全量重写的写放大基准
+  - perf-verify-stream.ts  验证流式增量渲染修复（120块 658ms→7ms）
+  - perf-verify-timer.ts   确定性验证 SSE 定时器泄漏修复（500→0）
+
+### 其他
+- doc：更新文档 `9c225cd`
+- doc：更新文档 `6d5b058`
+
 ## v0.1.585 (2026-07-10)
 
 ### 修复
