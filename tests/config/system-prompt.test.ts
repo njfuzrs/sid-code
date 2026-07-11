@@ -223,6 +223,46 @@ describe("buildSystemPrompt", () => {
     // 内容相同但确实重新构建了（无法直接验证，但至少不报错）
     expect(prompt1).toBe(prompt2);
   });
+
+  // 必删-4：身份指令的"铁律级"语言约束措辞改由能力标志 reasoningLanguageDrift 驱动，
+  // 而非 model.includes("deepseek") 字符串匹配。
+  describe("身份指令语言约束（必删-4：能力标志驱动，非模型名硬编码）", () => {
+    const IRON_LAW = "【不可违反的铁律】";
+
+    test("reasoningLanguageDrift=true 的模型走铁律级措辞", () => {
+      // deepseek-v4-pro / deepseek-reasoner 在注册表声明了 reasoningLanguageDrift:true
+      const p1 = buildSystemPrompt({ tools: [], model: "deepseek-v4-pro" });
+      expect(p1).toContain(IRON_LAW);
+      clearPromptCache();
+      const p2 = buildSystemPrompt({ tools: [], model: "deepseek-reasoner" });
+      expect(p2).toContain(IRON_LAW);
+    });
+
+    test("模型名带日期后缀 / 大小写变体仍能命中（catalog 前缀+大小写匹配）", () => {
+      const p1 = buildSystemPrompt({ tools: [], model: "deepseek-v4-pro-0711" });
+      expect(p1).toContain(IRON_LAW);
+      clearPromptCache();
+      const p2 = buildSystemPrompt({ tools: [], model: "DeepSeek-V4-Pro" });
+      expect(p2).toContain(IRON_LAW);
+    });
+
+    test("无漂移倾向的模型（Claude）走标准措辞，不含铁律", () => {
+      const p = buildSystemPrompt({ tools: [], model: "claude-sonnet-4-20250514" });
+      expect(p).not.toContain(IRON_LAW);
+      // 标准措辞仍是合法身份段
+      expect(p).toContain("sid-code");
+    });
+
+    test("无 model 时不走铁律（缺省 false）", () => {
+      const p = buildSystemPrompt({ tools: [] });
+      expect(p).not.toContain(IRON_LAW);
+    });
+
+    test("英文模式不受 reasoningLanguageDrift 影响（走英文语言规则分支）", () => {
+      const p = buildSystemPrompt({ tools: [], model: "deepseek-v4-pro", preferredLanguage: "en" });
+      expect(p).not.toContain(IRON_LAW);
+    });
+  });
 });
 
 describe("#11 resolvePromptMaxTokens（系统提示词预算动态化）", () => {

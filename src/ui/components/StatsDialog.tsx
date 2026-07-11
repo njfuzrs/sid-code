@@ -14,6 +14,7 @@ import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressCon
 import { PROGRESS_FILLED, PROGRESS_EMPTY } from "../constants/figures.ts";
 import type { Usage } from "../../llm/types.ts";
 import { SessionState } from "../../session/state.ts";
+import type { ModelPricing } from "../../api/cost-tracker.ts";
 
 interface StatsDialogProps {
   onClose: () => void;
@@ -26,6 +27,8 @@ interface StatsDialogProps {
   model: string;
   provider: string;
   sessionState?: SessionState;
+  /** 当前模型定价（每百万 token，USD）。解析不到时为 undefined，"单价"分区整体省略。 */
+  pricing?: ModelPricing;
 }
 
 /** 进度条渲染：filled/empty 方块（▰▱），width 格。 */
@@ -38,6 +41,13 @@ function renderProgressBar(percent: number, width = 12): string {
 /** 千分位格式化。 */
 function fmtNum(n: number): string {
   return n.toLocaleString("en-US");
+}
+
+/** 每百万 token 单价格式化：$X.XX/M（<1 保留更多小数以免归零）。 */
+function fmtPrice(perMillion: number): string {
+  if (perMillion === 0) return "免费";
+  const decimals = perMillion >= 1 ? 2 : perMillion >= 0.01 ? 3 : 4;
+  return `$${perMillion.toFixed(decimals)}/M`;
 }
 
 /** 一行「标签 …… 值」，标签固定宽度，值区可着色。labelWidth 用于对齐。 */
@@ -78,6 +88,7 @@ export const StatsDialog: React.FC<StatsDialogProps> = ({
   model,
   provider,
   sessionState,
+  pricing,
 }) => {
   useKeypress(KeypressPriority.Critical, (key: Key) => {
     if (key.name === "escape") {
@@ -148,6 +159,28 @@ export const StatsDialog: React.FC<StatsDialogProps> = ({
             ${costUSD.toFixed(2)} / ${costLimit.toFixed(2)}
           </Text>
         </StatRow>
+      )}
+
+      {pricing && (
+        <>
+          <SectionTitle>单价（每百万 token）</SectionTitle>
+          <StatRow label="输入">
+            <Text color={theme.text.primary}>{fmtPrice(pricing.input)}</Text>
+          </StatRow>
+          <StatRow label="输出">
+            <Text color={theme.text.primary}>{fmtPrice(pricing.output)}</Text>
+          </StatRow>
+          {typeof pricing.cacheRead === "number" && (
+            <StatRow label="缓存读取">
+              <Text color={theme.text.secondary}>{fmtPrice(pricing.cacheRead)}</Text>
+            </StatRow>
+          )}
+          {typeof pricing.cacheWrite === "number" && pricing.cacheWrite > 0 && (
+            <StatRow label="缓存写入">
+              <Text color={theme.text.secondary}>{fmtPrice(pricing.cacheWrite)}</Text>
+            </StatRow>
+          )}
+        </>
       )}
 
       <SectionTitle>会话信息</SectionTitle>

@@ -24,7 +24,9 @@ const ENV_KEYS = [
   "SID_CODE_WATCHDOG_NO_PROGRESS_MS",
   "SID_CODE_WATCHDOG_HEADER_GRACE_MS",
   "SID_CODE_MAX_TURN_DURATION_MS",
+  "SID_CODE_MAX_SESSION_DURATION_MS",
   "SID_CODE_MAX_TIMEOUT_RETRIES",
+  "SID_CODE_MAX_RETRIES_PER_CALL",
   "SID_CODE_RETRY_BACKOFF_BASE_MS",
   "SID_CODE_RETRY_BACKOFF_MAX_MS",
   "SID_CODE_IDLE_TIMEOUT_MS",
@@ -78,6 +80,42 @@ describe("resolveLoopTimeouts — 层级优先级", () => {
     process.env.SID_CODE_MAX_TIMEOUT_RETRIES = "0";
     const t = resolveLoopTimeouts({});
     expect(t.maxTimeoutRetries).toBe(0);
+  });
+
+  test("maxSessionDurationMs / maxRetriesPerCall 支持 env 与 settings 覆盖（不确定-1 / 不确定-2/3）", () => {
+    // 默认值
+    const def = resolveLoopTimeouts({});
+    expect(def.maxSessionDurationMs).toBe(DEFAULTS.maxSessionDurationMs);
+    expect(def.maxRetriesPerCall).toBe(DEFAULTS.maxRetriesPerCall);
+
+    // settings 覆盖
+    const bySettings = resolveLoopTimeouts({
+      network: { maxSessionDurationMs: 45 * 60_000, maxRetriesPerCall: 5 },
+    });
+    expect(bySettings.maxSessionDurationMs).toBe(45 * 60_000);
+    expect(bySettings.maxRetriesPerCall).toBe(5);
+
+    // env 优先级高于 settings
+    process.env.SID_CODE_MAX_SESSION_DURATION_MS = "600000";
+    process.env.SID_CODE_MAX_RETRIES_PER_CALL = "3";
+    const byEnv = resolveLoopTimeouts({
+      network: { maxSessionDurationMs: 45 * 60_000, maxRetriesPerCall: 5 },
+    });
+    expect(byEnv.maxSessionDurationMs).toBe(600_000);
+    expect(byEnv.maxRetriesPerCall).toBe(3);
+  });
+
+  test("会话级硬顶严格大于单轮硬顶（作为更粗一层兜底，避免同时到期）", () => {
+    // 不确定-1 副作用修复：maxSessionDurationMs 若与 maxTurnDurationMs 相等，
+    // 单轮跑满时二者几乎同时触发，会话级兜不到额外东西。默认应更晚触发。
+    const t = resolveLoopTimeouts({});
+    expect(t.maxSessionDurationMs).toBeGreaterThan(t.maxTurnDurationMs);
+  });
+
+  test("maxRetriesPerCall=0 是合法值（nonNegative），不被当作未设置", () => {
+    process.env.SID_CODE_MAX_RETRIES_PER_CALL = "0";
+    const t = resolveLoopTimeouts({});
+    expect(t.maxRetriesPerCall).toBe(0);
   });
 
   test("统一默认值：保活优先（阈值足够宽）", () => {

@@ -40,6 +40,7 @@ import type { DialogType } from "../../command/types.ts";
 import type { MCPManager } from "../../mcp/manager.ts";
 import type { SessionState } from "../../session/state.ts";
 import type { Usage } from "../../llm/types.ts";
+import { resolvePricing } from "../../api/cost-tracker.ts";
 
 export interface DialogSwitchProps {
   // 高优先级请求（覆盖 activeDialog）
@@ -215,6 +216,7 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
         model={model}
         provider={provider}
         sessionState={sessionState}
+        pricing={resolvePricing(model, availableModels) ?? undefined}
       />
     );
   }

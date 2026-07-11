@@ -78,10 +78,12 @@ export const DEFAULTS: Readonly<ResolvedLoopTimeouts> = {
   watchdogHeaderGraceMs: 15_000,
   maxTurnDurationMs: 30 * 60_000,
   // 会话级硬顶（不确定-1）：单次 TUI 会话（tuiAgentLoop 内一整轮 onUserInput）的总上限，
-  // 是 maxTurnDurationMs（单轮）之上的更粗一层兜底——多轮工具循环叠加可能远超单轮 30min。
+  // 是 maxTurnDurationMs（单轮 30min）之上的更粗一层兜底——多轮工具循环叠加可能远超单轮。
+  // 取单轮的 2 倍（60min），确保会话级真正比单轮级更晚触发、作为兜底而非与单轮同时到期
+  // （若两者相等，单轮跑满时二者几乎同时触发，会话级兜不到额外东西）。
   // 此前硬编码在 app.ts 内且无 env/settings 覆盖；纳入统一配置后可经
   // SID_CODE_MAX_SESSION_DURATION_MS / settings.network.maxSessionDurationMs 调整。
-  maxSessionDurationMs: 30 * 60_000,
+  maxSessionDurationMs: 60 * 60_000,
   maxTimeoutRetries: 10,
   // 单次 LLM 调用（executeWithFallback 一次）内"连接阶段重试 + 流式阶段重试"的共享总上界
   // （不确定-2/3）。此前两阶段各自独立计数（各 maxRetries 次），最坏可叠加成

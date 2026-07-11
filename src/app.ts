@@ -3735,11 +3735,20 @@ export class App {
           isAbortError(err) &&
           (isInternalTimeoutAbortReason(errReason) ||
             isInternalTimeoutAbortReason(this.abortController?.signal?.reason));
-        if (isAbortError(err) && !internalTimeoutLeaked) {
+        // 会话级硬顶超时同样不能被内层 catch 当"用户主动结束"静默吞掉——否则 onUserInput
+        // catch 的 sessionTimedOut 分支（展示"会话超过 N 分钟上限"文案 + 持久引导）永远不可达。
+        // 与 internalTimeoutLeaked 一样从"用户 ESC"分支排除、throw 上去交由 onUserInput 分类展示。
+        const sessionTimedOut =
+          isAbortError(err) &&
+          (isSessionTimeoutAbortReason(errReason) ||
+            isSessionTimeoutAbortReason(this.abortController?.signal?.reason));
+        if (isAbortError(err) && !internalTimeoutLeaked && !sessionTimedOut) {
           completedNormally = true;
           log.info("TUI", "用户中断当前响应");
         } else {
-          if (internalTimeoutLeaked) {
+          if (sessionTimedOut) {
+            log.warn("TUI", "会话超过时长上限，throw 交由上层展示专属文案");
+          } else if (internalTimeoutLeaked) {
             log.error("TUI", `agent loop 内部超时中断漏出（按故障 throw，交由上层展示）`, {
               errReason: String(errReason ?? this.abortController?.signal?.reason ?? "unknown"),
               message: err?.message,

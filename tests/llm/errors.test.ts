@@ -12,6 +12,7 @@ import {
   getNetworkErrorCode,
   isAbortError,
   isInternalTimeoutAbortReason,
+  isSessionTimeoutAbortReason,
   RequestAbortedError,
   ABORT_REASONS,
   INTERNAL_TIMEOUT_ABORT_REASONS,
@@ -428,5 +429,43 @@ describe("isInternalTimeoutAbortReason（内部超时自愈中断 vs 用户取�
     expect(isInternalTimeoutAbortReason(err.abortReason)).toBe(true);
     // 仍是标准 abort 错误（isAbortError 必中，避免孤儿 rejection 崩溃）
     expect(isAbortError(err)).toBe(true);
+  });
+});
+
+describe("isSessionTimeoutAbortReason（会话级硬顶超时，独立于用户取消/内部超时）", () => {
+  test("仅识别 session-timeout", () => {
+    // 不确定-1：会话跑满 maxSessionDurationMs 被自动结束，需展示专属文案而非笼统"已取消"。
+    expect(isSessionTimeoutAbortReason("session-timeout")).toBe(true);
+  });
+
+  test("不与用户取消 / 内部超时 / 旧 timeout reason 混淆", () => {
+    expect(isSessionTimeoutAbortReason("user-cancel")).toBe(false);
+    expect(isSessionTimeoutAbortReason("turn-timeout")).toBe(false);
+    expect(isSessionTimeoutAbortReason("watchdog-timeout")).toBe(false);
+    expect(isSessionTimeoutAbortReason("stream-overall-timeout")).toBe(false);
+    // 旧的会话超时 reason（保留向后兼容），不等于新的 session-timeout
+    expect(isSessionTimeoutAbortReason("timeout")).toBe(false);
+  });
+
+  test("会话超时与内部超时正交（互不归类）", () => {
+    // session-timeout 不该被当成 turn 级内部超时自愈（那样会走重试而非优雅结束）。
+    expect(isInternalTimeoutAbortReason("session-timeout")).toBe(false);
+    // 反向：内部超时 reason 也不该被当成会话硬顶。
+    expect(isSessionTimeoutAbortReason("turn-timeout")).toBe(false);
+  });
+
+  test("非字符串 / 未知值返回 false", () => {
+    expect(isSessionTimeoutAbortReason(undefined)).toBe(false);
+    expect(isSessionTimeoutAbortReason(null)).toBe(false);
+    expect(isSessionTimeoutAbortReason(123)).toBe(false);
+    expect(isSessionTimeoutAbortReason("random-string")).toBe(false);
+    expect(isSessionTimeoutAbortReason({ reason: "session-timeout" })).toBe(false);
+  });
+
+  test("session-timeout 已登记在 ABORT_REASONS（防孤儿 rejection 崩溃）", () => {
+    // abort("session-timeout") 用到的 reason 必须登记，否则其孤儿 rejection
+    // 会被 isAbortError 漏识别导致进程退出。
+    const allReasons = new Set<string>(ABORT_REASONS.map(String));
+    expect(allReasons.has("session-timeout")).toBe(true);
   });
 });
