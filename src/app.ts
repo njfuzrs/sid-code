@@ -61,7 +61,7 @@ import {
   formatHeadlessEvent,
 } from "./sdk/index.ts";
 import { JitContextManager } from "./config/jit-context.ts";
-import { isAbortError, isInternalTimeoutAbortReason } from "./llm/errors.ts";
+import { isAbortError, isInternalTimeoutAbortReason, isSessionTimeoutAbortReason } from "./llm/errors.ts";
 import * as CrashMarker from "./trace/crash-marker.ts";
 import * as PidManager from "./trace/pid-manager.ts";
 import { execSync } from "child_process";
@@ -379,6 +379,8 @@ export class App {
       // 注入后 fallback 与 loop 层超时/重试对齐——改 settings.json 的 network.* 或 env 一处生效。
       streamTimeoutMs: fallbackNetTimeouts.watchdogNoProgressMs,
       maxRetries: fallbackNetTimeouts.maxTimeoutRetries,
+      // 不确定-2/3：单次调用连接+流式两阶段共享重试上界，防退避风暴。
+      maxRetriesPerCall: fallbackNetTimeouts.maxRetriesPerCall,
       retryBackoffBaseMs: fallbackNetTimeouts.retryBackoffBaseMs,
       retryBackoffMaxMs: fallbackNetTimeouts.retryBackoffMaxMs,
       // 降级模式：生产默认 "ask"（询问用户），config 未设时兜底询问。
@@ -2701,6 +2703,19 @@ export class App {
     this.abortController = new AbortController();
     let runError: Error | null = null;
     let aborted = false;
+    // 不确定-1②：headless（-p print）路径此前无会话硬顶——挂死时会无限等待。补齐与 TUI 同源的
+    // 会话级硬顶（network-profile 统一配置，SID_CODE_MAX_SESSION_DURATION_MS / settings 可覆盖）。
+    const { resolveLoopTimeouts: resolveHeadlessTimeouts } = require("./config/network-profile.ts");
+    const sessionTimeoutMs = resolveHeadlessTimeouts({ network: this.config.network }).maxSessionDurationMs;
+    let sessionTimedOut = false;
+    const sessionTimer = setTimeout(() => {
+      sessionTimedOut = true;
+      process.stderr.write(
+        `\n[runHeadless] 会话超过 ${Math.round(sessionTimeoutMs / 60000)} 分钟上限，自动结束\n`,
+      );
+      this.abortController?.abort("session-timeout");
+    }, sessionTimeoutMs);
+    if (sessionTimer.unref) sessionTimer.unref();
     // 新用户回合开始：清执行阶段标志。approve 永远发生在 run 中途（exit_plan_mode 工具执行时），
     // 故 submitMessage 开始时上一轮执行阶段必已收尾，此处清理不会误清刚 approve 的标志。
     this.planManager?.endExecution();
@@ -2730,9 +2745,20 @@ export class App {
     } catch (err: any) {
       runError = err instanceof Error ? err : new Error(String(err));
       aborted = (err && (err.name === "AbortError" || /abort/i.test(err.message ?? ""))) === true;
-      // stderr 输出错误，但不抛出——必须让 SessionEnd hook 落地后再退出
-      process.stderr.write(`\n[runHeadless] 异常: ${runError.message}\n${runError.stack ?? ""}\n`);
+      // 会话硬顶超时按"正常自动结束"处理，不当运行时故障：清空 runError、标记 aborted，
+      // 使 SessionEnd reason=abort 而非 error，退出码走成功路径（不确定-1②）。
+      if (sessionTimedOut) {
+        runError = null;
+        aborted = true;
+        process.stderr.write(
+          `[runHeadless] 会话超过 ${Math.round(sessionTimeoutMs / 60000)} 分钟上限，已自动结束本轮\n`,
+        );
+      } else {
+        // stderr 输出错误，但不抛出——必须让 SessionEnd hook 落地后再退出
+        process.stderr.write(`\n[runHeadless] 异常: ${runError.message}\n${runError.stack ?? ""}\n`);
+      }
     } finally {
+      clearTimeout(sessionTimer);
       this.abortController = null;
       this.queryEngine.setStreamTextCallback(null);
     }
@@ -2911,6 +2937,19 @@ export class App {
       driver,
     );
 
+    // 不确定-1②：SDK stream-json 路径同样补齐会话级硬顶（与 TUI/runHeadless 同源配置）。
+    const { resolveLoopTimeouts: resolveSdkTimeouts } = require("./config/network-profile.ts");
+    const sdkSessionTimeoutMs = resolveSdkTimeouts({ network: this.config.network }).maxSessionDurationMs;
+    let sdkSessionTimedOut = false;
+    const sdkSessionTimer = setTimeout(() => {
+      sdkSessionTimedOut = true;
+      process.stderr.write(
+        `\n[runHeadlessSDK] 会话超过 ${Math.round(sdkSessionTimeoutMs / 60000)} 分钟上限，自动结束\n`,
+      );
+      this.abortController?.abort("session-timeout");
+    }, sdkSessionTimeoutMs);
+    if (sdkSessionTimer.unref) sdkSessionTimer.unref();
+
     let runError: Error | null = null;
     let aborted = false;
     try {
@@ -2926,8 +2965,18 @@ export class App {
       aborted =
         runError.name === "AbortError" || /abort/i.test(runError.message ?? "");
       structuredIO.rejectAllPending("session ended");
-      process.stderr.write(`\n[runHeadlessSDK] 异常: ${runError.message}\n`);
+      // 会话硬顶超时按正常自动结束处理（reason=abort 而非 error）。
+      if (sdkSessionTimedOut) {
+        runError = null;
+        aborted = true;
+        process.stderr.write(
+          `[runHeadlessSDK] 会话超过 ${Math.round(sdkSessionTimeoutMs / 60000)} 分钟上限，已自动结束本轮\n`,
+        );
+      } else {
+        process.stderr.write(`\n[runHeadlessSDK] 异常: ${runError.message}\n`);
+      }
     } finally {
+      clearTimeout(sdkSessionTimer);
       this.abortController = null;
     }
 
@@ -3377,11 +3426,16 @@ export class App {
 
     // TUI 版本的 agentLoop（消费 QueryEngine async generator）
     const tuiAgentLoop = async (userInput: string, displayCommand?: string) => {
-      const SESSION_TIMEOUT_MS = 30 * 60 * 1000; // 单次 session 最长 30 分钟
+      // 不确定-1：会话级硬顶纳入 network-profile 统一配置（此前硬编码 30min 且无覆盖入口）。
+      // 支持 SID_CODE_MAX_SESSION_DURATION_MS / settings.network.maxSessionDurationMs 覆盖。
+      const { resolveLoopTimeouts: resolveSessionTimeouts } = require("./config/network-profile.ts");
+      const SESSION_TIMEOUT_MS = resolveSessionTimeouts({ network: this.config.network }).maxSessionDurationMs;
       const sessionTimer = setTimeout(() => {
-        log.warn("TUI", "Session 超时，触发 abort");
-        // A6：超时中断 reason='timeout'，与用户主动取消区分——超时不触发输入框回填。
-        this.abortController?.abort("timeout");
+        log.warn("TUI", `Session 超过 ${Math.round(SESSION_TIMEOUT_MS / 60000)} 分钟上限，触发 abort`);
+        // A6：会话超时用专属 reason 'session-timeout'（区别于用户主动取消 'user-cancel'
+        // 与内部单轮/看门狗超时），app.ts catch 据此展示"会话超过 N 分钟上限，已自动结束"
+        // 而非笼统的"已取消当前响应"，且不触发输入框回填。
+        this.abortController?.abort("session-timeout");
       }, SESSION_TIMEOUT_MS);
 
       this.busy = true;
@@ -3782,15 +3836,23 @@ export class App {
               ? (err as { abortReason?: unknown }).abortReason
               : undefined;
           const convSignal = this.abortController?.signal;
+          // 不确定-1：会话级硬顶超时（session-timeout）——它 abort 了会话 signal，故 rawAborted
+          // 为 true，但语义既不是"用户主动取消"也不是"内部单轮/看门狗超时漏出"，需独立成一类
+          // 展示专属文案（"会话超过 N 分钟上限，已自动结束"），不回填输入、不当故障刷错误卡片。
+          const sessionTimedOut =
+            rawAborted &&
+            (isSessionTimeoutAbortReason(errReason) ||
+              isSessionTimeoutAbortReason(convSignal?.reason));
           const internalTimeoutLeaked =
             rawAborted &&
+            !sessionTimedOut &&
             (isInternalTimeoutAbortReason(errReason) ||
               isInternalTimeoutAbortReason(convSignal?.reason) ||
               // 会话级 signal 根本没被 abort（用户没按 ESC），却收到 abort 类错误
               // → 必然是 turn 级内部中断穿透，按故障处理而非用户取消。
               !convSignal?.aborted);
-          // 真正的"用户主动取消"：是 abort 类错误，且不是内部超时漏出。
-          const aborted = rawAborted && !internalTimeoutLeaked;
+          // 真正的"用户主动取消"：是 abort 类错误，且既不是会话硬顶也不是内部超时漏出。
+          const aborted = rawAborted && !internalTimeoutLeaked && !sessionTimedOut;
           let restoredInput = false;
           if (aborted) {
             log.info("TUI:CB", "当前响应已被用户中断");
@@ -3811,7 +3873,9 @@ export class App {
               clearPendingInput();
             }
           } else {
-            if (internalTimeoutLeaked) {
+            if (sessionTimedOut) {
+              log.warn("TUI:CB", "会话超过时长上限，已自动结束");
+            } else if (internalTimeoutLeaked) {
               log.error("TUI:CB", `onUserInput 内部超时中断漏出（按故障处理）`, {
                 errReason: String(errReason ?? convSignal?.reason ?? "unknown"),
                 message: err?.message,
@@ -3822,11 +3886,17 @@ export class App {
             clearPendingInput();
           }
 
+          const sessionTimeoutMin = Math.round(
+            (require("./config/network-profile.ts").resolveLoopTimeouts({ network: this.config.network })
+              .maxSessionDurationMs) / 60000,
+          );
           const message = aborted
             ? "已取消当前响应"
-            : internalTimeoutLeaked
-              ? `请求超时中断：${err?.message ?? String(err)}`
-              : `错误: ${err.message ?? String(err)}`;
+            : sessionTimedOut
+              ? `会话超过 ${sessionTimeoutMin} 分钟上限，已自动结束。可重新输入指令继续。`
+              : internalTimeoutLeaked
+                ? `请求超时中断：${err?.message ?? String(err)}`
+                : `错误: ${err.message ?? String(err)}`;
           updateState({
             isLoading: false,
             isStreaming: false,
@@ -3852,7 +3922,9 @@ export class App {
           // 这是 engine fatal_error 封装之外的兜底路径（如 submitMessage 之外抛出的异常，
           // 或内部超时自愈中断意外漏出此处——GAP-1 修复），确保任何真异常用户回神时
           // 都能看到原因，而不是只剩一句转瞬即逝的提示。
-          if (!aborted) {
+          // 会话硬顶超时是"跑太久被自动结束"的正常兜底，不是故障——不刷"任务失败"卡片/错误面板，
+          // 与用户主动取消（aborted）一样只给瞬态提示 + 下方持久引导（不确定-1）。
+          if (!aborted && !sessionTimedOut) {
             const errDisplayText = `任务失败：${err?.message ?? String(err)}\n可重新输入指令重试，或检查上面的输出定位原因。`;
             const errDisplay = [...bridge.current.displayItems, { kind: "system" as const, text: errDisplayText }];
             updateState({ displayItems: errDisplay });
@@ -3887,6 +3959,16 @@ export class App {
             };
             const prevHistoryItems = bridge.current.historyItems;
             updateState({ historyItems: [...prevHistoryItems, interruptHint] });
+          } else if (sessionTimedOut) {
+            // 会话硬顶：留一条持久引导，说明是自动结束而非报错，用户回神时能看懂发生了什么。
+            historyIdCounter += 1;
+            const sessionHint: import("./ui/types.ts").HistoryItem = {
+              id: historyIdCounter,
+              type: "hint",
+              text: `会话已运行超过 ${sessionTimeoutMin} 分钟，已自动结束本轮 — 直接输入新指令即可继续。`,
+            };
+            const prevHistoryItems = bridge.current.historyItems;
+            updateState({ historyItems: [...prevHistoryItems, sessionHint] });
           }
         } finally {
           this.abortController = null;

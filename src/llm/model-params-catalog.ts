@@ -38,6 +38,11 @@ export interface ModelParamsEntry {
    * undefined = manual（旧模型，用 budget_tokens）。
    */
   thinkingMode?: "adaptive" | "always-on";
+  /**
+   * 推理语言漂移倾向：思考过程在中文语境下易漂移到英文，需要更强语言约束措辞。
+   * 见 model-registry.ts 同名字段（必删-4：替代 system-prompt 的 model.includes("deepseek")）。
+   */
+  reasoningLanguageDrift?: boolean;
 }
 
 /** 从 ModelRegistryEntry 投影为 ModelParamsEntry（去掉 pricing） */

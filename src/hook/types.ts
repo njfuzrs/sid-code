@@ -340,6 +340,8 @@ export interface SubagentStartInput extends HookInput {
   /** explore / task / plan / summarize / verify / custom */
   agent_type: string;
   parent_session_id?: string;
+  /** 子代理任务描述（模型为什么派这个子代理）。排查时无需回 raw.jsonl 找原始 prompt。 */
+  description?: string;
   /** 子代理实际使用的模型（遥测按 model 分类/计费用；start 时为预期模型） */
   model?: string;
   /** 子代理实际使用的 provider（缺省由 model 推断） */

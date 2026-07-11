@@ -19,20 +19,33 @@ const memorySchema = lazySchema(() =>
     key: z.string().describe("记忆键名（简短描述性名称，如 'coding_style' 或 'test_framework'）"),
     value: z.string().describe("记忆内容（具体的偏好或约定）"),
     scope: z
-      .enum(["global", "project", "team"])
+      .enum(["global", "project", "team", "agent"])
       .optional()
-      .describe("记忆范围：global（全局，所有项目）/ project（当前项目，默认）/ team（团队共享，同步给所有协作者）"),
+      .describe(
+        "记忆范围：global（全局，所有项目）/ project（当前项目，默认）/ team（团队共享，同步给所有协作者）/ agent（当前子代理类型的跨会话领域经验，仅在子代理内可用）",
+      ),
   }),
 );
 
 export class MemoryTool implements Tool {
   private store: MemoryStore;
+  /** 当前子代理类型（仅子代理隔离工具集里注入；主会话为 undefined，此时 agent scope 不可用） */
+  private agentType?: string;
 
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = memorySchema();
 
-  constructor(store: MemoryStore) {
+  constructor(store: MemoryStore, agentType?: string) {
     this.store = store;
+    this.agentType = agentType;
+  }
+
+  /**
+   * 派生一个绑定了 agentType 的副本（共享同一 MemoryStore）。
+   * 供子代理隔离工具集使用——让 save_memory 的 agent scope 能定位到当前子代理类型目录。
+   */
+  withAgentType(agentType: string): MemoryTool {
+    return new MemoryTool(this.store, agentType);
   }
 
   /** 低风险工具：无权限意见，交给权限系统决定 */
@@ -54,6 +67,7 @@ export class MemoryTool implements Tool {
 - 记忆会持久化到磁盘，下次对话时自动加载
 - 项目记忆优先于全局记忆
 - team 范围：团队共享约定/规范，会同步给所有协作者（需启用 teamMemory）；含 secret 会被拒绝
+- agent 范围：仅子代理内可用——沉淀「这一类子代理」跨会话复用的领域经验（常见坑、领域约定、有效方法），下次同类型子代理开工时自动注入
 - 不要主动保存临时信息或已在 CLAUDE.md 中的内容
 - 不适合保存：会话状态、敏感数据（API Key 等）`;
   }
@@ -67,7 +81,7 @@ export class MemoryTool implements Tool {
     const params = input as {
       key: string;
       value: string;
-      scope?: "global" | "project" | "team";
+      scope?: "global" | "project" | "team" | "agent";
     };
 
     if (!params.key || !params.value) {
@@ -138,6 +152,29 @@ export class MemoryTool implements Tool {
         };
       } catch (err: any) {
         return { output: `保存团队记忆失败: ${err.message}`, isError: true };
+      }
+    }
+
+    // agent scope（G13）：写入当前子代理类型的跨会话领域记忆。
+    // 只在子代理隔离工具集里注入了 agentType 时可用；主会话无 agentType → 引导改用 project。
+    if (scope === "agent") {
+      if (!this.agentType) {
+        return {
+          output:
+            "错误: agent 范围仅在子代理内可用（用于沉淀该类型子代理的跨会话领域经验）。\n" +
+            "主会话请改用 project / global 范围。",
+          isError: true,
+        };
+      }
+      try {
+        const { saveAgentMemory } = await import("../memory/agent-store.ts");
+        await saveAgentMemory(this.agentType, key, value);
+        log.info("TOOL", `✓ agent 记忆已保存 [${this.agentType}] ${key}`);
+        return {
+          output: `记忆已保存到 agent 范围（${this.agentType} 类型跨会话领域经验）:\n键: ${key}\n值: ${value.slice(0, 100)}${value.length > 100 ? "..." : ""}`,
+        };
+      } catch (err: any) {
+        return { output: `保存 agent 记忆失败: ${err.message}`, isError: true };
       }
     }
 

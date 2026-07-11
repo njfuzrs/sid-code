@@ -108,6 +108,8 @@ export class BundledSkillTool implements Tool {
           timeoutMins != null
             ? Math.min(Math.max(timeoutMins, 1), 30) * 60_000
             : undefined,
+        // G13：以内置 skill 名作为 agent 类型，让同一 skill 跨会话沉淀领域经验
+        type: `skill:${this.cmd.name}`,
       },
       signal,
     );

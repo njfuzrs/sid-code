@@ -28,6 +28,8 @@
  * 设计原则：纯函数（入用户消息文本，出 boolean / 字符串），便于单测。
  */
 
+import { getLogger } from "../debug/logger.ts";
+
 // ─── Layer 1: AND 条件的两侧词表 ───
 
 /**
@@ -131,7 +133,12 @@ function matchesInvestigationPattern(text: string): boolean {
  * @returns 是否命中调查性上下文
  */
 export function detectInvestigationContext(userMessage: string): boolean {
-  if (!userMessage) return false;
+  if (!userMessage) {
+    // 空消息也记一笔——ds-max 漏触发排查时，若首轮取到空串会在这里留痕，
+    // 便于区分"消息为空"和"消息有内容但三层判定都没命中"两种漏触发根因。
+    logInvestigationMiss("EMPTY_MESSAGE", userMessage);
+    return false;
+  }
 
   // 直接对原始消息检测（Layer 1 + 2）
   if (matchesInvestigationPattern(userMessage)) return true;
@@ -140,7 +147,45 @@ export function detectInvestigationContext(userMessage: string): boolean {
   const title = extractJsonTitle(userMessage);
   if (title && matchesInvestigationPattern(title)) return true;
 
+  // 未命中：记录未命中原因，便于排查 detectInvestigationContext 漏触发
+  // （评估报告 §8.7 的 P1——ds-max 会话 HypothesisGuideInjected=0 的盲区排查）。
+  logInvestigationMiss(classifyInvestigationMiss(userMessage, title), userMessage);
   return false;
+}
+
+/**
+ * 分类"未命中调查性上下文"的原因，便于离线排查漏触发。
+ *
+ * 三层判定全部落空后，用 diagnose 的四象限 + title 信息还原"差在哪一侧"：
+ * - PATH_NOT_FOUND：有调查动词但没有路径锚点（AND 条件 A 侧缺失，且未命中高信号短语）
+ * - INV_CUE_NOT_FOUND：有路径但没有调查动词（AND 条件 B 侧缺失）
+ * - HIGH_SIGNAL_NOT_MATCHED：两侧都缺，连高信号短语也没命中（最常见的普通对话）
+ * - JSON_TITLE_NO_MATCH：消息里有 JSON title，但 title 内容仍未命中三层判定
+ */
+function classifyInvestigationMiss(userMessage: string, title: string | null): string {
+  const hasPath = PATH_CUES.some((re) => re.test(userMessage));
+  const hasVerb = INVESTIGATION_CUES.some((cue) => userMessage.includes(cue));
+  if (title) return "JSON_TITLE_NO_MATCH";
+  if (hasVerb && !hasPath) return "PATH_NOT_FOUND";
+  if (hasPath && !hasVerb) return "INV_CUE_NOT_FOUND";
+  return "HIGH_SIGNAL_NOT_MATCHED";
+}
+
+/**
+ * 未命中原因落 debug 日志。best-effort：仅在开启 --debug 时才有输出，
+ * 绝不影响 detectInvestigationContext 的返回值（保持纯函数语义供单测）。
+ * 只截取消息前 120 字符，避免超长用户输入灌爆 debug 日志。
+ */
+function logInvestigationMiss(reason: string, userMessage: string): void {
+  try {
+    const preview = (userMessage || "").slice(0, 120).replace(/\n/g, " ");
+    getLogger().debug(
+      "HYPOTHESIS_GUIDE",
+      `detectInvestigationContext 未命中 [${reason}]: "${preview}"`,
+    );
+  } catch {
+    /* 日志失败绝不阻断主流程 */
+  }
 }
 
 /**

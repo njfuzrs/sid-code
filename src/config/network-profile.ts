@@ -33,7 +33,9 @@ export interface NetworkTimeoutSettings {
   watchdogCheckIntervalMs?: number;
   watchdogHeaderGraceMs?: number;
   maxTurnDurationMs?: number;
+  maxSessionDurationMs?: number;
   maxTimeoutRetries?: number;
+  maxRetriesPerCall?: number;
   retryBackoffBaseMs?: number;
   retryBackoffMaxMs?: number;
 }
@@ -44,7 +46,9 @@ export interface ResolvedLoopTimeouts {
   watchdogNoProgressMs: number;
   watchdogHeaderGraceMs: number;
   maxTurnDurationMs: number;
+  maxSessionDurationMs: number;
   maxTimeoutRetries: number;
+  maxRetriesPerCall: number;
   retryBackoffBaseMs: number;
   retryBackoffMaxMs: number;
 }
@@ -73,7 +77,18 @@ export const DEFAULTS: Readonly<ResolvedLoopTimeouts> = {
   watchdogCheckIntervalMs: 5_000,
   watchdogHeaderGraceMs: 15_000,
   maxTurnDurationMs: 30 * 60_000,
+  // 会话级硬顶（不确定-1）：单次 TUI 会话（tuiAgentLoop 内一整轮 onUserInput）的总上限，
+  // 是 maxTurnDurationMs（单轮）之上的更粗一层兜底——多轮工具循环叠加可能远超单轮 30min。
+  // 此前硬编码在 app.ts 内且无 env/settings 覆盖；纳入统一配置后可经
+  // SID_CODE_MAX_SESSION_DURATION_MS / settings.network.maxSessionDurationMs 调整。
+  maxSessionDurationMs: 30 * 60_000,
   maxTimeoutRetries: 10,
+  // 单次 LLM 调用（executeWithFallback 一次）内"连接阶段重试 + 流式阶段重试"的共享总上界
+  // （不确定-2/3）。此前两阶段各自独立计数（各 maxRetries 次），最坏可叠加成
+  // connMaxRetries + streamMaxRetries 次；再乘以 loop 层 maxTimeoutRetries 与 fallback 切换，
+  // 三层名义上界相乘可达数十次。这里给单次调用兜一个硬顶，防退避风暴无限放大。
+  // 取 maxTimeoutRetries 同量级（略高，容纳两阶段正常各自重试），可经 env/settings 覆盖。
+  maxRetriesPerCall: 12,
   retryBackoffBaseMs: 5_000,
   retryBackoffMaxMs: 120_000,
 };
@@ -229,8 +244,12 @@ export function resolveLoopTimeouts(input: LoopTimeoutInputs): ResolvedLoopTimeo
       readEnvNonNegative("SID_CODE_WATCHDOG_HEADER_GRACE_MS") ?? n?.watchdogHeaderGraceMs ?? DEFAULTS.watchdogHeaderGraceMs,
     maxTurnDurationMs:
       readEnvMs("SID_CODE_MAX_TURN_DURATION_MS") ?? n?.maxTurnDurationMs ?? DEFAULTS.maxTurnDurationMs,
+    maxSessionDurationMs:
+      readEnvMs("SID_CODE_MAX_SESSION_DURATION_MS") ?? n?.maxSessionDurationMs ?? DEFAULTS.maxSessionDurationMs,
     maxTimeoutRetries:
       readEnvNonNegative("SID_CODE_MAX_TIMEOUT_RETRIES") ?? n?.maxTimeoutRetries ?? DEFAULTS.maxTimeoutRetries,
+    maxRetriesPerCall:
+      readEnvNonNegative("SID_CODE_MAX_RETRIES_PER_CALL") ?? n?.maxRetriesPerCall ?? DEFAULTS.maxRetriesPerCall,
     retryBackoffBaseMs:
       readEnvNonNegative("SID_CODE_RETRY_BACKOFF_BASE_MS") ?? n?.retryBackoffBaseMs ?? DEFAULTS.retryBackoffBaseMs,
     retryBackoffMaxMs:

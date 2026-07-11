@@ -49,6 +49,19 @@ const subAgentSchema = lazySchema(() => {
  */
 export type SubAgentUsageSink = (result: SubAgentResult) => void;
 
+/**
+ * ⚠️ 修改本类（新增子代理类型、改并发/超时/结果语义）时，必须同步检查以下三层对齐，
+ * 否则会重演"模型说并行、harness 实际串行"这类语义断裂（评估报告 §8.9 的教训）：
+ *
+ * 1. 模型层：`src/config/system-prompt.ts` 中的 sub_agent 工具描述是否与实际行为一致
+ *    （尤其"哪些 type 只读可并行"的表述，模型据此决定一次派几个）。
+ * 2. 执行层：`src/query/tool-executor.ts` 的并发分区逻辑是否对新类型生效
+ *    —— 它优先调用本类的 `isConcurrencySafe(input)`，回退到 `readOnly()`；
+ *    新类型的 `AgentDefinition.readOnly` 必须正确声明，否则只读子代理会被误判为串行。
+ * 3. 观测层：`src/trace/collector.ts` 的 SubagentStart/Stop 事件是否覆盖新类型且带成败字段
+ *    （success/agent_id/duration_ms），否则 `src/trace/digest.ts` 的子代理 section
+ *    无法判定成败与串/并行，重演"全部 SUCCESS"类误判。
+ */
 export class SubAgentTool implements Tool {
   private providerRegistry: ProviderRegistry;
   private toolRegistry: ToolRegistry;

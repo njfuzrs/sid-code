@@ -203,6 +203,8 @@ ${folderStructure}
       allowedTools: this.skill.allowedTools || [],
       maxTurns,
       timeout,
+      // G13：以 skill 名作为 agent 类型，让同一 skill 跨会话沉淀领域经验
+      type: `skill:${this.skill.name}`,
     }, signal);
 
     log.info("SKILL", `Skill ${this.skill.name} 完成`, {

@@ -212,4 +212,50 @@ describe("extractEvalContext", () => {
   test("空消息列表返回空字符串", () => {
     expect(extractEvalContext([])).toBe("");
   });
+
+  test("P0-3：最后一条 assistant 长报告（6.7k 字符）在默认 12000 上限下完整保留不被截断", () => {
+    // 复现事故规模：约 6.7k 字符的审计报告。旧实现三道截断（4000 上限）会把它截半，
+    // 评估器看不全 → 判不出"已完成"。修复后末条 assistant 放宽到 8000，默认 maxChars=12000，
+    // 6.7k < 8000 应完整保留（含结尾文本）。
+    const head = "审计报告开始\n" + "X".repeat(6600);
+    const tail = "\n审计报告结尾标记_UNIQUE_END";
+    const report = head + tail; // ≈ 6.7k 字符
+    const messages: Message[] = [
+      { role: "user", content: [{ type: "text", text: "请检查并汇总告诉我" }] },
+      { role: "assistant", content: [{ type: "text", text: report }] },
+    ];
+    const ctx = extractEvalContext(messages); // 默认 maxChars=12000
+    // 关键断言：报告结尾未被截断（旧 4000 上限下必丢失结尾标记）
+    expect(ctx).toContain("审计报告结尾标记_UNIQUE_END");
+    expect(ctx).toContain("审计报告开始");
+    expect(ctx).toContain("[assistant · 最新完整产出]");
+  });
+
+  test("P0-3：末条 assistant 白名单上限为 8000，超出部分才截断", () => {
+    // 边界验证：末条 assistant 单独放宽到 8000，超过 8000 的尾部会被截掉。
+    const report = "S".repeat(8000) + "OVERFLOW_TAIL_9000";
+    const messages: Message[] = [
+      { role: "assistant", content: [{ type: "text", text: report }] },
+    ];
+    const ctx = extractEvalContext(messages);
+    // 前 8000 保留、超出的尾部标记被截断
+    expect(ctx).toContain("[assistant · 最新完整产出]");
+    expect(ctx).not.toContain("OVERFLOW_TAIL_9000");
+  });
+
+  test("P0-3：末条 assistant 完整保留，同时其余较早消息仍按 800 截断", () => {
+    // 验证"末条不截断"不会波及其他消息：较早的 assistant 仍受 800 限制。
+    const earlyLong = "E".repeat(2000) + "EARLY_TAIL_UNIQUE";
+    const lastReport = "报告正文\n" + "L".repeat(3000) + "\nLAST_TAIL_UNIQUE";
+    const messages: Message[] = [
+      { role: "assistant", content: [{ type: "text", text: earlyLong }] },
+      { role: "user", content: [{ type: "text", text: "继续" }] },
+      { role: "assistant", content: [{ type: "text", text: lastReport }] },
+    ];
+    const ctx = extractEvalContext(messages);
+    // 末条完整（含结尾标记）
+    expect(ctx).toContain("LAST_TAIL_UNIQUE");
+    // 较早 assistant 被 800 截断（其结尾标记在第 2000+ 位，应丢失）
+    expect(ctx).not.toContain("EARLY_TAIL_UNIQUE");
+  });
 });

@@ -225,6 +225,46 @@ describe("Anthropic conformance — abort 中断", () => {
     expect(err).toBeDefined();
     expect(String(err.error.message)).toContain("abort");
   });
+
+  test("P0-2 §7.3 回归：真半开 raw stream（yield 一个事件后永不 settle、不感知 signal）→ abort 后 <2s 内退出，不 hang", async () => {
+    // 区别于上面的"预先 aborted"用例：此 mock raw stream yield 一个事件后挂在一个
+    // **永不 resolve、不监听 signal** 的 Promise 上（SSE 半开：TCP 在、服务端不再发 event）。
+    // 若 anthropic.ts 的消费循环仍是旧 for-await（无 Promise.race(abortPromise)），
+    // 流的 signal.aborted 检查永远执行不到 → hang。此处 mid-stream abort，验证 race 生效。
+    let neverSettles: () => void = () => {};
+    const provider = new AnthropicProvider("test-key", "claude-opus-4-8");
+    const hangingRaw = {
+      async *[Symbol.asyncIterator]() {
+        yield { type: "message_start", message: { usage: { input_tokens: 10, output_tokens: 0 } } };
+        // 挂起：不监听 signal、不 resolve、不 reject —— 唯一出路是消费循环外层的 abort race。
+        await new Promise<void>((_resolve, _reject) => {
+          neverSettles = () => { /* 有意留空：该 Promise 本就设计为永不 settle */ };
+        });
+        yield { type: "message_stop" };
+      },
+    };
+    const response = { headers: new Headers(), body: { cancel: () => Promise.resolve() } };
+    (provider as any).client.messages.create = () => ({
+      withResponse: async () => ({ data: hangingRaw, response }),
+    });
+
+    const ctl = new AbortController();
+    setTimeout(() => ctl.abort(), 100);
+
+    const start = Date.now();
+    const out = await drain(provider.sendMessageStream(BASE_PARAMS, ctl.signal));
+    const elapsed = Date.now() - start;
+
+    // 必须远早于任何分钟级超时兜底，证明是消费循环外层 abort race 生效
+    expect(elapsed).toBeLessThan(2_000);
+    // abort 被转成 error 事件（sendMessageStream 的最外层 catch 语义）。
+    // 消费循环的 abortPromise race 主动 reject 的是 RequestAbortedError("请求已中止（anthropic consume race）")，
+    // 证明退出走的是外层 race 而非流自身感知 signal（后者文案为 "Request aborted"）。
+    const err = out.find((e) => e.type === "error") as any;
+    expect(err).toBeDefined();
+    expect(String(err.error.message)).toContain("请求已中止");
+    neverSettles(); // 语义标记：该 promise 本就设计为不 settle
+  }, 10_000);
 });
 
 // ─── 6. thinking 块透传 ────────────────────────────────────────────────

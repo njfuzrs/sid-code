@@ -55,6 +55,21 @@ export interface ModelRegistryEntry {
    */
   thinkingMode?: "adaptive" | "always-on";
 
+  /**
+   * 推理语言漂移倾向：该模型的思考过程（reasoning/thinking）在中文语境下
+   * 容易自发漂移到英文，需要更强的语言约束措辞（system-prompt.ts 的「铁律级」
+   * 身份指令 + `<internal_en>` 疏导）才能稳定输出中文。
+   *
+   * 背景（必删-4 根治）：此前 system-prompt.ts 用 `model.includes("deepseek")`
+   * 字符串匹配决定走哪套措辞——违反"不按模型名硬编码分档"原则（见 memory
+   * `feedback-no-hardcoded-model-tier-rules.md`），模型改名/新版/同类新模型都会漂移。
+   * 改为能力标志后，是否需要强约束由注册表数据驱动，新增同类模型只需在此声明。
+   *
+   * - DeepSeek V4 系（思考模型，中文语境下 reasoning 明显英文漂移）：`true`
+   * - 其它模型：缺省 undefined（= false，走标准语言措辞）
+   */
+  reasoningLanguageDrift?: boolean;
+
   // ── 定价（可选，USD/百万 token） ──
   pricing?: RegistryPricing;
 }
@@ -83,13 +98,13 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
   // DeepSeek
   // ══════════════════════════════════════════════════════════════════
   // DeepSeek V4（V3.2 起）：thinking 模式支持工具调用，tool-call 轮必须回传 reasoning_content。
-  "deepseek-v4-pro": { contextWindow: 1_000_000, maxOutputTokens: 384_000, supportsThinking: true, requiresReasoningContentForToolCalls: true, pricing: { input: 0.435, output: 0.87, cacheRead: 0.0036, cacheWrite: 0 } },
-  "deepseek-v4-flash": { contextWindow: 1_000_000, maxOutputTokens: 384_000, supportsThinking: true, requiresReasoningContentForToolCalls: true, pricing: { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0 } },
-  "DeepSeek-V4-Flash": { contextWindow: 1_000_000, maxOutputTokens: 384_000, supportsThinking: true, requiresReasoningContentForToolCalls: true, pricing: { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0 } },
-  "DeepSeek-V4-Pro": { contextWindow: 1_000_000, maxOutputTokens: 384_000, supportsThinking: true, requiresReasoningContentForToolCalls: true, pricing: { input: 0.435, output: 0.87, cacheRead: 0.0036, cacheWrite: 0 } },
+  "deepseek-v4-pro": { contextWindow: 1_000_000, maxOutputTokens: 384_000, supportsThinking: true, requiresReasoningContentForToolCalls: true, reasoningLanguageDrift: true, pricing: { input: 0.435, output: 0.87, cacheRead: 0.0036, cacheWrite: 0 } },
+  "deepseek-v4-flash": { contextWindow: 1_000_000, maxOutputTokens: 384_000, supportsThinking: true, requiresReasoningContentForToolCalls: true, reasoningLanguageDrift: true, pricing: { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0 } },
+  "DeepSeek-V4-Flash": { contextWindow: 1_000_000, maxOutputTokens: 384_000, supportsThinking: true, requiresReasoningContentForToolCalls: true, reasoningLanguageDrift: true, pricing: { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0 } },
+  "DeepSeek-V4-Pro": { contextWindow: 1_000_000, maxOutputTokens: 384_000, supportsThinking: true, requiresReasoningContentForToolCalls: true, reasoningLanguageDrift: true, pricing: { input: 0.435, output: 0.87, cacheRead: 0.0036, cacheWrite: 0 } },
   "deepseek-chat": { contextWindow: 1_000_000, maxOutputTokens: 384_000, supportsThinking: false, pricing: { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0 } },
   // 旧 deepseek-reasoner（R1 系）：输入携带 reasoning_content 会触发旧协议 400，保持不回传（缺省 false）。
-  "deepseek-reasoner": { contextWindow: 1_000_000, maxOutputTokens: 384_000, supportsThinking: true, requiresReasoningContentForToolCalls: false, pricing: { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0 } },
+  "deepseek-reasoner": { contextWindow: 1_000_000, maxOutputTokens: 384_000, supportsThinking: true, requiresReasoningContentForToolCalls: false, reasoningLanguageDrift: true, pricing: { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0 } },
 
   // ══════════════════════════════════════════════════════════════════
   // OpenAI / GPT

@@ -171,13 +171,15 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
     };
   }
 
-  // P0-1/P1-2: 评估器降级时（blockerKey=__evaluator_unavailable__）推 warning 到 TUI
+  // P0-1/P1-2: 评估器降级时（blockerKey=__evaluator_unavailable__）推 warning 到 TUI。
+  // 文案必须随 isGoalHardStopEnabled() 分支：默认（降级模式）达阈值后不会放行，只会持续
+  // 注入软提醒直到 maxTurns/budget 兜底——若沿用「第 N 次将自动放行」文案会误导用户。
   if (evalResult.blockerKey === "__evaluator_unavailable__") {
     const failCount = blockedDetector["recentBlockerKeys"].filter(k => k === "__evaluator_unavailable__").length + 1;
-    systemMessages.push({
-      level: "warning",
-      text: `⚠️ Goal 评估器连续失败 ${failCount}/${goalConfig.blockedThreshold} 次，第 ${goalConfig.blockedThreshold} 次将自动放行。可 /goal clear 手动结束。`,
-    });
+    const text = isGoalHardStopEnabled()
+      ? `⚠️ Goal 评估器连续失败 ${failCount}/${goalConfig.blockedThreshold} 次，第 ${goalConfig.blockedThreshold} 次将自动放行。可 /goal clear 手动结束。`
+      : `⚠️ Goal 评估器连续失败 ${failCount}/${goalConfig.blockedThreshold} 次，将持续提醒模型自行决定收尾（由轮次/预算上限兜底）。可 /goal clear 手动结束。`;
+    systemMessages.push({ level: "warning", text });
   }
 
   // 5. 目标不可能达成

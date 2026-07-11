@@ -244,6 +244,109 @@ describe("buildDigest 成本归零(回归:不再 95% 误报)", () => {
   });
 });
 
+describe("buildDigest 子代理 section (§9.6)", () => {
+  /** 写 events.jsonl 到 session 目录 */
+  function writeEvents(dir: string, events: unknown[]) {
+    writeFileSync(join(dir, "events.jsonl"), events.map((e) => JSON.stringify(e)).join("\n") + "\n");
+  }
+
+  /** 造一条 SubagentStart 事件 */
+  function startEvt(ts: string, agentId: string, agentType: string, description?: string) {
+    return {
+      event: "SubagentStart",
+      session_id: "x",
+      timestamp: ts,
+      cwd: "/tmp",
+      data: { agent_id: agentId, agent_type: agentType, description: description ?? null },
+    };
+  }
+
+  /** 造一条 SubagentStop 事件 */
+  function stopEvt(ts: string, agentId: string, status: "completed" | "error" | "unknown", extra: Record<string, unknown> = {}) {
+    return {
+      event: "SubagentStop",
+      session_id: "x",
+      timestamp: ts,
+      cwd: "/tmp",
+      data: { agent_id: agentId, status, ...extra },
+    };
+  }
+
+  it("无子代理事件时 subAgents 为 undefined", () => {
+    writeSession("nosub001", normalSession());
+    const d = buildDigest(listSessions(paths)[0], false, paths)!;
+    expect(d.subAgents).toBeUndefined();
+  });
+
+  it("4 个串行子代理（评估报告场景）→ 判定 serial + 留间隔铁证 + 成败正确", () => {
+    const dir = writeSession("serial01", normalSession({ has_sub_agent: true }));
+    // 复刻报告 §8.4 真实时间戳：120s 一个、相邻 3ms/1ms/2ms 排队
+    writeEvents(dir, [
+      startEvt("2026-06-30T11:55:40.347Z", "subagent-explore-a1", "explore", "深挖 tool-executor 串行根因"),
+      stopEvt("2026-06-30T11:57:40.352Z", "subagent-explore-a1", "error", { elapsed_ms: 120005, turns: 5 }),
+      startEvt("2026-06-30T11:57:40.355Z", "subagent-explore-a2", "explore"),
+      stopEvt("2026-06-30T11:59:40.356Z", "subagent-explore-a2", "error"),
+      startEvt("2026-06-30T11:59:40.357Z", "subagent-explore-a3", "explore"),
+      stopEvt("2026-06-30T12:01:40.359Z", "subagent-explore-a3", "error"),
+      startEvt("2026-06-30T12:01:40.361Z", "subagent-explore-a4", "explore"),
+      stopEvt("2026-06-30T12:03:40.362Z", "subagent-explore-a4", "completed"),
+    ]);
+    const d = buildDigest(listSessions(paths)[0], false, paths)!;
+    expect(d.subAgents).toBeDefined();
+    const sa = d.subAgents!;
+    expect(sa.total).toBe(4);
+    expect(sa.succeeded).toBe(1);
+    expect(sa.failed).toBe(3);
+    expect(sa.concurrency).toBe("serial");
+    // 相邻间隔 3ms/1ms/2ms 应作为铁证留下
+    expect(sa.serialEvidence).toContain("3ms");
+    expect(sa.serialEvidence).toContain("1ms");
+    // 描述被携带
+    expect(sa.spans[0].description).toContain("串行根因");
+    // 串行 + 失败均产出异常信号
+    const kinds = d.anomalies.map((a) => a.kind);
+    expect(kinds).toContain("subagent_serial_execution");
+    expect(kinds).toContain("subagent_execution_outcome");
+    expect(kinds).toContain("hypothesis_missing_concurrency_safe");
+    // 渲染包含子代理 section
+    const out = renderHuman(d, { noColor: true });
+    expect(out).toContain("子代理执行");
+    expect(out).toContain("串行");
+  });
+
+  it("时间重叠的子代理 → 判定 parallel，不误报串行异常", () => {
+    const dir = writeSession("parallel01", normalSession({ has_sub_agent: true }));
+    // 三个几乎同时启动、执行区间互相重叠
+    writeEvents(dir, [
+      startEvt("2026-06-30T12:00:00.000Z", "p1", "explore"),
+      startEvt("2026-06-30T12:00:00.010Z", "p2", "explore"),
+      startEvt("2026-06-30T12:00:00.020Z", "p3", "explore"),
+      stopEvt("2026-06-30T12:00:30.000Z", "p1", "completed"),
+      stopEvt("2026-06-30T12:00:31.000Z", "p2", "completed"),
+      stopEvt("2026-06-30T12:00:32.000Z", "p3", "completed"),
+    ]);
+    const d = buildDigest(listSessions(paths)[0], false, paths)!;
+    const sa = d.subAgents!;
+    expect(sa.total).toBe(3);
+    expect(sa.succeeded).toBe(3);
+    expect(sa.concurrency).toBe("parallel");
+    expect(d.anomalies.map((a) => a.kind)).not.toContain("subagent_serial_execution");
+  });
+
+  it("缺 agent_id 的旧轨迹 → 回退到时序配对", () => {
+    const dir = writeSession("legacy01", normalSession({ has_sub_agent: true }));
+    writeEvents(dir, [
+      { event: "SubagentStart", session_id: "x", timestamp: "2026-06-30T12:00:00.000Z", cwd: "/tmp", data: { agent_type: "explore" } },
+      { event: "SubagentStop", session_id: "x", timestamp: "2026-06-30T12:00:10.000Z", cwd: "/tmp", data: { status: "completed" } },
+    ]);
+    const d = buildDigest(listSessions(paths)[0], false, paths)!;
+    const sa = d.subAgents!;
+    expect(sa.total).toBe(1);
+    expect(sa.succeeded).toBe(1);
+    expect(sa.concurrency).toBe("single");
+  });
+});
+
 describe("渲染", () => {
   it("renderHuman 无颜色模式不含 ANSI 码", () => {
     writeSession("render01", normalSession());

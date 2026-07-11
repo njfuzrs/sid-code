@@ -275,7 +275,7 @@ export class HookSystem {
     agentId: string,
     agentType: string,
     parentSessionId?: string,
-    extra?: { model?: string; provider?: string },
+    extra?: { model?: string; provider?: string; description?: string },
   ): Promise<AggregatedHookResult> {
     return this.eventHandler.fireSubagentStartEvent(agentId, agentType, parentSessionId, extra);
   }

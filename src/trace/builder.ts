@@ -135,7 +135,7 @@ export interface TraceMetadata {
   files_edited: Set<string>;
   user_prompts: string[];
   compactions: Array<{ trigger: string; timestamp: string }>;
-  subagent_spans: Array<{ agent_id: string; agent_type: string; start: string; end?: string }>;
+  subagent_spans: Array<{ agent_id: string; agent_type: string; start: string; end?: string; description?: string }>;
   has_thinking: boolean;
   has_sub_agent: boolean;
   total_tokens_sent: number;
@@ -302,7 +302,7 @@ export interface TrajectoryMetaOutput {
   has_sub_agent: boolean;
   user_prompts: string[];
   compactions: Array<{ trigger: string; timestamp: string }>;
-  subagent_spans: Array<{ agent_id: string; agent_type: string; start: string; end?: string }>;
+  subagent_spans: Array<{ agent_id: string; agent_type: string; start: string; end?: string; description?: string }>;
   tool_source: "sid-code";
   start_source?: string;
   end_source?: string;

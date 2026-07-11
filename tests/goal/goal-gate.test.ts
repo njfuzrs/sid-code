@@ -316,6 +316,62 @@ describe("handleGoalGate · 评估器故障熔断（P0-1）", () => {
     const warnMsg = out.systemMessages.find((m) => m.level === "warning" && m.text.includes("评估器连续失败"));
     expect(warnMsg).toBeDefined();
   });
+
+  test("默认（降级）模式：告警文案不承诺「自动放行」，改为「持续提醒」", async () => {
+    // 回归 P0-1 告警文案与默认行为不一致：默认模式达阈值不放行，文案不得写「将自动放行」
+    const saved = process.env.SID_ENABLE_GOAL_HARD_STOP;
+    delete process.env.SID_ENABLE_GOAL_HARD_STOP;
+    try {
+      const ctx: GoalGateContext = {
+        goal: (() => {
+          const g = createGoal("完成迁移工作");
+          g.objective = "完成迁移工作";
+          g.turnsUsed = 5;
+          return g;
+        })(),
+        messages: [],
+        turnUsage: { inputTokens: 100, outputTokens: 50 },
+        evalConfig: { model: "haiku-test", provider: failingProvider(), timeout: 1000, minTurnsBeforeEval: 2 },
+        goalConfig: DEFAULT_GOAL_CONFIG,
+        blockedDetector: new BlockedDetector(3),
+      };
+      const out = await handleGoalGate(ctx);
+      const warnMsg = out.systemMessages.find((m) => m.level === "warning" && m.text.includes("评估器连续失败"));
+      expect(warnMsg).toBeDefined();
+      expect(warnMsg!.text).not.toContain("自动放行");
+      expect(warnMsg!.text).toContain("持续提醒");
+    } finally {
+      if (saved === undefined) delete process.env.SID_ENABLE_GOAL_HARD_STOP;
+      else process.env.SID_ENABLE_GOAL_HARD_STOP = saved;
+    }
+  });
+
+  test("硬停止模式：告警文案承诺「自动放行」", async () => {
+    const saved = process.env.SID_ENABLE_GOAL_HARD_STOP;
+    process.env.SID_ENABLE_GOAL_HARD_STOP = "1";
+    try {
+      const ctx: GoalGateContext = {
+        goal: (() => {
+          const g = createGoal("完成迁移工作");
+          g.objective = "完成迁移工作";
+          g.turnsUsed = 5;
+          return g;
+        })(),
+        messages: [],
+        turnUsage: { inputTokens: 100, outputTokens: 50 },
+        evalConfig: { model: "haiku-test", provider: failingProvider(), timeout: 1000, minTurnsBeforeEval: 2 },
+        goalConfig: DEFAULT_GOAL_CONFIG,
+        blockedDetector: new BlockedDetector(3),
+      };
+      const out = await handleGoalGate(ctx);
+      const warnMsg = out.systemMessages.find((m) => m.level === "warning" && m.text.includes("评估器连续失败"));
+      expect(warnMsg).toBeDefined();
+      expect(warnMsg!.text).toContain("自动放行");
+    } finally {
+      if (saved === undefined) delete process.env.SID_ENABLE_GOAL_HARD_STOP;
+      else process.env.SID_ENABLE_GOAL_HARD_STOP = saved;
+    }
+  });
 });
 
 // ─── P1-1：报告型任务 fast-path ───

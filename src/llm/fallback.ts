@@ -183,6 +183,9 @@ export interface FallbackConfig {
   querySource?: QuerySource;
   /** 最大重试次数（默认由各阶段配置决定） */
   maxRetries?: number;
+  /** 不确定-2/3：单次 executeWithFallback 调用内"连接阶段 + 流式阶段"重试的共享总上界。
+   *  防止两阶段各自独立计数叠加成退避风暴。默认由 network-profile 的 maxRetriesPerCall 注入。 */
+  maxRetriesPerCall?: number;
   /** 流式整体超时（毫秒，默认 5 分钟） */
   streamTimeoutMs?: number;
   /** 配置-1：退避基数（毫秒）。默认由 network-profile 的 retryBackoffBaseMs 注入 */
@@ -236,6 +239,9 @@ interface RetryContext {
   consecutive529: number;
   /** max_tokens 溢出恢复时的覆盖值 */
   maxTokensOverride?: number;
+  /** 不确定-2/3：本次 executeWithFallback 调用内累计的重试次数（连接阶段 + 流式阶段共享）。
+   *  达到 maxRetriesPerCall 上界后不再重试，防两阶段独立计数叠加成退避风暴。 */
+  totalRetriesThisCall: number;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -257,6 +263,7 @@ export class ModelFallback {
       availability: config.availability,
       querySource: config.querySource,
       maxRetries: config.maxRetries,
+      maxRetriesPerCall: config.maxRetriesPerCall,
       streamTimeoutMs: config.streamTimeoutMs,
       retryBackoffBaseMs: config.retryBackoffBaseMs,
       retryBackoffMaxMs: config.retryBackoffMaxMs,
@@ -384,7 +391,10 @@ export class ModelFallback {
       needsAuthRefresh: false,
       disableKeepAlive: this.config.disableKeepAlive ?? false,
       consecutive529: 0,
+      totalRetriesThisCall: 0,
     };
+    // 不确定-2/3：单次调用共享重试预算上界（连接 + 流式两阶段合并计数）。
+    const maxRetriesPerCall = this.config.maxRetriesPerCall ?? NETWORK_DEFAULTS.maxTimeoutRetries;
 
     // ═══════════════════════════════════════════════════════════════
     // 阶段 1：连接（获取流对象）
@@ -446,6 +456,17 @@ export class ModelFallback {
           this.availability.markRetryOnce(params.model, "连接失败");
           break;
         }
+
+        // 不确定-2/3：单次调用共享重试预算上界——防连接+流式两阶段独立计数叠加成退避风暴。
+        if (ctx.totalRetriesThisCall >= maxRetriesPerCall) {
+          log.warn(
+            "FALLBACK",
+            `连接阶段：单次调用累计重试已达上界 ${maxRetriesPerCall}，停止重试转 fallback`,
+          );
+          this.availability.markRetryOnce(params.model, "单次调用重试上界");
+          break;
+        }
+        ctx.totalRetriesThisCall++;
 
         // ── 可重试：计算延迟 ──
         const delayMs = this.calculateRetryDelay(err, attempt, classified, CONNECTION_RETRY.maxDelayMs);
@@ -681,6 +702,19 @@ export class ModelFallback {
 
             break;
           }
+
+          // 不确定-2/3：单次调用共享重试预算上界。persistent（无人值守）模式豁免——它明确
+          // 要求无限重试直到成功，不受此上界约束（其无限循环在上面的 attempt>=streamMaxRetries
+          // 分支内自成一路）。非 persistent 路径达到上界即停止重试、转 fallback。
+          if (!this.config.persistent && ctx.totalRetriesThisCall >= maxRetriesPerCall) {
+            log.warn(
+              "FALLBACK",
+              `流式阶段：单次调用累计重试已达上界 ${maxRetriesPerCall}，停止重试转 fallback`,
+            );
+            this.availability.markRetryOnce(params.model, "单次调用重试上界");
+            break;
+          }
+          ctx.totalRetriesThisCall++;
 
           // 流式重试：重新发起完整请求
           const delayMs = this.calculateRetryDelay(err, attempt, classified, STREAM_RETRY.maxDelayMs);

@@ -237,6 +237,52 @@ describe("T7 — signal 穿透", () => {
     expect(received.length).toBeGreaterThanOrEqual(2);
     expect(received.length).toBeLessThan(50);
   }, 15_000);
+
+  test("P0-2 §7.3 回归：真半开流（自身完全不感知 abort、永不 settle）→ 外层 race 仍在 <2s 内退出，不 hang 到超时兜底", async () => {
+    // 对齐 fallback.test.ts / stream-processor-abort-isolation.test.ts 的"真半开"范式：
+    // 既有 T7 signal 穿透用例的 slow() 每 20ms 正常 yield 一个事件，abort 检查在下一个
+    // 事件到达后即可执行——这掩盖了 for-await 盲区。此处的流 yield 一个事件后挂在一个
+    // **永不 resolve/reject、不监听 signal** 的 Promise 上（SSE 半开：TCP 在、服务端不再
+    // 发 event、reader.read() 永不 settle）。若 stream-lifecycle.ts 的消费循环仍是旧
+    // for-await（无 Promise.race(abortPromise)），本用例会 hang 到 idle/overall 超时兜底
+    // （这里特意把三层超时都设为 60s）才退出，从而暴露回归。
+    const ctl = new AbortController();
+    let neverSettles: () => void = () => {};
+    async function* trulyHanging(): AsyncIterable<Evt> {
+      yield { type: "content_block_delta" };
+      // 挂起：不监听 signal、不 resolve、不 reject —— 唯一出路是 lifecycle 外层的 abort race。
+      await new Promise<void>((_resolve, _reject) => {
+        neverSettles = () => { /* 有意留空：该 Promise 本就设计为永不 settle */ };
+      });
+      yield { type: "message_stop" };
+    }
+
+    const lc = createStreamLifecycle<Evt>({
+      idleTimeoutMs: 60_000,            // 三层超时都设得很长，确保退出只可能来自 abort race
+      contentProgressTimeoutMs: 60_000,
+      overallTimeoutMs: 60_000,
+      isContentProgress: isContent,
+      stallWarnMs: 60_000,
+      label: "TEST",
+      signal: ctl.signal,
+    });
+
+    setTimeout(() => ctl.abort(), 100);
+
+    const received: Evt[] = [];
+    const start = Date.now();
+    // guard 消费循环在 abort race 触发时静默 break（signal.aborted）→ for-await 正常结束，不抛。
+    for await (const ev of lc.guard(trulyHanging())) {
+      received.push(ev);
+    }
+    const elapsed = Date.now() - start;
+
+    // 必须远早于 60s 的三层超时兜底，证明是外层 abort race 生效而非定时器兜底
+    expect(elapsed).toBeLessThan(2_000);
+    // 至少收到了挂起前的第一个事件，但被 abort 提前打断，收不到 message_stop
+    expect(received.length).toBe(1);
+    neverSettles(); // 语义标记：该 promise 本就设计为不 settle
+  }, 10_000);
 });
 
 describe("T7 — streamLifecycle 便捷函数（无 getSnapshot）", () => {

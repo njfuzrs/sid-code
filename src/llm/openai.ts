@@ -1717,8 +1717,14 @@ export class OpenAIProvider implements Provider {
       if (signal && signalAbortHandler) {
         signal.removeEventListener("abort", signalAbortHandler);
       }
-      try { reader.cancel(); } catch {}
-      try { reader.releaseLock(); } catch {}
+      // best-effort 清理：cancel/releaseLock 失败不影响主流程，但补 debug 痕迹，
+      // 避免"整块空吞"——排查 reader 泄漏/双重释放时至少日志里有线索（静默-8）。
+      try { reader.cancel(); } catch (e) {
+        getLogger().debug("LLM:OPENAI", `reader.cancel() 失败（不影响主流程）: ${(e as Error)?.message}`);
+      }
+      try { reader.releaseLock(); } catch (e) {
+        getLogger().debug("LLM:OPENAI", `reader.releaseLock() 失败（不影响主流程）: ${(e as Error)?.message}`);
+      }
     }
   }
 }

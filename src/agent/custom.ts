@@ -145,6 +145,8 @@ export class CustomAgentTool implements Tool {
       maxTurns: 30,
       // 三级回退：Frontmatter 声明 > 默认 300s（对齐 task 类型，自定义 agent 执行复杂任务）
       timeout: this.def.timeout ?? 300_000,
+      // G13：把自定义 Agent 类型透传给子代理，让 save_memory 的 agent scope 定位到该类型记忆目录
+      type: this.def.name,
     }, signal);
 
     // P0-1：把自定义子代理消耗的 token/费用回写主会话

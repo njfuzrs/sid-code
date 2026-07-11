@@ -452,7 +452,14 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
 
 /** 构建身份指令部分 */
 function buildIdentitySection(language?: "zh" | "en", model?: string): string {
-  const isDeepSeek = model ? model.toLowerCase().includes("deepseek") : false;
+  // 必删-4：是否走「铁律级」语言约束措辞，改由注册表能力标志 reasoningLanguageDrift 驱动，
+  // 而非 model.includes("deepseek") 字符串匹配（违反"不按模型名硬编码分档"原则，模型改名/
+  // 新版/同类新模型都会漂移；见 memory feedback-no-hardcoded-model-tier-rules.md）。
+  // 新增同类"中文语境思考易漂移到英文"的模型，只需在 model-registry 声明该标志即可享受此措辞。
+  const { lookupCatalog } = require("../llm/model-params-catalog.ts");
+  const needsStrongLanguageGuard = model
+    ? lookupCatalog(model)?.reasoningLanguageDrift === true
+    : false;
 
   // 英文模式（标准措辞，对标 Claude Code getLanguageSection）
   if (language === "en") {
@@ -472,8 +479,8 @@ function buildIdentitySection(language?: "zh" | "en", model?: string): string {
     return section;
   }
 
-  // DeepSeek 中文模式：铁律级措辞（L1）
-  if (isDeepSeek) {
+  // 推理语言易漂移的模型中文模式：铁律级措辞（L1）
+  if (needsStrongLanguageGuard) {
     return `你是 sid-code AI 编程助手，一个专业的代码辅助工具。你可以：
 - 帮助用户编写、修改、调试代码
 - 执行 shell 命令、读写文件
@@ -485,7 +492,7 @@ function buildIdentitySection(language?: "zh" | "en", model?: string): string {
 即使在思考推理过程中，也不得输出英文自然语言句子。
 只有代码块中的代码、命令输出、错误日志可保持原文，但解释性文字必须使用中文。
 
-# 思考语言疏导（DeepSeek 专用，实验性方案）
+# 思考语言疏导（实验性方案，适用于推理易漂移到英文的模型）
 
 如果你的技术思考（reasoning/thinking）自然倾向于使用英文，
 你可以将其包裹在 <internal_en> 和 </internal_en> 标签中。
@@ -496,7 +503,7 @@ function buildIdentitySection(language?: "zh" | "en", model?: string): string {
 技术代码、API 名称可保持原文，但解释和推理必须用中文。`;
   }
 
-  // 非 DeepSeek 中文模式（标准措辞，当前行为）
+  // 标准中文模式（无推理语言漂移倾向的模型，当前默认行为）
   return `你是 sid-code AI 编程助手，一个专业的代码辅助工具。你可以：
 - 帮助用户编写、修改、调试代码
 - 执行 shell 命令、读写文件

@@ -808,7 +808,9 @@ function loadFromEnv(): Partial<Config> {
   const base: Partial<Config> = {
     provider: env.SID_CODE_LLM_PROVIDER,
     model: env.SID_CODE_LLM_MODEL,
-    baseURL: env.SID_CODE_LLM_BASE_URL,
+    // baseURL：SID_CODE_LLM_BASE_URL 优先，OPENAI_BASE_URL 作兼容别名（不确定-4：
+    // 此前只实现了 SID_CODE_LLM_BASE_URL，运维习惯用的 OPENAI_BASE_URL 压根没被读取）。
+    baseURL: env.SID_CODE_LLM_BASE_URL || env.OPENAI_BASE_URL,
     anthropicKey: env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN,
     openaiKey: env.OPENAI_API_KEY || env.SID_CODE_LLM_API_KEY,
   };
@@ -942,8 +944,11 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
 
   const config = merged as Config;
 
+  // env 原始 baseURL（合并前）——用于 resolveCurrentModelConfig 检测 per-model 覆盖 env 并告警。
+  const envBaseURL = envConfig.baseURL;
+
   // 从 availableModels 解析当前模型的连接信息，回填顶层字段
-  resolveCurrentModelConfig(config);
+  resolveCurrentModelConfig(config, envBaseURL);
 
   // 如果 model 为空但 availableModels 有配置，自动选第一个作为默认模型
   if (!config.model && config.availableModels.length > 0) {
@@ -951,7 +956,16 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
     config.model = first.name;
     // 从第一个模型回填 provider / baseURL / apiKey
     if (first.provider) config.provider = first.provider;
-    if (first.baseURL) config.baseURL = first.baseURL;
+    if (first.baseURL) {
+      if (envBaseURL && envBaseURL !== first.baseURL) {
+        getLogger().warn(
+          "CONFIG",
+          `环境变量 baseURL（${envBaseURL}）被默认模型「${first.name}」的 base_url（${first.baseURL}）覆盖。` +
+            `优先级：per-model base_url > env(SID_CODE_LLM_BASE_URL/OPENAI_BASE_URL)。`,
+        );
+      }
+      config.baseURL = first.baseURL;
+    }
     if (first.apiKey) {
       if (config.provider === "anthropic") config.anthropicKey = first.apiKey;
       else config.openaiKey = first.apiKey;
@@ -1045,14 +1059,30 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
  * 从 availableModels 解析当前模型的完整连接信息，回填到顶层字段。
  * 这样 registry / cli / schema 等消费方无需关心 "信息在模型还是顶层"。
  * 如果当前模型不在 availableModels 中，保持顶层字段不变（向后兼容）。
+ *
+ * baseURL 优先级链（不确定-4，从高到低）：
+ *   per-model availableModels[].baseURL  >  env(SID_CODE_LLM_BASE_URL/OPENAI_BASE_URL)  >  默认
+ * per-model 存在时无条件覆盖 env——这是有意设计（多模型各自端点必须独立），但此前静默覆盖，
+ * 运维用 env 做临时故障演练/切端点时会"env 明明设了却不生效且无提示"。现改为：覆盖发生且
+ * 两者取值不同时给一条 warn，让优先级链可发现。envBaseURL 由调用方传入（合并前 env 的原值）。
  */
-export function resolveCurrentModelConfig(config: Config): void {
+export function resolveCurrentModelConfig(config: Config, envBaseURL?: string): void {
   if (!config.availableModels?.length) return;
   const mc = config.availableModels.find(m => m.name === config.model);
   if (!mc) return;
 
   if (mc.provider) config.provider = mc.provider;
-  if (mc.baseURL) config.baseURL = mc.baseURL;
+  if (mc.baseURL) {
+    if (envBaseURL && envBaseURL !== mc.baseURL) {
+      getLogger().warn(
+        "CONFIG",
+        `环境变量 baseURL（${envBaseURL}）被模型「${mc.name}」的 base_url（${mc.baseURL}）覆盖。` +
+          `优先级：per-model base_url > env(SID_CODE_LLM_BASE_URL/OPENAI_BASE_URL)。` +
+          `如需 env 生效，请删除该模型的 base_url 配置或直接改模型配置。`,
+      );
+    }
+    config.baseURL = mc.baseURL;
+  }
   if (mc.apiKey) {
     if (config.provider === "anthropic") {
       config.anthropicKey = mc.apiKey;

@@ -175,6 +175,51 @@ export interface ProviderDigestStats {
   warning?: string;
 }
 
+/**
+ * 单个子代理执行 span（digest 消费视角）。
+ *
+ * 由 events.jsonl 的 SubagentStart / SubagentStop 事件配对而成：
+ * Start 提供 agent_id / agent_type / description 与起始时间戳，
+ * Stop 提供 status（成败）/ turns / elapsed_ms / tokens 与结束时间戳。
+ * 配对策略优先按 agent_id 精确匹配（§9.8 已让 Stop 携带 agent_id），
+ * 缺 agent_id 时回退到"最近一个未闭合的 Start"时序匹配。
+ */
+export interface SubAgentSpan {
+  agentId: string;
+  agentType: string;
+  /** 派活意图（§9.2：SubagentStart 已携带 description） */
+  description?: string;
+  startTs?: string;
+  endTs?: string;
+  /** 由 Stop 事件的 status 映射：completed=成功、error=失败、unknown/未闭合=未知 */
+  status: "completed" | "error" | "unknown";
+  turns?: number;
+  elapsedMs?: number;
+  outputTokens?: number;
+  inputTokens?: number;
+  /** 与上一个 span 结束时间的间隔（毫秒）。<1000ms 视为串行排队的强信号。 */
+  gapFromPrevMs?: number;
+}
+
+/**
+ * 子代理执行汇总（digest 的子代理 section）。
+ *
+ * 直接回答"派了几个子代理、几成几败、是串行还是并行"——让任何读 digest 的
+ * 消费者（模型/人）无需回 raw.jsonl 交叉验证即可判断成败与并发行为，
+ * 消灭"全部 SUCCESS"类误判（评估报告 §8.2 的 cc 决定性失误）。
+ */
+export interface SubAgentSummary {
+  total: number;
+  succeeded: number;
+  failed: number;
+  unknown: number;
+  /** 执行模式判定：serial=全部首尾相接串行、parallel=存在时间重叠、mixed=部分重叠、single=仅一个 */
+  concurrency: "serial" | "parallel" | "mixed" | "single";
+  /** 串行判定的证据文本（相邻 span 的间隔），供渲染层直接展示 */
+  serialEvidence?: string;
+  spans: SubAgentSpan[];
+}
+
 export interface Digest {
   sessionId: string;
   model: string;
@@ -198,6 +243,8 @@ export interface Digest {
   crash?: { reason?: string; attribution?: unknown };
   /** T12.5：按 Provider 聚合的健康诊断 */
   providerStats?: ProviderDigestStats[];
+  /** §9.6：子代理执行汇总（几成几败 + 串行/并行判定）。无子代理时 undefined。 */
+  subAgents?: SubAgentSummary;
 }
 
 export interface SessionRef {
@@ -405,6 +452,148 @@ function matchViolations(ref: SessionRef, meta: TrajMeta, paths: DigestPaths): n
     /* ignore */
   }
   return count;
+}
+
+/**
+ * 从 events.jsonl 的 SubagentStart / SubagentStop 事件构建子代理执行汇总。
+ *
+ * 数据来源（§9.2/§9.8 已让 collector 落盘这些字段）：
+ * - SubagentStart.data: { agent_id, agent_type, description }
+ * - SubagentStop.data:  { agent_id, status(completed|error|unknown), turns, elapsed_ms, output_tokens, input_tokens }
+ *
+ * 配对策略：优先按 agent_id 精确匹配 Stop→Start；缺 agent_id（旧轨迹）时
+ * 回退到"最近一个未闭合的 Start"时序匹配（与 collector 的 span 闭合逻辑一致）。
+ *
+ * 串行/并行判定：按 startTs 排序后，逐个看相邻 span 的时间关系——
+ * - 后一个的 start 晚于前一个的 end（有正间隔且无重叠）→ 串行段
+ * - 后一个的 start 早于前一个的 end（时间重叠）→ 并行段
+ * 全串行=serial、全并行=parallel、混合=mixed、单个=single。
+ * 串行时把相邻间隔（如"3ms/1ms/2ms"）作为证据文本输出——这正是评估报告
+ * §8.4 中 DeepSeek 用来识别"假并行真串行"的铁证，让 digest 直接给出结论。
+ *
+ * 返回 null 表示本会话无子代理事件。
+ */
+function buildSubAgentSummary(
+  events: Array<{ event?: string; data?: Record<string, unknown> }>,
+): SubAgentSummary | null {
+  const starts = events.filter((e) => e.event === "SubagentStart");
+  const stops = events.filter((e) => e.event === "SubagentStop");
+  if (starts.length === 0 && stops.length === 0) return null;
+
+  // 1. 用 Start 事件建 span（保留出现顺序，后面按 startTs 排序）
+  const spans: SubAgentSpan[] = starts.map((e) => {
+    const d = (e.data as any) ?? {};
+    return {
+      agentId: String(d.agent_id ?? ""),
+      agentType: String(d.agent_type ?? "unknown"),
+      description: d.description != null ? String(d.description) : undefined,
+      startTs: typeof (e as any).timestamp === "string" ? (e as any).timestamp : d.timestamp,
+      status: "unknown" as const,
+    };
+  });
+
+  // 2. 把 Stop 事件回填到对应 span
+  const usedStop = new Set<number>();
+  const matchByAgentId = (agentId: string): SubAgentSpan | undefined => {
+    if (!agentId) return undefined;
+    // 从后往前找同 agent_id 且尚未闭合的 span
+    for (let i = spans.length - 1; i >= 0; i--) {
+      if (spans[i].agentId === agentId && !spans[i].endTs) return spans[i];
+    }
+    return undefined;
+  };
+  const matchLatestOpen = (): SubAgentSpan | undefined => {
+    for (let i = spans.length - 1; i >= 0; i--) {
+      if (!spans[i].endTs) return spans[i];
+    }
+    return undefined;
+  };
+
+  for (let si = 0; si < stops.length; si++) {
+    const e = stops[si];
+    const d = (e as any).data ?? {};
+    const stopTs = typeof (e as any).timestamp === "string" ? (e as any).timestamp : d.timestamp;
+    const agentId = String(d.agent_id ?? "");
+    let span = matchByAgentId(agentId) ?? matchLatestOpen();
+    // 没有任何 Start 可配对（只有 Stop 的畸形轨迹）：凭空造一个 span，不丢数据
+    if (!span) {
+      span = {
+        agentId,
+        agentType: String(d.agent_type ?? "unknown"),
+        status: "unknown",
+      };
+      spans.push(span);
+    }
+    usedStop.add(si);
+    span.endTs = stopTs;
+    const rawStatus = d.status;
+    span.status =
+      rawStatus === "completed" ? "completed" : rawStatus === "error" ? "error" : "unknown";
+    if (typeof d.turns === "number") span.turns = d.turns;
+    if (typeof d.elapsed_ms === "number") span.elapsedMs = d.elapsed_ms;
+    if (typeof d.output_tokens === "number") span.outputTokens = d.output_tokens;
+    if (typeof d.input_tokens === "number") span.inputTokens = d.input_tokens;
+  }
+
+  // 3. 按 startTs 排序，算相邻间隔 + 判定串行/并行
+  const parseTs = (ts?: string): number => {
+    if (!ts) return NaN;
+    const n = Date.parse(ts);
+    return Number.isNaN(n) ? NaN : n;
+  };
+  spans.sort((a, b) => {
+    const ta = parseTs(a.startTs);
+    const tb = parseTs(b.startTs);
+    if (Number.isNaN(ta) && Number.isNaN(tb)) return 0;
+    if (Number.isNaN(ta)) return 1;
+    if (Number.isNaN(tb)) return -1;
+    return ta - tb;
+  });
+
+  let serialPairs = 0;
+  let overlapPairs = 0;
+  const gapTexts: string[] = [];
+  for (let i = 1; i < spans.length; i++) {
+    const prev = spans[i - 1];
+    const cur = spans[i];
+    const prevEnd = parseTs(prev.endTs);
+    const curStart = parseTs(cur.startTs);
+    if (Number.isNaN(prevEnd) || Number.isNaN(curStart)) continue;
+    const gap = curStart - prevEnd;
+    cur.gapFromPrevMs = gap;
+    if (gap >= 0) {
+      serialPairs++;
+      // 只对"紧贴着排队"的小间隔留证据（串行铁证），大间隔是正常的先后调用
+      if (gap < 1000) gapTexts.push(`#${i + 1} 距 #${i} 结束 ${gap}ms`);
+    } else {
+      overlapPairs++;
+    }
+  }
+
+  let concurrency: SubAgentSummary["concurrency"];
+  if (spans.length <= 1) {
+    concurrency = "single";
+  } else if (overlapPairs === 0) {
+    concurrency = "serial";
+  } else if (serialPairs === 0) {
+    concurrency = "parallel";
+  } else {
+    concurrency = "mixed";
+  }
+
+  const succeeded = spans.filter((s) => s.status === "completed").length;
+  const failed = spans.filter((s) => s.status === "error").length;
+  const unknown = spans.filter((s) => s.status === "unknown").length;
+
+  return {
+    total: spans.length,
+    succeeded,
+    failed,
+    unknown,
+    concurrency,
+    serialEvidence: gapTexts.length > 0 ? gapTexts.join("、") : undefined,
+    spans,
+  };
 }
 
 export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths): Digest | null {
@@ -961,6 +1150,64 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     });
   }
 
+  // ── §9.6：子代理执行汇总（几成几败 + 串行/并行判定）──
+  // 直接命中评估报告根因：4 个"并行深挖"的 explore 子代理实际被串行执行（isConcurrencySafe
+  // 缺失所致）。digest 读 events.jsonl 的 SubagentStart/Stop 配对成 span，按相邻间隔判串行，
+  // 关联 status 成败——让任何消费者（模型/人）无需回 raw.jsonl 交叉验证即可下结论，
+  // 消灭 §8.2 的"全部 SUCCESS"误判。
+  const subAgents = buildSubAgentSummary(events);
+  if (subAgents && subAgents.total > 0) {
+    // L0 事实：几成几败（客观计数，带出处）
+    anomalies.push({
+      layer: "L0",
+      severity: subAgents.failed > 0 ? "high" : "low",
+      kind: "subagent_execution_outcome",
+      detail:
+        `子代理 ${subAgents.total} 个：${subAgents.succeeded} 成功 / ${subAgents.failed} 失败` +
+        `${subAgents.unknown > 0 ? ` / ${subAgents.unknown} 未知` : ""}（执行模式：${subAgents.concurrency}）`,
+      provenance: [
+        {
+          sourceFile: eventsPath,
+          lineRef: "event=SubagentStart/SubagentStop 配对",
+          rawValue: `total=${subAgents.total} ok=${subAgents.succeeded} fail=${subAgents.failed} mode=${subAgents.concurrency}`,
+          mtime: fileMtimeIso(eventsPath),
+        },
+      ],
+      pointer: `raw.jsonl（子代理 tool_result 实际错误文本）`,
+    });
+
+    // L0 事实 + L1 假设：多个子代理却全串行 —— 串行化根因的直接信号
+    if (subAgents.total >= 2 && subAgents.concurrency === "serial") {
+      anomalies.push({
+        layer: "L0",
+        severity: "high",
+        kind: "subagent_serial_execution",
+        detail:
+          `${subAgents.total} 个子代理首尾相接串行执行，无时间重叠` +
+          `${subAgents.serialEvidence ? `（相邻间隔：${subAgents.serialEvidence}）` : ""}`,
+        provenance: [
+          {
+            sourceFile: eventsPath,
+            lineRef: "SubagentStart/Stop 相邻时间戳间隔",
+            rawValue: subAgents.serialEvidence ?? `serial, ${subAgents.total} spans`,
+            mtime: fileMtimeIso(eventsPath),
+          },
+        ],
+        pointer: `src/agent/tool.ts（SubAgentTool.isConcurrencySafe）+ src/query/tool-executor.ts（分区并发）`,
+      });
+      anomalies.push({
+        layer: "L1",
+        severity: "medium",
+        kind: "hypothesis_missing_concurrency_safe",
+        detail: `假设:多个只读子代理被串行执行，是因 isConcurrencySafe 未对该类型返回 true。`,
+        falsifier:
+          `若这些子代理是 task/verify 等可写类型（本就应串行保护），或相邻间隔本就 >数秒（正常先后调用），` +
+          `则串行是预期行为而非 bug。先确认子代理类型与 AgentDefinition.readOnly 再采信。`,
+        pointer: `src/agent/agent-definition.ts（readOnly 声明）+ src/agent/tool.ts:isConcurrencySafe`,
+      });
+    }
+  }
+
   // ── 该看哪个原始文件(指针) ──
   const pointers: Digest["pointers"] = [
     { label: "完整轨迹", path: join(ref.dir, "session.traj"), hint: "TAO 步骤 + history + metadata,SFT/回溯用" },
@@ -1041,6 +1288,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     ledger: ledger || undefined,
     crash: crashSnapshot ? { reason: crashSnapshot.reason, attribution: crashSnapshot.attribution } : undefined,
     providerStats: providerStats.length > 0 ? providerStats : undefined,
+    subAgents: subAgents ?? undefined,
   };
 }
 
@@ -1173,6 +1421,43 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
       const ttft = ps.ttft_p50 ? `TTFT P50=${(ps.ttft_p50 / 1000).toFixed(1)}s` : "";
       const warn = ps.warning ? c("yellow", ` ⚡${ps.warning}`) : "";
       L.push(`  ${c("cyan", ps.provider.padEnd(12))} 请求:${ps.requests} 成功率:${successRate}% 延迟:${ps.avgLatencyMs}ms ${ttft}${warn}`);
+    }
+  }
+
+  // §9.6：子代理执行 section（几成几败 + 串行/并行 + 每个 span 明细）
+  if (d.subAgents && d.subAgents.total > 0) {
+    const sa = d.subAgents;
+    L.push("");
+    const modeLabel: Record<SubAgentSummary["concurrency"], string> = {
+      serial: "串行",
+      parallel: "并行",
+      mixed: "混合",
+      single: "单个",
+    };
+    // 有失败标红，串行也是需要警觉的信号（可能是并发 bug）
+    const headColor: Color = sa.failed > 0 ? "red" : sa.concurrency === "serial" && sa.total >= 2 ? "yellow" : "green";
+    L.push(
+      c("bold", "子代理执行:") +
+        " " +
+        c(headColor, `${sa.total} 个（${sa.succeeded} 成功 / ${sa.failed} 失败${sa.unknown > 0 ? ` / ${sa.unknown} 未知` : ""}）`) +
+        c("gray", `  执行模式: ${modeLabel[sa.concurrency]}`),
+    );
+    if (sa.concurrency === "serial" && sa.total >= 2 && sa.serialEvidence) {
+      L.push(c("yellow", `  ⚠ 串行排队铁证: ${sa.serialEvidence}`));
+    }
+    for (let i = 0; i < sa.spans.length; i++) {
+      const s = sa.spans[i];
+      const mark =
+        s.status === "completed" ? c("green", "·") : s.status === "error" ? c("red", "✗") : c("yellow", "○");
+      const statusText =
+        s.status === "completed" ? "成功" : s.status === "error" ? "失败" : "未知";
+      const dur = s.elapsedMs != null ? ` ${(s.elapsedMs / 1000).toFixed(1)}s` : "";
+      const turns = s.turns != null ? ` ${s.turns}轮` : "";
+      const gap = s.gapFromPrevMs != null && s.gapFromPrevMs >= 0 && s.gapFromPrevMs < 1000
+        ? c("yellow", ` ←${s.gapFromPrevMs}ms`)
+        : "";
+      const desc = s.description ? c("gray", ` ${truncate(s.description, 64)}`) : "";
+      L.push(`  ${mark} ${c("cyan", s.agentType)} [${statusText}]${dur}${turns}${gap}${desc}`);
     }
   }
 

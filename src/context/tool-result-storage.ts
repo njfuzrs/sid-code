@@ -4,7 +4,6 @@
  * 核心能力：
  * - persistLargeOutput(): 超过阈值的内容写入磁盘，返回 ~200 字节轻量引用
  * - ContentReplacementState: 跨 turn 稳定替换，确保 prompt cache 前缀稳定
- * - enforceToolResultBudget(): per-message 聚合预算控制
  *
  * 设计原则：
  * - 引用文本存储在 block.content 中（仍是字符串），保持类型兼容
@@ -16,7 +15,6 @@ import { writeFileSync, mkdirSync, existsSync, readdirSync, statSync, unlinkSync
 import { join } from "node:path";
 import { getLogger } from "../debug/index.ts";
 import { sidPaths } from "../config/paths.ts";
-import type { Message } from "../llm/types.ts";
 
 // ─── 配置 ───
 
@@ -180,82 +178,15 @@ export class ContentReplacementState {
   }
 }
 
-// ─── 工具输出预算控制（设计预留，当前无需接入） ───
-// enforceToolResultBudget 提供 per-message 聚合 token 预算控制（按总量而非条数）。
-// 当前三层防线（addMessage 持久化 + 遮罩服务 50K token 保护窗口 + KEEP_RECENT_OUTPUTS=6）
-// 已覆盖所有真实场景，不存在溢出风险。
-// 详细分析见：docs/bugfixes/todo/enforceToolResultBudget-待接入分析.md
-// 接入条件：KEEP_RECENT_OUTPUTS 被调高 / 豁免名单扩大 / 遮罩服务被绕过 / 小窗口模型使用增多
-
-/** 预算控制选项 */
-export interface ToolResultBudgetOptions {
-  /** 最大 token 预算（默认 50000） */
-  maxTokens?: number;
-  /** 保留最近 N 条消息不受限制（默认 4） */
-  preserveRecentCount?: number;
-  /** 字符到 token 的粗略换算比例（默认 4） */
-  charsPerToken?: number;
-}
-
-const DEFAULT_BUDGET_OPTIONS: Required<ToolResultBudgetOptions> = {
-  maxTokens: 50_000,
-  preserveRecentCount: 4,
-  charsPerToken: 4,
-};
-
-/** 预算控制结果 */
-export interface ToolResultBudgetResult {
-  /** 处理后的消息列表 */
-  messages: Message[];
-  /** 被截断的工具输出数量 */
-  truncatedCount: number;
-}
-
-/**
- * per-message 聚合预算控制
- *
- * 超出总预算的旧工具输出替换为占位符，
- * 优先保留最近的消息。
- */
-export function enforceToolResultBudget(
-  messages: Message[],
-  options?: ToolResultBudgetOptions,
-): ToolResultBudgetResult {
-  const opts = { ...DEFAULT_BUDGET_OPTIONS, ...options };
-  const maxChars = opts.maxTokens * opts.charsPerToken;
-  const cutoff = Math.max(0, messages.length - opts.preserveRecentCount);
-
-  let totalCharsUsed = 0;
-  let truncatedCount = 0;
-
-  const result = messages.map((msg, idx) => {
-    if (idx >= cutoff) return msg;
-    if (msg.role !== "user") return msg;
-
-    const hasToolResult = msg.content.some((b) => b.type === "tool_result");
-    if (!hasToolResult) return msg;
-
-    const newContent = msg.content.map((block) => {
-      if (block.type !== "tool_result" || typeof block.content !== "string") return block;
-
-      totalCharsUsed += block.content.length;
-
-      if (totalCharsUsed > maxChars) {
-        truncatedCount++;
-        return {
-          ...block,
-          content: `[工具输出已超出预算被清理，原始长度 ${block.content.length} 字符]`,
-        };
-      }
-
-      return block;
-    });
-
-    return { ...msg, content: newContent };
-  });
-
-  return { messages: result, truncatedCount };
-}
+// ─── 工具输出预算控制（已评估决定不实现，2026-07-11） ───
+// 曾有 enforceToolResultBudget()（per-message 聚合 token 总量预算控制）作为设计预留，
+// 但从未接入生产。评估后删除：现有三层防线（addMessage 持久化 + 遮罩服务 50K token
+// 保护窗口 + KEEP_RECENT_OUTPUTS=6）已覆盖所有真实场景，且该朴素实现与本文件的
+// prompt cache 稳定机制（ContentReplacementState）、getCleanedMessages 的活跃文件/
+// 当前 turn 豁免语义均不对齐，直接接入会引入回归。
+// 若将来确需按 token 总量兜底（KEEP_RECENT_OUTPUTS 调高 / 豁免名单扩大 / 遮罩被绕过 /
+// 小窗口模型增多），必须重写而非复用旧实现，重写要求见：
+// docs/bugfixes/todo/enforceToolResultBudget-待接入分析.md
 
 // ─── 临时文件清理 ───
 

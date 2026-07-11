@@ -110,7 +110,9 @@ export class RequestAbortedError extends Error {
  *
  * ⚠️ 凡是 `abortController.abort("xxx")` 用到的新 reason 字符串，都必须登记到这里，
  * 否则该 reason 触发的孤儿 rejection 会被当成真故障导致进程退出。
- * 现有调用点：app.ts onInterrupt("user-cancel")、session 超时("timeout")、
+ * 现有调用点：app.ts onInterrupt("user-cancel")、会话级硬顶("session-timeout"：
+ * tuiAgentLoop 超过 maxSessionDurationMs 上限，展示专属文案而非笼统"已取消"；旧 reason
+ * "timeout" 保留登记向后兼容，不再由主路径使用)、
  * 单轮硬超时("turn-timeout")、watchdog 看门狗("watchdog-timeout")、
  * side-call 硬超时("side-call-timeout"：auto-compact / context-collapse / recall / warmup)、
  * 每轮 race settle 后的 turn 级子 controller 清理("race-settled"：loop.ts finally 主动
@@ -127,6 +129,7 @@ export class RequestAbortedError extends Error {
 export const ABORT_REASONS = [
   "user-cancel",
   "timeout",
+  "session-timeout",
   "turn-timeout",
   "watchdog-timeout",
   "side-call-timeout",
@@ -176,6 +179,16 @@ export const INTERNAL_TIMEOUT_ABORT_REASONS: ReadonlySet<AbortReason> = new Set<
  */
 export function isInternalTimeoutAbortReason(reason: unknown): boolean {
   return typeof reason === "string" && INTERNAL_TIMEOUT_ABORT_REASONS.has(reason as AbortReason);
+}
+
+/**
+ * 判断某个 abort reason 是否为"会话级硬顶超时"（tuiAgentLoop 超过 maxSessionDurationMs）。
+ * 与用户主动取消（user-cancel）和内部单轮/看门狗超时都不同——它是"整场会话跑太久被自动
+ * 结束"，需要向用户展示专属文案（"会话超过 N 分钟上限，已自动结束"）而非笼统的"已取消"。
+ * 见 app.ts tuiAgentLoop 的 sessionTimer 与 catch 分支（不确定-1）。
+ */
+export function isSessionTimeoutAbortReason(reason: unknown): boolean {
+  return reason === "session-timeout";
 }
 
 /** 可重试的网络错误码 */

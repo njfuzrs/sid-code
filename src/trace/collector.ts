@@ -964,6 +964,7 @@ export class TraceCollector {
       agent_id: input.agent_id,
       agent_type: input.agent_type,
       start: input.timestamp,
+      description: input.description,
     });
 
     this.writer.appendEvent({
@@ -975,6 +976,8 @@ export class TraceCollector {
         agent_id: input.agent_id,
         agent_type: input.agent_type,
         parent_session_id: input.parent_session_id,
+        // §9.2：写入派活意图，排查时无需回 raw.jsonl 找原始 prompt
+        description: input.description ?? null,
       },
     });
   }

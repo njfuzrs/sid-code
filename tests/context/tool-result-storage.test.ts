@@ -7,14 +7,13 @@ import {
   persistLargeOutput,
   isPersistedReference,
   ContentReplacementState,
-  enforceToolResultBudget,
   cleanupPersistedOutputs,
   PERSISTED_OUTPUT_PREFIX,
 } from "../../src/context/tool-result-storage.ts";
 import { existsSync, unlinkSync, rmdirSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+// 注：enforceToolResultBudget 及其单测已删除（2026-07-11 决策：不接入，见 docs/bugfixes/todo/enforceToolResultBudget-待接入分析.md）
 import { homedir } from "node:os";
-import type { Message } from "../../src/llm/types.ts";
 
 const testSessionId = "test-storage-session-001";
 
@@ -121,44 +120,5 @@ describe("ContentReplacementState", () => {
 
     state.clear();
     expect(state.size).toBe(0);
-  });
-});
-
-describe("enforceToolResultBudget", () => {
-  function makeBudgetMessages(): Message[] {
-    return [
-      { role: "user", content: [{ type: "tool_result", tool_use_id: "1", content: "A".repeat(1000) }] },
-      { role: "assistant", content: [{ type: "text", text: "ok" }] },
-      { role: "user", content: [{ type: "tool_result", tool_use_id: "2", content: "B".repeat(1000) }] },
-      { role: "assistant", content: [{ type: "text", text: "ok" }] },
-      { role: "user", content: [{ type: "tool_result", tool_use_id: "3", content: "C".repeat(1000) }] },
-      { role: "assistant", content: [{ type: "text", text: "ok" }] },
-    ];
-  }
-
-  it("预算充足时不应截断", () => {
-    const msgs = makeBudgetMessages();
-    const result = enforceToolResultBudget(msgs, { maxTokens: 10000, preserveRecentCount: 0, charsPerToken: 4 });
-
-    // 3 个 × 1000 字符 = 3000 字符 < 40000 字符 (10000 tokens × 4)
-    expect(result.truncatedCount).toBe(0);
-  });
-
-  it("预算不足时应截断旧输出", () => {
-    const msgs = makeBudgetMessages();
-    const result = enforceToolResultBudget(msgs, { maxTokens: 200, preserveRecentCount: 0, charsPerToken: 4 });
-
-    // 200 tokens × 4 = 800 字符预算，3 个各 1000 字符
-    // 前两个用完预算，第三个被截断
-    expect(result.truncatedCount).toBeGreaterThan(0);
-  });
-
-  it("保护窗口内的消息不应被截断", () => {
-    const msgs = makeBudgetMessages();
-    // preserveRecentCount=2 保护最后 2 条消息（最新的 assistant + user）
-    // 只有第一条 user 消息可能被截断
-    const result = enforceToolResultBudget(msgs, { maxTokens: 200, preserveRecentCount: 4, charsPerToken: 4 });
-
-    expect(result.truncatedCount).toBeGreaterThanOrEqual(0);
   });
 });

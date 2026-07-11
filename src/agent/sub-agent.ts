@@ -230,6 +230,8 @@ export interface CustomSubAgentTask {
   maxTurns?: number;
   maxTokens?: number;
   timeout?: number;
+  /** 子代理类型（G13：save_memory 的 agent scope 据此定位记忆目录；不传则 agent scope 不可用） */
+  type?: string;
 }
 
 export class SubAgent {
@@ -331,7 +333,7 @@ export class SubAgent {
         agentId,
         task.type,
         undefined,
-        { model: expectedModel },
+        { model: expectedModel, description: task.description },
       ).catch(err => log.error("HOOK", `subagent_start hook 失败: ${err.message}`));
 
       // 尝试 spawn 模式（独立进程，避免 V8 OOM）
@@ -404,10 +406,12 @@ export class SubAgent {
 
     let result: SubAgentResult;
     try {
-      // SubagentStart hook
+      // SubagentStart hook（description 取自 userPrompt 首段，便于轨迹排查识别派活意图）
       this.hookSystem?.fireSubagentStartEvent(
         `subagent-custom-${Date.now()}`,
         "custom",
+        undefined,
+        { description: task.userPrompt?.slice(0, 120) },
       ).catch(err => log.error("HOOK", `subagent_start hook 失败: ${err.message}`));
 
       // 尝试 spawn 模式
@@ -920,7 +924,7 @@ export class SubAgent {
         disallowedTools: agentDef?.disallowedTools,
         isAsync: task._isAsync,
       });
-      const tools = this.buildIsolatedToolRegistry(filteredTools);
+      const tools = this.buildIsolatedToolRegistry(filteredTools, task.type);
       // M2: 把 StructuredOutput 工具挂进隔离工具集(在过滤之后,确保不被裁剪掉)
       if (structuredTool) {
         tools.register(structuredTool);
@@ -1135,7 +1139,7 @@ export class SubAgent {
         maxTokens: this.resolveSubAgentWindow(task),
       });
 
-      const systemPrompt = await enhanceSubAgentPrompt(task.systemPrompt, this.language, process.cwd());
+      const systemPrompt = await enhanceSubAgentPrompt(task.systemPrompt, this.language, process.cwd(), task.type);
       ctxMgr.setSystemPrompt(systemPrompt);
       ctxMgr.addMessage({
         role: "user",
@@ -1143,7 +1147,7 @@ export class SubAgent {
       });
 
       const tools = task.allowedTools.length > 0
-        ? this.buildIsolatedToolRegistry(this.toolRegistry.filter(task.allowedTools).all())
+        ? this.buildIsolatedToolRegistry(this.toolRegistry.filter(task.allowedTools).all(), task.type)
         : new ToolRegistry();
       // P2-2：CustomSubAgentTask 无 forkMessages，resolveSubAgentMaxTurns 自然落到常规档 30。
       const maxTurns = resolveSubAgentMaxTurns(task);
@@ -1253,7 +1257,7 @@ export class SubAgent {
    * 对标 claude-code：普通子代理 readFileState 全新空初始化（我们无 fork 模式，
    * 故无需克隆父级，比 cc 更简单）。spawn 路径靠进程隔离天然解决，不经过此方法。
    */
-  private buildIsolatedToolRegistry(filteredTools: LegacyTool[]): ToolRegistry {
+  private buildIsolatedToolRegistry(filteredTools: LegacyTool[], agentType?: string): ToolRegistry {
     const subTracker = new FileReadTracker();
     const rebuilt = new Map<string, LegacyTool>();
     for (const t of createStatefulTools(subTracker)) rebuilt.set(t.name(), t);
@@ -1261,7 +1265,12 @@ export class SubAgent {
     const tools = new ToolRegistry();
     for (const t of filteredTools) {
       // 有状态工具用子代理独立 tracker 重建；无状态工具直接复用（安全）
-      const replacement = STATEFUL_TOOL_NAMES.has(t.name()) ? rebuilt.get(t.name()) : undefined;
+      let replacement = STATEFUL_TOOL_NAMES.has(t.name()) ? rebuilt.get(t.name()) : undefined;
+      // G13：save_memory 绑定当前子代理类型，让 agent scope 能定位到该类型记忆目录。
+      // 用鸭子类型探测 withAgentType，避免对 MemoryTool 的强类型 import 依赖。
+      if (!replacement && agentType && t.name() === "save_memory" && typeof (t as any).withAgentType === "function") {
+        replacement = (t as any).withAgentType(agentType) as LegacyTool;
+      }
       tools.register(replacement ?? t);
     }
     return tools;

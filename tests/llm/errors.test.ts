@@ -305,6 +305,7 @@ describe("isAbortError", () => {
       "alert-webhook-timeout",
       "external-abort",
       "race-settled",
+      "session-timeout",
       "side-call-timeout",
       "stream-heartbeat-timeout",
       "stream-overall-timeout",
