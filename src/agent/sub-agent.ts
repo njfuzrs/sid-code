@@ -8,6 +8,7 @@ import type { Provider } from "../llm/provider.ts";
 import type { ContentBlock, Usage } from "../llm/types.ts";
 import type { ProviderRegistry } from "../llm/registry.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
+import { SidechainWriter } from "../session/sidechain.ts";
 import { validateToolInput } from "../tool/input-validator.ts";
 import type { LegacyTool } from "../tool/types.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
@@ -248,6 +249,10 @@ export class SubAgent {
   /** 输出语言偏好（L4，从主代理配置继承） */
   private language?: "zh" | "en";
 
+  /** P2-10：父会话 id（用于给子代理开 sidechain JSONL）。由 SubAgentTool 注入；
+   *  未注入时 sidechain 持久化静默禁用（不影响子代理执行）。 */
+  private parentSessionId?: string;
+
   /** Spawn 模式配置（子进程启动所需的 Provider 信息） */
   private spawnConfig?: { providerName: string; apiKey: string; baseURL?: string };
 
@@ -261,6 +266,11 @@ export class SubAgent {
   /** 设置权限检查器（dontAsk 语义，由外部工厂创建后注入） */
   setPermissionChecker(checker: Checker | null): void {
     this.permissionChecker = checker;
+  }
+
+  /** P2-10：设置父会话 id，启用子代理 sidechain 持久化（由 SubAgentTool 注入）。 */
+  setParentSessionId(sessionId: string | undefined): void {
+    this.parentSessionId = sessionId;
   }
 
   /** 获取权限检查器（供 runAgentLoop config 透传） */
@@ -879,11 +889,26 @@ export class SubAgent {
     // try 块外部声明 ctxMgr，以便 catch 块在超时时能读取部分进度信息
     let ctxMgr: ContextManager | undefined;
 
+    // P2-10：子代理 sidechain 持久化。仅当父会话 id 与 taskId（作 agentId）都在时启用；
+    // 缺任一则 writer 为 undefined，所有写入调用经可选链安全跳过（不影响执行）。
+    const sidechain =
+      this.parentSessionId && taskId
+        ? new SidechainWriter(this.parentSessionId, taskId)
+        : undefined;
+    /** P2-10：已持久化到 sidechain 的消息数游标（onTurnEnd 增量落盘用）。 */
+    let sidechainCursor = 0;
+    /** P2-10：子代理最终结束状态，finally 中据此写 sidechain_end。默认 aborted——
+     *  只有走到明确成功/失败分支才改写，若中途抛出未捕获异常/被 kill 则保持 aborted。 */
+    let sidechainStatus: "completed" | "failed" | "aborted" = "aborted";
+
     try {
       // 独立的上下文
       ctxMgr = new ContextManager({
         maxTokens: this.resolveSubAgentWindow(task),
       });
+
+      // P2-10：落 sidechain_start（记录子代理身份，供恢复时展示）。
+      sidechain?.start(task.type, task.description, this.modelOverride || this.model);
 
       const basePrompt = getSystemPrompt(task.type);
       let systemPrompt = await enhanceSubAgentPrompt(basePrompt, this.language, process.cwd(), task.type);
@@ -993,6 +1018,19 @@ export class SubAgent {
           toolUseCount = info.toolUseCount;
           tokenCount = info.tokenCount;
 
+          // P2-10：把本轮新增的对话消息落盘到 sidechain。用游标记录已持久化的消息数，
+          // 每轮从 ctxMgr 取增量顺序追加，避免重复写。落盘失败不影响子代理执行。
+          if (sidechain) {
+            try {
+              const all = ctxMgr!.getMessages();
+              for (let i = sidechainCursor; i < all.length; i++) {
+                const m = all[i];
+                sidechain.appendMessage(m.role as "user" | "assistant" | "tool", m.content, info.turn);
+              }
+              sidechainCursor = all.length;
+            } catch { /* sidechain 落盘失败静默 */ }
+          }
+
           // 实时写输出到磁盘（支持 task_output 增量读取）
           if (taskId && info.textOutput) {
             appendAgentOutput(taskId, `[轮次 ${info.turn}] ${info.textOutput}\n`);
@@ -1061,6 +1099,7 @@ export class SubAgent {
       log.info("SUBAGENT", `[${task.type}] 完成，共 ${loopResult.turns} 轮，耗时 ${((Date.now() - startTime) / 1000).toFixed(1)}秒`);
 
       if (loopResult.success) {
+        sidechainStatus = "completed";
         return {
           success: true,
           output: finalOutput,
@@ -1075,6 +1114,8 @@ export class SubAgent {
         // 返回 success=false + 原始 AbortError message。此处补充友好超时提示，
         // 包含已完成轮次和工具调用数，帮助用户判断是否"只差一点"还是完全没进展。
         const isTimeout = timeoutCtrl.signal.aborted;
+        // P2-10：超时/中断记为 aborted（可恢复），其余非成功记为 failed。
+        sidechainStatus = isTimeout ? "aborted" : "failed";
         const donePart = loopResult.turns > 0
           ? `，已完成 ${loopResult.turns} 轮、${toolUseCount} 次工具调用`
           : "";
@@ -1117,6 +1158,9 @@ export class SubAgent {
       };
     } finally {
       clearTimeout(timer);
+      // P2-10：无论成功/失败/异常，都写 sidechain_end 收尾。sidechainStatus 默认 aborted，
+      // 仅成功/明确失败分支改写——恢复扫描据此过滤已结束的 sidechain。
+      sidechain?.end(sidechainStatus);
     }
   }
 

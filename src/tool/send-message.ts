@@ -34,6 +34,8 @@ export class SendMessageTool implements Tool {
   /** 长尾工具:代理间消息低频使用,延迟加载,由 tool_search 按需调出 */
   readonly shouldDefer = true;
   readonly searchHint = "send message agent communication resume 发送 消息 代理 通信 恢复 续传";
+  /** P2-3：分派/通信类工具，每次发给不同代理、内容天然不同，豁免循环检测 */
+  readonly exemptFromLoopDetection = true;
 
   private providerRegistry?: ProviderRegistry;
   private toolRegistry?: ToolRegistry;

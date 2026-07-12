@@ -22,7 +22,20 @@ import { getLogger } from "../debug/logger.ts";
 import { validateToolInput } from "../tool/input-validator.ts";
 import type { HookSystem } from "../hook/system.ts";
 import type { Checker, PermissionRequest } from "../permission/types.ts";
+import type { ToolProgressData } from "../tool/types.ts";
 import { buildHookModifiedNotice } from "../query/tool-executor.ts";
+import { stripInternalFields } from "../tool/internal-fields.ts";
+
+/**
+ * GAP-07（子代理侧补齐）：子代理工具进度回调。
+ * 长跑工具在执行期间吐出的中间进度经此上报（如汇总到父循环状态栏）。
+ * 未注入时安全跳过。
+ */
+export type SubAgentToolProgress = (
+  toolName: string,
+  toolUseId: string,
+  event: ToolProgressData,
+) => void;
 
 /**
  * 执行工具调用（子代理版本，支持权限检查与并行执行）
@@ -37,6 +50,7 @@ export async function executeTools(
   signal?: AbortSignal,
   hookSystem?: HookSystem,
   permissionChecker?: Checker,
+  onProgress?: SubAgentToolProgress,
 ): Promise<ContentBlock[]> {
   const log = getLogger();
 
@@ -60,14 +74,20 @@ export async function executeTools(
       notFoundBlocks.push(item);
       continue;
     }
-    if (tool.readOnly?.() === true) {
+    // GAP-05：对齐主循环——优先 isConcurrencySafe(input) 输入感知判定，回退 readOnly()。
+    // 此前子代理只用 readOnly() 二分，导致只读 bash（如 ls/cat，主循环经 isReadOnlyCommand
+    // 判定可并行）在子代理里被当作非只读串行化，子代理效率低于主循环。
+    const isSafe = tool.isConcurrencySafe
+      ? tool.isConcurrencySafe(item.block.input)
+      : (tool.readOnly?.() ?? false);
+    if (isSafe) {
       readOnlyBlocks.push(item);
     } else {
       writingBlocks.push(item);
     }
   }
 
-  log.debug("SUBAGENT:TOOL", `工具分类: 只读 ${readOnlyBlocks.length} 个并行, 写入 ${writingBlocks.length} 个串行`);
+  log.debug("SUBAGENT:TOOL", `工具分类: 并发安全 ${readOnlyBlocks.length} 个并行, 其余 ${writingBlocks.length} 个串行`);
 
   // 结果收集（按原始顺序索引存储）
   const resultMap = new Map<number, ContentBlock>();
@@ -82,11 +102,11 @@ export async function executeTools(
     });
   }
 
-  // 只读工具并行执行
+  // 并发安全工具并行执行
   if (readOnlyBlocks.length > 0) {
     const readResults = await Promise.all(
       readOnlyBlocks.map(({ block, idx }) =>
-        executeSingleTool(block, tools, signal, hookSystem, permissionChecker).then(r => ({ idx, result: r }))
+        executeSingleTool(block, tools, signal, hookSystem, permissionChecker, onProgress).then(r => ({ idx, result: r }))
       )
     );
     for (const { idx, result } of readResults) {
@@ -94,9 +114,9 @@ export async function executeTools(
     }
   }
 
-  // 写入工具串行执行
+  // 非并发安全工具串行执行
   for (const { block, idx } of writingBlocks) {
-    const result = await executeSingleTool(block, tools, signal, hookSystem, permissionChecker);
+    const result = await executeSingleTool(block, tools, signal, hookSystem, permissionChecker, onProgress);
     resultMap.set(idx, result);
   }
 
@@ -117,6 +137,7 @@ async function executeSingleTool(
   signal?: AbortSignal,
   hookSystem?: HookSystem,
   permissionChecker?: Checker,
+  onProgress?: SubAgentToolProgress,
 ): Promise<ContentBlock> {
   const log = getLogger();
   const tool = tools.get(block.name);
@@ -202,8 +223,19 @@ async function executeSingleTool(
 
   const startTime = Date.now();
   try {
-    // 注入 _agentId 标记，防止子代理调用 enter_plan_mode / sub_agent 形成套娃
-    const result = await tool.execute({ ...(validation.data as Record<string, unknown>), _agentId: "sub-agent" }, signal);
+    // GAP-08：纵深防御——先剥离模型可能自行伪造的内部字段（如 _agentId），
+    // 再注入受控的 _agentId="sub-agent" 防套娃。顺序不能反：若先注入后剥离会把自己剥掉。
+    // 防止模型伪造 _agentId 绕过子代理套娃检测（passthrough schema 下 strict 拦不住）。
+    const cleanedInput = stripInternalFields(validation.data) as Record<string, unknown>;
+    // GAP-07：把 onProgress 桥接给 tool.execute（长跑工具中间进度上报）。
+    const progressCallback = onProgress
+      ? (event: ToolProgressData) => onProgress(block.name, block.id, event)
+      : undefined;
+    const result = await tool.execute(
+      { ...cleanedInput, _agentId: "sub-agent" },
+      signal,
+      progressCallback,
+    );
     const elapsed = Date.now() - startTime;
     // 截断超大输出
     const truncated = ContextManager.truncateToolOutput(result.output);

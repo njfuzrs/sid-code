@@ -183,3 +183,38 @@ describe("Registry — G19 bridge (toLegacyTool)", () => {
     expect(legacy.interruptBehavior?.()).toBe("block");
   });
 });
+
+describe("Registry — 工具名冲突处理 (GAP-14)", () => {
+  test("重复注册同名工具：先到先得，保留首个，不覆盖", () => {
+    const r = new Registry();
+    const first = mkTool("read", { searchHint: "first" });
+    const second = mkTool("read", { searchHint: "second" });
+    r.register(first);
+    r.register(second);
+    // 保留首个
+    expect(r.get("read")).toBe(first);
+    expect(r.get("read")?.searchHint).toBe("first");
+    expect(r.size()).toBe(1);
+  });
+
+  test("重复注册同名 MCP 工具：同样先到先得", () => {
+    const r = new Registry();
+    const first = mkTool("mcp__s__t", { searchHint: "first" });
+    const second = mkTool("mcp__s__t", { searchHint: "second" });
+    r.register(first);
+    r.register(second);
+    expect(r.get("mcp__s__t")).toBe(first);
+  });
+});
+
+describe("Registry — 工具名别名 fallback (GAP-13)", () => {
+  test("get() 精确未命中返回 undefined（无别名登记时）", () => {
+    const r = new Registry();
+    r.register(mkTool("read"));
+    // 未登记别名 → 旧名查不到
+    expect(r.get("read_file")).toBeUndefined();
+    // 精确名照常命中
+    expect(r.get("read")).toBeDefined();
+  });
+});
+

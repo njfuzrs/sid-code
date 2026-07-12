@@ -41,6 +41,12 @@ export interface Checker {
   rememberDecision?(req: PermissionRequest, allowed: boolean): void;
   /** 获取与指定工具相关的阴影规则（可选，供权限对话框展示不可达规则提示） */
   getShadowedRulesForTool?(toolName: string): ShadowedRule[];
+  /**
+   * GAP-04：获取 Bash 命令风险分类器（可选）。
+   * 供 tool-executor 在三路竞争中把分类器作为独立并行路径启动（与 UI 弹窗竞赛），
+   * 而非在 check() 内同步串行等待。返回 null 表示未配置分类器。
+   */
+  getBashClassifier?(): import("./bash-classifier.ts").BashClassifier | null;
 }
 
 /** 权限规则配置 */

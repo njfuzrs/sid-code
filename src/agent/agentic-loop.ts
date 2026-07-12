@@ -66,6 +66,8 @@ export interface AgentLoopConfig {
   /** 权限检查器（子代理用 dontAsk 语义：危险命令拦截 + safetyCheck 照常生效，ask→deny）。
    *  缺省时不做权限检查（兼容旧测试 / 纯只读子代理）。 */
   permissionChecker?: import("../permission/types.ts").Checker;
+  /** GAP-07（子代理侧）：长跑工具中间进度回调。缺省时工具执行无进度上报（无副作用）。 */
+  onToolProgress?: import("./tool-executor.ts").SubAgentToolProgress;
 }
 
 /** Agent 循环结果 */
@@ -317,7 +319,7 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
       }
 
       // 执行工具
-      const toolResults = await executeTools(response.content, tools, signal, config.hookSystem, config.permissionChecker);
+      const toolResults = await executeTools(response.content, tools, signal, config.hookSystem, config.permissionChecker, config.onToolProgress);
       ctxMgr.addMessage({ role: "user", content: toolResults });
 
       // 每轮结束回调（进度追踪 + 磁盘输出）

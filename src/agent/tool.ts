@@ -77,6 +77,9 @@ export class SubAgentTool implements Tool {
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = subAgentSchema();
 
+  /** P2-3：并发/分派类工具，每次 description/prompt 天然不同、shape detector 易误判，豁免循环检测 */
+  readonly exemptFromLoopDetection = true;
+
   /** 并发控制：当前占用 slot 数（同步 + 后台子代理统一计入） */
   static running = 0;
   /** 子代理并发上限：默认 3（工程常量，与模型无关），可经 SID_SUBAGENT_MAX_CONCURRENT 放宽。
@@ -159,10 +162,18 @@ export class SubAgentTool implements Tool {
     }
   }
 
+  /** P2-10：主会话 id（由 App 注入），用于给子代理开 sidechain JSONL。未注入时不持久化。 */
+  private parentSessionId?: string;
+
   constructor(providerRegistry: ProviderRegistry, toolRegistry: ToolRegistry, hookSystem?: HookSystem) {
     this.providerRegistry = providerRegistry;
     this.toolRegistry = toolRegistry;
     this.hookSystem = hookSystem;
+  }
+
+  /** P2-10：注入主会话 id，启用子代理 sidechain 持久化（由 App 在 SessionState 就绪后调用）。 */
+  setParentSessionId(sessionId: string | undefined): void {
+    this.parentSessionId = sessionId;
   }
 
   /**
@@ -391,6 +402,7 @@ ${typeLines}
 
       const subAgent = SubAgent.fromRegistry(this.providerRegistry, this.toolRegistry, this.hookSystem);
       if (this.permissionChecker) subAgent.setPermissionChecker(this.permissionChecker);
+      subAgent.setParentSessionId(this.parentSessionId); // P2-10：启用 sidechain 持久化
 
       // Fork 模式：继承主对话上下文（prompt cache 友好）
       let forkMessages: { role: string; content: import("../llm/types.ts").ContentBlock[] }[] | undefined;
@@ -507,6 +519,7 @@ ${typeLines}
     try {
       const subAgent = SubAgent.fromRegistry(this.providerRegistry, this.toolRegistry, this.hookSystem);
       if (this.permissionChecker) subAgent.setPermissionChecker(this.permissionChecker);
+      subAgent.setParentSessionId(this.parentSessionId); // P2-10：启用 sidechain 持久化
 
       // 传递预创建的 task 信息，execute() 内部不再重复创建
       const result = await subAgent.execute(

@@ -27,6 +27,8 @@ export class TaskStopTool implements Tool {
   /** 长尾工具：仅在有后台任务时使用，延迟加载，由 tool_search 按需调出 */
   readonly shouldDefer = true;
   readonly searchHint = "background task stop kill cancel 后台 任务 停止 终止";
+  /** P2-3：任务管理类工具，连续停止不同 task 是正当操作而非循环，豁免循环检测 */
+  readonly exemptFromLoopDetection = true;
 
   name(): string {
     return "task_stop";

@@ -16,7 +16,8 @@
 
 import type { Message } from "../llm/types.ts";
 import { join } from "path";
-import { existsSync, mkdirSync, readdirSync, statSync, readFileSync, appendFileSync } from "fs";
+import { existsSync, mkdirSync, readdirSync, statSync, readFileSync, appendFileSync, createReadStream } from "fs";
+import { createInterface } from "readline";
 import { getLogger } from "../debug/logger.ts";
 import { sidPaths } from "../config/paths.ts";
 import { generateSessionId } from "./id.ts";
@@ -91,6 +92,10 @@ export interface SessionSummary {
 const FLUSH_INTERVAL_MS = 100;
 const pendingWrites = new Map<string, string[]>();
 const flushTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+/** P1-6：JSONL 文件超过此字节数时走流式逐行读取（避免"巨串 + 行数组"双份内存尖峰）。
+ *  4MB 约对应数千条记录，小于此值一次性读取更快、开销可忽略。 */
+const JSONL_STREAM_THRESHOLD_BYTES = 4 * 1024 * 1024;
 
 /** 把某个文件已排队的内容一次性落盘（同步 appendFileSync，批量合并 syscall） */
 function flushFile(filePath: string): void {
@@ -492,8 +497,32 @@ ${summary}
 
   /** 从 JSONL 文件恢复会话 */
   private async loadFromJsonl(filePath: string): Promise<SessionData | null> {
-    const content = await Bun.file(filePath).text();
-    return parseSessionJsonl(content);
+    // P1-6：大文件流式读取。此前 `Bun.file().text()` 把整份 JSONL 读成一个巨串，
+    // parseSessionJsonl 内部再 `.split("\n")` 生成完整行数组——超长会话（数万条记录、
+    // 数十 MB）会同时驻留「巨串 + 行数组」两份内存，产生尖峰。
+    //
+    // 优化：小文件仍走一次性读取（简单、快）；超过阈值时改流式逐行读取，只保留行数组一份，
+    // 避免巨串常驻。解析语义完全不变——仍交给同一套 rebuildRecordOrder 做链式重建
+    // （不截断历史，遵守 sid-code 既有不变量）。
+    try {
+      const size = statSync(filePath).size;
+      if (size <= JSONL_STREAM_THRESHOLD_BYTES) {
+        const content = readFileSync(filePath, "utf-8");
+        return parseSessionJsonl(content);
+      }
+      const lines = await readJsonlLinesStreaming(filePath);
+      getLogger().info("SESSION", `大会话流式读取: ${filePath}（${(size / 1024 / 1024).toFixed(1)}MB, ${lines.length} 行）`);
+      return parseSessionJsonlLines(lines);
+    } catch (e) {
+      // statSync/流式读取任何环节失败都回退到一次性读取，保证鲁棒（不因优化引入新失败面）。
+      getLogger().warn("SESSION", `流式读取失败，回退整读: ${filePath} - ${(e as Error)?.message}`);
+      try {
+        const content = readFileSync(filePath, "utf-8");
+        return parseSessionJsonl(content);
+      } catch {
+        return null;
+      }
+    }
   }
 
   /** P0-1：读取已存在 jsonl 尾部记录的 uuid，用于 resume 时续接链尾。
@@ -569,6 +598,18 @@ ${summary}
  */
 export function parseSessionJsonl(content: string): SessionData | null {
   const lines = content.trim().split("\n").filter(Boolean);
+  return parseSessionJsonlLines(lines);
+}
+
+/**
+ * P1-6：从"已切分好的 JSONL 行数组"解析会话（parseSessionJsonl 与流式读取路径共用核心）。
+ * 与 parseSessionJsonl 的唯一区别是入参已是行数组（流式读取时逐行 push 得到，无需巨串），
+ * 解析语义完全一致。
+ *
+ * @param lines 非空 JSONL 行数组（每行一条记录；调用方已过滤空行）
+ * @returns 解析出的 SessionData；无 session_start 行时返回 null
+ */
+export function parseSessionJsonlLines(lines: string[]): SessionData | null {
   if (lines.length === 0) return null;
 
   const orderedRecords = rebuildRecordOrder(lines);
@@ -689,4 +730,30 @@ function rebuildRecordOrder(lines: string[]): SessionRecord[] {
 
   chain.reverse();
   return chain;
+}
+
+/**
+ * P1-6：流式逐行读取 JSONL，返回非空行数组（不构造整份巨串）。
+ *
+ * 用 Node createReadStream + readline 逐行消费，只把非空行 push 进数组——相比
+ * `Bun.file().text()` + `split("\n")` 少一份巨串常驻内存。返回的行数组交给
+ * parseSessionJsonlLines 走与整读完全一致的解析/链重建逻辑（语义不变）。
+ *
+ * 注意：这里仍会把所有行收进内存数组——因为链式重建需要按 uuid 回溯，无法真正做到
+ * "只读尾部"（尾行的 parentUuid 可能指向文件任意位置）。本优化消除的是"巨串"这一份
+ * 额外拷贝，而非行数组本身；对数十 MB 文件已能显著削峰。
+ */
+function readJsonlLinesStreaming(filePath: string): Promise<string[]> {
+  return new Promise<string[]>((resolve, reject) => {
+    const lines: string[] = [];
+    const stream = createReadStream(filePath, { encoding: "utf-8" });
+    stream.on("error", reject);
+    const rl = createInterface({ input: stream, crlfDelay: Infinity });
+    rl.on("line", (line) => {
+      // 与 split("\n").filter(Boolean) 对齐：去掉两端空白后仍非空才收（跳过空行）。
+      if (line.trim()) lines.push(line);
+    });
+    rl.on("error", reject);
+    rl.on("close", () => resolve(lines));
+  });
 }

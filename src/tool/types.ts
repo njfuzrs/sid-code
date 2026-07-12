@@ -93,6 +93,29 @@ export interface ToolCapabilityFields<Input = unknown> {
    * 返回 `undefined` 表示无需回填（回退原始 input 观测）。纯函数、无副作用。
    */
   backfillObservableInput?(input: Input): Input | undefined;
+
+  /**
+   * P2-3：工具自报"应豁免循环检测"（对齐差距分析「豁免白名单维护机制」方案②）。
+   *
+   * 背景：loop-detection.ts 的 `EXEMPT_TOOLS` 曾是一份手写死名单——新增工具时容易忘记
+   * 评估是否该豁免，且没有任何机制把"名单"与"真实注册的工具"对账，长期有漂移风险
+   * （同 subAgentModels 校验白名单曾从 BUILTIN_AGENTS 派生以根治漂移的教训）。
+   *
+   * 现让工具在自身定义处**自报**这一属性，作为豁免的**单一事实源**：
+   * `loop-detection.ts` 的 `EXEMPT_TOOLS` 与所有自报 `exemptFromLoopDetection === true`
+   * 的工具由 `tests/agent/loop-detection-exemption-audit.test.ts` 双向对账，任一侧新增/
+   * 遗漏都会让审计测试失败，从而把"忘记评估豁免"变成 CI 可见的硬错误。
+   *
+   * 豁免标准（满足其一即应置 true）：
+   *   1. 并发/分派类：每次调用的 description/prompt 天然不同，但 shape detector 可能因
+   *      结构相似而误判（如 sub_agent）。
+   *   2. 任务/状态管理类：操作的是不同 task / 不同状态条目，连续调用是正当推进而非循环
+   *      （如 task_output/task_stop/task_list/send_message/todo_write）。
+   *   3. 模式切换类：进入/退出某模式，语义上就是一次性的状态跃迁（如 enter/exit_plan_mode）。
+   *
+   * 不声明（undefined/false）表示"受循环检测约束"，是绝大多数读写/搜索类工具的默认。
+   */
+  exemptFromLoopDetection?: boolean;
 }
 
 // ===== 旧版接口（渐进式迁移期间保留） =====
@@ -113,6 +136,13 @@ export interface LegacyToolResult {
    * 据此拼多部件 content 让模型看图/读 PDF。其余工具不填充，保持 undefined。
    */
   mediaBlocks?: import("../llm/types.ts").ToolResultMediaBlock[];
+  /**
+   * GAP-06：上下文修改器（LegacyTool 侧对齐新版 Tool.contextModifier）。
+   * 工具执行后需要修改运行上下文（如 EnterPlanMode 切换权限模式）时填充。
+   * executeTools 在结果收集完毕后，按工具**原始顺序**依次应用，保证并发执行下
+   * 上下文修改顺序仍然确定。绝大多数工具不填充，保持 undefined。
+   */
+  contextModifier?: (context: ToolUseContext) => ToolUseContext;
 }
 
 /**

@@ -107,6 +107,15 @@ export class Registry {
   /** 延迟加载工具集合（预留给 ToolSearch） */
   private deferredTools = new Set<string>();
   /**
+   * GAP-13：工具名别名映射表（旧名 → 新名）。
+   * 对标 claude-code 工具查找的 alias fallback：工具重命名后，历史会话或模型记忆中的
+   * 旧名调用不会直接 404，而是解析到新名。`get()` 精确未命中时回退查此表。
+   * 目前 sid-code 工具名相对稳定，表为空——机制先行，重命名时在此登记映射即可。
+   */
+  private aliases = new Map<string, string>([
+    // ["旧名", "新名"]
+  ]);
+  /**
    * 运行时激活集合（ToolSearch 调出）。
    *
    * 工具默认延迟（静态 shouldDefer 字段 或 deferredTools 名单）后，模型经 tool_search
@@ -118,19 +127,40 @@ export class Registry {
 
   // ===== Layer 1：静态注册 =====
 
-  /** 注册工具（自动区分内置/MCP） */
+  /**
+   * 注册工具（自动区分内置/MCP）。
+   *
+   * GAP-14：工具名冲突处理——先到先得，不静默覆盖。
+   * 多个 MCP server 提供同名工具（或重复注册）时，保留首个注册的，跳过后续并打 warn。
+   * 此前直接 `.set()` 会让后注册的静默覆盖先注册的，工具行为随连接顺序漂移、用户无从察觉。
+   * 对标 claude-code assembleToolPool 的 uniqBy 去重 + 冲突告警。
+   */
   register(tool: LegacyTool): void {
     const name = tool.name();
-    if (name.startsWith("mcp__")) {
-      this.mcpTools.set(name, tool);
-    } else {
-      this.builtInTools.set(name, tool);
+    const target = name.startsWith("mcp__") ? this.mcpTools : this.builtInTools;
+    if (target.has(name)) {
+      getLogger().warn(
+        "TOOL",
+        `工具名冲突: "${name}" 已注册，跳过重复注册（先到先得，保留首个）`,
+      );
+      return;
     }
+    target.set(name, tool);
   }
 
-  /** 根据名称查找工具（两层都查） */
+  /**
+   * 根据名称查找工具（两层都查）。
+   *
+   * GAP-13：精确匹配未命中时，回退别名表解析（工具重命名兼容）。
+   */
   get(name: string): LegacyTool | undefined {
-    return this.builtInTools.get(name) ?? this.mcpTools.get(name);
+    const direct = this.builtInTools.get(name) ?? this.mcpTools.get(name);
+    if (direct) return direct;
+    const aliased = this.aliases.get(name);
+    if (aliased) {
+      return this.builtInTools.get(aliased) ?? this.mcpTools.get(aliased);
+    }
+    return undefined;
   }
 
   /** 返回所有已注册的工具（内置优先，MCP 在后） */

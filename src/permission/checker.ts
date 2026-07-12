@@ -955,7 +955,14 @@ export class PermissionChecker implements Checker {
 
     // ── 第二道：LLM 风险分类器（仅当启用且可用；critical 已在上面拦截，这里只处理"看似不危险/中低危"的命令）──
     //   plan 模式（只读）不调用分类器：plan 模式下工具本就受限于只读，再花 LLM 成本判风险无意义（迭代 III 集成点 #3）。
-    if (this.config.permissionMode !== "plan" && this.bashClassifier?.isAvailable()) {
+    //   GAP-04：speculativeClassifier 开启时，**跳过此处的同步分类器调用**——分类器改由
+    //   tool-executor 的三路竞争并行启动（与 UI 弹窗竞赛），避免"同步等分类器 + 弹窗"的串行叠加。
+    //   安全不变式不受影响：第一道 critical 拒绝、第三道硬编码 high/medium 兜底确认仍同步生效，
+    //   speculative 路径只能"提前放行需确认命令"，无法放行任何硬编码已知危险命令（弹窗兜底不被绕过）。
+    //   代价（仅 opt-in 生效）：分类器对"硬编码判安全但 LLM 判危险"命令的升级拦截，在 speculative
+    //   模式下让位给并行竞赛（该场景走弹窗/竞赛兜底）。默认关闭，保守用户行为不变。
+    const speculativeMode = (this.config as any).speculativeClassifier === true;
+    if (!speculativeMode && this.config.permissionMode !== "plan" && this.bashClassifier?.isAvailable()) {
       const classifyResult = await this.bashClassifier.classify({
         command: cmd,
         cwd: process.cwd(),

@@ -246,6 +246,15 @@ export interface Config {
   enableLLMClassifier?: boolean;
   /** LLM 分类器使用的模型（默认复用主循环模型 config.model） */
   classifierModel?: string;
+  /**
+   * GAP-04：分类器并行预启动（推测执行）。默认 false。
+   * 开启后：checker 的同步分类器**放行路径**下沉到 tool-executor 三路竞争，与 UI 弹窗并行，
+   * 分类器判定安全时提前跳过弹窗（省 1-2s）。
+   * 安全不变式：checker 的**硬编码/规则拒绝仍同步生效**（parallel 路径只 approve 不 deny），
+   * 分类器无法放行任何硬编码已知危险命令——弹窗兜底不会被绕过。
+   * 要求 enableLLMClassifier=true 才有意义（无分类器时该路径恒 null）。
+   */
+  speculativeClassifier?: boolean;
   /** 是否启用 macOS Seatbelt 沙箱（限制 bash 命令的文件系统和网络访问，默认 false） */
   enableSandbox?: boolean;
 
@@ -592,6 +601,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     sanitize_env: "sanitizeEnv",
     enable_llm_classifier: "enableLLMClassifier",
     classifier_model: "classifierModel",
+    speculative_classifier: "speculativeClassifier",
     team_memory: "teamMemory",
     trace: "trace",
     search: "search",

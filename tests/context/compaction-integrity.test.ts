@@ -92,4 +92,50 @@ describe("D2-4 闭合 — 压缩边界消息历史完整性", () => {
 
     expect(checkMessageHistoryIntegrity(ctx.getMessages()).intact).toBe(true);
   });
+
+  // ─── P1-4a: 压缩观察者接线 ───
+
+  // 纯文本对话轮：user(text) → assistant(text)。不含 tool 对，每条 user 都是安全分割点，
+  // 能可靠制造 >0 的 findCompressSplitPoint（pushToolRound 会因连续 user 合并只剩 1 个安全点）。
+  function pushTextRound(ctx: ContextManager, i: number, pad: string) {
+    ctx.addMessage({ role: "user", content: [{ type: "text", text: `问题 ${i} ${pad}` }] });
+    ctx.addMessage({ role: "assistant", content: [{ type: "text", text: `回答 ${i} ${pad}` }] });
+  }
+
+  test("P1-4a: compactWithSummary 触发 compactObserver 回调（summary + removedCount）", () => {
+    const ctx = new ContextManager({ maxTokens: 100_000 });
+    const calls: Array<{ summary: string; removedCount: number }> = [];
+    ctx.setCompactObserver((summary, removedCount) => calls.push({ summary, removedCount }));
+
+    const bigPad = "z".repeat(800);
+    for (let i = 0; i < 30; i++) pushTextRound(ctx, i, bigPad);
+    // 前置断言：确有安全分割点（否则压缩被跳过，测的就不是观察者了）
+    expect(ctx.findCompressSplitPoint()).toBeGreaterThan(0);
+    ctx.compactWithSummary("【摘要】观察者应收到这条");
+
+    expect(calls.length).toBe(1);
+    expect(calls[0].summary).toBe("【摘要】观察者应收到这条");
+    expect(calls[0].removedCount).toBeGreaterThan(0);
+  });
+
+  test("P1-4a: 无安全分割点时不触发 compactObserver（压缩被跳过）", () => {
+    const ctx = new ContextManager({ maxTokens: 100_000 });
+    let called = false;
+    ctx.setCompactObserver(() => { called = true; });
+    // 历史太短，findCompressSplitPoint 返回 <=0，compactWithSummary 直接 return
+    ctx.addMessage({ role: "user", content: [{ type: "text", text: "hi" }] });
+    ctx.compactWithSummary("【摘要】不应触发");
+    expect(called).toBe(false);
+  });
+
+  test("P1-4a: compactObserver 抛错不影响压缩完成", () => {
+    const ctx = new ContextManager({ maxTokens: 100_000 });
+    ctx.setCompactObserver(() => { throw new Error("落盘失败模拟"); });
+    const bigPad = "q".repeat(800);
+    for (let i = 0; i < 30; i++) pushTextRound(ctx, i, bigPad);
+    // 观察者抛错被 try/catch 吞掉，压缩正常完成、历史合法
+    expect(() => ctx.compactWithSummary("【摘要】观察者抛错")).not.toThrow();
+    expect(checkMessageHistoryIntegrity(ctx.getMessages()).intact).toBe(true);
+  });
 });
+

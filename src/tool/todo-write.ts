@@ -78,6 +78,9 @@ export class TodoWriteTool implements Tool {
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = todoWriteSchema();
 
+  /** P2-3：状态管理类工具，清单内容随进展自然变化、连续更新是正当行为，豁免循环检测 */
+  readonly exemptFromLoopDetection = true;
+
   private currentTodos: TodoItem[] = [];
   /**
    * todo_write 被成功调用的次数（单调递增）。

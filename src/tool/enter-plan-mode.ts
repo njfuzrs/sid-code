@@ -12,6 +12,8 @@ const enterPlanModeSchema = lazySchema(() => z.object({}));
 
 export class EnterPlanModeTool implements Tool {
   readonly zodSchema = enterPlanModeSchema();
+  /** P2-3：模式切换类工具，进入计划模式是一次性状态跃迁，豁免循环检测 */
+  readonly exemptFromLoopDetection = true;
 
   constructor(private planManager: PlanModeManager) {}
 

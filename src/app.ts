@@ -172,6 +172,16 @@ export class App {
   private sessionStore: SessionStore | null = null;
   /** B6：被 resume 恢复的会话 id（非 null 表示当前是 resume 会话，doInit 应续写原 jsonl 而非新建） */
   private resumedSessionId: string | null = null;
+  /** P1-7：本会话累积改动过的文件集合（去重），供 recordFileChanges 落盘 file_changes 快照。
+   *  resume 时从被恢复会话的 file_changes metadata 预填，续做时继续累积。 */
+  private changedFiles: Set<string> = new Set();
+  /**
+   * GAP-01：当前 turn 的流式工具预执行结果缓存（tool_use_id → SingleToolOutcome）。
+   * processStream 在流式回调中对并发安全工具抢先执行，结果暂存于此；随后 executeTools
+   * 经 getPrecomputedResult 命中复用。每个 turn 开始前重建，结束后清空，避免跨轮串味。
+   * 仅在 SID_ENABLE_STREAMING_TOOL_EXEC=1 时激活。
+   */
+  private _streamingToolResults: Map<string, import("./query/tool-executor.ts").SingleToolOutcome> | null = null;
   private queryEngine: QueryEngine;
   private hookSystem!: HookSystem;
   private jitContextMgr: JitContextManager;
@@ -586,6 +596,21 @@ export class App {
     }
   }
 
+  /**
+   * P2-10：注入主会话 id 到 SubAgentTool，启用子代理 sidechain 持久化。
+   * 用被恢复会话 id（resume 时）或本进程会话 id——与 SessionStore 实际写入的 jsonl 归属一致，
+   * 使子代理 sidechain 文件（<sessionId>-<agentId>.jsonl）挂在正确的主会话名下。
+   */
+  private wireSubAgentSessionId(): void {
+    const sessionId = this.resumedSessionId ?? this.sessionState.sessionId;
+    for (const tool of this.toolRegistry.all()) {
+      const maybe = tool as { setParentSessionId?: (id: string) => void };
+      if (typeof maybe.setParentSessionId === "function") {
+        maybe.setParentSessionId(sessionId);
+      }
+    }
+  }
+
   /** 注入 HookSystem 到 spawn-agent 类工具（根因修复）。遍历工具注册表，给所有带
    *  setHookSystem 的工具（SubAgentTool / WorkflowTool）回填 hookSystem，使其内部 spawn 的
    *  子代理能触发 Subagent 生命周期 hook 与工具级 execute_tool span。 */
@@ -701,6 +726,7 @@ export class App {
   private setEffortRuntime(level: import("./llm/effort.ts").EffortSetting, persist?: boolean): void {
     this.runtimeEffort = level;
     if (persist) this.persistKnob("effortLevel", level);
+    this.persistAgentSetting(); // P1-4b：落会话级快照，供 resume 恢复本会话档位
     this.pushKnobDisplay();
   }
 
@@ -711,6 +737,7 @@ export class App {
       // settings.json thinkingEnabled 是 boolean：on→true / off→false / auto→删除字段（回退默认）。
       this.persistKnob("thinkingEnabled", setting === undefined ? undefined : setting === "on");
     }
+    this.persistAgentSetting(); // P1-4b：落会话级快照，供 resume 恢复本会话思考态
     this.pushKnobDisplay();
   }
 
@@ -721,6 +748,31 @@ export class App {
       patchSettingsFile("userSettings", key, value);
     } catch (e) {
       getLogger().warn("KNOB", `持久化 ${key} 失败（不阻断）: ${(e as Error)?.message}`);
+    }
+  }
+
+  /**
+   * P1-4b：把当前 agent 设置（模型 + effort + thinking）快照落盘到会话 JSONL metadata。
+   *
+   * 与 persistKnob / persistModelField 的区别：那两个写**全局 settings.json**（-p 持久化，
+   * 影响后续所有新会话）；本方法写**会话级 JSONL metadata**，只为「resume 时恢复本会话
+   * 当时用的模型/档位」——此前恢复后这些运行时切换全部丢失、回落到默认值（文档 P1-4 #6）。
+   *
+   * 每次模型/effort/thinking 变更后调用，落一条覆盖式快照（恢复时取最后一条即当前值）。
+   * 失败不阻断：设置切换本身已在运行时生效，落盘只是为了 resume 续接。
+   */
+  private persistAgentSetting(): void {
+    if (!this.sessionStore) return;
+    try {
+      this.sessionStore.appendMetadata("agent_setting", {
+        model: this.config.model,
+        // runtimeEffort/runtimeThinking 为 undefined 时表示 auto；序列化时以 null 表达
+        // （JSON.stringify 会丢弃 undefined 字段，用 null 显式保留"auto"语义）。
+        effortLevel: this.runtimeEffort ?? null,
+        thinking: this.runtimeThinking ?? null,
+      });
+    } catch (e) {
+      getLogger().warn("AGENT_SETTING", `agent 设置快照落盘失败（不阻断）: ${(e as Error)?.message}`);
     }
   }
 
@@ -1408,6 +1460,22 @@ export class App {
       this.ctxMgr.setTranscriptPath(transcriptPath);
     } catch { /* 注入失败不影响启动，转录路径提示自动省略 */ }
 
+    // P1-4a：注入压缩事件观察者，让 compactWithSummary 完成后把 context_compact 记录落盘。
+    // 此前 SessionStore.appendCompact 定义了却从不被调用（死代码），JSONL 里从无压缩记录。
+    // 观察者转调 appendCompact，使压缩状态可观测（诊断/展示用；恢复不据此截断历史）。
+    try {
+      this.ctxMgr.setCompactObserver((summary, removedCount) => {
+        this.sessionStore?.appendCompact(summary, removedCount);
+      });
+    } catch { /* 观察者注入失败不影响启动，压缩仍正常执行只是不落盘诊断记录 */ }
+
+    // P2-10：注入主会话 id 到 SubAgentTool，启用子代理 sidechain 持久化。
+    // 放在此处（而非构造函数）：此时 resumedSessionId 已由 restoreSession 设定，
+    // sidechain 文件才能挂在正确的主会话名下。
+    try {
+      this.wireSubAgentSessionId();
+    } catch { /* sidechain 接线失败不影响启动，子代理仍正常执行只是不持久化 */ }
+
     // Step 0：接线 Session Memory 子系统（压缩前持续维护结构化会话笔记）。
     // 三处接线之一（① init）——构造 handle 并持有：
     //   - getMainContext 提供 ForkedAgentContext（共享主对话历史前缀，cache 友好）
@@ -1932,6 +2000,91 @@ export class App {
       }
     }
 
+    // P1-4b：从 JSONL metadata 恢复 agent 设置（模型 / effort / thinking）。
+    // 此前 resume 后这些运行时切换全部丢失、回落默认值（文档 P1-4 #6）。
+    // restoreSession 在 doInit 之前执行——此处改 this.config.model / runtimeEffort，
+    // 稍后 doInit 构建 provider 时自然采用恢复后的值，无需二次 clearCache。
+    // 优先级：显式 env 覆盖 > 恢复的会话快照。env 覆盖会被 queryLoop 每轮重读，天然最高优先，
+    // 故仅当 env 未设时才用快照恢复，避免覆盖用户本次启动的显式意图。
+    if (sessionData.metadata?.["agent_setting"]) {
+      try {
+        const setting = sessionData.metadata["agent_setting"] as {
+          model?: string;
+          effortLevel?: import("./llm/effort.ts").EffortSetting | null;
+          thinking?: import("./llm/effort.ts").ThinkingSetting | null;
+        };
+        const { getEffortEnvOverride, getThinkingEnvOverride } = await import("./llm/effort.ts");
+
+        // 模型：仅当当前 config.model 与快照不同才切换。不经过 setModel 回调（provider 尚未在
+        // TUI 上下文注入），直接改 config + resolveCurrentModelConfig，让 doInit 采用。
+        if (setting.model && setting.model !== this.config.model) {
+          const prev = this.config.model;
+          this.config.model = setting.model;
+          try {
+            const { resolveCurrentModelConfig } = require("./config/config.ts");
+            resolveCurrentModelConfig(this.config);
+            const newWindow = new TokenEstimator().getContextLimit(setting.model, this.config.availableModels);
+            this.ctxMgr.setMaxTokens(newWindow);
+          } catch { /* 模型/窗口解析失败沿用旧值，不阻断恢复 */ }
+          log.info("APP", `恢复 agent 模型: ${prev} → ${setting.model}`);
+        }
+
+        // effort：env 未设(null) 才用快照。快照存的 null 表示 auto(undefined)。
+        if (getEffortEnvOverride() === null && setting.effortLevel !== undefined) {
+          this.runtimeEffort = setting.effortLevel ?? undefined;
+          log.info("APP", `恢复 agent effort: ${this.runtimeEffort ?? "auto"}`);
+        }
+
+        // thinking：同上，env 未设(null) 才用快照。
+        if (getThinkingEnvOverride() === null && setting.thinking !== undefined) {
+          this.runtimeThinking = setting.thinking ?? undefined;
+          log.info("APP", `恢复 agent thinking: ${this.runtimeThinking ?? "auto"}`);
+        }
+      } catch (e) {
+        log.warn("APP", `agent 设置恢复失败（不阻断）: ${(e as Error)?.message}`);
+      }
+    }
+
+    // P1-7：从 JSONL metadata 恢复文件修改历史（打通 Checkpoint↔Resume）。
+    // 预填 changedFiles（续做时继续累积、去重），并构造一段摘要注入续接提示，
+    // 让模型知道"之前改过哪些文件"，无需用户重新说明或自己读 git diff。
+    let fileChangesNote: string | undefined;
+    if (sessionData.metadata?.["file_changes"]) {
+      try {
+        const fc = sessionData.metadata["file_changes"] as { files?: string[]; count?: number };
+        const files = Array.isArray(fc.files) ? fc.files.filter((f) => typeof f === "string") : [];
+        if (files.length > 0) {
+          for (const f of files) this.changedFiles.add(f);
+          // 摘要只列文件路径（最多 20 条，避免超长会话文件列表撑爆提示），不含 diff。
+          const shown = files.slice(0, 20);
+          const more = files.length > shown.length ? `\n…以及另外 ${files.length - shown.length} 个文件` : "";
+          fileChangesNote = `本会话此前已修改过以下文件（可按需读取确认当前状态，不要假设内容）：\n${shown.map((f) => `- ${f}`).join("\n")}${more}`;
+          log.info("APP", `恢复文件修改历史: ${files.length} 个文件`);
+        }
+      } catch (e) {
+        log.warn("APP", `文件修改历史恢复失败（不阻断）: ${(e as Error)?.message}`);
+      }
+    }
+
+    // P2-10：扫描被恢复会话名下未完成的子代理 sidechain（上次被 kill/超时、无 sidechain_end）。
+    // 把概要并入续接提示，让模型知道"有 N 个子代理任务上次没跑完"，可决定是否重新派发。
+    // 注意用 sessionData.id（被恢复会话）——sidechain 文件名按被恢复会话前缀归属。
+    let sidechainNote: string | undefined;
+    try {
+      const { scanUnfinishedSidechains } = await import("./session/sidechain.ts");
+      const unfinished = scanUnfinishedSidechains(sessionData.id);
+      if (unfinished.length > 0) {
+        const lines = unfinished
+          .slice(0, 10)
+          .map((s) => `- [${s.agentType}] ${s.description}（已进行 ${s.messageCount} 轮，未完成）`);
+        const more = unfinished.length > 10 ? `\n…以及另外 ${unfinished.length - 10} 个` : "";
+        sidechainNote = `本会话此前派发的以下子代理任务上次未跑完（进程被中断）。如仍需要，可重新派发子代理继续：\n${lines.join("\n")}${more}`;
+        log.info("APP", `恢复检测到 ${unfinished.length} 个未完成子代理 sidechain`);
+      }
+    } catch (e) {
+      log.warn("APP", `子代理 sidechain 扫描失败（不阻断）: ${(e as Error)?.message}`);
+    }
+
     // 缺口 B：读取被恢复会话的落盘进度（~/.sid-code/progress/<被恢复会话 id>.md）。
     // 注意用 sessionData.id（被恢复会话），不是本进程新 id——progress 文件按被恢复会话落盘。
     // 跨会话续做时，这是抗压缩、抗清理的外部进度记忆，恢复时一并回注。失败不阻断。
@@ -1941,28 +2094,80 @@ export class App {
       progressNote = loadProgressMarkdown(sessionData.id) ?? undefined;
     } catch { /* 进度回注是增强，失败不阻断恢复 */ }
 
+    // P1-7 + P2-10：把文件修改历史 + 进度 + 未完成子代理摘要并入续接提示，
+    // 一并注入到续接标记里。全部为空则 combinedNote 为 undefined。
+    const combinedNote = [fileChangesNote, sidechainNote, progressNote].filter((s) => s && s.trim()).join("\n\n") || undefined;
+
+    // ─────────────────────────────────────────────────────────────
+    // P0-2 + P1-5：恢复前先跑「脏数据清洗管道 + 中断检测」（session-recovery.ts）。
+    //
+    // 此前 restoreSession 直接把 sessionData.messages 原样灌入 ctxMgr，
+    // deserializeMessagesWithInterruptDetection 沦为死代码（仅测试引用）。现接线到
+    // 生产恢复路径：
+    //   - 清洗管道（6 层）剔除流式中断残留的脏数据（未解析 tool_use / 孤立 thinking /
+    //     空白 assistant / 不完整 content block / 失效权限模式），避免恢复后发给 API 触发 400。
+    //   - 中断检测三态决定续接标记：
+    //       · interrupted_turn（工具执行完但没回复就被中断）→ buildToolInterruptMarker
+    //         携带工具名，帮模型定位断点、不重复调用；
+    //       · interrupted_prompt（用户提问了但 Agent 没开始回复）→ 把该 user 提问重新挂到
+    //         历史末尾让模型直接作答（用户自己的提问就是最强的续接信号，无需再叠加标记）；
+    //       · none → 通用续接标记 buildResumeMarker。
+    // ─────────────────────────────────────────────────────────────
+    const { deserializeMessagesWithInterruptDetection } = await import("./sdk/session-recovery.ts");
+    const { messages: cleanedMessages, turnInterruptionState } =
+      deserializeMessagesWithInterruptDetection(sessionData.messages);
+    if (cleanedMessages.length !== sessionData.messages.length) {
+      log.info(
+        "APP",
+        `恢复清洗管道：${sessionData.messages.length} → ${cleanedMessages.length} 条消息（中断态=${turnInterruptionState.kind}）`,
+      );
+    } else if (turnInterruptionState.kind !== "none") {
+      log.info("APP", `恢复中断检测：${turnInterruptionState.kind}`);
+    }
+
+    // interrupted_prompt：清洗管道已把末尾未应答的 user 消息切出并放进 state.message，
+    // 此处单独持有，稍后重挂到历史末尾（而非叠加续接标记）。
+    const pendingUserPrompt =
+      turnInterruptionState.kind === "interrupted_prompt" ? turnInterruptionState.message : undefined;
+
+    /** 依据中断态构造续接标记消息（interrupted_turn 用专用工具标记，其余用通用标记）。 */
+    const buildContinuationMarker = (): import("./llm/types.ts").Message => {
+      const text =
+        turnInterruptionState.kind === "interrupted_turn"
+          ? SessionStore.buildToolInterruptMarker(turnInterruptionState.lastToolNames, combinedNote)
+          : SessionStore.buildResumeMarker(combinedNote);
+      return { role: "user", content: [{ type: "text", text }] };
+    };
+
     /**
-     * 缺口 B：在历史之后追加一条续接标记 user 消息，让模型知道"这是续接、别重新打招呼/重复询问"。
+     * 缺口 B：在历史之后追加续接信号，让模型知道"这是续接、别重新打招呼/重复询问"。
      * 必须在历史末尾干净（无游离 tool_use）时才安全追加——safeSliceTail 已保证切片边界干净。
+     * interrupted_prompt 场景重挂用户原提问；其余场景追加续接标记。
      * 作为独立 user 消息插在历史之后，出现在注意力最强的末尾位置。
+     *
+     * 注意：interrupted_prompt 分支重挂的是用户原提问（不含续接标记），但 combinedNote
+     * （进度/文件修改/未完成子代理摘要）不能因此丢失——若存在，先补一条续接标记带上再挂提问，
+     * 让模型既拿到历史进度、又直接回答用户的原始问题。
      */
-    const appendResumeMarker = () => {
-      this.ctxMgr.addMessage({
-        role: "user",
-        content: [{ type: "text", text: SessionStore.buildResumeMarker(progressNote) }],
-      });
+    const appendContinuation = () => {
+      if (pendingUserPrompt) {
+        if (combinedNote) this.ctxMgr.addMessage(buildContinuationMarker());
+        this.ctxMgr.addMessage(pendingUserPrompt);
+      } else {
+        this.ctxMgr.addMessage(buildContinuationMarker());
+      }
     };
 
     // 如果消息数量不多，直接恢复
     const SUMMARY_THRESHOLD = 20;
-    if (sessionData.messages.length <= SUMMARY_THRESHOLD) {
-      // 缺口 B 路径 1（最常见的短会话续接）：此前只 setMessages、不注入任何续接提示。
-      // 整体恢复完整历史后追加续接标记。若历史末尾恰是未应答的 tool_use，追加 user marker
-      // 会形成孤儿 tool_use——由发送前的 backfillOrphanToolResults 补占位 tool_result
-      // （它会把占位并入紧邻的下一条 user 消息，即本 marker），协议保持合法。
-      this.ctxMgr.setMessages(sessionData.messages);
-      appendResumeMarker();
-      log.info("APP", `直接恢复 ${sessionData.messages.length} 条消息 + 续接标记`);
+    if (cleanedMessages.length <= SUMMARY_THRESHOLD) {
+      // 缺口 B 路径 1（最常见的短会话续接）：整体恢复清洗后的完整历史，再追加续接信号。
+      // 若历史末尾恰是未应答的 tool_use，追加 user marker 会形成孤儿 tool_use——由发送前的
+      // backfillOrphanToolResults 补占位 tool_result（它会把占位并入紧邻的下一条 user 消息，
+      // 即本 marker），协议保持合法。
+      this.ctxMgr.setMessages(cleanedMessages);
+      appendContinuation();
+      log.info("APP", `直接恢复 ${cleanedMessages.length} 条消息 + 续接信号`);
       return;
     }
 
@@ -1971,8 +2176,8 @@ export class App {
     const summary = await store.loadSummary(sessionData.id);
 
     if (summary) {
-      // 路径 2（有摘要）：已有续接提示（buildResumeMessage 含摘要），保持现状即可。
-      const recentMessages = safeSliceTail(sessionData.messages, 10);
+      // 路径 2（有摘要）：已有续接提示（buildResumeMessage 含摘要）。
+      const recentMessages = safeSliceTail(cleanedMessages, 10);
       const resumeMsg = SessionStore.buildResumeMessage(summary.summary);
       this.ctxMgr.addMessage({
         role: "user",
@@ -1992,14 +2197,27 @@ export class App {
       for (const msg of recentMessages) {
         this.ctxMgr.addMessage(msg);
       }
+      // P1-5：摘要路径下若检测到工具执行中断，补一条工具续接标记（帮模型定位断点，
+      // 与已注入的摘要提示叠加不冲突）；若是 interrupted_prompt，重挂用户原提问。
+      // buildToolInterruptMarker/buildResumeMarker 已把 combinedNote（含文件修改历史）带上，
+      // 故这两条分支下无需再单独注入 combinedNote。
+      if (turnInterruptionState.kind === "interrupted_turn") {
+        this.ctxMgr.addMessage(buildContinuationMarker());
+      } else if (pendingUserPrompt) {
+        this.ctxMgr.addMessage(pendingUserPrompt);
+        // P1-7：pendingUserPrompt 分支不经过 marker，combinedNote 会丢失——单独补注入。
+        if (combinedNote) this.ctxMgr.addMessage(buildContinuationMarker());
+      } else if (combinedNote) {
+        // 正常结束(none)的摘要路径：buildResumeMessage 不含文件修改历史，补一条续接标记带上。
+        this.ctxMgr.addMessage(buildContinuationMarker());
+      }
       log.info("APP", `恢复会话：摘要 + 最近 ${recentMessages.length} 条消息`);
     } else {
-      // 缺口 B 路径 3（无摘要长会话）：此前只 setMessages、不注入任何续接提示。
-      // 安全截断后整体替换，再追加续接标记（说明早期消息已因恢复截断）。
-      const recentMessages = safeSliceTail(sessionData.messages, 15);
+      // 缺口 B 路径 3（无摘要长会话）：安全截断后整体替换，再追加续接信号。
+      const recentMessages = safeSliceTail(cleanedMessages, 15);
       this.ctxMgr.setMessages(recentMessages);
-      appendResumeMarker();
-      log.warn("APP", `无摘要，仅恢复最近 ${recentMessages.length} 条消息 + 续接标记`);
+      appendContinuation();
+      log.warn("APP", `无摘要，仅恢复最近 ${recentMessages.length} 条消息 + 续接信号`);
     }
   }
 
@@ -2011,14 +2229,61 @@ export class App {
     turnAbortController?: AbortController,
   ): Promise<AccumulatedResponse> {
     const { processStream: processStreamImpl } = await import("./query/stream-processor.ts");
-    return processStreamImpl(stream, onText, onThinking, {
-      // Fix 3（同类路径根治）：优先 abort 本轮 turn 级 controller（loop.ts 透传），只在
-      // 未提供时才回退到会话级 this.abortController。turn 级 controller 经 loop.ts 的
-      // composedSignal（AbortSignal.any）级联到底层 fetch，中断效果不变，但心跳/整体超时
-      // 不再污染会话级共享 signal——杜绝「60-90s 流卡顿 → 会话 signal 被毒化 → 后续 turn
-      // 出生即死 → 整条消息误报已取消」的回归（与 loop.ts finally 的 race-settled 同源）。
-      getAbortController: () => turnAbortController ?? this.abortController,
-    });
+
+    // GAP-01：流式工具执行——模型仍在输出后续内容时，就对已完整到达的**并发安全**工具抢跑，
+    // 使工具执行与模型输出时间重叠。默认关闭（SID_ENABLE_STREAMING_TOOL_EXEC=1 开启）。
+    // 只抢跑并发安全工具：写类工具依赖执行顺序/checkpoint 快照/plan-mode 处理，仍留给 executeTools
+    // 的批量编排统一处理（此处 precomputed 只对读类命中，写类不进缓存 → 走正常路径，零行为变化）。
+    let onToolUseComplete: ((block: import("./llm/types.ts").ToolUseBlock) => void) | undefined;
+    const { isStreamingToolExecEnabled } = await import("./query/streaming-tool-executor.ts");
+    if (isStreamingToolExecEnabled()) {
+      const { executeSingleTool, resolveToolPermission } = await import("./query/tool-executor.ts");
+      const deps = this.buildToolExecutorDeps();
+      const cache = new Map<string, import("./query/tool-executor.ts").SingleToolOutcome>();
+      this._streamingToolResults = cache;
+      const inflight = new Set<string>();
+      onToolUseComplete = (block) => {
+        // 仅抢跑并发安全工具（读类）；其余留给 executeTools 批量编排
+        const tool = this.toolRegistry.get(block.name);
+        if (!tool) return;
+        let safe = false;
+        try {
+          safe = tool.isConcurrencySafe ? tool.isConcurrencySafe(block.input) : (tool.readOnly?.() ?? false);
+        } catch { safe = false; }
+        if (!safe) return;
+        if (cache.has(block.id) || inflight.has(block.id)) return;
+        inflight.add(block.id);
+        // 异步抢跑：先过权限门（拒绝则不缓存，交回 executeTools 统一产出 error tool_result），
+        // 通过则执行并缓存结果。异常一律吞掉——executeTools 会正常重跑该工具，绝不影响正确性。
+        void (async () => {
+          try {
+            const reject = await resolveToolPermission(block, tool, deps);
+            if (reject) return; // 权限未过 → 不抢跑，交回批量路径
+            const outcome = await executeSingleTool(block, tool, deps);
+            cache.set(block.id, outcome);
+          } catch {
+            /* 抢跑失败静默：executeTools 会正常执行该工具 */
+          } finally {
+            inflight.delete(block.id);
+          }
+        })();
+      };
+    }
+
+    try {
+      return await processStreamImpl(stream, onText, onThinking, {
+        // Fix 3（同类路径根治）：优先 abort 本轮 turn 级 controller（loop.ts 透传），只在
+        // 未提供时才回退到会话级 this.abortController。turn 级 controller 经 loop.ts 的
+        // composedSignal（AbortSignal.any）级联到底层 fetch，中断效果不变，但心跳/整体超时
+        // 不再污染会话级共享 signal——杜绝「60-90s 流卡顿 → 会话 signal 被毒化 → 后续 turn
+        // 出生即死 → 整条消息误报已取消」的回归（与 loop.ts finally 的 race-settled 同源）。
+        getAbortController: () => turnAbortController ?? this.abortController,
+        onToolUseComplete,
+      });
+    } finally {
+      // 注意：不在此清空 _streamingToolResults——executeTools 在流结束后才读它。
+      // 由下一轮 processStream 开始时重建覆盖（每轮新建一个 cache），天然隔离跨轮。
+    }
   }
 
   /** 设置 TUI 模式下的权限确认回调 */
@@ -2076,7 +2341,16 @@ export class App {
   /** 执行工具调用，委托给 tool-executor */
   async executeTools(content: ContentBlock[]): Promise<{ results: ContentBlock[]; followup?: ContentBlock[] }> {
     const { executeTools: executeToolsImpl } = await import("./query/tool-executor.ts");
-    return executeToolsImpl(content, {
+    return executeToolsImpl(content, this.buildToolExecutorDeps());
+  }
+
+  /**
+   * GAP-01：构造 ToolExecutorDeps（供 executeTools 与流式预执行共享同一套依赖/管线）。
+   * 提取为独立方法，使流式工具执行器（StreamingToolExecutor）能用**完全一致**的
+   * 权限/hook/校验/执行/序列化管线抢跑并发安全工具，避免两套实现漂移。
+   */
+  private buildToolExecutorDeps(): import("./query/tool-executor.ts").ToolExecutorDeps {
+    return {
       config: this.config,
       toolRegistry: this.toolRegistry,
       sessionState: this.sessionState,
@@ -2101,7 +2375,42 @@ export class App {
           : (typeof (event as any).text === "string" ? (event as any).text : event.type);
         this.statusNotifier?.(`tool_progress_${toolUseId}`, `${toolName}: ${msg}`, 2000);
       },
-    });
+      // P1-7：把工具修改的文件落盘到会话 JSONL metadata，供 resume 重建文件修改上下文。
+      recordFileChanges: (files, toolName) => this.recordFileChanges(files, toolName),
+      // GAP-01：流式预执行结果缓存查询。有值 → executeTools 复用，跳过重复执行。
+      getPrecomputedResult: (toolUseId) => this._streamingToolResults?.get(toolUseId),
+    };
+  }
+
+  /**
+   * P1-7：累积并落盘会话内的文件修改摘要（打通 Checkpoint↔Resume）。
+   *
+   * this.changedFiles 维护本会话累积改动过的文件集合（去重）；每次有新增即落一条
+   * file_changes metadata 快照（覆盖式，恢复时取最后一条即完整集合）。只存「文件路径 +
+   * 最近工具名 + 计数」，不存 diff（完整内容在 CheckpointManager，避免 JSONL 膨胀）。
+   * 恢复时 restoreSession 读取此快照注入上下文，让模型知道之前改过哪些文件。
+   */
+  private recordFileChanges(files: string[], toolName: string): void {
+    if (!this.sessionStore || files.length === 0) return;
+    let added = false;
+    for (const f of files) {
+      if (!this.changedFiles.has(f)) {
+        this.changedFiles.add(f);
+        added = true;
+      }
+    }
+    // 未新增文件（都是重复修改已记录的文件）也刷新 lastTool，但仅在有新增时才落盘，
+    // 避免同一文件反复编辑产生大量冗余 metadata 记录。
+    if (!added) return;
+    try {
+      this.sessionStore.appendMetadata("file_changes", {
+        files: [...this.changedFiles],
+        lastTool: toolName,
+        count: this.changedFiles.size,
+      });
+    } catch (e) {
+      getLogger().warn("APP", `文件修改摘要落盘失败（不阻断）: ${(e as Error)?.message}`);
+    }
   }
 
   /**
@@ -4019,6 +4328,8 @@ export class App {
             this.pushKnobDisplay();
             // -p 持久化：写顶层 model。必用 patchSettingsFile（禁整体覆盖，见 settings 有损 round-trip 陷阱）。
             if (persist) this.persistModelField("model", m);
+            // P1-4b：落会话级 agent 设置快照，供 resume 恢复本会话使用的模型。
+            this.persistAgentSetting();
           },
           setFallbackModel: (m, persist) => this.setFallbackModelRuntime(m, persist, updateState),
           setSubAgentModel: (type, m, persist) => this.setSubAgentModelRuntime(type, m, persist),

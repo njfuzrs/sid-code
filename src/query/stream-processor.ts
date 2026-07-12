@@ -10,6 +10,7 @@ import type {
   StreamEvent,
   AccumulatedResponse,
   ContentBlock,
+  ToolUseBlock,
 } from "../llm/types.ts";
 import { accumulateUsage } from "../llm/types.ts";
 import { getLogger } from "../debug/index.ts";
@@ -27,6 +28,13 @@ export interface StreamProcessorOptions {
   overallTimeoutMs?: number;
   /** 获取 AbortController（用于超时时中断上游） */
   getAbortController?: () => AbortController | null;
+  /**
+   * GAP-01：一个 tool_use 块**完整解析**（input JSON 拼接并 parse 完成）后立即回调。
+   * 供上层 StreamingToolExecutor 在模型仍在流式输出后续内容时就开始执行已到达的工具，
+   * 使工具执行与模型输出时间重叠。additive：不设置时行为与此前完全一致（纯批量）。
+   * 回调抛错被吞（绝不影响流处理主流程）。
+   */
+  onToolUseComplete?: (block: ToolUseBlock) => void;
 }
 
 /**
@@ -228,6 +236,15 @@ export async function processStream(
                   inputHead: jsonStr.slice(0, 200),
                 });
                 block.input = {};
+              }
+              // GAP-01：tool_use 块完整解析完成 → 立即回调，供流式工具执行器抢跑。
+              // 回调异常绝不影响流处理（吞掉）。
+              if (options?.onToolUseComplete) {
+                try {
+                  options.onToolUseComplete(block as ToolUseBlock);
+                } catch (e) {
+                  log.warn("STREAM", `onToolUseComplete 回调异常（忽略）: ${e instanceof Error ? e.message : String(e)}`);
+                }
               }
             }
             jsonAccumulators.delete(event.index);

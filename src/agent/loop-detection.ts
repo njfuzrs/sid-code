@@ -422,10 +422,19 @@ export interface LLMLoopCheckResult {
 
 /** 豁免工具集合：这些工具的连续调用是合法的并发/分派行为，不应被判定为循环
  *  - sub_agent: 每次 description/prompt 不同，hash 必然不同，但 shape detector 可能误判
- *  - task_output/task_stop/send_message: 任务管理工具，操作不同 task
+ *  - task_output/task_stop/task_list/send_message: 任务管理/通信工具，操作不同 task/代理
  *  - todo_write: 状态更新工具，内容自然变化
- *  - enter_plan_mode/exit_plan_mode: 模式切换工具 */
-const EXEMPT_TOOLS = new Set([
+ *  - enter_plan_mode/exit_plan_mode: 模式切换工具
+ *
+ *  ⚠️ P2-3（豁免白名单维护机制）：本集合是循环检测豁免的**运行时事实源**，但它不再是
+ *  唯一事实源——每个应豁免的工具在自身定义处（*.ts 类字段）自报 `exemptFromLoopDetection
+ *  = true`（见 src/tool/types.ts ToolCapabilityFields.exemptFromLoopDetection 的豁免标准）。
+ *  两侧由 `tests/agent/loop-detection-exemption-audit.test.ts` **双向对账**：
+ *    - 工具自报豁免但此集合缺失 → 审计测试失败（提醒把新工具加进这里）
+ *    - 此集合列了某名但没有工具自报（或拼错） → 审计测试失败（提醒清理/纠错）
+ *  这样"新增工具时忘记评估豁免"从静默漂移变成 CI 可见的硬错误。
+ *  修改本集合时，务必同步在对应工具类上增删 `exemptFromLoopDetection` 字段。 */
+export const EXEMPT_TOOLS = new Set([
   "sub_agent", "task_output", "task_stop",
   "send_message", "todo_write", "enter_plan_mode",
   "exit_plan_mode", "task_list",

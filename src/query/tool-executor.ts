@@ -15,6 +15,21 @@ import { isAbortError } from "../llm/errors.ts";
 import { processToolResult } from "../tool/result-storage.ts";
 import { validateToolInput } from "../tool/input-validator.ts";
 import { yieldMissingToolResults, collectToolResultIdsFromBlocks } from "../agent/tool-result-guard.ts";
+import { stripInternalFields } from "../tool/internal-fields.ts";
+import type { ToolUseContext } from "../tool/types.ts";
+import { partitionToolCalls, getMaxToolConcurrency } from "./tool-orchestration.ts";
+
+/**
+ * GAP-06：executeSingleTool 内部返回载体——在标准 tool_result ContentBlock 之外，
+ * 旁路携带工具的 contextModifier，供 executeTools 在结果收集后按原始顺序应用。
+ * contextModifier 不属于 ContentBlock 协议字段（不能进 tool_result 发给 LLM），
+ * 故用一个内部包装类型透传，executeTools 提取后剥离，只把纯 ContentBlock 入历史。
+ */
+interface SingleToolOutcome {
+  block: ContentBlock;
+  contextModifier?: (context: ToolUseContext) => ToolUseContext;
+}
+export type { SingleToolOutcome };
 
 /**
  * G1 修复：主循环工具并发 cap。
@@ -22,13 +37,11 @@ import { yieldMissingToolResults, collectToolResultIdsFromBlocks } from "../agen
  * 主循环普通工具并发此前无限制（Promise.allSettled 一次性全发），模型一次派 10+ 个
  * grep/read 时全部同时打，可能耗尽文件句柄或触发 rate-limit。
  * 信号量限流：超上限的调用排队等待，有 slot 释放时按 FIFO 唤醒。
+ *
+ * GAP-10：并发上限的读取逻辑已提取到 tool-orchestration.ts 的 getMaxToolConcurrency()，
+ * 此处引用以保持单一事实源（编排层负责调度策略配置）。
  */
-const MAX_TOOL_CONCURRENCY = (() => {
-  const raw = process.env.SID_TOOL_MAX_CONCURRENT;
-  if (raw === undefined || raw === "") return 10;
-  const n = Number.parseInt(raw, 10);
-  return Number.isFinite(n) && n > 0 ? n : 10;
-})();
+const MAX_TOOL_CONCURRENCY = getMaxToolConcurrency();
 
 /** withConcurrencyLimit 可选行为钩子 */
 interface ConcurrencyLimitOptions {
@@ -180,6 +193,20 @@ export interface ToolExecutorDeps {
    * 未注入（无头模式）时安全跳过——执行器传给 tool.execute 的 onProgress 变为 no-op。
    */
   onToolProgress?: (toolName: string, toolUseId: string, event: import("../tool/types.ts").ToolProgressData) => void;
+  /**
+   * P1-7：记录本轮工具修改的文件（打通 Checkpoint↔Resume）。
+   * 在写入类工具的快照创建后调用，把「文件路径 + 工具名」摘要落盘到会话 JSONL metadata，
+   * 使 resume 时模型能知道"之前改过哪些文件"（此前 Checkpoint 独立存储，不参与恢复编排）。
+   * 未注入（无头/子代理）时安全跳过。
+   */
+  recordFileChanges?: (files: string[], toolName: string) => void;
+  /**
+   * GAP-01：流式预执行结果缓存查询（按 tool_use_id）。
+   * 流式工具执行器在模型仍在输出时抢先执行了并发安全工具；executeTools 的批量调度
+   * 在执行每个工具前先查此缓存，命中则直接复用结果（跳过重复执行），保持权限/hook/
+   * 顺序/checkpoint 等编排不变。未注入（批量模式/子代理）时返回 undefined，走正常执行。
+   */
+  getPrecomputedResult?: (toolUseId: string) => SingleToolOutcome | undefined;
 }
 
 /**
@@ -224,6 +251,14 @@ export async function executeTools(
       const toolNames = toolBlocks.map(t => t.block.name).join(", ");
       const toolSummary = affectedFiles.join(", ");
       await cpMgr.createSnapshot(affectedFiles, toolNames, toolSummary);
+      // P1-7：快照创建后，把文件修改摘要同步落盘到会话 JSONL（打通 Checkpoint↔Resume）。
+      // 双写：Checkpoint 存完整内容/diff 用于 undo；JSONL metadata 只存路径+工具名摘要用于
+      // resume 时重建"改过哪些文件"的上下文。落盘失败不影响工具执行。
+      try {
+        deps.recordFileChanges?.(affectedFiles, toolNames);
+      } catch (e: any) {
+        log.warn("CHECKPOINT", `文件修改摘要落盘失败（不阻断）: ${e?.message}`);
+      }
     } catch (err: any) {
       log.warn("CHECKPOINT", `创建快照失败: ${err.message}`);
     }
@@ -236,207 +271,203 @@ export async function executeTools(
   for (const { block, idx } of toolBlocks) {
     const tool = deps.toolRegistry.get(block.name);
     if (!tool) {
-      log.error("TOOL", `工具未找到: ${block.name}`);
+      // GAP-12：区分"未激活的 deferred 工具"与"真正不存在的工具"，给出可操作引导。
+      // deferred 工具（存在但未通过 tool_search 激活，schema 未发给模型）若直接返回
+      // "未找到"，模型会陷入"找不到 → 重试 → 还是找不到"死循环。附加"先 tool_search 加载"
+      // 引导让模型能自我修正。对标 claude-code 的 "Load the tool first" 提示。
+      const isDeferred = deps.toolRegistry.isDeferred(block.name);
+      const errorContent = isDeferred
+        ? `工具 "${block.name}" 存在但尚未加载（schema 未发送）。请先调用 tool_search 工具（参数 query: "select:${block.name}"）激活它，然后重试本次调用。`
+        : `工具 "${block.name}" 未找到。可用工具请通过 tool_search 查询。`;
+      log.error("TOOL", `工具未找到: ${block.name} (deferred=${isDeferred})`);
       rejectedResults.set(idx, {
         type: "tool_result",
         tool_use_id: block.id,
-        content: `工具 "${block.name}" 未找到`,
+        content: errorContent,
         is_error: true,
       });
       continue;
     }
 
-    // 权限检查
-    if (deps.permissionChecker) {
-      // G14：观测输入回填——权限/hook 看到展开后的规范化视图（如 ~ → 绝对路径），
-      // 工具实际执行仍用原始 input（保持 prompt cache 前缀稳定）。
-      let observableInput: unknown = block.input;
-      if (typeof tool.backfillObservableInput === "function") {
-        try {
-          const expanded = tool.backfillObservableInput(block.input);
-          if (expanded !== undefined) observableInput = expanded;
-        } catch { /* 回填钩子异常静默回退原始 input */ }
-      }
-      const permReq: PermissionRequest = {
-        toolName: block.name,
-        input: observableInput,
-        description: (observableInput as any)?.description
-          ? `${block.name}: ${(observableInput as any).description}`
-          : `${block.name}: ${JSON.stringify(observableInput).slice(0, 120)}`,
-      };
-      const decision = await deps.permissionChecker.check(permReq, tool);
-
-      if (!decision.allowed) {
-        if (decision.needsConfirmation) {
-          const desc = decision.reason || `工具 "${block.name}" 需要用户确认`;
-          log.info("PERMISSION", `请求权限决策(三路竞争): ${desc}`);
-
-          // 三路竞争：hook / classifier / 用户交互
-          const { resolvePermission } = await import("../permission/async-decision.ts");
-          const result = await resolvePermission(
-            { toolName: block.name, input: observableInput as Record<string, unknown>, description: desc },
-            {
-              isInteractive: true,
-              isSubAgent: false,
-              hookDecision: deps.hookSystem
-                ? async () => {
-                    try {
-                      const hookResult = await deps.hookSystem.firePermissionRequestEvent?.(
-                        block.name, observableInput as Record<string, unknown>, deps.config.permissionMode,
-                      );
-                      if (!hookResult?.finalOutput) return null;
-                      if (hookResult.finalOutput.isBlockingDecision()) {
-                        return { allowed: false, reason: hookResult.finalOutput.getEffectiveReason() };
-                      }
-                      // hook 未阻止 → 不干预，留给其他路径决策
-                      return null;
-                    } catch (e) {
-                      // 静默-6：权限 hook 抛异常时返回 null = 降级到交互确认（非放行），行为安全。
-                      // 但原空吞无任何痕迹——hook 因 bug 持续抛错时，用户只觉"权限 hook 从未生效"却无从排查。
-                      // 补 warn 记录异常（不改变降级语义）。
-                      log.warn("PERMISSION", `权限 hook 执行异常，降级到交互确认: ${(e as Error)?.message}`);
-                    }
-                    return null;
-                  }
-                : undefined,
-              userDecision: (req, resolve) => {
-                void deps.requestUserConfirmation(desc, permReq, block.name, block.input).then((confirmed) => {
-                  if (!resolve.isResolved()) {
-                    resolve.resolve({ allowed: confirmed, reason: confirmed ? "用户批准" : "用户拒绝" }, /* alwaysAllow handled by tuiConfirmCallback */);
-                  }
-                });
-              },
-              gracePeriodMs: 200,
-            },
-          );
-
-          if (!result.decision.allowed) {
-            log.info("PERMISSION", `权限拒绝(${result.source}): ${block.name}`);
-            rejectedResults.set(idx, {
-              type: "tool_result",
-              tool_use_id: block.id,
-              content: `${result.source === "user" ? "用户" : result.source === "timeout" ? "超时" : result.source}拒绝执行工具 "${block.name}"`,
-              is_error: true,
-            });
-            continue;
-          }
-          log.info("PERMISSION", `权限批准(${result.source}): ${block.name}`);
-        } else {
-          // G15：用 explainDecision 产出结构化中文解释（命中哪条规则/哪个模式/哪个来源），
-          // 让模型收到的拒绝反馈更明确，减少反复撞同一堵墙。无 decisionReason 时回退到 reason 文本。
-          const { explainDecision } = await import("../permission/explainer.ts");
-          const explanation = explainDecision(decision);
-          log.warn("PERMISSION", `权限拒绝: ${block.name} - ${explanation}`);
-          rejectedResults.set(idx, {
-            type: "tool_result",
-            tool_use_id: block.id,
-            content: `权限拒绝: ${explanation}`,
-            is_error: true,
-          });
-          continue;
-        }
-      }
+    // 权限检查（GAP-01：提取为共享函数 resolveToolPermission，批量/流式路径复用同一逻辑）
+    const reject = await resolveToolPermission(block, tool, deps);
+    if (reject) {
+      rejectedResults.set(idx, reject);
+      continue;
     }
 
     checkedTools.push({ block, tool, idx });
   }
 
-  // 分区并发策略：基于 isConcurrencySafe(input) 输入感知分区
-  // 并发安全的工具全部并行，非并发安全的工具串行执行
-  const concurrent: typeof checkedTools = [];
-  const sequential: typeof checkedTools = [];
+  // GAP-03 + GAP-10：贪心连续合并分区（算法提取到 tool-orchestration.partitionToolCalls）。
+  // 将连续的并发安全工具合并为一个并行批次，非并发安全工具作为串行批次，交替执行，
+  // 保留模型的隐式顺序语义（"先 Read → Edit → 再 Read"不被打乱）。
+  const batches = partitionToolCalls(checkedTools);
 
-  for (const item of checkedTools) {
-    const { tool, block } = item;
-    // 优先使用细粒度的 isConcurrencySafe(input)，回退到 readOnly()
-    const isSafe = tool.isConcurrencySafe
-      ? tool.isConcurrencySafe(block.input)
-      : (tool.readOnly?.() ?? false);
-    if (isSafe) {
-      concurrent.push(item);
-    } else {
-      sequential.push(item);
-    }
-  }
-
-  log.debug("TOOL", `分区并发: 并行 ${concurrent.length} 个, 串行 ${sequential.length} 个`);
+  log.debug("TOOL", `分区并发(贪心连续合并): ${batches.length} 个批次 [${batches.map(b => `${b.isConcurrencySafe ? "‖" : "→"}${b.items.length}`).join(", ")}]`);
 
   // 结果收集（按原始顺序索引存储）
   const resultMap: Map<number, ContentBlock> = new Map(rejectedResults);
+  // GAP-06：按原始顺序收集 contextModifier，执行后一次性按序应用。
+  const contextModifiers: Array<{ idx: number; modifier: (ctx: ToolUseContext) => ToolUseContext }> = [];
+  // GAP-02（串行 Bash 级联）：一旦某个 Bash 命令失败，同一轮内后续 Bash 工具跳过执行。
+  // 覆盖文档核心场景：[mkdir /tmp/x, cd /tmp/x && make, ls /tmp/x/bin]——写类 bash 属非并发安全，
+  // 走串行批次，第一个失败后后两个（依赖它）必然失败，跳过它们消除噪音、减少模型误判。
+  // 仅 Bash 触发、仅跳过 Bash（其他工具相互独立，照常执行）。
+  let bashCascadeTripped = false;
 
-  // 并发安全的工具：并行执行（G1：信号量限流，默认 cap=10，对齐 claude-code）
-  if (concurrent.length > 0) {
-    if (concurrent.length > MAX_TOOL_CONCURRENCY) {
-      log.debug("TOOL", `并行工具 ${concurrent.length} 个超过并发上限 ${MAX_TOOL_CONCURRENCY}，超出部分排队`);
-    }
-    // G20 sibling-abort：为这一批并发工具建一个链接到父信号的子 AbortController。
-    // 任一兄弟工具被取消（用户 ESC / 上游 abort）时，主动 abort 子信号，
-    // 让其余仍在跑的兄弟工具立即收到取消而非白跑到底（浪费时间/产生多余副作用）。
-    // 子信号独立于父信号：sibling-abort 触发时不反向 abort 父信号。
-    const { controller: siblingController, dispose: disposeSibling } =
-      createLinkedAbortController(deps.getAbortSignal());
-    try {
-      const readResults = await withConcurrencyLimit(
-        concurrent.map(({ block, tool, idx }) =>
-          () => {
-            // G24 interruptBehavior：工具声明 "block" = 用户中断时它选择继续跑完（不被 sibling-abort
-            // 联动取消），此类工具用父信号（仅真正的顶层 abort 能停）而非可被兄弟触发的子信号；
-            // 默认 "cancel"（含未声明）走子信号，参与 sibling-abort 联动。
-            let behavior: "cancel" | "block" = "cancel";
-            try {
-              behavior = tool.interruptBehavior?.() ?? "cancel";
-            } catch { behavior = "cancel"; }
-            const sig = behavior === "block" ? deps.getAbortSignal() : siblingController.signal;
-            return executeSingleTool(block, tool, deps, sig).then(r => ({ idx, result: r }));
-          }
-        ),
-        MAX_TOOL_CONCURRENCY,
-        {
-          // 某个兄弟工具因 abort 结束 → 立即取消其余在跑的兄弟 + 停止启动未开始的队列任务。
-          stopOnReject: (reason) => {
-            if (isAbortError(reason) && !siblingController.signal.aborted) {
-              log.info("TOOL", "并发工具中断：联动取消其余兄弟工具（sibling-abort）");
-              siblingController.abort((reason as any)?.reason ?? reason);
-              return true;
-            }
-            return false;
-          },
-        },
-      );
-      // abort 优先：任一工具被取消，立即向上抛（由 loop.ts catch 兜底补齐）
-      for (const r of readResults) {
-        if (r.status === "rejected" && isAbortError(r.reason)) {
-          throw r.reason;
-        }
+  // 逐批次执行：并发安全批次并行（信号量限流），非并发安全批次串行
+  for (const batch of batches) {
+    if (batch.isConcurrencySafe) {
+      // 并行批次（G1：信号量限流，默认 cap=10）
+      if (batch.items.length > MAX_TOOL_CONCURRENCY) {
+        log.debug("TOOL", `并行工具 ${batch.items.length} 个超过并发上限 ${MAX_TOOL_CONCURRENCY}，超出部分排队`);
       }
-      for (let i = 0; i < readResults.length; i++) {
-        const r = readResults[i];
-        if (r.status === "fulfilled") {
-          resultMap.set(r.value.idx, r.value.result);
-        } else {
-          // 非 abort 的 rejected（如 hook 异常）：executeSingleTool 的 catch 理论上会
-          // 返回 error tool_result，走不到这里；但若异常发生在 catch 之外（pre hook 等），
-          // Promise 会 rejected。此处把它转成 error tool_result，避免孤儿 tool_use。
-          const { block, idx } = concurrent[i];
-          log.error("TOOL", `并行工具 ${block.name} 异常未被内部捕获: ${r.reason?.message ?? r.reason}`);
+      // G20 + GAP-02：sibling-abort controller。
+      // 触发条件：abort 错误 OR Bash 工具 is_error（级联取消兄弟工具）。
+      const { controller: siblingController, dispose: disposeSibling } =
+        createLinkedAbortController(deps.getAbortSignal());
+      try {
+        const batchResults = await withConcurrencyLimit(
+          batch.items.map(({ block, tool, idx }) =>
+            () => {
+              let behavior: "cancel" | "block" = "cancel";
+              try { behavior = tool.interruptBehavior?.() ?? "cancel"; } catch { behavior = "cancel"; }
+              const sig = behavior === "block" ? deps.getAbortSignal() : siblingController.signal;
+              // GAP-01：流式预执行命中则复用结果，跳过重复执行（保持编排不变）。
+              const precomputed = deps.getPrecomputedResult?.(block.id);
+              const exec = precomputed
+                ? Promise.resolve(precomputed)
+                : executeSingleTool(block, tool, deps, sig);
+              return exec.then(outcome => {
+                // GAP-02：Bash 工具执行失败（is_error）时**立即**联动取消兄弟——
+                // 在 thunk 内触发（而非批次 settle 后），才能真正取消仍在跑/未启动的兄弟。
+                // Bash 有隐式依赖链（mkdir 失败 → 后续 cd 无意义），必然失败的结果是噪音。
+                // Read/WebFetch 等工具失败不级联（它们相互独立）。
+                if (block.name === "bash" && (outcome.block as any).is_error && !siblingController.signal.aborted) {
+                  log.info("TOOL", "Bash 失败级联：联动取消其余兄弟工具（sibling-abort-bash-error）");
+                  siblingController.abort("sibling_bash_error");
+                }
+                return { idx, result: outcome };
+              });
+            }
+          ),
+          MAX_TOOL_CONCURRENCY,
+          {
+            stopOnReject: (reason) => {
+              // abort（用户 ESC / 上游）或 bash 级联 abort 均停止启动后续排队任务
+              if (isAbortError(reason) && !siblingController.signal.aborted) {
+                log.info("TOOL", "并发工具中断：联动取消其余兄弟工具（sibling-abort）");
+                siblingController.abort((reason as any)?.reason ?? reason);
+                return true;
+              }
+              // bash 级联已在 thunk 内 abort：一旦子信号被 bash-error abort，也停止启动队列
+              return siblingController.signal.aborted;
+            },
+          },
+        );
+        // abort 优先：任一工具被**用户/上游** abort 取消，立即向上抛（bash 级联 abort 不向上抛）。
+        for (const r of batchResults) {
+          if (r.status === "rejected" && isAbortError(r.reason)) {
+            const reason = (r.reason as any)?.reason ?? (r.reason as any)?.message;
+            if (reason !== "sibling_bash_error") throw r.reason;
+          }
+        }
+        for (let i = 0; i < batchResults.length; i++) {
+          const r = batchResults[i];
+          if (r.status === "fulfilled") {
+            const { idx, result: outcome } = r.value;
+            resultMap.set(idx, outcome.block);
+            if (outcome.contextModifier) {
+              contextModifiers.push({ idx, modifier: outcome.contextModifier });
+            }
+          } else {
+            const { block: failBlock, idx: failIdx } = batch.items[i];
+            // GAP-02：被 bash 级联取消的兄弟（sibling_bash_error / withConcurrencyLimit 跳过占位）→
+            // 返回明确的"已取消"tool_result，而非泛化异常，让模型理解是级联取消非工具本身出错。
+            const rawReason = (r.reason as any)?.reason ?? (r.reason as any)?.message ?? String(r.reason);
+            const isBashCascade = isAbortError(r.reason)
+              ? rawReason === "sibling_bash_error"
+              : String(rawReason).includes("sibling-abort");
+            if (isBashCascade) {
+              log.info("TOOL", `并行工具 ${failBlock.name} 因兄弟 Bash 失败被级联取消`);
+              resultMap.set(failIdx, {
+                type: "tool_result",
+                tool_use_id: failBlock.id,
+                content: `已取消：同批次中先行的 Bash 命令执行失败，为避免依赖链上的无效执行，本工具未运行。`,
+                is_error: true,
+              });
+            } else {
+              log.error("TOOL", `并行工具 ${failBlock.name} 异常未被内部捕获: ${r.reason?.message ?? r.reason}`);
+              resultMap.set(failIdx, {
+                type: "tool_result",
+                tool_use_id: failBlock.id,
+                content: `工具执行异常: ${r.reason?.message ?? String(r.reason)}`,
+                is_error: true,
+              });
+            }
+          }
+        }
+      } finally {
+        disposeSibling();
+      }
+    } else {
+      // 串行批次：逐个执行
+      for (const { block, tool, idx } of batch.items) {
+        // GAP-02：串行 Bash 级联——前序 Bash 已失败时，跳过后续 Bash（依赖链无意义）。
+        if (bashCascadeTripped && block.name === "bash") {
+          log.info("TOOL", `串行 Bash 级联：跳过 ${block.name}（同轮先行 Bash 命令已失败）`);
           resultMap.set(idx, {
             type: "tool_result",
             tool_use_id: block.id,
-            content: `工具执行异常: ${r.reason?.message ?? String(r.reason)}`,
+            content: `已取消：同一轮中先行的 Bash 命令执行失败，后续 Bash 命令通常依赖其结果，为避免无效执行已跳过。如需强制执行请单独重试。`,
             is_error: true,
           });
+          continue;
+        }
+        // GAP-01：流式预执行命中则复用（串行批次通常是写工具，一般不会被流式预执行，
+        // 但保留一致性检查——若命中则跳过重复执行）。
+        const precomputed = deps.getPrecomputedResult?.(block.id);
+        const outcome = precomputed ?? await executeSingleTool(block, tool, deps);
+        resultMap.set(idx, outcome.block);
+        if (outcome.contextModifier) {
+          contextModifiers.push({ idx, modifier: outcome.contextModifier });
+        }
+        // GAP-02：Bash 命令失败 → 触发同轮后续 Bash 级联跳过。
+        if (block.name === "bash" && (outcome.block as any).is_error) {
+          bashCascadeTripped = true;
+          log.info("TOOL", `Bash 命令失败，触发同轮串行 Bash 级联跳过`);
         }
       }
-    } finally {
-      // 解绑父信号监听，避免长生命周期父信号累积监听器泄漏
-      disposeSibling();
     }
   }
 
-  // 非并发安全的工具：串行执行（等待并行工具完成后才开始）
-  for (const { block, tool, idx } of sequential) {
-    const result = await executeSingleTool(block, tool, deps);
-    resultMap.set(idx, result);
+  // GAP-06：按原始顺序应用 contextModifier（并发执行下仍保证确定性顺序）。
+  // contextModifier 典型用途：EnterPlanMode 切换权限模式。
+  // 当前简化实现：直接修改 deps.config（permissionMode 是 mutable 字段），
+  // 完整 ToolUseContext 的其余字段暂不传（待新版 Tool 接口全量迁移后统一补齐）。
+  if (contextModifiers.length > 0) {
+    contextModifiers.sort((a, b) => a.idx - b.idx);
+    for (const { modifier } of contextModifiers) {
+      try {
+        // 构造最小 ToolUseContext 传给 modifier
+        const minimalCtx: ToolUseContext = {
+          options: { tools: [], mainLoopModel: deps.config.model, mcpClients: [], isNonInteractive: false },
+          abortSignal: deps.getAbortSignal() ?? new AbortController().signal,
+          fileStateCache: {} as any,
+          messages: [],
+          permissionMode: deps.config.permissionMode,
+        };
+        const modified = modifier(minimalCtx);
+        // 回写有效变更
+        if (modified.permissionMode && modified.permissionMode !== deps.config.permissionMode) {
+          log.info("TOOL", `contextModifier 切换 permissionMode: ${deps.config.permissionMode} → ${modified.permissionMode}`);
+          deps.config.permissionMode = modified.permissionMode;
+        }
+      } catch (e: any) {
+        log.error("TOOL", `contextModifier 应用失败: ${e.message}`);
+      }
+    }
   }
 
   // 按原始顺序组装结果
@@ -491,6 +522,145 @@ export async function executeTools(
   return { results, followup };
 }
 
+/**
+ * GAP-01：单工具权限门（从 executeTools 的权限预检循环提取，批量/流式路径共享）。
+ *
+ * 对已确认存在的工具做权限检查。返回值：
+ *   - null：权限通过，可执行；
+ *   - ContentBlock：权限被拒/需确认失败，返回 error tool_result（调用方直接收集，不执行）。
+ *
+ * 逻辑与此前内联版本完全一致：deny 规则 / 危险命令 → 三路竞争（hook / 分类器并行 / 用户确认）。
+ */
+export async function resolveToolPermission(
+  block: ToolUseBlock,
+  tool: Tool,
+  deps: ToolExecutorDeps,
+): Promise<ContentBlock | null> {
+  const log = getLogger();
+  if (!deps.permissionChecker) return null;
+
+  // G14：观测输入回填——权限/hook 看到展开后的规范化视图（如 ~ → 绝对路径），
+  // 工具实际执行仍用原始 input（保持 prompt cache 前缀稳定）。
+  let observableInput: unknown = block.input;
+  if (typeof tool.backfillObservableInput === "function") {
+    try {
+      const expanded = tool.backfillObservableInput(block.input);
+      if (expanded !== undefined) observableInput = expanded;
+    } catch { /* 回填钩子异常静默回退原始 input */ }
+  }
+  const permReq: PermissionRequest = {
+    toolName: block.name,
+    input: observableInput,
+    description: (observableInput as any)?.description
+      ? `${block.name}: ${(observableInput as any).description}`
+      : `${block.name}: ${JSON.stringify(observableInput).slice(0, 120)}`,
+  };
+  const decision = await deps.permissionChecker.check(permReq, tool);
+
+  if (decision.allowed) return null;
+
+  if (decision.needsConfirmation) {
+    const desc = decision.reason || `工具 "${block.name}" 需要用户确认`;
+    log.info("PERMISSION", `请求权限决策(三路竞争): ${desc}`);
+
+    // 三路竞争：hook / classifier / 用户交互
+    const { resolvePermission } = await import("../permission/async-decision.ts");
+    const result = await resolvePermission(
+      { toolName: block.name, input: observableInput as Record<string, unknown>, description: desc },
+      {
+        isInteractive: true,
+        isSubAgent: false,
+        hookDecision: deps.hookSystem
+          ? async () => {
+              try {
+                const hookResult = await deps.hookSystem.firePermissionRequestEvent?.(
+                  block.name, observableInput as Record<string, unknown>, deps.config.permissionMode,
+                );
+                if (!hookResult?.finalOutput) return null;
+                if (hookResult.finalOutput.isBlockingDecision()) {
+                  return { allowed: false, reason: hookResult.finalOutput.getEffectiveReason() };
+                }
+                // hook 未阻止 → 不干预，留给其他路径决策
+                return null;
+              } catch (e) {
+                // 静默-6：权限 hook 抛异常时返回 null = 降级到交互确认（非放行），行为安全。
+                // 补 warn 记录异常（不改变降级语义）。
+                log.warn("PERMISSION", `权限 hook 执行异常，降级到交互确认: ${(e as Error)?.message}`);
+              }
+              return null;
+            }
+          : undefined,
+        // GAP-04：分类器并行预启动。对 Bash 工具，把 LLM 风险分类器作为独立竞争路径
+        // 与 hook / UI 弹窗并行跑，而非在 checker 里同步串行等待。
+        //   - 仅在 speculativeClassifier 开启时激活（默认关闭，保守用户行为不变）；
+        //   - 只对 bash 生效；只放行不拒绝；
+        //   - 安全护栏：checker 因**硬编码危险命令**要求确认时，禁止分类器放行（弹窗兜底不被绕过）；
+        //   - 决策已到达（hook/user 先赢）时，分类器结果被 resolve-once 语义自然丢弃。
+        classifierDecision: (
+          block.name === "bash"
+          && (deps.config as any).speculativeClassifier === true
+          && !(decision.decisionReason?.type === "dangerousCommand"
+               && !String((decision.decisionReason as any).pattern ?? "").startsWith("LLM:"))
+        )
+          ? async () => {
+              try {
+                const classifier = deps.permissionChecker?.getBashClassifier?.();
+                if (!classifier?.isAvailable()) return null;
+                if (deps.config.permissionMode === "plan") return null;
+                const cmd = (observableInput as any)?.command;
+                if (typeof cmd !== "string" || !cmd) return null;
+                const res = await classifier.classify({
+                  command: cmd,
+                  cwd: process.cwd(),
+                  description: desc,
+                  signal: deps.getAbortSignal(),
+                });
+                if (!res.classifierUnavailable && res.safe) {
+                  log.info("PERMISSION", `分类器并行放行 bash（${res.reason}），跳过弹窗`);
+                  return { allowed: true, reason: `分类器判定安全: ${res.reason}` };
+                }
+              } catch (e) {
+                log.warn("PERMISSION", `分类器并行路径异常（忽略，交回竞争）: ${(e as Error)?.message}`);
+              }
+              return null;
+            }
+          : undefined,
+        userDecision: (req, resolve) => {
+          void deps.requestUserConfirmation(desc, permReq, block.name, block.input).then((confirmed) => {
+            if (!resolve.isResolved()) {
+              resolve.resolve({ allowed: confirmed, reason: confirmed ? "用户批准" : "用户拒绝" });
+            }
+          });
+        },
+        gracePeriodMs: 200,
+      },
+    );
+
+    if (!result.decision.allowed) {
+      log.info("PERMISSION", `权限拒绝(${result.source}): ${block.name}`);
+      return {
+        type: "tool_result",
+        tool_use_id: block.id,
+        content: `${result.source === "user" ? "用户" : result.source === "timeout" ? "超时" : result.source}拒绝执行工具 "${block.name}"`,
+        is_error: true,
+      };
+    }
+    log.info("PERMISSION", `权限批准(${result.source}): ${block.name}`);
+    return null;
+  }
+
+  // needsConfirmation=false 的拒绝：结构化解释后返回 error
+  const { explainDecision } = await import("../permission/explainer.ts");
+  const explanation = explainDecision(decision);
+  log.warn("PERMISSION", `权限拒绝: ${block.name} - ${explanation}`);
+  return {
+    type: "tool_result",
+    tool_use_id: block.id,
+    content: `权限拒绝: ${explanation}`,
+    is_error: true,
+  };
+}
+
 /** 执行单个工具
  *
  * signalOverride：G20 sibling-abort 场景下，并发工具使用链接到父信号的子信号，
@@ -501,10 +671,14 @@ export async function executeSingleTool(
   tool: Tool,
   deps: ToolExecutorDeps,
   signalOverride?: AbortSignal,
-): Promise<ContentBlock> {
+): Promise<SingleToolOutcome> {
   const log = getLogger();
 
   log.toolStart(block.name, block.input);
+
+  // GAP-11：MCP 工具的 PostToolUse hook 需拿到**原始未截断**输出（脱敏/审计/格式转换
+  // 场景要看原文），内置工具沿用"截断后即最终输出"（hook 看到什么模型看到什么）。
+  const isMcpTool = block.name.startsWith("mcp__");
 
   // pre_tool_use hook
   const preToolResult = await deps.hookSystem.firePreToolUseEvent(
@@ -516,10 +690,12 @@ export async function executeSingleTool(
     const reason = preToolResult.finalOutput.getEffectiveReason();
     log.info("HOOK", `工具 ${block.name} 被 hook 阻止: ${reason}`);
     return {
-      type: "tool_result",
-      tool_use_id: block.id,
-      content: `Hook 阻止执行: ${reason}`,
-      is_error: true,
+      block: {
+        type: "tool_result",
+        tool_use_id: block.id,
+        content: `Hook 阻止执行: ${reason}`,
+        is_error: true,
+      },
     };
   }
 
@@ -546,13 +722,19 @@ export async function executeSingleTool(
   if (!validation.ok) {
     log.info("TOOL", `工具 ${block.name} 参数校验失败: ${validation.message}`);
     return {
-      type: "tool_result",
-      tool_use_id: block.id,
-      content: validation.message,
-      is_error: true,
+      block: {
+        type: "tool_result",
+        tool_use_id: block.id,
+        content: validation.message,
+        is_error: true,
+      },
     };
   }
-  effectiveInput = validation.data;
+  // GAP-08：纵深防御——校验通过后、执行前剥离模型可能自行伪造的内部字段
+  // （_agentId/_simulatedSedEdit/_hookInjected）。即使 zod strict 理论上已拦，
+  // 也不信任 schema 层一定拦得住（部分工具走 passthrough），在执行层再加一道，
+  // 防止模型伪造内部字段绕过控制（如伪造 _agentId 冒充子代理）。
+  effectiveInput = stripInternalFields(validation.data);
 
   const startTime = Date.now();
 
@@ -587,21 +769,33 @@ export async function executeSingleTool(
         ? describeEmptyOutput(block.name)
         : truncatedOutput;
 
+    // GAP-15：结构化遥测元数据（在 duration_ms 之外补充 input/output 规模、是否 MCP、
+    // 是否 hook 改参）。经 firePostToolUseEvent 的 harness_context 透传给 TelemetryHookProbe，
+    // 丰富 execute_tool span，供性能分析定位大 IO / 慢工具。
+    const telemetryMeta = {
+      tool_input_size: safeInputSize(block.input),
+      tool_output_size: result.output?.length ?? 0,
+      tool_is_mcp: isMcpTool,
+      tool_hook_modified: !!hookModifiedNotice,
+    };
+
     // post_tool_use hook
+    // GAP-11：MCP 工具先用**原始输出**跑 hook（脱敏/审计场景需原文），内置工具用截断后输出。
+    const hookOutput = isMcpTool ? result.output : normalizedOutput;
     const postResult = await deps.hookSystem.firePostToolUseEvent(
       block.name,
       block.input as Record<string, unknown>,
-      { output: normalizedOutput, isError: result.isError },
+      { output: hookOutput, isError: result.isError },
       result.isError,
       block.id,
-      { duration_ms: elapsed },
+      { duration_ms: elapsed, harness_context: telemetryMeta as any },
     );
 
     let finalOutput = normalizedOutput;
     const additionalCtx = postResult.finalOutput?.getAdditionalContext();
     if (additionalCtx) {
       log.info("HOOK", `PostToolUse hook 追加上下文到 ${block.name} 结果`);
-      finalOutput = truncatedOutput + "\n\n[Hook 附加上下文]\n" + additionalCtx;
+      finalOutput = normalizedOutput + "\n\n[Hook 附加上下文]\n" + additionalCtx;
     }
     // hook 改参告知前置到结果最前（模型先看到"参数被改过"，再读结果，避免按旧参数误判）
     if (hookModifiedNotice) {
@@ -614,15 +808,19 @@ export async function executeSingleTool(
     }
 
     return {
-      type: "tool_result",
-      tool_use_id: block.id,
-      content: finalOutput,
-      is_error: result.isError,
-      // 结构化 diff 透传(仅 edit/write 填充)。其它工具为 undefined → 字段不出现,零破坏。
-      // provider 序列化逐字段读取,不会泄漏给 LLM;随 Message 持久化可重放回 UI。
-      ...(result.structuredPatch?.length ? { structuredPatch: result.structuredPatch } : {}),
-      // G6：富媒体块透传(仅 Read 读图片/PDF 填充)。支持 vision 的 provider 据此拼多部件 content。
-      ...(result.mediaBlocks?.length ? { mediaBlocks: result.mediaBlocks } : {}),
+      block: {
+        type: "tool_result",
+        tool_use_id: block.id,
+        content: finalOutput,
+        is_error: result.isError,
+        // 结构化 diff 透传(仅 edit/write 填充)。其它工具为 undefined → 字段不出现,零破坏。
+        // provider 序列化逐字段读取,不会泄漏给 LLM;随 Message 持久化可重放回 UI。
+        ...(result.structuredPatch?.length ? { structuredPatch: result.structuredPatch } : {}),
+        // G6：富媒体块透传(仅 Read 读图片/PDF 填充)。支持 vision 的 provider 据此拼多部件 content。
+        ...(result.mediaBlocks?.length ? { mediaBlocks: result.mediaBlocks } : {}),
+      },
+      // GAP-06：透传工具的 contextModifier，由 executeTools 在结果收集后按原始顺序应用。
+      contextModifier: result.contextModifier,
     };
   } catch (err: any) {
     const elapsed = Date.now() - startTime;
@@ -646,11 +844,22 @@ export async function executeSingleTool(
     ).catch((e: any) => log.error("HOOK", `post_tool_use_failure hook 失败: ${e.message}`));
 
     return {
-      type: "tool_result",
-      tool_use_id: block.id,
-      content: `工具执行异常: ${err.message}`,
-      is_error: true,
+      block: {
+        type: "tool_result",
+        tool_use_id: block.id,
+        content: `工具执行异常: ${err.message}`,
+        is_error: true,
+      },
     };
+  }
+}
+
+/** GAP-15：安全估算工具输入的字节规模（JSON 序列化长度），失败返回 0，不抛。 */
+function safeInputSize(input: unknown): number {
+  try {
+    return JSON.stringify(input)?.length ?? 0;
+  } catch {
+    return 0;
   }
 }
 

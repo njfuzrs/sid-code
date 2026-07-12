@@ -127,6 +127,14 @@ export class Manager {
    * 转录路径提示自动省略，不影响其余压缩逻辑。
    */
   private transcriptPath?: string;
+  /**
+   * P1-4a：压缩事件观察者。compactWithSummary 完成后回调，把「摘要 + 被移除消息数」
+   * 落盘到会话 JSONL（context_compact 记录）。由 App 在 SessionStore 就绪后注入
+   * （sessionStore.appendCompact）。未注入时压缩仅改内存态、不落盘——保持向后兼容。
+   * 注意：sid-code 的不变量是 resume 永不据 compact boundary 截断历史（见 store.ts 顶部说明），
+   * 此记录仅作诊断/可观测用途。
+   */
+  private compactObserver?: (summary: string, removedCount: number) => void;
   /** 已调用的 Skill 记录（压缩时保留其 prompt 上下文） */
   private invokedSkills: InvokedSkill[] = [];
   /**
@@ -280,6 +288,15 @@ export class Manager {
   /** 获取完整会话转录文件路径（未注入返回 undefined）。 */
   getTranscriptPath(): string | undefined {
     return this.transcriptPath;
+  }
+
+  /**
+   * P1-4a：注入压缩事件观察者。compactWithSummary 完成后回调 (summary, removedCount)，
+   * 由上层（App）转调 sessionStore.appendCompact 落盘 context_compact 记录。
+   * 传 undefined 可解除观察者。
+   */
+  setCompactObserver(observer: ((summary: string, removedCount: number) => void) | undefined): void {
+    this.compactObserver = observer;
   }
 
   /**
@@ -1165,6 +1182,16 @@ export class Manager {
 
     // 记录压缩到会话指标
     getSessionMetrics().recordCompact();
+
+    // P1-4a：通知观察者落盘 context_compact 记录（summary + 被移除消息数=splitPoint）。
+    // 放在最后、包在 try 里：落盘失败绝不能影响已完成的内存压缩。
+    if (this.compactObserver) {
+      try {
+        this.compactObserver(summary, splitPoint);
+      } catch (e) {
+        getLogger().warn("CONTEXT", `压缩记录落盘失败（不影响压缩）: ${(e as Error)?.message}`);
+      }
+    }
   }
 
   /**
