@@ -135,6 +135,13 @@ export interface LoopState {
   hasAttemptedReactiveCompact: boolean;
   /** 上一次 continue 的原因 */
   transition: ContinueReason | undefined;
+  /**
+   * 上一轮成功拿到响应的时刻（epoch ms）。用于 cached-microcompact 的缓存冷热判定：
+   * 距上次响应超过 prompt cache 的 5min ephemeral TTL 时，视为缓存已冷，改走 direct-clear
+   * 真正释放本地 token（对标 CC time-based microcompact：缓存反正要重写，趁机清老工具结果）。
+   * 0/undefined 表示尚无上一轮（首轮），此时视为缓存冷（无前缀可保）。
+   */
+  lastResponseAt?: number;
   /** Stop Hook 重试次数 */
   stopHookRetryCount?: number;
   /**
@@ -422,6 +429,13 @@ export interface QueryDeps {
    * G2：当前 provider 名称（用于 cachedMicrocompact 路径判断）。可选。
    */
   getProviderName?: () => string;
+  /**
+   * MCP server instructions 增量拉取（对标 CC 的 mcp_instructions_delta 路径）。
+   * 每轮循环调用一次：返回自上次以来"新连接且尚未播报过的" MCP server 使用说明文本块，
+   * 由 loop 经 reminderParts 注入到 user 消息（cache-safe，不碰 system prompt 静态前缀）。
+   * 内部维护 announcedServers 去重集，无新增时返回 null。可选——未注入则不注入 MCP 说明。
+   */
+  getMcpInstructionsDelta?: () => string[] | null;
   /**
    * Trace 事件写入（Goal Gate、评估器等关键决策写入结构化事件到 events.jsonl）。
    * 可选——未注入则不写 trace 事件。

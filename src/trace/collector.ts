@@ -686,7 +686,15 @@ export class TraceCollector {
           index: currentIndex,
           model: input.llm_request.model,
           stop_reason: stopReason,
-          usage: { input_tokens: inputTokens, output_tokens: outputTokens, cache_read: cacheRead },
+          usage: {
+            input_tokens: inputTokens,
+            output_tokens: outputTokens,
+            cache_read: cacheRead,
+            // cache_creation（写入）此前缺失，导致 cost-recompute 对「首轮大量 cache 写入」的
+            // 僵尸/中断会话 cost 偏低（cache_creation 定价 ≈ 1.25× 普通 input）。cacheCreate 已在手边，
+            // 补落使 events 重算与 SessionState 权威值口径一致（对齐 claude-code 的 JSONL usage）。
+            cache_creation: cacheCreate,
+          },
           content_types: contentBlocks.filter(Boolean).map((b: any) => b.type),
           elapsed_ms: (resp as any).api_duration_ms,
           provider: resp.provider,  // T12.4：Provider 维度标记

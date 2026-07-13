@@ -29,10 +29,16 @@ const AVAILABLE_MODELS = [
     provider: "openai",
     pricing: { input: 0.435, output: 0.87, cacheRead: 0.0036, cacheWrite: 0 },
   },
+  {
+    // cacheWrite 非 0，用于验证 cache_creation 确实计入重算 cost
+    name: "claude-test",
+    provider: "anthropic",
+    pricing: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+  },
 ];
 
 /** 写一行 AfterModelRaw 事件 */
-function afterModelRaw(index: number, model: string, input: number, output: number, cacheRead = 0): string {
+function afterModelRaw(index: number, model: string, input: number, output: number, cacheRead = 0, cacheCreation = 0): string {
   return JSON.stringify({
     event: "AfterModelRaw",
     session_id: "test-sess",
@@ -41,7 +47,7 @@ function afterModelRaw(index: number, model: string, input: number, output: numb
       index,
       model,
       stop_reason: "end_turn",
-      usage: { input_tokens: input, output_tokens: output, cache_read: cacheRead },
+      usage: { input_tokens: input, output_tokens: output, cache_read: cacheRead, cache_creation: cacheCreation },
     },
   });
 }
@@ -98,6 +104,48 @@ describe("recomputeCostFromEvents", () => {
     writeFileSync(join(sessionDir, "events.jsonl"), events + "\n");
     const r = recomputeCostFromEvents(sessionDir, AVAILABLE_MODELS);
     expect(r!.apiCalls).toBe(2);
+  });
+
+  test("cache_creation 计入重算与汇总（2026-07 补落）", () => {
+    // 同一 input/output，一条带 cache_creation 一条不带，验证前者 cost 更高
+    writeFileSync(
+      join(sessionDir, "events.jsonl"),
+      afterModelRaw(1, "claude-test", 1000, 100, /*cacheRead*/ 0, /*cacheCreation*/ 50000) + "\n",
+    );
+    const withCreate = recomputeCostFromEvents(sessionDir, AVAILABLE_MODELS)!;
+    expect(withCreate.totalCacheCreationTokens).toBe(50000);
+    expect(withCreate.calls[0]!.cacheCreationTokens).toBe(50000);
+
+    // 对照组：无 cache_creation
+    writeFileSync(
+      join(sessionDir, "events.jsonl"),
+      afterModelRaw(1, "claude-test", 1000, 100, 0, 0) + "\n",
+    );
+    const without = recomputeCostFromEvents(sessionDir, AVAILABLE_MODELS)!;
+    expect(without.totalCacheCreationTokens).toBe(0);
+    // cache_creation 计入定价（cacheWrite=3.75），故带写入的 cost 明显更高
+    expect(withCreate.totalCostUSD).toBeGreaterThan(without.totalCostUSD);
+  });
+
+  test("向后兼容：补落前的历史会话无 cache_creation 字段 → 取 0，不报错", () => {
+    // 手写一条不含 cache_creation 键的 AfterModelRaw（模拟旧格式）
+    const legacy = JSON.stringify({
+      event: "AfterModelRaw",
+      session_id: "test-sess",
+      timestamp: "2026-06-01T00:00:00.000Z",
+      data: {
+        index: 1,
+        model: "deepseek-v4-pro",
+        stop_reason: "end_turn",
+        usage: { input_tokens: 500, output_tokens: 50, cache_read: 200 },
+      },
+    });
+    writeFileSync(join(sessionDir, "events.jsonl"), legacy + "\n");
+    const r = recomputeCostFromEvents(sessionDir, AVAILABLE_MODELS)!;
+    expect(r.apiCalls).toBe(1);
+    expect(r.totalCacheReadTokens).toBe(200);
+    expect(r.totalCacheCreationTokens).toBe(0);
+    expect(r.totalCostUSD).toBeGreaterThan(0);
   });
 });
 

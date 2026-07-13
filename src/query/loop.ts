@@ -113,6 +113,7 @@ import {
   formatCacheBreakReport,
   notifyCompaction,
 } from "../api/cache-detection.ts";
+import { getEffectiveBetaHeaders } from "../api/beta-header-latch.ts";
 import type {
   QueryLoopYield,
   QueryDeps,
@@ -121,6 +122,28 @@ import type {
 import { createInitialLoopState } from "./types.ts";
 import { setTransition } from "./transition.ts";
 import { lookupRegistry } from "../llm/model-registry.ts";
+
+/**
+ * 计算本轮请求真实携带的 beta headers（供 cache-break 检测器归因）。
+ *
+ * 此前两处快照点（请求前 / 响应后）均硬编码 `betaHeaders: []`，导致 cache-detection
+ * 里的"Beta headers 变化"归因分支在主循环路径永远不触发（静默失效的检测维度）。
+ * 真实的 beta header 由 provider（anthropic.ts）经 sticky latch（G7）注册，
+ * 这里以纯读方式（传空数组不注册新项）取回同一份 sticky 集合，与实际发送保持一致。
+ *
+ * 仅 anthropic 直连族有 anthropic-beta header 概念；其它 provider 恒空（与实际请求一致）。
+ * 注：latch 是全局单例，读的是"截至此刻已 sticky 的集合"。请求前快照时 provider 可能
+ * 尚未注册本轮新增 header，但 sticky-on 语义下 header 只增不减——一旦某 header 首次出现
+ * 就会被下一轮请求前快照捕获，配对检测因此能正确归因到"新增 beta header 那一轮"。
+ */
+function currentBetaHeaders(providerName: string): string[] {
+  if (providerName !== "anthropic") return [];
+  try {
+    return getEffectiveBetaHeaders([]);
+  } catch {
+    return [];
+  }
+}
 
 /**
  * 判断是否为超时类错误（用于 timeout 重试逻辑）。
@@ -244,6 +267,21 @@ export async function* queryLoop(
       deferredDefinitions,
     });
   })();
+
+  // 可观测性（对齐 CC 的 logForDebugging 风格，只打日志不做 /context 特性）：
+  // 启用延迟加载时打一行——首轮发多少工具、延迟多少、豁免哪几个高频工具，
+  // 便于排查"某 MCP 工具首轮为何可见/不可见"。
+  if (toolSearchEnabled) {
+    const activeCount = toolRegistry.activeDefinitions().length;
+    const deferredNames = toolRegistry.deferredToolNames();
+    log.info(
+      "TOOL_SEARCH",
+      `延迟加载已启用：首轮发送 ${activeCount} 个工具，延迟 ${deferredNames.length} 个` +
+        (config.toolSearchKeepLoaded && config.toolSearchKeepLoaded.length > 0
+          ? `，豁免名单 [${config.toolSearchKeepLoaded.join(", ")}]`
+          : ""),
+    );
+  }
 
   // Fix 1：try/finally 包裹整个 while 循环，确保 queryLoop 结束时（正常/异常/
   // 外部 .return() 中止）都能批量清理本次 loopId 下的所有残留快照，避免孤儿
@@ -747,6 +785,23 @@ export async function* queryLoop(
       }
     }
 
+    // ─── MCP server instructions 增量注入（对标 CC mcp_instructions_delta）───
+    // 新连接的 MCP server 首次出现时，把其"使用说明"经 reminderParts 注入 user 消息一次。
+    // 走动态注入而非 system prompt：MCP server 会话中途连断，塞进静态前缀会击穿 prompt cache
+    // （CC 老路径包在 DANGEROUS_uncached section，新路径正是改走 delta 附件保 cache）。
+    // announcedServers 去重由 app 侧维护，已播报过的不再重复注入。
+    if (deps.getMcpInstructionsDelta) {
+      const mcpBlocks = deps.getMcpInstructionsDelta();
+      if (mcpBlocks && mcpBlocks.length > 0) {
+        reminderParts.push(
+          `# MCP Server Instructions\n\n` +
+            `以下 MCP 服务器提供了使用说明，请在使用对应工具时遵循这些指令：\n\n` +
+            mcpBlocks.join("\n\n"),
+        );
+        log.info("QUERY_LOOP", `注入 ${mcpBlocks.length} 个 MCP server instructions`);
+      }
+    }
+
     if (reminderParts.length > 0) {
       // 注入逻辑抽到 reminder-inject.ts（纯函数，便于单测）。
       // 关键：纯 tool_result 轮（plan 探索高频场景）无 text block 时会追加 text block，
@@ -867,24 +922,44 @@ export async function* queryLoop(
     // ─── G2：cachedMicrocompact — 缓存友好压缩产出 cache_edits ───
     // 每轮发送前，对当前消息执行供应商感知的"缓存友好 microcompact"：
     // - Anthropic + 缓存温热 → 不改消息内容（保持前缀字节一致 → cache hit），产出 cache_edits
-    // - 其它情况 → 跳过（由 autoCompact pipeline 处理）
+    // - Anthropic + 缓存已冷 → direct-clear：缓存反正已过期要整段重写，趁重写前先清老工具结果，
+    //   缩小被重写的量并释放本地 token（对标 CC time-based microcompact 的核心洞察）
+    // - 其它 provider → 由上方 getProviderName 门控挡在外，走 autoCompact pipeline 处理
     // 产出的 pendingCacheEdits 注入 sendParams.cacheEdits，由 anthropic.ts 携带到请求体。
     try {
       const microState = deps.getCachedMicrocompactState?.();
       if (microState && deps.getProviderName?.() === "anthropic") {
         const { cachedMicrocompact } = await import("./compact/cached-microcompact.ts");
+        // 缓存冷热判定：距上一轮响应超过 5min ephemeral TTL 即视为已冷。
+        // 首轮（lastResponseAt 未设）视为冷——无前缀可保，direct-clear 无损失。
+        // 此前硬编码 cacheWarm:true 让 direct-clear 分支永不触发，CC 的"冷时清理"洞察被架空。
+        const PROMPT_CACHE_TTL_MS = 5 * 60 * 1000;
+        const cacheWarm = state.lastResponseAt != null
+          && (Date.now() - state.lastResponseAt) < PROMPT_CACHE_TTL_MS;
         const result = cachedMicrocompact(sendParams.messages, {
           providerName: "anthropic",
-          cacheWarm: true,
+          cacheWarm,
           state: microState,
           emitCacheEdits: !process.env.SID_DISABLE_CACHE_EDITS,
         });
-        if (result.pendingCacheEdits && result.pendingCacheEdits.edits.length > 0) {
-          sendParams.cacheEdits = result.pendingCacheEdits.edits;
-          log.debug("CACHE_EDITS", `注入 ${sendParams.cacheEdits.length} 条 cache_edits`);
-          // G1：cache_edits 删除后下次 cache_read 可能下降——通知检测器抑制
-          const { notifyCacheDeletion } = await import("../api/cache-detection.ts");
-          notifyCacheDeletion(sendParams.cacheEdits.length, "main");
+        if (result.path === "cache-preserving") {
+          if (result.pendingCacheEdits && result.pendingCacheEdits.edits.length > 0) {
+            sendParams.cacheEdits = result.pendingCacheEdits.edits;
+            log.debug("CACHE_EDITS", `注入 ${sendParams.cacheEdits.length} 条 cache_edits`);
+            // G1：cache_edits 删除后下次 cache_read 可能下降——通知检测器抑制
+            const { notifyCacheDeletion } = await import("../api/cache-detection.ts");
+            notifyCacheDeletion(sendParams.cacheEdits.length, "main");
+          }
+        } else if (result.compactedCount > 0) {
+          // direct-clear（缓存已冷）：改写后的消息必须回灌，否则清理无效（本地 token 不释放）。
+          // 前缀已因缓存过期失效，改写不额外损失命中；notifyCompaction 抑制这轮预期的 cache_read 下降。
+          sendParams.messages = result.messages;
+          finalMessages = result.messages;
+          notifyCompaction("main");
+          log.debug(
+            "CACHE_EDITS",
+            `缓存已冷 direct-clear：清理 ${result.compactedCount} 项工具结果，释放 ${result.savedChars} 字符`,
+          );
         }
       }
     } catch (err: any) {
@@ -901,7 +976,7 @@ export async function* queryLoop(
         toolSchemas: (sendParams.tools ?? []).map((t) => ({ ...t, name: t.name })),
         model: config.model,
         messageCount: sendParams.messages.length,
-        betaHeaders: [],
+        betaHeaders: currentBetaHeaders(config.provider),
         agentId: "main",
       });
     } catch { /* 快照失败绝不影响主循环 */ }
@@ -1253,6 +1328,8 @@ export async function* queryLoop(
     // 拿到有效 response 时重置，才能同时满足"当前请求重试计数正确递增"与
     // "跨轮次不会永久丧失重试能力"（隐患 6）两个要求。
     state.timeoutRetryCount = 0;
+    // 记录本轮成功响应时刻，供下一轮 cached-microcompact 判定缓存冷热（超 5min TTL 视为已冷）。
+    state.lastResponseAt = Date.now();
 
     // ─── A2：流式响应后检测 abort，优雅收尾 ───
     // 对标 claude-code：用户在流式输出期间按 ESC，此处已拿到 response 但尚未做任何后续处理。
@@ -1313,7 +1390,7 @@ export async function* queryLoop(
         toolSchemas: (sendParams.tools ?? []).map((t) => ({ ...t, name: t.name })),
         model: config.model,
         messageCount: sendParams.messages.length,
-        betaHeaders: [],
+        betaHeaders: currentBetaHeaders(config.provider),
         agentId: "main",
       });
       if (breakReport) {

@@ -197,6 +197,8 @@ export class App {
   private fileReadTracker: import("./tool/file-read-tracker.ts").FileReadTracker | null = null;
   /** §5：共享 cached microcompact 状态机，压缩后重置。延迟创建。 */
   private cachedMicrocompactState: import("./query/compact/cached-microcompact.ts").CachedMicrocompactState | null = null;
+  /** 已播报过 instructions 的 MCP server 名（去重集，避免每轮重复注入同一 server 说明）。 */
+  private announcedMcpServers = new Set<string>();
   /** 会话 ID（§4.1/§4.3 落盘目录用）。 */
   private sessionIdForCompact = "";
   /** 当前生效的项目规则（CLAUDE.md）内存缓存，供运行时重建系统提示词复用 */
@@ -510,6 +512,24 @@ export class App {
         return this.cachedMicrocompactState ?? undefined;
       },
       getProviderName: () => this.provider.name(),
+      // MCP server instructions 增量注入（对标 CC mcp_instructions_delta）：
+      // 每轮返回"新连接且尚未播报过"的 server 使用说明块，由 loop 经 reminderParts 注入 user 消息
+      // （cache-safe，不碰 system prompt 静态前缀）。announcedMcpServers 去重防每轮重注。
+      getMcpInstructionsDelta: () => {
+        if (!this.mcpManager) return null;
+        try {
+          const { getMcpInstructionsDelta } = require("./mcp/instructions-delta.ts");
+          const delta = getMcpInstructionsDelta(
+            this.mcpManager.getStatus(),
+            this.announcedMcpServers,
+          );
+          if (!delta) return null;
+          for (const name of delta.added) this.announcedMcpServers.add(name);
+          return delta.blocks;
+        } catch {
+          return null;
+        }
+      },
       // /goal：目标驱动持续执行——把运行时 goalState 暴露给 queryLoop（Goal Gate + Evidence 收集 + Reminder 注入）。
       getGoalState: () => this.goalState,
       updateGoalState: (updater) => {
@@ -1102,6 +1122,7 @@ export class App {
         // G5/G7：TTL 决策和 beta header 集合不应跨 /clear 泄漏
         resetTTLLatch();
         resetBetaHeaders();
+        this.announcedMcpServers.clear();
         resetSyncState();
         updateState(getConversationClearedPatch());
         break;
@@ -4496,6 +4517,7 @@ export class App {
             // G5/G7：TTL 决策和 beta header 集合不应跨 /clear 泄漏
             resetTTLLatch();
             resetBetaHeaders();
+            this.announcedMcpServers.clear();
             lastSyncedCount = 0;
             historyIdCounter = 0;
             activeStatusMessages.clear();

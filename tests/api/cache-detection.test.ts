@@ -110,6 +110,17 @@ describe("归因分析", () => {
     expect(report!.changes.some((c) => c.includes("TTL"))).toBe(true);
   });
 
+  test("Beta headers 变化（回归：此前主循环恒传 [] 使该归因永不触发）", () => {
+    const d = new CacheBreakDetector();
+    d.checkResponse(params({ cacheReadTokens: 50000, betaHeaders: [] }));
+    // 会话中途新增 beta header（如首次启用 token-efficient-tools）→ 前缀失效
+    const report = d.checkResponse(
+      params({ cacheReadTokens: 5000, betaHeaders: ["token-efficient-tools-2025-02-19"] }),
+    );
+    expect(report).not.toBeNull();
+    expect(report!.changes.some((c) => c.includes("Beta headers"))).toBe(true);
+  });
+
   test("命中下降但状态无变化 → 前缀 hash 未变归因为服务端波动", () => {
     let t = 0;
     const d = new CacheBreakDetector(() => t);

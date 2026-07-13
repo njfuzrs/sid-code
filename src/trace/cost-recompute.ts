@@ -10,10 +10,10 @@
  * 返回即落盘（collector.ts handleAfterModel），即使后续 pair 完成 / traj 重建崩溃也已写出。
  * 本模块解析这些事件、配合 model-registry 定价表重算 cost，作为 SessionEnd 缺失时的补偿。
  *
- * **口径说明**：AfterModelRaw.usage 只含 { input_tokens, output_tokens, cache_read }，
- * 不含 cache_creation（写入）。因此重算的 cost 对「有大量 cache 写入」的会话会略偏低——
- * 但这是 best-effort 补偿（总比 cost=0 准），且 cache_creation 通常只占首轮一次性开销。
- * 重算值会标注 source="events-recompute" 以便消费者区分于权威值。
+ * **口径说明**：AfterModelRaw.usage 含 { input_tokens, output_tokens, cache_read, cache_creation }。
+ * cache_creation（写入）自 2026-07 起补落（此前缺失导致「有大量 cache 写入」的会话 cost 偏低）。
+ * 对补落之前的历史会话，events 里没有 cache_creation 字段，重算仍会略偏低——但这是 best-effort
+ * 补偿（总比 cost=0 准）。重算值会标注 source="events-recompute" 以便消费者区分于权威值。
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -28,6 +28,7 @@ export interface RecomputedCall {
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
+  cacheCreationTokens: number;
   costUSD: number;
 }
 
@@ -45,6 +46,8 @@ export interface RecomputedCost {
   totalOutputTokens: number;
   /** 累计 cache_read token */
   totalCacheReadTokens: number;
+  /** 累计 cache_creation（写入）token */
+  totalCacheCreationTokens: number;
   /** 主导模型名（出现次数最多） */
   model: string;
   /** 逐次明细 */
@@ -83,6 +86,7 @@ export function recomputeCostFromEvents(
   let cumulativeInputTokens = 0;
   let totalOutputTokens = 0;
   let totalCacheReadTokens = 0;
+  let totalCacheCreationTokens = 0;
   let lastInputTokens = 0;
 
   for (const line of lines) {
@@ -99,8 +103,10 @@ export function recomputeCostFromEvents(
     const model = data.model ?? "";
     const inputTokens = Number(u.input_tokens ?? 0) || 0;
     const outputTokens = Number(u.output_tokens ?? 0) || 0;
-    // AfterModelRaw 落的是 cache_read（见 collector.ts），无 cache_creation
+    // cache_read / cache_creation：兼容两种键名（AfterModelRaw 用短名，历史/raw 用长名）。
+    // cache_creation 自 2026-07 补落；补落前的历史会话该字段缺失 → 取 0（重算仍偏低，best-effort）。
     const cacheReadTokens = Number(u.cache_read ?? u.cache_read_input_tokens ?? 0) || 0;
+    const cacheCreationTokens = Number(u.cache_creation ?? u.cache_creation_input_tokens ?? 0) || 0;
 
     // 重算单次 cost：用 cost-tracker 的独立函数（不依赖 SessionState 实例），
     // 与主循环 / SessionState.calculateCost 同口径（都走 normalizeCacheUsage + resolvePricing）。
@@ -108,15 +114,16 @@ export function recomputeCostFromEvents(
       inputTokens,
       outputTokens,
       cacheReadInputTokens: cacheReadTokens,
-      cacheCreationInputTokens: 0,
+      cacheCreationInputTokens: cacheCreationTokens,
     };
     const costUSD = calculateUSDCost(model, usage, availableModels);
 
-    calls.push({ index: Number(data.index ?? calls.length + 1), model, inputTokens, outputTokens, cacheReadTokens, costUSD });
+    calls.push({ index: Number(data.index ?? calls.length + 1), model, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, costUSD });
     totalCostUSD += costUSD;
     cumulativeInputTokens += inputTokens;
     totalOutputTokens += outputTokens;
     totalCacheReadTokens += cacheReadTokens;
+    totalCacheCreationTokens += cacheCreationTokens;
     lastInputTokens = inputTokens; // 末次覆盖（stock）
     if (model) modelCounts.set(model, (modelCounts.get(model) ?? 0) + 1);
   }
@@ -137,6 +144,7 @@ export function recomputeCostFromEvents(
     cumulativeInputTokens,
     totalOutputTokens,
     totalCacheReadTokens,
+    totalCacheCreationTokens,
     model,
     calls,
     source: "events-recompute",
@@ -234,7 +242,8 @@ export function backfillTrajCost(
   const newCost = recomputed.totalCostUSD;
 
   // 只在「traj cost 缺失/为 0」或「traj 明显低于 events 重算」时补写。
-  // traj cost ≥ events cost 时不动：traj 经 SessionState 覆盖含 cache_creation，比 events 更全。
+  // traj cost ≥ events cost 时不动：SessionState 权威值始终不劣于 events 重算
+  //（新会话两边都含 cache_creation；补落前的历史会话 events 缺该字段反而偏低）。
   const isMissing = oldCost === 0;
   const isUndercount = newCost > 0 && oldCost > 0 && (newCost - oldCost) / newCost > threshold;
 
@@ -249,12 +258,19 @@ export function backfillTrajCost(
   try {
     md.total_cost_usd = newCost;
     md.cost_recomputed_from_events = true;
+    // 同步补写 cache token 明细（此前僵尸会话补写只更新 cost，cache 内訳保持旧值/0）
+    if (typeof md.total_cache_read_tokens === "number") {
+      md.total_cache_read_tokens = recomputed.totalCacheReadTokens;
+    }
+    if (typeof md.total_cache_creation_tokens === "number") {
+      md.total_cache_creation_tokens = recomputed.totalCacheCreationTokens;
+    }
     md.cost_recompute_detail = {
       old_cost_usd: oldCost,
       recomputed_cost_usd: newCost,
       recomputed_api_calls: recomputed.apiCalls,
       source: recomputed.source,
-      note: "events.jsonl AfterModelRaw 重算（不含 cache_creation，可能略偏低）",
+      note: "events.jsonl AfterModelRaw 重算（含 cache_creation；补落前的历史会话缺该字段时略偏低）",
     };
     if (obj.info?.model_stats) {
       obj.info.model_stats.total_cost_usd = newCost;
@@ -282,7 +298,7 @@ function buildMinimalTrajFromRecompute(sessionDir: string, r: RecomputedCost): o
         tokens_sent: r.lastInputTokens,
         tokens_received: r.totalOutputTokens,
         cache_read_tokens: r.totalCacheReadTokens,
-        cache_creation_tokens: 0,
+        cache_creation_tokens: r.totalCacheCreationTokens,
         api_calls: r.apiCalls,
         total_cost_usd: r.totalCostUSD,
       },
@@ -297,7 +313,7 @@ function buildMinimalTrajFromRecompute(sessionDir: string, r: RecomputedCost): o
       total_tokens_received: r.totalOutputTokens,
       total_cumulative_prompt_tokens: r.cumulativeInputTokens,
       total_cache_read_tokens: r.totalCacheReadTokens,
-      total_cache_creation_tokens: 0,
+      total_cache_creation_tokens: r.totalCacheCreationTokens,
       total_tokens: r.lastInputTokens + r.totalOutputTokens,
       total_cost_usd: r.totalCostUSD,
       exit_status: "interrupted",

@@ -87,6 +87,8 @@ export interface QueryEngineDeps {
   getCachedMicrocompactState?: () => import("./compact/cached-microcompact.ts").CachedMicrocompactState | undefined;
   /** G2：当前 provider 名称（用于 cachedMicrocompact 路径判断）。可选 */
   getProviderName?: () => string;
+  /** MCP server instructions 增量拉取（新连接 server 的使用说明，经 reminderParts 注入）。可选 */
+  getMcpInstructionsDelta?: () => string[] | null;
   /** /goal：读取当前活跃目标状态。返回 null 表示无目标。queryLoop 在 reminder 管道和 Goal Gate 中使用。 */
   getGoalState?: () => import("../goal/state.ts").GoalState | null;
   /** /goal：更新目标状态（由 Goal Gate 在判定 complete/blocked/budget_limited 时调用）。 */
@@ -284,6 +286,7 @@ export class QueryEngine {
       // G2：cachedMicrocompact 状态机 + provider 名称（缓存友好压缩产出 cache_edits）
       getCachedMicrocompactState: this.deps.getCachedMicrocompactState,
       getProviderName: this.deps.getProviderName,
+      getMcpInstructionsDelta: this.deps.getMcpInstructionsDelta,
       // /goal：目标驱动持续执行——转发到 queryLoop deps
       getGoalState: this.deps.getGoalState,
       updateGoalState: this.deps.updateGoalState,

@@ -218,3 +218,61 @@ describe("Registry — 工具名别名 fallback (GAP-13)", () => {
   });
 });
 
+
+describe("Registry — 延迟豁免名单 keepLoaded (P0-2)", () => {
+  test("精确名豁免：命中工具 isDeferred=false、进 activeDefinitions、不进 deferredToolNames", () => {
+    const r = new Registry();
+    r.setKeepLoaded(["mcp__tavily__tavily_search"]);
+    r.register(mkTool("mcp__tavily__tavily_search"));
+    r.register(mkTool("mcp__tavily__tavily_extract"));
+
+    // 豁免工具：强制首轮可见
+    expect(r.isDeferred("mcp__tavily__tavily_search")).toBe(false);
+    expect(r.activeDefinitions().map((d) => d.name)).toContain("mcp__tavily__tavily_search");
+    expect(r.deferredToolNames()).not.toContain("mcp__tavily__tavily_search");
+
+    // 未豁免的同 server 工具：照常延迟
+    expect(r.isDeferred("mcp__tavily__tavily_extract")).toBe(true);
+    expect(r.deferredToolNames()).toContain("mcp__tavily__tavily_extract");
+  });
+
+  test("server 通配 mcp__github__*：命中该 server 全部、不误伤其它 server", () => {
+    const r = new Registry();
+    r.setKeepLoaded(["mcp__github__*"]);
+    r.register(mkTool("mcp__github__create_issue"));
+    r.register(mkTool("mcp__github__merge_pr"));
+    r.register(mkTool("mcp__slack__send"));
+
+    expect(r.isDeferred("mcp__github__create_issue")).toBe(false);
+    expect(r.isDeferred("mcp__github__merge_pr")).toBe(false);
+    // 其它 server 不受影响，照常延迟
+    expect(r.isDeferred("mcp__slack__send")).toBe(true);
+
+    const deferred = r.deferredToolNames();
+    expect(deferred).not.toContain("mcp__github__create_issue");
+    expect(deferred).not.toContain("mcp__github__merge_pr");
+    expect(deferred).toContain("mcp__slack__send");
+  });
+
+  test("空名单 / 未设置：MCP 工具照常全部延迟（向后兼容）", () => {
+    const r = new Registry();
+    r.register(mkTool("mcp__server__tool"));
+    // 未 setKeepLoaded
+    expect(r.isDeferred("mcp__server__tool")).toBe(true);
+    // 显式空数组
+    r.setKeepLoaded([]);
+    expect(r.isDeferred("mcp__server__tool")).toBe(true);
+    // undefined 归一化为空
+    r.setKeepLoaded(undefined);
+    expect(r.isDeferred("mcp__server__tool")).toBe(true);
+  });
+
+  test("豁免优先级低于运行时激活、但高于 mcp__ 前缀默认延迟", () => {
+    const r = new Registry();
+    r.setKeepLoaded(["mcp__x__a"]);
+    r.register(mkTool("mcp__x__a"));
+    // 豁免 → 本就可见，activateTool 返回 false（无需激活）
+    expect(r.activateTool("mcp__x__a")).toBe(false);
+    expect(r.isDeferred("mcp__x__a")).toBe(false);
+  });
+});

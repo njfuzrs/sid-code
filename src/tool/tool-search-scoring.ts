@@ -4,7 +4,7 @@
  * 对标 claude-code `tools/ToolSearchTool/ToolSearchTool.ts` 的
  * parseToolName / compileTermPatterns / searchToolsWithKeywords。
  *
- * 与 registry 解耦：只吃 `{ name, description, searchHint }` 三元组，
+ * 与 registry 解耦：只吃 `{ name, description, searchHint, paramText }` 轻量结构，
  * 不依赖 LegacyTool 实例，便于单测与复用。registry.searchDeferredTools 把工具
  * 实例摊平成这个轻量结构后调用本模块，再按返回的 name 顺序还原工具实例。
  *
@@ -31,6 +31,45 @@ export interface SearchableTool {
   name: string;
   description: string;
   searchHint?: string;
+  /**
+   * 参数文本：input_schema 顶层 property 名 + 各 property 的 description 拼平。
+   *
+   * 为什么 sid 要做而 CC 客户端没做：CC 是**服务端模型**——客户端发 defer_loading，
+   * 由 Anthropic API 服务端的 Tool Search Tool 对「工具名/描述/参数名/参数描述」四维
+   * 做检索并展开 schema；CC 本地这个 searchToolsWithKeywords 只是补充/回退，故意从简。
+   * 而 sid 是**纯客户端模拟**（多 provider，不发 beta wire），这个关键词搜索是唯一的
+   * 搜索——CC 客户端搜不到参数无所谓（服务端兜底），sid 搜不到就是真搜不到。所以给
+   * 这唯一的客户端搜索补一路参数信号，是补 sid 相对 CC 的结构性短板，不是跟风官方。
+   *
+   * 信号强度定位在 description 与 searchHint 之间（见评分循环 +3）。
+   */
+  paramText?: string;
+}
+
+/**
+ * 从 JSON Schema 提取「参数名 + 参数描述」拼平文本，供搜索评分用（纯函数，可单测）。
+ *
+ * 只取顶层 properties——足够覆盖绝大多数检索意图（模型搜 "pull request number" 命中
+ * merge_pr 的 pull_number 参数），且避免深层嵌套 schema 爆长拖慢词边界正则匹配。
+ * 控制总长上限（默认 512 字符），超长截断。
+ *
+ * @param inputSchema 已转换好的 JSON Schema（toolToDefinition 产出的 input_schema）
+ * @param maxLen      拼平文本长度上限，防超长 schema 拖慢匹配
+ */
+export function extractParamText(
+  inputSchema: Record<string, unknown> | undefined,
+  maxLen = 512,
+): string {
+  const props = (inputSchema as any)?.properties;
+  if (!props || typeof props !== "object") return "";
+  const parts: string[] = [];
+  for (const [key, val] of Object.entries(props)) {
+    parts.push(key);
+    const desc = (val as any)?.description;
+    if (typeof desc === "string" && desc) parts.push(desc);
+  }
+  const joined = parts.join(" ");
+  return joined.length > maxLen ? joined.slice(0, maxLen) : joined;
 }
 
 /** 搜索结果条目 */
@@ -164,13 +203,15 @@ export function searchToolsWithScoring(
       const parsed = parseToolName(tool.name);
       const descNormalized = tool.description.toLowerCase();
       const hintNormalized = tool.searchHint?.toLowerCase() ?? "";
+      const paramNormalized = tool.paramText?.toLowerCase() ?? "";
       return requiredTerms.every((term) => {
         const pattern = termPatterns.get(term)!;
         return (
           parsed.parts.includes(term) ||
           parsed.parts.some((part) => part.includes(term)) ||
           pattern.test(descNormalized) ||
-          (hintNormalized !== "" && pattern.test(hintNormalized))
+          (hintNormalized !== "" && pattern.test(hintNormalized)) ||
+          (paramNormalized !== "" && pattern.test(paramNormalized))
         );
       });
     });
@@ -180,6 +221,7 @@ export function searchToolsWithScoring(
     const parsed = parseToolName(tool.name);
     const descNormalized = tool.description.toLowerCase();
     const hintNormalized = tool.searchHint?.toLowerCase() ?? "";
+    const paramNormalized = tool.paramText?.toLowerCase() ?? "";
 
     let score = 0;
     for (const term of allScoringTerms) {
@@ -200,6 +242,13 @@ export function searchToolsWithScoring(
       // searchHint 命中（人工策划能力短语，信号强于 description）
       if (hintNormalized !== "" && pattern.test(hintNormalized)) {
         score += 4;
+      }
+
+      // 参数名/参数描述命中（sid 客户端搜索独有的第 4 维，信号强于纯 description）。
+      // 定位在 description(+2) 与 searchHint(+4) 之间——参数语义比一句话描述更贴近
+      // 模型的检索意图（"pull request number"→pull_number），但弱于人工策划的能力短语。
+      if (paramNormalized !== "" && pattern.test(paramNormalized)) {
+        score += 3;
       }
 
       // description 命中（词边界，避免子串误命中）

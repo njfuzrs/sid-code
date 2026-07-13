@@ -643,6 +643,9 @@ export async function main(): Promise<void> {
     const { FileReadTracker } = await import("./tool/file-read-tracker.ts");
     const { MemoryStore } = await import("./memory/store.ts");
     const toolRegistry = new ToolRegistry();
+    // P0-2：延迟加载豁免名单（高频工具强制首轮可见，省每会话 tool_search 往返）。
+    // 在注册任何工具前设置即可——isToolDeferred 每次调用时实时读该名单。
+    toolRegistry.setKeepLoaded(config.toolSearchKeepLoaded);
     const fileReadTracker = new FileReadTracker();
     const memoryStore = new MemoryStore(process.cwd());
 
@@ -940,6 +943,8 @@ export async function main(): Promise<void> {
         const prefix = `mcp__${serverName}__`;
         toolRegistry.removeByPrefix(prefix);
         for (const tool of tools) toolRegistry.register(tool);
+        // 动态刷新（IDE/重连）换了工具集，清 paramText 缓存避免陈旧参数文本。
+        toolRegistry.invalidateParamTextCache();
       };
 
       // G3 接线：注入 Elicitation 处理器（服务器请求额外信息时用终端交互处理）。
@@ -953,6 +958,9 @@ export async function main(): Promise<void> {
         mcpManager.connectAll(allMcpServers).then((mcpTools) => {
           for (const tool of mcpTools) toolRegistry.register(tool);
           if (mcpTools.length > 0) {
+            // 新工具进池后清 paramText 缓存：延迟工具集变化（含 schema 可能更新），
+            // 避免 tool_search 命中陈旧参数文本（借鉴 CC ToolSearchTool 的缓存失效）。
+            toolRegistry.invalidateParamTextCache();
             getLogger().info("MCP", `已连接，注册 ${mcpTools.length} 个工具`);
           }
         }).catch((err: any) => {

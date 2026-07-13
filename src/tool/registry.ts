@@ -14,7 +14,7 @@ import type { LegacyTool, ToolDescriptionContext } from "./types.ts";
 import type { ToolDefinition } from "../llm/types.ts";
 import { z } from "zod/v4";
 import { getLogger } from "../debug/index.ts";
-import { searchToolsWithScoring } from "./tool-search-scoring.ts";
+import { searchToolsWithScoring, extractParamText } from "./tool-search-scoring.ts";
 
 /**
  * Zod→JSON Schema 的 identity cache（对齐 CC zodToJsonSchema.ts）。
@@ -124,6 +124,33 @@ export class Registry {
    * 激活集合标记的是"已被模型显式调出、本会话保持可见"，二者正交。
    */
   private activatedTools = new Set<string>();
+
+  /**
+   * 延迟工具 paramText 缓存（工具名 → 参数文本）。
+   *
+   * 借鉴 CC ToolSearchTool 的 getToolDescriptionMemoized（按名 memoize），但比 CC 更省：
+   * CC 每次搜索都要 await tool.prompt() 算描述，sid 这里只在**首次**搜到某工具时算一次
+   * 参数文本（zodSchema→JSON Schema 或 inputSchema()），后续搜索直接命中缓存。
+   * 延迟工具集变化（MCP 连接/断开）时由 invalidateParamTextCache 清空——工具名是稳定 key，
+   * 但 MCP 重连可能换 schema，故连接回填后清一次，避免陈旧参数文本。
+   */
+  private paramTextCache = new Map<string, string>();
+
+  /**
+   * 延迟加载豁免名单（高频工具强制首轮可见）。
+   *
+   * sid 相对 CC 的**增量能力**：CC 客户端 isDeferredTool 没有用户可配的豁免开关——
+   * CC 想让常用 MCP 工具首轮可见,只能指望 MCP server 自己声明 _meta['anthropic/alwaysLoad']
+   * （现实中几乎没 server 这么做）。而 sid 默认 toolSearch:true 全 defer,用户每会话想用
+   * tavily/lark 都得先花一轮 tool_search 往返。给个用户名单钉死 3-5 个高频工具,直接省往返。
+   *
+   * 支持两种形态：
+   *   - 精确名："mcp__tavily__tavily_search"
+   *   - server 通配："mcp__github__*"（该 server 全部工具豁免）
+   *
+   * 由 cli.ts 经 setKeepLoaded 延迟注入（与 setPendingMcpServers 同一模式）。
+   */
+  private keepLoadedPatterns: string[] = [];
 
   // ===== Layer 1：静态注册 =====
 
@@ -270,12 +297,33 @@ export class Registry {
     if (tool.alwaysLoad) return false;
     // 已被 ToolSearch 运行时激活 → 不再延迟，进首轮上下文
     if (this.activatedTools.has(tool.name())) return false;
+    // 命中用户豁免名单 → 强制首轮可见（优先级高于 shouldDefer / mcp__ 前缀）。
+    // sid 相对 CC 的增量：让用户把高频 MCP 工具钉在首轮，省每会话的 tool_search 往返。
+    if (this.isKeepLoaded(tool.name())) return false;
     if (tool.shouldDefer) return true;
     // MCP 工具默认延迟：MCP 才是上下文膨胀的主因（单个 server 动辄几十个工具），
     // 延迟加载机制的首要服务对象就是它们（对标 claude-code isDeferredTool 的
     // `tool.isMcp === true` 规则）。按名称前缀识别，与 register() 的内置/MCP 分流同源。
     if (tool.name().startsWith("mcp__")) return true;
     return this.deferredTools.has(tool.name());
+  }
+
+  /**
+   * 设置延迟加载豁免名单（高频工具强制首轮可见）。
+   *
+   * 由 cli.ts 在创建 registry 后回填 config.toolSearchKeepLoaded。空数组/undefined 归一化为空。
+   */
+  setKeepLoaded(patterns: string[] | undefined): void {
+    this.keepLoadedPatterns = patterns ?? [];
+  }
+
+  /** 工具是否命中豁免名单（精确名 或 mcp__server__* 通配） */
+  private isKeepLoaded(name: string): boolean {
+    for (const p of this.keepLoadedPatterns) {
+      if (p === name) return true;
+      if (p.endsWith("*") && name.startsWith(p.slice(0, -1))) return true;
+    }
+    return false;
   }
 
   /** 标记工具为可延迟加载（ToolSearch 运行时使用） */
@@ -350,6 +398,8 @@ export class Registry {
       name: t.name(),
       description: t.description(),
       searchHint: t.searchHint,
+      // 参数文本（第 4 维检索信号）：懒算 + 按名缓存，只在首次搜到该工具时提取一次。
+      paramText: this.getParamText(t),
     }));
 
     // 严守"仅搜索延迟工具"契约：deferred 同时作为搜索池与精确名快路径的回退池，
@@ -359,6 +409,45 @@ export class Registry {
     return scored
       .map((s) => this.get(s.name))
       .filter((t): t is LegacyTool => t !== undefined);
+  }
+
+  /**
+   * 提取工具的参数文本（顶层参数名 + 参数描述拼平），按工具名缓存。
+   *
+   * schema 来源与 toolToDefinition 一致：优先 zodSchema（经 cachedZodToJsonSchema 转换，
+   * 复用同一 WeakMap 缓存，不重复转换），否则回退手写 inputSchema()。转换失败静默返回空串
+   * ——参数文本只是搜索的加分项，缺失不影响 name/description/searchHint 三路评分。
+   */
+  private getParamText(tool: LegacyTool): string {
+    const name = tool.name();
+    const cached = this.paramTextCache.get(name);
+    if (cached !== undefined) return cached;
+
+    let jsonSchema: Record<string, unknown> | undefined;
+    try {
+      if (tool.zodSchema) {
+        jsonSchema = cachedZodToJsonSchema(tool.zodSchema);
+      } else {
+        jsonSchema = tool.inputSchema();
+      }
+    } catch {
+      jsonSchema = undefined;
+    }
+
+    const paramText = extractParamText(jsonSchema);
+    this.paramTextCache.set(name, paramText);
+    return paramText;
+  }
+
+  /**
+   * 清空 paramText 缓存。
+   *
+   * MCP 连接回填后调用——新工具进池、或重连换了 schema 时，避免命中陈旧参数文本。
+   * 工具名是稳定 key，但同名 MCP 工具重连可能携带不同 schema，故按事件粒度整体清空
+   * （延迟工具数量有限，重算成本可忽略）。
+   */
+  invalidateParamTextCache(): void {
+    this.paramTextCache.clear();
   }
 
   /** 延迟工具数量（字段 + 名单双来源，去重） */

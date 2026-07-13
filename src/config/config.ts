@@ -237,6 +237,23 @@ export interface Config {
    */
   toolSearch?: boolean | "auto" | number;
 
+  /**
+   * 延迟加载豁免名单：命中的工具即使本应延迟（mcp__ 前缀 / shouldDefer），也强制首轮可见。
+   *
+   * sid 相对 claude-code 的**增量能力**——CC 客户端无此用户开关（只能靠 MCP server 自己
+   * 声明 alwaysLoad）。因 sid 默认 toolSearch:true 全 defer，用户每会话想用高频 MCP 工具
+   * 都得先花一轮 tool_search 往返；此名单让用户钉死 3-5 个高频工具首轮可见，省往返延迟。
+   *
+   * 支持两种形态：
+   *   - 精确名："mcp__tavily__tavily_search"
+   *   - server 通配："mcp__github__*"（该 server 全部工具豁免）
+   *
+   * 配置文件用 snake_case：tool_search_keep_loaded。
+   * 环境变量 SID_CODE_TOOL_SEARCH_KEEP_LOADED（逗号分隔）覆盖。
+   * 建议保留 3-5 个高频工具，过多会抵消延迟收益（defer 全为省 token，豁免过多即回到全量）。
+   */
+  toolSearchKeepLoaded?: string[];
+
   // 环境变量清理
   /** 是否在 bash 工具执行时清理环境变量（默认 false） */
   sanitizeEnv?: boolean;
@@ -607,6 +624,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     checkpoint: "checkpoint",
     jit_context: "jitContext",
     tool_search: "toolSearch",
+    tool_search_keep_loaded: "toolSearchKeepLoaded",
     sanitize_env: "sanitizeEnv",
     enable_llm_classifier: "enableLLMClassifier",
     classifier_model: "classifierModel",
@@ -849,6 +867,17 @@ function loadFromEnv(): Partial<Config> {
   const toolSearchEnv = parseToolSearchEnv(env.SID_CODE_TOOL_SEARCH);
   if (toolSearchEnv !== undefined) {
     base.toolSearch = toolSearchEnv;
+  }
+
+  // 延迟加载豁免名单 env 覆盖：SID_CODE_TOOL_SEARCH_KEEP_LOADED（逗号分隔）。
+  // 与 toolSearch 同风格：非空才覆盖，逐项 trim 去空。
+  const keepLoadedEnv = env.SID_CODE_TOOL_SEARCH_KEEP_LOADED;
+  if (keepLoadedEnv && keepLoadedEnv.trim() !== "") {
+    const patterns = keepLoadedEnv
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (patterns.length > 0) base.toolSearchKeepLoaded = patterns;
   }
 
   // trace 环境变量

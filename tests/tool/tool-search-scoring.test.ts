@@ -10,6 +10,7 @@ import {
   parseToolName,
   compileTermPatterns,
   searchToolsWithScoring,
+  extractParamText,
   type SearchableTool,
 } from "../../src/tool/tool-search-scoring.ts";
 
@@ -167,5 +168,93 @@ describe("searchToolsWithScoring", () => {
     // "read" 精确名快路径会命中 "read"
     const r = searchToolsWithScoring("read", similarTools, similarTools, 5);
     expect(r[0].name).toBe("read");
+  });
+});
+
+describe("extractParamText（P0-1：参数文本提取）", () => {
+  test("正常 properties：名 + 描述拼平", () => {
+    const schema = {
+      type: "object",
+      properties: {
+        pull_number: { type: "number", description: "PR 编号" },
+        repo: { type: "string", description: "仓库名" },
+      },
+    };
+    const text = extractParamText(schema);
+    expect(text).toContain("pull_number");
+    expect(text).toContain("PR 编号");
+    expect(text).toContain("repo");
+    expect(text).toContain("仓库名");
+  });
+
+  test("无 properties：返回空串", () => {
+    expect(extractParamText({ type: "object" })).toBe("");
+    expect(extractParamText(undefined)).toBe("");
+    expect(extractParamText({ properties: null } as any)).toBe("");
+  });
+
+  test("property 无 description：只取参数名", () => {
+    const text = extractParamText({ properties: { flag: { type: "boolean" } } });
+    expect(text).toBe("flag");
+  });
+
+  test("超长截断到 maxLen", () => {
+    const longDesc = "x".repeat(1000);
+    const text = extractParamText({ properties: { a: { description: longDesc } } }, 512);
+    expect(text.length).toBe(512);
+  });
+});
+
+describe("searchToolsWithScoring — paramText 第 4 维检索（P0-1）", () => {
+  test("description 不含关键词、但参数描述含 → 仍能搜到", () => {
+    const tools: SearchableTool[] = [
+      {
+        name: "mcp__github__merge",
+        description: "合并操作", // 不含 "pull" / "number"
+        paramText: "pull_number PR 编号 pull request number",
+      },
+      { name: "mcp__slack__send", description: "发送消息" },
+    ];
+    const r = searchToolsWithScoring("pull number", tools, tools, 5);
+    expect(r.map((x) => x.name)).toContain("mcp__github__merge");
+  });
+
+  test("paramText 权重(+3)介于 description(+2) 与 searchHint(+4) 之间", () => {
+    // 单一关键词 "celsius"，分别只在 paramText / description 命中
+    const paramHit: SearchableTool[] = [
+      { name: "aaa", description: "weather info", paramText: "unit celsius fahrenheit" },
+    ];
+    const descHit: SearchableTool[] = [
+      { name: "bbb", description: "returns celsius temperature" },
+    ];
+    const pScore = searchToolsWithScoring("celsius", paramHit, paramHit, 5)[0].score;
+    const dScore = searchToolsWithScoring("celsius", descHit, descHit, 5)[0].score;
+    // paramText 命中 +3 > description 命中 +2
+    expect(pScore).toBeGreaterThan(dScore);
+  });
+
+  test("+required 必需词可在 paramText 命中（预过滤一致性）", () => {
+    const tools: SearchableTool[] = [
+      {
+        name: "mcp__x__do",
+        description: "generic action",
+        // 词边界匹配：必需词需作为独立词出现（与 description 匹配同语义）。
+        // 参数描述天然携带自然语言词，这正是 paramText 的检索价值所在。
+        paramText: "url the webhook callback address",
+      },
+      { name: "mcp__y__do", description: "another action" },
+    ];
+    // 必需词 "webhook" 只在第一个工具的 paramText（描述部分）出现
+    const r = searchToolsWithScoring("+webhook do", tools, tools, 5);
+    expect(r.map((x) => x.name)).toContain("mcp__x__do");
+    expect(r.map((x) => x.name)).not.toContain("mcp__y__do");
+  });
+
+  test("无 paramText 的工具行为不变（向后兼容）", () => {
+    const tools: SearchableTool[] = [
+      { name: "mcp__github__create_issue", description: "创建 issue" },
+    ];
+    const r = searchToolsWithScoring("github", tools, tools, 5);
+    expect(r[0].name).toBe("mcp__github__create_issue");
   });
 });

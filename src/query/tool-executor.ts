@@ -18,6 +18,7 @@ import { yieldMissingToolResults, collectToolResultIdsFromBlocks } from "../agen
 import { stripInternalFields } from "../tool/internal-fields.ts";
 import type { ToolUseContext } from "../tool/types.ts";
 import { partitionToolCalls, getMaxToolConcurrency } from "./tool-orchestration.ts";
+import { recordEditOutcome } from "./edit-failure-tracker.ts";
 
 /**
  * GAP-06：executeSingleTool 内部返回载体——在标准 tool_result ContentBlock 之外，
@@ -797,6 +798,28 @@ export async function executeSingleTool(
       log.info("HOOK", `PostToolUse hook 追加上下文到 ${block.name} 结果`);
       finalOutput = normalizedOutput + "\n\n[Hook 附加上下文]\n" + additionalCtx;
     }
+
+    // 连续编辑失败计数提醒（借鉴 edit-guard，用现成的 PostToolUse 回注通道落地）：
+    // 弱模型对同一文件反复 edit/write 失败时，追加一条分型的、可执行的下一步建议，
+    // 引导它重读/换策略而非原样兜圈。纯追加、不阻断、不回滚——对弱模型是确定性纯增益。
+    // read 成功会清零对应文件计数（自愈），故 read/edit/write 都要过一遍。
+    try {
+      const efPath = (block.input as any)?.file_path;
+      const efReminder = recordEditOutcome(
+        deps.sessionState,
+        block.name,
+        typeof efPath === "string" ? efPath : undefined,
+        !!result.isError,
+        result.isError ? result.output ?? "" : "",
+      );
+      if (efReminder) {
+        finalOutput = finalOutput + "\n\n" + efReminder;
+      }
+    } catch (e: any) {
+      // 提醒是锦上添花，任何异常都不能影响工具结果本身。
+      log.warn("TOOL", `连续编辑失败提醒计算异常（忽略）: ${e?.message ?? e}`);
+    }
+
     // hook 改参告知前置到结果最前（模型先看到"参数被改过"，再读结果，避免按旧参数误判）
     if (hookModifiedNotice) {
       finalOutput = hookModifiedNotice + "\n\n" + finalOutput;
