@@ -7,7 +7,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { findRelevantMemories, parseSelection, type SideQueryFn } from "../../src/memory/recall.ts";
+import { findRelevantMemories, parseSelection, isMemoryRecallEnabled, type SideQueryFn } from "../../src/memory/recall.ts";
 
 let dir: string;
 
@@ -100,5 +100,32 @@ describe("findRelevantMemories", () => {
     const sideQuery: SideQueryFn = async () => '{"selected": []}';
     const results = await findRelevantMemories("q", dir, sideQuery);
     expect(results).toEqual([]);
+  });
+});
+
+describe("isMemoryRecallEnabled — flag 门控（对齐 claude-code tengu_moth_copse）", () => {
+  const KEY = "SID_CODE_MEMORY_RECALL";
+  let saved: string | undefined;
+  beforeEach(() => { saved = process.env[KEY]; });
+  afterEach(() => {
+    if (saved === undefined) delete process.env[KEY];
+    else process.env[KEY] = saved;
+  });
+
+  test("默认（未设 env）关闭——走全量索引注入", () => {
+    delete process.env[KEY];
+    expect(isMemoryRecallEnabled()).toBe(false);
+  });
+
+  test("SID_CODE_MEMORY_RECALL=1 时启用", () => {
+    process.env[KEY] = "1";
+    expect(isMemoryRecallEnabled()).toBe(true);
+  });
+
+  test("其它值（如 'true' / '0'）不启用——只认严格 '1'", () => {
+    process.env[KEY] = "true";
+    expect(isMemoryRecallEnabled()).toBe(false);
+    process.env[KEY] = "0";
+    expect(isMemoryRecallEnabled()).toBe(false);
   });
 });

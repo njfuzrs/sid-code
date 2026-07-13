@@ -34,10 +34,15 @@ import type { Message, ContentBlock } from "../llm/types.ts";
 import { REATTACH_ORIGIN } from "../query/compact/reattach-markers.ts";
 
 /**
- * 内部消息来源白名单（单一事实源）。
+ * 内部消息来源白名单（单一事实源）—— **整条隐藏**语义。
  *
  * 带这些 origin 的消息在 TUI/历史层整条隐藏（见 ui/history-adapter.ts 的 isHiddenFromDisplay）。
  * 顺序无关，值必须与各注入点写入的字符串逐字节一致。
+ *
+ * ⚠️ 边界：只登记「该整条隐藏」的来源。另有一类内部 origin（task-notification 后台任务通知、
+ * command-expansion 斜杠命令展开）虽也带 _meta.origin 标记，但它们走**专用渲染分流**
+ * （折叠项 / 只显命令名），**不是整条隐藏**——那些由 history-adapter 自己按 origin 分流处理，
+ * 不在此白名单，否则会被 isHiddenFromDisplay 误吞导致渲染丢失。见 INTERNAL_RENDER_ORIGINS。
  */
 export const INTERNAL_ORIGINS = [
   /** compactWithSummary / snipCompact / contextCollapse / emergencyTruncate 注入的摘要 + ack */
@@ -46,27 +51,45 @@ export const INTERNAL_ORIGINS = [
   "resume-summary",
   /** 压缩后重注入的文件正文 / Plan / 决策 / 原始任务锚点 + 各自 ack（= "compact-reattach"） */
   REATTACH_ORIGIN,
-  /** 后台子代理任务完成通知（<task-notification>），转专用折叠项渲染、不整条隐藏——
-   *  登记于此仅为让来源判定统一，实际渲染分流见 history-adapter 的 tryParseTaskNotifications */
+] as const;
+
+/**
+ * 走**专用渲染分流**的内部 origin（非整条隐藏）。登记于此仅为让"哪些是内部 origin"
+ * 有统一事实源、供哨兵测试识别为"已知内部来源"，不参与 isHiddenFromDisplay 的整条隐藏判定。
+ */
+export const INTERNAL_RENDER_ORIGINS = [
+  /** 后台子代理任务完成通知（<task-notification>）→ 折叠项渲染 */
   "task-notification",
-  /** 斜杠命令展开：只展示触发命令本身，提示词正文不进 TUI（见 history-adapter 特殊分流） */
+  /** 斜杠命令展开 → 只显示触发命令本身，提示词正文不进 TUI */
   "command-expansion",
 ] as const;
 
-/** 内部消息来源类型（从单一事实源派生，新增只改上面的数组）。 */
-export type InternalOrigin = (typeof INTERNAL_ORIGINS)[number];
+/** 内部消息来源类型（含整条隐藏 + 专用渲染两类，从单一事实源派生）。 */
+export type InternalOrigin =
+  | (typeof INTERNAL_ORIGINS)[number]
+  | (typeof INTERNAL_RENDER_ORIGINS)[number];
 
-/** 快速成员判定用的 Set（模块级构造一次）。 */
-const INTERNAL_ORIGIN_SET: ReadonlySet<string> = new Set(INTERNAL_ORIGINS);
+/** 整条隐藏判定用的 Set（仅 INTERNAL_ORIGINS）。 */
+const HIDE_ORIGIN_SET: ReadonlySet<string> = new Set(INTERNAL_ORIGINS);
+/** "是否已知内部来源"判定用的 Set（两类都算，供哨兵测试与统一识别）。 */
+const ALL_INTERNAL_ORIGIN_SET: ReadonlySet<string> = new Set([
+  ...INTERNAL_ORIGINS,
+  ...INTERNAL_RENDER_ORIGINS,
+]);
 
-/** 某字符串是否为已登记的内部来源。 */
+/** 某字符串是否为已登记的内部来源（含整条隐藏 + 专用渲染两类）。 */
 export function isInternalOrigin(origin: unknown): origin is InternalOrigin {
-  return typeof origin === "string" && INTERNAL_ORIGIN_SET.has(origin);
+  return typeof origin === "string" && ALL_INTERNAL_ORIGIN_SET.has(origin);
 }
 
-/** 消息是否带已登记的内部来源标记。 */
+/**
+ * 消息是否带「该整条隐藏」的内部来源标记。
+ * 注意：只认 INTERNAL_ORIGINS（整条隐藏类）——task-notification/command-expansion 走专用
+ * 渲染分流，不在此返回 true，否则会被 isHiddenFromDisplay 误吞。
+ */
 export function hasInternalOrigin(msg: Pick<Message, "_meta">): boolean {
-  return isInternalOrigin(msg._meta?.origin);
+  const origin = msg._meta?.origin;
+  return typeof origin === "string" && HIDE_ORIGIN_SET.has(origin);
 }
 
 /**

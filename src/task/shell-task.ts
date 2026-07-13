@@ -14,8 +14,7 @@ import {
 import { registerTask, updateTask, getTask, EVICT_GRACE_MS } from "./registry.ts";
 import { initTaskOutput, getTaskOutputTail } from "./disk-output.ts";
 import {
-  formatNotification,
-  enqueuePendingNotification,
+  enqueueTaskNotification,
 } from "./notification.ts";
 
 /** 获取平台 shell 配置 */
@@ -95,17 +94,15 @@ export function spawnShellTask(opts: {
       notified: true,
     }));
 
-    enqueuePendingNotification(
-      formatNotification({
-        taskId,
-        toolUseId: opts.toolUseId,
-        outputFile: output.filePath,
-        status: code === 0 ? "completed" : "failed",
-        summary: `命令 "${display.slice(0, 60)}" ${
-          code === 0 ? "执行成功" : `失败 (exit code: ${code})`
-        }`,
-      }),
-    );
+    enqueueTaskNotification({
+      taskId,
+      toolUseId: opts.toolUseId,
+      outputFile: output.filePath,
+      status: code === 0 ? "completed" : "failed",
+      summary: `命令 "${display.slice(0, 60)}" ${
+        code === 0 ? "执行成功" : `失败 (exit code: ${code})`
+      }`,
+    });
   });
 
   child.on("error", (err) => {
@@ -119,16 +116,14 @@ export function spawnShellTask(opts: {
       notified: true,
     }));
 
-    enqueuePendingNotification(
-      formatNotification({
-        taskId,
-        toolUseId: opts.toolUseId,
-        outputFile: output.filePath,
-        status: "failed",
-        summary: `命令启动失败`,
-        error: err.message,
-      }),
-    );
+    enqueueTaskNotification({
+      taskId,
+      toolUseId: opts.toolUseId,
+      outputFile: output.filePath,
+      status: "failed",
+      summary: `命令启动失败`,
+      error: err.message,
+    });
   });
 
   // abort 信号处理
@@ -183,15 +178,13 @@ export function killShellTask(taskId: string): void {
   // 修复缺口：killShellTask 此前设 notified=true 却从不入队通知，
   // 导致被 kill 的 shell 任务被 evictTerminalTasks 静默驱逐，主代理
   // 既看不到面板条目也收不到任何通知，任务无声消失。
-  enqueuePendingNotification(
-    formatNotification({
-      taskId,
-      toolUseId: task.toolUseId,
-      outputFile: task.outputFile,
-      status: "killed",
-      summary: `命令 "${(task.command ?? task.description).slice(0, 60)}" 已被终止`,
-    }),
-  );
+  enqueueTaskNotification({
+    taskId,
+    toolUseId: task.toolUseId,
+    outputFile: task.outputFile,
+    status: "killed",
+    summary: `命令 "${(task.command ?? task.description).slice(0, 60)}" 已被终止`,
+  });
 }
 
 // --- 停滞检测 ---
@@ -231,13 +224,13 @@ function startStallWatchdog(taskId: string): void {
         const tailSnippet = tail.length > 200
           ? `…${tail.slice(-200)}`
           : tail;
-        enqueuePendingNotification(
-          formatNotification({
+        enqueueTaskNotification(
+          {
             taskId,
             outputFile: task.outputFile,
             status: "running",
             summary: `命令似乎在等待用户输入，末尾：${tailSnippet}`,
-          }),
+          },
           "next",
         );
         lastGrowth = Date.now();

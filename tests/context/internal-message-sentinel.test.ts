@@ -18,6 +18,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
   INTERNAL_ORIGINS,
+  INTERNAL_RENDER_ORIGINS,
   isInternalOrigin,
   hasInternalOrigin,
   markInternal,
@@ -88,7 +89,8 @@ describe("防漂移哨兵：源码扫描所有 origin 注入点", () => {
     // 匹配 `origin: "xxx"` / `origin: 'xxx'`（紧跟在 _meta 上下文里的内联来源标记）。
     // 只关心字符串字面量形式——REATTACH_ORIGIN 等常量引用由 helper/类型系统保证，不在扫描列。
     const ORIGIN_LITERAL = /origin:\s*["']([^"']+)["']/g;
-    const whitelist = new Set<string>(INTERNAL_ORIGINS);
+    // 已知内部来源 = 整条隐藏类 + 专用渲染类。两类都算"已登记"，未登记才算漂移。
+    const whitelist = new Set<string>([...INTERNAL_ORIGINS, ...INTERNAL_RENDER_ORIGINS]);
 
     const violations: Array<{ file: string; origin: string }> = [];
     for (const file of files) {
@@ -115,12 +117,19 @@ describe("防漂移哨兵：源码扫描所有 origin 注入点", () => {
 });
 
 describe("隐藏行为：白名单 origin 的消息被判定隐藏", () => {
-  test("每个登记的 origin（task-notification 除外）都让消息整条隐藏", () => {
+  test("每个登记的整条隐藏 origin 都让消息整条隐藏", () => {
     for (const origin of INTERNAL_ORIGINS) {
-      // task-notification 走专用折叠渲染分流（不整条隐藏），单独验证故跳过
-      if (origin === "task-notification") continue;
       const msg = buildInternalMessage(origin, "assistant", "了解，继续。");
       expect(isHiddenFromDisplay(msg)).toBe(true);
+    }
+  });
+
+  test("专用渲染 origin（task-notification/command-expansion）不被整条隐藏（回归守卫）", () => {
+    // 回归：这两类走专用渲染分流，若被塞进 INTERNAL_ORIGINS 会被 isHiddenFromDisplay
+    // 误吞导致渲染丢失（task_notification 折叠项 / 命令名消失）。
+    for (const origin of INTERNAL_RENDER_ORIGINS) {
+      const msg = buildInternalMessage(origin, "user", "内容", { isMeta: true });
+      expect(isHiddenFromDisplay(msg)).toBe(false);
     }
   });
 

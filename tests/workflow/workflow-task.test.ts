@@ -97,7 +97,7 @@ describe("M6 workflow-task — 生命周期", () => {
     expect(t.notified).toBe(true);
     const notifs = dequeuePendingNotifications();
     expect(notifs.length).toBeGreaterThan(0);
-    expect(notifs.join("")).toContain("wf");
+    expect(notifs.map(n => n.content).join("")).toContain("wf");
   });
 
   test("fail 标记 failed + 发通知", async () => {
@@ -142,7 +142,7 @@ describe("M6 workflow-task — 生命周期", () => {
     killWorkflowTask(taskState.id);
     const notifs = dequeuePendingNotifications();
     expect(notifs.length).toBeGreaterThan(0);
-    const joined = notifs.join("");
+    const joined = notifs.map(n => n.content).join("");
     expect(joined).toContain("my-audit"); // 通知里带 workflow 名
     expect(joined.toLowerCase()).toContain("kill"); // killed 状态
   });

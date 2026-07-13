@@ -93,14 +93,84 @@ export function formatNotification(n: TaskNotification): string {
 /** 通知优先级 */
 export type NotificationPriority = "next" | "later";
 
+/**
+ * 结构化通知快照——从 TaskNotification 抽取「TUI 渲染所需的字段」，
+ * 与注入 LLM 的 XML 文本平行携带。
+ *
+ * ## 为什么要它（对标 claude-code + 比 CC 更进一步）
+ *
+ * 此前主循环只把 formatNotification 生成的 XML **文本**注入对话，TUI 侧（history-adapter）
+ * 再用正则 `<result...>([\s\S]*?)</result>` **重新解析**这段文本来折叠展示。子代理结论是
+ * 自由文本，一旦含 `</result>` / `</task-notification>` 字面量（本项目子代理常被用来核查
+ * 任务机制本身，出现这些词概率不低），非贪婪正则会提前截断 → 通知内容腰斩、后半段泄漏。
+ *
+ * CC 的做法是消费侧根本不重解析（wrapCommandText 只加一句前缀就把原文塞给 LLM），所以 CC
+ * 的 result 无需转义、字面量也不破坏——但 CC 的 TUI 因此也拿不到结构化字段做精细渲染。
+ *
+ * 本方案两端兼得：注入 LLM 的仍是**完整 XML 文本**（语义不变、字面量原样保留），同时把
+ * 结构化字段经 `_meta.notif` 平行带给 TUI，**TUI 不再解析文本**。结论里有任何 XML 字面量
+ * 都不影响——因为没有任何地方再对它做正则抽取。这就是"一次性根治点4"：不是给脆弱的
+ * 转义/反转义往返打补丁，而是把"需要转义"的那条解析路径整个删掉。
+ */
+export interface StructuredNotification {
+  taskId: string;
+  status: TaskStatus;
+  summary: string;
+  outputFile: string;
+  /** 结论正文（completed 走 result.output，failed/killed 走 error），缺省时 TUI 只显示摘要行。 */
+  result?: string;
+}
+
 interface PendingNotification {
   content: string;
   priority: NotificationPriority;
+  /** 结构化快照（供 TUI 走 _meta 结构化渲染，不解析 content 文本） */
+  structured?: StructuredNotification;
+}
+
+/** 出队结果：注入 LLM 的 XML 文本 + 供 TUI 渲染的结构化快照。 */
+export interface DequeuedNotification {
+  content: string;
+  structured?: StructuredNotification;
 }
 
 const pendingQueue: PendingNotification[] = [];
 
-/** 入队通知 */
+/** 从 TaskNotification 抽取 TUI 渲染所需的结构化快照。 */
+function toStructured(n: TaskNotification): StructuredNotification {
+  return {
+    taskId: n.taskId,
+    status: n.status,
+    summary: n.summary,
+    outputFile: n.outputFile,
+    // completed 走 result.output，failed/killed 走 error（与 formatNotification 的分支一致）。
+    result: n.result ? n.result.output : n.error,
+  };
+}
+
+/**
+ * 入队任务通知（推荐入口）——同时保存注入 LLM 的 XML 文本与供 TUI 的结构化快照。
+ *
+ * 生产侧统一走这个入口而非手工 formatNotification + enqueuePendingNotification，
+ * 保证结构化快照与 XML 文本同源、不漂移。
+ */
+export function enqueueTaskNotification(
+  n: TaskNotification,
+  priority: NotificationPriority = "later",
+): void {
+  pendingQueue.push({
+    content: formatNotification(n),
+    priority,
+    structured: toStructured(n),
+  });
+}
+
+/**
+ * 入队通知（底层入口，仅接受已格式化文本）。
+ *
+ * 保留供无结构化来源的调用方（如纯文本系统通知）使用。新的任务通知应优先用
+ * enqueueTaskNotification 以携带结构化快照。
+ */
 export function enqueuePendingNotification(
   content: string,
   priority: NotificationPriority = "later",
@@ -108,8 +178,8 @@ export function enqueuePendingNotification(
   pendingQueue.push({ content, priority });
 }
 
-/** 出队通知（主循环空闲时调用） */
-export function dequeuePendingNotifications(): string[] {
+/** 出队通知（主循环空闲时调用），携带结构化快照。 */
+export function dequeuePendingNotifications(): DequeuedNotification[] {
   if (pendingQueue.length === 0) return [];
 
   pendingQueue.sort((a, b) => {
@@ -118,7 +188,7 @@ export function dequeuePendingNotifications(): string[] {
     return 0;
   });
 
-  return pendingQueue.splice(0).map(n => n.content);
+  return pendingQueue.splice(0).map(n => ({ content: n.content, structured: n.structured }));
 }
 
 /** 检查是否有待处理的通知 */

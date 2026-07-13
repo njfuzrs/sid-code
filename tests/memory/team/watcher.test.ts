@@ -15,6 +15,7 @@ import {
   notifyTeamMemoryWrite,
   _resetWatcherStateForTesting,
   _getSuppressedReasonForTesting,
+  setTeamMemorySuppressionListener,
 } from "../../../src/memory/team/watcher.ts";
 import { getTeamMemPath } from "../../../src/memory/team/paths.ts";
 
@@ -134,6 +135,37 @@ describe("watcher — 失败抑制", () => {
     await new Promise((res) => setTimeout(res, 80));
     // 抑制态下不应同步到共享
     expect(existsSync(join(sharedDir, "blocked.md"))).toBe(false);
+  });
+
+  test("首次进入抑制态时通知监听器一次（比 claude-code 多做的一次性提示）", async () => {
+    const reasons: string[] = [];
+    _resetWatcherStateForTesting({
+      currentOpts: { enabled: false }, // 永久失败 → 抑制
+      currentCwd: cwd,
+      skipWatcher: true,
+      debounceMs: 20,
+    });
+    setTeamMemorySuppressionListener((reason) => reasons.push(reason));
+    // 连续多次 notify：抑制置位后应短路，监听器只应被调用一次
+    await notifyTeamMemoryWrite();
+    await new Promise((res) => setTimeout(res, 60));
+    await notifyTeamMemoryWrite();
+    await new Promise((res) => setTimeout(res, 60));
+    expect(_getSuppressedReasonForTesting()).toBe("disabled");
+    expect(reasons).toEqual(["disabled"]); // 恰好一次，不刷屏
+  });
+
+  test("未注册监听器时进入抑制态不报错（默认静默，对齐 claude-code）", async () => {
+    _resetWatcherStateForTesting({
+      currentOpts: { enabled: false },
+      currentCwd: cwd,
+      skipWatcher: true,
+      debounceMs: 20,
+    });
+    // 不注册监听器（_reset 已把 listener 置 null）
+    await notifyTeamMemoryWrite();
+    await new Promise((res) => setTimeout(res, 60));
+    expect(_getSuppressedReasonForTesting()).toBe("disabled"); // 抑制正常置位，无异常
   });
 });
 

@@ -13,8 +13,7 @@ import {
 import { registerTask, updateTask, getTask, EVICT_GRACE_MS } from "./registry.ts";
 import { initTaskOutput, appendTaskOutput, flushTaskOutput } from "./disk-output.ts";
 import {
-  formatNotification,
-  enqueuePendingNotification,
+  enqueueTaskNotification,
 } from "./notification.ts";
 
 /** 活跃 Agent 的 AbortController（用于 kill） */
@@ -90,16 +89,14 @@ export async function completeAgentTask(taskId: string, result: AgentTaskResult)
     notified: true,
   }));
 
-  enqueuePendingNotification(
-    formatNotification({
-      taskId,
-      toolUseId: task.toolUseId,
-      outputFile: task.outputFile,
-      status: "completed",
-      summary: `Agent "${task.description}" 执行完成`,
-      result,
-    }),
-  );
+  enqueueTaskNotification({
+    taskId,
+    toolUseId: task.toolUseId,
+    outputFile: task.outputFile,
+    status: "completed",
+    summary: `Agent "${task.description}" 执行完成`,
+    result,
+  });
 }
 
 /** 标记 Agent 任务失败 */
@@ -125,15 +122,13 @@ export async function failAgentTask(taskId: string, error: string): Promise<void
     notified: true,
   }));
 
-  enqueuePendingNotification(
-    formatNotification({
-      taskId,
-      toolUseId: task.toolUseId,
-      outputFile: task.outputFile,
-      status: "failed",
-      summary: `Agent "${task.description}" 执行失败: ${error.length > 200 ? error.slice(0, 200) + "…[截断]" : error}`,
-    }),
-  );
+  enqueueTaskNotification({
+    taskId,
+    toolUseId: task.toolUseId,
+    outputFile: task.outputFile,
+    status: "failed",
+    summary: `Agent "${task.description}" 执行失败: ${error.length > 200 ? error.slice(0, 200) + "…[截断]" : error}`,
+  });
 }
 
 /** 终止 Agent 任务 */
@@ -165,15 +160,13 @@ export function killAgentTask(taskId: string): void {
   // 也收不到任何通知，任务无声消失。落盘输出 fire-and-forget flush（kill 是
   // 同步语义，task_stop 不 await；通知 enqueue 本身同步，不依赖 flush）。
   void flushTaskOutput(taskId).catch(() => {});
-  enqueuePendingNotification(
-    formatNotification({
-      taskId,
-      toolUseId: task.toolUseId,
-      outputFile: task.outputFile,
-      status: "killed",
-      summary: `Agent "${task.description}" 已被终止`,
-    }),
-  );
+  enqueueTaskNotification({
+    taskId,
+    toolUseId: task.toolUseId,
+    outputFile: task.outputFile,
+    status: "killed",
+    summary: `Agent "${task.description}" 已被终止`,
+  });
 }
 
 /** 获取 Agent 任务的 AbortSignal */

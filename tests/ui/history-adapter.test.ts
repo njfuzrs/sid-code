@@ -775,6 +775,73 @@ describe("后台任务通知（<task-notification>）→ task_notification 历�
       expect(items[0].taskId).toBe("meta1");
     }
   });
+
+  // ─── 根治「点4」回归守卫：结构化优先 + 字面量不破坏 ───
+  // 核心改造：query/loop.ts 注入时把结构化快照放进 _meta.notif，TUI 优先读它、
+  // 不再解析 content 文本。这样子代理结论含 XML 闭合标签字面量也不破坏渲染。
+  test("_meta.notif 结构化优先：直接读结构化字段，不解析 content 文本", () => {
+    const msg: Message = {
+      role: "user",
+      // content 故意放一段畸形/不含闭合标签的文本——若还走正则会解析失败，
+      // 走结构化则完全无视 content。
+      content: [{ type: "text", text: "<task-notification> 残缺没有闭合" }],
+      _meta: {
+        origin: "task-notification",
+        isMeta: true,
+        notif: { taskId: "s1", status: "completed", summary: "结构化摘要", result: "结构化结论", outputFile: "/tmp/x.output" },
+      },
+    };
+    const items = messagesToHistoryItems([msg]);
+    expect(items).toHaveLength(1);
+    expect(items[0].type).toBe("task_notification");
+    if (items[0].type === "task_notification") {
+      expect(items[0].taskId).toBe("s1");
+      expect(items[0].status).toBe("completed");
+      expect(items[0].summary).toBe("结构化摘要");
+      expect(items[0].result).toBe("结构化结论");
+      expect(items[0].outputFile).toBe("/tmp/x.output");
+    }
+  });
+
+  test("结论含 </result> / </task-notification> 字面量 → 结构化路径完整保留（回归点4）", () => {
+    // 子代理核查任务机制本身时，结论里极可能出现这些闭合标签字面量。
+    // 旧实现用非贪婪正则 <result...>(.*?)</result> 会在第一个 </result> 处截断 → 内容腰斩。
+    // 结构化路径不解析文本，字面量原样保留。
+    const nastyResult = "分析 <result> 标签：遇到 </result> 会截断，</task-notification> 也是。完整保留才对。";
+    const msg: Message = {
+      role: "user",
+      content: [{ type: "text", text: "<task-notification>...</task-notification>" }],
+      _meta: {
+        origin: "task-notification",
+        isMeta: true,
+        notif: { taskId: "s2", status: "completed", summary: "核查完成", result: nastyResult, outputFile: "/tmp/y.output" },
+      },
+    };
+    const items = messagesToHistoryItems([msg]);
+    expect(items).toHaveLength(1);
+    if (items[0].type === "task_notification") {
+      // 完整保留，不在 </result> / </task-notification> 处截断
+      expect(items[0].result).toBe(nastyResult);
+    }
+  });
+
+  test("旧会话 resume 兼容：无 _meta.notif 时回退正则解析 content", () => {
+    // 旧持久化的会话消息带 _meta.origin 但没有 _meta.notif 结构化快照，
+    // 必须仍能通过正则解析出通知（向后兼容）。
+    const notif = buildNotification({ taskId: "legacy1", status: "failed", summary: "旧会话失败", result: "旧结论" });
+    const msg: Message = {
+      role: "user",
+      content: [{ type: "text", text: notif }],
+      _meta: { origin: "task-notification", isMeta: true }, // 无 notif 字段
+    };
+    const items = messagesToHistoryItems([msg]);
+    expect(items).toHaveLength(1);
+    expect(items[0].type).toBe("task_notification");
+    if (items[0].type === "task_notification") {
+      expect(items[0].taskId).toBe("legacy1");
+      expect(items[0].status).toBe("failed");
+    }
+  });
 });
 
 // 回归守卫：执行中工具活项必须从 Static 分流到动态区，根治 `⏺ task_list` 幽灵行残留。

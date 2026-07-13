@@ -92,9 +92,9 @@ describe("agent-task kill 通知（缺口 A2）", () => {
 
     const notifications = dequeuePendingNotifications();
     expect(notifications.length).toBe(1);
-    expect(notifications[0]).toContain("<status>killed</status>");
-    expect(notifications[0]).toContain("排查任务");
-    expect(notifications[0]).toContain(taskState.id);
+    expect(notifications[0].content).toContain("<status>killed</status>");
+    expect(notifications[0].content).toContain("排查任务");
+    expect(notifications[0].content).toContain(taskState.id);
   });
 
   test("kill 已终态任务不重复发通知（幂等）", async () => {
@@ -112,12 +112,19 @@ describe("agent-task kill 通知（缺口 A2）", () => {
     await completeAgentTask(a.taskState.id, fakeResult);
     let n = dequeuePendingNotifications();
     expect(n.length).toBe(1);
-    expect(n[0]).toContain("<status>completed</status>");
+    expect(n[0].content).toContain("<status>completed</status>");
+    // 结构化快照与 XML 文本同源（TUI 走 structured、LLM 走 content）
+    expect(n[0].structured?.status).toBe("completed");
+    expect(n[0].structured?.taskId).toBe(a.taskState.id);
 
     const b = createAgentTask({ agentType: "task", prompt: "p", description: "B" });
     await failAgentTask(b.taskState.id, "boom");
     n = dequeuePendingNotifications();
     expect(n.length).toBe(1);
-    expect(n[0]).toContain("<status>failed</status>");
+    expect(n[0].content).toContain("<status>failed</status>");
+    expect(n[0].structured?.status).toBe("failed");
+    // agent-task 的 failAgentTask 把 error 埋进 summary（不单独传 error 字段），
+    // 故结构化 summary 应含错误信息。
+    expect(n[0].structured?.summary).toContain("boom");
   });
 });

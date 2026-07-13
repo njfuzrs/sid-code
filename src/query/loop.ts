@@ -259,11 +259,16 @@ export async function* queryLoop(
       for (const notification of notifications) {
         ctxMgr.addMessage({
           role: "user",
-          content: [{ type: "text", text: notification }],
+          content: [{ type: "text", text: notification.content }],
           // 多层防泄漏标记（对标 CC AttachmentMessage + isMeta + origin）：
           // 即使 addMessage 角色交替合并把 notification 追加到 tool_result 消息，
           // history-adapter 仍能通过 _meta.origin 快速识别并走折叠渲染路径。
-          _meta: { origin: "task-notification", isMeta: true },
+          //
+          // notif：结构化快照。TUI 侧优先读它渲染，不再对 content 文本做正则重解析——
+          // 这样子代理结论里含 </result> / </task-notification> 字面量也不会破坏解析
+          // （根治「点4」：删掉需要转义的解析路径，而非给脆弱的转义往返打补丁）。
+          // 注入 LLM 的仍是 content 里的完整 XML 文本，语义不变、字面量原样保留。
+          _meta: { origin: "task-notification", isMeta: true, notif: notification.structured },
         });
       }
       log.info("QUERY_LOOP", `注入 ${notifications.length} 条后台任务通知`);

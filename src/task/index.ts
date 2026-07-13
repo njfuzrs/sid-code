@@ -26,6 +26,7 @@ export {
   getRunningTasks,
   getAllTasks,
   evictTerminalTasks,
+  EVICT_GRACE_MS,
   clearAllTasks,
   clearInactiveTasks,
   generateTaskStatusAttachment,
@@ -46,7 +47,10 @@ export {
 export {
   type TaskNotification,
   type NotificationPriority,
+  type StructuredNotification,
+  type DequeuedNotification,
   formatNotification,
+  enqueueTaskNotification,
   enqueuePendingNotification,
   dequeuePendingNotifications,
   hasPendingNotifications,

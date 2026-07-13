@@ -6,10 +6,12 @@
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
 import {
   getTask,
+  updateTask,
   isTerminalStatus,
   getTaskOutputDelta,
   isShellTask,
   isAgentTask,
+  EVICT_GRACE_MS,
 } from "../task/index.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
@@ -81,6 +83,18 @@ export class TaskOutputTool implements Tool {
     const currentTask = getTask(params.task_id);
     if (!currentTask) {
       return { output: `任务 "${params.task_id}" 已被驱逐`, isError: true };
+    }
+
+    // 访问续期（LRU "touch" 语义）：刚被 task_output 读取的终态任务，把驱逐窗口顺延，
+    // 避免活跃查询的任务在固定 60s 窗口边界被误驱逐（T0+59s 读取→T0+60s 驱逐→
+    // T0+61s 再读取失败 的竞态）。只对终态任务续期：running 任务本就不会被 evictTerminalTasks
+    // 驱逐（要求 isTerminalStatus），无需续期。直接刷新现有 evictAfter、不新增字段，
+    // 续期幂等（多次读取只是不断把 evictAfter 往后推），主代理停止查询后最后一次续期的
+    // 60s 后必被驱逐、无内存泄漏。
+    // 说明：这是消除罕见边界竞态的廉价保险（3 行、无副作用），非业界通用做法——
+    // claude-code 靠 UI holding / 用户 retain 决定生命周期，并不做「读一次续期」。
+    if (isTerminalStatus(currentTask.status)) {
+      updateTask(currentTask.id, (t) => ({ ...t, evictAfter: Date.now() + EVICT_GRACE_MS }));
     }
 
     const delta = await getTaskOutputDelta(params.task_id, currentTask.outputOffset);

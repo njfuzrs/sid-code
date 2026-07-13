@@ -15,7 +15,7 @@ import {
 } from "./types.ts";
 import { registerTask, updateTask, getTask, EVICT_GRACE_MS } from "./registry.ts";
 import { initTaskOutput, appendTaskOutput, flushTaskOutput } from "./disk-output.ts";
-import { formatNotification, enqueuePendingNotification } from "./notification.ts";
+import { enqueueTaskNotification } from "./notification.ts";
 
 /** 活跃 workflow 的 AbortController(用于 kill) */
 const activeWorkflowControllers = new Map<string, AbortController>();
@@ -95,16 +95,14 @@ export async function completeWorkflowTask(
     notified: true,
   }));
 
-  enqueuePendingNotification(
-    formatNotification({
-      taskId,
-      toolUseId: task.toolUseId,
-      outputFile: task.outputFile,
-      status: "completed",
-      summary: `Workflow "${task.workflowName}" 执行完成`,
-      result,
-    }),
-  );
+  enqueueTaskNotification({
+    taskId,
+    toolUseId: task.toolUseId,
+    outputFile: task.outputFile,
+    status: "completed",
+    summary: `Workflow "${task.workflowName}" 执行完成`,
+    result,
+  });
 }
 
 /** 标记 workflow 失败 */
@@ -125,16 +123,14 @@ export async function failWorkflowTask(taskId: string, error: string): Promise<v
     notified: true,
   }));
 
-  enqueuePendingNotification(
-    formatNotification({
-      taskId,
-      toolUseId: task.toolUseId,
-      outputFile: task.outputFile,
-      status: "failed",
-      summary: `Workflow "${task.workflowName}" 执行失败`,
-      error,
-    }),
-  );
+  enqueueTaskNotification({
+    taskId,
+    toolUseId: task.toolUseId,
+    outputFile: task.outputFile,
+    status: "failed",
+    summary: `Workflow "${task.workflowName}" 执行失败`,
+    error,
+  });
 }
 
 /** kill workflow(用户经 task_stop 主动终止) */
@@ -161,15 +157,13 @@ export function killWorkflowTask(taskId: string): boolean {
   // 落盘 fire-and-forget flush(kill 是同步语义,task_stop 不 await;通知 enqueue
   // 本身同步,不依赖 flush)。
   void flushTaskOutput(taskId).catch(() => {});
-  enqueuePendingNotification(
-    formatNotification({
-      taskId,
-      toolUseId: task.toolUseId,
-      outputFile: task.outputFile,
-      status: "killed",
-      summary: `Workflow "${task.workflowName}" 已被终止`,
-    }),
-  );
+  enqueueTaskNotification({
+    taskId,
+    toolUseId: task.toolUseId,
+    outputFile: task.outputFile,
+    status: "killed",
+    summary: `Workflow "${task.workflowName}" 已被终止`,
+  });
   return true;
 }
 

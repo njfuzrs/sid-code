@@ -150,6 +150,29 @@ function tryParseTaskNotifications(msg: Message): {
 
   // 快速路径：_meta 标记识别（中期加固后优先走此路径）
   if (msg._meta?.origin === "task-notification") {
+    // 结构化优先：query/loop.ts 注入时把 StructuredNotification 快照放进 _meta.notif。
+    // 直接读结构化字段构造历史项，**不解析 content 文本**——这样子代理结论里含
+    // </result> / </task-notification> 字面量也不会破坏渲染（根治「点4」的核心）。
+    const notif = msg._meta.notif as
+      | { taskId?: string; status?: string; summary?: string; result?: string; outputFile?: string }
+      | undefined;
+    if (notif && typeof notif === "object") {
+      return {
+        notifications: [
+          {
+            type: "task_notification",
+            taskId: notif.taskId ?? "",
+            status: notif.status ?? "",
+            summary: notif.summary ?? "",
+            ...(notif.result ? { result: notif.result } : {}),
+            ...(notif.outputFile ? { outputFile: notif.outputFile } : {}),
+          },
+        ],
+        remaining: null,
+      };
+    }
+    // 回退正则解析：旧会话 resume（注入时还没有 _meta.notif 结构化快照）时兼容。
+    // 旧数据里若结论含 XML 字面量仍可能被截断——那是历史遗留，新会话不再走此路径。
     const text = msg.content.map(b => (b.type === "text" ? b.text : "")).join("\n");
     const blocks = text.match(/<task-notification>[\s\S]*?<\/task-notification>/g);
     if (!blocks || blocks.length === 0) return null;
