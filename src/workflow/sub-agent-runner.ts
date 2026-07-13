@@ -77,6 +77,10 @@ export class SubAgentRunner implements AgentRunner {
         try {
           const session = await manager.create(slug);
           cwd = session.worktreePath;
+          // 创建期告警(依赖不一致/DB):workflow 子代理无输出通道,落日志避免静默丢失
+          for (const w of session.setupWarnings ?? []) {
+            log.warn("WORKFLOW", `worktree ${slug} 告警: ${w.split("\n")[0]}`);
+          }
           worktreeCleanup = async () => {
             // fail-closed:无改动则删,有改动保留(WorktreeManager.remove 内部判定)
             try {

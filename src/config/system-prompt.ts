@@ -40,6 +40,7 @@ import {
   DANGEROUS_dynamicAttachment,
 } from "./attachments.ts";
 import { getLogger } from "../debug/logger.ts";
+import { DYNAMIC_BOUNDARY } from "../api/cache-strategy.ts";
 
 /** 系统提示词构建上下文 */
 export interface SystemPromptContext {
@@ -405,7 +406,7 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
   const staticContent = [...coreParts, ...stableParts].join("\n\n");
 
   // 插入 DYNAMIC_BOUNDARY 标记（提示 LLM provider 在此处设置 cache_control: ephemeral）
-  const DYNAMIC_BOUNDARY = "\n\n<!-- DYNAMIC_BOUNDARY -->\n\n";
+  // 常量复用 cache-strategy.ts 的单一事实源，避免两处字面量漂移。
   let content: string;
   if (dynamicParts.length > 0) {
     content = staticContent + DYNAMIC_BOUNDARY + dynamicParts.join("\n\n");
@@ -419,8 +420,16 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
 
   if (tokens > maxTokens) {
     log.warn("PROMPT", `系统提示词超限 (${tokens} > ${maxTokens} tokens)，执行截断`);
-    const result = truncateToLimit(coreParts, attachments, maxTokens);
+    // 缺口1 修复：传入 DYNAMIC_BOUNDARY，让截断路径也保留静态/动态分区标记，
+    // 否则下游 buildSystemBlocks 找不到边界会把整段（含日期/git 等易变值）误当静态区缓存，
+    // 跨天首请求击穿缓存、cache_creation 全价重算，且该会话后续请求持续受损。
+    const result = truncateToLimit(coreParts, attachments, maxTokens, DYNAMIC_BOUNDARY);
     content = result.content;
+    // 断言：只要有附件被保留（included/truncated 非空），边界必须存在。
+    // 保守缓解——真丢了标记宁可 dev 期暴露，也不让缓存正确性 bug 静默溜到生产。
+    if ((result.included.length > 0 || result.truncated) && !content.includes(DYNAMIC_BOUNDARY)) {
+      log.warn("PROMPT", "截断后 DYNAMIC_BOUNDARY 缺失，缓存分区可能失效（请检查 truncateToLimit）");
+    }
     // 记录截断详情
     if (result.truncated) {
       const name = result.truncated.label || result.truncated.type;

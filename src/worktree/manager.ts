@@ -43,6 +43,7 @@ import {
   executeWorktreeRemoveHook,
 } from "./hooks.ts";
 import { applyWorktreeInclude } from "./include-copy.ts";
+import { checkDependencyConsistency, checkDatabaseUsage } from "./advisories.ts";
 
 // re-export 类型（向后兼容旧 import 路径）
 export type { WorktreeSession, WorktreeChanges } from "./types.ts";
@@ -176,7 +177,7 @@ export class WorktreeManager {
       }
     }
 
-    await this.postCreationSetup(worktreePath);
+    const setupWarnings = await this.postCreationSetup(worktreePath);
 
     return {
       originalCwd: this.gitRoot,
@@ -188,6 +189,7 @@ export class WorktreeManager {
       originalHeadCommit: headCommit,
       usedSparsePaths,
       creationDurationMs: Date.now() - startedAt,
+      setupWarnings,
     };
   }
 
@@ -439,12 +441,16 @@ export class WorktreeManager {
     return true;
   }
 
-  /** Post-creation setup：symlink 配置目录 + 复制 settings.local + 共享 hooks + commit归因 + include */
-  private async postCreationSetup(worktreePath: string): Promise<void> {
+  /**
+   * Post-creation setup：symlink 配置目录 + 复制 settings.local + 共享 hooks + commit归因 + include。
+   * @returns 创建期告警（依赖不一致 / DB migration），无告警返回空数组。
+   */
+  private async postCreationSetup(worktreePath: string): Promise<string[]> {
     const log = getLogger();
     const cfg = getWorktreeConfig(this.gitRoot);
 
     // 1. symlink 可配置目录（P1-6，默认 node_modules）
+    let symlinkedNodeModules = false;
     for (const dir of cfg.symlinkDirectories) {
       const src = join(this.gitRoot, dir);
       const dest = join(worktreePath, dir);
@@ -452,6 +458,7 @@ export class WorktreeManager {
       if (existsSync(src) && !existsSync(dest)) {
         try {
           symlinkSync(src, dest, "dir");
+          if (dir === "node_modules") symlinkedNodeModules = true;
         } catch (err: any) {
           // B4：失败不阻断，但记录 warning
           log.warn("WORKTREE", `symlink ${dir} 失败（非关键）: ${err.message}`);
@@ -500,6 +507,27 @@ export class WorktreeManager {
     } catch (err: any) {
       log.warn("WORKTREE", `.worktreeinclude 处理失败（非关键）: ${err.message}`);
     }
+
+    // 6. 创建期告警（比 CC 更进一步：把 symlink node_modules 的静默版本错乱 + DB 冲突
+    //    变成显式提示；条件不成立时零输出，无噪音）。best-effort，异常不阻断。
+    const warnings: string[] = [];
+    try {
+      const depWarn = checkDependencyConsistency(
+        worktreePath,
+        this.gitRoot,
+        symlinkedNodeModules,
+      );
+      if (depWarn) warnings.push(depWarn);
+    } catch {
+      /* 告警逻辑绝不阻断创建 */
+    }
+    try {
+      const dbWarn = checkDatabaseUsage(worktreePath);
+      if (dbWarn) warnings.push(dbWarn);
+    } catch {
+      /* 同上 */
+    }
+    return warnings;
   }
 
   /** 复制主仓 .sid-code/settings.local.json 到 worktree（P1-5） */

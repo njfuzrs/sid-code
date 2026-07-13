@@ -25,6 +25,8 @@ import type {
   LSPSymbolInformation,
   LSPCallHierarchyIncomingCall,
   LSPCallHierarchyOutgoingCall,
+  LSPCodeAction,
+  LSPWorkspaceEdit,
 } from "../lsp/lsp-types.ts";
 import { symbolKindName } from "../lsp/lsp-types.ts";
 
@@ -242,4 +244,111 @@ export function formatOutgoingCalls(result: unknown, workspaceFolder: string): s
     out += `\n\n（共 ${calls.length} 个被调用项，仅显示前 ${MAX_LOCATIONS} 个）`;
   }
   return out;
+}
+
+/** codeAction 展示上限：preferred 全展示，其它最多 MAX_CODE_ACTIONS 条 */
+export const MAX_CODE_ACTIONS = 10;
+/** 单条 edit 的 newText 预览上限（码点），防止大段插入撑爆上下文 */
+const NEWTEXT_PREVIEW_CAP = 200;
+
+/**
+ * 把 WorkspaceEdit 摘要为人类可读的"影响范围 + 内容预览"。
+ *
+ * 关键设计（区别于原方案的失败卖点）：**如实展示 edit 的坐标与替换文本，但不承诺"可直接用
+ * edit 工具应用"**。本项目的 edit 工具是 old_string/new_string 文本替换，与 LSP 的坐标式
+ * TextEdit 不同构，没有 WorkspaceEdit 应用器。诚实地把 range + newText 摊开给模型看，让它
+ * 读懂意图后自行用 edit 工具落地——这比谎称"直接 apply"更可用、更不会误导。
+ */
+function summarizeWorkspaceEdit(edit: LSPWorkspaceEdit, workspaceFolder: string): string[] {
+  const out: string[] = [];
+  // changes 与 documentChanges 两种形态归一为 [uri, edits] 列表
+  const entries: Array<[string, Array<{ range: any; newText: string }>]> = [];
+  if (edit.changes) {
+    for (const [uri, edits] of Object.entries(edit.changes)) entries.push([uri, edits]);
+  }
+  if (edit.documentChanges) {
+    for (const dc of edit.documentChanges) entries.push([dc.textDocument.uri, dc.edits]);
+  }
+  if (entries.length === 0) return out;
+
+  for (const [uri, edits] of entries) {
+    const path = uriToDisplayPath(uri, workspaceFolder);
+    for (const e of edits) {
+      const startLine = e.range?.start?.line ?? 0;
+      const startCh = e.range?.start?.character ?? 0;
+      const endLine = e.range?.end?.line ?? startLine;
+      const endCh = e.range?.end?.character ?? startCh;
+      const loc = fmtPos(startLine, startCh);
+      // 判定编辑类型：range 起止相同 = 纯插入；newText 为空 = 纯删除；否则替换
+      const isInsert = startLine === endLine && startCh === endCh;
+      const isDelete = e.newText === "";
+      const verb = isDelete ? "删除" : isInsert ? "插入" : "替换";
+      // 预览 newText：截断 + 转义换行，避免多行内容破坏列表结构
+      let preview = e.newText.replace(/\n/g, "\\n");
+      if (preview.length > NEWTEXT_PREVIEW_CAP) {
+        preview = preview.slice(0, NEWTEXT_PREVIEW_CAP) + "…";
+      }
+      const range = isInsert ? loc : `${loc}–${fmtPos(endLine, endCh)}`;
+      const body = isDelete ? "" : ` → \`${preview}\``;
+      out.push(`      ${verb} ${path}:${range}${body}`);
+    }
+  }
+  return out;
+}
+
+/**
+ * 格式化 textDocument/codeAction 结果（quickfix 建议）。
+ *
+ * 差异化于 Claude Code：CC 完整 LSP 子系统里**没有 codeAction**（源码实证，grep 零命中），
+ * 靠"编辑→诊断→模型推理修复"闭环。本操作是 pull 式补充：模型想修某个诊断时主动查语言服务器
+ * 已算好的确定性修复方案（import 补全、删未用变量等），把 title + 影响范围 + 替换内容摊开，
+ * 减少模型自行推理修复的 token。**只读展示，不自动应用**（应用仍走 edit 工具 + 权限门控）。
+ */
+export function formatCodeActions(result: unknown, workspaceFolder: string): string {
+  if (!result || !Array.isArray(result) || result.length === 0) {
+    return "无可用的代码修复建议（该位置没有语言服务器可提供的 quickfix）";
+  }
+  // 过滤掉既无 edit 又无 command 的空壳 action（部分服务器会返回纯占位）
+  const actions = (result as LSPCodeAction[]).filter(
+    (a) => a && a.title && (a.edit || a.command),
+  );
+  if (actions.length === 0) {
+    return "无可用的代码修复建议（该位置没有语言服务器可提供的 quickfix）";
+  }
+
+  const preferred = actions.filter((a) => a.isPreferred);
+  const others = actions.filter((a) => !a.isPreferred);
+
+  const lines: string[] = [];
+  const emit = (action: LSPCodeAction) => {
+    const kind = action.kind ?? "unknown";
+    lines.push(`  - "${action.title}" [${kind}]`);
+    if (action.edit) {
+      const summary = summarizeWorkspaceEdit(action.edit, workspaceFolder);
+      lines.push(...summary);
+    } else if (action.command) {
+      // 纯 command 形态：服务器要求执行命令而非直接给 edit，我们不执行任意命令，仅提示
+      lines.push(`      （此修复需服务器执行命令 \`${action.command.command}\`，无法直接展示 edit）`);
+    }
+  };
+
+  if (preferred.length > 0) {
+    lines.push("## 推荐修复（isPreferred，语言服务器标记为首选）");
+    for (const a of preferred) emit(a);
+  }
+  if (others.length > 0) {
+    if (preferred.length > 0) lines.push("");
+    lines.push("## 其它修复建议");
+    for (const a of others.slice(0, MAX_CODE_ACTIONS)) emit(a);
+    if (others.length > MAX_CODE_ACTIONS) {
+      lines.push(`  （另有 ${others.length - MAX_CODE_ACTIONS} 条修复建议未显示）`);
+    }
+  }
+
+  lines.push("");
+  lines.push(
+    "说明：以上为语言服务器计算的确定性修复方案。上方“影响范围 → 内容”即修复要做的改动，" +
+      "用 edit 工具在对应位置落地即可（本工具只读展示、不自动改文件）。",
+  );
+  return lines.join("\n");
 }

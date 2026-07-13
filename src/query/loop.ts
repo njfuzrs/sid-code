@@ -92,7 +92,11 @@ import {
 } from "./thinking-divergence.ts";
 import { injectReminders } from "./reminder-inject.ts";
 import { decideNagInjection, MAX_NO_PROGRESS_NAGS } from "./reminder-throttle.ts";
-import { buildContextPressureReminder } from "./context-pressure.ts";
+import {
+  buildContextPressureReminder,
+  contextPressureLevel,
+  CONTEXT_PRESSURE_REMINDER_INTERVAL,
+} from "./context-pressure.ts";
 import { detectInvestigationContext, buildHypothesisGuideReminder } from "./hypothesis-guide.ts";
 import { collectDiagnosticText, getLSPHealthWarning } from "../lsp/manager.ts";
 import { buildPermissionModeReminder, PERMISSION_MODE_REMINDER_INTERVAL } from "./permission-reminder.ts";
@@ -481,14 +485,35 @@ export async function* queryLoop(
     // 收集本轮要注入的 system-reminder 片段（plan 提醒 + todo 回注）
     const reminderParts: string[] = [];
 
-    // 缺口 A：上下文压力告知（每轮，使用率超阈值才注入）。
+    // 缺口 A：上下文压力告知（使用率超阈值才注入）。
     // usagePercent / remaining 已在上方"上下文使用率监控"段算出（loop.ts:146-147）。
     // 走每轮 reminder 通道（随消息流、抗缓存、抗 compact），给模型"落盘窗口"——
     // 让它在 compact 真正发生前主动收尾 / 落盘关键结论 / 收敛输出，而非被 harness
     // 背着突然压缩、丢失尚未落盘的中间结论。低于阈值返回 null，不刷屏。
+    //
+    // cadence 节流（对话重播/截断幻觉修复，对标 permission mode reminder）：
+    // pressure 文案里嵌实时百分比，逐字节去重（decideNagInjection）对它无效——连续两轮
+    // 百分比不同即被判"有变化"照注不误。故改按档位 cadence：升档（warn→urgent 或首次达标）
+    // 强注入一次；同档持续则每 CONTEXT_PRESSURE_REMINDER_INTERVAL 轮才重述一次。这样长任务
+    // 卡在 80-90% 时不会每轮把同一条安抚提醒注入成"幻影用户消息"（弱模型误判截断/重播根因）。
+    // 注：本项目比 CC 多做这层——CC 靠"纯安抚文案免节流"，但本项目提醒走 user 通道且需兼容
+    // DeepSeek 等对重复敏感的弱模型（有误判实证），故加 cadence 收敛，属"比标杆多一层防护"。
     {
-      const pressureReminder = buildContextPressureReminder(usagePercent, remaining);
-      if (pressureReminder) reminderParts.push(pressureReminder);
+      const level = contextPressureLevel(usagePercent);
+      if (level) {
+        const changed = state.lastSeenContextPressureLevel !== level;
+        const turnsSincePressure = state.turnCount - (state.lastContextPressureReminderTurn ?? 0);
+        if (changed || turnsSincePressure >= CONTEXT_PRESSURE_REMINDER_INTERVAL) {
+          const pressureReminder = buildContextPressureReminder(usagePercent, remaining);
+          if (pressureReminder) {
+            reminderParts.push(pressureReminder);
+            state.lastContextPressureReminderTurn = state.turnCount;
+          }
+        }
+      }
+      // 无论是否注入都刷新档位基线（含脱离阈值回落到 undefined 的情况，
+      // 下次再升到 warn/urgent 能重新识别为 changed 强注入一次）。
+      state.lastSeenContextPressureLevel = level;
     }
 
     // 缺口 C：permission mode 每轮可见（覆盖 plan 之外的所有 mode 切换）。

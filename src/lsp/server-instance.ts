@@ -94,6 +94,14 @@ export class LSPServerInstance {
             implementation: { linkSupport: true },
             documentSymbol: { hierarchicalDocumentSymbolSupport: true },
             callHierarchy: { dynamicRegistration: false },
+            // codeAction：声明支持 literal 形态 + isPreferred，否则部分服务器只回 Command
+            // 或不返回 quickfix。仅 pull 式按需查询用（LSPTool 的 codeAction 操作），不做推送。
+            codeAction: {
+              codeActionLiteralSupport: {
+                codeActionKind: { valueSet: ["quickfix", "refactor", "source"] },
+              },
+              isPreferredSupport: true,
+            },
           },
           workspace: {
             workspaceFolders: true,

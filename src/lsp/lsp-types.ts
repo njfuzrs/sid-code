@@ -92,6 +92,32 @@ export interface LSPCallHierarchyOutgoingCall {
   fromRanges: LSPRange[];
 }
 
+/** LSP TextEdit：坐标式编辑（range + 替换文本） */
+export interface LSPTextEdit {
+  range: LSPRange;
+  newText: string;
+}
+
+/** LSP WorkspaceEdit：codeAction 携带的修改集，可跨文件 */
+export interface LSPWorkspaceEdit {
+  changes?: Record<string, LSPTextEdit[]>;
+  documentChanges?: Array<{
+    textDocument: { uri: string; version?: number | null };
+    edits: LSPTextEdit[];
+  }>;
+}
+
+/** LSP CodeAction：一条可用的代码操作（quickfix / refactor / source） */
+export interface LSPCodeAction {
+  title: string;
+  kind?: string;
+  diagnostics?: Array<{ message: string; range: LSPRange; severity?: number }>;
+  isPreferred?: boolean;
+  edit?: LSPWorkspaceEdit;
+  command?: { title: string; command: string; arguments?: unknown[] };
+  data?: unknown;
+}
+
 /**
  * LSP SymbolKind 数字 → 名称映射（LSP 3.17 规范定义的 1-26）。
  * 用于格式化 documentSymbol / workspaceSymbol 结果，让模型看到 "Function" 而非 "12"。

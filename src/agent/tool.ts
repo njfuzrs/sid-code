@@ -386,6 +386,10 @@ ${typeLines}
           isolatedCwd = session.worktreePath;
           // D14：记录 slug ↔ 任务描述映射，便于事后追溯孤儿 worktree 归属
           log.info("SUBAGENT", `隔离 Worktree ${wtName} ← 任务: ${params.description}`);
+          // 创建期告警（依赖不一致 / DB）：子代理无 enter_worktree 输出通道，落日志避免静默丢失
+          for (const w of session.setupWarnings ?? []) {
+            log.warn("SUBAGENT", `隔离 Worktree ${wtName} 告警: ${w.split("\n")[0]}`);
+          }
           isolationCleanup = async () => {
             // 无改动则自动删除；有改动则保留（fail-closed，不强删）
             try {

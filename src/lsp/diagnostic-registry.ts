@@ -34,11 +34,37 @@ export class DiagnosticRegistry {
   private deliveredOrder: string[] = [];
   /** 单调递增 id（不依赖 Date.now，避免同毫秒碰撞） */
   private pendingSeq = 0;
+  /**
+   * 每个文件的**最新**诊断全量快照（uri → 诊断数组）。
+   *
+   * 与 pending/delivered 的"消费即清空"语义**完全独立**：pending 供 G1 每轮注入消费（collect
+   * 后清空），而 latest 是只读镜像，只被 registerPending 覆盖、被 clearForFile/clear 清除，
+   * 从不被 collect 消费。存在的唯一目的是给 codeAction 这类 pull 式查询提供 `context.diagnostics`——
+   * 多数语言服务器在 context 无诊断时返回空 quickfix 列表，而我们不能为此去偷 pending
+   * （否则 G1 注入链断掉）。LSP publishDiagnostics 语义即"该文档的全量诊断"，故每次覆盖。
+   */
+  private latest = new Map<string, Diagnostic[]>();
 
   /** 注册待投递的诊断（由 LSP 通知处理器调用） */
   registerPending(serverName: string, files: DiagnosticFile[]): void {
     const id = `${serverName}-${++this.pendingSeq}`;
     this.pending.set(id, { files, sent: false });
+    // 同步刷新只读快照：publishDiagnostics 给的是该 uri 的全量诊断，直接覆盖。
+    // 空数组也覆盖（表示"错误已清空"），这样 peek 到的永远是当前真实状态。
+    for (const file of files) {
+      this.latest.set(file.uri, file.diagnostics);
+    }
+  }
+
+  /**
+   * 只读快照：返回指定文件当前的全量诊断，**不消费、不清空、不影响 G1 注入链**。
+   *
+   * 供 codeAction 这类 pull 式查询填充 LSP `context.diagnostics`。没有对应文件的诊断时返回空数组。
+   * 返回浅拷贝，防止调用方意外改动内部快照。
+   */
+  peekDiagnosticsForFile(uri: string): Diagnostic[] {
+    const diags = this.latest.get(uri);
+    return diags ? [...diags] : [];
   }
 
   /**
@@ -113,6 +139,7 @@ export class DiagnosticRegistry {
     this.pending.clear();
     this.delivered.clear();
     this.deliveredOrder = [];
+    this.latest.clear();
   }
 
   /**

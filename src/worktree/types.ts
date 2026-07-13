@@ -31,6 +31,11 @@ export interface WorktreeSession {
   usedSparsePaths?: boolean;
   /** 创建耗时（ms，analytics 用，不持久化） */
   creationDurationMs?: number;
+  /**
+   * 创建期告警（依赖不一致 / DB migration 提醒等），仅运行时用于回显给用户，不持久化。
+   * 空/未定义表示无告警。见 advisories.ts。
+   */
+  setupWarnings?: string[];
 }
 
 /** Worktree 变更统计 */

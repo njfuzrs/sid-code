@@ -8,6 +8,8 @@
 import { describe, test, expect } from "bun:test";
 import {
   buildContextPressureReminder,
+  contextPressureLevel,
+  CONTEXT_PRESSURE_REMINDER_INTERVAL,
   CONTEXT_PRESSURE_THRESHOLDS,
 } from "../../src/query/context-pressure.ts";
 
@@ -75,5 +77,126 @@ describe("buildContextPressureReminder — 文案分级", () => {
     const urgent = buildContextPressureReminder(95, 5)!;
     expect(warn).toContain("请勿向用户");
     expect(urgent).toContain("请勿向用户");
+  });
+});
+
+describe("contextPressureLevel — 档位判定", () => {
+  test("未达 warn 返回 undefined", () => {
+    expect(contextPressureLevel(0)).toBeUndefined();
+    expect(contextPressureLevel(CONTEXT_PRESSURE_THRESHOLDS.warn - 1)).toBeUndefined();
+  });
+
+  test("warn ≤ 使用率 < urgent 返回 warn", () => {
+    expect(contextPressureLevel(CONTEXT_PRESSURE_THRESHOLDS.warn)).toBe("warn");
+    expect(contextPressureLevel(CONTEXT_PRESSURE_THRESHOLDS.urgent - 1)).toBe("warn");
+  });
+
+  test("使用率 ≥ urgent 返回 urgent", () => {
+    expect(contextPressureLevel(CONTEXT_PRESSURE_THRESHOLDS.urgent)).toBe("urgent");
+    expect(contextPressureLevel(100)).toBe("urgent");
+  });
+});
+
+/**
+ * cadence 节流逻辑（loop.ts 缺口 A 注入段）的行为规约。
+ *
+ * loop.ts 里的注入决策是内联逻辑，这里用一个等价的纯函数复刻它的判定规则，
+ * 锁定"升档强注入 + 同档每 N 轮重述 + 脱离阈值刷新基线"三条不变量，
+ * 防止后续重构悄悄回退成"每轮无条件注入"（对话重播/截断幻觉根因）。
+ */
+describe("上下文压力 cadence 节流规约", () => {
+  // 复刻 loop.ts 的判定：给定档位与轮次状态，是否应注入 + 更新后的状态。
+  function decidePressureInjection(args: {
+    level: "warn" | "urgent" | undefined;
+    turnCount: number;
+    lastSeenLevel: "warn" | "urgent" | undefined;
+    lastReminderTurn: number | undefined;
+    interval?: number;
+  }): { inject: boolean; nextLastReminderTurn: number | undefined } {
+    const interval = args.interval ?? CONTEXT_PRESSURE_REMINDER_INTERVAL;
+    if (!args.level) {
+      return { inject: false, nextLastReminderTurn: args.lastReminderTurn };
+    }
+    const changed = args.lastSeenLevel !== args.level;
+    const turnsSince = args.turnCount - (args.lastReminderTurn ?? 0);
+    if (changed || turnsSince >= interval) {
+      return { inject: true, nextLastReminderTurn: args.turnCount };
+    }
+    return { inject: false, nextLastReminderTurn: args.lastReminderTurn };
+  }
+
+  test("未达阈值不注入", () => {
+    const d = decidePressureInjection({
+      level: undefined,
+      turnCount: 5,
+      lastSeenLevel: undefined,
+      lastReminderTurn: undefined,
+    });
+    expect(d.inject).toBe(false);
+  });
+
+  test("首次达标（undefined→warn）强注入", () => {
+    const d = decidePressureInjection({
+      level: "warn",
+      turnCount: 10,
+      lastSeenLevel: undefined,
+      lastReminderTurn: undefined,
+    });
+    expect(d.inject).toBe(true);
+    expect(d.nextLastReminderTurn).toBe(10);
+  });
+
+  test("升档（warn→urgent）即使刚注入过也强注入", () => {
+    const d = decidePressureInjection({
+      level: "urgent",
+      turnCount: 11,
+      lastSeenLevel: "warn",
+      lastReminderTurn: 10, // 上轮刚注入
+    });
+    expect(d.inject).toBe(true);
+  });
+
+  test("同档持续、未到重述间隔 → 不注入（节流的核心，防幻影用户消息）", () => {
+    // 关键回归：长任务卡在 85% 连续多轮，同一条安抚提醒不再每轮注入
+    for (let t = 11; t < 10 + CONTEXT_PRESSURE_REMINDER_INTERVAL; t++) {
+      const d = decidePressureInjection({
+        level: "warn",
+        turnCount: t,
+        lastSeenLevel: "warn",
+        lastReminderTurn: 10,
+      });
+      expect(d.inject).toBe(false);
+    }
+  });
+
+  test("同档持续、达到重述间隔 → 低频重述一次", () => {
+    const d = decidePressureInjection({
+      level: "warn",
+      turnCount: 10 + CONTEXT_PRESSURE_REMINDER_INTERVAL,
+      lastSeenLevel: "warn",
+      lastReminderTurn: 10,
+    });
+    expect(d.inject).toBe(true);
+    expect(d.nextLastReminderTurn).toBe(10 + CONTEXT_PRESSURE_REMINDER_INTERVAL);
+  });
+
+  test("脱离阈值后回升，重新识别为升档强注入", () => {
+    // 卡在 warn → 压缩后回落到阈值下（level=undefined，基线刷新为 undefined）
+    // → 再次爬升到 warn，应被视为 changed 再注入一次
+    const afterDrop = decidePressureInjection({
+      level: undefined,
+      turnCount: 20,
+      lastSeenLevel: "warn",
+      lastReminderTurn: 10,
+    });
+    expect(afterDrop.inject).toBe(false);
+    // loop.ts 里 lastSeenLevel 被刷新为 undefined；模拟再升档
+    const reclimb = decidePressureInjection({
+      level: "warn",
+      turnCount: 25,
+      lastSeenLevel: undefined, // 已被刷新
+      lastReminderTurn: 10,
+    });
+    expect(reclimb.inject).toBe(true);
   });
 });

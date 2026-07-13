@@ -213,6 +213,19 @@ export interface LoopState {
    */
   noProgressNagCount?: number;
   /**
+   * 上次观察到的上下文压力档位（"warn" / "urgent" / undefined=未达阈值）。
+   * 与本轮不同（升档）→ 强注入一次压力提醒；同档持续 → 每 N 轮低频重述。
+   * 见 context-pressure.ts + loop.ts 缺口 A 注入段。
+   *
+   * 背景（对话重播/截断幻觉，见 reminder-throttle.ts）：pressure 文案里嵌了实时百分比，
+   * 逐字节去重（decideNagInjection）对它无效——连续两轮百分比不同即被判为"有变化"照注不误。
+   * 故 pressure 走 cadence 节流（跨档强注入 + 同档低频重述），而非 decideNagInjection，
+   * 避免长任务卡在 80-90% 时同一条安抚提醒每轮注入成"幻影用户消息"。
+   */
+  lastSeenContextPressureLevel?: "warn" | "urgent";
+  /** 上次注入上下文压力提醒的轮次（同档持续时按 CONTEXT_PRESSURE_REMINDER_INTERVAL 低频重述）。 */
+  lastContextPressureReminderTurn?: number;
+  /**
    * 缺口 C：上轮观察到的 permission mode。与本轮不同 → 视为切换，强注入一次 mode 指南。
    * undefined 表示尚未观察过。
    */

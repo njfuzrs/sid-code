@@ -121,4 +121,63 @@ describe("truncateToLimit", () => {
     const allTracked = result.included.length + (result.truncated ? 1 : 0) + result.discarded.length;
     expect(allTracked).toBe(3);
   });
+
+  // 缺口1：截断路径的 DYNAMIC_BOUNDARY 保真
+  describe("DYNAMIC_BOUNDARY 保真", () => {
+    const BOUNDARY = "\n\n<!-- DYNAMIC_BOUNDARY -->\n\n";
+
+    test("有附件保留时，boundary 插在静态区(coreParts)之后、附件之前", () => {
+      const core = ["身份指令", "环境信息"];
+      const attachments = [makeAttachment("git", "Git 状态", 40)];
+
+      const result = truncateToLimit(core, attachments, 100000, BOUNDARY);
+      expect(result.content).toContain(BOUNDARY);
+      // 静态核心区在 boundary 之前
+      const idx = result.content.indexOf(BOUNDARY);
+      expect(result.content.slice(0, idx)).toContain("身份指令");
+      expect(result.content.slice(0, idx)).toContain("环境信息");
+      // 附件在 boundary 之后（动态区）
+      expect(result.content.slice(idx)).toContain("Git 状态");
+      // 静态区不含附件（易变内容不会被误缓存进静态区）
+      expect(result.content.slice(0, idx)).not.toContain("Git 状态");
+    });
+
+    test("boundary 插入后无多余空行（不产生 4 个连续换行）", () => {
+      const core = ["核心"];
+      const attachments = [makeAttachment("git", "Git 状态", 40)];
+      const result = truncateToLimit(core, attachments, 100000, BOUNDARY);
+      // boundary 自带前后 \n\n，附件不应再补分隔，故整体不出现连续 4 个换行
+      expect(result.content).not.toContain("\n\n\n\n");
+    });
+
+    test("所有附件被丢弃（纯 coreParts）时不插 boundary", () => {
+      const core = ["核心内容必须保留"];
+      const attachments = [makeAttachment("extra", "X".repeat(100000), 10)];
+      const result = truncateToLimit(core, attachments, 50, BOUNDARY);
+      expect(result.content).toContain("核心内容必须保留");
+      // 无附件落入动态区 → 无需边界（与正常路径 dynamicParts.length===0 语义一致）
+      expect(result.content).not.toContain(BOUNDARY);
+    });
+
+    test("被截断的附件也落在 boundary 之后", () => {
+      const core = ["A".repeat(100)];
+      const attachments = [makeAttachment("big", "B".repeat(10000), 40)];
+      const result = truncateToLimit(core, attachments, 500, BOUNDARY);
+      if (result.truncated) {
+        const idx = result.content.indexOf(BOUNDARY);
+        expect(idx).toBeGreaterThan(-1);
+        // 截断内容在动态区
+        expect(result.content.slice(idx)).toContain("[内容已截断]");
+      }
+    });
+
+    test("不传 boundary 时退化为无边界拼接（向后兼容）", () => {
+      const core = ["核心"];
+      const attachments = [makeAttachment("git", "Git 状态", 40)];
+      const result = truncateToLimit(core, attachments, 100000);
+      expect(result.content).not.toContain(BOUNDARY);
+      expect(result.content).toContain("核心");
+      expect(result.content).toContain("Git 状态");
+    });
+  });
 });

@@ -204,6 +204,76 @@ describe("DiagnosticRegistry", () => {
   });
 });
 
+describe("peekDiagnosticsForFile（非消费式只读快照）", () => {
+  test("返回该文件当前全量诊断，且不消费 pending（不破坏 G1 注入链）", () => {
+    const reg = new DiagnosticRegistry();
+    reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("err1"), diag("err2", "Warning", 3)] }]);
+
+    // peek 多次结果稳定
+    const peeked = reg.peekDiagnosticsForFile("file:///a.ts");
+    expect(peeked.length).toBe(2);
+    expect(reg.peekDiagnosticsForFile("file:///a.ts").length).toBe(2);
+
+    // 关键不变量：peek 之后 collect 仍能拿到诊断（peek 没偷走 pending）
+    const collected = reg.collectDiagnostics();
+    expect(collected.length).toBe(1);
+    expect(collected[0]!.diagnostics.length).toBe(2);
+  });
+
+  test("collect 消费 pending 后，peek 仍返回快照（两条链互不影响）", () => {
+    const reg = new DiagnosticRegistry();
+    reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("err1")] }]);
+
+    // 先 collect 消费掉 pending
+    expect(reg.collectDiagnostics().length).toBe(1);
+    expect(reg.collectDiagnostics()).toEqual([]); // pending 已空
+
+    // peek 仍能拿到最新快照（codeAction 需要它填 context.diagnostics）
+    expect(reg.peekDiagnosticsForFile("file:///a.ts").length).toBe(1);
+  });
+
+  test("publishDiagnostics 语义=全量覆盖：再次注册替换快照", () => {
+    const reg = new DiagnosticRegistry();
+    reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("old")] }]);
+    expect(reg.peekDiagnosticsForFile("file:///a.ts")[0]!.message).toBe("old");
+
+    // 服务器重推该文件的全量诊断（错误已修，只剩一条新的）
+    reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("new")] }]);
+    const peeked = reg.peekDiagnosticsForFile("file:///a.ts");
+    expect(peeked.length).toBe(1);
+    expect(peeked[0]!.message).toBe("new");
+  });
+
+  test("空数组覆盖：错误清空后 peek 返回空（不残留过时诊断）", () => {
+    const reg = new DiagnosticRegistry();
+    reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("err1")] }]);
+    expect(reg.peekDiagnosticsForFile("file:///a.ts").length).toBe(1);
+
+    reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [] }]);
+    expect(reg.peekDiagnosticsForFile("file:///a.ts")).toEqual([]);
+  });
+
+  test("无该文件诊断时返回空数组", () => {
+    const reg = new DiagnosticRegistry();
+    expect(reg.peekDiagnosticsForFile("file:///nonexistent.ts")).toEqual([]);
+  });
+
+  test("clear() 同时清空快照", () => {
+    const reg = new DiagnosticRegistry();
+    reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("err1")] }]);
+    reg.clear();
+    expect(reg.peekDiagnosticsForFile("file:///a.ts")).toEqual([]);
+  });
+
+  test("返回浅拷贝：调用方改动不影响内部快照", () => {
+    const reg = new DiagnosticRegistry();
+    reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("err1")] }]);
+    const peeked = reg.peekDiagnosticsForFile("file:///a.ts");
+    peeked.push(diag("injected"));
+    expect(reg.peekDiagnosticsForFile("file:///a.ts").length).toBe(1);
+  });
+});
+
 describe("formatDiagnostics", () => {
   test("格式化为人类可读文本（1-based 行号）", () => {
     const text = formatDiagnostics([{

@@ -15,7 +15,9 @@ import {
   formatCallHierarchyItems,
   formatIncomingCalls,
   formatOutgoingCalls,
+  formatCodeActions,
   MAX_LOCATIONS,
+  MAX_CODE_ACTIONS,
 } from "../../src/tool/lsp-formatters.ts";
 import { pathToFileURL } from "url";
 import { join } from "path";
@@ -208,5 +210,109 @@ describe("formatCallHierarchy", () => {
     expect(formatCallHierarchyItems([], WS)).toContain("无可用的调用层级项");
     expect(formatIncomingCalls([], WS)).toBe("无调用者");
     expect(formatOutgoingCalls([], WS)).toBe("无被调用项");
+  });
+});
+
+describe("formatCodeActions", () => {
+  test("空结果 / 非数组 → 无修复提示", () => {
+    expect(formatCodeActions(null, WS)).toContain("无可用的代码修复建议");
+    expect(formatCodeActions([], WS)).toContain("无可用的代码修复建议");
+    expect(formatCodeActions("bogus", WS)).toContain("无可用的代码修复建议");
+  });
+
+  test("过滤掉既无 edit 又无 command 的空壳 action", () => {
+    const out = formatCodeActions([{ title: "空壳" }], WS);
+    expect(out).toContain("无可用的代码修复建议");
+  });
+
+  test("preferred 修复展示 title + kind + 插入内容（1-based 行列）", () => {
+    const actions = [
+      {
+        title: "Add missing import for 'useState'",
+        kind: "quickfix",
+        isPreferred: true,
+        edit: {
+          changes: {
+            [uri("src/App.tsx")]: [
+              {
+                range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
+                newText: "import { useState } from 'react';\n",
+              },
+            ],
+          },
+        },
+      },
+    ];
+    const out = formatCodeActions(actions, WS);
+    expect(out).toContain("推荐修复");
+    expect(out).toContain("Add missing import for 'useState'");
+    expect(out).toContain("[quickfix]");
+    // range start/start 相同 → 判定为插入
+    expect(out).toContain("插入");
+    expect(out).toContain("src/App.tsx:1:1");
+    // newText 中的换行被转义，不破坏列表结构
+    expect(out).toContain("\\n");
+    expect(out).not.toContain("import { useState } from 'react';\n      "); // 未原样带真实换行
+  });
+
+  test("newText 为空 → 判定为删除；range 起止不同 → 替换", () => {
+    const del = formatCodeActions([{
+      title: "Remove unused variable",
+      kind: "quickfix",
+      isPreferred: true,
+      edit: { changes: { [uri("a.ts")]: [{ range: { start: { line: 41, character: 0 }, end: { line: 42, character: 0 } }, newText: "" }] } },
+    }], WS);
+    expect(del).toContain("删除");
+    expect(del).toContain("a.ts:42:1"); // 1-based
+
+    const rep = formatCodeActions([{
+      title: "Replace with const",
+      kind: "quickfix",
+      isPreferred: true,
+      edit: { changes: { [uri("a.ts")]: [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } }, newText: "const" }] } },
+    }], WS);
+    expect(rep).toContain("替换");
+    expect(rep).toContain("const");
+  });
+
+  test("preferred 与非 preferred 分区展示", () => {
+    const actions = [
+      { title: "首选修复", kind: "quickfix", isPreferred: true, edit: { changes: { [uri("a.ts")]: [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, newText: "x" }] } } },
+      { title: "备选修复", kind: "quickfix", edit: { changes: { [uri("a.ts")]: [{ range: { start: { line: 1, character: 0 }, end: { line: 1, character: 0 } }, newText: "y" }] } } },
+    ];
+    const out = formatCodeActions(actions, WS);
+    expect(out).toContain("推荐修复");
+    expect(out).toContain("其它修复建议");
+    expect(out).toContain("首选修复");
+    expect(out).toContain("备选修复");
+  });
+
+  test("非 preferred 超过上限时截断并提示剩余数量", () => {
+    const actions = Array.from({ length: MAX_CODE_ACTIONS + 5 }, (_, i) => ({
+      title: `修复${i}`,
+      kind: "quickfix",
+      edit: { changes: { [uri("a.ts")]: [{ range: { start: { line: i, character: 0 }, end: { line: i, character: 0 } }, newText: "z" }] } },
+    }));
+    const out = formatCodeActions(actions, WS);
+    expect(out).toContain("另有 5 条修复建议未显示");
+  });
+
+  test("纯 command 形态 action：提示需服务器执行命令，不谎称可直接 apply", () => {
+    const out = formatCodeActions([{
+      title: "Organize Imports",
+      kind: "source.organizeImports",
+      command: { title: "Organize", command: "_typescript.organizeImports" },
+    }], WS);
+    expect(out).toContain("Organize Imports");
+    expect(out).toContain("需服务器执行命令");
+  });
+
+  test("说明文案诚实：只读展示、用 edit 工具落地，不承诺自动 apply", () => {
+    const out = formatCodeActions([{
+      title: "fix", kind: "quickfix", isPreferred: true,
+      edit: { changes: { [uri("a.ts")]: [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, newText: "x" }] } },
+    }], WS);
+    expect(out).toContain("edit 工具");
+    expect(out).toContain("不自动改文件");
   });
 });

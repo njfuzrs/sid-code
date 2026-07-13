@@ -131,8 +131,12 @@ Worktree 共享 Git 对象库，创建速度快，磁盘开销小。
 
       log.info("WORKTREE", `进入 Worktree: ${session.worktreePath}`);
       const tmuxLine = session.tmuxSession ? `\ntmux: ${session.tmuxSession}（可用 tmux attach -t ${session.tmuxSession} 接入）` : "";
+      // 创建期告警（依赖不一致 / DB migration）：条件真实成立才有内容
+      const warnLines = (session.setupWarnings ?? []).length
+        ? "\n\n" + session.setupWarnings!.map((w) => `⚠️ ${w}`).join("\n")
+        : "";
       return {
-        output: `已创建并进入 Worktree。\n路径: ${session.worktreePath}\n分支: ${session.worktreeBranch}${tmuxLine}`,
+        output: `已创建并进入 Worktree。\n路径: ${session.worktreePath}\n分支: ${session.worktreeBranch}${tmuxLine}${warnLines}`,
       };
     } catch (err: any) {
       log.error("WORKTREE", `创建 Worktree 失败: ${err.message}`);

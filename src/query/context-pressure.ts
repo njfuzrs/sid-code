@@ -31,6 +31,31 @@ export const CONTEXT_PRESSURE_THRESHOLDS = {
 } as const;
 
 /**
+ * 上下文压力档位。undefined 表示未达 warn 阈值（不注入）。
+ */
+export type ContextPressureLevel = "warn" | "urgent";
+
+/**
+ * 同一压力档位持续时的低频重述间隔（轮）。
+ *
+ * 与 permission-reminder / work-log 的 8 轮取齐：pressure 文案里嵌实时百分比，逐字节去重
+ * （decideNagInjection）对它无效，故走 cadence 节流——升档时强注入一次，同档持续则每
+ * CONTEXT_PRESSURE_REMINDER_INTERVAL 轮才重述一次，避免长任务卡在 80-90% 时每轮刷成
+ * "幻影用户消息"（对话重播/截断幻觉根因，见 reminder-throttle.ts）。
+ */
+export const CONTEXT_PRESSURE_REMINDER_INTERVAL = 8;
+
+/**
+ * 判定当前使用率对应的压力档位（纯函数，便于单测与 cadence 节流）。
+ * @returns "urgent" | "warn" | undefined（未达阈值）
+ */
+export function contextPressureLevel(usagePercent: number): ContextPressureLevel | undefined {
+  if (usagePercent >= CONTEXT_PRESSURE_THRESHOLDS.urgent) return "urgent";
+  if (usagePercent >= CONTEXT_PRESSURE_THRESHOLDS.warn) return "warn";
+  return undefined;
+}
+
+/**
  * 构造上下文压力告知 system-reminder。
  *
  * 低于 warn 阈值返回 null（不注入，避免每轮刷屏浪费 token）。

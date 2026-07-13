@@ -540,6 +540,15 @@ export function defaultConfig(): Config {
     mcpServers: {},
     showLineNumbers: true,
     alternateBuffer: false,
+    // 工具延迟加载默认恒开(tst)——对标 claude-code 默认 'tst' 行为。
+    // 15 个长尾工具(cron/worktree/task-*/team/workflow/notebook/ask-user 等)
+    // + 所有 MCP 工具首轮不注入,由模型经 tool_search 按需调出,首轮省 token。
+    // sid-code 的 tool search 是纯客户端模拟(activeDefinitions 过滤 + <available-deferred-tools>
+    // 名单注入 + 运行时 activateTool),不发 beta wire shape,故无 CC 依赖 beta API 时
+    // 代理网关 400 的风险(CC 需 CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS 补救,我们天生免疫)。
+    // 高频工具(读/写/编辑/todo/plan/hypothesis)不 defer,首轮照常可见,不影响体验。
+    // 用户可 SID_CODE_TOOL_SEARCH=false 或 settings.json 显式关闭回退。
+    toolSearch: true,
   };
 }
 

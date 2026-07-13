@@ -31,6 +31,7 @@ import {
   formatCallHierarchyItems,
   formatIncomingCalls,
   formatOutgoingCalls,
+  formatCodeActions,
   normalizeLocations,
 } from "./lsp-formatters.ts";
 
@@ -58,6 +59,7 @@ const LSP_OPERATIONS = [
   "prepareCallHierarchy",
   "incomingCalls",
   "outgoingCalls",
+  "codeAction",
 ] as const;
 
 type LSPOperation = (typeof LSP_OPERATIONS)[number];
@@ -82,12 +84,12 @@ const lspSchema = lazySchema(() =>
       .number()
       .int()
       .optional()
-      .describe("行号（1-based，如编辑器所示）。位置相关操作必填，documentSymbol/workspaceSymbol 可省略"),
+      .describe("行号（1-based，如编辑器所示）。位置相关操作必填，documentSymbol/workspaceSymbol 可省略；codeAction 可省略（省略=整文件范围）"),
     character: z
       .number()
       .int()
       .optional()
-      .describe("列号（1-based，如编辑器所示）。位置相关操作必填"),
+      .describe("列号（1-based，如编辑器所示）。位置相关操作必填；codeAction 可省略"),
     query: z
       .string()
       .optional()
@@ -98,8 +100,10 @@ const lspSchema = lazySchema(() =>
 /**
  * 过滤掉被 .gitignore 忽略的文件路径（G9）。
  * 用 `git check-ignore --stdin` 批量检查；git 不可用或出错时不过滤（返回原列表）。
+ *
+ * export 供单测直接驱动（含 T5-B3 的 signal 快速退出/子进程 kill 分支）。
  */
-async function filterGitignored(
+export async function filterGitignored(
   paths: string[],
   cwd: string,
   signal?: AbortSignal,
@@ -178,7 +182,8 @@ export class LSPTool implements Tool {
   description(): string {
     return (
       "与 Language Server Protocol（LSP）服务器交互，获取精确的代码智能信息：跳转定义、" +
-      "查找引用、悬停类型/文档、文件符号列表、全工作区符号搜索、查找实现、调用层级。" +
+      "查找引用、悬停类型/文档、文件符号列表、全工作区符号搜索、查找实现、调用层级、" +
+      "以及获取确定性代码修复建议（codeAction quickfix）。" +
       "比文本搜索（grep）更精确——理解语言语义，能跨文件解析符号。"
     );
   }
@@ -189,6 +194,7 @@ export class LSPTool implements Tool {
 - documentSymbol 只需 filePath（列出文件内所有符号）
 - workspaceSymbol 用 query 搜索符号名（filePath 仅用于定位语言服务器，可传项目内任意文件）
 - 调用层级两步走：先 prepareCallHierarchy 获取层级项，确认位置有效后再 incomingCalls（谁调用我）/ outgoingCalls（我调用谁）
+- codeAction 拿语言服务器算好的确定性修复（quickfix）：补缺失 import、删未用变量等。给 filePath 查整文件的修复建议，或加 line/character 只查光标处那条诊断的修复。返回的是"改哪里 → 改成什么"，你据此用 edit 工具落地（本操作只读、不自动改文件）。修复类错误时优先查它，省去自行推理
 - 内置支持 TypeScript/JavaScript/Vue/Python/Go/Rust/JSON/YAML/HTML/CSS/Shell：装好对应 language server 即自动生效；未安装时工具会返回精准安装引导。长尾语言可在 ~/.sid-code/lsp.json 自行配置
 - 优先用它而非 grep 做符号级导航：grep 只匹配文本，lsp 理解语义`;
   }
@@ -392,6 +398,47 @@ export class LSPTool implements Tool {
           });
           return { output: formatOutgoingCalls(result, workspaceFolder) };
         }
+      }
+      case "codeAction": {
+        // 关键修复（对比原方案的致命缺陷）：多数语言服务器在 context.diagnostics 为空时
+        // 返回空 quickfix 列表——它不知道要修什么。这里从被动诊断注册表**只读快照**取该文件
+        // 当前诊断填充 context，绝不消费 pending（否则 G1 每轮诊断注入链断掉）。
+        const { getDiagnosticRegistry } = await import("../lsp/manager.ts");
+        const registry = getDiagnosticRegistry();
+        const allDiags = registry ? registry.peekDiagnosticsForFile(uri) : [];
+
+        // 有 position：把范围收窄到光标所在行，只查该行诊断的修复（更聚焦、结果更少）；
+        // 无 position：整文件范围 + 全部诊断（查整个文件有哪些可用修复）。
+        const severityToNum: Record<string, number> = { Error: 1, Warning: 2, Info: 3, Hint: 4 };
+        let range: { start: { line: number; character: number }; end: { line: number; character: number } };
+        let contextDiags = allDiags;
+        if (position) {
+          range = { start: position, end: position };
+          contextDiags = allDiags.filter((d) => {
+            const s = d.range?.start?.line ?? -1;
+            const e = d.range?.end?.line ?? s;
+            return position.line >= s && position.line <= e;
+          });
+        } else {
+          // 整文件范围：用第一条诊断到末尾兜底一个大范围（服务器按 context.diagnostics 决定返回）
+          range = { start: { line: 0, character: 0 }, end: { line: 999_999, character: 0 } };
+        }
+
+        // 转成 LSP 协议诊断形态（数字 severity），供服务器匹配对应 quickfix
+        const lspDiagnostics = contextDiags.map((d) => ({
+          range: d.range,
+          severity: severityToNum[d.severity] ?? 3,
+          code: d.code,
+          source: d.source,
+          message: d.message,
+        }));
+
+        const result = await manager.sendRequest(params.filePath, "textDocument/codeAction", {
+          textDocument,
+          range,
+          context: { diagnostics: lspDiagnostics, only: ["quickfix"] },
+        });
+        return { output: formatCodeActions(result, workspaceFolder) };
       }
       default: {
         // 类型上 LSP_OPERATIONS 已穷举，这里兜底未知操作
