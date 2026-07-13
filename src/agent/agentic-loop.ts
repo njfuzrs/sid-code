@@ -108,6 +108,16 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
   let toolUseCount = 0;
   let lastTextOutput = "";
   let unknownStopWarning: string | undefined;
+
+  // LSP 诊断注入所需状态（子代理侧补齐，对标主循环 G1）。
+  // hasEditCapability：能力对齐门控——只有具备 edit/write 工具的子代理才注入诊断。
+  //   纯只读子代理（如 explore/summarize）不会被诊断噪音打扰。这比 CC 的"有 Bash 才注入"
+  //   更贴合本意：诊断是给"能改代码的 agent"看的，而本项目靠 edit/write 修复诊断、不依赖 bash。
+  // editedFiles：本子代理累计编辑过的文件绝对路径，作为诊断收集的作用域——并发子代理共用
+  //   全局 registry，各自只消费自己编辑文件的诊断，互不偷取（作用域消费 + 作用域清空）。
+  const hasEditCapability = !!(tools.get("edit") || tools.get("write"));
+  const editedFiles = new Set<string>();
+
   const totalUsage: Usage = {
     inputTokens: 0,
     outputTokens: 0,
@@ -122,11 +132,43 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
     // 每轮开始前的回调（SendMessage 注入等）
     config.onBeforeTurn?.(turns);
 
+    // LSP 诊断注入（子代理侧补齐，对标主循环 query/loop.ts 的 G1）。
+    // 上一轮若编辑过文件，此处收集这些文件的实时诊断注入为 user 消息，让子代理感知
+    // 自己编辑引入的类型/语法错误。作用域限定为本子代理编辑过的文件（editedFiles），
+    // 避免与主循环 / 并发子代理互相偷取全局 registry 里的 pending 诊断。
+    // ctxMgr.addMessage 会自动合并连续同角色消息，注入 user 消息不破坏角色交替。
+    // 收集即消费（作用域清空），故无需额外去重——同一诊断不会重复注入。
+    if (hasEditCapability && editedFiles.size > 0) {
+      try {
+        const { collectDiagnosticText } = await import("../lsp/manager.ts");
+        const diagnosticText = collectDiagnosticText(editedFiles);
+        if (diagnosticText) {
+          ctxMgr.addMessage({
+            role: "user",
+            content: [{
+              type: "text",
+              text:
+                `# LSP 诊断（来自语言服务器的实时反馈）\n\n${diagnosticText}\n\n` +
+                `以上是语言服务器对你刚编辑文件的实时分析结果。请关注其中的 Error / Warning，` +
+                `在后续工作中修复这些问题；若与当前任务无关可暂不处理，但不要无视真实的类型/语法错误。`,
+            }],
+          });
+          log.info("AGENT_LOOP", "注入 LSP 诊断反馈（子代理）");
+        }
+      } catch { /* LSP 未启用 / 收集失败：降级不注入，绝不影响子代理循环 */ }
+    }
+
     const toolDefs = tools.size() > 0 ? tools.definitions() : undefined;
 
+    // 发给 LLM 的消息走 getCleanedMessages()（对标 cc：所有循环共用压缩管道）。
+    // 子代理是 token 消耗大户（大量 read/grep/bash），此前裸发 getMessages() 完全没有
+    // 工具输出剪枝/遮罩，input token 线性膨胀。getCleanedMessages 提供：大输出剪枝
+    // （零依赖纯内存）+ observation masking（构造时传了 sessionId 才启用）。
+    // 注意：仅"发给 LLM"这一处换；返回给调用方的 AgentLoopResult.messages 仍用
+    // getMessages()（内部逻辑/最终产物需要完整历史，不能是清理后的视图）。
     const sendParams: SendParams = {
       model,
-      messages: ctxMgr.getMessages(),
+      messages: ctxMgr.getCleanedMessages(),
       system: ctxMgr.getSystemPrompt(),
       maxTokens: 4096,
       tools: toolDefs,
@@ -322,6 +364,22 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
       const toolResults = await executeTools(response.content, tools, signal, config.hookSystem, config.permissionChecker, config.onToolProgress);
       ctxMgr.addMessage({ role: "user", content: toolResults });
 
+      // 记录本轮编辑过的文件（供下一轮 LSP 诊断注入的作用域）。仅当具备编辑能力时才收集，
+      // 与注入门控保持一致。tool_result 的 is_error 判定成功——失败的编辑不纳入诊断作用域。
+      if (hasEditCapability) {
+        for (const b of toolUseBlocks) {
+          if (b.type !== "tool_use") continue;
+          if (b.name !== "edit" && b.name !== "write") continue;
+          const resultBlock = toolResults.find(
+            (r) => r.type === "tool_result" && r.tool_use_id === b.id,
+          );
+          if (resultBlock && resultBlock.type === "tool_result" && resultBlock.is_error) continue;
+          const input = b.input as Record<string, unknown>;
+          const p = (input?.file_path ?? input?.path) as string | undefined;
+          if (p) editedFiles.add(p);
+        }
+      }
+
       // 每轮结束回调（进度追踪 + 磁盘输出）
       const turnToolInfo = toolUseBlocks.map(b => ({
         name: b.type === "tool_use" ? b.name : "",
@@ -391,7 +449,7 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
     try {
       const summaryStream = provider.sendMessageStream({
         model,
-        messages: ctxMgr.getMessages(),
+        messages: ctxMgr.getCleanedMessages(),
         system: ctxMgr.getSystemPrompt(),
         maxTokens: 4096,
         // 不传 tools，禁止模型继续调工具

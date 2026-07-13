@@ -427,6 +427,21 @@ export interface QueryDeps {
     model: string;
     error?: string;
   }) => void;
+  /**
+   * 优化 1：把 queryLoop 内层 catch 捕获的异常持久化到 errors.jsonl。
+   * 此前 recordError 只在 engine.ts 最外层 catch 调用；loop.ts 里降级/重试（如超时重试
+   * continue、上下文溢出响应式压缩 continue）与观测类 warn 吞掉的异常，engine 层看不到，
+   * 排查时只见「重试后成功」而看不到最初为什么失败。用 phase 区分层级（connection/stream/
+   * post_stream…），context.willRetry 标注是否会被重试，让间歇性故障可复盘。
+   * 可选——未注入（如无头模式无 collector）则跳过，不影响主流程。
+   */
+  recordError?: (input: {
+    phase: "connection" | "stream" | "post_stream" | "tool_execution" | "hook" | "engine";
+    index: number;
+    error: string;
+    stack?: string;
+    context?: Record<string, unknown>;
+  }) => void;
 }
 
 // ─── QueryEngine 配置 ───

@@ -81,7 +81,10 @@ export function formatDiagnostics(
     for (const diag of file.diagnostics) {
       const loc = `${diag.range.start.line + 1}:${diag.range.start.character + 1}`;
       const src = diag.source ? ` [${diag.source}]` : "";
-      lines.push(`  ${diag.severity} (${loc})${src}: ${diag.message}`);
+      // code（如 TS2304 / no-unused-vars）在采集阶段已保留，此处一并输出，
+      // 帮助模型判断错误类别、按错误码检索文档。缺省时不输出。
+      const code = diag.code != null && diag.code !== "" ? ` ${diag.code}` : "";
+      lines.push(`  ${diag.severity} (${loc})${src}${code}: ${diag.message}`);
     }
   }
   return lines.join("\n");

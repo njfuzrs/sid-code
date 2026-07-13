@@ -147,6 +147,61 @@ describe("DiagnosticRegistry", () => {
     expect(files.length).toBe(1);
     expect(files[0]!.uri).toBe("file:///b.ts");
   });
+
+  // ─── 作用域消费（并发子代理隔离，修复全局单例 collect 串味）───
+
+  test("作用域 collect：只收集作用域内文件，作用域外原样保留", () => {
+    const reg = new DiagnosticRegistry();
+    reg.registerPending("ts", [
+      { uri: "file:///a.ts", diagnostics: [diag("erra")] },
+      { uri: "file:///b.ts", diagnostics: [diag("errb")] },
+    ]);
+
+    // 只消费 a.ts
+    const filesA = reg.collectDiagnostics(["file:///a.ts"]);
+    expect(filesA.length).toBe(1);
+    expect(filesA[0]!.uri).toBe("file:///a.ts");
+
+    // b.ts 的 pending 未被清空，另一消费者仍能拿到（不被 a.ts 的消费偷走）
+    const filesB = reg.collectDiagnostics(["file:///b.ts"]);
+    expect(filesB.length).toBe(1);
+    expect(filesB[0]!.uri).toBe("file:///b.ts");
+  });
+
+  test("作用域 collect：只清空作用域内文件的 pending", () => {
+    const reg = new DiagnosticRegistry();
+    reg.registerPending("ts", [
+      { uri: "file:///a.ts", diagnostics: [diag("erra")] },
+      { uri: "file:///b.ts", diagnostics: [diag("errb")] },
+    ]);
+
+    // 消费 a.ts 后，a.ts pending 清空、b.ts 保留
+    reg.collectDiagnostics(["file:///a.ts"]);
+    // 无作用域的全量 collect 只应剩 b.ts（a.ts 已被消费清空）
+    const rest = reg.collectDiagnostics();
+    expect(rest.length).toBe(1);
+    expect(rest[0]!.uri).toBe("file:///b.ts");
+  });
+
+  test("作用域 collect：作用域内无诊断返回空，不误消费其它文件", () => {
+    const reg = new DiagnosticRegistry();
+    reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("erra")] }]);
+
+    // 作用域是一个没有 pending 诊断的文件
+    expect(reg.collectDiagnostics(["file:///other.ts"])).toEqual([]);
+    // a.ts 的 pending 未被误清空
+    expect(reg.collectDiagnostics().length).toBe(1);
+  });
+
+  test("作用域 collect：跨轮次去重按内容生效（同作用域同诊断不重复）", () => {
+    const reg = new DiagnosticRegistry();
+    reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("err1")] }]);
+    expect(reg.collectDiagnostics(["file:///a.ts"]).length).toBe(1);
+
+    // 同诊断再注册 → 作用域消费同样被跨轮次去重过滤
+    reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("err1")] }]);
+    expect(reg.collectDiagnostics(["file:///a.ts"])).toEqual([]);
+  });
 });
 
 describe("formatDiagnostics", () => {
@@ -171,5 +226,34 @@ describe("formatDiagnostics", () => {
     expect(text).toContain("b.ts");
     expect(text).toContain("Error");
     expect(text).toContain("Warning");
+  });
+
+  test("输出诊断 code（如 TS2304），帮助模型判断错误类别", () => {
+    const text = formatDiagnostics([{
+      uri: "file:///a.ts",
+      diagnostics: [{
+        message: "Cannot find name 'fooBar'.",
+        severity: "Error",
+        range: { start: { line: 41, character: 4 }, end: { line: 41, character: 10 } },
+        source: "typescript",
+        code: 2304,
+      }],
+    }]);
+    // 期望形如：Error (42:5) [typescript] 2304: Cannot find name 'fooBar'.
+    expect(text).toContain("[typescript]");
+    expect(text).toContain("2304");
+    expect(text).toContain("Cannot find name 'fooBar'.");
+    // code 紧跟在 source 之后、message 冒号之前
+    expect(text).toMatch(/\[typescript\] 2304: Cannot find name/);
+  });
+
+  test("无 code 时不产生多余空格或占位符", () => {
+    const text = formatDiagnostics([{
+      uri: "file:///a.ts",
+      diagnostics: [diag("缺少分号", "Error", 4)], // diag helper 不带 code
+    }]);
+    // 无 code：source 后直接跟冒号，中间不能有孤立空格/括号残留
+    expect(text).toMatch(/\[test\]: 缺少分号/);
+    expect(text).not.toContain("()"); // 不能留空 code 括号
   });
 });

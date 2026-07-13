@@ -9,6 +9,23 @@
  * 且能理解语义关系。
  *
  * 为可测试性，sideQuery 通过依赖注入传入，单测可用 stub。
+ *
+ * ─────────────────────────────────────────────────────────────────────
+ * 【接线状态：休眠能力，非死代码】（2026-07 对标 claude-code 后定性）
+ *
+ * 当前主循环走的是「MEMORY.md 索引全量注入 system prompt，模型按需 Read」路径
+ * （见 memory/prompt.ts + query/init-helpers.ts），与 claude-code 的**默认**行为
+ * 一致——claude-code 也是默认全量注入，仅在 feature flag `tengu_moth_copse` 打开时
+ * 才切换到这里这种「Sonnet sideQuery 筛 top-5 再注入」的语义召回路径。
+ *
+ * 索引本身极轻（一行一指针，claude-code 实测硬截断到 200 行 / 25KB），全量注入对
+ * 中小记忆库完全可控，所以召回是「大记忆库省 token」的优化项，而非必需。
+ *
+ * 本模块保留为 **flag 门控的休眠能力**（对齐 claude-code「两路温存、开关切换」，而非
+ * 删除）：`isMemoryRecallEnabled()` 默认 false，仅 `SID_CODE_MEMORY_RECALL=1` 时启用。
+ * 接通点见 `isMemoryRecallEnabled` 的文档注释。**未接通期间不要在文档里宣称记忆走
+ * 语义召回**——那是文档失实（本轮已修正 E.11 FAQ）。
+ * ─────────────────────────────────────────────────────────────────────
  */
 
 import { existsSync } from "fs";
@@ -19,6 +36,21 @@ import { getLogger } from "../debug/logger.ts";
 import { recordSideCall } from "../trace/side-call-sink.ts";
 import { withSideCallDeadline } from "../llm/side-call-timeout.ts";
 import { resolveSideCallTimeouts } from "../config/network-profile.ts";
+
+/**
+ * 记忆语义召回是否启用（flag 门控的休眠能力，对齐 claude-code `tengu_moth_copse`）。
+ *
+ * 默认 **false**：走全量索引注入（memory/prompt.ts），与 claude-code 默认一致。
+ * 设 `SID_CODE_MEMORY_RECALL=1` 时启用语义召回——此时应在主循环每轮（或每 N 轮）
+ * 调用 `findRelevantMemories`，把结果经 `generateRecalledMemoryAttachment`
+ * （config/attachments.ts，优先级 MEMORY_RECALLED）注入，并停止全量索引注入。
+ *
+ * 之所以门控而非直接接通：全量注入对中小记忆库足够，语义召回每轮多一次 sideQuery，
+ * 只有记忆库大到全量注入吃紧时才划算——把决策权交给部署方，而不是写死。
+ */
+export function isMemoryRecallEnabled(): boolean {
+  return process.env.SID_CODE_MEMORY_RECALL === "1";
+}
 
 /** 轻量 LLM 调用签名（依赖注入，便于测试） */
 export type SideQueryFn = (opts: {

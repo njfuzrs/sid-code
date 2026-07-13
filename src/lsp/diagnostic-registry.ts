@@ -44,12 +44,26 @@ export class DiagnosticRegistry {
   /**
    * 检查并收集待投递的诊断。
    * 返回去重、限流后的诊断列表，调用后标记为已投递。
+   *
+   * @param scopeUris 可选的文件作用域过滤。
+   *   - 不传（主循环行为，保持不变）：收集所有 pending 诊断，收集后清空**全部** pending。
+   *   - 传入（子代理 / 并发场景）：只收集属于这些文件的诊断，且**只清空这些文件**的 pending 条目，
+   *     其它文件的诊断原样保留给别的消费者。
+   *
+   * 作用域参数修复"全局单例 collect 串味"：registry 是进程级单例，主循环与并发子代理共用同一
+   * 实例。旧的无差别 `collectDiagnostics()` 谁先调用谁就把**所有人**的 pending 捞走并清空，
+   * 另一方永远看不到自己编辑引入的诊断。传 scopeUris 后各消费者只消费自己关心的文件，互不偷取。
    */
-  collectDiagnostics(): DiagnosticFile[] {
-    // 1. 收集所有未投递的诊断
+  collectDiagnostics(scopeUris?: Iterable<string>): DiagnosticFile[] {
+    const scope = scopeUris ? new Set(scopeUris) : null;
+
+    // 1. 收集未投递的诊断（有作用域时只收集作用域内文件）
     const allFiles: DiagnosticFile[] = [];
     for (const entry of this.pending.values()) {
-      if (!entry.sent) allFiles.push(...entry.files);
+      if (entry.sent) continue;
+      for (const file of entry.files) {
+        if (!scope || scope.has(file.uri)) allFiles.push(file);
+      }
     }
     if (allFiles.length === 0) return [];
 
@@ -67,10 +81,31 @@ export class DiagnosticRegistry {
       this.markDelivered(file);
     }
 
-    // 6. 清空 pending（已处理）
-    this.pending.clear();
+    // 6. 清空 pending。无作用域：清空全部（主循环行为不变）；有作用域：只清空作用域内文件的
+    //    条目，保留其它文件的 pending 给别的消费者（并发隔离）。
+    if (scope) {
+      this.clearPendingForUris(scope);
+    } else {
+      this.pending.clear();
+    }
 
     return limited;
+  }
+
+  /**
+   * 从 pending 中移除指定文件集合的诊断条目（作用域消费后调用）。
+   * 逐条目过滤 files 数组：全属于作用域内则删整条，部分属于则保留其余文件的诊断。
+   * 复用与 clearForFile 一致的过滤策略。
+   */
+  private clearPendingForUris(uris: Set<string>): void {
+    for (const [id, entry] of this.pending) {
+      const remaining = entry.files.filter((f) => !uris.has(f.uri));
+      if (remaining.length === 0) {
+        this.pending.delete(id);
+      } else if (remaining.length !== entry.files.length) {
+        entry.files = remaining;
+      }
+    }
   }
 
   /** 清空所有状态（文件关闭/重置时） */

@@ -44,6 +44,27 @@ let debounceMs = DEFAULT_DEBOUNCE_MS;
 let syncSuppressedReason: string | null = null;
 
 /**
+ * 抑制态一次性通知回调（比 claude-code 多做的一点）。
+ *
+ * claude-code 的同步是彻底 fire-and-forget：抑制后只写 debug 日志 + analytics，
+ * 用户在 TUI 里完全无感知，本地新写的团队记忆会静默同步不出去。我们保留这个
+ * 「不刷屏」的克制（不逐次提示、不做 push 结果回传），但在**首次进入抑制态**时
+ * 给上层一次机会告知用户「同步已暂停」——只此一次，恢复（unlink 清除抑制）后
+ * 重新武装，避免用户以为团队记忆仍在正常同步。
+ *
+ * 对齐 src/ui/CLAUDE.md 交互铁律 C（提示渐进衰减）：同一抑制事件只通知一次。
+ */
+type SuppressionListener = (reason: string) => void;
+let suppressionListener: SuppressionListener | null = null;
+/** 防重复：同一次抑制态只通知一次，unlink 清除抑制时复位 */
+let suppressionNotified = false;
+
+/** 注册抑制态一次性通知回调（app 层接线；未注册时行为与 claude-code 一致：纯静默） */
+export function setTeamMemorySuppressionListener(fn: SuppressionListener | null): void {
+  suppressionListener = fn;
+}
+
+/**
  * 永久性失败 = 不靠重试就会同样失败。
  * disabled / no_shared_dir 属于配置态，重试无意义。io 错误视为可自愈（共享盘
  * 临时不可达），不抑制。
@@ -66,6 +87,11 @@ async function executeSync(): Promise<void> {
       if (isPermanentFailure(result) && syncSuppressedReason === null) {
         syncSuppressedReason = result.errorType ?? "unknown";
         log.warn("TEAMMEM", `抑制重试直到下次 unlink 或会话重启 (${syncSuppressedReason})`);
+        // 首次进入抑制态：一次性通知上层（恢复后 suppressionNotified 复位重新武装）
+        if (!suppressionNotified && suppressionListener) {
+          suppressionNotified = true;
+          try { suppressionListener(syncSuppressedReason); } catch { /* 通知失败不影响同步 */ }
+        }
       }
     }
   } catch (e: any) {
@@ -118,6 +144,7 @@ async function startFileWatcher(teamDir: string): Promise<void> {
           if (syncSuppressedReason !== null) {
             log.info("TEAMMEM", `unlink 清除了抑制 (原因: ${syncSuppressedReason})`);
             syncSuppressedReason = null;
+            suppressionNotified = false; // 复位：下次再进入抑制态时可再通知一次
           }
           scheduleSync();
         });
@@ -221,6 +248,8 @@ export function _resetWatcherStateForTesting(opts?: {
   currentSyncPromise = null;
   watcherStarted = opts?.skipWatcher ?? false;
   syncSuppressedReason = opts?.syncSuppressedReason ?? null;
+  suppressionNotified = false;
+  suppressionListener = null;
   currentOpts = opts?.currentOpts ?? null;
   currentCwd = opts?.currentCwd ?? process.cwd();
   debounceMs = opts?.debounceMs ?? DEFAULT_DEBOUNCE_MS;

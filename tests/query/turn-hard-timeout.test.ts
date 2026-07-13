@@ -166,6 +166,27 @@ describe("L1 — queryLoop 单轮硬超时", () => {
     expect(kinds).toContain("assistant_message");
     expect(kinds).toContain("done");
   });
+
+  // ─── 优化 1：内层 catch 补 recordError（补诊断盲区）───
+  test("优化1：超时重试的流式异常被 recordError 记录（phase=stream, willRetry）", async () => {
+    const hangForever = () => new Promise<never>(() => {});
+    const recorded: Array<{ phase: string; index: number; context?: Record<string, unknown> }> = [];
+    const { loopConfig } = makeLoopConfig({
+      processStream: hangForever as any,
+      maxTurnDurationMs: 30,
+      recordError: (input) => { recorded.push(input); },
+    });
+
+    for await (const _ev of queryLoop(loopConfig)) { /* 跑完 */ }
+
+    // 每次超时（重试 2 次 + 耗尽那次）都应落一条 phase=stream 的 error
+    const streamErrors = recorded.filter((r) => r.phase === "stream");
+    expect(streamErrors.length).toBeGreaterThan(0);
+    // context 应带 kind=timeout；重试未耗尽时 willRetry=true
+    expect(streamErrors.some((r) => r.context?.kind === "timeout")).toBe(true);
+    expect(streamErrors.some((r) => r.context?.willRetry === true)).toBe(true);
+    // 未识别错误走 throw→engine 不应在此以 stream 记（这里全是 timeout，无 engine 记录）
+  });
 });
 
 /**

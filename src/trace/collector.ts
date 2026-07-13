@@ -28,6 +28,7 @@ import {
 import type { HookSystem } from "../hook/system.ts";
 import { TraceWriter, type RawJsonlEntry } from "./writer.ts";
 import { buildTrajectory, type RequestResponsePair, type TraceMetadata } from "./builder.ts";
+import { buildDigest, resolvePaths } from "./digest.ts";
 import { getLogger } from "../debug/logger.ts";
 import { sidPaths } from "../config/paths.ts";
 import { estimateTextTokens } from "../context/token.ts";
@@ -431,11 +432,17 @@ export class TraceCollector {
                   timeouts_fired: activeSnapshots[0].timeoutsFired,
                 }
               : null;
+            // 优化 3：stream-observer 快照仅覆盖流式阶段；工具执行/后处理等非流式阶段
+            // activeRequest 为 null，此前心跳就只剩时间戳，进程 hang 时看不出卡在哪。
+            // 兜底塞入 last_known_state（§3.6 已维护 phase/turn/model），让 tool_exec
+            // 阶段的 hang 也能从最后一条心跳定位到「卡在第 N 轮工具执行」。
+            const lastState = !activeRequest ? this.metadata.last_known_state ?? null : null;
             const content = JSON.stringify({
               ts: new Date().toISOString(),
               session_id: traceSessionId,
               event_loop_lag_ms: lagMs,
               active_request: activeRequest,
+              ...(lastState ? { last_known_state: lastState } : {}),
             });
             writeFileSync(this.heartbeatPath, content);
           } catch { /* 心跳失败静默 */ }
@@ -1127,6 +1134,10 @@ export class TraceCollector {
     // 尤其 abnormal / user_interrupt 退出时，此前只有 metadata.json 无法验尸。
     this.persistMessagesSnapshot(input);
 
+    // 优化 2：落 session-summary.json（批量分诊入口）。
+    // 必须在 forceRebuildTraj 之后——buildDigest 从刚重建的 session.traj 读取。
+    this.persistSessionSummary();
+
     // 修复问题二：空白轨迹（无任何 LLM 调用的纯空壳）既不上传也不保留——
     // 上传空目录纯属浪费，且会把噪音同步到远端。提前判定，空壳直接清理并返回。
     if (this.isBlankSession()) {
@@ -1282,6 +1293,69 @@ export class TraceCollector {
       }
     } catch (err: any) {
       getLogger().warn("TRACE", `落 messages.json 失败（不影响退出）: ${err?.message ?? err}`);
+    }
+  }
+
+  /**
+   * 优化 2：把 digest 在 SessionEnd 算好的结论瘦身落盘为 session-summary.json。
+   *
+   * 关键设计：不在此处另写摘要逻辑，而是复用 digest（唯一事实源，已含 20+ 条分层异常规则）。
+   * 否则 collector 一套、digest 一套，日后必然漂移出两套结论。此处只做「跑 digest + 取字段」。
+   *
+   * 前置条件：调用点必须在 forceRebuildTraj() 之后——buildDigest 从刚重建的 session.traj 读取。
+   * 全程 try-catch 容错（不变量 1：采集永不阻塞主循环）；失败仅告警，退出流程照常。
+   */
+  private persistSessionSummary(): void {
+    try {
+      const sessionDir = this.writer.getSessionDir();
+      const trajPath = join(sessionDir, "session.traj");
+      // session.traj 尚未落盘（如空壳会话已提前 return，理论上到不了这里）则跳过
+      if (!existsSync(trajPath)) return;
+
+      // 复用 digest 引擎。digest.ts 是纯只读逻辑（无副作用），静态导入（见文件头）。
+      // resolvePaths() 不传参——与 /trace 命令一致，从 SID_CODE_HOME → ~/.sid-code 推导 root。
+      // 不能传 this.outputDir：它已是 .../trajectories，而 resolvePaths 会再拼一层 trajectories/sessions。
+      const paths = resolvePaths();
+      const ref = {
+        id: this.metadata.session_id,
+        dir: sessionDir,
+        trajPath,
+        mtimeMs: 0, // summary 落盘不依赖 mtime 排序，占位即可
+      };
+      const digest = buildDigest(ref, false, paths);
+      if (!digest) return;
+
+      // 瘦身：只取批量分诊需要的顶层信号，剔除大字段（userPrompts 全文 / toolSequence 明细 /
+      // thinkingHighlights 等）。异常只保留 kind+severity+layer，详情仍在 digest / errors.jsonl。
+      const errorAnomalies = digest.anomalies.filter(
+        (a) => a.severity === "high" || a.severity === "medium",
+      );
+      const summary = {
+        session_id: digest.sessionId,
+        model: digest.model,
+        exit_status: digest.exitStatus,
+        abnormal: digest.abnormal,
+        duration_ms: digest.durationMs,
+        turns: digest.apiCalls,
+        total_steps: digest.totalSteps,
+        cost_usd: digest.costUSD,
+        tokens_sent: digest.tokensSent,
+        tokens_received: digest.tokensReceived,
+        // 异常计数 + 精简清单（批量分诊主键：select(.errors > 0)）
+        errors: errorAnomalies.length,
+        anomaly_kinds: [...new Set(digest.anomalies.map((a) => a.kind))],
+        anomalies: digest.anomalies.map((a) => ({
+          kind: a.kind,
+          severity: a.severity,
+          layer: a.layer,
+        })),
+        top_tools: digest.toolsUsed.slice(0, 8),
+        files_edited_count: digest.filesEdited.length,
+        has_subagent: digest.subAgents != null,
+      };
+      this.writer.writeSessionSummary(summary);
+    } catch (err: any) {
+      getLogger().warn("TRACE", `落 session-summary.json 失败（不影响退出）: ${err?.message ?? err}`);
     }
   }
 

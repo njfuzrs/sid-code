@@ -111,6 +111,14 @@ export interface ManagerOptions {
   compactThreshold?: number; // 触发压缩的阈值比例（默认 0.7）
   /** 项目临时目录（用于工具输出落盘） */
   tempDir?: string;
+  /**
+   * 会话 ID。传入即在构造时启用工具输出遮罩（observation masking）——
+   * 对标 claude-code「压缩能力内嵌在共享循环、创建即生效」的架构：masking 不再依赖
+   * 事后手动调用 setSessionId，任何创建 ContextManager 的路径（主循环/子代理/headless）
+   * 只要传 sessionId 就默认带 masking，从根上杜绝「漏调 setter → masking 静默失效」。
+   * 省略时 masking 不启用（getCleanedMessages 的剪枝层仍照常工作，仅 masking 层降级）。
+   */
+  sessionId?: string;
 }
 
 export class Manager {
@@ -179,6 +187,12 @@ export class Manager {
     this.maxTokens = opts.maxTokens;
     this.compactThreshold = opts.compactThreshold ?? 0.7;
     this.tempDir = opts.tempDir;
+    // 创建即启用 masking（对标 cc）：构造时若已知 sessionId，直接建 maskingService，
+    // 不必等外部记得调 setSessionId。setSessionId 仍保留（App 侧在 sessionId 晚于
+    // ctxMgr 创建时补设），两条路径走同一初始化逻辑。
+    if (opts.sessionId) {
+      this.setSessionId(opts.sessionId);
+    }
   }
 
   /**
@@ -274,7 +288,8 @@ export class Manager {
   /** 设置会话 ID（用于工具输出遮罩和持久化） */
   setSessionId(sessionId: string): void {
     this.sessionId = sessionId;
-    this.maskingService = new ToolOutputMaskingService(sessionId);
+    // 传入窗口 → masking 保护窗口按窗口自适应（小窗口子代理不再空转，主会话行为不变）。
+    this.maskingService = new ToolOutputMaskingService(sessionId, this.maxTokens);
   }
 
   /**

@@ -237,3 +237,57 @@ export function addCacheBreakpoints(params: {
   const markedMessageIndex = addMessageCacheBreakpoint(params.messages, params.options);
   return { system, markedMessageIndex };
 }
+
+/**
+ * Anthropic 每请求最多 4 个 cache_control 断点，超限直接 400（整请求失败）。
+ *
+ * § 比 CC 更进一步：CC 只打点记录断点数（tengu_api_cache_breakpoints），**不做阈值保护**——
+ * 未来某次改动多标一个断点会静默上线,到生产才 400。这里把"comment-only 不变量"升级为
+ * 运行时护栏,在真正发请求前拦截。
+ *
+ * § 策略(dev-loud / prod-safe)：
+ *   - 统计 system blocks + messages 上的 cache_control 总数(tools 侧当前不标,预留计入)。
+ *   - 超过 4：非生产(NODE_ENV!=production)直接抛错,让单测/本地立刻暴露;
+ *     生产环境打 error 日志但不抛(宁可这一轮不命中缓存,也不因护栏把请求打挂)。
+ *
+ * @returns 实际断点总数(便于调用方按需记录)
+ */
+export function countCacheBreakpoints(
+  system: SystemBlock[] | undefined,
+  messages: CacheableMessage[],
+): number {
+  let count = 0;
+  for (const b of system ?? []) {
+    if (b.cache_control) count++;
+  }
+  for (const msg of messages) {
+    if (Array.isArray(msg.content)) {
+      for (const block of msg.content) {
+        if (block && typeof block === "object" && block.cache_control) count++;
+      }
+    }
+  }
+  return count;
+}
+
+/** Anthropic 每请求 cache_control 断点硬上限 */
+export const MAX_CACHE_BREAKPOINTS = 4;
+
+/**
+ * 断言 cache_control 断点总数未超 Anthropic 上限。发请求前调用。
+ * 超限时:非生产抛错(暴露 bug);生产打 error 不抛(容错优先)。
+ */
+export function assertCacheBreakpointBudget(
+  system: SystemBlock[] | undefined,
+  messages: CacheableMessage[],
+  logger?: { error: (tag: string, msg: string) => void },
+): void {
+  const count = countCacheBreakpoints(system, messages);
+  if (count <= MAX_CACHE_BREAKPOINTS) return;
+  const detail = `cache_control 断点数 ${count} 超过 Anthropic 上限 ${MAX_CACHE_BREAKPOINTS}，请求会 400`;
+  if (process.env.NODE_ENV === "production") {
+    logger?.error("CACHE", detail);
+  } else {
+    throw new Error(detail);
+  }
+}

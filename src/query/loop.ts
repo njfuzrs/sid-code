@@ -361,6 +361,14 @@ export async function* queryLoop(
               }
             } catch (err: any) {
               log.warn("QUERY_LOOP", `Context Collapse 异常，回退 autoCompact: ${err.message}`);
+              // 优化 1：collapse 失败被吞、静默回退 autoCompact——engine 层看不到。记 post_stream。
+              deps.recordError?.({
+                phase: "post_stream",
+                index: state.turnCount,
+                error: (err as Error)?.message ?? String(err),
+                stack: (err as Error)?.stack?.split("\n").slice(0, 5).join("\n"),
+                context: { kind: "context_collapse_failed", willRetry: false, fallback: "autoCompact" },
+              });
             }
           }
           if (!collapsed) {
@@ -386,7 +394,10 @@ export async function* queryLoop(
         break;
       }
       case "soft":
-        log.info("QUERY_LOOP", `上下文 ${usagePercent.toFixed(0)}%，启用工具输出遮罩`);
+        // soft 档本身不在此执行任何压缩动作：工具输出遮罩与剪枝统一在发送前的
+        // getCleanedMessages()（见本文件下方 cleanedMessages = ctxMgr.getCleanedMessages()）
+        // 里应用。此处仅记录进入了 soft 档，便于排查——不要误以为这里执行了压缩。
+        log.info("QUERY_LOOP", `上下文 ${usagePercent.toFixed(0)}%，进入 soft 档（遮罩/剪枝将在发送前 getCleanedMessages 统一应用）`);
         break;
       case "none":
         break;
@@ -504,8 +515,13 @@ export async function* queryLoop(
     // collectDiagnosticText 内部已做严重度过滤（仅 Error/Warning 注入）+ 跨轮次去重
     // （已投递的诊断不重复注入），故这里直接 push 即可，无需额外节流。
     // LSP 未配置 / 未就绪 / 无诊断时返回 null，不注入、不报错（降级正常）。
+    //
+    // 能力对齐门控：仅当具备 edit/write 工具时才注入诊断——诊断是给"能改代码的 agent"看的。
+    // 这比 CC 的"有 Bash 才注入"更贴合本意（本项目靠 edit/write 修诊断、不依赖 bash）；
+    // 纯只读会话不会被诊断噪音打扰。
     {
-      const diagnosticText = collectDiagnosticText();
+      const hasEditCapability = !!(toolRegistry.get("edit") || toolRegistry.get("write"));
+      const diagnosticText = hasEditCapability ? collectDiagnosticText() : null;
       if (diagnosticText) {
         reminderParts.push(
           `# LSP 诊断（来自语言服务器的实时反馈）\n\n${diagnosticText}\n\n` +
@@ -860,6 +876,20 @@ export async function* queryLoop(
       setSseDumpContext(sessionState.sessionId, state.turnCount, loopId);
       stream = deps.sendWithRetry(sendParams, composedSignal);
     } catch (err: any) {
+      // 优化 1：连接阶段异常落 errors.jsonl。此 catch 的所有处理路径都是降级重试
+      //（prompt-too-long 响应式压缩 continue / 上下文溢出调 maxTokens 或 autoCompact continue），
+      // 异常被吞不会冒泡到 engine 层——此前排查只见"重试后成功"，看不到最初为何失败。
+      deps.recordError?.({
+        phase: "connection",
+        index: state.turnCount,
+        error: (err as Error)?.message ?? String(err),
+        stack: (err as Error)?.stack?.split("\n").slice(0, 5).join("\n"),
+        context: {
+          willRetry: true,
+          promptTooLong: isPromptTooLongError(err),
+          attemptedReactiveCompact: state.hasAttemptedReactiveCompact,
+        },
+      });
       // prompt-too-long 错误扣留：自动触发响应式压缩重试
       if (isPromptTooLongError(err) && !state.hasAttemptedReactiveCompact) {
         log.warn("QUERY_LOOP", "检测到 prompt-too-long 错误，触发响应式压缩");
@@ -1057,6 +1087,29 @@ export async function* queryLoop(
       }
     } catch (err: any) {
       perfHandle.end({ model: config.model });
+
+      // 优化 1：只记录会被本 catch「吞掉/重试」的分支（timeout / prompt-too-long）。
+      // 未识别错误走下面 throw err → 冒泡到 engine 层已 recordError，此处不重复记，避免双写。
+      // willRetry 反映本轮是否还会重试：超时看重试次数未耗尽，prompt-too-long 看响应式压缩未用过。
+      {
+        const _isTimeout = isTimeoutError(err, turnAbortController.signal);
+        const _isPromptLong = isPromptTooLongError(err);
+        if (_isTimeout || _isPromptLong) {
+          deps.recordError?.({
+            phase: "stream",
+            index: state.turnCount,
+            error: (err as Error)?.message ?? String(err),
+            stack: (err as Error)?.stack?.split("\n").slice(0, 5).join("\n"),
+            context: {
+              kind: _isTimeout ? "timeout" : "prompt_too_long",
+              willRetry: _isTimeout
+                ? state.timeoutRetryCount < netTimeouts.maxTimeoutRetries
+                : !state.hasAttemptedReactiveCompact,
+              ...(_isTimeout ? { attempt: state.timeoutRetryCount + 1 } : {}),
+            },
+          });
+        }
+      }
 
       // timeout 错误直接重试（不需要压缩上下文，最多 2 次）
       // 根治（2026-07）：传入 turnAbortController.signal，使 isTimeoutError 能读到
@@ -1558,6 +1611,21 @@ export async function* queryLoop(
     // 打开这个口子（fail-open），而白名单天然对未知值 fail-closed。
     const isEndTurnLike = response.stopReason === "end_turn" || response.stopReason === "stop";
     const f2FallThrough = isEndTurnLike && hasPendingToolUse;
+    if (f2FallThrough) {
+      // §2.4：stop_reason 与 content 不一致——声称 end_turn/stop 却仍含 tool_use。
+      // 功能上 F2 fall-through 已能正确执行工具（不漏调），这里只补一条结构化 warn
+      // 遥测（不改控制流），把"被动兜住"升级为"主动暴露"：便于按 model 聚合发现
+      // 哪家第三方代理有此协议偏差（maximhq/bifrost #3638）。
+      log.warn(
+        "QUERY_LOOP",
+        "stop_reason 与 content 不一致：声称 end_turn/stop 但含 tool_use（疑似代理协议偏差，已自动兜底执行工具）",
+        {
+          stopReason: response.stopReason,
+          toolUseCount: response.content.filter((b) => b.type === "tool_use").length,
+          model: sendParams.model,
+        },
+      );
+    }
     if (isEndTurnLike && !hasPendingToolUse) {
       // AfterAgent hook
       if (hookSystem) {
@@ -2231,7 +2299,14 @@ export async function* queryLoop(
     } else {
       // 有内容但停止原因未识别（罕见）：内容已通过 assistant_message 呈现，这里补一条
       // 提示说明本轮为何提前收尾，避免用户困惑"为什么突然停了"。
-      log.warn("QUERY_LOOP", `未知停止原因: ${response.stopReason}`);
+      //
+      // 排查留痕：stopReason=null 且有内容的典型场景是"截断流"（代理 delta 后直接断流、
+      // 从未发 message_delta 收尾帧）。补 contentBlocks / hasToolUse 上下文，便于事后从
+      // 日志判断"提前收尾时到底积累了什么"（尤其是有 tool_use 却没执行的漏网场景）。
+      log.warn("QUERY_LOOP", `未知停止原因: ${response.stopReason}`, {
+        contentBlocks: response.content.length,
+        hasToolUse: response.content.some((b) => b.type === "tool_use"),
+      });
       yield {
         kind: "system",
         level: "warning",

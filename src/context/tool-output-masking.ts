@@ -10,9 +10,9 @@ import { estimateTextTokens } from "./token.ts";
 import { isPersistedReference } from "./tool-result-storage.ts";
 import type { Message } from "../llm/types.ts";
 
-/** 保护窗口：最近 50K token 的工具输出不遮罩 */
-const PROTECTION_THRESHOLD = 50_000;
-/** 累积超过 30K token 的可修剪输出才触发批量遮罩 */
+/** 保护窗口默认值：最近 50K token 的工具输出不遮罩（主会话大窗口沿用此值，行为不变） */
+const DEFAULT_PROTECTION_THRESHOLD = 50_000;
+/** 累积超过此 token 的可修剪输出才触发批量遮罩 */
 const MIN_PRUNABLE_THRESHOLD = 30_000;
 /** 遮罩标识 */
 const MASKING_TAG = "[tool_output_masked]";
@@ -32,10 +32,24 @@ interface MaskCandidate {
 
 export class ToolOutputMaskingService {
   private sessionDir: string;
+  /** 本实例的保护窗口（token）。默认 50K；小窗口子代理按窗口比例下调（见构造函数）。 */
+  private protectionThreshold: number;
 
-  constructor(sessionId?: string) {
+  /**
+   * @param sessionId 会话 ID，用于隔离 masking 落盘目录
+   * @param contextWindow 该会话的上下文窗口（token）。传入时按窗口自适应保护窗口——
+   *   解决小窗口子代理「保护窗口 ≥ 整个窗口 → masking 永不触发」的空转问题。
+   *   规则：保护窗口 = min(默认 50K, 窗口 × 40%)。主会话大窗口（≥125K）取默认 50K，
+   *   行为字节级不变；50K 窗口的只读子代理 → 20K 保护窗口，masking 得以真正生效。
+   *   不传时沿用默认 50K（向后兼容）。
+   */
+  constructor(sessionId?: string, contextWindow?: number) {
     // 多用户隔离：会话级临时目录带 UID（getSidTempDirName），以 0o700 创建
     this.sessionDir = ensureSessionTempDir(sessionId, "masked-outputs");
+    this.protectionThreshold =
+      typeof contextWindow === "number" && contextWindow > 0
+        ? Math.min(DEFAULT_PROTECTION_THRESHOLD, Math.floor(contextWindow * 0.4))
+        : DEFAULT_PROTECTION_THRESHOLD;
   }
 
   /**
@@ -74,7 +88,7 @@ export class ToolOutputMaskingService {
         const toolName = this.findToolName(messages, block.tool_use_id);
         if (EXEMPT_TOOLS.has(toolName)) continue;
 
-        if (protectedTokens < PROTECTION_THRESHOLD) {
+        if (protectedTokens < this.protectionThreshold) {
           protectedTokens += tokens;
           continue; // 在保护窗口内，跳过
         }
@@ -113,7 +127,7 @@ export class ToolOutputMaskingService {
           ...block,
           content:
             `${MASKING_TAG} tool=${candidate.toolName}, 原始长度=${candidate.content.length}字符, ` +
-            `原因=上下文空间回收（旧工具输出超出 ${PROTECTION_THRESHOLD / 1000}K token 保护窗口）。如仍需该内容可重新调用该工具，或读取下方完整输出文件。\n` +
+            `原因=上下文空间回收（旧工具输出超出 ${Math.round(this.protectionThreshold / 1000)}K token 保护窗口）。如仍需该内容可重新调用该工具，或读取下方完整输出文件。\n` +
             `${preview}\n[完整输出已保存到: ${filePath}]`,
         };
       }),

@@ -311,6 +311,21 @@ export class SubAgent {
     return 50_000;
   }
 
+  /**
+   * 为子代理 ContextManager 派生一个独立的 masking 会话 ID。
+   *
+   * masking 服务按 sessionId 建会话级临时目录（ensureSessionTempDir，0o700）落盘被遮罩的
+   * 大工具输出。子代理必须用独立 id，避免与主会话 / 并发子代理的临时文件互相覆盖。
+   * 优先用 parentSessionId 作前缀（便于溯源归属），拼上 taskId/task 标识做后缀；
+   * 二者皆缺时回退一个通用前缀（masking 目录仍隔离，只是不带溯源信息）。
+   */
+  private deriveSubAgentSessionId(taskKey?: string): string {
+    const suffix = taskKey || "anon";
+    return this.parentSessionId
+      ? `${this.parentSessionId}-sub-${suffix}`
+      : `subagent-${suffix}`;
+  }
+
   /** 执行子代理任务 */
   async execute(task: SubAgentTask, signal?: AbortSignal): Promise<SubAgentResult> {
     const log = getLogger();
@@ -905,6 +920,10 @@ export class SubAgent {
       // 独立的上下文
       ctxMgr = new ContextManager({
         maxTokens: this.resolveSubAgentWindow(task),
+        // 传派生 sessionId → 创建即启用工具输出遮罩。子代理是 token 消耗大户
+        // （大量 read/grep/bash），用独立 id 让 masking 落盘目录与主会话隔离，
+        // 避免临时文件互相覆盖。缺 parentSessionId 时退化为仅 taskId。
+        sessionId: this.deriveSubAgentSessionId(taskId),
       });
 
       // P2-10：落 sidechain_start（记录子代理身份，供恢复时展示）。
@@ -1181,6 +1200,8 @@ export class SubAgent {
     try {
       const ctxMgr = new ContextManager({
         maxTokens: this.resolveSubAgentWindow(task),
+        // 自定义子代理无 taskId，用 task.type 派生独立 masking 会话目录。
+        sessionId: this.deriveSubAgentSessionId(task.type),
       });
 
       const systemPrompt = await enhanceSubAgentPrompt(task.systemPrompt, this.language, process.cwd(), task.type);

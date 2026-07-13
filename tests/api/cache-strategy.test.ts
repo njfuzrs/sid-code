@@ -12,6 +12,9 @@ import {
   addCacheBreakpoints,
   splitSystemByDynamicBoundary,
   DYNAMIC_BOUNDARY,
+  countCacheBreakpoints,
+  assertCacheBreakpointBudget,
+  MAX_CACHE_BREAKPOINTS,
   type CacheableMessage,
 } from "../../src/api/cache-strategy.ts";
 
@@ -127,5 +130,75 @@ describe("addCacheBreakpoints 一站式", () => {
       0,
     );
     expect(totalMarks).toBe(1);
+  });
+});
+
+// ─── cache_control 断点预算护栏（比 CC 更进一步）────────────────────────
+
+describe("cache breakpoint budget guard", () => {
+  test("countCacheBreakpoints 统计 system + messages 上的 cache_control 总数", () => {
+    const system = buildSystemBlocks("static" + DYNAMIC_BOUNDARY + "dynamic"); // 2 个
+    const messages: CacheableMessage[] = [msg("user", "hi")];
+    markLastContentBlock(messages[0]); // +1
+    expect(countCacheBreakpoints(system, messages)).toBe(3);
+  });
+
+  test("当前真实布局(system 2 + 消息 1 = 3)在上限内，不抛", () => {
+    const system = buildSystemBlocks("static" + DYNAMIC_BOUNDARY + "dynamic");
+    const messages: CacheableMessage[] = [msg("user", "hi")];
+    markLastContentBlock(messages[0]);
+    expect(() => assertCacheBreakpointBudget(system, messages)).not.toThrow();
+  });
+
+  test("恰好 4 个断点仍放行（边界）", () => {
+    const system: any[] = [
+      { type: "text", text: "a", cache_control: { type: "ephemeral" } },
+      { type: "text", text: "b", cache_control: { type: "ephemeral" } },
+      { type: "text", text: "c", cache_control: { type: "ephemeral" } },
+    ];
+    const messages: CacheableMessage[] = [msg("user", "hi")];
+    markLastContentBlock(messages[0]);
+    expect(countCacheBreakpoints(system, messages)).toBe(MAX_CACHE_BREAKPOINTS);
+    expect(() => assertCacheBreakpointBudget(system, messages)).not.toThrow();
+  });
+
+  test("超过 4 个断点：非生产环境抛错（暴露 bug）", () => {
+    const system: any[] = [
+      { type: "text", text: "a", cache_control: { type: "ephemeral" } },
+      { type: "text", text: "b", cache_control: { type: "ephemeral" } },
+      { type: "text", text: "c", cache_control: { type: "ephemeral" } },
+      { type: "text", text: "d", cache_control: { type: "ephemeral" } },
+    ];
+    const messages: CacheableMessage[] = [msg("user", "hi")];
+    markLastContentBlock(messages[0]); // 总计 5
+    const prev = process.env.NODE_ENV;
+    delete process.env.NODE_ENV;
+    try {
+      expect(() => assertCacheBreakpointBudget(system, messages)).toThrow(/超过 Anthropic 上限/);
+    } finally {
+      if (prev !== undefined) process.env.NODE_ENV = prev;
+    }
+  });
+
+  test("超过 4 个断点：生产环境打日志不抛（容错优先）", () => {
+    const system: any[] = [
+      { type: "text", text: "a", cache_control: { type: "ephemeral" } },
+      { type: "text", text: "b", cache_control: { type: "ephemeral" } },
+      { type: "text", text: "c", cache_control: { type: "ephemeral" } },
+      { type: "text", text: "d", cache_control: { type: "ephemeral" } },
+      { type: "text", text: "e", cache_control: { type: "ephemeral" } },
+    ];
+    const messages: CacheableMessage[] = [];
+    const prev = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    let logged = "";
+    const logger = { error: (_tag: string, m: string) => { logged = m; } };
+    try {
+      expect(() => assertCacheBreakpointBudget(system, messages, logger)).not.toThrow();
+      expect(logged).toMatch(/超过 Anthropic 上限/);
+    } finally {
+      if (prev !== undefined) process.env.NODE_ENV = prev;
+      else delete process.env.NODE_ENV;
+    }
   });
 });

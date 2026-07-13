@@ -237,6 +237,20 @@ async function executeSingleTool(
       progressCallback,
     );
     const elapsed = Date.now() - startTime;
+
+    // LSP 文件变更通知（子代理侧补齐）：edit/write 成功后同步最新内容给 LSP，
+    // 复用主循环同一套 syncFileToLSP 编排（clearForFile + didChange + didSave）。
+    // 异步 fire-and-forget，不阻塞工具返回；诊断稍后经 agentic-loop 每轮注入。
+    // 此前子代理编辑代码后完全不通知 LSP，语言服务器看不到新内容 → 诊断断层。
+    if (!result.isError && (block.name === "write" || block.name === "edit")) {
+      const editedPath = (effectiveInput?.file_path ?? effectiveInput?.path) as string | undefined;
+      if (editedPath) {
+        void import("../lsp/manager.ts")
+          .then(({ syncFileToLSP }) => syncFileToLSP(editedPath))
+          .catch(() => { /* best-effort，失败不影响子代理执行 */ });
+      }
+    }
+
     // 截断超大输出
     const truncated = ContextManager.truncateToolOutput(result.output);
 

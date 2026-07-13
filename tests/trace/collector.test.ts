@@ -529,6 +529,50 @@ describe("TraceCollector", () => {
     expect(snapshot.message_count).toBeGreaterThan(0);
   });
 
+  // ─── 优化 2：SessionEnd 落 session-summary.json（批量分诊入口）───
+
+  test("优化2：正常会话 SessionEnd 落 session-summary.json，errors=0", async () => {
+    await fireSessionStart(hookSystem);
+    await fireModelRound(hookSystem, {
+      messages: [{ role: "user", content: "hi" }],
+      contentBlocks: [{ type: "text", text: "hello" }],
+      stopReason: "end_turn",
+    });
+    await hookSystem.fireSessionEndEvent("exit");
+
+    const sumPath = join(testDir, "sessions", "sess-001", "session-summary.json");
+    expect(existsSync(sumPath)).toBe(true);
+    const summary = JSON.parse(readFileSync(sumPath, "utf-8"));
+    expect(summary.session_id).toBe("sess-001");
+    expect(summary.exit_status).toBe("end_turn");
+    expect(summary.abnormal).toBe(false);
+    expect(summary.errors).toBe(0);
+    // 复用 digest 的字段应齐全（瘦身后仍含批量分诊主键）
+    expect(typeof summary.turns).toBe("number");
+    expect(Array.isArray(summary.anomaly_kinds)).toBe(true);
+    expect(Array.isArray(summary.anomalies)).toBe(true);
+  });
+
+  test("优化2：异常退出(error) 的 summary 标 abnormal=true 且 errors>0", async () => {
+    await fireSessionStart(hookSystem);
+    await fireModelRound(hookSystem, {
+      messages: [{ role: "user", content: "task" }],
+      contentBlocks: [{ type: "text", text: "处理中" }],
+      stopReason: "tool_use",
+    });
+    await hookSystem.fireSessionEndEvent("error", undefined, {
+      error: { message: "API 错误: 400", name: "ApiError" },
+    });
+
+    const summary = JSON.parse(
+      readFileSync(join(testDir, "sessions", "sess-001", "session-summary.json"), "utf-8"),
+    );
+    expect(summary.abnormal).toBe(true);
+    expect(summary.exit_status).toBe("error");
+    // digest 对 error 退出会产出异常项 → errors 计数 > 0
+    expect(summary.errors).toBeGreaterThan(0);
+  });
+
   test("D3-3：异常退出(error) 写 exit_attribution 到 metadata，abnormal=true", async () => {
     await fireSessionStart(hookSystem);
     await fireModelRound(hookSystem, {

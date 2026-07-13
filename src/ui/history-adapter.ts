@@ -20,7 +20,7 @@ import type { Message } from "../llm/types.ts";
 import { getToolSummary, getResultSummary, isDiffContent, getFilenameFromInput } from "./ui-utils.ts";
 // 直接复用产生端的 origin 常量,而非在此重复字符串字面量——避免"注入端打了 origin、
 // 隐藏端白名单漏登记"的漂移(compact-reattach 泄漏正是此类接线遗漏)。
-import { REATTACH_ORIGIN } from "../query/compact/reattach-markers.ts";
+import { hasInternalOrigin as hasInternalOriginImpl } from "../context/internal-message.ts";
 
 /**
  * 构建主屏 Static 模式的历史项数组（ADR-040）。
@@ -230,22 +230,12 @@ function isInternalOnlyText(text: string): boolean {
  * 内部消息来源标记(写入 Message._meta.origin),用于按来源隐藏内部注入的消息对,
  * 而非依赖脆弱的文案前缀匹配。
  *
- * 背景:压缩(compactWithSummary)与会话恢复(restoreSession 有摘要路径)会注入
- * "摘要 user 消息 + 固定 ack assistant 消息"这一对仅供 LLM 的上下文锚点。它们既非
- * 真实用户输入、也非模型真实答复,不应在 TUI 渲染——否则用户会看到一段
- * 「> [对话摘要]...」和一句凭空的「好的,我已了解...请继续」。这类消息的文案会随
- * 迭代微调(摘要前缀、ack 措辞),用 `_meta.origin` 标记比前缀匹配更稳。
+ * 单一事实源已上移到 context/internal-message.ts（INTERNAL_ORIGINS + hasInternalOrigin +
+ * markInternal/buildInternalMessage 构造器 + 哨兵测试）。此处直接复用,不再本地重复定义,
+ * 避免登记表在两处漂移。背景与设计见该模块头注释。
  */
-const INTERNAL_ORIGINS = new Set([
-  "compact-summary", // compactWithSummary 注入的摘要 / skill 保留 / ack；snipCompact 裁剪摘要
-  "resume-summary",  // restoreSession 有摘要路径注入的恢复提示 / ack
-  REATTACH_ORIGIN,   // "compact-reattach"：压缩后重注入的文件正文/Plan/决策/原始任务锚点 + 各自 ack
-]);
-
-/** 消息是否带内部来源标记(整条隐藏)。 */
 function hasInternalOrigin(msg: Message): boolean {
-  const origin = msg._meta?.origin;
-  return typeof origin === "string" && INTERNAL_ORIGINS.has(origin);
+  return hasInternalOriginImpl(msg);
 }
 
 /**

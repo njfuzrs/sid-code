@@ -29,6 +29,12 @@ export interface ExtractContext {
   memoryDir: string;
   canUseTool: CanUseToolFn;
   appendSystemMessage?: (msg: Message) => void;
+  /**
+   * 是否启用团队记忆——启用时提取 prompt 会追加 team scope 的**保守**分流指引，
+   * 允许把明确的团队级约定自动沉淀到 team scope（对标 claude-code，但门槛更高）。
+   * 默认 false：只写私有记忆，行为与改造前一致。
+   */
+  teamMemoryEnabled?: boolean;
 }
 
 /**
@@ -113,7 +119,7 @@ export function initExtractMemories(ctx: ExtractContext): ExtractMemoriesHandle 
     // 扫描现有记忆构建清单
     const headers = await scanMemoryFiles(ctx.memoryDir);
     const manifest = formatMemoryManifest(headers);
-    const promptText = buildExtractPrompt(manifest);
+    const promptText = buildExtractPrompt(manifest, ctx.teamMemoryEnabled ?? false);
 
     const promptMessages: Message[] = [
       { role: "user", content: [{ type: "text", text: promptText }] },

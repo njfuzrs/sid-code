@@ -883,29 +883,12 @@ function getAffectedFiles(toolBlocks: ToolUseBlock[]): string[] {
 
 /**
  * 通知 LSP 文件已变更（write/edit 后调用）。
+ * 编排逻辑已提取到 manager.ts 的 syncFileToLSP（主循环与子代理共用），此处仅做入参归一。
  * 从磁盘读取最新内容投递给 LSP；LSP 未就绪或读取失败时静默跳过。
  */
 async function notifyLSPFileChange(input: Record<string, unknown>): Promise<void> {
   const filePath = (input?.file_path ?? input?.path) as string | undefined;
   if (!filePath) return;
-  try {
-    const { getLSPManager, clearDiagnosticsForFile, notifyFileChanged } = await import("../lsp/manager.ts");
-    if (!getLSPManager()) return; // LSP 未启用，避免无谓读盘
-    const { readFile } = await import("fs/promises");
-    const content = await readFile(filePath, "utf-8");
-    // G3：先清除该文件的旧诊断记录，再投递变更。
-    // 否则跨轮次去重缓存会过滤掉服务器基于新内容重新推送的同位置诊断，
-    // 导致"修复后诊断不消失"或"过时错误持续驻留"。
-    clearDiagnosticsForFile(filePath);
-    await notifyFileChanged(filePath, content);
-    // G6：变更同步后额外发 didSave 通知——部分 LSP 服务器（如 pylsp、gopls 的某些配置）
-    // 依赖 didSave 而非 didChange 触发完整诊断刷新。didChange 已让服务器看到最新内容，
-    // didSave 再补一次"已保存"语义，最大化兼容不同服务器的诊断触发策略。
-    const manager = getLSPManager();
-    manager?.saveFile(filePath);
-  } catch (e) {
-    // 静默-8：LSP 同步是 best-effort（失败不阻断工具执行），但补 debug 日志便于排查
-    // "LSP 诊断不更新"这类问题（此前无任何痕迹）。
-    getLogger().debug("LSP", `文件变更同步失败（不影响工具执行）: ${(e as Error)?.message}`);
-  }
+  const { syncFileToLSP } = await import("../lsp/manager.ts");
+  await syncFileToLSP(filePath);
 }

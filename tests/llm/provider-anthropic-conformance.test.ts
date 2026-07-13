@@ -391,3 +391,86 @@ describe("Anthropic conformance — guardOutgoingMessages", () => {
     expect(threw).toBe(false);
   });
 });
+
+// ─── tool_choice 透传（OPT-2）────────────────────────────────────────────
+
+/**
+ * 创建一个会捕获 messages.create 首个入参（即请求体）的 provider。
+ * 用于断言 tool_choice / thinking 等字段是否正确下发到 Anthropic 请求。
+ */
+function makeCapturingProvider(): { provider: AnthropicProvider; getBody: () => any } {
+  const provider = new AnthropicProvider("test-key", "claude-opus-4-8");
+  let captured: any = null;
+  const minimalStream = makeRawStream([
+    { type: "message_start", message: { usage: { input_tokens: 1, output_tokens: 0 } } },
+    { type: "message_stop" },
+  ]);
+  const response = { headers: new Headers(), body: { cancel: () => Promise.resolve() } };
+  (provider as any).client.messages.create = (body: any) => {
+    captured = body;
+    return { withResponse: async () => ({ data: minimalStream, response }) };
+  };
+  return { provider, getBody: () => captured };
+}
+
+describe("Anthropic conformance — tool_choice 透传（OPT-2）", () => {
+  test('toolChoice="none" 下发 { type: "none" }（修复 auto-compact 静默丢弃）', async () => {
+    const { provider, getBody } = makeCapturingProvider();
+    await drain(provider.sendMessageStream({ ...BASE_PARAMS, toolChoice: "none" }));
+    expect(getBody().tool_choice).toEqual({ type: "none" });
+  });
+
+  test('toolChoice="auto" 下发 { type: "auto" }', async () => {
+    const { provider, getBody } = makeCapturingProvider();
+    await drain(provider.sendMessageStream({ ...BASE_PARAMS, toolChoice: "auto" }));
+    expect(getBody().tool_choice).toEqual({ type: "auto" });
+  });
+
+  test('toolChoice="required" 映射为 Anthropic 的 { type: "any" }（非 OpenAI 语义）', async () => {
+    const { provider, getBody } = makeCapturingProvider();
+    await drain(provider.sendMessageStream({ ...BASE_PARAMS, toolChoice: "required" }));
+    expect(getBody().tool_choice).toEqual({ type: "any" });
+  });
+
+  test('toolChoice={ name } 下发 { type: "tool", name }', async () => {
+    const { provider, getBody } = makeCapturingProvider();
+    await drain(provider.sendMessageStream({ ...BASE_PARAMS, toolChoice: { name: "StructuredOutput" } }));
+    expect(getBody().tool_choice).toEqual({ type: "tool", name: "StructuredOutput" });
+  });
+
+  test("不传 toolChoice 时请求体无 tool_choice 字段", async () => {
+    const { provider, getBody } = makeCapturingProvider();
+    await drain(provider.sendMessageStream({ ...BASE_PARAMS }));
+    expect("tool_choice" in getBody()).toBe(false);
+  });
+
+  test("thinking 开启 + 强制 tool_choice({name}) → 降级为 auto（Anthropic 约束）", async () => {
+    const { provider, getBody } = makeCapturingProvider();
+    await drain(provider.sendMessageStream({
+      ...BASE_PARAMS,
+      toolChoice: { name: "StructuredOutput" },
+      thinking: { enabled: true, budgetTokens: 1024 },
+    }));
+    expect(getBody().tool_choice).toEqual({ type: "auto" });
+  });
+
+  test('thinking 开启 + toolChoice="none" → 原样透传 none（none 在 thinking 下合法）', async () => {
+    const { provider, getBody } = makeCapturingProvider();
+    await drain(provider.sendMessageStream({
+      ...BASE_PARAMS,
+      toolChoice: "none",
+      thinking: { enabled: true, budgetTokens: 1024 },
+    }));
+    expect(getBody().tool_choice).toEqual({ type: "none" });
+  });
+
+  test('thinking 开启 + toolChoice="required" → 降级为 auto（any 在 thinking 下会 400）', async () => {
+    const { provider, getBody } = makeCapturingProvider();
+    await drain(provider.sendMessageStream({
+      ...BASE_PARAMS,
+      toolChoice: "required",
+      thinking: { enabled: true, budgetTokens: 1024 },
+    }));
+    expect(getBody().tool_choice).toEqual({ type: "auto" });
+  });
+});

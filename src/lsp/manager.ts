@@ -141,6 +141,37 @@ export async function notifyFileChanged(filePath: string, content: string): Prom
 }
 
 /**
+ * 编辑/写入文件后，把最新内容同步给 LSP 的完整编排（主循环与子代理共用）。
+ *
+ * 提取自 query/tool-executor.ts 的 notifyLSPFileChange，消除主循环与子代理两套重复实现，
+ * 也让子代理路径（此前完全不通知 LSP）能复用同一套正确编排：
+ *   1. clearDiagnosticsForFile：清该文件的跨轮次去重缓存，让服务器基于新内容重推的诊断
+ *      能作为"新诊断"再次投递（否则修复后诊断不消失 / 过时错误驻留）。
+ *   2. changeFile：发 didChange（首次见到文件则 didOpen），让服务器看到最新内容。
+ *   3. saveFile：补发 didSave——部分服务器（pylsp、gopls 某些配置）依赖 didSave 触发完整诊断。
+ *
+ * LSP 未启用时不读盘直接返回。全程 best-effort：任何失败只记 debug 日志，绝不阻断工具执行。
+ *
+ * @param filePath 被编辑/写入的文件绝对路径
+ */
+export async function syncFileToLSP(filePath: string): Promise<void> {
+  if (!filePath) return;
+  try {
+    if (!getLSPManager()) return; // LSP 未启用，避免无谓读盘
+    const { readFile } = await import("fs/promises");
+    const content = await readFile(filePath, "utf-8");
+    clearDiagnosticsForFile(filePath);
+    await notifyFileChanged(filePath, content);
+    getLSPManager()?.saveFile(filePath);
+  } catch (e) {
+    getLogger().debug(
+      "LSP",
+      `文件变更同步失败（不影响工具执行）: ${(e as Error)?.message}`,
+    );
+  }
+}
+
+/**
  * 收集待投递的诊断，格式化为附件文本。
  * 供主循环每轮注入 system-reminder 使用。
  *
@@ -148,13 +179,30 @@ export async function notifyFileChanged(filePath: string, content: string): Prom
  * 纯 Hint / Info 不注入——避免对模型刷无关紧要的提示、浪费 token。过滤后若只剩
  * Hint/Info 则整批跳过（返回 null），保持"有真问题才打扰"的克制。
  *
+ * @param scopeFilePaths 可选的文件作用域（绝对路径）。传入时只收集这些文件的诊断，
+ *   且只清空这些文件的 pending——供并发子代理隔离消费，避免与主循环 / 其它子代理互相偷诊断。
+ *   不传时收集并清空全部 pending（主循环行为，保持不变）。
  * @returns 格式化文本，无诊断或仅含 Hint/Info 时返回 null
  */
-export function collectDiagnosticText(): string | null {
+export function collectDiagnosticText(scopeFilePaths?: Iterable<string>): string | null {
   const registry = getDiagnosticRegistry();
   if (!registry) return null;
 
-  const files = registry.collectDiagnostics();
+  // 文件路径 → file:// URI（registry 内部以 URI 为 key）。畸形路径静默跳过。
+  let scopeUris: string[] | undefined;
+  if (scopeFilePaths) {
+    const { pathToFileURL } = require("url");
+    scopeUris = [];
+    for (const p of scopeFilePaths) {
+      try {
+        scopeUris.push(pathToFileURL(p).href);
+      } catch { /* 畸形路径跳过 */ }
+    }
+    // 显式传了作用域但没有一个合法 URI → 不误退化为全量消费，直接返回 null。
+    if (scopeUris.length === 0) return null;
+  }
+
+  const files = registry.collectDiagnostics(scopeUris);
   if (files.length === 0) return null;
 
   // 仅保留含 Error/Warning 的文件；Hint/Info 不足以构成注入理由。

@@ -1539,6 +1539,9 @@ export class App {
         }),
         memoryDir,
         canUseTool: createExtractPermissions(memoryDir),
+        // 团队记忆启用时，提取 prompt 追加 team scope 的保守分流指引（比 claude-code
+        // 门槛更高：默认私有，仅显然的团队级约定才自动进 team）。未启用时只写私有。
+        teamMemoryEnabled: !!this.config.teamMemory?.enabled,
         // 提取保存记忆后，把摘要回注主上下文（作为 system-reminder），让模型知晓已记忆。
         appendSystemMessage: (msg) => {
           try { this.ctxMgr.addMessage(msg as import("./llm/types.ts").Message); } catch { /* 回注失败不阻断 */ }
@@ -1596,7 +1599,28 @@ export class App {
       const { setTeamMemoryOptions } = await import("./memory/team/runtime.ts");
       setTeamMemoryOptions(this.config.teamMemory);
       if (this.config.teamMemory?.enabled) {
-        const { startTeamMemoryWatcher, stopTeamMemoryWatcher } = await import("./memory/team/watcher.ts");
+        const { startTeamMemoryWatcher, stopTeamMemoryWatcher, setTeamMemorySuppressionListener } =
+          await import("./memory/team/watcher.ts");
+        // 抑制态一次性提示（比 claude-code 多做的一点）：同步进入永久抑制态（配置态
+        // 错误 / 共享目录不可用）时，claude-code 纯静默；我们经主上下文注入一条
+        // system-reminder，让模型/用户知道「团队记忆同步已暂停」，避免以为仍在正常同步。
+        // 只在首次进入抑制态时触发一次（watcher 内部 suppressionNotified 去重），恢复后重新武装。
+        setTeamMemorySuppressionListener((reason) => {
+          try {
+            const hint = reason === "no_shared_dir"
+              ? "共享目录不可用"
+              : reason === "disabled"
+                ? "团队记忆未启用"
+                : `原因: ${reason}`;
+            this.ctxMgr.addMessage({
+              role: "user",
+              content: [{
+                type: "text",
+                text: `<system-reminder>团队记忆同步已暂停（${hint}）。本地新写入的团队记忆暂时不会同步给协作者；修复共享目录配置后，删除任一团队记忆文件或重启会话即可恢复同步。</system-reminder>`,
+              }],
+            } as import("./llm/types.ts").Message);
+          } catch { /* 通知失败不阻断同步 */ }
+        });
         await startTeamMemoryWatcher(this.config.teamMemory, process.cwd());
         const { registerCleanup } = await import("./utils/graceful-shutdown.ts");
         registerCleanup(() => stopTeamMemoryWatcher());

@@ -28,11 +28,12 @@ import { updateRateLimitStatus } from "../api/rate-limit.ts";
 import { guardOutgoingMessages } from "./protocol-sentinel.ts";
 import { createStreamLifecycle, LIFECYCLE_PRESETS } from "./stream-lifecycle.ts";
 import { resolveProviderStreamTimeouts } from "../config/network-profile.ts";
+import { wrapFetchWithEventLineShim } from "./sse-event-line-shim.ts";
 import type { StreamTelemetrySignal } from "./types.ts";
 import { emitTimeoutFired, emitStreamPhase } from "../trace/stream-observer.ts";
 import { currentSseDumpContext } from "./sse-chunk-dumper.ts";
 import { normalizeToolInput } from "./normalize-tool-input.ts";
-import { buildSystemBlocks } from "../api/cache-strategy.ts";
+import { buildSystemBlocks, assertCacheBreakpointBudget } from "../api/cache-strategy.ts";
 import { getEffectiveBetaHeaders } from "../api/beta-header-latch.ts";
 import { RequestAbortedError } from "./errors.ts";
 
@@ -93,6 +94,11 @@ export class AnthropicProvider implements Provider {
       // SDK 自带重试与 fallback.ts 的重试引擎会叠加放大请求次数，
       // 这里关掉 SDK 层重试，统一由 fallback.ts 管理重试/退避策略。
       maxRetries: 0,
+      // §2.3：给 SDK 传自定义 fetch，对 text/event-stream 响应注入缺失的 event: 行。
+      // 部分第三方 Anthropic 兼容代理只发 data: 行、省略 event: 行，会导致 SDK 的
+      // SSE 解析器静默丢弃整条流（earendil-works/pi #1983）。shim 仅在检测到缺失时
+      // 介入，对规范代理零影响；SIDCODE_SSE_EVENT_SHIM=off 可完全旁路。
+      fetch: wrapFetchWithEventLineShim(),
     });
     this._model = model;
   }
@@ -195,6 +201,10 @@ export class AnthropicProvider implements Provider {
       && !process.env.SID_DISABLE_GLOBAL_CACHE;
     const system = buildSystemBlocks(params.system, { globalScopeEnabled: useGlobalScope });
 
+    // 比 CC 更进一步：发请求前断言 cache_control 断点数未超 Anthropic 上限(4)，
+    // 把"comment-only 不变量"升级为运行时护栏(dev 抛错暴露 / prod 打日志容错)。
+    assertCacheBreakpointBudget(system, messages as any, getLogger());
+
     try {
       const requestStartTime = Date.now();
       let firstTokenTime: number | null = null;
@@ -217,6 +227,8 @@ export class AnthropicProvider implements Provider {
         system: system as any,
         tools: tools as any,
         stream: true as const,
+        // OPT-2: 透传 tool_choice（此前 Anthropic 两条路径均漏传，auto-compact 的 "none" 被静默丢弃）
+        ...buildToolChoiceParam(params),
         // Extended Thinking 支持：根据 outputConfig.thinkingType 分发 adaptive/manual
         ...(params.thinking?.enabled && buildThinkingParam(params)),
         // output_config.effort：adaptive 模型 + DeepSeek-via-Anthropic 端点均走此字段。
@@ -641,6 +653,9 @@ export class AnthropicProvider implements Provider {
       }
     }
 
+    // 与流式路径一致：发请求前断言 cache_control 断点数未超上限。
+    assertCacheBreakpointBudget(system, messages as any, getLogger());
+
     const log = getLogger();
     log.debug("LLM:ANTHROPIC", "非流式请求", {
       model: params.model || this._model,
@@ -655,6 +670,8 @@ export class AnthropicProvider implements Provider {
         system: system as any,
         tools: tools as any,
         stream: false,
+        // OPT-2: 透传 tool_choice（与流式路径一致）
+        ...buildToolChoiceParam(params),
         // 与流式路径一致：Extended Thinking（adaptive/manual 双模式）
         ...(params.thinking?.enabled && buildThinkingParam(params)),
         ...(params.outputConfig && {
@@ -740,6 +757,56 @@ function buildThinkingParam(params: SendParams): Record<string, unknown> {
       budget_tokens: params.thinking!.budgetTokens,
     },
   };
+}
+
+/**
+ * 把内部 toolChoice 翻译为 Anthropic 的 `tool_choice` 字段并透传。
+ *
+ * § 此前 Anthropic 流式/非流式两条路径都**不下发** tool_choice（仅 OpenAI 兼容路径处理），
+ * 导致上层设的 toolChoice 被静默丢弃——最典型的受害者是 auto-compact.ts 的
+ * `toolChoice: "none"`（禁止摘要时调用工具），在 Anthropic 直连下形同虚设，
+ * 模型摘要时仍可能调工具，浪费一轮或污染摘要。此函数补齐透传。
+ *
+ * § 取值映射（Anthropic 与 OpenAI 语义不同，别照搬）：
+ *   "auto"      → { type: "auto" }
+ *   "none"      → { type: "none" }
+ *   "required"  → { type: "any" }          （OpenAI 叫 required，Anthropic 叫 any）
+ *   { name }    → { type: "tool", name }
+ *
+ * § thinking 交互（比原方案更精确）：
+ *   Anthropic 官方约束——开启 thinking 时，tool_choice 只接受 auto / none，
+ *   传 any / tool（强制）会 400（见 anthropics/claude-code#18759）。
+ *   因此仅当 thinking 开启 **且** 请求的是"强制"类取值（required/{name}）时，
+ *   才降级为 auto 并告警；none/auto 在 thinking 下合法，原样透传（保住 auto-compact 的 none）。
+ *
+ * 返回可展开进 requestParams 的对象（不下发时返回空对象 `{}`）。
+ */
+function buildToolChoiceParam(params: SendParams): Record<string, unknown> {
+  const tc = params.toolChoice;
+  if (tc == null) return {};
+
+  const isForced = tc === "required" || typeof tc === "object";
+  if (params.thinking?.enabled && isForced) {
+    // thinking 下强制 tool_choice 会 400：降级 auto + 依赖 prompt 引导，并告警留痕
+    getLogger().warn(
+      "LLM:ANTHROPIC",
+      `thinking 开启时不支持强制 tool_choice，已将 ${JSON.stringify(tc)} 降级为 auto（Anthropic 约束，见 claude-code#18759）`,
+    );
+    return { tool_choice: { type: "auto" as const } };
+  }
+
+  if (typeof tc === "string") {
+    switch (tc) {
+      case "auto":
+        return { tool_choice: { type: "auto" as const } };
+      case "none":
+        return { tool_choice: { type: "none" as const } };
+      case "required":
+        return { tool_choice: { type: "any" as const } };
+    }
+  }
+  // { name } → 强制调用指定工具
+  return { tool_choice: { type: "tool" as const, name: tc.name } };
 }
 
 /** 判断模型是否支持 strict tool use（Constrained Decoding） */

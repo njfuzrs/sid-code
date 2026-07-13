@@ -293,6 +293,12 @@ export class QueryEngine {
       traceAppendEvent: this.deps.traceCollector
         ? (event) => (this.deps.traceCollector as any).writer?.appendEvent?.(event)
         : undefined,
+      // 优化 1：把 loop.ts 内层 catch（降级重试 continue / 观测类 warn 吞掉）捕获的异常
+      // 也持久化到 errors.jsonl。此前 recordError 只在下方 engine 最外层 catch 调用，
+      // 内层被吞掉的错误 engine 看不到。转发到 collector 的同一 recordError 方法。
+      recordError: this.deps.traceCollector
+        ? (input) => this.deps.traceCollector!.recordError(input)
+        : undefined,
       // Step 0：Session Memory 每轮收尾钩子（fire-and-forget，内部按双阈值决定是否提取）。
       updateSessionMemory: this.sessionMemory
         ? () => this.sessionMemory!.updateSessionMemory()

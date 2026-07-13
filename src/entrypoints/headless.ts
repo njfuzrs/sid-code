@@ -126,6 +126,9 @@ async function runAgentLoop(
 
   const ctxMgr = new ContextManager({
     maxTokens: init.max_tokens,
+    // 传 session_id → 创建即启用工具输出遮罩（对标 cc：headless 是评估/CI/批量入口，
+    // 长任务跑批时最需要 masking 压 input token，此前裸发完全没有）。
+    sessionId: init.session_id,
   });
 
   ctxMgr.setSystemPrompt(init.system_prompt);
@@ -187,7 +190,8 @@ async function runAgentLoop(
 
       const stream = provider.sendMessageStream({
         model: init.model,
-        messages: ctxMgr.getMessages(),
+        // 发给 LLM 走 getCleanedMessages()（剪枝 + masking），对标主循环与 agentic-loop。
+        messages: ctxMgr.getCleanedMessages(),
         system: ctxMgr.getSystemPrompt(),
         maxTokens: 4096,
         tools: toolDefs,

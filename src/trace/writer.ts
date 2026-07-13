@@ -218,4 +218,23 @@ export class TraceWriter {
       getLogger().warn("TRACE", `写入 messages.json 失败: ${err}`);
     }
   }
+
+  /**
+   * 写入/覆盖 session-summary.json — 优化 2：批量分诊入口。
+   *
+   * 固化的是 digest（唯一事实源）在 SessionEnd 时算好的瘦身结论，而非在 collector
+   * 里另起一套摘要逻辑（否则会与 digest 的 20+ 条异常规则漂移出两套结果）。
+   * 用途：用 jq 过滤 sessions 下所有 session-summary.json（如 errors>0）一键批量筛问题会话。
+   *
+   * @param summary 瘦身后的会话摘要对象
+   */
+  writeSessionSummary(summary: object): void {
+    if (!this.ensureDir()) return;
+    try {
+      const filePath = join(this.sessionDir, "session-summary.json");
+      writeFileSync(filePath, JSON.stringify(summary, null, 2));
+    } catch (err) {
+      getLogger().warn("TRACE", `写入 session-summary.json 失败: ${err}`);
+    }
+  }
 }

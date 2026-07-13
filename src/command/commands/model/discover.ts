@@ -92,7 +92,10 @@ export async function discoverModels(
 
   return {
     type: "text",
-    value: report + `\n\n✓ 已更新 ${updates.length} 个模型的参数到 settings.json`,
+    value:
+      report +
+      `\n\n✓ 已更新 ${updates.length} 个模型的参数到 settings.json` +
+      `\n提示：参数将在下次启动 sid-code 时生效。`,
   };
 }
 
