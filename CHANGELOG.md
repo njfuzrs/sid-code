@@ -2,6 +2,115 @@
 
 本文件由 scripts/generate-changelog.ts 自动生成，请勿手改。
 
+## v0.1.587 (2026-07-13)
+
+### 新功能
+- MCP instructions 增量注入 + 工具延迟加载豁免 + 缓存冷热判定修复 + paramText 参数检索 + 编辑失败追踪 + cache_creation 成本补落 `a985fd3`
+- worktree 创建期告警 + LSP codeAction 支持 + 上下文压力节流 + 工具延迟加载 + DYNAMIC_BOUNDARY 保真 `2eea82d`
+  - worktree advisories：创建期检测依赖一致性（lockfile hash 比对）和 DB migration 冲突，回显给用户 / 子代理日志落盘，异常不阻断
+  - LSP CodeAction：新增 LSPCodeAction 类型、diagnostic-registry latest 只读快照、 lsp-formatters 格式化、server-instance 能力声明、lsp.ts codeAction 操作
+  - 上下文压力 cadence 节流：按档位（warn/urgent）节流注入，升档强注入、同档 低频重述（每 8 轮），避免幻影用户消息（对话重播/截断幻觉根因）
+  - toolSearch 默认开启：对标 CC 默认行为，15 个长尾工具首轮不注入省 token
+  - DYNAMIC_BOUNDARY 保真：复用 cache-strategy.ts 单一事实源，截断路径不丢边界 标记，防止缓存分区失效
+  - 文档：删除可选优化/README.md，更新 context-engineering-next-optimizations.md
+- 通知结构化快照重构 + 内部消息来源分类拆分 + 文档更新 `e902b90`
+  - 通知机制：新增 StructuredNotification 与 enqueueTaskNotification 入口，
+  - TUI 结构化优先渲染，根治子代理结论含 XML 字面量破坏解析问题。
+  - 内部消息：INTERNAL_ORIGINS/INTERNAL_RENDER_ORIGINS 分类拆分，
+  - 修正 hasInternalOrigin 防止 task-notification 被整条隐藏误吞。
+  - 系统提示：补充按需拉取完整结论说明。
+  - 文档：团队记忆同步方案二次评审修正与落地记录。
+- 子代理增强——LSP 诊断注入、tool_choice 透传、masking 隔离 `e6dd3a8`
+  - 具备 edit/write 工具的子代理在每轮开始前收集已编辑文件的 LSP 诊断
+  - 注入为 user 消息让子代理感知自己引入的类型/语法错误
+  - 作用域限定为本子代理编辑过的文件，并发子代理互不偷取
+  - 为每个子代理派生独立 sessionId，避免并发子代理临时文件覆盖
+  - 自定义子代理以 task.type 标识，普通子代理以 taskId 标识
+  - 发给 LLM 的消息改用 getCleanedMessages()（大输出剪枝 + masking）
+  - 此前裸发 getMessages() 无任何工具输出剪枝，input token 线性膨胀
+  - auto-compact 设 toolChoice:"none" 禁止摘要时调工具，但此前被静默丢弃
+- 流式工具执行器 + 工具编排 + 侧链持久化 + 内部字段剥离 `efab10c`
+  - GAP-01 流式工具执行器（模型输出与工具执行并行）
+  - GAP-08 防御性内部字段剥离（纵深防模型伪造）
+  - GAP-10 工具编排层独立可测（分区调度算法提取）
+  - P2-10 子代理 sidechain 持久化（防中断丢失）
+  - 循环检测与终止策略-差距分析标记为已完成
+- 不确定-1 会话硬顶修复 + 必删-4 语言约束 + system-prompt 优化 + StatsDialog 单价 + 防线触发率脚本 `4ea9855`
+  - 不确定-1：app.ts 新增 sessionTimedOut 判断防止静默吞掉；maxSessionDurationMs 默认 60min（单轮 2 倍）
+  - 必删-4：语言约束改为 reasoningLanguageDrift 能力标志驱动
+  - system-prompt：新增"批量化搜索"和"避免宽 ASCII 表格"规则
+  - StatsDialog：新增 pricing prop 显示每百万 token 单价
+  - 新增 scripts/defense-trigger-rate.ts 防线触发率度量脚本
+- 审计报告落地修复与功能增强（不确定-1/2/3/4 + G13/G19/G22） `8687242`
+  - 不确定-1：会话级硬顶纳入 network-profile 统一配置，headless/SDK 路径补齐
+  - 不确定-2/3：单次调用重试硬顶 maxRetriesPerCall 防退避风暴
+  - 不确定-4：baseURL 优先级链明确化
+  - G13：子代理类型透传，save_memory agent scope 定位到子代理类型记忆目录
+  - G19：think 工具注册（新泛型 Tool → LegacyTool 桥接）
+  - G22：/compact 部分压缩（partial-compact）接线
+  - trace/digest：新增 SubAgentSpan/SubAgentSummary 数据结构
+  - 配套测试与注释规范
+- G19 工具注册现代化——bridge 适配器（新泛型 Tool → LegacyTool 桥接） `9b04cd6`
+  - src/tool/bridge.ts: 新增 toLegacyTool() 桥接适配器，buildTool() 构建的新泛型 Tool 经此适配后可直接 registry.register()
+  - src/tool/types.ts: LegacyTool 注释中标注 G19 迁移路径，新工具直接用 buildTool() + bridge 无需等全量迁移
+  - tests/tool/registry-modernization.test.ts: 完整闭环测试（buildTool → toLegacyTool → register → definitions）
+  - src/query/compact/g16-g26-decision.ts: G16/G26 决策记录文档
+- G10 autoDream 接线与配置（app.ts 集成 + settings 配置项 + 单元测试） `8690e9e`
+  - src/app.ts: autoDream 初始化接线，复用后台记忆提取子系统的 getMainContext + memoryDir
+  - src/config/config.ts: 新增 autoDream 配置项及 auto_dream/autoDream 双键映射
+  - tests/memory/dream.test.ts: 三级 gate 判定 + 状态持久化 + recordSession 计数测试
+- 多项功能增强（G6/G10/G21/G23/G25） `e7819d8`
+  - G6: Read 工具支持多模态富媒体（图片/PDF/Notebook），含图片 mediaBlock 返回、Notebook 结构化渲染、PDF document 块
+  - G10: 新增 autoDream 自主记忆巩固系统，三级 gate 触发（时间/会话/记忆量），fire-and-forget 后台 agent 跑 consolidate → prune
+  - G21: Glob/Ls 工具接入 deny 规则过滤，被 deny 的敏感文件不再出现在列举结果中
+  - G23: Shell 模式退出提示渐进衰减，复用 app-config 通用 hint 计数 API（满 3 次收敛）
+  - G25: 命令上下文注入 permissionChecker 实例，修复 /allow /deny /add-dir /permissions 运行时永远为 null 的漏传
+  - 新增 partial-compact 查询压缩模块
+  - edit/write 工具增强
+  - 对照 claude-code 多模态能力分析文档落地
+- **command,llm,permission** · /add-dir 命令 + G6 富媒体序列化 + G21 deny 路径隐藏 `13d4534`
+  - 新增 /add-dir 命令：运行时将目录加入当前会话可访问白名单，支持 --list / --remove
+  - G6: 抽取 serializeToolResultBlock 函数，支持图片/文档多部件 content 收敛流式/非流式两条序列化路径，避免逻辑漂移
+  - G21: 新增 isPathHidden 方法，让 deny 规则对 glob/ls 列举结果生效 glob 工具注入 isPathHidden 回调，被拒文件从列表里隐藏（对标 claude-code）
+- 多项功能增强（G6/G11/G12/G17/G20） `a2d9505`
+  - G6: Read 工具支持图片/Notebook/PDF 读取
+  - G11: 新增 NotebookEdit 工具（cell 级 .ipynb 编辑）
+  - G12: 系统提示重建时刷新输出风格
+  - G17: PTL 截头重试机制（避免 prompt 过长导致摘要失败）
+  - G20: sibling-abort 并发工具中断联动
+  - 新增 diff/doctor 命令
+  - 修复 sed -i 在 cd 场景下的路径解析
+  - 补充 sed 误报边界测试和 notebook-edit 测试
+- **mcp,config** · G3 Elicitation 接线与 G12 输出风格可插拔 `ba7420c`
+  - G3：MCP 服务端请求路由（elicitation/create），SSE 传输层双向通信， CLI 交互处理兜底，capabilities 声明与 handler 注册
+  - G12：outputStyle 配置注入系统提示词静态缓存区，用户可插拔输出风格
+  - 测试：更新 git-status 断言适配新 snapshot 格式，新增防死锁哨兵
+- 多项安全增强与功能补全（G2/G3/G5/G8/G9/G10/G11/G12/G13） `3a63743`
+  - G13: 新增 agent-store 记忆系统，按子代理类型注入历史积累经验
+  - G9: 补齐 bash-security 5 个校验器（畸形 token 注入/jq 逃逸/元字符/ 反斜杠转义空格/危险变量与不完整命令）
+  - G10/G11/G12: 新增文件写入/编辑前安全检测，编辑工具接管
+  - G8: 兼容 OpenAI 系 rate-limit header，补充限流状态提取
+  - G2: ToolClassifier 接线，auto 权限模式回归生效
+  - G3: MCP 传输层支持 Elicitation 服务器发起请求
+  - G5: 长跑工具中间进度路由到状态栏
+  - 对标 claude-code 的 git status 附件格式（仲裁锚点 + 结构化标签）
+
+### 修复
+- **llm** · 修复错误分类数字子串误判 + OpenAI strict schema 兼容性 `ccec09d`
+  - errors.ts: classifyError/is401Error/is408Error/is409Error 改用数字边界匹配， 避免网关 request id 中巧合内嵌的状态码数字子串（如 "404"）误判为终端错误； 拿到结构化 HTTP status 时优先使用，不再回退文本扫描（2026-07-13 生产事故复盘）
+  - openai-responses-request.ts: strict:true 工具的 schema 补全 required + optional 字段转 nullable，满足 OpenAI Structured Outputs 硬性要求； 对 z.any()/z.unknown() 等无约束节点自动检测并降级为非 strict（2026-07-14 复测发现）
+  - install-template.sh: PATH 前置改为幂等判断，避免 update 时重复拱到最前
+  - 新增/补充测试覆盖上述回归场景
+- **task-notification** · 多通知聚合为一条消息，防止 _meta 浅合并覆盖前面的通知 `f6c2969`
+  - 将 query/loop.ts 中逐条 addMessage 改为一次性聚合注入，_meta.notif 收集为
+  - 数组；history-adapter 兼容单对象/数组两种形态，确保 TUI 渲染不丢通知。
+  - 新增回归测试覆盖多通知数组与空数组回退场景。
+
+### 其他
+- doc：更新文档 `e487c2b`
+- doc：更新代办事项状态 `d13b186`
+- doc：更新文档 `9aaba54`
+
 ## v0.1.586 (2026-07-10)
 
 ### 新功能
