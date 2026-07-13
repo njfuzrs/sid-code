@@ -406,18 +406,38 @@ export function toAbortError(error?: unknown): RequestAbortedError {
 
 // ─── 细粒度错误检测谓词 ───
 
+/**
+ * 判断数字串 digits 是否在 msg 中以「数字边界」命中（前后不是 0-9）。
+ * 不能用裸 `.includes(digits)`：错误消息常内嵌网关 / CDN 返回的 request id、
+ * trace id 等不透明标识符，可能巧合包含目标状态码的数字子串。
+ *
+ * 实例（2026-07-13 生产事故）：Cloudflare 502 错误消息里的
+ * "(request id: 202607130613404387609908268d9d6yjWpBkX0)"，其中
+ * "...1340438..." 恰好包含 "404"。用 `.includes("404")` 判定会把这个可重试的
+ * 502 服务端错误误判成终端错误 model_not_found，导致重试提前放弃、直接切换到
+ * fallback 模型——而此时真实故障只是上游临时过载，多等几秒重试本可成功
+ * （消息里其实还有 "overloaded" 这个正确关键词，但排在判断顺序更后面的分支，
+ * 被抢先命中的 "404" 短路掉了）。
+ *
+ * 数字边界匹配保留 "HTTP 404" "code=404" "(404)" 等合法场景，排除被更长数字
+ * 串"吞掉"的巧合命中（如 "1340438" 里的 "404"）。
+ */
+function hasBoundaryDigits(msg: string, digits: string): boolean {
+  return new RegExp(`(?<!\\d)${digits}(?!\\d)`).test(msg);
+}
+
 export function is408Error(error: unknown): boolean {
   const status = getHTTPStatus(error);
   if (status === 408) return true;
   const msg = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-  return msg.includes("408") || msg.includes("http 408") || msg.includes("status 408");
+  return hasBoundaryDigits(msg, "408") || msg.includes("http 408") || msg.includes("status 408");
 }
 
 export function is409Error(error: unknown): boolean {
   const status = getHTTPStatus(error);
   if (status === 409) return true;
   const msg = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-  return msg.includes("409") || msg.includes("lock timeout") || msg.includes("conflict");
+  return hasBoundaryDigits(msg, "409") || msg.includes("lock timeout") || msg.includes("conflict");
 }
 
 export function is401Error(error: unknown): boolean {
@@ -425,7 +445,7 @@ export function is401Error(error: unknown): boolean {
   if (status === 401) return true;
   const msg = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
   return (
-    msg.includes("401") ||
+    hasBoundaryDigits(msg, "401") ||
     msg.includes("authentication") ||
     msg.includes("invalid api key") ||
     msg.includes("invalid x-api-key")
@@ -452,6 +472,19 @@ function parseRetryAfter(error: unknown): number | undefined {
 }
 
 /**
+ * 结合结构化 HTTP 状态码（若可得）与数字边界文本匹配，判断错误是否对应某个状态码。
+ *
+ * 结构化状态码（error.status/statusCode/response.status，见 getHTTPStatus）比文本
+ * 扫描更权威：一旦拿到就直接用它判定（无论真假都不再回退文本匹配），从根上避免消息
+ * 正文里的不透明 ID（request id / trace id）干扰判断。只有拿不到结构化状态码时，才
+ * 回退到 hasBoundaryDigits 的数字边界文本匹配。
+ */
+function matchesHttpStatus(structuredStatus: number | undefined, msg: string, code: string): boolean {
+  if (structuredStatus !== undefined) return String(structuredStatus) === code;
+  return hasBoundaryDigits(msg, code);
+}
+
+/**
  * 将原始错误分类为 Terminal / Retryable / 未知
  * 供 fallback.ts 和 provider 使用
  *
@@ -460,6 +493,8 @@ function parseRetryAfter(error: unknown): number | undefined {
 export function classifyError(error: unknown): TerminalError | RetryableError | Error {
   const msg = error instanceof Error ? error.message : String(error);
   const lowerMsg = msg.toLowerCase();
+  // 结构化状态码只算一次，供下面所有 matchesHttpStatus 调用复用。
+  const structuredStatus = getHTTPStatus(error);
 
   // 0. 服务端 x-should-retry header 优先
   if (parseXShouldRetry(error)) {
@@ -471,13 +506,13 @@ export function classifyError(error: unknown): TerminalError | RetryableError | 
   if (is401Error(error)) {
     return new TerminalError(msg, "auth_failed");
   }
-  if (lowerMsg.includes("404") || lowerMsg.includes("model_not_found") || lowerMsg.includes("not found")) {
+  if (matchesHttpStatus(structuredStatus, lowerMsg, "404") || lowerMsg.includes("model_not_found") || lowerMsg.includes("not found")) {
     return new TerminalError(msg, "model_not_found");
   }
   if (lowerMsg.includes("content_policy") || lowerMsg.includes("safety")) {
     return new TerminalError(msg, "content_policy");
   }
-  if (lowerMsg.includes("400") || lowerMsg.includes("invalid_request")) {
+  if (matchesHttpStatus(structuredStatus, lowerMsg, "400") || lowerMsg.includes("invalid_request")) {
     return new TerminalError(msg, "invalid_request");
   }
 
@@ -488,16 +523,16 @@ export function classifyError(error: unknown): TerminalError | RetryableError | 
   if (is409Error(error)) {
     return new RetryableError(msg, "lock_timeout");
   }
-  if (lowerMsg.includes("429") || lowerMsg.includes("rate_limit")) {
+  if (matchesHttpStatus(structuredStatus, lowerMsg, "429") || lowerMsg.includes("rate_limit")) {
     const retryAfter = parseRetryAfter(error);
     return new RetryableError(msg, "rate_limit", retryAfter);
   }
-  if (lowerMsg.includes("overloaded") || lowerMsg.includes("529") || lowerMsg.includes("503") ||
-      lowerMsg.includes("insufficient_system_resource")) {
+  if (lowerMsg.includes("overloaded") || matchesHttpStatus(structuredStatus, lowerMsg, "529") ||
+      matchesHttpStatus(structuredStatus, lowerMsg, "503") || lowerMsg.includes("insufficient_system_resource")) {
     const retryAfter = parseRetryAfter(error);
     return new RetryableError(msg, "overloaded", retryAfter);
   }
-  if (lowerMsg.includes("502") || lowerMsg.includes("500") || lowerMsg.includes("server_error")) {
+  if (matchesHttpStatus(structuredStatus, lowerMsg, "502") || matchesHttpStatus(structuredStatus, lowerMsg, "500") || lowerMsg.includes("server_error")) {
     return new RetryableError(msg, "server_error");
   }
   if (lowerMsg.includes("timeout") || lowerMsg.includes("etimedout") || msg.includes("超时")) {

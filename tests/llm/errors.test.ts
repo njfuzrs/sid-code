@@ -16,6 +16,9 @@ import {
   RequestAbortedError,
   ABORT_REASONS,
   INTERNAL_TIMEOUT_ABORT_REASONS,
+  is401Error,
+  is408Error,
+  is409Error,
 } from "../../src/llm/errors.ts";
 
 describe("classifyError", () => {
@@ -67,6 +70,70 @@ describe("classifyError", () => {
       const err = classifyError(new Error("400 Bad Request: invalid_request"));
       expect(err).toBeInstanceOf(TerminalError);
       expect((err as TerminalError).reason).toBe("invalid_request");
+    });
+  });
+
+  // === 数字边界匹配（防子串误判回归）===
+  describe("数字边界匹配（防止不透明 ID 里的数字子串误判状态码）", () => {
+    test("回归：Cloudflare 502 错误的 request id 恰好内嵌 \"404\" 子串，不应误判为终端错误（2026-07-13 生产事故）", () => {
+      // 事故复盘：claude-sonnet-5 连续 3 次遇到网关 502（"origin overloaded"），前两次
+      // request id 不含可疑数字串，被正确判为 RetryableError 并重试；第 3 次 request id
+      // "202607130613404387609908268d9d6yjWpBkX0" 里恰好包含 "404" 子串（"...1340438..."
+      // 中间），旧版 classifyError 用裸 `.includes("404")` 命中 → 误判为 TerminalError
+      // model_not_found → 重试提前放弃、直接切换到 fallback 模型（gpt-5.4），而此时真实
+      // 故障只是上游临时过载。数字边界匹配（前后不能是 0-9）能排除这种"被更长数字串
+      // 吞掉"的巧合命中，正确识别出消息里其实还有 "overloaded" 关键词。
+      const incidentMsg =
+        '502 {"error":{"type":"bad_response_status_code","message":"The origin web server returned an invalid or incomplete response to Cloudflare. This typically indicates the origin is overloaded or misconfigured. (request id: 202607130613404387609908268d9d6yjWpBkX0)"},"type":"error"}';
+      const err = classifyError(new Error(incidentMsg));
+      expect(err).toBeInstanceOf(RetryableError);
+      expect((err as RetryableError).reason).not.toBe("model_not_found" as any);
+    });
+
+    test("同类风险：request id 内嵌 \"401\"/\"429\"/\"500\" 数字串（前后被其它数字包夹）时，502 错误仍应正确分类为可重试", () => {
+      // 系统性验证：不只 "404"，任何状态码数字串都可能巧合出现在网关 request id /
+      // trace id 里。is401Error 等细粒度谓词与 classifyError 内联判断统一用数字边界
+      // 匹配后，这类巧合命中应被排除。注意：必须让目标数字串前后都紧邻其它数字
+      // （模拟真实 request id 的连续数字段），否则不构成"被更长数字串吞掉"的场景。
+      const ids = [
+        "99940112200000000000000000000000",  // 内嵌 "401"（"9994[01]122..."实际验证见下方精确构造）
+        "88842912200000000000000000000000",
+        "77750012200000000000000000000000",
+      ];
+      for (const id of ids) {
+        const msg = `502 Bad Gateway upstream overloaded (request id: ${id})`;
+        const err = classifyError(new Error(msg));
+        expect(err).toBeInstanceOf(RetryableError);
+      }
+    });
+
+    test("合法场景不受影响：数字边界匹配仍能识别真实状态码（前后为空格/标点）", () => {
+      expect((classifyError(new Error("HTTP 404 model not found")) as TerminalError).reason).toBe("model_not_found");
+      expect((classifyError(new Error("Error code=401: unauthorized")) as TerminalError).reason).toBe("auth_failed");
+      expect((classifyError(new Error("(429) rate limited")) as RetryableError).reason).toBe("rate_limit");
+    });
+
+    test("结构化 status 字段优先于消息文本：status=502 时不被消息里巧合出现的、且数字边界合法的其它状态码数字误导", () => {
+      // "code 404" 本身数字边界合法（前后是空格/结尾），若无结构化 status，
+      // classifyError 会判成 model_not_found；这里验证 status=502 的权威性压过它。
+      const err = new Error("upstream failure, trace code 404") as any;
+      err.status = 502;
+      const classified = classifyError(err);
+      expect(classified).toBeInstanceOf(RetryableError);
+      expect((classified as RetryableError).reason).toBe("server_error");
+    });
+
+    test("is401Error / is408Error / is409Error 对「前后均被数字包夹」的巧合子串不再误判", () => {
+      // "9940112" 中 "401" 前后都是数字（9,9,4 / 1,2,2...不构成边界），不应命中；
+      // 真实的 401/408/409（前后是空格/标点）仍应正确识别。
+      const mk = (id: string) => new Error(`502 Bad Gateway (request id: ${id})`);
+      expect(is401Error(mk("9994011220000"))).toBe(false); // "401" 前后均为数字
+      expect(is408Error(mk("9994081220000"))).toBe(false); // "408" 前后均为数字
+      expect(is409Error(mk("9994091220000"))).toBe(false); // "409" 前后均为数字
+      // 真实的 401/408/409 场景仍能正确识别（数字边界）
+      expect(is401Error(new Error("HTTP 401 Unauthorized"))).toBe(true);
+      expect(is408Error(new Error("HTTP 408 Request Timeout"))).toBe(true);
+      expect(is409Error(new Error("HTTP 409 Conflict"))).toBe(true);
     });
   });
 

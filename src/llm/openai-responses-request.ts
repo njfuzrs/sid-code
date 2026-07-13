@@ -55,6 +55,151 @@ export interface ResponsesToolDef {
 }
 
 /**
+ * 递归地把 zod 生成的 JSON Schema 改造成满足 OpenAI Structured Outputs / 函数调用
+ * strict 模式要求的形态：
+ * 1. 每个 object 节点的 required 补全为该节点全部 properties key —— strict 模式不允许
+ *    "可选 key"，可选语义必须改用 nullable 类型表达（OpenAI 官方要求：optional 字段要
+ *    用 union 类型带上 null，且仍要出现在 required 里，null 表示"未提供"）；
+ * 2. 原本不在 required 里的字段（即 zod `.optional()` 字段），其子 schema 包一层
+ *    "允许 null"（简单 type 用 `type: [原type, "null"]` 数组形式——OpenAI 官方推荐
+ *    写法；否则退化为 `anyOf: [原 schema, {type:"null"}]`）；
+ * 3. additionalProperties 显式设为 false（zod `z.toJSONSchema()` 默认已带，这里兜底，
+ *    防止未来 zod 版本升级或个别写法导致缺失）；
+ * 4. 递归处理 properties / items（数组，含 tuple 数组）/ anyOf|oneOf|allOf 分支，
+ *    保证任意深度嵌套都满足要求——OpenAI 的 strict 校验是递归的，只修顶层不够
+ *    （2026-07-13 事故里报错定位的正是嵌套两层的 `questions[].options[]`）。
+ *
+ * 背景（2026-07-13 生产事故）：registry.ts 默认给内置工具打 `strict: true`（原为
+ * Anthropic Constrained Decoding 设计），本文件的 convertTools() 曾无条件透传给
+ * OpenAI Responses API；但 zod 的 `.optional()` 字段转 JSON Schema 后不会出现在
+ * required 里，完全不满足 OpenAI strict 模式的硬性要求，导致任何带 optional 字段
+ * 的工具一旦发给 GPT-5.x 系列模型就 400（实测内置工具 30 个里 23 个中招，包括
+ * ask_user_question/read/edit/bash/grep 等高频工具，参见
+ * `OpenAI Responses API HTTP 400: Invalid schema for function 'ask_user_question'...
+ * 'required' is required to be supplied`）。
+ *
+ * 不做的事：不处理 record/字典模式（additionalProperties 为 schema 对象而非 false，
+ * 或 patternProperties）——这类 schema 架构上就与 strict 模式互斥（OpenAI 不支持
+ * 动态 key），目前内置工具没有这种写法（已用脚本核实全量内置工具）。一旦出现，
+ * 应在 registry.ts 层面不给该工具打 strict:true，而不是在这里强行"修"一个改不对
+ * 的 schema。
+ */
+function toStrictJsonSchema(schema: unknown): unknown {
+  if (schema === null || typeof schema !== "object") return schema;
+  if (Array.isArray(schema)) return schema.map(toStrictJsonSchema);
+
+  const node: Record<string, unknown> = { ...(schema as Record<string, unknown>) };
+
+  // 递归处理组合关键字分支（union / 交叉类型内部也可能是 object 节点）
+  for (const key of ["anyOf", "oneOf", "allOf"] as const) {
+    if (Array.isArray(node[key])) {
+      node[key] = (node[key] as unknown[]).map(toStrictJsonSchema);
+    }
+  }
+
+  // 递归处理数组 items（单 schema 场景；tuple 数组场景 items 本身是数组，走上面的分支）
+  if (node.items !== undefined) {
+    node.items = toStrictJsonSchema(node.items);
+  }
+
+  // object 节点：补全 required + 把新纳入 required 的原 optional 字段转 nullable
+  if (node.type === "object" && node.properties && typeof node.properties === "object") {
+    const properties = node.properties as Record<string, unknown>;
+    const originalRequired = new Set(
+      Array.isArray(node.required) ? (node.required as string[]) : [],
+    );
+    const allKeys = Object.keys(properties);
+    const newProperties: Record<string, unknown> = {};
+
+    for (const key of allKeys) {
+      const propSchema = toStrictJsonSchema(properties[key]);
+      newProperties[key] = originalRequired.has(key) ? propSchema : makeNullable(propSchema);
+    }
+
+    node.properties = newProperties;
+    node.required = allKeys;
+    if (node.additionalProperties === undefined) {
+      node.additionalProperties = false;
+    }
+  }
+
+  return node;
+}
+
+/**
+ * 把一个 JSON Schema 节点改造成"允许 null"，用于表达 zod `.optional()` 的可选语义
+ * （strict 模式下可选字段仍必须出现在 required 里，靠类型可空来表达"可以不提供"，
+ * 模型需要时会显式传 null）。
+ */
+function makeNullable(schema: unknown): unknown {
+  if (schema === null || typeof schema !== "object" || Array.isArray(schema)) {
+    return { anyOf: [schema, { type: "null" }] };
+  }
+  const node = schema as Record<string, unknown>;
+  if (typeof node.type === "string") {
+    // 简单 type 场景：type: "string" → type: ["string", "null"]（OpenAI 官方推荐写法）
+    return { ...node, type: [node.type, "null"] };
+  }
+  if (Array.isArray(node.type)) {
+    return node.type.includes("null") ? node : { ...node, type: [...node.type, "null"] };
+  }
+  // 无简单 type（如 enum-only、$ref、已有 anyOf/oneOf 的复合 schema）：整体包一层 anyOf
+  return { anyOf: [node, { type: "null" }] };
+}
+
+/**
+ * 递归检测：schema 里是否存在「strict 模式无法表达」的节点。
+ *
+ * OpenAI strict 模式要求每个 schema 节点都有确定的 `type`（或 enum/const/$ref/组合器
+ * anyOf|oneOf|allOf 之一）来约束取值。zod 的 `z.any()` / `z.unknown()`（"任意 JSON
+ * 值"）转 JSON Schema 后是一个**空对象 `{}`**（除 $schema/description 外无任何约束键），
+ * 既没有 type 也没有 enum/组合器——这类"无约束任意值"字段在 strict 模式下**根本无法
+ * 表达**（strict 的本质就是"约束解码"，而任意值意味着无约束），无论怎么包装 nullable
+ * 都会被 OpenAI 400：`schema must have a 'type' key`。
+ *
+ * 背景（2026-07-14 复测发现）：修好 ask_user_question 的 optional 字段后，实测 gpt-5.4
+ * 仍在 `workflow` 工具上 400——它的 `args` 字段是 `z.unknown()`（传给脚本的任意入参），
+ * 生成空 schema `{}`，makeNullable 把它包成 `anyOf:[{}, {type:"null"}]`，那个 `{}`
+ * 分支仍无 type key。这类工具架构上就与 strict 互斥，正确做法是**该工具整体降级为
+ * 非 strict**（发原始 schema、不带 strict:true，让服务端按普通函数调用处理），而不是
+ * 硬塞一个 OpenAI 必拒的 schema。
+ *
+ * 用运行时自检而非按工具名硬编码豁免：未来任何新增的 `z.any()`/`z.unknown()` 字段工具
+ * 都会被自动识别并降级，不会再次踩坑。
+ */
+function hasStrictIncompatibleNode(schema: unknown): boolean {
+  if (schema === null || typeof schema !== "object") return false;
+  if (Array.isArray(schema)) return schema.some(hasStrictIncompatibleNode);
+
+  const node = schema as Record<string, unknown>;
+  const hasType = node.type !== undefined;
+  const hasEnumOrConst = node.enum !== undefined || node.const !== undefined;
+  const hasRef = node.$ref !== undefined;
+  const combinators = ["anyOf", "oneOf", "allOf"] as const;
+  const hasCombinator = combinators.some((k) => Array.isArray(node[k]));
+  const isStructural = node.properties !== undefined || node.items !== undefined;
+
+  // 「无约束任意值」叶子：既无 type，也无 enum/const/$ref/组合器，且不是 object/array 结构节点。
+  if (!hasType && !hasEnumOrConst && !hasRef && !hasCombinator && !isStructural) {
+    return true;
+  }
+
+  // 递归下钻各类子节点
+  for (const key of combinators) {
+    if (Array.isArray(node[key]) && (node[key] as unknown[]).some(hasStrictIncompatibleNode)) {
+      return true;
+    }
+  }
+  if (node.items !== undefined && hasStrictIncompatibleNode(node.items)) return true;
+  if (node.properties && typeof node.properties === "object") {
+    for (const v of Object.values(node.properties as Record<string, unknown>)) {
+      if (hasStrictIncompatibleNode(v)) return true;
+    }
+  }
+  return false;
+}
+
+/**
  * 将 sid-code ToolDefinition[] 转换为 Responses API 扁平工具格式。
  * Chat Completions: { type:"function", function:{ name, description, parameters } }
  * Responses API:    { type:"function", name, description, parameters, strict? }
@@ -67,9 +212,26 @@ function convertTools(tools: ToolDefinition[]): ResponsesToolDef[] {
       description: tool.description,
       parameters: tool.input_schema,
     };
-    // strict 仅在显式声明时透传，保持与内部定义一致
+    // strict 仅在显式声明时透传，保持与内部定义一致。
+    // strict:true 时必须把 parameters 改造成满足 OpenAI strict 模式要求的形态
+    // （所有字段进 required + optional 语义转 nullable），否则原样透传 zod 生成的
+    // schema 会因缺失 required 字段被 OpenAI 400（见 toStrictJsonSchema 顶部背景）。
     if (tool.strict !== undefined) {
-      def.strict = tool.strict;
+      if (tool.strict) {
+        const strictParams = toStrictJsonSchema(tool.input_schema);
+        // 改造后自检：若仍含「无约束任意值」节点（z.any()/z.unknown()，如 workflow.args），
+        // 该工具与 strict 模式互斥——降级为非 strict（发原始 schema、不带 strict），
+        // 避免 OpenAI 400 `schema must have a 'type' key`（见 hasStrictIncompatibleNode 顶部背景）。
+        if (hasStrictIncompatibleNode(strictParams)) {
+          def.strict = false;
+          def.parameters = tool.input_schema;
+        } else {
+          def.strict = true;
+          def.parameters = strictParams as Record<string, unknown>;
+        }
+      } else {
+        def.strict = false;
+      }
     }
     return def;
   });

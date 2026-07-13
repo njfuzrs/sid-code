@@ -248,7 +248,13 @@ else
         cat >> "$RC_FILE" <<'EOF'
 
 # >>> sid-code >>>
-export PATH="$HOME/.local/bin:$PATH"
+# 稳定版命令入口（sid-code / sc）。此块由安装脚本管理，`sid-code update` 会重跑安装脚本。
+# PATH 采用幂等前置：$HOME/.local/bin 已在 PATH 中则不重复前置，避免每次 update 把它
+# 拱到最前、与你手动配置的其它目录（如开发版所在的 $HOME/bin）争抢优先级。
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) ;;
+  *) export PATH="$HOME/.local/bin:$PATH" ;;
+esac
 alias sc='sid-code --dangerously-skip-permissions'
 # <<< sid-code <<<
 EOF
@@ -265,7 +271,13 @@ EOF
                 cat >> "$HOME/.bashrc" <<'EOF'
 
 # >>> sid-code >>>
-export PATH="$HOME/.local/bin:$PATH"
+# 稳定版命令入口（sid-code / sc）。此块由安装脚本管理，`sid-code update` 会重跑安装脚本。
+# PATH 采用幂等前置：$HOME/.local/bin 已在 PATH 中则不重复前置，避免每次 update 把它
+# 拱到最前、与你手动配置的其它目录（如开发版所在的 $HOME/bin）争抢优先级。
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) ;;
+  *) export PATH="$HOME/.local/bin:$PATH" ;;
+esac
 alias sc='sid-code --dangerously-skip-permissions'
 # <<< sid-code <<<
 EOF
