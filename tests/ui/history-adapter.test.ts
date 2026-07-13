@@ -842,6 +842,52 @@ describe("后台任务通知（<task-notification>）→ task_notification 历�
       expect(items[0].status).toBe("failed");
     }
   });
+
+  // ─── 回归守卫：多通知聚合（防「合并覆盖 _meta.notif 导致前面通知消失」）───
+  // query/loop.ts 现把多条通知聚合为一条 user 消息注入：content 每条一个 text 块，
+  // _meta.notif 为数组。history-adapter 必须遍历数组渲染出全部，不能只出最后一条。
+  test("_meta.notif 数组 → 渲染出全部通知（多个后台任务同时完成）", () => {
+    const msg: Message = {
+      role: "user",
+      content: [
+        { type: "text", text: "<task-notification>...A...</task-notification>" },
+        { type: "text", text: "<task-notification>...B...</task-notification>" },
+      ],
+      _meta: {
+        origin: "task-notification",
+        isMeta: true,
+        notif: [
+          { taskId: "A", status: "completed", summary: "任务A完成", result: "结论A" },
+          { taskId: "B", status: "failed", summary: "任务B失败" },
+        ],
+      },
+    };
+    const items = messagesToHistoryItems([msg]);
+    const notifs = items.filter(i => i.type === "task_notification");
+    expect(notifs.length).toBe(2); // 两条都要在,不能只剩最后一条
+    if (notifs[0].type === "task_notification" && notifs[1].type === "task_notification") {
+      expect(notifs[0].taskId).toBe("A");
+      expect(notifs[0].result).toBe("结论A");
+      expect(notifs[1].taskId).toBe("B");
+      expect(notifs[1].status).toBe("failed");
+    }
+  });
+
+  test("_meta.notif 空数组 → 回退正则解析 content（防空数组吞掉通知）", () => {
+    // 边界：若聚合后数组为空（理论上不该发生,防御性），必须回退正则不至于丢渲染。
+    const notif = buildNotification({ taskId: "empty1", status: "completed", summary: "S", result: "R" });
+    const msg: Message = {
+      role: "user",
+      content: [{ type: "text", text: notif }],
+      _meta: { origin: "task-notification", isMeta: true, notif: [] },
+    };
+    const items = messagesToHistoryItems([msg]);
+    expect(items).toHaveLength(1);
+    expect(items[0].type).toBe("task_notification");
+    if (items[0].type === "task_notification") {
+      expect(items[0].taskId).toBe("empty1");
+    }
+  });
 });
 
 // 回归守卫：执行中工具活项必须从 Static 分流到动态区，根治 `⏺ task_list` 幽灵行残留。

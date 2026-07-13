@@ -256,21 +256,28 @@ export async function* queryLoop(
     // 让主代理被动收到后台子代理的结构化结果/失败信息。
     const notifications = dequeuePendingNotifications();
     if (notifications.length > 0) {
-      for (const notification of notifications) {
-        ctxMgr.addMessage({
-          role: "user",
-          content: [{ type: "text", text: notification.content }],
-          // 多层防泄漏标记（对标 CC AttachmentMessage + isMeta + origin）：
-          // 即使 addMessage 角色交替合并把 notification 追加到 tool_result 消息，
-          // history-adapter 仍能通过 _meta.origin 快速识别并走折叠渲染路径。
-          //
-          // notif：结构化快照。TUI 侧优先读它渲染，不再对 content 文本做正则重解析——
-          // 这样子代理结论里含 </result> / </task-notification> 字面量也不会破坏解析
-          // （根治「点4」：删掉需要转义的解析路径，而非给脆弱的转义往返打补丁）。
-          // 注入 LLM 的仍是 content 里的完整 XML 文本，语义不变、字面量原样保留。
-          _meta: { origin: "task-notification", isMeta: true, notif: notification.structured },
-        });
-      }
+      // 一次性把所有通知合成「一条」user 消息注入，而非逐条 addMessage。
+      // 原因：逐条 addMessage 会触发 ctxMgr 的「连续同 role 合并」——content 会连结，
+      // 但 _meta 是浅合并，_meta.notif 会被后一条覆盖，导致 TUI 结构化渲染只剩最后一条、
+      // 前面的通知从面板消失（回归）。这里主动聚合：content 每条一个 text 块（保留 XML
+      // 边界，LLM 侧语义不变），_meta.notif 收集为**数组**（TUI 侧遍历渲染，不丢任何一条）。
+      ctxMgr.addMessage({
+        role: "user",
+        content: notifications.map(n => ({ type: "text" as const, text: n.content })),
+        // 多层防泄漏标记（对标 CC AttachmentMessage + isMeta + origin）：
+        // 即使 addMessage 角色交替合并把 notification 追加到 tool_result 消息，
+        // history-adapter 仍能通过 _meta.origin 快速识别并走折叠渲染路径。
+        //
+        // notif：结构化快照数组。TUI 侧优先遍历它渲染，不再对 content 文本做正则重解析——
+        // 这样子代理结论里含 </result> / </task-notification> 字面量也不会破坏解析
+        // （根治「点4」：删掉需要转义的解析路径，而非给脆弱的转义往返打补丁）。
+        // 注入 LLM 的仍是 content 里的完整 XML 文本，语义不变、字面量原样保留。
+        _meta: {
+          origin: "task-notification",
+          isMeta: true,
+          notif: notifications.map(n => n.structured).filter(Boolean),
+        },
+      });
       log.info("QUERY_LOOP", `注入 ${notifications.length} 条后台任务通知`);
     }
 

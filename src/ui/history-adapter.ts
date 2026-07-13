@@ -153,21 +153,26 @@ function tryParseTaskNotifications(msg: Message): {
     // 结构化优先：query/loop.ts 注入时把 StructuredNotification 快照放进 _meta.notif。
     // 直接读结构化字段构造历史项，**不解析 content 文本**——这样子代理结论里含
     // </result> / </task-notification> 字面量也不会破坏渲染（根治「点4」的核心）。
-    const notif = msg._meta.notif as
-      | { taskId?: string; status?: string; summary?: string; result?: string; outputFile?: string }
-      | undefined;
-    if (notif && typeof notif === "object") {
+    //
+    // 兼容单个对象与数组两种形态：query/loop 现注入数组（一条消息聚合多通知）；
+    // 旧会话 resume 可能是单个对象（早期实现）。两者都遍历渲染，不丢任何一条。
+    type StructuredNotif = { taskId?: string; status?: string; summary?: string; result?: string; outputFile?: string };
+    const raw = msg._meta.notif as StructuredNotif | StructuredNotif[] | undefined;
+    const notifList: StructuredNotif[] = Array.isArray(raw)
+      ? raw
+      : raw && typeof raw === "object"
+        ? [raw]
+        : [];
+    if (notifList.length > 0) {
       return {
-        notifications: [
-          {
-            type: "task_notification",
-            taskId: notif.taskId ?? "",
-            status: notif.status ?? "",
-            summary: notif.summary ?? "",
-            ...(notif.result ? { result: notif.result } : {}),
-            ...(notif.outputFile ? { outputFile: notif.outputFile } : {}),
-          },
-        ],
+        notifications: notifList.map(notif => ({
+          type: "task_notification" as const,
+          taskId: notif.taskId ?? "",
+          status: notif.status ?? "",
+          summary: notif.summary ?? "",
+          ...(notif.result ? { result: notif.result } : {}),
+          ...(notif.outputFile ? { outputFile: notif.outputFile } : {}),
+        })),
         remaining: null,
       };
     }
