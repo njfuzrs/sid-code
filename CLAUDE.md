@@ -10,19 +10,27 @@
 
 ### 本地环境：双版本并存
 
-| 命令                            | 指向                             | 版本   | 用途         |
-| ------------------------------- | -------------------------------- | ------ | ------------ |
-| `sid-code` / `sc`               | `~/bin/sid-code` → 本地构建      | 开发版 | 日常开发调试 |
-| `sid-code-stable` / `sc-stable` | `~/.local/bin/sid-code` → 线上版 | 稳定版 | 验证线上版本 |
+| 命令                      | 指向                                          | 版本   | 用途         |
+| ------------------------- | --------------------------------------------- | ------ | ------------ |
+| `sid-code` / `sc`         | `~/.local/bin/sid-code` → 线上下载版          | 稳定版 | 验证线上版本 |
+| `sid-code-dev` / `sc-dev` | `~/bin/sid-code-dev` → 本地构建产物（仓库根） | 开发版 | 日常开发调试 |
 
-PATH 优先级：`~/bin` 在 `~/.local/bin` 之前，所以 `sid-code` 走本地开发版。
+> **`sid-code-stable` / `sc-stable` 已删除，不再存在。** 稳定版现在就是 `sc` / `sid-code`。
+
+两条命令是**不同的二进制名**，不靠 PATH 优先级区分：
+
+- `sid-code` 只存在于 `~/.local/bin`（`sid-code update` 下载的线上版）。
+- `sid-code-dev` 只存在于 `~/bin`，软链到仓库根 `~/Code/person/sid-code/sid-code`（`make build` / `make rebuild` 的产物）。
+
+> **⚠️ 调试铁律：改了代码要验证，必须跑 `sc-dev`（开发版），不要跑 `sc`。**
+> `sc` / `sid-code` 现在指向**线上稳定版**，跑它验证不到你本地的任何改动——历史上 `sc` 曾经是开发版，肌肉记忆很容易搞错，导致「代码改了、命令跑错、验证不生效」白忙一场。判断口诀：**验证本地改动 → `sc-dev`；对照线上行为 → `sc`。** 拿不准时先 `which sid-code-dev sid-code` 确认指向。
 
 ### 日常开发
 
 ```bash
 git pull          # 拉最新源码
 make rebuild      # 重建二进制（版本号不变）
-sc                # 启动开发版
+sc-dev            # 启动开发版（注意是 sc-dev，不是 sc）
 ```
 
 ### 发布上线
@@ -51,6 +59,10 @@ git commit -m "bump vX.Y.Z"
 
 # 5. 推送（tag 已在 release.sh 上传后推过；此处 git push 兜底补推本地 tag）
 git push
+
+# 6. 对齐开发版二进制版本号（发布制品用的是跨平台编译产物，
+#    仓库根的开发版二进制内联版本号还停在旧值，不补 rebuild 则 sc-dev 版本比线上低一位）
+make rebuild
 ```
 
 > `release.sh` 若首次失败已 bump 过版本号（如上传阶段报错），第二次用 `--no-bump --upload` 复用现有版本号，避免版本号 +2。tag 与 CHANGELOG.md 均幂等：`--no-bump` 复用同版本时 tag 已存在会跳过创建、changelog 同版本块原地替换，不会重复。
@@ -70,39 +82,8 @@ git push
 
 ```bash
 sid-code update    # 下载服务器最新版
-sc-stable          # 启动线上稳定版
+sc                 # 启动线上稳定版（sc / sid-code 就是线上版）
 ```
-
-### 团队默认配置（首装 + 更新补全）
-
-`scripts/team-defaults.template.json` 是团队默认配置的**唯一事实源**，两条路径共用：
-
-- **首次安装**：install.sh 从服务器下载 `team-defaults.json` 整份拷贝到 `~/.sid-code/settings.json`（仅当不存在时）。
-- **更新已装用户**：`sid-code update` 只换二进制、纯 bash 无法合并 JSON；补全交给**新二进制首次启动时**的迁移 `src/migrations/backfill-team-defaults.ts`（挂在 `runMigrations` 上，按 `migrations.json` 水位线**每台机器只补一次**），只追加用户缺失的顶层字段，绝不覆盖已有配置，用户主动删掉的键也不会被加回。
-
-**改了模板后必须推送服务器**（否则新装用户拿到的还是旧模板）：
-
-```bash
-./scripts/release.sh --upload-team-defaults scripts/team-defaults.template.json
-```
-
-> 模板同时被 TS 侧 `import` 内联进二进制（供更新补全），所以改模板后除了推送服务器，还需重新构建/发布二进制才能让"更新补全"带上新字段。
-
-### 内嵌 ripgrep 二进制（摆脱用户系统 PATH 依赖）
-
-sid-code 的 grep/glob 工具优先用 ripgrep，但不依赖用户系统装没装 `rg`：构建时把 4 平台预编译 rg 二进制嵌进 `bun --compile` 产物，运行时释放到 `~/.sid-code/bin/rg` 并使用（对标 claude-code 的 builtin ripgrep 模式）。用户没装 rg 时不再降级到慢的系统 grep。
-
-**仓库本地文件是唯一事实源，联网只是缺失时的回退**（2026-07 改造）：`vendor/ripgrep/<version>/rg-<platform>` 已 git 提交入库（4 平台共约 18.5MB），`scripts/fetch-ripgrep.ts` 优先直接复用（全程不联网）；仓库内缺失（如刚 bump 版本号还没提交）才回退联网下载公司服务器。`vendor/rg-embed`（`bun --compile` 的固定嵌入 import 路径）不再入库，纯本地构建产物，`git status` 不会再显示它被修改——不需要每次手动 `git checkout` 还原。
-
-- **升级 ripgrep 版本**：
-  1. 改 `scripts/fetch-ripgrep.ts` 里的 `DEFAULT_RG_VERSION`
-  2. 跑 `bun run scripts/fetch-ripgrep.ts --all`（联网下载新版本 4 平台二进制，落到 `vendor/ripgrep/<新版本>/`）
-  3. `git add vendor/ripgrep/<新版本>/` 提交入库（可选 `git rm -r vendor/ripgrep/<旧版本>/` 避免仓库无限膨胀）
-  4. 可选：`./scripts/release.sh --upload-ripgrep <本地目录> <版本号>` 同步一份到服务器，作为团队协作时"谁先下载谁上传，其他人无需各自联网"的备用/首次填充源（不再是构建流程强依赖的关键路径）
-- `make build`/`make rebuild` 跑 `fetch-ripgrep.ts --as-embed`（`-` 前缀不阻断构建失败，命中仓库内文件时全程不联网）；`release.sh` 跑 `--all` 拉全部 4 平台（同样优先命中仓库内文件），每个 target 编译前切换 `vendor/rg-embed` 为对应平台二进制。**仓库内和服务器都缺文件不阻断发布**，只是该平台产物没有内嵌 rg。
-- dev 模式（`bun run src` / `bun test`）不走释放逻辑，直接用系统 `rg`。
-- 运行时优先级：`SID_RIPGREP_PATH` 环境变量 > 嵌入释放的 `~/.sid-code/bin/rg` > 系统 PATH 的 `rg`。
-- 服务器存放路径由 `DEPLOY_RG_PATH` 控制（默认 `/var/www/html/vendor-bin/ripgrep`，与 `DEPLOY_PATH` 的发布版本目录隔离，不受旧版本清理逻辑影响），走同一份 `scripts/deploy.env` 凭据。
 
 ### 三个 Make 目标职责
 
@@ -111,6 +92,10 @@ sid-code 的 grep/glob 工具优先用 ripgrep，但不依赖用户系统装没�
 | `make rebuild`                  | 不变   | 日常开发：拉代码后更新二进制            |
 | `make build`                    | +1     | 本地自测：构建带新版本号的二进制        |
 | `./scripts/release.sh --upload` | +1     | 正式发布：构建 4 平台制品并上传到服务器 |
+
+> **⚠️ `make build` / `release.sh` 之后要补一次 `make rebuild`。**
+> `make build`（以及 `release.sh` 内部）会 bump `package.json` 版本号，但发布制品用的是**跨平台编译产物**，仓库根的开发版二进制（`sid-code-dev` 指向的 `~/Code/person/sid-code/sid-code`）不会跟着更新，它的**内联版本号还停在旧值**。发完版后 `sc-dev` 显示的版本会比线上低一位，容易误判。
+> 修复：发布/构建流程结束后再跑一次 `make rebuild`，用最新 `package.json` 重新编译开发版二进制，把内联版本号对齐。
 
 ### 二进制版本号嵌入机制
 
