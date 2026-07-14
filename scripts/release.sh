@@ -367,6 +367,12 @@ for entry in "${TARGETS[@]}"; do
         SMOKE_VER="$("$OUT_DIR/sid-code" --version 2>/dev/null)" \
             || fail "冒烟测试失败：$PLATFORM 产物无法执行 --version，发布中止"
         ok "冒烟测试通过（${PLATFORM}）: $SMOKE_VER"
+        # 方向 0（编译产物自检）：本平台产物额外跑 --self-check，断言 git-status 仲裁锚点等
+        # 关键修复已内联进二进制。堵住"源码有修复但编译产物没跟上"的发布陷阱——那正是
+        # git-status 快照冻结死循环的直接触发因素（根因分析-commit任务git状态快照冻结死循环.md）。
+        "$OUT_DIR/sid-code" --self-check \
+            || fail "自检失败：$PLATFORM 产物缺失关键修复（git-status 锚点等），发布中止"
+        ok "编译产物自检通过（${PLATFORM}）"
         SELF_SMOKE_DONE=true
     fi
 

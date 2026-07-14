@@ -8,6 +8,8 @@ build:
 	$(BUN) run scripts/embed-builtin-skills.ts
 	-$(BUN) run scripts/fetch-ripgrep.ts --as-embed
 	$(BUN) build --compile --outfile $(BINARY) src/entrypoints/bootstrap.ts
+	@echo "── 编译产物自检（方向 0：确认关键修复已内联）──"
+	@./$(BINARY) --self-check
 
 # 本地快速重建：跳过 bump-version，保持当前版本号不变
 # 适用场景：拉取最新代码后只需更新二进制，不想改变版本号
@@ -15,6 +17,8 @@ rebuild:
 	$(BUN) run scripts/embed-builtin-skills.ts
 	-$(BUN) run scripts/fetch-ripgrep.ts --as-embed
 	$(BUN) build --compile --outfile $(BINARY) src/entrypoints/bootstrap.ts
+	@echo "── 编译产物自检（方向 0：确认关键修复已内联）──"
+	@./$(BINARY) --self-check
 
 # 跨平台发布构建：macOS + Linux（arm64/x64 共 4 个目标），打包 + sha256 校验文件到 dist/release/
 # 加 --upload 上传到服务器（需要 DEPLOY_SSH_USER 环境变量），详见 scripts/release.sh 头部注释

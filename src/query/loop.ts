@@ -93,6 +93,13 @@ import {
 import { injectReminders } from "./reminder-inject.ts";
 import { decideNagInjection, MAX_NO_PROGRESS_NAGS } from "./reminder-throttle.ts";
 import {
+  processObservation as observeRepeatedReadonly,
+  isReadonlyProbeCommand,
+  buildStuckReminder,
+  buildTerminateNotice,
+  createRepeatedReadonlyState,
+} from "./repeated-readonly-guard.ts";
+import {
   buildContextPressureReminder,
   contextPressureLevel,
   CONTEXT_PRESSURE_REMINDER_INTERVAL,
@@ -742,6 +749,16 @@ export async function* queryLoop(
         `注入矛盾中断提醒（${state.pendingContradictions.length} 条假设待裁决）`,
       );
       state.pendingContradictions = undefined; // 注入后清空，避免重复
+    }
+
+    // 方向 2/4/6（git-status 快照冻结死循环止损阀·注入端）：上一轮检出"卡在只读命令上"，
+    // 本轮经 reminderParts 注入携带实时 git 状态的收敛提醒。放在最前（unshift），确保模型
+    // 在被冻结快照带偏前先读到实时事实。走 reminder 通道（仅本轮注入、不落历史、缓存友好），
+    // 与 pendingContradictions 同机制，注入后清空避免重复。
+    if (state.pendingStuckReminder) {
+      reminderParts.unshift(state.pendingStuckReminder);
+      log.info("QUERY_LOOP", "注入无进展止损收敛提醒（实时 git 状态）");
+      state.pendingStuckReminder = undefined;
     }
 
     // 方案③（思考发散·注入端）：上一轮检出的思考发散，本轮经 reminder 通道注入收敛提示。
@@ -2265,6 +2282,74 @@ export async function* queryLoop(
       // Step 0：本轮工具结果已入历史，触发 Session Memory 提取（fire-and-forget，
       // 内部按双阈值决定是否真正提取，未达阈值/进行中则直接跳过，不阻塞主循环）。
       deps.updateSessionMemory?.().catch(() => { /* 提取失败不阻断主循环 */ });
+
+      // ─── 方向 2/4/6：无进展只读命令重复检测 + git-status 刷新止损阀 ───
+      // 根因（根因分析-commit任务git状态快照冻结死循环.md）：git-status 快照冻结进 system
+      // prompt 整会话不刷新，任务完成后模型被"快照说脏/实时说净"的矛盾锁死，反复空跑
+      // git status 直到用户 ESC。此处识别"连续相同只读探查命令 + 输出稳定不变"，注入携带
+      // **实时** git 状态的收敛提醒（cache-safe，走 user 消息不碰 system prompt 静态前缀），
+      // 注满上限仍空转则强制收尾。检测/文案是纯函数（repeated-readonly-guard.ts），此处只做副作用。
+      {
+        // 从本轮 bash tool_use + 对应 tool_result 提取"只读探查命令 + 实时输出"。
+        // 非 bash 工具、写操作命令、有文本产出都算"有进展"，触发计数清零。
+        const probes: Array<{ command: string; output: string }> = [];
+        let hadOtherActivity = responseText.trim().length > 0;
+        for (const b of toolBlocks) {
+          if (b.type !== "tool_use") continue;
+          const cmd = b.name === "bash" ? (b.input as any)?.command : undefined;
+          if (b.name === "bash" && typeof cmd === "string" && isReadonlyProbeCommand(cmd)) {
+            const r = resultMap.get(b.id);
+            const output = r && r.type === "tool_result"
+              ? (typeof r.content === "string" ? r.content : JSON.stringify(r.content))
+              : "";
+            probes.push({ command: cmd, output });
+          } else {
+            // 任意非只读探查工具（写操作、编辑、其它 bash、非 bash 工具）= 有进展。
+            hadOtherActivity = true;
+          }
+        }
+        if (!state.repeatedReadonly) state.repeatedReadonly = createRepeatedReadonlyState();
+        const decision = observeRepeatedReadonly(state.repeatedReadonly, probes, hadOtherActivity);
+        if (decision.stuck && decision.action === "remind" && decision.command !== undefined) {
+          // 重新抓取实时 git 状态块，作为权威事实随提醒下发（压制冻结快照）。
+          let freshGitStatus: string | null = null;
+          try {
+            const { generateGitStatusAttachment, clearGitStatusCache } =
+              await import("../config/attachments.ts");
+            const { getCwd } = await import("../bootstrap/state.ts");
+            clearGitStatusCache(); // 先失效缓存，确保拿到的是最新状态（方向 3 同源）
+            // 用 getCwd() 而非 process.cwd()：bash 工具的 cd 追踪走全局状态而非 process.chdir，
+            // 只有 getCwd() 能反映会话内 cd 后的真实目录，与 bash 命令实际执行目录一致。
+            freshGitStatus = generateGitStatusAttachment(getCwd())?.content ?? null;
+          } catch { /* 抓取失败不阻断，提醒仍带命令实时输出 */ }
+          // 与 pendingContradictions 同机制：不在此直接 addMessage（那会永久落历史、长任务膨胀），
+          // 而是置 pending，下一轮循环开头经 reminderParts → injectReminders 注入（仅本轮、缓存友好）。
+          state.pendingStuckReminder = buildStuckReminder(decision.command, decision.output ?? "", freshGitStatus);
+          log.warn(
+            "QUERY_LOOP",
+            `无进展止损：连续 ${state.repeatedReadonly.repeatCount} 轮空跑只读命令 \`${decision.command.trim()}\`，` +
+              `下一轮经 reminder 通道注入实时 git 状态收敛提醒（第 ${state.repeatedReadonly.reminderCount}/${2} 次）`,
+          );
+          yield { kind: "system", level: "warning", text: `检测到反复执行同一只读命令且结果不变，已注入实时状态并提示收敛` };
+          setTransition(state, { type: "tool_use" }, deps, sessionState.sessionId);
+          continue;
+        }
+        if (decision.stuck && decision.action === "terminate" && decision.command !== undefined) {
+          // 已注满提醒上限仍空转 → 强制收尾，避免无限循环到用户 ESC。
+          const notice = buildTerminateNotice(decision.command);
+          ctxMgr.addMessage({ role: "user", content: [{ type: "text", text: notice }] });
+          try {
+            deps.sessionStore?.appendMessage({ role: "user", content: [{ type: "text", text: notice }] });
+          } catch { /* 持久化失败不阻断 */ }
+          log.warn(
+            "QUERY_LOOP",
+            `无进展止损：连续空跑只读命令 \`${decision.command.trim()}\` 且提醒无效，强制收尾（避免无限循环）`,
+          );
+          yield { kind: "system", level: "warning", text: `连续空转于同一只读命令，已强制结束以避免无限循环` };
+          yield { kind: "done", turns: state.turnCount };
+          return;
+        }
+      }
 
       setTransition(state, { type: "tool_use" }, deps, sessionState.sessionId);
       continue;

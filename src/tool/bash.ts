@@ -441,6 +441,17 @@ export class BashTool implements Tool {
         // CWD 追踪写回：仅前台、未取消、未超时、退出码 0 时写回全局 cwd。
         this.applyCwdTracking(cwdFile, !aborted && !timedOut && exitCode === 0);
 
+        // 方向 3（git-status 快照冻结死循环修复）：非只读命令成功执行后失效 git 状态缓存。
+        // git add/commit/restore/checkout、release.sh 等改动工作区的命令跑完后，下一次
+        // generateGitStatusAttachment（含止损阀 remind 时的实时重抓）能拿到最新状态，
+        // 而非命中 30s TTL 里的旧快照。只读命令（git status/log 等）不改状态，跳过以免抖缓存。
+        if (!aborted && !timedOut && exitCode === 0 && !isReadOnlyCommand(params.command)) {
+          try {
+            const { clearGitStatusCache } = require("../config/attachments.ts");
+            clearGitStatusCache();
+          } catch { /* 失效缓存失败不阻断命令返回 */ }
+        }
+
         // 合并输出
         let output = "";
         if (stdout) output += stdout;

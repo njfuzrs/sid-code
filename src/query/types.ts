@@ -247,6 +247,20 @@ export interface LoopState {
    */
   emptyParamRetryCount?: number;
   /**
+   * 方向 2/4/6（git-status 快照冻结死循环止损阀）：连续相同只读探查命令
+   * （git status/diff/log、ls/cat 等）+ 输出稳定不变的检测状态。跨轮累积，
+   * 达阈值先注入携带**实时** git 状态的收敛提醒（压制冻结快照带偏认知），
+   * 注满上限仍空转则强制收尾。见 repeated-readonly-guard.ts。
+   */
+  repeatedReadonly?: import("./repeated-readonly-guard.ts").RepeatedReadonlyState;
+  /**
+   * 方向 2/4/6：检测到"卡在只读命令上"，待下一轮循环开头经 reminderParts 注入的收敛提醒文本。
+   * 与 pendingContradictions 同机制——检测发生在工具结果回流（本轮末尾），注入发生在下一轮
+   * 循环开头的 reminder 通道（走 injectReminders，仅本轮注入、不落历史、缓存友好），
+   * 而非在此直接 addMessage（那样会永久留在上下文里，长任务持续膨胀）。注入后清空。
+   */
+  pendingStuckReminder?: string;
+  /**
    * 环节③ 机制2：上一轮工具结果检出的、与 open 假设矛盾的命中（pending 注入）。
    * 检测发生在工具结果回流时，注入发生在下一轮循环开头的 reminder 通道——
    * 用此字段跨轮暂存。注入后清空。
@@ -307,6 +321,7 @@ export function createInitialLoopState(maxTurns: number): LoopState {
     hasAttemptedReactiveCompact: false,
     transition: undefined,
     timeoutRetryCount: 0,
+    repeatedReadonly: { repeatCount: 0, reminderCount: 0 },
   };
 }
 

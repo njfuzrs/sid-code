@@ -587,9 +587,10 @@ export class LoopDetector {
   }
 }
 
-/** 检查循环检测是否启用（默认全局关闭，对齐 Claude Code；仅 SID_ENABLE_LOOP_DETECTION=1 显式开启）。
+/** 检查循环检测是否启用（默认全局关闭；仅 SID_ENABLE_LOOP_DETECTION=1 显式开启）。
  *
  *  为什么默认关闭（2026-07-07 决策，推翻此前 P0-1 的"默认全局启用"）：
+ *  **主依据是实测误判率，不是"对齐 CC"这个类比**（类比只是旁证，见文末）。
  *  启发式循环检测（尤其 ToolShapeLoopDetector）存在**结构性、无法根治的误判**。
  *  shape 检测把工具调用降维成"toolName + key-set + anchor 字段"的形状指纹，故意丢弃
  *  参数 value——这让它天然无法区分两类语义相反的行为：
@@ -601,9 +602,20 @@ export class LoopDetector {
  *  bash 调用数 ≥ 阈值就误判循环"，完全无视命令内容。真实案例：session 38428f6e 执行
  *  /commit 时，一串完全不同的 git 命令被判为"bash shape 探测循环"，反复注入恢复提示刷屏。
  *
- *  这类精度/召回权衡是启发式的固有缺陷，做不到零误判。Claude Code 源码也**不做**任何
- *  agent 工具调用循环检测（已核实），它依赖强模型自身收敛 + costLimit/轮次上限 +
- *  用户随时 ESC 兜底，实践证明足够。我们对齐此做法：默认关闭全部循环检测。
+ *  **实测证据（2026-07-14，scripts/loop-detection-probe.ts + loop-stats-probe.ts）**：
+ *    - 探针：8 条语义完全不同的 bash 命令（git status / rm -rf / release.sh …）shape key
+ *      全部塌成同一串 `bash::keys=[command]::anchors=(none)`——退化实锤。
+ *    - 回放 42 个真实会话：模拟开 shape 检测有 14 个会话命中，抽样 14/14 全是
+ *      "git status→diff→log 巡检 / 发布流程 / 系统性 glob"等正当操作——**会话级误判率≈100%**。
+ *    - 模拟开 exact 检测仅 1/42 命中，且唯一命中还是低危的 commit 后 status 轮询——**召回≈0**。
+ *  两个检测器都拿不到净收益，这是"默认关闭"的**决定性依据**。
+ *
+ *  旁证（非主依据）：Claude Code 源码也**不做**任何 agent 工具调用循环检测（已核实，
+ *  见官方 issue #4277 是"请求新增"检测的 feature request）。但注意 CC 敢不做的前提是
+ *  它只跑自家强模型；接入弱模型（如 deepseek-v4-pro）时不能仅凭"对齐 CC"照搬关闭——
+ *  真正的兜底是 costLimit/轮次上限/用户 ESC，**而交互模式下 maxTurns 默认 Infinity、
+ *  costLimit 默认不设**（loop.ts 的 `config.maxTurns || Infinity`），关掉检测后交互模式
+ *  实际只剩用户 ESC 一根兜底。需要重开检测的弱模型场景，用下面的 env 门控显式开启。
  *
  *  代码不删除、仅默认关闭（env 门控），保留可逆性：通过 SID_ENABLE_LOOP_DETECTION=1
  *  可为特定场景（如接入行为不稳定的弱模型）显式开启。 */

@@ -75,6 +75,19 @@ async function main(): Promise<void> {
     return;
   }
 
+  // 快速路径 7.5: --self-check — 校验编译产物内联的关键修复是否生效（方向 0）。
+  // 背景（根因分析-commit任务git状态快照冻结死循环.md 第 2 环）：`bun build --compile`
+  // 在**编译时**把源码内联进二进制。git pull/commit 更新了源码，但磁盘上的二进制不会变，
+  // 若忘了 make rebuild，跑的还是旧逻辑——那次死循环的直接触发因素正是"源码修了但二进制没跟上"。
+  // 本命令让**二进制自己**跑一遍关键代码路径，断言修复已内联；make build/rebuild 末尾调用它，
+  // 编译出的产物一旦缺失锚点就当场失败，堵住"源码有修复但二进制没重编"的发布陷阱。
+  if (args.length === 1 && args[0] === "--self-check") {
+    profileCheckpoint("bootstrap_route_resolved");
+    const { runSelfCheck } = await import("../command/self-check.ts");
+    const ok = await runSelfCheck();
+    process.exit(ok ? 0 : 1);
+  }
+
   // 所有快速路径未命中 → 启动早期输入捕获 → 加载完整 CLI
   profileCheckpoint("bootstrap_route_resolved");
 

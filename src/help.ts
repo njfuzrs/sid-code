@@ -120,7 +120,7 @@ Worktree 隔离:
   SID_CODE_DISABLE_TELEMETRY    设为 1 禁用遥测
   SID_CODE_DISABLE_NONESSENTIAL_TRAFFIC  设为 1 禁用非必要网络流量
   SID_CODE_DISABLE_PROJECT_RULES  设为 1 跳过 CLAUDE.md 加载（评测隔离）
-  SID_ENABLE_LOOP_DETECTION     循环检测默认关闭（对齐 CC，避免启发式误判），设为 1 可显式开启
+  SID_ENABLE_LOOP_DETECTION     循环检测默认关闭（实测 shape 检测误判率≈100%、exact 召回≈0），设为 1 可显式开启
 
   系统路径:
   SID_CONFIG_DIR                配置根目录覆盖（缺省 ~/.sid-code）
