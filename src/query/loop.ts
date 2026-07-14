@@ -275,13 +275,14 @@ export async function* queryLoop(
     });
   })();
 
+  // 回填定档结果给 registry，供 tool-executor 的「schema 未发送」补救判定使用
+  // （模型盲调未激活的延迟工具、传了畸形参数时，追加"先 tool_search 激活"引导）。
+  // 定档只算一次（循环外），与 toolSearchEnabled 局部变量同源，不会会话内漂移。
+  toolRegistry.setToolSearchEnabled(toolSearchEnabled);
+
   // 可观测性（对齐 CC 的 logForDebugging 风格，只打日志不做 /context 特性）：
   // 启用延迟加载时打一行——首轮发多少工具、延迟多少、豁免哪几个高频工具，
   // 便于排查"某 MCP 工具首轮为何可见/不可见"。
-  // 回填定档结果给 registry，供 tool-executor 的「schema 未发送」补救判定使用
-  // （模型盲调未激活的延迟工具、传了畸形参数时，追加“先 tool_search 激活”引导）。
-  toolRegistry.setToolSearchEnabled(toolSearchEnabled);
-
   if (toolSearchEnabled) {
     const activeCount = toolRegistry.activeDefinitions().length;
     const deferredNames = toolRegistry.deferredToolNames();

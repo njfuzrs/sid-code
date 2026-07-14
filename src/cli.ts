@@ -696,8 +696,9 @@ export async function main(): Promise<void> {
     toolRegistry.register(new TodoWriteTool());
 
     // 注册结构化提问工具（对标 cc AskUserQuestion）：模型遇关键岔路口时向用户抛
-    // 选择题、收集决策。shouldDefer，由 tool_search 按需调出；TUI 模式弹交互对话框，
-    // headless 模式自动降级为"无法提问"提示（见 ask-user-question-bridge.ts）。
+    // 选择题、收集决策。alwaysLoad 首轮常驻可见（内置流程如 /commit 刚需，避免模型
+    // 没看到 schema 就凭记忆猜参数盲调）；TUI 模式弹交互对话框，headless 模式自动
+    // 降级为"无法提问"提示（见 ask-user-question-bridge.ts）。
     const { AskUserQuestionTool } = await import("./tool/ask-user-question.ts");
     toolRegistry.register(new AskUserQuestionTool());
 
