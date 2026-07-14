@@ -7,7 +7,7 @@
  */
 
 import { test, expect, describe, beforeEach } from "bun:test";
-import { colorizeLine, clearLineHighlightCache } from "./CodeColorizer.tsx";
+import { colorizeLine, clearLineHighlightCache } from "../../../src/ui/components/CodeColorizer.tsx";
 
 describe("MD2/ST3 — 单行高亮缓存", () => {
   beforeEach(() => {

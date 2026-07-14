@@ -12,8 +12,8 @@
  */
 
 import { test, expect, describe } from "bun:test";
-import { deriveStreamingState } from "./derive-streaming-state.ts";
-import { StreamingState } from "./types.ts";
+import { deriveStreamingState } from "../../src/ui/derive-streaming-state.ts";
+import { StreamingState } from "../../src/ui/types.ts";
 
 describe("deriveStreamingState — 优先级链", () => {
   test("全部空闲 → Idle", () => {

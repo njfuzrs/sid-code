@@ -11,7 +11,7 @@ import {
   nextExpandLevel,
   expandLevelFromConstrain,
   type ExpandLevel,
-} from "./UIStateContext.tsx";
+} from "../../../src/ui/contexts/UIStateContext.tsx";
 
 describe("TO4 — EXPAND_LEVEL_MAX_LINES 映射", () => {
   test("级别 0/1/2 对应 3/50/Infinity（对标 cc MAX_LINES_TO_SHOW=3）", () => {

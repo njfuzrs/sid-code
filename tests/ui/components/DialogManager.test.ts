@@ -9,7 +9,7 @@
  */
 
 import { test, expect, describe } from "bun:test";
-import { isRecommendedLabel, assembleAnswer } from "./DialogManager.tsx";
+import { isRecommendedLabel, assembleAnswer } from "../../../src/ui/components/DialogManager.tsx";
 
 describe("isRecommendedLabel — 推荐后缀识别", () => {
   test("半角括号 (推荐)", () => {
