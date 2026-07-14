@@ -747,6 +747,34 @@ export class Manager {
   }
 
   /**
+   * 码点安全的头部/尾部截断：避免在 UTF-16 代理对（emoji、CJK 扩展 B 区等补充平面
+   * 字符）中间切断而产生孤立代理码元（乱码 �）。
+   *
+   * JS 字符串 slice 按 UTF-16 码元切分，`"😀".slice(0,1)` 会得到半个代理对。
+   * 中文 BMP 常用字是单码元不受影响，但 emoji / CJK-B 扩展区 / 部分组合字符会被切坏。
+   * 用 Array.from 按码点切分，从根本上避免。
+   *
+   * @param s 源字符串
+   * @param head 保留头部码点数（<=0 返回空串）
+   * @param tail 保留尾部码点数（<=0 返回空串）
+   */
+  static sliceByCodePoint(s: string, head: number, tail: number): { head: string; tail: string } {
+    // 快路径：全 BMP（无代理码元）时按码元切分与按码点等价，省去 Array.from 开销。
+    // 代理码元范围 \uD800-\uDFFF；不含则字符串里没有补充平面字符。
+    if (!/[\uD800-\uDFFF]/.test(s)) {
+      return {
+        head: head > 0 ? s.slice(0, head) : "",
+        tail: tail > 0 ? s.slice(-tail) : "",
+      };
+    }
+    const cps = Array.from(s); // 按码点拆分，代理对合并为单元素
+    return {
+      head: head > 0 ? cps.slice(0, head).join("") : "",
+      tail: tail > 0 ? cps.slice(-tail).join("") : "",
+    };
+  }
+
+  /**
    * 智能截断超大工具输出（三层策略，对标 Claude Code）
    * 1. 代码块：保留 60% 头 + 40% 尾（行级别）
    * 2. 文件内容（行号特征）：保留前 20 行 + 后 10 行
@@ -790,10 +818,11 @@ export class Manager {
       }
     }
 
-    // 3. 默认：70% 头 + 30% 尾（字符级别）
+    // 3. 默认：70% 头 + 30% 尾（码点安全，避免切断 emoji/CJK 扩展区产生乱码）
     const keepHead = Math.floor(maxChars * 0.7);
     const keepTail = Math.floor(maxChars * 0.3);
-    return `${result.slice(0, keepHead)}\n\n... [省略约 ${content.length - maxChars} 字符，共 ${content.length} 字符] ...\n\n${result.slice(-keepTail)}`;
+    const { head, tail } = Manager.sliceByCodePoint(result, keepHead, keepTail);
+    return `${head}\n\n... [省略约 ${content.length - maxChars} 字符，共 ${content.length} 字符] ...\n\n${tail}`;
   }
 
   /**

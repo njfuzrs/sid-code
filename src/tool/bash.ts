@@ -18,6 +18,7 @@ import { getLogger } from "../debug/logger.ts";
 import type { Config } from "../config/config.ts";
 import { isReadOnlyCommand, isDestructiveCommand } from "./bash/read-only-validation.ts";
 import { interpretExitCode } from "./bash/command-semantics.ts";
+import { looksLikeQuotingBreakage, quotingBreakageHint } from "./bash/quoting-diagnostics.ts";
 import { normalizeToolPath } from "./path-utils.ts";
 import { registerCleanup } from "../utils/graceful-shutdown.ts";
 import { ensureSidTempDir } from "../utils/temp-dir.ts";
@@ -239,7 +240,15 @@ export class BashTool implements Tool {
 - 后台进程会返回 PID，可用于后续管理
 - 每条命令在独立 shell 进程中执行。cd 后的目录变更会被自动追踪并对所有工具（read/edit/glob 等）生效，无需每次重复传 cwd；
   但 export、source venv/bin/activate 等动态环境变更不会跨命令保留——需要它们的操作必须写在同一条命令里。
-  例：\`cd src\` 后下一条 \`ls\` 会列 src 目录（可拆两条）；但 \`source venv/bin/activate && python foo.py\` 必须写为一条`;
+  例：\`cd src\` 后下一条 \`ls\` 会列 src 目录（可拆两条）；但 \`source venv/bin/activate && python foo.py\` 必须写为一条
+- 命令里含**引号、多行、中文引号或其它特殊字符的长文本**（最典型：git commit message），不要手写 \`-m "..."\` 内联——
+  内层引号极易把外层引号提前闭合，命令被 shell 拆断（退出码 127 / "未匹配"）。改用 heredoc 从 stdin 传入，内容按字面量处理无需转义：
+  \`\`\`
+  git commit -F - << 'SIDEOF'
+  <完整 commit message，可含任意引号/中文/多行>
+  SIDEOF
+  \`\`\`
+  定界符用单引号包裹（<< 'SIDEOF'）可禁用 $ 与反引号展开。或用 write 工具把内容写到临时文件后 \`git commit -F <文件>\``;
   }
 
   inputSchema(): Record<string, unknown> {
@@ -490,8 +499,14 @@ export class BashTool implements Tool {
         const interp = interpretExitCode(params.command, exitCode);
         if (interp.isError) {
           log.info("TOOL", `✓ 命令完成 code=${exitCode} stdout=${stdout.length}字符 stderr=${stderr.length}字符`);
+          // 引号畸形诊断：命令失败且疑似"手写引号被 shell 拆断"（中文/多行 commit message
+          // 高频场景）时，附一段可直接照抄的 heredoc 写法，避免模型原样重发陷入死循环。
+          let failOutput = `命令执行失败（退出码 ${exitCode}）:\n${output}`;
+          if (looksLikeQuotingBreakage(params.command, exitCode, output)) {
+            failOutput += `\n${quotingBreakageHint(params.command)}`;
+          }
           return {
-            output: `命令执行失败（退出码 ${exitCode}）:\n${output}`,
+            output: failOutput,
             isError: true,
           };
         }

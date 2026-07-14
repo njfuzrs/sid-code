@@ -46,21 +46,23 @@ export class DaemonWorker {
       const workdir = workspace.getWorkdir();
 
       // 生成 diff（base_branch...branch）
-      const { execSync } = await import("node:child_process");
+      // 用数组参数（execFileSync）：event.base_branch 来自 GitHub PR webhook 载荷
+      // （外部可控），字符串插值进 shell 会命令注入。数组参数不经 shell 解析。
+      const { execFileSync } = await import("node:child_process");
       let diff: string;
       try {
-        execSync(`git fetch origin ${event.base_branch} --depth 1`, {
+        execFileSync("git", ["fetch", "origin", event.base_branch, "--depth", "1"], {
           cwd: workdir,
           stdio: "pipe",
           timeout: 30_000,
         });
-        diff = execSync(`git diff origin/${event.base_branch}...HEAD`, {
+        diff = execFileSync("git", ["diff", `origin/${event.base_branch}...HEAD`], {
           cwd: workdir,
           encoding: "utf-8",
           timeout: 30_000,
         });
       } catch {
-        diff = execSync("git diff HEAD~1", {
+        diff = execFileSync("git", ["diff", "HEAD~1"], {
           cwd: workdir,
           encoding: "utf-8",
           timeout: 30_000,

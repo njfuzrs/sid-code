@@ -219,3 +219,55 @@ describe("cleanupToolOutputs", () => {
     expect(() => Manager.cleanupToolOutputs(tempDir)).not.toThrow();
   });
 });
+
+describe("sliceByCodePoint（码点安全截断）", () => {
+  test("纯 BMP 中文：头尾切分与预期一致", () => {
+    const s = "一二三四五六七八九十";
+    const { head, tail } = Manager.sliceByCodePoint(s, 3, 2);
+    expect(head).toBe("一二三");
+    expect(tail).toBe("九十");
+  });
+
+  test("emoji（代理对）不被从中间切断产生乱码", () => {
+    // 每个 emoji 占 2 个 UTF-16 码元，naive slice 会切出半个代理码元
+    const s = "😀😁😂🤣😃😄😅😆";
+    const { head, tail } = Manager.sliceByCodePoint(s, 3, 2);
+    // 结果必须是完整 emoji，不含孤立代理码元（U+FFFD 或半个代理）
+    expect(head).toBe("😀😁😂");
+    expect(tail).toBe("😅😆");
+    // 不含替换字符，也不含未配对代理码元
+    expect(/[�]/.test(head + tail)).toBe(false);
+    for (const ch of head + tail) {
+      const code = ch.codePointAt(0)!;
+      expect(code >= 0xd800 && code <= 0xdfff).toBe(false); // 无孤立代理
+    }
+  });
+
+  test("CJK 扩展 B 区（补充平面）不被切断", () => {
+    // 𠀀 (U+20000) 等扩展汉字是代理对
+    const s = "𠀀𠀁𠀂𠀃𠀄";
+    const { head, tail } = Manager.sliceByCodePoint(s, 2, 1);
+    expect(head).toBe("𠀀𠀁");
+    expect(tail).toBe("𠀄");
+    expect(Array.from(head).length).toBe(2);
+    expect(Array.from(tail).length).toBe(1);
+  });
+
+  test("head/tail 为 0 返回空串", () => {
+    const { head, tail } = Manager.sliceByCodePoint("abc😀", 0, 0);
+    expect(head).toBe("");
+    expect(tail).toBe("");
+  });
+
+  test("truncateToolOutput 对含 emoji 的超长文本不产生乱码", () => {
+    // 构造超过阈值、且切点附近是 emoji 的文本
+    const content = "😀".repeat(20000); // 40000 UTF-16 码元 > 30000 阈值
+    const result = Manager.truncateToolOutput(content, 30000);
+    // 截断结果里不应出现替换字符或孤立代理码元
+    expect(/[�]/.test(result)).toBe(false);
+    for (const ch of result) {
+      const code = ch.codePointAt(0)!;
+      expect(code >= 0xd800 && code <= 0xdfff).toBe(false);
+    }
+  });
+});
