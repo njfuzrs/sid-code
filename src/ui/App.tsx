@@ -35,7 +35,7 @@ import { deriveStreamingState } from "./derive-streaming-state.ts";
 import { useTerminalIntegration } from "./hooks/useTerminalIntegration.ts";
 import { useMessageQueue } from "./hooks/useMessageQueue.ts";
 import { useExitConfirm } from "./hooks/useExitConfirm.ts";
-import { messagesToHistoryItems, isPlaceholderMessage, isHiddenFromDisplay, buildStaticItems, splitLiveToolItems } from "./history-adapter.ts";
+import { messagesToHistoryItems, isPlaceholderMessage, isHiddenFromDisplay, buildStaticItems, splitLiveToolItems, capLiveToolItems } from "./history-adapter.ts";
 import { getLogger } from "../debug/logger.ts";
 import { DEFAULT_TERM_WIDTH } from "./markdown.ts";
 
@@ -391,6 +391,28 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     return () => { bridge.off("change", onChange); };
   }, [bridge]);
 
+  // 后台任务面板驱逐兜底：独立于主循环的 1s 定时器（对标 claude-code
+  // CoordinatorAgentStatus.tsx 的 setInterval(1000) 驱逐 tick）。
+  //
+  // 根因：evictTerminalTasks() 此前只在 queryLoop 循环开头 + finally 收尾调用，都受
+  // 主循环生命周期约束——① 主循环卡在长工具执行（如 30s bash）时，缓冲期到点的任务
+  // 要等下一轮循环开头才清（视觉延迟）；② 主循环已结束时靠 finally 的 force 兜底（已修）。
+  // cc 的做法是把驱逐挂在**面板组件的独立定时器**上：只要面板还有任务就每秒检查，
+  // 完全不依赖主循环转没转。这里补齐这一层——面板有终止态任务时启动 1s tick，调用
+  // evictTerminalTasks()（非 force，尊重 60s 缓冲期），驱逐发生时 registry 的
+  // notifyTaskChanged → bridge.updateTasks 自动刷新面板。无终止态任务时不启动定时器
+  //（避免空转）。这样"缓冲期到点"与"面板消失"之间的延迟被压到 ≤1s，且不依赖主循环。
+  const hasTerminalTask = state.tasks.some(t => t.status !== "running");
+  useEffect(() => {
+    if (!hasTerminalTask) return;
+    const timer = setInterval(() => {
+      import("../task/index.ts")
+        .then(({ evictTerminalTasks }) => evictTerminalTasks())
+        .catch(() => { /* 驱逐兜底失败不影响 UI */ });
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [hasTerminalTask]);
+
   // 触发退出：先设置 isQuitting=true 让 Ink 渲染最终帧，再延迟退出
   const triggerQuit = useCallback(() => {
     log.info("UI:APP", "触发退出，切换到退出回显模式");
@@ -692,9 +714,20 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
   // 从 Static 剥离——否则它被一次性打印进 scrollback，工具完成后 log-update 的 cell diff
   // 擦不掉已滚出视口的旧行，导致 `⏺ task_list`/`⏺ task_output` 幽灵行永久残留。
   // 剥出的 live 项改由动态区渲染（每帧重绘、永不提交 scrollback）。
-  const { committed: committedHistoryItems, live: liveToolItems } = useMemo(
+  const { committed: committedHistoryItems, live: liveToolItemsRaw } = useMemo(
     () => splitLiveToolItems(state.historyItems),
     [state.historyItems],
+  );
+  // 动态区 live 活项视口封顶（根治幽灵行残留）：live 活项虽在动态区渲染，但动态区同样受
+  // log-update"擦不掉 scrollback"的物理限制（见 capLiveToolItems / MainScreenLayout 注释）。
+  // 并行多工具时若 live 活项高度超过视口，早期 executing 行会溢出 scrollback 永久残留。
+  // 这里按视口高度派生一个预算：动态区还要容纳 streaming/thinking/composer/footer/对话框，
+  // 故 live 活项只取视口的约 1/3，且封顶在 [3, 12] 行区间（极小终端至少给 3 行，大终端也不
+  // 无限铺）。超出的工具由 MainScreenLayout 用一行「… +N 个工具执行中」摘要代替。
+  const liveToolRowsBudget = Math.max(3, Math.min(12, Math.floor(rows / 3)));
+  const { visible: liveToolItems, hiddenToolCount: hiddenLiveToolCount } = useMemo(
+    () => capLiveToolItems(liveToolItemsRaw, liveToolRowsBudget),
+    [liveToolItemsRaw, liveToolRowsBudget],
   );
   const staticItems = useMemo(
     (): HistoryItem[] => buildStaticItems(committedHistoryItems, require("../../package.json").version),
@@ -900,6 +933,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
         <MainScreenLayout
           staticItems={staticItems}
           liveToolItems={liveToolItems}
+          hiddenLiveToolCount={hiddenLiveToolCount}
           streamingText={state.streamingText}
           streamingThinking={state.streamingThinking}
           streamingThinkingStartMs={state.streamingThinkingStartMs}

@@ -45,6 +45,11 @@ interface MainScreenLayoutProps {
    * 动态区自然清空。这是根治 `⏺ task_list`/`⏺ task_output` 幽灵行残留的关键分流。
    */
   liveToolItems: HistoryItem[];
+  /**
+   * 被视口封顶折叠掉的 live 工具数（capLiveToolItems 返回）。>0 时在动态区顶部渲染一行
+   * 「… +N 个工具执行中」摘要，代替被折叠的活项——保证动态区高度有界、永不溢出视口。
+   */
+  hiddenLiveToolCount: number;
   /** 流式输出文本 */
   streamingText: string;
   /** v2：流式思考内容（独立于 streamingText） */
@@ -128,6 +133,7 @@ interface MainScreenLayoutProps {
 export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function MainScreenLayout({
   staticItems,
   liveToolItems,
+  hiddenLiveToolCount,
   streamingText,
   streamingThinking,
   streamingThinkingStartMs,
@@ -219,7 +225,16 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
           {/* 执行中的工具活项（status=executing 的 tool_group）：在动态区渲染而非 Static。
               log-update 每帧重绘这部分、绝不提交 scrollback；工具一完成，该项以终态并入
               staticItems（Static），此处随即清空。这样并行多工具的「逐个 executing 中间态」
-              仍可见（P2-1 语义保留），又根除了 executing 行溢出 scrollback 后擦不掉的幽灵残留。 */}
+              仍可见（P2-1 语义保留），又根除了 executing 行溢出 scrollback 后擦不掉的幽灵残留。
+
+              视口封顶（capLiveToolItems，App.tsx）：并行工具过多时 live 活项按视口预算做尾部
+              截断，超出的用下面这行摘要代替——保证动态区高度有界、永不溢出视口，log-update
+              永远擦得掉。摘要放在活项**上方**（被折叠的是较早发起的工具，最近的在下方靠近输入框）。 */}
+          {hiddenLiveToolCount > 0 ? (
+            <Box paddingLeft={2}>
+              <Text color={theme.ui.active}>{`… 另有 ${hiddenLiveToolCount} 个工具执行中`}</Text>
+            </Box>
+          ) : null}
           {liveToolItems.map((item, index) => (
             <HistoryItemDisplay
               key={keyExtractor(item, index)}

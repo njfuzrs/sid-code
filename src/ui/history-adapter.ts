@@ -81,6 +81,93 @@ export function splitLiveToolItems(historyItems: HistoryItem[]): {
   return { committed, live };
 }
 
+/**
+ * shell 工具名判定（与 ToolShared.tsx 的 isShellTool 同义）。
+ * 此处按行数估算需要，故本地复制这 3 行纯逻辑，避免 history-adapter（纯数据层）
+ * 依赖 ToolShared.tsx（React 组件层），防止引入不必要的渲染层耦合。
+ */
+function isShellToolName(name: string): boolean {
+  const lower = name.toLowerCase();
+  return lower === "bash" || lower === "shell" || lower === "execute_command";
+}
+
+/**
+ * 估算单个 executing 态工具在动态区占用的终端行数（对齐 ToolMessage 的实际渲染）：
+ * - shell 工具：header + 独立命令行区 ≈ 2 行（窄终端命令截断时还会多 1 行摘要，故按 2 起）
+ * - 带 MCP 进度消息的工具：header + 进度行 ≈ 2 行
+ * - 普通工具：仅 header ≈ 1 行
+ * 宁可略高估（多截、少显示）也不能低估——低估会让视口封顶偏松、动态区溢出 scrollback。
+ */
+function estimateToolRows(tool: { name: string; progressMessage?: string }): number {
+  if (isShellToolName(tool.name)) return 2;
+  if (tool.progressMessage) return 2;
+  return 1;
+}
+
+/**
+ * 估算一个 live 活项在动态区占用的终端行数。
+ * tool_group 累加组内每个工具的估算行数（executing 态结果行尚未到达，按 header/命令/进度估）。
+ * 用于 `capLiveToolItems` 的预算累计。
+ */
+function estimateLiveItemRows(item: HistoryItem): number {
+  if (item.type === "tool_group") {
+    return Math.max(1, item.tools.reduce((sum, t) => sum + estimateToolRows(t), 0));
+  }
+  return 1;
+}
+
+/**
+ * 对动态区的 live 工具活项按视口行数预算做**尾部封顶**，根治幽灵行残留。
+ *
+ * 根因（见 `isLiveToolItem` 注释 + src/ui/CLAUDE.md L3.4）：live 活项虽已从 `<Static>`
+ * 剥到动态区渲染，但动态区同样受 `log-update` 物理限制——它只能擦"当前视口内"的行，
+ * 擦不掉溢出到 scrollback 的行（log-update.ts:262-266）。并行多工具（如 6 子代理 +
+ * 一堆并行 read/grep）时 live 活项一次十几行，动态区高度超过视口 → 早期 executing 行
+ * 溢出 scrollback → 工具完成后终态并入 Static，但那些旧的 executing 幽灵行永久擦不掉。
+ *
+ * 修复不变量：**动态区的 live 活项高度永不超过给定预算** → 永远落在视口内 → log-update
+ * 永远擦得掉 → 无 scrollback 残留。
+ *
+ * 策略：保留**尾部**（最近发起的工具最相关、最可能仍在跑），累计估算行数不超过 `maxRows`；
+ * 超出的用调用侧的一行摘要「… +N 个工具执行中」代替（对齐 L3.3 折叠规范：显示摘要而非
+ * 完全隐藏）。maxRows ≤ 0 时退化为"全隐藏 + 全部计入摘要"（极小终端兜底，不渲染任何活项）。
+ *
+ * @param live 已由 `splitLiveToolItems` 拆出的 live 活项（保持原始相对顺序）
+ * @param maxRows 动态区分配给 live 活项的最大行数预算（由视口高度派生，见 App.tsx）
+ * @returns visible 保留渲染的活项（原始顺序）；hiddenToolCount 被折叠的工具数（供摘要文案）
+ */
+export function capLiveToolItems(
+  live: HistoryItem[],
+  maxRows: number,
+): { visible: HistoryItem[]; hiddenToolCount: number } {
+  const totalToolCount = live.reduce((sum, it) => sum + estimateLiveItemRows(it), 0);
+
+  // 预算充足：全部可见，无折叠。
+  if (maxRows > 0) {
+    let acc = 0;
+    let cutoff = 0; // 从尾部往前，保留 [cutoff, end) 区间
+    for (let i = live.length - 1; i >= 0; i--) {
+      const rows = estimateLiveItemRows(live[i]);
+      if (acc + rows > maxRows) {
+        cutoff = i + 1;
+        break;
+      }
+      acc += rows;
+    }
+    const visible = live.slice(cutoff);
+    if (visible.length === live.length) {
+      return { visible, hiddenToolCount: 0 };
+    }
+    const hiddenToolCount = live
+      .slice(0, cutoff)
+      .reduce((sum, it) => sum + estimateLiveItemRows(it), 0);
+    return { visible, hiddenToolCount };
+  }
+
+  // maxRows <= 0（极小终端兜底）：不渲染任何活项，全部计入摘要。
+  return { visible: [], hiddenToolCount: totalToolCount };
+}
+
 /** 思考摘要（从 thinking block 提取） */
 export interface ThoughtSummary {
   text: string;

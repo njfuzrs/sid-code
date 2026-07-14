@@ -14,6 +14,7 @@ import {
   isHiddenFromDisplay,
   isLiveToolItem,
   splitLiveToolItems,
+  capLiveToolItems,
 } from "../../src/ui/history-adapter.ts";
 import type { Message } from "../../src/llm/types.ts";
 import type { HistoryItem } from "../../src/ui/types.ts";
@@ -950,5 +951,122 @@ describe("splitLiveToolItems / isLiveToolItem — 执行中活项分流（防 sc
     const { committed, live } = splitLiveToolItems([]);
     expect(committed).toHaveLength(0);
     expect(live).toHaveLength(0);
+  });
+});
+
+// capLiveToolItems：动态区 live 活项视口封顶，根治并行多工具时 executing 行溢出 scrollback
+// 的幽灵残留。不变量：返回 visible 的估算行数永不超过 maxRows；超出部分计入 hiddenToolCount。
+describe("capLiveToolItems — 动态区 live 活项视口封顶（防 scrollback 溢出）", () => {
+  // 每个 group 一个 executing 工具 → 估算 1 行/项，便于按 maxRows 直接数
+  const oneToolGroup = (id: number, name: string): HistoryItem => ({
+    id,
+    type: "tool_group",
+    tools: [{ callId: `id-${id}`, name, description: "", status: ToolCallStatus.Executing, resultDisplay: undefined }],
+  }) as HistoryItem;
+  // 一个含 N 个 executing 工具的 group → 估算 N 行
+  const multiToolGroup = (id: number, count: number): HistoryItem => ({
+    id,
+    type: "tool_group",
+    tools: Array.from({ length: count }, (_, i) => ({
+      callId: `id-${id}-${i}`, name: `tool${i}`, description: "", status: ToolCallStatus.Executing, resultDisplay: undefined,
+    })),
+  }) as HistoryItem;
+
+  test("预算充足：全部可见，无折叠", () => {
+    const live = [oneToolGroup(1, "a"), oneToolGroup(2, "b"), oneToolGroup(3, "c")];
+    const { visible, hiddenToolCount } = capLiveToolItems(live, 10);
+    expect(visible).toHaveLength(3);
+    expect(hiddenToolCount).toBe(0);
+  });
+
+  test("超预算：保留尾部（最近发起的工具），较早的折叠进 hiddenToolCount", () => {
+    const live = [oneToolGroup(1, "a"), oneToolGroup(2, "b"), oneToolGroup(3, "c"), oneToolGroup(4, "d"), oneToolGroup(5, "e")];
+    const { visible, hiddenToolCount } = capLiveToolItems(live, 3);
+    // maxRows=3 → 保留最后 3 项 c/d/e
+    expect(visible.map(i => i.id)).toEqual([3, 4, 5]);
+    // 折叠 a/b = 2 个工具
+    expect(hiddenToolCount).toBe(2);
+  });
+
+  test("可见项估算行数永不超过 maxRows（核心不变量：动态区永不溢出视口）", () => {
+    const live = Array.from({ length: 20 }, (_, i) => oneToolGroup(i + 1, `t${i}`));
+    const maxRows = 5;
+    const { visible } = capLiveToolItems(live, maxRows);
+    const visibleRows = visible.reduce((sum, it) => sum + (it.type === "tool_group" ? it.tools.length : 1), 0);
+    expect(visibleRows).toBeLessThanOrEqual(maxRows);
+  });
+
+  test("多工具 group 按工具数计行：单个超预算的 group 也会被整体折叠", () => {
+    // 一个 group 含 8 个 executing 工具（估 8 行），预算只有 3 → 该 group 放不下，全折叠
+    const live = [multiToolGroup(1, 8)];
+    const { visible, hiddenToolCount } = capLiveToolItems(live, 3);
+    expect(visible).toHaveLength(0);
+    expect(hiddenToolCount).toBe(8);
+  });
+
+  test("maxRows<=0（极小终端兜底）：不渲染任何活项，全部计入摘要", () => {
+    const live = [oneToolGroup(1, "a"), multiToolGroup(2, 3)];
+    const { visible, hiddenToolCount } = capLiveToolItems(live, 0);
+    expect(visible).toHaveLength(0);
+    expect(hiddenToolCount).toBe(4); // 1 + 3
+  });
+
+  test("空 live：visible 空、hiddenToolCount 为 0", () => {
+    const { visible, hiddenToolCount } = capLiveToolItems([], 5);
+    expect(visible).toHaveLength(0);
+    expect(hiddenToolCount).toBe(0);
+  });
+
+  test("恰好等于预算：全部可见（边界，不误折叠）", () => {
+    const live = [oneToolGroup(1, "a"), oneToolGroup(2, "b"), oneToolGroup(3, "c")];
+    const { visible, hiddenToolCount } = capLiveToolItems(live, 3);
+    expect(visible).toHaveLength(3);
+    expect(hiddenToolCount).toBe(0);
+  });
+
+  // Finding 2 回归：shell 工具 executing 态实际渲染 2 行（header + 命令行），
+  // 带 MCP 进度的工具也是 2 行。按"每工具 1 行"估算会低估 → 封顶偏松 → 小终端溢出。
+  // estimateToolRows 对 shell/progress 工具计 2 行，锁住这个修正。
+  const shellGroup = (id: number): HistoryItem => ({
+    id,
+    type: "tool_group",
+    tools: [{ callId: `id-${id}`, name: "bash", description: "", status: ToolCallStatus.Executing, resultDisplay: undefined }],
+  }) as HistoryItem;
+  const progressGroup = (id: number): HistoryItem => ({
+    id,
+    type: "tool_group",
+    tools: [{ callId: `id-${id}`, name: "mcp_tool", description: "", status: ToolCallStatus.Executing, resultDisplay: undefined, progressMessage: "下载中 50%" }],
+  }) as HistoryItem;
+
+  test("shell 工具按 2 行估算：预算 3 只放得下 1 个 shell（2行）+ 尝试第 2 个超预算被折叠", () => {
+    // 两个 shell 各 2 行 = 4 行 > 预算 3 → 只保留最后 1 个（2 行），折叠前 1 个
+    const live = [shellGroup(1), shellGroup(2)];
+    const { visible, hiddenToolCount } = capLiveToolItems(live, 3);
+    expect(visible.map(i => i.id)).toEqual([2]);
+    expect(hiddenToolCount).toBe(2); // 折叠的 shellGroup(1) 估 2 行/工具，但 hiddenToolCount 计工具行数
+  });
+
+  test("带 MCP 进度的工具按 2 行估算", () => {
+    // 进度工具 2 行 + 普通工具 1 行 = 3 行，预算 3 → 全可见
+    const live = [progressGroup(1), oneToolGroup(2, "read")];
+    const r1 = capLiveToolItems(live, 3);
+    expect(r1.visible).toHaveLength(2);
+    expect(r1.hiddenToolCount).toBe(0);
+    // 预算 2 → 进度工具(2行)放不下与普通工具(1行)共存，保留尾部普通工具，折叠进度工具
+    const r2 = capLiveToolItems(live, 2);
+    expect(r2.visible.map(i => i.id)).toEqual([2]);
+    expect(r2.hiddenToolCount).toBe(2);
+  });
+
+  test("shell/progress 混合：可见项实际行数（按 estimateToolRows）永不超过 maxRows", () => {
+    const live = [shellGroup(1), progressGroup(2), oneToolGroup(3, "read"), shellGroup(4)];
+    const maxRows = 4;
+    const { visible } = capLiveToolItems(live, maxRows);
+    const rowsOf = (it: HistoryItem) =>
+      it.type === "tool_group"
+        ? it.tools.reduce((s, t) => s + (t.name.toLowerCase() === "bash" || (t as any).progressMessage ? 2 : 1), 0)
+        : 1;
+    const visibleRows = visible.reduce((s, it) => s + rowsOf(it), 0);
+    expect(visibleRows).toBeLessThanOrEqual(maxRows);
   });
 });

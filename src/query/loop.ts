@@ -2524,6 +2524,23 @@ export async function* queryLoop(
   } finally {
     // Fix 1：queryLoop 结束时批量清理本次 loopId 下所有快照残留
     clearAllSnapshots(loopId);
+
+    // 主循环终止时的收尾驱逐（尊重缓冲期，force=false）。
+    // 根因：evictTerminalTasks() 只在 while 循环每轮开头调用（上方 line ~336），是
+    // "下一轮驱动"的清除——主循环 end_turn 结束后再无下一轮循环开头触发驱逐。这里在
+    // generator 终止时（正常 end_turn / 异常 / 外部 .return() 中止都会经过 finally）
+    // 补一次收尾驱逐：把"缓冲期已过"的终止态任务立即清掉，不必等到下次用户输入才清。
+    //
+    // 为何 force=false（不忽略缓冲期）：缓冲期（EVICT_GRACE_MS=60s）的意义是"任务刚完成
+    // 后留一个窗口，让用户还能在面板翻看刚完成的任务"。真正根治"尾部窗口永久残留"的是
+    // TUI 侧独立于主循环的 1s 定时器（App.tsx，对标 cc CoordinatorAgentStatus），它会在
+    // 缓冲期到点后（≤1s 延迟）清掉——不依赖主循环转没转。因此这里无需 force 越过缓冲期
+    //（那会牺牲"刚完成可翻看"语义、比 cc 更激进）；缓冲期内的任务交给那个定时器即可。
+    // 安全性：只驱逐 notified=true 的终止态任务，其完成通知已原子入队 pendingQueue
+    //（独立于任务注册表），驱逐不丢任何完成信息。
+    try {
+      evictTerminalTasks();
+    } catch { /* 收尾清理不应影响主循环退出 */ }
   }
 
   // ─── P1-1：主循环达到 maxTurns——强制请求总结（额外一轮，不计入 maxTurns）───

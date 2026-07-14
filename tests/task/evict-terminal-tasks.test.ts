@@ -173,3 +173,50 @@ describe("evictTerminalTasks（驱逐缓冲期 evictAfter）", () => {
     expect(getAllTasks().map((t) => t.id)).toEqual([]);
   });
 });
+
+// ─── force=true：忽略缓冲期的强制驱逐能力 ───
+// 背景：evictTerminalTasks() 只在 queryLoop 每轮开头 + finally 收尾调用，都受主循环
+// 生命周期约束。真正根治"最后完成任务的尾部窗口残留"的是 TUI 侧独立于主循环的 1s 定时器
+//（App.tsx，对标 cc CoordinatorAgentStatus），它尊重缓冲期、到点即清（≤1s 延迟）。
+// 因此 loop.ts 的 finally 收尾用 force=false（尊重缓冲期，只清已过期的），不越过缓冲期。
+// 这里保留并验证 force=true 这个 API 能力本身：忽略缓冲期、只保留 isTerminalStatus +
+// notified 两层门控——供确实需要"立即清空、不等缓冲期"的场景使用（当前无调用方，但 API
+// 语义需锁定，防未来误用/回归）。
+describe("evictTerminalTasks(force=true)（忽略缓冲期的强制驱逐能力）", () => {
+  test("force=true：缓冲期未过的已通知终止态任务仍被驱逐（修复尾部窗口残留）", () => {
+    registerTask(
+      makeShellTask("tail-window", {
+        status: "completed",
+        notified: true,
+        endTime: Date.now(),
+        evictAfter: Date.now() + 60_000, // 缓冲期远未到——正是本次 bug 的时序
+      }),
+    );
+    // 常规调用（下一轮驱动）：缓冲期内，保留——复现残留
+    evictTerminalTasks();
+    expect(getAllTasks().map((t) => t.id)).toEqual(["tail-window"]);
+    // 收尾驱逐（force）：忽略缓冲期，清除
+    evictTerminalTasks(true);
+    expect(getAllTasks().map((t) => t.id)).toEqual([]);
+  });
+
+  test("force=true：运行中任务绝不被驱逐（收尾时仍在跑的后台任务要保留）", () => {
+    registerTask(makeShellTask("still-running")); // status=running
+    evictTerminalTasks(true);
+    expect(getAllTasks().map((t) => t.id)).toEqual(["still-running"]);
+  });
+
+  test("force=true：终止态但未通知的任务保留（通知未入队前不清，防丢完成信息）", () => {
+    registerTask(makeShellTask("done-unnotified", { status: "completed", notified: false, endTime: 1 }));
+    evictTerminalTasks(true);
+    expect(getAllTasks().map((t) => t.id)).toEqual(["done-unnotified"]);
+  });
+
+  test("force=true：混合场景仅清已通知终止态，保留运行中与未通知", () => {
+    registerTask(makeShellTask("running"));
+    registerTask(makeShellTask("done-notified", { status: "completed", notified: true, endTime: Date.now(), evictAfter: Date.now() + 60_000 }));
+    registerTask(makeShellTask("done-unnotified", { status: "completed", notified: false, endTime: 1 }));
+    evictTerminalTasks(true);
+    expect(getAllTasks().map((t) => t.id).sort()).toEqual(["done-unnotified", "running"]);
+  });
+});

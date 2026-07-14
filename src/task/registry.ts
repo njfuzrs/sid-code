@@ -78,15 +78,21 @@ const EVICT_GRACE_MS = 60_000;
  *  终止态（completed/failed/killed）任务一旦其完成通知已入队（notified=true）
  *  且缓冲期（evictAfter）已过，在面板上即属冗余——通知会经 dequeuePendingNotifications
  *  注入对话，任务条目应清除。三层门控对标 CC：① isTerminalStatus ② notified ③ evictAfter。
- *  删除发生时通知监听器刷新 TUI（否则面板不会重渲、仍显示已完成条目）。 */
-export function evictTerminalTasks(): void {
+ *  删除发生时通知监听器刷新 TUI（否则面板不会重渲、仍显示已完成条目）。
+ *
+ *  @param force 忽略缓冲期（evictAfter）检查，只要求 ① isTerminalStatus ② notified。
+ *    缓冲期的意义是"任务完成后留一个窗口，让主循环模型还能用 task_output 查结果"——
+ *    但当主循环已经终止（end_turn 收尾）时不会再有下一轮查询，缓冲期失去意义。此时
+ *    必须 force 驱逐，否则"最后完成、缓冲期还没到"的任务会因再无下一轮循环触发驱逐而
+ *    永久残留在面板（现象：「后台任务 · N 已完成」不消失）。见 loop.ts 收尾块调用点。 */
+export function evictTerminalTasks(force = false): void {
   const now = Date.now();
   let evicted = false;
   for (const [id, task] of tasks) {
     if (
       isTerminalStatus(task.status) &&
       task.notified &&
-      (task.evictAfter ?? 0) <= now  // 缓冲期检查：未设置视为 0（兼容旧任务立即驱逐）
+      (force || (task.evictAfter ?? 0) <= now)  // 缓冲期检查：force 时跳过；未设置视为 0（兼容旧任务立即驱逐）
     ) {
       evictTaskOutput(id);   // 连带清磁盘 .output 文件 + 内存 outputs 条目，避免孤儿泄露
       tasks.delete(id);
