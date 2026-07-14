@@ -30,6 +30,8 @@ export interface CacheBreakTelemetryEntry {
   changes: string[];
   previousCacheReadTokens: number;
   currentCacheReadTokens: number;
+  /** P1-2：本轮响应前是否发生过重试（分离重试触发脱落 vs 纯服务端波动）。旧数据无此字段。 */
+  precededByRetry?: boolean;
 }
 
 /** 遥测文件路径（测试可经环境变量重定向） */
@@ -52,6 +54,7 @@ export function emitCacheBreakTelemetry(record: CacheBreakRecord): void {
       changes: record.changes,
       previousCacheReadTokens: record.previousCacheReadTokens,
       currentCacheReadTokens: record.currentCacheReadTokens,
+      precededByRetry: record.precededByRetry,
     };
     const path = cacheBreaksPath();
     const dir = dirname(path);

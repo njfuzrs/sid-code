@@ -315,6 +315,12 @@ export class CostCommand implements Command {
       const rate = ((cacheView.cacheHitTokens / cacheView.promptTotal) * 100).toFixed(1);
       const savings = ss.getTotalCacheSavings();
       lines.push("", `缓存命中率: ${rate}%   省钱: $${savings.toFixed(4)}`);
+      // P2-2：openai 协议路径为服务端隐式缓存（无客户端主动写入 cache_control，
+      // cacheCreation 恒 0），命中率结构性上限约 60-70%，不同于 anthropic 族显式缓存的 90%+。
+      // 对该族标注正常上限，避免用户把 60-70% 误判为 harness bug。以协议路径为准，非按模型名单。
+      if (ctx.config.provider === "openai" && !totalUsage.cacheCreationInputTokens) {
+        lines.push("  （openai 协议为隐式缓存，60-70% 属正常上限；90%+ 需 anthropic 族显式缓存）");
+      }
     }
 
     const models = Object.entries(ss.modelUsage);

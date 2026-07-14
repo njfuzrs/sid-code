@@ -166,11 +166,28 @@ export interface ProviderDigestStats {
   failed: number;
   timedOut: number;
   retried: number;
+  /**
+   * 整轮 API 耗时均值（ms）。取自 AfterModelRaw.elapsed_ms（= apiDuration，含握手+生成+重试）。
+   * 注意：这不是"网关握手延迟"，渲染时须标注为"整轮耗时"，避免与 ttfb（首字节）混淆（Bug B）。
+   */
   avgLatencyMs: number;
-  /** T14.5：TTFT 分位数 */
+  /**
+   * T14.5 / P0-1：TTFT 分位数（ms）。
+   * 取自 StreamPhase("first_content").ttft_ms —— 每次 fetch 在 lifecycle 层独立计算的
+   * "首个内容事件（content_block_delta，含思考/工具）延迟"，不含重试污染、不受可视文本延迟影响。
+   * 弃用被污染的 AfterModelRaw.ttft_ms（那是 loop.ts 重试循环外只设一次基准 + 仅可视文本触发，
+   * 会把整轮生成耗时误计为首字节延迟，导致 P50/P95 严重虚高，见排查报告 Bug A）。
+   */
   ttft_p50?: number;
   ttft_p95?: number;
   ttft_p99?: number;
+  /**
+   * P0-1：模型生成耗时分位数（ms）。取自 RetryTelemetry.elapsedMs（单次 fetch 从连接到流结束）。
+   * 让"慢在生成"这一主因显式可见——此前 digest 只展示被污染的 TTFT，生成耗时无从体现。
+   */
+  gen_p50?: number;
+  gen_p95?: number;
+  gen_p99?: number;
   /** 超时率 > 10% 时标记 warning */
   warning?: string;
 }
@@ -1418,9 +1435,14 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     L.push(c("bold", "Provider 健康:"));
     for (const ps of d.providerStats) {
       const successRate = ps.requests > 0 ? ((ps.requests - ps.failed - ps.timedOut) / ps.requests * 100).toFixed(0) : "N/A";
-      const ttft = ps.ttft_p50 ? `TTFT P50=${(ps.ttft_p50 / 1000).toFixed(1)}s` : "";
+      // P0-1：TTFT 现取自纯净的 first_content（首内容延迟，不含重试/生成污染）
+      const ttft = ps.ttft_p50 ? ` TTFT(首字节)P50=${(ps.ttft_p50 / 1000).toFixed(1)}s` : "";
+      // P0-1：新增生成耗时分位，让"慢在生成"这一主因显式可见
+      const gen = ps.gen_p50 ? ` 生成P50=${(ps.gen_p50 / 1000).toFixed(1)}s` : "";
+      // Bug B：avgLatencyMs 是整轮 API 耗时（含握手+生成+重试），标注清楚，不是网关握手延迟
+      const roundtrip = ` 整轮均耗:${(ps.avgLatencyMs / 1000).toFixed(1)}s`;
       const warn = ps.warning ? c("yellow", ` ⚡${ps.warning}`) : "";
-      L.push(`  ${c("cyan", ps.provider.padEnd(12))} 请求:${ps.requests} 成功率:${successRate}% 延迟:${ps.avgLatencyMs}ms ${ttft}${warn}`);
+      L.push(`  ${c("cyan", ps.provider.padEnd(12))} 请求:${ps.requests} 成功率:${successRate}%${roundtrip}${ttft}${gen}${warn}`);
     }
   }
 
@@ -1493,28 +1515,65 @@ export function renderList(all: SessionRef[], opts: RenderOptions = {}): string 
 
 // ─────────────────────────── T12.5：Provider 聚合 ───────────────────────────
 
-/** 从 events.jsonl 事件列表聚合 per-provider 统计（导出供测试 + provider-health 使用） */
+/**
+ * 从 events.jsonl 事件列表聚合 per-provider 统计（导出供测试 + provider-health 使用）。
+ *
+ * P0-1（排查报告 Bug A 修复）—— 三个耗时指标的取数源分工：
+ * - **TTFT（首字节/首内容延迟）**：取自 `StreamPhase("first_content").ttft_ms`。这是 lifecycle 层
+ *   在每次 fetch 独立计算的"首个内容事件（content_block_delta，含思考/工具）延迟"，不含重试污染，
+ *   也不受"仅可视文本才触发"的延迟污染。**弃用** `AfterModelRaw.ttft_ms`——后者来自 loop.ts 重试
+ *   循环外只设一次的基准 + 仅首个"可视文本" chunk 触发，会把整轮生成耗时误计为首字节延迟
+ *   （实测 idx=15 合成 102.3s vs 真实首 token 6.7s），导致 P50/P95 严重虚高、误导排查方向。
+ * - **gen（模型生成耗时）**：取自 `RetryTelemetry("stream_completed").elapsedMs`（单次 fetch 从连接到
+ *   流结束的纯耗时，自带 provider）。新增此维度让"慢在生成"这一主因显式可见。
+ * - **avgLatencyMs（整轮 API 耗时）**：取自 `AfterModelRaw.elapsed_ms`（= apiDuration，含握手+生成+重试）。
+ *   渲染时须标注为"整轮耗时"而非"网关握手延迟"，避免与 TTFT 混淆（Bug B）。
+ *
+ * first_content 事件只带 model 不带 provider，故先扫一遍 AfterModelRaw 建立 model→provider 映射，
+ * 再用它把 first_content 的 ttft 归因到正确 provider（映射缺失时回退按 model 名启发式推断）。
+ */
 export function aggregateProviderStats(events: Array<{ event?: string; data?: Record<string, unknown> }>): ProviderDigestStats[] {
-  const map = new Map<string, { requests: number; failed: number; timedOut: number; retried: number; totalLatencyMs: number; ttfts: number[] }>();
+  const map = new Map<string, { requests: number; failed: number; timedOut: number; retried: number; totalLatencyMs: number; ttfts: number[]; gens: number[] }>();
 
   const ensure = (p: string) => {
-    if (!map.has(p)) map.set(p, { requests: 0, failed: 0, timedOut: 0, retried: 0, totalLatencyMs: 0, ttfts: [] });
+    if (!map.has(p)) map.set(p, { requests: 0, failed: 0, timedOut: 0, retried: 0, totalLatencyMs: 0, ttfts: [], gens: [] });
     return map.get(p)!;
   };
 
-  // 从 AfterModelRaw 事件统计每 provider 的请求数和延迟
+  // 按 model 名启发式推断 provider（映射兜底：first_content 无 provider、AfterModelRaw 未覆盖该 model 时用）
+  const inferProviderFromModel = (model: string): string =>
+    model.includes("claude") ? "anthropic" : model ? "openai" : "unknown";
+
+  // 第一遍：从 AfterModelRaw 建立 model→provider 映射（first_content 只带 model，需靠此归因）
+  const modelToProvider = new Map<string, string>();
   for (const e of events) {
+    if (e.event === "AfterModelRaw" && e.data) {
+      const provider = (e.data.provider as string) || "";
+      const model = (e.data.model as string) || "";
+      if (provider && model && !modelToProvider.has(model)) modelToProvider.set(model, provider);
+    }
+  }
+  const resolveProvider = (model: string): string =>
+    modelToProvider.get(model) || inferProviderFromModel(model);
+
+  // 第二遍：聚合各维度
+  for (const e of events) {
+    // AfterModelRaw：请求数 + 整轮耗时（avgLatencyMs 的来源）。不再从这里取 TTFT（被污染）。
     if (e.event === "AfterModelRaw" && e.data) {
       const provider = (e.data.provider as string) || "unknown";
       const stats = ensure(provider);
       stats.requests++;
       const elapsed = (e.data.elapsed_ms as number) || 0;
       stats.totalLatencyMs += elapsed;
-      // T14.5：收集 TTFT
-      const ttft = e.data.ttft_ms as number | undefined;
-      if (ttft && ttft > 0) stats.ttfts.push(ttft);
     }
-    // 从 RetryTelemetry 事件统计重试/超时
+    // P0-1：TTFT 改从 StreamPhase("first_content") 收集——纯净的每次 fetch 首内容延迟
+    if (e.event === "StreamPhase" && e.data && e.data.phase === "first_content") {
+      const model = (e.data.model as string) || "";
+      const provider = resolveProvider(model);
+      const ttft = e.data.ttft_ms as number | undefined;
+      if (ttft && ttft > 0) ensure(provider).ttfts.push(ttft);
+    }
+    // 从 RetryTelemetry 事件统计重试/超时 + 生成耗时（stream_completed.elapsedMs）
     if (e.event === "RetryTelemetry" && e.data) {
       const provider = (e.data.provider as string) || (e.data.model as string) || "unknown";
       const stats = ensure(provider);
@@ -1525,6 +1584,10 @@ export function aggregateProviderStats(events: Array<{ event?: string; data?: Re
         stats.timedOut++;
       } else if (type === "529_dropped") {
         stats.failed++;
+      } else if (type === "stream_completed") {
+        // P0-1：纯生成耗时（单次 fetch 从连接到流结束）
+        const gen = e.data.elapsedMs as number | undefined;
+        if (gen && gen > 0) stats.gens.push(gen);
       }
     }
     // 从 TimeoutFired 事件补充超时计数
@@ -1542,9 +1605,10 @@ export function aggregateProviderStats(events: Array<{ event?: string; data?: Re
   for (const [provider, stats] of map) {
     const timeoutRate = stats.requests > 0 ? stats.timedOut / stats.requests : 0;
     const sortedTtfts = stats.ttfts.sort((a, b) => a - b);
+    const sortedGens = stats.gens.sort((a, b) => a - b);
     let warning: string | undefined;
     if (timeoutRate > 0.1) warning = `超时率 ${(timeoutRate * 100).toFixed(1)}% > 10%`;
-    // T14.5：TTFT > 30s 标记 warning
+    // T14.5：TTFT > 30s 标记 warning（现在基于纯净的 first_content TTFT，不再虚高误报）
     const ttftP95 = percentile(sortedTtfts, 0.95);
     if (ttftP95 && ttftP95 > 30000 && !warning) warning = `TTFT P95 ${(ttftP95 / 1000).toFixed(1)}s > 30s`;
 
@@ -1558,6 +1622,9 @@ export function aggregateProviderStats(events: Array<{ event?: string; data?: Re
       ttft_p50: percentile(sortedTtfts, 0.5),
       ttft_p95: ttftP95,
       ttft_p99: percentile(sortedTtfts, 0.99),
+      gen_p50: percentile(sortedGens, 0.5),
+      gen_p95: percentile(sortedGens, 0.95),
+      gen_p99: percentile(sortedGens, 0.99),
       warning,
     });
   }

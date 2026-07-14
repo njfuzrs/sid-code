@@ -158,10 +158,16 @@ describe("T14.3: stream-observer first_content StreamPhase emit", () => {
 
 describe("T14.5: digest TTFT P50/P95/P99 聚合", () => {
   test("按 provider 分组输出 TTFT 分位数", () => {
-    const events = Array.from({ length: 100 }, (_, i) => ({
-      event: "AfterModelRaw",
-      data: { provider: "openai", elapsed_ms: 2000, ttft_ms: (i + 1) * 100 },
-    }));
+    // P0-1：TTFT 现取自 StreamPhase("first_content")（纯净首内容延迟），不再从 AfterModelRaw.ttft_ms 取
+    const events: Array<{ event: string; data: Record<string, unknown> }> = [
+      { event: "AfterModelRaw", data: { provider: "openai", model: "deepseek-chat", elapsed_ms: 2000 } },
+    ];
+    for (let i = 0; i < 100; i++) {
+      events.push({
+        event: "StreamPhase",
+        data: { phase: "first_content", model: "deepseek-chat", ttft_ms: (i + 1) * 100 },
+      });
+    }
 
     const stats = aggregateProviderStats(events);
     const openai = stats.find((s) => s.provider === "openai");
@@ -172,11 +178,16 @@ describe("T14.5: digest TTFT P50/P95/P99 聚合", () => {
   });
 
   test("TTFT P95 > 30s 标记 warning", () => {
-    // 全部 40s TTFT
-    const events = Array.from({ length: 10 }, () => ({
-      event: "AfterModelRaw",
-      data: { provider: "anthropic", elapsed_ms: 45000, ttft_ms: 40000 },
-    }));
+    // 全部 40s TTFT（first_content 源）
+    const events: Array<{ event: string; data: Record<string, unknown> }> = [
+      { event: "AfterModelRaw", data: { provider: "anthropic", model: "claude-3.5-sonnet", elapsed_ms: 45000 } },
+    ];
+    for (let i = 0; i < 10; i++) {
+      events.push({
+        event: "StreamPhase",
+        data: { phase: "first_content", model: "claude-3.5-sonnet", ttft_ms: 40000 },
+      });
+    }
 
     const stats = aggregateProviderStats(events);
     const anthropic = stats.find((s) => s.provider === "anthropic");
@@ -193,5 +204,42 @@ describe("T14.5: digest TTFT P50/P95/P99 聚合", () => {
     const ollama = stats.find((s) => s.provider === "ollama");
     expect(ollama!.ttft_p50).toBeUndefined();
     expect(ollama!.ttft_p99).toBeUndefined();
+  });
+
+  // P0-1 回归（排查报告 Bug A）：TTFT 必须来自 first_content，AfterModelRaw.ttft_ms 被彻底忽略。
+  // 固化"不再被可视文本延迟 + 重试双重污染"这一修复，防止回退。
+  test("AfterModelRaw.ttft_ms 被忽略，TTFT 只认 first_content（Bug A 回归）", () => {
+    const events = [
+      // AfterModelRaw 携带被污染的巨大 ttft_ms（模拟 idx=15 的 102s 合成值）——必须被忽略
+      { event: "AfterModelRaw", data: { provider: "openai", model: "glm-5.2", elapsed_ms: 104000, ttft_ms: 102300 } },
+      // first_content 携带真实首 token 延迟 6.7s——这才是应被采纳的值
+      { event: "StreamPhase", data: { phase: "first_content", model: "glm-5.2", ttft_ms: 6700 } },
+    ];
+    const stats = aggregateProviderStats(events);
+    const openai = stats.find((s) => s.provider === "openai");
+    expect(openai).toBeDefined();
+    // TTFT 取自 first_content（6700），绝不是 AfterModelRaw 的 102300
+    expect(openai!.ttft_p50).toBe(6700);
+    expect(openai!.ttft_p50).not.toBe(102300);
+    // 整轮均耗仍来自 AfterModelRaw.elapsed_ms（104s）——两个口径分离
+    expect(openai!.avgLatencyMs).toBe(104000);
+  });
+
+  // P0-1：新增生成耗时分位（RetryTelemetry.stream_completed.elapsedMs），让"慢在生成"显式可见
+  test("生成耗时分位取自 RetryTelemetry stream_completed", () => {
+    const events: Array<{ event: string; data: Record<string, unknown> }> = [
+      { event: "AfterModelRaw", data: { provider: "openai", model: "glm-5.2", elapsed_ms: 60000 } },
+    ];
+    for (let i = 0; i < 20; i++) {
+      events.push({
+        event: "RetryTelemetry",
+        data: { type: "stream_completed", provider: "openai", model: "glm-5.2", elapsedMs: (i + 1) * 5000 },
+      });
+    }
+    const stats = aggregateProviderStats(events);
+    const openai = stats.find((s) => s.provider === "openai");
+    expect(openai!.gen_p50).toBeGreaterThan(0);
+    expect(openai!.gen_p95).toBeGreaterThan(openai!.gen_p50!);
+    expect(openai!.gen_p99).toBeGreaterThanOrEqual(openai!.gen_p95!);
   });
 });

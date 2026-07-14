@@ -1338,6 +1338,9 @@ export async function* queryLoop(
       throw err;
     }
     const apiDuration = perfHandle.end({ model: config.model });
+    // P1-2：在清零 timeoutRetryCount 之前捕获"本轮是否发生过重试"，供下方 cache break
+    // 归因标注（重连会重发相同前缀，服务端缓存可能已过期/换节点 → 命中脱落）。
+    const turnPrecededByRetry = state.timeoutRetryCount > 0;
     // Fix 7：本轮成功拿到 response（未抛出 timeout 异常）→ 重置超时重试计数。
     // 注意：不能放在 while 循环顶部——timeout continue 也会回到那里，导致每次
     // 重试后立即被清零，使"连续超时重试"永远达不到 maxTimeoutRetries（变成无限
@@ -1409,6 +1412,7 @@ export async function* queryLoop(
         messageCount: sendParams.messages.length,
         betaHeaders: currentBetaHeaders(config.provider),
         agentId: "main",
+        precededByRetry: turnPrecededByRetry, // P1-2：分离重试触发脱落 vs 纯服务端波动
       });
       if (breakReport) {
         recordCacheBreak({
@@ -1855,7 +1859,8 @@ export async function* queryLoop(
             yield {
               kind: "system",
               level: "info",
-              text: `检测到 ${unfinished} 项任务未完成，自动继续推进 (${state.todoGateRetryCount}/${MAX_TODO_GATE_RETRIES})`,
+              // P2-1：中性措辞，避免"检测到…未完成"的报错感——这是正常的完成度兜底推进，非错误。
+              text: `清单还有 ${unfinished} 项待完成，继续推进 (${state.todoGateRetryCount}/${MAX_TODO_GATE_RETRIES})`,
             };
             setTransition(state, { type: "todo_gate_retry" }, deps, sessionState.sessionId);
             continue;

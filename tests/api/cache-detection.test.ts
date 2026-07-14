@@ -151,6 +151,46 @@ describe("reset / format", () => {
     expect(line).toContain("%");
     expect(line).toContain("tokens");
   });
+
+  // P1-2：前缀未变时按"是否紧跟重试"分离两类脱落
+  test("前缀未变 + 紧跟重试 → 标注'重连触发的服务端缓存丢失'", () => {
+    const d = new CacheBreakDetector();
+    // 首轮建立基线（前缀不变，后续同 systemPrompt/tools）
+    d.checkResponse(params({ cacheReadTokens: 50000 }));
+    // 次轮命中骤降、前缀不变、本轮发生过重试
+    const report = d.checkResponse(params({ cacheReadTokens: 5000, precededByRetry: true }))!;
+    const line = formatCacheBreakReport(report);
+    expect(line).toContain("前缀未变+紧跟重试");
+    expect(line).toContain("重连触发的服务端缓存丢失");
+  });
+
+  test("前缀未变 + 无重试 → 标注'纯服务端缓存波动'", () => {
+    const d = new CacheBreakDetector();
+    d.checkResponse(params({ cacheReadTokens: 50000 }));
+    const report = d.checkResponse(params({ cacheReadTokens: 5000, precededByRetry: false }))!;
+    const line = formatCacheBreakReport(report);
+    expect(line).toContain("前缀未变+无重试");
+    expect(line).toContain("纯服务端缓存波动");
+  });
+
+  test("前缀已变（本地断裂）时不附加重试标注", () => {
+    const d = new CacheBreakDetector();
+    d.checkResponse(params({ cacheReadTokens: 50000 }));
+    // systemPrompt 改变 → 前缀 hash 变化 → 属本地断裂，即便发生过重试也不标注重试关联
+    const report = d.checkResponse(params({ cacheReadTokens: 5000, systemPrompt: "CHANGED", precededByRetry: true }))!;
+    const line = formatCacheBreakReport(report);
+    expect(line).not.toContain("前缀未变");
+    expect(line).not.toContain("服务端缓存波动");
+  });
+
+  test("precededByRetry 未提供时不附加任何重试标注（向后兼容）", () => {
+    const d = new CacheBreakDetector();
+    d.checkResponse(params({ cacheReadTokens: 50000 }));
+    const report = d.checkResponse(params({ cacheReadTokens: 5000 }))!;
+    const line = formatCacheBreakReport(report);
+    expect(line).not.toContain("紧跟重试");
+    expect(line).not.toContain("无重试");
+  });
 });
 
 describe("中断记录环形缓冲 + 健康度建议（D3）", () => {

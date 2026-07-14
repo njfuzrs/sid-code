@@ -254,11 +254,17 @@ describe("T13.5: digest side_call_failures 异常诊断", () => {
 
 describe("T13.5: aggregateProviderStats 含 TTFT P99", () => {
   it("输出 ttft_p99 字段", () => {
-    // 构造有 TTFT 数据的 events
-    const events = Array.from({ length: 100 }, (_, i) => ({
-      event: "AfterModelRaw",
-      data: { provider: "openai", elapsed_ms: 1000, ttft_ms: (i + 1) * 100 }, // 100ms ~ 10000ms
-    }));
+    // P0-1：TTFT 现取自 StreamPhase("first_content")，不再从 AfterModelRaw.ttft_ms（被污染）取。
+    // 构造 first_content 事件（带 model，经 AfterModelRaw 建立的 model→provider 映射归因到 openai）。
+    const events: Array<{ event: string; data: Record<string, unknown> }> = [
+      { event: "AfterModelRaw", data: { provider: "openai", model: "deepseek-chat", elapsed_ms: 1000 } },
+    ];
+    for (let i = 0; i < 100; i++) {
+      events.push({
+        event: "StreamPhase",
+        data: { phase: "first_content", model: "deepseek-chat", ttft_ms: (i + 1) * 100 }, // 100ms ~ 10000ms
+      });
+    }
 
     const stats = aggregateProviderStats(events);
     const openai = stats.find(s => s.provider === "openai");

@@ -30,13 +30,19 @@ describe("T15: Provider 健康度聚合", () => {
 
   it("从多个会话聚合 provider 健康指标", () => {
     const now = new Date().toISOString();
+    // P0-1：TTFT 现取自 StreamPhase("first_content")（纯净首内容延迟），不再从 AfterModelRaw.ttft_ms 取。
+    // first_content 只带 model，经 AfterModelRaw 的 model→provider 映射归因。
     writeSession("session-001", [
-      { event: "AfterModelRaw", timestamp: now, data: { provider: "openai", elapsed_ms: 5000, ttft_ms: 2000, model: "deepseek" } },
-      { event: "AfterModelRaw", timestamp: now, data: { provider: "openai", elapsed_ms: 3000, ttft_ms: 1000, model: "deepseek" } },
-      { event: "AfterModelRaw", timestamp: now, data: { provider: "anthropic", elapsed_ms: 2000, ttft_ms: 800, model: "claude" } },
+      { event: "AfterModelRaw", timestamp: now, data: { provider: "openai", elapsed_ms: 5000, model: "deepseek" } },
+      { event: "StreamPhase", timestamp: now, data: { phase: "first_content", model: "deepseek", ttft_ms: 2000 } },
+      { event: "AfterModelRaw", timestamp: now, data: { provider: "openai", elapsed_ms: 3000, model: "deepseek" } },
+      { event: "StreamPhase", timestamp: now, data: { phase: "first_content", model: "deepseek", ttft_ms: 1000 } },
+      { event: "AfterModelRaw", timestamp: now, data: { provider: "anthropic", elapsed_ms: 2000, model: "claude" } },
+      { event: "StreamPhase", timestamp: now, data: { phase: "first_content", model: "claude", ttft_ms: 800 } },
     ]);
     writeSession("session-002", [
-      { event: "AfterModelRaw", timestamp: now, data: { provider: "openai", elapsed_ms: 4000, ttft_ms: 1500, model: "deepseek" } },
+      { event: "AfterModelRaw", timestamp: now, data: { provider: "openai", elapsed_ms: 4000, model: "deepseek" } },
+      { event: "StreamPhase", timestamp: now, data: { phase: "first_content", model: "deepseek", ttft_ms: 1500 } },
       { event: "RetryTelemetry", timestamp: now, data: { type: "retry", provider: "openai", model: "deepseek" } },
       { event: "RetryTelemetry", timestamp: now, data: { type: "stream_idle_timeout", provider: "openai" } },
     ]);
@@ -101,10 +107,11 @@ describe("T15: Provider 健康度聚合", () => {
 
   it("P50/P95/P99 计算精度", () => {
     const now = new Date().toISOString();
-    // 构造 100 个请求，TTFT 从 100 到 10000
+    // 构造 100 个请求，TTFT 从 100 到 10000（P0-1：TTFT 走 first_content 事件）
     const events: object[] = [];
     for (let i = 1; i <= 100; i++) {
-      events.push({ event: "AfterModelRaw", timestamp: now, data: { provider: "openai", elapsed_ms: i * 100, ttft_ms: i * 100 } });
+      events.push({ event: "AfterModelRaw", timestamp: now, data: { provider: "openai", model: "deepseek", elapsed_ms: i * 100 } });
+      events.push({ event: "StreamPhase", timestamp: now, data: { phase: "first_content", model: "deepseek", ttft_ms: i * 100 } });
     }
     writeSession("session-005", events);
 
@@ -124,7 +131,7 @@ describe("T15: Provider 健康度聚合", () => {
     const now = new Date().toISOString();
     const events: object[] = [];
     for (let i = 0; i < 10; i++) {
-      events.push({ event: "AfterModelRaw", timestamp: now, data: { provider: "openai", elapsed_ms: 2000, ttft_ms: 500 } });
+      events.push({ event: "AfterModelRaw", timestamp: now, data: { provider: "openai", model: "deepseek", elapsed_ms: 2000 } });
     }
     writeSession("session-render", events);
 

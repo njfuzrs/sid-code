@@ -113,6 +113,19 @@ export function aggregateProviderHealth(options: {
     return accumulators.get(p)!;
   };
 
+  // P0-1（排查报告 Bug A）：first_content 只带 model 不带 provider，先扫一遍 AfterModelRaw
+  // 建立 model→provider 映射，供 TTFT 归因。与 digest.aggregateProviderStats 同口径。
+  const modelToProvider = new Map<string, string>();
+  for (const e of events) {
+    if (e.event === "AfterModelRaw" && e.data) {
+      const prov = (e.data.provider as string) || "";
+      const model = (e.data.model as string) || "";
+      if (prov && model && !modelToProvider.has(model)) modelToProvider.set(model, prov);
+    }
+  }
+  const resolveProvider = (model: string): string =>
+    modelToProvider.get(model) || (model.includes("claude") ? "anthropic" : model ? "openai" : "unknown");
+
   for (const e of events) {
     if (e.event === "AfterModelRaw" && e.data) {
       const prov = (e.data.provider as string) || "unknown";
@@ -121,10 +134,19 @@ export function aggregateProviderHealth(options: {
       acc.requests++;
       const elapsed = (e.data.elapsed_ms as number) || 0;
       if (elapsed > 0) acc.totalLatencies.push(elapsed);
-      const ttft = e.data.ttft_ms as number | undefined;
-      if (ttft && ttft > 0) acc.ttfts.push(ttft);
+      // P0-1：TTFT 不再从 AfterModelRaw.ttft_ms 取（被"可视文本延迟+重试"双重污染，见排查报告 Bug A），
+      // 改由下方 StreamPhase("first_content") 分支收集纯净值。
       const ts = e.timestamp ? new Date(e.timestamp).getTime() : 0;
       if (ts > 0) acc.timestamps.push(ts);
+    }
+
+    // P0-1：TTFT 改从 StreamPhase("first_content") 收集——lifecycle 层每次 fetch 独立计算的首内容延迟
+    if (e.event === "StreamPhase" && e.data && e.data.phase === "first_content") {
+      const model = (e.data.model as string) || "";
+      const prov = resolveProvider(model);
+      if (filterProvider && prov !== filterProvider) continue;
+      const ttft = e.data.ttft_ms as number | undefined;
+      if (ttft && ttft > 0) ensure(prov).ttfts.push(ttft);
     }
 
     if (e.event === "RetryTelemetry" && e.data) {

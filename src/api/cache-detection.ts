@@ -78,6 +78,14 @@ export interface CacheBreakReport {
   previousPrefixHash?: string;
   /** P2-1 诊断：本次请求的 system prompt + tools 前缀 hash */
   currentPrefixHash?: string;
+  /**
+   * P1-2 诊断：本轮响应前是否发生过（loop 级）重试。
+   * 重试会重发相同前缀，但服务端缓存可能已过期或被路由到别的节点 → 命中脱落。
+   * 配合 previousPrefixHash===currentPrefixHash（前缀未变）可分离两类脱落：
+   * - 前缀未变 + 紧跟重试 → 重试触发的服务端缓存丢失（重连副作用）；
+   * - 前缀未变 + 无重试   → 纯服务端缓存波动（网关 TTL 过期 / 路由换节点，本地不可控）。
+   */
+  precededByRetry?: boolean;
 }
 
 /** 输入参数 */
@@ -96,6 +104,11 @@ export interface CacheCheckParams {
   messageCount?: number;
   /** 当前 agentId（子代理隔离用；不传视为主循环 "main"） */
   agentId?: string;
+  /**
+   * P1-2：本轮响应前是否发生过 loop 级重试（timeout/abort 重连）。
+   * 仅用于给 break 归因附加"重试关联"标注，不参与检测阈值判定。
+   */
+  precededByRetry?: boolean;
 }
 
 /** 检测阈值 */
@@ -263,6 +276,7 @@ export class CacheBreakDetector {
       currentCacheReadTokens: params.cacheReadTokens,
       previousPrefixHash: prevPrefixHash,
       currentPrefixHash: currPrefixHash,
+      precededByRetry: params.precededByRetry,
     };
 
     // 更新状态
@@ -375,7 +389,20 @@ export function resetCacheDetection(): void {
 
 /** 将报告格式化为单行日志 */
 export function formatCacheBreakReport(report: CacheBreakReport): string {
-  return `缓存命中下降 ${report.dropPercent}% (${report.dropTokens} tokens): ${report.changes.join("; ")}`;
+  // P1-2：前缀未变时附加"重试关联"标注，分离"重试触发脱落"与"纯服务端波动"两类。
+  // 前缀已变（本地断裂）时不标注——那是本地问题，与重试无关。
+  let retryTag = "";
+  if (report.precededByRetry !== undefined) {
+    const prefixUnchanged =
+      report.previousPrefixHash !== undefined &&
+      report.previousPrefixHash === report.currentPrefixHash;
+    if (prefixUnchanged) {
+      retryTag = report.precededByRetry
+        ? " [前缀未变+紧跟重试→重连触发的服务端缓存丢失]"
+        : " [前缀未变+无重试→纯服务端缓存波动，本地不可控]";
+    }
+  }
+  return `缓存命中下降 ${report.dropPercent}% (${report.dropTokens} tokens): ${report.changes.join("; ")}${retryTag}`;
 }
 
 // ─── D1/D3：最近中断记录环形缓冲 + 健康度建议（供 /cache --breaks 查询） ───
