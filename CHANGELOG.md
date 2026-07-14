@@ -2,7 +2,42 @@
 
 本文件由 scripts/generate-changelog.ts 自动生成，请勿手改。
 
-## v0.1.587 (2026-07-13)
+## v0.1.588 (2026-07-14)
+
+### 新功能
+- 可观测性修复 — TTFT 数据源校准 + 缓存脱落归因 + UX 文案 + 指标体系文档 `c013255`
+  - P0-1（排查报告 Bug A）：TTFT 从被污染的 AfterModelRaw.ttft_ms
+  - 切换到纯净的 StreamPhase("first_content").ttft_ms，
+  - 消除重试/渲染延迟双重污染；
+  - 新增 gen_p50/p95/p99 生成耗时维度，让"慢在生成"显式可见；
+  - avgLatencyMs 渲染标注"整轮耗时"，避免与首字节混淆（Bug B）
+  - P1-2：缓存命中下降归因增加 precededByRetry 字段，前缀未变时
+  - 按"是否紧跟重试"分离两类脱落：重试触发 vs 纯服务端波动
+  - P2：todo gate 中性措辞优化；openai 协议缓存命中率上限提示（60-70% 正常）
+- 码点安全截断 + daemon 防命令注入 + bash 引号诊断 `450bec6`
+  - feat(context): 码点安全的 truncateToolOutput，避免切断 emoji/CJK 扩展区
+  - feat(bash): 新增引号畸形诊断，命令失败时附 heredoc 写法提示
+  - fix(daemon): worker/workspace 改用 execFileSync，消除命令注入风险
+  - test: 补充 sliceByCodePoint 和 quoting-diagnostics 单测
+  - docs: 归档 git-status 快照冻结死循环相关根因分析
+- git-status 快照冻结死循环多方向修复 `a685d07`
+  - 方向 0：新增 --self-check 编译产物自检（bootstrap + self-check 模块），
+  - 在 make build/rebuild 和 release.sh 末尾自动验证关键修复已内联。
+  - 方向 2/4/6：新增 repeated-readonly-guard 模块，检测连续相同只读
+  - 探查命令（git status/diff/log 等）+ 输出稳定不变，先注入携带实时
+  - git 状态的收敛提醒，注满上限仍空转则强制收尾。
+  - 方向 3：非只读命令（git add/commit 等）成功执行后失效 git 状态
+  - 缓存，确保下一次 generateGitStatusAttachment 拿到最新状态。
+  - 补充：loop-detection 默认关闭的决策依据从"对齐 CC"升级为"实测
+- 调整文档位置 `0d882d0`
+- 统一移动测试文件到test目录下 `0bce4df`
+- 调整doc目录结构 `f57dc86`
+- 调整doc目录结构 `77ccf9a`
+
+### 其他
+- doc：更新文档完成状态 `8986c99`
+
+## v0.1.587 (2026-07-14)
 
 ### 新功能
 - MCP instructions 增量注入 + 工具延迟加载豁免 + 缓存冷热判定修复 + paramText 参数检索 + 编辑失败追踪 + cache_creation 成本补落 `a985fd3`
