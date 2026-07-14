@@ -13,7 +13,7 @@ import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { getLogger } from "../debug/index.ts";
 import { isAbortError } from "../llm/errors.ts";
 import { processToolResult } from "../tool/result-storage.ts";
-import { validateToolInput } from "../tool/input-validator.ts";
+import { validateToolInput, buildSchemaNotSentHint } from "../tool/input-validator.ts";
 import { yieldMissingToolResults, collectToolResultIdsFromBlocks } from "../agent/tool-result-guard.ts";
 import { stripInternalFields } from "../tool/internal-fields.ts";
 import type { ToolUseContext } from "../tool/types.ts";
@@ -273,9 +273,10 @@ export async function executeTools(
     const tool = deps.toolRegistry.get(block.name);
     if (!tool) {
       // GAP-12：区分"未激活的 deferred 工具"与"真正不存在的工具"，给出可操作引导。
-      // deferred 工具（存在但未通过 tool_search 激活，schema 未发给模型）若直接返回
-      // "未找到"，模型会陷入"找不到 → 重试 → 还是找不到"死循环。附加"先 tool_search 加载"
-      // 引导让模型能自我修正。对标 claude-code 的 "Load the tool first" 提示。
+      // 注意适用边界：本分支仅在 registry.get() 拿不到实例时进入。**已注册**的延迟工具
+      // （最常见情形——shouldDefer 内置工具、mcp__ 工具）get() 能拿到实例，不走这里，
+      // 而是走到下面的参数校验层，由 buildSchemaNotSentHint 处理「schema 未发送」盲调。
+      // 本分支只兜底"名单标记了 deferred 但从未 register"这类极边缘情形。
       const isDeferred = deps.toolRegistry.isDeferred(block.name);
       const errorContent = isDeferred
         ? `工具 "${block.name}" 存在但尚未加载（schema 未发送）。请先调用 tool_search 工具（参数 query: "select:${block.name}"）激活它，然后重试本次调用。`
@@ -721,12 +722,21 @@ export async function executeSingleTool(
   // 工具未提供 zodSchema 时原样放行（回退到工具内部手工检查）。
   const validation = validateToolInput(tool, effectiveInput);
   if (!validation.ok) {
-    log.info("TOOL", `工具 ${block.name} 参数校验失败: ${validation.message}`);
+    // 「schema 未发送」补救（对标 claude-code buildSchemaNotSentHint）：模型盲调未激活的
+    // 延迟工具、传了畸形参数时，裸 zod 错误会误导它以为是自己参数写错、反复微调猜测。
+    // 追加“先 tool_search 激活拿 schema 再重试”引导，把真正根因讲清楚，让它一步自救。
+    const schemaHint = buildSchemaNotSentHint(tool, {
+      toolSearchEnabled: deps.toolRegistry.isToolSearchEnabled(),
+      isDeferred: deps.toolRegistry.isDeferred(block.name),
+      isActivated: deps.toolRegistry.isActivated(block.name),
+    });
+    const content = schemaHint ? validation.message + schemaHint : validation.message;
+    log.info("TOOL", `工具 ${block.name} 参数校验失败: ${validation.message}${schemaHint ? "（附 schema 未发送引导）" : ""}`);
     return {
       block: {
         type: "tool_result",
         tool_use_id: block.id,
-        content: validation.message,
+        content,
         is_error: true,
       },
     };

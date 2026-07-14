@@ -52,6 +52,34 @@ describe("Registry — 运行时激活（activateTool）", () => {
     expect(r.isActivated("x")).toBe(false);
     expect(r.activeDefinitions().map((d) => d.name)).not.toContain("x");
   });
+
+  test("alwaysLoad 工具：首轮直入 activeDefinitions（不进延迟池）", () => {
+    // 对标 ask_user_question 的加载策略：交互类刚需工具首轮就带完整 schema，
+    // 无需一轮 tool_search 往返，避免模型凭记忆猜参数结构盲调翻车。
+    const r = new Registry();
+    r.register(mkTool("ask", { alwaysLoad: true, searchHint: "ask question" }));
+    expect(r.isDeferred("ask")).toBe(false);
+    expect(r.activeDefinitions().map((d) => d.name)).toContain("ask");
+  });
+
+  test("alwaysLoad 优先级高于 shouldDefer（同时声明时仍首轮可见）", () => {
+    // isToolDeferred 里 alwaysLoad 的 return false 排在 shouldDefer 判定之前。
+    const r = new Registry();
+    r.register(mkTool("both", { alwaysLoad: true, shouldDefer: true }));
+    expect(r.isDeferred("both")).toBe(false);
+    expect(r.activeDefinitions().map((d) => d.name)).toContain("both");
+  });
+});
+
+describe("Registry — 延迟加载定档标志（setToolSearchEnabled）", () => {
+  test("默认 false，setter 往返读回一致", () => {
+    const r = new Registry();
+    expect(r.isToolSearchEnabled()).toBe(false);
+    r.setToolSearchEnabled(true);
+    expect(r.isToolSearchEnabled()).toBe(true);
+    r.setToolSearchEnabled(false);
+    expect(r.isToolSearchEnabled()).toBe(false);
+  });
 });
 
 describe("ToolSearchTool — select: 精确激活", () => {

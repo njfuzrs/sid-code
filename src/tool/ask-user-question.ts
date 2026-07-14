@@ -71,8 +71,22 @@ const askUserQuestionSchema = lazySchema(() =>
 
 export class AskUserQuestionTool implements Tool {
   readonly zodSchema = askUserQuestionSchema();
-  /** 长尾低频工具：仅在需要用户拍板时使用，延迟加载，由 tool_search 按需调出 */
-  readonly shouldDefer = true;
+  /**
+   * 首轮常驻可见（alwaysLoad），不进延迟池。
+   *
+   * 对标 claude-code 的 alwaysLoad 语义：ToolSearch 启用时仍把完整 schema 发进首轮
+   * 上下文，无需一轮 tool_search 往返即可正确调用。
+   *
+   * 为什么不 shouldDefer——尽管本工具确实"低频"，但它是 /commit、/commit-push-pr 等
+   * 内置流程的**刚需**：这些流程的提示词直接点名要求「用 ask_user_question 弹结构化选项」。
+   * 若延迟加载，模型看到工具名却没看到 schema，会凭记忆猜参数结构直接盲调（实测把
+   * `questions: [...]` 猜成 `answers: [...]`），触发参数校验失败→再 tool_search 激活→重试，
+   * 白白多绕一轮。交互类刚需工具首轮直出，省掉这一轮盲调 churn，代价仅首轮多约几百 token。
+   *
+   * 注意：不再声明 shouldDefer——alwaysLoad 与 shouldDefer 语义互斥（registry.isToolDeferred
+   * 里 alwaysLoad 优先级最高会直接 return false），同时声明只会造成阅读困惑。
+   */
+  readonly alwaysLoad = true;
   readonly searchHint = "ask user question choice clarify decision 提问 选择 澄清 决策 选型";
 
   name(): string {

@@ -266,8 +266,17 @@ describe("AskUserQuestionTool", () => {
     expect(tool.isConcurrencySafe()).toBe(false);
   });
 
-  test("shouldDefer 与 searchHint", () => {
-    expect(tool.shouldDefer).toBe(true);
+  test("alwaysLoad 首轮常驻可见，不再声明 shouldDefer（避免盲调翻车）", () => {
+    // 交互类刚需工具（/commit 等内置流程直接点名要用）：首轮就该带完整 schema，
+    // 否则模型看到工具名却没 schema，会凭记忆猜参数结构盲调（实测把 questions 猜成 answers）。
+    // alwaysLoad=true 让它在 ToolSearch 启用时仍首轮可见；shouldDefer 与 alwaysLoad 语义互斥，
+    // 不应同时声明（registry.isToolDeferred 里 alwaysLoad 优先级最高）。
+    expect(tool.alwaysLoad).toBe(true);
+    // shouldDefer 字段已从类上移除；用接口视角断言其为 undefined（未声明）。
+    expect((tool as { shouldDefer?: boolean }).shouldDefer).toBeUndefined();
+  });
+
+  test("searchHint 仍保留（tool_search 关键词匹配兜底）", () => {
     expect(tool.searchHint).toContain("ask user question");
     expect(tool.searchHint).toContain("提问");
   });

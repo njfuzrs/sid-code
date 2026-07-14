@@ -19,6 +19,38 @@ export type ToolInputValidation =
   | { ok: false; message: string };
 
 /**
+ * 「schema 未发送」补救提示（对标 claude-code buildSchemaNotSentHint）。
+ *
+ * 场景：延迟加载（ToolSearch）启用时，未激活的延迟工具其完整 schema **不在**首轮上下文里。
+ * 模型只看到工具名（<available-deferred-tools> 列表），却凭记忆猜参数结构直接盲调——
+ * 典型翻车是把带类型的参数（数组/数字/布尔）猜错结构或猜成字符串，触发 zod 校验失败。
+ *
+ * 此时裸 zod 错误（"questions 期望 array 实际 undefined"）会误导模型以为是自己参数写错、
+ * 反复微调猜测，而**真正根因是它根本没看到 schema**。追加本提示把根因和自救路径讲清楚：
+ * 先 tool_search 激活拿到 schema，再重试。
+ *
+ * 返回 null 表示无需补救（未启用延迟加载 / 工具非延迟池成员 / 已激活 → schema 已发送）。
+ */
+export function buildSchemaNotSentHint(
+  tool: LegacyTool,
+  opts: { toolSearchEnabled: boolean; isDeferred: boolean; isActivated: boolean },
+): string | null {
+  // 三重门控（对标 claude-code：门控失配只多花一轮往返，不会造成错误行为）：
+  // 1. 延迟加载未启用 → 全量工具首轮直出，参数错是模型自己的锅，别误导它去 tool_search
+  // 2. 工具不在延迟池 → schema 本就发了，与「未发送」无关
+  // 3. 工具已激活 → schema 已随激活进入上下文，同样已发送
+  if (!opts.toolSearchEnabled) return null;
+  if (!opts.isDeferred) return null;
+  if (opts.isActivated) return null;
+  return (
+    `\n\n⚠️ 本工具（${tool.name()}）的 schema 尚未发送给你——它是延迟加载工具，` +
+    `当前只有工具名在 <available-deferred-tools> 列表里，完整参数结构不在你的上下文中。` +
+    `没有 schema，你只能凭记忆猜参数，带类型的参数（数组/对象/数字）极易猜错结构。` +
+    `请先调用 tool_search（参数 query: "select:${tool.name()}"）激活它拿到真实 schema，再重试本次调用。`
+  );
+}
+
+/**
  * 用工具的 zodSchema 校验输入。
  *
  * 工具未提供 zodSchema 时返回 { ok: true, data: input } 原样放行（回退到工具内部

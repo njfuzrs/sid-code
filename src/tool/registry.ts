@@ -152,6 +152,19 @@ export class Registry {
    */
   private keepLoadedPatterns: string[] = [];
 
+  /**
+   * 本会话是否启用了工具延迟加载（ToolSearch）。
+   *
+   * 由 queryLoop 首轮定档后经 setToolSearchEnabled 回填（判定逻辑见 loop.ts，只算一次）。
+   * 供 tool-executor 的「schema 未发送」补救判定使用：只有延迟加载启用、且工具确属延迟池、
+   * 且尚未激活时，畸形参数才可能源于「模型没看到 schema」。关闭延迟加载时全量工具首轮直出，
+   * 参数错就是模型自己的锅，不该误导它去 tool_search（对标 claude-code
+   * isToolSearchEnabledOptimistic 门控）。
+   *
+   * 默认 false：未回填（如无头/测试路径）时不触发补救提示，退回裸校验错误，行为保守。
+   */
+  private toolSearchEnabled = false;
+
   // ===== Layer 1：静态注册 =====
 
   /**
@@ -315,6 +328,21 @@ export class Registry {
    */
   setKeepLoaded(patterns: string[] | undefined): void {
     this.keepLoadedPatterns = patterns ?? [];
+  }
+
+  /**
+   * 回填本会话延迟加载定档结果。
+   *
+   * 由 queryLoop 首轮算出 toolSearchEnabled 后调用一次（与 setKeepLoaded 同一延迟注入模式）。
+   * 仅供 tool-executor 的「schema 未发送」补救判定使用。
+   */
+  setToolSearchEnabled(enabled: boolean): void {
+    this.toolSearchEnabled = enabled;
+  }
+
+  /** 本会话是否启用了延迟加载（ToolSearch） */
+  isToolSearchEnabled(): boolean {
+    return this.toolSearchEnabled;
   }
 
   /** 工具是否命中豁免名单（精确名 或 mcp__server__* 通配） */

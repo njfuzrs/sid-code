@@ -7,7 +7,10 @@
 
 import { describe, test, expect } from "bun:test";
 import { z } from "zod/v4";
-import { validateToolInput } from "../../src/tool/input-validator.ts";
+import {
+  validateToolInput,
+  buildSchemaNotSentHint,
+} from "../../src/tool/input-validator.ts";
 import type { LegacyTool } from "../../src/tool/types.ts";
 
 /** 构造一个最小 LegacyTool 桩，可选注入 zodSchema */
@@ -113,5 +116,48 @@ describe("validateToolInput", () => {
       todos: [{ content: "x", status: "BAD" }],
     });
     expect(bad.ok).toBe(false);
+  });
+});
+
+describe("buildSchemaNotSentHint（schema 未发送补救）", () => {
+  const tool = mkTool("ask_user_question");
+
+  test("延迟加载启用 + 工具属延迟池 + 未激活 → 返回引导（点名 tool_search select）", () => {
+    const hint = buildSchemaNotSentHint(tool, {
+      toolSearchEnabled: true,
+      isDeferred: true,
+      isActivated: false,
+    });
+    expect(hint).not.toBeNull();
+    expect(hint).toContain("schema 尚未发送");
+    expect(hint).toContain("tool_search");
+    expect(hint).toContain("select:ask_user_question");
+  });
+
+  test("延迟加载未启用 → 不补救（全量工具首轮直出，参数错是模型自己的锅）", () => {
+    const hint = buildSchemaNotSentHint(tool, {
+      toolSearchEnabled: false,
+      isDeferred: true,
+      isActivated: false,
+    });
+    expect(hint).toBeNull();
+  });
+
+  test("工具不在延迟池 → 不补救（schema 本就发了）", () => {
+    const hint = buildSchemaNotSentHint(tool, {
+      toolSearchEnabled: true,
+      isDeferred: false,
+      isActivated: false,
+    });
+    expect(hint).toBeNull();
+  });
+
+  test("工具已激活 → 不补救（schema 已随激活进入上下文）", () => {
+    const hint = buildSchemaNotSentHint(tool, {
+      toolSearchEnabled: true,
+      isDeferred: true,
+      isActivated: true,
+    });
+    expect(hint).toBeNull();
   });
 });
