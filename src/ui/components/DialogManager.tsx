@@ -161,29 +161,142 @@ function ShellConfirmDialog({ request }: { request: ShellConfirmRequestInfo }) {
   );
 }
 
-/** Plan Mode 审批对话框（轻量版：计划内容已在上方消息区域渲染，底部只显示操作栏） */
+/** Plan Mode 审批对话框（选择列表版：批准/拒绝附意见/取消/自由输入） */
 function PlanApprovalDialog({ request }: { request: PlanApprovalRequestInfo }) {
   const resolvedRef = useRef(false);
+  const [cursor, setCursor] = useState(0);
+  // "拒绝，附修改意见"输入态
+  const [editingFeedback, setEditingFeedback] = useState(false);
+  const [feedbackText, setFeedbackText] = useState("");
+  // "其他…"自由输入态
+  const [editingOther, setEditingOther] = useState(false);
+  const [otherText, setOtherText] = useState("");
+
+  const options = [
+    { label: "批准并执行", action: "approve" },
+    { label: "拒绝，附修改意见", action: "reject-feedback" },
+    { label: "取消（退出计划模式）", action: "cancel" },
+  ];
+  const otherIndex = options.length; // "其他…"行
+  const totalRows = options.length + 1;
+
+  const accent = theme.ui.active;
+
+  const finish = (decision: string) => {
+    if (resolvedRef.current) return;
+    resolvedRef.current = true;
+    request.resolve(decision);
+  };
 
   useKeypress(KeypressPriority.Critical, (key) => {
     if (resolvedRef.current) return false;
-    if (!key.insertable) return false;
-    const lower = key.name;
-    if (lower === "y") { resolvedRef.current = true; request.resolve("approve"); return true; }
-    if (lower === "n") { resolvedRef.current = true; request.resolve("reject"); return true; }
+
+    // 文本输入态：拦截所有按键
+    if (editingFeedback) {
+      if (key.name === "return") {
+        // 提交反馈
+        const text = feedbackText.trim();
+        finish(text ? `reject:${text}` : "reject");
+        return true;
+      }
+      if (key.name === "escape") { setEditingFeedback(false); setFeedbackText(""); return true; }
+      if (key.name === "backspace") { setFeedbackText(t => t.slice(0, -1)); return true; }
+      if (key.insertable && key.name) { setFeedbackText(t => t + key.name); return true; }
+      return true; // 吃掉所有按键
+    }
+    if (editingOther) {
+      if (key.name === "return") {
+        const text = otherText.trim();
+        if (text) finish(`reject:${text}`);
+        return true;
+      }
+      if (key.name === "escape") { setEditingOther(false); setOtherText(""); return true; }
+      if (key.name === "backspace") { setOtherText(t => t.slice(0, -1)); return true; }
+      if (key.insertable && key.name) { setOtherText(t => t + key.name); return true; }
+      return true;
+    }
+
+    // 列表导航态
+    if (key.name === "up" || (key.ctrl && key.name === "p")) {
+      setCursor(c => c <= 0 ? totalRows - 1 : c - 1);
+      return true;
+    }
+    if (key.name === "down" || (key.ctrl && key.name === "n")) {
+      setCursor(c => c >= totalRows - 1 ? 0 : c + 1);
+      return true;
+    }
+    if (key.name === "escape") { finish("cancel"); return true; }
+    if (key.name === "return") {
+      if (cursor < options.length) {
+        const opt = options[cursor];
+        if (opt.action === "approve") { finish("approve"); return true; }
+        if (opt.action === "cancel") { finish("cancel"); return true; }
+        if (opt.action === "reject-feedback") { setEditingFeedback(true); return true; }
+      } else {
+        // "其他…"
+        setEditingOther(true);
+        return true;
+      }
+    }
+    // 快捷键（不在编辑态时）
+    if (key.insertable) {
+      if (key.name === "y") { finish("approve"); return true; }
+      if (key.name === "n") { setEditingFeedback(true); setCursor(1); return true; }
+    }
     return false;
   });
 
   const lineCount = request.planContent.split("\n").length;
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.text.accent} paddingX={1}>
-      <Text color={theme.text.accent} bold>{PLAN_REVIEW} 计划审批</Text>
+    <Box flexDirection="column" borderStyle="round" borderColor={accent} paddingX={1}>
+      <Text color={accent} bold>{PLAN_REVIEW} 计划审批</Text>
       <Text dimColor>文件: {request.planFilePath} ({lineCount} 行)</Text>
-      <Text dimColor>计划内容已显示在上方消息区域，可滚动查看</Text>
-      <Box marginTop={0}>
-        <Text color={theme.status.success} bold> (y)</Text><Text>批准并执行 </Text>
-        <Text color={theme.status.error} bold> (n)</Text><Text>拒绝并修改</Text>
+      <Box flexDirection="column" marginTop={1}>
+        {options.map((opt, i) => {
+          const focused = cursor === i && !editingFeedback && !editingOther;
+          return (
+            <Box key={opt.action}>
+              <Box width={4} flexShrink={0}>
+                <Text color={focused ? accent : theme.text.secondary}>
+                  {focused ? POINTER : " "}{focused ? RADIO_SELECTED : RADIO_EMPTY}
+                </Text>
+              </Box>
+              <Text color={focused ? accent : undefined} bold={focused}>{opt.label}</Text>
+            </Box>
+          );
+        })}
+        {/* "其他…"行 */}
+        <Box>
+          <Box width={4} flexShrink={0}>
+            <Text color={cursor === otherIndex && !editingFeedback && !editingOther ? accent : theme.text.secondary}>
+              {cursor === otherIndex && !editingFeedback && !editingOther ? POINTER : " "}{cursor === otherIndex && !editingFeedback && !editingOther ? RADIO_SELECTED : RADIO_EMPTY}
+            </Text>
+          </Box>
+          <Text color={cursor === otherIndex && !editingFeedback && !editingOther ? accent : theme.text.secondary} bold={cursor === otherIndex && !editingFeedback && !editingOther}>其他…</Text>
+        </Box>
+      </Box>
+      {/* 反馈文本输入区 */}
+      {editingFeedback && (
+        <Box paddingLeft={2} marginTop={0}>
+          <Text color={accent}>{ARROW_PROMPT} 修改意见: </Text>
+          <Text>{feedbackText}</Text>
+          <Text color={accent}>{CURSOR}</Text>
+        </Box>
+      )}
+      {editingOther && (
+        <Box paddingLeft={2} marginTop={0}>
+          <Text color={accent}>{ARROW_PROMPT} </Text>
+          <Text>{otherText}</Text>
+          <Text color={accent}>{CURSOR}</Text>
+        </Box>
+      )}
+      <Box marginTop={1}>
+        <Text dimColor>
+          {editingFeedback || editingOther
+            ? "Enter 提交 · Esc 返回"
+            : "↑↓ 移动 · Enter 选择 · y 批准 · n 拒绝 · Esc 取消"}
+        </Text>
       </Box>
     </Box>
   );

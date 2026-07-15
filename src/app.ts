@@ -2605,20 +2605,34 @@ export class App {
         // W12.D2 / ADR-017：批准消息嵌入失败更新执行守则
         // 因为 deactivatePlanMode 后系统提示词的 plan prompt（含阶段 5）会被移除，
         // 批准消息是 LLM 进入执行阶段唯一保留的"plan 上下文锚点"
+        // 用 <system-reminder> 包裹，阻止 TUI 渲染（isInternalOnlyText 识别）
         const { buildPlanApprovedMessage } = await import("./plan/prompt.ts");
         return [{
           type: "text",
-          text: buildPlanApprovedMessage(planPath || "", this.countPlanSteps(planPath)),
+          text: `<system-reminder>\n${buildPlanApprovedMessage(planPath || "", this.countPlanSteps(planPath))}\n</system-reminder>`,
         }];
+      } else if (decision === "cancel") {
+        // 用户取消：退出 plan mode，不注入任何 followup
+        this.planManager.forceExit();
+        await this.deactivatePlanMode();
+        log.info("PLAN", "用户取消计划，退出 Plan Mode");
+        return null;
       } else {
+        // reject（可能带 feedback）
+        const feedback = typeof decision === "string" && decision.startsWith("reject:")
+          ? decision.slice("reject:".length).trim()
+          : "";
         const canContinue = this.planManager.reject();
         if (canContinue) {
           const count = this.planManager.getRejectionCount();
           log.info("PLAN", `用户拒绝计划 (${count}/5)，继续修改`);
           // 注入拒绝反馈，让 LLM 知道需要修改计划
+          const feedbackLine = feedback
+            ? `\n\n用户的修改意见：${feedback}`
+            : "";
           return [{
             type: "text",
-            text: `用户拒绝了你的计划（第 ${count} 次）。请根据用户反馈修改计划文件，然后再次调用 exit_plan_mode 提交审批。`,
+            text: `<system-reminder>\n用户拒绝了你的计划（第 ${count} 次）。请根据用户反馈修改计划文件，然后再次调用 exit_plan_mode 提交审批。${feedbackLine}\n</system-reminder>`,
           }];
         } else {
           await this.deactivatePlanMode();
@@ -2636,7 +2650,7 @@ export class App {
       const { buildPlanApprovedMessage } = await import("./plan/prompt.ts");
       return [{
         type: "text",
-        text: buildPlanApprovedMessage(planPath || "", this.countPlanSteps(planPath)),
+        text: `<system-reminder>\n${buildPlanApprovedMessage(planPath || "", this.countPlanSteps(planPath))}\n</system-reminder>`,
       }];
     }
   }
@@ -2722,8 +2736,8 @@ export class App {
     log.info("PERMISSION", `Shift+Tab 切换权限模式 → ${next}（skipPerms=${this.config.skipPermissions} yesMode=${this.config.yesMode}）`);
   }
 
-  /** TUI 模式下的 Plan Mode 审批回调，返回 "approve" | "reject" */
-  private tuiPlanApprovalCallback: ((planFilePath: string) => Promise<"approve" | "reject">) | null = null;
+  /** TUI 模式下的 Plan Mode 审批回调，返回决策字符串：approve / cancel / reject / reject:修改意见 */
+  private tuiPlanApprovalCallback: ((planFilePath: string) => Promise<string>) | null = null;
 
   /** /export 面板执行导出（Dialog 回调） */
   private exportConversation(target: "clipboard" | "file", format: "md" | "json" | "both"): void {
@@ -2750,7 +2764,7 @@ export class App {
   }
 
   /** 设置 Plan Mode 审批回调（由 TUI 注入） */
-  setPlanApprovalCallback(cb: (planFilePath: string) => Promise<"approve" | "reject">): void {
+  setPlanApprovalCallback(cb: (planFilePath: string) => Promise<string>): void {
     this.tuiPlanApprovalCallback = cb;
   }
 
@@ -3704,7 +3718,7 @@ export class App {
 
     // 设置 TUI Plan Mode 审批回调
     this.setPlanApprovalCallback(async (planFilePath) => {
-      return new Promise<"approve" | "reject">((resolve) => {
+      return new Promise<string>((resolve) => {
         log.info("TUI:PLAN", `显示 Plan 审批对话框: ${planFilePath}`);
         // 读取计划文件内容
         let planContent = "";
@@ -3726,7 +3740,7 @@ export class App {
         const prevHistoryItems = bridge.current.historyItems;
         updateState({ historyItems: [...prevHistoryItems, planHistoryItem] });
 
-        const wrappedResolve = (decision: "approve" | "reject") => {
+        const wrappedResolve = (decision: string) => {
           log.info("TUI:PLAN", `Plan 审批响应: ${decision}`);
           updateState({ planApprovalRequest: null });
           resolve(decision);

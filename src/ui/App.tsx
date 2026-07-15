@@ -132,7 +132,7 @@ export interface ShellConfirmRequestInfo {
 export interface PlanApprovalRequestInfo {
   planFilePath: string;
   planContent: string;
-  resolve: (decision: "approve" | "reject") => void;
+  resolve: (decision: string) => void;
 }
 
 /** AskUserQuestion 单题（投影给 UI 的展示结构，不直接依赖工具层类型） */
