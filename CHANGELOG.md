@@ -2,6 +2,50 @@
 
 本文件由 scripts/generate-changelog.ts 自动生成，请勿手改。
 
+## v0.1.589 (2026-07-15)
+
+### 新功能
+- **plan** · Plan 审批对话框升级为多选项列表，支持取消和附意见拒绝 `efcea8c`
+  - 审批回调类型从二值字面量改为 string，支持 cancel / reject:feedback 等扩展决策
+  - 新增 cancel 分支：退出 Plan Mode 并记录日志
+  - 新增 reject 带 feedback 解析：注入用户修改意见到 LLM 上下文
+  - 消息统一用 <system-reminder> 包裹，阻止 TUI 意外渲染
+  - PlanApprovalDialog 从 Y/N 升级为选择列表：批准 / 拒绝附意见 / 取消 / 其他…
+  - 支持键盘导航（↑↓ 移动、Enter 选择、y/n 快捷键、Esc 取消）和文本输入态
+- **tool** · 延迟加载工具「schema 未发送」补救机制 + ask_user_question 首轮可见 `a0bfdaf`
+  - 新增 buildSchemaNotSentHint：参数校验失败时判断是否因 schema 未发送， 追加"先 tool_search 激活"引导，避免模型盲调反复微调参数
+  - registry 新增 toolSearchEnabled 标志，由 queryLoop 首轮回填， 供 tool-executor 做门控判断
+  - executeSingleTool 参数校验失败时调用 buildSchemaNotSentHint 追加补救
+  - ask_user_question 改为 alwaysLoad（首轮带完整 schema）， 作为 /commit 等内置流程的刚需工具，避免盲调翻车
+
+### 修复
+- **ui** · 调整审批对话框选项列表间距，修复图标拥挤 `d39488a`
+  - 将选项图标区域宽度从 4→5，并在指针图标与单选图标之间
+  - 补充空格，改善视觉间距。
+- **ui** · 统一快捷键提示显示逻辑，Composer 不再独立判断 `dd53fb6`
+  - DialogSwitch 透传 hideShortcutsHint={true}，不再依赖 isEmpty 动态判断是否显示 Composer 的快捷键提示
+  - 快捷键提示统一由顶部 AppHeader/EmptyLogo 控制，避免重复
+- **ui** · 修复幽灵行残留 — 终端任务驱逐兜底 + 动态区活项视口封顶 `6382ebf`
+  - queryLoop finally 收尾驱逐：主循环终止后不再依赖下一轮循环触发驱逐
+  - evictTerminalTasks 增加 force 参数：支持忽略缓冲期强制驱逐
+  - App.tsx 独立 1s 定时器驱逐兜底：对标 cc CoordinatorAgentStatus，不依赖主循环
+  - 动态区 live 活项视口封顶：按视口预算尾部截断，根治并行多工具时 executing 行溢出 scrollback
+  - MainScreenLayout 隐藏工具摘要：折叠超预算活项时显示"… +N 个工具执行中"
+
+### 重构
+- **ui** · 提取 isEnter 变量消除 key.name 重复比较 `2df8348`
+  - 将 3 处 key.name === "return" 提取为 isEnter 常量，
+  - 集中处理回车键判断，减少重复代码。
+- **plan** · Plan 文件命名从词汇 slug 改为语义命名（时间戳 + 主题 + 项目子目录） `8176107`
+  - 新增 formatPlanTime / resolvePlanProject / sanitizeProjectName / sanitizePlanTopic 函数
+  - Plan 路径改为 plans/{项目名}/{YYYYMMDD-HHmm}-{主题}.md 结构
+  - enter-plan-mode 工具增加 topic 参数，支持中文主题命名
+  - 更新测试覆盖新命名逻辑
+- **tool** · ask_user_question 注册策略注释完善与代码顺序整理 `6ab2d4c`
+
+### 其他
+- doc: 更新参考文档内容 `b6edc1f`
+
 ## v0.1.588 (2026-07-14)
 
 ### 新功能
