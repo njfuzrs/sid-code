@@ -191,9 +191,11 @@ function PlanApprovalDialog({ request }: { request: PlanApprovalRequestInfo }) {
   useKeypress(KeypressPriority.Critical, (key) => {
     if (resolvedRef.current) return false;
 
+    const isEnter = key.name === "return" || key.name === "enter";
+
     // 文本输入态：拦截所有按键
     if (editingFeedback) {
-      if (key.name === "return") {
+      if (isEnter) {
         // 提交反馈
         const text = feedbackText.trim();
         finish(text ? `reject:${text}` : "reject");
@@ -205,7 +207,7 @@ function PlanApprovalDialog({ request }: { request: PlanApprovalRequestInfo }) {
       return true; // 吃掉所有按键
     }
     if (editingOther) {
-      if (key.name === "return") {
+      if (isEnter) {
         const text = otherText.trim();
         if (text) finish(`reject:${text}`);
         return true;
@@ -226,7 +228,7 @@ function PlanApprovalDialog({ request }: { request: PlanApprovalRequestInfo }) {
       return true;
     }
     if (key.name === "escape") { finish("cancel"); return true; }
-    if (key.name === "return") {
+    if (isEnter) {
       if (cursor < options.length) {
         const opt = options[cursor];
         if (opt.action === "approve") { finish("approve"); return true; }
