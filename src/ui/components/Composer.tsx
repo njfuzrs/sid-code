@@ -153,7 +153,7 @@ interface ComposerProps {
   onExitRequest?: () => void;
   /** Shift+Tab 权限模式循环切换回调，透传给 InputArea。 */
   onCyclePermissionMode?: () => void;
-  /** 空会话时 EmptyLogo 已显示快捷键提示，Composer 不再重复 */
+  /** 隐藏 Composer 上方的快捷键提示。当前恒为 true —— 快捷键提示统一由顶部 AppHeader/EmptyLogo 显示，Composer 不再重复 */
   hideShortcutsHint?: boolean;
 }
 

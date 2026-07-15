@@ -249,7 +249,7 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
       queuedCount={queuedCount}
       onExitRequest={onExitRequest}
       onCyclePermissionMode={onCyclePermissionMode}
-      hideShortcutsHint={isEmpty}
+      hideShortcutsHint={true}
     />
   );
 };
