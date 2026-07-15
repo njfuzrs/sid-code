@@ -1043,7 +1043,9 @@ describe("capLiveToolItems — 动态区 live 活项视口封顶（防 scrollbac
     const live = [shellGroup(1), shellGroup(2)];
     const { visible, hiddenToolCount } = capLiveToolItems(live, 3);
     expect(visible.map(i => i.id)).toEqual([2]);
-    expect(hiddenToolCount).toBe(2); // 折叠的 shellGroup(1) 估 2 行/工具，但 hiddenToolCount 计工具行数
+    // hiddenToolCount 计**工具个数**（供「另有 N 个工具执行中」文案），非行数：
+    // 折叠的 shellGroup(1) 虽估 2 行，但只含 1 个工具 → 摘要应显示 1。
+    expect(hiddenToolCount).toBe(1);
   });
 
   test("带 MCP 进度的工具按 2 行估算", () => {
@@ -1055,7 +1057,8 @@ describe("capLiveToolItems — 动态区 live 活项视口封顶（防 scrollbac
     // 预算 2 → 进度工具(2行)放不下与普通工具(1行)共存，保留尾部普通工具，折叠进度工具
     const r2 = capLiveToolItems(live, 2);
     expect(r2.visible.map(i => i.id)).toEqual([2]);
-    expect(r2.hiddenToolCount).toBe(2);
+    // 折叠的 progressGroup(1) 含 1 个工具 → 摘要计 1（工具数，非 2 行）。
+    expect(r2.hiddenToolCount).toBe(1);
   });
 
   test("shell/progress 混合：可见项实际行数（按 estimateToolRows）永不超过 maxRows", () => {
@@ -1068,5 +1071,24 @@ describe("capLiveToolItems — 动态区 live 活项视口封顶（防 scrollbac
         : 1;
     const visibleRows = visible.reduce((s, it) => s + rowsOf(it), 0);
     expect(visibleRows).toBeLessThanOrEqual(maxRows);
+  });
+
+  test("shell 多行实时输出：折叠时 hiddenToolCount 计工具数而非行数（防「1 个工具显示成 N 个」）", () => {
+    // bash 工具带 8 行 tail 快照 → estimateToolRows = 2 + 8 = 10 行，远超预算被整体折叠。
+    // 旧实现误把行数(10)当 hiddenToolCount → 摘要显示「另有 10 个工具执行中」，实际只有 1 个。
+    const bashWithLongOutput = (id: number): HistoryItem => ({
+      id,
+      type: "tool_group",
+      tools: [{
+        callId: `id-${id}`, name: "bash", description: "", status: ToolCallStatus.Executing,
+        resultDisplay: undefined,
+        progressMessage: Array.from({ length: 8 }, (_, i) => `行${i}`).join("\n"),
+      }],
+    }) as HistoryItem;
+    // 预算 3：10 行的 bash 放不下 → 与尾部普通工具二选一，bash 被折叠。
+    const live = [bashWithLongOutput(1), oneToolGroup(2, "read")];
+    const { visible, hiddenToolCount } = capLiveToolItems(live, 3);
+    expect(visible.map(i => i.id)).toEqual([2]);
+    expect(hiddenToolCount).toBe(1); // 1 个 bash 工具，不是 10 行
   });
 });

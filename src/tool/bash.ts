@@ -46,6 +46,46 @@ const MAX_OUTPUT_LENGTH = 30000;
 const BACKGROUND_DELAY_MS = 200;
 
 /**
+ * 前台命令实时进度节流间隔（毫秒）。
+ * bun test / 构建等命令每秒可输出数百行，逐行 emit 会把 React 重渲打爆并触发全屏闪烁
+ *（见 src/ui/CLAUDE.md L3.4）。攒够一个间隔再吐一次尾部，兼顾"实时感"与渲染成本。
+ */
+const PROGRESS_THROTTLE_MS = 120;
+
+/**
+ * 实时进度只回传输出的**尾部 N 行**（对齐 CLAUDE.md L3.4「流式内容按视口高度 tail 截断」）。
+ * 执行中的工具卡片是单行 header 下的一小块活动区，喂全量输出既无必要也会撑爆动态区高度。
+ * 完整输出仍在命令结束后作为 tool_result 一次性返回，不受此截断影响。
+ *
+ * 取 5 行(而非更多)是为了与动态区高度预算解耦：单个 shell 活项估算 = header + 命令行 + 进度行
+ * ≈ 2 + 5 = 7 行，让 capLiveToolItems 的预算门槛降到 rows≥21（覆盖多数分屏终端），
+ * 避免小终端下整项被折叠成摘要、实时输出被静默关闭（见 history-adapter.estimateToolRows）。
+ */
+const PROGRESS_TAIL_LINES = 5;
+
+/** 单行进度尾部的最大字符数（窄终端兜底，避免超长单行破坏对齐）。 */
+const PROGRESS_LINE_MAX_CHARS = 200;
+
+/**
+ * 从累积的完整输出里取"最近 N 行、每行至多 M 字符"的尾部快照，作为实时进度文本。
+ * 纯函数：只做字符串切分，不改状态。空输出返回空串（调用方据此跳过 emit）。
+ */
+function tailProgressSnapshot(fullOutput: string): string {
+  if (!fullOutput) return "";
+  const lines = fullOutput.split("\n");
+  // 末尾若是空行（输出以 \n 结尾），去掉它再取尾部，避免最后一行永远是空白。
+  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  const tail = lines.slice(-PROGRESS_TAIL_LINES);
+  return tail
+    .map((line) =>
+      line.length > PROGRESS_LINE_MAX_CHARS
+        ? `${line.slice(0, PROGRESS_LINE_MAX_CHARS)}…`
+        : line,
+    )
+    .join("\n");
+}
+
+/**
  * 是否以 detached 模式 spawn（子进程独立进程组，便于进程树 kill）。
  * 仅 POSIX 启用：Windows 下 detached 会弹出可见控制台窗口，且无进程组概念，
  * 其进程树清理依赖 killProcessTree 内的 taskkill /T（走真实父子关系），无需 detached。
@@ -347,7 +387,11 @@ export class BashTool implements Tool {
     }
   }
 
-  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
+  async execute(
+    input: unknown,
+    signal?: AbortSignal,
+    onProgress?: (event: import("./types.ts").ToolProgressData) => void,
+  ): Promise<ToolResult> {
     const log = getLogger();
     const params = input as {
       command: string;
@@ -441,11 +485,70 @@ export class BashTool implements Tool {
       signal?.addEventListener("abort", abortHandler);
 
       try {
-        const [stdout, stderr] = await Promise.all([
-          new Response(proc.stdout).text(),
-          new Response(proc.stderr).text(),
+        // 流式增量读取（替代旧的 `new Response(proc.stdout).text()` 一次性 await）。
+        //
+        // 旧实现憋到进程退出才拿到完整输出——长命令（bun test / 构建 / git clone）执行
+        // 数十秒内 TUI 只显示 `⏺ bash (执行中…)`、零输出，用户无从判断是否卡死。
+        // 改为并发读 stdout/stderr 两个流，边读边累积，并节流把"尾部快照"经 onProgress
+        // 上报给执行中的工具卡片（见 app.ts liveToolOutput 侧信道）。
+        //
+        // 关键不变量（不能改坏）：
+        // - 完整输出仍在命令结束后一次性返回（进度只是尾部预览，不替代最终 tool_result）；
+        // - 超时/abort 杀进程树后 reader 会读到 done，pump 正常收尾，不泄漏；
+        // - stdout/stderr 分别累积，最终合并逻辑与旧实现一致。
+        let stdout = "";
+        let stderr = "";
+        let lastEmit = 0;
+        let lastEmitted = "";
+
+        // 节流 emit：攒够 PROGRESS_THROTTLE_MS 才吐一次尾部快照，且内容有变化才发。
+        // force=true 用于流结束时的最后一次补发，确保最终尾部不因节流被吞。
+        const emitProgress = (force: boolean) => {
+          if (!onProgress) return;
+          const nowMs = Date.now();
+          if (!force && nowMs - lastEmit < PROGRESS_THROTTLE_MS) return;
+          // 合并 stdout+stderr 取尾部（用户视角不区分两个流，跟最终输出的拼接顺序一致）。
+          const combined = stderr ? (stdout ? `${stdout}\n${stderr}` : stderr) : stdout;
+          const snapshot = tailProgressSnapshot(combined);
+          if (!snapshot || snapshot === lastEmitted) return;
+          lastEmit = nowMs;
+          lastEmitted = snapshot;
+          try {
+            onProgress({ type: "output", text: snapshot });
+          } catch { /* 进度上报失败不影响命令执行 */ }
+        };
+
+        // 单个流的抽水循环：解码 chunk 累积到目标 buffer，每 chunk 后尝试节流 emit。
+        const pump = async (
+          stream: ReadableStream<Uint8Array>,
+          append: (text: string) => void,
+        ): Promise<void> => {
+          const reader = stream.getReader();
+          const decoder = new TextDecoder();
+          try {
+            for (;;) {
+              const { value, done } = await reader.read();
+              if (done) break;
+              if (value) {
+                append(decoder.decode(value, { stream: true }));
+                emitProgress(false);
+              }
+            }
+            // flush 解码器残留的多字节字符尾巴
+            const tail = decoder.decode();
+            if (tail) append(tail);
+          } finally {
+            try { reader.releaseLock(); } catch { /* 已释放 */ }
+          }
+        };
+
+        await Promise.all([
+          pump(proc.stdout, (t) => { stdout += t; }),
+          pump(proc.stderr, (t) => { stderr += t; }),
         ]);
         const exitCode = await proc.exited;
+        // 命令结束：强制补发最后一次尾部，确保最终几行不被节流吞掉。
+        emitProgress(true);
 
         // CWD 追踪写回：仅前台、未取消、未超时、退出码 0 时写回全局 cwd。
         this.applyCwdTracking(cwdFile, !aborted && !timedOut && exitCode === 0);

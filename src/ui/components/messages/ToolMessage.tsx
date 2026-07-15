@@ -99,7 +99,10 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
         description={hasShellCommand ? "" : description}
         status={status}
         emphasis={emphasis}
-        progressMessage={progressMessage}
+        // shell 工具的实时输出是多行 tail 快照，塞进单行 header 会被截断——改在命令行下方
+        // 以独立多行块展示（见 shellLiveOutputSection）。故 header 只给非 shell 工具（如
+        // MCP 工具的单行进度）显示 progressMessage。
+        progressMessage={hasShellCommand ? undefined : progressMessage}
         resultSummary={shouldExpandContent ? undefined : resultSummary}
         elapsedMs={elapsedMs}
       />
@@ -158,7 +161,30 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
       </Box>
     ) : null;
 
-  // 无结果也无 shell 命令：紧凑模式只有 header
+  // Shell 实时输出区域：执行中的 bash/shell 工具，把 progressMessage（stdout/stderr 尾部
+  // 快照，多行）展示在命令行下方，让 `bun test` 这类长命令不再"卡在无输出"。
+  // 仅 executing 态且有进度文本时出现；命令结束后由真实 resultDisplay 接管（progressMessage
+  // 不再注入）。灰色 + 2 空格缩进，与命令行、结果区的视觉节奏一致。
+  const hasShellLiveOutput =
+    hasShellCommand && status === "executing" && !!progressMessage;
+  // progressMessage 是多行尾部快照，逐行渲染（每行独立 truncate-end 兜底窄终端）。
+  const shellLiveLines = hasShellLiveOutput ? progressMessage!.split("\n") : [];
+  const shellLiveOutputSection = hasShellLiveOutput ? (
+    <Box flexDirection="row">
+      <Box flexShrink={0}>
+        <Text color={theme.text.secondary} dimColor>{`  ${TREE_BRANCH} `}</Text>
+      </Box>
+      <Box flexDirection="column" flexGrow={1}>
+        {shellLiveLines.map((line, i) => (
+          <Text key={i} color={theme.text.secondary} dimColor wrap="truncate-end">
+            {line || " "}
+          </Text>
+        ))}
+      </Box>
+    </Box>
+  ) : null;
+
+  // 无结果、无 shell 命令、无实时输出：紧凑模式只有 header
   if (!shouldExpandContent && !hasShellCommand) {
     return header;
   }
@@ -168,6 +194,7 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
     <Box width={terminalWidth} flexDirection="column">
       {header}
       {shellCommandSection}
+      {shellLiveOutputSection}
       {shouldExpandContent && (
         <Box flexDirection="row">
           <Box flexShrink={0}>

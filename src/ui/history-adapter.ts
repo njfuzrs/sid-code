@@ -92,14 +92,36 @@ function isShellToolName(name: string): boolean {
 }
 
 /**
+ * shell 实时输出在行数预算里的上限。与 bash 侧 PROGRESS_TAIL_LINES（当前 5）一致，
+ * 但独立定义于此：即使上游 tail 调大，估算高度也不失控。取 5 使单个 shell 活项估算
+ * ≈ 2 + 5 = 7 行，capLiveToolItems 预算门槛降到 rows≥21，覆盖多数分屏终端。
+ */
+const SHELL_PROGRESS_ROW_CAP = 5;
+
+/**
  * 估算单个 executing 态工具在动态区占用的终端行数（对齐 ToolMessage 的实际渲染）：
- * - shell 工具：header + 独立命令行区 ≈ 2 行（窄终端命令截断时还会多 1 行摘要，故按 2 起）
- * - 带 MCP 进度消息的工具：header + 进度行 ≈ 2 行
- * - 普通工具：仅 header ≈ 1 行
- * 宁可略高估（多截、少显示）也不能低估——低估会让视口封顶偏松、动态区溢出 scrollback。
+ * - shell 工具 + 实时输出：header + 命令行 + 进度尾部各行（ToolMessage 逐行渲染 progressMessage），
+ *   按 2 + 进度行数估算；
+ * - shell 工具无实时输出：header + 独立命令行区 ≈ 2 行（窄终端命令截断时还会多 1 行摘要，故按 2 起）；
+ * - 带 MCP 进度消息的工具：header + 进度行 ≈ 2 行；
+ * - 普通工具：仅 header ≈ 1 行。
+ * 宁可略高估（多截、少显示）也不能低估——低估会让视口封顶偏松、动态区溢出 scrollback（幽灵行残留）。
  */
 function estimateToolRows(tool: { name: string; progressMessage?: string }): number {
-  if (isShellToolName(tool.name)) return 2;
+  if (isShellToolName(tool.name)) {
+    // shell 实时输出逐行渲染在命令行下方（见 ToolMessage.shellLiveOutputSection）：
+    // header(1) + 命令行(1) + progressMessage 的行数。progressMessage 缺省时按 2 起。
+    // 进度行数设上限 SHELL_PROGRESS_ROW_CAP：与 bash 侧 PROGRESS_TAIL_LINES 解耦，即使
+    // 上游 tail 调大，单个 shell 活项的估算高度也不会失控挤占其它并发工具的动态区预算。
+    if (tool.progressMessage) {
+      const progressLines = Math.min(
+        tool.progressMessage.split("\n").length,
+        SHELL_PROGRESS_ROW_CAP,
+      );
+      return 2 + progressLines;
+    }
+    return 2;
+  }
   if (tool.progressMessage) return 2;
   return 1;
 }
@@ -112,6 +134,18 @@ function estimateToolRows(tool: { name: string; progressMessage?: string }): num
 function estimateLiveItemRows(item: HistoryItem): number {
   if (item.type === "tool_group") {
     return Math.max(1, item.tools.reduce((sum, t) => sum + estimateToolRows(t), 0));
+  }
+  return 1;
+}
+
+/**
+ * 统计一个 live 活项包含的**工具个数**（供「另有 N 个工具执行中」摘要文案）。
+ * tool_group 计组内 tools 数，其它活项计 1。与 estimateLiveItemRows（行数预算）区分：
+ * 预算算行数、摘要算工具数，二者语义不同不可混用。
+ */
+function countLiveItemTools(item: HistoryItem): number {
+  if (item.type === "tool_group") {
+    return Math.max(1, item.tools.length);
   }
   return 1;
 }
@@ -140,7 +174,8 @@ export function capLiveToolItems(
   live: HistoryItem[],
   maxRows: number,
 ): { visible: HistoryItem[]; hiddenToolCount: number } {
-  const totalToolCount = live.reduce((sum, it) => sum + estimateLiveItemRows(it), 0);
+  // 摘要文案计工具数（非行数）——见下方 hiddenToolCount 注释。
+  const totalToolCount = live.reduce((sum, it) => sum + countLiveItemTools(it), 0);
 
   // 预算充足：全部可见，无折叠。
   if (maxRows > 0) {
@@ -158,9 +193,13 @@ export function capLiveToolItems(
     if (visible.length === live.length) {
       return { visible, hiddenToolCount: 0 };
     }
+    // 摘要文案是「另有 N 个工具执行中」，故 N 必须是**工具个数**而非行数。
+    // 此前误累加 estimateLiveItemRows（行数）——单工具占 1-2 行时误差不明显，但 shell
+    // 实时输出让单工具最多占 ~10 行，折叠时会把「1 个工具」显示成「10 个工具」。改为
+    // 累加各折叠活项的真实工具数（tool_group 计组内 tools 数，其它活项计 1）。
     const hiddenToolCount = live
       .slice(0, cutoff)
-      .reduce((sum, it) => sum + estimateLiveItemRows(it), 0);
+      .reduce((sum, it) => sum + countLiveItemTools(it), 0);
     return { visible, hiddenToolCount };
   }
 

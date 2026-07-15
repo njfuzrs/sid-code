@@ -714,10 +714,33 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
   // 从 Static 剥离——否则它被一次性打印进 scrollback，工具完成后 log-update 的 cell diff
   // 擦不掉已滚出视口的旧行，导致 `⏺ task_list`/`⏺ task_output` 幽灵行永久残留。
   // 剥出的 live 项改由动态区渲染（每帧重绘、永不提交 scrollback）。
-  const { committed: committedHistoryItems, live: liveToolItemsRaw } = useMemo(
+  const { committed: committedRaw, live: liveToolItemsRaw } = useMemo(
     () => splitLiveToolItems(state.historyItems),
     [state.historyItems],
   );
+  // committed 数组引用稳定化（配合 bash 实时输出的轻量刷新路径 refreshLiveProgressInPlace）：
+  // 纯进度刷新会换 state.historyItems 引用 → 上面的 split memo 重跑 → committedRaw 每次是新数组，
+  // 即使其内容（各已完成项对象）完全没变。而本 fork 的 <Static> 仅按 items 引用 memo（不做
+  // index 增量），committedRaw 引用一变就会全量重渲整个 scrollback 历史。这里用 ref 缓存：
+  // 当长度与每个 item 引用都未变时返回上一次的数组引用，让 staticItems / Static 跳过重渲。
+  // 正确性：messagesToHistoryItems 每次全量 new 对象，committed 项内容一变其引用必变；轻量路径
+  // 只改 live tool_group、从不碰 committed 项 → "引用不变 ⟺ 内容不变"，比较是充分的。
+  // usePrevious/dedupe 惯用法：useMemo 计算期写 committedRef 是一处受控的"自引用缓存"。
+  // 本仓无 StrictMode（不双调用 useMemo），且同步 reconciler 无并发撕裂，故安全。即使未来
+  // 引入 StrictMode 双调用也幂等：第一次判"变了"→写 ref 返回 committedRaw；第二次 prev 已
+  // ===committedRaw → 走相等分支返回 prev（同一引用），ref 终值与返回值都一致，不会写脏。
+  const committedRef = useRef<HistoryItem[]>(committedRaw);
+  const committedHistoryItems = useMemo(() => {
+    const prev = committedRef.current;
+    if (
+      prev.length === committedRaw.length &&
+      prev.every((it, i) => it === committedRaw[i])
+    ) {
+      return prev;
+    }
+    committedRef.current = committedRaw;
+    return committedRaw;
+  }, [committedRaw]);
   // 动态区 live 活项视口封顶（根治幽灵行残留）：live 活项虽在动态区渲染，但动态区同样受
   // log-update"擦不掉 scrollback"的物理限制（见 capLiveToolItems / MainScreenLayout 注释）。
   // 并行多工具时若 live 活项高度超过视口，早期 executing 行会溢出 scrollback 永久残留。

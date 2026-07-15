@@ -2413,11 +2413,20 @@ export class App {
         return buildPlanModeReminder(this.planManager.nextReminderIsFull());
       },
       discoverJitContext: (toolBlocks) => this.discoverJitContext(toolBlocks),
-      // G5 接线：长跑工具的中间进度路由到状态栏（无头模式下 statusNotifier 为 null，安全跳过）。
+      // G5 接线：长跑工具的中间进度。
+      // - bash/shell 工具的 output 事件（执行中的 stdout/stderr 尾部）→ 路由到执行中的工具卡片，
+      //   在 header 下方以 progressMessage 实时展示，让 `bun test` 这类长命令不再"卡在无输出"。
+      // - 其它工具的 MCP 进度 → 仍走状态栏 2s 临时提示（保持原行为）。
+      // 无头模式下 statusNotifier / liveToolProgressSink 均为 null，安全跳过。
       onToolProgress: (toolName, toolUseId, event) => {
         const msg = typeof (event as any).message === "string"
           ? (event as any).message
           : (typeof (event as any).text === "string" ? (event as any).text : event.type);
+        const isShell = toolName === "bash" || toolName === "shell" || toolName === "execute_command";
+        if (isShell && this.liveToolProgressSink && typeof (event as any).text === "string") {
+          this.liveToolProgressSink(toolUseId, (event as any).text);
+          return;
+        }
         this.statusNotifier?.(`tool_progress_${toolUseId}`, `${toolName}: ${msg}`, 2000);
       },
       // P1-7：把工具修改的文件落盘到会话 JSONL metadata，供 resume 重建文件修改上下文。
@@ -2683,6 +2692,21 @@ export class App {
    * cyclePermissionMode）也能推送一次性状态栏提示。未就绪时安全跳过。
    */
   private statusNotifier: ((baseId: string, text: string, delayMs: number) => void) | null = null;
+
+  /**
+   * 工具实时进度接收器（bash 等长跑工具的执行中输出 → 执行中工具卡片）。
+   *
+   * onToolProgress 定义在 buildToolExecutorDeps 里，而进度侧信道（liveToolProgress Map）
+   * 与 syncDisplay 都在 doInit 的闭包内，两者作用域不通。用这个实例字段作桥：doInit
+   * 注册实现（写 Map + 触发 syncDisplay 重渲），onToolProgress 调用它。TUI 未就绪
+   *（无头模式）时为 null，安全跳过。
+   *
+   * @param toolUseId 工具调用 id（对应 executing 工具项的 callId）
+   * @param text 尾部进度快照；null 表示该工具已结束，清除其进度条目
+   */
+  private liveToolProgressSink:
+    | ((toolUseId: string, text: string | null) => void)
+    | null = null;
 
   /**
    * Shift+Tab 权限模式循环切换（对齐 claude-code）。
@@ -3635,6 +3659,8 @@ export class App {
     // HistoryItem 同步：追踪上次同步的 ctxMgr 消息数
     const { messagesToDisplayItems } = await import("./ui/App.tsx");
     const { messagesToHistoryItems } = await import("./ui/history-adapter.ts");
+    // ToolCallStatus 是运行时枚举（非纯类型），实时进度注入需按值比较 Executing 态，故动态引入。
+    const { ToolCallStatus } = await import("./ui/types.ts");
     let lastSyncedCount = 0;
     let historyIdCounter = 0;
 
@@ -3644,6 +3670,74 @@ export class App {
         historyIdCounter += 1;
         return { ...item, id: historyIdCounter } as import("./ui/types.ts").HistoryItem;
       });
+    };
+
+    // ── 工具实时进度侧信道（bash 等长跑工具的执行中输出）──
+    //
+    // executing 态工具项由 messagesToHistoryItems 从"已入 ctxMgr 但 tool_result 未到"的
+    // tool_use 重建，本身不带进度文本。这里用一个 toolUseId → 进度文本的 Map 作为侧信道：
+    // onToolProgress 写入并触发 syncDisplay，重建 historyItems 后由 injectLiveToolProgress
+    // 把进度注入到对应的 executing 工具项的 progressMessage 字段（渲染链 ToolMessage 已支持）。
+    // tool_end 时清除该工具的条目，避免进度残留到已完成态。
+    const liveToolProgress = new Map<string, string>();
+
+    /**
+     * 把侧信道里的实时进度注入到 executing 态工具项。就地改 progressMessage（这些 item
+     * 是 assignIds 刚 new 出来的，非共享引用，改它不影响 Static 缓存的已完成项）。
+     */
+    const injectLiveToolProgress = (
+      historyItems: import("./ui/types.ts").HistoryItem[],
+    ): void => {
+      if (liveToolProgress.size === 0) return;
+      for (const item of historyItems) {
+        if (item.type !== "tool_group") continue;
+        for (const tool of item.tools) {
+          if (tool.status !== ToolCallStatus.Executing) continue;
+          const progress = liveToolProgress.get(tool.callId);
+          if (progress) tool.progressMessage = progress;
+        }
+      }
+    };
+
+    /**
+     * 纯进度刷新的轻量路径（#5 性能优化）：不从 ctxMgr 全量重建，只在**现有**
+     * bridge.current.historyItems 上更新 executing 工具的 progressMessage。
+     *
+     * 引用策略（关键）：只对"内容真正变化的 tool_group"新建替身对象（浅拷贝 + 新 tools 数组），
+     * 其余 committed 项（含已完成 tool_group、文本、思考等）**保持原引用**。这样：
+     * - 顶层 historyItems 换新数组引用 → React 感知到更新；
+     * - 但 Static/committed 项按 item 引用做 memo，引用未变 → 不整块重渲；
+     * - 只有那个 live tool_group 重渲 → O(1) 而非 O(N)。
+     *
+     * 返回 false 表示"有新消息尚未同步"（lastSyncedCount 落后于 ctxMgr），此时不能走轻量路径
+     * （否则漏渲新消息），调用方需回退到 syncDisplay({}) 全量重建。
+     */
+    const refreshLiveProgressInPlace = (): boolean => {
+      // 有新消息未同步 → 轻量路径不安全，交回 syncDisplay。
+      if (this.ctxMgr.getMessages().length !== lastSyncedCount) return false;
+
+      const prev = bridge.current.historyItems;
+      let changed = false;
+      const next = prev.map((item) => {
+        if (item.type !== "tool_group") return item;
+        // 该 group 是否含 executing 工具且进度有更新
+        let groupChanged = false;
+        const tools = item.tools.map((tool) => {
+          if (tool.status !== ToolCallStatus.Executing) return tool;
+          const progress = liveToolProgress.get(tool.callId);
+          if (progress === undefined || progress === tool.progressMessage) return tool;
+          groupChanged = true;
+          return { ...tool, progressMessage: progress };
+        });
+        if (!groupChanged) return item;
+        changed = true;
+        return { ...item, tools };
+      });
+
+      // 没有任何 live 工具进度变化：无需重渲（内容去重已在 sink 层做，这里是二次兜底）。
+      if (!changed) return true;
+      updateState({ historyItems: next });
+      return true;
     };
 
     /** 从 ctxMgr 增量同步新消息到 historyItems */
@@ -3661,11 +3755,39 @@ export class App {
       // 这样 tool_use 和 tool_result 能正确合并，description/input 不会丢失
       historyIdCounter = 0;
       const historyItems = assignIds(messagesToHistoryItems(allMsgs));
+      injectLiveToolProgress(historyItems);
 
       lastSyncedCount = allMsgs.length;
       updateState({ messages: allMsgs, displayItems, historyItems, ...extraPatch });
       // 每次同步时刷新后台任务面板
       bridge.updateTasks();
+    };
+
+    // 注册工具实时进度接收器：写侧信道 Map + 触发 syncDisplay 重渲（把 progressMessage
+    // 注入执行中工具卡片）。此处在闭包内，能同时访问 liveToolProgress 与 syncDisplay，
+    // 弥合与 buildToolExecutorDeps.onToolProgress 的作用域断层。
+    //
+    // 进度条目的生命周期与清理：
+    // - 当前 bash 只 emit `{type:"output", text}`，永不传 null，故 text=null 分支目前是**预留**
+    //   接口（未来若接入 tool_end 精确清理可用），非活跃路径。
+    // - 已完成工具的旧进度**不会残留显示**：injectLiveToolProgress 只把 progress 注入
+    //   status===Executing 的工具项，工具一旦 tool_result 到达变为 success/error 态就不再被注入，
+    //   即使 Map 里还留着它的 toolUseId 条目也无副作用。
+    // - Map 的内存回收靠轮末 finally 的 liveToolProgress.clear()（见下文），不依赖 per-tool 清理。
+    this.liveToolProgressSink = (toolUseId: string, text: string | null) => {
+      if (text === null) {
+        // 预留分支：显式清除某工具的进度条目（删不到说明本就无条目，跳过重渲）。
+        if (!liveToolProgress.delete(toolUseId)) return;
+      } else {
+        if (liveToolProgress.get(toolUseId) === text) return; // 内容未变，跳过重渲
+        liveToolProgress.set(toolUseId, text);
+      }
+      // 性能路径（避免大会话下每 120ms 全量 O(N) 重建）：纯进度刷新时通常没有新消息进 ctxMgr，
+      // 无需 messagesToHistoryItems 全量重建。改走 refreshLiveProgressInPlace——只在现有
+      // historyItems 上替换"含该 executing 工具的 tool_group"引用（committed/Static 项引用
+      // 保持不变，其 memo 不失效，Static 不整块重渲）。若本轮恰有新消息未同步（refresh 返回
+      // false，如进度与 tool_result 到达时序交错），回退到 syncDisplay({}) 全量重建保正确。
+      if (!refreshLiveProgressInPlace()) syncDisplay({});
     };
 
     /** 重建（/compact 后消息被压缩，需要完整重建） */
@@ -3678,6 +3800,7 @@ export class App {
       const systemItems = bridge.current.displayItems.filter(d => d.kind === "system");
       const displayItems = [...messagesToDisplayItems(allMsgs), ...systemItems];
       const historyItems = assignIds(messagesToHistoryItems(allMsgs));
+      injectLiveToolProgress(historyItems);
       updateState({ messages: allMsgs, displayItems, historyItems, ...extraPatch });
       // 每次重建时刷新后台任务面板
       bridge.updateTasks();
@@ -3904,7 +4027,16 @@ export class App {
               streamingFullText = "";
               streamingThinkingFull = "";
               streamSynced = false;
-              syncDisplay({ toolName: event.toolName, toolInput: event.toolInput ?? null, isToolExecuting: true, streamingText: "", streamingThinking: "", streamingThinkingStartMs: undefined, isStreaming: false, streamingLine: "" });
+              // CM3 补清：请求失败重试成功后，模型可能**先发工具调用而非文本/思考**
+              //（如直接 tool_use，无前置正文）。此时文本/思考流式首帧的清除路径（line 3851/3873）
+              // 走不到，retryStatus 会残留到工具执行阶段与新状态串台（现象：`⟳ 请求失败…`
+              // 悬在正在执行的工具上方不消失）。tool_start 已是"请求成功"的确证信号，在此补清一次。
+              // 注意顺序：removeStatusMessage 必须在 syncDisplay 之前——syncDisplay 内部
+              // updateState 会同步把 bridge.current.retryStatus 清成 null，若放其后再判断
+              // `bridge.current.retryStatus` 恒为 false，清除逻辑永不触发。这里无条件清
+              //（与 done 路径 line 4241 一致，system:transient 是重试专用 key，清它零副作用）。
+              removeStatusMessage("system:transient");
+              syncDisplay({ toolName: event.toolName, toolInput: event.toolInput ?? null, isToolExecuting: true, streamingText: "", streamingThinking: "", streamingThinkingStartMs: undefined, isStreaming: false, streamingLine: "", retryStatus: null });
               break;
             case "tool_end":
               syncDisplay({
@@ -4163,6 +4295,9 @@ export class App {
       // 本轮结束兜底清除重试进度消息：重试后若直接进 tool（不走文本/思考流式的清除路径），
       // sticky 的 "system:transient" 重试提示会残留到下一轮、与新状态串台。done 路径统一清一次。
       removeStatusMessage("system:transient");
+      // 本轮所有工具已完成，清空实时进度侧信道，防 Map 跨轮累积。已完成工具在 injectLiveToolProgress
+      // 里本就不再被注入（只注入 executing 态），此处仅回收内存。
+      liveToolProgress.clear();
 
       // 本轮结束 → 标记空闲并冲刷 Cron 忙时积压的提示词
       this.busy = false;
