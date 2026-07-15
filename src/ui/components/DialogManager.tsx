@@ -259,9 +259,9 @@ function PlanApprovalDialog({ request }: { request: PlanApprovalRequestInfo }) {
           const focused = cursor === i && !editingFeedback && !editingOther;
           return (
             <Box key={opt.action}>
-              <Box width={4} flexShrink={0}>
+              <Box width={5} flexShrink={0}>
                 <Text color={focused ? accent : theme.text.secondary}>
-                  {focused ? POINTER : " "}{focused ? RADIO_SELECTED : RADIO_EMPTY}
+                  {focused ? POINTER : " "} {focused ? RADIO_SELECTED : RADIO_EMPTY}
                 </Text>
               </Box>
               <Text color={focused ? accent : undefined} bold={focused}>{opt.label}</Text>
@@ -270,9 +270,9 @@ function PlanApprovalDialog({ request }: { request: PlanApprovalRequestInfo }) {
         })}
         {/* "其他…"行 */}
         <Box>
-          <Box width={4} flexShrink={0}>
+          <Box width={5} flexShrink={0}>
             <Text color={cursor === otherIndex && !editingFeedback && !editingOther ? accent : theme.text.secondary}>
-              {cursor === otherIndex && !editingFeedback && !editingOther ? POINTER : " "}{cursor === otherIndex && !editingFeedback && !editingOther ? RADIO_SELECTED : RADIO_EMPTY}
+              {cursor === otherIndex && !editingFeedback && !editingOther ? POINTER : " "} {cursor === otherIndex && !editingFeedback && !editingOther ? RADIO_SELECTED : RADIO_EMPTY}
             </Text>
           </Box>
           <Text color={cursor === otherIndex && !editingFeedback && !editingOther ? accent : theme.text.secondary} bold={cursor === otherIndex && !editingFeedback && !editingOther}>其他…</Text>
