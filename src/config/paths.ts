@@ -105,7 +105,8 @@ export const sidPaths = {
 
   // ── 计划 ──
   plans: () => sidHomePath("plans"),
-  plan: (slug: string) => sidHomePath("plans", `${slug}.md`),
+  plansForProject: (project: string) => sidHomePath("plans", project),
+  plan: (project: string, fileName: string) => sidHomePath("plans", project, `${fileName}.md`),
 
   // ── 任务输出 ──
   tasks: () => sidHomePath("tasks"),

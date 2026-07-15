@@ -8,7 +8,11 @@ import type { PlanModeManager } from "../plan/state.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
 
-const enterPlanModeSchema = lazySchema(() => z.object({}));
+const enterPlanModeSchema = lazySchema(() => z.object({
+  topic: z.string().optional().describe(
+    "本次计划的中文主题，用于命名计划文件（如「重构认证模块」）。简短名词短语，10 字以内最佳。可省略。"
+  ),
+}));
 
 export class EnterPlanModeTool implements Tool {
   readonly zodSchema = enterPlanModeSchema();
@@ -80,7 +84,8 @@ export class EnterPlanModeTool implements Tool {
       return { output: "已经在计划模式中", isError: true };
     }
 
-    const ok = this.planManager.enter();
+    const topic = typeof inp?.topic === "string" ? inp.topic : undefined;
+    const ok = this.planManager.enter(undefined, topic);
     if (!ok) {
       return { output: "无法进入计划模式", isError: true };
     }

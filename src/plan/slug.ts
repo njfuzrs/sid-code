@@ -1,14 +1,13 @@
 /**
- * 词汇 Slug 生成器
- * 对标 Claude Code 的可读命名（如 brave-eagle-42），替代时间戳命名。
+ * 词汇 Slug 生成器 + Plan 文件命名工具
  *
- * 用于:
- * - Plan 文件命名（src/plan/state.ts）
- * - 用户手动创建的 Worktree 命名（src/worktree/）
+ * generateWordSlug / isWordSlug — Worktree 可读命名（brave-eagle-42）
+ * formatPlanTime / resolvePlanProject / sanitizeProjectName / sanitizePlanTopic — Plan 文件语义命名
  */
 
 import { existsSync } from "fs";
-import { join } from "path";
+import { join, basename } from "path";
+import { execFileSync } from "child_process";
 
 /** 形容词词库 */
 const ADJECTIVES = [
@@ -55,4 +54,62 @@ export function generateWordSlug(existingDir?: string): string {
 /** 判断字符串是否符合词汇 Slug 形态（adj-noun-NN）—— 用于识别用户命名 vs 临时命名 */
 export function isWordSlug(s: string): boolean {
   return /^[a-z]+-[a-z]+-\d{1,2}$/.test(s);
+}
+
+// ────────────────────────────────────────────────────────────────────────────────
+// Plan 文件语义命名
+// ────────────────────────────────────────────────────────────────────────────────
+
+/** 格式化为 YYYYMMDD-HHmm（本地时区） */
+export function formatPlanTime(d: Date = new Date()): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
+}
+
+/**
+ * 从 cwd 解析项目名：basename(gitRoot ?? cwd) + sanitize。
+ * 自带 git rev-parse，不依赖 worktree/manager.ts 避免循环引用。
+ */
+export function resolvePlanProject(cwd: string): string {
+  let root = cwd;
+  try {
+    root = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+      cwd,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim() || cwd;
+  } catch {
+    // 非 git 环境，用 cwd
+  }
+  return sanitizeProjectName(basename(root));
+}
+
+/**
+ * 项目目录名 sanitize：保留中英文数字，去路径分隔符/控制字符/Windows 敌对字符，
+ * 去首尾点横线（防隐藏目录），限长 50，空兜底 "default"。
+ */
+export function sanitizeProjectName(raw: string): string {
+  const cleaned = raw
+    .replace(/[/\\\x00-\x1f]/g, "")       // 路径分隔符 + 控制字符
+    .replace(/[:*?"<>|]/g, "")             // Windows 敌对字符
+    .replace(/\s+/g, "-")                  // 空白转连字符
+    .replace(/^[.\-]+|[.\-]+$/g, "")       // 去首尾点/横线
+    .slice(0, 50)
+    .trim();
+  return cleaned || "default";
+}
+
+/**
+ * 中文主题 sanitize：同 sanitizeProjectName 但限长 40 字符，空返回 null（调用方兜底为纯时间戳）。
+ */
+export function sanitizePlanTopic(raw?: string): string | null {
+  if (!raw) return null;
+  const cleaned = raw
+    .replace(/[/\\\x00-\x1f]/g, "")
+    .replace(/[:*?"<>|]/g, "")
+    .replace(/\s+/g, "-")
+    .replace(/^[.\-]+|[.\-]+$/g, "")
+    .slice(0, 40)
+    .trim();
+  return cleaned || null;
 }

@@ -9,8 +9,9 @@
 import { resolve } from "path";
 import { mkdirSync, existsSync } from "fs";
 import { createHash } from "crypto";
-import { generateWordSlug } from "./slug.ts";
+import { formatPlanTime, resolvePlanProject, sanitizePlanTopic } from "./slug.ts";
 import { sidPaths } from "../config/paths.ts";
+import { getCwd } from "../bootstrap/state.ts";
 
 /** Plan Mode 状态 */
 export type PlanModeState = "inactive" | "planning" | "awaiting_approval";
@@ -62,8 +63,8 @@ export class PlanModeManager {
   private listeners: PlanModeListener[] = [];
   /** 进入 plan 模式前的权限模式（退出时恢复） */
   private prePlanMode: string | null = null;
-  /** 缓存的计划文件 slug（同一会话内复用，避免重命名） */
-  private planSlug: string | null = null;
+  /** 缓存的计划文件所属项目名（同一会话内复用） */
+  private planProject: string | null = null;
   /** Plan Mode 提醒注入轮次计数（用于节流：每 N 轮发完整提醒） */
   private reminderTurn = 0;
   /** 完整提醒间隔（每 N 轮发一次完整提醒，其余发简短提醒） */
@@ -94,7 +95,7 @@ export class PlanModeManager {
   }
 
   /** 进入 Plan Mode */
-  enter(currentPermissionMode?: string): boolean {
+  enter(currentPermissionMode?: string, topic?: string): boolean {
     if (this.state !== "inactive") return false;
     const from = this.state;
     this.state = "planning";
@@ -103,7 +104,7 @@ export class PlanModeManager {
     this.allowedPrompts = [];
     this.executing = false;
     this.prePlanMode = currentPermissionMode || null;
-    this.planFilePath = this.generatePlanFilePath();
+    this.planFilePath = this.generatePlanFilePath(topic);
     this.ensurePlanDir();
     this.emit({ from, to: this.state, planFilePath: this.planFilePath });
     return true;
@@ -344,17 +345,23 @@ export class PlanModeManager {
 
   // ── 内部方法 ──
 
-  private generatePlanFilePath(): string {
-    // 词汇 Slug 命名（brave-eagle-42.md），可读性优于时间戳。
-    // 同一会话内缓存 slug，避免每次进入 plan 都换名字。
-    if (!this.planSlug) {
-      this.planSlug = generateWordSlug();
+  private generatePlanFilePath(topic?: string): string {
+    const project = resolvePlanProject(getCwd());
+    this.planProject = project;
+    const time = formatPlanTime();
+    const safeTopic = sanitizePlanTopic(topic);
+    const base = safeTopic ? `${time}-${safeTopic}` : time;
+    // 去重：同项目同分钟内多次进入 plan（或兜底时间戳）避免覆盖
+    let candidate = sidPaths.plan(project, base);
+    let n = 2;
+    while (existsSync(candidate)) {
+      candidate = sidPaths.plan(project, `${base}-${n++}`);
     }
-    return sidPaths.plan(this.planSlug);
+    return candidate;
   }
 
   private ensurePlanDir(): void {
-    const dir = sidPaths.plans();
+    const dir = sidPaths.plansForProject(this.planProject ?? "default");
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
     }
