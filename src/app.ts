@@ -266,6 +266,12 @@ export class App {
     this.sessionState = new SessionState(sessionId);
     // 注入用户配置的模型列表（含定价/provider），供计费和 provider 推断优先使用
     this.sessionState.setAvailableModels(opts.config.availableModels);
+    // 网关定价惰性刷新：先载入缓存供本会话计费用，缓存超 TTL 则后台静默刷新（失败不阻塞启动）。
+    // 端点取当前主模型的 baseURL（resolveCurrentModelConfig 已回填到顶层 config.baseURL）。
+    try {
+      const { maybeRefreshGatewayPricing } = require("./llm/gateway-pricing.ts");
+      maybeRefreshGatewayPricing(opts.config.baseURL);
+    } catch { /* 采集不可用不影响启动 */ }
     // 注册辅助调用成本计算函数（复用 SessionState.calculateCost）
     setSideCostCalculator((model, usage) => this.sessionState.calculateCost(model, usage));
     // 注册辅助调用成本观察者：实时累加到 SessionState.sideCostUSD，

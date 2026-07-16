@@ -70,6 +70,8 @@ export const sidPaths = {
   globalClaudeMd: () => sidHomePath("CLAUDE.md"),
   gitignore: () => sidHomePath(".gitignore"),
   lspConfig: () => sidHomePath("lsp.json"),
+  /** 网关定价采集缓存（全局共享，不随会话；带 pricing_version + fetched_at） */
+  gatewayPricing: () => sidHomePath("gateway-pricing.json"),
 
   // ── 日志归拢：logs/ ──
   logs: () => sidHomePath("logs"),

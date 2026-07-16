@@ -718,6 +718,8 @@ export class TraceCollector {
           content_types: contentBlocks.filter(Boolean).map((b: any) => b.type),
           elapsed_ms: (resp as any).api_duration_ms,
           provider: resp.provider,  // T12.4：Provider 维度标记
+          // 端点维度：区分同模型不同渠道，供排查 + cost-recompute 按 (model, endpoint) 精确重算
+          ...(resp.base_url ? { base_url: resp.base_url } : {}),
           ttft_ms: (resp as any).ttft_ms,  // T14.4：TTFT 持久化
           // 缺口分析二类：推理 token 落盘（仅 OpenAI 族 >0，供 digest 拆解思考成本）
           ...(reasoningTokens > 0 ? { reasoning_tokens: reasoningTokens } : {}),

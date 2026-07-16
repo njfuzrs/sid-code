@@ -35,6 +35,36 @@ describe("config", () => {
     expect(cfg.model).toBe("llama3");
   });
 
+  // 回归：normalizeConfigKeys 归一化 availableModels 时必须保留用户手写 pricing。
+  // 曾漏拷该字段，导致「用户手写价最高优先」被架空（settings.json 里配的价被静默丢弃）。
+  test("loadConfig 保留 availableModels 的用户手写 pricing（snake_case 路径）", async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const dir = mkdtempSync(join(tmpdir(), "sid-cfg-"));
+    const prevHome = process.env.SID_CONFIG_DIR;
+    try {
+      writeFileSync(join(dir, "settings.json"), JSON.stringify({
+        model: "my-model",
+        availableModels: [
+          { name: "my-model", provider: "openai", base_url: "https://gw.example.com/v1",
+            api_key: "sk-x", pricing: { input: 1.64, output: 3.29, cacheRead: 0.13 } },
+        ],
+      }));
+      process.env.SID_CONFIG_DIR = dir;
+      const cfg = await loadConfig({});
+      const m = cfg.availableModels.find(x => x.name === "my-model");
+      expect(m?.pricing).toBeDefined();
+      expect(m!.pricing!.input).toBe(1.64);
+      expect(m!.pricing!.output).toBe(3.29);
+      expect(m!.pricing!.cacheRead).toBe(0.13);
+    } finally {
+      if (prevHome === undefined) delete process.env.SID_CONFIG_DIR;
+      else process.env.SID_CONFIG_DIR = prevHome;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   // §3.6（fdb47f30）：loadConfig 收尾必须保证 sessionId 非空（单一事实源），
   // 否则 registerSession 写入 active-sessions 的 sessionId 为空字符串（/ps 看不到 id）。
   test("loadConfig 未指定时自动生成非空 sessionId", async () => {

@@ -656,6 +656,9 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
         contextWindow: m.context_window || m.contextWindow,
         maxOutputTokens: m.max_output_tokens || m.maxOutputTokens,
         supportsThinking: m.supports_thinking ?? m.supportsThinking,
+        // pricing 内部字段本就 camelCase（input/output/cacheRead/cacheWrite），直接透传。
+        // 此前遗漏导致走 snake_case 归一化路径时用户自配价被静默丢弃（架空「用户手写价最高优先」）。
+        pricing: m.pricing,
       }));
     // 特殊处理 hooks：旧格式（数组）→ 新格式（按事件分组）
     } else if (configKey === "hooks" && Array.isArray(value)) {

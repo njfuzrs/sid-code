@@ -285,6 +285,9 @@ export interface AfterModelInput extends HookInput {
     ttft_ms?: number;
     /** T12.3：Provider 名称（"anthropic" | "openai" | "ollama" 等） */
     provider?: string;
+    /** 端点维度：本次请求实际走的 base_url，区分同模型不同渠道（如公司网关 vs 官方），
+     *  供轨迹排查 + cost-recompute 按 (model, endpoint) 复合键精确重算成本。 */
+    base_url?: string;
   };
 
   // ── Harness 扩展点 ──

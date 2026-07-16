@@ -107,6 +107,11 @@ export function recomputeCostFromEvents(
     // cache_creation 自 2026-07 补落；补落前的历史会话该字段缺失 → 取 0（重算仍偏低，best-effort）。
     const cacheReadTokens = Number(u.cache_read ?? u.cache_read_input_tokens ?? 0) || 0;
     const cacheCreationTokens = Number(u.cache_creation ?? u.cache_creation_input_tokens ?? 0) || 0;
+    // provider / base_url：AfterModelRaw 已落盘（provider 自 T12.4、base_url 自本次改造）。
+    // provider 影响 normalizeCacheUsage 三段拆分；base_url 使 (model, endpoint) 复合键精确匹配
+    // （修正同名不同渠道重算错价）。历史会话缺这两字段 → undefined，退回 model-only（best-effort）。
+    const provider = typeof data.provider === "string" ? data.provider : undefined;
+    const baseURL = typeof data.base_url === "string" ? data.base_url : undefined;
 
     // 重算单次 cost：用 cost-tracker 的独立函数（不依赖 SessionState 实例），
     // 与主循环 / SessionState.calculateCost 同口径（都走 normalizeCacheUsage + resolvePricing）。
@@ -116,7 +121,7 @@ export function recomputeCostFromEvents(
       cacheReadInputTokens: cacheReadTokens,
       cacheCreationInputTokens: cacheCreationTokens,
     };
-    const costUSD = calculateUSDCost(model, usage, availableModels);
+    const costUSD = calculateUSDCost(model, usage, availableModels, provider, baseURL);
 
     calls.push({ index: Number(data.index ?? calls.length + 1), model, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, costUSD });
     totalCostUSD += costUSD;

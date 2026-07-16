@@ -107,7 +107,7 @@ export class SessionState {
   }
 
   /** 更新 API 调用的用量统计 */
-  updateUsage(model: string, usage: Usage, durationMs: number, provider?: string): void {
+  updateUsage(model: string, usage: Usage, durationMs: number, provider?: string, baseURL?: string): void {
     const prov = provider ?? SessionState.inferProvider(model, this.availableModels);
     // 初始化模型统计
     if (!this.modelUsage[model]) {
@@ -142,12 +142,12 @@ export class SessionState {
     stats.cacheCreationInputTokens += usage.cacheCreationInputTokens ?? 0;
     stats.requests += 1;
 
-    // 计算本次成本（带 provider 口径）
-    const cost = this.calculateCost(model, usage, prov);
+    // 计算本次成本（带 provider 口径 + 端点精确价）
+    const cost = this.calculateCost(model, usage, prov, baseURL);
     stats.costUSD += cost;
 
     // 累加缓存节省（全价假设 − 实际）
-    stats.cacheSavingsUSD += this.calculateSavings(model, usage, prov);
+    stats.cacheSavingsUSD += this.calculateSavings(model, usage, prov, baseURL);
 
     // 更新全局统计
     this.totalCostUSD += cost;
@@ -207,7 +207,7 @@ export class SessionState {
    * @param usage 原始用量
    * @param provider provider 名（"anthropic"/"openai"/...）。不传时按模型名推断（claude* → anthropic）。
    */
-  calculateCost(model: string, usage: Usage, provider?: string): number {
+  calculateCost(model: string, usage: Usage, provider?: string, baseURL?: string): number {
     const prov = provider ?? SessionState.inferProvider(model, this.availableModels);
 
     // 本地推理 provider（ollama 等）不产生真金白银费用，恒 0。
@@ -217,7 +217,7 @@ export class SessionState {
       return 0;
     }
 
-    const pricing = resolvePricing(model, this.availableModels);
+    const pricing = resolvePricing(model, this.availableModels, baseURL);
     if (!pricing) {
       // P1-4：未知模型不静默归零（否则换个模型名费用立刻变 0，costLimit 守卫被绕过，
       // 用户以为"免费"实际在烧钱）。记 WARN 一次（按模型去重），用保守兜底价估算成本，
@@ -252,18 +252,18 @@ export class SessionState {
    * 计算单次调用的缓存节省金额（美元）= 假设全部按未命中全价 − 实际成本。
    * 全价假设：把 promptTotal 全部当未命中输入计价。
    */
-  calculateSavings(model: string, usage: Usage, provider?: string): number {
+  calculateSavings(model: string, usage: Usage, provider?: string, baseURL?: string): number {
     const prov = provider ?? SessionState.inferProvider(model, this.availableModels);
     // 本地 provider 无费用 → 无"节省"概念，恒 0
     if (SessionState.isLocalProvider(prov)) return 0;
-    const pricing = resolvePricing(model, this.availableModels);
+    const pricing = resolvePricing(model, this.availableModels, baseURL);
     if (!pricing) return 0;
     const n = normalizeCacheUsage(usage, prov);
     // 全价成本：promptTotal 全按未命中输入 + 输出
     const hypothetical =
       (n.promptTotal / 1_000_000) * pricing.input +
       (n.outputTokens / 1_000_000) * pricing.output;
-    const actual = this.calculateCost(model, usage, prov);
+    const actual = this.calculateCost(model, usage, prov, baseURL);
     return Math.max(0, hypothetical - actual);
   }
 

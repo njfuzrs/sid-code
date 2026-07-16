@@ -268,6 +268,12 @@ export function lookupRegistry(model: string): ModelRegistryEntry | null {
   // FALLBACK 高估数倍，且 calculateSavings 遇 pricing=null 直接返回 0（"省钱恒 $0"）。
   // 用白名单精确剥离，绝不盲目按 "-" 拆分（否则会误伤 claude-/gpt-/glm- 等本就以连字符
   // 构成的正规模型名）。剥离后递归复用完整匹配策略；bare 每次严格变短，必然终止。
+  //
+  // ⚠ 定位：前缀剥离已降为**最后兜底**。渠道精确价由 gateway-pricing.ts 提供，
+  // resolvePricing 的网关查询（步骤 3）先于本函数（步骤 4）——网关采到 "ali-deepseek-v4-pro"
+  // 的渠道精确价即命中返回，根本走不到这里的剥离。仅当网关缓存 + 用户配置都 miss（缓存过期/
+  // 冷门渠道名）时，才靠剥离退到官方价，聊胜于 FALLBACK。剥离**会抹平渠道差价**（把 ali-/tx-
+  // 都套成官方价），是「查无此模型」的下策兜底，不是精确计费路径。
   for (const prefix of ROUTE_PREFIXES) {
     if (model.startsWith(prefix) && model.length > prefix.length) {
       const hit = lookupRegistry(model.slice(prefix.length));

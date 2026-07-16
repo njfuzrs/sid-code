@@ -43,6 +43,32 @@ describe("Config Validation", () => {
     expect(result.errors).toHaveLength(0);
   });
 
+  describe("availableModels 同名多端点", () => {
+    test("同名 + 不同端点 = 合法多渠道配置，不告警", () => {
+      const config = {
+        ...baseConfig,
+        availableModels: [
+          { name: "deepseek-v4-pro", baseURL: "https://gateway.example.com/v1" },
+          { name: "deepseek-v4-pro", baseURL: "https://api.deepseek.com" },
+        ],
+      } as Config;
+      const result = validateConfig(config);
+      expect(result.warnings.some(w => w.path === "availableModels" && w.message.includes("重复"))).toBe(false);
+    });
+
+    test("同名 + 同端点 = 真冲突，告警", () => {
+      const config = {
+        ...baseConfig,
+        availableModels: [
+          { name: "deepseek-v4-pro", baseURL: "https://gateway.example.com/v1" },
+          { name: "deepseek-v4-pro", baseURL: "https://gateway.example.com/v1/" }, // 归一化后同端点
+        ],
+      } as Config;
+      const result = validateConfig(config);
+      expect(result.warnings.some(w => w.path === "availableModels" && w.message.includes("重复"))).toBe(true);
+    });
+  });
+
   test("invalid provider fails validation", () => {
     const config = { ...baseConfig, provider: "invalid" };
     const result = validateConfig(config);

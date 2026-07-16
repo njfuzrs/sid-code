@@ -1,5 +1,10 @@
 import type { LocalCommandModule, LocalCommandResult } from "../../types.ts";
 import type { CommandContext } from "../../types.ts";
+import { resolvePricing } from "../../../api/cost-tracker.ts";
+import { lookupRegistry, getRegistryEntries } from "../../../llm/model-registry.ts";
+import { getGatewayCacheMeta } from "../../../llm/gateway-pricing.ts";
+import { lookupGatewayPricing } from "../../../llm/gateway-pricing.ts";
+import { normalizeBaseURL } from "../../../llm/endpoint-key.ts";
 
 /**
  * /model 命令实现（按需加载）
@@ -38,12 +43,22 @@ const mod: LocalCommandModule = {
       return { type: "text", value: buildAvailableModels(ctx) };
     }
 
+    // /model pricing [--all] —— 输出定价表（默认只列 availableModels，--all 追加全量注册表）
+    if (trimmed === "pricing" || trimmed.startsWith("pricing ") || trimmed === "price") {
+      const all = trimmed.includes("--all") || trimmed.includes("-a");
+      return { type: "text", value: buildPricingTable(ctx, all) };
+    }
+
     if (trimmed === "help" || trimmed === "-h" || trimmed === "--help") {
       return { type: "text", value: buildHelp() };
     }
 
-    // /model discover [--apply|-a] [--force|-f]
+    // /model discover [--apply|-a] [--force|-f] [--pricing]
     if (trimmed.startsWith("discover") || trimmed.startsWith("disc")) {
+      // --pricing：从当前主模型端点（或全部 availableModels 端点）采集网关价格。
+      if (trimmed.includes("--pricing")) {
+        return syncGatewayPricingCmd(ctx, trimmed.includes("--force") || trimmed.includes("-f"));
+      }
       const { discoverModels } = await import("./discover.ts");
       const apply = trimmed.includes("--apply") || trimmed.includes("-a");
       const force = trimmed.includes("--force") || trimmed.includes("-f");
@@ -195,6 +210,35 @@ function buildInvalidTypeError(type: string): string {
   return `错误: 无效的子代理类型 "${type}"\n合法类型: ${SUBAGENT_TYPES.join(" / ")}\n\n说明:\n  · default —— 兜底，所有未单独指定的子代理类型都用它\n  · explore/task/plan/summarize/verify —— 按职责单独指定`;
 }
 
+/**
+ * 判定某模型在某端点下的定价来源（与 resolvePricing 优先级链一致）：
+ * 用户手写复合键 > 用户手写仅名 > 网关采集 > 注册表 > 兜底。
+ */
+function detectPricingSource(
+  ctx: CommandContext,
+  name: string,
+  baseURL?: string,
+): "用户手写" | "网关采集" | "内置注册表" | "兜底估算" {
+  const models = ctx.config.availableModels;
+  const exact = models.find(m => m.name === name && normalizeBaseURL(m.baseURL) === normalizeBaseURL(baseURL));
+  if (exact?.pricing && exact.pricing.input > 0) return "用户手写";
+  const byName = models.find(m => m.name === name);
+  if (byName?.pricing && byName.pricing.input > 0) return "用户手写";
+  if (lookupGatewayPricing(name, baseURL)) return "网关采集";
+  if (lookupRegistry(name)?.pricing) return "内置注册表";
+  return "兜底估算";
+}
+
+/** 格式化一行价格（in/out/cacheRead/cacheWrite，$/1M）。 */
+function formatPriceLine(name: string, availableModels: any[], baseURL?: string): string {
+  const p = resolvePricing(name, availableModels, baseURL);
+  if (!p) return "价格: (未知，走兜底估算 in $2 / out $10)";
+  const parts = [`in $${p.input}/M`, `out $${p.output}/M`];
+  if (p.cacheRead !== undefined) parts.push(`cacheRead $${p.cacheRead}/M`);
+  if (p.cacheWrite !== undefined) parts.push(`cacheWrite $${p.cacheWrite}/M`);
+  return `价格: ${parts.join("  ")}`;
+}
+
 function buildAvailableModels(ctx: CommandContext): string {
   if (ctx.config.availableModels.length === 0) {
     return "未配置可用模型列表\n请在 ~/.sid-code/settings.json 中添加 availableModels 配置";
@@ -205,6 +249,8 @@ function buildAvailableModels(ctx: CommandContext): string {
     lines.push(`\n${idx + 1}. ${m.name}${current}`);
     if (m.provider) lines.push(`   提供商: ${m.provider}`);
     if (m.baseURL) lines.push(`   API 地址: ${m.baseURL}`);
+    const src = detectPricingSource(ctx, m.name, m.baseURL);
+    lines.push(`   ${formatPriceLine(m.name, ctx.config.availableModels, m.baseURL)}（来源: ${src}）`);
   });
 
   // 当前 fallback / 子代理映射一并展示，让用户知道除主模型外还有哪些可切换项。
@@ -250,6 +296,7 @@ function buildHelp(): string {
     "",
     "  /model                          打开模型选择对话框（无参）",
     "  /model list                     显示所有可用模型 + 当前 fallback / 子代理映射",
+    "  /model pricing [--all]          显示定价表（--all 追加内置注册表全量）",
     "  /model <name> [-p]              切换主模型（-p 持久化到 settings.json）",
     "  /model fallback <name> [-p]     切换 fallback 降级模型",
     "  /model fallback clear [-p]      清除 fallback",
@@ -259,6 +306,94 @@ function buildHelp(): string {
     "",
     "持久化：默认仅当会话生效；加 -p（别名 --persist / save）才写入 settings.json 跨会话保留。",
   ].join("\n");
+}
+
+/**
+ * /model discover --pricing —— 手动从网关采集定价。
+ *
+ * 遍历 availableModels 里去重后的端点，逐个拉取 `/api/pricing`。当前实现按模型名入库
+ * （网关渠道名已含前缀天然区分渠道），多端点采集合并到同一缓存。
+ */
+async function syncGatewayPricingCmd(ctx: CommandContext, force: boolean): Promise<LocalCommandResult> {
+  const { syncGatewayPricing } = await import("../../../llm/gateway-pricing.ts");
+  // 去重端点：优先 availableModels 的 baseURL，回退顶层 config.baseURL。
+  const endpoints = new Set<string>();
+  for (const m of ctx.config.availableModels) {
+    if (m.baseURL) endpoints.add(m.baseURL);
+  }
+  if (endpoints.size === 0 && ctx.config.baseURL) endpoints.add(ctx.config.baseURL);
+  if (endpoints.size === 0) {
+    return { type: "text", value: "未找到可采集的端点（availableModels 与 config.baseURL 均无 base_url）" };
+  }
+  const results: string[] = ["网关定价采集结果:"];
+  for (const baseURL of endpoints) {
+    try {
+      const r = await syncGatewayPricing({ baseURL, force });
+      results.push(`  ${baseURL} → ${r.reason}（${r.count} 条，${r.updated ? "已更新" : "无变化"}）`);
+    } catch (e) {
+      results.push(`  ${baseURL} → 采集失败: ${String(e)}`);
+    }
+  }
+  results.push("", "查看结果: /model pricing");
+  return { type: "text", value: results.join("\n") };
+}
+
+/**
+ * /model pricing —— 输出定价表供用户核对。
+ *
+ * 默认列出 availableModels（用户实际会用到的模型 + 端点 + 解析后价格 + 来源）。
+ * --all 追加内置注册表全量条目（model-registry.ts 的所有模型），满足「查看所有模型价格」需求。
+ */
+function buildPricingTable(ctx: CommandContext, all: boolean): string {
+  const lines: string[] = [];
+  const fmtPrice = (v?: number) => (v === undefined ? "—" : `$${v}`);
+
+  // ── 网关采集缓存状态 ──
+  const meta = getGatewayCacheMeta();
+  if (meta) {
+    const ageH = ((Date.now() - meta.fetchedAt) / 3_600_000).toFixed(1);
+    lines.push(`网关定价缓存: ${meta.count} 条，采集于 ${ageH}h 前（version ${meta.version.slice(0, 8)}）`);
+  } else {
+    lines.push("网关定价缓存: (无，执行 /model discover --pricing 采集)");
+  }
+  lines.push("");
+
+  // ── availableModels 定价表 ──
+  lines.push("已配置模型定价（$/1M token）:");
+  lines.push("");
+  if (ctx.config.availableModels.length === 0) {
+    lines.push("  (未配置 availableModels)");
+  } else {
+    for (const m of ctx.config.availableModels) {
+      const p = resolvePricing(m.name, ctx.config.availableModels, m.baseURL);
+      const src = detectPricingSource(ctx, m.name, m.baseURL);
+      const current = m.name === ctx.config.model ? " ✓" : "";
+      lines.push(`  ${m.name}${current}`);
+      lines.push(`    端点: ${m.baseURL || "(默认/官方)"}`);
+      if (p) {
+        lines.push(`    in ${fmtPrice(p.input)}  out ${fmtPrice(p.output)}  cacheRead ${fmtPrice(p.cacheRead)}  cacheWrite ${fmtPrice(p.cacheWrite)}  [${src}]`);
+      } else {
+        lines.push(`    (未知价格，走兜底估算 in $2 / out $10)  [${src}]`);
+      }
+    }
+  }
+
+  // ── 全量注册表（--all）──
+  if (all) {
+    lines.push("", "─────────────", "内置注册表全量定价（官方，$/1M token）:", "");
+    for (const [name, entry] of getRegistryEntries()) {
+      const p = entry.pricing;
+      if (!p) {
+        lines.push(`  ${name}: (无定价)`);
+        continue;
+      }
+      lines.push(`  ${name}: in ${fmtPrice(p.input)}  out ${fmtPrice(p.output)}  cacheRead ${fmtPrice(p.cacheRead)}  cacheWrite ${fmtPrice(p.cacheWrite)}`);
+    }
+  } else {
+    lines.push("", "（加 --all 查看内置注册表全部模型价格）");
+  }
+
+  return lines.join("\n");
 }
 
 export default mod;

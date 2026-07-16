@@ -5,6 +5,7 @@
 
 import type { Config } from "./config.ts";
 import { getActiveAgentTypes } from "../agent/agent-definition.ts";
+import { normalizeBaseURL } from "../llm/endpoint-key.ts";
 
 /** 验证错误 */
 export interface ValidationError {
@@ -368,19 +369,24 @@ export function validateConfig(config: Config): ValidationResult {
     });
   }
 
-  // availableModels 内部重名检查：resolveCurrentModelConfig 用 find() 按 name 精确匹配，
-  // 只命中第一条同名条目，后续重名条目的 provider/apiKey/baseURL/maxOutputTokens 配置
-  // 永远不会被使用，且没有任何提示。
+  // availableModels 重复检查：判重键 = (name + 归一化端点)。
+  // 「同名 + 同端点」= 真冲突（resolveCurrentModelConfig 的 find 只命中第一条，其余配置永不生效）→ 告警。
+  // 「同名 + 不同端点」= 合法的多端点配置（如同一模型同时配官方端点与公司网关，各自计价）→ 不告警。
+  //   计费按 (model, endpoint) 复合键精确匹配（resolvePricing），故同名多端点是刻意支持的用法。
   if (config.availableModels?.length) {
-    const nameCount = new Map<string, number>();
+    const keyCount = new Map<string, { name: string; count: number }>();
     for (const m of config.availableModels) {
-      if (m.name) nameCount.set(m.name, (nameCount.get(m.name) ?? 0) + 1);
+      if (!m.name) continue;
+      const key = `${m.name} ${normalizeBaseURL(m.baseURL)}`;
+      const prev = keyCount.get(key);
+      if (prev) prev.count++;
+      else keyCount.set(key, { name: m.name, count: 1 });
     }
-    for (const [name, count] of nameCount) {
+    for (const { name, count } of keyCount.values()) {
       if (count > 1) {
         warnings.push({
           path: "availableModels",
-          message: `模型名 "${name}" 重复出现 ${count} 次，按名查找只命中第一条，其余同名条目的配置永远不会被使用`,
+          message: `模型 "${name}" 在同一端点下重复出现 ${count} 次，按名查找只命中第一条，其余同名同端点条目的配置永远不会被使用（同名不同端点是合法的多渠道配置，不在此列）`,
         });
       }
     }

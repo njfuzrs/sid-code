@@ -15,6 +15,8 @@
 import type { Usage } from "../llm/types.ts";
 import { normalizeCacheUsage } from "../llm/types.ts";
 import { lookupRegistry } from "../llm/model-registry.ts";
+import { sameEndpoint } from "../llm/endpoint-key.ts";
+import { lookupGatewayPricing } from "../llm/gateway-pricing.ts";
 
 /** 模型定价（每百万 token，USD） */
 export interface ModelPricing {
@@ -44,31 +46,52 @@ const FALLBACK_PRICING: ModelPricing = {
 export interface PricingModelEntry {
   name?: string;
   provider?: string;
+  baseURL?: string;
   pricing?: ModelPricing;
 }
 
 /**
  * 解析模型定价 — 定价解析的**唯一入口**。
  *
- * 优先级：
- *   1. availableModels[].pricing —— 用户配置优先（权威）
- *   2. model-registry.ts 统一注册表（精确/前缀/家族匹配）
- *   3. null —— 未知模型，调用方自行走兜底价
+ * 优先级（新增端点维度，向后兼容——不传 baseURL 时行为与旧版等价）：
+ *   1. 用户手写「模型名 + 端点」精确复合键（权威，同名不同端点各自计价）
+ *   2. 用户手写「仅模型名」（兼容旧配置：没配端点时命中第一条同名）
+ *   3. 网关采集价（gateway-pricing.ts，按渠道名精确匹配，修正前缀剥离低估）
+ *   4. model-registry.ts 统一注册表（精确/前缀/家族匹配；前缀剥离已降为末位兜底）
+ *   5. null —— 未知模型，调用方自行走兜底价
  *
  * @param model 模型名
  * @param availableModels 用户配置的模型列表（可选，携带权威 pricing）
+ * @param baseURL 本次请求实际走的端点（可选；用于「模型名 + 端点」精确匹配）
  */
 export function resolvePricing(
   model: string,
   availableModels?: PricingModelEntry[],
+  baseURL?: string,
 ): ModelPricing | null {
-  // 1. 用户配置优先：availableModels 里同名模型声明的 pricing 是权威值
+  // 1. 用户手写「模型名 + 端点」精确复合键：同名不同端点各自计价（最高权威）。
+  //    仅当 baseURL 传入时启用；两端都过归一化，杜绝斜杠/大小写漏配。
+  if (baseURL !== undefined) {
+    const exact = availableModels?.find(
+      m => m.name === model && sameEndpoint(m.baseURL, baseURL),
+    );
+    if (exact?.pricing && exact.pricing.input > 0) {
+      return exact.pricing;
+    }
+  }
+
+  // 2. 用户手写「仅模型名」：兼容旧配置（无端点维度时命中第一条同名）。
   const userModel = availableModels?.find(m => m.name === model);
   if (userModel?.pricing && userModel.pricing.input > 0) {
     return userModel.pricing;
   }
 
-  // 2. 从统一注册表查找
+  // 3. 网关采集价：按渠道名精确匹配（ali-/tx-/origin- 前缀天然区分渠道）。
+  //    命中即返回，从而根本走不到步骤 4 注册表的前缀剥离——修正「渠道名被剥成官方名套官方价」的低估。
+  const gateway = lookupGatewayPricing(model, baseURL);
+  if (gateway) return gateway;
+
+  // 4. 从统一注册表查找（前缀剥离在此仅作「查无此模型」的最后兜底）。
   const entry = lookupRegistry(model);
   return entry?.pricing ?? null;
 }
@@ -102,8 +125,9 @@ export function calculateUSDCost(
   usage: Usage,
   availableModels?: PricingModelEntry[],
   provider?: string,
+  baseURL?: string,
 ): number {
-  const p = resolvePricing(model, availableModels) ?? FALLBACK_PRICING;
+  const p = resolvePricing(model, availableModels, baseURL) ?? FALLBACK_PRICING;
   const M = 1_000_000;
   const prov = provider ?? inferPricingProvider(model, availableModels);
   const n = normalizeCacheUsage(usage, prov);
@@ -144,7 +168,7 @@ export class CostTracker {
   }
 
   /** 累加一次 API 调用的用量与成本 */
-  record(model: string, usage: Usage, durationMs = 0, provider?: string): number {
+  record(model: string, usage: Usage, durationMs = 0, provider?: string, baseURL?: string): number {
     if (!this.modelUsage[model]) {
       this.modelUsage[model] = {
         inputTokens: 0,
@@ -162,7 +186,7 @@ export class CostTracker {
     mu.cacheCreationInputTokens += usage.cacheCreationInputTokens ?? 0;
     mu.requestCount++;
 
-    const cost = calculateUSDCost(model, usage, this.availableModels, provider);
+    const cost = calculateUSDCost(model, usage, this.availableModels, provider, baseURL);
     mu.costUSD += cost;
     this.totalCostUSD += cost;
     this.totalAPIDurationMs += durationMs;

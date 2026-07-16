@@ -1394,8 +1394,10 @@ export async function* queryLoop(
     }
 
     // ─── 更新用量统计 ───
-    sessionState.updateUsage(config.model, response.usage, apiDuration, config.provider);
-    const thisCost = sessionState.calculateCost(config.model, response.usage, config.provider);
+    // config.baseURL 是 resolveCurrentModelConfig 回填的当前模型端点，传入使计费按
+    // (model, endpoint) 复合键精确匹配——同名不同渠道（如 ali-/tx-/origin- 前缀）各自计价。
+    sessionState.updateUsage(config.model, response.usage, apiDuration, config.provider, config.baseURL);
+    const thisCost = sessionState.calculateCost(config.model, response.usage, config.provider, config.baseURL);
 
     // ─── P1-6/P1-7：用真实 usage 校准上下文估算器 ───
     // 把 provider 原始 usage 归一化为完整 prompt（promptTotal，与厂商无关），
@@ -1530,6 +1532,7 @@ export async function* queryLoop(
           cache_savings_usd: cacheSavingsUSD,
           ttft_ms: ttftMs,
           provider: config.provider,  // T12.3：Provider 维度标记
+          base_url: config.baseURL,   // 端点维度：区分同模型不同渠道，便于排查 + 重算精确计费
         },
       );
       if (afterModelResult.finalOutput?.isBlockingDecision()) {
