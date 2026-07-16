@@ -48,10 +48,18 @@ describe("classifyError", () => {
       expect((err as TerminalError).reason).toBe("model_not_found");
     });
 
-    test("not found", () => {
-      const err = classifyError(new Error("The model was not found"));
+    test("明确的 model_not_found 结构化标记 → 终端错误", () => {
+      const err = classifyError(new Error("model_not_found: unknown model id"));
       expect(err).toBeInstanceOf(TerminalError);
       expect((err as TerminalError).reason).toBe("model_not_found");
+    });
+
+    test("归因脱节修复：裸 \"not found\"（无 404 状态码、无 model_not_found 标记）不再判为终端 model_not_found", () => {
+      // 旧行为：`lowerMsg.includes("not found")` 把任何含 "not found" 的消息判成终端错误
+      // → 上游/网关临时返回 "upstream not found" / "no available channel ... not found"
+      // 等可重试 5xx 被误判、提前放弃重试。修复后这类消息不再命中 model_not_found。
+      const err = classifyError(new Error("upstream not found, please retry"));
+      expect((err as any).reason).not.toBe("model_not_found");
     });
 
     test("content_policy 拒绝", () => {

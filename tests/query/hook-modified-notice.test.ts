@@ -11,7 +11,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { buildHookModifiedNotice } from "../../src/query/tool-executor.ts";
+import { buildHookModifiedNotice, hookActuallyModifiedInput } from "../../src/query/tool-executor.ts";
 
 describe("buildHookModifiedNotice — hook 改参告知", () => {
   test("包含被改工具的名字", () => {
@@ -45,5 +45,42 @@ describe("buildHookModifiedNotice — hook 改参告知", () => {
     expect(a).toContain("grep");
     expect(b).toContain("glob");
     expect(a).not.toEqual(b);
+  });
+});
+
+describe("hookActuallyModifiedInput — 仅在参数真的改变时才判定为已修改（归因脱节修复）", () => {
+  test("hook 原样透传相同参数 → 未修改（不应注入告知）", () => {
+    const orig = { file_path: "/a.ts", limit: 100 };
+    expect(hookActuallyModifiedInput(orig, { file_path: "/a.ts", limit: 100 })).toBe(false);
+  });
+
+  test("key 顺序不同但值相同 → 未修改（顺序无关比较）", () => {
+    expect(hookActuallyModifiedInput({ a: 1, b: 2 }, { b: 2, a: 1 })).toBe(false);
+  });
+
+  test("改了某个值 → 已修改", () => {
+    expect(hookActuallyModifiedInput({ file_path: "/a.ts" }, { file_path: "/b.ts" })).toBe(true);
+  });
+
+  test("新增了字段 → 已修改", () => {
+    expect(hookActuallyModifiedInput({ cmd: "ls" }, { cmd: "ls", timeout: 5000 })).toBe(true);
+  });
+
+  test("删除了字段 → 已修改", () => {
+    expect(hookActuallyModifiedInput({ cmd: "ls", timeout: 5000 }, { cmd: "ls" })).toBe(true);
+  });
+
+  test("嵌套对象深度相等 → 未修改", () => {
+    const orig = { opts: { deep: { x: [1, 2, 3] } } };
+    const mod = { opts: { deep: { x: [1, 2, 3] } } };
+    expect(hookActuallyModifiedInput(orig, mod)).toBe(false);
+  });
+
+  test("嵌套数组元素不同 → 已修改", () => {
+    expect(hookActuallyModifiedInput({ x: [1, 2, 3] }, { x: [1, 2, 4] })).toBe(true);
+  });
+
+  test("空对象 vs 空对象 → 未修改", () => {
+    expect(hookActuallyModifiedInput({}, {})).toBe(false);
   });
 });

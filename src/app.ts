@@ -2532,7 +2532,7 @@ export class App {
       // 现在追加 isExecuting()：approve 后进入执行阶段标志，按计划执行期间失败也能触发。
       const inPlanContext = this.planManager.isPlanning() || this.planManager.isExecuting();
       if (result && result.type === "tool_result" && result.is_error && inPlanContext) {
-        const { getSharedRecoveryHook } = await import("./plan/recovery.ts");
+        const { getSharedRecoveryHook, classifyRecoveryTrigger } = await import("./plan/recovery.ts");
         const hook = getSharedRecoveryHook();
         const planFilePath = this.planManager.getPlanFilePath() || "";
         // 执行阶段 plan 文件路径仍保留（approve/deactivate 不清空，仅 forceExit/下次 enter 清）。
@@ -2547,9 +2547,10 @@ export class App {
           currentPlanFilePath: planFilePath,
           planStepIndex: null,
         };
-        const triggerType = block.name === "read" || block.name === "edit"
-          ? "file_not_found"
-          : "tool_failure";
+        // 按实际错误消息内容判定, 而非按工具名硬编码.
+        // 旧逻辑把 read/edit 的任何失败都当 file_not_found —— 导致"目录当文件读"
+        // 被误报为"文件/目录不存在"(见 classifyRecoveryTrigger 注释).
+        const triggerType = classifyRecoveryTrigger(block.name, ctx.errorMessage);
         if (hook.shouldTrigger(triggerType, ctx)) {
           hook.recordTrigger(triggerType, ctx.currentPlanFilePath);
           const hint = hook.buildRecoveryHint(triggerType, ctx);

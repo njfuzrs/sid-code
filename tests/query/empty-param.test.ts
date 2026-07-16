@@ -163,15 +163,21 @@ describe("empty-param — buildEmptyParamRetryMessage", () => {
     expect(msg).toContain("分段");
   });
 
-  it("stop_reason=end_turn（非截断）→ 走退化分支", () => {
+  it("stop_reason=end_turn（非截断）→ 走非截断分支：陈述事实+重发建议，不臆造根因", () => {
     const msg = buildEmptyParamRetryMessage(hits, 1, MAX_EMPTY_PARAM_RETRIES, false, "end_turn");
-    expect(msg).toContain("大上下文下的模型退化");
+    // 归因脱节修复：不再无条件断言"大上下文退化"这一未经证实的根因
+    expect(msg).not.toContain("大上下文下的模型退化");
+    expect(msg).not.toContain("大上下文");
+    // 只陈述可观测事实 + 给出无论何种成因都正确的补救动作
+    expect(msg).toContain("参数为空");
+    expect(msg).toContain("重新发起完整的工具调用");
     expect(msg).not.toContain("分段");
   });
 
-  it("不传 stop_reason → 保持退化分支（向后兼容）", () => {
+  it("不传 stop_reason → 同样走非截断分支且不臆造根因（向后兼容）", () => {
     const msg = buildEmptyParamRetryMessage(hits, 1, MAX_EMPTY_PARAM_RETRIES, false);
-    expect(msg).toContain("大上下文下的模型退化");
+    expect(msg).not.toContain("大上下文");
+    expect(msg).toContain("重新发起完整的工具调用");
   });
 });
 

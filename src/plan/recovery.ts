@@ -21,6 +21,44 @@ export type RecoveryTrigger =
   | "permission_denied"     // 权限拒绝 (sandbox / acceptEdits 拒绝)
   | "user_correction";      // 用户在 plan mode 中纠正方向
 
+/**
+ * 按「实际错误消息内容」而非「工具名」判定 recovery 触发类型。
+ *
+ * 背景 (bug fix): 旧逻辑 `block.name === "read" || "edit" ? "file_not_found" : "tool_failure"`
+ * 把 read/edit 的**任何**失败都当成 file_not_found。但这两个工具的失败远不止"路径不存在":
+ *   - read: "是一个目录，不是文件" / "文件过大" / "二进制文件" / "无权限"
+ *   - edit: "未找到要替换的字符串" / "模糊匹配歧义" / "文件已存在且非空" / "无权限"
+ * 结果是模型收到误导性的"文件/目录不存在"提示 —— 明明目录存在, 只是把目录当文件读了.
+ *
+ * 判定优先级 (先特化后兜底):
+ *   1. permission_denied —— 权限被拒 (含 sandbox / EACCES)
+ *   2. file_not_found    —— 真·路径不存在 (ENOENT / formatPathNotFoundError 的"文件不存在")
+ *      注意: "是一个目录 / 不是文件" **不算** file_not_found —— 路径存在, 只是类型不符
+ *   3. tool_failure      —— 其余全部走通用分支, hint 会回显真实错误消息(不臆造原因)
+ */
+export function classifyRecoveryTrigger(
+  _toolName: string,
+  errorMessage: string,
+): RecoveryTrigger {
+  const msg = errorMessage || "";
+
+  // 1) 权限拒绝: 无权限 / permission denied / EACCES / EPERM / 权限被拒
+  if (/无权限|权限被拒|权限拒绝|permission denied|\bEACCES\b|\bEPERM\b/i.test(msg)) {
+    return "permission_denied";
+  }
+
+  // 2) 真·文件不存在: formatPathNotFoundError 输出以"错误: 文件不存在:"开头,
+  //    底层 fs 抛 ENOENT / "no such file or directory".
+  //    刻意排除"是一个目录 / 不是文件"—— 那是类型不符, 路径本身存在.
+  if (/文件不存在|no such file or directory|\bENOENT\b/i.test(msg)) {
+    return "file_not_found";
+  }
+
+  // 3) 兜底: 目录当文件读 / 文件过大 / 二进制 / 未匹配 / 模糊歧义 / no-op …
+  //    统一走 tool_failure, 由 buildRecoveryHint 回显真实错误消息, 不臆造"不存在".
+  return "tool_failure";
+}
+
 /** Recovery 触发上下文 — 调用方填好后传入 hook */
 export interface RecoveryContext {
   toolName: string;

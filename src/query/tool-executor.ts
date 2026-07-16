@@ -160,6 +160,51 @@ export function buildHookModifiedNotice(toolName: string): string {
   );
 }
 
+/**
+ * 判断 hook 回传的 tool_input 是否**真的改变了**原始参数。
+ *
+ * 背景（归因脱节 bug）：PreToolUseHookOutput.getModifiedToolInput() 只要 hook 在
+ * hookSpecificOutput 里回带了 `tool_input` 字段就返回它——**不比较是否与原 input 不同**。
+ * 而 applyHookOutputToInput 对 PreToolUse 做的是 `{...old, ...new}` 浅合并，
+ * 合并后可能与原值逐字节相同（hook 原样透传 / 只回带了默认值）。此时旧逻辑仍会注入
+ * "参数被 hook 修改"提示，误导模型怀疑自己提交的参数、甚至重发——与 plan-recovery
+ * 按工具名误判 file_not_found 同类：用"是否回带 tool_input"代理"参数是否真的变了"。
+ *
+ * 用结构化深比较（顺序无关的 JSON 等价）判定，相等则视为"未修改"，不注入提示。
+ */
+export function hookActuallyModifiedInput(original: unknown, modified: unknown): boolean {
+  return !stableDeepEqual(original, modified);
+}
+
+/** 顺序无关的结构化深比较（对象 key 排序后逐一比较，数组按序比较）。 */
+function stableDeepEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a === null || b === null || a === undefined || b === undefined) return a === b;
+  if (typeof a !== "object" || typeof b !== "object") return a === b;
+
+  const aArr = Array.isArray(a);
+  const bArr = Array.isArray(b);
+  if (aArr !== bArr) return false;
+  if (aArr && bArr) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (!stableDeepEqual(a[i], b[i])) return false;
+    }
+    return true;
+  }
+
+  const aKeys = Object.keys(a as Record<string, unknown>);
+  const bKeys = Object.keys(b as Record<string, unknown>);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const k of aKeys) {
+    if (!Object.prototype.hasOwnProperty.call(b, k)) return false;
+    if (!stableDeepEqual((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k])) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /** 工具执行器依赖 */
 export interface ToolExecutorDeps {
   config: Config;
@@ -710,9 +755,13 @@ export async function executeSingleTool(
   if (preToolResult.finalOutput && "getModifiedToolInput" in preToolResult.finalOutput) {
     const modified = (preToolResult.finalOutput as any).getModifiedToolInput?.();
     if (modified) {
-      log.info("HOOK", `工具 ${block.name} 输入被 hook 修改`);
+      // 用改后参数执行（即使与原值相同也无害），但仅当**真的变了**才注入告知提示——
+      // 否则会误导模型以为参数被改（见 hookActuallyModifiedInput 注释）。
       effectiveInput = modified;
-      hookModifiedNotice = buildHookModifiedNotice(block.name);
+      if (hookActuallyModifiedInput(block.input, modified)) {
+        log.info("HOOK", `工具 ${block.name} 输入被 hook 修改`);
+        hookModifiedNotice = buildHookModifiedNotice(block.name);
+      }
     }
   }
 

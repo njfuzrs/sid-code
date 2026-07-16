@@ -506,7 +506,12 @@ export function classifyError(error: unknown): TerminalError | RetryableError | 
   if (is401Error(error)) {
     return new TerminalError(msg, "auth_failed");
   }
-  if (matchesHttpStatus(structuredStatus, lowerMsg, "404") || lowerMsg.includes("model_not_found") || lowerMsg.includes("not found")) {
+  // 归因脱节修复：删除裸 `"not found"` 子串命中。它不受结构化状态码约束，
+  // 会把上游/网关临时返回的 "upstream not found" / "no available channel ... not found"
+  // 等**可重试** 5xx 错误误判成终端 model_not_found → 提前放弃重试、直接切 fallback
+  // （与本文件 hasBoundaryDigits 记录的 404-in-request-id 事故同类）。
+  // 仅保留：真 404 状态码（数字边界匹配） 或 明确的 `model_not_found` 结构化标记。
+  if (matchesHttpStatus(structuredStatus, lowerMsg, "404") || lowerMsg.includes("model_not_found")) {
     return new TerminalError(msg, "model_not_found");
   }
   if (lowerMsg.includes("content_policy") || lowerMsg.includes("safety")) {

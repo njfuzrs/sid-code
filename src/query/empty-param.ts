@@ -133,7 +133,10 @@ export function replaceEmptyParamToolUses(
     if (block.type === "tool_use" && isDegradedToolUse(block, getSchema)) {
       return {
         type: "text" as const,
-        text: `[系统检测] 工具 ${block.name} 的参数为空——模型在大上下文场景下退化（生成了工具调用声明但未填写参数）。该次调用已作废。`,
+        // 归因脱节修复：不再无条件断言"大上下文退化"——空参数的成因不止一种
+        // （小/新上下文下模型偶发生成空 tool_use、provider 序列化丢参等）。只陈述
+        // 可观测事实（参数为空、调用作废），不臆造未经证实的根因。
+        text: `[系统检测] 工具 ${block.name} 生成了工具调用声明但参数为空（input={}），该次调用已作废。`,
       };
     }
     return block;
@@ -148,7 +151,8 @@ export function replaceEmptyParamToolUses(
  * @param attempt 当前是第几次重试（1-based）
  * @param maxAttempts 最大重试次数
  * @param compacted 本轮是否已执行上下文压缩（用于措辞）
- * @param stopReason 本轮响应的 stop_reason（用于区分"截断"与"大上下文退化"两种根因）
+ * @param stopReason 本轮响应的 stop_reason（=max_tokens/length 时归因为"截断"，
+ *        给分段写入建议；否则只陈述"参数为空"事实，不臆造根因）
  */
 export function buildEmptyParamRetryMessage(
   hits: EmptyParamHit[],
@@ -182,9 +186,12 @@ export function buildEmptyParamRetryMessage(
     );
   }
 
+  // 非截断分支：成因不唯一（大上下文退化只是其一，也可能是小/新上下文下的偶发空调用、
+  // provider 丢参等）。不再无条件断言"大上下文退化"这一未经证实的根因，只陈述事实 +
+  // 给出无论何种成因都正确的补救动作（重发带完整参数的调用）。
   return (
     `<system-reminder>\n` +
-    `检测到工具调用「${toolList}」的参数为空（input={}），这是大上下文下的模型退化，该调用未执行。${compactNote}\n` +
+    `检测到工具调用「${toolList}」的参数为空（input={}），该调用未执行。${compactNote}\n` +
     `请重新发起完整的工具调用，务必填写所有必需参数（例如 write 工具需要 file_path 和 content）。` +
     `不要只输出"开始写"之类的文本后停止——直接给出带完整参数的工具调用。\n` +
     `（自动重试 ${attempt}/${maxAttempts}）\n` +

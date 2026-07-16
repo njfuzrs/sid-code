@@ -13,6 +13,7 @@ import {
   DefaultRecoveryHook,
   getSharedRecoveryHook,
   _setSharedRecoveryHookForTest,
+  classifyRecoveryTrigger,
   type RecoveryContext,
   type RecoveryTrigger,
 } from "../../src/plan/recovery.ts";
@@ -137,6 +138,65 @@ describe("DefaultRecoveryHook — buildRecoveryHint 4 类 trigger", () => {
     const ctx = { ...baseCtx, planStepIndex: null };
     const txt = h.buildRecoveryHint("tool_failure", ctx);
     expect(txt).toContain("off-plan");
+  });
+});
+
+describe("classifyRecoveryTrigger — 按错误消息内容判定 (bug fix)", () => {
+  test("read 目录当文件读 → tool_failure (不是 file_not_found)", () => {
+    // 复现原始 bug: 路径存在但是目录, 旧逻辑误报"文件/目录不存在"
+    const msg = "错误: '/Users/x/Code/sid-code/src/entrypoints' 是一个目录，不是文件。请使用 ls 工具列出目录内容。";
+    expect(classifyRecoveryTrigger("read", msg)).toBe("tool_failure");
+  });
+
+  test("read 真·文件不存在 → file_not_found", () => {
+    const msg = "错误: 文件不存在: /tmp/nope.txt\n当前工作目录: /tmp";
+    expect(classifyRecoveryTrigger("read", msg)).toBe("file_not_found");
+  });
+
+  test("底层 ENOENT → file_not_found", () => {
+    expect(classifyRecoveryTrigger("read", "ENOENT: no such file or directory, open '/x'")).toBe("file_not_found");
+  });
+
+  test("read 无权限 → permission_denied", () => {
+    expect(classifyRecoveryTrigger("read", "错误: 无权限读取文件: /etc/shadow")).toBe("permission_denied");
+  });
+
+  test("EACCES → permission_denied", () => {
+    expect(classifyRecoveryTrigger("edit", "EACCES: permission denied, open '/etc/hosts'")).toBe("permission_denied");
+  });
+
+  test("edit 未找到要替换的字符串 → tool_failure", () => {
+    const msg = "错误: 未找到要替换的字符串（精确/灵活/正则/模糊匹配均未命中）。";
+    expect(classifyRecoveryTrigger("edit", msg)).toBe("tool_failure");
+  });
+
+  test("edit 模糊匹配歧义 → tool_failure", () => {
+    const msg = "错误: old_string 与文件中多个位置都近似匹配（模糊匹配歧义），无法确定要修改哪一处。";
+    expect(classifyRecoveryTrigger("edit", msg)).toBe("tool_failure");
+  });
+
+  test("edit 文件不存在(创建失败) → file_not_found", () => {
+    const msg = "错误: 文件不存在: /tmp/missing/target.ts\n当前工作目录: /tmp";
+    expect(classifyRecoveryTrigger("edit", msg)).toBe("file_not_found");
+  });
+
+  test("read 文件过大 → tool_failure", () => {
+    const msg = "错误: 文件过大 (42.0 MB，超过 10 MB 上限)。请使用 offset 和 limit 参数分段读取。";
+    expect(classifyRecoveryTrigger("read", msg)).toBe("tool_failure");
+  });
+
+  test("非 read/edit 工具的通用失败 → tool_failure", () => {
+    expect(classifyRecoveryTrigger("bash", "command failed with exit code 1")).toBe("tool_failure");
+  });
+
+  test("空错误消息 → tool_failure (兜底不崩)", () => {
+    expect(classifyRecoveryTrigger("read", "")).toBe("tool_failure");
+  });
+
+  test("permission 优先级高于 file_not_found (同时出现权限关键词)", () => {
+    // 防御: 若消息同时含"文件不存在"与"无权限", 权限判定应先命中
+    const msg = "错误: 无权限读取文件, 且该文件不存在";
+    expect(classifyRecoveryTrigger("read", msg)).toBe("permission_denied");
   });
 });
 

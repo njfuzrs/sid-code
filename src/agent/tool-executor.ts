@@ -23,7 +23,7 @@ import { validateToolInput } from "../tool/input-validator.ts";
 import type { HookSystem } from "../hook/system.ts";
 import type { Checker, PermissionRequest } from "../permission/types.ts";
 import type { ToolProgressData } from "../tool/types.ts";
-import { buildHookModifiedNotice } from "../query/tool-executor.ts";
+import { buildHookModifiedNotice, hookActuallyModifiedInput } from "../query/tool-executor.ts";
 import { stripInternalFields } from "../tool/internal-fields.ts";
 
 /**
@@ -176,9 +176,12 @@ async function executeSingleTool(
       if (preToolResult.finalOutput && "getModifiedToolInput" in preToolResult.finalOutput) {
         const modified = (preToolResult.finalOutput as any).getModifiedToolInput?.();
         if (modified) {
-          log.info("SUBAGENT:HOOK", `工具 ${block.name} 输入被 hook 修改`);
           effectiveInput = modified as Record<string, unknown>;
-          hookModifiedNotice = buildHookModifiedNotice(block.name);
+          // 仅当参数真的变了才注入提示（避免 hook 原样透传 tool_input 时误报）。
+          if (hookActuallyModifiedInput(block.input, modified)) {
+            log.info("SUBAGENT:HOOK", `工具 ${block.name} 输入被 hook 修改`);
+            hookModifiedNotice = buildHookModifiedNotice(block.name);
+          }
         }
       }
     } catch (err: any) {
