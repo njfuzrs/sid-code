@@ -2,6 +2,55 @@
 
 本文件由 scripts/generate-changelog.ts 自动生成，请勿手改。
 
+## v0.1.590 (2026-07-16)
+
+### 新功能
+- **startup** · update 后全端点定价强制刷新 + API Key 占位符识别 `0aafe2b`
+  - 新增 refreshGatewayPricingOnStartup，通过版本水位线（lastPricingSyncVersion） 判断刚 update 后 force 全端点强制刷新定价缓存，忽略 24h TTL
+  - 新增 isMissingApiKey 函数，识别 __YOUR_API_KEY__ 占位符为未配置， 新用户首次安装时友好引导而非静默撞 401
+  - 新增测试：gateway-pricing 启动刷新策略 5 个用例 + config 占位符识别 3 个用例
+  - 文档：重命名可观测性指标体系目录 + 新增网关定价审计报告
+- **llm** · 网关定价多端点分桶、按次计费展示、采集可观测性 `5005ffb`
+  - 缓存结构从单端点扁平改为按归一化端点分桶（v2），旧版 v1 自动迁移
+  - lookupGatewayPricing 端点感知：先查精确桶，再跨桶兜底
+  - syncGatewayPricing 只更新本端点桶，不再互相覆盖
+  - /model pricing 展示按次计费模型（quotaType=1）
+  - 新增观察者模式 + GatewayPricingSync trace 事件
+  - 测试环境隔离：避免读到本机真实网关缓存导致断言不稳定
+- **llm** · 网关定价自动采集与端点归一化计费 `164224a`
+  - 新增 endpoint-key.ts：normalizeBaseURL 端点 URL 归一化， 收敛等价写法避免计费复合键漏配
+  - 新增 gateway-pricing.ts：从 new-api 网关 /api/pricing 接口 自动采集价格，含本地缓存与容错回退
+  - 新增 /model pricing 命令：查看模型定价表含来源标注 （用户手写/网关采集/内置注册表/兜底估算）
+  - 新增 /model discover --pricing：手动触发网关价格采集
+  - resolvePricing 优先级链：用户手写 > 网关采集 > 注册表 > 兜底
+  - 配置与计费链路配套调整
+- **trace** · 补全会话轨迹可观测性指标（缺口分析一至六类） `5a5ab09`
+  - 一类·TTFB：anthropic 路径补齐 headers_received/HttpConnected 事件，与 openai 同口径
+  - 二类·reasoning token：新增 reasoningTokens 字段（Usage/Hook/Trace），openai extract 函数，loop 透传
+  - 三类·输出/输入比：SessionEnd 派生 output_input_ratio
+  - 四类·缓存命中率：SessionEnd 派生 session_cache_hit_rate
+  - 五类·上下文趋势：逐轮 context_usage_ratio 序列 + 峰值，落盘 used/window/ratio
+  - 六类·可靠性：弃流数/重试次数聚合，stream_completed 纯生成耗时 → 吞吐 tokens/sec
+  - trace builder 新增 10+ 派生/采集类指标字段，collector 新增对应采集逻辑
+  - 测试：collector 新增 9 个用例覆盖新指标采集与派生
+- **ui** · bash 长命令实时进度展示 + RetryStatus 倒计时定格修复 `cf64fc5`
+  - bash.ts: pump 循环替代 Response().text() 一次性 await，120ms 节流 emit 尾部 5 行
+  - app.ts: liveToolProgress 侧信道 Map 注入 executing 态 progressMessage； refreshLiveProgressInPlace 轻量路径只换 live tool_group 引用，不重建 committed； CM3 补清请求失败重试成功后 retryStatus 残留
+  - ToolMessage.tsx: shell 实时输出以独立多行块展示在命令行下方
+  - App.tsx: committed 数组引用稳定化，防止轻量刷新触发 Static 全量重渲
+  - history-adapter.ts: estimateToolRows 计入进度行数；countLiveItemTools 修正 hiddenToolCount 计工具数而非行数（防「1 个工具显示成 10 个」）
+  - test: 更新断言 + 新增 shell 多行实时输出折叠测试
+
+### 修复
+- **agent/query/llm/plan** · 归因脱节修复——按实际证据判定而非硬编码代理条件 `941035f`
+  - llm/errors: 删除裸 "not found" 子串匹配，避免把 5xx 可重试错误误判为终端 model_not_found
+  - plan/recovery: 新增 classifyRecoveryTrigger，按错误消息内容判定触发类型，不再按工具名硬编码
+  - query/tool-executor: 新增 hookActuallyModifiedInput，仅在 hook 真的改参时才注入提示
+  - query/empty-param: 不再臆造"大上下文退化"根因，空参数时只陈述事实
+
+### 其他
+- doc：AI Agent 核心可观测性指标体系 & sid-code 覆盖缺口分析 `aec12b6`
+
 ## v0.1.589 (2026-07-15)
 
 ### 新功能
