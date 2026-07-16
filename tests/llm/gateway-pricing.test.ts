@@ -213,3 +213,95 @@ describe("多端点缓存分桶（修复互相覆盖 bug）", () => {
     expect(lookupGatewayPricing("free-model", "https://a.example.com")).toBeNull();
   });
 });
+
+describe("refreshGatewayPricingOnStartup — update 后自动拉取触发策略", () => {
+  let tmpDir: string;
+  let prevConfigDir: string | undefined;
+  let origFetch: typeof globalThis.fetch;
+  let fetchedURLs: string[];
+
+  beforeEach(() => {
+    prevConfigDir = process.env.SID_CONFIG_DIR;
+    tmpDir = mkdtempSync(join(tmpdir(), "gw-startup-"));
+    process.env.SID_CONFIG_DIR = tmpDir;
+    __resetGatewayPricingForTest();
+
+    // 拦截 fetch：记录被采集的 URL，返回空 data（syncGatewayPricing 会因「无有效条目」提前返回，
+    // 但已经证明它尝试了该端点——这正是我们要断言的「是否触发采集」）。
+    fetchedURLs = [];
+    origFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: any) => {
+      fetchedURLs.push(String(url));
+      return { ok: true, json: async () => ({ data: [] }) } as any;
+    }) as any;
+  });
+
+  afterEach(async () => {
+    globalThis.fetch = origFetch;
+    if (prevConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
+    else process.env.SID_CONFIG_DIR = prevConfigDir;
+    __resetGatewayPricingForTest();
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  /** refreshGatewayPricingOnStartup 内部是 fire-and-forget，给微任务一点时间落地。 */
+  async function flush(): Promise<void> {
+    await new Promise((r) => setTimeout(r, 20));
+  }
+
+  function writeFreshCache(endpointKey: string): void {
+    mkdirSync(tmpDir, { recursive: true });
+    writeFileSync(sidPaths.gatewayPricing(), JSON.stringify({
+      schema_version: 2,
+      endpoints: {
+        [endpointKey]: {
+          source_url: `${endpointKey}/api/pricing`,
+          fetched_at: Date.now(), // 刚采集，TTL 未过期
+          pricing_version: "fresh",
+          models: { m: { input: 1, output: 2, quotaType: 0 } },
+        },
+      },
+    }), "utf8");
+  }
+
+  test("force=true（刚 update）忽略 TTL，对全部端点强制刷新", async () => {
+    writeFreshCache("https://a.example.com"); // 缓存很新，TTL 未过期
+    const { refreshGatewayPricingOnStartup } = await import("../../src/llm/gateway-pricing.ts");
+    refreshGatewayPricingOnStartup(["https://a.example.com", "https://b.example.com"], true);
+    await flush();
+    // 两个端点都被采集（含 TTL 未过期的 a）。
+    expect(fetchedURLs).toContain("https://a.example.com/api/pricing");
+    expect(fetchedURLs).toContain("https://b.example.com/api/pricing");
+  });
+
+  test("force=false（日常）TTL 未过期端点跳过，不触发采集", async () => {
+    writeFreshCache("https://a.example.com");
+    const { refreshGatewayPricingOnStartup } = await import("../../src/llm/gateway-pricing.ts");
+    refreshGatewayPricingOnStartup(["https://a.example.com"], false);
+    await flush();
+    // a 缓存新鲜，TTL 未过期 → 跳过，不采集。
+    expect(fetchedURLs).not.toContain("https://a.example.com/api/pricing");
+  });
+
+  test("force=false 但端点从未采集过 → 仍触发采集（首次填充）", async () => {
+    const { refreshGatewayPricingOnStartup } = await import("../../src/llm/gateway-pricing.ts");
+    refreshGatewayPricingOnStartup(["https://new.example.com"], false);
+    await flush();
+    expect(fetchedURLs).toContain("https://new.example.com/api/pricing");
+  });
+
+  test("端点去重 + 过滤空串：同端点只采一次，空串忽略", async () => {
+    const { refreshGatewayPricingOnStartup } = await import("../../src/llm/gateway-pricing.ts");
+    refreshGatewayPricingOnStartup(["https://x.example.com", "https://x.example.com", "", "  "], true);
+    await flush();
+    const xHits = fetchedURLs.filter((u) => u === "https://x.example.com/api/pricing");
+    expect(xHits.length).toBe(1);
+  });
+
+  test("空端点集合 → 无采集、不抛", async () => {
+    const { refreshGatewayPricingOnStartup } = await import("../../src/llm/gateway-pricing.ts");
+    expect(() => refreshGatewayPricingOnStartup([], true)).not.toThrow();
+    await flush();
+    expect(fetchedURLs.length).toBe(0);
+  });
+});

@@ -377,7 +377,7 @@ export function validateConfig(config: Config): ValidationResult {
     const keyCount = new Map<string, { name: string; count: number }>();
     for (const m of config.availableModels) {
       if (!m.name) continue;
-      const key = `${m.name} ${normalizeBaseURL(m.baseURL)}`;
+      const key = `${m.name}\x00${normalizeBaseURL(m.baseURL)}`;
       const prev = keyCount.get(key);
       if (prev) prev.count++;
       else keyCount.set(key, { name: m.name, count: 1 });

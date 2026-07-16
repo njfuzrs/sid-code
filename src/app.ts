@@ -266,11 +266,34 @@ export class App {
     this.sessionState = new SessionState(sessionId);
     // 注入用户配置的模型列表（含定价/provider），供计费和 provider 推断优先使用
     this.sessionState.setAvailableModels(opts.config.availableModels);
-    // 网关定价惰性刷新：先载入缓存供本会话计费用，缓存超 TTL 则后台静默刷新（失败不阻塞启动）。
-    // 端点取当前主模型的 baseURL（resolveCurrentModelConfig 已回填到顶层 config.baseURL）。
+    // 网关定价启动刷新：先载入缓存供本会话计费用，再决定刷新策略（失败不阻塞启动）。
+    //   - 刚 update 过（二进制版本号 ≠ app.json 水位线）→ 忽略 TTL，全端点强制刷新一次，
+    //     确保 update 后立即拿到最新渠道价，不必等 24h TTL 或手动 /model discover --pricing。
+    //   - 日常启动 → 按端点 TTL 惰性刷新。
+    // 端点集合：availableModels 各 baseURL + 顶层 config.baseURL（resolveCurrentModelConfig 已回填）。
     try {
-      const { maybeRefreshGatewayPricing } = require("./llm/gateway-pricing.ts");
-      maybeRefreshGatewayPricing(opts.config.baseURL);
+      const { refreshGatewayPricingOnStartup } = require("./llm/gateway-pricing.ts");
+      const { getAppConfig, saveAppConfig } = require("./config/app-config.ts");
+      const { getVersion } = require("./version.ts");
+
+      const currentVersion: string = getVersion();
+      const lastVersion: string | undefined = getAppConfig().lastPricingSyncVersion;
+      // 版本水位线缺失（老用户首次带此逻辑启动）也视为「需强制刷新」——补上首次全量采集。
+      const justUpdated = lastVersion !== currentVersion;
+
+      const endpoints: string[] = [];
+      for (const m of opts.config.availableModels) {
+        if (m.baseURL) endpoints.push(m.baseURL);
+      }
+      if (opts.config.baseURL) endpoints.push(opts.config.baseURL);
+
+      refreshGatewayPricingOnStartup(endpoints, justUpdated);
+
+      // 更新水位线（无论采集成败都推进：采集是 fire-and-forget，失败下次启动按 TTL 兜底，
+      // 不因失败反复触发全端点强制刷新拖慢每次启动）。
+      if (justUpdated) {
+        saveAppConfig((c: any) => ({ ...c, lastPricingSyncVersion: currentVersion }));
+      }
     } catch { /* 采集不可用不影响启动 */ }
     // 注册辅助调用成本计算函数（复用 SessionState.calculateCost）
     setSideCostCalculator((model, usage) => this.sessionState.calculateCost(model, usage));

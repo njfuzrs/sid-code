@@ -480,6 +480,42 @@ export function maybeRefreshGatewayPricing(baseURL?: string, ttlMs = DEFAULT_TTL
   void syncGatewayPricing({ baseURL }).catch(() => {});
 }
 
+/**
+ * 启动时的网关定价刷新总入口（覆盖 update 后自动拉取场景）。
+ *
+ * 两种模式：
+ * - **force=true（刚 update 过：二进制版本号变化）**：忽略 TTL，对**全部端点**各强制刷新一次，
+ *   确保 update 后立即拿到最新渠道价，不必等 24h TTL 或用户手动 /model discover --pricing。
+ * - **force=false（日常启动）**：退化为原 maybeRefreshGatewayPricing 的按端点 TTL 惰性刷新。
+ *
+ * 全程后台 fire-and-forget：失败静默保留旧缓存 + 回退注册表，绝不阻塞启动、绝不抛。
+ *
+ * @param endpoints 待刷新端点集合（调用方从 availableModels 的 baseURL + 顶层 config.baseURL 去重收集）
+ * @param force     是否强制刷新（true 时忽略 TTL）
+ * @param ttlMs     TTL（force=false 时生效）
+ */
+export function refreshGatewayPricingOnStartup(
+  endpoints: string[],
+  force: boolean,
+  ttlMs = DEFAULT_TTL_MS,
+): void {
+  loadGatewayCache();
+  // 去重 + 过滤空端点。
+  const uniq = Array.from(new Set(endpoints.filter((e) => e && e.trim() !== "")));
+  if (uniq.length === 0) return;
+
+  for (const baseURL of uniq) {
+    if (!force) {
+      // 日常：按端点桶判 TTL，未过期跳过。
+      const meta = getGatewayCacheMeta(baseURL);
+      const stale = !meta || Date.now() - meta.fetchedAt > ttlMs;
+      if (!stale) continue;
+    }
+    // force=true 时忽略 TTL；后台静默刷新，逐端点独立，互不影响。
+    void syncGatewayPricing({ baseURL, force }).catch(() => {});
+  }
+}
+
 /** 仅测试用：重置内存态。 */
 export function __resetGatewayPricingForTest(): void {
   memBuckets = {};

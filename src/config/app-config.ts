@@ -54,6 +54,11 @@ export interface AppConfig {
   // key = hint 标识（如 "shellMode" / "ctrlOExpand"），value = 已显示次数
   hints?: Record<string, number>;
 
+  // update 后网关定价强制刷新水位线：记录「上次跑网关定价刷新时的二进制版本号」。
+  // 新二进制首次启动发现此值 ≠ 当前版本（= 刚 update 过），就忽略 24h TTL 强制全端点刷新一次，
+  // 确保 update 后立即拿到最新渠道价，而不必等 TTL 到期或用户手动 /model discover --pricing。
+  lastPricingSyncVersion?: string;
+
   // 调试配置
   debug: boolean;
   debugLevel: string;

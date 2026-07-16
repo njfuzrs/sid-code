@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { defaultConfig, loadConfig } from "../../src/config/config.ts";
+import { defaultConfig, loadConfig, isMissingApiKey, PLACEHOLDER_API_KEY } from "../../src/config/config.ts";
 
 describe("config", () => {
   test("defaultConfig 返回合理的默认值（不绑定特定 Provider/模型）", () => {
@@ -126,6 +126,25 @@ describe("config", () => {
       } finally {
         restore();
       }
+    });
+  });
+
+  describe("isMissingApiKey — 占位符/空值识别", () => {
+    test("空 / undefined / 纯空白 → 视为缺失", () => {
+      expect(isMissingApiKey(undefined)).toBe(true);
+      expect(isMissingApiKey(null)).toBe(true);
+      expect(isMissingApiKey("")).toBe(true);
+      expect(isMissingApiKey("   ")).toBe(true);
+    });
+
+    test("团队模板占位符 __YOUR_API_KEY__（含首尾空白）→ 视为缺失", () => {
+      expect(isMissingApiKey(PLACEHOLDER_API_KEY)).toBe(true);
+      expect(isMissingApiKey("  __YOUR_API_KEY__  ")).toBe(true);
+    });
+
+    test("真实 key → 不缺失", () => {
+      expect(isMissingApiKey("sk-abc123")).toBe(false);
+      expect(isMissingApiKey("anthropic-xyz")).toBe(false);
     });
   });
 });

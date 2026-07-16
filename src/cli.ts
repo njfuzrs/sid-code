@@ -13,7 +13,7 @@ if (!process.env.FORCE_COLOR && !process.env.NO_COLOR) {
 }
 
 import { parseArgs } from "node:util";
-import { loadConfig } from "./config/config.ts";
+import { loadConfig, isMissingApiKey, PLACEHOLDER_API_KEY } from "./config/config.ts";
 import type { Config } from "./config/config.ts";
 import { initLogger, getLogger, LogLevel, getPerfTimer } from "./debug/index.ts";
 import { printHelp } from "./help.ts";
@@ -570,14 +570,22 @@ export async function main(): Promise<void> {
     // - headless（print）模式：缺 key 无法交互，按原样报错退出（文案指向配置位置）。
     // - TUI 模式：缺 key 不退出，标记 _needsOnboarding，进界面后由 OnboardingDialog 引导。
     //   （config.ts loadConfig 已处理"完全空配置"分支；此处覆盖"provider 有值但缺 key"。）
+    // isMissingApiKey：空 / 纯空白 / 团队模板占位符 __YOUR_API_KEY__ 都算"未配置"。
+    // 占位符是非空字符串，若只判空会漏过——新用户首次安装拿到的正是占位符，不识别就会撞 401。
+    const usingPlaceholder =
+      (config.provider === "anthropic" && config.anthropicKey?.trim() === PLACEHOLDER_API_KEY) ||
+      (config.provider === "openai" && config.openaiKey?.trim() === PLACEHOLDER_API_KEY);
     const missingKey =
-      (config.provider === "anthropic" && !config.anthropicKey) ||
-      (config.provider === "openai" && !config.openaiKey);
+      (config.provider === "anthropic" && isMissingApiKey(config.anthropicKey)) ||
+      (config.provider === "openai" && isMissingApiKey(config.openaiKey));
     if (missingKey) {
       if (config.print) {
         const keyName = config.provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
+        const hint = usingPlaceholder
+          ? `检测到 API Key 仍是安装模板占位符 ${PLACEHOLDER_API_KEY}，尚未替换为真实密钥。\n`
+          : `未配置 ${keyName}。\n`;
         console.error(
-          `错误: 未配置 ${keyName}。\n` +
+          `错误: ${hint}` +
           `请在 ~/.sid-code/settings.json 配置 availableModels[].api_key，或设置环境变量 ${keyName}。`,
         );
         process.exit(1);

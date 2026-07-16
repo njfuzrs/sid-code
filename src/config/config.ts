@@ -12,6 +12,21 @@ import { getSidHome } from "./paths.ts";
 import { parseToolSearchEnv } from "../tool/tool-search-auto.ts";
 import type { NetworkTimeoutSettings } from "./network-profile.ts";
 
+/**
+ * 团队默认配置模板（scripts/team-defaults.template.json）里 apiKey 的占位符值。
+ * 首次安装 install.sh 整份拷贝模板到 settings.json，key 就是这个占位符——用户必须换成真 key。
+ * 非空字符串,故会绕过"缺 key"的空值校验;各处需显式识别它并视同"未配置",
+ * 否则新用户不换 key 直接发消息会撞 401 而无任何引导提示。
+ */
+export const PLACEHOLDER_API_KEY = "__YOUR_API_KEY__";
+
+/** apiKey 是否等价于"未配置"（空 / 纯空白 / 团队模板占位符）。 */
+export function isMissingApiKey(key?: string | null): boolean {
+  if (!key) return true;
+  const trimmed = key.trim();
+  return trimmed === "" || trimmed === PLACEHOLDER_API_KEY;
+}
+
 /** MCP 服务器配置 */
 export interface MCPServerConfig {
   transport: "stdio" | "http" | "sse" | "ws";
