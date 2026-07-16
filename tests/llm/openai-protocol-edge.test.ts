@@ -11,7 +11,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { OpenAIProvider, extractOpenAICacheHit } from "../../src/llm/openai.ts";
+import { OpenAIProvider, extractOpenAICacheHit, extractOpenAIReasoningTokens } from "../../src/llm/openai.ts";
 import { DYNAMIC_BOUNDARY } from "../../src/api/cache-strategy.ts";
 
 class TestableOpenAIProvider extends OpenAIProvider {
@@ -329,6 +329,39 @@ describe("extractOpenAICacheHit：各家缓存命中字段兜底链（依据 api
     // 0 是合法命中值(冷启动)，?? 只在 null/undefined 时下探，不会把 0 当缺失
     expect(extractOpenAICacheHit({ prompt_tokens_details: { cached_tokens: 0 } })).toBe(0);
     expect(extractOpenAICacheHit({ prompt_cache_hit_tokens: 0 })).toBe(0);
+  });
+});
+
+describe("extractOpenAIReasoningTokens：推理 token 字段兜底链（缺口分析二类）", () => {
+  test("① 标准 completion_tokens_details.reasoning_tokens（o-series / GLM / 网关归一化）", () => {
+    expect(extractOpenAIReasoningTokens({
+      prompt_tokens: 100,
+      completion_tokens: 500,
+      completion_tokens_details: { reasoning_tokens: 320 },
+    })).toBe(320);
+  });
+
+  test("② output_tokens_details.reasoning_tokens 兜底（部分端点命名差异）", () => {
+    expect(extractOpenAIReasoningTokens({
+      output_tokens_details: { reasoning_tokens: 128 },
+    })).toBe(128);
+  });
+
+  test("③ 顶层 reasoning_tokens 兜底（DeepSeek 官方直连可能形状）", () => {
+    expect(extractOpenAIReasoningTokens({
+      completion_tokens: 40,
+      reasoning_tokens: 15,
+    })).toBe(15);
+  });
+
+  test("无推理字段 → 0（非思考模型 / 网关未透传，不误报）", () => {
+    expect(extractOpenAIReasoningTokens({ prompt_tokens: 100, completion_tokens: 20 })).toBe(0);
+    expect(extractOpenAIReasoningTokens(undefined)).toBe(0);
+    expect(extractOpenAIReasoningTokens({})).toBe(0);
+  });
+
+  test("reasoning 为 0 显式返回 0（不因 ?? 短路误判）", () => {
+    expect(extractOpenAIReasoningTokens({ completion_tokens_details: { reasoning_tokens: 0 } })).toBe(0);
   });
 });
 

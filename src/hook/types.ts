@@ -264,6 +264,8 @@ export interface AfterModelInput extends HookInput {
       cacheReadInputTokens?: number;
       /** 缓存创建 token 数 */
       cacheCreationInputTokens?: number;
+      /** 缺口分析二类：推理/思考 token 数（output 子集，thinking 模型隐藏成本单独计） */
+      reasoningTokens?: number;
     };
     /** 完整的 assistant content blocks（含 tool_use） */
     content_blocks?: unknown[];

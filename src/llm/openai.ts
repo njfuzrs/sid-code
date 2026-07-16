@@ -76,6 +76,22 @@ export function extractOpenAICacheHit(usage: any): number {
     ?? 0;
 }
 
+/**
+ * 从 OpenAI 兼容响应的 usage 提取"推理(思考)token 数"——流式/非流式共用的单一事实源。
+ *
+ * 标准字段 `completion_tokens_details.reasoning_tokens`（OpenAI o-series / GLM / DeepSeek
+ * 经网关归一化后均落此形状）。该值是 completion_tokens 的**子集**（reasoning 已计入输出），
+ * 单独暴露供成本拆解（缺口分析二类），调用方勿再叠加进 outputTokens。
+ * 兜底链末尾放 DeepSeek 官方直连可能出现的顶层 `reasoning_tokens`。
+ * 无该字段（非思考模型 / 网关未透传）时返回 0，由上层决定是否落 undefined。
+ */
+export function extractOpenAIReasoningTokens(usage: any): number {
+  return usage?.completion_tokens_details?.reasoning_tokens
+    ?? usage?.output_tokens_details?.reasoning_tokens
+    ?? usage?.reasoning_tokens
+    ?? 0;
+}
+
 /** 工具调用追踪状态（用于 SSE 流中多工具并行解析） */
 interface ToolCallState {
   id: string;
@@ -1252,6 +1268,8 @@ export class OpenAIProvider implements Provider {
 
     // 缓存命中数：见 extractOpenAICacheHit 的字段兜底说明（流式/非流式单一事实源）。
     const cacheHit = extractOpenAICacheHit(data.usage);
+    // 缺口分析二类：推理 token 单独计数（completion_tokens 子集，不叠加 output）。
+    const reasoning = extractOpenAIReasoningTokens(data.usage);
 
     return {
       role: "assistant",
@@ -1261,6 +1279,7 @@ export class OpenAIProvider implements Provider {
         inputTokens: data.usage?.prompt_tokens ?? 0,
         outputTokens: data.usage?.completion_tokens ?? 0,
         ...(cacheHit > 0 ? { cacheReadInputTokens: cacheHit } : {}),
+        ...(reasoning > 0 ? { reasoningTokens: reasoning } : {}),
       },
       // §2.3：reasoning_content 存入 _meta，供 convertMessages 下轮按需回传
       //（与流式路径 stream-processor 的 response._meta 同源）。
@@ -1476,6 +1495,9 @@ export class OpenAIProvider implements Provider {
               // 缓存命中数：见 extractOpenAICacheHit 的字段兜底说明（与非流式共用）。
               const cacheHit = extractOpenAICacheHit(chunk.usage);
               if (cacheHit > 0) usage.cacheReadInputTokens = cacheHit;
+              // 缺口分析二类：推理 token 单独计数（completion_tokens 子集，不叠加 output）。
+              const reasoning = extractOpenAIReasoningTokens(chunk.usage);
+              if (reasoning > 0) usage.reasoningTokens = reasoning;
             }
 
             if (!delta && !finishReason) continue;

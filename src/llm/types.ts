@@ -107,6 +107,15 @@ export interface Usage {
   outputTokens: number;
   cacheCreationInputTokens?: number;
   cacheReadInputTokens?: number;
+  /**
+   * 推理 / 思考 token 数（缺口分析二类：thinking 模型的隐藏成本，需单独计）。
+   * - **OpenAI 族**：取自 `completion_tokens_details.reasoning_tokens`，是 outputTokens 的**子集**
+   *   （completion_tokens 已含 reasoning），单独暴露供成本拆解，勿再加进 outputTokens。
+   * - **Anthropic**：无独立 reasoning 计数（thinking 已计入 output_tokens），恒 undefined；
+   *   是否有思考靠 thinking_blocks / has_thinking 区分。
+   * 不产生时保持 undefined（不落一个误导的 0）。
+   */
+  reasoningTokens?: number;
 }
 
 /**
@@ -205,6 +214,12 @@ export function accumulateUsage(target: Usage, eventUsage: Usage | undefined): U
   if (eventUsage.cacheCreationInputTokens != null) {
     target.cacheCreationInputTokens =
       (target.cacheCreationInputTokens ?? 0) + eventUsage.cacheCreationInputTokens;
+  }
+  // 缺口分析二类：reasoning token 随 usage 事件透传。仅在显式提供时累加，避免 undefined→0 污染
+  //（与 cache 字段同口径）。OpenAI 族在最终 usage chunk 给累计值，累加等价于取末值。
+  if (eventUsage.reasoningTokens != null) {
+    target.reasoningTokens =
+      (target.reasoningTokens ?? 0) + eventUsage.reasoningTokens;
   }
   return target;
 }

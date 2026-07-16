@@ -18,6 +18,7 @@
 import { describe, test, expect } from "bun:test";
 import { AnthropicProvider } from "../../src/llm/anthropic.ts";
 import type { SendParams, StreamEvent } from "../../src/llm/types.ts";
+import { initStreamObserver, resetStreamObserver } from "../../src/trace/stream-observer.ts";
 
 // ─── 测试脚手架 ──────────────────────────────────────────────────────────
 
@@ -48,6 +49,7 @@ function makeProviderWithEvents(
   const provider = new AnthropicProvider("test-key", "claude-opus-4-8");
   const rawStream = makeRawStream(events, opts);
   const response = {
+    status: 200,
     headers: new Headers(opts.responseHeaders ?? {}),
     body: { cancel: () => Promise.resolve() },
   };
@@ -310,6 +312,43 @@ describe("Anthropic conformance — usage 统计", () => {
     const deltaEv = out.find((e) => e.type === "message_delta") as any;
     expect(deltaEv.usage.outputTokens).toBe(42);
     expect(deltaEv.usage.inputTokens).toBe(0);
+  });
+});
+
+// ─── 缺口分析补全：TTFB 可观测性（headers_received / HttpConnected）────────
+
+describe("Anthropic conformance — TTFB 可观测性（缺口分析一类）", () => {
+  test("收到响应头后 emit headers_received + HttpConnected（与 openai 同口径）", async () => {
+    const captured: any[] = [];
+    initStreamObserver("sess-ttfb", "/tmp", (ev) => captured.push(ev));
+    try {
+      const events = [
+        { type: "message_start", message: { usage: { input_tokens: 10, output_tokens: 0 } } },
+        { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+        { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "x" } },
+        { type: "content_block_stop", index: 0 },
+        { type: "message_stop" },
+      ];
+      const provider = makeProviderWithEvents(events, {
+        responseHeaders: { "content-type": "text/event-stream" },
+      });
+      await drain(provider.sendMessageStream(BASE_PARAMS));
+
+      const headersReceived = captured.find(
+        (e) => e.event === "StreamPhase" && e.data?.phase === "headers_received",
+      );
+      expect(headersReceived).toBeDefined();
+      expect(headersReceived.data.http_status).toBe(200);
+      expect(headersReceived.data.content_type).toBe("text/event-stream");
+      expect(typeof headersReceived.data.ttfb_ms).toBe("number");
+      expect(headersReceived.data.ttfb_ms).toBeGreaterThanOrEqual(0);
+
+      const httpConnected = captured.find((e) => e.event === "HttpConnected");
+      expect(httpConnected).toBeDefined();
+      expect(httpConnected.data.status).toBe(200);
+    } finally {
+      resetStreamObserver();
+    }
   });
 });
 

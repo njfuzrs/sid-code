@@ -150,6 +150,73 @@ export interface TraceMetadata {
   total_cache_creation_tokens: number;
   total_cost_usd: number;
   total_api_calls: number;
+
+  // ── 缺口分析补全：派生/采集类指标（会话级聚合，逐轮更新） ──
+  /**
+   * reasoning / thinking token 累计（缺口分析二类）。此前仅有 `has_thinking` 布尔，
+   * thinking 模型的隐藏成本无从体现。取自 provider usage 的 reasoning token 字段
+   * （OpenAI 族 `completion_tokens_details.reasoning_tokens`；Anthropic 无独立计数，
+   * 只能靠 output_tokens 含思考，故该族此值恒 0，靠 has_thinking 区分）。
+   */
+  total_reasoning_tokens: number;
+  /**
+   * 纯生成耗时累计（ms）。取自 `RetryTelemetry(stream_completed).elapsedMs`
+   * （单次 fetch 从连接到流结束的纯耗时，不含握手/重试/等待）。
+   * 与 total_tokens_received 配对派生"输出吞吐 tokens/sec"——**分母必须是纯生成耗时**，
+   * 用整轮 api_duration_ms 会重蹈 Bug A 的重试/等待污染覆辙（见排查报告 §2）。
+   */
+  total_gen_elapsed_ms: number;
+  /** 拿到过纯生成耗时的 fetch 次数（tokens/sec 分母的样本数，判断吞吐是否可信） */
+  gen_samples: number;
+  /**
+   * 会话级输出吞吐（tokens/sec）= total_tokens_received / (total_gen_elapsed_ms/1000)。
+   * gen_samples=0（无纯生成耗时样本）时为 undefined，不落一个误导的 0 或 ∞。
+   */
+  output_tokens_per_sec?: number;
+  /**
+   * 工具执行耗时累计（ms）。逐个 PostToolUse 的 duration_ms 累加。
+   * 与主循环 SessionState.totalToolDuration 同口径，但持久化进轨迹供离线复盘。
+   */
+  total_tool_duration_ms: number;
+  /** 记录到耗时的工具调用次数（求均值/判断样本量用） */
+  tool_duration_samples: number;
+  /**
+   * 上下文占用峰值（0~1）。每轮 AfterModel 用 promptTotal/contextWindow 计算，取最大值。
+   * 反映"最接近上下文溢出的时刻"，比末值更能预警 lost-in-the-middle 与成本膨胀。
+   */
+  context_usage_peak_ratio?: number;
+  /** 上下文占用峰值对应的绝对 token 数（与 context_usage_peak_ratio 同轮） */
+  context_usage_peak_tokens?: number;
+  /** 上下文占用峰值时所用的窗口大小（token），便于核对比率来源 */
+  context_window_at_peak?: number;
+  /**
+   * 缺口分析五类：上下文占用率逐轮序列（每轮 AfterModel 的 ratio，保留时序）。
+   * 峰值只给"最满时刻"，趋势才能看出"是否随轮次线性膨胀"（第 28 轮 ≈ 第 1 轮 28×）。
+   */
+  context_usage_trend: number[];
+
+  // ── 缺口分析六类·可靠性（会话级聚合计数） ──
+  /**
+   * 被弃流数（缺口分析六类：白烧 output token 的主因，本次排查命中 12 条）。
+   * 统计 StreamPhase(aborted) + RetryTelemetry(retry/超时/529_dropped)——
+   * 每次重连意味着前一次流被丢弃、已生成的 output 白烧。
+   */
+  discarded_streams: number;
+  /** 模型调用重试次数累计（RetryTelemetry type=retry） */
+  model_retry_count: number;
+
+  // ── 缺口分析三/四类·派生比率（SessionEnd 一次性算） ──
+  /**
+   * 输出/输入 token 比（缺口分析三类）。输出单价是输入的 3–8×，此比率上涨说明成本结构恶化。
+   * 分母用累计输入 prompt（flow 口径，与 output 累计可比）；无输入时 undefined。
+   */
+  output_input_ratio?: number;
+  /**
+   * 本会话缓存命中率（缺口分析四类）= cache_read /（cache_read + 全价输入）。
+   * 此前仅有跨会话命中率，单会话 traj 不落此派生值，无法定位"哪个会话缓存差"。
+   */
+  session_cache_hit_rate?: number;
+
   // 辅助 LLM 调用统计（影子调用：标题生成/记忆召回/权限分类/摘要压缩/预热/目标评估等，
   // 不经过主循环 BeforeModel/AfterModel 的调用）
   side_api_calls: number;
@@ -289,6 +356,33 @@ export interface TrajectoryMetaOutput {
    */
   total_cumulative_prompt_tokens: number;
   total_cost_usd: number;
+
+  // ── 缺口分析补全：派生/采集类指标（会话级，可选——旧 traj 无这些字段） ──
+  /** 缺口分析二类：reasoning/thinking token 累计（仅 OpenAI 族 >0） */
+  total_reasoning_tokens?: number;
+  /** 缺口分析一类：会话级输出吞吐（tokens/sec）；无纯生成耗时样本时 undefined */
+  output_tokens_per_sec?: number;
+  /** 缺口分析一类：纯生成耗时累计（ms，tokens/sec 分母，来自 stream_completed） */
+  total_gen_elapsed_ms?: number;
+  /** 缺口分析一类：工具执行耗时累计（ms，逐个 PostToolUse.duration_ms 累加） */
+  total_tool_duration_ms?: number;
+  /** 缺口分析一类：记录到耗时的工具调用次数 */
+  tool_duration_samples?: number;
+  /** 缺口分析五类：上下文占用峰值（0~1）；窗口未知时 undefined */
+  context_usage_peak_ratio?: number;
+  /** 缺口分析五类：上下文占用峰值对应的绝对 token 数 */
+  context_usage_peak_tokens?: number;
+  /** 缺口分析五类：上下文占用率逐轮趋势序列 */
+  context_usage_trend?: number[];
+  /** 缺口分析六类：被弃流数（重连/中断丢弃的流，白烧 output token） */
+  discarded_streams?: number;
+  /** 缺口分析六类：模型调用重试次数 */
+  model_retry_count?: number;
+  /** 缺口分析三类：输出/输入 token 比 */
+  output_input_ratio?: number;
+  /** 缺口分析四类：本会话缓存命中率 */
+  session_cache_hit_rate?: number;
+
   // 辅助 LLM 调用统计（影子调用）
   side_api_calls?: number;
   side_cost_usd?: number;
@@ -763,6 +857,22 @@ export function buildTrajectory(
     // §6.3：累计 prompt（flow），与 total_cost_usd 同口径，供外部做可比单价除法
     total_cumulative_prompt_tokens: metadata.total_cumulative_prompt_tokens,
     total_cost_usd: metadata.total_cost_usd,
+    // 缺口分析补全：派生/采集类指标（仅在有值时输出，避免污染旧 traj 的解析预期）
+    ...(metadata.total_reasoning_tokens ? { total_reasoning_tokens: metadata.total_reasoning_tokens } : {}),
+    ...(metadata.output_tokens_per_sec !== undefined ? { output_tokens_per_sec: metadata.output_tokens_per_sec } : {}),
+    ...(metadata.total_gen_elapsed_ms ? { total_gen_elapsed_ms: metadata.total_gen_elapsed_ms } : {}),
+    ...(metadata.total_tool_duration_ms ? { total_tool_duration_ms: metadata.total_tool_duration_ms } : {}),
+    ...(metadata.tool_duration_samples ? { tool_duration_samples: metadata.tool_duration_samples } : {}),
+    ...(metadata.context_usage_peak_ratio !== undefined ? {
+      context_usage_peak_ratio: metadata.context_usage_peak_ratio,
+      context_usage_peak_tokens: metadata.context_usage_peak_tokens,
+    } : {}),
+    ...(metadata.context_usage_trend && metadata.context_usage_trend.length > 0
+      ? { context_usage_trend: metadata.context_usage_trend } : {}),
+    ...(metadata.discarded_streams ? { discarded_streams: metadata.discarded_streams } : {}),
+    ...(metadata.model_retry_count ? { model_retry_count: metadata.model_retry_count } : {}),
+    ...(metadata.output_input_ratio !== undefined ? { output_input_ratio: metadata.output_input_ratio } : {}),
+    ...(metadata.session_cache_hit_rate !== undefined ? { session_cache_hit_rate: metadata.session_cache_hit_rate } : {}),
     exit_status: exitStatus,
     tools_used: Array.from(metadata.tools_used),
     files_edited: Array.from(metadata.files_edited),

@@ -40,13 +40,17 @@ async function fireModelRound(
     outputTokens?: number;
     cacheRead?: number;
     cacheCreate?: number;
+    reasoningTokens?: number;
+    provider?: string;
+    model?: string;
   } = {},
 ) {
   const messages = opts.messages ?? [{ role: "user", content: "hello" }];
   const contentBlocks = opts.contentBlocks ?? [{ type: "text", text: "回答" }];
+  const model = opts.model ?? "claude-test";
 
   await hookSystem.fireBeforeModelEvent({
-    model: "claude-test",
+    model,
     messages: (messages as any[]).map(m => ({
       role: m.role,
       content: typeof m.content === "string" ? m.content : JSON.stringify(m.content),
@@ -58,7 +62,7 @@ async function fireModelRound(
 
   await hookSystem.fireAfterModelEvent(
     {
-      model: "claude-test",
+      model,
       messages: [],
       raw_messages: messages,
       system: opts.system,
@@ -72,7 +76,9 @@ async function fireModelRound(
         outputTokens: opts.outputTokens ?? 50,
         cacheReadInputTokens: opts.cacheRead ?? 0,
         cacheCreationInputTokens: opts.cacheCreate ?? 0,
+        ...(opts.reasoningTokens !== undefined ? { reasoningTokens: opts.reasoningTokens } : {}),
       },
+      ...(opts.provider ? { provider: opts.provider } : {}),
     },
   );
 }
@@ -365,6 +371,138 @@ describe("TraceCollector", () => {
     const failureEvent = lines.map(l => JSON.parse(l)).find(e => e.event === "PostToolUseFailure");
     expect(failureEvent).toBeDefined();
     expect(failureEvent.data.is_error).toBe(true);
+  });
+
+  // ─── 缺口分析补全：派生/采集类指标 ───
+
+  describe("缺口分析指标采集与落盘", () => {
+    const readEvents = (): any[] => {
+      const eventsPath = join(testDir, "sessions", "sess-001", "events.jsonl");
+      return readFileSync(eventsPath, "utf-8").trim().split("\n").map(l => JSON.parse(l));
+    };
+
+    test("工具耗时：PostToolUse.duration_ms 落盘 + 会话级累计", async () => {
+      await fireSessionStart(hookSystem);
+      await hookSystem.firePostToolUseEvent("bash", { command: "ls" }, { output: "a" }, false, "t1", { duration_ms: 1200 });
+      await hookSystem.firePostToolUseEvent("read", { file_path: "a.ts" }, { output: "b" }, false, "t2", { duration_ms: 800 });
+
+      const meta = collector.getMetadata()!;
+      expect(meta.total_tool_duration_ms).toBe(2000);
+      expect(meta.tool_duration_samples).toBe(2);
+
+      const post = readEvents().filter(e => e.event === "PostToolUse");
+      expect(post[0].data.duration_ms).toBe(1200);
+      expect(post[1].data.duration_ms).toBe(800);
+    });
+
+    test("工具耗时：缺 duration_ms 时不落字段、不计样本", async () => {
+      await fireSessionStart(hookSystem);
+      await hookSystem.firePostToolUseEvent("bash", { command: "ls" }, { output: "a" }, false, "t1");
+
+      const meta = collector.getMetadata()!;
+      expect(meta.total_tool_duration_ms).toBe(0);
+      expect(meta.tool_duration_samples).toBe(0);
+      const post = readEvents().find(e => e.event === "PostToolUse");
+      expect(post.data.duration_ms).toBeUndefined();
+    });
+
+    test("reasoning token：落盘 AfterModelRaw + 会话级累计（仅 >0 时落字段）", async () => {
+      await fireSessionStart(hookSystem);
+      await fireModelRound(hookSystem, { reasoningTokens: 300, outputTokens: 500, provider: "openai", model: "glm-5.2" });
+      await fireModelRound(hookSystem, { reasoningTokens: 0, outputTokens: 50, provider: "openai", model: "glm-5.2" });
+
+      const meta = collector.getMetadata()!;
+      expect(meta.total_reasoning_tokens).toBe(300);
+
+      const raw = readEvents().filter(e => e.event === "AfterModelRaw");
+      expect(raw[0].data.reasoning_tokens).toBe(300);
+      // reasoning=0 时不落字段（避免噪声）
+      expect(raw[1].data.reasoning_tokens).toBeUndefined();
+    });
+
+    test("上下文占用率：落盘 used/window/ratio + 会话级峰值", async () => {
+      await fireSessionStart(hookSystem);
+      // claude-test 会命中兜底窗口；用真实模型名确保窗口可查
+      await fireModelRound(hookSystem, { inputTokens: 100_000, provider: "anthropic", model: "claude-opus-4-8" });
+      await fireModelRound(hookSystem, { inputTokens: 300_000, provider: "anthropic", model: "claude-opus-4-8" });
+
+      const raw = readEvents().filter(e => e.event === "AfterModelRaw");
+      expect(raw[0].data.context_used_tokens).toBe(100_000);
+      expect(raw[0].data.context_window).toBeGreaterThan(0);
+      expect(raw[0].data.context_usage_ratio).toBeGreaterThan(0);
+      expect(raw[0].data.context_usage_ratio).toBeLessThanOrEqual(1);
+
+      // 峰值取各轮最大（第二轮 300k > 第一轮 100k）
+      const meta = collector.getMetadata()!;
+      expect(meta.context_usage_peak_tokens).toBe(300_000);
+      expect(meta.context_usage_peak_ratio).toBeGreaterThan(raw[0].data.context_usage_ratio);
+    });
+
+    test("tokens/sec：纯生成耗时累计 + SessionEnd 派生吞吐", async () => {
+      await fireSessionStart(hookSystem);
+      await fireModelRound(hookSystem, { outputTokens: 1000, provider: "openai", model: "glm-5.2" });
+      // 模拟 stream_completed 遥测（纯生成耗时 2s）
+      collector.writeRetryTelemetry({ type: "stream_completed", provider: "openai", totalEvents: 10, elapsedMs: 2000 });
+
+      let meta = collector.getMetadata()!;
+      expect(meta.total_gen_elapsed_ms).toBe(2000);
+      expect(meta.gen_samples).toBe(1);
+
+      await hookSystem.fireSessionEndEvent("exit");
+      meta = collector.getMetadata()!;
+      // 1000 tokens / 2s = 500 tokens/sec
+      expect(meta.output_tokens_per_sec).toBeCloseTo(500, 0);
+    });
+
+    test("tokens/sec：无纯生成耗时样本时 output_tokens_per_sec 为 undefined（不落误导 0）", async () => {
+      await fireSessionStart(hookSystem);
+      await fireModelRound(hookSystem, { outputTokens: 1000, provider: "openai", model: "glm-5.2" });
+      // 不写任何 stream_completed 遥测
+
+      await hookSystem.fireSessionEndEvent("exit");
+      const meta = collector.getMetadata()!;
+      expect(meta.gen_samples).toBe(0);
+      expect(meta.output_tokens_per_sec).toBeUndefined();
+    });
+
+    test("弃流/重试：会话级聚合计数（六类·可靠性）", async () => {
+      await fireSessionStart(hookSystem);
+      collector.writeRetryTelemetry({ type: "retry", provider: "openai", attempt: 1 });
+      collector.writeRetryTelemetry({ type: "retry", provider: "openai", attempt: 2 });
+      collector.writeRetryTelemetry({ type: "stream_idle_timeout", provider: "openai", timeoutMs: 90000, totalEvents: 3 });
+      collector.writeRetryTelemetry({ type: "529_dropped", provider: "openai", model: "glm-5.2" });
+      collector.writeRetryTelemetry({ type: "stream_completed", provider: "openai", totalEvents: 10, elapsedMs: 1000 });
+
+      const meta = collector.getMetadata()!;
+      // retry×2 计入重试 + 弃流；idle_timeout + 529 各计弃流；completed 不计弃流
+      expect(meta.model_retry_count).toBe(2);
+      expect(meta.discarded_streams).toBe(4);
+    });
+
+    test("上下文趋势：逐轮 ratio 序列保留时序", async () => {
+      await fireSessionStart(hookSystem);
+      await fireModelRound(hookSystem, { inputTokens: 100_000, provider: "anthropic", model: "claude-opus-4-8" });
+      await fireModelRound(hookSystem, { inputTokens: 200_000, provider: "anthropic", model: "claude-opus-4-8" });
+      await fireModelRound(hookSystem, { inputTokens: 300_000, provider: "anthropic", model: "claude-opus-4-8" });
+
+      const meta = collector.getMetadata()!;
+      expect(meta.context_usage_trend).toHaveLength(3);
+      // 单调递增（输入逐轮变大 → 占用率逐轮升高）
+      expect(meta.context_usage_trend[1]).toBeGreaterThan(meta.context_usage_trend[0]);
+      expect(meta.context_usage_trend[2]).toBeGreaterThan(meta.context_usage_trend[1]);
+    });
+
+    test("派生比率：output/input 比 + 单会话缓存命中率（三/四类）", async () => {
+      await fireSessionStart(hookSystem);
+      await fireModelRound(hookSystem, { inputTokens: 1000, outputTokens: 250, cacheRead: 600, provider: "openai", model: "glm-5.2" });
+
+      await hookSystem.fireSessionEndEvent("exit");
+      const meta = collector.getMetadata()!;
+      // output/input = 250 / 1000 = 0.25
+      expect(meta.output_input_ratio).toBeCloseTo(0.25, 3);
+      // 命中率 = cache_read / cumulative_prompt = 600 / 1000 = 0.6
+      expect(meta.session_cache_hit_rate).toBeCloseTo(0.6, 3);
+    });
   });
 
   // ─── UserPromptSubmit ───

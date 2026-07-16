@@ -32,7 +32,9 @@ import { buildDigest, resolvePaths } from "./digest.ts";
 import { getLogger } from "../debug/logger.ts";
 import { sidPaths } from "../config/paths.ts";
 import { estimateTextTokens } from "../context/token.ts";
-import type { Message } from "../llm/types.ts";
+import type { Message, Usage } from "../llm/types.ts";
+import { normalizeCacheUsage } from "../llm/types.ts";
+import { TokenEstimator } from "../llm/token-estimator.ts";
 import { checkMessageHistoryIntegrity } from "../agent/message-invariants.ts";
 import { resetSideCallStats, getSideStats, setSideStatsObserver } from "./side-call-sink.ts";
 import {
@@ -150,6 +152,9 @@ export class TraceCollector {
   private harnessEditCount = 0;
   private harnessEditFirstPass = 0;
   private harnessProtocols: Record<string, number> = {};
+
+  // 缺口分析五类：上下文窗口查询（TokenEstimator 是窗口大小的 SSOT，避免另建静态表漂移）
+  private readonly tokenEstimator = new TokenEstimator();
 
   constructor(options: CollectorOptions = {}, uploader: TraceUploaderInterface | null = null) {
     this.outputDir = options.outputDir
@@ -377,6 +382,15 @@ export class TraceCollector {
       total_cache_creation_tokens: 0,
       total_cost_usd: 0,
       total_api_calls: 0,
+      // 缺口分析补全：派生/采集类指标（逐轮更新）
+      total_reasoning_tokens: 0,
+      total_gen_elapsed_ms: 0,
+      gen_samples: 0,
+      total_tool_duration_ms: 0,
+      tool_duration_samples: 0,
+      context_usage_trend: [],
+      discarded_streams: 0,
+      model_retry_count: 0,
       // 辅助 LLM 调用统计（影子调用：标题生成/记忆召回/权限分类/摘要压缩/预热/目标评估等）
       side_api_calls: 0,
       side_cost_usd: 0,
@@ -669,9 +683,15 @@ export class TraceCollector {
     const outputTokens = usage.outputTokens ?? 0;
     const cacheRead = usage.cacheReadInputTokens ?? 0;
     const cacheCreate = usage.cacheCreationInputTokens ?? 0;
+    // 缺口分析二类：推理 token（output 子集，仅 OpenAI 族提供；Anthropic 恒 undefined）
+    const reasoningTokens = usage.reasoningTokens ?? 0;
     const stopReason = resp.stop_reason ?? "end_turn";
     const contentBlocks = (resp.content_blocks ?? []) as unknown[];
     const thinkingBlocks = resp.thinking_blocks as Array<{ type: "thinking"; thinking: string }> | undefined;
+
+    // 缺口分析五类：上下文占用率。used=完整 prompt 规模（promptTotal，厂商无关），
+    // window=模型上下文窗口（TokenEstimator SSOT）。窗口未知则不落（不猜一个误导比率）。
+    const ctxUsage = this.computeContextUsage(input.llm_request.model, usage, resp.provider);
 
     // §3.2：AfterModelRaw 事件——processStream 返回即落盘，消除"有 Before 无 After"的诊断盲区。
     // 即使后续 pair 完成/raw.jsonl/traj 重建崩溃，排查者也能看到响应已到达。
@@ -699,6 +719,16 @@ export class TraceCollector {
           elapsed_ms: (resp as any).api_duration_ms,
           provider: resp.provider,  // T12.4：Provider 维度标记
           ttft_ms: (resp as any).ttft_ms,  // T14.4：TTFT 持久化
+          // 缺口分析二类：推理 token 落盘（仅 OpenAI 族 >0，供 digest 拆解思考成本）
+          ...(reasoningTokens > 0 ? { reasoning_tokens: reasoningTokens } : {}),
+          // 缺口分析五类：上下文占用率（used=完整 prompt 规模 / 模型上下文窗口）。
+          // used 走 normalizeCacheUsage 的 promptTotal（厂商无关：Anthropic=未命中+命中+写入，
+          // OpenAI=prompt_tokens 全量），避免因缓存字段口径差异误算占用。
+          ...(ctxUsage ? {
+            context_used_tokens: ctxUsage.usedTokens,
+            context_window: ctxUsage.window,
+            context_usage_ratio: ctxUsage.ratio,
+          } : {}),
         },
       });
     } catch {
@@ -730,6 +760,18 @@ export class TraceCollector {
     this.metadata.total_cache_read_tokens += cacheRead;
     this.metadata.total_cache_creation_tokens += cacheCreate;
     this.metadata.total_api_calls += 1;
+    // 缺口分析二类：reasoning token 累计（flow，仅 OpenAI 族 >0）
+    this.metadata.total_reasoning_tokens += reasoningTokens;
+    // 缺口分析五类：上下文占用峰值（取各轮最大值——最接近溢出的时刻最有预警价值）+ 逐轮趋势序列
+    if (ctxUsage) {
+      if (ctxUsage.ratio > (this.metadata.context_usage_peak_ratio ?? 0)) {
+        this.metadata.context_usage_peak_ratio = ctxUsage.ratio;
+        this.metadata.context_usage_peak_tokens = ctxUsage.usedTokens;
+        this.metadata.context_window_at_peak = ctxUsage.window;
+      }
+      // 趋势：保留逐轮 ratio 时序（看是否随轮次线性膨胀）。保留 3 位小数够用且省空间。
+      this.metadata.context_usage_trend.push(Math.round(ctxUsage.ratio * 1000) / 1000);
+    }
     // 成本增量落盘（flow，与 SessionState.totalCostUSD 同口径累加）。
     // 此前 total_cost_usd 只在 SessionEnd 用 stats 覆盖一次（见 handleSessionEnd），
     // 若 SessionEnd 未干净触发（进程被杀 / 仍存活，heartbeat.txt 残留），
@@ -873,6 +915,16 @@ export class TraceCollector {
       }
     }
 
+    // 缺口分析（一类·工具耗时）：主循环 tool-executor 已在 firePostToolUseEvent 透传
+    // duration_ms（= Pre→Post 墙钟），此前采集器丢弃，工具级耗时无从离线复盘。
+    // 落盘到 PostToolUse 事件 + 会话级累计，供 digest 定位"慢在哪个工具"。
+    const toolDurationMs =
+      typeof input.duration_ms === "number" && input.duration_ms >= 0 ? input.duration_ms : undefined;
+    if (toolDurationMs !== undefined) {
+      this.metadata.total_tool_duration_ms += toolDurationMs;
+      this.metadata.tool_duration_samples += 1;
+    }
+
     this.writer.appendEvent({
       event: HookEventName.PostToolUse,
       session_id: this.metadata.session_id,
@@ -882,6 +934,8 @@ export class TraceCollector {
         tool_name: input.tool_name,
         tool_use_id: input.tool_use_id,
         is_error: input.is_error ?? false,
+        // 缺口分析（一类·工具耗时）：每次工具执行墙钟，供 digest 聚合分位/定位慢工具
+        ...(toolDurationMs !== undefined ? { duration_ms: toolDurationMs } : {}),
       },
     });
 
@@ -1070,6 +1124,37 @@ export class TraceCollector {
       if (s.tools_used) for (const t of s.tools_used) this.metadata.tools_used.add(t);
       if (s.files_edited) for (const f of s.files_edited) this.metadata.files_edited.add(f);
       if (s.has_thinking !== undefined) this.metadata.has_thinking = s.has_thinking;
+    }
+
+    // 缺口分析一类：派生会话级输出吞吐 tokens/sec。
+    // 分母是纯生成耗时累计（total_gen_elapsed_ms，来自 stream_completed，不含握手/重试/等待），
+    // 分子取 total_tokens_received（若上面被 SessionState 覆盖，用的是权威值，口径仍是"最终输出"）。
+    // 无纯生成耗时样本（gen_samples=0，如 anthropic 未接 lifecycle telemetry 的旧路径）时留 undefined，
+    // 不落一个误导的 0 或 ∞——与 TTFT/Bug A 的"宁缺毋滥"philosophy 一致。
+    if (this.metadata.gen_samples > 0 && this.metadata.total_gen_elapsed_ms > 0) {
+      this.metadata.output_tokens_per_sec =
+        this.metadata.total_tokens_received / (this.metadata.total_gen_elapsed_ms / 1000);
+    }
+
+    // 缺口分析三类：输出/输入 token 比。分母用累计输入 prompt（flow，与 output 累计同口径），
+    // 输出单价是输入的 3–8×，此比率上涨即成本结构恶化的早期信号。
+    if (this.metadata.total_cumulative_prompt_tokens > 0) {
+      this.metadata.output_input_ratio =
+        this.metadata.total_tokens_received / this.metadata.total_cumulative_prompt_tokens;
+    }
+
+    // 缺口分析四类：本会话缓存命中率 = cache_read /（cache_read + 全价输入）。
+    // 分母口径与跨会话命中率（usage-aggregator）对齐：命中 + 全价输入 = 可缓存的总输入基数。
+    // 全价输入 = 累计 prompt − 命中 − 写入（写入本身不算命中但占输入）。
+    const cacheRead = this.metadata.total_cache_read_tokens;
+    const cacheCreate = this.metadata.total_cache_creation_tokens;
+    const cacheableBase = this.metadata.total_cumulative_prompt_tokens;
+    if (cacheableBase > 0) {
+      // 命中率分母用完整输入基数（含命中+写入+全价），与 /cache 跨会话口径一致
+      this.metadata.session_cache_hit_rate = Math.min(1, cacheRead / cacheableBase);
+    } else if (cacheRead + cacheCreate > 0) {
+      // 极端兜底：cumulative 缺失但有缓存数据时，用命中/(命中+写入) 近似
+      this.metadata.session_cache_hit_rate = cacheRead / (cacheRead + cacheCreate);
     }
 
     // 推断 exit_status
@@ -1687,6 +1772,37 @@ export class TraceCollector {
     return this.prevMessageCount;
   }
 
+  /**
+   * 缺口分析五类：计算单轮上下文占用率。
+   *
+   * used = normalizeCacheUsage().promptTotal —— 厂商无关的"完整输入 prompt 规模"
+   *   （Anthropic=未命中+命中+写入；OpenAI=prompt_tokens 全量）。这是"喂给模型的上下文有多满"
+   *   的正确口径，缓存命中不减少上下文占用（缓存只省钱不省窗口）。
+   * window = TokenEstimator.getContextLimit(model) —— 窗口大小 SSOT。
+   *
+   * 窗口未知（返回兜底值也算已知）时仍可算比率；provider 缺失时按 model 名启发式归一化，
+   * 与 normalizeCacheUsage 的 anthropic 判定同源。异常一律返回 null（可观测性不阻断主流程）。
+   */
+  private computeContextUsage(
+    model: string,
+    usage: { inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number },
+    provider?: string,
+  ): { usedTokens: number; window: number; ratio: number } | null {
+    try {
+      const prov = provider || (/claude/i.test(model) ? "anthropic" : "openai");
+      const normalized = normalizeCacheUsage(usage as Usage, prov);
+      const usedTokens = normalized.promptTotal;
+      if (!(usedTokens > 0)) return null;
+      const window = this.tokenEstimator.getContextLimit(model);
+      if (!(window > 0)) return null;
+      // 比率封顶 1（极端情况下 prompt 超窗口时 clamp，避免 >1 的诡异值）
+      const ratio = Math.min(1, usedTokens / window);
+      return { usedTokens, window, ratio };
+    } catch {
+      return null;
+    }
+  }
+
   /** T12：写入 RetryTelemetry 事件到 events.jsonl */
   writeRetryTelemetry(event: Record<string, unknown>): void {
     if (!this.initialized) return;
@@ -1697,6 +1813,33 @@ export class TraceCollector {
         timestamp: new Date().toISOString(),
         data: event,
       });
+      // 缺口分析（一类·输出吞吐）：stream_completed.elapsedMs 是"单次 fetch 从连接到流结束
+      // 的纯生成耗时"（不含握手/重试/等待），是 tokens/sec 唯一正确的分母。
+      // 累加到会话级，SessionEnd 时与 total_tokens_received 派生 output_tokens_per_sec。
+      // 每轮流内可能有多次 stream_completed（重试重连），全部累加 → 分母是"实际生成墙钟"，
+      // 分子是"最终采纳的输出 token"，二者口径一致（都只算真正产出 token 的那段时间）。
+      if (event.type === "stream_completed") {
+        const elapsed = event.elapsedMs;
+        if (typeof elapsed === "number" && elapsed > 0) {
+          this.metadata.total_gen_elapsed_ms += elapsed;
+          this.metadata.gen_samples += 1;
+        }
+      }
+      // 缺口分析六类·可靠性：重试 / 弃流会话级聚合。
+      // 每次 retry / 超时中断 / 529 掉线，都意味着前一次流被丢弃、已生成的 output 白烧
+      //（本次排查命中 12 条弃流）。聚成会话级计数，避免排查时手工数 events.jsonl。
+      const telType = event.type;
+      if (telType === "retry") {
+        this.metadata.model_retry_count += 1;
+        this.metadata.discarded_streams += 1;
+      } else if (
+        telType === "stream_idle_timeout" ||
+        telType === "stream_content_progress_timeout" ||
+        telType === "stream_overall_timeout" ||
+        telType === "529_dropped"
+      ) {
+        this.metadata.discarded_streams += 1;
+      }
     } catch { /* 遥测写入失败不影响主流程 */ }
   }
 }

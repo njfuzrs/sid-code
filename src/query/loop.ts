@@ -1522,6 +1522,8 @@ export async function* queryLoop(
             outputTokens: response.usage.outputTokens,
             cacheReadInputTokens: (response.usage as any).cacheReadInputTokens,
             cacheCreationInputTokens: (response.usage as any).cacheCreationInputTokens,
+            // 缺口分析二类：reasoning token 透传给采集器（thinking 模型隐藏成本单独计）
+            reasoningTokens: (response.usage as any).reasoningTokens,
           },
           cost_usd: thisCost,
           api_duration_ms: apiDuration,

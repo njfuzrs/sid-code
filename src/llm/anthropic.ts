@@ -30,7 +30,7 @@ import { createStreamLifecycle, LIFECYCLE_PRESETS } from "./stream-lifecycle.ts"
 import { resolveProviderStreamTimeouts } from "../config/network-profile.ts";
 import { wrapFetchWithEventLineShim } from "./sse-event-line-shim.ts";
 import type { StreamTelemetrySignal } from "./types.ts";
-import { emitTimeoutFired, emitStreamPhase } from "../trace/stream-observer.ts";
+import { emitTimeoutFired, emitStreamPhase, emitHttpConnected } from "../trace/stream-observer.ts";
 import { currentSseDumpContext } from "./sse-chunk-dumper.ts";
 import { normalizeToolInput } from "./normalize-tool-input.ts";
 import { buildSystemBlocks, assertCacheBreakpointBudget } from "../api/cache-strategy.ts";
@@ -277,6 +277,29 @@ export class AnthropicProvider implements Provider {
         updateRateLimitStatus(response.headers);
       } catch {
         /* headers 提取失败不影响主流程 */
+      }
+
+      // 缺口分析（一类·TTFB）：此前只有 openai.ts emit headers_received/HttpConnected，
+      // anthropic 路径的"发出请求→收到响应头"延迟（含网关握手/排队）完全不可观测。
+      // 补齐后 anthropic 与 openai 同口径，digest/provider-health 的 TTFB 归因才完整。
+      try {
+        const obsIndex = currentSseDumpContext().turnIndex;
+        const ttfbMs = Date.now() - requestStartTime;
+        const contentType = response.headers.get?.("content-type") ?? undefined;
+        emitStreamPhase(obsIndex, "headers_received", {
+          http_status: response.status,
+          content_type: contentType,
+          ttfb_ms: ttfbMs,
+          model: this._model,
+        });
+        emitHttpConnected(obsIndex, {
+          status: response.status,
+          content_type: contentType,
+          ttfb_ms: ttfbMs,
+          model: this._model,
+        });
+      } catch {
+        /* 可观测性 emit 失败绝不影响主流程 */
       }
 
       // § StreamLifecycle 包装（T7）：三层超时 idle / content progress / overall + stall detection。
