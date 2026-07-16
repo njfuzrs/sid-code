@@ -1844,4 +1844,20 @@ export class TraceCollector {
       }
     } catch { /* 遥测写入失败不影响主流程 */ }
   }
+
+  /**
+   * 阶段 2.5：网关定价采集可观测事件。
+   * 记录采集成功/失败、命中版本、覆盖模型数、端点，便于排查「价格是否最新 / 走了哪个端点」。
+   */
+  writeGatewayPricingEvent(event: Record<string, unknown>): void {
+    if (!this.initialized) return;
+    try {
+      this.writer.appendEvent({
+        event: "GatewayPricingSync",
+        session_id: this.metadata.session_id,
+        timestamp: new Date().toISOString(),
+        data: event,
+      });
+    } catch { /* 采集遥测写入失败不影响主流程 */ }
+  }
 }

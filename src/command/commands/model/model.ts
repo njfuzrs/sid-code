@@ -2,7 +2,7 @@ import type { LocalCommandModule, LocalCommandResult } from "../../types.ts";
 import type { CommandContext } from "../../types.ts";
 import { resolvePricing } from "../../../api/cost-tracker.ts";
 import { lookupRegistry, getRegistryEntries } from "../../../llm/model-registry.ts";
-import { getGatewayCacheMeta } from "../../../llm/gateway-pricing.ts";
+import { getGatewayCacheMeta, getAllGatewayEntries } from "../../../llm/gateway-pricing.ts";
 import { lookupGatewayPricing } from "../../../llm/gateway-pricing.ts";
 import { normalizeBaseURL } from "../../../llm/endpoint-key.ts";
 
@@ -229,6 +229,19 @@ function detectPricingSource(
   return "兜底估算";
 }
 
+/**
+ * 查网关采集缓存里某模型（某端点）的按次单价（quota_type=1）。
+ * 命中返回 perCallUSD，否则 undefined（非按次计费 / 未采集）。
+ */
+function getGatewayPerCall(name: string, baseURL?: string): number | undefined {
+  // 端点桶优先，未命中回退合并视图（兼容用户配置端点与采集端点归一化后不完全一致的情况）。
+  const scoped = getAllGatewayEntries(baseURL)[name] ?? getAllGatewayEntries()[name];
+  if (scoped && scoped.quotaType === 1 && typeof scoped.perCallUSD === "number") {
+    return scoped.perCallUSD;
+  }
+  return undefined;
+}
+
 /** 格式化一行价格（in/out/cacheRead/cacheWrite，$/1M）。 */
 function formatPriceLine(name: string, availableModels: any[], baseURL?: string): string {
   const p = resolvePricing(name, availableModels, baseURL);
@@ -311,8 +324,8 @@ function buildHelp(): string {
 /**
  * /model discover --pricing —— 手动从网关采集定价。
  *
- * 遍历 availableModels 里去重后的端点，逐个拉取 `/api/pricing`。当前实现按模型名入库
- * （网关渠道名已含前缀天然区分渠道），多端点采集合并到同一缓存。
+ * 遍历 availableModels 里去重后的端点，逐个拉取 `/api/pricing`。每个端点写入各自的
+ * 缓存桶（按归一化端点分桶），不再互相覆盖——多渠道场景下所有端点的价格都得以保留。
  */
 async function syncGatewayPricingCmd(ctx: CommandContext, force: boolean): Promise<LocalCommandResult> {
   const { syncGatewayPricing } = await import("../../../llm/gateway-pricing.ts");
@@ -370,7 +383,12 @@ function buildPricingTable(ctx: CommandContext, all: boolean): string {
       const current = m.name === ctx.config.model ? " ✓" : "";
       lines.push(`  ${m.name}${current}`);
       lines.push(`    端点: ${m.baseURL || "(默认/官方)"}`);
-      if (p) {
+      // 按次计费（quota_type=1）模型：resolvePricing 对其返回 null（token 价不适用），
+      // 直接显示网关采到的按次单价，避免误示为「in $0 / out $0」。
+      const perCall = getGatewayPerCall(m.name, m.baseURL);
+      if (perCall !== undefined) {
+        lines.push(`    按次计费 $${perCall}/次  [网关采集]`);
+      } else if (p) {
         lines.push(`    in ${fmtPrice(p.input)}  out ${fmtPrice(p.output)}  cacheRead ${fmtPrice(p.cacheRead)}  cacheWrite ${fmtPrice(p.cacheWrite)}  [${src}]`);
       } else {
         lines.push(`    (未知价格，走兜底估算 in $2 / out $10)  [${src}]`);
@@ -389,8 +407,19 @@ function buildPricingTable(ctx: CommandContext, all: boolean): string {
       }
       lines.push(`  ${name}: in ${fmtPrice(p.input)}  out ${fmtPrice(p.output)}  cacheRead ${fmtPrice(p.cacheRead)}  cacheWrite ${fmtPrice(p.cacheWrite)}`);
     }
+
+    // 网关采集到的按次计费模型（quota_type=1，如 veo 视频类）：token 价不适用，
+    // 单列展示按次单价——否则这些模型在上面按 token 的表里会被漏掉或误示为 $0。
+    const perCallEntries = Object.entries(getAllGatewayEntries())
+      .filter(([, e]) => e.quotaType === 1 && typeof e.perCallUSD === "number");
+    if (perCallEntries.length > 0) {
+      lines.push("", "─────────────", "网关按次计费模型（quota_type=1，USD/次）:", "");
+      for (const [name, e] of perCallEntries) {
+        lines.push(`  ${name}: $${e.perCallUSD}/次`);
+      }
+    }
   } else {
-    lines.push("", "（加 --all 查看内置注册表全部模型价格）");
+    lines.push("", "（加 --all 查看内置注册表全部模型价格 + 网关按次计费模型）");
   }
 
   return lines.join("\n");

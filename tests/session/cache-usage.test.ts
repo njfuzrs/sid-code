@@ -7,10 +7,31 @@
  * - calculateCost 三段分别计价，不再用减法导致重复扣减
  */
 
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { normalizeCacheUsage, accumulateUsage } from "../../src/llm/types.ts";
 import type { Usage } from "../../src/llm/types.ts";
 import { SessionState } from "../../src/session/state.ts";
+import { __resetGatewayPricingForTest } from "../../src/llm/gateway-pricing.ts";
+
+// 隔离：把配置目录指向空临时目录，避免 deepseek-v4-pro 计费断言读到本机真实网关缓存
+// （渠道价会覆盖注册表价，dev 机必挂）。gateway-pricing 有模块级内存缓存，需一并重置。
+let __tmpCfg: string;
+let __prevCfg: string | undefined;
+beforeAll(() => {
+  __prevCfg = process.env.SID_CONFIG_DIR;
+  __tmpCfg = mkdtempSync(join(tmpdir(), "cache-usage-cfg-"));
+  process.env.SID_CONFIG_DIR = __tmpCfg;
+  __resetGatewayPricingForTest();
+});
+afterAll(() => {
+  if (__prevCfg === undefined) delete process.env.SID_CONFIG_DIR;
+  else process.env.SID_CONFIG_DIR = __prevCfg;
+  __resetGatewayPricingForTest();
+  try { rmSync(__tmpCfg, { recursive: true, force: true }); } catch { /* ignore */ }
+});
 
 describe("normalizeCacheUsage", () => {
   test("Anthropic：inputTokens 即未命中余量，promptTotal = input + hit + write", () => {

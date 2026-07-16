@@ -1722,6 +1722,14 @@ export class App {
       this._retryTelemetryWriter = (event) => {
         traceCollectorInstance.writeRetryTelemetry(event as unknown as Record<string, unknown>);
       };
+      // 阶段 2.5：网关定价采集观察者 → 一条 GatewayPricingSync trace 事件。
+      // 观察者模式（对齐 setSideCostObserver）避免 gateway-pricing.ts 反向依赖 collector。
+      try {
+        const { setGatewayPricingObserver } = require("./llm/gateway-pricing.ts");
+        setGatewayPricingObserver((obs: Record<string, unknown>) => {
+          traceCollectorInstance.writeGatewayPricingEvent(obs);
+        });
+      } catch { /* 采集不可用不影响启动 */ }
     }
 
     // session_start hook（非阻塞）。

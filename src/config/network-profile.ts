@@ -160,6 +160,8 @@ export interface SideCallTimeouts {
   /** 会话标题生成（非流式，与 recall 同档——生成前须显式关闭 thinking，否则思考模型
    *  可能超时；见 app.ts upgradeSessionTitle 的 thinking:{enabled:false}） */
   titleMs: number;
+  /** 网关定价采集 GET /api/pricing（后台 fire-and-forget，失败静默回退旧缓存/注册表） */
+  gatewayPricingMs: number;
 }
 
 export const SIDE_CALL_DEFAULTS: Readonly<SideCallTimeouts> = {
@@ -168,6 +170,7 @@ export const SIDE_CALL_DEFAULTS: Readonly<SideCallTimeouts> = {
   collapseSegmentMs: 45_000,
   recallMs: 15_000,
   titleMs: 15_000,
+  gatewayPricingMs: 15_000,
 };
 
 /** 解析 side-call 超时子表：env override（readEnvMs 校验）> 统一默认值。 */
@@ -179,6 +182,8 @@ export function resolveSideCallTimeouts(): SideCallTimeouts {
       readEnvMs("SID_CODE_COLLAPSE_SEGMENT_TIMEOUT_MS") ?? SIDE_CALL_DEFAULTS.collapseSegmentMs,
     recallMs: readEnvMs("SID_CODE_RECALL_TIMEOUT_MS") ?? SIDE_CALL_DEFAULTS.recallMs,
     titleMs: readEnvMs("SID_CODE_TITLE_TIMEOUT_MS") ?? SIDE_CALL_DEFAULTS.titleMs,
+    gatewayPricingMs:
+      readEnvMs("SID_CODE_GATEWAY_PRICING_TIMEOUT_MS") ?? SIDE_CALL_DEFAULTS.gatewayPricingMs,
   };
 }
 

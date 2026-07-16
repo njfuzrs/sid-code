@@ -3,13 +3,35 @@
  * USD 成本计算（含缓存计价）/ 按模型累加 / 格式化摘要
  */
 
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   calculateUSDCost,
   resolvePricing,
   CostTracker,
 } from "../../src/api/cost-tracker.ts";
+import { __resetGatewayPricingForTest } from "../../src/llm/gateway-pricing.ts";
 import type { Usage } from "../../src/llm/types.ts";
+
+// 隔离：把配置目录指向空临时目录，避免读到本机真实 ~/.sid-code/gateway-pricing.json。
+// 否则 dev 机上 deepseek-v4-pro 会命中网关渠道价，覆盖注册表价，本文件的计费断言必挂
+// （CI 无缓存文件才碰巧通过）。gateway-pricing 有模块级内存缓存，需一并重置。
+let __tmpCfg: string;
+let __prevCfg: string | undefined;
+beforeAll(() => {
+  __prevCfg = process.env.SID_CONFIG_DIR;
+  __tmpCfg = mkdtempSync(join(tmpdir(), "cost-tracker-cfg-"));
+  process.env.SID_CONFIG_DIR = __tmpCfg;
+  __resetGatewayPricingForTest();
+});
+afterAll(() => {
+  if (__prevCfg === undefined) delete process.env.SID_CONFIG_DIR;
+  else process.env.SID_CONFIG_DIR = __prevCfg;
+  __resetGatewayPricingForTest();
+  try { rmSync(__tmpCfg, { recursive: true, force: true }); } catch { /* ignore */ }
+});
 
 describe("resolvePricing", () => {
   test("精确匹配", () => {
