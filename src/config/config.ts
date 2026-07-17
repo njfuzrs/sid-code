@@ -297,9 +297,6 @@ export interface Config {
   // 会话保留配置
   sessionRetention?: SessionRetentionConfig;
 
-  // 项目哈希（用于多项目隔离）
-  projectHash?: string;
-
   // 搜索配置
   search?: SearchConfig;
 

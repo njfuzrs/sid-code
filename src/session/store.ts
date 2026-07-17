@@ -63,7 +63,6 @@ export interface SessionData {
   createdAt: string;
   updatedAt: string;
   kind?: "main" | "subagent";
-  projectHash?: string;
   directories?: string[];
   /** 会话启动时的工作目录（取自 session_start.cwd），用于按项目筛选/展示。 */
   cwd?: string;
