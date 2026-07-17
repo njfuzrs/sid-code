@@ -7,11 +7,14 @@ import React, { useState, useCallback, useMemo, useEffect } from "react";
 import Box from "../ink/components/Box.js";
 import Text from "../ink/components/Text.js";
 import useInput from "../ink/hooks/use-input.js";
+import useStdout from "../ink/_vendor/use-stdout.js";
 import type { Config } from "../config/config.ts";
 import type { SessionInfo } from "./utils.ts";
 import {
   getSessionFiles,
   formatRelativeTime,
+  formatAbsoluteTime,
+  shortenModel,
   filterSessions,
   sortSessions,
 } from "./utils.ts";
@@ -26,8 +29,40 @@ function shortenPath(p: string | undefined): string {
   return p.startsWith(home) ? "~" + p.slice(home.length) : p;
 }
 
-/** 每页显示的会话数 */
-const SESSIONS_PER_PAGE = 20;
+/**
+ * 每条会话占用的终端行数：标题 1 行 + 元信息 1 行 + marginBottom 1 行 = 3 行。
+ * 用于按终端高度反推一屏能放几条。
+ */
+const ROWS_PER_SESSION = 3;
+
+/**
+ * 列表区之外的固定行开销（不随会话数变化的部分）：
+ *   标题 1 + 搜索框(round 边框上下 2 + 内容 1 = 3) + 列表上 margin 1
+ *   + 上/下溢出指示各 1(共 2) + footer(上 margin 1 + 本体 1 = 2) + 安全余量 2
+ * 端末行数减去这部分,剩下的除以每条行数,就是一屏能放的会话数。
+ */
+const FIXED_CHROME_ROWS = 11;
+
+/** 兜底每页会话数（拿不到终端高度时用）。 */
+const FALLBACK_SESSIONS_PER_PAGE = 8;
+
+/** 每页最少显示的会话数,避免终端过矮时算出 0 或负数。 */
+const MIN_SESSIONS_PER_PAGE = 3;
+
+/**
+ * 按终端高度计算一屏能放几条会话。
+ * 关键:必须让「固定开销 + 会话行 + 溢出指示」的总高度 ≤ 终端行数,
+ * 否则整个选择器高于终端 → 终端自身出现滚动条,方向键下翻变成终端滚动到底部,
+ * 顶部信息被顶出视口(用户反馈的 bug)。
+ */
+function computeSessionsPerPage(terminalRows: number | undefined): number {
+  if (!terminalRows || terminalRows <= 0) {
+    return FALLBACK_SESSIONS_PER_PAGE;
+  }
+  const usable = terminalRows - FIXED_CHROME_ROWS;
+  const count = Math.floor(usable / ROWS_PER_SESSION);
+  return Math.max(MIN_SESSIONS_PER_PAGE, count);
+}
 
 /** 会话浏览器属性 */
 export interface SessionBrowserProps {
@@ -79,6 +114,8 @@ export interface SessionBrowserState {
   startIndex: number;
   endIndex: number;
   visibleSessions: SessionInfo[];
+  /** 一屏能放几条会话（按终端高度动态计算，防止选择器高于终端出滚动条） */
+  sessionsPerPage: number;
 
   // 状态更新函数
   setSessions: React.Dispatch<React.SetStateAction<SessionInfo[]>>;
@@ -101,7 +138,8 @@ function useSessionBrowserState(
   initialError: string | null = null,
   initialSearchQuery = "",
   initialSearchMode = false,
-  projectRoot?: string
+  projectRoot?: string,
+  sessionsPerPage: number = FALLBACK_SESSIONS_PER_PAGE
 ): SessionBrowserState {
   const [sessions, setSessions] = useState<SessionInfo[]>(initialSessions);
   const [loading, setLoading] = useState(initialLoading);
@@ -109,7 +147,9 @@ function useSessionBrowserState(
   const [activeIndex, setActiveIndex] = useState(0);
   const [scrollOffset, setScrollOffset] = useState(0);
   const [sortOrder, setSortOrder] = useState<"date" | "messages" | "name">("date");
-  const [sortReverse, setSortReverse] = useState(false);
+  // 默认按时间倒序（最近的在最上面）——用户定位会话优先看最近聊过的。
+  // sortSessions 的 date 是升序（旧→新），reverse=true 翻成降序（新→旧）。
+  const [sortReverse, setSortReverse] = useState(true);
   const [searchQuery, setSearchQuery] = useState(initialSearchQuery);
   const [isSearchMode, setIsSearchMode] = useState(initialSearchMode);
   const [hasLoadedFullContent, setHasLoadedFullContent] = useState(false);
@@ -141,7 +181,7 @@ function useSessionBrowserState(
 
   const totalSessions = filteredAndSortedSessions.length;
   const startIndex = scrollOffset;
-  const endIndex = Math.min(scrollOffset + SESSIONS_PER_PAGE, totalSessions);
+  const endIndex = Math.min(scrollOffset + sessionsPerPage, totalSessions);
   const visibleSessions = filteredAndSortedSessions.slice(startIndex, endIndex);
 
   return {
@@ -172,6 +212,7 @@ function useSessionBrowserState(
     startIndex,
     endIndex,
     visibleSessions,
+    sessionsPerPage,
   };
 }
 
@@ -242,6 +283,7 @@ function useMoveSelection(state: SessionBrowserState) {
     totalSessions,
     activeIndex,
     scrollOffset,
+    sessionsPerPage,
     setActiveIndex,
     setScrollOffset,
   } = state;
@@ -257,11 +299,62 @@ function useMoveSelection(state: SessionBrowserState) {
       // 调整滚动偏移
       if (newIndex < scrollOffset) {
         setScrollOffset(newIndex);
-      } else if (newIndex >= scrollOffset + SESSIONS_PER_PAGE) {
-        setScrollOffset(newIndex - SESSIONS_PER_PAGE + 1);
+      } else if (newIndex >= scrollOffset + sessionsPerPage) {
+        setScrollOffset(newIndex - sessionsPerPage + 1);
       }
     },
-    [totalSessions, activeIndex, scrollOffset, setActiveIndex, setScrollOffset]
+    [
+      totalSessions,
+      activeIndex,
+      scrollOffset,
+      sessionsPerPage,
+      setActiveIndex,
+      setScrollOffset,
+    ]
+  );
+}
+
+/**
+ * 环绕式移动 Hook（用于 ↑/↓ 单步）：到底再往下回到第一条，到顶再往上回到最后一条。
+ * 与 useMoveSelection 的区别是不 clamp，而是对 totalSessions 取模实现无限滚动。
+ * scrollOffset 追随新 index：跳到列表两端时把目标行滚进可视窗口。
+ */
+function useWrapSelection(state: SessionBrowserState) {
+  const {
+    totalSessions,
+    activeIndex,
+    scrollOffset,
+    sessionsPerPage,
+    setActiveIndex,
+    setScrollOffset,
+  } = state;
+
+  return useCallback(
+    (delta: number) => {
+      if (totalSessions <= 0) return;
+      // 取模环绕：+totalSessions 再取模，保证负数（往上越界）也落到正确区间。
+      const newIndex =
+        (((activeIndex + delta) % totalSessions) + totalSessions) %
+        totalSessions;
+      setActiveIndex(newIndex);
+
+      // 滚动窗口跟随:目标行在窗口上方→顶对齐;在窗口下方→底对齐。
+      // 环绕到末尾时 newIndex 远大于当前窗口→底对齐把它滚进来;
+      // 环绕到开头时 newIndex=0→顶对齐。
+      if (newIndex < scrollOffset) {
+        setScrollOffset(newIndex);
+      } else if (newIndex >= scrollOffset + sessionsPerPage) {
+        setScrollOffset(Math.max(0, newIndex - sessionsPerPage + 1));
+      }
+    },
+    [
+      totalSessions,
+      activeIndex,
+      scrollOffset,
+      sessionsPerPage,
+      setActiveIndex,
+      setScrollOffset,
+    ]
   );
 }
 
@@ -281,6 +374,7 @@ function useCycleSortOrder(state: SessionBrowserState) {
 function useSessionBrowserInput(
   state: SessionBrowserState,
   moveSelection: (delta: number) => void,
+  wrapSelection: (delta: number) => void,
   cycleSortOrder: () => void,
   onResumeSession: (session: SessionInfo) => void,
   onDeleteSession: (session: SessionInfo) => Promise<void>,
@@ -335,7 +429,9 @@ function useSessionBrowserInput(
         state.setScrollOffset(0);
       } else if (input === "G") {
         state.setActiveIndex(state.totalSessions - 1);
-        state.setScrollOffset(Math.max(0, state.totalSessions - SESSIONS_PER_PAGE));
+        state.setScrollOffset(
+          Math.max(0, state.totalSessions - state.sessionsPerPage)
+        );
       } else if (input === "s") {
         cycleSortOrder();
       } else if (input === "r") {
@@ -363,9 +459,9 @@ function useSessionBrowserInput(
             });
         }
       } else if (input === "u") {
-        moveSelection(-Math.round(SESSIONS_PER_PAGE / 2));
+        moveSelection(-Math.round(state.sessionsPerPage / 2));
       } else if (input === "d") {
-        moveSelection(Math.round(SESSIONS_PER_PAGE / 2));
+        moveSelection(Math.round(state.sessionsPerPage / 2));
       }
     }
 
@@ -376,13 +472,13 @@ function useSessionBrowserInput(
         onResumeSession(selectedSession);
       }
     } else if (key.upArrow) {
-      moveSelection(-1);
+      wrapSelection(-1);
     } else if (key.downArrow) {
-      moveSelection(1);
+      wrapSelection(1);
     } else if (key.pageUp) {
-      moveSelection(-SESSIONS_PER_PAGE);
+      moveSelection(-state.sessionsPerPage);
     } else if (key.pageDown) {
-      moveSelection(SESSIONS_PER_PAGE);
+      moveSelection(state.sessionsPerPage);
     }
   });
 }
@@ -514,11 +610,17 @@ function SessionItem({
       : theme.text.primary;
   const metaColor = isActive ? theme.text.primary : theme.text.secondary;
 
-  // 元信息：消息数 · 时间 · 项目路径（有 cwd 才显示末段）
+  // 元信息：北京时间(相对) · 消息数 · 模型 · 项目路径
+  // 时间放首位——用户定位会话主要靠“什么时候聊的”，北京时间具体到分钟，
+  // 括号里再附相对时间（如 2d/3h）便于快速估算新旧。
+  const absTime = formatAbsoluteTime(session.lastUpdated);
+  const relTime = formatRelativeTime(session.lastUpdated, "short");
   const metaParts = [
+    absTime ? `${absTime} (${relTime})` : relTime,
     `${session.messageCount} 条`,
-    formatRelativeTime(session.lastUpdated, "short"),
   ];
+  const modelShort = shortenModel(session.model);
+  if (modelShort) metaParts.push(modelShort);
   const cwdShort = shortenPath(session.cwd);
   if (cwdShort) metaParts.push(cwdShort);
   if (session.isCurrentSession) metaParts.push("当前");
@@ -542,7 +644,7 @@ function SessionItem({
   const arrow = isActive ? "❯ " : "  ";
   const indexLabel = `#${originalIndex + 1} `;
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" marginBottom={1}>
       {/* 行 1：箭头 + 序号 + 标题 */}
       <Text wrap="truncate-end">
         <Text color={isActive ? theme.ui.active : theme.text.secondary}>
@@ -570,13 +672,13 @@ function SessionList({ state }: { state: SessionBrowserState }): JSX.Element {
   return (
     <Box flexDirection="column" marginTop={1}>
       {state.scrollOffset > 0 && (
-        <Text color={theme.text.secondary}>  ▲ 还有更早的会话</Text>
+        <Text color={theme.text.secondary}>  ▲ 还有更新的会话</Text>
       )}
       {state.visibleSessions.map((session) => (
         <SessionItem key={session.id} session={session} state={state} />
       ))}
       {state.endIndex < state.totalSessions && (
-        <Text color={theme.text.secondary}>  ▼ 还有更多会话</Text>
+        <Text color={theme.text.secondary}>  ▼ 还有更早的会话</Text>
       )}
     </Box>
   );
@@ -679,6 +781,12 @@ export function SessionBrowser({
   initialSearchQuery = "",
   projectRoot,
 }: SessionBrowserProps): JSX.Element {
+  // 按终端高度动态算一屏能放几条会话——防止选择器整体高于终端行数,
+  // 否则终端自身出滚动条,方向键下翻会把顶部信息顶出视口(用户反馈的 bug)。
+  // useStdout 的 rows 是响应式的(随终端 resize 更新),窗口拉高/缩小会自动重算。
+  const { stdout } = useStdout();
+  const sessionsPerPage = computeSessionsPerPage(stdout?.rows);
+
   // searchFirst 时进入即搜索模式；若带了预填搜索词也自动进搜索模式便于继续编辑。
   const state = useSessionBrowserState(
     [],
@@ -686,15 +794,18 @@ export function SessionBrowser({
     null,
     initialSearchQuery,
     searchFirst || Boolean(initialSearchQuery),
-    projectRoot
+    projectRoot,
+    sessionsPerPage
   );
   const moveSelection = useMoveSelection(state);
+  const wrapSelection = useWrapSelection(state);
   const cycleSortOrder = useCycleSortOrder(state);
 
   useLoadSessions(config, currentSessionId, state);
   useSessionBrowserInput(
     state,
     moveSelection,
+    wrapSelection,
     cycleSortOrder,
     onResumeSession,
     onDeleteSession,

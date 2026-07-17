@@ -56,6 +56,8 @@ export interface SessionInfo {
   matchCount?: number;
   /** 会话工作目录（取 directories[0]，用于元信息行展示项目路径） */
   cwd?: string;
+  /** 会话使用的模型（取自 session_start.model），用于元信息行展示 */
+  model?: string;
 }
 
 /** 会话文件条目 */
@@ -172,6 +174,45 @@ export function formatRelativeTime(
 }
 
 /**
+ * 格式化为北京时间（UTC+8）的具体日期时间，用于会话列表定位。
+ * 输出形如 "07-15 14:32"（同年省略年份）或 "2025-12-30 09:05"（跨年补年份）。
+ * 用固定 +8 偏移手工换算，不依赖运行环境时区，保证任何机器上都显示北京时间。
+ */
+export function formatAbsoluteTime(timestamp: string): string {
+  const time = new Date(timestamp);
+  if (isNaN(time.getTime())) return "";
+  // 转成北京时间：UTC 毫秒 + 8h，再用 getUTC* 取“北京墙上时间”各字段。
+  const bj = new Date(time.getTime() + 8 * 60 * 60 * 1000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const year = bj.getUTCFullYear();
+  const month = pad(bj.getUTCMonth() + 1);
+  const day = pad(bj.getUTCDate());
+  const hour = pad(bj.getUTCHours());
+  const minute = pad(bj.getUTCMinutes());
+  const nowYear = new Date().getUTCFullYear();
+  const datePart =
+    year === nowYear ? `${month}-${day}` : `${year}-${month}-${day}`;
+  return `${datePart} ${hour}:${minute}`;
+}
+
+/**
+ * 把模型 ID 缩短为可读短名，用于列表元信息行。
+ * 去掉 provider 前缀与常见冗余后缀（日期戳、[1m]、括号说明），过长再截断。
+ */
+export function shortenModel(model: string | undefined): string {
+  if (!model) return "";
+  let m = model.trim();
+  // 去掉 provider 前缀（如 "anthropic/claude-..." / "openai:gpt-..."）
+  m = m.replace(/^[^/:]+[/:]/, "");
+  // 去掉尾部 [1m]、(xxx) 之类修饰
+  m = m.replace(/\s*\[[^\]]*\]\s*$/, "").replace(/\s*\([^)]*\)\s*$/, "");
+  // 去掉结尾的日期戳（-20250101 / -2025-01-01）
+  m = m.replace(/-\d{8}$/, "").replace(/-\d{4}-\d{2}-\d{2}$/, "");
+  if (m.length > 28) m = m.slice(0, 27) + "…";
+  return m;
+}
+
+/**
  * 加载所有会话文件（包括损坏文件）
  */
 export async function getAllSessionFiles(
@@ -272,6 +313,7 @@ export async function getAllSessionFiles(
             messages,
             // 优先 session_start.cwd（几乎所有会话都有），退回 directories[0]（早期少数会话）
             cwd: data.cwd || data.directories?.[0],
+            model: data.model || undefined,
           };
 
           return { fileName: file, sessionInfo };
