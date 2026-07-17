@@ -49,6 +49,18 @@ export interface ModelUsageStats {
   provider: string;
 }
 
+/**
+ * 用量统计的可持久化快照（写入会话 JSONL 的 usage_stats metadata，resume 时回灌）。
+ * 覆盖 Footer 状态栏展示所需全部维度——恢复对话后 token/费用/缓存节省不再从 0 起。
+ */
+export interface UsageSnapshot {
+  totalCostUSD: number;
+  sideCostUSD: number;
+  totalAPIDuration: number;
+  totalToolDuration: number;
+  modelUsage: Record<string, ModelUsageStats>;
+}
+
 /** 会话状态 */
 export class SessionState {
   readonly sessionId: string;
@@ -179,6 +191,64 @@ export class SessionState {
    */
   addSideCost(costUSD: number): void {
     this.sideCostUSD += costUSD;
+  }
+
+  /**
+   * 序列化当前用量统计为可持久化快照（用于会话落盘 + resume 恢复）。
+   *
+   * 覆盖 Footer 状态栏展示所需的全部维度：
+   * - 各模型的 modelUsage（token 三口径 / cache / cost / cacheSavings / provider）——
+   *   getTotalUsage / getStockPromptTokens / getTotalCacheSavings 全部从这里派生。
+   * - 全局 totalCostUSD / sideCostUSD——getEffectiveTotalCostUSD（费用列）从这里派生。
+   * - totalAPIDuration / totalToolDuration——供耗时展示恢复。
+   *
+   * 注意：不含 sessionData（临时数据）、availableModels（启动时注入）、
+   * warnedUnknownModels（去重集，无需跨会话保留）——这些要么会被重新注入，要么无展示意义。
+   */
+  serializeUsageSnapshot(): UsageSnapshot {
+    return {
+      totalCostUSD: this.totalCostUSD,
+      sideCostUSD: this.sideCostUSD,
+      totalAPIDuration: this.totalAPIDuration,
+      totalToolDuration: this.totalToolDuration,
+      modelUsage: JSON.parse(JSON.stringify(this.modelUsage)) as Record<string, ModelUsageStats>,
+    };
+  }
+
+  /**
+   * 从持久化快照回灌用量统计（resume 恢复路径调用）。
+   *
+   * 直接覆盖当前累计值——resume 时 SessionState 是全新零值实例，覆盖等价于「继续之前的
+   * 累计」。回灌后后续 updateUsage 会在此基础上继续累加，Footer 展示连续不断档。
+   *
+   * 容错：快照缺字段/类型不符时按零值兜底，绝不因脏快照抛错阻断恢复。
+   */
+  hydrateUsage(snapshot: UsageSnapshot | undefined | null): void {
+    if (!snapshot || typeof snapshot !== "object") return;
+    this.totalCostUSD = typeof snapshot.totalCostUSD === "number" ? snapshot.totalCostUSD : 0;
+    this.sideCostUSD = typeof snapshot.sideCostUSD === "number" ? snapshot.sideCostUSD : 0;
+    this.totalAPIDuration = typeof snapshot.totalAPIDuration === "number" ? snapshot.totalAPIDuration : 0;
+    this.totalToolDuration = typeof snapshot.totalToolDuration === "number" ? snapshot.totalToolDuration : 0;
+    const restored: Record<string, ModelUsageStats> = {};
+    const src = snapshot.modelUsage;
+    if (src && typeof src === "object") {
+      for (const [model, s] of Object.entries(src)) {
+        if (!s || typeof s !== "object") continue;
+        restored[model] = {
+          inputTokens: Number((s as ModelUsageStats).inputTokens) || 0,
+          stockPromptTokens: Number((s as ModelUsageStats).stockPromptTokens) || 0,
+          cumulativePromptTokens: Number((s as ModelUsageStats).cumulativePromptTokens) || 0,
+          outputTokens: Number((s as ModelUsageStats).outputTokens) || 0,
+          cacheReadInputTokens: Number((s as ModelUsageStats).cacheReadInputTokens) || 0,
+          cacheCreationInputTokens: Number((s as ModelUsageStats).cacheCreationInputTokens) || 0,
+          requests: Number((s as ModelUsageStats).requests) || 0,
+          costUSD: Number((s as ModelUsageStats).costUSD) || 0,
+          cacheSavingsUSD: Number((s as ModelUsageStats).cacheSavingsUSD) || 0,
+          provider: typeof (s as ModelUsageStats).provider === "string" ? (s as ModelUsageStats).provider : "",
+        };
+      }
+    }
+    this.modelUsage = restored;
   }
 
   /**

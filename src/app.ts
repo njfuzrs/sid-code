@@ -2127,6 +2127,27 @@ export class App {
       }
     }
 
+    // 从 JSONL metadata 恢复累计用量统计（token/费用/缓存节省/各模型 modelUsage）。
+    // 根因：footer 状态栏统计只活在内存态 SessionState，此前从未持久化也从未回灌——
+    // resume 后 SessionState 全新零值，Footer 按"零值隐藏"规则把整排统计抹掉，
+    // 用户感知为"恢复对话后底部统计信息全部丢失"。此处把落盘的最后一条快照回灌，
+    // 后续 updateUsage 在此基础上继续累加，Footer 展示连续不断档。失败不阻断恢复。
+    if (sessionData.metadata?.["usage_stats"]) {
+      try {
+        this.sessionState.hydrateUsage(
+          sessionData.metadata["usage_stats"] as import("./session/state.ts").UsageSnapshot,
+        );
+        log.info(
+          "APP",
+          `恢复用量统计: cost=$${this.sessionState.getEffectiveTotalCostUSD().toFixed(4)}, ` +
+            `stockTokens=${this.sessionState.getStockPromptTokens()}, ` +
+            `savings=$${this.sessionState.getTotalCacheSavings().toFixed(4)}`,
+        );
+      } catch (e) {
+        log.warn("APP", `用量统计恢复失败（不阻断）: ${(e as Error)?.message}`);
+      }
+    }
+
     // P1-7：从 JSONL metadata 恢复文件修改历史（打通 Checkpoint↔Resume）。
     // 预填 changedFiles（续做时继续累积、去重），并构造一段摘要注入续接提示，
     // 让模型知道"之前改过哪些文件"，无需用户重新说明或自己读 git diff。
@@ -2956,6 +2977,25 @@ export class App {
       const { serializeGoalState } = require("./goal/state.ts");
       this.sessionStore.appendMetadata("goal_state", serializeGoalState(this.goalState));
     } catch { /* 持久化失败不阻断 */ }
+  }
+
+  /**
+   * 将累计用量统计（cost/token/cache/各模型 modelUsage）落盘到 session JSONL。
+   *
+   * 根因修复：此前 footer 状态栏统计（token 上/下行、费用、缓存节省、命中率）只活在
+   * 内存态 SessionState，从未写入可恢复的会话文件——`-c` 恢复后 SessionState 是全新零值
+   * 实例，Footer 按"零值隐藏"规则把整排统计抹掉，用户感知为"统计全部丢失"。
+   *
+   * 每轮对话结束（done）后覆盖式落一条 usage_stats metadata 快照（恢复时取最后一条即最新
+   * 累计值）。频率与 file_changes 一致（每轮一条），JSONL 膨胀可忽略。失败不阻断主流程。
+   */
+  private persistUsageStats(): void {
+    if (!this.sessionStore) return;
+    try {
+      this.sessionStore.appendMetadata("usage_stats", this.sessionState.serializeUsageSnapshot());
+    } catch (e) {
+      getLogger().warn("APP", `用量统计落盘失败（不阻断）: ${(e as Error)?.message}`);
+    }
   }
 
   /**
@@ -4251,6 +4291,9 @@ export class App {
                 isStreaming: false,
                 streamingLine: "",
               });
+              // 本轮结束：把累计用量统计落盘（与 footer 展示同一批数值），
+              // 使 `-c` 恢复后 Footer 不再从 0 起（根因见 persistUsageStats 注释）。
+              this.persistUsageStats();
               break;
             }
           }
