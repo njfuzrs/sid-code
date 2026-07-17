@@ -66,6 +66,50 @@ describe("D4-2 — DiffRenderer 渲染快照", () => {
     expect(frame).toContain("line one");
     expect(frame).toContain("line two");
   });
+
+  // ── 折叠档：write/edit 新建大文件默认折叠、末尾给 ctrl+o 展开 footer ──
+  // 背景：曾一次性把整份文件灌进 TUI（DiffRenderer 直渲绕过折叠）。
+
+  test("新文件超 maxLines：只渲染头部 N 行 + 折叠 footer，尾部行不出现", () => {
+    // 新建 30 行文件，折叠档 maxLines=5
+    const lines = Array.from({ length: 30 }, (_, i) => `+line ${i}`);
+    const newFileDiff = ["@@ -0,0 +1,30 @@", ...lines].join("\n");
+    const { lastFrame } = render(
+      <DiffRenderer diffContent={newFileDiff} terminalWidth={80} maxLines={5} />,
+    );
+    const frame = stripAnsi(lastFrame() ?? "");
+    // 头部保留
+    expect(frame).toContain("line 0");
+    expect(frame).toContain("line 4");
+    // 尾部被折叠、不出现
+    expect(frame).not.toContain("line 29");
+    // 折叠 footer：25 行已折叠 + ctrl+o 展开提示
+    expect(frame).toContain("25");
+    expect(frame).toContain("ctrl+o");
+  });
+
+  test("新文件未超 maxLines：完整渲染、无折叠 footer", () => {
+    const newFileDiff = ["@@ -0,0 +1,3 @@", "+a", "+b", "+c"].join("\n");
+    const { lastFrame } = render(
+      <DiffRenderer diffContent={newFileDiff} terminalWidth={80} maxLines={16} />,
+    );
+    const frame = stripAnsi(lastFrame() ?? "");
+    expect(frame).toContain("a");
+    expect(frame).toContain("c");
+    expect(frame).not.toContain("ctrl+o");
+  });
+
+  test("maxLines 缺省（全展开档）：不折叠，长文件全渲染", () => {
+    const lines = Array.from({ length: 30 }, (_, i) => `+line ${i}`);
+    const newFileDiff = ["@@ -0,0 +1,30 @@", ...lines].join("\n");
+    const { lastFrame } = render(
+      <DiffRenderer diffContent={newFileDiff} terminalWidth={80} />,
+    );
+    const frame = stripAnsi(lastFrame() ?? "");
+    expect(frame).toContain("line 0");
+    expect(frame).toContain("line 29");
+    expect(frame).not.toContain("ctrl+o");
+  });
 });
 
 describe("D4-2 — LoadingIndicator 渲染快照", () => {

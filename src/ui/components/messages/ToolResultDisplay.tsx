@@ -2,7 +2,7 @@
  * 工具结果展示组件
  *
  * 根据结果类型分发到不同的渲染方式：
- * - Diff → DiffRenderer
+ * - Diff → DiffRenderer（含折叠：新建文件/大改动默认折叠，ctrl+o 阶梯展开）
  * - 错误 → 红色文本
  * - ANSI 输出 → AnsiOutputText
  * - JSON → pretty-print
@@ -30,6 +30,16 @@ const MAXIMUM_RESULT_DISPLAY_CHARACTERS = 20_000;
  * 之前是 20，导致工具结果占满屏幕。
  */
 const DEFAULT_MAX_LINES = 3;
+
+/**
+ * diff 折叠档（level 0）的可视行基线。
+ *
+ * 比普通文本结果（3 行）宽松：diff / 新建文件预览更需要上下文，3 行几乎不可读；
+ * 也避免把常见的小改动（如 5~10 行 edit）折叠成「3 行 + 展开提示」反而更难看。
+ * MaxSizedBox 只在内容**超过**此高度时才折叠，因此小 diff 仍完整展示、
+ * 只有新建整文件 / 大改动这类真正超长的才折叠——与 claude-code 的观感一致。
+ */
+const DIFF_COLLAPSE_MAX_LINES = 16;
 
 /** 宽度感知换行留出的安全边距（对标 cc PADDING_TO_PREVENT_OVERFLOW=10） */
 const WRAP_WIDTH_PADDING = 8;
@@ -109,27 +119,38 @@ export const ToolResultDisplay: React.FC<ToolResultDisplayProps> = ({
   // （与命令输出、错误正文共享同一套 ctrl+o 阶梯展开语义）。
   // base 取调用方传入的 maxLines（折叠档基线），全展开档返回 undefined（不截断）。
   const effectiveMaxLines = useExpandedMaxLines(maxLines);
+  // diff 专用折叠档：基线更宽松（DIFF_COLLAPSE_MAX_LINES），阶梯与普通文本共用同一 expandLevel。
+  // 全展开档同样返回 undefined（不折叠）。
+  const effectiveDiffMaxLines = useExpandedMaxLines(
+    Math.max(maxLines, DIFF_COLLAPSE_MAX_LINES),
+  );
+
+  // 宽度感知换行 / diff 折叠框宽度：终端宽度减去边距（树枝缩进 + 容器 padding），最小 20 列。
+  // 提前到分支之前计算，diff 折叠框与文本截断框共用。
+  const maxColumnWidth = Math.max(terminalWidth - WRAP_WIDTH_PADDING, 20);
 
   const hasPatch = !!structuredPatch?.length;
   // 有结构化 diff 时,即使 resultDisplay 为空(或仅摘要)也要渲染 diff;否则无内容才退出
   if (!resultDisplay && !hasPatch) return null;
 
-  // 结构化 diff 优先:直接喂 DiffRenderer 的 structuredPatch,绕过文本正则解析
+  // 结构化 diff 优先:直接喂 DiffRenderer 的 structuredPatch,绕过文本正则解析。
+  // maxLines 把折叠交给 DiffRenderer 内部**同步**裁剪——这是 Static 安全的关键：
+  // 工具结果一完成即被 <Static> 一次性打印进 scrollback，无法再重渲。若改用异步测高的
+  // MaxSizedBox（ResizeObserver 首帧 contentHeight=0 → 判定不溢出 → 整份内容先落 scrollback
+  // 再折叠），大文件会污染回滚区且擦不掉。DiffRenderer 在渲染前按 maxLines 保留头部（新建
+  // 文件看开头最有用）、底部留统一折叠 footer，一次成型。
   if (isDiff && hasPatch) {
     return (
       <DiffRenderer
         structuredPatch={structuredPatch}
         filename={filename}
         terminalWidth={terminalWidth}
+        maxLines={effectiveDiffMaxLines}
       />
     );
   }
 
   if (!resultDisplay) return null;
-
-  // 宽度感知换行：对标 claude-code 的 wrapWidth 计算
-  // 终端宽度减去边距（树枝缩进 + 容器 padding），最小 20 列
-  const maxColumnWidth = Math.max(terminalWidth - WRAP_WIDTH_PADDING, 20);
 
   // 0. 预先截断超长内容，避免性能问题
   let content = resultDisplay;
@@ -141,13 +162,14 @@ export const ToolResultDisplay: React.FC<ToolResultDisplayProps> = ({
     }
   }
 
-  // 1. Diff 内容 → DiffRenderer
+  // 1. Diff 内容 → DiffRenderer（同样接折叠，maxLines 走 DiffRenderer 内部同步裁剪）
   if (isDiff) {
     return (
       <DiffRenderer
         diffContent={content}
         filename={filename}
         terminalWidth={terminalWidth}
+        maxLines={effectiveDiffMaxLines}
       />
     );
   }

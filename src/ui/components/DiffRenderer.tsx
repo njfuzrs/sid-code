@@ -7,7 +7,7 @@ import { diffWordsWithSpace, type StructuredPatchHunk } from 'diff';
 import { colorizeCode, colorizeLine } from './CodeColorizer.js';
 import { theme as semanticTheme } from '../semantic-colors.js';
 import { buildDiffAnsiLines, type DiffAnsiColors } from './diffAnsiLines.js';
-import { ELLIPSIS } from '../constants/collapse.ts';
+import { ELLIPSIS, formatCollapsedSummary } from '../constants/collapse.ts';
 import type { Color } from '../../ink/styles.js';
 
 /**
@@ -217,6 +217,30 @@ export interface DiffRenderPlanItem {
 }
 
 /**
+ * 折叠档裁剪:按 maxLines **同步**保留前 N 个计划项(保留头部),统计被裁掉的实际行数。
+ *
+ * - line 项计 1 行,collapsed 项计其 hiddenCount 行(与展示语义一致)。
+ * - maxLines===undefined 或计划本就不超限 → 原样返回,foldedLineCount=0。
+ * - 头部优先:diff / 新建文件最有用的是开头,与工具结果 <Static> 打印方向一致。
+ *
+ * 抽成纯函数便于单测(渲染路径依赖 lowlight/主题,难在测试里跑)。
+ */
+export function foldRenderPlan(
+  plan: DiffRenderPlanItem[],
+  maxLines?: number,
+): { plan: DiffRenderPlanItem[]; foldedLineCount: number } {
+  if (maxLines === undefined || plan.length <= maxLines) {
+    return { plan, foldedLineCount: 0 };
+  }
+  let foldedLineCount = 0;
+  for (let i = maxLines; i < plan.length; i++) {
+    const it = plan[i];
+    foldedLineCount += it.kind === 'collapsed' ? (it.hiddenCount ?? 0) : 1;
+  }
+  return { plan: plan.slice(0, maxLines), foldedLineCount };
+}
+
+/**
  * DF2 大 diff 上下文折叠:把连续的未变更上下文(context)块中超长的部分折叠。
  * 连续 context run 长度 > threshold 时,保留首尾各 keep 行,中间替换为一个
  * collapsed 占位(隐藏 run-2*keep 行)。add/del/其它行原样保留。
@@ -265,6 +289,17 @@ interface DiffRendererProps {
   filename?: string;
   tabWidth?: number;
   terminalWidth: number;
+  /**
+   * 折叠档：最多展示的可显示行数（新建文件的代码行 / diff 的增删+上下文行）。
+   *
+   * 超出则**同步**裁剪、只保留前 maxLines 行，末尾追加统一的
+   * `… N 行已折叠 · ctrl+o 展开` footer。传 undefined = 全展开档（不折叠）。
+   *
+   * 为何在此同步裁剪而非上层包 MaxSizedBox：工具结果一完成即被 <Static> 一次性打印进
+   * 终端 scrollback，此后无法重渲。异步测高的 MaxSizedBox 首帧会先把整份内容落进 scrollback
+   * 再折叠 → 大文件污染回滚区且擦不掉。同步裁剪一次成型，Static 安全。
+   */
+  maxLines?: number;
 }
 
 const DEFAULT_TAB_WIDTH = 4; // 每个制表符的空格数
@@ -287,6 +322,7 @@ export const DiffRenderer: React.FC<DiffRendererProps> = ({
   filename,
   tabWidth = DEFAULT_TAB_WIDTH,
   terminalWidth,
+  maxLines,
 }) => {
   const hasPatch = !!structuredPatch?.length;
   const parsedLines = useMemo(() => {
@@ -332,27 +368,51 @@ export const DiffRenderer: React.FC<DiffRendererProps> = ({
 
     if (isNewFile) {
       // 提取仅添加行的内容
-      const addedContent = parsedLines
+      const addedLines = parsedLines
         .filter((line) => line.type === 'add')
-        .map((line) => line.content)
-        .join('\n');
+        .map((line) => line.content);
       // 从文件名推断语言，如果没有文件名则默认为纯文本
       const fileExtension = filename?.split('.').pop() || null;
       const language = fileExtension
         ? getLanguageFromExtension(fileExtension)
         : null;
-      return colorizeCode({
-        code: addedContent,
+
+      // 折叠：新建文件全是 add 行、零上下文，planDiffWithContextCollapse 折不掉，
+      // 必须在此按 maxLines **同步**保留头部（看文件开头最有用）、末尾追加统一折叠 footer。
+      // 不用 colorizeCode 的 availableHeight——那是保留尾部（top overflow），方向相反。
+      const hiddenCount =
+        maxLines !== undefined && addedLines.length > maxLines
+          ? addedLines.length - maxLines
+          : 0;
+      const shownContent = (
+        hiddenCount > 0 ? addedLines.slice(0, maxLines) : addedLines
+      ).join('\n');
+
+      const colorized = colorizeCode({
+        code: shownContent,
         language,
         maxWidth: terminalWidth,
         showLineNumbers: true,
       });
+
+      if (hiddenCount > 0) {
+        return (
+          <Box flexDirection="column" width={terminalWidth}>
+            {colorized}
+            <Text color={semanticTheme.text.secondary} dimColor>
+              {formatCollapsedSummary(hiddenCount, { hint: 'ctrl+o' })}
+            </Text>
+          </Box>
+        );
+      }
+      return colorized;
     } else {
       return renderDiffContent(
         parsedLines,
         filename,
         tabWidth,
         terminalWidth,
+        maxLines,
       );
     }
   }, [
@@ -363,6 +423,7 @@ export const DiffRenderer: React.FC<DiffRendererProps> = ({
     filename,
     terminalWidth,
     tabWidth,
+    maxLines,
   ]);
 
   return renderedOutput;
@@ -373,6 +434,7 @@ const renderDiffContent = (
   filename: string | undefined,
   tabWidth = DEFAULT_TAB_WIDTH,
   terminalWidth: number,
+  maxLines?: number,
 ) => {
   // 1. 标准化空白（在进一步处理之前将制表符替换为空格）
   const normalizedLines = parsedLines.map((line) => ({
@@ -441,12 +503,24 @@ const renderDiffContent = (
   );
 
   // DF2:对超长未变更上下文做折叠。plan 保留每行的原始下标(origIndex)以查 pairMap。
-  const renderPlan = planDiffWithContextCollapse(
+  const fullPlan = planDiffWithContextCollapse(
     displayableLines.map((l) => ({ type: l.type, content: l.content })),
   );
 
+  // 折叠档裁剪：按 maxLines **同步**保留前 N 个计划项（保留头部），统计被裁掉的实际行数
+  // 供末尾折叠 footer。全展开档（maxLines===undefined）不裁剪。Static 安全：一次成型、
+  // 不依赖异步测高。逻辑抽到 foldRenderPlan 纯函数便于单测。
+  const { plan: renderPlan, foldedLineCount } = foldRenderPlan(fullPlan, maxLines);
+  const foldFooter =
+    foldedLineCount > 0 ? (
+      <Text color={semanticTheme.text.secondary} dimColor>
+        {formatCollapsedSummary(foldedLineCount, { hint: 'ctrl+o' })}
+      </Text>
+    ) : null;
+
   // DF3:大 diff 走 RawAnsi 单 leaf 路径。折叠后的计划行数超阈值时,预渲染 ANSI 字符串,
   // 绕过 per-line React 子树的 Yoga/squash/重序列化回环。小 diff 仍走下方 React 路径。
+  // 注:折叠档裁剪后 renderPlan 通常远小于阈值 → 走 React 路径;仅全展开的大 diff 命中这里。
   if (renderPlan.length > RAW_ANSI_LINE_THRESHOLD) {
     const bg = semanticTheme.background.diff;
     const colors: DiffAnsiColors = {
@@ -470,6 +544,7 @@ const renderDiffContent = (
     return (
       <Box key={key} flexDirection="column" width={terminalWidth}>
         <RawAnsi lines={ansiLines} width={terminalWidth} />
+        {foldFooter}
       </Box>
     );
   }
@@ -608,11 +683,12 @@ const renderDiffContent = (
     [],
   );
 
-  // 超长未变更上下文已由 planDiffWithContextCollapse 折叠;整体高度限制
-  // 交由上层 SlicingMaxSizedBox 处理,这里直接用 Box 列布局。
+  // 超长未变更上下文已由 planDiffWithContextCollapse 折叠;折叠档再按 maxLines 同步裁剪头部,
+  // 末尾追加统一折叠 footer(foldFooter)。全展开档 foldFooter 为 null,与旧行为一致。
   return (
     <Box key={key} flexDirection="column" width={terminalWidth}>
       {content}
+      {foldFooter}
     </Box>
   );
 };

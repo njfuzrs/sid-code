@@ -160,6 +160,8 @@ L1 视觉原子    字形、颜色、主题                          ← 最小�
 - 折叠时**显示摘要而非完全隐藏**：给出"折叠了什么、有多少"——文案用 `… +N more` / `… N 行已折叠` 这类**统一格式**，不要每处自己编。
 - 展开提示文案统一（如 `(ctrl+o 展开)`），并遵循 L4-C 的渐进衰减：在子区域 / 虚拟列表内不重复显示提示。
 - 行号 / 上下文截断：diff 类只显示变更前后各几行上下文（cc 用 `CONTEXT_LINES=3`），不是整文件。
+- **Static 安全铁律**：工具结果一完成即被 `<Static>` 一次性打印进终端 scrollback，此后无法重渲。折叠必须**同步一次成型**（渲染前就裁好行数），**不能用异步测高的 `MaxSizedBox`**（ResizeObserver 首帧 `contentHeight=0` → 判定不溢出 → 整份内容先落 scrollback 再折叠 → 大文件污染回滚区且擦不掉）。`SlicingMaxSizedBox`（按 `maxColumnWidth` 同步换行+截断）、`DiffRenderer` 的 `maxLines`（同步保留头部+`foldRenderPlan` 纯函数裁剪）都是同步路径，安全。`MaxSizedBox` 只可用于动态区（log-update 每帧重绘、可重测），不可用于进 Static 的已完成项。
+- **diff 折叠已落地** ✅：`write`/`edit` 返回 `structuredPatch`，`ToolResultDisplay` 把折叠档 `maxLines`（`DIFF_COLLAPSE_MAX_LINES=16`，比普通文本 3 行宽松）传给 `DiffRenderer` 内部同步裁剪——新建整文件 / 大改动默认只显头部 + `… N 行已折叠 · ctrl+o 展开` footer，小改动完整展示。此前 `isDiff && hasPatch` 分支直渲 `DiffRenderer` 绕过一切折叠，整文件灌屏（DiffRenderer 尾部注释说"高度限制交由上层"，但调用方从没接上——已补齐）。阶梯展开与普通文本共用 `expandLevel`。
 
 ### 3.4 流式渲染：逐字可见，已完成与进行中分离 ✅
 
