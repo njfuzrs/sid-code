@@ -270,7 +270,8 @@ export async function getAllSessionFiles(
             summary: data.summary,
             fullContent,
             messages,
-            cwd: data.directories?.[0],
+            // 优先 session_start.cwd（几乎所有会话都有），退回 directories[0]（早期少数会话）
+            cwd: data.cwd || data.directories?.[0],
           };
 
           return { fileName: file, sessionInfo };

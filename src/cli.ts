@@ -323,8 +323,12 @@ async function runSessionPicker(
   const { sidPaths } = await import("./config/paths.ts");
   const { consumeEarlyInput } = await import("./ui/early-input.ts");
   const { drainStdin } = await import("./ink/ink.tsx");
+  const { findGitRoot } = await import("./worktree/manager.ts");
   const { join } = await import("path");
   const { unlinkSync, existsSync } = await import("fs");
+
+  // 当前项目根：git 根优先，无 git 时退回 cwd。传给选择器做 Ctrl+P「仅当前项目」筛选。
+  const projectRoot = findGitRoot(process.cwd()) || process.cwd();
 
   // 关键：bootstrap 阶段的早期输入捕获（early-input）在 stdin 上挂了 readable 监听，
   // 会把每个字节 read() 掉。若不先停掉它，选择器里 Ink 的 useInput 一个按键都收不到
@@ -343,6 +347,7 @@ async function runSessionPicker(
       currentSessionId: config.sessionId,
       searchFirst: opts.searchFirst,
       initialSearchQuery: opts.initialSearchQuery,
+      projectRoot,
       onResumeSession: (session: any) => {
         selectedId = session.id;
         unmount?.(); // 选中即卸载，waitUntilExit 随即 resolve

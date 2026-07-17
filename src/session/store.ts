@@ -64,6 +64,8 @@ export interface SessionData {
   kind?: "main" | "subagent";
   projectHash?: string;
   directories?: string[];
+  /** 会话启动时的工作目录（取自 session_start.cwd），用于按项目筛选/展示。 */
+  cwd?: string;
   summary?: string;
   /** 会话元数据（metadata 记录的累积结果，用于恢复 goalState 等运行时状态） */
   metadata?: Record<string, unknown>;
@@ -621,6 +623,7 @@ export function parseSessionJsonlLines(lines: string[]): SessionData | null {
   let provider = "";
   let createdAt = "";
   let updatedAt = "";
+  let cwd = "";
   let version = LEGACY_JSONL_VERSION;
 
   for (const record of orderedRecords) {
@@ -631,6 +634,7 @@ export function parseSessionJsonlLines(lines: string[]): SessionData | null {
         provider = record.provider;
         createdAt = record.timestamp;
         updatedAt = record.timestamp;
+        if (typeof record.cwd === "string") cwd = record.cwd;
         // P2-12：v3+ 文件带 version 字段；v2 及更早无此字段，保持 LEGACY_JSONL_VERSION 兜底。
         if (typeof (record as { version?: string }).version === "string") {
           version = (record as { version: string }).version;
@@ -667,6 +671,7 @@ export function parseSessionJsonlLines(lines: string[]): SessionData | null {
     createdAt,
     updatedAt,
     kind: metadata["kind"] as "main" | "subagent" | undefined,
+    cwd: cwd || undefined,
     summary: metadata["summary"] as string | undefined,
     metadata,
   };

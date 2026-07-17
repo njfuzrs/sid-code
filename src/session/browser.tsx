@@ -43,6 +43,11 @@ export interface SessionBrowserProps {
   searchFirst?: boolean;
   /** 预填搜索词（`-r <term>` 未精确命中 ID 时把 term 带进选择器）。 */
   initialSearchQuery?: string;
+  /**
+   * 当前项目根（启动 cwd 的 git 根，无 git 时为 cwd）。用于 Ctrl+P「仅当前项目」筛选：
+   * 只保留 cwd 落在该根目录下的会话。不传则禁用项目筛选（Ctrl+P 无效）。
+   */
+  projectRoot?: string;
 }
 
 /** 会话浏览器状态 */
@@ -66,6 +71,9 @@ export interface SessionBrowserState {
   sortOrder: "date" | "messages" | "name";
   sortReverse: boolean;
 
+  // 项目筛选状态：true = 仅当前项目，false = 全部（默认）
+  projectOnly: boolean;
+
   // 计算值
   totalSessions: number;
   startIndex: number;
@@ -83,6 +91,7 @@ export interface SessionBrowserState {
   setSortOrder: React.Dispatch<React.SetStateAction<"date" | "messages" | "name">>;
   setSortReverse: React.Dispatch<React.SetStateAction<boolean>>;
   setHasLoadedFullContent: React.Dispatch<React.SetStateAction<boolean>>;
+  setProjectOnly: React.Dispatch<React.SetStateAction<boolean>>;
 }
 
 /** 状态管理 Hook */
@@ -91,7 +100,8 @@ function useSessionBrowserState(
   initialLoading = true,
   initialError: string | null = null,
   initialSearchQuery = "",
-  initialSearchMode = false
+  initialSearchMode = false,
+  projectRoot?: string
 ): SessionBrowserState {
   const [sessions, setSessions] = useState<SessionInfo[]>(initialSessions);
   const [loading, setLoading] = useState(initialLoading);
@@ -103,11 +113,24 @@ function useSessionBrowserState(
   const [searchQuery, setSearchQuery] = useState(initialSearchQuery);
   const [isSearchMode, setIsSearchMode] = useState(initialSearchMode);
   const [hasLoadedFullContent, setHasLoadedFullContent] = useState(false);
+  // 默认 false = 列全部会话（用户选择：全局全部为默认，Ctrl+P 切「仅当前项目」）
+  const [projectOnly, setProjectOnly] = useState(false);
 
   const filteredAndSortedSessions = useMemo(() => {
-    const filtered = filterSessions(sessions, searchQuery);
+    // 项目筛选：projectOnly 且有 projectRoot 时，只留 cwd 落在项目根下的会话。
+    // 用路径前缀匹配（带分隔符，避免 /a/proj 误匹配 /a/proj-foo）。
+    let base = sessions;
+    if (projectOnly && projectRoot) {
+      const root = projectRoot.replace(/\/+$/, "");
+      base = sessions.filter((s) => {
+        if (!s.cwd) return false;
+        const c = s.cwd.replace(/\/+$/, "");
+        return c === root || c.startsWith(root + "/");
+      });
+    }
+    const filtered = filterSessions(base, searchQuery);
     return sortSessions(filtered, sortOrder, sortReverse);
-  }, [sessions, searchQuery, sortOrder, sortReverse]);
+  }, [sessions, searchQuery, sortOrder, sortReverse, projectOnly, projectRoot]);
 
   // 搜索清空时重置完整内容标志
   useEffect(() => {
@@ -142,6 +165,8 @@ function useSessionBrowserState(
     setSortOrder,
     sortReverse,
     setSortReverse,
+    projectOnly,
+    setProjectOnly,
     filteredAndSortedSessions,
     totalSessions,
     startIndex,
@@ -260,9 +285,21 @@ function useSessionBrowserInput(
   onResumeSession: (session: SessionInfo) => void,
   onDeleteSession: (session: SessionInfo) => Promise<void>,
   onExit: () => void,
-  searchFirst = false
+  searchFirst = false,
+  projectFilterEnabled = false
 ) {
   useInput((input, key) => {
+    // Ctrl+P：在「全部 / 仅当前项目」间切换（两种模式下都生效，且不落进搜索框）。
+    // 仅当调用方提供了 projectRoot（projectFilterEnabled）才启用。
+    if (key.ctrl && input === "p") {
+      if (projectFilterEnabled) {
+        state.setProjectOnly((v) => !v);
+        state.setActiveIndex(0);
+        state.setScrollOffset(0);
+      }
+      return;
+    }
+
     if (state.isSearchMode) {
       // 搜索模式
       if (key.escape) {
@@ -389,10 +426,14 @@ function SearchHeader({
   state: SessionBrowserState;
 }): JSX.Element {
   const hasQuery = Boolean(state.searchQuery);
+  const scopeLabel = state.projectOnly ? "仅当前项目" : "全部项目";
   return (
     <Box flexDirection="column">
       <Text bold color={theme.text.accent}>
-        恢复会话
+        恢复会话{" "}
+        <Text color={theme.text.secondary}>
+          （{scopeLabel} · {state.totalSessions} 个）
+        </Text>
       </Text>
       <Box
         borderStyle="round"
@@ -548,17 +589,23 @@ function SessionList({ state }: { state: SessionBrowserState }): JSX.Element {
 function FooterHints({
   state,
   searchFirst,
+  projectFilterEnabled,
 }: {
   state: SessionBrowserState;
   searchFirst?: boolean;
+  projectFilterEnabled?: boolean;
 }): JSX.Element {
   // 关键：提示只列**当前模式下真正生效**的键，避免误导。
-  // 搜索模式里 s/x/q 都是往查询里打字，不能当快捷键宣传——那里只留导航/恢复/退出。
-  let hints: string[];
+  // 搜索模式里 s/x/q 都是往查询里打字，不能当快捷键宣传——那里只留导航/恢复/退出/项目切换。
+  // Ctrl+P 两种模式下都生效（在 useInput 顶部处理），故都列出（前提是启用了项目筛选）。
+  const projectHint = projectFilterEnabled
+    ? `Ctrl+P ${state.projectOnly ? "看全部" : "仅本项目"}`
+    : null;
+  let hints: (string | null)[];
   if (state.isSearchMode) {
     const escHint =
       searchFirst && !state.searchQuery ? "Esc 退出" : "Esc 清空/退出";
-    hints = ["输入以搜索", "↑↓ 移动", "Enter 恢复", escHint];
+    hints = ["输入以搜索", "↑↓ 移动", "Enter 恢复", projectHint, escHint];
   } else {
     const sortLabel = { date: "时间", messages: "消息数", name: "名称" }[
       state.sortOrder
@@ -569,13 +616,14 @@ function FooterHints({
       "/ 搜索",
       "x 删除",
       `s 排序(${sortLabel}${state.sortReverse ? "↓" : "↑"})`,
+      projectHint,
       "q 退出",
     ];
   }
   return (
     <Box marginTop={1}>
       <Text color={theme.text.secondary} wrap="truncate-end">
-        {hints.join("  ·  ")}
+        {hints.filter(Boolean).join("  ·  ")}
       </Text>
     </Box>
   );
@@ -585,9 +633,11 @@ function FooterHints({
 function SessionBrowserView({
   state,
   searchFirst,
+  projectFilterEnabled,
 }: {
   state: SessionBrowserState;
   searchFirst?: boolean;
+  projectFilterEnabled?: boolean;
 }): JSX.Element {
   if (state.loading) {
     return <SessionBrowserLoading />;
@@ -609,7 +659,11 @@ function SessionBrowserView({
       ) : (
         <SessionList state={state} />
       )}
-      <FooterHints state={state} searchFirst={searchFirst} />
+      <FooterHints
+        state={state}
+        searchFirst={searchFirst}
+        projectFilterEnabled={projectFilterEnabled}
+      />
     </Box>
   );
 }
@@ -623,6 +677,7 @@ export function SessionBrowser({
   onExit,
   searchFirst = false,
   initialSearchQuery = "",
+  projectRoot,
 }: SessionBrowserProps): JSX.Element {
   // searchFirst 时进入即搜索模式；若带了预填搜索词也自动进搜索模式便于继续编辑。
   const state = useSessionBrowserState(
@@ -630,7 +685,8 @@ export function SessionBrowser({
     true,
     null,
     initialSearchQuery,
-    searchFirst || Boolean(initialSearchQuery)
+    searchFirst || Boolean(initialSearchQuery),
+    projectRoot
   );
   const moveSelection = useMoveSelection(state);
   const cycleSortOrder = useCycleSortOrder(state);
@@ -643,8 +699,15 @@ export function SessionBrowser({
     onResumeSession,
     onDeleteSession,
     onExit,
-    searchFirst
+    searchFirst,
+    Boolean(projectRoot)
   );
 
-  return <SessionBrowserView state={state} searchFirst={searchFirst} />;
+  return (
+    <SessionBrowserView
+      state={state}
+      searchFirst={searchFirst}
+      projectFilterEnabled={Boolean(projectRoot)}
+    />
+  );
 }

@@ -243,6 +243,17 @@ describe("parseSessionJsonl", () => {
     expect(data!.updatedAt).toBe("2026-01-01T00:00:02Z");
   });
 
+  test("从 session_start 解析出 cwd（-r 选择器项目筛选依赖它）", () => {
+    // 回归：此前 parser 读了 session_start.cwd 却没写进 SessionData，
+    // 导致 -r 选择器 Ctrl+P「仅当前项目」筛选恒为 0 条（cwd 全空匹配不上）。
+    const content = [
+      JSON.stringify({ type: "session_start", sessionId: "s-cwd", model: "m", provider: "p", cwd: "/Users/me/proj", timestamp: "t0" }),
+      JSON.stringify({ type: "user_message", message: { role: "user", content: [{ type: "text", text: "hi" }] }, timestamp: "t1" }),
+    ].join("\n");
+    const data = parseSessionJsonl(content);
+    expect(data!.cwd).toBe("/Users/me/proj");
+  });
+
   test("无 session_start 行返回 null", () => {
     const content = JSON.stringify({ type: "user_message", message: { role: "user", content: [] }, timestamp: "t" });
     expect(parseSessionJsonl(content)).toBeNull();
