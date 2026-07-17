@@ -324,6 +324,7 @@ async function runSessionPicker(
   const { consumeEarlyInput } = await import("./ui/early-input.ts");
   const { drainStdin } = await import("./ink/ink.tsx");
   const { findGitRoot } = await import("./worktree/manager.ts");
+  const { setSuppressTerminalProbe } = await import("./ink/terminal.ts");
   const { join } = await import("path");
   const { unlinkSync, existsSync } = await import("fs");
 
@@ -340,6 +341,12 @@ async function runSessionPicker(
 
   let selectedId: string | null = null;
   let unmount: (() => void) | undefined;
+
+  // 关键:选择器是短命 Ink 实例,卸载后会切到主 TUI。若它也发端末探查(XTVERSION),
+  // 慢终端(VS Code xterm.js)的回复会在卸载后才到、经交接被拆碎漏进主 TUI 输入框
+  // (`>|xterm.js(...)1;2c` 乱码)。这里抑制探查,只让主 TUI 探查——它解析器已接线,
+  // 回复被正确消费。waitUntilExit 后在 finally 里解除,不影响主 TUI。
+  setSuppressTerminalProbe(true);
 
   const instance = await render(
     React.createElement(SessionBrowser, {
@@ -365,14 +372,15 @@ async function runSessionPicker(
   );
   unmount = instance.unmount;
 
-  await instance.waitUntilExit();
+  try {
+    await instance.waitUntilExit();
+  } finally {
+    // 解除探查抑制:选择器已卸载,主 TUI 需要正常探查(它解析器已接线,回复不会拆碎)。
+    setSuppressTerminalProbe(false);
+  }
 
-  // 关键：选择器 Ink 实例挂载时会探测终端（XTVERSION `CSI>0q` + DA1 `CSI c` 哨兵），
-  // 回复（如 `\eP>|xterm.js(...)\e\\` 和 `\e[?1;2c`）经终端往返**异步**到达 stdin。
-  // 用户快速按 Enter 选中时，回复往往在选择器卸载之后才到，于是漏进随后启动的 TUI，
-  // 被当成键入打进输入框，表现为「> >|xterm.js(...)1;2c」乱码。
-  // 卸载虽已同步 drain 一次，但吸不到「在途」回复。这里等一小会儿让回复落地，再 drain 一次，
-  // 把这批终端应答彻底吞掉，才把 stdin 交给 TUI。DA1 哨兵保证回复有界，30ms 足够本地终端往返。
+  // 兜底 drain:选择器不再发探查(已抑制),这里主要吸掉用户按 Enter 选中前后
+  // 可能残留的按键字节,避免漏进主 TUI 输入框。等一小会儿让在途字节落地再 drain。
   await new Promise((r) => setTimeout(r, 30));
   try {
     drainStdin(process.stdin);
