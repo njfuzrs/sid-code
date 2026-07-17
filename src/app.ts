@@ -837,9 +837,8 @@ export class App {
         // （JSON.stringify 会丢弃 undefined 字段，用 null 显式保留"auto"语义）。
         effortLevel: this.runtimeEffort ?? null,
         thinking: this.runtimeThinking ?? null,
-        // 权限模式(Shift+Tab 循环切换的运行时档位)。恢复时只认安全档位，危险档位
-        // (dangerously-skip-permissions/always-allow)出于安全考虑不跨会话恢复。
-        permissionMode: this.config.permissionMode ?? null,
+        // P0-2：permissionMode 不再写入快照（对齐 CC：权限档位不做隐式记忆，每会话重新裁定）。
+        // 快照只保留 model/effortLevel/thinking 这类用户偏好（非安全边界）。
       });
     } catch (e) {
       getLogger().warn("AGENT_SETTING", `agent 设置快照落盘失败（不阻断）: ${(e as Error)?.message}`);
@@ -2092,6 +2091,28 @@ export class App {
 
     log.info("APP", `恢复会话: ${sessionData.id}, 消息数 ${sessionData.messages.length}`);
 
+    // P0-1：cwd 一致性告警（纵深防御）。会话已按项目物理分目录，`-c`/选择器天然按项目隔离，
+    // 这条几乎不会触发；但用户手工 `-r <ID>` 恢复他项目会话时，仍可能在项目 B 里跑起项目 A 的
+    // 会话（进程 cwd 仍是 B、工具在 B 下执行）。此时同时告警日志 + 并入续接提示（combinedNote），
+    // 让用户/模型都知道跨项目恢复、路径可能不匹配。note 在下方与其他续接提示合并注入。
+    let cwdMismatchNote: string | undefined;
+    try {
+      const sessCwd = sessionData.cwd;
+      if (sessCwd) {
+        const { resolveProjectRoot } = await import("./memory/paths.ts");
+        const sessRoot = resolveProjectRoot(sessCwd);
+        const curRoot = resolveProjectRoot(process.cwd());
+        if (sessRoot !== curRoot) {
+          const msg = `⚠️ 跨项目恢复：本会话原属于项目 ${sessRoot}，当前工作目录属于 ${curRoot}。`
+            + `工具将在当前工作目录下执行，历史中的文件路径可能与当前项目不匹配，请留意。`;
+          log.warn("APP", msg);
+          cwdMismatchNote = msg;
+        }
+      }
+    } catch (e) {
+      log.warn("APP", `cwd 一致性检查失败（不阻断）: ${(e as Error)?.message}`);
+    }
+
     // B6：标记当前为 resume 会话。doInit 据此调 resumeSession（续写原 jsonl）而非 startSession（新建）。
     // 注意：不修改 sessionState.sessionId（trajectory/PID/crash marker 仍用本进程的新 id，避免跨进程冲突），
     // 仅让 SessionStore 的 currentFile 指向被恢复会话的旧 jsonl 续写，使历史不碎片化。
@@ -2155,28 +2176,13 @@ export class App {
           log.info("APP", `恢复 agent thinking: ${this.runtimeThinking ?? "auto"}`);
         }
 
-        // permissionMode：安全恢复。
-        // 优先级：CLI 显式启动参数 > 会话快照。CLI 的 --permission-mode / --dangerously-skip-permissions
-        // 在 new App 之前已设进 config，故仅当当前为默认 "default"(用户本次未显式指定)时才用快照恢复，
-        // 避免覆盖用户本次启动的显式意图。
-        // 安全红线：危险档位(dangerously-skip-permissions/always-allow)绝不跨会话自动恢复——
-        // 这类"全放行"档位若因 resume 悄悄复活，用户可能在毫不知情下失去权限保护。plan 档也不在此
-        // 恢复(有独立状态机 + 需重建 planManager 上下文)。只恢复 default/acceptEdits 这类"安全且幂等"档位。
-        const snapMode = setting.permissionMode;
-        const SAFE_RESTORABLE = new Set(["default", "acceptEdits"]);
-        if (
-          this.config.permissionMode === "default" && // 本次未经 CLI 显式指定
-          typeof snapMode === "string" &&
-          snapMode !== "default" &&
-          SAFE_RESTORABLE.has(snapMode)
-        ) {
-          this.config.permissionMode = snapMode as typeof this.config.permissionMode;
-          // 同步粘性执行开关(与 cyclePermissionMode 一致)：acceptEdits 不改 skip/yes，仅改档位。
-          this.tuiStateUpdater?.({ permissionMode: snapMode });
-          log.info("APP", `恢复权限模式: ${snapMode}`);
-        } else if (typeof snapMode === "string" && (snapMode === "dangerously-skip-permissions" || snapMode === "always-allow")) {
-          log.info("APP", `快照权限模式为危险档位 ${snapMode}，出于安全不自动恢复，回落 ${this.config.permissionMode}`);
-        }
+        // P0-2：permissionMode 不做隐式跨会话恢复（对齐 CC 安全红线）。
+        // 权限档位每会话重新裁定，一律回到 default 或 CLI 显式值（--permission-mode / -y /
+        // --dangerously-skip-permissions，在 loadConfig 阶段已生效，与恢复无关）。
+        // 此前只有 acceptEdits 一个档位会跨会话静默复活，构成不一致的"半恢复"语义——
+        // 用户上次开了 acceptEdits，这次在完全不同上下文里 resume，会在不知情下失去"每次确认"保护。
+        // 删除整个恢复块后，permissionMode 彻底不进恢复流程。
+        // 注：agent_setting.permissionMode 类型字段保留（见 setting 声明），仅为兼容旧快照残留字段——读到即忽略。
       } catch (e) {
         log.warn("APP", `agent 设置恢复失败（不阻断）: ${(e as Error)?.message}`);
       }
@@ -2294,7 +2300,7 @@ export class App {
 
     // P1-7 + P2-10：把文件修改历史 + 进度 + 未完成子代理摘要并入续接提示，
     // 一并注入到续接标记里。全部为空则 combinedNote 为 undefined。
-    const combinedNote = [fileChangesNote, sidechainNote, progressNote].filter((s) => s && s.trim()).join("\n\n") || undefined;
+    const combinedNote = [cwdMismatchNote, fileChangesNote, sidechainNote, progressNote].filter((s) => s && s.trim()).join("\n\n") || undefined;
 
     // ─────────────────────────────────────────────────────────────
     // P0-2 + P1-5：恢复前先跑「脏数据清洗管道 + 中断检测」（session-recovery.ts）。

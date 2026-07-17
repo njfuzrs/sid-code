@@ -153,24 +153,34 @@ export async function identifySessionsToDelete(
 async function deleteSessionArtifacts(
   sessionId: string,
   sessionFileName: string,
-  config: Config
+  config: Config,
+  dirPath?: string,
 ): Promise<void> {
   const log = getLogger();
 
-  // 删除会话文件
-  const sessionDir = sidPaths.sessions();
+  // P0-1：会话按项目分目录后，用条目自带的 dirPath 定位；回退根目录兼容未迁移的平铺文件。
+  const sessionDir = dirPath || sidPaths.sessions();
   const sessionPath = join(sessionDir, sessionFileName);
   if (existsSync(sessionPath)) {
     unlinkSync(sessionPath);
     log.debug("CLEANUP", `已删除会话文件: ${sessionFileName}`);
   }
 
-  // 删除摘要文件
+  // 删除摘要文件（与会话文件同项目目录下的 summaries/）
   const summaryDir = join(sessionDir, "summaries");
   const summaryPath = join(summaryDir, `${sessionId}.json`);
   if (existsSync(summaryPath)) {
     unlinkSync(summaryPath);
     log.debug("CLEANUP", `已删除摘要文件: ${sessionId}.json`);
+  }
+
+  // P0-1：清理同 id 的 sidechain 文件（`<id>-<agentId>.jsonl`，与主会话同目录）。
+  try {
+    const { cleanupSidechainsInDir } = await import("./sidechain.ts");
+    const removed = cleanupSidechainsInDir(sessionDir, sessionId);
+    if (removed > 0) log.debug("CLEANUP", `已删除 sidechain: ${removed} 个 (${sessionId})`);
+  } catch (err: any) {
+    log.warn("CLEANUP", `删除 sidechain 失败（不阻断）: ${sessionId} - ${err?.message}`);
   }
 
   // P0：对称清理同 id 的 trajectory 目录（trajectories/sessions/{id}/）。
@@ -250,13 +260,14 @@ export async function cleanupExpiredSessions(
         await deleteSessionArtifacts(
           entry.sessionInfo.id,
           entry.fileName,
-          config
+          config,
+          entry.dirPath,
         );
         result.deleted++;
         result.deletedIds.push(entry.sessionInfo.id);
       } else {
-        // 损坏文件，直接删除
-        const sessionPath = join(sessionDir, entry.fileName);
+        // 损坏文件，直接删除（P0-1：用条目自带 dirPath 定位所在项目目录）
+        const sessionPath = join(entry.dirPath || sessionDir, entry.fileName);
         if (existsSync(sessionPath)) {
           unlinkSync(sessionPath);
           result.deleted++;

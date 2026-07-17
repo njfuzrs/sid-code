@@ -48,7 +48,8 @@ export async function handleDeleteSession(sessionId: string): Promise<void> {
 
   try {
     const session = await selector.findSession(sessionId);
-    const sessionPath = join(sessionDir, session.fileName);
+    // P0-1：会话按项目分目录后，用条目自带的 dirPath 定位；回退根目录兼容未迁移的平铺文件。
+    const sessionPath = join(session.dirPath || sessionDir, session.fileName);
 
     if (existsSync(sessionPath)) {
       unlinkSync(sessionPath);

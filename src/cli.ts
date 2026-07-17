@@ -323,13 +323,14 @@ async function runSessionPicker(
   const { sidPaths } = await import("./config/paths.ts");
   const { consumeEarlyInput } = await import("./ui/early-input.ts");
   const { drainStdin } = await import("./ink/ink.tsx");
-  const { findGitRoot } = await import("./worktree/manager.ts");
   const { setSuppressTerminalProbe } = await import("./ink/terminal.ts");
+  const { resolveProjectRoot } = await import("./memory/paths.ts");
   const { join } = await import("path");
   const { unlinkSync, existsSync } = await import("fs");
 
-  // 当前项目根：git 根优先，无 git 时退回 cwd。传给选择器做 Ctrl+P「仅当前项目」筛选。
-  const projectRoot = findGitRoot(process.cwd()) || process.cwd();
+  // 当前项目根：与存储侧分目录归一算法一致（resolveProjectRoot = git top-level 优先，
+  // 失败退回 resolve(cwd)）。传给选择器做 Ctrl+P「仅当前项目」筛选，保证过滤与物理目录对得上。
+  const projectRoot = resolveProjectRoot(process.cwd());
 
   // 关键：bootstrap 阶段的早期输入捕获（early-input）在 stdin 上挂了 readable 监听，
   // 会把每个字节 read() 掉。若不先停掉它，选择器里 Ink 的 useInput 一个按键都收不到
@@ -360,7 +361,8 @@ async function runSessionPicker(
         unmount?.(); // 选中即卸载，waitUntilExit 随即 resolve
       },
       onDeleteSession: async (session: any) => {
-        const sessionPath = join(sessionDir, session.fileName);
+        // P0-1：会话按项目分目录后，用条目自带的 dirPath 定位；回退到根目录兼容未迁移的平铺文件。
+        const sessionPath = join(session.dirPath || sessionDir, session.fileName);
         if (existsSync(sessionPath)) {
           unlinkSync(sessionPath);
         }

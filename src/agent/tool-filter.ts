@@ -19,6 +19,11 @@ const ALL_AGENT_DISALLOWED_TOOLS = new Set([
   "sub_agent",         // 防嵌套：子代理不允许再 spawn 子代理
   "task_output",       // 子代理不应读取其他任务输出
   "task_stop",         // 子代理不应终止其他任务
+  // P1-1：todo_write 是"主代理进度追踪工具"（全局单实例、无 agentId 概念），子代理有独立的
+  // task_list 做子任务追踪。此前 general-purpose（白名单 null 不限制）与自定义子代理（黑名单只禁
+  // sub_agent）会拿到父级同一 TodoWriteTool 实例 → 并发写 todo 会污染主会话 currentTodos。
+  // 机制性隔离：与 save_memory/enter_plan_mode 等主代理专属工具同列，所有子代理一律禁用。
+  "todo_write",
 ]);
 
 /** 自定义 Agent 额外禁止的工具 */

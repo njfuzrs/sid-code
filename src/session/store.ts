@@ -16,10 +16,11 @@
 
 import type { Message } from "../llm/types.ts";
 import { join } from "path";
-import { existsSync, mkdirSync, readdirSync, statSync, readFileSync, appendFileSync, createReadStream } from "fs";
+import { existsSync, mkdirSync, readdirSync, statSync, readFileSync, writeFileSync, renameSync, appendFileSync, createReadStream } from "fs";
 import { createInterface } from "readline";
 import { getLogger } from "../debug/logger.ts";
 import { sidPaths } from "../config/paths.ts";
+import { resolveProjectRoot, sanitizeProjectKey } from "../memory/paths.ts";
 import { generateSessionId } from "./id.ts";
 
 /** 当前会话数据格式版本。1.0=旧版全量 JSON；2.0=JSONL 事件溯源（无链）；3.0=+uuid/parentUuid 链 */
@@ -163,6 +164,92 @@ export function flushPendingSessionWrites(): void {
 // 覆盖不到 SIGKILL/硬崩溃——与 CC 自身的设计取舍一致，这一点做不到更好。
 process.on("exit", flushPendingSessionWrites);
 
+// ─────────────────────────────────────────────────────────────
+// P0-1：会话按项目物理分目录（对齐 Claude Code）。
+//
+// 布局：~/.sid-code/sessions/<projectKey>/<sessionId>.jsonl
+//   projectKey = sanitizeProjectKey(resolveProjectRoot(cwd))（git top-level 优先，
+//   与 memory/ 分目录同款算法，保证同仓不同子目录归一到同一 key）。
+//
+// 读写职责分工：
+//   - 写入（startSession/append/save/saveSummary）落到「当前项目」目录。
+//   - loadLatest()（`-c`）只扫「当前项目」目录 → 跨项目串会话在存储层不可能。
+//   - load(id) / resumeSession / loadSummary / 全局视图（--list-sessions/digest/cleanup）
+//     跨所有项目子目录解析 → 手工 `-r <ID>` / 选择器「全部项目」默认视图仍可命中他项目会话。
+//
+// _legacy 兜底目录：无 cwd 的极旧会话迁移时归入此目录，不丢失。
+// ─────────────────────────────────────────────────────────────
+
+/** 无 cwd 的极旧会话迁移兜底目录名。 */
+const LEGACY_PROJECT_KEY = "_legacy";
+/** 项目子目录下的会话摘要子目录名。 */
+const SUMMARY_SUBDIR = "summaries";
+
+/** 计算「当前项目」的会话目录 key（git top-level 归一）。 */
+export function currentProjectSessionKey(cwd: string = process.cwd()): string {
+  return sanitizeProjectKey(resolveProjectRoot(cwd));
+}
+
+/** 「当前项目」的会话目录绝对路径：~/.sid-code/sessions/<projectKey>/ */
+export function currentProjectSessionDir(cwd: string = process.cwd()): string {
+  return join(sidPaths.sessions(), currentProjectSessionKey(cwd));
+}
+
+/**
+ * 列出所有项目会话子目录（含 _legacy），外加 sessions 根本身。
+ *
+ * 用于「全局视图」与「跨项目按 id 解析」。返回根目录是为了兼容尚未迁移完成的
+ * 平铺旧文件（迁移是 best-effort，个别失败会留在根下，读取端仍要能看到）。
+ * 只返回真实存在的目录，稳定去重。
+ */
+export function listAllSessionDirs(): string[] {
+  const root = sidPaths.sessions();
+  const dirs: string[] = [];
+  const seen = new Set<string>();
+  const push = (d: string) => {
+    if (!seen.has(d) && existsSync(d)) {
+      seen.add(d);
+      dirs.push(d);
+    }
+  };
+  // 根目录优先（平铺旧文件兜底）
+  push(root);
+  if (existsSync(root)) {
+    try {
+      for (const name of readdirSync(root)) {
+        if (name === SUMMARY_SUBDIR || name.startsWith(".")) continue;
+        const sub = join(root, name);
+        try {
+          if (statSync(sub).isDirectory()) push(sub);
+        } catch {
+          /* 单个 stat 失败跳过 */
+        }
+      }
+    } catch {
+      /* 根目录读取失败 → 只返回已收集的 */
+    }
+  }
+  return dirs;
+}
+
+/**
+ * 跨所有项目目录查找某会话 id 的文件路径（jsonl 优先，回退 json）。
+ * 命中「当前项目目录」优先返回；否则遍历其余项目目录。找不到返回 null。
+ */
+export function resolveSessionFileAcrossProjects(id: string): string | null {
+  const dirsInPriority = [currentProjectSessionDir(), ...listAllSessionDirs()];
+  const seen = new Set<string>();
+  for (const dir of dirsInPriority) {
+    if (seen.has(dir)) continue;
+    seen.add(dir);
+    const jsonl = join(dir, `${id}.jsonl`);
+    if (existsSync(jsonl)) return jsonl;
+    const json = join(dir, `${id}.json`);
+    if (existsSync(json)) return json;
+  }
+  return null;
+}
+
 export class SessionStore {
   private sessionDir: string;
   private summaryDir: string;
@@ -176,14 +263,18 @@ export class SessionStore {
   private lastUuid: string | null = null;
 
   constructor() {
-    this.sessionDir = sidPaths.sessions();
-    this.summaryDir = join(this.sessionDir, "summaries");
+    // P0-1：写入落到「当前项目」子目录（sessions/<projectKey>/）。
+    this.sessionDir = currentProjectSessionDir();
+    this.summaryDir = join(this.sessionDir, SUMMARY_SUBDIR);
     if (!existsSync(this.sessionDir)) {
       mkdirSync(this.sessionDir, { recursive: true });
     }
     if (!existsSync(this.summaryDir)) {
       mkdirSync(this.summaryDir, { recursive: true });
     }
+    // P0-1：首个 SessionStore 实例化时，一次性把平铺旧会话按 cwd 迁移到项目子目录。
+    // 幂等 + best-effort：已在子目录的不动、失败留原地不阻断启动。
+    migrateFlatSessionsOnce();
   }
 
   /** 开始新会话（JSONL 模式）。P2-9：不立即创建文件，延迟到首条真实记录时才 materialize，
@@ -230,7 +321,11 @@ export class SessionStore {
     cwd: string,
     traceSessionId?: string,
   ): void {
-    const jsonlPath = join(this.sessionDir, `${sessionId}.jsonl`);
+    // P0-1：跨项目解析旧 jsonl——恢复他项目会话时续写落回其原目录，不迁移、不碎片化。
+    const resolved = resolveSessionFileAcrossProjects(sessionId);
+    const jsonlPath = resolved && resolved.endsWith(".jsonl")
+      ? resolved
+      : join(this.sessionDir, `${sessionId}.jsonl`);
     if (existsSync(jsonlPath)) {
       this.currentFile = jsonlPath;
       this.materialized = true;
@@ -332,29 +427,33 @@ export class SessionStore {
     log.info("SESSION", `会话已保存: ${session.id} (${session.messages.length}条消息, ${sizeStr})`);
   }
 
-  /** 加载会话（优先 JSONL，回退 JSON） */
+  /**
+   * 加载会话（优先 JSONL，回退 JSON）。
+   *
+   * P0-1：跨所有项目目录解析 id——`-r <ID>` / 选择器「全部项目」视图可命中他项目会话；
+   * 命中当前项目目录优先。找不到才回退到旧行为（无对应文件）。
+   */
   async load(id: string): Promise<SessionData | null> {
     const log = getLogger();
 
-    // 优先尝试 JSONL 格式
-    const jsonlPath = join(this.sessionDir, `${id}.jsonl`);
-    if (existsSync(jsonlPath)) {
+    const resolved = resolveSessionFileAcrossProjects(id);
+    if (!resolved) return null;
+
+    if (resolved.endsWith(".jsonl")) {
       // P0-3：读取前先把该文件的缓冲写入落盘，避免读到落后于内存状态的内容
       // （缓冲只延迟落盘时机，绝不能改变"读到的就是最新写入"这一语义）。
-      flushFile(jsonlPath);
-      const result = await this.loadFromJsonl(jsonlPath);
+      flushFile(resolved);
+      const result = await this.loadFromJsonl(resolved);
       if (result) {
         log.info("SESSION", `会话已加载(JSONL): ${id} (${result.messages.length}条消息)`);
         return result;
       }
+      return null;
     }
 
-    // 回退到旧 JSON 格式
-    const jsonPath = join(this.sessionDir, `${id}.json`);
-    if (!existsSync(jsonPath)) return null;
-
+    // 旧 JSON 格式
     try {
-      const content = await Bun.file(jsonPath).text();
+      const content = await Bun.file(resolved).text();
       const data = JSON.parse(content) as SessionData;
       if (!data.version) data.version = "0.0";
       log.info("SESSION", `会话已加载(JSON): ${id} (${data.messages.length}条消息)`);
@@ -420,17 +519,31 @@ export class SessionStore {
     await Bun.write(filePath, JSON.stringify(summary, null, 2));
   }
 
-  /** 加载会话摘要 */
+  /**
+   * 加载会话摘要。
+   *
+   * P0-1：先查当前项目 summaries/，未命中再跨所有项目目录查找——恢复他项目会话时
+   * 其摘要也在对应项目目录下。旧平铺 summaries（sessions/summaries/）作为兜底纳入扫描。
+   */
   async loadSummary(sessionId: string): Promise<SessionSummary | null> {
-    const filePath = join(this.summaryDir, `${sessionId}.json`);
-    if (!existsSync(filePath)) return null;
-
-    try {
-      const content = await Bun.file(filePath).text();
-      return JSON.parse(content) as SessionSummary;
-    } catch {
-      return null;
+    const candidates = [
+      join(this.summaryDir, `${sessionId}.json`),
+      ...listAllSessionDirs().map((d) => join(d, SUMMARY_SUBDIR, `${sessionId}.json`)),
+      join(sidPaths.sessions(), SUMMARY_SUBDIR, `${sessionId}.json`),
+    ];
+    const seen = new Set<string>();
+    for (const filePath of candidates) {
+      if (seen.has(filePath)) continue;
+      seen.add(filePath);
+      if (!existsSync(filePath)) continue;
+      try {
+        const content = await Bun.file(filePath).text();
+        return JSON.parse(content) as SessionSummary;
+      } catch {
+        /* 单个损坏跳过，继续找 */
+      }
     }
+    return null;
   }
 
   /** 构建恢复消息 */
@@ -761,4 +874,205 @@ function readJsonlLinesStreaming(filePath: string): Promise<string[]> {
     rl.on("error", reject);
     rl.on("close", () => resolve(lines));
   });
+}
+
+// ─────────────────────────────────────────────────────────────
+// P0-1：平铺旧会话一次性迁移到项目子目录。
+// ─────────────────────────────────────────────────────────────
+
+/** 进程级迁移哨兵：一次进程内只跑一次（多个 SessionStore 实例共享）。 */
+let migrationDone = false;
+
+/** 从会话文件首部读取 session_start.cwd（jsonl 逐行找 / json 直接取）。读不到返回 undefined。 */
+function readSessionCwd(filePath: string): string | undefined {
+  try {
+    if (filePath.endsWith(".jsonl")) {
+      // 只读前若干行找 session_start（通常是第一条真实记录）。
+      const content = readFileSync(filePath, "utf-8");
+      const lines = content.split("\n");
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const rec = JSON.parse(line);
+          if (rec?.type === "session_start" && typeof rec.cwd === "string") {
+            return rec.cwd;
+          }
+        } catch {
+          continue;
+        }
+      }
+      return undefined;
+    }
+    const data = JSON.parse(readFileSync(filePath, "utf-8"));
+    if (typeof data?.cwd === "string") return data.cwd;
+    if (Array.isArray(data?.directories) && typeof data.directories[0] === "string") {
+      return data.directories[0];
+    }
+  } catch {
+    /* 读取/解析失败 → 无 cwd */
+  }
+  return undefined;
+}
+
+/**
+ * 把某个平铺会话文件（及其 sidechain 与 summary）迁移到目标项目子目录。
+ * best-effort：单个文件失败只 warn，不影响其余；已存在同名目标不覆盖（幂等）。
+ */
+function migrateOneSession(
+  root: string,
+  baseName: string, // 不含扩展名的会话 id
+  ext: string,       // ".jsonl" / ".json"
+  projectKey: string,
+  allNames: string[],
+): void {
+  const log = getLogger();
+  const targetDir = join(root, projectKey);
+  try {
+    if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true });
+
+    const move = (fromName: string, toDir: string) => {
+      const from = join(root, fromName);
+      const to = join(toDir, fromName);
+      if (!existsSync(from)) return;
+      if (existsSync(to)) return; // 目标已存在，不覆盖（幂等）
+      try {
+        renameSync(from, to);
+      } catch {
+        // 跨设备/权限失败 → 复制后删原（同分区一般走不到这里）
+        try {
+          writeFileSync(to, readFileSync(from));
+          // 原文件保留，避免复制不完整时丢数据；下次迁移遇到目标已存在即跳过。
+        } catch (e) {
+          log.warn("SESSION", `迁移复制失败: ${fromName} - ${(e as Error)?.message}`);
+        }
+      }
+    };
+
+    // 会话主文件
+    move(`${baseName}${ext}`, targetDir);
+
+    // 同 id 的 sidechain 文件：`<id>-<agentId>.jsonl`
+    const sidechainPrefix = `${baseName}-`;
+    for (const name of allNames) {
+      if (name.startsWith(sidechainPrefix) && name.endsWith(".jsonl")) {
+        move(name, targetDir);
+      }
+    }
+
+    // summary：sessions/summaries/<id>.json → sessions/<projectKey>/summaries/<id>.json
+    const summaryName = `${baseName}.json`;
+    const oldSummary = join(root, SUMMARY_SUBDIR, summaryName);
+    if (existsSync(oldSummary)) {
+      const targetSummaryDir = join(targetDir, SUMMARY_SUBDIR);
+      const targetSummary = join(targetSummaryDir, summaryName);
+      if (!existsSync(targetSummary)) {
+        try {
+          if (!existsSync(targetSummaryDir)) mkdirSync(targetSummaryDir, { recursive: true });
+          renameSync(oldSummary, targetSummary);
+        } catch (e) {
+          log.warn("SESSION", `迁移摘要失败: ${summaryName} - ${(e as Error)?.message}`);
+        }
+      }
+    }
+  } catch (e) {
+    log.warn("SESSION", `迁移会话失败（留原地）: ${baseName}${ext} - ${(e as Error)?.message}`);
+  }
+}
+
+/**
+ * 一次性把 sessions/ 根下平铺的旧会话按 session_start.cwd 迁移到项目子目录。
+ *
+ * - 每个平铺 jsonl/json → resolveProjectRoot(cwd) → sanitizeProjectKey → sessions/<key>/。
+ * - 无 cwd 的极旧会话 → sessions/_legacy/，不丢失。
+ * - 同 id 的 sidechain（`<id>-<agentId>.jsonl`）与 summary 一并搬迁。
+ * - 幂等：已在子目录的天然不在扫描范围（只扫根层文件）；目标已存在不覆盖。
+ * - best-effort：任何单点失败只 warn，不阻断启动。
+ */
+export function migrateFlatSessionsOnce(): void {
+  if (migrationDone) return;
+  migrationDone = true;
+
+  const root = sidPaths.sessions();
+  if (!existsSync(root)) return;
+
+  const log = getLogger();
+  let names: string[];
+  try {
+    names = readdirSync(root);
+  } catch {
+    return;
+  }
+
+  // 平铺在根层的会话主文件（排除 sidechain 与隐藏文件；sidechain 随主文件一起搬）。
+  // 主文件 = 不含 "-<agentId>" 分隔且以 .jsonl/.json 结尾——但 sidechain 也以 .jsonl 结尾，
+  // 无法仅凭文件名区分。策略：先收集所有 session_start 主文件（能读出 session_start 记录的），
+  // sidechain 由主文件迁移时按前缀带走；剩余无主文件的孤儿 sidechain 最后归入 _legacy。
+  const jsonlFiles = names.filter((n) => n.endsWith(".jsonl") && !n.startsWith("."));
+  const jsonFiles = names.filter((n) => n.endsWith(".json") && !n.startsWith("."));
+
+  let migrated = 0;
+
+  // 判定主文件：能读出 session_start（jsonl）或含 messages 字段（json）。
+  const isMainJsonl = (name: string): boolean => {
+    try {
+      const content = readFileSync(join(root, name), "utf-8");
+      for (const line of content.split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          const rec = JSON.parse(line);
+          if (rec?.type === "session_start") return true;
+          if (rec?.type === "sidechain_start") return false; // 是 sidechain，不当主文件
+        } catch {
+          continue;
+        }
+        // 首条有效记录既非 session_start 也非 sidechain_start：无法确定，保守当主文件
+        return true;
+      }
+    } catch {
+      /* 读不了 → 不当主文件，留给孤儿兜底 */
+    }
+    return false;
+  };
+
+  for (const name of jsonlFiles) {
+    if (!isMainJsonl(name)) continue;
+    const baseName = name.slice(0, -".jsonl".length);
+    const cwd = readSessionCwd(join(root, name));
+    const projectKey = cwd ? sanitizeProjectKey(resolveProjectRoot(cwd)) : LEGACY_PROJECT_KEY;
+    migrateOneSession(root, baseName, ".jsonl", projectKey, jsonlFiles);
+    migrated++;
+  }
+
+  for (const name of jsonFiles) {
+    const baseName = name.slice(0, -".json".length);
+    const cwd = readSessionCwd(join(root, name));
+    const projectKey = cwd ? sanitizeProjectKey(resolveProjectRoot(cwd)) : LEGACY_PROJECT_KEY;
+    migrateOneSession(root, baseName, ".json", projectKey, jsonlFiles);
+    migrated++;
+  }
+
+  // 孤儿 sidechain（主文件已不存在/无法识别）：归入 _legacy，避免残留在根层。
+  let remaining: string[];
+  try {
+    remaining = readdirSync(root).filter((n) => n.endsWith(".jsonl") && !n.startsWith("."));
+  } catch {
+    remaining = [];
+  }
+  for (const name of remaining) {
+    const legacyDir = join(root, LEGACY_PROJECT_KEY);
+    try {
+      if (!existsSync(legacyDir)) mkdirSync(legacyDir, { recursive: true });
+      const to = join(legacyDir, name);
+      if (!existsSync(to)) {
+        renameSync(join(root, name), to);
+        migrated++;
+      }
+    } catch (e) {
+      log.warn("SESSION", `孤儿 sidechain 迁移失败: ${name} - ${(e as Error)?.message}`);
+    }
+  }
+
+  if (migrated > 0) {
+    log.info("SESSION", `会话按项目分目录迁移完成: ${migrated} 个文件`);
+  }
 }

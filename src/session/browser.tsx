@@ -19,8 +19,8 @@ import {
   sortSessions,
 } from "./utils.ts";
 import { theme } from "../ui/semantic-colors.ts";
-import { join } from "path";
 import { homedir } from "os";
+import { sidPaths } from "../config/paths.ts";
 
 /** 把绝对路径中的 home 前缀缩成 ~，元信息行展示项目路径用 */
 function shortenPath(p: string | undefined): string {
@@ -234,8 +234,8 @@ function useLoadSessions(
   useEffect(() => {
     const loadSessions = async () => {
       try {
-        const home = process.env.HOME || homedir();
-        const sessionDir = join(home, ".sid-code", "sessions");
+        // P0-1：传 sessions 根目录 → getSessionFiles 跨所有项目子目录聚合（选择器默认「全部项目」视图）。
+        const sessionDir = sidPaths.sessions();
         const sessionData = await getSessionFiles(sessionDir, currentSessionId);
         setSessions(sessionData);
         setLoading(false);
@@ -253,8 +253,7 @@ function useLoadSessions(
     const loadFullContent = async () => {
       if (isSearchMode && !hasLoadedFullContent) {
         try {
-          const home = process.env.HOME || homedir();
-          const sessionDir = join(home, ".sid-code", "sessions");
+          const sessionDir = sidPaths.sessions();
           const sessionData = await getSessionFiles(sessionDir, currentSessionId, {
             includeFullContent: true,
           });

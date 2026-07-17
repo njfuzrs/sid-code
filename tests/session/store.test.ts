@@ -4,7 +4,7 @@
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { SessionStore } from "../../src/session/store.ts";
-import { parseSessionJsonl } from "../../src/session/store.ts";
+import { parseSessionJsonl, currentProjectSessionDir } from "../../src/session/store.ts";
 import type { SessionData } from "../../src/session/store.ts";
 import { join } from "path";
 import { mkdirSync, rmSync, existsSync } from "fs";
@@ -203,8 +203,9 @@ describe("SessionStore", () => {
 
     // P0-3：写入已改为缓冲批量落盘，直接读原始文件前需先同步刷新
     SessionStore.flushPendingWrites();
+    // P0-1：会话已按项目分目录，读实际项目目录（而非旧的平铺 sessions/ 根）。
     const raw = await Bun.file(
-      join(testDir, ".sid-code", "sessions", "old-sess.jsonl")
+      join(currentProjectSessionDir(), "old-sess.jsonl")
     ).text();
     expect(raw).toContain("\"type\":\"metadata\"");
     expect(raw).toContain("trace_session_id");
@@ -220,8 +221,9 @@ describe("SessionStore", () => {
     store2.resumeSession("same-id", "m", "p", "/cwd", "same-id");
 
     SessionStore.flushPendingWrites();
+    // P0-1：会话已按项目分目录，读实际项目目录。
     const raw = await Bun.file(
-      join(testDir, ".sid-code", "sessions", "same-id.jsonl")
+      join(currentProjectSessionDir(), "same-id.jsonl")
     ).text();
     expect(raw).not.toContain("trace_session_id");
   });

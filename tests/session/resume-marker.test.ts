@@ -210,4 +210,70 @@ describe("App.restoreSession（缺口 B 三条路径）", () => {
     const restored = (app as any).ctxMgr.getMessages() as Message[];
     expect(allText(restored)).toContain("尚未完成的任务PQR");
   });
+
+  // ─── P0-2：permissionMode 不做隐式跨会话恢复（对齐 CC 安全红线）───
+
+  test("P0-2：快照含 acceptEdits + CLI 未指定 → 恢复后仍为 default（不复活半恢复档）", async () => {
+    const app = makeApp(); // config.permissionMode = "default"（CLI 未显式指定）
+    const data: SessionData = {
+      id: "perm-accept",
+      messages: [userMsg("继续")],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      metadata: {
+        // 旧快照里残留 permissionMode 字段——恢复端应读到即忽略，不复活。
+        agent_setting: { model: "m", effortLevel: null, thinking: null, permissionMode: "acceptEdits" },
+      },
+    } as unknown as SessionData;
+
+    await app.restoreSession(data);
+    // 关键断言：acceptEdits 不再跨会话静默复活，权限档位回到每会话重新裁定的 default。
+    expect((app as any).config.permissionMode).toBe("default");
+  });
+
+  test("P0-2：CLI 显式 acceptEdits 不被快照的 default 覆盖（显式意图优先，与恢复无关）", async () => {
+    const config = {
+      ...defaultConfig(),
+      model: "mock-model",
+      provider: "mock",
+      availableModels: [],
+      permissionMode: "acceptEdits", // CLI 显式指定（loadConfig 阶段生效）
+    } as unknown as Config;
+    const app = new App({ config, provider: {} as any, mcpManager: {} as any });
+
+    const data: SessionData = {
+      id: "perm-cli-explicit",
+      messages: [userMsg("继续")],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      metadata: {
+        agent_setting: { model: "m", effortLevel: null, thinking: null, permissionMode: "default" },
+      },
+    } as unknown as SessionData;
+
+    await app.restoreSession(data);
+    // 恢复流程完全不碰 permissionMode，CLI 显式值原样保留。
+    expect((app as any).config.permissionMode).toBe("acceptEdits");
+  });
+
+  test("P0-2：agent_setting 的 model/effort/thinking 仍正常恢复（只删 permissionMode）", async () => {
+    const app = makeApp();
+    const data: SessionData = {
+      id: "perm-keep-prefs",
+      messages: [userMsg("继续")],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      metadata: {
+        agent_setting: { model: "restored-model", effortLevel: "high", thinking: "on", permissionMode: "acceptEdits" },
+      },
+    } as unknown as SessionData;
+
+    await app.restoreSession(data);
+    // 用户偏好（非安全边界）继续恢复，不受 P0-2 影响。
+    expect((app as any).config.model).toBe("restored-model");
+    expect((app as any).runtimeEffort).toBe("high");
+    expect((app as any).runtimeThinking).toBe("on");
+    // 但权限档位不恢复。
+    expect((app as any).config.permissionMode).toBe("default");
+  });
 });

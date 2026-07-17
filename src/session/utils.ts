@@ -8,7 +8,8 @@ import { join } from "path";
 import { homedir } from "os";
 import { existsSync, readdirSync, statSync } from "fs";
 import type { SessionData } from "./store.ts";
-import { parseSessionJsonl, flushPendingSessionWrites } from "./store.ts";
+import { parseSessionJsonl, flushPendingSessionWrites, listAllSessionDirs } from "./store.ts";
+import { sidPaths } from "../config/paths.ts";
 
 /** 文本匹配结果 */
 export interface TextMatch {
@@ -58,12 +59,16 @@ export interface SessionInfo {
   cwd?: string;
   /** 会话使用的模型（取自 session_start.model），用于元信息行展示 */
   model?: string;
+  /** P0-1：会话文件所在目录的绝对路径（按项目分目录后，删除/定位必须用它而非根目录 join）。 */
+  dirPath?: string;
 }
 
 /** 会话文件条目 */
 export interface SessionFileEntry {
   /** 完整文件名 */
   fileName: string;
+  /** P0-1：文件所在目录绝对路径（跨项目扫描时各条目可能来自不同项目子目录）。 */
+  dirPath: string;
   /** 会话信息（损坏文件为 null） */
   sessionInfo: SessionInfo | null;
 }
@@ -212,8 +217,123 @@ export function shortenModel(model: string | undefined): string {
   return m;
 }
 
+/** 扫描单个会话目录，返回其中所有会话文件条目（不递归子目录，summaries/ 由调用方排除）。 */
+async function scanSessionDir(
+  sessionDir: string,
+  currentSessionId?: string,
+  options: GetSessionOptions = {}
+): Promise<SessionFileEntry[]> {
+  if (!existsSync(sessionDir)) return [];
+
+  // 同时扫描旧 JSON 与新 JSONL 两种格式（Bug1：此前只扫 .json，
+  // 导致已迁移到 jsonl 的会话在列表/清理中完全不可见）。
+  const files = readdirSync(sessionDir)
+    .filter(
+      (f) => (f.endsWith(".json") || f.endsWith(".jsonl")) && !f.startsWith(".")
+    )
+    .sort();
+
+  const sessionPromises = files.map(
+    async (file): Promise<SessionFileEntry> => {
+      const filePath = join(sessionDir, file);
+      try {
+        // 目录项可能是子目录（如 summaries/ 已被上面过滤，但防御性再判一次）。
+        if (!statSync(filePath).isFile()) {
+          return { fileName: file, dirPath: sessionDir, sessionInfo: null };
+        }
+        const content = await Bun.file(filePath).text();
+        // jsonl 是多行事件流，不能用 JSON.parse 整体解析——走逐行解析器。
+        const data = file.endsWith(".jsonl")
+          ? parseSessionJsonl(content)
+          : (JSON.parse(content) as SessionData);
+
+        // 验证必需字段
+        if (
+          !data ||
+          !data.id ||
+          !data.messages ||
+          !Array.isArray(data.messages) ||
+          !data.createdAt ||
+          !data.updatedAt
+        ) {
+          return { fileName: file, dirPath: sessionDir, sessionInfo: null };
+        }
+
+        // 跳过空会话（只有系统消息）
+        const hasUserOrAssistant = data.messages.some(
+          (msg) => msg.role === "user" || msg.role === "assistant"
+        );
+        if (!hasUserOrAssistant) {
+          return { fileName: file, dirPath: sessionDir, sessionInfo: null };
+        }
+
+        // 跳过子代理会话
+        if (data.kind === "subagent") {
+          return { fileName: file, dirPath: sessionDir, sessionInfo: null };
+        }
+
+        const firstUserMessage = extractFirstUserMessage(data.messages);
+        // 是否当前会话：按解析出的 data.id 精确相等判断。
+        // 旧实现 file.includes(currentSessionId.slice(0,8)) 依赖「id 恒为 8 位 hex」，
+        // 新 id 格式为 YYYYMMDD-HHMMSS-<hex>，截前 8 位会得到日期串（如 20260627）
+        // 从而把「同一天的所有会话」全部误判为当前会话。改用 id 相等彻底规避。
+        const isCurrentSession = currentSessionId
+          ? data.id === currentSessionId
+          : false;
+
+        let fullContent: string | undefined;
+        let messages:
+          | Array<{ role: "user" | "assistant"; content: string }>
+          | undefined;
+
+        if (options.includeFullContent) {
+          fullContent = data.messages
+            .map((msg) => getMessageContent(msg))
+            .join(" ");
+          messages = data.messages.map((msg) => ({
+            role: msg.role === "user" ? ("user" as const) : ("assistant" as const),
+            content: getMessageContent(msg),
+          }));
+        }
+
+        const sessionInfo: SessionInfo = {
+          id: data.id,
+          file: file.replace(/\.(json|jsonl)$/, ""),
+          fileName: file,
+          startTime: data.createdAt,
+          lastUpdated: data.updatedAt,
+          messageCount: data.messages.length,
+          displayName: data.summary || firstUserMessage,
+          firstUserMessage,
+          isCurrentSession,
+          index: 0, // 排序后设置
+          summary: data.summary,
+          fullContent,
+          messages,
+          // 优先 session_start.cwd（几乎所有会话都有），退回 directories[0]（早期少数会话）
+          cwd: data.cwd || data.directories?.[0],
+          model: data.model || undefined,
+          dirPath: sessionDir,
+        };
+
+        return { fileName: file, dirPath: sessionDir, sessionInfo };
+      } catch {
+        // 文件损坏
+        return { fileName: file, dirPath: sessionDir, sessionInfo: null };
+      }
+    }
+  );
+
+  return Promise.all(sessionPromises);
+}
+
 /**
- * 加载所有会话文件（包括损坏文件）
+ * 加载会话文件（包括损坏文件）。
+ *
+ * P0-1：会话已按项目物理分目录（sessions/<projectKey>/）。此函数的语义是「全局视图」——
+ * 当传入的 sessionDir 是 sessions 根目录时，跨所有项目子目录聚合扫描（供 --list-sessions /
+ * 选择器「全部项目」默认视图 / cleanup 使用）；当传入的是某个具体项目子目录时，只扫该目录。
+ * 判定方式：sessionDir === sidPaths.sessions() 视为全局根。
  */
 export async function getAllSessionFiles(
   sessionDir: string,
@@ -221,110 +341,17 @@ export async function getAllSessionFiles(
   options: GetSessionOptions = {}
 ): Promise<SessionFileEntry[]> {
   try {
-    if (!existsSync(sessionDir)) {
-      return [];
-    }
-
     // P0-3：SessionStore 写入已改为缓冲批量落盘（100ms 窗口），直接读文件系统可能
     // 读到落后于内存状态的内容——扫描前先把所有会话的待写入缓冲同步落盘。
     flushPendingSessionWrites();
 
-    // 同时扫描旧 JSON 与新 JSONL 两种格式（Bug1：此前只扫 .json，
-    // 导致已迁移到 jsonl 的会话在列表/清理中完全不可见）。
-    const files = readdirSync(sessionDir)
-      .filter(
-        (f) =>
-          (f.endsWith(".json") || f.endsWith(".jsonl")) && !f.startsWith(".")
-      )
-      .sort();
+    const isGlobalRoot = sessionDir === sidPaths.sessions();
+    const dirs = isGlobalRoot ? listAllSessionDirs() : [sessionDir];
 
-    const sessionPromises = files.map(
-      async (file): Promise<SessionFileEntry> => {
-        const filePath = join(sessionDir, file);
-        try {
-          const content = await Bun.file(filePath).text();
-          // jsonl 是多行事件流，不能用 JSON.parse 整体解析——走逐行解析器。
-          const data = file.endsWith(".jsonl")
-            ? parseSessionJsonl(content)
-            : (JSON.parse(content) as SessionData);
-
-          // 验证必需字段
-          if (
-            !data ||
-            !data.id ||
-            !data.messages ||
-            !Array.isArray(data.messages) ||
-            !data.createdAt ||
-            !data.updatedAt
-          ) {
-            return { fileName: file, sessionInfo: null };
-          }
-
-          // 跳过空会话（只有系统消息）
-          const hasUserOrAssistant = data.messages.some(
-            (msg) => msg.role === "user" || msg.role === "assistant"
-          );
-          if (!hasUserOrAssistant) {
-            return { fileName: file, sessionInfo: null };
-          }
-
-          // 跳过子代理会话
-          if (data.kind === "subagent") {
-            return { fileName: file, sessionInfo: null };
-          }
-
-          const firstUserMessage = extractFirstUserMessage(data.messages);
-          // 是否当前会话：按解析出的 data.id 精确相等判断。
-          // 旧实现 file.includes(currentSessionId.slice(0,8)) 依赖「id 恒为 8 位 hex」，
-          // 新 id 格式为 YYYYMMDD-HHMMSS-<hex>，截前 8 位会得到日期串（如 20260627）
-          // 从而把「同一天的所有会话」全部误判为当前会话。改用 id 相等彻底规避。
-          const isCurrentSession = currentSessionId
-            ? data.id === currentSessionId
-            : false;
-
-          let fullContent: string | undefined;
-          let messages:
-            | Array<{ role: "user" | "assistant"; content: string }>
-            | undefined;
-
-          if (options.includeFullContent) {
-            fullContent = data.messages
-              .map((msg) => getMessageContent(msg))
-              .join(" ");
-            messages = data.messages.map((msg) => ({
-              role: msg.role === "user" ? ("user" as const) : ("assistant" as const),
-              content: getMessageContent(msg),
-            }));
-          }
-
-          const sessionInfo: SessionInfo = {
-            id: data.id,
-            file: file.replace(/\.(json|jsonl)$/, ""),
-            fileName: file,
-            startTime: data.createdAt,
-            lastUpdated: data.updatedAt,
-            messageCount: data.messages.length,
-            displayName: data.summary || firstUserMessage,
-            firstUserMessage,
-            isCurrentSession,
-            index: 0, // 排序后设置
-            summary: data.summary,
-            fullContent,
-            messages,
-            // 优先 session_start.cwd（几乎所有会话都有），退回 directories[0]（早期少数会话）
-            cwd: data.cwd || data.directories?.[0],
-            model: data.model || undefined,
-          };
-
-          return { fileName: file, sessionInfo };
-        } catch {
-          // 文件损坏
-          return { fileName: file, sessionInfo: null };
-        }
-      }
+    const perDir = await Promise.all(
+      dirs.map((d) => scanSessionDir(d, currentSessionId, options))
     );
-
-    return await Promise.all(sessionPromises);
+    return perDir.flat();
   } catch (error: any) {
     if (error.code === "ENOENT") {
       return [];
@@ -350,7 +377,7 @@ export async function getSessionFiles(
   // 过滤损坏文件
   const validSessions = allFiles
     .filter(
-      (entry): entry is { fileName: string; sessionInfo: SessionInfo } =>
+      (entry): entry is SessionFileEntry & { sessionInfo: SessionInfo } =>
         entry.sessionInfo !== null
     )
     .map((entry) => entry.sessionInfo);

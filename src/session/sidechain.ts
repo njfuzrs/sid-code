@@ -17,8 +17,8 @@
  */
 
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync } from "fs";
-import { join } from "path";
-import { sidPaths } from "../config/paths.ts";
+import { join, dirname } from "path";
+import { currentProjectSessionDir, resolveSessionFileAcrossProjects } from "./store.ts";
 import { getLogger } from "../debug/logger.ts";
 import type { ContentBlock } from "../llm/types.ts";
 
@@ -52,6 +52,18 @@ function sidechainFileName(sessionId: string, agentId: string): string {
 }
 
 /**
+ * P0-1：sidechain 必须与主会话文件同目录。会话已按项目分目录（sessions/<projectKey>/），
+ * 主会话可能属于当前项目、也可能是恢复进来的他项目会话。
+ * 解析规则：先跨项目找到主会话 jsonl，取其所在目录；找不到（如主会话尚未 materialize）
+ * 回退到「当前项目」目录。
+ */
+function resolveSessionDirForSidechain(sessionId: string): string {
+  const mainFile = resolveSessionFileAcrossProjects(sessionId);
+  if (mainFile) return dirname(mainFile);
+  return currentProjectSessionDir();
+}
+
+/**
  * 子代理 sidechain 写入器。每个子代理实例持有一个，生命周期与子代理执行一致。
  *
  * 用法：
@@ -67,11 +79,15 @@ export class SidechainWriter {
   private started = false;
   private ended = false;
 
+  /** sidechain 文件所在目录（与主会话同项目目录）。 */
+  private readonly dir: string;
+
   constructor(
     private readonly parentSessionId: string,
     private readonly agentId: string,
   ) {
-    this.filePath = join(sidPaths.sessions(), sidechainFileName(parentSessionId, agentId));
+    this.dir = resolveSessionDirForSidechain(parentSessionId);
+    this.filePath = join(this.dir, sidechainFileName(parentSessionId, agentId));
   }
 
   /** sidechain 文件绝对路径（供测试/日志）。 */
@@ -81,8 +97,7 @@ export class SidechainWriter {
 
   private write(record: SidechainRecord): void {
     try {
-      const dir = sidPaths.sessions();
-      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      if (!existsSync(this.dir)) mkdirSync(this.dir, { recursive: true });
       appendFileSync(this.filePath, JSON.stringify(record) + "\n", "utf-8");
     } catch (e) {
       getLogger().warn("SIDECHAIN", `写入失败（不阻断子代理）: ${(e as Error)?.message}`);
@@ -129,7 +144,8 @@ export class SidechainWriter {
  * @returns 未完成 sidechain 概要数组（按 agentId 排序，稳定输出）
  */
 export function scanUnfinishedSidechains(sessionId: string): UnfinishedSidechain[] {
-  const dir = sidPaths.sessions();
+  // P0-1：sidechain 与主会话同项目目录，按主会话解析所在目录。
+  const dir = resolveSessionDirForSidechain(sessionId);
   if (!existsSync(dir)) return [];
 
   const prefix = `${sessionId}-`;
@@ -191,11 +207,12 @@ export function scanUnfinishedSidechains(sessionId: string): UnfinishedSidechain
 }
 
 /**
- * 删除某主会话名下所有 sidechain 文件（会话清理时调用，避免孤儿 sidechain 堆积）。
+ * 删除指定目录下某主会话名下所有 sidechain 文件。
  * 返回删除的文件数。失败静默（best-effort 清理）。
+ *
+ * P0-1：cleanup 已知会话所在项目目录（entry.dirPath），直接在该目录删，避免全局扫描。
  */
-export function cleanupSidechains(sessionId: string): number {
-  const dir = sidPaths.sessions();
+export function cleanupSidechainsInDir(dir: string, sessionId: string): number {
   if (!existsSync(dir)) return 0;
   const prefix = `${sessionId}-`;
   let removed = 0;
@@ -209,4 +226,14 @@ export function cleanupSidechains(sessionId: string): number {
     }
   } catch { /* 目录读取失败返回已删除计数 */ }
   return removed;
+}
+
+/**
+ * 删除某主会话名下所有 sidechain 文件（会话清理时调用，避免孤儿 sidechain 堆积）。
+ * 返回删除的文件数。失败静默（best-effort 清理）。
+ *
+ * P0-1：自动解析主会话所在项目目录后删除。
+ */
+export function cleanupSidechains(sessionId: string): number {
+  return cleanupSidechainsInDir(resolveSessionDirForSidechain(sessionId), sessionId);
 }

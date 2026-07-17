@@ -316,6 +316,9 @@ export class CheckpointManager {
         });
 
         this.dirty = true;
+        // P1-2：写时双层 eviction（per-file 版本上限 + 总量上限），淘汰时保护 diff 链完整性。
+        // 放在 push 之后、saveIndex 之前——确定性强、无需定时器（同 CC 写时淘汰思路）。
+        await this.evictIfNeeded();
         await this.saveIndex();
         log.debug("CHECKPOINT", `已创建快照 ${snapshotId}: ${files.length} 个文件`);
       }
@@ -614,6 +617,198 @@ export class CheckpointManager {
     return this.rebuildContentAtSnapshot(filePath, this.index.snapshots[targetIndex - 1].id);
   }
 
+  // ─────────────────────────────────────────────────────────────
+  // P1-2：checkpoint eviction（写时淘汰 + diff 链重锚定）
+  //
+  // 结构约束（决定不能照搬 CC 的 per-file slice(-MAX)）：
+  //   - per-session 单 index.json，所有快照内联其中，按 timestamp 时间序排列。
+  //   - 同一文件跨快照是 diff 链：首存 full，后续存相对上一版本的 diff。
+  //     重建靠 rebuildContentAtSnapshot：从目标往前找最近 full 作基点再逐步 applyDiff。
+  //   - 盲删最旧快照/条目会切断 diff 链 → undo/restore 该文件 rebuild 返回 null。
+  //
+  // 因此淘汰粒度是「删快照内某文件的 SnapshotFile 条目」，且删某文件最旧条目前，
+  // 若它是 full 且后面还有该文件的 diff 依赖它，先把「紧邻的下一个该文件 diff」
+  // 用 rebuildContentAtSnapshot 重建成内容、原地改写成新 full（重锚定基点），再删旧条目。
+  // ─────────────────────────────────────────────────────────────
+
+  /** 写时双层淘汰：先 per-file 版本上限（A），再总量上限（B）。淘汰后重建 latestFullMap。 */
+  private async evictIfNeeded(): Promise<void> {
+    try {
+      await this.evictPerFile();
+      await this.evictBySize();
+    } catch (err: any) {
+      // 淘汰失败绝不能影响快照本身已成功写入——仅告警。
+      getLogger().warn("CHECKPOINT", `checkpoint 淘汰失败（不阻断）: ${err?.message}`);
+    } finally {
+      // 保留铁律 #3：淘汰后重建 latestFullMap，避免加速查找指向已删快照。
+      this.rebuildLatestFullMap();
+    }
+  }
+
+  /** 收集某文件在所有快照中的出现位置（按时间序，返回 {snapshotIndex, file}）。 */
+  private collectFileEntries(filePath: string): Array<{ snapshotIndex: number; file: SnapshotFile }> {
+    const entries: Array<{ snapshotIndex: number; file: SnapshotFile }> = [];
+    for (let i = 0; i < this.index.snapshots.length; i++) {
+      const f = this.index.snapshots[i].files.find((x) => x.filePath === filePath);
+      if (f) entries.push({ snapshotIndex: i, file: f });
+    }
+    return entries;
+  }
+
+  /** 全仓所有出现过的文件路径（去重）。 */
+  private allTrackedFilePaths(): string[] {
+    const set = new Set<string>();
+    for (const s of this.index.snapshots) {
+      for (const f of s.files) set.add(f.filePath);
+    }
+    return Array.from(set);
+  }
+
+  /**
+   * 确保删除某文件在 fromSnapshotIndex 处的 full 条目不会切断后续 diff 链：
+   * 若「紧邻的下一个该文件条目」是 diff（依赖被删 full），先把它 rebuild 成内容、原地改写成新 full。
+   *
+   * 返回 true 表示「删除该 full 是安全的」：
+   *   - 后续紧邻条目是 full（已有独立基点）→ 直接安全；
+   *   - 后续紧邻条目是 diff → 已成功重锚定为 full → 安全；
+   *   - 后续无该文件任何条目 → 无人依赖该 full → 安全（size 淘汰按 LRU 丢弃老文件的孤版本，
+   *     近期窗口由 evictBySize 的 MIN_KEEP 保护；per-file 淘汰因 count>max 恒有更新版本，走不到这里）。
+   * 返回 false 仅在 diff 重建异常（无法安全重锚定）时——调用方应放弃删除以免切链。
+   */
+  private async reanchorFullForFile(filePath: string, fromSnapshotIndex: number): Promise<boolean> {
+    // 找 fromSnapshotIndex 之后（不含）该文件的下一个条目。
+    for (let i = fromSnapshotIndex + 1; i < this.index.snapshots.length; i++) {
+      const f = this.index.snapshots[i].files.find((x) => x.filePath === filePath);
+      if (!f) continue;
+      if (f.type === "full") {
+        // 后面已有独立 full 基点，旧 full 可直接删，无需重锚定。
+        return true;
+      }
+      // f 是 diff：把它重建成内容，原地改写成 full（新基点）。
+      const rebuilt = await this.rebuildContentAtSnapshot(filePath, this.index.snapshots[i].id);
+      if (rebuilt === null) {
+        // 无法重建（异常）→ 保守失败，调用方应放弃删除旧 full 以免切链。
+        return false;
+      }
+      // 原地改写为 full（复用压缩阈值逻辑）。
+      const compressThreshold = this.config.compressThresholdKb * 1024;
+      f.type = "full";
+      f.diff = undefined;
+      if (rebuilt.length > compressThreshold) {
+        const compressed = Bun.gzipSync(Buffer.from(rebuilt, "utf-8"));
+        f.content = Buffer.from(compressed).toString("base64");
+        f.compressed = true;
+      } else {
+        f.content = rebuilt;
+        f.compressed = false;
+      }
+      this.dirty = true;
+      return true;
+    }
+    // 该文件在 fromSnapshotIndex 之后无其他条目 → 无 diff 依赖该 full → 删除安全（LRU 丢弃老孤版本）。
+    return true;
+  }
+
+  /**
+   * 删除某文件的一个 SnapshotFile 条目（按 snapshotIndex 定位）。
+   * 若删空该快照的 files，则整组移除（复用 restore 的 splice 模式）。
+   * 返回删除后是否发生了快照整组移除（用于调用方修正遍历下标）。
+   */
+  private removeFileEntry(filePath: string, snapshotIndex: number): boolean {
+    const snapshot = this.index.snapshots[snapshotIndex];
+    if (!snapshot) return false;
+    snapshot.files = snapshot.files.filter((f) => f.filePath !== filePath);
+    this.dirty = true;
+    if (snapshot.files.length === 0) {
+      this.index.snapshots.splice(snapshotIndex, 1);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * A. per-file 版本上限：当某文件历史条目数 > maxCheckpointsPerFile 时从最旧端删。
+   * 删最旧条目前若它是 full 且后面还有依赖它的 diff，先重锚定下一个 diff 为 full。
+   */
+  private async evictPerFile(): Promise<void> {
+    const max = this.config.maxCheckpointsPerFile;
+    if (!max || max <= 0) return;
+
+    for (const filePath of this.allTrackedFilePaths()) {
+      // 循环删最旧，直到条目数 ≤ max（保留铁律 #1/#5：至少留最近若干个，且 ≥ /checkpoints 可见窗口由 max 保证）。
+      let entries = this.collectFileEntries(filePath);
+      while (entries.length > max) {
+        const oldest = entries[0];
+        if (oldest.file.type === "full") {
+          // 先重锚定后续 diff；无法重锚定（它已是最新/唯一版本，或重建失败）则停止淘汰该文件。
+          const ok = await this.reanchorFullForFile(filePath, oldest.snapshotIndex);
+          if (!ok) break;
+        }
+        // 删最旧条目（重锚定已保证后续 diff 有 full 基点）。
+        this.removeFileEntry(filePath, oldest.snapshotIndex);
+        // 快照结构可能因整组移除而变化，重新收集。
+        entries = this.collectFileEntries(filePath);
+      }
+    }
+  }
+
+  /**
+   * B. 总量上限：当前 session index.json 序列化字节数超 maxTotalSizeMb 时，
+   * 从最旧快照整组删（LRU=时间序），删到阈值下。删最旧段时对跨边界文件先重锚定。
+   * 保留铁律 #5：保留窗口不小于 /checkpoints 可见的最近 10 条 + /undo 最近 1 条。
+   */
+  private async evictBySize(): Promise<void> {
+    const maxBytes = this.config.maxTotalSizeMb * 1024 * 1024;
+    if (!maxBytes || maxBytes <= 0) return;
+
+    // 保留窗口下限：至少保留最近 MIN_KEEP 个快照，避免把用户可见/可 restore 的近期快照删掉。
+    const MIN_KEEP = 11; // /checkpoints 显示最近 10 条 + /undo 最近 1 条
+
+    let guard = 0;
+    while (this.serializedSize() > maxBytes && this.index.snapshots.length > MIN_KEEP) {
+      if (guard++ > 100000) break; // 防御性死循环阀
+      // 待删的最旧快照（下标 0）。删前：对其中每个文件，若它是该文件当前 full 基点且后续有 diff 依赖，
+      // 先重锚定后续 diff 为 full。
+      const oldest = this.index.snapshots[0];
+      if (!oldest) break;
+
+      let blocked = false;
+      for (const f of oldest.files) {
+        if (f.type === "full") {
+          const ok = await this.reanchorFullForFile(f.filePath, 0);
+          if (!ok) {
+            // 该文件的 full 无法重锚定（是最新/唯一版本）→ 不能删这个最旧快照，否则切链。
+            blocked = true;
+            break;
+          }
+        }
+      }
+      if (blocked) break; // 最旧快照不可删 → 停止总量淘汰（已尽力）。
+
+      // 整组移除最旧快照。
+      this.index.snapshots.shift();
+      this.dirty = true;
+    }
+  }
+
+  /** 计算当前 index 序列化后的字节数（与 saveIndex 落盘格式一致）。 */
+  private serializedSize(): number {
+    return Buffer.byteLength(JSON.stringify(this.index, null, 2), "utf-8");
+  }
+
+  /** 淘汰后重建 latestFullMap：文件路径 → 最新 full 快照 id（时间序最后一个 full）。 */
+  private rebuildLatestFullMap(): void {
+    const map: Record<string, string> = {};
+    for (const snapshot of this.index.snapshots) {
+      for (const f of snapshot.files) {
+        if (f.type === "full") {
+          map[f.filePath] = snapshot.id; // 后出现的覆盖，最终指向最新 full
+        }
+      }
+    }
+    this.index.latestFullMap = map;
+  }
+
   /** 获取最后一个快照 */
   private getLastSnapshot(): Snapshot | null {
     if (this.index.snapshots.length === 0) return null;
@@ -649,6 +844,9 @@ export class CheckpointManager {
       const now = Date.now();
       const maxAgeMs = this.config.maxAgeDays * 24 * 60 * 60 * 1000;
       const maxTotalBytes = this.config.maxTotalSizeMb * 1024 * 1024;
+
+      // 存活会话（未过期、非当前）的 {目录, mtime, 大小}，用于后续按 LRU 真删。
+      const survivors: Array<{ dir: string; name: string; mtimeMs: number; size: number }> = [];
       let totalSize = 0;
 
       for (const session of sessions) {
@@ -667,15 +865,28 @@ export class CheckpointManager {
           }
 
           // 累计大小
-          totalSize += this.getDirSize(sessionDir);
+          const size = this.getDirSize(sessionDir);
+          totalSize += size;
+          survivors.push({ dir: sessionDir, name: session, mtimeMs: stat.mtimeMs, size });
         } catch {
           // 忽略无法访问的目录
         }
       }
 
-      // 如果总大小超限，清理最旧的会话
+      // P1-2：总大小超限时真删（此前只 warn）。按 mtime LRU 删最旧的其他 session 目录，
+      // 删到阈值下。当前 session（this.sessionId）永不在候选内（上面已 skip），由写时 evictBySize 自清。
       if (totalSize > maxTotalBytes) {
-        log.warn("CHECKPOINT", `Checkpoint 总大小超限 (${(totalSize / 1024 / 1024).toFixed(1)}MB)，清理旧会话`);
+        survivors.sort((a, b) => a.mtimeMs - b.mtimeMs); // 最旧在前
+        for (const s of survivors) {
+          if (totalSize <= maxTotalBytes) break;
+          try {
+            rmSync(s.dir, { recursive: true, force: true });
+            totalSize -= s.size;
+            log.debug("CHECKPOINT", `总量超限清理最旧会话: ${s.name} (释放 ${(s.size / 1024 / 1024).toFixed(1)}MB)`);
+          } catch {
+            // 单个删除失败不影响其余
+          }
+        }
       }
     } catch {
       // 忽略清理错误

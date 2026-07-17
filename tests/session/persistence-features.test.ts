@@ -8,7 +8,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { SessionStore, parseSessionJsonl, parseSessionJsonlLines } from "../../src/session/store.ts";
+import { SessionStore, parseSessionJsonl, parseSessionJsonlLines, currentProjectSessionDir } from "../../src/session/store.ts";
 import { SidechainWriter, scanUnfinishedSidechains, cleanupSidechains } from "../../src/session/sidechain.ts";
 import { join } from "path";
 import { mkdirSync, rmSync, existsSync, readFileSync } from "fs";
@@ -89,8 +89,8 @@ describe("状态持久化新特性", () => {
     store.appendMessage({ role: "assistant", content: [{ type: "text", text: "A1" }] });
     SessionStore.flushPendingWrites();
 
-    // 读取原始文件内容
-    const sessDir = join(testDir, ".sid-code", "sessions");
+    // 读取原始文件内容（P0-1：会话已按项目分目录，读实际项目目录）
+    const sessDir = currentProjectSessionDir();
     const files = require("fs").readdirSync(sessDir).filter((f: string) => f.includes("lines-001"));
     expect(files.length).toBe(1);
     const content = readFileSync(join(sessDir, files[0]), "utf-8");
