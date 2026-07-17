@@ -41,8 +41,8 @@ sc-dev            # 启动开发版（注意是 sc-dev，不是 sc）
 标准顺序：
 
 ```bash
-# 1. 验证（不可跳过）
-bun test && make rebuild
+# 1. 验证构建（全量单测由 release.sh 门禁负责，此处不重复跑）
+make rebuild
 
 # 2. 先提交功能代码（此时版本号还没动，固化「功能」这个逻辑单元）
 git add <改动文件>
