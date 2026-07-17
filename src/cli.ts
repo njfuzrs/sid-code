@@ -39,14 +39,95 @@ type CLIArgs = Partial<Config> & {
   bridgeToken?: string;
   /** --worktree [name]：启动时自动创建并进入 worktree（缺省值表示自动命名） */
   worktree?: string | boolean;
+  /**
+   * `-r` / `--resume` 不带值 → 打开交互式会话选择器（对标 CC）。
+   * 带值时走 config.resume（ID / 索引 / 搜索词），此标志为 false。
+   */
+  resumePicker?: boolean;
 };
+
+/**
+ * 预扫描 argv 抽取 `-r` / `--resume`，对齐 claude-code 的 `[value]` 可选值语义。
+ *
+ * 背景：Node/Bun 的 `parseArgs` 里 `type: "string"` 的选项**强制要求带值**，
+ * 于是 `sid-code -r` 单独出现就报 `Option '-r, --resume <value>' argument missing`。
+ * CC 的声明是 `-r, --resume [value]`（值可选）：不带值开交互选择器，带值按 ID 恢复
+ * 或当搜索词。这里手动解析出三态，并把相关 token 从 argv 剔除，交给 parseArgs 处理其余选项。
+ *
+ * 三态：
+ *   - 未出现            → { present: false }
+ *   - 出现但不带值      → { present: true, picker: true }        （开选择器）
+ *   - 出现且带值        → { present: true, value: "<v>" }        （ID / 索引 / 搜索词）
+ *
+ * 「带值」判定：`-r foo` / `--resume foo` / `--resume=foo` / `-r=foo` / `-rfoo`。
+ * 若 `-r` 后紧跟的是另一个选项（以 `-` 开头）则视为不带值——与 CC 一致。
+ */
+export function extractResumeArg(argv: string[]): {
+  present: boolean;
+  picker: boolean;
+  value?: string;
+  rest: string[];
+} {
+  const rest: string[] = [];
+  let present = false;
+  let picker = false;
+  let value: string | undefined;
+
+  for (let i = 0; i < argv.length; i++) {
+    const token = argv[i];
+
+    // 形如 --resume=foo / -r=foo
+    if (token.startsWith("--resume=")) {
+      present = true;
+      value = token.slice("--resume=".length);
+      continue;
+    }
+    if (token.startsWith("-r=")) {
+      present = true;
+      value = token.slice("-r=".length);
+      continue;
+    }
+
+    // 形如 -rfoo（短选项紧贴值，不含 = ）
+    if (token.length > 2 && token.startsWith("-r") && !token.startsWith("--")) {
+      present = true;
+      value = token.slice(2);
+      continue;
+    }
+
+    // 形如 -r / --resume（值在下一个 token 或缺省）
+    if (token === "-r" || token === "--resume") {
+      present = true;
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith("-")) {
+        value = next;
+        i++; // 消费值 token，避免它掉进 positionals 变成提示词
+      } else {
+        picker = true; // 不带值 → 开选择器
+      }
+      continue;
+    }
+
+    rest.push(token);
+  }
+
+  // 带了值就不是 picker（picker 仅用于「显式无值」这一态）
+  if (value !== undefined) picker = false;
+
+  return { present, picker, value, rest };
+}
 
 /** 解析命令行参数 */
 function parseCLIArgs(): CLIArgs {
   let values: Record<string, any>;
   let positionals: string[];
+
+  // 先摘掉 resume（可选值语义 parseArgs 表达不了），其余交给 parseArgs。
+  const resumeArg = extractResumeArg(process.argv.slice(2));
+
   try {
     const result = parseArgs({
+      args: resumeArg.rest,
       options: {
         // LLM 配置
         provider: { type: "string" },
@@ -62,8 +143,9 @@ function parseCLIArgs(): CLIArgs {
         "disallowed-tools": { type: "string" },
 
         // 会话配置
+        // 注意：resume（-r）不在此声明——它是可选值语义（`-r` 可不带值开选择器），
+        // parseArgs 的 type:"string" 无法表达，已在 extractResumeArg 中预处理。
         continue: { type: "boolean", short: "c" },
-        resume: { type: "string", short: "r" },
         "list-sessions": { type: "boolean" },
         "browse-sessions": { type: "boolean" },
         "delete-session": { type: "string" },
@@ -154,7 +236,9 @@ function parseCLIArgs(): CLIArgs {
       ? String(values["disallowed-tools"]).split(",").map((s: string) => s.trim()).filter(Boolean)
       : undefined,
     continue: values.continue,
-    resume: values.resume,
+    // resume 已在 extractResumeArg 预解析：带值走 config.resume，无值走 resumePicker 开选择器。
+    resume: resumeArg.value,
+    resumePicker: resumeArg.picker,
     print: values.print,
     outputFormat: values["output-format"],
     maxTurns: values["max-turns"] ? parseInt(values["max-turns"]) : undefined,
@@ -220,27 +304,48 @@ function parseCLIArgs(): CLIArgs {
   return cliConfig;
 }
 
-/** 处理浏览会话命令 */
-async function handleBrowseSessions(config: Config): Promise<void> {
+/**
+ * 渲染交互式会话选择器，返回用户选中的会话 id；用户取消（Esc/q）返回 null。
+ *
+ * 对标 claude-code `-r` 的选择器：选中后**直接**把 id 交回调用方去恢复，
+ * 而不是打印「请再敲一遍 --resume <id>」。selectAndExit 语义——一旦选中即卸载 TUI。
+ *
+ * @param opts.searchFirst        进入即搜索模式（CC 风格：一进来就是搜索框）
+ * @param opts.initialSearchQuery 预填搜索词（`-r <term>` 未精确命中 ID 时带进来）
+ */
+async function runSessionPicker(
+  config: Config,
+  opts: { searchFirst?: boolean; initialSearchQuery?: string } = {}
+): Promise<string | null> {
   const React = await import("react");
   const { default: render } = await import("./ink/root.js");
   const { SessionBrowser } = await import("./session/browser.tsx");
-  const { SessionStore } = await import("./session/store.ts");
   const { sidPaths } = await import("./config/paths.ts");
+  const { consumeEarlyInput } = await import("./ui/early-input.ts");
+  const { drainStdin } = await import("./ink/ink.tsx");
   const { join } = await import("path");
   const { unlinkSync, existsSync } = await import("fs");
 
-  const store = new SessionStore();
+  // 关键：bootstrap 阶段的早期输入捕获（early-input）在 stdin 上挂了 readable 监听，
+  // 会把每个字节 read() 掉。若不先停掉它，选择器里 Ink 的 useInput 一个按键都收不到
+  // ——表现为「方向键 / Enter / 输入全部无反应」。正常 TUI 由 InputArea 消费它，
+  // 但选择器在 TUI 之前渲染，必须自己先停掉捕获，把 stdin 交还给 Ink。
+  consumeEarlyInput();
+
   const sessionDir = sidPaths.sessions();
 
-  let selectedSession: any = null;
+  let selectedId: string | null = null;
+  let unmount: (() => void) | undefined;
 
-  const { waitUntilExit } = await render(
+  const instance = await render(
     React.createElement(SessionBrowser, {
       config,
       currentSessionId: config.sessionId,
+      searchFirst: opts.searchFirst,
+      initialSearchQuery: opts.initialSearchQuery,
       onResumeSession: (session: any) => {
-        selectedSession = session;
+        selectedId = session.id;
+        unmount?.(); // 选中即卸载，waitUntilExit 随即 resolve
       },
       onDeleteSession: async (session: any) => {
         const sessionPath = join(sessionDir, session.fileName);
@@ -249,16 +354,36 @@ async function handleBrowseSessions(config: Config): Promise<void> {
         }
       },
       onExit: () => {
-        process.exit(0);
+        unmount?.(); // 取消：卸载但不设 selectedId
       },
     })
   );
+  unmount = instance.unmount;
 
-  await waitUntilExit();
+  await instance.waitUntilExit();
 
-  if (selectedSession) {
-    console.log(`已选择会话: ${selectedSession.id}`);
-    console.log(`使用 --resume ${selectedSession.id} 恢复此会话`);
+  // 关键：选择器 Ink 实例挂载时会探测终端（XTVERSION `CSI>0q` + DA1 `CSI c` 哨兵），
+  // 回复（如 `\eP>|xterm.js(...)\e\\` 和 `\e[?1;2c`）经终端往返**异步**到达 stdin。
+  // 用户快速按 Enter 选中时，回复往往在选择器卸载之后才到，于是漏进随后启动的 TUI，
+  // 被当成键入打进输入框，表现为「> >|xterm.js(...)1;2c」乱码。
+  // 卸载虽已同步 drain 一次，但吸不到「在途」回复。这里等一小会儿让回复落地，再 drain 一次，
+  // 把这批终端应答彻底吞掉，才把 stdin 交给 TUI。DA1 哨兵保证回复有界，30ms 足够本地终端往返。
+  await new Promise((r) => setTimeout(r, 30));
+  try {
+    drainStdin(process.stdin);
+  } catch {
+    /* stdin 可能已被销毁，忽略 */
+  }
+
+  return selectedId;
+}
+
+/** 处理浏览会话命令（--browse-sessions 独立入口，选中后打印恢复提示） */
+async function handleBrowseSessions(config: Config): Promise<void> {
+  const selectedId = await runSessionPicker(config);
+  if (selectedId) {
+    console.log(`已选择会话: ${selectedId}`);
+    console.log(`使用 --resume ${selectedId} 恢复此会话`);
   }
 }
 
@@ -1235,17 +1360,67 @@ export async function main(): Promise<void> {
       }
     }
 
-    // 会话恢复：--continue 或 --resume <id>
-    if (config.continue || config.resume) {
+    // 会话恢复：--continue / --resume <id> / --resume（无值开选择器，对标 CC）
+    if (config.continue || config.resume || cliArgs.resumePicker) {
       const { SessionStore } = await import("./session/store.ts");
+      const { SessionSelector } = await import("./session/utils.ts");
+      const { sidPaths } = await import("./config/paths.ts");
       const store = new SessionStore();
       let session: import("./session/store.ts").SessionData | null = null;
 
-      if (config.resume) {
-        session = await store.load(config.resume);
+      // 无头模式（--print）不能弹交互选择器：缺 stdin 无法选择。
+      if (cliArgs.resumePicker && config.print) {
+        console.error("错误: 无头模式（--print）下 --resume 必须带会话 ID。用法: sid-code -p --resume <id>");
+        process.exit(1);
+      }
+
+      if (cliArgs.resumePicker) {
+        // -r 不带值 → 打开交互式选择器（进入即搜索，CC 风格）
+        const selectedId = await runSessionPicker(config, { searchFirst: true });
+        if (!selectedId) {
+          // 用户取消选择：直接退出，不进入空会话（对齐 CC）
+          getLogger().info("CLI", "用户取消会话选择");
+          process.exit(0);
+        }
+        session = await store.load(selectedId);
         if (!session) {
-          console.error(`错误: 未找到会话 ${config.resume}`);
+          console.error(`错误: 无法加载会话 ${selectedId}`);
           process.exit(1);
+        }
+      } else if (config.resume) {
+        // -r <value>：先按 ID / 索引精确解析；命中即恢复。
+        let resolvedId: string | null = null;
+        try {
+          const selector = new SessionSelector(sidPaths.sessions());
+          const info = await selector.findSession(config.resume);
+          resolvedId = info.id;
+        } catch {
+          resolvedId = null;
+        }
+
+        if (resolvedId) {
+          session = await store.load(resolvedId);
+        }
+
+        if (!session) {
+          // 未精确命中 → 把值当搜索词带进选择器（对齐 CC：no exact match → search term）。
+          if (config.print) {
+            console.error(`错误: 未找到会话 ${config.resume}`);
+            process.exit(1);
+          }
+          const selectedId = await runSessionPicker(config, {
+            searchFirst: true,
+            initialSearchQuery: config.resume,
+          });
+          if (!selectedId) {
+            getLogger().info("CLI", "用户取消会话选择");
+            process.exit(0);
+          }
+          session = await store.load(selectedId);
+          if (!session) {
+            console.error(`错误: 无法加载会话 ${selectedId}`);
+            process.exit(1);
+          }
         }
       } else {
         session = await store.loadLatest();

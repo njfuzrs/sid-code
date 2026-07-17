@@ -54,6 +54,8 @@ export interface SessionInfo {
   matchSnippets?: TextMatch[];
   /** 匹配数量 */
   matchCount?: number;
+  /** 会话工作目录（取 directories[0]，用于元信息行展示项目路径） */
+  cwd?: string;
 }
 
 /** 会话文件条目 */
@@ -268,6 +270,7 @@ export async function getAllSessionFiles(
             summary: data.summary,
             fullContent,
             messages,
+            cwd: data.directories?.[0],
           };
 
           return { fileName: file, sessionInfo };

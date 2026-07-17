@@ -24,7 +24,8 @@ LLM 配置:
 
 会话配置:
   -c, --continue              继续最近一次会话
-  -r, --resume <id>           恢复指定会话（ID 或索引）
+  -r, --resume [值]           恢复会话：不带值打开交互式选择器（可搜索），
+                              带值按 ID/索引恢复，未命中则作为搜索词进选择器
   --list-sessions             列出所有会话（文本模式）
   --browse-sessions           打开 TUI 会话浏览器
   --delete-session <id>       删除指定会话

@@ -3,7 +3,7 @@
  * 提供交互式会话选择、搜索、删除功能
  */
 
-import React, { useState, useCallback, useMemo, useEffect, useRef } from "react";
+import React, { useState, useCallback, useMemo, useEffect } from "react";
 import Box from "../ink/components/Box.js";
 import Text from "../ink/components/Text.js";
 import useInput from "../ink/hooks/use-input.js";
@@ -15,15 +15,19 @@ import {
   filterSessions,
   sortSessions,
 } from "./utils.ts";
+import { theme } from "../ui/semantic-colors.ts";
 import { join } from "path";
 import { homedir } from "os";
-import { unlinkSync, existsSync } from "fs";
+
+/** 把绝对路径中的 home 前缀缩成 ~，元信息行展示项目路径用 */
+function shortenPath(p: string | undefined): string {
+  if (!p) return "";
+  const home = homedir();
+  return p.startsWith(home) ? "~" + p.slice(home.length) : p;
+}
 
 /** 每页显示的会话数 */
 const SESSIONS_PER_PAGE = 20;
-
-/** 固定列宽度（索引 + 消息数 + 时间 + 分隔符） */
-const FIXED_COLUMNS_WIDTH = 30;
 
 /** 会话浏览器属性 */
 export interface SessionBrowserProps {
@@ -32,6 +36,13 @@ export interface SessionBrowserProps {
   onResumeSession: (session: SessionInfo) => void;
   onDeleteSession: (session: SessionInfo) => Promise<void>;
   onExit: () => void;
+  /**
+   * 进入即搜索模式（对标 claude-code `-r` 的选择器：一进来就是搜索框，输入即过滤）。
+   * 此模式下搜索框为空时按 Esc 直接退出选择器（而非切回导航模式）。
+   */
+  searchFirst?: boolean;
+  /** 预填搜索词（`-r <term>` 未精确命中 ID 时把 term 带进选择器）。 */
+  initialSearchQuery?: string;
 }
 
 /** 会话浏览器状态 */
@@ -78,7 +89,9 @@ export interface SessionBrowserState {
 function useSessionBrowserState(
   initialSessions: SessionInfo[] = [],
   initialLoading = true,
-  initialError: string | null = null
+  initialError: string | null = null,
+  initialSearchQuery = "",
+  initialSearchMode = false
 ): SessionBrowserState {
   const [sessions, setSessions] = useState<SessionInfo[]>(initialSessions);
   const [loading, setLoading] = useState(initialLoading);
@@ -87,8 +100,8 @@ function useSessionBrowserState(
   const [scrollOffset, setScrollOffset] = useState(0);
   const [sortOrder, setSortOrder] = useState<"date" | "messages" | "name">("date");
   const [sortReverse, setSortReverse] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [isSearchMode, setIsSearchMode] = useState(false);
+  const [searchQuery, setSearchQuery] = useState(initialSearchQuery);
+  const [isSearchMode, setIsSearchMode] = useState(initialSearchMode);
   const [hasLoadedFullContent, setHasLoadedFullContent] = useState(false);
 
   const filteredAndSortedSessions = useMemo(() => {
@@ -246,12 +259,25 @@ function useSessionBrowserInput(
   cycleSortOrder: () => void,
   onResumeSession: (session: SessionInfo) => void,
   onDeleteSession: (session: SessionInfo) => Promise<void>,
-  onExit: () => void
+  onExit: () => void,
+  searchFirst = false
 ) {
   useInput((input, key) => {
     if (state.isSearchMode) {
       // 搜索模式
       if (key.escape) {
+        // searchFirst（对标 CC `-r` 选择器）：搜索框已空时 Esc 直接退出选择器；
+        // 有内容时 Esc 先清空。非 searchFirst 模式沿用旧行为（Esc 切回导航模式）。
+        if (searchFirst) {
+          if (state.searchQuery) {
+            state.setSearchQuery("");
+            state.setActiveIndex(0);
+            state.setScrollOffset(0);
+          } else {
+            onExit();
+          }
+          return;
+        }
         state.setIsSearchMode(false);
         state.setSearchQuery("");
         state.setActiveIndex(0);
@@ -353,26 +379,36 @@ function SessionBrowserEmpty(): JSX.Element {
   );
 }
 
-/** 导航帮助组件 */
-function NavigationHelpDisplay(): JSX.Element {
+/**
+ * 顶部标题 + 搜索框（对标 CC：带圆角边框的搜索输入，一眼就知道能打字）。
+ * 无论导航还是搜索模式都渲染，只是搜索模式下光标可见 + 提示"输入以搜索"。
+ */
+function SearchHeader({
+  state,
+}: {
+  state: SessionBrowserState;
+}): JSX.Element {
+  const hasQuery = Boolean(state.searchQuery);
   return (
     <Box flexDirection="column">
-      <Text dimColor>
-        ↑↓: 移动  Enter: 恢复  x: 删除  /: 搜索  s: 排序  r: 反转  q: 退出
+      <Text bold color={theme.text.accent}>
+        恢复会话
       </Text>
-    </Box>
-  );
-}
-
-/** 搜索模式显示组件 */
-function SearchModeDisplay({ query }: { query: string }): JSX.Element {
-  return (
-    <Box flexDirection="column">
-      <Text>
-        搜索: <Text color="cyan">{query}</Text>
-        <Text dimColor>_</Text>
-      </Text>
-      <Text dimColor>Esc: 退出搜索</Text>
+      <Box
+        borderStyle="round"
+        borderColor={theme.ui.active}
+        paddingX={1}
+        marginTop={0}
+      >
+        <Text color={theme.ui.symbol}>⌕ </Text>
+        {hasQuery ? (
+          <Text color={theme.text.primary}>{state.searchQuery}</Text>
+        ) : (
+          <Text color={theme.text.secondary}>输入以搜索…</Text>
+        )}
+        {/* 闪烁光标位——静态下画一个块，示意可输入 */}
+        <Text color={theme.ui.active}>▏</Text>
+      </Box>
     </Box>
   );
 }
@@ -380,65 +416,17 @@ function SearchModeDisplay({ query }: { query: string }): JSX.Element {
 /** 无结果显示组件 */
 function NoResultsDisplay(): JSX.Element {
   return (
-    <Box flexDirection="column" padding={1}>
-      <Text>未找到匹配的会话</Text>
-      <Text dimColor>按 Esc 清除搜索</Text>
+    <Box paddingX={1} paddingY={0}>
+      <Text color={theme.text.secondary}>未找到匹配的会话</Text>
     </Box>
   );
 }
 
-/** 列表头部组件 */
-function SessionListHeader({ state }: { state: SessionBrowserState }): JSX.Element {
-  const sortLabel = {
-    date: "日期",
-    messages: "消息数",
-    name: "名称",
-  }[state.sortOrder];
-
-  return (
-    <Box flexDirection="column">
-      <Text>
-        共 {state.totalSessions} 个会话 | 排序: {sortLabel}
-        {state.sortReverse ? " (降序)" : " (升序)"}
-      </Text>
-    </Box>
-  );
-}
-
-/** 表头组件 */
-function SessionTableHeader({ state }: { state: SessionBrowserState }): JSX.Element {
-  return (
-    <Box flexDirection="row" marginTop={1}>
-      <Text>{state.scrollOffset > 0 ? "▲ " : "  "}</Text>
-      <Box width={5} flexShrink={0}>
-        <Text color="gray" bold>
-          索引
-        </Text>
-      </Box>
-      <Text color="gray"> │ </Text>
-      <Box width={4} flexShrink={0}>
-        <Text color="gray" bold>
-          消息
-        </Text>
-      </Box>
-      <Text color="gray"> │ </Text>
-      <Box width={4} flexShrink={0}>
-        <Text color="gray" bold>
-          时间
-        </Text>
-      </Box>
-      <Text color="gray"> │ </Text>
-      <Box flexShrink={0}>
-        <Text color="gray" bold>
-          {state.searchQuery ? "匹配" : "名称"}
-        </Text>
-      </Box>
-    </Box>
-  );
-}
-
-/** 匹配片段显示组件 */
-function MatchSnippetDisplay({
+/**
+ * 匹配片段（搜索时替代元信息行的第二行）：命中词高亮。
+ * CC 风格——用暗色包裹、命中词用告警色，不再用「你:/助手:」前缀噪声。
+ */
+function MatchSnippetLine({
   session,
   isActive,
 }: {
@@ -448,26 +436,25 @@ function MatchSnippetDisplay({
   if (!session.matchSnippets || session.matchSnippets.length === 0) {
     return null;
   }
-
   const firstMatch = session.matchSnippets[0];
-  const rolePrefix = firstMatch.role === "user" ? "你:   " : "助手:";
-  const roleColor = firstMatch.role === "user" ? "green" : "blue";
-
+  const dim = isActive ? theme.text.primary : theme.text.secondary;
   return (
-    <>
-      <Text color={isActive ? "cyan" : roleColor} bold>
-        {rolePrefix}{" "}
-      </Text>
-      <Text color={isActive ? "cyan" : undefined}>{firstMatch.before}</Text>
-      <Text color="red" bold>
+    <Text wrap="truncate-end">
+      <Text color={dim}>{"    " + firstMatch.before}</Text>
+      <Text color={theme.status.warning} bold>
         {firstMatch.match}
       </Text>
-      <Text color={isActive ? "cyan" : undefined}>{firstMatch.after}</Text>
-    </>
+      <Text color={dim}>{firstMatch.after}</Text>
+    </Text>
   );
 }
 
-/** 会话项组件 */
+/**
+ * 单条会话（CC 风格两行）：
+ *   行 1  ❯ <标题>                          ← 选中项高亮，标题单行截断
+ *   行 2    消息数 · 相对时间 · 项目路径      ← 暗色元信息，靠中点分隔（不用 │ 竖线对不齐）
+ * 搜索时行 2 换成命中片段。选中行整体用左侧箭头 + 主色标题，不用背景块（避免整行刷蓝突兀）。
+ */
 function SessionItem({
   session,
   state,
@@ -479,86 +466,129 @@ function SessionItem({
   const isActive = originalIndex === state.activeIndex;
   const isDisabled = session.isCurrentSession;
 
-  const prefix = isActive ? "❯ " : "  ";
-  let additionalInfo = "";
+  const titleColor = isActive
+    ? theme.ui.active
+    : isDisabled
+      ? theme.text.secondary
+      : theme.text.primary;
+  const metaColor = isActive ? theme.text.primary : theme.text.secondary;
 
-  if (session.isCurrentSession) {
-    additionalInfo = " (当前)";
-  }
-
+  // 元信息：消息数 · 时间 · 项目路径（有 cwd 才显示末段）
+  const metaParts = [
+    `${session.messageCount} 条`,
+    formatRelativeTime(session.lastUpdated, "short"),
+  ];
+  const cwdShort = shortenPath(session.cwd);
+  if (cwdShort) metaParts.push(cwdShort);
+  if (session.isCurrentSession) metaParts.push("当前");
   if (
     state.searchQuery &&
-    session.matchSnippets &&
-    session.matchSnippets.length > 0
+    session.matchCount &&
+    session.matchCount > 1
   ) {
-    if (session.matchCount && session.matchCount > 1) {
-      additionalInfo += ` (+${session.matchCount - 1} 个)`;
-    }
+    metaParts.push(`+${session.matchCount - 1} 处匹配`);
   }
 
-  const matchDisplay = state.searchQuery ? (
-    <MatchSnippetDisplay session={session} isActive={isActive} />
-  ) : null;
+  const showMatch =
+    Boolean(state.searchQuery) &&
+    session.matchSnippets &&
+    session.matchSnippets.length > 0;
 
-  const displayText = matchDisplay || session.displayName;
-
+  // 关键：每行用**单个** <Text wrap="truncate-end">，不套 flex-row + flexGrow 子项。
+  // flex-row 里放可伸缩的 <Text> 时，vendored ink 对超宽 CJK 文本的测量会先按完整宽度
+  // 布局再截断，导致多出一个空行（截图里每条会话下方的空行就是这么来的）。
+  // 单 Text + 行内嵌套 <Text> 上色，既能截断又不折行。
+  const arrow = isActive ? "❯ " : "  ";
+  const indexLabel = `#${originalIndex + 1} `;
   return (
-    <Box flexDirection="row" backgroundColor={isActive ? "blue" : undefined}>
-      <Text color={isActive ? "cyan" : isDisabled ? "gray" : undefined}>
-        {prefix}
+    <Box flexDirection="column">
+      {/* 行 1：箭头 + 序号 + 标题 */}
+      <Text wrap="truncate-end">
+        <Text color={isActive ? theme.ui.active : theme.text.secondary}>
+          {arrow}
+        </Text>
+        <Text color={metaColor}>{indexLabel}</Text>
+        <Text bold={isActive} color={titleColor}>
+          {session.displayName}
+        </Text>
       </Text>
-      <Box width={5}>
-        <Text color={isActive ? "cyan" : isDisabled ? "gray" : undefined}>
-          #{originalIndex + 1}
+      {/* 行 2：元信息 或 命中片段 */}
+      {showMatch ? (
+        <MatchSnippetLine session={session} isActive={isActive} />
+      ) : (
+        <Text wrap="truncate-end" color={metaColor} dimColor={!isActive}>
+          {"    " + metaParts.join("  ·  ")}
         </Text>
-      </Box>
-      <Text color={isActive ? "cyan" : "gray"}> │ </Text>
-      <Box width={4}>
-        <Text color={isActive ? "cyan" : isDisabled ? "gray" : undefined}>
-          {session.messageCount}
-        </Text>
-      </Box>
-      <Text color={isActive ? "cyan" : "gray"}> │ </Text>
-      <Box width={4}>
-        <Text color={isActive ? "cyan" : isDisabled ? "gray" : undefined}>
-          {formatRelativeTime(session.lastUpdated, "short")}
-        </Text>
-      </Box>
-      <Text color={isActive ? "cyan" : "gray"}> │ </Text>
-      <Box flexGrow={1}>
-        <Text color={isActive ? "cyan" : isDisabled ? "gray" : undefined}>
-          {displayText}
-          {additionalInfo && (
-            <Text color={isActive ? "cyan" : "gray"}>{additionalInfo}</Text>
-          )}
-        </Text>
-      </Box>
+      )}
     </Box>
   );
 }
 
-/** 会话列表组件 */
+/** 会话列表组件（滚动窗口 + 上下溢出指示） */
 function SessionList({ state }: { state: SessionBrowserState }): JSX.Element {
   return (
-    <Box flexDirection="column">
-      <Box flexDirection="column">
-        {!state.isSearchMode && <NavigationHelpDisplay />}
-        <SessionTableHeader state={state} />
-      </Box>
-
+    <Box flexDirection="column" marginTop={1}>
+      {state.scrollOffset > 0 && (
+        <Text color={theme.text.secondary}>  ▲ 还有更早的会话</Text>
+      )}
       {state.visibleSessions.map((session) => (
         <SessionItem key={session.id} session={session} state={state} />
       ))}
+      {state.endIndex < state.totalSessions && (
+        <Text color={theme.text.secondary}>  ▼ 还有更多会话</Text>
+      )}
+    </Box>
+  );
+}
 
-      <Text color="gray">
-        {state.endIndex < state.totalSessions ? "▼" : " "}
+/**
+ * 底部功能提示栏（对标 CC 的 "Type to search · Enter to select · Esc to cancel"）。
+ * 按当前模式自适应：始终可"输入即搜索"，故常驻提示；Esc 语义随查询状态变化。
+ */
+function FooterHints({
+  state,
+  searchFirst,
+}: {
+  state: SessionBrowserState;
+  searchFirst?: boolean;
+}): JSX.Element {
+  // 关键：提示只列**当前模式下真正生效**的键，避免误导。
+  // 搜索模式里 s/x/q 都是往查询里打字，不能当快捷键宣传——那里只留导航/恢复/退出。
+  let hints: string[];
+  if (state.isSearchMode) {
+    const escHint =
+      searchFirst && !state.searchQuery ? "Esc 退出" : "Esc 清空/退出";
+    hints = ["输入以搜索", "↑↓ 移动", "Enter 恢复", escHint];
+  } else {
+    const sortLabel = { date: "时间", messages: "消息数", name: "名称" }[
+      state.sortOrder
+    ];
+    hints = [
+      "↑↓ 移动",
+      "Enter 恢复",
+      "/ 搜索",
+      "x 删除",
+      `s 排序(${sortLabel}${state.sortReverse ? "↓" : "↑"})`,
+      "q 退出",
+    ];
+  }
+  return (
+    <Box marginTop={1}>
+      <Text color={theme.text.secondary} wrap="truncate-end">
+        {hints.join("  ·  ")}
       </Text>
     </Box>
   );
 }
 
 /** 会话浏览器视图组件 */
-function SessionBrowserView({ state }: { state: SessionBrowserState }): JSX.Element {
+function SessionBrowserView({
+  state,
+  searchFirst,
+}: {
+  state: SessionBrowserState;
+  searchFirst?: boolean;
+}): JSX.Element {
   if (state.loading) {
     return <SessionBrowserLoading />;
   }
@@ -573,13 +603,13 @@ function SessionBrowserView({ state }: { state: SessionBrowserState }): JSX.Elem
 
   return (
     <Box flexDirection="column" paddingX={1}>
-      <SessionListHeader state={state} />
-      {state.isSearchMode && <SearchModeDisplay query={state.searchQuery} />}
+      <SearchHeader state={state} />
       {state.filteredAndSortedSessions.length === 0 ? (
         <NoResultsDisplay />
       ) : (
         <SessionList state={state} />
       )}
+      <FooterHints state={state} searchFirst={searchFirst} />
     </Box>
   );
 }
@@ -591,8 +621,17 @@ export function SessionBrowser({
   onResumeSession,
   onDeleteSession,
   onExit,
+  searchFirst = false,
+  initialSearchQuery = "",
 }: SessionBrowserProps): JSX.Element {
-  const state = useSessionBrowserState();
+  // searchFirst 时进入即搜索模式；若带了预填搜索词也自动进搜索模式便于继续编辑。
+  const state = useSessionBrowserState(
+    [],
+    true,
+    null,
+    initialSearchQuery,
+    searchFirst || Boolean(initialSearchQuery)
+  );
   const moveSelection = useMoveSelection(state);
   const cycleSortOrder = useCycleSortOrder(state);
 
@@ -603,8 +642,9 @@ export function SessionBrowser({
     cycleSortOrder,
     onResumeSession,
     onDeleteSession,
-    onExit
+    onExit,
+    searchFirst
   );
 
-  return <SessionBrowserView state={state} />;
+  return <SessionBrowserView state={state} searchFirst={searchFirst} />;
 }
