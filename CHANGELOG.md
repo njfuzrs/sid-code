@@ -2,6 +2,71 @@
 
 本文件由 scripts/generate-changelog.ts 自动生成，请勿手改。
 
+## v0.1.591 (2026-07-17)
+
+### 新功能
+- **session** · 会话浏览器按终端高度动态分页，优化元信息展示与环绕导航 `0cf5f7a`
+  - 动态分页：用 useStdout 获取终端行数，实时计算每页会话数， 防止选择器高于终端导致滚动条 bug
+  - 环绕式导航：新增 useWrapSelection hook，↑↓ 键在列表首尾 间环绕（取模），滚动窗口跟随目标行
+  - 元信息行：时间显示改为"北京时间 (相对时间)" 格式，新增 模型短名展示（去掉 provider 前缀与冗余后缀）
+  - 溢出指示：▲ 修正为"还有更新的会话"，▼ 修正为"还有更早的会话"
+  - SessionInfo 新增 model 字段，从会话文件 data.model 读取
+- **session** · 会话浏览器添加 Ctrl+P「仅当前项目」筛选 `ea4e151`
+  - 从 session_start.cwd 解析会话工作目录，存入 SessionData.cwd
+  - 选择器顶栏显示当前范围（全部/仅当前项目）与会话总数
+  - Footer 提示 Ctrl+P 切换项目范围
+  - getAllSessionFiles 优先使用 session_start.cwd，退回 directories[0]
+- **cli** · -r/--resume 可选值语义——无值开交互选择器，带值按 ID/搜索词恢复 `a9dfaa7`
+  - 手动解析 -r 可选值（parseArgs 不支持 [value]），三态：缺省/无值开选择器/带值恢复
+  - 未精确命中时把值作为搜索词进选择器（对齐 CC）
+  - 会话浏览器 UI 重构为 CC 风格两行布局 + 搜索框 + 底部功能提示
+  - 新增 extractResumeArg 单测
+- **ui** · diff 渲染折叠——新建文件/大改动默认折叠，ctrl+o 阶梯展开 `9e774ac`
+  - DiffRenderer 新增 maxLines prop + foldRenderPlan 纯函数，同步裁剪， 确保 Static 一次成型不污染 scrollback
+  - ToolResultDisplay 设 DIFF_COLLAPSE_MAX_LINES=16 折叠档，isDiff 分支 接上折叠、与普通文本共用 expandLevel 阶梯展开
+  - 新建文件在 colorizeCode 前按 maxLines 保留头部，末尾追加统一折叠 footer
+  - 新增 foldRenderPlan 单测 + 折叠渲染快照测试
+- **session** · 会话状态快照持久化——todo/假设/目标/权限跨 resume 恢复 `a4046cb`
+  - 新增 persistTodoState/persistHypothesisLedger/persistGoalState 持久化方法， 每轮 done 后落盘到 JSONL metadata，与 persistUsageStats 对称
+  - restoreSession 回灌：todo 清单 → TodoPanel 首屏展示、假设登记表 → 交付门禁 不失据、权限模式(安全档位) → 跨会话恢复、agent 设置恢复
+  - /clear 边界加固：置空后立即落归零快照覆盖旧数据，防止恢复端幽灵清单/统计/ 目标/假设复活；goal 用 __CLEARED__ 哨兵标记
+  - checkpointSessionId 引入：resume 时 checkpoint 跟随逻辑会话 id，使 /undo 恢复 后能回滚到 resume 之前的编辑
+  - 首屏 goalDisplay 对称推送：resume 带活跃目标时 Footer 不再空白
+  - 权限模式安全红线：dangerously-skip-permissions/always-allow 绝不跨会话恢复
+  - 新增 hypothesis-ledger/todo-write 的 serialize/hydrate 方法
+  - 新增 tests/session/hypothesis-persistence.test.ts 与 todo-persistence.test.ts
+
+### 修复
+- 多项 P0/P1 安全与稳定性修复 `21b66d3`
+  - P0-1: 会话按项目分目录，cwd 一致性告警（纵深防御跨项目恢复）
+  - P0-2: permissionMode 不做隐式跨会话恢复（对齐 CC 安全红线）
+  - P1-1: todo_write 加入子代理禁用列表（防止并发写污染主会话 todo）
+  - P1-2: checkpoint 写时双层 eviction + 跨会话 LRU 真删总量清理
+- **ink** · 抑制短命 Ink 实例的终端探查，防止回复碎片漏入输入框 `729ef87`
+  - 新增 suppressTerminalProbe 机制：短命实例跳过探查，主 TUI 正常探查
+  - 新增 responseFragment 类型：丢弃拆分/截断的终端回复，不误作按键
+  - 处理 Lone ST（\x1b\\）等尾部碎片，CSI-private/CSI-secondary 前缀
+- **session** · resume 后累计用量统计回灌——Footer 不再从零值起 `04e9626`
+  - 新增 UsageSnapshot 接口与序列化/反序列化逻辑（state.ts）
+  - resume 路径从 JSONL metadata 恢复累计用量（app.ts）
+  - 每轮对话结束落盘用量快照到会话 JSONL（app.ts）
+  - 新增 usage-stats-persistence 单元测试
+
+### 文档
+- 归档 bugfixes/done 目录下散落文档到对应主题目录 `639a020`
+  - 新建"系统提示词冻结快照"主题目录收纳 git 快照冻结相关分析；
+  - 其余散落文档按主题归入 循环检测与长任务/中断与错误处理/
+  - Harness与模型评估/调度与状态持久化/Token与计费统计。
+
+### 其他
+- doc: 添加迁移工具调研文档 `9501149`
+- **ink** · 新增终端响应碎片漏入回归测试 `3a50976`
+  - 新增 tests/ink/terminal-response-fragment.test.ts 对短命 Ink 实例终端探查回复碎片漏入输入框的 bug 做回归覆盖
+  - 补充 docs/bugfixes/todo/ 持久化恢复对齐 CC 改造 TODO 执行清单
+- **ui** · 移除 CodeColorizer MaxSizedBox 死代码，新增持久化审计文档 `3e5dff1`
+  - 移除 availableHeight 参数及 MaxSizedBox 折叠分支：全仓无人传参， 且与 Static 安全铁律冲突（异步测高先把内容落 scrollback 再折叠， 污染回滚区且不可擦除）
+  - 新增两份审计文档：状态持久化与恢复对称性分析、对标 Claude Code 差距分析与核心哲学
+
 ## v0.1.590 (2026-07-16)
 
 ### 新功能
