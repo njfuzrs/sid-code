@@ -32,6 +32,12 @@ export interface AppContext {
   registry: ToolRegistry;
   config: Config;
   sessionId: string;
+  /**
+   * 逻辑会话 id（resume 时=被恢复会话 id，否则=本进程会话 id），用于 checkpoint 归属。
+   * /undo 等回滚命令须用它，才能在 `-c` 恢复后够到 resume 之前的检查点。
+   * 缺省时回退 sessionState.sessionId。
+   */
+  checkpointSessionId?: string;
   provider: Provider;
   providerRegistry?: ProviderRegistry;
   mcpManager?: MCPManager;

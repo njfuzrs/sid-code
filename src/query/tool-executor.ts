@@ -212,6 +212,12 @@ export interface ToolExecutorDeps {
   sessionState: SessionState;
   hookSystem: HookSystem;
   permissionChecker: Checker | null;
+  /**
+   * 逻辑会话 id（resume 时=被恢复会话 id，否则=本进程会话 id），用于 checkpoint 快照归属。
+   * 与 sessionState.sessionId（本进程新 id）刻意区分：checkpoint 跟随逻辑会话，使 `-c` 恢复后
+   * `/undo` 能回滚到 resume 之前的编辑。缺省（未注入）时回落 sessionState.sessionId。
+   */
+  checkpointSessionId?: string;
   /** 获取 AbortSignal */
   getAbortSignal: () => AbortSignal | undefined;
   /** 请求用户确认（TUI 回调或 headless 自动决策） */
@@ -291,7 +297,7 @@ export async function executeTools(
     try {
       const { getCheckpointManager } = await import("../checkpoint/manager.ts");
       const cpMgr = await getCheckpointManager(
-        deps.sessionState.sessionId,
+        deps.checkpointSessionId ?? deps.sessionState.sessionId,
         deps.config.checkpoint,
       );
       const toolNames = toolBlocks.map(t => t.block.name).join(", ");

@@ -424,7 +424,7 @@ export class UndoCommand implements Command {
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     const { getCheckpointManager } = await import("../checkpoint/manager.ts");
     const cpMgr = await getCheckpointManager(
-      ctx.sessionState.sessionId,
+      ctx.checkpointSessionId ?? ctx.sessionState.sessionId,
       ctx.config.checkpoint,
     );
 
@@ -469,7 +469,7 @@ export class CheckpointsCommand implements Command {
   async execute(_args: string, ctx: AppContext): Promise<CommandResult> {
     const { getCheckpointManager } = await import("../checkpoint/manager.ts");
     const cpMgr = await getCheckpointManager(
-      ctx.sessionState.sessionId,
+      ctx.checkpointSessionId ?? ctx.sessionState.sessionId,
       ctx.config.checkpoint,
     );
 
@@ -527,7 +527,7 @@ export class RestoreCommand implements Command {
 
     const { getCheckpointManager } = await import("../checkpoint/manager.ts");
     const cpMgr = await getCheckpointManager(
-      ctx.sessionState.sessionId,
+      ctx.checkpointSessionId ?? ctx.sessionState.sessionId,
       ctx.config.checkpoint,
     );
 

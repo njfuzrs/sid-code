@@ -284,6 +284,43 @@ print("Hello World")
     return this.writeVersion;
   }
 
+  /**
+   * 序列化当前 todo 清单为可持久化快照（写入会话 JSONL 的 todo_state metadata，resume 回灌）。
+   *
+   * 根因：currentTodos 是纯内存态，此前从未持久化也从未回灌——`-c` 恢复后 TodoWriteTool 是
+   * 全新空实例，TodoPanel 因 todos 为空整块隐藏，用户感知为"任务清单恢复后消失"。work-log
+   * 只把进度以文本 reminder 每 N 轮回注给模型，不足以复原用户可见的 TodoPanel。
+   *
+   * 只存清单本体（content/activeForm/status）。writeVersion 是 queryLoop 回注判定的全局时序
+   * 基准、单调递增，不跨会话保留——恢复后从 0 起不影响回注逻辑（首次比较即视为"有更新"）。
+   */
+  serialize(): { todos: TodoItem[] } {
+    return { todos: this.currentTodos.map((t) => ({ ...t })) };
+  }
+
+  /**
+   * 从持久化快照回灌 todo 清单（resume 恢复路径调用）。
+   *
+   * 容错：快照缺字段/类型不符/status 非法时，跳过该项而非抛错——绝不因脏快照阻断恢复。
+   * 直接覆盖 currentTodos（resume 时本就是空实例，覆盖等价于"继续之前的清单"）。
+   * 不触碰 writeVersion（保持从 0 起的时序基准语义）。
+   */
+  hydrate(snapshot: { todos?: unknown } | undefined | null): void {
+    if (!snapshot || typeof snapshot !== "object") return;
+    const raw = (snapshot as { todos?: unknown }).todos;
+    if (!Array.isArray(raw)) return;
+    const restored: TodoItem[] = [];
+    for (const item of raw) {
+      if (!item || typeof item !== "object") continue;
+      const t = item as Partial<TodoItem>;
+      if (typeof t.content !== "string" || !t.content.trim()) continue;
+      if (typeof t.activeForm !== "string" || !t.activeForm.trim()) continue;
+      if (typeof t.status !== "string" || !VALID_STATUSES.has(t.status)) continue;
+      restored.push({ content: t.content, activeForm: t.activeForm, status: t.status });
+    }
+    this.currentTodos = restored;
+  }
+
   async execute(input: unknown, _signal?: AbortSignal): Promise<ToolResult> {
     const params = input as { todos?: unknown };
 

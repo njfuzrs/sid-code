@@ -248,6 +248,70 @@ export class HypothesisLedger {
     this.items.clear();
     this.seq = 0;
   }
+
+  /**
+   * 序列化登记表为可持久化快照(写入会话 JSONL 的 hypothesis_ledger metadata,resume 回灌)。
+   *
+   * 根因:items/seq 是纯内存态,此前从未持久化也从未回灌——跨会话续做同一排查时(`-c` 恢复),
+   * 登记表全新为空,机制3「交付门禁」失去依据:上一会话登记的 open/refuted 假设不再拦截交付,
+   * 模型可能把未证实的假设当结论写出去(正是本模块要防的 fdb47f30 事故模式)。
+   *
+   * 全量存储 items(含证据链/证伪线索/状态)+ seq(保持 id 单调递增,避免恢复后 register 撞号)。
+   */
+  serialize(): { seq: number; items: Hypothesis[] } {
+    return {
+      seq: this.seq,
+      // 深拷贝,防止外部改写快照污染内部状态(与 TodoWriteTool.serialize 同款纪律)
+      items: [...this.items.values()].map((h) => ({
+        ...h,
+        falsifierCues: [...h.falsifierCues],
+        supporting: h.supporting.map((e) => ({ ...e })),
+        refuting: h.refuting.map((e) => ({ ...e })),
+        challengedFingerprints: [...h.challengedFingerprints],
+      })),
+    };
+  }
+
+  /**
+   * 从持久化快照回灌登记表(resume 恢复路径调用)。
+   *
+   * 容错:快照缺字段/类型不符时逐条跳过,绝不因脏快照阻断恢复。直接覆盖(resume 时本就是空实例)。
+   * seq 取「快照 seq」与「回灌成功的最大 H 编号」的较大值——即使 seq 字段丢失或偏小,也能保证
+   * 后续 register 生成的 id 不与已恢复假设撞号。
+   */
+  hydrate(snapshot: { seq?: unknown; items?: unknown } | undefined | null): void {
+    if (!snapshot || typeof snapshot !== "object") return;
+    const rawItems = (snapshot as { items?: unknown }).items;
+    if (!Array.isArray(rawItems)) return;
+    const restored = new Map<string, Hypothesis>();
+    let maxSeq = 0;
+    for (const item of rawItems) {
+      if (!item || typeof item !== "object") continue;
+      const h = item as Partial<Hypothesis>;
+      if (typeof h.id !== "string" || !h.id) continue;
+      if (typeof h.statement !== "string" || !h.statement) continue;
+      if (typeof h.falsifier !== "string" || !h.falsifier) continue;
+      if (h.status !== "open" && h.status !== "confirmed" && h.status !== "refuted") continue;
+      restored.set(h.id, {
+        id: h.id,
+        statement: h.statement,
+        falsifier: h.falsifier,
+        falsifierCues: Array.isArray(h.falsifierCues) ? h.falsifierCues.filter((c): c is string => typeof c === "string") : [],
+        status: h.status,
+        supporting: Array.isArray(h.supporting) ? h.supporting.filter((e): e is HypothesisEvidence => !!e && typeof e === "object" && typeof (e as HypothesisEvidence).note === "string") : [],
+        refuting: Array.isArray(h.refuting) ? h.refuting.filter((e): e is HypothesisEvidence => !!e && typeof e === "object" && typeof (e as HypothesisEvidence).note === "string") : [],
+        createdTurn: typeof h.createdTurn === "number" ? h.createdTurn : 0,
+        updatedTurn: typeof h.updatedTurn === "number" ? h.updatedTurn : 0,
+        challengedFingerprints: Array.isArray(h.challengedFingerprints) ? h.challengedFingerprints.filter((f): f is string => typeof f === "string") : [],
+      });
+      // 从 id(形如 "H3")提取编号,兜底 seq
+      const m = /^H(\d+)$/.exec(h.id);
+      if (m) maxSeq = Math.max(maxSeq, Number(m[1]));
+    }
+    this.items = restored;
+    const snapSeq = typeof (snapshot as { seq?: unknown }).seq === "number" ? (snapshot as { seq: number }).seq : 0;
+    this.seq = Math.max(snapSeq, maxSeq);
+  }
 }
 
 // ─────────────────── system-reminder 构建(纯函数,便于单测) ───────────────────

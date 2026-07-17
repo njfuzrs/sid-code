@@ -146,6 +146,12 @@ export function classifyRetryKind(
   return "retry";
 }
 
+/**
+ * goal_state 清除哨兵：/clear 时落一条此值，覆盖 clear 前的旧目标快照。
+ * restoreSession 读到它就跳过 goal 恢复，使 /clear 的目标清除语义在恢复端也生效。
+ */
+const GOAL_STATE_CLEARED_MARKER = "__CLEARED__";
+
 export class App {
   private config: Config;
   private provider: Provider;
@@ -650,8 +656,20 @@ export class App {
    * 用被恢复会话 id（resume 时）或本进程会话 id——与 SessionStore 实际写入的 jsonl 归属一致，
    * 使子代理 sidechain 文件（<sessionId>-<agentId>.jsonl）挂在正确的主会话名下。
    */
+  /**
+   * 逻辑会话 id：resume 时用被恢复会话 id，否则用本进程会话 id。
+   * 与 SessionStore 实际写入的 jsonl 归属一致，也是 checkpoint / sidechain 等
+   * "跟随逻辑会话而非物理进程"的资源应使用的 id。
+   *
+   * 对比：sessionState.sessionId 是本进程新 id，用于 crash marker / PID / trajectory
+   * （这些必须跨进程唯一，避免 resume 时与原进程冲突）。二者刻意分离，不可混用。
+   */
+  private getLogicalSessionId(): string {
+    return this.resumedSessionId ?? this.sessionState.sessionId;
+  }
+
   private wireSubAgentSessionId(): void {
-    const sessionId = this.resumedSessionId ?? this.sessionState.sessionId;
+    const sessionId = this.getLogicalSessionId();
     for (const tool of this.toolRegistry.all()) {
       const maybe = tool as { setParentSessionId?: (id: string) => void };
       if (typeof maybe.setParentSessionId === "function") {
@@ -819,6 +837,9 @@ export class App {
         // （JSON.stringify 会丢弃 undefined 字段，用 null 显式保留"auto"语义）。
         effortLevel: this.runtimeEffort ?? null,
         thinking: this.runtimeThinking ?? null,
+        // 权限模式(Shift+Tab 循环切换的运行时档位)。恢复时只认安全档位，危险档位
+        // (dangerously-skip-permissions/always-allow)出于安全考虑不跨会话恢复。
+        permissionMode: this.config.permissionMode ?? null,
       });
     } catch (e) {
       getLogger().warn("AGENT_SETTING", `agent 设置快照落盘失败（不阻断）: ${(e as Error)?.message}`);
@@ -1143,6 +1164,15 @@ export class App {
         this.clearInactiveBackgroundTasks();
         // /clear 后 goal 目标状态清空：旧 /goal 不应跨会话残留
         this.goalState = null;
+        // 边界加固：/clear 续写同一 jsonl（不新建文件），若清空后用户直接退出、没有新一轮 done，
+        // 恢复会按"取最后一条"读到 clear 前的旧快照 → 幽灵清单/统计/目标/假设。这里立即覆盖式
+        // 落一条归零快照，让 clear 语义在恢复端也生效。全部对称处理。失败不阻断。
+        this.persistUsageStats();
+        this.persistTodoState();
+        this.persistHypothesisLedger();
+        // goal 特殊：goalState 已置 null，persistGoalState() 会 no-op 落不了空目标，
+        // 故用清除哨兵覆盖 clear 前的旧目标快照，restoreSession 读到哨兵即跳过恢复。
+        this.persistGoalState(true);
         // 缓存检测状态重置：旧基线对新会话无效，不清会产生虚假中断检测
         resetCacheDetection();
         clearCacheBreaks();
@@ -2068,7 +2098,8 @@ export class App {
     this.resumedSessionId = sessionData.id;
 
     // /goal：从 JSONL metadata 恢复目标状态（跨会话续做时保持目标意识不断）
-    if (sessionData.metadata?.["goal_state"]) {
+    // 边界：读到清除哨兵（/clear 落的）跳过恢复，不复活 clear 前的旧目标。
+    if (sessionData.metadata?.["goal_state"] && sessionData.metadata["goal_state"] !== GOAL_STATE_CLEARED_MARKER) {
       try {
         const { deserializeGoalState } = await import("./goal/state.ts");
         const restored = deserializeGoalState(sessionData.metadata["goal_state"] as string);
@@ -2094,6 +2125,7 @@ export class App {
           model?: string;
           effortLevel?: import("./llm/effort.ts").EffortSetting | null;
           thinking?: import("./llm/effort.ts").ThinkingSetting | null;
+          permissionMode?: string | null;
         };
         const { getEffortEnvOverride, getThinkingEnvOverride } = await import("./llm/effort.ts");
 
@@ -2121,6 +2153,29 @@ export class App {
         if (getThinkingEnvOverride() === null && setting.thinking !== undefined) {
           this.runtimeThinking = setting.thinking ?? undefined;
           log.info("APP", `恢复 agent thinking: ${this.runtimeThinking ?? "auto"}`);
+        }
+
+        // permissionMode：安全恢复。
+        // 优先级：CLI 显式启动参数 > 会话快照。CLI 的 --permission-mode / --dangerously-skip-permissions
+        // 在 new App 之前已设进 config，故仅当当前为默认 "default"(用户本次未显式指定)时才用快照恢复，
+        // 避免覆盖用户本次启动的显式意图。
+        // 安全红线：危险档位(dangerously-skip-permissions/always-allow)绝不跨会话自动恢复——
+        // 这类"全放行"档位若因 resume 悄悄复活，用户可能在毫不知情下失去权限保护。plan 档也不在此
+        // 恢复(有独立状态机 + 需重建 planManager 上下文)。只恢复 default/acceptEdits 这类"安全且幂等"档位。
+        const snapMode = setting.permissionMode;
+        const SAFE_RESTORABLE = new Set(["default", "acceptEdits"]);
+        if (
+          this.config.permissionMode === "default" && // 本次未经 CLI 显式指定
+          typeof snapMode === "string" &&
+          snapMode !== "default" &&
+          SAFE_RESTORABLE.has(snapMode)
+        ) {
+          this.config.permissionMode = snapMode as typeof this.config.permissionMode;
+          // 同步粘性执行开关(与 cyclePermissionMode 一致)：acceptEdits 不改 skip/yes，仅改档位。
+          this.tuiStateUpdater?.({ permissionMode: snapMode });
+          log.info("APP", `恢复权限模式: ${snapMode}`);
+        } else if (typeof snapMode === "string" && (snapMode === "dangerously-skip-permissions" || snapMode === "always-allow")) {
+          log.info("APP", `快照权限模式为危险档位 ${snapMode}，出于安全不自动恢复，回落 ${this.config.permissionMode}`);
         }
       } catch (e) {
         log.warn("APP", `agent 设置恢复失败（不阻断）: ${(e as Error)?.message}`);
@@ -2166,6 +2221,46 @@ export class App {
         }
       } catch (e) {
         log.warn("APP", `文件修改历史恢复失败（不阻断）: ${(e as Error)?.message}`);
+      }
+    }
+
+    // 从 JSONL metadata 回灌 todo 清单（打通 TodoPanel↔Resume）。
+    // 根因：TodoWriteTool.currentTodos 是纯内存态，此前 resume 后为空，TodoPanel 整块隐藏，
+    // 用户感知为"任务清单恢复后消失"。此处把落盘的最后一条快照回灌进工具实例——
+    // 稍后 runTUI 构造 bridge 初值时读 todoTool.getTodos() 即可带上历史清单首屏渲染。
+    // 工具注册在 new App 之前（cli.ts），此处 registry 必能取到实例。失败不阻断恢复。
+    if (sessionData.metadata?.["todo_state"]) {
+      try {
+        const todoTool = this.toolRegistry.get("todo_write") as
+          | import("./tool/todo-write.ts").TodoWriteTool
+          | undefined;
+        if (todoTool) {
+          todoTool.hydrate(sessionData.metadata["todo_state"] as { todos?: unknown });
+          const n = todoTool.getTodos().length;
+          if (n > 0) log.info("APP", `恢复 todo 清单: ${n} 项`);
+        }
+      } catch (e) {
+        log.warn("APP", `todo 清单恢复失败（不阻断）: ${(e as Error)?.message}`);
+      }
+    }
+
+    // 从 JSONL metadata 回灌假设登记表（打通交付门禁↔Resume）。
+    // 根因:HypothesisLedger 是纯内存态,resume 后为空 → 上一会话登记的 open/refuted 假设
+    // 不再拦截交付,模型可能把未证实假设当结论。此处回灌进工具持有的 ledger 实例。
+    // hypothesis_register 工具注册在 new App 之前(cli.ts),此处 registry 必能取到。失败不阻断。
+    if (sessionData.metadata?.["hypothesis_ledger"]) {
+      try {
+        const regTool = this.toolRegistry.get("hypothesis_register") as
+          | import("./tool/hypothesis.ts").HypothesisRegisterTool
+          | undefined;
+        const ledger = regTool?.getLedger();
+        if (ledger) {
+          ledger.hydrate(sessionData.metadata["hypothesis_ledger"] as { seq?: unknown; items?: unknown });
+          const n = ledger.all().length;
+          if (n > 0) log.info("APP", `恢复假设登记表: ${n} 条假设`);
+        }
+      } catch (e) {
+        log.warn("APP", `假设登记表恢复失败（不阻断）: ${(e as Error)?.message}`);
       }
     }
 
@@ -2457,6 +2552,8 @@ export class App {
       config: this.config,
       toolRegistry: this.toolRegistry,
       sessionState: this.sessionState,
+      // checkpoint 跟随逻辑会话 id（resume 时=旧会话 id），使 `-c` 后 /undo 够得到 resume 之前的编辑。
+      checkpointSessionId: this.getLogicalSessionId(),
       hookSystem: this.hookSystem,
       permissionChecker: this.permissionChecker,
       getAbortSignal: () => this.abortController?.signal,
@@ -2970,10 +3067,19 @@ export class App {
   /**
    * /goal：将当前 goalState 持久化到 session JSONL（增量 metadata 记录）。
    * 每次 goalState 变更时调用（set/update），失败不阻断。
+   *
+   * 边界（clearMarker=true）：/clear 把 goalState 置 null 后，若不落任何记录，恢复端会按
+   * "取最后一条"读到 clear 前的旧目标 → 幽灵目标复活。此时落一条哨兵 __CLEARED__，
+   * restoreSession 识别到就跳过恢复，让 /clear 的目标清除语义在恢复端也生效。
    */
-  private persistGoalState(): void {
-    if (!this.goalState || !this.sessionStore) return;
+  private persistGoalState(clearMarker = false): void {
+    if (!this.sessionStore) return;
     try {
+      if (clearMarker) {
+        this.sessionStore.appendMetadata("goal_state", GOAL_STATE_CLEARED_MARKER);
+        return;
+      }
+      if (!this.goalState) return;
       const { serializeGoalState } = require("./goal/state.ts");
       this.sessionStore.appendMetadata("goal_state", serializeGoalState(this.goalState));
     } catch { /* 持久化失败不阻断 */ }
@@ -2995,6 +3101,50 @@ export class App {
       this.sessionStore.appendMetadata("usage_stats", this.sessionState.serializeUsageSnapshot());
     } catch (e) {
       getLogger().warn("APP", `用量统计落盘失败（不阻断）: ${(e as Error)?.message}`);
+    }
+  }
+
+  /**
+   * 将当前 todo 清单落盘到 session JSONL（覆盖式，恢复时取最后一条）。
+   *
+   * 根因修复：TodoWriteTool.currentTodos 只活在内存，此前从未持久化——`-c` 恢复后清单为空，
+   * TodoPanel 整块隐藏，用户感知为"任务清单丢失"。与 usage_stats 同挂在每轮 done 后落盘。
+   *
+   * 空清单也落一条（快照 { todos: [] }）——覆盖语义下这能正确表达"用户 /clear 或全部完成后
+   * 清单已清空"，避免恢复到更早的非空快照产生幽灵清单。失败不阻断主流程。
+   */
+  private persistTodoState(): void {
+    if (!this.sessionStore) return;
+    try {
+      const todoTool = this.toolRegistry.get("todo_write") as
+        | import("./tool/todo-write.ts").TodoWriteTool
+        | undefined;
+      if (!todoTool) return;
+      this.sessionStore.appendMetadata("todo_state", todoTool.serialize());
+    } catch (e) {
+      getLogger().warn("APP", `todo 清单落盘失败（不阻断）: ${(e as Error)?.message}`);
+    }
+  }
+
+  /**
+   * 将假设登记表落盘到 session JSONL（覆盖式，恢复时取最后一条）。
+   *
+   * 根因修复：HypothesisLedger.items/seq 只活在内存，此前从未持久化——跨会话续做同一排查时
+   * `-c` 恢复后登记表为空，机制3「交付门禁」失去依据(上一会话的 open/refuted 假设不再拦截
+   * 交付)。与 usage_stats/todo_state 同挂在每轮 done 后落盘。空表也落(表达 /clear 后已清空)。
+   * 失败不阻断主流程。
+   */
+  private persistHypothesisLedger(): void {
+    if (!this.sessionStore) return;
+    try {
+      const regTool = this.toolRegistry.get("hypothesis_register") as
+        | import("./tool/hypothesis.ts").HypothesisRegisterTool
+        | undefined;
+      const ledger = regTool?.getLedger();
+      if (!ledger) return;
+      this.sessionStore.appendMetadata("hypothesis_ledger", ledger.serialize());
+    } catch (e) {
+      getLogger().warn("APP", `假设登记表落盘失败（不阻断）: ${(e as Error)?.message}`);
     }
   }
 
@@ -3554,7 +3704,14 @@ export class App {
         provider: m.provider || this.config.provider,
         description: m.baseURL ? `${m.provider || this.config.provider} (${m.baseURL})` : undefined,
       })),
-      todos: [],
+      // resume 恢复:restoreSession 已把 todo_state 回灌进 TodoWriteTool 实例,此处读回让
+      // 恢复的清单首屏即出现在 TodoPanel(不再写死空数组)。新会话时工具为空、返回 []，行为不变。
+      todos: (() => {
+        const todoTool = this.toolRegistry.get("todo_write") as
+          | import("./tool/todo-write.ts").TodoWriteTool
+          | undefined;
+        return todoTool?.getTodos() ?? [];
+      })(),
       tasks: [],
       retryStatus: null,
       errorPanel: [],
@@ -3668,6 +3825,14 @@ export class App {
     this.tuiStateUpdater = (patch) => updateState(patch as any);
     // 初次推送 effort/thinking 展示态到状态栏（让会话启动即显示当前旋钮档位）。
     this.pushKnobDisplay();
+    // 对称补丁：goal 目标进度同样在启动时推一次。restoreSession 已把 goalState 回灌进内存
+    // （app.ts 恢复 goal_state 分支），但 bridge 初值 goalDisplay 写死 null、buildGoalDisplay
+    // 只在 queryLoop 运行回调触发——`-c` 恢复带活跃目标的会话后，首屏 Footer 目标列会空白，
+    // 直到用户发第一条消息才出现。此处补一次显式推送，与 pushKnobDisplay 对称。
+    const initialGoalDisplay = this.buildGoalDisplay();
+    if (initialGoalDisplay) {
+      updateState({ goalDisplay: initialGoalDisplay });
+    }
 
     // 通知队列：管理 statusMessage 的叠加与去重，解决多条通知互相覆盖的问题
     // - sticky 通知（max_turns/loop_detected/hook_blocked 等）不设超时，持久保留
@@ -4294,6 +4459,10 @@ export class App {
               // 本轮结束：把累计用量统计落盘（与 footer 展示同一批数值），
               // 使 `-c` 恢复后 Footer 不再从 0 起（根因见 persistUsageStats 注释）。
               this.persistUsageStats();
+              // 同步把 todo 清单落盘，使 `-c` 恢复后 TodoPanel 不再空掉（根因见 persistTodoState 注释）。
+              this.persistTodoState();
+              // 同步把假设登记表落盘，使 `-c` 恢复后交付门禁不失据（根因见 persistHypothesisLedger 注释）。
+              this.persistHypothesisLedger();
               break;
             }
           }
@@ -4578,6 +4747,8 @@ export class App {
           registry: this.toolRegistry,
           config: this.config,
           sessionId: "",
+          // checkpoint 跟随逻辑会话 id，使 `-c` 恢复后 /undo 够得到 resume 之前的检查点。
+          checkpointSessionId: this.getLogicalSessionId(),
           provider: this.provider,
           // providerRegistry 必传：fork 模式的 bundled skill（/review、/commit-push-pr 等 6 个）
           // 依赖它创建子代理；缺失会让 executor 静默退回 inline，导致 fork 隔离/allowedTools/maxTurns 失效。
