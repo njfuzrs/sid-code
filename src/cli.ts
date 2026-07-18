@@ -877,7 +877,7 @@ export async function main(): Promise<void> {
     const toolSearchTool = new ToolSearchTool(toolRegistry);
     toolRegistry.register(toolSearchTool);
 
-    // 注册后台任务工具（task 系统已就位，此处补齐工具入口）
+    // 注册后台任务工具（运行态 shell/agent/workflow：bg_task_get/bg_task_list/task_output/task_stop）
     const { TaskOutputTool } = await import("./tool/task-output.ts");
     const { TaskStopTool } = await import("./tool/task-stop.ts");
     const { TaskListTool } = await import("./tool/task-list.ts");
@@ -888,6 +888,17 @@ export async function main(): Promise<void> {
     toolRegistry.register(new TaskListTool());
     toolRegistry.register(new TaskGetTool());
     toolRegistry.register(new SendMessageTool(providerRegistry, toolRegistry));
+
+    // 注册结构化任务清单工具（带依赖/owner 的持久化 TODO：task_create/task_update/task_get/task_list）
+    // 对标 claude-code TaskCreate/TaskUpdate/TaskGet/TaskList，服务多 agent 派活。
+    const { TaskCreateTool } = await import("./tool/structured-task-create.ts");
+    const { TaskUpdateTool } = await import("./tool/structured-task-update.ts");
+    const { StructuredTaskGetTool } = await import("./tool/structured-task-get.ts");
+    const { StructuredTaskListTool } = await import("./tool/structured-task-list.ts");
+    toolRegistry.register(new TaskCreateTool());
+    toolRegistry.register(new TaskUpdateTool());
+    toolRegistry.register(new StructuredTaskGetTool());
+    toolRegistry.register(new StructuredTaskListTool());
 
     // 注册 Worktree 隔离工具（D27: 仅在 git 仓库或配置了 WorktreeCreate/Remove hook 时注册）
     {

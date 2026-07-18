@@ -222,14 +222,17 @@ export class GrepTool implements Tool {
         break;
       case "content":
         args.push("--line-number");
+        // 上下文行优先级（对齐 CC GrepTool）：context(-C) 优先于 -B/-A，三者互斥不叠加，
+        // 避免同时下发 -C 与 -A/-B 给 ripgrep 造成行为未定义。
         if (params.context !== undefined) {
           args.push("-C", String(params.context));
-        }
-        if (params.before_context !== undefined) {
-          args.push("-B", String(params.before_context));
-        }
-        if (params.after_context !== undefined) {
-          args.push("-A", String(params.after_context));
+        } else {
+          if (params.before_context !== undefined) {
+            args.push("-B", String(params.before_context));
+          }
+          if (params.after_context !== undefined) {
+            args.push("-A", String(params.after_context));
+          }
         }
         break;
     }
@@ -244,9 +247,10 @@ export class GrepTool implements Tool {
       args.push("--fixed-strings");
     }
 
-    // 多行模式
+    // 多行模式：加 --multiline-dotall 让 `.` 跨行匹配（对齐 CC GrepTool 的 -U --multiline-dotall），
+    // 否则含 `.` 的跨行 pattern（如 `foo.*bar` 跨行）在 --multiline 下仍匹配不到换行。
     if (params.multiline) {
-      args.push("--multiline");
+      args.push("--multiline", "--multiline-dotall");
     }
 
     // 单文件匹配数限制

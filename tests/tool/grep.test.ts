@@ -389,4 +389,44 @@ describe("GrepTool", () => {
     }
     // 如果 rg 不报错只是返回空结果也 OK
   });
+
+  // P2-7：multiline + --multiline-dotall 让 . 跨行匹配
+  test("multiline 模式下 . 可跨行匹配（--multiline-dotall）", async () => {
+    createFile("ml.ts", `function foo() {\n  return bar;\n}\n`);
+
+    const tool = new GrepTool();
+    const result = await tool.execute({
+      pattern: "foo\\(\\).*bar",  // . 需跨越换行才能匹配
+      path: tempDir,
+      output_mode: "content",
+      multiline: true,
+    });
+
+    const parsed = parseOutput(result.output);
+    expect(parsed.content).toContain("foo");
+    expect(parsed.content).toContain("bar");
+  });
+
+  // P2-8：context(-C) 与 -A/-B 互斥，context 优先
+  test("同时给 context 与 before/after_context 时以 context 为准（不叠加）", async () => {
+    createFile("ctx.ts", `L1\nL2\nL3\nTARGET\nL5\nL6\nL7\n`);
+
+    const tool = new GrepTool();
+    const result = await tool.execute({
+      pattern: "TARGET",
+      path: tempDir,
+      output_mode: "content",
+      context: 1,          // 前后各 1 行 → L3, L5
+      before_context: 3,   // 应被忽略（否则会带出 L1）
+      after_context: 3,    // 应被忽略（否则会带出 L7）
+    });
+
+    const parsed = parseOutput(result.output);
+    const content = parsed.content as string;
+    expect(content).toContain("L3");
+    expect(content).toContain("L5");
+    // context=1 生效 → 不应带出更远的 L1 / L7
+    expect(content).not.toContain("L1");
+    expect(content).not.toContain("L7");
+  });
 });

@@ -27,6 +27,7 @@ const subAgentSchema = lazySchema(() => {
   return z.object({
     type: z
       .string()
+      .optional()
       .describe("子代理类型（见工具描述中列出的可用类型，省略时默认 general-purpose）"),
     description: z.string().describe("子任务的简短描述"),
     prompt: z.string().describe("给子代理的详细指令"),
@@ -323,15 +324,16 @@ ${typeLines}
       return { output: "子代理不允许嵌套调用子代理。如需并行执行多个任务，请在主代理层面直接使用多个 sub_agent 调用。", isError: true };
     }
 
-    if (!params.type || !params.description || !params.prompt) {
-      return { output: "错误: 缺少必需参数 (type, description, prompt)", isError: true };
-    }
-
-    const validTypes = getActiveAgentTypes();
-    // 对标 cc：type 省略时默认 general-purpose（cc 的默认兜底类型）
+    // 对标 cc：type 省略时默认 general-purpose（cc 的默认兜底类型）。
+    // 必须在缺参校验之前兜底，否则 type 省略会被误判为"缺必需参数"（schema 已改 optional）。
     if (!params.type) {
       params.type = "general-purpose";
     }
+    if (!params.description || !params.prompt) {
+      return { output: "错误: 缺少必需参数 (description, prompt)", isError: true };
+    }
+
+    const validTypes = getActiveAgentTypes();
     if (!validTypes.includes(params.type)) {
       return { output: `错误: 无效的子代理类型 "${params.type}"，可选: ${validTypes.join(", ")}`, isError: true };
     }

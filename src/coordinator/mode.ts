@@ -15,8 +15,8 @@ export const COORDINATOR_ONLY_TOOLS = new Set<string>([
   "send_message",
   "task_output",
   "task_stop",
-  "task_list",
-  "task_get",
+  "bg_task_list",
+  "bg_task_get",
 ]);
 
 export function isCoordinatorMode(): boolean {

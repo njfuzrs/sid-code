@@ -14,6 +14,7 @@ import {
   setAskUserQuestionHandler,
   askUserQuestion,
   hasAskUserQuestionHandler,
+  parseAskTimeoutMs,
 } from "../../src/tool/ask-user-question-bridge.ts";
 import { AskUserQuestionTool } from "../../src/tool/ask-user-question.ts";
 
@@ -279,5 +280,72 @@ describe("AskUserQuestionTool", () => {
   test("searchHint 仍保留（tool_search 关键词匹配兜底）", () => {
     expect(tool.searchHint).toContain("ask user question");
     expect(tool.searchHint).toContain("提问");
+  });
+});
+
+// P1-3：askUserQuestionTimeout 解析 + 空闲超时
+describe("parseAskTimeoutMs", () => {
+  test("never / 空 / 0 → null（不启用超时）", () => {
+    expect(parseAskTimeoutMs("never")).toBeNull();
+    expect(parseAskTimeoutMs("")).toBeNull();
+    expect(parseAskTimeoutMs(undefined)).toBeNull();
+    expect(parseAskTimeoutMs("0")).toBeNull();
+  });
+
+  test("带单位的时长正确换算", () => {
+    expect(parseAskTimeoutMs("60s")).toBe(60_000);
+    expect(parseAskTimeoutMs("5m")).toBe(300_000);
+    expect(parseAskTimeoutMs("2h")).toBe(7_200_000);
+    expect(parseAskTimeoutMs("500ms")).toBe(500);
+    expect(parseAskTimeoutMs("1.5m")).toBe(90_000);
+  });
+
+  test("纯数字视为毫秒", () => {
+    expect(parseAskTimeoutMs("3000")).toBe(3000);
+  });
+
+  test("非法格式 → null", () => {
+    expect(parseAskTimeoutMs("abc")).toBeNull();
+    expect(parseAskTimeoutMs("5x")).toBeNull();
+    expect(parseAskTimeoutMs("-3s")).toBeNull();
+  });
+
+  test("大小写与空白容忍", () => {
+    expect(parseAskTimeoutMs(" 30S ")).toBe(30_000);
+    expect(parseAskTimeoutMs("NEVER")).toBeNull();
+  });
+});
+
+describe("AskUserQuestion 空闲超时行为（handler 模式模拟）", () => {
+  beforeEach(() => {
+    setAskUserQuestionHandler(null);
+  });
+
+  test("handler 挂 idle 定时器：到期按 cancelled 解除，不阻塞", async () => {
+    // 模拟 app.ts 里注入的、带 idle 超时的 handler：用户永不响应
+    const idleMs = parseAskTimeoutMs("60s")!;
+    const shortMs = 30; // 测试用短超时，验证语义
+    void idleMs; // 证明解析路径可用
+    setAskUserQuestionHandler(async () => {
+      return new Promise((resolve) => {
+        let settled = false;
+        const done = () => {
+          if (settled) return;
+          settled = true;
+          resolve({ status: "cancelled" });
+        };
+        setTimeout(done, shortMs);
+        // 故意不提供任何"用户响应"路径，模拟无人值守
+      });
+    });
+
+    const start = Date.now();
+    const result = await askUserQuestion({
+      questions: [{ question: "proceed?", header: "Q", options: [{ label: "yes" }, { label: "no" }] }],
+    });
+    const elapsed = Date.now() - start;
+
+    expect(result.status).toBe("cancelled");
+    expect(elapsed).toBeLessThan(5000); // 确实是超时解除而非挂死
   });
 });

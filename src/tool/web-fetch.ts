@@ -20,6 +20,56 @@ const RATE_LIMIT_WINDOW_MS = 60000;
 const MAX_RETRIES = 2;
 const RETRY_DELAYS = [1000, 3000]; // 1s, 3s
 
+/** 最大重定向跳数（对齐 claude-code MAX_REDIRECTS，防重定向环） */
+const MAX_REDIRECTS = 10;
+
+/** 内容缓存 TTL：15 分钟（对齐 CC WebFetch 缓存），避免同一 URL 短期内重复抓取 */
+const CACHE_TTL_MS = 15 * 60 * 1000;
+/** 缓存条目上限，防无界增长（LRU 近似：满时清理过期项，仍满则删最早插入项） */
+const CACHE_MAX_ENTRIES = 100;
+
+interface CacheEntry {
+  /** 抓取到的正文（未拼 prompt 引导 / 来源头，供不同 prompt 复用同一份内容） */
+  body: string;
+  expiresAt: number;
+}
+const contentCache = new Map<string, CacheEntry>();
+
+/** 读缓存：命中且未过期返回 body，否则清理过期项并返回 null。 */
+function getCachedBody(url: string): string | null {
+  const entry = contentCache.get(url);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    contentCache.delete(url);
+    return null;
+  }
+  // LRU touch：重新插入到末尾（Map 保留插入序）
+  contentCache.delete(url);
+  contentCache.set(url, entry);
+  return entry.body;
+}
+
+/** 写缓存：容量超限时先删过期项，仍满则删最早插入的一项。 */
+function setCachedBody(url: string, body: string): void {
+  if (contentCache.size >= CACHE_MAX_ENTRIES) {
+    const now = Date.now();
+    for (const [k, v] of contentCache) {
+      if (now > v.expiresAt) contentCache.delete(k);
+    }
+    if (contentCache.size >= CACHE_MAX_ENTRIES) {
+      const oldest = contentCache.keys().next().value;
+      if (oldest !== undefined) contentCache.delete(oldest);
+    }
+  }
+  contentCache.set(url, { body, expiresAt: Date.now() + CACHE_TTL_MS });
+}
+
+/** 测试辅助：清空内容缓存 + 主机限流历史（两处均为模块级全局，测试间需隔离）。 */
+export function __clearWebFetchCache(): void {
+  contentCache.clear();
+  hostRequestHistory.clear();
+}
+
 /** 主机请求历史记录 */
 const hostRequestHistory = new Map<string, number[]>();
 
@@ -71,10 +121,47 @@ function validateUrl(urlStr: string): string | null {
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     return `不支持的协议 ${url.protocol}，仅支持 http/https`;
   }
+  // 拒绝 user:pass@host 形式（凭据内嵌 URL，常用于绕过校验或钓鱼）
+  if (url.username || url.password) {
+    return `拒绝含内嵌凭据的 URL（user:pass@）: ${url.hostname}`;
+  }
   if (isPrivateOrLocalhost(url.hostname)) {
     return `拒绝访问私有/本地地址: ${url.hostname}`;
   }
   return null;
+}
+
+/**
+ * 判断重定向是否在允许范围内（对齐 claude-code isPermittedRedirect）。
+ * 只放行"同源"或"仅增删 www. 前缀"的重定向；跨 host 一律视为不允许，
+ * 交由上层返回提示让模型显式二次确认——防开放重定向 → SSRF（如公网域名 302 跳
+ * 169.254.169.254 云 metadata / 127.0.0.1 本地服务）。
+ */
+function isPermittedRedirect(fromUrl: string, toUrl: string): boolean {
+  try {
+    const from = new URL(fromUrl);
+    const to = new URL(toUrl);
+    if (from.protocol !== to.protocol) {
+      // 允许 http→https 升级（同 host），不允许 https→http 降级
+      if (!(from.protocol === "http:" && to.protocol === "https:")) return false;
+    }
+    const stripWww = (h: string) => h.replace(/^www\./, "");
+    return stripWww(from.hostname) === stripWww(to.hostname);
+  } catch {
+    return false;
+  }
+}
+
+/** http→https 升级（同 host，返回升级后的 URL 字符串） */
+function upgradeToHttps(urlStr: string): string {
+  try {
+    const url = new URL(urlStr);
+    if (url.protocol === "http:") {
+      url.protocol = "https:";
+      return url.href;
+    }
+  } catch { /* 忽略无效 URL */ }
+  return urlStr;
 }
 
 // ─── GitHub URL 转换 ──────────────────────────────────────────────────────────
@@ -130,7 +217,7 @@ function htmlToText(html: string): string {
 const webFetchSchema = lazySchema(() =>
   z.object({
     url: z.string().describe("要抓取的 URL（必须是 http 或 https）"),
-    prompt: z.string().optional().describe("可选：说明关注哪些内容（仅作提示，不影响抓取行为）"),
+    prompt: z.string().optional().describe("可选：说明你关注该页面的哪些信息；会作为提炼关注点拼在返回正文前，引导据此提取"),
   }),
 );
 
@@ -181,9 +268,19 @@ export class WebFetchTool implements Tool {
       return { output: `错误: ${validationError}`, isError: true };
     }
 
-    // GitHub blob URL 转换
-    const fetchUrl = convertGithubUrl(params.url);
+    // GitHub blob URL 转换 + http→https 升级（对齐 CC，减少明文抓取）
+    const fetchUrl = upgradeToHttps(convertGithubUrl(params.url));
     const isConverted = fetchUrl !== params.url;
+
+    // 缓存命中：15 分钟内同一 URL 直接复用正文（对齐 CC WebFetch 缓存）。
+    // 缓存的是抓取正文（不含来源头/prompt 引导）——不同 prompt 复用同一份内容，
+    // prompt 引导在 formatResult 阶段现拼，故命中缓存也能响应新的 prompt。
+    // 命中缓存时跳过限流计数（未发起真实请求）。
+    const cachedBody = getCachedBody(fetchUrl);
+    if (cachedBody !== null) {
+      log.info("TOOL", `✓ 缓存命中 ${fetchUrl}`);
+      return { output: this.formatResult(cachedBody, fetchUrl, isConverted, params.prompt) };
+    }
 
     // 限流检查
     const url = new URL(fetchUrl);
@@ -198,13 +295,43 @@ export class WebFetchTool implements Tool {
     log.info("TOOL", `▶ 抓取 ${fetchUrl}${isConverted ? ` (转换自 ${params.url})` : ""}`);
 
     // 带重试的抓取
-    return this.fetchWithRetry(fetchUrl, isConverted, signal, log);
+    return this.fetchWithRetry(fetchUrl, isConverted, params.prompt, signal, log);
+  }
+
+  /** 组装最终输出：来源头 + 可选 prompt 关注引导 + 截断正文。
+   *  正文单独缓存（不含头/引导），此处按当前请求现拼，保证缓存命中也能响应新 prompt。 */
+  private formatResult(
+    text: string,
+    fetchUrl: string,
+    isConverted: boolean,
+    prompt: string | undefined,
+  ): string {
+    // 截断超长内容
+    let body: string;
+    if (text.length > MAX_CONTENT_LENGTH) {
+      body = text.slice(0, MAX_CONTENT_LENGTH);
+      body += `\n\n... [内容已截断：共 ${text.length} 字符，仅显示前 ${MAX_CONTENT_LENGTH} 字符]`;
+    } else {
+      body = text;
+    }
+
+    const header = isConverted
+      ? `[已将 GitHub blob URL 转换为 raw URL]\n来源: ${fetchUrl}\n\n`
+      : `来源: ${fetchUrl}\n\n`;
+
+    // prompt 生效：作为"关注点"引导拼在正文前，提示模型据此提炼（对齐 CC 用 prompt 驱动提炼的意图）。
+    const promptGuide = prompt?.trim()
+      ? `关注点（请据此从下文提炼相关信息）: ${prompt.trim()}\n\n`
+      : "";
+
+    return header + promptGuide + body;
   }
 
   /** 带重试的抓取 */
   private async fetchWithRetry(
     fetchUrl: string,
     isConverted: boolean,
+    prompt: string | undefined,
     signal: AbortSignal | undefined,
     log: ReturnType<typeof getLogger>,
     retryCount = 0,
@@ -220,14 +347,62 @@ export class WebFetchTool implements Tool {
         : timeoutController.signal;
 
       let response: Response;
+      let currentUrl = fetchUrl;
       try {
-        response = await fetch(fetchUrl, {
-          signal: combinedSignal,
-          headers: {
-            "User-Agent": "Mozilla/5.0 (compatible; sid-code/1.0)",
-            "Accept": "text/html,text/plain,application/json,*/*",
-          },
-        });
+        // 手动逐跳跟随重定向：每一跳都对目标 host 重跑安全校验，
+        // 防开放重定向 → SSRF（公网域名 302 跳私有/本地地址）。
+        let redirects = 0;
+        while (true) {
+          const hopResponse = await fetch(currentUrl, {
+            signal: combinedSignal,
+            redirect: "manual",
+            headers: {
+              "User-Agent": "Mozilla/5.0 (compatible; sid-code/1.0)",
+              "Accept": "text/html,text/plain,application/json,*/*",
+            },
+          });
+
+          // 非重定向状态码：直接作为最终响应
+          if (hopResponse.status < 300 || hopResponse.status >= 400) {
+            response = hopResponse;
+            break;
+          }
+
+          // 重定向：解析 Location
+          const location = hopResponse.headers.get("location");
+          if (!location) {
+            response = hopResponse; // 无 Location，交给后续 !ok 处理
+            break;
+          }
+
+          if (++redirects > MAX_REDIRECTS) {
+            return {
+              output: `错误: 重定向次数超过上限 (${MAX_REDIRECTS})，疑似重定向环`,
+              isError: true,
+            };
+          }
+
+          const nextUrl = new URL(location, currentUrl).href;
+
+          // 跨 host 重定向：拒绝并提示模型显式确认（对齐 CC，防 SSRF）
+          if (!isPermittedRedirect(currentUrl, nextUrl)) {
+            return {
+              output:
+                `检测到跨站重定向（已拦截，防 SSRF/开放重定向）:\n` +
+                `  来源: ${currentUrl}\n  目标: ${nextUrl}\n\n` +
+                `如确需抓取目标地址，请用目标 URL 重新发起 web_fetch。`,
+              isError: true,
+            };
+          }
+
+          // 允许的重定向（同源/±www）：目标 host 仍需过私有 IP 校验
+          const hopError = validateUrl(nextUrl);
+          if (hopError) {
+            return { output: `错误: 重定向目标被拦截 - ${hopError}`, isError: true };
+          }
+
+          currentUrl = nextUrl;
+        }
       } finally {
         clearTimeout(timeoutId);
       }
@@ -251,22 +426,12 @@ export class WebFetchTool implements Tool {
         text = rawText;
       }
 
-      // 截断超长内容
-      let output: string;
-      if (text.length > MAX_CONTENT_LENGTH) {
-        output = text.slice(0, MAX_CONTENT_LENGTH);
-        output += `\n\n... [内容已截断：共 ${text.length} 字符，仅显示前 ${MAX_CONTENT_LENGTH} 字符]`;
-      } else {
-        output = text;
-      }
-
-      const header = isConverted
-        ? `[已将 GitHub blob URL 转换为 raw URL]\n来源: ${fetchUrl}\n\n`
-        : `来源: ${fetchUrl}\n\n`;
+      // 写缓存：存未截断/未拼引导的正文，供 15 分钟内不同 prompt 复用
+      setCachedBody(fetchUrl, text);
 
       log.info("TOOL", `✓ 抓取完成 ${text.length}字符${text.length > MAX_CONTENT_LENGTH ? "(已截断)" : ""}`);
 
-      return { output: header + output };
+      return { output: this.formatResult(text, fetchUrl, isConverted, prompt) };
     } catch (err: any) {
       // 判断是否应该重试
       const shouldRetry = this.shouldRetryError(err) && retryCount < MAX_RETRIES;
@@ -275,7 +440,7 @@ export class WebFetchTool implements Tool {
         const delay = RETRY_DELAYS[retryCount];
         log.info("TOOL", `⚠ 抓取失败，${delay}ms 后重试 (${retryCount + 1}/${MAX_RETRIES})`);
         await new Promise(resolve => setTimeout(resolve, delay));
-        return this.fetchWithRetry(fetchUrl, isConverted, signal, log, retryCount + 1);
+        return this.fetchWithRetry(fetchUrl, isConverted, prompt, signal, log, retryCount + 1);
       }
 
       if (err?.name === "AbortError") {

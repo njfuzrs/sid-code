@@ -423,3 +423,71 @@ describe("Read 工具 — 错误处理", () => {
     expect(result.output).toContain("路径无效");
   });
 });
+
+// P1-4：PDF 页数门限校验
+describe("Read 工具 - PDF 页数门限（P1-4）", () => {
+  /** 构造一个含 N 个 `/Type /Page` 对象的最小合法 PDF。*/
+  function makePdf(pageCount: number): string {
+    let body = "%PDF-1.4\n";
+    for (let i = 0; i < pageCount; i++) {
+      body += `${i + 1} 0 obj\n<< /Type /Page >>\nendobj\n`;
+    }
+    body += "%%EOF\n";
+    return body;
+  }
+
+  function writePdf(pageCount: number): string {
+    const dir = makeTmpDir();
+    const filePath = join(dir, `doc-${pageCount}p.pdf`);
+    writeFileSync(filePath, makePdf(pageCount));
+    return filePath;
+  }
+
+  test("小 PDF（≤10 页）不给 pages 也能直接读", async () => {
+    const filePath = writePdf(3);
+    const tool = new ReadTool();
+    const result = await tool.execute({ file_path: filePath });
+    expect(result.isError).toBeFalsy();
+    expect(result.output).toContain("共 3 页");
+  });
+
+  test("大 PDF（>10 页）不给 pages → 报错要求分页", async () => {
+    const filePath = writePdf(25);
+    const tool = new ReadTool();
+    const result = await tool.execute({ file_path: filePath });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("不分页直读上限");
+  });
+
+  test("大 PDF 给合法 pages（≤20 页）→ 放行", async () => {
+    const filePath = writePdf(25);
+    const tool = new ReadTool();
+    const result = await tool.execute({ file_path: filePath, pages: "1-5" });
+    expect(result.isError).toBeFalsy();
+    expect(result.output).toContain("关注页码 1-5");
+  });
+
+  test("pages 请求超过 20 页 → 报错", async () => {
+    const filePath = writePdf(50);
+    const tool = new ReadTool();
+    const result = await tool.execute({ file_path: filePath, pages: "1-30" });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("单次最多读取 20 页");
+  });
+
+  test("pages 格式非法 → 报错", async () => {
+    const filePath = writePdf(5);
+    const tool = new ReadTool();
+    const result = await tool.execute({ file_path: filePath, pages: "abc" });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("格式非法");
+  });
+
+  test("pages 超过实际页数 → 报错", async () => {
+    const filePath = writePdf(3);
+    const tool = new ReadTool();
+    const result = await tool.execute({ file_path: filePath, pages: "1-5" });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("超过 PDF 实际页数");
+  });
+});

@@ -30,6 +30,11 @@ import { SubAgentTool } from "../../src/agent/tool.ts";
 import { TaskOutputTool } from "../../src/tool/task-output.ts";
 import { TaskStopTool } from "../../src/tool/task-stop.ts";
 import { TaskListTool } from "../../src/tool/task-list.ts";
+import { TaskGetTool } from "../../src/tool/task-get.ts";
+import { TaskCreateTool } from "../../src/tool/structured-task-create.ts";
+import { TaskUpdateTool } from "../../src/tool/structured-task-update.ts";
+import { StructuredTaskGetTool } from "../../src/tool/structured-task-get.ts";
+import { StructuredTaskListTool } from "../../src/tool/structured-task-list.ts";
 import { SendMessageTool } from "../../src/tool/send-message.ts";
 import { TodoWriteTool } from "../../src/tool/todo-write.ts";
 import { EnterPlanModeTool } from "../../src/tool/enter-plan-mode.ts";
@@ -53,6 +58,11 @@ function makeExemptToolInstances(): { name: string; exempt: boolean }[] {
     new TaskOutputTool(),
     new TaskStopTool(),
     new TaskListTool(),
+    new TaskGetTool(),
+    new TaskCreateTool(),
+    new TaskUpdateTool(),
+    new StructuredTaskGetTool(),
+    new StructuredTaskListTool(),
     new SendMessageTool(providerRegistry, toolRegistry),
     new TodoWriteTool(),
     new EnterPlanModeTool(planManager),
@@ -98,7 +108,7 @@ function scanSourceForExemptToolNames(): Set<string> {
 }
 
 describe("循环检测豁免白名单对账审计（P2-3）", () => {
-  test("EXEMPT_TOOLS 非空且为预期的 8 个工具", () => {
+  test("EXEMPT_TOOLS 非空且为预期的豁免工具集合", () => {
     // 锚定当前豁免集合，任何增删都会让此断言失败并强制 review（是否真该豁免）。
     expect([...EXEMPT_TOOLS].sort()).toEqual(
       [
@@ -106,15 +116,22 @@ describe("循环检测豁免白名单对账审计（P2-3）", () => {
         "exit_plan_mode",
         "send_message",
         "sub_agent",
-        "task_list",
+        // 后台任务运行态查询/管理
+        "bg_task_list",
+        "bg_task_get",
         "task_output",
         "task_stop",
+        // 结构化任务清单维护
+        "task_create",
+        "task_update",
+        "task_list",
+        "task_get",
         "todo_write",
       ].sort(),
     );
   });
 
-  test("【实例对账】8 个豁免工具都自报 exemptFromLoopDetection=true", () => {
+  test("【实例对账】豁免工具都自报 exemptFromLoopDetection=true", () => {
     const instances = makeExemptToolInstances();
     for (const { name, exempt } of instances) {
       expect(exempt, `工具 ${name} 应自报 exemptFromLoopDetection=true`).toBe(true);

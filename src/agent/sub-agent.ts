@@ -14,6 +14,7 @@ import type { LegacyTool } from "../tool/types.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { FileReadTracker } from "../tool/file-read-tracker.ts";
 import { createStatefulTools, STATEFUL_TOOL_NAMES } from "../tool/stateful-tools.ts";
+import { TodoWriteTool } from "../tool/todo-write.ts";
 import {
   StructuredOutputTool,
   structuredOutputPromptSuffix,
@@ -1331,6 +1332,12 @@ export class SubAgent {
     for (const t of filteredTools) {
       // 有状态工具用子代理独立 tracker 重建；无状态工具直接复用（安全）
       let replacement = STATEFUL_TOOL_NAMES.has(t.name()) ? rebuilt.get(t.name()) : undefined;
+      // P1-2：todo_write 持有 currentTodos 内存态（也是"先读后写"外的可变状态载体）。
+      // 子代理若复用父级同一实例，并发写会污染主会话清单——给每个子代理一份**独立实例**，
+      // 实现进程内 todo 追踪隔离（与 FileReadTracker 工具同构思路，无需跨执行器传 agentId）。
+      if (!replacement && t.name() === "todo_write") {
+        replacement = new TodoWriteTool();
+      }
       // G13：save_memory 绑定当前子代理类型，让 agent scope 能定位到该类型记忆目录。
       // 用鸭子类型探测 withAgentType，避免对 MemoryTool 的强类型 import 依赖。
       if (!replacement && agentType && t.name() === "save_memory" && typeof (t as any).withAgentType === "function") {

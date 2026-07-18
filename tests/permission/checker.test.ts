@@ -313,4 +313,51 @@ describe("PermissionChecker", () => {
     });
     expect(result.allowed).toBe(true);
   });
+
+  // P0-2：allow 规则复合命令拆分（对齐 claude-code bashPermissions every(allow)）
+  // 注：matchRule 用 minimatch glob，`*` 不跨 `/`，故测试命令避免带路径分隔符，
+  // 保证 glob 能匹配、聚焦验证"复合命令拆分"这一修复点本身。
+  describe("allow 规则复合命令感知", () => {
+    test("单命令命中 allow 前缀规则 → 放行", async () => {
+      const checker = new PermissionChecker(defaultConfig(), { allow: ["Bash(ls *)"] });
+      const result = await checker.check({
+        toolName: "bash",
+        input: { command: "ls -la" },
+      });
+      expect(result.allowed).toBe(true);
+    });
+
+    test("复合命令后半段未被 allow 覆盖 → 不放行（不因 * 贪婪吞掉而越权）", async () => {
+      const checker = new PermissionChecker(defaultConfig(), { allow: ["Bash(ls *)"] });
+      // 修复前：`ls *` 的 * 贪婪匹配整条 "ls -la && whoami" 而误放行；
+      // 修复后：拆成 ["ls -la", "whoami"]，whoami 未被 allow 覆盖 → 不放行。
+      const result = await checker.check({
+        toolName: "bash",
+        input: { command: "ls -la && whoami" },
+      });
+      expect(result.allowed).toBe(false);
+    });
+
+    test("复合命令所有子命令都被 allow 覆盖 → 放行", async () => {
+      const checker = new PermissionChecker(defaultConfig(), {
+        allow: ["Bash(ls *)", "Bash(pwd)"],
+      });
+      const result = await checker.check({
+        toolName: "bash",
+        input: { command: "ls -la && pwd" },
+      });
+      expect(result.allowed).toBe(true);
+    });
+
+    test("引号内的 && 不被误拆（整条视为单命令匹配）", async () => {
+      const checker = new PermissionChecker(defaultConfig(), {
+        allow: ['Bash(echo *)'],
+      });
+      const result = await checker.check({
+        toolName: "bash",
+        input: { command: 'echo "a && b"' },
+      });
+      expect(result.allowed).toBe(true);
+    });
+  });
 });

@@ -392,6 +392,32 @@ describe("SubAgent plan 类型", () => {
     expect(result.isError).toBe(true);
     expect(result.output).toContain("无效的子代理类型");
   });
+
+  // P2-16：type 省略时兜底 general-purpose（schema 已改 optional，兜底不再是死代码）
+  test("SubAgentTool 省略 type 时默认 general-purpose（不再误报缺参）", async () => {
+    const provider = new MockProvider();
+    const toolRegistry = new Registry();
+    const tool = new SubAgentTool(mockProviderRegistry(provider), toolRegistry);
+
+    const result = await tool.execute({
+      description: "无类型测试",
+      prompt: "测试",
+    });
+
+    // 不应因缺 type 报"缺少必需参数"，而是兜底 general-purpose 正常执行
+    expect(result.output).not.toContain("缺少必需参数");
+    expect(result.isError).toBe(false);
+  });
+
+  test("SubAgentTool 仍要求 description/prompt", async () => {
+    const provider = new MockProvider();
+    const toolRegistry = new Registry();
+    const tool = new SubAgentTool(mockProviderRegistry(provider), toolRegistry);
+
+    const result = await tool.execute({ type: "explore" });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("缺少必需参数");
+  });
 });
 
 // ─── extractFinalText / isLikelyThinking 启发式过滤（Bug 2 第三道防线）───

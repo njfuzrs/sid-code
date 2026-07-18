@@ -82,6 +82,29 @@ export function hasAskUserQuestionHandler(): boolean {
 }
 
 /**
+ * 解析 askUserQuestionTimeout 配置值 → 毫秒数。
+ * 支持："60s" / "5m" / "2h" / "never" / 纯数字（毫秒）。
+ * 返回 null 表示不启用超时（"never"、空、或无法解析）。
+ */
+export function parseAskTimeoutMs(value: string | undefined): number | null {
+  if (!value) return null;
+  const v = value.trim().toLowerCase();
+  if (v === "never" || v === "" || v === "0") return null;
+  // 纯数字：视为毫秒
+  if (/^\d+$/.test(v)) {
+    const ms = parseInt(v, 10);
+    return ms > 0 ? ms : null;
+  }
+  const m = v.match(/^(\d+(?:\.\d+)?)\s*(ms|s|m|h)$/);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  if (!(n > 0)) return null;
+  const unit = m[2];
+  const mult = unit === "ms" ? 1 : unit === "s" ? 1000 : unit === "m" ? 60_000 : 3_600_000;
+  return Math.round(n * mult);
+}
+
+/**
  * 发起一次提问。工具层调用入口。
  *
  * 无 handler（headless）时立即返回 unavailable，不阻塞；handler 抛错时同样降级为

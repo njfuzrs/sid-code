@@ -1,6 +1,6 @@
 /**
- * TaskGetTool — 获取单个任务详情
- * 对标 claude-code TaskGetTool
+ * BgTaskGetTool（工具名 bg_task_get）— 获取单个后台任务详情
+ * 后台任务运行态查询，对应 CC 的 TaskOutput 族；结构化清单单条查询见 structured-task-get.ts
  */
 
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
@@ -22,14 +22,16 @@ export class TaskGetTool implements Tool {
   readonly zodSchema = taskGetSchema();
   /** 长尾工具：仅在有后台任务时使用，延迟加载，由 tool_search 按需调出 */
   readonly shouldDefer = true;
-  readonly searchHint = "background task get detail 后台 任务 详情 查询";
+  readonly searchHint = "background task get detail 后台 任务 详情 查询 bg_task_get";
+  /** 任务管理类工具，连续查询不同后台任务状态是正当轮询而非循环，豁免循环检测（与 bg_task_list 一致） */
+  readonly exemptFromLoopDetection = true;
 
   name(): string {
-    return "task_get";
+    return "bg_task_get";
   }
 
   description(): string {
-    return "获取单个后台任务的详细信息，包含状态、进度、输出等。";
+    return "获取单个后台任务（Shell/Agent/Workflow）的详细信息，包含状态、进度、输出等。注意：这是运行态后台任务查询，不是结构化任务清单（后者用 task_get）。";
   }
 
   inputSchema(): Record<string, unknown> {

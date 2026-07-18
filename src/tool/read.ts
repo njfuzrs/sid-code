@@ -28,6 +28,53 @@ const DEFAULT_MAX_LINES = 2000;
 /** 文件大小上限（字节）：超过此值拒绝全量读取，要求指定 offset/limit */
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB
 
+/** PDF 单次读取最大页数（对齐 CC PDF_MAX_PAGES_PER_READ=20）。*/
+const PDF_MAX_PAGES_PER_READ = 20;
+/** 不指定 pages 时允许直接整份读取的页数上限（对齐 CC PDF_AT_MENTION_INLINE_THRESHOLD=10）。*/
+const PDF_INLINE_PAGE_THRESHOLD = 10;
+
+/**
+ * 估算 PDF 页数（无第三方库，扫描原始字节）。
+ * 优先统计 `/Type /Page`（非 /Pages）对象数；回退到 `/Count N`。
+ * 返回 null 表示无法可靠判定（不阻断，避免误伤加密/异形 PDF）。
+ */
+function estimatePdfPageCount(buffer: Buffer): number | null {
+  // Buffer→latin1 字符串足以匹配 PDF 结构关键字（PDF 语法用 ASCII）
+  const text = buffer.toString("latin1");
+  // /Type /Page（后面不接 s，排除 /Pages 树节点）；容忍中间空白
+  const pageMatches = text.match(/\/Type\s*\/Page(?![a-zA-Z])/g);
+  if (pageMatches && pageMatches.length > 0) return pageMatches.length;
+  // 回退：页树根的 /Count N（取最大值，防嵌套 /Kids 子树多个 /Count）
+  const countMatches = [...text.matchAll(/\/Count\s+(\d+)/g)].map((m) => parseInt(m[1], 10));
+  if (countMatches.length > 0) return Math.max(...countMatches);
+  return null;
+}
+
+/**
+ * 解析 pages 参数（如 "1-5" / "3" / "2,4,7"），返回涉及的页码数量。
+ * 解析失败返回 null（交由上层报格式错误）。
+ */
+function countRequestedPages(pages: string): number | null {
+  const parts = pages.split(",").map((p) => p.trim()).filter(Boolean);
+  if (parts.length === 0) return null;
+  let total = 0;
+  for (const part of parts) {
+    const range = part.match(/^(\d+)-(\d+)$/);
+    if (range) {
+      const start = parseInt(range[1], 10);
+      const end = parseInt(range[2], 10);
+      if (start < 1 || end < start) return null;
+      total += end - start + 1;
+    } else if (/^\d+$/.test(part)) {
+      if (parseInt(part, 10) < 1) return null;
+      total += 1;
+    } else {
+      return null; // 非法片段
+    }
+  }
+  return total;
+}
+
 /**
  * 设备文件黑名单：会导致无限输出或阻塞读取的设备路径。
  * 对标 CC BLOCKED_DEVICE_PATHS。
@@ -220,7 +267,7 @@ const readSchema = lazySchema(() =>
     file_path: z.string().describe("要读取的文件的绝对路径"),
     offset: z.number().optional().describe("起始行号（从 1 开始），默认为 1"),
     limit: z.number().optional().describe(`读取的最大行数，默认 ${DEFAULT_MAX_LINES} 行`),
-    pages: z.string().optional().describe("PDF 文件的页码范围（如 \"1-5\" 或 \"3\"），仅对 .pdf 生效，一次最多 20 页"),
+    pages: z.string().optional().describe("PDF 文件的页码范围（如 \"1-5\"、\"3\"、\"2,4,7\"），仅对 .pdf 生效。单次最多 20 页；PDF 超过 10 页时必须指定该参数，否则会报错要求分页"),
   }),
 );
 
@@ -570,13 +617,49 @@ export class ReadTool implements Tool {
           isError: true,
         };
       }
-      const buffer = await Bun.file(filePath).arrayBuffer();
-      const base64 = Buffer.from(buffer).toString("base64");
+      const buffer = Buffer.from(await Bun.file(filePath).arrayBuffer());
+
+      // 页数门限校验（对齐 CC）：避免大 PDF 整份 base64 盲传撑爆上下文/超 provider 限制。
+      const pageCount = estimatePdfPageCount(buffer);
+
+      if (params.pages) {
+        // 给了 pages：校验格式 + 请求页数不超单次上限
+        const requested = countRequestedPages(params.pages);
+        if (requested === null) {
+          return {
+            output: `错误: pages 参数格式非法 "${params.pages}"。支持 "1-5"、"3"、"2,4,7" 等格式。`,
+            isError: true,
+          };
+        }
+        if (requested > PDF_MAX_PAGES_PER_READ) {
+          return {
+            output: `错误: 单次最多读取 ${PDF_MAX_PAGES_PER_READ} 页，本次请求 ${requested} 页。请缩小 pages 范围分次读取。`,
+            isError: true,
+          };
+        }
+        if (pageCount !== null && requested > pageCount) {
+          return {
+            output: `错误: 请求页数 ${requested} 超过 PDF 实际页数 ${pageCount}。`,
+            isError: true,
+          };
+        }
+      } else if (pageCount !== null && pageCount > PDF_INLINE_PAGE_THRESHOLD) {
+        // 未给 pages 且页数超阈值：拒绝盲传整份，要求显式分页
+        return {
+          output:
+            `错误: PDF 共 ${pageCount} 页，超过不分页直读上限 (${PDF_INLINE_PAGE_THRESHOLD} 页)。` +
+            `请用 pages 参数指定范围（如 "1-${PDF_MAX_PAGES_PER_READ}"），单次最多 ${PDF_MAX_PAGES_PER_READ} 页。`,
+          isError: true,
+        };
+      }
+
+      const base64 = buffer.toString("base64");
+      const pageCountHint = pageCount !== null ? `，共 ${pageCount} 页` : "";
       const pagesHint = params.pages ? `，关注页码 ${params.pages}` : "";
 
-      log.info("TOOL", `✓ 读取 PDF ${filePath} (${(stat.size / 1024).toFixed(0)} KB)`);
+      log.info("TOOL", `✓ 读取 PDF ${filePath} (${(stat.size / 1024).toFixed(0)} KB${pageCountHint})`);
       return {
-        output: `[PDF 文档: ${filePath} (${(stat.size / 1024).toFixed(0)} KB)${pagesHint}]`,
+        output: `[PDF 文档: ${filePath} (${(stat.size / 1024).toFixed(0)} KB${pageCountHint})${pagesHint}]`,
         mediaBlocks: [{ kind: "document", mediaType: "application/pdf", data: base64 }],
       };
     } catch (err: any) {

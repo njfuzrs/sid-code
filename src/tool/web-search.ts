@@ -19,8 +19,59 @@ const webSearchSchema = lazySchema(() =>
   z.object({
     query: z.string().describe("搜索关键词或自然语言问题"),
     max_results: z.number().optional().describe("最大返回结果数（默认 5，最大 10）"),
+    allowed_domains: z
+      .array(z.string())
+      .optional()
+      .describe("仅保留这些域名的结果（如 [\"docs.python.org\"]）。与 blocked_domains 互斥"),
+    blocked_domains: z
+      .array(z.string())
+      .optional()
+      .describe("排除这些域名的结果。与 allowed_domains 互斥"),
   }),
 );
+
+/** 提取 URL 的 hostname（失败返回空串）。 */
+function urlHostname(url: string): string {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * 判断 host 是否匹配某个域名规则（后缀匹配：规则 "example.com" 命中 "docs.example.com"）。
+ */
+function hostMatchesDomain(host: string, domain: string): boolean {
+  const d = domain.trim().toLowerCase().replace(/^\*\./, "");
+  if (!d) return false;
+  return host === d || host.endsWith("." + d);
+}
+
+/**
+ * 按 allowed/blocked 域名过滤搜索结果（后端无关，对齐 CC WebSearch 的 allowed/blocked_domains）。
+ * allowed 非空：只保留命中 allowed 的；blocked 非空：剔除命中 blocked 的。
+ */
+export function filterResultsByDomain<T extends { url: string }>(
+  results: T[],
+  allowed?: string[],
+  blocked?: string[],
+): T[] {
+  let out = results;
+  if (allowed && allowed.length > 0) {
+    out = out.filter((r) => {
+      const host = urlHostname(r.url);
+      return host && allowed.some((d) => hostMatchesDomain(host, d));
+    });
+  }
+  if (blocked && blocked.length > 0) {
+    out = out.filter((r) => {
+      const host = urlHostname(r.url);
+      return !host || !blocked.some((d) => hostMatchesDomain(host, d));
+    });
+  }
+  return out;
+}
 
 export class WebSearchTool implements Tool {
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
@@ -50,7 +101,8 @@ export class WebSearchTool implements Tool {
 - 返回搜索结果列表（标题 + URL + 摘要），不返回完整页面内容
 - 如果需要深入阅读某个搜索结果，请用 web_fetch 抓取对应 URL
 - 搜索词建议使用英文以获得更好的结果，除非用户明确要求中文搜索
-- 典型工作流：web_search 找到相关 URL → web_fetch 深入阅读 → 综合回答`;
+- 典型工作流：web_search 找到相关 URL → web_fetch 深入阅读 → 综合回答
+- 可用 allowed_domains 限定只搜某些站点（如官方文档域名），或 blocked_domains 排除干扰站点；两者互斥`;
   }
 
   inputSchema(): Record<string, unknown> {
@@ -59,11 +111,26 @@ export class WebSearchTool implements Tool {
 
   async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
     const log = getLogger();
-    const params = input as { query: string; max_results?: number };
+    const params = input as {
+      query: string;
+      max_results?: number;
+      allowed_domains?: string[];
+      blocked_domains?: string[];
+    };
 
     // 1. 参数校验
     if (!params.query || params.query.trim() === "") {
       return { output: "错误: query 参数不能为空", isError: true };
+    }
+
+    // allowed_domains 与 blocked_domains 互斥（对齐 CC 语义，避免歧义）
+    const hasAllowed = Array.isArray(params.allowed_domains) && params.allowed_domains.length > 0;
+    const hasBlocked = Array.isArray(params.blocked_domains) && params.blocked_domains.length > 0;
+    if (hasAllowed && hasBlocked) {
+      return {
+        output: "错误: allowed_domains 与 blocked_domains 不能同时使用，请只用其中一个。",
+        isError: true,
+      };
     }
 
     // 2. 限流检查
@@ -88,22 +155,30 @@ export class WebSearchTool implements Tool {
 
     // 4. 执行搜索
     const maxResults = Math.min(params.max_results ?? 5, 10);
+    // 有域名过滤时多取一些候选，过滤后再截断到 maxResults，避免过滤后结果过少。
+    const fetchCount = (hasAllowed || hasBlocked) ? Math.min(maxResults * 3, 30) : maxResults;
     log.info("TOOL", `▶ 搜索 "${params.query}" (后端: ${this.backend.name}, 最多 ${maxResults} 条)`);
 
     try {
       const response = await this.backend.search(params.query, {
-        maxResults,
+        maxResults: fetchCount,
         signal,
       });
 
+      // 4.5 域名过滤（后端无关）+ 截断到 maxResults
+      let results = filterResultsByDomain(response.results, params.allowed_domains, params.blocked_domains);
+      results = results.slice(0, maxResults);
+      const filtered: SearchResponse = { ...response, results };
+
       // 5. 格式化输出
-      if (response.results.length === 0) {
+      if (filtered.results.length === 0) {
+        const hint = (hasAllowed || hasBlocked) ? "（域名过滤后无匹配结果，可调整 allowed/blocked_domains）" : "";
         log.info("TOOL", `✓ 搜索完成，无结果`);
-        return { output: `未找到与 "${params.query}" 相关的搜索结果。` };
+        return { output: `未找到与 "${params.query}" 相关的搜索结果。${hint}` };
       }
 
-      log.info("TOOL", `✓ 搜索完成，${response.results.length} 条结果，耗时 ${response.durationMs}ms`);
-      return { output: this.formatResults(params.query, response) };
+      log.info("TOOL", `✓ 搜索完成，${filtered.results.length} 条结果，耗时 ${response.durationMs}ms`);
+      return { output: this.formatResults(params.query, filtered) };
     } catch (err: any) {
       if (err?.name === "AbortError") {
         return { output: "搜索已取消", isError: true };

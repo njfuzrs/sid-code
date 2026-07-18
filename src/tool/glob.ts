@@ -1,6 +1,10 @@
 /**
  * Glob 工具 - 文件名模式匹配
- * 对标 Claude Code：基于 ripgrep 构建（--files --glob），按修改时间降序排列，最近编辑的在前面。
+ * 基于 ripgrep 构建（--files --glob），按修改时间**降序**排列，最近编辑的在前面。
+ *
+ * ⚠️ 排序方向刻意偏离 CC：CC 用 `--sort=modified`（oldest-first），本工具用 `--sortr=modified`
+ * （newest-first）。对 agent 而言"最近改过的文件优先"更实用（通常正是当前任务相关文件），
+ * 故有意保留此差异，非 bug。参见 P2-6 审计结论。
  *
  * 架构说明（2026-07 重写 + 复审补全）：
  * 旧实现用纯 JS `glob` 库，存在多个缺口，现全部修复：

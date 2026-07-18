@@ -32,18 +32,42 @@ const bashSchema = lazySchema(() =>
   z.object({
     command: z.string().describe("要执行的 shell 命令"),
     description: z.string().optional().describe("用自然语言描述这条命令要做什么（会显示给用户审批）"),
-    timeout: z.number().optional().describe("超时时间（毫秒），默认 120000（2 分钟），最长 600000（10 分钟）"),
+    timeout: z.number().optional().describe("超时时间（毫秒），默认 120000（2 分钟），最长 600000（10 分钟）；可用 BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS 环境变量覆盖默认值与上限"),
     cwd: z.string().optional().describe("工作目录，默认为当前目录"),
-    is_background: z.boolean().optional().describe("是否后台运行（不等待命令完成，立即返回 PID）"),
-    run_in_background: z.boolean().optional().describe("是否以后台任务模式运行（通过 Task 系统管理，完成后通知）"),
+    is_background: z.boolean().optional().describe("[已废弃，请用 run_in_background] 后台运行。为兼容保留，行为已等同 run_in_background（走 Task 系统）"),
+    run_in_background: z.boolean().optional().describe("是否以后台任务模式运行（通过 Task 系统管理，返回 task_id，完成后通知；用 task_output 查询输出）"),
   }),
 );
 
 /** Bash 输出截断阈值（对标 Claude Code 30000 字符） */
 const MAX_OUTPUT_LENGTH = 30000;
 
-/** 后台进程延迟时间（200ms 后切换到后台） */
-const BACKGROUND_DELAY_MS = 200;
+/** 硬性下限：任何超时都不得低于 1 秒（防误传 0/负值把命令瞬间掐死）。 */
+const TIMEOUT_FLOOR_MS = 1000;
+/** 出厂默认超时（未传 timeout 且未配 env 时）：2 分钟。 */
+const FACTORY_DEFAULT_TIMEOUT_MS = 120000;
+/** 出厂上限（未配 env 时）：10 分钟。 */
+const FACTORY_MAX_TIMEOUT_MS = 600000;
+
+/**
+ * 解析 bash 超时的默认值与上限，支持 env 覆盖（对齐 CC 的
+ * BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS）。
+ * - 非法/非正数 env 值一律忽略，回落出厂值。
+ * - 保证 floor ≤ default ≤ max（default 不超过 max，max 不低于 floor）。
+ */
+export function resolveTimeoutBounds(): { defaultMs: number; maxMs: number } {
+  const parseEnv = (name: string): number | undefined => {
+    const raw = process.env[name];
+    if (!raw) return undefined;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : undefined;
+  };
+  const maxMs = Math.max(parseEnv("BASH_MAX_TIMEOUT_MS") ?? FACTORY_MAX_TIMEOUT_MS, TIMEOUT_FLOOR_MS);
+  const defaultRaw = parseEnv("BASH_DEFAULT_TIMEOUT_MS") ?? FACTORY_DEFAULT_TIMEOUT_MS;
+  // 默认值夹在 [floor, max] 内
+  const defaultMs = Math.min(Math.max(defaultRaw, TIMEOUT_FLOOR_MS), maxMs);
+  return { defaultMs, maxMs };
+}
 
 /**
  * 前台命令实时进度节流间隔（毫秒）。
@@ -273,6 +297,7 @@ export class BashTool implements Tool {
   usageGuide(): string {
     return `- 仅用于需要 shell 执行的系统命令，文件操作请用专用工具
 - 不要用 bash 执行 cat/head/tail（用 read）、echo/cat 写文件（用 write）、sed/awk（用 edit）、find（用 glob）、grep（用 grep 工具）
+- 要向用户传达信息时，直接在回复正文里输出文本，不要用 echo/printf 打印（除非确实需要把文本喂给管道/重定向等 shell 流程）
 - 必须提供 description 参数，用自然语言描述命令意图
 - 设置合理的 timeout，默认 2 分钟，最长 10 分钟
 - 输出超过 30000 字符会被自动截断
@@ -418,18 +443,18 @@ export class BashTool implements Tool {
 
     log.info("TOOL", `▶ 执行: ${params.command.slice(0, 200)}${params.command.length > 200 ? "..." : ""}`);
 
-    // Task 系统后台模式（新）
-    if (params.run_in_background) {
+    // Task 系统后台模式（统一通道）。
+    // P2-10：is_background 是旧后台通道（不进 Task 系统、无 task_id、无完成通知），弱模型
+    // 选到它会落入"无法查询输出"死角。现把两个参数统一重定向到 Task 系统——is_background
+    // 保留仅为向后兼容（schema 已标 deprecated），语义与 run_in_background 完全一致。
+    if (params.run_in_background || params.is_background) {
       return this.executeWithTaskSystem(params, signal);
     }
 
-    // 旧后台模式（兼容）
-    if (params.is_background) {
-      return this.executeBackground(params);
-    }
-
-    // 超时限制：最短 1 秒，最长 10 分钟
-    const timeout = Math.min(Math.max(params.timeout || 120000, 1000), 600000);
+    // 超时限制：默认值/上限支持 env 覆盖（BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS），
+    // 下限恒为 1 秒。未传 timeout 用默认值，传了则夹在 [1s, max] 内。
+    const { defaultMs, maxMs } = resolveTimeoutBounds();
+    const timeout = Math.min(Math.max(params.timeout || defaultMs, TIMEOUT_FLOOR_MS), maxMs);
     const cwd = this.resolveCwd(params.cwd);
     const { shell, args } = getPlatformShell({ login: !this.snapshotFilePath });
 
@@ -629,86 +654,6 @@ export class BashTool implements Tool {
       // 异常路径也清理 cwd 临时文件，避免泄漏
       if (cwdFile) { try { unlinkSync(cwdFile); } catch { /* 忽略 */ } }
       return { output: formatSpawnError(err, cwd), isError: true };
-    }
-  }
-
-  /** 后台执行命令（不追踪 cwd：命令未完成，pwd -P 行不应触发写回） */
-  private async executeBackground(params: {
-    command: string;
-    cwd?: string;
-  }): Promise<ToolResult> {
-    const log = getLogger();
-    await this.snapshotReady;
-    const cwd = this.resolveCwd(params.cwd);
-    const { shell, args } = getPlatformShell({ login: !this.snapshotFilePath });
-    // 后台命令：注入快照但不追踪 cwd
-    const { commandString: rawBgCommand } = this.buildCommand(params.command, { trackCwd: false });
-    const commandString = this.sandboxManager?.isEnabled()
-      ? this.sandboxManager.wrapCommand(rawBgCommand)
-      : rawBgCommand;
-
-    // 准备环境变量（如果启用了清理）
-    let env = process.env;
-    if (globalConfig && (globalConfig as any).sanitizeEnv) {
-      const { sanitizeEnv } = await import("../config/env-sanitizer.ts");
-      env = sanitizeEnv(process.env as Record<string, string>);
-      log.debug("BASH", `环境变量已清理，保留 ${Object.keys(env).length} 个变量`);
-    }
-
-    try {
-      // detached（仅 POSIX）→ 子进程成进程组组长，退出时 killBackgroundProcesses 可 process.kill(-pid) 清理整棵树
-      const proc = spawn({
-        cmd: [shell, ...args, commandString],
-        cwd,
-        env,
-        stdout: "pipe",
-        stderr: "pipe",
-        detached: DETACH,
-      });
-
-      // 等待一小段时间收集初始输出
-      await new Promise(resolve => setTimeout(resolve, BACKGROUND_DELAY_MS));
-
-      const pid = proc.pid;
-      backgroundPids.add(pid);
-
-      // 尝试读取初始输出（非阻塞）
-      // T5-B4：旧实现用 `new Response(proc.stdout).text()` 与 100ms race——超时后
-      // Response 仍持有 reader 消费整个 stdout（后台进程可能输出很久），reader 被
-      // abandon 不 cancel → 孤儿读取。改用显式 getReader + 超时 cancel，只读首个 chunk。
-      let initialOutput = "";
-      const reader = proc.stdout.getReader();
-      let readTimedOut = false;
-      const readTimer = setTimeout(() => {
-        readTimedOut = true;
-        // cancel 会解除 reader 对 stdout 的占用，后台进程继续运行（stdout 变为无消费者）
-        reader.cancel().catch(() => { /* 已释放 */ });
-      }, 100);
-      try {
-        const { value } = await reader.read();
-        if (value && !readTimedOut) {
-          initialOutput = new TextDecoder().decode(value).slice(0, 500); // 只取前 500 字符
-        }
-      } catch {
-        // 忽略读取失败
-      } finally {
-        clearTimeout(readTimer);
-        // T5-B4：读完首 chunk 或超时后释放锁，让 stdout pipe 不再被本函数占用，
-        // 后台进程可继续独立运行、输出被系统丢弃（不阻塞、不泄漏）。
-        try { await reader.cancel(); } catch { /* 已 cancel */ }
-        try { reader.releaseLock(); } catch { /* 已释放 */ }
-      }
-
-      log.info("TOOL", `✓ 命令已在后台运行 PID=${pid}`);
-
-      let output = `命令已在后台运行 (PID: ${pid})`;
-      if (initialOutput) {
-        output += `\n\n初始输出:\n${initialOutput}`;
-      }
-
-      return { output };
-    } catch (err: any) {
-      return { output: `后台执行失败: ${err.message}`, isError: true };
     }
   }
 

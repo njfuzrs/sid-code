@@ -563,7 +563,7 @@ export class PermissionChecker implements Checker {
 
     // Step 8: allow 规则（工具级）
     if (this.rules) {
-      const allowDecision = checkRules({ deny: [], allow: this.rules.allow, ask: [] }, req);
+      const allowDecision = this.checkAllowRules(req);
       if (allowDecision && allowDecision.allowed) {
         log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(allow规则)`);
         return { ...allowDecision, decisionReason: { type: "rule", rule: "allow", behavior: "allow" } };
@@ -1020,6 +1020,54 @@ export class PermissionChecker implements Checker {
     }
 
     return null; // 无危险
+  }
+
+  /**
+   * allow 规则检查（复合命令感知）。
+   *
+   * 对齐 claude-code bashPermissions：`Bash(safe *)` 这类前缀/glob allow 规则**不能**放行
+   * `safe && evil` 这样的复合命令。否则 `allow: ["Bash(ls *)"]` 会因 `ls *` 的 `*` 贪婪吞掉
+   * `ls && ./untrusted.sh` 的后半段而整体放行，形成 allow 越权。
+   *
+   * 修复：bash 命令先 splitCompoundCommand 拆成子命令，要求**每个子命令都被 allow 覆盖**
+   * （every(allow)）才放行；任一子命令不在 allow 覆盖内 → 不放行（落到后续 ask）。
+   * 非 bash 工具（file_path/pattern 类）保持原逻辑，整条匹配。
+   *
+   * 说明：危险命令检测（Step 2）已在本步之前对复合命令拆分逐子命令查危险模式，
+   * 故 `ls && curl|sh` 这类会被更早拦下；本修复补的是"逃过危险模式、又非受保护路径写入的
+   * 第二条命令"（如 `ls && ./x.sh`、`ls && git push`）被 allow 前缀规则误放行的越权缺口。
+   */
+  private checkAllowRules(req: PermissionRequest): Decision | null {
+    if (!this.rules) return null;
+    const allowRules = { deny: [], allow: this.rules.allow, ask: [] };
+
+    // 非 bash：保持原整条匹配语义
+    if (req.toolName !== "bash") {
+      return checkRules(allowRules, req);
+    }
+
+    const command = (req.input as { command?: string })?.command ?? "";
+    const subCommands = splitCompoundCommand(command);
+
+    // 单命令（无 &&/||/;/| 复合）：等价于原逻辑，直接整条匹配
+    if (subCommands.length <= 1) {
+      return checkRules(allowRules, req);
+    }
+
+    // 复合命令：逐子命令校验，全部命中 allow 才放行（every(allow)）
+    for (const sub of subCommands) {
+      const subReq: PermissionRequest = {
+        ...req,
+        input: { ...(req.input as object), command: sub },
+      };
+      const subDecision = checkRules(allowRules, subReq);
+      if (!subDecision || !subDecision.allowed) {
+        // 任一子命令不在 allow 覆盖内 → 整体不放行，落到后续 ask
+        return null;
+      }
+    }
+    // 所有子命令都被 allow 覆盖
+    return { allowed: true };
   }
 
   /**

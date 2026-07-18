@@ -66,7 +66,9 @@ const DEFAULT_MAX_TOKENS = 512;
 /** 三级快速路径：这些工具在工作区内操作时无需调 API */
 const AUTO_ALLOW_TOOLS = new Set([
   "read", "read_many", "glob", "grep", "ls", "ripgrep",
-  "task_list", "task_get", "web_search", "web_fetch",
+  "bg_task_list", "bg_task_get", "web_search", "web_fetch",
+  // 结构化任务清单：纯内存态清单读写，无外部副作用，工作区内自动放行
+  "task_list", "task_get", "task_create", "task_update",
 ]);
 
 /** 工具在工作区内执行 write/edit 时自动放行 */

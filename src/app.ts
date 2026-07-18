@@ -4125,11 +4125,21 @@ export class App {
 
     // 设置 TUI AskUserQuestion 提问回调（结构化选择题，对标 cc AskUserQuestion）
     {
-      const { setAskUserQuestionHandler } = await import("./tool/ask-user-question-bridge.ts");
+      const { setAskUserQuestionHandler, parseAskTimeoutMs } = await import("./tool/ask-user-question-bridge.ts");
       setAskUserQuestionHandler(async (req, signal) => {
         return new Promise((resolve) => {
           log.info("TUI:ASK", `显示提问对话框: ${req.questions.length} 题`);
           let settled = false;
+          // 空闲超时（askUserQuestionTimeout）：交互态弹窗后若用户在此时长内不响应，
+          // 按 cancelled 自动解除，避免带 handler 的编排器/后台子代理被单个提问无限期阻塞。
+          const idleTimeoutMs = parseAskTimeoutMs(this.config.askUserQuestionTimeout);
+          let idleTimer: ReturnType<typeof setTimeout> | null = null;
+          const clearIdleTimer = () => {
+            if (idleTimer) {
+              clearTimeout(idleTimer);
+              idleTimer = null;
+            }
+          };
           const wrappedResolve = (
             result:
               | { decision: "answered"; answers: Record<string, string>; notes?: Record<string, string> }
@@ -4137,6 +4147,7 @@ export class App {
           ) => {
             if (settled) return;
             settled = true;
+            clearIdleTimer();
             log.info("TUI:ASK", `提问对话框响应: ${result.decision}`);
             updateState({ askUserQuestionRequest: null });
             if (result.decision === "answered") {
@@ -4156,6 +4167,12 @@ export class App {
               () => wrappedResolve({ decision: "cancelled" }),
               { once: true },
             );
+          }
+          if (idleTimeoutMs !== null) {
+            idleTimer = setTimeout(() => {
+              log.info("TUI:ASK", `提问对话框空闲超时 (${idleTimeoutMs}ms)，按取消处理`);
+              wrappedResolve({ decision: "cancelled" });
+            }, idleTimeoutMs);
           }
           updateState({
             askUserQuestionRequest: { questions: req.questions, resolve: wrappedResolve },

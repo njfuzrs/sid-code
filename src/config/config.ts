@@ -146,6 +146,16 @@ export interface Config {
    */
   thinkingEnabled?: boolean;
 
+  /**
+   * AskUserQuestion 交互态空闲超时（settings.json askUserQuestionTimeout）。
+   * 对齐 claude-code v2.1.200：交互模式下弹出提问对话框后，若用户在此时长内不响应，
+   * 按 cancelled 自动解除（模型收到"请选默认继续"），避免带 TUI handler 的编排器/后台
+   * 子代理场景被单个提问无限期阻塞。
+   * 取值："60s" / "5m" / "never"（或纯数字=毫秒）。缺省 = "never"（保守，对齐 CC 默认）。
+   * 注意：headless/SDK/CI 无 handler 时本就返回 unavailable 不阻塞，本设置只作用于交互态。
+   */
+  askUserQuestionTimeout?: string;
+
   // 权限配置
   // 支持 6 种模式：default, always-allow, deny-write, acceptEdits, plan, dontAsk
   permissionMode: string;
@@ -603,6 +613,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     max_tokens: "maxTokens",
     available_models: "availableModels",
     permission_mode: "permissionMode",
+    ask_user_question_timeout: "askUserQuestionTimeout",
     skip_permissions: "skipPermissions",
     allowed_tools: "allowedTools",
     disallowed_tools: "disallowedTools",

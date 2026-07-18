@@ -19,11 +19,9 @@ const ALL_AGENT_DISALLOWED_TOOLS = new Set([
   "sub_agent",         // 防嵌套：子代理不允许再 spawn 子代理
   "task_output",       // 子代理不应读取其他任务输出
   "task_stop",         // 子代理不应终止其他任务
-  // P1-1：todo_write 是"主代理进度追踪工具"（全局单实例、无 agentId 概念），子代理有独立的
-  // task_list 做子任务追踪。此前 general-purpose（白名单 null 不限制）与自定义子代理（黑名单只禁
-  // sub_agent）会拿到父级同一 TodoWriteTool 实例 → 并发写 todo 会污染主会话 currentTodos。
-  // 机制性隔离：与 save_memory/enter_plan_mode 等主代理专属工具同列，所有子代理一律禁用。
-  "todo_write",
+  // 注: todo_write 曾因全局单实例并发写污染主会话被一律禁用; P1-2 已改为每个进程内子代理在
+  // buildIsolatedToolRegistry 拿独立 TodoWriteTool 实例 (spawn 路径本就是独立子进程),
+  // 污染根因消除, 恢复子代理 todo 追踪能力对齐 CC per-agent 命名空间, 故不再禁用。
 ]);
 
 /** 自定义 Agent 额外禁止的工具 */
@@ -33,10 +31,10 @@ const CUSTOM_AGENT_DISALLOWED_TOOLS = new Set([
 
 /** 内置子代理类型的工具白名单 */
 const BUILTIN_AGENT_ALLOWED_TOOLS: Record<string, string[] | null> = {
-  explore: ["read", "grep", "glob", "ls", "read_many", "task_list"],
-  task: ["read", "write", "edit", "bash", "grep", "glob", "ls", "read_many", "web_fetch", "web_search", "task_list"],
-  plan: ["read", "grep", "glob", "ls", "read_many", "task_list"],
-  verify: ["read", "grep", "glob", "ls", "read_many", "bash", "task_list"],  // 对抗式验证：只读 + bash 核实
+  explore: ["read", "grep", "glob", "ls", "read_many", "task_list", "task_get", "todo_write"],
+  task: ["read", "write", "edit", "bash", "grep", "glob", "ls", "read_many", "web_fetch", "web_search", "task_list", "task_get", "task_create", "task_update", "todo_write"],
+  plan: ["read", "grep", "glob", "ls", "read_many", "task_list", "task_get", "todo_write"],
+  verify: ["read", "grep", "glob", "ls", "read_many", "bash", "task_list", "task_get", "todo_write"],  // 对抗式验证：只读 + bash 核实
   summarize: null,  // null = 不需要工具
   "general-purpose": null, // null = 不限制（由 Layer 3 的 disallowedTools 控制）
 };
@@ -45,7 +43,8 @@ const BUILTIN_AGENT_ALLOWED_TOOLS: Record<string, string[] | null> = {
 const ASYNC_ALLOWED_TOOLS = new Set([
   "read", "read_many", "write", "edit",
   "bash", "grep", "glob", "ls",
-  "web_search", "web_fetch", "task_list",
+  "web_search", "web_fetch",
+  "task_list", "task_get", "task_create", "task_update", "todo_write",
 ]);
 
 export interface ToolFilterOptions {

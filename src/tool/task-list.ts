@@ -1,6 +1,6 @@
 /**
- * TaskListTool — 列出所有后台任务
- * 对标 claude-code TaskListTool
+ * BgTaskListTool（工具名 bg_task_list）— 列出所有后台任务
+ * 后台任务运行态列表，对应 CC 的 TaskOutput 族；结构化清单列表见 structured-task-list.ts
  */
 
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
@@ -25,16 +25,16 @@ export class TaskListTool implements Tool {
   readonly zodSchema = taskListSchema();
   /** 长尾工具：仅在有后台任务时使用，延迟加载，由 tool_search 按需调出 */
   readonly shouldDefer = true;
-  readonly searchHint = "background task list status 后台 任务 列出 状态";
+  readonly searchHint = "background task list status 后台 任务 列出 状态 bg_task_list";
   /** P2-3：任务管理类工具，状态查询工具连续调用是正当行为而非循环，豁免循环检测 */
   readonly exemptFromLoopDetection = true;
 
   name(): string {
-    return "task_list";
+    return "bg_task_list";
   }
 
   description(): string {
-    return "列出所有后台任务（Shell 命令和 Agent），包含状态、类型、进度信息。用于了解当前有哪些任务正在运行或已完成。";
+    return "列出所有后台任务（Shell 命令和 Agent），包含状态、类型、进度信息。用于了解当前有哪些任务正在运行或已完成。注意：这是运行态后台任务列表，不是结构化任务清单（后者用 task_list）。";
   }
 
   inputSchema(): Record<string, unknown> {

@@ -11,7 +11,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { BashTool } from "../../src/tool/bash.ts";
+import { BashTool, resolveTimeoutBounds } from "../../src/tool/bash.ts";
 import { interpretExitCode } from "../../src/tool/bash/command-semantics.ts";
 import { getCwd, setCwd } from "../../src/bootstrap/state.ts";
 
@@ -234,5 +234,80 @@ describe("缺口3-补: run_in_background(Task系统) 进程树清理", () => {
     }
     expect(alive).toBe(false);
   }, 10000);
+});
+
+// P2-10：is_background 与 run_in_background 统一走 Task 系统（返回 task_id，非旧 PID 格式）
+describe("P2-10: is_background 统一到 Task 系统", () => {
+  it("run_in_background 返回 task_id", async () => {
+    const { clearAllTasks } = await import("../../src/task/index.ts");
+    const bash = new BashTool();
+    const result = await bash.execute({ command: "echo hi", run_in_background: true });
+    const parsed = JSON.parse(result.output);
+    expect(parsed.task_id).toBeDefined();
+    expect(parsed.message).toContain("后台任务");
+    clearAllTasks();
+  });
+
+  it("is_background（旧通道）也返回 task_id，不再是旧 PID 格式", async () => {
+    const { clearAllTasks } = await import("../../src/task/index.ts");
+    const bash = new BashTool();
+    const result = await bash.execute({ command: "echo hi", is_background: true });
+    // 修复前 is_background 走 executeBackground → 返回 "命令已在后台运行 (PID: ...)"（非 JSON）
+    // 修复后统一走 Task 系统 → 返回含 task_id 的 JSON
+    const parsed = JSON.parse(result.output);
+    expect(parsed.task_id).toBeDefined();
+    expect(result.output).not.toContain("PID:");
+    clearAllTasks();
+  });
+});
+
+// P2-11：bash 超时默认值/上限支持 env 覆盖（对齐 CC BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS）
+describe("P2-11: bash 超时 env 覆盖", () => {
+  const KEYS = ["BASH_DEFAULT_TIMEOUT_MS", "BASH_MAX_TIMEOUT_MS"] as const;
+  let saved: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    saved = {};
+    for (const k of KEYS) {
+      saved[k] = process.env[k];
+      delete process.env[k];
+    }
+  });
+  afterEach(() => {
+    for (const k of KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
+  it("未配 env 时用出厂默认值 120000 / 上限 600000", () => {
+    const { defaultMs, maxMs } = resolveTimeoutBounds();
+    expect(defaultMs).toBe(120000);
+    expect(maxMs).toBe(600000);
+  });
+
+  it("env 覆盖默认值与上限", () => {
+    process.env.BASH_DEFAULT_TIMEOUT_MS = "5000";
+    process.env.BASH_MAX_TIMEOUT_MS = "900000";
+    const { defaultMs, maxMs } = resolveTimeoutBounds();
+    expect(defaultMs).toBe(5000);
+    expect(maxMs).toBe(900000);
+  });
+
+  it("默认值被夹到不超过上限", () => {
+    process.env.BASH_DEFAULT_TIMEOUT_MS = "999999999";
+    process.env.BASH_MAX_TIMEOUT_MS = "300000";
+    const { defaultMs, maxMs } = resolveTimeoutBounds();
+    expect(maxMs).toBe(300000);
+    expect(defaultMs).toBe(300000); // 夹到上限
+  });
+
+  it("非法/非正 env 值被忽略，回落出厂值", () => {
+    process.env.BASH_DEFAULT_TIMEOUT_MS = "abc";
+    process.env.BASH_MAX_TIMEOUT_MS = "-100";
+    const { defaultMs, maxMs } = resolveTimeoutBounds();
+    expect(defaultMs).toBe(120000);
+    expect(maxMs).toBe(600000);
+  });
 });
 
