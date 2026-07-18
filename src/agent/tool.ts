@@ -32,6 +32,14 @@ const subAgentSchema = lazySchema(() => {
     description: z.string().describe("子任务的简短描述"),
     prompt: z.string().describe("给子代理的详细指令"),
     run_in_background: z.boolean().optional().describe("是否后台执行（立即返回 task_id，完成后通知）"),
+    model: z
+      .string()
+      .optional()
+      .describe("覆盖子代理使用的模型（省略时按子代理类型的默认模型）。用于给重任务派更强模型、给轻任务派更省模型。"),
+    cwd: z
+      .string()
+      .optional()
+      .describe("子代理的工作目录（省略时继承当前目录）。文件类工具会以此为基准。"),
     fork: z
       .boolean()
       .optional()
@@ -316,6 +324,8 @@ ${typeLines}
       prompt: string;
       run_in_background?: boolean;
       isolation?: "worktree";
+      model?: string;
+      cwd?: string;
       _agentId?: string;
     };
 
@@ -354,6 +364,8 @@ ${typeLines}
     prompt: string;
     fork?: boolean;
     isolation?: "worktree";
+    model?: string;
+    cwd?: string;
   }, signal?: AbortSignal): Promise<ToolResult> {
     const log = getLogger();
 
@@ -372,7 +384,8 @@ ${typeLines}
       // Worktree 隔离：在独立工作区执行，结束后清理无改动的 Worktree。
       // B7：通过 SubAgentTask.cwd 走 withAgentCwd（AsyncLocalStorage）而非 process.chdir，
       // 与 workflow/swarm 一致，避免并发 agent 间 chdir 竞态。
-      let isolatedCwd: string | undefined;
+      // 显式 cwd 作为基准目录（worktree 模式会在下方覆盖为隔离工作区路径）
+      let isolatedCwd: string | undefined = params.cwd;
       if (params.isolation === "worktree") {
         try {
           const { WorktreeManager, findGitRootForAgent } = await import("../worktree/manager.ts");
@@ -426,6 +439,7 @@ ${typeLines}
           prompt: params.prompt,
           forkMessages,
           cwd: isolatedCwd, // B7: 经 withAgentCwd 隔离，并发安全
+          model: params.model, // P2-15: 每次调用可覆盖模型
         },
         signal,
       );
@@ -468,6 +482,8 @@ ${typeLines}
     type: string;
     description: string;
     prompt: string;
+    model?: string;
+    cwd?: string;
   }, signal?: AbortSignal): Promise<ToolResult> {
     const log = getLogger();
 
@@ -506,7 +522,7 @@ ${typeLines}
   /** 后台执行逻辑 */
   private async executeInBackground(
     taskId: string,
-    params: { type: string; description: string; prompt: string },
+    params: { type: string; description: string; prompt: string; model?: string; cwd?: string },
     abortController: AbortController,
   ): Promise<void> {
     const log = getLogger();
@@ -533,6 +549,8 @@ ${typeLines}
           type: params.type,
           description: params.description,
           prompt: params.prompt,
+          model: params.model, // P2-15: 每次调用可覆盖模型
+          cwd: params.cwd, // P2-15: 每次调用可指定工作目录
           _taskId: taskId,
           _abortController: abortController,
           _isAsync: true,

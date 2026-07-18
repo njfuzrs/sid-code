@@ -418,6 +418,16 @@ describe("SubAgent plan 类型", () => {
     expect(result.isError).toBe(true);
     expect(result.output).toContain("缺少必需参数");
   });
+
+  // P2-15：schema 透出 model / cwd（此前内部支持但未暴露给 LLM）
+  test("SubAgentTool schema 暴露 model 与 cwd 参数", () => {
+    const provider = new MockProvider();
+    const tool = new SubAgentTool(mockProviderRegistry(provider), new Registry());
+    const schema = tool.inputSchema() as { properties?: Record<string, unknown> };
+    expect(schema.properties).toBeDefined();
+    expect(schema.properties).toHaveProperty("model");
+    expect(schema.properties).toHaveProperty("cwd");
+  });
 });
 
 // ─── extractFinalText / isLikelyThinking 启发式过滤（Bug 2 第三道防线）───

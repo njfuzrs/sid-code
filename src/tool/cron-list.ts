@@ -5,6 +5,7 @@
 
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
 import { getScheduler } from "../cron/scheduler.ts";
+import { cronToHuman } from "../cron/describe.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
 
@@ -41,7 +42,10 @@ export class CronListTool implements Tool {
     const lines = tasks.map((t) => {
       const kind = t.recurring ? "循环" : "一次性";
       const durable = t.durable ? " [持久]" : "";
-      return `${t.id}  ${t.cron}  ${kind}${durable}  ${t.prompt.slice(0, 60)}`;
+      const human = cronToHuman(t.cron);
+      // 人类可读描述 + 原始表达式（回落时 human 已是 "cron: ..."，避免重复展示）
+      const schedule = human.startsWith("cron:") ? t.cron : `${human}（${t.cron}）`;
+      return `${t.id}  ${schedule}  ${kind}${durable}  ${t.prompt.slice(0, 60)}`;
     });
 
     return { output: `定时任务（${tasks.length}）:\n${lines.join("\n")}` };
