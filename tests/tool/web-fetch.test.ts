@@ -328,6 +328,68 @@ describe("WebFetchTool - 重定向 SSRF 防护", () => {
   });
 });
 
+describe("WebFetchTool - HTML→Markdown 结构保留", () => {
+  async function fetchHtml(host: string, html: string): Promise<string> {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mock(async () =>
+      new Response(html, { status: 200, headers: { "content-type": "text/html; charset=utf-8" } })
+    ) as unknown as typeof fetch;
+    const tool = new WebFetchTool();
+    const r = await tool.execute({ url: `https://${host}.example.com/p` });
+    globalThis.fetch = originalFetch;
+    return r.output;
+  }
+
+  test("标题转 # 前缀", async () => {
+    const out = await fetchHtml("md-h", "<h1>大标题</h1><h2>小标题</h2><p>正文</p>");
+    expect(out).toContain("# 大标题");
+    expect(out).toContain("## 小标题");
+    expect(out).toContain("正文");
+  });
+
+  test("链接转 [text](url)", async () => {
+    const out = await fetchHtml("md-a", '<p>见 <a href="https://x.com/doc">文档</a></p>');
+    expect(out).toContain("[文档](https://x.com/doc)");
+  });
+
+  test("列表项转 - 前缀", async () => {
+    const out = await fetchHtml("md-li", "<ul><li>甲</li><li>乙</li></ul>");
+    expect(out).toContain("- 甲");
+    expect(out).toContain("- 乙");
+  });
+
+  test("强调转 **/*，行内代码转反引号", async () => {
+    const out = await fetchHtml("md-em", "<p><strong>重点</strong> 和 <em>斜体</em> 和 <code>x=1</code></p>");
+    expect(out).toContain("**重点**");
+    expect(out).toContain("*斜体*");
+    expect(out).toContain("`x=1`");
+  });
+
+  test("表格单元格用 | 分隔", async () => {
+    const out = await fetchHtml("md-table", "<table><tr><td>A</td><td>B</td></tr></table>");
+    expect(out).toContain("A | B");
+  });
+
+  test("仍去除 script/style 内容", async () => {
+    const out = await fetchHtml("md-clean", '<html><head><script>alert(1)</script><style>.a{color:red}</style></head><body>干净</body></html>');
+    expect(out).not.toContain("alert");
+    expect(out).not.toContain("color:red");
+    expect(out).toContain("干净");
+  });
+
+  test("解码十六进制与数字 HTML 实体", async () => {
+    const out = await fetchHtml("md-ent", "<p>&#x4e2d;&#25991; &amp; more</p>");
+    expect(out).toContain("中文");
+    expect(out).toContain("&");
+  });
+
+  test("javascript: 伪协议链接只保留文字", async () => {
+    const out = await fetchHtml("md-js", '<p><a href="javascript:evil()">点我</a></p>');
+    expect(out).toContain("点我");
+    expect(out).not.toContain("javascript:");
+  });
+});
+
 describe("WebFetchTool - 15 分钟内容缓存", () => {
   test("同一 URL 第二次抓取命中缓存，不再发起真实请求", async () => {
     const originalFetch = globalThis.fetch;

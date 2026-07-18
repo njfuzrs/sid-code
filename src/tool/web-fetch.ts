@@ -182,31 +182,74 @@ function convertGithubUrl(urlStr: string): string {
 // ─── HTML 转纯文本 ────────────────────────────────────────────────────────────
 
 /** 轻量 HTML 转纯文本（无外部依赖） */
-function htmlToText(html: string): string {
-  // 去除 <script> 和 <style> 及其内容
-  let text = html
-    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
-    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, "");
-
-  // 块级标签转换为换行
-  text = text.replace(/<\/(p|div|li|tr|h[1-6]|blockquote|pre|br)>/gi, "\n");
-  text = text.replace(/<br\s*\/?>/gi, "\n");
-
-  // 去除所有剩余 HTML 标签
-  text = text.replace(/<[^>]+>/g, "");
-
-  // 解码常见 HTML 实体
-  text = text
+/** 解码常见 HTML 实体（数字实体 + 十六进制实体 + 具名实体）。 */
+function decodeHtmlEntities(s: string): string {
+  return s
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
     .replace(/&nbsp;/g, " ")
-    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)));
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCodePoint(Number.parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number(code)));
+}
 
-  // 合并多余空行（超过 2 个连续空行压缩为 2 个）
-  text = text.replace(/\n{3,}/g, "\n\n");
+/**
+ * 把 HTML 转成保留结构的 Markdown（对齐 CC 用 turndown 保留标题/链接/列表/表格的意图）。
+ * 不引三方库，用正则做轻量转换：结构信息（标题层级、链接、列表、表格）对模型理解页面很关键，
+ * 纯文本会把这些全丢掉。转换顺序要先内联（链接/强调）再块级（标题/列表/表格），最后剥标签。
+ */
+function htmlToMarkdown(html: string): string {
+  let text = html;
+
+  // 1) 去除不可见/噪声节点及其内容：script / style / head 里的 noscript / 注释
+  text = text
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
+    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, "")
+    .replace(/<noscript\b[^<]*(?:(?!<\/noscript>)<[^<]*)*<\/noscript>/gi, "");
+
+  // 2) 内联元素：链接 → [text](url)，强调 → **/*（先处理，避免被后续剥标签吃掉）
+  text = text.replace(/<a\b[^>]*\bhref=["']([^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi, (_, href, inner) => {
+    const label = inner.replace(/<[^>]+>/g, "").trim();
+    const url = String(href).trim();
+    if (!label) return url; // 无文字的链接直接给 URL
+    if (!url || url.startsWith("javascript:")) return label; // 空/伪协议只留文字
+    return `[${label}](${url})`;
+  });
+  text = text.replace(/<(strong|b)\b[^>]*>([\s\S]*?)<\/\1>/gi, (_, _tag, inner) => `**${inner.replace(/<[^>]+>/g, "").trim()}**`);
+  text = text.replace(/<(em|i)\b[^>]*>([\s\S]*?)<\/\1>/gi, (_, _tag, inner) => `*${inner.replace(/<[^>]+>/g, "").trim()}*`);
+  text = text.replace(/<code\b[^>]*>([\s\S]*?)<\/code>/gi, (_, inner) => `\`${inner.replace(/<[^>]+>/g, "")}\``);
+
+  // 3) 标题：<h1..6> → 对应级别的 # 前缀（前后留空行）
+  text = text.replace(/<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1>/gi, (_, level, inner) => {
+    const content = inner.replace(/<[^>]+>/g, "").trim();
+    return content ? `\n\n${"#".repeat(Number(level))} ${content}\n\n` : "";
+  });
+
+  // 4) 列表项：<li> → "- " 前缀，闭合换行
+  text = text.replace(/<li\b[^>]*>/gi, "\n- ").replace(/<\/li>/gi, "");
+
+  // 5) 表格：单元格用 " | " 分隔，行末换行（粗略但保留列结构）
+  text = text.replace(/<\/(t[dh])>/gi, " | ").replace(/<\/tr>/gi, "\n");
+
+  // 6) 其余块级标签闭合/换行标签 → 换行
+  text = text.replace(/<\/(p|div|section|article|blockquote|pre|ul|ol|table|h[1-6])>/gi, "\n");
+  text = text.replace(/<br\s*\/?>/gi, "\n");
+
+  // 7) 剥掉所有剩余标签
+  text = text.replace(/<[^>]+>/g, "");
+
+  // 8) 解码 HTML 实体
+  text = decodeHtmlEntities(text);
+
+  // 9) 清理：行尾多余的表格分隔符、行内空白、超过 2 个的连续空行
+  text = text
+    .replace(/ \| *\n/g, "\n") // 行末悬空的 " | "
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n");
 
   return text.trim();
 }
@@ -420,7 +463,7 @@ export class WebFetchTool implements Tool {
       // 根据 Content-Type 处理内容
       let text: string;
       if (contentType.toLowerCase().includes("text/html")) {
-        text = htmlToText(rawText);
+        text = htmlToMarkdown(rawText);
       } else {
         // text/plain, application/json, text/markdown 等直接返回
         text = rawText;
