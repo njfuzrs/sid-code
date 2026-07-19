@@ -141,6 +141,9 @@ export const ABORT_REASONS = [
   "agent-stream-heartbeat-timeout",
   "alert-webhook-timeout",
   "external-abort",
+  // 缺口1 h2A：mid-turn `now` 级抢占（用户显式中断/改向触发的优雅收束）。
+  // 登记进白名单确保抢占走 isAbortError 总闸门识别，不裸字符串 reject（不变量 2）。
+  "midturn-preempt",
 ] as const;
 
 export type AbortReason = (typeof ABORT_REASONS)[number];

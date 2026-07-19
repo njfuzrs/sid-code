@@ -33,7 +33,7 @@ import type { StreamTelemetrySignal } from "./types.ts";
 import { emitTimeoutFired, emitStreamPhase, emitHttpConnected } from "../trace/stream-observer.ts";
 import { currentSseDumpContext } from "./sse-chunk-dumper.ts";
 import { normalizeToolInput } from "./normalize-tool-input.ts";
-import { buildSystemBlocks, assertCacheBreakpointBudget } from "../api/cache-strategy.ts";
+import { buildSystemBlocks, assertCacheBreakpointBudget, markLastToolCacheBreakpoint } from "../api/cache-strategy.ts";
 import { getEffectiveBetaHeaders } from "../api/beta-header-latch.ts";
 import { RequestAbortedError } from "./errors.ts";
 
@@ -201,9 +201,20 @@ export class AnthropicProvider implements Provider {
       && !process.env.SID_DISABLE_GLOBAL_CACHE;
     const system = buildSystemBlocks(params.system, { globalScopeEnabled: useGlobalScope });
 
+    // 增强 5.1：工具区缓存断点（对齐 CC toolToAPISchema cacheControl）。
+    // 仅直连 Anthropic 且未禁用时，在最后一个工具上打一个断点，把整个工具区纳入前缀缓存分层。
+    // 走网关时降级不打（网关对 scope/beta 字段兼容性差，且收益仅直连链路）。
+    // SID_DISABLE_TOOL_CACHE=1 可一键关闭降级。
+    const enableToolCache = isDirectAnthropicEndpoint(this.client.baseURL)
+      && !process.env.SID_DISABLE_TOOL_CACHE;
+    if (enableToolCache) {
+      markLastToolCacheBreakpoint(tools, { globalScope: useGlobalScope });
+    }
+
     // 比 CC 更进一步：发请求前断言 cache_control 断点数未超 Anthropic 上限(4)，
     // 把"comment-only 不变量"升级为运行时护栏(dev 抛错暴露 / prod 打日志容错)。
-    assertCacheBreakpointBudget(system, messages as any, getLogger());
+    // tools 一并计入(增强 5.1 新增工具区断点后总数不得超 4)。
+    assertCacheBreakpointBudget(system, messages as any, getLogger(), tools as any);
 
     try {
       const requestStartTime = Date.now();
@@ -676,8 +687,15 @@ export class AnthropicProvider implements Provider {
       }
     }
 
-    // 与流式路径一致：发请求前断言 cache_control 断点数未超上限。
-    assertCacheBreakpointBudget(system, messages as any, getLogger());
+    // 增强 5.1：工具区缓存断点（与流式路径同策略，仅直连 Anthropic 且未禁用时打）。
+    const enableToolCache = isDirectAnthropicEndpoint(this.client.baseURL)
+      && !process.env.SID_DISABLE_TOOL_CACHE;
+    if (enableToolCache) {
+      markLastToolCacheBreakpoint(tools, { globalScope: useGlobalScope });
+    }
+
+    // 与流式路径一致：发请求前断言 cache_control 断点数未超上限（tools 一并计入）。
+    assertCacheBreakpointBudget(system, messages as any, getLogger(), tools as any);
 
     const log = getLogger();
     log.debug("LLM:ANTHROPIC", "非流式请求", {

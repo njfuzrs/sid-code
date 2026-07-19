@@ -380,6 +380,7 @@ describe("isAbortError", () => {
       "agent-stream-overall-timeout",
       "alert-webhook-timeout",
       "external-abort",
+      "midturn-preempt",
       "race-settled",
       "session-timeout",
       "side-call-timeout",

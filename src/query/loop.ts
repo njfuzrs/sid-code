@@ -82,6 +82,7 @@ import {
   buildProgressReminder,
 } from "./work-log.ts";
 import { dequeuePendingNotifications, evictTerminalTasks } from "../task/index.ts";
+import { drainByPriority, hasPending, type QueuedCommand } from "./message-queue-manager.ts";
 import {
   measureThinkingLen,
   isThinkingDiverging,
@@ -1754,7 +1755,15 @@ export async function* queryLoop(
     // 如果未来要重构这里的停止原因判断逻辑，必须保持"白名单枚举可继续的情况"这个方向，
     // 不要改成"排除已知的错误情况"——后者每新增一种未识别的错误 stopReason 都会重新
     // 打开这个口子（fail-open），而白名单天然对未知值 fail-closed。
-    const isEndTurnLike = response.stopReason === "end_turn" || response.stopReason === "stop";
+    // stop_sequence（模型撞到配置的 stop 序列）与 end_turn/stop 同属"正常终止"，
+    // 必须走完整收尾链（AfterAgent hook / Stop hooks / todo gate / goal gate / session memory 提取），
+    // 而不是落到下方"未识别停止原因"分支弹 terminal 警告并跳过全部收尾。
+    // 对齐 CC：stop_sequence 在 CC 全源码零特殊处理，直接 fall-through 当正常结束。
+    // 白名单方向不变（fail-closed 防死亡螺旋，见上方 P0-2 注释），这里只是补齐一个已知的正常终止 reason。
+    const isEndTurnLike =
+      response.stopReason === "end_turn" ||
+      response.stopReason === "stop" ||
+      response.stopReason === "stop_sequence";
     const f2FallThrough = isEndTurnLike && hasPendingToolUse;
     if (f2FallThrough) {
       // §2.4：stop_reason 与 content 不一致——声称 end_turn/stop 却仍含 tool_use。
@@ -2366,6 +2375,22 @@ export async function* queryLoop(
         }
       }
 
+      // ─── 缺口1 Phase B：mid-turn 抢占式 drain（安全检查点 = 工具批次之间）───
+      // 此处是天然安全点：本轮 tool_use 已全部拿到配对的 tool_result 并入历史
+      //（上方 addMessage(toolResults)），不存在孤儿 → 满足不变量 1（finalizeMessagesForSend 配对）。
+      // 仅 drain `now` 级（用户显式中断/改向）：把排队的高优先级用户输入 mid-turn 插入为 user 消息，
+      // 让模型在下一轮立刻看到，而非等到整个任务 end_turn 后才接续（对齐 CC drain mid-turn between turns）。
+      // next/later 级（普通排队输入 / 后台通知）不在此插入，仍走回合边界 drain，避免打断正常推进。
+      // 灰度：默认关闭，SID_ENABLE_MIDTURN_DRAIN=1 开启；关闭时行为与改造前完全一致（向后兼容）。
+      if (process.env.SID_ENABLE_MIDTURN_DRAIN === "1" && hasPending("now")) {
+        const preempts = drainByPriority("now");
+        const injected = injectQueuedCommandsAsUserMessage(preempts, ctxMgr, deps);
+        if (injected > 0) {
+          log.info("QUERY_LOOP", `mid-turn 抢占：注入 ${injected} 条 now 级用户输入，本轮工具结果已配对无孤儿`);
+          yield { kind: "system", level: "info", text: `已插入 ${injected} 条新输入，将在下一轮优先处理` };
+        }
+      }
+
       setTransition(state, { type: "tool_use" }, deps, sessionState.sessionId);
       continue;
     }
@@ -2714,6 +2739,35 @@ function buildPendingToolResults(
     content,
     is_error: true,
   }));
+}
+
+/**
+ * 缺口1 Phase B：把 drain 出的队列命令注入为一条 user 消息（mid-turn 抢占用）。
+ *
+ * 只处理 user-input 类命令（payload 为文本）；其余 kind（task-notification 等）在此不注入
+ *（它们各有专门的回合边界注入路径，不应经 mid-turn now 通道插入）。
+ * 多条聚合成「一条」user 消息、每条一个 text 块（与任务通知注入同策略，避免逐条 addMessage
+ * 触发 ctxMgr 同 role 合并导致 _meta 覆盖）。返回实际注入的条数。
+ *
+ * 安全前提：调用点必须已保证消息序列无孤儿 tool_use（本轮 tool_result 已配对入历史），
+ * 故此处直接 addMessage 一条 user 文本不会破坏配对（不变量 1）。
+ */
+function injectQueuedCommandsAsUserMessage(
+  commands: QueuedCommand[],
+  ctxMgr: ContextManager,
+  deps: QueryDeps,
+): number {
+  const texts = commands
+    .filter(c => c.kind === "user-input" && typeof c.payload === "string" && c.payload.trim())
+    .map(c => (c.payload as string));
+  if (texts.length === 0) return 0;
+
+  const content = texts.map(t => ({ type: "text" as const, text: t }));
+  ctxMgr.addMessage({ role: "user", content });
+  try {
+    deps.sessionStore?.appendMessage({ role: "user", content });
+  } catch { /* 持久化失败不阻断主循环 */ }
+  return texts.length;
 }
 
 /** LLM 认知循环检测 */

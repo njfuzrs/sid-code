@@ -3,7 +3,7 @@
  * 对标 Claude Code 的动态附件机制：优先级排序 + 条件注入
  */
 
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 import { getLogger } from "../debug/logger.ts";
 import {
   generateSkillListing,
@@ -206,6 +206,27 @@ export function clearGitStatusCache(): void {
 }
 
 /**
+ * 安全执行 git 子命令（对标 CC execFileNoThrow）。
+ * - 用 execFileSync 数组参数形式而非 execSync 字符串拼接，杜绝命令注入（分支名/路径含 shell 元字符时）。
+ * - 统一挂 --no-optional-locks 全局标志：只读采集 git 状态时不去抢 index.lock，
+ *   避免与用户并行的 git 命令（commit/rebase 等）抢锁导致偶发失败或干扰对方（对齐 CC）。
+ * - 失败返回空串（调用方按需回退），不抛出。
+ */
+function runGit(args: string[], workingDir: string, timeout = 5000): string {
+  try {
+    return execFileSync("git", ["--no-optional-locks", ...args], {
+      cwd: workingDir,
+      stdio: "pipe",
+      timeout,
+    })
+      .toString()
+      .trim();
+  } catch {
+    return "";
+  }
+}
+
+/**
  * 生成 Git 状态附件
  * 执行 git status --short 获取当前仓库状态
  * 带模块级缓存，预取和正式调用共享结果
@@ -222,74 +243,39 @@ export function generateGitStatusAttachment(workingDir: string): Attachment | nu
   }
 
   try {
-    // 检查是否是 Git 仓库
-    execSync("git rev-parse --is-inside-work-tree", {
+    // 检查是否是 Git 仓库（execFileSync 数组参数，失败抛出 → 走外层 catch 返回 null）
+    execFileSync("git", ["--no-optional-locks", "rev-parse", "--is-inside-work-tree"], {
       cwd: workingDir,
       stdio: "pipe",
       timeout: 5000,
     });
 
     // 获取当前分支
-    let branch = "";
-    try {
-      branch = execSync("git branch --show-current", {
-        cwd: workingDir,
-        stdio: "pipe",
-        timeout: 5000,
-      }).toString().trim();
-    } catch {
-      branch = "unknown";
-    }
+    const branch = runGit(["branch", "--show-current"], workingDir) || "unknown";
 
     // 获取简短状态（对标 CC context.ts:64 —— git status --short）
-    const status = execSync("git status --short", {
-      cwd: workingDir,
-      stdio: "pipe",
-      timeout: 5000,
-    }).toString().trim();
+    const status = runGit(["status", "--short"], workingDir);
 
     // 获取最近 5 条提交（对标 CC context.ts:68 —— git log --oneline -n 5）
-    let recentCommits = "";
-    try {
-      recentCommits = execSync("git log --oneline -5", {
-        cwd: workingDir,
-        stdio: "pipe",
-        timeout: 5000,
-      }).toString().trim();
-    } catch {
-      // 新仓库可能没有提交
-    }
+    // 新仓库可能没有提交 → runGit 返回空串
+    const recentCommits = runGit(["log", "--oneline", "-5"], workingDir);
 
     // 获取 git 用户名（对标 CC context.ts:74）
-    let userName = "";
-    try {
-      userName = execSync("git config user.name", {
-        cwd: workingDir,
-        stdio: "pipe",
-        timeout: 3000,
-      }).toString().trim();
-    } catch { /* 未配置时静默 */ }
+    const userName = runGit(["config", "user.name"], workingDir, 3000);
 
     // 获取默认主分支（对标 CC context.ts:63 —— getDefaultBranch()）
-    let mainBranch = "";
-    try {
-      // 优先从 remote HEAD 推断
-      mainBranch = execSync("git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null || echo ''", {
-        cwd: workingDir,
-        stdio: "pipe",
-        timeout: 3000,
-      }).toString().trim().replace("refs/remotes/origin/", "");
-      if (!mainBranch) {
-        // 回退：检查常见分支名
-        for (const candidate of ["main", "master"]) {
-          try {
-            execSync(`git rev-parse --verify ${candidate}`, { cwd: workingDir, stdio: "pipe", timeout: 2000 });
-            mainBranch = candidate;
-            break;
-          } catch { /* 不存在，继续 */ }
+    // 优先从 remote HEAD 推断（execFile 不走 shell，故不能用 `|| echo ''`，改由 runGit 失败返回空串兜底）
+    let mainBranch = runGit(["symbolic-ref", "refs/remotes/origin/HEAD"], workingDir, 3000)
+      .replace("refs/remotes/origin/", "");
+    if (!mainBranch) {
+      // 回退：检查常见分支名
+      for (const candidate of ["main", "master"]) {
+        if (runGit(["rev-parse", "--verify", candidate], workingDir, 2000)) {
+          mainBranch = candidate;
+          break;
         }
       }
-    } catch { /* 静默 */ }
+    }
 
     // ── 对标 CC context.ts:96-103 的输出格式 ──
     // CC 的格式设计原则:

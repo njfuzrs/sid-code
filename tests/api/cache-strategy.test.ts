@@ -7,6 +7,7 @@ import { describe, test, expect } from "bun:test";
 import {
   buildSystemBlocks,
   markLastContentBlock,
+  markLastToolCacheBreakpoint,
   clearCacheBreakpoints,
   addMessageCacheBreakpoint,
   addCacheBreakpoints,
@@ -16,6 +17,7 @@ import {
   assertCacheBreakpointBudget,
   MAX_CACHE_BREAKPOINTS,
   type CacheableMessage,
+  type CacheableTool,
 } from "../../src/api/cache-strategy.ts";
 
 function msg(role: string, ...texts: string[]): CacheableMessage {
@@ -196,6 +198,61 @@ describe("cache breakpoint budget guard", () => {
     try {
       expect(() => assertCacheBreakpointBudget(system, messages, logger)).not.toThrow();
       expect(logged).toMatch(/超过 Anthropic 上限/);
+    } finally {
+      if (prev !== undefined) process.env.NODE_ENV = prev;
+      else delete process.env.NODE_ENV;
+    }
+  });
+});
+
+describe("markLastToolCacheBreakpoint（增强 5.1 工具区缓存断点）", () => {
+  function tools(...names: string[]): CacheableTool[] {
+    return names.map((name) => ({ name }));
+  }
+
+  test("空/undefined 工具数组 → 不打标返回 false", () => {
+    expect(markLastToolCacheBreakpoint(undefined)).toBe(false);
+    expect(markLastToolCacheBreakpoint([])).toBe(false);
+  });
+
+  test("只在最后一个工具上打标，前面的工具不带 cache_control", () => {
+    const ts = tools("read", "write", "bash");
+    expect(markLastToolCacheBreakpoint(ts)).toBe(true);
+    expect(ts[0].cache_control).toBeUndefined();
+    expect(ts[1].cache_control).toBeUndefined();
+    expect(ts[2].cache_control).toEqual({ type: "ephemeral" });
+  });
+
+  test("globalScope=true → 最后工具带 scope=global", () => {
+    const ts = tools("read", "bash");
+    markLastToolCacheBreakpoint(ts, { globalScope: true });
+    expect(ts[1].cache_control).toEqual({ type: "ephemeral", scope: "global" });
+  });
+
+  test("工具区断点计入 countCacheBreakpoints 总数", () => {
+    const ts = tools("read", "bash");
+    markLastToolCacheBreakpoint(ts);
+    // system 1 块 + 无消息断点 + 工具区 1 个 = 2
+    const system = buildSystemBlocks("core")!;
+    expect(countCacheBreakpoints(system, [], ts)).toBe(2);
+    // 不传 tools 时不计工具区断点（向后兼容）
+    expect(countCacheBreakpoints(system, [])).toBe(1);
+  });
+
+  test("system(2块)+消息(1)+工具(1)=4 恰好不超上限，不报错", () => {
+    const system = buildSystemBlocks(`STATIC${DYNAMIC_BOUNDARY}DYNAMIC`)!; // 2 块
+    const messages: CacheableMessage[] = [msg("user", "hi")];
+    markLastContentBlock(messages[0]); // 1 个消息断点
+    const ts: CacheableTool[] = [{ name: "read" }];
+    markLastToolCacheBreakpoint(ts); // 1 个工具断点
+    expect(countCacheBreakpoints(system, messages, ts)).toBe(4);
+    const prev = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    let logged = "";
+    const logger = { error: (_t: string, m: string) => { logged = m; } };
+    try {
+      expect(() => assertCacheBreakpointBudget(system, messages, logger, ts)).not.toThrow();
+      expect(logged).toBe(""); // 恰好 4，不触发超限日志
     } finally {
       if (prev !== undefined) process.env.NODE_ENV = prev;
       else delete process.env.NODE_ENV;

@@ -4,16 +4,29 @@
  * 当 LLM 正在响应时，用户输入会被暂存到队列中。
  * 响应结束后（StreamingState 变为 Idle），自动按顺序发送队列中的消息。
  *
- * 参考 gemini-cli 的 message queue 机制。
+ * 缺口1 Phase C（h2A 收敛）：底层存储从 React 局部 state 改为统一优先级队列
+ * `src/query/message-queue-manager.ts`，与后台任务通知 / mid-turn 抢占共享同一队列内核。
+ * - 入队：普通排队走 `next` 级；`enqueueNow` 走 `now` 级（ESC 改向/显式中断，可被 loop mid-turn 抢占）。
+ * - 计数：经 useSyncExternalStore 订阅队列快照，只计 user-input 类命令（"已排队 N 条"）。
+ * - drain：保持现状语义——仅在 streamingState===Idle 时逐条取 user-input 发送，向后兼容。
+ *   task-notification（`later` 级）不在此 drain，仍由 queryLoop 回合边界处理，互不干扰。
  */
 
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import { StreamingState } from "../types.ts";
+import {
+  enqueueCommand,
+  dequeueFirstByKind,
+  getQueueSnapshot,
+  subscribeQueue,
+} from "../../query/message-queue-manager.ts";
 
 export interface UseMessageQueueReturn {
-  /** 入队一条消息 */
+  /** 入队一条普通排队消息（next 级） */
   enqueue: (text: string) => void;
-  /** 队列中的消息数量 */
+  /** 入队一条抢占消息（now 级，ESC 改向；开启 mid-turn drain 时可被 loop 抢占插入） */
+  enqueueNow: (text: string) => void;
+  /** 队列中待发送的用户输入数量 */
   queueLength: number;
   /** 是否正在处理队列 */
   isProcessing: boolean;
@@ -30,44 +43,55 @@ export function useMessageQueue({
   streamingState,
   onSend,
 }: UseMessageQueueOptions): UseMessageQueueReturn {
-  const [queue, setQueue] = useState<string[]>([]);
   const isProcessingRef = useRef(false);
-  const [isProcessing, setIsProcessing] = useState(false);
+  const isProcessingStateRef = useRef(false);
+
+  // 订阅统一队列快照，派生「待发送用户输入」条数（useSyncExternalStore 保证稳定引用/正确重渲）。
+  const snapshot = useSyncExternalStore(subscribeQueue, getQueueSnapshot, getQueueSnapshot);
+  const queueLength = snapshot.filter((c) => c.kind === "user-input").length;
 
   const enqueue = useCallback((text: string) => {
-    setQueue(prev => [...prev, text]);
+    enqueueCommand({ priority: "next", kind: "user-input", payload: text });
   }, []);
 
-  // 当 streamingState 变为 Idle 且队列非空时，自动发送
+  const enqueueNow = useCallback((text: string) => {
+    enqueueCommand({ priority: "now", kind: "user-input", payload: text });
+  }, []);
+
+  // 当 streamingState 变为 Idle 且队列有待发送 user-input 时，逐条按序发送。
+  // 逐条 drain（每次只取 1 条）保持与旧实现完全一致的接续语义，避免一次性 flush 改变行为。
   useEffect(() => {
     if (streamingState !== StreamingState.Idle) return;
-    if (queue.length === 0) return;
+    if (queueLength === 0) return;
     if (isProcessingRef.current) return;
 
-    const processQueue = async () => {
+    const processNext = async () => {
       isProcessingRef.current = true;
-      setIsProcessing(true);
+      isProcessingStateRef.current = true;
 
-      // 取出第一条消息
-      const [first, ...rest] = queue;
-      setQueue(rest);
+      // 只取队首那条 user-input（保持 FIFO、不触碰 task-notification），发送后其余留待下次 effect。
+      // 逐条接续语义与旧实现完全一致：每次 Idle 只发一条，避免一次性 flush 改变行为。
+      const first = dequeueFirstByKind("user-input");
 
       try {
-        await onSend(first);
+        if (first && typeof first.payload === "string") {
+          await onSend(first.payload);
+        }
       } catch {
         // 发送失败不重试，丢弃
       }
 
       isProcessingRef.current = false;
-      setIsProcessing(false);
+      isProcessingStateRef.current = false;
     };
 
-    processQueue();
-  }, [streamingState, queue, onSend]);
+    processNext();
+  }, [streamingState, queueLength, onSend]);
 
   return {
     enqueue,
-    queueLength: queue.length,
-    isProcessing,
+    enqueueNow,
+    queueLength,
+    isProcessing: isProcessingStateRef.current,
   };
 }

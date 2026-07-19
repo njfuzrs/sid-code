@@ -17,8 +17,10 @@ interface Tool {
   usageGuide?(): string;
 }
 import { isCoordinatorMode, getCoordinatorSystemPrompt, COORDINATOR_ONLY_TOOLS } from "../coordinator/mode.ts";
-import { platform, homedir } from "os";
+import { platform, homedir, type as osType, release as osRelease } from "os";
 import { cwd } from "process";
+import { existsSync } from "fs";
+import { join } from "path";
 import { estimateTokens, truncateToLimit } from "./token-utils.ts";
 import { TokenEstimator } from "../llm/token-estimator.ts";
 import {
@@ -228,6 +230,9 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
   }
 
   coreParts.push(buildConstraintsSection(ctx.preferredLanguage));
+
+  // 上下文管理静态告知（增强 5.3）：放静态核心区确保被 prompt cache 稳定缓存、弱模型每轮可见。
+  coreParts.push(buildContextManagementSection());
 
   // 子代理结果安全边界（缺口 2 阶段 1）：仅在子代理工具可用时注入，
   // 避免无 sub_agent 工具的精简模式平白多一段 prompt。
@@ -528,12 +533,58 @@ function buildIdentitySection(language?: "zh" | "en", model?: string): string {
 你的回复应该简洁、专业、可操作。`;
 }
 
+/**
+ * 判断目录是否在 git 仓库内（对标 CC `<env>` 的 "Is directory a git repo: Yes/No"）。
+ * 用文件系统向上查找 .git 而非执行 `git` 命令：零子进程开销、无抢锁副作用、静态可缓存。
+ * .git 可能是目录（普通仓库）或文件（worktree / submodule 的 gitdir 指针），existsSync 两者都覆盖。
+ */
+function isInsideGitRepo(startDir: string): boolean {
+  try {
+    let dir = startDir;
+    // 向上逐级查找，直到文件系统根（dirname 到达自身即为根）
+    for (let i = 0; i < 100; i++) {
+      if (existsSync(join(dir, ".git"))) return true;
+      const parent = join(dir, "..");
+      if (parent === dir) break;
+      dir = parent;
+    }
+  } catch {
+    /* 权限/符号链接异常时静默判否 */
+  }
+  return false;
+}
+
+/**
+ * 上下文管理静态告知（增强 5.3，对齐 CC constants/prompts.ts 常驻声明）。
+ *
+ * 为什么放静态核心区而非运行时 reminder：CC 把"会自动压缩、不受窗口限制、旧结果会清理"
+ * 这类元信息写进常驻 system prompt，弱模型每轮都能在被 prompt cache 稳定缓存的前缀里读到；
+ * 我们此前主要靠 context-pressure.ts 的每轮运行时 reminder 传达，弱模型在被冻结的 system
+ * prompt 里读不到这几句，长会话中容易误判"上下文要满了/历史被截断"而催赶或空转。
+ *
+ * 取向与 context-pressure.ts 保持一致：告知机制存在 + 引导落盘按需拉取，不催赶、不制造矛盾指令。
+ */
+function buildContextManagementSection(): string {
+  return `
+<context-management>
+## 上下文与记忆管理（机制告知）
+
+- **自动压缩**：当对话接近上下文窗口上限时，系统会自动压缩较早的历史（保留结论与关键状态）。你**不受单个上下文窗口长度的硬限制**——不必因为"对话变长"就仓促收尾、跳过步骤或省略验证。
+- **旧工具结果自动清理**：较早的大体积工具输出（文件全文、命令长输出等）会被自动清理，仅保留最近若干条的完整内容；被清理的内容可在需要时用工具重新读取。因此不要把"历史里读过的长内容"当作会永久驻留的记忆。
+- **主动落盘按需拉取**：产出的重要中间结果（长分析、清单、方案）如需跨多轮引用，优先写入文件（或记忆系统）再按需读回，而不是指望它一直留在对话历史里。这样既省上下文，又不丢信息。
+- 这些都是后台机制，**无需你手动触发压缩或清理**；按正常节奏推进任务即可。
+</context-management>`;
+}
+
 /** 构建环境信息部分 */
 function buildEnvironmentSection(workingDir?: string): string {
   const workDir = workingDir || cwd();
   const homeDir = homedir();
   const os = platform();
+  // OS Version：对齐 CC `<env>` 的 uname -sr（内核名 + 版本），如 "Darwin 25.5.0"。
+  const osVersion = `${osType()} ${osRelease()}`;
   const shell = process.env.SHELL || "unknown";
+  const isGitRepo = isInsideGitRepo(workDir);
   // 注意：当前日期【刻意不在此处】注入。日期每天变化，若放进静态核心区会跨天击穿
   // 静态前缀缓存。日期改由 generateDateAttachment 注入到 DYNAMIC_BOUNDARY 之后的动态区。
 
@@ -542,7 +593,9 @@ function buildEnvironmentSection(workingDir?: string): string {
 ## 环境信息
 - 工作目录: ${workDir}
 - 用户主目录: ${homeDir}
+- 是否 git 仓库 (Is directory a git repo): ${isGitRepo ? "Yes" : "No"}
 - 操作系统: ${os}
+- 系统版本 (OS Version): ${osVersion}
 - Shell: ${shell}
 - 路径提示: 如果读取文件时报告"文件不存在"，请先检查路径是否为绝对路径、是否与上述工作目录/主目录一致，然后重试。不要预设"文件已被删除"。
 </environment>`;

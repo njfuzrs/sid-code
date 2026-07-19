@@ -171,6 +171,35 @@ export function buildSystemBlocksV2(
   return blocks;
 }
 
+/** 可被打标的工具定义（鸭子类型；只关心 cache_control 字段是否可挂） */
+export interface CacheableTool {
+  name: string;
+  cache_control?: CacheControl;
+  [key: string]: unknown;
+}
+
+/**
+ * 增强 5.1：在工具数组的**最后一个**工具上放一个 cache breakpoint（对齐 CC toolToAPISchema cacheControl）。
+ *
+ * 为什么放最后一个：tools 数组整体在 system 之前、messages 之后被服务端处理，
+ * 在末尾工具打一个断点 = 把"整个工具区"纳入前缀缓存的一个独立分层，
+ * 工具定义每请求稳定 → 高命中。放最后一个而非每个，保证只 +1 个断点（守住 ≤4 上限）。
+ *
+ * scope：仅直连 Anthropic 且工具区确实跨用户一致时才用 global（与 system 静态区同策略）；
+ * 走网关时降级为普通 ephemeral（org 级）或由调用方直接不打（见 anthropic.ts 门控）。
+ *
+ * @returns 是否成功打标（空数组返回 false）
+ */
+export function markLastToolCacheBreakpoint(
+  tools: CacheableTool[] | undefined,
+  options?: { globalScope?: boolean },
+): boolean {
+  if (!tools || tools.length === 0) return false;
+  const last = tools[tools.length - 1];
+  last.cache_control = options?.globalScope ? EPHEMERAL_GLOBAL : EPHEMERAL;
+  return true;
+}
+
 /** 在指定消息的最后一个 content block 上打标 */
 export function markLastContentBlock(message: CacheableMessage | undefined): boolean {
   if (!message) return false;
@@ -255,6 +284,7 @@ export function addCacheBreakpoints(params: {
 export function countCacheBreakpoints(
   system: SystemBlock[] | undefined,
   messages: CacheableMessage[],
+  tools?: CacheableTool[],
 ): number {
   let count = 0;
   for (const b of system ?? []) {
@@ -266,6 +296,10 @@ export function countCacheBreakpoints(
         if (block && typeof block === "object" && block.cache_control) count++;
       }
     }
+  }
+  // 工具区断点（增强 5.1）：tools 数组里挂了 cache_control 的工具计入总数，守 ≤4 上限。
+  for (const t of tools ?? []) {
+    if (t && typeof t === "object" && t.cache_control) count++;
   }
   return count;
 }
@@ -281,8 +315,9 @@ export function assertCacheBreakpointBudget(
   system: SystemBlock[] | undefined,
   messages: CacheableMessage[],
   logger?: { error: (tag: string, msg: string) => void },
+  tools?: CacheableTool[],
 ): void {
-  const count = countCacheBreakpoints(system, messages);
+  const count = countCacheBreakpoints(system, messages, tools);
   if (count <= MAX_CACHE_BREAKPOINTS) return;
   const detail = `cache_control 断点数 ${count} 超过 Anthropic 上限 ${MAX_CACHE_BREAKPOINTS}，请求会 400`;
   if (process.env.NODE_ENV === "production") {

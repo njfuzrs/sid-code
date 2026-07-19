@@ -535,6 +535,34 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     return false;
   });
 
+  // Alt+T 一键切换扩展思考（对标 cc keybindings meta+t → chat:thinkingToggle）。
+  // 复用 /think 面板的 setThinking / getThinkingState 回调，不新造状态源。
+  // 语义：在 on ↔ off 之间翻转（以当前"是否已生效 applied"为准），比 /think 面板的三态选择更快。
+  // 能力门控：模型不支持思考开关（内置推理模型）时给瞬时提示，不静默吞键。
+  useKeypress(KeypressPriority.High, (key: Key) => {
+    const b = matchBinding(key);
+    if (b?.action !== "app:toggleThinking") return false;
+    const getState = callbacks.getThinkingState;
+    const setThinking = callbacks.setThinking;
+    if (!setThinking) return false;
+
+    const st = getState?.();
+    if (st && !st.capability.supportsThinkingToggle) {
+      log.info("UI:APP", "Alt+T：当前模型不支持思考开关，忽略");
+      bridge.update({ statusMessage: "当前模型不支持显式思考开关（思考由模型自身决定）" });
+      setTimeout(() => bridge.update({ statusMessage: "" }), 2500);
+      return true;
+    }
+
+    // applied=当前是否真的在思考（auto 已解析后的结果）；据此翻转到相反态。
+    const next: import("../llm/effort.ts").ThinkingSetting = st?.applied ? "off" : "on";
+    setThinking(next, /* persist */ true);
+    log.info("UI:APP", `Alt+T：切换扩展思考 → ${next}`);
+    bridge.update({ statusMessage: next === "on" ? "已开启扩展思考" : "已关闭扩展思考" });
+    setTimeout(() => bridge.update({ statusMessage: "" }), 2000);
+    return true;
+  });
+
   // Ctrl+O 统一展开/收起折叠内容（对标 claude-code：单键管所有折叠区）：
   // 工具结果阶梯展开（0 折叠 → 1 更多 → 2 全展开 → 0），思考块与 expandLevel 同步：
   // expandLevel=0 时折叠思考，≥1 时展开思考。两者周期对齐，不再割裂。

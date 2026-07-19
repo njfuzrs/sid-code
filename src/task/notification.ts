@@ -6,6 +6,12 @@
  */
 
 import type { TaskStatus, AgentTaskResult } from "./types.ts";
+import {
+  enqueueCommand,
+  drainByKind,
+  queueSize,
+  getQueueSnapshot,
+} from "../query/message-queue-manager.ts";
 
 /**
  * 通知正文最大字符数。
@@ -121,20 +127,24 @@ export interface StructuredNotification {
   result?: string;
 }
 
-interface PendingNotification {
-  content: string;
-  priority: NotificationPriority;
-  /** 结构化快照（供 TUI 走 _meta 结构化渲染，不解析 content 文本） */
-  structured?: StructuredNotification;
-}
-
 /** 出队结果：注入 LLM 的 XML 文本 + 供 TUI 渲染的结构化快照。 */
 export interface DequeuedNotification {
   content: string;
   structured?: StructuredNotification;
 }
 
-const pendingQueue: PendingNotification[] = [];
+// 缺口1 Phase C（h2A 收敛）：任务通知不再维护独立 pendingQueue，改为背靠统一优先级队列
+// （src/query/message-queue-manager.ts），与用户输入排队 / mid-turn 抢占共享同一内核。
+// - 通知统一以 kind:"task-notification" 入队，payload 携带 {content, structured}；
+// - NotificationPriority("next"|"later") 直接映射到统一队列同名优先级（不会用 now，通知从不抢占）；
+// - dequeuePendingNotifications 只 drain task-notification 类，绝不吞掉 user-input（那归 UI/loop 处理）。
+// 公共 API 签名与语义保持不变，生产调用方无需改动。
+
+/** 统一队列里任务通知命令的 payload 形状。 */
+interface NotificationPayload {
+  content: string;
+  structured?: StructuredNotification;
+}
 
 /** 从 TaskNotification 抽取 TUI 渲染所需的结构化快照。 */
 function toStructured(n: TaskNotification): StructuredNotification {
@@ -158,11 +168,11 @@ export function enqueueTaskNotification(
   n: TaskNotification,
   priority: NotificationPriority = "later",
 ): void {
-  pendingQueue.push({
+  const payload: NotificationPayload = {
     content: formatNotification(n),
-    priority,
     structured: toStructured(n),
-  });
+  };
+  enqueueCommand({ priority, kind: "task-notification", payload });
 }
 
 /**
@@ -175,23 +185,31 @@ export function enqueuePendingNotification(
   content: string,
   priority: NotificationPriority = "later",
 ): void {
-  pendingQueue.push({ content, priority });
+  const payload: NotificationPayload = { content };
+  enqueueCommand({ priority, kind: "task-notification", payload });
 }
 
-/** 出队通知（主循环空闲时调用），携带结构化快照。 */
+/**
+ * 出队通知（主循环空闲时调用），携带结构化快照。
+ *
+ * 只取 task-notification 类命令；now/next/later 顺序由统一队列保证（通知只用 next/later）。
+ * 绝不 drain user-input（那由 UI Idle-drain / loop mid-turn 处理），避免跨通道误吞。
+ */
 export function dequeuePendingNotifications(): DequeuedNotification[] {
-  if (pendingQueue.length === 0) return [];
-
-  pendingQueue.sort((a, b) => {
-    if (a.priority === "next" && b.priority === "later") return -1;
-    if (a.priority === "later" && b.priority === "next") return 1;
-    return 0;
+  // 只取 task-notification 类（drainByKind 保证不误吞 user-input，也不重排其余命令）。
+  const notifs = drainByKind("task-notification");
+  if (notifs.length === 0) return [];
+  return notifs.map((c) => {
+    const p = c.payload as NotificationPayload;
+    return { content: p.content, structured: p.structured };
   });
-
-  return pendingQueue.splice(0).map(n => ({ content: n.content, structured: n.structured }));
 }
 
-/** 检查是否有待处理的通知 */
+/** 检查是否有待处理的通知（只看 task-notification 类，不含 user-input）。不出队。 */
 export function hasPendingNotifications(): boolean {
-  return pendingQueue.length > 0;
+  if (queueSize() === 0) return false; // 快速短路：整个统一队列为空
+  // 读快照过滤 task-notification（无副作用，避免 drain/回队开销）。
+  const snap = getQueueSnapshot();
+  for (const c of snap) if (c.kind === "task-notification") return true;
+  return false;
 }
