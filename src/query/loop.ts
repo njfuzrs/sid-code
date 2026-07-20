@@ -82,7 +82,7 @@ import {
   buildProgressReminder,
 } from "./work-log.ts";
 import { dequeuePendingNotifications, evictTerminalTasks } from "../task/index.ts";
-import { drainByPriority, hasPending, type QueuedCommand } from "./message-queue-manager.ts";
+import { drainByPriorityAndKind, hasPending, type QueuedCommand } from "./message-queue-manager.ts";
 import {
   measureThinkingLen,
   isThinkingDiverging,
@@ -2383,7 +2383,9 @@ export async function* queryLoop(
       // next/later 级（普通排队输入 / 后台通知）不在此插入，仍走回合边界 drain，避免打断正常推进。
       // 灰度：默认关闭，SID_ENABLE_MIDTURN_DRAIN=1 开启；关闭时行为与改造前完全一致（向后兼容）。
       if (process.env.SID_ENABLE_MIDTURN_DRAIN === "1" && hasPending("now")) {
-        const preempts = drainByPriority("now");
+        // 只取 now 级的 user-input（按 priority+kind 双条件），不误吞 / 丢弃其余 now 级 kind。
+        // 非 user-input 的 now 级命令（如未来的孤儿权限响应）保留在队列，走各自专门通道。
+        const preempts = drainByPriorityAndKind("now", "user-input");
         const injected = injectQueuedCommandsAsUserMessage(preempts, ctxMgr, deps);
         if (injected > 0) {
           log.info("QUERY_LOOP", `mid-turn 抢占：注入 ${injected} 条 now 级用户输入，本轮工具结果已配对无孤儿`);

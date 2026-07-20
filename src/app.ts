@@ -50,6 +50,7 @@ import { resetCacheDetection, clearCacheBreaks } from "./api/cache-detection.ts"
 import { resetTTLLatch } from "./api/cache-ttl-latch.ts";
 import { resetBetaHeaders } from "./api/beta-header-latch.ts";
 import { resetCircuitBreaker } from "./query/auto-compact.ts";
+import { clearQueue as clearMessageQueue } from "./query/message-queue-manager.ts";
 import { HookSystem } from "./hook/system.ts";
 import {
   SDKQueryEngine,
@@ -1180,6 +1181,10 @@ export class App {
         // G5/G7：TTL 决策和 beta header 集合不应跨 /clear 泄漏
         resetTTLLatch();
         resetBetaHeaders();
+        // 统一消息队列清空（缺口1 h2A）：/clear 是会话级重置，排队中的用户输入 / 未出队的
+        // 后台任务通知不应跨会话残留（否则 clear 后队列 drain 会把上一会话的旧输入注入新会话）。
+        // 队列是模块级单例，ctxMgr.clear() 不会触及它 —— 必须显式清空，对齐其余重置项。
+        clearMessageQueue();
         this.announcedMcpServers.clear();
         resetSyncState();
         updateState(getConversationClearedPatch());
@@ -4941,6 +4946,8 @@ export class App {
             // G5/G7：TTL 决策和 beta header 集合不应跨 /clear 泄漏
             resetTTLLatch();
             resetBetaHeaders();
+            // 统一消息队列清空（缺口1 h2A）：会话级重置不应让排队输入/未出队通知跨会话残留。
+            clearMessageQueue();
             this.announcedMcpServers.clear();
             lastSyncedCount = 0;
             historyIdCounter = 0;

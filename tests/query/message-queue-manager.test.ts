@@ -5,11 +5,12 @@
  * 另覆盖：drainByPriority 分级 drain、peek/hasPending 探测、快照稳定引用、clear/reset。
  */
 
-import { describe, test, expect, beforeEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import {
   enqueueCommand,
   drainByPriority,
   drainByKind,
+  drainByPriorityAndKind,
   dequeueFirstByKind,
   peek,
   hasPending,
@@ -27,6 +28,9 @@ function enq(priority: "now" | "next" | "later", payload: string, kind: CommandK
 
 describe("message-queue-manager（Phase A 内核）", () => {
   beforeEach(() => __resetForTest());
+  // 队列是模块级单例：本文件跑完必须清空，否则残留命令会漏进后续测试文件的 queryLoop
+  //（dequeuePendingNotifications 会注入这些残留，用测试假 payload 触发下游崩溃）。
+  afterEach(() => __resetForTest());
 
   test("出队顺序：now → next → later", () => {
     // 乱序入队
@@ -192,5 +196,39 @@ describe("message-queue-manager（Phase A 内核）", () => {
     enq("now", "esc1", "user-input"); // ESC 改向
     const users = drainByKind("user-input").map((c) => c.payload);
     expect(users).toEqual(["esc1", "u1"]); // now 排最前
+  });
+
+  describe("drainByPriorityAndKind（priority + kind 双条件）", () => {
+    test("只取 now 级 user-input，其余 kind / 优先级全保留", () => {
+      enq("now", "esc1", "user-input"); // ✓ 取
+      enq("now", "perm1", "permission-response"); // kind 不匹配 → 留
+      enq("next", "u2", "user-input"); // 优先级不够 → 留
+      const taken = drainByPriorityAndKind("now", "user-input").map((c) => c.payload);
+      expect(taken).toEqual(["esc1"]);
+      // 剩余 2 条顺序不变
+      const rest = getQueueSnapshot().map((c) => c.payload);
+      expect(rest).toEqual(["perm1", "u2"]);
+    });
+
+    test("多条 now 级 user-input 保持 FIFO", () => {
+      enq("now", "a", "user-input");
+      enq("now", "b", "user-input");
+      enq("now", "c", "user-input");
+      const taken = drainByPriorityAndKind("now", "user-input").map((c) => c.payload);
+      expect(taken).toEqual(["a", "b", "c"]);
+      expect(queueSize()).toBe(0);
+    });
+
+    test("无匹配返回空数组、不触发通知", () => {
+      let notified = 0;
+      const unsub = subscribeQueue(() => notified++);
+      enq("later", "n1", "task-notification");
+      notified = 0; // 忽略入队通知
+      const taken = drainByPriorityAndKind("now", "user-input");
+      expect(taken).toEqual([]);
+      expect(notified).toBe(0); // 无变更不 emit
+      expect(queueSize()).toBe(1);
+      unsub();
+    });
   });
 });

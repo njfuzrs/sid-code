@@ -149,6 +149,34 @@ export function dequeueFirstByKind(kind: CommandKind): QueuedCommand | undefined
   return taken;
 }
 
+/**
+ * 出队**同时满足** priority ≤ maxPriority **且** kind === 指定 kind 的命令。
+ * 其余命令（优先级不够 / kind 不匹配）全部原位保留、顺序不变。
+ *
+ * mid-turn 抢占用：Phase B 只想 mid-turn 注入「now 级的用户输入」，但 drainByPriority("now")
+ * 会把 now 级的**所有** kind 一并取出，而注入侧只处理 user-input → 非 user-input 的 now 级命令
+ * 被静默丢弃（当前 now 级只有 user-input 未暴露，但一旦将来有 now 级 permission-response 就会丢失）。
+ * 本函数按 (priority, kind) 双条件精确取出，杜绝跨 kind 误吞 / 丢弃。
+ * 已按 (priority, enqueuedAt) 有序，取出的同 kind 命令天然保持 FIFO。
+ */
+export function drainByPriorityAndKind(
+  maxPriority: CommandPriority,
+  kind: CommandKind,
+): QueuedCommand[] {
+  if (queue.length === 0) return [];
+  const maxRank = PRIORITY_RANK[maxPriority];
+  const taken: QueuedCommand[] = [];
+  const remaining: QueuedCommand[] = [];
+  for (const c of queue) {
+    if (PRIORITY_RANK[c.priority] <= maxRank && c.kind === kind) taken.push(c);
+    else remaining.push(c);
+  }
+  if (taken.length === 0) return [];
+  queue = remaining;
+  emitChange();
+  return taken;
+}
+
 /** 查看队首命令（不出队）。用于 mid-turn 探测「是否有 now 级待处理」。 */
 export function peek(): QueuedCommand | undefined {
   return queue[0];

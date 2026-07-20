@@ -23,6 +23,7 @@ import {
   enqueueCommand,
   __resetForTest,
   queueSize,
+  getQueueSnapshot,
 } from "../../src/query/message-queue-manager.ts";
 import { checkMessageHistoryIntegrity } from "../../src/agent/message-invariants.ts";
 
@@ -163,5 +164,32 @@ describe("缺口1 Phase B — mid-turn 抢占式 drain", () => {
       if (ev.kind === "system" && "text" in ev) systemTexts.push(ev.text);
     }
     expect(systemTexts.some((t) => t.includes("已插入"))).toBe(false);
+  });
+
+  test("mid-turn 只取 now 级 user-input，不丢弃同为 now 级的其它 kind", async () => {
+    // 回归防护：drainByPriority("now") 会连 now 级的非 user-input 一并取出，而注入侧只处理
+    // user-input → 其余 kind 被静默丢弃。改用 drainByPriorityAndKind("now","user-input") 后，
+    // now 级的 permission-response 必须保留在队列，不被 mid-turn 通道误吞 / 丢失。
+    process.env.SID_ENABLE_MIDTURN_DRAIN = "1";
+    const { loopConfig, ctxMgr } = makeLoopConfig([toolResp("tu-1"), endResp("完成")]);
+
+    // 同为 now 级：一条用户输入（应被注入）+ 一条权限响应（应保留在队列）
+    enqueueCommand({ priority: "now", kind: "user-input", payload: "改向输入" });
+    enqueueCommand({ priority: "now", kind: "permission-response", payload: { granted: true } });
+
+    const systemTexts: string[] = [];
+    for await (const ev of queryLoop(loopConfig)) {
+      if (ev.kind === "system" && "text" in ev) systemTexts.push(ev.text);
+    }
+
+    // user-input 被注入
+    expect(systemTexts.some((t) => t.includes("已插入"))).toBe(true);
+    const allText = JSON.stringify(ctxMgr.getMessages());
+    expect(allText).toContain("改向输入");
+
+    // permission-response 未被丢弃，仍留在队列
+    const remaining = getQueueSnapshot();
+    expect(remaining.length).toBe(1);
+    expect(remaining[0]!.kind).toBe("permission-response");
   });
 });

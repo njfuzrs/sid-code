@@ -438,8 +438,13 @@ export class PermissionChecker implements Checker {
     const resource = filePath || (req.input as any)?.command || "";
 
     // Step 1: deny 规则（工具级）
+    //
+    // bash 复合命令需逐子命令拆分匹配（对称于 Step 8 的 checkAllowRules）：
+    // 用户配 `deny: ["Bash(curl *)"]` 时，`ls && curl evil.com` 的后段 curl 不应
+    // 因 minimatch 前缀不跨 `&&` 而漏匹配。deny 语义与 allow 相反——任一子命令命中
+    // deny 规则即整体拒绝（some(deny)，非 every）。
     if (this.rules) {
-      const ruleDecision = checkRules({ deny: this.rules.deny, allow: [], ask: [] }, req);
+      const ruleDecision = this.checkDenyRules(req);
       if (ruleDecision && !ruleDecision.allowed) {
         log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(deny规则: ${ruleDecision.reason})`);
         return { ...ruleDecision, decisionReason: { type: "rule", rule: ruleDecision.reason || "", behavior: "deny" } };
@@ -1020,6 +1025,52 @@ export class PermissionChecker implements Checker {
     }
 
     return null; // 无危险
+  }
+
+  /**
+   * deny 规则检查（复合命令感知）——对称于 checkAllowRules，语义相反。
+   *
+   * 对齐 claude-code bashPermissions：`Bash(curl *)` 这类前缀/glob deny 规则**不能**被
+   * `safe && curl evil` 这样的复合命令前缀绕过。minimatch 不跨 `&&`/`||`/`;`/`|`，
+   * 整条匹配时 `ls && curl evil.com` 匹配不到 `curl *` 规则 → 用户配置的 deny 被静默绕过。
+   *
+   * 修复：bash 命令先 splitCompoundCommand 拆成子命令，**任一子命令命中 deny 规则即整体拒绝**
+   * （some(deny)，与 allow 的 every 相反）。非 bash 工具保持原逻辑，整条匹配。
+   *
+   * 说明：内置危险模式检测（Step 2 hardcodedDangerCheck）本就复合命令感知，故 `ls && curl|sh`
+   * 这类内置模式不受影响；本修复补的是"用户自定义 deny 规则"对复合命令后段的覆盖缺口。
+   */
+  private checkDenyRules(req: PermissionRequest): Decision | null {
+    if (!this.rules) return null;
+    const denyRules = { deny: this.rules.deny, allow: [], ask: [] };
+
+    // 非 bash：保持原整条匹配语义
+    if (req.toolName !== "bash") {
+      return checkRules(denyRules, req);
+    }
+
+    const command = (req.input as { command?: string })?.command ?? "";
+    const subCommands = splitCompoundCommand(command);
+
+    // 单命令（无 &&/||/;/| 复合）：等价于原逻辑，直接整条匹配
+    if (subCommands.length <= 1) {
+      return checkRules(denyRules, req);
+    }
+
+    // 复合命令：逐子命令校验，任一子命令命中 deny 即整体拒绝（some(deny)）
+    for (const sub of subCommands) {
+      const subReq: PermissionRequest = {
+        ...req,
+        input: { ...(req.input as object), command: sub },
+      };
+      const subDecision = checkRules(denyRules, subReq);
+      if (subDecision && !subDecision.allowed) {
+        // 命中的 deny 规则针对的是子命令，reason 里带上原始命令上下文更可读
+        return subDecision;
+      }
+    }
+    // 没有任何子命令命中 deny
+    return null;
   }
 
   /**

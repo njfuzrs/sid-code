@@ -223,6 +223,9 @@ export const SettingsSchema = lazySchema(() =>
       sanitizeEnv: z.boolean().optional(),
       trustProjectExtensions: z.boolean().optional(),
       jitContext: z.boolean().optional(),
+      // AskUserQuestion 交互态空闲超时（"60s"/"5m"/"never"，默认 never 对齐 CC 保守语义）。
+      // 交互式 TUI 下单次提问级 idle 超时，到期按 cancelled resolve（模型收到"用户未响应，选默认继续"）。
+      askUserQuestionTimeout: z.string().optional(),
       // LLM 命令风险分类器（P0-3 迭代 II）
       enableLLMClassifier: z.boolean().optional(),
       classifierModel: z.string().optional(),
