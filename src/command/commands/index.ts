@@ -22,6 +22,11 @@ import diff from "./diff/index.ts";
 import doctor from "./doctor/index.ts";
 import todos from "./todos/index.ts";
 import status from "./status/index.ts";
+import context from "./context/index.ts";
+import vim from "./vim/index.ts";
+import workflows from "./workflows/index.ts";
+import copy from "./copy/index.ts";
+import rename from "./rename/index.ts";
 
 export const BUILTIN_COMMANDS: UnifiedCommand[] = [
   compact,
@@ -37,4 +42,9 @@ export const BUILTIN_COMMANDS: UnifiedCommand[] = [
   doctor,
   todos,
   status,
+  context,
+  vim,
+  workflows,
+  copy,
+  rename,
 ];

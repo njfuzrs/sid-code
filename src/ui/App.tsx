@@ -74,6 +74,12 @@ export interface TUICallbacks {
   setEffort?: (level: import("../llm/effort.ts").EffortSetting, persist?: boolean) => void;
   /** 思考开关旋钮 setter（/think 面板用） */
   setThinking?: (setting: import("../llm/effort.ts").ThinkingSetting, persist?: boolean) => void;
+  /** Vim 输入模式 setter（/vim 命令用）。persist=true 时写 settings.json vimMode。 */
+  setVimMode?: (enabled: boolean, persist?: boolean) => void;
+  /** 读取当前 Vim 输入模式开关（/vim 无参 toggle 时用）。 */
+  getVimMode?: () => boolean;
+  /** 会话重命名（/rename 用）。name 为空时基于上下文生成。返回最终名字。 */
+  renameSession?: (name?: string) => string | Promise<string>;
   /** 读取当前 effort 运行时态 + 能力（/effort 面板展示用） */
   getEffortState?: () => {
     runtime: import("../llm/effort.ts").EffortSetting;
@@ -225,6 +231,8 @@ export interface TUIState {
   thinkingDisplay: { on: boolean; isAuto: boolean } | null;
   /** /goal：目标状态展示态（状态栏 goal 列）。null = 无活跃目标 */
   goalDisplay: { turnsUsed: number; maxTurns: number; status: string } | null;
+  /** P1-5 可自定义状态栏配置（来自 settings.json 的 statusLine 块）。undefined = 走内置聚合状态栏。 */
+  statusLine?: import("./statusline/run-statusline.ts").StatusLineConfig;
   statusMessage: string;
   permissionRequest: PermissionRequestInfo | null;
   shellConfirmRequest: ShellConfirmRequestInfo | null;
@@ -249,6 +257,8 @@ export interface TUIState {
   isQuitting: boolean;
   /** Copy Mode：禁用鼠标事件，允许终端原生文本选择 */
   copyModeEnabled: boolean;
+  /** Vim 输入模式开关（/vim 切换）。状态栏显示 ·v 标记，运行时由 setVimMode 推送。 */
+  vimMode: boolean;
   /** 所有已注册命令（补全用） */
   commands: Array<{ name: string; aliases: string[]; description: string; requiresArgs?: boolean }>;
   /** 当前工作目录（@ 文件补全用） */
@@ -795,7 +805,9 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     effortDisplay: state.effortDisplay,
     thinkingDisplay: state.thinkingDisplay,
     goalDisplay: state.goalDisplay,
-  }), [state.model, state.provider, state.permissionMode, state.isPlanMode, state.gitBranch, state.debug, state.cwd, state.commands, state.availableModels, state.effortDisplay, state.thinkingDisplay, state.goalDisplay]);
+    vimMode: state.vimMode,
+    statusLine: state.statusLine,
+  }), [state.model, state.provider, state.permissionMode, state.isPlanMode, state.gitBranch, state.debug, state.cwd, state.commands, state.availableModels, state.effortDisplay, state.thinkingDisplay, state.goalDisplay, state.vimMode, state.statusLine]);
 
   // 派生 SessionContext 值
   const sessionValue = useMemo((): SessionContextValue => ({

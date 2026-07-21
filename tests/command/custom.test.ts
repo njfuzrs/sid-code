@@ -6,7 +6,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, writeFileSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { CustomCommand, CustomCommandLoader } from "../../src/command/custom.ts";
+import { CustomCommand, CustomCommandLoader, parseCustomCommandOptions } from "../../src/command/custom.ts";
 import { ExtensionLoader } from "../../src/extension/loader.ts";
 
 describe("CustomCommand", () => {
@@ -72,14 +72,29 @@ describe("CustomCommand", () => {
 
 describe("CustomCommandLoader", () => {
   let testDir: string;
+  let homeDir: string;
+  let prevClaude: string | undefined;
+  let prevSid: string | undefined;
 
   beforeEach(() => {
     testDir = join(tmpdir(), `cmd-test-${Date.now()}`);
     mkdirSync(testDir, { recursive: true });
+    // 隔离用户级目录（否则 loadAll 会扫到真实 ~/.claude/commands 与 ~/.sid-code/commands，
+    // 污染 length 断言）。指向空临时目录。
+    homeDir = join(testDir, "__home__");
+    mkdirSync(homeDir, { recursive: true });
+    prevClaude = process.env.CLAUDE_CONFIG_DIR;
+    prevSid = process.env.SID_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = join(homeDir, ".claude");
+    process.env.SID_CONFIG_DIR = join(homeDir, ".sid-code");
   });
 
   afterEach(() => {
     rmSync(testDir, { recursive: true, force: true });
+    if (prevClaude === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = prevClaude;
+    if (prevSid === undefined) delete process.env.SID_CONFIG_DIR;
+    else process.env.SID_CONFIG_DIR = prevSid;
   });
 
   test("加载自定义命令", async () => {
@@ -127,5 +142,108 @@ description: 代码审查
     const loader = new CustomCommandLoader(new ExtensionLoader());
     const results = await loader.loadAll(testDir);
     expect(results.length).toBe(0);
+  });
+});
+
+// ── P2-2：frontmatter 高级字段 ──
+describe("P2-2 parseCustomCommandOptions", () => {
+  test("解析 argument-hint（连字符 key）", () => {
+    const o = parseCustomCommandOptions({ "argument-hint": "<pr-number>" });
+    expect(o.argumentHint).toBe("<pr-number>");
+  });
+
+  test("驼峰 argumentHint 亦兼容", () => {
+    const o = parseCustomCommandOptions({ argumentHint: "hint2" });
+    expect(o.argumentHint).toBe("hint2");
+  });
+
+  test("allowed-tools 逗号分隔字符串", () => {
+    const o = parseCustomCommandOptions({ "allowed-tools": "read, grep , bash" });
+    expect(o.allowedTools).toEqual(["read", "grep", "bash"]);
+  });
+
+  test("allowed-tools 数组", () => {
+    const o = parseCustomCommandOptions({ "allowed-tools": ["read", "edit"] });
+    expect(o.allowedTools).toEqual(["read", "edit"]);
+  });
+
+  test("model 字段", () => {
+    const o = parseCustomCommandOptions({ model: "claude-opus-4" });
+    expect(o.model).toBe("claude-opus-4");
+  });
+
+  test("空 frontmatter → 空 options", () => {
+    const o = parseCustomCommandOptions({});
+    expect(o.argumentHint).toBeUndefined();
+    expect(o.allowedTools).toBeUndefined();
+    expect(o.model).toBeUndefined();
+  });
+});
+
+describe("P2-2 CustomCommand 高级字段生效", () => {
+  let testDir: string;
+  let prevClaude: string | undefined;
+  let prevSid: string | undefined;
+  beforeEach(() => {
+    testDir = join(tmpdir(), `cmd-p22-${Date.now()}`);
+    mkdirSync(testDir, { recursive: true });
+    // 隔离用户级目录，同 CustomCommandLoader describe。
+    prevClaude = process.env.CLAUDE_CONFIG_DIR;
+    prevSid = process.env.SID_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = join(testDir, "__home__", ".claude");
+    process.env.SID_CONFIG_DIR = join(testDir, "__home__", ".sid-code");
+  });
+  afterEach(() => {
+    rmSync(testDir, { recursive: true, force: true });
+    if (prevClaude === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = prevClaude;
+    if (prevSid === undefined) delete process.env.SID_CONFIG_DIR;
+    else process.env.SID_CONFIG_DIR = prevSid;
+  });
+
+  test("argumentHint() 透出 frontmatter 值", () => {
+    const cmd = new CustomCommand("pr", "创建 PR", "body", { argumentHint: "<title>" });
+    expect(cmd.argumentHint()).toBe("<title>");
+  });
+
+  test("未声明 hint 时 argumentHint() 为空串", () => {
+    const cmd = new CustomCommand("x", "d", "b");
+    expect(cmd.argumentHint()).toBe("");
+  });
+
+  test("无 allowed-tools/model 走 inline submit_prompt", async () => {
+    const cmd = new CustomCommand("ask", "d", "回答 $@", {});
+    const r = await cmd.execute("hi", {} as any);
+    expect(r.kind).toBe("submit_prompt");
+  });
+
+  test("声明 allowed-tools 但无 providerRegistry 时回退 inline", async () => {
+    const cmd = new CustomCommand("scan", "d", "扫描 $@", { allowedTools: ["read"] });
+    // ctx 无 providerRegistry → 回退 inline，保证命令可用
+    const r = await cmd.execute("src", {} as any);
+    expect(r.kind).toBe("submit_prompt");
+    expect(r.prompt).toBe("扫描 src");
+  });
+
+  test("loadAll 应用 frontmatter 高级字段", async () => {
+    const cmdDir = join(testDir, ".sid-code", "commands");
+    mkdirSync(cmdDir, { recursive: true });
+    writeFileSync(
+      join(cmdDir, "review.md"),
+      `---
+description: 代码审查
+argument-hint: "<file>"
+allowed-tools: read, grep
+model: claude-opus-4
+---
+审查文件 $1`,
+    );
+    const loader = new CustomCommandLoader(new ExtensionLoader());
+    const results = await loader.loadAll(testDir);
+    // 按名精确定位（loadAll 亦会扫描用户 home 下命令，不能断言总数）。
+    const review = results.find((r) => r.cmd.name() === "review");
+    expect(review).toBeDefined();
+    expect(review!.cmd.description()).toBe("代码审查");
+    expect(review!.cmd.argumentHint()).toBe("<file>");
   });
 });

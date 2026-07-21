@@ -32,6 +32,47 @@ function extractDescription(body: string): string {
 }
 
 /**
+ * P2-2：自定义命令 frontmatter 高级字段（对齐 claude-code）。
+ * - argumentHint：补全时显示的参数提示（frontmatter key: argument-hint）。
+ * - allowedTools：限定 prompt 执行时可用工具集，非空则走 fork 子代理隔离执行。
+ * - model：指定该命令用哪个模型执行（仅 fork 路径生效）。
+ */
+export interface CustomCommandOptions {
+  argumentHint?: string;
+  allowedTools?: string[];
+  model?: string;
+}
+
+/**
+ * 从 frontmatter 解析高级字段（含 CC 的连字符 key 与本项目驼峰 key 双写兼容）。
+ * allowed-tools 支持逗号分隔字符串或数组两种写法（对齐 skill/loader.ts）。
+ */
+export function parseCustomCommandOptions(
+  frontmatter: Record<string, unknown>,
+): CustomCommandOptions {
+  const opts: CustomCommandOptions = {};
+
+  const hint = frontmatter["argument-hint"] ?? frontmatter["argumentHint"];
+  if (typeof hint === "string" && hint.trim()) {
+    opts.argumentHint = hint.trim();
+  }
+
+  const rawTools = frontmatter["allowed-tools"] ?? frontmatter["allowedTools"] ?? frontmatter["tools"];
+  if (typeof rawTools === "string" && rawTools.trim()) {
+    opts.allowedTools = rawTools.split(",").map((s) => s.trim()).filter(Boolean);
+  } else if (Array.isArray(rawTools)) {
+    opts.allowedTools = rawTools.map(String).map((s) => s.trim()).filter(Boolean);
+  }
+
+  const model = frontmatter["model"];
+  if (typeof model === "string" && model.trim()) {
+    opts.model = model.trim();
+  }
+
+  return opts;
+}
+
+/**
  * 处理文件注入 @{path}
  * 读取文件内容并替换占位符，文件不存在时抛出错误
  */
@@ -136,16 +177,20 @@ export class CustomCommand implements Command {
   private _name: string;
   private _description: string;
   private _body: string;
+  private _options: CustomCommandOptions;
 
-  constructor(name: string, description: string, body: string) {
+  constructor(name: string, description: string, body: string, options: CustomCommandOptions = {}) {
     this._name = name;
     this._description = description;
     this._body = body;
+    this._options = options;
   }
 
   name(): string { return this._name; }
   aliases(): string[] { return []; }
   description(): string { return this._description || `自定义命令: ${this._name}`; }
+  // P2-2：frontmatter argument-hint 透出到补全（adapter 会取 argumentHint()）。
+  argumentHint(): string { return this._options.argumentHint ?? ""; }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     let text: string;
@@ -161,7 +206,53 @@ export class CustomCommand implements Command {
       return { kind: "message", message: "已取消：用户拒绝执行 Shell 命令" };
     }
 
+    // P2-2：声明了 allowed-tools 或 model 时走 fork 子代理隔离执行——
+    // 限定工具集 + 指定模型，返回子代理最终输出。否则维持 inline 注入当前对话。
+    const { allowedTools, model } = this._options;
+    if ((allowedTools && allowedTools.length > 0) || model) {
+      return this.executeFork(text, ctx, allowedTools, model);
+    }
+
     return { kind: "submit_prompt", prompt: text };
+  }
+
+  /** fork 模式：在受限子代理中执行 prompt（复用 SubAgent.executeCustom）。 */
+  private async executeFork(
+    prompt: string,
+    ctx: AppContext,
+    allowedTools?: string[],
+    model?: string,
+  ): Promise<CommandResult> {
+    const log = getLogger();
+    if (!ctx.providerRegistry) {
+      // 无 ProviderRegistry（如无头精简环境）时退回 inline，保证命令仍可用。
+      log.warn("CUSTOM_CMD", `fork 命令 /${this._name} 无 providerRegistry，退回 inline`);
+      return { kind: "submit_prompt", prompt };
+    }
+    try {
+      const { SubAgent } = await import("../agent/sub-agent.ts");
+      const subAgent = SubAgent.fromRegistry(
+        ctx.providerRegistry,
+        ctx.registry, // AppContext 的 ToolRegistry 字段名为 registry
+        ctx.hookSystem,
+        model, // modelOverride：未指定则用主模型
+      );
+      const result = await subAgent.executeCustom({
+        systemPrompt: "你是一个专注的助手，请完成以下任务。",
+        userPrompt: prompt,
+        allowedTools: allowedTools ?? [],
+        maxTurns: 30,
+        type: "custom-command",
+      });
+      if (!result.success) {
+        return { kind: "error", message: result.output || "自定义命令执行失败" };
+      }
+      return { kind: "message", message: result.output };
+    } catch (err: any) {
+      log.error("CUSTOM_CMD", `fork 执行失败 /${this._name}: ${err?.message}`);
+      // fork 出错兜底回 inline，避免命令完全不可用。
+      return { kind: "submit_prompt", prompt };
+    }
   }
 }
 
@@ -190,7 +281,9 @@ export class CustomCommandLoader {
       }
 
       const description = (file.frontmatter.description as string) || extractDescription(file.body);
-      const cmd = new CustomCommand(file.name, description, file.body);
+      // P2-2：解析 argument-hint / allowed-tools / model 高级字段。
+      const options = parseCustomCommandOptions(file.frontmatter);
+      const cmd = new CustomCommand(file.name, description, file.body, options);
       const source: "user" | "project" = file.source === "user" ? "user" : "project";
       results.push({ cmd, source });
     }

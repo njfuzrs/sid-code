@@ -133,6 +133,14 @@ export interface Config {
   autoDream?: boolean;
   /** UI 主题名（/theme 持久化端，settings.json theme）。不设置时用内置默认暗色主题 */
   theme?: string;
+  /** Vim 输入模式开关（/vim 持久化端，settings.json vimMode）。缺省 = false */
+  vimMode?: boolean;
+  /**
+   * P1-5 可自定义状态栏（settings.json statusLine，对标 claude-code）。
+   * { type: "command", command: "<脚本>", padding?: number }。缺省 = 走内置聚合状态栏。
+   * 脚本经 stdin 收 JSON 会话数据，stdout 即状态栏内容（支持 ANSI）。
+   */
+  statusLine?: import("../ui/statusline/run-statusline.ts").StatusLineConfig;
 
   /**
    * 推理强度档位初值（/effort 持久化端，settings.json effortLevel）。
@@ -750,6 +758,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     auto_dream: "autoDream",
     autoDream: "autoDream",
     theme: "theme",
+    vimMode: "vimMode",
   };
 
   const result: any = {};
@@ -1283,13 +1292,17 @@ export async function ensureConfigDir(): Promise<string> {
 }
 
 /**
- * 五层权限规则加载
- * 优先级（数组合并，deny > allow > ask）：
- * 1. 策略配置：/etc/sid-code/policy.yaml（企业级，可选）
- * 2. 全局配置：~/.sid-code/settings.json 中的 permissions 字段
- * 3. 项目配置：<project>/.sid-code/permissions.yaml（团队共享）
- * 4. 本地配置：<project>/.sid-code/permissions.local.yaml（个人，加入 .gitignore）
- * 5. 会话配置：内存中的临时规则（由 checker 的 sessionMemory 管理）
+ * 权限规则加载（历史 B 加载器，P2-1 后已收敛为 RuleLoader 薄封装）。
+ *
+ * 本函数不再自行解析任何文件，全部委托给 RuleLoader（单一事实源）。各源与优先级
+ * 由 RuleLoader 统一负责（低→高）：
+ *   session → command → cliArg → userSettings → projectSettings → localSettings → flagSettings → policySettings
+ * 其中企业策略从 managedPolicyCandidates()（/etc/sid-code/managed-settings.json
+ * + ~/.sid-code/managed-settings.json）加载——历史上冲突的 /etc/sid-code/policy.json
+ * 与 policy.yaml 两个路径已废弃，不再读取。
+ *
+ * 调用方（cli.ts）仅用其返回值作 checker 构造期的**启动占位**规则；
+ * checker.initRules() 会再跑一次 RuleLoader.loadAll 并以其为准（清除占位避免重复）。
  */
 export async function loadPermissionRules(): Promise<import("../permission/types.ts").PermissionRule> {
   const log = getLogger();

@@ -52,6 +52,16 @@ export interface AppContext {
   setThinking?: (setting: import("../llm/effort.ts").ThinkingSetting, persist?: boolean) => void;
   /** 输出语言 setter（/language 用）。persist=true 时写 settings.json；lang=undefined 回退默认。 */
   setLanguage?: (lang: "zh" | "en" | undefined, persist?: boolean) => void | Promise<void>;
+  /** Vim 输入模式 setter（/vim 用）。persist=true 时写 settings.json vimMode。 */
+  setVimMode?: (enabled: boolean, persist?: boolean) => void;
+  /** 读取当前 Vim 输入模式开关（/vim 无参 toggle 时用）。 */
+  getVimMode?: () => boolean;
+  /** 自定义状态栏 setter（/statusline 用，P1-5）。config=undefined 禁用；persist=true 写 settings.json。 */
+  setStatusLine?: (config: import("../ui/statusline/run-statusline.ts").StatusLineConfig | undefined, persist?: boolean) => void;
+  /** 读取当前自定义状态栏配置（/statusline 展示/toggle 用）。 */
+  getStatusLine?: () => import("../ui/statusline/run-statusline.ts").StatusLineConfig | undefined;
+  /** 会话重命名（/rename 用）。name 为空时基于上下文生成。返回最终名字。 */
+  renameSession?: (name?: string) => string | Promise<string>;
   /** 读取当前 effort 运行时态 + 能力（/effort 展示用） */
   getEffortState?: () => {
     runtime: import("../llm/effort.ts").EffortSetting;
@@ -201,6 +211,22 @@ export interface CommandContext {
   setThinking?: (setting: import("../llm/effort.ts").ThinkingSetting, persist?: boolean) => void;
   /** 输出语言 setter（/language 用）。persist=true 时写 settings.json；lang=undefined 回退默认。 */
   setLanguage?: (lang: "zh" | "en" | undefined, persist?: boolean) => void | Promise<void>;
+  /**
+   * Vim 输入模式 setter（/vim 用）。写运行时态让状态栏即时反映；
+   * persist=true 时写 settings.json vimMode（跨会话生效）。
+   */
+  setVimMode?: (enabled: boolean, persist?: boolean) => void;
+  /** 读取当前 Vim 输入模式开关（/vim 无参 toggle 时用）。 */
+  getVimMode?: () => boolean;
+  /** 自定义状态栏 setter（/statusline 用，P1-5）。config=undefined 禁用；persist=true 写 settings.json。 */
+  setStatusLine?: (config: import("../ui/statusline/run-statusline.ts").StatusLineConfig | undefined, persist?: boolean) => void;
+  /** 读取当前自定义状态栏配置（/statusline 展示/toggle 用）。 */
+  getStatusLine?: () => import("../ui/statusline/run-statusline.ts").StatusLineConfig | undefined;
+  /**
+   * 会话重命名（/rename 用）。写 session_name 元数据（跨 resume 生效）并更新状态栏/终端标题。
+   * name 为空时由实现方基于上下文生成一个名字（复用标题生成启发式）。返回最终生效的名字。
+   */
+  renameSession?: (name?: string) => string | Promise<string>;
   /** 读取当前 effort/thinking 运行时态 + 能力描述（/effort、/think 无参时展示用） */
   getEffortState?: () => {
     runtime: import("../llm/effort.ts").EffortSetting;

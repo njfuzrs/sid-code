@@ -137,4 +137,9 @@ export class Journal {
   get size(): number {
     return this.entries.size;
   }
+
+  /** 按 callIndex 升序返回所有条目（/workflows 详情展示用，只读快照）。 */
+  all(): JournalEntry[] {
+    return [...this.entries.values()].sort((a, b) => a.callIndex - b.callIndex);
+  }
 }

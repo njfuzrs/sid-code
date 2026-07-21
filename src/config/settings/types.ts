@@ -202,6 +202,9 @@ export const SettingsSchema = lazySchema(() =>
       // UI 主题偏好（/theme 持久化端；缺省 = 内置默认暗色主题）
       theme: z.string().optional(),
 
+      // Vim 输入模式开关（/vim 持久化端；缺省 = false）
+      vimMode: z.boolean().optional(),
+
       // 权限配置
       permissions: PermissionsSchema().optional(),
       permissionMode: z.string().optional(),

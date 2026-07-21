@@ -399,4 +399,55 @@ describe("增量压缩", () => {
     mgr.setMaxTokens(NaN);
     expect(mgr.getMaxTokens()).toBe(1_000_000);
   });
+
+  // ── P0-2：/context 分类 token 拆解 ──
+  test("P0-2 getTokenBreakdown 各分类总和 ≈ estimateTokens", () => {
+    const mgr = new Manager({ maxTokens: 200_000 });
+    mgr.setSystemPrompt("你是一个编程助手" + "x".repeat(400));
+    mgr.addMessage({ role: "user", content: [{ type: "text", text: "帮我修 bug" }] });
+    mgr.addMessage({
+      role: "assistant",
+      content: [
+        { type: "text", text: "好的，我来看看" },
+        { type: "tool_use", id: "t1", name: "read", input: { path: "a.ts" } },
+      ],
+    });
+    mgr.addMessage({
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "t1", content: "文件内容".repeat(50) }],
+    });
+
+    const bd = mgr.getTokenBreakdown(6);
+    // 分类总和应等于 categories 各项之和
+    const sum = bd.categories.reduce((s, c) => s + c.tokens, 0);
+    expect(bd.total).toBe(sum);
+    // 与 estimateTokens 同口径（含工具 schema），允许小幅取整误差
+    const est = mgr.estimateTokens(6);
+    expect(Math.abs(bd.total - est)).toBeLessThanOrEqual(2);
+    // 关键分类都应有值
+    const byKey = Object.fromEntries(bd.categories.map((c) => [c.key, c.tokens]));
+    expect(byKey.systemPrompt).toBeGreaterThan(0);
+    expect(byKey.toolSchemas).toBeGreaterThan(0);
+    expect(byKey.userText).toBeGreaterThan(0);
+    expect(byKey.assistantText).toBeGreaterThan(0);
+    expect(byKey.toolUse).toBeGreaterThan(0);
+    expect(byKey.toolResult).toBeGreaterThan(0);
+  });
+
+  test("P0-2 getTokenBreakdown 汇总字段正确", () => {
+    const mgr = new Manager({ maxTokens: 100_000 });
+    mgr.addMessage({ role: "user", content: [{ type: "text", text: "hi" }] });
+    const bd = mgr.getTokenBreakdown(0);
+    expect(bd.maxTokens).toBe(100_000);
+    // 默认 compactThreshold=0.7 → 阈值 token = 70000
+    expect(bd.compactThresholdTokens).toBe(Math.round(100_000 * mgr.getCompactThreshold()));
+    expect(bd.calibrated).toBe(false);
+  });
+
+  test("P0-2 getTokenBreakdown 空会话不崩溃", () => {
+    const mgr = new Manager({ maxTokens: 100_000 });
+    const bd = mgr.getTokenBreakdown(0);
+    expect(bd.total).toBeGreaterThanOrEqual(0);
+    expect(bd.categories.length).toBeGreaterThan(0);
+  });
 });

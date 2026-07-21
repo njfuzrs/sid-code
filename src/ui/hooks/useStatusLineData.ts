@@ -17,7 +17,6 @@ import { SessionState } from "../../session/state.ts";
 import { theme } from "../semantic-colors.ts";
 import { useUIState } from "../contexts/UIStateContext.tsx";
 import { useConfig } from "../contexts/ConfigContext.tsx";
-import { useSettings } from "../contexts/SettingsContext.tsx";
 import { formatLargeNumber } from "../utils/format-number.ts";
 import { TOKEN_IN, TOKEN_OUT, EFFORT_GLYPHS, EFFORT_AUTO, THINKING_ON, THINKING_OFF, GOAL_MARK, PAUSED_MARK } from "../constants/figures.ts";
 import type { PricingModelEntry } from "../../api/cost-tracker.ts";
@@ -254,7 +253,6 @@ export interface StatusLineInput {
 export function useStatusLineData(input: StatusLineInput): StatusLineData {
   const { renderMarkdown } = useUIState();
   const config = useConfig();
-  const settings = useSettings();
 
   const {
     permissionMode,
@@ -282,7 +280,8 @@ export function useStatusLineData(input: StatusLineInput): StatusLineData {
       gitBranch,
       isDebug: debug,
       isRaw: !renderMarkdown,
-      isVim: !!settings.vimMode,
+      // /vim 切换经 TUIState→ConfigContext 实时推送（settings.vimMode 是未 seed 的死值，不用）。
+      isVim: !!config.vimMode,
       // 零值隐藏：会话尚无输入/输出时不显示 ↑0 ↓0（纯噪音），与 context 隐藏条件一致。
       tokens:
         stockInputTokens === 0 && usage.outputTokens === 0
@@ -317,7 +316,7 @@ export function useStatusLineData(input: StatusLineInput): StatusLineData {
     gitBranch,
     debug,
     renderMarkdown,
-    settings.vimMode,
+    config.vimMode,
     usage,
     stockInputTokens,
     costUSD,

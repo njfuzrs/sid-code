@@ -135,7 +135,7 @@ describe("extract 安全防护", () => {
 });
 
 describe("loadBundledSkills (内置注册)", () => {
-  test("注册全部 7 个内置 Skill", () => {
+  test("注册全部 8 个内置 Skill", () => {
     const skills = loadBundledSkills();
     const names = skills.map((s) => s.name);
     // 质量保障类
@@ -147,6 +147,17 @@ describe("loadBundledSkills (内置注册)", () => {
     expect(names).toContain("review");
     expect(names).toContain("pr-comments");
     expect(names).toContain("pr-workflow");
+    // P2-3：/pr 独立命令（专注生成 PR 描述，inline）
+    expect(names).toContain("pr");
+  });
+
+  test("P2-3 /pr 为 inline 命令且专注生成描述", () => {
+    const skills = loadBundledSkills();
+    const pr = skills.find((s) => s.name === "pr");
+    if (pr?.type !== "prompt") throw new Error("/pr 应为 prompt 命令");
+    // inline：产物是给人看的描述文本，需在主对话展示
+    expect(pr.context).toBe("inline");
+    expect(pr.userInvocable).toBe(true);
   });
 
   test("pr-comments 暴露 pr_comments 别名（兼容下划线命名）", () => {

@@ -28,6 +28,7 @@ import { AgentsDialog } from "./AgentsDialog.tsx";
 import { CommandsDialog } from "./CommandsDialog.tsx";
 import { HelpDialog } from "./HelpDialog.tsx";
 import { ExportDialog } from "./ExportDialog.tsx";
+import { ContextDialog } from "./ContextDialog.tsx";
 import type { OnboardingResult } from "./OnboardingDialog.tsx";
 import type {
   PermissionRequestInfo,
@@ -154,6 +155,8 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
         currentModel={model}
         availableModels={availableModels}
         onModelSelect={onModelSelect}
+        getEffortState={callbacks.getEffortState}
+        setEffort={callbacks.setEffort}
       />
     );
   }
@@ -237,6 +240,15 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
       <ExportDialog
         onClose={onDialogClose}
         onExport={callbacks.onExportConversation}
+      />
+    );
+  }
+  // /context：上下文分类 token 拆解可视化
+  if (activeDialog === "context" && callbacks.getContextBreakdown) {
+    return (
+      <ContextDialog
+        onClose={onDialogClose}
+        getBreakdown={callbacks.getContextBreakdown}
       />
     );
   }

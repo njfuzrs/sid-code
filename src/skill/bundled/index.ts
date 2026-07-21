@@ -12,6 +12,7 @@ import { registerCommitPushPrSkill } from "./commit-push-pr.ts";
 import { registerReviewSkill } from "./review.ts";
 import { registerPrCommentsSkill } from "./pr-comments.ts";
 import { registerPrWorkflowSkill } from "./pr-workflow.ts";
+import { registerPrSkill } from "./pr.ts";
 import { getBundledSkills as getRegisteredBundledSkills } from "./registry.ts";
 
 export {
@@ -35,6 +36,7 @@ export function registerBundledSkills(): void {
   registerReviewSkill();
   registerPrCommentsSkill();
   registerPrWorkflowSkill();
+  registerPrSkill();
   registered = true;
 }
 

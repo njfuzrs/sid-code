@@ -809,6 +809,81 @@ export class App {
     this.pushKnobDisplay();
   }
 
+  /**
+   * 切换 Vim 输入模式（/vim 用）。写 TUIState.vimMode 让状态栏即时反映；
+   * persist=true 时落 settings.json vimMode（跨会话生效）。
+   * 返回切换后的最新值，供命令回显。
+   */
+  private setVimMode(enabled: boolean, persist?: boolean): void {
+    this.config.vimMode = enabled;
+    if (persist) {
+      try {
+        const { patchSettingsFile } = require("./config/settings/index.ts");
+        patchSettingsFile("userSettings", "vimMode", enabled);
+      } catch (e) {
+        getLogger().warn("VIM", `持久化 vimMode 失败（不阻断）: ${(e as Error)?.message}`);
+      }
+    }
+    this.tuiStateUpdater?.({ vimMode: enabled });
+  }
+
+  /**
+   * 设置自定义状态栏配置（/statusline 用，P1-5）。
+   * - config=undefined 表示禁用（回退内置聚合状态栏）。
+   * - persist=true 时写 settings.json 顶层 statusLine 块（跨会话生效）。
+   * - 经 tuiStateUpdater 推 statusLine 到 TUIState → configValue → Footer 即时切换。
+   */
+  private setStatusLine(
+    config: import("./ui/statusline/run-statusline.ts").StatusLineConfig | undefined,
+    persist?: boolean,
+  ): void {
+    this.config.statusLine = config;
+    if (persist) {
+      try {
+        const { patchSettingsFile } = require("./config/settings/index.ts");
+        patchSettingsFile("userSettings", "statusLine", config);
+      } catch (e) {
+        getLogger().warn("STATUSLINE", `持久化 statusLine 失败（不阻断）: ${(e as Error)?.message}`);
+      }
+    }
+    // 配置变更后清脚本节流缓存，确保新命令/禁用立即生效（不复用旧指纹结果）。
+    try {
+      const { clearStatusLineCache } = require("./ui/statusline/run-statusline.ts");
+      clearStatusLineCache();
+    } catch { /* 忽略 */ }
+    this.tuiStateUpdater?.({ statusLine: config });
+  }
+
+  /**
+   * 重命名当前会话（/rename 用）。
+   * - 写 session_name 元数据（与 --name 同一字段，resume 后仍显示、会话列表可见）。
+   * - 更新状态栏/终端标题（tuiStateUpdater sessionTitle）。
+   * - name 为空/未给时，基于最近一条用户消息用启发式派生一个名字。
+   * 返回最终生效的名字（供命令回显）。
+   */
+  private renameSession(name?: string): string {
+    let finalName = (name ?? "").trim();
+    if (!finalName) {
+      // 无参：从最近一条用户消息派生启发式标题。
+      const msgs = this.ctxMgr.getMessages();
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i].role !== "user") continue;
+        const text = msgs[i].content
+          .filter((b: any) => b.type === "text")
+          .map((b: any) => b.text)
+          .join(" ");
+        const derived = deriveTaskTitle(text);
+        if (derived) { finalName = derived; break; }
+      }
+    }
+    if (!finalName) finalName = "未命名会话";
+    // 落元数据 + 刷新标题（sessionStore 为 null 时静默跳过持久化，标题仍更新）。
+    this.sessionStore?.appendMetadata("session_name", finalName);
+    this.config.sessionName = finalName;
+    this.tuiStateUpdater?.({ sessionTitle: finalName });
+    return finalName;
+  }
+
   /** 设置 thinking 运行时态（/think 用）。语义同 setEffortRuntime。 */
   private setThinkingRuntime(setting: import("./llm/effort.ts").ThinkingSetting, persist?: boolean): void {
     this.runtimeThinking = setting;
@@ -3414,8 +3489,10 @@ export class App {
   async runHeadless(input: string): Promise<string> {
     await this.init();
 
-    // stream-json 模式：走 SDK 编程接口（NDJSON 双向流式）
-    if (this.config.outputFormat === "stream-json") {
+    // stream-json 模式：走 SDK 编程接口（NDJSON 双向流式）。
+    // P2-1 --input-format stream-json：输入侧走流式 JSON（stdin 逐条消息）也进 SDK 路径，
+    // 与 --output-format stream-json 任一命中即启用双向流（对齐 CC：input/output 格式相互独立）。
+    if (this.config.outputFormat === "stream-json" || this.config.inputFormat === "stream-json") {
       await this.runHeadlessSDK(input);
       return "";
     }
@@ -3663,8 +3740,13 @@ export class App {
         sessionId: this.sessionState.sessionId,
         model: this.config.model,
         maxTurns: this.config.maxTurns || undefined,
+        // P1-9：花费上限透传到 SDK 引擎（超限终止）。
+        maxBudgetUsd: this.config.costLimit || undefined,
         systemPrompt: this.config.systemPrompt || undefined,
         jsonSchema: this.config.jsonSchema,
+        // P2-2 --include-partial-messages：显式开启则转发 stream_event 部分增量；
+        // verbose 模式亦隐含开启（与既有行为兼容）。
+        includeStreamEvents: this.config.includePartialMessages || this.config.verbose,
       },
       driver,
     );
@@ -3808,6 +3890,7 @@ export class App {
       streamingLine: "",
       isQuitting: false,
       copyModeEnabled: false,
+      vimMode: !!this.config.vimMode,
       commands: initialCommands,
       cwd: process.cwd(),
       activeDialog: null,
@@ -3828,6 +3911,8 @@ export class App {
       retryStatus: null,
       errorPanel: [],
       goalDisplay: null,
+      // P1-5 自定义状态栏配置：从 settings.json 的 statusLine 块透传。缺省 undefined = 走内置状态栏。
+      statusLine: this.config.statusLine,
       needsOnboarding: !!this.config._needsOnboarding,
       startupWarnings: this.buildStartupWarnings(),
     });
@@ -4918,6 +5003,11 @@ export class App {
           setEffort: (level, persist) => this.setEffortRuntime(level, persist),
           setThinking: (setting, persist) => this.setThinkingRuntime(setting, persist),
           setLanguage: (lang, persist) => this.setLanguageRuntime(lang, persist),
+          setVimMode: (enabled, persist) => this.setVimMode(enabled, persist),
+          getVimMode: () => !!this.config.vimMode,
+          setStatusLine: (config, persist) => this.setStatusLine(config, persist),
+          getStatusLine: () => this.config.statusLine,
+          renameSession: (name?: string) => this.renameSession(name),
           getEffortState: () => this.getEffortState(),
           getThinkingState: () => this.getThinkingState(),
           exitRequested: false,
@@ -5189,6 +5279,9 @@ export class App {
       // /effort、/think 面板：运行时旋钮 setter/getter（复用 cmdCtx 已有的同名实现）
       setEffort: (level, persist) => this.setEffortRuntime(level, persist),
       setThinking: (setting, persist) => this.setThinkingRuntime(setting, persist),
+      setVimMode: (enabled, persist) => this.setVimMode(enabled, persist),
+      getVimMode: () => !!this.config.vimMode,
+      renameSession: (name?: string) => this.renameSession(name),
       getEffortState: () => this.getEffortState(),
       getThinkingState: () => this.getThinkingState(),
       // /hooks、/config、/permissions、/skills、/commands、/help 面板依赖的稳定引用

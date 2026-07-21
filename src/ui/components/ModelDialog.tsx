@@ -14,8 +14,9 @@ import Text from "../../ink/components/Text.js";
 import stringWidth from "string-width";
 import { theme } from '../semantic-colors.ts';
 import { BaseSelectionList, type SelectionListItem } from './shared/BaseSelectionList.tsx';
-import { TODO_COMPLETED, ARROW_PROMPT } from '../constants/figures.ts';
+import { TODO_COMPLETED, ARROW_PROMPT, EFFORT_GLYPHS } from '../constants/figures.ts';
 import { useKeypress, KeypressPriority, type Key } from '../contexts/KeypressContext.tsx';
+import { EFFORT_LEVELS, type EffortLevel, type EffortSetting } from '../../llm/effort.ts';
 
 interface ModelOption {
   name: string;
@@ -23,11 +24,42 @@ interface ModelOption {
   description?: string;
 }
 
+interface EffortState {
+  runtime: EffortSetting;
+  applied: EffortLevel | undefined;
+  isAuto: boolean;
+  capability: import("../../llm/effort.ts").EffortCapability;
+}
+
 interface ModelDialogProps {
   onClose: () => void;
   currentModel: string;
   availableModels: ModelOption[];
   onModelSelect: (modelName: string) => void;
+  /** 读取当前 effort 运行时态 + 能力（P2-1 左右键调 effort 用）。缺省则不显示 effort 行。 */
+  getEffortState?: () => EffortState;
+  /** effort setter（P2-1 左右键实时调整）。persist 语义同 /effort。 */
+  setEffort?: (level: EffortSetting, persist?: boolean) => void;
+}
+
+/**
+ * P2-1：从当前 effort 档位循环到下一档（纯函数，便于单测）。
+ * dir=1 右移（增强），dir=-1 左移（减弱），到边界环绕。
+ * current 为 null/非法时以 high 兜底。
+ */
+export function cycleEffort(current: EffortLevel | undefined, dir: 1 | -1): EffortLevel {
+  const idx = current ? EFFORT_LEVELS.indexOf(current) : -1;
+  const base = idx < 0 ? EFFORT_LEVELS.indexOf('high') : idx;
+  const nextIdx = (base + dir + EFFORT_LEVELS.length) % EFFORT_LEVELS.length;
+  return EFFORT_LEVELS[nextIdx];
+}
+
+/** P2-1：从 effort 状态解析当前生效档位（auto 态取 applied 实际档位）。 */
+export function resolveDisplayedEffort(state: EffortState | undefined): EffortLevel | undefined {
+  if (!state) return undefined;
+  return state.isAuto
+    ? state.applied
+    : ((state.runtime as EffortLevel | undefined) ?? state.applied);
 }
 
 interface ModelItem extends SelectionListItem<string> {
@@ -42,10 +74,24 @@ export const ModelDialog: React.FC<ModelDialogProps> = ({
   currentModel,
   availableModels,
   onModelSelect,
+  getEffortState,
+  setEffort,
 }) => {
+  const effortState = getEffortState?.();
+  // 仅当模型支持档位切换且回调齐全时，才启用左右键调 effort。
+  const effortEnabled = !!(effortState?.capability.supportsEffort && setEffort);
+
+  // 左右方向键循环调整 effort（实时生效，仅当会话；选定模型后由 /effort -p 兜底持久化）。
+  // 对齐 claude-code /model：←/→ 在 low→medium→high→xhigh→max 间循环。
   useKeypress(KeypressPriority.Critical, (key: Key) => {
     if (key.name === 'escape') {
       onClose();
+      return true;
+    }
+    if (effortEnabled && (key.name === 'left' || key.name === 'right')) {
+      // 以当前生效档位为基准（auto 态取 applied 实际档位）循环切换。
+      const current = resolveDisplayedEffort(effortState);
+      setEffort?.(cycleEffort(current, key.name === 'right' ? 1 : -1));
       return true;
     }
     return false;
@@ -90,6 +136,9 @@ export const ModelDialog: React.FC<ModelDialogProps> = ({
 
   const currentOption = availableModels.find(m => m.name === currentModel);
 
+  // effort 展示态：显示当前生效档位 + 字形；auto 态标注跟随默认。
+  const effortDisplayLevel = resolveDisplayedEffort(effortState);
+
   return (
     <Box
       flexDirection="column"
@@ -105,6 +154,13 @@ export const ModelDialog: React.FC<ModelDialogProps> = ({
       {currentOption && (
         <Text color={theme.text.secondary}>
           当前: {currentOption.name} ({currentOption.provider})
+        </Text>
+      )}
+      {effortEnabled && effortDisplayLevel && (
+        <Text color={theme.text.secondary}>
+          推理强度: <Text color={theme.ui.active}>{EFFORT_GLYPHS[effortDisplayLevel]} {effortDisplayLevel}</Text>
+          {effortState?.isAuto ? " (auto)" : ""}
+          <Text dimColor> · ←/→ 调整</Text>
         </Text>
       )}
       <Box marginTop={1} flexDirection="column">
@@ -137,7 +193,9 @@ export const ModelDialog: React.FC<ModelDialogProps> = ({
         />
       </Box>
       <Box marginTop={1}>
-        <Text dimColor italic>↑↓ 导航 · Enter 切换 · Esc 取消</Text>
+        <Text dimColor italic>
+          ↑↓ 导航 · Enter 切换{effortEnabled ? " · ←/→ 调 effort" : ""} · Esc 取消
+        </Text>
       </Box>
     </Box>
   );
