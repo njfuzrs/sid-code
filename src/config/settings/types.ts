@@ -205,6 +205,15 @@ export const SettingsSchema = lazySchema(() =>
       // Vim 输入模式开关（/vim 持久化端；缺省 = false）
       vimMode: z.boolean().optional(),
 
+      // 全屏 Alternate Buffer 模式开关（/tui 持久化端；缺省 = false = 主屏 Static 模式，见 ADR-040）
+      alternateBuffer: z.boolean().optional(),
+
+      // UI 强调色/品牌色覆盖（/color 持久化端；缺省 = 跟随主题的 ui.active）。存 hex，如 "#89b4fa"
+      accentColor: z.string().optional(),
+
+      // Fast Mode 开关（/fast 持久化端；缺省 = false）。当前网关未提供对等 fast 能力，此开关为预留
+      fastMode: z.boolean().optional(),
+
       // 权限配置
       permissions: PermissionsSchema().optional(),
       permissionMode: z.string().optional(),

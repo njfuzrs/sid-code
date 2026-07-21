@@ -75,6 +75,30 @@ async function main(): Promise<void> {
     return;
   }
 
+  // 快速路径 8: agents 子命令（缺口 A-2）— 无头列举所有子代理（内置/自定义/插件），不启动 App
+  if (args[0] === "agents") {
+    profileCheckpoint("bootstrap_route_resolved");
+    const { handleAgentsCommand } = await import("../command/agents.ts");
+    await handleAgentsCommand(args.slice(1));
+    return;
+  }
+
+  // 快速路径 9: mcp 子命令（缺口 A-3）— 无头管理 MCP 服务器配置（list/get/add/remove），不启动 App
+  if (args[0] === "mcp") {
+    profileCheckpoint("bootstrap_route_resolved");
+    const { handleMcpCommand } = await import("../command/mcp-cli.ts");
+    await handleMcpCommand(args.slice(1));
+    return;
+  }
+
+  // 快速路径 10: auth 子命令（缺口 A-1 可行子集）— 认证配置诊断（status），login/logout 不适用
+  if (args[0] === "auth") {
+    profileCheckpoint("bootstrap_route_resolved");
+    const { handleAuthCommand } = await import("../command/auth.ts");
+    await handleAuthCommand(args.slice(1));
+    return;
+  }
+
   // 快速路径 7.5: --self-check — 校验编译产物内联的关键修复是否生效（方向 0）。
   // 背景（根因分析-commit任务git状态快照冻结死循环.md 第 2 环）：`bun build --compile`
   // 在**编译时**把源码内联进二进制。git pull/commit 更新了源码，但磁盘上的二进制不会变，

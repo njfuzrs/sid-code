@@ -1,5 +1,6 @@
 import type { LocalCommandModule } from "../../types.ts";
 import type { TodoItem } from "../../../tool/todo-write.ts";
+import { TODO_PENDING, TODO_IN_PROGRESS, TODO_COMPLETED } from "../../../ui/constants/figures.ts";
 
 /**
  * /todos 命令实现（按需加载）
@@ -30,9 +31,16 @@ const mod: LocalCommandModule = {
   },
 };
 
-/** 图标：进行中 🔄 / 已完成 ✅ / 待开始 ⬜ */
+/**
+ * 状态字形：靠「填充度」表达递进（○ 待办 → ◐ 进行中 → ● 完成），单色几何字形。
+ * 从 figures.ts 取，遵守 src/ui/CLAUDE.md L1.1「禁彩色 emoji」——此前用 ✅🔄⬜ 违反该铁律。
+ */
 function icon(status: TodoItem["status"]): string {
-  return status === "completed" ? "✅" : status === "in_progress" ? "🔄" : "⬜";
+  return status === "completed"
+    ? TODO_COMPLETED
+    : status === "in_progress"
+      ? TODO_IN_PROGRESS
+      : TODO_PENDING;
 }
 
 /** 按状态分组渲染：进行中 → 待开始 → 已完成，末尾附进度汇总 */

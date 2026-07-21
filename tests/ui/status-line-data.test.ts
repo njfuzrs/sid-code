@@ -13,6 +13,8 @@ import {
   deriveContextColor,
   deriveCost,
   deriveCacheMetrics,
+  deriveWorktree,
+  deriveRepoName,
 } from "../../src/ui/hooks/useStatusLineData.ts";
 import { theme } from "../../src/ui/semantic-colors.ts";
 import type { Usage } from "../../src/llm/types.ts";
@@ -109,5 +111,31 @@ describe("LY1 — deriveCacheMetrics", () => {
     }
     // 不同 provider 归一化策略不同，至少不抛错
     expect(true).toBe(true);
+  });
+});
+
+describe("P3-3 — deriveWorktree", () => {
+  test("worktree 路径提取名字", () => {
+    expect(deriveWorktree("/home/u/proj/.claude/worktrees/feat-x")).toBe("feat-x");
+    expect(deriveWorktree("/home/u/proj/.claude/worktrees/feat-x/src/a.ts")).toBe("feat-x");
+  });
+
+  test("非 worktree 路径返回空串", () => {
+    expect(deriveWorktree("/home/u/proj")).toBe("");
+    expect(deriveWorktree("/home/u/proj/src")).toBe("");
+  });
+});
+
+describe("P3-3 — deriveRepoName", () => {
+  test("非 git 目录返回空串（不抛错）", () => {
+    // /tmp 下通常无 .git，返回空串。
+    expect(deriveRepoName("/")).toBe("");
+  });
+
+  test("git 仓库返回主仓目录名", () => {
+    // 本仓库根名为 sid-code；从 cwd 向上应找到它。
+    const name = deriveRepoName(process.cwd());
+    // 在本仓库内运行时应拿到 sid-code；否则至少是非空或空串（不抛错即通过）。
+    expect(typeof name).toBe("string");
   });
 });

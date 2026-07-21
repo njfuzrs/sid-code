@@ -89,28 +89,47 @@ interface AtExpansionResult {
   injectedContent: string | null;
 }
 
+/** vision 支持的图片扩展名（与 tool/read.ts 严格一致）。图片走 Read 工具而非文本内联。 */
+const AT_IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
+
 async function expandAtReferences(input: string): Promise<AtExpansionResult> {
-  const AT_PATTERN = /@([\w./\-]+)/g;
+  // 两种形态：@"带空格的路径" 或 @无空格路径。前者支持 P2-6/P2-7 的临时图片路径（可能含空格）。
+  const AT_PATTERN = /@"([^"]+)"|@([\w./\-]+)/g;
   const matches = [...input.matchAll(AT_PATTERN)];
   if (matches.length === 0) return { displayText: input, injectedContent: null };
 
   const fileContents: string[] = [];
+  const imagePaths: string[] = [];
   for (const match of matches) {
-    const filePath = match[1];
+    const filePath = match[1] ?? match[2]; // 引号组优先
+    if (!filePath) continue;
+    const ext = extname(filePath).toLowerCase();
+    // 图片：不内联字节（会损坏），改为提示模型用 Read 工具读取（走 vision 多模态管道）。
+    if (AT_IMAGE_EXTENSIONS.has(ext)) {
+      imagePaths.push(resolve(process.cwd(), filePath));
+      continue;
+    }
     try {
       const absPath = resolve(process.cwd(), filePath);
       const content = await readFile(absPath, "utf-8");
-      const ext = extname(filePath).slice(1);
-      fileContents.push(`以下是文件 \`${filePath}\` 的内容：\n\`\`\`${ext}\n${content}\n\`\`\``);
+      fileContents.push(`以下是文件 \`${filePath}\` 的内容：\n\`\`\`${extname(filePath).slice(1)}\n${content}\n\`\`\``);
     } catch {
       // 文件不存在时跳过
     }
   }
 
+  const parts: string[] = [];
+  if (fileContents.length > 0) parts.push(fileContents.join("\n\n"));
+  if (imagePaths.length > 0) {
+    // 引导模型主动 Read 图片：Read 工具读图会产出 mediaBlocks，交给支持 vision 的 provider。
+    const list = imagePaths.map((p) => `- ${p}`).join("\n");
+    parts.push(`用户粘贴/引用了以下图片文件，请用 Read 工具读取它们以查看图片内容：\n${list}`);
+  }
+
   return {
     displayText: input,
-    injectedContent: fileContents.length > 0
-      ? `<system-reminder>\n${fileContents.join("\n\n")}\n</system-reminder>`
+    injectedContent: parts.length > 0
+      ? `<system-reminder>\n${parts.join("\n\n")}\n</system-reminder>`
       : null,
   };
 }
@@ -160,6 +179,10 @@ export class App {
   private providerRegistry?: ProviderRegistry;
   private mcpManager?: MCPManager;
   private ctxMgr: ContextManager;
+  /** P2-1 会话回退管理器（Esc+Esc rewind）。每轮输入前登记回退点，UI 选中后截断对话/回滚文件。 */
+  private rewindManager: import("./session/rewind-manager.ts").RewindManager | null = null;
+  /** P2-1：CheckpointManager 最近一次快照 id（回退点登记时记录文件锚点）。空串 = 尚无快照。 */
+  private latestCheckpointSnapshotId = "";
   private toolRegistry: ToolRegistry;
   private commandRegistry: CommandRegistry;
   /** 统一命令注册表（新体系）。非空时 TUI 命令获取/执行走此注册表 */
@@ -276,6 +299,28 @@ export class App {
     // §3.3：注入 Plan 正文提供方——压缩时把活跃 Plan 正文重注入消息历史。
     // 仅在 plan 执行/规划阶段返回正文，否则返回 null（不注入）。
     this.ctxMgr.setPlanContentProvider(() => this.readActivePlanContent());
+    // P2-1：会话回退管理器。注入 ctxMgr 取/设消息 + CheckpointManager 取最新快照/恢复，
+    // 二者解耦于 RewindManager 内部逻辑（便于单测，且不与 ctxMgr/checkpoint 内部实现耦合）。
+    {
+      const { RewindManager } = require("./session/rewind-manager.ts");
+      this.rewindManager = new RewindManager({
+        getMessages: () => this.ctxMgr.getMessages(),
+        setMessages: (msgs: unknown[]) => this.ctxMgr.setMessages(msgs as import("./llm/types.ts").Message[]),
+        getLatestSnapshotId: () => this.latestCheckpointSnapshotId,
+        restoreToSnapshot: async (snapshotId: string): Promise<number | null> => {
+          try {
+            const { getCheckpointManager } = await import("./checkpoint/manager.ts");
+            const cpMgr = await getCheckpointManager(sessionId, this.config.checkpoint);
+            const result = await cpMgr.restoreToSnapshot(snapshotId);
+            if (!result) return null;
+            return result.files?.length ?? 0;
+          } catch (e) {
+            getLogger().warn("REWIND", `文件回滚失败: ${(e as Error)?.message}`);
+            return null;
+          }
+        },
+      });
+    }
     this.sessionState = new SessionState(sessionId);
     // 注入用户配置的模型列表（含定价/provider），供计费和 provider 推断优先使用
     this.sessionState.setAvailableModels(opts.config.availableModels);
@@ -405,6 +450,13 @@ export class App {
       if (!ok) {
         getLogger().warn("THEME", `settings.json 中的主题 "${opts.config.theme}" 不存在，已回退默认主题`);
       }
+    }
+
+    // 强调色覆盖运行时态初值：从 settings.json accentColor 恢复（/color 持久化端）。
+    // 同 theme——themeManager 启动不读 config，须显式恢复，否则 /color -p 白做。
+    if (opts.config.accentColor) {
+      const { themeManager } = require("./ui/themes/theme-manager.ts");
+      themeManager.setAccentOverride(opts.config.accentColor);
     }
 
     // 如果有 providerRegistry，从中获取 availability 服务
@@ -1250,6 +1302,8 @@ export class App {
         this.resetTodoTool();
         this.resetHypothesisLedger();
         this.clearInactiveBackgroundTasks();
+        // P2-1：/clear 清空对话 → 回退点全部失效（对应的消息已不存在），一并清空。
+        this.rewindManager?.clear();
         // /clear 后 goal 目标状态清空：旧 /goal 不应跨会话残留
         this.goalState = null;
         // 边界加固：/clear 续写同一 jsonl（不新建文件），若清空后用户直接退出、没有新一轮 done，
@@ -2765,6 +2819,8 @@ export class App {
       },
       // P1-7：把工具修改的文件落盘到会话 JSONL metadata，供 resume 重建文件修改上下文。
       recordFileChanges: (files, toolName) => this.recordFileChanges(files, toolName),
+      // P2-1：记录最新快照 id，作为下一轮回退点的文件锚点。
+      onSnapshotCreated: (snapshotId) => { this.latestCheckpointSnapshotId = snapshotId; },
       // GAP-01：流式预执行结果缓存查询。有值 → executeTools 复用，跳过重复执行。
       getPrecomputedResult: (toolUseId) => this._streamingToolResults?.get(toolUseId),
     };
@@ -4780,6 +4836,14 @@ export class App {
     const callbacks: import("./ui/App.tsx").TUICallbacks = {
       onUserInput: async (text, opts) => {
         log.debug("TUI:CB", `onUserInput 被调用: "${text.slice(0, 100)}"`);
+        // P2-1：本轮用户输入提交前登记回退点（对话锚点=当前消息数组长度，文件锚点=最新快照 id）。
+        // 供 Esc+Esc 回退选择器列出并回退到本轮之前。displayCommand（斜杠命令展开）也登记——
+        // 它同样推进对话，值得成为一个回退锚点；预览用触发命令而非整段展开提示词更可读。
+        try {
+          this.rewindManager?.registerPoint(opts?.displayCommand ?? text, Date.now());
+        } catch (e) {
+          log.warn("REWIND", `登记回退点失败: ${(e as Error)?.message}`);
+        }
         // 首条用户消息 → 设置会话任务名（终端标题）。启发式即时 + 后台升级。
         // 命令展开（displayCommand）用触发命令而非整段提示词做标题启发式。
         maybeSetSessionTitle(opts?.displayCommand ?? text);
@@ -5134,6 +5198,8 @@ export class App {
             this.resetTodoTool();
             this.resetHypothesisLedger();
             this.clearInactiveBackgroundTasks();
+            // P2-1：/clear 清空对话 → 回退点全部失效，一并清空。
+            this.rewindManager?.clear();
             // /clear 后 goal 目标状态清空：旧 /goal 不应跨会话残留
             this.goalState = null;
             // 缓存检测状态重置：旧基线对新会话无效，不清会产生虚假中断检测
@@ -5290,21 +5356,54 @@ export class App {
       unifiedRegistry: this.unifiedRegistry,
       // Shift+Tab 权限模式循环切换（复用 cyclePermissionMode 实例方法）
       onCyclePermissionMode: () => this.cyclePermissionMode(),
-      // Ctrl+B 转后台（对标 cc）。完整的"任意前台工具执行热转后台"需要主循环
-      // （query/loop）在工具执行边界处支持 detach，成本较高，列为二期。本期给出
-      // 可行引导：忙时提示改用 bash 的 run_in_background 起后台任务；空闲时说明用法。
-      // 返回的文案透传到 TUI 瞬时提示。
-      onBackgroundCurrent: (): string | null => {
+      // Ctrl+B 转后台（对标 cc，P1-4）：把当前正在跑的前台 bash 命令过继给 Task 系统——
+      // bash.ts 的 requestDetachForegroundBash() 找到正在跑的前台执行并让它提前返回
+      // task_id 结果，主循环随之空闲、可继续接受新输入；命令本身在后台跑完后走既有的
+      // 后台通知回注链路。完整的"任意工具（含子代理）热转后台"仍是二期——子代理没有
+      // 与 bash 对等的"过继中途进程"入口，先把最常见的长命令场景做实。
+      onBackgroundCurrent: async (): Promise<string | null> => {
         const busy = !!this.abortController && !this.abortController.signal.aborted;
-        if (busy) {
-          return "当前执行暂不支持热转后台；如需后台运行长命令，请用 bash 的 run_in_background 参数";
+        if (!busy) {
+          return "空闲状态无前台任务可转后台；长命令可用 bash run_in_background 起后台任务";
         }
-        return "空闲状态无前台任务可转后台；长命令可用 bash run_in_background 起后台任务";
+        const { requestDetachForegroundBash } = await import("./tool/bash.ts");
+        const n = requestDetachForegroundBash();
+        if (n > 0) {
+          return n === 1
+            ? "已将当前命令转入后台，可继续输入新指令"
+            : `已将 ${n} 个前台命令转入后台，可继续输入新指令`;
+        }
+        return "当前执行不是可转后台的 bash 命令（可能是子代理或模型响应生成中），暂不支持热转后台";
       },
       // /export 面板：导出对话到剪贴板或文件
       onExportConversation: (target, format) => this.exportConversation(target, format),
       // /context 面板：实时读取上下文分类 token 拆解
       getContextBreakdown: () => this.ctxMgr.getTokenBreakdown(this.toolRegistry.size()),
+      // P2-1：Esc+Esc 回退选择器读取回退点列表（最新在前，投影为 UI 展示结构）。
+      getRewindPoints: () => {
+        const points = this.rewindManager?.listPoints() ?? [];
+        return points.map((p) => ({
+          id: p.id,
+          inputPreview: p.inputPreview,
+          timestamp: p.timestamp,
+          hasSnapshot: !!p.snapshotId,
+        }));
+      },
+      // P2-1：执行回退。截断对话（可选回滚文件）后重建首屏，返回结果供 UI 回显。
+      onRewind: async (id, mode) => {
+        const result = await this.rewindManager?.rewindTo(id, mode, Date.now());
+        if (!result) return null;
+        // 回退物理改写了 ctxMgr.messages，historyItems 仍是旧快照——必须立即重建首屏，
+        // 否则被丢弃的消息残留在屏幕上，且下一轮乐观更新基于过时快照。
+        rebuildDisplay();
+        // 上下文/统计计数不重置：回退只截断消息，token 累计等运行时计数保持（与 /clear 区分）。
+        return {
+          mode: result.mode,
+          messagesDropped: result.messagesDropped,
+          filesRestored: result.filesRestored,
+          fileRestoreSkipped: result.fileRestoreSkipped,
+        };
+      },
     };
 
     // 恢复会话首屏渲染：restoreSession 仅把历史灌入 ctxMgr（LLM 上下文），

@@ -181,6 +181,77 @@ try {
   registerCleanup(killBackgroundProcesses);
 } catch { /* 测试或非标准入口下可能不可用,忽略 */ }
 
+/**
+ * Ctrl+B 热转后台（P1-4，对标 claude-code）。
+ *
+ * 语义：把"正在前台执行的 bash 命令"过继给 Task 系统——execute() 立即返回 task_id 结果，
+ * 主循环随之空闲、可以接受新输入；命令本身继续在后台跑完，完成后走既有的后台通知回注
+ * 链路（与模型主动传 run_in_background=true 完全同一条通知/面板/kill 路径，见
+ * task/shell-task.ts 的 adoptRunningProcessAsTask）。
+ *
+ * 触发方是 App.tsx 的 Ctrl+B 键处理器（经 app.ts 的 onBackgroundCurrent 回调），本模块
+ * 不感知 UI；这里只维护"当前有哪些前台执行可以响应转后台请求"的注册表——用回调而非
+ * toolUseId 索引，因为 execute() 的调用签名（tool-executor.ts）不传 toolUseId，且 bash
+ * 是单例工具，同一时刻通常只有 0~1 个前台执行在跑（并发安全的只读命令批次理论上可能
+ * 有多个，此时 Ctrl+B 会把它们一起转后台——只读命令通常跑得快用户不太会这么做，但统一
+ * 处理更简单也不会错）。
+ */
+const foregroundDetachHandlers = new Map<number, () => boolean>();
+let foregroundDetachSeq = 0;
+
+/**
+ * 请求把当前所有"可转后台"的前台 bash 执行转入后台。
+ * 返回实际触发的个数（0 表示当前没有可转后台的前台命令——调用方据此给用户诚实的提示，
+ * 而不是假装成功）。已经处于超时/取消收尾中的执行不会响应（各自内部有守卫，迟到的
+ * 转后台请求没有意义——进程已经在被杀或已经杀完）。
+ *
+ * 注意：handler 的返回值（true=真正执行了 detach，false=命中内部守卫短路）才是"实际触发"，
+ * 不能用 `handlers.length`（注册数）代替——一个已经 timedOut/aborted/已 detach 的前台执行
+ * 仍然在 map 里（要等 execute() 的 finally 才移除），若不看返回值直接数注册数，会在命令即将
+ * 因超时被杀的窗口期把"实际没转成"误报成"已转后台"，是一句谎话。
+ */
+export function requestDetachForegroundBash(): number {
+  const handlers = [...foregroundDetachHandlers.values()];
+  let detachedCount = 0;
+  for (const handler of handlers) {
+    try {
+      if (handler()) detachedCount++;
+    } catch { /* 单个 handler 异常不应影响其它并发前台执行 */ }
+  }
+  return detachedCount;
+}
+
+/**
+ * adoptRunningProcessAsTask 的返回形状（本地声明，仅为拿到字段级类型提示；
+ * 避免为了一个内部类型对 task/index.ts 做静态类型导入，维持该模块一贯的
+ * 惰性 require 接线风格）。
+ */
+interface DetachedTaskHandle {
+  taskState: { id: string; status: string; outputFile: string };
+  appendLiveOutput: (text: string) => void;
+  markExited: (exitCode: number | null) => void;
+  markError: (err: Error) => void;
+}
+
+/**
+ * 收尾 detachedTaskHandle（若已转后台）——TS 对"跨闭包重新赋值的 let 变量"控制流窄化有
+ * 缺陷：detachedTaskHandle 在 detach handler 闭包（`foregroundDetachHandlers.set` 里注册
+ * 的那个）里被异步重新赋值，但 runToCompletion 闭包自身在被创建那一刻捕获到的仍是声明时
+ * 的 null——导致在 runToCompletion 内直接 `if (detachedTaskHandle)`（哪怕先赋给局部 const
+ * 别名）都会被 tsc 误窄化为 `never`（报错 "Property 'xxx' does not exist on type 'never'"，
+ * 已用最小复现验证：本地 const 别名规避不了，必须让变量穿过一次函数调用边界——参数类型只看
+ * 函数签名，不受调用点的窄化分析影响）。
+ * 返回 true 表示已处理（调用方据此提前 return），false 表示尚未转后台，继续走前台收尾。
+ */
+function finalizeIfDetached(
+  handle: DetachedTaskHandle | null,
+  action: (h: DetachedTaskHandle) => void,
+): boolean {
+  if (!handle) return false;
+  action(handle);
+  return true;
+}
+
 /** 全局配置（用于环境变量清理） */
 let globalConfig: Config | null = null;
 
@@ -488,9 +559,37 @@ export class BashTool implements Tool {
         stderr: "pipe",
         detached: DETACH,
       });
+      // Ctrl+B 热转后台时，任务的 startTime 用真实起跑时刻（而非 detach 那一刻），
+      // 避免任务面板把"已经跑了很久的命令"误显示成刚开始。
+      const spawnedAt = Date.now();
 
       let timedOut = false;
       let aborted = false;
+      // 非 null 表示本次执行已被 Ctrl+B 转入后台——此后 pump/超时/abort/cwd 逻辑全部改道：
+      // 新输出写盘、不再走前台 timeout/abort kill、不追踪 cwd。
+      let detachedTaskHandle: DetachedTaskHandle | null = null;
+      let stdout = "";
+      let stderr = "";
+      let lastEmit = 0;
+      let lastEmitted = "";
+
+      // 节流 emit：攒够 PROGRESS_THROTTLE_MS 才吐一次尾部快照，且内容有变化才发。
+      // force=true 用于流结束时的最后一次补发，确保最终尾部不因节流被吞。
+      const emitProgress = (force: boolean) => {
+        if (detachedTaskHandle) return; // 已转后台：前台进度卡片已经不存在，无需上报
+        if (!onProgress) return;
+        const nowMs = Date.now();
+        if (!force && nowMs - lastEmit < PROGRESS_THROTTLE_MS) return;
+        // 合并 stdout+stderr 取尾部（用户视角不区分两个流，跟最终输出的拼接顺序一致）。
+        const combined = stderr ? (stdout ? `${stdout}\n${stderr}` : stderr) : stdout;
+        const snapshot = tailProgressSnapshot(combined);
+        if (!snapshot || snapshot === lastEmitted) return;
+        lastEmit = nowMs;
+        lastEmitted = snapshot;
+        try {
+          onProgress({ type: "output", text: snapshot });
+        } catch { /* 进度上报失败不影响命令执行 */ }
+      };
 
       // 单一超时定时器：到点直接杀进程树并标记 timedOut（对标 claude-code #handleTimeout → #doKill）。
       // 不再玩"两个同延时定时器 + backgrounded 标志"的竞态把戏——旧实现里
@@ -509,6 +608,40 @@ export class BashTool implements Tool {
       };
       signal?.addEventListener("abort", abortHandler);
 
+      // Ctrl+B 转后台注册（P1-4）。命令仍在跑时才能响应——已经在超时/取消收尾中的
+      // 执行会被守卫忽略（迟到的转后台请求没有意义，进程已经在被杀或已经杀完）。
+      const detachHandlerId = ++foregroundDetachSeq;
+      let resolveDetach: ((result: ToolResult) => void) | null = null;
+      const detachPromise = new Promise<ToolResult>((resolve) => { resolveDetach = resolve; });
+      foregroundDetachHandlers.set(detachHandlerId, () => {
+        if (detachedTaskHandle || timedOut || aborted) return false;
+        clearTimeout(timeoutId);
+        signal?.removeEventListener("abort", abortHandler);
+        // 后台任务不追踪 cwd（对齐 executeWithTaskSystem 的既有语义）：cd 发生的时间点已经
+        // 脱离"用户仍在等待这条命令"的因果链，异步写回全局 cwd 会与用户后续操作产生竞态。
+        if (cwdFile) { try { unlinkSync(cwdFile); } catch { /* 忽略 */ } }
+
+        const { adoptRunningProcessAsTask } = require("../task/index.ts");
+        const adopted: DetachedTaskHandle = adoptRunningProcessAsTask({
+          proc,
+          command: params.command,
+          alreadyCaptured: stdout + (stderr ? (stdout ? "\n" : "") + stderr : ""),
+          signal,
+          startTime: spawnedAt,
+        });
+        detachedTaskHandle = adopted;
+        log.info("BASH", `Ctrl+B：前台命令已转入后台 (task_id: ${adopted.taskState.id})`);
+        resolveDetach!({
+          output: JSON.stringify({
+            task_id: adopted.taskState.id,
+            status: adopted.taskState.status,
+            output_file: adopted.taskState.outputFile,
+            message: `已将当前前台命令转入后台 (task_id: ${adopted.taskState.id})`,
+          }),
+        });
+        return true;
+      });
+
       try {
         // 流式增量读取（替代旧的 `new Response(proc.stdout).text()` 一次性 await）。
         //
@@ -520,30 +653,9 @@ export class BashTool implements Tool {
         // 关键不变量（不能改坏）：
         // - 完整输出仍在命令结束后一次性返回（进度只是尾部预览，不替代最终 tool_result）；
         // - 超时/abort 杀进程树后 reader 会读到 done，pump 正常收尾，不泄漏；
-        // - stdout/stderr 分别累积，最终合并逻辑与旧实现一致。
-        let stdout = "";
-        let stderr = "";
-        let lastEmit = 0;
-        let lastEmitted = "";
-
-        // 节流 emit：攒够 PROGRESS_THROTTLE_MS 才吐一次尾部快照，且内容有变化才发。
-        // force=true 用于流结束时的最后一次补发，确保最终尾部不因节流被吞。
-        const emitProgress = (force: boolean) => {
-          if (!onProgress) return;
-          const nowMs = Date.now();
-          if (!force && nowMs - lastEmit < PROGRESS_THROTTLE_MS) return;
-          // 合并 stdout+stderr 取尾部（用户视角不区分两个流，跟最终输出的拼接顺序一致）。
-          const combined = stderr ? (stdout ? `${stdout}\n${stderr}` : stderr) : stdout;
-          const snapshot = tailProgressSnapshot(combined);
-          if (!snapshot || snapshot === lastEmitted) return;
-          lastEmit = nowMs;
-          lastEmitted = snapshot;
-          try {
-            onProgress({ type: "output", text: snapshot });
-          } catch { /* 进度上报失败不影响命令执行 */ }
-        };
-
-        // 单个流的抽水循环：解码 chunk 累积到目标 buffer，每 chunk 后尝试节流 emit。
+        // - stdout/stderr 分别累积，最终合并逻辑与旧实现一致；
+        // - Ctrl+B 转后台后（detachedTaskHandle 非 null）：新增内容改写盘、不再进内存
+        //   累积（避免长跑后台进程内存无界增长），也不再触发前台进度回调。
         const pump = async (
           stream: ReadableStream<Uint8Array>,
           append: (text: string) => void,
@@ -567,86 +679,122 @@ export class BashTool implements Tool {
           }
         };
 
-        await Promise.all([
-          pump(proc.stdout, (t) => { stdout += t; }),
-          pump(proc.stderr, (t) => { stderr += t; }),
-        ]);
-        const exitCode = await proc.exited;
-        // 命令结束：强制补发最后一次尾部，确保最终几行不被节流吞掉。
-        emitProgress(true);
-
-        // CWD 追踪写回：仅前台、未取消、未超时、退出码 0 时写回全局 cwd。
-        this.applyCwdTracking(cwdFile, !aborted && !timedOut && exitCode === 0);
-
-        // 方向 3（git-status 快照冻结死循环修复）：非只读命令成功执行后失效 git 状态缓存。
-        // git add/commit/restore/checkout、release.sh 等改动工作区的命令跑完后，下一次
-        // generateGitStatusAttachment（含止损阀 remind 时的实时重抓）能拿到最新状态，
-        // 而非命中 30s TTL 里的旧快照。只读命令（git status/log 等）不改状态，跳过以免抖缓存。
-        if (!aborted && !timedOut && exitCode === 0 && !isReadOnlyCommand(params.command)) {
+        // 正常完成链：包成一个立即执行的异步函数而不直接 await——这样 Ctrl+B 触发的
+        // detachPromise 才能在它之前 settle，让 execute() 提前返回；pump/exited 不会被
+        // "放弃"，Promise.race 的败者仍在事件循环里跑完，detach 后转去走 Task 收尾分支。
+        const runToCompletion = (async (): Promise<ToolResult> => {
           try {
-            const { clearGitStatusCache } = require("../config/attachments.ts");
-            clearGitStatusCache();
-          } catch { /* 失效缓存失败不阻断命令返回 */ }
-        }
+            await Promise.all([
+              pump(proc.stdout, (t) => {
+                if (detachedTaskHandle) { detachedTaskHandle.appendLiveOutput(t); return; }
+                stdout += t;
+              }),
+              pump(proc.stderr, (t) => {
+                if (detachedTaskHandle) { detachedTaskHandle.appendLiveOutput(t); return; }
+                stderr += t;
+              }),
+            ]);
+            const exitCode = await proc.exited;
+            emitProgress(true);
 
-        // 合并输出
-        let output = "";
-        if (stdout) output += stdout;
-        if (stderr) {
-          if (output && !output.endsWith("\n")) output += "\n";
-          output += stderr;
-        }
-        if (!output) output = "(命令无输出)";
+            // 已转后台：不再构造前台 ToolResult，走 Task 收尾记账（对齐 spawnShellTask 的
+            // child.on("exit")）。这里的返回值不会被消费——外层 Promise.race 早已用
+            // detachPromise 的结果 resolve 了 execute()。穿 finalizeIfDetached 走一次函数
+            // 调用边界，规避上面 DetachedTaskHandle 声明处注释的 tsc 窄化缺陷。
+            if (finalizeIfDetached(detachedTaskHandle, (h) => h.markExited(exitCode))) {
+              return { output: "" };
+            }
 
-        // 二进制输出检测
-        if (isBinaryOutput(output)) {
-          const byteCount = new TextEncoder().encode(output).length;
-          output = `[检测到二进制输出，共 ${byteCount} 字节]`;
-        } else {
-          output = truncateOutput(output);
-        }
+            // CWD 追踪写回：仅前台、未取消、未超时、退出码 0 时写回全局 cwd。
+            this.applyCwdTracking(cwdFile, !aborted && !timedOut && exitCode === 0);
 
-        // 超时（缺口 1/2 修复）：杀掉进程树后给出明确的 kill 语义，
-        // 并引导模型改用 run_in_background 而非无谓重试。
-        if (timedOut) {
-          return {
-            output: `命令执行超过 ${timeout / 1000} 秒被终止（超时）。\n如需长时间运行，请用 run_in_background=true 重试。\n部分输出:\n${output}`,
-            isError: true,
-          };
-        }
+            // 方向 3（git-status 快照冻结死循环修复）：非只读命令成功执行后失效 git 状态缓存。
+            // git add/commit/restore/checkout、release.sh 等改动工作区的命令跑完后，下一次
+            // generateGitStatusAttachment（含止损阀 remind 时的实时重抓）能拿到最新状态，
+            // 而非命中 30s TTL 里的旧快照。只读命令（git status/log 等）不改状态，跳过以免抖缓存。
+            if (!aborted && !timedOut && exitCode === 0 && !isReadOnlyCommand(params.command)) {
+              try {
+                const { clearGitStatusCache } = require("../config/attachments.ts");
+                clearGitStatusCache();
+              } catch { /* 失效缓存失败不阻断命令返回 */ }
+            }
 
-        if (aborted) {
-          return {
-            output: `用户取消，已终止命令。\n部分输出:\n${output}`,
-            isError: true,
-          };
-        }
+            // 合并输出
+            let output = "";
+            if (stdout) output += stdout;
+            if (stderr) {
+              if (output && !output.endsWith("\n")) output += "\n";
+              output += stderr;
+            }
+            if (!output) output = "(命令无输出)";
 
-        // 退出码语义解释（缺口 4 修复）：grep 无匹配 / diff 有差异 / find 部分不可访问
-        // / test 条件为假 等，退出码非 0 但不是错误，不再误标 isError。
-        const interp = interpretExitCode(params.command, exitCode);
-        if (interp.isError) {
-          log.info("TOOL", `✓ 命令完成 code=${exitCode} stdout=${stdout.length}字符 stderr=${stderr.length}字符`);
-          // 引号畸形诊断：命令失败且疑似"手写引号被 shell 拆断"（中文/多行 commit message
-          // 高频场景）时，附一段可直接照抄的 heredoc 写法，避免模型原样重发陷入死循环。
-          let failOutput = `命令执行失败（退出码 ${exitCode}）:\n${output}`;
-          if (looksLikeQuotingBreakage(params.command, exitCode, output)) {
-            failOutput += `\n${quotingBreakageHint(params.command)}`;
+            // 二进制输出检测
+            if (isBinaryOutput(output)) {
+              const byteCount = new TextEncoder().encode(output).length;
+              output = `[检测到二进制输出，共 ${byteCount} 字节]`;
+            } else {
+              output = truncateOutput(output);
+            }
+
+            // 超时（缺口 1/2 修复）：杀掉进程树后给出明确的 kill 语义，
+            // 并引导模型改用 run_in_background 而非无谓重试。
+            if (timedOut) {
+              return {
+                output: `命令执行超过 ${timeout / 1000} 秒被终止（超时）。\n如需长时间运行，请用 run_in_background=true 重试。\n部分输出:\n${output}`,
+                isError: true,
+              };
+            }
+
+            if (aborted) {
+              return {
+                output: `用户取消，已终止命令。\n部分输出:\n${output}`,
+                isError: true,
+              };
+            }
+
+            // 退出码语义解释（缺口 4 修复）：grep 无匹配 / diff 有差异 / find 部分不可访问
+            // / test 条件为假 等，退出码非 0 但不是错误，不再误标 isError。
+            const interp = interpretExitCode(params.command, exitCode);
+            if (interp.isError) {
+              log.info("TOOL", `✓ 命令完成 code=${exitCode} stdout=${stdout.length}字符 stderr=${stderr.length}字符`);
+              // 引号畸形诊断：命令失败且疑似"手写引号被 shell 拆断"（中文/多行 commit message
+              // 高频场景）时，附一段可直接照抄的 heredoc 写法，避免模型原样重发陷入死循环。
+              let failOutput = `命令执行失败（退出码 ${exitCode}）:\n${output}`;
+              if (looksLikeQuotingBreakage(params.command, exitCode, output)) {
+                failOutput += `\n${quotingBreakageHint(params.command)}`;
+              }
+              return {
+                output: failOutput,
+                isError: true,
+              };
+            }
+
+            log.info("TOOL", `✓ 命令完成 code=${exitCode} stdout=${stdout.length}字符 stderr=${stderr.length}字符`);
+            // 非 0 但语义上非错误：附注语义提示（如 "无匹配"），帮助模型正确理解
+            if (exitCode !== 0 && interp.message) {
+              const note = output === "(命令无输出)" ? interp.message : `${output}\n(${interp.message})`;
+              return { output: note };
+            }
+            return { output };
+          } catch (err) {
+            // 已转后台时，pump/exited 阶段的异常记为任务失败（对齐 spawnShellTask 的
+            // child.on("error")），不再向外抛——execute() 已经通过 detachPromise 返回过了。
+            // 同上，穿 finalizeIfDetached 走一次函数调用边界规避 tsc 窄化缺陷。
+            if (finalizeIfDetached(detachedTaskHandle, (h) => h.markError(err instanceof Error ? err : new Error(String(err))))) {
+              return { output: "" };
+            }
+            throw err;
           }
-          return {
-            output: failOutput,
-            isError: true,
-          };
-        }
+        })();
 
-        log.info("TOOL", `✓ 命令完成 code=${exitCode} stdout=${stdout.length}字符 stderr=${stderr.length}字符`);
-        // 非 0 但语义上非错误：附注语义提示（如 "无匹配"），帮助模型正确理解
-        if (exitCode !== 0 && interp.message) {
-          const note = output === "(命令无输出)" ? interp.message : `${output}\n(${interp.message})`;
-          return { output: note };
-        }
-        return { output };
+        // Ctrl+B 竞速：谁先 settle 用谁。未触发 detach 时 detachPromise 永远不会
+        // resolve（没有 handler 调用过 resolveDetach），等价于原来的 `await runToCompletion`。
+        return await Promise.race([detachPromise, runToCompletion]);
       } finally {
+        foregroundDetachHandlers.delete(detachHandlerId);
+        // detach 分支已经在 handler 内部清理过 timer/listener；未 detach 时这里兜底清理。
+        // clearTimeout/removeEventListener 对已经清理过的 timer/listener 是安全的空操作，
+        // 双重清理不会出错，无需额外按 detachedTaskHandle 分支。
         clearTimeout(timeoutId);
         signal?.removeEventListener("abort", abortHandler);
       }

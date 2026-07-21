@@ -149,7 +149,9 @@ export class WorktreeCommand implements Command {
 /** /cron — 管理定时任务 */
 export class CronCommand implements Command {
   name() { return "cron"; }
-  aliases() { return []; }
+  // schedule：对齐 claude-code 命名（CC /schedule 做本地定时任务，我们用 /cron 覆盖同能力）。
+  // 云端 Routine 部分不做（无云端基建，见方案 §6）。
+  aliases() { return ["schedule"]; }
   description() { return "管理定时任务 (list/delete)"; }
 
   async execute(args: string, _ctx: AppContext): Promise<CommandResult> {

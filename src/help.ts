@@ -126,6 +126,16 @@ Worktree 隔离:
                                       --interval <ms>     调度检查间隔（默认 60000）
                                       --max-concurrent <n> 最大并发 headless job（默认 3）
                                       --allowed-tools <a,b> 全局兜底工具白名单
+  update                      下载并替换二进制到最新版（不动 ~/.sid-code/ 数据）
+  agents                      列出所有可用子代理（内置/自定义/插件）
+                                用法: sid-code agents [--json] [--setting-sources user,project,local]
+  mcp                         管理 MCP 服务器配置（不启动会话）
+                                用法: sid-code mcp <list|get|add|remove> [参数] [--json]
+                                示例: sid-code mcp list
+                                      sid-code mcp add fs npx -y @modelcontextprotocol/server-filesystem /tmp --scope user
+                                      sid-code mcp remove fs
+  auth                        认证配置诊断
+                                用法: sid-code auth status [--json]
 
 环境变量:
   ANTHROPIC_API_KEY             Anthropic API 密钥
@@ -157,6 +167,7 @@ Worktree 隔离:
   SID_CODE_DISABLE_NONESSENTIAL_TRAFFIC  设为 1 禁用非必要网络流量
   SID_CODE_DISABLE_PROJECT_RULES  设为 1 跳过 CLAUDE.md 加载（评测隔离）
   SID_ENABLE_LOOP_DETECTION     循环检测默认关闭（实测 shape 检测误判率≈100%、exact 召回≈0），设为 1 可显式开启
+  SID_ENABLE_BARE_ELLIPSIS_CHECK  裸符号省略号检测 [...]/(...)  默认关闭（实测真阳性 0、误报高），设为 1 可显式开启
 
   系统路径:
   SID_CONFIG_DIR                配置根目录覆盖（缺省 ~/.sid-code）

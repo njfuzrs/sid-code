@@ -3,7 +3,7 @@
  * spawn 子进程，stdout/stderr 写入磁盘文件，完成后通知主循环
  */
 
-import { spawn, type ChildProcess } from "child_process";
+import { spawn } from "child_process";
 import { openSync, closeSync } from "fs";
 import { platform } from "os";
 import {
@@ -26,8 +26,101 @@ function getPlatformShell(): { shell: string; args: string[] } {
   return { shell: userShell, args: ["-c"] };
 }
 
+/**
+ * killShellTask / adoptRunningProcessAsTask 共用的最小进程接口——只依赖 pid + kill()。
+ * Node 的 ChildProcess（spawnShellTask 自己 spawn 的）与 Bun 的 Subprocess（P1-4：
+ * bash.ts 前台执行经 Ctrl+B 热转后台时过继过来的）都天然满足，无需为两个运行时
+ * 分别维护跟踪表——统一走同一份 activeProcesses + kill 逻辑。
+ */
+interface AdoptableProcess {
+  readonly pid?: number;
+  kill(signal?: any): unknown;
+}
+
 /** 活跃子进程引用（用于 kill） */
-const activeProcesses = new Map<string, ChildProcess>();
+const activeProcesses = new Map<string, AdoptableProcess>();
+
+/**
+ * 任务因子进程退出而进入终态：更新 registry 状态 + 入队完成通知。
+ * spawnShellTask 的 child.on("exit") 与 adoptRunningProcessAsTask 的 markExited 共用。
+ *
+ * 终态守卫（对齐 agent-task.ts 的 complete/failAgentTask，见
+ * tests/task/agent-task-terminal-guard.test.ts 的"缺口 A1"）：若任务已经因
+ * killShellTask（用户 Ctrl+F 双击 / 未来 task_stop 主动终止）先行进入终态，这里必须
+ * 短路——否则被 SIGKILL 的进程随后触发的 exit 事件会把已经广播过的 "killed" 状态和
+ * 通知覆盖成 "failed"，造成状态倒退 + 矛盾的重复通知。此前 shell 任务未补齐这层
+ * 守卫（agent-task 那边修过同类缺口，shell 这边是漏网的），随 P1-4 一并修正。
+ */
+function finalizeShellTaskExit(opts: {
+  taskId: string;
+  toolUseId?: string;
+  outputFile: string;
+  display: string;
+  code: number | null;
+  signal: NodeJS.Signals | null;
+}): void {
+  const { taskId, toolUseId, outputFile, display, code, signal } = opts;
+  const existing = getTask(taskId);
+  if (!existing || isTerminalStatus(existing.status)) return;
+
+  updateTask<LocalShellTaskState>(taskId, (t) => {
+    if (isTerminalStatus(t.status)) return t;
+    return {
+      ...t,
+      status: code === 0 ? "completed" : "failed",
+      exitCode: code ?? -1,
+      interrupted: signal !== null,
+      endTime: Date.now(),
+      evictAfter: Date.now() + EVICT_GRACE_MS,
+      notified: true,
+    };
+  });
+
+  enqueueTaskNotification({
+    taskId,
+    toolUseId,
+    outputFile,
+    status: code === 0 ? "completed" : "failed",
+    summary: `命令 "${display.slice(0, 60)}" ${
+      code === 0 ? "执行成功" : `失败 (exit code: ${code})`
+    }`,
+  });
+}
+
+/**
+ * 任务因子进程 spawn/运行异常而失败：与 finalizeShellTaskExit 同款终态守卫。
+ * spawnShellTask 的 child.on("error") 与 adoptRunningProcessAsTask 的 markError 共用。
+ */
+function finalizeShellTaskError(opts: {
+  taskId: string;
+  toolUseId?: string;
+  outputFile: string;
+  err: Error;
+}): void {
+  const { taskId, toolUseId, outputFile, err } = opts;
+  const existing = getTask(taskId);
+  if (!existing || isTerminalStatus(existing.status)) return;
+
+  updateTask<LocalShellTaskState>(taskId, (t) => {
+    if (isTerminalStatus(t.status)) return t;
+    return {
+      ...t,
+      status: "failed",
+      endTime: Date.now(),
+      evictAfter: Date.now() + EVICT_GRACE_MS,
+      notified: true,
+    };
+  });
+
+  enqueueTaskNotification({
+    taskId,
+    toolUseId,
+    outputFile,
+    status: "failed",
+    summary: `命令启动失败`,
+    error: err.message,
+  });
+}
 
 /** 启动后台 Shell 任务 */
 export function spawnShellTask(opts: {
@@ -83,47 +176,12 @@ export function spawnShellTask(opts: {
 
   child.on("exit", (code, signal) => {
     activeProcesses.delete(taskId);
-
-    updateTask<LocalShellTaskState>(taskId, (t) => ({
-      ...t,
-      status: code === 0 ? "completed" : "failed",
-      exitCode: code ?? -1,
-      interrupted: signal !== null,
-      endTime: Date.now(),
-      evictAfter: Date.now() + EVICT_GRACE_MS,
-      notified: true,
-    }));
-
-    enqueueTaskNotification({
-      taskId,
-      toolUseId: opts.toolUseId,
-      outputFile: output.filePath,
-      status: code === 0 ? "completed" : "failed",
-      summary: `命令 "${display.slice(0, 60)}" ${
-        code === 0 ? "执行成功" : `失败 (exit code: ${code})`
-      }`,
-    });
+    finalizeShellTaskExit({ taskId, toolUseId: opts.toolUseId, outputFile: output.filePath, display, code, signal });
   });
 
   child.on("error", (err) => {
     activeProcesses.delete(taskId);
-
-    updateTask<LocalShellTaskState>(taskId, (t) => ({
-      ...t,
-      status: "failed",
-      endTime: Date.now(),
-      evictAfter: Date.now() + EVICT_GRACE_MS,
-      notified: true,
-    }));
-
-    enqueueTaskNotification({
-      taskId,
-      toolUseId: opts.toolUseId,
-      outputFile: output.filePath,
-      status: "failed",
-      summary: `命令启动失败`,
-      error: err.message,
-    });
+    finalizeShellTaskError({ taskId, toolUseId: opts.toolUseId, outputFile: output.filePath, err });
   });
 
   // abort 信号处理
@@ -135,6 +193,91 @@ export function spawnShellTask(opts: {
   startStallWatchdog(taskId);
 
   return taskState;
+}
+
+/**
+ * 收养一个已经在前台运行的进程，登记为后台 Shell 任务（Ctrl+B 热转后台，P1-4）。
+ *
+ * 与 spawnShellTask 的关键区别：进程已经由调用方（bash.ts 前台 execute()）spawn 并读了
+ * 一部分输出，本函数只做"事后过继"——不再 spawn 新进程，只接管注册表 + 磁盘输出 +
+ * kill 跟踪 + 停滞检测。调用方仍在跑的 pump 循环通过返回的 appendLiveOutput 把后续输出
+ * 接着写盘，进程最终退出/异常时经 markExited/markError 收尾——与 spawnShellTask 的
+ * child.on("exit"/"error") 走同一套 finalizeShellTaskExit/Error，保证"模型主动
+ * run_in_background=true"与"用户 Ctrl+B 热转"两条路径在面板展示、kill、通知上完全一致。
+ */
+export function adoptRunningProcessAsTask(opts: {
+  /** 已在运行的子进程（Bun Subprocess 或 Node ChildProcess，只需 pid + kill()）。 */
+  proc: AdoptableProcess;
+  /** 展示/存档用的干净命令（不含 shell 快照注入前缀）。 */
+  command: string;
+  toolUseId?: string;
+  /** detach 发生前已经在内存里攒下的输出，先整块写入磁盘，保持输出连续不丢。 */
+  alreadyCaptured: string;
+  /** 原前台执行的 abort signal；该信号后续 abort 时联动 kill 本任务（对齐 spawnShellTask）。 */
+  signal?: AbortSignal;
+  /**
+   * 进程真实起跑时刻（毫秒时间戳）。不传则用当前时刻兜底——但那会让任务面板把
+   * "已经跑了很久才被转后台的命令"误显示成刚开始，调用方应尽量传真实 spawn 时间。
+   */
+  startTime?: number;
+}): {
+  taskState: LocalShellTaskState;
+  appendLiveOutput: (text: string) => void;
+  markExited: (exitCode: number | null) => void;
+  markError: (err: Error) => void;
+} {
+  const taskId = generateTaskId("local_shell");
+  const output = initTaskOutput(taskId);
+  const display = opts.command;
+
+  if (opts.alreadyCaptured) output.append(opts.alreadyCaptured);
+
+  const taskState: LocalShellTaskState = {
+    id: taskId,
+    type: "local_shell",
+    status: "running",
+    description: display.slice(0, 100),
+    toolUseId: opts.toolUseId,
+    startTime: opts.startTime ?? Date.now(),
+    outputFile: output.filePath,
+    outputOffset: 0,
+    notified: false,
+    command: display,
+    interrupted: false,
+    isBackgrounded: true,
+  };
+
+  registerTask(taskState);
+  activeProcesses.set(taskId, opts.proc);
+
+  // abort 信号处理（对齐 spawnShellTask）：原前台执行所属的那一轮若在任务仍活跃时被
+  // 上游 abort，联动 kill——语义与"模型主动 run_in_background=true"完全一致。
+  opts.signal?.addEventListener("abort", () => {
+    killShellTask(taskId);
+  });
+
+  // 启动停滞检测（复用同一套 "等待 y/n" 探测）
+  startStallWatchdog(taskId);
+
+  return {
+    taskState,
+    appendLiveOutput: (text: string) => output.append(text),
+    markExited: (exitCode: number | null) => {
+      activeProcesses.delete(taskId);
+      finalizeShellTaskExit({
+        taskId,
+        toolUseId: opts.toolUseId,
+        outputFile: output.filePath,
+        display,
+        code: exitCode,
+        signal: null,
+      });
+    },
+    markError: (err: Error) => {
+      activeProcesses.delete(taskId);
+      finalizeShellTaskError({ taskId, toolUseId: opts.toolUseId, outputFile: output.filePath, err });
+    },
+  };
 }
 
 /** 终止 Shell 任务 */

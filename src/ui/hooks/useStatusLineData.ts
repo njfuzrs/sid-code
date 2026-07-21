@@ -33,6 +33,34 @@ export function shortenPath(p: string, maxLen = 25, home = homedir()): string {
   return display;
 }
 
+/**
+ * P3-3：从 cwd 派生「仓库名」——取主仓 git 根的目录名（worktree 内也回落到主仓名，
+ * 对齐 cc 状态栏显示仓库名而非分支）。非 git 目录返回空串（不显示该列）。
+ * findCanonicalGitRoot 从 worktree 的 .git pointer 一路回溯到主仓根，故 worktree 内
+ * 也能拿到主仓名。
+ */
+export function deriveRepoName(cwd: string): string {
+  try {
+    const { findCanonicalGitRoot } = require("../../worktree/canonical.ts");
+    const root = findCanonicalGitRoot(cwd) as string | null;
+    if (!root) return "";
+    const parts = root.split("/").filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * P3-3：从 cwd 派生 worktree 名。约定 sid-code 的 worktree 位于 `.claude/worktrees/<name>`，
+ * 非 worktree（在主仓或普通目录）返回空串（不显示 worktree 列）。
+ * 与 Footer.deriveWorktreeName 同源逻辑，集中到数据层供状态栏列复用。
+ */
+export function deriveWorktree(cwd: string): string {
+  const m = cwd.match(/\.claude\/worktrees\/([^/]+)/);
+  return m ? m[1] : "";
+}
+
 /** 权限模式 → 显示文本 + 语义色。纯函数，可单测。 */
 export function derivePermission(permissionMode: string): {
   display: string;
@@ -209,6 +237,10 @@ export interface StatusLineData {
   permission: { display: string; color: string; isDanger: boolean };
   isPlanMode: boolean;
   gitBranch: string;
+  /** P3-3：仓库名（主仓 git 根目录名）。空串 = 非 git 目录，不显示该列。 */
+  repoName: string;
+  /** P3-3：worktree 名（`.claude/worktrees/<name>`）。空串 = 非 worktree，不显示该列。 */
+  worktree: string;
   isDebug: boolean;
   isRaw: boolean;
   isVim: boolean;
@@ -278,6 +310,8 @@ export function useStatusLineData(input: StatusLineInput): StatusLineData {
       permission: derivePermission(permissionMode),
       isPlanMode,
       gitBranch,
+      repoName: deriveRepoName(config.cwd),
+      worktree: deriveWorktree(config.cwd),
       isDebug: debug,
       isRaw: !renderMarkdown,
       // /vim 切换经 TUIState→ConfigContext 实时推送（settings.vimMode 是未 seed 的死值，不用）。

@@ -4,8 +4,8 @@
  * 文档分级检测、isDocumentFile、m 标志修复验证
  */
 
-import { describe, test, expect } from "bun:test";
-import { detectOmissionPlaceholders, hasOmissionPlaceholders, isDocumentFile, isPythonFile } from "../../src/tool/omission-detector.ts";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { detectOmissionPlaceholders, hasOmissionPlaceholders, isDocumentFile, isPythonFile, isBareEllipsisCheckEnabled } from "../../src/tool/omission-detector.ts";
 
 describe("detectOmissionPlaceholders - JavaScript/TypeScript", () => {
   test("检测 // ... rest of 注释", () => {
@@ -123,21 +123,21 @@ describe("detectOmissionPlaceholders - 独立省略号", () => {
     expect(matches.length).toBeGreaterThan(0);
   });
 
-  test("检测 [...] 括号省略号", () => {
+  test("[...] 括号省略号默认关闭，不再拦截（2026-07-21 实测裁决）", () => {
     const code = `const config = {
   name: "test",
   [...]
 };`;
     const matches = detectOmissionPlaceholders(code);
-    expect(matches.length).toBeGreaterThan(0);
+    expect(matches.length).toBe(0);
   });
 
-  test("检测 (...) 括号省略号", () => {
+  test("(...) 括号省略号默认关闭，不再拦截（2026-07-21 实测裁决）", () => {
     const code = `function process(a, b, (...)) {
   return a + b;
 }`;
     const matches = detectOmissionPlaceholders(code);
-    expect(matches.length).toBeGreaterThan(0);
+    expect(matches.length).toBe(0);
   });
 
   test("正常的展开运算符不误报", () => {
@@ -293,18 +293,16 @@ describe("detectOmissionPlaceholders - 文档文件分级检测", () => {
     expect(matches[0].pattern).toBe("Standalone ellipsis");
   });
 
-  test("代码文件全量检测不变 — 方括号省略号", () => {
+  test("代码文件里方括号省略号默认关闭（裸符号规则默认关）", () => {
     const content = "const config = { [...] }";
     const matches = detectOmissionPlaceholders(content, false);
-    expect(matches.length).toBeGreaterThan(0);
-    expect(matches[0].pattern).toBe("Bracketed ellipsis");
+    expect(matches.length).toBe(0);
   });
 
-  test("代码文件全量检测不变 — 圆括号省略号", () => {
+  test("代码文件里圆括号省略号默认关闭（裸符号规则默认关）", () => {
     const content = "function process((...)) {}";
     const matches = detectOmissionPlaceholders(content, false);
-    expect(matches.length).toBeGreaterThan(0);
-    expect(matches[0].pattern).toBe("Parenthesized ellipsis");
+    expect(matches.length).toBe(0);
   });
 
   test("向后兼容（不传 isDoc，默认为代码文件）", () => {
@@ -372,6 +370,73 @@ describe("isPythonFile", () => {
   test("不识别 .ts / .js 文件", () => {
     expect(isPythonFile("/path/to/code.ts")).toBe(false);
     expect(isPythonFile("/path/to/code.js")).toBe(false);
+  });
+});
+
+describe("detectOmissionPlaceholders - 裸符号规则默认关闭（2026-07-21 实测裁决）", () => {
+  // 实测：这两条无关键字的纯符号规则在真实代码里几乎全是误报（真阳性 0），
+  // 净负债，故默认关闭；代码保留、可经 SID_ENABLE_BARE_ELLIPSIS_CHECK=1 重开（对齐 loop-detection）。
+
+  test("回归：注释里讲 markdown 链接形态 [text](...) 不再误报（会话 76fdc7b3 真实案例）", () => {
+    // 原始命中：/tmp/prettify_markdown.py 第 32 行，行尾 ](...) 曾命中 Parenthesized ellipsis
+    const content = "# 4. 修复特定的 email 前面的括号转义，例如：\\[ \\[ [Zhiqiang.Shen@mbzuai.ac.ae](...)";
+    const matches = detectOmissionPlaceholders(content, false, true);
+    expect(matches.length).toBe(0);
+  });
+
+  test("代码里的 (...) 默认不拦（合法代码如 await fetch(...)）", () => {
+    const content = "const r = await fetch(...);";
+    const matches = detectOmissionPlaceholders(content, false, false);
+    expect(matches.length).toBe(0);
+  });
+
+  test("代码里的 [...] 默认不拦（合法代码如 [...new Set(x)]）", () => {
+    const content = "const uniq = [...];";
+    const matches = detectOmissionPlaceholders(content, false, false);
+    expect(matches.length).toBe(0);
+  });
+
+  test("字符串字面量里的 [...] 默认不拦（分词器才能区分，成本不合理）", () => {
+    const content = 'test("接受 { bindings: [...] } 包裹形式", () => {});';
+    const matches = detectOmissionPlaceholders(content, false, false);
+    expect(matches.length).toBe(0);
+  });
+
+  test("带关键字的 // ... rest of 不受影响，仍被检测（真省略信号）", () => {
+    const content = "function foo() {\n  // ... rest of implementation\n  return true;\n}";
+    const matches = detectOmissionPlaceholders(content, false, false);
+    expect(matches.length).toBeGreaterThan(0);
+    expect(matches[0].pattern).toBe("JS comment ellipsis");
+  });
+});
+
+describe("isBareEllipsisCheckEnabled - env 门控可逆重开", () => {
+  const KEY = "SID_ENABLE_BARE_ELLIPSIS_CHECK";
+  let saved: string | undefined;
+  beforeEach(() => { saved = process.env[KEY]; });
+  afterEach(() => { if (saved === undefined) delete process.env[KEY]; else process.env[KEY] = saved; });
+
+  test("默认（未设 env）关闭", () => {
+    delete process.env[KEY];
+    expect(isBareEllipsisCheckEnabled()).toBe(false);
+    expect(detectOmissionPlaceholders("function process((...)) {}", false, false).length).toBe(0);
+  });
+
+  test("SID_ENABLE_BARE_ELLIPSIS_CHECK=1 时重开，裸符号规则恢复拦截", () => {
+    process.env[KEY] = "1";
+    expect(isBareEllipsisCheckEnabled()).toBe(true);
+    const m1 = detectOmissionPlaceholders("function process((...)) {}", false, false);
+    expect(m1.length).toBeGreaterThan(0);
+    expect(m1[0].pattern).toBe("Parenthesized ellipsis");
+    const m2 = detectOmissionPlaceholders("const config = { [...] };", false, false);
+    expect(m2.length).toBeGreaterThan(0);
+    expect(m2[0].pattern).toBe("Bracketed ellipsis");
+  });
+
+  test("重开后文档文件仍走 docSafe 跳过（不影响文档分级）", () => {
+    process.env[KEY] = "1";
+    const matches = detectOmissionPlaceholders("函数签名：process(a, b, (...))", true, false);
+    expect(matches.length).toBe(0);
   });
 });
 

@@ -173,3 +173,14 @@ export const EFFORT_GLYPHS: Record<"low" | "medium" | "high" | "xhigh" | "max", 
  */
 export const THINKING_ON = "✻";
 export const THINKING_OFF = "✧";
+
+/**
+ * 状态栏「git 分支」字形（P3-3，仓库/分支列）。⎇ 是通用分支符号，跨终端字体覆盖良好，
+ * 单色几何、与整体字形语言一致（不用彩色 emoji）。
+ */
+export const GIT_BRANCH = "⎇";
+/**
+ * 状态栏「worktree」字形（P3-3，worktree 列）。⑂ 分叉符表示从主仓分出的工作树，
+ * 与 GIT_BRANCH ⎇ 同为"分支/分叉"语义族，区分主仓分支与 worktree。
+ */
+export const WORKTREE_MARK = "⑂";

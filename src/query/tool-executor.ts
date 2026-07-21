@@ -253,6 +253,11 @@ export interface ToolExecutorDeps {
    */
   recordFileChanges?: (files: string[], toolName: string) => void;
   /**
+   * P2-1：文件快照创建后回传其 id，供会话回退（RewindManager）记录文件锚点。
+   * 未注入（无头/子代理）时安全跳过。
+   */
+  onSnapshotCreated?: (snapshotId: string) => void;
+  /**
    * GAP-01：流式预执行结果缓存查询（按 tool_use_id）。
    * 流式工具执行器在模型仍在输出时抢先执行了并发安全工具；executeTools 的批量调度
    * 在执行每个工具前先查此缓存，命中则直接复用结果（跳过重复执行），保持权限/hook/
@@ -302,7 +307,11 @@ export async function executeTools(
       );
       const toolNames = toolBlocks.map(t => t.block.name).join(", ");
       const toolSummary = affectedFiles.join(", ");
-      await cpMgr.createSnapshot(affectedFiles, toolNames, toolSummary);
+      const snapshotId = await cpMgr.createSnapshot(affectedFiles, toolNames, toolSummary);
+      // P2-1：把新快照 id 回传给会话回退管理器（作为下一轮回退点的文件锚点）。
+      if (snapshotId) {
+        try { deps.onSnapshotCreated?.(snapshotId); } catch { /* 不阻断工具执行 */ }
+      }
       // P1-7：快照创建后，把文件修改摘要同步落盘到会话 JSONL（打通 Checkpoint↔Resume）。
       // 双写：Checkpoint 存完整内容/diff 用于 undo；JSONL metadata 只存路径+工具名摘要用于
       // resume 时重建"改过哪些文件"的上下文。落盘失败不影响工具执行。

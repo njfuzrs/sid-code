@@ -102,15 +102,49 @@ export interface TUICallbacks {
   /** Shift+Tab 权限模式循环切换（切 config.permissionMode + 刷状态栏 + 瞬时提示） */
   onCyclePermissionMode?: () => void;
   /**
-   * Ctrl+B 把当前前台执行转入后台（对标 cc）。返回一段结果提示（展示给用户），
-   * 无可转移的前台任务时返回 null。当前实现受限于主循环 detach 能力（见 app.ts），
-   * 完整的"任意工具执行热转后台"为二期；本期仅在空闲/无支持场景给引导提示。
+   * Ctrl+B 把当前前台执行转入后台（对标 cc，P1-4）。返回一段结果提示（展示给用户），
+   * 无可转移的前台任务时返回 null。异步——app.ts 的实现需要动态 import bash.ts 拿
+   * requestDetachForegroundBash（避免 App.tsx 静态引入 tool 层）。当前只支持 bash 前台
+   * 命令热转；子代理没有与 bash 对等的"过继中途进程"入口，仍是二期。
    */
-  onBackgroundCurrent?: () => string | null;
+  onBackgroundCurrent?: () => Promise<string | null>;
   /** /export 面板选择后执行导出 */
   onExportConversation?: (target: "clipboard" | "file", format: "md" | "json" | "both") => void;
   /** /context 面板：读取当前上下文分类 token 拆解（稳定引用，调用时实时计算） */
   getContextBreakdown?: () => import("../context/manager.ts").ContextTokenBreakdown;
+  /**
+   * P2-1：Esc+Esc 回退选择器读取回退点列表（最新在前）。
+   * 投影为 UI 展示结构，不直接暴露 RewindPoint 内部字段。
+   */
+  getRewindPoints?: () => RewindPointInfo[];
+  /**
+   * P2-1：执行回退到指定回退点。mode=conversation 仅截断对话；
+   * conversation-and-code 额外回滚文件到当轮快照。返回结果供 UI 回显（null=点已失效）。
+   */
+  onRewind?: (
+    id: number,
+    mode: "conversation" | "conversation-and-code",
+  ) => Promise<RewindResultInfo | null>;
+}
+
+/** P2-1：投影给 UI 的回退点展示信息（不直接依赖 session 层 RewindPoint 类型）。 */
+export interface RewindPointInfo {
+  /** 回退点稳定 id（供选中）。 */
+  id: number;
+  /** 用户输入预览（单行截断）。 */
+  inputPreview: string;
+  /** 登记时间戳（ms）。 */
+  timestamp: number;
+  /** 是否有可回滚的文件快照（无则「对话+代码」模式会跳过文件回滚）。 */
+  hasSnapshot: boolean;
+}
+
+/** P2-1：回退执行结果（供 UI 回显）。 */
+export interface RewindResultInfo {
+  mode: "conversation" | "conversation-and-code";
+  messagesDropped: number;
+  filesRestored: number;
+  fileRestoreSkipped: boolean;
 }
 
 /** 权限请求信息 */
@@ -663,10 +697,16 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     // 空闲时放行给 InputArea 的 Ctrl+B 光标左移，不打断输入框编辑。
     const busy = state.isLoading || state.isStreaming || state.isToolExecuting;
     if (!busy) return false;
-    const msg = callbacks.onBackgroundCurrent?.();
-    if (msg) {
-      showTransientMessage(msg, TransientMessageType.Info);
-    }
+    // onBackgroundCurrent 是 async（内部要动态 import bash.ts 拿 requestDetachForegroundBash），
+    // 而 useKeypress handler 必须同步返回"本次按键是否已消费"——先返回 true（忙态下 Ctrl+B
+    // 语义上已被本键接管，不再放行给输入框），转后台结果异步 then 回来后再展示提示。
+    callbacks.onBackgroundCurrent?.()
+      .then((msg) => {
+        if (msg) showTransientMessage(msg, TransientMessageType.Info);
+      })
+      .catch((err) => {
+        log.warn("UI:APP", `Ctrl+B 转后台失败: ${err instanceof Error ? err.message : String(err)}`);
+      });
     return true;
   });
 
@@ -718,6 +758,30 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
 
     log.info("UI:APP", "用户按下 Esc，请求中断当前操作");
     callbacks.onInterrupt();
+    return true;
+  });
+
+  // P2-1：Esc+Esc 打开会话回退选择器（对标 cc rewind/checkpoint）。
+  // 仅在「空闲 + 无任何面板/请求 + 未在流式/工具执行」时触发——忙时单 Esc 已被上面的
+  // 中断 handler 消费（双击的第一个 Esc 就中断了，不会走到 escape-escape 合成），
+  // 这里只处理真正的空闲态双击。回退管理器无回退点时 RewindDialog 会自渲染空态提示。
+  useKeypress(KeypressPriority.High, (key: Key) => {
+    if (key.name !== "escape-escape") return false;
+    const busy = state.isLoading || state.isStreaming || state.isToolExecuting;
+    if (
+      busy ||
+      state.activeDialog ||
+      state.permissionRequest ||
+      state.shellConfirmRequest ||
+      state.planApprovalRequest ||
+      state.askUserQuestionRequest
+    ) {
+      return false;
+    }
+    // 回退能力未接线（如 headless/bridge 无回调）则不响应，避免开空面板。
+    if (!callbacks.getRewindPoints || !callbacks.onRewind) return false;
+    log.info("UI:APP", "Esc+Esc：打开会话回退选择器");
+    bridge.update({ activeDialog: "rewind" });
     return true;
   });
 

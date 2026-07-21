@@ -230,6 +230,16 @@ export interface Config {
    */
   alternateBuffer?: boolean;
 
+  /** UI 强调色/品牌色覆盖（/color 持久化端，settings.json accentColor）。存 hex，缺省=跟随主题 ui.active */
+  accentColor?: string;
+
+  /**
+   * Fast Mode 开关（/fast 持久化端，settings.json fastMode）。缺省 = false。
+   * 语义：偏好更快的输出端点/服务档位。当前网关未提供对等 fast 能力，故此开关为「预留」——
+   * 已透传到 fallback 层（config.fastMode），待网关支持后即可生效，运行时不写死模型名单。
+   */
+  fastMode?: boolean;
+
   // 子代理模型映射
   subAgentModels?: import("../llm/registry.ts").SubAgentModelMap;
 
@@ -759,6 +769,9 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     autoDream: "autoDream",
     theme: "theme",
     vimMode: "vimMode",
+    alternateBuffer: "alternateBuffer",
+    accentColor: "accentColor",
+    fastMode: "fastMode",
   };
 
   const result: any = {};

@@ -24,11 +24,20 @@ import { getLogger } from "../debug/logger.ts";
 import { theme } from "./semantic-colors.ts";
 import { useKeypress, KeypressPriority } from "./contexts/KeypressContext.tsx";
 import { useKeybindings } from "./contexts/KeybindingContext.tsx";
-import { useUIState, useUIActions } from "./contexts/UIStateContext.tsx";
+import { useUIState, useUIActions, TransientMessageType } from "./contexts/UIStateContext.tsx";
 import { useExitConfirm } from "./hooks/useExitConfirm.ts";
 import { useTextBuffer, getVisualLines, getCursorVisualPosition } from "./text-buffer.ts";
 import { useSlashCompletion, type CommandInfo } from "./hooks/useSlashCompletion.ts";
 import { useAtCompletion } from "./hooks/useAtCompletion.ts";
+import { useSettings } from "./contexts/SettingsContext.tsx";
+import { reduceVimEngine } from "./vim/transitions.ts";
+import {
+  INITIAL_ENGINE_STATE,
+  type VimEngineState,
+  type VimMode,
+  type VimKey,
+  type VimBuffer,
+} from "./vim/types.ts";
 import { useReverseSearch } from "./hooks/useReverseSearch.ts";
 import { useInputHistoryStore } from "./hooks/useInputHistoryStore.ts";
 import { useShellCompletion } from "./hooks/useShellCompletion.ts";
@@ -40,6 +49,7 @@ import {
   expandPastedRefs,
   clearPastes,
 } from "./pasted-contents.ts";
+import { readClipboardImageToFile, detectDroppedImagePath } from "./utils/clipboard-image.ts";
 import { SuggestionsDisplay, type Suggestion } from "./components/SuggestionsDisplay.tsx";
 import { parseInputForHighlighting, renderHighlightedSegments } from "./utils/inputHighlight.tsx";
 import { DEFAULT_TERM_WIDTH } from "./markdown.ts";
@@ -121,7 +131,7 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
   // Ctrl+D 二次确认退出（仅输入框为空时;非空时 Ctrl+D 仍是删除光标后字符）。
   // 读 UIState 的 ctrlDPressedOnce 驱动 ExitWarning,onConfirm 调 App 传入的 triggerQuit。
   const { ctrlDPressedOnce } = useUIState();
-  const { setCtrlDPressedOnce } = useUIActions();
+  const { setCtrlDPressedOnce, showTransientMessage } = useUIActions();
   const { press: pressCtrlD, cancel: cancelCtrlDConfirm } = useExitConfirm({
     pressedOnce: ctrlDPressedOnce,
     setPressedOnce: setCtrlDPressedOnce,
@@ -150,6 +160,51 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
   // 用户在 keybindings.json 里改这些 action 即可生效，不再硬编码。
   const { chordMachine, matchBinding } = useKeybindings();
   const [chordPending, setChordPending] = useState(false);
+
+  // ── Vim 输入模式（P2-2 完整引擎）──
+  // vimMode 来自 SettingsContext（/vim 命令热更新此值）；关闭时引擎完全旁路，保持原生输入行为。
+  // vim 运行态（mode + pending + visualAnchor）用 ref 存：按键回调里需读最新值且不应触发额外重渲，
+  // 只有 mode 变化需要重渲（光标样式/模式栏变化）才同步到 state。
+  const { vimMode } = useSettings();
+  const vimStateRef = useRef<VimEngineState>(INITIAL_ENGINE_STATE);
+  const [vimModeLabel, setVimModeLabel] = useState<VimMode>("normal");
+
+  /**
+   * Vim 拦截器：vimMode 开启时最先处理按键。返回 true 表示已消费（阻断后续普通分发）。
+   * 关闭时直接返回 false，零影响原有输入路径。
+   *
+   * 引擎在 {lines, cursor} 缓冲快照上求值，产出新缓冲后用 tb.vimSetBuffer 原子写回——
+   * motion/operator/text-object/count 全部在纯函数引擎里完成，InputArea 只做快照进/出。
+   * INSERT 模式引擎不消费普通字符（返回 consumed=false），键透传给原生 readline 编辑逻辑，
+   * 故插入、退格、补全、历史等既有行为在 INSERT 下原样保留。
+   */
+  const handleVimKey = useCallback((key: VimKey): boolean => {
+    if (!vimMode) return false;
+    const prev = vimStateRef.current;
+    const bufBefore: VimBuffer = {
+      lines: tb.state.lines,
+      cursorRow: tb.state.cursorRow,
+      cursorCol: tb.state.cursorCol,
+    };
+    const r = reduceVimEngine(bufBefore, prev, key);
+    vimStateRef.current = r.state;
+    if (r.state.mode !== prev.mode) setVimModeLabel(r.state.mode);
+    // 缓冲有变化才写回（避免纯移动/无操作触发多余 dispatch）。
+    const changed =
+      r.buffer.lines !== bufBefore.lines ||
+      r.buffer.cursorRow !== bufBefore.cursorRow ||
+      r.buffer.cursorCol !== bufBefore.cursorCol;
+    if (changed) {
+      tb.vimSetBuffer(r.buffer.lines, r.buffer.cursorRow, r.buffer.cursorCol);
+    }
+    return r.consumed;
+  }, [vimMode, tb]);
+
+  // vimMode 开启时从 normal 模式起步；关闭时复位内部态，避免下次开启残留 insert/待决前缀。
+  useEffect(() => {
+    vimStateRef.current = INITIAL_ENGINE_STATE;
+    setVimModeLabel("normal");
+  }, [vimMode]);
 
   /** 执行一个和弦 action（示例:编辑器级操作,作用于当前输入框）。 */
   const runChordAction = useCallback((action: string): boolean => {
@@ -313,6 +368,28 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
     }
   }, [isLoading, tb]);
 
+  // P2-6/P2-7 共用：把图片文件路径以 @<path> 引用插入输入框，走 Read 工具 vision 管道。
+  // 路径含空格时用引号包裹，确保 @ 引用解析与 shell 补全不被空格截断。
+  const insertImageRef = useCallback((imgPath: string) => {
+    const ref = /\s/.test(imgPath) ? `@"${imgPath}" ` : `@${imgPath} `;
+    tb.insert(ref);
+  }, [tb]);
+
+  // P2-6：尝试读剪贴板图片 → 临时文件 → 插入 @ 引用。成功给 hint，失败给 warning（剪贴板无图/无工具）。
+  const tryInsertClipboardImage = useCallback((): boolean => {
+    // 用真实时钟命名临时文件（本组件运行于 node/浏览器运行时，非 workflow 沙箱，Date.now 可用）。
+    const imgPath = readClipboardImageToFile(Date.now());
+    if (imgPath) {
+      insertImageRef(imgPath);
+      log.info("UI:INPUT", `剪贴板图片已插入: ${imgPath}`);
+      showTransientMessage("已粘贴剪贴板图片", TransientMessageType.Hint);
+      return true;
+    }
+    // 剪贴板无图片或系统无读取工具——给一次轻提示，不打断输入。
+    showTransientMessage("剪贴板无图片（或缺 pngpaste/xclip/wl-paste）", TransientMessageType.Warning);
+    return false;
+  }, [insertImageRef, showTransientMessage]);
+
   const handleSubmit = useCallback(() => {
     const raw = tb.submit();
     if (!raw) return;
@@ -369,6 +446,13 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
   useKeypress(KeypressPriority.Normal, (key) => {
     // 流式响应中仍允许编辑输入：提交走 onSubmit → App 层入队接续（多条输入排队）。
     // 中断键（esc）由 App 的 High 优先级处理器先行拦截，不会落到这里。
+
+    // ── Vim 拦截（vimMode 开启时最先处理）──
+    // normal 模式下 hjkl/x/dd 等被状态机消费并阻断普通分发；insert 模式仅拦 Esc，其余放行。
+    // 但补全菜单/反向搜索/和弦待决等"子模式"激活时不接管，交还原生流程避免打架。
+    if (vimMode && !reverseSearch.state.active && completion.mode === "none" && !chordPending) {
+      if (handleVimKey(key)) return true;
+    }
 
     // ── K5 和弦处理（优先于单键，含 Ctrl+K 前缀）──
     // 反向搜索激活时不走和弦（搜索框内 Ctrl+K 无意义）。
@@ -485,6 +569,23 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
 
     if (key.name === "paste") {
       const cleaned = cleanPasteText(key.sequence);
+
+      // P2-6 剪贴板截图：空 paste 是终端对"剪贴板里是图片"的典型信号（parse-keypress 保留空 paste）。
+      // 尝试把剪贴板图片落临时文件 → 插入 @<path> 引用，走 Read 工具的 vision 管道。
+      if (cleaned.length === 0) {
+        tryInsertClipboardImage();
+        // 空文本无内容可插，无论有无图片都吞掉此 paste。
+        return true;
+      }
+
+      // P2-7 拖放图片：粘贴内容是单个图片文件路径（终端拖文件常粘贴路径）→ 转 @<path> 引用。
+      const dropped = detectDroppedImagePath(cleaned);
+      if (dropped) {
+        insertImageRef(dropped);
+        log.debug("UI:INPUT", `拖放图片: ${dropped}`);
+        return true;
+      }
+
       if (cleaned.length > 0) {
         // IN3：大块粘贴登记元数据并插入精简占位引用，提交时还原；
         // 小块粘贴直接插入，保持顺手。
@@ -777,11 +878,19 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
       return <Text key={`vl-${visualIdx}`}>{lineText}</Text>;
     }
 
-    // 光标行：在 cursorCol 处插入 inverse 字符
+    // 光标行：在 cursorCol 处插入光标字符
     const colInLine = cursorPos.visualCol;
     const before = lineText.slice(0, colInLine);
     const cursorChar = lineText[colInLine] || " ";
     const after = colInLine < lineText.length ? lineText.slice(colInLine + 1) : "";
+
+    // vim 命令态(normal/visual)光标用品牌色块,与 insert(普通 inverse)区分——一眼可辨当前模式。
+    const vimNormal = vimMode && vimModeLabel !== "insert";
+    const cursorNode = vimNormal ? (
+      <Text backgroundColor={theme.ui.active} color={theme.background.primary}>{cursorChar}</Text>
+    ) : (
+      <Text inverse>{cursorChar}</Text>
+    );
 
     if (vl.logicalRow === 0 && vl.start === 0) {
       // 第一行带语法高亮 + 光标
@@ -794,7 +903,7 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
         <Text key={`vl-${visualIdx}`}>
           <Text color={theme.ui.active} bold>{currentPrompt}</Text>
           {renderHighlightedSegments(beforeSegments)}
-          <Text inverse>{cursorChar}</Text>
+          {cursorNode}
           {renderHighlightedSegments(afterSegments)}
         </Text>
       );
@@ -803,7 +912,7 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
     return (
       <Text key={`vl-${visualIdx}`}>
         {before}
-        <Text inverse>{cursorChar}</Text>
+        {cursorNode}
         {after}
       </Text>
     );
@@ -829,6 +938,24 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
       >
         {renderedLines}
       </Box>
+      {/* P2-2：Vim 动态模式栏（对标 cc 的 -- NORMAL -- / -- INSERT --）。
+          仅 vimMode 开启时显示；NORMAL/VISUAL 用品牌色，INSERT 用次要色，一眼可辨当前模式。 */}
+      {vimMode && (
+        <Box paddingX={1}>
+          <Text
+            color={vimModeLabel === "insert" ? theme.text.secondary : theme.ui.active}
+            bold={vimModeLabel !== "insert"}
+          >
+            {vimModeLabel === "insert"
+              ? "-- INSERT --"
+              : vimModeLabel === "visual"
+                ? "-- VISUAL --"
+                : vimModeLabel === "visual-line"
+                  ? "-- VISUAL LINE --"
+                  : "-- NORMAL --"}
+          </Text>
+        </Box>
+      )}
     </Box>
   );
 }

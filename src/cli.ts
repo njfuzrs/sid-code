@@ -344,6 +344,27 @@ function parseCLIArgs(): CLIArgs {
     }
   }
 
+  // 组合约束（P2-1 / P2-2，对齐 CC main.tsx:1825/1850）——SDK 流式输入/部分消息依赖 stream-json 输出通道：
+  //   ① --input-format=stream-json 要求 --output-format=stream-json（双向流式必须成对；
+  //      否则 stdin 逐条消息读进来了，回包却走 text/json 单次输出，SDK 对端无法解析）。
+  //   ② --include-partial-messages 要求 --print + --output-format=stream-json（部分增量只在
+  //      无头 stream-json 输出路径上有意义；交互 TUI 自己就在渲染增量，重复开启无益）。
+  const outFmt = values["output-format"];
+  if (inputFormat === "stream-json" && outFmt !== "stream-json") {
+    console.error(
+      "错误: --input-format stream-json 需要同时指定 --output-format stream-json（双向流式必须成对）。",
+    );
+    process.exit(1);
+  }
+  if (values["include-partial-messages"] === true) {
+    if (values.print !== true || outFmt !== "stream-json") {
+      console.error(
+        "错误: --include-partial-messages 需要同时指定 --print 与 --output-format stream-json。",
+      );
+      process.exit(1);
+    }
+  }
+
   // setting-sources（P1-6）：逗号分隔子集 user/project/local。
   let settingSources: Config["settingSources"] | undefined;
   if (values["setting-sources"] !== undefined) {
@@ -1432,6 +1453,39 @@ export async function main(): Promise<void> {
         "CONFIG",
         `--tools 白名单裁剪：保留 ${toolRegistry.builtInSize()} 个内置工具，移除 ${removed.length} 个${removed.length > 0 ? `（${removed.slice(0, 10).join(", ")}${removed.length > 10 ? "…" : ""}）` : ""}`,
       );
+    }
+
+    // P1-10 --agent（单数，会话级主代理人格）：让整个会话以指定子代理的人格运行。
+    // 时序关键：必须在**所有** agent 来源（built-in / 自定义 / 插件 / --agents 注入）都
+    // 已 registerDynamicAgents 之后再解析，否则 --agent 指向 --agents 注入的代理时会解析不到。
+    // 接线策略（不改 buildSystemPrompt 签名，复用已有的全经路配线）：把该代理的 systemPrompt
+    // 合流进 config.appendSystemPrompt——buildSystemPrompt 的初次构建 + CLAUDE.md/运行时重建
+    // 三条路径都消费 appendSystemPrompt，一处合流即全经路生效。
+    // 注：不在此处切换主模型——provider/providerRegistry 已在上方（cli.ts:1084-1092）用
+    // config.model 解析完毕，此处再改 config.model 已无法回传到已实例化的 provider。
+    // 会话级模型切换应由 --model（更高优先级、在 provider 解析前生效）承担。
+    if (config.topLevelAgent) {
+      const { resolveAgent, getActiveAgentTypes } = await import("./agent/agent-definition.ts");
+      const persona = resolveAgent(config.topLevelAgent);
+      if (!persona) {
+        console.error(
+          `错误: --agent 指定的子代理 "${config.topLevelAgent}" 不存在。可用: ${getActiveAgentTypes().join(", ")}`,
+        );
+        process.exit(1);
+      }
+      // 人格 systemPrompt 合流进 appendSystemPrompt（置于用户 append 之前，人格是基线）。
+      if (persona.systemPrompt && persona.systemPrompt.trim()) {
+        config.appendSystemPrompt = config.appendSystemPrompt
+          ? `${persona.systemPrompt}\n\n${config.appendSystemPrompt}`
+          : persona.systemPrompt;
+      }
+      if (persona.model && persona.model !== config.model) {
+        getLogger().warn(
+          "AGENT",
+          `--agent "${config.topLevelAgent}" 声明了 model "${persona.model}"，但会话级模型切换须用 --model（provider 已在更早阶段解析）。本次仅应用人格提示词，模型仍为 ${config.model}。`,
+        );
+      }
+      getLogger().info("AGENT", `--agent 会话级主代理人格已应用: ${config.topLevelAgent}`);
     }
 
     // P1-7 --mcp-config：解析额外 MCP 配置源（文件路径或内联 JSON，可重复）。

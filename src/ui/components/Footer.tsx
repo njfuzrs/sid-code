@@ -31,18 +31,12 @@ import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
 import type { Usage } from "../../llm/types.ts";
 import { theme } from "../semantic-colors.ts";
-import { WARNING_MARK } from "../constants/figures.ts";
-import { useStatusLineData } from "../hooks/useStatusLineData.ts";
+import { WARNING_MARK, GIT_BRANCH, WORKTREE_MARK } from "../constants/figures.ts";
+import { useStatusLineData, deriveWorktree } from "../hooks/useStatusLineData.ts";
 import { useConfig } from "../contexts/ConfigContext.tsx";
 import { useCustomStatusLine } from "../statusline/useCustomStatusLine.ts";
 import { normalizeCacheUsage } from "../../llm/types.ts";
 import { SessionState } from "../../session/state.ts";
-
-/** 从 cwd 派生 worktree 名：约定 worktree 位于 `.claude/worktrees/<name>` 下。非 worktree 返回空串。 */
-function deriveWorktreeName(cwd: string): string {
-  const m = cwd.match(/\.claude\/worktrees\/([^/]+)/);
-  return m ? m[1] : "";
-}
 
 // ── Footer 主组件 ──
 
@@ -113,7 +107,7 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
     data: {
       cwd: config.cwd,
       gitBranch: props.gitBranch,
-      worktree: deriveWorktreeName(config.cwd),
+      worktree: deriveWorktree(config.cwd),
       permissionMode: props.permissionMode,
       model: props.model,
       inputTokens: props.stockInputTokens,
@@ -184,6 +178,16 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
   }
   if (data.scroll) {
     metricItems.push({ key: "scroll", str: data.scroll.text, color: theme.status.warning, dropOrder: 6 });
+  }
+  // P3-3：git 上下文段——仓库名 ⎇ 分支（+ worktree 名）。对齐 cc 显示仓库名而非仅分支。
+  // repoName 空 = 非 git 目录，整段不显示。worktree 非空时追加 ⑂<name> 列。
+  // dropOrder=7（信息量最低、最先在窄屏被丢），排在计量区最右、权限角之前。
+  if (data.repoName || data.gitBranch) {
+    const segs: string[] = [];
+    if (data.repoName) segs.push(data.repoName);
+    if (data.gitBranch) segs.push(`${GIT_BRANCH} ${data.gitBranch}`);
+    if (data.worktree) segs.push(`${WORKTREE_MARK} ${data.worktree}`);
+    metricItems.push({ key: "git", str: segs.join(" "), color: itemColor, dropOrder: 7 });
   }
 
   // ── 权限角：权限模式统一独占最右一处（default/auto/skip-perms…）。常驻，永不丢弃。──

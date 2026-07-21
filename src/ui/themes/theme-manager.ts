@@ -26,6 +26,8 @@ class ThemeManager {
   private readonly availableThemes: Theme[];
   private activeTheme: Theme;
   private terminalBackground: string | undefined;
+  /** /color 强调色覆盖（hex）。非空时覆盖活动主题的品牌色 ui.active + text.accent/link。 */
+  private accentOverride: string | undefined;
 
   constructor() {
     this.availableThemes = [
@@ -37,6 +39,19 @@ class ThemeManager {
       DaltonizedLight,
     ];
     this.activeTheme = DEFAULT_THEME;
+  }
+
+  /**
+   * 设置/清除 UI 强调色覆盖（/color 用）。hex=undefined 表示清除，回退主题原品牌色。
+   * 因 semantic-colors.ts 的 `theme` 是 getter 代理，覆盖后组件下次读值即生效（配合重渲）。
+   */
+  setAccentOverride(hex: string | undefined): void {
+    this.accentOverride = hex;
+  }
+
+  /** 当前强调色覆盖（/color 展示用）。 */
+  getAccentOverride(): string | undefined {
+    return this.accentOverride;
   }
 
   setTerminalBackground(color: string | undefined): void {
@@ -76,10 +91,19 @@ class ThemeManager {
   }
 
   /**
-   * 获取当前主题的语义颜色
+   * 获取当前主题的语义颜色。
+   * 若设了 accentOverride，则把品牌色相关 token（ui.active + text.accent/link）替换为覆盖色，
+   * 其余 token 保持主题原值——只点睛品牌色，不动整套配色（遵守三状态体系不扩张）。
    */
   getSemanticColors() {
-    return this.getActiveTheme().semanticColors;
+    const base = this.getActiveTheme().semanticColors;
+    if (!this.accentOverride) return base;
+    const hex = this.accentOverride;
+    return {
+      ...base,
+      text: { ...base.text, accent: hex, link: hex },
+      ui: { ...base.ui, active: hex, focus: hex },
+    };
   }
 
   /**

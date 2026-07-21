@@ -58,6 +58,7 @@ export {
 
 export {
   spawnShellTask,
+  adoptRunningProcessAsTask,
   killShellTask,
 } from "./shell-task.ts";
 

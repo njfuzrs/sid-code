@@ -120,7 +120,8 @@ export type DialogType =
   | "commands"
   | "help"
   | "export"
-  | "context";
+  | "context"
+  | "rewind";
 
 /** 命令执行结果类型 */
 export type CommandResultKind =

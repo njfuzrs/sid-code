@@ -76,7 +76,16 @@ type Action =
   | { type: "history-up" }
   | { type: "history-down" }
   | { type: "reset" }
-  | { type: "set-text"; text: string };
+  | { type: "set-text"; text: string }
+  // ── Vim 动作（现有 action 无法表达的最小补充；移动/退格等复用现有 move/delete-*）──
+  | { type: "vim-delete-line" }              // dd：删整逻辑行
+  | { type: "vim-delete-to-line-end" }       // D / d$：删到行末
+  | { type: "vim-open-line"; above: boolean } // o / O：下方(上方)开新行并把光标置于其上
+  | { type: "vim-move-line-first-nonblank" }  // ^：移到行首第一个非空白字符
+  // Vim 引擎原子写回：完整 vim 状态机在外部对 {lines,cursor} 求值后，用本 action 一次性
+  // 写回结果（行数组 + 精确光标）。区别于 set-text（光标只能落末尾），vim 的 motion/operator
+  // 需要把光标停在任意位置，故需要携带 row/col 的原子入口。
+  | { type: "vim-set-buffer"; lines: string[]; cursorRow: number; cursorCol: number };
 
 /** 获取完整文本 */
 function getText(state: TextBufferState): string {
@@ -427,6 +436,50 @@ function baseReducer(state: TextBufferState, action: Action): TextBufferState {
         historyIndex: -1,
       };
     }
+
+    case "vim-delete-line": {
+      // dd：删当前逻辑行。删后光标落在同下标行（末行则上移一行），列夹到行末。
+      if (state.lines.length === 1) {
+        return { ...state, lines: [""], cursorCol: 0, preferredCol: null };
+      }
+      const newLines = [...state.lines];
+      newLines.splice(state.cursorRow, 1);
+      const newRow = Math.min(state.cursorRow, newLines.length - 1);
+      const newCol = Math.min(state.cursorCol, newLines[newRow].length);
+      return { ...state, lines: newLines, cursorRow: newRow, cursorCol: newCol, preferredCol: null };
+    }
+
+    case "vim-delete-to-line-end": {
+      // D / d$：从光标删到行末（保留光标位置，vim 语义光标停在删除后行末字符上）。
+      const line = state.lines[state.cursorRow];
+      const newLines = [...state.lines];
+      newLines[state.cursorRow] = line.slice(0, state.cursorCol);
+      return { ...state, lines: newLines, preferredCol: null };
+    }
+
+    case "vim-open-line": {
+      // o / O：在下方(above=false)或上方(above=true)插入空行，光标移到新行行首（调用方切 insert 模式）。
+      const insertAt = action.above ? state.cursorRow : state.cursorRow + 1;
+      const newLines = [...state.lines];
+      newLines.splice(insertAt, 0, "");
+      return { ...state, lines: newLines, cursorRow: insertAt, cursorCol: 0, preferredCol: null };
+    }
+
+    case "vim-move-line-first-nonblank": {
+      // ^：移到行首第一个非空白字符（全空白行则到行末）。
+      const line = state.lines[state.cursorRow];
+      let col = 0;
+      while (col < line.length && /\s/.test(line[col])) col++;
+      return { ...state, cursorCol: col, preferredCol: null };
+    }
+
+    case "vim-set-buffer": {
+      // Vim 引擎原子写回：外部状态机已算好完整 {lines, cursor}，这里直接落地并夹紧越界。
+      const lines = action.lines.length > 0 ? action.lines : [""];
+      const row = Math.max(0, Math.min(action.cursorRow, lines.length - 1));
+      const col = Math.max(0, Math.min(action.cursorCol, lines[row].length));
+      return { ...state, lines, cursorRow: row, cursorCol: col, preferredCol: null };
+    }
   }
 }
 
@@ -608,6 +661,20 @@ export function useTextBuffer(props: UseTextBufferProps) {
     dispatch({ type: "set-text", text });
   }, []);
 
+  // ── Vim 动作 dispatch 封装 ──
+  const vimDeleteLine = useCallback(() => dispatch({ type: "vim-delete-line" }), []);
+  const vimDeleteToLineEnd = useCallback(() => dispatch({ type: "vim-delete-to-line-end" }), []);
+  const vimOpenLine = useCallback((above: boolean) => dispatch({ type: "vim-open-line", above }), []);
+  const vimSetBuffer = useCallback(
+    (lines: string[], cursorRow: number, cursorCol: number) =>
+      dispatch({ type: "vim-set-buffer", lines, cursorRow, cursorCol }),
+    [],
+  );
+  const vimMoveLineFirstNonBlank = useCallback(
+    () => dispatch({ type: "vim-move-line-first-nonblank" }),
+    [],
+  );
+
   // Viewport 滚动
   const { height: vpHeight, width: vpWidth } = props.viewport;
   const visualLines = useMemo(
@@ -646,6 +713,11 @@ export function useTextBuffer(props: UseTextBufferProps) {
     getText: getTextValue,
     isEmpty,
     setText,
+    vimDeleteLine,
+    vimDeleteToLineEnd,
+    vimOpenLine,
+    vimMoveLineFirstNonBlank,
+    vimSetBuffer,
     visualLines,
     cursorVisual,
     scrollTop,

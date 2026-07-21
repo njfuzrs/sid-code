@@ -29,6 +29,7 @@ import { CommandsDialog } from "./CommandsDialog.tsx";
 import { HelpDialog } from "./HelpDialog.tsx";
 import { ExportDialog } from "./ExportDialog.tsx";
 import { ContextDialog } from "./ContextDialog.tsx";
+import { RewindDialog } from "./RewindDialog.tsx";
 import type { OnboardingResult } from "./OnboardingDialog.tsx";
 import type {
   PermissionRequestInfo,
@@ -249,6 +250,16 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
       <ContextDialog
         onClose={onDialogClose}
         getBreakdown={callbacks.getContextBreakdown}
+      />
+    );
+  }
+  // P2-1：Esc+Esc 会话回退选择器
+  if (activeDialog === "rewind") {
+    return (
+      <RewindDialog
+        onClose={onDialogClose}
+        getRewindPoints={callbacks.getRewindPoints}
+        onRewind={callbacks.onRewind}
       />
     );
   }

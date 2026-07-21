@@ -529,10 +529,10 @@ function* emitKeys(keypressHandler: KeypressHandler): Generator<void, void, stri
         alt = true;
       }
     } else if (sequence === `${ESC}${ESC}`) {
-      name = 'escape'; alt = false;
-      keypressHandler({
-        name: 'escape', shift, alt, ctrl, cmd, insertable: false, sequence: ESC,
-      });
+      // P2-1：Esc+Esc 双击不再合并/去抖为单 escape（那样会抹掉双击信号），而是发出
+      // 专门的 escape-escape 事件，供 rewind 回退选择器消费。单 Esc 逻辑（中断/关面板）不变——
+      // 单 Esc 走上面的 ch === ESC 分支发 name:'escape'，二者互不干扰。
+      name = 'escape-escape'; alt = false;
     } else if (escaped) {
       name = ch.length ? undefined : 'escape';
       alt = ch.length > 0;

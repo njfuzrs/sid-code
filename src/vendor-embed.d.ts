@@ -9,3 +9,14 @@ declare module "*/vendor/rg-embed" {
   const path: string;
   export default path;
 }
+
+/**
+ * bun `with { type: "text" }` 文本 import 的类型声明。
+ *
+ * 编译时把 .md 原文内联进产物，import 默认导出文件文本内容（utf-8 字符串）。
+ * 用于把参考文档打进二进制（如 /claude-api 注入 api-reference/*.md），发布版无需运行时文件。
+ */
+declare module "*.md" {
+  const content: string;
+  export default content;
+}
