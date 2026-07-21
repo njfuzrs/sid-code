@@ -144,4 +144,27 @@ describe("CommandRegistry - 命令冲突处理", () => {
     const cmd = reg.get("custom");
     expect(cmd).toBe(project);
   });
+
+  test("P0-3 别名冲突保留先注册者，不 last-write-wins", () => {
+    const reg = new Registry();
+    const first = new MockCommand("first", ["x"]);
+    const second = new MockCommand("second", ["x"]);
+
+    reg.register(first);
+    reg.register(second);
+
+    // /x 落到先注册的 first（后者别名被忽略），而非静默覆盖到 second
+    expect(reg.get("x")).toBe(first);
+    // 两个命令名本身都在
+    expect(reg.get("first")).toBe(first);
+    expect(reg.get("second")).toBe(second);
+  });
+
+  test("P0-3 同一命令重复注册别名不误报（幂等）", () => {
+    const reg = new Registry();
+    const cmd = new MockCommand("dup", ["a"]);
+    reg.register(cmd);
+    reg.register(cmd); // 再注册同一实例，别名指向不变，不应被"冲突"逻辑拦掉
+    expect(reg.get("a")).toBe(cmd);
+  });
 });

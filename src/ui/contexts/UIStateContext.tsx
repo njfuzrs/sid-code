@@ -69,6 +69,8 @@ export interface UIState {
   showEscapePrompt: boolean;
   /** 对话框是否可见（统一控制：对话框和输入区互斥） */
   dialogsVisible: boolean;
+  /** Ctrl+T 隐藏后台任务面板（仅隐藏 UI，任务照常运行）。默认 false=显示。 */
+  taskPanelHidden: boolean;
 }
 
 /** UI 操作 */
@@ -88,6 +90,8 @@ export interface UIActions {
   setCtrlDPressedOnce: (value: boolean) => void;
   setShowEscapePrompt: (value: boolean) => void;
   setDialogsVisible: (value: boolean) => void;
+  /** Ctrl+T：切换后台任务面板显隐。 */
+  toggleTaskPanel: () => void;
 }
 
 const UIStateContext = createContext<UIState | undefined>(undefined);
@@ -153,9 +157,14 @@ export const UIStateProvider: React.FC<UIStateProviderProps> = ({ children }) =>
   const [ctrlDPressedOnce, setCtrlDPressedOnce] = useState(false);
   const [showEscapePrompt, setShowEscapePrompt] = useState(false);
   const [dialogsVisible, setDialogsVisible] = useState(false);
+  const [taskPanelHidden, setTaskPanelHidden] = useState(false);
 
   const toggleRenderMarkdown = useCallback(() => {
     setRenderMarkdown(prev => !prev);
+  }, []);
+
+  const toggleTaskPanel = useCallback(() => {
+    setTaskPanelHidden(prev => !prev);
   }, []);
 
   // TO4：constrainHeight 派生自 expandLevel（0=约束，≥1=放开），保留旧语义。
@@ -176,6 +185,7 @@ export const UIStateProvider: React.FC<UIStateProviderProps> = ({ children }) =>
     ctrlDPressedOnce,
     showEscapePrompt,
     dialogsVisible,
+    taskPanelHidden,
   }), [
     renderMarkdown,
     transientMessage,
@@ -187,6 +197,7 @@ export const UIStateProvider: React.FC<UIStateProviderProps> = ({ children }) =>
     ctrlDPressedOnce,
     showEscapePrompt,
     dialogsVisible,
+    taskPanelHidden,
   ]);
 
   const actions = useMemo<UIActions>(() => ({
@@ -213,7 +224,8 @@ export const UIStateProvider: React.FC<UIStateProviderProps> = ({ children }) =>
     setCtrlDPressedOnce,
     setShowEscapePrompt,
     setDialogsVisible,
-  }), [toggleRenderMarkdown, showTransientMessage]);
+    toggleTaskPanel,
+  }), [toggleRenderMarkdown, showTransientMessage, toggleTaskPanel]);
 
   return (
     <UIStateContext.Provider value={state}>

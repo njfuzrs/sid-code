@@ -23,6 +23,14 @@ export interface TextBufferState {
   history: string[];
   historyIndex: number;
   savedInput: string;
+  /** Emacs kill ring：环形缓冲，最新在尾部，容量上限 KILL_RING_MAX */
+  killRing: string[];
+  /** yank-pop 游标：指向上次 yank 取用的 killRing 下标，-1 表示未处于 yank 序列 */
+  killRingIndex: number;
+  /** 仅在紧邻 yank 后为 true，允许 yank-pop（emacs 语义：yank-pop 只在 yank 序列内有效） */
+  lastActionWasYank: boolean;
+  /** 上次 yank/yank-pop 实际插入的文本，供 yank-pop 撤销上次插入用 */
+  lastYankText: string;
 }
 
 export interface Viewport {
@@ -43,6 +51,15 @@ export interface VisualLine {
 }
 
 const MAX_HISTORY = 100;
+/** kill ring 容量上限（对标 emacs 默认 kill-ring-max=60，这里取 32 够用） */
+const KILL_RING_MAX = 32;
+
+/** 把一段被删文本推入 kill ring（尾部为最新，超容量时丢弃最旧）。返回新数组。 */
+function pushKill(ring: string[], text: string): string[] {
+  if (!text) return ring;
+  const next = [...ring, text];
+  return next.length > KILL_RING_MAX ? next.slice(next.length - KILL_RING_MAX) : next;
+}
 
 // ── Reducer ──────────────────────────────────────────────────────
 
@@ -53,6 +70,9 @@ type Action =
   | { type: "move"; direction: "left" | "right" | "up" | "down" | "home" | "end" | "wordLeft" | "wordRight" }
   | { type: "kill-line" }
   | { type: "kill-to-start" }
+  | { type: "kill-word-before" }
+  | { type: "yank" }
+  | { type: "yank-pop" }
   | { type: "history-up" }
   | { type: "history-down" }
   | { type: "reset" }
@@ -92,7 +112,7 @@ function findNextWordBoundary(line: string, col: number): number {
   return i;
 }
 
-function reducer(state: TextBufferState, action: Action): TextBufferState {
+function baseReducer(state: TextBufferState, action: Action): TextBufferState {
   switch (action.type) {
     case "insert": {
       const insertLines = action.text.split("\n");
@@ -248,15 +268,83 @@ function reducer(state: TextBufferState, action: Action): TextBufferState {
     }
 
     case "kill-line": {
+      const line = state.lines[state.cursorRow];
+      const killed = line.slice(state.cursorCol);
       const newLines = [...state.lines];
-      newLines[state.cursorRow] = state.lines[state.cursorRow].slice(0, state.cursorCol);
-      return { ...state, lines: newLines, preferredCol: null };
+      newLines[state.cursorRow] = line.slice(0, state.cursorCol);
+      return { ...state, lines: newLines, preferredCol: null, killRing: pushKill(state.killRing, killed) };
     }
 
     case "kill-to-start": {
+      const line = state.lines[state.cursorRow];
+      const killed = line.slice(0, state.cursorCol);
       const newLines = [...state.lines];
-      newLines[state.cursorRow] = state.lines[state.cursorRow].slice(state.cursorCol);
-      return { ...state, lines: newLines, cursorCol: 0, preferredCol: null };
+      newLines[state.cursorRow] = line.slice(state.cursorCol);
+      return { ...state, lines: newLines, cursorCol: 0, preferredCol: null, killRing: pushKill(state.killRing, killed) };
+    }
+
+    case "kill-word-before": {
+      // 删除光标前一个词（到前词边界），并入 kill ring。
+      const line = state.lines[state.cursorRow];
+      if (state.cursorCol > 0) {
+        const boundary = findPrevWordBoundary(line, state.cursorCol);
+        const killed = line.slice(boundary, state.cursorCol);
+        const newLines = [...state.lines];
+        newLines[state.cursorRow] = line.slice(0, boundary) + line.slice(state.cursorCol);
+        return {
+          ...state,
+          lines: newLines,
+          cursorCol: boundary,
+          preferredCol: null,
+          killRing: pushKill(state.killRing, killed),
+        };
+      }
+      // 行首:合并到上一行(不入环,与 delete-backward 语义一致)
+      if (state.cursorRow > 0) {
+        const newLines = [...state.lines];
+        const prevLen = newLines[state.cursorRow - 1].length;
+        newLines[state.cursorRow - 1] += newLines[state.cursorRow];
+        newLines.splice(state.cursorRow, 1);
+        return { ...state, lines: newLines, cursorRow: state.cursorRow - 1, cursorCol: prevLen, preferredCol: null };
+      }
+      return state;
+    }
+
+    case "yank": {
+      // 把 kill ring 最近一次弹到光标处;记录本次插入范围供 yank-pop 撤销。
+      if (state.killRing.length === 0) return state;
+      const lastIdx = state.killRing.length - 1;
+      const text = state.killRing[lastIdx];
+      const inserted = baseReducer(state, { type: "insert", text });
+      return {
+        ...inserted,
+        killRing: state.killRing,       // insert 会清 historyIndex,但 killRing 需原样保留
+        killRingIndex: lastIdx,
+        lastActionWasYank: true,
+        lastYankText: text,
+      };
+    }
+
+    case "yank-pop": {
+      // 仅在紧邻 yank 后有效:撤销上次 yank 插入的文本,改插 killRing 里更早的一条(回绕)。
+      if (!state.lastActionWasYank || state.killRing.length === 0) return state;
+      // 先撤销上次插入的 lastYankText(删除光标前 lastYankText.length 个字符)。
+      const removeLen = state.lastYankText.length;
+      let s: TextBufferState = state;
+      for (let i = 0; i < removeLen; i++) {
+        s = baseReducer(s, { type: "delete-backward" });
+      }
+      // 游标回退一格(回绕到末尾),取更早的一条。
+      const nextIdx = (state.killRingIndex - 1 + state.killRing.length) % state.killRing.length;
+      const text = state.killRing[nextIdx];
+      const inserted = baseReducer(s, { type: "insert", text });
+      return {
+        ...inserted,
+        killRing: state.killRing,
+        killRingIndex: nextIdx,
+        lastActionWasYank: true,
+        lastYankText: text,
+      };
     }
 
     case "history-up": {
@@ -319,6 +407,11 @@ function reducer(state: TextBufferState, action: Action): TextBufferState {
         history: newHistory,
         historyIndex: -1,
         savedInput: "",
+        // kill ring 跨提交保留(emacs 语义:提交后仍可 yank 之前删的内容)
+        killRing: state.killRing,
+        killRingIndex: -1,
+        lastActionWasYank: false,
+        lastYankText: "",
       };
     }
 
@@ -335,6 +428,43 @@ function reducer(state: TextBufferState, action: Action): TextBufferState {
       };
     }
   }
+}
+
+/**
+ * 顶层 reducer 包装：维护 emacs yank 序列语义。
+ * yank / yank-pop 自己管理 lastActionWasYank；其它任何编辑动作执行后都把它清 false，
+ * 使 yank-pop 只在紧邻 yank 后生效。reset 走 baseReducer 已显式重置，此处不覆盖。
+ */
+export type TextBufferAction = Action;
+
+/** 构造一个空的 TextBufferState（供测试/外部初始化用）。 */
+export function createInitialState(text = ""): TextBufferState {
+  const lines = text ? textToLines(text) : [""];
+  const lastRow = lines.length - 1;
+  return {
+    lines,
+    cursorRow: lastRow,
+    cursorCol: lines[lastRow].length,
+    preferredCol: null,
+    history: [],
+    historyIndex: -1,
+    savedInput: "",
+    killRing: [],
+    killRingIndex: -1,
+    lastActionWasYank: false,
+    lastYankText: "",
+  };
+}
+
+export function textBufferReducer(state: TextBufferState, action: Action): TextBufferState {
+  const next = baseReducer(state, action);
+  if (action.type === "yank" || action.type === "yank-pop" || action.type === "reset") {
+    return next;
+  }
+  if (next.lastActionWasYank) {
+    return { ...next, lastActionWasYank: false };
+  }
+  return next;
 }
 
 // ── Visual 行映射 ────────────────────────────────────────────────
@@ -401,7 +531,7 @@ export interface UseTextBufferProps {
 }
 
 export function useTextBuffer(props: UseTextBufferProps) {
-  const [state, dispatch] = useReducer(reducer, {
+  const [state, dispatch] = useReducer(textBufferReducer, {
     lines: [""],
     cursorRow: 0,
     cursorCol: 0,
@@ -409,6 +539,10 @@ export function useTextBuffer(props: UseTextBufferProps) {
     history: [],
     historyIndex: -1,
     savedInput: "",
+    killRing: [],
+    killRingIndex: -1,
+    lastActionWasYank: false,
+    lastYankText: "",
   });
 
   const insert = useCallback((text: string) => {
@@ -433,6 +567,18 @@ export function useTextBuffer(props: UseTextBufferProps) {
 
   const killToStart = useCallback(() => {
     dispatch({ type: "kill-to-start" });
+  }, []);
+
+  const killWordBefore = useCallback(() => {
+    dispatch({ type: "kill-word-before" });
+  }, []);
+
+  const yank = useCallback(() => {
+    dispatch({ type: "yank" });
+  }, []);
+
+  const yankPop = useCallback(() => {
+    dispatch({ type: "yank-pop" });
   }, []);
 
   const historyUp = useCallback(() => {
@@ -491,6 +637,9 @@ export function useTextBuffer(props: UseTextBufferProps) {
     moveCursor,
     killLine,
     killToStart,
+    killWordBefore,
+    yank,
+    yankPop,
     historyUp,
     historyDown,
     submit,

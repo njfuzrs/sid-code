@@ -113,6 +113,9 @@ async function processTemplate(
 
   // 1. 参数替换（兼容旧语法 $@ 和新语法 {{args}}）
   const parts = args.trim().split(/\s+/).filter(Boolean);
+  // $ARGUMENTS：CC 迁移兼容——.claude/commands 模板里的字面量占位符（CC SkillTool 做同样展开）。
+  // 必须在 $@ 之前替换：$@ 的正则不会误吞 $ARGUMENTS（\b 边界），但先替换更直观且防未来正则调整踩坑。
+  result = result.replace(/\$ARGUMENTS\b/g, args.trim());
   result = result.replace(/\$@|\$\*/g, args.trim());
   result = result.replace(/\$(\d+)/g, (_match, idx) => {
     const i = parseInt(idx) - 1;

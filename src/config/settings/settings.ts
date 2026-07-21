@@ -60,9 +60,42 @@ export function setFlagSettings(settings: SettingsJson | null): void {
   setCachedSource("flagSettings", settings);
 }
 
-/** 当前生效的 SettingSource 列表（预留 SDK 模式禁用某些来源的扩展点） */
+/**
+ * P1-6 --setting-sources：限定加载的磁盘来源子集（user/project/local）。
+ * null = 不限制（默认加载全部）。非 null 时仅列出的磁盘来源生效。
+ *
+ * 注意：flagSettings（--settings 显式注入）与 policySettings（企业强制管控）**始终保留**——
+ * 前者是用户本次命令显式给的、后者是不可绕过的管控，都不受 --setting-sources 限制。
+ */
+let enabledDiskSources: ReadonlySet<SettingSource> | null = null;
+
+/**
+ * 设置 --setting-sources 过滤（cli.ts 极早期调用，早于任何 getSettings）。
+ * @param sources CC 风格来源名子集 user/project/local；空/undefined 清除限制。
+ */
+export function setEnabledSettingSources(sources: ("user" | "project" | "local")[] | null | undefined): void {
+  if (!sources || sources.length === 0) {
+    enabledDiskSources = null;
+    setSessionCache(null);
+    return;
+  }
+  const map: Record<"user" | "project" | "local", SettingSource> = {
+    user: "userSettings",
+    project: "projectSettings",
+    local: "localSettings",
+  };
+  // 磁盘来源按子集过滤；内存/管控来源始终保留。
+  const allowed = new Set<SettingSource>(sources.map((s) => map[s]));
+  allowed.add("flagSettings");
+  allowed.add("policySettings");
+  enabledDiskSources = allowed;
+  setSessionCache(null); // 过滤变更，清缓存重新合并
+}
+
+/** 当前生效的 SettingSource 列表（受 --setting-sources 过滤，见 setEnabledSettingSources） */
 function getEnabledSettingSources(): readonly SettingSource[] {
-  return SETTING_SOURCES;
+  if (enabledDiskSources === null) return SETTING_SOURCES;
+  return SETTING_SOURCES.filter((s) => enabledDiskSources!.has(s));
 }
 
 /** 安全的 structuredClone（Bun/Node ≥17 全局可用，降级到 JSON 克隆） */

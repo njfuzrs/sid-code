@@ -398,7 +398,9 @@ class MCPTestCommand implements Command {
 /** /mcp authenticate - 触发远程 MCP 服务器的 OAuth 授权 */
 class MCPAuthenticateCommand implements Command {
   name() { return "authenticate"; }
-  aliases() { return ["auth", "login"]; }
+  // 别名收窄为 ["auth"]：不再劫持 "login"（账户登录通用语义，CC /login=登录 Anthropic 账户）。
+  // 释放顶层 login，避免未来账户体系硬冲突 + 语义误导。
+  aliases() { return ["auth"]; }
   description() { return "对配置了 OAuth 的远程 MCP 服务器发起授权"; }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {

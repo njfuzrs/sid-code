@@ -278,7 +278,11 @@ export class SessionStore {
 
   /** 开始新会话（JSONL 模式）。P2-9：不立即创建文件，延迟到首条真实记录时才 materialize，
    *  避免"打开即退出"的会话留下只有 session_start 的空文件噪音。 */
-  startSession(sessionId: string, model: string, provider: string, cwd: string): void {
+  /**
+   * @param forkedFromSessionId P0-2 --fork-session：分叉来源会话 id。非空时写入 session_start.parentUuid，
+   *   记录本会话是从哪个会话分叉出来的，便于溯源；不影响历史（历史已由 App 注入 ctxMgr）。
+   */
+  startSession(sessionId: string, model: string, provider: string, cwd: string, forkedFromSessionId?: string): void {
     this.currentFile = join(this.sessionDir, `${sessionId}.jsonl`);
     this.materialized = false;
     const uuid = crypto.randomUUID();
@@ -291,7 +295,7 @@ export class SessionStore {
       cwd,
       timestamp: new Date().toISOString(),
       uuid,
-      parentUuid: null,
+      parentUuid: forkedFromSessionId ?? null,
     };
     // 链尾提前指向待写入的 session_start，即便文件还未 materialize，
     // 后续记录的 parentUuid 也能正确指向它（写入顺序由 ensureMaterialized 保证）。

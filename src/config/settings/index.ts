@@ -42,6 +42,7 @@ export {
   getSettingsForSource,
   loadSettingsFromDisk,
   setFlagSettings,
+  setEnabledSettingSources,
   writeSettingsFile,
   patchSettingsFile,
   mergeMissingTopLevelKeys,

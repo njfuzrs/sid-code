@@ -14,6 +14,22 @@ export class Registry {
   private aliasMap = new Map<string, Command>();
   private commandSources = new Map<string, CommandSource>();
 
+  /**
+   * 注册别名，冲突时保留先注册者（确定性），拒绝 last-write-wins 静默覆盖。
+   * P0-3：aliasMap.has(alias) 且指向不同命令 → warn 并跳过，不覆盖。
+   */
+  private registerAlias(alias: string, cmd: Command): void {
+    const existing = this.aliasMap.get(alias);
+    if (existing && existing !== cmd) {
+      getLogger().warn(
+        "COMMAND",
+        `别名冲突: /${alias} 已被 "${existing.name()}" 占用，"${cmd.name()}" 的该别名被忽略`,
+      );
+      return;
+    }
+    this.aliasMap.set(alias, cmd);
+  }
+
   /** 注册一个命令及其所有别名 */
   register(cmd: Command, source: CommandSource = "builtin"): void {
     const log = getLogger();
@@ -22,7 +38,7 @@ export class Registry {
       this.commands.set(cmd.name(), cmd);
       this.commandSources.set(cmd.name(), "builtin");
       for (const alias of cmd.aliases()) {
-        this.aliasMap.set(alias, cmd);
+        this.registerAlias(alias, cmd);
       }
       return;
     }
@@ -44,7 +60,7 @@ export class Registry {
     this.commands.set(cmd.name(), cmd);
     this.commandSources.set(cmd.name(), source);
     for (const alias of cmd.aliases()) {
-      this.aliasMap.set(alias, cmd);
+      this.registerAlias(alias, cmd);
     }
   }
 

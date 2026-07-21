@@ -59,14 +59,28 @@ name: test
 describe("ExtensionLoader", () => {
   let testDir: string;
   let loader: ExtensionLoader;
+  // 隔离 user 级配置根：把 ~/.sid-code 与 ~/.claude 都指向临时目录，
+  // 避免真实机器上的用户级扩展（~/.claude/commands 等）污染 project 级断言。
+  let prevSidHome: string | undefined;
+  let prevClaudeHome: string | undefined;
+  let userHomeDir: string;
 
   beforeEach(() => {
-    testDir = join(tmpdir(), `ext-test-${Date.now()}`);
+    testDir = join(tmpdir(), `ext-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     mkdirSync(testDir, { recursive: true });
+    userHomeDir = join(testDir, "__user_home__");
+    prevSidHome = process.env.SID_CONFIG_DIR;
+    prevClaudeHome = process.env.CLAUDE_CONFIG_DIR;
+    process.env.SID_CONFIG_DIR = join(userHomeDir, ".sid-code");
+    process.env.CLAUDE_CONFIG_DIR = join(userHomeDir, ".claude");
     loader = new ExtensionLoader();
   });
 
   afterEach(() => {
+    if (prevSidHome === undefined) delete process.env.SID_CONFIG_DIR;
+    else process.env.SID_CONFIG_DIR = prevSidHome;
+    if (prevClaudeHome === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = prevClaudeHome;
     rmSync(testDir, { recursive: true, force: true });
   });
 
@@ -151,5 +165,43 @@ description: 测试命令
     loader.clearCache();
     const result3 = await loader.scan("commands", testDir);
     expect(result3.length).toBe(2);
+  });
+
+  // ── P1-6：.claude/{type} 兼容读取 ──
+  test("P1-6 项目级 .claude/commands 被兼容读取", async () => {
+    const claudeDir = join(testDir, ".claude", "commands");
+    mkdirSync(claudeDir, { recursive: true });
+    writeFileSync(join(claudeDir, "deploy.md"), "部署命令");
+
+    const files = await loader.scan("commands", testDir);
+    const deploy = files.find((f) => f.name === "deploy");
+    expect(deploy).toBeDefined();
+    expect(deploy!.rawContent).toBe("部署命令");
+  });
+
+  test("P1-6 同名时 .sid-code 优先于 .claude", async () => {
+    const claudeDir = join(testDir, ".claude", "commands");
+    const sidDir = join(testDir, ".sid-code", "commands");
+    mkdirSync(claudeDir, { recursive: true });
+    mkdirSync(sidDir, { recursive: true });
+    writeFileSync(join(claudeDir, "deploy.md"), "claude 版本");
+    writeFileSync(join(sidDir, "deploy.md"), "sid-code 版本");
+
+    const files = await loader.scan("commands", testDir);
+    const deploy = files.find((f) => f.name === "deploy");
+    expect(deploy).toBeDefined();
+    // .sid-code 优先
+    expect(deploy!.rawContent).toBe("sid-code 版本");
+    // 只保留一个 deploy（去重）
+    expect(files.filter((f) => f.name === "deploy").length).toBe(1);
+  });
+
+  test("P1-6 .claude/skills 同理兼容", async () => {
+    const claudeSkills = join(testDir, ".claude", "skills");
+    mkdirSync(claudeSkills, { recursive: true });
+    writeFileSync(join(claudeSkills, "mySkill.md"), "技能内容");
+
+    const files = await loader.scan("skills", testDir);
+    expect(files.find((f) => f.name === "mySkill")).toBeDefined();
   });
 });

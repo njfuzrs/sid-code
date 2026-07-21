@@ -20,6 +20,9 @@ import { printHelp } from "./help.ts";
 import { runMigrations } from "./migrations/runner.ts";
 import { getVersion } from "./version.ts";
 import { isAbortError } from "./llm/errors.ts";
+import { EFFORT_LEVELS, isEffortLevel } from "./llm/effort.ts";
+import { readFileSync } from "node:fs";
+import { resolve as resolvePath } from "node:path";
 
 profileCheckpoint("full_cli_imports_loaded");
 
@@ -45,6 +48,14 @@ type CLIArgs = Partial<Config> & {
    */
   resumePicker?: boolean;
 };
+
+/**
+ * 校验 UUID v4 格式（--session-id 用）。CC 要求 --session-id 必须是合法 UUID。
+ * 宽松匹配 8-4-4-4-12 十六进制形态（不强制 version/variant 位，兼容外部编排生成的 uuid）。
+ */
+export function isValidUUID(v: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+}
 
 /**
  * 预扫描 argv 抽取 `-r` / `--resume`，对齐 claude-code 的 `[value]` 可选值语义。
@@ -117,6 +128,21 @@ export function extractResumeArg(argv: string[]): {
   return { present, picker, value, rest };
 }
 
+/**
+ * 归一 --allow-tool / --deny-tool 规则 flag（P2-1）。
+ * parseArgs multiple:true 给出 string[]（未传为 undefined）；每项再按逗号拆分并去空。
+ * 返回 undefined（未传）或去重后的规则数组。
+ */
+function normalizeRuleFlag(raw: unknown): string[] | undefined {
+  if (raw === undefined) return undefined;
+  const items = Array.isArray(raw) ? raw : [raw];
+  const rules = items
+    .flatMap((s) => String(s).split(","))
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return rules.length > 0 ? Array.from(new Set(rules)) : undefined;
+}
+
 /** 解析命令行参数 */
 function parseCLIArgs(): CLIArgs {
   let values: Record<string, any>;
@@ -133,6 +159,10 @@ function parseCLIArgs(): CLIArgs {
         provider: { type: "string" },
         model: { type: "string", short: "m" },
         "max-tokens": { type: "string" },
+        // 推理强度档位（P0-3）：low/medium/high/xhigh/max/auto。映射到 config.effortLevel。
+        effort: { type: "string" },
+        // 主模型失败时的降级模型（P0-4）：映射到 config.fallbackModel，须在 availableModels 中存在。
+        "fallback-model": { type: "string" },
 
         // 权限配置
         "permission-mode": { type: "string" },
@@ -141,11 +171,21 @@ function parseCLIArgs(): CLIArgs {
         // 缺口 C1 §5.3：预授权工具白名单（守护进程无头 job 注入；逗号分隔）
         "allowed-tools": { type: "string" },
         "disallowed-tools": { type: "string" },
+        // P2-1：CLI 权限规则（cliArg 源，规则语法如 "Bash(curl *)"；可多次传或逗号分隔）
+        "allow-tool": { type: "string", multiple: true },
+        "deny-tool": { type: "string", multiple: true },
 
         // 会话配置
         // 注意：resume（-r）不在此声明——它是可选值语义（`-r` 可不带值开选择器），
         // parseArgs 的 type:"string" 无法表达，已在 extractResumeArg 中预处理。
         continue: { type: "boolean", short: "c" },
+        // 显式指定会话 UUID（P0-1）：SDK 幂等/外部编排复现。须合法 UUID；
+        // 与 --continue/--resume 同用时必须带 --fork-session（组合约束在下方校验）。
+        "session-id": { type: "string" },
+        // 恢复会话时分叉出新 id 而非复用原 id（P0-2）：配合 --resume/--continue/--session-id。
+        "fork-session": { type: "boolean" },
+        // 禁用会话落盘（P1-2 会话控制）：本次会话不写持久化存储（SDK/一次性任务用）。
+        "no-session-persistence": { type: "boolean" },
         "list-sessions": { type: "boolean" },
         "browse-sessions": { type: "boolean" },
         "delete-session": { type: "string" },
@@ -162,6 +202,8 @@ function parseCLIArgs(): CLIArgs {
         "system-prompt": { type: "string" },
         "append-system-prompt": { type: "string" },
         "system-prompt-file": { type: "string" },
+        // 从文件读取内容追加到系统提示词（P1-4）：与 --append-system-prompt 合并。
+        "append-system-prompt-file": { type: "string" },
 
         // 调试
         debug: { type: "boolean", short: "d" },
@@ -193,6 +235,39 @@ function parseCLIArgs(): CLIArgs {
 
         // Worktree 隔离（P1-2）：启动时直接进入 worktree
         worktree: { type: "string" }, // --worktree[=name]；不带值时自动命名
+
+        // 目录授权（P1-1）：追加额外可访问目录（可重复）。映射到 config.allowedDirectories。
+        "add-dir": { type: "string", multiple: true },
+        // 花费上限美元（P1-9）：映射到 config.costLimit，超限终止。
+        "max-budget-usd": { type: "string" },
+        // IDE 自动连接（A-4 子集）：等价于 SID_CODE_AUTO_CONNECT_IDE=true / config.ide.autoConnect。
+        ide: { type: "boolean" },
+        // 禁用所有斜杠命令（P1-8）：headless/受限场景下关闭 / 命令入口。
+        "disable-slash-commands": { type: "boolean" },
+        // 会话显示名（P2-5）：映射到会话元数据 title/name，便于 --list-sessions 辨识。
+        name: { type: "string", short: "n" },
+
+        // 配置源（P1-5 / P1-6）
+        settings: { type: "string" }, // 额外 settings 源：文件路径或内联 JSON
+        "setting-sources": { type: "string" }, // 逗号分隔子集：user/project/local
+
+        // MCP 配置源（P1-7）
+        "mcp-config": { type: "string", multiple: true }, // 文件路径或内联 JSON，可重复
+        "strict-mcp-config": { type: "boolean" }, // 仅用 --mcp-config，忽略其它来源
+
+        // Beta 头（P2-3）
+        betas: { type: "string", multiple: true }, // anthropic-beta 头值，可重复或逗号分隔
+
+        // 工具白名单替换整个内置集（P2-6）
+        tools: { type: "string" }, // 逗号分隔；替换而非叠加
+
+        // 子代理注入（P1-10）
+        agents: { type: "string" }, // 内联 JSON：{name:{description,prompt,tools?,model?}}
+        agent: { type: "string" }, // 顶层子代理人格名
+
+        // SDK 输入/输出格式（P2-1 / P2-2）
+        "input-format": { type: "string" }, // text（默认）/ stream-json
+        "include-partial-messages": { type: "boolean" }, // stream-json 输出含部分增量
       },
       allowPositionals: true,
       allowNegative: true,
@@ -220,6 +295,115 @@ function parseCLIArgs(): CLIArgs {
     process.exit(0);
   }
 
+  // ── flag 值校验与组合约束（对齐 claude-code main.tsx 的启动期校验）──
+
+  // effort 档位（P0-3）：合法档位或 auto/unset。非法值报错退出。
+  let effortLevel: Config["effortLevel"] | undefined;
+  if (values.effort !== undefined) {
+    const raw = String(values.effort).trim().toLowerCase();
+    if (raw === "auto" || raw === "unset") {
+      // auto：不显式设档（保持 undefined，运行时跟随模型默认）
+      effortLevel = undefined;
+    } else if (isEffortLevel(raw)) {
+      effortLevel = raw as Config["effortLevel"];
+    } else {
+      console.error(
+        `错误: --effort 无效档位 "${values.effort}"，可选: ${EFFORT_LEVELS.join(" / ")} / auto`,
+      );
+      process.exit(1);
+    }
+  }
+
+  // session-id（P0-1）：UUID 校验 + 组合约束。
+  if (values["session-id"] !== undefined) {
+    if (!isValidUUID(String(values["session-id"]))) {
+      console.error(
+        `错误: --session-id 必须是合法 UUID（形如 xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx），收到: "${values["session-id"]}"`,
+      );
+      process.exit(1);
+    }
+    // 组合约束：--session-id 与 --continue/--resume 同用时必须带 --fork-session。
+    const resumingExisting = values.continue === true || resumeArg.present;
+    if (resumingExisting && values["fork-session"] !== true) {
+      console.error(
+        "错误: --session-id 与 --continue/--resume 同用时必须同时指定 --fork-session（否则无法确定是复用还是分叉会话）。",
+      );
+      process.exit(1);
+    }
+  }
+
+  // input-format（P2-1）：仅 text / stream-json。
+  let inputFormat: Config["inputFormat"] | undefined;
+  if (values["input-format"] !== undefined) {
+    const raw = String(values["input-format"]).trim().toLowerCase();
+    if (raw === "text" || raw === "stream-json") {
+      inputFormat = raw as Config["inputFormat"];
+    } else {
+      console.error(`错误: --input-format 无效值 "${values["input-format"]}"，可选: text / stream-json`);
+      process.exit(1);
+    }
+  }
+
+  // setting-sources（P1-6）：逗号分隔子集 user/project/local。
+  let settingSources: Config["settingSources"] | undefined;
+  if (values["setting-sources"] !== undefined) {
+    const parts = String(values["setting-sources"]).split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+    const valid = new Set(["user", "project", "local"]);
+    const bad = parts.filter((p) => !valid.has(p));
+    if (bad.length > 0) {
+      console.error(`错误: --setting-sources 含无效源 "${bad.join(", ")}"，可选: user / project / local`);
+      process.exit(1);
+    }
+    settingSources = parts as Config["settingSources"];
+  }
+
+  // max-budget-usd（P1-9）：正数。
+  let costLimit: number | undefined;
+  if (values["max-budget-usd"] !== undefined) {
+    const n = Number(values["max-budget-usd"]);
+    if (!Number.isFinite(n) || n <= 0) {
+      console.error(`错误: --max-budget-usd 必须是正数，收到: "${values["max-budget-usd"]}"`);
+      process.exit(1);
+    }
+    costLimit = n;
+  }
+
+  // append-system-prompt-file（P1-4）：读文件内容，与 --append-system-prompt 合并。
+  let appendSystemPrompt: string | undefined = values["append-system-prompt"];
+  if (values["append-system-prompt-file"] !== undefined) {
+    const filePath = String(values["append-system-prompt-file"]);
+    try {
+      const fileContent = readFileSync(resolvePath(filePath), "utf-8");
+      appendSystemPrompt = appendSystemPrompt
+        ? `${appendSystemPrompt}\n${fileContent}`
+        : fileContent;
+    } catch (err: any) {
+      console.error(`错误: 无法读取 --append-system-prompt-file "${filePath}": ${err?.message ?? err}`);
+      process.exit(1);
+    }
+  }
+
+  // agents（P1-10）：内联 JSON 解析。
+  let injectedAgents: Config["injectedAgents"] | undefined;
+  if (values.agents !== undefined) {
+    try {
+      const parsed = JSON.parse(String(values.agents));
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("须为对象 { name: { prompt, ... } }");
+      }
+      // 逐项校验 prompt 必填。
+      for (const [name, def] of Object.entries(parsed as Record<string, any>)) {
+        if (!def || typeof def !== "object" || typeof def.prompt !== "string" || !def.prompt.trim()) {
+          throw new Error(`子代理 "${name}" 缺少 prompt 字段`);
+        }
+      }
+      injectedAgents = parsed as Config["injectedAgents"];
+    } catch (err: any) {
+      console.error(`错误: --agents JSON 解析失败: ${err?.message ?? err}`);
+      process.exit(1);
+    }
+  }
+
   // 转换为 Config 格式
   const cliConfig: CLIArgs = {
     provider: values.provider,
@@ -235,6 +419,10 @@ function parseCLIArgs(): CLIArgs {
     disallowedTools: values["disallowed-tools"]
       ? String(values["disallowed-tools"]).split(",").map((s: string) => s.trim()).filter(Boolean)
       : undefined,
+    // P2-1：--allow-tool / --deny-tool 为规则语法（cliArg 源）。multiple:true → string[]；
+    // 每项再按逗号拆分，兼容 `--deny-tool "Bash(curl *),Read(.env)"` 与多次传参两种写法。
+    cliAllowRules: normalizeRuleFlag(values["allow-tool"]),
+    cliDenyRules: normalizeRuleFlag(values["deny-tool"]),
     continue: values.continue,
     // resume 已在 extractResumeArg 预解析：带值走 config.resume，无值走 resumePicker 开选择器。
     resume: resumeArg.value,
@@ -245,7 +433,8 @@ function parseCLIArgs(): CLIArgs {
     verbose: values.verbose,
     jsonSchemaFile: values["json-schema"],
     systemPrompt: values["system-prompt"],
-    appendSystemPrompt: values["append-system-prompt"],
+    // P1-4：合并了 --append-system-prompt 与 --append-system-prompt-file 的内容
+    appendSystemPrompt: appendSystemPrompt,
     systemPromptFile: values["system-prompt-file"],
     debug: values.debug,
     debugLevel: values["debug-level"],
@@ -294,6 +483,52 @@ function parseCLIArgs(): CLIArgs {
               : undefined,
         }
       : undefined, // 不覆盖——完全由配置文件（settings.json）决定
+
+    // ── 对齐 claude-code 新增 flag（批次 1/2/4）──
+    // P0-3 推理强度档位（已在上方校验为合法档位或 auto→undefined）。
+    // 注意：mergeConfig 跳过 undefined，故 auto 态不会覆盖 settings.json 的 effortLevel；
+    // 若需 CLI 显式压过 settings/env 的 auto 语义，由 app.ts 运行时初值处理。
+    effortLevel: effortLevel,
+    // P0-4 降级模型。
+    fallbackModel: values["fallback-model"],
+    // P0-1 显式会话 UUID（已校验格式 + 组合约束）。
+    sessionId: values["session-id"],
+    // P0-2 会话分叉。
+    forkSession: values["fork-session"],
+    // P1-2 禁用会话落盘。
+    noSessionPersistence: values["no-session-persistence"],
+    // P2-5 会话显示名。
+    sessionName: values.name,
+    // P1-1 追加授权目录（multiple → string[]）。
+    allowedDirectories: values["add-dir"] as string[] | undefined,
+    // P1-9 花费上限美元（已校验为正数）。
+    costLimit: costLimit,
+    // A-4 子集：--ide 显式开启 IDE 自动连接。
+    ide: values.ide === true ? { autoConnect: true } : undefined,
+    // P1-8 禁用斜杠命令。
+    disableSlashCommands: values["disable-slash-commands"],
+    // P1-5 额外 settings 源（文件或内联 JSON）。
+    extraSettings: values.settings,
+    // P1-6 限定 settings 源（已校验子集）。
+    settingSources: settingSources,
+    // P1-7 额外 MCP 配置源 + 严格模式。
+    mcpConfigSources: values["mcp-config"] as string[] | undefined,
+    strictMcpConfig: values["strict-mcp-config"],
+    // P2-3 额外 anthropic-beta 头值（multiple + 逗号分隔展开）。
+    betas: values.betas
+      ? (values.betas as string[]).flatMap((b) => b.split(",").map((s) => s.trim())).filter(Boolean)
+      : undefined,
+    // P2-6 工具白名单替换整个内置集（逗号分隔）。
+    toolsWhitelist: values.tools
+      ? String(values.tools).split(",").map((s) => s.trim()).filter(Boolean)
+      : undefined,
+    // P1-10 子代理注入（已解析校验）+ 顶层人格。
+    injectedAgents: injectedAgents,
+    topLevelAgent: values.agent,
+    // P2-1 输入格式（已校验）。
+    inputFormat: inputFormat,
+    // P2-2 stream-json 输出含部分增量。
+    includePartialMessages: values["include-partial-messages"],
   };
 
   // 位置参数作为初始提示词
@@ -550,6 +785,31 @@ export async function main(): Promise<void> {
   try {
     const cliArgs = parseCLIArgs();
 
+    // P1-5 / P1-6：在 loadConfig 之前注入 settings 源过滤与 --settings 覆盖源，
+    // 使后续 loadConfigFile → getSettings 合并时即生效（settings 是 config 的上游数据源之一）。
+    {
+      const { setFlagSettings, setEnabledSettingSources } = await import("./config/settings/index.ts");
+      // --setting-sources：限定磁盘来源子集（flag/policy 始终保留）。
+      setEnabledSettingSources(cliArgs.settingSources ?? null);
+      // --settings：文件路径或内联 JSON，作为 flagSettings 内存源注入（优先级最高的磁盘外覆盖）。
+      if (cliArgs.extraSettings) {
+        const raw = String(cliArgs.extraSettings).trim();
+        try {
+          let json: any;
+          if (raw.startsWith("{")) {
+            json = JSON.parse(raw); // 内联 JSON
+          } else {
+            const content = readFileSync(resolvePath(raw), "utf-8"); // 文件路径
+            json = JSON.parse(content);
+          }
+          setFlagSettings(json);
+        } catch (err: any) {
+          console.error(`错误: --settings 解析失败（应为文件路径或内联 JSON）: ${err?.message ?? err}`);
+          process.exit(1);
+        }
+      }
+    }
+
     // 执行数据迁移（幂等，失败不阻塞）
     profileCheckpoint("migrations_start");
     runMigrations();
@@ -558,6 +818,53 @@ export async function main(): Promise<void> {
     profileCheckpoint("config_load_start");
     const config = await loadConfig(cliArgs);
     profileCheckpoint("config_load_end");
+
+    // P2-1 item5 + P2-2：实例化企业策略管理器，读 managed settings，
+    // 把功能开关（policy-limits）与模式管控（mode-policy: disabledModes / disableBypassPermissionsMode）注入全局。
+    try {
+      const { PolicyManager } = await import("./config/policy.ts");
+      const policyManager = new PolicyManager();
+      const policy = await policyManager.load();
+      if (policy) {
+        // 功能级开关
+        if (policy.policyLimits) {
+          const { setPolicyLimits } = await import("./config/policy-limits.ts");
+          setPolicyLimits(policy.policyLimits);
+        }
+        // 模式级管控（P2-2）
+        const { setModePolicy, isBypassDisabledByPolicy, isModeDisabledByPolicy } = await import("./permission/mode-policy.ts");
+        setModePolicy(policy.disabledModes, policy.disableBypassPermissionsMode);
+
+        // P2-2 fail-fast：策略禁用 bypass 时，若 CLI 显式传了 bypass 相关 flag/mode，明确报错退出
+        const cliWantsBypass =
+          cliArgs.skipPermissions === true ||
+          cliArgs.permissionMode === "dangerously-skip-permissions" ||
+          cliArgs.permissionMode === "always-allow";
+        if (isBypassDisabledByPolicy() && cliWantsBypass) {
+          console.error(
+            "错误: 企业策略（managed settings: disableBypassPermissionsMode=disable）已禁用 bypass 权限模式，" +
+            "--dangerously-skip-permissions / --permission-mode always-allow 不可用。",
+          );
+          process.exit(1);
+        }
+        // 通用 disabledModes fail-fast：CLI 显式请求了被策略禁用的模式 → 报错退出
+        if (cliArgs.permissionMode && isModeDisabledByPolicy(String(cliArgs.permissionMode))) {
+          console.error(
+            `错误: 企业策略已禁用权限模式 "${cliArgs.permissionMode}"（managed settings: disabledModes）。`,
+          );
+          process.exit(1);
+        }
+        // 降级：策略禁用 bypass 时，抹掉从其它来源（settings 文件等）渗入的 skip/bypass 态
+        if (isBypassDisabledByPolicy()) {
+          if (config.skipPermissions) config.skipPermissions = false;
+          if (config.permissionMode === "dangerously-skip-permissions" || config.permissionMode === "always-allow") {
+            config.permissionMode = "default";
+          }
+        }
+      }
+    } catch (err) {
+      getLogger().warn("POLICY", `企业策略加载跳过: ${err}`);
+    }
 
     // Coordinator 模式：检查环境变量 SID_CODE_COORDINATOR_MODE=1
     // 设为 coordinator 后主循环角色切换为"编排者"，注入编排工作流提示词
@@ -658,6 +965,16 @@ export async function main(): Promise<void> {
           logger.warn("CONFIG", `  ✗ ${e.path}: ${e.message}`);
         }
       }
+    }
+
+    // P2-3 --betas：把用户指定的 anthropic-beta 头值注册为 sticky（会话期恒携带）。
+    // 复用 G7 beta-header-latch 机制：只增不减，避免中途抖动废掉 prompt cache。放在 logger 就绪后。
+    if (config.betas && config.betas.length > 0) {
+      const { stickyBetaHeader } = await import("./api/beta-header-latch.ts");
+      for (const b of config.betas) {
+        if (b && b.trim()) stickyBetaHeader(b.trim());
+      }
+      getLogger().info("LLM", `已注册 ${config.betas.length} 个 --betas anthropic-beta 头值。`);
     }
 
     // headless(--print) 模式：诊断默认可见（不依赖 --debug），有问题才输出、无问题零输出；
@@ -1027,6 +1344,40 @@ export async function main(): Promise<void> {
       toolRegistry.register(new CustomAgentTool(def, providerRegistry, toolRegistry));
     }
 
+    // P1-10 --agents：注入 CLI 指定的子代理定义（内联 JSON）。
+    // 注册进聚合 registry（使 sub_agent 可发现）+ 注册为 CustomAgentTool（使模型可直接调用）。
+    // 优先级高于自定义/插件 agent（overwrite=true 默认），CLI 显式注入应压过磁盘来源。
+    if (config.injectedAgents && Object.keys(config.injectedAgents).length > 0) {
+      const injected = Object.entries(config.injectedAgents).map(([name, def]) => ({
+        agentType: name,
+        description: def.description ?? name,
+        whenToUse: def.description ?? name,
+        systemPrompt: def.prompt,
+        tools: def.tools && def.tools.length > 0 ? def.tools : undefined,
+        model: def.model,
+        source: "userSettings" as const,
+      }));
+      registerDynamicAgents(injected);
+      // 同步注册为工具，使模型可直接调用（与自定义 agent 对等）。
+      for (const [name, def] of Object.entries(config.injectedAgents)) {
+        toolRegistry.register(
+          new CustomAgentTool(
+            {
+              name,
+              description: def.description ?? name,
+              prompt: def.prompt,
+              tools: def.tools ?? [],
+              source: "user", // CLI 注入（--agents）归为 user 来源
+              filePath: "",
+            },
+            providerRegistry,
+            toolRegistry,
+          ),
+        );
+      }
+      getLogger().info("AGENT", `--agents 注入 ${injected.length} 个子代理: ${injected.map((a) => a.agentType).join(", ")}`);
+    }
+
     // 加载插件组件（命令 / Agent；Hooks 和 MCP 在下方各自的初始化点接入）
     let pluginMcpServers: Record<string, import("./config/config.ts").MCPServerConfig> = {};
     try {
@@ -1071,14 +1422,59 @@ export async function main(): Promise<void> {
 
     profileCheckpoint("tool_reg_end");
 
-    // 初始化 MCP 服务器（后台连接，不阻塞启动）—— 合并用户配置 + 插件 MCP
-    const allMcpServers = { ...config.mcpServers, ...pluginMcpServers };
+    // P2-6 --tools：白名单替换整个内置工具集（未列出的内置工具不可见）。
+    // 基础设施工具 tool_search 强制保留——它是延迟加载调度器，裁掉会破坏 ToolSearch 机制。
+    // MCP 工具不受影响（由各 MCP server 决定其可用性）。
+    if (config.toolsWhitelist && config.toolsWhitelist.length > 0) {
+      const keep = [...config.toolsWhitelist, "tool_search"];
+      const removed = toolRegistry.retainBuiltInByNames(keep);
+      getLogger().info(
+        "CONFIG",
+        `--tools 白名单裁剪：保留 ${toolRegistry.builtInSize()} 个内置工具，移除 ${removed.length} 个${removed.length > 0 ? `（${removed.slice(0, 10).join(", ")}${removed.length > 10 ? "…" : ""}）` : ""}`,
+      );
+    }
+
+    // P1-7 --mcp-config：解析额外 MCP 配置源（文件路径或内联 JSON，可重复）。
+    // 支持 { "mcpServers": {...} } 或直接 { "serverName": {...} } 两种形态（与 .mcp.json 一致）。
+    let mcpConfigServers: Record<string, import("./config/config.ts").MCPServerConfig> = {};
+    if (config.mcpConfigSources && config.mcpConfigSources.length > 0) {
+      for (const src of config.mcpConfigSources) {
+        const raw = String(src).trim();
+        try {
+          let parsed: any;
+          if (raw.startsWith("{")) {
+            parsed = JSON.parse(raw); // 内联 JSON
+          } else {
+            parsed = JSON.parse(readFileSync(resolvePath(raw), "utf-8")); // 文件路径
+          }
+          const servers = parsed?.mcpServers || parsed?.mcp_servers || parsed;
+          if (servers && typeof servers === "object" && !Array.isArray(servers)) {
+            mcpConfigServers = { ...mcpConfigServers, ...servers };
+          } else {
+            getLogger().warn("MCP", `--mcp-config 源格式不正确（期望对象）: ${raw.slice(0, 60)}`);
+          }
+        } catch (err: any) {
+          console.error(`错误: --mcp-config 解析失败 "${raw.slice(0, 60)}": ${err?.message ?? err}`);
+          process.exit(1);
+        }
+      }
+    }
+
+    // 初始化 MCP 服务器（后台连接，不阻塞启动）。
+    // P1-7 --strict-mcp-config：严格模式仅用 --mcp-config 指定的服务器，忽略 settings/.mcp.json/插件来源；
+    // 非严格模式：用户配置 + 插件 MCP + --mcp-config 合并（--mcp-config 优先级最高）。
+    const allMcpServers = config.strictMcpConfig
+      ? { ...mcpConfigServers }
+      : { ...config.mcpServers, ...pluginMcpServers, ...mcpConfigServers };
+    if (config.strictMcpConfig) {
+      getLogger().info("MCP", `严格 MCP 配置模式（--strict-mcp-config）：仅加载 --mcp-config 指定的 ${Object.keys(mcpConfigServers).length} 个服务器。`);
+    }
     let mcpManager: import("./mcp/manager.ts").MCPManager | undefined;
 
     // IDE 自动连接需要 mcpManager（IDE 作为动态 MCP server 接入），
     // 因此即使没有配置 MCP 服务器，只要 IDE 自动连接生效也创建 manager
     const { shouldAutoConnect } = await import("./ide/integration.ts");
-    const ideAutoConnect = shouldAutoConnect();
+    const ideAutoConnect = shouldAutoConnect(config.ide?.autoConnect);
 
     if (Object.keys(allMcpServers).length > 0 || ideAutoConnect) {
       const { MCPManager } = await import("./mcp/manager.ts");

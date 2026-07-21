@@ -34,6 +34,7 @@ import type { SessionState } from "../../session/state.ts";
 import type { Usage } from "../../llm/types.ts";
 import type { TodoItem } from "../../tool/todo-write.ts";
 import { TodoPanel } from "./TodoPanel.tsx";
+import { useUIState } from "../contexts/UIStateContext.tsx";
 import { theme } from "../semantic-colors.ts";
 
 interface MainScreenLayoutProps {
@@ -188,6 +189,7 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
   // 稳定前缀切分 + log-update fork 的增量增长路径防闪烁（见 StreamingMarkdown.tsx）。
   // 旧的 tailToFitByBlocks 视口窗口已废弃——那是 stock ink 时代的 workaround，
   // 导致流式中只见尾部一小段。完成后整条进 <Static> → scrollback，原生上滚回看。
+  const { taskPanelHidden } = useUIState();
   const hasText = isStreaming && !!streamingText;
   const hasThinking = isStreaming && !!streamingThinking;
   // 思考恒折叠为单行摘要（对标 cc）：ThinkingMessage 内部只渲染一行摘要 + 字符数 + 实时计时，
@@ -269,7 +271,7 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
           ) : null}
 
           <Notifications startupWarnings={startupWarnings} />
-          <TodoPanel todos={todos} tasks={tasks} termWidth={termWidth} />
+          <TodoPanel todos={todos} tasks={tasks} termWidth={termWidth} tasksHidden={taskPanelHidden} />
           <ToastDisplay />
 
           {/* CM3/CM4：LLM 重试/限流提示（实时倒计时 + 限流升级建议） */}

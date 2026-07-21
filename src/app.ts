@@ -12,6 +12,7 @@ import type {
 } from "./llm/types.ts";
 import type { Config } from "./config/config.ts";
 import type { Checker } from "./permission/types.ts";
+import { isBypassDisabledByPolicy, isModeDisabledByPolicy } from "./permission/mode-policy.ts";
 import type { ProviderRegistry } from "./llm/registry.ts";
 import type { MCPManager } from "./mcp/manager.ts";
 import type { PlanModeManager } from "./plan/state.ts";
@@ -179,6 +180,8 @@ export class App {
   private sessionStore: SessionStore | null = null;
   /** B6：被 resume 恢复的会话 id（非 null 表示当前是 resume 会话，doInit 应续写原 jsonl 而非新建） */
   private resumedSessionId: string | null = null;
+  /** P0-2：--fork-session 时记录分叉来源会话 id（非 null 表示当前是分叉会话，新建 jsonl 并把源 id 写入 parentUuid） */
+  private forkedFromSessionId: string | null = null;
   /** P1-7：本会话累积改动过的文件集合（去重），供 recordFileChanges 落盘 file_changes 快照。
    *  resume 时从被恢复会话的 file_changes metadata 预填，续做时继续累积。 */
   private changedFiles: Set<string> = new Set();
@@ -210,8 +213,8 @@ export class App {
   private sessionIdForCompact = "";
   /** 当前生效的项目规则（CLAUDE.md）内存缓存，供运行时重建系统提示词复用 */
   private currentProjectRules: ProjectRules | null = null;
-  /** TUI 模式下的权限确认回调（由 TUI 注入），返回 "yes" | "no" | "always" */
-  private tuiConfirmCallback: ((toolName: string, toolInput: unknown, desc: string, shadowedRules?: import("./ui/App.tsx").ShadowedRuleInfo[]) => Promise<"yes" | "no" | "always">) | null = null;
+  /** TUI 模式下的权限确认回调（由 TUI 注入），返回 "yes" | "no" | "always" | "always-persist" */
+  private tuiConfirmCallback: ((toolName: string, toolInput: unknown, desc: string, shadowedRules?: import("./ui/App.tsx").ShadowedRuleInfo[]) => Promise<"yes" | "no" | "always" | "always-persist">) | null = null;
   /** TUI 状态更新回调（由 TUI 注入，用于同步 permissionMode 等状态） */
   private tuiStateUpdater: ((patch: Record<string, unknown>) => void) | null = null;
   /** 幂等保护：init() 只执行一次 */
@@ -250,7 +253,10 @@ export class App {
     // 键盘循环能否切到 always-allow(bypass)由「启动时是否开了 skip-perms」决定——
     // 用启动瞬间的稳定快照,而非运行时 config.skipPermissions(cyclePermissionMode 会改写它,
     // 用实时值会让 bypass 可用性随循环漂移)。见 cyclePermissionMode。
-    this.bypassAvailableAtLaunch = opts.config.skipPermissions === true;
+    // P2-2：bypass 可用性额外受企业策略 killswitch 门控——即使启动开了 skip-perms，
+    // 若 managed settings 设 disableBypassPermissionsMode=disable，则 bypass 强制不可用。
+    this.bypassAvailableAtLaunch =
+      opts.config.skipPermissions === true && !isBypassDisabledByPolicy();
     this.provider = opts.provider;
     this.providerRegistry = opts.providerRegistry;
     this.mcpManager = opts.mcpManager;
@@ -311,7 +317,12 @@ export class App {
     getSessionMetrics().setAvailableModels(opts.config.availableModels);
     // B1：会话持久化写入端（构造很轻，仅建目录）。startSession/resumeSession 延迟到 doInit 调用，
     // 以便 B6 能根据 resumedSessionId 决定"新建 jsonl"还是"续写旧 jsonl"。
-    this.sessionStore = new SessionStore();
+    // P1-2 --no-session-persistence：置 null 则所有 this.sessionStore?.xxx 调用自动 no-op，
+    // 本次会话完全不落盘（SDK / 一次性任务用），checkpoint/trace 等其它子系统不受影响。
+    this.sessionStore = opts.config.noSessionPersistence ? null : new SessionStore();
+    if (opts.config.noSessionPersistence) {
+      getLogger().info("APP", "会话持久化已禁用（--no-session-persistence）：本次会话不写 jsonl。");
+    }
     // 成本配额管理（合并 costLimit 和 quota 配置）
     const quotaConfig = opts.config.quota;
     const effectiveCostLimit = quotaConfig?.costLimit ?? opts.config.costLimit;
@@ -1103,6 +1114,8 @@ export class App {
    * 无新注册表时回退旧 Registry.all()。
    */
   private async loadCommandList(): Promise<Array<{ name: string; aliases: string[]; description: string; requiresArgs?: boolean }>> {
+    // P1-8 --disable-slash-commands：禁用时补全列表为空（配合 onSlashCommand 门控，彻底关闭斜杠命令）。
+    if (this.config.disableSlashCommands) return [];
     if (this.unifiedRegistry) {
       try {
         const cmds = await this.unifiedRegistry.getCommands(process.cwd());
@@ -1525,13 +1538,24 @@ export class App {
         );
         log.info("APP", `会话持久化续写已启动（resume）: ${this.resumedSessionId}（trace=${this.sessionState.sessionId}）`);
       } else {
+        // P0-2：fork 会话把源 id 作为 parentUuid 写入 session_start，便于溯源。
         this.sessionStore?.startSession(
           this.sessionState.sessionId,
           this.config.model,
           this.config.provider,
           process.cwd(),
+          this.forkedFromSessionId ?? undefined,
         );
-        log.info("APP", `会话持久化已启动: ${this.sessionState.sessionId}`);
+        log.info(
+          "APP",
+          this.forkedFromSessionId
+            ? `会话持久化已启动（fork 自 ${this.forkedFromSessionId}）: ${this.sessionState.sessionId}`
+            : `会话持久化已启动: ${this.sessionState.sessionId}`,
+        );
+      }
+      // P2-5 --name/-n：把会话显示名写入元数据，供 --list-sessions / 会话浏览器辨识。
+      if (this.config.sessionName) {
+        this.sessionStore?.appendMetadata("session_name", this.config.sessionName);
       }
     } catch (e) {
       log.warn("APP", `会话持久化启动失败（不阻断）: ${(e as Error)?.message}`);
@@ -2121,7 +2145,20 @@ export class App {
     // B6：标记当前为 resume 会话。doInit 据此调 resumeSession（续写原 jsonl）而非 startSession（新建）。
     // 注意：不修改 sessionState.sessionId（trajectory/PID/crash marker 仍用本进程的新 id，避免跨进程冲突），
     // 仅让 SessionStore 的 currentFile 指向被恢复会话的旧 jsonl 续写，使历史不碎片化。
-    this.resumedSessionId = sessionData.id;
+    //
+    // P0-2 --fork-session：分叉模式下**不**设 resumedSessionId——doInit 因此走 startSession（新建
+    // jsonl），把源会话历史（下方照常注入 ctxMgr）拷进一个全新会话，源会话 jsonl 保持不动。
+    // 新会话 id 用本进程 sessionState.sessionId（若 --session-id 指定，构造时已置为该值）。
+    // parentUuid 记录源会话 id，便于溯源。
+    if (this.config.forkSession) {
+      this.forkedFromSessionId = sessionData.id;
+      log.info(
+        "APP",
+        `会话分叉（--fork-session）：源 ${sessionData.id} → 新会话 ${this.sessionState.sessionId}（历史已拷入，源会话不改动）`,
+      );
+    } else {
+      this.resumedSessionId = sessionData.id;
+    }
 
     // /goal：从 JSONL metadata 恢复目标状态（跨会话续做时保持目标意识不断）
     // 边界：读到清除哨兵（/clear 落的）跳过恢复，不复活 clear 前的旧目标。
@@ -2496,7 +2533,7 @@ export class App {
   }
 
   /** 设置 TUI 模式下的权限确认回调 */
-  setTUIConfirmCallback(cb: (toolName: string, toolInput: unknown, desc: string, shadowedRules?: import("./ui/App.tsx").ShadowedRuleInfo[]) => Promise<"yes" | "no" | "always">): void {
+  setTUIConfirmCallback(cb: (toolName: string, toolInput: unknown, desc: string, shadowedRules?: import("./ui/App.tsx").ShadowedRuleInfo[]) => Promise<"yes" | "no" | "always" | "always-persist">): void {
     this.tuiConfirmCallback = cb;
   }
 
@@ -2518,11 +2555,67 @@ export class App {
         }
         return true;
       }
+      // P2-3：持久化档——把命令归一为规则写入 project settings，跨会话生效，并热更新当前 checker。
+      if (answer === "always-persist") {
+        await this.persistBashAllowRule(req, toolInput);
+        return true;
+      }
       return answer === "yes";
     }
 
     // headless 模式：根据权限模式自动决策
     return this.config.permissionMode === "always-allow";
+  }
+
+  /**
+   * P2-3：把 Bash 命令持久化为 project settings 的 allow 规则（跨会话生效）。
+   *
+   * 归一策略保守（对齐 CC「a 精确记住命令」）：默认用**精确匹配整条命令**生成
+   * `Bash(<command>)` 规则，不自动追加 `*`，避免一次 always 放行过宽。
+   * 写盘后热更新当前 checker（addSessionRule 立即生效 + persistRule 落盘下次会话生效）。
+   */
+  private async persistBashAllowRule(
+    req: import("./permission/types.ts").PermissionRequest | undefined,
+    toolInput: unknown,
+  ): Promise<void> {
+    const log = getLogger();
+    const command = (toolInput as { command?: string })?.command
+      ?? (req?.input as { command?: string } | undefined)?.command
+      ?? "";
+    if (!command.trim()) {
+      // 无命令可归一：退化为会话内记忆，至少本会话不再重复确认
+      if (req && this.permissionChecker?.rememberDecision) {
+        this.permissionChecker.rememberDecision(req, true);
+      }
+      return;
+    }
+
+    // 保守归一：精确匹配整条命令。matchShellRulePattern 对无通配符走精确全串匹配，
+    // 故 Bash(<command>) 能且仅能命中原命令本身。
+    const rule = `Bash(${command.trim()})`;
+
+    try {
+      // ① 热更新当前会话的 checker：立即生效，本轮之后同命令免确认
+      const checker = this.permissionChecker as any;
+      const loader = typeof checker?.getRuleLoader === "function" ? checker.getRuleLoader() : null;
+      if (loader && typeof checker?.refreshRulesFromLoader === "function") {
+        loader.addSessionRule("allow", rule);
+        checker.refreshRulesFromLoader();
+      } else if (req && this.permissionChecker?.rememberDecision) {
+        this.permissionChecker.rememberDecision(req, true);
+      }
+
+      // ② 持久化到 project settings：下次会话仍生效
+      const { persistRule } = await import("./permission/rule-persistence.ts");
+      await persistRule("project", "allow", rule, process.cwd());
+      this.statusNotifier?.("perm_persist", `已持久化允许规则: ${rule}`, 3000);
+      log.info("PERMISSION", `Bash always(持久) → 写入 project settings: ${rule}`);
+    } catch (err) {
+      log.warn("PERMISSION", `持久化允许规则失败(降级为会话内): ${err}`);
+      if (req && this.permissionChecker?.rememberDecision) {
+        this.permissionChecker.rememberDecision(req, true);
+      }
+    }
   }
 
   /**
@@ -2907,12 +3000,20 @@ export class App {
     };
     // 仅跳过 plan 档：plan 是独立状态机（见上），键盘只改字符串会造假 plan 态。
     // auto 档已接线 ToolClassifier（cli.ts），可正常进入键盘循环。
+    // P2-2：企业策略禁用的模式（disabledModes / bypass killswitch）也跳过。
+    // 最多绕一整圈（模式数上限）防死循环；全被禁时保持当前模式不变。
     let next = getNextPermissionMode(ctx);
-    for (let i = 0; i < 2 && next === "plan"; i++) {
+    for (let i = 0; i < 8 && (next === "plan" || isModeDisabledByPolicy(next)); i++) {
+      if (next === this.config.permissionMode) break; // 绕回原点，无可切换的模式
       next = getNextPermissionMode({ ...ctx, mode: next });
     }
 
     if (next === this.config.permissionMode) return; // 无变化不刷屏
+    // 兜底：绕圈后仍落在被禁模式（极端配置），拒绝切换
+    if (isModeDisabledByPolicy(next)) {
+      this.statusNotifier?.("perm_mode_switch", "该权限模式已被企业策略禁用", 2500);
+      return;
+    }
 
     this.config.permissionMode = next;
     // ⚠️ 关键：skipPermissions / yesMode 是「粘性」执行开关，checker 直接读它们做早退放行
@@ -4080,9 +4181,9 @@ export class App {
 
     // 设置 TUI 权限确认回调
     this.setTUIConfirmCallback(async (toolName, toolInput, desc, shadowedRules) => {
-      return new Promise<"yes" | "no" | "always">((resolve) => {
+      return new Promise<"yes" | "no" | "always" | "always-persist">((resolve) => {
         log.info("TUI:PERM", `显示权限对话框: ${toolName} - ${desc}`);
-        const wrappedResolve = (answer: "yes" | "no" | "always") => {
+        const wrappedResolve = (answer: "yes" | "no" | "always" | "always-persist") => {
           log.info("TUI:PERM", `权限对话框响应: ${answer}`);
           updateState({ permissionRequest: null });
           resolve(answer);
@@ -4769,6 +4870,13 @@ export class App {
 
         const commandInput = `/${cmd}${args ? " " + args : ""}`;
 
+        // P1-8 --disable-slash-commands：禁用时不解析为命令，原文当普通输入交给 LLM。
+        if (this.config.disableSlashCommands) {
+          log.info("TUI:CMD", `斜杠命令已禁用（--disable-slash-commands），作为普通输入提交: ${commandInput}`);
+          await callbacks.onUserInput(commandInput);
+          return;
+        }
+
         // 构建命令上下文
         const cmdCtx: import("./command/types.ts").AppContext = {
           ctxMgr: this.ctxMgr,
@@ -5089,8 +5197,21 @@ export class App {
       unifiedRegistry: this.unifiedRegistry,
       // Shift+Tab 权限模式循环切换（复用 cyclePermissionMode 实例方法）
       onCyclePermissionMode: () => this.cyclePermissionMode(),
+      // Ctrl+B 转后台（对标 cc）。完整的"任意前台工具执行热转后台"需要主循环
+      // （query/loop）在工具执行边界处支持 detach，成本较高，列为二期。本期给出
+      // 可行引导：忙时提示改用 bash 的 run_in_background 起后台任务；空闲时说明用法。
+      // 返回的文案透传到 TUI 瞬时提示。
+      onBackgroundCurrent: (): string | null => {
+        const busy = !!this.abortController && !this.abortController.signal.aborted;
+        if (busy) {
+          return "当前执行暂不支持热转后台；如需后台运行长命令，请用 bash 的 run_in_background 参数";
+        }
+        return "空闲状态无前台任务可转后台；长命令可用 bash run_in_background 起后台任务";
+      },
       // /export 面板：导出对话到剪贴板或文件
       onExportConversation: (target, format) => this.exportConversation(target, format),
+      // /context 面板：实时读取上下文分类 token 拆解
+      getContextBreakdown: () => this.ctxMgr.getTokenBreakdown(this.toolRegistry.size()),
     };
 
     // 恢复会话首屏渲染：restoreSession 仅把历史灌入 ctxMgr（LLM 上下文），

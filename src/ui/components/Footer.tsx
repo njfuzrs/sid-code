@@ -33,6 +33,16 @@ import type { Usage } from "../../llm/types.ts";
 import { theme } from "../semantic-colors.ts";
 import { WARNING_MARK } from "../constants/figures.ts";
 import { useStatusLineData } from "../hooks/useStatusLineData.ts";
+import { useConfig } from "../contexts/ConfigContext.tsx";
+import { useCustomStatusLine } from "../statusline/useCustomStatusLine.ts";
+import { normalizeCacheUsage } from "../../llm/types.ts";
+import { SessionState } from "../../session/state.ts";
+
+/** 从 cwd 派生 worktree 名：约定 worktree 位于 `.claude/worktrees/<name>` 下。非 worktree 返回空串。 */
+function deriveWorktreeName(cwd: string): string {
+  const m = cwd.match(/\.claude\/worktrees\/([^/]+)/);
+  return m ? m[1] : "";
+}
 
 // ── Footer 主组件 ──
 
@@ -87,9 +97,34 @@ function joinedWidth(strs: string[]): number {
 export const Footer = React.memo(function Footer(props: FooterProps) {
   const data = useStatusLineData(props);
   const { itemColor } = data;
+  const config = useConfig();
 
   const termWidth =
     props.termWidth ?? (typeof process !== "undefined" ? process.stdout?.columns : undefined) ?? 80;
+
+  // P1-5 自定义状态栏：配了 statusLine.command 就跑用户脚本，stdout 作状态栏（原样透传 ANSI）。
+  // 组装会话数据（复用 useStatusLineData 已聚合字段 + props + 派生 worktree）。
+  const cacheNorm = normalizeCacheUsage(props.usage, SessionState.inferProvider(props.model, config.availableModels));
+  const cacheHitRate = cacheNorm.cacheHitTokens > 0 && cacheNorm.promptTotal > 0
+    ? Math.round((cacheNorm.cacheHitTokens / Math.max(1, cacheNorm.promptTotal)) * 100)
+    : 0;
+  const customStatusLine = useCustomStatusLine({
+    config: config.statusLine,
+    data: {
+      cwd: config.cwd,
+      gitBranch: props.gitBranch,
+      worktree: deriveWorktreeName(config.cwd),
+      permissionMode: props.permissionMode,
+      model: props.model,
+      inputTokens: props.stockInputTokens,
+      outputTokens: props.usage.outputTokens,
+      contextPercent: props.contextPercent,
+      costUSD: props.costUSD,
+      cacheHitRate,
+      effort: config.effortDisplay ? (config.effortDisplay.isAuto ? "auto" : config.effortDisplay.level) : "",
+      thinking: !!config.thinkingDisplay?.on,
+    },
+  });
 
   // ── 身份区：model（+ raw/vim 暗角标）。常驻，永不丢弃。──
   let identityStr = data.model;
@@ -209,6 +244,18 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
   const permMode: React.ReactNode = (
     <Text color={permColor} wrap="truncate-end">{permStr}</Text>
   );
+
+  // P1-5：配了自定义状态栏且脚本有输出 → 原样渲染脚本 stdout（透传 ANSI），
+  // 不走下面的内置四区布局。padding 从配置取（默认 0）。
+  if (customStatusLine !== null) {
+    const padLeft = Math.max(0, config.statusLine?.padding ?? 0);
+    return (
+      <Box paddingX={1} width="100%" flexWrap="nowrap" overflow="hidden">
+        {padLeft > 0 && <Box width={padLeft} />}
+        <Text wrap="truncate-end">{customStatusLine}</Text>
+      </Box>
+    );
+  }
 
   // ── 四区布局：区间用 flexGrow 空盒撑开留白，不插 ` · `（L2.2 留白 > 分隔线）──
   // flexWrap="nowrap" + overflow="hidden" + 各 Text 的 truncate-end 三重保证单行。

@@ -80,3 +80,29 @@ export {
   killWorkflowTask,
   getWorkflowTaskSignal,
 } from "./workflow-task.ts";
+
+import { getRunningTasks } from "./registry.ts";
+import { isShellTask, isAgentTask, isWorkflowTask } from "./types.ts";
+import { killShellTask } from "./shell-task.ts";
+import { killAgentTask } from "./agent-task.ts";
+import { killWorkflowTask } from "./workflow-task.ts";
+
+/**
+ * 终止所有正在运行的后台任务（Shell / Agent / Workflow），返回被终止的任务数。
+ * 供 Ctrl+F「终止全部后台代理」双击确认使用。按各任务类型分派到对应 kill 函数
+ * （幂等：已终态任务被 getRunningTasks 过滤掉，不会重复 kill）。
+ */
+export function killAllRunningTasks(): number {
+  const running = getRunningTasks();
+  for (const task of running) {
+    if (isShellTask(task)) killShellTask(task.id);
+    else if (isAgentTask(task)) killAgentTask(task.id);
+    else if (isWorkflowTask(task)) killWorkflowTask(task.id);
+  }
+  return running.length;
+}
+
+/** 当前是否有正在运行的后台任务（供 Ctrl+F 判断是否 no-op）。 */
+export function hasRunningTasks(): boolean {
+  return getRunningTasks().length > 0;
+}

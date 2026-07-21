@@ -9,7 +9,7 @@ import { readdir, readFile } from "fs/promises";
 import { join, basename } from "path";
 import { parseFrontmatter } from "./frontmatter.ts";
 import { getLogger } from "../debug/logger.ts";
-import { sidPaths } from "../config/paths.ts";
+import { sidPaths, getClaudeHome } from "../config/paths.ts";
 import type {
   ExtensionSource,
   ParsedExtensionFile,
@@ -73,69 +73,9 @@ export class ExtensionLoader {
       errors.push(...builtinErrors);
     }
 
-    // 1. 扫描用户目录 ~/.sid-code/{type}/
-    const userDir = sidPaths.extensionDir(type);
-    const { files: userFiles, errors: userErrors } = await this.scanDir(userDir, "user");
-    for (const f of userFiles) {
-      const existing = fileMap.get(f.name);
-      if (existing) {
-        overrides.push({
-          name: f.name,
-          overriddenPath: existing.filePath,
-          overriddenSource: existing.source,
-          overridingPath: f.filePath,
-          overridingSource: f.source,
-        });
-      }
-      fileMap.set(f.name, f);
-    }
-    errors.push(...userErrors);
-
-    // 2. 扫描项目目录 {projectDir}/.sid-code/{type}/（后扫描覆盖先扫描）
-    if (projectDir) {
-      const projDir = join(projectDir, ".sid-code", type);
-      const { files: projFiles, errors: projErrors } = await this.scanDir(projDir, "project");
-
-      // 项目级文件需要信任检查
-      let trustedProjFiles = projFiles;
-      if (
-        !options?.trustProjectExtensions &&
-        options?.trustManager &&
-        projFiles.length > 0
-      ) {
-        const untrustedFiles: ParsedExtensionFile[] = [];
-        const trustedFilesTemp: ParsedExtensionFile[] = [];
-
-        for (const file of projFiles) {
-          const isTrusted = await options.trustManager.isTrusted(
-            file.filePath,
-            file.rawContent,
-            projectDir,
-          );
-          if (isTrusted) {
-            trustedFilesTemp.push(file);
-          } else {
-            untrustedFiles.push(file);
-          }
-        }
-
-        // 如果有未信任的文件，通过回调让用户确认
-        if (untrustedFiles.length > 0 && options.onUntrusted) {
-          const confirmedFiles = await options.onUntrusted(untrustedFiles);
-          // 记录用户确认的文件
-          if (confirmedFiles.length > 0) {
-            await options.trustManager.trustBatch(
-              confirmedFiles.map((f) => ({ filePath: f.filePath, content: f.rawContent })),
-              projectDir,
-            );
-            trustedFilesTemp.push(...confirmedFiles);
-          }
-        }
-
-        trustedProjFiles = trustedFilesTemp;
-      }
-
-      for (const f of trustedProjFiles) {
+    // 合并一批扫描结果进 fileMap（后合并覆盖先合并，记录 override）
+    const mergeFiles = (files: ParsedExtensionFile[]) => {
+      for (const f of files) {
         const existing = fileMap.get(f.name);
         if (existing) {
           overrides.push({
@@ -148,6 +88,61 @@ export class ExtensionLoader {
         }
         fileMap.set(f.name, f);
       }
+    };
+
+    // 1. 扫描用户级目录（P1-6：先 ~/.claude 兜底，再 ~/.sid-code 覆盖）
+    //    CC 迁移用户把命令放在 ~/.claude/{type}/，我们兼容读取；同名以 .sid-code 为准。
+    const userClaudeDir = join(getClaudeHome(), type);
+    const { files: userClaudeFiles, errors: userClaudeErrors } = await this.scanDir(userClaudeDir, "user");
+    mergeFiles(userClaudeFiles);
+    errors.push(...userClaudeErrors);
+
+    const userDir = sidPaths.extensionDir(type);
+    const { files: userFiles, errors: userErrors } = await this.scanDir(userDir, "user");
+    mergeFiles(userFiles);
+    errors.push(...userErrors);
+
+    // 2. 扫描项目级目录（P1-6：先 {proj}/.claude 兜底，再 {proj}/.sid-code 覆盖）
+    //    两个项目目录都走信任检查（项目级扩展默认不可信）。
+    if (projectDir) {
+      // 对一批项目级文件做信任过滤，返回可信文件
+      const filterTrusted = async (files: ParsedExtensionFile[]): Promise<ParsedExtensionFile[]> => {
+        if (options?.trustProjectExtensions || !options?.trustManager || files.length === 0) {
+          return files;
+        }
+        const untrustedFiles: ParsedExtensionFile[] = [];
+        const trustedFilesTemp: ParsedExtensionFile[] = [];
+        for (const file of files) {
+          const isTrusted = await options.trustManager.isTrusted(
+            file.filePath,
+            file.rawContent,
+            projectDir,
+          );
+          if (isTrusted) trustedFilesTemp.push(file);
+          else untrustedFiles.push(file);
+        }
+        // 未信任文件通过回调让用户确认
+        if (untrustedFiles.length > 0 && options.onUntrusted) {
+          const confirmedFiles = await options.onUntrusted(untrustedFiles);
+          if (confirmedFiles.length > 0) {
+            await options.trustManager.trustBatch(
+              confirmedFiles.map((f) => ({ filePath: f.filePath, content: f.rawContent })),
+              projectDir,
+            );
+            trustedFilesTemp.push(...confirmedFiles);
+          }
+        }
+        return trustedFilesTemp;
+      };
+
+      const projClaudeDir = join(projectDir, ".claude", type);
+      const { files: projClaudeFiles, errors: projClaudeErrors } = await this.scanDir(projClaudeDir, "project");
+      mergeFiles(await filterTrusted(projClaudeFiles));
+      errors.push(...projClaudeErrors);
+
+      const projDir = join(projectDir, ".sid-code", type);
+      const { files: projFiles, errors: projErrors } = await this.scanDir(projDir, "project");
+      mergeFiles(await filterTrusted(projFiles));
       errors.push(...projErrors);
     }
 

@@ -13,7 +13,9 @@ sid-code - AI 编程 CLI 工具
 LLM 配置:
   --provider <name>           LLM 提供商 (anthropic/openai/ollama)
   -m, --model <name>          模型名称
+  --fallback-model <name>     主模型失败时的降级模型（须在 available_models 中）
   --max-tokens <n>            响应最大 token 数
+  --effort <level>            推理强度档位 (low/medium/high/xhigh/max/auto)
 
 权限配置:
   --permission-mode <mode>    权限模式 (default/always-allow/deny-write/acceptEdits/plan/dontAsk)
@@ -21,11 +23,17 @@ LLM 配置:
   -y, --yes                   自动批准所有权限请求
   --allowed-tools <list>      工具白名单（逗号分隔，如 "read,grep,bash"）
   --disallowed-tools <list>   工具黑名单（逗号分隔）
+  --tools <list>              替换整个内置工具集（逗号分隔；未列出的工具不注册）
+  --add-dir <dir>             追加可访问目录（可重复：--add-dir A --add-dir B）
 
 会话配置:
   -c, --continue              继续最近一次会话
   -r, --resume [值]           恢复会话：不带值打开交互式选择器（可搜索），
                               带值按 ID/索引恢复，未命中则作为搜索词进选择器
+  --session-id <uuid>         指定会话 UUID（须合法 UUID；与 -c/-r 同用须配 --fork-session）
+  --fork-session              恢复会话时分叉为新会话（新 id，不改动源会话）
+  --no-session-persistence    禁用会话落盘（本次会话不写持久化存储）
+  -n, --name <name>           会话显示名（便于 --list-sessions 辨识）
   --list-sessions             列出所有会话（文本模式）
   --browse-sessions           打开 TUI 会话浏览器
   --delete-session <id>       删除指定会话
@@ -33,7 +41,9 @@ LLM 配置:
 
 无头模式:
   -p, --print                 无头模式（非交互式，需提供提示词）
+  --input-format <fmt>        输入格式 (text/stream-json；stream-json 从 stdin 读流式消息)
   --output-format <fmt>       输出格式 (text/json)
+  --include-partial-messages  stream-json 输出模式下包含部分消息增量
   --max-turns <n>             Agent 循环最大轮次
   --verbose                   详细输出（无头模式下输出全量消息数组而非仅最终消息）
   --json-schema <path>        结构化输出 JSON Schema 文件路径（约束 LLM 输出格式）
@@ -42,9 +52,34 @@ LLM 配置:
   --system-prompt <text>      覆盖系统提示词
   --append-system-prompt <text>  追加到系统提示词
   --system-prompt-file <path>    从文件加载系统提示词
+  --append-system-prompt-file <path>  从文件读取内容追加到系统提示词
 
 插件:
   --plugin-dir <path>         会话级插件目录（可重复：--plugin-dir A --plugin-dir B）
+
+配置源:
+  --settings <file-or-json>   额外 settings 源（文件路径或内联 JSON，最后一层覆盖）
+  --setting-sources <sources> 限定加载的 settings 源（逗号分隔，子集：user/project/local）
+
+MCP:
+  --mcp-config <config>       额外 MCP 配置源（文件路径或内联 JSON，可重复）
+  --strict-mcp-config         仅用 --mcp-config 指定的服务器，忽略其它来源
+
+子代理:
+  --agents <json>             注入子代理定义（内联 JSON: {name:{description,prompt,...}}）
+  --agent <name>              整会话使用指定的顶层子代理人格
+
+模型行为:
+  --betas <beta>              额外 anthropic-beta 头值（可重复或逗号分隔）
+
+限制控制:
+  --max-budget-usd <amount>   花费上限（美元，超限终止）
+
+IDE:
+  --ide                       启动即自动连接 IDE（等价 SID_CODE_AUTO_CONNECT_IDE=true）
+
+功能开关:
+  --disable-slash-commands    禁用所有斜杠命令（headless/受限场景）
 
 调试:
   -d, --debug                 启用调试模式（日志输出到 ~/.sid-code/debug.log）

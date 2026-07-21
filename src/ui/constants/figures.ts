@@ -151,15 +151,17 @@ export const TITLE_ANIMATION_FRAMES = ["⠂", "⠐"];
 export const EFFORT_LOW = "▁";
 export const EFFORT_MEDIUM = "▃";
 export const EFFORT_HIGH = "▅";
+export const EFFORT_XHIGH = "▇";
 export const EFFORT_MAX = "█";
 /** effort auto 态字形（未显式设档，跟随模型默认）。空心点 = 「未定」。 */
 export const EFFORT_AUTO = "◌";
 
 /** 档位 → 字形映射（供 useStatusLineData 取用，避免渲染层硬编码）。 */
-export const EFFORT_GLYPHS: Record<"low" | "medium" | "high" | "max", string> = {
+export const EFFORT_GLYPHS: Record<"low" | "medium" | "high" | "xhigh" | "max", string> = {
   low: EFFORT_LOW,
   medium: EFFORT_MEDIUM,
   high: EFFORT_HIGH,
+  xhigh: EFFORT_XHIGH,
   max: EFFORT_MAX,
 };
 

@@ -23,8 +23,15 @@ export interface PolicySettings {
   policyLimits?: Record<string, { allowed: boolean }>;
   /** 是否只允许企业策略中的规则 */
   allowManagedPermissionRulesOnly?: boolean;
-  /** 禁用的权限模式 */
+  /** 禁用的权限模式（通用：禁用任意模式，接进 cyclePermissionMode 与 CLI 校验） */
   disabledModes?: string[];
+  /**
+   * 禁用 bypass（always-allow / dangerously-skip-permissions）模式（P2-2，对齐 CC
+   * utils/settings/types.ts:67 disableBypassPermissionsMode）。
+   * - "disable"：强制禁用 bypass，即使 CLI 传了 --dangerously-skip-permissions 也报错退出/降级；
+   * - "allow"（默认/缺省）：不限制。
+   */
+  disableBypassPermissionsMode?: "disable" | "allow";
 }
 
 /** 策略加载器接口（可扩展） */

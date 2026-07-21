@@ -58,7 +58,7 @@ export function getNextPermissionMode(ctx: PermissionModeContext): PermissionMod
 /** 模式显示名称 */
 export function getModeName(mode: PermissionMode): string {
   switch (mode) {
-    case "default": return "默认";
+    case "default": return "Manual（手动）";
     case "always-allow": return "全部允许";
     case "deny-write": return "禁止写入";
     case "acceptEdits": return "自动接受编辑";

@@ -16,6 +16,7 @@ import type { Config } from "../config/config.ts";
 import type { PlanModeManager } from "../plan/state.ts";
 import type { Tool, PermissionResult, ToolUseContext } from "../tool/types.ts";
 import { checkRules } from "./rules.ts";
+import type { PathRuleContext } from "./path-rule-matching.ts";
 import { AuditLogger } from "./audit.ts";
 import { getLogger } from "../debug/logger.ts";
 import { splitCompoundCommand, hasSensitiveRedirection } from "./shell-parser.ts";
@@ -33,6 +34,7 @@ import { getShadowedRulesForTool } from "./shadowed-rules.ts";
 import type { SandboxManager } from "./sandbox.ts";
 import { BashClassifier } from "./bash-classifier.ts";
 import * as path from "node:path";
+import * as os from "node:os";
 
 /** 危险命令模式（对标 Claude Code 15 种） */
 interface DangerousPattern {
@@ -129,11 +131,22 @@ const FILE_TOOLS = new Set(["read", "write", "edit"]);
 /** 写操作工具 */
 const WRITE_TOOLS = new Set(["write", "edit"]);
 
-/** 只读工具（含低风险工具如 save_memory） */
-const READ_ONLY_TOOLS = new Set(["read", "grep", "glob", "ls", "read_many", "web_fetch", "save_memory"]);
+/**
+ * 只读工具（含低风险工具如 save_memory）。
+ * 注意：web_fetch **不在**此列表（P1-2，对齐 CC 方案 A）——网络出站需人类把关，
+ * 默认走 ask 而非无条件放行；预授权代码类域名由 web_fetch 自身的 checkPermissions 免确认放行，
+ * domain 粒度授权由 WebFetch(domain:x) 规则控制。
+ */
+const READ_ONLY_TOOLS = new Set(["read", "grep", "glob", "ls", "read_many", "save_memory"]);
 
 /** 会话记忆最大条目数 */
 const MAX_SESSION_MEMORY = 1000;
+
+/**
+ * acceptEdits 模式下自动放行的文件系统命令（对齐 CC modeValidation.ts ACCEPT_EDITS_ALLOWED_COMMANDS）。
+ * 仅当命令的路径参数都在 cwd 内才自动放行；跨 cwd 的 mv/rm 等仍走确认（刻意的攻击面权衡）。
+ */
+const ACCEPT_EDITS_FS_COMMANDS = new Set(["mkdir", "touch", "rm", "rmdir", "mv", "cp", "sed"]);
 
 /** Plan Mode 下额外允许的工具（在 READ_ONLY_TOOLS 基础上） */
 const PLAN_MODE_EXTRA_TOOLS = new Set([
@@ -296,6 +309,63 @@ export class PermissionChecker implements Checker {
   }
 
   /**
+   * 构造路径规则解析上下文（P0-2）。
+   * 文件类工具（read/write/edit）的路径规则前缀（`//` `~/` `/` `./`）需据此归一化。
+   * workspaceRoot=项目根；cwd 优先用 bash 显式 cwd 参数（如有），否则工作区根。
+   */
+  private buildPathRuleContext(req?: PermissionRequest): PathRuleContext {
+    const inputCwd = (req?.input as { cwd?: string } | undefined)?.cwd;
+    return {
+      workspaceRoot: this.workspacePath,
+      homeDir: os.homedir(),
+      cwd: inputCwd || this.workspacePath,
+    };
+  }
+
+  /**
+   * P1-3：判断 bash 命令在 acceptEdits 模式下是否可自动放行。
+   *
+   * 对齐 CC modeValidation.ts + pathValidation.ts：复合命令拆分后，**每个**子命令的 baseCmd
+   * 都必须是文件系统命令（ACCEPT_EDITS_FS_COMMANDS），**且**其路径参数经校验都在 cwd 内。
+   * 任一子命令不满足 → 返回 false（落回 ask）。
+   *
+   * 注意：危险命令层（Step 2）在 acceptEdits（Step 11）之前，故 `rm -rf /` 等已先被拦，
+   * 本方法只处理「逃过危险检测的普通 fs 命令」，保持 bypass-immune 语义不破。
+   */
+  private canAutoAllowFsCommandInAcceptEdits(command: string): boolean {
+    const subCommands = splitCompoundCommand(command);
+    if (subCommands.length === 0) return false;
+
+    const cwd = this.workspacePath;
+    for (const sub of subCommands) {
+      const trimmed = sub.trim();
+      if (!trimmed) return false;
+      const tokens = trimmed.split(/\s+/);
+      const baseCmd = tokens[0];
+      // baseCmd 必须是白名单 fs 命令
+      if (!ACCEPT_EDITS_FS_COMMANDS.has(baseCmd)) return false;
+
+      // 路径参数（非 - 开头的 token，跳过 baseCmd 本身）都必须在 cwd 内
+      for (let i = 1; i < tokens.length; i++) {
+        const tok = tokens[i];
+        if (!tok || tok.startsWith("-")) continue; // 跳过选项标志
+        // sed 的脚本参数（如 's/a/b/'）不是路径——含 / 但非路径的表达式会被下方 resolve 兜住：
+        // 只要 resolve 后不在 cwd 内即 false，脚本表达式通常不在 cwd 内故不会误放行；
+        // 保守起见对 sed 的首个非选项参数（脚本）放宽：仅校验其余参数（文件）。
+        if (baseCmd === "sed" && i === 1 && !tok.includes("/")) {
+          // 形如 sed -i 'expr' file：expr 不含 / 时视为脚本，跳过
+          continue;
+        }
+        const resolved = path.isAbsolute(tok) ? tok : path.resolve(cwd, tok);
+        if (!this.pathValidator.isWithinWorkspace(resolved)) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  /**
    * 获取与指定工具相关的阴影规则（供权限确认对话框展示不可达规则提示）。
    * 对标 claude-code 的 "Unreachable Rules"：deny 遮蔽=blocked，ask 遮蔽=shadowed。
    * 异常时返回空数组——阴影提示是增强信息，绝不能因它阻断权限流程。
@@ -363,32 +433,50 @@ export class PermissionChecker implements Checker {
     if (!deny || deny.length === 0) return false;
 
     const denyOnly = { deny, allow: [], ask: [] };
-    const candidates = [absPath];
-    try {
-      const rel = path.relative(this.workspacePath, absPath);
-      // 仅当相对路径落在工作区内（不以 .. 开头、非绝对）时才作为候选，
-      // 避免把工作区外路径错误地按相对模式匹配。
-      if (rel && !rel.startsWith("..") && !path.isAbsolute(rel)) {
-        candidates.push(rel);
-      }
-    } catch {
-      /* path.relative 失败（跨盘等）：仅用绝对路径匹配 */
-    }
 
-    // 用 "read" 工具名匹配：隐藏语义 = "读不到的文件不该出现在列表里"，
-    // 与 deny 规则里最常见的 Read(...) / *(...) 形态一致（matchRule 大小写不敏感、
-    // 支持 * 通配符工具名）。deny 规则里的 file_path 走 minimatch(dot:true)。
-    for (const fp of candidates) {
-      const decision = checkRules(denyOnly, { toolName: "read", input: { file_path: fp } });
-      if (decision && !decision.allowed) return true;
-    }
-    return false;
+    // P0-2：路径规则前缀（`//` `~/` `/` `./`）现由 matchPathRule 统一解析归一化，
+    // 不再需要旧的「绝对+工作区相对双候选」workaround——传绝对路径 + pathCtx，
+    // matchPathRule 会把规则里的相对/前缀模式 resolve 到同一坐标系后比对。
+    const decision = checkRules(
+      denyOnly,
+      { toolName: "read", input: { file_path: absPath } },
+      this.buildPathRuleContext(),
+    );
+    return !!(decision && !decision.allowed);
   }
 
-  /** 异步初始化：加载设置文件中的规则 */
+  /**
+   * 异步初始化：从所有来源加载权限规则（P2-1：单一事实源 = RuleLoader）。
+   *
+   * 加载顺序与优先级：
+   * - 构造器传入的 `rules`（来自 cli.ts loadPermissionRules，B 加载器）仅作**启动占位**，
+   *   让 initRules 之前的权限检查有兜底；此处 loadAll 读到真实文件后，以 RuleLoader（A）为准。
+   *   为避免 B 的占位 projectSettings 与 A 读到的 projectSettings 重复，先清占位再 loadAll。
+   * - cliArg（--allow-tool/--deny-tool）与 flagSettings 从 config 接线（P2-1 补齐的接线缺口）。
+   */
   async initRules(): Promise<void> {
+    // 清除构造器 B 占位的 projectSettings，避免与 loadAll 读到的真实文件重复计数
+    this.ruleLoader.clearSource("projectSettings");
+
     await this.ruleLoader.loadAll();
-    // 同步到旧版 rules 字段（兼容）
+
+    // P2-1：接线 CLI 规则（cliArg 源）——此前 setCliArgRules 零调用者，--allow/deny-tool 从不生效
+    const cliAllow = (this.config as { cliAllowRules?: string[] }).cliAllowRules;
+    const cliDeny = (this.config as { cliDenyRules?: string[] }).cliDenyRules;
+    if ((cliAllow && cliAllow.length) || (cliDeny && cliDeny.length)) {
+      this.ruleLoader.setCliArgRules(cliAllow, cliDeny);
+    }
+
+    // 同步到旧版 rules 字段（兼容 checkRules 消费）
+    this.rules = this.ruleLoader.toPermissionRule();
+  }
+
+  /**
+   * 从 ruleLoader 重新同步旧版 rules 字段（P2-3）。
+   * 供运行时向 ruleLoader 增删规则（如 always-persist 的 addSessionRule）后，
+   * 让 checkRules 消费的 this.rules 立即反映最新合并结果。
+   */
+  refreshRulesFromLoader(): void {
     this.rules = this.ruleLoader.toPermissionRule();
   }
 
@@ -503,7 +591,7 @@ export class PermissionChecker implements Checker {
 
     // Step 5: ask 规则（工具级）
     if (this.rules) {
-      const askDecision = checkRules({ deny: [], allow: [], ask: this.rules.ask }, req);
+      const askDecision = checkRules({ deny: [], allow: [], ask: this.rules.ask }, req, this.buildPathRuleContext(req));
       if (askDecision && !askDecision.allowed && askDecision.needsConfirmation) {
         log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 需确认(ask规则: ${askDecision.reason})`);
         return { ...askDecision, decisionReason: { type: "rule", rule: askDecision.reason || "", behavior: "ask" } };
@@ -591,6 +679,15 @@ export class PermissionChecker implements Checker {
       if (FILE_TOOLS.has(req.toolName)) {
         log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(acceptEdits模式)`);
         return { allowed: true, decisionReason: { type: "mode", mode: "acceptEdits" } };
+      }
+      // P1-3：cwd 内的文件系统 bash 命令（mkdir/touch/rm/rmdir/mv/cp/sed）也自动放行。
+      // 危险命令层（Step 2）已在前拦截 rm -rf / 等，跨 cwd 的 mv/rm 由 cwd 路径校验挡下。
+      if (req.toolName === "bash") {
+        const command = (req.input as { command?: string })?.command ?? "";
+        if (command && this.canAutoAllowFsCommandInAcceptEdits(command)) {
+          log.info("PERMISSION", `bash(${command.slice(0, 80)}) → 允许(acceptEdits模式+cwd内fs命令)`);
+          return { allowed: true, decisionReason: { type: "mode", mode: "acceptEdits" } };
+        }
       }
     }
 
@@ -1043,10 +1140,11 @@ export class PermissionChecker implements Checker {
   private checkDenyRules(req: PermissionRequest): Decision | null {
     if (!this.rules) return null;
     const denyRules = { deny: this.rules.deny, allow: [], ask: [] };
+    const pathCtx = this.buildPathRuleContext(req);
 
-    // 非 bash：保持原整条匹配语义
+    // 非 bash：保持原整条匹配语义（文件类工具走路径前缀解析）
     if (req.toolName !== "bash") {
-      return checkRules(denyRules, req);
+      return checkRules(denyRules, req, pathCtx);
     }
 
     const command = (req.input as { command?: string })?.command ?? "";
@@ -1054,7 +1152,7 @@ export class PermissionChecker implements Checker {
 
     // 单命令（无 &&/||/;/| 复合）：等价于原逻辑，直接整条匹配
     if (subCommands.length <= 1) {
-      return checkRules(denyRules, req);
+      return checkRules(denyRules, req, pathCtx);
     }
 
     // 复合命令：逐子命令校验，任一子命令命中 deny 即整体拒绝（some(deny)）
@@ -1063,7 +1161,7 @@ export class PermissionChecker implements Checker {
         ...req,
         input: { ...(req.input as object), command: sub },
       };
-      const subDecision = checkRules(denyRules, subReq);
+      const subDecision = checkRules(denyRules, subReq, pathCtx);
       if (subDecision && !subDecision.allowed) {
         // 命中的 deny 规则针对的是子命令，reason 里带上原始命令上下文更可读
         return subDecision;
@@ -1091,10 +1189,11 @@ export class PermissionChecker implements Checker {
   private checkAllowRules(req: PermissionRequest): Decision | null {
     if (!this.rules) return null;
     const allowRules = { deny: [], allow: this.rules.allow, ask: [] };
+    const pathCtx = this.buildPathRuleContext(req);
 
-    // 非 bash：保持原整条匹配语义
+    // 非 bash：保持原整条匹配语义（文件类工具走路径前缀解析）
     if (req.toolName !== "bash") {
-      return checkRules(allowRules, req);
+      return checkRules(allowRules, req, pathCtx);
     }
 
     const command = (req.input as { command?: string })?.command ?? "";
@@ -1102,7 +1201,7 @@ export class PermissionChecker implements Checker {
 
     // 单命令（无 &&/||/;/| 复合）：等价于原逻辑，直接整条匹配
     if (subCommands.length <= 1) {
-      return checkRules(allowRules, req);
+      return checkRules(allowRules, req, pathCtx);
     }
 
     // 复合命令：逐子命令校验，全部命中 allow 才放行（every(allow)）
@@ -1111,7 +1210,7 @@ export class PermissionChecker implements Checker {
         ...req,
         input: { ...(req.input as object), command: sub },
       };
-      const subDecision = checkRules(allowRules, subReq);
+      const subDecision = checkRules(allowRules, subReq, pathCtx);
       if (!subDecision || !subDecision.allowed) {
         // 任一子命令不在 allow 覆盖内 → 整体不放行，落到后续 ask
         return null;
@@ -1176,7 +1275,8 @@ export class PermissionChecker implements Checker {
     // Plan Mode 专用工具放行
     if (PLAN_MODE_EXTRA_TOOLS.has(req.toolName)) {
       if (req.toolName === "sub_agent") {
-        const subType = (req.input as any)?.type;
+        // 字段提取与 rules.ts extractMatchValue 对齐（subagent_type 优先，兼容旧 type）
+        const subType = (req.input as any)?.subagent_type || (req.input as any)?.type;
         if (subType && subType !== "explore") {
           log.info("PERMISSION", `${req.toolName}(type=${subType}) → 拒绝(plan模式只允许explore子代理)`);
           return { allowed: false, reason: "计划模式下只允许 explore 类型的子代理" };

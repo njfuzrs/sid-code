@@ -20,6 +20,8 @@ import debug from "./debug/index.ts";
 import exportCmd from "./export/index.ts";
 import diff from "./diff/index.ts";
 import doctor from "./doctor/index.ts";
+import todos from "./todos/index.ts";
+import status from "./status/index.ts";
 
 export const BUILTIN_COMMANDS: UnifiedCommand[] = [
   compact,
@@ -33,4 +35,6 @@ export const BUILTIN_COMMANDS: UnifiedCommand[] = [
   exportCmd,
   diff,
   doctor,
+  todos,
+  status,
 ];

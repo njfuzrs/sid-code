@@ -90,6 +90,13 @@ describe("Config Validation", () => {
     expect(result.errors.some(e => e.path === "permissionMode")).toBe(true);
   });
 
+  test("P2-4: manual / auto 是合法权限模式", () => {
+    for (const mode of ["manual", "auto"]) {
+      const result = validateConfig({ ...baseConfig, permissionMode: mode });
+      expect(result.errors.some(e => e.path === "permissionMode")).toBe(false);
+    }
+  });
+
   test("empty model name fails validation", () => {
     const config = { ...baseConfig, model: "" };
     const result = validateConfig(config);

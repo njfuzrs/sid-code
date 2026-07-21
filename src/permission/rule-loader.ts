@@ -77,8 +77,11 @@ export class RuleLoader {
   async loadAll(): Promise<void> {
     const log = getLogger();
 
-    // 并行加载各来源
+    // 并行加载各文件来源。
+    // P2-1：新增 policySettings（企业策略，最高优先级、可信源）。
+    // 顺序不影响优先级（getAllRules 按 RULE_SOURCE_PRIORITY 统一排序），仅影响 I/O 并发。
     await Promise.all([
+      this.loadPolicyFile(),
       this.loadSettingsFile("userSettings", sidPaths.settings()),
       this.loadSettingsFile("projectSettings", join(this.workspacePath, ".sid-code", "settings.json")),
       this.loadSettingsFile("localSettings", join(this.workspacePath, ".sid-code", "settings.local.json")),
@@ -87,6 +90,60 @@ export class RuleLoader {
     this.invalidateCache();
     const total = this.getAllRules().length;
     log.info("RULE_LOADER", `加载完成，共 ${total} 条规则`);
+  }
+
+  /**
+   * 加载企业策略文件（P2-1）。first-exists-wins 遍历候选路径，取第一个存在的。
+   *
+   * 与普通 settings 的关键差异：
+   * - policySettings 是**可信源**，其 allow 规则**不走** DANGEROUS_SELF_AUTHORIZATION_PATTERNS 剥离
+   *   （企业管理员有权自我授权，projectSettings 才是不可信源）。
+   * - 优先级最高（RULE_SOURCE_PRIORITY.policySettings=7），且 checkRules 打分中 deny=1000 恒压 allow，
+   *   故 policy 的 deny 不会被任何下层 allow 覆盖。
+   * - 0o600 权限校验：非 600 仅告警不阻塞（对齐原 ManagedFileLoader 语义）。
+   */
+  private async loadPolicyFile(): Promise<void> {
+    const log = getLogger();
+
+    for (const filePath of sidPaths.managedPolicyCandidates()) {
+      if (!existsSync(filePath)) continue;
+
+      // 权限校验：企业策略文件应为 600（仅所有者可写），防篡改
+      try {
+        const { statSync } = await import("fs");
+        const mode = statSync(filePath).mode & 0o777;
+        if (mode !== 0o600) {
+          log.warn("RULE_LOADER", `企业策略文件 ${filePath} 权限不安全 (${mode.toString(8)})，建议设为 600`);
+        }
+      } catch {
+        /* 权限检查失败不阻塞加载 */
+      }
+
+      try {
+        const content = await Bun.file(filePath).text();
+        const settings: SettingsFile = JSON.parse(content);
+        if (!settings.permissions) return; // 命中候选文件即停（first-exists-wins），即使无 permissions
+        // 可信源：不做 filterUntrustedProjectRules 剥离
+        const rules = this.parsePermissions(settings.permissions, "policySettings");
+        this.sources.set("policySettings", rules);
+        log.info("RULE_LOADER", `policySettings: ${filePath} → ${rules.length} 条规则（企业策略，最高优先级）`);
+      } catch (err: any) {
+        log.warn("RULE_LOADER", `读取企业策略文件 ${filePath} 失败: ${err.message}`);
+      }
+      return; // first-exists-wins：命中第一个存在的候选就停
+    }
+  }
+
+  /**
+   * 设置 SDK 内联规则（flagSettings，如 --settings CLI 内存来源）。P2-1 新增接线点。
+   */
+  setFlagRules(perms?: SettingsPermissions): void {
+    if (!perms) return;
+    const rules = this.parsePermissions(perms, "flagSettings");
+    if (rules.length > 0) {
+      this.sources.set("flagSettings", rules);
+      this.invalidateCache();
+    }
   }
 
   /**

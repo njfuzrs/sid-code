@@ -1,9 +1,9 @@
 /**
  * 推理强度快捷切换面板（/effort 无参时打开）
  *
- * 选项固定（low/medium/high/max/auto），无外部数据，用轻量 Dialog + RadioButtonSelect。
+ * 选项固定（low/medium/high/xhigh/max/auto），无外部数据，用轻量 Dialog + RadioButtonSelect。
  * - 当前生效档位用 ● 标记（区别于光标指示的 ›）
- * - 每档用 ▁▃▅█ 柱状字形表达强度递进（元原则①：同族填充度递进）
+ * - 每档用 ▁▃▅▇█ 柱状字形表达强度递进（元原则①：同族填充度递进）
  * - 底部 hint 提示 -p 持久化
  */
 
@@ -18,6 +18,7 @@ import {
   EFFORT_LOW,
   EFFORT_MEDIUM,
   EFFORT_HIGH,
+  EFFORT_XHIGH,
   EFFORT_MAX,
   EFFORT_AUTO,
 } from "../constants/figures.ts";
@@ -48,6 +49,7 @@ const OPTIONS: EffortItem[] = [
   { value: "low", key: "low", glyph: EFFORT_LOW, label: "low", desc: "快速响应，跳过深度推理" },
   { value: "medium", key: "medium", glyph: EFFORT_MEDIUM, label: "medium", desc: "平衡模式" },
   { value: "high", key: "high", glyph: EFFORT_HIGH, label: "high", desc: "深度推理（多数模型默认）" },
+  { value: "xhigh", key: "xhigh", glyph: EFFORT_XHIGH, label: "xhigh", desc: "更深推理（介于 high 与 max）" },
   { value: "max", key: "max", glyph: EFFORT_MAX, label: "max", desc: "最大推理深度" },
   { value: "auto", key: "auto", glyph: EFFORT_AUTO, label: "auto", desc: "跟随模型默认" },
 ];

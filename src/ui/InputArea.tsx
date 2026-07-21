@@ -33,6 +33,7 @@ import { useReverseSearch } from "./hooks/useReverseSearch.ts";
 import { useInputHistoryStore } from "./hooks/useInputHistoryStore.ts";
 import { useShellCompletion } from "./hooks/useShellCompletion.ts";
 import { consumePendingRestore } from "./pending-input.ts";
+import { editInExternalEditor } from "./utils/external-editor.ts";
 import {
   registerPaste,
   shouldPlaceholder,
@@ -99,6 +100,7 @@ function renderFirstLineContent(lineText: string, promptLen: number): React.Reac
 
 export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0, onPermissionModeSwitch, onExitRequest }: InputAreaProps) {
   const lastSubmittedRef = useRef<string>("");
+  const externalEditingRef = useRef(false); // Ctrl+G 外部编辑防重入
   const log = getLogger();
   const prevLoadingRef = useRef(isLoading);
   const { stdout } = useStdout();
@@ -439,6 +441,25 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
       return true;
     }
 
+    // Ctrl+G 外部编辑器编辑 prompt（对标 cc）：把当前输入交给 $VISUAL/$EDITOR，
+    // 编辑保存退出后回填。异步 handoff（spawn 全屏编辑器），立即 return true 消费按键，
+    // 用 ref 防止编辑期间重复触发。
+    if (matchBinding(key)?.action === "input:externalEditor") {
+      if (externalEditingRef.current) return true;
+      externalEditingRef.current = true;
+      const current = tb.getText();
+      void editInExternalEditor(current)
+        .then((result) => {
+          if (result.ok) {
+            tb.setText(result.text);
+          } else if (result.error) {
+            log.warn("UI:INPUT", `外部编辑器: ${result.error}`);
+          }
+        })
+        .finally(() => { externalEditingRef.current = false; });
+      return true;
+    }
+
     // Shell 模式切换：! 在行首时进入 Shell 模式
     if (key.insertable && key.sequence === "!" && tb.isEmpty()) {
       setShellModeActive(true);
@@ -514,10 +535,11 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
     }
 
     // ── 普通键盘输入 ──
-    if (key.name === "enter" && !key.shift) { handleSubmit(); return true; }
-
-    // 多行输入：Shift+Enter 插入真正的换行
-    if (key.name === "enter" && key.shift) { tb.insert("\n"); return true; }
+    // 换行：Shift+Enter / Option(Alt)+Enter 都插换行（macOS 用户惯用 Option+Enter，
+    // 解析层已把 ESC+CR 识别为 alt+enter，此前误落提交分支）。
+    if (key.name === "enter" && (key.shift || key.alt)) { tb.insert("\n"); return true; }
+    // 提交：仅裸 Enter（无 shift/alt）
+    if (key.name === "enter" && !key.shift && !key.alt) { handleSubmit(); return true; }
 
     // 历史记录：
     // - shell 模式(类 REPL):光标在首行↑ / 末行↓ 时翻历史,否则在多行命令内移光标
@@ -551,12 +573,27 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
     if (key.name === "home") { tb.moveCursor("home"); return true; }
     if (key.name === "end") { tb.moveCursor("end"); return true; }
 
-    // Emacs 快捷键
+    // ── Emacs 光标/编辑键（Alt 词移 + Ctrl 字符移/删词/kill ring）──
+    // Alt+B / Alt+F：按词左右移（与 Alt+方向键等价的字母键，emacs 惯用）。
+    if (key.alt && key.name === "b") { tb.moveCursor("wordLeft"); return true; }
+    if (key.alt && key.name === "f") { tb.moveCursor("wordRight"); return true; }
+    // Alt+Y：yank-pop（仅紧邻 yank 后有效，循环取 kill ring 更早条目）。
+    if (key.alt && key.name === "y") { tb.yankPop(); return true; }
+
+    // Emacs Ctrl 快捷键
     if (key.ctrl) {
       if (key.name === "a") { tb.moveCursor("home"); return true; }
       if (key.name === "e") { tb.moveCursor("end"); return true; }
+      if (key.name === "f") { tb.moveCursor("right"); return true; }
+      if (key.name === "b") { tb.moveCursor("left"); return true; }
       if (key.name === "k") { tb.killLine(); return true; }
       if (key.name === "u") { tb.killToStart(); return true; }
+      if (key.name === "w") { tb.killWordBefore(); return true; }
+      if (key.name === "y") { tb.yank(); return true; }
+      // Ctrl+J：插入换行（通用换行键；解析层把裸 \n 归一为 name:'j',ctrl:true）。
+      if (key.name === "j") { tb.insert("\n"); return true; }
+      // Ctrl+H：部分终端把退格发为 ^H，显式归一为删除（对齐 cc）。
+      if (key.name === "h") { tb.deleteBackward(); return true; }
       if (key.name === "d") {
         // Ctrl+D：输入框为空 → 二次确认退出（终端 EOF 约定）；非空 → 删除光标后字符。
         if (tb.isEmpty()) {
@@ -574,6 +611,8 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
       return true;
     }
 
+    // 防静默吞键：未绑定的 Alt/Ctrl 字母组合（如 Alt+Z）不落到插入分支静默吞掉——
+    // 直接 return false 交还上层，避免"按了没反应"的隐蔽坏体验。
     return false;
   });
 

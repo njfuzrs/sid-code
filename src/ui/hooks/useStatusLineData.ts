@@ -57,15 +57,25 @@ export function derivePermission(permissionMode: string): {
         return theme.status.success;
     }
   })();
-  const display =
-    permissionMode === "dangerously-skip-permissions" ? "skip-perms" : permissionMode;
+  // P2-4：模式展示对齐 CC。default 展示为「⏸ Manual」（⏸ 徽章 = 手动逐条确认，
+  // 对齐 CC v2.1.200 default→Manual 改名 + PAUSE 徽章语义）。
+  const display = (() => {
+    switch (permissionMode) {
+      case "dangerously-skip-permissions":
+        return "skip-perms";
+      case "default":
+        return `${PAUSED_MARK} Manual`;
+      default:
+        return permissionMode;
+    }
+  })();
   return { display, color, isDanger };
 }
 
-/** 上下文百分比 → 语义色（≥90 红 / ≥70 黄 / 其余默认）。 */
+/** 上下文百分比 → 语义色（对齐 cc：≤60 灰 / 61-80 黄 / 81%+ 红）。 */
 export function deriveContextColor(contextPercent: number, defaultColor: string): string {
-  if (contextPercent >= 90) return theme.status.error;
-  if (contextPercent >= 70) return theme.status.warning;
+  if (contextPercent >= 81) return theme.status.error;
+  if (contextPercent >= 61) return theme.status.warning;
   return defaultColor;
 }
 
@@ -133,7 +143,7 @@ export function deriveCacheSavings(
  * - 显式档位 → 填充方块字形（▁▃▅█）+ 档位名；max 用品牌色点睛，其余用默认灰。
  */
 export function deriveEffort(
-  effortDisplay: { level: "low" | "medium" | "high" | "max"; isAuto: boolean } | null,
+  effortDisplay: { level: import("../../llm/effort.ts").EffortLevel; isAuto: boolean } | null,
   defaultColor: string,
 ): { glyph: string; text: string; color: string } | null {
   if (!effortDisplay) return null;
@@ -142,8 +152,8 @@ export function deriveEffort(
     // auto 态：空心点 ◌ 前缀 + 档位名。◌ 字形自解释「跟随默认」，不再写 (auto) 文字后缀（冗余）。
     return { glyph: EFFORT_AUTO, text: `${EFFORT_AUTO} ${level}`, color: defaultColor };
   }
-  // max 档用品牌强调色点睛（最高强度值得一眼可辨），其余档位用默认灰，保持克制。
-  const color = level === "max" ? theme.ui.active : defaultColor;
+  // 最高两档（xhigh/max）用品牌强调色点睛（最高强度值得一眼可辨），其余档位用默认灰，保持克制。
+  const color = level === "max" || level === "xhigh" ? theme.ui.active : defaultColor;
   return { glyph: EFFORT_GLYPHS[level], text: level, color };
 }
 

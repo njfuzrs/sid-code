@@ -25,7 +25,14 @@ export interface PermissionPromptRequest {
   toolInput: unknown;
   description?: string;
   reason?: string;
-  resolve: (result: "yes" | "no" | "always") => void;
+  /**
+   * 决策结果：
+   * - yes            允许本次
+   * - no             拒绝
+   * - always         本会话始终允许（sessionMemory）
+   * - always-persist 持久化到项目 settings（跨会话，P2-3；仅 Bash 工具提供此档）
+   */
+  resolve: (result: "yes" | "no" | "always" | "always-persist") => void;
 }
 
 /** 单个操作项：高亮按键 + 说明 */
@@ -52,6 +59,8 @@ export function PermissionPrompt({ request }: { request: PermissionPromptRequest
   // 危险时走标红 + 安全默认拒绝路径。其它工具维持常态确认。
   const command: string = typeof input?.command === "string" ? input.command : "";
   const isDangerous = command.length > 0 && isDestructiveCommand(command);
+  // P2-3：仅 Bash 工具提供「持久化到项目配置」档；危险命令不提供持久档（避免一键永久放行破坏性命令）。
+  const isBashTool = request.toolName === "bash" && !isDangerous;
 
   const accentColor = isDangerous ? theme.status.error : theme.status.warning;
   const title = isDangerous ? "危险操作 · 权限请求" : "权限请求";
@@ -78,6 +87,14 @@ export function PermissionPrompt({ request }: { request: PermissionPromptRequest
     if (lower === "n") {
       resolvedRef.current = true;
       request.resolve("no");
+      return true;
+    }
+    // P2-3：Bash 工具额外提供「A 持久化到项目配置」档（跨会话生效）。
+    // Shift+A 上报的 key.name 仍是 "a" 但带 shift 修饰；须先于裸 a 判定，否则被裸 a 截胡。
+    // 文件编辑类不提供持久档（对齐 CC「Edit always 仅会话」）。
+    if (isBashTool && lower === "a" && key.shift) {
+      resolvedRef.current = true;
+      request.resolve("always-persist");
       return true;
     }
     if (lower === "a") {
@@ -129,7 +146,10 @@ export function PermissionPrompt({ request }: { request: PermissionPromptRequest
       <Box marginTop={1} gap={2}>
         <ActionKey keyLabel="y" desc="允许" color={theme.status.success} />
         <ActionKey keyLabel="n" desc={isDangerous ? "拒绝（默认）" : "拒绝"} color={theme.status.error} />
-        <ActionKey keyLabel="a" desc="始终允许" color={theme.ui.active} />
+        <ActionKey keyLabel="a" desc={isBashTool ? "本会话始终允许" : "始终允许"} color={theme.ui.active} />
+        {isBashTool && (
+          <ActionKey keyLabel="A" desc="持久化到项目配置" color={theme.ui.active} />
+        )}
       </Box>
     </Box>
   );

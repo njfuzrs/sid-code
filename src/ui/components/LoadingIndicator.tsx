@@ -72,7 +72,7 @@ export const LoadingIndicator: React.FC<LoadingIndicatorProps> = ({
     if (streamingState === StreamingState.Idle) return;
     const timer = setInterval(() => {
       setFrame(f => (f + 1) % SPINNER_FRAMES.length);
-    }, 80);
+    }, 50); // 对齐 cc 的 ~50ms 帧率（此前 80ms 略显迟滞）
     return () => clearInterval(timer);
   }, [streamingState, a11y]);
 

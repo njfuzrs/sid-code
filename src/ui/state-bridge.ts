@@ -62,6 +62,12 @@ export class StateBridge extends EventEmitter {
         if (t.progressSummary) {
           info.progressSummary = t.progressSummary;
         }
+        // 子代理 verbose 详情（Ctrl+O expandLevel≥1 展开）：透传最近工具活动序列。
+        if (t.progress?.recentActivities?.length) {
+          info.recentActivities = t.progress.recentActivities
+            .map((a) => a.activityDescription || a.toolName)
+            .filter((s): s is string => !!s);
+        }
       }
       if (isShellTask(t)) {
         info.command = t.command;

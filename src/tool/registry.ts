@@ -282,6 +282,36 @@ export class Registry {
     }
   }
 
+  /**
+   * P2-6 --tools：就地裁剪内置工具集，仅保留白名单内的工具（名称不区分大小写匹配）。
+   *
+   * 与 allowedTools（权限层预授权）语义不同：这是**工具集裁剪**——未列出的内置工具直接不可见、
+   * 模型无法调用。MCP 工具（mcp__ 前缀）不受影响，由各 MCP server 决定其可用性。
+   * 名称匹配同时接受工具原名与别名（经 get() 解析）。
+   *
+   * @returns 被移除的工具名列表（供调用方日志/诊断）。
+   */
+  retainBuiltInByNames(names: string[]): string[] {
+    // 归一化白名单：小写、trim、去空。同时把别名解析到真实工具名。
+    const wanted = new Set<string>();
+    for (const raw of names) {
+      const n = raw.trim().toLowerCase();
+      if (!n) continue;
+      wanted.add(n);
+    }
+    const removed: string[] = [];
+    for (const name of [...this.builtInTools.keys()]) {
+      const lower = name.toLowerCase();
+      // 命中白名单（原名）或其别名映射到的名字在白名单内 → 保留。
+      const keep = wanted.has(lower);
+      if (!keep) {
+        this.builtInTools.delete(name);
+        removed.push(name);
+      }
+    }
+    return removed;
+  }
+
   /** 已注册工具数量 */
   size(): number {
     return this.builtInTools.size + this.mcpTools.size;

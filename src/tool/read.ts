@@ -140,6 +140,10 @@ function hasBinaryExtension(filePath: string): boolean {
  * G6：图片扩展名集合。这些文件此前被当二进制拒读，现改为以 vision 内容块返回，
  * 让支持视觉的模型能直接看图（截图、图表、UI 稿等）。
  */
+// vision 支持的图片扩展名。范围严格对齐 Anthropic Messages API 官方支持的
+// 四种格式（image/png、image/jpeg、image/gif、image/webp）。
+// TIFF/BMP：Anthropic vision 明确不支持，加入只会触发 API 400（invalid media type），
+// 故不纳入——如需读这类图片，应先本地转码为上述格式（P3-4 结论：不支持则明确不支持）。
 const IMAGE_EXTENSIONS = new Set([
   ".png", ".jpg", ".jpeg", ".gif", ".webp",
 ]);

@@ -8,6 +8,7 @@ import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResu
 import { getLogger } from "../debug/logger.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
+import { isPreapprovedHost } from "./web-fetch-preapproved.ts";
 
 const FETCH_TIMEOUT_MS = 10000;
 const MAX_CONTENT_LENGTH = 100000; // 从 50000 提升到 100000
@@ -272,8 +273,26 @@ export class WebFetchTool implements Tool {
     return true;
   }
 
-  /** 只读工具：无权限意见，交给权限系统决定 */
-  async checkPermissions(_input: unknown, _context: ToolUseContext): Promise<PermissionResult> {
+  /**
+   * 权限检查（对齐 CC WebFetchTool.checkPermissions，方案 A）：
+   * - 预授权代码类域名（PREAPPROVED_HOSTS）→ 直接放行（免确认）
+   * - 其它 → passthrough：交给权限系统按 WebFetch(domain:x) 规则匹配，
+   *   无匹配规则时落到默认 ask（web_fetch 已从 checker READ_ONLY_TOOLS 移除，不再无条件放行）。
+   *
+   * 契约：网络出站需人类把关，默认 ask 而非默认放行。domain 粒度授权由用户规则控制。
+   */
+  async checkPermissions(input: unknown, _context: ToolUseContext): Promise<PermissionResult> {
+    const url: string = (input as { url?: string })?.url ?? "";
+    if (url) {
+      try {
+        const parsed = new URL(url);
+        if (isPreapprovedHost(parsed.hostname, parsed.pathname)) {
+          return { behavior: "allow", updatedInput: input };
+        }
+      } catch {
+        /* URL 解析失败：交给 passthrough / execute 阶段的 SSRF 校验处理 */
+      }
+    }
     return { behavior: "passthrough" };
   }
 

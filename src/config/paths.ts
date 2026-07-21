@@ -38,6 +38,22 @@ export function sidHomePath(...segments: string[]): string {
 }
 
 /**
+ * 返回 CC 兼容配置根目录（~/.claude），用于读取从 Claude Code 迁移的扩展。
+ * 优先级：CLAUDE_CONFIG_DIR 环境变量 > ~/.claude
+ *
+ * 对标 CC 的 CLAUDE_CONFIG_DIR。仅用于**兼容读取**（如 ~/.claude/commands、
+ * ~/.claude/skills），sid-code 自身产物一律写 getSidHome()。
+ * 每次调用重新读 env，便于测试隔离。
+ */
+export function getClaudeHome(): string {
+  const override = process.env.CLAUDE_CONFIG_DIR;
+  if (override && override.trim() !== "") {
+    return override;
+  }
+  return join(homedir(), ".claude");
+}
+
+/**
  * 判断某个绝对路径是否落在配置根目录（getSidHome()）之内。
  *
  * 用于「项目级路径派生」的防御：当进程 cwd 恰为 ~/.sid-code 时，
@@ -67,6 +83,13 @@ export const sidPaths = {
   settings: () => sidHomePath("settings.json"),
   appConfig: () => sidHomePath("app.json"),
   managedSettings: () => sidHomePath("managed-settings.json"),
+  /**
+   * 企业策略文件候选路径（P2-1，first-exists-wins，优先级从高到低）：
+   * 1. /etc/sid-code/managed-settings.json —— 系统级企业管控（对齐 CC 系统 managed 路径，最高）
+   * 2. ~/.sid-code/managed-settings.json    —— 用户级 MDM/回退（原 ManagedFileLoader 路径，兼容既有）
+   * 统一后废弃历史上冲突的 /etc/sid-code/policy.json 与 /etc/sid-code/policy.yaml 两个路径。
+   */
+  managedPolicyCandidates: (): string[] => ["/etc/sid-code/managed-settings.json", sidHomePath("managed-settings.json")],
   globalClaudeMd: () => sidHomePath("CLAUDE.md"),
   gitignore: () => sidHomePath(".gitignore"),
   lspConfig: () => sidHomePath("lsp.json"),

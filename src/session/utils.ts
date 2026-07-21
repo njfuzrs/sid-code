@@ -303,7 +303,11 @@ async function scanSessionDir(
           startTime: data.createdAt,
           lastUpdated: data.updatedAt,
           messageCount: data.messages.length,
-          displayName: data.summary || firstUserMessage,
+          // P2-5：用户经 --name/-n 指定的显示名（session_name 元数据）优先，其次摘要，最后首条用户消息。
+          displayName:
+            (typeof data.metadata?.session_name === "string" && data.metadata.session_name.trim()
+              ? data.metadata.session_name
+              : undefined) || data.summary || firstUserMessage,
           firstUserMessage,
           isCurrentSession,
           index: 0, // 排序后设置

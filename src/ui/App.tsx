@@ -11,6 +11,8 @@
 
 import React, { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import useApp from "../ink/hooks/use-app.js";
+import inkInstances from "../ink/instances.js";
+import { killAllRunningTasks, hasRunningTasks } from "../task/index.ts";
 import { KeypressProvider, useKeypress, KeypressPriority, type Key } from "./contexts/KeypressContext.tsx";
 import { KeybindingProvider, useKeybindings } from "./contexts/KeybindingContext.tsx";
 import { AccessibilityProvider } from "./accessibility/AccessibilityContext.tsx";
@@ -18,7 +20,7 @@ import { ScrollProvider, useScrollState } from "./contexts/ScrollProvider.tsx";
 import { TerminalProvider, useTerminalDimensions } from "./contexts/TerminalContext.tsx";
 import { MouseProvider, enableMouseEvents, disableMouseEvents } from "./contexts/MouseContext.tsx";
 import { OverflowProvider } from "./contexts/OverflowContext.tsx";
-import { UIStateProvider, useUIActions, useUIState } from "./contexts/UIStateContext.tsx";
+import { UIStateProvider, useUIActions, useUIState, TransientMessageType } from "./contexts/UIStateContext.tsx";
 import { StreamingProvider } from "./contexts/StreamingContext.tsx";
 import { ConfigProvider, type ConfigContextValue } from "./contexts/ConfigContext.tsx";
 import { SessionProvider, type SessionContextValue } from "./contexts/SessionContext.tsx";
@@ -93,8 +95,16 @@ export interface TUICallbacks {
   unifiedRegistry?: import("../command/unified-registry.ts").UnifiedCommandRegistry;
   /** Shift+Tab 权限模式循环切换（切 config.permissionMode + 刷状态栏 + 瞬时提示） */
   onCyclePermissionMode?: () => void;
+  /**
+   * Ctrl+B 把当前前台执行转入后台（对标 cc）。返回一段结果提示（展示给用户），
+   * 无可转移的前台任务时返回 null。当前实现受限于主循环 detach 能力（见 app.ts），
+   * 完整的"任意工具执行热转后台"为二期；本期仅在空闲/无支持场景给引导提示。
+   */
+  onBackgroundCurrent?: () => string | null;
   /** /export 面板选择后执行导出 */
   onExportConversation?: (target: "clipboard" | "file", format: "md" | "json" | "both") => void;
+  /** /context 面板：读取当前上下文分类 token 拆解（稳定引用，调用时实时计算） */
+  getContextBreakdown?: () => import("../context/manager.ts").ContextTokenBreakdown;
 }
 
 /** 权限请求信息 */
@@ -102,7 +112,7 @@ export interface PermissionRequestInfo {
   toolName: string;
   toolInput: unknown;
   description: string;
-  resolve: (answer: "yes" | "no" | "always") => void;
+  resolve: (answer: "yes" | "no" | "always" | "always-persist") => void;
   /**
    * 与该工具相关的不可达规则（对标 cc Unreachable Rules）。
    * 每条含被阴影规则、覆盖它的规则、严重度(blocked/shadowed)。可选——无阴影时省略。
@@ -310,6 +320,8 @@ export interface TaskDisplayInfo {
   lastActivity?: string;
   /** 周期性进度摘要（M5 opt-in） */
   progressSummary?: string;
+  /** 最近若干次工具活动（子代理 verbose 详情用；Ctrl+O expandLevel≥1 时展开）。 */
+  recentActivities?: string[];
   /** 任务起始时间戳（ms）。运行中由前端本地 tick 实时计算耗时，不再依赖快照。 */
   startTime: number;
   /** 任务结束时间戳（ms）。终态后耗时定格到此值，避免回看时持续增长。 */
@@ -355,7 +367,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
   streamingStateRef.current = streamingState;
   const log = getLogger();
   const { getScrollState } = useScrollState();
-  const { toggleRenderMarkdown, cycleExpandLevel, setShowIsExpandableHint, setCtrlCPressedOnce } = useUIActions();
+  const { toggleRenderMarkdown, cycleExpandLevel, setShowIsExpandableHint, setCtrlCPressedOnce, toggleTaskPanel, showTransientMessage } = useUIActions();
   const { ctrlCPressedOnce, expandLevel } = useUIState();
   const { matchBinding } = useKeybindings();
 
@@ -560,6 +572,91 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     log.info("UI:APP", `Alt+T：切换扩展思考 → ${next}`);
     bridge.update({ statusMessage: next === "on" ? "已开启扩展思考" : "已关闭扩展思考" });
     setTimeout(() => bridge.update({ statusMessage: "" }), 2000);
+    return true;
+  });
+
+  // Alt+P 切换模型（对标 cc keybindings meta+p）：打开 ModelDialog，不清空当前输入框。
+  // 关键差异：只切运行时 model（经 dialog 选择走 handleModelSelect），绝不动 text-buffer——
+  // cc 的 "不清 prompt" 语义正解。若已有其它对话框打开则不抢占。
+  useKeypress(KeypressPriority.High, (key: Key) => {
+    const b = matchBinding(key);
+    if (b?.action !== "app:toggleModel") return false;
+    if (state.activeDialog) return false; // 已有对话框时不抢占
+    log.info("UI:APP", "Alt+P：打开模型切换对话框（保留输入）");
+    bridge.update({ activeDialog: "model" });
+    return true;
+  });
+
+  // Ctrl+L 清屏（保留历史）（对标 cc / 传统 readline ctrl+l）：
+  // 调 ink 实例的 forceRedraw()——擦当前可视区 + 全量重绘当前帧，scrollback 与
+  // 会话上下文（ctxMgr/historyItems）都不动。两种 buffer 模式 forceRedraw 内部已分别处理
+  // （alt 走 resetFramesForAltScreen；主屏走 repaint + prevFrameContaminated），此处无需分支。
+  useKeypress(KeypressPriority.High, (key: Key) => {
+    const b = matchBinding(key);
+    if (b?.action !== "app:clearScreen") return false;
+    log.info("UI:APP", "Ctrl+L：清屏（保留历史与上下文）");
+    inkInstances.get(process.stdout)?.forceRedraw();
+    return true;
+  });
+
+  // Ctrl+T 切换后台任务面板显隐（对标 cc）：仅隐藏 UI，后台任务照常运行。
+  useKeypress(KeypressPriority.High, (key: Key) => {
+    const b = matchBinding(key);
+    if (b?.action !== "app:toggleTaskPanel") return false;
+    log.info("UI:APP", "Ctrl+T：切换后台任务面板显隐");
+    toggleTaskPanel();
+    return true;
+  });
+
+  // Ctrl+F 终止所有后台代理（对标 cc killAll）：3s 双击确认，防误触。
+  // 首击提示「再按一次终止全部后台任务（3s）」，窗口内二击才真正 killAll；
+  // 无后台任务时 no-op（不提示、不消费按键的确认态）。窗口过期需重新双击。
+  const killAllConfirmRef = useRef(false);
+  const killAllTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useKeypress(KeypressPriority.High, (key: Key) => {
+    const b = matchBinding(key);
+    if (b?.action !== "app:killAllTasks") return false;
+    // 无后台任务：放行给 InputArea 的 Ctrl+F 光标右移（emacs 传统）。
+    // 有后台任务：本键升格为"终止全部后台任务"，双击确认。这种上下文分层
+    // 与 cc 一致——全局任务键只在真有任务时抢占，否则不打断输入框编辑。
+    if (!hasRunningTasks()) return false;
+    if (killAllConfirmRef.current) {
+      // 二次确认：真正终止
+      if (killAllTimerRef.current) { clearTimeout(killAllTimerRef.current); killAllTimerRef.current = null; }
+      killAllConfirmRef.current = false;
+      const n = killAllRunningTasks();
+      log.info("UI:APP", `Ctrl+F：已终止 ${n} 个后台任务`);
+      showTransientMessage(`已终止 ${n} 个后台任务`, TransientMessageType.Info);
+      return true;
+    }
+    // 首击：提示 + 开 3s 窗口
+    killAllConfirmRef.current = true;
+    showTransientMessage("再按一次 Ctrl+F 终止全部后台任务（3s 内）", TransientMessageType.Warning);
+    if (killAllTimerRef.current) clearTimeout(killAllTimerRef.current);
+    killAllTimerRef.current = setTimeout(() => {
+      killAllConfirmRef.current = false;
+      killAllTimerRef.current = null;
+    }, 3000);
+    return true;
+  });
+  useEffect(() => () => {
+    if (killAllTimerRef.current) clearTimeout(killAllTimerRef.current);
+  }, []);
+
+  // Ctrl+B 把当前前台执行转入后台（对标 cc）。tmux 下 Ctrl+B 是 prefix，可能吞首击——
+  // 帮助文案已注明冲突。转移逻辑交 app.ts 的 onBackgroundCurrent（受主循环 detach 能力限制，
+  // 完整"任意工具热转后台"为二期）；回调给出的提示文案透传给用户。
+  useKeypress(KeypressPriority.High, (key: Key) => {
+    const b = matchBinding(key);
+    if (b?.action !== "app:backgroundTask") return false;
+    // 上下文分层（同 Ctrl+F）：仅在有前台执行（忙）时本键升格为"转后台"；
+    // 空闲时放行给 InputArea 的 Ctrl+B 光标左移，不打断输入框编辑。
+    const busy = state.isLoading || state.isStreaming || state.isToolExecuting;
+    if (!busy) return false;
+    const msg = callbacks.onBackgroundCurrent?.();
+    if (msg) {
+      showTransientMessage(msg, TransientMessageType.Info);
+    }
     return true;
   });
 

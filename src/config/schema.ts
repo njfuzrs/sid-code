@@ -30,14 +30,18 @@ export interface ValidationResult {
 /** 有效的 provider 值 */
 const VALID_PROVIDERS = new Set(["anthropic", "openai", "ollama"]);
 
-/** 有效的权限模式 */
+/** 有效的权限模式
+ *  - "manual"：CC 别名，等价 "default"（在 config.ts 归一层映射为 default）
+ *  - "auto"：分类器自动裁决模式，可经 --permission-mode auto 显式进入（需分类器可用） */
 const VALID_PERMISSION_MODES = new Set([
   "default",
+  "manual",
   "always-allow",
   "deny-write",
   "acceptEdits",
   "plan",
   "dontAsk",
+  "auto",
   "dangerously-skip-permissions",
 ]);
 

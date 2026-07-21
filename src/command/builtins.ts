@@ -371,7 +371,7 @@ export class CompactCommand implements Command {
 /** /clear 命令 */
 export class ClearCommand implements Command {
   name() { return "clear"; }
-  aliases() { return []; }
+  aliases() { return ["reset", "new"]; }
   description() { return "清空对话历史"; }
 
   async execute(_args: string, _ctx: AppContext): Promise<CommandResult> {
@@ -382,7 +382,7 @@ export class ClearCommand implements Command {
 /** /config 命令 */
 export class ConfigCommand implements Command {
   name() { return "config"; }
-  aliases() { return []; }
+  aliases() { return ["settings"]; }
   description() { return "显示当前配置"; }
 
   async execute(_args: string, ctx: AppContext): Promise<CommandResult> {

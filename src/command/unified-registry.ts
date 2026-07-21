@@ -169,14 +169,35 @@ export class UnifiedCommandRegistry {
     this.cache.clear();
   }
 
-  /** 按数组顺序去重（保留首次出现的，名称 + 别名都参与去重） */
+  /**
+   * 按数组顺序去重（保留首次出现的，名称 + 别名都参与去重）。
+   *
+   * P0-3 别名冲突检测：区分两种"占用"——
+   *   1. 命令名 dedupe（同名命令，后者被优先级更高的前者覆盖）——正常，debug 级。
+   *   2. 别名碰撞（某命令的别名已被别的命令名/别名占用）——静默劫持风险，warn 级 +
+   *      **确定性保留先注册者**（丢弃后写别名，get() 落到先注册命令，不再 last-write-wins）。
+   * 记录首个占用者，便于告警定位。
+   */
   private dedupe(commands: UnifiedCommand[]): UnifiedCommand[] {
-    const seen = new Set<string>();
+    const log = getLogger();
+    // token → 首个占用它的命令名（用于告警时指认"被谁占用"）
+    const owner = new Map<string, string>();
     const result: UnifiedCommand[] = [];
     for (const cmd of commands) {
-      if (seen.has(cmd.name)) continue;
-      seen.add(cmd.name);
-      for (const alias of cmd.aliases ?? []) seen.add(alias);
+      if (owner.has(cmd.name)) continue; // 同名命令：优先级更高的已在，丢弃本条
+      owner.set(cmd.name, cmd.name);
+      for (const alias of cmd.aliases ?? []) {
+        const existing = owner.get(alias);
+        if (existing && existing !== cmd.name) {
+          // 别名碰撞：该别名已被 existing 占用 → 保留先注册者，告警提示本命令该别名被忽略
+          log.warn(
+            "COMMAND",
+            `别名冲突: /${alias} 已被 "${existing}" 占用，"${cmd.name}" 的该别名被忽略`,
+          );
+          continue;
+        }
+        if (!existing) owner.set(alias, cmd.name);
+      }
       result.push(cmd);
     }
     return result;

@@ -4,7 +4,6 @@
  * 配置文件位置：~/.sid-code/settings.json + ~/.sid-code/app.json（唯一真相源）
  */
 
-import { parse as parseYAML } from "yaml";
 import { join } from "path";
 import { existsSync, mkdirSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
@@ -139,7 +138,7 @@ export interface Config {
    * 推理强度档位初值（/effort 持久化端，settings.json effortLevel）。
    * 缺省 = auto（跟随模型默认，不显式下发）。运行时态在 App.runtimeEffort，本字段仅作启动初值。
    */
-  effortLevel?: "low" | "medium" | "high" | "max";
+  effortLevel?: "low" | "medium" | "high" | "xhigh" | "max";
   /**
    * 思考开关初值（/think 持久化端，settings.json thinkingEnabled）。
    * 缺省 = auto（跟随模型/provider 默认）。运行时态在 App.runtimeThinking，本字段仅作启动初值。
@@ -163,6 +162,9 @@ export interface Config {
   allowedTools: string[];
   disallowedTools: string[];
   yesMode: boolean;
+  /** P2-1：CLI 权限规则（cliArg 源，规则语法如 "Bash(curl *)"）。--allow-tool / --deny-tool。 */
+  cliAllowRules?: string[];
+  cliDenyRules?: string[];
 
   // 目录白名单/黑名单
   allowedDirectories: string[];
@@ -172,6 +174,21 @@ export interface Config {
   sessionId: string;
   continue: boolean;
   resume: string;
+  /**
+   * 恢复会话时分叉出新 id 而非复用原 id（P0-2 --fork-session）。
+   * 默认 undefined/false：复用被恢复会话的 id，续接同一会话。
+   * true：生成新 id（或用 --session-id 指定），把源会话历史拷贝到新会话，parentUuid 指向源，源不动。
+   */
+  forkSession?: boolean;
+  /**
+   * 禁用会话落盘（P1-2 --no-session-persistence）。
+   * 默认 undefined/false：正常持久化。true：本次会话不写持久化存储（SDK/一次性任务用）。
+   */
+  noSessionPersistence?: boolean;
+  /**
+   * 会话显示名（P2-5 --name/-n）。写入会话元数据 title，便于 --list-sessions 辨识。
+   */
+  sessionName?: string;
 
   // 无头模式配置
   print: boolean;
@@ -238,6 +255,76 @@ export interface Config {
   // 插件配置
   /** 会话级插件目录（--plugin-dir，不持久化，视为 inline 来源） */
   pluginDirs?: string[];
+
+  // 功能开关
+  /**
+   * 禁用所有斜杠命令（P1-8 --disable-slash-commands）。
+   * 默认 undefined/false：正常注册。true：跳过命令注册，headless/受限场景关闭 / 命令入口。
+   */
+  disableSlashCommands?: boolean;
+
+  // 配置源控制（P1-5 / P1-6）
+  /**
+   * 额外的 settings 源（--settings <file-or-json>）：文件路径或内联 JSON 字符串。
+   * 优先级高于常规 user/project/local 三源，作为最后一层覆盖。运行时字段，不落盘。
+   */
+  extraSettings?: string;
+  /**
+   * 限定加载哪些 settings 源（--setting-sources <sources>，逗号分隔）。
+   * 取值子集：user / project / local。设置后仅加载列出的源，其余跳过。运行时字段，不落盘。
+   */
+  settingSources?: ("user" | "project" | "local")[];
+
+  // MCP 配置源（P1-7）
+  /**
+   * 额外 MCP 配置源（--mcp-config <configs...>）：文件路径或内联 JSON 字符串数组。
+   * 与 settings.json 的 mcpServers 合并。运行时字段，不落盘。
+   */
+  mcpConfigSources?: string[];
+  /**
+   * 严格 MCP 配置模式（--strict-mcp-config）：仅使用 --mcp-config 指定的服务器，
+   * 忽略 settings.json / .mcp.json 中的 mcpServers。默认 false。运行时字段，不落盘。
+   */
+  strictMcpConfig?: boolean;
+
+  // Beta 头（P2-3）
+  /**
+   * 额外的 anthropic-beta 头值（--betas <betas...>）：透传到 Anthropic 请求头。
+   * 运行时字段，不落盘。
+   */
+  betas?: string[];
+
+  // 工具白名单替换（P2-6）
+  /**
+   * 用此名单**替换**整个内置工具集（--tools <tools...>）。
+   * 与 allowedTools（权限层预授权）语义不同：这是**工具集裁剪**，未列出的工具不注册。
+   * 空/undefined：注册全部内置工具（现状）。运行时字段，不落盘。
+   */
+  toolsWhitelist?: string[];
+
+  // 子代理注入（P1-10）
+  /**
+   * CLI 注入的子代理定义（--agents <json>）：{ name: { description, prompt, tools?, model? } }。
+   * 注册进聚合 registry，使 sub_agent 可发现。运行时字段，不落盘。
+   */
+  injectedAgents?: Record<string, { description?: string; prompt: string; tools?: string[]; model?: string }>;
+  /**
+   * 整会话使用的顶层子代理人格名（--agent <name>）。
+   * 指向 injectedAgents 或已注册 agent 的名字。运行时字段，不落盘。
+   */
+  topLevelAgent?: string;
+
+  // SDK 输入/输出格式（P2-1 / P2-2）
+  /**
+   * 输入格式（--input-format <fmt>）：text（默认）/ stream-json。
+   * stream-json：从 stdin 读取流式 JSON 消息。运行时字段，不落盘。
+   */
+  inputFormat?: "text" | "stream-json";
+  /**
+   * stream-json 输出模式下是否包含部分消息增量（--include-partial-messages）。
+   * 默认 false。运行时字段，不落盘。
+   */
+  includePartialMessages?: boolean;
 
   // Checkpoint 配置
   checkpoint?: CheckpointConfig;
@@ -1077,6 +1164,12 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
     }
   }
 
+  // P2-4：CC 的 "manual" 是 sid "default" 的别名，归一到内部规范名
+  // （对齐 CC v2.1.200 default→Manual 改名；sid 内部仍用 default 作规范键）。
+  if (config.permissionMode === "manual") {
+    config.permissionMode = "default";
+  }
+
   // skipPermissions / yesMode 同步到 permissionMode（状态栏显示用）
   if (config.skipPermissions) {
     config.permissionMode = "dangerously-skip-permissions";
@@ -1200,50 +1293,20 @@ export async function ensureConfigDir(): Promise<string> {
  */
 export async function loadPermissionRules(): Promise<import("../permission/types.ts").PermissionRule> {
   const log = getLogger();
-  const { mergeRules } = await import("../permission/rules.ts");
 
-  const layers: string[] = [
-    "/etc/sid-code/policy.yaml",
-    join(getSidHome(), "settings.json"),
-    join(process.cwd(), ".sid-code/permissions.yaml"),
-    join(process.cwd(), ".sid-code/permissions.local.yaml"),
-  ];
+  // P2-1：两套加载器合一——以 RuleLoader 为唯一事实源。
+  // 本函数（历史 B 加载器）保留为薄封装，仅供 cli.ts 构造 checker 时提供**启动占位**规则；
+  // checker.initRules() 会再跑一次 RuleLoader.loadAll 并以其为准（并清除占位避免重复）。
+  // 这样企业策略/user/project/local 各源只有 RuleLoader 一处解析逻辑，消除双读隐患。
+  const { RuleLoader } = await import("../permission/rule-loader.ts");
+  const loader = new RuleLoader(process.cwd());
 
-  const allRules: import("../permission/types.ts").PermissionRule[] = [];
-
-  for (const filePath of layers) {
-    if (!existsSync(filePath)) continue;
-
-    try {
-      const content = await Bun.file(filePath).text();
-      // settings.json 为 JSON，其余层为 YAML
-      const parsed = filePath.endsWith(".json")
-        ? JSON.parse(content)
-        : parseYAML(content);
-      const permissions = parsed?.permissions || parsed?.permission_rules;
-      if (!permissions) continue;
-
-      const rule: import("../permission/types.ts").PermissionRule = {
-        allow: permissions.allow || [],
-        deny: permissions.deny || [],
-        ask: permissions.ask || [],
-      };
-
-      // 同时提取目录白名单/黑名单（如果有）
-      allRules.push(rule);
-      log.debug("CONFIG", `加载权限规则: ${filePath}`, {
-        allow: rule.allow?.length || 0,
-        deny: rule.deny?.length || 0,
-        ask: rule.ask?.length || 0,
-      });
-    } catch (err) {
-      log.warn("CONFIG", `读取权限规则失败: ${filePath}`, err);
-    }
-  }
-
-  if (allRules.length === 0) {
+  try {
+    await loader.loadAll();
+  } catch (err) {
+    log.warn("CONFIG", `加载权限规则失败(RuleLoader.loadAll)`, err);
     return { allow: [], deny: [], ask: [] };
   }
 
-  return mergeRules(...allRules);
+  return loader.toPermissionRule();
 }

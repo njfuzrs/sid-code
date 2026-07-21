@@ -166,6 +166,19 @@ const WorktreeSettingsSchema = lazySchema(() =>
   }).passthrough(),
 );
 
+/** 可自定义状态栏 Schema（对标 claude-code statusLine）
+ *  type=command：spawn 用户脚本，会话数据经 stdin 传 JSON，脚本 stdout 即状态栏内容。 */
+const StatusLineSchema = lazySchema(() =>
+  z.object({
+    /** 目前仅支持 command 类型（跑外部脚本） */
+    type: z.enum(["command"]).optional(),
+    /** 要执行的 shell 命令/脚本路径。空则回退内置状态栏。 */
+    command: z.string().optional(),
+    /** 左侧留白列数（默认 0） */
+    padding: z.number().min(0).optional(),
+  }).passthrough(),
+);
+
 /** 完整 Settings Schema */
 export const SettingsSchema = lazySchema(() =>
   z
@@ -231,7 +244,7 @@ export const SettingsSchema = lazySchema(() =>
       classifierModel: z.string().optional(),
 
       // 推理强度 / 思考开关旋钮（/effort、/think 持久化端；缺省 = auto 跟随模型默认）
-      effortLevel: z.enum(["low", "medium", "high", "max"]).optional(),
+      effortLevel: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
       thinkingEnabled: z.boolean().optional(),
 
       // 目录控制
@@ -240,6 +253,9 @@ export const SettingsSchema = lazySchema(() =>
 
       // Worktree 隔离配置
       worktree: WorktreeSettingsSchema().optional(),
+
+      // 可自定义状态栏（/statusline 持久化端；缺省 = 内置聚合状态栏）
+      statusLine: StatusLineSchema().optional(),
 
       // 网络超时/重试配置（direct/gateway 场景适配）
       network: NetworkTimeoutsSchema().optional(),

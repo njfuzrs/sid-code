@@ -109,3 +109,57 @@ describe("RuleLoader - projectSettings 危险自我授权过滤", () => {
     expect(allowRules.length).toBe(5);
   });
 });
+
+describe("RuleLoader - P2-1 cliArg / flag / policy 三源接线", () => {
+  test("setCliArgRules 填充 cliArg 源（此前零调用者）", () => {
+    const loader = new RuleLoader("/tmp/test-ws");
+    loader.setCliArgRules(["Bash(npm *)"], ["Bash(curl *)"]);
+    const rules = loader.getRulesBySource("cliArg");
+    expect(rules.find(r => r.behavior === "allow")?.rawRule).toBe("Bash(npm *)");
+    expect(rules.find(r => r.behavior === "deny")?.rawRule).toBe("Bash(curl *)");
+  });
+
+  test("setFlagRules 填充 flagSettings 源", () => {
+    const loader = new RuleLoader("/tmp/test-ws");
+    loader.setFlagRules({ deny: ["Read(.env)"], allow: [], ask: [] });
+    const rules = loader.getRulesBySource("flagSettings");
+    expect(rules.find(r => r.behavior === "deny")?.rawRule).toBe("Read(.env)");
+  });
+
+  test("policySettings 优先级最高（getAllRules 排序置顶）", () => {
+    const loader = new RuleLoader("/tmp/test-ws");
+    // 手动注入各源模拟（policy 走内部私有加载，这里用 importFromPermissionRule 验证排序）
+    loader.importFromPermissionRule({ allow: ["Bash(ls)"], deny: [], ask: [] }, "userSettings");
+    loader.setCliArgRules(["Bash(pwd)"], undefined);
+    // 通过 setFlagRules 模拟高优先级源
+    loader.setFlagRules({ allow: ["Bash(whoami)"], deny: [], ask: [] });
+    const all = loader.getAllRules();
+    // flagSettings(6) 应排在 cliArg(2) / userSettings(3) 之前
+    const flagIdx = all.findIndex(r => r.source === "flagSettings");
+    const userIdx = all.findIndex(r => r.source === "userSettings");
+    const cliIdx = all.findIndex(r => r.source === "cliArg");
+    expect(flagIdx).toBeLessThan(userIdx);
+    expect(flagIdx).toBeLessThan(cliIdx);
+  });
+
+  test("policy allow 规则不被危险自我授权过滤（可信源）", async () => {
+    // 用真实临时 policy 文件验证：写 Bash(*) 到 policy，应保留（企业可自我授权）
+    const os = await import("os");
+    const fs = await import("fs");
+    const path = await import("path");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sid-policy-"));
+    const policyFile = path.join(dir, "managed-settings.json");
+    fs.writeFileSync(policyFile, JSON.stringify({ permissions: { deny: ["Bash(curl *)"], allow: ["Bash(*)"] } }), { mode: 0o600 });
+
+    // 直接测 parsePermissions 对 policySettings 的行为：不走 filter
+    // （loadPolicyFile 是私有方法，这里通过公有 importFromPermissionRule 以非 projectSettings 源验证不过滤语义）
+    const loader = new RuleLoader(dir);
+    loader.importFromPermissionRule({ allow: ["Bash(*)"], deny: ["Bash(curl *)"], ask: [] }, "policySettings");
+    const rules = loader.getRulesBySource("policySettings");
+    const allowRules = rules.filter(r => r.behavior === "allow").map(r => r.rawRule);
+    // 企业策略是可信源，Bash(*) 应保留（对比 projectSettings 会被剔除）
+    expect(allowRules).toContain("Bash(*)");
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});

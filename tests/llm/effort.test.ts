@@ -22,14 +22,14 @@ function baseParams(model: string): SendParams {
 }
 
 describe("isEffortLevel / EFFORT_LEVELS", () => {
-  test("4 档标度", () => {
-    expect(EFFORT_LEVELS).toEqual(["low", "medium", "high", "max"]);
+  test("5 档标度（含 xhigh，对齐 claude-code）", () => {
+    expect(EFFORT_LEVELS).toEqual(["low", "medium", "high", "xhigh", "max"]);
   });
   test("合法/非法判定", () => {
     expect(isEffortLevel("high")).toBe(true);
     expect(isEffortLevel("max")).toBe(true);
+    expect(isEffortLevel("xhigh")).toBe(true);
     expect(isEffortLevel("auto")).toBe(false);
-    expect(isEffortLevel("xhigh")).toBe(false);
   });
 });
 

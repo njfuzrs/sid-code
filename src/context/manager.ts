@@ -76,6 +76,20 @@ export interface InvokedSkill {
   invokedAt: number;
 }
 
+/** P0-2：上下文分类 token 拆解结果（供 /context 可视化） */
+export interface ContextTokenBreakdown {
+  /** 各分类 token 明细 */
+  categories: Array<{ key: string; label: string; tokens: number }>;
+  /** 各分类合计（≈ estimateTokens） */
+  total: number;
+  /** 上下文窗口上限 */
+  maxTokens: number;
+  /** 自动压缩阈值对应的 token 数（maxTokens × compactThreshold） */
+  compactThresholdTokens: number;
+  /** 是否已被真实 usage 校准（未校准时为纯启发式估算） */
+  calibrated: boolean;
+}
+
 /** 压缩级别 */
 export type CompactionLevel =
   | "none"       // 不需要压缩
@@ -926,6 +940,81 @@ export class Manager {
   /** 获取上下文窗口最大 token 数 */
   getMaxTokens(): number {
     return this.maxTokens;
+  }
+
+  /** 获取压缩阈值比例（默认 0.7）——/context 展示"距自动压缩阈值"用 */
+  getCompactThreshold(): number {
+    return this.compactThreshold;
+  }
+
+  /**
+   * P0-2：按类别拆分当前上下文 token 用量（供 /context 可视化）。
+   *
+   * 分类口径与 rawEstimateTokens 完全一致（同一套启发式），保证 total 与 estimateTokens
+   * 对得上。已收到真实 usage 校准后，各分类同比乘 calibrationFactor 收敛到真实口径。
+   *
+   * 分类：
+   * - systemPrompt：系统提示词（含注入的 CLAUDE.md/记忆等，都进 systemPrompt 字符串）
+   * - toolSchemas ：工具定义 schema 开销
+   * - userText    ：user 消息文本（含压缩摘要——摘要以 user 消息注入）
+   * - assistantText：assistant 消息文本
+   * - toolUse     ：tool_use 块（工具调用入参 JSON）
+   * - toolResult  ：tool_result 块（工具返回内容）
+   * - overhead    ：每条消息的结构开销
+   */
+  getTokenBreakdown(toolCount: number = 0): ContextTokenBreakdown {
+    let systemPrompt = estimateTextTokens(this.systemPrompt);
+    let toolSchemas = this.toolSchemaTokens ?? toolCount * 80;
+    let userText = 0;
+    let assistantText = 0;
+    let toolUse = 0;
+    let toolResult = 0;
+    let overhead = 0;
+
+    for (const msg of this.messages) {
+      overhead += 4;
+      for (const block of msg.content) {
+        if (block.type === "text") {
+          const t = estimateTextTokens(block.text);
+          if (msg.role === "assistant") assistantText += t;
+          else userText += t;
+        } else if (block.type === "tool_use") {
+          toolUse += estimateTextTokens(JSON.stringify(block.input)) + 20;
+        } else if (block.type === "tool_result") {
+          toolResult += estimateTextTokens(block.content) + 10;
+        }
+      }
+    }
+
+    // 校准：与 estimateTokens 一致，收到真实 usage 后各分类同比缩放
+    const factor = this.calibrated ? this.calibrationFactor : 1;
+    const scale = (n: number) => Math.round(n * factor);
+    systemPrompt = scale(systemPrompt);
+    toolSchemas = scale(toolSchemas);
+    userText = scale(userText);
+    assistantText = scale(assistantText);
+    toolUse = scale(toolUse);
+    toolResult = scale(toolResult);
+    overhead = scale(overhead);
+
+    const categories = [
+      { key: "systemPrompt", label: "系统提示词", tokens: systemPrompt },
+      { key: "toolSchemas", label: "工具定义", tokens: toolSchemas },
+      { key: "userText", label: "用户消息", tokens: userText },
+      { key: "assistantText", label: "助手回复", tokens: assistantText },
+      { key: "toolUse", label: "工具调用", tokens: toolUse },
+      { key: "toolResult", label: "工具结果", tokens: toolResult },
+      { key: "overhead", label: "结构开销", tokens: overhead },
+    ];
+
+    const total = categories.reduce((sum, c) => sum + c.tokens, 0);
+    return {
+      categories,
+      total,
+      maxTokens: this.maxTokens,
+      compactThresholdTokens: Math.round(this.maxTokens * this.compactThreshold),
+      calibrated: this.calibrated,
+    };
   }
 
   /** 是否需要压缩 */

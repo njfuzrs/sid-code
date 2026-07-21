@@ -99,7 +99,7 @@ describe("键盘循环跳过 plan + auto 的逻辑", () => {
 
 describe("getModeName", () => {
   it("各模式均有中文名称", () => {
-    expect(getModeName("default")).toBe("默认");
+    expect(getModeName("default")).toBe("Manual（手动）");
     expect(getModeName("always-allow")).toBe("全部允许");
     expect(getModeName("auto")).toBe("自动模式");
     expect(getModeName("acceptEdits")).toBe("自动接受编辑");

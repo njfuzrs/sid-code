@@ -143,8 +143,10 @@ export class IDEIntegration {
  * 2. 显式开启自动连接
  * 3. 在 IDE 内置终端中运行
  */
-export function shouldAutoConnect(): boolean {
+export function shouldAutoConnect(configAutoConnect?: boolean): boolean {
   return !!(
+    // --ide flag / settings.json ide.autoConnect 显式开启（与 env 等价，A-4 子集）
+    configAutoConnect ||
     process.env.SID_CODE_SSE_PORT ||
     process.env.SID_CODE_AUTO_CONNECT_IDE === "true" ||
     isSupportedTerminal()

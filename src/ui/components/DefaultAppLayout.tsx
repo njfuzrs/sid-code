@@ -20,6 +20,7 @@ import { Notifications, type StartupWarning } from "./Notifications.tsx";
 import { RetryStatus } from "./RetryStatus.tsx";
 import { ErrorPanel } from "./ErrorPanel.tsx";
 import { TodoPanel } from "./TodoPanel.tsx";
+import { useUIState } from "../contexts/UIStateContext.tsx";
 import { ToastDisplay } from "./ToastDisplay.tsx";
 import { ExitWarning } from "./ExitWarning.tsx";
 import { EmptyLogo } from "./EmptyLogo.tsx";
@@ -176,6 +177,7 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
 }) => {
   const rootRef = useRef<DOMElement>(null);
   useFlickerDetector(rootRef, rows);
+  const { taskPanelHidden } = useUIState();
 
   // ST8：流式↔滚动协调。粘底状态来自 MainContent 的 VirtualizedList；
   // 流式期间用户滚离底部 → paused，显示「跟随已暂停」提示。
@@ -233,7 +235,7 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
         <Box flexDirection="column" gap={1}>
           <CopyModeWarning enabled={copyModeEnabled} />
           <Notifications startupWarnings={startupWarnings} />
-          <TodoPanel todos={todos} tasks={tasks} termWidth={termWidth} />
+          <TodoPanel todos={todos} tasks={tasks} termWidth={termWidth} tasksHidden={taskPanelHidden} />
           <ToastDisplay />
 
           {/* CM3/CM4：LLM 重试/限流提示 */}

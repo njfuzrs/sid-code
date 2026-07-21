@@ -109,7 +109,8 @@ export type DialogType =
   | "agents"
   | "commands"
   | "help"
-  | "export";
+  | "export"
+  | "context";
 
 /** 命令执行结果类型 */
 export type CommandResultKind =

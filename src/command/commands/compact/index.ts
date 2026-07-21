@@ -9,8 +9,8 @@ import type { UnifiedCommand } from "../../types.ts";
 const compact: UnifiedCommand = {
   type: "local",
   name: "compact",
-  description: "压缩对话历史（可选 <比例|下标> 只压前半段）",
-  argumentHint: "[比例|下标]",
+  description: "压缩对话历史（无参全量 / 数字只压前半段 / 文本 focus 保留重点）",
+  argumentHint: "[比例|下标|focus 指令]",
   source: "builtin",
   load: () => import("./compact.ts").then((m) => m.default),
 };

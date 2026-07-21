@@ -25,12 +25,35 @@ import { lookupCatalog } from "./model-params-catalog.ts";
 // 1. 统一内部标度（与协议无关）
 // ─────────────────────────────────────────────────────────────
 
-/** 统一推理强度档位（用户面对的永远是这 4 档 + auto） */
-export const EFFORT_LEVELS = ["low", "medium", "high", "max"] as const;
+/** 统一推理强度档位（用户面对的永远是这 5 档 + auto，对齐 claude-code low/medium/high/xhigh/max） */
+export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
 export type EffortLevel = (typeof EFFORT_LEVELS)[number];
 
 /** undefined = auto（跟随模型默认，不显式下发 effort 参数） */
 export type EffortSetting = EffortLevel | undefined;
+
+/**
+ * 线格式档位（各 provider 的 reasoning_effort / output_config.effort 实际认可的值）。
+ * 统一档位含 xhigh，但没有任何 provider 的线格式认 "xhigh"——它必须在 applier 里钳到本四档之一。
+ * 这个类型让钳制结果与线格式字段（SendParams.reasoningEffort / outputConfig.effort）严格对齐。
+ */
+type WireEffort = "low" | "medium" | "high" | "max";
+
+/**
+ * 把统一档位钳到「支持 max 的线格式」（DeepSeek/GLM/Anthropic-adaptive 用）：
+ * xhigh → max（视为最高档），其余原样。
+ */
+function clampToMaxWire(effort: EffortLevel): WireEffort {
+  return effort === "xhigh" ? "max" : effort;
+}
+
+/**
+ * 把统一档位钳到「无 max 的线格式」（o-series/Grok 用）：
+ * max 与 xhigh 均 → high，其余原样。
+ */
+function clampToHighWire(effort: EffortLevel): WireEffort {
+  return effort === "max" || effort === "xhigh" ? "high" : effort;
+}
 
 /** 思考开关三态。undefined = auto（跟随模型/provider 默认） */
 export type ThinkingSetting = "on" | "off" | undefined;
@@ -49,6 +72,7 @@ const ANTHROPIC_EFFORT_BUDGET: Record<EffortLevel, number> = {
   low: 2_000,
   medium: 10_000,
   high: 20_000,
+  xhigh: 32_000,
   max: 50_000,
 };
 
@@ -102,8 +126,9 @@ function applyDeepSeekOpenAI(params: SendParams, effort: EffortSetting, thinking
   // budgetTokens 在 DeepSeek OpenAI 端点无对应字段，置 0；强度走 reasoningEffort。
   params.thinking = { enabled: thinking, budgetTokens: 0 };
   // 思考关闭时不下发 effort（与 openai.ts 的 thinkingDisabled 规避一致，避冲突）。
+  // DeepSeek 仅认 high/max：xhigh 与 max 同视为 max，low/medium 视为 high。
   if (thinking && effort !== undefined) {
-    params.reasoningEffort = effort === "max" ? "max" : "high";
+    params.reasoningEffort = clampToMaxWire(effort) === "max" ? "max" : "high";
   }
 }
 
@@ -115,7 +140,7 @@ function applyDeepSeekOpenAI(params: SendParams, effort: EffortSetting, thinking
 function applyDeepSeekAnthropic(params: SendParams, effort: EffortSetting, thinking: boolean): void {
   params.thinking = { enabled: thinking, budgetTokens: 0 };
   if (thinking && effort !== undefined) {
-    params.outputConfig = { effort: effort === "max" ? "max" : "high" };
+    params.outputConfig = { effort: clampToMaxWire(effort) === "max" ? "max" : "high" };
   }
 }
 
@@ -145,7 +170,9 @@ function applyAnthropicNative(params: SendParams, effort: EffortSetting, thinkin
     }
 
     // auto（effort=undefined）→ 走模型默认（Opus 4.8 默认 high）
-    const level: EffortLevel = effort ?? "high";
+    // Anthropic adaptive 线格式官方档位为 low/medium/high/max，不含 xhigh：
+    // xhigh 钳到 max，避免未知档位触发 400。
+    const level: WireEffort = clampToMaxWire(effort ?? "high");
     // 标记为 adaptive 模式：anthropic.ts 据此下发 {type:"adaptive"} 而非 {type:"enabled"}
     params.thinking = { enabled: true, budgetTokens: 0 };
     params.outputConfig = { effort: level, thinkingType: "adaptive" };
@@ -168,7 +195,8 @@ function applyAnthropicNative(params: SendParams, effort: EffortSetting, thinkin
  */
 function applyOSeries(params: SendParams, effort: EffortSetting, _thinking: boolean): void {
   if (effort !== undefined) {
-    params.reasoningEffort = effort === "max" ? "high" : effort;
+    // o-series 仅 low/medium/high，无 max：max 与 xhigh 均钳到 high。
+    params.reasoningEffort = clampToHighWire(effort);
   }
 }
 
@@ -187,8 +215,9 @@ function applyNoop(_params: SendParams, _effort: EffortSetting, _thinking: boole
 function applyGLMOpenAI(params: SendParams, effort: EffortSetting, thinking: boolean): void {
   params.thinking = { enabled: thinking, budgetTokens: 0 };
   // 思考关闭时不下发 effort（与 DeepSeek 一致，避免与 disabled 冲突）。
+  // GLM 线格式仅认 low/medium/high/max，不认 xhigh：xhigh 钳到 max（GLM 支持的最高档）。
   if (thinking && effort !== undefined) {
-    params.reasoningEffort = effort;
+    params.reasoningEffort = clampToMaxWire(effort);
   }
 }
 
@@ -200,7 +229,8 @@ function applyGLMOpenAI(params: SendParams, effort: EffortSetting, thinking: boo
  */
 function applyGrokOpenAI(params: SendParams, effort: EffortSetting, _thinking: boolean): void {
   if (effort !== undefined) {
-    params.reasoningEffort = effort === "max" ? "high" : effort;
+    // Grok 无 max：max 与 xhigh 均钳到 high。
+    params.reasoningEffort = clampToHighWire(effort);
   }
 }
 

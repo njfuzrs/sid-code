@@ -30,6 +30,7 @@ import type { TaskDisplayInfo } from "../App.tsx";
 import { theme } from "../semantic-colors.ts";
 import { stringWidth } from "../../ink/stringWidth.js";
 import { useIsAccessibilityEnabled } from "../accessibility/AccessibilityContext.tsx";
+import { useExpandLevel } from "../contexts/UIStateContext.tsx";
 import { formatLargeNumber } from "../utils/format-number.ts";
 import { formatDuration } from "../utils/format-duration.ts";
 import {
@@ -53,6 +54,8 @@ interface TodoPanelProps {
   termWidth: number;
   /** 最大显示行数，超出则截断 */
   maxDisplay?: number;
+  /** Ctrl+T 隐藏后台任务面板（仅隐藏 UI，任务照常运行）。默认 false=显示。 */
+  tasksHidden?: boolean;
 }
 
 /** 截断文本到指定显示宽度（CJK 安全：按 stringWidth 列宽累计，非码点数） */
@@ -150,6 +153,10 @@ const TaskRow = React.memo(function TaskRow({
   const isFailed = task.status === "failed";
   const isKilled = task.status === "killed";
   const a11y = useIsAccessibilityEnabled();
+  // P2-4：Ctrl+O verbose 覆盖子代理详情。expandLevel≥1 时展开最近工具活动序列，
+  // =0 折叠为单行 activityLine（对齐 cc verbose 语义：Ctrl+O 统管子代理详略）。
+  const expandLevel = useExpandLevel();
+  const verbose = expandLevel >= 1;
 
   // 运行中订阅共享时钟（a11y 关动画 → 不订阅）。250ms 重渲一次：
   // 旋转字形每帧推进一个象限(平滑转动)，耗时秒数也随之实时刷新。
@@ -232,12 +239,21 @@ const TaskRow = React.memo(function TaskRow({
         </Box>
         <Text color={theme.text.secondary} dimColor>{statsText}</Text>
       </Box>
-      {activityLine && (
+      {/* verbose（Ctrl+O expandLevel≥1）且有工具活动序列：逐行展开最近活动。
+          否则折叠为单行 activityLine。 */}
+      {verbose && task.recentActivities && task.recentActivities.length > 0 ? (
+        task.recentActivities.map((act, i) => (
+          <Box key={i} flexDirection="row" paddingLeft={2}>
+            <Text color={theme.text.secondary} dimColor>{`${TREE_BRANCH} `}</Text>
+            <Text color={theme.text.secondary} dimColor>{truncate(act, maxContentLen - 6)}</Text>
+          </Box>
+        ))
+      ) : activityLine ? (
         <Box flexDirection="row" paddingLeft={2}>
           <Text color={theme.text.secondary} dimColor>{`${TREE_BRANCH} `}</Text>
           <Text color={theme.text.secondary} dimColor>{truncate(activityLine, maxContentLen - 6)}</Text>
         </Box>
-      )}
+      ) : null}
     </Box>
   );
 });
@@ -247,9 +263,11 @@ export const TodoPanel = React.memo(function TodoPanel({
   tasks,
   termWidth,
   maxDisplay = 8,
+  tasksHidden = false,
 }: TodoPanelProps) {
   const hasTodos = todos && todos.length > 0;
-  const hasTasks = tasks && tasks.length > 0;
+  // Ctrl+T 隐藏后台任务面板：任务仍在跑，只是不占屏。
+  const hasTasks = !tasksHidden && tasks && tasks.length > 0;
   if (!hasTodos && !hasTasks) return null;
 
   const compactMode = termWidth < 60 || maxDisplay === 0;

@@ -46,10 +46,11 @@ describe("LY1 — derivePermission", () => {
   test("deny-write 也是危险态", () => {
     expect(derivePermission("deny-write").isDanger).toBe(true);
   });
-  test("默认 → success 色，非危险态", () => {
+  test("默认 → success 色，非危险态，展示 ⏸ Manual 徽章（P2-4）", () => {
     const r = derivePermission("default");
     expect(r.color).toBe(theme.status.success);
     expect(r.isDanger).toBe(false);
+    expect(r.display).toBe("⏸ Manual");
   });
   test("plan → 非危险态", () => {
     expect(derivePermission("plan").isDanger).toBe(false);
@@ -57,10 +58,16 @@ describe("LY1 — derivePermission", () => {
 });
 
 describe("LY1 — deriveContextColor", () => {
-  test("≥90 红 / ≥70 黄 / 其余默认", () => {
+  test("对齐 cc：≤60 默认 / 61-80 黄 / 81%+ 红", () => {
     const def = "x";
+    // 81%+ 红
+    expect(deriveContextColor(81, def)).toBe(theme.status.error);
     expect(deriveContextColor(95, def)).toBe(theme.status.error);
-    expect(deriveContextColor(75, def)).toBe(theme.status.warning);
+    // 61-80 黄
+    expect(deriveContextColor(61, def)).toBe(theme.status.warning);
+    expect(deriveContextColor(80, def)).toBe(theme.status.warning);
+    // ≤60 默认
+    expect(deriveContextColor(60, def)).toBe(def);
     expect(deriveContextColor(50, def)).toBe(def);
   });
 });

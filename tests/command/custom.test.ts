@@ -43,6 +43,25 @@ describe("CustomCommand", () => {
     expect(result.prompt).toBe("请回答: 什么是 TypeScript");
   });
 
+  test("$ARGUMENTS 字面量替换（CC 迁移兼容）", async () => {
+    const cmd = new CustomCommand("ask", "提问", "请回答: $ARGUMENTS");
+    const result = await cmd.execute("什么是 TypeScript", {} as any);
+    expect(result.kind).toBe("submit_prompt");
+    expect(result.prompt).toBe("请回答: 什么是 TypeScript");
+  });
+
+  test("$ARGUMENTS 与 $1 混用（\\b 边界不误伤）", async () => {
+    const cmd = new CustomCommand("t", "", "全部=$ARGUMENTS 第一个=$1");
+    const result = await cmd.execute("alpha beta", {} as any);
+    expect(result.prompt).toBe("全部=alpha beta 第一个=alpha");
+  });
+
+  test("$ARGUMENTS 空参数替换为空", async () => {
+    const cmd = new CustomCommand("t", "", "内容:[$ARGUMENTS]");
+    const result = await cmd.execute("", {} as any);
+    expect(result.prompt).toBe("内容:[]");
+  });
+
   test("缺少的参数替换为空字符串", async () => {
     const cmd = new CustomCommand("test", "", "参数1=$1 参数2=$2");
     const result = await cmd.execute("只有一个", {} as any);
