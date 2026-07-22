@@ -15,6 +15,8 @@ import type { Provider } from "../llm/provider.ts";
 import type { Message, ContentBlock } from "../llm/types.ts";
 import { getLogger } from "../debug/logger.ts";
 import { recordSideCall } from "../trace/side-call-sink.ts";
+import { SIDE_CALL_NO_THINK } from "../llm/side-call-timeout.ts";
+import { SIDE_CALL_TIMEOUT_REASON } from "../llm/errors.ts";
 
 /** 风险等级 */
 export type RiskLevel = "none" | "low" | "medium" | "high" | "critical";
@@ -146,7 +148,8 @@ export class ToolClassifier {
 
     try {
       const abortCtl = new AbortController();
-      const timer = setTimeout(() => abortCtl.abort(), timeoutMs);
+      // H10：超时用带 reason 的 abort，与主路径 reason 白名单口径统一（详见 errors.ts）。
+      const timer = setTimeout(() => abortCtl.abort(SIDE_CALL_TIMEOUT_REASON), timeoutMs);
       const signal = req.signal
         ? AbortSignal.any([req.signal, abortCtl.signal])
         : abortCtl.signal;
@@ -167,13 +170,16 @@ export class ToolClassifier {
       const model = this.config.model || "";
       const maxTokens = this.config.maxTokens ?? DEFAULT_MAX_TOKENS;
       const system = SYSTEM_PROMPT;
+      // H5：工具分类是「出个 {safe,risk} JSON」的分类任务，关思考。主模型为思考模型时不关会让
+      // 每次权限判定都触发完整思考——非流式分类常因此超时（provider 已计费、客户端拿不到响应）。
+      const sendParams = { model, messages, system, maxTokens, thinking: SIDE_CALL_NO_THINK };
 
       let text = "";
 
       // 优先非流式
       if (typeof this.provider!.sendMessageNonStreaming === "function") {
         const resp = await this.provider!.sendMessageNonStreaming(
-          { model, messages, system, maxTokens },
+          sendParams,
           signal,
         );
         clearTimeout(timer);
@@ -195,8 +201,8 @@ export class ToolClassifier {
           .join("");
       } else {
         // 流式累积兜底
-        for await (const ev of this.provider!.sendMessageStream({ model, messages, system, maxTokens }, signal)) {
-          if (signal.aborted) throw new Error("Request aborted");
+        for await (const ev of this.provider!.sendMessageStream(sendParams, signal)) {
+          if (signal.aborted) throw new Error(String((signal as any).reason ?? SIDE_CALL_TIMEOUT_REASON)); // H10
           if (ev.type === "content_block_delta" && ev.delta.type === "text_delta") {
             text += ev.delta.text;
           }

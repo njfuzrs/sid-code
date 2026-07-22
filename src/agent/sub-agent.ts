@@ -5,7 +5,8 @@
  */
 
 import type { Provider } from "../llm/provider.ts";
-import type { ContentBlock, Usage } from "../llm/types.ts";
+import type { ContentBlock, Usage, SendParams } from "../llm/types.ts";
+import { SIDE_CALL_NO_THINK } from "../llm/side-call-timeout.ts";
 import type { ProviderRegistry } from "../llm/registry.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
 import { SidechainWriter } from "../session/sidechain.ts";
@@ -999,14 +1000,26 @@ export class SubAgent {
 
       // M4(Dynamic Workflows): effort → provider reasoningEffort（仅 high|max 两档）。
       // low/medium/high → "high"；xhigh/max → "max"（对齐 SendParams.reasoningEffort 契约）。
-      const sendParamsExtra =
+      //
+      // H8：子代理 thinking 收口。此前 sendParamsExtra 只在显式传 effort 时给 reasoningEffort，
+      // 从不给 thinking 开关——子代理用思考模型时全程沿用服务端默认（enabled），思考不可控，
+      // 与主循环「thinking 是受控旋钮」的口径分裂（主循环能关，子代理关不掉），对 explore/
+      // summarize 这类只读调研子代理成本与延迟双放大。
+      //
+      // 收口规则：thinking 显式跟随 effort——
+      //   • 显式指定 effort（task.effort 非空）→ 视为「要思考」，开 thinking + 下发 reasoningEffort；
+      //   • 未指定 effort → 关 thinking（SIDE_CALL_NO_THINK），子代理默认不思考。
+      // 显式下发 enabled:false 对不支持思考开关的模型是 no-op（anthropic 忽略；openai.ts 仅对
+      // DeepSeek/GLM 下发 thinking:{type:disabled}），不会引发 400，安全。
+      const sendParamsExtra: Partial<SendParams> =
         task.effort !== undefined
           ? {
+              thinking: { enabled: true, budgetTokens: 0 },
               reasoningEffort: (task.effort === "xhigh" || task.effort === "max"
                 ? "max"
                 : "high") as "high" | "max",
             }
-          : undefined;
+          : { thinking: SIDE_CALL_NO_THINK };
 
       const loopResult = await runAgentLoop({
         provider: activeProvider,
@@ -1017,6 +1030,9 @@ export class SubAgent {
         signal: mergedSignal,
         loopDetector,
         sendParamsExtra,
+        // H9：透传共享的 availability（与主 fallback 引擎同一实例），子代理 terminal 类错误
+        // 跨路径拉黑。registry 缺省（旧测试）时为 undefined，runAgentLoop 内做空值保护。
+        availability: this.registry?.availability,
         hookSystem: this.hookSystem,
         permissionChecker: this.permissionChecker ?? undefined,
         onBeforeTurn: (turn) => {

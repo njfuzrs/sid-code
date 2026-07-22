@@ -20,7 +20,8 @@ import type { Provider } from "../../llm/provider.ts";
 import { getLogger } from "../../debug/index.ts";
 import { estimateTextTokens } from "../../context/token.ts";
 import { recordSideCall } from "../../trace/side-call-sink.ts";
-import { withSideCallDeadline } from "../../llm/side-call-timeout.ts";
+import { withSideCallDeadline, SIDE_CALL_NO_THINK } from "../../llm/side-call-timeout.ts";
+import { SIDE_CALL_TIMEOUT_REASON } from "../../llm/errors.ts";
 import { createStreamLifecycle, LIFECYCLE_PRESETS } from "../../llm/stream-lifecycle.ts";
 import { resolveSideCallTimeouts } from "../../config/network-profile.ts";
 
@@ -139,6 +140,8 @@ async function summarizeSegment(
           messages: [{ role: "user", content: [{ type: "text", text: user }] }],
           system,
           maxTokens: 1500,
+          // H5：分段摘要是压缩任务，关思考（同 auto-compact）。
+          thinking: SIDE_CALL_NO_THINK,
         },
         signal,
       );
@@ -160,8 +163,9 @@ async function summarizeSegment(
       });
       for await (const event of lifecycle.guard(stream)) {
         // A7 纵深防御：上下文折叠 side-call 检查 signal
+        // H10：抛出携带 abort reason 的错误，与主路径 reason 白名单口径一致。
         if (signal.aborted) {
-          throw new Error("Request aborted");
+          throw new Error(String((signal as any).reason ?? SIDE_CALL_TIMEOUT_REASON));
         }
         if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
           s += event.delta.text;

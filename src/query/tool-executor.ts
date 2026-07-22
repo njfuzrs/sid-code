@@ -220,8 +220,10 @@ export interface ToolExecutorDeps {
   checkpointSessionId?: string;
   /** 获取 AbortSignal */
   getAbortSignal: () => AbortSignal | undefined;
-  /** 请求用户确认（TUI 回调或 headless 自动决策） */
-  requestUserConfirmation: (desc: string, permReq: PermissionRequest, toolName: string, toolInput: unknown) => Promise<boolean>;
+  /** 请求用户确认（TUI 回调或 headless 自动决策）。
+   *  signal（H7）：传入本轮 AbortSignal，弹窗期间被 abort（心跳/看门狗/turn_hard/用户取消）时
+   *  解除弹窗（按"拒绝"闭合），避免孤儿弹窗与重试后的 executeTools 形成双状态机打架。 */
+  requestUserConfirmation: (desc: string, permReq: PermissionRequest, toolName: string, toolInput: unknown, signal?: AbortSignal) => Promise<boolean>;
   /**
    * Plan Mode 状态转换处理。
    *
@@ -688,7 +690,8 @@ export async function resolveToolPermission(
             }
           : undefined,
         userDecision: (req, resolve) => {
-          void deps.requestUserConfirmation(desc, permReq, block.name, block.input).then((confirmed) => {
+          // H7：透传本轮 signal，弹窗期间被 abort 时回调侧解除弹窗（按拒绝闭合），杜绝孤儿弹窗。
+          void deps.requestUserConfirmation(desc, permReq, block.name, block.input, deps.getAbortSignal()).then((confirmed) => {
             if (!resolve.isResolved()) {
               resolve.resolve({ allowed: confirmed, reason: confirmed ? "用户批准" : "用户拒绝" });
             }

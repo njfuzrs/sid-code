@@ -1088,32 +1088,72 @@ export async function* queryLoop(
       // 无需新写 yield done/return,且保留重试机会。
       // 超时阈值可经 deps 注入覆盖（默认 10 分钟），便于单测用短值触发。
       const MAX_TURN_DURATION_MS = deps.maxTurnDurationMs ?? netTimeouts.maxTurnDurationMs;
-      let turnTimer: ReturnType<typeof setTimeout> | null = null;
+
+      // ─── 人机输入闸门配套状态（turn_hard 与 watchdog 共享）───
+      // H6 根治：turn_hard 此前是一次性 setTimeout，回调体内不查 isAwaitingHumanInput()，
+      // 用户在 fallback / 抢跑弹窗前离开、超过 30min 未作答时，硬超时照 fire → abortThisTurn
+      //（"turn-timeout"）→ 级联 abort composedSignal → 弹窗按 cancelled 解除 → 终止本轮，
+      // 与紧邻的 watchdog（已有 gate + 等待补偿）口径分裂。
+      // 修复：把 turn_hard 从「一次性 setTimeout」改为「周期 setInterval 检查」，与 watchdog 同构——
+      // 等人输入的时段整体从「已耗时」里剔除，只有真正的非等待业务耗时累计达 30min 才 fire。
+      // 两个计时器共享同一套等待累计变量，避免各自维护导致重复扣除或状态漂移。
+      let humanInputPausedAt: number | null = null;  // 当前等待段起点（null=未在等待）
+      let humanInputPauseAccumMs = 0;                 // 已结束的等待段累计总时长
+      const turnStartedAt = Date.now();
+
+      let turnTimer: ReturnType<typeof setInterval> | null = null;
       // 缺口 2 进阶：turn_hard 超时 fire 后武装「未生效」检查；race settle 时 disarm。
       // 若 5s 内未 disarm，说明超时 fire 了却没让 Promise.race settle（本次事故指纹）。
       let disarmTurnIneffective: (() => void) | null = null;
+      // turn_hard 周期检查间隔：复用 watchdog 的 check interval（同为 5s 级），保证及时性。
+      // 检查间隔取「watchdog 间隔」与「硬超时阈值」的较小值（下限 10ms 防忙轮询）：
+      // 阈值远大于间隔时用 watchdog 间隔（5s 级，足够及时）；阈值很小时（单测注入 50ms /
+      // 激进配置）用阈值本身，保证第一次检查不会晚于超时点太多，硬超时如期 fire。
+      const TURN_HARD_CHECK_INTERVAL_MS = Math.max(
+        10,
+        Math.min(netTimeouts.watchdogCheckIntervalMs, MAX_TURN_DURATION_MS),
+      );
       const turnTimeoutPromise = new Promise<never>((_resolve, reject) => {
-        turnTimer = setTimeout(() => {
-          log.error("QUERY_LOOP", `单轮硬超时 ${MAX_TURN_DURATION_MS / 1000}s，强制让出控制权`);
-          // 缺口 2：记录单轮硬超时触发
-          emitTimeoutFired(state.turnCount, "turn_hard_timeout", {
-            threshold_ms: MAX_TURN_DURATION_MS,
-            model: config.model,
-          });
-          // 缺口 2 进阶：武装未生效检查（reject 后若 race 未 settle → TimeoutIneffective）
-          disarmTurnIneffective = armIneffectiveCheck(
-            state.turnCount,
-            "turn_hard_timeout",
-            "promise_race_not_settled_after_5s",
-          ) as (() => void);
-          // 尽力而为：主动 abort 上游 fetch（即便对已 hang 的 reader 无效也无害）。
-          // Fix 3 根治：只 abort 本轮子 controller，不碰会话级 signal。
-          abortThisTurn("turn-timeout");
-          reject(new Error(`单轮硬超时：${MAX_TURN_DURATION_MS / 1000}s 无完成`));
-        }, MAX_TURN_DURATION_MS);
+        turnTimer = setInterval(() => {
+          try {
+            // race 已 settle 后不再触发（防冗余 abort）。
+            if (raceSettled) return;
+            // 闸门：正在阻塞等用户输入（fallback / 抢跑权限弹窗）→ 记录等待段起点，不计硬超时。
+            if (isAwaitingHumanInput()) {
+              if (humanInputPausedAt === null) humanInputPausedAt = Date.now();
+              return;
+            }
+            // 刚结束等待：把本段等待时长并入累计，从「已耗时」里整体剔除。
+            if (humanInputPausedAt !== null) {
+              humanInputPauseAccumMs += Date.now() - humanInputPausedAt;
+              humanInputPausedAt = null;
+            }
+            // 非等待业务耗时 = 墙钟总耗时 - 累计等待时长。达阈值才判硬超时。
+            const businessElapsedMs = Date.now() - turnStartedAt - humanInputPauseAccumMs;
+            if (businessElapsedMs < MAX_TURN_DURATION_MS) return;
+
+            log.error("QUERY_LOOP", `单轮硬超时 ${MAX_TURN_DURATION_MS / 1000}s（已扣除 ${(humanInputPauseAccumMs / 1000).toFixed(0)}s 等待），强制让出控制权`);
+            // 缺口 2：记录单轮硬超时触发
+            emitTimeoutFired(state.turnCount, "turn_hard_timeout", {
+              threshold_ms: MAX_TURN_DURATION_MS,
+              model: config.model,
+            });
+            // 缺口 2 进阶：武装未生效检查（reject 后若 race 未 settle → TimeoutIneffective）
+            disarmTurnIneffective = armIneffectiveCheck(
+              state.turnCount,
+              "turn_hard_timeout",
+              "promise_race_not_settled_after_5s",
+            ) as (() => void);
+            // 尽力而为：主动 abort 上游 fetch（即便对已 hang 的 reader 无效也无害）。
+            // Fix 3 根治：只 abort 本轮子 controller，不碰会话级 signal。
+            abortThisTurn("turn-timeout");
+            reject(new Error(`单轮硬超时：${MAX_TURN_DURATION_MS / 1000}s 无完成`));
+          } catch { /* 周期检查自身异常不外泄，等下个 tick */ }
+        }, TURN_HARD_CHECK_INTERVAL_MS);
         // P3（9bc92c2c + fdb47f30 教训）：不 unref——Bun 中 unref timer 在事件循环被
-        // 底层 IO hang 占满时不保证按时 fire，导致硬超时形同虚设。
-        // 正常路径的 finally { clearTimeout(turnTimer) } 保证不会泄漏阻止退出。
+        // 底层 IO hang 占满时不保证按时 fire，导致硬超时形同虚设。setInterval 在 Bun 中
+        // 已被 heartbeat 证明可靠（周期性重排，不受单次长任务饿死）。
+        // 正常路径的 finally { clearInterval(turnTimer) } 保证不会泄漏阻止退出。
       });
 
       // ─── T1：setInterval 看门狗（turn_hard_timeout 的补位防线）───
@@ -1138,10 +1178,10 @@ export async function* queryLoop(
       // Fix 2：看门狗启动前主动清除可能残留的旧快照（防止孤儿 generator 写入的脏数据误杀）
       clearStreamSnapshot(state.turnCount);
       const watchdogStartedAt = Date.now();
-      // 人机输入闸门配套状态：humanInputPausedAt 记录当前等待段起点（null=未在等待），
-      // humanInputPauseAccumMs 累计已结束的等待总时长，从无进展判定里剔除（根因B修复）。
-      let humanInputPausedAt: number | null = null;
-      let humanInputPauseAccumMs = 0;
+      // 人机输入闸门配套状态（humanInputPausedAt / humanInputPauseAccumMs）已提升到 turn_hard
+      // 之前定义，turn_hard 与 watchdog 共享同一套（H6）：两个 setInterval 都在单线程事件循环内
+      // 跑，先跑的那个 tick 负责「结束等待→累计→置 null」，后跑的看到 null 即跳过，天然不会重复
+      // 累计；共享还保证两条防线对「已扣除多少等待」看法一致，不会一个扣了另一个没扣而口径打架。
       const watchdogPromise = new Promise<never>((_resolve, reject) => {
         watchdogTimer = setInterval(() => {
           try {
@@ -1151,7 +1191,9 @@ export async function* queryLoop(
             // 弹窗发生在 stream generator 内部（tryFallback），期间无 SSE 事件流动，
             // 若不短路，看门狗会把"等人答题"误当流 hang 强杀，掐断弹窗（事故 20260721-142757）。
             if (isAwaitingHumanInput()) {
-              humanInputPausedAt = Date.now();
+              // 仅在首次进入等待时记起点——共享变量后若每 tick 无条件覆盖，会把已积累的等待
+              // 时长丢掉（起点被不断后移），导致结束时累计偏少、补偿不足。置 null 才写。
+              if (humanInputPausedAt === null) humanInputPausedAt = Date.now();
               return;
             }
             // 刚结束等待：把无进展基线整体后移等待时长，避免答完立即被判超时。
@@ -1217,7 +1259,7 @@ export async function* queryLoop(
         // onThinking 通过 QueryEngine 层的 streamThinkingCallback 桥接，queryLoop 自身无需处理
       } finally {
         raceSettled = true;
-        if (turnTimer !== null) clearTimeout(turnTimer);
+        if (turnTimer !== null) clearInterval(turnTimer);  // H6：turn_hard 已改为 setInterval 周期检查
         if (watchdogTimer !== null) clearInterval(watchdogTimer);
         // race 已 settle（正常返回或 catch 到 reject）→ disarm，证明超时确实生效。
         // 断言读取：disarm 仅在闭包内赋值，TS 线性流会把变量窄化成 null，故显式转型。

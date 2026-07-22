@@ -378,6 +378,7 @@ describe("isAbortError", () => {
     expect([...ABORT_REASONS].map(String).sort()).toEqual([
       "agent-stream-heartbeat-timeout",
       "agent-stream-overall-timeout",
+      "agent-stream-timeout",
       "alert-webhook-timeout",
       "external-abort",
       "midturn-preempt",

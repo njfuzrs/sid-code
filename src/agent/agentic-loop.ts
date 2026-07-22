@@ -17,6 +17,7 @@ import { emitStreamPhase } from "../trace/stream-observer.ts";
 import type { HookSystem } from "../hook/system.ts";
 import { LoopDetector, LOOP_RECOVERY_PROMPT } from "./loop-detection.ts";
 import { processStream, type StreamProcessResult } from "./stream-processor.ts";
+import { AGENT_STREAM_TIMEOUT_REASON, classifyError, TerminalError } from "../llm/errors.ts";
 import { executeTools } from "./tool-executor.ts";
 import { isEmptyToolInput, toolHasRequiredParams } from "../query/empty-param.ts";
 
@@ -68,6 +69,11 @@ export interface AgentLoopConfig {
   permissionChecker?: import("../permission/types.ts").Checker;
   /** GAP-07（子代理侧）：长跑工具中间进度回调。缺省时工具执行无进度上报（无副作用）。 */
   onToolProgress?: import("./tool-executor.ts").SubAgentToolProgress;
+  /** H9：模型可用性服务（与主 fallback 引擎共享同一实例，来自 ProviderRegistry.availability）。
+   *  子代理遇 terminal 类错误（认证失败 / 模型不存在 / 内容策略）时 markTerminal，让拉黑状态跨
+   *  主路径/子代理/side-call 共享——避免同一坏模型下次子代理再选它撞一次。缺省时不做拉黑（兼容
+   *  无 registry 的旧测试）。 */
+  availability?: import("../llm/availability.ts").ModelAvailabilityService;
 }
 
 /** Agent 循环结果 */
@@ -102,6 +108,7 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
   const {
     provider, model, ctxMgr, tools, maxTurns, signal, loopDetector,
     loopRecoveryPrompt = LOOP_RECOVERY_PROMPT,
+    availability,
   } = config;
 
   let turns = 0;
@@ -190,8 +197,17 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
 
     // B2: 子代理硬超时保护（对齐主循环 L1），作为 T4 setInterval 心跳之上的最后兜底
     const AGENT_STREAM_TIMEOUT_MS = 5 * 60 * 1000; // 5min
+    let agentTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
     const timeoutPromise = new Promise<StreamProcessResult>((_, reject) => {
-      setTimeout(() => {
+      agentTimeoutTimer = setTimeout(() => {
+        // H10：超时改用带 reason 的 abort，而非裸 Error。turnAbort 被 abort 后：
+        //  ① 上游 fetch/SSE reader 以裸字符串 AGENT_STREAM_TIMEOUT_REASON reject——已登记
+        //     ABORT_REASONS，被 isAbortError 识别为「中断」而非真故障，杜绝孤儿 rejection 崩溃；
+        //  ② 该 reason 属 INTERNAL_TIMEOUT_ABORT_REASONS，未来若上层改依 reason 区分「内部超时
+        //     可重试 vs 用户取消不重试」，能被正确判为内部超时；
+        //  ③ processStream 感知 turnAbort → 抛 abort 错误，与本 reject 竞争，无论谁赢，
+        //     catch 分支都据 signal.reason 归因，不再依赖易被覆盖的错误消息文本。
+        try { turnAbort.abort(AGENT_STREAM_TIMEOUT_REASON); } catch { /* 幂等 */ }
         reject(new Error(`子代理流式超时：${AGENT_STREAM_TIMEOUT_MS / 1000}s 无响应`));
       }, AGENT_STREAM_TIMEOUT_MS);
     });
@@ -206,11 +222,27 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
         }),
         timeoutPromise,
       ]);
+      // 正常 settle：清超时定时器，避免 5min 后无谓 fire + 阻止进程退出。
+      if (agentTimeoutTimer !== null) clearTimeout(agentTimeoutTimer);
       // T13.1：子代理 LLM 调用完成
       emitStreamPhase(agentStreamIndex, "completed", { caller: "sub-agent", model, elapsed_ms: Date.now() - turnStartTime });
     } catch (err: any) {
+      if (agentTimeoutTimer !== null) clearTimeout(agentTimeoutTimer);
       // T13.1：子代理 LLM 调用失败
       emitStreamPhase(agentStreamIndex, "error", { caller: "sub-agent", model, error: err.message, elapsed_ms: Date.now() - turnStartTime });
+      // H9：terminal 类错误（认证失败 / 模型不存在 / 内容策略 / invalid_request）跨路径共享拉黑——
+      // 与主 fallback 引擎共用同一 availability 实例，markTerminal 后主路径/其它子代理/side-call
+      // 下次都不再选这个坏模型，不必各自再撞一次。仅对 classifyError 判定为 TerminalError 的才拉黑；
+      // 超时/abort/限流等非 terminal 错误不动 availability（它们可重试，拉黑会误伤）。
+      try {
+        if (availability) {
+          const classified = classifyError(err);
+          if (classified instanceof TerminalError) {
+            availability.markTerminal(model, classified.message);
+            log.warn("AGENT_LOOP", `子代理模型 ${model} 判定 terminal（${classified.message}），已跨路径拉黑`);
+          }
+        }
+      } catch { /* 分类失败不影响错误返回 */ }
       // 超时或 abort 都走错误返回
       log.error("AGENT_LOOP", `流式处理异常: ${err.message}`);
       return {
@@ -242,6 +274,25 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
         lastTextOutput,
         messages: ctxMgr.getMessages(),
         errorMessage: response.errorMessage || "LLM 错误",
+      };
+    }
+
+    // H9：空响应校验（对齐主/降级路径 fallback.ts 的 hasYieldedContent 兜底）。
+    // 背景：子代理默认复用主 provider（常为同一网关），网关返回 text/html 错误页或空流时，
+    // processStream 会给出「stopReason 非 error、但 content 为空」的伪成功——子代理若直接透传，
+    // 会误判「完成但无输出」返回空结果给主代理（事故 session 20260708-102143 同型）。
+    // 判据：本轮既无任何 content block、又非因 max_tokens 截断（截断是合法的「有产出但被切」）。
+    const hasAnyContent = response.content.length > 0;
+    if (!hasAnyContent && response.stopReason !== "max_tokens") {
+      log.error("AGENT_LOOP", `子代理收到空响应（0 内容块，stopReason=${response.stopReason}），判定失败`);
+      return {
+        success: false,
+        turns,
+        totalUsage,
+        toolUseCount,
+        lastTextOutput,
+        messages: ctxMgr.getMessages(),
+        errorMessage: `子代理收到空响应（0 内容块，疑似网关返回非流式错误页或模型不可用）`,
       };
     }
 

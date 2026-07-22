@@ -34,7 +34,8 @@ import { buildFreshnessWarning } from "./freshness.ts";
 import { MEMORY_LIMITS, type RelevantMemory } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
 import { recordSideCall } from "../trace/side-call-sink.ts";
-import { withSideCallDeadline } from "../llm/side-call-timeout.ts";
+import { withSideCallDeadline, SIDE_CALL_NO_THINK } from "../llm/side-call-timeout.ts";
+import { SIDE_CALL_TIMEOUT_REASON } from "../llm/errors.ts";
 import { resolveSideCallTimeouts } from "../config/network-profile.ts";
 
 /**
@@ -199,6 +200,8 @@ export function makeSideQuery(
             system,
             messages: [{ role: "user", content: [{ type: "text", text: user }] }],
             maxTokens,
+            // H5：记忆召回是「挑相关记忆→出列表」的轻量任务，关思考。
+            thinking: SIDE_CALL_NO_THINK,
           },
           mergedSignal,
         );
@@ -206,8 +209,10 @@ export function makeSideQuery(
         let usage: any = null;
         for await (const event of stream) {
           // 纵深防御：记忆召回 side-call 检查 signal，防止 provider 层超时失效时挂死
+          // H10：抛出携带 abort reason 的错误（mergeTimeoutSignal 超时段 reason="side-call-timeout"），
+          // 与主路径 reason 白名单口径一致，不再裸 "Request aborted"。
           if (mergedSignal.aborted) {
-            throw new Error("Request aborted");
+            throw new Error(String((mergedSignal as any).reason ?? SIDE_CALL_TIMEOUT_REASON));
           }
           if (event.type === "content_block_delta" && event.delta?.type === "text_delta") {
             t += event.delta.text;

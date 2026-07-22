@@ -31,6 +31,7 @@ import type {
 import { accumulateUsage } from "../llm/types.ts";
 import { normalizeToolInput } from "../llm/normalize-tool-input.ts";
 import { getLogger } from "../debug/index.ts";
+import { SIDE_CALL_NO_THINK } from "../llm/side-call-timeout.ts";
 
 // ============================================================
 // 主线
@@ -195,6 +196,9 @@ async function runAgentLoop(
         system: ctxMgr.getSystemPrompt(),
         maxTokens: 4096,
         tools: toolDefs,
+        // H8：headless（spawn 出的独立进程子代理）入口无独立 effort 旋钮，默认关思考，
+        // 与进程内子代理/fork 收口口径一致（ParentInitMessage 不携带 effort）。
+        thinking: SIDE_CALL_NO_THINK,
       });
 
       // 处理流式响应

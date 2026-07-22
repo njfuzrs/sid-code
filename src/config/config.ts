@@ -1335,17 +1335,29 @@ export function clampMaxTokensToModelCeiling(config: Config): void {
   }
 }
 
-/** 从 availableModels 中查找当前模型的 maxOutputTokens，
- *  若用户未配置则从内置注册表兜底 */
-export function resolveModelMaxOutputTokens(config: Config): number | undefined {
-  if (config.availableModels?.length) {
-    const modelConfig = config.availableModels.find(m => m.name === config.model);
+/** 按「模型名 + availableModels 列表」解析该模型的 maxOutputTokens（单一事实源）。
+ *  优先级：availableModels[].maxOutputTokens > 内置注册表兜底。二者都拿不到 → undefined
+ *  （未知模型不臆测上限）。与 resolveModelMaxOutputTokens 共享同一逻辑，供 fallback 引擎
+ *  等「需要解析非当前 config.model 的任意模型上限」的场景复用（见 H4：fallback 目标可能是
+ *  注册表外的自定义模型，只查注册表会漏，必须先查 availableModels）。 */
+export function resolveMaxOutputTokensForModel(
+  model: string,
+  availableModels?: Config["availableModels"],
+): number | undefined {
+  if (availableModels?.length) {
+    const modelConfig = availableModels.find(m => m.name === model);
     if (modelConfig?.maxOutputTokens) return modelConfig.maxOutputTokens;
   }
   // 兜底：从内置模型注册表获取（避免用户未配置时退化到硬编码 32768）
   const { lookupRegistry } = require("../llm/model-registry.ts");
-  const entry = lookupRegistry(config.model);
+  const entry = lookupRegistry(model);
   return entry?.maxOutputTokens || undefined;
+}
+
+/** 从 availableModels 中查找当前模型的 maxOutputTokens，
+ *  若用户未配置则从内置注册表兜底 */
+export function resolveModelMaxOutputTokens(config: Config): number | undefined {
+  return resolveMaxOutputTokensForModel(config.model, config.availableModels);
 }
 
 /** 确保配置目录存在 */

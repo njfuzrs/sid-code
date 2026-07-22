@@ -13,7 +13,8 @@ import { getLogger } from "../debug/index.ts";
 import { resolveSideCallTimeouts } from "../config/network-profile.ts";
 import { AutoCompactCircuitBreaker } from "./circuit-breaker.ts";
 import { recordSideCall } from "../trace/side-call-sink.ts";
-import { withSideCallDeadline } from "../llm/side-call-timeout.ts";
+import { withSideCallDeadline, SIDE_CALL_NO_THINK } from "../llm/side-call-timeout.ts";
+import { SIDE_CALL_TIMEOUT_REASON } from "../llm/errors.ts";
 import { createStreamLifecycle, LIFECYCLE_PRESETS } from "../llm/stream-lifecycle.ts";
 import { isPromptTooLongError } from "./reactive-compact.ts";
 
@@ -306,6 +307,9 @@ async function runSummaryRequest(
           messages: [{ role: "user", content: [{ type: "text", text: summaryPrompt }] }],
           system: COMPACT_SYSTEM_PROMPT,
           maxTokens: 4000,
+          // H5：上下文摘要是「压缩历史→出摘要文本」的任务，关思考。摘要模型未指定时跟主模型，
+          // 主模型为思考模型时不关会让每次 auto-compact 触发完整思考，超时（阻塞主循环）+成本双放大。
+          thinking: SIDE_CALL_NO_THINK,
           // §3.1：携带主对话工具定义（命中已缓存前缀）；toolChoice=none 禁止摘要时调用工具
           ...(deps.toolSchemas && deps.toolSchemas.length > 0
             ? { tools: deps.toolSchemas, toolChoice: "none" as const }
@@ -329,8 +333,10 @@ async function runSummaryRequest(
       });
       for await (const event of lifecycle.guard(stream)) {
         // A6 纵深防御：压缩 side-call 检查 signal，防止主循环 abort 后压缩仍挂起
+        // H10：抛出携带 abort reason 的错误（withSideCallDeadline 超时段 reason="side-call-timeout"），
+        // 与主路径 reason 白名单口径一致，不再裸 "Request aborted"。
         if (signal.aborted) {
-          throw new Error("Request aborted");
+          throw new Error(String((signal as any).reason ?? SIDE_CALL_TIMEOUT_REASON));
         }
         if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
           s += event.delta.text;

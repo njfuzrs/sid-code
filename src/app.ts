@@ -237,7 +237,7 @@ export class App {
   /** 当前生效的项目规则（CLAUDE.md）内存缓存，供运行时重建系统提示词复用 */
   private currentProjectRules: ProjectRules | null = null;
   /** TUI 模式下的权限确认回调（由 TUI 注入），返回 "yes" | "no" | "always" | "always-persist" */
-  private tuiConfirmCallback: ((toolName: string, toolInput: unknown, desc: string, shadowedRules?: import("./ui/App.tsx").ShadowedRuleInfo[]) => Promise<"yes" | "no" | "always" | "always-persist">) | null = null;
+  private tuiConfirmCallback: ((toolName: string, toolInput: unknown, desc: string, shadowedRules?: import("./ui/App.tsx").ShadowedRuleInfo[], signal?: AbortSignal) => Promise<"yes" | "no" | "always" | "always-persist">) | null = null;
   /** TUI 状态更新回调（由 TUI 注入，用于同步 permissionMode 等状态） */
   private tuiStateUpdater: ((patch: Record<string, unknown>) => void) | null = null;
   /** 幂等保护：init() 只执行一次 */
@@ -494,6 +494,26 @@ export class App {
       maxRetriesPerCall: fallbackNetTimeouts.maxRetriesPerCall,
       retryBackoffBaseMs: fallbackNetTimeouts.retryBackoffBaseMs,
       retryBackoffMaxMs: fallbackNetTimeouts.retryBackoffMaxMs,
+      // H1：注入按模型名实时解析上下文窗口的回调，根治 tryRecoverMaxTokens 死代码
+      // （构造从不传 contextLimit → 恒 return null）。箭头函数捕获 this，读 this.config
+      // 保证主模型切换后仍按当前 model + availableModels 解析。
+      resolveContextLimit: (model: string) => {
+        try {
+          return new TokenEstimator().getContextLimit(model, this.config.availableModels);
+        } catch {
+          return undefined;
+        }
+      },
+      // H4：注入与主路径同源的输出上限解析（availableModels > 注册表），让 fallback 钳制
+      // maxTokens 时不再只查内置注册表——注册表外的自定义模型此前会漏钳制触发 400。
+      resolveMaxOutputTokens: (model: string) => {
+        try {
+          const { resolveMaxOutputTokensForModel } = require("./config/config.ts");
+          return resolveMaxOutputTokensForModel(model, this.config.availableModels);
+        } catch {
+          return undefined;
+        }
+      },
       // 降级模式：生产默认 "ask"（询问用户），config 未设时兜底询问。
       fallbackSwitchMode: opts.config.fallbackSwitchMode ?? "ask",
       // 降级决策钩子（ask 模式生效）：弹选择题让用户决定切哪个模型 / 不切。
@@ -1013,11 +1033,22 @@ export class App {
    */
   private applyPrimaryModelSwitch(
     model: string,
-    opts?: { persist?: boolean; reason?: string },
+    opts?: { persist?: boolean; reason?: string; clearTerminal?: boolean },
   ): void {
     const log = getLogger();
     const label = opts?.reason ? `（${opts.reason}）` : "";
     log.info("TUI:CMD", `切换模型: ${this.config.model} → ${model}${opts?.persist ? "（持久化）" : ""}${label}`);
+    // H2 死锁根治：用户显式切入某模型时（clearTerminal=true），强制清除它可能残留的 terminal
+    // 拉黑态，给一次干净机会。否则 terminal 是进程内永久态——用户 /model 切回被瞬时 401/400
+    // 误拉黑的模型，下一轮 isAvailable 开头就被拦、永远走不到成功清除点，切了等于没切且无提示。
+    // 降级路径（promoteToPrimary）不传 clearTerminal：降级目标是否可用交给 fallback 引擎自身
+    // 的成功信号（streamFromFallback 产出内容后 force markHealthy）判定，不在此处预先放行。
+    if (opts?.clearTerminal) {
+      try {
+        this.fallback?.getAvailability().markHealthy(model, true);
+        log.info("FALLBACK", `用户显式切入 ${model}，已清除其 terminal 拉黑态（如有）`);
+      } catch { /* availability 未就绪不阻断切换 */ }
+    }
     this.config.model = model;
     const { resolveCurrentModelConfig } = require("./config/config.ts");
     resolveCurrentModelConfig(this.config);
@@ -1111,9 +1142,12 @@ export class App {
     // 把降级目标提升为主模型（根因A修复）：切换不再只对当次调用生效，而是写回
     // config.model，让后续轮次也用新模型，避免下一轮又用回失败的主模型撞回 terminal 拉黑。
     // 注意仅在真正 switch 时调用；abort 分支不动主模型。
-    const promoteToPrimary = (model: string): void => {
+    const promoteToPrimary = (model: string, clearTerminal = false): void => {
       // 不持久化（不写 settings.json）：降级是本会话的临时纠偏，不应污染用户的全局默认模型。
-      this.applyPrimaryModelSwitch(model, { reason: `${ctx.failedModel} 降级` });
+      // clearTerminal：仅当用户在弹窗里「显式选中」某模型时传 true（正向信号，同 /model 语义，
+      // 给它清一次 terminal）；auto 兜底切默认备用不 force 清——若默认备用真处于 terminal，
+      // 交给其成功产出信号（streamFromFallback force markHealthy）判定。
+      this.applyPrimaryModelSwitch(model, { reason: `${ctx.failedModel} 降级`, clearTerminal });
     };
 
     // auto 兜底：切默认 fallback（有则 switch，无则 abort）。headless 与各类失败路径共用。
@@ -1136,18 +1170,26 @@ export class App {
     }
 
     // 构造选项：默认备用置顶（标注）+ 其它 availableModels（排除主模型与默认备用）+ 不切换。
+    // H2：对处于 terminal 拉黑态的模型在 description 追加标注，让用户知情——选中被拉黑的模型
+    // 会在切入时 force 清一次 terminal（见下方选中分支），给它一次干净机会；不置灰移除，避免
+    // 瞬时 401/400 误拉黑后用户彻底无法选回。
+    const avail = (() => {
+      try { return this.fallback?.getAvailability(); } catch { return undefined; }
+    })();
+    const terminalNote = (name: string): string =>
+      avail?.isTerminal(name) ? "（曾被标记不可用，切入将重试）" : "";
     const options: { label: string; description?: string }[] = [];
     if (ctx.defaultFallbackModel && this.buildFallbackProvider(ctx.defaultFallbackModel)) {
       options.push({
         label: ctx.defaultFallbackModel,
-        description: "配置的备用模型（推荐）",
+        description: `配置的备用模型（推荐）${terminalNote(ctx.defaultFallbackModel)}`,
       });
     }
     for (const m of this.config.availableModels) {
       if (m.name === ctx.failedModel) continue; // 排除刚失败的主模型
       if (m.name === ctx.defaultFallbackModel) continue; // 已置顶
       if (!m.provider) continue; // 无法构建 provider
-      options.push({ label: m.name, description: m.provider });
+      options.push({ label: m.name, description: `${m.provider}${terminalNote(m.name)}` });
     }
     const NO_SWITCH = "不切换，终止本轮";
     options.push({ label: NO_SWITCH, description: "保持当前状态，可稍后重发消息或用 /model 切换" });
@@ -1196,7 +1238,7 @@ export class App {
       return { action: "abort" };
     }
     log.info("FALLBACK", `用户选择切换到 ${answer}`);
-    promoteToPrimary(answer);
+    promoteToPrimary(answer, /* clearTerminal */ true); // 用户显式选中 → 清一次 terminal（H2）
     return { action: "switch", model: answer, provider };
   }
 
@@ -2252,9 +2294,15 @@ export class App {
     }
 
     // 模型选择（仅当命令行未指定时才覆盖）
-    if (rules.model && !process.argv.includes("--model")) {
-      this.config.model = rules.model;
-      log.info("APP", `CLAUDE.md 模型: ${rules.model}`);
+    // H3 根治：此前裸改 config.model + 一条日志，不重算任何派生值（maxTokens 残留旧模型高上限、
+    // provider 实例/上下文窗口分母/effort 展示态全失真）→ 首轮请求发给新模型即 400 → terminal
+    // 拉黑，与源头 bug 同链。改为复用 applyPrimaryModelSwitch 的统一重算路径（resolveCurrentModelConfig
+    // → 重建 provider → setMaxTokens → pushKnobDisplay），一次覆盖初始化(doInit)+热重载(watcher)两窗口。
+    // 不持久化（CLAUDE.md 指定的模型是项目约定，不写用户全局 settings.json）；不 clearTerminal
+    // （非用户交互式主动切换，不预先放行 terminal 拉黑判定）。
+    if (rules.model && !process.argv.includes("--model") && rules.model !== this.config.model) {
+      log.info("APP", `CLAUDE.md 模型: ${rules.model}（复用统一切换路径重算派生值）`);
+      this.applyPrimaryModelSwitch(rules.model, { reason: "CLAUDE.md # Model" });
     }
 
     // systemPromptAddition → appendSystemPrompt（仅当 CLI 未指定 --append-system-prompt 时）
@@ -2690,7 +2738,14 @@ export class App {
         // 通过则执行并缓存结果。异常一律吞掉——executeTools 会正常重跑该工具，绝不影响正确性。
         void (async () => {
           try {
-            const reject = await resolveToolPermission(block, tool, deps);
+            // H7：权限确认可能弹 ask 对话框阻塞等用户作答。抢跑发生在流式接收窗口内（模型仍在
+            // 吐后续内容），此时 stream-processor 心跳 / loop 看门狗 / turn_hard 都在计时——
+            // 若不接闸门，用户思考的这段静默会被误判成流 hang 强杀，掐断权限弹窗（与 fallback
+            // 弹窗同型，事故 20260721-142757）。用 withHumanInputWait 只包权限确认这一步（不包
+            // 工具执行），期间置闸门通知所有看门狗剔除等待时段。异常安全：withHumanInputWait
+            // 内部 finally 保证闸门闭合。
+            const { withHumanInputWait } = require("./query/human-input-gate.ts");
+            const reject = await withHumanInputWait(() => resolveToolPermission(block, tool, deps));
             if (reject) return; // 权限未过 → 不抢跑，交回批量路径
             const outcome = await executeSingleTool(block, tool, deps);
             cache.set(block.id, outcome);
@@ -2720,7 +2775,7 @@ export class App {
   }
 
   /** 设置 TUI 模式下的权限确认回调 */
-  setTUIConfirmCallback(cb: (toolName: string, toolInput: unknown, desc: string, shadowedRules?: import("./ui/App.tsx").ShadowedRuleInfo[]) => Promise<"yes" | "no" | "always" | "always-persist">): void {
+  setTUIConfirmCallback(cb: (toolName: string, toolInput: unknown, desc: string, shadowedRules?: import("./ui/App.tsx").ShadowedRuleInfo[], signal?: AbortSignal) => Promise<"yes" | "no" | "always" | "always-persist">): void {
     this.tuiConfirmCallback = cb;
   }
 
@@ -2730,12 +2785,14 @@ export class App {
     req?: import("./permission/types.ts").PermissionRequest,
     toolName?: string,
     toolInput?: unknown,
+    signal?: AbortSignal,
   ): Promise<boolean> {
     // TUI 模式：使用注入的回调
     if (this.tuiConfirmCallback) {
       // 计算与该工具相关的不可达规则（对标 cc Unreachable Rules），失败不阻断
       const shadowedRules = this.collectShadowedRulesForUI(toolName);
-      const answer = await this.tuiConfirmCallback(toolName || "", toolInput, description, shadowedRules);
+      // H7：透传 signal，弹窗期间被 abort 时 TUI 回调侧解除弹窗（按"no"闭合）。
+      const answer = await this.tuiConfirmCallback(toolName || "", toolInput, description, shadowedRules, signal);
       if (answer === "always") {
         if (req && this.permissionChecker?.rememberDecision) {
           this.permissionChecker.rememberDecision(req, true);
@@ -2848,8 +2905,8 @@ export class App {
       hookSystem: this.hookSystem,
       permissionChecker: this.permissionChecker,
       getAbortSignal: () => this.abortController?.signal,
-      requestUserConfirmation: (desc, permReq, toolName, toolInput) =>
-        this.requestUserConfirmation(desc, permReq, toolName, toolInput),
+      requestUserConfirmation: (desc, permReq, toolName, toolInput, signal) =>
+        this.requestUserConfirmation(desc, permReq, toolName, toolInput, signal),
       handlePlanModeTransitions: (toolBlocks, resultMap) =>
         this.handlePlanModeTransitions(toolBlocks, resultMap),
       getPlanModeReminder: async () => {
@@ -4379,14 +4436,30 @@ export class App {
     };
 
     // 设置 TUI 权限确认回调
-    this.setTUIConfirmCallback(async (toolName, toolInput, desc, shadowedRules) => {
+    this.setTUIConfirmCallback(async (toolName, toolInput, desc, shadowedRules, signal) => {
       return new Promise<"yes" | "no" | "always" | "always-persist">((resolve) => {
         log.info("TUI:PERM", `显示权限对话框: ${toolName} - ${desc}`);
+        // H7：settled 去重 + onAbort 清理，防止「用户作答」与「signal abort」双触发 resolve
+        // 或 abort 后残留监听器泄漏。对齐已修的 askUserQuestion handler（signal.addEventListener("abort")）。
+        let settled = false;
+        const onAbort = () => {
+          if (settled) return;
+          settled = true;
+          log.info("TUI:PERM", `权限对话框被中断（signal abort），按拒绝解除弹窗`);
+          updateState({ permissionRequest: null });
+          resolve("no"); // 中断 = 不放行（保守）：既解除孤儿弹窗，又不误放行未确认的工具
+        };
         const wrappedResolve = (answer: "yes" | "no" | "always" | "always-persist") => {
+          if (settled) return;
+          settled = true;
+          if (signal) signal.removeEventListener("abort", onAbort);
           log.info("TUI:PERM", `权限对话框响应: ${answer}`);
           updateState({ permissionRequest: null });
           resolve(answer);
         };
+        // signal 已 abort（弹窗还没显示就被取消）→ 立即按拒绝短路，不显示孤儿弹窗。
+        if (signal?.aborted) { onAbort(); return; }
+        if (signal) signal.addEventListener("abort", onAbort, { once: true });
         updateState({
           permissionRequest: { toolName, toolInput, description: desc, resolve: wrappedResolve, shadowedRules },
         });
@@ -5096,7 +5169,8 @@ export class App {
           // providerRegistry 必传：fork 模式的 bundled skill（/review、/commit-push-pr 等 6 个）
           // 依赖它创建子代理；缺失会让 executor 静默退回 inline，导致 fork 隔离/allowedTools/maxTurns 失效。
           providerRegistry: this.providerRegistry,
-          setModel: (m, persist) => this.applyPrimaryModelSwitch(m, { persist }),
+          // clearTerminal:true —— 用户显式 /model 切换，给目标模型清一次 terminal 拉黑（H2）。
+          setModel: (m, persist) => this.applyPrimaryModelSwitch(m, { persist, clearTerminal: true }),
           setFallbackModel: (m, persist) => this.setFallbackModelRuntime(m, persist, updateState),
           setSubAgentModel: (type, m, persist) => this.setSubAgentModelRuntime(type, m, persist),
           setEffort: (level, persist) => this.setEffortRuntime(level, persist),

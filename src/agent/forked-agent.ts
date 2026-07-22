@@ -19,6 +19,7 @@ import type { LegacyTool, PermissionResult } from "../tool/types.ts";
 import { validateToolInput } from "../tool/input-validator.ts";
 import { getLogger } from "../debug/logger.ts";
 import { normalizeToolInput } from "../llm/normalize-tool-input.ts";
+import { SIDE_CALL_NO_THINK } from "../llm/side-call-timeout.ts";
 
 /** 工具权限控制函数 */
 export type CanUseToolFn = (
@@ -206,6 +207,9 @@ export async function runForkedAgent(
           messages: conversation,
           maxTokens: 2048,
           tools: toolDefs,
+          // H8：fork agent 执行窄范围任务（querySource 标注），无独立 effort 旋钮，默认关思考，
+          // 与子代理收口口径一致（thinking 是受控旋钮，不放任沿用思考模型服务端默认 enabled）。
+          thinking: SIDE_CALL_NO_THINK,
         },
         signal,
       );

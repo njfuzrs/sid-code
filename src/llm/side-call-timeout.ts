@@ -19,6 +19,24 @@
  */
 
 import { getLogger } from "../debug/logger.ts";
+import type { SendParams } from "./types.ts";
+
+/**
+ * side-call 统一的「关闭思考」开关（H5）。
+ *
+ * 背景：后台 side-call（目标评估 / 工具分类 / bash 分类 / 记忆召回 / 各类摘要 / Agent Hook）
+ * 都是「出个 JSON / 分类 / 几个词」的轻量任务，不需要扩展思考。这些调用不指定独立模型时直接
+ * 复用主 provider + 主 model——当主模型是 DeepSeek/GLM 思考模型时，openai.ts 仅在传了
+ * params.thinking 才下发 thinking:{type:"disabled"}，不传则沿用服务端默认（思考模型默认 enabled）。
+ * 结果：① 非流式分类调用思考+生成常超过 side-call 硬超时（15~45s）→ provider 已计费但客户端
+ * 超时拿不到响应（与历史「标题生成未关 thinking 致超时、账单对不上」完全同型）；② token 成本放大。
+ *
+ * 此前只有标题生成（app.ts）显式关了思考。抽成共享常量，所有 side-call 请求统一带上，一处对齐。
+ */
+export const SIDE_CALL_NO_THINK: NonNullable<SendParams["thinking"]> = {
+  enabled: false,
+  budgetTokens: 0,
+} as const;
 
 /** side-call 超时错误（消息含"超时"字样，便于上层 isTimeoutError / catch 识别）。 */
 export class SideCallTimeoutError extends Error {

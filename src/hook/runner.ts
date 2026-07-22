@@ -19,6 +19,8 @@ import {
 import { getLogger } from "../debug/logger.ts";
 import { sanitizeStrings } from "../llm/sanitize-unicode.ts";
 import { recordSideCall } from "../trace/side-call-sink.ts";
+import { SIDE_CALL_NO_THINK } from "../llm/side-call-timeout.ts";
+import { SIDE_CALL_TIMEOUT_REASON } from "../llm/errors.ts";
 
 /** 默认超时 60 秒 */
 const DEFAULT_TIMEOUT = 60_000;
@@ -572,7 +574,8 @@ export class HookRunner {
       const model = hookConfig.model ?? config.model;
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), timeout);
+      // H10：超时用带 reason 的 abort，与主路径 reason 白名单口径统一（详见 errors.ts）。
+      const timeoutId = setTimeout(() => controller.abort(SIDE_CALL_TIMEOUT_REASON), timeout);
 
       try {
         const text = await this.collectStreamResponse(provider, {
@@ -580,6 +583,8 @@ export class HookRunner {
           messages: [{ role: "user", content: [{ type: "text", text: processedPrompt }] }],
           system: "你是一个 Hook 验证器，负责评估 AI 编程助手的操作是否合理。\n你的响应必须是一个 JSON 对象：\n- 如果操作合理：{\"ok\": true}\n- 如果操作不合理：{\"ok\": false, \"reason\": \"具体原因\"}\n只返回 JSON，不要包含其他内容。",
           maxTokens: 1024,
+          // H5：Agent Hook 验证器是「出个 {ok,reason} JSON」的分类任务，关思考。
+          thinking: SIDE_CALL_NO_THINK,
         }, controller.signal);
 
         const parsed = this.parseJsonOutput(text);
@@ -635,7 +640,8 @@ export class HookRunner {
       const model = hookConfig.model ?? config.model;
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), timeout);
+      // H10：超时用带 reason 的 abort，与主路径 reason 白名单口径统一（详见 errors.ts）。
+      const timeoutId = setTimeout(() => controller.abort(SIDE_CALL_TIMEOUT_REASON), timeout);
 
       try {
         const text = await this.collectStreamResponse(provider, {
@@ -643,6 +649,8 @@ export class HookRunner {
           messages: [{ role: "user", content: [{ type: "text", text: processedPrompt }] }],
           system: "你是一个 Agent Hook 验证器。你的任务是验证 AI 编程助手的操作结果是否正确。\n分析完成后，返回一个 JSON 对象：\n- 如果验证通过：{\"ok\": true}\n- 如果验证失败：{\"ok\": false, \"reason\": \"失败原因和修复建议\"}\n只返回 JSON，不要包含其他内容。",
           maxTokens: 2048,
+          // H5：Agent Hook 验证器是「出个 {ok,reason} JSON」的分类任务，关思考。
+          thinking: SIDE_CALL_NO_THINK,
         }, controller.signal);
 
         const parsed = this.parseJsonOutput(text);
@@ -690,8 +698,9 @@ export class HookRunner {
     let streamUsage: any = null;
     for await (const event of provider.sendMessageStream(params, signal)) {
       // 纵深防御:hook-runner side-call 检查 signal,防止 provider 层超时失效时挂死
+      // H10：抛出携带 abort reason 的错误，与主路径 reason 白名单口径一致。
       if (signal?.aborted) {
-        throw new Error("Request aborted");
+        throw new Error(String((signal as any).reason ?? SIDE_CALL_TIMEOUT_REASON));
       }
       if (event.type === "content_block_delta" && "text" in event.delta) {
         text += event.delta.text;

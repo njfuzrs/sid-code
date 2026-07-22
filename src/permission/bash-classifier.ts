@@ -14,6 +14,8 @@ import type { Message } from "../llm/types.ts";
 import { getCapabilities } from "../llm/provider.ts";
 import { getLogger } from "../debug/logger.ts";
 import { recordSideCall } from "../trace/side-call-sink.ts";
+import { SIDE_CALL_NO_THINK } from "../llm/side-call-timeout.ts";
+import { SIDE_CALL_TIMEOUT_REASON } from "../llm/errors.ts";
 
 /** 风险等级（由低到高） */
 export type RiskLevel = "none" | "low" | "medium" | "high" | "critical";
@@ -246,17 +248,20 @@ export class BashClassifier {
     const model = modelName;
     const maxTokens = this.config.maxTokens ?? DEFAULT_MAX_TOKENS;
     const timeoutMs = this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    // H5：bash 命令分类是「出个风险 JSON」的分类任务，关思考（同 tool-classifier）。
+    const sendParams = { model, messages, system, maxTokens, thinking: SIDE_CALL_NO_THINK };
 
     // 组合超时信号与外部取消信号
     const timeoutController = new AbortController();
-    const timer = setTimeout(() => timeoutController.abort(), timeoutMs);
+    // H10：超时用带 reason 的 abort，与主路径 reason 白名单口径统一（详见 errors.ts）。
+    const timer = setTimeout(() => timeoutController.abort(SIDE_CALL_TIMEOUT_REASON), timeoutMs);
     const signal = combineSignals(req.signal, timeoutController.signal);
 
     try {
       // 优先非流式（更省、更直接）
       if (typeof provider.sendMessageNonStreaming === "function") {
         const resp = await provider.sendMessageNonStreaming(
-          { model, messages, system, maxTokens },
+          sendParams,
           signal,
         );
         // 记录辅助调用用量
@@ -279,10 +284,11 @@ export class BashClassifier {
       let streamUsage: any = null;
       const caps = getCapabilities(provider);
       void caps; // 仅用于显式表明已考虑能力差异
-      for await (const ev of provider.sendMessageStream({ model, messages, system, maxTokens }, signal)) {
+      for await (const ev of provider.sendMessageStream(sendParams, signal)) {
         // 纵深防御:bash-classifier side-call 检查 signal(已组合超时+外部取消),防止 provider 层超时失效时挂死
+        // H10：抛出携带 abort reason 的错误（而非裸 "Request aborted"），与主路径 reason 白名单口径一致。
         if (signal.aborted) {
-          throw new Error("Request aborted");
+          throw new Error(String((signal as any).reason ?? SIDE_CALL_TIMEOUT_REASON));
         }
         if (ev.type === "content_block_delta" && ev.delta.type === "text_delta") {
           text += ev.delta.text;
@@ -330,10 +336,11 @@ function combineSignals(...signals: Array<AbortSignal | undefined>): AbortSignal
   const controller = new AbortController();
   for (const s of valid) {
     if (s.aborted) {
-      controller.abort();
+      // H10：透传源 signal 的 reason（超时段带 SIDE_CALL_TIMEOUT_REASON），不再裸 abort()。
+      controller.abort((s as any).reason);
       break;
     }
-    s.addEventListener("abort", () => controller.abort(), { once: true });
+    s.addEventListener("abort", () => controller.abort((s as any).reason), { once: true });
   }
   return controller.signal;
 }

@@ -193,8 +193,17 @@ export interface FallbackConfig {
   retryBackoffBaseMs?: number;
   /** 配置-1：退避上限（毫秒）。默认由 network-profile 的 retryBackoffMaxMs 注入 */
   retryBackoffMaxMs?: number;
-  /** 上下文窗口大小（用于 max_tokens 溢出恢复） */
+  /** 上下文窗口大小（用于 max_tokens 溢出恢复）。
+   *  H1：此前构造从不注入 → tryRecoverMaxTokens 恒 return null（死代码）。
+   *  静态值适合固定单模型；主模型可切换时优先用 resolveContextLimit 回调按当前模型实时解析。 */
   contextLimit?: number;
+  /** H1：按模型名解析上下文窗口的回调（主模型可切换时用，优先于静态 contextLimit）。
+   *  由 app.ts 注入，内部走 TokenEstimator().getContextLimit(model, availableModels)。 */
+  resolveContextLimit?: (model: string) => number | undefined;
+  /** H4：按模型名解析输出上限（maxOutputTokens）的回调。
+   *  由 app.ts 注入，内部走 resolveMaxOutputTokensForModel（availableModels > 注册表）。
+   *  fallback 目标钳制 maxTokens 时用它替代「只查内置注册表」，避免注册表外的自定义模型漏钳制。 */
+  resolveMaxOutputTokens?: (model: string) => number | undefined;
   /** 是否禁用 keep-alive（ECONNRESET 后自动置位） */
   disableKeepAlive?: boolean;
   /** Phase 4：无人值守 persistent retry 模式 */
@@ -232,7 +241,12 @@ export interface SystemAPIErrorMessage {
 
 /** 内部重试上下文 */
 interface RetryContext {
-  /** 是否需要刷新认证（401 后置位） */
+  /** 401 认证错误的「只重试一次」闸门（首个 401 置位并立即重试；第二个 401 因已置位落到
+   *  classifyError → TerminalError → markTerminal + fallback）。
+   *  N1（另案）：当前无 auth 刷新钩子消费此标志——重试用的仍是同一份旧凭据，故它实际只是
+   *  「retry-once 闸门」而非「刷新触发器」。真正接线凭据刷新钩子超出本次修复范围，另案跟踪；
+   *  在此之前**不可删除**该标志——删了会让首个 401 直接 terminal 拉黑，丧失「瞬时 401 重试一次」
+   *  的容错。 */
   needsAuthRefresh: boolean;
   /** 是否需要禁用 keep-alive（ECONNRESET 后置位） */
   disableKeepAlive: boolean;
@@ -269,6 +283,8 @@ export class ModelFallback {
       retryBackoffBaseMs: config.retryBackoffBaseMs,
       retryBackoffMaxMs: config.retryBackoffMaxMs,
       contextLimit: config.contextLimit,
+      resolveContextLimit: config.resolveContextLimit,
+      resolveMaxOutputTokens: config.resolveMaxOutputTokens,
       disableKeepAlive: config.disableKeepAlive,
       persistent: config.persistent,
       fastMode: config.fastMode,
@@ -420,9 +436,9 @@ export class ModelFallback {
           throw toAbortError(err);
         }
 
-        // ── 401 认证错误：标记刷新 + 重试一次 ──
+        // ── 401 认证错误：retry-once 闸门（N1：暂无真刷新钩子，仅重试一次，见 RetryContext 注释）──
         if (is401Error(err) && !ctx.needsAuthRefresh) {
-          log.info("FALLBACK", "401 认证错误，标记刷新标志并重试");
+          log.info("FALLBACK", "401 认证错误，触发 retry-once 闸门并重试（暂无凭据刷新钩子）");
           ctx.needsAuthRefresh = true;
           this.emitTelemetry({ type: "auth_refresh", model: params.model, error: String(err) });
           // 不退避，直接重试
@@ -545,6 +561,7 @@ export class ModelFallback {
               // ── max_tokens 溢出自动恢复（感知 thinking budget）──
               const maxTokensResult = this.tryRecoverMaxTokens(
                 event.error.message,
+                params.model,
                 params.thinking?.budgetTokens,
               );
               if (maxTokensResult !== null) {
@@ -919,7 +936,12 @@ export class ModelFallback {
     // "max_tokens out of range"——与主模型「切模型不重算 maxTokens」是同一类 bug。
     // 用内置注册表解析 fallback 模型上限并钳制（拿不到上限的未知模型不臆测、保持原值）。
     const fallbackParams = { ...params, model: fallbackModel };
-    const fbCeiling = lookupRegistry(fallbackModel)?.maxOutputTokens;
+    // H4：钳制上限优先走 resolveMaxOutputTokens 回调（availableModels > 注册表，与主路径
+    // resolveModelMaxOutputTokens 同源），回调缺失才回退到「只查内置注册表」。修前只查注册表，
+    // fallback 目标若是注册表外的自定义模型 → fbCeiling=undefined → 不钳制 → 主模型高 maxTokens
+    // 原样发给 fallback → 400 → markTerminal 拉黑 fallback 目标。
+    const fbCeiling = this.config.resolveMaxOutputTokens?.(fallbackModel)
+      ?? lookupRegistry(fallbackModel)?.maxOutputTokens;
     if (fbCeiling && fallbackParams.maxTokens && fallbackParams.maxTokens > fbCeiling) {
       log.info(
         "FALLBACK",
@@ -954,6 +976,18 @@ export class ModelFallback {
           streamLevel: true,
         },
       };
+      return;
+    }
+    // N2（H2 加剧因素修复）：降级流确实产出内容后，标记 fallbackModel 健康，清除其可能残留的
+    // terminal 拉黑态。背景：主路径成功时会 markHealthy(params.model)（fallback.ts 阶段2 末尾），
+    // 但降级路径此前无此调用——若 fallbackModel 曾被 markTerminal（如主备双模型走同一网关、网关
+    // 整体故障双双 terminal），即便本次 streamFromFallback(T) 成功，T 的 availability 仍停在
+    // terminal → 下一轮 isAvailable(T)=false 又 tryFallback。仅在确有内容产出时清除，空响应/纯
+    // error 不清（那本就是失败信号）。
+    if (fbYieldedContent) {
+      // force=true：降级流确实产出内容是明确正向信号，强制清除 fallbackModel 可能残留的
+      // terminal 态（否则被拉黑的模型即便成功也永远停在 terminal，下轮又被拦）。
+      this.availability.markHealthy(fallbackModel, true);
     }
   }
 
@@ -1016,8 +1050,15 @@ export class ModelFallback {
    * @param errorMessage 错误消息
    * @param thinkingBudget thinking 预算 token 数（Extended Thinking 场景，需从可用空间中扣除）
    */
-  private tryRecoverMaxTokens(errorMessage: string, thinkingBudget?: number): number | null {
-    const contextLimit = this.config.contextLimit;
+  private tryRecoverMaxTokens(
+    errorMessage: string,
+    model: string,
+    thinkingBudget?: number,
+  ): number | null {
+    // H1：优先用 resolveContextLimit 回调按当前模型实时解析（主模型可切换），
+    // 回调缺失或返回空时回退到静态 contextLimit。修前构造从不注入 contextLimit →
+    // this.config.contextLimit 恒 undefined → 恒 return null，整套溢出恢复是死代码。
+    const contextLimit = this.config.resolveContextLimit?.(model) ?? this.config.contextLimit;
     if (!contextLimit) return null;
 
     // 匹配: "188059 + 20000 > 200000"

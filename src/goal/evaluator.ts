@@ -11,6 +11,8 @@ import type { Provider } from "../llm/provider.ts";
 import type { Message } from "../llm/types.ts";
 import { getLogger } from "../debug/logger.ts";
 import { recordSideCall } from "../trace/side-call-sink.ts";
+import { SIDE_CALL_NO_THINK } from "../llm/side-call-timeout.ts";
+import { SIDE_CALL_TIMEOUT_REASON } from "../llm/errors.ts";
 
 const log = getLogger();
 
@@ -258,7 +260,10 @@ async function callEvaluatorModel(
   ];
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeout);
+  // H10：超时用带 reason 的 abort（SIDE_CALL_TIMEOUT_REASON="side-call-timeout"，已登记
+  // ABORT_REASONS）而非无参 abort。底层 fetch 以该裸字符串 reject 时被 isAbortError 识别为
+  // 中断、不崩进程；与主路径「判超时看 reason 白名单」的口径统一，不再依赖错误消息文本匹配。
+  const timer = setTimeout(() => controller.abort(SIDE_CALL_TIMEOUT_REASON), timeout);
 
   try {
     let responseText = "";
@@ -269,14 +274,18 @@ async function callEvaluatorModel(
         messages,
         system: systemPrompt,
         maxTokens: 512,
+        // H5：目标评估是「判断完成条件是否满足→出个 JSON」的分类任务，关思考。
+        // 不关则主模型为思考模型时每次评估都触发完整思考，超时+成本双放大。
+        thinking: SIDE_CALL_NO_THINK,
       },
       controller.signal,
     );
 
     for await (const event of stream) {
       // 纵深防御:goal-evaluator side-call 检查 signal(controller.signal),防止 provider 层超时失效时挂死
+      // H10：抛出携带 abort reason 的错误（而非裸 "Request aborted"），与主路径 reason 白名单口径一致。
       if (controller.signal.aborted) {
-        throw new Error("Request aborted");
+        throw new Error(String(controller.signal.reason ?? SIDE_CALL_TIMEOUT_REASON));
       }
       if (event.type === "content_block_delta" && "text" in event.delta) {
         responseText += event.delta.text;
