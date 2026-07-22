@@ -17,6 +17,7 @@ import { getLogger } from "../debug/index.ts";
 import { normalizeToolInput } from "../llm/normalize-tool-input.ts";
 import { detectUnansweredEndTurn } from "./unanswered-end-turn.ts";
 import { RequestAbortedError } from "../llm/errors.ts";
+import { isAwaitingHumanInput } from "./human-input-gate.ts";
 
 /** 流式处理器配置 */
 export interface StreamProcessorOptions {
@@ -86,11 +87,31 @@ export async function processStream(
   let lastActivityTime = Date.now();
   let timeoutError: Error | null = null;
 
+  // 记录"等待用户输入"累计时长：弹窗阻塞期间不应计入心跳/整体超时，否则等人答题
+  // 会被误判成流 hang（事故复盘 20260721-142757）。用累加"扣除量"的方式把等待时段
+  // 从两个超时的分母里剔除，答完自然恢复计时。
+  let humanWaitStartedAt: number | null = null;
+  let humanWaitAccumMs = 0;
+
   const checkInterval = setInterval(() => {
     const now = Date.now();
 
-    // 整体超时检测
-    if (now - startTime > OVERALL_TIMEOUT) {
+    // 闸门：正在阻塞等用户输入（如 fallback 询问弹窗）→ 本次不判超时，只记录等待起点。
+    // 等待期间持续推进 lastActivityTime/扣除量，使答完后不会因"这段静默"立即被误杀。
+    if (isAwaitingHumanInput()) {
+      if (humanWaitStartedAt === null) humanWaitStartedAt = now;
+      lastActivityTime = now; // 等待中视为"有活动"，避免心跳在等待中途误触
+      return;
+    }
+    // 刚结束一段等待：累加等待时长到扣除量，并把活动时间对齐到现在。
+    if (humanWaitStartedAt !== null) {
+      humanWaitAccumMs += now - humanWaitStartedAt;
+      humanWaitStartedAt = null;
+      lastActivityTime = now;
+    }
+
+    // 整体超时检测（扣除累计的用户等待时段）
+    if (now - startTime - humanWaitAccumMs > OVERALL_TIMEOUT) {
       timeoutError = new Error(
         `Stream overall timeout: ${OVERALL_TIMEOUT / 1000}s 总时长超限`,
       );

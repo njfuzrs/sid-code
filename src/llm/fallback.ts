@@ -39,6 +39,7 @@ import {
   is409Error,
 } from "./errors.ts";
 import { ModelAvailabilityService } from "./availability.ts";
+import { lookupRegistry } from "./model-registry.ts";
 import type { RetryTelemetryEvent } from "./retry-telemetry.ts";
 import { computeBackoffMs, DEFAULTS as NETWORK_DEFAULTS } from "../config/network-profile.ts";
 
@@ -913,7 +914,19 @@ export class ModelFallback {
     signal?: AbortSignal,
   ): AsyncGenerator<StreamEvent> {
     const log = getLogger();
+    // maxTokens 钳制：切到 fallback 模型时若沿用主模型的 maxTokens，可能超过 fallback
+    // 模型的物理输出上限（如主模型 deepseek 384K 降级到 glm 128K），触发网关 400
+    // "max_tokens out of range"——与主模型「切模型不重算 maxTokens」是同一类 bug。
+    // 用内置注册表解析 fallback 模型上限并钳制（拿不到上限的未知模型不臆测、保持原值）。
     const fallbackParams = { ...params, model: fallbackModel };
+    const fbCeiling = lookupRegistry(fallbackModel)?.maxOutputTokens;
+    if (fbCeiling && fallbackParams.maxTokens && fallbackParams.maxTokens > fbCeiling) {
+      log.info(
+        "FALLBACK",
+        `fallback 模型 ${fallbackModel} maxTokens ${fallbackParams.maxTokens} 超上限 ${fbCeiling}，已钳制`,
+      );
+      fallbackParams.maxTokens = fbCeiling;
+    }
     let fbYieldedContent = false;
     let fbYieldedError = false;
     for await (const event of fallbackProvider.sendMessageStream(fallbackParams, signal)) {

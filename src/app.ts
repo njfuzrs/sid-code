@@ -1000,6 +1000,48 @@ export class App {
   }
 
   /**
+   * 切换主模型运行时态（单一真相源）。
+   *
+   * /model 切换（setModel 回调）与 fallback 降级写回主模型（decideFallback）共用本方法，
+   * 确保「切模型」在两条入口的副作用完全一致：更新 config.model + 回填连接信息（含
+   * maxTokens 按新模型重算/钳制，见 resolveCurrentModelConfig）+ 重建 provider + 同步
+   * 上下文窗口 + 推展示态 + 可选持久化。
+   *
+   * 根治「切了备用模型下一轮又用回失败主模型」：fallback 降级此前只对当次 executeWithFallback
+   * 调用生效，从不写回 config.model，导致下一轮 params.model 又变回失败的主模型、撞回
+   * terminal 拉黑。现让 decideFallback 选定后调用本方法，把降级目标真正提升为主模型。
+   */
+  private applyPrimaryModelSwitch(
+    model: string,
+    opts?: { persist?: boolean; reason?: string },
+  ): void {
+    const log = getLogger();
+    const label = opts?.reason ? `（${opts.reason}）` : "";
+    log.info("TUI:CMD", `切换模型: ${this.config.model} → ${model}${opts?.persist ? "（持久化）" : ""}${label}`);
+    this.config.model = model;
+    const { resolveCurrentModelConfig } = require("./config/config.ts");
+    resolveCurrentModelConfig(this.config);
+    if (this.providerRegistry) {
+      this.providerRegistry.clearCache();
+      this.provider = this.providerRegistry.getProvider();
+      this.queryEngine.updateProvider(this.provider);
+    }
+    // 同步上下文窗口：新模型窗口可能与旧模型不同（如 200k↔1M）。
+    // 不更新会让 compact 决策与 Footer 上下文百分比沿用旧窗口作分母而失真。
+    try {
+      const newWindow = new TokenEstimator().getContextLimit(model, this.config.availableModels);
+      this.ctxMgr.setMaxTokens(newWindow);
+    } catch { /* 窗口解析失败不影响切换，沿用旧窗口 */ }
+    this.tuiStateUpdater?.({ model });
+    // 模型变了，effort/thinking 能力可能随之变（如换到不支持 max 的模型），重推展示态。
+    this.pushKnobDisplay();
+    // -p 持久化：写顶层 model。必用 patchSettingsFile（禁整体覆盖，见 settings 有损 round-trip 陷阱）。
+    if (opts?.persist) this.persistModelField("model", model);
+    // P1-4b：落会话级 agent 设置快照，供 resume 恢复本会话使用的模型。
+    this.persistAgentSetting();
+  }
+
+  /**
    * 切换 fallback 模型运行时态（/model fallback 用）。
    * - 更新 config.fallbackModel；
    * - 从 availableModels 解析对应 provider，热更新 ModelFallback 的降级目标（不重建 queryEngine）；
@@ -1066,12 +1108,23 @@ export class App {
     const log = getLogger();
     const { askUserQuestion, hasAskUserQuestionHandler } = await import("./tool/ask-user-question-bridge.ts");
 
+    // 把降级目标提升为主模型（根因A修复）：切换不再只对当次调用生效，而是写回
+    // config.model，让后续轮次也用新模型，避免下一轮又用回失败的主模型撞回 terminal 拉黑。
+    // 注意仅在真正 switch 时调用；abort 分支不动主模型。
+    const promoteToPrimary = (model: string): void => {
+      // 不持久化（不写 settings.json）：降级是本会话的临时纠偏，不应污染用户的全局默认模型。
+      this.applyPrimaryModelSwitch(model, { reason: `${ctx.failedModel} 降级` });
+    };
+
     // auto 兜底：切默认 fallback（有则 switch，无则 abort）。headless 与各类失败路径共用。
     const autoFallback = (): FallbackDecision => {
       const def = ctx.defaultFallbackModel;
       if (def) {
         const provider = this.buildFallbackProvider(def);
-        if (provider) return { action: "switch", model: def, provider };
+        if (provider) {
+          promoteToPrimary(def);
+          return { action: "switch", model: def, provider };
+        }
       }
       return { action: "abort" };
     };
@@ -1102,7 +1155,11 @@ export class App {
     const question = `主模型 ${ctx.failedModel} 请求失败（${ctx.reason}），是否切换到备用模型继续？`;
     let result;
     try {
-      result = await askUserQuestion(
+      // 人机输入闸门：本弹窗阻塞等用户作答期间，通知看门狗（stream-processor 心跳 +
+      // loop 无进展）不要把这段静默误判成流 hang 而 abort 掉弹窗（根因B修复，
+      // 事故 20260721-142757）。务必用 withHumanInputWait 包裹以保证异常安全闭合。
+      const { withHumanInputWait } = require("./query/human-input-gate.ts");
+      result = await withHumanInputWait(() => askUserQuestion(
         {
           questions: [
             {
@@ -1114,7 +1171,7 @@ export class App {
           ],
         },
         ctx.signal,
-      );
+      ));
     } catch (err) {
       // 提问本身异常 → auto 兜底（保任务不中断）。
       log.warn("FALLBACK", `askUserQuestion 异常，降级为自动切换: ${err}`);
@@ -1139,6 +1196,7 @@ export class App {
       return { action: "abort" };
     }
     log.info("FALLBACK", `用户选择切换到 ${answer}`);
+    promoteToPrimary(answer);
     return { action: "switch", model: answer, provider };
   }
 
@@ -5038,30 +5096,7 @@ export class App {
           // providerRegistry 必传：fork 模式的 bundled skill（/review、/commit-push-pr 等 6 个）
           // 依赖它创建子代理；缺失会让 executor 静默退回 inline，导致 fork 隔离/allowedTools/maxTurns 失效。
           providerRegistry: this.providerRegistry,
-          setModel: (m, persist) => {
-            log.info("TUI:CMD", `切换模型: ${this.config.model} → ${m}${persist ? "（持久化）" : ""}`);
-            this.config.model = m;
-            const { resolveCurrentModelConfig } = require("./config/config.ts");
-            resolveCurrentModelConfig(this.config);
-            if (this.providerRegistry) {
-              this.providerRegistry.clearCache();
-              this.provider = this.providerRegistry.getProvider();
-              this.queryEngine.updateProvider(this.provider);
-            }
-            // 同步上下文窗口：新模型窗口可能与旧模型不同（如 200k↔1M）。
-            // 不更新会让 compact 决策与 Footer 上下文百分比沿用旧窗口作分母而失真。
-            try {
-              const newWindow = new TokenEstimator().getContextLimit(m, this.config.availableModels);
-              this.ctxMgr.setMaxTokens(newWindow);
-            } catch { /* 窗口解析失败不影响切换，沿用旧窗口 */ }
-            updateState({ model: m });
-            // 模型变了，effort/thinking 能力可能随之变（如换到不支持 max 的模型），重推展示态。
-            this.pushKnobDisplay();
-            // -p 持久化：写顶层 model。必用 patchSettingsFile（禁整体覆盖，见 settings 有损 round-trip 陷阱）。
-            if (persist) this.persistModelField("model", m);
-            // P1-4b：落会话级 agent 设置快照，供 resume 恢复本会话使用的模型。
-            this.persistAgentSetting();
-          },
+          setModel: (m, persist) => this.applyPrimaryModelSwitch(m, { persist }),
           setFallbackModel: (m, persist) => this.setFallbackModelRuntime(m, persist, updateState),
           setSubAgentModel: (type, m, persist) => this.setSubAgentModelRuntime(type, m, persist),
           setEffort: (level, persist) => this.setEffortRuntime(level, persist),

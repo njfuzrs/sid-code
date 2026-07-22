@@ -442,6 +442,16 @@ export interface Config {
    * 场景仍按原样报错退出。不写入磁盘配置，仅运行时携带。
    */
   _needsOnboarding?: boolean;
+  /**
+   * 用户显式配置的 maxTokens 全局覆盖值（CLI --max-tokens / env SID_MAX_OUTPUT_TOKENS /
+   * settings.json 顶层 maxTokens）。仅运行时携带，不写入磁盘。
+   *
+   * 用途：让 resolveCurrentModelConfig 在「运行时 /model 切换」时能区分
+   * 「maxTokens 是用户刻意设的」还是「上个模型自动推导出的残留值」——
+   * 前者应尊重（但仍钳制到新模型物理上限），后者应按新模型重算。
+   * 不设置表示用户从未显式指定，maxTokens 完全由模型能力推导。
+   */
+  _explicitMaxTokens?: number;
 }
 
 /** IDE 集成配置 */
@@ -1127,10 +1137,20 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
 
   const config = merged as Config;
 
+  // 记录用户显式配置的 maxTokens 全局覆盖值——必须在首次 resolveCurrentModelConfig 之前，
+  // 否则 resolveCurrentModelConfig 读不到 _explicitMaxTokens 会走「按模型推导」分支，把用户
+  // 显式值覆盖掉（回归）。供后续运行时 /model 切换区分「刻意设的」与「模型推导残留」。
+  const userExplicitMaxTokens = cliArgs.maxTokens || (fileConfig as any).maxTokens || (envConfig as any).maxTokens;
+  if (userExplicitMaxTokens) {
+    const n = Number(userExplicitMaxTokens);
+    if (Number.isFinite(n) && n > 0) config._explicitMaxTokens = n;
+  }
+
   // env 原始 baseURL（合并前）——用于 resolveCurrentModelConfig 检测 per-model 覆盖 env 并告警。
   const envBaseURL = envConfig.baseURL;
 
-  // 从 availableModels 解析当前模型的连接信息，回填顶层字段
+  // 从 availableModels 解析当前模型的连接信息，回填顶层字段（含 maxTokens 按模型能力
+  // 重算/钳制，已尊重上面登记的 _explicitMaxTokens）。
   resolveCurrentModelConfig(config, envBaseURL);
 
   // 如果 model 为空但 availableModels 有配置，自动选第一个作为默认模型
@@ -1177,14 +1197,18 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
     return config;
   }
 
-  // 如果用户未显式配置 maxTokens，从当前模型的 maxOutputTokens 自动推导
-  const userExplicitMaxTokens = cliArgs.maxTokens || (fileConfig as any).maxTokens || (envConfig as any).maxTokens;
-  if (!userExplicitMaxTokens) {
+  // maxTokens 兜底推导：_explicitMaxTokens 已在前面(首次 resolveCurrentModelConfig 之前)登记。
+  // 当有 availableModels 时，resolveCurrentModelConfig 已完成 maxTokens 重算/钳制；
+  // 但它对「无 availableModels」的场景早返回、不动 maxTokens，故此处兜底：用户未显式配置
+  // 时按当前模型注册表推导。最后统一钳制到模型物理上限（含无 availableModels 的注册表兜底）。
+  if (!config._explicitMaxTokens) {
     const modelMaxOutput = resolveModelMaxOutputTokens(config);
     if (modelMaxOutput) {
       config.maxTokens = modelMaxOutput;
     }
   }
+  // 统一钳制：即便用户显式配置，也不能超过当前模型的物理输出上限（否则网关直接 400）。
+  clampMaxTokensToModelCeiling(config);
 
   // P2-4：CC 的 "manual" 是 sid "default" 的别名，归一到内部规范名
   // （对齐 CC v2.1.200 default→Manual 改名；sid 内部仍用 default 作规范键）。
@@ -1279,7 +1303,36 @@ export function resolveCurrentModelConfig(config: Config, envBaseURL?: string): 
       config.openaiKey = mc.apiKey;
     }
   }
-  if (mc.maxOutputTokens) config.maxTokens = mc.maxOutputTokens;
+
+  // maxTokens 重算（根治「运行时切模型不重算，把上个模型的高上限带到新模型触发 HTTP 400」）：
+  //   1. 用户显式全局覆盖（_explicitMaxTokens）优先，但仍要钳制到新模型物理上限（见步骤 3）。
+  //   2. 否则按新模型能力推导：availableModels[].maxOutputTokens > 内置注册表兜底。
+  //      不能像旧实现那样「没配 maxOutputTokens 就不动 config.maxTokens」——那正是残留值 bug 根因。
+  //   3. 无论哪条路径，最终都钳制到当前模型的物理输出上限。
+  if (config._explicitMaxTokens && config._explicitMaxTokens > 0) {
+    config.maxTokens = config._explicitMaxTokens;
+  } else {
+    const derived = resolveModelMaxOutputTokens(config);
+    if (derived) config.maxTokens = derived;
+  }
+  clampMaxTokensToModelCeiling(config);
+}
+
+/**
+ * 把 config.maxTokens 钳制到当前模型的物理输出上限（maxOutputTokens）。
+ * 上限来源：availableModels[].maxOutputTokens > 内置注册表。二者都拿不到时不钳制
+ * （未知模型不臆测上限，保持调用方给的值，避免误伤自定义端点）。
+ * 幂等：多次调用结果一致。
+ */
+export function clampMaxTokensToModelCeiling(config: Config): void {
+  const ceiling = resolveModelMaxOutputTokens(config);
+  if (ceiling && config.maxTokens > ceiling) {
+    getLogger().info(
+      "CONFIG",
+      `maxTokens ${config.maxTokens} 超过模型「${config.model}」输出上限 ${ceiling}，已钳制到 ${ceiling}`,
+    );
+    config.maxTokens = ceiling;
+  }
 }
 
 /** 从 availableModels 中查找当前模型的 maxOutputTokens，

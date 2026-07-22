@@ -292,6 +292,60 @@ describe("ModelFallback", () => {
     expect(fallbackReason).toBeTruthy();
   });
 
+  test("切 fallback 时按 fallback 模型注册表上限钳制 maxTokens（根因A配套）", async () => {
+    // 主模型 maxTokens 384000（如 deepseek），降级到 glm-5.2（注册表上限 128000）时，
+    // fallback provider 收到的 maxTokens 必须被钳到 128000，否则 fallback 调用自己也会 400。
+    let seenMaxTokens: number | undefined;
+    let seenModel: string | undefined;
+    const capturingFallback: Provider = {
+      name: () => "mock",
+      defaultModel: () => "glm-5.2",
+      async *sendMessageStream(params: SendParams): AsyncIterable<StreamEvent> {
+        seenMaxTokens = params.maxTokens;
+        seenModel = params.model;
+        yield* successProvider().sendMessageStream();
+      },
+    };
+    const fallback = new ModelFallback(
+      { fallbackProvider: capturingFallback, fallbackModel: "glm-5.2" },
+    );
+
+    await collectEvents(
+      fallback.executeWithFallback(
+        errorEventProvider("401 Unauthorized"),
+        { ...defaultParams, maxTokens: 384000 },
+      ),
+    );
+
+    expect(seenModel).toBe("glm-5.2");
+    expect(seenMaxTokens).toBe(128000);
+  });
+
+  test("fallback 模型上限足够时不下调 maxTokens", async () => {
+    // fallback 到 deepseek-v4-pro（上限 384000），主 maxTokens 200000 在上限内 → 原样透传。
+    let seenMaxTokens: number | undefined;
+    const capturingFallback: Provider = {
+      name: () => "mock",
+      defaultModel: () => "deepseek-v4-pro",
+      async *sendMessageStream(params: SendParams): AsyncIterable<StreamEvent> {
+        seenMaxTokens = params.maxTokens;
+        yield* successProvider().sendMessageStream();
+      },
+    };
+    const fallback = new ModelFallback(
+      { fallbackProvider: capturingFallback, fallbackModel: "deepseek-v4-pro" },
+    );
+
+    await collectEvents(
+      fallback.executeWithFallback(
+        errorEventProvider("401 Unauthorized"),
+        { ...defaultParams, maxTokens: 200000 },
+      ),
+    );
+
+    expect(seenMaxTokens).toBe(200000);
+  });
+
   test("用户中断时不重试也不 fallback", async () => {
     let fallbackCalled = false;
     const fallbackProv: Provider = {

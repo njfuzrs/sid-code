@@ -23,6 +23,7 @@ import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { resolveToolSearchEnabled } from "../tool/tool-search-auto.ts";
 import { TOKEN_THRESHOLDS } from "../context/auto-compact.ts";
 import { ModelFallback } from "../llm/fallback.ts";
+import { isAwaitingHumanInput } from "./human-input-gate.ts";
 import { setSseDumpContext } from "../llm/sse-chunk-dumper.ts";
 import { resolveLoopTimeouts, computeBackoffMs } from "../config/network-profile.ts";
 import { emitTimeoutFired, emitTimeoutRetry, emitTimeoutRetryExhausted, armIneffectiveCheck, emitWatchdogKill, getStreamSnapshot, clearStreamSnapshot, clearAllSnapshots } from "../trace/stream-observer.ts";
@@ -1137,11 +1138,27 @@ export async function* queryLoop(
       // Fix 2：看门狗启动前主动清除可能残留的旧快照（防止孤儿 generator 写入的脏数据误杀）
       clearStreamSnapshot(state.turnCount);
       const watchdogStartedAt = Date.now();
+      // 人机输入闸门配套状态：humanInputPausedAt 记录当前等待段起点（null=未在等待），
+      // humanInputPauseAccumMs 累计已结束的等待总时长，从无进展判定里剔除（根因B修复）。
+      let humanInputPausedAt: number | null = null;
+      let humanInputPauseAccumMs = 0;
       const watchdogPromise = new Promise<never>((_resolve, reject) => {
         watchdogTimer = setInterval(() => {
           try {
             // Fix 3/隐患 7：race 已 settle 后不再触发 abort（防冗余）
             if (raceSettled) return;
+            // 闸门：正在阻塞等用户输入（如 fallback 询问弹窗）→ 不判无进展。
+            // 弹窗发生在 stream generator 内部（tryFallback），期间无 SSE 事件流动，
+            // 若不短路，看门狗会把"等人答题"误当流 hang 强杀，掐断弹窗（事故 20260721-142757）。
+            if (isAwaitingHumanInput()) {
+              humanInputPausedAt = Date.now();
+              return;
+            }
+            // 刚结束等待：把无进展基线整体后移等待时长，避免答完立即被判超时。
+            if (humanInputPausedAt !== null) {
+              humanInputPauseAccumMs += Date.now() - humanInputPausedAt;
+              humanInputPausedAt = null;
+            }
             const snapshot = getStreamSnapshot(state.turnCount);
             // Fix 6（隐患 4）：快照缺失 = 还在等首字节，用 headerTimeoutMs（+10s 余量）
             // 而非固定 90s 阈值兜底——否则 DeepSeek 大上下文请求（首字节需 90-120s 属正常）
@@ -1152,7 +1169,8 @@ export async function* queryLoop(
               : netTimeouts.headerTimeoutMs + WATCHDOG_HEADER_GRACE_MS;
             // 快照存在用 lastContentProgressAt；缺失则退化为 watchdog 启动时间兜底。
             const lastProgressAt = snapshot?.lastContentProgressAt ?? watchdogStartedAt;
-            const noProgressMs = Date.now() - lastProgressAt;
+            // 扣除累计的用户等待时段，避免弹窗答完后残留的等待时长把无进展判超。
+            const noProgressMs = Date.now() - lastProgressAt - humanInputPauseAccumMs;
             if (noProgressMs < effectiveThresholdMs) return;
 
             log.error(

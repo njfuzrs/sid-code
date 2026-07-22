@@ -28,6 +28,28 @@ describe("config", () => {
     expect(cfg.maxTokens).toBe(4096);
   });
 
+  // 回归（code review 自查）：显式 maxTokens 必须在 loadConfig 全流程存活，不被
+  // 「按模型推导」分支静默覆盖。曾因 _explicitMaxTokens 登记晚于首次
+  // resolveCurrentModelConfig，导致显式值被模型上限覆盖。
+  test("loadConfig 显式 maxTokens 低于模型上限时不被模型推导覆盖", async () => {
+    const cfg = await loadConfig({
+      provider: "openai",
+      model: "deepseek-v4-pro", // 注册表上限 384000，远高于显式值
+      maxTokens: 8192,
+    });
+    expect(cfg.maxTokens).toBe(8192);
+  });
+
+  // 回归：显式 maxTokens 超过模型物理上限时必须钳制（否则网关 400）。
+  test("loadConfig 显式 maxTokens 超模型上限时钳制到上限", async () => {
+    const cfg = await loadConfig({
+      provider: "openai",
+      model: "glm-5.2", // 注册表上限 128000
+      maxTokens: 999999,
+    });
+    expect(cfg.maxTokens).toBe(128000);
+  });
+
   test("loadConfig CLI 参数优先级最高", async () => {
     const cfg = await loadConfig({ provider: "ollama", model: "llama3" });
     // CLI 参数应覆盖环境变量和默认值
