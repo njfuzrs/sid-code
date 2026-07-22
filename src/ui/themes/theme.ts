@@ -52,8 +52,8 @@ export const lightTheme: ColorsTheme = {
   AccentGreen: '#347d2a', // 加深绿（浅底对比度 ~4.6:1）
   AccentYellow: '#9a6700', // 加深棕橙（浅底对比度 ~4.8:1）
   AccentRed: '#d20f39', // red
-  DiffAdded: '#d4edda',
-  DiffRemoved: '#f8d7da',
+  DiffAdded: '#b5e6c2', // 加深，浅底整行可辨（与 lightSemanticColors 同步）
+  DiffRemoved: '#f4c2ca',
   Comment: '#6c6f85', // subtext0（代码注释，浅底对比度 ~4.4:1）
   Gray: '#5c5f77', // subtext1（次要文本，对比度 ~5.5:1）
   DarkGray: '#acb0be', // surface2（边框）
@@ -77,8 +77,8 @@ export const darkTheme: ColorsTheme = {
   AccentGreen: '#a6e3a1', // green
   AccentYellow: '#f9e2af', // yellow
   AccentRed: '#f38ba8', // red
-  DiffAdded: '#1e3a2e',
-  DiffRemoved: '#3a1e1e',
+  DiffAdded: '#215c33', // 加深，行底色 vs 基底一眼可辨（与 darkSemanticColors 同步）
+  DiffRemoved: '#63202f',
   Comment: '#9399b2', // overlay2（代码注释，深底可读）
   Gray: '#6c7086', // overlay0（次要文本）
   DarkGray: '#45475a', // surface1（边框/竖线）

@@ -55,10 +55,13 @@ export const darkSemanticColors: SemanticColors = {
     input: '#313244',
     focus: '#1e3a5f',
     diff: {
-      added: '#1e3a2e',
-      removed: '#3a1e1e',
-      addedEmphasis: '#2d5a43',
-      removedEmphasis: '#5a2d2d',
+      // 2026-07: 行底色 vs 基底 #1e1e2e 原仅 1.1~1.3:1，整行像没上色。
+      // 加深加浓后 add ~2.1:1 / del ~1.4:1（受红色亮度上限约束），
+      // 「哪行增/删」一眼可辨；文字(status.success/error) on 底色仍 ≥5:1。
+      added: '#215c33',
+      removed: '#63202f',
+      addedEmphasis: '#357a4b',
+      removedEmphasis: '#8a2f42',
     },
   },
   border: {
@@ -174,10 +177,11 @@ export const githubDarkSemanticColors: SemanticColors = {
     input: '#2f363d',
     focus: '#044289',
     diff: {
-      added: '#3C4636',
-      removed: '#502125',
-      addedEmphasis: '#4C6340',
-      removedEmphasis: '#6B2D31',
+      // 2026-07: 加深加浓，行底色 vs 基底 #24292e 由 ~1.2 提到 add ~1.8 / del ~1.3。
+      added: '#1c5a2e',
+      removed: '#6e2129',
+      addedEmphasis: '#2f7d47',
+      removedEmphasis: '#8a2f3a',
     },
   },
   border: {
@@ -213,10 +217,11 @@ export const githubLightSemanticColors: SemanticColors = {
     input: '#e1e4e8',
     focus: '#dbeeff',
     diff: {
-      added: '#e6ffed',
-      removed: '#ffeef0',
-      addedEmphasis: '#acf2bd',
-      removedEmphasis: '#fdb8c0',
+      // 2026-07: 白底原 add/del 底色接近纯白（~1.05:1），加深让整行可辨。
+      added: '#b7ebc7',
+      removed: '#f7c2c8',
+      addedEmphasis: '#8dd6a3',
+      removedEmphasis: '#ef9aa3',
     },
   },
   border: {
@@ -253,10 +258,11 @@ export const lightSemanticColors: SemanticColors = {
     input: '#ccd0da',
     focus: '#dce8ff',
     diff: {
-      added: '#d4edda',
-      removed: '#f8d7da',
-      addedEmphasis: '#a3d9b1',
-      removedEmphasis: '#f1aeb5',
+      // 2026-07: 浅底 add/del 底色原偏淡（~1.1:1），加深让整行可辨。
+      added: '#b5e6c2',
+      removed: '#f4c2ca',
+      addedEmphasis: '#8bcfa0',
+      removedEmphasis: '#e89aa6',
     },
   },
   border: {
