@@ -97,10 +97,17 @@ import { decideNagInjection, MAX_NO_PROGRESS_NAGS } from "./reminder-throttle.ts
 import {
   processObservation as observeRepeatedReadonly,
   isReadonlyProbeCommand,
+  isReadFamilyTool,
+  makeToolProbeCommand,
   buildStuckReminder,
   buildTerminateNotice,
   createRepeatedReadonlyState,
 } from "./repeated-readonly-guard.ts";
+import {
+  parseSoftTurnLimit,
+  shouldRemindSoftTurnLimit,
+  buildSoftTurnLimitReminder,
+} from "./soft-turn-limit.ts";
 import {
   buildContextPressureReminder,
   contextPressureLevel,
@@ -782,6 +789,20 @@ export async function* queryLoop(
       reminderParts.push(buildOutputStallMessage(state.outputVolumeHistory ?? []));
       log.info("QUERY_LOOP", "P2-1：注入产出停滞提醒");
       state.pendingOutputStallReminder = false;
+    }
+
+    // 【第四层·兜底】SID_MAX_TURNS 软阈值提醒（默认关闭，尊重"不打断长任务"偏好）。
+    // 仅当显式设置 SID_MAX_TURNS=<正整数> 时启用：单条用户消息处理超过 N 轮时，一次性
+    // 注入软提醒"已 N 轮，若已完成请收尾"。这是软提示、不强杀（不 yield done）——把决定
+    // 权留给模型/用户，只补上交互模式 maxTurns=Infinity 场景下"完全没有自省信号"这个缺口。
+    // 优先级最低（push），且一条消息内仅一次（softTurnLimitReminded 置位），不刷屏。
+    {
+      const softLimit = parseSoftTurnLimit(process.env.SID_MAX_TURNS);
+      if (shouldRemindSoftTurnLimit(state.turnCount, softLimit, state.softTurnLimitReminded ?? false)) {
+        reminderParts.push(buildSoftTurnLimitReminder(state.turnCount, softLimit!));
+        state.softTurnLimitReminded = true;
+        log.info("QUERY_LOOP", `第四层：注入 SID_MAX_TURNS 软阈值提醒（第 ${state.turnCount} 轮，阈值 ${softLimit}）`);
+      }
     }
 
     // ─── /goal：目标状态周期回注（对标 Codex continuation.md）───
@@ -2380,21 +2401,32 @@ export async function* queryLoop(
       // **实时** git 状态的收敛提醒（cache-safe，走 user 消息不碰 system prompt 静态前缀），
       // 注满上限仍空转则强制收尾。检测/文案是纯函数（repeated-readonly-guard.ts），此处只做副作用。
       {
-        // 从本轮 bash tool_use + 对应 tool_result 提取"只读探查命令 + 实时输出"。
-        // 非 bash 工具、写操作命令、有文本产出都算"有进展"，触发计数清零。
+        // 从本轮工具调用提取"只读探查动作 + 实时输出"。判据(★缺口 B 修复 §4.2/§3b)：
+        //   - bash 且命令是只读探查(含 cd 前缀,见 isReadonlyProbeCommand)→ 计入 probes;
+        //   - 纯只读检查工具(read/ls/glob/grep/lsp)→ 归一化为 `工具名 入参` 也计入 probes,
+        //     使"git status ↔ read 同一区域"交替空转能构成稳定复合签名而被识别,
+        //     不再被交替的 read 当"有进展"清零(历史死循环的关键缺口);
+        //   - 其它一切(写操作、编辑、其它 bash 命令、task_*/todo_write 等有产出工具、文本产出)
+        //     = 真进展,置 hadOtherActivity=true 触发清零。
         const probes: Array<{ command: string; output: string }> = [];
         let hadOtherActivity = responseText.trim().length > 0;
         for (const b of toolBlocks) {
           if (b.type !== "tool_use") continue;
-          const cmd = b.name === "bash" ? (b.input as any)?.command : undefined;
-          if (b.name === "bash" && typeof cmd === "string" && isReadonlyProbeCommand(cmd)) {
+          const readOutput = () => {
             const r = resultMap.get(b.id);
-            const output = r && r.type === "tool_result"
+            return r && r.type === "tool_result"
               ? (typeof r.content === "string" ? r.content : JSON.stringify(r.content))
               : "";
-            probes.push({ command: cmd, output });
+          };
+          const cmd = b.name === "bash" ? (b.input as any)?.command : undefined;
+          if (b.name === "bash" && typeof cmd === "string" && isReadonlyProbeCommand(cmd)) {
+            probes.push({ command: cmd, output: readOutput() });
+          } else if (isReadFamilyTool(b.name)) {
+            // 纯只读检查工具:用"工具名 + 稳定序列化入参"作为签名命令,
+            // 读同一区域(入参相同)且返回相同 → 与 git status 一起构成稳定签名。
+            probes.push({ command: makeToolProbeCommand(b.name, b.input), output: readOutput() });
           } else {
-            // 任意非只读探查工具（写操作、编辑、其它 bash、非 bash 工具）= 有进展。
+            // 写操作、编辑、其它 bash、有产出工具 = 有进展。
             hadOtherActivity = true;
           }
         }

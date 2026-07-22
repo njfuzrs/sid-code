@@ -176,4 +176,40 @@ describe("无进展只读命令止损阀（queryLoop 集成）", () => {
     expect(kinds).toContain("assistant_message");
     expect(kinds).toContain("done");
   });
+
+  // ★端到端回放本次真实死锁（缺口 A+B 修复）：命令带 `cd` 前缀 + git status 与 read 同区域交替。
+  // 修复前：cd 前缀让 isReadonlyProbeCommand 判非只读（缺口 A）→ 零 probe；即便进了，
+  //   交替的 read 每轮把计数清零（缺口 B）→ 永不达阈值 → 整会话零触发，空转到用户 ESC。
+  // 修复后：cd 前缀被剥离后识别为只读探查；read 折叠进复合签名不再清零 → 正常触发收敛+强制收尾。
+  test("★回放真实死锁：cd 前缀 git status ↔ read 同区域交替 → 触发止损并强制收尾", async () => {
+    // 每轮同时发"cd 前缀的 git status"和"read 同一文件同一区域"（复合签名稳定）。
+    const stuckResp = (i: number): AccumulatedResponse => ({
+      role: "assistant",
+      content: [
+        { type: "tool_use", id: `g${i}`, name: "bash", input: { command: "cd /repo && git status --short" } },
+        { type: "tool_use", id: `r${i}`, name: "read", input: { file_path: "/repo/a.vue", offset: 585 } },
+      ],
+      stopReason: "tool_use",
+      usage: { inputTokens: 100, outputTokens: 5 },
+    } as AccumulatedResponse);
+    const responses = Array.from({ length: 20 }, (_, i) => stuckResp(i));
+    const { loopConfig, ctxMgr, sentReminders } = makeLoopConfig(responses, "(命令无输出)");
+
+    const kinds: string[] = [];
+    const systemTexts: string[] = [];
+    for await (const ev of queryLoop(loopConfig)) {
+      kinds.push(ev.kind);
+      if (ev.kind === "system" && "text" in ev) systemTexts.push(ev.text);
+    }
+
+    // 收敛提醒被注入（证明缺口 A/B 修复后确实触发了，而非零触发）。
+    const convergenceReminders = sentReminders.filter(
+      (t) => t.includes("反复执行相同的只读命令") || t.includes("连续多轮执行相同的只读命令"),
+    );
+    expect(convergenceReminders.length).toBe(MAX_STUCK_REMINDERS);
+    // 强制收尾（terminate），未耗尽 30 轮 maxTurns。
+    expect(injectedReminderTexts(ctxMgr).some((t) => t.includes("强制结束"))).toBe(true);
+    expect(kinds).toContain("done");
+    expect(systemTexts.some((t) => t.includes("强制结束") || t.includes("无限循环"))).toBe(true);
+  });
 });

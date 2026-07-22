@@ -87,6 +87,27 @@ describe("buildTrajectory", () => {
     expect(result.trajectory).toHaveLength(0);
   });
 
+  // ─── ★§6.4：model_at_start 归因字段落盘（回归防"死字段"） ───
+
+  test("★model_at_start 与 model 不同时落进 metadata 输出", () => {
+    const result = buildTrajectory([makePair()], makeMetadata({
+      model: "ali-deepseek-v4-pro",   // /model 切换后的实际模型
+      model_at_start: "glm-5.2",       // 启动模型
+    }));
+    // 必须真的序列化进产物,否则归因对照拿不到（此前是死字段）。
+    expect(result.metadata.model_at_start).toBe("glm-5.2");
+    expect(result.metadata.model).toBe("ali-deepseek-v4-pro");
+  });
+
+  test("★未切换（model_at_start === model）时省略该字段，兼容旧 traj", () => {
+    const result = buildTrajectory([makePair()], makeMetadata({
+      model: "claude-sonnet-4-20250514",
+      model_at_start: "claude-sonnet-4-20250514",
+    }));
+    // 相同则无对照意义,不写字段（保持产物精简、与旧 traj 一致）。
+    expect(result.metadata.model_at_start).toBeUndefined();
+  });
+
   // ─── final_answer 步骤 ───
 
   test("stop_reason=end_turn 且 thought 非空时生成 final_answer", () => {

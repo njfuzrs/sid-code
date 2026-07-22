@@ -154,6 +154,22 @@ describe("TraceCollector", () => {
     expect(collector.getPairs()[1].stop_reason).toBe("tool_use");
   });
 
+  // ─── ★§6.4：/model 切换后 metadata.model 跟踪实际模型，model_at_start 保留启动值 ───
+
+  test("★/model 中途切换：metadata.model 跟随实际模型，model_at_start 冻结启动值", async () => {
+    // SessionStart 启动模型为 claude-test（见 fireSessionStart）。随后两轮请求分别用
+    // glm-5.2、deepseek-v4-pro，模拟用户中途 /model 切换。
+    await fireSessionStart(hookSystem, "sess-001");
+    await fireModelRound(hookSystem, { model: "glm-5.2" });
+    await fireModelRound(hookSystem, { model: "ali-deepseek-v4-pro" });
+
+    const meta = collector.getMetadata()!;
+    // model 跟踪实际发生请求的模型（切换后为最新模型），与 raw/events/TUI 一致。
+    expect(meta.model).toBe("ali-deepseek-v4-pro");
+    // model_at_start 冻结在 SessionStart 的启动值，供归因对照，不随 /model 切换变动。
+    expect(meta.model_at_start).toBe("claude-test");
+  });
+
   test("AfterModel 后 raw.jsonl 追加一行", async () => {
     await fireSessionStart(hookSystem);
     await fireModelRound(hookSystem);
@@ -1093,6 +1109,40 @@ describe("TraceCollector", () => {
     // 非空壳，目录必须保留
     expect(existsSync(dir)).toBe(true);
     expect(existsSync(join(dir, "raw.jsonl"))).toBe(true);
+  });
+
+  // ─── ★§6.1：放宽空壳清理，覆盖"发出一次 BeforeModel 即被 abort、0 token"的启动即中断会话 ───
+
+  test("★启动即中断（BeforeModel 发出后立即 abort，0 token）退出时也判空壳清理", async () => {
+    await fireSessionStart(hookSystem); // sess-001
+    const dir = join(testDir, "sessions", "sess-001");
+    // 只发 BeforeModel（在途），不发 AfterModel —— 模拟用户敲 "hi" 随即 Ctrl-C。
+    await hookSystem.fireBeforeModelEvent({
+      model: "claude-test",
+      messages: [{ role: "user", content: "hi" }],
+      raw_messages: [{ role: "user", content: "hi" }],
+    });
+    expect(existsSync(dir)).toBe(true);
+
+    // 退出：handleSessionEnd 会把在途 pair 冲成 partial/interrupted 空壳,随后判空壳清理。
+    await hookSystem.fireSessionEndEvent("user_interrupt");
+
+    // 该类噪音会话（全天 18 条）应被清理，不再残留供上传。
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  test("★在途中断但已收到响应内容（有诊断价值）→ 保留目录，不误删", async () => {
+    await fireSessionStart(hookSystem); // sess-001
+    const dir = join(testDir, "sessions", "sess-001");
+    // 完成一轮真实 LLM 调用（收到内容块）——即便随后异常退出也有诊断价值。
+    await fireModelRound(hookSystem, {
+      messages: [{ role: "user", content: "hi" }],
+      contentBlocks: [{ type: "text", text: "部分回答" }],
+    });
+    await hookSystem.fireSessionEndEvent("user_interrupt");
+
+    // 有真实响应内容 → 非空壳，必须保留。
+    expect(existsSync(dir)).toBe(true);
   });
 
   // ─── 修复问题一：resume 复用原 trajectory 目录 ───

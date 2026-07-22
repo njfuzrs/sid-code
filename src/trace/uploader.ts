@@ -537,6 +537,8 @@ export class UploadManager implements TraceUploaderInterface {
       const snapshot = {
         session_id: md.session_id,
         model: md.model,
+        // ★§6.4：/model 切换后归因对照（仅 session.traj 里存在时才带；未切换则无此字段）。
+        ...(md.model_at_start ? { model_at_start: md.model_at_start } : {}),
         start_time: md.start_time,
         end_time: md.end_time,
         total_steps: md.total_steps,

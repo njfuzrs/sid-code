@@ -363,6 +363,8 @@ export class TraceCollector {
     this.metadata = {
       session_id: traceSessionId,
       model: input.model ?? "",
+      // ★§6.4：冻结启动模型,供"启动 vs /model 切换后"归因对照。`model` 随后跟踪实际模型。
+      model_at_start: input.model ?? "",
       start_time: input.timestamp,
       working_directory: input.cwd,
       permission_mode: input.permission_mode,
@@ -519,7 +521,10 @@ export class TraceCollector {
         this.metadata.system_prompt = systemText;
         this.metadata.system_prompt_hash = createHash("md5").update(systemText).digest("hex");
       }
-      if (this.metadata.model === "" && req.model) {
+      // ★§6.4：跟踪实际模型（而非仅首次写入后冻结）。`/model` 中途切换后，后续请求
+      // 的 req.model 即为新模型，这里随之更新 metadata.model，与 raw/events/TUI 一致。
+      // model_at_start 仍保留启动值不变，供归因对照。
+      if (req.model && this.metadata.model !== req.model) {
         this.metadata.model = req.model;
       }
     }
@@ -780,7 +785,8 @@ export class TraceCollector {
     // session.traj.total_cost_usd 会永远停在初始 0。这里每轮 AfterModel 增量累加，
     // 使 traj 在中断场景也保留已发生的成本；SessionEnd 触发时仍以 SessionState 权威值覆盖。
     this.metadata.total_cost_usd += resp.cost_usd ?? 0;
-    if (this.metadata.model === "" && input.llm_request.model) {
+    // ★§6.4：同上,跟踪实际模型（/model 切换后随之更新，非仅首次）。
+    if (input.llm_request.model && this.metadata.model !== input.llm_request.model) {
       this.metadata.model = input.llm_request.model;
     }
 
@@ -1312,22 +1318,44 @@ export class TraceCollector {
   }
 
   /**
-   * 判定当前会话是否「空白轨迹」——打开即退、从未发生任何 LLM 调用的纯空壳。
+   * 判定当前会话是否「空白轨迹」——打开即退、从未发生任何有效 LLM 调用的纯空壳。
    *
-   * 空白判据（三者同时成立才算空壳，任一不满足都视为有效会话）：
-   *   1. 本进程从未完成任何 LLM 轮次：pairs.length === 0；
-   *   2. 权威统计也确认零调用：metadata.total_api_calls === 0（SessionEnd 已用 SessionState 覆盖）；
-   *   3. 非 resume 续接：resumedPairOffset === 0——续接目录即便本进程空跑也含历史轮次，绝不能删。
+   * 两类空壳（均要求 resumedPairOffset===0 且 total_api_calls===0）：
+   *   1. 经典空壳：pairs 空 + 无在途请求（打开即退，从未发起任何请求）；
+   *   2. ★启动即中断空壳（§6.1）：发出一次 BeforeModel 即被 abort、0 token，pairs 里只剩
+   *      is_partial+interrupted+空 content 的空壳 pair。覆盖"敲 hi 随即 Ctrl-C"这类噪音会话。
+   *
+   * 保守边界：只要有任何一轮真正收到过响应内容（response.content 非空），或有在途请求残留，
+   *   就视为有诊断价值而保留——网关侧可能已计费，本地目录不能删。
    */
   private isBlankSession(): boolean {
-    return (
-      this.pairs.length === 0 &&
-      (this.metadata.total_api_calls ?? 0) === 0 &&
-      this.resumedPairOffset === 0 &&
-      // 有在途请求（BeforeModel 已发但 AfterModel 未到）时不算空壳——
-      // 中断会话仍需保留目录供诊断，否则网关侧有计费但本地连 events.jsonl 都被删。
-      !this.currentPair
-    );
+    // 前置铁律：resume 续接目录即便本进程空跑也含历史轮次，绝不能删。
+    if (this.resumedPairOffset !== 0) return false;
+    // 权威统计确认零 LLM 调用（SessionEnd 已用 SessionState 覆盖 total_api_calls）。
+    if ((this.metadata.total_api_calls ?? 0) !== 0) return false;
+
+    // 经典空壳：打开即退，从未发起任何请求（pairs 空 + 无在途）。
+    if (this.pairs.length === 0 && !this.currentPair) return true;
+
+    // ★§6.1 放宽分支（根治文档观测项）：覆盖"发出一次 BeforeModel 即被 abort、0 token"的
+    // 启动即中断会话（如用户开终端敲 "hi" 随即 Ctrl-C，全天 18 条这类噪音）。
+    // 此判定发生在 handleSessionEnd 已把在途 currentPair 冲成 partial pair 塞进 pairs 之后
+    // （见 handleSessionEnd 的"在途请求收尾"段），故此时 currentPair 已为 null、pairs 里
+    // 只剩若干 is_partial 且 stop_reason="interrupted" 的空壳 pair。
+    // 严格条件（全部满足才判空壳，任一不满足即保留供诊断）：
+    //   - 没有任何在途请求残留（currentPair 为空）；
+    //   - pairs 全部是 partial/interrupted（没有任何一轮真正收到过 response）；
+    //   - 每个 partial pair 的 response.content 为空（从未收到任何响应字节/内容块）。
+    // 只要有一轮收到过内容（哪怕未正常收尾），就说明网关侧可能已计费、有诊断价值，保留。
+    if (!this.currentPair && this.pairs.length > 0) {
+      const allInterruptedEmpty = this.pairs.every((p) => {
+        const contentLen = Array.isArray(p.response?.content) ? p.response!.content.length : 0;
+        return p.is_partial === true && p.stop_reason === "interrupted" && contentLen === 0;
+      });
+      if (allInterruptedEmpty) return true;
+    }
+
+    return false;
   }
 
   /**

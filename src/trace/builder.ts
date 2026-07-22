@@ -124,7 +124,18 @@ export interface HarnessTraceMetadata {
 /** 会话元数据 */
 export interface TraceMetadata {
   session_id: string;
+  /**
+   * 当前/实际使用的模型。
+   * ★§6.4（根治文档观测项）：此字段跟踪**实际发生请求的模型**——`/model` 切换后随之更新，
+   * 与 raw.jsonl/events.jsonl 及 TUI 实时显示一致，避免归因分析时误判为启动值。
+   * 会话启动时的原始模型另存于 `model_at_start`。
+   */
   model: string;
+  /**
+   * ★§6.4：会话启动时（SessionStart）的原始模型，写入后冻结不变。
+   * 用户中途 `/model` 切换只更新 `model`，不动此字段，供"启动 vs 切换后"的归因对照。
+   */
+  model_at_start?: string;
   start_time: string;
   end_time?: string;
   working_directory: string;
@@ -339,6 +350,11 @@ export interface TrajectoryInfo {
 export interface TrajectoryMetaOutput {
   session_id: string;
   model: string;
+  /**
+   * ★§6.4：会话启动时的原始模型（写入后冻结）。与 `model`（跟踪 /model 切换后的实际模型）
+   * 配对，供归因分析对照"启动 vs 切换后"。可选——旧 traj 无此字段。
+   */
+  model_at_start?: string;
   start_time: string;
   end_time: string;
   total_steps: number;
@@ -845,6 +861,11 @@ export function buildTrajectory(
   const metaOutput: TrajectoryMetaOutput = {
     session_id: metadata.session_id,
     model: metadata.model,
+    // ★§6.4：落盘启动模型，供"启动 vs /model 切换后"归因对照。仅在有值且与当前模型不同时
+    // 才写（相同则无对照意义，省字段，兼容旧 traj）。
+    ...(metadata.model_at_start && metadata.model_at_start !== metadata.model
+      ? { model_at_start: metadata.model_at_start }
+      : {}),
     start_time: metadata.start_time,
     end_time: metadata.end_time ?? new Date().toISOString(),
     total_steps: trajectory.length,

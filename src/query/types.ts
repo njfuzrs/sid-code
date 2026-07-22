@@ -310,6 +310,12 @@ export interface LoopState {
   tokenBudgetBaselineUsage?: number;
   /** P0-3：预算续写已触发的次数（供日志/可观测性使用，真正的停止条件是预算耗尽或递减检测） */
   tokenBudgetContinuationCount?: number;
+  /**
+   * 【第四层·兜底】SID_MAX_TURNS 软阈值提醒是否已注入（每条用户消息内仅一次）。
+   * 默认关闭（未设 SID_MAX_TURNS 则永不置位）；达阈值注入一次软提醒后置真，避免每轮刷屏。
+   * queryLoop 每条用户消息新建 state，随新消息天然重置。
+   */
+  softTurnLimitReminded?: boolean;
 }
 
 /** 创建初始循环状态 */
