@@ -299,11 +299,10 @@ describe("ModelFallback", () => {
     let seenModel: string | undefined;
     const capturingFallback: Provider = {
       name: () => "mock",
-      defaultModel: () => "glm-5.2",
       async *sendMessageStream(params: SendParams): AsyncIterable<StreamEvent> {
         seenMaxTokens = params.maxTokens;
         seenModel = params.model;
-        yield* successProvider().sendMessageStream();
+        yield* successProvider().sendMessageStream(defaultParams);
       },
     };
     const fallback = new ModelFallback(
@@ -326,10 +325,9 @@ describe("ModelFallback", () => {
     let seenMaxTokens: number | undefined;
     const capturingFallback: Provider = {
       name: () => "mock",
-      defaultModel: () => "deepseek-v4-pro",
       async *sendMessageStream(params: SendParams): AsyncIterable<StreamEvent> {
         seenMaxTokens = params.maxTokens;
-        yield* successProvider().sendMessageStream();
+        yield* successProvider().sendMessageStream(defaultParams);
       },
     };
     const fallback = new ModelFallback(

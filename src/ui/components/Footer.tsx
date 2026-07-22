@@ -1,28 +1,28 @@
 /**
- * Footer 组件（四区分组底部状态栏）
+ * Footer 组件（两行分层 + 各行单侧对齐 + 两色层次 底部状态栏）
  *
- * 视觉语言对标 claude-code 的 statusline：不再把所有列用统一 ` · ` 平铺（等权重 =
- * 没有重点），而是按语义分四区，区间用留白隔断，区内才用 ` · ` 连接：
+ * 信息变多后单行放不下。此前试过「两端锚定」（左右各一簇、中间大留白），但两簇隔太远
+ * 反而显得零散不成整体。这版改为**每行单侧对齐、按语义把相关信息聚成一条连续流**，
+ * 视觉语言仍对标 claude-code 的 statusline（区内 ` · ` 连接、克制点睛）：
  *
- *   身份区(左)          旋钮区              计量区(右)                 权限角(最右)
- *   deepseek-v4-pro     ✻ max              ↑12k ↓3.4k · 45% · ⚡83%   default / ⚠ skip-perms
+ *   行1(会话/运行 · 左对齐)  glm-5.2 · ✻ · max · 4% · ↑30.9k ↓116 · $0.0343 · ⚡47%
+ *   行2(环境/上下文 · 右对齐)                              sid-code ⎇ master · ⏸ Manual
  *
- * - 身份区：model（+ debug 暗角标）。常驻。
- * - 旋钮区：thinking 字形 · effort 字形（先小后大：先开关后档位）。支持时显示。
- * - 计量区：tokens · context% · cache% · cost。有值才现（零值隐藏）。
- * - 权限角：权限模式统一独占最右一处（default/auto/skip-perms…）；危险态加 ⚠ 前缀点睛。
- *   此前非危险模式塞旋钮区、危险模式独占最右，两处位置迷惑用户，现统一到最右一处。
+ * ① 分两行（纵向分层）：
+ *    - 行1｜会话运行态（每轮在变、需要盯的）：model · thinking · effort · [PLAN] ·
+ *      context% · tokens(↑in ↓out) · cost · cache% · savings · scroll。**整行左对齐**，
+ *      从最左视线起点一条流读下来。
+ *    - 行2｜环境上下文（很少变、次要的）：repo ⎇ branch · ⑂worktree · 权限模式。
+ *      **整行右对齐**，退到右下角，与行1错开，主次分明。
+ * ② 一行内所有项用统一 ` · ` 连接成一条连续流（不再用大留白把信息撕成两半），读感整体。
+ * ③ 「两色层次」：同一项内部拆「单位/符号(暗)」+「数值(亮)」两色——方向箭头 ↑↓、⚡、⎇、
+ *    $ 符号、分隔点一律暗色(theme.ui.comment)后退；真正的数值(token 数、分支名、model)
+ *    用亮色(theme.text.primary)前进。即便全程无告警也有「标签→数值」层次，不再一片灰。
+ *    语义告警(上下文超阈红/黄、缓存命中绿、费用超限红/黄、max 档蓝、危险权限红)再点睛。
  *
- * 降噪(L4.C)：↑0 ↓0 / ≈$0 零值隐藏；DEBUG 从常驻 warning 黄降为暗角灰标 ·d；
- * effort/thinking 去掉 (auto) 文字后缀（字形自解释）。
- * 点睛(元原则③)：默认全灰，只有危险态 / 上下文超阈 / 费用超限 / max 档 才上色。
- *
- * 窄终端自适应(L4.D「终端窄时按优先级渐进隐藏」)：状态栏必须**单行**呈现，宽度不够时
- * 不能让任一区块的文本折行到第二行（会把 model 拆成 `ali-deepseek-v4-\nflash`、把
- * token 数字截半，视觉全乱）。这里用 stringWidth(L2.3) 实测各区块列宽，按优先级从低到
- * 高逐项丢弃：计量区先丢（且区内 scroll→savings→cache→cost→tokens→context 顺序丢），
- * 再丢旋钮区；身份区(model) 与权限角(尤其危险态 skip-perms 必须可见)永远保留。每个
- * <Text> 再加 wrap="truncate-end" 兜底——即便实测有偏差也只会单行截断，绝不折行。
+ * 不折行兜底：两行各 flexWrap="nowrap" + overflow="hidden" + 每个 <Text> wrap="truncate-end"；
+ * 行1 极窄时按 dropOrder 从低价值到高价值逐项丢计量项（scroll→savings→cache→cost→tokens→
+ * context），model / 旋钮永远保留；行2 极窄时先丢 git 段，权限模式永远保留。
  */
 
 import React from "react";
@@ -31,12 +31,13 @@ import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
 import type { Usage } from "../../llm/types.ts";
 import { theme } from "../semantic-colors.ts";
-import { WARNING_MARK, GIT_BRANCH, WORKTREE_MARK } from "../constants/figures.ts";
+import { WARNING_MARK, GIT_BRANCH, WORKTREE_MARK, TOKEN_IN, TOKEN_OUT } from "../constants/figures.ts";
 import { useStatusLineData, deriveWorktree } from "../hooks/useStatusLineData.ts";
 import { useConfig } from "../contexts/ConfigContext.tsx";
 import { useCustomStatusLine } from "../statusline/useCustomStatusLine.ts";
 import { normalizeCacheUsage } from "../../llm/types.ts";
 import { SessionState } from "../../session/state.ts";
+import { formatLargeNumber } from "../utils/format-number.ts";
 
 // ── Footer 主组件 ──
 
@@ -56,48 +57,56 @@ interface FooterProps {
   cacheSavingsUSD?: number;
   /**
    * 终端列宽（响应式，随窗口 resize 变化）。用于窄终端下按优先级渐进隐藏区块，
-   * 保证状态栏始终单行。缺省时回退到 stdout.columns，仍可工作只是不随 resize 精确联动。
+   * 保证状态栏每行不折行。缺省时回退到 stdout.columns，仍可工作只是不随 resize 精确联动。
    */
   termWidth?: number;
 }
 
 /** 区内分隔符宽度（" · " = 前后空格 + 点 = 3 列）。 */
 const DOT_WIDTH = 3;
-/** 区间留白宽度（身份→旋钮、计量→权限角均为 width={3} 空盒）。 */
-const GAP_WIDTH = 3;
-/** 弹性留白盒的最小宽度（flexGrow spacer 的 minWidth）。 */
-const SPACER_MIN = 2;
 /** 外层 paddingX={1} 占左右各 1 列。 */
 const PADDING_X = 2;
 
-/** 区内分隔符：仅在同一区内多项之间使用，区间靠留白不靠它。 */
+/** 区内分隔符：同一行项之间统一用它连接成连续流。 */
 const Dot: React.FC = () => <Text color={theme.ui.comment}> · </Text>;
 
-/** 计量项描述：str 供实测列宽，node 供渲染，dropOrder 越大越先在窄屏被丢弃。 */
-interface MetricItem {
+/** 一行内的一个「段」：str 供实测列宽，nodes 供渲染（已按两色层次拆好），dropOrder 越大越先丢。 */
+interface Segment {
   key: string;
   str: string;
-  color: string | undefined;
+  nodes: React.ReactNode;
   dropOrder: number;
 }
 
-/** 把一组带分隔符的项的字符串拼起来测总宽（n 项 → (n-1) 个 " · "）。 */
+/** 把若干段的字符串按 " · " 连接测总宽（n 段 → (n-1) 个 " · "）。 */
 function joinedWidth(strs: string[]): number {
   if (strs.length === 0) return 0;
   const textW = strs.reduce((sum, s) => sum + stringWidth(s), 0);
   return textW + DOT_WIDTH * (strs.length - 1);
 }
 
+/** 把段数组渲染成「段 · 段 · 段」的连续流。 */
+function renderFlow(segs: Segment[]): React.ReactNode[] {
+  const out: React.ReactNode[] = [];
+  segs.forEach((s, i) => {
+    if (i > 0) out.push(<Dot key={`dot-${s.key}`} />);
+    out.push(<React.Fragment key={s.key}>{s.nodes}</React.Fragment>);
+  });
+  return out;
+}
+
 export const Footer = React.memo(function Footer(props: FooterProps) {
   const data = useStatusLineData(props);
-  const { itemColor } = data;
   const config = useConfig();
 
   const termWidth =
     props.termWidth ?? (typeof process !== "undefined" ? process.stdout?.columns : undefined) ?? 80;
 
+  // ── 两色层次的两个基线色：暗(单位/符号，后退) + 亮(数值，前进) ──
+  const dim = theme.ui.comment;
+  const val = theme.text.primary;
+
   // P1-5 自定义状态栏：配了 statusLine.command 就跑用户脚本，stdout 作状态栏（原样透传 ANSI）。
-  // 组装会话数据（复用 useStatusLineData 已聚合字段 + props + 派生 worktree）。
   const cacheNorm = normalizeCacheUsage(props.usage, SessionState.inferProvider(props.model, config.availableModels));
   const cacheHitRate = cacheNorm.cacheHitTokens > 0 && cacheNorm.promptTotal > 0
     ? Math.round((cacheNorm.cacheHitTokens / Math.max(1, cacheNorm.promptTotal)) * 100)
@@ -120,137 +129,190 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
     },
   });
 
-  // ── 身份区：model（+ raw/vim 暗角标）。常驻，永不丢弃。──
-  let identityStr = data.model;
-  if (data.isRaw) identityStr += " ·r";
-  if (data.isVim) identityStr += " ·v";
-  const identity: React.ReactNode[] = [
-    <Text key="model" color={itemColor} wrap="truncate-end">{data.model}</Text>,
-  ];
-  if (data.isRaw) identity.push(<Text key="raw" color={theme.ui.comment}> ·r</Text>);
-  if (data.isVim) identity.push(<Text key="vim" color={theme.ui.comment}> ·v</Text>);
-  // DEBUG 不在状态栏展示：debug 是开发者自己开的开关，不必常驻占位。
+  // ════════════════════════════════════════════════════════════════════════
+  // 行1（会话/运行态，左对齐）：model · 旋钮 · 计量
+  // ════════════════════════════════════════════════════════════════════════
 
-  // ── 旋钮区：goal · thinking · effort · [PLAN]（先模式后旋钮：goal/[PLAN] 是"当前模式"，
-  //    thinking/effort 是开关档位）──
-  // 收集字符串（供测宽）与渲染项（供输出），保持索引对应，窄屏时整区一起丢。
-  const knobStrs: string[] = [];
-  const knobNodes: React.ReactNode[] = [];
-  // /goal 目标进度：进入 goal 模式时最关键的上下文，放旋钮区最前（与 [PLAN] 同为模式标识）。
-  // 文案已带「目标 N/M 轮」中文标签，语义自解释，不用彩色 emoji。
+  // 固定段（永不丢弃）：model（亮+粗，视线锚点）+ raw/vim 暗角标 + 旋钮。
+  const fixedSegs: Segment[] = [];
+  {
+    const idNodes: React.ReactNode[] = [
+      <Text key="model" bold color={val} wrap="truncate-end">{data.model}</Text>,
+    ];
+    if (data.isRaw) idNodes.push(<Text key="raw" color={dim}> ·r</Text>);
+    if (data.isVim) idNodes.push(<Text key="vim" color={dim}> ·v</Text>);
+    let idStr = data.model + (data.isRaw ? " ·r" : "") + (data.isVim ? " ·v" : "");
+    fixedSegs.push({ key: "model", str: idStr, dropOrder: -1, nodes: <>{idNodes}</> });
+  }
   if (data.goal) {
-    knobStrs.push(data.goal.text);
-    knobNodes.push(<Text key="goal" color={data.goal.color}>{data.goal.text}</Text>);
+    fixedSegs.push({
+      key: "goal", str: data.goal.text, dropOrder: -1,
+      nodes: <Text color={data.goal.color} wrap="truncate-end">{data.goal.text}</Text>,
+    });
   }
   if (data.thinking) {
-    // 旋钮区只渲染字形（✻/✧），去掉 on/off 文字——字形自解释开关态。
-    knobStrs.push(data.thinking.glyph);
-    knobNodes.push(<Text key="thinking" color={data.thinking.color}>{data.thinking.glyph}</Text>);
+    // 旋钮区只渲染字形（✻/✧），字形自解释开关态。
+    fixedSegs.push({
+      key: "thinking", str: data.thinking.glyph, dropOrder: -1,
+      nodes: <Text color={data.thinking.color}>{data.thinking.glyph}</Text>,
+    });
   }
   if (data.effort) {
-    knobStrs.push(data.effort.text);
-    knobNodes.push(<Text key="effort" color={data.effort.color}>{data.effort.text}</Text>);
+    fixedSegs.push({
+      key: "effort", str: data.effort.text, dropOrder: -1,
+      nodes: <Text color={data.effort.color}>{data.effort.text}</Text>,
+    });
   }
   if (data.isPlanMode) {
-    knobStrs.push("[PLAN]");
-    knobNodes.push(<Text key="plan" bold color={theme.ui.active}>[PLAN]</Text>);
+    fixedSegs.push({
+      key: "plan", str: "[PLAN]", dropOrder: -1,
+      nodes: <Text bold color={theme.ui.active}>[PLAN]</Text>,
+    });
   }
 
-  // ── 计量区：tokens · context · cache · cost（零值项由 hook / 下方判定隐藏）──
-  // dropOrder 越大越先被丢：context(1) / tokens(2) 最有价值，最后才丢；
-  // scroll(6) / savings(5) 信息量最低，最先丢。
-  const metricItems: MetricItem[] = [];
-  if (data.tokens) {
-    metricItems.push({ key: "tokens", str: data.tokens.text, color: itemColor, dropOrder: 2 });
-  }
+  // 计量段（窄屏可丢，dropOrder 越大越先丢）：context / tokens / cost / cache / savings / scroll。
+  const metricSegs: Segment[] = [];
+
+  // context%：默认亮值(有层次)，超阈时由 deriveContextColor 转黄/红点睛。
   if (data.context) {
-    metricItems.push({ key: "context", str: data.context.text, color: data.context.color, dropOrder: 1 });
+    const elevated = data.context.color !== theme.ui.comment;
+    metricSegs.push({
+      key: "context", str: data.context.text, dropOrder: 1,
+      nodes: <Text color={elevated ? data.context.color : val}>{data.context.text}</Text>,
+    });
   }
-  if (data.cache) {
-    metricItems.push({ key: "cache", str: data.cache.text, color: data.cache.color, dropOrder: 4 });
+  // tokens：↑/↓ 箭头(暗) + 数值(亮)。
+  if (data.tokens) {
+    const inStr = formatLargeNumber(props.stockInputTokens);
+    const outStr = formatLargeNumber(props.usage.outputTokens);
+    metricSegs.push({
+      key: "tokens", str: `${TOKEN_IN}${inStr} ${TOKEN_OUT}${outStr}`, dropOrder: 2,
+      nodes: (
+        <>
+          <Text color={dim}>{TOKEN_IN}</Text>
+          <Text color={val}>{inStr}</Text>
+          <Text color={dim}> {TOKEN_OUT}</Text>
+          <Text color={val}>{outStr}</Text>
+        </>
+      ),
+    });
   }
-  // 费用零值隐藏：costUSD<=0 时不显示 ≈$0 / $0（纯噪音）。
+  // cost：$/≈$ 符号(暗) + 数值(超限红/黄，否则亮)。
   if (props.costUSD > 0) {
-    metricItems.push({ key: "cost", str: data.cost.text, color: data.cost.color ?? itemColor, dropOrder: 3 });
+    const m = data.cost.text.match(/^([^\d.]*)(.*)$/);
+    const prefix = m?.[1] ?? "$";
+    const num = m?.[2] ?? data.cost.text;
+    metricSegs.push({
+      key: "cost", str: data.cost.text, dropOrder: 3,
+      nodes: (
+        <>
+          <Text color={dim}>{prefix}</Text>
+          <Text color={data.cost.color ?? val}>{num}</Text>
+        </>
+      ),
+    });
   }
+  // cache：⚡符号(暗) + 命中率(≥50% 绿点睛，否则亮)。
+  if (data.cache) {
+    const rateColor = data.cache.rate >= 50 ? theme.status.success : val;
+    metricSegs.push({
+      key: "cache", str: data.cache.text, dropOrder: 4,
+      nodes: (
+        <>
+          <Text color={dim}>⚡</Text>
+          <Text color={rateColor}>{data.cache.rate}%</Text>
+        </>
+      ),
+    });
+  }
+  // savings：金额(绿) + " saved" 后缀(暗)。
   if (data.cacheSavings) {
-    metricItems.push({ key: "savings", str: data.cacheSavings.text, color: data.cacheSavings.color, dropOrder: 5 });
+    const amount = data.cacheSavings.text.replace(/\s*saved\s*$/, "");
+    metricSegs.push({
+      key: "savings", str: data.cacheSavings.text, dropOrder: 5,
+      nodes: (
+        <>
+          <Text color={theme.status.success}>{amount}</Text>
+          <Text color={dim}> saved</Text>
+        </>
+      ),
+    });
   }
+  // scroll：↑符号(暗) + 百分比(黄)。
   if (data.scroll) {
-    metricItems.push({ key: "scroll", str: data.scroll.text, color: theme.status.warning, dropOrder: 6 });
-  }
-  // P3-3：git 上下文段——仓库名 ⎇ 分支（+ worktree 名）。对齐 cc 显示仓库名而非仅分支。
-  // repoName 空 = 非 git 目录，整段不显示。worktree 非空时追加 ⑂<name> 列。
-  // dropOrder=7（信息量最低、最先在窄屏被丢），排在计量区最右、权限角之前。
-  if (data.repoName || data.gitBranch) {
-    const segs: string[] = [];
-    if (data.repoName) segs.push(data.repoName);
-    if (data.gitBranch) segs.push(`${GIT_BRANCH} ${data.gitBranch}`);
-    if (data.worktree) segs.push(`${WORKTREE_MARK} ${data.worktree}`);
-    metricItems.push({ key: "git", str: segs.join(" "), color: itemColor, dropOrder: 7 });
+    const pct = data.scroll.text.replace(/^↑/, "");
+    metricSegs.push({
+      key: "scroll", str: data.scroll.text, dropOrder: 6,
+      nodes: (
+        <>
+          <Text color={dim}>↑</Text>
+          <Text color={theme.status.warning}>{pct}</Text>
+        </>
+      ),
+    });
   }
 
-  // ── 权限角：权限模式统一独占最右一处（default/auto/skip-perms…）。常驻，永不丢弃。──
-  // default 用暗灰降噪（常驻但不喧宾夺主，L2.1 克制点睛）；危险态加 ⚠ 前缀 + 语义色点睛，
-  // 其余非危险常规态用 derivePermission 的语义色。
+  // ════════════════════════════════════════════════════════════════════════
+  // 行2（环境/上下文，右对齐）：repo ⎇ branch · ⑂worktree · 权限模式
+  // ════════════════════════════════════════════════════════════════════════
+
+  const row2Segs: Segment[] = [];
+  // git 段（窄屏可丢）：仓库名/分支名/worktree名(亮) + ⎇/⑂ 符号(暗)。
+  if (data.repoName || data.gitBranch) {
+    const gitNodes: React.ReactNode[] = [];
+    const gitStrParts: string[] = [];
+    if (data.repoName) {
+      gitNodes.push(<Text key="repo" color={val} wrap="truncate-end">{data.repoName}</Text>);
+      gitStrParts.push(data.repoName);
+    }
+    if (data.gitBranch) {
+      gitNodes.push(<Text key="gb" color={dim}> {GIT_BRANCH} </Text>);
+      gitNodes.push(<Text key="branch" color={val} wrap="truncate-end">{data.gitBranch}</Text>);
+      gitStrParts.push(`${GIT_BRANCH} ${data.gitBranch}`);
+    }
+    if (data.worktree) {
+      gitNodes.push(<Text key="wt" color={dim}> {WORKTREE_MARK} </Text>);
+      gitNodes.push(<Text key="wtname" color={val} wrap="truncate-end">{data.worktree}</Text>);
+      gitStrParts.push(`${WORKTREE_MARK} ${data.worktree}`);
+    }
+    row2Segs.push({ key: "git", str: gitStrParts.join(" "), dropOrder: 1, nodes: <>{gitNodes}</> });
+  }
+  // 权限模式（永不丢弃）：default→暗灰降噪；危险态 ⚠ 前缀 + 语义色 + 粗体点睛。
   const permColor = data.permission.isDanger
     ? data.permission.color
     : data.permission.display === "default"
-      ? theme.ui.comment
+      ? dim
       : data.permission.color;
   const permStr = (data.permission.isDanger ? `${WARNING_MARK} ` : "") + data.permission.display;
+  row2Segs.push({
+    key: "perm", str: permStr, dropOrder: -1,
+    nodes: <Text bold={data.permission.isDanger} color={permColor} wrap="truncate-end">{permStr}</Text>,
+  });
 
-  // ── 窄终端渐进隐藏：按优先级从低到高逐项丢，直到单行放得下（L4.D）──
-  // 固定占用（永不丢）：身份区 + 弹性留白 + 计量→权限角留白 + 权限角 + 左右 padding。
+  // ── 窄终端渐进隐藏：各行独立按 dropOrder 从大到小丢，直到该行放得下（L4.D）──
   const budget = termWidth - PADDING_X;
-  const fixedWidth = stringWidth(identityStr) + SPACER_MIN + GAP_WIDTH + stringWidth(permStr);
-
-  // 先算「旋钮 + 全部计量」都显示时的可变宽度。
-  let keptMetrics = [...metricItems];
-  let showKnobs = knobStrs.length > 0;
-
-  const variableWidth = () => {
-    let w = 0;
-    if (showKnobs) w += GAP_WIDTH + joinedWidth(knobStrs); // 身份→旋钮留白 + 旋钮
-    w += joinedWidth(keptMetrics.map((m) => m.str)); // 计量区
-    return w;
+  const fitRow = (segs: Segment[]): Segment[] => {
+    const kept = [...segs];
+    while (kept.length > 0 && joinedWidth(kept.map((s) => s.str)) > budget) {
+      // 找可丢项（dropOrder 最大且 >= 0）；没有可丢项则停（固定段 dropOrder<0 永不丢）。
+      let worstIdx = -1;
+      for (let i = 0; i < kept.length; i++) {
+        if (kept[i]!.dropOrder < 0) continue;
+        if (worstIdx < 0 || kept[i]!.dropOrder > kept[worstIdx]!.dropOrder) worstIdx = i;
+      }
+      if (worstIdx < 0) break;
+      kept.splice(worstIdx, 1);
+    }
+    return kept;
   };
 
-  // 1) 计量区从 dropOrder 最大的开始丢。
-  const overflows = () => fixedWidth + variableWidth() > budget;
-  while (overflows() && keptMetrics.length > 0) {
-    let worstIdx = 0;
-    for (let i = 1; i < keptMetrics.length; i++) {
-      if (keptMetrics[i]!.dropOrder > keptMetrics[worstIdx]!.dropOrder) worstIdx = i;
-    }
-    keptMetrics.splice(worstIdx, 1);
-  }
-  // 2) 计量区丢空仍放不下 → 丢整个旋钮区。
-  if (overflows() && showKnobs) showKnobs = false;
+  const row1Segs = fitRow([...fixedSegs, ...metricSegs]);
+  const row2Kept = fitRow(row2Segs);
 
-  // ── 渲染：把留下的计量项按 dropOrder 顺序重新插回 " · "，保持视觉排序稳定 ──
-  const metrics: React.ReactNode[] = [];
-  keptMetrics
-    .sort((a, b) => a.dropOrder - b.dropOrder)
-    .forEach((m, i) => {
-      if (i > 0) metrics.push(<Dot key={`md-${m.key}`} />);
-      metrics.push(<Text key={m.key} color={m.color} wrap="truncate-end">{m.str}</Text>);
-    });
+  const row1Nodes = renderFlow(row1Segs);
+  const row2Nodes = renderFlow(row2Kept);
 
-  const knobs: React.ReactNode[] = [];
-  if (showKnobs) {
-    knobNodes.forEach((node, i) => {
-      if (i > 0) knobs.push(<Dot key={`kd-${i}`} />);
-      knobs.push(node);
-    });
-  }
-
-  const permMode: React.ReactNode = (
-    <Text color={permColor} wrap="truncate-end">{permStr}</Text>
-  );
-
-  // P1-5：配了自定义状态栏且脚本有输出 → 原样渲染脚本 stdout（透传 ANSI），
-  // 不走下面的内置四区布局。padding 从配置取（默认 0）。
+  // P1-5：配了自定义状态栏且脚本有输出 → 原样渲染脚本 stdout（透传 ANSI），不走内置布局。
   if (customStatusLine !== null) {
     const padLeft = Math.max(0, config.statusLine?.padding ?? 0);
     return (
@@ -261,26 +323,24 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
     );
   }
 
-  // ── 四区布局：区间用 flexGrow 空盒撑开留白，不插 ` · `（L2.2 留白 > 分隔线）──
-  // flexWrap="nowrap" + overflow="hidden" + 各 Text 的 truncate-end 三重保证单行。
+  // ── 两行布局：行1 左对齐、行2 右对齐（justifyContent 定位）。 ──
+  // 关键坑（此前反复截断的真根因）：内层行**不能再写 width="100%"**。外层已 paddingX={1}，
+  // 内层的 100% 会按含 padding 的宽度解析、比实际内容区宽 2 列，整行右移溢出右 padding，
+  // 最右一个字符被 setCellAt 的边界检查丢弃 → 权限模式恒被截成「skip-perm」（少末字符），
+  // 加上 ⚠ 是 ambiguous-width（string-width 记 2 列、ink 渲染按 1 列）时更明显。去掉内层
+  // width 后行宽由 flex 父容器（已扣 padding 的内容区）自然决定，右对齐贴齐右 padding 内缘。
+  // 内容盒 flexShrink={0}：fitRow 已按实测宽度保证放得下，不允许 Yoga 再压缩误触截断。
   return (
-    <Box paddingX={1} width="100%" flexWrap="nowrap" overflow="hidden">
-      {/* 身份区（可截断但永不丢） */}
-      <Box flexShrink={1}>{identity}</Box>
+    <Box flexDirection="column" paddingX={1} width="100%">
+      {/* 行1·会话/运行态（左对齐） */}
+      <Box flexWrap="nowrap" overflow="hidden" justifyContent="flex-start">
+        <Box flexShrink={0}>{row1Nodes}</Box>
+      </Box>
 
-      {/* 身份 → 旋钮：小留白 */}
-      {knobs.length > 0 && <Box width={GAP_WIDTH} />}
-      <Box flexShrink={0}>{knobs}</Box>
-
-      {/* 弹性留白，把计量区/权限角推到右侧 */}
-      <Box flexGrow={1} minWidth={SPACER_MIN} />
-
-      {/* 计量区（右对齐） */}
-      <Box flexShrink={0} justifyContent="flex-end">{metrics}</Box>
-
-      {/* 计量 → 权限角：小留白，权限模式统一独占最右一处 */}
-      <Box width={GAP_WIDTH} />
-      <Box flexShrink={0}>{permMode}</Box>
+      {/* 行2·环境/上下文（右对齐） */}
+      <Box flexWrap="nowrap" overflow="hidden" justifyContent="flex-end">
+        <Box flexShrink={0}>{row2Nodes}</Box>
+      </Box>
     </Box>
   );
 });
