@@ -432,7 +432,8 @@ export class EditTool implements Tool {
 - 如果 read 输出带行号前缀（如 "123→"），edit 会自动剥离，无需手动处理
 - 设置 replace_all=true 可替换所有匹配项
 - old_string='' 且文件不存在时，直接创建新文件（等价于 write）
-- new_string 必须包含完整替换内容，禁止使用 ... 省略已存在的代码`;
+- new_string 必须包含完整替换内容，禁止使用 ... 省略已存在的代码
+- 单次 edit 的内容尽量控制在数百行以内；超大改动请拆成多次 edit 逐段完成。一次性替换过长内容容易在流式输出中途被截断/中断，导致该次调用参数不完整而未执行`;
   }
 
   inputSchema(): Record<string, unknown> {

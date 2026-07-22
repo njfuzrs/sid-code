@@ -68,8 +68,15 @@ export function appendAgentOutput(taskId: string, content: string): void {
   appendTaskOutput(taskId, content);
 }
 
-/** 标记 Agent 任务完成（接受结构化结果） */
-export async function completeAgentTask(taskId: string, result: AgentTaskResult): Promise<void> {
+/**
+ * 标记 Agent 任务完成（接受结构化结果）。
+ *
+ * @param notify 是否投递 `<task-notification>`。默认 true（后台子代理：主循环靠这条通知感知完成）。
+ *   前台子代理传 false——它的结果已由 runSync 作为 tool_result 返回并渲染成工具卡片，再发一条
+ *   task-notification 就是"双投递"（同一批结果既渲染工具卡片又渲染 `⏺ Agent "..." 执行完成`）。
+ *   对齐 claude-code：前台工具的完成态靠同一 keyed 行原地变态，不靠额外通知（见根治方案 §5.1）。
+ */
+export async function completeAgentTask(taskId: string, result: AgentTaskResult, notify: boolean = true): Promise<void> {
   await flushTaskOutput(taskId);
   activeAgentControllers.delete(taskId);
 
@@ -89,6 +96,8 @@ export async function completeAgentTask(taskId: string, result: AgentTaskResult)
     notified: true,
   }));
 
+  if (!notify) return;
+
   enqueueTaskNotification({
     taskId,
     toolUseId: task.toolUseId,
@@ -99,8 +108,14 @@ export async function completeAgentTask(taskId: string, result: AgentTaskResult)
   });
 }
 
-/** 标记 Agent 任务失败 */
-export async function failAgentTask(taskId: string, error: string): Promise<void> {
+/**
+ * 标记 Agent 任务失败。
+ *
+ * @param notify 是否投递 `<task-notification>`。默认 true（后台子代理）。前台子代理传 false——
+ *   失败结果已由 runSync 作为 isError 的 tool_result 返回（并通知统一错误面板），无需再发通知
+ *   （双投递）。见 completeAgentTask 的 notify 说明与根治方案 §5.1。
+ */
+export async function failAgentTask(taskId: string, error: string, notify: boolean = true): Promise<void> {
   await flushTaskOutput(taskId);
   activeAgentControllers.delete(taskId);
 
@@ -121,6 +136,8 @@ export async function failAgentTask(taskId: string, error: string): Promise<void
     evictAfter: Date.now() + EVICT_GRACE_MS,  // 对标 CC: 60s 缓冲期后才允许驱逐
     notified: true,
   }));
+
+  if (!notify) return;
 
   enqueueTaskNotification({
     taskId,

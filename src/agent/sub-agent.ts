@@ -383,7 +383,12 @@ export class SubAgent {
         result = await runInner();
       }
 
-      // 成功：标记任务完成并发送通知（结构化结果）
+      // 前台子代理（runSync，非 _isAsync）：结果已由 tool.ts runSync 作为 tool_result 返回并
+      // 渲染成工具卡片，此处不再发 <task-notification>（否则双投递，见根治方案 §5.1）。
+      // 后台子代理（runAsync，_isAsync=true）：主循环靠这条通知感知完成，必须投递。
+      const notify = task._isAsync === true;
+
+      // 成功：标记任务完成并（按需）发送通知（结构化结果）
       if (result.success) {
         const agentResult: AgentTaskResult = {
           output: result.output,
@@ -391,14 +396,14 @@ export class SubAgent {
           totalTokens: result.usage.inputTokens + result.usage.outputTokens,
           usage: result.usage,
         };
-        await completeAgentTask(taskId, agentResult);
+        await completeAgentTask(taskId, agentResult, notify);
       } else {
-        await failAgentTask(taskId, result.output);
+        await failAgentTask(taskId, result.output, notify);
       }
     } catch (err: any) {
       // 顶层异常兜底
       log.error("SUBAGENT", `[${task.type}] 顶层异常`, { error: err.message });
-      await failAgentTask(taskId, err.message).catch(() => {});
+      await failAgentTask(taskId, err.message, task._isAsync === true).catch(() => {});
       result = {
         success: false,
         output: `子代理执行异常: ${err.message}`,

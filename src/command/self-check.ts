@@ -24,21 +24,29 @@ interface CheckResult {
   detail: string;
 }
 
-/** git-status 仲裁锚点必须包含的三段关键文案（与 attachments.ts / 哨兵单测同源）。 */
+/**
+ * git-status 快照必须包含的启动锚点文案（与 attachments.ts / 哨兵单测同源）。
+ *
+ * ★根治「git 快照冻结死循环」后(2026-07-23)第三条锚点已从"以实时为准"措辞升级为
+ * "移除 volatile Status 块 + 引导实时获取"。锚点不再是"叫模型别信快照里的净/脏状态"
+ * (那是治标),而是"快照里根本没有净/脏状态,唯一来源是实时 git status"(治本)。
+ */
 const GIT_STATUS_ANCHOR_MARKERS = [
   "snapshot in time",
   "will not update during the conversation",
-  "以 bash 工具执行 `git status` 的返回为准",
+  "未包含在此快照中",
 ];
 
 /**
- * 校验 1：git-status 仲裁锚点已内联。
+ * 校验 1：git-status 快照锚点已内联，且 volatile Status 块已被移除（防死锁根治）。
  *
- * 直接调用编译进二进制的 generateGitStatusAttachment，检查输出是否含锚点句。
+ * 直接调用编译进二进制的 generateGitStatusAttachment，检查输出：
+ *   - 含启动锚点句(声明这是快照、不会更新、文件状态需实时获取);
+ *   - **不含** `Status:` 文件状态列表(唯一会过期、唯一制造净/脏矛盾的 volatile 块)。
  * 非 git 仓库时返回 null——此时跳过（视为通过），因为无法构造输出，且构建机通常在 git 仓库内。
  */
 async function checkGitStatusAnchor(): Promise<CheckResult> {
-  const name = "git-status 仲裁锚点（方向 1）";
+  const name = "git-status 防死锁根治（方向 1）";
   try {
     const { generateGitStatusAttachment } = await import("../config/attachments.ts");
     const att = generateGitStatusAttachment(process.cwd());
@@ -51,11 +59,21 @@ async function checkGitStatusAnchor(): Promise<CheckResult> {
         name,
         ok: false,
         detail:
-          `git-status 块缺少仲裁锚点文案：${missing.map((m) => `"${m}"`).join("、")}。` +
+          `git-status 块缺少锚点文案：${missing.map((m) => `"${m}"`).join("、")}。` +
           `这几乎可以断定二进制编译自方向 1 修复之前——请重新 make rebuild。`,
       };
     }
-    return { name, ok: true, detail: "锚点句齐全" };
+    // ★关键回归护栏：volatile `Status:` 块必须已被物理移除。
+    if (att.content.includes("Status:")) {
+      return {
+        name,
+        ok: false,
+        detail:
+          `git-status 块仍含会过期的 "Status:" 文件状态列表——这是死循环矛盾源，` +
+          `必须移除(只留 branch/commits)。若二进制含此块，说明编译自根治修复之前，请重新 make rebuild。`,
+      };
+    }
+    return { name, ok: true, detail: "锚点齐全且 volatile Status 块已移除" };
   } catch (e: any) {
     return { name, ok: false, detail: `执行异常：${e?.message ?? String(e)}` };
   }

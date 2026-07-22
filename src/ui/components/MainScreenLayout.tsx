@@ -38,19 +38,13 @@ import { useUIState } from "../contexts/UIStateContext.tsx";
 import { theme } from "../semantic-colors.ts";
 
 interface MainScreenLayoutProps {
-  /** 已终结历史项（含 app_header，但不含流式虚拟项、不含执行中活项）；进 <Static> 打印到 scrollback */
+  /**
+   * 全部历史项（含 app_header + 执行中的 tool_group，但不含流式虚拟项）；进 <Static> 打印到 scrollback。
+   * 执行中工具作为普通 tool_group 直接在此列表，完成时原地 reconcile 成终态（对齐 cc inline 路）。
+   * 幽灵行残留的物理根治靠默认走 alt-screen 有界视口（DefaultAppLayout）；本 inline 路是 `--inline`
+   * 逃生舱，不再做静动拆分/视口封顶（那套自创缝补已删除，见 App.tsx staticItems 注释与根治方案 §6.3）。
+   */
   staticItems: HistoryItem[];
-  /**
-   * 执行中的活项（含 status=executing 工具的 tool_group）。**不进 Static**，改在动态区
-   * （log-update 每帧重绘、永不提交 scrollback）渲染——工具一完成即以终态并入 staticItems，
-   * 动态区自然清空。这是根治 `⏺ task_list`/`⏺ task_output` 幽灵行残留的关键分流。
-   */
-  liveToolItems: HistoryItem[];
-  /**
-   * 被视口封顶折叠掉的 live 工具数（capLiveToolItems 返回）。>0 时在动态区顶部渲染一行
-   * 「… +N 个工具执行中」摘要，代替被折叠的活项——保证动态区高度有界、永不溢出视口。
-   */
-  hiddenLiveToolCount: number;
   /** 流式输出文本 */
   streamingText: string;
   /** v2：流式思考内容（独立于 streamingText） */
@@ -133,8 +127,6 @@ interface MainScreenLayoutProps {
 
 export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function MainScreenLayout({
   staticItems,
-  liveToolItems,
-  hiddenLiveToolCount,
   streamingText,
   streamingThinking,
   streamingThinkingStartMs,
@@ -224,29 +216,9 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
           {/* 空会话：欢迎屏（首条消息到达后即随 Static 滚走） */}
           {isEmpty ? <EmptyLogo termWidth={termWidth} cwd={cwd} gitBranch={gitBranch} model={model} needsOnboarding={activeDialog === "onboarding"} /> : null}
 
-          {/* 执行中的工具活项（status=executing 的 tool_group）：在动态区渲染而非 Static。
-              log-update 每帧重绘这部分、绝不提交 scrollback；工具一完成，该项以终态并入
-              staticItems（Static），此处随即清空。这样并行多工具的「逐个 executing 中间态」
-              仍可见（P2-1 语义保留），又根除了 executing 行溢出 scrollback 后擦不掉的幽灵残留。
-
-              视口封顶（capLiveToolItems，App.tsx）：并行工具过多时 live 活项按视口预算做尾部
-              截断，超出的用下面这行摘要代替——保证动态区高度有界、永不溢出视口，log-update
-              永远擦得掉。摘要放在活项**上方**（被折叠的是较早发起的工具，最近的在下方靠近输入框）。 */}
-          {hiddenLiveToolCount > 0 ? (
-            <Box paddingLeft={2}>
-              <Text color={theme.ui.active}>{`… 另有 ${hiddenLiveToolCount} 个工具执行中`}</Text>
-            </Box>
-          ) : null}
-          {liveToolItems.map((item, index) => (
-            <HistoryItemDisplay
-              key={keyExtractor(item, index)}
-              item={item}
-              prevItem={undefined}
-              terminalWidth={termWidth}
-              thinkCollapsed={thinkingCollapsed}
-              thinkExpandable={false}
-            />
-          ))}
+          {/* 执行中工具不再单独渲染：作为普通 tool_group（status=executing）随 staticItems 进 Static，
+              完成时原地 reconcile 成终态（对齐 cc inline 路「同一 keyed 行原地变态」）。此前的独立
+              动态区 live 渲染 + 视口封顶摘要是自创缝补（治标，见根治方案 §6.3），已删除。 */}
 
           {/* v2：流式思考区域 — 独立于 streamingText（对标 Claude Code）
               思考在正文之前渲染（模型先思考后回答），顺序与语义一致。

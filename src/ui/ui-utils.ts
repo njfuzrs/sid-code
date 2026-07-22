@@ -22,6 +22,21 @@ function truncateSummary(text: string, max: number): string {
   return text.length > max ? text.slice(0, max - 1) + ELLIPSIS : text;
 }
 
+/**
+ * 判定是否子代理类工具名（供 header 摘要 / 权限框详情共用）。
+ * 真实工具名是 `sub_agent`（带下划线，见 agent/tool.ts name()）——此前只判 `startsWith("subagent")`
+ * （无下划线）→ `getToolSummary("sub_agent", …)` 恒返回 `""`，导致 sub_agent 卡片 header 光秃秃
+ * 没有 `type "摘要"` 描述（残留时更是纯 `⏺ sub_agent`）。这里显式覆盖 `sub_agent` 与历史别名。
+ */
+function isSubAgentToolName(lower: string): boolean {
+  return (
+    lower === "sub_agent" ||
+    lower.startsWith("subagent") ||
+    lower.startsWith("agent__") ||
+    lower.startsWith("skill__")
+  );
+}
+
 /** 从工具输入中提取参数摘要（供 MessageItemRenderer / DialogManager 共用） */
 export function getToolSummary(name: string, input: unknown): string {
   const inp = input as any;
@@ -44,7 +59,7 @@ export function getToolSummary(name: string, input: unknown): string {
   }
   if (lower === "grep") return `"${inp?.pattern || ""}"`;
   if (lower === "glob") return inp?.pattern || "";
-  if (lower.startsWith("subagent") || lower.startsWith("agent__") || lower.startsWith("skill__")) {
+  if (isSubAgentToolName(lower)) {
     const agentType = inp?.type || inp?.agentType || "";
     const prompt = inp?.prompt || inp?.task || "";
     const short = truncateSummary(prompt, PROMPT_MAX_CHARS);
@@ -76,7 +91,7 @@ export function getToolDetailFull(name: string, input: unknown): string {
   if (lower === "bash") return inp?.command || "";
   if (lower === "grep") return `"${inp?.pattern || ""}"`;
   if (lower === "glob") return inp?.pattern || "";
-  if (lower.startsWith("subagent") || lower.startsWith("agent__") || lower.startsWith("skill__")) {
+  if (isSubAgentToolName(lower)) {
     const agentType = inp?.type || inp?.agentType || "";
     const prompt = inp?.prompt || inp?.task || "";
     return agentType ? `${agentType} "${prompt}"` : prompt;

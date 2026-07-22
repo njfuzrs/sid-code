@@ -5524,9 +5524,9 @@ export class App {
       rebuildDisplay();
     }
 
-    // 渲染 TUI（ADR-040：默认主屏 Static 原生选择，--alternate-buffer 走全屏虚拟滚动）
+    // 渲染 TUI（幽灵残留根治方案乙：默认全屏 alt-screen 有界视口，--inline 逃生舱回退旧主屏 Static）
     const alternateBuffer = this.config.alternateBuffer === true;
-    log.info("TUI", `开始渲染 TUI 组件（${alternateBuffer ? "Alternate Buffer 全屏" : "主屏 Static"} 模式）`);
+    log.info("TUI", `开始渲染 TUI 组件（${alternateBuffer ? "Alternate Buffer 全屏有界视口" : "主屏 Static 内联（--inline）"} 模式）`);
 
     const app = createFullScreen(
       React.createElement(TUIApp, {

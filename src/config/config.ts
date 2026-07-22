@@ -225,8 +225,12 @@ export interface Config {
   // UI 渲染配置
   /**
    * 是否启用 alternate buffer（全屏 TUI）模式。
-   * - false（默认）：主屏 Static 渲染，历史进终端 scrollback，支持边流式边鼠标原生选中复制（对标 claude-code，见 ADR-040）
-   * - true（--alternate-buffer opt-in）：全屏虚拟滚动 + 鼠标滚轮/滚动条 + Ctrl+S Copy Mode
+   * - true（默认，见「幽灵残留根治」方案乙）：全屏 alt-screen 有界视口（ScrollBox+VirtualizedList，
+   *   overflow=hidden），内容物理上进不了擦不掉的终端 scrollback → 从物理上根治「执行中工具溢出
+   *   scrollback 后擦不掉的幽灵行残留」；应用内滚动/选择/复制/Ctrl+S Copy Mode 已 vendor 对齐 cc。
+   *   对齐 claude-code 内部（ant）默认 = fullscreen 的那条路。
+   * - false（--inline 逃生舱 opt-out）：旧主屏 Static 渲染，历史进终端 scrollback、原生文本选择，
+   *   兼容不支持 alt-screen 的终端；但执行中工具溢出视口会残留幽灵行（故降级为显式选项，非默认）。
    */
   alternateBuffer?: boolean;
 
@@ -693,7 +697,8 @@ export function defaultConfig(): Config {
     hooks: {},
     mcpServers: {},
     showLineNumbers: true,
-    alternateBuffer: false,
+    // 默认 true：全屏 alt-screen 有界视口，物理根治幽灵行残留（方案乙）。--inline 可回退旧主屏路。
+    alternateBuffer: true,
     // 工具延迟加载默认恒开(tst)——对标 claude-code 默认 'tst' 行为。
     // 15 个长尾工具(cron/worktree/task-*/team/workflow/notebook/ask-user 等)
     // + 所有 MCP 工具首轮不注入,由模型经 tool_search 按需调出,首轮省 token。

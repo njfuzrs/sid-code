@@ -277,29 +277,31 @@ export function generateGitStatusAttachment(workingDir: string): Attachment | nu
       }
     }
 
-    // ── 对标 CC context.ts:96-103 的输出格式 ──
-    // CC 的格式设计原则:
-    //   1. 首行显式声明"这是启动快照、不会更新"（第 97 行,弱模型的仲裁锚点）
-    //   2. 数据用结构化标签（Status:\n / Recent commits:\n）而非自然语言断言
-    //      ── "(clean)" 是数据标记,弱模型不会当成"当前事实";
-    //      ── "工作区干净，无未提交变更" 是自然语言声明,弱模型会当成权威断言
-    //   3. 超长 status 截断后指向 BashTool（第 88 行,"run git status using BashTool"）
-    const MAX_STATUS_CHARS = 2000;
-    const truncatedStatus = status.length > MAX_STATUS_CHARS
-      ? status.substring(0, MAX_STATUS_CHARS)
-        + '\n... (截断：超过 2000 字符。如需完整信息请用 bash 工具执行 "git status")'
-      : status;
+    // ── 第一层·预防(根治「git 快照冻结死循环」) ──
+    // 【关键决策】冻结快照里唯一会过期、唯一制造"净/脏"矛盾的就是 `Status:` 文件状态列表。
+    // 我们把它**物理移除**,不再作为冻结权威常驻上下文;保留稳定、不会过期的部分
+    // (branch / main branch / git user / recent commits——会话内极少变或只增不减)。
+    //
+    // 为什么删而非"加措辞让模型别信":
+    //   - 加措辞是"留着矛盾,叫弱模型仲裁"——deepseek 这类弱模型做不到,历史修了两次仍复发;
+    //   - 删除 volatile 块是"矛盾根本不存在"——上下文里只剩实时 `git status` 一个状态来源,
+    //     没有第二个"权威"跟它打架,模型无从纠结。这是治本 vs 治标的区别。
+    // 完全对齐 CC 的思路:CC 在只读子代理里直接删掉整段 gitStatus(runAgent.ts:400-410,
+    //   注释 "explicitly labeled stale"、"dead weight"),我们更温和——只删最毒的 volatile 部分。
+    //
+    // 注:`status` 变量仍保留采集(供缓存键/未来诊断),但不再拼进快照文本。
+    void status; // 明确标注:采集了但刻意不进快照(避免"未使用变量"误删)
 
     const lines: string[] = [
-      // 首行=仲裁锚点（对标 CC 第 97 行）:
+      // 首行=显式声明这是启动快照,并**引导**模型:工作区文件状态未包含在此,需实时获取。
       "This is the git status at the start of the conversation. Note that this status is a snapshot in time, "
         + "and will not update during the conversation. "
-        + "工作区实时状态请以 bash 工具执行 `git status` 的返回为准。",
+        + "工作区文件状态(哪些文件被修改/新增/删除)未包含在此快照中(会随对话变化);"
+        + "需要时请运行 `git status` 获取实时状态,不要依据此快照判断工作区是否有未提交改动。",
       `Current branch: ${branch}`,
     ];
     if (mainBranch) lines.push(`Main branch (you will usually use this for PRs): ${mainBranch}`);
     if (userName) lines.push(`Git user: ${userName}`);
-    lines.push(`Status:\n${truncatedStatus || "(clean)"}`);
     if (recentCommits) lines.push(`Recent commits:\n${recentCommits}`);
 
     const result: Attachment = {

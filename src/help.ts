@@ -101,8 +101,12 @@ IDE:
     trace.upload.delete_after_upload 上传后是否删本地（默认 false = 本地保留全量副本）
 
 UI:
-  --alternate-buffer          启用全屏 Alternate Buffer 模式（应用内虚拟滚动 + 鼠标滚轮 + Ctrl+S Copy Mode）。
-                              默认关闭：走主屏渲染，历史进终端 scrollback，可边流式边用鼠标原生选中复制（ADR-040）
+  --inline                    回退旧主屏内联模式：历史进终端原生 scrollback、鼠标原生选中复制，
+                              兼容不支持 alt-screen 的终端。默认已改为全屏有界视口（见下），
+                              仅在需要终端原生 scrollback/选择时用此逃生舱。
+  --alternate-buffer          兼容保留（现已是默认）：全屏 Alternate Buffer 有界视口
+                              （应用内虚拟滚动 + 鼠标滚轮 + Ctrl+S Copy Mode）。默认启用，
+                              物理根治执行中工具溢出 scrollback 的幽灵行残留。
 
 Bridge 远程控制:
   --bridge <ws-url>           进入 Bridge 模式，连接中继服务器接受远程客户端操控（ws:// 或 wss://）

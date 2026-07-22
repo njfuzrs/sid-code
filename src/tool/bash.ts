@@ -81,9 +81,8 @@ const PROGRESS_THROTTLE_MS = 120;
  * 执行中的工具卡片是单行 header 下的一小块活动区，喂全量输出既无必要也会撑爆动态区高度。
  * 完整输出仍在命令结束后作为 tool_result 一次性返回，不受此截断影响。
  *
- * 取 5 行(而非更多)是为了与动态区高度预算解耦：单个 shell 活项估算 = header + 命令行 + 进度行
- * ≈ 2 + 5 = 7 行，让 capLiveToolItems 的预算门槛降到 rows≥21（覆盖多数分屏终端），
- * 避免小终端下整项被折叠成摘要、实时输出被静默关闭（见 history-adapter.estimateToolRows）。
+ * 取 5 行(而非更多)是为了控制执行中工具卡片实时活动区的高度：单个 shell 活项 = header + 命令行
+ * + 进度行 ≈ 2 + 5 = 7 行，在默认的 alt-screen 有界视口下不会挤占过多可见空间。
  */
 const PROGRESS_TAIL_LINES = 5;
 

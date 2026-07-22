@@ -128,13 +128,17 @@ describe("empty-param — replaceEmptyParamToolUses", () => {
 describe("empty-param — buildEmptyParamRetryMessage", () => {
   const hits = [{ id: "t1", name: "write", index: 1 }];
 
-  it("含工具名 + 重试计数 + 完整参数要求 + system-reminder 包裹", () => {
+  it("含工具名 + 重试计数 + 完整参数要求 + system-reminder 包裹 + 未落地回执", () => {
     const msg = buildEmptyParamRetryMessage(hits, 1, MAX_EMPTY_PARAM_RETRIES, false);
     expect(msg).toContain("<system-reminder>");
     expect(msg).toContain("</system-reminder>");
     expect(msg).toContain("write");
     expect(msg).toContain(`1/${MAX_EMPTY_PARAM_RETRIES}`);
     expect(msg).toContain("file_path");
+    // ★第二层·预防 根治死循环导火索:任何未执行的 tool_use 都必须明确回执"未落地",
+    // 消除模型"以为已做/就差最后一步"的幻觉(历史死循环的直接导火索)。
+    expect(msg).toContain("未执行");
+    expect(msg).toContain("没有落地");
   });
 
   it("已压缩时包含精简上下文措辞", () => {
@@ -163,21 +167,27 @@ describe("empty-param — buildEmptyParamRetryMessage", () => {
     expect(msg).toContain("分段");
   });
 
-  it("stop_reason=end_turn（非截断）→ 走非截断分支：陈述事实+重发建议，不臆造根因", () => {
+  it("stop_reason=end_turn（非截断）→ 走非截断分支：未落地回执 + 覆盖中断 + 分段建议，不臆造根因", () => {
     const msg = buildEmptyParamRetryMessage(hits, 1, MAX_EMPTY_PARAM_RETRIES, false, "end_turn");
     // 归因脱节修复：不再无条件断言"大上下文退化"这一未经证实的根因
     expect(msg).not.toContain("大上下文下的模型退化");
     expect(msg).not.toContain("大上下文");
-    // 只陈述可观测事实 + 给出无论何种成因都正确的补救动作
-    expect(msg).toContain("参数为空");
-    expect(msg).toContain("重新发起完整的工具调用");
-    expect(msg).not.toContain("分段");
+    // ★第二层·预防：非截断分支现在也必须给"未落地"明确回执 + 覆盖 abort/中断成因。
+    expect(msg).toContain("未执行");
+    expect(msg).toContain("没有落地");
+    expect(msg).toContain("中断");
+    // 重发建议仍在（措辞已并入"重新发出这次调用"）。
+    expect(msg).toContain("重新发出这次调用");
+    // 对大内容也给分段建议，降低再次被中断的概率（覆盖 §3.2 abort 缺口）。
+    expect(msg).toContain("分段");
   });
 
-  it("不传 stop_reason → 同样走非截断分支且不臆造根因（向后兼容）", () => {
+  it("不传 stop_reason → 同样走非截断分支：未落地回执 + 不臆造根因（向后兼容）", () => {
     const msg = buildEmptyParamRetryMessage(hits, 1, MAX_EMPTY_PARAM_RETRIES, false);
     expect(msg).not.toContain("大上下文");
-    expect(msg).toContain("重新发起完整的工具调用");
+    expect(msg).toContain("未执行");
+    expect(msg).toContain("没有落地");
+    expect(msg).toContain("重新发出这次调用");
   });
 });
 

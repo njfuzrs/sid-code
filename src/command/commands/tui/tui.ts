@@ -22,7 +22,7 @@ const mod: LocalCommandModule = {
       return {
         type: "text",
         value: [
-          `当前渲染模式: ${cur ? "全屏 Alternate Buffer" : "主屏 Static（默认）"}`,
+          `当前渲染模式: ${cur ? "全屏 Alternate Buffer（默认）" : "主屏 Static（--inline 逃生舱）"}`,
           `切换: /tui ${cur ? "off" : "on"}（写入 settings.json，重启后生效）`,
         ].join("\n"),
       };

@@ -1428,10 +1428,16 @@ export async function* queryLoop(
           (b): b is Extract<typeof b, { type: "tool_use" }> => b.type === "tool_use",
         );
         if (pendingToolUses.length > 0) {
+          // ★第二层·预防(根治死循环导火索):中断收尾时明确回执"这一步没有落地",
+          // 而非只说"用户取消"。历史死循环正是"超大 edit 被中断 → 模型误以为已执行 →
+          // 空转确认到底做没做"。给一条无歧义的未落地事实,消除"以为已做"的幻觉——
+          // 恢复会话/续接下一轮时模型据此重发,不会陷入"就差最后一步"的空转。
           const cancelResults = pendingToolUses.map(b => ({
             type: "tool_result" as const,
             tool_use_id: b.id,
-            content: "用户取消了此工具调用",
+            content:
+              `此工具调用(${b.name})被中断,未执行——这一步没有落地,工作区未因它发生任何改动。` +
+              `若仍需完成,请在下次继续时重新发出完整调用(内容较大时分段写入)。`,
             is_error: true,
           }));
           ctxMgr.addMessage({ role: "assistant", content: response.content });

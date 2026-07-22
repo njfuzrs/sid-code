@@ -230,8 +230,9 @@ function parseCLIArgs(): CLIArgs {
         bridge: { type: "string" }, // 中继 WebSocket URL，提供即进入 Bridge 模式
         "bridge-token": { type: "string" },
 
-        // UI 渲染（ADR-040）
-        "alternate-buffer": { type: "boolean" }, // 启用全屏 alt-screen；缺省走主屏 Static 模式（原生文本选择）
+        // UI 渲染（幽灵残留根治方案乙：默认全屏 alt-screen 有界视口）
+        "inline": { type: "boolean" }, // 逃生舱：回退旧主屏 Static 内联模式（原生文本选择/终端 scrollback；不支持 alt-screen 的终端用）
+        "alternate-buffer": { type: "boolean" }, // 兼容保留：显式开全屏 alt-screen（现已是默认，此 flag 仅为不破坏旧脚本）
 
         // Worktree 隔离（P1-2）：启动时直接进入 worktree
         worktree: { type: "string" }, // --worktree[=name]；不带值时自动命名
@@ -470,8 +471,15 @@ function parseCLIArgs(): CLIArgs {
     bridgeToken: values["bridge-token"],
     // Worktree 启动 flag（P1-2）：--worktree=name 指定名称；--worktree= 或空串则自动命名
     worktree: values.worktree !== undefined ? (values.worktree || true) : undefined,
-    // UI 渲染模式（ADR-040）：--alternate-buffer 显式开全屏；缺省 undefined → 主屏 Static
-    alternateBuffer: values["alternate-buffer"] === true ? true : undefined,
+    // UI 渲染模式（幽灵残留根治方案乙）：默认全屏 alt-screen 有界视口（config 默认 true）。
+    // --inline 逃生舱强制回退旧主屏 Static（false，最高优先级）；--alternate-buffer 兼容保留（显式 true）；
+    // 两者都不给 → undefined → 走 config 默认（true）。
+    alternateBuffer:
+      values["inline"] === true
+        ? false
+        : values["alternate-buffer"] === true
+          ? true
+          : undefined,
     // 轨迹采集配置。
     // 采集默认启用（--no-trace 关闭）。上传配置完全走配置文件（settings.json trace.upload 段），
     // CLI flag 仅作为覆盖手段——不在代码中硬编码 URL/token。

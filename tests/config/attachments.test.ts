@@ -55,15 +55,29 @@ describe("generateGitStatusAttachment", () => {
     expect(attachment!.type).toBe("gitStatus");
     expect(attachment!.priority).toBe(PRIORITY.GIT_STATUS);
     expect(attachment!.content).toContain("<git-status>");
+    // 保留稳定部分：branch（会话内极少变）。
     expect(attachment!.content).toContain("Current branch:");
-    expect(attachment!.content).toContain("Status:");
-    // 防死锁哨兵：git-status 必须显式标注"这是启动快照、以实时 git status 为准"。
-    // 缺此标注会让弱模型把过期快照当实时事实，与 bash 实时结果打架陷入认知死锁
-    // （根因分析-git状态快照冻结导致认知死锁.md）。误删标注即回归。
-    // 文案对标 claude-code context.ts:97 的仲裁锚点句 + 中文补充"以实时 git status 为准"。
+    // 首行仍显式声明"这是启动快照、不会更新"（弱模型的锚点）。
     expect(attachment!.content).toContain("snapshot in time");
     expect(attachment!.content).toContain("will not update during the conversation");
-    expect(attachment!.content).toContain("以 bash 工具执行 `git status` 的返回为准");
+  });
+
+  // ★第一层·预防 防死锁哨兵（根治-git快照冻结死循环）：
+  // 冻结快照里唯一会过期、唯一制造"净/脏"矛盾的就是 `Status:` 文件状态列表。
+  // 它必须被**物理移除**——上下文里不再有一个"权威"的 clean/dirty 状态去和实时
+  // `git status` 打架，弱模型才不会陷入"到底做完没有"的认知死锁。
+  // 若有人重新加回 `Status:` 块（哪怕带"以实时为准"措辞），此测试即回归失败——
+  // 因为历史证明"加措辞让模型别信"治不住弱模型（151220/164407 两次复发）。
+  test("★不含会过期的 Status 文件状态列表（防死锁根治）", () => {
+    const attachment = generateGitStatusAttachment(process.cwd());
+    expect(attachment).not.toBeNull();
+    // 绝不能出现 "Status:" 标签块（这是 volatile 矛盾源）。
+    expect(attachment!.content).not.toContain("Status:");
+    // 也不能出现 "(clean)" 这类会与实时状态打架的断言。
+    expect(attachment!.content).not.toContain("(clean)");
+    // 必须有明确引导：文件状态未包含在快照中，需实时 git status 获取。
+    expect(attachment!.content).toContain("git status");
+    expect(attachment!.content).toContain("未包含在此快照中");
   });
 
   test("非 Git 仓库返回 null", () => {

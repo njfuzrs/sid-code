@@ -6,7 +6,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { isDiffContent } from "../../src/ui/ui-utils.ts";
+import { isDiffContent, getToolSummary, getToolDetailFull } from "../../src/ui/ui-utils.ts";
 
 describe("isDiffContent", () => {
   const editDiff = "文件已编辑: /tmp/foo.ts（替换了 1 处）\n\n@@ -1,3 +1,3 @@\n function foo() {\n-  return 1;\n+  return 42;\n }";
@@ -34,5 +34,33 @@ describe("isDiffContent", () => {
   test("其它工具一律 false", () => {
     expect(isDiffContent("bash", "@@ -1,1 +1,1 @@\n-a\n+b")).toBe(false);
     expect(isDiffContent("read", "@@ whatever")).toBe(false);
+  });
+});
+
+// 回归守卫（根治方案 §5.2）：真实工具名是 `sub_agent`（带下划线），此前只判 startsWith("subagent")
+// → getToolSummary("sub_agent", …) 恒返回 ""，sub_agent 卡片 header 光秃秃没有描述。锁定返回非空。
+describe("getToolSummary / getToolDetailFull — sub_agent 命名匹配", () => {
+  const input = { type: "explore", prompt: "找出所有渲染路径的入口文件并总结" };
+
+  test("getToolSummary(sub_agent, …) 返回非空且含 agentType", () => {
+    const s = getToolSummary("sub_agent", input);
+    expect(s).not.toBe("");
+    expect(s).toContain("explore");
+  });
+
+  test("getToolDetailFull(sub_agent, …) 返回完整 prompt（不截断）", () => {
+    const d = getToolDetailFull("sub_agent", input);
+    expect(d).toContain("explore");
+    expect(d).toContain("找出所有渲染路径的入口文件并总结");
+  });
+
+  test("无 type 时回落到 prompt 摘要，仍非空", () => {
+    expect(getToolSummary("sub_agent", { prompt: "只有 prompt" })).not.toBe("");
+  });
+
+  test("历史别名 subagent/agent__/skill__ 仍匹配（不回归）", () => {
+    expect(getToolSummary("subagent", input)).toContain("explore");
+    expect(getToolSummary("agent__foo", input)).toContain("explore");
+    expect(getToolSummary("skill__bar", input)).toContain("explore");
   });
 });
