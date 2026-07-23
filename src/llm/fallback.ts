@@ -19,7 +19,7 @@
 import type { Provider } from "./provider.ts";
 import type { SendParams, StreamEvent } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
-import { emitTimeoutFired, armIneffectiveCheck } from "../trace/stream-observer.ts";
+import { emitTimeoutFired, armIneffectiveCheck, getStreamSnapshot } from "../trace/stream-observer.ts";
 import { currentSseDumpContext } from "./sse-chunk-dumper.ts";
 import {
   classifyError,
@@ -739,6 +739,24 @@ export class ModelFallback {
 
           log.info("FALLBACK", `流式重试 ${attempt + 1}，延迟 ${delayMs}ms`);
           this.listener?.onRetry?.(attempt + 1, classified.message, delayMs);
+          // §6.3 重复开流成因遥测：推导本次"重新获取流"的结构化原因。
+          // 优先取 stream-observer snapshot 里最近触发的超时层（idle_timeout /
+          // content_progress_timeout / fallback_stream_timeout——这些是导致重开的精确信号），
+          // 无超时记录则取 classified.reason（network_error/overloaded/empty_response 等）。
+          // 这是 §2.7 "同一轮重复开流"观测盲区的根因定位钥匙——回放会话时可据此判断
+          // 重复开流是 idle 超时、内容进展超时、还是网络抖动导致，而非仅凭 error 字符串猜测。
+          // 控制流收窄在深层嵌套循环里退化为 Error，用显式 instanceof 取 reason。
+          let reopenReason = "unknown";
+          if (classified instanceof RetryableError) {
+            reopenReason = classified.reason;
+          }
+          try {
+            const { turnIndex, loopId } = currentSseDumpContext();
+            const snapshot = getStreamSnapshot(turnIndex, loopId);
+            if (snapshot && snapshot.timeoutsFired.length > 0) {
+              reopenReason = snapshot.timeoutsFired[snapshot.timeoutsFired.length - 1];
+            }
+          } catch { /* 可观测性不影响重试 */ }
           this.emitTelemetry({
             type: "retry",
             model: params.model,
@@ -746,6 +764,7 @@ export class ModelFallback {
             delayMs,
             error: classified.message,
             phase: "stream",
+            reopenReason,
           });
 
           yield* this.sleepWithProgress(

@@ -7,6 +7,7 @@ import {
   PRIORITY,
   generateClaudeMdAttachment,
   generateGitStatusAttachment,
+  clearGitStatusCache,
   generatePermissionModeAttachment,
   generateDiagnosticsAttachment,
   generateIDESelectionAttachment,
@@ -85,6 +86,63 @@ describe("generateGitStatusAttachment", () => {
     // /tmp 通常不是 Git 仓库
     // 注意：如果 /tmp 碰巧是 Git 仓库，这个测试可能失败
     expect(attachment).toBeNull();
+  });
+
+  // ★缺口 3 补强：构造脏工作区，断言快照确实不含文件状态列表。
+  //
+  // 上一条"★不含会过期的 Status"测试依赖当前项目目录的 git 状态——若 CI 环境恰好 clean，
+  // 无法验证"工作区确实脏时，快照也确实不含文件列表"这一核心场景。本用例创建临时 git 仓库、
+  // 制造脏状态（untracked + modified 文件），断言：
+  //   (1) 这些脏文件名绝不泄漏进 <git-status>（volatile 矛盾源物理移除）；
+  //   (2) 仍含稳定部分 branch / 引导语。
+  test("★脏工作区下快照仍不含文件状态列表（构造脏仓库验证）", () => {
+    const { mkdtempSync, writeFileSync, mkdirSync, rmSync } = require("node:fs");
+    const { execSync } = require("node:child_process");
+    const { tmpdir } = require("node:os");
+    const { join } = require("node:path");
+
+    // 创建临时 git 仓库并制造脏状态。
+    const dirtyRepo = mkdtempSync(join(tmpdir(), "sid-dirty-"));
+    try {
+      execSync("git init -q", { cwd: dirtyRepo });
+      execSync('git config user.email "t@t.com"', { cwd: dirtyRepo });
+      execSync('git config user.name "t"', { cwd: dirtyRepo });
+      // 先 commit 一个文件（让仓库有 HEAD，branch 可读）
+      writeFileSync(join(dirtyRepo, "committed.txt"), "v1");
+      execSync("git add committed.txt && git commit -q -m init", { cwd: dirtyRepo });
+      // 制造两类脏状态：untracked + modified
+      writeFileSync(join(dirtyRepo, "untracked-new.txt"), "new");
+      writeFileSync(join(dirtyRepo, "committed.txt"), "v2-dirty"); // 已提交文件被改
+      mkdirSync(join(dirtyRepo, "subdir"));
+      writeFileSync(join(dirtyRepo, "subdir", "nested.txt"), "nested");
+
+      // 确认工作区确实脏（自检：git status --short 有输出）
+      const dirtyOutput = execSync("git status --short", { cwd: dirtyRepo }).toString().trim();
+      expect(dirtyOutput.length).toBeGreaterThan(0);
+      expect(dirtyOutput).toContain("untracked-new.txt");
+
+      // 清缓存避免上一个测试残留干扰（generateGitStatusAttachment 有 30s TTL 缓存）
+      clearGitStatusCache();
+      const attachment = generateGitStatusAttachment(dirtyRepo);
+      expect(attachment).not.toBeNull();
+      const content = attachment!.content;
+
+      // (1) 脏文件名绝不泄漏进 <git-status>——这是第一层根治的核心断言。
+      expect(content).not.toContain("untracked-new.txt");
+      expect(content).not.toContain("committed.txt");
+      expect(content).not.toContain("nested.txt");
+      expect(content).not.toContain("Status:");
+      expect(content).not.toContain("(clean)");
+      expect(content).not.toContain("M ");
+      expect(content).not.toContain("??");
+
+      // (2) 仍含稳定部分 + 引导语。
+      expect(content).toContain("Current branch:");
+      expect(content).toContain("未包含在此快照中");
+      expect(content).toContain("git status");
+    } finally {
+      rmSync(dirtyRepo, { recursive: true, force: true });
+    }
   });
 });
 

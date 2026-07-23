@@ -38,6 +38,19 @@ export interface RetryTelemetryEvent {
   provider?: string;
   /** 重试阶段：connection / stream */
   phase?: "connection" | "stream";
+  /**
+   * §6.3 重复开流成因遥测：本次"重新获取流"的结构化原因。
+   *
+   * 旧实现只记 error.message 字符串，无法在遥测层面区分重开成因。本字段按优先级记录：
+   * - 超时类：idle_timeout / content_progress_timeout / fallback_stream_timeout
+   *   （从 stream-observer snapshot 的 timeoutsFired 取最近触发的超时层）
+   * - 非超时类：network_error / overloaded / empty_response / request_timeout 等
+   *   （取自 classified.reason）
+   *
+   * 这是 §2.7 "同一轮重复开流"观测盲区的根因定位钥匙——回放会话时可据此判断
+   * 重复开流是 idle 超时、内容进展超时、还是网络抖动导致。
+   */
+  reopenReason?: string;
   /** 降级目标模型 */
   fallbackModel?: string;
   /** 查询来源（后台 529 丢弃时） */
@@ -68,7 +81,7 @@ export function defaultTelemetryHandler(event: RetryTelemetryEvent): void {
 
   switch (event.type) {
     case "retry":
-      log.info("TELEMETRY", `[retry] ${event.model} phase=${event.phase} attempt=${event.attempt} delay=${event.delayMs}ms error=${event.error}`);
+      log.info("TELEMETRY", `[retry] ${event.model} phase=${event.phase} attempt=${event.attempt} delay=${event.delayMs}ms reopen=${event.reopenReason ?? "N/A"} error=${event.error}`);
       break;
 
     case "fallback":
