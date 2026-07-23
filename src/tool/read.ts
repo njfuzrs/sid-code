@@ -275,9 +275,42 @@ const readSchema = lazySchema(() =>
   }),
 );
 
+/** 发现 4：单文件读取历史（一次读取的行窗口 + 是否整文件可覆盖），用于"重复窄读"引导。 */
+interface ReadWindow {
+  startLine: number; // 1-based 起始行
+  endLine: number;   // 含
+  totalLines: number;
+}
+
+/**
+ * 发现 4：重复读引导的标记前缀（唯一、便于下游精确剥离）。
+ *
+ * ★关键（防回归）：此提示是**元信息**,不是文件内容。它会被追加进 read 的 tool_result output,
+ * 而 repeated-readonly-guard 用 (命令, output) 签名做"卡住"判定——提示里含每次自增的"第N次"计数,
+ * 若不剥离会让相同区域的重复读每轮签名都不同 → guard 的 repeatCount 永远清零 → 反而**瘫痪**了
+ * git-status 冻结死循环的止损阀(缺口B)。故 guard 捕获 read 输出做签名前,必须先剥离本前缀起的整段。
+ * 用独特前缀(非泛用的"[提示:")避免误伤其它可能的方括号提示。
+ */
+export const READ_EFFICIENCY_HINT_MARK = "\n\n[读取效率提示: ";
+
+/** 发现 4：从 read 输出里剥离效率提示段(供 loop-detection 等做内容签名前调用),无提示则原样返回。 */
+export function stripReadEfficiencyHint(output: string): string {
+  const idx = output.indexOf(READ_EFFICIENCY_HINT_MARK);
+  return idx === -1 ? output : output.slice(0, idx);
+}
+
+/** 发现 4：触发"重复读"引导的最少读取次数（给模型两次定向复查的余地，第 3 次才提示）。 */
+const REPEAT_READ_HINT_THRESHOLD = 3;
+/** 发现 4：每个 file_path 最多保留的近期读窗口数（防无界增长）。 */
+const READ_HISTORY_PER_FILE_CAP = 12;
+/** 发现 4：读历史最多跟踪的文件数（LRU 粗粒度，防大会话内存膨胀）。 */
+const READ_HISTORY_FILES_CAP = 64;
+
 export class ReadTool implements Tool {
   private stateCache: FileStateCache | null;
   private tracker: FileReadTracker | null;
+  /** 发现 4：file_path → 近期读窗口列表。纯效率引导用，不影响读取结果。 */
+  private readHistory = new Map<string, ReadWindow[]>();
 
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = readSchema();
@@ -306,6 +339,75 @@ export class ReadTool implements Tool {
 
   readOnly(): boolean {
     return true;
+  }
+
+  /**
+   * 发现 4：记录本次读窗口并生成"重复窄读"非阻塞引导（不改读取结果，只在 output 末尾追加提示）。
+   *
+   * 背景：弱模型对大文件常做几十次 `limit=10~60` 的窄窗读、反复重读同一区域(实证单文件 33 次)。
+   * read 是纯只读工具,重复读不报错、无引导,模型缺乏"停止重读"的外部信号 → 拉长步数 + 推高 token。
+   *
+   * 只做**非阻塞提示**,绝不拦截(read 是安全只读操作,拦截会误伤合法的定向复查),对齐记忆
+   * `write-truncation-opt-triple-review` 里"回注通道只提醒不强制"的定调。触发两类提示:
+   *   ① 重复读:同文件近期读 ≥ 阈值次且本次窗口与历史高度重叠 → 提示复用已读内容;
+   *   ② 读太窄:文件行数 < 默认上限却传了小 limit → 提示可一次整读。
+   * 返回追加到 output 的提示串(可为空)。
+   */
+  private recordReadAndBuildHint(
+    filePath: string,
+    win: ReadWindow,
+    hadExplicitLimit: boolean,
+  ): string {
+    // 取本文件历史(在追加本次之前),用于判定重叠/重复
+    const prior = this.readHistory.get(filePath) ?? [];
+
+    // 与历史窗口的重叠比例(本次窗口有多少行此前已读过)
+    const winLen = Math.max(1, win.endLine - win.startLine + 1);
+    let maxOverlapRatio = 0;
+    for (const p of prior) {
+      const lo = Math.max(win.startLine, p.startLine);
+      const hi = Math.min(win.endLine, p.endLine);
+      if (hi >= lo) {
+        maxOverlapRatio = Math.max(maxOverlapRatio, (hi - lo + 1) / winLen);
+      }
+    }
+
+    // 追加本次窗口到历史(带每文件/文件数上限,LRU 粗回收)
+    const updated = [...prior, win].slice(-READ_HISTORY_PER_FILE_CAP);
+    this.readHistory.delete(filePath); // 删后重插 → 维持插入序,近用在尾
+    this.readHistory.set(filePath, updated);
+    if (this.readHistory.size > READ_HISTORY_FILES_CAP) {
+      const oldest = this.readHistory.keys().next().value;
+      if (oldest !== undefined) this.readHistory.delete(oldest);
+    }
+
+    const readCount = updated.length;
+    const hints: string[] = [];
+
+    // ① 重复窄读:读够多次 + 本次与历史高度重叠(>60%)
+    if (readCount >= REPEAT_READ_HINT_THRESHOLD && maxOverlapRatio > 0.6) {
+      const fitsInOneRead = win.totalLines <= DEFAULT_MAX_LINES;
+      hints.push(
+        `本会话已第 ${readCount} 次读取 ${filePath},且本次窗口与此前读过的区域高度重叠。` +
+        (fitsInOneRead
+          ? `该文件共 ${win.totalLines} 行(未超单次上限 ${DEFAULT_MAX_LINES}),建议一次性整读(不传 offset/limit)或直接复用已读内容,避免重复读推高上下文。`
+          : `建议复用已读内容,或用 grep 定位后按需读,避免反复窄读同一区域。`)
+      );
+    } else if (
+      // ② 读太窄:**首次**读一个不大的文件却传了小 limit(只在第 1 次提示,避免每次窄读都唠叨)
+      readCount === 1 &&
+      hadExplicitLimit &&
+      win.totalLines <= DEFAULT_MAX_LINES &&
+      winLen < win.totalLines &&
+      winLen < 200
+    ) {
+      hints.push(
+        `该文件共 ${win.totalLines} 行,未超单次读取上限 ${DEFAULT_MAX_LINES}。若需通览,可不传 limit 一次整读,省去多次分段。`
+      );
+    }
+
+    // 用独特标记前缀(READ_EFFICIENCY_HINT_MARK)包裹,便于 loop-detection 精确剥离,不污染内容签名。
+    return hints.length ? `${READ_EFFICIENCY_HINT_MARK}${hints.join(" ")}]` : "";
   }
 
   /** 只读工具：无权限意见，交给权限系统决定 */
@@ -517,6 +619,15 @@ export class ReadTool implements Tool {
         const nextOffset = endIdx + 1;
         output += `\n\n[文件已截断：当前显示第 ${shownStart}-${shownEnd} 行，共 ${totalLines} 行。如需读取更多，请使用 offset=${nextOffset} 继续读取。]`;
       }
+
+      // 发现 4：记录读窗口 + 追加"重复窄读"非阻塞引导（失败不影响读取结果）。
+      try {
+        output += this.recordReadAndBuildHint(
+          filePath,
+          { startLine: offset, endLine: endIdx, totalLines },
+          params.limit !== undefined,
+        );
+      } catch { /* 引导是锦上添花，绝不阻断读取 */ }
 
       log.info("TOOL", `✓ 读取 ${filePath} ${normalizedLines.length}行 ${isTruncated ? `(截断，共${totalLines}行)` : ""}`);
 

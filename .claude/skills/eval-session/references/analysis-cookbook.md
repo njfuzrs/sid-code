@@ -152,6 +152,19 @@ print(f'--- {len(rows)} 个可疑会话(有异常信号),优先评这些 ---')
 
 > 这是**粗筛**,不是判定——命中只表示"值得看",仍要走 Phase 1 首过 + 逐段核实。阈值(warn>4000 等)是启发式,按实际调;别把粗筛结果当结论直接写进报告。成本离群需结合账本另算(账本 sessionId 是 hash 后 8 位,与轨迹目录名的日期前缀是两套 key)。
 
+**更快的主键分诊(有 session-summary.json 时优先用)**:
+
+```bash
+cd ~/.sid-code/trajectories/sessions
+# 主键 = real_errors(诚实错误计数,仅 is_error/TurnError/errors.jsonl/退出error/侧调用失败/数据损坏),
+# 或 high_severity_anomalies>0。不要再用 .errors(已弃用别名 = anomalies_count,含 watchdog 慢响应 /
+# stuck_loop 等假阳性,会把干净会话误选成"高产候选")。
+cat */session-summary.json 2>/dev/null | jq -c 'select(.real_errors > 0 or .high_severity_anomalies > 0)
+  | {session_id, real_errors, anomalies_count, high_severity_anomalies, exit_status, anomaly_kinds}'
+```
+
+> 发现 3 修复后:`real_errors` 是新主键(诚实错误数),`anomalies_count` 是旧 `errors` 语义(含假阳性,仅供参考),`errors` 保留为 `anomalies_count` 的弃用别名。慢响应(`model_call_slow_response`)已降级为 [低],不再进 `high_severity_anomalies`。
+
 ## 三、把脚本自身的缺陷当 harness 发现
 
 评估中若发现 trace-digest **误报/漏报/结果与原始数据矛盾**(如首过步数与 traj 实际不符、把并行标成循环),**这本身就是一条 §3 harness 缺陷**,按缺陷模板写进报告(根因定位到 `src/trace/digest.ts:行号` + 修复方向)。流程因此自我改进:每次评估都可能反哺脚本。

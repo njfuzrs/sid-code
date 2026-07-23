@@ -1063,11 +1063,17 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
           ` 超时触发=[${Array.isArray(snap.timeouts_fired) ? (snap.timeouts_fired as unknown[]).join(",") : ""}]` +
           ` abort=${snap.abort_signal_aborted}`
         : ` | 无流快照（hang 发生在 fetch 发出前，或 stream-observer 未初始化）`;
+      // 发现 2：区分「慢 vs 死」。看门狗 fire 时若流仍在收 chunk（still_progressing），
+      // 是「慢响应」而非 hang——降级为 [低] 且改 kind，避免慢模型（如长响应）被误报 [高] 疑似 hang，
+      // 也避免污染 §5 批量分诊选样（见发现 3）。真 hang（无快照/无进展/已 abort）仍报 [高]。
+      const stillProgressing = snap?.still_progressing === true;
       anomalies.push({
         layer: "L0",
-        severity: "high",
-        kind: "model_call_unpaired_watchdog",
-        detail: `配对看门狗超时: index=${d.index} model=${d.model} elapsed=${d.elapsed_ms}ms${snapDetail}`,
+        severity: stillProgressing ? "low" : "high",
+        kind: stillProgressing ? "model_call_slow_response" : "model_call_unpaired_watchdog",
+        detail: stillProgressing
+          ? `慢响应（超时未配对但流仍在进展，非 hang）: index=${d.index} model=${d.model} elapsed=${d.elapsed_ms}ms${snapDetail}`
+          : `配对看门狗超时: index=${d.index} model=${d.model} elapsed=${d.elapsed_ms}ms${snapDetail}`,
         provenance: [{
           sourceFile: eventsPath,
           lineRef: `event=ModelCallUnpaired index=${d.index}`,

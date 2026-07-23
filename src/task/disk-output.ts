@@ -19,7 +19,10 @@ export class DiskTaskOutput {
   #queue: string[] = [];
   #bytesWritten = 0;
   #capped = false;
-  #draining = false;
+  /** 当前在途的 drain промise；null 表示空闲。flush() 必须 await 这一个实例，
+   *  而不是另起一个竞争的 drain——否则新 drain 可能先看到空队列而提前 resolve，
+   *  让 flush() 在真正的 appendFile 落盘前就返回（读端拿到不存在/空文件）。 */
+  #drainPromise: Promise<void> | null = null;
   #filePath: string;
 
   constructor(taskId: string) {
@@ -39,9 +42,15 @@ export class DiskTaskOutput {
     } else {
       this.#queue.push(content);
     }
-    if (!this.#draining) {
-      this.#draining = true;
-      void this.#drain();
+    this.#ensureDraining();
+  }
+
+  /** 确保有且仅有一个 drain 在跑；已有则复用。 */
+  #ensureDraining(): void {
+    if (!this.#drainPromise) {
+      this.#drainPromise = this.#drain().finally(() => {
+        this.#drainPromise = null;
+      });
     }
   }
 
@@ -52,12 +61,14 @@ export class DiskTaskOutput {
       const data = chunks.join("");
       await appendFile(this.#filePath, data);
     }
-    this.#draining = false;
   }
 
   async flush(): Promise<void> {
-    if (this.#queue.length > 0 || this.#draining) {
-      await this.#drain();
+    // 等待在途 drain 完成；若期间又排入新内容（drain 已退出循环但 flush 尚未返回），
+    // 重新拉起 drain 直至队列彻底排空，保证返回时磁盘已写全。
+    while (this.#drainPromise || this.#queue.length > 0) {
+      this.#ensureDraining();
+      await this.#drainPromise;
     }
   }
 }

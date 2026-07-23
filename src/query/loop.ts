@@ -21,6 +21,7 @@ import type { BudgetTracker } from "../telemetry/metrics/budget-tracker.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { resolveToolSearchEnabled } from "../tool/tool-search-auto.ts";
+import { stripReadEfficiencyHint } from "../tool/read.ts";
 import { TOKEN_THRESHOLDS } from "../context/auto-compact.ts";
 import { ModelFallback } from "../llm/fallback.ts";
 import { isAwaitingHumanInput } from "./human-input-gate.ts";
@@ -922,6 +923,10 @@ export async function* queryLoop(
         raw_messages: sendParams.messages,
         system: sendParams.system,
         tools: sendParams.tools,
+      }, {
+        // 发现 1 修复：把 StreamPhase 快照的 key 组件（turnCount + loopId）透传给采集器，
+        // 让配对看门狗用与 emitStreamPhase 一致的 key 查快照，不再恒 null。
+        stream_snapshot_ref: { turn_index: state.turnCount, loop_id: loopId },
       });
       if (beforeModelResult.finalOutput?.isBlockingDecision()) {
         log.info("HOOK", `BeforeModel hook 阻止 LLM 请求: ${beforeModelResult.finalOutput.getEffectiveReason()}`);
@@ -2414,9 +2419,13 @@ export async function* queryLoop(
           if (b.type !== "tool_use") continue;
           const readOutput = () => {
             const r = resultMap.get(b.id);
-            return r && r.type === "tool_result"
+            const raw = r && r.type === "tool_result"
               ? (typeof r.content === "string" ? r.content : JSON.stringify(r.content))
               : "";
+            // 发现 4 防回归：read 的效率提示是每轮自增的元信息("第N次读取"),不是文件内容。
+            // 做"卡住"签名前必须剥离——否则相同区域的重复读每轮签名都不同,repeatCount 永远清零,
+            // 反而瘫痪 git-status 冻结死循环止损阀(缺口B)。只影响 read 家族,其它探查输出无此标记、原样返回。
+            return stripReadEfficiencyHint(raw);
           };
           const cmd = b.name === "bash" ? (b.input as any)?.command : undefined;
           if (b.name === "bash" && typeof cmd === "string" && isReadonlyProbeCommand(cmd)) {

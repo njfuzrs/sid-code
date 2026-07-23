@@ -165,12 +165,16 @@ export class HookEventHandler {
   /** BeforeModel 事件 */
   async fireBeforeModelEvent(
     llmRequest: BeforeModelInput["llm_request"],
-    options?: { harness_context?: import("./types.ts").HarnessHookContext },
+    options?: {
+      harness_context?: import("./types.ts").HarnessHookContext;
+      stream_snapshot_ref?: BeforeModelInput["stream_snapshot_ref"];
+    },
   ): Promise<AggregatedHookResult> {
     const input: BeforeModelInput = {
       ...this.createBaseInput(HookEventName.BeforeModel),
       llm_request: llmRequest,
       harness_context: options?.harness_context,
+      stream_snapshot_ref: options?.stream_snapshot_ref,
     };
     return this.executeHooks(HookEventName.BeforeModel, input);
   }

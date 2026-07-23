@@ -135,10 +135,28 @@ export class TraceCollector {
   private heartbeatPath: string = "";
   /** §3.4：BeforeModel 配对看门狗（index → timer） */
   private pendingModelCalls = new Map<number, ReturnType<typeof setTimeout>>();
-  /** 配对超时阈值（2 分钟）——作为 fallback/stream-processor abort race 都失效时的最后兜底。
-   * P0-2：原 10 分钟太长（真实 hang 时用户白等 600s）。abort race 修复后主路径应在秒级收尾，
-   * 此看门狗仅在极端情况兜底，缩短到 120s 限制最坏等待时间。 */
-  private readonly PAIRING_TIMEOUT_MS = 2 * 60 * 1000;
+  /** 发现 1：index → StreamPhase 快照定位信息（turn_index + loop_id）。
+   * 看门狗 fire 时据此用与 emitStreamPhase 一致的 key 查快照，修复 stream_snapshot 恒 null。 */
+  private streamSnapshotRefs = new Map<number, { turn_index: number; loop_id: string }>();
+  /** 配对超时阈值——作为 fallback/stream-processor abort race 都失效时的最后兜底。
+   *
+   * 发现 2 修复：原 120s 对慢模型（如 glm-5.2 单轮 200s+ 长响应）偏紧，会把「慢但活着」的
+   * 请求误报成 [高] 疑似 hang。放宽到 300s，并允许经 SID_CODE_PAIRING_TIMEOUT_MS 覆盖（运维调参 /
+   * 测试注入）。真正的区分「慢 vs 死」靠 fire 时查流快照（chunks 仍在涨 = 活着，不报/降级），
+   * 阈值只决定「多久之后才值得去看一眼流状态」。
+   * 不按模型名硬编码分档（见 MEMORY feedback-no-hardcoded-model-tier-rules）。 */
+  private readonly PAIRING_TIMEOUT_MS = TraceCollector.resolvePairingTimeoutMs();
+
+  /** 解析配对看门狗阈值：env 覆盖 > 默认 300s。非法值回退默认。 */
+  private static resolvePairingTimeoutMs(): number {
+    const DEFAULT_MS = 300_000;
+    const raw = process.env.SID_CODE_PAIRING_TIMEOUT_MS;
+    if (raw && raw.trim() !== "") {
+      const n = Number(raw);
+      if (Number.isFinite(n) && n > 0) return n;
+    }
+    return DEFAULT_MS;
+  }
   /** §3.8：audit.log 起始行号（SessionStart 时快照） */
   private auditLogStartLine: number = 0;
   /** §3.8：audit.log 文件路径（SessionStart 时快照） */
@@ -514,6 +532,11 @@ export class TraceCollector {
     // resume 续接时 index 在历史轮次（resumedPairOffset）之上接续，避免与旧 raw.jsonl 行 index 重号。
     const index = this.resumedPairOffset + this.pairs.length + 1;
 
+    // 发现 1：记住本轮的流快照定位信息（turn_index + loop_id），供看门狗 fire 时用一致的 key 查快照。
+    if (input.stream_snapshot_ref) {
+      this.streamSnapshotRefs.set(index, input.stream_snapshot_ref);
+    }
+
     // 首次请求提取 system prompt
     if (index === 1 && req.system !== undefined) {
       const systemText = extractSystemPromptText(req.system);
@@ -630,19 +653,35 @@ export class TraceCollector {
     }
     const pairingTimer = setTimeout(() => {
       try {
-        // 缺口 3：从 stream-observer 获取流状态快照，附加到 ModelCallUnpaired 事件
-        const snapshot = getStreamSnapshot(index);
+        // 缺口 3 + 发现 1：从 stream-observer 获取流状态快照，附加到 ModelCallUnpaired 事件。
+        // 发现 1 修复：用 emitStreamPhase 写入时同款 key（turn_index + loop_id）查快照。
+        // ref 缺失（非 queryLoop 来源）时退化为原行为（用 index 直查），不至于比修复前更差。
+        const ref = this.streamSnapshotRefs.get(index);
+        const snapshot = ref
+          ? getStreamSnapshot(ref.turn_index, ref.loop_id)
+          : getStreamSnapshot(index);
+        // 发现 2：区分「慢 vs 死」。若快照仍在收 chunk（最近有内容进展、未收到终止/abort），
+        // 说明请求「慢但活着」，标记 still_progressing=true 供 digest 降级为 [低] 慢响应，
+        // 不再一律报 [高] 疑似 hang。判据：有快照 + 收到过 chunk + 最近进展在阈值内。
+        const PROGRESS_FRESH_MS = 30_000; // 最近 30s 内还有内容进展 = 仍在动
+        const lastProgressMs = snapshot?.lastContentProgressAt
+          ? Date.now() - snapshot.lastContentProgressAt
+          : null;
+        const stillProgressing = !!snapshot
+          && snapshot.chunksReceived > 0
+          && !snapshot.abortSignalAborted
+          && lastProgressMs !== null
+          && lastProgressMs < PROGRESS_FRESH_MS;
         const streamDiag = snapshot ? {
           last_known_phase: snapshot.phase,
           http_status_received: snapshot.httpStatusReceived,
           http_status: snapshot.httpStatus,
           chunks_received: snapshot.chunksReceived,
           empty_chunks: snapshot.emptyChunks,
-          last_content_progress_ms: snapshot.lastContentProgressAt
-            ? Date.now() - snapshot.lastContentProgressAt
-            : null,
+          last_content_progress_ms: lastProgressMs,
           timeouts_fired: snapshot.timeoutsFired,
           abort_signal_aborted: snapshot.abortSignalAborted,
+          still_progressing: stillProgressing,
         } : null;
 
         this.writer.appendEvent({
@@ -653,12 +692,16 @@ export class TraceCollector {
             index,
             model: req.model,
             elapsed_ms: this.PAIRING_TIMEOUT_MS,
-            hint: "BeforeModel 发出后超时未收到 AfterModel/AfterModelRaw/TurnError，可能：1)请求hang 2)处理崩溃但未被catch",
+            // still_progressing 时是「慢响应」而非 hang，hint 相应区分，避免误导排查者。
+            hint: stillProgressing
+              ? "BeforeModel 发出后超时未配对，但流仍在收 chunk：慢响应而非 hang（模型长响应/网关慢）"
+              : "BeforeModel 发出后超时未收到 AfterModel/AfterModelRaw/TurnError，可能：1)请求hang 2)处理崩溃但未被catch",
             stream_snapshot: streamDiag,
           },
         });
       } catch { /* 看门狗写入失败静默 */ }
       this.pendingModelCalls.delete(index);
+      this.streamSnapshotRefs.delete(index);
     }, this.PAIRING_TIMEOUT_MS);
     // unref 确保看门狗不阻止进程退出
     if (pairingTimer && typeof pairingTimer === "object" && "unref" in pairingTimer) {
@@ -679,8 +722,16 @@ export class TraceCollector {
       clearTimeout(pairingTimer);
       this.pendingModelCalls.delete(pairIndex);
     }
-    // 缺口 3：清除流状态快照（正常完成，不再需要诊断数据）
-    clearStreamSnapshot(pairIndex);
+    // 缺口 3 + 发现 1：清除流状态快照（正常完成，不再需要诊断数据）。
+    // 发现 1 修复：快照 key 是 turn_index+loop_id（见 handleBeforeModel），此前用 pairIndex 清除
+    // 从来清不掉对应快照（key 不符），快照要拖到 loop 结束 clearAllSnapshots 才回收。改用同款 ref 清。
+    const ref = this.streamSnapshotRefs.get(pairIndex);
+    if (ref) {
+      clearStreamSnapshot(ref.turn_index, ref.loop_id);
+      this.streamSnapshotRefs.delete(pairIndex);
+    } else {
+      clearStreamSnapshot(pairIndex);
+    }
 
     const resp = input.llm_response;
     const usage = resp.usage ?? {};
@@ -1450,9 +1501,28 @@ export class TraceCollector {
 
       // 瘦身：只取批量分诊需要的顶层信号，剔除大字段（userPrompts 全文 / toolSequence 明细 /
       // thinkingHighlights 等）。异常只保留 kind+severity+layer，详情仍在 digest / errors.jsonl。
-      const errorAnomalies = digest.anomalies.filter(
+      //
+      // 发现 3 修复：此前只落一个 `errors` = high+medium 严重度**异常**计数，但字段名(errors)与语义
+      // (anomalies，含 L1 假设 + watchdog/stuck_loop 等假阳性)不一致——批量分诊主键 select(.errors>0)
+      // 被假阳性灌水，几乎每个含慢响应/并行读的干净会话都 errors>0，稀释真有 bug 的会话。
+      // 现拆成两个诚实字段：
+      //   - real_errors：仅「确认的硬错误信号」计数（工具 is_error / TurnError / errors.jsonl /
+      //     退出状态 error / 侧调用失败 / 数据损坏），不含 L1 假设与假阳性。批量分诊新主键。
+      //   - anomalies_count：high+medium 异常总数（旧 errors 语义，含假阳性），保留供参考。
+      // `errors` 字段保留为 anomalies_count 的别名（向后兼容旧脚本），但注释标注已弃用。
+      const REAL_ERROR_KINDS = new Set([
+        "exit_status_error",       // L0：退出状态为 error
+        "tool_result_is_error",    // L0：工具 tool_result 标记 is_error（如 LSP 超时）
+        "turn_error_in_events",    // L0：events.jsonl 有 TurnError
+        "errors_jsonl_has_entries",// L0：errors.jsonl 有条目
+        "side_call_failures",      // L0：侧调用（子代理等）失败
+        "schema_missing_core_keys",// L0：轨迹数据损坏
+      ]);
+      const anomaliesCount = digest.anomalies.filter(
         (a) => a.severity === "high" || a.severity === "medium",
-      );
+      ).length;
+      const realErrors = digest.anomalies.filter((a) => REAL_ERROR_KINDS.has(a.kind)).length;
+      const highSeverityAnomalies = digest.anomalies.filter((a) => a.severity === "high").length;
       const summary = {
         session_id: digest.sessionId,
         model: digest.model,
@@ -1464,8 +1534,12 @@ export class TraceCollector {
         cost_usd: digest.costUSD,
         tokens_sent: digest.tokensSent,
         tokens_received: digest.tokensReceived,
-        // 异常计数 + 精简清单（批量分诊主键：select(.errors > 0)）
-        errors: errorAnomalies.length,
+        // 发现 3：批量分诊主键 = real_errors（诚实错误计数）。旧 errors 字段保留为 anomalies_count 别名。
+        real_errors: realErrors,
+        anomalies_count: anomaliesCount,
+        high_severity_anomalies: highSeverityAnomalies,
+        /** @deprecated 用 real_errors（真错误）或 anomalies_count（含假阳性的异常总数）替代 */
+        errors: anomaliesCount,
         anomaly_kinds: [...new Set(digest.anomalies.map((a) => a.kind))],
         anomalies: digest.anomalies.map((a) => ({
           kind: a.kind,

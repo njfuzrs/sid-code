@@ -240,6 +240,18 @@ export interface BeforeModelInput extends HookInput {
   // ── Harness 扩展点 ──
   /** Harness 每轮上下文 */
   harness_context?: HarnessHookContext;
+
+  /**
+   * 流快照定位信息（发现 1 修复）：queryLoop 侧 StreamPhase 快照的 key 是 `${loop_id}:${turn_index}`
+   * （turn_index = 每条用户消息内自增的 state.turnCount，loop_id = 每次 queryLoop 唯一 ID）。
+   * 采集器的配对看门狗此前用「累计 pair 数 + 1」查快照，与此 key 语义不同 → 除首条用户消息外永远
+   * 查不到,stream_snapshot 恒 null（死代码）。透传这两个字段，让看门狗用同一 key 查快照。
+   * 可选：非 queryLoop 来源（如直接调 hook）不带，看门狗退化为原行为。
+   */
+  stream_snapshot_ref?: {
+    turn_index: number;
+    loop_id: string;
+  };
 }
 
 /** AfterModel 输入 */

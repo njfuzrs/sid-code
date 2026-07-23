@@ -334,6 +334,52 @@ describe("buildDigest 子代理 section (§9.6)", () => {
     expect(d.subAgents).toBeUndefined();
   });
 
+  it("发现2:ModelCallUnpaired 带 still_progressing → 降级为[低]慢响应,非[高]hang", () => {
+    const dir = writeSession("slowresp1", normalSession());
+    writeEvents(dir, [
+      {
+        event: "ModelCallUnpaired", session_id: "x", timestamp: "2026-07-23T06:46:00.000Z", cwd: "/tmp",
+        data: {
+          index: 60, model: "glm-5.2", elapsed_ms: 300000,
+          // 发现 1 修复后快照非 null(key 对齐);流仍在收 chunk → 发现 2 判定慢响应
+          stream_snapshot: {
+            last_known_phase: "first_content", http_status_received: true, http_status: 200,
+            chunks_received: 1200, empty_chunks: 0, last_content_progress_ms: 800,
+            timeouts_fired: [], abort_signal_aborted: false, still_progressing: true,
+          },
+        },
+      },
+    ]);
+    const d = buildDigest(listSessions(paths)[0], false, paths)!;
+    const slow = d.anomalies.find((a) => a.kind === "model_call_slow_response");
+    expect(slow).toBeDefined();
+    expect(slow!.severity).toBe("low");
+    // 不再报[高]疑似 hang
+    expect(d.anomalies.some((a) => a.kind === "model_call_unpaired_watchdog")).toBe(false);
+  });
+
+  it("发现2:真 hang(无进展/已 abort)仍报[高] model_call_unpaired_watchdog", () => {
+    const dir = writeSession("realhang1", normalSession());
+    writeEvents(dir, [
+      {
+        event: "ModelCallUnpaired", session_id: "x", timestamp: "2026-07-23T06:46:00.000Z", cwd: "/tmp",
+        data: {
+          index: 12, model: "glm-5.2", elapsed_ms: 300000,
+          stream_snapshot: {
+            last_known_phase: "headers_received", http_status_received: true, http_status: 200,
+            chunks_received: 0, empty_chunks: 0, last_content_progress_ms: 300000,
+            timeouts_fired: ["header_timeout"], abort_signal_aborted: true, still_progressing: false,
+          },
+        },
+      },
+    ]);
+    const d = buildDigest(listSessions(paths)[0], false, paths)!;
+    const hang = d.anomalies.find((a) => a.kind === "model_call_unpaired_watchdog");
+    expect(hang).toBeDefined();
+    expect(hang!.severity).toBe("high");
+    expect(d.anomalies.some((a) => a.kind === "model_call_slow_response")).toBe(false);
+  });
+
   it("4 个串行子代理（评估报告场景）→ 判定 serial + 留间隔铁证 + 成败正确", () => {
     const dir = writeSession("serial01", normalSession({ has_sub_agent: true }));
     // 复刻报告 §8.4 真实时间戳：120s 一个、相邻 3ms/1ms/2ms 排队

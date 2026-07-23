@@ -18,7 +18,7 @@ import { describe, test, expect, afterEach } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { ReadTool } from "../../src/tool/read.ts";
+import { ReadTool, stripReadEfficiencyHint } from "../../src/tool/read.ts";
 import { FileReadTracker } from "../../src/tool/file-read-tracker.ts";
 
 const tmpDirs: string[] = [];
@@ -489,5 +489,85 @@ describe("Read 工具 - PDF 页数门限（P1-4）", () => {
     const result = await tool.execute({ file_path: filePath, pages: "1-5" });
     expect(result.isError).toBe(true);
     expect(result.output).toContain("超过 PDF 实际页数");
+  });
+});
+
+describe("Read 工具 — 发现4:重复窄读非阻塞引导", () => {
+  test("反复窄读同一区域(≥3次高度重叠)→ 追加复用/整读提示", async () => {
+    // 用 >2000 行大文件排除"读太窄"提示(②),单独验证重复读(①)。
+    const lines = Array.from({ length: 3000 }, (_, i) => `line${i + 1}`).join("\n");
+    const filePath = makeTmpFile(lines, "big.ts");
+    const tool = new ReadTool(); // 同一实例内跟踪读历史
+
+    // 前两次不提示(给定向复查余地)
+    const r1 = await tool.execute({ file_path: filePath, offset: 100, limit: 20 });
+    expect(r1.output).not.toContain("[读取效率提示:");
+    const r2 = await tool.execute({ file_path: filePath, offset: 105, limit: 20 });
+    expect(r2.output).not.toContain("[读取效率提示:");
+    // 第 3 次仍读同一区域 → 触发重复读提示
+    const r3 = await tool.execute({ file_path: filePath, offset: 100, limit: 20 });
+    expect(r3.output).toContain("[读取效率提示:");
+    expect(r3.output).toContain("第 3 次读取");
+  });
+
+  test("读不同区域(不重叠)不触发重复读提示", async () => {
+    // 用 >2000 行的大文件,排除"读太窄可整读"提示(②),单独验证不重叠导航不触发重复读(①)
+    const lines = Array.from({ length: 3000 }, (_, i) => `line${i + 1}`).join("\n");
+    const filePath = makeTmpFile(lines, "nav.ts");
+    const tool = new ReadTool();
+    const r1 = await tool.execute({ file_path: filePath, offset: 1, limit: 20 });
+    const r2 = await tool.execute({ file_path: filePath, offset: 500, limit: 20 });
+    const r3 = await tool.execute({ file_path: filePath, offset: 1500, limit: 20 });
+    // 合法的分段导航(不同 offset、不重叠)不应被当重复读打扰
+    expect(r1.output).not.toContain("[读取效率提示:");
+    expect(r2.output).not.toContain("[读取效率提示:");
+    expect(r3.output).not.toContain("[读取效率提示:");
+  });
+
+  test("整读(不传 limit)不触发'读太窄'提示", async () => {
+    const lines = Array.from({ length: 300 }, (_, i) => `line${i + 1}`).join("\n");
+    const filePath = makeTmpFile(lines, "whole.ts");
+    const tool = new ReadTool();
+    const r = await tool.execute({ file_path: filePath });
+    expect(r.output).not.toContain("[读取效率提示:");
+  });
+
+  test("首次对不大的文件传小 limit → '读太窄'提示可整读", async () => {
+    const lines = Array.from({ length: 300 }, (_, i) => `line${i + 1}`).join("\n");
+    const filePath = makeTmpFile(lines, "narrow.ts");
+    const tool = new ReadTool();
+    const r = await tool.execute({ file_path: filePath, offset: 1, limit: 20 });
+    expect(r.output).toContain("[读取效率提示:");
+    expect(r.output).toContain("一次整读");
+  });
+
+  test("防回归:read 始终读磁盘最新内容,提示不缓存旧内容", async () => {
+    // 用户担忧点:提示会不会让模型读到旧快照。验证:read 每次真读磁盘,提示只加元信息不改内容。
+    const filePath = makeTmpFile("V1-old\n".repeat(300), "live.ts");
+    const tool = new ReadTool();
+    await tool.execute({ file_path: filePath, offset: 1, limit: 20 });
+    await tool.execute({ file_path: filePath, offset: 1, limit: 20 });
+    // 文件被外部改写后再读 → 必须看到新内容 V2,而非缓存的 V1
+    writeFileSync(filePath, "V2-new\n".repeat(300));
+    const r3 = await tool.execute({ file_path: filePath, offset: 1, limit: 20 });
+    expect(r3.output).toContain("V2-new");
+    expect(r3.output).not.toContain("V1-old");
+  });
+
+  test("防回归:剥离效率提示后,相同区域重复读的内容签名保持稳定(不瘫痪 loop-detection)", async () => {
+    // 核心回归:效率提示含每轮自增的"第N次",若不剥离会让重复读签名每轮都变 → repeatCount 清零 →
+    // 瘫痪 git-status 冻结死循环止损阀。验证 stripReadEfficiencyHint 剥离后签名一致。
+    const lines = Array.from({ length: 3000 }, (_, i) => `line${i + 1}`).join("\n");
+    const filePath = makeTmpFile(lines, "sig.ts");
+    const tool = new ReadTool();
+    const outs: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      const r = await tool.execute({ file_path: filePath, offset: 100, limit: 20 });
+      outs.push(stripReadEfficiencyHint(r.output));
+    }
+    // 第 3、4 次带了不同的"第N次"提示,但剥离后 4 次内容签名必须完全一致
+    expect(new Set(outs).size).toBe(1);
+    // 且原始输出确实在后几次带了提示(证明剥离不是空操作)
+    expect(outs[0]).not.toContain("[读取效率提示:");
   });
 });

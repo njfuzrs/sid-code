@@ -236,7 +236,10 @@ export class HookSystem {
 
   async fireBeforeModelEvent(
     llmRequest: BeforeModelInput["llm_request"],
-    options?: { harness_context?: import("./types.ts").HarnessHookContext },
+    options?: {
+      harness_context?: import("./types.ts").HarnessHookContext;
+      stream_snapshot_ref?: BeforeModelInput["stream_snapshot_ref"];
+    },
   ): Promise<AggregatedHookResult> {
     return this.eventHandler.fireBeforeModelEvent(llmRequest, options);
   }

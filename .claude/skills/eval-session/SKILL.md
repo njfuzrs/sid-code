@@ -271,7 +271,11 @@ grep -rl "collector.ts\|account.*落盘\|<本次发现关键词>" docs/bugfixes/
 - **`warn.log` 里成批的"hang/僵尸会话"**:通常是**启动时**对历史会话的诊断扫描,不是本会话的问题。看时间戳和 session_id 是否本会话。
 - **`model_call_unpaired_watchdog`(标[高]"疑似 hang")**:配对看门狗阈值仅 2 分钟(`collector.ts` 里 `PAIRING_TIMEOUT_MS`,grep 确认当前值),慢模型(glm/deepseek)+长上下文下单轮生成超阈值是常态,会被误报成 hang。**核实法**:比对该 index 的 `BeforeModel → AfterModelRaw` 真实耗时 + `AfterModelRaw` 的 `output_tokens`(大输出 + 流在走 = 慢响应,非 hang;实证 20260723-140029 index=60 是 222s 出 14006 token 的慢响应被误报)。注:**这个误报机制本身是坐实的真 harness 缺陷**——(a) 阈值偏紧;(b) `stream_snapshot` **结构性永远为 null**:看门狗用 collector 的 pair index 查快照,StreamPhase 却用 queryLoop 的 turnCount 注册,两套 index 命名空间 key 从不匹配(不是"loopId 拿不到",是 index 数值本身对不上,见铁律 7 + MEMORY `[[watchdog-snapshot-index-mismatch]]`)。核实后写进 §3,别只当假阳性略过。
   > 行号会随 collector.ts 改动漂移(该文件很活跃),上面只给符号名(`PAIRING_TIMEOUT_MS`/`getStreamSnapshot`/`turnCount`),写报告前用 `grep -n` 现查行号,别照抄 skill 里的旧行号。
-- **`session-summary.json` 的 `errors` 字段 ≠ 真错误数**:它是 high+medium **异常(anomaly)** 计数(`collector.ts` 的 `errorAnomalies = anomalies.filter(severity high||medium)`),**含已证实的假阳性**(watchdog / stuck_loop),不是 `is_error`/TurnError 的真错误数。实证 20260723-140029:`errors:3` 但全轨迹 `is_error` 只有 1。**别把 `errors:N` 当"N 个真错误"直接写进报告**;要真错误数就 grep 轨迹 `is_error:true` + events 的 TurnError。⚠️ 它还是批量分诊主键 `select(.errors>0)` → 被假阳性灌水会把干净会话误选成"高产候选",分诊选样时要意识到这层污染(这本身是一条 harness 发现)。
+- **`session-summary.json` 的错误字段(发现 3 已修)**:现在有三个字段,分诊/报告用对键:
+  - `real_errors`:**诚实错误计数**——仅硬错误信号(`is_error`/TurnError/errors.jsonl/退出 error/侧调用失败/数据损坏),不含 L1 假设与假阳性。**批量分诊主键 = `select(.real_errors>0 or .high_severity_anomalies>0)`**,写报告说"N 个真错误"用这个。
+  - `anomalies_count`:high+medium **异常**总数(旧 `errors` 语义,**含假阳性**如 watchdog 慢响应 / stuck_loop),仅供参考。
+  - `errors`:已弃用,= `anomalies_count` 的别名(向后兼容旧脚本),**别再用它当分诊主键**。
+  - 背景:修复前 `errors` 名实不符(叫 errors 实为 anomalies),假阳性灌水把干净会话误选成"高产候选"。实证 20260723-140029:`errors:3` 但真错误只 1(LSP 超时)。慢响应现已降级为 [低]`model_call_slow_response`,不再进 `high_severity_anomalies`。
 - **`CACHE_BREAK`(warn.log)**:warn.log 若已标"本地前缀 hash 未变 → 疑为服务端缓存波动,本地不可控",就是**服务端波动,非 sid-code 缺陷**——归因已正确,别再花时间"修缓存"。反是 harness 归因正确的正向样本(可记进 §2.5)。
 
 ## 反哺本 skill:发现新陷阱/新纪律就回填(常驻,不是可选项)
