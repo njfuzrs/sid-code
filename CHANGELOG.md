@@ -2,6 +2,147 @@
 
 本文件由 scripts/generate-changelog.ts 自动生成，请勿手改。
 
+## v0.1.592 (2026-07-23)
+
+### 新功能
+- **query,trace** · SID_MAX_TURNS 软阈值提醒 + 只读死锁缺口 A/B 修复 + model_at_start 归因 + 空壳清理放宽 `60f4c8b`
+  - 新增 SID_MAX_TURNS 软阈值提醒（第四层兜底）：默认关闭，仅显式设置时启用， 单条消息处理超过 N 轮时一次性注入软提醒，不强杀，尊重"不打断长任务"偏好
+  - 缺口 A 修复：isReadonlyProbeCommand 剥离 cd/env 前缀后再判只读， 让 `cd /a/b && git status` 等真实死锁形态进入检测
+  - 缺口 B 修复：read/ls/glob/grep/lsp 等纯只读工具折叠进 probe 签名， 使 `git status ↔ read 同区域` 交替空转构成稳定复合签名，不再被交替清零
+  - §6.4 model_at_start 归因字段：trace 中新增启动模型追踪， model 跟踪 /model 切换后的实际模型，供归因对照
+  - §6.1 放宽空壳清理：覆盖"发出一次 BeforeModel 即被 abort、0 token" 的启动即中断会话，清理全天噪音
+- **ui** · 状态栏重构为两行分层布局 + 两色层次 `e4eee67`
+  - Footer 从单行四区改为两行：行1(会话/运行态)左对齐、行2(环境/上下文)右对齐
+  - 引入两色层次：单位/符号(暗色后退) + 数值(亮色前进)，全程有层次不再一片灰
+  - 修复权限模式恒被截断：去掉内层 width="100%"，行宽由 flex 父容器自然决定
+  - 窄屏渐进隐藏改为各行独立按 dropOrder 丢计量项
+  - fallback 测试适配：移除 defaultModel、传 defaultParams
+  - 新增状态切换/阻塞交互/后台看门狗修复方案文档
+- 补齐 CC 对齐缺口——Vim 引擎、会话回退、14 个新命令、CLI 校验与 UI 增强 `c5a6732`
+  - 新增 Vim 编辑引擎（src/ui/vim/）：motions/operators/text-objects/transitions
+  - 新增会话回退管理器（rewind-manager）+ RewindDialog UI
+  - 新增 14 个命令：batch/bug/claude-api/color/fast/fork/insights/ keybindings/statusline/terminal-setup/tui/agents/auth/mcp-cli
+  - 新增 CLI 标志校验（flag-e2e/flag-validators）
+  - 新增剪贴板图片粘贴、Shell 任务接管（adopt）
+  - 文档重组：对齐方案文件移入 double-check/ 子目录
+  - 各模块配套测试覆盖
+- **command,skill** · 新增 6 个命令 + /pr skill `1c90ca9`
+  - 新增 /context /copy /rename /statusline /vim /workflows 命令，
+  - 新增 /pr bundled skill（对齐 CC），app 层增强 setVimMode/
+  - setStatusLine/renameSession/stream-json 双向流/maxBudgetUsd，
+  - UI 增强状态栏 Vim 模式，新增 3 组测试。
+- 大规模补齐 CC 对齐缺口——CLI/权限/会话/UI/命令/配置全面补全 `6420a7c`
+  - CLI：新增 session-id、effort、allow-tool 等 20+ 参数，对齐 CC 启动参数集
+  - 权限：acceptEdits 下文件系统命令放行、路径/Shell 规则匹配、mode-policy
+  - 会话：fork-session 分叉、no-session-persistence、sessionName
+  - 命令：新增 /status、/todos 内置命令
+  - UI：ContextDialog、Footer 状态栏、statusline、external-editor、kill-ring
+  - 配置：扩展 Config 接口 30+ 字段，settings 源控制、MCP 配置源
+  - 工具：WebFetch 预授权域名、工具白名单替换
+  - 测试：新增 10+ 测试文件覆盖各模块
+- **query** · 统一优先级消息队列 + mid-turn 抢占 drain,补齐缓存/环境/终止对齐 `a943c6e`
+  - 新增 message-queue-manager.ts:收敛用户输入/后台通知/agent 消息到 now/next/later 优先级队列
+  - loop.ts 支持 mid-turn 抢占 drain(now 级,SID_ENABLE_MIDTURN_DRAIN 灰度开关)
+  - stop_sequence 纳入正常终止白名单,走完整收尾链
+  - cache-strategy: 工具区缓存断点 markLastToolCacheBreakpoint(仅直连 Anthropic)+断点预算护栏计入 tools
+  - system-prompt: 新增上下文管理静态告知(增强 5.3)+环境信息补齐 git 仓库判定与 OS Version
+  - errors.ts 登记 midturn-preempt abort reason
+  - task/notification 接入统一队列
+  - 补充 message-queue-manager / midturn-drain / stop-sequence-end-turn 测试
+- **tool** · P2-17 cron 人类可读调度 + P2-15 sub_agent 透出 model/cwd `3a2a03a`
+  - P2-17：新增 cron/describe.ts 的 cronToHuman，识别每 N 分钟/每小时/每天/
+  - 工作日/每周某几天/每月某日等常见模式，识别不了回落原始 cron；cron_list
+  - 输出「人读描述（原始 cron）」。
+  - P2-15：sub_agent schema 补 model（每次调用覆盖模型）与 cwd（工作目录），
+  - 同步/后台两路径均透传到 SubAgentTask（内部本就支持，此前未暴露给 LLM）。
+  - 测试 tests/cron/describe.test.ts 9 pass + tests/agent/sub-agent.test.ts
+  - 29 pass；全量 5809 pass；make rebuild 通过。
+- **web-fetch** · P2-2 HTML→Markdown 保留页面结构 `d82a5e0`
+  - 标题→# 前缀、链接→[text](url)、列表→- 前缀、表格单元格→| 分隔
+  - 强调→**/*、行内代码→反引号
+  - 去 script/style/HTML 注释，解码十六进制/数字/具名实体
+  - javascript: 伪协议链接只保留文字，防注入
+- **tool** · 补齐结构化任务清单 + WebFetch 缓存/prompt + bash 超时 env 覆盖 `161fc28`
+  - 新增 structured-task-store：subject/status/owner/blocks/blockedBy 双向依赖边维护 + 成环检测 + isTaskUnblocked
+  - 新增 task_create/task_update/task_get/task_list 四工具（结构化清单）
+  - 原后台任务族改名 bg_task_get/bg_task_list（语义对应 CC TaskOutput 族）
+  - 同步 coordinator/loop-detection/agent-definition/tool-filter/ tool-classifier/cli 全部引用
+- **skill** · 新增 claude-code-migration 迁移技能 `17123e5`
+  - 将 Claude Code 的用户级和项目级配置迁移到 sid-code，支持
+  - settings、MCP servers、commands、skills、agents、hooks、memory、
+  - output styles、permissions 等配置的迁移。
+  - 新增 inspect-migration.mjs 只读检查脚本、mapping.md 映射准绳、
+  - E2E 测试脚本及 Claude Code 设计空间研究文档。
+
+### 修复
+- **trace,hook,query,tool,task** · eval-session 评估 4 项缺陷修复 + 文档测试闭环 `e8b5c6d`
+  - queryLoop 侧 StreamPhase 快照 key 是 `${loop_id}:${turn_index}`，采集器配对看门狗此前用 「累计 pair 数 + 1」查快照，key 语义不同 → 除首条用户消息外永远查不到，stream_snapshot 恒 null（死代码）。新增 BeforeModelInput.stream_snapshot_ref 透传 turn_index +…
+  - 慢模型 + 长上下文下单轮生成超 2 分钟配对阈值是常态，但流仍在收 chunk 并非 hang。
+  - 看 stream_snapshot.still_progressing：流有进展 → 降级为 [低] model_call_slow_response， 不再进 high_severity_anomalies；真 hang（无进展/已 abort）仍报 [高] watchdog（digest.ts/collector.ts）。
+  - 原 `errors` 字段实为 high+medium 异常计数（含 watchdog/stuck_loop 假阳性），被误当真错误数 灌水进分诊主键。拆为三字段：`real_errors`（诚实错误计数，仅 is_error/TurnError 等）、 `anomalies_count`（异常总数，含假阳性，仅供参考）、`errors`（弃用别名 = anomalies_count，向后兼容）。
+  - 批量分诊主键改用 `select(.real_errors>0 or .high_severity_anomalies>0)`（digest.ts + 文档同步）。
+  - 弱模型对大文件常做几十次 limit=10~60 窄窗读、反复重读同一区域（实证 33 次），read 是纯只读、 无引导信号 → 拉长步数 + 推高 token。新增「重复窄读」非阻塞提示：同文件 ≥3 次且与历史高度重叠 → 提示复用/整读；首次对小文件传小 limit → 提示可一次整读。绝不拦截只读操作（read.ts）。
+  - 防回归：提示含每轮自增的「第 N 次」元信息，会破坏 repeated-readonly-guard 的内容签名（每轮都变 → repeatCount 清零 → 瘫痪 git-status 冻结死循环止损阀）。新增 stripReadEfficiencyHint， loop-detection 做签名前先剥离该段（read.ts/loop.ts + 单测覆盖签名稳定性）。
+  - flush() 此前另起 drain 与在途 drain 竞争，可能先看到空队列而提前 resolve，读端拿到不存在文件。
+- **telemetry,trace** · 账本增量落盘 + 并行子代理误报修复 + ✗标记只信is_error `509d93d`
+  - 成本不落账本(高)：usage-ledger 从 append 改 upsert，每轮 AfterModel 增量落盘，去掉 ledgerWritten flag；读侧 dedupeBySession 兼容历史 append 多行。交互式会话任务完成后不再丢账本。
+  - 并行子代理误报循环(中)：digest shape run 检测加时间戳窗口，同时间戳 派发的 fan-out 不计 run；保留串行空转告警。
+  - ✗标记混淆(低)：移除关键词启发式，✗ 只留给 is_error===true 的真失败。
+- **llm,query,config** · 补齐 git 快照死循环 4 个缺口 + 文档归档 `e92aafc`
+  - §6.3 重复开流成因遥测（原未落地）：fallback.ts 重开流路径读 stream-observer snapshot 的 timeoutsFired，推导结构化 reopenReason （idle/content_progress/fallback_stream_timeout），无超时记录则取 classified.reason；retry-telemetry.ts 新增 reop…
+  - abort 路径必达+集成测试（原部分落地）：empty-param 测试用真实 AbortController 在 processStream 返回前触发 abort，断言 cancel result 含「被中断/未执行/没有落地/分段写入」且已 sessionStore 落盘
+  - 第一层脏工作区单测（原部分落地）：attachments 测试创建临时 git 仓库 →commit→制造 untracked+modified 脏状态，断言脏文件名绝不泄漏进 <git-status>
+  - 文档归档：根治-git快照死循环 todo→done；新增两份排查/评估文档
+- 双层预防根治 git 快照冻结死循环 + 全屏有界视口物理根治幽灵残留 `681f723`
+  - 第一层（attachments.ts）：移除 volatile Status 块，消除净/脏矛盾源
+  - 第二层（empty-param.ts, loop.ts）：空参数/中断回执明确"未落地"，覆盖 abort 路径
+  - 方案乙（config.ts, app.ts, cli.ts, help.ts, tui.ts）：默认全屏 alt-screen 有界视口，--inline 逃生舱
+  - 子代理前台不再双投递通知（sub-agent.ts, agent-task.ts）
+  - UI 修复：sub_agent 卡片 header、live tool 视口封顶等
+  - 自检更新 + 测试更新
+- H1-H10 系统性修复——fallback 死代码、terminal 拉黑、硬超时误杀、孤儿弹窗、子代理 thinking 收口 `0bf9bae`
+  - H1: fallback 注入 resolveContextLimit 回调，根治 tryRecoverMaxTokens 死代码
+  - （构造从不传 contextLimit → 恒 return null）
+  - H2: 用户显式切模型或降级选中时清除 terminal 拉黑态，避免切了等于没切
+  - H3: CLAUDE.md 模型切换复用 applyPrimaryModelSwitch 统一重算路径
+  - （此前裸改 config.model，maxTokens/provider/effort 全失真致 400）
+  - H4: fallback 注入 resolveMaxOutputTokens，修复自定义模型漏钳制 maxTokens 致 400
+  - H5: config.ts 新增 resolveMaxOutputTokensForModel 导出
+  - H6: turn_hard 超时改为 setInterval 周期检查，与人机等待闸门共享状态，
+- **fallback,query,config** · 修复 fallback 切模型 maxTokens 不重算致 400 + 看门狗误杀弹窗 `dac6cbc`
+  - config: 登记 _explicitMaxTokens 提前到首次 resolveCurrentModelConfig 之前，避免用户显式值被模型推导覆盖；新增 clampMaxTokensToModelCeiling 统一钳制
+  - app: 抽取 applyPrimaryModelSwitch 统一 /model 切换与 fallback 降级 的主模型写回逻辑，确保两条入口均重算 maxTokens
+  - fallback: 切到 fallback 模型时按注册表上限钳制 maxTokens
+- **fallback,query,config** · 修复 fallback 切模型 maxTokens 不重算致 400 + 看门狗误杀弹窗 `2d12bfc`
+  - config: 登记 _explicitMaxTokens 提前到首次 resolveCurrentModelConfig 之前，避免用户显式值被模型推导覆盖；新增 clampMaxTokensToModelCeiling 统一钳制
+  - app: 抽取 applyPrimaryModelSwitch 统一 /model 切换与 fallback 降级 的主模型写回逻辑，确保两条入口均重算 maxTokens
+  - fallback: 切到 fallback 模型时按注册表上限钳制 maxTokens
+- **query,permission** · 补齐队列/权限/clear 三处缺口 `21a3cd2`
+  - 队列：drainByPriorityAndKind 双条件精确出队，mid-turn 只取 user-input
+  - 不误吞其他 kind（如 permission-response）
+  - 权限：checkDenyRules 复合命令逐子命令拆分匹配 deny 规则，任一命中即
+  - 整体拒绝（some 语义），修补 `ls && curl evil.com` 绕过 deny 前缀的安全缺口
+  - /clear：两处增加 clearMessageQueue() 调用，防止跨会话残留
+  - 配置：新增 askUserQuestionTimeout 配置项
+  - 测试：补齐对应测试用例
+
+### 文档
+- **skill** · 完善 eval-session 评估文档——执行环境约定、跨段桥接、批量分诊与能力链路探针 `240efac`
+  - 增加执行环境约定（分清"谁在评""评谁"）
+  - 新增 Phase 3.5 跨段桥接（模型失误→harness 发现）
+  - 新增 Phase 0 适评性分诊与批量分诊脚本
+  - 新增成本基线判读与 B 路能力链路探针
+  - 术语统一：缺陷→发现（缺陷+优化点）
+  - 更新完成判据与输出模板
+- 重组对齐 claude-code 缺口修复方案文档 + 新增安全审计 `1394f62`
+  - 将 todo 下分散的对标方案文档归并进「对齐claude-code-缺口修复方案/」目录并编号
+  - 新增 09-20 记忆/MCP/子代理/上下文窗口/Git/会话/IDE/SDK/Skills/配置/生态等对标方案
+  - 新增 docs/security-audit prompt 注入与凭证管理审计
+- 发布流程第一步移除重复的 bun test，release.sh 内部已自带门禁 `20a9bd6`
+
+### 其他
+- doc: 新增方案设计文档 幽灵残留：完全对齐 claude-code 渲染架构 —— 物理根治 `1ebaf64`
+
 ## v0.1.591 (2026-07-17)
 
 ### 新功能
