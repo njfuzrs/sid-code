@@ -157,6 +157,8 @@ export interface ToolStep {
   argPreview: string;
   isError: boolean;
   orphan: boolean;
+  /** 该 action 派发时刻(ms epoch,解析失败为 undefined)。用于区分并行 fan-out 与串行空转。 */
+  tsMs?: number;
 }
 
 /** T12.5：Provider 维度聚合统计 */
@@ -330,6 +332,23 @@ function fileMtimeIso(path: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * 解析轨迹步骤时间戳为 ms epoch。
+ * builder 写出的是 ISO 字符串(见 builder.ts:645 等),但历史/其他来源可能是数字 epoch(秒或毫秒),
+ * 这里统一容错解析:字符串走 Date.parse,数字按大小判断秒/毫秒,失败返回 undefined。
+ */
+function parseStepTsMs(ts: unknown): number | undefined {
+  if (typeof ts === "string") {
+    const ms = Date.parse(ts);
+    return Number.isNaN(ms) ? undefined : ms;
+  }
+  if (typeof ts === "number" && Number.isFinite(ts)) {
+    // < 1e12 视为秒级 epoch(2001 年之前的毫秒 epoch 不会出现在轨迹里),换算成毫秒
+    return ts < 1e12 ? ts * 1000 : ts;
+  }
+  return undefined;
 }
 
 // ─────────────────────────── session 定位 ───────────────────────────
@@ -710,6 +729,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
         argPreview: previewArgs(s.tool_input, s.action),
         isError: false,
         orphan: false,
+        tsMs: parseStepTsMs(s.timestamp),
       });
     }
     if (s.message_type === "observation") {
@@ -721,10 +741,12 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
       if (s.is_error) {
         toolErrorCount++;
         if (last) last.isError = true;
-      } else if (typeof s.content === "string" && /\b(error|failed|exception|拒绝|denied)\b/i.test(s.content)) {
-        // observation 文本里透出错误信号(并非所有 is_error 都被标记)
-        if (last && !last.isError) last.isError = true;
       }
+      // 注:此前这里还有一条"observation 文本含 error/failed/exception/denied 关键词即判失败"的
+      // 启发式,已删除——它把 ✗ 打在了成功但内容里恰好出现这些词的调用上(实测:read 一个正文含
+      // "error" 34 次的源码文件、或子代理返回的审计报告里提到 "failed",都会被误标 ✗),而截断读取
+      // (read.ts 只追加"文件已截断"提示、返回 isError=false)本就不是失败。✗ 现在只信任 tool_result
+      // 的权威 is_error 标志(同 loop-detection「信任权威信号、不用粗糙代理」原则)。
     }
     // 思维链要点(取前几条,full 模式取更多)
     if (s.thought && typeof s.thought === "string") {
@@ -784,18 +806,38 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   }
 
   // ── 循环嫌疑:连续相同 (tool + 锚点参数) ──
+  //
+  // 关键:并行 fan-out(如把一个大任务切成 4 份同时派发 4 个 sub_agent)在轨迹里表现为
+  // "连续相同 shape",但它是合法编排而非"一个做完再做下一个"的串行空转。二者的判别信号是
+  // **派发时间戳**:并行的几个调用几乎同一时刻发出(间隔 < PARALLEL_DISPATCH_WINDOW_MS),
+  // 串行空转则每个调用间隔一次完整的 LLM 往返(秒级以上)。因此计数时把"与上一个近乎同时派发"
+  // 的调用视为并行分支,不计入连续 run(既不 ++,也不打断已有 run——它只是被跳过)。
+  // 时间戳缺失(老轨迹)时退化为原行为(全部计数),不误伤。
+  const PARALLEL_DISPATCH_WINDOW_MS = 1000;
   let maxRun = 0;
   let maxRunShape = "";
   let prevShape = "";
+  let prevTsMs: number | undefined;
   let curRun = 0;
   for (const t of toolSequence) {
     const shape = `${t.tool}|${t.argPreview.split(" ")[0] || ""}`;
+    const parallelWithPrev =
+      shape === prevShape &&
+      t.tsMs !== undefined &&
+      prevTsMs !== undefined &&
+      Math.abs(t.tsMs - prevTsMs) < PARALLEL_DISPATCH_WINDOW_MS;
+    if (parallelWithPrev) {
+      // 并行分支:跳过,不计入 run。prevShape 保持不变,prevTsMs 更新为本次(供链式并行判定)。
+      prevTsMs = t.tsMs;
+      continue;
+    }
     if (shape === prevShape) {
       curRun++;
     } else {
       curRun = 1;
       prevShape = shape;
     }
+    prevTsMs = t.tsMs;
     if (curRun > maxRun) {
       maxRun = curRun;
       maxRunShape = shape;

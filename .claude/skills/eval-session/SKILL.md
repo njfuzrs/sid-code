@@ -79,9 +79,10 @@ todo-fix 清单(派生物,每条都必须回指某条已确认的评估结论)
 1. **每条结论必带证据**:`file:line`(代码)或实测数据(命令输出/统计),禁止臆测。写不出证据的判断降级为"假设",并给证伪条件。
 2. **声称"测试通过 / 有单测闭环"必须真跑**:执行 `bun test <文件>` 并把 pass/fail 数贴进报告。**只读到测试文件存在 ≠ 测试通过**——这是最容易犯的过度声称。
 3. **结论前先验证**:对交付物里的每条"已落地/已修复"声明,亲自 read 对应代码确认,不转述、不盲信(包括不盲信子代理的返回)。
-4. **交叉核对 MEMORY.md(有则做)**:发现的 harness 问题,若能读到本机为 sid-code 维护的项目记忆(通常在 `~/.claude/projects/.../memory/MEMORY.md`),查是否已有记录——**复发的老问题**要显式标注(比一次性问题严重),新问题考虑提示用户存记忆。**读不到该记忆时**(换机器 / 执行者非本机 agent)按「执行环境约定 §2」跳过并注明,不硬卡。
+4. **交叉核对 MEMORY.md(有则做)**:发现的 harness 问题,若能读到本机为 sid-code 维护的项目记忆(通常在 `~/.claude/projects/.../memory/MEMORY.md`),查是否已有记录——**复发的老问题**要显式标注(比一次性问题严重),新问题考虑提示用户存记忆。**读不到该记忆时**(换机器 / 执行者非本机 agent)按「执行环境约定 §2」跳过并注明,不硬卡。**MEMORY 引用的常量/阈值/`file:line` 要拿现码验一遍——记忆是时点快照,漂移很常见;记忆写 X、现码是 Y,这个漂移本身就是一条产出**(至少值得回填修正记忆,也可能揭示某处被静默改过。实证:20260723-140029 撞见 MEMORY 记 `PAIRING_TIMEOUT 600s`、现码 120s)。
 5. **区分 trace-digest 的已知假阳性**(见下"陷阱"),别把工具的误报当成真缺陷写进报告。
 6. **每条"模型的锅"都要过 harness 桥**(见 Phase 3.5):模型失误/低效不能只记进 §2 就算完,必须回问"harness 本可以拦住/让它更容易做对吗?",能翻译成 harness 改进的进 §3。**这是本 skill 出货的主通道,不是可选项。**
+7. **比对两组计数/index 前,先确认它们数的是不是同一个东西**:trace 里存在多套 index 命名空间(如 collector 的 pair index 跑到 90、queryLoop 的 turnCount 只到 32、StreamPhase 的 obsIndex 用满整场循环),名字都叫 `index`/`turn` 但语义不同。**"某 index 在 N 之后消失/对不上"极易被误判成数据丢失 bug**,下结论前必须先 read 源码确认两边的 index 由谁分配(实证:20260723-140029 差点把"StreamPhase index 32 后消失"写成流事件丢失,核对后才发现是 turnCount vs pair index 两套命名空间——它反而成了真发现的证据)。凡跨事件类型比对计数,这一步不可省。
 
 ## 执行流程(半自动:机械首过 + 逐段人工核实)
 
@@ -268,8 +269,19 @@ grep -rl "collector.ts\|account.*落盘\|<本次发现关键词>" docs/bugfixes/
 - **`repeated_tool_shape_run` / `hypothesis_stuck_loop`**:shape 检测只按"工具名+首参"连续计数,**不看时间戳**。并行 fan-out 的多个 sub_agent(同一时间戳派发)会被误报成"原地打转"。逐个比对派发时间戳/参数再判。
 - **工具序列 `✗`**:可能只是"截断读取"(大文件只读了一段)或并行派发标记,**不一定是失败**。以 `subagent_execution_outcome` 的成功/失败计数为准。
 - **`warn.log` 里成批的"hang/僵尸会话"**:通常是**启动时**对历史会话的诊断扫描,不是本会话的问题。看时间戳和 session_id 是否本会话。
-- **`model_call_unpaired_watchdog`(标[高]"疑似 hang")**:配对看门狗阈值仅 2 分钟(`collector.ts` 里 `PAIRING_TIMEOUT_MS`,grep 确认当前值),慢模型(glm/deepseek)+长上下文下单轮生成超阈值是常态,会被误报成 hang;且看门狗取快照时可能拿不到 loopId(`getStreamSnapshot(index)` 未显式传 loopId,回退到 ambient context,若上下文已切走则 `stream_snapshot=null`),连自证的证据都没有。**核实法**:看 events.jsonl 该 index 的 StreamPhase 是否持续有 chunks(有=流在进展=慢响应,非 hang),比对 BeforeModel→AfterModel 真实耗时。注:**这个误报机制本身可能是一条真 harness 缺陷**(阈值偏紧 + 快照 key 依赖 ambient context),核实后若成立应写进 §3,而非只当假阳性略过。
-  > 行号会随 collector.ts 改动漂移(该文件很活跃),上面只给符号名(`PAIRING_TIMEOUT_MS`/`getStreamSnapshot`),写报告前用 `grep -n` 现查行号,别照抄 skill 里的旧行号。
+- **`model_call_unpaired_watchdog`(标[高]"疑似 hang")**:配对看门狗阈值仅 2 分钟(`collector.ts` 里 `PAIRING_TIMEOUT_MS`,grep 确认当前值),慢模型(glm/deepseek)+长上下文下单轮生成超阈值是常态,会被误报成 hang。**核实法**:比对该 index 的 `BeforeModel → AfterModelRaw` 真实耗时 + `AfterModelRaw` 的 `output_tokens`(大输出 + 流在走 = 慢响应,非 hang;实证 20260723-140029 index=60 是 222s 出 14006 token 的慢响应被误报)。注:**这个误报机制本身是坐实的真 harness 缺陷**——(a) 阈值偏紧;(b) `stream_snapshot` **结构性永远为 null**:看门狗用 collector 的 pair index 查快照,StreamPhase 却用 queryLoop 的 turnCount 注册,两套 index 命名空间 key 从不匹配(不是"loopId 拿不到",是 index 数值本身对不上,见铁律 7 + MEMORY `[[watchdog-snapshot-index-mismatch]]`)。核实后写进 §3,别只当假阳性略过。
+  > 行号会随 collector.ts 改动漂移(该文件很活跃),上面只给符号名(`PAIRING_TIMEOUT_MS`/`getStreamSnapshot`/`turnCount`),写报告前用 `grep -n` 现查行号,别照抄 skill 里的旧行号。
+- **`session-summary.json` 的 `errors` 字段 ≠ 真错误数**:它是 high+medium **异常(anomaly)** 计数(`collector.ts` 的 `errorAnomalies = anomalies.filter(severity high||medium)`),**含已证实的假阳性**(watchdog / stuck_loop),不是 `is_error`/TurnError 的真错误数。实证 20260723-140029:`errors:3` 但全轨迹 `is_error` 只有 1。**别把 `errors:N` 当"N 个真错误"直接写进报告**;要真错误数就 grep 轨迹 `is_error:true` + events 的 TurnError。⚠️ 它还是批量分诊主键 `select(.errors>0)` → 被假阳性灌水会把干净会话误选成"高产候选",分诊选样时要意识到这层污染(这本身是一条 harness 发现)。
+- **`CACHE_BREAK`(warn.log)**:warn.log 若已标"本地前缀 hash 未变 → 疑为服务端缓存波动,本地不可控",就是**服务端波动,非 sid-code 缺陷**——归因已正确,别再花时间"修缓存"。反是 harness 归因正确的正向样本(可记进 §2.5)。
+
+## 反哺本 skill:发现新陷阱/新纪律就回填(常驻,不是可选项)
+
+cookbook §三 已定"脚本自身的缺陷是一条 harness 发现"——但那只反哺 `trace-digest`。**本 skill 自己也要在每轮评估后自我进化**:一轮评估里若撞见 **SKILL.md 陷阱节没列的新假阳性**、**一条本可避免的"差点写错"**、或**一个可复用的验证纪律**,它们默认只会死在那份报告里,下一个评估者还得重踩。所以:
+
+- **评估收尾时问一句**:这轮有没有遇到"陷阱节没写、但下次还会坑人"的东西?(新假阳性 / 数据格式坑 / index-namespace 类误判 / MEMORY 漂移模式 / 查询 typo 教训……)
+- **有则回填**:补进 SKILL.md「陷阱」节或「铁律」,或 cookbook 的查询片段。**带上实证会话 id 做锚点**(如"实证 20260723-140029"),让后来者能追。回填是 skill 维护动作,**不受"本 skill 不改代码"约束**——那条约束管的是被评的 sid-code 源码,不是 skill 自己的文档。
+- **尺度**:只回填"可复用、跨会话成立"的教训;一次性的会话细节不进 skill(那是报告的事)。拿不准就在报告的"记忆建议/skill 建议"里提一句,交人类决定,别擅自塞。
+- 本节自身就是这么来的(2026-07-23 一轮评估反哺):新增了铁律 7、陷阱节 3 条(errors 字段 / CACHE_BREAK / watchdog 快照 null 收口)、cookbook heredoc 模板。
 
 ## 完成判据
 
@@ -286,3 +298,4 @@ grep -rl "collector.ts\|account.*落盘\|<本次发现关键词>" docs/bugfixes/
 - §5 列出"需人类二次确认的判断项",且 todo-fix(§6)明确标注"待确认后驱动修复"。
 - §6 每条 todo-fix 都 `← 源自 §X 发现 N`(可追溯)+ 标类型(缺陷/优化点)+ 带优先级 + 带"验证方法"。
 - 结尾一句话:本会话最值得先动的 sid-code 问题是什么(bug 或优化点,依据 = 已确认的评估结论)。
+- **反哺自检**:这轮若撞见陷阱节没列的新假阳性/新纪律/查询坑,已按「反哺本 skill」节回填(或在报告里提请人类决定),没让它只死在报告里。

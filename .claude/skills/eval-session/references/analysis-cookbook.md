@@ -36,6 +36,24 @@ bun scripts/trace-digest.ts --list             # 列最近 20 个会话
 
 > `session.traj` 是**单个顶层 JSON**(键:`trajectory`/`history`/`info`/`metadata`),**不是 JSONL**——用 JSONL 逐行解析会失败。`events.jsonl` 才是逐行 JSONL。
 
+> **多语句 python 用 heredoc,别用 `python3 -c "..."`。** 单行 `-c` 里写多语句极易 typo(实证 20260723-140029:一轮里 `or {}` 打成 `or `、`observation') or` 断行,连翻 3 次车),而且报错信息还被 shell 引号搅得难读。多语句一律用下面的 heredoc 模板,一次过:
+>
+> ```bash
+> cd ~/.sid-code/trajectories/sessions/<完整-id>
+> python3 << 'PYEOF'
+> import json, collections
+> o = json.load(open('session.traj'))
+> traj = o.get('trajectory') or []
+> # …在这里写多行分析,缩进/引号都不受 shell 干扰…
+> for i, s in enumerate(traj):
+>     obs = s.get('observation') or {}
+>     if isinstance(obs, dict) and obs.get('is_error'):
+>         print(i, s.get('tool_name'))
+> PYEOF
+> ```
+>
+> 用 `'PYEOF'`(带引号)阻止 shell 对 heredoc 体做变量展开。只有真正的单表达式(如 `json.load(open(f))['metadata']`)才值得用 `-c`。
+
 ### 跨会话:统计某信号的分布(如 SessionEnd 缺失率)
 
 ```bash

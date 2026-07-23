@@ -55,3 +55,6 @@ scheduled_tasks.lock
 # import 路径产物（bun --compile 用，见 src/tool/rg-embedded.ts），纯本地构建物、不入库；
 # 旧的扁平缓存路径 vendor/rg-<platform> 一并忽略（如本机残留不会被误加入库）。
 /vendor/rg-*
+
+# eval 评估目录（本地调试数据，不入库）
+docs/bugfixes/todo/eval/

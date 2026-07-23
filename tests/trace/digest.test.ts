@@ -193,6 +193,62 @@ describe("buildDigest 异常检测", () => {
     expect(hyp?.falsifier).toBeTruthy();
   });
 
+  it("缺陷2:同时间戳并行 fan-out 的 4 个 sub_agent 不报 stuck_loop", () => {
+    // 复刻真实场景:把任务切成 4 份同时派发 4 个子代理,派发时间戳几乎一致(< 1s 窗口)。
+    // 这是合法并行编排,不是"一个做完再做下一个"的串行空转,不应触发循环假设。
+    const ts = "2026-07-23T02:15:34.985Z";
+    const steps: unknown[] = [];
+    for (let i = 0; i < 4; i++) {
+      steps.push({ message_type: "action", tool_name: "sub_agent", tool_input: { prompt: "你是代码审计子代理" }, timestamp: ts });
+      steps.push({ message_type: "observation", content: "结论", is_error: false });
+    }
+    writeSession("para0001", { trajectory: steps, metadata: { exit_status: "end_turn" } });
+    const d = buildDigest(listSessions(paths)[0], false, paths)!;
+    expect(d.anomalies.some((a) => a.kind === "repeated_tool_shape_run")).toBe(false);
+    expect(d.anomalies.some((a) => a.kind === "hypothesis_stuck_loop")).toBe(false);
+  });
+
+  it("缺陷2:间隔秒级(串行空转)的同形状调用仍报 stuck_loop", () => {
+    // 每个调用间隔一次完整 LLM 往返(> 1s 窗口),是真串行,应保留循环告警。
+    const steps: unknown[] = [];
+    for (let i = 0; i < 5; i++) {
+      const ts = new Date(Date.parse("2026-07-23T02:15:34.000Z") + i * 5000).toISOString();
+      steps.push({ message_type: "action", tool_name: "grep", tool_input: { pattern: "foo" }, timestamp: ts });
+      steps.push({ message_type: "observation", content: "no match", is_error: false });
+    }
+    writeSession("serial02", { trajectory: steps, metadata: { exit_status: "end_turn" } });
+    const d = buildDigest(listSessions(paths)[0], false, paths)!;
+    expect(d.anomalies.some((a) => a.kind === "repeated_tool_shape_run")).toBe(true);
+    expect(d.anomalies.some((a) => a.kind === "hypothesis_stuck_loop")).toBe(true);
+  });
+
+  it("缺陷3:成功但内容含 error/failed 关键词的读取不标 ✗(只信任 is_error)", () => {
+    // 读一个正文里恰好出现 "error"/"failed" 的源码文件,tool_result is_error=false → 成功。
+    // 旧版关键词启发式会误标 ✗,现已移除。
+    writeSession("falsex01", {
+      trajectory: [
+        { message_type: "action", tool_name: "read", tool_input: { file_path: "/loop.ts" } },
+        { message_type: "observation", content: "function handleError() { throw failed exception }", is_error: false },
+      ],
+      metadata: { exit_status: "end_turn" },
+    });
+    const d = buildDigest(listSessions(paths)[0], false, paths)!;
+    expect(d.toolSequence[0].isError).toBe(false);
+    expect(d.anomalies.some((a) => a.kind === "tool_result_is_error")).toBe(false);
+  });
+
+  it("缺陷3:截断读取(带'文件已截断'提示、is_error=false)不标 ✗", () => {
+    writeSession("trunc001", {
+      trajectory: [
+        { message_type: "action", tool_name: "read", tool_input: { file_path: "/big.ts" } },
+        { message_type: "observation", content: "...\n\n[文件已截断：当前显示第 1435-1489 行，共 2950 行。]", is_error: false },
+      ],
+      metadata: { exit_status: "end_turn" },
+    });
+    const d = buildDigest(listSessions(paths)[0], false, paths)!;
+    expect(d.toolSequence[0].isError).toBe(false);
+  });
+
   it("schema 漂移(缺 trajectory 和 metadata)→ 高优先级告警,不静默", () => {
     writeSession("badschem", { foo: "bar", baz: 123 });
     const all = listSessions(paths);

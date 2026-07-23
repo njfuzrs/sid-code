@@ -7,7 +7,7 @@
  */
 
 import type { UsageLedgerEntry } from "./usage-ledger.ts";
-import { readUsageLedger } from "./usage-ledger.ts";
+import { readUsageLedger, dedupeBySession } from "./usage-ledger.ts";
 
 /** 聚合粒度 */
 export type Granularity = "day" | "week" | "month";
@@ -149,7 +149,7 @@ export interface AggregateOptions {
 export function aggregateUsage(opts: AggregateOptions = {}): PeriodCacheStats[] {
   const granularity = opts.granularity ?? "day";
   const now = opts.nowSeconds ?? Math.floor(Date.now() / 1000);
-  let entries = readUsageLedger(opts.maxEntries);
+  let entries = dedupeBySession(readUsageLedger(opts.maxEntries));
 
   // 模型过滤（精确或前缀）
   if (opts.model) {
@@ -185,7 +185,7 @@ export function aggregateUsage(opts: AggregateOptions = {}): PeriodCacheStats[] 
  */
 export function aggregateOverall(opts: AggregateOptions = {}): PeriodCacheStats {
   const now = opts.nowSeconds ?? Math.floor(Date.now() / 1000);
-  let entries = readUsageLedger(opts.maxEntries);
+  let entries = dedupeBySession(readUsageLedger(opts.maxEntries));
   if (opts.model) {
     const q = opts.model;
     entries = entries.filter((e) => e.model === q || e.model.startsWith(q) || q.startsWith(e.model));

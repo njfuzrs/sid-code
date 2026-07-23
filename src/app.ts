@@ -36,7 +36,7 @@ import {
 } from "./ui/pending-input.ts";
 import { QuotaManager } from "./llm/quota.ts";
 import { TokenMeter } from "./telemetry/metrics/token-meter.ts";
-import { appendUsageLedger } from "./telemetry/usage-ledger.ts";
+import { upsertUsageLedger } from "./telemetry/usage-ledger.ts";
 import { BudgetTracker } from "./telemetry/metrics/budget-tracker.ts";
 import type { BudgetRule } from "./telemetry/metrics/budget-tracker.ts";
 import type { BudgetRuleConfig } from "./config/config.ts";
@@ -197,8 +197,6 @@ export class App {
   private abortController: AbortController | null = null;
   /** 紧急退出防重入：emergencySessionEnd 只执行一次 */
   private emergencyEnded = false;
-  /** 模块 C1：用量账本防重入——每会话只落一行 */
-  private ledgerWritten = false;
   /** B1/B2/B3：会话持久化写入端（JSONL 增量写入） */
   private sessionStore: SessionStore | null = null;
   /** B6：被 resume 恢复的会话 id（非 null 表示当前是 resume 会话，doInit 应续写原 jsonl 而非新建） */
@@ -3558,39 +3556,67 @@ export class App {
   }
 
   /**
-   * 模块 C1：SessionEnd 时落一行用量账本汇总（~/.sid-code/usage-ledger.jsonl）。
+   * 从当前 SessionState 构造账本行；空会话（无 API 调用）返回 null。
    *
-   * - 幂等：ledgerWritten flag 确保每会话只落一行（finalizeSessionStore 在多退出路径调用）。
-   * - 跳过空会话：无任何 API 调用（promptTotal=0）不落行，避免噪声。
    * - 经 SessionState.getNormalizedCacheUsage() 单一事实源派生三段，口径与 Footer/摘要一致。
    * - 只存聚合数字，绝不含消息内容——隐私安全。
    */
+  private buildLedgerEntry(): import("./telemetry/usage-ledger.ts").UsageLedgerEntry | null {
+    const n = this.sessionState.getNormalizedCacheUsage();
+    if (n.promptTotal <= 0) return null; // 空会话不落行
+    const models = Object.entries(this.sessionState.modelUsage);
+    // 主模型 = 请求数最多者（多模型会话取主导模型标注；token 仍为全会话汇总）
+    const primary = models.sort(([, a], [, b]) => b.requests - a.requests)[0];
+    const model = primary?.[0] ?? this.config.model ?? "unknown";
+    const provider = primary?.[1]?.provider ?? this.config.provider ?? "unknown";
+    return {
+      ts: Math.floor(Date.now() / 1000),
+      sessionId: this.sessionState.sessionId,
+      model,
+      provider,
+      promptTotal: n.promptTotal,
+      cacheHit: n.cacheHitTokens,
+      cacheWrite: n.cacheWriteTokens,
+      uncachedInput: n.uncachedInputTokens,
+      output: n.outputTokens,
+      costUSD: this.sessionState.getEffectiveTotalCostUSD(),
+      savingsUSD: this.sessionState.getTotalCacheSavings(),
+      durationMs: this.sessionState.getElapsedMs(),
+    };
+  }
+
+  /**
+   * 模块 C1：SessionEnd 时落一行用量账本汇总（~/.sid-code/usage-ledger.jsonl）。
+   *
+   * - 用 upsert（按 sessionId 去重、latest-wins）落最终权威值，覆盖本会话此前的每轮增量行。
+   * - 跳过空会话：无任何 API 调用（promptTotal=0）不落行，避免噪声。
+   */
   private appendSessionToLedger(): void {
-    if (this.ledgerWritten) return;
     try {
-      const n = this.sessionState.getNormalizedCacheUsage();
-      if (n.promptTotal <= 0) return; // 空会话不落行
-      this.ledgerWritten = true;
-      const models = Object.entries(this.sessionState.modelUsage);
-      // 主模型 = 请求数最多者（多模型会话取主导模型标注；token 仍为全会话汇总）
-      const primary = models.sort(([, a], [, b]) => b.requests - a.requests)[0];
-      const model = primary?.[0] ?? this.config.model ?? "unknown";
-      const provider = primary?.[1]?.provider ?? this.config.provider ?? "unknown";
-      appendUsageLedger({
-        ts: Math.floor(Date.now() / 1000),
-        sessionId: this.sessionState.sessionId,
-        model,
-        provider,
-        promptTotal: n.promptTotal,
-        cacheHit: n.cacheHitTokens,
-        cacheWrite: n.cacheWriteTokens,
-        uncachedInput: n.uncachedInputTokens,
-        output: n.outputTokens,
-        costUSD: this.sessionState.getEffectiveTotalCostUSD(),
-        savingsUSD: this.sessionState.getTotalCacheSavings(),
-        durationMs: this.sessionState.getElapsedMs(),
-      });
+      const entry = this.buildLedgerEntry();
+      if (!entry) return;
+      upsertUsageLedger(entry);
     } catch { /* 账本写入失败绝不阻断退出 */ }
+  }
+
+  /**
+   * 缺陷修复：每轮 done 后把「本会话累计用量」增量 upsert 进账本。
+   *
+   * 根因：账本此前只在退出路径（SessionEnd）落一行。交互式会话做完一轮仍停在 REPL 不退出 →
+   * SessionEnd 不触发 → 该会话在跨会话聚合（/cache）里长期计 $0，直到用户手动退出。
+   *
+   * upsert 保证「每会话恒一行」（latest-wins），既让长驻会话的成本即时可见，又不因每轮写入而在
+   * 求和型聚合里翻倍。与 persistUsageStats/persistTodoState 同挂在每轮 done 后，best-effort、
+   * 失败不阻断主流程。
+   */
+  private flushSessionLedgerIncremental(): void {
+    try {
+      const entry = this.buildLedgerEntry();
+      if (!entry) return;
+      upsertUsageLedger(entry);
+    } catch (e) {
+      getLogger().warn("APP", `账本增量落盘失败（不阻断）: ${(e as Error)?.message}`);
+    }
   }
 
   /**
@@ -4860,6 +4886,9 @@ export class App {
               // 本轮结束：把累计用量统计落盘（与 footer 展示同一批数值），
               // 使 `-c` 恢复后 Footer 不再从 0 起（根因见 persistUsageStats 注释）。
               this.persistUsageStats();
+              // 同步把本会话累计用量 upsert 进跨会话账本，使长驻会话（做完仍停在 REPL、
+              // 迟迟不退出）的成本即时可见于 /cache，不再要等 SessionEnd（根因见 flushSessionLedgerIncremental 注释）。
+              this.flushSessionLedgerIncremental();
               // 同步把 todo 清单落盘，使 `-c` 恢复后 TodoPanel 不再空掉（根因见 persistTodoState 注释）。
               this.persistTodoState();
               // 同步把假设登记表落盘，使 `-c` 恢复后交付门禁不失据（根因见 persistHypothesisLedger 注释）。
