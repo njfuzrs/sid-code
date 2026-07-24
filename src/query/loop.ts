@@ -848,6 +848,21 @@ export async function* queryLoop(
       }
     }
 
+    // G7：异步 hook 的 asyncRewake 回灌——后台 hook 进程 exit 2 时，其 stderr 在下一轮开始
+    // 作为 system-reminder 注入，唤醒模型处理反馈（对标 CC async hook rewake）。
+    if (deps.drainAsyncHookRewakes) {
+      const rewakes = deps.drainAsyncHookRewakes();
+      if (rewakes && rewakes.length > 0) {
+        reminderParts.push(
+          `<system-reminder>\n` +
+            `以下异步 Hook 已在后台完成并返回了需要你处理的反馈（退出码 2）：\n\n` +
+            rewakes.join("\n\n") +
+            `\n</system-reminder>`,
+        );
+        log.info("QUERY_LOOP", `注入 ${rewakes.length} 个 asyncRewake hook 反馈`);
+      }
+    }
+
     if (reminderParts.length > 0) {
       // 注入逻辑抽到 reminder-inject.ts（纯函数，便于单测）。
       // 关键：纯 tool_result 轮（plan 探索高频场景）无 text block 时会追加 text block，

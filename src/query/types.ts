@@ -458,6 +458,13 @@ export interface QueryDeps {
    */
   getMcpInstructionsDelta?: () => string[] | null;
   /**
+   * G7：排空异步 hook 的 asyncRewake 通知（对标 CC 的 async hook rewake 路径）。
+   * 每轮循环开始调用一次：返回已完成且 exit 2 的 asyncRewake hook 的 stderr 文本块，
+   * 由 loop 经 reminderParts 注入 user 消息（作为 system-reminder 唤醒模型处理 hook 反馈）。
+   * 内部维护 rewake 队列，无待处理通知时返回空数组。可选——未注入则不回灌 async hook 反馈。
+   */
+  drainAsyncHookRewakes?: () => string[];
+  /**
    * Trace 事件写入（Goal Gate、评估器等关键决策写入结构化事件到 events.jsonl）。
    * 可选——未注入则不写 trace 事件。
    */

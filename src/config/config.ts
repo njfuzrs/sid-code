@@ -72,7 +72,10 @@ export interface HookConfig {
   headers?: Record<string, string>; // url 类型：HTTP 头
   timeout?: number;                // 超时（秒），默认 30
   blocking?: boolean;              // 是否阻塞，默认 false
+  async?: boolean;                 // G7：command 类型后台异步执行，不阻塞主循环
+  asyncRewake?: boolean;           // G7：后台 hook exit 2 时，其 stderr 下一轮回灌唤醒模型
   matcher?: string;                // 工具匹配（精确或 /regex/）
+  if?: string;                     // G10：tool_input 细粒度条件（权限规则语法，如 Bash(git *)）
   // ─── prompt / agent 类型（LLM 层 hook，G5） ───
   name?: string;                   // hook 名称（可观测性/日志）
   prompt?: string;                 // prompt/agent 类型：验证提示词

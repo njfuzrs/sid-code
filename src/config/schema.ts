@@ -57,6 +57,8 @@ const VALID_HOOK_EVENTS = new Set([
   "subagent_stop",
   "permission_request",
   "notification",
+  "instructions_loaded",
+  "teammate_idle",
 ]);
 
 /** 有效的子代理类型：从活跃 agent registry 派生（含 built-in + custom + plugin）。

@@ -46,6 +46,12 @@ export async function loadSkillCommands(
   try {
     const { loadBundledSkills } = await import("../skill/bundled/index.ts");
     bundled = loadBundledSkills();
+    // 与磁盘 Skill 同口径：bundled 也要 honor disabledSkills，否则禁用
+    // /simplify /verify /commit /pr* 等 bundled skill 是空操作（面板/命令仍在）。
+    if (disabledSkills && disabledSkills.length > 0) {
+      const disabledSet = new Set(disabledSkills.map((n) => n.toLowerCase()));
+      bundled = bundled.filter((cmd) => !disabledSet.has(cmd.name.toLowerCase()));
+    }
   } catch (err: any) {
     getLogger().debug("COMMAND", `加载 Bundled Skill 失败: ${err?.message}`);
   }

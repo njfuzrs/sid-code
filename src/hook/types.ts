@@ -41,6 +41,14 @@ export enum HookEventName {
   BeforeHookExecution = "BeforeHookExecution",
   /** Hook 执行结束 */
   AfterHookExecution = "AfterHookExecution",
+  /** G11：指令加载到上下文（CLAUDE.md / rules 加载后触发） */
+  InstructionsLoaded = "InstructionsLoaded",
+  /** G11：团队代理空闲（可 block，用于团队协作场景） */
+  TeammateIdle = "TeammateIdle",
+  /** G11：hook 反向向用户提问的协议（action: accept/decline/cancel），需配套 UI，先占位 */
+  Elicitation = "Elicitation",
+  /** G11：Elicitation 的用户响应结果 */
+  ElicitationResult = "ElicitationResult",
 }
 
 /** 旧 snake_case → 新 PascalCase 映射（向后兼容） */
@@ -66,6 +74,10 @@ export const LEGACY_EVENT_MAP: Record<string, HookEventName> = {
   cwd_changed: HookEventName.CwdChanged,
   task_created: HookEventName.TaskCreated,
   task_completed: HookEventName.TaskCompleted,
+  instructions_loaded: HookEventName.InstructionsLoaded,
+  teammate_idle: HookEventName.TeammateIdle,
+  elicitation: HookEventName.Elicitation,
+  elicitation_result: HookEventName.ElicitationResult,
 };
 
 /** 配置来源（优先级从高到低） */
@@ -503,6 +515,40 @@ export interface TaskCompletedInput extends HookInput {
   result?: string;
 }
 
+/** G11：InstructionsLoaded 输入——指令（CLAUDE.md / rules）加载到上下文时 */
+export interface InstructionsLoadedInput extends HookInput {
+  /** 已加载的指令来源路径列表（CLAUDE.md、规则文件等） */
+  sources: string[];
+  /** 加载的指令总字符数（可观测性） */
+  total_chars?: number;
+}
+
+/** G11：TeammateIdle 输入——团队代理空闲时（可 block） */
+export interface TeammateIdleInput extends HookInput {
+  /** 空闲的队友代理 ID */
+  teammate_id: string;
+  /** 队友名称 */
+  teammate_name?: string;
+  /** 已空闲时长（毫秒） */
+  idle_ms?: number;
+}
+
+/** G11：Elicitation 输入——hook 反向向用户提问（需配套 UI，先占位） */
+export interface ElicitationInput extends HookInput {
+  /** 向用户展示的提问消息 */
+  message: string;
+  /** 可选的结构化 schema（约束用户回答） */
+  requestedSchema?: Record<string, unknown>;
+}
+
+/** G11：ElicitationResult 输入——Elicitation 的用户响应结果 */
+export interface ElicitationResultInput extends HookInput {
+  /** 用户动作 */
+  action: "accept" | "decline" | "cancel";
+  /** 用户填写的内容（action=accept 时） */
+  content?: Record<string, unknown>;
+}
+
 // ============================================================
 // 输出类型
 // ============================================================
@@ -732,6 +778,8 @@ export interface HookExecutionResult {
   exitCode?: number;
   duration: number;
   error?: Error;
+  /** G7：该 hook 以异步后台模式启动（不阻塞本轮，结果由 AsyncHookRegistry 收集） */
+  async?: boolean;
 }
 
 /** Hook 执行计划 */

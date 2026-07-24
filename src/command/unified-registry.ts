@@ -170,6 +170,19 @@ export class UnifiedCommandRegistry {
   }
 
   /**
+   * 运行时更新禁用 Skill 列表（/skills 面板行内启用/禁用用）。
+   *
+   * 构造时的 disabledSkills 是一份静态快照，运行时改配置不会自动生效。
+   * 本方法更新快照并清 cwd 缓存 —— 下次 loadAllCommands 会带新列表重新加载，
+   * 磁盘 Skill 的 isEnabled: () => !skill.disabled 与 bundled 过滤同步反映新状态，
+   * 命令补全 / skill 工具随之更新，无需重启。
+   */
+  setDisabledSkills(names: string[]): void {
+    this.loadOptions.disabledSkills = names;
+    this.cache.clear();
+  }
+
+  /**
    * 按数组顺序去重（保留首次出现的，名称 + 别名都参与去重）。
    *
    * P0-3 别名冲突检测：区分两种"占用"——

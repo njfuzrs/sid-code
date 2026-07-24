@@ -31,6 +31,10 @@ import {
   type CwdChangedInput,
   type TaskCreatedInput,
   type TaskCompletedInput,
+  type InstructionsLoadedInput,
+  type TeammateIdleInput,
+  type ElicitationInput,
+  type ElicitationResultInput,
   type AggregatedHookResult,
 } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -408,6 +412,50 @@ export class HookEventHandler {
       result,
     };
     return this.executeHooks(HookEventName.TaskCompleted, input);
+  }
+
+  /** G11：InstructionsLoaded 事件——指令（CLAUDE.md / rules）加载到上下文时 */
+  async fireInstructionsLoadedEvent(sources: string[], totalChars?: number): Promise<AggregatedHookResult> {
+    const input: InstructionsLoadedInput = {
+      ...this.createBaseInput(HookEventName.InstructionsLoaded),
+      sources,
+      total_chars: totalChars,
+    };
+    return this.executeHooks(HookEventName.InstructionsLoaded, input);
+  }
+
+  /** G11：TeammateIdle 事件——团队代理空闲时（可 block） */
+  async fireTeammateIdleEvent(teammateId: string, teammateName?: string, idleMs?: number): Promise<AggregatedHookResult> {
+    const input: TeammateIdleInput = {
+      ...this.createBaseInput(HookEventName.TeammateIdle),
+      teammate_id: teammateId,
+      teammate_name: teammateName,
+      idle_ms: idleMs,
+    };
+    return this.executeHooks(HookEventName.TeammateIdle, input);
+  }
+
+  /** G11：Elicitation 事件——hook 反向向用户提问（需配套 UI，先占位） */
+  async fireElicitationEvent(message: string, requestedSchema?: Record<string, unknown>): Promise<AggregatedHookResult> {
+    const input: ElicitationInput = {
+      ...this.createBaseInput(HookEventName.Elicitation),
+      message,
+      requestedSchema,
+    };
+    return this.executeHooks(HookEventName.Elicitation, input);
+  }
+
+  /** G11：ElicitationResult 事件——Elicitation 的用户响应结果 */
+  async fireElicitationResultEvent(
+    action: ElicitationResultInput["action"],
+    content?: Record<string, unknown>,
+  ): Promise<AggregatedHookResult> {
+    const input: ElicitationResultInput = {
+      ...this.createBaseInput(HookEventName.ElicitationResult),
+      action,
+      content,
+    };
+    return this.executeHooks(HookEventName.ElicitationResult, input);
   }
 
   // ============================================================

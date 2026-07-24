@@ -74,9 +74,17 @@ export class HookRunner {
   /** G6：注入的真子代理执行器（app 层设置）。 */
   private agentHookExecutor?: AgentHookExecutor;
 
+  /** G7：异步 hook 注册表（app/system 层注入，用于后台执行 + asyncRewake 回灌）。 */
+  private asyncRegistry?: import("./async-registry.ts").AsyncHookRegistry;
+
   /** G6：由 app 层注入真子代理执行器（携带工具注册表 / ProviderRegistry）。 */
   setAgentHookExecutor(executor: AgentHookExecutor | undefined): void {
     this.agentHookExecutor = executor;
+  }
+
+  /** G7：注入异步 hook 注册表（由 HookSystem 构造时设置）。 */
+  setAsyncRegistry(registry: import("./async-registry.ts").AsyncHookRegistry | undefined): void {
+    this.asyncRegistry = registry;
   }
 
   /** 执行单个 hook */
@@ -247,6 +255,46 @@ export class HookRunner {
       proc.stdin.end();
     } catch {
       // stdin 写入失败不影响执行
+    }
+
+    // G7：异步 hook——不阻塞主循环，立即返回，进程在后台跑完由 asyncRegistry 收集结果。
+    // asyncRewake 模式下若后台进程 exit 2，其 stderr 会在下一轮循环开始时作为 system-reminder 回灌给模型。
+    if (hookConfig.async === true && this.asyncRegistry) {
+      const hookName = hookConfig.name ?? command.slice(0, 40);
+      const asyncId = this.asyncRegistry.register(hookName);
+      const registry = this.asyncRegistry;
+      const supportsRewake = hookConfig.asyncRewake === true;
+
+      // 后台等待进程结束 + 双阶段超时杀进程；结果写回 asyncRegistry（不 await）
+      const bgTimeoutId = setTimeout(() => {
+        proc.kill("SIGTERM");
+        setTimeout(() => {
+          try { proc.kill("SIGKILL"); } catch { /* 进程可能已退出 */ }
+        }, 5000);
+      }, timeout);
+      void (async () => {
+        try {
+          const exitCode = await proc.exited;
+          const stderr = await new Response(proc.stderr).text();
+          // 仅 asyncRewake=true 且 exit 2 才回灌（markCompleted 内部据 exitCode===2 入 rewake 队列）
+          registry.markCompleted(asyncId, supportsRewake ? (exitCode ?? 0) : 0, stderr);
+        } catch (e) {
+          registry.markCompleted(asyncId, 0, String(e));
+        } finally {
+          clearTimeout(bgTimeoutId);
+        }
+      })();
+
+      // 立即返回 success（异步 hook 不参与本轮阻塞决策）
+      return {
+        hookConfig, eventName,
+        success: true,
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+        duration: Date.now() - startTime,
+        async: true,
+      };
     }
 
     // 双阶段超时杀进程：SIGTERM → 5s → SIGKILL

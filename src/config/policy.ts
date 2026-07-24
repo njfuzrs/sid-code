@@ -23,6 +23,10 @@ export interface PolicySettings {
   policyLimits?: Record<string, { allowed: boolean }>;
   /** 是否只允许企业策略中的规则 */
   allowManagedPermissionRulesOnly?: boolean;
+  /** G13：禁用所有 Hook（企业管控最强档，任何来源的 hook 都不执行） */
+  disableAllHooks?: boolean;
+  /** G13：只允许企业管理的 Hook（Runtime/Project 来源），屏蔽 User/Plugin/Global 来源的 hook */
+  allowManagedHooksOnly?: boolean;
   /** 禁用的权限模式（通用：禁用任意模式，接进 cyclePermissionMode 与 CLI 校验） */
   disabledModes?: string[];
   /**

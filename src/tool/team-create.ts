@@ -38,6 +38,8 @@ export class TeamCreateTool implements Tool {
   private permissionChecker?: import("../permission/types.ts").Checker;
   /** leader 权限确认回调（由主会话注入） */
   private permissionConfirm?: (desc: string) => Promise<boolean>;
+  /** G11：Hook 系统（主会话注入，用于 teammate 空闲时触发 TeammateIdle） */
+  private hookSystem?: import("../hook/system.ts").HookSystem;
 
   constructor(
     private providerRegistry: ProviderRegistry,
@@ -47,6 +49,11 @@ export class TeamCreateTool implements Tool {
   /** 注入权限检查器（子代理 dontAsk 语义） */
   setPermissionChecker(checker: import("../permission/types.ts").Checker): void {
     this.permissionChecker = checker;
+  }
+
+  /** G11：注入 Hook 系统（用于 TeammateIdle 事件） */
+  setHookSystem(hookSystem: import("../hook/system.ts").HookSystem): void {
+    this.hookSystem = hookSystem;
   }
 
   /** 注入 leader 权限确认回调（swarm teammate 需确认时转发给 leader） */
@@ -104,6 +111,7 @@ export class TeamCreateTool implements Tool {
         providerRegistry: this.providerRegistry,
         toolRegistry: this.toolRegistry,
         subAgentChecker: this.permissionChecker,
+        hookSystem: this.hookSystem,
         permissionArbiter: this.permissionConfirm
           ? async (req) => {
               const desc = `[${req.teammate}] 请求执行 ${req.toolName}: ${req.description}`;

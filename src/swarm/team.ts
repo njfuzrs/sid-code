@@ -51,6 +51,8 @@ export interface TeamOptions {
   permissionArbiter?: PermissionArbiter;
   /** 子代理 checker（dontAsk 语义基底，teammate 在其基础上加 escalate） */
   subAgentChecker?: Checker;
+  /** G11：Hook 系统（teammate 完成/空闲时触发 TeammateIdle 事件） */
+  hookSystem?: import("../hook/system.ts").HookSystem;
 }
 
 export class TeamManager {
@@ -250,6 +252,19 @@ export class TeamManager {
           await manager.remove(worktreeSession, false); // 无改动才删
         } catch {
           log.info("SWARM", `保留有改动的成员 Worktree: ${worktreeSession.worktreePath}`);
+        }
+      }
+
+      // G11：teammate 任务结束 → 进入空闲，触发 TeammateIdle hook（可 block，用于团队协作编排）
+      // 注意：team.ts 刻意不依赖 Date.now（便于测试），idle_ms 交由 hook 消费方自行度量，此处不传。
+      if (this.opts.hookSystem) {
+        try {
+          await this.opts.hookSystem.fireTeammateIdleEvent(
+            `${this.teamName}:${member.name}`,
+            member.name,
+          );
+        } catch (e) {
+          log.warn("SWARM", `TeammateIdle hook 触发失败（不影响团队）: ${e}`);
         }
       }
     }

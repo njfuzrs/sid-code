@@ -8,6 +8,8 @@ import { HookPlanner } from "./planner.ts";
 import { HookRunner } from "./runner.ts";
 import { HookAggregator } from "./aggregator.ts";
 import { HookEventHandler } from "./event-handler.ts";
+import { AsyncHookRegistry, type RewakeNotification } from "./async-registry.ts";
+import { EnterprisePolicyGate, type EnterprisePolicy } from "./enterprise-policy.ts";
 import { HookEventName, ConfigSource, LEGACY_EVENT_MAP } from "./types.ts";
 import type { HooksConfig as LegacyHooksConfig, HookConfig as LegacyHookConfig } from "../config/config.ts";
 import type {
@@ -27,12 +29,16 @@ export class HookSystem {
   private readonly runner: HookRunner;
   private readonly aggregator: HookAggregator;
   private readonly eventHandler: HookEventHandler;
+  /** G7：异步 hook 注册表（后台执行 + asyncRewake 回灌） */
+  private readonly asyncRegistry: AsyncHookRegistry;
 
   constructor() {
     this.registry = new HookRegistry();
     this.planner = new HookPlanner(this.registry);
     this.runner = new HookRunner();
     this.aggregator = new HookAggregator();
+    this.asyncRegistry = new AsyncHookRegistry();
+    this.runner.setAsyncRegistry(this.asyncRegistry);
     this.eventHandler = new HookEventHandler(
       this.planner,
       this.runner,
@@ -40,9 +46,41 @@ export class HookSystem {
     );
   }
 
+  /**
+   * G7：排空异步 hook 的 rewake 通知（供主循环每轮开始时调用）。
+   * 返回 asyncRewake=true 且后台进程 exit 2 的 hook 的 stderr，作为 system-reminder 注入下一轮。
+   */
+  drainRewakeNotifications(): RewakeNotification[] {
+    return this.asyncRegistry.drainRewakeNotifications();
+  }
+
+  /** G7：是否有待回灌的异步 rewake 通知（主循环快速检查用）。 */
+  hasRewakeNotifications(): boolean {
+    return this.asyncRegistry.hasRewakeNotifications();
+  }
+
+  /** G7：清理已完成的异步 hook 条目（会话结束或定期调用）。 */
+  cleanupAsyncHooks(): void {
+    this.asyncRegistry.cleanup();
+  }
+
   /** 从旧格式配置初始化（向后兼容） */
   initializeFromLegacy(legacyHooks: LegacyHooksConfig): void {
     this.registry.initializeFromLegacy(legacyHooks);
+  }
+
+  /**
+   * G13：应用企业策略（managed-settings）——构造 EnterprisePolicyGate 注入 registry。
+   * disableAllHooks / allowManagedHooksOnly 等策略会在 getHooksForEvent 时过滤 hook。
+   * 传 undefined 或空策略等价于解除门控。
+   */
+  applyEnterprisePolicy(policy: EnterprisePolicy | undefined): void {
+    if (!policy) {
+      this.registry.setPolicyGate(undefined);
+      return;
+    }
+    const gate = new EnterprisePolicyGate(policy);
+    this.registry.setPolicyGate(gate);
   }
 
   /** 从新格式配置初始化 */
@@ -156,6 +194,7 @@ export class HookSystem {
         try {
           this.registry.registerHook(config, eventName, {
             matcher: legacyHook.matcher,
+            if: legacyHook.if,
             source: ConfigSource.Plugin,
           });
         } catch {
@@ -190,8 +229,11 @@ export class HookSystem {
     if (!legacy.command) return null;
     return {
       type: "command",
+      name: legacy.name,
       command: legacy.command,
       timeout: legacy.timeout,
+      async: legacy.async,           // G7：后台异步执行
+      asyncRewake: legacy.asyncRewake, // G7：exit 2 回灌唤醒
     };
   }
 
@@ -362,5 +404,28 @@ export class HookSystem {
   /** TaskCompleted 事件 */
   async fireTaskCompletedEvent(taskId: string, taskDescription: string, success: boolean, result?: string): Promise<AggregatedHookResult> {
     return this.eventHandler.fireTaskCompletedEvent(taskId, taskDescription, success, result);
+  }
+
+  /** G11：InstructionsLoaded 事件——指令（CLAUDE.md / rules）加载到上下文时 */
+  async fireInstructionsLoadedEvent(sources: string[], totalChars?: number): Promise<AggregatedHookResult> {
+    return this.eventHandler.fireInstructionsLoadedEvent(sources, totalChars);
+  }
+
+  /** G11：TeammateIdle 事件——团队代理空闲时（可 block） */
+  async fireTeammateIdleEvent(teammateId: string, teammateName?: string, idleMs?: number): Promise<AggregatedHookResult> {
+    return this.eventHandler.fireTeammateIdleEvent(teammateId, teammateName, idleMs);
+  }
+
+  /** G11：Elicitation 事件——hook 反向向用户提问（需配套 UI，先占位） */
+  async fireElicitationEvent(message: string, requestedSchema?: Record<string, unknown>): Promise<AggregatedHookResult> {
+    return this.eventHandler.fireElicitationEvent(message, requestedSchema);
+  }
+
+  /** G11：ElicitationResult 事件——Elicitation 的用户响应结果 */
+  async fireElicitationResultEvent(
+    action: "accept" | "decline" | "cancel",
+    content?: Record<string, unknown>,
+  ): Promise<AggregatedHookResult> {
+    return this.eventHandler.fireElicitationResultEvent(action, content);
   }
 }

@@ -83,3 +83,42 @@ describe("UnifiedCommandRegistry.getCommands", () => {
     expect(true).toBe(true);
   });
 });
+
+describe("UnifiedCommandRegistry.setDisabledSkills", () => {
+  // 用一个记录加载次数 + 按当前 disabledSkills 决定命令启用态的子类，
+  // 验证 setDisabledSkills 会清缓存并让下次 getCommands 反映新的禁用列表。
+  class CountingRegistry extends UnifiedCommandRegistry {
+    loads = 0;
+    async loadAllCommands(cwd: string): Promise<UnifiedCommand[]> {
+      const cached = (this as any).cache.get(cwd);
+      if (cached) return cached;
+      this.loads++;
+      const disabled = new Set(
+        ((this as any).loadOptions.disabledSkills ?? []).map((n: string) =>
+          n.toLowerCase(),
+        ),
+      );
+      const merged = [
+        localCmd("simplify", { isEnabled: () => !disabled.has("simplify") }),
+        localCmd("verify", { isEnabled: () => !disabled.has("verify") }),
+      ];
+      (this as any).cache.set(cwd, merged);
+      return merged;
+    }
+  }
+
+  test("更新禁用列表 + 清缓存，下次 getCommands 过滤掉被禁用项", async () => {
+    const reg = new CountingRegistry();
+
+    const before = (await reg.getCommands("/tmp")).map((c) => c.name);
+    expect(before).toContain("simplify");
+    expect(before).toContain("verify");
+    expect(reg.loads).toBe(1); // 首次加载
+
+    reg.setDisabledSkills(["simplify"]);
+    const after = (await reg.getCommands("/tmp")).map((c) => c.name);
+    expect(after).not.toContain("simplify"); // 已禁用被过滤
+    expect(after).toContain("verify");
+    expect(reg.loads).toBe(2); // 缓存已清 → 重新加载
+  });
+});

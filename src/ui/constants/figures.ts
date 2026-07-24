@@ -45,6 +45,9 @@ export const POINTER = "▸";
 /** 警告标记（与 ✔/✘ 同族的纤细字形，用于内联警告前缀） */
 export const WARNING_MARK = "⚠";
 
+/** 搜索框前缀字形（放大镜，单色几何，跨终端覆盖良好；对标 cc 的 ⌕ 搜索框）。 */
+export const SEARCH_MARK = "⌕";
+
 /**
  * 目标标记（/goal 状态栏前缀）。◎ 同心圆 = 瞄准/靶心，单色几何字形，宽度=1。
  * 替代此前状态栏用的彩色 🎯 emoji（违反 L1.1「禁彩色 emoji」，且跨终端占位不一致）。

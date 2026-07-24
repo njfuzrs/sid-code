@@ -8,12 +8,9 @@ export { HookPlanner } from "./planner.ts";
 export { HookRunner, LazyJsonInput } from "./runner.ts";
 export { HookAggregator } from "./aggregator.ts";
 export { HookEventHandler } from "./event-handler.ts";
-export { HookConfigSnapshot } from "./config-snapshot.ts";
 export { StopHookOrchestrator, createStopHookErrorMessage } from "./stop-hook-orchestrator.ts";
 export { AsyncHookRegistry } from "./async-registry.ts";
 export { isBlockedAddress, sanitizeHeaders, ssrfGuardedFetch } from "./ssrf-guard.ts";
-export { createResolveOnce } from "./resolve-once.ts";
-export { handleInteractivePermission } from "./permission-race.ts";
 export { SessionHookManager } from "./session-hooks.ts";
 export { EnterprisePolicyGate } from "./enterprise-policy.ts";
 

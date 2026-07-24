@@ -34,6 +34,13 @@ export interface HookRegistryEntry {
 export class HookRegistry {
   private entries: HookRegistryEntry[] = [];
   private eventIndex = new Map<HookEventName, number>();
+  /** G13：企业策略门控（app 层注入 managed-settings 策略后设置）。未设置时不做任何过滤。 */
+  private policyGate?: import("./enterprise-policy.ts").EnterprisePolicyGate;
+
+  /** G13：注入企业策略门控（disableAllHooks / allowManagedHooksOnly 等）。 */
+  setPolicyGate(gate: import("./enterprise-policy.ts").EnterprisePolicyGate | undefined): void {
+    this.policyGate = gate;
+  }
 
   /** 从旧格式配置初始化（向后兼容） */
   initializeFromLegacy(legacyHooks: LegacyHooksConfig): void {
@@ -64,6 +71,7 @@ export class HookRegistry {
           source: ConfigSource.User,
           eventName,
           matcher: legacyHook.matcher,
+          if: legacyHook.if,
           sequential: false,
           enabled: true,
         });
@@ -116,7 +124,7 @@ export class HookRegistry {
   registerHook(
     config: HookConfig,
     eventName: HookEventName,
-    options?: { matcher?: string; sequential?: boolean; source?: ConfigSource },
+    options?: { matcher?: string; if?: string; sequential?: boolean; source?: ConfigSource },
   ): void {
     const source = options?.source ?? ConfigSource.Runtime;
 
@@ -129,6 +137,7 @@ export class HookRegistry {
       source,
       eventName,
       matcher: options?.matcher,
+      if: options?.if,
       sequential: options?.sequential,
       enabled: true,
     });
@@ -143,9 +152,17 @@ export class HookRegistry {
   /** 获取指定事件的所有 hook（已过滤禁用项和已执行的 once hook，按优先级排序） */
   getHooksForEvent(eventName: HookEventName): HookRegistryEntry[] {
     if (!this.hasHookForEvent(eventName)) return [];
-    return this.entries
-      .filter(e => e.eventName === eventName && e.enabled && !(e.once && e.executed))
-      .sort((a, b) => this.getSourcePriority(a.source) - this.getSourcePriority(b.source));
+    let entries = this.entries
+      .filter(e => e.eventName === eventName && e.enabled && !(e.once && e.executed));
+
+    // G13：企业策略门控——disableAllHooks / allowManagedHooksOnly / blockedCommands 等。
+    // 门控读取 config.source，故过滤前把 entry.source 回填到 config.source（entry 与 config 分别存 source）。
+    if (this.policyGate) {
+      const gate = this.policyGate;
+      entries = entries.filter(e => gate.isHookAllowed({ ...e.config, source: e.config.source ?? e.source }));
+    }
+
+    return entries.sort((a, b) => this.getSourcePriority(a.source) - this.getSourcePriority(b.source));
   }
 
   /**
@@ -300,8 +317,11 @@ export class HookRegistry {
     if (!legacy.command) return null;
     return {
       type: "command",
+      name: legacy.name,
       command: legacy.command,
       timeout: legacy.timeout,
+      async: legacy.async,           // G7：后台异步执行
+      asyncRewake: legacy.asyncRewake, // G7：exit 2 回灌唤醒
     };
   }
 

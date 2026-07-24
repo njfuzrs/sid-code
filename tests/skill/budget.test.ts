@@ -7,6 +7,7 @@ import {
   formatCommandsWithinBudget,
   generateSkillListing,
   computeCharBudget,
+  estimateSkillListingTokens,
   DEFAULT_CHAR_BUDGET,
   type SkillListingEntry,
 } from "../../src/skill/budget.ts";
@@ -88,5 +89,27 @@ describe("generateSkillListing", () => {
     expect(out).toContain("skill 工具");
     expect(out).toContain("- a: 描述A");
     expect(out).toContain("</system-reminder>");
+  });
+});
+
+describe("estimateSkillListingTokens", () => {
+  test("按注入行 `- name: desc` 字符数 ÷ 4 估算", () => {
+    // "- ab: cd" = 8 字符 → ceil(8/4) = 2
+    expect(estimateSkillListingTokens({ name: "ab", description: "cd" })).toBe(2);
+  });
+
+  test("whenToUse 优先于 description", () => {
+    const withWhen = estimateSkillListingTokens({
+      name: "x",
+      description: "短",
+      whenToUse: "这是一个更长的何时使用说明文本",
+    });
+    const descOnly = estimateSkillListingTokens({ name: "x", description: "短" });
+    expect(withWhen).toBeGreaterThan(descOnly);
+  });
+
+  test("空描述也不为 0（含 name + 前缀开销）", () => {
+    // "- n: " = 5 字符 → ceil(5/4) = 2
+    expect(estimateSkillListingTokens({ name: "n", description: "" })).toBe(2);
   });
 });

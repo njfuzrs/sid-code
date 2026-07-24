@@ -590,6 +590,24 @@ export class App {
     // 插件 hook 在 loadPluginHooks 后才注册，故那里会再应用一次（见下方 loadPluginHooks 调用点）。
     this.hookSystem.applyDisabledHooks(this.config.disabledHooks);
 
+    // G13：应用企业策略 Hook 门控（managed-settings.json 的 disableAllHooks / allowManagedHooksOnly）。
+    // fire-and-forget：策略读取失败或缺失时不影响启动（无门控 = 全部 hook 照常执行）。
+    void (async () => {
+      try {
+        const { PolicyManager } = await import("./config/policy.ts");
+        const policy = await new PolicyManager().load();
+        if (policy && (policy.disableAllHooks || policy.allowManagedHooksOnly)) {
+          this.hookSystem.applyEnterprisePolicy({
+            disableAllHooks: policy.disableAllHooks,
+            allowManagedHooksOnly: policy.allowManagedHooksOnly,
+          });
+          getLogger().info("HOOK", `企业策略 Hook 门控已应用（disableAllHooks=${!!policy.disableAllHooks}, allowManagedHooksOnly=${!!policy.allowManagedHooksOnly}）`);
+        }
+      } catch (e) {
+        getLogger().debug("HOOK", `企业策略 Hook 门控加载跳过: ${e}`);
+      }
+    })();
+
     // G6：注入 agent hook 的真子代理执行器（携带工具注册表 + ProviderRegistry）。
     // agent 类型 hook 借此启动真正的只读子代理（默认 read/grep/glob）做多轮验证，
     // 而非退化为单轮 LLM 调用。无 providerRegistry（极简/测试）时不注入，runner 自动回退单轮。
@@ -1506,6 +1524,8 @@ export class App {
           } catch (err: any) {
             process.stderr.write(`[quit] SessionEnd hook 失败: ${err?.message ?? err}\n`);
           }
+          // G7：清理已完成的异步 hook 条目（会话结束）
+          this.hookSystem.cleanupAsyncHooks();
           this.finalizeSessionStore();
           try { CrashMarker.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
           try { PidManager.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
@@ -1757,6 +1777,14 @@ export class App {
         if (projectRules) {
           log.debug("APP", `加载 CLAUDE.md 规则 (${projectRules.rawContent.length} 字符)`);
           this.applyProjectRules(projectRules);
+
+          // G11：指令加载完成 → 触发 InstructionsLoaded hook（CLAUDE.md / rules 进入上下文时）
+          try {
+            const sources = projectRules.sourcePath ? [projectRules.sourcePath] : ["CLAUDE.md"];
+            await this.hookSystem.fireInstructionsLoadedEvent(sources, projectRules.rawContent.length);
+          } catch (e) {
+            log.warn("APP", `InstructionsLoaded hook 触发失败（不影响启动）: ${e}`);
+          }
         }
 
         // P1-UI：预填充 JIT 已加载文件列表，避免后续 discoverContext 重复注入首轮已含的 CLAUDE.md。

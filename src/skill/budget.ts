@@ -15,6 +15,19 @@
 export const SKILL_BUDGET_CONTEXT_PERCENT = 0.01;
 /** 每 token 约 4 字符 */
 const CHARS_PER_TOKEN = 4;
+
+/**
+ * 估算单个 Skill 注入 system prompt 的大致 token 数（供 /skills 面板展示，对齐 cc 的 `~N tok`）。
+ *
+ * 口径与真实注入一致：每个 Skill 在 system prompt 里占一行
+ * `- {name}: {whenToUse||description}`（见 formatCommandsWithinBudget 的 fullLine），
+ * 按该行字符数 ÷ CHARS_PER_TOKEN 估算。不是精确 tokenizer，只作数量级参考。
+ */
+export function estimateSkillListingTokens(entry: SkillListingEntry): number {
+  const desc = (entry.whenToUse || entry.description || "").trim();
+  const line = `- ${entry.name}: ${desc}`;
+  return Math.ceil(line.length / CHARS_PER_TOKEN);
+}
 /** 默认字符预算（200k 窗口 × 4 × 1%） */
 export const DEFAULT_CHAR_BUDGET = 8_000;
 /** 每条描述字符上限 */

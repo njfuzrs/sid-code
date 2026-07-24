@@ -290,6 +290,13 @@ export class QueryEngine {
       getCachedMicrocompactState: this.deps.getCachedMicrocompactState,
       getProviderName: this.deps.getProviderName,
       getMcpInstructionsDelta: this.deps.getMcpInstructionsDelta,
+      // G7：异步 hook rewake 回灌——每轮开始排空后台 hook 的 exit-2 反馈，格式化为文本块
+      drainAsyncHookRewakes: hookSystem
+        ? () => {
+            const notes = hookSystem.drainRewakeNotifications();
+            return notes.map(n => `[Hook: ${n.hookName}]\n${n.error}`);
+          }
+        : undefined,
       // /goal：目标驱动持续执行——转发到 queryLoop deps
       getGoalState: this.deps.getGoalState,
       updateGoalState: this.deps.updateGoalState,
