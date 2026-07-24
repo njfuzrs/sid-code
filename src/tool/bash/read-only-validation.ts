@@ -29,13 +29,76 @@ const READ_ONLY_COMMANDS = new Set([
   "ping", "dig", "nslookup", "host", "curl", "wget",
 ]);
 
-/** 已知的只读 Git 子命令 */
+/**
+ * 已知的只读 Git 子命令。
+ *
+ * ⚠️ 注意：`config` **不在**此列表——`git config --get x`（读）与 `git config user.email x`（写）
+ * 语义完全不同。把整个 config 子命令判只读会让写操作（含 `core.hooksPath` 劫持）被自动放行，
+ * 违反「NEVER 更新 git config」安全协议（对齐 CC）。config 的只读判定改由 isReadOnlyGitConfig
+ * 按 flag 细分（见下）。
+ */
 const READ_ONLY_GIT_SUBCOMMANDS = new Set([
   "status", "log", "diff", "show", "branch", "remote", "tag",
   "stash", "describe", "shortlog", "blame", "ls-files",
-  "ls-tree", "cat-file", "rev-parse", "rev-list", "config",
+  "ls-tree", "cat-file", "rev-parse", "rev-list",
   "reflog", "name-rev", "for-each-ref",
 ]);
+
+/**
+ * 判断 `git config` 的参数是否为纯只读形态（P0-1）。
+ *
+ * 只读：带纯读 flag（`--get`/`--get-all`/`--get-regexp`/`--get-urlmatch`/`--list`/`-l`）
+ *       且**无裸 `key value` 写入位置参数**。
+ * 写：出现 `--add`/`--unset`/`--unset-all`/`--replace-all`/`--edit`/`-e`/`--rename-section`/
+ *     `--remove-section`，或提供了 `key value`（两个及以上位置参数）→ 写，非只读。
+ *
+ * 保守默认：无法确定时返回 false（当作写操作，落到确认），安全优先。
+ *
+ * @param args `git config` 之后的参数数组（不含 "git" 与 "config"）
+ */
+export function isReadOnlyGitConfig(args: string[]): boolean {
+  // 写操作 flag —— 命中任一即非只读
+  const WRITE_FLAGS = new Set([
+    "--add", "--unset", "--unset-all", "--replace-all",
+    "--edit", "-e", "--rename-section", "--remove-section",
+    "--unset-section",
+  ]);
+  // 纯读 flag —— 命中即倾向只读（仍需无写入位置参数）
+  const READ_FLAGS = new Set([
+    "--get", "--get-all", "--get-regexp", "--get-urlmatch",
+    "--list", "-l", "--get-color", "--get-colorbool",
+  ]);
+
+  let hasReadFlag = false;
+  // 作用域 flag（--global/--system/--local/--worktree/--file/-f/--blob）本身不决定读写，
+  // 但其后若跟 key value 则是写。逐一扫描，收集非 flag 的位置参数。
+  const positional: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (!a) continue;
+    if (WRITE_FLAGS.has(a)) return false;
+    if (READ_FLAGS.has(a)) { hasReadFlag = true; continue; }
+    // --file <path> / -f <path> / --blob <blob>：跳过其后紧跟的值参数（不算 key/value）
+    if (a === "--file" || a === "-f" || a === "--blob") { i++; continue; }
+    // 作用域 flag 与其它 -- 开头选项：跳过
+    if (a.startsWith("-")) continue;
+    positional.push(a);
+  }
+
+  // 有纯读 flag：只读的前提是没有裸 key value 写入。
+  //   `--get key`（1 个位置参数=要读的 key）→ 只读；
+  //   `--get-regexp pattern` → 只读；
+  //   位置参数 ≥ 2 时按写处理（保守）。
+  if (hasReadFlag) {
+    return positional.length <= 1;
+  }
+
+  // 无任何读写 flag：
+  //   `git config key`（1 个位置参数）→ 读取该 key（等价隐式 --get）→ 只读；
+  //   `git config key value`（≥2 位置参数）→ 写入 → 非只读；
+  //   `git config`（0 位置参数，通常配 --list 才有意义，裸跑无效）→ 视为只读。
+  return positional.length <= 1;
+}
 
 /** 已知的危险 Git 子命令 */
 const DANGEROUS_GIT_SUBCOMMANDS = new Set([
@@ -96,6 +159,11 @@ export function isReadOnlyCommand(command: string): boolean {
       const subCmd = args[0];
       if (!subCmd) continue; // 裸 git 是只读的
       if (DANGEROUS_GIT_SUBCOMMANDS.has(subCmd)) return false;
+      // P0-1：git config 按 flag 细分读写（写操作含 core.hooksPath 劫持不可判只读）
+      if (subCmd === "config") {
+        if (!isReadOnlyGitConfig(args.slice(1))) return false;
+        continue;
+      }
       if (!READ_ONLY_GIT_SUBCOMMANDS.has(subCmd)) return false; // 未知子命令默认非只读
       continue;
     }

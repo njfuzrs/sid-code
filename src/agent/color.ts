@@ -39,6 +39,51 @@ export function assignAgentColor(agentId: string): AgentColor {
   return PALETTE[idx]!;
 }
 
+// ============================================================
+// P1-2：frontmatter 显式色注册（对齐 CC setAgentColor / agentColorManager）
+//
+// agent 可在 frontmatter 声明 `color: blue`，注册进此表；TUI 渲染该 agent 的
+// 进度/结果行时优先用声明色，未声明走 assignAgentColor 哈希分配（现状行为）。
+// ============================================================
+
+/** agentType → 显式声明色 的映射（frontmatter color 注册端）。 */
+const explicitAgentColors = new Map<string, AgentColor>();
+
+/** 允许的色名（= PALETTE 的 name 集合），供 frontmatter 校验用。 */
+export function isValidAgentColorName(name: string): boolean {
+  return PALETTE.some((c) => c.name === name.toLowerCase());
+}
+
+/** 按色名查 PALETTE 项（不区分大小写）；未命中返回 undefined。 */
+export function getColorByName(name: string): AgentColor | undefined {
+  const lower = name.toLowerCase();
+  return PALETTE.find((c) => c.name === lower);
+}
+
+/**
+ * 注册 agent 的显式声明色（P1-2）。
+ * 非法色名 → 返回 false（调用方 warn，回退哈希分配）；合法 → 注册并返回 true。
+ */
+export function setAgentColor(agentType: string, colorName: string): boolean {
+  const color = getColorByName(colorName);
+  if (!color) return false;
+  explicitAgentColors.set(agentType, color);
+  return true;
+}
+
+/**
+ * 获取 agent 的颜色：优先显式声明色（setAgentColor），否则按 agentType 哈希分配。
+ * 这是 TUI 渲染 agent 进度/结果行的统一取色入口。
+ */
+export function getAgentColor(agentType: string): AgentColor {
+  return explicitAgentColors.get(agentType) ?? assignAgentColor(agentType);
+}
+
+/** 清空显式色注册（测试用）。 */
+export function clearExplicitAgentColors(): void {
+  explicitAgentColors.clear();
+}
+
 /** 用代理颜色包裹文本（ANSI 256 色） */
 export function colorize(text: string, color: AgentColor): string {
   return `\x1b[38;5;${color.code}m${text}\x1b[0m`;

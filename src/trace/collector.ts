@@ -522,6 +522,22 @@ export class TraceCollector {
     } catch { /* 静默：索引是辅助功能 */ }
   }
 
+  /**
+   * 记录一条自定义事件到 events.jsonl（P2-3：git 操作度量等运行时事件的通用入口）。
+   * writer 未就绪（SessionStart 之前）或未初始化时静默忽略——度量不阻断主流程。
+   */
+  recordCustomEvent(event: string, data: Record<string, unknown>): void {
+    if (!this.initialized || !this.writer) return;
+    try {
+      this.writer.appendEvent({
+        event,
+        session_id: this.metadata.session_id,
+        timestamp: new Date().toISOString(),
+        data,
+      });
+    } catch { /* 事件落盘失败静默，不影响主流程 */ }
+  }
+
   // ─── BeforeModel ───
 
   private handleBeforeModel(input: BeforeModelInput): void {

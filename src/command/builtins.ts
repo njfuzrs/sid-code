@@ -851,10 +851,19 @@ export class MemoryCommand implements Command {
 export class RewindCommand implements Command {
   name() { return "rewind"; }
   aliases() { return []; }
-  description() { return "回退最近 n 轮对话（默认 1 轮）"; }
+  description() { return "回退会话（可选代码/对话/两者），等价 Esc+Esc"; }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
-    const n = Math.max(1, parseInt(args.trim()) || 1);
+    const trimmed = args.trim();
+
+    // P2-2：无参数 → 打开统一回退选择器（对标 CC 的 Esc+Esc 菜单）。
+    // 让用户在交互面板里选「回退点」+「仅对话 / 对话+代码」，实现代码/对话/两者的统一入口。
+    if (!trimmed) {
+      return { kind: "dialog", dialog: "rewind" };
+    }
+
+    // 向后兼容：`/rewind <n>` 保留「仅回退 n 轮对话」的脚本化快捷路径（不弹面板、不动文件）。
+    const n = Math.max(1, parseInt(trimmed) || 1);
     const removed = ctx.ctxMgr.rewindTurns(n);
     if (removed === 0) {
       return { kind: "message", message: "没有可回退的对话" };

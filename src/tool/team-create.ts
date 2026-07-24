@@ -23,6 +23,10 @@ const teamCreateSchema = lazySchema(() =>
           type: z.string().describe("子代理类型（见 sub_agent 工具描述中列出的可用类型）"),
           task: z.string().describe("分配给该成员的任务"),
           isolated: z.boolean().optional().describe("是否在独立 Worktree 执行（会改文件的成员应为 true，默认 true）"),
+          dependsOn: z
+            .array(z.string())
+            .optional()
+            .describe("依赖的其他成员名列表：这些成员完成后本成员才开始（用于有序编排，如测试成员依赖实现成员）。不填=无依赖，立即并发"),
         }),
       )
       .describe("团队成员列表"),
@@ -102,6 +106,19 @@ export class TeamCreateTool implements Tool {
         return { output: `错误: 成员 "${m.name}" 的无效子代理类型 "${m.type}"，可选: ${validTypes.join(", ")}`, isError: true };
       }
       names.add(m.name);
+    }
+
+    // P2-2：校验 dependsOn 引用的成员名都存在（引用不存在的成员是明显的编排错误，早失败）。
+    for (const m of params.members) {
+      if (!m.dependsOn) continue;
+      for (const dep of m.dependsOn) {
+        if (!names.has(dep)) {
+          return { output: `错误: 成员 "${m.name}" 的依赖 "${dep}" 不是有效成员名`, isError: true };
+        }
+        if (dep === m.name) {
+          return { output: `错误: 成员 "${m.name}" 不能依赖自己`, isError: true };
+        }
+      }
     }
 
     try {

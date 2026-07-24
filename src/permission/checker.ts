@@ -13,6 +13,7 @@
 
 import type { Checker, Decision, PermissionRequest, PermissionRule, PermissionDecisionReason, PermissionCheckOptions } from "./types.ts";
 import type { Config } from "../config/config.ts";
+import type { PermissionMode } from "./mode.ts";
 import type { PlanModeManager } from "../plan/state.ts";
 import type { Tool, PermissionResult, ToolUseContext } from "../tool/types.ts";
 import { checkRules } from "./rules.ts";
@@ -33,6 +34,7 @@ import { RuleLoader } from "./rule-loader.ts";
 import { getShadowedRulesForTool } from "./shadowed-rules.ts";
 import type { SandboxManager } from "./sandbox.ts";
 import { BashClassifier } from "./bash-classifier.ts";
+import { GIT_DANGER_PATTERNS } from "./git-danger-patterns.ts";
 import * as path from "node:path";
 import * as os from "node:os";
 
@@ -78,6 +80,11 @@ const DANGEROUS_PATTERNS: DangerousPattern[] = [
   { name: "管道到文件覆盖", pattern: />\s*\/etc\//, severity: "medium" },
   { name: "清除命令历史", pattern: /history\s+-c|>\s*.*\.(bash_history|zsh_history)/, severity: "medium" },
   { name: "修改 crontab", pattern: /crontab\s+(-e|-r|-l)/, severity: "medium" },
+
+  // Git —— 破坏性/难恢复（P0-2，对齐 CC destructiveCommandWarning）。
+  // 从 git-danger-patterns.ts 单一事实源展开，避免与 UI 层 danger-detect 两份正则漂移。
+  // hardcodedDangerCheck 会按复合命令拆分逐子命令查这些模式，加进此表后自动继承拆分能力。
+  ...GIT_DANGER_PATTERNS,
 ];
 
 /** safetyCheck 受保护路径（bypass-immune，即使 always-allow 也不可绕过） */
@@ -215,6 +222,30 @@ export class PermissionChecker implements Checker {
   /** 清除 prePlanMode（退出 plan 时调用） */
   clearPrePlanMode(): void {
     this.prePlanMode = null;
+  }
+
+  /**
+   * P2-1：派生一个覆盖 permissionMode 的新 checker（供 agent frontmatter permissionMode 用）。
+   *
+   * 为什么派生而非 mutate：并发子代理共享同一主 checker 实例，直接改 this.config.permissionMode
+   * 会污染其他子代理/主代理。故浅拷贝 config（仅换 permissionMode），复用同一套 rules/workspace，
+   * 并把已注入的运行期协作者（planManager/sandbox/classifier 等）原样搬到新实例——否则派生 checker
+   * 丢失 auto 模式分类器 / 沙箱等能力，行为与主 checker 不一致。
+   *
+   * sessionMemory / preApproved / denialTracking 刻意不共享（各自独立会话记忆），派生实例从干净态起步。
+   */
+  deriveWithPermissionMode(mode: PermissionMode): PermissionChecker {
+    const derivedConfig: Config = { ...this.config, permissionMode: mode };
+    const derived = new PermissionChecker(derivedConfig, this.rules ?? undefined, this.workspacePath);
+    // 搬运运行期注入的协作者（构造函数不覆盖这些，需显式复制）。
+    if (this.planManager) derived.setPlanManager(this.planManager);
+    if (this.sandboxManager) derived.setSandboxManager(this.sandboxManager);
+    if (this.bashClassifier) derived.setBashClassifier(this.bashClassifier);
+    if (this.toolClassifier) derived.setToolClassifier(this.toolClassifier);
+    if (this.bridgePermissionDelegate) derived.setBridgePermissionDelegate(this.bridgePermissionDelegate);
+    // 运行时扩展的允许目录白名单也一并继承（用户 /add-dir 授权对子代理同样生效）。
+    for (const dir of this.getAllowedDirectories()) derived.addAllowedDirectory(dir);
+    return derived;
   }
 
   /** 设置沙箱管理器 */

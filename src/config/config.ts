@@ -378,6 +378,9 @@ export interface Config {
   // Checkpoint 配置
   checkpoint?: CheckpointConfig;
 
+  // Git 集成配置（P3-1：可配置归因）
+  git?: GitConfig;
+
   // JIT 上下文发现
   /** 是否启用 JIT 上下文发现（默认 true） */
   jitContext?: boolean;
@@ -641,6 +644,22 @@ export interface CheckpointConfig {
   hugeFileThresholdLines?: number;
 }
 
+/** 归因配置（commit / PR 尾注，可配可关） */
+export interface AttributionConfig {
+  /** 是否启用（默认 true） */
+  enabled?: boolean;
+  /** 归因文本（默认 "Co-Authored-By: sid-code <noreply@sid-code.dev>"） */
+  text?: string;
+}
+
+/** Git 集成配置（P3-1，对标 CC commitAttribution/prAttribution） */
+export interface GitConfig {
+  /** commit 尾注归因（写入 commit message） */
+  commitAttribution?: AttributionConfig;
+  /** PR 尾注归因（写入 PR 描述） */
+  prAttribution?: AttributionConfig;
+}
+
 /** 会话保留配置 */
 export interface SessionRetentionConfig {
   /** 是否启用自动清理（默认 true） */
@@ -794,6 +813,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     disabled_hooks: "disabledHooks",
     trust_project_extensions: "trustProjectExtensions",
     checkpoint: "checkpoint",
+    git: "git",
     jit_context: "jitContext",
     tool_search: "toolSearch",
     tool_search_keep_loaded: "toolSearchKeepLoaded",

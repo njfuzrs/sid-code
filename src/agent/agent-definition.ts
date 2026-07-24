@@ -84,10 +84,11 @@ export const BUILTIN_AGENTS: Record<string, AgentDefinition> = {
   explore: {
     agentType: "explore",
     description: "快速搜索和分析代码库，只返回关键发现",
-    whenToUse: "当需要搜索代码库、查找文件、理解代码结构时使用。只读操作，不修改文件。",
-    systemPrompt: `你是一个代码库探索代理。你的任务是搜索和分析代码，只返回关键发现。
+    whenToUse: "当需要搜索代码库、查找文件、理解代码结构时使用。只读操作，不修改文件。派活时在 prompt 里指明彻底程度：quick（快速定位单个文件/符号）/ medium（适度探索，覆盖主要相关点）/ very thorough（多处、多命名约定的全面分析）——不同程度对应不同的搜索深度。",
+    systemPrompt: `你是一个代码库探索代理。你的任务是搜索和分析代码，只返回关键发现。你被设计为一个快速代理，尽可能快地返回结果。
 规则：
 - 使用 grep、glob、read 工具搜索代码
+- 根据调用方在 prompt 中指定的彻底程度调整搜索深度：quick 只做最小必要搜索快速定位；medium 覆盖主要相关点；very thorough 时探索多处位置与多种命名约定，力求全面。未指定时按 medium 处理。
 - 只返回文件路径、行号和关键代码片段
 - 保持输出简洁，不要冗长解释
 - 完成搜索后，以 "## 发现" 开头输出最终报告，包含：关键文件列表、核心发现、建议的下一步行动

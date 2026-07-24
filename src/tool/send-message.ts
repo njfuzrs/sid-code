@@ -39,10 +39,17 @@ export class SendMessageTool implements Tool {
 
   private providerRegistry?: ProviderRegistry;
   private toolRegistry?: ToolRegistry;
+  /** P2-3：父会话 id，用于定位子代理 sidechain transcript 做真恢复。由 app.ts 鸭子类型注入。 */
+  private parentSessionId?: string;
 
   constructor(providerRegistry?: ProviderRegistry, toolRegistry?: ToolRegistry) {
     this.providerRegistry = providerRegistry;
     this.toolRegistry = toolRegistry;
+  }
+
+  /** P2-3：注入父会话 id（与 SubAgentTool 同款，app.ts wireParentSessionId 统一接线）。 */
+  setParentSessionId(sessionId: string | undefined): void {
+    this.parentSessionId = sessionId;
   }
 
   name(): string {
@@ -95,14 +102,15 @@ export class SendMessageTool implements Tool {
   }
 
   /**
-   * Resume 已终态 Agent：基于原任务上下文(prompt + output)重启 Agent。
+   * Resume 已终态 Agent（P2-3，对标 cc resumeAgent 真恢复）。
    *
-   * 对标 cc resumeAgent：不解析完整 JSONL transcript（复杂度高），
-   * 而是用轻量续传——把原 prompt + 原 output 作为上下文前缀，新消息作为续传指令，
-   * 创建新的后台 agent task 继续执行。调用方得到新 task_id 便于追踪。
+   * 优先从子代理 sidechain JSONL transcript 重建**完整对话历史**（含中间轮工具调用/结论），
+   * 经 forkMessages 灌入新子代理，让 resume 的 agent 看到自己之前的完整上下文再续接新指令。
    *
-   * 这比 cc 的"从完整 transcript 恢复"轻量得多，但覆盖了主要用例：
-   * 用户觉得子代理做完后"还差一步"时，能直接续传而不是从头再来。
+   * transcript 缺失/损坏/无 parentSessionId 时，fail-open 降级到**轻量续传**：
+   * 把原 prompt + 原 output 拼成上下文前缀 + 新指令起新 task（覆盖「还差一步」主用例）。
+   *
+   * 两条路径都创建新的后台 agent task，调用方得到新 task_id 便于追踪。
    */
   private async resumeAgent(task: LocalAgentTaskState, message: string): Promise<ToolResult> {
     const log = getLogger();
@@ -117,7 +125,28 @@ export class SendMessageTool implements Tool {
       };
     }
 
-    // 构建续传 prompt：原上下文 + 原输出 + 新指令
+    // P2-3：尝试从 sidechain transcript 重建完整历史（真恢复）。成功则走 forkMessages 续跑。
+    let forkMessages: { role: "user" | "assistant"; content: import("../llm/types.ts").ContentBlock[] }[] | undefined;
+    let resumeMode: "transcript" | "lightweight" = "lightweight";
+    if (this.parentSessionId) {
+      try {
+        const { reconstructSidechainMessages } = await import("../session/sidechain.ts");
+        const reconstructed = reconstructSidechainMessages(this.parentSessionId, task.id);
+        if (reconstructed && reconstructed.messages.length > 0) {
+          // 在完整历史末尾追加新的续传指令（user 消息）。
+          forkMessages = [
+            ...reconstructed.messages,
+            { role: "user", content: [{ type: "text", text: `[续传指令] ${message}` }] },
+          ];
+          resumeMode = "transcript";
+          log.info("SUBAGENT", `Resume(真恢复): 从 transcript 重建 ${reconstructed.messages.length} 条消息`);
+        }
+      } catch (err: any) {
+        log.warn("SUBAGENT", `Resume transcript 重建失败，降级轻量续传: ${err?.message ?? err}`);
+      }
+    }
+
+    // 构建续传 prompt：原上下文 + 原输出 + 新指令（轻量续传路径 / transcript 路径的 description 用）
     const originalOutput = task.result?.output ?? task.error ?? "(无输出)";
     const resumePrompt = [
       `[续传上下文] 你之前执行了以下任务并已完成：`,
@@ -146,11 +175,14 @@ export class SendMessageTool implements Tool {
     void (async () => {
       try {
         const subAgent = SubAgent.fromRegistry(this.providerRegistry!, this.toolRegistry!);
+        if (this.parentSessionId) subAgent.setParentSessionId(this.parentSessionId);
         const result = await subAgent.execute(
           {
             type: task.agentType,
             description: `[Resume] ${message.slice(0, 80)}`,
-            prompt: resumePrompt,
+            // transcript 恢复：走 forkMessages（完整历史）；轻量续传：走拼接 prompt。
+            prompt: forkMessages ? message : resumePrompt,
+            forkMessages,
           },
           abortController.signal,
         );
@@ -166,15 +198,16 @@ export class SendMessageTool implements Tool {
       }
     })();
 
-    log.info("SUBAGENT", `Resume agent: 原 ${task.id} → 新 ${newTaskId} (${task.agentType})`);
+    log.info("SUBAGENT", `Resume agent(${resumeMode}): 原 ${task.id} → 新 ${newTaskId} (${task.agentType})`);
 
     return {
       output: JSON.stringify({
         status: "resumed",
+        resume_mode: resumeMode, // transcript=完整历史真恢复 / lightweight=轻量续传
         original_agent_id: task.id,
         new_task_id: newTaskId,
         agent_type: task.agentType,
-        message: `已恢复 Agent 执行（新 task_id: ${newTaskId}），完成后会通知你`,
+        message: `已恢复 Agent 执行（新 task_id: ${newTaskId}，模式: ${resumeMode}），完成后会通知你`,
       }),
     };
   }

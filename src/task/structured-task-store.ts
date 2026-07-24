@@ -190,6 +190,70 @@ export function isTaskUnblocked(task: StructuredTask): boolean {
   });
 }
 
+// ============================================================
+// P2-2：持久化快照 + 认领调度（供 swarm team 共享任务列表用）
+// ============================================================
+
+/** 序列化当前全部任务为可落盘的快照（深拷贝，隔离外部改动）。 */
+export function serializeStructuredTasks(): StructuredTask[] {
+  return getAllStructuredTasks().map((t) => ({
+    ...t,
+    blocks: [...t.blocks],
+    blockedBy: [...t.blockedBy],
+    metadata: { ...t.metadata },
+  }));
+}
+
+/**
+ * 从快照恢复任务（P2-2 进程重启/团队接续）。替换当前内存态，
+ * 并把 idCounter 重置为快照里的最大数字 ID，避免新建任务 ID 撞车。
+ * 非法条目（缺 id/subject）跳过。
+ */
+export function restoreStructuredTasks(snapshot: StructuredTask[]): void {
+  tasks.clear();
+  idCounter = 0;
+  let maxId = 0;
+  for (const t of snapshot) {
+    if (!t || typeof t.id !== "string" || typeof t.subject !== "string") continue;
+    tasks.set(t.id, {
+      ...t,
+      blocks: Array.isArray(t.blocks) ? [...t.blocks] : [],
+      blockedBy: Array.isArray(t.blockedBy) ? [...t.blockedBy] : [],
+      metadata: t.metadata && typeof t.metadata === "object" ? { ...t.metadata } : {},
+    });
+    const n = Number(t.id);
+    if (Number.isFinite(n) && n > maxId) maxId = n;
+  }
+  idCounter = maxId;
+}
+
+/**
+ * 认领下一个可执行任务（P2-2 team 成员自协调调度）。
+ *
+ * 挑选首个 `pending` 且 `isTaskUnblocked`（所有上游已完成）的任务，
+ * 置 owner + in_progress 后返回；无可认领任务返回 undefined。
+ * 按数字 ID 升序挑选，保证认领顺序稳定可预测。
+ */
+export function claimNextUnblockedTask(owner: string): StructuredTask | undefined {
+  for (const task of getAllStructuredTasks()) {
+    if (task.status !== "pending") continue;
+    if (!isTaskUnblocked(task)) continue;
+    task.owner = owner;
+    task.status = "in_progress";
+    task.updatedAt = Date.now();
+    return task;
+  }
+  return undefined;
+}
+
+/** 是否还有未完成（pending/in_progress）的任务。供调度循环判断终止。 */
+export function hasUnfinishedTasks(): boolean {
+  for (const t of tasks.values()) {
+    if (t.status === "pending" || t.status === "in_progress") return true;
+  }
+  return false;
+}
+
 /** 测试辅助：清空全部结构化任务并重置 ID 计数。 */
 export function __clearStructuredTasks(): void {
   tasks.clear();

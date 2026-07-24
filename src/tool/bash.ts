@@ -19,6 +19,7 @@ import type { Config } from "../config/config.ts";
 import { isReadOnlyCommand, isDestructiveCommand } from "./bash/read-only-validation.ts";
 import { interpretExitCode } from "./bash/command-semantics.ts";
 import { looksLikeQuotingBreakage, quotingBreakageHint } from "./bash/quoting-diagnostics.ts";
+import { detectMergeConflictHint } from "./bash/merge-conflict.ts";
 import { normalizeToolPath } from "./path-utils.ts";
 import { registerCleanup } from "../utils/graceful-shutdown.ts";
 import { ensureSidTempDir } from "../utils/temp-dir.ts";
@@ -383,7 +384,24 @@ export class BashTool implements Tool {
   <完整 commit message，可含任意引号/中文/多行>
   SIDEOF
   \`\`\`
-  定界符用单引号包裹（<< 'SIDEOF'）可禁用 $ 与反引号展开。或用 write 工具把内容写到临时文件后 \`git commit -F <文件>\``;
+  定界符用单引号包裹（<< 'SIDEOF'）可禁用 $ 与反引号展开。或用 write 工具把内容写到临时文件后 \`git commit -F <文件>\`
+
+## Git 命令安全（每次跑 git 都适用）
+- 优先新建 commit，不要 --amend 既有 commit：pre-commit hook 失败时 commit 并未发生，此时 --amend 会改掉「上一个已完成的 commit」，可能破坏历史工作。hook 失败 → 修复问题 → 重新 git add → 新建 commit。除非用户明确要求，否则始终新建 commit
+- 破坏性操作（git reset --hard / push --force / checkout . / restore . / clean -f / branch -D / stash drop）执行前，先想有没有更安全的等价做法；只在确实最优且用户要求时才用
+- 绝不用 --no-verify 跳过 hooks、--no-gpg-sign 跳过签名，除非用户明确要求；hook 失败时排查并修复根因，而不是跳过
+- 不擅自 git config 写操作（尤其 core.hooksPath）、不改 git 远程与分支上游，除非用户要求
+- 不自动 push / 建 PR（走 /commit-push-pr 或用户显式要求）
+
+## 合并冲突处理（git merge / rebase / cherry-pick / pull 报冲突时）
+1. git status 找出所有冲突文件（Unmerged paths）
+2. 逐个 read 冲突文件，定位 <<<<<<< / ======= / >>>>>>> 标记
+3. 在代码库上下文中理解双方变更各自的意图
+4. 用 edit 消除标记、写入正确的合并结果——保留双方都需要的逻辑，不是简单选一边
+5. 双方语义都正确、需要人工取舍时，用 ask_user_question 让用户拍板，不要擅自决定
+6. 解决后 git add 冲突文件，按需 git commit（merge）/ git rebase --continue
+- 不用 git checkout --theirs/--ours 简单丢一侧，除非确认那一侧确实该整体采用
+- 中途放弃用 git merge --abort / git rebase --abort 回到干净状态`;
   }
 
   inputSchema(): Record<string, unknown> {
@@ -716,6 +734,13 @@ export class BashTool implements Tool {
                 const { clearGitStatusCache } = require("../config/attachments.ts");
                 clearGitStatusCache();
               } catch { /* 失效缓存失败不阻断命令返回 */ }
+
+              // P2-3：git 操作使用度量。命令成功后分类 commit/push/pr_created 等并落计数，
+              // 供 trace/telemetry 观察（非 git 操作静默忽略）。记账失败不阻断命令返回。
+              try {
+                const { recordGitOperation } = require("./git-operation-tracking.ts");
+                recordGitOperation(params.command, Date.now());
+              } catch { /* 度量失败不阻断命令返回 */ }
             }
 
             // 合并输出
@@ -769,6 +794,16 @@ export class BashTool implements Tool {
             }
 
             log.info("TOOL", `✓ 命令完成 code=${exitCode} stdout=${stdout.length}字符 stderr=${stderr.length}字符`);
+
+            // P1-3：合并冲突感知（超越 CC 的运行时增强）。git merge/rebase/cherry-pick/pull
+            // 产生冲突时（输出含 CONFLICT），附一条提示引导模型按「合并冲突处理协议」逐个解决，
+            // 双方都对时问用户，而不是盲目丢一侧。纯追加提示、不改退出码语义。
+            const conflictHint = detectMergeConflictHint(params.command, output);
+            if (conflictHint) {
+              const base = output === "(命令无输出)" ? "" : `${output}\n`;
+              return { output: `${base}${conflictHint}` };
+            }
+
             // 非 0 但语义上非错误：附注语义提示（如 "无匹配"），帮助模型正确理解
             if (exitCode !== 0 && interp.message) {
               const note = output === "(命令无输出)" ? interp.message : `${output}\n(${interp.message})`;

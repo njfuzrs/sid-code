@@ -73,6 +73,7 @@ import { resolve, extname, join } from "path";
 import { sidPaths } from "./config/paths.ts";
 import { deriveTaskTitle } from "./ui/utils/task-title.ts";
 import { recordSideCall, setSideCostCalculator, setSideCostObserver } from "./trace/side-call-sink.ts";
+import { setGitOperationObserver, type GitOperationEvent } from "./tool/git-operation-tracking.ts";
 import { withSideCallDeadline } from "./llm/side-call-timeout.ts";
 import { resolveSideCallTimeouts } from "./config/network-profile.ts";
 
@@ -426,6 +427,16 @@ export class App {
     // 注册辅助调用成本观察者：实时累加到 SessionState.sideCostUSD，
     // 使 TUI 费用列 / /cost 命令 / quota 守卫看到主+辅助的真实总花费
     setSideCostObserver((costUSD) => this.sessionState.addSideCost(costUSD));
+    // P2-3：git 操作使用度量观察者。bash 成功执行 commit/push/PR 创建等操作后，
+    // 把事件写入 trace 的 events.jsonl（git_operation 事件），供后续可观测性分析。
+    setGitOperationObserver((event: GitOperationEvent) => {
+      try {
+        this.traceCollector?.recordCustomEvent?.("git_operation", {
+          kind: event.kind,
+          command: event.command,
+        });
+      } catch { /* 度量透传失败不影响主流程 */ }
+    });
     getSessionMetrics().setSessionId(sessionId);
     getSessionMetrics().setAvailableModels(opts.config.availableModels);
     // B1：会话持久化写入端（构造很轻，仅建目录）。startSession/resumeSession 延迟到 doInit 调用，

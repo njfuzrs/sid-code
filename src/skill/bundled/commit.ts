@@ -53,6 +53,13 @@ const COMMIT_PROMPT = `# Commit: 生成提交信息并提交
 用户选"确认提交"才执行 \`git commit\`；选"取消"则不提交并简报"已取消"。
 提交后运行 \`git log --oneline -1\` 回显结果。
 
+## 阶段 5: pre-commit hook 失败处理（关键）
+若 git commit 因 pre-commit hook 失败（lint/test 未过）：
+- **commit 没有发生**。此时绝不能用 \`git commit --amend\`——amend 会改掉「上一个已完成的
+  commit」，可能破坏历史工作。
+- 正确做法：修复 hook 报告的问题 → 重新 \`git add\` 相关文件 → 创建一个**新的** \`git commit\`。
+- 除非用户明确要求 amend，否则始终新建 commit。
+
 ## 约束
 - 只提交已暂存内容，不擅自扩大范围；不修改任何代码文件，只生成 message 并提交
 - **不要**自动 \`git push\`——推送是 /commit-push-pr 的职责
@@ -71,9 +78,15 @@ export function registerCommitSkill(): void {
     allowedTools: ["bash", "read", "grep", "glob"],
     context: "inline",
     userInvocable: true,
-    async getPromptForCommand(args) {
+    async getPromptForCommand(args, context) {
+      // P3-1：归因动态注入（settings.git.commitAttribution），覆盖所有 commit 路径。
+      // enabled=false → 空串 → prompt 不出现归因指令（对齐 CC shouldIncludeGitInstructions）。
+      const { commitAttributionInstruction } = await import("../../tool/git-attribution.ts");
+      const attribution = commitAttributionInstruction(context?.config?.git);
+      const attributionSection = attribution ? `\n\n## 归因\n${attribution}` : "";
       return (
         COMMIT_PROMPT +
+        attributionSection +
         (args.trim() ? `\n\n## 用户额外要求\n\n${args.trim()}` : "")
       );
     },

@@ -1351,9 +1351,19 @@ export async function main(): Promise<void> {
       );
     }
 
-    // 加载自定义 Agents（注册为工具 + 注册进统一聚合 registry）
-    const { CustomAgentLoader, CustomAgentTool } = await import("./agent/custom.ts");
+    // 加载自定义 Agents（P2-4：只注册进统一聚合 registry，通过 sub_agent({type}) 访问；
+    // 不再包装为 agent__xxx 独立工具——收敛到 CC 式单通道，自定义 agent 自动获得
+    // sub_agent 的 run_in_background/isolation/fork/并发信号量能力）。
+    const { CustomAgentLoader } = await import("./agent/custom.ts");
     const { registerDynamicAgents } = await import("./agent/agent-definition.ts");
+    const { setAgentColor } = await import("./agent/color.ts");
+    // P1-2：把 frontmatter 声明的 color 注册进颜色映射；非法色名 warn 跳过（回退哈希分配）。
+    const registerAgentColor = (agentType: string, color: string | undefined) => {
+      if (!color) return;
+      if (!setAgentColor(agentType, color)) {
+        getLogger().warn("AGENT", `Agent "${agentType}" 的 color="${color}" 非法，已回退自动分配色`);
+      }
+    };
     const customAgents = await new CustomAgentLoader().loadAll(undefined, scanOptions);
     // 注册进聚合 registry：让 sub_agent 的 type 枚举能发现自定义 agent
     if (customAgents.length > 0) {
@@ -1366,11 +1376,17 @@ export async function main(): Promise<void> {
           tools: def.tools.length > 0 ? def.tools : undefined,
           source: "userSettings" as const,
           filePath: def.filePath,
+          // P0-2/P1-1/P1-2/P2-1：透传扩展 frontmatter 字段到 AgentDefinition。
+          model: def.model,
+          skills: def.skills,
+          color: def.color,
+          permissionMode: def.permissionMode,
+          hooks: def.hooks,
+          background: def.background,
+          isolation: def.isolation,
         })),
       );
-    }
-    for (const def of customAgents) {
-      toolRegistry.register(new CustomAgentTool(def, providerRegistry, toolRegistry));
+      for (const def of customAgents) registerAgentColor(def.name, def.color);
     }
 
     // P1-10 --agents：注入 CLI 指定的子代理定义（内联 JSON）。
@@ -1387,23 +1403,7 @@ export async function main(): Promise<void> {
         source: "userSettings" as const,
       }));
       registerDynamicAgents(injected);
-      // 同步注册为工具，使模型可直接调用（与自定义 agent 对等）。
-      for (const [name, def] of Object.entries(config.injectedAgents)) {
-        toolRegistry.register(
-          new CustomAgentTool(
-            {
-              name,
-              description: def.description ?? name,
-              prompt: def.prompt,
-              tools: def.tools ?? [],
-              source: "user", // CLI 注入（--agents）归为 user 来源
-              filePath: "",
-            },
-            providerRegistry,
-            toolRegistry,
-          ),
-        );
-      }
+      // P2-4：不再注册 agent__xxx 独立工具，注入的 agent 统一通过 sub_agent({type}) 访问。
       getLogger().info("AGENT", `--agents 注入 ${injected.length} 个子代理: ${injected.map((a) => a.agentType).join(", ")}`);
     }
 
@@ -1431,13 +1431,20 @@ export async function main(): Promise<void> {
             tools: def.tools.length > 0 ? def.tools : undefined,
             source: "plugin" as const,
             filePath: def.filePath,
+            // P0-2/P1-1/P1-2/P2-1：透传扩展 frontmatter 字段到 AgentDefinition。
+            model: def.model,
+            skills: def.skills,
+            color: def.color,
+            permissionMode: def.permissionMode,
+            hooks: def.hooks,
+            background: def.background,
+            isolation: def.isolation,
           })),
           false,
         );
+        for (const def of pluginAgents) registerAgentColor(def.name, def.color);
       }
-      for (const def of pluginAgents) {
-        toolRegistry.register(new CustomAgentTool(def, providerRegistry, toolRegistry));
-      }
+      // P2-4：不再注册 agent__xxx 独立工具，插件 agent 统一通过 sub_agent({type}) 访问。
 
       // 收集插件 MCP 服务器（合并到 config.mcpServers，下方统一连接）
       pluginMcpServers = await collectPluginMcpServers();

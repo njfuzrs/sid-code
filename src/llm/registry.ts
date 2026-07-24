@@ -95,10 +95,89 @@ export class ProviderRegistry {
     };
   }
 
-  /** 获取子代理模型（按类型查映射 > default 兜底 > 主模型） */
+  /**
+   * 获取子代理模型。
+   *
+   * 优先级（P0-1/P0-2 补全后）：
+   *   1. subAgentModels[type]     —— 用户按类型显式配置（最高，永远优先于任何默认）
+   *   2. subAgentModels.default   —— 用户兜底默认
+   *   3. agentDef.model           —— agent 定义/frontmatter 声明的 model（P0-2 自定义 agent）
+   *   4. modelTier 档位映射        —— 语义档位派生（P0-1，explore/plan/summarize=cheap）
+   *   5. this.config.model        —— 主模型兜底（fail-open，绝不因配错更贵或报错）
+   *
+   * 注意：task.model（每次调用覆盖）在调用方 sub-agent.ts 层处理，优先级高于本方法的全部返回值。
+   */
   getModelForSubAgent(type: string): string {
-    const mapped = this.subAgentModels[type as keyof SubAgentModelMap];
-    return mapped || this.subAgentModels.default || this.config.model;
+    // 1 + 2：用户配置（按类型 > default）——永远优先，保留用户完全控制权。
+    const userConfigured = this.subAgentModels[type as keyof SubAgentModelMap] || this.subAgentModels.default;
+    if (userConfigured) return userConfigured;
+
+    // 3 + 4：agent 定义驱动（frontmatter model > 语义档位）。resolveAgent 覆盖 built-in + custom + plugin。
+    const def = (() => {
+      try { return resolveAgent(type); } catch { return undefined; }
+    })();
+    if (def) {
+      // 3：frontmatter/定义显式 model（P0-2）。"inherit" 已在解析层归一为不设，此处非空即用。
+      if (def.model && def.model.trim()) return def.model.trim();
+      // 4：语义档位映射（P0-1）。仅 cheap/strong 尝试派生；default 或未设直接落主模型。
+      if (def.modelTier && def.modelTier !== "default") {
+        const tierModel = this.resolveModelForTier(def.modelTier);
+        if (tierModel) return tierModel;
+      }
+    }
+
+    // 5：主模型兜底。
+    return this.config.model;
+  }
+
+  /**
+   * 语义档位 → 实际模型名派生（P0-1）。
+   *
+   * 不硬编码模型名单（铁律 feedback-no-hardcoded-model-tier-rules）。派生来源按优先级：
+   *   1. 环境变量 SID_CHEAP_MODEL / SID_STRONG_MODEL（用户显式指定，最高权威）
+   *   2. availableModels 按 input 价排序：cheap=最便宜、strong=最贵（且不同于主模型档位）
+   *   3. 派生不出（无 availableModels / 无定价 / 只有主模型自己）→ null，调用方 fail-open 回退主模型
+   *
+   * 绝不返回比主模型更贵的 cheap 档，也绝不因派生失败报错。
+   */
+  private resolveModelForTier(tier: "cheap" | "strong"): string | null {
+    // 1：环境变量显式指定。
+    const envName = tier === "cheap" ? "SID_CHEAP_MODEL" : "SID_STRONG_MODEL";
+    const envModel = process.env[envName]?.trim();
+    if (envModel) return envModel;
+
+    // 2：从 availableModels 按价格派生。无配置模型列表时无从派生。
+    const models = this.config.availableModels;
+    if (!models || models.length === 0) return null;
+
+    // 为每个候选模型解析 input 单价（USD/M），过滤解析不出价格的。
+    const priced: Array<{ name: string; input: number }> = [];
+    for (const m of models) {
+      if (!m.name) continue;
+      const pricing = resolvePricing(m.name, models, m.baseURL);
+      if (pricing && pricing.input > 0) {
+        priced.push({ name: m.name, input: pricing.input });
+      }
+    }
+    if (priced.length === 0) return null;
+
+    // 主模型的价格作为参照：cheap 档必须严格更便宜，strong 档必须严格更贵，否则宁可回退主模型。
+    const mainPricing = resolvePricing(this.config.model, models, this.config.baseURL);
+    const mainInput = mainPricing && mainPricing.input > 0 ? mainPricing.input : null;
+
+    if (tier === "cheap") {
+      // 取最便宜的一个；若比主模型贵/相等则不派生（回退主模型，绝不更贵）。
+      const cheapest = priced.reduce((a, b) => (b.input < a.input ? b : a));
+      if (cheapest.name === this.config.model) return null;
+      if (mainInput !== null && cheapest.input >= mainInput) return null;
+      return cheapest.name;
+    } else {
+      // strong：取最贵的一个；若不比主模型贵则不派生。
+      const strongest = priced.reduce((a, b) => (b.input > a.input ? b : a));
+      if (strongest.name === this.config.model) return null;
+      if (mainInput !== null && strongest.input <= mainInput) return null;
+      return strongest.name;
+    }
   }
 
   /**

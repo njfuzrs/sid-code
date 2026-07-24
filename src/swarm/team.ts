@@ -12,7 +12,16 @@ import { join } from "path";
 import { randomBytes } from "crypto";
 import { Mailbox } from "./mailbox.ts";
 import { PermissionSync, type PermissionArbiter } from "./permission-sync.ts";
-import { assignAgentColor, type AgentColor } from "../agent/color.ts";
+import { assignAgentColor, getAgentColor, type AgentColor } from "../agent/color.ts";
+import {
+  createStructuredTask,
+  updateStructuredTask,
+  getStructuredTask,
+  getAllStructuredTasks,
+  isTaskUnblocked,
+  __clearStructuredTasks,
+} from "../task/structured-task-store.ts";
+import { persistTeamTasks, loadTeamTasks } from "../task/team-task-store.ts";
 import { getLogger } from "../debug/logger.ts";
 import type { ProviderRegistry } from "../llm/registry.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
@@ -27,6 +36,9 @@ export interface TeammateSpec {
   task: string;
   /** 是否需要独立 Worktree（默认 true，会改文件的成员需要） */
   isolated?: boolean;
+  /** P2-2：本成员依赖的其他成员名（这些成员完成后本成员才开始执行）。
+   *  用于「B 依赖 A」的有序编排——A 未完成前 B 不启动。空/未设 = 无依赖，可立即并发。 */
+  dependsOn?: string[];
 }
 
 /** 成员执行结果 */
@@ -60,6 +72,10 @@ export class TeamManager {
   readonly mailbox: Mailbox;
   readonly permissionSync: PermissionSync;
   private readonly teamDir: string;
+  /** P1-3：leader 收件箱 drain 出的成员回写消息（run() 结束时填充，供观测/回放）。 */
+  leaderMessages: import("./mailbox.ts").MailMessage[] = [];
+  /** P2-2：成员名 → 共享任务列表中的任务 ID 映射（seedTaskList 建立）。 */
+  private memberTaskIds = new Map<string, string>();
 
   constructor(private opts: TeamOptions) {
     this.teamName = opts.teamName;
@@ -109,6 +125,121 @@ export class TeamManager {
     };
   }
 
+  // ============================================================
+  // P2-2：共享任务列表调度（seed → 依赖等待 → 完成解锁 + 持久化）
+  // ============================================================
+
+  /**
+   * 把成员任务建成结构化共享任务列表：每个成员一个任务，dependsOn 建成 blockedBy 依赖边。
+   * 建完落盘一次（`.sid-code/tasks/{team}/tasks.json`）。
+   * 依赖引用不存在的成员名时 warn 跳过该边（不阻断建列表）。
+   */
+  private seedTaskList(): void {
+    const log = getLogger();
+    this.memberTaskIds.clear();
+
+    // P2-2：若该团队有历史任务文件，先恢复（进程重启/团队接续场景），并尝试按
+    // metadata.member 复原成员→任务映射，让已完成的上游依赖在重启后依然生效。
+    try {
+      if (loadTeamTasks(this.teamName, this.opts.baseDir)) {
+        for (const t of getAllStructuredTasks()) {
+          const member = (t.metadata as { member?: string })?.member;
+          if (typeof member === "string" && this.opts.members.some((m) => m.name === member)) {
+            this.memberTaskIds.set(member, t.id);
+          }
+        }
+        // 已完整复原全部成员映射时直接复用（不重建），保留历史完成态与依赖。
+        if (this.memberTaskIds.size === this.opts.members.length) {
+          log.info("TEAM_TASKS", `团队 "${this.teamName}" 从历史任务文件恢复 ${this.memberTaskIds.size} 个任务`);
+          return;
+        }
+        // 映射不完整（成员集变更）→ 放弃复用，清空重建，避免半吊子状态。
+        this.memberTaskIds.clear();
+        __clearStructuredTasks();
+      }
+    } catch (err: any) {
+      log.warn("TEAM_TASKS", `团队任务恢复失败（降级为全新）: ${err?.message ?? err}`);
+      this.memberTaskIds.clear();
+    }
+
+    // 先建全部任务节点，拿到 ID
+    for (const m of this.opts.members) {
+      const task = createStructuredTask({
+        subject: `[${this.teamName}] ${m.name}`,
+        description: m.task,
+        metadata: { team: this.teamName, member: m.name, agentType: m.type },
+      });
+      this.memberTaskIds.set(m.name, task.id);
+    }
+    // 再建依赖边：dependsOn 的上游成员完成后，本成员任务才解锁
+    for (const m of this.opts.members) {
+      if (!m.dependsOn || m.dependsOn.length === 0) continue;
+      const selfId = this.memberTaskIds.get(m.name)!;
+      const upstreamIds: string[] = [];
+      for (const dep of m.dependsOn) {
+        const depId = this.memberTaskIds.get(dep);
+        if (!depId) {
+          log.warn("TEAM_TASKS", `成员 "${m.name}" 依赖的成员 "${dep}" 不存在，已忽略该依赖`);
+          continue;
+        }
+        upstreamIds.push(depId);
+      }
+      if (upstreamIds.length > 0) {
+        const res = updateStructuredTask(selfId, { addBlockedBy: upstreamIds });
+        if (!res.ok) log.warn("TEAM_TASKS", `成员 "${m.name}" 依赖建边失败: ${res.error}`);
+      }
+    }
+    persistTeamTasks(this.teamName, this.opts.baseDir);
+  }
+
+  /** 某成员的所有依赖是否都已完成（据共享任务列表判断）。无任务映射时视为无依赖。 */
+  private isMemberUnblocked(memberName: string): boolean {
+    const taskId = this.memberTaskIds.get(memberName);
+    if (!taskId) return true;
+    const task = getStructuredTask(taskId);
+    if (!task) return true;
+    return isTaskUnblocked(task);
+  }
+
+  /** 标记成员任务进入执行态（认领），落盘。 */
+  private markMemberRunning(memberName: string): void {
+    const taskId = this.memberTaskIds.get(memberName);
+    if (!taskId) return;
+    updateStructuredTask(taskId, { status: "in_progress", owner: memberName });
+    persistTeamTasks(this.teamName, this.opts.baseDir);
+  }
+
+  /** 标记成员任务终态（成功=completed / 失败保持 in_progress→仍标 completed 释放依赖，但记 metadata.failed），落盘。 */
+  private markMemberDone(memberName: string, success: boolean): void {
+    const taskId = this.memberTaskIds.get(memberName);
+    if (!taskId) return;
+    // 完成（含失败）都置 completed 以解锁下游——失败细节记入 metadata，避免整图死锁。
+    updateStructuredTask(taskId, { status: "completed", metadata: { failed: !success } });
+    persistTeamTasks(this.teamName, this.opts.baseDir);
+  }
+
+  /**
+   * 等待某成员的依赖全部完成（轮询共享任务列表）。
+   * 已解锁立即返回；否则每 200ms 检查一次，直到解锁或 signal abort。
+   */
+  private async waitForMemberUnblocked(memberName: string, signal?: AbortSignal): Promise<void> {
+    if (this.isMemberUnblocked(memberName)) return;
+    return new Promise<void>((resolve, reject) => {
+      const timer = setInterval(() => {
+        if (signal?.aborted) {
+          clearInterval(timer);
+          reject(new Error("等待依赖时被中止"));
+          return;
+        }
+        if (this.isMemberUnblocked(memberName)) {
+          clearInterval(timer);
+          resolve();
+        }
+      }, 200);
+      timer.unref?.();
+    });
+  }
+
   /**
    * 执行所有成员任务，返回汇总结果。
    *
@@ -125,6 +256,10 @@ export class TeamManager {
     // canonical root 防嵌套（P0-2/B1）
     const gitRoot = findGitRootForAgent(process.cwd());
     const ts = stampMs ?? 0;
+
+    // P2-2：把成员任务建成共享任务列表（结构化任务图），落盘 + 依赖建边。
+    // 成员完成时 markTaskCompleted 触发依赖解锁，dependsOn 的成员据此等待上游。
+    this.seedTaskList();
 
     // B7：隔离成员经 SubAgentTask.cwd 走 withAgentCwd（AsyncLocalStorage），
     // 不再用 process.chdir，因此隔离成员也可与非隔离成员一起并发执行（无 chdir 竞态）。
@@ -152,6 +287,12 @@ export class TeamManager {
         teamTimeoutPromise,
       ]);
 
+      // P1-3：leader drain 自己的收件箱，消费成员回写的 result 消息（真正闭合通信环——
+      // 成员 send(to:"leader") 至此有了确定的消费方，不再是只写不读的伪通信）。
+      // 结果本身已通过返回值收集，此处 drain 用于：① 让 mailbox 状态归零（标记已读）；
+      // ② 供 leaderMessages 观测/回放（如后续 P3-2 三态显示模式消费）。
+      this.leaderMessages = this.mailbox.drain("leader");
+
       // 保持成员定义顺序
       const byName = new Map<string, TeammateResult>();
       for (const r of results) byName.set(r.name, r);
@@ -174,13 +315,32 @@ export class TeamManager {
     const { SubAgent } = await import("../agent/sub-agent.ts");
     const { WorktreeManager } = await import("../worktree/manager.ts");
 
-    const color = assignAgentColor(`${this.teamName}:${member.name}`);
+    // P1-2：优先用 agent 类型的 frontmatter 显式声明色（getAgentColor 内部回退哈希分配）；
+    // 未声明色的 agent 仍按「团队名:成员名」哈希分配，保证同一成员颜色稳定。
+    const color = member.type
+      ? getAgentColor(member.type)
+      : assignAgentColor(`${this.teamName}:${member.name}`);
     const result: TeammateResult = {
       name: member.name,
       success: false,
       output: "",
       color,
     };
+
+    // P2-2：若本成员依赖其他成员，先等上游全部完成再启动（据共享任务列表判断）。
+    // 无依赖成员立即通过，与原并发行为一致。等待期间 signal abort 则抛出，由外层捕获。
+    if (member.dependsOn && member.dependsOn.length > 0) {
+      try {
+        await this.waitForMemberUnblocked(member.name, signal ?? teamSignal);
+      } catch (err: any) {
+        result.output = `成员 ${member.name} 等待依赖时被中止: ${err.message}`;
+        this.markMemberDone(member.name, false);
+        return result;
+      }
+    }
+
+    // P2-2：认领任务（置 in_progress + owner），落盘。
+    this.markMemberRunning(member.name);
 
     // 投递初始任务到成员邮箱（可回放）
     this.mailbox.send({
@@ -229,6 +389,15 @@ export class TeamManager {
           description: `[${this.teamName}] ${member.name}`,
           prompt: member.task,
           cwd: isolatedCwd, // B7: withAgentCwd 隔离，并发安全
+          // P1-3：双向通信——每轮开始时 drain 本成员收件箱里的未读消息
+          //（来自 leader 或其他 peer 成员），格式化后由子代理注入上下文。
+          drainInbox: () => {
+            const msgs = this.mailbox.drain(member.name);
+            return msgs.map((m) => {
+              const kind = m.kind ? `(${m.kind})` : "";
+              return `来自 ${m.from}${kind}：${m.content}`;
+            });
+          },
         },
         memberSignal,
       );
@@ -247,6 +416,10 @@ export class TeamManager {
       result.output = `成员 ${member.name} 执行失败: ${err.message}`;
       log.error("SWARM", result.output);
     } finally {
+      // P2-2：标记成员任务终态（completed 解锁下游依赖），落盘。放在最前——
+      // 让等待本成员的 dependsOn 成员尽早解锁，不必等 worktree 清理/hook 触发完成。
+      this.markMemberDone(member.name, result.success);
+
       if (manager && worktreeSession) {
         try {
           await manager.remove(worktreeSession, false); // 无改动才删

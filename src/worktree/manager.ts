@@ -569,11 +569,35 @@ export class WorktreeManager {
     const realHookDir = join(worktreePath, gitDir);
     const realHookPath = join(realHookDir, "prepare-commit-msg");
     if (existsSync(realHookPath)) return;
+
+    // P3-1：归因文本读同一份 config（settings.git.commitAttribution），不再硬编码。
+    // enabled=false 时不安装 hook（用户全局关闭归因）。
+    let attribution = "";
+    try {
+      const { getSettings } = require("../config/settings/settings.ts");
+      const { resolveCommitAttribution } = require("../tool/git-attribution.ts");
+      const { settings } = getSettings(this.gitRoot);
+      attribution = resolveCommitAttribution(settings?.git);
+    } catch {
+      // 读取失败 → 用默认归因兜底（保持既有 worktree 行为）
+      const { DEFAULT_COMMIT_ATTRIBUTION } = require("../tool/git-attribution.ts");
+      attribution = DEFAULT_COMMIT_ATTRIBUTION;
+    }
+    if (!attribution) {
+      log.debug("WORKTREE", "commit 归因已关闭（settings.git.commitAttribution.enabled=false），跳过 hook 安装");
+      return;
+    }
+
+    // 安全转义：归因文本用单引号包裹注入 shell，转义内部单引号（'\'' 惯用法）。
+    const shQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+    const quoted = shQuote(attribution);
+    // grep 用 -F 固定串匹配（避免文本含正则元字符被误解析），幂等：已有归因不重复追加。
     const script = `#!/bin/sh
-# sid-code commit 归因 hook（自动安装）
+# sid-code commit 归因 hook（自动安装，内容来自 settings.git.commitAttribution）
 COMMIT_MSG_FILE="$1"
-if ! grep -q "Co-Authored-By: sid-code" "$COMMIT_MSG_FILE" 2>/dev/null; then
-  printf '\\nCo-Authored-By: sid-code <noreply@sid-code.dev>\\n' >> "$COMMIT_MSG_FILE"
+ATTRIBUTION=${quoted}
+if ! grep -qF "$ATTRIBUTION" "$COMMIT_MSG_FILE" 2>/dev/null; then
+  printf '\\n%s\\n' "$ATTRIBUTION" >> "$COMMIT_MSG_FILE"
 fi
 `;
     try {

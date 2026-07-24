@@ -15,6 +15,7 @@ import {
   failAgentTask,
 } from "../task/index.ts";
 import type { HookSystem } from "../hook/system.ts";
+import { buildAgentHookSystem } from "./agent-hooks.ts";
 import type { SubAgentResult } from "./sub-agent.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
@@ -348,6 +349,19 @@ ${typeLines}
       return { output: `错误: 无效的子代理类型 "${params.type}"，可选: ${validTypes.join(", ")}`, isError: true };
     }
 
+    // P2-1：agent 定义声明的 background / isolation 作为默认值，显式工具参数优先覆盖。
+    // （frontmatter 里声明 background: true 的 coordinator/审计类 agent 默认后台跑；
+    //  声明 isolation: worktree 的写类 agent 默认隔离，无需每次调用方显式传。）
+    const def = resolveAgent(params.type);
+    if (def) {
+      if (params.run_in_background === undefined && def.background === true) {
+        params.run_in_background = true;
+      }
+      if (params.isolation === undefined && def.isolation === "worktree") {
+        params.isolation = "worktree";
+      }
+    }
+
     // 后台执行模式
     if (params.run_in_background) {
       return this.runAsync(params, signal);
@@ -355,6 +369,51 @@ ${typeLines}
 
     // 同步执行模式
     return this.runSync(params, signal);
+  }
+
+  /**
+   * P2-1：按 agent 类型创建 SubAgent，并应用 frontmatter 声明的 permissionMode / hooks。
+   *
+   * - permissionMode：若 agent 声明且主 checker 支持 deriveWithPermissionMode，则派生一个
+   *   覆盖该模式的独立 checker（不污染并发的其他子代理）；否则用共享 checker。
+   * - hooks：若 agent 声明，构建**专属隔离** HookSystem（只承载该 agent 的 hook），
+   *   避免 A 的 hook 对 B 的工具调用误触发；未声明则用共享 hookSystem。
+   *
+   * runSync / runAsync 共用此工厂，保证两条路径行为一致。
+   */
+  private createSubAgentForType(agentType: string): SubAgent {
+    const def = resolveAgent(agentType);
+
+    // hooks：优先专属隔离 HookSystem，回退共享。
+    let hookSystem = this.hookSystem;
+    if (def?.hooks) {
+      try {
+        const isolated = buildAgentHookSystem(agentType, def.hooks);
+        if (isolated) hookSystem = isolated;
+      } catch (err: any) {
+        getLogger().warn("SUBAGENT", `Agent ${agentType} hooks 注册失败（回退共享 hookSystem）: ${err?.message ?? err}`);
+      }
+    }
+
+    const subAgent = SubAgent.fromRegistry(this.providerRegistry, this.toolRegistry, hookSystem);
+
+    // permissionMode：优先派生覆盖模式的独立 checker，回退共享。
+    if (this.permissionChecker) {
+      let checker = this.permissionChecker;
+      const mode = def?.permissionMode;
+      const derivable = checker as { deriveWithPermissionMode?: (m: string) => import("../permission/types.ts").Checker };
+      if (mode && typeof derivable.deriveWithPermissionMode === "function") {
+        try {
+          checker = derivable.deriveWithPermissionMode(mode);
+          getLogger().debug("SUBAGENT", `Agent ${agentType} 应用 permissionMode=${mode}`);
+        } catch (err: any) {
+          getLogger().warn("SUBAGENT", `Agent ${agentType} permissionMode=${mode} 派生失败（回退共享 checker）: ${err?.message ?? err}`);
+        }
+      }
+      subAgent.setPermissionChecker(checker);
+    }
+
+    return subAgent;
   }
 
   /** 同步执行子代理 */
@@ -419,8 +478,7 @@ ${typeLines}
         }
       }
 
-      const subAgent = SubAgent.fromRegistry(this.providerRegistry, this.toolRegistry, this.hookSystem);
-      if (this.permissionChecker) subAgent.setPermissionChecker(this.permissionChecker);
+      const subAgent = this.createSubAgentForType(params.type);
       subAgent.setParentSessionId(this.parentSessionId); // P2-10：启用 sidechain 持久化
 
       // Fork 模式：继承主对话上下文（prompt cache 友好）
@@ -539,8 +597,7 @@ ${typeLines}
     }
 
     try {
-      const subAgent = SubAgent.fromRegistry(this.providerRegistry, this.toolRegistry, this.hookSystem);
-      if (this.permissionChecker) subAgent.setPermissionChecker(this.permissionChecker);
+      const subAgent = this.createSubAgentForType(params.type);
       subAgent.setParentSessionId(this.parentSessionId); // P2-10：启用 sidechain 持久化
 
       // 传递预创建的 task 信息，execute() 内部不再重复创建

@@ -9,13 +9,18 @@
  */
 
 import { isDestructiveCommand } from "../../tool/bash/read-only-validation.ts";
+import { GIT_DANGER_DISPLAY } from "../../permission/git-danger-patterns.ts";
 
-/** UI 侧补充的破坏性命令模式（核心 isDestructiveCommand 未覆盖的日常高频项） */
+/**
+ * UI 侧补充的破坏性命令模式（核心 isDestructiveCommand 未覆盖的日常高频项）。
+ *
+ * ⚠️ git 类模式**不再在此硬编码**——统一从 `git-danger-patterns.ts` 的 `GIT_DANGER_DISPLAY`
+ * 展开（与 checker.ts 的运行时拦截规则同源），避免「展示规则」与「拦截规则」两份漂移（P0-2）。
+ * 这里只保留 git 之外的日常高频破坏性项（rm/drop table/kill/写块设备/chmod -R）。
+ */
 const UI_DESTRUCTIVE_PATTERNS: ReadonlyArray<{ pattern: RegExp; label: string }> = [
   { pattern: /\brm\s+(-\w*\s+)*-?\w*[rf]/i, label: "递归/强制删除文件" },
-  { pattern: /\bgit\s+reset\s+--hard/i, label: "丢弃所有本地改动 (git reset --hard)" },
-  { pattern: /\bgit\s+clean\s+-\w*[fd]/i, label: "删除未跟踪文件 (git clean)" },
-  { pattern: /\bgit\s+push\s+.*(--force|-f)\b/i, label: "强制推送 (git push --force)" },
+  ...GIT_DANGER_DISPLAY,
   { pattern: /\b(drop|truncate)\s+(table|database)\b/i, label: "删除数据库表/库" },
   { pattern: /\bkill(all)?\s+(-9\s+)?-?\w/i, label: "批量终止进程" },
   { pattern: />\s*\/dev\/sd/i, label: "写入块设备" },

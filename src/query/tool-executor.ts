@@ -353,7 +353,7 @@ export async function executeTools(
   if (toolBlocks.length === 0) return { results: [] };
 
   // 收集本次工具调用会修改的文件路径（用于创建快照）
-  const affectedFiles = getAffectedFiles(toolBlocks.map(t => t.block));
+  const affectedFiles = await getAffectedFiles(toolBlocks.map(t => t.block));
 
   // 在工具执行前统一创建快照
   if (affectedFiles.length > 0) {
@@ -1072,7 +1072,7 @@ function safeInputSize(input: unknown): number {
 }
 
 /** 根据工具类型提取受影响的文件路径 */
-function getAffectedFiles(toolBlocks: ToolUseBlock[]): string[] {
+async function getAffectedFiles(toolBlocks: ToolUseBlock[]): Promise<string[]> {
   const files: string[] = [];
   for (const block of toolBlocks) {
     switch (block.name) {
@@ -1082,11 +1082,29 @@ function getAffectedFiles(toolBlocks: ToolUseBlock[]): string[] {
           files.push((block.input as any).file_path);
         }
         break;
+      case "bash": {
+        // P2-1：破坏性 bash 命令（git reset --hard / checkout . / clean -f / rm / mv）
+        // 执行前快照受影响文件，让 /undo 能回退 bash 造成的破坏（此前是 checkpoint 盲区）。
+        const command = (block.input as any)?.command;
+        if (typeof command === "string" && command.trim()) {
+          try {
+            const { getBashAffectedFiles } = await import("../checkpoint/bash-affected-files.ts");
+            const { getCwd } = await import("../bootstrap/state.ts");
+            const cwd = (block.input as any)?.cwd || getCwd();
+            const bashFiles = await getBashAffectedFiles(command, cwd);
+            files.push(...bashFiles);
+          } catch {
+            /* 提取失败不阻断工具执行 */
+          }
+        }
+        break;
+      }
       default:
         break;
     }
   }
-  return files;
+  // 去重（范围性快照 + 精确提取可能重叠）
+  return [...new Set(files)];
 }
 
 /**

@@ -34,6 +34,87 @@ export interface CustomAgentDefinition {
   filePath: string;
   /** 超时时间（毫秒），默认 300_000（5 分钟，对齐 task 类型） */
   timeout?: number;
+  /** 模型覆盖（P0-2，frontmatter model；"inherit"/空 = 继承主模型） */
+  model?: string;
+  /** 预加载技能名列表（P1-1，frontmatter skills） */
+  skills?: string[];
+  /** UI 区分色（P1-2，frontmatter color） */
+  color?: string;
+  /** 权限模式（P2-1，frontmatter permissionMode） */
+  permissionMode?: string;
+  /** agent 专用 hooks（P2-1，frontmatter hooks） */
+  hooks?: unknown;
+  /** 是否默认后台执行（P2-1，frontmatter background） */
+  background?: boolean;
+  /** 是否默认 worktree 隔离（P2-1，frontmatter isolation） */
+  isolation?: "worktree";
+}
+
+/**
+ * 解析「逗号分隔字符串或 YAML 数组」双格式字段（tools/skills 共用）。
+ * 非字符串非数组 → 空数组。
+ */
+export function parseListField(raw: unknown): string[] {
+  if (typeof raw === "string") {
+    return raw.split(",").map((s) => s.trim()).filter(Boolean);
+  }
+  if (Array.isArray(raw)) {
+    return raw.map(String).map((s) => s.trim()).filter(Boolean);
+  }
+  return [];
+}
+
+/** 合法权限模式名（P2-1 校验，对齐 src/permission/mode.ts PermissionMode）。 */
+const VALID_PERMISSION_MODES = new Set([
+  "default", "always-allow", "deny-write", "acceptEdits",
+  "plan", "dontAsk", "auto", "dangerously-skip-permissions",
+]);
+
+/**
+ * 从 frontmatter 提取扩展字段（P0-2/P1-1/P1-2/P2-1 共用）。
+ * 非法值 warn 跳过（不 spawn 失败），返回可直接展开进 CustomAgentDefinition 的部分对象。
+ */
+export function parseAgentExtendedFrontmatter(
+  fm: Record<string, unknown>,
+  agentName: string,
+): Pick<CustomAgentDefinition, "model" | "skills" | "color" | "permissionMode" | "hooks" | "background" | "isolation"> {
+  const log = getLogger();
+  const out: Pick<CustomAgentDefinition, "model" | "skills" | "color" | "permissionMode" | "hooks" | "background" | "isolation"> = {};
+
+  // model（P0-2）："inherit"（大小写不敏感）视为不设。
+  if (typeof fm.model === "string") {
+    const m = fm.model.trim();
+    if (m && m.toLowerCase() !== "inherit") out.model = m;
+  }
+
+  // skills（P1-1）：双格式解析。
+  const skills = parseListField(fm.skills);
+  if (skills.length > 0) out.skills = skills;
+
+  // color（P1-2）：字符串；色板校验交给注册层（此处只透传，非法值由 color 注册器 warn）。
+  if (typeof fm.color === "string" && fm.color.trim()) out.color = fm.color.trim();
+
+  // permissionMode（P2-1）：枚举校验，非法值 warn 跳过。
+  if (typeof fm.permissionMode === "string") {
+    const pm = fm.permissionMode.trim();
+    if (VALID_PERMISSION_MODES.has(pm)) out.permissionMode = pm;
+    else if (pm) log.warn("CUSTOM_AGENT", `Agent ${agentName} 的 permissionMode="${pm}" 非法，已忽略`);
+  }
+
+  // hooks（P2-1）：透传对象/数组，非法结构由 hook 注册层校验。
+  if (fm.hooks && typeof fm.hooks === "object") out.hooks = fm.hooks;
+
+  // background（P2-1）：布尔。
+  if (typeof fm.background === "boolean") out.background = fm.background;
+
+  // isolation（P2-1）：仅接受 "worktree"，非法值 warn 跳过。
+  if (typeof fm.isolation === "string") {
+    const iso = fm.isolation.trim();
+    if (iso === "worktree") out.isolation = "worktree";
+    else if (iso) log.warn("CUSTOM_AGENT", `Agent ${agentName} 的 isolation="${iso}" 非法（仅支持 worktree），已忽略`);
+  }
+
+  return out;
 }
 
 /** 自定义 Agent 加载器 */
@@ -54,22 +135,19 @@ export class CustomAgentLoader {
       const fm = file.frontmatter;
 
       // 解析 tools（支持逗号分隔字符串或数组）
-      let tools: string[] = [];
-      const rawTools = fm.tools;
-      if (typeof rawTools === "string") {
-        tools = rawTools.split(",").map(s => s.trim()).filter(Boolean);
-      } else if (Array.isArray(rawTools)) {
-        tools = rawTools.map(String);
-      }
+      const tools = parseListField(fm.tools);
+      const agentName = (fm.name as string) || file.name;
 
       agents.push({
-        name: (fm.name as string) || file.name,
+        name: agentName,
         description: (fm.description as string) || "",
         tools,
         prompt: file.body,
         source: file.source,
         filePath: file.filePath,
         timeout: typeof fm.timeout === "number" ? fm.timeout : undefined,
+        // P0-2/P1-1/P1-2/P2-1：消费扩展 frontmatter 字段（model/skills/color/permissionMode/hooks/background/isolation）。
+        ...parseAgentExtendedFrontmatter(fm, agentName),
       });
     }
 
@@ -83,7 +161,14 @@ export class CustomAgentLoader {
   }
 }
 
-/** 自定义 Agent 工具（包装为 Tool 接口） */
+/**
+ * 自定义 Agent 工具（包装为 Tool 接口）。
+ *
+ * @deprecated P2-4：双注册收敛后，自定义/插件 agent 不再包装为独立 `agent__xxx` 工具，
+ * 而是统一通过 `sub_agent({type: "<name>"})` 访问（对齐 CC 单 Agent 工具模型）。
+ * cli.ts 已停止注册此类实例；保留类定义仅为兼容期回归测试与潜在外部引用。
+ * 新代码请勿再注册 CustomAgentTool——用 registerDynamicAgents 让 agent 进 sub_agent 通道。
+ */
 export class CustomAgentTool implements Tool {
   private def: CustomAgentDefinition;
   private providerRegistry: ProviderRegistry;

@@ -72,9 +72,17 @@ export function registerCommitPushPrSkill(): void {
     disableModelInvocation: true,
     maxTurns: 25,
     timeoutMins: 15, // 含 git push + gh pr create，慢网络下 2 分钟可能超时
-    async getPromptForCommand(args) {
+    async getPromptForCommand(args, context) {
+      // P3-1：commit + PR 归因动态注入（settings.git.commitAttribution / prAttribution）。
+      // 各自 enabled=false → 空串 → 不出现对应归因指令。
+      const { commitAttributionInstruction, prAttributionInstruction } = await import("../../tool/git-attribution.ts");
+      const commitAttr = commitAttributionInstruction(context?.config?.git);
+      const prAttr = prAttributionInstruction(context?.config?.git);
+      const parts = [commitAttr, prAttr].filter(Boolean);
+      const attributionSection = parts.length ? `\n\n## 归因\n${parts.join("\n\n")}` : "";
       return (
         COMMIT_PUSH_PR_PROMPT +
+        attributionSection +
         (args.trim() ? `\n\n## 用户额外要求\n\n${args.trim()}` : "")
       );
     },

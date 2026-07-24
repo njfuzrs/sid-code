@@ -206,6 +206,108 @@ export function scanUnfinishedSidechains(sessionId: string): UnfinishedSidechain
   return result;
 }
 
+/** 重建出的 sidechain 对话（供 resume 续跑用）。 */
+export interface ReconstructedSidechain {
+  /** 重建后的线性消息历史（已过滤孤儿 thinking / 未解析 tool_use，保证可安全续跑）。 */
+  messages: { role: "user" | "assistant"; content: ContentBlock[] }[];
+  /** sidechain_start 里记录的 agentType（缺失为空串）。 */
+  agentType: string;
+  /** 是否已正常结束（末尾有 sidechain_end）。 */
+  ended: boolean;
+}
+
+/**
+ * P2-3：从 sidechain JSONL 重建子代理的完整对话历史，供 resume 在完整上下文上续跑。
+ *
+ * 读 `<sessionId>-<agentId>.jsonl`，按写入顺序还原 message 记录，并做两步清洗（对齐 CC
+ * filterOrphanedThinkingOnlyMessages / filterUnresolvedToolUses）：
+ *   1. 过滤「只含 thinking 且无实质内容」的孤儿 assistant 消息——续跑时 thinking 无意义且
+ *      可能破坏 provider 的 thinking 契约。
+ *   2. 过滤末尾「未被 tool_result 解析的 tool_use」——续接新 user 消息前，悬空 tool_use 会
+ *      让 provider 报「tool_use 无对应 tool_result」。
+ *
+ * transcript 不存在 / 空 / 全损坏时返回 null（调用方 fail-open 降级到轻量续传）。
+ *
+ * @param sessionId 主会话 id
+ * @param agentId   子代理 id（= 执行时的 taskId）
+ */
+export function reconstructSidechainMessages(
+  sessionId: string,
+  agentId: string,
+): ReconstructedSidechain | null {
+  const dir = resolveSessionDirForSidechain(sessionId);
+  const filePath = join(dir, sidechainFileName(sessionId, agentId));
+  if (!existsSync(filePath)) return null;
+
+  let lines: string[];
+  try {
+    if (statSync(filePath).size === 0) return null;
+    lines = readFileSync(filePath, "utf-8").trim().split("\n").filter(Boolean);
+  } catch {
+    return null;
+  }
+  if (lines.length === 0) return null;
+
+  const raw: { role: "user" | "assistant" | "tool"; content: ContentBlock[] }[] = [];
+  let agentType = "";
+  let ended = false;
+  for (const line of lines) {
+    let rec: SidechainRecord;
+    try {
+      rec = JSON.parse(line) as SidechainRecord;
+    } catch {
+      continue; // 跳过损坏行
+    }
+    if (rec.type === "sidechain_start") agentType = rec.agentType;
+    else if (rec.type === "sidechain_end") ended = true;
+    else if (rec.type === "message" && Array.isArray(rec.content)) {
+      raw.push({ role: rec.role, content: rec.content });
+    }
+  }
+  if (raw.length === 0) return null;
+
+  // tool 角色消息在 provider 侧属 user 轮（tool_result 载体），归一到 user。
+  const normalized = raw.map((m) => ({
+    role: (m.role === "assistant" ? "assistant" : "user") as "user" | "assistant",
+    content: m.content,
+  }));
+
+  // 清洗 1：丢弃只含 thinking / 空内容的孤儿 assistant 消息。
+  const noOrphanThinking = normalized.filter((m) => {
+    if (m.role !== "assistant") return true;
+    const hasSubstantive = m.content.some((b: any) => {
+      const t = b?.type;
+      return t && t !== "thinking" && t !== "redacted_thinking";
+    });
+    return hasSubstantive;
+  });
+
+  // 清洗 2：收集所有已解析的 tool_use id（有对应 tool_result 的），剔除悬空 tool_use。
+  const resolvedIds = new Set<string>();
+  for (const m of noOrphanThinking) {
+    for (const b of m.content as any[]) {
+      if (b?.type === "tool_result" && b.tool_use_id) resolvedIds.add(b.tool_use_id);
+    }
+  }
+  const cleaned = noOrphanThinking
+    .map((m) => {
+      if (m.role !== "assistant") return m;
+      const content = (m.content as any[]).filter((b) => b?.type !== "tool_use" || resolvedIds.has(b.id));
+      return { role: m.role, content };
+    })
+    // 清洗后可能出现空 content 的 assistant 消息，剔除。
+    .filter((m) => Array.isArray(m.content) && m.content.length > 0);
+
+  if (cleaned.length === 0) return null;
+
+  // provider 契约：首条必须是 user。若清洗后以 assistant 开头，前置一条占位 user。
+  if (cleaned[0]!.role !== "user") {
+    cleaned.unshift({ role: "user", content: [{ type: "text", text: "(接续之前的子代理任务)" } as ContentBlock] });
+  }
+
+  return { messages: cleaned, agentType, ended };
+}
+
 /**
  * 删除指定目录下某主会话名下所有 sidechain 文件。
  * 返回删除的文件数。失败静默（best-effort 清理）。

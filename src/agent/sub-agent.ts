@@ -110,6 +110,11 @@ export interface SubAgentTask {
    *  存在时子代理不从空上下文起步，而是接续这段父对话历史（prompt cache 友好），
    *  适合"接着主对话往下深钻某个分支"的子任务。对标 cc forkSubagent。 */
   forkMessages?: { role: string; content: ContentBlock[] }[];
+  /** P1-3：额外消息拉取回调（swarm 团队成员用）。每轮开始时调用，返回的字符串作为
+   *  user 消息注入子代理上下文——team.ts 用它把成员 mailbox 里的未读消息（来自 leader/peer）
+   *  drain 出来，实现真正的双向通信。与 message-queue 的 drainAgentMessages 并列消费，
+   *  互不干扰。缺省时不影响任何行为（向后兼容）。 */
+  drainInbox?: () => string[];
 }
 
 /** P2-2：计算子代理默认 maxTurns（未显式指定 task.maxTurns 时）。
@@ -164,6 +169,7 @@ async function enhanceSubAgentPrompt(
   preferredLanguage?: "zh" | "en",
   workingDir?: string,
   agentType?: string,
+  skills?: string[],
 ): Promise<string> {
   const notes: string[] = [];
 
@@ -209,6 +215,18 @@ async function enhanceSubAgentPrompt(
     );
   }
 
+  // P1-1：预加载技能段（对齐 CC §11.8 角色链）。放在语言铁律之后、env details 之前，
+  // 与 agent memory 注入并列。skill 不存在时内部 warn 跳过，返回空串（向后兼容）。
+  let skillSection = "";
+  if (skills && skills.length > 0) {
+    try {
+      const { buildSkillPreloadSection } = await import("./skill-preload.ts");
+      skillSection = await buildSkillPreloadSection(skills, agentType);
+    } catch {
+      // 技能预加载失败不阻断子代理启动
+    }
+  }
+
   // G13：按 agent 类型注入历史积累记忆（跨会话领域经验）。
   // 无该类型记忆时返回空串，行为与改动前一致（向后兼容）。
   let agentMemorySection = "";
@@ -221,7 +239,10 @@ async function enhanceSubAgentPrompt(
     }
   }
 
-  const enhanced = `${basePrompt}\n\n---\n\n${notes.join("\n")}`;
+  // 组装顺序：base prompt → 预加载技能（语言铁律后、env 前）→ notes（含语言/环境）→ agent memory。
+  let enhanced = basePrompt;
+  if (skillSection) enhanced += `\n\n---\n\n${skillSection}`;
+  enhanced += `\n\n---\n\n${notes.join("\n")}`;
   return agentMemorySection ? `${enhanced}\n\n${agentMemorySection}` : enhanced;
 }
 
@@ -938,7 +959,10 @@ export class SubAgent {
       sidechain?.start(task.type, task.description, this.modelOverride || this.model);
 
       const basePrompt = getSystemPrompt(task.type);
-      let systemPrompt = await enhanceSubAgentPrompt(basePrompt, this.language, process.cwd(), task.type);
+      // P1-1：解析 agent 定义拿到 skills（预加载技能）。resolveAgent 覆盖 built-in + custom + plugin。
+      // 复用到下方 tool 过滤（agentDef.tools/disallowedTools），避免重复解析。
+      const agentDef = resolveAgent(task.type);
+      let systemPrompt = await enhanceSubAgentPrompt(basePrompt, this.language, process.cwd(), task.type, agentDef?.skills);
 
       // M2(Dynamic Workflows): 带 schema 时,系统提示追加结构化输出强制段
       let structuredTool: StructuredOutputTool | undefined;
@@ -967,7 +991,7 @@ export class SubAgent {
       // 区分内置类型 vs 动态(自定义/插件)类型：
       // 内置走 tool-filter 的角色白名单(builtInType)；动态类型该白名单查不到，
       // 改用其 AgentDefinition 声明的 tools/disallowedTools(对标 cc resolveAgentTools)。
-      const agentDef = resolveAgent(task.type);
+      // agentDef 已在上方（P1-1 skills 解析处）解析，此处复用。
       const isBuiltInType = task.type in BUILTIN_AGENTS;
       const filteredTools = filterToolsForAgent(allTools, {
         isBuiltIn: isBuiltInType,
@@ -1050,6 +1074,19 @@ export class SubAgent {
               ctxMgr!.addMessage({
                 role: "user",
                 content: [{ type: "text", text: `<system-reminder>\n[主代理消息] ${msg}\n</system-reminder>` }],
+              });
+            }
+          }
+          // P1-3：消费 swarm mailbox 里的未读消息（来自 leader / peer 成员）。
+          // 与主代理消息队列并列 drain，从第 2 轮起检查——首轮已带初始任务，无需重复注入。
+          if (task.drainInbox && turn > 1) {
+            let inboxMsgs: string[] = [];
+            try { inboxMsgs = task.drainInbox(); } catch { /* drain 失败不阻断本轮 */ }
+            for (const msg of inboxMsgs) {
+              log.info("SUBAGENT", `[${task.type}] 收到团队消息: ${msg.slice(0, 100)}`);
+              ctxMgr!.addMessage({
+                role: "user",
+                content: [{ type: "text", text: `<system-reminder>\n[团队消息] ${msg}\n</system-reminder>` }],
               });
             }
           }

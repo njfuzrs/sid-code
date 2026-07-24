@@ -12,6 +12,7 @@ import { getLogger } from "../debug/logger.ts";
 import { memoize } from "../utils/memoize.ts";
 import { parseFrontmatter } from "../extension/frontmatter.ts";
 import type { CustomAgentDefinition } from "../agent/custom.ts";
+import { parseListField, parseAgentExtendedFrontmatter } from "../agent/custom.ts";
 import { registerPluginCache } from "./caches.ts";
 import { loadAllPluginsCacheOnly } from "./loader.ts";
 import type { LoadedPlugin } from "./types.ts";
@@ -32,17 +33,6 @@ function getAgentName(filePath: string, baseDir: string, pluginName: string): st
   const rel = base.replace(/\.md$/, "");
   const namespace = rel.split(sep).join(":");
   return `${pluginName}:${namespace}`;
-}
-
-/** 解析 frontmatter.tools（逗号分隔字符串或数组） */
-function parseTools(rawTools: unknown): string[] {
-  if (typeof rawTools === "string") {
-    return rawTools.split(",").map((s) => s.trim()).filter(Boolean);
-  }
-  if (Array.isArray(rawTools)) {
-    return rawTools.map(String);
-  }
-  return [];
 }
 
 async function scanAgentFiles(
@@ -92,10 +82,12 @@ async function loadAgentFile(
     out.push({
       name,
       description: (frontmatter.description as string) || (frontmatter.whenToUse as string) || "",
-      tools: parseTools(frontmatter.tools),
+      tools: parseListField(frontmatter.tools),
       prompt: body,
       source: "user", // 插件 Agent 视为 user 级来源（ExtensionSource 无 plugin 值）
       filePath,
+      // P0-2/P1-1/P1-2/P2-1：消费扩展 frontmatter 字段（与自定义 agent 同源解析）。
+      ...parseAgentExtendedFrontmatter(frontmatter, name),
     });
   } catch (err: any) {
     getLogger().warn("PLUGIN", `加载插件 Agent 失败 ${filePath}: ${err.message}`);
