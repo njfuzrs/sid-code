@@ -14,8 +14,8 @@
  */
 
 import { join, dirname } from "path";
-import { homedir } from "os";
-import { existsSync, watch } from "fs";
+import { homedir, platform } from "os";
+import { existsSync, watch, realpathSync } from "fs";
 import type { FSWatcher } from "fs";
 import { getLogger } from "../debug/logger.ts";
 import { sidHomePath } from "./paths.ts";
@@ -39,8 +39,74 @@ const CLAUDE_LOCAL_FILES = [
 /** 项目规则目录（.claude/rules/*.md） */
 const CLAUDE_RULES_DIR = ".claude/rules";
 
+/**
+ * M6：用户级规则目录候选（~/.claude/rules 优先，回退 ~/.sid-code/rules）。
+ * 优先级介于 user 层（全局 CLAUDE.md）之后、project 层之前。
+ */
+function userRulesDirs(): string[] {
+  return [
+    join(homedir(), ".claude", "rules"),
+    join(homedir(), ".sid-code", "rules"),
+  ];
+}
+
+/**
+ * M8：企业级 managed 目录候选（按平台）。放合并链最前（最高优先级基座）。
+ * - macOS: /Library/Application Support/SidCode
+ * - Linux: /etc/sid-code
+ * - Windows: %PROGRAMDATA%\SidCode（回退 C:\ProgramData\SidCode）
+ */
+function managedRootDirs(): string[] {
+  const p = platform();
+  if (p === "darwin") return ["/Library/Application Support/SidCode"];
+  if (p === "win32") {
+    const programData = process.env.PROGRAMDATA || "C:\\ProgramData";
+    return [join(programData, "SidCode")];
+  }
+  // linux 及其它类 unix
+  return ["/etc/sid-code"];
+}
+
+/**
+ * M9：安全解析路径——若为 symlink 则跟随到 realpath，断链/不存在时回退原路径。
+ * 用于规则目录扫描与循环检测，防 symlink 环 + 指向意外目标。
+ */
+function safeResolvePath(absolutePath: string): string {
+  // 直接 realpathSync：解析路径中**所有**层级的 symlink（含父目录），
+  // 得到唯一 canonical 路径，作为去重键最可靠（symlink 与真身归一）。
+  try {
+    return realpathSync(absolutePath);
+  } catch {
+    // 文件不存在 / 断链 / 权限 → 回退原路径（不抛异常）
+    return absolutePath;
+  }
+}
+
 /** frontmatter 块匹配（文件开头的 --- ... ---） */
 const RULES_FRONTMATTER_RE = /^---\s*\n([\s\S]*?)\n---\s*\n?/;
+
+// ─── M4：外部导入跳过收集器 ───
+// processImports 遇到未批准的外部导入时经 onExternalSkipped 回调这里暂存。
+// 上层（app 启动流程）加载完 CLAUDE.md 后调 consumeSkippedExternalImports()
+// 判断是否需要弹审批对话框 / 注入 system-reminder。
+const _skippedExternalImports = new Set<string>();
+
+/** 记录一个被跳过的外部导入路径（M4）。 */
+export function recordSkippedExternalImport(absolutePath: string): void {
+  _skippedExternalImports.add(absolutePath);
+}
+
+/** 读取并清空被跳过的外部导入列表（M4）。 */
+export function consumeSkippedExternalImports(): string[] {
+  const list = [..._skippedExternalImports];
+  _skippedExternalImports.clear();
+  return list;
+}
+
+/** 只读快照：当前是否有被跳过的外部导入（不清空）。 */
+export function hasSkippedExternalImports(): boolean {
+  return _skippedExternalImports.size > 0;
+}
 
 // ─── 结构化解析 ───
 
@@ -80,7 +146,7 @@ export interface ProjectRules {
    */
   paths?: string[];
   /** 规则层级（用于调试与优先级展示） */
-  layer?: "user" | "project" | "subdir" | "rulesDir" | "local";
+  layer?: "managed" | "user" | "userRulesDir" | "project" | "subdir" | "rulesDir" | "local";
 }
 
 /**
@@ -319,6 +385,51 @@ export async function findCLAUDEmd(startDir: string): Promise<string | null> {
   return null;
 }
 
+/**
+ * M7：向上遍历父目录链，收集**所有**命中的 CLAUDE.md（不 early-return）。
+ * 返回顺序：根（最浅）在前 → cwd（最深）在后，使越深的目录优先级越高（后者覆盖前者）。
+ *
+ * 上界：遍历到文件系统根或家目录为止（避免扫到无关的系统上层目录）。
+ * 每一层只取第一个命中的候选文件名（同层多个候选取优先级最高的）。
+ * 用 realpath 去重，防 symlink 使同一文件重复计入。
+ */
+export async function findCLAUDEmdChain(startDir: string): Promise<string[]> {
+  const log = getLogger();
+  const chain: string[] = [];
+  const seen = new Set<string>();
+  const home = homedir();
+  let currentDir = startDir;
+  const fsRoot = "/";
+
+  // 上界：家目录的父目录（含家目录本身仍遍历），或文件系统根。
+  const homeParent = dirname(home);
+
+  while (true) {
+    for (const filename of CLAUDE_MD_FILES) {
+      const candidatePath = join(currentDir, filename);
+      if (existsSync(candidatePath)) {
+        const real = safeResolvePath(candidatePath);
+        if (!seen.has(real)) {
+          seen.add(real);
+          chain.push(candidatePath);
+          log.debug("RULES", `父链命中 CLAUDE.md: ${candidatePath}`);
+        }
+        break; // 同层只取第一个命中
+      }
+    }
+
+    // 到达上界则停：文件系统根、或家目录父级（不再往系统上层扫）
+    if (currentDir === fsRoot || currentDir === home || currentDir === homeParent) break;
+    const parentDir = dirname(currentDir);
+    if (parentDir === currentDir) break;
+    currentDir = parentDir;
+  }
+
+  // 反转：根在前、cwd 在后（越深优先级越高）
+  chain.reverse();
+  return chain;
+}
+
 /** 查找全局 CLAUDE.md */
 export function findGlobalCLAUDEmd(): string | null {
   const globalPath = join(homedir(), ".claude", "CLAUDE.md");
@@ -326,6 +437,23 @@ export function findGlobalCLAUDEmd(): string | null {
   // 也检查 sid-code 自己的配置目录
   const sidCodePath = sidHomePath("CLAUDE.md");
   if (existsSync(sidCodePath)) return sidCodePath;
+  return null;
+}
+
+/**
+ * M8：查找企业级 managed CLAUDE.md（按平台系统级目录）。
+ * 最高优先级——放合并链最前作为组织策略基座（用户/项目无法覆盖其存在，但可累积）。
+ * 返回第一个存在的 <managedRoot>/CLAUDE.md。
+ */
+export function findManagedCLAUDEmd(): string | null {
+  const log = getLogger();
+  for (const root of managedRootDirs()) {
+    const candidate = join(root, "CLAUDE.md");
+    if (existsSync(candidate)) {
+      log.info("RULES", `找到企业级 managed CLAUDE.md: ${candidate}`);
+      return candidate;
+    }
+  }
   return null;
 }
 
@@ -339,7 +467,19 @@ async function loadAndParse(filePath: string, projectRoot?: string): Promise<Pro
     // 处理 @import 指令
     const { processImports } = await import("./import-processor.ts");
     const allowedDirs = projectRoot ? [projectRoot, homedir()] : [homedir()];
-    content = await processImports(content, filePath, { allowedDirectories: allowedDirs });
+    // M4：外部导入（项目根之外，含 ~/）需批准。读 project 级批准位；未批准时外部导入被跳过。
+    // 被跳过的外部导入经模块级收集器暂存，供上层注入 system-reminder 提示用户批准。
+    let externalApproved = false;
+    try {
+      const { getClaudeMdExternalImportsApproved } = await import("./app-config.ts");
+      externalApproved = getClaudeMdExternalImportsApproved(projectRoot) === true;
+    } catch { /* 读批准位失败 → 保守按未批准处理 */ }
+    content = await processImports(content, filePath, {
+      allowedDirectories: allowedDirs,
+      projectRoot,
+      externalApproved,
+      onExternalSkipped: (p) => recordSkippedExternalImport(p),
+    });
 
     log.debug("RULES", `加载 CLAUDE.md: ${filePath} (${content.length} 字符)`);
     return parseClaudeMd(content, filePath);
@@ -423,31 +563,83 @@ async function findProjectCLAUDEmdFiles(projectRoot: string): Promise<string[]> 
 }
 
 /**
- * 加载 .claude/rules/ 目录下的所有 *.md 规则文件。
- * 按文件名排序，逐个解析（各自可带 frontmatter paths 条件）。
+ * 通用规则目录加载器：扫描 dir 下所有 *.md，按文件名排序逐个解析。
+ * M9：跟随 symlink（Glob followSymlinks）+ realpath 去重防环——同一 realpath 只加载一次。
+ *
+ * @param dir         规则目录绝对路径
+ * @param layer       赋给加载结果的 layer 标记
+ * @param parseRoot   传给 loadAndParse 的 projectRoot（决定 @import 的 allowedDirs / 外部判定）
+ * @param seen        跨调用共享的 realpath 去重集合（防同一文件经不同 symlink 重复加载）
  */
-async function loadRulesDir(projectRoot: string): Promise<ProjectRules[]> {
+async function loadRulesFromDir(
+  dir: string,
+  layer: NonNullable<ProjectRules["layer"]>,
+  parseRoot: string | undefined,
+  seen: Set<string>,
+): Promise<ProjectRules[]> {
   const log = getLogger();
-  const rulesDir = join(projectRoot, CLAUDE_RULES_DIR);
-  if (!existsSync(rulesDir)) return [];
+  if (!existsSync(dir)) return [];
 
   const out: ProjectRules[] = [];
   try {
     const entries = await Array.fromAsync(
-      new Bun.Glob("**/*.md").scan({ cwd: rulesDir, onlyFiles: true }),
+      // followSymlinks:true —— 跟随目录/文件 symlink（对齐 CC safeResolvePath 语义）
+      new Bun.Glob("**/*.md").scan({ cwd: dir, onlyFiles: true, followSymlinks: true }),
     );
     entries.sort();
     for (const rel of entries) {
-      const full = join(rulesDir, rel);
-      const rules = await loadAndParse(full, projectRoot);
+      const full = join(dir, rel);
+      // M9：realpath 归一去重，防 symlink 环 / 重复指向同一文件
+      const real = safeResolvePath(full);
+      if (seen.has(real)) {
+        log.debug("RULES", `规则文件已加载（symlink 去重），跳过: ${full}`);
+        continue;
+      }
+      seen.add(real);
+      const rules = await loadAndParse(full, parseRoot);
       if (rules) {
-        rules.layer = "rulesDir";
+        rules.layer = layer;
         out.push(rules);
-        log.debug("RULES", `加载规则目录文件: ${full}`);
+        log.debug("RULES", `加载规则目录文件[${layer}]: ${full}`);
       }
     }
   } catch (err) {
-    log.debug("RULES", `加载 .claude/rules/ 失败: ${rulesDir}`, err);
+    log.debug("RULES", `加载规则目录失败: ${dir}`, err);
+  }
+  return out;
+}
+
+/**
+ * 加载项目级 .claude/rules/ 目录下的所有 *.md 规则文件（rulesDir 层）。
+ */
+async function loadRulesDir(projectRoot: string, seen: Set<string>): Promise<ProjectRules[]> {
+  return loadRulesFromDir(join(projectRoot, CLAUDE_RULES_DIR), "rulesDir", projectRoot, seen);
+}
+
+/**
+ * M6：加载用户级规则目录（~/.claude/rules 优先，回退 ~/.sid-code/rules）。
+ * layer=userRulesDir，优先级在 user 层之后、project 层之前。
+ * 两个候选都存在时都加载（去重由 seen 保证）。
+ */
+async function loadUserRulesDir(seen: Set<string>): Promise<ProjectRules[]> {
+  const out: ProjectRules[] = [];
+  for (const dir of userRulesDirs()) {
+    // parseRoot 传 homedir：允许 @import 家目录内文件（视作内部，不触发外部审批）
+    const rules = await loadRulesFromDir(dir, "userRulesDir", homedir(), seen);
+    out.push(...rules);
+  }
+  return out;
+}
+
+/**
+ * M8：加载企业级 managed 规则目录（<managedRoot>/rules/*.md）。
+ * layer=managed，最高优先级（放合并链最前）。
+ */
+async function loadManagedRulesDir(seen: Set<string>): Promise<ProjectRules[]> {
+  const out: ProjectRules[] = [];
+  for (const root of managedRootDirs()) {
+    const rules = await loadRulesFromDir(join(root, "rules"), "managed", undefined, seen);
+    out.push(...rules);
   }
   return out;
 }
@@ -487,6 +679,23 @@ export async function loadAllCLAUDEmd(
 ): Promise<ProjectRules | null> {
   const log = getLogger();
   const activeFiles = opts?.activeFiles ?? [];
+  // M9：跨所有规则目录/文件共享的 realpath 去重集合，防 symlink 重复加载 / 环。
+  const seenRealPaths = new Set<string>();
+
+  // 0. M8：加载企业级 managed CLAUDE.md（最高优先级基座，放合并链最前）
+  const managedPath = findManagedCLAUDEmd();
+  let managedRules: ProjectRules | null = null;
+  if (managedPath) {
+    managedRules = await loadAndParse(managedPath);
+    if (managedRules) {
+      managedRules.layer = "managed";
+      seenRealPaths.add(safeResolvePath(managedPath));
+      log.info("RULES", `加载企业级 managed 规则: ${managedPath}`);
+    }
+  }
+
+  // 0.5 M8：加载企业级 managed 规则目录（<managedRoot>/rules/*.md）
+  const managedRulesDirRules = await loadManagedRulesDir(seenRealPaths);
 
   // 1. 加载全局 CLAUDE.md（User 层）
   const globalPath = findGlobalCLAUDEmd();
@@ -495,30 +704,43 @@ export async function loadAllCLAUDEmd(
     globalRules = await loadAndParse(globalPath);
     if (globalRules) {
       globalRules.layer = "user";
+      seenRealPaths.add(safeResolvePath(globalPath));
       log.info("RULES", `加载全局规则: ${globalPath}`);
     }
   }
 
-  // 2. 加载项目根 CLAUDE.md（Project 层）
-  const projectPath = await findCLAUDEmd(startDir);
-  let projectRules: ProjectRules | null = null;
-  if (projectPath) {
-    projectRules = await loadAndParse(projectPath, startDir);
-    if (projectRules) {
-      projectRules.layer = "project";
-      log.info("RULES", `加载项目规则: ${projectPath}`);
+  // 1.5 M6：加载用户级规则目录（~/.claude/rules 或 ~/.sid-code/rules），userRulesDir 层
+  const userRulesDirRules = await loadUserRulesDir(seenRealPaths);
+
+  // 2. M7：加载父目录链上**所有** CLAUDE.md（根在前、cwd 在后，越深优先级越高）
+  //    取代原来只加载最近一个根的做法。
+  const chain = await findCLAUDEmdChain(startDir);
+  // 过滤掉已被 managed/global 加载的（realpath 去重）
+  const chainFiltered = chain.filter((p) => !seenRealPaths.has(safeResolvePath(p)));
+  // 项目根 = 父链最深一层所在目录（无命中时回退 startDir），供子目录/rulesDir 定位
+  const projectPath = chainFiltered.length > 0 ? chainFiltered[chainFiltered.length - 1] : null;
+  const projectRoot = projectPath ? dirname(projectPath) : startDir;
+
+  let projectChainRules: ProjectRules | null = null;
+  for (const p of chainFiltered) {
+    seenRealPaths.add(safeResolvePath(p));
+    const rules = await loadAndParse(p, projectRoot);
+    if (rules) {
+      // 最深一层标 project，其余父层标 subdir（语义：父层是外围上下文）
+      rules.layer = p === projectPath ? "project" : "subdir";
+      log.info("RULES", `加载父链规则[${rules.layer}]: ${p}`);
+      projectChainRules = projectChainRules ? mergeProjectRules(projectChainRules, rules) : rules;
     }
   }
 
   // 3. 查找并加载子目录 CLAUDE.md（Subdir 层）
-  const projectRoot = projectPath ? dirname(projectPath) : startDir;
   const subFiles = await findProjectCLAUDEmdFiles(projectRoot);
-
-  // 过滤掉已经加载的根文件
-  const subFilesFiltered = subFiles.filter(f => f !== projectPath && f !== globalPath);
+  // 过滤掉已加载的（父链 / 全局 / managed，realpath 去重）
+  const subFilesFiltered = subFiles.filter((f) => !seenRealPaths.has(safeResolvePath(f)));
 
   let subRules: ProjectRules | null = null;
   for (const subFile of subFilesFiltered) {
+    seenRealPaths.add(safeResolvePath(subFile));
     const rules = await loadAndParse(subFile, projectRoot);
     if (rules) {
       rules.layer = "subdir";
@@ -528,15 +750,20 @@ export async function loadAllCLAUDEmd(
   }
 
   // 4. 加载 .claude/rules/ 目录规则（rulesDir 层）
-  const rulesDirRules = await loadRulesDir(projectRoot);
+  const rulesDirRules = await loadRulesDir(projectRoot, seenRealPaths);
 
   // 5. 加载本地私有规则（Local 层，优先级最高）
   const localRules = await loadLocalRules(projectRoot);
 
   // 6. 按优先级链合并，frontmatter paths 不匹配的规则被跳过
+  //    顺序（后者覆盖/累积在前者之上）：
+  //    managed → user → userRulesDir → 父链(project+subdir) → 子目录 → rulesDir → local
   const ordered: (ProjectRules | null)[] = [
+    managedRules,
+    ...managedRulesDirRules,
     globalRules,
-    projectRules,
+    ...userRulesDirRules,
+    projectChainRules,
     subRules,
     ...rulesDirRules,
     localRules,
@@ -584,6 +811,21 @@ export function watchCLAUDEmd(
 ): void {
   const log = getLogger();
 
+  // M10：变更去抖——目录级监听 fs.watch 对单次保存可能触发多个事件，
+  // 且规则重建（重读盘 + 重展开 @import）较重，200ms 去抖合并抖动。
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  const fireChange = (path: string) => {
+    log.info("RULES", `规则变更检测: ${path}`);
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      debounceTimer = null;
+      // 清除系统提示词缓存
+      clearPromptCache();
+      // 通知回调
+      onChange?.(path);
+    }, 200);
+  };
+
   // 收集需要监听的文件
   const filesToWatch: string[] = [];
 
@@ -595,26 +837,50 @@ export function watchCLAUDEmd(
   const globalPath = findGlobalCLAUDEmd();
   if (globalPath) filesToWatch.push(globalPath);
 
-  if (filesToWatch.length === 0) {
-    log.debug("RULES", "无 CLAUDE.md 文件需要监听");
+  // M8：企业级 managed CLAUDE.md
+  const managedPath = findManagedCLAUDEmd();
+  if (managedPath) filesToWatch.push(managedPath);
+
+  // M10：目录级监听——.claude/rules/ + 用户级 rules 目录。
+  // 目录内 *.md 增删改都触发重建（fs.watch 目录级，recursive 尽力而为）。
+  const projectRoot = projectPath ? dirname(projectPath) : startDir;
+  const dirsToWatch: string[] = [join(projectRoot, CLAUDE_RULES_DIR), ...userRulesDirs()];
+
+  if (filesToWatch.length === 0 && dirsToWatch.every((d) => !existsSync(d))) {
+    log.debug("RULES", "无 CLAUDE.md / rules 目录需要监听");
     return;
   }
 
   for (const filePath of filesToWatch) {
     try {
       const watcher = watch(filePath, (eventType) => {
-        if (eventType === "change") {
-          log.info("RULES", `CLAUDE.md 变化检测: ${filePath}`);
-          // 清除系统提示词缓存
-          clearPromptCache();
-          // 通知回调
-          onChange?.(filePath);
+        if (eventType === "change" || eventType === "rename") {
+          fireChange(filePath);
         }
       });
       activeWatchers.push(watcher);
-      log.debug("RULES", `开始监听: ${filePath}`);
+      log.debug("RULES", `开始监听文件: ${filePath}`);
     } catch (err) {
       log.warn("RULES", `监听 CLAUDE.md 失败: ${filePath}`, err);
+    }
+  }
+
+  // M10：监听 rules 目录（仅对 .md 变更触发）
+  for (const dir of dirsToWatch) {
+    if (!existsSync(dir)) continue;
+    try {
+      // recursive:true 在 macOS/Windows 支持；Linux 尽力而为（顶层 .md 仍可监听）
+      const watcher = watch(dir, { recursive: true }, (eventType, filename) => {
+        // 仅 .md 文件变更才重建（忽略临时文件 / 非规则文件）
+        if (filename && !String(filename).endsWith(".md")) return;
+        if (eventType === "change" || eventType === "rename") {
+          fireChange(join(dir, String(filename ?? "")));
+        }
+      });
+      activeWatchers.push(watcher);
+      log.debug("RULES", `开始监听规则目录: ${dir}`);
+    } catch (err) {
+      log.warn("RULES", `监听规则目录失败: ${dir}`, err);
     }
   }
 }

@@ -339,6 +339,24 @@ export class MemoryStore {
     return [...merged.values()].sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
+  /**
+   * M5：解析某条记忆对应的 .md 文件绝对路径（供 /memory 面板用编辑器打开）。
+   * 未找到（key 不存在或无文件映射）返回 null。
+   */
+  async resolveEntryPath(key: string, scope?: "global" | "project"): Promise<string | null> {
+    await this.load();
+    const tryResolve = (files: Map<string, string>, dir: string | null): string | null => {
+      if (!dir) return null;
+      const fn = files.get(key);
+      return fn ? join(dir, fn) : null;
+    };
+    // 优先按传入 scope；未指定时项目覆盖全局（与 get 一致）
+    if (scope === "global") return tryResolve(this.globalFiles, this.globalDir);
+    if (scope === "project") return tryResolve(this.projectFiles, this.projectDir);
+    return tryResolve(this.projectFiles, this.projectDir)
+      ?? tryResolve(this.globalFiles, this.globalDir);
+  }
+
   /** 搜索记忆（key 或 value 含关键词） */
   async search(keyword: string): Promise<MemoryEntry[]> {
     const all = await this.list();

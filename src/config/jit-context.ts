@@ -86,8 +86,19 @@ export class JitContextManager {
 
             // 处理 @import 指令
             const { processImports } = await import("./import-processor.ts");
+            // M4：JIT 子目录 CLAUDE.md 的 allowedDirectories 仅限项目根，外部导入天然不可达；
+            // 仍显式传 projectRoot + 批准位以对齐主加载路径的语义。
+            let externalApproved = false;
+            try {
+              const { getClaudeMdExternalImportsApproved } = await import("./app-config.ts");
+              externalApproved = getClaudeMdExternalImportsApproved(projectRoot) === true;
+            } catch { /* 保守按未批准 */ }
+            const { recordSkippedExternalImport } = await import("./rules.ts");
             const processedContent = await processImports(content, candidatePath, {
               allowedDirectories: [projectRoot],
+              projectRoot,
+              externalApproved,
+              onExternalSkipped: (p) => recordSkippedExternalImport(p),
             });
 
             foundContexts.push({

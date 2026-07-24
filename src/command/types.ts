@@ -56,6 +56,13 @@ export interface AppContext {
   setVimMode?: (enabled: boolean, persist?: boolean) => void;
   /** 读取当前 Vim 输入模式开关（/vim 无参 toggle 时用）。 */
   getVimMode?: () => boolean;
+  /**
+   * M2：auto-memory 后台提取开关 setter（/memory auto 用）。
+   * 运行时热接线/断线后台提取；persist=true 时写 settings.json autoMemory。
+   */
+  setAutoMemory?: (enabled: boolean, persist?: boolean) => void | Promise<void>;
+  /** M2：读取当前 auto-memory 运行时启用态（/memory auto status 用）。 */
+  getAutoMemoryState?: () => { enabled: boolean; source: "env" | "settings" | "default" };
   /** 自定义状态栏 setter（/statusline 用，P1-5）。config=undefined 禁用；persist=true 写 settings.json。 */
   setStatusLine?: (config: import("../ui/statusline/run-statusline.ts").StatusLineConfig | undefined, persist?: boolean) => void;
   /** 读取当前自定义状态栏配置（/statusline 展示/toggle 用）。 */
@@ -121,7 +128,8 @@ export type DialogType =
   | "help"
   | "export"
   | "context"
-  | "rewind";
+  | "rewind"
+  | "claude-md-external-imports";
 
 /** 命令执行结果类型 */
 export type CommandResultKind =

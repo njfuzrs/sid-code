@@ -439,6 +439,10 @@ export function generateTodoListAttachment(todoList: string): Attachment {
 /**
  * 生成记忆附件
  * 将全局/项目双层记忆注入系统提示词
+ *
+ * @deprecated M11：记忆已统一走 memorySystemPrompt 索引指针路径（core 区注入
+ * MEMORY.md 索引，模型按需 Read 全文），不再注入本 <memory> 全文摘要附件。
+ * 保留导出仅为向后兼容，buildSystemPrompt 已不再调用。
  */
 export function generateMemoryAttachment(memorySummary: string): Attachment {
   return {

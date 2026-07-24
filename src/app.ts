@@ -281,6 +281,8 @@ export class App {
   private extractMemories: import("./memory/extract/extractor.ts").ExtractMemoriesHandle | null = null;
   /** G10：autoDream 自主记忆巩固句柄（默认 null，仅 settings.autoDream 开启时接线） */
   private autoDream: import("./memory/dream/dream.ts").AutoDreamHandle | null = null;
+  /** M4：待审批的外部 @import 路径快照（启动加载 CLAUDE.md 时收集，供审批对话框展示）。 */
+  private pendingExternalImportPaths: string[] = [];
   /**
    * 推理强度运行时态（/effort 切换端）。undefined = auto（跟随模型默认）。
    * 与 config.permissionMode 同级——运行时可变，queryLoop 每轮经注入的 getter 取最新值。
@@ -1787,6 +1789,21 @@ export class App {
           }
         }
 
+        // M4：外部导入审批。若加载中遇到未批准的外部 @import，且用户尚未做过决定
+        // （approval 位为 undefined），收集快照留待 TUI 就绪后弹审批对话框。
+        try {
+          const { consumeSkippedExternalImports } = await import("./config/rules.ts");
+          const { getClaudeMdExternalImportsApproved } = await import("./config/app-config.ts");
+          const skipped = consumeSkippedExternalImports();
+          const decided = getClaudeMdExternalImportsApproved(process.cwd()) !== undefined;
+          if (skipped.length > 0 && !decided) {
+            this.pendingExternalImportPaths = skipped;
+            log.info("APP", `检测到 ${skipped.length} 个未批准的外部 @import，待审批`);
+          }
+        } catch (e) {
+          log.warn("APP", `外部导入审批检测失败（不阻断）: ${(e as Error)?.message}`);
+        }
+
         // P1-UI：预填充 JIT 已加载文件列表，避免后续 discoverContext 重复注入首轮已含的 CLAUDE.md。
         // loadAllCLAUDEmd 加载了根 CLAUDE.md（+ 全局），JIT 不知道，首次触达任何 src/ 文件时会
         // 向上找到根 CLAUDE.md 再注入一次。预标记消除此重复。
@@ -1938,85 +1955,10 @@ export class App {
       log.warn("APP", `Session Memory 接线失败（不阻断，autoCompact 回退 LLM 摘要）: ${(e as Error)?.message}`);
     }
 
-    // 接线后台记忆提取子系统：每轮 end_turn 后 fire-and-forget 跑 forked agent，
-    // 从对话中提取值得长期记住的信息写入 MEMORY.md（互斥：主代理本轮已写记忆则跳过）。
-    //   - getMainContext 提供 ForkedAgentContext（共享主对话历史前缀，cache 友好）
-    //   - statefulTools 注入独立 FileReadTracker（缺口 A 隔离，不污染主代理缓存）
-    //   - canUseTool 把提取代理权限收窄到只读 + 仅能写 memoryDir
-    //   - appendSystemMessage 把"已保存 N 条记忆"回注主上下文，提示模型
-    // 失败不阻断启动：extractMemories 保持 null，主循环 extractMemories?.() 自动跳过。
-    try {
-      const { initExtractMemories } = await import("./memory/extract/extractor.ts");
-      const { createExtractPermissions } = await import("./memory/extract/permissions.ts");
-      const { ensureAutoMemPath } = await import("./memory/paths.ts");
-      const { createStatefulTools } = await import("./tool/stateful-tools.ts");
-      const { FileReadTracker } = await import("./tool/file-read-tracker.ts");
-      const memoryDir = ensureAutoMemPath(process.cwd());
-      this.extractMemories = initExtractMemories({
-        getMainContext: () => ({
-          systemPrompt: this.ctxMgr.getSystemPrompt(),
-          messages: this.ctxMgr.getMessages(),
-          provider: this.provider,
-          toolRegistry: this.toolRegistry,
-          model: this.config.model,
-          // FileReadTracker 隔离（缺口 A）：提取代理读文件用独立 tracker，
-          // 不污染主代理「先读后写」护栏。
-          statefulTools: createStatefulTools(new FileReadTracker()),
-        }),
-        memoryDir,
-        canUseTool: createExtractPermissions(memoryDir),
-        // 团队记忆启用时，提取 prompt 追加 team scope 的保守分流指引（比 claude-code
-        // 门槛更高：默认私有，仅显然的团队级约定才自动进 team）。未启用时只写私有。
-        teamMemoryEnabled: !!this.config.teamMemory?.enabled,
-        // 提取保存记忆后，把摘要回注主上下文（作为 system-reminder），让模型知晓已记忆。
-        appendSystemMessage: (msg) => {
-          try { this.ctxMgr.addMessage(msg as import("./llm/types.ts").Message); } catch { /* 回注失败不阻断 */ }
-        },
-      });
-      this.queryEngine.setExtractMemories(this.extractMemories);
-      // 会话关闭前 drain 进行中的提取，避免 fire-and-forget 的写入被强制退出截断。
-      try {
-        const { registerCleanup } = await import("./utils/graceful-shutdown.ts");
-        registerCleanup(() => this.extractMemories?.drainPending(5_000) ?? Promise.resolve());
-      } catch { /* drain 注册失败不阻断启动 */ }
-      log.info("APP", `后台记忆提取子系统已接线: ${memoryDir}`);
-
-      // G10：autoDream 自主记忆巩固（默认关闭，settings.autoDream 开启）。
-      // 复用提取子系统的 getMainContext + memoryDir + 权限（dream 代理同样只读 + 仅写 memoryDir）。
-      // 会话结束经三级 gate 判断是否跑后台巩固/剪枝，让记忆库不再只增不理。
-      if (this.config.autoDream) {
-        try {
-          const { initAutoDream } = await import("./memory/dream/dream.ts");
-          this.autoDream = initAutoDream({
-            getMainContext: () => ({
-              systemPrompt: this.ctxMgr.getSystemPrompt(),
-              messages: this.ctxMgr.getMessages(),
-              provider: this.provider,
-              toolRegistry: this.toolRegistry,
-              model: this.config.model,
-              statefulTools: createStatefulTools(new FileReadTracker()),
-            }),
-            memoryDir,
-            canUseTool: createExtractPermissions(memoryDir),
-            config: { enabled: true },
-          });
-          this.autoDream.recordSession();
-          const { registerCleanup } = await import("./utils/graceful-shutdown.ts");
-          registerCleanup(async () => {
-            // 会话关闭时尝试触发一次 dream，并 drain 进行中的巩固
-            await this.autoDream?.maybeDream();
-            await this.autoDream?.drainPending(8_000);
-          });
-          log.info("APP", "autoDream 自主记忆巩固已接线");
-        } catch (e) {
-          this.autoDream = null;
-          log.warn("APP", `autoDream 接线失败（不阻断）: ${(e as Error)?.message}`);
-        }
-      }
-    } catch (e) {
-      this.extractMemories = null;
-      log.warn("APP", `后台记忆提取接线失败（不阻断）: ${(e as Error)?.message}`);
-    }
+    // 接线后台记忆提取子系统 + autoDream。
+    // M2：auto-memory 开关门控（env SID_CODE_AUTO_MEMORY > settings autoMemory > 默认 true）。
+    // 实际接线委托给 wireExtractMemories()，以便 /memory auto 在运行时热接线/断线。
+    await this.wireExtractMemories();
 
     // 团队记忆同步（E.11 协作护城河）：注入运行时配置 + 启动 watcher（含初始同步）。
     // 仅在 teamMemory.enabled 且共享目录可用时实际启动；未启用时只注入配置（供
@@ -2067,11 +2009,23 @@ export class App {
         // 3. 重建系统提示词
         const { buildSystemPrompt } = await import("./config/system-prompt.ts");
         const { collectSkillListingEntries } = await import("./skill/tool.ts");
-        let memorySummary: string | undefined;
+        // M11：记忆走索引指针路径（memorySystemPrompt），不再用 <memory> 全文摘要。
+        let memorySystemPrompt: string | undefined;
         try {
           const { MemoryStore } = await import("./memory/store.ts");
+          const { buildMemorySystemPrompt } = await import("./memory/prompt.ts");
           const memStore = new MemoryStore(process.cwd());
-          memorySummary = await memStore.generateSummary() || undefined;
+          await memStore.load();
+          const indexContent = await memStore.getIndexContent();
+          let teamIndexContent: string | null = null;
+          try {
+            const { isTeamMemoryEnabled } = await import("./memory/team/paths.ts");
+            if (isTeamMemoryEnabled(this.config.teamMemory)) {
+              const { getTeamIndexContent } = await import("./memory/team/store.ts");
+              teamIndexContent = await getTeamIndexContent(process.cwd());
+            }
+          } catch { /* 团队索引注入失败不阻断 */ }
+          memorySystemPrompt = buildMemorySystemPrompt(indexContent, teamIndexContent) || undefined;
         } catch { /* 忽略 */ }
 
         // G12：CLAUDE.md 重建路径同样刷新输出风格
@@ -2089,7 +2043,7 @@ export class App {
           workingDir: process.cwd(),
           permissionMode: this.config.permissionMode,
           gitStatus: true,
-          memorySummary,
+          memorySystemPrompt,
           preferredLanguage: this.config.language,
           model: this.config.model,
           availableModels: this.config.availableModels,
@@ -2232,6 +2186,192 @@ export class App {
     } catch { /* 遥测旁路，绝不影响启动 */ }
   }
 
+  /**
+   * M2：接线（或断线）后台记忆提取子系统 + autoDream。
+   * 每轮 end_turn 后 fire-and-forget 跑 forked agent 从对话提炼记忆写入 memory 目录。
+   *   - getMainContext 提供 ForkedAgentContext（共享主对话历史前缀，cache 友好）
+   *   - statefulTools 注入独立 FileReadTracker（缺口 A 隔离，不污染主代理缓存）
+   *   - canUseTool 把提取代理权限收窄到只读 + 仅能写 memoryDir
+   *   - appendSystemMessage 把"已保存 N 条记忆"回注主上下文，提示模型
+   * 开关关闭时不接线（extractMemories=null，主循环 extractMemories?.() 自动跳过）。
+   * 可在运行时被 /memory auto 重复调用以热接线/断线。失败不阻断启动。
+   */
+  private async wireExtractMemories(): Promise<void> {
+    const log = getLogger();
+    try {
+      const { initExtractMemories } = await import("./memory/extract/extractor.ts");
+      const { createExtractPermissions } = await import("./memory/extract/permissions.ts");
+      const { ensureAutoMemPath, isAutoMemoryEnabled } = await import("./memory/paths.ts");
+      const { createStatefulTools } = await import("./tool/stateful-tools.ts");
+      const { FileReadTracker } = await import("./tool/file-read-tracker.ts");
+
+      if (!isAutoMemoryEnabled(this.config.autoMemory)) {
+        // 断线：清空句柄并同步到 queryEngine，主循环收尾不再触发提取。
+        this.extractMemories = null;
+        this.queryEngine.setExtractMemories(null);
+        log.info("APP", "auto-memory 后台提取已禁用（autoMemory=false 或 SID_CODE_AUTO_MEMORY=0）");
+        return;
+      }
+
+      const memoryDir = ensureAutoMemPath(process.cwd());
+      this.extractMemories = initExtractMemories({
+        getMainContext: () => ({
+          systemPrompt: this.ctxMgr.getSystemPrompt(),
+          messages: this.ctxMgr.getMessages(),
+          provider: this.provider,
+          toolRegistry: this.toolRegistry,
+          model: this.config.model,
+          // FileReadTracker 隔离（缺口 A）：提取代理读文件用独立 tracker，
+          // 不污染主代理「先读后写」护栏。
+          statefulTools: createStatefulTools(new FileReadTracker()),
+        }),
+        memoryDir,
+        canUseTool: createExtractPermissions(memoryDir),
+        // 团队记忆启用时，提取 prompt 追加 team scope 的保守分流指引（比 claude-code
+        // 门槛更高：默认私有，仅显然的团队级约定才自动进 team）。未启用时只写私有。
+        teamMemoryEnabled: !!this.config.teamMemory?.enabled,
+        // 提取保存记忆后，把摘要回注主上下文（作为 system-reminder），让模型知晓已记忆。
+        appendSystemMessage: (msg) => {
+          try { this.ctxMgr.addMessage(msg as import("./llm/types.ts").Message); } catch { /* 回注失败不阻断 */ }
+        },
+      });
+      this.queryEngine.setExtractMemories(this.extractMemories);
+      // 会话关闭前 drain 进行中的提取，避免 fire-and-forget 的写入被强制退出截断。
+      // 仅首次接线时注册一次（用 flag 去重，避免运行时反复 toggle 累积多个 cleanup）。
+      if (!this.extractMemoriesCleanupRegistered) {
+        this.extractMemoriesCleanupRegistered = true;
+        try {
+          const { registerCleanup } = await import("./utils/graceful-shutdown.ts");
+          registerCleanup(() => this.extractMemories?.drainPending(5_000) ?? Promise.resolve());
+        } catch { /* drain 注册失败不阻断启动 */ }
+      }
+      log.info("APP", `后台记忆提取子系统已接线: ${memoryDir}`);
+
+      // G10：autoDream 自主记忆巩固（默认关闭，settings.autoDream 开启）。
+      // 复用提取子系统的 getMainContext + memoryDir + 权限（dream 代理同样只读 + 仅写 memoryDir）。
+      // 会话结束经三级 gate 判断是否跑后台巩固/剪枝，让记忆库不再只增不理。
+      // 仅首次接线时启动（避免运行时 toggle 重复 recordSession/registerCleanup）。
+      if (this.config.autoDream && !this.autoDream) {
+        try {
+          const { initAutoDream } = await import("./memory/dream/dream.ts");
+          this.autoDream = initAutoDream({
+            getMainContext: () => ({
+              systemPrompt: this.ctxMgr.getSystemPrompt(),
+              messages: this.ctxMgr.getMessages(),
+              provider: this.provider,
+              toolRegistry: this.toolRegistry,
+              model: this.config.model,
+              statefulTools: createStatefulTools(new FileReadTracker()),
+            }),
+            memoryDir,
+            canUseTool: createExtractPermissions(memoryDir),
+            config: { enabled: true },
+          });
+          this.autoDream.recordSession();
+          const { registerCleanup } = await import("./utils/graceful-shutdown.ts");
+          registerCleanup(async () => {
+            // 会话关闭时尝试触发一次 dream，并 drain 进行中的巩固
+            await this.autoDream?.maybeDream();
+            await this.autoDream?.drainPending(8_000);
+          });
+          log.info("APP", "autoDream 自主记忆巩固已接线");
+        } catch (e) {
+          this.autoDream = null;
+          log.warn("APP", `autoDream 接线失败（不阻断）: ${(e as Error)?.message}`);
+        }
+      }
+    } catch (e) {
+      this.extractMemories = null;
+      log.warn("APP", `后台记忆提取接线失败（不阻断）: ${(e as Error)?.message}`);
+    }
+  }
+
+  /** M2：drain cleanup 是否已注册（避免运行时 toggle 累积多个 cleanup）。 */
+  private extractMemoriesCleanupRegistered = false;
+
+  /**
+   * M2：运行时切换 auto-memory 后台提取开关（/memory auto 用）。
+   * 更新 config.autoMemory + 热接线/断线；persist=true 时写 settings.json。
+   */
+  async setAutoMemoryRuntime(enabled: boolean, persist?: boolean): Promise<void> {
+    const log = getLogger();
+    this.config.autoMemory = enabled;
+    if (persist) {
+      try {
+        const { patchSettingsFile } = await import("./config/settings/settings.ts");
+        patchSettingsFile("userSettings", "autoMemory", enabled);
+      } catch (e) {
+        log.warn("APP", `写入 autoMemory settings 失败: ${(e as Error)?.message}`);
+      }
+    }
+    // 重新走接线逻辑（内部会按新的开关状态接线或断线）。
+    await this.wireExtractMemories();
+  }
+
+  /** M2：读取 auto-memory 运行时启用态 + 判定来源（env / settings / default）。 */
+  getAutoMemoryState(): { enabled: boolean; source: "env" | "settings" | "default" } {
+    const env = process.env.SID_CODE_AUTO_MEMORY;
+    let source: "env" | "settings" | "default" = "default";
+    if (env !== undefined && env !== "") {
+      const v = env.trim().toLowerCase();
+      if (["0", "false", "off", "no", "1", "true", "on", "yes"].includes(v)) source = "env";
+    } else if (this.config.autoMemory !== undefined) {
+      source = "settings";
+    }
+    // enabled 复用 isAutoMemoryEnabled 的判定逻辑（此处内联避免异步 import）
+    let enabled: boolean;
+    if (source === "env") {
+      const v = env!.trim().toLowerCase();
+      enabled = !(v === "0" || v === "false" || v === "off" || v === "no");
+    } else {
+      enabled = this.config.autoMemory !== false;
+    }
+    return { enabled, source };
+  }
+
+  /**
+   * M4：应用外部导入审批决定。
+   * approved=true：持久化批准位 + 重载 CLAUDE.md（外部导入这次会展开）+ 重建系统提示词。
+   * approved=false：持久化拒绝位（后续静默跳过）。
+   * 两种情况都清空待审批快照。
+   */
+  async applyExternalImportDecision(approved: boolean): Promise<void> {
+    const log = getLogger();
+    try {
+      const { setClaudeMdExternalImportsApproved } = await import("./config/app-config.ts");
+      setClaudeMdExternalImportsApproved(process.cwd(), approved);
+    } catch (e) {
+      log.warn("APP", `持久化外部导入批准位失败: ${(e as Error)?.message}`);
+    }
+    // 清空待审批快照 + 收集器
+    this.pendingExternalImportPaths = [];
+    try {
+      const { consumeSkippedExternalImports } = await import("./config/rules.ts");
+      consumeSkippedExternalImports();
+    } catch { /* 忽略 */ }
+
+    if (approved) {
+      // 重载规则：这次 externalApproved=true，外部导入会展开，随后重建系统提示词。
+      try {
+        const { loadAllCLAUDEmd } = await import("./config/rules.ts");
+        const { clearPromptCache } = await import("./config/system-prompt.ts");
+        // 清 prompt 缓存，确保重新读盘 + 重新展开导入。
+        try { clearPromptCache(); } catch { /* 忽略 */ }
+        const newRules = await loadAllCLAUDEmd(process.cwd());
+        if (newRules) {
+          this.applyProjectRules(newRules);
+          // rebuildSystemPrompt 读 this.currentProjectRules（applyProjectRules 刚更新）。
+          await this.rebuildSystemPrompt();
+        }
+        log.info("APP", "外部导入已批准，CLAUDE.md 规则已重载");
+      } catch (e) {
+        log.warn("APP", `批准后重载 CLAUDE.md 失败: ${(e as Error)?.message}`);
+      }
+    } else {
+      log.info("APP", "外部导入已拒绝，后续静默跳过");
+    }
+  }
+
   /** 注册信号处理：SIGINT/SIGTERM 时同步触发 SessionEnd，避免 trajectory 丢失 */
   private signalHandlersRegistered = false;
   private registerSignalHandlers(): void {
@@ -2291,11 +2431,23 @@ export class App {
     try {
       const { buildSystemPrompt } = await import("./config/system-prompt.ts");
       const { collectSkillListingEntries } = await import("./skill/tool.ts");
-      let memorySummary: string | undefined;
+      // M11：记忆走索引指针路径（memorySystemPrompt），不再用 <memory> 全文摘要。
+      let memorySystemPrompt: string | undefined;
       try {
         const { MemoryStore } = await import("./memory/store.ts");
+        const { buildMemorySystemPrompt } = await import("./memory/prompt.ts");
         const memStore = new MemoryStore(process.cwd());
-        memorySummary = await memStore.generateSummary() || undefined;
+        await memStore.load();
+        const indexContent = await memStore.getIndexContent();
+        let teamIndexContent: string | null = null;
+        try {
+          const { isTeamMemoryEnabled } = await import("./memory/team/paths.ts");
+          if (isTeamMemoryEnabled(this.config.teamMemory)) {
+            const { getTeamIndexContent } = await import("./memory/team/store.ts");
+            teamIndexContent = await getTeamIndexContent(process.cwd());
+          }
+        } catch { /* 团队索引注入失败不阻断 */ }
+        memorySystemPrompt = buildMemorySystemPrompt(indexContent, teamIndexContent) || undefined;
       } catch { /* 忽略 */ }
 
       const rules = this.currentProjectRules;
@@ -2314,7 +2466,7 @@ export class App {
         workingDir: process.cwd(),
         permissionMode: this.config.permissionMode,
         gitStatus: true,
-        memorySummary,
+        memorySystemPrompt,
         preferredLanguage: this.config.language,
         model: this.config.model,
         availableModels: this.config.availableModels,
@@ -4185,7 +4337,10 @@ export class App {
       vimMode: !!this.config.vimMode,
       commands: initialCommands,
       cwd: process.cwd(),
-      activeDialog: null,
+      // M4：启动若有待审批的外部 @import 且无需 onboarding，首屏直接弹审批对话框。
+      activeDialog: (!this.config._needsOnboarding && this.pendingExternalImportPaths.length > 0)
+        ? "claude-md-external-imports" as const
+        : null,
       availableModels: this.config.availableModels.map(m => ({
         name: m.name,
         provider: m.provider || this.config.provider,
@@ -5302,6 +5457,8 @@ export class App {
           setLanguage: (lang, persist) => this.setLanguageRuntime(lang, persist),
           setVimMode: (enabled, persist) => this.setVimMode(enabled, persist),
           getVimMode: () => !!this.config.vimMode,
+          setAutoMemory: (enabled, persist) => this.setAutoMemoryRuntime(enabled, persist),
+          getAutoMemoryState: () => this.getAutoMemoryState(),
           setStatusLine: (config, persist) => this.setStatusLine(config, persist),
           getStatusLine: () => this.config.statusLine,
           renameSession: (name?: string) => this.renameSession(name),
@@ -5636,6 +5793,11 @@ export class App {
           filesRestored: result.filesRestored,
           fileRestoreSkipped: result.fileRestoreSkipped,
         };
+      },
+      // M4：外部导入审批。读被跳过列表 + 决定回调（持久化 + 重载规则）。
+      getSkippedExternalImports: () => this.pendingExternalImportPaths,
+      onClaudeMdExternalImportDecision: async (approved) => {
+        await this.applyExternalImportDecision(approved);
       },
     };
 

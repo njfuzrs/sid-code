@@ -37,6 +37,13 @@ export interface ProjectConfig {
   hasCompletedProjectOnboarding?: boolean;
   /** MCP 服务器审批状态 */
   mcpServerApprovals?: Record<string, boolean>;
+  /**
+   * M4：CLAUDE.md 外部导入（项目根之外，含 ~/）是否已批准。
+   * undefined = 尚未询问；true = 已批准（外部导入静默展开）；false = 已拒绝（外部导入跳过）。
+   */
+  claudeMdExternalImportsApproved?: boolean;
+  /** M4：外部导入审批警告是否已展示过（避免重复弹窗）。 */
+  claudeMdExternalImportsWarningShown?: boolean;
 }
 
 /** 全局应用配置 */
@@ -365,6 +372,23 @@ export function markTrustDialogAccepted(projectPath: string): void {
 /** 检查项目是否已信任 */
 export function isProjectTrusted(projectPath?: string): boolean {
   return getProjectConfig(projectPath).hasTrustDialogAccepted === true;
+}
+
+/**
+ * M4：读取 CLAUDE.md 外部导入批准态。
+ * 返回 undefined 表示尚未询问，true/false 表示已批准/已拒绝。
+ */
+export function getClaudeMdExternalImportsApproved(projectPath?: string): boolean | undefined {
+  return getProjectConfig(projectPath).claudeMdExternalImportsApproved;
+}
+
+/** M4：持久化 CLAUDE.md 外部导入批准态（同时标记警告已展示）。 */
+export function setClaudeMdExternalImportsApproved(projectPath: string, approved: boolean): void {
+  updateProjectConfig(projectPath, (current) => ({
+    ...current,
+    claudeMdExternalImportsApproved: approved,
+    claudeMdExternalImportsWarningShown: true,
+  }));
 }
 
 // ───────────────────────── 提示渐进衰减 ─────────────────────────

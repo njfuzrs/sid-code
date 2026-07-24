@@ -33,7 +33,6 @@ import {
   generateIDESelectionAttachment,
   generateIDEMentionAttachment,
   generateTodoListAttachment,
-  generateMemoryAttachment,
   generateRecalledMemoryAttachment,
   generateSessionMemoryAttachment,
   generateSkillListingAttachment,
@@ -347,10 +346,10 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
     if (denyAttachment) attachments.push(denyAttachment);
   }
 
-  // 记忆（全局/项目双层）
-  if (ctx.memorySummary) {
-    attachments.push(generateMemoryAttachment(ctx.memorySummary));
-  }
+  // M11：下线 <memory> 全文摘要附件（历史遗留双轨注入）。
+  // 记忆统一走 memorySystemPrompt 索引指针路径（core 区注入 MEMORY.md 索引，
+  // 模型按需 Read 单条全文），与 CC 对齐，避免同批记忆两种表示重复消耗 token。
+  // ctx.memorySummary 保留在类型中仅供兼容，不再注入附件。
 
   // 动态召回的相关记忆（Task 7）
   if (ctx.recalledMemories && ctx.recalledMemories.length > 0) {

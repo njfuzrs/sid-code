@@ -112,3 +112,46 @@ export async function editInExternalEditor(
   if (dir) { try { rmSync(dir, { recursive: true, force: true }); } catch { /* 忽略 */ } }
   return { ok: true, text: edited };
 }
+
+/**
+ * M5：用外部编辑器直接打开一个**已存在的文件**（不经临时文件）。
+ * 阻塞直到编辑器退出。用于 /memory 面板编辑 auto-memory 条目（对齐 CC editFileInEditor）。
+ *
+ * @param filePath 要打开的文件绝对路径。
+ * @param stdout   用于定位 ink 实例的写流（默认 process.stdout）。
+ * @returns ok=true 表示编辑器 0 退出；否则 error 说明原因。
+ */
+export async function openFileInExternalEditor(
+  filePath: string,
+  stdout: NodeJS.WriteStream = process.stdout,
+): Promise<{ ok: boolean; error?: string }> {
+  const log = getLogger();
+  const ink = inkInstances.get(stdout);
+  const cmd = resolveEditorCommand();
+  const bin = cmd[0];
+  const args = [...cmd.slice(1), filePath];
+
+  ink?.enterAlternateScreen();
+  const exitCode = await new Promise<number>((resolve) => {
+    try {
+      const child = spawn(bin, args, { stdio: "inherit" });
+      child.on("error", (err) => {
+        log.warn("UI:EDITOR", `外部编辑器启动失败: ${String(err)}`);
+        resolve(-1);
+      });
+      child.on("exit", (code) => resolve(code ?? 0));
+    } catch (e) {
+      log.warn("UI:EDITOR", `spawn 编辑器异常: ${String(e)}`);
+      resolve(-1);
+    }
+  });
+  ink?.exitAlternateScreen();
+
+  if (exitCode !== 0) {
+    return {
+      ok: false,
+      error: exitCode === -1 ? `无法启动编辑器 "${bin}"` : `编辑器以非零码退出 (${exitCode})`,
+    };
+  }
+  return { ok: true };
+}

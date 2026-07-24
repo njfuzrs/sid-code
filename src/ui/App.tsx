@@ -125,6 +125,16 @@ export interface TUICallbacks {
     id: number,
     mode: "conversation" | "conversation-and-code",
   ) => Promise<RewindResultInfo | null>;
+  /**
+   * M4：读取当前被跳过的外部 @import 路径（供审批对话框展示）。
+   * 空数组表示无待批准的外部导入。
+   */
+  getSkippedExternalImports?: () => string[];
+  /**
+   * M4：外部导入审批决定回调。approved=true 批准（持久化 + 重载规则展开导入），
+   * false 拒绝（持久化拒绝态，后续静默跳过）。
+   */
+  onClaudeMdExternalImportDecision?: (approved: boolean) => void | Promise<void>;
 }
 
 /** P2-1：投影给 UI 的回退点展示信息（不直接依赖 session 层 RewindPoint 类型）。 */

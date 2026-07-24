@@ -139,4 +139,39 @@ describe("loadAllCLAUDEmd 多层级", () => {
       expect(merged).toBeNull();
     }
   });
+
+  test("M7: 父目录链上多层 CLAUDE.md 都加载（越深优先级越高）", async () => {
+    // proj/CLAUDE.md（外层）+ proj/packages/app/CLAUDE.md（内层）
+    writeFileSync(join(proj, "CLAUDE.md"), "# Instructions\n外层根规则ROOTMARK");
+    const inner = join(proj, "packages", "app");
+    mkdirSync(inner, { recursive: true });
+    writeFileSync(join(inner, "CLAUDE.md"), "# Instructions\n内层应用规则INNERMARK");
+
+    const merged = await loadAllCLAUDEmd(inner);
+    expect(merged).not.toBeNull();
+    // 两层都应被加载
+    expect(merged!.rawContent).toContain("ROOTMARK");
+    expect(merged!.rawContent).toContain("INNERMARK");
+  });
+
+  test("M9: symlink 指向的规则文件只加载一次（去重防重复）", async () => {
+    const { symlinkSync } = await import("fs");
+    writeFileSync(join(proj, "CLAUDE.md"), "# Instructions\n根规则");
+    mkdirSync(join(proj, ".claude", "rules"), { recursive: true });
+    const realRule = join(proj, ".claude", "rules", "real.md");
+    writeFileSync(realRule, "# Custom Rules\n- 唯一规则 UNIQUERULE");
+    // 同目录内建一个指向 real.md 的 symlink
+    try {
+      symlinkSync(realRule, join(proj, ".claude", "rules", "link.md"));
+    } catch {
+      // 某些环境不支持 symlink，跳过断言
+      return;
+    }
+
+    const merged = await loadAllCLAUDEmd(proj);
+    expect(merged).not.toBeNull();
+    // UNIQUERULE 应只出现一次（symlink 去重），用正则统计出现次数
+    const count = (merged!.rawContent.match(/UNIQUERULE/g) || []).length;
+    expect(count).toBe(1);
+  });
 });

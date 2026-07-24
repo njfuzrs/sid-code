@@ -605,7 +605,7 @@ export class RestoreCommand implements Command {
 export class MemoryCommand implements Command {
   name() { return "memory"; }
   aliases() { return ["mem"]; }
-  description() { return "管理记忆（set/get/delete/list/search/show/reload）"; }
+  description() { return "管理记忆（auto/set/get/delete/list/search/show/reload）"; }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     // 无参数 → 打开交互式记忆文件浏览面板（CLAUDE.md 列表 + 预览）
@@ -621,6 +621,49 @@ export class MemoryCommand implements Command {
     const subCmd = parts[0] || "list";
 
     switch (subCmd) {
+      case "auto": {
+        // M2：auto-memory 后台提取开关。/memory auto on|off|status [-p]
+        const action = (parts[1] || "status").toLowerCase();
+        const persist = args.includes("-p") || args.includes("--persist");
+
+        if (action === "status" || action === "") {
+          if (!ctx.getAutoMemoryState) {
+            return { kind: "message", message: "auto-memory 状态不可用（运行环境未接线）" };
+          }
+          const st = ctx.getAutoMemoryState();
+          const sourceLabel = { env: "环境变量 SID_CODE_AUTO_MEMORY", settings: "settings.json", default: "默认" }[st.source];
+          const stateLabel = st.enabled ? "已启用（extraction on）" : "已禁用（extraction off）";
+          return {
+            kind: "message",
+            message: [
+              `auto-memory: ${stateLabel}`,
+              `  来源: ${sourceLabel}`,
+              "",
+              "用法: /memory auto on|off [-p]（-p 持久化到 settings.json）",
+            ].join("\n"),
+          };
+        }
+
+        if (action !== "on" && action !== "off" && action !== "enable" && action !== "disable") {
+          return { kind: "error", message: "用法: /memory auto on|off|status [-p]" };
+        }
+
+        const enable = action === "on" || action === "enable";
+        if (!ctx.setAutoMemory) {
+          return { kind: "message", message: "auto-memory 开关不可用（运行环境未接线）" };
+        }
+        // env 覆盖优先级更高：若 env 显式设值，运行时切换仍生效但重启后被 env 覆盖，提示用户。
+        const envSet = process.env.SID_CODE_AUTO_MEMORY !== undefined && process.env.SID_CODE_AUTO_MEMORY !== "";
+        await ctx.setAutoMemory(enable, persist);
+        const lines = [
+          `auto-memory 后台提取已${enable ? "启用" : "禁用"}${persist ? "（已持久化到 settings.json）" : "（仅本会话）"}`,
+        ];
+        if (envSet) {
+          lines.push("⚠️ 检测到环境变量 SID_CODE_AUTO_MEMORY 已设置，重启后将以环境变量为准。");
+        }
+        return { kind: "message", message: lines.join("\n") };
+      }
+
       case "set": {
         const key = parts[1];
         const value = parts.slice(2).join(" ");
@@ -689,37 +732,52 @@ export class MemoryCommand implements Command {
       }
 
       case "reload": {
-        // 重新加载记忆并刷新系统提示词
+        // M11：重新加载记忆并刷新系统提示词。
+        // 走 memorySystemPrompt 索引指针路径（与启动 init-helpers 一致），
+        // 不再用 memorySummary 全文摘要（已下线双轨注入）。
         const freshStore = new MemoryStore(process.cwd());
-        const freshSummary = await freshStore.generateSummary() || undefined;
+        await freshStore.load();
+        const { buildMemorySystemPrompt } = await import("../memory/prompt.ts");
+        const indexContent = await freshStore.getIndexContent();
 
-        if (freshSummary) {
-          // 重建系统提示词
-          const { buildSystemPrompt } = await import("../config/system-prompt.ts");
-          const { loadAllCLAUDEmd } = await import("../config/rules.ts");
-          const projectRules = await loadAllCLAUDEmd(process.cwd());
+        // 团队记忆索引一并注入（若启用）
+        let teamIndexContent: string | null = null;
+        try {
+          const { isTeamMemoryEnabled } = await import("../memory/team/paths.ts");
+          if (isTeamMemoryEnabled(ctx.config.teamMemory)) {
+            const { getTeamIndexContent } = await import("../memory/team/store.ts");
+            teamIndexContent = await getTeamIndexContent(process.cwd());
+          }
+        } catch { /* 团队记忆索引注入失败不阻断 reload */ }
 
-          const newPrompt = buildSystemPrompt({
-            tools: ctx.registry.all(),
-            projectRules: projectRules?.rawContent || undefined,
-            projectRulesPath: projectRules?.sourcePath,
-            appendPrompt: ctx.config.appendSystemPrompt || undefined,
-            workingDir: process.cwd(),
-            permissionMode: ctx.config.permissionMode,
-            gitStatus: true,
-            memorySummary: freshSummary,
-            preferredLanguage: ctx.config.language,
-            model: ctx.config.model,
-            availableModels: ctx.config.availableModels,
-            // 不再写死 maxTokens：交由 buildSystemPrompt 按模型 contextWindow 的 90% 动态推导
-          });
-          ctx.ctxMgr.setSystemPrompt(newPrompt);
-          clearPromptCache();
-
-          return { kind: "message", message: `记忆已重新加载，系统提示词已刷新 (${newPrompt.length} 字符)` };
+        const memorySystemPrompt = buildMemorySystemPrompt(indexContent, teamIndexContent);
+        if (!memorySystemPrompt) {
+          return { kind: "message", message: "记忆为空，无需刷新" };
         }
 
-        return { kind: "message", message: "记忆为空，无需刷新" };
+        // 重建系统提示词（索引指针进 core 区）
+        const { buildSystemPrompt } = await import("../config/system-prompt.ts");
+        const { loadAllCLAUDEmd } = await import("../config/rules.ts");
+        const projectRules = await loadAllCLAUDEmd(process.cwd());
+
+        const newPrompt = buildSystemPrompt({
+          tools: ctx.registry.all(),
+          projectRules: projectRules?.rawContent || undefined,
+          projectRulesPath: projectRules?.sourcePath,
+          appendPrompt: ctx.config.appendSystemPrompt || undefined,
+          workingDir: process.cwd(),
+          permissionMode: ctx.config.permissionMode,
+          gitStatus: true,
+          memorySystemPrompt,
+          preferredLanguage: ctx.config.language,
+          model: ctx.config.model,
+          availableModels: ctx.config.availableModels,
+          // 不再写死 maxTokens：交由 buildSystemPrompt 按模型 contextWindow 的 90% 动态推导
+        });
+        ctx.ctxMgr.setSystemPrompt(newPrompt);
+        clearPromptCache();
+
+        return { kind: "message", message: `记忆已重新加载，系统提示词已刷新 (${newPrompt.length} 字符)` };
       }
 
       case "list":
@@ -916,12 +974,57 @@ export class StatsCommand implements Command {
 }
 
 /** /init 命令 — 初始化项目配置目录 */
+/**
+ * M1：`/init` 代码库分析 prompt（中文，对齐全局中文约定）。
+ * 驱动模型 agentic 地扫描仓库、发现 build/test/lint 命令与项目约定，
+ * 生成（或改进）一份真实、具体、可验证的 CLAUDE.md，而非占位符。
+ * 对齐 CC commands/init.ts 的 type: 'prompt' 做法。
+ */
+const INIT_ANALYSIS_PROMPT = `请为当前代码库生成（或改进）一份 \`CLAUDE.md\` 文件，用于给未来在此仓库工作的 AI 编码助手提供指导。
+
+## 执行步骤
+
+1. **扫描项目结构**：用 glob/ls 查看项目根与关键子目录，识别整体布局与模块划分。
+2. **识别技术栈与工具链**：读取以下文件（存在才读）推断语言、框架、包管理器：
+   - \`package.json\` / \`bun.lockb\` / \`pnpm-lock.yaml\`（Node/前端）
+   - \`Cargo.toml\`（Rust）、\`go.mod\`（Go）、\`pom.xml\` / \`build.gradle\`（Java/Kotlin）
+   - \`pyproject.toml\` / \`requirements.txt\` / \`setup.py\`（Python）
+   - \`Makefile\` / \`Justfile\` / \`Taskfile.yml\`（任务运行器）
+3. **提取关键命令**：从上述文件的 scripts/targets 中找出真实的 **构建 / 测试 / lint / 类型检查 / 启动** 命令，务必写实际命令（如 \`bun test\`、\`make build\`），不要写占位符。
+4. **提炼项目约定**：读 \`README\`、现有 \`CLAUDE.md\`、\`.gitignore\`、CI 配置（\`.github/workflows/\` 等），提炼编码风格、目录约定、提交规范、测试要求等。
+5. **检查现有 CLAUDE.md**：
+   - **若已存在**：先读取全文，以「改进建议」形式提出具体修改（缺什么、哪里过时），**不要静默覆盖**。除非用户明确要求重写，否则保留用户已有内容，只做增量补充。
+   - **若不存在**：写一份新的 CLAUDE.md。
+
+## CLAUDE.md 内容要求
+
+- **语言**：用中文撰写（对齐本项目约定）。
+- **长度**：目标 200 行以内，聚焦高价值信息，不要冗余。
+- **结构建议**：项目简介 / 技术栈 / 常用命令（build、test、lint、run）/ 目录结构说明 / 编码约定 / 注意事项。
+- **具体可验证**：每条命令、每个约定都应能被实际执行或核对，避免空泛描述。
+- 若发现 \`.cursorrules\`、\`.github/copilot-instructions.md\` 等其它 AI 规则文件，可整合其有价值内容。
+
+完成后，简要说明你做了哪些改动（新建还是改进、包含哪些关键命令），并提示用户可运行 \`/init --dirs-only\` 初始化 \`.sid-code/\` 自定义目录脚手架。`;
+
+/**
+ * M1：`/init` 命令。
+ * - 默认（无参 / 非 --dirs-only）：返回 submit_prompt，驱动模型 agentic 分析代码库生成真实 CLAUDE.md。
+ * - \`--dirs-only\`：仅执行 \`.sid-code/\` 目录脚手架（保留旧行为，不再写占位 CLAUDE.md）。
+ */
 export class InitCommand implements Command {
   name() { return "init"; }
   aliases() { return []; }
-  description() { return "在当前项目初始化 .sid-code/ 配置目录"; }
+  description() { return "分析代码库并生成 CLAUDE.md（--dirs-only 仅初始化 .sid-code/ 目录）"; }
 
-  async execute(_args: string, _ctx: AppContext): Promise<CommandResult> {
+  async execute(args: string, _ctx: AppContext): Promise<CommandResult> {
+    const dirsOnly = /(^|\s)--dirs-only(\s|$)/.test(args);
+
+    // 默认路径：注入代码库分析 prompt，交给模型 agentic 执行（对齐 CC type: 'prompt'）。
+    if (!dirsOnly) {
+      return { kind: "submit_prompt", prompt: INIT_ANALYSIS_PROMPT };
+    }
+
+    // --dirs-only：仅做目录脚手架（旧脚手架能力保留，但不再写占位 CLAUDE.md）。
     const fs = await import("fs/promises");
     const path = await import("path");
     const cwd = process.cwd();
@@ -945,24 +1048,11 @@ export class InitCommand implements Command {
       }
     }
 
-    // 创建示例 CLAUDE.md（如不存在）
-    const claudeMdPath = path.join(cwd, "CLAUDE.md");
-    let claudeMdCreated = false;
-    try {
-      await fs.access(claudeMdPath);
-    } catch {
-      // 不存在，创建示例
-      const example = `# 项目说明\n\n在此描述项目背景、技术栈、编码约定等，sid-code 会将此文件注入系统提示词。\n`;
-      await fs.writeFile(claudeMdPath, example, "utf-8");
-      claudeMdCreated = true;
-    }
-
     const lines: string[] = [];
     if (created.length > 0) lines.push(`已创建目录:\n${created.map(d => `  ${d}/`).join("\n")}`);
     if (skipped.length > 0) lines.push(`已存在（跳过）:\n${skipped.map(d => `  ${d}/`).join("\n")}`);
-    if (claudeMdCreated) lines.push("已创建 CLAUDE.md 示例文件");
 
-    lines.push("\n提示：", "  .sid-code/commands/ — 放置自定义斜杠命令 (.md)", "  .sid-code/skills/   — 放置 Skills 提示词模板 (.md)", "  .sid-code/agents/   — 放置自定义 Agent 定义 (.md)");
+    lines.push("\n提示：", "  .sid-code/commands/ — 放置自定义斜杠命令 (.md)", "  .sid-code/skills/   — 放置 Skills 提示词模板 (.md)", "  .sid-code/agents/   — 放置自定义 Agent 定义 (.md)", "\n运行不带参数的 /init 可分析代码库并生成 CLAUDE.md。");
 
     return { kind: "message", message: lines.join("\n") };
   }

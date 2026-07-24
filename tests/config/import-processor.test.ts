@@ -97,7 +97,7 @@ describe("Import Processor", () => {
     cleanup();
   });
 
-  test("only allows .md files", async () => {
+  test("M3: 允许白名单文本扩展名（.txt/.json）", async () => {
     setup();
 
     const mainFile = join(testDir, "main.md");
@@ -111,10 +111,161 @@ describe("Import Processor", () => {
       allowedDirectories: [testDir],
     });
 
-    // .txt 文件不应该被导入
-    expect(result).toContain("@file.txt");
-    expect(result).not.toContain("This is a text file");
+    // M3：.txt 现在在白名单内，应被导入
+    expect(result).toContain("This is a text file");
+    expect(result).toContain("<!-- @import file.txt -->");
 
+    cleanup();
+  });
+
+  test("M3: 拒绝非白名单扩展名（.exe）", async () => {
+    setup();
+
+    const mainFile = join(testDir, "main.md");
+    const binFile = join(testDir, "bad.exe");
+    writeFileSync(binFile, "binary payload");
+    const mainContent = "# Main\n@bad.exe";
+    writeFileSync(mainFile, mainContent);
+
+    const result = await processImports(mainContent, mainFile, {
+      allowedDirectories: [testDir],
+    });
+
+    expect(result).not.toContain("binary payload");
+    // 原始行保留
+    expect(result).toContain("@bad.exe");
+
+    cleanup();
+  });
+
+  test("M3: 无扩展名文件（@README）可导入", async () => {
+    setup();
+
+    const mainFile = join(testDir, "main.md");
+    const readme = join(testDir, "README");
+    writeFileSync(readme, "readme body here");
+    const mainContent = "# Main\n@README";
+    writeFileSync(mainFile, mainContent);
+
+    const result = await processImports(mainContent, mainFile, {
+      allowedDirectories: [testDir],
+    });
+
+    expect(result).toContain("readme body here");
+
+    cleanup();
+  });
+
+  test("M3: 行内导入（See @notes.md for details）也识别", async () => {
+    setup();
+
+    const mainFile = join(testDir, "main.md");
+    const notes = join(testDir, "notes.md");
+    writeFileSync(notes, "inline note body");
+    const mainContent = "See @notes.md for details.";
+    writeFileSync(mainFile, mainContent);
+
+    const result = await processImports(mainContent, mainFile, {
+      allowedDirectories: [testDir],
+    });
+
+    // 原始 prose 行保留 + 导入内容追加
+    expect(result).toContain("See @notes.md for details.");
+    expect(result).toContain("inline note body");
+
+    cleanup();
+  });
+
+  test("M3: 跳过代码围栏内的 @import", async () => {
+    setup();
+
+    const mainFile = join(testDir, "main.md");
+    const fake = join(testDir, "fake.md");
+    writeFileSync(fake, "SHOULD NOT IMPORT");
+    const mainContent = "# Main\n```\n@fake.md\n```\n";
+    writeFileSync(mainFile, mainContent);
+
+    const result = await processImports(mainContent, mainFile, {
+      allowedDirectories: [testDir],
+    });
+
+    // 代码围栏内的 @fake.md 不应被导入
+    expect(result).not.toContain("SHOULD NOT IMPORT");
+    expect(result).toContain("@fake.md");
+
+    cleanup();
+  });
+
+  test("M3: 跳过行内代码内的 @token", async () => {
+    setup();
+
+    const mainFile = join(testDir, "main.md");
+    const fake = join(testDir, "fake.md");
+    writeFileSync(fake, "SHOULD NOT IMPORT");
+    const mainContent = "Use `@fake.md` syntax to import.";
+    writeFileSync(mainFile, mainContent);
+
+    const result = await processImports(mainContent, mainFile, {
+      allowedDirectories: [testDir],
+    });
+
+    expect(result).not.toContain("SHOULD NOT IMPORT");
+
+    cleanup();
+  });
+
+  test("M4: 外部导入未批准 → 跳过 + 回调", async () => {
+    setup();
+
+    // 外部目录（项目根之外）
+    const externalDir = "/tmp/sid-code-import-ext";
+    rmSync(externalDir, { recursive: true, force: true });
+    mkdirSync(externalDir, { recursive: true });
+    const externalFile = join(externalDir, "ext.md");
+    writeFileSync(externalFile, "EXTERNAL CONTENT");
+
+    const mainFile = join(testDir, "main.md");
+    const mainContent = `# Main\n@${externalFile}`;
+    writeFileSync(mainFile, mainContent);
+
+    const skipped: string[] = [];
+    const result = await processImports(mainContent, mainFile, {
+      allowedDirectories: [testDir, externalDir],
+      projectRoot: testDir,
+      externalApproved: false,
+      onExternalSkipped: (p) => skipped.push(p),
+    });
+
+    // 未批准 → 外部内容不导入
+    expect(result).not.toContain("EXTERNAL CONTENT");
+    expect(skipped.length).toBe(1);
+
+    rmSync(externalDir, { recursive: true, force: true });
+    cleanup();
+  });
+
+  test("M4: 外部导入已批准 → 正常展开", async () => {
+    setup();
+
+    const externalDir = "/tmp/sid-code-import-ext2";
+    rmSync(externalDir, { recursive: true, force: true });
+    mkdirSync(externalDir, { recursive: true });
+    const externalFile = join(externalDir, "ext.md");
+    writeFileSync(externalFile, "EXTERNAL CONTENT OK");
+
+    const mainFile = join(testDir, "main.md");
+    const mainContent = `# Main\n@${externalFile}`;
+    writeFileSync(mainFile, mainContent);
+
+    const result = await processImports(mainContent, mainFile, {
+      allowedDirectories: [testDir, externalDir],
+      projectRoot: testDir,
+      externalApproved: true,
+    });
+
+    expect(result).toContain("EXTERNAL CONTENT OK");
+
+    rmSync(externalDir, { recursive: true, force: true });
     cleanup();
   });
 

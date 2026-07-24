@@ -190,6 +190,26 @@ export function validateMemoryPath(raw: string): string | undefined {
 }
 
 /**
+ * M2：判定 auto-memory 后台自动提取是否启用。
+ * 优先级：env SID_CODE_AUTO_MEMORY > settings autoMemory > 默认 true。
+ * - env 显式设 "0" / "false" → 关闭；设 "1" / "true" → 启用（覆盖 settings）。
+ * - settings.autoMemory === false → 关闭；否则默认启用（保持既有行为）。
+ *
+ * 对齐 [feedback-no-hardcoded-model-tier-rules] 的「全局默认 + env 兜底」范式，
+ * 且与 recall.ts 的 env gate 风格一致（但 recall 默认关，本项默认开）。
+ */
+export function isAutoMemoryEnabled(settingValue?: boolean): boolean {
+  const env = process.env.SID_CODE_AUTO_MEMORY;
+  if (env !== undefined && env !== "") {
+    const v = env.trim().toLowerCase();
+    if (v === "0" || v === "false" || v === "off" || v === "no") return false;
+    if (v === "1" || v === "true" || v === "on" || v === "yes") return true;
+  }
+  // env 未设或无法解析 → 看 settings，仅显式 false 才关闭
+  return settingValue !== false;
+}
+
+/**
  * 生成记忆文件名：<type>_<slug>.md
  * slug 由 name 派生为 kebab-case，截断到 60 字符。
  */

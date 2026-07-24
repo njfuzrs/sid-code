@@ -139,6 +139,13 @@ export interface Config {
    * 默认关闭——开启后会话结束经三级 gate 判断是否跑后台记忆巩固/剪枝。
    */
   autoDream?: boolean;
+  /**
+   * M2：auto-memory 后台自动提取开关（settings.json autoMemory）。
+   * 默认启用（保持既有行为）——每轮 end_turn 后从对话提炼记忆写入 memory 目录。
+   * 设为 false 关闭后台提取（隐私敏感项目 / 不想消耗后台 token）。
+   * 优先级：env SID_CODE_AUTO_MEMORY > settings autoMemory > 默认 true。
+   */
+  autoMemory?: boolean;
   /** UI 主题名（/theme 持久化端，settings.json theme）。不设置时用内置默认暗色主题 */
   theme?: string;
   /** Vim 输入模式开关（/vim 持久化端，settings.json vimMode）。缺省 = false */
@@ -790,6 +797,8 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     outputStyle: "outputStyle",
     auto_dream: "autoDream",
     autoDream: "autoDream",
+    auto_memory: "autoMemory",
+    autoMemory: "autoMemory",
     theme: "theme",
     vimMode: "vimMode",
     alternateBuffer: "alternateBuffer",

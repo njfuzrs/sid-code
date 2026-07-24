@@ -30,6 +30,7 @@ import { HelpDialog } from "./HelpDialog.tsx";
 import { ExportDialog } from "./ExportDialog.tsx";
 import { ContextDialog } from "./ContextDialog.tsx";
 import { RewindDialog } from "./RewindDialog.tsx";
+import { ClaudeMdExternalImportDialog } from "./ClaudeMdExternalImportDialog.tsx";
 import type { OnboardingResult } from "./OnboardingDialog.tsx";
 import type {
   PermissionRequestInfo,
@@ -200,6 +201,19 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
   }
   if (activeDialog === "memory") {
     return <MemoryDialog onClose={onDialogClose} cwd={cwd} />;
+  }
+  if (activeDialog === "claude-md-external-imports") {
+    const paths = callbacks.getSkippedExternalImports?.() ?? [];
+    return (
+      <ClaudeMdExternalImportDialog
+        paths={paths}
+        onDecision={async (approved) => {
+          await callbacks.onClaudeMdExternalImportDecision?.(approved);
+          onDialogClose();
+        }}
+        onClose={onDialogClose}
+      />
+    );
   }
   if (activeDialog === "config" && callbacks.config) {
     return <ConfigDialog onClose={onDialogClose} config={callbacks.config} sessionState={sessionState} />;
