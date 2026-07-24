@@ -17,6 +17,7 @@ import type { ProviderRegistry } from "./llm/registry.ts";
 import type { MCPManager } from "./mcp/manager.ts";
 import type { PlanModeManager } from "./plan/state.ts";
 import { Manager as ContextManager } from "./context/manager.ts";
+import { resolveAutoCompactPctOverride } from "./context/auto-compact.ts";
 import { Registry as ToolRegistry } from "./tool/registry.ts";
 import { Registry as CommandRegistry } from "./command/registry.ts";
 import { ModelFallback } from "./llm/fallback.ts";
@@ -358,7 +359,10 @@ export class App {
     // 上下文窗口按模型实际大小初始化（deepseek-v4 为 1M，Claude 200K，gpt-4o 128K）。
     // 硬编码 200000 会让 deepseek 的 contextPercent 高估 5 倍、过早触发自动压缩。
     const ctxWindow = new TokenEstimator().getContextLimit(opts.config.model, opts.config.availableModels);
-    this.ctxMgr = new ContextManager({ maxTokens: ctxWindow });
+    // §12 P1-1：env（SID_CODE_AUTOCOMPACT_PCT / CLAUDE_AUTOCOMPACT_PCT_OVERRIDE）解析出的使用率
+    // 上限透传为 compactThreshold，接活这个此前从未被注入的死参数（见 manager 构造）。
+    const autoCompactPct = resolveAutoCompactPctOverride() ?? undefined;
+    this.ctxMgr = new ContextManager({ maxTokens: ctxWindow, compactThreshold: autoCompactPct });
     this.ctxMgr.setSessionId(sessionId);
     // §3.3：注入 Plan 正文提供方——压缩时把活跃 Plan 正文重注入消息历史。
     // 仅在 plan 执行/规划阶段返回正文，否则返回 null（不注入）。

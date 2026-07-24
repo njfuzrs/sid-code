@@ -157,6 +157,64 @@ describe("CompactionLevel", () => {
     mgr.setSystemPrompt("a".repeat(215_000));
     expect(mgr.getCompactionLevel()).toBe("none");
   });
+
+  // §12 P0-2：大窗口（1M）相对系数提高后，hard 档从 88% 提前到 ~82%。
+  // 1M 窗口下 compression = max(60K, 0.18×1M=180K) = 180K → 剩余 ≤ 180K（用量 ≥ 820K）即 hard。
+  test("1M 窗口：used=820K 触发 hard（P0-2 提前，旧系数需 880K）", () => {
+    const mgr = new Manager({ maxTokens: 1_000_000 });
+    // 4.1M 字符 × 0.20 → 820K tokens，剩余 180K = compressionThreshold 边界（≤ 触发 hard）
+    mgr.setSystemPrompt("a".repeat(4_100_000));
+    expect(mgr.getCompactionLevel()).toBe("hard");
+  });
+
+  test("1M 窗口：used=810K 仍为 soft（剩余 190K 在 masking 220K 内、未到 hard 180K）", () => {
+    const mgr = new Manager({ maxTokens: 1_000_000 });
+    // 4.05M 字符 × 0.20 → 810K tokens，剩余 190K：>180K(hard) 且 ≤220K(masking) → soft
+    mgr.setSystemPrompt("a".repeat(4_050_000));
+    expect(mgr.getCompactionLevel()).toBe("soft");
+  });
+});
+
+describe("setAutoCompactPctOverride (§12 P1-1)", () => {
+  test("设 50% override：200K 窗口 used 达 100K 即 hard", () => {
+    const mgr = new Manager({ maxTokens: 200_000 });
+    mgr.setAutoCompactPctOverride(0.5);
+    // 500K 字符 × 0.20 → 100K tokens，剩余 100K = 窗口×(1-0.5) 边界 → hard
+    mgr.setSystemPrompt("a".repeat(500_000));
+    expect(mgr.getCompactionLevel()).toBe("hard");
+  });
+
+  test("构造参数 compactThreshold 等价 override（接活死参数）", () => {
+    const mgr = new Manager({ maxTokens: 200_000, compactThreshold: 0.5 });
+    mgr.setSystemPrompt("a".repeat(500_000));
+    expect(mgr.getCompactionLevel()).toBe("hard");
+  });
+
+  test("百分数形态自动归一化（50 → 0.5）", () => {
+    const mgr = new Manager({ maxTokens: 200_000 });
+    mgr.setAutoCompactPctOverride(50);
+    expect(mgr.getAutoCompactPctOverride()).toBe(0.5);
+  });
+
+  test("非法值（0 / 1 / NaN）清空 override，回落默认系数", () => {
+    const mgr = new Manager({ maxTokens: 200_000 });
+    mgr.setAutoCompactPctOverride(0);
+    expect(mgr.getAutoCompactPctOverride()).toBeNull();
+    mgr.setAutoCompactPctOverride(1);
+    expect(mgr.getAutoCompactPctOverride()).toBeNull();
+    mgr.setAutoCompactPctOverride(NaN);
+    expect(mgr.getAutoCompactPctOverride()).toBeNull();
+  });
+
+  test("override 不架空 emergency 绝对底线（设极端高使用率仍保 40K 兜底）", () => {
+    const mgr = new Manager({ maxTokens: 200_000 });
+    // 设 99% → override 剩余门槛 = 2K，但 emergency = max(40K, 20K) = 40K
+    // compressionThreshold 取 max(2K, 40K) = 40K，hard 不会晚于 emergency 触发
+    mgr.setAutoCompactPctOverride(0.99);
+    // 850K 字符 → 170K tokens，剩余 30K ≤ 40K(emergency) → emergency（而非被 override 顶到只剩 2K 才动）
+    mgr.setSystemPrompt("a".repeat(850_000));
+    expect(mgr.getCompactionLevel()).toBe("emergency");
+  });
 });
 
 describe("emergencyTruncate", () => {

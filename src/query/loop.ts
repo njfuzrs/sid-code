@@ -378,18 +378,16 @@ export async function* queryLoop(
     log.info("QUERY_LOOP", `轮次 ${state.turnCount}/${state.maxTurns}，消息数 ${ctxMgr.getMessages().length}，上下文 ${usagePercent.toFixed(0)}%`);
 
     // ─── 分级压缩策略 ───
-    // 优先使用新的四层阈值（context/auto-compact.ts），再回退到现有三层逻辑
+    // blocking 绝对底线（剩余极少、连一次 LLM 往返都危险）优先于 getCompactionLevel 的渐进档。
+    // §12 P2-2：此前这里还算 autoCompact 档但从不消费（死代码），已清理——渐进压缩
+    // （soft/hard/emergency）统一由下方 getCompactionLevel 接管。
     const remainingTokens = contextMax - currentTokens;
-    const newLevel = (() => {
-      if (remainingTokens <= TOKEN_THRESHOLDS.blocking) return "blocking";
-      if (remainingTokens <= TOKEN_THRESHOLDS.autoCompact) return "autoCompact";
-      return null;
-    })();
+    const isBlocking = remainingTokens <= TOKEN_THRESHOLDS.blocking;
 
     const compactionLevel = ctxMgr.getCompactionLevel(toolCount);
 
     // blocking：强制截断（不调用 LLM）
-    if (newLevel === "blocking") {
+    if (isBlocking) {
       log.warn("QUERY_LOOP", `上下文阻塞 (剩余 ${remainingTokens} tokens)，强制截断`);
       const msgCountBefore = ctxMgr.messageCount();
       ctxMgr.emergencyTruncate();
@@ -897,6 +895,9 @@ export async function* queryLoop(
       system: ctxMgr.getSystemPrompt(),
       maxTokens: state.maxOutputTokensOverride ?? config.maxTokens,
       tools: toolDefs,
+      // §12 P2-1：思考 token 上限（settings.maxThinkingTokens，env 优先在 effort.ts 内解析）。
+      // effort.ts applyAnthropicNative 读取它钳制思考预算（manual 精确 / adaptive 降档）。
+      maxThinkingTokens: config.maxThinkingTokens,
     };
 
     // ─── Effort / Thinking 旋钮 → 各 provider 线格式（能力感知映射层，effort.ts）───
@@ -922,6 +923,19 @@ export async function* queryLoop(
       }
 
       cap.applyToSendParams(sendParams, appliedEffort, appliedThinking);
+
+      // §12 P2-1：思考预算被上限钳制时，一次性诚实告知用户（尤其 adaptive 模型无法精确保证）。
+      const capMark = sendParams.thinkingBudgetCapped;
+      if (capMark && !state.thinkingBudgetCapNotified) {
+        state.thinkingBudgetCapNotified = true;
+        if (capMark.mode === "manual") {
+          log.info("EFFORT", `思考预算已钳制到 ${capMark.appliedBudget} tokens（上限 ${capMark.requestedMax}）`);
+          yield { kind: "system", level: "info", text: `思考预算已按上限钳制到 ${capMark.appliedBudget} tokens` };
+        } else {
+          log.info("EFFORT", `adaptive 模型思考预算由服务端决定，已按上限 ${capMark.requestedMax} 映射到 effort=${capMark.mappedEffort}（无法保证精确上限）`);
+          yield { kind: "system", level: "info", text: `adaptive 模型思考预算由服务端决定，已按上限映射到 effort=${capMark.mappedEffort}，无法保证精确上限` };
+        }
+      }
     } else {
       // ── 向后兼容回退：无旋钮 getter 时，沿用 engine 透传的 thinking hint ──
       // - Anthropic provider 读 params.thinking.budgetTokens 开启 Extended Thinking；

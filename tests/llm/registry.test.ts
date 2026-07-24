@@ -70,6 +70,34 @@ describe("ProviderRegistry", () => {
     expect(registry.getModelForSubAgent("plan")).toBe("main-model");
   });
 
+  test("§12 P3-1：CLAUDE_CODE_SUBAGENT_MODEL env 填充 default 兜底键", () => {
+    const prev = process.env.CLAUDE_CODE_SUBAGENT_MODEL;
+    try {
+      process.env.CLAUDE_CODE_SUBAGENT_MODEL = "cc-cheap-model";
+      const config = testConfig({ model: "main-model" });
+      const registry = new ProviderRegistry(config);
+      // 未单独映射的类型走 env 提供的 default 兜底，而非主模型
+      expect(registry.getModelForSubAgent("explore")).toBe("cc-cheap-model");
+      expect(registry.getModelForSubAgent("summarize")).toBe("cc-cheap-model");
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDE_CODE_SUBAGENT_MODEL;
+      else process.env.CLAUDE_CODE_SUBAGENT_MODEL = prev;
+    }
+  });
+
+  test("§12 P3-1：显式配置的 default 优先于 env（env 不覆盖用户配置）", () => {
+    const prev = process.env.CLAUDE_CODE_SUBAGENT_MODEL;
+    try {
+      process.env.CLAUDE_CODE_SUBAGENT_MODEL = "cc-cheap-model";
+      const config = testConfig({ model: "main-model" });
+      const registry = new ProviderRegistry(config, { default: "explicit-default" });
+      expect(registry.getModelForSubAgent("explore")).toBe("explicit-default");
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDE_CODE_SUBAGENT_MODEL;
+      else process.env.CLAUDE_CODE_SUBAGENT_MODEL = prev;
+    }
+  });
+
   test("getSpawnConfigForSubAgent：未映射类型沿用主模型 + 主 spawn 配置（P1-1）", () => {
     const config = testConfig({ model: "main-model", provider: "openai", baseURL: "https://api.test.com/v1" });
     const registry = new ProviderRegistry(config);

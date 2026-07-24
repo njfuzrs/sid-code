@@ -154,6 +154,9 @@ async function doAutoCompact(
     log.info("HOOK", `压缩被 hook 阻止: ${preCompactResult.finalOutput.getEffectiveReason()}`);
     return "skipped";
   }
+  // §12 P1-3：PreCompact hook 返回的 additionalContext 作为「额外指令」注入摘要 prompt
+  // （对标 CC mergeHookInstructions）。如 hook 返回「保留所有数据库 schema」，摘要器据此偏向保留。
+  const hookInstructions = preCompactResult.finalOutput?.getAdditionalContext?.();
 
   try {
     // 优先路径：Session Memory 压缩（结构化会话笔记）
@@ -205,7 +208,8 @@ async function doAutoCompact(
     let streamUsage: any = null;
     let ptlSummarizeBase = toSummarize;
     for (let ptlAttempt = 0; ; ptlAttempt++) {
-      const summaryPrompt = buildCompactUserPrompt(ptlSummarizeBase);
+      // §12 P1-3：hook additionalContext 作为 customInstructions 注入摘要 prompt
+      const summaryPrompt = buildCompactUserPrompt(ptlSummarizeBase, hookInstructions);
       try {
         ({ summary, streamUsage } = await runSummaryRequest(deps, summaryPrompt, COMPACT_TIMEOUT_MS));
         break; // 成功（含空摘要，交由下方判定）

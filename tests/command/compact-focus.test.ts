@@ -95,7 +95,7 @@ describe("P0-1 /compact 参数分流", () => {
     expect(captured.join("\n")).not.toContain("重点保留与");
   });
 
-  test("无参 → 全量摘要式压缩，不调用 provider", async () => {
+  test("无参 → 全量 LLM 摘要压缩（§12 P2-4：走 provider，不再是本地截断）", async () => {
     const captured: string[] = [];
     const provider = makeMockProvider(captured);
     const ctx = makeCtx(buildMessages(8), provider);
@@ -104,8 +104,25 @@ describe("P0-1 /compact 参数分流", () => {
 
     expect(result.type).toBe("text");
     expect((result as any).value).toContain("对话已压缩");
-    // 无参走本地截断摘要，不发 LLM 请求
-    expect(captured.length).toBe(0);
+    // §12 P2-4：无参从旧的本地 200 字截断升级为真正的 LLM 摘要，必须发 LLM 请求
+    expect(captured.length).toBeGreaterThan(0);
+    // 且不应带 focus 提示语（无参无 focus）
+    expect(captured.join("\n")).not.toContain("重点保留与");
+  });
+
+  test("无参 → LLM 摘要失败时回退本地截断兜底（§12 P2-4，永不 no-op）", async () => {
+    // provider 抛错模拟 LLM 摘要失败
+    const failingProvider = {
+      async *sendMessageStream() {
+        throw new Error("network down");
+      },
+    };
+    const ctx = makeCtx(buildMessages(8), failingProvider);
+
+    const result = await compactMod.call("", ctx);
+    expect(result.type).toBe("text");
+    // 兜底文案：降级为本地截断，仍然完成压缩
+    expect((result as any).value).toContain("降级为本地截断");
   });
 
   test("历史太短 → 拒绝压缩", async () => {
@@ -115,5 +132,53 @@ describe("P0-1 /compact 参数分流", () => {
 
     const result = await compactMod.call("focus on x", ctx);
     expect((result as any).value).toContain("太短");
+  });
+
+  test("§12 P1-3：PreCompact hook(manual) block 阻止压缩", async () => {
+    const captured: string[] = [];
+    const provider = makeMockProvider(captured);
+    const ctx = makeCtx(buildMessages(8), provider);
+    ctx.hookSystem = {
+      firePreCompactEvent: async (trigger: string) => {
+        expect(trigger).toBe("manual");
+        return {
+          finalOutput: {
+            isBlockingDecision: () => true,
+            getEffectiveReason: () => "正在处理关键任务",
+            getAdditionalContext: () => undefined,
+          },
+        };
+      },
+      firePostCompactEvent: async () => ({}),
+    };
+
+    const result = await compactMod.call("", ctx);
+    expect((result as any).value).toContain("hook 阻止");
+    expect((result as any).value).toContain("正在处理关键任务");
+    // 被阻止 → 未调用 provider
+    expect(captured.length).toBe(0);
+  });
+
+  test("§12 P1-3：PreCompact hook additionalContext 注入摘要 prompt", async () => {
+    const captured: string[] = [];
+    const provider = makeMockProvider(captured);
+    const ctx = makeCtx(buildMessages(8), provider);
+    ctx.hookSystem = {
+      firePreCompactEvent: async () => ({
+        finalOutput: {
+          isBlockingDecision: () => false,
+          getEffectiveReason: () => "",
+          getAdditionalContext: () => "务必保留所有数据库 schema 定义",
+        },
+      }),
+      firePostCompactEvent: async () => ({}),
+    };
+
+    const result = await compactMod.call("focus on auth", ctx);
+    expect((result as any).value).toContain("focus 压缩完成");
+    const prompt = captured.join("\n");
+    // focus 文本与 hook 指令都进入摘要 prompt
+    expect(prompt).toContain("focus on auth");
+    expect(prompt).toContain("务必保留所有数据库 schema 定义");
   });
 });

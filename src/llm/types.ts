@@ -345,6 +345,25 @@ export interface SendParams {
    * provider 不直接依赖 RetryTelemetry，只产出与协议无关的 {@link StreamTelemetrySignal}。
    */
   onStreamTelemetry?: (signal: StreamTelemetrySignal) => void;
+  /**
+   * §12 P2-1：思考 token 预算上限（来自 settings.maxThinkingTokens）。
+   * 由上层（loop/app）在构建 SendParams 时注入；effort.ts 的 applyAnthropicNative
+   * 读取它（env SID_CODE_MAX_THINKING_TOKENS / MAX_THINKING_TOKENS 优先）钳制思考预算。
+   * env 未设时才用此 settings 值兜底。不传则不钳制。
+   */
+  maxThinkingTokens?: number;
+  /**
+   * §12 P2-1：思考预算被上限钳制后的诊断标记（供 UI/日志诚实告知用户）。
+   * - manual 模型：appliedBudget = 实际下发的钳制后预算（精确）。
+   * - adaptive 模型：mappedEffort = 上限映射到的降档 effort（间接压低，非精确保证）。
+   * 未触发钳制时不设置。
+   */
+  thinkingBudgetCapped?: {
+    requestedMax: number;
+    appliedBudget?: number;
+    mappedEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+    mode: "manual" | "adaptive";
+  };
 }
 
 /**

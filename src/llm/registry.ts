@@ -8,6 +8,8 @@ import type { Config, ModelConfig } from "../config/config.ts";
 import { getLogger } from "../debug/logger.ts";
 import { ModelAvailabilityService } from "./availability.ts";
 import { TokenEstimator } from "./token-estimator.ts";
+import { resolvePricing } from "../api/cost-tracker.ts";
+import { resolveAgent } from "../agent/agent-definition.ts";
 
 /** 子代理模型映射 */
 export interface SubAgentModelMap {
@@ -32,6 +34,13 @@ export class ProviderRegistry {
   constructor(config: Config, subAgentModels?: SubAgentModelMap) {
     this.config = config;
     this.subAgentModels = subAgentModels ?? {};
+    // §12 P3-1：迁移友好——CC 用户设了 CLAUDE_CODE_SUBAGENT_MODEL 也生效。
+    // 仅当未显式配置 subAgentModels.default 时用它填充 default（不覆盖用户显式配置）。
+    // sid-code 的 subAgentModels 按类型分级（比 CC 更强），此处只补 default 兜底键。
+    const ccSubAgentModel = process.env.CLAUDE_CODE_SUBAGENT_MODEL?.trim();
+    if (ccSubAgentModel && !this.subAgentModels.default) {
+      this.subAgentModels = { ...this.subAgentModels, default: ccSubAgentModel };
+    }
     this.availability = new ModelAvailabilityService();
   }
 

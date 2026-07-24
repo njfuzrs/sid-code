@@ -258,6 +258,10 @@ export const SettingsSchema = lazySchema(() =>
       // 推理强度 / 思考开关旋钮（/effort、/think 持久化端；缺省 = auto 跟随模型默认）
       effortLevel: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
       thinkingEnabled: z.boolean().optional(),
+      // §12 P2-1：思考 token 预算上限（对标 CC MAX_THINKING_TOKENS）。
+      // env SID_CODE_MAX_THINKING_TOKENS / MAX_THINKING_TOKENS 优先；此为 env 未设时的兜底。
+      // manual 模型精确钳制 budget，adaptive 模型映射到 effort 降档（间接）。须为正整数。
+      maxThinkingTokens: z.number().int().positive().optional(),
 
       // 目录控制
       allowedDirectories: z.array(z.string()).optional(),

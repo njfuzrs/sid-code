@@ -168,6 +168,12 @@ export interface Config {
    * 缺省 = auto（跟随模型/provider 默认）。运行时态在 App.runtimeThinking，本字段仅作启动初值。
    */
   thinkingEnabled?: boolean;
+  /**
+   * §12 P2-1：思考 token 预算上限（settings.json maxThinkingTokens，对标 CC MAX_THINKING_TOKENS）。
+   * env SID_CODE_MAX_THINKING_TOKENS / MAX_THINKING_TOKENS 优先；此为 env 未设时的兜底。
+   * 透传到 SendParams.maxThinkingTokens，由 effort.ts 钳制思考预算。缺省 = 不钳制。
+   */
+  maxThinkingTokens?: number;
 
   /**
    * AskUserQuestion 交互态空闲超时（settings.json askUserQuestionTimeout）。

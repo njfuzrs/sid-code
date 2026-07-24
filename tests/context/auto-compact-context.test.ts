@@ -4,45 +4,15 @@
 
 import { describe, it, expect } from "bun:test";
 import {
-  getAutoCompactLevel,
   TOKEN_THRESHOLDS,
   TokenFreedTracker,
   isCompactSourceMessage,
+  resolveAutoCompactPctOverride,
 } from "../../src/context/auto-compact.ts";
 import type { Message } from "../../src/llm/types.ts";
 
-describe("getAutoCompactLevel", () => {
-  it("剩余 > 20K 应返回 null", () => {
-    expect(getAutoCompactLevel(30_000)).toBeNull();
-  });
-
-  it("剩余 ≤ 20K 应返回 warning", () => {
-    expect(getAutoCompactLevel(18_000)).toBe("warning");
-  });
-
-  it("剩余 ≤ 13K 应返回 autoCompact", () => {
-    expect(getAutoCompactLevel(10_000)).toBe("autoCompact");
-  });
-
-  it("剩余 ≤ 3K 应返回 blocking", () => {
-    expect(getAutoCompactLevel(2_000)).toBe("blocking");
-  });
-
-  it("边界值 autoCompact/warning 分界 (13K)", () => {
-    expect(getAutoCompactLevel(13_000)).toBe("autoCompact");
-    expect(getAutoCompactLevel(13_001)).toBe("warning");
-  });
-
-  it("边界值 warning/null 分界 (20K)", () => {
-    expect(getAutoCompactLevel(20_000)).toBe("warning");
-    expect(getAutoCompactLevel(20_001)).toBeNull();
-  });
-
-  it("边界值 blocking/autoCompact 分界 (3K)", () => {
-    expect(getAutoCompactLevel(3_000)).toBe("blocking");
-    expect(getAutoCompactLevel(3_001)).toBe("autoCompact");
-  });
-});
+// §12 P2-2：getAutoCompactLevel + autoCompact/warning/error 三档已删除（事实死代码，
+// 主循环只消费 blocking）。原 getAutoCompactLevel describe 一并移除。
 
 describe("TokenFreedTracker", () => {
   it("初始总量为 0", () => {
@@ -124,16 +94,48 @@ describe("isCompactSourceMessage", () => {
 });
 
 describe("TOKEN_THRESHOLDS", () => {
-  it("应包含四层阈值", () => {
-    expect(TOKEN_THRESHOLDS.autoCompact).toBe(13_000);
-    expect(TOKEN_THRESHOLDS.warning).toBe(20_000);
-    expect(TOKEN_THRESHOLDS.error).toBe(20_000);
+  it("§12 P2-2 清理后只保留 blocking 底线（其余死档已删）", () => {
     expect(TOKEN_THRESHOLDS.blocking).toBe(3_000);
+    // 死档已删除：断言不再存在，防止回归时误加回来
+    expect((TOKEN_THRESHOLDS as Record<string, number>).autoCompact).toBeUndefined();
+    expect((TOKEN_THRESHOLDS as Record<string, number>).warning).toBeUndefined();
+    expect((TOKEN_THRESHOLDS as Record<string, number>).error).toBeUndefined();
+  });
+});
+
+describe("resolveAutoCompactPctOverride (§12 P1-1)", () => {
+  it("未设 env 返回 null", () => {
+    expect(resolveAutoCompactPctOverride({})).toBeNull();
+    expect(resolveAutoCompactPctOverride({ SID_CODE_AUTOCOMPACT_PCT: "" })).toBeNull();
   });
 
-  it("阈值应为只读（类型层面 as const 保证）", () => {
-    // as const 在 TS 类型层面保证只读，运行时不冻结对象
-    expect(TOKEN_THRESHOLDS.autoCompact).toBe(13_000);
-    expect(TOKEN_THRESHOLDS.blocking).toBe(3_000);
+  it("小数形态 (0,1) 原样返回", () => {
+    expect(resolveAutoCompactPctOverride({ SID_CODE_AUTOCOMPACT_PCT: "0.5" })).toBe(0.5);
+    expect(resolveAutoCompactPctOverride({ SID_CODE_AUTOCOMPACT_PCT: "0.82" })).toBe(0.82);
+  });
+
+  it("百分数形态 (1,100) 归一化为小数", () => {
+    expect(resolveAutoCompactPctOverride({ SID_CODE_AUTOCOMPACT_PCT: "50" })).toBe(0.5);
+    expect(resolveAutoCompactPctOverride({ SID_CODE_AUTOCOMPACT_PCT: "82" })).toBeCloseTo(0.82, 5);
+  });
+
+  it("非法值忽略返回 null（abc / 0 / 100 / 150）", () => {
+    expect(resolveAutoCompactPctOverride({ SID_CODE_AUTOCOMPACT_PCT: "abc" })).toBeNull();
+    expect(resolveAutoCompactPctOverride({ SID_CODE_AUTOCOMPACT_PCT: "0" })).toBeNull();
+    expect(resolveAutoCompactPctOverride({ SID_CODE_AUTOCOMPACT_PCT: "100" })).toBeNull();
+    expect(resolveAutoCompactPctOverride({ SID_CODE_AUTOCOMPACT_PCT: "150" })).toBeNull();
+  });
+
+  it("SID_CODE_ 优先于 CLAUDE_ 兼容别名", () => {
+    expect(
+      resolveAutoCompactPctOverride({
+        SID_CODE_AUTOCOMPACT_PCT: "0.6",
+        CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "0.3",
+      }),
+    ).toBe(0.6);
+  });
+
+  it("仅设 CLAUDE_ 别名时生效（迁移友好）", () => {
+    expect(resolveAutoCompactPctOverride({ CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "70" })).toBeCloseTo(0.7, 5);
   });
 });

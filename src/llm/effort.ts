@@ -158,6 +158,9 @@ function applyAnthropicNative(params: SendParams, effort: EffortSetting, thinkin
   const catalogEntry = lookupCatalog(params.model || "");
   const thinkingMode = catalogEntry?.thinkingMode;
 
+  // §12 P2-1：思考 token 上限（env / settings）。null 表示未设。
+  const maxThinking = getMaxThinkingTokensOverride(params.maxThinkingTokens);
+
   if (thinkingMode === "always-on" || thinkingMode === "adaptive") {
     // ── adaptive / always-on 路径 ──
     // always-on 模型不可关闭思考（关也按低 effort 下发），avoid 400
@@ -170,9 +173,19 @@ function applyAnthropicNative(params: SendParams, effort: EffortSetting, thinkin
     }
 
     // auto（effort=undefined）→ 走模型默认（Opus 4.8 默认 high）
+    let effectiveEffort: EffortLevel = effort ?? "high";
+    // §12 P2-1：adaptive 模型 budget 由服务端定，客户端无法硬钳——改为按上限把 effort 降档间接压低。
+    // 仅当降档结果比用户档位更低时才生效（不上调），并在 outputConfig 打标记供 UI/日志诚实告知。
+    if (maxThinking !== null) {
+      const capped = mapThinkingCapToEffort(maxThinking);
+      if (capped !== null && ANTHROPIC_EFFORT_BUDGET[capped] < ANTHROPIC_EFFORT_BUDGET[effectiveEffort]) {
+        effectiveEffort = capped;
+        params.thinkingBudgetCapped = { requestedMax: maxThinking, mappedEffort: capped, mode: "adaptive" };
+      }
+    }
     // Anthropic adaptive 线格式官方档位为 low/medium/high/max，不含 xhigh：
     // xhigh 钳到 max，避免未知档位触发 400。
-    const level: WireEffort = clampToMaxWire(effort ?? "high");
+    const level: WireEffort = clampToMaxWire(effectiveEffort);
     // 标记为 adaptive 模式：anthropic.ts 据此下发 {type:"adaptive"} 而非 {type:"enabled"}
     params.thinking = { enabled: true, budgetTokens: 0 };
     params.outputConfig = { effort: level, thinkingType: "adaptive" };
@@ -184,7 +197,13 @@ function applyAnthropicNative(params: SendParams, effort: EffortSetting, thinkin
     }
     // auto（effort=undefined）兜底用 medium 预算，保证开思考时有合理预算。
     const level: EffortLevel = effort ?? "medium";
-    params.thinking = { enabled: true, budgetTokens: ANTHROPIC_EFFORT_BUDGET[level] };
+    let budget = ANTHROPIC_EFFORT_BUDGET[level];
+    // §12 P2-1：manual 模型 budget 由客户端下发，可精确钳制：Math.min(档位budget, 上限)。
+    if (maxThinking !== null && maxThinking < budget) {
+      budget = maxThinking;
+      params.thinkingBudgetCapped = { requestedMax: maxThinking, appliedBudget: budget, mode: "manual" };
+    }
+    params.thinking = { enabled: true, budgetTokens: budget };
   }
 }
 
@@ -509,4 +528,48 @@ export function getThinkingEnvOverride(
   if (v === "on" || v === "true" || v === "1") return true;
   if (v === "off" || v === "false" || v === "0") return false;
   return null; // auto / 非法 → 不覆盖
+}
+
+/**
+ * §12 P2-1：读取思考 token 预算上限（SID_CODE_MAX_THINKING_TOKENS / 兼容别名 MAX_THINKING_TOKENS）。
+ *
+ * 对齐 CC `MAX_THINKING_TOKENS`——直接钳制思考 token 上限省钱。
+ * - `SID_CODE_MAX_THINKING_TOKENS` 优先于兼容别名 `MAX_THINKING_TOKENS`（自有变量 > 迁移别名）。
+ * - settings 参数 `settingsValue` 优先级低于 env（env 是即时覆盖）。
+ * - 须为正整数；非法值（≤0 / NaN）忽略返回 null（不钳制）。
+ *
+ * 语义随模型协议不同：
+ * - manual 模型（budget 客户端下发）：直接 Math.min(档位budget, 上限)，精确钳制。
+ * - adaptive 模型（budget 服务端定）：客户端无法硬钳，改为按上限把 effort 降档间接压低（见 applyAnthropicNative）。
+ *
+ * @param settingsValue settings.maxThinkingTokens（可选，env 未设时的兜底）
+ * @returns 正整数上限，或 null（未设/非法）。
+ */
+export function getMaxThinkingTokensOverride(
+  settingsValue?: number,
+  env: Record<string, string | undefined> = process.env,
+): number | null {
+  const raw = env.SID_CODE_MAX_THINKING_TOKENS ?? env.MAX_THINKING_TOKENS;
+  if (raw !== undefined && raw.trim() !== "") {
+    const parsed = Number(raw.trim());
+    if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed);
+    // 非法 env 值：不静默回退到 settings（用户显式设了 env 应能看出问题），直接忽略返回 null
+    return null;
+  }
+  if (settingsValue !== undefined && Number.isFinite(settingsValue) && settingsValue > 0) {
+    return Math.floor(settingsValue);
+  }
+  return null;
+}
+
+/**
+ * §12 P2-1：adaptive 模型下把「思考 token 上限」映射到 effort 降档（客户端无法硬钳服务端预算）。
+ * 阈值与 ANTHROPIC_EFFORT_BUDGET 档位预算对应：<5K→low、<15K→medium、<32K→high，否则不降。
+ * 返回降档后的建议 effort（若无需降档返回 null）。
+ */
+export function mapThinkingCapToEffort(maxThinkingTokens: number): EffortLevel | null {
+  if (maxThinkingTokens < 5_000) return "low";
+  if (maxThinkingTokens < 15_000) return "medium";
+  if (maxThinkingTokens < 32_000) return "high";
+  return null; // ≥32K：不降档（已接近/超过 xhigh 预算）
 }

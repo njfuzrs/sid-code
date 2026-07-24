@@ -288,6 +288,10 @@ export interface LoopState {
    */
   lspHealthWarned?: boolean;
   /**
+   * §12 P2-1：思考预算被 maxThinkingTokens 上限钳制的提示是否已展示过（一次性，避免每轮刷屏）。
+   */
+  thinkingBudgetCapNotified?: boolean;
+  /**
    * /goal：上次注入 Goal reminder 的轮次（周期回注节流用）。
    * 0/undefined 表示尚未回注过。
    */

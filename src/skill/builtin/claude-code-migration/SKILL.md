@@ -25,7 +25,41 @@ mode: activate
 
 **绝不整体覆盖写 sid-code 的 settings.json。** 只做「新增缺失的顶层字段/嵌套键」的 patch 式合并：读入现有 JSON → 只添加计划里确认的字段 → 写回。原因：sid-code 的 settings 经 Zod round-trip 整体重写会 strip 掉嵌套字段（如 `availableModels[].apiKey`）并把 `${ENV}` 占位符展开成明文落盘。若目标字段已存在，走冲突流程，不覆盖。
 
+## JSON 合并的硬性约束（settings.json / .mcp.json）
+
+**绝不即兴写临时脚本（如 `/tmp/*.mjs`、`/tmp/*.js`）来做 JSON 合并。** 这类做法反复出问题：临时脚本用错模块系统（`.mjs` 里写 `require` 直接崩）、或改走 `write` 工具把整段 JSON 当字符串塞进去被参数校验拒绝。JSON 的 patch 合并、`type→transport` 转换等**确定性变换**一律交给 skill 自带的确定性脚本，你只负责调用它、传参、读它的 JSON 结果：
+
+```bash
+# settings.json patch 合并（只新增缺失键，冲突默认跳过并报告，不覆盖已有键与嵌套 apiKey）
+node <skill-dir>/scripts/apply-migration.mjs --op merge-settings --target <settings.json> --patch '<json>'
+# MCP 合并（自动做 type→transport、disabled→enabled、丢弃不支持字段；已存在的 server 名算冲突跳过）
+node <skill-dir>/scripts/apply-migration.mjs --op merge-mcp --target <.mcp.json 或 settings.json> --servers '<json>'
+```
+
+- patch/servers 过长时改用 `--patch-file <path>` / `--servers-file <path>` 从文件读，避免超长命令行。
+- 想先看结果不落盘：加 `--dry-run`，脚本会把合并后的完整对象放在返回 JSON 的 `result` 字段里。
+- 需要覆盖已有键时（仅在用户明确选择"覆盖"冲突处理方式后）：加 `--on-conflict overwrite`。
+- 脚本返回 JSON：`{ ok, written, added:[], conflicts:[], transforms:[] }`。据 `conflicts` 走冲突确认流程，据 `transforms` 向用户交代做了哪些转换。
+- 与 inspector 一样，脚本用 `node` 或 `bun` 都能跑（见下方运行时探测）。
+
+**若确实需要 skill 未覆盖的一次性 JSON 处理**（脚本的两个 op 都不适用），也**不要**即兴写脚本文件——直接用 sid-code 内置的 `read` 读现有 JSON、在上下文里算好合并结果、再用 `write` 写回（`write` 的 `content` 传合并后的 JSON 字符串即可，不需要任何外部运行时）。
+
 ## 工作流
+
+### 0. 探测脚本运行时（决定后续 inspector / apply 用什么跑）
+
+本 skill 的脚本（`inspect-migration.mjs`、`apply-migration.mjs`）用 `node` 或 `bun` 都能跑。开工前先探测一次，后续所有脚本调用统一用探测到的运行时：
+
+```bash
+command -v bun >/dev/null 2>&1 && echo "runtime=bun" || (command -v node >/dev/null 2>&1 && echo "runtime=node" || echo "runtime=none")
+```
+
+- **优先 `bun`**：sid-code 本身就是 Bun 运行的，`bun` 几乎一定在（就是跑 sid-code 的那个）。
+- 探到 `bun` 或 `node` → 后续命令里的 `node` 一律替换成探测到的运行时（如 `bun <skill-dir>/scripts/xxx.mjs`）。
+- **探到 `none`（两者都没有，极罕见）→ 降级为纯内置工具，绝不引导用户安装 node/bun**：
+  - 只读检查：不跑 inspector，改用 sid-code 的 `read`/`glob`/`grep` 按 `references/mapping.md` 列出的源/目标文件逐一手查，产出同样结构的迁移计划。
+  - JSON 合并：不跑 `apply-migration.mjs`，改用 `read` 读现有目标 JSON → 在上下文里按上方约束算好 patch 合并结果（含 `type→transport` 转换）→ 用 `write` 写回。
+  - 降级不等于跳过：所有安全规则（先只读、写前确认、不覆盖、patch 合并、不迁 secret）照旧生效。
 
 ### 1. 运行只读 inspector
 
@@ -33,7 +67,7 @@ mode: activate
 node <skill-dir>/scripts/inspect-migration.mjs --project "$PWD"
 ```
 
-需要机器可读结果时加 `--format json`。如果没有 Node.js（sid-code 基于 Bun，通常有 `bun`，也可用 `bun <skill-dir>/scripts/inspect-migration.mjs`），不要跳过检查；按 `references/mapping.md` 列出的源文件和目标文件手动检查，并在任何写入前生成同样结构的迁移计划。
+（`node` 替换成上一步探测到的运行时。）需要机器可读结果时加 `--format json`。若运行时探测为 `none`，按上一步的降级路径手动检查，不要跳过。
 
 inspector 是**状态感知**的：它读取迁移状态文件（默认 `~/.sid-code/state/cc-migration-state.json`，可用 `--state` 覆盖），把「已记录迁移过且目标仍存在」的项归入「已迁移（本次跳过）」，不再当作冲突反复要求确认。逃生阀：`--force` 忽略全部状态、`--force-user` 仅忽略用户级状态，用于源配置更新后想重新迁移的场景。计划里每个可迁移/需确认项都带 `identity` 字段，执行后按它回写状态。
 
@@ -67,8 +101,8 @@ inspector 是**状态感知**的：它读取迁移状态文件（默认 `~/.sid-
 
 - 复制文件/目录，不移动。
 - **不覆盖已有目标。** 遇到冲突时，让用户选择跳过、追加、重命名副本或手动合并。
-- **settings.json 用 patch 式合并**（见上方硬性约束），不整体覆盖。
-- **MCP 写入时执行 `type→transport` 转换**：每个 server 补上 `transport` 字段（`stdio`/`http`/`sse`/`ws`，按 mapping.md 规则推导），`disabled` 转 `enabled`，丢弃 sid-code 不支持的字段（如 `cwd`/`trust`/`oauth`）。项目级 MCP 优先写项目根 `.mcp.json`；如果项目根已有有效 `.mcp.json`，只报告 sid-code 可直接读取，不复制。
+- **settings.json / .mcp.json 用确定性脚本做 patch 合并**（见上方「JSON 合并的硬性约束」）：调用 `apply-migration.mjs --op merge-settings` / `--op merge-mcp`，不整体覆盖、不即兴写脚本。运行时为 `none` 时才走 `read`+`write` 手动合并的降级路径。
+- **MCP 写入时执行 `type→transport` 转换**：这一步由 `apply-migration.mjs --op merge-mcp` 自动完成（补 `transport`、`disabled→enabled`、丢弃 `cwd`/`trust`/`oauth` 等不支持字段），你只需把 Claude 侧 `mcpServers` 原样作为 `--servers` 传入。项目级 MCP 优先写项目根 `.mcp.json`；如果项目根已有有效 `.mcp.json`，只报告 sid-code 可直接读取，不复制。
 - **hooks 写入时执行结构展开**：把 Claude 的 `event -> [{matcher, hooks:[inner]}]` 展开成 sid-code 的扁平 `event -> [{type, event, matcher, command, timeout, ...}]`，并替换 `$CLAUDE_PROJECT_DIR` token。目标已有 hooks 时按事件名追加（需确认）。
 - **memory 复制**：把源 memory 目录整体 copy 到目标目录（inspector 计划里的目标路径）；`team/` 子目录整体保留结构；目标已存在时走冲突流程，绝不覆盖合并。
 - **compatibleInPlace 项不复制**：只告知用户它们已能被 sid-code 读取。
@@ -101,6 +135,7 @@ inspector 是**状态感知**的：它读取迁移状态文件（默认 `~/.sid-
 
 - `references/mapping.md`：迁移映射和缺口的准绳。解释检查结果或改文件前**必须读取**。
 - `scripts/inspect-migration.mjs`：确定性的只读扫描脚本。会**只读**读取迁移状态文件来识别已迁移项；不得写文件、安装或访问网络。
+- `scripts/apply-migration.mjs`：确定性的写入脚本，做 settings.json / .mcp.json 的 patch 式合并与 MCP `type→transport` 转换。只 patch 合并、不整体覆盖、冲突默认跳过并报告；不安装、不联网。用它替代任何即兴写的临时合并脚本。`node` 或 `bun` 均可运行。
 - 迁移状态文件 `~/.sid-code/state/cc-migration-state.json`：本 skill 的记账文件，记录已迁移项的 identity，让多次运行不重复处理全局配置。由 skill 在迁移成功后写入，inspector 只读。删除它不影响 sid-code 运行，只会让下次运行重新提示已迁移项。
 
 ## 已知限制

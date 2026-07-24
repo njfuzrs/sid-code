@@ -26,6 +26,36 @@ export interface AgentDefinition {
   disallowedTools?: string[];
   /** 模型覆盖（undefined = 继承主模型） */
   model?: string;
+  /**
+   * 语义模型档位（P0-1，对齐 CC 给 Explore pin haiku 的成本设计）。
+   * "cheap" 高频只读代理（explore/plan/summarize）省 token；"strong" 需最强模型；"default" 跟主模型。
+   * 不硬编码模型名（铁律 feedback-no-hardcoded-model-tier-rules）——档位→实际模型由
+   * registry.getModelForSubAgent 从「已注册模型按价格排序 + 环境变量」派生，fail-open 回退主模型。
+   * 优先级：task.model 每次调用覆盖 > subAgentModels[type] 用户配置 > model 字段 > modelTier 档位 > 主模型。
+   */
+  modelTier?: "cheap" | "default" | "strong";
+  /**
+   * 预加载技能名列表（P1-1，对齐 CC §11.8 角色链最佳实践）。
+   * spawn 时把这些 skill 的内容作为「预加载专业知识」段注入子代理 system prompt。
+   * skill 不存在时 warn 跳过，不 spawn 失败。
+   */
+  skills?: string[];
+  /**
+   * UI 区分色（P1-2，对齐 CC frontmatter color）。
+   * 声明后该 agent 的进度/结果行用此色；未声明走 assignAgentColor 哈希分配。
+   * 校验是否在允许色板内（见 color.ts PALETTE），非法值 warn 跳过用默认分配色。
+   */
+  color?: string;
+  /**
+   * 权限模式（P2-1，对齐 CC frontmatter permissionMode）。
+   * 声明后子代理用此权限模式（如 acceptEdits/plan）。非法值 warn 跳过。
+   */
+  permissionMode?: string;
+  /**
+   * agent 专用 hooks（P2-1，对齐 CC frontmatter hooks + §11.8「子代理专用 hooks」）。
+   * 结构与 settings.json hooks 一致；spawn 时注册到该子代理的 hook 系统。
+   */
+  hooks?: unknown;
   /** 最大轮次（默认 10） */
   maxTurns?: number;
   /** 超时时间（毫秒，默认 120000） */
@@ -64,6 +94,8 @@ export const BUILTIN_AGENTS: Record<string, AgentDefinition> = {
 - 标注置信度：对每个关键发现，简短标注确定性（如「已读码确认」「推测，未核实」「未找到，可能不存在」），并显式列出你没能确认的点。不要把推测当事实陈述，让主代理能判断哪些结论需要复核`,
     tools: ["read", "grep", "glob", "ls", "read_many", "task_list", "task_get"],
     readOnly: true,
+    // P0-1：explore 是高频只读搜索代理，pin 便宜档省 token（对齐 CC 给 Explore 固定 haiku）。
+    modelTier: "cheap",
     // explore 常被派去读 7-11 个文件 + 多轮 grep，每轮都要等 LLM 响应；
     // 慢模型（glm/deepseek 等）下 120s 明显不够，给足 300s。
     timeout: 300_000,
@@ -97,6 +129,8 @@ export const BUILTIN_AGENTS: Record<string, AgentDefinition> = {
 - 保持简洁
 - 完成后以 "## 摘要" 开头输出结构化摘要`,
     // summarize 不需要工具
+    // P0-1：摘要是纯文本压缩任务，pin 便宜档省 token。
+    modelTier: "cheap",
     timeout: 180_000,
     source: "built-in",
   },
@@ -112,6 +146,8 @@ export const BUILTIN_AGENTS: Record<string, AgentDefinition> = {
 - 完成后以 "## 方案" 开头输出：问题分析、方案设计、涉及文件、实现步骤`,
     tools: ["read", "grep", "glob", "ls", "read_many", "task_list", "task_get"],
     readOnly: true,
+    // P0-1：plan 只读分析代理，pin 便宜档省 token。
+    modelTier: "cheap",
     // plan 只读但需要大量阅读代码，给足 240s。
     timeout: 240_000,
     source: "built-in",

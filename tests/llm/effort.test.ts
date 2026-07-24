@@ -14,6 +14,8 @@ import {
   getEffortEnvOverride,
   getThinkingEnvOverride,
   previewWireEffort,
+  getMaxThinkingTokensOverride,
+  mapThinkingCapToEffort,
 } from "../../src/llm/effort.ts";
 import type { SendParams } from "../../src/llm/types.ts";
 
@@ -324,5 +326,128 @@ describe("previewWireEffort — 预演实际下发档（钳制提示用）", () 
   test("unknown：no-op → 返回原档", () => {
     expect(previewWireEffort(unknownCap, "max")).toBe("max");
     expect(previewWireEffort(unknownCap, "low")).toBe("low");
+  });
+});
+
+describe("§12 P2-1 getMaxThinkingTokensOverride", () => {
+  test("未设 env/settings 返回 null", () => {
+    expect(getMaxThinkingTokensOverride(undefined, {})).toBeNull();
+  });
+
+  test("env SID_CODE_ 优先，正整数生效", () => {
+    expect(getMaxThinkingTokensOverride(undefined, { SID_CODE_MAX_THINKING_TOKENS: "5000" })).toBe(5000);
+  });
+
+  test("兼容别名 MAX_THINKING_TOKENS", () => {
+    expect(getMaxThinkingTokensOverride(undefined, { MAX_THINKING_TOKENS: "8000" })).toBe(8000);
+  });
+
+  test("SID_CODE_ 优先于 MAX_THINKING_TOKENS 别名", () => {
+    expect(
+      getMaxThinkingTokensOverride(undefined, {
+        SID_CODE_MAX_THINKING_TOKENS: "3000",
+        MAX_THINKING_TOKENS: "9000",
+      }),
+    ).toBe(3000);
+  });
+
+  test("env 未设时用 settings 兜底", () => {
+    expect(getMaxThinkingTokensOverride(7000, {})).toBe(7000);
+  });
+
+  test("env 非法值忽略返回 null（不回退 settings）", () => {
+    expect(getMaxThinkingTokensOverride(7000, { SID_CODE_MAX_THINKING_TOKENS: "abc" })).toBeNull();
+    expect(getMaxThinkingTokensOverride(7000, { SID_CODE_MAX_THINKING_TOKENS: "0" })).toBeNull();
+    expect(getMaxThinkingTokensOverride(7000, { SID_CODE_MAX_THINKING_TOKENS: "-5" })).toBeNull();
+  });
+});
+
+describe("§12 P2-1 mapThinkingCapToEffort", () => {
+  test("<5K → low", () => expect(mapThinkingCapToEffort(3000)).toBe("low"));
+  test("<15K → medium", () => expect(mapThinkingCapToEffort(10000)).toBe("medium"));
+  test("<32K → high", () => expect(mapThinkingCapToEffort(20000)).toBe("high"));
+  test("≥32K → null（不降档）", () => expect(mapThinkingCapToEffort(40000)).toBeNull());
+});
+
+describe("§12 P2-1 思考预算钳制 — applyToSendParams", () => {
+  const OLD_ENV = { ...process.env };
+  function clearEnv() {
+    delete process.env.SID_CODE_MAX_THINKING_TOKENS;
+    delete process.env.MAX_THINKING_TOKENS;
+  }
+
+  test("manual 模型：env 上限 < 档位预算 → 精确钳制 budget", () => {
+    clearEnv();
+    process.env.SID_CODE_MAX_THINKING_TOKENS = "5000";
+    try {
+      const cap = resolveEffortCapability({ model: "claude-opus-4", provider: "anthropic" });
+      const p = baseParams("claude-opus-4");
+      cap.applyToSendParams(p, "high", true); // high=20K → 钳到 5K
+      expect(p.thinking).toEqual({ enabled: true, budgetTokens: 5000 });
+      expect(p.thinkingBudgetCapped).toMatchObject({ mode: "manual", appliedBudget: 5000, requestedMax: 5000 });
+    } finally {
+      Object.assign(process.env, OLD_ENV);
+      clearEnv();
+      Object.assign(process.env, OLD_ENV);
+    }
+  });
+
+  test("manual 模型：上限 > 档位预算 → 不钳制（用档位预算）", () => {
+    clearEnv();
+    process.env.SID_CODE_MAX_THINKING_TOKENS = "40000";
+    try {
+      const cap = resolveEffortCapability({ model: "claude-opus-4", provider: "anthropic" });
+      const p = baseParams("claude-opus-4");
+      cap.applyToSendParams(p, "high", true); // high=20K < 40K → 不钳
+      expect(p.thinking).toEqual({ enabled: true, budgetTokens: 20000 });
+      expect(p.thinkingBudgetCapped).toBeUndefined();
+    } finally {
+      clearEnv();
+      Object.assign(process.env, OLD_ENV);
+    }
+  });
+
+  test("manual 模型：settings 兜底（无 env）", () => {
+    clearEnv();
+    try {
+      const cap = resolveEffortCapability({ model: "claude-opus-4", provider: "anthropic" });
+      const p = baseParams("claude-opus-4");
+      p.maxThinkingTokens = 2000;
+      cap.applyToSendParams(p, "high", true); // high=20K → 钳到 2K
+      expect(p.thinking).toEqual({ enabled: true, budgetTokens: 2000 });
+      expect(p.thinkingBudgetCapped).toMatchObject({ mode: "manual", appliedBudget: 2000 });
+    } finally {
+      Object.assign(process.env, OLD_ENV);
+    }
+  });
+
+  test("adaptive 模型：低上限映射 effort 降档并打标记（无法精确钳制）", () => {
+    clearEnv();
+    process.env.SID_CODE_MAX_THINKING_TOKENS = "4000"; // <5K → low
+    try {
+      const cap = resolveEffortCapability({ model: "claude-opus-4-8", provider: "anthropic" });
+      const p = baseParams("claude-opus-4-8");
+      cap.applyToSendParams(p, "high", true); // 请求 high，但上限映射降到 low
+      expect(p.outputConfig).toMatchObject({ effort: "low", thinkingType: "adaptive" });
+      expect(p.thinkingBudgetCapped).toMatchObject({ mode: "adaptive", mappedEffort: "low", requestedMax: 4000 });
+    } finally {
+      clearEnv();
+      Object.assign(process.env, OLD_ENV);
+    }
+  });
+
+  test("adaptive 模型：上限映射档位不低于当前档 → 不降档不打标记", () => {
+    clearEnv();
+    process.env.SID_CODE_MAX_THINKING_TOKENS = "40000"; // ≥32K → 不降档
+    try {
+      const cap = resolveEffortCapability({ model: "claude-opus-4-8", provider: "anthropic" });
+      const p = baseParams("claude-opus-4-8");
+      cap.applyToSendParams(p, "low", true); // 已是 low，上限也不要求降
+      expect(p.outputConfig).toMatchObject({ effort: "low" });
+      expect(p.thinkingBudgetCapped).toBeUndefined();
+    } finally {
+      clearEnv();
+      Object.assign(process.env, OLD_ENV);
+    }
   });
 });

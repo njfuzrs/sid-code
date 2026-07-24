@@ -140,6 +140,12 @@ export class Manager {
   private systemPrompt: string = "";
   private maxTokens: number;
   private compactThreshold: number;
+  /**
+   * §12 P1-1：autoCompact 触发的使用率上限（0~1 小数），null 表示未设（用默认相对系数）。
+   * 由 env（SID_CODE_AUTOCOMPACT_PCT / CLAUDE_AUTOCOMPACT_PCT_OVERRIDE）或 compactThreshold 参数注入。
+   * 设了之后 getCompactionLevel 的 hard 档改用 maxTokens×(1-pct) 作剩余门槛（见 getCompactionLevel）。
+   */
+  private autoCompactPctOverride: number | null = null;
   private tempDir?: string;
   private sessionId?: string;
   private maskingService?: ToolOutputMaskingService;
@@ -200,6 +206,12 @@ export class Manager {
   constructor(opts: ManagerOptions) {
     this.maxTokens = opts.maxTokens;
     this.compactThreshold = opts.compactThreshold ?? 0.7;
+    // §12 P1-1/P2-3：接活 compactThreshold 死参数——显式传入（非默认 0.7）时作为 autoCompact
+    // 使用率上限注入 override，让这个此前从未被消费的参数真正参与 getCompactionLevel 决策。
+    // 上层（app.ts）把 env 解析出的百分比换算成 compactThreshold 传入。
+    if (opts.compactThreshold !== undefined) {
+      this.setAutoCompactPctOverride(opts.compactThreshold);
+    }
     this.tempDir = opts.tempDir;
     // 创建即启用 masking（对标 cc）：构造时若已知 sessionId，直接建 maskingService，
     // 不必等外部记得调 setSessionId。setSessionId 仍保留（App 侧在 sessionId 晚于
@@ -948,6 +960,34 @@ export class Manager {
   }
 
   /**
+   * §12 P1-1：设置 autoCompact 触发的使用率上限（override 默认相对系数）。
+   *
+   * @param pct 使用率上限：可传 0~1 小数（0.5=50%）或 1~100 整数（50=50%，自动归一化）。
+   *   合法范围归一化后须落在 (0, 1)；非法值（≤0 / ≥1 / NaN）忽略并清空 override（回到默认系数）。
+   *   同步更新 compactThreshold（/context 展示"距自动压缩阈值"用），保持两者口径一致。
+   */
+  setAutoCompactPctOverride(pct: number | null): void {
+    if (pct === null || !Number.isFinite(pct)) {
+      this.autoCompactPctOverride = null;
+      return;
+    }
+    // 归一化：>1 视为百分数（50 → 0.5）
+    const normalized = pct > 1 ? pct / 100 : pct;
+    // 严格区间校验：必须 (0,1)，否则视为非法忽略（防止 0/100/150 之类把安全底线顶掉）
+    if (normalized <= 0 || normalized >= 1) {
+      this.autoCompactPctOverride = null;
+      return;
+    }
+    this.autoCompactPctOverride = normalized;
+    this.compactThreshold = normalized;
+  }
+
+  /** §12 P1-1：获取当前 autoCompact 使用率上限（null=未设，用默认相对系数）。 */
+  getAutoCompactPctOverride(): number | null {
+    return this.autoCompactPctOverride;
+  }
+
+  /**
    * P0-2：按类别拆分当前上下文 token 用量（供 /context 可视化）。
    *
    * 分类口径与 rawEstimateTokens 完全一致（同一套启发式），保证 total 与 estimateTokens
@@ -1045,12 +1085,24 @@ export class Manager {
     // §12.6 阈值相对化：纯绝对 buffer 对超大窗口（如 1M）触发过晚——
     //   1M 窗口剩 80K 才开始 masking = 已用 92%，留给压缩的腾挪空间过小。
     // 故每层取「绝对 buffer」与「窗口百分比」中更早触发（更大）的那个作为剩余阈值。
-    //   masking: max(80K, 18% window)、compression: max(60K, 12% window)、emergency: max(40K, 7% window)
-    //   对 200K 窗口：18%=36K < 80K → 仍用绝对值（行为不变，兼容老模型）。
-    //   对 1M 窗口：18%=180K > 80K → 用相对值（剩 180K≈82% 用量即开始 masking，留足腾挪空间）。
-    const maskingThreshold = Math.max(BUFFER_THRESHOLDS.masking, this.maxTokens * 0.18);
-    const compressionThreshold = Math.max(BUFFER_THRESHOLDS.compression, this.maxTokens * 0.12);
-    const emergencyThreshold = Math.max(BUFFER_THRESHOLDS.emergency, this.maxTokens * 0.07);
+    //   masking: max(80K, 22% window)、compression: max(60K, 18% window)、emergency: max(40K, 10% window)
+    //   对 200K 窗口：22%=44K < 80K → 仍用绝对值（行为不变，兼容老模型，hard 仍在剩 60K≈70%）。
+    //   对 1M 窗口：18%=180K > 60K → hard 用相对值（剩 180K≈82% 用量即摘要，从 88% 提前 6 点，留足腾挪空间）。
+    // §12 P0-2：系数从 0.18/0.12/0.07 提到 0.22/0.18/0.10——纯绝对 buffer 让「窗口越大越晚压缩」，
+    //   默认 Opus 4.8（1M 窗口）受影响最直接，88% 才压缩已进入推理质量下降区。系数对所有窗口统一，
+    //   不按模型名分档（遵守全局指令 feedback-no-hardcoded-model-tier-rules），靠 max(绝对, 相对) 自然分流。
+    let compressionThreshold = Math.max(BUFFER_THRESHOLDS.compression, this.maxTokens * 0.18);
+    const maskingThreshold = Math.max(BUFFER_THRESHOLDS.masking, this.maxTokens * 0.22);
+    const emergencyThreshold = Math.max(BUFFER_THRESHOLDS.emergency, this.maxTokens * 0.10);
+
+    // §12 P1-1：autoCompact 百分比 override（SID_CODE_AUTOCOMPACT_PCT / compactThreshold）。
+    // 设了 override → hard 档（LLM 摘要）改用「窗口 ×(1-pct)」作为剩余门槛，让用户可精确控制触发点。
+    // masking/emergency 仍保留绝对 buffer 兜底，不被 override 架空（防止用户设极端值把安全底线也顶掉）。
+    // 取「override 剩余门槛」与「emergency 绝对底线」的较大值，保证 hard 永远早于或等于 emergency 触发。
+    if (this.autoCompactPctOverride !== null) {
+      const overrideRemaining = this.maxTokens * (1 - this.autoCompactPctOverride);
+      compressionThreshold = Math.max(overrideRemaining, emergencyThreshold);
+    }
 
     // 按剩余空间从紧到松检查：剩余越少 → 响应越激进
     if (remaining <= emergencyThreshold) return "emergency";    // 紧急截断
