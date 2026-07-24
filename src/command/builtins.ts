@@ -605,10 +605,10 @@ export class RestoreCommand implements Command {
 export class MemoryCommand implements Command {
   name() { return "memory"; }
   aliases() { return ["mem"]; }
-  description() { return "管理记忆（auto/set/get/delete/list/search/show/reload）"; }
+  description() { return "管理记忆（auto/external/set/get/delete/list/search/show/reload）"; }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
-    // 无参数 → 打开交互式记忆文件浏览面板（CLAUDE.md 列表 + 预览）
+    // 无参数 → 打开交互式记忆面板（auto-memory 条目管理 + f 键切回 CLAUDE.md 浏览）
     if (!args.trim()) {
       return { kind: "dialog", dialog: "memory" };
     }
@@ -662,6 +662,50 @@ export class MemoryCommand implements Command {
           lines.push("⚠️ 检测到环境变量 SID_CODE_AUTO_MEMORY 已设置，重启后将以环境变量为准。");
         }
         return { kind: "message", message: lines.join("\n") };
+      }
+
+      case "external": {
+        // M4-5：CLAUDE.md 外部 @import 审批开关。/memory external allow|deny|status
+        // 让用户在启动对话框拒绝后仍有命令入口改主意（对齐 CC Config.tsx toggle）。
+        const action = (parts[1] || "status").toLowerCase();
+
+        if (action === "status" || action === "") {
+          if (!ctx.getExternalImportsState) {
+            return { kind: "message", message: "外部导入审批状态不可用（运行环境未接线）" };
+          }
+          const { approved } = ctx.getExternalImportsState();
+          const stateLabel = approved === undefined
+            ? "尚未询问（首次遇到外部导入时会弹审批对话框）"
+            : approved
+              ? "已允许（项目外的 @import 会被展开加载）"
+              : "已禁用（项目外的 @import 会被跳过）";
+          return {
+            kind: "message",
+            message: [
+              `CLAUDE.md 外部导入: ${stateLabel}`,
+              "",
+              "用法: /memory external allow|deny|status",
+              "  allow — 允许加载项目根之外（含 ~/）的 @import",
+              "  deny  — 跳过所有项目外的 @import",
+            ].join("\n"),
+          };
+        }
+
+        if (action !== "allow" && action !== "deny" && action !== "on" && action !== "off") {
+          return { kind: "error", message: "用法: /memory external allow|deny|status" };
+        }
+
+        if (!ctx.setExternalImportsApproved) {
+          return { kind: "message", message: "外部导入审批开关不可用（运行环境未接线）" };
+        }
+        const approved = action === "allow" || action === "on";
+        await ctx.setExternalImportsApproved(approved);
+        return {
+          kind: "message",
+          message: approved
+            ? "已允许 CLAUDE.md 外部导入，规则已重载（项目外的 @import 现在会被展开）。"
+            : "已禁用 CLAUDE.md 外部导入，项目外的 @import 将被跳过。",
+        };
       }
 
       case "set": {

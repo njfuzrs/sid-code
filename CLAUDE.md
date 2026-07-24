@@ -15,7 +15,6 @@
 | `sid-code` / `sc`         | `~/.local/bin/sid-code` → 线上下载版          | 稳定版 | 验证线上版本 |
 | `sid-code-dev` / `sc-dev` | `~/bin/sid-code-dev` → 本地构建产物（仓库根） | 开发版 | 日常开发调试 |
 
-> **`sid-code-stable` / `sc-stable` 已删除，不再存在。** 稳定版现在就是 `sc` / `sid-code`。
 
 两条命令是**不同的二进制名**，不靠 PATH 优先级区分：
 

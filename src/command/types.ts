@@ -63,6 +63,13 @@ export interface AppContext {
   setAutoMemory?: (enabled: boolean, persist?: boolean) => void | Promise<void>;
   /** M2：读取当前 auto-memory 运行时启用态（/memory auto status 用）。 */
   getAutoMemoryState?: () => { enabled: boolean; source: "env" | "settings" | "default" };
+  /**
+   * M4-5：CLAUDE.md 外部 @import 审批 setter（/memory external allow|deny 用）。
+   * 持久化批准位到 project 级 config；allow 时重载 CLAUDE.md 展开外部导入并重建系统提示词。
+   */
+  setExternalImportsApproved?: (approved: boolean) => void | Promise<void>;
+  /** M4-5：读取当前外部导入审批态（/memory external status 用）。undefined=尚未询问。 */
+  getExternalImportsState?: () => { approved: boolean | undefined };
   /** 自定义状态栏 setter（/statusline 用，P1-5）。config=undefined 禁用；persist=true 写 settings.json。 */
   setStatusLine?: (config: import("../ui/statusline/run-statusline.ts").StatusLineConfig | undefined, persist?: boolean) => void;
   /** 读取当前自定义状态栏配置（/statusline 展示/toggle 用）。 */

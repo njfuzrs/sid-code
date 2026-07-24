@@ -389,7 +389,14 @@ export async function findCLAUDEmd(startDir: string): Promise<string | null> {
  * M7：向上遍历父目录链，收集**所有**命中的 CLAUDE.md（不 early-return）。
  * 返回顺序：根（最浅）在前 → cwd（最深）在后，使越深的目录优先级越高（后者覆盖前者）。
  *
- * 上界：遍历到文件系统根或家目录为止（避免扫到无关的系统上层目录）。
+ * 上界（三选一，最先命中者停）：
+ *   1. git 仓库根（含 `.git` 的目录）——扫完该层后停，不越出仓库边界；
+ *   2. 家目录 / 家目录父级——不往系统上层扫；
+ *   3. 文件系统根。
+ * git root 上界是主要边界：monorepo 场景下父链应止于仓库根，避免把仓库外
+ * 无关上层目录的 CLAUDE.md 也拉进来（对齐 resolveProjectRoot 的 git 优先思路）。
+ * 用 existsSync 探测 `.git`（零子进程），不依赖 git 可执行。
+ *
  * 每一层只取第一个命中的候选文件名（同层多个候选取优先级最高的）。
  * 用 realpath 去重，防 symlink 使同一文件重复计入。
  */
@@ -418,8 +425,11 @@ export async function findCLAUDEmdChain(startDir: string): Promise<string[]> {
       }
     }
 
-    // 到达上界则停：文件系统根、或家目录父级（不再往系统上层扫）
-    if (currentDir === fsRoot || currentDir === home || currentDir === homeParent) break;
+    // 上界 1：当前目录即 git 仓库根 → 扫完本层后停（不越出仓库边界）。
+    // 用 existsSync 探测 `.git`（文件或目录，worktree 下 .git 是文件），零子进程。
+    const isGitRoot = existsSync(join(currentDir, ".git"));
+    // 上界 2/3：文件系统根、或家目录（及其父级，不再往系统上层扫）。
+    if (isGitRoot || currentDir === fsRoot || currentDir === home || currentDir === homeParent) break;
     const parentDir = dirname(currentDir);
     if (parentDir === currentDir) break;
     currentDir = parentDir;

@@ -1789,31 +1789,43 @@ export class App {
           }
         }
 
-        // M4：外部导入审批。若加载中遇到未批准的外部 @import，且用户尚未做过决定
-        // （approval 位为 undefined），收集快照留待 TUI 就绪后弹审批对话框。
+        // M4：外部导入审批。若加载中遇到未批准的外部 @import：
+        //  - 用户尚未做过决定（approval 位为 undefined）→ 收集快照，待 TUI 就绪后弹审批对话框；
+        //  - 用户已决定拒绝（approval === false）→ 无对话框，导入被静默跳过。此时必须
+        //    经主上下文注入一条 system-reminder 告知模型「有外部导入被跳过 + 如何批准」，
+        //    否则模型完全不知道这些指令缺失（M4-4：对齐团队记忆抑制态的可见性做法，
+        //    避免静默降级）。
         try {
           const { consumeSkippedExternalImports } = await import("./config/rules.ts");
           const { getClaudeMdExternalImportsApproved } = await import("./config/app-config.ts");
           const skipped = consumeSkippedExternalImports();
-          const decided = getClaudeMdExternalImportsApproved(process.cwd()) !== undefined;
+          const approval = getClaudeMdExternalImportsApproved(process.cwd());
+          const decided = approval !== undefined;
           if (skipped.length > 0 && !decided) {
+            // 未决定 → 弹审批对话框（TUI 就绪后）。交互中，不再额外注入 reminder。
             this.pendingExternalImportPaths = skipped;
             log.info("APP", `检测到 ${skipped.length} 个未批准的外部 @import，待审批`);
+          } else if (skipped.length > 0 && approval === false) {
+            // 已拒绝 → 无 UI，静默跳过。注入 reminder 让模型知晓（M4-4）。
+            this.injectExternalImportSkippedReminder(skipped);
+            log.info("APP", `${skipped.length} 个外部 @import 因已拒绝被跳过，已注入 reminder 告知模型`);
           }
         } catch (e) {
           log.warn("APP", `外部导入审批检测失败（不阻断）: ${(e as Error)?.message}`);
         }
 
-        // P1-UI：预填充 JIT 已加载文件列表，避免后续 discoverContext 重复注入首轮已含的 CLAUDE.md。
-        // loadAllCLAUDEmd 加载了根 CLAUDE.md（+ 全局），JIT 不知道，首次触达任何 src/ 文件时会
-        // 向上找到根 CLAUDE.md 再注入一次。预标记消除此重复。
-        const { findCLAUDEmd, findGlobalCLAUDEmd } = await import("./config/rules.ts");
-        const rootClaudeMd = await findCLAUDEmd(process.cwd());
+        // P1-UI / M7-3：预填充 JIT 已加载文件列表，避免后续 discoverContext 重复注入首轮已含的 CLAUDE.md。
+        // loadAllCLAUDEmd 加载了**整条父目录链**上所有 CLAUDE.md（+ 全局），JIT 不知道，首次触达
+        // 任何 src/ 文件时会向上找到这些 CLAUDE.md 再注入一次。预标记消除此重复。
+        // 原来只标根 CLAUDE.md（单值 findCLAUDEmd），中间层父目录 CLAUDE.md 会被 JIT 重复注入——
+        // 改用 findCLAUDEmdChain 把整条链都标记，与 loadAllCLAUDEmd 的加载范围对齐。
+        const { findCLAUDEmdChain, findGlobalCLAUDEmd } = await import("./config/rules.ts");
+        const chainClaudeMd = await findCLAUDEmdChain(process.cwd());
         const globalClaudeMd = findGlobalCLAUDEmd();
-        const preloaded = [rootClaudeMd, globalClaudeMd].filter(Boolean) as string[];
+        const preloaded = [...chainClaudeMd, globalClaudeMd].filter(Boolean) as string[];
         if (preloaded.length > 0) {
           this.jitContextMgr.markLoaded(preloaded);
-          log.debug("APP", `JIT 预标记 ${preloaded.length} 个已加载 CLAUDE.md`);
+          log.debug("APP", `JIT 预标记 ${preloaded.length} 个已加载 CLAUDE.md（含 ${chainClaudeMd.length} 层父链）`);
         }
       }
 
@@ -2327,6 +2339,42 @@ export class App {
       enabled = this.config.autoMemory !== false;
     }
     return { enabled, source };
+  }
+
+  /**
+   * M4-4：向主上下文注入一条 system-reminder，告知模型「有外部 @import 被跳过」。
+   * 用于「用户已拒绝外部导入」的静默场景——无 UI 对话框，但模型需知晓这些指令缺失，
+   * 以及如何通过 `/memory external allow` 重新批准（对齐团队记忆抑制态的可见性做法）。
+   */
+  private injectExternalImportSkippedReminder(skipped: string[]): void {
+    if (skipped.length === 0) return;
+    const MAX_SHOWN = 5;
+    const shown = skipped.slice(0, MAX_SHOWN);
+    const extra = skipped.length - shown.length;
+    const list = shown.map((p) => `  · ${p}`).join("\n")
+      + (extra > 0 ? `\n  …等共 ${skipped.length} 个` : "");
+    try {
+      this.ctxMgr.addMessage({
+        role: "user",
+        content: [{
+          type: "text",
+          text: `<system-reminder>项目 CLAUDE.md 通过 @import 引用了 ${skipped.length} 个项目根之外的文件，因外部导入未被批准而已跳过，其内容未加载到上下文：\n${list}\n若这些外部指令是需要的，可运行 /memory external allow 批准后重载；否则可忽略本提示。</system-reminder>`,
+        }],
+      } as import("./llm/types.ts").Message);
+    } catch { /* 注入失败不阻断启动 */ }
+  }
+
+  /**
+   * M4-5：读取当前外部导入审批态（/memory external status 用）。
+   * undefined=尚未询问，true/false=已允许/已拒绝。
+   */
+  getExternalImportsState(): { approved: boolean | undefined } {
+    try {
+      const { getClaudeMdExternalImportsApproved } = require("./config/app-config.ts");
+      return { approved: getClaudeMdExternalImportsApproved(process.cwd()) };
+    } catch {
+      return { approved: undefined };
+    }
   }
 
   /**
@@ -5459,6 +5507,9 @@ export class App {
           getVimMode: () => !!this.config.vimMode,
           setAutoMemory: (enabled, persist) => this.setAutoMemoryRuntime(enabled, persist),
           getAutoMemoryState: () => this.getAutoMemoryState(),
+          // M4-5：外部 @import 审批命令入口（/memory external allow|deny|status）。
+          setExternalImportsApproved: (approved) => this.applyExternalImportDecision(approved),
+          getExternalImportsState: () => this.getExternalImportsState(),
           setStatusLine: (config, persist) => this.setStatusLine(config, persist),
           getStatusLine: () => this.config.statusLine,
           renameSession: (name?: string) => this.renameSession(name),
