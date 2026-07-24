@@ -9,7 +9,6 @@ import { HookRunner } from "../../src/hook/runner.ts";
 import { HookRegistry } from "../../src/hook/registry.ts";
 import { HookPlanner } from "../../src/hook/planner.ts";
 import { HookAggregator } from "../../src/hook/aggregator.ts";
-import { HookEventHandler } from "../../src/hook/event-handler.ts";
 import { HookEventName } from "../../src/hook/types.ts";
 import type { HooksConfig } from "../../src/config/config.ts";
 
@@ -96,9 +95,9 @@ describe("HookSystem", () => {
     expect(result.success).toBe(true);
   });
 
-  // === blocking 机制（退出码语义：0=成功, 1=警告, 2+=阻塞） ===
+  // === blocking 机制（G4 退出码语义对齐 CC：0=成功, 2=阻塞, 其余非零=非阻塞告警） ===
 
-  test("退出码 2+ 产生 deny 决策", async () => {
+  test("退出码 2 产生 deny 决策（唯一阻塞码）", async () => {
     const sys = createSystem({
       pre_tool_use: [{ command: "exit 2" }],
     });
@@ -113,6 +112,24 @@ describe("HookSystem", () => {
     const result = await sys.firePreToolUseEvent("bash", {});
     // 退出码 1 = 警告，不是 blocking
     expect(result.finalOutput?.isBlockingDecision()).toBe(false);
+  });
+
+  test("G4：退出码 3（非 2 的非零）不阻塞（对齐 CC，仅 2 阻塞）", async () => {
+    const sys = createSystem({
+      pre_tool_use: [{ command: "exit 3" }],
+    });
+    const result = await sys.firePreToolUseEvent("bash", {});
+    // 旧实现 2+ 全 deny 会误阻塞；CC 语义仅 exit 2 阻塞，3 为非阻塞告警
+    expect(result.finalOutput?.isBlockingDecision()).toBe(false);
+  });
+
+  test("G4：退出码 2 的 stderr 作为阻塞原因反馈模型", async () => {
+    const sys = createSystem({
+      pre_tool_use: [{ command: `sh -c 'echo "拒绝原因在stderr" 1>&2; exit 2'` }],
+    });
+    const result = await sys.firePreToolUseEvent("bash", {});
+    expect(result.finalOutput?.isBlockingDecision()).toBe(true);
+    expect(result.finalOutput?.getEffectiveReason()).toContain("拒绝原因在stderr");
   });
 
   test("JSON 输出 decision=deny 阻止执行", async () => {
@@ -291,6 +308,25 @@ describe("HookSystem", () => {
     const result = await sys.firePostToolUseFailureEvent("bash", {}, "something failed");
     expect(result.success).toBe(true);
   });
+
+  // === G4：逐事件差异——SessionStart/SubagentStart 忽略阻塞 ===
+
+  test("G4：SessionStart exit2 被忽略阻塞（不阻断会话启动）", async () => {
+    const sys = createSystem({
+      session_start: [{ command: `sh -c 'echo "试图阻塞" 1>&2; exit 2'` }],
+    });
+    const result = await sys.fireSessionStartEvent("startup");
+    // 生命周期事件的 hook 不能阻塞：block 应被降级，isBlockingDecision 为 false
+    expect(result.finalOutput?.isBlockingDecision()).toBeFalsy();
+  });
+
+  test("G4：SubagentStart exit2 被忽略阻塞", async () => {
+    const sys = createSystem({
+      subagent_start: [{ command: `sh -c 'echo x 1>&2; exit 2'` }],
+    });
+    const result = await sys.fireSubagentStartEvent("agent-1", "general", "parent-session");
+    expect(result.finalOutput?.isBlockingDecision()).toBeFalsy();
+  });
 });
 
 // === HookRunner 单元测试 ===
@@ -372,6 +408,38 @@ describe("HookRegistry", () => {
     const registry = new HookRegistry();
     registry.initializeFromLegacy({
       invalid_event: [{ command: "echo test" }],
+    } as any);
+    expect(registry.getAllHooks().length).toBe(0);
+  });
+
+  // === G5：prompt / agent 类型从配置加载 ===
+
+  test("G5：prompt 类型从旧格式配置加载", () => {
+    const registry = new HookRegistry();
+    registry.initializeFromLegacy({
+      pre_tool_use: [{ type: "prompt", prompt: "这个命令安全吗？", model: "gpt-4o-mini" }],
+    } as any);
+    const hooks = registry.getHooksForEvent(HookEventName.PreToolUse);
+    expect(hooks.length).toBe(1);
+    expect(hooks[0].config.type).toBe("prompt");
+    expect((hooks[0].config as any).prompt).toBe("这个命令安全吗？");
+  });
+
+  test("G5：agent 类型从旧格式配置加载（含 tools）", () => {
+    const registry = new HookRegistry();
+    registry.initializeFromLegacy({
+      pre_tool_use: [{ type: "agent", prompt: "审查改动", tools: ["read", "grep"] }],
+    } as any);
+    const hooks = registry.getHooksForEvent(HookEventName.PreToolUse);
+    expect(hooks.length).toBe(1);
+    expect(hooks[0].config.type).toBe("agent");
+    expect((hooks[0].config as any).tools).toEqual(["read", "grep"]);
+  });
+
+  test("G5：prompt 类型缺 prompt 字段被跳过", () => {
+    const registry = new HookRegistry();
+    registry.initializeFromLegacy({
+      pre_tool_use: [{ type: "prompt" }],
     } as any);
     expect(registry.getAllHooks().length).toBe(0);
   });

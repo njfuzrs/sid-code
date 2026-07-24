@@ -11,7 +11,7 @@
  * 阶段 3：resolvePermission — 交互式决策（由上层 agent loop 处理）
  */
 
-import type { Checker, Decision, PermissionRequest, PermissionRule, PermissionDecisionReason } from "./types.ts";
+import type { Checker, Decision, PermissionRequest, PermissionRule, PermissionDecisionReason, PermissionCheckOptions } from "./types.ts";
 import type { Config } from "../config/config.ts";
 import type { PlanModeManager } from "../plan/state.ts";
 import type { Tool, PermissionResult, ToolUseContext } from "../tool/types.ts";
@@ -720,7 +720,7 @@ export class PermissionChecker implements Checker {
    * 阶段 2：后处理（含副作用：会话记忆、denial tracking、模式后处理）
    * 这是对外暴露的 check() 方法
    */
-  async check(req: PermissionRequest, tool?: Tool, toolContext?: ToolUseContext): Promise<Decision> {
+  async check(req: PermissionRequest, tool?: Tool, toolContext?: ToolUseContext, options?: PermissionCheckOptions): Promise<Decision> {
     const log = getLogger();
     const resource = (req.input as any)?.file_path || (req.input as any)?.command || "";
 
@@ -752,6 +752,52 @@ export class PermissionChecker implements Checker {
 
     // 运行阶段 1 内部检查
     const result = await this.hasPermissionsInner(req, tool, toolContext);
+
+    // ── G2/G3：PreToolUse hook 权限决策注入 ──
+    // 安全护栏（对齐 CC toolHooks.ts:386 + 我们既有 yesMode 语义）：
+    //   - hook allow 只能把「普通 ask」转为放行；对硬拒绝（!allowed && !needsConfirmation）、
+    //     危险命令确认（dangerousCommand）、safetyCheck 确认一律无效——deny/危险命令不被越过。
+    //   - hook ask 把「本会放行」强制升级为用户确认（needsConfirmation）。
+    if (options?.hookPermissionDecision === "allow") {
+      const dr = result.decisionReason?.type;
+      const isSafetyConfirmation = dr === "dangerousCommand" || dr === "safetyCheck";
+      // 仅普通 ask（needsConfirmation 且非安全类确认）可被 hook allow 放行；硬 deny 不放行
+      if (!result.allowed && result.needsConfirmation && !isSafetyConfirmation) {
+        log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(PreToolUse hook permissionDecision:allow)`);
+        this.denialTracking = recordSuccess(this.denialTracking);
+        this.auditLogger.log({
+          timestamp: new Date().toISOString(),
+          type: "tool_use",
+          tool: req.toolName,
+          resource,
+          decision: "allow",
+          reason: "PreToolUse hook allow",
+          user_confirmed: false,
+        });
+        return { allowed: true, decisionReason: { type: "other", reason: "PreToolUse hook allow" } };
+      }
+      if (!result.allowed) {
+        log.info("PERMISSION", `${req.toolName} → PreToolUse hook allow 被安全护栏拦截(${dr})，不放行`);
+      }
+    } else if (options?.hookPermissionDecision === "ask" && result.allowed) {
+      // hook 要求升级确认：把本会自动放行的操作强制转为 needsConfirmation。
+      // 非交互/dontAsk 无 UI 通道 → 降级为 deny（对齐既有 ask→deny 语义）。
+      if (this.config.permissionMode === "dontAsk" || this.isNonInteractive()) {
+        log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(PreToolUse hook ask，但无交互通道)`);
+        return {
+          allowed: false,
+          reason: "PreToolUse hook 要求确认，但当前为非交互模式，自动拒绝",
+          decisionReason: { type: "other", reason: "PreToolUse hook ask (non-interactive)" },
+        };
+      }
+      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 升级确认(PreToolUse hook permissionDecision:ask)`);
+      return {
+        allowed: false,
+        needsConfirmation: true,
+        reason: "PreToolUse hook 要求用户确认",
+        decisionReason: { type: "other", reason: "PreToolUse hook ask" },
+      };
+    }
 
     // allow → 重置 denial tracking
     if (result.allowed) {

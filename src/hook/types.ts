@@ -87,8 +87,19 @@ export enum HookType {
   Agent = "agent",
 }
 
-/** 决策类型 */
-export type HookDecision = "allow" | "deny" | "block" | undefined;
+/**
+ * 顶层决策类型（老式 decision 字段）
+ * CC utils/hooks.ts:525-543：`approve` 等价 allow（放行），`block`/`deny` 阻塞。
+ */
+export type HookDecision = "allow" | "approve" | "deny" | "block" | undefined;
+
+/**
+ * PreToolUse 权限决策三值（对齐 CC hookSpecificOutput.permissionDecision）
+ * - allow：跳过交互提示，但仍跑规则检查（有 deny 规则仍拒、有 ask 规则仍弹框）
+ * - deny：阻止执行，reason 反馈给模型
+ * - ask：升级为用户确认，弹框展示 hook 的 message
+ */
+export type HookPermissionDecision = "allow" | "deny" | "ask";
 
 // ============================================================
 // Hook 配置
@@ -153,6 +164,12 @@ export type HookConfig = CommandHookConfig | UrlHookConfig | RuntimeHookConfig |
 /** Hook 定义（配置文件中的一组 hook，带 matcher） */
 export interface HookDefinition {
   matcher?: string;
+  /**
+   * G10：在 matcher（工具名）之上的细粒度 tool_input 条件（权限规则语法）。
+   * 例：`Bash(git *)` 仅当命令匹配 git 开头才触发；`Read(*.ts)` 仅当读 .ts 文件才触发。
+   * 仅 PreToolUse/PostToolUse/PostToolUseFailure/PermissionRequest 事件支持（有 tool_input）。
+   */
+  if?: string;
   sequential?: boolean;
   hooks: HookConfig[];
 }
@@ -525,9 +542,18 @@ export class DefaultHookOutput implements HookOutput {
     this.hookSpecificOutput = data.hookSpecificOutput;
   }
 
-  /** 是否为阻塞决策 */
+  /** 是否为阻塞决策（block/deny，approve/allow 不阻塞） */
   isBlockingDecision(): boolean {
     return this.decision === "block" || this.decision === "deny";
+  }
+
+  /**
+   * 是否为顶层放行决策（G9：对齐 CC decision:"approve"）
+   * CC utils/hooks.ts:525-543 把顶层 `approve` 视为放行信号（等价 allow）。
+   * 我们既有 `allow` 也视为放行，兼容两种写法。
+   */
+  isApproveDecision(): boolean {
+    return this.decision === "approve" || this.decision === "allow";
   }
 
   /** 是否应停止执行 */
@@ -577,15 +603,52 @@ export class DefaultHookOutput implements HookOutput {
 
 /** PreToolUse 输出 */
 export class PreToolUseHookOutput extends DefaultHookOutput {
-  /** 获取修改后的工具输入 */
+  /**
+   * 获取修改后的工具输入（G1：对齐 CC hookSpecificOutput.updatedInput，整体替换）
+   *
+   * CC 规范（utils/hooks.ts:618-620）用 `updatedInput` 整体替换 input。我们同时认两个字段名：
+   * `updatedInput` 优先（对齐 CC），`tool_input` 兜底（向后兼容我们的旧行为）。
+   */
   getModifiedToolInput(): Record<string, unknown> | undefined {
-    if (this.hookSpecificOutput && "tool_input" in this.hookSpecificOutput) {
-      const input = this.hookSpecificOutput["tool_input"];
-      if (typeof input === "object" && input !== null && !Array.isArray(input)) {
-        return input as Record<string, unknown>;
-      }
+    const so = this.hookSpecificOutput;
+    if (!so) return undefined;
+    const candidate =
+      ("updatedInput" in so ? so["updatedInput"] : undefined) ??
+      ("tool_input" in so ? so["tool_input"] : undefined);
+    if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
+      return candidate as Record<string, unknown>;
     }
     return undefined;
+  }
+
+  /**
+   * 获取权限决策三值（G2：对齐 CC hookSpecificOutput.permissionDecision）
+   * allow / deny / ask，无有效值返回 undefined。
+   */
+  getPermissionDecision(): HookPermissionDecision | undefined {
+    const d = this.hookSpecificOutput?.["permissionDecision"];
+    if (d === "allow" || d === "deny" || d === "ask") return d;
+    return undefined;
+  }
+
+  /** 获取权限决策的说明文本（CC permissionDecisionReason） */
+  getPermissionDecisionReason(): string | undefined {
+    const r = this.hookSpecificOutput?.["permissionDecisionReason"];
+    return typeof r === "string" ? r : undefined;
+  }
+
+  /**
+   * 是否为阻塞决策（override）
+   * 除顶层 block/deny 外，permissionDecision:"deny" 也算阻塞（G2）。
+   */
+  override isBlockingDecision(): boolean {
+    if (super.isBlockingDecision()) return true;
+    return this.getPermissionDecision() === "deny";
+  }
+
+  /** override getEffectiveReason：permissionDecisionReason 优先于 stopReason/reason */
+  override getEffectiveReason(): string {
+    return this.getPermissionDecisionReason() || super.getEffectiveReason();
   }
 }
 

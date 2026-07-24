@@ -34,9 +34,20 @@ export interface PermissionRequest {
   description?: string;
 }
 
+/**
+ * 权限检查选项（G2/G3：PreToolUse hook 决策注入）
+ * hookPermissionDecision 由 PreToolUse hook 的 hookSpecificOutput.permissionDecision 得来：
+ *   - "allow"：跳过默认交互提示（但 deny 规则/危险命令/ask 规则仍生效）
+ *   - "ask"：强制升级为用户确认（即便工具本会自动放行）
+ * 安全护栏：allow 永不越过 deny 规则与硬编码危险命令（CC toolHooks.ts:386）。
+ */
+export interface PermissionCheckOptions {
+  hookPermissionDecision?: "allow" | "ask";
+}
+
 /** 权限检查器接口 */
 export interface Checker {
-  check(req: PermissionRequest, tool?: unknown, toolContext?: unknown): Promise<Decision>;
+  check(req: PermissionRequest, tool?: unknown, toolContext?: unknown, options?: PermissionCheckOptions): Promise<Decision>;
   /** 记住会话内权限决策（可选） */
   rememberDecision?(req: PermissionRequest, allowed: boolean): void;
   /** 获取与指定工具相关的阴影规则（可选，供权限对话框展示不可达规则提示） */

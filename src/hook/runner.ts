@@ -42,10 +42,10 @@ export class LazyJsonInput {
   }
 }
 
-/** 退出码常量 */
+/** 退出码常量（对齐 CC utils/hooks.ts：仅 2 阻塞，其余非零非阻塞告警） */
 const EXIT_SUCCESS = 0;
-const EXIT_WARNING = 1;
-// 2+ = 阻塞
+/** 退出码 2 = 阻塞（stderr 反馈给模型）。其余非零 = 非阻塞告警（stderr 展示给用户，继续执行）。 */
+const EXIT_BLOCKING = 2;
 
 /** 需要从环境变量中过滤的敏感 key 模式 */
 const SENSITIVE_ENV_PATTERNS = [
@@ -57,7 +57,28 @@ const SENSITIVE_ENV_PATTERNS = [
   /auth/i,
 ];
 
+/**
+ * G6：agent hook 的真子代理执行器（由 app 层注入，携带 ProviderRegistry + 工具注册表）。
+ * 返回结构化 { ok, reason }，runner 据此产出 block/allow 决策。
+ * 未注入（无头/子代理/测试）时 executeAgentHook 回退单轮 LLM 调用（保持可用）。
+ */
+export type AgentHookExecutor = (params: {
+  prompt: string;
+  model?: string;
+  tools?: string[];
+  timeoutMs: number;
+  signal: AbortSignal;
+}) => Promise<{ ok: boolean; reason?: string; transcript?: string }>;
+
 export class HookRunner {
+  /** G6：注入的真子代理执行器（app 层设置）。 */
+  private agentHookExecutor?: AgentHookExecutor;
+
+  /** G6：由 app 层注入真子代理执行器（携带工具注册表 / ProviderRegistry）。 */
+  setAgentHookExecutor(executor: AgentHookExecutor | undefined): void {
+    this.agentHookExecutor = executor;
+  }
+
   /** 执行单个 hook */
   async executeHook(
     hookConfig: HookConfig,
@@ -393,21 +414,24 @@ export class HookRunner {
 
   /** 解析 command hook 输出（退出码语义：0=成功, 1=警告, 2+=阻塞） */
   private parseCommandOutput(stdout: string, stderr: string, exitCode: number): HookOutput {
-    const textToParse = stdout.trim() || stderr.trim();
+    // JSON 输出优先（无论退出码）：结构化 decision 覆盖退出码语义。
+    // stdout 优先解析（CC 约定 JSON 走 stdout），stdout 非 JSON 时再尝试 stderr。
+    const stdoutText = stdout.trim();
+    const stderrText = stderr.trim();
+    const jsonOutput = this.parseJsonOutput(stdoutText) ?? this.parseJsonOutput(stderrText);
+    if (jsonOutput) return jsonOutput;
 
-    if (textToParse) {
-      const jsonOutput = this.parseJsonOutput(textToParse);
-      if (jsonOutput) return jsonOutput;
-    }
-
-    // 非 JSON，根据退出码转换
+    // 非 JSON：按 CC 退出码语义转换（仅 2 阻塞，其余非零非阻塞告警）。
     if (exitCode === EXIT_SUCCESS) {
-      return { decision: "allow", systemMessage: textToParse || undefined };
-    } else if (exitCode === EXIT_WARNING) {
-      return { decision: "allow", systemMessage: textToParse ? `警告: ${textToParse}` : undefined };
+      // 0：成功。stdout 作为 systemMessage（透明反馈，某些事件如 UserPromptSubmit/SessionStart
+      // 会把它注入上下文；由事件层决定，这里只承载文本）。
+      return { decision: "allow", systemMessage: stdoutText || undefined };
+    } else if (exitCode === EXIT_BLOCKING) {
+      // 2：阻塞。stderr 优先反馈给模型（CC 约定 exit 2 的原因写在 stderr）。
+      return { decision: "deny", reason: stderrText || stdoutText || `Hook 退出码 ${exitCode}` };
     } else {
-      // 2+ = 阻塞
-      return { decision: "deny", reason: textToParse || `Hook 退出码 ${exitCode}` };
+      // 其余非零（1/3/…）：非阻塞告警。stderr 展示给用户，继续执行（不 deny，对齐 CC）。
+      return { decision: "allow", systemMessage: stderrText ? `警告: ${stderrText}` : (stdoutText || undefined) };
     }
   }
 
@@ -517,17 +541,20 @@ export class HookRunner {
         }
         break;
 
-      case HookEventName.PreToolUse:
-        if ("tool_input" in hookOutput.hookSpecificOutput) {
-          const newInput = hookOutput.hookSpecificOutput["tool_input"];
-          if (newInput && typeof newInput === "object" && "tool_input" in modified) {
-            (modified as any).tool_input = {
-              ...(modified as any).tool_input,
-              ...(newInput as Record<string, unknown>),
-            };
-          }
+      case HookEventName.PreToolUse: {
+        const so = hookOutput.hookSpecificOutput;
+        // G1：updatedInput 优先，整体替换（对齐 CC 语义）
+        if ("updatedInput" in so && so["updatedInput"] && typeof so["updatedInput"] === "object" && "tool_input" in modified) {
+          (modified as any).tool_input = so["updatedInput"];
+        } else if ("tool_input" in so && so["tool_input"] && typeof so["tool_input"] === "object" && "tool_input" in modified) {
+          // 旧格式兼容：浅合并保留其他字段
+          (modified as any).tool_input = {
+            ...(modified as any).tool_input,
+            ...(so["tool_input"] as Record<string, unknown>),
+          };
         }
         break;
+      }
 
       case HookEventName.BeforeModel:
         if ("llm_request" in hookOutput.hookSpecificOutput) {
@@ -628,10 +655,52 @@ export class HookRunner {
     const log = getLogger();
     const timeout = (hookConfig.timeout ?? 60) * 1000;
 
-    try {
-      const jsonInput = JSON.stringify(input);
-      const processedPrompt = hookConfig.prompt.replace(/\$ARGUMENTS/g, jsonInput);
+    const jsonInput = JSON.stringify(input);
+    const processedPrompt = hookConfig.prompt.replace(/\$ARGUMENTS/g, jsonInput);
 
+    // G6：优先走注入的真子代理执行器（可多轮、可用 read/grep/glob 等工具验证）。
+    if (this.agentHookExecutor) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(SIDE_CALL_TIMEOUT_REASON), timeout);
+      try {
+        const res = await this.agentHookExecutor({
+          prompt: processedPrompt,
+          model: hookConfig.model,
+          tools: hookConfig.tools,
+          timeoutMs: timeout,
+          signal: controller.signal,
+        });
+        if (res.ok === false) {
+          return {
+            hookConfig, eventName, success: true,
+            output: {
+              decision: "block",
+              reason: res.reason ?? "Agent Hook 验证失败",
+              hookSpecificOutput: res.transcript ? { additionalContext: res.transcript } : undefined,
+            },
+            duration: Date.now() - startTime,
+          };
+        }
+        return {
+          hookConfig, eventName, success: true,
+          output: { decision: "allow" },
+          duration: Date.now() - startTime,
+        };
+      } catch (error) {
+        // 真子代理失败：不阻断主流程（放行），记录告警（与下方单轮回退的失败语义一致）。
+        log.warn("HOOK", `Agent Hook 子代理执行失败: ${error}`);
+        return {
+          hookConfig, eventName, success: true,
+          output: { decision: "allow" },
+          duration: Date.now() - startTime,
+        };
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    }
+
+    // 回退：未注入子代理执行器（无头/测试）→ 单轮 LLM 验证（保持原可用性）。
+    try {
       const { ProviderRegistry } = await import("../llm/registry.ts");
       const { loadConfig } = await import("../config/config.ts");
       const config = await loadConfig();

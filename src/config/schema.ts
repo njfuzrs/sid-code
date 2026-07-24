@@ -239,11 +239,12 @@ export function validateConfig(config: Config): ValidationResult {
       hookList.forEach((hook, index) => {
         const prefix = `hooks.${eventName}[${index}]`;
 
-        // 验证 type
-        if (hook.type && hook.type !== "command" && hook.type !== "url") {
+        // 验证 type（G5：新增 prompt/agent 两种 LLM 层 hook）
+        const VALID_HOOK_TYPES = ["command", "url", "prompt", "agent"];
+        if (hook.type && !VALID_HOOK_TYPES.includes(hook.type)) {
           errors.push({
             path: `${prefix}.type`,
-            message: `无效值 "${hook.type}"，有效值为 command/url`,
+            message: `无效值 "${hook.type}"，有效值为 ${VALID_HOOK_TYPES.join("/")}`,
             value: hook.type,
           });
         }
@@ -264,6 +265,15 @@ export function validateConfig(config: Config): ValidationResult {
             path: `${prefix}.url`,
             message: "url 类型的 Hook 必须指定 url 字段",
             value: hook.url,
+          });
+        }
+
+        // prompt / agent 类型必须有 prompt 字段
+        if ((hookType === "prompt" || hookType === "agent") && !hook.prompt) {
+          errors.push({
+            path: `${prefix}.prompt`,
+            message: `${hookType} 类型的 Hook 必须指定 prompt 字段`,
+            value: hook.prompt,
           });
         }
 

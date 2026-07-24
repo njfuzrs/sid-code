@@ -7,6 +7,8 @@ import type { ContentBlock, ToolUseBlock } from "../llm/types.ts";
 import type { LegacyTool as Tool } from "../tool/types.ts";
 import type { Checker, PermissionRequest } from "../permission/types.ts";
 import type { HookSystem } from "../hook/system.ts";
+import type { AggregatedHookResult } from "../hook/types.ts";
+import { PreToolUseHookOutput } from "../hook/types.ts";
 import type { SessionState } from "../session/state.ts";
 import type { Config } from "../config/config.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
@@ -176,6 +178,51 @@ export function hookActuallyModifiedInput(original: unknown, modified: unknown):
   return !stableDeepEqual(original, modified);
 }
 
+/**
+ * G1/G2/G9：PreToolUse hook 结果的统一解读（主循环 / 子代理 / 流式共享一份语义）。
+ *
+ * 返回：
+ *   - blocked：顶层 block/deny 或 permissionDecision:"deny" → 阻塞，reason 反馈模型。
+ *   - permissionDecision：allow/ask → 注入权限层（allow 不越 deny 规则/危险命令）。
+ *   - modifiedInput：getModifiedToolInput()（updatedInput 优先，tool_input 兜底）。
+ *   - inputChanged：改后参数是否与原值真的不同（决定是否注入 hookModifiedNotice）。
+ */
+export interface PreToolUseInterpretation {
+  blocked: boolean;
+  blockReason?: string;
+  permissionDecision?: "allow" | "ask";
+  modifiedInput?: Record<string, unknown>;
+  inputChanged: boolean;
+}
+
+export function interpretPreToolUse(
+  result: AggregatedHookResult,
+  originalInput: unknown,
+): PreToolUseInterpretation {
+  const out = result.finalOutput;
+  if (!out) return { blocked: false, inputChanged: false };
+
+  // 阻塞判定（PreToolUseHookOutput.isBlockingDecision 已含 permissionDecision:"deny"）
+  if (out.isBlockingDecision()) {
+    return { blocked: true, blockReason: out.getEffectiveReason(), inputChanged: false };
+  }
+
+  let permissionDecision: "allow" | "ask" | undefined;
+  let modifiedInput: Record<string, unknown> | undefined;
+  if (out instanceof PreToolUseHookOutput) {
+    const pd = out.getPermissionDecision();
+    if (pd === "allow" || pd === "ask") permissionDecision = pd;
+    modifiedInput = out.getModifiedToolInput();
+  } else if ("getModifiedToolInput" in out) {
+    modifiedInput = (out as any).getModifiedToolInput?.();
+  }
+
+  const inputChanged =
+    modifiedInput !== undefined && hookActuallyModifiedInput(originalInput, modifiedInput);
+
+  return { blocked: false, permissionDecision, modifiedInput, inputChanged };
+}
+
 /** 顺序无关的结构化深比较（对象 key 排序后逐一比较，数组按序比较）。 */
 function stableDeepEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;
@@ -266,6 +313,15 @@ export interface ToolExecutorDeps {
    * 顺序/checkpoint 等编排不变。未注入（批量模式/子代理）时返回 undefined，走正常执行。
    */
   getPrecomputedResult?: (toolUseId: string) => SingleToolOutcome | undefined;
+  /**
+   * G3：PreToolUse fire-once 缓存（按 tool_use_id）。
+   *
+   * 主循环把 PreToolUse **上移**到权限检查之前（resolveToolPermission 内），以便其
+   * permissionDecision 注入权限层。为避免 executeSingleTool 二次触发同一 PreToolUse，
+   * resolveToolPermission 把已 fire 的结果与解读缓存于此；executeSingleTool 命中缓存
+   * 则直接复用（不再 fire）。未注入（子代理/旧测试）时 executeSingleTool 自行 fire。
+   */
+  preToolUseCache?: Map<string, { result: AggregatedHookResult; interpretation: PreToolUseInterpretation }>;
 }
 
 /**
@@ -350,6 +406,14 @@ export async function executeTools(
         content: errorContent,
         is_error: true,
       });
+      continue;
+    }
+
+    // GAP-01 + G3：流式预执行已命中的工具，其权限检查与 PreToolUse hook 在抢跑时已完成
+    // （precomputed 存在 ⟺ 抢跑通过了权限门并执行成功）。此处跳过重复的 resolveToolPermission，
+    // 既避免二次权限检查，也避免 PreToolUse hook 二次 fire（原语义：precomputed 工具只 fire 一次）。
+    if (deps.getPrecomputedResult?.(block.id)) {
+      checkedTools.push({ block, tool, idx });
       continue;
     }
 
@@ -612,6 +676,42 @@ export async function resolveToolPermission(
       if (expanded !== undefined) observableInput = expanded;
     } catch { /* 回填钩子异常静默回退原始 input */ }
   }
+  // ── G3：PreToolUse 先行（上移到权限检查之前）──
+  // CC 规范顺序 PreToolUse → 权限：先跑 PreToolUse 拿 permissionDecision/updatedInput，
+  // 再喂给权限层。fire-once：结果缓存于 deps.preToolUseCache，executeSingleTool 复用不再二次 fire。
+  let hookPermissionDecision: "allow" | "ask" | undefined;
+  if (deps.hookSystem) {
+    try {
+      const preResult = await deps.hookSystem.firePreToolUseEvent(
+        block.name,
+        block.input as Record<string, unknown>,
+        block.id,
+      );
+      const interp = interpretPreToolUse(preResult, block.input);
+      deps.preToolUseCache?.set(block.id, { result: preResult, interpretation: interp });
+
+      // 阻塞 → 直接返回 error（不再走权限检查）
+      if (interp.blocked) {
+        log.info("HOOK", `工具 ${block.name} 被 PreToolUse hook 阻止: ${interp.blockReason}`);
+        return {
+          type: "tool_result",
+          tool_use_id: block.id,
+          content: `Hook 阻止执行: ${interp.blockReason ?? "无原因"}`,
+          is_error: true,
+        };
+      }
+
+      hookPermissionDecision = interp.permissionDecision;
+
+      // updatedInput：hook 改参后按新参数鉴权（对齐 CC）。观测输入同步替换。
+      if (interp.modifiedInput !== undefined) {
+        observableInput = interp.modifiedInput;
+      }
+    } catch (err: any) {
+      log.error("HOOK", `PreToolUse hook 执行异常（继续走权限检查）: ${err?.message}`);
+    }
+  }
+
   const permReq: PermissionRequest = {
     toolName: block.name,
     input: observableInput,
@@ -619,7 +719,7 @@ export async function resolveToolPermission(
       ? `${block.name}: ${(observableInput as any).description}`
       : `${block.name}: ${JSON.stringify(observableInput).slice(0, 120)}`,
   };
-  const decision = await deps.permissionChecker.check(permReq, tool);
+  const decision = await deps.permissionChecker.check(permReq, tool, undefined, { hookPermissionDecision });
 
   if (decision.allowed) return null;
 
@@ -746,13 +846,24 @@ export async function executeSingleTool(
   const isMcpTool = block.name.startsWith("mcp__");
 
   // pre_tool_use hook
-  const preToolResult = await deps.hookSystem.firePreToolUseEvent(
-    block.name,
-    block.input as Record<string, unknown>,
-    block.id,
-  );
-  if (preToolResult.finalOutput?.isBlockingDecision()) {
-    const reason = preToolResult.finalOutput.getEffectiveReason();
+  // G3 fire-once：主循环已在 resolveToolPermission 里 fire 过并缓存，此处复用不再二次 fire。
+  // 缓存未命中（子代理/旧测试/直接调用 executeSingleTool）时才自行 fire。
+  const cached = deps.preToolUseCache?.get(block.id);
+  let interp: PreToolUseInterpretation;
+  if (cached) {
+    deps.preToolUseCache?.delete(block.id); // 取用即失效，防跨轮串味
+    interp = cached.interpretation;
+  } else {
+    const preToolResult = await deps.hookSystem.firePreToolUseEvent(
+      block.name,
+      block.input as Record<string, unknown>,
+      block.id,
+    );
+    interp = interpretPreToolUse(preToolResult, block.input);
+  }
+
+  if (interp.blocked) {
+    const reason = interp.blockReason ?? "无原因";
     log.info("HOOK", `工具 ${block.name} 被 hook 阻止: ${reason}`);
     return {
       block: {
@@ -770,16 +881,13 @@ export async function executeSingleTool(
   // 默认不含任何说明，模型会按自己原始的（已被改掉的）参数去理解结果 → 误判。
   // 这里记录"被改过"，在最终 tool_result 前置一条告知，让模型据实对齐执行参数。
   let hookModifiedNotice = "";
-  if (preToolResult.finalOutput && "getModifiedToolInput" in preToolResult.finalOutput) {
-    const modified = (preToolResult.finalOutput as any).getModifiedToolInput?.();
-    if (modified) {
-      // 用改后参数执行（即使与原值相同也无害），但仅当**真的变了**才注入告知提示——
-      // 否则会误导模型以为参数被改（见 hookActuallyModifiedInput 注释）。
-      effectiveInput = modified;
-      if (hookActuallyModifiedInput(block.input, modified)) {
-        log.info("HOOK", `工具 ${block.name} 输入被 hook 修改`);
-        hookModifiedNotice = buildHookModifiedNotice(block.name);
-      }
+  if (interp.modifiedInput !== undefined) {
+    // 用改后参数执行（即使与原值相同也无害），但仅当**真的变了**才注入告知提示——
+    // 否则会误导模型以为参数被改（见 hookActuallyModifiedInput 注释）。
+    effectiveInput = interp.modifiedInput;
+    if (interp.inputChanged) {
+      log.info("HOOK", `工具 ${block.name} 输入被 hook 修改`);
+      hookModifiedNotice = buildHookModifiedNotice(block.name);
     }
   }
 

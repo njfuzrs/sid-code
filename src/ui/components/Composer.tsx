@@ -31,7 +31,6 @@ import { useKeypress, KeypressPriority } from "../contexts/KeypressContext.tsx";
 import type { CommandInfo } from "../hooks/useSlashCompletion.ts";
 import { DEFAULT_TERM_WIDTH } from "../markdown.ts";
 import { SUCCESS_MARK, ERROR_MARK, BULLET } from "../constants/figures.ts";
-import { deriveEffort } from "../hooks/useStatusLineData.ts";
 import { formatDuration } from "../utils/format-duration.ts";
 
 /** 窄屏阈值 */
@@ -204,9 +203,6 @@ export const Composer: React.FC<ComposerProps> = ({
   const isWaiting = streaming.streamingState === StreamingState.WaitingForConfirmation;
   const isIdle = streaming.streamingState === StreamingState.Idle;
   const showLoadingIndicator = isConnecting || isResponding || isWaiting;
-  // effort 字形：复用状态栏同一派生逻辑（单一事实源），取 glyph 追加到 spinner 行尾。
-  // null（模型不支持档位）时不显示。
-  const effortGlyph = deriveEffort(config.effortDisplay, theme.text.secondary)?.glyph ?? null;
   const showRawMarkdownIndicator = !uiState.renderMarkdown;
   const showContextUsage = session.contextPercent >= 50;
 
@@ -273,7 +269,6 @@ export const Composer: React.FC<ComposerProps> = ({
               toolName={streaming.toolName}
               toolElapsedTime={toolElapsedTime}
               outputTokens={turnOutputTokens}
-              effortGlyph={effortGlyph}
             />
           ) : (
             <Box flexDirection={isNarrow ? "column" : "row"} alignItems={isNarrow ? "flex-start" : "center"}>

@@ -93,7 +93,7 @@ export class HookEventHandler {
       tool_input: toolInput,
       tool_use_id: toolUseId,
     };
-    return this.executeHooks(HookEventName.PreToolUse, input, { toolName });
+    return this.executeHooks(HookEventName.PreToolUse, input, { toolName, toolInput });
   }
 
   /** PostToolUse 事件 */
@@ -122,7 +122,7 @@ export class HookEventHandler {
       verify_triggered: options?.verify_triggered,
       harness_context: options?.harness_context,
     };
-    return this.executeHooks(HookEventName.PostToolUse, input, { toolName });
+    return this.executeHooks(HookEventName.PostToolUse, input, { toolName, toolInput });
   }
 
   /** PostToolUseFailure 事件 */
@@ -140,7 +140,7 @@ export class HookEventHandler {
       is_error: true,
       tool_use_id: toolUseId,
     };
-    return this.executeHooks(HookEventName.PostToolUseFailure, input, { toolName });
+    return this.executeHooks(HookEventName.PostToolUseFailure, input, { toolName, toolInput });
   }
 
   /** UserPromptSubmit 事件 */

@@ -23,7 +23,7 @@ import { validateToolInput } from "../tool/input-validator.ts";
 import type { HookSystem } from "../hook/system.ts";
 import type { Checker, PermissionRequest } from "../permission/types.ts";
 import type { ToolProgressData } from "../tool/types.ts";
-import { buildHookModifiedNotice, hookActuallyModifiedInput } from "../query/tool-executor.ts";
+import { buildHookModifiedNotice, interpretPreToolUse } from "../query/tool-executor.ts";
 import { stripInternalFields } from "../tool/internal-fields.ts";
 
 /**
@@ -156,6 +156,8 @@ async function executeSingleTool(
   let effectiveInput: Record<string, unknown> = block.input as Record<string, unknown>;
   // 与主循环口径一致：hook 改写参数后给模型一条前置告知，避免按原参数误判结果。
   let hookModifiedNotice = "";
+  // G3：PreToolUse permissionDecision（allow/ask），注入下方权限检查。
+  let hookPermissionDecision: "allow" | "ask" | undefined;
   if (hookSystem) {
     try {
       const preToolResult = await hookSystem.firePreToolUseEvent(
@@ -163,25 +165,24 @@ async function executeSingleTool(
         block.input as Record<string, unknown>,
         block.id,
       );
-      if (preToolResult.finalOutput?.isBlockingDecision()) {
-        const reason = preToolResult.finalOutput.getEffectiveReason();
-        log.info("SUBAGENT:HOOK", `工具 ${block.name} 被 hook 阻止: ${reason}`);
+      // G3：与主循环共享同一 PreToolUse 解读（block/permissionDecision/updatedInput）
+      const interp = interpretPreToolUse(preToolResult, block.input);
+      if (interp.blocked) {
+        log.info("SUBAGENT:HOOK", `工具 ${block.name} 被 hook 阻止: ${interp.blockReason}`);
         return {
           type: "tool_result",
           tool_use_id: block.id,
-          content: `Hook 阻止执行: ${reason}`,
+          content: `Hook 阻止执行: ${interp.blockReason ?? "无原因"}`,
           is_error: true,
         };
       }
-      if (preToolResult.finalOutput && "getModifiedToolInput" in preToolResult.finalOutput) {
-        const modified = (preToolResult.finalOutput as any).getModifiedToolInput?.();
-        if (modified) {
-          effectiveInput = modified as Record<string, unknown>;
-          // 仅当参数真的变了才注入提示（避免 hook 原样透传 tool_input 时误报）。
-          if (hookActuallyModifiedInput(block.input, modified)) {
-            log.info("SUBAGENT:HOOK", `工具 ${block.name} 输入被 hook 修改`);
-            hookModifiedNotice = buildHookModifiedNotice(block.name);
-          }
+      hookPermissionDecision = interp.permissionDecision;
+      if (interp.modifiedInput !== undefined) {
+        effectiveInput = interp.modifiedInput;
+        // 仅当参数真的变了才注入提示（避免 hook 原样透传 tool_input 时误报）。
+        if (interp.inputChanged) {
+          log.info("SUBAGENT:HOOK", `工具 ${block.name} 输入被 hook 修改`);
+          hookModifiedNotice = buildHookModifiedNotice(block.name);
         }
       }
     } catch (err: any) {
@@ -196,7 +197,8 @@ async function executeSingleTool(
       input: effectiveInput,
       description: `${block.name}: ${JSON.stringify(effectiveInput).slice(0, 120)}`,
     };
-    const decision = await permissionChecker.check(permReq, tool);
+    // G3：PreToolUse permissionDecision 注入（子代理无 UI，ask 在下方 needsConfirmation→deny）
+    const decision = await permissionChecker.check(permReq, tool, undefined, { hookPermissionDecision });
     if (!decision.allowed) {
       // 子代理无 UI 通道，needsConfirmation 也直接 deny（dontAsk 语义）
       const reason = decision.reason || "子代理不允许此操作";

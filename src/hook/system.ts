@@ -91,6 +91,11 @@ export class HookSystem {
     this.eventHandler.setCwd(cwd);
   }
 
+  /** G6：注入 agent hook 的真子代理执行器（由 app 层携带工具注册表设置）。 */
+  setAgentHookExecutor(executor: import("./runner.ts").AgentHookExecutor | undefined): void {
+    this.runner.setAgentHookExecutor(executor);
+  }
+
   /** 设置当前权限模式 */
   setPermissionMode(mode: string): void {
     this.eventHandler.setPermissionMode(mode);
@@ -172,6 +177,15 @@ export class HookSystem {
         headers: legacy.headers,
         timeout: legacy.timeout,
       };
+    }
+    // G5：prompt / agent 类型（与 registry.convertLegacyHook 保持一致）
+    if (type === "prompt") {
+      if (!legacy.prompt) return null;
+      return { type: "prompt", name: legacy.name, prompt: legacy.prompt, model: legacy.model, timeout: legacy.timeout };
+    }
+    if (type === "agent") {
+      if (!legacy.prompt) return null;
+      return { type: "agent", name: legacy.name, prompt: legacy.prompt, model: legacy.model, tools: legacy.tools, timeout: legacy.timeout };
     }
     if (!legacy.command) return null;
     return {

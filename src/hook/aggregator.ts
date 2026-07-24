@@ -55,8 +55,14 @@ export class HookAggregator {
       case HookEventName.PostToolUseFailure:
       case HookEventName.UserPromptSubmit:
       case HookEventName.AfterAgent:
-      case HookEventName.SessionStart:
         return this.mergeWithOrDecision(outputs);
+
+      // G4：SessionStart/SubagentStart/Setup 忽略 exit2 阻塞（对齐 CC hooksConfigManager）——
+      // 这些生命周期事件的 hook 不能阻塞会话启动，block 降级为 systemMessage 告警。
+      case HookEventName.SessionStart:
+      case HookEventName.SubagentStart:
+      case HookEventName.Setup:
+        return this.mergeWithOrDecision(outputs, /* ignoreBlock */ true);
 
       // 字段替换类事件：后者覆盖前者
       case HookEventName.BeforeModel:
@@ -69,8 +75,11 @@ export class HookAggregator {
     }
   }
 
-  /** OR 决策合并：任一 deny/block → 整体 deny，消息拼接 */
-  private mergeWithOrDecision(outputs: HookOutput[]): HookOutput {
+  /**
+   * OR 决策合并：任一 deny/block → 整体 deny，消息拼接
+   * @param ignoreBlock G4：SessionStart/SubagentStart/Setup 忽略阻塞，block 降级为 systemMessage。
+   */
+  private mergeWithOrDecision(outputs: HookOutput[], ignoreBlock = false): HookOutput {
     const merged: HookOutput = {
       continue: true,
       suppressOutput: false,
@@ -95,8 +104,14 @@ export class HookAggregator {
       // OR 决策：任一 deny/block → 整体 deny
       const temp = new DefaultHookOutput(output);
       if (temp.isBlockingDecision()) {
-        hasBlockDecision = true;
-        merged.decision = output.decision;
+        if (ignoreBlock) {
+          // G4：忽略阻塞的事件——block 降级为告警文本，不影响 decision
+          const blockText = output.reason || output.stopReason;
+          if (blockText) systemMessages.push(`[hook 阻塞已忽略] ${blockText}`);
+        } else {
+          hasBlockDecision = true;
+          merged.decision = output.decision;
+        }
       }
 
       if (output.reason) reasons.push(output.reason);

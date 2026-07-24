@@ -195,7 +195,10 @@ export class QueryEngine {
     if (hookSystem) {
       const hookResult = await hookSystem.fireUserPromptSubmitEvent(userInput);
       if (hookResult.finalOutput?.isBlockingDecision()) {
-        log.info("HOOK", `用户输入被 hook 阻止: ${hookResult.finalOutput.getEffectiveReason()}`);
+        // G4：UserPromptSubmit 阻塞语义——直接 return 使原 prompt 不进入模型上下文
+        // （等价 CC exit2 的"擦除原 prompt"），只反馈阻塞原因。此处 return 前用户消息
+        // 尚未 addMessage（见下方 ctxMgr.addMessage 在 thinking 解析之后），天然不落库。
+        log.info("HOOK", `用户输入被 hook 阻止（原 prompt 不入上下文）: ${hookResult.finalOutput.getEffectiveReason()}`);
         yield { kind: "hook_blocked", reason: hookResult.finalOutput.getEffectiveReason() };
         return;
       }

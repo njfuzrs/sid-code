@@ -40,11 +40,6 @@ interface LoadingIndicatorProps {
   inline?: boolean;
   /** 是否显示取消和计时器 */
   showCancelAndTimer?: boolean;
-  /**
-   * 推理强度符号（effort 字形，如 ▁▃▅▇█ / ◌）。对齐 cc 在 spinner 行尾显示当前 effort。
-   * null / 缺省时不显示（模型不支持档位切换）。
-   */
-  effortGlyph?: string | null;
 }
 
 /** 格式化时间 */
@@ -65,7 +60,6 @@ export const LoadingIndicator: React.FC<LoadingIndicatorProps> = ({
   outputTokens = 0,
   inline = false,
   showCancelAndTimer = true,
-  effortGlyph = null,
 }) => {
   // Spinner 动画
   const a11y = useIsAccessibilityEnabled();
@@ -146,14 +140,6 @@ export const LoadingIndicator: React.FC<LoadingIndicatorProps> = ({
         <>
           <Text> </Text>
           <Text color={theme.text.secondary} dimColor>· {slowHint}</Text>
-        </>
-      )}
-      {/* effort 符号：行尾追加当前推理强度字形（对齐 cc）。非等待态且模型支持档位时显示，
-          用次要灰色不抢主文案（强度值本身在状态栏，spinner 行只做一眼可辨的补充点缀）。 */}
-      {!isWaiting && effortGlyph && (
-        <>
-          <Text> </Text>
-          <Text color={theme.text.secondary}>{effortGlyph}</Text>
         </>
       )}
     </>

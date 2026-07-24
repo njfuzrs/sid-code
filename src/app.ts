@@ -92,6 +92,32 @@ interface AtExpansionResult {
 /** vision 支持的图片扩展名（与 tool/read.ts 严格一致）。图片走 Read 工具而非文本内联。 */
 const AT_IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
 
+/**
+ * G6：从 agent hook 子代理输出中宽松解析 { ok, reason } 裁决。
+ * 子代理可能在 JSON 前后夹带解释文本，这里截取最后一个 `{...}` JSON 对象解析。
+ * 解析不到返回 null（调用方默认放行，不误阻塞）。
+ */
+function parseAgentHookVerdict(output: string): { ok?: boolean; reason?: string } | null {
+  if (!output) return null;
+  // 优先整体解析
+  const tryParse = (s: string): { ok?: boolean; reason?: string } | null => {
+    try {
+      const v = JSON.parse(s);
+      if (v && typeof v === "object" && "ok" in v) return v as { ok?: boolean; reason?: string };
+    } catch { /* 非 JSON */ }
+    return null;
+  };
+  const whole = tryParse(output.trim());
+  if (whole) return whole;
+  // 回退：截取最后一个平衡的 {...} 片段
+  const last = output.lastIndexOf("}");
+  const first = output.indexOf("{");
+  if (first >= 0 && last > first) {
+    return tryParse(output.slice(first, last + 1));
+  }
+  return null;
+}
+
 async function expandAtReferences(input: string): Promise<AtExpansionResult> {
   // 两种形态：@"带空格的路径" 或 @无空格路径。前者支持 P2-6/P2-7 的临时图片路径（可能含空格）。
   const AT_PATTERN = /@"([^"]+)"|@([\w./\-]+)/g;
@@ -563,6 +589,43 @@ export class App {
     // 恢复 settings.json disabledHooks（/hooks disable -p 持久化端）。
     // 插件 hook 在 loadPluginHooks 后才注册，故那里会再应用一次（见下方 loadPluginHooks 调用点）。
     this.hookSystem.applyDisabledHooks(this.config.disabledHooks);
+
+    // G6：注入 agent hook 的真子代理执行器（携带工具注册表 + ProviderRegistry）。
+    // agent 类型 hook 借此启动真正的只读子代理（默认 read/grep/glob）做多轮验证，
+    // 而非退化为单轮 LLM 调用。无 providerRegistry（极简/测试）时不注入，runner 自动回退单轮。
+    if (this.providerRegistry) {
+      this.hookSystem.setAgentHookExecutor(async ({ prompt, model, tools, timeoutMs, signal }) => {
+        const { SubAgent } = await import("./agent/sub-agent.ts");
+        // 防套娃：agent hook 的子代理默认只读工具集，且不再触发 agent hook（hookSystem 不透传）。
+        const allowedTools = tools && tools.length > 0 ? tools : ["read", "grep", "glob"];
+        const agent = SubAgent.fromRegistry(
+          this.providerRegistry!,
+          this.toolRegistry,
+          undefined, // 不透传 hookSystem，避免子代理工具再触发 agent hook 形成递归
+          model,
+        );
+        if (this.permissionChecker) agent.setPermissionChecker(this.permissionChecker);
+        const result = await agent.executeCustom({
+          systemPrompt:
+            "你是一个 Agent Hook 验证器。你可以使用只读工具（read/grep/glob）多轮调查代码，" +
+            "验证 AI 编程助手的操作是否合理/正确。\n" +
+            "调查完成后，最后一条消息只返回一个 JSON 对象：\n" +
+            "- 验证通过：{\"ok\": true}\n" +
+            "- 验证失败：{\"ok\": false, \"reason\": \"失败原因和修复建议\"}",
+          userPrompt: prompt,
+          allowedTools,
+          timeout: timeoutMs,
+          type: "custom",
+        }, signal);
+        // 从子代理输出中解析结构化 { ok, reason }（宽松：截取最后一个 JSON 对象）
+        const parsed = parseAgentHookVerdict(result.output);
+        return {
+          ok: parsed?.ok !== false, // 解析不到默认放行（不误阻塞）
+          reason: parsed?.reason,
+          transcript: result.output,
+        };
+      });
+    }
 
     // 初始化 QueryEngine（两层架构：QueryEngine → queryLoop）
     this.queryEngine = new QueryEngine({
@@ -2902,6 +2965,10 @@ export class App {
       checkpointSessionId: this.getLogicalSessionId(),
       hookSystem: this.hookSystem,
       permissionChecker: this.permissionChecker,
+      // G3：PreToolUse fire-once 缓存。每次 buildToolExecutorDeps 建一份新 Map，
+      // 在同一 deps 内由 resolveToolPermission（先 fire）与 executeSingleTool（复用）共享，
+      // 保证 PreToolUse 只 fire 一次且 permissionDecision 能注入权限层。
+      preToolUseCache: new Map(),
       getAbortSignal: () => this.abortController?.signal,
       requestUserConfirmation: (desc, permReq, toolName, toolInput, signal) =>
         this.requestUserConfirmation(desc, permReq, toolName, toolInput, signal),

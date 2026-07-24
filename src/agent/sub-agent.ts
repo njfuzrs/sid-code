@@ -828,18 +828,19 @@ export class SubAgent {
 
     // pre_tool_use hook（spawn 路径同样接入 hook 链，与进程内 / 主循环对齐）。
     let effectiveInput = input;
+    let hookPermissionDecision: "allow" | "ask" | undefined;
     if (this.hookSystem) {
       try {
         const pre = await this.hookSystem.firePreToolUseEvent(name, input, undefined);
-        if (pre.finalOutput?.isBlockingDecision()) {
-          const reason = pre.finalOutput.getEffectiveReason();
-          log.info("SUBAGENT:HOOK", `工具 ${name} 被 hook 阻止: ${reason}`);
-          return { content: `Hook 阻止执行: ${reason}`, is_error: true };
+        // G3：与主循环/进程内子代理共享同一 PreToolUse 解读
+        const { interpretPreToolUse } = await import("../query/tool-executor.ts");
+        const interp = interpretPreToolUse(pre, input);
+        if (interp.blocked) {
+          log.info("SUBAGENT:HOOK", `工具 ${name} 被 hook 阻止: ${interp.blockReason}`);
+          return { content: `Hook 阻止执行: ${interp.blockReason ?? "无原因"}`, is_error: true };
         }
-        if (pre.finalOutput && "getModifiedToolInput" in pre.finalOutput) {
-          const modified = (pre.finalOutput as any).getModifiedToolInput?.();
-          if (modified) effectiveInput = modified as Record<string, unknown>;
-        }
+        hookPermissionDecision = interp.permissionDecision;
+        if (interp.modifiedInput !== undefined) effectiveInput = interp.modifiedInput;
       } catch (err: any) {
         log.error("SUBAGENT:HOOK", `pre_tool_use hook 失败: ${err.message}`);
       }
@@ -852,7 +853,7 @@ export class SubAgent {
         input: effectiveInput,
         description: `${name}: ${JSON.stringify(effectiveInput).slice(0, 120)}`,
       };
-      const decision = await this.permissionChecker.check(permReq, tool);
+      const decision = await this.permissionChecker.check(permReq, tool, undefined, { hookPermissionDecision });
       if (!decision.allowed) {
         const reason = decision.reason || "子代理不允许此操作";
         log.info("SUBAGENT:PERM", `权限拒绝 ${name}: ${reason}`);

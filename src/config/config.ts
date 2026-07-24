@@ -62,9 +62,9 @@ export interface MCPOAuthConfig {
   callbackPort?: number;
 }
 
-/** Hook 配置（支持 command 和 url 两种类型） */
+/** Hook 配置（支持 command / url / prompt / agent 四种类型） */
 export interface HookConfig {
-  type?: "command" | "url";       // 钩子类型，默认 command
+  type?: "command" | "url" | "prompt" | "agent"; // 钩子类型，默认 command
   event?: string;                  // 旧格式兼容：事件名
   command?: string;                // command 类型：shell 命令
   url?: string;                    // url 类型：HTTP 地址
@@ -73,6 +73,11 @@ export interface HookConfig {
   timeout?: number;                // 超时（秒），默认 30
   blocking?: boolean;              // 是否阻塞，默认 false
   matcher?: string;                // 工具匹配（精确或 /regex/）
+  // ─── prompt / agent 类型（LLM 层 hook，G5） ───
+  name?: string;                   // hook 名称（可观测性/日志）
+  prompt?: string;                 // prompt/agent 类型：验证提示词
+  model?: string;                  // prompt/agent 类型：使用的模型（默认走 side-call 模型）
+  tools?: string[];                // agent 类型：子代理可用工具白名单
 }
 
 /** Hook 配置集合（按事件分组，新格式） */

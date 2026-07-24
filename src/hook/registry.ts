@@ -19,6 +19,8 @@ export interface HookRegistryEntry {
   source: ConfigSource;
   eventName: HookEventName;
   matcher?: string;
+  /** G10：tool_input 细粒度条件（权限规则语法，仅工具事件生效） */
+  if?: string;
   sequential?: boolean;
   enabled: boolean;
   /** 来源 Skill 名称（Skill 声明的会话级 hook） */
@@ -100,6 +102,7 @@ export class HookRegistry {
             source,
             eventName: resolvedEvent,
             matcher: def.matcher,
+            if: def.if,
             sequential: def.sequential,
             enabled: true,
           });
@@ -264,10 +267,32 @@ export class HookRegistry {
       if (!legacy.url) return null;
       return {
         type: "url",
-        name: legacy.command ? undefined : undefined,
         url: legacy.url,
         method: legacy.method,
         headers: legacy.headers,
+        timeout: legacy.timeout,
+      };
+    }
+    // G5：prompt 类型（LLM 单轮验证）
+    if (type === "prompt") {
+      if (!legacy.prompt) return null;
+      return {
+        type: "prompt",
+        name: legacy.name,
+        prompt: legacy.prompt,
+        model: legacy.model,
+        timeout: legacy.timeout,
+      };
+    }
+    // G5：agent 类型（多轮子代理验证）
+    if (type === "agent") {
+      if (!legacy.prompt) return null;
+      return {
+        type: "agent",
+        name: legacy.name,
+        prompt: legacy.prompt,
+        model: legacy.model,
+        tools: legacy.tools,
         timeout: legacy.timeout,
       };
     }
