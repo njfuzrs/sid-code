@@ -27,6 +27,30 @@ export const TODO_REMINDER_CONFIG = {
 export const MAX_TODO_GATE_RETRIES = 3;
 
 /**
+ * P0-3 误判自愈阈值：续命耗尽时，若"有实质产出却不翻状态位"的次数 ≥ 此值，
+ * 判定极可能是"任务已交付、只是忘标记"（而非真没做完），收尾不抛假警报。
+ * 取 MAX_TODO_GATE_RETRIES：即**每一次**续命模型都在实质应答却始终不更新清单，
+ * 才认定为"忘标记"——足够保守，不会把"真没做完但产出了点东西"误当忘标记放过。
+ */
+export const TODO_GATE_FORGOT_MARK_THRESHOLD = MAX_TODO_GATE_RETRIES;
+
+/**
+ * 判定本轮是否"有实质产出"——用于 todo gate 区分"真没做完"vs"忘标记"。
+ * 产出实质内容（如输出了完整报告）却试图收尾，比"空手 end_turn"更像"活干完了忘翻状态位"。
+ * 阈值与 output-stall 的语义对齐：远高于一句寒暄，约等于"至少写了一段实质文字"。
+ */
+export const TODO_GATE_PRODUCTIVE_TEXT_MIN = 200;
+
+/**
+ * P0-3 误判自愈：续命耗尽且判定为"极可能忘标记"时的中性收尾文案。
+ * 不抛"仍有 N 项未完成"的红字警报（那会是假警报），只做一句不打扰的说明。
+ * 注意：措辞不断言"已完成"（门禁读不到模型的心），只如实说"已放行收尾"。
+ */
+export function buildTodoGateForgotMarkMessage(): string {
+  return `已完成本轮工作并收尾。如清单仍有未勾选项，多为状态标记遗漏，可让我核对。`;
+}
+
+/**
  * 方案②（deepseek-reasoning-leak 修复）：「未答复的 end_turn」最大软续命次数。
  * stream-processor 判定本轮思考漂移进正文 / 只思考不答复（无 todo 也生效）时，
  * 回注收敛提示并续命。上限比 todo gate 略小——连续 N 次仍未答复说明模型确实卡死，

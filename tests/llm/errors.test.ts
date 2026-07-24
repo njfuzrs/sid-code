@@ -246,6 +246,47 @@ describe("classifyError", () => {
     });
   });
 
+  // === 连接被关闭的消息文本兜底（无 .code 结构字段）===
+  // 回归：2026-07 迁移 skill 崩溃复盘。网关在 [DONE] 后延迟关 socket，最终 RST 抛出
+  // 裸 Error "The socket connection was closed unexpectedly"，无 .code 字段，此前落到
+  // "无法分类"分支 → 不重试 → 静默降级。现应归为可重试 network_error。
+  describe("连接被关闭（消息文本兜底）", () => {
+    test("Bun/undici socket connection was closed", () => {
+      const err = classifyError(
+        new Error(
+          "The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()",
+        ),
+      );
+      expect(err).toBeInstanceOf(RetryableError);
+      expect((err as RetryableError).reason).toBe("network_error");
+    });
+
+    test("socket hang up", () => {
+      const err = classifyError(new Error("socket hang up"));
+      expect(err).toBeInstanceOf(RetryableError);
+      expect((err as RetryableError).reason).toBe("network_error");
+    });
+
+    test("other side closed", () => {
+      const err = classifyError(new Error("other side closed"));
+      expect(err).toBeInstanceOf(RetryableError);
+      expect((err as RetryableError).reason).toBe("network_error");
+    });
+
+    test("terminated（undici 流式中断）", () => {
+      const err = classifyError(new Error("terminated"));
+      expect(err).toBeInstanceOf(RetryableError);
+      expect((err as RetryableError).reason).toBe("network_error");
+    });
+
+    test("互斥性：socket 关闭错误不得被 isAbortError 误判为中断", () => {
+      // 关键：可重试网络故障 与 用户/超时中断 必须严格互斥，
+      // 否则 socket 错误若被当 abort 就会被静默吞掉、既不重试也不报错。
+      const socketErr = new Error("The socket connection was closed unexpectedly");
+      expect(isAbortError(socketErr)).toBe(false);
+    });
+  });
+
   // === 未知错误 ===
   describe("未知错误", () => {
     test("无法分类的 Error 返回原始错误", () => {

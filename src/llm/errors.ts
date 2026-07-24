@@ -215,6 +215,25 @@ const RETRYABLE_NETWORK_CODES = [
   "EAI_AGAIN", "ECONNREFUSED", "EHOSTUNREACH",
 ];
 
+/**
+ * 可重试的"连接被关闭"错误消息片段（小写）。
+ * 这类瞬态断连常以裸 Error 冒泡（无 .code 字段），只能靠消息文本兜底识别。
+ * 与 isAbortError 的白名单严格互斥——这些是**网络故障**（该重试），不是用户/超时中断（不该重试）。
+ * 来源：Bun/undici fetch 流式断连、各家网关 socket RST 的实测文案。
+ */
+const RETRYABLE_CONNECTION_MESSAGES = [
+  "socket connection was closed",
+  "socket hang up",
+  "other side closed",
+  "connection closed",
+  "connection reset",
+  "econnreset",
+  "epipe",
+  "network error",
+  "failed to fetch",
+  "terminated",
+];
+
 // ─── Cause 链遍历工具 ───
 
 /**
@@ -565,6 +584,16 @@ export function classifyError(error: unknown): TerminalError | RetryableError | 
   // 3. 网络错误码检测
   const code = getNetworkErrorCode(error);
   if (code && RETRYABLE_NETWORK_CODES.includes(code)) {
+    return new RetryableError(msg, "network_error");
+  }
+
+  // 3.5 连接被对端关闭（消息文本兜底）——这类错误常以裸 Error 冒泡，无 .code 结构字段，
+  // 靠上面的 RETRYABLE_NETWORK_CODES 命不中。典型：Bun/undici fetch 在流式响应中途
+  // 断连抛出 "The socket connection was closed unexpectedly"、"socket hang up"、
+  // "other side closed"、"terminated" 等。它们是**瞬态**网络故障，应重试而非静默放弃。
+  // 根因（2026-07 迁移 skill 崩溃复盘）：网关在 [DONE] 后延迟关 socket，最终 RST 抛出
+  // 上述消息，此前落到"无法分类"分支 → 不重试。放在网络码检测之后，避免遮蔽结构化码。
+  if (RETRYABLE_CONNECTION_MESSAGES.some(frag => lowerMsg.includes(frag))) {
     return new RetryableError(msg, "network_error");
   }
 

@@ -71,9 +71,12 @@ import {
   TODO_REMINDER_CONFIG,
   MAX_TODO_GATE_RETRIES,
   MAX_UNANSWERED_RETRIES,
+  TODO_GATE_FORGOT_MARK_THRESHOLD,
+  TODO_GATE_PRODUCTIVE_TEXT_MIN,
   buildTodoReminder,
   buildTodoGateMessage,
   buildTodoGateExhaustedMessage,
+  buildTodoGateForgotMarkMessage,
   buildUnansweredEndTurnMessage,
   countUnfinished,
 } from "./todo-reminder.ts";
@@ -652,6 +655,9 @@ export async function* queryLoop(
           // 同一条用户消息内模型完成部分项后，gate 不该继续消耗上一段停滞攒下的续命额度。
           state.noProgressNagCount = 0;
           state.todoGateRetryCount = 0;
+          // 误判自愈：writeVersion 变化 = 模型确实推进了清单 = 属"真没做完后继续干"的良性路径，
+          // 清零"有产出却不翻状态位"计数（该计数只统计连续的 B 类：交付了却忘标记）。
+          state.todoGateProductiveNoUpdateCount = 0;
         } else {
           const turnsSinceReminder = state.turnCount - (state.lastTodoReminderTurn ?? 0);
           // 压缩后强制回注（与 goalReminderPendingAfterCompact 同机制）
@@ -1971,6 +1977,17 @@ export async function* queryLoop(
         const todoState = deps.getTodoState();
         const unfinished = todoState ? countUnfinished(todoState.todos) : 0;
         if (todoState && unfinished > 0) {
+          // 误判自愈信号：本轮"有实质产出"（写了一段实质文字，如输出了完整报告）却试图收尾。
+          // 关键前提——本 gate 只在 `isEndTurnLike && !hasPendingToolUse` 分支到达，即本轮
+          // **没有任何工具调用**，因此 todo_write 本轮必然没执行、writeVersion 不可能变化。
+          // 于是"有产出却不翻状态位"= producedSubstantialText 即可，无需再判 writeVersion。
+          // 逐次累计；若某轮模型改走 todo_write（有工具调用）则不会到这里，且下一轮 P0-2 复位
+          // 逻辑会在 writeVersion 变化时把本计数清零（良性路径不会误触发忘标记判定）。
+          const producedSubstantialText = responseText.trim().length >= TODO_GATE_PRODUCTIVE_TEXT_MIN;
+          if (producedSubstantialText) {
+            state.todoGateProductiveNoUpdateCount = (state.todoGateProductiveNoUpdateCount ?? 0) + 1;
+          }
+
           const retries = state.todoGateRetryCount ?? 0;
           if (retries < MAX_TODO_GATE_RETRIES) {
             state.todoGateRetryCount = retries + 1;
@@ -1991,16 +2008,35 @@ export async function* queryLoop(
             setTransition(state, { type: "todo_gate_retry" }, deps, sessionState.sessionId);
             continue;
           }
-          // 续命耗尽：放行但如实呈现未完成项
-          log.warn(
-            "QUERY_LOOP",
-            `P0-3：完成度续命已达上限 ${MAX_TODO_GATE_RETRIES}，放行但仍有 ${unfinished} 项未完成`,
-          );
-          yield {
-            kind: "system",
-            level: "warning",
-            text: buildTodoGateExhaustedMessage(todoState.todos),
-          };
+
+          // 续命耗尽。区分两种外部观测相同、本质不同的收尾：
+          const forgotMark =
+            (state.todoGateProductiveNoUpdateCount ?? 0) >= TODO_GATE_FORGOT_MARK_THRESHOLD;
+          if (forgotMark) {
+            // B) 极可能"忘标记"：每次续命模型都在实质应答却始终不翻状态位。抛"未完成"是假警报，
+            // 反而误导用户以为交付物有缺失。改为中性收尾（warn 日志保留，供排查门禁误判率）。
+            log.warn(
+              "QUERY_LOOP",
+              `P0-3：续命耗尽且判定为"忘标记"（连续 ${state.todoGateProductiveNoUpdateCount} 次有产出却未翻状态位），` +
+                `抑制假警报，中性收尾；仍有 ${unfinished} 项未勾选`,
+            );
+            yield {
+              kind: "system",
+              level: "info",
+              text: buildTodoGateForgotMarkMessage(),
+            };
+          } else {
+            // A) 真没做完：放行但如实呈现未完成项，不假装完成。
+            log.warn(
+              "QUERY_LOOP",
+              `P0-3：完成度续命已达上限 ${MAX_TODO_GATE_RETRIES}，放行但仍有 ${unfinished} 项未完成`,
+            );
+            yield {
+              kind: "system",
+              level: "warning",
+              text: buildTodoGateExhaustedMessage(todoState.todos),
+            };
+          }
         }
       }
 

@@ -459,3 +459,61 @@ describe("OpenAI Content-Type 守卫（伪装成功的错误页 fail-fast）", (
     }
   });
 });
+
+// 回归：2026-07 迁移 skill 崩溃复盘。收到 [DONE] 后必须立即跳出、不再 reader.read()。
+// 此前用 continue 继续读，网关在 [DONE] 后延迟关 socket（实测 39s）时会卡在空转窗口，
+// 期间的 socket 错误还会经 finally 的 reader.cancel() 逃逸成 unhandledRejection 崩溃。
+describe("OpenAI [DONE] 后立即收尾（不空转等 socket）", () => {
+  test("[DONE] 之后即便 socket 迟迟不关，流也应迅速结束", async () => {
+    const origFetch = globalThis.fetch;
+    // 构造一个"[DONE] 后不发 EOF、挂起一段时间才关闭"的流，模拟网关延迟关 socket。
+    const encoder = new TextEncoder();
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            'data: {"choices":[{"delta":{"content":"hi"},"finish_reason":null}]}\n\n' +
+              'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n' +
+              "data: [DONE]\n\n",
+          ),
+        );
+        // 关键：不立刻 close()。若实现收到 [DONE] 仍继续 read()，就会卡在这里等 2s。
+        timer = setTimeout(() => {
+          try { controller.close(); } catch { /* already closed */ }
+        }, 2000);
+      },
+      cancel() {
+        if (timer) clearTimeout(timer);
+      },
+    });
+    globalThis.fetch = ((_url: any, _init?: any) =>
+      Promise.resolve(
+        new Response(stream, {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        }),
+      )) as typeof fetch;
+
+    try {
+      const provider = new OpenAIProvider("test-key", "gpt-4o-mini");
+      const events: any[] = [];
+      const startedAt = Date.now();
+      for await (const ev of provider.sendMessageStream({
+        model: "gpt-4o-mini",
+        messages: [{ role: "user", content: "hi" }],
+        maxTokens: 16,
+      } as any)) {
+        events.push(ev);
+      }
+      const elapsed = Date.now() - startedAt;
+
+      // 收到 [DONE] 后应立即结束（远早于 2s 的挂起窗口），而非空转等 socket。
+      expect(elapsed).toBeLessThan(1000);
+      expect(events.some((e) => e.type === "message_stop")).toBe(true);
+      expect(events.filter((e) => e.type === "error").length).toBe(0);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+});

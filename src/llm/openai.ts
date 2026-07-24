@@ -1365,6 +1365,8 @@ export class OpenAIProvider implements Provider {
       signal.addEventListener("abort", signalAbortHandler, { once: true });
     }) : null;
 
+    // 空转崩溃修复：收到 [DONE] 后置位，让外层 while 立即退出，不再 reader.read()。
+    let streamDone = false;
     try {
       // 缺口 1：记录进入 SSE 消费阶段
       emitStreamPhase(parseObsIndex, "sse_consuming", { model: this._model });
@@ -1458,7 +1460,14 @@ export class OpenAIProvider implements Provider {
               pendingFinishReason = null;
             }
             yield { type: "message_stop" };
-            continue;
+            // 空转崩溃修复（2026-07 迁移 skill 崩溃复盘）：收到 [DONE] 表示流已逻辑完成，
+            // 必须立即跳出、不再 reader.read()。此前用 continue 继续读，正常情况下服务端会
+            // 紧接着 EOF 让 read() 返回 done；但某些网关在 [DONE] 后会把 socket 挂起数十秒
+            // 才 RST（实测 39s），这期间流其实早已完成却卡在读取上，最终 socket 错误还会经
+            // finally 的 reader.cancel() 逃逸成 unhandledRejection 崩溃。置 streamDone 跳出
+            // 外层 while，从源头消除这段空转窗口。
+            streamDone = true;
+            break;
           }
 
           try {
@@ -1713,6 +1722,10 @@ export class OpenAIProvider implements Provider {
           }
         }
 
+        // 空转崩溃修复：[DONE] 已处理完（含 message_stop / 延迟 message_delta 的 yield），
+        // 跳出外层 while，不再 reader.read()（否则会卡在网关延迟关闭的 socket 上空转）。
+        if (streamDone) break;
+
         // Fix 2: content progress timeout — 每次 reader.read() settle 后检查
         // 即使 TCP 层有字节到达（空行/ping），只要无有效内容进展就超时中断
         const contentElapsed = Date.now() - lastContentProgressAt;
@@ -1741,8 +1754,21 @@ export class OpenAIProvider implements Provider {
       }
       // best-effort 清理：cancel/releaseLock 失败不影响主流程，但补 debug 痕迹，
       // 避免"整块空吞"——排查 reader 泄漏/双重释放时至少日志里有线索（静默-8）。
-      try { reader.cancel(); } catch (e) {
-        getLogger().debug("LLM:OPENAI", `reader.cancel() 失败（不影响主流程）: ${(e as Error)?.message}`);
+      //
+      // ⚠️ 崩溃根因修复（2026-07 迁移 skill 崩溃复盘）：reader.cancel() 返回 Promise，
+      // 当底层 stream 已因 socket RST 进入 errored 态时，它返回的是一个 **rejected**
+      // Promise，且 rejection 是**异步**的——同步 try/catch 根本抓不到，rejection 会逃逸
+      // 成 floating unhandledRejection。cli.ts 的全局兜底不认 socket 错误（不在 abort 白
+      // 名单）→ 误判为真故障 → process.exit(1) 崩溃。即便上方 for-await 的 catch 已经优
+      // 雅处理了同一个 read() 错误，这个 finally 里独立的 cancel() rejection 仍会杀进程。
+      // 必须用 .catch() 兜住异步 rejection（对齐本文件 1374/1411/1731 行的既有写法）。
+      try {
+        reader.cancel().catch((e) => {
+          getLogger().debug("LLM:OPENAI", `reader.cancel() 失败（不影响主流程）: ${(e as Error)?.message}`);
+        });
+      } catch (e) {
+        // 极少数运行时 cancel() 同步抛错的兜底（如 reader 状态非法）
+        getLogger().debug("LLM:OPENAI", `reader.cancel() 同步异常（不影响主流程）: ${(e as Error)?.message}`);
       }
       try { reader.releaseLock(); } catch (e) {
         getLogger().debug("LLM:OPENAI", `reader.releaseLock() 失败（不影响主流程）: ${(e as Error)?.message}`);

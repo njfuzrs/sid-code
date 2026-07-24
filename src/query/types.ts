@@ -165,6 +165,17 @@ export interface LoopState {
   /** P0-3：end_turn 完成度硬校验已软续命的次数 */
   todoGateRetryCount?: number;
   /**
+   * P0-3 误判自愈：todo gate 续命期间，模型每次都产出了实质内容（文本/工具调用）
+   * 却始终不更新 writeVersion 的累计次数。
+   *
+   * 语义：区分门禁面对的两种外部观测相同、本质不同的情况——
+   *   A) 真没做完：模型收到续命提醒后继续干活、产出实质内容并推进清单（writeVersion 变化，会清零本计数）。
+   *   B) 忘标记：任务其实已交付（报告已输出等），模型每轮都在实质应答，却没翻最后的状态位。
+   * 若续命耗尽时本计数 ≥ 阈值，判定极可能是 B，收尾时不抛"仍有 N 项未完成"的假警报，
+   * 改为中性收尾（warn 日志保留供排查）。writeVersion 变化时清零（见 loop.ts gate 复位处）。
+   */
+  todoGateProductiveNoUpdateCount?: number;
+  /**
    * 方案②（deepseek-reasoning-leak 修复）：「未答复的 end_turn」已软续命的次数。
    * stream-processor 置 response._unansweredEndTurn（思考漂移进正文 / 只思考不答复）时，
    * 不依赖 todo 也回注一次收敛提示并续命，兜住例③"重试无反应"的机制级根因。

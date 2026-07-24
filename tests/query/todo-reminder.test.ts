@@ -8,11 +8,14 @@ import { describe, it, expect } from "bun:test";
 import {
   TODO_REMINDER_CONFIG,
   MAX_TODO_GATE_RETRIES,
+  TODO_GATE_FORGOT_MARK_THRESHOLD,
+  TODO_GATE_PRODUCTIVE_TEXT_MIN,
   unfinishedTodos,
   countUnfinished,
   buildTodoReminder,
   buildTodoGateMessage,
   buildTodoGateExhaustedMessage,
+  buildTodoGateForgotMarkMessage,
 } from "../../src/query/todo-reminder.ts";
 import type { TodoItem } from "../../src/tool/todo-write.ts";
 
@@ -72,5 +75,38 @@ describe("todo-reminder — P0-3 完成度闸门", () => {
     expect(m).toContain("1 项任务未完成");
     expect(m).toContain("没做的");
     expect(m).toContain(`${MAX_TODO_GATE_RETRIES}`);
+  });
+});
+
+describe("todo-reminder — P0-3 误判自愈（忘标记 vs 真没做完）", () => {
+  it("忘标记阈值取满续命次数（最保守：每次都有产出却不翻状态位才判忘标记）", () => {
+    expect(TODO_GATE_FORGOT_MARK_THRESHOLD).toBe(MAX_TODO_GATE_RETRIES);
+  });
+
+  it("实质产出阈值远高于一句寒暄（≥200 字符）", () => {
+    expect(TODO_GATE_PRODUCTIVE_TEXT_MIN).toBeGreaterThanOrEqual(200);
+  });
+
+  it("buildTodoGateForgotMarkMessage 中性收尾：不抛'未完成'红字、不断言'已完成'", () => {
+    const m = buildTodoGateForgotMarkMessage();
+    // 不得出现制造假警报的"仍有 N 项未完成"字样
+    expect(m).not.toContain("未完成");
+    expect(m).not.toContain("⚠️");
+    // 也不得武断宣称已完成（门禁读不到模型的心）
+    expect(m).not.toContain("已全部完成");
+    // 应给出"可核对"的温和出口
+    expect(m).toContain("核对");
+  });
+
+  it("忘标记文案与如实警报文案是两条不同路径（措辞可区分）", () => {
+    const forgot = buildTodoGateForgotMarkMessage();
+    const honest = buildTodoGateExhaustedMessage([
+      todo("做完的", "completed"),
+      todo("没做的", "pending"),
+    ]);
+    expect(forgot).not.toBe(honest);
+    // 如实警报保留"未完成"语义，忘标记路径不含
+    expect(honest).toContain("未完成");
+    expect(forgot).not.toContain("未完成");
   });
 });
