@@ -132,7 +132,7 @@ export type ConfigScope = 'user' | 'project' | 'local' | 'dynamic';
 
 /** 带 Scope 标记的 MCP 服务器配置 */
 export interface ScopedMcpServerConfig {
-  transport: "stdio" | "http" | "sse" | "ws";
+  transport: "stdio" | "http" | "http-json" | "sse" | "ws";
   command?: string;
   args?: string[];
   env?: Record<string, string>;

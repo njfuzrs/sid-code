@@ -21,12 +21,18 @@ export function getMcpServerSignature(config: MCPServerConfig | ScopedMcpServerC
   return null;
 }
 
-/** Scope 优先级：user > local > project > dynamic */
+/**
+ * Scope 优先级（数字小=高优先，同名/同签名以高优先级为准）：dynamic > user > local > project
+ *
+ * dynamic 提到最高（B1）：IDE 等动态注册的 server 是运行时注入的活连接，
+ * 不应被静态配置文件里的同名项顶掉（否则用户 settings 里误写同名会挤掉 IDE 连接）。
+ * user > local > project 对齐文档 10.5：个人全局 > 本地实验 > 团队共享。
+ */
 const SCOPE_PRIORITY: Record<ConfigScope, number> = {
+  dynamic: -1,
   user: 0,
   local: 1,
   project: 2,
-  dynamic: 3,
 };
 
 /**

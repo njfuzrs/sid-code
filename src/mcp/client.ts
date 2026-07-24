@@ -20,6 +20,15 @@ import type {
   GetPromptResult,
   MCPPrompt,
 } from "./types.ts";
+import { getRawVersion } from "../version.ts";
+import { getLogger } from "../debug/logger.ts";
+import { basename } from "path";
+
+/**
+ * 客户端声明的 MCP 协议版本（G6-5）。
+ * 2025-03-26 是 Streamable HTTP + tool annotations 的规范版本，与 G4 配套。
+ */
+export const CLIENT_PROTOCOL_VERSION = "2025-03-26";
 
 /** MCPClient 配置选项 */
 export interface MCPClientOptions {
@@ -102,6 +111,19 @@ export class MCPClient {
   }
 
   /**
+   * G6-2：惰性注册 roots/list 请求处理器，返回当前工作目录作为唯一 root。
+   * 服务器在声明 roots 能力后可发 roots/list 询问客户端可访问的根目录。
+   * 幂等：已注册则跳过。
+   */
+  private ensureRootsHandler(): void {
+    if (this.requestHandlers.has("roots/list")) return;
+    this.onRequestMethod("roots/list", async () => {
+      const cwd = process.cwd();
+      return { roots: [{ uri: `file://${cwd}`, name: basename(cwd) || cwd }] };
+    });
+  }
+
+  /**
    * 注册通用 MCP 通知处理器（支持同一 method 多个处理器）。
    * 用于 IDE 通知（selection_changed / at_mentioned 等）。
    * @returns 取消注册函数
@@ -158,10 +180,16 @@ export class MCPClient {
     if (this.hasRequestHandler("elicitation/create")) {
       capabilities.elicitation = {};
     }
+    // G6-2：默认声明 roots 能力并注册 roots/list 处理器（返回 CWD），
+    // 否则服务器发 roots/list 会收到 -32601。惰性注册，避免重复。
+    this.ensureRootsHandler();
+    capabilities.roots = {};
+
+    // G6-4：clientInfo 版本号从 package.json 读真实值（此前硬编码 0.1.0，与二进制脱节）。
     const response = await this.sendWithRetry(this.makeRequest("initialize", {
-      protocolVersion: "2024-11-05",
+      protocolVersion: CLIENT_PROTOCOL_VERSION,
       capabilities,
-      clientInfo: { name: "sid-code", version: "0.1.0" },
+      clientInfo: { name: "sid-code", version: getRawVersion() },
     }));
 
     if (response.error) {
@@ -170,6 +198,15 @@ export class MCPClient {
 
     this.serverInfo = response.result as InitializeResult;
     this.initialized = true;
+
+    // G6-5：协议版本协商——比对服务器返回的 protocolVersion，不一致仅 warn，不强制断开（宽容）。
+    const serverProto = this.serverInfo?.protocolVersion;
+    if (serverProto && serverProto !== CLIENT_PROTOCOL_VERSION) {
+      getLogger().warn(
+        "MCP",
+        `协议版本不一致：client=${CLIENT_PROTOCOL_VERSION}, server=${serverProto}（继续连接，宽容处理）`,
+      );
+    }
 
     // 发送 initialized 通知（无 id，不等响应）
     const notification: JsonRpcNotification = {

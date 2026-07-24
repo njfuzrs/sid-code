@@ -44,6 +44,7 @@ export class MCPEnhancedCommand implements Command {
       new MCPTestCommand(),
       new MCPAuthenticateCommand(),
       new MCPPromptsCommand(),
+      new MCPPromptRunCommand(),
       new MCPResourcesCommand(),
     ];
   }
@@ -303,11 +304,16 @@ class MCPEnableCommand implements Command {
       return { kind: "message", message: `MCP 服务器 "${name}" 已在当前会话启用` };
     }
 
-    // TODO: 持久化启用（需要修改配置文件或 enablement 状态）
-    return {
-      kind: "message",
-      message: `MCP 服务器 "${name}" 启用功能待实现\n当前仅支持 --session 临时启用`,
-    };
+    // G6-3：持久化启用——把 enabled=true 写回 server 所在配置源（user/project）。
+    try {
+      const target = setServerEnabled(name, true);
+      if (!target) {
+        return { kind: "error", message: `未在 user/project 配置中找到 MCP 服务器 "${name}"` };
+      }
+      return { kind: "message", message: `MCP 服务器 "${name}" 已持久启用（${target} 配置）\n重启会话后生效` };
+    } catch (err: any) {
+      return { kind: "error", message: `启用失败: ${err.message}` };
+    }
   }
 }
 
@@ -337,12 +343,57 @@ class MCPDisableCommand implements Command {
       return { kind: "message", message: `MCP 服务器 "${name}" 已在当前会话禁用` };
     }
 
-    // TODO: 持久化禁用
-    return {
-      kind: "message",
-      message: `MCP 服务器 "${name}" 禁用功能待实现\n当前仅支持 --session 临时禁用`,
-    };
+    // G6-3：持久化禁用——把 enabled=false 写回 server 所在配置源（user/project）。
+    try {
+      const target = setServerEnabled(name, false);
+      if (!target) {
+        return { kind: "error", message: `未在 user/project 配置中找到 MCP 服务器 "${name}"` };
+      }
+      return { kind: "message", message: `MCP 服务器 "${name}" 已持久禁用（${target} 配置）\n重启会话后生效` };
+    } catch (err: any) {
+      return { kind: "error", message: `禁用失败: ${err.message}` };
+    }
   }
+}
+
+/**
+ * G6-3：把某 MCP 服务器的 enabled 位持久化到它所在的配置源。
+ *
+ * 查找顺序：project(.mcp.json) → user(settings.json)。找到即在该源就地改 enabled，
+ * 返回命中的 scope；两处都没有返回 null。用 patchSettingsFile 只改一字段，避免整体
+ * 重写 settings 时 Zod 有损解析（strip 掉 MCP 自定义字段 + 展开 env 占位符落明文）。
+ */
+function setServerEnabled(name: string, enabled: boolean): "project" | "user" | null {
+  const log = getLogger();
+
+  // project：.mcp.json
+  const mcpJsonPath = resolve(process.cwd(), ".mcp.json");
+  if (existsSync(mcpJsonPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(mcpJsonPath, "utf-8"));
+      const servers = parsed.mcpServers ?? parsed.mcp_servers ?? parsed;
+      if (servers && typeof servers === "object" && servers[name]) {
+        servers[name].enabled = enabled;
+        writeFileSync(mcpJsonPath, JSON.stringify(parsed, null, 2), "utf-8");
+        log.info("MCP", `已持久化 ${name} enabled=${enabled} 到 .mcp.json`);
+        return "project";
+      }
+    } catch (err) {
+      log.warn("MCP", `读取 .mcp.json 失败: ${err}`);
+    }
+  }
+
+  // user：~/.sid-code/settings.json 的 mcpServers
+  const { settings } = getSettingsForSource("userSettings");
+  const servers = { ...(settings?.mcpServers ?? {}) } as Record<string, any>;
+  if (servers[name]) {
+    servers[name] = { ...servers[name], enabled };
+    patchSettingsFile("userSettings", "mcpServers", servers);
+    log.info("MCP", `已持久化 ${name} enabled=${enabled} 到用户 settings.json`);
+    return "user";
+  }
+
+  return null;
 }
 
 /** /mcp test - 测试 MCP 服务器连接 */
@@ -462,6 +513,61 @@ class MCPPromptsCommand implements Command {
     }
 
     return { kind: "message", message: lines.join("\n") };
+  }
+}
+
+/**
+ * /mcp prompt <server>:<name> [k=v...] - 执行指定提示词并提交给 LLM
+ *
+ * B3：修复引导语指向的「/mcp prompt」命令此前不存在（承诺了不存在的命令，
+ * 用户照做时命令回退到父命令 → 只列状态）。逻辑迁自原死代码 MCPCommand.usePrompt。
+ */
+class MCPPromptRunCommand implements Command {
+  name() { return "prompt"; }
+  aliases() { return []; }
+  description() { return "执行 MCP 提示词：/mcp prompt <server>:<name> [arg=val ...]"; }
+  argumentHint() { return "<server>:<name> [arg=val ...]"; }
+
+  async execute(args: string, ctx: AppContext): Promise<CommandResult> {
+    if (!ctx.mcpManager) {
+      return { kind: "error", message: "MCP 管理器未初始化" };
+    }
+
+    // 格式：<server>:<promptName> [arg1=val1 arg2=val2 ...]
+    const match = args.trim().match(/^(\S+?):(\S+)(?:\s+(.*))?$/);
+    if (!match) {
+      return {
+        kind: "error",
+        message: "用法: /mcp prompt <server>:<name> [arg1=val1 arg2=val2 ...]\n用 /mcp prompts 查看可用提示词",
+      };
+    }
+
+    const [, serverName, promptName, argStr] = match;
+    const promptArgs: Record<string, string> = {};
+    if (argStr) {
+      for (const pair of argStr.split(/\s+/)) {
+        const eq = pair.indexOf("=");
+        if (eq > 0) {
+          promptArgs[pair.slice(0, eq)] = pair.slice(eq + 1);
+        }
+      }
+    }
+
+    try {
+      const messages = await ctx.mcpManager.getPrompt(
+        serverName,
+        promptName,
+        Object.keys(promptArgs).length > 0 ? promptArgs : undefined,
+      );
+      // 将提示词消息拼接为文本，作为用户输入提交给 LLM
+      const text = messages.map(m => m.content).join("\n\n");
+      if (!text.trim()) {
+        return { kind: "error", message: `提示词 ${serverName}:${promptName} 返回空内容` };
+      }
+      return { kind: "submit_prompt", prompt: text };
+    } catch (err: any) {
+      return { kind: "error", message: `获取提示词失败: ${err.message}` };
+    }
   }
 }
 

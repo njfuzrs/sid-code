@@ -51,7 +51,7 @@ const HookEntrySchema = lazySchema(() =>
 /** MCP 服务器 Schema */
 const MCPServerSchema = lazySchema(() =>
   z.object({
-    transport: z.enum(["stdio", "http", "sse", "ws"]),
+    transport: z.enum(["stdio", "http", "http-json", "sse", "ws"]),
     command: z.string().optional(),
     args: z.array(z.string()).optional(),
     env: z.record(z.string()).optional(),

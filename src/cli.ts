@@ -1587,6 +1587,16 @@ export async function main(): Promise<void> {
       }
     }
 
+    // G1：注册 MCP 资源工具（ListMcpResources / ReadMcpResource）。
+    // 用惰性 getter 持有 mcpManager 引用（此刻可能仍在异步连接，工具执行时才求值）。
+    // 仅在存在 mcpManager 时注册，避免无 MCP 场景给模型塞无用工具。
+    if (mcpManager) {
+      const mgrRef = mcpManager;
+      const { ListMcpResourcesTool, ReadMcpResourceTool } = await import("./tool/mcp-resources.ts");
+      toolRegistry.register(new ListMcpResourcesTool(() => mgrRef));
+      toolRegistry.register(new ReadMcpResourceTool(() => mgrRef));
+    }
+
     // IDE 自动发现与连接（后台进行，不阻塞启动）
     // 复用 mcpManager 的 onToolsRefresh 同步工具，IDE 作为动态 MCP server 接入
     if (mcpManager && ideAutoConnect) {

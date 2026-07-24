@@ -11,9 +11,11 @@ import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "../tool
 import type { MCPToolDefinition, MCPResource, MCPPrompt } from "./types.ts";
 import { MCPConnectionStatus } from "./types.ts";
 import { MCPClient } from "./client.ts";
-import { StdioTransport, HTTPTransport, SSETransport, WebSocketTransport } from "./transport.ts";
+import { StdioTransport, HTTPTransport, StreamableHTTPTransport, SSETransport, WebSocketTransport } from "./transport.ts";
 import { buildMcpToolName } from "./normalization.ts";
 import { expandEnvVars } from "./env-expansion.ts";
+import { enforceMcpOutputTokenLimit, IMAGE_TOKEN_ESTIMATE } from "./mcp-output-limit.ts";
+import { getMcpTimeout } from "./mcp-timeout.ts";
 import { getLogger } from "../debug/logger.ts";
 import { join } from "path";
 import { ensureSidTempDir } from "../utils/temp-dir.ts";
@@ -114,22 +116,36 @@ class MCPToolAdapter implements Tool {
         signal,
       );
 
-      const text = result.content
+      let text = result.content
         .filter((c) => c.type === "text" && c.text)
         .map((c) => c.text!)
         .join("\n");
 
+      // G3：图片内容不静默丢弃。当前主循环 MCP 结果走文本通道，无法透传 image block，
+      // 故按固定 token/张计入预算并给占位说明（对齐 CC IMAGE_TOKEN_ESTIMATE 语义）。
+      const imageCount = result.content.filter((c) => c.type === "image" && (c.data || c.mimeType)).length;
+      if (imageCount > 0) {
+        const placeholder = `[MCP 结果含 ${imageCount} 张图片，约 ${imageCount * IMAGE_TOKEN_ESTIMATE} token，当前通道不透传图片内容]`;
+        text = text ? `${text}\n\n${placeholder}` : placeholder;
+      }
+
+      // G3：先按 token 上限截断喂给模型的部分（默认 25000 token，env 可覆盖）。
+      // 截断与「结果过大落盘」分层：落盘存完整存档，截断控喂模型的量，两者可同时发生。
+      const { text: limitedText, truncated } = enforceMcpOutputTokenLimit(text);
+
+      // 字符级落盘保护：完整文本过大时落盘完整结果，返回截断/预览 + 路径。
       if (text.length > MAX_RESULT_SIZE) {
         const tmpPath = join(ensureSidTempDir(), `mcp-result-${Date.now()}.txt`);
         await Bun.write(tmpPath, text);
+        const preview = truncated ? limitedText : text.slice(0, 2000);
         return {
-          output: `结果过大 (${text.length} 字符)，已保存到: ${tmpPath}\n\n前 2000 字符预览:\n${text.slice(0, 2000)}`,
+          output: `结果过大 (${text.length} 字符)，完整结果已保存到: ${tmpPath}\n\n预览:\n${preview}`,
           isError: false,
         };
       }
 
       return {
-        output: text || "(无输出)",
+        output: limitedText || "(无输出)",
         isError: result.isError,
       };
     } catch (err: any) {
@@ -227,7 +243,7 @@ export class MCPManager {
     const connectOne = async ([name, config]: [string, MCPServerConfig]): Promise<Tool[]> => {
       this.serverConfigs.set(name, config);
       this.setStatus(name, MCPConnectionStatus.CONNECTING);
-      const connectTimeout = config.timeout ?? 30000;
+      const connectTimeout = getMcpTimeout(config.timeout);
       // 连接超时孤儿清理：超时时 abort，让 doConnect 主动 close 传输层
       // （kill stdio 子进程 / abort HTTP·SSE 连接），避免 connect 变孤儿后子进程泄漏。
       const connectCtl = new AbortController();
@@ -307,7 +323,7 @@ export class MCPManager {
       signal.addEventListener("abort", onAbort, { once: true });
     }
     try {
-      const timeout = config.timeout ?? 30000;
+      const timeout = getMcpTimeout(config.timeout);
       const retries = config.retries ?? 2;
       const client = new MCPClient(transport, { timeout, retries });
 
@@ -394,7 +410,7 @@ export class MCPManager {
 
   /** 创建传输层 */
   private async createTransport(name: string, config: MCPServerConfig) {
-    const timeout = config.timeout ?? 30000;
+    const timeout = getMcpTimeout(config.timeout);
 
     // OAuth 服务器：注入 access token 为 Authorization 头（优先于静态 authToken）
     let oauthHeader: Record<string, string> | undefined;
@@ -429,6 +445,14 @@ export class MCPManager {
       const args = config.args?.map(a => expandEnvVars(a).expanded) ?? [];
       return new StdioTransport(cmd, args, config.env, timeout);
     } else if (config.transport === "http") {
+      // G4：http 默认走 Streamable HTTP（对齐 CC 与 2025-03-26 规范）
+      if (!config.url) {
+        throw new Error(`MCP 服务器 ${name} 缺少 url 配置`);
+      }
+      const { expanded: url } = expandEnvVars(config.url);
+      return new StreamableHTTPTransport(url, headers, timeout);
+    } else if (config.transport === "http-json") {
+      // 旧单 JSON HTTP 传输（兼容保留，仅在服务器不支持 Streamable 时显式指定）
       if (!config.url) {
         throw new Error(`MCP 服务器 ${name} 缺少 url 配置`);
       }
@@ -503,6 +527,18 @@ export class MCPManager {
       .join("\n");
   }
 
+  /**
+   * G1：读取资源原始 contents（含 blob base64），供 ReadMcpResourceTool 决定
+   * 文本进上下文 / blob 落盘。与 readResource（纯文本拼接）分层。
+   */
+  async readResourceRaw(serverName: string, uri: string) {
+    const client = this.clients.get(serverName);
+    if (!client) {
+      throw new Error(`MCP 服务器 ${serverName} 未连接`);
+    }
+    return client.readResource(uri);
+  }
+
   /** 获取所有服务器的资源列表 */
   getAllResources(): Array<{ serverName: string; resource: MCPResource }> {
     const result: Array<{ serverName: string; resource: MCPResource }> = [];
@@ -565,7 +601,8 @@ export class MCPManager {
     const config = this.serverConfigs.get(name);
     const state = this.getState(name);
 
-    if (!config || config.transport === "http") return;
+    // http / http-json 是无长连接的请求-响应传输，不做心跳（重连按请求粒度处理）
+    if (!config || config.transport === "http" || config.transport === "http-json") return;
     if (state.status === MCPConnectionStatus.RECONNECTING || state.status === MCPConnectionStatus.FAILED) return;
 
     this.stopHeartbeat(name);
@@ -773,7 +810,7 @@ export class MCPManager {
     this.serverConfigs.set(name, config);
     this.setStatus(name, MCPConnectionStatus.CONNECTING);
 
-    const connectTimeout = config.timeout ?? 30000;
+    const connectTimeout = getMcpTimeout(config.timeout);
     const connectCtl = new AbortController();
     let connectTimer: ReturnType<typeof setTimeout> | null = null;
     try {
@@ -876,7 +913,7 @@ export class MCPManager {
 
     // 重连并刷新工具（传入超时 signal，防止 doConnect 变孤儿）
     this.setStatus(name, MCPConnectionStatus.CONNECTING);
-    const connectTimeout = config.timeout ?? 30000;
+    const connectTimeout = getMcpTimeout(config.timeout);
     const connectCtl = new AbortController();
     const connectTimer = setTimeout(() => { connectCtl.abort(); }, connectTimeout);
     try {

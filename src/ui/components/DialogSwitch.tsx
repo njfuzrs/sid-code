@@ -245,7 +245,7 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
     return <AgentsDialog onClose={onDialogClose} />;
   }
   if (activeDialog === "commands" && callbacks.unifiedRegistry) {
-    return <CommandsDialog onClose={onDialogClose} registry={callbacks.unifiedRegistry} />;
+    return <CommandsDialog onClose={onDialogClose} registry={callbacks.unifiedRegistry} mcpManager={mcpManager} />;
   }
   if (activeDialog === "help" && callbacks.unifiedRegistry) {
     return <HelpDialog onClose={onDialogClose} registry={callbacks.unifiedRegistry} />;

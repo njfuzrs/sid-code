@@ -7,10 +7,13 @@ import { BaseSelectionList, type SelectionListItem } from "./shared/BaseSelectio
 import { ARROW_PROMPT } from "../constants/figures.ts";
 import type { UnifiedCommandRegistry } from "../../command/unified-registry.ts";
 import type { UnifiedCommand } from "../../command/types.ts";
+import type { MCPManager } from "../../mcp/manager.ts";
 
 interface CommandsDialogProps {
   onClose: () => void;
   registry: UnifiedCommandRegistry;
+  /** G2：用于把 MCP prompt 动态注入命令浏览列表 */
+  mcpManager?: MCPManager;
 }
 
 type ViewState = "list" | "detail";
@@ -41,16 +44,19 @@ function sourceColor(source: string | undefined): string {
   }
 }
 
-export const CommandsDialog: React.FC<CommandsDialogProps> = ({ onClose, registry }) => {
+export const CommandsDialog: React.FC<CommandsDialogProps> = ({ onClose, registry, mcpManager }) => {
   const [view, setView] = useState<ViewState>("list");
   const [commands, setCommands] = useState<UnifiedCommand[]>([]);
   const [selectedCmd, setSelectedCmd] = useState<UnifiedCommand | null>(null);
 
   useEffect(() => {
-    registry.getCommands(process.cwd()).then((cmds) => {
-      setCommands(cmds.filter((cmd) => !cmd.isHidden));
+    // G2：动态注入 MCP prompt 命令，与补全菜单/执行路径保持一致
+    import("../../command/mcp-prompt-commands.ts").then(({ buildMcpPromptCommands }) => {
+      registry.getCommands(process.cwd(), buildMcpPromptCommands(mcpManager)).then((cmds) => {
+        setCommands(cmds.filter((cmd) => !cmd.isHidden));
+      });
     });
-  }, [registry]);
+  }, [registry, mcpManager]);
 
   useKeypress(KeypressPriority.Critical, (key: Key) => {
     if (key.name === "escape") {

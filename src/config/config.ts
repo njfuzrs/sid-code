@@ -28,7 +28,8 @@ export function isMissingApiKey(key?: string | null): boolean {
 
 /** MCP 服务器配置 */
 export interface MCPServerConfig {
-  transport: "stdio" | "http" | "sse" | "ws";
+  // G4：http = Streamable HTTP（2025-03-26 规范，默认，对齐 CC）；http-json = 旧单 JSON 传输（兼容保留）
+  transport: "stdio" | "http" | "http-json" | "sse" | "ws";
   command?: string;
   args?: string[];
   env?: Record<string, string>;
@@ -274,6 +275,11 @@ export interface Config {
   // Hook 和 MCP
   hooks: HooksConfig;
   mcpServers: Record<string, MCPServerConfig>;
+  /**
+   * B1：MCP 安全策略（denylist/allowlist）。合并多源 MCP 配置时按此过滤，
+   * 命中 deniedServers 的 server 直接剔除并留痕。默认 undefined（不过滤）。
+   */
+  mcpPolicy?: import("../mcp/types.ts").McpPolicy;
 
   // UI 配置
   /** 代码块是否显示行号（默认 true） */
@@ -771,6 +777,8 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     audit_log_file: "auditLogFile",
     hooks: "hooks",
     mcp_servers: "mcpServers",
+    mcp_policy: "mcpPolicy",
+    mcpPolicy: "mcpPolicy",
     sub_agent_models: "subAgentModels",
     goal: "goal",
     cost_limit: "costLimit",
@@ -1124,6 +1132,41 @@ async function loadMCPJson(): Promise<Record<string, MCPServerConfig>> {
   }
 }
 
+/**
+ * B1：加载 local 作用域 MCP 配置。
+ *
+ * local 承载个人/实验性/含敏感凭证的 server，不入版本库（对齐 CC 的 ~/.claude.json
+ * 项目段 local 语义）。物理落点：~/.sid-code/projects/<项目路径 hash>/mcp.local.json，
+ * 与该项目其它 per-project 状态同目录。用 git canonical root 派生 key（同仓多 worktree
+ * 共享 local 配置），失败回退 cwd。
+ */
+async function loadLocalMcpJson(): Promise<Record<string, MCPServerConfig>> {
+  const log = getLogger();
+  try {
+    const { resolveProjectRoot, sanitizeProjectKey } = await import("../memory/paths.ts");
+    const { sidPaths } = await import("./paths.ts");
+    const projectKey = sanitizeProjectKey(resolveProjectRoot(process.cwd()));
+    const localPath = join(sidPaths.projects(), projectKey, "mcp.local.json");
+
+    if (!existsSync(localPath)) {
+      return {};
+    }
+
+    const content = await Bun.file(localPath).text();
+    const parsed = JSON.parse(content);
+    const servers = parsed.mcpServers || parsed.mcp_servers || parsed;
+    if (typeof servers !== "object" || Array.isArray(servers)) {
+      log.warn("CONFIG", `mcp.local.json 格式不正确，期望对象`);
+      return {};
+    }
+    log.info("CONFIG", `mcp.local.json 加载 ${Object.keys(servers).length} 个 local MCP 服务器`);
+    return servers;
+  } catch (err) {
+    log.warn("CONFIG", `读取 mcp.local.json 失败: ${err}`);
+    return {};
+  }
+}
+
 /** 加载完整配置 */
 export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config> {
   const defaults = defaultConfig();
@@ -1135,26 +1178,55 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
   merged = mergeConfig(merged, envConfig);
   merged = mergeConfig(merged, cliArgs);
 
-  // 合并项目级 .mcp.json（项目级覆盖全局，需审批）
-  const mcpJsonServers = await loadMCPJson();
-  if (Object.keys(mcpJsonServers).length > 0) {
-    const { getProjectServerApproval } = await import("../mcp/approval.ts");
-    const projectPath = process.cwd();
-    const approvedServers: Record<string, MCPServerConfig> = {};
-    for (const [name, serverConfig] of Object.entries(mcpJsonServers)) {
-      const status = getProjectServerApproval(name, projectPath);
-      if (status === "rejected") {
-        getLogger().info("CONFIG", `项目 MCP 服务器 "${name}" 已被拒绝，跳过`);
-        continue;
+  // B1：多源 MCP 配置合并（user > local > project，签名去重 + policy 过滤）。
+  // 三源物理落点：
+  //   user    —— ~/.sid-code/settings.json 的 mcpServers（合并期已进 merged.mcpServers）
+  //   local   —— ~/.sid-code/projects/<项目 hash>/mcp.local.json（个人/实验，不入库）
+  //   project —— CWD .mcp.json（团队共享，需审批）
+  // 此前是「裸浅合并 {...user, ...project}」——项目级无条件覆盖用户级、方向与文档相反、
+  // 无 local、无签名去重、无 policy。改为接线 mergeMcpConfigs 统一处理。
+  {
+    const userServers = ((merged as Config).mcpServers || {}) as Record<string, MCPServerConfig>;
+    const localServers = await loadLocalMcpJson();
+
+    // 项目级 .mcp.json 走审批：rejected 剔除、pending 标记（合并时经 ...config 透传保留）
+    const mcpJsonServers = await loadMCPJson();
+    const projectServers: Record<string, MCPServerConfig> = {};
+    if (Object.keys(mcpJsonServers).length > 0) {
+      const { getProjectServerApproval } = await import("../mcp/approval.ts");
+      const projectPath = process.cwd();
+      for (const [name, serverConfig] of Object.entries(mcpJsonServers)) {
+        const status = getProjectServerApproval(name, projectPath);
+        if (status === "rejected") {
+          getLogger().info("CONFIG", `项目 MCP 服务器 "${name}" 已被拒绝，跳过`);
+          continue;
+        }
+        if (status === "pending") {
+          // pending 状态的服务器标记为需审批（由 App 启动后交互确认）
+          (serverConfig as any)._pendingApproval = true;
+        }
+        projectServers[name] = serverConfig;
       }
-      if (status === "pending") {
-        // pending 状态的服务器标记为需审批（由 App 启动后交互确认）
-        (serverConfig as any)._pendingApproval = true;
-      }
-      approvedServers[name] = serverConfig;
     }
-    const existing = (merged as Config).mcpServers || {};
-    (merged as any).mcpServers = { ...existing, ...approvedServers };
+
+    // 有 local/project 源，或配了 policy 时才走合并（否则保持纯 user 直通，零行为变化）。
+    const policy = (merged as Config).mcpPolicy;
+    if (
+      Object.keys(localServers).length > 0 ||
+      Object.keys(projectServers).length > 0 ||
+      policy
+    ) {
+      const { mergeMcpConfigs } = await import("../mcp/config.ts");
+      const mergedMcp = mergeMcpConfigs(
+        [
+          { scope: "user", servers: userServers },
+          { scope: "local", servers: localServers },
+          { scope: "project", servers: projectServers },
+        ],
+        policy,
+      );
+      (merged as any).mcpServers = mergedMcp as Record<string, MCPServerConfig>;
+    }
   }
 
   const config = merged as Config;

@@ -10,6 +10,7 @@
  *   mcp get <name>                          查看单个服务器详情
  *   mcp add <name> <command|url> [args...]  添加服务器（--scope user|project，--transport stdio|http|sse）
  *   mcp remove <name> [--scope ...]         移除服务器
+ *   mcp serve [--allow-write]               把 sid-code 自身工具暴露为 MCP server（stdio）
  *
  * 写入语义与 /mcp 一致：user 作用域外科式补丁 settings.json 的 mcpServers（不整体覆盖，
  * 避免 Zod 有损 round-trip / 密钥明文化）；project 作用域写 .mcp.json。
@@ -195,6 +196,13 @@ export async function handleMcpCommand(args: string[]): Promise<void> {
   const sub = args[0];
   const rest = args.slice(1);
   switch (sub) {
+    case "serve": {
+      // G5：把 sid-code 自身工具暴露为 MCP server（stdio）。默认仅只读工具，
+      // --allow-write 放开写/执行类。走独立入口，不启动 App。
+      const { runMcpServe } = await import("../entrypoints/mcp-serve.ts");
+      await runMcpServe(rest);
+      return;
+    }
     case "list":
     case undefined:
       await cmdList(asJson);
@@ -212,7 +220,7 @@ export async function handleMcpCommand(args: string[]): Promise<void> {
       return;
     default:
       console.error(
-        `错误: 未知 mcp 子命令 "${sub}"。可用: list / get <name> / add <name> <command|url> / remove <name>`,
+        `错误: 未知 mcp 子命令 "${sub}"。可用: list / get <name> / add <name> <command|url> / remove <name> / serve [--allow-write]`,
       );
       process.exit(1);
   }

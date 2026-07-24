@@ -219,6 +219,65 @@ export class StdioTransport implements Transport {
   }
 }
 
+/** 单个 SSE 事件（event + data 已聚合） */
+export interface SSEEvent {
+  event: string;
+  data: string;
+}
+
+/**
+ * 通用 SSE 流解析（G4 抽出，供 SSETransport 与 StreamableHTTPTransport 共用）。
+ *
+ * 逐块读取 ReadableStream，按 SSE 规范（`event:`/`data:` 行 + 空行分隔事件）切分，
+ * 每完成一个事件回调 onEvent。多行 data 用 `\n` 拼接（对齐 SSE 规范）。
+ * shouldStop 返回 true 时提前结束（如传输已关闭）。
+ */
+export async function parseSSEStream(
+  body: ReadableStream<Uint8Array>,
+  onEvent: (event: SSEEvent) => void,
+  shouldStop?: () => boolean,
+): Promise<void> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let eventType = "";
+  let eventData = "";
+
+  const flush = () => {
+    if (eventData || eventType) {
+      onEvent({ event: eventType || "message", data: eventData });
+    }
+    eventType = "";
+    eventData = "";
+  };
+
+  try {
+    while (!shouldStop?.()) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const rawLine of lines) {
+        const line = rawLine.replace(/\r$/, ""); // 兼容 CRLF
+        if (line.startsWith("event:")) {
+          eventType = line.slice(6).trim();
+        } else if (line.startsWith("data:")) {
+          const chunk = line.slice(5).replace(/^ /, ""); // 去掉冒号后单个前导空格
+          eventData = eventData ? `${eventData}\n${chunk}` : chunk;
+        } else if (line === "") {
+          flush();
+        }
+        // 其它字段（id:/retry: 等）忽略
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 /** HTTP 传输 - 通过 HTTP 请求通信 */
 export class HTTPTransport implements Transport {
   private url: string;
@@ -256,6 +315,174 @@ export class HTTPTransport implements Transport {
 
   close(): void {
     // HTTP 传输无需关闭
+  }
+}
+
+/** POST 时声明同时接受 JSON 与 SSE（Streamable HTTP spec 要求，否则服务器可能回 406） */
+const STREAMABLE_HTTP_ACCEPT = "application/json, text/event-stream";
+/** MCP session 失效错误码（Streamable HTTP：Session not found） */
+const SESSION_NOT_FOUND_CODE = -32001;
+
+/**
+ * Streamable HTTP 传输（G4，对齐 MCP 2025-03-26 规范）。
+ *
+ * 与旧 HTTPTransport 的差异：
+ * - POST 带 `Accept: application/json, text/event-stream`（spec 要求）。
+ * - 响应按 Content-Type 分流：application/json → 单 JSON；text/event-stream → 解析 SSE
+ *   流，从中取匹配 request.id 的 message 事件（同时把服务器发的通知/请求路由出去）。
+ * - 读响应头 `mcp-session-id` 缓存，后续请求带 `Mcp-Session-Id`（会话保持）。
+ * - 收到 -32001（Session not found）→ 清 session id，让上层重新 initialize。
+ *
+ * 不引 @modelcontextprotocol/sdk，自研以对齐本仓既有传输层风格。
+ */
+export class StreamableHTTPTransport implements Transport {
+  private url: string;
+  private headers: Record<string, string>;
+  private timeout: number;
+  private closed = false;
+  /** 服务器返回的会话 id，后续请求回传 */
+  private sessionId: string | null = null;
+  onNotification?: (notification: JsonRpcNotification) => void;
+  onRequest?: (request: JsonRpcRequest) => Promise<JsonRpcResponse>;
+  onClose?: () => void;
+
+  constructor(url: string, headers?: Record<string, string>, timeout?: number) {
+    this.url = url;
+    this.headers = headers || {};
+    this.timeout = timeout ?? 30000;
+  }
+
+  private buildHeaders(): Record<string, string> {
+    const h: Record<string, string> = {
+      "Content-Type": "application/json",
+      Accept: STREAMABLE_HTTP_ACCEPT,
+      ...this.headers,
+    };
+    if (this.sessionId) h["Mcp-Session-Id"] = this.sessionId;
+    return h;
+  }
+
+  async send(request: JsonRpcRequest, signal?: AbortSignal): Promise<JsonRpcResponse> {
+    if (this.closed) {
+      throw new Error("传输已关闭");
+    }
+
+    const signals: AbortSignal[] = [AbortSignal.timeout(this.timeout)];
+    if (signal) signals.push(signal);
+    const combinedSignal = signals.length === 1 ? signals[0] : AbortSignal.any(signals);
+
+    const response = await fetch(this.url, {
+      method: "POST",
+      headers: this.buildHeaders(),
+      body: JSON.stringify(sanitizeStrings(request)),
+      signal: combinedSignal,
+    });
+
+    // 捕获/更新会话 id（spec：initialize 响应头带 mcp-session-id）
+    const newSession = response.headers.get("mcp-session-id");
+    if (newSession) this.sessionId = newSession;
+
+    if (!response.ok) {
+      throw new Error(`MCP Streamable HTTP 错误: ${response.status}`);
+    }
+
+    const contentType = (response.headers.get("content-type") || "").toLowerCase();
+
+    let result: JsonRpcResponse;
+    if (contentType.includes("text/event-stream") && response.body) {
+      result = await this.readResponseFromSSE(response.body, request.id);
+    } else {
+      result = (await response.json()) as JsonRpcResponse;
+    }
+
+    // -32001 Session not found → 清 session，让上层重新 initialize（对齐 CC）
+    if (result.error?.code === SESSION_NOT_FOUND_CODE) {
+      this.sessionId = null;
+    }
+    return result;
+  }
+
+  /**
+   * 从 SSE 响应流中读出匹配 targetId 的响应。
+   * 期间若遇到服务器通知/服务器发起的请求，分别路由到 onNotification / onRequest。
+   */
+  private async readResponseFromSSE(
+    body: ReadableStream<Uint8Array>,
+    targetId: number | string,
+  ): Promise<JsonRpcResponse> {
+    return new Promise<JsonRpcResponse>((resolve, reject) => {
+      let settled = false;
+      parseSSEStream(
+        body,
+        (evt) => {
+          if (!evt.data) return;
+          let msg: any;
+          try {
+            msg = JSON.parse(evt.data);
+          } catch {
+            return; // 跳过非 JSON
+          }
+          if (msg?.jsonrpc !== "2.0") return;
+
+          // 无 id + method：服务器通知
+          if (!("id" in msg) && msg.method) {
+            this.onNotification?.(msg as JsonRpcNotification);
+            return;
+          }
+          // 有 id + method：服务器发起的请求（elicitation/create 等）
+          if ("id" in msg && msg.method) {
+            this.handleServerRequest(msg as JsonRpcRequest);
+            return;
+          }
+          // 匹配目标响应
+          if ("id" in msg && msg.id === targetId) {
+            settled = true;
+            resolve(msg as JsonRpcResponse);
+          }
+        },
+        () => this.closed || settled,
+      )
+        .then(() => {
+          if (!settled) reject(new Error("Streamable HTTP SSE 流结束但未收到匹配响应"));
+        })
+        .catch(reject);
+    });
+  }
+
+  /** 处理服务器发起的请求：调 onRequest 拿响应，经 POST 回传（无 onRequest 时回 -32601） */
+  private handleServerRequest(request: JsonRpcRequest): void {
+    const respond = (response: JsonRpcResponse) => {
+      if (this.closed) return;
+      fetch(this.url, {
+        method: "POST",
+        headers: this.buildHeaders(),
+        body: JSON.stringify(sanitizeStrings(response)),
+      }).catch(() => { /* 回传失败忽略 */ });
+    };
+    if (!this.onRequest) {
+      respond({ jsonrpc: "2.0", id: request.id, error: { code: -32601, message: `方法未找到: ${request.method}` } });
+      return;
+    }
+    this.onRequest(request)
+      .then(respond)
+      .catch((err) => {
+        respond({ jsonrpc: "2.0", id: request.id, error: { code: -32603, message: `内部错误: ${err?.message ?? err}` } });
+      });
+  }
+
+  sendNotification(notification: JsonRpcNotification): void {
+    if (this.closed) return;
+    fetch(this.url, {
+      method: "POST",
+      headers: this.buildHeaders(),
+      body: JSON.stringify(sanitizeStrings(notification)),
+    }).catch(() => {});
+  }
+
+  close(): void {
+    this.closed = true;
+    this.sessionId = null;
+    this.onClose?.();
   }
 }
 
