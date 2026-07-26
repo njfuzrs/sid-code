@@ -15,6 +15,7 @@ import React from "react";
 import Box from "../../../ink/components/Box.js";
 import Text from "../../../ink/components/Text.js";
 import { theme } from "../../semantic-colors.ts";
+import { getAgentInkColor } from "../../../agent/color.ts";
 import { BULLET, TREE_BRANCH } from "../../constants/figures.ts";
 import { SlicingMaxSizedBox } from "../SlicingMaxSizedBox.tsx";
 import { useExpandedMaxLines } from "../../contexts/UIStateContext.tsx";
@@ -26,6 +27,11 @@ interface TaskNotificationMessageProps {
   status: string;
   /** 结构化结果正文（子代理结论 / 错误信息），缺省时只显示摘要行 */
   result?: string;
+  /**
+   * P1-2：子代理类型。给摘要行加一个该 agent 的身份色标签（frontmatter 声明色优先，
+   * 否则按类型哈希分配），多代理并行时用颜色区分是哪个 agent 回来的。缺省则不加标签。
+   */
+  agentType?: string;
   terminalWidth: number;
 }
 
@@ -53,6 +59,7 @@ export const TaskNotificationMessage: React.FC<TaskNotificationMessageProps> = (
   summary,
   status,
   result,
+  agentType,
   terminalWidth,
 }) => {
   // 与工具结果共享同一套 ctrl+o 阶梯展开语义：折叠档基线 = DEFAULT_MAX_LINES，
@@ -68,6 +75,10 @@ export const TaskNotificationMessage: React.FC<TaskNotificationMessageProps> = (
           <Text color={statusColor(status)}>{BULLET}</Text>
         </Box>
         <Box flexGrow={1}>
+          {/* P1-2：agent 身份色只点在类型标签上（克制点睛，不给整行上色）。 */}
+          {agentType ? (
+            <Text color={getAgentInkColor(agentType)}>{`${agentType} `}</Text>
+          ) : null}
           <Text wrap="wrap" color={theme.text.primary}>{summary}</Text>
         </Box>
       </Box>

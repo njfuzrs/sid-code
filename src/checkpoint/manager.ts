@@ -823,6 +823,77 @@ export class CheckpointManager {
     }
   }
 
+  /**
+   * P1-G2b：从源会话继承 checkpoint 历史（`--fork-session` 用）。
+   *
+   * 背景（本次修复的真缺口）：分叉会话的 logical session id 是全新的，checkpoint 目录因此
+   * 是空目录——新会话 `/undo` / `/restore` 够不到分叉前的任何编辑，方案 §3 的验收标准
+   * 「新会话 /undo 能回退到分叉前的编辑」此前不成立。
+   *
+   * 实现选择：**深拷贝索引**而非软链/转读。快照的完整内容与 diff 都内联在 index.json 里
+   * （见 Snapshot.content / .diff），没有旁挂的物理文件，所以一次索引拷贝就是完整继承；
+   * 而拷贝（相对转读）让两个会话此后各自独立演进——新会话继续 snapshot / undo 不会
+   * 反向污染源会话的回退历史，这是分叉语义的要求。
+   *
+   * 约束与边界：
+   * - 仅在当前会话**尚无任何快照**时执行（刚 init 的分叉会话），否则视为误调用直接跳过，
+   *   避免把源历史插进已有快照序列造成 id 冲突 / 时序错乱。
+   * - `sessionId` 改写为当前会话，`nextId` 沿用源值（快照 id 不重排，保持 `/restore <ID>`
+   *   在分叉前后指向同一个逻辑快照，用户的肌肉记忆和历史记录里的 id 仍然有效）。
+   * - 源不存在 / 索引损坏 → 只告警，新会话退化为空 checkpoint（不阻断启动）。
+   *
+   * @param srcSessionId 源会话 id
+   * @returns 继承到的快照条数（0 表示未继承）
+   */
+  async inheritFrom(srcSessionId: string): Promise<number> {
+    const log = getLogger();
+    if (!this.config.enabled) return 0;
+    if (!srcSessionId || srcSessionId === this.sessionId) return 0;
+    // 已有快照 → 不做插入式继承（防 id 冲突 / 时序错乱）
+    if (this.index.snapshots.length > 0) {
+      log.warn("CHECKPOINT", `继承跳过：当前会话已有 ${this.index.snapshots.length} 个快照，不做插入式继承`);
+      return 0;
+    }
+
+    try {
+      const srcIndexPath = join(sidPaths.checkpoints(srcSessionId), "index.json");
+      if (!existsSync(srcIndexPath)) {
+        log.info("CHECKPOINT", `源会话无 checkpoint 可继承: ${srcSessionId}`);
+        return 0;
+      }
+      const parsed = JSON.parse(await Bun.file(srcIndexPath).text());
+      // 源可能是旧格式（files 而非 snapshots）——复用既有迁移逻辑，继承后即为新格式。
+      const srcIndex: CheckpointIndex = parsed.files && !parsed.snapshots
+        ? this.migrateLegacyIndex(parsed as LegacyCheckpointIndex)
+        : (parsed as CheckpointIndex);
+
+      const snapshots = Array.isArray(srcIndex.snapshots) ? srcIndex.snapshots : [];
+      if (snapshots.length === 0) {
+        log.info("CHECKPOINT", `源会话 checkpoint 为空，无需继承: ${srcSessionId}`);
+        return 0;
+      }
+
+      // 深拷贝：两会话此后独立演进，改一边不影响另一边（structuredClone 覆盖 diff 嵌套结构）。
+      this.index = {
+        sessionId: this.sessionId,
+        createdAt: srcIndex.createdAt ?? Date.now(),
+        nextId: typeof srcIndex.nextId === "number" ? srcIndex.nextId : snapshots.length + 1,
+        snapshots: structuredClone(snapshots),
+        latestFullMap: structuredClone(srcIndex.latestFullMap ?? {}),
+      };
+      this.dirty = true;
+      await this.saveIndex();
+      log.info(
+        "CHECKPOINT",
+        `已从源会话继承 checkpoint: ${srcSessionId} → ${this.sessionId}（${snapshots.length} 个快照，两会话此后独立演进）`,
+      );
+      return snapshots.length;
+    } catch (e) {
+      log.warn("CHECKPOINT", `checkpoint 继承失败（新会话退化为空回退历史，不阻断）: ${(e as Error)?.message}`);
+      return 0;
+    }
+  }
+
   /** 保存索引到磁盘 */
   private async saveIndex(): Promise<void> {
     if (!this.dirty) return;

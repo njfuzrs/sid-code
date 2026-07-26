@@ -126,6 +126,26 @@ export class TokenEstimator {
   }
 
   /**
+   * §12 P3-2：获取模型单次响应的最大输出 token 数（完成缓冲区的「输出预留」分量）。
+   *
+   * 优先级与 getContextLimit 一致：用户配置 availableModels[].maxOutputTokens > 内置注册表。
+   * 两者都拿不到时返回 undefined——由 ContextManager 用默认预留兜底，而不是在这里编一个数字
+   * （编出来的值会被当成"已知事实"参与阈值计算，比明确的 undefined 更危险）。
+   */
+  getMaxOutputTokens(
+    model: string,
+    availableModels?: Array<{ name?: string; maxOutputTokens?: number }>,
+  ): number | undefined {
+    const userModel = availableModels?.find(m => m.name === model);
+    if (typeof userModel?.maxOutputTokens === "number" && userModel.maxOutputTokens > 0) {
+      return userModel.maxOutputTokens;
+    }
+    const entry = lookupRegistry(model);
+    if (entry && entry.maxOutputTokens > 0) return entry.maxOutputTokens;
+    return undefined;
+  }
+
+  /**
    * 检查请求是否可能超出上下文限制
    * 返回 null 表示安全，否则返回超出的 token 数
    */

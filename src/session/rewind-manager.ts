@@ -29,8 +29,13 @@ export interface RewindPoint {
   timestamp: number;
 }
 
-/** 回退模式。 */
-export type RewindMode = "conversation" | "conversation-and-code";
+/**
+ * 回退模式（对齐 CC Esc+Esc 菜单的三档：代码 / 对话 / 两者）。
+ * - `conversation`：仅截断对话，不动文件。
+ * - `code`：仅回滚文件到该轮快照，保留对话（用户想留着上下文重试，只要撤销文件改动）。
+ * - `conversation-and-code`：两者都做。
+ */
+export type RewindMode = "conversation" | "code" | "conversation-and-code";
 
 /** 回退结果（供 UI 回显）。 */
 export interface RewindResult {
@@ -113,8 +118,9 @@ export class RewindManager {
   /**
    * 执行回退到指定点。
    * - conversation：仅截断对话消息到 point.messageIndex。
+   * - code：仅回滚文件到该轮快照，**不动对话**（回退点也全部保留，因为对话没变）。
    * - conversation-and-code：先 restoreToSnapshot 回滚文件，再截断对话。
-   * 截断后清理所有落在该点之后（含该点）的回退点，避免"回退后又能回退到已丢弃的未来"。
+   * 截断对话后清理所有落在该点之后（含该点）的回退点，避免"回退后又能回退到已丢弃的未来"。
    */
   async rewindTo(id: number, mode: RewindMode, nowMs: number): Promise<RewindResult | null> {
     void nowMs;
@@ -123,7 +129,7 @@ export class RewindManager {
 
     let filesRestored = 0;
     let fileRestoreSkipped = false;
-    if (mode === "conversation-and-code") {
+    if (mode === "code" || mode === "conversation-and-code") {
       if (point.snapshotId) {
         const n = await this.deps.restoreToSnapshot(point.snapshotId);
         if (n === null) fileRestoreSkipped = true;
@@ -131,6 +137,11 @@ export class RewindManager {
       } else {
         fileRestoreSkipped = true;
       }
+    }
+
+    // mode=code：只回滚文件，对话与回退点原样保留（用户要留着上下文继续/重试）。
+    if (mode === "code") {
+      return { point, mode, messagesDropped: 0, filesRestored, fileRestoreSkipped };
     }
 
     // 对话截断：保留 [0, messageIndex) 的消息。

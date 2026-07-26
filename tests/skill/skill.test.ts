@@ -7,9 +7,24 @@ import { mkdirSync, writeFileSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { SkillLoader } from "../../src/skill/loader.ts";
-import { SkillTool } from "../../src/skill/tool.ts";
+import { SkillMetaTool } from "../../src/skill/meta-tool.ts";
 import { SkillManager } from "../../src/skill/manager.ts";
 import { ExtensionLoader } from "../../src/extension/loader.ts";
+import type { SkillDefinition } from "../../src/skill/types.ts";
+
+/** 构造只含指定 skills 的 manager（绕过磁盘扫描），与 meta-tool.test.ts 同口径 */
+function managerWith(skills: SkillDefinition[]): SkillManager {
+  const m = new SkillManager();
+  // @ts-expect-error 测试直接注入内部 skills，避免磁盘 discover
+  m.skills = skills;
+  return m;
+}
+
+/** 取元工具的 buildResourceHint（私有方法，测试直呼） */
+function resourceHint(skill: SkillDefinition): Promise<string> {
+  const tool = new SkillMetaTool(managerWith([skill]), {} as any, {} as any);
+  return (tool as any).buildResourceHint(skill);
+}
 
 describe("SkillLoader", () => {
   let testDir: string;
@@ -144,75 +159,11 @@ describe("SkillManager - ADR-025 内置加载机制", () => {
   });
 });
 
-describe("SkillTool", () => {
-  test("name 前缀", () => {
-    const skill = {
-      name: "review",
-      description: "代码审查",
-      prompt: "审查代码",
-      source: "project" as const,
-      filePath: "/test/review.md",
-    };
-    const tool = new SkillTool(skill, {} as any, {} as any);
-    expect(tool.name()).toBe("skill__review");
-  });
+// 注：per-skill 的 `skill__<name>` 工具（SkillTool）已被单一 `Skill` 元工具取代（P0-1），
+// 工具名/description/inputSchema/readOnly 的断言迁至 meta-tool.test.ts。
+// 下面保留的是与工具形态无关、仍需防回归的 delegate 资源注入行为。
 
-  test("description 包含 whenToUse", () => {
-    const skill = {
-      name: "review",
-      description: "代码审查",
-      whenToUse: "当用户要求审查代码时",
-      prompt: "审查代码",
-      source: "project" as const,
-      filePath: "/test/review.md",
-    };
-    const tool = new SkillTool(skill, {} as any, {} as any);
-    expect(tool.description()).toContain("代码审查");
-    expect(tool.description()).toContain("当用户要求审查代码时");
-  });
-
-  test("inputSchema 包含 input 参数", () => {
-    const skill = {
-      name: "test",
-      description: "测试",
-      prompt: "内容",
-      source: "project" as const,
-      filePath: "/test.md",
-    };
-    const tool = new SkillTool(skill, {} as any, {} as any);
-    const schema = tool.inputSchema();
-    expect(schema.type).toBe("object");
-    expect((schema.properties as any).input).toBeDefined();
-    expect(schema.required).toEqual(["input"]);
-  });
-
-  test("readOnly 根据 allowedTools 判断", () => {
-    const readOnlySkill = {
-      name: "analyze",
-      description: "分析",
-      allowedTools: ["read", "grep"],
-      prompt: "分析",
-      source: "project" as const,
-      filePath: "/test.md",
-    };
-    const writeSkill = {
-      name: "fix",
-      description: "修复",
-      allowedTools: ["read", "write", "edit"],
-      prompt: "修复",
-      source: "project" as const,
-      filePath: "/test.md",
-    };
-
-    const readTool = new SkillTool(readOnlySkill, {} as any, {} as any);
-    const writeTool = new SkillTool(writeSkill, {} as any, {} as any);
-
-    expect(readTool.readOnly()).toBe(true);
-    expect(writeTool.readOnly()).toBe(false);
-  });
-});
-
-describe("SkillTool - delegate 资源注入（Bug 2 修复）", () => {
+describe("Skill delegate 资源注入（Bug 2 回归）", () => {
   let skillDir: string;
 
   beforeEach(() => {
@@ -239,8 +190,7 @@ describe("SkillTool - delegate 资源注入（Bug 2 修复）", () => {
       filePath: join(skillDir, "SKILL.md"),
       skillRoot: skillDir,
     };
-    const tool = new SkillTool(skill, {} as any, {} as any);
-    const hint = await (tool as any).buildResourceHint();
+    const hint = await resourceHint(skill);
 
     // 注入了 skill 的绝对目录路径
     expect(hint).toContain(skillDir);
@@ -266,8 +216,7 @@ describe("SkillTool - delegate 资源注入（Bug 2 修复）", () => {
         filePath: join(bareDir, "SKILL.md"),
         skillRoot: bareDir,
       };
-      const tool = new SkillTool(skill, {} as any, {} as any);
-      const hint = await (tool as any).buildResourceHint();
+      const hint = await resourceHint(skill);
       expect(hint).toBe("");
     } finally {
       rmSync(bareDir, { recursive: true, force: true });
@@ -283,8 +232,7 @@ describe("SkillTool - delegate 资源注入（Bug 2 修复）", () => {
       source: "mcp" as const,
       filePath: "",
     };
-    const tool = new SkillTool(skill, {} as any, {} as any);
-    const hint = await (tool as any).buildResourceHint();
+    const hint = await resourceHint(skill);
     expect(hint).toBe("");
   });
 });

@@ -43,6 +43,10 @@ export class HookSystem {
       this.planner,
       this.runner,
       this.aggregator,
+      "",
+      process.cwd(),
+      // once hook 回标需要 registry（执行成功后标记已执行，使其不再进入后续计划）
+      this.registry,
     );
   }
 
@@ -168,6 +172,15 @@ export class HookSystem {
   /** 获取所有 hook（用于管理命令） */
   getAllHooks(): HookRegistryEntry[] {
     return this.registry.getAllHooks();
+  }
+
+  /**
+   * 获取某事件当前**仍可执行**的 hook（已过滤禁用项、已执行的 once hook、企业策略拦截项）。
+   * 与 getAllHooks 的区别：后者返回全部注册条目（含已失效的 once），供 /hooks 面板展示；
+   * 本方法反映「下次触发会真正跑哪些」，供诊断与测试断言使用。
+   */
+  getHooksForEvent(eventName: HookEventName): HookRegistryEntry[] {
+    return this.registry.getHooksForEvent(eventName);
   }
 
   /**

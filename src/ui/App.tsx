@@ -118,12 +118,13 @@ export interface TUICallbacks {
    */
   getRewindPoints?: () => RewindPointInfo[];
   /**
-   * P2-1：执行回退到指定回退点。mode=conversation 仅截断对话；
-   * conversation-and-code 额外回滚文件到当轮快照。返回结果供 UI 回显（null=点已失效）。
+   * P2-1：执行回退到指定回退点。三档模式（对齐 CC Esc+Esc 菜单）：
+   * conversation 仅截断对话；code 仅回滚文件、保留对话；conversation-and-code 两者都做。
+   * 返回结果供 UI 回显（null=点已失效）。
    */
   onRewind?: (
     id: number,
-    mode: "conversation" | "conversation-and-code",
+    mode: RewindUIMode,
   ) => Promise<RewindResultInfo | null>;
   /**
    * M4：读取当前被跳过的外部 @import 路径（供审批对话框展示）。
@@ -149,9 +150,15 @@ export interface RewindPointInfo {
   hasSnapshot: boolean;
 }
 
+/**
+ * P2-1：回退范围模式（UI 层枚举，与 session 层 RewindMode 同值）。
+ * 单独声明而不 import session 类型：UI 层不依赖 session 内部模块（保持单向依赖）。
+ */
+export type RewindUIMode = "conversation" | "code" | "conversation-and-code";
+
 /** P2-1：回退执行结果（供 UI 回显）。 */
 export interface RewindResultInfo {
-  mode: "conversation" | "conversation-and-code";
+  mode: RewindUIMode;
   messagesDropped: number;
   filesRestored: number;
   fileRestoreSkipped: boolean;
@@ -821,12 +828,19 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
 
   // 多条输入排队：流式响应中提交的普通输入入队，当前轮结束（Idle）后自动接续。
   // 对标 cc 的 now>next>later——这里实现 next（用户输入排队），系统通知不抢占。
-  const { enqueue, queueLength, popLastForEdit } = useMessageQueue({
+  const { enqueue, queueLength, queuedByPriority, popLastForEdit } = useMessageQueue({
     streamingState,
     onSend: dispatchInput,
   });
 
-  const handleSubmit = useCallback(async (text: string) => {
+  /**
+   * 提交输入。P1-G6：priority 由 InputArea 透传（裸 Enter=next / Alt+N=now / Alt+L=later），
+   * 仅在流式中入队时生效；空闲态直送不入队，优先级无意义。
+   */
+  const handleSubmit = useCallback(async (
+    text: string,
+    priority: "now" | "next" | "later" = "next",
+  ) => {
     log.info("UI:INPUT", `handleSubmit: "${text.slice(0, 100)}"`);
     if (isSubmittingRef.current) return;
 
@@ -836,8 +850,8 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     // 流式进行中：斜杠命令仍直送（/exit、/clear 等需即时生效），普通输入入队接续。
     const busy = streamingStateRef.current !== StreamingState.Idle;
     if (busy && !text.startsWith("/")) {
-      log.info("UI:INPUT", "流式中，输入入队等待接续");
-      enqueue(text);
+      log.info("UI:INPUT", `流式中，输入入队等待接续（${priority}）`);
+      enqueue(text, priority);
       return;
     }
 
@@ -1115,6 +1129,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           cwd={state.cwd}
           onSubmit={handleSubmit}
           queuedCount={queueLength}
+          queuedByPriority={queuedByPriority}
           onPopQueuedForEdit={popLastForEdit}
           onExitRequest={triggerQuit}
           onCyclePermissionMode={handleCyclePermissionMode}
@@ -1170,6 +1185,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           cwd={state.cwd}
           onSubmit={handleSubmit}
           queuedCount={queueLength}
+          queuedByPriority={queuedByPriority}
           onPopQueuedForEdit={popLastForEdit}
           onExitRequest={triggerQuit}
           onCyclePermissionMode={handleCyclePermissionMode}

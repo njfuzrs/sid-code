@@ -850,7 +850,9 @@ export class MemoryCommand implements Command {
 /** /rewind 命令 — 回退最近 n 轮对话 */
 export class RewindCommand implements Command {
   name() { return "rewind"; }
-  aliases() { return []; }
+  // P0-B2：`/checkpoint`（单数）作为别名——CC 用户敲这个词期待的是「回退到某个检查点」，
+  // 语义落在本命令而非 `/checkpoints`（复数，只列快照，别名 /cp）。不加别名会让 CC 习惯落空。
+  aliases() { return ["checkpoint"]; }
   description() { return "回退会话（可选代码/对话/两者），等价 Esc+Esc"; }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
@@ -903,6 +905,17 @@ export class StatsCommand implements Command {
       `预估费用：$${ss.getEffectiveTotalCostUSD().toFixed(4)}`,
       `会话时长：${SessionState.formatDuration(ss.getElapsedMs())}`,
     ];
+
+    // P2-3：git 操作度量（commit/push/PR 创建等），有计数才展示，避免空行噪音。
+    const { getGitOperationStats } = await import("../tool/git-operation-tracking.ts");
+    const git = getGitOperationStats();
+    if (git.total > 0) {
+      const detail = Object.entries(git.byKind)
+        .filter(([, n]) => n > 0)
+        .map(([k, n]) => `${k} ${n}`)
+        .join(" / ");
+      lines.push(`Git 操作：${git.total} 次（${detail}）`);
+    }
     return { kind: "message", message: lines.join("\n") };
   }
 }

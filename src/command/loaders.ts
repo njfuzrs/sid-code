@@ -27,19 +27,35 @@ export async function loadCustomCommands(
   );
 }
 
-/** 加载 Skills，适配为 PromptCommand */
+/**
+ * 加载 Skills，适配为 PromptCommand
+ *
+ * @param sharedManager 共享 SkillManager（由 UnifiedCommandRegistry 从 cli.ts 透传）。
+ *   传入时直接复用其已加载的 skill 集——这很关键：插件 skills、MCP skills 是运行时
+ *   经 addPluginSkills 追加进主 manager 的，自建 manager 重扫磁盘拿不到它们；
+ *   条件激活 gate 态、/skills disable 态、热重载结果同理会分叉。
+ *   不传时退化为自建 manager 重扫（仅测试/独立调用场景）。
+ */
 export async function loadSkillCommands(
   cwd: string,
   scanOptions?: ScanOptions,
   disabledSkills?: string[],
+  sharedManager?: import("../skill/manager.ts").SkillManager,
 ): Promise<UnifiedCommand[]> {
-  const { SkillManager } = await import("../skill/manager.ts");
-  const manager = new SkillManager();
-  await manager.discover(cwd, scanOptions);
-  if (disabledSkills && disabledSkills.length > 0) {
-    manager.setDisabledSkills(disabledSkills);
+  let manager = sharedManager;
+  if (!manager) {
+    const { SkillManager } = await import("../skill/manager.ts");
+    manager = new SkillManager();
+    await manager.discover(cwd, scanOptions);
+    if (disabledSkills && disabledSkills.length > 0) {
+      manager.setDisabledSkills(disabledSkills);
+    }
   }
-  const diskSkills = manager.getSkills().map((skill) => skillToCommand(skill));
+  // getSkills() 已过滤 disabled；gated（条件未激活）skill 仍在其中，
+  // 交给 skillToCommand 的 isEnabled 动态挡住（对齐 CC：未激活的条件 skill 不可调用）。
+  // 传函数而非快照：gate 态运行时会因文件接触而解除。
+  const gateQuery = (name: string) => manager!.isGated(name);
+  const diskSkills = manager.getSkills().map((skill) => skillToCommand(skill, gateQuery));
 
   // 合并 Bundled Skill（编译时内置，优先级高于磁盘同名 Skill）
   let bundled: UnifiedCommand[] = [];

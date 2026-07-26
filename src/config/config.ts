@@ -763,7 +763,16 @@ function resolveEnvPlaceholder(value: string | undefined): string | undefined {
   return value.replace(/\$\{([A-Z0-9_]+)\}/g, (_m, name) => process.env[name] ?? "");
 }
 
-/** 将 YAML 字段名转换为 Config 字段名 */
+/**
+ * 将 YAML 字段名转换为 Config 字段名。
+ *
+ * 注意 keyMap 的兜底语义 `keyMap[k] || k`：未登记的键**原样保留**——这是 settings.json
+ * （camelCase，字段名已对齐 Config）能直通的原因。登记 snake_case 别名只是为了让 YAML
+ * 风格的写法也命中同一字段。
+ *
+ * 导出别名 normalizeConfigKeysForTest 供单测直接断言归一化结果（避免为验证一个字段
+ * 去构造真实配置文件）。
+ */
 function normalizeConfigKeys(raw: any): Partial<Config> {
   if (!raw || typeof raw !== "object") {
     return {};
@@ -820,6 +829,9 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     sanitize_env: "sanitizeEnv",
     enable_llm_classifier: "enableLLMClassifier",
     classifier_model: "classifierModel",
+    // §12 P2-1：思考预算上限。settings.json 用 camelCase 直通（keyMap 兜底），
+    // 这里显式登记 snake_case 别名，让 YAML 风格配置也能命中同一 Config 字段。
+    max_thinking_tokens: "maxThinkingTokens",
     speculative_classifier: "speculativeClassifier",
     team_memory: "teamMemory",
     trace: "trace",
@@ -967,6 +979,12 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
 
   return result;
 }
+
+/**
+ * §12 P2-1 复审：导出 normalizeConfigKeys 供单测断言字段归一化。
+ * 生产代码请勿使用——配置加载统一走 loadConfig / loadConfigFile。
+ */
+export const normalizeConfigKeysForTest = normalizeConfigKeys;
 
 /**
  * 加载配置文件。

@@ -23,8 +23,15 @@ function parseStringList(raw: unknown): string[] | undefined {
   return undefined;
 }
 
-/** 最大 Skill 数量（避免工具列表膨胀，支持更多自定义 Skill） */
-const MAX_SKILLS = 50;
+/**
+ * 最大 Skill 数量（失控保护上限，不是常规约束）。
+ *
+ * 原值 50 是「每个 skill 一个 skill__<name> 工具」时代的硬顶——工具定义数随 skill 线性
+ * 增长并常驻首轮上下文，必须掐死。P0-1 改为单一 `Skill` 元工具后工具数恒为 1，
+ * skill 数量只影响摘要 listing，而 listing 已有独立预算（250 字符/条 + 1% 上下文窗口，
+ * 见 budget.ts）会自行截断。此处仅作为目录被误配/循环链接时的失控保护。
+ */
+const MAX_SKILLS = 500;
 
 export class SkillLoader {
   private extensionLoader: ExtensionLoader;
@@ -60,6 +67,12 @@ export class SkillLoader {
       ...scanOptions,
       managedDirs: scanOptions?.managedDirs ?? sidPaths.managedExtensionDirs("skills"),
     };
+    if (effectiveOptions.additionalDirs?.length) {
+      log.debug(
+        "SKILL",
+        `additional skills 目录（--add-dir）: ${effectiveOptions.additionalDirs.join(", ")}`,
+      );
+    }
     const files = await this.extensionLoader.scan(
       "skills",
       projectDir,

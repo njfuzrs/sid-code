@@ -72,4 +72,12 @@ export interface ScanOptions {
    * 未提供或 SID_CODE_DISABLE_POLICY_SKILLS=1 时不扫描 managed 层。
    */
   managedDirs?: string[];
+  /**
+   * `--add-dir` 授权的额外目录（对齐 CC loadSkillsDir 的 additionalDirs）。
+   * 每个目录下的 `.sid-code/{type}/` 与 `.claude/{type}/` 参与加载。
+   * 优先级：builtin < user < project < **additional** < managed。
+   * 命令行显式授权已表达用户意图，故不再走项目级信任确认；但仍受
+   * strictPluginOnlyCustomization 锁定约束（--add-dir 不是策略绕过口）。
+   */
+  additionalDirs?: string[];
 }

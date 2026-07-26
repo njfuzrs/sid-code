@@ -59,6 +59,12 @@ export interface PartialCompactResult {
   compactedCount: number;
   /** 估算节省的 token 数 */
   savedTokens: number;
+  /**
+   * §12 P2-4 复审：生成的摘要正文（success=true 时有值）。
+   * 供压缩后收尾（runPostCompact）做摘要覆盖率质量校验——此前不返回，
+   * 手动压缩路径拿不到摘要就无法参与质量统计。
+   */
+  summary?: string;
   /** 未成功时的原因（调用方可据此提示） */
   reason?: string;
 }
@@ -245,6 +251,8 @@ export async function partialCompact(
     splitIndex: finalSplit,
     compactedCount: compactPart.length,
     savedTokens,
+    // §12 P2-4 复审：回传摘要正文供压缩后收尾做质量校验
+    summary: trimmed,
   };
 }
 

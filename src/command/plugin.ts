@@ -166,7 +166,7 @@ export class PluginCommand implements Command {
 export class ReloadPluginsCommand implements Command {
   name() { return "reload-plugins"; }
   aliases() { return ["reload-plugin"]; }
-  description() { return "重新加载所有插件组件（命令/Hooks/MCP）"; }
+  description() { return "重新加载所有插件组件（命令/Skills/Hooks/MCP）"; }
 
   async execute(_args: string, ctx: AppContext): Promise<CommandResult> {
     const result = await refreshActivePlugins({
@@ -176,12 +176,15 @@ export class ReloadPluginsCommand implements Command {
       toolRegistry: ctx.registry,
       hookSystem: ctx.hookSystem,
       mcpManager: ctx.mcpManager,
+      // §18.10：插件带的 skills 也要随刷新生效/失效（原子替换）
+      skillManager: ctx.skillManager,
     });
 
     const lines = [
       "插件已重新加载:",
       `  ${result.loadResult.enabled.length} 个启用插件`,
       `  ${result.commandsLoaded} 个命令`,
+      `  ${result.skillsLoaded} 个 Skill`,
       `  ${result.mcpToolsLoaded} 个 MCP 工具`,
     ];
     if (result.hooksRefreshed) lines.push("  Hooks 已刷新");

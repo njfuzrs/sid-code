@@ -57,12 +57,19 @@ import { getAppConfig, shouldShowHint, markHintShown } from "../config/app-confi
 import { ARROW_PROMPT } from "./constants/figures.ts";
 
 interface InputAreaProps {
-  onSubmit: (text: string) => void;
+  /**
+   * 提交输入。P1-G6：第二参为排队优先级（对齐 CC now>next>later）——
+   * 省略/`"next"` 为默认排队；`"now"` 插队最先发；`"later"` 排在所有 next 之后。
+   * 空闲态（非流式）时优先级无意义，App 层直送不入队。
+   */
+  onSubmit: (text: string, priority?: "now" | "next" | "later") => void;
   isLoading: boolean;
   commands: CommandInfo[];
   cwd: string;
   /** 流式中已排队待接续的输入条数（>0 时输入框上方提示） */
   queuedCount?: number;
+  /** P1-G6：按优先级分组的排队条数（提示分组展示用）。未传时退化为只用 queuedCount 总数。 */
+  queuedByPriority?: { now: number; next: number; later: number };
   /** P2-G6：↑ 弹回编辑——空输入框按 ↑ 时取队尾排队输入回输入框继续编辑。返回 null 表示队列空。 */
   onPopQueuedForEdit?: () => string | null;
   /** Shift+Tab 权限模式切换回调（可选） */
@@ -110,7 +117,7 @@ function renderFirstLineContent(lineText: string, promptLen: number): React.Reac
 
 // ── 组件 ──────────────────────────────────────────────────────────
 
-export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0, onPopQueuedForEdit, onPermissionModeSwitch, onExitRequest }: InputAreaProps) {
+export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0, queuedByPriority, onPopQueuedForEdit, onPermissionModeSwitch, onExitRequest }: InputAreaProps) {
   const lastSubmittedRef = useRef<string>("");
   const externalEditingRef = useRef(false); // Ctrl+G 外部编辑防重入
   const log = getLogger();
@@ -392,7 +399,12 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
     return false;
   }, [insertImageRef, showTransientMessage]);
 
-  const handleSubmit = useCallback(() => {
+  /**
+   * 提交当前输入。P1-G6：priority 透传给 App 层的排队器——
+   * 裸 Enter 走默认（next），Alt+N → now（插队），Alt+L → later（延后）。
+   * shell 模式（`!` 前缀）走直送 /bash，优先级对其无意义（不排队），忽略。
+   */
+  const handleSubmit = useCallback((priority?: "now" | "next" | "later") => {
     const raw = tb.submit();
     if (!raw) return;
 
@@ -421,9 +433,13 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
       return;
     }
 
-    log.info("UI:INPUT", `提交输入: "${text.slice(0, 100)}"${text.length > 100 ? "..." : ""}`);
+    log.info(
+      "UI:INPUT",
+      `提交输入${priority && priority !== "next" ? `（${priority}）` : ""}: `
+        + `"${text.slice(0, 100)}"${text.length > 100 ? "..." : ""}`,
+    );
     lastSubmittedRef.current = text;
-    onSubmit(text);
+    onSubmit(text, priority);
 
     setTimeout(() => { lastSubmittedRef.current = ""; }, 1000);
   }, [tb, onSubmit, shellModeActive, addHistoryEntry]);
@@ -641,8 +657,18 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
     // 换行：Shift+Enter / Option(Alt)+Enter 都插换行（macOS 用户惯用 Option+Enter，
     // 解析层已把 ESC+CR 识别为 alt+enter，此前误落提交分支）。
     if (key.name === "enter" && (key.shift || key.alt)) { tb.insert("\n"); return true; }
-    // 提交：仅裸 Enter（无 shift/alt）
+    // 提交：仅裸 Enter（无 shift/alt）→ 默认 next 级排队
     if (key.name === "enter" && !key.shift && !key.alt) { handleSubmit(); return true; }
+
+    // P1-G6：带优先级提交（Alt+N=now 插队 / Alt+L=later 延后，对齐 CC now>next>later）。
+    // 仅在**流式进行中**（isLoading）拦截——空闲时提交不入队，优先级无意义，此时放行让
+    // Alt+N/Alt+L 走正常字符输入路径（macOS Option 组合键可能是用户想输入的字符）。
+    // 输入框为空时同样放行（没内容可提交）。
+    if (isLoading && !tb.isEmpty()) {
+      const action = matchBinding(key)?.action;
+      if (action === "input:submitNow") { handleSubmit("now"); return true; }
+      if (action === "input:submitLater") { handleSubmit("later"); return true; }
+    }
 
     // 历史记录：
     // - shell 模式(类 REPL):光标在首行↑ / 末行↓ 时翻历史,否则在多行命令内移光标
@@ -784,14 +810,31 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
     prevQueuedCountRef.current = queuedCount;
   }, [queuedCount]);
 
+  // P1-G6：按优先级分组的计数文案。只在**存在非 next 级**时才分组展示——全是默认排队时
+  // 写"3 条 next"是噪音（视觉规范 L2：排版表达状态，不为等价信息加词）。
+  // 顺序固定 now → next → later，与实际发送顺序一致，用户读到的就是发送次序。
+  const queueBreakdown = (() => {
+    if (!queuedByPriority) return null;
+    const { now, next, later } = queuedByPriority;
+    if (now === 0 && later === 0) return null; // 全默认级 → 不分组
+    return [
+      now > 0 ? `插队 ${now}` : null,
+      next > 0 ? `常规 ${next}` : null,
+      later > 0 ? `延后 ${later}` : null,
+    ].filter(Boolean).join(" · ");
+  })();
+
   // 队列提示：流式中已排队 N 条输入待接续时，在输入框上方一行提示。
   // P2-G6：完整形态附带"↑ 编辑"提示，告知用户可把队尾输入弹回编辑（输入框空时按 ↑）。
+  // P1-G6：有非默认优先级时追加分组明细（按发送顺序 插队 · 常规 · 延后）。
   const queueHint = queuedCount > 0 ? (
     <Box paddingLeft={1}>
       <Text color={theme.status.warning}>
         {queueHintFullRef.current
-          ? `${ARROW_PROMPT} 已排队 ${queuedCount} 条输入，将在当前响应结束后依次发送（空输入框按 ↑ 弹回编辑）`
-          : `${ARROW_PROMPT} 已排队 ${queuedCount} 条`}
+          ? `${ARROW_PROMPT} 已排队 ${queuedCount} 条输入`
+            + `${queueBreakdown ? `（${queueBreakdown}）` : ""}`
+            + `，将在当前响应结束后依次发送（空输入框按 ↑ 弹回编辑）`
+          : `${ARROW_PROMPT} 已排队 ${queuedCount} 条${queueBreakdown ? `（${queueBreakdown}）` : ""}`}
       </Text>
     </Box>
   ) : null;

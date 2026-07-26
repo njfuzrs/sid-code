@@ -149,6 +149,51 @@ describe("状态持久化新特性", () => {
     expect(fc.count).toBe(2);
   });
 
+  // P2-1 补齐：file_changes 带 snapshotId 锚点。此前只有文件名，resume 后拿不到
+  // 「这批改动对应哪个快照」，跨会话无法把文件集反查回可回退的快照。
+  test("P2-1: file_changes 携带 lastSnapshotId + snapshotIds 锚点，覆盖式取最后一条", async () => {
+    const store = new SessionStore();
+    store.startSession("fc-002", "m", "p", "/cwd");
+    // 第一轮改动
+    store.appendMetadata("file_changes", {
+      files: ["/src/a.ts"],
+      lastTool: "edit",
+      count: 1,
+      lastSnapshotId: "s1",
+      snapshotIds: ["s1"],
+    });
+    // 第二轮改动（覆盖式：累积集合 + 累积快照序列）
+    store.appendMetadata("file_changes", {
+      files: ["/src/a.ts", "/src/b.ts"],
+      lastTool: "bash",
+      count: 2,
+      lastSnapshotId: "s2",
+      snapshotIds: ["s1", "s2"],
+    });
+    SessionStore.flushPendingWrites();
+
+    const loaded = await store.load("fc-002");
+    const fc = loaded!.metadata?.["file_changes"] as any;
+    // 覆盖语义：取最后一条即完整集合
+    expect(fc.files).toEqual(["/src/a.ts", "/src/b.ts"]);
+    expect(fc.lastSnapshotId).toBe("s2");
+    // 快照序列保序累积，resume 后可据此把文件集反查回任一历史快照
+    expect(fc.snapshotIds).toEqual(["s1", "s2"]);
+  });
+
+  test("P2-1: 无快照时不写 snapshotId 字段（旧记录/未启用 checkpoint 场景兼容）", async () => {
+    const store = new SessionStore();
+    store.startSession("fc-003", "m", "p", "/cwd");
+    store.appendMetadata("file_changes", { files: ["/src/a.ts"], lastTool: "edit", count: 1 });
+    SessionStore.flushPendingWrites();
+
+    const loaded = await store.load("fc-003");
+    const fc = loaded!.metadata?.["file_changes"] as any;
+    expect(fc.files).toEqual(["/src/a.ts"]);
+    expect(fc.lastSnapshotId).toBeUndefined();
+    expect(fc.snapshotIds).toBeUndefined();
+  });
+
   // ─── P2-10: 子代理 sidechain ───
 
   test("P2-10: SidechainWriter 写入 start + messages + end", () => {

@@ -27,6 +27,23 @@ import { generateSessionId } from "./id.ts";
 const CURRENT_VERSION = "3.0";
 /** 早期 JSONL（session_start 无 version 字段）的隐含版本号 */
 const LEGACY_JSONL_VERSION = "2.0";
+/**
+ * A1：存储布局兼容标注，写入 session_start.schemaCompat。
+ *
+ * 语义是「CC 风格、非逐字节兼容」——外部工具据此知道可以按 CC 的心智模型解析
+ * （JSONL 一行一记录、uuid/parentUuid 父子链、user/assistant/tool_result 消息类型、
+ * assistant 内嵌 usage），但**不要**假设字段名逐一相同。已知的刻意偏离：
+ *   - 记录判别字段是 `type`（session_start / user_message / assistant_message /
+ *     tool_result / context_compact / metadata / session_end），非 CC 的扁平结构；
+ *   - per-message 上下文（cwd/gitBranch/permissionMode）**仅在相对上一条变化时**落盘，
+ *     读取方需沿链继承补齐，不能假设每条都有（CC 每条都写）；
+ *   - `context_compact.isBoundary` 仅作诊断元数据，恢复时**不据此截断历史**
+ *     （sid-code 不变量：resume 永不丢失真实历史）；
+ *   - 会话级聚合状态（usage_stats / todo_state / file_changes / goal_state / …）走
+ *     `metadata` 记录的 key-value，覆盖式语义（取最后一条）。
+ * 版本号跟随 CURRENT_VERSION 变化时应一并复核本常量。
+ */
+const SCHEMA_COMPAT = "claude-code-like/v3";
 
 /** P1-G3：per-message usage 四字段（对齐 CC assistant 消息内嵌 usage 结构）。
  *  落盘的是**该次 API 调用**的用量，非累计值；口径由 provider 解析后的 Usage 归一而来。 */
@@ -47,7 +64,10 @@ interface ChainFields {
 
 /** JSONL 记录类型（调用方视角，不含链字段——链字段由 appendRecord 统一盖戳） */
 type SessionRecordInput =
-  | { type: "session_start"; version: string; sessionId: string; model: string; provider: string; cwd: string; timestamp: string }
+  // A1：session_start 带 schemaCompat 标注，声明本文件的记录结构「CC 风格但非逐字节兼容」，
+  // 供外部工具（转换器 / 分析脚本）在解析前就知道该按哪套字段映射读，而不必靠猜。
+  // 值固定为 SCHEMA_COMPAT；已有旧文件无此字段，解析侧一律容忍缺失（视为 unknown）。
+  | { type: "session_start"; version: string; schemaCompat?: string; sessionId: string; model: string; provider: string; cwd: string; timestamp: string }
   // P2-G7：user_message 可选携带 per-message 上下文（cwd/gitBranch/permissionMode）。
   // 仅在**相对上一条发生变化**时落盘（见 appendMessage），继承语义比 CC 每条都写更省空间。
   | { type: "user_message"; message: Message; timestamp: string; cwd?: string; gitBranch?: string; permissionMode?: string }
@@ -79,6 +99,8 @@ export interface SessionData {
   directories?: string[];
   /** 会话启动时的工作目录（取自 session_start.cwd），用于按项目筛选/展示。 */
   cwd?: string;
+  /** A1：存储布局兼容标注（取自 session_start.schemaCompat）。旧文件无此字段 → undefined。 */
+  schemaCompat?: string;
   summary?: string;
   /** 会话元数据（metadata 记录的累积结果，用于恢复 goalState 等运行时状态） */
   metadata?: Record<string, unknown>;
@@ -302,6 +324,7 @@ export class SessionStore {
     this.pendingStart = {
       type: "session_start",
       version: CURRENT_VERSION,
+      schemaCompat: SCHEMA_COMPAT, // A1：声明布局为「CC 风格但非逐字节兼容」，见常量注释
       sessionId,
       model,
       provider,
@@ -313,6 +336,71 @@ export class SessionStore {
     // 链尾提前指向待写入的 session_start，即便文件还未 materialize，
     // 后续记录的 parentUuid 也能正确指向它（写入顺序由 ensureMaterialized 保证）。
     this.lastUuid = uuid;
+  }
+
+  /**
+   * P1-G2a：把源会话的消息历史**落盘拷贝**进当前（新建的）分叉会话 jsonl。
+   *
+   * 背景（本次修复的真缺口）：`--fork-session` 此前只把源历史注入内存 ctxMgr，新会话 jsonl
+   * 从空的 session_start 起写。后果有两个：
+   *   1. 新会话第一次对话前在 `--list-sessions` 里表现为空会话；
+   *   2. 对新会话再 `-r` 一次，只能读到分叉后的增量，源历史彻底丢失（分叉不可再分叉）。
+   * 方案 §3 要求的是「拷贝历史 + 重新盖戳」，这里补齐。
+   *
+   * 实现要点：
+   * - **重新盖戳**：不复用源记录的 uuid（否则两份文件 uuid 冲突，rebuildRecordOrder 的
+   *   链式回溯会在跨文件溯源场景下产生歧义）。每条经 appendRecord 走一遍，天然获得
+   *   新 uuid + 指向前一条的 parentUuid，形成一条独立完整的链。
+   * - **溯源锚点**：拷贝前落一条 `forked_from` metadata（源会话 id + 源链尾 uuid），
+   *   与 session_start.parentUuid=srcId 互为冗余，便于外部工具双向追溯。
+   * - **顺序**：必须在 startSession 之后、任何新消息写入之前调用（由 App.doInit 保证）。
+   * - **容错**：拷贝失败只告警不抛——分叉会话退化为「只有内存上下文」的旧行为，
+   *   比启动失败可接受得多。
+   *
+   * @param srcSessionId 源会话 id（用于溯源锚点与日志）
+   * @param messages 源会话的消息历史（调用方已从 SessionData.messages 读出）
+   * @param srcTailUuid 源会话链尾 uuid（可选，仅作溯源信息记录）
+   * @returns 实际写入的消息条数
+   */
+  forkHistoryFrom(srcSessionId: string, messages: Message[], srcTailUuid?: string | null): number {
+    if (!this.currentFile) return 0;
+    const log = getLogger();
+    try {
+      // 溯源锚点先落，确保即便后续拷贝中途失败也能看出「这是一次分叉」。
+      this.appendMetadata("forked_from", {
+        sessionId: srcSessionId,
+        ...(srcTailUuid ? { uuid: srcTailUuid } : {}),
+        messageCount: messages.length,
+      });
+      let written = 0;
+      for (const message of messages) {
+        // 走 appendMessage 而非直接 appendRecord：role→type 的映射、tool_result 归类
+        // 与正常写入路径完全一致（单一真相源），避免分叉出的历史与原生历史结构不一致。
+        // 不传 meta：源消息的 per-message usage/上下文已在源会话 jsonl 里，分叉副本
+        // 只需承载对话内容；重复计费维度会让 usage 归因出现双算。
+        this.appendMessage(message);
+        written++;
+      }
+      log.info("SESSION", `会话分叉历史已落盘: ${srcSessionId} → ${written} 条消息拷入新会话`);
+      return written;
+    } catch (e) {
+      log.warn("SESSION", `会话分叉历史落盘失败（降级为仅内存上下文，不阻断）: ${(e as Error)?.message}`);
+      return 0;
+    }
+  }
+
+  /**
+   * P1-G2a：读取指定会话 jsonl 的链尾 uuid（供分叉时记录溯源锚点）。
+   * 跨项目解析；文件不存在/无 uuid 返回 null（降级为不带 uuid 的锚点，不影响功能）。
+   */
+  readTailUuidOf(sessionId: string): string | null {
+    try {
+      const resolved = resolveSessionFileAcrossProjects(sessionId);
+      if (!resolved || !resolved.endsWith(".jsonl")) return null;
+      return this.loadTailUuid(resolved);
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -807,6 +895,7 @@ export function parseSessionJsonlLines(lines: string[]): SessionData | null {
   let updatedAt = "";
   let cwd = "";
   let version = LEGACY_JSONL_VERSION;
+  let schemaCompat: string | undefined;
 
   for (const record of orderedRecords) {
     switch (record.type) {
@@ -820,6 +909,10 @@ export function parseSessionJsonlLines(lines: string[]): SessionData | null {
         // P2-12：v3+ 文件带 version 字段；v2 及更早无此字段，保持 LEGACY_JSONL_VERSION 兜底。
         if (typeof (record as { version?: string }).version === "string") {
           version = (record as { version: string }).version;
+        }
+        // A1：透出布局兼容标注（旧文件无此字段 → 保持 undefined，不臆造值）。
+        if (typeof (record as { schemaCompat?: string }).schemaCompat === "string") {
+          schemaCompat = (record as { schemaCompat: string }).schemaCompat;
         }
         break;
       case "user_message":
@@ -864,6 +957,7 @@ export function parseSessionJsonlLines(lines: string[]): SessionData | null {
     updatedAt,
     kind: metadata["kind"] as "main" | "subagent" | undefined,
     cwd: cwd || undefined,
+    schemaCompat,
     summary: metadata["summary"] as string | undefined,
     metadata,
   };

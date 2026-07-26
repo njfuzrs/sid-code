@@ -63,6 +63,17 @@ export class CommandExecutor {
       };
     }
 
+    // 启用性检查（兜底）：UnifiedCommandRegistry.getCommands 已按 isEnabled 过滤，
+    // 但本方法也接受调用方自备的命令数组（测试、immediate 路径、未过滤快照）。
+    // 对 skill 来说 isEnabled 承载两件事：/skills 禁用态，以及 P1-2 条件激活 gate
+    //（未触发的条件 skill 不可调用）——漏掉这层就能按名直呼绕过条件。
+    if (cmd.isEnabled && !cmd.isEnabled()) {
+      return {
+        type: "error",
+        message: `/${cmd.name} 当前不可用（已禁用，或为尚未触发的条件激活 Skill）`,
+      };
+    }
+
     return this.dispatch(cmd, parsed.args);
   }
 
@@ -205,13 +216,53 @@ export class CommandExecutor {
     cmd: UnifiedCommand & PromptCommand,
     args: string,
   ): Promise<CommandExecutionResult> {
-    const prompt = await cmd.getPromptForCommand(args, this.ctx);
+    // ── skill 来源命令：先走 P0-3 权限判定，再注册 P0-2 生命周期 hooks ──
+    // 顺序铁律：权限 → hooks → 执行。被拒的 skill 不能留下 hooks 污染后续工具调用。
+    const skill = cmd.skill;
+    let registeredHookCount = 0;
 
-    if (cmd.context === "fork") {
-      return this.executeFork(cmd, prompt);
+    if (skill) {
+      const { authorizeSkill, resolveSkillAsk, registerSkillLifecycleHooks } = await import(
+        "../skill/executor.ts"
+      );
+      const auth = authorizeSkill(skill, { permissionRules: this.ctx.permissionRules });
+      if (auth.decision === "deny") {
+        return { type: "error", message: `权限拒绝：${auth.reason ?? skill.name}` };
+      }
+      if (auth.decision === "ask") {
+        const allowed = await resolveSkillAsk(skill, auth.reason ?? "", {
+          confirm: this.ctx.requestUserConfirmation,
+        });
+        if (!allowed) {
+          return { type: "error", message: `已取消：Skill "${skill.name}" 未获批准。` };
+        }
+      }
+      registeredHookCount = registerSkillLifecycleHooks(skill, this.ctx.hookSystem);
     }
 
-    return { type: "submit_prompt", value: prompt, shouldQuery: true };
+    try {
+      const prompt = await cmd.getPromptForCommand(args, this.ctx);
+
+      if (cmd.context === "fork") {
+        return await this.executeFork(cmd, prompt);
+      }
+
+      // inline：prompt 注入主对话。hooks 需在整段对话期间存活，故**不卸载**
+      // （对齐 CC 的 session hook 语义：注册即持续到会话结束或 skill 卸载）。
+      registeredHookCount = 0;
+      return { type: "submit_prompt", value: prompt, shouldQuery: true };
+    } finally {
+      // fork：hooks 作用域仅本次子代理调用，返回后卸载（与 SkillMetaTool.executeDelegate 同口径）。
+      if (registeredHookCount > 0 && skill && this.ctx.hookSystem) {
+        const removed = this.ctx.hookSystem.removeSkillHooks(skill.name);
+        if (removed > 0) {
+          getLogger().debug(
+            "SKILL",
+            `fork skill "${skill.name}" 返回，卸载 ${removed} 个会话 hook`,
+          );
+        }
+      }
+    }
   }
 
   /** fork 模式：在子代理中独立执行，返回最终输出 */
@@ -229,25 +280,48 @@ export class CommandExecutor {
         return { type: "submit_prompt", value: prompt, shouldQuery: true };
       }
 
+      const skill = cmd.skill;
+
+      // P1-1：skill 来源命令透传 effort / agent 类型 / model（与模型路径 SkillMetaTool 同口径）。
+      let effort: "low" | "medium" | "high" | "xhigh" | "max" | undefined;
+      let agentType: string | undefined;
+      if (skill) {
+        const { normalizeSkillEffort, resolveSkillAgentType } = await import(
+          "../skill/executor.ts"
+        );
+        effort = normalizeSkillEffort(skill.effort);
+        agentType = await resolveSkillAgentType(skill.agent, skill.name);
+      }
+
       const subAgent = SubAgent.fromRegistry(
         this.ctx.providerRegistry,
         this.ctx.toolRegistry,
         this.ctx.hookSystem,
+        skill?.model,
       );
+      // 子代理内的工具权限判定沿用主会话 checker（未注入时子代理走自身默认）
+      if (this.ctx.permissionChecker) {
+        subAgent.setPermissionChecker(this.ctx.permissionChecker);
+      }
 
       const result = await subAgent.executeCustom({
-        systemPrompt: "你是一个专注的助手，请完成以下任务。",
+        systemPrompt: skill
+          ? `你是一个专门执行 "${skill.name}" 任务的代理。${skill.description}`
+          : "你是一个专注的助手，请完成以下任务。",
         userPrompt: prompt,
         allowedTools: cmd.allowedTools ?? [],
         // P2-2：fork 命令无 forkMessages/继承主对话概念（systemPrompt 是全新的“专注助手”提示词），
         // 与常规非 fork 子代理同档：默认从 10 提到 30。
         maxTurns: cmd.maxTurns ?? 30,
-        // 超时透传：对齐磁盘 skill 的钳制（默认 2 分钟，最大 30 分钟，见 skill/tool.ts:146）。
+        // 超时透传：对齐磁盘 skill 的钳制（默认 2 分钟，最大 30 分钟）。
         // 不传 timeoutMins 时 executeCustom 内部默认 120_000ms，与历史行为一致。
         timeout:
           cmd.timeoutMins != null
             ? Math.min(Math.max(cmd.timeoutMins, 1), 30) * 60_000
             : undefined,
+        effort,
+        // agent 优先作为 agent 类型（memory/system prompt 跟随）；否则沿用 skill:<name>
+        type: skill ? (agentType ?? `skill:${skill.name}`) : undefined,
       });
 
       return {

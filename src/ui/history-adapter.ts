@@ -115,7 +115,7 @@ function tryParseTaskNotifications(msg: Message): {
     //
     // 兼容单个对象与数组两种形态：query/loop 现注入数组（一条消息聚合多通知）；
     // 旧会话 resume 可能是单个对象（早期实现）。两者都遍历渲染，不丢任何一条。
-    type StructuredNotif = { taskId?: string; status?: string; summary?: string; result?: string; outputFile?: string };
+    type StructuredNotif = { taskId?: string; status?: string; summary?: string; result?: string; outputFile?: string; agentType?: string };
     const raw = msg._meta.notif as StructuredNotif | StructuredNotif[] | undefined;
     const notifList: StructuredNotif[] = Array.isArray(raw)
       ? raw
@@ -131,6 +131,8 @@ function tryParseTaskNotifications(msg: Message): {
           summary: notif.summary ?? "",
           ...(notif.result ? { result: notif.result } : {}),
           ...(notif.outputFile ? { outputFile: notif.outputFile } : {}),
+          // P1-2：agentType 只在结构化路径可得（XML 里刻意不带），用于身份色渲染。
+          ...(notif.agentType ? { agentType: notif.agentType } : {}),
         })),
         remaining: null,
       };

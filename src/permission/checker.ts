@@ -34,7 +34,7 @@ import { RuleLoader } from "./rule-loader.ts";
 import { getShadowedRulesForTool } from "./shadowed-rules.ts";
 import type { SandboxManager } from "./sandbox.ts";
 import { BashClassifier } from "./bash-classifier.ts";
-import { GIT_DANGER_PATTERNS } from "./git-danger-patterns.ts";
+import { GIT_DANGER_PATTERNS, normalizeGitGlobalOptions } from "./git-danger-patterns.ts";
 import * as path from "node:path";
 import * as os from "node:os";
 
@@ -1322,11 +1322,19 @@ export class PermissionChecker implements Checker {
     }
 
     // 1b. 拆分复合命令，对每个子命令检查其余模式
+    //
+    // ⚠️ 安全：每个子命令**额外**用「剥离 git 全局选项后的归一串」再查一遍。
+    // git 允许在子命令之前插入 `-c k=v` / `-C dir` / `--no-pager` 等全局选项
+    // （`git -c core.pager=cat reset --hard`），这会把子命令与 `git` 撑开，使所有
+    // `\bgit\s+<子命令>` 形态的正则失配 → 危险命令在 acceptEdits/yesMode 下被静默放行。
+    // 归一化后双重匹配即可覆盖该绕过（对齐 CC gitCmdRe 的全局选项容错）。
     const subCommands = splitCompoundCommand(cmd);
     const nonPipelinePatterns = DANGEROUS_PATTERNS.filter(dp => !pipelinePatterns.includes(dp));
     for (const subCmd of subCommands) {
+      const normalized = normalizeGitGlobalOptions(subCmd);
+      const variants = normalized === subCmd ? [subCmd] : [subCmd, normalized];
       for (const dp of nonPipelinePatterns) {
-        if (dp.pattern.test(subCmd)) {
+        if (variants.some(v => dp.pattern.test(v))) {
           return { name: dp.name, severity: dp.severity };
         }
       }

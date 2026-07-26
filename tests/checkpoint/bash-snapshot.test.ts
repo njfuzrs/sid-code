@@ -148,3 +148,89 @@ describe("P2-1 rm 破坏进入 checkpoint 覆盖（消除盲区）", () => {
     expect(mine!.fileCount).toBe(2);
   });
 });
+
+/**
+ * `git clean -f` 删的是**未跟踪**文件——这些文件 `git diff` 看不到，
+ * 只走工作区级快照的话永远回退不了（P2-1 待决策项 3：要快照未跟踪文件）。
+ */
+describe("P2-1 git clean 未跟踪文件进快照", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = join(tmpdir(), `git-clean-snap-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(dir, { recursive: true });
+    // 建一个最小 git 仓库：1 个已跟踪并被改动的文件 + 未跟踪文件 + 未跟踪目录
+    const git = (args: string[]) =>
+      Bun.spawnSync(["git", ...args], { cwd: dir, stdout: "ignore", stderr: "ignore" });
+    git(["init"]);
+    writeFileSync(join(dir, "tracked.txt"), "orig\n");
+    git(["add", "tracked.txt"]);
+    git(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "init"]);
+    writeFileSync(join(dir, "tracked.txt"), "orig\nmodified\n");
+    writeFileSync(join(dir, "untracked.txt"), "new\n");
+    mkdirSync(join(dir, "newdir"), { recursive: true });
+    writeFileSync(join(dir, "newdir", "deep.txt"), "deep\n");
+  });
+
+  afterEach(() => {
+    if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("git clean -fd 同时纳入已改动 + 未跟踪文件（含目录展开）", async () => {
+    const files = await getBashAffectedFiles("git clean -fd", dir);
+    expect(files).toContain(join(dir, "tracked.txt")); // 工作区改动（原有能力）
+    expect(files).toContain(join(dir, "untracked.txt")); // 未跟踪文件（新增）
+    expect(files).toContain(join(dir, "newdir", "deep.txt")); // 目录展开为文件粒度
+  });
+
+  test("git clean -f（无 -d）不含目录内文件", async () => {
+    const files = await getBashAffectedFiles("git clean -f", dir);
+    expect(files).toContain(join(dir, "untracked.txt"));
+    expect(files).not.toContain(join(dir, "newdir", "deep.txt"));
+  });
+
+  test("git clean -n（预演）不触发快照", async () => {
+    expect(await getBashAffectedFiles("git clean -n", dir)).toEqual([]);
+  });
+
+  test("git reset --hard 不误收未跟踪文件（它不删未跟踪）", async () => {
+    const files = await getBashAffectedFiles("git reset --hard", dir);
+    expect(files).toContain(join(dir, "tracked.txt"));
+    expect(files).not.toContain(join(dir, "untracked.txt"));
+  });
+
+  // 说明：与上面 rm 的端到端测试同理——本用例断言 P2-1 的实际交付
+  // 「clean 之前建快照且捕获未跟踪文件的原始内容」。恢复深度受既有 checkpoint undo 模型
+  // 约束（该模型对「文件的首个快照」无法单步恢复，与 write/edit 一致，属另一子系统议题）。
+  test("clean 前建快照并捕获未跟踪文件原始内容（端到端）", async () => {
+    const manager = new CheckpointManager(
+      `git-clean-snap-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      { enabled: true },
+    );
+    await manager.init();
+
+    const target = join(dir, "untracked.txt");
+
+    // clean 之前建快照（模拟 tool-executor 的行为）
+    const affected = await getBashAffectedFiles("git clean -fd", dir);
+    expect(affected).toContain(target);
+    const sid = await manager.createSnapshot(affected, "bash", "$ git clean -fd");
+    expect(sid).toBeTruthy();
+
+    unlinkSync(target); // 模拟 clean 删除未跟踪文件
+    expect(existsSync(target)).toBe(false);
+
+    // 快照里确实存了未跟踪文件的原始内容（此前未跟踪文件完全不进快照 = 盲区）
+    const snap = manager.listSnapshots().find(s => s.id === sid);
+    expect(snap).toBeDefined();
+    expect(snap!.toolName).toBe("bash");
+    // P2-1 摘要带上触发命令，便于 /checkpoints 里辨认这是哪次破坏前的快照
+    expect(snap!.toolSummary).toContain("git clean");
+    const detail = manager.getSnapshotDetail(sid);
+    const entry = detail!.files.find(f => f.filePath === target);
+    expect(entry).toBeDefined();
+    expect(entry!.existedBefore).toBe(true);
+    expect(entry!.type).toBe("full");
+    expect(entry!.content).toBe("new\n"); // 原始内容已捕获，可用于回滚
+  });
+});

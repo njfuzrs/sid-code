@@ -16,6 +16,13 @@ import {
 } from "../task/index.ts";
 import type { HookSystem } from "../hook/system.ts";
 import { buildAgentHookSystem } from "./agent-hooks.ts";
+import {
+  canSpawnSubAgent,
+  describeSpawnRejection,
+  getAgentDepth,
+  isNestedSubAgentEnabled,
+  resolveMaxDepth,
+} from "./depth-context.ts";
 import type { SubAgentResult } from "./sub-agent.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
@@ -58,6 +65,38 @@ const subAgentSchema = lazySchema(() => {
  * 否则子代理烧的钱完全不计入总费用，costLimit 守卫对子代理失效。
  */
 export type SubAgentUsageSink = (result: SubAgentResult) => void;
+
+/**
+ * 渲染「可用子代理类型」清单（sub_agent 工具 description 的主体部分）。
+ *
+ * 文案结构对标 claude-code AgentTool/prompt.ts:43 formatAgentLine：`- type: whenToUse (Tools: ...)`。
+ * 用 whenToUse（"何时用"，比 description"是什么"更能指导派活决策）；
+ * 工具集按 allowlist/denylist 分别渲染（denylist → "除 X 外的全部工具"）。
+ *
+ * 独立导出（而非内联在 description 里）供 §12 P0-1 的 /context 分类记账复用——
+ * 「自定义代理」占多少 token 必须与模型实际看到的文本同源，否则两处会漂移。
+ */
+export function renderAgentTypeLines(): string {
+  const defs = getActiveAgentDefinitions();
+  const toolsDescOf = (d: import("./agent-definition.ts").AgentDefinition): string => {
+    const allow = d.tools && d.tools.length > 0 ? d.tools : null;
+    const deny = d.disallowedTools && d.disallowedTools.length > 0 ? d.disallowedTools : null;
+    if (allow && deny) {
+      const denySet = new Set(deny);
+      const eff = allow.filter((t) => !denySet.has(t));
+      return eff.length > 0 ? eff.join("、") : "无";
+    }
+    if (allow) return allow.join("、");
+    if (deny) return `除 ${deny.join("、")} 外的全部工具`;
+    return "全部工具";
+  };
+  return defs
+    .map((d) => {
+      const readonlyTag = d.readOnly ? "，只读" : "";
+      return `- ${d.agentType}：${d.whenToUse}（可用工具：${toolsDescOf(d)}${readonlyTag}）`;
+    })
+    .join("\n");
+}
 
 /**
  * ⚠️ 修改本类（新增子代理类型、改并发/超时/结果语义）时，必须同步检查以下三层对齐，
@@ -130,6 +169,15 @@ export class SubAgentTool implements Tool {
    * @param signal 可选中止信号。等待期间被 abort 则移除 waiter 并抛出，避免泄漏。
    */
   static async acquireSlot(signal?: AbortSignal): Promise<void> {
+    // P3-1 死锁防护：嵌套子代理（depth ≥ 1）免排队，不占信号量。
+    //
+    // 信号量是全局静态的（全树共享）。若嵌套层也排队，会出现经典的"持有并等待"死锁：
+    // 父代理占着 slot 阻塞等子代理返回，子代理在队列里等 slot 释放，而 slot 只会在
+    // 父代理返回后释放 → 队列永远推不动。父辈已为这条执行链占了一个 slot，子代理是在
+    // 父辈额度内跑，不增加"并发执行链"数量，故直接放行是安全的。
+    // 深度本身由 canSpawnSubAgent 卡住（默认 1 层、上限 MAX_AGENT_DEPTH），不会无限放行。
+    if (getAgentDepth() >= 1) return;
+
     if (SubAgentTool.running < SubAgentTool.MAX_CONCURRENT) {
       SubAgentTool.running++;
       return;
@@ -163,6 +211,10 @@ export class SubAgentTool implements Tool {
    * 无排队者：递减 running。这样 running 恒等于"实际持有 slot 的子代理数"。
    */
   static releaseSlot(): void {
+    // P3-1：与 acquireSlot 的免排队通道对称——嵌套层没占 slot，不能释放，
+    // 否则会凭空多放一个额度（running 被减到低于真实持有数，实际并发悄悄超限）。
+    if (getAgentDepth() >= 1) return;
+
     const next = SubAgentTool.waiters.shift();
     if (next) {
       // slot 转移给下一个等待者，running 不变（该 waiter 继承本 slot）
@@ -248,30 +300,7 @@ export class SubAgentTool implements Tool {
     // 缺口 F：把每种子代理类型的能力 + 工具集边界写进 description，
     // 而非只列类型名。否则模型派活时只能凭类型名猜能力，可能把"需要写文件"的活
     // 派给只读的 explore，子代理撞墙后才反馈失败，浪费一整个子代理回合。
-    //
-    // 文案结构对标 claude-code AgentTool/prompt.ts:43 formatAgentLine：
-    //   `- type: whenToUse (Tools: ...)`
-    // 用 whenToUse（"何时用"，比 description"是什么"更能指导派活决策）；
-    // 工具集按 allowlist/denylist 分别渲染（denylist → "除 X 外的全部工具"）。
-    const defs = getActiveAgentDefinitions();
-    const toolsDescOf = (d: import("./agent-definition.ts").AgentDefinition): string => {
-      const allow = d.tools && d.tools.length > 0 ? d.tools : null;
-      const deny = d.disallowedTools && d.disallowedTools.length > 0 ? d.disallowedTools : null;
-      if (allow && deny) {
-        const denySet = new Set(deny);
-        const eff = allow.filter((t) => !denySet.has(t));
-        return eff.length > 0 ? eff.join("、") : "无";
-      }
-      if (allow) return allow.join("、");
-      if (deny) return `除 ${deny.join("、")} 外的全部工具`;
-      return "全部工具";
-    };
-    const typeLines = defs
-      .map((d) => {
-        const readonlyTag = d.readOnly ? "，只读" : "";
-        return `- ${d.agentType}：${d.whenToUse}（可用工具：${toolsDescOf(d)}${readonlyTag}）`;
-      })
-      .join("\n");
+    const typeLines = renderAgentTypeLines();
     return `启动一个子代理来执行独立的子任务。子代理有自己独立的上下文，不会污染主对话。
 
 可用类型（注意各自的工具集边界——只读类型不能写文件/执行命令）：
@@ -293,7 +322,11 @@ ${typeLines}
 - **怎么选类型**：只读探查（搜代码、读模块、定位实现）派 explore；要改文件 / 跑命令派 task；验证某个已有结论是否成立、需要对抗式复核派 verify。拿不准是否要写入就先按只读派 explore，需要写时子代理会反馈、再改派 task。
 - **分治 vs 并行只读不是一回事**：并行调 read/grep/glob 只是在同一个上下文里多发几个只读调用，结果都回到主对话；分治是把一整段子任务连同它的上下文交给独立子代理，主对话只收最终结论。方向多、每个方向都重（要读很多文件）时，用分治而不是堆并行 read。
 - **并行分治**：多个子方向可以一次发多个 sub_agent 并行执行；需要后台跑设 run_in_background=true。
-- **嵌套限制**：子代理内部不能再派子代理，分治只能由主线程发起。所以要并行就在主线程一次性把多个 sub_agent 发出去，别指望某个子代理内部再 fan-out。`;
+- **嵌套限制**：${
+      isNestedSubAgentEnabled()
+        ? `子代理内部可以再派一层子代理（总深度上限 ${resolveMaxDepth()}）。但优先在主线程一次性把多个 sub_agent 发出去——嵌套只用于「子方向自身又大到需要再分」的情况，层层 fan-out 会让代理数指数增长。`
+        : "子代理内部不能再派子代理，分治只能由主线程发起。所以要并行就在主线程一次性把多个 sub_agent 发出去，别指望某个子代理内部再 fan-out。"
+    }`;
   }
 
   /**
@@ -330,9 +363,15 @@ ${typeLines}
       _agentId?: string;
     };
 
-    // 防嵌套：子代理上下文不允许再 spawn 子代理（参考 enter_plan_mode 的 _agentId 模式）
-    if (params._agentId) {
-      return { output: "子代理不允许嵌套调用子代理。如需并行执行多个任务，请在主代理层面直接使用多个 sub_agent 调用。", isError: true };
+    // P3-1：嵌套受控放开——由深度上下文（ALS）裁决，而非"是不是子代理"的布尔判断。
+    //
+    // 默认（SID_ENABLE_NESTED_SUBAGENT 未开）行为与改造前完全一致：depth ≥ 1 一律拒绝。
+    // 开启后允许到 MAX_AGENT_DEPTH（默认 2），由全树共享信号量 + 免排队通道防指数爆炸。
+    //
+    // 仍保留 _agentId 作为兜底：ALS 理论上覆盖全部子代理执行路径，但若将来出现
+    // 未包裹 withIncrementedDepth 的新路径，_agentId 能兜住（纵深防御，不依赖单点）。
+    if (!canSpawnSubAgent() || (params._agentId && getAgentDepth() === 0)) {
+      return { output: describeSpawnRejection(), isError: true };
     }
 
     // 对标 cc：type 省略时默认 general-purpose（cc 的默认兜底类型）。

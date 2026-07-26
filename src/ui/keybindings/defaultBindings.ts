@@ -40,6 +40,11 @@ export const DEFAULT_BINDINGS: KeyBinding[] = [
   { action: "input:newlineCtrlJ",   stroke: { ctrl: true, name: "j" },    display: "Ctrl+J",      description: "多行输入",    showInHelp: false },
   { action: "input:killRingYank",   stroke: { ctrl: true, name: "y" },    display: "Ctrl+Y",      description: "yank（粘贴已删文本）", showInHelp: false },
   { action: "input:emacsKillWord",  stroke: { ctrl: true, name: "w" },    display: "Ctrl+W",      description: "删除前一个词", showInHelp: false },
+  // P1-G6：流式响应中提交时选择排队优先级（对齐 CC now>next>later）。
+  // 裸 Enter = next（默认排队）；Alt+N = now（本轮结束后最先发，开 mid-turn drain 时可抢占）；
+  // Alt+L = later（排在所有 next 之后）。空闲态这两个键不拦截（无队列语义），照常插入字符。
+  { action: "input:submitNow",      stroke: { alt: true, name: "n" },     display: "Alt+N",       description: "提交并插队（优先发送）", showInHelp: true },
+  { action: "input:submitLater",    stroke: { alt: true, name: "l" },     display: "Alt+L",       description: "提交并延后（最后发送）", showInHelp: true },
   // ── App.tsx 全局键（实际触发也改为查表）──
   { action: "app:toggleCopyMode",  stroke: { ctrl: true, name: "s" }, display: "Ctrl+S",     description: "Copy Mode",          showInHelp: true },
   { action: "app:toggleMarkdown",  stroke: { alt: true,  name: "m" }, display: "Alt+M",      description: "切换 Markdown 渲染", showInHelp: true },

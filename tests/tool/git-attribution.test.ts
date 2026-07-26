@@ -55,3 +55,86 @@ describe("P3-1 prompt 指令段", () => {
     expect(prAttributionInstruction({ prAttribution: { enabled: false } })).toBe("");
   });
 });
+
+/**
+ * settings.git 进 Schema（此前只靠顶层 .passthrough() 兜住 → 类型错写静默通过，
+ * `enabled: "false"` 字符串会被当 truthy 继续加归因）。
+ */
+describe("P3-1 settings.git Schema 校验", () => {
+  test("合法配置通过并保留字段", async () => {
+    const { SettingsSchema } = await import("../../src/config/settings/types.ts");
+    const r = SettingsSchema().safeParse({
+      git: { commitAttribution: { enabled: false }, prAttribution: { text: "X" } },
+    });
+    expect(r.success).toBe(true);
+    expect((r as any).data.git.commitAttribution.enabled).toBe(false);
+    expect((r as any).data.git.prAttribution.text).toBe("X");
+  });
+
+  test("类型错写被拦下（而非静默当 truthy）", async () => {
+    const { SettingsSchema } = await import("../../src/config/settings/types.ts");
+    const r = SettingsSchema().safeParse({ git: { commitAttribution: { enabled: "false" } } });
+    expect(r.success).toBe(false);
+    expect((r as any).error.issues[0].path).toEqual(["git", "commitAttribution", "enabled"]);
+  });
+
+  test("git 段缺省不报错（可选）", async () => {
+    const { SettingsSchema } = await import("../../src/config/settings/types.ts");
+    expect(SettingsSchema().safeParse({}).success).toBe(true);
+  });
+});
+
+/**
+ * PR 归因必须覆盖**所有** PR 路径（/commit-push-pr、/pr-workflow、/pr）——
+ * 只接一处会导致其余路径的 PR 描述缺归因（方案 P3-1 「统一注入路径」要求）。
+ */
+describe("P3-1 PR 归因覆盖所有 PR skill", () => {
+  const PR_SKILLS = ["commit-push-pr", "pr-workflow", "pr"];
+
+  /**
+   * 按名取一个 bundled skill 的 prompt 构造器。
+   *
+   * ⚠️ 不能依赖全局注册表：`registerBundledSkills` 有 `registered` 幂等标志，而同批测试里
+   * 其他文件会调用 `clearBundledSkills()` —— 清空后再调 registerBundledSkills 是空操作，
+   * 单跑本文件能过、全量跑就取不到 skill。这里逐个 skill 直接调它自己的注册函数（不受
+   * 幂等标志约束），每个 case 独立注册，不受运行顺序影响。
+   */
+  async function getSkill(name: string) {
+    const { getBundledSkills } = await import("../../src/skill/bundled/registry.ts");
+    const registrars: Record<string, () => Promise<() => void>> = {
+      "commit-push-pr": async () =>
+        (await import("../../src/skill/bundled/commit-push-pr.ts")).registerCommitPushPrSkill,
+      "pr-workflow": async () =>
+        (await import("../../src/skill/bundled/pr-workflow.ts")).registerPrWorkflowSkill,
+      pr: async () => (await import("../../src/skill/bundled/pr.ts")).registerPrSkill,
+    };
+    const register = await registrars[name]!();
+    register(); // registerBundledSkill 内部同名覆盖，重复调用安全
+    const skill = getBundledSkills().find((s) => s.name === name);
+    expect(skill).toBeDefined();
+    return skill! as { getPromptForCommand?: (args: string, ctx: unknown) => Promise<string> };
+  }
+
+  for (const name of PR_SKILLS) {
+    test(`/${name} 默认注入 PR 归因文本`, async () => {
+      const skill = await getSkill(name);
+      const prompt = await skill.getPromptForCommand!("", { config: {} } as any);
+      expect(prompt).toContain(DEFAULT_PR_ATTRIBUTION);
+    });
+
+    test(`/${name} prAttribution.enabled=false 时 prompt 无归因`, async () => {
+      const skill = await getSkill(name);
+      const ctx = { config: { git: { prAttribution: { enabled: false } } } } as any;
+      const prompt = await skill.getPromptForCommand!("", ctx);
+      expect(prompt).not.toContain(DEFAULT_PR_ATTRIBUTION);
+    });
+
+    test(`/${name} 支持自定义 PR 归因文本`, async () => {
+      const skill = await getSkill(name);
+      const ctx = { config: { git: { prAttribution: { text: "🤖 by acme-bot" } } } } as any;
+      const prompt = await skill.getPromptForCommand!("", ctx);
+      expect(prompt).toContain("🤖 by acme-bot");
+      expect(prompt).not.toContain(DEFAULT_PR_ATTRIBUTION);
+    });
+  }
+});

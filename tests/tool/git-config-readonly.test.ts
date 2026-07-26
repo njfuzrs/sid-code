@@ -6,7 +6,11 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { isReadOnlyCommand, isReadOnlyGitConfig } from "../../src/tool/bash/read-only-validation.ts";
+import {
+  isReadOnlyCommand,
+  isReadOnlyGitConfig,
+  stripSafeGitGlobalOptions,
+} from "../../src/tool/bash/read-only-validation.ts";
 
 describe("P0-1 git config 只读细分", () => {
   test("读取形态判只读", () => {
@@ -47,5 +51,47 @@ describe("P0-1 git config 只读细分", () => {
     expect(isReadOnlyCommand("git status")).toBe(true);
     expect(isReadOnlyCommand("git log --oneline")).toBe(true);
     expect(isReadOnlyCommand("git diff")).toBe(true);
+  });
+});
+
+/**
+ * git 全局选项与只读判定：`-C dir` / `--no-pager` 等无副作用选项应被剥离（保持只读，
+ * 避免纯读命令白弹确认）；`-c k=v` 等能注入配置的选项**必须**判非只读
+ * （`-c core.pager='sh -c evil'`、`-c alias.x='!evil'` 可借只读子命令执行任意代码）。
+ */
+describe("git 全局选项的只读判定", () => {
+  test("安全全局选项被剥离，只读语义保持", () => {
+    expect(isReadOnlyCommand("git -C /tmp log")).toBe(true);
+    expect(isReadOnlyCommand("git -C /tmp status")).toBe(true);
+    expect(isReadOnlyCommand("git --no-pager diff")).toBe(true);
+    expect(isReadOnlyCommand("git --git-dir=/tmp/.git log")).toBe(true);
+    expect(isReadOnlyCommand("git -C /tmp config --list")).toBe(true);
+    expect(isReadOnlyCommand("git --version")).toBe(true);
+  });
+
+  test("-c 注入类全局选项一律判非只读（可执行任意代码）", () => {
+    expect(isReadOnlyCommand("git -c core.pager=cat status")).toBe(false);
+    expect(isReadOnlyCommand("git -c core.pager='sh -c evil' log")).toBe(false);
+    expect(isReadOnlyCommand("git -c alias.x='!evil' status")).toBe(false);
+    expect(isReadOnlyCommand("git --exec-path=/tmp/evil status")).toBe(false);
+  });
+
+  test("全局选项不能把危险子命令洗成只读", () => {
+    expect(isReadOnlyCommand("git -C /tmp push --force")).toBe(false);
+    expect(isReadOnlyCommand("git --no-pager reset --hard")).toBe(false);
+    expect(isReadOnlyCommand("git -C /tmp clean -fd")).toBe(false);
+    expect(isReadOnlyCommand("git -C /tmp config core.hooksPath /tmp/evil")).toBe(false);
+  });
+
+  test("stripSafeGitGlobalOptions 直接单测", () => {
+    expect(stripSafeGitGlobalOptions(["-C", "/tmp", "log"])).toEqual(["log"]);
+    expect(stripSafeGitGlobalOptions(["--no-pager", "diff"])).toEqual(["diff"]);
+    expect(stripSafeGitGlobalOptions(["--git-dir=/x/.git", "status"])).toEqual(["status"]);
+    expect(stripSafeGitGlobalOptions(["status"])).toEqual(["status"]);
+    // 不可信选项 → null（调用方判非只读）
+    expect(stripSafeGitGlobalOptions(["-c", "core.pager=cat", "status"])).toBeNull();
+    expect(stripSafeGitGlobalOptions(["--config-env=X=Y", "status"])).toBeNull();
+    // 子命令自身的 flag 不被剥离
+    expect(stripSafeGitGlobalOptions(["-C", "/tmp", "push", "--force"])).toEqual(["push", "--force"]);
   });
 });

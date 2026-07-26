@@ -91,9 +91,18 @@ export function registerPrWorkflowSkill(): void {
     disableModelInvocation: true,
     maxTurns: 50, // 上限（skill/types.ts:51）
     timeoutMins: 30, // 上限：五阶段 SOP 含 push/建 PR + 自审，2 分钟远不够
-    async getPromptForCommand(args) {
+    async getPromptForCommand(args, context) {
+      // P3-1：commit + PR 归因动态注入（settings.git.commitAttribution / prAttribution）。
+      // 本 skill 同时做 commit 与建 PR，两处归因都要覆盖；各自 enabled=false → 空串。
+      const { commitAttributionInstruction, prAttributionInstruction } = await import("../../tool/git-attribution.ts");
+      const parts = [
+        commitAttributionInstruction(context?.config?.git),
+        prAttributionInstruction(context?.config?.git),
+      ].filter(Boolean);
+      const attributionSection = parts.length ? `\n\n## 归因\n${parts.join("\n\n")}` : "";
       return (
         PR_WORKFLOW_PROMPT +
+        attributionSection +
         (args.trim() ? `\n\n## 用户额外要求\n\n${args.trim()}` : "")
       );
     },

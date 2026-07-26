@@ -52,6 +52,11 @@ export interface TaskNotification {
   outputFile: string;
   status: TaskStatus;
   summary: string;
+  /**
+   * P1-2：子代理类型（如 explore / 自定义 agent 名）。仅用于 TUI 取该 agent 的
+   * 身份色渲染通知行——**不进 XML**（模型不需要，进了反而是噪音）。
+   */
+  agentType?: string;
   /** 结构化结果（completed 状态时可用，对标 claude-code AgentToolResult） */
   result?: AgentTaskResult;
   /** 纯文本错误信息（failed 状态时可用，向后兼容旧调用方传 string） */
@@ -125,6 +130,8 @@ export interface StructuredNotification {
   outputFile: string;
   /** 结论正文（completed 走 result.output，failed/killed 走 error），缺省时 TUI 只显示摘要行。 */
   result?: string;
+  /** P1-2：子代理类型，供 TUI 取该 agent 的身份色（frontmatter color > 哈希分配）。 */
+  agentType?: string;
 }
 
 /** 出队结果：注入 LLM 的 XML 文本 + 供 TUI 渲染的结构化快照。 */
@@ -155,6 +162,7 @@ function toStructured(n: TaskNotification): StructuredNotification {
     outputFile: n.outputFile,
     // completed 走 result.output，failed/killed 走 error（与 formatNotification 的分支一致）。
     result: n.result ? n.result.output : n.error,
+    agentType: n.agentType,
   };
 }
 

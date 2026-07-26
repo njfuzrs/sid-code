@@ -11,8 +11,8 @@ import { writeFileSync, readFileSync, mkdirSync, existsSync, renameSync } from "
 import { join } from "path";
 import { getLogger } from "../debug/logger.ts";
 import {
-  serializeStructuredTasks,
-  restoreStructuredTasks,
+  serializeTeamTasks,
+  restoreTeamTasks,
   type StructuredTask,
 } from "./structured-task-store.ts";
 
@@ -28,12 +28,15 @@ export function teamTasksPath(teamName: string, baseDir?: string): string {
 }
 
 /**
- * 把当前内存态任务快照原子落盘到团队任务文件。
+ * 把**该团队分区**的任务快照原子落盘到团队任务文件。
  * 写失败 warn 但不抛（持久化是增益，不应阻断 team 执行）。
+ *
+ * 注意只落该团队的任务（按 metadata.team 过滤）——此前用全量快照，会把主会话
+ * LLM 的 TODO 清单和其他团队的任务一起写进本团队文件，重启恢复时再灌回内存。
  */
 export function persistTeamTasks(teamName: string, baseDir?: string): void {
   const path = teamTasksPath(teamName, baseDir);
-  const snapshot = serializeStructuredTasks();
+  const snapshot = serializeTeamTasks(teamName);
   try {
     const dir = join(path, "..");
     mkdirSync(dir, { recursive: true });
@@ -47,7 +50,7 @@ export function persistTeamTasks(teamName: string, baseDir?: string): void {
 }
 
 /**
- * 从团队任务文件恢复任务到内存态。
+ * 从团队任务文件恢复**该团队分区**的任务到内存态（主会话 TODO / 其他团队不受影响）。
  * 文件不存在返回 false（无历史，全新团队）；损坏则 warn 后返回 false（降级为全新）。
  * 成功恢复返回 true。
  */
@@ -61,7 +64,7 @@ export function loadTeamTasks(teamName: string, baseDir?: string): boolean {
       getLogger().warn("TEAM_TASKS", `团队任务文件结构非法 (${teamName})，忽略`);
       return false;
     }
-    restoreStructuredTasks(parsed.tasks);
+    restoreTeamTasks(teamName, parsed.tasks);
     return true;
   } catch (err: any) {
     getLogger().warn("TEAM_TASKS", `团队任务文件读取失败 (${teamName})，降级为全新: ${err?.message ?? err}`);

@@ -35,6 +35,10 @@ function categoryColor(key: string): string {
   const map: Record<string, string> = {
     systemPrompt: theme.ui.active,
     toolSchemas: theme.text.accent,
+    // §12 P0-1 完整版新增细分类：沿用既有语义色池，不引入新色相（L1 元原则「克制点睛」）
+    mcpToolSchemas: theme.text.link,
+    agentDefs: theme.status.warning,
+    memoryFiles: theme.status.success,
     userText: theme.status.success,
     assistantText: theme.text.link,
     toolUse: theme.status.warning,
@@ -72,7 +76,7 @@ export const ContextDialog: React.FC<ContextDialogProps> = ({ onClose, getBreakd
   });
 
   const bd = getBreakdown();
-  const { categories, total, maxTokens, compactThresholdTokens, calibrated } = bd;
+  const { categories, total, maxTokens, compactThresholdTokens, completionBuffer, calibrated } = bd;
 
   // 整体网格宽度（格数），按 maxTokens 归一化——每格代表 maxTokens/GRID_WIDTH 个 token。
   const GRID_WIDTH = 40;
@@ -86,8 +90,20 @@ export const ContextDialog: React.FC<ContextDialogProps> = ({ onClose, getBreakd
   const toCompact = Math.max(0, compactThresholdTokens - total);
   const compactPct = maxTokens > 0 ? Math.round((compactThresholdTokens / maxTokens) * 100) : 0;
 
-  // 拼接彩色网格：每个分类贡献 cells 个 PROGRESS_FILLED，剩余补 PROGRESS_EMPTY。
-  const emptyCells = Math.max(0, GRID_WIDTH - usedCells);
+  // P3-2：完成缓冲区（输出预留 + 摘要预留）在网格里单独占格——它不是"已用"也不是"可用"，
+  // 而是被预留掉的空间。对齐 CC /context 的 Autocompact buffer 方块。
+  const bufferCells =
+    maxTokens > 0 && completionBuffer > 0
+      ? Math.min(
+          Math.max(0, GRID_WIDTH - usedCells),
+          Math.round((completionBuffer / maxTokens) * GRID_WIDTH),
+        )
+      : 0;
+
+  // 拼接彩色网格：分类格 → 缓冲区格 → 空闲格，三段合计恒为 GRID_WIDTH。
+  const emptyCells = Math.max(0, GRID_WIDTH - usedCells - bufferCells);
+  // 真正可用于对话的空闲空间（扣掉完成缓冲区），比裸 remaining 更诚实
+  const freeSpace = Math.max(0, remaining - completionBuffer);
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
@@ -102,6 +118,10 @@ export const ContextDialog: React.FC<ContextDialogProps> = ({ onClose, getBreakd
             </Text>
           ) : null,
         )}
+        {/* P3-2：完成缓冲区——已填充字形（表示"不可用"）但用弱化色，区别于分类的语义色 */}
+        {bufferCells > 0 ? (
+          <Text color={theme.ui.comment}>{PROGRESS_FILLED.repeat(bufferCells)}</Text>
+        ) : null}
         {emptyCells > 0 ? (
           <Text color={theme.ui.dark}>{PROGRESS_EMPTY.repeat(emptyCells)}</Text>
         ) : null}
@@ -128,8 +148,15 @@ export const ContextDialog: React.FC<ContextDialogProps> = ({ onClose, getBreakd
           <Text color={theme.text.primary}>{fmtNum(total)}</Text>
           <Text color={theme.text.secondary}> / {fmtNum(maxTokens)} tokens（{usedPct}%）</Text>
         </Row>
-        <Row label="剩余">
-          <Text color={theme.text.primary}>{fmtNum(remaining)} tokens</Text>
+        {/* P3-2：完成缓冲区单独成行——它占着窗口但不可用于对话，混进"剩余"会让用户高估余量 */}
+        {completionBuffer > 0 ? (
+          <Row label="完成预留">
+            <Text color={theme.ui.comment}>{fmtNum(completionBuffer)} tokens</Text>
+            <Text color={theme.text.secondary}>（当前回复输出 + 一次摘要）</Text>
+          </Row>
+        ) : null}
+        <Row label={completionBuffer > 0 ? "可用空闲" : "剩余"}>
+          <Text color={theme.text.primary}>{fmtNum(completionBuffer > 0 ? freeSpace : remaining)} tokens</Text>
         </Row>
         <Row label="压缩阈值">
           <Text color={theme.status.warning}>{fmtNum(compactThresholdTokens)} tokens（{compactPct}%）</Text>

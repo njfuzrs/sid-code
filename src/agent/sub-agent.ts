@@ -53,6 +53,7 @@ import { dirname, join, sep } from "path";
 import { fileURLToPath } from "url";
 import { existsSync } from "fs";
 import { withAgentCwd } from "../bootstrap/cwd-context.ts";
+import { withIncrementedDepth } from "./depth-context.ts";
 
 /** sid-code 源码根目录（src/）的绝对路径，用于 spawn 子进程时定位 headless.ts。
  *  编译二进制中 import.meta.url 指向 /$bunfs/root/...（虚拟路径），此时 headless.ts
@@ -399,17 +400,23 @@ export class SubAgent {
           ? withAgentCwd(task.cwd, () => this.executeInner(task, signal, taskId))
           : this.executeInner(task, signal, taskId);
 
-      if (this.shouldUseSpawn() && !task.cwd) {
-        try {
-          result = await this.executeSpawned(task, signal, taskId);
-          log.info("SUBAGENT", `[${task.type}] spawn 模式完成`);
-        } catch (err: any) {
-          log.warn("SUBAGENT", `spawn 模式失败，回退到进程内模式: ${err.message}`);
-          result = await this.executeInner(task, signal, taskId);
+      // P3-1：把整个子代理执行体包进「深度 +1」上下文。子代理内部若再调 sub_agent，
+      // canSpawnSubAgent 读到的就是自己那一层的深度，据此裁决放行/拒绝。
+      // spawn 模式是独立子进程（ALS 不跨进程），但子进程内也从 depth 0 起算——
+      // 其 sub_agent 工具在子进程里同样受 canSpawnSubAgent 约束，故仍不会无限套娃。
+      result = await withIncrementedDepth(async () => {
+        if (this.shouldUseSpawn() && !task.cwd) {
+          try {
+            const spawned = await this.executeSpawned(task, signal, taskId);
+            log.info("SUBAGENT", `[${task.type}] spawn 模式完成`);
+            return spawned;
+          } catch (err: any) {
+            log.warn("SUBAGENT", `spawn 模式失败，回退到进程内模式: ${err.message}`);
+            return await this.executeInner(task, signal, taskId);
+          }
         }
-      } else {
-        result = await runInner();
-      }
+        return await runInner();
+      });
 
       // 前台子代理（runSync，非 _isAsync）：结果已由 tool.ts runSync 作为 tool_result 返回并
       // 渲染成工具卡片，此处不再发 <task-notification>（否则双投递，见根治方案 §5.1）。
@@ -1048,13 +1055,24 @@ export class SubAgent {
       //   • 未指定 effort → 关 thinking（SIDE_CALL_NO_THINK），子代理默认不思考。
       // 显式下发 enabled:false 对不支持思考开关的模型是 no-op（anthropic 忽略；openai.ts 仅对
       // DeepSeek/GLM 下发 thinking:{type:disabled}），不会引发 400，安全。
+      // §12 P2-1 复审：思考预算上限（SID_CODE_MAX_THINKING_TOKENS / MAX_THINKING_TOKENS / settings）
+      // 对子代理同样生效。此前子代理直接手写 thinking/reasoningEffort、绕过 effort.ts 的钳制层，
+      // 用户设了上限却只约束主循环——子代理（尤其并发派多个）才是思考 token 的大头，属于
+      // 「配置了但对最花钱的路径不起作用」。这里按上限把档位降下来，与主循环 adaptive 路径同一映射。
+      const { getMaxThinkingTokensOverride, mapThinkingCapToEffort } = await import("../llm/effort.ts");
+      const thinkingCap = getMaxThinkingTokensOverride();
+      const cappedEffort = thinkingCap !== null ? mapThinkingCapToEffort(thinkingCap) : null;
       const sendParamsExtra: Partial<SendParams> =
         task.effort !== undefined
           ? {
               thinking: { enabled: true, budgetTokens: 0 },
-              reasoningEffort: (task.effort === "xhigh" || task.effort === "max"
+              // 上限映射出更低档位时取更低者（只降不升，与 effort.ts applyAnthropicNative 一致）
+              reasoningEffort: ((task.effort === "xhigh" || task.effort === "max") &&
+              cappedEffort === null
                 ? "max"
                 : "high") as "high" | "max",
+              // 透传上限，供 provider 侧 effort 映射层做精确钳制（manual 线格式模型）
+              maxThinkingTokens: thinkingCap ?? undefined,
             }
           : { thinking: SIDE_CALL_NO_THINK };
 

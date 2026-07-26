@@ -234,6 +234,12 @@ export type HistoryItemTaskNotification = HistoryItemBase & {
   result?: string;
   /** 完整输出落盘文件路径（供「展开看完整」指引） */
   outputFile?: string;
+  /**
+   * P1-2：子代理类型（如 explore / 自定义 agent 名）。用于给摘要行的 agent 名标一个
+   * 稳定的身份色（frontmatter 声明色优先，否则按类型哈希分配），多代理并行时便于区分。
+   * 缺省则不着色，保持原样。
+   */
+  agentType?: string;
 };
 
 // ── 联合类型 ──

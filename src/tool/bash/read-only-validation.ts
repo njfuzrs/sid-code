@@ -100,6 +100,46 @@ export function isReadOnlyGitConfig(args: string[]): boolean {
   return positional.length <= 1;
 }
 
+/**
+ * 「安全」的 git 全局选项——出现在子命令之前、本身无副作用、剥离后不改变只读语义。
+ *
+ * 明确**不含** `-c` / `--config-env` / `--exec-path`：它们能注入配置（`core.pager`、
+ * `alias.*`、`core.sshCommand`）从而借只读子命令执行任意代码，必须保持「非只读」判定。
+ */
+const SAFE_GIT_GLOBAL_BOOL_OPTS = new Set([
+  "-P", "--no-pager", "--paginate", "--bare", "--no-replace-objects",
+  "--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--icase-pathspecs",
+  "--no-optional-locks", "--no-lazy-fetch", "--no-advice",
+]);
+/** 安全的带值全局选项（值可能是同 token 的 `--opt=v` 或下一个 token）。 */
+const SAFE_GIT_GLOBAL_VALUE_OPTS = new Set(["-C", "--git-dir", "--work-tree", "--namespace"]);
+
+/**
+ * 剥离 git 命令**子命令之前**的安全全局选项，返回以子命令开头的参数数组。
+ *
+ * @param args `git` 之后的全部参数
+ * @returns 剥离后的参数数组；遇到不可信全局选项（`-c` 等）返回 `null`（调用方判非只读）
+ */
+export function stripSafeGitGlobalOptions(args: string[]): string[] | null {
+  let i = 0;
+  for (; i < args.length; i++) {
+    const tok = args[i];
+    if (!tok || !tok.startsWith("-")) break; // 到达子命令
+    const eq = tok.indexOf("=");
+    const name = eq > 0 ? tok.slice(0, eq) : tok;
+    if (SAFE_GIT_GLOBAL_VALUE_OPTS.has(name)) {
+      if (eq < 0) i++; // 值在下一个 token
+      continue;
+    }
+    if (SAFE_GIT_GLOBAL_BOOL_OPTS.has(name)) continue;
+    // `git --version` / `git --help` 等：本身就是「子命令位」的 flag，交给下游判定
+    if (name === "--version" || name === "--help" || name === "-v" || name === "-h") break;
+    // 其余以 - 开头的全局选项（含 -c / --config-env / --exec-path / 未知项）→ 不可信
+    return null;
+  }
+  return args.slice(i);
+}
+
 /** 已知的危险 Git 子命令 */
 const DANGEROUS_GIT_SUBCOMMANDS = new Set([
   "push", "reset", "rebase", "merge", "cherry-pick",
@@ -156,12 +196,22 @@ export function isReadOnlyCommand(command: string): boolean {
 
     // Git 子命令检查
     if (cmd === "git") {
-      const subCmd = args[0];
-      if (!subCmd) continue; // 裸 git 是只读的
+      // git 允许在子命令前插入全局选项（`git -C dir log`、`git --no-pager diff`）。
+      // 不剥离会把 "-C" 当子命令 → 未知子命令 → 一律判非只读，纯读命令白弹确认。
+      //
+      // ⚠️ 安全边界：**只剥离无副作用的全局选项**。`-c k=v` / `--config-env` / `--exec-path`
+      // 刻意**不剥离**——`-c core.pager='sh -c evil'`、`-c alias.x='!evil'` 能借只读子命令
+      // 执行任意代码，必须落确认（保持 return false）。
+      const gitArgs = stripSafeGitGlobalOptions(args);
+      if (gitArgs === null) return false; // 命中不可信全局选项（-c 等）→ 非只读
+      const subCmd = gitArgs[0];
+      if (!subCmd) continue; // 裸 git（或仅剩安全全局选项）是只读的
+      // `git --version` / `git --help`：纯信息查询，此前落到「未知子命令」被判非只读，白弹确认
+      if (subCmd === "--version" || subCmd === "--help" || subCmd === "-v" || subCmd === "-h") continue;
       if (DANGEROUS_GIT_SUBCOMMANDS.has(subCmd)) return false;
       // P0-1：git config 按 flag 细分读写（写操作含 core.hooksPath 劫持不可判只读）
       if (subCmd === "config") {
-        if (!isReadOnlyGitConfig(args.slice(1))) return false;
+        if (!isReadOnlyGitConfig(gitArgs.slice(1))) return false;
         continue;
       }
       if (!READ_ONLY_GIT_SUBCOMMANDS.has(subCmd)) return false; // 未知子命令默认非只读

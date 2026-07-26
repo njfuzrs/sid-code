@@ -9,7 +9,7 @@
 import { describe, test, expect } from "bun:test";
 import { PermissionChecker } from "../../src/permission/checker.ts";
 import { defaultConfig } from "../../src/config/config.ts";
-import { matchGitDanger } from "../../src/permission/git-danger-patterns.ts";
+import { matchGitDanger, normalizeGitGlobalOptions } from "../../src/permission/git-danger-patterns.ts";
 
 async function check(command: string, cfgOverride: Record<string, unknown> = {}) {
   const checker = new PermissionChecker({ ...defaultConfig(), ...cfgOverride });
@@ -115,5 +115,59 @@ describe("P0-2 危险 git 变体硬拦截", () => {
     const r = await check("ls && git push --force origin main");
     expect(r.allowed).toBe(false);
     expect(r.needsConfirmation).toBe(true);
+  });
+});
+
+/**
+ * git 全局选项绕过（安全回归）：git 允许在子命令**之前**插入 `-c k=v` / `-C dir` /
+ * `--no-pager` 等全局选项，这会把子命令与 `git` 撑开，使 `\bgit\s+<子命令>` 正则全部失配。
+ * 修复前 `git -c core.pager=cat reset --hard` 在 yesMode/acceptEdits 下被静默放行。
+ */
+describe("git 全局选项不能绕过危险检测", () => {
+  test("normalizeGitGlobalOptions 剥离全局选项", () => {
+    expect(normalizeGitGlobalOptions("git -c core.pager=cat reset --hard")).toBe("git reset --hard");
+    expect(normalizeGitGlobalOptions("git -C /tmp push --force origin main")).toBe("git push --force origin main");
+    expect(normalizeGitGlobalOptions("git --no-pager clean -fd")).toBe("git clean -fd");
+    expect(normalizeGitGlobalOptions("git --git-dir=/tmp/.git clean -fd")).toBe("git clean -fd");
+    expect(normalizeGitGlobalOptions("git -c a=b -C /d -P stash drop")).toBe("git stash drop");
+    expect(normalizeGitGlobalOptions("ls && git -c x=y reset --hard")).toBe("ls && git reset --hard");
+  });
+
+  test("normalizeGitGlobalOptions 不吞子命令自身 flag", () => {
+    expect(normalizeGitGlobalOptions("git commit --no-verify")).toBe("git commit --no-verify");
+    expect(normalizeGitGlobalOptions("git push --force")).toBe("git push --force");
+    expect(normalizeGitGlobalOptions("git reset --hard")).toBe("git reset --hard");
+    // 无全局选项时原样返回（零开销路径）
+    expect(normalizeGitGlobalOptions("git status")).toBe("git status");
+  });
+
+  test("matchGitDanger 覆盖全局选项变体", () => {
+    expect(matchGitDanger("git -c core.pager=cat reset --hard")?.name).toBe("git 硬重置");
+    expect(matchGitDanger("git -C /tmp push --force origin main")?.name).toBe("git 强制推送 main/master");
+    expect(matchGitDanger("git --no-pager clean -fd")?.name).toBe("git 清理未跟踪文件");
+  });
+
+  test("yesMode 下 git -c ... reset --hard 仍需确认（此前被放行）", async () => {
+    const r = await check("git -c core.pager=cat reset --hard HEAD~1", { yesMode: true });
+    expect(r.allowed).toBe(false);
+    expect(r.needsConfirmation).toBe(true);
+  });
+
+  test("acceptEdits 下 git -C dir push --force 仍需确认（此前被放行）", async () => {
+    const r = await check("git -C /tmp push --force origin main", { permissionMode: "acceptEdits" });
+    expect(r.allowed).toBe(false);
+    expect(r.needsConfirmation).toBe(true);
+  });
+
+  test("复合命令 + 全局选项组合仍命中", async () => {
+    const r = await check("ls && git -c x=y clean -fdx", { yesMode: true });
+    expect(r.allowed).toBe(false);
+    expect(r.needsConfirmation).toBe(true);
+  });
+
+  test("安全 git 命令不因归一化误报", () => {
+    expect(matchGitDanger("git -C /tmp status")).toBeNull();
+    expect(matchGitDanger("git --no-pager log --oneline")).toBeNull();
+    expect(matchGitDanger("git --version")).toBeNull();
   });
 });

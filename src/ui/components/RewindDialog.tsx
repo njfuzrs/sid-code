@@ -18,22 +18,26 @@ import { theme } from "../semantic-colors.ts";
 import { BaseSelectionList, type SelectionListItem } from "./shared/BaseSelectionList.tsx";
 import { ARROW_PROMPT } from "../constants/figures.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
-import type { RewindPointInfo, RewindResultInfo } from "../App.tsx";
+import type { RewindPointInfo, RewindResultInfo, RewindUIMode } from "../App.tsx";
 
 interface RewindDialogProps {
   onClose: () => void;
   getRewindPoints?: () => RewindPointInfo[];
-  onRewind?: (
-    id: number,
-    mode: "conversation" | "conversation-and-code",
-  ) => Promise<RewindResultInfo | null>;
+  onRewind?: (id: number, mode: RewindUIMode) => Promise<RewindResultInfo | null>;
 }
 
 interface PointItem extends SelectionListItem<number> {
   point: RewindPointInfo;
 }
 
-type ModeValue = "conversation" | "conversation-and-code";
+type ModeValue = RewindUIMode;
+
+/** 模式中文标签（结果回显用，与选项 label 同源避免两处漂移）。 */
+const MODE_LABELS: Record<RewindUIMode, string> = {
+  code: "仅代码",
+  conversation: "仅对话",
+  "conversation-and-code": "对话 + 代码",
+};
 interface ModeItem extends SelectionListItem<ModeValue> {
   label: string;
   desc: string;
@@ -88,15 +92,23 @@ export const RewindDialog: React.FC<RewindDialogProps> = ({ onClose, getRewindPo
 
   // 回退结果回显。
   if (result) {
-    const modeText = result.mode === "conversation-and-code" ? "对话 + 代码" : "仅对话";
+    const modeText = MODE_LABELS[result.mode];
+    const touchedCode = result.mode === "code" || result.mode === "conversation-and-code";
+    const touchedConversation = result.mode !== "code";
     return (
       <Box flexDirection="column" borderStyle="round" borderColor={theme.status.success} paddingX={1} paddingY={0}>
         <Text bold color={theme.status.success}>已回退（{modeText}）</Text>
         <Box marginTop={1} flexDirection="column">
-          <Text color={theme.text.secondary}>丢弃了 {result.messagesDropped} 条消息</Text>
-          {result.mode === "conversation-and-code" && (
+          {touchedConversation && (
+            <Text color={theme.text.secondary}>丢弃了 {result.messagesDropped} 条消息</Text>
+          )}
+          {touchedCode && (
             result.fileRestoreSkipped
-              ? <Text color={theme.status.warning}>无文件快照可回滚（仅回退了对话）</Text>
+              ? (
+                <Text color={theme.status.warning}>
+                  {touchedConversation ? "无文件快照可回滚（仅回退了对话）" : "无文件快照可回滚（未做任何改动）"}
+                </Text>
+              )
               : <Text color={theme.text.secondary}>回滚了 {result.filesRestored} 个文件</Text>
           )}
         </Box>
@@ -109,11 +121,19 @@ export const RewindDialog: React.FC<RewindDialogProps> = ({ onClose, getRewindPo
 
   // 阶段 2：模式选择。
   if (selectedPoint) {
+    // 三档（对齐 CC Esc+Esc 菜单）：代码 / 对话 / 两者。
+    // 「仅代码」放第一档——最常用：留着上下文不重说，只撤销模型改坏的文件。
     const modeItems: ModeItem[] = [
+      {
+        value: "code",
+        key: "code-only",
+        label: "仅代码",
+        desc: selectedPoint.hasSnapshot ? "只把文件回滚到该轮快照，保留对话" : "该轮无文件快照，无可回滚内容",
+      },
       { value: "conversation", key: "conv", label: "仅对话", desc: "截断对话到该轮之前，不动文件" },
       {
         value: "conversation-and-code",
-        key: "code",
+        key: "both",
         label: "对话 + 代码",
         desc: selectedPoint.hasSnapshot ? "同时把文件回滚到该轮快照" : "该轮无文件快照，将仅回退对话",
       },
@@ -144,7 +164,7 @@ export const RewindDialog: React.FC<RewindDialogProps> = ({ onClose, getRewindPo
             onSelect={handleModeSelect}
             isFocused={!busy}
             showNumbers={false}
-            maxItemsToShow={2}
+            maxItemsToShow={modeItems.length}
             selectedIndicator={ARROW_PROMPT}
             renderItem={(item, { isSelected }) => (
               <Box>

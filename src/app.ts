@@ -72,8 +72,8 @@ import { readFile } from "fs/promises";
 import { resolve, extname, join } from "path";
 import { sidPaths } from "./config/paths.ts";
 import { deriveTaskTitle } from "./ui/utils/task-title.ts";
-import { recordSideCall, setSideCostCalculator, setSideCostObserver } from "./trace/side-call-sink.ts";
-import { setGitOperationObserver, type GitOperationEvent } from "./tool/git-operation-tracking.ts";
+import { recordSideCall, setSideCostCalculator, setSideCostObserver, getSideStats } from "./trace/side-call-sink.ts";
+import { setGitOperationObserver, resetGitOperationStats, type GitOperationEvent } from "./tool/git-operation-tracking.ts";
 import { withSideCallDeadline } from "./llm/side-call-timeout.ts";
 import { resolveSideCallTimeouts } from "./config/network-profile.ts";
 
@@ -273,9 +273,15 @@ export class App {
   private resumedSessionId: string | null = null;
   /** P0-2：--fork-session 时记录分叉来源会话 id（非 null 表示当前是分叉会话，新建 jsonl 并把源 id 写入 parentUuid） */
   private forkedFromSessionId: string | null = null;
+  /** P1-G2a：分叉时源会话的完整消息历史，doInit 里 startSession 之后拷进新 jsonl。
+   *  只在 --fork-session 路径设置；拷贝完即清空，避免长会话常驻一份历史副本。 */
+  private forkSourceMessages: import("./llm/types.ts").Message[] | null = null;
   /** P1-7：本会话累积改动过的文件集合（去重），供 recordFileChanges 落盘 file_changes 快照。
    *  resume 时从被恢复会话的 file_changes metadata 预填，续做时继续累积。 */
   private changedFiles: Set<string> = new Set();
+  /** P2-1：本会话累积的 checkpoint 快照 id 序列（去重、按创建顺序），随 file_changes 落盘。
+   *  resume 时从被恢复会话的 file_changes.snapshotIds 预填，使跨会话仍能把文件集反查回快照。 */
+  private changedFileSnapshotIds: string[] = [];
   /**
    * GAP-01：当前 turn 的流式工具预执行结果缓存（tool_use_id → SingleToolOutcome）。
    * processStream 在流式回调中对并发安全工具抢先执行，结果暂存于此；随后 executeTools
@@ -371,11 +377,17 @@ export class App {
     this.sessionIdForCompact = sessionId;
     // 上下文窗口按模型实际大小初始化（deepseek-v4 为 1M，Claude 200K，gpt-4o 128K）。
     // 硬编码 200000 会让 deepseek 的 contextPercent 高估 5 倍、过早触发自动压缩。
-    const ctxWindow = new TokenEstimator().getContextLimit(opts.config.model, opts.config.availableModels);
+    const estimator = new TokenEstimator();
+    const ctxWindow = estimator.getContextLimit(opts.config.model, opts.config.availableModels);
     // §12 P1-1：env（SID_CODE_AUTOCOMPACT_PCT / CLAUDE_AUTOCOMPACT_PCT_OVERRIDE）解析出的使用率
     // 上限透传为 compactThreshold，接活这个此前从未被注入的死参数（见 manager 构造）。
     const autoCompactPct = resolveAutoCompactPctOverride() ?? undefined;
-    this.ctxMgr = new ContextManager({ maxTokens: ctxWindow, compactThreshold: autoCompactPct });
+    this.ctxMgr = new ContextManager({
+      maxTokens: ctxWindow,
+      compactThreshold: autoCompactPct,
+      // §12 P3-2：完成缓冲区的输出预留分量（给当前 turn 的输出留空间，避免压缩打断任务）
+      maxOutputTokens: estimator.getMaxOutputTokens(opts.config.model, opts.config.availableModels),
+    });
     this.ctxMgr.setSessionId(sessionId);
     // §3.3：注入 Plan 正文提供方——压缩时把活跃 Plan 正文重注入消息历史。
     // 仅在 plan 执行/规划阶段返回正文，否则返回 null（不注入）。
@@ -441,6 +453,10 @@ export class App {
     setSideCostObserver((costUSD) => this.sessionState.addSideCost(costUSD));
     // P2-3：git 操作使用度量观察者。bash 成功执行 commit/push/PR 创建等操作后，
     // 把事件写入 trace 的 events.jsonl（git_operation 事件），供后续可观测性分析。
+    //
+    // 计数器是模块级单例：同一进程内新建/恢复会话必须先清零，否则上一个会话的
+    // commit/push 计数会串到新会话的 /stats 里（度量污染）。
+    resetGitOperationStats();
     setGitOperationObserver((event: GitOperationEvent) => {
       try {
         this.traceCollector?.recordCustomEvent?.("git_operation", {
@@ -837,12 +853,31 @@ export class App {
     this.refreshToolSchemaTokens();
   }
 
-  /** 重算并注入工具定义的真实 token 数（EST-4）。工具池变化（含 MCP 连接）后可重复调用。 */
+  /**
+   * 重算并注入工具定义的真实 token 数（EST-4）。工具池变化（含 MCP 连接）后可重复调用。
+   *
+   * §12 P0-1 完整版：同时把 MCP 工具（mcp__ 前缀）的 schema token 单独记账注入，
+   * 供 /context 把「工具定义」拆成内置/MCP 两类——MCP 是上下文膨胀主因，用户需要看清它的占比。
+   */
   refreshToolSchemaTokens(): void {
     try {
       const defs = this.toolRegistry.definitions();
-      const tokens = new TokenEstimator().estimateTools(defs);
-      this.ctxMgr.setToolSchemaTokens(tokens);
+      const estimator = new TokenEstimator();
+      this.ctxMgr.setToolSchemaTokens(estimator.estimateTools(defs));
+      // MCP 工具按 mcp__ 前缀识别（与 ToolRegistry 的分桶口径一致，见 registry.ts:180）
+      const mcpDefs = defs.filter((d) => d.name.startsWith("mcp__"));
+      this.ctxMgr.setMcpToolSchemaTokens(
+        mcpDefs.length > 0 ? estimator.estimateTools(mcpDefs) : 0,
+      );
+      // §12 P0-1：子代理定义清单（渲染在 sub_agent 工具 description 里）单独记账 →
+      // /context 的「自定义代理」类别。它是工具定义总量的子集，不影响总量与压缩决策。
+      // 文本由 agent/tool.ts 的 renderAgentTypeLines 提供（与 description 同源，不会漂移）。
+      if (defs.some((d) => d.name === "sub_agent")) {
+        const { renderAgentTypeLines } = require("./agent/tool.ts");
+        this.ctxMgr.setAgentDefinitionTokens(estimator.estimateText(renderAgentTypeLines()));
+      } else {
+        this.ctxMgr.setAgentDefinitionTokens(0);
+      }
     } catch {
       // 估算失败不致命：ContextManager 回退到 toolCount×80 粗估
     }
@@ -921,20 +956,30 @@ export class App {
     }
   }
 
-  /** 注入权限检查器到子代理类工具（SubAgentTool / SkillTool / BundledSkillTool）。
+  /** 注入权限检查器到子代理类工具（SubAgentTool / SkillMetaTool / BundledSkillTool）。
    *  子代理使用 dontAsk 语义的 checker：危险命令/safetyCheck 拦截，ask→deny。 */
+  /**
+   * P0-3：取合并后的**原始**权限规则（含 `Skill(<name>)` 形态）。
+   *
+   * 供两处消费：SkillMetaTool（模型路径）与 CommandContext.permissionRules（用户斜杠路径）。
+   * 必须是原始规则而非子代理 checker——后者 dontAsk 语义会把 ask 直接降级为 deny，
+   * 导致「需确认」的 skill 在用户主动调用时被静默拒绝。
+   */
+  private getRawPermissionRules(): import("./permission/types.ts").PermissionRule | undefined {
+    const checkerWithRules = this.permissionChecker as unknown as {
+      getRules?: () => import("./permission/types.ts").PermissionRule | null;
+    } | null;
+    if (!checkerWithRules || typeof checkerWithRules.getRules !== "function") return undefined;
+    return checkerWithRules.getRules() ?? undefined;
+  }
+
   private wireToolPermissionChecker(): void {
     if (!this.permissionChecker) return;
     // 延迟导入工厂函数（避免循环依赖）
     const { createSubAgentChecker } = require("./permission/sub-agent-checker.ts");
     const subChecker = createSubAgentChecker(this.permissionChecker);
     // P0-3：抽取合并后的权限规则，供 skill 元工具解析 Skill(name) 规则。
-    const checkerWithRules = this.permissionChecker as unknown as {
-      getRules?: () => import("./permission/types.ts").PermissionRule | null;
-    };
-    const rawRules = typeof checkerWithRules.getRules === "function"
-      ? checkerWithRules.getRules()
-      : null;
+    const rawRules = this.getRawPermissionRules();
     for (const tool of this.toolRegistry.all()) {
       const maybe = tool as {
         setPermissionChecker?: (c: import("./permission/types.ts").Checker) => void;
@@ -1219,8 +1264,12 @@ export class App {
     // 同步上下文窗口：新模型窗口可能与旧模型不同（如 200k↔1M）。
     // 不更新会让 compact 决策与 Footer 上下文百分比沿用旧窗口作分母而失真。
     try {
-      const newWindow = new TokenEstimator().getContextLimit(model, this.config.availableModels);
-      this.ctxMgr.setMaxTokens(newWindow);
+      const est = new TokenEstimator();
+      // §12 P3-2：窗口与输出上限一起同步——完成缓冲区的输出预留分量依赖新模型的 maxOutputTokens。
+      this.ctxMgr.setMaxTokens(
+        est.getContextLimit(model, this.config.availableModels),
+        est.getMaxOutputTokens(model, this.config.availableModels),
+      );
     } catch { /* 窗口解析失败不影响切换，沿用旧窗口 */ }
     this.tuiStateUpdater?.({ model });
     // 模型变了，effort/thinking 能力可能随之变（如换到不支持 max 的模型），重推展示态。
@@ -1698,6 +1747,20 @@ export class App {
     }
   }
 
+  /**
+   * §12 P2-4 复审：解析压缩相关的会话级落盘目录（同步版，供构造 AppContext 时取值）。
+   * 与 autoCompact 内的异步取法同源（ensureSessionTempDir(sessionId, "compact")），
+   * 失败返回 undefined —— 落盘只是诊断增强，拿不到目录不影响压缩本身。
+   */
+  private resolveSessionDir(): string | undefined {
+    try {
+      const { ensureSessionTempDir } = require("./utils/temp-dir.ts");
+      return ensureSessionTempDir(this.sessionIdForCompact, "compact");
+    } catch {
+      return undefined;
+    }
+  }
+
   /** 自动压缩，委托给 auto-compact 模块（返回压缩结果，静默-9：truncated=有损降级） */
   private async autoCompact(): Promise<"summarized" | "truncated" | "skipped" | void> {
     const { autoCompact: impl } = await import("./query/auto-compact.ts");
@@ -1928,7 +1991,13 @@ export class App {
 
       // 构建系统提示词（委托给 init-helpers）
       const { buildInitialSystemPrompt } = await import("./query/init-helpers.ts");
-      systemPrompt = await buildInitialSystemPrompt(this.config, this.toolRegistry.all(), denyRulesSummary);
+      systemPrompt = await buildInitialSystemPrompt(
+        this.config,
+        this.toolRegistry.all(),
+        denyRulesSummary,
+        // §12 P0-1：记忆/CLAUDE.md 分段记账 → /context 独立类别
+        (s) => this.ctxMgr.setMemoryTokens(s.memory),
+      );
     } else {
       // 预置 systemPrompt 分支：跳过附件构建，但多来源权限规则仍需加载（原 initRules 在此之外，
       // 重排后这里补上，避免预置 prompt 时规则不生效的回归）。
@@ -1982,6 +2051,31 @@ export class App {
             ? `会话持久化已启动（fork 自 ${this.forkedFromSessionId}）: ${this.sessionState.sessionId}`
             : `会话持久化已启动: ${this.sessionState.sessionId}`,
         );
+        // P1-G2a：分叉会话把源历史**落盘**进新 jsonl（重新盖 uuid 链戳），使新会话成为
+        // 一份自洽、可再次 resume / 再次分叉的独立副本。必须紧跟 startSession 之后、
+        // 任何新消息写入之前——否则源历史会排在本轮新消息后面，时序错乱。
+        if (this.forkedFromSessionId && this.forkSourceMessages?.length) {
+          const srcTailUuid = this.sessionStore?.readTailUuidOf(this.forkedFromSessionId) ?? null;
+          this.sessionStore?.forkHistoryFrom(
+            this.forkedFromSessionId,
+            this.forkSourceMessages,
+            srcTailUuid,
+          );
+        }
+        // 拷贝完即释放（长会话不必常驻一份历史副本）。
+        this.forkSourceMessages = null;
+        // P1-G2b：继承源会话的 checkpoint 历史，让新会话 /undo / /restore 够得到分叉前的编辑。
+        // 分叉会话的 logical id 是全新的 → checkpoint 目录本为空目录（此前的真缺口）。
+        // 深拷贝索引，两会话此后独立演进；失败只告警，退化为空回退历史。
+        if (this.forkedFromSessionId) {
+          try {
+            const { getCheckpointManager } = await import("./checkpoint/manager.ts");
+            const cpMgr = await getCheckpointManager(this.getLogicalSessionId(), this.config.checkpoint);
+            await cpMgr.inheritFrom(this.forkedFromSessionId);
+          } catch (e) {
+            log.warn("APP", `checkpoint 继承失败（不阻断）: ${(e as Error)?.message}`);
+          }
+        }
       }
       // P2-5 --name/-n：把会话显示名写入元数据，供 --list-sessions / 会话浏览器辨识。
       if (this.config.sessionName) {
@@ -2103,7 +2197,7 @@ export class App {
         this.applyProjectRules(newRules);
         // 3. 重建系统提示词
         const { buildSystemPrompt } = await import("./config/system-prompt.ts");
-        const { collectSkillListingEntries } = await import("./skill/tool.ts");
+        const { collectSkillListingEntries } = await import("./skill/listing.ts");
         // M11：记忆走索引指针路径（memorySystemPrompt），不再用 <memory> 全文摘要。
         let memorySystemPrompt: string | undefined;
         try {
@@ -2149,6 +2243,8 @@ export class App {
             this.permissionChecker && typeof (this.permissionChecker as any).describeDenyRules === "function"
               ? (this.permissionChecker as any).describeDenyRules() || undefined
               : undefined,
+          // §12 P0-1：CLAUDE.md 变更后记忆类占用会变，重建时同步刷新分段记账
+          onSectionTokens: (s) => this.ctxMgr.setMemoryTokens(s.memory),
           // 不再写死 maxTokens：交由 buildSystemPrompt 按模型 contextWindow 的 90% 动态推导
         });
         this.ctxMgr.setSystemPrompt(newPrompt);
@@ -2564,7 +2660,7 @@ export class App {
     const log = getLogger();
     try {
       const { buildSystemPrompt } = await import("./config/system-prompt.ts");
-      const { collectSkillListingEntries } = await import("./skill/tool.ts");
+      const { collectSkillListingEntries } = await import("./skill/listing.ts");
       // M11：记忆走索引指针路径（memorySystemPrompt），不再用 <memory> 全文摘要。
       let memorySystemPrompt: string | undefined;
       try {
@@ -2609,6 +2705,8 @@ export class App {
           this.permissionChecker && typeof (this.permissionChecker as any).describeDenyRules === "function"
             ? (this.permissionChecker as any).describeDenyRules() || undefined
             : undefined,
+        // §12 P0-1：运行时偏好变更（/language 等）后同步刷新记忆分段记账
+        onSectionTokens: (s) => this.ctxMgr.setMemoryTokens(s.memory),
       });
       this.ctxMgr.setSystemPrompt(newPrompt);
       log.info("APP", `系统提示词已重建（运行时偏好变更）: ${newPrompt.length} 字符`);
@@ -2870,9 +2968,14 @@ export class App {
     // parentUuid 记录源会话 id，便于溯源。
     if (this.config.forkSession) {
       this.forkedFromSessionId = sessionData.id;
+      // P1-G2a：留存源历史，doInit 里 startSession 之后 forkHistoryFrom 落盘进新 jsonl。
+      // 此前只注入 ctxMgr（内存），新 jsonl 从空起写——分叉会话无法再被 resume 读到源历史。
+      // 用切片副本，避免后续 ctxMgr 的截断/压缩操作影响待拷贝内容。
+      this.forkSourceMessages = sessionData.messages.slice();
       log.info(
         "APP",
-        `会话分叉（--fork-session）：源 ${sessionData.id} → 新会话 ${this.sessionState.sessionId}（历史已拷入，源会话不改动）`,
+        `会话分叉（--fork-session）：源 ${sessionData.id} → 新会话 ${this.sessionState.sessionId}`
+          + `（${this.forkSourceMessages.length} 条历史将拷入新 jsonl，源会话不改动）`,
       );
     } else {
       this.resumedSessionId = sessionData.id;
@@ -2918,8 +3021,12 @@ export class App {
           try {
             const { resolveCurrentModelConfig } = require("./config/config.ts");
             resolveCurrentModelConfig(this.config);
-            const newWindow = new TokenEstimator().getContextLimit(setting.model, this.config.availableModels);
-            this.ctxMgr.setMaxTokens(newWindow);
+            const est = new TokenEstimator();
+            // §12 P3-2：窗口与输出上限一起同步（完成缓冲区依赖 maxOutputTokens）
+            this.ctxMgr.setMaxTokens(
+              est.getContextLimit(setting.model, this.config.availableModels),
+              est.getMaxOutputTokens(setting.model, this.config.availableModels),
+            );
           } catch { /* 模型/窗口解析失败沿用旧值，不阻断恢复 */ }
           log.info("APP", `恢复 agent 模型: ${prev} → ${setting.model}`);
         }
@@ -2975,7 +3082,20 @@ export class App {
     let fileChangesNote: string | undefined;
     if (sessionData.metadata?.["file_changes"]) {
       try {
-        const fc = sessionData.metadata["file_changes"] as { files?: string[]; count?: number };
+        const fc = sessionData.metadata["file_changes"] as {
+          files?: string[];
+          count?: number;
+          snapshotIds?: string[];
+        };
+        // P2-1：预填快照 id 序列，使 resume 后新落的 file_changes 仍带完整历史锚点
+        // （否则续做时序列从空开始，分叉前那批快照的 id 在新记录里丢失）。
+        if (Array.isArray(fc.snapshotIds)) {
+          for (const sid of fc.snapshotIds) {
+            if (typeof sid === "string" && sid && !this.changedFileSnapshotIds.includes(sid)) {
+              this.changedFileSnapshotIds.push(sid);
+            }
+          }
+        }
         const files = Array.isArray(fc.files) ? fc.files.filter((f) => typeof f === "string") : [];
         if (files.length > 0) {
           for (const f of files) this.changedFiles.add(f);
@@ -3435,8 +3555,13 @@ export class App {
    * file_changes metadata 快照（覆盖式，恢复时取最后一条即完整集合）。只存「文件路径 +
    * 最近工具名 + 计数」，不存 diff（完整内容在 CheckpointManager，避免 JSONL 膨胀）。
    * 恢复时 restoreSession 读取此快照注入上下文，让模型知道之前改过哪些文件。
+   *
+   * P2-1 补齐：连带记录 `lastSnapshotId`（最近一批改动对应的 checkpoint 快照 id）与
+   * `snapshotIds`（本会话累积的快照 id 序列）。此前 file_changes 只有文件名，resume 之后
+   * 拿不到「这批改动对应哪个快照」，跨会话无法把文件集反查回可回退的快照——现在
+   * `/restore <id>` 与 rewind 面板在 resume 后也有可用锚点。
    */
-  private recordFileChanges(files: string[], toolName: string): void {
+  private recordFileChanges(files: string[], toolName: string, snapshotId?: string): void {
     if (!this.sessionStore || files.length === 0) return;
     let added = false;
     for (const f of files) {
@@ -3445,14 +3570,24 @@ export class App {
         added = true;
       }
     }
-    // 未新增文件（都是重复修改已记录的文件）也刷新 lastTool，但仅在有新增时才落盘，
-    // 避免同一文件反复编辑产生大量冗余 metadata 记录。
-    if (!added) return;
+    // 快照 id 序列去重累积（同一快照 id 不重复记录）。
+    let snapshotAdded = false;
+    if (snapshotId && !this.changedFileSnapshotIds.includes(snapshotId)) {
+      this.changedFileSnapshotIds.push(snapshotId);
+      snapshotAdded = true;
+    }
+    // 未新增文件（都是重复修改已记录的文件）也刷新 lastTool，但仅在有新增（文件或快照）时
+    // 才落盘，避免同一文件反复编辑产生大量冗余 metadata 记录。
+    if (!added && !snapshotAdded) return;
     try {
       this.sessionStore.appendMetadata("file_changes", {
         files: [...this.changedFiles],
         lastTool: toolName,
         count: this.changedFiles.size,
+        ...(snapshotId ? { lastSnapshotId: snapshotId } : {}),
+        ...(this.changedFileSnapshotIds.length > 0
+          ? { snapshotIds: [...this.changedFileSnapshotIds] }
+          : {}),
       });
     } catch (e) {
       getLogger().warn("APP", `文件修改摘要落盘失败（不阻断）: ${(e as Error)?.message}`);
@@ -3946,6 +4081,27 @@ export class App {
       this.sessionStore.appendMetadata("usage_stats", this.sessionState.serializeUsageSnapshot());
     } catch (e) {
       getLogger().warn("APP", `用量统计落盘失败（不阻断）: ${(e as Error)?.message}`);
+    }
+    // P1-G3 补齐：影子调用（标题生成 / 子代理等辅助 LLM 调用）的用量此前只进 trajectory，
+    // 不进会话 jsonl——resume 后这部分 token/费用在会话维度彻底不可见，「省了多少」测不准
+    // （北极星「更省」的采集缺口之一）。这里覆盖式落一条 side_call_stats，与 usage_stats
+    // 同频（每轮一条）。只落聚合量 + byLabel 分布，不落 details 全量（避免 JSONL 膨胀）。
+    try {
+      const s = getSideStats();
+      // 无影子调用时不落盘（避免每轮写一条全零记录）。
+      if (s.apiCalls > 0) {
+        this.sessionStore.appendMetadata("side_call_stats", {
+          apiCalls: s.apiCalls,
+          costUSD: s.costUSD,
+          tokensSent: s.tokensSent,
+          tokensReceived: s.tokensReceived,
+          failed: s.failed,
+          timedOut: s.timedOut,
+          byLabel: s.byLabel,
+        });
+      }
+    } catch (e) {
+      getLogger().warn("APP", `影子调用用量落盘失败（不阻断）: ${(e as Error)?.message}`);
     }
   }
 
@@ -5740,8 +5896,13 @@ export class App {
           hookSystem: this.hookSystem,
           // P0-3：skill 权限 ask 决策的用户确认回调（用户斜杠路径用主会话弹窗）。
           requestUserConfirmation: (desc: string) => this.requestUserConfirmation(desc),
+          // P0-3：skill 授权判定要的是**原始规则**（Skill(name) 的 allow/deny/ask），
+          // 不能用子代理 checker——那会把 ask 降级成 deny。
+          permissionRules: this.getRawPermissionRules(),
           commandRegistry: this.commandRegistry,
           unifiedRegistry: this.unifiedRegistry,
+          // §18.10：/reload-plugins 刷新插件 skills 需要主 manager（原子替换 plugin 来源）
+          skillManager: this.skillManager,
           // /goal：目标驱动持续执行——命令层读写 goalState 的三个回调
           getGoalState: () => this.goalState,
           setGoalState: (goal) => {
@@ -5757,9 +5918,12 @@ export class App {
             }
           },
           traceCollector: this.traceCollector ?? undefined,
+          // §12 P2-4 复审：手动 /compact 的压缩后收尾要用它们做文件重注入与质量报告落盘，
+          // 与自动压缩共用 query/compact/post-compact.ts。漏传会让手动压缩后模型"忘掉"刚读的文件。
+          fileReadTracker: this.fileReadTracker ?? undefined,
+          sessionDir: this.resolveSessionDir(),
           // G25：权限检查器实例注入命令上下文（/allow /deny /add-dir /permissions 使用）。
-          // 旧体系命令通过 (ctx as any).permissionChecker 读取——AppContext 类型不含此字段，
-          // 但对象字面量可以携带额外属性。这里补齐实际传值，修复先前的漏传（运行时永远 null）。
+          // P0-3 追加用途：fork skill 的子代理内工具权限沿用主会话 checker（经 toCommandContext 桥接）。
           permissionChecker: this.permissionChecker,
         };
 
@@ -5970,8 +6134,12 @@ export class App {
         // 4. 同步上下文窗口
         try {
           const { TokenEstimator } = require("./llm/token-estimator.ts");
-          const newWindow = new TokenEstimator().getContextLimit(result.model, this.config.availableModels);
-          this.ctxMgr.setMaxTokens(newWindow);
+          const est = new TokenEstimator();
+          // §12 P3-2：窗口与输出上限一起同步（完成缓冲区依赖 maxOutputTokens）
+          this.ctxMgr.setMaxTokens(
+            est.getContextLimit(result.model, this.config.availableModels),
+            est.getMaxOutputTokens(result.model, this.config.availableModels),
+          );
         } catch { /* 窗口解析失败不影响配置，沿用旧窗口 */ }
 
         // 5. 刷新状态栏
@@ -6045,7 +6213,8 @@ export class App {
         if (!result) return null;
         // 回退物理改写了 ctxMgr.messages，historyItems 仍是旧快照——必须立即重建首屏，
         // 否则被丢弃的消息残留在屏幕上，且下一轮乐观更新基于过时快照。
-        rebuildDisplay();
+        // mode=code 只回滚文件、对话未动 → 无需重建（省一次全量 diff 渲染）。
+        if (mode !== "code") rebuildDisplay();
         // 上下文/统计计数不重置：回退只截断消息，token 累计等运行时计数保持（与 /clear 区分）。
         return {
           mode: result.mode,

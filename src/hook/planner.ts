@@ -43,7 +43,8 @@ export class HookPlanner {
     const log = getLogger();
     log.debug("HOOK", `执行计划 [${eventName}]: ${hookConfigs.length} 个 hook，${sequential ? "串行" : "并行"}`);
 
-    return { eventName, hookConfigs, sequential };
+    // entries 与 hookConfigs 下标一一对应：执行后据此回标 once hook 已执行（否则 once 永不失效）
+    return { eventName, hookConfigs, sequential, entries: deduped };
   }
 
   /** 检查 hook 是否匹配上下文（matcher 工具名 + G10 的 if tool_input 条件） */

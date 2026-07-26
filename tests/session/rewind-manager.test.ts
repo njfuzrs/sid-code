@@ -146,3 +146,74 @@ describe("RewindManager", () => {
     expect(res).toBeNull();
   });
 });
+
+/**
+ * mode=code（仅代码）：对齐 CC Esc+Esc 菜单的第三档——只回滚文件，**保留对话**。
+ * 用途：用户想留着上下文直接重试，只撤销模型改坏的文件，不必把提问重说一遍。
+ */
+describe("RewindManager mode=code（仅代码）", () => {
+  test("只回滚文件，对话完全不动", async () => {
+    const h = makeDeps();
+    const mgr = new RewindManager(h.deps);
+    h.setLatestSnapshot("s7");
+    const p1 = mgr.registerPoint("轮1", 1000);
+    h.pushMsg("u1"); h.pushMsg("a1");
+    mgr.registerPoint("轮2", 2000);
+    h.pushMsg("u2"); h.pushMsg("a2");
+
+    const res = await mgr.rewindTo(p1.id, "code", 3000);
+    expect(res).not.toBeNull();
+    expect(res!.mode).toBe("code");
+    expect(res!.filesRestored).toBe(2);
+    expect(res!.fileRestoreSkipped).toBe(false);
+    expect(h.restoreCalls).toEqual(["s7"]);
+    // 关键：对话一条都没丢
+    expect(res!.messagesDropped).toBe(0);
+    expect(h.messages).toEqual(["u1", "a1", "u2", "a2"]);
+  });
+
+  test("回退点全部保留（对话未变，未来点仍可用）", async () => {
+    const h = makeDeps();
+    const mgr = new RewindManager(h.deps);
+    h.setLatestSnapshot("s1");
+    const p1 = mgr.registerPoint("轮1", 1000);
+    h.pushMsg("u1");
+    mgr.registerPoint("轮2", 2000);
+    h.pushMsg("u2");
+    expect(mgr.listPoints().length).toBe(2);
+
+    await mgr.rewindTo(p1.id, "code", 3000);
+    // 与 conversation 模式不同：这里不清理任何点
+    expect(mgr.listPoints().length).toBe(2);
+  });
+
+  test("无快照时跳过回滚且不动对话", async () => {
+    const h = makeDeps();
+    const mgr = new RewindManager(h.deps);
+    // latestSnapshot 保持空串
+    const p1 = mgr.registerPoint("轮1", 1000);
+    h.pushMsg("u1");
+
+    const res = await mgr.rewindTo(p1.id, "code", 2000);
+    expect(res!.fileRestoreSkipped).toBe(true);
+    expect(res!.filesRestored).toBe(0);
+    expect(res!.messagesDropped).toBe(0);
+    expect(h.restoreCalls).toEqual([]);
+    expect(h.messages).toEqual(["u1"]);
+  });
+
+  test("三档模式互不干扰：code 后仍可再做 conversation 回退", async () => {
+    const h = makeDeps();
+    const mgr = new RewindManager(h.deps);
+    h.setLatestSnapshot("s3");
+    const p1 = mgr.registerPoint("轮1", 1000);
+    h.pushMsg("u1"); h.pushMsg("a1");
+
+    await mgr.rewindTo(p1.id, "code", 2000);
+    expect(h.messages.length).toBe(2);
+
+    const res2 = await mgr.rewindTo(p1.id, "conversation", 3000);
+    expect(res2!.messagesDropped).toBe(2);
+    expect(h.messages).toEqual([]);
+  });
+});

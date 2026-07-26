@@ -448,8 +448,8 @@ async function buildExtraReattach(deps: AutoCompactDeps, toSummarize: Message[])
 }
 
 /**
- * 压缩后统一收尾：文件恢复（§2.1）、MC state 重置（§5）、质量校验（§4.1）、
- * 自适应记录（§4.2）、PostCompact hook（§3.2）。全部 best-effort，异常不影响主流程。
+ * 压缩后统一收尾（auto 路径薄封装）。实现在 ./compact/post-compact.ts，
+ * 供自动压缩与手动 /compact 共用同一套收尾语义（§12 P2-4 复审）。
  */
 async function postCompactReattachAndNotify(
   deps: AutoCompactDeps,
@@ -459,62 +459,20 @@ async function postCompactReattachAndNotify(
   tokensBefore: number,
   usedLLM: boolean,
 ): Promise<void> {
-  const log = getLogger();
-
-  // §2.1：恢复最近访问文件（压缩已腾出空间，这里再注入并守 50K 预算）
-  if (deps.fileReadTracker) {
-    try {
-      const { buildReattachFileMessages } = await import("./compact/reattach-files.ts");
-      const fileMsgs = buildReattachFileMessages(deps.fileReadTracker);
-      if (fileMsgs.length > 0) {
-        deps.ctxMgr.appendReattachMessages(fileMsgs);
-        log.info("COMPACT", `Post-compact 文件恢复注入 ${fileMsgs.length} 条消息`);
-      }
-    } catch (err: any) {
-      log.debug("COMPACT", `Post-compact 文件恢复跳过: ${err.message}`);
-    }
-  }
-
-  // §5：压缩重组了消息历史，缓存 microcompact 状态机的"已删除 tool_use_id"映射全部失效，重置
-  if (deps.cachedMicrocompactState) {
-    try {
-      const { resetCachedMicrocompactState } = await import("./compact/cached-microcompact.ts");
-      resetCachedMicrocompactState(deps.cachedMicrocompactState);
-      log.debug("COMPACT", "已重置 cached microcompact 状态机");
-    } catch { /* 忽略 */ }
-  }
-
-  // G1：压缩重组消息历史后，下一次请求 cache_read 必然骤降（前缀变了），这是预期的——
-  // 通知检测器抑制紧接的一次检测，避免误报 cache break 淹没真实告警。
-  try {
-    const { notifyCompaction } = await import("../api/cache-detection.ts");
-    notifyCompaction("main");
-  } catch { /* 忽略 */ }
-
-  // §4.1：质量校验（覆盖率）
-  let coverage = 1;
-  try {
-    const { recordCompactQuality } = await import("./compact/quality-check.ts");
-    const report = recordCompactQuality(originalMessages, summary, deps.sessionDir);
-    coverage = report.coverage;
-  } catch { /* 忽略 */ }
-
-  const tokensAfter = deps.ctxMgr.estimateTokens();
-  const messagesAfter = deps.ctxMgr.messageCount();
-  const savedRatio = tokensBefore > 0 ? Math.max(0, (tokensBefore - tokensAfter) / tokensBefore) : 0;
-
-  // §4.2：记录压缩特征供后续自适应
-  try {
-    const { recordCompactFeature } = await import("./compact/adaptive-strategy.ts");
-    recordCompactFeature({ tokensBefore, tokensAfter, savedRatio, usedLLM, coverage });
-  } catch { /* 忽略 */ }
-
-  // §3.2：PostCompact hook 接线
-  try {
-    await deps.hookSystem.firePostCompactEvent("auto", messagesBefore, messagesAfter, Math.max(0, tokensBefore - tokensAfter));
-  } catch (err: any) {
-    log.debug("HOOK", `PostCompact hook 执行异常（不影响压缩）: ${err.message}`);
-  }
+  const { runPostCompact } = await import("./compact/post-compact.ts");
+  await runPostCompact({
+    trigger: "auto",
+    ctxMgr: deps.ctxMgr,
+    hookSystem: deps.hookSystem,
+    fileReadTracker: deps.fileReadTracker,
+    cachedMicrocompactState: deps.cachedMicrocompactState,
+    sessionDir: deps.sessionDir,
+    originalMessages,
+    summary,
+    messagesBefore,
+    tokensBefore,
+    usedLLM,
+  });
 }
 
 /**

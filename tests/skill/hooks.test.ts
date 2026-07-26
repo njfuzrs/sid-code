@@ -60,6 +60,60 @@ describe("registerSkillHooks", () => {
     expect(cmds).not.toContain("${SKILL_DIR}");
   });
 
+  test("CC 变量写法 ${CLAUDE_SKILL_DIR} / ${CLAUDE_PLUGIN_ROOT} 也被替换", () => {
+    const sys = new HookSystem();
+    registerSkillHooks(
+      sys,
+      "cc-skill",
+      {
+        PostToolUse: [
+          {
+            matcher: "write",
+            hooks: [
+              { command: "sh ${CLAUDE_SKILL_DIR}/a.sh" },
+              { command: "sh ${CLAUDE_PLUGIN_ROOT}/b.sh" },
+            ],
+          },
+        ],
+      },
+      "/tmp/cc-skill",
+    );
+    const cmds = sys
+      .getAllHooks()
+      .map((h) => (h.config.type === "command" ? h.config.command : ""))
+      .join("|");
+    expect(cmds).toContain("/tmp/cc-skill/a.sh");
+    expect(cmds).toContain("/tmp/cc-skill/b.sh");
+    expect(cmds).not.toContain("${CLAUDE_SKILL_DIR}");
+    expect(cmds).not.toContain("${CLAUDE_PLUGIN_ROOT}");
+  });
+
+  test("skillRoot 注入为 hook 子进程环境变量（对齐 CC CLAUDE_PLUGIN_ROOT）", () => {
+    const sys = new HookSystem();
+    registerSkillHooks(sys, "ts-lint", config, "/tmp/ts-lint");
+    const entry = sys.getAllHooks().find((h) => h.skillName === "ts-lint");
+    expect(entry).toBeDefined();
+    const env = entry!.config.type === "command" ? entry!.config.env : undefined;
+    expect(env?.CLAUDE_PLUGIN_ROOT).toBe("/tmp/ts-lint");
+    expect(env?.CLAUDE_SKILL_DIR).toBe("/tmp/ts-lint");
+    expect(env?.SID_CODE_SKILL_DIR).toBe("/tmp/ts-lint");
+    expect(env?.SID_CODE_SKILL_NAME).toBe("ts-lint");
+  });
+
+  test("无 skillRoot 时只注入 skill 名，不产生空路径变量", () => {
+    const sys = new HookSystem();
+    registerSkillHooks(
+      sys,
+      "no-root",
+      { Stop: [{ matcher: "*", hooks: [{ command: "echo hi" }] }] },
+      undefined,
+    );
+    const entry = sys.getAllHooks().find((h) => h.skillName === "no-root");
+    const env = entry?.config.type === "command" ? entry.config.env : undefined;
+    expect(env?.SID_CODE_SKILL_NAME).toBe("no-root");
+    expect(env?.CLAUDE_PLUGIN_ROOT).toBeUndefined();
+  });
+
   test("hook 标注 skillName 与 once", () => {
     const sys = new HookSystem();
     registerSkillHooks(sys, "ts-lint", config, "/tmp/ts-lint");
@@ -83,6 +137,62 @@ describe("registerSkillHooks", () => {
   test("无 hooks 配置返回 0", () => {
     const sys = new HookSystem();
     expect(registerSkillHooks(sys, "x", undefined, undefined)).toBe(0);
+  });
+});
+
+describe("once hook 生命周期（执行一次后失效）", () => {
+  test("once:true 的 hook 执行成功后不再触发；once:false 持续触发", async () => {
+    const sys = new HookSystem();
+    // 用 true 作为命令（退出码 0 = 成功），确保 once 回标条件成立
+    registerSkillHooks(
+      sys,
+      "once-skill",
+      { PostToolUse: [{ matcher: "write", hooks: [{ command: "true", once: true }] }] },
+      undefined,
+    );
+    registerSkillHooks(
+      sys,
+      "always-skill",
+      { PostToolUse: [{ matcher: "write", hooks: [{ command: "true", once: false }] }] },
+      undefined,
+    );
+
+    const activeForWrite = () =>
+      sys
+        .getHooksForEvent(HookEventName.PostToolUse)
+        .filter((h) => h.matcher === "write").length;
+
+    expect(activeForWrite()).toBe(2);
+
+    // 第一次触发：两个都跑，once 的执行成功后被标记
+    await sys.firePostToolUseEvent("write", { file_path: "/tmp/a" }, { output: "ok" }, false);
+    expect(activeForWrite()).toBe(1);
+    expect(
+      sys
+        .getHooksForEvent(HookEventName.PostToolUse)
+        .some((h) => h.skillName === "always-skill"),
+    ).toBe(true);
+
+    // 第二次触发：once 已失效，不应回到可执行集合
+    await sys.firePostToolUseEvent("write", { file_path: "/tmp/b" }, { output: "ok" }, false);
+    expect(activeForWrite()).toBe(1);
+  });
+
+  test("once hook 执行失败时保留（下次仍可重试）", async () => {
+    const sys = new HookSystem();
+    // 退出码 1 = 失败（非 2，不构成阻断语义，仅算执行失败）
+    registerSkillHooks(
+      sys,
+      "flaky",
+      { PostToolUse: [{ matcher: "write", hooks: [{ command: "exit 1", once: true }] }] },
+      undefined,
+    );
+
+    await sys.firePostToolUseEvent("write", { file_path: "/tmp/a" }, { output: "ok" }, false);
+    // 失败不回标 → hook 仍在可执行集合里
+    expect(
+      sys.getHooksForEvent(HookEventName.PostToolUse).filter((h) => h.skillName === "flaky").length,
+    ).toBe(1);
   });
 });
 

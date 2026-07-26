@@ -84,10 +84,47 @@ export interface ContextTokenBreakdown {
   total: number;
   /** 上下文窗口上限 */
   maxTokens: number;
-  /** 自动压缩阈值对应的 token 数（maxTokens × compactThreshold） */
+  /**
+   * 自动压缩（hard 档 = LLM 摘要）实际触发时的已用 token 数。
+   *
+   * §12 复审修复：此前用 `maxTokens × compactThreshold`（默认 0.7）计算，与
+   * `getCompactionLevel` 真正生效的 `max(绝对 buffer, 窗口×系数)` **不同源**——
+   * 1M 窗口下显示 70% 而实际 82% 才触发，/context 的「距触发还剩」少算 120K。
+   * 现改为直接取 `getCompactionThresholds().compactionTriggerUsed`（单一事实源）。
+   */
   compactThresholdTokens: number;
+  /**
+   * P3-2：有效窗口 = maxTokens - 完成缓冲区（输出预留 + 摘要预留）。
+   * 阈值判定的实际分母；未启用完成缓冲区时等于 maxTokens。
+   */
+  effectiveWindow: number;
+  /** P3-2：完成缓冲区 token 数（maxTokens - effectiveWindow），供 /context 展示"预留"行 */
+  completionBuffer: number;
   /** 是否已被真实 usage 校准（未校准时为纯启发式估算） */
   calibrated: boolean;
+}
+
+/**
+ * §12 复审：压缩阈值计算结果（单一事实源）。
+ *
+ * `getCompactionLevel` 与 `getTokenBreakdown`（/context 展示）**必须**共用这一份计算，
+ * 否则「显示的触发点」与「真实的触发点」会漂移（历史 bug：1M 窗口显示 70% 实际 82%）。
+ */
+export interface CompactionThresholds {
+  /** 有效窗口（= maxTokens - 完成缓冲区），阈值判定的分母 */
+  effectiveWindow: number;
+  /** 完成缓冲区（输出预留 + 摘要预留） */
+  completionBuffer: number;
+  /** 剩余 ≤ 此值 → soft（工具输出遮罩） */
+  maskingRemaining: number;
+  /** 剩余 ≤ 此值 → hard（LLM 摘要压缩） */
+  compressionRemaining: number;
+  /** 剩余 ≤ 此值 → emergency（强制截断） */
+  emergencyRemaining: number;
+  /** hard 档实际触发时的已用 token 数（= effectiveWindow - compressionRemaining） */
+  compactionTriggerUsed: number;
+  /** 是否走小窗口简化路径（≤60K 窗口只有 emergency 一档） */
+  smallWindow: boolean;
 }
 
 /** 压缩级别 */
@@ -119,10 +156,49 @@ const BUFFER_THRESHOLDS = {
 /** 小窗口模型阈值（window ≤ 60K tokens 时仅 emergency 截断生效，比例触发） */
 const SMALL_WINDOW_EMERGENCY_RATIO = 0.90;
 
+/**
+ * P3-2：完成缓冲区（Completion Buffer）——对标 CC `getEffectiveContextWindowSize` 的意图。
+ *
+ * 语义：**触发压缩时，剩余空间至少要够「把当前这一轮说完 + 跑一次摘要」**，否则压缩本身
+ * 都可能因窗口不足而失败（摘要请求也要占 input+output）。
+ * 缓冲区 = 输出预留（当前 turn 还要生成的 output tokens）+ 摘要预留（一次 LLM 摘要往返）。
+ *
+ * **关键设计：缓冲区是「地板」而非「减法」。**
+ * 直觉做法是 `有效窗口 = 窗口 - 缓冲区` 再套三层阈值，但那会与既有绝对 buffer（80K/60K/40K）
+ * **叠加**——绝对 buffer 本来就是为「留完成空间」设的，再减一次等于双重预留：
+ * 200K 窗口的 hard 触发点会从 70% 猛提前到 55%，128K 更是提前到 38%，
+ * 白扔掉三成可用上下文。故改为对每层剩余门槛取 `max(原门槛, 缓冲区)`：
+ * - 绝对/相对门槛已足够宽时（200K：hard 门槛 60K > 缓冲 30K）→ 缓冲区不生效，行为零回归；
+ * - 只有当模型输出能力大到原门槛兜不住时才抬高门槛（如 128K 输出的模型，
+ *   emergency 原门槛 40K < 输出需求 → 抬到能容纳输出，避免"截断后仍写不完"）。
+ *
+ * 只作用于 hard / emergency 两层——masking 只是遮罩工具输出，不涉及"必须写得完"。
+ *
+ * 缓冲区对所有模型统一计算，**不按模型名分档**（遵守全局指令 feedback-no-hardcoded-model-tier-rules）——
+ * 唯一的模型相关输入是注册表里的结构性事实 `maxOutputTokens`，属于允许的结构分档。
+ */
+const COMPLETION_BUFFER = {
+  /** 未注入模型 maxOutputTokens 时的输出预留兜底 */
+  DEFAULT_OUTPUT_RESERVE: 16_000,
+  /** 输出预留占窗口的上限比例（防止大输出窗口模型把地板抬到吃掉过多上下文） */
+  OUTPUT_RESERVE_MAX_RATIO: 0.12,
+  /** 一次 LLM 摘要往返的预留（对齐 CC 的 min(20K,...) 量级） */
+  SUMMARY_RESERVE: 20_000,
+  /** 缓冲区总量占窗口的上限比例（硬护栏：地板绝不抬过窗口 20%） */
+  TOTAL_MAX_RATIO: 0.20,
+  /** 小窗口模型（≤60K）不启用——空间本就紧张，抬地板会让它一直处于压缩态 */
+  MIN_WINDOW_TO_APPLY: 60_000,
+};
+
 /** 上下文管理器配置 */
 export interface ManagerOptions {
   maxTokens: number;        // 上下文窗口最大 token 数
   compactThreshold?: number; // 触发压缩的阈值比例（默认 0.7）
+  /**
+   * P3-2：模型单次响应的最大输出 token 数（来自 model-registry 的 maxOutputTokens）。
+   * 用于计算完成缓冲区的「输出预留」分量；未传时用 COMPLETION_BUFFER.DEFAULT_OUTPUT_RESERVE 兜底。
+   */
+  maxOutputTokens?: number;
   /** 项目临时目录（用于工具输出落盘） */
   tempDir?: string;
   /**
@@ -146,6 +222,11 @@ export class Manager {
    * 设了之后 getCompactionLevel 的 hard 档改用 maxTokens×(1-pct) 作剩余门槛（见 getCompactionLevel）。
    */
   private autoCompactPctOverride: number | null = null;
+  /**
+   * P3-2：模型单次响应最大输出 token（完成缓冲区的输出预留分量）。
+   * 由构造参数或 setMaxOutputTokens 注入（模型切换时上层重设）。
+   */
+  private maxOutputTokens?: number;
   private tempDir?: string;
   private sessionId?: string;
   private maskingService?: ToolOutputMaskingService;
@@ -181,6 +262,27 @@ export class Manager {
    * null 表示尚未注入真实值。
    */
   private toolSchemaTokens: number | null = null;
+  /**
+   * P0-1 完整版：MCP 工具 schema 的 token 数（toolSchemaTokens 的**子集**）。
+   * 由上层在工具池变化后通过 setMcpToolSchemaTokens 注入，供 /context 把「工具定义」
+   * 拆成「内置工具」与「MCP 工具」两类（对齐 CC analyzeContext 的 System tools / MCP tools）。
+   * 0 表示未注入或无 MCP 工具——此时 /context 不展示该分类，不影响总量。
+   */
+  private mcpToolSchemaTokens: number = 0;
+  /**
+   * P0-1 完整版：子代理定义（内置 + 用户自定义）占用的 token 数。
+   *
+   * **注意母项归属**：sid-code 的子代理清单是渲染在 `sub_agent` 工具的 description 里的
+   * （见 agent/tool.ts:247 formatAgentLine 风格），不在 system prompt 中——所以它是
+   * `toolSchemaTokens` 的子集，而非 systemPrompt 的子集。对齐 CC analyzeContext 的
+   * Custom agents 分类（CC 那边同样源自 AgentTool 的 prompt）。
+   */
+  private agentDefinitionTokens: number = 0;
+  /**
+   * P0-1 完整版：CLAUDE.md / 记忆索引在 system prompt 中占用的 token 数
+   * （systemPrompt 的**子集**）。对齐 CC analyzeContext 的 Memory files 分类。
+   */
+  private memoryTokens: number = 0;
 
   /**
    * 压缩互斥锁（§6 并发守卫）。true 表示有一个压缩流程正在执行。
@@ -212,6 +314,8 @@ export class Manager {
     if (opts.compactThreshold !== undefined) {
       this.setAutoCompactPctOverride(opts.compactThreshold);
     }
+    // P3-2：完成缓冲区的输出预留分量数据源（模型 maxOutputTokens）。
+    this.maxOutputTokens = opts.maxOutputTokens;
     this.tempDir = opts.tempDir;
     // 创建即启用 masking（对标 cc）：构造时若已知 sessionId，直接建 maskingService，
     // 不必等外部记得调 setSessionId。setSessionId 仍保留（App 侧在 sessionId 晚于
@@ -265,6 +369,38 @@ export class Manager {
   }
 
   /**
+   * P0-1 完整版：注入 MCP 工具 schema 的 token 数（`setToolSchemaTokens` 总量的子集）。
+   *
+   * 与 setToolSchemaTokens 成对调用（见 app.ts refreshToolSchemaTokens）。仅影响 /context
+   * 的分类展示，不改变总量与压缩决策——把「工具定义」拆成内置/MCP 两类，让用户看清
+   * MCP 是否是上下文膨胀主因（对齐 CC analyzeContext 的 MCP tools 分类）。
+   *
+   * @param tokens MCP 工具定义的估算 token 数；非正值视为 0（无 MCP 工具，分类不展示）。
+   */
+  setMcpToolSchemaTokens(tokens: number): void {
+    this.mcpToolSchemaTokens =
+      Number.isFinite(tokens) && tokens > 0 ? Math.ceil(tokens) : 0;
+  }
+
+  /**
+   * P0-1 完整版：注入子代理定义在 system prompt 中的 token 数（systemPrompt 的子集）。
+   * 对齐 CC analyzeContext 的 Custom agents 分类。非正值视为 0（分类不展示）。
+   */
+  setAgentDefinitionTokens(tokens: number): void {
+    this.agentDefinitionTokens =
+      Number.isFinite(tokens) && tokens > 0 ? Math.ceil(tokens) : 0;
+  }
+
+  /**
+   * P0-1 完整版：注入 CLAUDE.md / 记忆索引在 system prompt 中的 token 数（systemPrompt 的子集）。
+   * 对齐 CC analyzeContext 的 Memory files 分类。非正值视为 0（分类不展示）。
+   */
+  setMemoryTokens(tokens: number): void {
+    this.memoryTokens =
+      Number.isFinite(tokens) && tokens > 0 ? Math.ceil(tokens) : 0;
+  }
+
+  /**
    * 更新上下文窗口大小（运行中 /model 切换模型时调用）。
    *
    * maxTokens 此前仅构造时按初始模型窗口设定、之后只读。运行中切换到不同窗口的模型后，
@@ -273,10 +409,14 @@ export class Manager {
    * 200k→1M 方向虚高 → 过早 compact。切模型时同步窗口可消除该失真。
    *
    * @param maxTokens 新模型的上下文窗口 token 数；非正值忽略（防御非法输入）。
+   * @param maxOutputTokens P3-2：新模型的单次最大输出 token（完成缓冲区的输出预留分量）。
+   *   省略时**保持原值不变**（而非清零）——避免只知窗口不知输出上限的调用方把缓冲区打回默认。
+   *   显式传 undefined 与省略同义；要清除请调 setMaxOutputTokens(undefined)。
    */
-  setMaxTokens(maxTokens: number): void {
+  setMaxTokens(maxTokens: number, maxOutputTokens?: number): void {
     if (!Number.isFinite(maxTokens) || maxTokens <= 0) return;
     this.maxTokens = maxTokens;
+    if (maxOutputTokens !== undefined) this.setMaxOutputTokens(maxOutputTokens);
   }
 
   /**
@@ -954,9 +1094,110 @@ export class Manager {
     return this.maxTokens;
   }
 
-  /** 获取压缩阈值比例（默认 0.7）——/context 展示"距自动压缩阈值"用 */
+  /**
+   * P3-2：设置模型单次响应最大输出 token（完成缓冲区的输出预留分量）。
+   * 模型切换时由上层重设，使缓冲区跟随新模型的输出能力。
+   */
+  setMaxOutputTokens(n: number | undefined): void {
+    this.maxOutputTokens = n !== undefined && Number.isFinite(n) && n > 0 ? n : undefined;
+  }
+
+  /** 获取压缩阈值比例（默认 0.7）——历史 API，仅诊断用；真实触发点见 getCompactionThresholds() */
   getCompactThreshold(): number {
     return this.compactThreshold;
+  }
+
+  /**
+   * §12 复审 + P3-2：计算全部压缩阈值（**单一事实源**）。
+   *
+   * `getCompactionLevel`（真实触发决策）与 `getTokenBreakdown`（/context 展示）都必须走这里，
+   * 杜绝「显示的触发点 ≠ 真实触发点」的漂移（历史 bug：1M 窗口 /context 显示 70%，实际 82%）。
+   *
+   * 计算顺序：
+   * 1. 完成缓冲区（P3-2）：`effectiveWindow = maxTokens - min(输出预留 + 摘要预留, 窗口×15%)`。
+   *    小窗口（≤60K）不启用（空间紧张，再减会过早触发）。
+   * 2. 三层阈值：每层取「绝对 buffer」与「有效窗口×系数」中更早触发（更大）的那个作为剩余门槛。
+   * 3. P1-1 override：设了使用率上限则 hard 档改用 `effectiveWindow×(1-pct)`，
+   *    但不低于 emergency 绝对底线（防止极端值把安全线顶掉）。
+   */
+  getCompactionThresholds(): CompactionThresholds {
+    const smallWindow = this.maxTokens <= 60_000;
+
+    // ── 1. 完成缓冲区（P3-2）：作为 hard/emergency 剩余门槛的「地板」，不做窗口减法 ──
+    let completionBuffer = 0;
+    if (this.maxTokens > COMPLETION_BUFFER.MIN_WINDOW_TO_APPLY) {
+      const outputReserve = Math.min(
+        this.maxOutputTokens ?? COMPLETION_BUFFER.DEFAULT_OUTPUT_RESERVE,
+        Math.floor(this.maxTokens * COMPLETION_BUFFER.OUTPUT_RESERVE_MAX_RATIO),
+      );
+      completionBuffer = Math.min(
+        outputReserve + COMPLETION_BUFFER.SUMMARY_RESERVE,
+        Math.floor(this.maxTokens * COMPLETION_BUFFER.TOTAL_MAX_RATIO),
+      );
+    }
+    // 有效窗口 = 全窗口：阈值判定分母不变（缓冲区通过抬高门槛体现，见上方 COMPLETION_BUFFER 注释）。
+    // 保留该字段供 /context 展示与未来演进；当前恒等于 maxTokens。
+    const effectiveWindow = this.maxTokens;
+
+    // ── 小窗口路径：默认只有 emergency 一档（比例触发）──
+    if (smallWindow) {
+      const emergencyRemaining = (1 - SMALL_WINDOW_EMERGENCY_RATIO) * this.maxTokens;
+      // §12 复审：P1-1 override 在小窗口下同样生效。
+      // 此前小窗口分支直接 return，把用户显式设的 SID_CODE_AUTOCOMPACT_PCT 悄悄忽略了——
+      // 用户在 32K 模型上设 50% 却永远等到 90% 才截断，属于「配置了但不起作用」的静默失效。
+      // 仍不启用 masking（小窗口遮罩收益低于信息损失）。
+      const compressionRemaining =
+        this.autoCompactPctOverride !== null
+          ? Math.max(this.maxTokens * (1 - this.autoCompactPctOverride), emergencyRemaining)
+          : 0;  // 未设 override → 无 hard 档（门槛 0，剩余永不 ≤ 0 除非溢出）
+      return {
+        effectiveWindow,
+        completionBuffer,
+        maskingRemaining: 0,
+        compressionRemaining,
+        emergencyRemaining,
+        // 有 override 时按 hard 报告触发点，否则退回 emergency（供 /context 展示"距压缩"）
+        compactionTriggerUsed: Math.round(
+          this.maxTokens - (compressionRemaining > 0 ? compressionRemaining : emergencyRemaining),
+        ),
+        smallWindow: true,
+      };
+    }
+
+    // ── 2. 三层阈值（绝对 buffer vs 窗口相对系数，取更早触发者）──
+    // §12 P0-2：系数 0.22/0.18/0.10——纯绝对 buffer 让「窗口越大越晚压缩」，1M 窗口 88% 才压缩
+    // 已进入推理质量下降区。系数对所有窗口统一，不按模型名分档，靠 max(绝对, 相对) 自然分流。
+    const maskingRemaining = Math.max(BUFFER_THRESHOLDS.masking, this.maxTokens * 0.22);
+    let compressionRemaining = Math.max(BUFFER_THRESHOLDS.compression, this.maxTokens * 0.18);
+    // P3-2 地板：emergency 是最后一道防线，剩余必须够「写完当前回复 + 一次摘要」。
+    let emergencyRemaining = Math.max(
+      BUFFER_THRESHOLDS.emergency,
+      this.maxTokens * 0.10,
+      completionBuffer,
+    );
+
+    // ── 3. P1-1 override ──
+    if (this.autoCompactPctOverride !== null) {
+      const overrideRemaining = this.maxTokens * (1 - this.autoCompactPctOverride);
+      compressionRemaining = Math.max(overrideRemaining, emergencyRemaining);
+    } else {
+      // P3-2 地板：hard 档要留够跑摘要的空间，否则「该压缩时已压不动」。
+      compressionRemaining = Math.max(compressionRemaining, completionBuffer);
+    }
+    // 不变量：hard 必须不晚于 emergency 触发（剩余门槛更大 = 更早触发）
+    if (compressionRemaining < emergencyRemaining) {
+      emergencyRemaining = compressionRemaining;
+    }
+
+    return {
+      effectiveWindow,
+      completionBuffer,
+      maskingRemaining,
+      compressionRemaining,
+      emergencyRemaining,
+      compactionTriggerUsed: Math.round(this.maxTokens - compressionRemaining),
+      smallWindow: false,
+    };
   }
 
   /**
@@ -993,18 +1234,34 @@ export class Manager {
    * 分类口径与 rawEstimateTokens 完全一致（同一套启发式），保证 total 与 estimateTokens
    * 对得上。已收到真实 usage 校准后，各分类同比乘 calibrationFactor 收敛到真实口径。
    *
-   * 分类：
-   * - systemPrompt：系统提示词（含注入的 CLAUDE.md/记忆等，都进 systemPrompt 字符串）
-   * - toolSchemas ：工具定义 schema 开销
-   * - userText    ：user 消息文本（含压缩摘要——摘要以 user 消息注入）
-   * - assistantText：assistant 消息文本
-   * - toolUse     ：tool_use 块（工具调用入参 JSON）
-   * - toolResult  ：tool_result 块（工具返回内容）
-   * - overhead    ：每条消息的结构开销
+   * 分类（对齐 CC analyzeContext 的类别粒度）：
+   * - systemPrompt  ：系统提示词骨架（扣除记忆分量后的余量）
+   * - toolSchemas   ：内置工具定义 schema（扣除 MCP 与子代理定义分量后的余量）
+   * - mcpToolSchemas：MCP 工具 schema（CC: MCP tools）
+   * - agentDefs     ：子代理定义清单（CC: Custom agents；渲染在 sub_agent 工具描述里）
+   * - memoryFiles   ：CLAUDE.md / 记忆索引（CC: Memory files）
+   * - userText      ：user 消息文本（含压缩摘要——摘要以 user 消息注入）
+   * - assistantText ：assistant 消息文本
+   * - toolUse       ：tool_use 块（工具调用入参 JSON）
+   * - toolResult    ：tool_result 块（工具返回内容）
+   * - overhead      ：每条消息的结构开销
+   *
+   * 细分量（mcp/agent/memory）由注入端单独记账，未注入时为 0 且不展示——
+   * 此时观感与首版三分类一致，不会凭空造数。总量恒等于 estimateTokens 口径（细分只是切分，不新增）。
    */
   getTokenBreakdown(toolCount: number = 0): ContextTokenBreakdown {
-    let systemPrompt = estimateTextTokens(this.systemPrompt);
-    let toolSchemas = this.toolSchemaTokens ?? toolCount * 80;
+    // ── 工具定义母项：切出 MCP 与子代理定义两个子集 ──
+    // clamp + 顺序扣减：保证各分量非负且和恒等于母项，防止注入端口径漂移让母项变负数。
+    const totalToolSchemas = this.toolSchemaTokens ?? toolCount * 80;
+    let mcpToolSchemas = Math.min(this.mcpToolSchemaTokens, totalToolSchemas);
+    let agentDefs = Math.min(this.agentDefinitionTokens, totalToolSchemas - mcpToolSchemas);
+    let toolSchemas = totalToolSchemas - mcpToolSchemas - agentDefs;
+
+    // ── 系统提示词母项：切出记忆/CLAUDE.md 子集 ──
+    const rawSystemPrompt = estimateTextTokens(this.systemPrompt);
+    let memoryFiles = Math.min(this.memoryTokens, rawSystemPrompt);
+    let systemPrompt = rawSystemPrompt - memoryFiles;
+
     let userText = 0;
     let assistantText = 0;
     let toolUse = 0;
@@ -1030,85 +1287,85 @@ export class Manager {
     const factor = this.calibrated ? this.calibrationFactor : 1;
     const scale = (n: number) => Math.round(n * factor);
     systemPrompt = scale(systemPrompt);
+    memoryFiles = scale(memoryFiles);
+    agentDefs = scale(agentDefs);
     toolSchemas = scale(toolSchemas);
+    mcpToolSchemas = scale(mcpToolSchemas);
     userText = scale(userText);
     assistantText = scale(assistantText);
     toolUse = scale(toolUse);
     toolResult = scale(toolResult);
     overhead = scale(overhead);
 
+    // 分类顺序对齐 CC analyzeContext：先「常驻上下文」（系统/工具/记忆/代理），再「会话消息」。
+    // tokens=0 的细分类不展示（未注入记账时保持首版三分类的干净观感）。
     const categories = [
       { key: "systemPrompt", label: "系统提示词", tokens: systemPrompt },
       { key: "toolSchemas", label: "工具定义", tokens: toolSchemas },
+      { key: "mcpToolSchemas", label: "MCP 工具", tokens: mcpToolSchemas, omitIfZero: true },
+      { key: "agentDefs", label: "自定义代理", tokens: agentDefs, omitIfZero: true },
+      { key: "memoryFiles", label: "记忆/CLAUDE.md", tokens: memoryFiles, omitIfZero: true },
       { key: "userText", label: "用户消息", tokens: userText },
       { key: "assistantText", label: "助手回复", tokens: assistantText },
       { key: "toolUse", label: "工具调用", tokens: toolUse },
       { key: "toolResult", label: "工具结果", tokens: toolResult },
       { key: "overhead", label: "结构开销", tokens: overhead },
-    ];
+    ]
+      .filter((c) => !(c.omitIfZero && c.tokens <= 0))
+      .map(({ key, label, tokens }) => ({ key, label, tokens }));
 
     const total = categories.reduce((sum, c) => sum + c.tokens, 0);
+    // §12 复审：触发点与 getCompactionLevel 同源（此前用 maxTokens×compactThreshold，1M 窗口差 120K）。
+    const t = this.getCompactionThresholds();
     return {
       categories,
       total,
       maxTokens: this.maxTokens,
-      compactThresholdTokens: Math.round(this.maxTokens * this.compactThreshold),
+      compactThresholdTokens: t.compactionTriggerUsed,
+      effectiveWindow: t.effectiveWindow,
+      completionBuffer: t.completionBuffer,
       calibrated: this.calibrated,
     };
   }
 
-  /** 是否需要压缩 */
+  /**
+   * 是否需要压缩（历史 API）。
+   *
+   * §12 复审：改为与 getCompactionLevel 同源——此前用 `maxTokens × compactThreshold`（默认 0.7），
+   * 与真实触发链路（绝对 buffer + 相对系数 + 完成缓冲区）不同源，会给调用方错误信号。
+   * 语义 = 已达 hard 档（LLM 摘要）或更紧急。
+   */
   needsCompaction(toolCount: number = 0): boolean {
-    return this.estimateTokens(toolCount) > this.maxTokens * this.compactThreshold;
+    const level = this.getCompactionLevel(toolCount);
+    return level === "hard" || level === "emergency";
   }
 
   /**
    * 获取压缩级别
    *
-   * 基于绝对 token buffer 而非百分比，使行为在不同窗口模型间可预测：
+   * 阈值全部来自 `getCompactionThresholds()`（单一事实源，与 /context 展示同源）：
    * - 小窗口模型（≤ 60K）：仅剩 10% 时触发 emergency 截断
-   * - 标准窗口模型（≥ 80K）：三层渐进压缩按 buffer 阈值触发
+   * - 标准/大窗口模型：三层渐进压缩（绝对 buffer vs 有效窗口相对系数，取更早触发者）
+   * - P3-2：判定分母是「有效窗口」= 窗口 - 完成缓冲区（给当前 turn 输出 + 一次摘要留完成空间）
    */
   getCompactionLevel(toolCount: number = 0): CompactionLevel {
     const used = this.estimateTokens(toolCount);
-    const remaining = this.maxTokens - used;
+    const t = this.getCompactionThresholds();
+    const remaining = t.effectiveWindow - used;
 
-    // 小窗口模型（≤ 60K tokens）：仅 emergency 截断（比例触发）
-    if (this.maxTokens <= 60_000) {
-      if (remaining <= (1 - SMALL_WINDOW_EMERGENCY_RATIO) * this.maxTokens) {
-        return "emergency";
-      }
+    // 小窗口模型（≤ 60K tokens）：默认仅 emergency 截断；设了 P1-1 override 时 hard 档也生效
+    // （compressionRemaining 在未设 override 时为 0，剩余永不 ≤ 0，等价于该档关闭）。
+    if (t.smallWindow) {
+      if (remaining <= t.emergencyRemaining) return "emergency";
+      if (t.compressionRemaining > 0 && remaining <= t.compressionRemaining) return "hard";
       return "none";
     }
 
-    // 标准/大窗口模型：三层渐进压缩。
-    // §12.6 阈值相对化：纯绝对 buffer 对超大窗口（如 1M）触发过晚——
-    //   1M 窗口剩 80K 才开始 masking = 已用 92%，留给压缩的腾挪空间过小。
-    // 故每层取「绝对 buffer」与「窗口百分比」中更早触发（更大）的那个作为剩余阈值。
-    //   masking: max(80K, 22% window)、compression: max(60K, 18% window)、emergency: max(40K, 10% window)
-    //   对 200K 窗口：22%=44K < 80K → 仍用绝对值（行为不变，兼容老模型，hard 仍在剩 60K≈70%）。
-    //   对 1M 窗口：18%=180K > 60K → hard 用相对值（剩 180K≈82% 用量即摘要，从 88% 提前 6 点，留足腾挪空间）。
-    // §12 P0-2：系数从 0.18/0.12/0.07 提到 0.22/0.18/0.10——纯绝对 buffer 让「窗口越大越晚压缩」，
-    //   默认 Opus 4.8（1M 窗口）受影响最直接，88% 才压缩已进入推理质量下降区。系数对所有窗口统一，
-    //   不按模型名分档（遵守全局指令 feedback-no-hardcoded-model-tier-rules），靠 max(绝对, 相对) 自然分流。
-    let compressionThreshold = Math.max(BUFFER_THRESHOLDS.compression, this.maxTokens * 0.18);
-    const maskingThreshold = Math.max(BUFFER_THRESHOLDS.masking, this.maxTokens * 0.22);
-    const emergencyThreshold = Math.max(BUFFER_THRESHOLDS.emergency, this.maxTokens * 0.10);
-
-    // §12 P1-1：autoCompact 百分比 override（SID_CODE_AUTOCOMPACT_PCT / compactThreshold）。
-    // 设了 override → hard 档（LLM 摘要）改用「窗口 ×(1-pct)」作为剩余门槛，让用户可精确控制触发点。
-    // masking/emergency 仍保留绝对 buffer 兜底，不被 override 架空（防止用户设极端值把安全底线也顶掉）。
-    // 取「override 剩余门槛」与「emergency 绝对底线」的较大值，保证 hard 永远早于或等于 emergency 触发。
-    if (this.autoCompactPctOverride !== null) {
-      const overrideRemaining = this.maxTokens * (1 - this.autoCompactPctOverride);
-      compressionThreshold = Math.max(overrideRemaining, emergencyThreshold);
-    }
-
     // 按剩余空间从紧到松检查：剩余越少 → 响应越激进
-    if (remaining <= emergencyThreshold) return "emergency";    // 紧急截断
-    if (remaining <= compressionThreshold) return "hard";       // LLM 摘要压缩
-    if (remaining <= maskingThreshold) return "soft";           // 工具输出遮罩
-    return "none";                                              // 充裕 → 不需要压缩
+    if (remaining <= t.emergencyRemaining) return "emergency";    // 紧急截断
+    if (remaining <= t.compressionRemaining) return "hard";       // LLM 摘要压缩
+    if (remaining <= t.maskingRemaining) return "soft";           // 工具输出遮罩
+    return "none";                                                // 充裕 → 不需要压缩
   }
 
   /**

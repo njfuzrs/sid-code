@@ -62,16 +62,35 @@ export function registerSkillHooks(
       for (const hook of def.hooks) {
         if (!hook?.command) continue;
 
-        // 替换命令中的 ${SKILL_DIR} 变量
+        // 替换命令中的 skill 目录变量。三种写法都认：
+        //   ${SKILL_DIR}          —— sid 原生
+        //   ${CLAUDE_SKILL_DIR}   —— 与 prompt-processor 的 CC 兼容写法一致
+        //   ${CLAUDE_PLUGIN_ROOT} —— CC 权威写法（utils/hooks.ts:845，skill hook 复用插件变量名，
+        //                            使 skill 迁移成 plugin 时命令无需改动）
+        // 用函数形式 replace，避免 skillRoot 里的 `$&`/`$1` 被当替换模式解释。
         let command = hook.command;
         if (skillRoot) {
-          command = command.replace(/\$\{SKILL_DIR\}/g, skillRoot);
+          command = command.replace(
+            /\$\{(?:SKILL_DIR|CLAUDE_SKILL_DIR|CLAUDE_PLUGIN_ROOT)\}/g,
+            () => skillRoot,
+          );
         }
 
         const config: CommandHookConfig = {
           type: "command",
           name: `skill:${skillName}`,
           command,
+          // 对齐 CC（utils/hooks.ts:908）：skill hook 的子进程可通过环境变量拿到 skill 根目录，
+          // 无需在命令里硬编码路径。CLAUDE_PLUGIN_ROOT 是 CC 权威名（skill 与 plugin 同名），
+          // 另给 sid 原生前缀别名，便于 sid 侧脚本自解释。
+          env: skillRoot
+            ? {
+                CLAUDE_PLUGIN_ROOT: skillRoot,
+                CLAUDE_SKILL_DIR: skillRoot,
+                SID_CODE_SKILL_DIR: skillRoot,
+                SID_CODE_SKILL_NAME: skillName,
+              }
+            : { SID_CODE_SKILL_NAME: skillName },
         };
 
         try {

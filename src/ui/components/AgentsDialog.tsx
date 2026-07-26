@@ -5,6 +5,7 @@ import { theme } from "../semantic-colors.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
 import { ARROW_PROMPT } from "../constants/figures.ts";
 import { getActiveAgentDefinitions, type AgentDefinition } from "../../agent/agent-definition.ts";
+import { getAgentInkColor } from "../../agent/color.ts";
 
 interface AgentsDialogProps {
   onClose: () => void;
@@ -49,12 +50,13 @@ export const AgentsDialog: React.FC<AgentsDialogProps> = ({ onClose }) => {
           if (a.model) tags.push(`model:${a.model}`);
           else if (a.modelTier && a.modelTier !== "default") tags.push(`档位:${a.modelTier}`);
           if (a.skills && a.skills.length > 0) tags.push(`skills:${a.skills.length}`);
-          if (a.color) tags.push(`色:${a.color}`);
 
           return (
             <Box key={a.agentType} flexDirection="row">
               <Box flexShrink={0} width={22}>
-                <Text color={theme.ui.active}>{a.agentType}</Text>
+                {/* P1-2：agent 名直接用其身份色渲染——声明了 color 的显式色，
+                    未声明的走哈希分配。比单独列一个「色:blue」文字标签更直观。 */}
+                <Text color={getAgentInkColor(a.agentType)}>{a.agentType}</Text>
               </Box>
               <Box flexGrow={1} flexDirection="column">
                 <Text wrap="truncate-end" color={theme.text.primary}>{a.description || a.whenToUse}</Text>

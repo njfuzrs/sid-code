@@ -3,6 +3,10 @@
  * 事件枚举、输入/输出接口、HookOutput 类层次、执行计划等
  */
 
+// HookExecutionPlan.entries 需要 registry 条目类型。registry.ts 反向依赖本文件，
+// 故用 `import type`（编译期擦除，不产生运行时循环依赖）。
+import type { HookRegistryEntry } from "./registry.ts";
+
 // ============================================================
 // 枚举
 // ============================================================
@@ -787,6 +791,17 @@ export interface HookExecutionPlan {
   eventName: HookEventName;
   hookConfigs: HookConfig[];
   sequential: boolean;
+  /**
+   * 与 hookConfigs **下标一一对应**的 registry 条目（承载 once/skillName 等元数据）。
+   *
+   * 为什么需要：`once: true` 的一次性 hook 执行后必须失效，而 hookConfigs 是纯配置、
+   * 丢失了「这条来自哪个 entry」的身份，导致 registry.markOnceExecuted 无从调用
+   * （历史上该方法零调用点 → once 语义完全不生效）。计划里带回 entry 引用，
+   * 执行成功后按下标回标即可。
+   *
+   * 下标对齐前提：runner 的 executeHooksParallel/Sequential 均按入参顺序返回结果。
+   */
+  entries?: HookRegistryEntry[];
 }
 
 /** 聚合后的结果 */

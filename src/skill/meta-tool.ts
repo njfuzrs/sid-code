@@ -23,6 +23,7 @@ import type { HookSystem } from "../hook/system.ts";
 import type { Checker, PermissionRule } from "../permission/types.ts";
 import type { SkillDefinition } from "./types.ts";
 import type { SkillManager } from "./manager.ts";
+import { dirname } from "node:path";
 import { SubAgent } from "../agent/sub-agent.ts";
 import { getLogger } from "../debug/logger.ts";
 import { scanSkillResources } from "./resources.ts";
@@ -157,6 +158,19 @@ export class SkillMetaTool implements Tool {
       return { output: `错误：Skill "${skill.name}" 已被禁用。`, isError: true };
     }
 
+    // P1-2：条件激活 skill 在触发前不可调用。gate 只把它挡出 listing 是不够的——
+    // 模型仍可凭猜名或历史上下文按名直接调用，绕过 paths 条件。CC 的口径是
+    // getAllCommands 不含未激活的 conditionalSkills，findCommand 直接失败（errorCode 2），
+    // 这里给出等价语义并说明触发条件，便于模型转向正确做法。
+    if (this.manager.isGated(skill.name)) {
+      const paths = skill.paths?.length ? skill.paths.join(", ") : "特定文件";
+      return {
+        output:
+          `错误：Skill "${skill.name}" 是条件激活 skill，尚未触发（需先接触匹配 ${paths} 的文件），当前不可调用。`,
+        isError: true,
+      };
+    }
+
     // ── P0-3：权限判定（先于 hooks 注册与执行）──
     const auth = authorizeSkill(skill, { permissionRules: this.permissionRules });
     if (auth.decision === "deny") {
@@ -271,18 +285,39 @@ export class SkillMetaTool implements Tool {
     return { output: result.output, isError: !result.success };
   }
 
-  /** 构建资源清单提示（delegate 子代理用绝对路径读 skill references/scripts） */
+  /**
+   * 构造 delegate 子代理的资源清单提示片段。
+   *
+   * 背景：子代理的工作目录 = 项目目录（sub-agent.ts 的 workdir=process.cwd()），不是 skill
+   * 目录。SKILL.md 正文常写 `references/xxx.md`、`scripts/xxx.ts` 这类相对路径，子代理直接
+   * Read 会落到项目目录而读不到。解决：把 skill 资源的**绝对目录**连同目录树注入 prompt，
+   * 并明确要求用绝对路径读取/执行——只给出目录路径是不够的，模型仍会沿用正文里的相对写法。
+   *
+   * - 无 references/scripts/assets 资源时返回空串（不污染 prompt）。
+   * - skillRoot 缺失时回退 dirname(filePath)；两者都无则返回空串，不阻断执行。
+   */
   private async buildResourceHint(skill: SkillDefinition): Promise<string> {
-    if (!skill.skillRoot) return "";
+    const skillDir = skill.skillRoot || (skill.filePath ? dirname(skill.filePath) : "");
+    if (!skillDir) return "";
+
+    let folderStructure: string;
     try {
-      const folderStructure = await scanSkillResources(skill.skillRoot);
-      if (!folderStructure) return "";
-      return (
-        `\n\n---\nSkill 资源目录（绝对路径）: ${skill.skillRoot}\n` +
-        `以下资源需用**绝对路径**读取（你的工作目录是项目目录，不是 skill 目录）:\n${folderStructure}`
-      );
+      folderStructure = await scanSkillResources(skillDir);
     } catch {
       return "";
     }
+    if (!folderStructure) return "";
+
+    return `\n\n---\n\n## Skill 资源文件（重要：读取方式）
+
+本 Skill 自带以下资源文件，位于**绝对目录** \`${skillDir}\`：
+
+${folderStructure}
+
+**读取规则（务必遵守）**：
+- 你的工作目录是被处理的**项目目录**，不是上面的 Skill 目录。
+- SKILL.md 正文里出现的 \`references/xxx\`、\`scripts/xxx\`、\`validations/xxx\` 等相对路径，**一律拼成绝对路径**再访问：例如 \`${skillDir}/references/output-template.md\`。
+- 用 \`read\` 工具读 references/validations，用 \`bash\` 执行 scripts 时也用上述绝对路径。
+- **切勿**用相对路径直接读这些资源——那会落到项目目录、读取失败。`;
   }
 }

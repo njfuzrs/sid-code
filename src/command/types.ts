@@ -102,10 +102,28 @@ export interface AppContext {
    * 用户斜杠路径的 skill 若含敏感能力（hooks/allowedTools/shell）触发 ask 时，弹此确认。
    */
   requestUserConfirmation?: (desc: string) => Promise<boolean>;
+  /**
+   * P0-3：原始权限规则（permissions.allow/deny/ask，含 `Skill(<name>)` 形态）。
+   * 经 toCommandContext 桥接给新体系，供 skill 授权判定使用。
+   */
+  permissionRules?: import("../permission/types.ts").PermissionRule;
   /** Hook 系统引用（/hooks 命令用） */
   hookSystem?: HookSystem;
+  /**
+   * §12 P2-4 复审：最近访问文件追踪器（手动 /compact 压缩后重注入最近读过的文件）。
+   * 经 toCommandContext 桥接到 CommandContext.fileReadTracker。
+   */
+  fileReadTracker?: import("../tool/file-read-tracker.ts").FileReadTracker;
+  /** §12 P2-4 复审：会话级临时目录（手动压缩质量报告落盘）。经 toCommandContext 桥接。 */
+  sessionDir?: string;
   /** 命令注册表引用（/reload-plugins 重新合并插件命令用） */
   commandRegistry?: import("./registry.ts").Registry;
+  /**
+   * Skill 管理器引用（/reload-plugins 刷新插件 skills 用）。
+   * §18.10：插件带的 skills 需随插件安装/卸载原子替换，否则装了新插件要重启才能用它的
+   * skill、卸载后旧 skill 还留着。
+   */
+  skillManager?: import("../skill/manager.ts").SkillManager;
   /** 统一命令注册表引用（新体系 /reload-plugins 刷新插件命令用，优先于 commandRegistry） */
   unifiedRegistry?: import("./unified-registry.ts").UnifiedCommandRegistry;
   /** /goal：读取当前目标状态 */
@@ -206,6 +224,15 @@ export interface CommandContext {
   hookSystem?: HookSystem;
   cwd: string;
   /**
+   * §12 P2-4 复审：最近访问文件追踪器。手动 /compact 压缩后据它重注入最近读过的文件
+   * （与自动压缩共用 query/compact/post-compact.ts 的收尾）。未注入则跳过文件恢复。
+   */
+  fileReadTracker?: import("../tool/file-read-tracker.ts").FileReadTracker;
+  /**
+   * §12 P2-4 复审：会话级临时目录。手动压缩的摘要质量报告落盘到此；未注入则只算不落盘。
+   */
+  sessionDir?: string;
+  /**
    * 切换主模型回调。persist=true 时同时写 settings.json 顶层 model（跨会话生效）。
    * 对齐 /effort 的 -p 语义：默认仅当会话生效，-p 才落盘。
    */
@@ -264,6 +291,24 @@ export interface CommandContext {
   sendToLLM?: (text: string) => Promise<void>;
   /** Shell 注入确认回调，返回 true 表示用户确认 */
   confirmShellCommands?: (commands: string[]) => Promise<boolean>;
+  /**
+   * P0-3：通用用户确认回调（skill 权限 ask 决策用），返回 true 表示用户批准。
+   * 用户斜杠路径的 skill 若含敏感能力（hooks/allowedTools/shell 等）触发 ask 时弹此确认。
+   * 未注入时 ask 决策会保守拒绝（不静默放行）。
+   */
+  requestUserConfirmation?: (desc: string) => Promise<boolean>;
+  /**
+   * P0-3：原始权限规则（permissions.allow/deny/ask，含 `Skill(<name>)` 形态）。
+   * 供 skill 授权判定使用——注意必须是**原始规则**而非子代理 checker，
+   * 否则 ask 会被 dontAsk 语义直接降级为 deny。
+   */
+  permissionRules?: import("../permission/types.ts").PermissionRule;
+  /**
+   * 权限检查器（fork 子代理内的工具权限判定沿用主会话规则）。
+   * 注意与 permissionRules 的分工：checker 用于**工具调用**判定（子代理内 dontAsk 语义），
+   * permissionRules 用于 skill 自身的 allow/deny/ask 判定（需要原始规则，不能被 checker 降级）。
+   */
+  permissionChecker?: import("../permission/types.ts").Checker | null;
   /** 自定义命令摘要（/help 显示用） */
   customCommands?: Array<{ name: string; description: string }>;
   /** 统一命令注册表引用（/reload-plugins 刷新插件命令用） */
@@ -371,6 +416,16 @@ export interface PromptCommand {
   allowedTools?: string[];                 // 限制模型可用的工具集（fork 模式）
   maxTurns?: number;                       // 最大轮次（fork 模式）
   timeoutMins?: number;                    // 子代理超时(分钟，fork 模式)；默认 2，最大 30
+  /**
+   * 来源 skill 定义（仅 skill 适配出的 prompt 命令有）。
+   *
+   * 为什么要挂在命令上：TUI 的斜杠命令执行走 UnifiedCommandRegistry → CommandExecutor，
+   * 这是用户调用 skill 的**真实路径**。skill 的权限判定（P0-3）、生命周期 hooks（P0-2）、
+   * effort/agent 透传（P1-1）都需要原始 SkillDefinition，而 PromptCommand 只携带
+   * prompt/allowedTools/maxTurns 等投影字段，信息不足。挂原定义让 executor 能复用
+   * skill/executor.ts 的同一套内核，避免两条路径实现漂移。
+   */
+  skill?: import("../skill/types.ts").SkillDefinition;
 }
 
 // ============================================================

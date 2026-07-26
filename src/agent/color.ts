@@ -88,3 +88,18 @@ export function clearExplicitAgentColors(): void {
 export function colorize(text: string, color: AgentColor): string {
   return `\x1b[38;5;${color.code}m${text}\x1b[0m`;
 }
+
+/**
+ * 转成 Ink `<Text color>` 可用的形式（`ansi256(<code>)`）。
+ *
+ * TUI 组件不该自己拼 ANSI 转义（会被 ink 的宽度计算当成可见字符），
+ * 统一走这个入口把 AgentColor 交给 ink 渲染。
+ */
+export function toInkColor(color: AgentColor): string {
+  return `ansi256(${color.code})`;
+}
+
+/** agentType → Ink 颜色字符串的直达入口（TUI 渲染取色统一走这里）。 */
+export function getAgentInkColor(agentType: string): string {
+  return toInkColor(getAgentColor(agentType));
+}

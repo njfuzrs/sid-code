@@ -10,8 +10,11 @@
  * 使用方式：
  *   1. bash 命令**成功执行后**（exitCode===0）调用 recordGitOperation(command)。
  *   2. app.ts 启动时用 setGitOperationObserver 注入观察者，把事件透传给 trace/telemetry。
- *   3. getGitOperationStats() 读累加值；resetGitOperationStats() 在 SessionStart 重置。
+ *   3. getGitOperationStats() 读累加值；resetGitOperationStats() 在会话初始化时重置
+ *      （同进程内 resume/新会话不串味）。
  */
+
+import { normalizeGitGlobalOptions } from "../permission/git-danger-patterns.ts";
 
 /** git 操作分类 */
 export type GitOperationKind =
@@ -56,7 +59,10 @@ let _observer: ((event: GitOperationEvent) => void) | null = null;
  */
 export function classifyGitOperation(command: string): GitOperationKind | null {
   if (!command) return null;
-  const c = command.trim();
+  // git 全局选项容错（对齐 CC gitCmdRe）：`git -c commit.gpgsign=false commit`、
+  // `git -C dir push`、`git --no-pager log` 会把子命令与 `git` 撑开，
+  // 不归一化则所有 `\bgit\s+<子命令>` 正则失配 → 这些操作漏计数。
+  const c = normalizeGitGlobalOptions(command.trim());
 
   // PR / MR 创建（非 git 子命令，但属 git 工作流度量）
   if (/\bgh\s+pr\s+create\b/.test(c)) return "pr_created";
@@ -81,7 +87,7 @@ export function classifyGitOperation(command: string): GitOperationKind | null {
 /**
  * 注册 git 操作观察者（app.ts 启动时注入，把事件透传 trace/telemetry）。
  */
-export function setGitOperationObserver(fn: (event: GitOperationEvent) => void): void {
+export function setGitOperationObserver(fn: ((event: GitOperationEvent) => void) | null): void {
   _observer = fn;
 }
 

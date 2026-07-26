@@ -114,6 +114,26 @@ export interface SystemPromptContext {
    *  不传时按当前模型 contextWindow 的 90% 动态推导（见 resolvePromptMaxTokens），
    *  而非写死 180000（那是 Claude 200K 窗口时代的预留值，对 1M 窗口模型只用到 18% 就截断）。 */
   maxTokens?: number;
+
+  /**
+   * §12 P0-1 完整版：分段 token 记账回调（供 /context 把 system prompt 拆成命名类别）。
+   *
+   * 在提示词组装完成（含截断）后调用一次，报告各命名段实际进入提示词的 token 数。
+   * 放在 buildSystemPrompt 内部报告而非由调用方事后估算，是因为只有这里知道：
+   * 哪些附件被截断丢弃了、CLAUDE.md 包装标签的开销算在哪一段。
+   *
+   * 未提供时不做任何额外计算（零开销），/context 退化为不展示细分类别。
+   */
+  onSectionTokens?: (sections: PromptSectionTokens) => void;
+}
+
+/**
+ * §12 P0-1 完整版：system prompt 内部命名段的 token 记账。
+ * 对齐 CC analyzeContext 的 Memory files 类别。只报告「实际进入最终提示词」的段。
+ */
+export interface PromptSectionTokens {
+  /** CLAUDE.md 项目规则 + 记忆系统指令/MEMORY.md 索引 + 召回记忆 + session memory 的合计 */
+  memory: number;
 }
 
 /** 缓存条目 */
@@ -207,11 +227,20 @@ export function resolvePromptMaxTokens(ctx: SystemPromptContext): number {
 export function buildSystemPrompt(ctx: SystemPromptContext): string {
   const log = getLogger();
 
+  // §12 P0-1 完整版：记忆类段的文本，末尾统一记账上报（见 reportSectionTokens）。
+  // 由 collectMemorySections 从 ctx 单点重建（缓存命中/未命中两条路径共用同一函数，
+  // 避免两处各自推断「哪段是记忆」而漂移）。
+  const memorySectionTexts: string[] = [];
+  collectMemorySections(ctx, memorySectionTexts);
+
   // 检查缓存
   const cacheKey = generateCacheKey(ctx);
   const cached = cache.get(cacheKey);
   if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
     log.debug("PROMPT", "使用缓存的系统提示词");
+    // 命中缓存也要上报分段记账：缓存只存最终文本，若此处跳过上报，
+    // /context 在缓存有效期内（5min）会把「记忆」类别显示成 0。
+    reportSectionTokens(ctx, cached.content, memorySectionTexts);
     return cached.content;
   }
 
@@ -457,10 +486,65 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
 
   log.info("PROMPT", `系统提示词构建完成: ${content.length}字符, ~${estimateTokens(content)} tokens, ${attachments.length}个附件`);
 
+  // §12 P0-1 完整版：报告分段 token（供 /context 拆出「记忆/CLAUDE.md」类别）。
+  // 只统计**实际留在最终 content 里**的段——截断丢弃的附件不计入，否则 /context 会
+  // 显示一段其实并不占上下文的用量。
+  reportSectionTokens(ctx, content, memorySectionTexts);
+
   // 6. 写入缓存
   cache.set(cacheKey, { content, timestamp: Date.now() });
 
   return content;
+}
+
+/**
+ * §12 P0-1 完整版：收集「记忆类」段的文本（单一事实源）。
+ *
+ * 口径必须与 buildSystemPrompt 的实际注入点一一对应，新增记忆类注入点时同步加在这里：
+ * - memorySystemPrompt：记忆系统指令 + MEMORY.md 索引（core 区注入）
+ * - projectRules      ：CLAUDE.md（走 generateClaudeMdAttachment，故按其包装后文本估算）
+ * - recalledMemories  ：动态召回的相关记忆
+ * - sessionMemoryContent：压缩后注入的 Session Memory
+ *
+ * 用包装后的附件文本（而非裸内容）估算，才能把 <system-reminder> 标签开销正确归到本类别。
+ */
+function collectMemorySections(ctx: SystemPromptContext, out: string[]): void {
+  if (!ctx.onSectionTokens) return;  // 未注入回调 → 完全不做这些字符串构造
+  if (ctx.memorySystemPrompt) out.push(ctx.memorySystemPrompt);
+  if (ctx.projectRules) {
+    out.push(generateClaudeMdAttachment(ctx.projectRules, ctx.projectRulesPath).content);
+  }
+  if (ctx.recalledMemories && ctx.recalledMemories.length > 0) {
+    const att = generateRecalledMemoryAttachment(ctx.recalledMemories);
+    if (att) out.push(att.content);
+  }
+  if (ctx.sessionMemoryContent) {
+    const att = generateSessionMemoryAttachment(ctx.sessionMemoryContent);
+    if (att) out.push(att.content);
+  }
+}
+
+/**
+ * §12 P0-1 完整版：统计并上报 system prompt 的命名段 token 数。
+ *
+ * `candidates` 是各记忆类段的原始文本（可能因截断未全部进入 content）。逐段用
+ * `content.includes()` 判定是否真的在最终提示词里，只累加在场的段——保证 /context
+ * 的「记忆」类别不虚报被截断掉的内容。
+ */
+function reportSectionTokens(
+  ctx: SystemPromptContext,
+  content: string,
+  candidates: string[],
+): void {
+  if (!ctx.onSectionTokens) return;  // 未注入回调 → 零开销
+  let memory = 0;
+  for (const text of candidates) {
+    if (!text) continue;
+    // 截断后的段可能只剩前缀，用首 200 字符做在场判定（比全文 includes 更耐截断）
+    const probe = text.length > 200 ? text.slice(0, 200) : text;
+    if (content.includes(probe)) memory += estimateTokens(text);
+  }
+  ctx.onSectionTokens({ memory });
 }
 
 /** 构建身份指令部分 */

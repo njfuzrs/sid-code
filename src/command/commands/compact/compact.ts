@@ -140,7 +140,10 @@ async function runPartial(
   const compactModel =
     ctx.providerRegistry?.getModelForSubAgent("summarize") ?? ctx.config.model;
 
-  const result = await partialCompact(ctx.ctxMgr.getMessages(), opts.upTo, {
+  // 压缩前的原始消息快照：post-compact 的摘要覆盖率校验要拿它跟摘要比对
+  const originalMessages = ctx.ctxMgr.getMessages();
+
+  const result = await partialCompact(originalMessages, opts.upTo, {
     provider: ctx.provider,
     model: compactModel,
     customInstructions: opts.customInstructions,
@@ -155,15 +158,53 @@ async function runPartial(
   }
 
   ctx.ctxMgr.setMessages(result.messages);
+
+  // §12 P2-4 复审：手动压缩走与自动压缩**同一套**收尾（文件重注入 / MC state 重置 /
+  // cache break 抑制 / 质量校验 / 自适应记录 / PostCompact hook）。
+  // 此前手动路径只 fire 了 PostCompact hook，压缩后模型会"忘掉"刚读过的文件——
+  // 同一个压缩动作在两条路径上语义不一致。
+  await runManualPostCompact(ctx, {
+    originalMessages,
+    summary: result.summary ?? "",
+    messagesBefore: opts.before,
+    tokensBefore: opts.tokensBefore,
+    usedLLM: true,
+  });
+
   const after = ctx.ctxMgr.messageCount();
-
-  // §3.2：手动压缩也触发 PostCompact hook（trigger=manual）
-  await firePostCompact(ctx, opts.before, after, opts.tokensBefore);
-
   return {
     type: "text",
     value: opts.successPrefix(result.compactedCount, result.savedTokens, after),
   };
+}
+
+/**
+ * §12 P2-4 复审：手动压缩的收尾调用（复用 auto 路径的 runPostCompact 单一事实源）。
+ * 全部 best-effort——收尾任一步失败都不影响已完成的压缩。
+ */
+async function runManualPostCompact(
+  ctx: CommandContext,
+  args: {
+    originalMessages: import("../../../llm/types.ts").Message[];
+    summary: string;
+    messagesBefore: number;
+    tokensBefore: number;
+    usedLLM: boolean;
+  },
+): Promise<void> {
+  try {
+    const { runPostCompact } = await import("../../../query/compact/post-compact.ts");
+    await runPostCompact({
+      trigger: "manual",
+      ctxMgr: ctx.ctxMgr,
+      hookSystem: ctx.hookSystem,
+      fileReadTracker: ctx.fileReadTracker,
+      sessionDir: ctx.sessionDir,
+      ...args,
+    });
+  } catch {
+    // 收尾失败不影响压缩结果本身
+  }
 }
 
 /**

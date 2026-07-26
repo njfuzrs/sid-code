@@ -6,6 +6,7 @@
 import { HookPlanner, type HookEventContext } from "./planner.ts";
 import { HookRunner } from "./runner.ts";
 import { HookAggregator } from "./aggregator.ts";
+import type { HookRegistry } from "./registry.ts";
 import {
   HookEventName,
   type HookInput,
@@ -36,6 +37,7 @@ import {
   type ElicitationInput,
   type ElicitationResultInput,
   type AggregatedHookResult,
+  type HookExecutionPlan,
 } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
 
@@ -51,6 +53,11 @@ export class HookEventHandler {
   private sessionId: string;
   private cwd: string;
   private permissionMode: string = "";
+  /**
+   * registry 引用，仅用于 once hook 回标（executeHooks 里按 plan.entries 下标标记已执行）。
+   * 可选：老调用点不传时 once 语义退化为「不失效」，与历史行为一致，不会报错。
+   */
+  private readonly registry?: HookRegistry;
 
   constructor(
     planner: HookPlanner,
@@ -58,12 +65,14 @@ export class HookEventHandler {
     aggregator: HookAggregator,
     sessionId: string = "",
     cwd: string = process.cwd(),
+    registry?: HookRegistry,
   ) {
     this.planner = planner;
     this.runner = runner;
     this.aggregator = aggregator;
     this.sessionId = sessionId;
     this.cwd = cwd;
+    this.registry = registry;
   }
 
   /** 更新会话 ID */
@@ -480,9 +489,12 @@ export class HookEventHandler {
       // ★ 快速路径：全部是 runtime hook → 直接执行，跳过 aggregator 开销
       const userHooks = plan.hookConfigs.filter(h => h.type !== "runtime");
       if (userHooks.length === 0) {
-        for (const config of plan.hookConfigs) {
+        for (let i = 0; i < plan.hookConfigs.length; i++) {
+          const config = plan.hookConfigs[i];
           if (config.type === "runtime") {
             await config.action(input);
+            // runtime hook 无 success 概念，执行即视为成功 → 回标 once
+            this.markOnceExecuted(plan, i);
           }
         }
         return emptyResult();
@@ -492,6 +504,13 @@ export class HookEventHandler {
       const results = plan.sequential
         ? await this.runner.executeHooksSequential(plan.hookConfigs, eventName, input)
         : await this.runner.executeHooksParallel(plan.hookConfigs, eventName, input);
+
+      // 2.5 once hook 回标：执行成功的一次性 hook 标记为已执行，后续计划不再纳入。
+      // 对齐 CC registerSkillHooks 的 onHookSuccess → removeSessionHook（只在成功后移除，
+      // 失败的 once hook 保留以便下次重试）。runner 按入参顺序返回结果，故下标可对齐。
+      for (let i = 0; i < results.length; i++) {
+        if (results[i]?.success) this.markOnceExecuted(plan, i);
+      }
 
       // 3. 聚合结果
       const aggregated = this.aggregator.aggregateResults(results, eventName);
@@ -509,6 +528,20 @@ export class HookEventHandler {
         totalDuration: 0,
       };
     }
+  }
+
+  /**
+   * 把计划中第 index 个 hook 对应的 registry 条目标记为「once 已执行」。
+   * 非 once 条目在 registry.markOnceExecuted 内部直接短路，此处无需判断。
+   */
+  private markOnceExecuted(plan: HookExecutionPlan, index: number): void {
+    const entry = plan.entries?.[index];
+    if (!entry || !entry.once || !this.registry) return;
+    this.registry.markOnceExecuted(entry);
+    getLogger().debug(
+      "HOOK",
+      `一次性 hook 已执行，后续不再触发: ${entry.eventName}${entry.skillName ? ` (skill:${entry.skillName})` : ""}`,
+    );
   }
 
   /** 构建基础输入 */

@@ -1,7 +1,7 @@
 /**
  * Bundled Skill 工具包装器（Gap 1）
  *
- * 背景：磁盘 Skill 通过 SkillTool 注册为工具，模型可自动调用；而 Bundled Skill
+ * 背景：磁盘 Skill 通过 `Skill` 元工具（SkillMetaTool）暴露给模型，可自动调用；而 Bundled Skill
  * 此前只暴露为斜杠命令（UnifiedCommandRegistry），模型看不到、无法自动调用 ——
  * 这是 sid-code 内部的能力不对等（不是"对标 claude-code"，claude-code 的 /commit
  * 等本身也只是斜杠命令）。
@@ -102,7 +102,7 @@ export class BundledSkillTool implements Tool {
         userPrompt: prompt,
         allowedTools: this.cmd.allowedTools ?? [],
         // P2-2：内置 skill 若忘记声明 maxTurns 时的兜底默认，从 10 提到 30
-        // （与 sub-agent.ts/skill/tool.ts 的常规子代理默认对齐；现有内置 skill 均已显式声明，不受影响）
+        // （与 sub-agent.ts/skill/meta-tool.ts 的常规子代理默认对齐；现有内置 skill 均已显式声明，不受影响）
         maxTurns: this.cmd.maxTurns ?? 30,
         timeout:
           timeoutMins != null

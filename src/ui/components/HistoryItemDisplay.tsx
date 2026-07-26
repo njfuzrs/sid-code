@@ -261,6 +261,7 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
             summary={item.summary}
             status={item.status}
             result={item.result}
+            agentType={item.agentType}
             terminalWidth={width}
           />
         </Box>

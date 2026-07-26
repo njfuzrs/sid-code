@@ -440,6 +440,8 @@ export const EXEMPT_TOOLS = new Set([
   "exit_plan_mode", "bg_task_list", "bg_task_get",
   // 结构化任务清单：连续 create/update/list 是正当的清单维护而非循环
   "task_create", "task_update", "task_list", "task_get",
+  // P1-3 团队通信：连续给不同成员发消息是正当的协作编排（与 send_message 同理）
+  "team_message",
 ]);
 
 /** 循环检测器（组合工具调用和内容检测） */

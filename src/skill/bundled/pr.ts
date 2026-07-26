@@ -75,9 +75,15 @@ export function registerPrSkill(): void {
     allowedTools: ["bash", "read", "grep", "glob"],
     context: "inline",
     userInvocable: true,
-    async getPromptForCommand(args) {
+    async getPromptForCommand(args, context) {
+      // P3-1：PR 归因动态注入（settings.git.prAttribution）。
+      // /pr 只产出描述文本不建 PR，但产出会被用户直接拿去建 PR，归因同样要带上；
+      // prAttribution.enabled=false → 空串 → prompt 里完全不提归因。
+      const { prAttributionInstruction } = await import("../../tool/git-attribution.ts");
+      const prAttr = prAttributionInstruction(context?.config?.git);
       return (
         PR_PROMPT +
+        (prAttr ? `\n\n## 归因\n${prAttr}` : "") +
         (args.trim() ? `\n\n## 用户额外要求\n\n${args.trim()}` : "")
       );
     },

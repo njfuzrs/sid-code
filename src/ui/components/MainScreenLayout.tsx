@@ -80,6 +80,8 @@ interface MainScreenLayoutProps {
   onSubmit: (text: string) => void;
   /** 流式中已排队待接续的输入条数 */
   queuedCount?: number;
+  /** P1-G6：按优先级分组的排队条数，透传给 Composer→InputArea。 */
+  queuedByPriority?: { now: number; next: number; later: number };
   /** P2-G6：↑ 弹回编辑——取队尾排队输入回输入框，透传给 Composer→InputArea。 */
   onPopQueuedForEdit?: () => string | null;
   /** Ctrl+D（输入框为空时）请求退出的回调，透传给 Composer→InputArea。 */
@@ -150,6 +152,7 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
   cwd,
   onSubmit,
   queuedCount = 0,
+  queuedByPriority,
   onPopQueuedForEdit,
   onExitRequest,
   onCyclePermissionMode,
@@ -292,6 +295,7 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
             commands={commands}
             cwd={cwd}
             queuedCount={queuedCount}
+            queuedByPriority={queuedByPriority}
             onPopQueuedForEdit={onPopQueuedForEdit}
             onExitRequest={onExitRequest}
             onCyclePermissionMode={onCyclePermissionMode}

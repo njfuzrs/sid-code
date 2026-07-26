@@ -26,6 +26,17 @@ import { getLogger } from "../debug/logger.ts";
 export interface UnifiedRegistryLoadOptions {
   scanOptions?: ScanOptions;
   disabledSkills?: string[];
+  /**
+   * 共享 SkillManager（强烈建议注入）。
+   *
+   * 不注入时 loadSkillCommands 会自建一个 SkillManager 重扫磁盘，导致：
+   *   - 插件 skills / MCP skills（运行时 addPluginSkills 追加的）在斜杠命令里不可见；
+   *   - 条件激活 gate 态、/skills disable 态、热重载结果与主 manager 分叉；
+   *   - 同一份 SKILL.md 被解析两遍（启动期多余 IO）。
+   * 由 cli.ts 注入启动时创建的那一个 manager，使模型路径（SkillMetaTool）与
+   * 用户斜杠路径（UnifiedCommandRegistry）共用同一份 skill 真源。
+   */
+  skillManager?: import("../skill/manager.ts").SkillManager;
 }
 
 export class UnifiedCommandRegistry {
@@ -60,10 +71,12 @@ export class UnifiedCommandRegistry {
         log.warn("COMMAND", `加载自定义命令失败: ${e?.message}`);
         return [] as UnifiedCommand[];
       }),
-      loadSkillCommands(cwd, scanOptions, disabledSkills).catch((e) => {
-        log.warn("COMMAND", `加载 Skill 命令失败: ${e?.message}`);
-        return [] as UnifiedCommand[];
-      }),
+      loadSkillCommands(cwd, scanOptions, disabledSkills, this.loadOptions.skillManager).catch(
+        (e) => {
+          log.warn("COMMAND", `加载 Skill 命令失败: ${e?.message}`);
+          return [] as UnifiedCommand[];
+        },
+      ),
       loadBuiltinCommands().catch((e) => {
         log.warn("COMMAND", `加载内置命令失败: ${e?.message}`);
         return [] as UnifiedCommand[];
@@ -166,6 +179,18 @@ export class UnifiedCommandRegistry {
 
   /** 清除缓存（当命令来源变化时调用，如重新加载扩展） */
   clearCache(): void {
+    this.cache.clear();
+  }
+
+  /**
+   * skill 集合发生运行时变化后刷新斜杠命令（插件 skills 加载、MCP skills 发现、
+   * 动态发现、热重载、gate 解除等）。
+   *
+   * 为什么必须显式调用：loadAllCommands 结果按 cwd 缓存，共享 SkillManager 里
+   * 新追加的 skill 不会自动出现在缓存快照里——用户会看到 `/plugin:skill` 提示
+   * "未知命令"。这里只清缓存，下次 getCommands 会从共享 manager 重新投影。
+   */
+  invalidateSkillCommands(): void {
     this.cache.clear();
   }
 

@@ -105,6 +105,7 @@ export async function completeAgentTask(taskId: string, result: AgentTaskResult,
     status: "completed",
     summary: `Agent "${task.description}" 执行完成`,
     result,
+    agentType: task.agentType, // P1-2：供 TUI 取该 agent 的身份色
   });
 }
 
@@ -145,6 +146,7 @@ export async function failAgentTask(taskId: string, error: string, notify: boole
     outputFile: task.outputFile,
     status: "failed",
     summary: `Agent "${task.description}" 执行失败: ${error.length > 200 ? error.slice(0, 200) + "…[截断]" : error}`,
+    agentType: task.agentType, // P1-2：供 TUI 取该 agent 的身份色
   });
 }
 
@@ -183,6 +185,7 @@ export function killAgentTask(taskId: string): void {
     outputFile: task.outputFile,
     status: "killed",
     summary: `Agent "${task.description}" 已被终止`,
+    agentType: task.agentType, // P1-2：供 TUI 取该 agent 的身份色
   });
 }
 

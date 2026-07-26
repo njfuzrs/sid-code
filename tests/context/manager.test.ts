@@ -129,13 +129,26 @@ describe("ContextManager", () => {
     expect(mgr.getMaxTokens()).toBe(200000);
   });
 
-  test("默认 compactThreshold 为 0.7", () => {
-    const mgr = new Manager({ maxTokens: 1000 });
-    // 700 tokens 以上应触发压缩（0.7 * 1000 = 700）；ASCII 系数 0.20 → 700 tokens ≈ 3500 字符
-    mgr.setSystemPrompt("a".repeat(3300)); // ~660 tokens < 700
+  test("§12 复审：needsCompaction 与 getCompactionLevel 同源（不再用 0.7 比例独立判定）", () => {
+    // 历史行为：needsCompaction 用 maxTokens×compactThreshold(0.7) 独立判定，与真实压缩链路
+    // （绝对 buffer + 相对系数 + 完成缓冲区）不同源 —— 会给调用方错误信号。
+    // 现在语义 = 已达 hard 档或更紧急，两者恒等。
+    const mgr = new Manager({ maxTokens: 1000 });   // 小窗口：默认无 hard 档，仅 emergency
+    mgr.setSystemPrompt("a".repeat(3300));          // ~660 tokens，剩余 340 > 100 门槛
+    expect(mgr.getCompactionLevel(0)).toBe("none");
     expect(mgr.needsCompaction(0)).toBe(false);
-    mgr.setSystemPrompt("a".repeat(3700)); // ~740 tokens > 700
+
+    mgr.setSystemPrompt("a".repeat(4600));          // ~920 tokens，剩余 80 ≤ 100 → emergency
+    expect(mgr.getCompactionLevel(0)).toBe("emergency");
     expect(mgr.needsCompaction(0)).toBe(true);
+
+    // 标准窗口：needsCompaction 恒等于「level ∈ {hard, emergency}」
+    const std = new Manager({ maxTokens: 200_000 });
+    std.setSystemPrompt("a".repeat(Math.ceil(140_000 / 0.2)));  // 恰好到 70% 触发点
+    expect(std.needsCompaction(0)).toBe(
+      ["hard", "emergency"].includes(std.getCompactionLevel(0)),
+    );
+    expect(std.needsCompaction(0)).toBe(true);
   });
 
   test("compactWithSummary 使用安全分割点压缩", () => {
@@ -439,9 +452,52 @@ describe("增量压缩", () => {
     mgr.addMessage({ role: "user", content: [{ type: "text", text: "hi" }] });
     const bd = mgr.getTokenBreakdown(0);
     expect(bd.maxTokens).toBe(100_000);
-    // 默认 compactThreshold=0.7 → 阈值 token = 70000
-    expect(bd.compactThresholdTokens).toBe(Math.round(100_000 * mgr.getCompactThreshold()));
+    // §12 复审：compactThresholdTokens 与真实触发链路同源（getCompactionThresholds），
+    // 不再是 maxTokens×compactThreshold(0.7)。100K 窗口 hard 门槛 = max(60K, 18%)=60K → 触发点 40K。
+    expect(bd.compactThresholdTokens).toBe(mgr.getCompactionThresholds().compactionTriggerUsed);
+    expect(bd.compactThresholdTokens).toBe(40_000);
     expect(bd.calibrated).toBe(false);
+  });
+
+  test("§12 复审：/context 展示的触发点 == getCompactionLevel 真实触发点（各窗口）", () => {
+    // 历史 bug：1M 窗口 /context 显示 70%（maxTokens×0.7）而真实触发在 82%，少算 120K。
+    for (const maxTokens of [100_000, 200_000, 1_000_000]) {
+      const mgr = new Manager({ maxTokens });
+      const trigger = mgr.getTokenBreakdown(0).compactThresholdTokens;
+      // 恰好到触发点：应已进入 hard（或更紧急）
+      mgr.setSystemPrompt("a".repeat(Math.ceil(trigger / 0.2)));
+      expect(["hard", "emergency"]).toContain(mgr.getCompactionLevel(0));
+      // 触发点前 10%：不应到 hard
+      const mgr2 = new Manager({ maxTokens });
+      mgr2.setSystemPrompt("a".repeat(Math.floor((trigger * 0.9) / 0.2)));
+      expect(["none", "soft"]).toContain(mgr2.getCompactionLevel(0));
+    }
+  });
+
+  test("§12 P3-2：完成缓冲区抬高 emergency 地板，且不让 200K 窗口回归（仍 70% 触发）", () => {
+    // 200K 窗口 + 64K 输出：缓冲 = min(64K, 200K×12%)+20K = 24K+20K = 44K，
+    // 但 hard 原门槛 60K > 44K → 缓冲不生效，触发点仍是 70%（零回归）。
+    const std = new Manager({ maxTokens: 200_000, maxOutputTokens: 64_000 });
+    expect(std.getTokenBreakdown(0).compactThresholdTokens).toBe(140_000);
+    // 80K 窗口 + 超大输出：缓冲被 TOTAL_MAX_RATIO(20%) 封顶为 16K，不会吃掉过多窗口
+    const big = new Manager({ maxTokens: 80_000, maxOutputTokens: 128_000 });
+    const t = big.getCompactionThresholds();
+    expect(t.completionBuffer).toBe(16_000);
+    // 不变量：hard 永不晚于 emergency 触发
+    expect(t.compressionRemaining).toBeGreaterThanOrEqual(t.emergencyRemaining);
+    // 小窗口（≤60K）不启用缓冲区
+    expect(new Manager({ maxTokens: 32_000 }).getCompactionThresholds().completionBuffer).toBe(0);
+  });
+
+  test("§12 复审：小窗口模型下 P1-1 override 同样生效（此前被静默忽略）", () => {
+    // 32K 窗口设 50%：应在用量过半时进 hard，而非一直等到 90% 才 emergency
+    const mgr = new Manager({ maxTokens: 32_000, compactThreshold: 0.5 });
+    mgr.setSystemPrompt("a".repeat(Math.ceil(17_000 / 0.2)));  // ~17K tokens > 16K
+    expect(mgr.getCompactionLevel(0)).toBe("hard");
+    // 未设 override 的小窗口：同样用量下不触发（保持原行为）
+    const plain = new Manager({ maxTokens: 32_000 });
+    plain.setSystemPrompt("a".repeat(Math.ceil(17_000 / 0.2)));
+    expect(plain.getCompactionLevel(0)).toBe("none");
   });
 
   test("P0-2 getTokenBreakdown 空会话不崩溃", () => {

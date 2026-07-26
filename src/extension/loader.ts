@@ -10,6 +10,7 @@ import { join, basename } from "path";
 import { parseFrontmatter } from "./frontmatter.ts";
 import { getLogger } from "../debug/logger.ts";
 import { sidPaths, getClaudeHome } from "../config/paths.ts";
+import { isRestrictedToPluginOnly } from "../config/plugin-only-policy.ts";
 import type {
   ExtensionSource,
   ParsedExtensionFile,
@@ -90,21 +91,37 @@ export class ExtensionLoader {
       }
     };
 
+    // 企业策略：该定制化面是否被锁定为「仅管理员可信来源」
+    //（strictPluginOnlyCustomization）。锁定时跳过 user/project/additional 三层，
+    // 只保留 builtin 与 managed —— 防止未审计的项目级 skill/agent 被自动加载执行。
+    // type 与面名同形（skills/commands/agents/hooks），直接透传。
+    const surfaceLocked = isRestrictedToPluginOnly(
+      type as import("../config/plugin-only-policy.ts").CustomizationSurface,
+    );
+    if (surfaceLocked) {
+      getLogger().debug(
+        "EXTENSION",
+        `${type} 已被企业策略锁定为仅管理员来源，跳过 user/project/additional 层`,
+      );
+    }
+
     // 1. 扫描用户级目录（P1-6：先 ~/.claude 兜底，再 ~/.sid-code 覆盖）
     //    CC 迁移用户把命令放在 ~/.claude/{type}/，我们兼容读取；同名以 .sid-code 为准。
-    const userClaudeDir = join(getClaudeHome(), type);
-    const { files: userClaudeFiles, errors: userClaudeErrors } = await this.scanDir(userClaudeDir, "user");
-    mergeFiles(userClaudeFiles);
-    errors.push(...userClaudeErrors);
+    if (!surfaceLocked) {
+      const userClaudeDir = join(getClaudeHome(), type);
+      const { files: userClaudeFiles, errors: userClaudeErrors } = await this.scanDir(userClaudeDir, "user");
+      mergeFiles(userClaudeFiles);
+      errors.push(...userClaudeErrors);
 
-    const userDir = sidPaths.extensionDir(type);
-    const { files: userFiles, errors: userErrors } = await this.scanDir(userDir, "user");
-    mergeFiles(userFiles);
-    errors.push(...userErrors);
+      const userDir = sidPaths.extensionDir(type);
+      const { files: userFiles, errors: userErrors } = await this.scanDir(userDir, "user");
+      mergeFiles(userFiles);
+      errors.push(...userErrors);
+    }
 
     // 2. 扫描项目级目录（P1-6：先 {proj}/.claude 兜底，再 {proj}/.sid-code 覆盖）
     //    两个项目目录都走信任检查（项目级扩展默认不可信）。
-    if (projectDir) {
+    if (projectDir && !surfaceLocked) {
       // 对一批项目级文件做信任过滤，返回可信文件
       const filterTrusted = async (files: ParsedExtensionFile[]): Promise<ParsedExtensionFile[]> => {
         if (options?.trustProjectExtensions || !options?.trustManager || files.length === 0) {
@@ -144,6 +161,22 @@ export class ExtensionLoader {
       const { files: projFiles, errors: projErrors } = await this.scanDir(projDir, "project");
       mergeFiles(await filterTrusted(projFiles));
       errors.push(...projErrors);
+    }
+
+    // 2.5 additional 层（--add-dir 授权目录，对齐 CC loadSkillsDir 的 additionalDirs）。
+    //     语义：用户显式用 --add-dir 授权的目录，其 .sid-code/{type}/ 与 .claude/{type}/
+    //     同样参与加载。优先级高于项目级（更晚合并 = 覆盖），低于 managed。
+    //     信任：显式命令行授权已表达用户意图，与项目级自动发现不同，故不再走信任确认；
+    //     但受 strictPluginOnlyCustomization 锁定约束（--add-dir 不是策略绕过口）。
+    if (options?.additionalDirs && options.additionalDirs.length > 0 && !surfaceLocked) {
+      for (const baseDir of options.additionalDirs) {
+        for (const sub of [".claude", ".sid-code"]) {
+          const dir = join(baseDir, sub, type);
+          const { files: addFiles, errors: addErrors } = await this.scanDir(dir, "project");
+          mergeFiles(addFiles);
+          errors.push(...addErrors);
+        }
+      }
     }
 
     // 3. P2-1：企业 managed 层（最高优先级，最后扫描）。managed 扩展覆盖同名 user/project，

@@ -39,6 +39,11 @@ export interface RefreshContext {
   toolRegistry?: ToolRegistry;
   hookSystem?: HookSystem;
   mcpManager?: MCPManager;
+  /**
+   * Skill 管理器。插件带的 skills（§18.10）此前不参与刷新——装了新插件要重启才能用它的
+   * skill，卸载插件后它的 skill 还留着。传入后走 replacePluginSkills 原子替换。
+   */
+  skillManager?: import("../skill/manager.ts").SkillManager;
 }
 
 /** 刷新结果摘要 */
@@ -47,6 +52,8 @@ export interface RefreshResult {
   commandsLoaded: number;
   hooksRefreshed: boolean;
   mcpToolsLoaded: number;
+  /** 刷新后生效的插件 Skill 数量（未传 skillManager 时为 0） */
+  skillsLoaded: number;
   componentErrors: string[];
 }
 
@@ -95,7 +102,22 @@ export async function refreshActivePlugins(ctx: RefreshContext): Promise<Refresh
     }
   }
 
-  // 4. MCP
+  // 4. Skills（§18.10 插件带的 skills）
+  let skillsLoaded = 0;
+  if (ctx.skillManager) {
+    try {
+      // getPluginSkills 是 memoize 的，clearAllPluginCaches 已清除，这里会重新加载
+      const { getPluginSkills } = await import("./loadPluginSkills.ts");
+      const pluginSkills = await getPluginSkills();
+      // 原子替换：卸载/禁用的插件其 skill 一并移除（纯追加会永久残留）
+      skillsLoaded = ctx.skillManager.replacePluginSkills(pluginSkills);
+    } catch (err: any) {
+      componentErrors.push(`Skill 刷新失败: ${err.message}`);
+      log.error("PLUGIN", `Skill 刷新失败: ${err.message}`);
+    }
+  }
+
+  // 5. MCP
   let mcpToolsLoaded = 0;
   if (ctx.mcpManager) {
     try {
@@ -120,8 +142,15 @@ export async function refreshActivePlugins(ctx: RefreshContext): Promise<Refresh
 
   log.info(
     "PLUGIN",
-    `插件刷新完成: ${loadResult.enabled.length} 启用, ${commandsLoaded} 命令, ${mcpToolsLoaded} MCP 工具`,
+    `插件刷新完成: ${loadResult.enabled.length} 启用, ${commandsLoaded} 命令, ${skillsLoaded} Skill, ${mcpToolsLoaded} MCP 工具`,
   );
 
-  return { loadResult, commandsLoaded, hooksRefreshed, mcpToolsLoaded, componentErrors };
+  return {
+    loadResult,
+    commandsLoaded,
+    hooksRefreshed,
+    mcpToolsLoaded,
+    skillsLoaded,
+    componentErrors,
+  };
 }

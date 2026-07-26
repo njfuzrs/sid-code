@@ -300,7 +300,7 @@ export interface ToolExecutorDeps {
    * 使 resume 时模型能知道"之前改过哪些文件"（此前 Checkpoint 独立存储，不参与恢复编排）。
    * 未注入（无头/子代理）时安全跳过。
    */
-  recordFileChanges?: (files: string[], toolName: string) => void;
+  recordFileChanges?: (files: string[], toolName: string, snapshotId?: string) => void;
   /**
    * P2-1：文件快照创建后回传其 id，供会话回退（RewindManager）记录文件锚点。
    * 未注入（无头/子代理）时安全跳过。
@@ -364,7 +364,10 @@ export async function executeTools(
         deps.config.checkpoint,
       );
       const toolNames = toolBlocks.map(t => t.block.name).join(", ");
-      const toolSummary = affectedFiles.join(", ");
+      // P2-1：摘要带上触发命令。此前只有文件列表，`/checkpoints` 里看不出
+      // 「这次快照是 `git reset --hard` 之前建的」——回退时无法判断该选哪个快照。
+      // bash 工具的命令（截断）优先入摘要，其余工具沿用文件列表。
+      const toolSummary = buildSnapshotSummary(toolBlocks.map(t => t.block), affectedFiles);
       const snapshotId = await cpMgr.createSnapshot(affectedFiles, toolNames, toolSummary);
       // P2-1：把新快照 id 回传给会话回退管理器（作为下一轮回退点的文件锚点）。
       if (snapshotId) {
@@ -373,8 +376,10 @@ export async function executeTools(
       // P1-7：快照创建后，把文件修改摘要同步落盘到会话 JSONL（打通 Checkpoint↔Resume）。
       // 双写：Checkpoint 存完整内容/diff 用于 undo；JSONL metadata 只存路径+工具名摘要用于
       // resume 时重建"改过哪些文件"的上下文。落盘失败不影响工具执行。
+      // P2-1 补齐：连带落 snapshotId 锚点——此前 file_changes 只有文件名，resume 后
+      // 拿不到「这批改动对应哪个快照」，跨会话无法把文件集反查回可回退的快照。
       try {
-        deps.recordFileChanges?.(affectedFiles, toolNames);
+        deps.recordFileChanges?.(affectedFiles, toolNames, snapshotId || undefined);
       } catch (e: any) {
         log.warn("CHECKPOINT", `文件修改摘要落盘失败（不阻断）: ${e?.message}`);
       }
@@ -1069,6 +1074,28 @@ function safeInputSize(input: unknown): number {
   } catch {
     return 0;
   }
+}
+
+/**
+ * 构造快照摘要（P2-1）：让 `/checkpoints` 能看出「这次快照是哪个操作之前建的」。
+ *
+ * bash 工具带上触发命令（截断 120 字符）——破坏性 bash（`git reset --hard`、`rm`）
+ * 是最需要回退的场景，光有文件列表看不出原因。其余工具沿用文件列表。
+ */
+function buildSnapshotSummary(toolBlocks: ToolUseBlock[], affectedFiles: string[]): string {
+  const CMD_MAX = 120;
+  const commands: string[] = [];
+  for (const block of toolBlocks) {
+    if (block.name !== "bash") continue;
+    const cmd = (block.input as any)?.command;
+    if (typeof cmd !== "string" || !cmd.trim()) continue;
+    const oneLine = cmd.replace(/\s+/g, " ").trim();
+    commands.push(oneLine.length > CMD_MAX ? `${oneLine.slice(0, CMD_MAX - 1)}…` : oneLine);
+  }
+  const fileList = affectedFiles.join(", ");
+  if (commands.length === 0) return fileList;
+  const cmdPart = `$ ${commands.join(" ; ")}`;
+  return fileList ? `${cmdPart} → ${fileList}` : cmdPart;
 }
 
 /** 根据工具类型提取受影响的文件路径 */

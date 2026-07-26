@@ -83,6 +83,8 @@ export interface DialogSwitchProps {
   commands: Array<{ name: string; aliases: string[]; description: string }>;
   cwd: string;
   queuedCount?: number;
+  /** P1-G6：按优先级分组的排队条数，透传给 Composer→InputArea。 */
+  queuedByPriority?: { now: number; next: number; later: number };
   /** P2-G6：↑ 弹回编辑，透传给 Composer→InputArea。 */
   onPopQueuedForEdit?: () => string | null;
   onExitRequest?: () => void;
@@ -120,6 +122,7 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
   commands,
   cwd,
   queuedCount,
+  queuedByPriority,
   onPopQueuedForEdit,
   onExitRequest,
   onCyclePermissionMode,
@@ -287,6 +290,7 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
       commands={commands}
       cwd={cwd}
       queuedCount={queuedCount}
+      queuedByPriority={queuedByPriority}
       onPopQueuedForEdit={onPopQueuedForEdit}
       onExitRequest={onExitRequest}
       onCyclePermissionMode={onCyclePermissionMode}

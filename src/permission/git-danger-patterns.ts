@@ -23,6 +23,11 @@ export interface GitDangerPattern {
   pattern: RegExp;
   /** 严重程度：critical=拒绝不可确认 / high=可确认 / medium=需确认 */
   severity: GitDangerSeverity;
+  /**
+   * 是否为「更具体」的模式。同 severity 下多条同时命中时，specific 的胜出，
+   * 让确认框显示信息量更大的那条（如「强制推送 main/master」优于泛化的「强制推送」）。
+   */
+  specific?: boolean;
 }
 
 /**
@@ -40,7 +45,9 @@ export const GIT_DANGER_PATTERNS: readonly GitDangerPattern[] = [
   // 强制推送：覆盖远程历史
   { name: "git 强制推送", pattern: /\bgit\s+push\b[^;&|\n]*[ \t](--force|--force-with-lease|-f)\b/, severity: "high" },
   // 强制推送 main/master：最危险的常见误操作（CC 专门警告）。保留 high 让用户能确认执行。
-  { name: "git 强制推送 main/master", pattern: /\bgit\s+push\b[^;&|\n]*(--force|--force-with-lease|-f)\b[^;&|\n]*\b(main|master)\b/, severity: "high" },
+  // specific=true：与上面的通用「强制推送」同为 high 且会同时命中，标记为更具体使其在
+  // matchGitDanger 里胜出，确认框才能显示"正在强推 main"这个关键信息。
+  { name: "git 强制推送 main/master", pattern: /\bgit\s+push\b[^;&|\n]*(--force|--force-with-lease|-f)\b[^;&|\n]*\b(main|master)\b/, severity: "high", specific: true },
   // 清理未跟踪文件（-f 强制，排除 -n/--dry-run 预演）
   { name: "git 清理未跟踪文件", pattern: /\bgit\s+clean\b(?![^;&|\n]*(?:-[a-zA-Z]*n|--dry-run))[^;&|\n]*-[a-zA-Z]*f/, severity: "high" },
   // 丢弃工作区改动：git checkout . / git restore .
@@ -81,16 +88,84 @@ export const GIT_DANGER_DISPLAY: readonly GitDangerDisplay[] = [
 ];
 
 /**
+ * git **全局选项**（出现在子命令之前）——归一化时需剥离，否则子命令与 `git` 之间被撑开，
+ * 所有 `\bgit\s+<子命令>` 形态的正则全部失配（安全绕过）。
+ *
+ * 分两类：
+ *   - 带值：`-c k=v` / `-C <dir>` / `--git-dir=<p>` / `--work-tree <p>` / `--namespace` / `--exec-path`
+ *     （`=` 形式值粘在同 token，分离形式值在下一个 token）。
+ *   - 纯布尔：`--no-pager` / `-P` / `--paginate` / `--bare` / `--literal-pathspecs` / `--no-replace-objects`…
+ *
+ * ⚠️ 只剥离**子命令之前**的选项——一旦遇到第一个非选项 token（= 子命令），立即停止，
+ * 绝不触碰子命令自身的参数（否则会把 `git commit --no-verify` 的 flag 也吃掉）。
+ */
+const GIT_GLOBAL_OPTS_WITH_VALUE = new Set(["-c", "-C", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"]);
+const GIT_GLOBAL_BOOL_OPTS = new Set([
+  "-P", "--no-pager", "--paginate", "--bare", "--no-replace-objects",
+  "--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--icase-pathspecs",
+  "--no-optional-locks", "--no-lazy-fetch", "--no-advice",
+]);
+
+/**
+ * 归一化命令串里的 git 全局选项：把 `git -c k=v -C dir reset --hard` 改写为 `git reset --hard`，
+ * 使所有 `\bgit\s+<子命令>` 正则能正常命中。
+ *
+ * 设计取舍：
+ *   - **纯文本改写**，不做 shell 解析——本函数用于安全**检测**，宁可多归一化一份候选串
+ *     （检测时两份都过一遍正则）也不能因解析失败而漏检。
+ *   - 逐段处理每个 `git` 出现处，支持复合命令（`ls && git -c x reset --hard`）。
+ *   - 无全局选项时返回原串（零开销、零行为变化）。
+ *
+ * @returns 剥离全局选项后的命令串；与原串相同表示无需归一化
+ */
+export function normalizeGitGlobalOptions(command: string): string {
+  if (!command || !/\bgit\s+-/.test(command)) return command;
+
+  // 逐个 `git` 词边界处理：匹配 `git` 后紧跟的连续全局选项段并删除。
+  return command.replace(/\bgit((?:[ \t]+-[^\s;&|]*(?:[ \t]+[^\s;&|-][^\s;&|]*)?)+)/g, (_full, optsPart: string) => {
+    // 把选项段按空白切成 token，逐个判断是否为「可剥离的全局选项」。
+    const tokens = optsPart.trim().split(/[ \t]+/).filter(Boolean);
+    const kept: string[] = [];
+    let i = 0;
+    for (; i < tokens.length; i++) {
+      const tok = tokens[i]!;
+      if (!tok.startsWith("-")) break; // 到达子命令（第一个非选项 token）→ 停止剥离
+      // `--opt=value` 形式：取 `=` 前的名字判断
+      const eq = tok.indexOf("=");
+      const name = eq > 0 ? tok.slice(0, eq) : tok;
+      if (GIT_GLOBAL_OPTS_WITH_VALUE.has(name)) {
+        if (eq < 0) i++; // 值在下一个 token（`-c k=v` / `-C dir`），一并跳过
+        continue;
+      }
+      if (GIT_GLOBAL_BOOL_OPTS.has(name)) continue;
+      // 不是已知全局选项 → 说明已经进入子命令的 flag 区（如 `git --version`），保留其余全部
+      break;
+    }
+    // 剥离掉 [0, i) 的全局选项，保留 i 之后的所有 token
+    kept.push(...tokens.slice(i));
+    return kept.length > 0 ? `git ${kept.join(" ")}` : "git";
+  });
+}
+
+/**
  * 判断命令是否命中任一破坏性 git 模式（供 checkpoint 触发条件等复用，P2-1）。
+ *
+ * 对原串与「剥离 git 全局选项后的归一串」双重匹配——`git -c core.pager=cat reset --hard`
+ * 这类插入全局选项的绕过写法也能命中（安全修复：此前一律漏检）。
+ *
  * @returns 命中的模式（severity 最高优先），未命中返回 null
  */
 export function matchGitDanger(command: string): GitDangerPattern | null {
   if (!command) return null;
   const order: Record<GitDangerSeverity, number> = { critical: 3, high: 2, medium: 1 };
+  const normalized = normalizeGitGlobalOptions(command);
+  const candidates = normalized === command ? [command] : [command, normalized];
+  // 排序键：severity 优先，同 severity 下 specific 胜出（信息量更大的标签赢）。
+  const rank = (p: GitDangerPattern) => order[p.severity] * 2 + (p.specific ? 1 : 0);
   let best: GitDangerPattern | null = null;
   for (const p of GIT_DANGER_PATTERNS) {
-    if (p.pattern.test(command)) {
-      if (!best || order[p.severity] > order[best.severity]) best = p;
+    if (candidates.some((c) => p.pattern.test(c))) {
+      if (!best || rank(p) > rank(best)) best = p;
     }
   }
   return best;

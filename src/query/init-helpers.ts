@@ -227,11 +227,17 @@ async function initAnalyticsSink(config: Config, sessionId: string): Promise<voi
   }
 }
 
-/** 构建系统提示词 */
+/**
+ * 构建系统提示词
+ *
+ * @param onSectionTokens §12 P0-1：分段 token 记账回调，透传给 buildSystemPrompt。
+ *   供 /context 把「记忆/CLAUDE.md」从系统提示词总量里拆成独立类别。
+ */
 export async function buildInitialSystemPrompt(
   config: Config,
   tools: import("../tool/types.ts").LegacyTool[],
   denyRulesSummary?: string,
+  onSectionTokens?: (s: import("../config/system-prompt.ts").PromptSectionTokens) => void,
 ): Promise<string> {
   const log = getLogger();
 
@@ -293,7 +299,7 @@ export async function buildInitialSystemPrompt(
 
   const { buildSystemPrompt } = await import("../config/system-prompt.ts");
   const { collectIDEContext } = await import("../ide/integration.ts");
-  const { collectSkillListingEntries } = await import("../skill/tool.ts");
+  const { collectSkillListingEntries } = await import("../skill/listing.ts");
   // G12：加载激活的输出风格（配置态稳定，注入静态缓存区）
   let outputStyleContent: string | undefined;
   try {
@@ -320,6 +326,8 @@ export async function buildInitialSystemPrompt(
     // 缺口 D：deny 规则约束摘要（前置告知模型哪些操作必被拒绝）
     denyRulesSummary,
     ...collectIDEContext(),
+    // §12 P0-1：分段记账（记忆/CLAUDE.md）上报给 /context
+    onSectionTokens,
     // 不再写死 maxTokens：交由 buildSystemPrompt 按模型 contextWindow 的 90% 动态推导
   });
 }

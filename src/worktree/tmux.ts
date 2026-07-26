@@ -83,6 +83,76 @@ export function createTmuxSessionForWorktree(
   }
 }
 
+// ============================================================
+// P3-2：Agent Teams 的 teammate pane（对齐 CC teammateMode: "tmux"）
+//
+// 与上面的 worktree session 不同：teammate pane 不是给用户交互用的 shell，
+// 而是**实时观察窗**——每个成员一个 pane，`tail -F` 该成员任务的落盘输出。
+// 成员本就把输出流式写盘（task/disk-output.ts），所以 tail 就能拿到实时进度，
+// 无需把子代理搬进 tmux 进程（那会破坏进程内并发、worktree ALS 隔离等既有机制）。
+// ============================================================
+
+/** teammate 观察 session 名：sid-team-<团队名>。 */
+export function generateTeamTmuxSessionName(teamName: string): string {
+  const safe = teamName.replace(/[/.]/g, "_").replace(/[^a-zA-Z0-9_-]/g, "");
+  return `sid-team-${safe}`.slice(0, MAX_SESSION_NAME);
+}
+
+/**
+ * 为团队创建观察 session（detached）。失败/无 tmux 返回 null（调用方降级 in-process）。
+ */
+export function createTeamTmuxSession(sessionName: string, cwd: string): string | null {
+  const log = getLogger();
+  if (!isTmuxAvailable()) {
+    log.debug("SWARM", "tmux 不可用，teammateMode=tmux 降级为 in-process");
+    return null;
+  }
+  if (tmuxSessionExists(sessionName)) return sessionName;
+  try {
+    execFileSync("tmux", ["new-session", "-d", "-s", sessionName, "-c", cwd], {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    log.info(
+      "SWARM",
+      `已创建 teammate 观察 session: ${sessionName}（${isITerm2() ? "iTerm2 可 tmux -CC attach" : "tmux attach -t " + sessionName}）`,
+    );
+    return sessionName;
+  } catch (err: any) {
+    log.warn("SWARM", `创建 teammate tmux session 失败（降级 in-process）: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * 给某成员开一个 pane，实时 tail 其输出文件。
+ *
+ * 用 `tail -F`（大写 F）：文件尚未创建时会等待并在创建后跟上，
+ * 避免成员还没产出первый字节就因文件不存在而 pane 退出。
+ * 失败静默返回 false——观察窗是增益，绝不能阻断团队执行。
+ */
+export function createTeammatePane(
+  sessionName: string,
+  memberName: string,
+  outputFile: string,
+): boolean {
+  try {
+    execFileSync(
+      "tmux",
+      [
+        "new-window", "-t", sessionName, "-n", memberName.slice(0, 20),
+        // sh -c 里只拼固定命令 + execFileSync 传参（非 shell 拼接用户串），
+        // outputFile 由内部生成（taskId 派生），不含用户可控内容。
+        "tail", "-F", outputFile,
+      ],
+      { stdio: ["pipe", "pipe", "pipe"] },
+    );
+    return true;
+  } catch (err: any) {
+    getLogger().debug("SWARM", `创建 teammate pane 失败 (${memberName}): ${err?.message ?? err}`);
+    return false;
+  }
+}
+
 /**
  * 杀掉 tmux session。静默忽略 "session not found"。
  */

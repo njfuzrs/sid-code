@@ -191,6 +191,100 @@ export function isTaskUnblocked(task: StructuredTask): boolean {
 }
 
 // ============================================================
+// 团队命名空间（同一 Map 内按 metadata.team 分区）
+//
+// 本 store 是模块级单例，同时服务两类消费方：
+//   ① 主会话 LLM 的 TODO 清单（task_create/task_update/task_list/task_get），无 team 标记；
+//   ② swarm TeamManager 的共享任务列表，建任务时打 metadata.team = <团队名>。
+// 二者混在一个 Map 里，若团队侧用全量 clear/serialize，会连带清掉/落盘主会话任务。
+// 故团队侧一律走下面这组带 teamName 的分区 API，全量 API 只留给主会话与测试。
+// ============================================================
+
+/** 任务是否属于指定团队分区。 */
+function belongsToTeam(task: StructuredTask, teamName: string): boolean {
+  return (task.metadata as { team?: unknown })?.team === teamName;
+}
+
+/** 取某团队分区内的全部任务（按数字 ID 升序）。 */
+export function getTeamTasks(teamName: string): StructuredTask[] {
+  return getAllStructuredTasks().filter((t) => belongsToTeam(t, teamName));
+}
+
+/**
+ * 只清除某团队分区的任务（主会话 TODO 与其他团队不受影响）。
+ * 同时摘除被删任务的依赖边，避免残留悬空引用。
+ */
+export function clearTeamTasks(teamName: string): void {
+  for (const t of getTeamTasks(teamName)) {
+    detachDependencies(t.id);
+    tasks.delete(t.id);
+  }
+}
+
+/** 序列化某团队分区的任务快照（深拷贝）。 */
+export function serializeTeamTasks(teamName: string): StructuredTask[] {
+  return getTeamTasks(teamName).map((t) => ({
+    ...t,
+    blocks: [...t.blocks],
+    blockedBy: [...t.blockedBy],
+    metadata: { ...t.metadata },
+  }));
+}
+
+/**
+ * 把某团队分区的快照恢复进内存态（只替换该团队的任务，不动主会话/其他团队）。
+ *
+ * ID 冲突处理：快照里的 ID 可能与当前内存态已有的**其他**任务（主会话 TODO / 另一团队）
+ * 撞车——团队任务文件是独立落盘的，各自 ID 空间从 1 开始。撞车时把该任务重映射到一个
+ * 新 ID，并按映射表同步重写 blocks/blockedBy，保证依赖图在合并后依然自洽。
+ * 指向快照外未知 ID 的边直接丢弃（对端已不存在，留着只会永久阻塞）。
+ *
+ * @returns oldId → newId 的重映射表（未改变的 ID 也在表内，方便调用方统一查表）
+ */
+export function restoreTeamTasks(
+  teamName: string,
+  snapshot: StructuredTask[],
+): Map<string, string> {
+  // 先清掉该团队现存任务，避免与快照重复（同一 ID 视为同一任务的旧态）。
+  clearTeamTasks(teamName);
+
+  const valid = snapshot.filter(
+    (t) => t && typeof t.id === "string" && typeof t.subject === "string",
+  );
+
+  // 第一遍：分配最终 ID（撞车则取新 ID）。
+  const idMap = new Map<string, string>();
+  for (const t of valid) {
+    idMap.set(t.id, tasks.has(t.id) ? nextId() : t.id);
+  }
+
+  // 第二遍：按映射表落盘任务 + 重写依赖边。
+  const remapEdges = (ids: unknown): string[] =>
+    Array.isArray(ids)
+      ? (ids as string[]).map((x) => idMap.get(x)).filter((x): x is string => !!x)
+      : [];
+
+  for (const t of valid) {
+    const id = idMap.get(t.id)!;
+    tasks.set(id, {
+      ...t,
+      id,
+      blocks: remapEdges(t.blocks),
+      blockedBy: remapEdges(t.blockedBy),
+      metadata:
+        t.metadata && typeof t.metadata === "object"
+          ? { ...t.metadata, team: teamName }
+          : { team: teamName },
+    });
+    // 保持 idCounter 高于所有已用数字 ID，防后续新建撞车。
+    const n = Number(id);
+    if (Number.isFinite(n) && n > idCounter) idCounter = n;
+  }
+
+  return idMap;
+}
+
+// ============================================================
 // P2-2：持久化快照 + 认领调度（供 swarm team 共享任务列表用）
 // ============================================================
 
@@ -227,16 +321,33 @@ export function restoreStructuredTasks(snapshot: StructuredTask[]): void {
   idCounter = maxId;
 }
 
+/** 任务是否预分配给了某个具体成员（metadata.member 非空）。 */
+export function isPreassignedTask(task: StructuredTask): boolean {
+  const m = (task.metadata as { member?: unknown })?.member;
+  return typeof m === "string" && m.length > 0;
+}
+
 /**
  * 认领下一个可执行任务（P2-2 team 成员自协调调度）。
  *
  * 挑选首个 `pending` 且 `isTaskUnblocked`（所有上游已完成）的任务，
  * 置 owner + in_progress 后返回；无可认领任务返回 undefined。
  * 按数字 ID 升序挑选，保证认领顺序稳定可预测。
+ *
+ * @param teamName 限定只在该团队分区内认领（团队调度必传）。省略则在全部任务里挑，
+ *                 仅供测试/单团队场景——生产路径一律传团队名，避免抢走主会话 TODO。
+ * @param opts.onlyUnassigned 只认领**未预分配**的共享池任务（跳过 metadata.member 已指定
+ *                 给某成员的任务）。团队共享池调度必传 true，否则成员会互相抢走对方的活。
  */
-export function claimNextUnblockedTask(owner: string): StructuredTask | undefined {
-  for (const task of getAllStructuredTasks()) {
+export function claimNextUnblockedTask(
+  owner: string,
+  teamName?: string,
+  opts?: { onlyUnassigned?: boolean },
+): StructuredTask | undefined {
+  const pool = teamName ? getTeamTasks(teamName) : getAllStructuredTasks();
+  for (const task of pool) {
     if (task.status !== "pending") continue;
+    if (opts?.onlyUnassigned && isPreassignedTask(task)) continue;
     if (!isTaskUnblocked(task)) continue;
     task.owner = owner;
     task.status = "in_progress";
@@ -246,9 +357,13 @@ export function claimNextUnblockedTask(owner: string): StructuredTask | undefine
   return undefined;
 }
 
-/** 是否还有未完成（pending/in_progress）的任务。供调度循环判断终止。 */
-export function hasUnfinishedTasks(): boolean {
-  for (const t of tasks.values()) {
+/**
+ * 是否还有未完成（pending/in_progress）的任务。供调度循环判断终止。
+ * @param teamName 限定只看该团队分区（团队调度循环必传，否则主会话 TODO 会让循环永不退出）。
+ */
+export function hasUnfinishedTasks(teamName?: string): boolean {
+  const pool = teamName ? getTeamTasks(teamName) : Array.from(tasks.values());
+  for (const t of pool) {
     if (t.status === "pending" || t.status === "in_progress") return true;
   }
   return false;

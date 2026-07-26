@@ -15,6 +15,19 @@ import { PROGRESS_FILLED, PROGRESS_EMPTY } from "../constants/figures.ts";
 import type { Usage } from "../../llm/types.ts";
 import { SessionState } from "../../session/state.ts";
 import type { ModelPricing } from "../../api/cost-tracker.ts";
+import { getGitOperationStats, type GitOperationKind } from "../../tool/git-operation-tracking.ts";
+
+/** git 操作类型的中文标签（面板展示用）。 */
+const GIT_KIND_LABELS: Record<string, string> = {
+  commit: "提交",
+  push: "推送",
+  pr_created: "PR 创建",
+  merge: "合并",
+  rebase: "变基",
+  checkout: "切换分支",
+  reset: "重置",
+  other: "其他",
+};
 
 interface StatsDialogProps {
   onClose: () => void;
@@ -100,6 +113,16 @@ export const StatsDialog: React.FC<StatsDialogProps> = ({
 
   const inputTokens = usage.inputTokens ?? 0;
   const outputTokens = usage.outputTokens ?? 0;
+
+  // P2-3：git 操作度量。直接读模块级单例（与 /stats 文本模式同源），
+  // 面板每次打开时取当时快照——不订阅变更（面板是一次性快照展示，非实时流）。
+  const gitStats = React.useMemo(() => {
+    const s = getGitOperationStats();
+    return {
+      total: s.total,
+      rows: (Object.entries(s.byKind) as Array<[GitOperationKind, number]>).filter(([, n]) => n > 0),
+    };
+  }, []);
 
   // 缓存命中率：stockInputTokens 为末次完整输入 tokens，作为缓存命中量近似
   const cacheHitRate = inputTokens > 0 ? Math.round((stockInputTokens / inputTokens) * 100) : 0;
@@ -200,6 +223,21 @@ export const StatsDialog: React.FC<StatsDialogProps> = ({
       <StatRow label="Provider">
         <Text color={theme.text.primary}>{provider}</Text>
       </StatRow>
+
+      {/* P2-3：git 操作度量。有计数才出现，零计数时整段省略（不给空分区添噪音）。 */}
+      {gitStats.total > 0 && (
+        <>
+          <SectionTitle>Git 操作</SectionTitle>
+          <StatRow label="总计">
+            <Text color={theme.text.primary}>{gitStats.total} 次</Text>
+          </StatRow>
+          {gitStats.rows.map(([kind, count]) => (
+            <StatRow key={kind} label={GIT_KIND_LABELS[kind] ?? kind}>
+              <Text color={theme.text.primary}>{count} 次</Text>
+            </StatRow>
+          ))}
+        </>
+      )}
 
       <Box marginTop={1}>
         <Text dimColor italic>Esc 关闭</Text>

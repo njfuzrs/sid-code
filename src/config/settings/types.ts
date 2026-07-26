@@ -166,6 +166,32 @@ const WorktreeSettingsSchema = lazySchema(() =>
   }).passthrough(),
 );
 
+/** 归因配置 Schema（commit / PR 尾注共用形状，P3-1） */
+const AttributionSettingsSchema = lazySchema(() =>
+  z.object({
+    /** 是否启用该归因（默认 true；false = 该路径完全不加归因文本） */
+    enabled: z.boolean().optional(),
+    /** 自定义归因文本（缺省用内置默认值） */
+    text: z.string().optional(),
+  }).passthrough(),
+);
+
+/**
+ * Git 集成配置 Schema（P3-1，对标 CC commitAttribution/prAttribution）。
+ *
+ * 声明在 Schema 里而非只靠顶层 `.passthrough()` 兜住的意义：
+ * 类型错写（`git.commitAttribution.enabled: "false"` 字符串）能在加载期被 zod 报出来，
+ * 而不是静默当成 truthy 继续加归因。
+ */
+const GitSettingsSchema = lazySchema(() =>
+  z.object({
+    /** commit message 尾注归因 */
+    commitAttribution: AttributionSettingsSchema().optional(),
+    /** PR 描述尾注归因 */
+    prAttribution: AttributionSettingsSchema().optional(),
+  }).passthrough(),
+);
+
 /** 可自定义状态栏 Schema（对标 claude-code statusLine）
  *  type=command：spawn 用户脚本，会话数据经 stdin 传 JSON，脚本 stdout 即状态栏内容。 */
 const StatusLineSchema = lazySchema(() =>
@@ -269,6 +295,9 @@ export const SettingsSchema = lazySchema(() =>
 
       // Worktree 隔离配置
       worktree: WorktreeSettingsSchema().optional(),
+
+      // Git 集成配置（commit / PR 归因，P3-1）
+      git: GitSettingsSchema().optional(),
 
       // 可自定义状态栏（/statusline 持久化端；缺省 = 内置聚合状态栏）
       statusLine: StatusLineSchema().optional(),

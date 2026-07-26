@@ -867,6 +867,12 @@ export async function main(): Promise<void> {
           const { setPolicyLimits } = await import("./config/policy-limits.ts");
           setPolicyLimits(policy.policyLimits);
         }
+        // 定制化来源锁定（strictPluginOnlyCustomization）：屏蔽用户/项目级自带 skill 等，
+        // 只保留 managed/plugin/builtin。必须在扩展扫描之前注入。
+        {
+          const { setPluginOnlyPolicy } = await import("./config/plugin-only-policy.ts");
+          setPluginOnlyPolicy(policy.strictPluginOnlyCustomization);
+        }
         // 模式级管控（P2-2）
         const { setModePolicy, isBypassDisabledByPolicy, isModeDisabledByPolicy } = await import("./permission/mode-policy.ts");
         setModePolicy(policy.disabledModes, policy.disableBypassPermissionsMode);
@@ -1279,6 +1285,10 @@ export async function main(): Promise<void> {
     // 注册 Swarm 多代理协作工具
     const { TeamCreateTool } = await import("./tool/team-create.ts");
     toolRegistry.register(new TeamCreateTool(providerRegistry, toolRegistry));
+    // P1-3：团队成员之间/成员→leader 的消息投递（mailbox 写入口，补齐双向通信）。
+    // 主代理调用会明确报错（不在团队上下文），只有团队成员执行链里可用。
+    const { TeamMessageTool } = await import("./tool/team-message.ts");
+    toolRegistry.register(new TeamMessageTool());
 
     // 注册 Dynamic Workflows 编排工具(延迟工具,由 tool_search 在多 agent 编排场景按需调出)
     const { WorkflowTool } = await import("./tool/workflow.ts");
@@ -1307,6 +1317,10 @@ export async function main(): Promise<void> {
         log.warn("TRUST", `发现 ${files.length} 个未信任的项目级扩展，已自动信任`);
         return files;
       },
+      // additional 层（对齐 CC）：--add-dir 授权的目录，其 .sid-code/{type}/ 与
+      // .claude/{type}/ 下的 skills/commands/agents 一并加载。此前 --add-dir 只影响
+      // 文件访问白名单，授权目录自带的 skill 加载不进来。
+      additionalDirs: config.allowedDirectories,
     };
     const customCmds = await new CustomCommandLoader().loadAll(undefined, scanOptions);
     for (const { cmd, source } of customCmds) commandRegistry.register(cmd, source);
@@ -1348,7 +1362,7 @@ export async function main(): Promise<void> {
     });
 
     // Bundled Skill 模型调用路径（Gap 1）：把 fork 模式且未禁止模型调用的
-    // Bundled Skill 注册为工具，使 LLM 可自动调用（与磁盘 Skill 的 SkillTool 对等）。
+    // Bundled Skill 注册为工具，使 LLM 可自动调用（与磁盘 Skill 的 Skill 元工具对等）。
     // inline 模式语义是注入主对话、不返回结果，不适合做工具，仅保留斜杠命令。
     // 带强副作用的 skill（commit-push-pr / pr-workflow / pr-comments）已在各自定义里
     // 设 disableModelInvocation:true，仅 review(只读) 暴露给模型。
@@ -1776,7 +1790,16 @@ export async function main(): Promise<void> {
     const unifiedRegistry = new UnifiedCommandRegistry({
       scanOptions,
       disabledSkills: config.disabledSkills,
+      // 关键：与 SkillMetaTool 共用同一个 SkillManager。否则 loadSkillCommands 会自建
+      // manager 重扫磁盘，插件/MCP skill（运行时追加）在斜杠命令里不可见，
+      // 且 gate/disable/热重载状态与模型路径分叉。
+      skillManager,
     });
+    // skill 集合运行时变更 → 斜杠命令快照失效。覆盖：插件 skills 追加、MCP skill 发现、
+    // 动态发现、条件激活 gate 解除、热重载、/skills 启停。不接这条线的话，新 skill
+    // 在 TUI 里既不补全也执行不了（getCommands 返回的是启动时的 cwd 缓存）。
+    skillManager.onSkillsChanged(() => unifiedRegistry.invalidateSkillCommands());
+
     // 预加载插件命令快照（custom/skill/builtin 由 getCommands 按 cwd 懒加载并缓存）
     try {
       await unifiedRegistry.loadPlugins();

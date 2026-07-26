@@ -36,6 +36,15 @@ export interface PolicySettings {
    * - "allow"（默认/缺省）：不限制。
    */
   disableBypassPermissionsMode?: "disable" | "allow";
+  /**
+   * 锁定定制化来源为「仅管理员可信来源」（对齐 CC strictPluginOnlyCustomization）。
+   * true=锁全部面；数组=只锁列出的面（commands/skills/agents/hooks/mcp-servers）。
+   * 锁定后用户级（~/.sid-code/*）与项目级（.sid-code/*）自带内容不再加载，
+   * managed / plugin / builtin 来源不受影响。详见 config/plugin-only-policy.ts。
+   */
+  strictPluginOnlyCustomization?:
+    | boolean
+    | import("./plugin-only-policy.ts").CustomizationSurface[];
 }
 
 /** 策略加载器接口（可扩展） */

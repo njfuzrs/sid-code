@@ -56,6 +56,8 @@ function makeCtx(messages: Message[], provider: any) {
       ];
     },
     getTranscriptPath: () => undefined,
+    // §12 P2-4 复审：压缩后收尾（runPostCompact）会调它把最近读过的文件重注入
+    appendReattachMessages: (m: Message[]) => { msgs = [...msgs, ...m]; },
   };
   return {
     ctxMgr,
@@ -180,5 +182,69 @@ describe("P0-1 /compact 参数分流", () => {
     // focus 文本与 hook 指令都进入摘要 prompt
     expect(prompt).toContain("focus on auth");
     expect(prompt).toContain("务必保留所有数据库 schema 定义");
+  });
+});
+
+describe("§12 P2-4 复审：手动 /compact 走与自动压缩同一套压缩后收尾", () => {
+  /** mock FileReadTracker：buildReattachFileMessages 用到 getRecentFiles + getRecordedMtime */
+  function makeTracker(files: string[]) {
+    return {
+      getRecentFiles: () => files,
+      // null = 无记录的 mtime → 不标记"已被外部修改"
+      getRecordedMtime: () => null,
+    } as any;
+  }
+
+  test("手动压缩后触发文件重注入（此前手动路径完全不做，模型会忘掉刚读的文件）", async () => {
+    const captured: string[] = [];
+    const ctx = makeCtx(buildMessages(8), makeMockProvider(captured));
+    // 指向本测试文件自身——真实存在且可读，buildReattachFileMessages 能产出注入消息
+    ctx.fileReadTracker = makeTracker([import.meta.path]);
+
+    const before = ctx.ctxMgr.messageCount();
+    const result = await compactMod.call("", ctx);
+    expect((result as any).value).toContain("对话已压缩");
+
+    // 压缩后消息里应含重注入的文件内容（appendReattachMessages 被调用过）
+    const all = ctx.ctxMgr
+      .getMessages()
+      .flatMap((m: Message) => m.content)
+      .filter((b: any) => b.type === "text")
+      .map((b: any) => b.text)
+      .join("\n");
+    expect(all).toContain("compact-focus.test.ts");
+    // 压缩确实生效（条数少于原始 16 条 + 注入），且注入不是零条
+    expect(ctx.ctxMgr.messageCount()).toBeLessThan(before);
+  });
+
+  test("PostCompact hook 的 trigger 为 manual（与 auto 路径区分）", async () => {
+    const captured: string[] = [];
+    const ctx = makeCtx(buildMessages(8), makeMockProvider(captured));
+    const triggers: string[] = [];
+    ctx.hookSystem = {
+      firePreCompactEvent: async () => ({}),
+      firePostCompactEvent: async (trigger: string) => { triggers.push(trigger); return {}; },
+    };
+
+    await compactMod.call("", ctx);
+    expect(triggers).toContain("manual");
+  });
+
+  test("无 fileReadTracker 时收尾静默跳过，压缩结果不受影响", async () => {
+    const captured: string[] = [];
+    const ctx = makeCtx(buildMessages(8), makeMockProvider(captured));
+    // 不注入 fileReadTracker
+    const result = await compactMod.call("", ctx);
+    expect((result as any).value).toContain("对话已压缩");
+  });
+
+  test("收尾内部抛错不影响已完成的压缩（best-effort 语义）", async () => {
+    const captured: string[] = [];
+    const ctx = makeCtx(buildMessages(8), makeMockProvider(captured));
+    // tracker 抛错 → 文件恢复步骤失败，但压缩结果必须照常返回
+    ctx.fileReadTracker = { getRecentFiles: () => { throw new Error("tracker boom"); } } as any;
+
+    const result = await compactMod.call("", ctx);
+    expect((result as any).value).toContain("对话已压缩");
   });
 });

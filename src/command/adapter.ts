@@ -45,6 +45,10 @@ export function toAppContext(ctx: CommandContext): AppContext {
     sendToLLM: ctx.sendToLLM,
     customCommands: ctx.customCommands,
     confirmShellCommands: ctx.confirmShellCommands,
+    // P0-3：skill 权限判定所需的确认通道 / 原始规则 / checker（双向桥接保持一致）
+    requestUserConfirmation: ctx.requestUserConfirmation,
+    permissionRules: ctx.permissionRules,
+    permissionChecker: ctx.permissionChecker,
     hookSystem: ctx.hookSystem,
     unifiedRegistry: ctx.unifiedRegistry,
     traceCollector: ctx.traceCollector,
@@ -117,7 +121,14 @@ export function toCommandContext(appCtx: AppContext): CommandContext {
     sendToLLM: appCtx.sendToLLM,
     customCommands: appCtx.customCommands,
     confirmShellCommands: appCtx.confirmShellCommands,
+    // P0-3：skill 权限 ask 的确认通道 + 原始权限规则。缺任一项时 ask 决策保守拒绝。
+    requestUserConfirmation: appCtx.requestUserConfirmation,
+    permissionRules: appCtx.permissionRules,
+    permissionChecker: appCtx.permissionChecker,
     hookSystem: appCtx.hookSystem,
+    // §12 P2-4 复审：手动 /compact 的压缩后收尾依赖这两项（文件重注入 / 质量报告落盘）
+    fileReadTracker: appCtx.fileReadTracker,
+    sessionDir: appCtx.sessionDir,
     cwd: process.cwd(),
     unifiedRegistry: appCtx.unifiedRegistry,
     // /goal：目标驱动持续执行——桥接到新体系 CommandContext

@@ -129,6 +129,46 @@ export class SkillManager {
       }
     }
     getLogger().info("SKILL", `追加 ${pluginSkills.length} 个插件 Skill`);
+    // 斜杠命令快照失效：新 skill 需立即可 /name 调用（否则报「未知命令」）
+    this.notifySkillsChanged();
+  }
+
+  /**
+   * 原子替换所有插件来源的 skills（/reload-plugins 用）。
+   *
+   * 为什么不能复用 addPluginSkills：那是纯追加语义——插件被卸载/禁用后它带的 skill
+   * 会永久残留在 skills 与 appendedSkills 里（还会被热重载一次次重放）。这里先剔除
+   * 全部 loadedFrom="plugin" 的旧条目，再并入新集合，整个过程在同一同步调用内完成。
+   *
+   * 只动 plugin 来源：MCP skills（loadedFrom="mcp"）与动态发现的 skill 不受影响。
+   *
+   * @returns 替换后的插件 skill 数量
+   */
+  replacePluginSkills(pluginSkills: SkillDefinition[]): number {
+    const isPlugin = (s: SkillDefinition) => s.loadedFrom === "plugin";
+    const before = this.skills.filter(isPlugin).length;
+
+    // 剔除旧插件 skill（skills 与热重载重放清单两处都要清，否则 reload 会把旧的带回来）
+    this.skills = this.skills.filter((s) => !isPlugin(s));
+    this.appendedSkills = this.appendedSkills.filter((s) => !isPlugin(s));
+
+    if (pluginSkills.length > 0) {
+      this.addSkillsWithPrecedence(pluginSkills);
+      const known = new Set(this.appendedSkills.map((s) => s.filePath));
+      for (const s of pluginSkills) {
+        if (!known.has(s.filePath)) {
+          this.appendedSkills.push(s);
+          known.add(s.filePath);
+        }
+      }
+    }
+
+    getLogger().info(
+      "SKILL",
+      `插件 Skill 已替换: ${before} → ${pluginSkills.length}`,
+    );
+    this.notifySkillsChanged();
+    return pluginSkills.length;
   }
 
   /**
@@ -158,6 +198,43 @@ export class SkillManager {
     // 重放禁用态（/skills disable 的选择应跨热重载保留）
     if (disabledNames.length > 0) this.setDisabledSkills(disabledNames);
     log.info("SKILL", `Skill 热重载完成：${this.skills.length} 个（含 ${preserved.length} 个插件/动态）`);
+    // 热重载改变了整个 skill 集合（新增/删除/内容变更），斜杠命令快照必须失效
+    this.notifySkillsChanged();
+  }
+
+  // ===== skill 集合变更通知（斜杠命令快照失效用）=====
+
+  /** skill 集合变更监听器（斜杠命令注册表据此清缓存，重新投影 skill → 命令） */
+  private changeListeners: Array<() => void> = [];
+
+  /**
+   * 订阅 skill 集合变更。
+   *
+   * 动机：用户斜杠命令走 UnifiedCommandRegistry，其结果按 cwd 缓存。运行时追加的 skill
+   *（插件 / MCP 发现 / 动态发现 / 热重载 / gate 解除）不会自动出现在快照里，
+   * 用户敲 `/plugin:skill` 会得到「未知命令」。让 manager 主动广播，订阅方清缓存即可。
+   *
+   * @returns 取消订阅函数
+   */
+  onSkillsChanged(listener: () => void): () => void {
+    this.changeListeners.push(listener);
+    return () => {
+      this.changeListeners = this.changeListeners.filter((l) => l !== listener);
+    };
+  }
+
+  /** 广播 skill 集合变更（监听器异常不影响其他监听器与主流程） */
+  private notifySkillsChanged(): void {
+    for (const listener of this.changeListeners) {
+      try {
+        listener();
+      } catch (err) {
+        getLogger().debug(
+          "SKILL",
+          `skill 变更监听器异常（忽略）: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
   }
 
   // ===== P1-2/P2-2：条件激活门控（gated skill 从模型 listing 隐藏，直到被激活）=====
@@ -168,11 +245,14 @@ export class SkillManager {
   /** 设置 gated 集合（覆盖式）。条件激活 skill 初始化时全部 gate。 */
   setGatedSkills(names: string[]): void {
     this.gatedSkillNames = new Set(names.map((n) => n.toLowerCase()));
+    this.notifySkillsChanged();
   }
 
   /** 解除某个 skill 的 gate（激活后从 listing 隐藏 → 暴露）。 */
   ungateSkill(name: string): void {
-    this.gatedSkillNames.delete(name.toLowerCase());
+    if (!this.gatedSkillNames.delete(name.toLowerCase())) return;
+    // gate 解除意味着该 skill 从「不可调用」变为「可调用」，斜杠命令快照需刷新
+    this.notifySkillsChanged();
   }
 
   /** 该 skill 是否被 gate（隐藏于模型 listing）。 */
@@ -234,6 +314,8 @@ export class SkillManager {
     for (const skill of this.skills) {
       skill.disabled = lowercaseDisabledNames.includes(skill.name.toLowerCase());
     }
+    // 启用/禁用改变了可调用集合，斜杠命令快照需刷新
+    this.notifySkillsChanged();
   }
 
   /**

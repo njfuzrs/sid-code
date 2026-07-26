@@ -36,6 +36,7 @@ import { TaskUpdateTool } from "../../src/tool/structured-task-update.ts";
 import { StructuredTaskGetTool } from "../../src/tool/structured-task-get.ts";
 import { StructuredTaskListTool } from "../../src/tool/structured-task-list.ts";
 import { SendMessageTool } from "../../src/tool/send-message.ts";
+import { TeamMessageTool } from "../../src/tool/team-message.ts";
 import { TodoWriteTool } from "../../src/tool/todo-write.ts";
 import { EnterPlanModeTool } from "../../src/tool/enter-plan-mode.ts";
 import { ExitPlanModeTool } from "../../src/tool/exit-plan-mode.ts";
@@ -64,6 +65,7 @@ function makeExemptToolInstances(): { name: string; exempt: boolean }[] {
     new StructuredTaskGetTool(),
     new StructuredTaskListTool(),
     new SendMessageTool(providerRegistry, toolRegistry),
+    new TeamMessageTool(),
     new TodoWriteTool(),
     new EnterPlanModeTool(planManager),
     new ExitPlanModeTool(planManager),
@@ -127,6 +129,8 @@ describe("循环检测豁免白名单对账审计（P2-3）", () => {
         "task_list",
         "task_get",
         "todo_write",
+        // P1-3 团队成员通信（连续发给不同成员是正当协作编排）
+        "team_message",
       ].sort(),
     );
   });
