@@ -146,6 +146,17 @@ export class ExtensionLoader {
       errors.push(...projErrors);
     }
 
+    // 3. P2-1：企业 managed 层（最高优先级，最后扫描）。managed 扩展覆盖同名 user/project，
+    //    且不受项目信任检查约束（企业下发本就是可信源）。SID_CODE_DISABLE_POLICY_SKILLS=1 时跳过。
+    const policyDisabled = process.env.SID_CODE_DISABLE_POLICY_SKILLS === "1";
+    if (options?.managedDirs && options.managedDirs.length > 0 && !policyDisabled) {
+      for (const managedDir of options.managedDirs) {
+        const { files: managedFiles, errors: managedErrors } = await this.scanDir(managedDir, "managed");
+        mergeFiles(managedFiles);
+        errors.push(...managedErrors);
+      }
+    }
+
     const files = Array.from(fileMap.values());
     const result: ScanResult = { files, errors, overrides };
 
@@ -191,6 +202,19 @@ export class ExtensionLoader {
   /** 清除缓存 */
   clearCache(): void {
     this.cache.clear();
+  }
+
+  /**
+   * P0-4：扫描任意单个目录（供插件 skills 加载复用与 user/project 完全一致的扫描逻辑：
+   * 扁平 .md + 子目录 SKILL.md/AGENT.md/index.md）。source 标记来源（插件传 "project" 语义占位，
+   * 真实 loadedFrom 由调用方覆盖）。
+   */
+  async scanSingleDir(
+    dir: string,
+    source: ExtensionSource = "project",
+  ): Promise<ParsedExtensionFile[]> {
+    const { files } = await this.scanDir(dir, source);
+    return files;
   }
 
   /** 扫描单个目录下的 .md 文件和子目录中的 SKILL.md / AGENT.md / index.md */

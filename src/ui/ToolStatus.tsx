@@ -48,6 +48,11 @@ function getToolLabel(name: string, input: unknown): string {
     const pattern = inp?.pattern || "";
     return `Glob ${pattern}`;
   }
+  // P0-1：单一 Skill 元工具（input={skill,args}），摘要显示被调用的 skill 名
+  if (lower === "skill") {
+    const skillName = inp?.skill || "";
+    return skillName ? `Skill (${skillName})` : name;
+  }
   if (lower.startsWith("subagent") || lower.startsWith("agent__") || lower.startsWith("skill__")) {
     const agentType = inp?.type || inp?.agentType || "";
     return agentType ? `${name} (${agentType})` : name;

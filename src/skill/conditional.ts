@@ -81,6 +81,19 @@ export class ConditionalSkillStore {
     return false;
   }
 
+  /**
+   * P2-3：按名强制激活（热重载后恢复「重载前已激活」的条件 skill，保持只进不退）。
+   * skill 在 conditional 中则移到 dynamic；不在则忽略（可能是无条件 skill）。
+   * @returns 是否发生了状态迁移
+   */
+  forceActivate(name: string): boolean {
+    const skill = this.conditional.get(name);
+    if (!skill) return false;
+    this.dynamic.set(name, skill);
+    this.conditional.delete(name);
+    return true;
+  }
+
   /** 已激活的动态 Skill */
   getDynamicSkills(): SkillDefinition[] {
     return [...this.dynamic.values()];

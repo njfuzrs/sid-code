@@ -28,6 +28,15 @@ const CURRENT_VERSION = "3.0";
 /** 早期 JSONL（session_start 无 version 字段）的隐含版本号 */
 const LEGACY_JSONL_VERSION = "2.0";
 
+/** P1-G3：per-message usage 四字段（对齐 CC assistant 消息内嵌 usage 结构）。
+ *  落盘的是**该次 API 调用**的用量，非累计值；口径由 provider 解析后的 Usage 归一而来。 */
+export interface PerMessageUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadInputTokens?: number;
+  cacheCreationInputTokens?: number;
+}
+
 /** 记录公共字段：uuid 链（P0-1） */
 interface ChainFields {
   /** 本条记录的唯一 ID */
@@ -39,8 +48,12 @@ interface ChainFields {
 /** JSONL 记录类型（调用方视角，不含链字段——链字段由 appendRecord 统一盖戳） */
 type SessionRecordInput =
   | { type: "session_start"; version: string; sessionId: string; model: string; provider: string; cwd: string; timestamp: string }
-  | { type: "user_message"; message: Message; timestamp: string }
-  | { type: "assistant_message"; message: Message; timestamp: string }
+  // P2-G7：user_message 可选携带 per-message 上下文（cwd/gitBranch/permissionMode）。
+  // 仅在**相对上一条发生变化**时落盘（见 appendMessage），继承语义比 CC 每条都写更省空间。
+  | { type: "user_message"; message: Message; timestamp: string; cwd?: string; gitBranch?: string; permissionMode?: string }
+  // P1-G3：assistant_message 可选内嵌该次 API 调用的 usage 四字段 + model/stopReason/msgId，
+  // 供按单条回复归因 token/成本（整会话聚合 usage_stats 快照仍并存，用于快速恢复总量）。
+  | { type: "assistant_message"; message: Message; timestamp: string; usage?: PerMessageUsage; model?: string; stopReason?: string; msgId?: string }
   | { type: "tool_result"; message: Message; timestamp: string }
   | { type: "context_compact"; summary: string; removedCount: number; timestamp: string; isBoundary?: boolean }
   | { type: "metadata"; key: string; value: unknown; timestamp: string }
@@ -353,12 +366,65 @@ export class SessionStore {
     return this.currentFile;
   }
 
-  /** 追加消息（增量写入） */
-  appendMessage(message: Message): void {
+  /** P2-G7：上一条 user_message 落盘时的上下文，用于"仅变化时记录"的继承判断。 */
+  private lastUserContext: { cwd?: string; gitBranch?: string; permissionMode?: string } = {};
+
+  /**
+   * 追加消息（增量写入）。
+   *
+   * @param meta 可选的 per-message 元数据：
+   *   - assistant：`usage`/`model`/`stopReason`/`msgId`（P1-G3，按单条回复归因 token/成本）。
+   *   - user：`cwd`/`gitBranch`/`permissionMode`（P2-G7，诊断"这条消息在哪个分支/权限模式下发的"）。
+   *     调用方须传**实时读取**的值（git 分支尤其不能用启动快照，见 gitstatus-frozen-snapshot 教训）；
+   *     store 只做"与上一条相同则省略"的增量落盘，不主动探测。
+   */
+  appendMessage(
+    message: Message,
+    meta?: {
+      usage?: PerMessageUsage;
+      model?: string;
+      stopReason?: string;
+      msgId?: string;
+      cwd?: string;
+      gitBranch?: string;
+      permissionMode?: string;
+    },
+  ): void {
     if (!this.currentFile) return;
     const type = message.role === "user" ? "user_message"
       : message.role === "assistant" ? "assistant_message"
       : "tool_result";
+
+    if (type === "assistant_message") {
+      // P1-G3：内嵌该次调用的 usage / model / stopReason / msgId（有则带，无则退化为裸记录）。
+      this.appendRecord({
+        type,
+        message,
+        timestamp: new Date().toISOString(),
+        ...(meta?.usage ? { usage: meta.usage } : {}),
+        ...(meta?.model ? { model: meta.model } : {}),
+        ...(meta?.stopReason ? { stopReason: meta.stopReason } : {}),
+        ...(meta?.msgId ? { msgId: meta.msgId } : {}),
+      } as SessionRecordInput);
+      return;
+    }
+
+    if (type === "user_message" && meta) {
+      // P2-G7：仅在 cwd/gitBranch/permissionMode 相对上一条**变化**时落盘，未变则省略（继承语义）。
+      const rec: any = { type, message, timestamp: new Date().toISOString() };
+      if (meta.cwd !== undefined && meta.cwd !== this.lastUserContext.cwd) rec.cwd = meta.cwd;
+      if (meta.gitBranch !== undefined && meta.gitBranch !== this.lastUserContext.gitBranch) rec.gitBranch = meta.gitBranch;
+      if (meta.permissionMode !== undefined && meta.permissionMode !== this.lastUserContext.permissionMode) rec.permissionMode = meta.permissionMode;
+      // 记住本次上下文（即便未落盘也要更新基线，供下一条比较）
+      this.lastUserContext = {
+        cwd: meta.cwd ?? this.lastUserContext.cwd,
+        gitBranch: meta.gitBranch ?? this.lastUserContext.gitBranch,
+        permissionMode: meta.permissionMode ?? this.lastUserContext.permissionMode,
+      };
+      this.appendRecord(rec as SessionRecordInput);
+      return;
+    }
+
     this.appendRecord({ type, message, timestamp: new Date().toISOString() } as SessionRecordInput);
   }
 
@@ -758,10 +824,20 @@ export function parseSessionJsonlLines(lines: string[]): SessionData | null {
         break;
       case "user_message":
       case "assistant_message":
-      case "tool_result":
+      case "tool_result": {
+        // P1-G3 / P2-G7：把 per-message 元数据（usage/model/stopReason/msgId、cwd/gitBranch/
+        // permissionMode）挂到消息的 _meta，不进 content（不影响 LLM 请求体），供归因/诊断读取。
+        const rec = record as any;
+        const metaKeys = ["usage", "model", "stopReason", "msgId", "cwd", "gitBranch", "permissionMode"] as const;
+        const extracted: Record<string, unknown> = {};
+        for (const k of metaKeys) if (rec[k] !== undefined) extracted[k] = rec[k];
+        if (Object.keys(extracted).length > 0) {
+          record.message._meta = { ...(record.message._meta ?? {}), ...extracted };
+        }
         messages.push(record.message);
         updatedAt = record.timestamp;
         break;
+      }
       case "metadata":
         metadata[record.key] = record.value;
         updatedAt = record.timestamp;

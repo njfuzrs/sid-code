@@ -821,7 +821,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
 
   // 多条输入排队：流式响应中提交的普通输入入队，当前轮结束（Idle）后自动接续。
   // 对标 cc 的 now>next>later——这里实现 next（用户输入排队），系统通知不抢占。
-  const { enqueue, queueLength } = useMessageQueue({
+  const { enqueue, queueLength, popLastForEdit } = useMessageQueue({
     streamingState,
     onSend: dispatchInput,
   });
@@ -1115,6 +1115,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           cwd={state.cwd}
           onSubmit={handleSubmit}
           queuedCount={queueLength}
+          onPopQueuedForEdit={popLastForEdit}
           onExitRequest={triggerQuit}
           onCyclePermissionMode={handleCyclePermissionMode}
           permissionMode={state.permissionMode}
@@ -1169,6 +1170,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           cwd={state.cwd}
           onSubmit={handleSubmit}
           queuedCount={queueLength}
+          onPopQueuedForEdit={popLastForEdit}
           onExitRequest={triggerQuit}
           onCyclePermissionMode={handleCyclePermissionMode}
           permissionMode={state.permissionMode}

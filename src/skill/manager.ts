@@ -13,6 +13,15 @@ export class SkillManager {
   private skills: SkillDefinition[] = [];
   private activeSkillNames = new Set<string>();
   private loader: SkillLoader;
+  /**
+   * P0-4：插件/动态发现追加进来的 skill（命名空间前缀隔离）。
+   * 单独留存的原因：discover() 会 clearSkills() 重扫 builtin/user/project，
+   * 若不缓存，reload（P2-3 热重载）后插件/动态 skill 会丢失。reload 末尾据此重放。
+   */
+  private appendedSkills: SkillDefinition[] = [];
+  /** P2-3：记住上次 discover 的入参，供热重载沿用同一套扫描配置（trustManager 等）。 */
+  private lastProjectDir?: string;
+  private lastScanOptions?: ScanOptions;
 
   constructor(loader?: SkillLoader) {
     this.loader = loader ?? new SkillLoader();
@@ -24,6 +33,8 @@ export class SkillManager {
    */
   async discover(projectDir?: string, scanOptions?: ScanOptions): Promise<void> {
     this.clearSkills();
+    this.lastProjectDir = projectDir;
+    this.lastScanOptions = scanOptions;
     const log = getLogger();
 
     // 1. 加载内置 Skill（最低优先级）
@@ -99,6 +110,84 @@ export class SkillManager {
     }
 
     this.skills = Array.from(skillMap.values());
+  }
+
+  /**
+   * P0-4：追加插件 skills（命名空间前缀 pluginName:skillName 天然避免与内置/用户冲突）。
+   * 在 discover 之后调用。同名走标准 precedence（后者覆盖），但前缀隔离下几乎不会同名。
+   */
+  addPluginSkills(pluginSkills: SkillDefinition[]): void {
+    if (pluginSkills.length === 0) return;
+    this.addSkillsWithPrecedence(pluginSkills);
+    // P2-3：登记以便热重载后重放（clearSkills 只清 builtin/user/project 重扫结果）。
+    // 同 filePath 去重，避免同一 skill 多次 add 后 reload 重复堆叠。
+    const known = new Set(this.appendedSkills.map((s) => s.filePath));
+    for (const s of pluginSkills) {
+      if (!known.has(s.filePath)) {
+        this.appendedSkills.push(s);
+        known.add(s.filePath);
+      }
+    }
+    getLogger().info("SKILL", `追加 ${pluginSkills.length} 个插件 Skill`);
+  }
+
+  /**
+   * P2-3：热重载。重扫 builtin/user/project（先清 loader 缓存，避免命中 5min TTL 旧结果），
+   * 再重放插件/动态发现的 appendedSkills（命名空间前缀天然不与重扫结果冲突）。
+   *
+   * 注意：discover() 会 clearSkills() + 重置 gated/active 态。gated 态由调用方
+   *（SkillActivationCoordinator.reinit）在 reload 后重新分离条件 skill 建立，
+   * 已激活的动态 skill 由 coordinator 侧保留（只进不退）。
+   */
+  async reload(): Promise<void> {
+    const log = getLogger();
+    // 清 ExtensionLoader 缓存，否则 5min TTL 内重扫命中旧结果，改动不生效。
+    try {
+      this.loader.getExtensionLoader().clearCache();
+    } catch { /* 缓存清理失败不阻断重载 */ }
+
+    // 快照 reload 前的禁用集（discover 重建 skill 定义会丢失 disabled 态，需重放）。
+    const disabledNames = this.skills.filter((s) => s.disabled).map((s) => s.name);
+
+    const preserved = [...this.appendedSkills];
+    await this.discover(this.lastProjectDir, this.lastScanOptions);
+    if (preserved.length > 0) {
+      // 重放插件/动态 skill（appendedSkills 已被 discover 后仍留存，此处只是重新并入 skills 数组）
+      this.addSkillsWithPrecedence(preserved);
+    }
+    // 重放禁用态（/skills disable 的选择应跨热重载保留）
+    if (disabledNames.length > 0) this.setDisabledSkills(disabledNames);
+    log.info("SKILL", `Skill 热重载完成：${this.skills.length} 个（含 ${preserved.length} 个插件/动态）`);
+  }
+
+  // ===== P1-2/P2-2：条件激活门控（gated skill 从模型 listing 隐藏，直到被激活）=====
+
+  /** gated skill 名（小写）：已加载但尚未在模型 listing 中暴露（条件激活/动态发现前） */
+  private gatedSkillNames = new Set<string>();
+
+  /** 设置 gated 集合（覆盖式）。条件激活 skill 初始化时全部 gate。 */
+  setGatedSkills(names: string[]): void {
+    this.gatedSkillNames = new Set(names.map((n) => n.toLowerCase()));
+  }
+
+  /** 解除某个 skill 的 gate（激活后从 listing 隐藏 → 暴露）。 */
+  ungateSkill(name: string): void {
+    this.gatedSkillNames.delete(name.toLowerCase());
+  }
+
+  /** 该 skill 是否被 gate（隐藏于模型 listing）。 */
+  isGated(name: string): boolean {
+    return this.gatedSkillNames.has(name.toLowerCase());
+  }
+
+  /**
+   * 获取应进入模型 listing 的 skill（P1-2/P3-2）：
+   * 已启用 + 未禁模型调用 + 未被 gate（条件激活未触发的 skill 不进初始 listing）。
+   */
+  getListableSkills(): SkillDefinition[] {
+    return this.skills.filter(
+      (s) => !s.disabled && !s.disableModelInvocation && !this.isGated(s.name),
+    );
   }
 
   /**

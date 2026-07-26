@@ -59,6 +59,14 @@ export function getToolSummary(name: string, input: unknown): string {
   }
   if (lower === "grep") return `"${inp?.pattern || ""}"`;
   if (lower === "glob") return inp?.pattern || "";
+  // P0-1：单一 Skill 元工具（input={skill,args}），摘要显示 skill 名 + args
+  if (lower === "skill") {
+    const skillName = inp?.skill || "";
+    const args = inp?.args || "";
+    const short = truncateSummary(args, PROMPT_MAX_CHARS);
+    if (!skillName) return "";
+    return short ? `${skillName} "${short}"` : skillName;
+  }
   if (isSubAgentToolName(lower)) {
     const agentType = inp?.type || inp?.agentType || "";
     const prompt = inp?.prompt || inp?.task || "";

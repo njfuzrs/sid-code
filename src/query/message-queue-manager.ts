@@ -150,6 +150,23 @@ export function dequeueFirstByKind(kind: CommandKind): QueuedCommand | undefined
 }
 
 /**
+ * P2-G6：出队**最后一条**指定 kind 的命令（队尾弹回编辑用）。
+ * 用户在空输入框按 ↑ 时，把最近排队的一条弹回输入框继续编辑——取"最后入队"的那条最符合直觉
+ * （刚敲错想改的是刚排的）。队列按 (priority, enqueuedAt) 有序，同 kind 的最后一条即数组中
+ * 该 kind 的最后一个匹配项。无匹配返回 undefined。
+ */
+export function dequeueLastByKind(kind: CommandKind): QueuedCommand | undefined {
+  for (let i = queue.length - 1; i >= 0; i--) {
+    if (queue[i].kind === kind) {
+      const [taken] = queue.splice(i, 1);
+      emitChange();
+      return taken;
+    }
+  }
+  return undefined;
+}
+
+/**
  * 出队**同时满足** priority ≤ maxPriority **且** kind === 指定 kind 的命令。
  * 其余命令（优先级不够 / kind 不匹配）全部原位保留、顺序不变。
  *

@@ -60,7 +60,9 @@ export interface ProgressNotification {
 
 /** queryLoop yield 的消息类型 */
 export type QueryLoopYield =
-  | { kind: "assistant_message"; message: Message }
+  // P1-G3：persistMeta 携带该次 API 调用的 usage/model/stopReason/msgId，仅用于会话落盘归因，
+  // 不进 LLM 历史（不放 message._meta，避免污染后续请求体）。engine 持久化时透传给 store。
+  | { kind: "assistant_message"; message: Message; persistMeta?: { usage?: { inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number }; model?: string; stopReason?: string; msgId?: string } }
   | { kind: "tool_start"; toolName: string; toolInput?: unknown }
   | { kind: "tool_end"; toolName: string; result?: { isError?: boolean; elapsedMs?: number } }
   | { kind: "stream_text"; text: string }
@@ -479,6 +481,14 @@ export interface QueryDeps {
    * 内部维护 rewake 队列，无待处理通知时返回空数组。可选——未注入则不回灌 async hook 反馈。
    */
   drainAsyncHookRewakes?: () => string[];
+  /**
+   * P1-2/P2-2/P3-2：Skill 运行时激活协调。每轮工具执行后调用 onSkillToolResults 喂入工具
+   * 输入（条件激活 + 动态发现）；每轮开始调用 drainSkillListingDelta 取增量 skill 摘要
+   * （首轮全量、后续只增量），由 loop 经 reminderParts 注入（cache-friendly）。
+   * 可选——未注入则 skill 激活/增量 listing 不生效（向后兼容）。
+   */
+  onSkillToolResults?: (toolInputs: unknown[]) => Promise<void>;
+  drainSkillListingDelta?: () => string | null;
   /**
    * Trace 事件写入（Goal Gate、评估器等关键决策写入结构化事件到 events.jsonl）。
    * 可选——未注入则不写 trace 事件。

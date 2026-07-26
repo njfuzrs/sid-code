@@ -97,6 +97,11 @@ export interface AppContext {
   customCommands?: Array<{ name: string; description: string }>;
   /** Shell 注入确认回调（自定义命令 !{cmd} 语法用），返回 true 表示用户确认 */
   confirmShellCommands?: (commands: string[]) => Promise<boolean>;
+  /**
+   * P0-3：通用用户确认回调（skill 权限 ask 决策用），返回 true 表示用户批准。
+   * 用户斜杠路径的 skill 若含敏感能力（hooks/allowedTools/shell）触发 ask 时，弹此确认。
+   */
+  requestUserConfirmation?: (desc: string) => Promise<boolean>;
   /** Hook 系统引用（/hooks 命令用） */
   hookSystem?: HookSystem;
   /** 命令注册表引用（/reload-plugins 重新合并插件命令用） */

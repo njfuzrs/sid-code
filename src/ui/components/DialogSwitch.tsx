@@ -83,6 +83,8 @@ export interface DialogSwitchProps {
   commands: Array<{ name: string; aliases: string[]; description: string }>;
   cwd: string;
   queuedCount?: number;
+  /** P2-G6：↑ 弹回编辑，透传给 Composer→InputArea。 */
+  onPopQueuedForEdit?: () => string | null;
   onExitRequest?: () => void;
   /** Shift+Tab 权限模式循环切换回调，透传给 Composer→InputArea。 */
   onCyclePermissionMode?: () => void;
@@ -118,6 +120,7 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
   commands,
   cwd,
   queuedCount,
+  onPopQueuedForEdit,
   onExitRequest,
   onCyclePermissionMode,
   isEmpty,
@@ -284,6 +287,7 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
       commands={commands}
       cwd={cwd}
       queuedCount={queuedCount}
+      onPopQueuedForEdit={onPopQueuedForEdit}
       onExitRequest={onExitRequest}
       onCyclePermissionMode={onCyclePermissionMode}
       hideShortcutsHint={true}

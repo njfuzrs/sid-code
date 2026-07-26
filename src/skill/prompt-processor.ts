@@ -8,8 +8,8 @@
  *   2. $ARGUMENTS / $@ / $* / {{args}} → 完整参数字符串
  *   3. $1 $2 ... → 位置参数
  *   4. $arg_name → 命名参数（frontmatter arguments 字段）
- *   5. ${SKILL_DIR} → Skill 自身目录
- *   6. ${SESSION_ID} → 当前会话 ID
+ *   5. ${SKILL_DIR} / ${CLAUDE_SKILL_DIR} → Skill 自身目录
+ *   6. ${SESSION_ID} / ${CLAUDE_SESSION_ID} → 当前会话 ID
  *   7. !`cmd` → 内联 shell 命令执行（仅非 MCP Skill）
  *
  * 安全：MCP Skill（loadedFrom="mcp"）被视为不可信来源，
@@ -66,18 +66,21 @@ export async function processSkillPrompt(
   content = substituteArguments(content, args, options.argumentNames);
 
   // Step 5: ${SKILL_DIR} 替换
+  // P1-3 变量兼容：同时认 CC 的 ${CLAUDE_SKILL_DIR}（loadSkillsDir.ts）与 sid 原生 ${SKILL_DIR}，
+  // 避免从 CC 迁移的 skill 变量原样残留在 prompt。两套名等价替换。
+  const skillDirRe = /\$\{(?:CLAUDE_)?SKILL_DIR\}/g;
   if (isMcp) {
     content = content.replace(
-      /\$\{SKILL_DIR\}/g,
+      skillDirRe,
       "[MCP Skill 不支持 SKILL_DIR 变量]",
     );
   } else if (options.skillRoot) {
     const skillDir = options.skillRoot.replace(/\\/g, "/");
-    content = content.replace(/\$\{SKILL_DIR\}/g, skillDir);
+    content = content.replace(skillDirRe, skillDir);
   }
 
-  // Step 6: ${SESSION_ID} 替换
-  content = content.replace(/\$\{SESSION_ID\}/g, context.sessionId);
+  // Step 6: ${SESSION_ID} 替换（同时认 CC 的 ${CLAUDE_SESSION_ID}）
+  content = content.replace(/\$\{(?:CLAUDE_)?SESSION_ID\}/g, context.sessionId);
 
   // Step 7: 内联 shell 命令 —— 仅非 MCP Skill
   if (isMcp) {

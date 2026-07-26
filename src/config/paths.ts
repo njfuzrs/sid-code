@@ -141,6 +141,15 @@ export const sidPaths = {
   builtinSkills: () => sidHomePath("builtin-skills"),
   skills: () => sidHomePath("skills"),
   extensionDir: (type: string) => sidHomePath(type),
+  /**
+   * P2-1：企业 managed 扩展目录候选（first-exists 全扫，优先级最高）。
+   * 与 managedPolicyCandidates 同源约定：系统级 /etc/sid-code/{type} + 用户级回退 ~/.sid-code/managed/{type}。
+   * managed 层扩展覆盖同名 user/project。SID_CODE_DISABLE_POLICY_SKILLS=1 可整体关闭。
+   */
+  managedExtensionDirs: (type: string): string[] => [
+    `/etc/sid-code/${type}`,
+    sidHomePath("managed", type),
+  ],
 
   // ── 自带二进制（编译期嵌入、运行时释放的工具，如 ripgrep）──
   binDir: () => sidHomePath("bin"),

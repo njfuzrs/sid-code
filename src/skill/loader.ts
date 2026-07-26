@@ -33,6 +33,11 @@ export class SkillLoader {
     this.extensionLoader = extensionLoader ?? new ExtensionLoader();
   }
 
+  /** P2-3：暴露底层 ExtensionLoader，供热重载清缓存（否则命中 5min TTL 旧结果）。 */
+  getExtensionLoader(): ExtensionLoader {
+    return this.extensionLoader;
+  }
+
   /**
    * 加载所有 Skill 定义
    *
@@ -48,10 +53,17 @@ export class SkillLoader {
     scanOptions?: ScanOptions,
   ): Promise<SkillDefinition[]> {
     const log = getLogger();
+    // P2-1：默认注入企业 managed skills 目录候选（调用方未显式指定时）。
+    // managed 层最高优先级，覆盖同名 user/project；SID_CODE_DISABLE_POLICY_SKILLS=1 时 loader 内部跳过。
+    const { sidPaths } = await import("../config/paths.ts");
+    const effectiveOptions: ScanOptions = {
+      ...scanOptions,
+      managedDirs: scanOptions?.managedDirs ?? sidPaths.managedExtensionDirs("skills"),
+    };
     const files = await this.extensionLoader.scan(
       "skills",
       projectDir,
-      scanOptions,
+      effectiveOptions,
     );
     const skills: SkillDefinition[] = [];
 
@@ -72,6 +84,28 @@ export class SkillLoader {
     }
 
     return skills;
+  }
+
+  /**
+   * P0-4：把一个已解析的扩展文件转成 SkillDefinition，并施加命名空间前缀。
+   *
+   * 插件 skills 复用此入口：先走标准 buildSkillDefinition（frontmatter 解析、校验），
+   * 再把 name 改写为 `<prefix>:<name>`。关键——前缀在 sanitize 之后施加，绕开
+   * sanitizeName 会把 `:` 替成 `-`、validateName 会拒 `:` 的问题（否则命名空间被破坏）。
+   *
+   * @param prefix 命名空间前缀（如插件名）；空则等价于 buildSkillDefinition
+   * @param loadedFrom 覆盖 loadedFrom（插件传 "plugin"）
+   */
+  buildNamespacedSkill(
+    file: ParsedExtensionFile,
+    prefix: string,
+    loadedFrom?: SkillDefinition["loadedFrom"],
+  ): SkillDefinition | null {
+    const skill = this.buildSkillDefinition(file);
+    if (!skill) return null;
+    if (prefix) skill.name = `${prefix}:${skill.name}`;
+    if (loadedFrom) skill.loadedFrom = loadedFrom;
+    return skill;
   }
 
   /**
@@ -153,7 +187,9 @@ export class SkillLoader {
       name: sanitizedName,
       description,
       allowedTools,
-      whenToUse: fm["when-to-use"] as string ?? fm["whenToUse"] as string,
+      // P1-3 变量/字段兼容：CC 权威字段是 when_to_use（下划线，frontmatterParser.ts），
+      // sid 原生用 when-to-use/whenToUse。三写法兼容，避免从 CC 迁移的 skill 静默丢 whenToUse。
+      whenToUse: (fm["when_to_use"] as string) ?? (fm["when-to-use"] as string) ?? (fm["whenToUse"] as string),
       argumentHint: fm["argument-hint"] as string ?? fm["argumentHint"] as string,
       model: fm.model as string,
       disableModelInvocation: fm["disable-model-invocation"] === true || fm["disableModelInvocation"] === true,
@@ -163,7 +199,7 @@ export class SkillLoader {
       timeoutMins,
       prompt: file.body,
       source: file.source,
-      loadedFrom: file.source === "builtin" ? "builtin" : "skills",
+      loadedFrom: file.source === "builtin" ? "builtin" : file.source === "managed" ? "managed" : "skills",
       filePath: file.filePath,
       skillRoot,
       userInvocable,

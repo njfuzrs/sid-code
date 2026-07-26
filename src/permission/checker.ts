@@ -511,6 +511,11 @@ export class PermissionChecker implements Checker {
     this.rules = this.ruleLoader.toPermissionRule();
   }
 
+  /** 读取当前合并后的权限规则（P0-3：供 skill 元工具抽取 Skill(name) 规则）。 */
+  getRules(): PermissionRule | null {
+    return this.rules;
+  }
+
   /** 设置权限规则（支持运行时更新，同步到 ruleLoader） */
   setRules(rules: PermissionRule): void {
     this.rules = rules;

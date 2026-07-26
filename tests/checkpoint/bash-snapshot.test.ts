@@ -51,6 +51,45 @@ describe("P2-1 getBashAffectedFiles 提取", () => {
     const files = await getBashAffectedFiles("git reset --hard HEAD~1", dir);
     expect(Array.isArray(files)).toBe(true);
   });
+
+  // ── P0-B1：非破坏性但改文件的命令（此前是 checkpoint 盲区） ──
+
+  test("cp 源与目标都收", async () => {
+    const files = await getBashAffectedFiles("cp a.ts b.ts", dir);
+    expect(files).toContain(join(dir, "a.ts"));
+    expect(files).toContain(join(dir, "b.ts"));
+  });
+
+  test("> 重定向目标进快照", async () => {
+    const files = await getBashAffectedFiles("echo hello > out.txt", dir);
+    expect(files).toContain(join(dir, "out.txt"));
+  });
+
+  test(">> 追加重定向目标进快照", async () => {
+    const files = await getBashAffectedFiles("echo hello >> log.txt", dir);
+    expect(files).toContain(join(dir, "log.txt"));
+  });
+
+  test("tee 写入目标进快照", async () => {
+    const files = await getBashAffectedFiles("echo x | tee out.txt", dir);
+    expect(files).toContain(join(dir, "out.txt"));
+  });
+
+  test("sed -i 提取目标文件、跳过脚本 token", async () => {
+    const files = await getBashAffectedFiles(`sed -i "s/foo/bar/" src/x.ts`, dir);
+    expect(files).toContain(join(dir, "src/x.ts"));
+    // 脚本 's/foo/bar/' 不应被误当路径
+    expect(files).not.toContain(join(dir, "s/foo/bar"));
+  });
+
+  test("sed 无 -i（只读）不触发快照", async () => {
+    expect(await getBashAffectedFiles(`sed -e "s/a/b/" foo.txt`, dir)).toEqual([]);
+  });
+
+  test("动态路径（变量/命令替换）跳过，不写坏 index", async () => {
+    const files = await getBashAffectedFiles("f=$(mktemp); echo x > $f", dir);
+    expect(files).toEqual([]);
+  });
 });
 
 describe("P2-1 rm 破坏进入 checkpoint 覆盖（消除盲区）", () => {

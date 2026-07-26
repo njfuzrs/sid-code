@@ -47,6 +47,8 @@ export interface QueryEngineDeps {
   budgetTracker?: BudgetTracker;
   /** B2：会话持久化写入端（增量写入 user/assistant/tool_result 消息）。可选——未注入则不持久化 */
   sessionStore?: import("../session/store.ts").SessionStore;
+  /** P1-2/P2-2/P3-2：Skill 运行时激活协调器（条件激活 + 动态发现 + 增量 listing）。可选。 */
+  skillActivationCoordinator?: import("../skill/activation-coordinator.ts").SkillActivationCoordinator;
   /** 执行工具调用（含权限检查）。返回 results + 可选 followup（ADR-019） */
   executeTools: (content: ContentBlock[]) => Promise<{ results: ContentBlock[]; followup?: ContentBlock[] }>;
   /** 处理流式响应。onThinking 对标 Claude Code 的独立思考流通道 */
@@ -241,7 +243,23 @@ export class QueryEngine {
         : {}),
     };
     try {
-      sessionStore?.appendMessage(userMessage);
+      // P2-G7：per-message 上下文（cwd/gitBranch/permissionMode）。实时读取（分支尤其不能用启动
+      // 快照），store 侧仅在相对上一条变化时落盘。探测失败不阻断持久化。
+      let ctxMeta: { cwd?: string; gitBranch?: string; permissionMode?: string } | undefined;
+      try {
+        const { getCwd } = await import("../bootstrap/state.ts");
+        const { getCurrentGitBranch } = await import("../util/git-branch.ts");
+        const cwd = getCwd();
+        const gitBranch = await getCurrentGitBranch(cwd, Date.now());
+        ctxMeta = {
+          cwd,
+          gitBranch,
+          permissionMode: config.permissionMode,
+        };
+      } catch {
+        /* 上下文探测失败：退化为无 meta 落盘 */
+      }
+      sessionStore?.appendMessage(userMessage, ctxMeta);
     } catch (e) {
       log.warn("ENGINE", `用户消息持久化失败（不阻断）: ${(e as Error)?.message}`);
     }
@@ -296,6 +314,13 @@ export class QueryEngine {
             const notes = hookSystem.drainRewakeNotifications();
             return notes.map(n => `[Hook: ${n.hookName}]\n${n.error}`);
           }
+        : undefined,
+      // P1-2/P2-2/P3-2：skill 激活协调器转发（条件激活/动态发现 + 增量 listing）
+      onSkillToolResults: this.deps.skillActivationCoordinator
+        ? (toolInputs) => this.deps.skillActivationCoordinator!.onToolResults(toolInputs)
+        : undefined,
+      drainSkillListingDelta: this.deps.skillActivationCoordinator
+        ? () => this.deps.skillActivationCoordinator!.drainListingDelta()
         : undefined,
       // /goal：目标驱动持续执行——转发到 queryLoop deps
       getGoalState: this.deps.getGoalState,
@@ -357,7 +382,8 @@ export class QueryEngine {
         // endSession 只在 App 退出时调用一次（B3）。
         if (event.kind === "assistant_message") {
           try {
-            sessionStore?.appendMessage(event.message);
+            // P1-G3：透传 persistMeta（usage/model/stopReason/msgId）到 store，按单条回复落盘归因。
+            sessionStore?.appendMessage(event.message, event.persistMeta);
           } catch (e) {
             log.warn("ENGINE", `assistant 消息持久化失败（不阻断）: ${(e as Error)?.message}`);
           }

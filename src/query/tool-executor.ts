@@ -1082,6 +1082,12 @@ async function getAffectedFiles(toolBlocks: ToolUseBlock[]): Promise<string[]> {
           files.push((block.input as any).file_path);
         }
         break;
+      case "notebook_edit":
+        // P0-B1：NotebookEdit 改 .ipynb 也要快照（此前只认 write/edit，notebook 是盲区）。
+        if ((block.input as any)?.notebook_path) {
+          files.push((block.input as any).notebook_path);
+        }
+        break;
       case "bash": {
         // P2-1：破坏性 bash 命令（git reset --hard / checkout . / clean -f / rm / mv）
         // 执行前快照受影响文件，让 /undo 能回退 bash 造成的破坏（此前是 checkpoint 盲区）。

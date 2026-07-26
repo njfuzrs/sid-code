@@ -5,8 +5,8 @@
 
 import type { TrustManager } from "./trust.ts";
 
-/** 扩展来源 */
-export type ExtensionSource = "builtin" | "user" | "project";
+/** 扩展来源（managed = 企业策略层，最高优先级，P2-1） */
+export type ExtensionSource = "builtin" | "managed" | "user" | "project";
 
 /** 扫描到的扩展文件（未解析 frontmatter） */
 export interface ExtensionFile {
@@ -66,4 +66,10 @@ export interface ScanOptions {
   trustManager?: TrustManager;
   /** 未信任文件回调（返回用户确认后的文件列表） */
   onUntrusted?: (files: ParsedExtensionFile[]) => Promise<ParsedExtensionFile[]>;
+  /**
+   * P2-1：企业 managed 层目录候选（first-exists 全扫）。企业策略统一下发的扩展，
+   * 优先级最高——managed 扩展覆盖同名 user/project，且可标记为 locked（不被任何来源覆盖）。
+   * 未提供或 SID_CODE_DISABLE_POLICY_SKILLS=1 时不扫描 managed 层。
+   */
+  managedDirs?: string[];
 }

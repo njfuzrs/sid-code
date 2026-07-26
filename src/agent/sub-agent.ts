@@ -256,6 +256,13 @@ export interface CustomSubAgentTask {
   timeout?: number;
   /** 子代理类型（G13：save_memory 的 agent scope 据此定位记忆目录；不传则 agent scope 不可用） */
   type?: string;
+  /**
+   * P1-1：推理努力程度（skill frontmatter effort 透传而来）。
+   * low|medium|high → provider reasoningEffort "high"；xhigh|max → "max"
+   * （provider 层仅接受 high|max，对齐 SendParams.reasoningEffort 契约）。
+   * 显式指定即开 thinking + 下发 reasoningEffort；不传则关 thinking（与 executeInner 同口径）。
+   */
+  effort?: "low" | "medium" | "high" | "xhigh" | "max";
 }
 
 export class SubAgent {
@@ -1294,6 +1301,20 @@ export class SubAgent {
       let lastTextOutput = "";
       let toolUseCount = 0;
 
+      // P1-1：effort → provider reasoningEffort，与 executeInner 同口径（仅 high|max 两档）。
+      // low/medium/high → "high"；xhigh/max → "max"。显式指定 effort 视为「要思考」，开 thinking；
+      // 未指定则关 thinking（SIDE_CALL_NO_THINK），自定义子代理默认不思考。skill frontmatter
+      // 声明 effort: high 时经此生效（此前 executeCustomInner 从不消费 effort，写了不起作用）。
+      const customSendParamsExtra: Partial<SendParams> =
+        task.effort !== undefined
+          ? {
+              thinking: { enabled: true, budgetTokens: 0 },
+              reasoningEffort: (task.effort === "xhigh" || task.effort === "max"
+                ? "max"
+                : "high") as "high" | "max",
+            }
+          : { thinking: SIDE_CALL_NO_THINK };
+
       const loopResult = await runAgentLoop({
         provider: activeProvider,
         model: activeModel,
@@ -1303,6 +1324,7 @@ export class SubAgent {
         signal: mergedSignal,
         loopDetector,
         hookSystem: this.hookSystem,
+        sendParamsExtra: customSendParamsExtra,
         onTurnEnd: (info) => {
           lastTextOutput = info.textOutput || lastTextOutput;
           toolUseCount += info.tools.length;

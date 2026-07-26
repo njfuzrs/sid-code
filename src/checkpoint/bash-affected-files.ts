@@ -17,7 +17,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import * as path from "node:path";
-import { parseBashCommand, extractSimpleCommands } from "../tool/bash/parser.ts";
+import { parseBashCommand, extractSimpleCommands, extractRedirectTargets } from "../tool/bash/parser.ts";
 import { matchGitDanger } from "../permission/git-danger-patterns.ts";
 import { getLogger } from "../debug/logger.ts";
 
@@ -57,27 +57,63 @@ async function getGitWorkingSetFiles(cwd: string): Promise<string[]> {
  */
 function extractExplicitPaths(command: string, cwd: string): string[] {
   const files: string[] = [];
+  let ast: ReturnType<typeof parseBashCommand>;
   let simpleCommands: Array<{ command: string; args: string[] }>;
   try {
-    simpleCommands = extractSimpleCommands(parseBashCommand(command));
+    ast = parseBashCommand(command);
+    simpleCommands = extractSimpleCommands(ast);
   } catch {
     return files;
   }
 
   const resolve = (tok: string) => (path.isAbsolute(tok) ? tok : path.resolve(cwd, tok));
+  // 变量拼接 / 命令替换 / 通配符的路径无法静态确定，收进来会写坏 index——一律跳过（保守）。
+  const isStatic = (tok: string) => !!tok && !/[$`*?~\[\]{}]/.test(tok);
+
+  // P0-B1：`>`/`>>` 重定向目标（echo x > f、cmd >> log）——parser 已能提取。
+  try {
+    for (const target of extractRedirectTargets(ast)) {
+      if (isStatic(target)) files.push(resolve(target));
+    }
+  } catch {
+    /* 重定向提取失败不阻断其余提取 */
+  }
 
   for (const { command: cmd, args } of simpleCommands) {
     if (cmd === "rm") {
       // rm [-flags] file...：取所有非 flag 参数
       for (const a of args) {
-        if (!a || a.startsWith("-")) continue;
+        if (!a || a.startsWith("-") || !isStatic(a)) continue;
         files.push(resolve(a));
       }
     } else if (cmd === "mv" || cmd === "cp") {
-      // mv src... dst：源与目标都可能被破坏/覆盖，全收
+      // mv/cp src... dst：源与目标都可能被破坏/覆盖，全收
       for (const a of args) {
-        if (!a || a.startsWith("-")) continue;
+        if (!a || a.startsWith("-") || !isStatic(a)) continue;
         files.push(resolve(a));
+      }
+    } else if (cmd === "tee") {
+      // tee [-a] file...：写入目标文件（含 -a 追加）
+      for (const a of args) {
+        if (!a || a.startsWith("-") || !isStatic(a)) continue;
+        files.push(resolve(a));
+      }
+    } else if (cmd === "sed") {
+      // sed [flags] SCRIPT FILE...：仅在带 -i（原地编辑）时提取目标文件。
+      const hasInplace = args.some(a => a === "-i" || a.startsWith("-i") || a === "--in-place" || a.startsWith("--in-place"));
+      if (hasInplace) {
+        // 结构=flags + 脚本 + 文件...。脚本是第一个非 flag token（形如 's/a/b/'、'1d'），
+        // 跳过它，其余非 flag token 视为文件。`-e <script>` 形式也一并跳过其后紧邻的脚本。
+        let scriptSeen = false;
+        for (let i = 0; i < args.length; i++) {
+          const a = args[i];
+          if (!a) continue;
+          if (a === "-e" || a === "-f") { i++; scriptSeen = true; continue; } // 脚本作为独立参数
+          if (a.startsWith("-")) continue;
+          if (!scriptSeen) { scriptSeen = true; continue; } // 第一个非 flag = 内联脚本，跳过
+          if (!isStatic(a)) continue;
+          files.push(resolve(a));
+        }
       }
     } else if (cmd === "git") {
       const sub = args[0];
@@ -85,7 +121,7 @@ function extractExplicitPaths(command: string, cwd: string): string[] {
         // git checkout/restore <file>（非 "." —— "." 走范围性快照）
         for (let i = 1; i < args.length; i++) {
           const a = args[i];
-          if (!a || a.startsWith("-") || a === ".") continue;
+          if (!a || a.startsWith("-") || a === "." || !isStatic(a)) continue;
           // 跳过 <commit>/<branch>：checkout 的第一个非 flag 参数可能是分支名。
           // 保守起见：只收看起来像路径的（含 / 或 . 或存在后缀）——难精确，
           // 但范围性破坏已由 workspace-wide 兜底，这里只做尽力而为。
@@ -108,10 +144,16 @@ export async function getBashAffectedFiles(command: string, cwd: string): Promis
   if (!command?.trim()) return [];
 
   const isDestructiveGit = matchGitDanger(command) !== null;
-  const isFileDestruction = /\b(rm|mv)\b/.test(command);
+  const isFileDestruction = /\b(rm|mv|cp)\b/.test(command);
+  // P0-B1：非破坏性但仍会改文件的命令——原地编辑（sed -i）、写入（tee）、重定向（> >>）。
+  // 这些此前是 checkpoint 盲区：/undo 够不到用 bash 改的文件。
+  const isFileMutation =
+    /\bsed\b[^;&|\n]*\s-i\b/.test(command) ||
+    /\btee\b/.test(command) ||
+    /(^|[^0-9<>])>>?[^&]/.test(command);
 
-  // 触发条件收敛：非破坏性命令不快照
-  if (!isDestructiveGit && !isFileDestruction) return [];
+  // 触发条件收敛：既不破坏也不改文件的命令不快照
+  if (!isDestructiveGit && !isFileDestruction && !isFileMutation) return [];
 
   try {
     // 范围性破坏 → 工作区级快照

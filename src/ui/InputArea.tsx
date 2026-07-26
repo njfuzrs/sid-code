@@ -63,6 +63,8 @@ interface InputAreaProps {
   cwd: string;
   /** 流式中已排队待接续的输入条数（>0 时输入框上方提示） */
   queuedCount?: number;
+  /** P2-G6：↑ 弹回编辑——空输入框按 ↑ 时取队尾排队输入回输入框继续编辑。返回 null 表示队列空。 */
+  onPopQueuedForEdit?: () => string | null;
   /** Shift+Tab 权限模式切换回调（可选） */
   onPermissionModeSwitch?: () => void;
   /** Ctrl+D（输入框为空时）请求退出的回调——由 App 传入 triggerQuit。 */
@@ -108,7 +110,7 @@ function renderFirstLineContent(lineText: string, promptLen: number): React.Reac
 
 // ── 组件 ──────────────────────────────────────────────────────────
 
-export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0, onPermissionModeSwitch, onExitRequest }: InputAreaProps) {
+export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0, onPopQueuedForEdit, onPermissionModeSwitch, onExitRequest }: InputAreaProps) {
   const lastSubmittedRef = useRef<string>("");
   const externalEditingRef = useRef(false); // Ctrl+G 外部编辑防重入
   const log = getLogger();
@@ -646,6 +648,17 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
     // - shell 模式(类 REPL):光标在首行↑ / 末行↓ 时翻历史,否则在多行命令内移光标
     // - 普通模式:仅单行时 ↑↓ 触发历史,多行时移光标
     if (key.name === "up" && !key.shift) {
+      // P2-G6：空输入框 + 队列非空时，↑ 先弹回队尾排队输入编辑（优先于历史检索，对齐 CC）。
+      // 队列弹回从"最近排的一条"取，符合"刚敲错想改"的直觉；取出即从队列移除。
+      const inputEmpty = tb.state.lines.length === 1 && (tb.state.lines[0] ?? "") === "";
+      if (inputEmpty && queuedCount > 0 && onPopQueuedForEdit) {
+        const popped = onPopQueuedForEdit();
+        if (popped != null) {
+          tb.setText(popped);
+          return true;
+        }
+        // 弹回返回 null（竞态：队列已被 drain 清空）→ 落回历史检索。
+      }
       const atFirstLine = tb.state.cursorRow === 0;
       const wantHistory = shellModeActive ? atFirstLine : tb.state.lines.length === 1;
       if (wantHistory) {
@@ -772,11 +785,12 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
   }, [queuedCount]);
 
   // 队列提示：流式中已排队 N 条输入待接续时，在输入框上方一行提示。
+  // P2-G6：完整形态附带"↑ 编辑"提示，告知用户可把队尾输入弹回编辑（输入框空时按 ↑）。
   const queueHint = queuedCount > 0 ? (
     <Box paddingLeft={1}>
       <Text color={theme.status.warning}>
         {queueHintFullRef.current
-          ? `${ARROW_PROMPT} 已排队 ${queuedCount} 条输入，将在当前响应结束后依次发送`
+          ? `${ARROW_PROMPT} 已排队 ${queuedCount} 条输入，将在当前响应结束后依次发送（空输入框按 ↑ 弹回编辑）`
           : `${ARROW_PROMPT} 已排队 ${queuedCount} 条`}
       </Text>
     </Box>

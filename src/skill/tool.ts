@@ -229,8 +229,35 @@ ${folderStructure}
 export function collectSkillListingEntries(
   tools: ReadonlyArray<unknown>,
 ): import("./budget.ts").SkillListingEntry[] | undefined {
-  const entries = tools
-    .filter((t): t is SkillTool => t instanceof SkillTool)
-    .map((t) => t.getListingEntry());
-  return entries.length > 0 ? entries : undefined;
+  const entries: import("./budget.ts").SkillListingEntry[] = [];
+
+  for (const t of tools) {
+    // P0-1：磁盘/内置 skill 现由单一 SkillMetaTool 汇总（一次性拿全部条目）
+    const maybeMeta = t as { getListingEntries?: () => import("./budget.ts").SkillListingEntry[] };
+    if (typeof maybeMeta.getListingEntries === "function") {
+      entries.push(...maybeMeta.getListingEntries());
+      continue;
+    }
+    // 向后兼容：残留的单实例 SkillTool（若有）
+    if (t instanceof SkillTool) {
+      entries.push(t.getListingEntry());
+      continue;
+    }
+    // Bundled skill 工具（BundledSkillTool）仍是独立工具，鸭子类型取其条目
+    const maybeBundled = t as { getListingEntry?: () => import("./budget.ts").SkillListingEntry };
+    if (typeof maybeBundled.getListingEntry === "function" && !(t instanceof SkillTool)) {
+      entries.push(maybeBundled.getListingEntry());
+    }
+  }
+
+  // 去重（同名保留首个：meta 优先于 bundled）
+  const seen = new Set<string>();
+  const deduped = entries.filter((e) => {
+    const key = e.name.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  return deduped.length > 0 ? deduped : undefined;
 }

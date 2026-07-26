@@ -33,6 +33,7 @@ LLM 配置:
   --session-id <uuid>         指定会话 UUID（须合法 UUID；与 -c/-r 同用须配 --fork-session）
   --fork-session              恢复会话时分叉为新会话（新 id，不改动源会话）
   --no-session-persistence    禁用会话落盘（本次会话不写持久化存储）
+  --from-pr <number>          从 PR 恢复会话上下文（gh pr view；内嵌会话 id 则恢复，否则注入 PR 上下文）
   -n, --name <name>           会话显示名（便于 --list-sessions 辨识）
   --list-sessions             列出所有会话（文本模式）
   --browse-sessions           打开 TUI 会话浏览器

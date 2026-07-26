@@ -17,6 +17,7 @@ import { StreamingState } from "../types.ts";
 import {
   enqueueCommand,
   dequeueFirstByKind,
+  dequeueLastByKind,
   getQueueSnapshot,
   subscribeQueue,
 } from "../../query/message-queue-manager.ts";
@@ -26,6 +27,11 @@ export interface UseMessageQueueReturn {
   enqueue: (text: string) => void;
   /** 入队一条抢占消息（now 级，ESC 改向；开启 mid-turn drain 时可被 loop 抢占插入） */
   enqueueNow: (text: string) => void;
+  /**
+   * P2-G6：把队尾（最近入队）的一条 user-input 弹出返回，供输入框继续编辑。
+   * 无排队 user-input 时返回 null。取出即从队列移除。
+   */
+  popLastForEdit: () => string | null;
   /** 队列中待发送的用户输入数量 */
   queueLength: number;
   /** 是否正在处理队列 */
@@ -56,6 +62,12 @@ export function useMessageQueue({
 
   const enqueueNow = useCallback((text: string) => {
     enqueueCommand({ priority: "now", kind: "user-input", payload: text });
+  }, []);
+
+  // P2-G6：↑ 弹回编辑——取队尾最近排的一条 user-input 回输入框。
+  const popLastForEdit = useCallback((): string | null => {
+    const taken = dequeueLastByKind("user-input");
+    return taken && typeof taken.payload === "string" ? taken.payload : null;
   }, []);
 
   // 当 streamingState 变为 Idle 且队列有待发送 user-input 时，逐条按序发送。
@@ -91,6 +103,7 @@ export function useMessageQueue({
   return {
     enqueue,
     enqueueNow,
+    popLastForEdit,
     queueLength,
     isProcessing: isProcessingStateRef.current,
   };

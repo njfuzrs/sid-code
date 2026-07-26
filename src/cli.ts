@@ -47,6 +47,8 @@ type CLIArgs = Partial<Config> & {
    * 带值时走 config.resume（ID / 索引 / 搜索词），此标志为 false。
    */
   resumePicker?: boolean;
+  /** P2-G9：--from-pr <number>——从 PR 恢复会话上下文（PR 编号字符串）。 */
+  fromPr?: string;
 };
 
 /**
@@ -186,6 +188,9 @@ function parseCLIArgs(): CLIArgs {
         "fork-session": { type: "boolean" },
         // 禁用会话落盘（P1-2 会话控制）：本次会话不写持久化存储（SDK/一次性任务用）。
         "no-session-persistence": { type: "boolean" },
+        // 从 PR 恢复会话上下文（P2-G9）：gh pr view <n> 拉取标题/描述/改动文件；
+        // PR body 嵌了会话 id 则 resume 该会话，否则把 PR 上下文注入新会话。
+        "from-pr": { type: "string" },
         "list-sessions": { type: "boolean" },
         "browse-sessions": { type: "boolean" },
         "delete-session": { type: "string" },
@@ -449,6 +454,8 @@ function parseCLIArgs(): CLIArgs {
     // resume 已在 extractResumeArg 预解析：带值走 config.resume，无值走 resumePicker 开选择器。
     resume: resumeArg.value,
     resumePicker: resumeArg.picker,
+    // P2-G9：从 PR 恢复（PR 编号）。在会话恢复分支前处理，命中会话 id 则转 resume。
+    fromPr: values["from-pr"],
     print: values.print,
     outputFormat: values["output-format"],
     maxTurns: values["max-turns"] ? parseInt(values["max-turns"]) : undefined,
@@ -1306,7 +1313,7 @@ export async function main(): Promise<void> {
 
     // 加载 Skills（通过 SkillManager 统一管理）
     const { SkillManager } = await import("./skill/manager.ts");
-    const { SkillTool } = await import("./skill/tool.ts");
+    const { SkillMetaTool } = await import("./skill/meta-tool.ts");
     const { SkillCommand } = await import("./command/skill-command.ts");
     const skillManager = new SkillManager();
     await skillManager.discover(process.cwd(), scanOptions);
@@ -1315,18 +1322,30 @@ export async function main(): Promise<void> {
       skillManager.setDisabledSkills(config.disabledSkills);
     }
 
+    // P0-1：单一 Skill 元工具（对齐 CC）。此前每个 skill 一个 skill__<name> 工具导致工具池膨胀
+    // + 与摘要 listing 信息重复。改为全局唯一 `Skill` 工具按名分发，工具数不随 skill 增长。
+    // 权限规则/hookSystem/permissionChecker 由 app.ts 的 wireTool* setter 回填。
+    // permissionRules 在下方（checker 构造处）才加载，故此处只注册工具，
+    // 权限规则/hookSystem/permissionChecker 统一由 app.ts 的 wireTool* setter 回填。
+    const skillMetaTool = new SkillMetaTool(skillManager, providerRegistry, toolRegistry);
+    toolRegistry.register(skillMetaTool);
+
     const skills = skillManager.getSkills();
     for (const skill of skills) {
-      // 模型调用路径：注册为工具（除非显式禁止模型调用）
-      if (!skill.disableModelInvocation) {
-        toolRegistry.register(new SkillTool(skill, providerRegistry, toolRegistry));
-      }
       // 用户调用路径：注册为斜杠命令 /skill-name（除非显式禁止用户调用）
       // 此前缺失此步骤,导致 /bug-fix 等 skill 命令报"未知命令"。
       if (skill.userInvocable !== false) {
         commandRegistry.register(new SkillCommand(skill), "user");
       }
     }
+
+    // P1-2/P2-2/P3-2：Skill 运行时激活协调器。init() 延后到插件 skills 也加载完毕后调用
+    // （下方插件块），以便条件激活门控覆盖插件 skill。
+    const { SkillActivationCoordinator } = await import("./skill/activation-coordinator.ts");
+    const skillActivationCoordinator = new SkillActivationCoordinator({
+      manager: skillManager,
+      cwd: process.cwd(),
+    });
 
     // Bundled Skill 模型调用路径（Gap 1）：把 fork 模式且未禁止模型调用的
     // Bundled Skill 注册为工具，使 LLM 可自动调用（与磁盘 Skill 的 SkillTool 对等）。
@@ -1419,6 +1438,23 @@ export async function main(): Promise<void> {
       // 插件命令（带 pluginName: 前缀，与内置/自定义命令隔离）
       const pluginCmdCount = await mergePluginCommands(commandRegistry);
 
+      // P0-4：插件 Skills（带 pluginName: 前缀）。注入同一 skillManager（元工具据此分发），
+      // 并把 userInvocable 的注册为 /pluginName:skill 斜杠命令。
+      try {
+        const { getPluginSkills } = await import("./plugin/loadPluginSkills.ts");
+        const pluginSkills = await getPluginSkills();
+        if (pluginSkills.length > 0) {
+          skillManager.addPluginSkills(pluginSkills);
+          for (const skill of pluginSkills) {
+            if (skill.userInvocable !== false) {
+              commandRegistry.register(new SkillCommand(skill), "user");
+            }
+          }
+        }
+      } catch (err: any) {
+        getLogger().warn("PLUGIN", `插件 Skills 加载失败: ${err?.message ?? String(err)}`);
+      }
+
       // 插件 Agent（注册为工具 + 注册进聚合 registry，overwrite=false：优先级低于用户自定义）
       const pluginAgents = await loadPluginAgents();
       if (pluginAgents.length > 0) {
@@ -1455,6 +1491,10 @@ export async function main(): Promise<void> {
     } catch (err: any) {
       getLogger().error("PLUGIN", `插件组件加载失败: ${err.message}`);
     }
+
+    // P1-2/P2-2：插件 skills 也加载完毕后，用全量 skill 初始化激活协调器
+    // （分离条件激活 skill 并 gate，未触发前不进模型 listing）。
+    skillActivationCoordinator.init(skillManager.getAllSkills());
 
     profileCheckpoint("tool_reg_end");
 
@@ -1580,13 +1620,36 @@ export async function main(): Promise<void> {
       }
 
       if (Object.keys(allMcpServers).length > 0) {
-        mcpManager.connectAll(allMcpServers).then((mcpTools) => {
+        const mgrForSkills = mcpManager;
+        mcpManager.connectAll(allMcpServers).then(async (mcpTools) => {
           for (const tool of mcpTools) toolRegistry.register(tool);
           if (mcpTools.length > 0) {
             // 新工具进池后清 paramText 缓存：延迟工具集变化（含 schema 可能更新），
             // 避免 tool_search 命中陈旧参数文本（借鉴 CC ToolSearchTool 的缓存失效）。
             toolRegistry.invalidateParamTextCache();
             getLogger().info("MCP", `已连接，注册 ${mcpTools.length} 个工具`);
+          }
+          // P2-4：连接完成后发现 MCP server 暴露的 skill:// 资源，转成 loadedFrom="mcp" 的 skill。
+          // 安全隔离已就位（prompt-processor 禁内联 shell、executor 拒 hooks、permission 敏感属性强制 ask）。
+          try {
+            const { discoverMcpSkills } = await import("./mcp/skill-discovery.ts");
+            const mcpSkills = await discoverMcpSkills(mgrForSkills);
+            if (mcpSkills.length > 0) {
+              skillManager.addPluginSkills(mcpSkills); // 复用 precedence 追加 + 热重载重放登记
+              for (const skill of mcpSkills) {
+                if (skill.userInvocable !== false) {
+                  commandRegistry.register(new SkillCommand(skill), "user");
+                }
+              }
+              // 新 skill 进 listing：走增量注入路径（system prompt 已在启动时建好、
+              // 来不及含这些迟到 skill，故必须经 reminder 增量提醒，否则模型看不到）。
+              skillActivationCoordinator.enqueueListingForNewSkills(
+                mcpSkills.filter((s) => !s.disableModelInvocation).map((s) => s.name),
+              );
+              getLogger().info("MCP", `发现 ${mcpSkills.length} 个 MCP Skill: ${mcpSkills.map((s) => s.name).join(", ")}`);
+            }
+          } catch (err: any) {
+            getLogger().warn("MCP", `MCP Skill 发现失败（不阻断）: ${err?.message ?? String(err)}`);
           }
         }).catch((err: any) => {
           getLogger().error("MCP", `初始化失败: ${err.message}`);
@@ -1723,7 +1786,7 @@ export async function main(): Promise<void> {
 
     // 创建 App
     const { App } = await import("./app.ts");
-    const app = new App({ config, provider, providerRegistry, toolRegistry, commandRegistry, unifiedRegistry, permissionChecker, mcpManager, planManager, fileReadTracker });
+    const app = new App({ config, provider, providerRegistry, toolRegistry, commandRegistry, unifiedRegistry, permissionChecker, mcpManager, planManager, fileReadTracker, skillActivationCoordinator, skillManager });
     // 注册全局 App 弱引用（供 uncaughtException 等异常兜底使用）
     setLastApp(app);
 
@@ -1858,6 +1921,31 @@ export async function main(): Promise<void> {
         }
       } catch (err: any) {
         getLogger().warn("WORKTREE", `worktree 启动处理失败（不阻断）: ${err.message}`);
+      }
+    }
+
+    // P2-G9：--from-pr <number>——从 PR 恢复会话上下文。放在会话恢复分支之前：
+    //   - PR body 内嵌会话 id → 设 config.resume，转下方正常 resume 流程。
+    //   - 否则把 PR 上下文（标题/描述/改动文件）拼进初始 prompt，注入新会话。
+    // gh 不可用 / PR 不存在 → 报错退出（PR 恢复失败用户需要知道，不静默降级为空会话）。
+    if (cliArgs.fromPr) {
+      try {
+        const { loadFromPr } = await import("./session/from-pr.ts");
+        const result = await loadFromPr(cliArgs.fromPr, process.cwd());
+        if (result.sessionId) {
+          getLogger().info("CLI", `--from-pr ${result.prNumber}：内嵌会话 id ${result.sessionId}，转为 resume`);
+          config.resume = result.sessionId;
+        } else if (result.contextText) {
+          getLogger().info("CLI", `--from-pr ${result.prNumber}：注入 PR 上下文到新会话`);
+          // 把 PR 上下文前置到用户 prompt（若有）之前；纯 --from-pr 无 prompt 时，
+          // 上下文本身即首条输入。
+          cliArgs.prompt = cliArgs.prompt
+            ? `${result.contextText}\n\n---\n\n${cliArgs.prompt}`
+            : result.contextText;
+        }
+      } catch (err: any) {
+        console.error(`错误: --from-pr 失败：${err?.message ?? String(err)}`);
+        process.exit(1);
       }
     }
 

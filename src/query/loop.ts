@@ -867,6 +867,17 @@ export async function* queryLoop(
       }
     }
 
+    // P3-2：Skill 增量 listing 注入（首轮全量、后续只增量已激活的条件/动态 skill）。
+    // 走 reminderParts（user 消息，cache-friendly），不碰 system prompt 静态前缀 → 不击穿 prompt cache。
+    if (deps.drainSkillListingDelta) {
+      try {
+        const skillDelta = deps.drainSkillListingDelta();
+        if (skillDelta) reminderParts.push(skillDelta);
+      } catch (e) {
+        log.warn("QUERY_LOOP", `skill 增量 listing 注入异常（忽略）: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+
     if (reminderParts.length > 0) {
       // 注入逻辑抽到 reminder-inject.ts（纯函数，便于单测）。
       // 关键：纯 tool_result 轮（plan 探索高频场景）无 text block 时会追加 text block，
@@ -1711,7 +1722,21 @@ export async function* queryLoop(
           content: sanitizedContent,
           ...(response._meta ? { _meta: response._meta } : {}),
         });
-        yield { kind: "assistant_message", message: { role: "assistant", content: sanitizedContent } };
+        yield {
+          kind: "assistant_message",
+          message: { role: "assistant", content: sanitizedContent },
+          persistMeta: {
+            usage: {
+              inputTokens: response.usage.inputTokens,
+              outputTokens: response.usage.outputTokens,
+              cacheReadInputTokens: (response.usage as any).cacheReadInputTokens,
+              cacheCreationInputTokens: (response.usage as any).cacheCreationInputTokens,
+            },
+            model: config.model,
+            stopReason: response.stopReason ?? undefined,
+            msgId: (response as any).id ?? undefined,
+          },
+        };
 
         // 重试前压缩上下文，打击大上下文根因（消息足够多才有意义）
         const compactResult = reactiveCompact(ctxMgr);
@@ -1766,7 +1791,21 @@ export async function* queryLoop(
         content: sanitizedContent,
         ...(response._meta ? { _meta: response._meta } : {}),
       });
-      yield { kind: "assistant_message", message: { role: "assistant", content: sanitizedContent } };
+      yield {
+        kind: "assistant_message",
+        message: { role: "assistant", content: sanitizedContent },
+        persistMeta: {
+          usage: {
+            inputTokens: response.usage.inputTokens,
+            outputTokens: response.usage.outputTokens,
+            cacheReadInputTokens: (response.usage as any).cacheReadInputTokens,
+            cacheCreationInputTokens: (response.usage as any).cacheCreationInputTokens,
+          },
+          model: config.model,
+          stopReason: response.stopReason ?? undefined,
+          msgId: (response as any).id ?? undefined,
+        },
+      };
       yield {
         kind: "system",
         level: "warning",
@@ -1783,7 +1822,19 @@ export async function* queryLoop(
       ...(response._meta ? { _meta: response._meta } : {}),
     });
 
-    yield { kind: "assistant_message", message: { role: "assistant", content: response.content } };
+    // P1-G3：本次 API 调用的 usage/model/stopReason 随 assistant_message 落盘（按单条回复归因）。
+    const assistantPersistMeta = {
+      usage: {
+        inputTokens: response.usage.inputTokens,
+        outputTokens: response.usage.outputTokens,
+        cacheReadInputTokens: (response.usage as any).cacheReadInputTokens,
+        cacheCreationInputTokens: (response.usage as any).cacheCreationInputTokens,
+      },
+      model: config.model,
+      stopReason: response.stopReason ?? undefined,
+      msgId: (response as any).id ?? undefined,
+    };
+    yield { kind: "assistant_message", message: { role: "assistant", content: response.content }, persistMeta: assistantPersistMeta };
 
     // ─── 内容循环检测 ───
     if (responseText && loopDetector.recordContent(responseText)) {
@@ -2463,6 +2514,15 @@ export async function* queryLoop(
       // Step 0：本轮工具结果已入历史，触发 Session Memory 提取（fire-and-forget，
       // 内部按双阈值决定是否真正提取，未达阈值/进行中则直接跳过，不阻塞主循环）。
       deps.updateSessionMemory?.().catch(() => { /* 提取失败不阻断主循环 */ });
+
+      // P1-2/P2-2：本轮工具输入喂给 skill 激活协调器（条件激活 + 动态发现）。
+      // 新激活/发现的 skill 会在下一轮开始经 drainSkillListingDelta → reminderParts 增量注入。
+      if (deps.onSkillToolResults) {
+        const toolInputs = toolBlocks
+          .filter((b) => b.type === "tool_use")
+          .map((b) => (b as import("../llm/types.ts").ToolUseBlock).input);
+        deps.onSkillToolResults(toolInputs).catch(() => { /* 激活失败不阻断主循环 */ });
+      }
 
       // ─── 方向 2/4/6：无进展只读命令重复检测 + git-status 刷新止损阀 ───
       // 根因（根因分析-commit任务git状态快照冻结死循环.md）：git-status 快照冻结进 system

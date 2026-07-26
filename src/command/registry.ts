@@ -99,6 +99,24 @@ export class Registry {
   }
 
   /**
+   * P2-3：按谓词删除命令（含别名清理）。热重载时清除陈旧 SkillCommand 用。
+   * @returns 删除的命令数
+   */
+  removeWhere(predicate: (cmd: Command) => boolean): number {
+    let removed = 0;
+    for (const [name, cmd] of [...this.commands]) {
+      if (!predicate(cmd)) continue;
+      this.commands.delete(name);
+      this.commandSources.delete(name);
+      for (const alias of cmd.aliases()) {
+        if (this.aliasMap.get(alias) === cmd) this.aliasMap.delete(alias);
+      }
+      removed++;
+    }
+    return removed;
+  }
+
+  /**
    * 原子替换所有插件命令（source=plugin）。
    *
    * 插件命令名自带 pluginName: 前缀，天然与内置/用户命令隔离，因此直接按 source

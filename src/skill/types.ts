@@ -6,7 +6,7 @@
 import type { ExtensionSource } from "../extension/types.ts";
 
 /** Skill 加载位置（对齐 Claude Code loadedFrom） */
-export type SkillLoadedFrom = "builtin" | "bundled" | "skills" | "mcp";
+export type SkillLoadedFrom = "builtin" | "bundled" | "skills" | "mcp" | "plugin" | "managed";
 
 /** Skill 生命周期钩子声明（frontmatter 中的 hooks 字段） */
 export interface SkillHookEntry {

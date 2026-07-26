@@ -216,6 +216,10 @@ export interface AppOptions {
   planManager?: PlanModeManager;
   /** 共享的 FileReadTracker 实例（§2.1 post-compact 文件恢复需要它取最近访问文件）。 */
   fileReadTracker?: import("./tool/file-read-tracker.ts").FileReadTracker;
+  /** P1-2/P2-2/P3-2：Skill 运行时激活协调器（条件激活 + 动态发现 + 增量 listing）。可选。 */
+  skillActivationCoordinator?: import("./skill/activation-coordinator.ts").SkillActivationCoordinator;
+  /** P2-3：Skill 管理器（热重载需调 reload() 重扫磁盘 skill）。可选。 */
+  skillManager?: import("./skill/manager.ts").SkillManager;
 }
 
 /**
@@ -292,6 +296,12 @@ export class App {
   private traceCollector: import("./trace/collector.ts").TraceCollector | null = null;
   /** §2.1：共享 FileReadTracker，autoCompact 后用于恢复最近访问文件。 */
   private fileReadTracker: import("./tool/file-read-tracker.ts").FileReadTracker | null = null;
+  /** P1-2/P2-2/P3-2：Skill 运行时激活协调器（条件激活 + 动态发现 + 增量 listing）。可选。 */
+  private skillActivationCoordinator?: import("./skill/activation-coordinator.ts").SkillActivationCoordinator;
+  /** P2-3：Skill 管理器（热重载调 reload()）。可选。 */
+  private skillManager?: import("./skill/manager.ts").SkillManager;
+  /** P2-3：Skill 文件热重载监听器（退出时 stop()）。 */
+  private skillChangeDetector?: import("./skill/change-detector.ts").SkillChangeDetector;
   /** §5：共享 cached microcompact 状态机，压缩后重置。延迟创建。 */
   private cachedMicrocompactState: import("./query/compact/cached-microcompact.ts").CachedMicrocompactState | null = null;
   /** 已播报过 instructions 的 MCP server 名（去重集，避免每轮重复注入同一 server 说明）。 */
@@ -355,6 +365,8 @@ export class App {
     this.permissionChecker = opts.permissionChecker ?? null;
     this.planManager = opts.planManager ?? null;
     this.fileReadTracker = opts.fileReadTracker ?? null;
+    this.skillActivationCoordinator = opts.skillActivationCoordinator;
+    this.skillManager = opts.skillManager;
     const sessionId = opts.config.sessionId || generateSessionId();
     this.sessionIdForCompact = sessionId;
     // 上下文窗口按模型实际大小初始化（deepseek-v4 为 1M，Claude 200K，gpt-4o 128K）。
@@ -714,6 +726,7 @@ export class App {
       tokenMeter: this.tokenMeter,
       budgetTracker: this.budgetTracker,
       sessionStore: this.sessionStore ?? undefined,
+      skillActivationCoordinator: this.skillActivationCoordinator,
       executeTools: (content) => this.executeTools(content),
       processStream: (stream, onText, onThinking, turnAbortController) => this.processStream(stream, onText, onThinking, turnAbortController),
       autoCompact: () => this.autoCompact(),
@@ -915,13 +928,25 @@ export class App {
     // 延迟导入工厂函数（避免循环依赖）
     const { createSubAgentChecker } = require("./permission/sub-agent-checker.ts");
     const subChecker = createSubAgentChecker(this.permissionChecker);
+    // P0-3：抽取合并后的权限规则，供 skill 元工具解析 Skill(name) 规则。
+    const checkerWithRules = this.permissionChecker as unknown as {
+      getRules?: () => import("./permission/types.ts").PermissionRule | null;
+    };
+    const rawRules = typeof checkerWithRules.getRules === "function"
+      ? checkerWithRules.getRules()
+      : null;
     for (const tool of this.toolRegistry.all()) {
       const maybe = tool as {
         setPermissionChecker?: (c: import("./permission/types.ts").Checker) => void;
         setPermissionConfirm?: (fn: (desc: string) => Promise<boolean>) => void;
+        setPermissionRules?: (r: import("./permission/types.ts").PermissionRule) => void;
       };
       if (typeof maybe.setPermissionChecker === "function") {
         maybe.setPermissionChecker(subChecker);
+      }
+      // P0-3：SkillMetaTool 需要原始规则（非 subChecker）来判定 Skill(name) 的 allow/deny/ask
+      if (typeof maybe.setPermissionRules === "function" && rawRules) {
+        maybe.setPermissionRules(rawRules);
       }
       // TeamCreateTool 需要额外注入 leader 确认回调（swarm teammate escalate 用）
       if (typeof maybe.setPermissionConfirm === "function") {
@@ -2131,6 +2156,9 @@ export class App {
       }
     });
 
+    // P2-3：Skill 文件热重载（改 SKILL.md 免重启）
+    await this.startSkillHotReload();
+
     // 轨迹采集初始化（委托给 init-helpers）
     const { initTraceCollector, initTelemetrySystem } = await import("./query/init-helpers.ts");
     const traceCollectorInstance = await initTraceCollector(this.config, this.hookSystem);
@@ -2586,6 +2614,114 @@ export class App {
       log.info("APP", `系统提示词已重建（运行时偏好变更）: ${newPrompt.length} 字符`);
     } catch (e) {
       log.warn("APP", `重建系统提示词失败（不阻断）: ${(e as Error)?.message}`);
+    }
+  }
+
+  /**
+   * P2-3：启动 Skill 文件热重载监听。
+   *
+   * 监听 user（~/.sid-code/skills、~/.claude/skills）+ project（.sid-code/skills、.claude/skills）
+   * skills 目录的 .md 变更，防抖后重跑 SkillManager.reload()（重扫磁盘）+ 重建条件门控
+   *（SkillActivationCoordinator.reinit，保留已激活的动态 skill）+ 刷新 /skill 斜杠命令
+   * + 重建 system prompt（skill 摘要 listing 跟着刷新）。
+   *
+   * 降级：无 skillManager 时跳过；监听失败（Linux 递归 fs.watch 兼容问题）由 change-detector
+   * 内部静默禁用，不影响主流程。退出时经 registerCleanup 关闭所有 watcher（对齐退出清理铁律）。
+   */
+  private async startSkillHotReload(): Promise<void> {
+    const log = getLogger();
+    if (!this.skillManager) return;
+    // 热重载默认开启；SID_CODE_DISABLE_SKILL_HOT_RELOAD=1 可关闭（对齐可逆开关惯例）。
+    if (process.env.SID_CODE_DISABLE_SKILL_HOT_RELOAD === "1") {
+      log.debug("SKILL", "Skill 热重载已由环境变量禁用");
+      return;
+    }
+
+    try {
+      const { SkillChangeDetector } = await import("./skill/change-detector.ts");
+      const { sidPaths } = await import("./config/paths.ts");
+      const { getClaudeHome } = await import("./config/paths.ts");
+      const { join } = await import("node:path");
+
+      const cwd = process.cwd();
+      // 监听 user + project 两级、.sid-code + .claude 两套目录（与 ExtensionLoader 扫描口径一致）。
+      // 不监听 managed（企业下发，运行时不预期变更）与 builtin（释放目录，随二进制固定）。
+      const watchDirs = [
+        sidPaths.extensionDir("skills"),
+        join(getClaudeHome(), "skills"),
+        join(cwd, ".sid-code", "skills"),
+        join(cwd, ".claude", "skills"),
+      ];
+
+      const detector = new SkillChangeDetector({
+        onChange: async (changedDirs) => {
+          await this.reloadSkillsAfterChange(changedDirs);
+        },
+      });
+      detector.watchDirs(watchDirs);
+      this.skillChangeDetector = detector;
+
+      if (detector.isWatching()) {
+        const { registerCleanup } = await import("./utils/graceful-shutdown.ts");
+        registerCleanup(() => {
+          this.skillChangeDetector?.stop();
+        });
+        log.info("SKILL", "Skill 热重载监听已启动");
+      }
+    } catch (e) {
+      log.warn("SKILL", `Skill 热重载接线失败（不阻断）: ${(e as Error)?.message}`);
+    }
+  }
+
+  /**
+   * P2-3：SKILL.md 变更后的重载流程（防抖回调，串行）。
+   */
+  private async reloadSkillsAfterChange(changedDirs: string[]): Promise<void> {
+    const log = getLogger();
+    const mgr = this.skillManager;
+    if (!mgr) return;
+
+    try {
+      // 快照重载前「已激活」态（用于 reinit 保留只进不退语义）
+      const prevActivated = this.skillActivationCoordinator?.getActivatedNames() ?? [];
+
+      // 1. 重扫磁盘（清缓存 + 重放插件/动态 + 重放禁用态）
+      await mgr.reload();
+
+      // 2. 重建条件门控（保留已激活的动态 skill）
+      this.skillActivationCoordinator?.reinit(mgr.getAllSkills(), prevActivated);
+
+      // 3. 刷新 /skill 斜杠命令：先删旧的 skill 命令，再按新集重注册
+      await this.refreshSkillCommands();
+
+      // 4. 重建 system prompt（skill 摘要 listing 跟着刷新——单一元工具据 manager 实时取）
+      await this.rebuildSystemPrompt();
+
+      log.info("SKILL", `Skill 热重载生效（${changedDirs.length} 个目录变更）`);
+    } catch (e) {
+      log.warn("SKILL", `Skill 热重载处理失败（不阻断）: ${(e as Error)?.message}`);
+    }
+  }
+
+  /**
+   * P2-3：热重载后刷新用户 `/skill` 斜杠命令。
+   * 删除所有 SkillCommand（source=user，且命令对象是 SkillCommand），按新 skill 集重注册。
+   */
+  private async refreshSkillCommands(): Promise<void> {
+    const mgr = this.skillManager;
+    if (!mgr) return;
+    try {
+      const { SkillCommand } = await import("./command/skill-command.ts");
+      // 删除现有 SkillCommand（避免陈旧 skill 命令残留）
+      this.commandRegistry.removeWhere((cmd) => cmd instanceof SkillCommand);
+      // 按新集重注册用户可调用的 skill
+      for (const skill of mgr.getSkills()) {
+        if (skill.userInvocable !== false) {
+          this.commandRegistry.register(new SkillCommand(skill), "user");
+        }
+      }
+    } catch (e) {
+      getLogger().debug("SKILL", `刷新 skill 斜杠命令失败: ${(e as Error)?.message}`);
     }
   }
 
@@ -3876,9 +4012,17 @@ export class App {
    */
   private buildStartupWarnings(): import("./ui/components/Notifications.tsx").StartupWarning[] {
     if (this.config._needsOnboarding) return [];
-    const diag = this.config._validationDiagnostics;
-    if (!diag) return [];
     const warnings: import("./ui/components/Notifications.tsx").StartupWarning[] = [];
+    // P1-G4 --no-session-persistence：交互模式给出明确提示（buildStartupWarnings 只喂 TUI，
+    // 无头模式不渲染，故天然只在交互态出现），让用户知道本次会话不会落盘、退出即丢历史。
+    if (this.config.noSessionPersistence) {
+      warnings.push({
+        id: "no-session-persistence",
+        message: "会话持久化已禁用（--no-session-persistence）：本次对话不会保存，退出后无法 --resume 恢复。",
+      });
+    }
+    const diag = this.config._validationDiagnostics;
+    if (!diag) return warnings;
     diag.errors.forEach((e, i) => {
       warnings.push({ id: `startup-error-${i}-${e.path}`, message: `[配置错误] ${e.path}: ${e.message}` });
     });
@@ -5594,6 +5738,8 @@ export class App {
             });
           },
           hookSystem: this.hookSystem,
+          // P0-3：skill 权限 ask 决策的用户确认回调（用户斜杠路径用主会话弹窗）。
+          requestUserConfirmation: (desc: string) => this.requestUserConfirmation(desc),
           commandRegistry: this.commandRegistry,
           unifiedRegistry: this.unifiedRegistry,
           // /goal：目标驱动持续执行——命令层读写 goalState 的三个回调
