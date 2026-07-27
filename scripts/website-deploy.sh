@@ -106,13 +106,26 @@ require_remote() {
 
 # 冒烟：站点首页 + install.sh。install.sh 这条是刻意加的硬门禁——
 # nginx root 已指向站点目录，/releases/ 靠 alias 回落，断了就是所有用户装不上。
+#
+# ⚠️ 这里刻意**不写** `curl ... | grep -q`（2026-07-27 实测该写法有假失败）：
+# `grep -q` 命中即退出，会在 curl 还在写 stdout 时关闭管道 → curl 拿 EPIPE 死于
+# **exit 23**（write error），`set -o pipefail` 又把这个 23 传给 if → 明明 grep
+# 匹配成功（实测 PIPESTATUS: curl=23 grep=0）也走失败分支。首页内容越大 / 网络越慢
+# 越容易触发（`--limit-rate 3000` 可 100% 复现）。假失败会让脚本 fail 掉一次
+# **本已成功的发布**，且文案直接引导 --rollback，等于把好版本白白退掉。
+# 正确做法：先把响应体整份收下来（curl 退出码单独判），再对内容做匹配，两件事不共享管道。
 smoke_test() {
     local rc=0
     info "冒烟校验 ..."
-    if curl -fsS --max-time 15 "http://${DEPLOY_SSH_HOST}/" | grep -q "sid-code"; then
+    local home_body="" home_rc=0
+    home_body="$(curl -fsS --max-time 15 "http://${DEPLOY_SSH_HOST}/")" || home_rc=$?
+    if [ "$home_rc" -ne 0 ]; then
+        warn "首页请求失败（curl exit ${home_rc}）"
+        rc=1
+    elif printf '%s' "$home_body" | grep -q "sid-code"; then
         ok "首页 200 且含 sid-code"
     else
-        warn "首页内容校验失败"
+        warn "首页内容校验失败（已拿到响应但不含 sid-code，长度 ${#home_body}）"
         rc=1
     fi
     local code
