@@ -25,7 +25,7 @@
 
 - [CLI 参数与子命令](/ref/cli): sid-code 的全部命令行参数与子命令。
 - [环境变量](/ref/env): 全部可用环境变量及其作用。
-- [术语表](/ref/glossary): agentic loop / 上下文窗口 / 权限模式 / 轨迹 / effort 档位等术语的准确定义。
+- [术语表](/ref/glossary): 本站反复出现的术语的准确定义。读文档时遇到不认识的词，来这里查一句话。
 - [Hook 事件](/ref/hooks): 全部 Hook 事件的名称、触发时机与载荷字段。
 - [settings.json 字段](/ref/settings): settings.json 的全部可配字段、类型与默认值。
 - [斜杠命令](/ref/slash-commands): 交互模式里可用的全部斜杠命令。
