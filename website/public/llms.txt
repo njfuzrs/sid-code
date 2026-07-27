@@ -37,7 +37,7 @@
 - [配置 LLM Provider](/start/configure): anthropic / openai / ollama 三族协议各一份可直接粘的 settings.json，含 base_url 的 /v1 两族相反规则。
 - [跑通第一个任务](/start/first-task): 一个真实小任务的全过程：改一个函数并跑测试，逐屏解说。
 - [安装](/start/install): 一条 curl 命令装好 sid-code，以及 PATH / 权限 / 架构识别三类常见失败的处理。
-- [接下来读什么](/start/next): 按你的目标给出三条阅读路径，每条带一句为什么。
+- [接下来读什么](/start/next): 按你的目标给出四条阅读路径，每条带一句为什么。
 
 ## 企业与团队
 

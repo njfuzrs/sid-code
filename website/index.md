@@ -27,7 +27,7 @@ features:
     link: /start/configure
     linkText: 配置 provider
   - title: 功能自主可定制
-    details: 60+ 内置工具、32 类 Hook 事件、Skill 与子代理全部可改可扩。发现问题当天就能补，不必等官方排期。
+    details: 44 个内置工具、32 类 Hook 事件、Skill 与子代理全部可改可扩。发现问题当天就能补，不必等官方排期。
     link: /extend/
     linkText: 扩展方式总览
   - title: 深度贴合企业开发环境
@@ -64,8 +64,9 @@ sid-code --version    # 确认版本
     单测          grep -rhoE '\b(it|test)\(' tests src --include='*.test.ts' --include='*.test.tsx' | wc -l
                   （实测 6,583 个用例 / 520 个测试文件）
     Hook 事件数   src/hook/types.ts 的 HookEventName 枚举成员数（实测 32）
-    内置工具数    以 sid-code --dump-tools 为准（T-3.2 就绪后改用运行时真值）
-    eval case     bun run eval:list 的汇总行
+    内置工具数    sid-code --dump-tools | bun -e '...' 数组长度（2026-07-27 实测 44，与
+                  脚本生成的 ref/tools.md 同源同值。此前写"60+"与运行时真值不符，已改）
+    eval case     bun run eval:list 的汇总行（2026-07-27 实测 P0=10 holdout=5 P1=9 P2=6 = 30）
   改这组数字前先跑上面的命令，不要凭记忆改。
 -->
 
@@ -73,7 +74,7 @@ sid-code --version    # 确认版本
 | --- | --- |
 | 自研代码 | `src/` 下 17 万行以上 TypeScript（不含 vendor 的 ink fork） |
 | 工程闭环 | 500+ 测试文件、6000+ 单测用例；每次改代码跑全量，全绿才提交 |
-| 能力面 | 60+ 内置工具、32 类 Hook 事件、LSP 代码智能、权限门控、可观测轨迹 |
+| 能力面 | 44 个内置工具、32 类 Hook 事件、LSP 代码智能、权限门控、可观测轨迹 |
 | 评测体系 | 30 个 eval case（含 holdout），发布前跑，防功能回退 |
 
 这些数字不是为了好看——它们是"这东西真在跑、有人天天用"的证据。能力边界与还没做完的部分，
