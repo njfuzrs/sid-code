@@ -5,14 +5,238 @@ description: 真实踩过的坑：症状 → 原因 → 解法。
 
 # 排障
 
-::: warning 本页待撰写
-内容排期在阶段 5（T-5.4）。当前是占位页——先建出来是因为站点导航已声明这条链接，
-而构建期死链检测是发布门禁（`ignoreDeadLinks: false`），页面缺失会直接让构建失败。
-:::
+按症状查。每条都是真实遇到过的，不是假想的故障树。
 
-真实踩过的坑：症状 → 原因 → 解法。
+**先跑这一条**，八成问题它直接告诉你答案：
+
+```text
+/doctor
+```
+
+## 快速上手
+
+`/doctor` 的真实输出（本机，v0.1.592）：
+
+```text
+sid-code 环境诊断
+
+  ✔ 版本             sid-code v0.1.592 (TypeScript)
+  ✔ 运行时            Bun 1.3.14，Node v24.3.0，darwin/arm64
+  ✔ 配置目录           /Users/you/.sid-code
+  ✔ settings.json  可读，JSON 合法
+  ✔ 工作目录           git 仓库，分支 master
+  ✔ ripgrep        rg（系统 PATH）
+  ✔ 模型             glm-5.2  [openai]
+  ✔ API Key        已配置（availableModels[].api_key）
+  ✔ API 地址         https://your-gateway.example.com/v1
+  ✔ MCP            未配置
+
+✔ 一切正常。
+```
+
+它**不打印任何密钥值**，只报"是否配置了、从哪个字段读到的"。所以这份输出可以直接
+贴给同事看。
+
+三档语义：`✔` 正常、`⚠` 警告（核心功能可用）、`✘` 异常（必须修）。
+
+## 详细说明
+
+### 装不上 / 装完找不到命令
+
+**症状：`sid-code: command not found`**
+
+安装脚本把二进制放在 `~/.local/bin`，这个目录不在你的 PATH 里，或者 rc 文件改了但当前
+shell 还没重新加载。
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+然后 `source ~/.zshrc`（或你用的那个 rc），或者直接开个新终端。
+永久生效见[安装](/start/install)。
+
+**症状：`不支持的架构: xxx`**
+
+安装脚本只认它有构建产物的架构。报错里会带上实际检测到的 `uname -m` 值。
+
+**症状：`sha256 校验失败（期望 ..., 实际 ...），安装中止，未影响现有安装`**
+
+下载损坏或被中间设备改过。重跑一次即可。注意后半句：**校验失败发生在切软链之前**，
+所以你现有的安装完好无损，不会装到一半坏在中间。
+
+### 模型调不通
+
+这一类最常见，而且**报错文本本身就是最强线索**。sid-code 把常见错误映射成了
+带建议的面板，照着做通常就好了。
+
+| 面板标题 | 真实原因 | 怎么修 |
+| --- | --- | --- |
+| API Key 无效或已过期 | key 错了 / 过期 / 环境变量没生效 | 查 `settings.json` 的 `apiKey`，或确认 `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` |
+| 模型不存在或不可用 | 模型 ID 和网关实际可用的不一致（**区分大小写**） | 对齐 `settings.json` 的 `model` 字段 |
+| 账户配额已耗尽 | 余额没了 | 充值，或配 `fallbackModel` 切别的 |
+| 请求被限流 (429) | 频率太高 | 已在自动退避重试，持续出现就降频 |
+| 服务过载 (529/503) | 上游过载 | 已自动重试，等一会 |
+| **网关返回非流式错误页** | 见下 | 见下 |
+
+**症状：网关返回非流式错误页 / 明明配好了但一句话都不回**
+
+这是**踩得最狠的一个坑**，值得单独讲。
+
+有些网关对不可用的模型或渠道**不返回 4xx/5xx，而是回 HTTP 200 加一个
+`text/html` 的错误页**（内容常常是 "No available channel"）。这个响应逐行进 SSE
+解析器后，一个 `data:` 行都没有，于是被当成"空回复，正常结束"静默收尾——
+界面上你什么提示都看不到，只觉得它"不说话"。
+
+现在有 Content-Type 守卫在解析前拦下，报错形如：
+
+```text
+网关返回非流式响应（Content-Type: text/html, HTTP 200），
+疑似模型/渠道不可用的错误页：<html>... No available channel ...
+```
+
+看到这个，查两件事：**模型 ID 是否是网关真的开了的**，以及 **`base_url` 的 `/v1` 后缀**。
+
+**症状：404，URL 里出现 `/v1/v1/messages`**
+
+`base_url` 的 `/v1` 规则**两族相反**，这是新手第一大卡点：
+
+| provider 族 | `base_url` 要不要带 `/v1` | 写错的后果 |
+| --- | --- | --- |
+| anthropic 族 | **不带** | 多写 `/v1` → 真实 404 `Invalid URL (POST /v1/v1/messages)` |
+| openai 族 | **要带** | 漏写 → 不报 404，而是上面那个 HTTP 200 的 HTML 错误页 |
+
+完整规则和可粘贴的配置见[配置 LLM Provider](/start/configure)。
+
+### 界面相关
+
+**症状：鼠标划不中文字，复制不了**
+
+全屏视口吃掉了鼠标事件。`Ctrl+S` 进 Copy Mode 临时放开，或用 `--inline` 永久回到
+内联模式。细节见[交互模式与键位](/use/interactive)。
+
+**症状：`Shift+Enter` 不换行，直接就发送了**
+
+终端没把这个组合传给程序。跑 `/terminal-setup`，或改用 `Alt+Enter` / `Ctrl+J`。
+
+**症状：终端里留下花屏 / 残行**
+
+用 `Ctrl+L` 清屏（保留历史）。如果是执行中工具输出留下的残留，那正是全屏视口成为
+默认要解决的问题——确认你没有用 `--inline`。
+
+**症状：`Ctrl+B` 不起作用**
+
+在 tmux 下和默认 prefix 撞车。改 tmux prefix，或在 `keybindings.json` 里给
+`app:backgroundTask` 换个键。
+
+### 行为不对
+
+**症状：它突然不记得前面说过的话**
+
+发生了自动压缩，摘要是有损的。重要约定别指望它记住，写进 CLAUDE.md。
+见[上下文与压缩](/use/context)。
+
+**症状：CLAUDE.md 写了但它不遵守**
+
+先确认加载了（`/memory list`，或 `/context` 看"记忆/CLAUDE.md"是否非零）。
+加载了还不遵守通常是写法太软——把"建议"改成"必须/不要"。
+见[记忆与 CLAUDE.md](/use/memory)。
+
+**症状：每一步都要我确认，太烦**
+
+`Shift+Tab` 切到 `acceptEdits`，或者写 allow 规则。别一上来就
+`--dangerously-skip-permissions`。见[权限与人工确认](/use/permissions)。
+
+**症状：它改了我没让它改的文件**
+
+`/diff` 看清改了什么，`/undo` 撤销，或者 `Esc` `Esc` 回退选择器选"仅代码"档退回去。
+见[会话管理](/use/sessions)。
+
+**症状：worktree 里跑测试报 `module not found`，主仓是好的**
+
+`node_modules` 软链到主仓，但两边 lockfile 不同 → 跑的是主仓的依赖版本。
+创建时应该已经告警过。见[Worktree 隔离](/use/worktree)。
+
+**症状：Hook 配了但没触发**
+
+`/hooks list` 看是不是被禁用了。
+
+**症状：MCP 服务器连不上**
+
+`/mcp` 看连接状态，`/doctor` 里也有一行 MCP。见[MCP](/extend/mcp)。
+
+### 排障工具箱
+
+按"从粗到细"排：
+
+| 命令 | 什么时候用 |
+| --- | --- |
+| `/doctor` | 第一个跑的。环境、配置、模型、key、ripgrep、MCP 一次过 |
+| `/config` | 看当前**生效**的配置（合并了各层之后的结果，不是某个文件的内容） |
+| `/status` | 当前模型、目录、token 概览 |
+| `/context` | 上下文占用拆解 |
+| `/cost` | 花了多少 |
+| `/trace` | **它当时到底干了什么** —— 把轨迹嚼成结构化摘要，`--full` 看详细 |
+| `/insights` | 会话分析报告（模型/成本/token/工具/异常） |
+| `/debug` | 诊断数据、复制 Session ID、上传轨迹快照 |
+| `/bug` | 生成带环境信息的 bug 报告模板，直接进剪贴板 |
+
+**`/trace` 是被低估的那个**。"它为什么改了那个文件"、"这一步为什么重试了三次"
+这类问题，看轨迹摘要比翻聊天记录快得多。
+
+### 日志
+
+```bash
+sid-code --debug
+```
+
+日志落在 `~/.sid-code/debug.log`。想换地方用 `--debug-log-file <path>`。
+也可以用环境变量：
+
+```bash
+SID_CODE_DEBUG=1 sid-code
+```
+
+SSE 层面的问题（流式响应异常、卡住不动）用 `SID_CODE_DEBUG_SSE=1`。
+
+权限决策有独立的审计日志：`~/.sid-code/logs/permissions-audit.log`。
+"它为什么没问我就改了"这类问题在这里能查到每一条决策的依据。
+
+### 报 bug 之前
+
+跑一遍这两个，把输出附上：
+
+```text
+/doctor
+/bug 简单描述问题
+```
+
+`/bug` 会带上环境信息生成模板。注意**贴之前扫一眼有没有内部地址或路径**——
+`/doctor` 会打印 API 地址（不打印 key）。
+
+## 常见问题
+
+**`/doctor` 全绿但还是调不通模型。**
+`/doctor` 检查的是"配置完整性"，不发真实请求。所以 key 格式对但已失效、
+模型 ID 拼对但网关没开这个渠道，它都查不出来。这时候看真实报错文本，对照上面
+"模型调不通"那一节。
+
+**`/config` 和我 `settings.json` 里写的不一样。**
+预期。配置有多层（企业 managed / 用户 / 项目 / 本地 / 环境变量 / CLI 参数），
+`/config` 显示的是合并后**实际生效**的值。层级与优先级见
+[settings.json 字段](/ref/settings)。
+
+**改了 settings.json 但没生效。**
+多数配置在启动时读取，改完重开会话。另外确认 JSON 合法——`/doctor` 会明确报
+`settings.json 解析失败`。
+
+**日志文件越来越大。**
+`debug.log` 只在 `--debug` 时写。权限审计日志会自动轮转（`.log.1`）。
+不需要的直接删，不影响运行。
 
 ## 相关
 
-- [sid-code 是什么](/start/)
-- [安装](/start/install)
+- [安装](/start/install) —— 安装期失败的完整处理
+- [配置 LLM Provider](/start/configure) —— `/v1` 两族相反规则的完整说明
+- [权限与人工确认](/use/permissions) —— 权限相关症状
+- [上下文与压缩](/use/context) —— "它忘事了"
+- [环境变量](/ref/env) —— `SID_CODE_DEBUG` 等全部变量

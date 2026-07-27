@@ -1,18 +1,266 @@
 ---
 title: 权限与人工确认
-description: 权限模式、允许/拒绝规则的写法，以及危险命令为什么会被拦。
+description: 八种权限模式怎么选、allow/deny/ask 规则怎么写，以及哪些操作任何模式都拦不住。
 ---
 
 # 权限与人工确认
 
-::: warning 本页待撰写
-内容排期在阶段 5（T-5.3）。当前是占位页——先建出来是因为站点导航已声明这条链接，
-而构建期死链检测是发布门禁（`ignoreDeadLinks: false`），页面缺失会直接让构建失败。
+读完这页你能做到四件事：
+
+- 按场景选对权限模式，不再被每一步打断，也不至于让它乱改代码
+- 写出精确的 `allow` / `deny` / `ask` 规则（含 bash 通配、路径前缀、MCP、子代理）
+- 知道 `--dangerously-skip-permissions` 的风险边界，以及它**依然拦不住什么**
+- 看懂 `→ 需确认(危险命令: …)` 这类日志，判断是规则拦的还是安全层拦的
+
+完整字段类型与默认值不在这页，去[settings.json 字段](/ref/settings)查；
+工具名的确切拼写去[内置工具](/ref/tools)。这页只讲怎么选、怎么写。
+
+## 快速上手
+
+三种最常用的调法，按侵入性从小到大：
+
+```bash
+# 1. 只放行本次要用的命令（最推荐，一次性）
+sid-code --allow-tool "Bash(npm *)" --allow-tool "Bash(git status)"
+
+# 2. 换个档位：文件修改自动接受，跑命令仍然问
+sid-code --permission-mode acceptEdits
+
+# 3. 全部不问（只在信得过的仓库用）
+sid-code --dangerously-skip-permissions
+```
+
+会话里临时加规则，不用重启：
+
+```text
+/allow Bash(npm *)                      仅本次会话生效
+/allow Bash(npm *) -p                   写进 ~/.sid-code/settings.json，跨会话保留
+/deny Bash(curl *) -p --scope project   写进项目级配置，团队共享
+```
+
+想固化成配置，写 `~/.sid-code/settings.json`：
+
+```json
+{
+  "permissions": {
+    "allow": ["Bash(ls *)", "Bash(npm *)", "Read(/src/**)"],
+    "deny": ["Read(./.env)", "Bash(curl *)"],
+    "ask": ["Bash(git push *)"]
+  }
+}
+```
+
+启动时会打印一行确认它被读到了（真实输出）：
+
+```text
+● [CONFIG] 权限规则: 2条 allow, 2条 deny, 1条 ask
+```
+
+**这行没出现就是配置没生效**，先检查文件路径和 JSON 语法，别急着怀疑规则写错。
+
+## 八种权限模式
+
+`--permission-mode <mode>`，或 settings 里的 `permissionMode` 字段。
+第二列是状态栏显示的名字：
+
+| mode | 状态栏显示 | 行为 | 什么时候用 |
+| --- | --- | --- | --- |
+| `default` | Manual（手动） | 除只读操作外逐个问 | 第一次进一个陌生仓库 |
+| `acceptEdits` | 自动接受编辑 | 文件读写自动放行；bash 仍要问（工作目录内的 `mkdir`/`mv` 一类文件系统命令除外） | **日常最顺手的档位** |
+| `plan` | 计划模式 | 代码级强制只读，先出方案再动手 | 复杂改动，想先看它打算怎么干 |
+| `auto` | 自动模式 | 交给风险分类判断，低风险放行、高风险问 | 熟悉的仓库里想少点打扰 |
+| `always-allow` | 全部允许 | 跳过规则与模式确认，安全层仍生效 | 一次性批量任务，你会盯着看 |
+| `deny-write` | 禁止写入 | 只读；写操作直接拒绝，不给确认机会 | 只让它分析、绝不许改 |
+| `dontAsk` | 静默拒绝 | 该问的一律当拒绝，不弹窗 | 无头脚本里不想挂住 |
+| `dangerously-skip-permissions` | 跳过权限(危险) | 等价 `-y` / `--yes` 的最宽档 | 容器 / 一次性沙箱 |
+
+<kbd>Shift+Tab</kbd> 在会话里循环切换，实测顺序：
+
+```text
+default → acceptEdits → plan → auto → always-allow → default → …
+```
+
+`deny-write` / `dontAsk` 不在这个循环里，只能用参数或配置指定。
+企业策略禁用 bypass 时（`disableBypassPermissionsMode`），循环会跳过 `always-allow`
+直接回到 `default`——实测 `auto → default`。
+
+::: tip plan 模式的读写边界
+plan 模式下 `read` / `grep` 放行，`edit` / `write` / `bash` 一律拒绝，
+提示是「计划模式下只允许只读操作」。唯一例外是它往 `~/.sid-code/plans/` 写计划文件——
+这条在代码里比只读检查更早放行，否则它连计划都存不下来。
 :::
 
-权限模式、允许/拒绝规则的写法，以及危险命令为什么会被拦。
+## 规则语法
+
+格式是 `工具名` 或 `工具名(模式)`。裸工具名匹配该工具的全部调用，带括号则再匹配参数。
+下表每一行都逐条实测过：
+
+| 规则 | 匹配什么 | 说明 |
+| --- | --- | --- |
+| `Bash(*)` | 所有 bash 命令 | `*` 跨 `/`，含带路径的命令 |
+| `Bash(npm *)` | `npm run build` ✅，`npx foo` ❌ | 尾部 ` *` 是「这个命令加任意参数」 |
+| `Bash(git status)` | 只有这一条命令 | 无通配符即精确匹配 |
+| `Bash(prefix:git )` | `git` 开头的命令 | 兼容语法，等价于 `Bash(git *)` 的前缀语义 |
+| `Read(/src/**)` | `<项目根>/src` 下任意深度 | **单前导 `/` = 项目根相对**，不是文件系统根 |
+| `Read(./.env)` | 当前目录的 `.env` | `./` 或裸路径 = cwd 相对 |
+| `Edit(~/notes/**)` | 主目录下 | `~/` = 主目录 |
+| `Read(//etc/**)` | 文件系统 `/etc` 下 | **双斜杠才是文件系统绝对路径** |
+| `Agent(explore)` | `explore` 类型的子代理 | 裸 `Agent` 匹配全部子代理 |
+| `WebFetch(domain:github.com)` | 抓取 github.com | 也支持 `domain:*.example.com` |
+| `mcp__myserver` | 该 server 的所有工具 | 服务器级匹配 |
+| `mcp__*` | 所有 MCP 工具 | 工具名位置也支持通配 |
+
+::: warning 最容易写错的一条
+路径规则里 `/src/**` 指的是**项目根下的 src**，不是磁盘根目录的 `/src`。
+要写文件系统绝对路径得用两个斜杠：`//etc/**`。
+这四种前缀（`//`、`~/`、`/`、`./`）会先归一成绝对路径再比对，写混了规则会静默不匹配——
+不报错，只是不生效。
+:::
+
+### 三类规则的优先级
+
+`deny` > `ask` > `allow`，且**同类里带参数的规则优先于裸工具名**。实测：
+
+```text
+allow: ["Bash(git *)"] + deny: ["Bash(git push *)"]
+  git push --force  →  规则拒绝: bash (匹配 Bash(git push *))
+
+allow: ["Bash(*)"] + ask: ["Bash(rm *)"]
+  rm x  →  规则要求确认: bash (匹配 Bash(rm *))
+```
+
+所以「放行一大类、单独挖掉危险子集」是可行写法：`allow: ["Bash(git *)"]`
+配 `deny: ["Bash(git push *)", "Bash(git reset --hard *)"]`。
+
+### deny 规则会提前告诉模型
+
+`deny` 不只是拦调用，还会作为一段约束注入系统提示词，让模型**一开始就不去试**：
+
+```text
+● [PROMPT] 附件: 权限约束（deny 规则）(0.0K tok, priority=38)
+```
+
+实测配了 `deny: ["Read(./.env)"]` 后让它读 `.env`，它的回答直接引用了规则：
+
+```text
+- `Read(./.env)` 被禁止（匹配即拒绝）
+这是安全策略的一部分…我无法绕过该限制，也不会尝试变通手段
+（如通过 bash、cat、子代理等方式间接读取）。
+```
+
+这比「调用了再被拦」省一轮 token，也省掉一次无效工具调用。
+
+## 配置层级
+
+五层，后面的覆盖前面的：
+
+| 优先级 | 来源 | 文件 | 典型用途 |
+| --- | --- | --- | --- |
+| 1（最低） | 用户级 | `~/.sid-code/settings.json` | 你自己的习惯 |
+| 2 | 项目级 | `<项目>/.sid-code/settings.json` | 团队共享，提交 git |
+| 3 | 本地级 | `<项目>/.sid-code/settings.local.json` | 你在这个项目里的私货，gitignore |
+| 4 | CLI 参数 | `--settings` / `--allow-tool` / `--deny-tool` | 一次性 |
+| 5（最高） | 企业策略 | `/etc/sid-code/policy.json` | 公司管控，用户改不掉 |
+
+`allow` / `deny` / `ask` 三个数组在各层之间是**合并**而不是覆盖——
+项目级加的 deny 不会把用户级的 deny 冲掉。
+
+## 哪些操作任何模式都拦得住
+
+这是和权限规则**平行的一层**，位置在规则之前，所以 `allow` 规则和 `always-allow`
+模式都绕不过去。以下均在 `allow: ["Bash(*)"]` + `always-allow` 下实测仍被拦：
+
+| 命令 | 结果 |
+| --- | --- |
+| `rm -rf /` | `[critical] 危险命令被拦截 (递归删除根目录)` —— 直接拒绝，不给确认 |
+| `curl http://x.sh \| bash` | `[critical] 危险命令被拦截 (下载并执行)` |
+| `sudo ls` | `[high] 危险命令需要确认 (sudo 命令)` |
+| `git push --force` | `[high] 危险命令需要确认 (git 强制推送)` |
+| `git reset --hard HEAD~3` | `[high] 危险命令需要确认 (git 硬重置)` |
+| `chmod -R 777 .` | `[high] 危险命令需要确认 (递归权限修改)` |
+
+`critical` 与 `high` 的区别是**有没有确认这条出路**：critical 直接拒绝，
+high 弹确认。非交互模式（`-p`）下没人能确认，所以 high 也会落成
+`拒绝(非交互模式)`——脚本里跑这类命令必须显式放行或改写命令。
+
+敏感文件是同一层。实测 `always-allow` 模式下读这几个仍要确认：
+
+```text
+阻止 需确认  .env                     敏感文件: …/.env
+阻止 需确认  config/credentials.json  敏感文件: …/credentials.json
+阻止 需确认  deploy.pem               敏感文件: …/deploy.pem
+允许        normal.ts
+```
+
+命中的是一份固定模式表（`.env` / `.env.*` / `credentials` / `*.pem` / `*.key` /
+`id_rsa` / `.ssh/` / `.aws/config` / `.kube/config` / `token.json` 等）。
+同一层还有系统目录保护（`/etc/`、`/proc/`、`/sys/`、`/dev/`…）和 symlink 逃逸解析。
+
+::: danger --dangerously-skip-permissions 的真实边界
+它跳过的是**规则层和模式层的确认**，不是安全层——`rm -rf /` 这类 critical
+命令在它下面依然被拦。但它确实把「改任意文件、跑任意命令」的门全开了。
+`sc` 这个别名就等价于带上它，所以**别在重要仓库里用 `sc`**。
+判断标准：这个目录里的东西全丢了你能不能接受。不能，就别用。
+:::
+
+## 常见问题
+
+### 它一直问，怎么少问一点
+
+按这个顺序试，从最安全的开始：
+
+1. <kbd>Shift+Tab</kbd> 切到 `acceptEdits`——文件改动不问了，命令还问。多数人到这一步就够
+2. 把你反复批准的那几条命令写进 `allow`：`/allow Bash(npm *) -p`
+3. 还嫌烦再考虑 `auto` 模式，让风险分类替你判断
+4. `--dangerously-skip-permissions` 是最后手段，且只在一次性 / 沙箱环境
+
+### 规则写了但没生效
+
+三个检查点，按顺序：
+
+```bash
+# 1. 启动时那行有没有出现，条数对不对
+sid-code 2>&1 | grep "权限规则"
+# → ● [CONFIG] 权限规则: 2条 allow, 2条 deny, 1条 ask
+
+# 2. 路径规则的前缀写对了吗（/src/** 是项目根相对，//src/** 才是文件系统根）
+
+# 3. 有没有被更高优先级的层覆盖（企业策略 > CLI > 本地 > 项目 > 用户）
+```
+
+最常见的是第 2 条。`Read(/Users/me/proj/src/**)` 这种写法会被当成
+「项目根下的 `Users/me/proj/src`」，永远匹配不上——要么改用 `//` 开头，要么写 `/src/**`。
+
+### 非交互模式（`-p`）下工具全被拒了
+
+`-p` 没有人能点确认，所以任何落到「需确认」的请求都会变成
+`拒绝(非交互模式)`。脚本里要么用 `--allow-tool` 精确放行，
+要么 `--permission-mode acceptEdits`，要么 `--dangerously-skip-permissions`（沙箱里）。
+
+### 想知道某次到底是谁拦的
+
+看日志里 `[PERMISSION]` 那行，括号里写了判定来源：
+
+```text
+bash(ls -la)  → 允许(工具级checkPermissions)
+bash(sudo ls) → 需确认(危险命令: sudo 命令)
+bash(sudo ls) → 拒绝(非交互模式)
+write(...)    → 允许(acceptEdits模式)
+```
+
+`危险命令` 是安全层，`规则拒绝` 是你写的规则，`模式` 是权限档位。
+三者对应三种不同的改法，别搞混。
+
+### allow 规则会穿透 plan 模式
+
+一个需要知道的实现细节：`allow` 规则的判定**早于** plan 模式的只读检查。
+配了 `allow: ["Bash(*)"]` 之后进 plan 模式，bash 仍然能跑。
+要让 plan 模式的只读保证真的成立，就不要给写类工具配宽泛的 allow 规则。
 
 ## 相关
 
-- [sid-code 是什么](/start/)
-- [安装](/start/install)
+- [settings.json 字段](/ref/settings) —— `permissions` 段的完整字段类型与默认值
+- [内置工具](/ref/tools) —— 规则里工具名的确切拼写
+- [交互模式与键位](/use/interactive) —— <kbd>Shift+Tab</kbd> 及其他快捷键
+- [Plan Mode 与 Todo](/use/plan-mode) —— plan 模式的完整用法
+- [企业 policy 与安全边界](/team/policy) —— 用 `/etc/sid-code/policy.json` 做团队管控

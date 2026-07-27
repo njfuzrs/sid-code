@@ -14,12 +14,12 @@
 
 - [扩展方式总览](/extend/): Skill / Hook / 子代理 / MCP 四条扩展路径的选择表：什么场景用哪个。
 - [无头模式与脚本化](/extend/headless): 在 CI / 脚本里非交互地跑 sid-code。
-- [Hook 指南](/extend/hooks): 在关键节点插入自己的校验与自动化（任务导向；完整字段表见参考页）。
+- [Hook 指南](/extend/hooks): 用三个可直接粘的真实场景讲清 Hook 怎么写、怎么调、怎么排错。
 - [代码智能（LSP）](/extend/lsp): 定义跳转、引用查找、诊断注入如何让改代码更准。
 - [MCP](/extend/mcp): 接入 MCP server，把企业内部系统变成可调用的工具。
 - [插件与 Bridge](/extend/plugins): 插件目录的加载规则与扩展边界。
 - [Skill](/extend/skills): 把团队的流程与规范封装成可复用的 skill。
-- [子代理](/extend/subagents): 把任务派给子代理，并按职责给子代理分级模型以省钱。
+- [子代理](/extend/subagents): 把任务派给子代理，用自定义 agent 固化职责，并按类型分级模型省钱。
 
 ## 参考（脚本生成）
 
@@ -50,10 +50,10 @@
 ## 使用
 
 - [上下文与压缩](/use/context): 上下文窗口如何管理、auto-compact 何时触发、怎么少花 token。
-- [成本与用量](/use/cost): 单次任务花了多少、prompt cache 命中率怎么看、怎么把成本降下来。
+- [成本与用量](/use/cost): 单次任务花了多少、prompt cache 命中率怎么看、怎么把成本降下来、怎么设花费上限。
 - [交互模式与键位](/use/interactive): 常用键位、和弦、中断与排队输入的行为。
 - [记忆与 CLAUDE.md](/use/memory): 项目指令、个人记忆、团队记忆三层的作用范围与优先级。
-- [权限与人工确认](/use/permissions): 权限模式、允许/拒绝规则的写法，以及危险命令为什么会被拦。
+- [权限与人工确认](/use/permissions): 八种权限模式怎么选、allow/deny/ask 规则怎么写，以及哪些操作任何模式都拦不住。
 - [Plan Mode 与 Todo](/use/plan-mode): 先规划后动手的用法，以及 todo 清单在长任务里的作用。
 - [会话管理](/use/sessions): 会话持久化、恢复（-c）、checkpoint 与回滚。
 - [排障](/use/troubleshooting): 真实踩过的坑：症状 → 原因 → 解法。
