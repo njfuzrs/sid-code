@@ -12,13 +12,13 @@
 
 ## 进阶定制
 
-- [扩展方式总览](/extend/): Skill / Hook / 子代理 / MCP 四条扩展路径的选择表：什么场景用哪个。
-- [无头模式与脚本化](/extend/headless): 在 CI / 脚本里非交互地跑 sid-code。
+- [扩展方式总览](/extend/): Skill / Hook / 子代理 / MCP / 插件 五条扩展路径的选择表：什么场景用哪个。
+- [无头模式与脚本化](/extend/headless): 在 CI / 脚本里非交互地跑 sid-code：三种输出格式怎么选、stdout 什么时候会被污染、结构化输出的坑。
 - [Hook 指南](/extend/hooks): 用三个可直接粘的真实场景讲清 Hook 怎么写、怎么调、怎么排错。
-- [代码智能（LSP）](/extend/lsp): 定义跳转、引用查找、诊断注入如何让改代码更准。
-- [MCP](/extend/mcp): 接入 MCP server，把企业内部系统变成可调用的工具。
-- [插件与 Bridge](/extend/plugins): 插件目录的加载规则与扩展边界。
-- [Skill](/extend/skills): 把团队的流程与规范封装成可复用的 skill。
+- [代码智能（LSP）](/extend/lsp): 定义跳转、引用查找、诊断注入如何让改代码更准：装好 language server 即零配置生效。
+- [MCP](/extend/mcp): 接入 MCP server，把企业内部系统变成可调用的工具：三种传输方式、四层作用域、为什么工具"看不见"。
+- [插件与 Bridge](/extend/plugins): 插件目录的加载规则与扩展边界，以及 Bridge 远程控制模式。
+- [Skill](/extend/skills): 把团队的流程与规范封装成可复用的 skill：8 个内置 skill 干什么、自定义怎么写、为什么写了不生效。
 - [子代理](/extend/subagents): 把任务派给子代理，用自定义 agent 固化职责，并按类型分级模型省钱。
 
 ## 参考（脚本生成）
@@ -41,11 +41,11 @@
 
 ## 企业与团队
 
-- [团队默认配置分发](/team/defaults): 用 team-defaults.json 给全团队统一 provider 与默认配置。
-- [从 Claude Code 迁移](/team/migrate): 配置、hook、skill 的对应关系与迁移步骤。
+- [团队默认配置分发](/team/defaults): 用 team-defaults.json 给全团队统一 provider 与默认配置，新人装完即可用。
+- [从 Claude Code 迁移](/team/migrate): 哪些配置不用动就能用、哪些必须改结构、以及用内置 skill 半自动迁移。
 - [轨迹采集与可观测](/team/observability): 轨迹落在哪里、能回答什么问题、怎么聚合。
-- [企业 policy 与安全边界](/team/policy): 企业侧能强制约束哪些行为，以及当前的能力边界。
-- [配额与成本控制](/team/quota): 按人/按团队设成本上限，以及超限时的行为。
+- [企业 policy 与安全边界](/team/policy): 企业侧能强制约束哪些行为、哪些约束用户绕不过去，以及当前的能力边界在哪。
+- [配额与成本控制](/team/quota): 给会话、给团队设花费上限；四级预警、按周期的预算规则、超限自动停止。
 
 ## 使用
 
