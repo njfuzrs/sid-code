@@ -1,0 +1,15 @@
+{
+  "name": "sid-code-website",
+  "private": true,
+  "version": "0.0.0",
+  "description": "sid-code 官网与官方文档站（VitePress，纯静态产物）",
+  "type": "module",
+  "scripts": {
+    "dev": "vitepress dev",
+    "build": "vitepress build",
+    "preview": "vitepress preview"
+  },
+  "devDependencies": {
+    "vitepress": "1.6.4"
+  }
+}

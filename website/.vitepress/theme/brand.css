@@ -1,0 +1,117 @@
+/**
+ * sid-code 品牌样式 —— 把 VitePress 默认主题的 CSS 变量映射到既有品牌色。
+ *
+ * 唯一事实源：scripts/generate-changelog.ts:469+ 的 :root 变量体系
+ * （CHANGELOG.html 用的就是它）。改配色时先改那边，再同步这里，
+ * 否则官网和 CHANGELOG 页会像两个不同产品（验收项 A10）。
+ */
+
+:root {
+  /* ── 品牌原始变量（与 generate-changelog.ts 逐值对齐）── */
+  --sid-bg: #f5f7fb;
+  --sid-bg-grad-1: rgba(59, 108, 246, 0.06);
+  --sid-bg-grad-2: rgba(124, 92, 246, 0.05);
+  --sid-panel: #ffffff;
+  --sid-panel-2: #fbfcfe;
+  --sid-border: #e3e8f0;
+  --sid-border-soft: #eef1f6;
+  --sid-text: #1a2236;
+  --sid-text-dim: #4a5568;
+  --sid-text-mute: #8a94a6;
+  --sid-brand: #3b6cf6;
+  --sid-brand-strong: #2554e0;
+  --sid-brand-soft: rgba(59, 108, 246, 0.1);
+  --sid-brand-glow: rgba(59, 108, 246, 0.28);
+  --sid-feat: #1f9d57;
+  --sid-fix: #d93a54;
+  --sid-perf: #8250df;
+  --sid-docs: #0e8a8a;
+
+  /* ── 字体：mono 承担技术感 ── */
+  --vp-font-family-base: -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "PingFang SC", "Microsoft YaHei", sans-serif;
+  --vp-font-family-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code",
+    Menlo, Consolas, monospace;
+
+  /* ── 映射到 VitePress 主题变量 ── */
+  --vp-c-brand-1: var(--sid-brand-strong);
+  --vp-c-brand-2: var(--sid-brand);
+  --vp-c-brand-3: var(--sid-brand);
+  --vp-c-brand-soft: var(--sid-brand-soft);
+
+  --vp-c-bg: var(--sid-panel);
+  --vp-c-bg-alt: var(--sid-bg);
+  --vp-c-bg-soft: var(--sid-panel-2);
+  --vp-c-bg-elv: var(--sid-panel);
+
+  --vp-c-text-1: var(--sid-text);
+  --vp-c-text-2: var(--sid-text-dim);
+  --vp-c-text-3: var(--sid-text-mute);
+
+  --vp-c-divider: var(--sid-border);
+  --vp-c-border: var(--sid-border);
+  --vp-c-gutter: var(--sid-border-soft);
+
+  /* 语义色沿用 changelog 的分组色，保证徽章语义跨页一致 */
+  --vp-c-tip-1: var(--sid-feat);
+  --vp-c-danger-1: var(--sid-fix);
+  --vp-c-warning-1: #b7791f;
+}
+
+/* 首页 hero 渐变光斑：与 CHANGELOG.html 的 body 背景同款 */
+.VPHome {
+  background:
+    radial-gradient(1200px 620px at 82% -12%, var(--sid-bg-grad-1), transparent 60%),
+    radial-gradient(900px 520px at -12% 8%, var(--sid-bg-grad-2), transparent 55%),
+    var(--sid-bg);
+  background-attachment: fixed;
+}
+
+/* hero 主标题走品牌渐变，避免纯色单调 */
+.VPHero .name {
+  background: linear-gradient(
+    120deg,
+    var(--sid-brand-strong) 10%,
+    #7c5cf6 90%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* 行内 code 用品牌 soft 底 + mono，技术感来自字体不是花色 */
+:not(pre) > code {
+  font-family: var(--vp-font-family-mono);
+  background-color: var(--sid-brand-soft) !important;
+  color: var(--sid-brand-strong) !important;
+}
+
+/* 表格：参考页全是表格，加强可读性（斑马纹 + 表头底色）*/
+.vp-doc table {
+  display: table;
+  width: 100%;
+  font-size: 14px;
+}
+.vp-doc tr:nth-child(2n) {
+  background-color: var(--sid-panel-2);
+}
+.vp-doc th {
+  background-color: var(--sid-bg);
+  color: var(--sid-text);
+  font-weight: 600;
+}
+
+/* 深色模式：只翻转中性色，品牌蓝保持同一色相 */
+.dark {
+  --sid-bg: #0f1420;
+  --sid-panel: #151b28;
+  --sid-panel-2: #1a2130;
+  --sid-border: #26304a;
+  --sid-border-soft: #1f2738;
+  --sid-text: #e6ebf5;
+  --sid-text-dim: #a8b3c7;
+  --sid-text-mute: #6b7688;
+  --sid-brand: #6b93ff;
+  --sid-brand-strong: #8badff;
+  --sid-brand-soft: rgba(107, 147, 255, 0.14);
+}

@@ -1,0 +1,9 @@
+# VitePress 构建产物与缓存（构建在本地/CI 做，产物不入库）
+.vitepress/dist/
+.vitepress/cache/
+
+# 站点独立依赖树
+node_modules/
+
+# 预压缩产物（website-deploy.sh 生成，随 dist 一起丢弃）
+*.gz
