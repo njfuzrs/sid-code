@@ -28,6 +28,12 @@
 - **语言**：所有回复、代码注释、文档均用中文
 - **联网工具**：遇到不熟悉的 API / 库 / 报错信息时，主动用 tavily-mcp / context7-mcp 查最新文档，不要凭记忆猜
 - **构建验证**：task 完成后跑 `bun test`（全量单测，以实际输出为准）以及跑 `make rebuild` 验证构建成功，**不可跳过，必须执行**
+- **改了参考页数据源要重新生成官网参考页**：动过 `src/help.ts`、`src/cli.ts`、`src/tool/`、`src/command/`、`src/config/`、`src/hook/` 之后，跑一次
+  `bun run docs:gen-reference`，并把 `website/ref/` 与 `website/public/llms.txt` 的改动一并提交。
+  `website/ref/` 下 6 页（CLI 参数 / 工具 / 斜杠命令 / Hook 事件 / settings 字段 / 环境变量）是**从源码生成**的，
+  源码改了不重新生成就是文档骗人——用户照着文档写一个不存在的参数比没有文档更糟。
+  pre-commit 会跑 `--check` 拦住这种漂移（未装 hook 先跑 `bun run install-hooks`）。
+  设计与验收见 `docs/reference/官网与文档站设计方案.md` §4.5。
 
 ## 1. 开发 / 发布 / 更新三线流程
 

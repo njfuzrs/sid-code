@@ -22,7 +22,21 @@ set -e
 REPO_ROOT=$(git rev-parse --show-toplevel)
 cd "$REPO_ROOT"
 
+# 公开面清单。website/ 是 2026-07 新增的对外站点（T-3.7）——它比 evals/CASES.md
+# 更"公开"：会构建成静态站挂上公网。参考页由脚本从源码生成，理论上不会带 holdout
+# 题面，但"理论上不会"正是需要门禁的地方（生成器读的是源码，源码里出现过 holdout
+# 相关串就会被带出去）。
+#
+# 用 find 展开而非写死 glob：PUBLIC_FILES 靠 shell 分词遍历，
+# 未匹配的 glob 在 sh 下会原样留下（成为不存在的文件名），靠下方 [ -f ] 兜底虽不报错，
+# 但会掩盖"目录改名后再也没扫到"的静默失效。find 拿不到就是空，语义更干净。
 PUBLIC_FILES="evals/CASES.md evals/DASHBOARD.md"
+if [ -d "website" ]; then
+  WEBSITE_MD=$(find website -name node_modules -prune -o -name '.vitepress' -prune -o -name '*.md' -print 2>/dev/null || true)
+  # llms.txt 也是生成物且会被公网抓取，一并纳入
+  [ -f "website/public/llms.txt" ] && WEBSITE_MD="$WEBSITE_MD website/public/llms.txt"
+  PUBLIC_FILES="$PUBLIC_FILES $WEBSITE_MD"
+fi
 
 if [ ! -d "evals/holdout" ] && ! ls evals/holdout/architecture/ >/dev/null 2>&1; then
   exit 0

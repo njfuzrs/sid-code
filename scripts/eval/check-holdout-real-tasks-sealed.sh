@@ -43,19 +43,39 @@ if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
   exit 1
 fi
 
-# Step 3: 公开页面（CASES.md / DASHBOARD.md）不能含任何 holdout sid 短码
+# Step 3: 公开页面不能含任何 holdout sid 短码
+#
+# T-3.7：website/ 一并纳入。它是 2026-07 新增的对外站点，会构建成静态站挂公网，
+# 公开程度高于 evals/CASES.md。参考页虽由脚本从源码生成，但生成器读的就是源码——
+# 源码里出现过 holdout sid 就会被带出去，正是门禁该守的地方。
+# 用 find 展开而非写死 glob：未匹配的 glob 在 sh 下原样留下成为不存在的文件名，
+# 会被下方 [ -f ] 静默跳过，从而掩盖"目录改名后再也没扫到"的失效。
 PUBLIC_FILES="evals/CASES.md evals/DASHBOARD.md evals/eval-dashboard.html evals/eval-data.json"
+if [ -d "website" ]; then
+  WEBSITE_PUBLIC=$(find website -name node_modules -prune -o -name '.vitepress' -prune -o -name '*.md' -print 2>/dev/null || true)
+  [ -f "website/public/llms.txt" ] && WEBSITE_PUBLIC="$WEBSITE_PUBLIC website/public/llms.txt"
+  PUBLIC_FILES="$PUBLIC_FILES $WEBSITE_PUBLIC"
+fi
+# 每个文件只起一次 grep（`-f` 一次性喂全部 200 个 sid），而不是「sid × 文件」两层循环。
+# 纳入 website/ 的 30+ 页后，两层循环会变成 200×36 ≈ 7200 次 grep 进程，实测把本脚本
+# 从 0.8s 拖到 12.8s，直接撞穿 tests/eval/check-holdout-real-tasks-sealed.test.ts 的 5s 超时。
+# 门禁跑得慢就会被 --no-verify 绕过，所以这里的性能是正确性的一部分。
 LEAKS=0
-while IFS= read -r short_sid; do
-  [ -z "$short_sid" ] && continue
+SIDS=$(mktemp)
+trap 'rm -f "$SIDS"' EXIT
+grep -v '^[[:space:]]*$' "$SEALED" > "$SIDS" || true
+
+if [ -s "$SIDS" ]; then
   for f in $PUBLIC_FILES; do
     [ -f "$f" ] || continue
-    if grep -F -q -- "$short_sid" "$f" 2>/dev/null; then
-      echo "[check-holdout-sealed] ❌ $f 含 holdout sid: '$short_sid'"
+    HITS=$(grep -F -o -f "$SIDS" "$f" 2>/dev/null | sort -u || true)
+    [ -z "$HITS" ] && continue
+    for sid in $HITS; do
+      echo "[check-holdout-sealed] ❌ $f 含 holdout sid: '$sid'"
       LEAKS=$((LEAKS + 1))
-    fi
+    done
   done
-done < "$SEALED"
+fi
 
 if [ "$LEAKS" -gt 0 ]; then
   echo ""

@@ -43,6 +43,14 @@ const BLACKLIST = new Set<string>([
   "not found",
   "check",
   "check(currentCost)",
+  // T-3.7：把 website/ 纳入公开面后浮现的三处误报。它们来自 case_023 的
+  // must_not_include —— 即"模型**不应**输出的串"，本身不是题面内容，泄露它们
+  // 不透露任何 holdout 题目信息。而且这三个是通用标识符：任何讲配置的文档站都必须
+  // 写 ANTHROPIC_API_KEY，参考页的环境变量表天然会出现 process.env。
+  // 不豁免的话门禁会长期红着，红久了就会被 --no-verify 绕过——那才是真正的失守。
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "process.env",
 ]);
 
 const tokens = new Set<string>();

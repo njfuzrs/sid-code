@@ -1,5 +1,8 @@
 import { defineConfig } from "vitepress";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { tokenizeCJK } from "./tokenize";
+import { stripFrontmatter } from "./raw-markdown";
 
 /**
  * sid-code 官网与官方文档站配置。
@@ -186,9 +189,35 @@ export default defineConfig({
     externalLinkIcon: true,
 
     footer: {
+      // llms.txt 由 scripts/docs-gen-reference.ts 生成（T-3.3b），供 agent 抓全站索引。
+      // sid-code 本身就是 agent，自家 agent 能读懂自家文档是个闭环。
       message:
-        '本站由 <a href="https://vitepress.dev/">VitePress</a> 构建。参考类页面由脚本从源码生成。',
+        '本站由 <a href="https://vitepress.dev/">VitePress</a> 构建。参考类页面由脚本从源码生成。' +
+        '给大模型看的全站索引：<a href="/llms.txt">llms.txt</a>',
       copyright: "sid-code · 跑在终端的 coding agent",
     },
+  },
+
+  /**
+   * T-3.11「复制整页」按钮的数据供给：把每页的**原始 markdown** 塞进 pageData，
+   * 供主题层的按钮直接读。
+   *
+   * 为什么走 transformPageData 而不是前端 fetch 源文件：
+   *   · fetch 需要把 .md 一并发布到站点目录（多一份产物 + 要改 nginx 才不当下载处理）；
+   *   · 且 dev 与 build 两套路径不一致，容易只在一边能用。
+   * transformPageData 在两种模式下都跑，数据随页面一起序列化，前端零请求。
+   *
+   * 刻意复制 markdown 源文而非渲染后的 HTML/innerText：用户复制整页的真实目的
+   * 是**贴给 agent**，markdown 才是 agent 友好的形态（表格结构完整、无样式噪音）。
+   */
+  transformPageData(pageData, ctx) {
+    // 虚拟页（404 等）的 filePath 是空串，跳过
+    if (!pageData.filePath) return;
+    try {
+      const abs = resolve(ctx.siteConfig.srcDir, pageData.filePath);
+      pageData.frontmatter.rawMarkdown = stripFrontmatter(readFileSync(abs, "utf-8"));
+    } catch {
+      // 读不到就不给按钮数据（按钮自身会隐藏），不因此让整站构建失败
+    }
   },
 });

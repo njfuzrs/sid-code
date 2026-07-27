@@ -1,0 +1,61 @@
+# sid-code
+
+> 跑在终端的 coding agent —— 多 provider 可插拔、功能自主、数据自主。
+
+本文件是给大模型读的全站索引（共 36 页）。
+`/ref/` 下的参考页由 `scripts/docs-gen-reference.ts` 从源码生成，与实现同源。
+
+## 站点
+
+- [sid-code](/)
+- [更新日志](/changelog): 每个版本的变更记录，从 git 历史生成，不在本站重复维护。
+
+## 进阶定制
+
+- [扩展方式总览](/extend/): Skill / Hook / 子代理 / MCP 四条扩展路径的选择表：什么场景用哪个。
+- [无头模式与脚本化](/extend/headless): 在 CI / 脚本里非交互地跑 sid-code。
+- [Hook 指南](/extend/hooks): 在关键节点插入自己的校验与自动化（任务导向；完整字段表见参考页）。
+- [代码智能（LSP）](/extend/lsp): 定义跳转、引用查找、诊断注入如何让改代码更准。
+- [MCP](/extend/mcp): 接入 MCP server，把企业内部系统变成可调用的工具。
+- [插件与 Bridge](/extend/plugins): 插件目录的加载规则与扩展边界。
+- [Skill](/extend/skills): 把团队的流程与规范封装成可复用的 skill。
+- [子代理](/extend/subagents): 把任务派给子代理，并按职责给子代理分级模型以省钱。
+
+## 参考（脚本生成）
+
+- [CLI 参数与子命令](/ref/cli): sid-code 的全部命令行参数与子命令。
+- [环境变量](/ref/env): 全部可用环境变量及其作用。
+- [术语表](/ref/glossary): agentic loop / 上下文窗口 / 权限模式 / 轨迹 / effort 档位等术语的准确定义。
+- [Hook 事件](/ref/hooks): 全部 Hook 事件的名称、触发时机与载荷字段。
+- [settings.json 字段](/ref/settings): settings.json 的全部可配字段、类型与默认值。
+- [斜杠命令](/ref/slash-commands): 交互模式里可用的全部斜杠命令。
+- [内置工具](/ref/tools): 全部内置工具的名称、用途与入参。表里的名称就是你在权限规则、子代理工具清单、hook matcher 里要写的字符串。
+
+## 入门
+
+- [sid-code 是什么](/start/): 一句话定位、它能替你做什么的具体例子，以及和 Claude Code 的关系与差异。
+- [配置 LLM Provider](/start/configure): anthropic / openai / ollama 三族协议各一份可直接粘的 settings.json，含 base_url 的 /v1 两族相反规则。
+- [跑通第一个任务](/start/first-task): 一个真实小任务的全过程：改一个函数并跑测试，逐屏解说。
+- [安装](/start/install): 一条 curl 命令装好 sid-code，以及 PATH / 权限 / 架构识别三类常见失败的处理。
+- [接下来读什么](/start/next): 按你的目标给出三条阅读路径，每条带一句为什么。
+
+## 企业与团队
+
+- [团队默认配置分发](/team/defaults): 用 team-defaults.json 给全团队统一 provider 与默认配置。
+- [从 Claude Code 迁移](/team/migrate): 配置、hook、skill 的对应关系与迁移步骤。
+- [轨迹采集与可观测](/team/observability): 轨迹落在哪里、能回答什么问题、怎么聚合。
+- [企业 policy 与安全边界](/team/policy): 企业侧能强制约束哪些行为，以及当前的能力边界。
+- [配额与成本控制](/team/quota): 按人/按团队设成本上限，以及超限时的行为。
+
+## 使用
+
+- [上下文与压缩](/use/context): 上下文窗口如何管理、auto-compact 何时触发、怎么少花 token。
+- [成本与用量](/use/cost): 单次任务花了多少、prompt cache 命中率怎么看、怎么把成本降下来。
+- [交互模式与键位](/use/interactive): 常用键位、和弦、中断与排队输入的行为。
+- [记忆与 CLAUDE.md](/use/memory): 项目指令、个人记忆、团队记忆三层的作用范围与优先级。
+- [权限与人工确认](/use/permissions): 权限模式、允许/拒绝规则的写法，以及危险命令为什么会被拦。
+- [Plan Mode 与 Todo](/use/plan-mode): 先规划后动手的用法，以及 todo 清单在长任务里的作用。
+- [会话管理](/use/sessions): 会话持久化、恢复（-c）、checkpoint 与回滚。
+- [排障](/use/troubleshooting): 真实踩过的坑：症状 → 原因 → 解法。
+- [Worktree 隔离](/use/worktree): 在独立 worktree 里干活，含 symlink node_modules 的跨分支 lockfile 风险。
+

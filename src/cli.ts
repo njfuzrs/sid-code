@@ -49,6 +49,14 @@ type CLIArgs = Partial<Config> & {
   resumePicker?: boolean;
   /** P2-G9：--from-pr <number>——从 PR 恢复会话上下文（PR 编号字符串）。 */
   fromPr?: string;
+  /**
+   * T-3.2：隐藏出口 --dump-tools——把**实际注册进 registry** 的工具定义
+   * （`toolToDefinition()` 结果，与发给 LLM 的定义同源）以 JSON 输出后退出。
+   * 供 `scripts/docs-gen-reference.ts` 生成 `website/ref/tools.md`——文档走"运行时自省"
+   * 而非静态解析源码文本（设计见 §4.5.2 机制二）。刻意不写进 --help：它是给生成器用的
+   * 内部出口，不是用户功能（对账测试里以 HIDDEN_FLAGS 显式登记豁免）。
+   */
+  dumpTools?: boolean;
 };
 
 /**
@@ -274,6 +282,9 @@ function parseCLIArgs(): CLIArgs {
         // SDK 输入/输出格式（P2-1 / P2-2）
         "input-format": { type: "string" }, // text（默认）/ stream-json
         "include-partial-messages": { type: "boolean" }, // stream-json 输出含部分增量
+
+        // 文档生成出口（T-3.2，隐藏：刻意不进 --help）
+        "dump-tools": { type: "boolean" }, // 输出实际注册的工具定义 JSON 后退出
       },
       allowPositionals: true,
       allowNegative: true,
@@ -474,6 +485,8 @@ function parseCLIArgs(): CLIArgs {
     "delete-session": values["delete-session"],
     "cleanup-sessions": values["cleanup-sessions"],
     "upload-traces": values["upload-traces"],
+    // T-3.2：文档生成出口（隐藏 flag，见 CLIArgs.dumpTools 注释）
+    dumpTools: values["dump-tools"],
     bridgeUrl: values.bridge,
     bridgeToken: values["bridge-token"],
     // Worktree 启动 flag（P1-2）：--worktree=name 指定名称；--worktree= 或空串则自动命名
@@ -1511,6 +1524,31 @@ export async function main(): Promise<void> {
     skillActivationCoordinator.init(skillManager.getAllSkills());
 
     profileCheckpoint("tool_reg_end");
+
+    // T-3.2 --dump-tools：把实际注册进 registry 的工具定义以 JSON 输出后退出。
+    //
+    // 位置刻意选在这里（内置工具注册全部完成之后、--tools 白名单裁剪与 MCP 连接之前）：
+    //   - 之前 → 会漏掉 Skill 元工具 / Bundled Skill 工具 / worktree 等后段注册的工具；
+    //   - 之后 → 产物会随 --tools 裁剪与本机 MCP 服务器配置变化，生成的文档
+    //     就不是"内置工具全集"而是"这台机器这次会话恰好可见的工具"，pre-commit
+    //     的 --check 会在不同人机器上给出不同结论（§4.5.2 问题 A 要防的正是这个）。
+    //
+    // 取 definitions() 而非 all()：它就是发给 LLM 的那份定义（含 usageGuide 拼接与
+    // zodSchema→JSON Schema 转换），文档因此与模型看到的内容同源。
+    // 不传 AssembleOptions（无 deny/mode 裁剪）= 内置工具全集，与文档语义一致。
+    if (cliArgs.dumpTools) {
+      const json = JSON.stringify(toolRegistry.definitions(), null, 2) + "\n";
+      // 先等 stdout 排空再 exit：产物约 80KB，管道下（`--dump-tools | jq`）单次 write
+      // 会遇背压，裸 process.exit() 会截断 JSON——生成器拿到半截 JSON 会解析失败。
+      await new Promise<void>((resolve) => {
+        if (process.stdout.write(json)) resolve();
+        else process.stdout.once("drain", () => resolve());
+      });
+      // 必须显式 exit：走到这里已完成全套初始化（settings 变更监听、日志流、
+      // early-input 的 stdin resume 等），仅 return 会让事件循环一直有活引用而挂住不退。
+      // 与 bootstrap 的 --self-check 快速路径同套路。
+      process.exit(0);
+    }
 
     // P2-6 --tools：白名单替换整个内置工具集（未列出的内置工具不可见）。
     // 基础设施工具 tool_search 强制保留——它是延迟加载调度器，裁掉会破坏 ToolSearch 机制。

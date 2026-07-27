@@ -111,7 +111,9 @@ export interface ModelConfig {
 /** 应用配置 */
 export interface Config {
   // LLM 配置
+  /** LLM 提供商（anthropic / openai / ollama 等，决定走哪套协议） */
   provider: string;
+  /** 主模型名（须在 availableModels 中；/model 可运行时切换） */
   model: string;
   /** 主模型失败时的降级模型（必须在 availableModels 中存在），为空字符串则不降级 */
   fallbackModel: string;
@@ -120,10 +122,15 @@ export interface Config {
    * 可选——未设时消费点（app.ts）按 "ask" 兜底（生产默认询问）。
    */
   fallbackSwitchMode?: "ask" | "auto" | "off";
+  /** Anthropic API 密钥（provider=anthropic 时必填；env ANTHROPIC_API_KEY 优先） */
   anthropicKey: string;
+  /** OpenAI 兼容端点的 API 密钥（provider=openai/ollama 等；env OPENAI_API_KEY 优先） */
   openaiKey: string;
+  /** 自定义 API 基础 URL。注意 anthropic 族与 openai 族对 /v1 后缀的要求相反 */
   baseURL: string;
+  /** 单次响应最大输出 token 数（≥1000） */
   maxTokens: number;
+  /** 可选模型清单（/model 切换、--fallback-model 校验都以此为范围） */
   availableModels: ModelConfig[];
   /** 网络超时/重试配置（统一单套保活优先默认值，见 network-profile.ts） */
   network?: NetworkTimeoutSettings;
@@ -189,7 +196,9 @@ export interface Config {
   // 支持 6 种模式：default, always-allow, deny-write, acceptEdits, plan, dontAsk
   permissionMode: string;
   skipPermissions: boolean;
+  /** 预授权工具名单（免确认直接执行）。与 toolsWhitelist 不同：这是权限层，不裁剪工具集 */
   allowedTools: string[];
+  /** 禁用工具名单（拒绝优先于 allowedTools） */
   disallowedTools: string[];
   yesMode: boolean;
   /** P2-1：CLI 权限规则（cliArg 源，规则语法如 "Bash(curl *)"）。--allow-tool / --deny-tool。 */
@@ -197,7 +206,9 @@ export interface Config {
   cliDenyRules?: string[];
 
   // 目录白名单/黑名单
+  /** 可访问目录白名单（cwd 之外要读写的目录须显式加入；对应 --add-dir） */
   allowedDirectories: string[];
+  /** 禁止访问的目录（黑名单优先于白名单） */
   blockedDirectories: string[];
 
   // 会话配置

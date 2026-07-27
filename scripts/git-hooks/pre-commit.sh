@@ -43,6 +43,31 @@ if [ -n "$STAGED_REAL_TASKS" ]; then
 fi
 
 # ============================================================================
+# T-3.8: 参考页反漂移门禁（官网方案 §4.5.2 机制一）
+#
+# 改了参考页的 6 个数据源之一（help.ts / tool/ / command/ / config/ / hook/），
+# 就必须重新生成 website/ref/ 下的参考页。不一致则**阻止提交**。
+#
+# 这道门禁的保证是：源码改了但文档没跟着改，物理上进不了仓库。
+# 参考表一旦漂移就是骗人——用户照着文档写了一个不存在的参数，比没有文档更糟。
+#
+# 注意只在数据源变动时才跑：--check 要起一次 bun 进程 dump 工具定义（约 1s），
+# 每次提交都跑会让无关提交也变慢，久了就会被 --no-verify 绕过。
+# ============================================================================
+STAGED_REF_SOURCES=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '^src/(help\.ts|cli\.ts|tool/|command/|config/|hook/)' || true)
+STAGED_REF_PAGES=$(git diff --cached --name-only --diff-filter=ACMRD | grep -E '^website/(ref/|public/llms\.txt)' || true)
+
+if [ -n "$STAGED_REF_SOURCES" ] || [ -n "$STAGED_REF_PAGES" ]; then
+  echo "[pre-commit] T-3.8 参考页与源码对账（改动涉及参考页数据源）..."
+  if ! bun run "$REPO_ROOT/scripts/docs-gen-reference.ts" --check; then
+    echo "[pre-commit] ❌ 参考页与源码不一致，commit 中止"
+    echo "             修复：bun run docs:gen-reference && git add website/ref website/public/llms.txt"
+    echo "             如确认误报，可加 --no-verify 跳过单次（不建议）"
+    exit 1
+  fi
+fi
+
+# ============================================================================
 # B7-7: SKILL.md 改动 → 提示 holdout execution 回归（§13.4.4 v1.3 蒸馏护栏 2）
 # ============================================================================
 STAGED_SKILLS=$(git diff --cached --name-only --diff-filter=ACM | grep -E '(^src/skill/builtin/.*/SKILL\.md$|^.*\.sid-code/skills/.*\.md$)' || true)

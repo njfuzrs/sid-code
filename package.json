@@ -19,6 +19,8 @@
     "website:build": "bun run --cwd website build",
     "website:preview": "bun run --cwd website preview",
     "docs:gen-reference": "bun run scripts/docs-gen-reference.ts",
+    "docs:gen-reference-check": "bun run scripts/docs-gen-reference.ts --check",
+    "docs:gen-reference-stale": "bun run scripts/docs-gen-reference.ts --stale",
     "install-hooks": "sh scripts/install-git-hooks.sh",
     "lint": "echo 'TODO: add linter'",
     "eval:run": "bun run node_modules/eval-framework/core/runner.ts",

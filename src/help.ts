@@ -23,6 +23,8 @@ LLM 配置:
   -y, --yes                   自动批准所有权限请求
   --allowed-tools <list>      工具白名单（逗号分隔，如 "read,grep,bash"）
   --disallowed-tools <list>   工具黑名单（逗号分隔）
+  --allow-tool <rule>         追加允许规则（规则语法，如 "Bash(git status)"；可重复或逗号分隔）
+  --deny-tool <rule>          追加拒绝规则（同上语法；拒绝优先于允许）
   --tools <list>              替换整个内置工具集（逗号分隔；未列出的工具不注册）
   --add-dir <dir>             追加可访问目录（可重复：--add-dir A --add-dir B）
 
@@ -60,7 +62,8 @@ LLM 配置:
 
 配置源:
   --settings <file-or-json>   额外 settings 源（文件路径或内联 JSON，最后一层覆盖）
-  --setting-sources <sources> 限定加载的 settings 源（逗号分隔，子集：user/project/local）
+  --setting-sources <sources>
+                              限定加载的 settings 源（逗号分隔，子集：user/project/local）
 
 MCP:
   --mcp-config <config>       额外 MCP 配置源（文件路径或内联 JSON，可重复）

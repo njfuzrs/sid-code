@@ -27,5 +27,7 @@ for src in "$SRC_DIR"/*.sh; do
 done
 
 echo ""
-echo "已安装：pre-commit (B6-10 数据污染扫描) / pre-push (holdout 泄露检测 + dashboard 刷新)"
+echo "已安装："
+echo "  pre-commit  B6-10 数据污染扫描 + T-3.8 参考页反漂移对账"
+echo "  pre-push    holdout 泄露检测 + T-3.9 站点构建（死链门禁）+ dashboard 刷新"
 echo "完成。要禁用某个 hook，加 --no-verify 跳过单次，或删除 $DST_DIR/<name>"

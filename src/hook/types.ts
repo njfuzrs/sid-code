@@ -11,31 +11,65 @@ import type { HookRegistryEntry } from "./registry.ts";
 // 枚举
 // ============================================================
 
-/** 事件名称（PascalCase，配置文件中仍支持旧的 snake_case） */
+/**
+ * 事件名称（PascalCase，配置文件中仍支持旧的 snake_case）
+ *
+ * ⚠ 每个成员的注释即 `website/ref/hooks.md` 的「触发时机」列（由
+ * `scripts/docs-gen-reference.ts` 提取，见该文件的 extractEnumComments）。
+ * 改注释等于改文档，改完需跑 `bun run docs:gen-reference`，否则 pre-commit 拦。
+ *
+ * 标「预留」的成员：`event-handler.ts` 里有对应的 `fire*Event` 方法，但 hook 子系统
+ * **之外没有任何调用者**（已逐个 grep 确认），即用户配了也不会被调用。这类事实必须
+ * 写进注释——参考文档说"有这个事件"而实际不触发，比不写更糟。接线后请同步删掉「预留」。
+ */
 export enum HookEventName {
+  /** 工具执行前、权限检查之前触发。可 block（返回 deny 则工具不执行）。 */
   PreToolUse = "PreToolUse",
+  /** 工具执行成功返回结果后触发。不可 block，仅可注入附加上下文。 */
   PostToolUse = "PostToolUse",
+  /** 工具执行抛异常后触发。不可 block，fire-and-forget 不等待结果。 */
   PostToolUseFailure = "PostToolUseFailure",
+  /** 用户输入提交后、入上下文前触发。可 block（原 prompt 不入上下文）。 */
   UserPromptSubmit = "UserPromptSubmit",
+  /** 模型 end_turn 且无待执行工具后触发。不可 block，仅可请求清除上下文。 */
   AfterAgent = "AfterAgent",
+  /** 每轮 LLM 请求发出前触发。可 block（阻止本次请求并结束循环）。 */
   BeforeModel = "BeforeModel",
+  /** 每轮 LLM 响应收全后触发。可 block（丢弃响应并结束循环）。 */
   AfterModel = "AfterModel",
+  /** 会话启动或 resume 时触发。不可 block（block 降级为告警）。 */
   SessionStart = "SessionStart",
+  /** 会话退出前触发（exit / error / abort）。不可 block，超时即放弃。 */
   SessionEnd = "SessionEnd",
+  /** 上下文压缩执行前触发。可 block（跳过本次压缩）。 */
   PreCompact = "PreCompact",
+  /** 上下文压缩完成后触发。不可 block，异常也不影响压缩结果。 */
   PostCompact = "PostCompact",
+  /** 子代理任务启动前触发。不可 block（block 降级为告警）。 */
   SubagentStart = "SubagentStart",
+  /** 子代理任务结束后触发（finally）。不可 block，fire-and-forget。 */
   SubagentStop = "SubagentStop",
+  /** 预留：有 fire 方法但无调用点，配了不会被触发。 */
   Notification = "Notification",
+  /** 助手回答收尾、准备停止时触发。可 block（注入错误并重试修复）。 */
   Stop = "Stop",
+  /** 预留：有 fire 方法但无调用点，配了不会被触发。 */
   StopFailure = "StopFailure",
+  /** 预留：有 fire 方法但无调用点，配了不会被触发。 */
   Setup = "Setup",
+  /** 权限需用户确认时、三路竞速中触发。可 block（返回 deny 则拒绝该工具）。 */
   PermissionRequest = "PermissionRequest",
+  /** 预留：有 fire 方法但无调用点，配了不会被触发。 */
   PermissionDenied = "PermissionDenied",
+  /** 预留：有 fire 方法但无调用点，配了不会被触发。 */
   ConfigChange = "ConfigChange",
+  /** 预留：有 fire 方法但无调用点，配了不会被触发。 */
   FileChanged = "FileChanged",
+  /** 预留：有 fire 方法但无调用点，配了不会被触发。 */
   CwdChanged = "CwdChanged",
+  /** 预留：有 fire 方法但无调用点，配了不会被触发。 */
   TaskCreated = "TaskCreated",
+  /** 预留：有 fire 方法但无调用点，配了不会被触发。 */
   TaskCompleted = "TaskCompleted",
   /** 权限检查开始（spec 17 §6.1.3，用于 blocked_on_user span） */
   BeforePermissionCheck = "BeforePermissionCheck",
