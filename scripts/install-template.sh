@@ -17,6 +17,10 @@
 set -euo pipefail
 
 RELEASE_BASE="${RELEASE_BASE:-http://121.196.144.227/releases/sid-code}"
+# 文档站地址由 RELEASE_BASE 去掉 /releases/sid-code 后缀派生——服务器地址仍只有
+# RELEASE_BASE 一处事实源（release.sh 用 DEPLOY_SSH_HOST 注入它），换域名不会漏改这里。
+# 本地 file:// 测试时派生结果无意义，故下面只在 http(s) 前缀时才打印文档链接。
+DOCS_BASE="${RELEASE_BASE%/releases/sid-code}"
 INSTALL_ROOT="$HOME/.local/share/sid-code"
 VERSIONS_DIR="$INSTALL_ROOT/versions"
 BIN_DIR="$HOME/.local/bin"
@@ -334,6 +338,11 @@ echo "    sid-code             # 启动（需逐条确认权限）"
 echo "    sid-code --version   # 确认版本"
 echo "    sid-code update      # 以后升级到最新版本"
 echo ""
+case "$DOCS_BASE" in
+    http://*|https://*)
+        echo "  📖 使用文档: ${DOCS_BASE}/start/"
+        ;;
+esac
 echo "  📄 更新日志（网页）: ${RELEASE_BASE}/CHANGELOG.html"
 echo "  📄 更新日志（文本）: ${RELEASE_BASE}/CHANGELOG.md"
 echo ""
