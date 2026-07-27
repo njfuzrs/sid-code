@@ -659,7 +659,7 @@ export interface CheckpointConfig {
 export interface AttributionConfig {
   /** 是否启用（默认 true） */
   enabled?: boolean;
-  /** 归因文本（默认 "Co-Authored-By: sid-code <noreply@sid-code.dev>"） */
+  /** 归因文本（默认 "Co-Authored-By: sid-code <noreply@sid-code.cc>"） */
   text?: string;
 }
 

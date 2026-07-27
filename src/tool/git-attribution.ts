@@ -14,7 +14,7 @@
 import type { GitConfig } from "../config/config.ts";
 
 /** commit 归因默认文本 */
-export const DEFAULT_COMMIT_ATTRIBUTION = "Co-Authored-By: sid-code <noreply@sid-code.dev>";
+export const DEFAULT_COMMIT_ATTRIBUTION = "Co-Authored-By: sid-code <noreply@sid-code.cc>";
 /** PR 归因默认文本 */
 export const DEFAULT_PR_ATTRIBUTION = "🤖 Generated with sid-code";
 
