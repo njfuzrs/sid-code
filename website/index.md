@@ -6,7 +6,7 @@ titleTemplate: 长在企业研发环境里的 coding agent
 hero:
   name: sid-code
   text: 长在企业研发环境里的 coding agent
-  tagline: 终端里说人话，它读代码、改文件、跑命令，用真实的编译与测试结果证明改对了。而模型你选、harness 你改、内网它进得去、数据一行不外流——这四条，闭源产品结构上给不了。
+  tagline: 模型你选、harness 你改、内网它进得去、数据一行不外流。这四条，闭源 coding agent 结构上给不了。
   image:
     src: /favicon.svg
     alt: sid-code
