@@ -87,9 +87,12 @@
 }
 
 /* 表格：参考页全是表格，加强可读性（斑马纹 + 表头底色）*/
+/* display:block + overflow-x:auto 是 VitePress 默认（vp-doc.css），曾被改成 display:table
+   导致内容超宽时无滚动条、长 URL 撑破容器溢出到右侧 aside。改回 block 才能触发横向滚动。 */
 .vp-doc table {
-  display: table;
+  display: block;
   width: 100%;
+  overflow-x: auto;
   font-size: 14px;
 }
 .vp-doc tr:nth-child(2n) {
