@@ -68,6 +68,28 @@ if [ -n "$STAGED_REF_SOURCES" ] || [ -n "$STAGED_REF_PAGES" ]; then
 fi
 
 # ============================================================================
+# 叙述覆盖度门禁：新增命令不能只进 ref/ 参考表
+#
+# 上面 T-3.8 保证的是「参考页不漂移」，但参考页是脚本生成的——新增一个命令，
+# ref/slash-commands.md 会自动多一行，指南页却不会自动变。结果是功能"进了字典，
+# 没进教程"：用户不会读一张 60 行的表来发现能力。2026-07 覆盖度核对实测
+# 62 个命令里 21 个处于这个状态（详见 docs/reference/官网文档覆盖度核对报告.md）。
+#
+# 触发条件复用命令注册表相关改动（src/command/），与 T-3.8 同源，不额外拖慢无关提交。
+#
+# ⚠ 当前是**告警模式**（--coverage，恒退 0），因为存量 18 个未清完；
+#    存量清零后把下面的 --coverage 改成 --coverage-strict 并去掉 `|| true`，
+#    "做了功能不写文档"就在物理上进不了仓库。
+# ============================================================================
+STAGED_CMD_SOURCES=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '^src/command/' || true)
+STAGED_GUIDE_PAGES=$(git diff --cached --name-only --diff-filter=ACMRD | grep -E '^website/(start|use|extend|team)/' || true)
+
+if [ -n "$STAGED_CMD_SOURCES" ] || [ -n "$STAGED_GUIDE_PAGES" ]; then
+  echo "[pre-commit] 叙述覆盖度检查（命令是否只存在于 ref/ 参考表）..."
+  bun run "$REPO_ROOT/scripts/docs-gen-reference.ts" --coverage || true
+fi
+
+# ============================================================================
 # B7-7: SKILL.md 改动 → 提示 holdout execution 回归（§13.4.4 v1.3 蒸馏护栏 2）
 # ============================================================================
 STAGED_SKILLS=$(git diff --cached --name-only --diff-filter=ACM | grep -E '(^src/skill/builtin/.*/SKILL\.md$|^.*\.sid-code/skills/.*\.md$)' || true)

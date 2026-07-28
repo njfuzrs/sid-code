@@ -20,6 +20,8 @@
  *   bun run scripts/docs-gen-reference.ts            # 写入
  *   bun run scripts/docs-gen-reference.ts --check    # 对账：不一致退 1（pre-commit 门禁调用）
  *   bun run scripts/docs-gen-reference.ts --stale    # 报告 >90 天未复核的指南页（只告警不阻塞）
+ *   bun run scripts/docs-gen-reference.ts --coverage # 报告只在 ref/ 出现、无指南页介绍的命令（告警）
+ *   bun run scripts/docs-gen-reference.ts --coverage-strict  # 同上，但有未覆盖即退 1（存量清完后启用）
  */
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -31,6 +33,8 @@ const REF = join(WEBSITE, "ref");
 
 const CHECK = process.argv.includes("--check");
 const STALE = process.argv.includes("--stale");
+const COVERAGE_STRICT = process.argv.includes("--coverage-strict");
+const COVERAGE = process.argv.includes("--coverage") || COVERAGE_STRICT;
 
 /**
  * 沿用 docs-index-gen.ts 的标记约定，不发明新格式（标记内覆盖，标记外保留）。
@@ -808,6 +812,182 @@ export function findStalePages(
   return { stale, missing, invalid };
 }
 
+// ============================================================
+// 叙述覆盖度：每个内置命令必须在 ref/ 之外被提到
+// ============================================================
+
+/**
+ * 为什么需要这道检查（根因，不是洁癖）：
+ *
+ * 新增一个斜杠命令时，`ref/slash-commands.md` 因为脚本生成会**自动**多出一行；
+ * 但指南页（start/ use/ extend/ team/）不会自动变。结果是功能"进了字典，没进教程"。
+ * 用户不会去读一张 62 行的参考表来发现能力——只在 ref 表出现一行 20 字描述的命令，
+ * 等于没做。2026-07 的覆盖度核对实测 62 个命令里 21 个（34%）处于这个状态。
+ *
+ * 判据刻意宽松：只要在 ref/ 之外**任意一篇** md 里被提到就算过。
+ * 这不检验写得好不好（那是 §4.5.3 机制二真人验收的事），只堵死"完全没提"。
+ * 宽松是为了让它可长期通过——严到需要人为绕过的门禁等于没有门禁。
+ *
+ * 豁免（EXEMPT）只给"自明到写进指南反而是噪音"的命令，且必须逐个写理由。
+ */
+const NARRATIVE_EXEMPT: Record<string, string> = {
+  exit: "退出程序，语义自明；写进指南是噪音",
+  help: "命令自身即入口，首个任务页已教用户按 ?",
+};
+
+/** 参与叙述覆盖统计的目录（= 人工撰写的指南层，ref/ 是脚本生成故排除） */
+const NARRATIVE_DIRS = ["start", "use", "extend", "team"];
+
+export interface CoverageResult {
+  /** 只在 ref/ 出现、无任何叙述页提到的命令 */
+  uncovered: string[];
+  /** 命令 → 提到它的叙述页清单（仅含已覆盖的） */
+  covered: Map<string, string[]>;
+  /** 豁免掉的命令 */
+  exempt: string[];
+  total: number;
+}
+
+/**
+ * 一个代码块里出现多少个不同命令就判定它是"粘贴的清单"而非"用法示例"。
+ *
+ * 真实的用法示例一次演示 1-3 个命令（`/copy` 那节列了 `/copy` 与 `/copy code`）；
+ * 而粘贴一段 `sid-code --help` 或 `/` 菜单回显会一次列出几十个。后者若算覆盖，
+ * 贴一次输出就能"覆盖"全部命令，门禁形同虚设。阈值取 4：实测当前全站没有任何
+ * 代码块命中（最多 3 个），即这条规则现在不改变任何判定，只封住将来的后门。
+ */
+const FENCE_DUMP_THRESHOLD = 4;
+
+/**
+ * 收集叙述层页面正文，并剥掉三类"看着像提到、其实不是介绍"的噪音。
+ *
+ * 剥掉的原因逐条都踩过（本轮实测的误判）：
+ *   1. 单段链接目标 `](/changelog)` —— 命令名前是 `(`，不是路径字符，mentionsCommand
+ *      的左边界拦不住，只能靠剥离。多段形态 `](/use/permissions)` 由左边界拦住
+ *      （前导是 `e`），两者分工见测试「两种链接形态各由一道机制拦住」。
+ *   2. 路径片段 `~/.sid-code/agents/`、`/tmp/x/commands` —— 目录名里的同名段不是命令，
+ *      由 mentionsCommand 的左边界负责。
+ *   3. 清单式代码块 —— 见 FENCE_DUMP_THRESHOLD。
+ *
+ * 保留普通代码块：命令的用法示例本来就写在围栏里（`/copy`、`/init` 都是这种），
+ * 整段剥掉会把真覆盖误判成未覆盖。
+ */
+function collectNarrativeText(): Array<{ rel: string; text: string }> {
+  const out: Array<{ rel: string; text: string }> = [];
+  const glob = new Glob("**/*.md");
+  for (const file of glob.scanSync(WEBSITE)) {
+    const rel = file.replace(/\\/g, "/");
+    if (rel.startsWith("node_modules/") || rel.startsWith(".vitepress/")) continue;
+    const top = rel.includes("/") ? rel.split("/")[0] : "";
+    // 站根的 index.md / changelog.md 也算叙述层（首页会介绍能力）
+    if (top !== "" && !NARRATIVE_DIRS.includes(top)) continue;
+
+    const raw = readFileSync(join(WEBSITE, rel), "utf8");
+    out.push({ rel, text: stripLinkTargets(stripDumpFences(raw)) });
+  }
+  return out;
+}
+
+/** 丢弃"清单式"代码块（见 FENCE_DUMP_THRESHOLD），保留单命令用法示例围栏 */
+function stripDumpFences(text: string): string {
+  return text.replace(/```[\s\S]*?```/g, (fence) => {
+    const distinct = new Set([...fence.matchAll(/(?:^|\s)\/([a-z][a-z0-9-]*)/gm)].map((m) => m[1]));
+    return distinct.size >= FENCE_DUMP_THRESHOLD ? "" : fence;
+  });
+}
+
+/** 清空 markdown 链接目标：`](/use/permissions)` → `]()`，正文与链接文字不动 */
+function stripLinkTargets(text: string): string {
+  return text.replace(/\]\([^)]*\)/g, "]()");
+}
+
+/**
+ * 判断某命令是否在正文里被"提到"。
+ *
+ * 两侧都要卡边界：
+ *   · 右边界：`/think` 不能被 `/thinking` 撑住，故后随字符不得属于 [a-z0-9-]。
+ *   · 左边界：`~/.sid-code/agents/` 里的 `/agents` 不算提到 `/agents` 命令，
+ *     故前导字符不得是路径字符 [A-Za-z0-9._/-]。行首/空白/反引号前导才算。
+ */
+function mentionsCommand(text: string, name: string): boolean {
+  const re = new RegExp(
+    `(^|[^A-Za-z0-9._/-])/${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![a-z0-9-])`,
+    "m",
+  );
+  return re.test(text);
+}
+
+/**
+ * 暴露给测试的内部件。
+ *
+ * 覆盖度门禁的价值全在匹配器的准确度上：判宽了（把链接目标 `](/use/permissions)`
+ * 算成提到 `/permissions` 命令）门禁形同虚设；判严了（整块丢弃代码围栏，漏掉写在
+ * 围栏里的 `/copy` 用法）会逼人加豁免绕过。两种错本轮实现时都真的犯过，
+ * 所以匹配器必须被直接测到，而不是只测端到端退出码。
+ */
+export const __coverageInternals = {
+  mentionsCommand,
+  stripDumpFences,
+  stripLinkTargets,
+  NARRATIVE_EXEMPT,
+};
+
+export function checkNarrativeCoverage(cmdNames: string[]): CoverageResult {
+  const pages = collectNarrativeText();
+  const uncovered: string[] = [];
+  const covered = new Map<string, string[]>();
+  const exempt: string[] = [];
+
+  for (const name of cmdNames) {
+    if (name in NARRATIVE_EXEMPT) {
+      exempt.push(name);
+      continue;
+    }
+    const hits = pages.filter((p) => mentionsCommand(p.text, name)).map((p) => p.rel);
+    if (hits.length) covered.set(name, hits);
+    else uncovered.push(name);
+  }
+  uncovered.sort();
+  return { uncovered, covered, exempt, total: cmdNames.length };
+}
+
+/**
+ * 报告叙述覆盖度。
+ *
+ * @param strict true = 有未覆盖命令则返回非零（阻断）。
+ *   当前存量 21 个未覆盖，先走告警模式；存量清完后把 pre-commit 的调用改成 --coverage-strict。
+ */
+function reportCoverage(cmdNames: string[], strict: boolean): number {
+  const { uncovered, covered, exempt, total } = checkNarrativeCoverage(cmdNames);
+  const counted = total - exempt.length;
+
+  console.log(
+    `docs-gen-reference --coverage：${counted} 个内置命令（豁免 ${exempt.length} 个），` +
+      `${covered.size} 个已有叙述页覆盖，${uncovered.length} 个仅存在于 ref/。`,
+  );
+
+  if (uncovered.length === 0) {
+    console.log(`  ✓ 每个内置命令都至少被一篇指南页提到。`);
+    return 0;
+  }
+
+  console.log(`\n  以下命令只在 ref/slash-commands.md 出现，没有任何指南页介绍：`);
+  for (const name of uncovered) console.log(`    · /${name}`);
+  console.log(
+    `\n  修复：在 ${NARRATIVE_DIRS.join(" / ")} 下找合适的页面补一段（说清"什么时候用、为什么"），\n` +
+      `  而不是往 ref/ 里加字——参考页答"怎么写"，指南页答"什么时候用"（设计方案 §4.3.8）。`,
+  );
+
+  if (!strict) {
+    console.log(
+      `\n  当前为告警模式（存量未清完，不阻断）。清完后把 pre-commit 的调用换成\n` +
+        `  --coverage-strict，"做了功能不写文档"在物理上就进不了仓库。`,
+    );
+    return 0;
+  }
+  return 1;
+}
+
 function reportStale(today: string): number {
   const { stale, missing, invalid } = findStalePages(today);
   console.log(`docs-gen-reference --stale（基准日 ${today}，阈值 90 天）：`);
@@ -882,6 +1062,11 @@ async function build(): Promise<{ pages: Page[]; llms: Page; rec: CliReconcile }
 }
 
 async function main(): Promise<void> {
+  if (COVERAGE) {
+    const cmds = await loadSlashCommands();
+    process.exit(reportCoverage(cmds.map((c) => c.name), COVERAGE_STRICT));
+  }
+
   if (STALE) {
     // 基准日走 git 的提交日期而非 new Date()：脚本在 pre-commit 里跑，
     // 用当次提交日期作基准可复现（同一 commit 重跑结论一致）。取不到则回退系统日期。

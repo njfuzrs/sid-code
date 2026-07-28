@@ -26,6 +26,8 @@ import {
   extractHelpFlags,
   spliceAutoGen,
   findStalePages,
+  checkNarrativeCoverage,
+  __coverageInternals,
   HELP_ONLY_WHITELIST,
   HIDDEN_FLAGS,
   MARKER_START,
@@ -304,6 +306,118 @@ describe("参考页生成器 · --check 自洽（问题 A：同源性）", () =>
     expect(near.stale.length).toBe(0); // 基准日早于任何 lastReviewed → 不该有超期
     expect(far.stale.length + far.missing.length).toBeGreaterThan(0);
   }, 60_000);
+});
+
+describe("叙述覆盖度门禁 · 匹配器准确度（判宽=门禁失效，判严=逼人加豁免）", () => {
+  const { mentionsCommand, stripDumpFences, stripLinkTargets, NARRATIVE_EXEMPT } =
+    __coverageInternals;
+
+  test("正常提及算覆盖（行首、句中、backtick 包裹、带参数）", () => {
+    expect(mentionsCommand("/goal 设定完成条件", "goal")).toBe(true);
+    expect(mentionsCommand("用 `/cache --breaks` 查退化", "cache")).toBe(true);
+    expect(mentionsCommand("先跑 /doctor 看看", "doctor")).toBe(true);
+    expect(mentionsCommand("| `/undo` | 撤销 |", "undo")).toBe(true);
+  });
+
+  test("右边界：前缀同名的长命令不算覆盖短命令", () => {
+    // 实测风险：/think 被 /thinking 撑住、/co 被 /context 撑住
+    expect(mentionsCommand("讲的是 /thinking 这个东西", "think")).toBe(false);
+    expect(mentionsCommand("/context 压缩", "co")).toBe(false);
+    expect(mentionsCommand("/add-dir-extra", "add-dir")).toBe(false);
+  });
+
+  test("左边界：路径片段里的同名段不算覆盖（本轮真实误判之一）", () => {
+    // `~/.sid-code/agents/` 曾让 /agents 假覆盖
+    expect(mentionsCommand("放到 ~/.sid-code/agents/ 下", "agents")).toBe(false);
+    expect(mentionsCommand("mkdir -p /tmp/demo-plugin/commands", "commands")).toBe(false);
+    expect(mentionsCommand("见 docs/reference/init.md", "init")).toBe(false);
+  });
+
+  test("markdown 链接目标不算覆盖：两种链接形态各由一道机制拦住", () => {
+    // 这是本轮真实误判之二：早期实现（无左边界、不剥链接）把 `](/use/permissions)`
+    // 算成"提到了 /permissions 命令"，于是一个字介绍都没有的 /permissions 被判已覆盖。
+    // 修复后两种链接形态由**不同**机制拦住，分工要测清楚，否则删掉任一都以为安全：
+
+    // ① 多段链接 `](/use/permissions)`：命令名前是 `e`（路径字符）→ 左边界拦住，无需剥离
+    const multiSeg = "六种模式见[权限与人工确认](/use/permissions)。";
+    expect(mentionsCommand(multiSeg, "permissions"), "左边界应拦住多段链接").toBe(false);
+
+    // ② 单段链接 `](/changelog)`：命令名前是 `(`，**不是**路径字符 → 左边界拦不住，
+    //    必须靠剥离链接目标。这一类是站内顶层页链接，一旦有命令与顶层页同名就会假覆盖。
+    const singleSeg = "见[更新日志](/changelog)。";
+    expect(mentionsCommand(singleSeg, "changelog"), "左边界拦不住单段链接（本回归的前提）").toBe(
+      true,
+    );
+    expect(
+      mentionsCommand(stripLinkTargets(singleSeg), "changelog"),
+      "剥离链接目标后不应再命中",
+    ).toBe(false);
+
+    // 真正的介绍（命令写在正文/表格里）两道机制都不该误伤
+    expect(mentionsCommand(stripLinkTargets("跑 `/permissions` 看当前规则"), "permissions")).toBe(
+      true,
+    );
+
+    // 且 /permissions 当前实际就是未覆盖——哪天补了文档，这条会提醒同步下调基线
+    expect(checkNarrativeCoverage(["permissions"]).uncovered).toEqual(["permissions"]);
+  });
+
+  test("清单式代码块不算覆盖（防贴一段 /help 输出就'覆盖'全部命令）", () => {
+    const dump = ["```text", "/clear", "/compact", "/context", "/cost", "/doctor", "```"].join("\n");
+    const one = ["```text", "/copy        复制最后一条回复", "```"].join("\n");
+
+    // 清单被整块丢弃 → 里面的命令一个都不算覆盖
+    expect(mentionsCommand(stripDumpFences(dump), "compact")).toBe(false);
+    // 单命令用法示例保留 → 仍算覆盖
+    expect(mentionsCommand(stripDumpFences(one), "copy")).toBe(true);
+  });
+
+  test("普通用法围栏要保留（否则写在围栏里的 /copy /init 会被误判未覆盖）", () => {
+    // /copy 全站只在 use/interactive.md 的代码围栏里出现，是真覆盖
+    const r = checkNarrativeCoverage(["copy", "init", "vim"]);
+    expect(r.uncovered, "围栏内的真实用法示例应算覆盖").toEqual([]);
+  });
+
+  test("豁免必须逐条带理由，且理由非空", () => {
+    // 防豁免表退化成"塞进去就不用写文档"的后门
+    expect(Object.keys(NARRATIVE_EXEMPT).length).toBeLessThanOrEqual(5);
+    for (const [name, reason] of Object.entries(NARRATIVE_EXEMPT)) {
+      expect(reason.length, `/${name} 的豁免理由为空`).toBeGreaterThan(8);
+    }
+  });
+});
+
+describe("叙述覆盖度门禁 · 端到端", () => {
+  test("--coverage 只告警不阻塞（退 0），且输出未覆盖清单", () => {
+    const proc = Bun.spawnSync(["bun", "run", "scripts/docs-gen-reference.ts", "--coverage"], {
+      cwd: ROOT,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(proc.exitCode).toBe(0);
+    expect(proc.stdout.toString()).toContain("个内置命令");
+  }, 60_000);
+
+  test("覆盖统计自洽：covered + uncovered + exempt == 命令总数", () => {
+    const keys = tableRowKeys(autoGenBody("slash-commands")).map((k) => k.replace(/^\//, ""));
+    const r = checkNarrativeCoverage(keys);
+    expect(r.covered.size + r.uncovered.length + r.exempt.length).toBe(keys.length);
+    expect(r.total).toBe(keys.length);
+  });
+
+  test("存量基线只减不增（改动不得让未覆盖命令变多）", () => {
+    // 基线随存量清理下调；这条断言的作用是防"新增命令又不写文档"把数字顶回去。
+    // 2026-07 核对时为 18。清到 0 后把 pre-commit 换成 --coverage-strict。
+    const BASELINE = 18;
+    const keys = tableRowKeys(autoGenBody("slash-commands")).map((k) => k.replace(/^\//, ""));
+    const { uncovered } = checkNarrativeCoverage(keys);
+    expect(
+      uncovered.length,
+      `未覆盖命令数升到 ${uncovered.length}（基线 ${BASELINE}）：${uncovered.join(" ")}\n` +
+        `新增命令请同时在 start/use/extend/team 下补一段说明；` +
+        `若确为存量清理导致下降，请同步下调 BASELINE。`,
+    ).toBeLessThanOrEqual(BASELINE);
+  });
 });
 
 describe("参考页生成器 · AUTO-GEN 标记语义（T-3.6c）", () => {
