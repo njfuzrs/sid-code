@@ -338,13 +338,17 @@ echo "    sid-code             # 启动（需逐条确认权限）"
 echo "    sid-code --version   # 确认版本"
 echo "    sid-code update      # 以后升级到最新版本"
 echo ""
+# 更新日志已并入官网 /changelog。DOCS_BASE 是 http(s) 时给官网地址；
+# 本地 file:// 验证场景下没有站点可指，退回文本版（与产物同目录，必然存在）。
 case "$DOCS_BASE" in
     http://*|https://*)
         echo "  📖 使用文档: ${DOCS_BASE}/start/"
+        echo "  📄 更新日志: ${DOCS_BASE}/changelog"
+        ;;
+    *)
+        echo "  📄 更新日志: ${RELEASE_BASE}/CHANGELOG.md"
         ;;
 esac
-echo "  📄 更新日志（网页）: ${RELEASE_BASE}/CHANGELOG.html"
-echo "  📄 更新日志（文本）: ${RELEASE_BASE}/CHANGELOG.md"
 echo ""
 
 # 仅当「刚写入 PATH 块」且「当前 shell 的 PATH 里还没有该 bin 目录」时才提示 source。

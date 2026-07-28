@@ -76,17 +76,24 @@ make rebuild
 git add <改动文件>
 git commit -m "feat: ..."
 
-# 3. 发布（release.sh 内部会 bump 版本号 + 生成 CHANGELOG.md/.html + 打 tag vX.Y.Z
+# 3. 发布（release.sh 内部会 bump 版本号 + 生成 changelog 三产物 + 打 tag vX.Y.Z
 #    + 重新生成 builtin-embedded.generated.ts，上传成功后推 tag 并传 CHANGELOG.md/.html 到服务器顶层）
 #    不需要先跑 make build！
 ./scripts/release.sh --upload
 
-# 4. 补提交版本号变更 + changelog（CHANGELOG.md/.html 由 release.sh 生成，必须一并提交）
-git add package.json src/skill/builtin-embedded.generated.ts CHANGELOG.md CHANGELOG.html
+# 4. 补提交版本号变更 + changelog 三产物（均由 release.sh 生成，必须一并提交；
+#    漏掉 changelog.json 就等于官网 /changelog 拿不到这个版本）
+git add package.json src/skill/builtin-embedded.generated.ts \
+        CHANGELOG.md CHANGELOG.html website/.vitepress/data/changelog.json
 git commit -m "bump vX.Y.Z"
 
 # 5. 推送（tag 已在 release.sh 上传后推过；此处 git push 兜底补推本地 tag）
 git push
+
+# 5.5 发布官网，让 /changelog 上线本次版本（必做）
+#     官网 /changelog 是站点构建期快照，release.sh 只生成数据、不发布站点。
+#     放在 bump 提交之后：那时工作区才干净，才过得了 website-deploy.sh 的 dirty 门禁。
+./scripts/website-deploy.sh
 
 # 6. 对齐开发版二进制版本号（发布制品用的是跨平台编译产物，
 #    仓库根的开发版二进制内联版本号还停在旧值，不补 rebuild 则 sc-dev 版本比线上低一位）
@@ -95,7 +102,19 @@ make rebuild
 
 > `release.sh` 若首次失败已 bump 过版本号（如上传阶段报错），第二次用 `--no-bump --upload` 复用现有版本号，避免版本号 +2。tag 与 CHANGELOG.md 均幂等：`--no-bump` 复用同版本时 tag 已存在会跳过创建、changelog 同版本块原地替换，不会重复。
 >
-> **Changelog + Tag**：release.sh 在 bump 后自动从 git 历史（上个 semver tag → HEAD，按 feat/fix/… 分组）生成两份产物——`CHANGELOG.md`（文本事实源，累积追踪、不删除）+ `CHANGELOG.html`（科技风网页，可直接点开，含 commit body 细节展开/分组徽章/搜索过滤），并打 annotated tag `vX.Y.Z`。两份都是「git 历史的渲染视图」，每次运行从 git 完整重建（历史 tag 指向不可变提交 → 历史块稳定，只有正在发布的版本块每次变化，确定性且幂等）。用户可通过 `http://<host>/releases/sid-code/CHANGELOG.html`（网页，推荐）或 `.../CHANGELOG.md`（文本）查看版本变更。
+> **Changelog + Tag**：release.sh 在 bump 后自动从 git 历史（上个 semver tag → HEAD，按 feat/fix/… 分组）重建 changelog，并打 annotated tag `vX.Y.Z`。**git 历史是唯一事实源**，每次运行从 git 完整重建（历史 tag 指向不可变提交 → 历史块稳定，只有正在发布的版本块每次变化，确定性且幂等）。三份产物各有唯一职责：
+>
+> | 产物 | 职责 |
+> | --- | --- |
+> | `CHANGELOG.md` | 文本事实源（累积追踪、不删除），给 diff / `curl` / 脚本 |
+> | `website/.vitepress/data/changelog.json` | 官网 `/changelog` 页的数据源，由 `theme/Changelog.vue` 渲染 |
+> | `CHANGELOG.html` | 跳转页 → `/changelog`，只为保住散落各处的老链接不 404 |
+>
+> **用户看更新日志的唯一入口是官网 `http://<host>/changelog`**（2026-07-28 起）。它和文档站是同一个站、同一套配色与深浅色，自带只搜版本变更的独立搜索框，且**不进全站搜索索引**（否则几百条 commit 描述会把正常查询冲成噪音；执行方是 `website/.vitepress/config.ts` 的 `search.options._render` 钩子 + 页面 frontmatter `search: false`）。
+>
+> ⚠ **两条禁令**，破了就是数据错乱或每次 commit 都红：
+> - `website-deploy.sh` **不得**重跑 `generate-changelog.ts` —— 会把 HEAD 上尚未发版的提交归到已发布的版本号名下。只有 `release.sh` 有资格生成这份数据。
+> - changelog 产物**不纳入** `docs-gen-reference --check` 那类反漂移门禁 —— `website/ref/` 能立门禁是因为源是源码；changelog 的源是 git 历史，每提交一次就变。
 
 **上传凭据**：SSH 信息读自 `scripts/deploy.env`（不入库，见 `deploy.env.example` 模板）。
 配了 `DEPLOY_SSH_PASSWORD` 后用 sshpass 免交互上传，无需每次输密码。首次配置：

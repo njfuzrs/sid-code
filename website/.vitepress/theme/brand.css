@@ -1,9 +1,11 @@
 /**
  * sid-code 品牌样式 —— 把 VitePress 默认主题的 CSS 变量映射到既有品牌色。
  *
- * 唯一事实源：scripts/generate-changelog.ts:469+ 的 :root 变量体系
- * （CHANGELOG.html 用的就是它）。改配色时先改那边，再同步这里，
- * 否则官网和 CHANGELOG 页会像两个不同产品（验收项 A10）。
+ * ⚠ 本文件现在是品牌配色的**唯一事实源**。
+ *   2026-07-28 之前事实源在 scripts/generate-changelog.ts 的 :root 里
+ *   （CHANGELOG.html 自带一整套调色板）。那份 mini 站已随 changelog 并入官网删除，
+ *   /changelog 现在由 theme/Changelog.vue 渲染、直接读这里的变量 —— 配色天然只有一处，
+ *   不再存在「官网和 changelog 像两个产品」的漂移风险（原验收项 A10 的诉求）。
  */
 
 :root {
@@ -22,10 +24,14 @@
   --sid-brand-strong: #2554e0;
   --sid-brand-soft: rgba(59, 108, 246, 0.1);
   --sid-brand-glow: rgba(59, 108, 246, 0.28);
-  --sid-feat: #1f9d57;
-  --sid-fix: #d93a54;
-  --sid-perf: #8250df;
-  --sid-docs: #0e8a8a;
+  /* 分组语义色（changelog 徽章 / 提示框）。
+     取值经对比度实测校准：徽章是 12px 粗体，不算 large text，需 ≥ AA 4.5:1，
+     背景按 --vp-c-bg-soft 算。原值 feat #1f9d57 只有 3.4、docs #0e8a8a 4.07、
+     fix #d93a54 4.37 —— 均压深一档到 4.5 以上。深色模式在 .dark 块里另有一套。 */
+  --sid-feat: #157a42;
+  --sid-fix: #c22740;
+  --sid-perf: #7038d4;
+  --sid-docs: #0a6f6f;
 
   /* ── 字体：mono 承担技术感 ── */
   --vp-font-family-base: -apple-system, BlinkMacSystemFont, "Segoe UI",
@@ -117,4 +123,12 @@
   --sid-brand: #6b93ff;
   --sid-brand-strong: #8badff;
   --sid-brand-soft: rgba(107, 147, 255, 0.14);
+
+  /* 分组语义色深色版：浅色那套压深过的值在深底上反而更暗（实测 perf 3.19 /
+     fix 3.59 / docs 3.85，全部不达 AA），必须整组提亮。改这几个值后
+     重跑对比度实测，别只靠目测——深底上的饱和色很容易看着够亮实则不达标。 */
+  --sid-feat: #4ade80;
+  --sid-fix: #ff8095;
+  --sid-perf: #c4a4ff;
+  --sid-docs: #4fd1c5;
 }

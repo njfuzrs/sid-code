@@ -7,7 +7,7 @@ TypeScript + Bun + Ink 自研，编译成单文件二进制分发——下载一
 不需要装 Node、不需要 `npm install`。
 
 📖 **官方文档：** http://121.196.144.227/
-📄 **更新日志：** http://121.196.144.227/releases/sid-code/CHANGELOG.html
+📄 **更新日志：** http://121.196.144.227/changelog
 
 ---
 

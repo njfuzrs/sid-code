@@ -129,6 +129,28 @@ export default defineConfig({
          * 只传 options → 索引用 bigram、查询用默认分词 → 全站搜不到，
          * 且不报任何错（静默失效）。删任一处前先读 tokenize.ts 顶部说明。
          */
+        /**
+         * 把 frontmatter 标了 `search: false` 的页面从**全站**索引里摘出去。
+         *
+         * 目前唯一使用者是 /changelog：它由 theme/Changelog.vue 从构建期 JSON 渲染，
+         * 自带一个只搜版本变更的独立搜索框。若让几百条 commit 描述进全站索引，
+         * 「搜 hook」「搜权限」这类正常查询会被一片版本噪音冲掉——两个搜索的
+         * 目标读者不同，索引必须分开。
+         *
+         * ⚠ 用同步 `md.render`，不要照抄上游 main 分支文档里的 `md.renderAsync` ——
+         * 那是更新版才有的 API，在当前锁定的 vitepress 1.6.4 上是 undefined，
+         * 构建期直接报 `md.renderAsync is not a function`（实测踩到）。
+         * 升级 vitepress 时可一并复核这里。
+         *
+         * ⚠ 顺序不能调：必须**先 render 再判断**。`env.frontmatter` 是 md.render
+         * 在渲染过程中回填到 env 上的，渲染前读恒为 undefined —— 把早退提到前面
+         * 看似省一次渲染，实际是静默失效（实测索引里照旧留下 4 条 /changelog 标题条目）。
+         */
+        _render(src, env, md) {
+          const html = md.render(src, env);
+          if ((env as any)?.frontmatter?.search === false) return "";
+          return html;
+        },
         miniSearch: {
           options: {
             tokenize: tokenizeCJK,

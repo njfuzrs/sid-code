@@ -12,6 +12,7 @@ import { h } from "vue";
 import DefaultTheme from "vitepress/theme";
 import type { Theme } from "vitepress";
 import CopyPage from "./CopyPage.vue";
+import Changelog from "./Changelog.vue";
 import "./brand.css";
 
 export default {
@@ -20,5 +21,13 @@ export default {
     return h(DefaultTheme.Layout, null, {
       "doc-before": () => h(CopyPage),
     });
+  },
+  /**
+   * 全局注册 <Changelog />，让 website/changelog.md 能直接挂载它。
+   * 只注册这一个组件：它的数据源是构建期 JSON，写成 md 会被全站搜索索引
+   * 冲成噪音（详见 Changelog.vue 顶部说明）。
+   */
+  enhanceApp({ app }) {
+    app.component("Changelog", Changelog);
   },
 } satisfies Theme;

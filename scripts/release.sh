@@ -23,11 +23,18 @@
 #   → git add vendor/ripgrep/<新版本>/ 提交入库（可选再用 --upload-ripgrep 同步一份到服务器作为团队备用源）。
 #
 # Changelog + Git Tag：bump 版本号之后、构建之前，脚本会自动
-#   ① 跑 scripts/generate-changelog.ts 从 git 历史生成 CHANGELOG.md（文本事实源，仓库根，
-#      累积追踪）+ CHANGELOG.html（科技风网页，可直接点开，含 commit body 细节/分组/搜索）
+#   ① 跑 scripts/generate-changelog.ts 从 git 历史生成三份产物：
+#      · CHANGELOG.md                          文本事实源（仓库根，累积追踪）
+#      · website/.vitepress/data/changelog.json 官网 /changelog 页的数据源
+#      · CHANGELOG.html                        跳转页 → /changelog（保住散落各处的老链接）
 #   ② 打 annotated tag vX.Y.Z 到当前 HEAD
 #   --upload 时额外把 CHANGELOG.md + CHANGELOG.html 传到服务器顶层、并在上传成功后 push tag。
 #   两者失败都不阻断发布（非致命 warn）；tag/changelog 幂等，--no-bump 复用版本安全。
+#
+#   ⚠ 用户可见的更新日志现在是**官网 /changelog 页**，它是站点构建期快照 ——
+#   本脚本只生成数据，不发布站点。发完版必须按 CLAUDE.md 铁律第 5.5 步跑
+#   ./scripts/website-deploy.sh，否则线上 /changelog 还停在上一个版本。
+#   website-deploy.sh 开头有版本一致性检查会 warn 提醒这件事。
 #
 # 版本号 bump 规则：release.sh 默认自增 patch 版本号一次。若你已经先跑过 make build
 #   （它内部也会 bump），再直接 release 会导致版本号 +2；此时加 --no-bump 复用现有版本号。
@@ -411,7 +418,9 @@ chmod +x "$RELEASE_DIR/install.sh"
 echo "$VERSION" > "$RELEASE_DIR/latest.txt"
 
 # 把仓库根 CHANGELOG.md + CHANGELOG.html 纳入发布产物（服务器顶层），让 file://$RELEASE_DIR
-# 本地验证与真实上传走同一套相对路径逻辑。MD 是文本事实源，HTML 是可直接点开的科技风页面。
+# 本地验证与真实上传走同一套相对路径逻辑。MD 是文本事实源；HTML 现在只是跳转页
+# （→ 官网 /changelog），保留它是因为老链接散落在 README / install.sh 收尾提示 /
+# 用户终端历史输出里，直接删就是一堆 404。
 if [ -f "$ROOT/CHANGELOG.md" ]; then
     cp "$ROOT/CHANGELOG.md" "$RELEASE_DIR/CHANGELOG.md"
 fi
@@ -449,7 +458,7 @@ if [ "$DO_UPLOAD" = true ]; then
         run_scp "$RELEASE_DIR/CHANGELOG.md" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_PATH}/CHANGELOG.md"
     fi
     if [ -f "$RELEASE_DIR/CHANGELOG.html" ]; then
-        info "上传 CHANGELOG.html ..."
+        info "上传 CHANGELOG.html（跳转页 → /changelog）..."
         run_scp "$RELEASE_DIR/CHANGELOG.html" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_PATH}/CHANGELOG.html"
     fi
 
@@ -483,8 +492,12 @@ done"
     ok "发布完成！安装命令："
     echo "    curl -fsSL http://${DEPLOY_SSH_HOST}/releases/sid-code/install.sh | bash"
     echo ""
-    echo "  📄 Changelog（网页）: http://${DEPLOY_SSH_HOST}/releases/sid-code/CHANGELOG.html"
-    echo "  📄 Changelog（文本）: http://${DEPLOY_SSH_HOST}/releases/sid-code/CHANGELOG.md"
+    echo "  📄 更新日志（官网）: http://${DEPLOY_SSH_HOST}/changelog"
+    echo "  📄 更新日志（文本）: http://${DEPLOY_SSH_HOST}/releases/sid-code/CHANGELOG.md"
+    echo ""
+    echo "  ⚠️  官网 /changelog 是站点构建期快照，本次发布还没上线到站点。"
+    echo "      按铁律补完 bump 提交后，再跑一次："
+    echo "          ./scripts/website-deploy.sh"
 else
     echo ""
     echo "  提示：加 --upload 参数可上传到服务器（凭据读自 scripts/deploy.env）"

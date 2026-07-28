@@ -137,6 +137,21 @@ smoke_test() {
         warn "install.sh 返回 $code —— 用户安装链路可能已断，立即检查 nginx 的 /releases/ alias！"
         rc=1
     fi
+
+    # /changelog：更新日志已并入站点（不再是外链），它现在和首页一样是用户直达页面。
+    # 校验渲染出了真内容而不是空壳——组件挂载失败/数据缺失时页面结构仍在，只有
+    # 内容为空，光看状态码是 200 看不出来。用同款「先收响应体再匹配」写法（见上方注释）。
+    local cl_body="" cl_rc=0
+    cl_body="$(curl -fsS --max-time 15 "http://${DEPLOY_SSH_HOST}/changelog")" || cl_rc=$?
+    if [ "$cl_rc" -ne 0 ]; then
+        warn "/changelog 请求失败（curl exit ${cl_rc}）"
+        rc=1
+    elif printf '%s' "$cl_body" | grep -q "cl-version"; then
+        ok "/changelog 200 且渲染出版本条目"
+    else
+        warn "/changelog 拿到响应但没有版本条目（长度 ${#cl_body}）—— 检查 changelog.json 是否随构建打进产物"
+        rc=1
+    fi
     return $rc
 }
 
@@ -178,6 +193,30 @@ if [ "$DO_DRY_RUN" != true ]; then
     [ -f "$ENV_FILE" ] || fail "缺少 ${ENV_FILE}（见 deploy.env.example 模板）"
     require_remote
 fi
+
+# ── /changelog 数据新鲜度检查（只 warn，不阻断）──
+#
+# /changelog 由 theme/Changelog.vue 读 website/.vitepress/data/changelog.json 渲染，
+# 那份 JSON 只由 release.sh 在发版时生成。两条流水线各自独立（文档改动远比发版频繁），
+# 所以存在一个真实的漂移窗口：发完版忘了重发站点 → 线上 /changelog 停在上一个版本。
+# 这里把「忘了」这件事变成可见信号。
+#
+# ⚠ 刻意**不**在这里重跑 generate-changelog.ts：那会把当前 HEAD 上尚未发版的提交
+# 归到一个已发布的版本号名下，归属直接错乱。只有 release.sh 有资格生成这份数据。
+CHANGELOG_DATA="$WEBSITE_DIR/.vitepress/data/changelog.json"
+PKG_VER="$(bun --print "require('$ROOT/package.json').version" 2>/dev/null || echo "")"
+if [ ! -f "$CHANGELOG_DATA" ]; then
+    warn "缺少 ${CHANGELOG_DATA#"$ROOT/"} —— /changelog 页会构建失败。先跑一次 release.sh，或从 git 恢复该文件"
+elif [ -n "$PKG_VER" ]; then
+    DATA_VER="$(bun --print "require('$CHANGELOG_DATA').currentVersion" 2>/dev/null || echo "")"
+    if [ -n "$DATA_VER" ] && [ "$DATA_VER" != "$PKG_VER" ]; then
+        warn "更新日志数据是 v${DATA_VER}，但当前版本是 v${PKG_VER} —— /changelog 将缺少最新版本"
+        warn "  若刚发过版：先跑 ./scripts/release.sh 生成数据并提交，再回来发站点"
+    else
+        ok "更新日志数据与版本一致（v${PKG_VER}）"
+    fi
+fi
+
 ok "前置校验通过"
 
 # ─── 2. 依赖 ───
@@ -294,6 +333,6 @@ echo ""
 ok "文档站发布完成（版本 ${VER}）"
 echo "    🌐 站点：      http://${DEPLOY_SSH_HOST}/"
 echo "    📘 快速开始：  http://${DEPLOY_SSH_HOST}/start/"
-echo "    📄 Changelog： http://${DEPLOY_SSH_HOST}/releases/sid-code/CHANGELOG.html"
+echo "    📄 更新日志：  http://${DEPLOY_SSH_HOST}/changelog"
 echo ""
 echo "    回滚：./scripts/website-deploy.sh --rollback"
