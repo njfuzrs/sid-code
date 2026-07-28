@@ -113,6 +113,7 @@ export default defineConfig({
             { text: "配额与成本控制", link: "/team/quota" },
             { text: "企业 policy 与安全边界", link: "/team/policy" },
             { text: "轨迹采集与可观测", link: "/team/observability" },
+            { text: "定时与无人值守", link: "/team/scheduled" },
             { text: "从 Claude Code 迁移", link: "/team/migrate" },
           ],
         },
