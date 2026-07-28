@@ -1537,6 +1537,19 @@ export async function main(): Promise<void> {
     // zodSchema→JSON Schema 转换），文档因此与模型看到的内容同源。
     // 不传 AssembleOptions（无 deny/mode 裁剪）= 内置工具全集，与文档语义一致。
     if (cliArgs.dumpTools) {
+      // §5.2：MCP 资源工具（ListMcpResources / ReadMcpResource）此刻尚未注册——
+      // 它们的真实注册在下方 cli.ts:1715，且受 `if (mcpManager)` 条件包裹（仅配了 MCP
+      // 才注册）。而 dump 在此处（1539）早于注册点且紧接着 exit(0)，导致 dump 产物永远
+      // 缺这两个内置工具，ref/tools.md 随之漏项。
+      // 这里补注册带 noop getter 的实例：dump 只取 definitions()（走 zodSchema→JSON Schema，
+      // 不调 execute），dump 后立即 exit，不进正常启动路径、不污染运行时工具集。
+      // 若 mcpManager 已存在并已注册（防御性，当前时序不会发生），先到先得会跳过。
+      if (!toolRegistry.get("ListMcpResources")) {
+        const { ListMcpResourcesTool, ReadMcpResourceTool } = await import("./tool/mcp-resources.ts");
+        const noop: () => undefined = () => undefined;
+        toolRegistry.register(new ListMcpResourcesTool(noop));
+        toolRegistry.register(new ReadMcpResourceTool(noop));
+      }
       const json = JSON.stringify(toolRegistry.definitions(), null, 2) + "\n";
       // 先等 stdout 排空再 exit：产物约 80KB，管道下（`--dump-tools | jq`）单次 write
       // 会遇背压，裸 process.exit() 会截断 JSON——生成器拿到半截 JSON 会解析失败。

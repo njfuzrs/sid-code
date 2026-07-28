@@ -17,7 +17,6 @@
  *
  * 选择方式：
  *   settings.json → outputStyle: "concise"（匹配 name 字段）
- *   或 CLI --output-style concise
  *
  * 加载优先级：项目级 > 用户级（同名时项目覆盖全局）。
  */

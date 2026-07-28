@@ -354,6 +354,13 @@ const PASSTHROUGH_FIELDS: Array<[string, string]> = [
   ["pluginDirs", "array"],
   ["showLineNumbers", "boolean"],
   ["goal", "object"],
+  // §5.1 补录：三字段均在 Config 接口声明 + 有消费点 + SettingsSchema 未声明（靠 .passthrough() 生效），
+  // 用户写进 settings.json 能生效，此前漏进白名单导致 ref/settings.md 不含它们。
+  // 证据：config.ts:451(enableSandbox)+cli.ts:1808 消费；config.ts:144(outputStyle)+app.ts:2225/2689 消费；
+  // config.ts:449(speculativeClassifier)+tool-executor.ts:770/checker.ts:1148 消费。
+  ["enableSandbox", "boolean"],
+  ["outputStyle", "string"],
+  ["speculativeClassifier", "boolean"],
 ];
 
 /**

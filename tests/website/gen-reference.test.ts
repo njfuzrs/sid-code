@@ -358,8 +358,9 @@ describe("叙述覆盖度门禁 · 匹配器准确度（判宽=门禁失效，�
       true,
     );
 
-    // 且 /permissions 当前实际就是未覆盖——哪天补了文档，这条会提醒同步下调基线
-    expect(checkNarrativeCoverage(["permissions"]).uncovered).toEqual(["permissions"]);
+    // /permissions 已被 use/permissions.md:172 覆盖（commit 1ad35f71 补全 §2.2 八项后下调基线）。
+    // 若将来该覆盖又被移除，这条会失败提醒恢复。
+    expect(checkNarrativeCoverage(["permissions"]).uncovered).toEqual([]);
   });
 
   test("清单式代码块不算覆盖（防贴一段 /help 输出就'覆盖'全部命令）", () => {

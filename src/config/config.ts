@@ -137,7 +137,7 @@ export interface Config {
   /** 输出语言偏好: "zh" 中文优先（默认）, "en" 英文优先。不设置时系统提示词默认中文 */
   language?: "zh" | "en";
   /**
-   * G12：输出风格名（settings.json outputStyle / CLI --output-style）。
+   * G12：输出风格名（settings.json outputStyle）。
    * 匹配 .sid-code/output-styles/ 或 ~/.sid-code/output-styles/ 下 .md 文件的 name 字段。
    * 不设置时不注入任何风格约束。
    */
