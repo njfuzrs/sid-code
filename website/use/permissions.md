@@ -227,6 +227,95 @@ allow: ["Bash(*)"] + ask: ["Bash(rm *)"]
 `/add-dir` 是**你在终端里亲手输入的**，属于显式人工授权——与「项目配置自动扩大目录白名单」那种静默扩大攻击面的行为性质不同。后者是被安全层禁止的。
 :::
 
+## macOS Seatbelt 沙箱：操作系统级隔离
+
+上面讲的规则层、危险命令层、敏感文件层都是**应用内的软约束**——它们拦的是「模型想让 sid-code 做什么」。
+但 bash 工具真正执行命令时，命令本身能碰什么文件、能不能联网，应用层是管不到的。
+macOS 上 sid-code 还有一道**操作系统级**的硬隔离：[Seatbelt 沙箱](https://developer.apple.com/library/archive/technotes/tn2067/)（`src/permission/sandbox.ts`）。
+
+### 它和前面几层是什么关系
+
+| 层 | 拦什么 | 谁执行 |
+| --- | --- | --- |
+| 权限规则（allow/deny/ask） | 模型想调哪个工具 | sid-code 应用层 |
+| 危险命令拦截 | 命令文本本身危险（`rm -rf /`） | sid-code 应用层 |
+| 敏感文件保护 | 命令碰 `.env`/`*.pem` 等 | sid-code 应用层 |
+| **Seatbelt 沙箱** | **命令执行时能碰哪些文件/网络** | **macOS 内核** |
+
+前三层是「调不调用」的决策，沙箱是「调用之后、命令真正执行时」的操作系统兜底。即使前三层全放行了，
+沙箱仍能在内核级挡住命令越界读写。**它只在 macOS 上生效**（`process.platform === "darwin"`，
+`sandbox.ts:57`），其他平台降级为无沙箱。
+
+### 沙箱 profile 长什么样
+
+沙箱用 macOS 自带的 `sandbox-exec` 生成一份 Seatbelt profile（`sandbox.ts:81-140`），
+把每条 bash 命令包进 `sandbox-exec -p '<profile>' /bin/sh -c '<command>'`。profile 默认
+`(deny default)`（默认全拒）后逐项放行，允许/禁止的路径：
+
+| 类别 | profile 规则 | 说明 |
+| --- | --- | --- |
+| 工作目录 | 允许读写 `cwd` 子树 | 这是你让它改的代码所在 |
+| 系统工具链 | 只读 `/usr/lib` `/usr/bin` `/usr/local` `/Library/Developer` `/Applications/Xcode.app` | 跑编译/解释器需要 |
+| 临时目录 | 读写 `/tmp` `/private/tmp` | 命令临时文件 |
+| 家目录工具 | 只读 `~/.bun` `~/.nvm` `~/.npm` `~/.cargo` | 运行包管理器需要 |
+| **敏感目录** | **显式 deny** `~/.ssh` `~/.gnupg` `~/.sid-code` | SSH 密钥、GPG、sid-code 自身配置与轨迹 |
+| 网络 | 默认只放行 `localhost`（`allowedHosts`） | 防 bash 命令外发数据 |
+
+`~/.ssh`、`~/.gnupg`、`~/.sid-code` 是**显式 deny** 的——即使权限规则放行了 bash，命令也
+碰不到这三处。这层防御不依赖应用层判断，是内核强制的。
+
+### 怎么开
+
+settings.json 的 `enableSandbox` 字段（`src/config/config.ts:451`，CLI 消费在 `src/cli.ts:1808`）：
+
+```json
+{
+  "enableSandbox": true,
+  "sandbox": {
+    "autoAllowBashIfSandboxed": true,
+    "allowedWritePaths": [],
+    "allowedReadPaths": [],
+    "allowedHosts": ["localhost"]
+  }
+}
+```
+
+| 字段 | 默认 | 作用 |
+| --- | --- | --- |
+| `enableSandbox` | `false` | 总开关，开=bash 命令进沙箱 |
+| `autoAllowBashIfSandboxed` | `true` | 沙箱启用时自动放行 bash（减少弹窗——反正内核已兜底） |
+| `allowedWritePaths` | `[]` | 额外允许写入的目录 |
+| `allowedReadPaths` | `[]` | 额外允许读取的目录 |
+| `allowedHosts` | `["localhost"]` | 网络白名单主机 |
+
+沙箱启用后 `autoAllowBashIfSandboxed` 默认为 true：因为命令执行被内核限制在白名单路径内，
+应用层再逐条确认 bash 是冗余的——这是「用硬隔离换少打扰」的取舍。想保留逐条确认就设 `false`。
+
+### 能防什么 / 不能防什么
+
+**能防**（内核级，应用层绕不过）：
+
+- 命令读写工作目录外的文件（除非在 `allowedWritePaths`/`allowedReadPaths` 里）
+- 命令读 `~/.ssh`、`~/.gnupg`、`~/.sid-code`
+- 命令发网络请求到 `allowedHosts` 之外的主机
+
+**不能防**（沙箱的边界）：
+
+- **工作目录内的任意操作**——沙箱允许读写整个 `cwd` 子树，所以 `rm -rf .` 在工作目录内
+  沙箱是放行的（这要靠前面的危险命令层拦）
+- **非 macOS 平台**——Linux / Windows 上 `isEnabled()` 返回 false，沙箱不生效（`sandbox.ts:57`）
+- **非 bash 工具的写操作**——沙箱只包 bash 命令；`edit`/`write` 工具走的是应用层路径校验，
+  不经 sandbox-exec
+
+所以沙箱是「bash 命令的操作系统级兜底」，不是「全工具的隔离」。和前面的应用层规则是
+**互补**而非替代：应用层管「该不该调」，沙箱管「调了之后内核允不允许」。
+
+::: warning 沙箱违规不是错误，是告警
+沙箱违规（命令尝试碰被 deny 的路径/主机）会记录到 `violations` 列表并 warn
+（`sandbox.ts:71-75`），**不一定会让命令失败**——取决于 sandbox-exec 的处理。
+看日志里 `[SANDBOX]` 行能知道哪条命令撞了边界。
+:::
+
 ## 哪些操作任何模式都拦得住
 
 这是和权限规则**平行的一层**，位置在规则之前，所以 `allow` 规则和 `always-allow`

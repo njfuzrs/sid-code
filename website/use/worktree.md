@@ -182,6 +182,147 @@ pnpm install           # 独立安装
 worktree 隔离有实际开销（创建 + 磁盘），所以只在 agent 真的会并行改文件时才值得。
 纯读的探索任务不需要。
 
+### 从 PR 继续工作：`--from-pr`
+
+不是每次都从主干切 worktree——有时你想**接着一个已存在的 PR 往下做**。
+`--from-pr <number>` 从 PR 恢复会话上下文（`src/session/from-pr.ts`，对齐 claude-code）：
+
+```bash
+sid-code --from-pr 42
+```
+
+它做两件事之一，取决于 PR 描述里有没有内嵌会话 id：
+
+| PR 描述情况 | 行为 |
+| --- | --- |
+| 内嵌了 `sid-session: <id>` / `session-id: <id>` 之类标记 | **恢复原会话**——转到正常 resume 流程，把那次做 PR 时的工作上下文原样接回来 |
+| 没有内嵌 id | **注入 PR 上下文到新会话**——把 PR 的标题、描述、改动文件列表拼成一段初始上下文，让模型带着"这个 PR 改了什么"的背景开始 |
+
+注入的上下文长这样（`from-pr.ts` 的 `buildPrContextText`）：
+
+```text
+我正在基于 PR #42 继续工作，以下是该 PR 的上下文：
+
+标题：修复 add 函数的边界条件
+分支：fix/add → main
+
+描述：
+<PR body 原文>
+
+改动文件（3）：
+  - src/calc.ts
+  - tests/calc.test.ts
+  - README.md
+```
+
+依赖 `gh` CLI（`gh pr view`）。`gh` 不可用 / 未登录 / PR 不存在时**报错降级而非静默吞**
+——PR 恢复失败用户需要知道为什么。常见错误：
+
+```text
+错误: --from-pr 需要一个 PR 编号（数字），收到: "abc"
+错误: gh pr view 42 失败：未找到 gh CLI。请先安装 GitHub CLI...
+```
+
+配合 worktree 用最顺——基于 PR 开一个隔离工作副本：
+
+```bash
+sid-code --from-pr 42 --worktree=pr-42-fix
+```
+
+这样新会话带着 PR 上下文开始，改动又隔离在 `worktree-pr-42-fix` 里，不碰主工作区。
+
+## Git 集成与提交归因
+
+用 sid-code 提交代码时，commit message 和 PR 描述默认会带一行归因尾注，
+标明这次改动是 sid-code 协作的产物。这是**默认开启**的，可以关、可以改。
+
+### 归因长什么样
+
+| 位置 | 默认尾注 | 配置字段 |
+| --- | --- | --- |
+| commit message 末尾 | `Co-Authored-By: sid-code <noreply@sid-code.cc>` | `git.commitAttribution` |
+| PR 描述末尾 | `🤖 Generated with sid-code` | `git.prAttribution` |
+
+commit 归因与正文之间空一行（vim `Co-Authored-By` 惯例）。这两条是**独立可配**的——
+关掉 commit 归因不影响 PR 归因，反之亦然（`src/tool/git-attribution.ts`）。
+
+### 怎么配 / 怎么关
+
+settings.json 的 `git` 字段（`src/config/config.ts:659-672`）：
+
+```json
+{
+  "git": {
+    "commitAttribution": {
+      "enabled": true,
+      "text": "Co-Authored-By: sid-code <noreply@sid-code.cc>"
+    },
+    "prAttribution": {
+      "enabled": true,
+      "text": "🤖 Generated with sid-code"
+    }
+  }
+}
+```
+
+| 字段 | 默认 | 作用 |
+| --- | --- | --- |
+| `commitAttribution.enabled` | `true` | 是否给 commit 加归因 |
+| `commitAttribution.text` | `Co-Authored-By: sid-code <noreply@sid-code.cc>` | 自定义归因文本（空串回退默认） |
+| `prAttribution.enabled` | `true` | 是否给 PR 加归因 |
+| `prAttribution.text` | `🤖 Generated with sid-code` | 自定义 PR 归因文本 |
+
+关掉某一类：
+
+```json
+{ "git": { "commitAttribution": { "enabled": false } } }
+```
+
+`enabled: false` 时对应路径完全不出现归因文字（不是"加个空行"，是 prompt 里压根不提）。
+`text` 设成空串或纯空白会回退到默认值，不会生成一个没有内容的尾注。
+
+### 归因什么时候触发
+
+**只有 sid-code 执行的 git 操作才加归因**，不是所有 git commit 都加：
+
+- `/commit`、`/commit-push-pr`、`/pr-workflow`、`/pr` 这些 skill 的 prompt 里会动态注入归因指令，
+  模型写 commit/PR 时按指令追加——这是主路径
+- worktree 内若装了 `prepare-commit-msg` hook（`worktree.commitAttribution: true`），
+  你手动 `git commit` 也会触发
+
+所以**非 worktree 的普通仓库里，你绕过 sid-code 手动 `git commit` 不会带归因**。
+想让 worktree 里的裸 commit 也带归因，要把上面的 `worktree.commitAttribution` 设 `true`。
+
+### worktree 的 `commitAttribution` 和全局 `git.commitAttribution` 什么关系
+
+容易混，因为名字一样但管的事不同：
+
+| 开关 | 位置 | 默认 | 管什么 |
+| --- | --- | --- | --- |
+| `worktree.commitAttribution` | `worktree` 段 | `false` | **是否装** prepare-commit-msg hook（布尔值） |
+| `git.commitAttribution.enabled` | `git` 段 | `true` | **归因文本**是否启用（装了 hook 后写什么内容） |
+
+关系链（`src/worktree/manager.ts:499-501`）：
+
+```text
+worktree.commitAttribution: true  → 装 prepare-commit-msg hook
+  └─ hook 内读 git.commitAttribution
+       ├─ enabled: false → 跳过（hook 装了但不写内容）
+       └─ enabled: true  → 写 text（或默认值）进 commit message
+```
+
+所以：
+
+- 想全局关归因 → 设 `git.commitAttribution.enabled: false`（所有路径都关）
+- 只想关 worktree 的 hook（保留 skill prompt 归因）→ 设 `worktree.commitAttribution: false`
+- 默认状态下 worktree 不装 hook（`false`），但 skill prompt 归因是开的（`git.commitAttribution.enabled` 默认 `true`）
+
+::: tip 自定义归因文本
+想把"sid-code"换成你们团队的名字，改 `text` 字段即可。比如内部规范要求写
+`Co-Authored-By: dev-bot <bot@company.com>`，设成：
+`{ "git": { "commitAttribution": { "text": "Co-Authored-By: dev-bot <bot@company.com>" } } }`。
+:::
+
 ## 常见问题
 
 **worktree 里跑测试报 `module not found`，主仓好的。**

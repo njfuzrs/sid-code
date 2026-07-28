@@ -256,6 +256,40 @@ sid-code agents | grep 你的agent名
 给它配 `isolation`，每个子代理拿一个独立 git worktree，互不冲突。
 见[Worktree 隔离](/use/worktree)。
 
+## Agent Teams：更重的多代理协作形态（实验中）
+
+子代理是「派一个出去干一件活」。当你有一件**能拆成多个独立子任务**的复杂工作
+（比如 A 改前端、B 改后端、C 写测试），sid-code 还有一个更重的形态——**Agent Teams**：
+一次拉起多个子代理组成团队，各自在独立 worktree 里并行干，成员之间能互相发消息，
+最后汇总结果给你。
+
+它和多个并行 `sub_agent` 的区别：
+
+| | 多个并行 `sub_agent` | Agent Teams |
+| --- | --- | --- |
+| 编排 | 你在 prompt 里手动拆 | 声明成员 + 任务，框架自动调度 |
+| 通信 | 各干各的，互不知情 | 成员间能 `team_message` 通信 |
+| 依赖 | 无 | 支持 `dependsOn`（A 完成后 B 才开始） |
+| 共享任务 | 无 | `shared_tasks` 池，谁空谁认领 |
+| 隔离 | 按需配 `isolation` | 默认每个成员独立 worktree |
+
+**它是实验特性，默认关闭**。Teams 会并发拉起多个子代理、各开 worktree、跑满 15 分钟硬超时——
+成本和副作用都远大于单个 `sub_agent`，所以需要你显式 opt-in：
+
+```bash
+SID_ENABLE_AGENT_TEAMS=1 sid-code
+```
+
+没开时，`team_create` 工具仍然注册（保持可发现性），但调用会直接返回提示让你去开开关，
+不会真的起团队。关闭时的替代方案就是上面讲的**多个并行的 `sub_agent` 调用**——同样能并发，
+且成本可控。
+
+::: tip 什么时候值得用 Teams
+当你能明确把工作拆成 3+ 个**互相独立或只有单向依赖**的子任务，且每个都会改文件、
+需要 worktree 隔离时。如果只是「搜几个地方」，多个 `sub_agent` 就够了，Teams 的编排
+开销不划算。
+:::
+
 ## 相关
 
 - [成本与用量](/use/cost) —— 分级模型到底省了多少，怎么验证

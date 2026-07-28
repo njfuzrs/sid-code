@@ -109,6 +109,49 @@ CLAUDE.md 不能靠 `@~/.ssh/id_rsa` 把你的私钥读进上下文。未批准�
 
 想看它现在占多少上下文，`/context` 里有独立的"记忆/CLAUDE.md"一项。
 
+### 输出风格：教它怎么说话
+
+CLAUDE.md 管「做什么、不做什么」，输出风格管「怎么说」——回复长短、用不用 markdown、
+语气正式还是口语。放一个 `.md` 文件到 `.sid-code/output-styles/`（项目级）或
+`~/.sid-code/output-styles/`（用户级），内容会作为系统提示词注入。
+
+一个风格文件长这样：
+
+```markdown
+---
+name: concise
+description: 简洁风格，每次回复不超过 3 句话
+---
+
+你是一个极简风格的助手。
+- 每次回复不超过 3 句话
+- 不要使用 markdown 标题
+- 用短句
+```
+
+选中它：
+
+```json
+{
+  "outputStyle": "concise"
+}
+```
+
+`outputStyle` 匹配的是文件 frontmatter 里的 `name` 字段（没写 `name` 就用文件名）。
+**项目级覆盖用户级**——同名时项目里的那份生效，和 CLAUDE.md 的层级方向一致。
+
+几个行为要知道：
+
+- **注入位置是系统提示词**，和 CLAUDE.md 同层。所以它**每次请求都发一遍**，写得越长越贵——
+  风格文件该写"约束"而不是"背景知识"
+- **会话重建时刷新**——改了 `settings.outputStyle` 或风格文件后，下一轮 LLM 调用就用新的，
+  不用重开会话
+- **风格文件可以只有正文没有 frontmatter**——这时 `name` 取文件名，`description` 为空，
+  一样能用，只是 `/` 菜单里展示得朴素些
+
+适合放什么：固定回复格式（commit message 模板、API 响应风格）、语气约束（中文优先、
+不用 emoji）、结构要求（先结论后展开、列表代替散文）。不适合放业务逻辑——那是 CLAUDE.md 的活。
+
 ### 记忆：模型自己攒的东西
 
 CLAUDE.md 是你手写的，记忆是模型用 `save_memory` 存的，跨会话可用。四类封闭分类：

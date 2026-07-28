@@ -214,6 +214,101 @@ sid-code -p '分析 calc.ts。只输出 JSON，形如 {"language":"...","functio
 `--input-format stream-json` 从 stdin 逐条读消息，配合 `--output-format stream-json`
 就是双向流——这是把 sid-code 当 SDK 嵌进自己程序的路子。
 
+## 作为可编程运行时：SDK
+
+`-p` 是「发一条、收一个结果」的单轮模式。但有些场景需要**多轮编程式对话**——
+外部程序持续注入消息、中途打断、动态切模型、甚至接管权限确认。sid-code 的
+`src/sdk/` 就是为此设计的可编程运行时入口。
+
+### 三层架构
+
+`src/sdk/index.ts` 自述为三层（把 sid-code 从「交互式 CLI」升级为「可编程的 Agent 运行时」，
+外部调用者通过子进程 spawn + NDJSON 协议通信）：
+
+| 层 | 职责 | 关键模块 |
+| --- | --- | --- |
+| 类型定义层 | Schema-First 的全部消息/控制协议类型 | `schemas.ts` / `control-schemas.ts` / `types.ts` |
+| 会话引擎层 | 无头编排、查询驱动 | `query-engine.ts`（`SDKQueryEngine`）/ `headless-runner.ts` |
+| 传输协议层 | 双向流式通信 | `structured-io.ts`（`StructuredIO`）/ `ndjson.ts` |
+
+外部程序两条接入路径：
+
+1. **spawn 子进程 + `--input-format stream-json --output-format stream-json`**——
+   最常用，跨语言（Python/Go 都能用），靠 NDJSON 双向流通信
+2. **import SDK 模块**（Bun/Node 程序）——拿到 `SDKQueryEngine` / `StructuredIO` 等
+   原语自己编排，灵活但要自己管进程
+
+### 双向流协议：消息怎么来回
+
+`--input-format stream-json` 让 sid-code 从 **stdin** 逐条读 NDJSON 消息，
+`--output-format stream-json` 把 sid-code 的产出写到 **stdout**。两者**共用同一个 NDJSON 通道**
+（单通道全序，避免跨通道时序问题，`control-schemas.ts:7`）。这是和单向 `-p` 的本质区别：
+`-p` 只能发一条收一个结果，双向流能持续多轮交互。
+
+数据消息（user/assistant/result）与控制消息（control_request/control_response）**混在同一条流里**，
+靠 `type` 字段区分。控制协议（`control-schemas.ts`）覆盖这些请求类型：
+
+| 控制请求 | 干什么 | 谁发起 |
+| --- | --- | --- |
+| `initialize` | 握手：注入 system_prompt / json_schema / max_turns / max_budget | 外部程序 → sid-code |
+| `interrupt` | 中断当前轮 | 外部程序 → sid-code |
+| `can_use_tool` | **权限请求**：sid-code 想调工具时问外部程序让不让 | sid-code → 外部程序 |
+| `set_model` | 运行时切模型 | 外部程序 → sid-code |
+| `get_context_usage` | 查上下文占用 | 外部程序 → sid-code |
+| `mcp_message` | MCP 跨进程消息桥接 | 双向 |
+
+控制请求带 `request_id`，响应（`control_response` 的 `success` / `error`）按 id 配对——
+这是标准的 request-response 通道，与数据消息的全序流复用一条 stdin/stdout。
+
+### 权限外部接管：`can_use_tool`
+
+这是 SDK 模式最独特的能力。`-p` 下权限只能靠预配 allow 规则或 `--dangerously-skip-permissions`，
+**没法在运行时由外部程序逐条决策**。SDK 模式可以：sid-code 每次要调工具前，发一条
+`can_use_tool` 控制请求（含 `tool_name` / `input` / `tool_use_id`），外部程序收到后回
+`allow` / `deny` / `always_allow`（`permission-bridge.ts` 的 `createSDKCanUseTool`）。
+
+这让外部程序能实现「按工具内容动态放行」——比如允许读文件但拦截写、
+允许跑测试但拦截 `git push`，且这些策略由外部程序自己定，不靠 sid-code 的配置。
+
+### 一个多轮交互的消息流示例
+
+外部程序 spawn sid-code 后，典型的多轮消息往返（混在一条 NDJSON 流里）：
+
+```text
+[外部 → sid-code]  control_request: initialize（注入 system_prompt、max_turns=10）
+[ sid-code → 外部] control_response: success
+[外部 → sid-code]  user 消息（第一条 prompt）
+[ sid-code → 外部] assistant 消息（含 thinking + text 块）
+[ sid-code → 外部] control_request: can_use_tool（想调 bash 跑 npm test）
+[外部 → sid-code] control_response: allow
+[ sid-code → 外部] assistant 消息（工具结果 + 继续推理）
+[ sid-code → 外部] result: success（这一轮的 total_cost_usd）
+[外部 → sid-code]  user 消息（第二轮 prompt，复用同一会话上下文）
+[ sid-code → 外部] assistant 消息
+[ sid-code → 外部] control_request: can_use_tool（想写文件）
+[外部 → sid-code] control_response: deny（外部程序按策略拒绝）
+[ sid-code → 外部] assistant 消息（模型收到拒绝后改路子）
+...
+```
+
+每一行都是一条 NDJSON。注意 `result` 只在**每轮结束**时出现，含 `total_cost_usd`——
+多轮场景里每轮都有一个 result，不是只有最后才有。
+
+### SDK 能做而 `-p` 做不到的
+
+| 能力 | `-p` | SDK 双向流 |
+| --- | --- | --- |
+| 多轮编程式对话（复用上下文） | ❌ 一发一收 | ✅ 持续注入 |
+| 运行时权限逐条决策 | ❌ 只能预配 allow | ✅ `can_use_tool` 外部接管 |
+| 中途打断当前轮 | ❌（杀进程） | ✅ `interrupt` 控制请求 |
+| 运行时切模型 | ❌ 要重启 | ✅ `set_model` |
+| 查询上下文占用 | ❌ | ✅ `get_context_usage` |
+| MCP 跨进程桥接 | ❌ | ✅ `mcp_message` |
+
+代价是：外部程序要自己管 NDJSON 解析、request_id 配对、进程生命周期。
+想最快上手，参考 `src/sdk/` 里的模块导出——`SDKQueryEngine` 和 `StructuredIO`
+是两个主要编排原语。
+
 ## CI 里常用的参数
 
 | 参数 | 作用 |

@@ -112,6 +112,23 @@ CI 里要用项目级扩展，得显式打开信任——细节见 [Skill](/exte
 插件是**分发容器**，Skill 是**内容**。一个插件里可以装 Skill、命令、Hook、MCP 配置。
 自己用写 Skill 就够；要发给团队十个人用，打成插件——他们一个 `--plugin-dir` 全拿到。
 
+### 注入外部参考文档：`/claude-api`
+
+写代码时想让模型基于最新 API 规范（而不是它训练数据里可能滞后的版本），
+用 `/claude-api` 把 Anthropic 官方 API 文档注入当前对话上下文
+（`src/command/commands/claude-api/claude-api.ts`，文档编译期内联进二进制）：
+
+```text
+/claude-api              列出可加载的参考子文档
+/claude-api api          注入核心 API（content blocks / tool use / 扩展思考 / prompt caching）
+/claude-api messages     注入 Messages API 流式 SSE 状态机
+/claude-api all          注入全部
+```
+
+注入后，可直接让模型基于这份文档帮你写或审 Anthropic API 相关代码——
+它会以注入文档为准，而非自身训练数据。**CC 的 `/claude-api` 在导入 anthropic SDK
+时自动触发，sid-code 做成显式命令，语义等价。**
+
 ### 想同时用好几个，会冲突吗
 
 会，且有明确的优先级。同名时：**managed（企业下发）> 用户级 > 项目级**，

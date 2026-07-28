@@ -181,6 +181,67 @@ mcp__fetch-demo__echo
 }
 ```
 
+## MCP 的三原语：Tools / Prompts / Resources
+
+MCP 协议有三类原语，sid-code 全部支持。上面讲的是 Tools——最常用的一条腿，但不是唯一一条：
+
+| 原语 | 是什么 | 在 sid-code 里长什么样 |
+| --- | --- | --- |
+| **Tools** | 模型能调的函数 | 延迟加载的 `mcp__<server>__<tool>` 工具，走 `tool_search` 取出 |
+| **Prompts** | server 预置的提示词模板 | 动态转成 `mcp__<server>__<prompt>` 斜杠命令，进 `/` 菜单可补全 |
+| **Resources** | server 暴露的数据（文件、DB 行、配置…） | `ListMcpResources` / `ReadMcpResource` 两个工具，模型自主列举和读取 |
+
+三者的区别在于**谁发起**：Tools 和 Resources 由模型在对话中按需调用，Prompts 由**你**主动 `/` 触发。
+
+### Prompts：server 预置的提示词变成斜杠命令
+
+一个 MCP server 可以声明一组 prompt（带参数的提示词模板）。sid-code 会把每个 prompt 动态注册成一个斜杠命令，命名规则和工具一致：
+
+```text
+mcp__<server 名>__<prompt 名>
+```
+
+接了一个叫 `git` 的 server，它有个 `commit-message` prompt，输入 `/` 就能看到：
+
+```text
+/mcp__git__commit-message
+```
+
+直接跑，prompt 模板渲染后的内容会**作为你的输入提交给模型**——相当于 server 帮你写好了一段提问。带参数的 prompt 两种传法都行：
+
+```text
+/mcp__git__commit-message staged=true        # key=value 形式
+/mcp__git__commit-message true                # 位置参数，按 prompt 声明的参数顺序填
+```
+
+几个要知道的行为：
+
+- **命令列表是动态的**——server 连上才有对应命令，断了就消失，不用重启会话
+- **参数提示**：`/` 菜单里会显示必填 `<param>` 和可选 `[param]`
+- **不是所有 server 都有 prompt**——没有 prompt 的 server 不会产生任何斜杠命令，这是正常的
+
+### Resources：让模型读 server 暴露的数据
+
+Resources 是 server 暴露的数据源——可以是文件、数据库行、配置片段，由 URI 标识（如 `file:///tmp/a.txt`、`db://table/rows`）。模型通过两个工具自主访问：
+
+```text
+ListMcpResources    列出已连接 server 暴露的资源（可按 server 过滤）
+ReadMcpResource     读取指定资源，参数 server + uri
+```
+
+和 Tools 一样，这两个工具也走延迟加载——需要时让模型自己搜。典型用法是你直接说要什么，模型会自己去列、去读：
+
+```text
+看一下 git server 里有哪些资源
+```
+
+模型会调 `ListMcpResources` 列清单，再按需 `ReadMcpResource` 取内容。
+
+两个设计取舍值得知道：
+
+- **文本进上下文，二进制落盘**。文本资源直接读进对话（受 token 上限约束，超长会截断）；二进制资源（图片、PDF 等）不把 base64 灌进上下文，而是落盘到临时文件、返回路径——模型再走 Read 工具的 vision 管道看它
+- **资源内容当数据，不当指令**。Resources 来自外部系统，sid-code 把它当**数据**处理而不是指令执行——这和[权限与人工确认](/use/permissions)的安全语义一致，防止恶意 server 用 resource 内容注入指令
+
 ## 常见问题
 
 ### 接上了，但模型说"没有 mcp 工具"

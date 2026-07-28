@@ -107,6 +107,11 @@ SID_CODE_AUTOCOMPACT_PCT=0.6 sid-code
    探索过程中读的那一堆文件不进主上下文。见[子代理](/extend/subagents)。
 4. **该 `/clear` 就 `/clear`**。任务真做完了，压缩不如清空。
 5. **按需加载工具**。工具定义也占上下文，`toolSearch` 可以让工具 schema 延迟加载。
+6. **不常用的约定存进 Auto Memory，别堆进 CLAUDE.md**。CLAUDE.md 全文每次请求都带，
+   而记忆系统是「**索引进上下文 + 需要时按需 Read**」——只把记忆的标题与摘要常驻
+   （实测每条约几十 token），具体内容等模型判断需要时才读回。所以「常用约定写 CLAUDE.md、
+   不常用但重要的约定让 `save_memory` 存」能让系统提示词体积下来一截，又不丢信息。
+   见[记忆与 CLAUDE.md](/use/memory)。
 
 ### 旁路提问：`/btw`
 
