@@ -91,13 +91,14 @@ description: ${desc}
 
 ${desc}
 
-::: danger 本页由脚本生成，请勿手工编辑
-\`<!-- AUTO-GEN:START -->\` 与 \`<!-- AUTO-GEN:END -->\` 之间的内容由
-\`scripts/docs-gen-reference.ts\` 从源码生成（数据源：${source}），
-手改会在下次生成时被覆盖，且 pre-commit 会先拦住。
-
-需要补充说明请写在标记**之外**——那部分内容会被保留。
-:::
+<!--
+  本页由脚本生成，请勿手工编辑
+  AUTO-GEN:START 与 AUTO-GEN:END 标记之间的内容由
+  scripts/docs-gen-reference.ts 从源码生成（数据源：${source}），
+  手改会在下次生成时被覆盖，且 pre-commit 会先拦住。
+  需要补充说明请写在标记之外——那部分内容会被保留。
+  （此提示写给维护者，HTML 注释不会渲染给终端用户。）
+-->
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 

@@ -445,20 +445,39 @@ describe("参考页生成器 · AUTO-GEN 标记语义（T-3.6c）", () => {
     expect(regenerated).toContain("真内容");
   });
 
-  test("END 标记的定位从 START 之后开始（防命中提示语里的字面标记）", () => {
-    // 各参考页的提示语里**字面**写着 `<!-- AUTO-GEN:START -->` 与 `<!-- AUTO-GEN:END -->`
-    // （给人看的说明），位置都在真标记之前。早期实现用裸 indexOf(END) 命中了提示语里那个，
-    // 拿到比 START 更小的下标，splice 出的文件把提示语后半段和正文一起吃掉了。
-    const src = read("website/ref/tools.md");
-    const proseEnd = src.indexOf(MARKER_END);
-    const realStart = src.indexOf(MARKER_START);
-    expect(proseEnd, "提示语里应有字面 END 标记（本回归的前提）").toBeLessThan(realStart);
+  test("END 标记的定位从 START 之后开始（防命中 START 前的字面标记）", () => {
+    // spliceAutoGen 必须从 START 之后找 END，不能用裸 indexOf(END)：
+    // 早期实现撞过一个 bug——文件里在真 START 标记之前字面出现了 `<!-- AUTO-GEN:END -->`
+    // （历史版本各参考页的「请勿手工编辑」提示语里就给人看地写着这两个标记串），
+    // 裸 indexOf(END) 会命中那个、拿到比 START 更小的下标，splice 出的文件把提示语
+    // 后半段和正文一起吃掉。
+    //
+    // 现在提示语已改为 HTML 注释（不渲染给终端用户），真实页面文件里不再有字面 END 标记；
+    // 但 spliceAutoGen 的实现仍须防这个回归。改用合成输入直接验证被测函数的行为——
+    // 不再依赖真实页面文件必须包含字面标记这个脆弱前提（提示语形式是会变的）。
+    const fake = [
+      "前置说明：这里字面写着 END 标记（给人看的，不是真标记）",
+      MARKER_END,
+      "（这段应被保留，不能被 splice 吃掉）",
+      MARKER_START,
+      "",
+      "旧的自动区内容",
+      "",
+      MARKER_END,
+      "",
+    ].join("\n");
+    // 前提：字面 END 出现在真 START 之前（这正是会触发裸 indexOf bug 的布局）
+    expect(fake.indexOf(MARKER_END), "合成输入里字面 END 须在真 START 之前").toBeLessThan(
+      fake.indexOf(MARKER_START),
+    );
 
-    const out = spliceAutoGen(src, "生成内容标记", "tools.md");
-    // 提示语与正文都还在，且只写入了一处生成内容
-    expect(out).toContain("需要补充说明请写在标记**之外**");
-    expect(out).toContain("# 内置工具");
-    expect(out).toContain("手改会在下次生成时被覆盖");
+    const out = spliceAutoGen(fake, "生成内容标记", "fake.md");
+    // START 前的字面说明须原样保留（没被误当真标记吃掉）
+    expect(out).toContain("前置说明");
+    expect(out).toContain("（这段应被保留");
+    // 旧的自动区内容被覆盖（不残留）
+    expect(out).not.toContain("旧的自动区内容");
+    // 只写入了一处生成内容
     expect((out.match(/生成内容标记/g) ?? []).length).toBe(1);
   });
 
