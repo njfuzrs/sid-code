@@ -774,6 +774,89 @@ describe("后台任务通知（<task-notification>）→ task_notification 历�
     }
   });
 
+  // ─── 回归：快速路径丢弃 tool_result → 工具项永久停在 executing ───
+  //
+  // 真实事故（TUI 末尾残留 `⏺ task_stop`）：任务已全部完成、模型已输出总结，屏幕最后一行
+  // 却挂着一个执行中的 `⏺ task_stop`，误导用户以为后台任务还在跑。
+  //
+  // 根因：ctxMgr.addMessage 角色交替**合并**把 <task-notification> 追加进上一条含 tool_result
+  // 的 user 消息，形成 [tool_result(task_stop 结果), text(通知)] 且带 _meta.origin。
+  // 快速路径无条件 `remaining: null`，把 tool_result 一并丢弃 → task_stop 的 tool_use 配不上
+  // 结果、滞留 pendingToolCalls，最终被「未匹配 pending」兜底逻辑以 executing 态追加到历史末尾。
+  test("回归：_meta 快速路径必须保留同消息的 tool_result（工具不残留 executing）", () => {
+    const msgs: Message[] = [
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "现在关闭后台 dev server 收尾。" },
+          { type: "tool_use", id: "call_stop", name: "task_stop", input: { task_id: "s83gw0mj2" } },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "call_stop", content: '{"status":"killed"}' },
+          { type: "text", text: buildNotification({ taskId: "s83gw0mj2", status: "killed", summary: '命令 "bun run dev" 已被终止' }) },
+        ],
+        _meta: {
+          origin: "task-notification",
+          isMeta: true,
+          notif: [{ taskId: "s83gw0mj2", status: "killed", summary: '命令 "bun run dev" 已被终止' }],
+        },
+      },
+      { role: "assistant", content: [{ type: "text", text: "dev server 已关闭。任务完成。" }] },
+    ];
+    const items = messagesToHistoryItems(msgs);
+
+    // 通知照常折叠成专用项
+    expect(items.filter(i => i.type === "task_notification")).toHaveLength(1);
+
+    // 核心断言：task_stop 已配对为终态，绝不残留 executing
+    const tools = items.flatMap(i => (i.type === "tool_group" ? i.tools : []));
+    expect(tools).toHaveLength(1);
+    expect(tools[0].name).toBe("task_stop");
+    expect(tools[0].status).toBe(ToolCallStatus.Success);
+    expect(tools.some(t => t.status === ToolCallStatus.Executing)).toBe(false);
+
+    // 顺序不变量：工具项必须在最终总结**之前**，而不是被兜底逻辑甩到历史末尾
+    const lastItem = items[items.length - 1];
+    expect(lastItem.type).toBe("assistant");
+  });
+
+  test("回归：正则回退路径同样保留 tool_result", () => {
+    const msgs: Message[] = [
+      { role: "assistant", content: [{ type: "tool_use", id: "c1", name: "task_stop", input: {} }] },
+      {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "c1", content: "ok" },
+          { type: "text", text: buildNotification({ taskId: "t9", status: "killed", summary: "已终止" }) },
+        ],
+        // 旧会话 resume：有 origin 标记但没有 _meta.notif 结构化快照 → 走正则回退
+        _meta: { origin: "task-notification", isMeta: true },
+      },
+    ];
+    const items = messagesToHistoryItems(msgs);
+    const tools = items.flatMap(i => (i.type === "tool_group" ? i.tools : []));
+    expect(tools).toHaveLength(1);
+    expect(tools[0].status).toBe(ToolCallStatus.Success);
+  });
+
+  test("回归：带 origin 标记但无任何可解析通知时，tool_result 不丢", () => {
+    const msgs: Message[] = [
+      { role: "assistant", content: [{ type: "tool_use", id: "c2", name: "bash", input: {} }] },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "c2", content: "done" }],
+        _meta: { origin: "task-notification", isMeta: true },
+      },
+    ];
+    const items = messagesToHistoryItems(msgs);
+    const tools = items.flatMap(i => (i.type === "tool_group" ? i.tools : []));
+    expect(tools).toHaveLength(1);
+    expect(tools[0].status).toBe(ToolCallStatus.Success);
+  });
+
   // ─── 根治「点4」回归守卫：结构化优先 + 字面量不破坏 ───
   // 核心改造：query/loop.ts 注入时把结构化快照放进 _meta.notif，TUI 优先读它、
   // 不再解析 content 文本。这样子代理结论含 XML 闭合标签字面量也不破坏渲染。

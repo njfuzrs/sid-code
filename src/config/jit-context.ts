@@ -63,11 +63,17 @@ export class JitContextManager {
     // 规范化路径
     const normalizedDir = targetDir.toLowerCase();
 
-    // 如果已经扫描过这个目录，跳过
+    // 如果已经扫描过这个目录，跳过。
+    //
+    // 例外（配合下面的 paths 作用域判定）：本目录链上存在**因作用域未命中而跳过**的
+    // CLAUDE.md 时，不能把该目录记为「已扫描」——否则同目录下换一个命中作用域的文件
+    // （如先读 src/ui/README.md 未命中、再读 src/ui/Footer.tsx 命中）将永远拿不到规则。
+    // 这类目录留待下次触达重新判定；只有「链上全部候选都已处理完」才登记为已扫描。
     if (this.scannedDirs.has(normalizedDir)) {
       return null;
     }
-    this.scannedDirs.add(normalizedDir);
+    /** 本次扫描是否遇到「因作用域未命中而跳过」的规则文件 */
+    let hasScopeDeferred = false;
 
     // 向上查找 CLAUDE.md，直到项目根目录
     const foundContexts: Array<{ path: string; content: string }> = [];
@@ -81,7 +87,33 @@ export class JitContextManager {
 
         if (existsSync(candidatePath) && !this.loadedFiles.has(normalizedPath)) {
           try {
-            const content = await Bun.file(candidatePath).text();
+            const rawContent = await Bun.file(candidatePath).text();
+
+            // frontmatter `paths:` 作用域判定（与主加载路径 loadAllCLAUDEmd 同语义）。
+            //
+            // 这是 paths 机制真正生效的地方：主加载路径在启动时没有「当前活动文件」，
+            // 带 paths 的规则一律不注入；JIT 拿到的 accessedPath 才是确切的活动文件，
+            // 用它判定作用域——命中才注入。这样 `paths: ["src/ui/**"]` 的 TUI 规范
+            // 只在真正读写 src/ui 下文件时进入上下文，在 website/ 里做文档任务时不会出现。
+            //
+            // 注意 body：注入的是剥离 frontmatter 后的正文，避免把 `paths:` 元数据喂给模型。
+            const { parseRulesFrontmatter, rulesPathsMatch } = await import("./rules.ts");
+            const { paths, body } = parseRulesFrontmatter(rawContent);
+            if (paths && paths.length > 0) {
+              // activeFiles 用相对项目根的路径（与 CLAUDE.md 里 glob 的书写基准一致）
+              const activeFile = relative(projectRoot, accessedPath);
+              if (!rulesPathsMatch(paths, [activeFile])) {
+                log.debug(
+                  "JIT",
+                  `作用域不匹配，跳过: ${candidatePath} (paths=${JSON.stringify(paths)}, file=${activeFile})`,
+                );
+                // 不加入 loadedFiles：换个文件再触达时需要重新判定作用域。
+                // 同时标记本目录不可登记为「已扫描」，否则同目录下后续命中的文件拿不到规则。
+                hasScopeDeferred = true;
+                break;
+              }
+            }
+            const content = body;
             this.loadedFiles.add(normalizedPath);
 
             // 处理 @import 指令
@@ -118,6 +150,12 @@ export class JitContextManager {
       const parentDir = dirname(currentDir);
       if (parentDir === currentDir) break; // 到达根目录
       currentDir = parentDir;
+    }
+
+    // 目录级扫描缓存登记：仅当本次没有「因作用域未命中而跳过」的规则时才登记。
+    // 有跳过项则保持未登记，让同目录下后续访问的文件有机会重新判定作用域并拿到规则。
+    if (!hasScopeDeferred) {
+      this.scannedDirs.add(normalizedDir);
     }
 
     // 如果没有发现新上下文，返回 null

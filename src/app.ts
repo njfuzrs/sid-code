@@ -1961,17 +1961,18 @@ export class App {
         }
 
         // P1-UI / M7-3：预填充 JIT 已加载文件列表，避免后续 discoverContext 重复注入首轮已含的 CLAUDE.md。
-        // loadAllCLAUDEmd 加载了**整条父目录链**上所有 CLAUDE.md（+ 全局），JIT 不知道，首次触达
-        // 任何 src/ 文件时会向上找到这些 CLAUDE.md 再注入一次。预标记消除此重复。
-        // 原来只标根 CLAUDE.md（单值 findCLAUDEmd），中间层父目录 CLAUDE.md 会被 JIT 重复注入——
-        // 改用 findCLAUDEmdChain 把整条链都标记，与 loadAllCLAUDEmd 的加载范围对齐。
-        const { findCLAUDEmdChain, findGlobalCLAUDEmd } = await import("./config/rules.ts");
-        const chainClaudeMd = await findCLAUDEmdChain(process.cwd());
-        const globalClaudeMd = findGlobalCLAUDEmd();
-        const preloaded = [...chainClaudeMd, globalClaudeMd].filter(Boolean) as string[];
+        //
+        // 事实源 = loadAllCLAUDEmd 返回的 loadedPaths（**实际合并进系统提示词**的文件清单）。
+        // 此前用「findCLAUDEmdChain + 全局路径」估算，有两个方向的偏差：
+        //  - 漏标：findProjectCLAUDEmdFiles 加载的子目录文件（如 docs/summary/CLAUDE.md）不在父链上，
+        //    首次触达该目录时被 JIT 二次注入，同一份规则在上下文里出现两遍。
+        //  - 误标：因 frontmatter paths 未命中而**没有注入**的文件（如 src/ui/CLAUDE.md 在非 UI 任务中）
+        //    若被预标记，JIT 后续真正触达 src/ui 时会认为「已加载」而永久跳过，作用域规则彻底失效。
+        // 用 loadedPaths 两个方向都对齐：只标记真正注入了的，未注入的留给 JIT 按作用域按需加载。
+        const preloaded = projectRules?.loadedPaths ?? [];
         if (preloaded.length > 0) {
           this.jitContextMgr.markLoaded(preloaded);
-          log.debug("APP", `JIT 预标记 ${preloaded.length} 个已加载 CLAUDE.md（含 ${chainClaudeMd.length} 层父链）`);
+          log.debug("APP", `JIT 预标记 ${preloaded.length} 个已注入的 CLAUDE.md`);
         }
       }
 

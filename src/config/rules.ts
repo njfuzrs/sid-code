@@ -145,6 +145,17 @@ export interface ProjectRules {
    * 为空 / undefined 表示无条件生效。
    */
   paths?: string[];
+  /**
+   * 本结果**实际合并进来**的 CLAUDE.md 绝对路径清单（按合并顺序）。
+   *
+   * 用途：JIT 预标记的单一事实源。此前 app.ts 只用 findCLAUDEmdChain + 全局路径做预标记，
+   * 漏掉了 findProjectCLAUDEmdFiles 加载的**子目录**文件（如 docs/summary/CLAUDE.md），
+   * 导致首次触达该目录下文件时 JIT 把同一份规则二次注入系统提示词。
+   *
+   * 关键：因 paths 不匹配而被跳过的文件**不在此列表**——它们本就该留给 JIT 在
+   * 真正触达对应目录时按作用域注入，预标记它们会让作用域规则永久失效。
+   */
+  loadedPaths?: string[];
   /** 规则层级（用于调试与优先级展示） */
   layer?: "managed" | "user" | "userRulesDir" | "project" | "subdir" | "rulesDir" | "local";
 }
@@ -320,7 +331,14 @@ export function parseClaudeMd(content: string, sourcePath: string): ProjectRules
   // 先剥离 frontmatter（提取 paths 条件），用 body 做段落解析
   const { paths, body } = parseRulesFrontmatter(content);
   const sections = splitSections(body);
-  const rules = extractRules(sections, sourcePath, content);
+  // rawContent 用 **body**（已剥离 frontmatter）而非原始 content。
+  //
+  // 缺陷背景：rawContent 会被 generateClaudeMdAttachment 原样拼进系统提示词。此前传 content，
+  // 于是 `---\npaths: ["src/ui/**"]\n---` 这段**给加载器看的元数据**被当作指令喂给模型
+  // （实测轨迹里可见 `---\npaths: [...]\n---` 夹在两份规则之间）。它对模型无意义，
+  // 且紧跟在上一份文件的 `---` 分隔符后形成 `---\n---` 噪声，反而干扰模型判断规则边界。
+  // 解析用 body、注入也用 body，两者对齐。
+  const rules = extractRules(sections, sourcePath, body);
   if (paths) rules.paths = paths;
   return rules;
 }
@@ -354,7 +372,24 @@ export function mergeProjectRules(base: ProjectRules, override: ProjectRules): P
     disallowedTools: override.disallowedTools || base.disallowedTools,
     permissionMode: override.permissionMode || base.permissionMode,
     model: override.model || base.model,
-    // paths 条件在合并前已被各文件单独应用；合并结果无条件生效（不再携带 paths）
+    // paths：**不在此处丢弃**。
+    //
+    // 历史缺陷（website 目录误注入 src/ui TUI 规范的根因）：这里原本不返回 paths，
+    // 注释声称「合并前已被各文件单独应用」——但 loadAllCLAUDEmd 的真实顺序是反的：
+    // 先把同层多个文件 merge 成一条（paths 在此被抹成 undefined），**之后**才统一做
+    // rulesPathsMatch 过滤。于是带 `paths: ["src/ui/**"]` 的作用域规则被同层某个
+    // 无条件文件（如 docs/summary/CLAUDE.md）当作载体夹带进来，在任意 cwd 下都无条件生效。
+    //
+    // 根治分两步：① loadAllCLAUDEmd 改为「先按文件过滤、再合并」（见该函数 §3/§6），
+    // 这是主修复——过滤后进入 merge 的都已确认命中，合并结果的 paths 不再被消费；
+    // ② 这里保留 paths 作为兜底，万一未来又出现「合并后才过滤」的调用路径，条件不会静默消失。
+    //
+    // 兜底语义：**任一侧无条件 → 合并结果无条件**。因为无条件那侧本就该始终生效，
+    // 若给它套上另一侧的 glob 会反向造成「无条件规则被作用域规则连坐屏蔽」，
+    // 比原缺陷更难察觉。两侧都有条件时取并集（paths 本身是「任一 glob 命中即生效」的或语义）。
+    ...(base.paths && base.paths.length > 0 && override.paths && override.paths.length > 0
+      ? { paths: Array.from(new Set([...base.paths, ...override.paths])) }
+      : {}),
     layer: override.layer || base.layer,
   };
 }
@@ -731,6 +766,26 @@ export async function loadAllCLAUDEmd(
   const projectPath = chainFiltered.length > 0 ? chainFiltered[chainFiltered.length - 1] : null;
   const projectRoot = projectPath ? dirname(projectPath) : startDir;
 
+  // 实际合并进结果的文件清单（按合并顺序）。这是 JIT 预标记的事实源：
+  // 只预标记真正注入了的文件，被作用域拦下的**不标记**，留给 JIT 在触达对应目录时按需注入。
+  const loadedPaths: string[] = [];
+
+  // 作用域守卫（根治「website 目录被注入 src/ui TUI 规范」）：
+  // 同层多文件在这里就地过滤，**过滤在合并之前**。此前是「先 merge 同层 → 再统一过滤」，
+  // 而 merge 会抹掉 paths，导致带作用域的文件被同层无条件文件夹带进来、在任意 cwd 无条件生效。
+  const keepInScope = (rules: ProjectRules): boolean => {
+    if (rulesPathsMatch(rules.paths, activeFiles)) {
+      loadedPaths.push(rules.sourcePath);
+      return true;
+    }
+    log.info(
+      "RULES",
+      `规则 paths 条件不匹配当前作用域，跳过: ${rules.sourcePath}` +
+        ` (paths=${JSON.stringify(rules.paths)}, activeFiles=${activeFiles.length} 个)`,
+    );
+    return false;
+  };
+
   let projectChainRules: ProjectRules | null = null;
   for (const p of chainFiltered) {
     seenRealPaths.add(safeResolvePath(p));
@@ -738,6 +793,7 @@ export async function loadAllCLAUDEmd(
     if (rules) {
       // 最深一层标 project，其余父层标 subdir（语义：父层是外围上下文）
       rules.layer = p === projectPath ? "project" : "subdir";
+      if (!keepInScope(rules)) continue;
       log.info("RULES", `加载父链规则[${rules.layer}]: ${p}`);
       projectChainRules = projectChainRules ? mergeProjectRules(projectChainRules, rules) : rules;
     }
@@ -754,6 +810,9 @@ export async function loadAllCLAUDEmd(
     const rules = await loadAndParse(subFile, projectRoot);
     if (rules) {
       rules.layer = "subdir";
+      // 关键：子目录层是本缺陷的实际发生地（docs/summary 无条件 + src/ui 带 paths 同层合并）。
+      // 逐文件过滤后，src/ui 的 paths 在 cwd=website 时正确落空、不再被夹带。
+      if (!keepInScope(rules)) continue;
       log.info("RULES", `加载子目录规则: ${subFile}`);
       subRules = subRules ? mergeProjectRules(subRules, rules) : rules;
     }
@@ -779,19 +838,27 @@ export async function loadAllCLAUDEmd(
     localRules,
   ];
 
+  // 已在 §2/§3 逐文件过滤过的聚合结果（那里才是「同层多文件合并」的发生地，必须在合并前拦），
+  // 此处不再重复过滤——否则其 sourcePath 会被二次登记进 loadedPaths。
+  const preFiltered = new Set<ProjectRules>(
+    [projectChainRules, subRules].filter(Boolean) as ProjectRules[],
+  );
+
   let merged: ProjectRules | null = null;
   for (const r of ordered) {
     if (!r) continue;
-    // frontmatter paths 条件过滤
-    if (!rulesPathsMatch(r.paths, activeFiles)) {
-      log.debug("RULES", `规则 paths 条件不匹配，跳过: ${r.sourcePath}`);
-      continue;
-    }
+    // frontmatter paths 条件过滤：只作用于**尚未逐文件过滤**的条目——
+    // 单文件条目（managed / global / local）与规则目录条目（*RulesDirRules 每文件独立成项，
+    // 不预先合并）。与 §2/§3 的逐文件过滤互补，覆盖全部来源、无遗漏也无重复。
+    if (!preFiltered.has(r) && !keepInScope(r)) continue;
     merged = merged ? mergeProjectRules(merged, r) : r;
   }
 
   if (merged) {
-    log.info("RULES", "规则合并完成");
+    // loadedPaths 挂到结果上，供 app.ts 做 JIT 预标记（单一事实源，替代此前
+    // 「findCLAUDEmdChain + 全局路径」的近似估算——那个漏掉子目录文件，导致 JIT 二次注入）。
+    merged.loadedPaths = loadedPaths;
+    log.info("RULES", `规则合并完成，实际生效 ${loadedPaths.length} 个文件`);
   }
 
   return merged;

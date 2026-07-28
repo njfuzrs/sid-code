@@ -122,6 +122,18 @@ function tryParseTaskNotifications(msg: Message): {
       : raw && typeof raw === "object"
         ? [raw]
         : [];
+    // 关键：remaining 必须保留**非文本** blocks（tool_result 等），不能返回 null。
+    //
+    // 缺陷背景（TUI 末尾残留 `⏺ task_stop` 的根因）：ctxMgr.addMessage 的角色交替**合并**
+    // 会把 <task-notification> 追加进上一条同为 user 的 tool_result 消息，于是一条消息同时含
+    // [tool_result(task_stop 的结果), text(通知)] 且带 _meta.origin=task-notification。
+    // 此前快速路径无条件 `remaining: null`，把这条 tool_result 一并丢弃 → task_stop 的 tool_use
+    // 永远配不上结果，滞留在 pendingToolCalls，最终被函数末尾的「未匹配 pending」兜底逻辑
+    // 输出为 executing 态并追加到历史**末尾**，表现为任务已完成、屏幕最后却挂着一行执行中的
+    // `⏺ task_stop`，误导用户以为任务还在跑。
+    //
+    // 修复：只吃掉通知**文本**块，其余 blocks 原样交还调用方走正常渲染路径（与通用路径一致）。
+    const nonTextBlocks = msg.content.filter(b => b.type !== "text");
     if (notifList.length > 0) {
       return {
         notifications: notifList.map(notif => ({
@@ -134,19 +146,23 @@ function tryParseTaskNotifications(msg: Message): {
           // P1-2：agentType 只在结构化路径可得（XML 里刻意不带），用于身份色渲染。
           ...(notif.agentType ? { agentType: notif.agentType } : {}),
         })),
-        remaining: null,
+        remaining: nonTextBlocks.length > 0 ? nonTextBlocks : null,
       };
     }
     // 回退正则解析：旧会话 resume（注入时还没有 _meta.notif 结构化快照）时兼容。
     // 旧数据里若结论含 XML 字面量仍可能被截断——那是历史遗留，新会话不再走此路径。
     const text = msg.content.map(b => (b.type === "text" ? b.text : "")).join("\n");
     const blocks = text.match(/<task-notification>[\s\S]*?<\/task-notification>/g);
+    // 无通知块可解析时返回 null，让消息完全走正常渲染路径（tool_result 因此不会丢）。
     if (!blocks || blocks.length === 0) return null;
     const items: HistoryItemWithoutId[] = [];
     for (const block of blocks) {
       items.push(parseOneNotificationBlock(block));
     }
-    return { notifications: items, remaining: null };
+    return {
+      notifications: items,
+      remaining: nonTextBlocks.length > 0 ? nonTextBlocks : null,
+    };
   }
 
   // 通用路径：从 content blocks 中分离 notification text blocks 与其它 blocks
