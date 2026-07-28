@@ -133,6 +133,85 @@ alternate buffer 的终端。代价是执行中的工具输出可能在 scrollba
 
 多数命令都支持 `-p` 后缀 = 持久化到 settings.json，不加就只作用于当前会话。
 
+### 思考开关：`/think`
+
+`Alt+T` 是扩展思考的快捷键，斜杠命令 `/think` 管的是同一件事但更精确——三档显式控制：
+
+```text
+/think          显示当前思考开关状态 + 模型能力
+/think on       开启思考
+/think off      关闭思考
+/think auto     恢复 auto（跟随模型/provider 默认）
+/think on -p    切换并持久化到 settings.json（别名 --persist / save）
+```
+
+两个要分清的概念：
+
+- **思考开关**（`/think`）控制**是否思考**——on / off / auto 三档
+- **推理强度**（`/effort`）控制**思考多深**——low / medium / high / xhigh / max 五档
+
+两者正交：可以「开着思考但强度调低」，也可以「关掉思考」直接不思考。
+
+::: tip 不是所有模型都有这个开关
+`/think` 只对支持显式思考开关的模型有意义（如带 thinking budget 的模型）。OpenAI o-series 这类**内置推理**的模型，思考行为由模型自身决定，`/think` 会直接提示「当前模型不支持显式思考开关」而不下发——这不是故障。
+:::
+
+如果设了环境变量 `SID_CODE_THINKING=on|off`，它会覆盖运行时切换。这时 `/think on` 虽然不报错，但实际行为不会变——命令会显式提示你「环境变量正在覆盖」。取消覆盖用 `unset SID_CODE_THINKING`。
+
+### 外观与偏好
+
+四个命令管界面外观，都支持 `-p` 持久化（默认仅当前会话）：
+
+| 命令 | 管什么 | 常用调法 |
+| --- | --- | --- |
+| `/theme` | 整套配色（浅色/深色主题） | `/theme` 打开选择对话框；`/theme list` 看清单；`/theme "Default Light" -p` 直接切 |
+| `/color` | 强调色（只点睛品牌色，不动整套配色） | `/color #89b4fa -p`；`/color reset` 清除覆盖 |
+| `/tui` | 全屏 vs 内联渲染模式 | `/tui off` 切到内联（= `--inline`）；`/tui on` 切回全屏 |
+| `/language` | 输出语言偏好（zh / en / auto） | `/language zh -p` 中文优先；`/language auto` 回退默认 |
+
+几个容易混的点：
+
+- `/theme` 切的是**预设主题**（浅色/深色多套），`/color` 只覆盖**强调色**一个变量——两个不冲突，可以「用 Default Light 主题 + 自定义蓝色强调」
+- `/tui` 写的是 `alternateBuffer` 字段，**重启后才生效**——运行时无法就地切全屏/内联（渲染链路在启动时一次性定型）。命令会明确提示「重启 sid-code 后生效」
+- `/language` 切完**立即重建系统提示词**，下一轮 LLM 调用就用新语言，不用重开会话。`auto` 是删除偏好字段、回退系统提示词默认（中文）
+
+颜色支持 `#RGB` / `#RRGGBB` 十六进制和 CSS/Ink 命名色（如 `blue`、`cyan`），命名色会归一化成 hex 存储，保证跨主题稳定。
+
+### 自定义状态栏：`/statusline`
+
+底部状态栏默认是内置聚合视图（模型 · 分支 · token · 费用…）。想换成自己的，挂一个脚本：
+
+```text
+/statusline 'jq -r "\(.model) · \(.gitBranch) · \(.contextPercent)%"'
+```
+
+脚本协议：sid-code 把当前状态序列化成 JSON 经 **stdin** 喂给脚本，脚本的 **stdout** 就是状态栏内容（支持 ANSI 颜色）。收到的 JSON 包含这些字段：
+
+| 字段 | 内容 |
+| --- | --- |
+| `cwd` | 当前工作目录 |
+| `gitBranch` | 当前 git 分支 |
+| `worktree` | worktree 信息 |
+| `permissionMode` | 权限模式 |
+| `model` | 当前模型 |
+| `inputTokens` / `outputTokens` | token 计数 |
+| `contextPercent` | 上下文占用百分比 |
+| `costUSD` | 本次会话费用 |
+| `cacheHitRate` | 缓存命中率 |
+| `effort` | 推理强度档位 |
+| `thinking` | 思考开关状态 |
+
+管理：
+
+```text
+/statusline              查看当前配置 + 协议说明
+/statusline <命令> -p    设置并持久化到 settings.json
+/statusline off          禁用，回退内置
+/statusline off -p       禁用并从 settings.json 移除
+```
+
+容错：脚本超时（1s）或非零退出会自动回退内置状态栏，不会卡住界面。
+
 ## 常见问题
 
 **按 `?` 没反应，直接打出了问号。**

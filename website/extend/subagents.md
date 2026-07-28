@@ -32,6 +32,38 @@ sid-code agents --json   # 机器可读
 
 **最常用的是 `explore`**：让它去翻代码，你的主上下文只收结论。
 
+### 会话内 `/agents`：看自定义 agent
+
+上面 `sid-code agents` 是 CLI 命令，列出全部（内置 + 自定义）。会话里还有一个同名的斜杠命令 `/agents`，作用不同——它只列**你自己写的自定义 agent**，按来源分组：
+
+```text
+/agents
+```
+
+输出长这样（有自定义 agent 时）：
+
+```text
+自定义 Agents:
+
+用户级 (~/.sid-code/agents/):
+  • const-finder - 专门找导出的常量名 [工具: read, grep, glob]
+
+项目级 (.sid-code/agents/):
+  • db-migrator - 执行数据库迁移脚本 [工具: read, bash]
+```
+
+没有自定义 agent 时会提示你去哪个目录加文件。
+
+**两者的区别**：
+
+| | `sid-code agents`（CLI） | `/agents`（斜杠命令） |
+| --- | --- | --- |
+| 在哪用 | 终端，启动前 | 会话内 |
+| 列什么 | 内置 6 个 + 全部自定义 | 只列自定义 |
+| 用途 | 确认有哪些可用、`--json` 给脚本 | 写了自定义 agent 后快速确认有没有被加载到 |
+
+所以「写了 `.md` 但模型不派它」时，先用 `/agents` 确认文件被识别了，再排查 frontmatter 的 `description` 是不是空。
+
 ## 派活
 
 直接说就行，不用记语法：

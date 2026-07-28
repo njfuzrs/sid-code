@@ -84,6 +84,7 @@ export default defineConfig({
             { text: "Dynamic Workflows", link: "/extend/workflows" },
             { text: "MCP", link: "/extend/mcp" },
             { text: "代码智能（LSP）", link: "/extend/lsp" },
+            { text: "IDE 集成", link: "/extend/ide" },
             { text: "无头模式与脚本化", link: "/extend/headless" },
             { text: "插件与 Bridge", link: "/extend/plugins" },
           ],

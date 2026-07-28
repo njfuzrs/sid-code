@@ -2,7 +2,7 @@
 
 > 跑在终端的 coding agent —— 多 provider 可插拔、功能自主、数据自主。
 
-本文件是给大模型读的全站索引（共 38 页）。
+本文件是给大模型读的全站索引（共 39 页）。
 `/ref/` 下的参考页由 `scripts/docs-gen-reference.ts` 从源码生成，与实现同源。
 
 ## 站点
@@ -15,6 +15,7 @@
 - [扩展方式总览](/extend/): Skill / Hook / 子代理 / MCP / 插件 五条扩展路径的选择表：什么场景用哪个。
 - [无头模式与脚本化](/extend/headless): 在 CI / 脚本里非交互地跑 sid-code：三种输出格式怎么选、stdout 什么时候会被污染、结构化输出的坑。
 - [Hook 指南](/extend/hooks): 用三个可直接粘的真实场景讲清 Hook 怎么写、怎么调、怎么排错。
+- [IDE 集成](/extend/ide): 在 VS Code / Cursor / Windsurf 里用 sid-code：选区同步、@提及、diff 视图、自动发现。
 - [代码智能（LSP）](/extend/lsp): 定义跳转、引用查找、诊断注入如何让改代码更准：装好 language server 即零配置生效。
 - [MCP](/extend/mcp): 接入 MCP server，把企业内部系统变成可调用的工具：三种传输方式、四层作用域、为什么工具"看不见"。
 - [插件与 Bridge](/extend/plugins): 插件目录的加载规则与扩展边界，以及 Bridge 远程控制模式。
