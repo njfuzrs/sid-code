@@ -4,15 +4,15 @@
 
 **一句话宗旨：以可度量的轨迹数据为底座，做更快、更省、更安全、深度融合企业级开发环境的 coding agent。**
 
-这四个方向是**长期北极星，不是短期验收标准**。每一个都很难，甚至现在有未达成、未接线的部分——这不是缺陷，恰恰是它值得当方向的理由。目标定在够不着的地方，然后一级一级踩着台阶靠近它。
+这四个方向是**长期北极星，不是短期验收标准**。每一个都很难，甚至现在有未达成、未接线的部分——这不是缺陷，恰恰是它值得当方向的理由。
 
-四个方向 + 一个底座：
+四个方向 + 一个底座（现状标注为 2026-07 快照，实时数据以 `bun scripts/trace-digest.ts` 为准）：
 
 - **更快**：降低首字延迟（TTFT）与端到端耗时。现状：几乎无 latency 基线，属于「要补的度量」。
 - **更省**：降低单位任务 token / 成本。现状：Prompt cache（deepseek 受控 0→83.2%、anthropic 族 99.5%）已验证有闭环，是四个词里唯一有硬数据的；但 cost 采集尚不全（影子调用绕过埋点），「省了多少」暂测不准。
 - **更安全**：从静态防护延伸到 HITL / 权限规则 / 企业 policy。现状：静态防护层（path-validator / bash-security / 危险命令拦截）对标 CC 极高甚至超越；但权限规则层仍有未修 P0（Bash `*` 不跨 `/`、Read/Edit 路径前缀未实现等）。
 - **深度融合企业级**：团队记忆、企业 policy、企业系统接入。现状：网关计费 / 飞书 / MCP / vibe-bugfix 已跑通几个企业系统；企业 policy 层仍是未接线的脚手架，团队记忆刚从「半黑洞」修出。
-- **底座 · 可度量 / 数据飞轮**：events.jsonl（1481+ 会话）、trace-digest、eval-session、四环防线触发率脚本。**这不是隐含前提，是宗旨的一部分。** 度量的作用不是「验收目标达没达成」，而是「确认每一步是不是在朝北极星走」——目标可以够不着，但「这次改动让 cost 采得更全 / cache 命中又涨几个点 / 又一个权限 P0 接线了」这种朝向感必须能量出来。
+- **底座 · 可度量 / 数据飞轮**：events.jsonl（1481+ 会话）、trace-digest、eval-session、四环防线触发率脚本。**这不是隐含前提，是宗旨的一部分。** 度量的作用不是「验收目标达没达成」，而是「确认每一步是不是在朝北极星走」——「这次改动让 cost 采得更全 / cache 命中又涨几个点 / 又一个权限 P0 接线了」这种朝向感必须能量出来。
 
 **方向内部有张力，落地时要正视而非回避：** 更安全（更多 HITL / 权限校验）天然拖慢速度、增加动态内容，而动态内容又伤 cache 命中率=伤省。真实工程演进就是在这几个约束间找平衡，不是四个指标同时拉满。遇到「弹权限确认 vs 少打扰」这类摇摆时，回到这里，明确本次改动在为哪个方向让路。
 
@@ -60,18 +60,11 @@
 4. **不确定就问，或者干脆不动**。留着一个多余文件的代价是零；删错一个文件的代价是
    用户几小时的工作凭空消失。工作区不干净**不影响**你交付任务。
 
-**2026-07-28 真实事故（本条铁律的来源）**：
-用户在并行写官网文档，我跑完 `bun test` 后看到 `git status` 多出 `website/` 下若干文件，
-误判为「测试跑出来的脏产物」，执行了 `rm -f website/extend/workflows.md`、
-`rm -f website/team/scheduled.md` 和 `git checkout -- website/`。
-后果：**2 个从未 git add 的完整新页面 + 3 个已追踪文件约 300 行新增内容全部永久丢失**。
-恢复途径逐一查证全空——git 对象库（未 add）、`git fsck` 悬空 blob、VSCode/Cursor 本地历史、
-Time Machine（未配置）、APFS 快照（无）、`.vitepress/dist`、`~/.Trash`、全盘同名搜索。
-
-两个本该拦住我的信号都被忽略了：
-① `website/.vitepress/config.ts` 在**会话最开始**的 git status 快照里就是 `M`，
-   早于我的任何操作，逻辑上不可能是测试产物；
-② 我在 `rm` 和 `git checkout` 之前**从未读过**这些文件内容，只看文件名就下了结论。
+**2026-07-28 真实事故（本条铁律的来源）**：误判用户并行写的 `website/` 文档为「测试脏产物」，
+`rm` 两个新页 + `git checkout -- website/`，**2 个未 add 的新页面 + 约 300 行已追踪改动永久丢失**，
+所有恢复途径查证全空。两个被忽略的信号：① `config.ts` 在**会话初始** git status 快照里就是 `M`，
+不可能是测试产物；② 动手前**从未读过**文件内容。完整复盘见
+`docs/bugfixes/done/20260728-误删并行任务文件-数据永久丢失复盘.md`。
 
 教训一句话：**归因错误 + 立即执行不可逆操作 = 数据永久丢失。
 先读再判断，不可逆操作先问，工作区脏不是理由。**
@@ -86,10 +79,7 @@ Time Machine（未配置）、APFS 快照（无）、`.vitepress/dist`、`~/.Tra
 | `sid-code-dev` / `sc-dev` | `~/bin/sid-code-dev` → 本地构建产物（仓库根） | 开发版 | 日常开发调试 |
 
 
-两条命令是**不同的二进制名**，不靠 PATH 优先级区分：
-
-- `sid-code` 只存在于 `~/.local/bin`（`sid-code update` 下载的线上版）。
-- `sid-code-dev` 只存在于 `~/bin`，软链到仓库根 `~/Code/person/sid-code/sid-code`（`make build` / `make rebuild` 的产物）。
+两条命令是**不同的二进制名**，不靠 PATH 优先级区分。
 
 > **⚠️ 调试铁律：改了代码要验证，必须跑 `sc-dev`（开发版），不要跑 `sc`。**
 > `sc` / `sid-code` 现在指向**线上稳定版**，跑它验证不到你本地的任何改动——历史上 `sc` 曾经是开发版，肌肉记忆很容易搞错，导致「代码改了、命令跑错、验证不生效」白忙一场。判断口诀：**验证本地改动 → `sc-dev`；对照线上行为 → `sc`。** 拿不准时先 `which sid-code-dev sid-code` 确认指向。
@@ -117,33 +107,29 @@ make rebuild
 git add <改动文件>
 git commit -m "feat: ..."
 
-# 3. 发布（release.sh 内部会 bump 版本号 + 生成 changelog 三产物 + 打 tag vX.Y.Z
-#    + 重新生成 builtin-embedded.generated.ts，上传成功后推 tag 并传 CHANGELOG.md/.html 到服务器顶层）
-#    不需要先跑 make build！
+# 3. 发布：内部 bump 版本号 + 生成 changelog 三产物 + 打 tag + 重新生成
+#    builtin-embedded.generated.ts；不需要先跑 make build
 ./scripts/release.sh --upload
 
-# 4. 补提交版本号变更 + changelog 三产物（均由 release.sh 生成，必须一并提交；
-#    漏掉 changelog.json 就等于官网 /changelog 拿不到这个版本）
+# 4. 补提交版本号 + changelog 三产物（漏掉 changelog.json 官网 /changelog 就拿不到这个版本）
 git add package.json src/skill/builtin-embedded.generated.ts \
         CHANGELOG.md CHANGELOG.html website/.vitepress/data/changelog.json
 git commit -m "bump vX.Y.Z"
 
-# 5. 推送（tag 已在 release.sh 上传后推过；此处 git push 兜底补推本地 tag）
+# 5. 推送（tag 已在 release.sh 上传后推过，这里兜底补推）
 git push
 
-# 5.5 发布官网，让 /changelog 上线本次版本（必做）
-#     官网 /changelog 是站点构建期快照，release.sh 只生成数据、不发布站点。
-#     放在 bump 提交之后：那时工作区才干净，才过得了 website-deploy.sh 的 dirty 门禁。
+# 5.5 发布官网（必做）：/changelog 是站点构建期快照，release.sh 只生成数据不发站点。
+#     必须放在 bump 提交之后，工作区干净才过得了 website-deploy.sh 的 dirty 门禁。
 ./scripts/website-deploy.sh
 
-# 6. 对齐开发版二进制版本号（发布制品用的是跨平台编译产物，
-#    仓库根的开发版二进制内联版本号还停在旧值，不补 rebuild 则 sc-dev 版本比线上低一位）
+# 6. 对齐开发版二进制版本号（见下方 Make 表格注解，不补则 sc-dev 比线上低一位）
 make rebuild
 ```
 
-> `release.sh` 若首次失败已 bump 过版本号（如上传阶段报错），第二次用 `--no-bump --upload` 复用现有版本号，避免版本号 +2。tag 与 CHANGELOG.md 均幂等：`--no-bump` 复用同版本时 tag 已存在会跳过创建、changelog 同版本块原地替换，不会重复。
+> `release.sh` 首次失败（如上传阶段报错）已 bump 过版本号时，第二次用 `--no-bump --upload` 复用。重跑安全：tag 已存在会跳过创建，changelog 同版本块原地替换，均幂等。
 >
-> **Changelog + Tag**：release.sh 在 bump 后自动从 git 历史（上个 semver tag → HEAD，按 feat/fix/… 分组）重建 changelog，并打 annotated tag `vX.Y.Z`。**git 历史是唯一事实源**，每次运行从 git 完整重建（历史 tag 指向不可变提交 → 历史块稳定，只有正在发布的版本块每次变化，确定性且幂等）。三份产物各有唯一职责：
+> **Changelog + Tag**：release.sh 在 bump 后从 git 历史（上个 semver tag → HEAD，按 feat/fix/… 分组）重建 changelog，并打 annotated tag `vX.Y.Z`。**git 历史是唯一事实源**，每次运行完整重建，确定性且幂等。三份产物各有唯一职责：
 >
 > | 产物 | 职责 |
 > | --- | --- |
@@ -151,7 +137,7 @@ make rebuild
 > | `website/.vitepress/data/changelog.json` | 官网 `/changelog` 页的数据源，由 `theme/Changelog.vue` 渲染 |
 > | `CHANGELOG.html` | 跳转页 → `/changelog`，只为保住散落各处的老链接不 404 |
 >
-> **用户看更新日志的唯一入口是官网 `http://<host>/changelog`**（2026-07-28 起）。它和文档站是同一个站、同一套配色与深浅色，自带只搜版本变更的独立搜索框，且**不进全站搜索索引**（否则几百条 commit 描述会把正常查询冲成噪音；执行方是 `website/.vitepress/config.ts` 的 `search.options._render` 钩子 + 页面 frontmatter `search: false`）。
+> **用户看更新日志的唯一入口是官网 `http://<host>/changelog`**（2026-07-28 起）。它和文档站同站同配色，自带只搜版本变更的独立搜索框，且**不进全站搜索索引**（否则几百条 commit 描述会把正常查询冲成噪音）。实现见 `website/.vitepress/config.ts` 的 `search.options._render`。
 >
 > ⚠ **两条禁令**，破了就是数据错乱或每次 commit 都红：
 > - `website-deploy.sh` **不得**重跑 `generate-changelog.ts` —— 会把 HEAD 上尚未发版的提交归到已发布的版本号名下。只有 `release.sh` 有资格生成这份数据。
@@ -160,11 +146,6 @@ make rebuild
 **上传凭据**：SSH 信息读自 `scripts/deploy.env`（不入库，见 `deploy.env.example` 模板）。
 配了 `DEPLOY_SSH_PASSWORD` 后用 sshpass 免交互上传，无需每次输密码。首次配置：
 `cp scripts/deploy.env.example scripts/deploy.env` 后填入真实值。
-
-**版本号只 bump 一次**：`release.sh` 默认自增 patch 版本号一次。若你已经先跑过
-`make build`（它内部也会 bump），再直接 `release.sh` 会让版本号 +2 —— 此时加 `--no-bump`
-复用现有版本号：`./scripts/release.sh --no-bump --upload`。
-推荐做法：不要先 `make build`，直接 `./scripts/release.sh --upload`，一次 bump 到位。
 
 ### 用户更新（或自己验证线上版）
 
@@ -181,10 +162,8 @@ sc                 # 启动线上稳定版（sc / sid-code 就是线上版）
 | `make build`                    | +1     | 本地自测：构建带新版本号的二进制        |
 | `./scripts/release.sh --upload` | +1     | 正式发布：构建 4 平台制品并上传到服务器 |
 
-> **⚠️ `make build` / `release.sh` 之后要补一次 `make rebuild`。**
-> `make build`（以及 `release.sh` 内部）会 bump `package.json` 版本号，但发布制品用的是**跨平台编译产物**，仓库根的开发版二进制（`sid-code-dev` 指向的 `~/Code/person/sid-code/sid-code`）不会跟着更新，它的**内联版本号还停在旧值**。发完版后 `sc-dev` 显示的版本会比线上低一位，容易误判。
-> 修复：发布/构建流程结束后再跑一次 `make rebuild`，用最新 `package.json` 重新编译开发版二进制，把内联版本号对齐。
+三条由「版本号内联进二进制」派生的规则（`bun build --compile` 编译时把 `package.json` 写进产物，git pull 更新源码不会改它）：
 
-### 二进制版本号嵌入机制
-
-`bun build --compile` 在编译时把 `package.json` 内联进二进制。之后即使 git pull 更新了源码，磁盘上的二进制版本号也不会变。**源码更新后必须重新编译**（`make rebuild` 或 `make build`）。
+- **源码更新后必须重新编译**，否则跑的还是旧代码。
+- **版本号只 bump 一次**：直接 `./scripts/release.sh --upload`，别先跑 `make build`（它内部也 bump，会让版本号 +2）。已 bump 过用 `--no-bump --upload` 复用。
+- **`make build` / `release.sh` 之后补一次 `make rebuild`**：发布制品是跨平台编译产物，仓库根的开发版二进制不会跟着更新，内联版本号还停在旧值 —— 不补则 `sc-dev` 显示的版本比线上低一位，容易误判。
