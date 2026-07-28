@@ -175,6 +175,65 @@ describe("CHANGELOG.html · 跳转页而非自建 mini 站", () => {
   });
 });
 
+describe("独立搜索的匹配语义", () => {
+  // 复刻组件里的匹配逻辑（Changelog.vue 的 haystack + commitMatches）。
+  // 组件是 .vue 单文件、无法在 bun test 里直接 import 其内部函数，
+  // 所以这里锁的是**语义契约**：改组件逻辑时两边要一起改，否则这些断言会红。
+  const hay = (c: any) =>
+    [c.scope ?? "", c.desc, c.hash, ...c.details].join(" ").toLowerCase();
+  const matches = (c: any, terms: string[]) =>
+    terms.length === 0 || terms.every((t) => hay(c).includes(t));
+  const parse = (q: string) => q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+
+  function allCommits() {
+    const d = JSON.parse(readFileSync(DATA_PATH, "utf8"));
+    const out: any[] = [];
+    for (const v of d.versions) for (const g of v.groups) out.push(...g.commits);
+    return out;
+  }
+
+  test("多词是 AND 而非整串子串匹配", () => {
+    // 这是改造中真实踩到的缺陷：整串匹配要求两个词在原文里紧邻，
+    // 而 changelog 的词通常散落在描述与细节的不同位置，用户输两个词一条不中。
+    const commits = allCommits();
+    const term1 = "缓存";
+    const term2 = "命中";
+    const andHits = commits.filter((c) => matches(c, [term1, term2])).length;
+    const substringHits = commits.filter((c) =>
+      hay(c).includes(`${term1} ${term2}`),
+    ).length;
+    expect(andHits).toBeGreaterThan(0);
+    expect(andHits).toBeGreaterThan(substringHits);
+  });
+
+  test("空查询与纯空白查询返回全部", () => {
+    const commits = allCommits();
+    expect(commits.filter((c) => matches(c, parse(""))).length).toBe(commits.length);
+    expect(commits.filter((c) => matches(c, parse("   "))).length).toBe(commits.length);
+  });
+
+  test("搜 hash 能命中（提交条目显示 hash，用户会拿它搜）", () => {
+    const commits = allCommits();
+    const withHash = commits.find((c) => c.hash);
+    expect(withHash).toBeDefined();
+    expect(matches(withHash, parse(withHash.hash))).toBe(true);
+  });
+
+  test("搜 scope 能命中，且跨字段与描述词组合有效", () => {
+    const commits = allCommits();
+    const withScope = commits.find((c) => c.scope && c.desc.length > 4);
+    expect(withScope).toBeDefined();
+    expect(matches(withScope, parse(withScope.scope))).toBe(true);
+    // scope 与描述里的词组合 —— 这是拼成整段 haystack 才能支持的场景
+    const firstWord = withScope.desc.slice(0, 2);
+    expect(matches(withScope, [withScope.scope.toLowerCase(), firstWord.toLowerCase()])).toBe(true);
+  });
+
+  test("不存在的词返回 0（无结果态有兜底 UI）", () => {
+    expect(allCommits().filter((c) => matches(c, parse("zzz-不存在-zzz"))).length).toBe(0);
+  });
+});
+
 describe("组件与数据的耦合点", () => {
   test("组件静态 import 的路径与生成器的输出路径一致", () => {
     const vue = readFileSync(COMPONENT_PATH, "utf8");

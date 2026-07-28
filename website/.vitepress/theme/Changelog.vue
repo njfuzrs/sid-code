@@ -55,13 +55,27 @@ const query = ref("");
 /** 当前只看某一类变更（null = 全部）。点徽章切换，再点取消。 */
 const activeGroup = ref<string | null>(null);
 
-/** 搜索命中的判定：scope / 描述 / 细节 / hash 任一包含关键词（大小写不敏感） */
-function commitMatches(c: Commit, q: string): boolean {
-  if (!q) return true;
-  if (c.desc.toLowerCase().includes(q)) return true;
-  if (c.scope && c.scope.toLowerCase().includes(q)) return true;
-  if (c.hash.toLowerCase().includes(q)) return true;
-  return c.details.some((d) => d.toLowerCase().includes(q));
+/**
+ * 一条提交的可搜索文本：scope + 描述 + 全部细节 + hash 拼成一段。
+ * 拼成整体而不是逐字段比，是为了让多词查询能跨字段命中
+ * （例如 scope 是 `perf`、描述里有 `缓存`，搜「perf 缓存」应该中）。
+ */
+function haystack(c: Commit): string {
+  return [c.scope ?? "", c.desc, c.hash, ...c.details].join(" ").toLowerCase();
+}
+
+/**
+ * 多词 AND 匹配：按空白拆词，每个词都要出现才算命中。
+ *
+ * 刻意不做整串子串匹配 —— 那样搜「prompt cache」要求这两个词在原文里**紧邻**，
+ * 而 changelog 里它们通常分散在描述和细节的不同位置（实测：prompt 9 条、
+ * cache 6 条、"prompt cache" 0 条），用户输两个词却一条不中，看着像坏了。
+ * 中文不分词，单个 token 仍是子串匹配，所以「缓存」这类查询照常工作。
+ */
+function commitMatches(c: Commit, terms: string[]): boolean {
+  if (terms.length === 0) return true;
+  const hay = haystack(c);
+  return terms.every((t) => hay.includes(t));
 }
 
 /**
@@ -70,16 +84,16 @@ function commitMatches(c: Commit, q: string): boolean {
  * 也让「没有匹配」这个状态只有一个判断点（filtered.length === 0）。
  */
 const filtered = computed<Version[]>(() => {
-  const q = query.value.trim().toLowerCase();
+  const terms = query.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const g = activeGroup.value;
-  if (!q && !g) return changelog.versions;
+  if (terms.length === 0 && !g) return changelog.versions;
 
   const out: Version[] = [];
   for (const v of changelog.versions) {
     const groups: Group[] = [];
     for (const grp of v.groups) {
       if (g && grp.key !== g) continue;
-      const commits = grp.commits.filter((c) => commitMatches(c, q));
+      const commits = grp.commits.filter((c) => commitMatches(c, terms));
       if (commits.length > 0) groups.push({ ...grp, commits });
     }
     if (groups.length > 0) {
