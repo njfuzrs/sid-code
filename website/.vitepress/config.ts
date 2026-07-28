@@ -92,7 +92,7 @@ export default defineConfig({
       ],
       "/ref/": [
         {
-          text: "参考（脚本生成，勿手改）",
+          text: "参考",
           items: [
             { text: "CLI 参数与子命令", link: "/ref/cli" },
             { text: "斜杠命令", link: "/ref/slash-commands" },

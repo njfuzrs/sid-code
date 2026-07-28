@@ -1,12 +1,12 @@
 ---
 layout: home
 title: sid-code
-titleTemplate: 跑在终端的 coding agent
+titleTemplate: 长在企业研发环境里的 coding agent
 
 hero:
   name: sid-code
-  text: 跑在终端的 coding agent
-  tagline: 你在终端里说人话，它读你的代码、改文件、跑命令，并用真实的测试结果证明改对了。
+  text: 长在企业研发环境里的 coding agent
+  tagline: 终端里说人话，它读代码、改文件、跑命令，用真实的编译与测试结果证明改对了。而模型你选、harness 你改、内网它进得去、数据一行不外流——这四条，闭源产品结构上给不了。
   image:
     src: /favicon.svg
     alt: sid-code
@@ -23,19 +23,19 @@ hero:
 
 features:
   - title: 多 provider 可插拔
-    details: Anthropic / OpenAI / Ollama 三族协议，公司自建网关、Azure、本地离线模型都能接。换模型是改配置，不是换工具。
+    details: Anthropic / OpenAI / Ollama 三族协议同时在线。公司自建网关、Azure、本地离线模型都能接，主模型跑不动还能自动降级到备用模型。换模型是改一行配置，不是换一个工具。
     link: /start/configure
     linkText: 配置 provider
   - title: 功能自主可定制
-    details: 44 个内置工具、32 类 Hook 事件、Skill 与子代理全部可改可扩。发现问题当天就能补，不必等官方排期。
+    details: 44 个内置工具、32 类 Hook 事件、Skill 与子代理，全部开源可改可扩。你的团队有什么怪规矩，就往里写什么规矩——今天发现的问题今天补上。
     link: /extend/
     linkText: 扩展方式总览
   - title: 深度贴合企业开发环境
-    details: 内部网关计费、内网 GitLab、MCP 接入、团队默认配置分发——都是按真实企业内网基建做的适配，不是通用能力凑合。
+    details: 内部网关计费、内网 GitLab、MCP 接入、团队默认配置一键分发。这些是按真实企业内网基建一条条适配出来的，不是拿通用能力硬凑。
     link: /team/defaults
     linkText: 企业与团队
   - title: 数据全部自主
-    details: 会话轨迹、评测结果、成本账本都留在自己的基础设施里。这既是合规前提，也是持续优化的燃料。
+    details: 会话轨迹、评测结果、成本账本全部落在你自己的基础设施里。既是过合规的前提，也是持续优化的燃料——数据在自己手上，才谈得上迭代。
     link: /team/observability
     linkText: 轨迹与可观测
 ---
