@@ -90,17 +90,112 @@ Todo 不只是给你看的进度条，它是模型自己的工作记忆。长任
 清单是**全量替换**的：每次更新都提交完整列表，不是增量打补丁。所以你看到的
 永远是当前完整状态，不会出现半旧半新。
 
-### 相关但不同的两个东西
+### 相关但不同的三个东西
 
-容易和 Plan Mode 搞混，说清楚：
+容易和 Plan Mode 搞混，放一起说清楚：
 
 | 命令 | 干什么 | 和 Plan Mode 的区别 |
 | --- | --- | --- |
 | `/goal <完成条件>` | 目标驱动：设定完成条件，达成前不停 | Plan 是"先批准再动手"，goal 是"一直干到达标" |
-| `/loop [间隔] <任务>` | 按间隔重复跑同一个 prompt | 周期性任务，和规划无关 |
+| `/loop [间隔] <任务>` | 按间隔重复跑同一个 prompt | 周期性任务，和规划无关，见[定时与无人值守](/team/scheduled) |
 
-`/goal` 有 `status` / `pause` / `resume` / `turns <n>` / `budget <tokens>` 等子命令，
-可以给它设轮次和 token 上限，避免真的跑不停。
+下面展开讲 `/goal`——它有一套独立的评估机制，不只是"循环到满意"。
+
+## `/goal`：目标驱动持续执行
+
+`/goal` 解决的是一类 Plan Mode 管不了的场景：**你知道目标长什么样，但不想逐步盯着它怎么干**。
+设定一个完成条件，AI 自己干到达标为止，中间不需要你批准每一步。
+
+典型用法：
+
+```text
+/goal 把 src/legacy/ 下所有 callback 风格函数改成 async/await，测试全绿才算完成
+```
+
+它和 Plan Mode 的根本区别：Plan Mode 是"先出方案等你批"，`/goal` 是"直接干到达标"。
+两者还可以配合——先 `/plan` 看方案，满意后退出 Plan Mode 再 `/goal` 执行。
+
+### 子命令
+
+`/goal` 的完整参数（`src/command/commands/goal/goal.ts:42-56`）：
+
+| 子命令 | 作用 |
+| --- | --- |
+| `/goal <完成条件>` | 设定新目标（已有活跃目标会先确认替换） |
+| `/goal status` | 查看当前目标状态、轮次、预算、证据数、上次评估 |
+| `/goal pause` | 暂停目标 |
+| `/goal resume` | 恢复目标 |
+| `/goal edit <新条件>` | 编辑目标条件（会重置已收集的证据） |
+| `/goal turns <n>` | 调整最大轮次（1–1000） |
+| `/goal budget <tokens>` | 设置 Token 预算（支持 `100k` 这种写法） |
+| `/goal clear` 或 `/goal cancel` | 清除目标 |
+
+### 它怎么判断"达标了"
+
+这是 `/goal` 的核心设计，不是靠模型自己说"我做完了"。每轮对话结束时，一套独立的机制介入
+（`src/query/goal-gate.ts`，在 end_turn 处理链的最末）：
+
+1. **证据收集**——自动从工具结果里提取证据（`src/goal/evidence-collector.ts`）。
+   测试结果、构建结果、文件变更、命令输出都会进证据日志，不依赖模型配合，也不受
+   `/compact` 影响（证据是结构化的，压缩对话不会丢）。
+2. **预算检查**——先查 Token 预算，超了直接停（省下后面评估的调用费用）。
+3. **轮次检查**——再查轮次上限。
+4. **独立评估者**——用一个**独立的小模型**（haiku 级别，512 token 输出、关闭思考）
+   基于**证据日志**判定目标是否达成（`src/goal/evaluator.ts`）。
+   对话上下文只作补充，不是主判据——所以即使对话被压缩，评估也不受影响。
+5. **快速路径**——测试全绿 / 构建成功 / 报告型任务已交付，直接判定满足，连 LLM 都不调
+   （`src/goal/evaluator.ts` 的 `tryFastPathEval`）。
+
+评估者返回结构化结果：`{satisfied, reason, blockerKey, progress, impossible}`。
+
+### 双闸与自动停
+
+| 闸 | 默认值 | 触发什么 |
+| --- | --- | --- |
+| 最大轮次 | **150** 轮（`src/goal/config.ts:34`，"给长任务留足空间"） | 到了 → `turns_limited` |
+| Token 预算 | 可配（`/goal budget`） | 到了 → `budget_limited` |
+
+还有一个**卡住检测**：连续 3 轮撞上同一个 blocker（`src/goal/blocked-detector.ts`，
+默认 threshold=3）→ 判 `blocked`。比如连续 3 轮都卡在"找不到某个依赖"，它会停下来
+而不是无限重试。
+
+::: tip blocked 默认是软提醒，不是硬停止
+`blocked` 和 `impossible` 默认**降级为软提醒**——告诉你"看起来卡住了"，但不会强制终止，
+你可以让它继续试或手动调整。想恢复"卡住即停"的旧行为，设环境变量
+`SID_ENABLE_GOAL_HARD_STOP=1`（`src/query/goal-gate.ts:319-321`）。
+:::
+
+### 目标不会忘
+
+长任务里模型容易"做着做着忘了目标是什么"。`/goal` 每 **4 轮**自动把目标状态回注一次
+（`src/goal/reminder.ts`，`reminderInterval: 4`），首轮必注入、`/compact` 后强制注入。
+
+回注走的是 `reminderParts` 管道，**不进 system prompt**——所以不影响 Prompt Cache 命中率
+（cache 按前缀命中，system prompt 没变就还在）。这也是 `/goal` 能长跑而不贵的原因之一。
+
+状态栏会显示进度：`◎ 目标 N/M 轮`，接近上限（≥80%）转黄预警；暂停时显示 `⏸ 目标已暂停`。
+
+### 目标跨会话
+
+目标状态会持久化到会话 metadata（`src/app.ts:4048-4066`）。用 `--resume` 恢复会话时，
+非终态的目标会一起恢复，继续推进。`/clear` 会落一个 `__CLEARED__` 哨兵防止"幽灵目标复活"。
+
+::: warning `/goal` 与 Token Budget 续写互斥
+`/goal` 和 `--max-budget-usd` 的"超预算续写"语义冲突——一个要停、一个要续。
+同时用的话 `/goal` 优先（`src/query/loop.ts:2144-2146`）。要给 `/goal` 任务设成本上限，
+用 `/goal budget <tokens>` 设 Token 预算，或用 `quota.costLimit` 做硬顶（见
+[成本与用量](/use/cost) 的坑一）。
+:::
+
+### `/goal`、Plan Mode、`/loop` 三者怎么选
+
+| 你要的 | 用哪个 | 为什么 |
+| --- | --- | --- |
+| 先看方案再动手 | Plan Mode | 要你的批准才改文件 |
+| 知道目标，干到达标为止 | `/goal` | 独立评估者判定，不需要逐步批准 |
+| 按固定间隔重复同一件事 | `/loop` | 定时调度，不是"达标"驱动，见[定时与无人值守](/team/scheduled) |
+
+判断标准：**你要不要在它动手前看一眼方案**。要就用 Plan Mode；不要、只关心结果就用 `/goal`。
 
 ## 常见问题
 

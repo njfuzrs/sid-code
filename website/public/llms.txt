@@ -2,7 +2,7 @@
 
 > 跑在终端的 coding agent —— 多 provider 可插拔、功能自主、数据自主。
 
-本文件是给大模型读的全站索引（共 36 页）。
+本文件是给大模型读的全站索引（共 38 页）。
 `/ref/` 下的参考页由 `scripts/docs-gen-reference.ts` 从源码生成，与实现同源。
 
 ## 站点
@@ -20,6 +20,7 @@
 - [插件与 Bridge](/extend/plugins): 插件目录的加载规则与扩展边界，以及 Bridge 远程控制模式。
 - [Skill](/extend/skills): 把团队的流程与规范封装成可复用的 skill：8 个内置 skill 干什么、自定义怎么写、为什么写了不生效。
 - [子代理](/extend/subagents): 把任务派给子代理，用自定义 agent 固化职责，并按类型分级模型省钱。
+- [Dynamic Workflows](/extend/workflows): 什么时候该用多 agent 编排、pipeline 和 parallel 怎么选、跑挂了怎么 resume。
 
 ## 参考（脚本生成）
 
@@ -46,6 +47,7 @@
 - [轨迹采集与可观测](/team/observability): 每次会话落盘了什么、能回答什么问题、怎么用一条命令做事后诊断、怎么聚合到团队。
 - [企业 policy 与安全边界](/team/policy): 企业侧能强制约束哪些行为、哪些约束用户绕不过去，以及当前的能力边界在哪。
 - [配额与成本控制](/team/quota): 给会话、给团队设花费上限；四级预警、按周期的预算规则、超限自动停止。
+- [定时与无人值守](/team/scheduled): 会话内 /loop、跨会话 durable 定时任务、daemon 常驻守护、GitHub webhook 触发——整条无人值守链路。
 
 ## 使用
 

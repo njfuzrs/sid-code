@@ -17,6 +17,15 @@ description: 每次会话落盘了什么、能回答什么问题、怎么用一�
 
 ## 快速上手
 
+会话里想立刻看当前这一轮的调用结构，不用翻文件：
+
+```text
+/telemetry
+```
+
+它会即时显示当前会话的 **Span 树 + Metric 汇总**（内存数据，不需要开 telemetry 配置）。
+想看更早的会话，用下面这条命令读落盘轨迹：
+
 想知道刚才那次会话到底发生了什么，一条命令：
 
 ```bash
@@ -213,6 +222,97 @@ done
 跨会话聚合成本同理——遍历 `metadata.json` 的 `total_cost_usd` 求和。
 这也是[按天统计花费的正确做法](/team/quota#周期是进程内的-重启即清零)：
 `budgetRules` 的周期计数是进程内的，跨会话统计只能靠轨迹。
+
+## `/telemetry`：会话内即时查看
+
+上面讲的 `trace-digest` 和轨迹文件是**事后**看的——会话已经结束，从磁盘读。
+`/telemetry` 是**即时**看的——会话进行中就能看当前这一轮的调用结构，数据在内存里。
+
+```text
+/telemetry
+```
+
+别名 `/tele`。它显示当前会话的 **Span 树 + Metric 汇总**（`src/command/builtins.ts:1162`）：
+
+- **总览**：LLM 调用轮数、Token 消耗（输入/输出）、费用、缓存节省、TTFT 平均、工具调用次数
+- **调用时间线**：构建 Span 树递归渲染（扁平 span 列表按 `parentSpanId` 建父子关系，
+  `builtins.ts:1281-1301`），每行显示 kind 中文标签、时长、模型名、TTFT、Token、费用（chat）
+  或工具名、时长（tool）
+- **其他指标**：按 name 分组的 metric（sum/count/max/last）
+
+它**不接受参数**——参数名以下划线开头表示未使用（`builtins.ts:1167`）。遥测未启用时
+提示你去开，无数据时提示无数据。
+
+### `/telemetry` 与轨迹落盘的关系
+
+两者**同源双汇**：同一套 Hook 事件驱动，一份走 telemetry bus（内存，`TelemetryBus`），
+一份走 trace collector（磁盘）。区别：
+
+| 维度 | `/telemetry` | 轨迹落盘 |
+| --- | --- | --- |
+| 数据位置 | 内存 | `~/.sid-code/trajectories/sessions/<id>/` |
+| 时效 | 会话进行中即时看 | 会话结束后看 |
+| 持久 | 会话结束即消失（内存） | 默认保留 100 个会话目录 |
+| 用途 | 看当前调用结构是否正常 | 事后诊断、跨会话统计 |
+
+想看当前会话"哪一步慢、花了多少"用 `/telemetry`；想回溯昨天那次会话用 `trace-digest` 读落盘。
+
+### 命令对比
+
+四个容易混的命令，各有各的数据源和定位：
+
+| 命令 | 数据源 | 回答什么 |
+| --- | --- | --- |
+| `/telemetry` | 内存当前会话 Span/Metric | 当前调用结构、哪步慢 |
+| `/trace` | 磁盘历史会话轨迹 | 排查某个历史会话（见上文） |
+| `/cost` | 会话状态 | 这次花了多少、缓存命中多少（见[成本与用量](/use/cost)） |
+| `/cache` | `usage-ledger.jsonl` | 跨会话缓存命中率趋势与退化监测（见[成本与用量](/use/cost)） |
+
+### 开启完整遥测与 Perfetto 导出
+
+`/telemetry` 命令本身不需要开配置就能跑（它读的是内存里 always-on 的轻量记录）。
+要拿到完整遥测体系（Metric 聚合 + JSONL 落盘 + Provider 健康），在 `~/.sid-code/settings.json` 配：
+
+```json
+{
+  "telemetry": {
+    "enabled": true,
+    "exporters": ["jsonl"]
+  }
+}
+```
+
+字段（`src/config/config.ts:935-944`、`schema.ts:702-713`）：
+
+| 字段 | 作用 | 默认 |
+| --- | --- | --- |
+| `telemetry.enabled` | 是否启用完整遥测 | `false` |
+| `telemetry.exporters` | 导出器列表：`"console"`（调试）/`"jsonl"`（落盘 `~/.sid-code/telemetry/`，50MB 轮转保留 5 个） | — |
+| `telemetry.batchSize` | 批量导出大小 | `512` |
+| `telemetry.flushIntervalMs` | 刷新间隔 | `5000`ms |
+| `telemetry.maxQueueSize` | 最大队列 | `2048` |
+
+### 导出 Perfetto trace
+
+想把会话的调用时间线用可视化工具打开，设环境变量 `SID_CODE_PERFETTO_TRACE`（`src/telemetry/perfetto.ts:34`）：
+
+```bash
+export SID_CODE_PERFETTO_TRACE=1          # 启用，落盘到默认文件名
+# 或指定路径：
+export SID_CODE_PERFETTO_TRACE=/tmp/my-trace.json
+```
+
+会话结束时（`TelemetryBus.shutdown()`，`bus.ts:262-270`）自动落盘一个 Perfetto
+Trace Event 格式的 JSON（`{ traceEvents: [{ name, cat, ph: "X", ts, dur, pid, tid, args }] }`）。
+每种 span kind 映射到不同 tid（invoke_agent/chat/execute_tool/blocked_on_user/hook_execution），
+在时间轴上分层显示。
+
+打开方式：
+
+- Chrome：地址栏 `chrome://tracing`
+- 或在线工具：<https://ui.perfetto.dev>
+
+这对分析"哪一步耗时、子代理在哪一段排队、工具调用有没有重叠"非常直观。
 
 ## 采集边界（如实说）
 

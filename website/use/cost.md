@@ -106,6 +106,103 @@ sid-code 会替你判断并在 `/cost` 里标注，就是那行括号里的提�
 | 中途别反复 `/model` 切换 | 换模型等于换缓存空间，前面攒的全不算 |
 | 长任务里别插无关的临时问题 | 插进去的内容会让后面每一轮的前缀都变 |
 
+## 跨会话：`/cache`
+
+`/cost` 只看**当前这次会话**。想知道"这周缓存命中率是不是在掉""哪个模型最近老断缓存"，
+用 `/cache`——它读的是跨会话的用量账本，不是内存里的当前会话。
+
+数据存在 `~/.sid-code/usage-ledger.jsonl`（append-only，每会话一行汇总，
+`src/telemetry/usage-ledger.ts`）。所以即使会话关了、机器重启了，历史还在。
+
+### 默认输出：长期命中率与省钱趋势
+
+```text
+/cache
+```
+
+无参显示长期统计：总命中率（百分比 + 绝对 token 数）、累计省钱（USD）、累计成本
++ 会话数、按模型分列的用量（按命中 token 降序）、各周期命中率的趋势 sparkline
+（`▁▃▅▆▇█` 字符图，一眼看出在涨还是在掉）。
+
+### 五个参数
+
+| 参数 | 作用 |
+| --- | --- |
+| `--period day\|week\|month` | 聚合粒度，默认 `day`。`week` 用 ISO 周键、`month` 用年月键 |
+| `--model <name>` | 按模型名过滤（精确或前缀匹配） |
+| `--breaks` | 显示最近 20 条缓存中断记录 + 健康度建议（`src/api/cache-detection.ts` 的 `getCacheHealthAdvice()`） |
+| `--history` | 跨会话缓存中断遥测历史聚合，从 `~/.sid-code/cache-breaks.jsonl` 读，按归因类型计数 |
+| `--prune <N>` | 滚动裁剪账本，只保留最近 N 行（账本太大时用） |
+
+### `--breaks`：缓存退化监测
+
+这是 `/cache` 最该单独说一节的能力。**缓存命中率从 90% 掉到 70%，不是 `/cost` 能看出来的——
+你得知道它为什么掉了、什么时候掉的**。`--breaks` 就是干这个的。
+
+检测机制（`src/api/cache-detection.ts` 的 `CacheBreakDetector`）：每轮请求前快照缓存关键状态
+（system prompt hash / 工具 schema hash / 模型 / cache control / beta headers / 消息数 /
+工具顺序），响应后比较 `cache_read_tokens` 变化。**下降 > 5% 且绝对值 > 2000 tokens**
+才算一次中断（`cache-detection.ts:115-116`）——避免正常波动报假警。
+
+15+ 种归因维度：模型变化、system prompt 变化、工具增删改、工具顺序变化、缓存策略变化、
+beta headers 变化、消息数量骤减（compact 导致）、TTL 过期、重试关联……
+
+`--history` 把这些中断落盘到 `~/.sid-code/cache-breaks.jsonl`（append-only），长期聚合，
+告诉你"最近哪种归因最频繁"。子代理的缓存中断**独立计**——`MultiSourceCacheDetector`
+按 agentId 维护独立基线（`cache-detection.ts:299-362`），不会把子代理的正常波动算进主会话。
+
+::: tip compact 会触发一次中断，但会被抑制
+`/compact` 会让消息数量骤减，正常应该报一次中断。但 `notifyCompaction()` /
+`notifyCacheDeletion()` 会跳过紧接的那次检测（假阳性抑制），所以 compact 后看到命中率
+下降是正常的，不会在 `--breaks` 里报成异常。
+:::
+
+## 单会话深度分析：`/insights`
+
+`/cost` 给数字，`/insights` 给**结构化报告**——这次会话到底发生了什么、哪里可能有问题。
+
+```text
+/insights              # 分析当前会话
+/insights latest       # 分析最近一个会话
+/insights 20260728-004217-cc55cf0d   # 分析指定会话
+```
+
+别名 `/analyze`。纯本地执行，不调模型（`src/command/commands/insights/insights.ts`），
+复用 `trace/digest.ts` 的 `renderHuman()` 渲染。产出结构（与
+[轨迹采集与可观测](/team/observability) 里 `trace-digest` 同源）：
+
+```text
+━━━ session <id>  [<exitStatus>] ━━━
+  模型/API 次数/步骤/耗时/成本/token
+
+用户意图: 1. <prompt>
+
+L0 事实层 (N) — 机器可验证,带出处,不含判断:
+  [高] <kind>: <detail>  ⊢ 出处: <file> @<lineRef> = <rawValue>
+L1 假设层 (N) — 待验证,先消解证伪条件再采信:
+  [中] <kind>: <detail>  ⚖ 证伪条件: <condition>
+
+工具序列 (N 次调用):  · <tool> / ✗ <tool>
+思维链要点:  💭 <thought>
+子代理执行:  <N> 个（成功/失败）  模式: 串行|并行|混合
+```
+
+**它最有价值的设计是 L0/L1 分层**：L0 事实层带出处（`messages.json` 的哪一行 = 什么值），
+L1 假设层带证伪条件。它不直接给你"结论是 X"，而是给可验证的事实 + 待验证的假设 +
+推翻假设需要看哪里。比如 `exit_status = error` 是事实，但假设层同时给了证伪路径——
+查 `messages.json` 的 attribution 会看到实际是正常 end_turn，说明 error 状态不等价于异常终止。
+
+### `/cost`、`/cache`、`/insights` 各管什么
+
+| 命令 | 回答什么 | 数据源 | 范围 |
+| --- | --- | --- | --- |
+| `/cost` | 这次花了多少钱、缓存命中多少 | 内存当前会话 | 单会话 |
+| `/cache` | 缓存命中率长期趋势、是否在退化 | `usage-ledger.jsonl` + `cache-breaks.jsonl` | 全部历史会话 |
+| `/insights` | 这次发生了什么、哪里可能有问题 | `trajectories/sessions/<id>/` 轨迹文件 | 单会话深度 |
+
+三者不重复、不替代：`/cost` 看当下花了多少、`/cache` 看长期缓存在不在退化、
+`/insights` 看单次会话的决策链与异常信号。
+
 ## 设花费上限
 
 单次会话给个硬顶，超了自动停：

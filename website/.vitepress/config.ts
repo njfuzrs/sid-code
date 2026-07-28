@@ -81,6 +81,7 @@ export default defineConfig({
             { text: "Skill", link: "/extend/skills" },
             { text: "Hook 指南", link: "/extend/hooks" },
             { text: "子代理", link: "/extend/subagents" },
+            { text: "Dynamic Workflows", link: "/extend/workflows" },
             { text: "MCP", link: "/extend/mcp" },
             { text: "代码智能（LSP）", link: "/extend/lsp" },
             { text: "无头模式与脚本化", link: "/extend/headless" },
