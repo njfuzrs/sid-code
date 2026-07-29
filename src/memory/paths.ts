@@ -273,13 +273,52 @@ export function isAutoMemoryEnabled(settingValue?: boolean): boolean {
 }
 
 /**
+ * 记忆类型前缀（与 MemoryType 封闭分类法一致）。
+ * 用于剥离 key 里已经带上的类型前缀，避免二次拼接。
+ */
+const MEMORY_TYPE_PREFIX_RE = /^(user|feedback|project|reference)[_-]+/;
+
+/**
+ * 剥掉 key 开头冗余的类型前缀：`project_xxx` → `xxx`。
+ *
+ * 三个调用方共用同一条规则（文件名生成、私有记忆 key 归一化、agent 记忆 key 归一化），
+ * 各自抄一份正则必然漂移，所以收敛到这里。
+ *
+ * 语义边界：
+ * - 只剥一层，且要求类型词后**紧跟分隔符**——`projection-matrix`、`userland-tooling`
+ *   这类以类型词开头的正常语义名不会被误伤。
+ * - **剥完为空则返回原值**（`project` 这种 key 整体就是类型词，清空会丢掉标识）。
+ * - 幂等：对已归一化的 key 再调用结果不变。
+ */
+export function stripMemoryTypePrefix(name: string): string {
+  const stripped = name.replace(MEMORY_TYPE_PREFIX_RE, "");
+  return stripped || name;
+}
+
+/**
  * 生成记忆文件名：<type>_<slug>.md
  * slug 由 name 派生为 kebab-case，截断到 60 字符。
+ *
+ * ─── 2026-07-30 修复：双类型前缀 ───
+ *
+ * 模型保存记忆时经常把类型写进 name（`name: project_xxx`），而本函数无条件在
+ * 前面再拼一次 `${type}_`，产出 `project_project-xxx.md`。后果不是文件名难看
+ * 而已——注入 system prompt 的索引行是 `- [key](文件名)`，key 与文件名从此
+ * **对不上**（实测某项目 47 条索引 47 条全部不一致），模型照着 key 拼路径
+ * 必然 Read 失败，照着链接读又要先看懂前缀是冗余的。
+ *
+ * 因此在派生 slug 前先剥掉 key 已有的类型前缀。只剥一层且只认封闭分类法里的
+ * 4 个词：`project_xxx` → `xxx`，但 `user-profile` 这种以类型词开头的**正常
+ * 语义名**不会被误伤（要求前缀后紧跟分隔符才算前缀）。
+ *
+ * 幂等：`memoryFilename("project", memoryFilename(...))` 不会继续脱层，
+ * 因为剥离只作用于 name，不作用于最终拼出的文件名。
  */
 export function memoryFilename(type: string, name: string): string {
   const slug = name
     .toLowerCase()
     .trim()
+    .replace(MEMORY_TYPE_PREFIX_RE, "")
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 60) || "untitled";

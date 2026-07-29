@@ -28,7 +28,7 @@ import {
   isMemoryType,
   type MemoryType,
 } from "./types.ts";
-import { memoryFilename } from "./paths.ts";
+import { memoryFilename, stripMemoryTypePrefix } from "./paths.ts";
 
 /** 单条记忆（向后兼容旧结构，新增可选 type/description） */
 export interface MemoryEntry {
@@ -183,11 +183,121 @@ export class MemoryStore {
       await this.migrateLegacyIfNeeded(this.projectDir, "project");
     }
 
+    // 2026-07-30：修掉 memoryFilename 的双前缀后，**存量**文件仍叫
+    // `project_project-xxx.md`。不迁移的话索引里的 key 与文件名会继续对不上
+    // （模型照 key 拼路径依旧 Read 失败），等于治标不治本，所以在这里一次性改名。
+    //
+    // 改名只治了文件名。`name:` frontmatter 里残留的类型前缀是同一个 bug 的另一半，
+    // 必须一起清（详见 migrateDoublePrefixNames 的「第二步」注释）。
+    const globalRenamed = await this.migrateDoublePrefixNames(this.globalDir);
+    const projectRenamed = this.projectDir
+      ? await this.migrateDoublePrefixNames(this.projectDir)
+      : false;
+
     await this.loadDir(this.globalDir, "global", this.globalEntries, this.globalFiles);
     if (this.projectDir) {
       await this.loadDir(this.projectDir, "project", this.projectEntries, this.projectFiles);
     }
     this.loaded = true;
+
+    // 改过名就必须重建索引：索引行里的链接是文件名，改名后旧索引整行都指向
+    // 不存在的文件——那正是本次要修的「Read 报文件不存在」，不能自己再造一遍。
+    // 放在 loaded=true 之后：writeIndex 依赖 loadDir 填好的 files 映射。
+    if (globalRenamed) await this.writeIndex(this.globalDir, this.globalEntries);
+    if (projectRenamed && this.projectDir) {
+      await this.writeIndex(this.projectDir, this.projectEntries);
+    }
+  }
+
+  /**
+   * 把存量的双类型前缀文件名归一化：`project_project-xxx.md` → `project_xxx.md`。
+   *
+   * 只处理「`<type>_` 后紧跟又一个类型词 + 分隔符」这一种确定形态，别的文件一律不碰。
+   * 判据来自 `memoryFilename`：新逻辑对同一个 key 会产出归一化后的名字，所以这里
+   * 用「重算文件名 ≠ 当前文件名」作为需要改名的信号，与生成侧共用同一套规则，
+   * 不会漂移。
+   *
+   * 三条安全约束：
+   * - **目标已存在则跳过**（不覆盖用户数据，宁可留着旧名也不丢内容）
+   * - 任一步失败只 warn 不抛（记忆加载不能因为改名失败而整体失效）
+   * - 幂等：改完再跑重算结果与现名一致，不再触发
+   *
+   * @returns 是否实际改过名（调用方据此决定要不要重建 MEMORY.md 索引）
+   */
+  private async migrateDoublePrefixNames(dir: string): Promise<boolean> {
+    if (!existsSync(dir)) return false;
+    let names: string[];
+    try {
+      names = await readdir(dir);
+    } catch {
+      return false;
+    }
+    let renamed = false;
+    const log = getLogger();
+    const existing = new Set(names);
+    for (const filename of names) {
+      if (!filename.endsWith(".md") || filename === INDEX_FILE) continue;
+      // 仅当形如 <type>_<type>[_-]... 时才考虑改名，避免误伤正常语义名
+      const m = filename.match(
+        /^(user|feedback|project|reference)_(user|feedback|project|reference)[_-]/,
+      );
+      if (!m) continue;
+      const type = m[1]!;
+      const bare = filename.replace(/\.md$/, "").slice(type.length + 1);
+      const target = memoryFilename(type, bare);
+      if (target === filename || existing.has(target)) continue;
+      try {
+        await rename(join(dir, filename), join(dir, target));
+        existing.delete(filename);
+        existing.add(target);
+        renamed = true;
+        log.debug("MEMORY", `记忆文件名归一化: ${filename} → ${target}`);
+      } catch (err) {
+        log.warn("MEMORY", `记忆文件名归一化失败（跳过）: ${filename} — ${(err as Error)?.message}`);
+      }
+    }
+
+    // ─── 第二步：清 `name:` frontmatter 里残留的类型前缀 ───
+    //
+    // 上面只改了文件名，key 来自 frontmatter 的 `name:`（parseMemoryFile），所以
+    // `name: project_xxx` 会继续把带前缀的 key 灌进索引方括号。这不是命名方案的
+    // 固有差异，而是同一个 bug 的另一半，两个具体危害：
+    //
+    // 1. **索引里出现自相矛盾的分类**：改名后文件真实 type 由文件名前缀决定，而
+    //    key 里那个前缀是模型当初随手写的，两者可以不一致——实测 7 条残留里有 4 条
+    //    矛盾（`key=project_...` 却在 `user_*.md` / `feedback_*.md` / `reference_*.md`
+    //    里）。模型读到「project_website-deploy…」会以为这是项目上下文，实际它被
+    //    分类为 reference。这是会误导判断的脏数据，不是无害的命名差异。
+    // 2. **key 不稳定**：同一条记忆下次被 set() 覆盖时，若模型传的 key 不带前缀，
+    //    会被当成新 key 而非覆盖，产出重复条目。
+    //
+    // 对照实现（claude-code memdir）索引行是 `- [Title](file.md)`，方括号里就是
+    // 人类可读标题、本就不等于文件名。所以**方括号 ≠ 文件名本身不是缺陷**，
+    // 我们只清「key 里混进了类型前缀」这一种确定的脏数据，不去强求 key == 文件名。
+    //
+    // 安全约束同上：只认封闭分类法 4 个词 + 紧跟分隔符（`projection-matrix` 这类
+    // 正常语义名不受影响）；单文件失败只 warn；幂等（清过一次后正则不再命中）。
+    for (const filename of existing) {
+      if (!filename.endsWith(".md") || filename === INDEX_FILE) continue;
+      const filePath = join(dir, filename);
+      try {
+        const text = await Bun.file(filePath).text();
+        const nameM = text.match(/^name:\s*(.+)$/m);
+        const rawName = nameM?.[1]?.trim();
+        if (!rawName) continue;
+        // 剥离规则与文件名生成共用 stripMemoryTypePrefix（剥完为空时返回原值，
+        // 所以 `name: project` 这种 key 整体是类型词的情况天然不动）
+        const cleaned = stripMemoryTypePrefix(rawName);
+        if (cleaned === rawName) continue;
+        await Bun.write(filePath, text.replace(/^name:\s*.+$/m, `name: ${cleaned}`));
+        renamed = true;
+        log.debug("MEMORY", `记忆 key 归一化: ${rawName} → ${cleaned}（${filename}）`);
+      } catch (err) {
+        log.warn("MEMORY", `记忆 key 归一化失败（跳过）: ${filename} — ${(err as Error)?.message}`);
+      }
+    }
+
+    return renamed;
   }
 
   /** 扫描目录加载所有记忆 .md 文件到内存缓存 */
@@ -401,18 +511,51 @@ export class MemoryStore {
     return summary;
   }
 
-  /** 读取项目 MEMORY.md 索引内容（供 Task 7 系统提示词注入） */
+  /**
+   * 读取 MEMORY.md 索引内容（供 Task 7 系统提示词注入）。
+   *
+   * ─── 2026-07-30 修复：两个让索引「指不到文件」的缺陷 ───
+   *
+   * **缺陷 A：只给文件名、不给目录 → 模型只能猜路径。**
+   * 索引正文是 `- [key](file.md)` 的裸相对链接，注入提示词只说「用 Read 工具
+   * 读取对应文件」，全程不出现记忆目录。实测模型把 `project_xxx.md` 拼到
+   * `~/.sid-code/memory/`（该目录真实存在且有文件，是最像的落点），而项目记忆
+   * 实际在 `~/.sid-code/projects/<key>/memory/`——文件名对、目录错、Read 报
+   * 「文件不存在」。修法是在每段索引前显式声明该段所在的**绝对目录**。
+   *
+   * **缺陷 B：global scope 索引从不注入。**
+   * 旧实现 `if (!this.projectDir) return null` + 只读 projectDir 的 INDEX_FILE，
+   * 于是 `~/.sid-code/memory/` 下的全局记忆（用户画像、跨项目偏好）永远进不了
+   * system prompt——写得进、读不到，与团队记忆曾经的「半黑洞」同型。而函数
+   * 的 doc 和 prompt.ts 的形参注释都写着「global/project scope」，属实现与
+   * 契约不符。现在两个 scope 各出一段，各自带自己的目录。
+   *
+   * 顺序：项目段在前、全局段在后——同 key 时项目记忆优先（与 `get()` 的覆盖
+   * 语义一致），越具体的越靠前。
+   */
   async getIndexContent(): Promise<string | null> {
     await this.load();
-    if (!this.projectDir) return null;
-    const indexPath = join(this.projectDir, INDEX_FILE);
-    if (!existsSync(indexPath)) return null;
-    try {
-      const text = await Bun.file(indexPath).text();
-      return text.trim() || null;
-    } catch {
-      return null;
+
+    const sections: string[] = [];
+    for (const [dir, label] of [
+      [this.projectDir, "项目记忆"] as const,
+      [this.globalDir, "全局记忆"] as const,
+    ]) {
+      if (!dir) continue;
+      const indexPath = join(dir, INDEX_FILE);
+      if (!existsSync(indexPath)) continue;
+      let text: string;
+      try {
+        text = (await Bun.file(indexPath).text()).trim();
+      } catch {
+        continue;
+      }
+      if (!text) continue;
+      // 目录必须是绝对路径且与链接可直接拼接：模型拿 `${dir}/${链接}` 就能 Read。
+      sections.push(`#### ${label}（目录：${dir}）\n\n${text}`);
     }
+
+    return sections.length > 0 ? sections.join("\n\n") : null;
   }
 
   /** 获取统计信息 */

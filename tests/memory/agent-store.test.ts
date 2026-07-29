@@ -79,3 +79,59 @@ describe("G13 — saveAgentMemory 写入端", () => {
     expect(idx).toBeNull();
   });
 });
+
+/**
+ * 2026-07-30 回归：agent scope 索引的可寻址性
+ *
+ * 与私有/团队记忆同源的两个缺陷（详见 docs/_template/多任务报错.txt 排查）：
+ * - 索引只给裸文件名、注入文案不给目录 → 子代理只能猜路径然后 Read 失败。
+ *   这里比主会话更严重：目录是 `~/.sid-code/memory/agents/<sanitizeAgentType(type)>/`，
+ *   slug 经过变换，子代理无法从 agentType 反推。
+ * - key 混进类型前缀 → 索引方括号自带一个可能与文件真实分类矛盾的分类词。
+ */
+describe("agent 记忆索引可寻址性（2026-07-30 回归）", () => {
+  test("索引带绝对目录，且「目录 + 链接文件名」能解析到真实文件", async () => {
+    const { saveAgentMemory, getAgentIndexContent } = await import("../../src/memory/agent-store.ts");
+    const { getAgentMemPath } = await import("../../src/memory/paths.ts");
+    await saveAgentMemory("code-review", "prefer-early-return", "偏好提前 return");
+
+    const idx = (await getAgentIndexContent("code-review"))!;
+    const dir = getAgentMemPath("code-review");
+    expect(idx).toContain(dir);
+
+    const link = idx.match(/\]\(([^)]+)\)/)?.[1];
+    expect(link).toBeDefined();
+    expect(existsSync(join(dir, link!))).toBe(true);
+  });
+
+  test("注入文案指明用「目录 + 链接文件名」拼路径，并警告不要用 key", async () => {
+    const { saveAgentMemory, buildAgentMemoryInjection } = await import("../../src/memory/agent-store.ts");
+    await saveAgentMemory("code-review", "prefer-early-return", "偏好提前 return");
+
+    const section = await buildAgentMemoryInjection("code-review");
+    expect(section).toContain("绝对路径");
+    expect(section).toContain("不要拿 key 拼路径");
+  });
+
+  test("key 自带类型前缀时不产生双前缀文件名，索引 key 也已归一化", async () => {
+    const { saveAgentMemory, getAgentIndexContent } = await import("../../src/memory/agent-store.ts");
+    const { getAgentMemPath } = await import("../../src/memory/paths.ts");
+    await saveAgentMemory("code-review", "project_review-gotcha", "评审坑位");
+
+    const dir = getAgentMemPath("code-review");
+    const entries = readdirSync(dir).filter((f) => f !== "MEMORY.md");
+    // 文件名不含双前缀
+    expect(entries.some((f) => /^(user|feedback|project|reference)_(user|feedback|project|reference)[_-]/.test(f))).toBe(false);
+
+    const idx = (await getAgentIndexContent("code-review"))!;
+    // 方括号里的 key 不再残留类型前缀
+    const keys = [...idx.matchAll(/- \[([^\]]+)\]/g)].map((m) => m[1]!);
+    expect(keys.every((k) => !/^(user|feedback|project|reference)[_-]/.test(k))).toBe(true);
+    expect(keys).toContain("review-gotcha");
+  });
+
+  test("无记忆时仍返回空串（不注入空段）", async () => {
+    const { buildAgentMemoryInjection } = await import("../../src/memory/agent-store.ts");
+    expect(await buildAgentMemoryInjection("never-used")).toBe("");
+  });
+});

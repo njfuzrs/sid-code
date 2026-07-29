@@ -219,6 +219,61 @@ describe("Read 工具 — 二进制内容检测 (P1)", () => {
 
     expect(result.isError).toBeUndefined();
   });
+
+  /**
+   * 2026-07-30 回归：报错必须可定位。
+   *
+   * 事故：src/permission/denial-tracking.ts 6838 字节里只有 1 个字面 NUL（作者本意是
+   * 写 \x00 转义当分隔符）。旧报错只说「包含二进制数据」，模型为定位这一个字节连烧
+   * 5+ 次工具调用（cat → file+tr 数 NUL → tr -d → python3 找偏移），而偏移/总数
+   * 工具侧本来就已算出，只是没说。
+   */
+  test("NUL 报错给出首个字节的偏移与行列号", async () => {
+    // 第 3 行第 6 列（1-based）是 NUL
+    const content = Buffer.from("line1\nline2\nabcde\x00tail\n");
+    const filePath = makeTmpFile(content, "one-nul.dat");
+    const tool = new ReadTool();
+    const result = await tool.execute({ file_path: filePath });
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("字节偏移 17");
+    expect(result.output).toContain("第 3 行第 6 列");
+    expect(result.output).toContain("共 1 个");
+  });
+
+  test("极少量 NUL 时给出「改用 \\x00 转义」的修法提示", async () => {
+    const content = Buffer.from("const sep = `a\x00b`;\n");
+    const filePath = makeTmpFile(content, "src-like.dat");
+    const tool = new ReadTool();
+    const result = await tool.execute({ file_path: filePath });
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("\\x00");
+    expect(result.output).toContain("不是文件损坏");
+  });
+
+  test("大量 NUL 时提示确为二进制文件，不给源码修法", async () => {
+    const buf = Buffer.alloc(64, 0);
+    const filePath = makeTmpFile(buf, "real-binary.dat");
+    const tool = new ReadTool();
+    const result = await tool.execute({ file_path: filePath });
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("大概率确实是二进制文件");
+    expect(result.output).not.toContain("不是文件损坏");
+  });
+
+  test("占比超阈值的报错给出百分比与首个控制字符位置", async () => {
+    const buf = Buffer.alloc(100);
+    for (let i = 0; i < 100; i++) buf[i] = i < 15 ? 1 : 65;
+    const filePath = makeTmpFile(buf, "ratio.dat");
+    const tool = new ReadTool();
+    const result = await tool.execute({ file_path: filePath });
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("15.0%");
+    expect(result.output).toContain("字节偏移 0");
+  });
 });
 
 describe("Read 工具 — 目录路径检测 (P1)", () => {

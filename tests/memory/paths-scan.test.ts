@@ -12,6 +12,7 @@ import {
   validateMemoryPath,
   isAutoMemPath,
   memoryFilename,
+  stripMemoryTypePrefix,
 } from "../../src/memory/paths.ts";
 import { scanMemoryFiles, formatMemoryManifest, parseFrontmatter, stripFrontmatter } from "../../src/memory/scan.ts";
 import { memoryAgeDays, memoryAge, buildFreshnessWarning } from "../../src/memory/freshness.ts";
@@ -79,6 +80,53 @@ describe("paths — 安全验证", () => {
   test("memoryFilename 生成 <type>_<slug>.md", () => {
     expect(memoryFilename("user", "Backend Engineer Role")).toBe("user_backend-engineer-role.md");
     expect(memoryFilename("feedback", "测试")).toMatch(/^feedback_.*\.md$/);
+  });
+
+  // 2026-07-30 回归：key 自带类型前缀时不得二次拼接。
+  // 旧实现产出 project_project-xxx.md，导致索引里的 key 与文件名对不上，
+  // 模型照 key 拼路径必然 Read 失败（实测某项目 47 条索引 47 条全不一致）。
+  test("memoryFilename 剥离 key 已有的类型前缀（不产生双前缀）", () => {
+    expect(memoryFilename("project", "project_my-thing")).toBe("project_my-thing.md");
+    expect(memoryFilename("feedback", "feedback-my-pref")).toBe("feedback_my-pref.md");
+    // 前缀与 type 不同也剥（文件名里的 type 才是权威分类）
+    expect(memoryFilename("reference", "project-cron-command")).toBe("reference_cron-command.md");
+    // 只剥一层
+    expect(memoryFilename("project", "project_project_double")).toBe("project_project-double.md");
+  });
+
+  test("memoryFilename 不误伤以类型词开头的正常语义名", () => {
+    // 类型词后没有分隔符 → 不是前缀，是词的一部分
+    expect(memoryFilename("project", "projection-matrix")).toBe("project_projection-matrix.md");
+    expect(memoryFilename("user", "userland-tooling")).toBe("user_userland-tooling.md");
+  });
+
+  test("memoryFilename 幂等：对已归一化的 key 重复调用结果不变", () => {
+    const once = memoryFilename("project", "my-thing");
+    expect(once).toBe("project_my-thing.md");
+    expect(memoryFilename("project", "my-thing")).toBe(once);
+  });
+
+  // 共享给三个调用方（文件名生成 / 私有记忆 key 归一化 / agent 记忆 key 归一化），
+  // 各自抄一份正则必然漂移，故收敛为一个导出函数。
+  test("stripMemoryTypePrefix 剥掉冗余类型前缀", () => {
+    expect(stripMemoryTypePrefix("project_my-thing")).toBe("my-thing");
+    expect(stripMemoryTypePrefix("feedback-my-pref")).toBe("my-pref");
+    expect(stripMemoryTypePrefix("user__double-sep")).toBe("double-sep");
+  });
+
+  test("stripMemoryTypePrefix 不误伤以类型词开头的正常语义名", () => {
+    expect(stripMemoryTypePrefix("projection-matrix")).toBe("projection-matrix");
+    expect(stripMemoryTypePrefix("userland-tooling")).toBe("userland-tooling");
+  });
+
+  test("stripMemoryTypePrefix 剥完为空时返回原值（不把 key 清空）", () => {
+    expect(stripMemoryTypePrefix("project")).toBe("project");
+    expect(stripMemoryTypePrefix("project_")).toBe("project_");
+  });
+
+  test("stripMemoryTypePrefix 幂等", () => {
+    const once = stripMemoryTypePrefix("project_my-thing");
+    expect(stripMemoryTypePrefix(once)).toBe(once);
   });
 });
 

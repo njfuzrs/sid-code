@@ -20,6 +20,7 @@ import {
   ensureAgentMemPath,
   getAgentMemPath,
   memoryFilename,
+  stripMemoryTypePrefix,
 } from "./paths.ts";
 import { MEMORY_LIMITS, isMemoryType, type MemoryType } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -27,13 +28,24 @@ import { getLogger } from "../debug/logger.ts";
 /**
  * 读取某 agent 类型累积的 MEMORY.md 索引内容（供 system prompt 注入）。
  * 目录或索引不存在、读失败、内容为空均返回 null。
+ *
+ * ─── 2026-07-30：与私有/团队索引同步修掉「只给文件名不给目录」 ───
+ *
+ * 索引行是 `- [key](file.md)` 的裸相对链接，而注入文案只说「用 Read 读取对应文件」。
+ * 子代理无从知道目录在哪，只能猜路径然后 Read 报「文件不存在」——主会话已实测过
+ * 这个失败（模型把文件名拼到了 `~/.sid-code/memory/`）。
+ *
+ * 这里比主会话更严重：agent 记忆目录是 `~/.sid-code/memory/agents/<sanitized-type>/`,
+ * 那个 slug 经过 sanitizeAgentType 变换，**子代理根本无法从 agentType 反推出来**。
+ * 所以必须显式给出绝对目录。
  */
 export async function getAgentIndexContent(agentType: string): Promise<string | null> {
   const indexPath = getAgentMemoryIndexPath(agentType);
   if (!existsSync(indexPath)) return null;
   try {
-    const text = await Bun.file(indexPath).text();
-    return text.trim() || null;
+    const text = (await Bun.file(indexPath).text()).trim();
+    if (!text) return null;
+    return `#### ${agentType} 记忆（目录：${getAgentMemPath(agentType)}）\n\n${text}`;
   } catch {
     return null;
   }
@@ -56,7 +68,9 @@ export function buildAgentMemorySection(
   return `<system-reminder>
 ### ${agentType} 类型的历史积累记忆（跨会话）
 
-下面是「${agentType}」这一类子代理在过往会话中沉淀的领域经验索引。这些是同类任务反复积累的可复用知识（常见坑、领域约定、有效方法）。开始任务前先参考;需要某条记忆的完整内容时，用 Read 工具读取对应文件：
+下面是「${agentType}」这一类子代理在过往会话中沉淀的领域经验索引。这些是同类任务反复积累的可复用知识（常见坑、领域约定、有效方法）。开始任务前先参考。
+需要某条记忆的完整内容时，用 Read 工具读取「段标题里的目录 + 链接里的文件名」拼成的绝对路径。
+注意：括号里的文件名才是真实文件名，方括号里的 key 可能与文件名不同，**不要拿 key 拼路径**。
 
 ${indexContent}
 </system-reminder>`;
@@ -114,7 +128,12 @@ function parseAgentMemoryHead(text: string, filename: string): { key: string; de
     }
     body = text.replace(AGENT_FRONTMATTER_RE, "").trim();
   }
-  const key = name || filename.replace(/\.md$/, "");
+  // key 归一化：剥掉 name 里冗余的类型前缀（与私有记忆同规则）。
+  // 不剥的话索引方括号会出现 `project_xxx` 这种自带分类的 key，而文件真实分类由
+  // 文件名前缀决定，两者可以矛盾 —— 私有记忆里实测 7 条残留有 4 条矛盾。
+  // 这里在解析处收口，读写两侧都走 parseAgentMemoryHead，一处修即全覆盖。
+  const rawKey = name || filename.replace(/\.md$/, "");
+  const key = stripMemoryTypePrefix(rawKey);
   if (!description) description = (body.split("\n")[0] || "").slice(0, 150);
   return { key, description, type: type ?? inferAgentMemoryType(key, body) };
 }

@@ -17,6 +17,7 @@ import { extname } from "path";
 import { glob } from "glob";
 import { getLogger } from "../debug/logger.ts";
 import { normalizeToolPath } from "./path-utils.ts";
+import { isBinaryContent, BINARY_CHECK_WINDOW } from "./binary-detect.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
 
@@ -60,24 +61,9 @@ function hasBinaryExtension(filePath: string): boolean {
   return BINARY_EXTENSIONS.has(ext);
 }
 
-/**
- * 检查缓冲区是否包含二进制内容（null 字节或高比例不可打印字符）
- * 仅检查前 8192 字节
- */
-function isBinaryContent(buffer: Buffer): boolean {
-  const checkSize = Math.min(buffer.length, 8192);
-  let nonPrintable = 0;
-
-  for (let i = 0; i < checkSize; i++) {
-    const byte = buffer[i]!;
-    if (byte === 0) return true;
-    if (byte < 32 && byte !== 9 && byte !== 10 && byte !== 13) {
-      nonPrintable++;
-    }
-  }
-
-  return checkSize > 0 && nonPrintable / checkSize > 0.1;
-}
+// 二进制检测复用 ./binary-detect.ts —— 原先这里与 read.ts 各有一份逐字节相同的
+// 实现，判据改一处就会漏另一处。read_many 只统计跳过数（不给单文件报错），
+// 因此只用布尔封装即可；详细诊断信息由 read 工具在单文件路径上给出。
 
 /** ReadMany 工具输入 schema —— 运行时校验 + JSON Schema 生成的唯一真相源 */
 const readManySchema = lazySchema(() =>
@@ -217,7 +203,7 @@ export class ReadManyTool implements Tool {
           const content = await file.text();
 
           // 二进制内容检测
-          const contentBuffer = Buffer.from(content.slice(0, 8192));
+          const contentBuffer = Buffer.from(content.slice(0, BINARY_CHECK_WINDOW));
           if (contentBuffer.length > 0 && isBinaryContent(contentBuffer)) {
             skippedBinaryContent++;
             return null;

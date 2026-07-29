@@ -224,13 +224,15 @@ print("Hello World")
 
 ## 任务状态
 - pending: 尚未开始
-- in_progress: 正在进行（**恰好一个，不多不少** — 任何时候都必须有且仅有一个 in_progress）
+- in_progress: 正在进行（**理想情况下同时只保留一个**）
 - completed: 已完成
 
 ## 任务管理规则
 - 实时更新状态
 - 完成后立即标记（不要攒到最后一起标记）
-- **恰好一个 in_progress** — 任何时候都必须有且仅有一个 in_progress 任务
+- **同一时刻理想情况下只有一个 in_progress** —— 这是让进度展示清晰的建议，不是硬性校验：
+  多个 in_progress 不会被拒绝，清单照常保存，只会在返回里附一句提示。
+  但请把它当默认习惯：一次专注一件事，做完再流转下一件。
 - 完成当前任务再开始新任务
 - 删除不再相关的任务
 
@@ -360,23 +362,41 @@ print("Hello World")
     // 检查全部完成（必须在 in_progress 校验之前，否则 [{completed}, {completed}] 会被误杀）
     const allDone = todos.length > 0 && todos.every(t => t.status === "completed");
 
-    // 检查 in_progress 数量：恰好一个（对齐 Claude Code 约束）
-    // 放行：全 pending（首次创建）和 全 completed（清空列表）
-    // 拦截：多个 in_progress / 存在 completed 但无 in_progress
+    // ─── 2026-07-30 修复：「恰好一个 in_progress」从硬拒绝降级为软提示 ───
+    //
+    // 旧实现把这条**提示词层面的规范**做成了 isError 硬拦截，直接丢弃整次写入。
+    // 三条证据说明这是过度执行：
+    //
+    // 1. 对标实现只把它当建议，不做校验。claude-code 的 TodoWriteTool.call() 里
+    //    **没有任何** in_progress 计数检查，规范只写在提示词里且明确带 hedge:
+    //    「**Ideally** you should only have one todo as in_progress at a time」。
+    //    其 V2 的 TaskUpdateTool 同样不校验。
+    // 2. 对标实现的 UI 按**复数**渲染 in_progress（TaskListV2.tsx:153
+    //    `tasks.filter(t => t.status === 'in_progress').sort(byIdAsc)`），我们的
+    //    TodoPanel.tsx:287 也一样——即多个 in_progress 在展示层根本不是问题。
+    // 3. 我们自己的 structured-task-store（多 agent 协作）本来就允许多个 in_progress
+    //    并存（每个 teammate 各占一个，见 structured-task-store.ts:353），
+    //    两套任务模型对同一语义给出相反的硬约束，本身就不自洽。
+    //
+    // 代价是实测的：某会话提交 12 条清单、其中 4 条 in_progress 被拒，模型 105.4 秒
+    // 后重试，而两次提交的 content 数组**逐字相同**、只有 status 不同——这次往返
+    // 没有产生任何信息，纯属自伤。
+    //
+    // 现在的处理：**接受写入**，把规范作为提示附在成功输出里。模型能看到纠正建议，
+    // 但已经做的工作不会被丢掉。同理适用于「有非 pending 却无 in_progress」——
+    // 例如 [completed, pending, pending] 是刚做完一项、正要挑下一项的正常中间态。
+    const statusAdvisories: string[] = [];
     if (!allDone) {
       const inProgressCount = todos.filter(t => t.status === "in_progress").length;
       const hasNonPending = todos.some(t => t.status !== "pending");
       if (inProgressCount > 1) {
-        return {
-          output: `不能有多个 in_progress 任务（当前 ${inProgressCount} 个）。请只保留一个 in_progress，其余设为 pending。`,
-          isError: true,
-        };
-      }
-      if (hasNonPending && inProgressCount === 0) {
-        return {
-          output: `当前没有 in_progress 任务。请将一个任务标记为 in_progress 再提交。任何时候都必须有恰好一个 in_progress。`,
-          isError: true,
-        };
+        statusAdvisories.push(
+          `提示：当前有 ${inProgressCount} 个 in_progress。清单已按你提交的内容保存，但建议同一时刻只保留 1 个 in_progress、其余置 pending——这样进度展示更清晰，也更容易发现自己是否在并行摊开太多任务。`,
+        );
+      } else if (hasNonPending && inProgressCount === 0) {
+        statusAdvisories.push(
+          "提示：当前没有 in_progress 任务。清单已保存，但若你正要继续推进，记得把下一项置为 in_progress。",
+        );
       }
     }
 
@@ -396,9 +416,12 @@ print("Hello World")
       };
     }
 
-    // 返回 diff
+    // 返回 diff（附上状态建议——写入已成功，建议不影响结果）
+    const diff = formatTodoDiff(oldTodos, this.currentTodos);
     return {
-      output: formatTodoDiff(oldTodos, this.currentTodos),
+      output: statusAdvisories.length > 0
+        ? `${diff}\n\n${statusAdvisories.join("\n")}`
+        : diff,
     };
   }
 }

@@ -46,7 +46,15 @@ describe("TodoWriteTool", () => {
     expect(result.output).toContain("进度: 0/2 已完成, 1 进行中, 1 待开始");
   });
 
-  it("拒绝多个 in_progress", async () => {
+  /**
+   * 2026-07-30 行为变更：「恰好一个 in_progress」从硬拒绝降级为软提示。
+   *
+   * 依据：claude-code 的 TodoWriteTool.call() 不做该校验（规范只在提示词里，且写作
+   * 「Ideally you should only have one」），其 UI 也按复数渲染 in_progress；我们自己的
+   * TodoPanel 与 structured-task-store 同样支持复数。旧硬拦截实测让模型白等 105.4 秒
+   * 重交一份 content 逐字相同、仅 status 不同的清单——纯自伤，无信息产出。
+   */
+  it("接受多个 in_progress，但附带软提示", async () => {
     const tool = new TodoWriteTool();
     const result = await tool.execute({
       todos: [
@@ -54,11 +62,16 @@ describe("TodoWriteTool", () => {
         makeTodo("任务2", "in_progress"),
       ],
     });
-    expect(result.isError).toBe(true);
-    expect(result.output).toContain("不能有多个 in_progress");
+    expect(result.isError).toBeFalsy();
+    // 清单真的存下来了（不是被丢弃）
+    expect(result.output).toContain("任务1");
+    expect(result.output).toContain("任务2");
+    expect(tool.getTodos()).toHaveLength(2);
+    // 建议仍然给到模型
+    expect(result.output).toContain("建议同一时刻只保留 1 个 in_progress");
   });
 
-  it("拒绝存在 completed 但无 in_progress 的列表", async () => {
+  it("接受 completed + pending（无 in_progress）的中间态，并提示", async () => {
     const tool = new TodoWriteTool();
     const result = await tool.execute({
       todos: [
@@ -66,8 +79,21 @@ describe("TodoWriteTool", () => {
         makeTodo("任务2", "pending"),
       ],
     });
-    expect(result.isError).toBe(true);
-    expect(result.output).toContain("in_progress");
+    expect(result.isError).toBeFalsy();
+    expect(tool.getTodos()).toHaveLength(2);
+    expect(result.output).toContain("没有 in_progress 任务");
+  });
+
+  it("单个 in_progress 时不附加任何提示", async () => {
+    const tool = new TodoWriteTool();
+    const result = await tool.execute({
+      todos: [
+        makeTodo("任务1", "in_progress"),
+        makeTodo("任务2", "pending"),
+      ],
+    });
+    expect(result.isError).toBeFalsy();
+    expect(result.output).not.toContain("提示：");
   });
 
   it("允许全 pending 列表（首次创建阶段）", async () => {

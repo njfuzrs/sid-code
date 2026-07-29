@@ -19,6 +19,7 @@ import { statSync } from "fs";
 import { extname } from "path";
 import { getLogger } from "../debug/logger.ts";
 import { normalizeToolPath, formatPathNotFoundError } from "./path-utils.ts";
+import { detectBinaryContent, formatBinaryRejection, BINARY_CHECK_WINDOW } from "./binary-detect.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
 
@@ -243,27 +244,8 @@ function renderNotebook(raw: string): string {
   return parts.join("\n");
 }
 
-/**
- * 检查缓冲区是否包含二进制内容（null 字节或高比例不可打印字符）
- * 仅检查前 8192 字节
- */
-function isBinaryContent(buffer: Buffer): boolean {
-  const checkSize = Math.min(buffer.length, 8192);
-  let nonPrintable = 0;
-
-  for (let i = 0; i < checkSize; i++) {
-    const byte = buffer[i]!;
-    // null 字节是二进制的强信号
-    if (byte === 0) return true;
-    // 统计非可打印、非空白字节
-    if (byte < 32 && byte !== 9 && byte !== 10 && byte !== 13) {
-      nonPrintable++;
-    }
-  }
-
-  // 超过 10% 不可打印字符 → 大概率是二进制
-  return checkSize > 0 && nonPrintable / checkSize > 0.1;
-}
+// 二进制检测已收敛到 ./binary-detect.ts（原先 read.ts 与 read-many.ts 各抄一份
+// 逐字节相同的实现，改一处漏一处）。判据不变，额外产出可定位的诊断信息。
 
 /** Read 工具输入 schema —— 运行时校验 + JSON Schema 生成的唯一真相源 */
 const readSchema = lazySchema(() =>
@@ -550,13 +532,18 @@ export class ReadTool implements Tool {
       // 读取文件内容
       const content = await file.text();
 
-      // P1: 二进制内容检测 — 扩展名未拦截但内容是二进制的情况
-      const contentBuffer = Buffer.from(content.slice(0, 8192));
-      if (contentBuffer.length > 0 && isBinaryContent(contentBuffer)) {
-        return {
-          output: `错误: 文件内容包含二进制数据，无法以文本形式读取: ${filePath}`,
-          isError: true,
-        };
+      // P1: 二进制内容检测 — 扩展名未拦截但内容是二进制的情况。
+      // 判据不变，但报错要带上「首个可疑字节的偏移/行列 + 总数 + 修法」——旧版只说
+      // 一句"包含二进制数据"，模型为定位单个 NUL 字节要连烧 5+ 次工具调用。
+      const contentBuffer = Buffer.from(content.slice(0, BINARY_CHECK_WINDOW));
+      if (contentBuffer.length > 0) {
+        const detection = detectBinaryContent(contentBuffer);
+        if (detection.isBinary) {
+          return {
+            output: formatBinaryRejection(filePath, detection, contentBuffer, fileSize),
+            isError: true,
+          };
+        }
       }
 
       // P2: BOM 剥离

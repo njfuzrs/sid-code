@@ -87,13 +87,19 @@ export async function rebuildTeamIndex(dir: string): Promise<void> {
 /**
  * 读取团队记忆 MEMORY.md 索引内容（供 system prompt 注入）。
  * 未启用 / 目录或索引不存在 / 读失败均返回 null。
+ *
+ * 2026-07-30：与私有索引同步修掉「只给文件名不给目录」——索引行是裸相对链接，
+ * 模型无从知道团队记忆目录在哪，只能猜路径然后 Read 失败。这里在正文前显式
+ * 声明绝对目录，模型拿「目录 + 链接文件名」即可直接 Read。
  */
 export async function getTeamIndexContent(cwd: string = process.cwd()): Promise<string | null> {
-  const indexPath = join(getTeamMemPath(cwd), INDEX_FILE);
+  const dir = getTeamMemPath(cwd);
+  const indexPath = join(dir, INDEX_FILE);
   if (!existsSync(indexPath)) return null;
   try {
-    const text = await readFile(indexPath, "utf8");
-    return text.trim() || null;
+    const text = (await readFile(indexPath, "utf8")).trim();
+    if (!text) return null;
+    return `#### 团队记忆（目录：${dir}）\n\n${text}`;
   } catch {
     return null;
   }
