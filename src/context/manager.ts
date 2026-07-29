@@ -744,8 +744,13 @@ export class Manager {
 
     // 深拷贝并清理（P1-3 + 9.3：占位符附带精准重读指引——含工具名 + input 摘要）
     // 使用 replacementState 保证同一 tool_use_id 的占位文本跨调用字节级一致（prompt cache 稳定）
+    // ⚠️ 必须用 `...msg` 默认透传：手写 `{role, content}` 会丢弃 `_meta`，
+    // 导致 DeepSeek 要求原样回传的 `reasoning_content`、压缩边界 `compact_boundary`、
+    // TUI 隐藏标记 `origin` 在长会话（触发本清理分支）里静默消失。
+    // 重建消息对象时一律「默认透传、只覆盖要改的字段」，别再写字段清单——
+    // 清单跟不上 Message 类型演进就是下一次静默丢字段。
     const result = cleaned.map((msg, msgIdx) => ({
-      role: msg.role,
+      ...msg,
       content: msg.content.map((block, blockIdx) => {
         const key = `${msgIdx}:${blockIdx}`;
         const meta = cleanMap.get(key);
@@ -870,10 +875,12 @@ export class Manager {
       });
 
       if (hadContent) {
+        // `...msg._meta` 而非整体覆盖：`origin`（TUI 隐藏标记）、`compact_boundary`
+        // 等已有元数据必须留下，只叠加 gc_released。
         this.messages[i] = {
-          role: msg.role,
+          ...msg,
           content: [{ type: "text", text: `[已释放] ${msg.role} 消息内容已被 GC 回收，详情见 compact_boundary` }],
-          _meta: { gc_released: true },
+          _meta: { ...msg._meta, gc_released: true },
         };
         releasedCount++;
       }

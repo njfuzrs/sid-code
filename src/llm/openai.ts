@@ -28,6 +28,7 @@ import { splitSystemByDynamicBoundary } from "../api/cache-strategy.ts";
 import { updateRateLimitStatus } from "../api/rate-limit.ts";
 import { estimateTextTokens } from "../context/token.ts";
 import { sanitizeStrings } from "./sanitize-unicode.ts";
+import { serializeToolResultContentForOpenAI } from "./openai-tool-result-content.ts";
 import { SseChunkDumper, currentSseDumpContext } from "./sse-chunk-dumper.ts";
 import { resolveHeaderTimeoutMs, resolveProviderStreamTimeouts } from "../config/network-profile.ts";
 import { buildResponsesRequest } from "./openai-responses-request.ts";
@@ -443,6 +444,16 @@ export class OpenAIProvider implements Provider {
             textParts.push(block.text);
           } else if (block.type === "thinking") {
             if (block.thinking) thinkingParts.push(block.thinking);
+          } else if (block.type === "redacted_thinking") {
+            // Anthropic 安全审查脱敏后的思考块。OpenAI 协议**无对应字段**，
+            // `data` 是不可读的密文，塞进 content 只会污染上下文 → 只能丢弃。
+            // 但必须**可观测**：此前它落进"未识别"静默消失，推理链断裂无迹可寻。
+            // 典型来路：Anthropic 侧历史 + 跨 provider fallback。
+            getLogger().warn(
+              "LLM:PROTOCOL",
+              `[${this.name()}] convertMessages 丢弃 redacted_thinking 块（OpenAI 协议无对应字段，` +
+                `data 为密文无法降级为文本）。跨 provider 回放 Anthropic 历史时会出现，推理链在此断裂。`,
+            );
           } else if (block.type === "tool_use") {
             // §2.3 fail-fast：空 id 的 tool_use 无法与后续 tool message 配对，
             // 原样转发必然触发 OpenAI 400。在转换层提前抛错，比让服务端 400 更易定位。
@@ -461,6 +472,14 @@ export class OpenAIProvider implements Provider {
                 arguments: JSON.stringify(block.input ?? {}),
               },
             });
+          } else {
+            // default 兜底告警：让"丢弃"可观测。手写分派链的通用病是跟不上 ContentBlock
+            // 类型演进——新增块类型若忘了在此加分支，此前会静默消失，只能靠事后审计发现。
+            getLogger().warn(
+              "LLM:PROTOCOL",
+              `[${this.name()}] convertMessages 遇到未识别的 assistant content block（` +
+                `type=${(block as { type?: string }).type}），已丢弃。请在此补齐分派分支。`,
+            );
           }
         }
 
@@ -533,7 +552,7 @@ export class OpenAIProvider implements Provider {
               tool_call_id: block.tool_use_id,
               // §2.1：规范要求 tool message content 为非空 string。工具返回空串
               //（如 bash 无输出、grep 无匹配）时部分严格网关会判非法 → 400，兜底占位。
-              content: block.content && block.content.length > 0 ? block.content : "(empty)",
+              content: serializeToolResultContentForOpenAI(block, this.name()),
             });
           }
         }

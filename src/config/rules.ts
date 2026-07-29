@@ -13,8 +13,9 @@
  * - Memory: 记忆键值对（累积）
  */
 
-import { join, dirname } from "path";
+import { join, dirname, relative, sep } from "path";
 import { homedir, platform } from "os";
+import { execFileSync } from "child_process";
 import { existsSync, watch, realpathSync } from "fs";
 import type { FSWatcher } from "fs";
 import { getLogger } from "../debug/logger.ts";
@@ -206,6 +207,123 @@ export function parseRulesFrontmatter(content: string): { paths?: string[]; body
   }
   return { paths, body };
 }
+
+/**
+ * 采集「当前活动范围」文件列表（相对项目根），供 loadAllCLAUDEmd 的 `activeFiles` 使用。
+ *
+ * ## 为什么需要它
+ *
+ * `rulesPathsMatch` 在 `activeFiles` 为空时对**所有**带 `paths:` 的规则返回 false。
+ * 而全部 5 个生产调用点此前都不传 `activeFiles`，于是主加载路径的作用域规则永不生效
+ * （死闸门）：带 `paths:` 的子目录 CLAUDE.md 在启动阶段的系统提示词里永远缺席，
+ * 只能等运行时真正触达该目录由 JIT 补——若整场会话不触碰该目录（纯对话/纯规划），
+ * 用户配置的作用域规则整场缺失。
+ *
+ * ## 两个信号，各自补对方的盲区
+ *
+ * 1. **cwd 目录标记**（`"<relDir>/"`）——代表「用户当前在哪工作」。
+ *    带末尾 `/` 是刻意的：`Bun.Glob("src/ui/**").match("src/ui")` 为 **false**，
+ *    而 `.match("src/ui/")` 为 true。少这个斜杠整个信号会静默失效。
+ * 2. **git 变更文件的真实相对路径**——代表「用户正在改什么」。
+ *    这一路必不可少：目录标记只能满足 `dir/**` 形状的规则，
+ *    对 `paths: ["**\/*.py"]`、`paths: ["src/ui/*.ts"]` 这类**扩展名作用域**一律不匹配
+ *    （实测：`Bun.Glob("**\/*.py").match("src/")` = false）。只用目录标记等于把
+ *    扩展名作用域规则继续关在门外，只修了一半。
+ *
+ * ## git 变更必须按 cwd 收窄（否则会重演历史事故）
+ *
+ * 只取**cwd 子树内**的变更文件，不是全仓变更。理由是一起真实事故：
+ * cwd=`<repo>/website` 做文档任务，却被注入 `src/ui/CLAUDE.md` 的 TUI 规范，
+ * 模型连续 6 次自述"注入的规范与当前任务无关"
+ * （回归测试见 `tests/config/rules-layered.test.ts` 的"同层多文件…夹带"一例）。
+ * 本仓库这类项目工作区里 `src/ui` 长期有未提交改动，若取全仓变更，
+ * 那份 TUI 规范会在任何 cwd 下都被重新拉进上下文——等于换个入口把事故重演一遍。
+ *
+ * 按 cwd 子树收窄后语义自洽：**作用域 = 我此刻工作的范围**。
+ * cwd=项目根时全仓变更都算（用户确实在全项目范围工作）；
+ * cwd=`website` 时只有 website 的变更算，`src/ui` 规范正确落空。
+ *
+ * ## 刻意不做的事
+ *
+ * - **不做全仓扫描**：大仓下遍历文件树会拖慢启动（伤"更快"），而 git 变更 + cwd
+ *   已覆盖"用户此刻关心什么"的绝大多数情形。
+ * - **不 fail-open**：git 不可用/非仓库时返回的仍是仅含 cwd 标记的列表，
+ *   而不是"匹配一切"。作用域规则的语义是收窄注入面，采集失败就退回更保守的一侧。
+ *
+ * @param projectRoot 项目根（glob 的书写基准）
+ * @param cwd 当前工作目录，默认 `process.cwd()`
+ */
+export function collectActiveScopeFiles(
+  projectRoot: string,
+  cwd: string = process.cwd(),
+): string[] {
+  const files = new Set<string>();
+
+  // 1. cwd 目录标记：末尾斜杠不可省（见上方说明）
+  try {
+    const relDir = relative(projectRoot, cwd);
+    // relDir 为空 = cwd 就是项目根；此时用 "" 无意义，跳过（根目录不构成作用域收窄信号）
+    if (relDir && !relDir.startsWith("..")) {
+      files.add(relDir.split(sep).join("/") + "/");
+    }
+  } catch { /* 路径不可比较时跳过该信号 */ }
+
+  // 2. git 变更文件（已追踪的改动 + 未追踪的新文件），取相对项目根路径。
+  //    只保留 cwd 子树内的（见上方"必须按 cwd 收窄"）。cwd=项目根时 prefix 为空 → 全收。
+  let prefix = "";
+  try {
+    const relDir = relative(projectRoot, cwd);
+    if (relDir && !relDir.startsWith("..")) prefix = relDir.split(sep).join("/") + "/";
+  } catch { /* 不可比较时按"全收"处理，与 cwd=根 同语义 */ }
+
+  for (const p of listGitChangedFiles(projectRoot)) {
+    if (!prefix || p.startsWith(prefix)) files.add(p);
+  }
+
+  return Array.from(files);
+}
+
+/**
+ * 列出 git 视角下「正在改动」的文件（相对项目根，正斜杠分隔）。
+ * 失败一律返回空数组——采集不到就退回更保守的一侧，绝不 fail-open。
+ */
+function listGitChangedFiles(projectRoot: string): string[] {
+  try {
+    // --no-optional-locks：只读采集不抢 index.lock，避免干扰用户并行的 git 命令（对齐 attachments.ts）
+    // -z：NUL 分隔，路径含空格/中文/引号时不会被 git 转义成带引号的形式
+    // -uall：**必需**。默认 `-unormal` 会把未追踪目录折叠成 `website/` 一条，
+    //   于是新建文件的**扩展名**根本不出现在采集结果里，`paths: ["**/*.py"]`
+    //   这类作用域对新文件一律失配 —— 等于扩展名作用域只修了一半。
+    const out = execFileSync(
+      "git",
+      ["--no-optional-locks", "status", "--porcelain", "-z", "-uall"],
+      { cwd: projectRoot, stdio: "pipe", timeout: 3000, maxBuffer: 4 * 1024 * 1024 },
+    ).toString();
+
+    const results: string[] = [];
+    // porcelain -z 每条记录形如 `XY <path>\0`；重命名/复制（R/C）多带一个 `<origPath>\0`
+    const records = out.split("\0");
+    for (let i = 0; i < records.length; i++) {
+      const rec = records[i];
+      if (!rec || rec.length < 4) continue;
+      const status = rec.slice(0, 2);
+      const path = rec.slice(3);
+      if (path) results.push(path);
+      // R/C 状态多消费一个「原路径」记录，否则下一轮会把它当成 status 前缀误解析
+      if (status[0] === "R" || status[0] === "C") i++;
+      if (results.length >= ACTIVE_SCOPE_MAX_FILES) break;
+    }
+    return results;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 采集上限：activeFiles 只用于 glob 匹配（O(rules × files)），
+ * 大量改动的仓库下无需全量——超出部分对"命中哪些作用域"的判定几乎无增益。
+ */
+const ACTIVE_SCOPE_MAX_FILES = 500;
 
 /**
  * 判断规则的 paths 条件是否匹配给定的活动文件列表。
@@ -716,14 +834,17 @@ async function loadLocalRules(projectRoot: string): Promise<ProjectRules | null>
  *   User(全局) → Project(项目根) → Subdir(子目录) → rulesDir(.claude/rules/) → Local(CLAUDE.local.md)
  *
  * @param startDir   起始目录
- * @param opts.activeFiles  当前活动文件列表（相对项目根），用于 frontmatter paths 条件过滤
+ * @param opts.activeFiles  当前活动文件列表（相对项目根），用于 frontmatter paths 条件过滤。
+ *   **不传时自动采集**（见 §2.5）——此前默认 `[]`，而 `rulesPathsMatch` 对空列表一律拒绝，
+ *   于是全部生产调用点（都没传）都让作用域规则永不生效。默认值必须是"采集"而非"空"：
+ *   留成空的话，下一个新增调用点还会再犯同一个错。
+ *   显式传 `[]` 仍表示"无活动范围"（测试用它断言拒绝行为）。
  */
 export async function loadAllCLAUDEmd(
   startDir: string,
   opts?: { activeFiles?: string[] },
 ): Promise<ProjectRules | null> {
   const log = getLogger();
-  const activeFiles = opts?.activeFiles ?? [];
   // M9：跨所有规则目录/文件共享的 realpath 去重集合，防 symlink 重复加载 / 环。
   const seenRealPaths = new Set<string>();
 
@@ -765,6 +886,19 @@ export async function loadAllCLAUDEmd(
   // 项目根 = 父链最深一层所在目录（无命中时回退 startDir），供子目录/rulesDir 定位
   const projectPath = chainFiltered.length > 0 ? chainFiltered[chainFiltered.length - 1] : null;
   const projectRoot = projectPath ? dirname(projectPath) : startDir;
+
+  // 2.5 activeFiles 兜底采集（第 1 条"死闸门"的根治点）。
+  //
+  // 必须放在这里而不是函数入口：采集需要 projectRoot 作为 glob 书写基准，
+  // 而 projectRoot 要等父链扫完（上面几行）才知道。
+  //
+  // 为什么改默认值而不是让 5 个调用点各自传：调用点手传要求每个入口自己算一次
+  // projectRoot（还得跟这里的算法保持一致），且新增入口必然漏传——这正是本缺陷的成因。
+  // 默认即采集后，"忘记传"不再是一种可能的错误。
+  const activeFiles = opts?.activeFiles ?? collectActiveScopeFiles(projectRoot, startDir);
+  if (!opts?.activeFiles) {
+    log.debug("RULES", `自动采集作用域活动文件 ${activeFiles.length} 个（projectRoot=${projectRoot}）`);
+  }
 
   // 实际合并进结果的文件清单（按合并顺序）。这是 JIT 预标记的事实源：
   // 只预标记真正注入了的文件，被作用域拦下的**不标记**，留给 JIT 在触达对应目录时按需注入。

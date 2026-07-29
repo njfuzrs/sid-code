@@ -250,6 +250,8 @@ export async function buildInitialSystemPrompt(
   const disableProjectRules = process.env.SID_CODE_DISABLE_PROJECT_RULES === "1";
   const projectRules = disableProjectRules ? null : await (async () => {
     const { loadAllCLAUDEmd } = await import("../config/rules.ts");
+    // activeFiles 不在此处传：loadAllCLAUDEmd 内部按自己算出的 projectRoot 自动采集
+    // （见该函数 §2.5）。调用点手传会让 5 个入口各算一次 projectRoot、且新入口必然漏传。
     return loadAllCLAUDEmd(process.cwd());
   })();
 

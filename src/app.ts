@@ -279,6 +279,28 @@ export function classifyRetryKind(
  */
 const GOAL_STATE_CLEARED_MARKER = "__CLEARED__";
 
+/**
+ * 审计第 11 条：把已加载的 JIT 上下文合并回一份（可能是刚重建的）系统提示词。
+ *
+ * 抽成纯函数导出，是为了让「覆盖式重建会不会丢 JIT」这个判定可被直接测试——
+ * 缺陷本体就在这个判定里，测一份模拟实现等于没测。
+ *
+ * @param prompt 目标系统提示词（新构建的，或当前的）
+ * @param jitContexts `JitContextManager.getLoadedContexts()` 的结果；
+ *   null/空串表示无已加载 JIT（或 jitContext 被配置关闭），此时原样返回。
+ * @returns `prompt` 为合并后文本，`appended` 表示本次是否真的追加了（供日志区分）
+ */
+export function mergeJitContextIntoPrompt(
+  prompt: string,
+  jitContexts: string | null | undefined,
+): { prompt: string; appended: boolean } {
+  // 无已加载 JIT：原样返回，不产生多余空行
+  if (!jitContexts) return { prompt, appended: false };
+  // 幂等：已含该正文时不重复追加（压缩路径可能对同一份提示词反复调用）
+  if (prompt.includes(jitContexts)) return { prompt, appended: false };
+  return { prompt: prompt + "\n\n" + jitContexts, appended: true };
+}
+
 export class App {
   private config: Config;
   private provider: Provider;
@@ -1870,22 +1892,9 @@ export class App {
 
       // §9.5：压缩后重新注入仍在作用域内的 JIT 规则（CLAUDE.md）。
       // JIT 上下文被追加到系统提示词，但摘要后的消息历史不再提及这些规则，
-      // 模型可能"忘记"它们仍然有效。把已加载的 JIT 正文重新附加到系统提示词末尾。
-      try {
-        if (this.config.jitContext !== false) {
-          const jitContexts = this.jitContextMgr.getLoadedContexts();
-          if (jitContexts) {
-            const currentPrompt = this.ctxMgr.getSystemPrompt();
-            // 避免重复追加：仅当当前提示词不含该正文时才追加
-            if (!currentPrompt.includes(jitContexts)) {
-              this.ctxMgr.setSystemPrompt(currentPrompt + "\n\n" + jitContexts);
-              getLogger().info("JIT", `压缩后重新注入 JIT 上下文 (${jitContexts.length} 字符)`);
-            }
-          }
-        }
-      } catch (err: any) {
-        getLogger().debug("JIT", `压缩后 JIT 重注入跳过: ${err.message}`);
-      }
+      // 模型可能"忘记"它们仍然有效。复用 applySystemPrompt 的回灌逻辑
+      // （此前这里是独立的一份实现，rebuild 路径漏抄 → 第 11 条）。
+      this.applySystemPrompt(this.ctxMgr.getSystemPrompt(), "压缩后");
       // 静默-9：把压缩结果透传给 loop 层，truncated 时提示用户上下文有损。
       return outcome;
     });
@@ -2288,7 +2297,9 @@ export class App {
           onSectionTokens: (s) => this.ctxMgr.setMemoryTokens(s.memory),
           // 不再写死 maxTokens：交由 buildSystemPrompt 按模型 contextWindow 的 90% 动态推导
         });
-        this.ctxMgr.setSystemPrompt(newPrompt);
+        // 走 applySystemPrompt 而非裸 setSystemPrompt：否则已加载的 JIT 子目录规则
+        // 会被这次覆盖抹掉且不再补注入（第 11 条）。
+        this.applySystemPrompt(newPrompt, "CLAUDE.md 变更重建");
         log.info("APP", `系统提示词已重建: ${newPrompt.length} 字符`);
       }
     });
@@ -2797,7 +2808,8 @@ export class App {
         // §12 P0-1：运行时偏好变更（/language 等）后同步刷新记忆分段记账
         onSectionTokens: (s) => this.ctxMgr.setMemoryTokens(s.memory),
       });
-      this.ctxMgr.setSystemPrompt(newPrompt);
+      // 同上：覆盖式重建必须回灌 JIT，否则 /language、/model 一切就丢掉子目录规则（第 11 条）。
+      this.applySystemPrompt(newPrompt, "运行时偏好变更重建");
       log.info("APP", `系统提示词已重建（运行时偏好变更）: ${newPrompt.length} 字符`);
     } catch (e) {
       log.warn("APP", `重建系统提示词失败（不阻断）: ${(e as Error)?.message}`);
@@ -4114,6 +4126,44 @@ export class App {
         log.warn("JIT", `JIT 上下文发现失败: ${path}`, err);
       }
     }
+  }
+
+  /**
+   * 覆盖式写入系统提示词的**唯一收口**：写回 ctxMgr 的同时回灌已加载的 JIT 上下文。
+   *
+   * ## 为什么必须收口
+   *
+   * JIT 上下文（子目录 CLAUDE.md）是以「追加到系统提示词末尾」的方式生效的
+   * （见 `checkJitContext`）。而覆盖式重建（`rebuildSystemPrompt`、CLAUDE.md watcher）
+   * 直接 `setSystemPrompt(newPrompt)`，把这些追加内容整体抹掉。
+   *
+   * 抹掉后**不会自愈**：`JitContextManager.loadedFiles` 已把该文件记为已加载，
+   * 后续再访问同目录也不再重新注入——规则永久丢失直到进程重启。
+   * 与第 1 条（主加载跳过带作用域的规则）叠加时尤其严重：那时 JIT 是唯一注入途径，
+   * 而这条途径的产物会被任意一次 `/model`、`/language` 切换抹平。
+   *
+   * 追加式内容天生会被覆盖式重建丢掉，所以修法不是"在 rebuild 里补一次回灌"
+   * （下一个重建入口还会漏），而是让**所有**覆盖式写入都只走这一个函数。
+   */
+  private applySystemPrompt(newPrompt: string, reason: string): void {
+    const log = getLogger();
+    let finalPrompt = newPrompt;
+
+    try {
+      const jitContexts = this.config.jitContext === false
+        ? null
+        : this.jitContextMgr.getLoadedContexts();
+      const merged = mergeJitContextIntoPrompt(newPrompt, jitContexts);
+      finalPrompt = merged.prompt;
+      if (merged.appended) {
+        log.info("JIT", `${reason}：回灌 JIT 上下文 (${jitContexts!.length} 字符)`);
+      }
+    } catch (err: any) {
+      // 回灌失败不能阻断提示词写入——丢作用域规则比丢整个系统提示词轻得多
+      log.debug("JIT", `${reason}：JIT 回灌跳过: ${err?.message}`);
+    }
+
+    this.ctxMgr.setSystemPrompt(finalPrompt);
   }
 
   /** 构建 SessionEnd 统计数据 */

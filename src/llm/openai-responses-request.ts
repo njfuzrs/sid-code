@@ -14,6 +14,7 @@
  */
 
 import type { SendParams, Message, ToolDefinition, ContentBlock } from "./types.ts";
+import { serializeToolResultContentForOpenAI } from "./openai-tool-result-content.ts";
 
 /**
  * OpenAI Responses API 请求体
@@ -287,12 +288,14 @@ function expandMessage(message: Message): ResponsesInputItem[] {
         break;
       }
       case "tool_result": {
-        // 工具结果切分为独立 item
+        // 工具结果切分为独立 item。
+        // output 走统一序列化：is_error 前缀标注 + mediaBlocks 降级文本说明
+        // （此前只取 block.content，两者静默丢弃——审计第 6 条）。
         flushText();
         items.push({
           type: "function_call_output",
           call_id: block.tool_use_id,
-          output: block.content,
+          output: serializeToolResultContentForOpenAI(block, "openai-responses"),
         });
         break;
       }

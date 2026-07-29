@@ -110,8 +110,10 @@ export class ToolOutputMaskingService {
     }
 
     // 第二遍：执行遮罩
+    // ⚠️ 必须用 `...msg` 默认透传（同 ContextManager.getCleanedMessages）：
+    // 手写 `{role, content}` 会丢 `_meta`（reasoning_content / compact_boundary / origin）。
     const masked: Message[] = messages.map((msg, msgIdx) => ({
-      role: msg.role,
+      ...msg,
       content: msg.content.map((block, blockIdx) => {
         const candidate = candidateSet.get(`${msgIdx}:${blockIdx}`);
         if (!candidate) return block;

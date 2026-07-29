@@ -244,6 +244,20 @@ function hasInternalOrigin(msg: Message): boolean {
 }
 
 /**
+ * 消息里是否含"必须渲染的工具块"——即 tool_use / tool_result。
+ *
+ * 这类块**不能随整条消息一起被隐藏/分流吃掉**：`tool_result` 丢了对应的 `tool_use`
+ * 就永远配不上结果，滞留 pendingToolCalls，最终被兜底逻辑输出成 executing 态挂在
+ * 历史**末尾**——表现为任务已完成、屏幕最后却挂着一行"执行中"的工具气泡。
+ * 这是 task-notification / command-expansion / internal-origin 三处共享的隐蔽性来源：
+ * 单一内容块的消息永远不暴露，只有角色交替合并把内部消息追加到含 tool_result 的
+ * user 消息上时才现形。
+ */
+function hasToolBlocks(msg: Message): boolean {
+  return msg.content.some(b => b.type === "tool_use" || b.type === "tool_result");
+}
+
+/**
  * 整条消息是否应从展示中隐藏(占位 / 续接标记 / 纯内部文本消息)。
  * 仅当消息**只含**内部文本(无真实用户文本、无 tool_result)时才整条隐藏;
  * 混合内容(如循环恢复:orphan tool_result + 内部提示文本)交给 stripInternalTextBlocks
@@ -254,7 +268,11 @@ export function isHiddenFromDisplay(msg: Message): boolean {
   if (isResumeMarkerMessage(msg)) return true;
   // 压缩 / 恢复注入的摘要+ack 消息对:按 _meta.origin 标记整条隐藏
   //(含 assistant ack——前缀匹配无法覆盖 assistant 侧,故用来源标记)。
-  if (hasInternalOrigin(msg)) return true;
+  //
+  // 但**含工具块时不整条隐藏**：否则同消息内的 tool_result 被一并丢弃(见 hasToolBlocks
+  // 注释)。这条早退此前不看内容、只看 _meta.origin,违反了本函数自己的注释;
+  // 现按注释办——混合内容交给调用方剥离文本块后继续渲染工具块。
+  if (hasInternalOrigin(msg)) return !hasToolBlocks(msg);
   // 仅含内部文本块(无其它类型 block)的消息整条隐藏
   return msg.content.length > 0
     && msg.content.every(b => b.type === "text" && isInternalOnlyText(b.text));
@@ -274,6 +292,42 @@ function stripInternalTextBlocks(msg: Message): Message {
     ...msg,
     content: msg.content.filter(b => !(b.type === "text" && isInternalOnlyText(b.text))),
   };
+}
+
+/**
+ * 「分流但保留兄弟块」的统一出口。
+ *
+ * 三条整条分流/隐藏路径（task-notification 专用折叠项 / command-expansion 命令项 /
+ * internal-origin 整条隐藏）都必须走这里，而不是各自 `continue`：
+ * 它们吃掉的只是**文本块**（通知 XML / 展开后的提示词 / 内部 ack），同消息内的
+ * `tool_use` / `tool_result` 属于兄弟块，要原样交回正常渲染路径。
+ *
+ * 逐处打补丁的做法已经失败过一次——task-notification 修好后另两处仍在丢块，
+ * 所以这里收口成单一函数：新增任何「整条分流」路径都调它，不要再写第四份 `continue`。
+ *
+ * @param blocks 分流后剩余的 block（调用方已剔除自己消费掉的文本块）
+ * @returns 是否产出了历史项（false = 无剩余内容，调用方直接 continue）
+ */
+function pushRemainingBlocks(
+  rawMsg: Message,
+  blocks: import("../llm/types.ts").ContentBlock[],
+  items: HistoryItemWithoutId[],
+  toolNameMap: Map<string, string>,
+  pendingToolCalls: Map<string, IndividualToolCallDisplay>,
+): boolean {
+  if (blocks.length === 0) return false;
+  const msg = stripInternalTextBlocks({ ...rawMsg, content: blocks });
+  if (msg.content.length === 0) return false;
+  // 与主路径一致：先补 tool_use 名称映射，再转换（否则 tool_result 侧取不到工具名）
+  for (const block of msg.content) {
+    if (block.type === "tool_use") toolNameMap.set(block.id, block.name);
+  }
+  if (msg.role === "assistant") {
+    items.push(...convertAssistantMessage(msg, pendingToolCalls));
+  } else {
+    items.push(...convertUserMessage(msg, toolNameMap, pendingToolCalls));
+  }
+  return true;
 }
 
 /**
@@ -324,17 +378,9 @@ export function messagesToHistoryItemsWithMap(
     const notifResult = tryParseTaskNotifications(rawMsg);
     if (notifResult) {
       items.push(...notifResult.notifications);
+      // 剩余 blocks（tool_result 等）继续走正常渲染路径（与其余两条分流路径共用出口）
       if (notifResult.remaining) {
-        // 剩余 blocks（tool_result 等）继续走正常渲染路径
-        const remainingMsg = { ...rawMsg, content: notifResult.remaining };
-        const strippedRemaining = stripInternalTextBlocks(remainingMsg);
-        if (strippedRemaining.content.length > 0) {
-          if (strippedRemaining.role === "assistant") {
-            items.push(...convertAssistantMessage(strippedRemaining, pendingToolCalls));
-          } else {
-            items.push(...convertUserMessage(strippedRemaining, toolNameMap, pendingToolCalls));
-          }
-        }
+        pushRemainingBlocks(rawMsg, notifResult.remaining, items, toolNameMap, pendingToolCalls);
       }
       continue;
     }
@@ -350,6 +396,31 @@ export function messagesToHistoryItemsWithMap(
       if (displayCommand) {
         items.push({ type: "command", input: displayCommand, output: null });
       }
+      // 只吃掉展开后的**提示词文本**，其余 block（tool_result 等）交回正常渲染路径。
+      // 此前是无条件 continue：角色交替合并把展开消息追加进含 tool_result 的 user 消息时，
+      // 那条 tool_result 被一并丢弃 → tool_use 永久 pending → 末尾挂"执行中"气泡。
+      pushRemainingBlocks(
+        rawMsg,
+        rawMsg.content.filter(b => b.type !== "text"),
+        items,
+        toolNameMap,
+        pendingToolCalls,
+      );
+      continue;
+    }
+
+    // 内部来源消息（压缩摘要 / ack 等）含工具块时不再整条隐藏（见 isHiddenFromDisplay），
+    // 但它的**文本**仍是"仅供 LLM"的，必须在这里吃掉——这类 ack 文案（如「了解，继续。」）
+    // 没有 `<system-reminder>` 之类前缀，stripInternalTextBlocks 认不出来，
+    // 只能按 _meta.origin 判定。
+    if (hasInternalOrigin(rawMsg)) {
+      pushRemainingBlocks(
+        rawMsg,
+        rawMsg.content.filter(b => b.type !== "text"),
+        items,
+        toolNameMap,
+        pendingToolCalls,
+      );
       continue;
     }
 
