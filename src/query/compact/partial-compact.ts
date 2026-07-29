@@ -20,7 +20,7 @@
 import type { Message } from "../../llm/types.ts";
 import type { Provider } from "../../llm/provider.ts";
 import { getLogger } from "../../debug/index.ts";
-import { estimateTextTokens } from "../../context/token.ts";
+import { estimateMessagesTokens } from "../../context/token.ts";
 import { recordSideCall } from "../../trace/side-call-sink.ts";
 import { withSideCallDeadline, SIDE_CALL_NO_THINK } from "../../llm/side-call-timeout.ts";
 import { SIDE_CALL_TIMEOUT_REASON } from "../../llm/errors.ts";
@@ -92,20 +92,6 @@ function findSafeSplitAtOrBefore(messages: Message[], desired: number): number {
     if (isSafeBoundary(messages[i])) return i;
   }
   return -1;
-}
-
-/** 估算消息段 token（与 context-collapse 口径一致） */
-function estimateMessagesTokens(messages: Message[]): number {
-  let total = 0;
-  for (const msg of messages) {
-    if (!Array.isArray(msg.content)) continue;
-    for (const block of msg.content) {
-      if (block.type === "text") total += estimateTextTokens(block.text);
-      else if (block.type === "tool_result" && typeof block.content === "string") total += estimateTextTokens(block.content);
-      else if (block.type === "tool_use") total += estimateTextTokens(JSON.stringify(block.input));
-    }
-  }
-  return total;
 }
 
 /**

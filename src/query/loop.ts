@@ -645,7 +645,12 @@ export async function* queryLoop(
     {
       const level = contextPressureLevel(usagePercent);
       if (level) {
-        const changed = state.lastSeenContextPressureLevel !== level;
+        // 审计第 9 条：lastSeenContextPressureLevel 上移到 SessionState（跨消息持久）。
+        // 原挂在每条消息重建的 LoopState 上 → 每条消息开局 undefined →
+        // `undefined !== "warn"` 必为 changed=true → 每条新消息首轮都强注入压力提醒。
+        // 上移后只有真正升档（warn→urgent 或首次达标）才 changed=true。
+        const lastLevel = sessionState.get("lastSeenContextPressureLevel") as "warn" | "urgent" | undefined;
+        const changed = lastLevel !== level;
         const turnsSincePressure = state.turnCount - (state.lastContextPressureReminderTurn ?? 0);
         if (changed || turnsSincePressure >= CONTEXT_PRESSURE_REMINDER_INTERVAL) {
           const pressureReminder = buildContextPressureReminder(usagePercent, remaining);
@@ -657,7 +662,7 @@ export async function* queryLoop(
       }
       // 无论是否注入都刷新档位基线（含脱离阈值回落到 undefined 的情况，
       // 下次再升到 warn/urgent 能重新识别为 changed 强注入一次）。
-      state.lastSeenContextPressureLevel = level;
+      sessionState.set("lastSeenContextPressureLevel", level);
     }
 
     // 缺口 C：permission mode 每轮可见（覆盖 plan 之外的所有 mode 切换）。
@@ -687,8 +692,19 @@ export async function* queryLoop(
     if (deps.getCurrentPermissionMode) {
       const mode = deps.getCurrentPermissionMode();
       if (mode && mode !== "default" && mode !== "plan") {
-        const isBaseline = state.lastSeenPermissionMode === undefined;
-        const changed = isRuntimeModeSwitch(state.lastSeenPermissionMode, mode);
+        // 审计第 9 条：lastSeenPermissionMode 上移到 SessionState（跨消息持久）。
+        // 原挂在每条消息重建的 LoopState 上 → 每条消息开局 lastSeen 又变 undefined
+        // → isBaseline=true → 跨消息的真实 mode 切换（A→B）永远检测不到（每条
+        // 消息首轮都被当基线）。上移后只有会话真正首轮才是基线，后续消息能识别
+        // lastSeen 已有值 → changed 检测生效。
+        //
+        // 注意：lastPermissionModeReminderTurn / lastInjectedPermissionModeText
+        // 必须留在 LoopState（与 turnCount 同生命周期）——它们依赖 turnCount 计
+        // cadence 间隔，若也上移到 sessionState，跨消息时 turnCount 归零会导致
+        // turnsSinceMode 算出负数（cadence 永不触发）、去重会挡死 cadence 重述。
+        const lastSeen = sessionState.get("lastSeenPermissionMode") as string | undefined;
+        const isBaseline = lastSeen === undefined;
+        const changed = isRuntimeModeSwitch(lastSeen, mode);
         if (isBaseline) {
           // 基线那一轮不注入，并把周期性重述的 cadence 锚在此刻：
           // 否则恢复会话（turnCount 已 ≥ 间隔）首轮会立刻触发一次"到期"重述，
@@ -713,7 +729,7 @@ export async function* queryLoop(
         }
       }
       // 无论是否注入，都刷新"上轮 mode"基线（含切回 default 的情况，下次再切走能识别为 changed）
-      state.lastSeenPermissionMode = mode;
+      sessionState.set("lastSeenPermissionMode", mode);
     }
 
     // Plan Mode 提醒（既有逻辑）

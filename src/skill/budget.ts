@@ -22,6 +22,10 @@ const CHARS_PER_TOKEN = 4;
  * 口径与真实注入一致：每个 Skill 在 system prompt 里占一行
  * `- {name}: {whenToUse||description}`（见 formatCommandsWithinBudget 的 fullLine），
  * 按该行字符数 ÷ CHARS_PER_TOKEN 估算。不是精确 tokenizer，只作数量级参考。
+ *
+ * 审计第 15 条：原审计文档称"仅被测试引用"，实测该判断有误——本函数被
+ * `src/ui/components/SkillsDialog.tsx` 的 /skills 面板用于展示每个 skill 的 token
+ * 占用（2 处生产调用）。非死代码，勿删。
  */
 export function estimateSkillListingTokens(entry: SkillListingEntry): number {
   const desc = (entry.whenToUse || entry.description || "").trim();

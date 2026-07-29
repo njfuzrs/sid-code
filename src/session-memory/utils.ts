@@ -7,6 +7,8 @@
 
 import type { Message } from "../llm/types.ts";
 import { estimateTextTokens } from "../context/token.ts";
+// 审计第 21 条：收敛到 token.ts 的统一实现（补全 thinking/redacted_thinking/mediaBlocks）。
+import { estimateMessagesTokens as estimateMessagesTokensUnified } from "../context/token.ts";
 
 /** Session Memory 配置 */
 export interface SessionMemoryConfig {
@@ -47,17 +49,9 @@ export function initialSessionMemoryState(): SessionMemoryState {
   };
 }
 
-/** 估算一组消息的 token 总数 */
+/** 估算一组消息的 token 总数（审计第 21 条：委托给 context/token.ts 的统一实现） */
 export function estimateMessagesTokens(messages: Message[]): number {
-  let total = 0;
-  for (const msg of messages) {
-    for (const block of msg.content) {
-      if (block.type === "text") total += estimateTextTokens(block.text);
-      else if (block.type === "tool_result") total += estimateTextTokens(block.content);
-      else if (block.type === "tool_use") total += estimateTextTokens(JSON.stringify(block.input));
-    }
-  }
-  return total;
+  return estimateMessagesTokensUnified(messages);
 }
 
 /** 最后一个 assistant turn 是否包含工具调用 */

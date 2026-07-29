@@ -64,6 +64,14 @@ export class SkillActivationCoordinator {
     if (gatedNames.length > 0) {
       getLogger().info("SKILL", `${gatedNames.length} 个条件激活 skill 待触发: ${gatedNames.join(", ")}`);
     }
+    // 列表注入基线对齐 reinit()（审计第 10 条）：冷启动时当前可见（无条件）skill
+    // 已由 collectSkillListingEntries 经 system prompt 静态附件注入一轮，若不设基线，
+    // drainListingDelta 首轮会因 sentSkillNames 为空再全量注入一次 → 首轮两份重复。
+    // 设基线后 drainListingDelta 名副其实只做增量：首轮返回 null，后续仅新激活的走增量。
+    this.sentSkillNames = new Set(
+      this.manager.getListableSkills().map((s) => s.name.toLowerCase()),
+    );
+    this.pendingActivated = [];
     return gatedNames;
   }
 

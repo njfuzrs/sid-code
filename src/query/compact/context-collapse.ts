@@ -18,7 +18,7 @@
 import type { Message } from "../../llm/types.ts";
 import type { Provider } from "../../llm/provider.ts";
 import { getLogger } from "../../debug/index.ts";
-import { estimateTextTokens } from "../../context/token.ts";
+import { estimateTextTokens, estimateMessagesTokens } from "../../context/token.ts";
 import { recordSideCall } from "../../trace/side-call-sink.ts";
 import { withSideCallDeadline, SIDE_CALL_NO_THINK } from "../../llm/side-call-timeout.ts";
 import { SIDE_CALL_TIMEOUT_REASON } from "../../llm/errors.ts";
@@ -54,19 +54,6 @@ export interface CollapseResult {
   savedTokens: number;
   /** usage 是否降到目标以下（true 则可跳过 autoCompact） */
   success: boolean;
-}
-
-/** 估算消息段的 token */
-function estimateMessagesTokens(messages: Message[]): number {
-  let total = 0;
-  for (const msg of messages) {
-    for (const block of msg.content) {
-      if (block.type === "text") total += estimateTextTokens(block.text);
-      else if (block.type === "tool_result" && typeof block.content === "string") total += estimateTextTokens(block.content);
-      else if (block.type === "tool_use") total += estimateTextTokens(JSON.stringify(block.input));
-    }
-  }
-  return total;
 }
 
 /** 把一段消息渲染成摘要 LLM 的输入文本 */

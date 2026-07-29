@@ -64,22 +64,34 @@ describe("SkillActivationCoordinator - 条件激活门控（P1-2）", () => {
 });
 
 describe("SkillActivationCoordinator - 增量 listing（P3-2）", () => {
-  test("首轮全量注入所有可 listing skill", () => {
+  test("init 后 drainListingDelta 首轮不再返回全量（审计第 10 条：避免与 system prompt 重复）", () => {
     const mgr = managerWith([makeSkill({ name: "a" }), makeSkill({ name: "b" })]);
     const coord = new SkillActivationCoordinator({ manager: mgr, cwd: "/proj" });
     coord.init(mgr.getSkills());
+    // init 设了 sentSkillNames 基线（对齐 reinit），drainListingDelta 首轮不再全量注入——
+    // 这些 skill 已由 collectSkillListingEntries 经 system prompt 静态附件注入过一轮。
     const delta = coord.drainListingDelta();
-    expect(delta).toContain("a");
-    expect(delta).toContain("b");
+    expect(delta).toBeNull();
+    // 基线已记录两个 skill，后续不再重复
     expect(coord.getSentNames().sort()).toEqual(["a", "b"]);
   });
 
-  test("第二轮无新增 → 返回 null（不重复注入）", () => {
+  test("drainListingDelta 首轮全量能力仍保留（不调 init 的场景，如 MCP 迟到 skill）", () => {
+    const mgr = managerWith([makeSkill({ name: "a" }), makeSkill({ name: "b" })]);
+    const coord = new SkillActivationCoordinator({ manager: mgr, cwd: "/proj" });
+    // 不调 init → sentSkillNames 为空 → drainListingDelta 首轮返回全量。
+    // 这覆盖"启动后才出现的 skill"经 enqueueListingForNewSkills / drain 增量注入的真实路径。
+    const delta = coord.drainListingDelta();
+    expect(delta).toContain("a");
+    expect(delta).toContain("b");
+  });
+
+  test("首轮即返回 null，后续无新增也返回 null", () => {
     const mgr = managerWith([makeSkill({ name: "a" })]);
     const coord = new SkillActivationCoordinator({ manager: mgr, cwd: "/proj" });
     coord.init(mgr.getSkills());
-    expect(coord.drainListingDelta()).not.toBeNull(); // 首轮
-    expect(coord.drainListingDelta()).toBeNull(); // 第二轮无新增
+    expect(coord.drainListingDelta()).toBeNull(); // 首轮：基线已设，不重复
+    expect(coord.drainListingDelta()).toBeNull(); // 后续无新增
   });
 
   test("激活新 skill 后增量注入只含新 skill", async () => {
@@ -90,12 +102,11 @@ describe("SkillActivationCoordinator - 增量 listing（P3-2）", () => {
     const coord = new SkillActivationCoordinator({ manager: mgr, cwd: "/proj", enableDynamicDiscovery: false });
     coord.init(mgr.getSkills());
 
-    // 首轮：只有 always（onts 被 gate）
+    // 首轮：基线已设（always 已在 system prompt），drainListingDelta 返回 null
     const first = coord.drainListingDelta();
-    expect(first).toContain("always");
-    expect(first).not.toContain("onts");
+    expect(first).toBeNull();
 
-    // 激活 onts
+    // 激活 onts（条件 skill 从 gate 解除 → 进 pending）
     await coord.onToolResults([{ file_path: "/proj/x.ts" }]);
     const delta = coord.drainListingDelta();
     expect(delta).toContain("onts");

@@ -5,6 +5,8 @@
 
 import type { Message, ToolDefinition } from "./types.ts";
 import { lookupRegistry } from "./model-registry.ts";
+// 审计第 21 条：收敛到 context/token.ts 的统一块估算（补全 thinking/redacted_thinking/mediaBlocks）。
+import { estimateBlockTokens } from "../context/token.ts";
 
 /** 超过此长度使用快速近似（性能优化） */
 const MAX_CHARS_FOR_FULL_HEURISTIC = 100_000;
@@ -65,19 +67,13 @@ export class TokenEstimator {
     return Math.ceil(tokens);
   }
 
-  /** 估算消息列表的总 token 数 */
+  /** 估算消息列表的总 token 数（审计第 21 条：收敛到统一块估算，补全 thinking/redacted_thinking/mediaBlocks） */
   estimateMessages(messages: Message[]): number {
     let total = 0;
     for (const msg of messages) {
       total += 4; // 每条消息的固定开销（role + 分隔符）
       for (const block of msg.content) {
-        if (block.type === "text") {
-          total += this.estimateText(block.text);
-        } else if (block.type === "tool_use") {
-          total += this.estimateText(block.name) + this.estimateText(JSON.stringify(block.input));
-        } else if (block.type === "tool_result") {
-          total += this.estimateText(block.content);
-        }
+        total += estimateBlockTokens(block);
       }
     }
     return total;

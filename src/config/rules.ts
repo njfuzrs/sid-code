@@ -509,6 +509,15 @@ export function mergeProjectRules(base: ProjectRules, override: ProjectRules): P
       ? { paths: Array.from(new Set([...base.paths, ...override.paths])) }
       : {}),
     layer: override.layer || base.layer,
+    // 审计第 16 条：loadedPaths 兜底（对齐 paths 的处理位置）。
+    // 当前调用链在 loadAllCLAUDEmd 末尾事后挂载 merged.loadedPaths（:994），
+    // merge 输入侧通常都没有 loadedPaths → 此处输出 undefined → 行为不变。
+    // 但若未来出现「合并前就给对象挂了 loadedPaths」的调用路径，不在此兜底
+    // 会导致该清单被 merge 抹成 undefined → JIT 预标记事实源丢失。
+    // 语义取并集：loadedPaths 是「实际加载的文件清单」，两侧加载的都算。
+    ...(base.loadedPaths || override.loadedPaths
+      ? { loadedPaths: Array.from(new Set([...(base.loadedPaths || []), ...(override.loadedPaths || [])])) }
+      : {}),
   };
 }
 

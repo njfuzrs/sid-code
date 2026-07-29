@@ -83,3 +83,55 @@ export function estimateTextTokens(text: string): number {
   }
   return memoizedTextTokens(text);
 }
+
+/**
+ * 估算单个 ContentBlock 的 token 数（审计第 21 条：统一收敛点）。
+ *
+ * 此前全仓有 5 份各自手写的 if/else if 链（token-estimator.ts、context/manager.ts、
+ * session-memory/utils.ts、compact/context-collapse.ts、compact/partial-compact.ts），
+ * 全部漏算 thinking / redacted_thinking / tool_result.mediaBlocks 三类块。
+ * 本函数是它们的单一收敛点——补全全部分支后，消费方调它即可，不再各自手写。
+ */
+export function estimateBlockTokens(block: import("../llm/types.ts").ContentBlock): number {
+  switch (block.type) {
+    case "text":
+      return estimateTextTokens(block.text);
+    case "tool_use":
+      return estimateTextTokens(block.name) + estimateTextTokens(JSON.stringify(block.input));
+    case "tool_result": {
+      let t = estimateTextTokens(typeof block.content === "string" ? block.content : "");
+      // mediaBlocks（图片/PDF 的 base64）此前完全未计入，导致含富媒体工具结果的
+      // token 估算严重偏低。base64 体积远大于等长文本，按字符数估近似偏保守（不低估）。
+      if (block.mediaBlocks) {
+        for (const mb of block.mediaBlocks) {
+          t += estimateTextTokens(mb.data ?? "");
+        }
+      }
+      return t;
+    }
+    case "thinking":
+      return estimateTextTokens(block.thinking ?? "");
+    case "redacted_thinking":
+      // data 是被安全系统脱敏的密文，多轮回传必需，体积不可忽略。
+      return estimateTextTokens(block.data ?? "");
+    default:
+      return 0;
+  }
+}
+
+/**
+ * 估算一组消息的 token 总数（不含每条消息的结构开销，消费方按需自行加）。
+ *
+ * 审计第 21 条：收敛全仓 5 份重复实现。各消费方此前各自手写同款漏算的 if 链，
+ * 改一处改不全——统一调本函数后补一次即全部生效。
+ */
+export function estimateMessagesTokens(messages: import("../llm/types.ts").Message[]): number {
+  let total = 0;
+  for (const msg of messages) {
+    if (!Array.isArray(msg.content)) continue;
+    for (const block of msg.content) {
+      total += estimateBlockTokens(block);
+    }
+  }
+  return total;
+}

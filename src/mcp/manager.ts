@@ -735,17 +735,6 @@ export class MCPManager {
     return statuses;
   }
 
-  /** 获取所有已连接服务器的 instructions（供 System Prompt 注入） */
-  getServerInstructions(): Array<{ name: string; instructions: string }> {
-    const result: Array<{ name: string; instructions: string }> = [];
-    for (const [name, state] of this.serverStates) {
-      if (state.status === MCPConnectionStatus.CONNECTED && state.instructions) {
-        result.push({ name, instructions: state.instructions });
-      }
-    }
-    return result;
-  }
-
   /** 关闭所有连接 */
   closeAll(): void {
     for (const [name] of this.serverStates) {

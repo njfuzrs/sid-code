@@ -5,7 +5,7 @@
 
 import type { Message } from "../llm/types.ts";
 import { MessageValidator } from "./validator.ts";
-import { estimateTextTokens } from "./token.ts";
+import { estimateTextTokens, estimateBlockTokens } from "./token.ts";
 import { ToolOutputMaskingService, TOOL_RESULT_CLEARED_MESSAGE } from "./tool-output-masking.ts";
 import { persistLargeOutput, isPersistedReference, ContentReplacementState } from "./tool-result-storage.ts";
 import { getLogger, getSessionMetrics } from "../debug/index.ts";
@@ -1081,15 +1081,15 @@ export class Manager {
       total += 4;
 
       for (const block of msg.content) {
-        if (block.type === "text") {
-          total += estimateTextTokens(block.text);
-        } else if (block.type === "tool_use") {
-          // tool_use 块：JSON 内容 + 结构开销（约 20 token）
-          total += estimateTextTokens(JSON.stringify(block.input)) + 20;
-        } else if (block.type === "tool_result") {
-          // tool_result 块：内容 + 结构开销（约 10 token）
-          total += estimateTextTokens(block.content) + 10;
-        }
+        // 审计第 21 条：收敛到 estimateBlockTokens 统一块估算
+        // （补全 thinking / redacted_thinking / tool_result.mediaBlocks，此前全漏算）。
+        // 保留各块结构开销常数（tool_use +20 / tool_result +10），这是 rawEstimateTokens
+        // 区别于 estimateMessagesTokens（无结构开销）的地方。本函数有
+        // calibrationFactor + lastActualInputTokens 双层校准护栏（estimateTokens:1056），
+        // 漏算被系数吸收，此处补全分支以缩小校准前的偏差窗口。
+        total += estimateBlockTokens(block);
+        if (block.type === "tool_use") total += 20;
+        else if (block.type === "tool_result") total += 10;
       }
     }
 
