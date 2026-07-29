@@ -399,30 +399,12 @@ export function generateDateAttachment(date: string): Attachment {
   );
 }
 
-/**
- * 生成 IDE 选中代码附件（预留接口）
- */
-export function generateIDESelectionAttachment(selection: string): Attachment {
-  return {
-    type: "ideSelection",
-    label: "IDE 选中代码",
-    content: `<ide-selection>\n${selection}\n</ide-selection>`,
-    priority: PRIORITY.IDE_SELECTION,
-  };
-}
-
-/**
- * 生成 IDE @提及附件
- * 入参为已格式化的提及列表文本（每行一个位置）。
- */
-export function generateIDEMentionAttachment(mentionText: string): Attachment {
-  return {
-    type: "ideMention",
-    label: "IDE @提及",
-    content: `<ide-mentions>\n用户在 IDE 中引用了以下代码位置：\n${mentionText}\n</ide-mentions>`,
-    priority: PRIORITY.IDE_SELECTION, // 与选区同优先级
-  };
-}
+// IDE 选区 / @提及的 system prompt 附件 generator 已删除。
+// 这两类内容随用户在编辑器里的每次点选变化，做成 system prompt 附件会每次变更都
+// 击穿 prompt cache 静态前缀；已改走 delta 消息通道（drainIDEContextDelta →
+// reminderParts），与 MCP server instructions 同模式。
+// PRIORITY.IDE_SELECTION / IDE_OPEN_FILES 保留：优先级表是稳定的排序契约，
+// 有测试断言相邻档位的序关系，且未来若有真正稳定的 IDE 类附件可复用。
 
 /**
  * 生成 Todo 列表附件（预留接口）

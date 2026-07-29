@@ -164,14 +164,8 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("类型不匹配");
   });
 
-  test("包含 IDE 选中代码附件", () => {
-    const prompt = buildSystemPrompt({
-      tools: [],
-      ideSelection: "const x: number = 'hello';",
-    });
-    expect(prompt).toContain("<ide-selection>");
-    expect(prompt).toContain("const x: number");
-  });
+  // 「包含 IDE 选中代码附件」用例已删除：IDE 选区/@提及不再进 system prompt
+  // （改走 drainIDEContextDelta 消息通道，避免每次点选击穿静态前缀缓存）。
 
   test("包含 Todo 列表附件", () => {
     const prompt = buildSystemPrompt({

@@ -30,8 +30,6 @@ import {
   generatePermissionModeAttachment,
   generateDiagnosticsAttachment,
   generateDateAttachment,
-  generateIDESelectionAttachment,
-  generateIDEMentionAttachment,
   generateTodoListAttachment,
   generateRecalledMemoryAttachment,
   generateSessionMemoryAttachment,
@@ -69,10 +67,14 @@ export interface SystemPromptContext {
   permissionMode?: string;
   /** 是否包含 Git 状态 */
   gitStatus?: boolean;
-  /** IDE 选中代码 */
-  ideSelection?: string;
-  /** IDE @提及（已格式化的位置列表文本） */
-  ideMention?: string;
+  /**
+   * 注意：IDE 选区 / @提及**不再走 system prompt**。
+   *
+   * 它们随用户在编辑器里的每次点选变化，塞进 system prompt 会每次变更都击穿
+   * prompt cache 静态前缀。已改走 delta 消息通道（`drainIDEContextDelta` →
+   * `reminderParts`），与 MCP server instructions 同模式。
+   * `collectIDEContext()` 仍保留，但只供 `/ide` 状态展示，不要再喂到这里。
+   */
   /** 诊断信息 */
   diagnostics?: string;
   /** Todo 列表 */
@@ -160,33 +162,115 @@ function simpleHash(str: string): string {
   return hash.toString(36);
 }
 
-/** 生成缓存键 */
-function generateCacheKey(ctx: SystemPromptContext): string {
-  return [
-    ctx.workingDir || cwd(),
-    ctx.permissionMode || "default",
-    ctx.gitStatus ? "git" : "nogit",
-    ctx.tools.length.toString(),
-    ctx.projectRules ? simpleHash(ctx.projectRules) : "",
-    ctx.appendPrompt ? simpleHash(ctx.appendPrompt) : "",
-    ctx.filePrompt ? simpleHash(ctx.filePrompt) : "",
-    ctx.outputStyleContent ? simpleHash(ctx.outputStyleContent) : "",
-    ctx.ideSelection ? simpleHash(ctx.ideSelection) : "",
-    ctx.ideMention ? simpleHash(ctx.ideMention) : "",
-    ctx.diagnostics ? simpleHash(ctx.diagnostics) : "",
-    ctx.todoList ? simpleHash(ctx.todoList) : "",
-    ctx.memorySummary ? simpleHash(ctx.memorySummary) : "",
-    ctx.memorySystemPrompt ? simpleHash(ctx.memorySystemPrompt) : "",
-    ctx.recalledMemories?.length
-      ? simpleHash(ctx.recalledMemories.map((m) => m.filename).join(","))
-      : "",
-    ctx.sessionMemoryContent ? simpleHash(ctx.sessionMemoryContent) : "",
-    ctx.skillEntries?.length
-      ? simpleHash(ctx.skillEntries.map((s) => s.name).join(","))
-      : "",
-    ctx.denyRulesSummary ? simpleHash(ctx.denyRulesSummary) : "",
-    ctx.model || "",
-  ].filter(Boolean).join(":");
+/**
+ * 第二个独立 hash（FNV-1a 32 位）。
+ * 与 simpleHash 组合成 ~64 位指纹，把缓存键碰撞概率压到可忽略——
+ * 单个 32 位 hash 在 CACHE_MAX_SIZE=100 条目下的碰撞概率约 1e-6，
+ * 而一次碰撞的后果是**返回另一份系统提示词**（静默的正确性事故），
+ * 不是简单的性能损失，所以这里宁可多算一遍。
+ */
+function fnv1aHash(str: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    hash ^= str.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+/**
+ * 不参与缓存键的字段白名单。
+ *
+ * 只能放**确定不影响输出内容**的字段。onSectionTokens 是记账回调，
+ * buildSystemPrompt 对它只调用不读取，换一个回调不会让提示词文本变化。
+ * 新增此类"纯副作用"字段时加到这里；**其余任何字段都会自动进键，不需要改代码**。
+ */
+const CACHE_KEY_IGNORED_FIELDS: ReadonlySet<string> = new Set<keyof SystemPromptContext>([
+  "onSectionTokens",
+]);
+
+/**
+ * 稳定序列化：对象键排序后 JSON 化，保证"同内容 → 同字符串"。
+ * 函数值与 undefined 一律跳过（不影响输出，且不可序列化）。
+ */
+function stableStringify(value: unknown): string {
+  if (value === undefined || typeof value === "function") return "";
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "";
+  if (Array.isArray(value)) {
+    return "[" + value.map(stableStringify).join(",") + "]";
+  }
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj)
+    .filter((k) => obj[k] !== undefined && typeof obj[k] !== "function")
+    .sort();
+  return "{" + keys.map((k) => JSON.stringify(k) + ":" + stableStringify(obj[k])).join(",") + "}";
+}
+
+/**
+ * 工具身份指纹：工具的 name / description / usageGuide 都会进提示词
+ * （见 buildToolGuideSection），所以三者任一变化都必须换键。
+ *
+ * 不能用 `tools.length`——等数量替换（MCP server 连断抵消、切 agent 使白名单
+ * 变化但总数不变、插件热加载）会命中同一缓存，模型收到已不存在工具的使用指南。
+ */
+function toolsIdentity(tools: Tool[]): string {
+  return tools
+    .map((t) => {
+      let guide = "";
+      try {
+        guide = t.usageGuide?.() ?? "";
+      } catch {
+        // usageGuide 抛错不应连带打挂提示词构建；退化为空串（此时键仍含 name+description）
+      }
+      return `${t.name()}\u0000${t.description()}\u0000${guide}`;
+    })
+    .join("\u0001");
+}
+
+/**
+ * 生成缓存键——**从 ctx 自动派生，不再手写维度列表**。
+ *
+ * 手写列表是本仓库反复踩过的坑：`preferredLanguage`（切 /language 后串味）、
+ * 工具身份（等数量替换后串味）、skillEntries 描述与 recalledMemories 正文
+ * （改了内容不刷新）四处都曾漏进键。根因不是"漏了某个字段"，而是
+ * **手写列表必然跟不上 SystemPromptContext 的类型演进**——每加一个注入源就要
+ * 记得同步改这里，漏改的表现是"缓存串味"这种极难复现的间歇性 bug。
+ *
+ * 现在改为遍历 ctx 全部字段：新增字段**自动进键**，除非显式登记进
+ * CACHE_KEY_IGNORED_FIELDS。三个字段需要归一化（见下方注释），因为它们的
+ * "有效值"与 ctx 原值不同，直接入键会漏判或多算。
+ *
+ * 导出仅供测试直接断言键的区分能力——有些字段（如未知的 model / permissionMode）
+ * 换值后提示词文本恰好不变，只能从键本身验证"没有串味"，无法从输出内容反推。
+ */
+export function generateCacheKey(ctx: SystemPromptContext): string {
+  const snapshot: Record<string, unknown> = {};
+
+  for (const [key, value] of Object.entries(ctx)) {
+    if (CACHE_KEY_IGNORED_FIELDS.has(key)) continue;
+    if (value === undefined || typeof value === "function") continue;
+    snapshot[key] = value;
+  }
+
+  // 归一化 1：工具对象的方法无法序列化（stableStringify 会得到 {}），
+  // 换成显式身份指纹。必须放在循环之后以覆盖上面写入的原始 tools。
+  snapshot.tools = toolsIdentity(ctx.tools);
+
+  // 归一化 2：workingDir 缺省时 buildEnvironmentSection 用 cwd()，
+  // 键里不落实际值会让不同 cwd 的两次"未传 workingDir"调用互相命中。
+  snapshot.workingDir = ctx.workingDir || cwd();
+
+  // 归一化 3：permissionMode 的 undefined 与 "default" 产出同一份提示词，
+  // 归一化后两者共享缓存（否则只是白多一次 miss，不影响正确性）。
+  snapshot.permissionMode = ctx.permissionMode || "default";
+
+  // Coordinator 模式不在 ctx 里（模块级全局），但它会往 coreParts 追加整段
+  // 协调者提示词，属于影响输出的维度，必须进键。
+  snapshot.__coordinatorMode = isCoordinatorMode();
+
+  const canonical = stableStringify(snapshot);
+  // 长度 + 两个独立 hash：见 fnv1aHash 注释（避免静默返回另一份提示词）
+  return `${canonical.length}:${simpleHash(canonical)}:${fnv1aHash(canonical)}`;
 }
 
 /** 清理过期缓存 */
@@ -348,15 +432,8 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
     }
   }
 
-  // IDE 选中代码
-  if (ctx.ideSelection) {
-    attachments.push(generateIDESelectionAttachment(ctx.ideSelection));
-  }
-
-  // IDE @提及
-  if (ctx.ideMention) {
-    attachments.push(generateIDEMentionAttachment(ctx.ideMention));
-  }
+  // IDE 选区 / @提及已改走 delta 消息通道（见 SystemPromptContext 上的说明），
+  // 此处不再注入附件——否则每次点选都击穿静态前缀缓存。
 
   // 诊断信息
   if (ctx.diagnostics) {

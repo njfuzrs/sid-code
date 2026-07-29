@@ -10,7 +10,6 @@ import {
   clearGitStatusCache,
   generatePermissionModeAttachment,
   generateDiagnosticsAttachment,
-  generateIDESelectionAttachment,
   generateTodoListAttachment,
 } from "../../src/config/attachments.ts";
 
@@ -187,14 +186,9 @@ describe("generateDiagnosticsAttachment", () => {
   });
 });
 
-describe("generateIDESelectionAttachment", () => {
-  test("生成正确的附件", () => {
-    const attachment = generateIDESelectionAttachment("const x = 1;");
-    expect(attachment.type).toBe("ideSelection");
-    expect(attachment.priority).toBe(PRIORITY.IDE_SELECTION);
-    expect(attachment.content).toContain("const x = 1;");
-  });
-});
+// generateIDESelectionAttachment / generateIDEMentionAttachment 的用例已删除：
+// 两个 generator 已移除（IDE 选区/@提及改走 delta 消息通道，不再进 system prompt）。
+// PRIORITY.IDE_SELECTION 的序关系断言保留在文件开头的优先级用例里。
 
 describe("generateTodoListAttachment", () => {
   test("生成正确的附件", () => {
