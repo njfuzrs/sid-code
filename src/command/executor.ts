@@ -250,6 +250,23 @@ export class CommandExecutor {
       // inline：prompt 注入主对话。hooks 需在整段对话期间存活，故**不卸载**
       // （对齐 CC 的 session hook 语义：注册即持续到会话结束或 skill 卸载）。
       registeredHookCount = 0;
+
+      // 审计第 19 条：skill 来源的 inline 注入要上报 addInvokedSkill，
+      // 否则压缩丢弃旧消息后模型遗忘 skill 工作流指令（ctxMgr 侧保留机制早已接线，
+      // 缺的一直是喂数据这一侧）。这条路径（UnifiedCommandRegistry → CommandExecutor）
+      // 是 TUI 斜杠命令的真实路径，与 SkillCommand.execute 并列，两者都要上报。
+      // 非 skill 来源的 prompt 命令不上报：它们不是"工作流指令"，压缩后无需重注入。
+      if (skill) {
+        try {
+          this.ctx.ctxMgr?.addInvokedSkill(skill.name, prompt);
+        } catch (e: any) {
+          getLogger().warn(
+            "COMMAND",
+            `记录 inline skill 调用失败（不阻断）: ${e?.message ?? String(e)}`,
+          );
+        }
+      }
+
       return { type: "submit_prompt", value: prompt, shouldQuery: true };
     } finally {
       // fork：hooks 作用域仅本次子代理调用，返回后卸载（与 SkillMetaTool.executeDelegate 同口径）。

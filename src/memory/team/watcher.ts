@@ -133,8 +133,12 @@ async function startFileWatcher(teamDir: string): Promise<void> {
         scheduleSync();
         return;
       }
-      // 忽略同步状态 manifest 自身的写入（避免自触发循环）
-      if (typeof filename === "string" && filename.includes(".team-memory-sync.json")) {
+      // 忽略两类不参与同步的本地文件（避免自触发循环）：
+      //   - .team-memory-sync.json：同步状态 manifest，每轮同步都写
+      //   - MEMORY.md：本地索引，由 saveTeamMemory / syncTeamMemory 收尾重建。
+      //     它本就被 readEntries 排除在同步之外，重建它触发的那一轮同步是纯空转。
+      if (typeof filename === "string"
+        && (filename.includes(".team-memory-sync.json") || filename.endsWith("MEMORY.md"))) {
         return;
       }
       if (syncSuppressedReason !== null) {

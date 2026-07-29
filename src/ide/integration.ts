@@ -184,10 +184,18 @@ export function resetIDEIntegration(): void {
 }
 
 /**
- * 收集当前 IDE 上下文（选区 + @提及），供 buildSystemPrompt 注入。
+ * 收集当前 IDE 上下文（选区 + @提及）。
  * 无 IDE 连接或无有效数据时返回空对象。
  *
  * 注意：@提及为消费语义——调用一次后清空（避免重复注入）。
+ *
+ * ⚠ **不要用它喂 buildSystemPrompt**。IDE 上下文是会话中途才产生、且随用户每次
+ * 操作变化的动态内容，塞进 system prompt 静态前缀有两个问题：
+ *   ① 时序：连接是后台异步的（findAvailableIDE 以 1s 轮询重试至 30s 超时），
+ *      而 buildInitialSystemPrompt 只在启动瞬间跑一次 → 那一刻必然还没连上；
+ *   ② 缓存：选区每变一次就换一次静态前缀 → 每次都击穿 prompt cache。
+ * 正路径是 {@link drainIDEContextDelta}，经 reminderParts 走 user 消息动态注入
+ * （与 MCP server instructions 同一模式）。本函数保留供 /ide 状态展示与测试使用。
  */
 export function collectIDEContext(): { ideSelection?: string; ideMention?: string } {
   if (!singleton || singleton.getStatus().status !== "connected") {
@@ -212,4 +220,73 @@ export function collectIDEContext(): { ideSelection?: string; ideMention?: strin
   }
 
   return result;
+}
+
+// ─── IDE 上下文增量注入（对标 MCP server instructions 的 delta 模式）───
+
+/**
+ * 上次已注入的选区指纹。用于去重：选区没变就不重复注入（模型已经看到过），
+ * 变了才注入新的一份。null 表示尚未注入过任何选区。
+ *
+ * 只存指纹不存正文：选区正文可能很大，没必要为去重再持有一份。
+ */
+let lastInjectedSelectionKey: string | null = null;
+
+/** 选区指纹：文件 + 行范围 + 正文长度 + 正文本身（用后者兜住同位置改内容） */
+function selectionKey(text: string): string {
+  return `${text.length}:${text}`;
+}
+
+/**
+ * 取一次待注入的 IDE 上下文增量（每轮 query loop 开始时调用）。
+ *
+ * 返回 null 表示本轮无新增内容。两类内容的语义不同：
+ *   - **选区**：状态型。同一份选区只注入一次；用户改选区后再注入新的一份。
+ *     选区自带 5 分钟 TTL（见 selection.ts），过期后视为无选区。
+ *   - **@提及**：事件型（消费语义）。有就注入并清空，不做跨轮去重。
+ *
+ * 与直接塞 system prompt 的区别：本函数在**每轮**被调用，因此 IDE 何时连上都能
+ * 赶上（不再依赖"启动瞬间已连接"这个几乎不可能成立的前提），且注入落在 user
+ * 消息尾部而非静态前缀 → 不击穿 prompt cache。
+ */
+export function drainIDEContextDelta(): string | null {
+  if (!singleton || singleton.getStatus().status !== "connected") {
+    // 未连接（含断开）：复位指纹，重连后重新注入当前选区
+    lastInjectedSelectionKey = null;
+    return null;
+  }
+
+  const parts: string[] = [];
+
+  const selection = singleton.selection.formatForAttachment();
+  if (selection) {
+    const key = selectionKey(selection);
+    if (key !== lastInjectedSelectionKey) {
+      lastInjectedSelectionKey = key;
+      parts.push(`<ide-selection>\n${selection}\n</ide-selection>`);
+    }
+  } else {
+    // 选区被清空 / TTL 过期：复位，下次有选区时（即使内容与上次相同）重新注入
+    lastInjectedSelectionKey = null;
+  }
+
+  const mentions = singleton.mentions.consumeMentions();
+  if (mentions.length > 0) {
+    const lines = mentions
+      .map((m) => {
+        const range = m.lineStart != null
+          ? `:${m.lineStart + 1}${m.lineEnd != null ? `-${m.lineEnd + 1}` : ""}`
+          : "";
+        return `  - ${m.filePath}${range}`;
+      })
+      .join("\n");
+    parts.push(`<ide-mentions>\n用户在 IDE 中引用了以下代码位置：\n${lines}\n</ide-mentions>`);
+  }
+
+  return parts.length > 0 ? parts.join("\n\n") : null;
+}
+
+/** 复位增量注入状态（测试用；生产中断开连接会自动复位） */
+export function _resetIDEContextDeltaForTesting(): void {
+  lastInjectedSelectionKey = null;
 }

@@ -305,6 +305,26 @@ export async function syncTeamMemory(opts: TeamMemoryOptions, cwd: string = proc
 
     await writeManifest(localDir, nextManifest);
 
+    // 本地目录被改动过 → 重建本地 MEMORY.md 索引。
+    //
+    // 索引是注入侧的唯一事实源（store.getTeamIndexContent 只读该文件、无扫目录
+    // fallback），而上面四条改本地的路径（pull / 远端删除传播 / 冲突复活 / 冲突远端
+    // 获胜）都只写条目文件。不在此重建，则：
+    //   - 全新端索引恒 null → 团队记忆段落整段不进 system prompt（等同功能未上线）
+    //   - 老端索引陈旧 → 只见自己写的，见不到同事的
+    //   - 删除传播后索引留悬空指针 → 模型照索引 Read 必然失败
+    // rebuild 是全目录扫描，一次补齐全部（含冲突副本已被其自身规则排除）。
+    // pushed-only 的轮次不重建：本地未变，索引已由 saveTeamMemory 维护。
+    if (pulled || deleted || conflicts) {
+      try {
+        const { rebuildTeamIndex } = await import("./store.ts");
+        await rebuildTeamIndex(localDir);
+      } catch (e: any) {
+        // 索引重建失败不推翻已成功的同步（条目文件已落盘），仅告警
+        log.warn("TEAMMEM", `本地 MEMORY.md 索引重建失败（条目已同步）: ${e?.message ?? e}`);
+      }
+    }
+
     if (skippedSecrets.length > 0) {
       const labels = Array.from(new Set(skippedSecrets.map((s) => s.label))).join(", ");
       log.warn("TEAMMEM", `${skippedSecrets.length} 个文件含 secret(${labels})，已跳过同步（未外泄到共享目录）`);

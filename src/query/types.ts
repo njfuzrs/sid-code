@@ -482,6 +482,16 @@ export interface QueryDeps {
    */
   drainAsyncHookRewakes?: () => string[];
   /**
+   * 审计第 22 条：IDE 上下文（选区 / @提及）增量拉取，与 getMcpInstructionsDelta 同模式。
+   * 每轮循环开始调用一次：返回本轮新增的 `<ide-selection>` / `<ide-mentions>` 文本块，
+   * 由 loop 经 reminderParts 注入 user 消息。
+   *
+   * 为什么走消息通道而不是 system prompt：IDE 连接是后台异步的（启动瞬间必然未连上），
+   * 且选区随用户操作变化——塞静态前缀既赶不上时序又每次击穿 prompt cache。
+   * 内部对选区做指纹去重（同一份只注入一次），@提及为消费语义。无新增时返回 null。
+   */
+  drainIDEContextDelta?: () => string | null;
+  /**
    * P1-2/P2-2/P3-2：Skill 运行时激活协调。每轮工具执行后调用 onSkillToolResults 喂入工具
    * 输入（条件激活 + 动态发现）；每轮开始调用 drainSkillListingDelta 取增量 skill 摘要
    * （首轮全量、后续只增量），由 loop 经 reminderParts 注入（cache-friendly）。

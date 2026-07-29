@@ -49,8 +49,16 @@ function serialize(key: string, value: string, description: string, type: Memory
   ].join("\n");
 }
 
-/** 重建团队记忆 MEMORY.md 索引（扫描目录内全部条目） */
-async function rebuildIndex(dir: string): Promise<void> {
+/**
+ * 重建团队记忆 MEMORY.md 索引（扫描目录内全部条目）。
+ *
+ * 索引是**注入侧的唯一事实源**（`getTeamIndexContent` 只读这个文件、无扫目录
+ * fallback），所以任何改动本地团队记忆目录的一方都必须重建它，否则同步下来的
+ * 条目躺在磁盘上却永远进不了 system prompt。两个调用方：
+ *   - `saveTeamMemory`（本机写入）
+ *   - `syncTeamMemory`（pull / 删除传播 / 冲突落盘后，见 sync.ts 收尾）
+ */
+export async function rebuildTeamIndex(dir: string): Promise<void> {
   let names: string[];
   try {
     names = await readdir(dir);
@@ -129,7 +137,7 @@ export async function saveTeamMemory(
 
   try {
     await writeFile(filePath, serialize(key, value, opts?.description ?? "", type, now), "utf8");
-    await rebuildIndex(dir);
+    await rebuildTeamIndex(dir);
     log.info("TEAMMEM", `✓ 团队记忆已保存: ${key}`);
 
     // 通知 watcher 同步到共享目录（best-effort，不阻断）

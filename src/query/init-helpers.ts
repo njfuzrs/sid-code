@@ -298,7 +298,6 @@ export async function buildInitialSystemPrompt(
   }
 
   const { buildSystemPrompt } = await import("../config/system-prompt.ts");
-  const { collectIDEContext } = await import("../ide/integration.ts");
   const { collectSkillListingEntries } = await import("../skill/listing.ts");
   // G12：加载激活的输出风格（配置态稳定，注入静态缓存区）
   let outputStyleContent: string | undefined;
@@ -325,7 +324,12 @@ export async function buildInitialSystemPrompt(
     skillEntries: collectSkillListingEntries(tools),
     // 缺口 D：deny 规则约束摘要（前置告知模型哪些操作必被拒绝）
     denyRulesSummary,
-    ...collectIDEContext(),
+    // 审计第 22 条：IDE 选区/@提及**不再**从这里注入。
+    // 原先 `...collectIDEContext()` 在此展开，但 IDE 连接是后台异步的（轮询至 30s 超时），
+    // 而本函数只在启动瞬间跑一次 → 那一刻 status 必然还不是 connected，恒返回 {}；
+    // 两处 rebuildSystemPrompt 也不采集，净效果是 IDE 上下文基本永远进不了模型。
+    // 现改走 query loop 每轮的 reminderParts（drainIDEContextDelta），既解决时序
+    // 又不把易变内容塞进静态前缀击穿 prompt cache。
     // §12 P0-1：分段记账（记忆/CLAUDE.md）上报给 /context
     onSectionTokens,
     // 不再写死 maxTokens：交由 buildSystemPrompt 按模型 contextWindow 的 90% 动态推导

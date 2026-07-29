@@ -91,6 +91,8 @@ export interface QueryEngineDeps {
   getProviderName?: () => string;
   /** MCP server instructions 增量拉取（新连接 server 的使用说明，经 reminderParts 注入）。可选 */
   getMcpInstructionsDelta?: () => string[] | null;
+  /** 审计第 22 条：IDE 选区/@提及 增量拉取（经 reminderParts 注入，不进静态 system prompt）。可选 */
+  drainIDEContextDelta?: () => string | null;
   /** /goal：读取当前活跃目标状态。返回 null 表示无目标。queryLoop 在 reminder 管道和 Goal Gate 中使用。 */
   getGoalState?: () => import("../goal/state.ts").GoalState | null;
   /** /goal：更新目标状态（由 Goal Gate 在判定 complete/blocked/budget_limited 时调用）。 */
@@ -308,6 +310,8 @@ export class QueryEngine {
       getCachedMicrocompactState: this.deps.getCachedMicrocompactState,
       getProviderName: this.deps.getProviderName,
       getMcpInstructionsDelta: this.deps.getMcpInstructionsDelta,
+      // 审计第 22 条：IDE 选区/@提及 增量注入（与上面 MCP instructions 同一模式）
+      drainIDEContextDelta: this.deps.drainIDEContextDelta,
       // G7：异步 hook rewake 回灌——每轮开始排空后台 hook 的 exit-2 反馈，格式化为文本块
       drainAsyncHookRewakes: hookSystem
         ? () => {

@@ -848,6 +848,17 @@ export class App {
           return null;
         }
       },
+      // 审计第 22 条：IDE 选区/@提及 增量注入（与上面 MCP instructions 同一模式）。
+      // 每轮拉一次增量而非启动时采集一次——IDE 连接是后台异步的，启动瞬间必然未连上；
+      // 走 reminderParts（user 消息）而非 system prompt 静态前缀，选区变化不击穿 prompt cache。
+      drainIDEContextDelta: () => {
+        try {
+          const { drainIDEContextDelta } = require("./ide/integration.ts");
+          return drainIDEContextDelta();
+        } catch {
+          return null;
+        }
+      },
       // /goal：目标驱动持续执行——把运行时 goalState 暴露给 queryLoop（Goal Gate + Evidence 收集 + Reminder 注入）。
       getGoalState: () => this.goalState,
       updateGoalState: (updater) => {
@@ -883,6 +894,8 @@ export class App {
     // 工具级 hook 与 Subagent span 在生产中从未触发。HookSystem 创建后经 setter 接通。
     this.wireToolHookSystem();
     this.wireToolPermissionChecker();
+    // 审计第 19 条：接通 skill 调用上报 → ctxMgr.addInvokedSkill（压缩时重注入 skill 工作流）
+    this.wireSkillInvocationSink();
 
     // EST-4：注入工具定义的真实 schema token 数，替代 ContextManager 内 toolCount×80 粗估，
     // 避免 schema 大/工具多时低估上下文占用、compact 触发过晚。
@@ -988,6 +1001,23 @@ export class App {
       const maybe = tool as { setHookSystem?: (h: HookSystem) => void };
       if (typeof maybe.setHookSystem === "function") {
         maybe.setHookSystem(this.hookSystem);
+      }
+    }
+  }
+
+  /**
+   * 审计第 19 条：给 SkillMetaTool 接线 skill 调用上报（→ ctxMgr.addInvokedSkill）。
+   *
+   * ctxMgr 侧的「压缩时重注入 skill 工作流」机制（buildInvokedSkillMessages）早已接线，
+   * 缺的一直是喂数据这一侧——addInvokedSkill 在生产中零调用，invokedSkills 恒为空，
+   * 于是压缩后模型直接遗忘 skill 工作流指令。这里补上模型路径（activate）；
+   * 用户斜杠路径（inline）由 SkillCommand 自己用 ctx.ctxMgr 上报。
+   */
+  private wireSkillInvocationSink(): void {
+    for (const tool of this.toolRegistry.all()) {
+      const maybe = tool as { setInvokedSkillSink?: (fn: (name: string, content: string) => void) => void };
+      if (typeof maybe.setInvokedSkillSink === "function") {
+        maybe.setInvokedSkillSink((name, content) => this.ctxMgr.addInvokedSkill(name, content));
       }
     }
   }
@@ -1944,6 +1974,14 @@ export class App {
       }
     }
 
+    // 团队记忆同步（E.11 协作护城河）——必须在系统提示词构建**之前**。
+    //
+    // 时序是这个功能能否生效的前提：注入侧读的是本地 MEMORY.md 索引快照，
+    // 而 buildInitialSystemPrompt 只跑一次。若初始 pull 晚于它（原顺序即如此，
+    // 启动 watcher 在构建之后约 200 行），首轮拿到的永远是 pull 前的陈旧/空索引，
+    // 同事写的团队记忆整场会话不可见——等同功能未上线。
+    await this.wireTeamMemorySync();
+
     let systemPrompt = this.config.systemPrompt;
 
     // 评测隔离开关：SID_CODE_DISABLE_PROJECT_RULES=1 时跳过 CLAUDE.md 加载，
@@ -2186,43 +2224,9 @@ export class App {
     // 实际接线委托给 wireExtractMemories()，以便 /memory auto 在运行时热接线/断线。
     await this.wireExtractMemories();
 
-    // 团队记忆同步（E.11 协作护城河）：注入运行时配置 + 启动 watcher（含初始同步）。
-    // 仅在 teamMemory.enabled 且共享目录可用时实际启动；未启用时只注入配置（供
-    // write/edit 守卫判断，此时守卫对团队记忆目录不拦截）。
-    try {
-      const { setTeamMemoryOptions } = await import("./memory/team/runtime.ts");
-      setTeamMemoryOptions(this.config.teamMemory);
-      if (this.config.teamMemory?.enabled) {
-        const { startTeamMemoryWatcher, stopTeamMemoryWatcher, setTeamMemorySuppressionListener } =
-          await import("./memory/team/watcher.ts");
-        // 抑制态一次性提示（比 claude-code 多做的一点）：同步进入永久抑制态（配置态
-        // 错误 / 共享目录不可用）时，claude-code 纯静默；我们经主上下文注入一条
-        // system-reminder，让模型/用户知道「团队记忆同步已暂停」，避免以为仍在正常同步。
-        // 只在首次进入抑制态时触发一次（watcher 内部 suppressionNotified 去重），恢复后重新武装。
-        setTeamMemorySuppressionListener((reason) => {
-          try {
-            const hint = reason === "no_shared_dir"
-              ? "共享目录不可用"
-              : reason === "disabled"
-                ? "团队记忆未启用"
-                : `原因: ${reason}`;
-            this.ctxMgr.addMessage({
-              role: "user",
-              content: [{
-                type: "text",
-                text: `<system-reminder>团队记忆同步已暂停（${hint}）。本地新写入的团队记忆暂时不会同步给协作者；修复共享目录配置后，删除任一团队记忆文件或重启会话即可恢复同步。</system-reminder>`,
-              }],
-            } as import("./llm/types.ts").Message);
-          } catch { /* 通知失败不阻断同步 */ }
-        });
-        await startTeamMemoryWatcher(this.config.teamMemory, process.cwd());
-        const { registerCleanup } = await import("./utils/graceful-shutdown.ts");
-        registerCleanup(() => stopTeamMemoryWatcher());
-        log.info("APP", "团队记忆同步已启动（共享目录模型）");
-      }
-    } catch (e) {
-      log.warn("APP", `团队记忆同步接线失败（不阻断）: ${(e as Error)?.message}`);
-    }
+    // 团队记忆同步已在系统提示词构建之前完成（见 doInit 内 wireTeamMemorySync 调用点），
+    // 此处不再重复启动——初始 pull 必须早于 buildInitialSystemPrompt，否则同事的记忆
+    // 索引赶不上首轮注入。
 
     // 启动 CLAUDE.md 文件变化监听（变更时重新加载规则 + 重建系统提示词）
     watchCLAUDEmd(process.cwd(), async (changedPath) => {
@@ -2415,6 +2419,54 @@ export class App {
       const { logEvent } = await import("./analytics/index.ts");
       logEvent("startup_timing", { duration_ms: Date.now() - initStartMs });
     } catch { /* 遥测旁路，绝不影响启动 */ }
+  }
+
+  /**
+   * 团队记忆同步（E.11 协作护城河）：注入运行时配置 + 启动 watcher（含初始同步）。
+   *
+   * 仅在 teamMemory.enabled 且共享目录可用时实际启动；未启用时只注入配置（供
+   * write/edit 守卫判断，此时守卫对团队记忆目录不拦截）。
+   *
+   * **调用点必须早于 buildInitialSystemPrompt**：初始同步会 pull 同事的记忆条目并
+   * 重建本地 MEMORY.md 索引，而注入侧（buildMemorySystemPrompt 的团队段）读的是
+   * 该索引的一次性快照。晚一步则首轮注入的是 pull 前的空/陈旧索引。
+   */
+  private async wireTeamMemorySync(): Promise<void> {
+    const log = getLogger();
+    try {
+      const { setTeamMemoryOptions } = await import("./memory/team/runtime.ts");
+      setTeamMemoryOptions(this.config.teamMemory);
+      if (this.config.teamMemory?.enabled) {
+        const { startTeamMemoryWatcher, stopTeamMemoryWatcher, setTeamMemorySuppressionListener } =
+          await import("./memory/team/watcher.ts");
+        // 抑制态一次性提示（比 claude-code 多做的一点）：同步进入永久抑制态（配置态
+        // 错误 / 共享目录不可用）时，claude-code 纯静默；我们经主上下文注入一条
+        // system-reminder，让模型/用户知道「团队记忆同步已暂停」，避免以为仍在正常同步。
+        // 只在首次进入抑制态时触发一次（watcher 内部 suppressionNotified 去重），恢复后重新武装。
+        setTeamMemorySuppressionListener((reason) => {
+          try {
+            const hint = reason === "no_shared_dir"
+              ? "共享目录不可用"
+              : reason === "disabled"
+                ? "团队记忆未启用"
+                : `原因: ${reason}`;
+            this.ctxMgr.addMessage({
+              role: "user",
+              content: [{
+                type: "text",
+                text: `<system-reminder>团队记忆同步已暂停（${hint}）。本地新写入的团队记忆暂时不会同步给协作者；修复共享目录配置后，删除任一团队记忆文件或重启会话即可恢复同步。</system-reminder>`,
+              }],
+            } as import("./llm/types.ts").Message);
+          } catch { /* 通知失败不阻断同步 */ }
+        });
+        await startTeamMemoryWatcher(this.config.teamMemory, process.cwd());
+        const { registerCleanup } = await import("./utils/graceful-shutdown.ts");
+        registerCleanup(() => stopTeamMemoryWatcher());
+        log.info("APP", "团队记忆同步已启动（共享目录模型）");
+      }
+    } catch (e) {
+      log.warn("APP", `团队记忆同步接线失败（不阻断）: ${(e as Error)?.message}`);
+    }
   }
 
   /**

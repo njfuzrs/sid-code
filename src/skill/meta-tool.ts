@@ -57,6 +57,8 @@ export class SkillMetaTool implements Tool {
   private hookSystem?: HookSystem;
   private permissionChecker?: Checker;
   private permissionRules?: PermissionRule;
+  /** 审计第 19 条：activate 分支上报 skill 调用，供压缩时重注入工作流指令 */
+  private invokedSkillSink?: (name: string, content: string) => void;
 
   constructor(
     manager: SkillManager,
@@ -81,6 +83,18 @@ export class SkillMetaTool implements Tool {
   /** P0-3：注入统一权限规则（含 Skill(name) 规则），由 cli 回填 */
   setPermissionRules(rules: PermissionRule): void {
     this.permissionRules = rules;
+  }
+
+  /**
+   * 审计第 19 条：注入 skill 调用上报回调（app 侧接 ctxMgr.addInvokedSkill）。
+   *
+   * activate 模式把 skill 的 prompt 作为工具结果注入主对话，压缩会把这段旧消息丢掉；
+   * ctxMgr 的保留机制（buildInvokedSkillMessages）需要知道「调用过哪些 skill、内容是什么」
+   * 才能重注入。这里用 setter 注入而非构造入参，与 setHookSystem / setPermissionChecker
+   * 同一模式，避免 skill 层反向依赖 context 层。未注入时退化为不上报（压缩后遗忘工作流）。
+   */
+  setInvokedSkillSink(sink: (name: string, content: string) => void): void {
+    this.invokedSkillSink = sink;
   }
 
   name(): string {
@@ -224,10 +238,20 @@ export class SkillMetaTool implements Tool {
 
     this.manager.activateSkill(skill.name);
 
-    return {
-      output: `${header}${skill.prompt}${resources}${inputSection}`,
-      isError: false,
-    };
+    const output = `${header}${skill.prompt}${resources}${inputSection}`;
+
+    // 审计第 19 条：在真正执行注入的这一方上报，供压缩时重注入 skill 工作流指令。
+    // 上报的是实际进入上下文的完整内容（含 Base directory 头部与资源清单），
+    // 而非裸 skill.prompt——压缩后重注入的必须与模型当初看到的一致。
+    // delegate 分支不上报：那份 prompt 活在子代理上下文里，主对话压缩与它无关。
+    try {
+      this.invokedSkillSink?.(skill.name, output);
+    } catch (e: any) {
+      // 上报失败只影响「压缩后能否重注入」，不该让 skill 调用本身失败
+      log.warn("SKILL", `记录 activate skill 调用失败（不阻断）: ${e?.message ?? String(e)}`);
+    }
+
+    return { output, isError: false };
   }
 
   /** delegate 模式：子代理执行，返回最终输出（P1-1：透传 effort/agent） */

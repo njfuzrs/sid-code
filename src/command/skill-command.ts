@@ -95,6 +95,19 @@ export class SkillCommand implements Command {
     }
 
     // inline 模式：注入当前对话，触发 LLM 响应（hooks 随会话长期存活，不卸载）
+    //
+    // 审计第 19 条：在**真正执行注入的这一方**上报 ctxMgr.addInvokedSkill。
+    // skill 的工作流指令是模型后续正确执行任务的关键上下文，而压缩会丢弃旧消息；
+    // ctxMgr 侧的保留机制（buildInvokedSkillMessages）早已接线，缺的一直是喂数据这一步
+    // ——不上报则 invokedSkills 恒为空，压缩后模型直接遗忘 skill 工作流。
+    // 只在 inline 分支上报：fork 分支的 prompt 活在子代理上下文里，主对话压缩与它无关。
+    try {
+      ctx.ctxMgr?.addInvokedSkill(this.skill.name, prompt);
+    } catch (e: any) {
+      // 上报失败只影响「压缩后能否重注入」，不该阻断 skill 本身的执行
+      log.warn("SKILL", `记录 inline skill 调用失败（不阻断）: ${e?.message ?? String(e)}`);
+    }
+
     log.debug("SKILL", `inline 注入 skill /${this.skill.name}`);
     return { kind: "submit_prompt", prompt };
   }

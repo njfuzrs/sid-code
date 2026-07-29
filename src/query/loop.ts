@@ -852,6 +852,24 @@ export async function* queryLoop(
       }
     }
 
+    // ─── IDE 上下文增量注入（审计第 22 条，与上面 MCP instructions 同一模式）───
+    // IDE 选区 / @提及 原先只在 buildInitialSystemPrompt 采集一次，而 IDE 连接是后台异步的
+    // （轮询至 30s 超时）→ 启动瞬间必然未连上，两处 rebuildSystemPrompt 也不采集，
+    // 净效果是 IDE 上下文基本永远进不了模型。改在每轮拉增量：何时连上都能赶上，
+    // 且落在 user 消息尾部而非静态前缀 → 选区变化不击穿 prompt cache。
+    // 选区做指纹去重（同一份只注入一次）、@提及为消费语义，均在 drainIDEContextDelta 内。
+    if (deps.drainIDEContextDelta) {
+      try {
+        const ideDelta = deps.drainIDEContextDelta();
+        if (ideDelta) {
+          reminderParts.push(ideDelta);
+          log.info("QUERY_LOOP", "注入 IDE 上下文增量（选区/@提及）");
+        }
+      } catch (e) {
+        log.warn("QUERY_LOOP", `IDE 上下文增量注入异常（忽略）: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+
     // G7：异步 hook 的 asyncRewake 回灌——后台 hook 进程 exit 2 时，其 stderr 在下一轮开始
     // 作为 system-reminder 注入，唤醒模型处理反馈（对标 CC async hook rewake）。
     if (deps.drainAsyncHookRewakes) {
