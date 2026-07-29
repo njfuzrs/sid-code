@@ -34,10 +34,10 @@ function agentsMemRoot(): string {
 }
 
 /**
- * 把项目根路径转成文件系统安全的目录名。
- * 用 git canonical root 派生，去掉分隔符与特殊字符。
+ * 纯 sanitize（有损）：去掉分隔符与不安全字符。**不要直接用它做目录键**，
+ * 见 `sanitizeProjectKey` 的单射性说明。仅供内部与迁移期识别「旧键」使用。
  */
-export function sanitizeProjectKey(raw: string): string {
+function sanitizeProjectKeyLossy(raw: string): string {
   // 去掉首尾分隔符，把路径分隔符与不安全字符替换为 -
   const cleaned = raw
     .replace(/^[\\/]+|[\\/]+$/g, "")
@@ -46,6 +46,69 @@ export function sanitizeProjectKey(raw: string): string {
     .replace(/-+/g, "-")
     .replace(/^-+|-+$/g, "");
   return cleaned || "default";
+}
+
+/**
+ * 该键的**有损**程度判定：sanitize 是否丢掉了区分两个不同路径所必需的信息。
+ *
+ * 判据：把路径按分隔符切段后，是否存在含「非 `[a-zA-Z0-9._-]` 字符」的段
+ * （中文/日文/空格/括号…）。有这种段，就可能与另一个 ASCII 骨架相同的路径撞键。
+ * 反过来，全段都是安全字符的路径经 sanitize 是单射的，无需加后缀。
+ *
+ * 不检查「连续分隔符被 `-+` 折叠」：`//` 与 `/` 指向磁盘上同一个目录，而入参恒经
+ * `resolveProjectRoot`（git toplevel 或 `resolve()`）归一化，重复分隔符不会出现；
+ * 即便出现，折叠成同一个键也是正确行为，不是碰撞。
+ */
+function isKeyLossy(raw: string): boolean {
+  const trimmed = raw.replace(/^[\\/]+|[\\/]+$/g, "");
+  return trimmed.split(/[\\/]+/).some((s) => /[^a-zA-Z0-9._-]/.test(s));
+}
+
+/**
+ * 短哈希（6 位十六进制），用于给有损键补足单射性。
+ *
+ * 用 FNV-1a：无需引入 crypto、同步、稳定跨平台。这里只要求「不同输入极少碰撞」，
+ * 不是密码学用途——键碰撞的后果是隔离失效，而 6 位 hex（约 1677 万）对
+ * 「同一台机器上 ASCII 骨架相同的项目数」这个量级远够用。
+ */
+function shortHash(raw: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < raw.length; i++) {
+    h ^= raw.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, "0").slice(0, 6);
+}
+
+/**
+ * 把项目根路径转成文件系统安全的目录名。
+ * 用 git canonical root 派生，去掉分隔符与特殊字符。
+ *
+ * 审计第 3 条：键派生必须是**单射**的。旧实现把「任意非 ASCII 字符」与「分隔符」
+ * 都映射成 `-` 再折叠连续 `-`，是双重有损——`~/工作/app` 与 `~/文档/app` 派生出
+ * **完全相同**的键，两个私有项目的记忆/会话/团队记忆目录重合，互相可读。
+ * 中文用户的常见目录习惯极易命中，不是构造出来的边界场景。
+ *
+ * 修法：**仅当** sanitize 真的丢了信息时，追加原始路径的短哈希后缀（`-a3f9c1`）。
+ * 纯 ASCII 路径（绝大多数用户）的键保持**逐字节不变**——这一点是刻意的：该键同时
+ * 决定 `projects/<key>/memory`、`projects/<key>/team-memory`、`sessions/<key>/`、
+ * `projects/<key>/mcp.local.json` 四处已落盘数据的位置，无条件改键会让所有存量
+ * 用户的记忆与历史会话凭空「消失」。有损路径的用户本来就在共用一个错误目录，
+ * 换键是必要代价（旧目录仍在磁盘上，未删除，见 `findLegacyProjectKey`）。
+ */
+export function sanitizeProjectKey(raw: string): string {
+  const cleaned = sanitizeProjectKeyLossy(raw);
+  if (!isKeyLossy(raw)) return cleaned;
+  return `${cleaned}-${shortHash(raw)}`;
+}
+
+/**
+ * 取该项目在**旧（有损）算法**下的键，用于读取存量数据做兼容回退。
+ * 键本来就无损时返回 undefined（新旧键相同，无需回退）。
+ */
+export function findLegacyProjectKey(raw: string): string | undefined {
+  if (!isKeyLossy(raw)) return undefined;
+  return sanitizeProjectKeyLossy(raw);
 }
 
 /**

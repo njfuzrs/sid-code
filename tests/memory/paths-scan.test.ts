@@ -8,6 +8,7 @@ import { join } from "path";
 import { tmpdir } from "os";
 import {
   sanitizeProjectKey,
+  findLegacyProjectKey,
   validateMemoryPath,
   isAutoMemPath,
   memoryFilename,
@@ -17,8 +18,35 @@ import { memoryAgeDays, memoryAge, buildFreshnessWarning } from "../../src/memor
 
 describe("paths — 安全验证", () => {
   test("sanitizeProjectKey 去掉分隔符与特殊字符", () => {
+    // 纯 ASCII 安全字符路径：键逐字节不变（存量数据兼容的硬约束，见 paths.ts 说明）
     expect(sanitizeProjectKey("/Users/foo/bar")).toBe("Users-foo-bar");
     expect(sanitizeProjectKey("")).toBe("default");
+  });
+
+  // 审计第 3 条：键派生必须单射，否则 ASCII 骨架相同的项目串目录、私有记忆互相可读
+  test("sanitizeProjectKey 非 ASCII 路径不再撞键（审计第 3 条）", () => {
+    const a = sanitizeProjectKey("/tmp/sid-audit/工作/app");
+    const b = sanitizeProjectKey("/tmp/sid-audit/文档/app");
+    const c = sanitizeProjectKey("/tmp/sid-audit/项目/app");
+    expect(new Set([a, b, c]).size).toBe(3);
+    // 仍保留可读的 ASCII 骨架前缀，便于人工辨认目录归属
+    expect(a.startsWith("tmp-sid-audit-app-")).toBe(true);
+  });
+
+  test("sanitizeProjectKey 同一路径稳定可复现（键不能每次启动都变）", () => {
+    const p = "/Users/foo/工作/app";
+    expect(sanitizeProjectKey(p)).toBe(sanitizeProjectKey(p));
+  });
+
+  test("含空格路径也算有损，需加后缀区分", () => {
+    expect(sanitizeProjectKey("/Users/foo/my project")).not.toBe(
+      sanitizeProjectKey("/Users/foo/my-project"),
+    );
+  });
+
+  test("findLegacyProjectKey：无损路径无旧键，有损路径给出旧键供兼容读取", () => {
+    expect(findLegacyProjectKey("/Users/foo/bar")).toBeUndefined();
+    expect(findLegacyProjectKey("/tmp/sid-audit/工作/app")).toBe("tmp-sid-audit-app");
   });
 
   test("validateMemoryPath 拒绝相对路径", () => {

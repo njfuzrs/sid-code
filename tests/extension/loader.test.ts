@@ -28,22 +28,40 @@ description: 测试描述
     expect(result.body).toBe(content);
   });
 
-  test("frontmatter 缺少闭合标记", () => {
+  // 审计第 4 条：缺闭合 / YAML 解析失败不再静默降级为"无 frontmatter"，
+  // 必须回报 error 供消费方 fail-closed——否则 allowed-tools/model/tools 约束
+  // 随解析失败一起消失（降级方向更宽松），且 YAML 原文被当指令喂给模型。
+  test("frontmatter 缺少闭合标记 → 报 error（审计第 4 条）", () => {
     const content = `---
 name: test
 正文内容`;
     const result = parseFrontmatter(content);
     expect(result.frontmatter).toEqual({});
     expect(result.body).toBe(content);
+    expect(result.error).toBeDefined();
+    expect(result.error).toContain("缺少闭合分隔符");
   });
 
-  test("YAML 解析失败返回空 frontmatter", () => {
+  test("只有一行 --- → 报 error（审计第 4 条）", () => {
+    const result = parseFrontmatter("---");
+    expect(result.error).toContain("缺少闭合分隔符");
+  });
+
+  test("YAML 解析失败 → 报 error（审计第 4 条）", () => {
     const content = `---
 : invalid: yaml: [
 ---
 正文`;
     const result = parseFrontmatter(content);
     expect(result.frontmatter).toEqual({});
+    expect(result.error).toBeDefined();
+  });
+
+  test("合法的「本来就没有 frontmatter」不报 error（防误判）", () => {
+    // 这条是关键对照：fail-closed 不能把"用户没写 frontmatter"也当成错误，
+    // 否则会把大量合法的纯 markdown 扩展文件全部拒绝加载。
+    expect(parseFrontmatter("这是普通 markdown 内容").error).toBeUndefined();
+    expect(parseFrontmatter("# 标题\n\n正文 --- 中间有横线").error).toBeUndefined();
   });
 
   test("空 frontmatter", () => {

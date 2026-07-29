@@ -334,6 +334,16 @@ export class PermissionChecker implements Checker {
     return this.pathValidator.getAllowedDirectories();
   }
 
+  /**
+   * 获取内部路径校验器实例（供工具层之外的读路径复用同一道防线，如 `@文件` 提及展开）。
+   *
+   * 返回实例本身而非副本：`addAllowedDirectory`（/add-dir）改的是这个实例，
+   * 复制一份会让消费方看不到本会话的运行时授权。
+   */
+  getPathValidator(): PathValidator {
+    return this.pathValidator;
+  }
+
   /** 获取配置（只读，供子代理 checker 工厂复制配置） */
   getConfig(): Readonly<Config> {
     return this.config;

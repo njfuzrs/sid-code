@@ -8,17 +8,32 @@ import YAML from "yaml";
 export interface FrontmatterResult {
   frontmatter: Record<string, unknown>;
   body: string;
+  /**
+   * 审计第 4 条：**畸形** frontmatter 的错误说明（正常解析 / 本来就没有 frontmatter 时为 undefined）。
+   *
+   * 关键区分：「文件不以 `---` 开头」= 用户本就没写 frontmatter，是合法的，`error` 为空；
+   * 「以 `---` 开头但找不到闭合 / YAML 完全解析不出来」= 用户**意图**写 frontmatter 但写错了，
+   * 此时旧实现把原始 YAML 当正文返回，造成两个后果：
+   *   ① `allowed-tools` / `model` 等安全约束随解析失败一起消失，且降级方向**更宽松**
+   *      （自定义命令从"fork 子代理受限执行"退化成"inline 注入主对话、无工具限制"）；
+   *   ② 原始 YAML 文本被当自然语言指令喂给模型。
+   * 两者都是静默的。消费方**必须**检查此字段并 fail-closed（跳过该文件），
+   * 不能把"用户的笔误"解释成"另一种合法语义"。
+   */
+  error?: string;
 }
 
 /**
  * 解析 markdown 文件的 frontmatter
  * 检测 `---\n` 开头，找到第二个 `---\n`，中间部分用 yaml.parse() 解析
- * 解析失败返回空 frontmatter + 完整内容作为 body
+ *
+ * 返回的 `error` 非空表示 frontmatter 畸形（详见 `FrontmatterResult.error`）——
+ * 消费方须据此跳过该文件，而不是当作"无 frontmatter"继续加载。
  */
 export function parseFrontmatter(content: string): FrontmatterResult {
   const trimmed = content.trimStart();
 
-  // 必须以 --- 开头（后面紧跟换行或文件结束）
+  // 必须以 --- 开头（后面紧跟换行或文件结束）。不以 --- 开头 = 合法的"无 frontmatter"，非错误。
   if (!trimmed.startsWith("---")) {
     return { frontmatter: {}, body: content };
   }
@@ -26,7 +41,8 @@ export function parseFrontmatter(content: string): FrontmatterResult {
   // 找第二个 ---
   const firstNewline = trimmed.indexOf("\n");
   if (firstNewline === -1) {
-    return { frontmatter: {}, body: content };
+    // 整个文件只有一行 `---`：以 --- 开头却没有闭合，属畸形
+    return { frontmatter: {}, body: content, error: "frontmatter 以 `---` 开头但缺少闭合分隔符" };
   }
 
   const rest = trimmed.slice(firstNewline + 1);
@@ -43,7 +59,12 @@ export function parseFrontmatter(content: string): FrontmatterResult {
   } else {
     closingIndex = rest.indexOf("\n---");
     if (closingIndex === -1) {
-      return { frontmatter: {}, body: content };
+      // 最常见的笔误形态：少写一行 `---`、写成 `--`、或闭合行末无换行
+      return {
+        frontmatter: {},
+        body: content,
+        error: "frontmatter 以 `---` 开头但缺少闭合分隔符",
+      };
     }
     yamlStr = rest.slice(0, closingIndex);
     body = rest.slice(closingIndex + 4).replace(/^\n/, "");
@@ -62,8 +83,13 @@ export function parseFrontmatter(content: string): FrontmatterResult {
     if (simpleFrontmatter && Object.keys(simpleFrontmatter).length > 0) {
       return { frontmatter: simpleFrontmatter, body };
     }
-    // 简单解析也失败，返回完整内容作为 body
-    return { frontmatter: {}, body: content };
+    // 简单解析也失败：分隔符齐全但里面完全不是 key-value，同属畸形——
+    // 原始 YAML 会被当正文喂给模型，且约束全丢。
+    return {
+      frontmatter: {},
+      body: content,
+      error: `frontmatter YAML 解析失败: ${(error as Error)?.message ?? String(error)}`,
+    };
   }
 }
 

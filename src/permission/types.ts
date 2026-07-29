@@ -58,6 +58,17 @@ export interface Checker {
    * 而非在 check() 内同步串行等待。返回 null 表示未配置分类器。
    */
   getBashClassifier?(): import("./bash-classifier.ts").BashClassifier | null;
+  /**
+   * 获取内部路径校验器（可选）。
+   *
+   * 供**工具层之外**的读文件路径复用同一道路径防线——目前唯一消费方是 `@文件` 提及展开
+   * （`src/app.ts` expandAtReferences）。它此前直接 `readFile` 零校验，等于给敏感文件
+   * 开了一条绕过 FILE_TOOLS 校验（checker.ts Step 4）的侧门。
+   *
+   * 必须暴露**同一个实例**而非新建：`/add-dir` 等运行时授权改的是这个实例的白名单，
+   * 新建一个会丢掉本会话的用户授权。
+   */
+  getPathValidator?(): import("./path-validator.ts").PathValidator;
 }
 
 /** 权限规则配置 */

@@ -52,7 +52,14 @@ export async function discoverMcpSkills(
   for (const { serverName, resource } of skillResources) {
     try {
       const text = await provider.readResource(serverName, resource.uri);
-      const { frontmatter: fm, body } = parseFrontmatter(text);
+      const { frontmatter: fm, body, error: fmError } = parseFrontmatter(text);
+
+      // 审计第 4 条：畸形 frontmatter fail-closed 跳过。MCP Skill 来自外部 server，
+      // 更不能因解析失败就丢掉 allowed-tools/context 约束（fork 会退化成 inline）。
+      if (fmError) {
+        log.warn("MCP", `跳过 frontmatter 格式错误的 MCP Skill: ${serverName}:${resource.name} - ${fmError}`);
+        continue;
+      }
 
       const rawName = (fm.name as string) || resource.name;
       const name = `${serverName}:${rawName}`;

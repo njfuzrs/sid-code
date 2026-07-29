@@ -276,7 +276,17 @@ export class ExtensionLoader {
 
           try {
             const rawContent = await readFile(filePath, "utf-8");
-            const { frontmatter, body } = parseFrontmatter(rawContent);
+            const { frontmatter, body, error: fmError } = parseFrontmatter(rawContent);
+
+            // 审计第 4 条：frontmatter 畸形时 fail-closed 跳过该文件，不再静默降级。
+            // 旧行为把原始 YAML 当正文返回，导致 allowed-tools/model/tools 白名单
+            // 随解析失败一起消失（降级方向更宽松），且 YAML 原文被当指令喂给模型。
+            if (fmError) {
+              const errorMsg = `扩展文件 frontmatter 格式错误，已跳过: ${filePath} - ${fmError}`;
+              errors.push({ filePath, message: errorMsg });
+              log.warn("EXTENSION", errorMsg);
+              continue;
+            }
 
             results.push({
               name,
@@ -302,7 +312,15 @@ export class ExtensionLoader {
 
               try {
                 const rawContent = await readFile(candidatePath, "utf-8");
-                const { frontmatter, body } = parseFrontmatter(rawContent);
+                const { frontmatter, body, error: fmError } = parseFrontmatter(rawContent);
+
+                // 审计第 4 条：同扁平文件分支，畸形 frontmatter fail-closed 跳过。
+                if (fmError) {
+                  const errorMsg = `扩展文件 frontmatter 格式错误，已跳过: ${candidatePath} - ${fmError}`;
+                  errors.push({ filePath: candidatePath, message: errorMsg });
+                  log.warn("EXTENSION", errorMsg);
+                  break;
+                }
 
                 results.push({
                   name,

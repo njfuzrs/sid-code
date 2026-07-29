@@ -12,6 +12,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
 import { sidPaths } from "../config/paths.ts";
 import { migrate as backfillTeamDefaults } from "./backfill-team-defaults.ts";
+import { migrate as relocateLossyProjectKey } from "./relocate-lossy-project-key.ts";
 
 interface Migration {
   version: number;
@@ -25,6 +26,11 @@ const migrations: Migration[] = [
     version: 1,
     name: "backfill-team-defaults",
     migrate: backfillTeamDefaults,
+  },
+  {
+    version: 2,
+    name: "relocate-lossy-project-key",
+    migrate: relocateLossyProjectKey,
   },
 ];
 

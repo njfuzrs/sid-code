@@ -77,7 +77,14 @@ async function loadAgentFile(
 ): Promise<void> {
   try {
     const raw = await readFile(filePath, "utf-8");
-    const { frontmatter, body } = parseFrontmatter(raw);
+    const { frontmatter, body, error: fmError } = parseFrontmatter(raw);
+    // 审计第 4 条：畸形 frontmatter fail-closed 跳过。此处后果与自定义命令同构——
+    // 实测闭合符缺失时 frontmatter={}、`tools` 白名单丢失（子代理拿到全部工具）、
+    // YAML 原文进 agent prompt。降级方向更宽松，必须拒绝加载而非静默放行。
+    if (fmError) {
+      getLogger().warn("PLUGIN", `插件 Agent frontmatter 格式错误，已跳过 ${filePath}: ${fmError}`);
+      return;
+    }
     const name = getAgentName(filePath, baseDir, pluginName);
     out.push({
       name,

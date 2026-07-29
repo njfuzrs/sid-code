@@ -89,6 +89,12 @@ import { resolveSideCallTimeouts } from "./config/network-profile.ts";
 interface AtExpansionResult {
   displayText: string;
   injectedContent: string | null;
+  /**
+   * 被路径校验拦下、未注入的 @ 提及（审计第 20 条）。
+   * 调用方据此给**用户**一条可见提示——原实现的 `catch {}` 是静默的，
+   * 修复时不能延续：拦截必须 fail-closed 且可观测，否则用户以为文件已给到模型。
+   */
+  blockedPaths?: Array<{ path: string; reason: string }>;
 }
 
 /** vision 支持的图片扩展名（与 tool/read.ts 严格一致）。图片走 Read 工具而非文本内联。 */
@@ -120,11 +126,14 @@ function parseAgentHookVerdict(output: string): { ok?: boolean; reason?: string 
   return null;
 }
 
-async function expandAtReferences(
+export async function expandAtReferences(
   input: string,
   mcpManager?: MCPManager,
+  permissionChecker?: Checker | null,
 ): Promise<AtExpansionResult> {
   const parts: string[] = [];
+  /** 被路径校验拦下的 @ 提及，用于向用户显式告知"没注入"（不能静默） */
+  const blocked: Array<{ path: string; reason: string }> = [];
 
   // G1：先抽取 MCP 资源提及 @server:uri（uri 含冒号，如 @filesystem:file:///tmp/a.txt）。
   // 正则对齐 CC extractMcpResourceMentions：@ 后跟「非空白且含冒号」的 token。
@@ -176,8 +185,26 @@ async function expandAtReferences(
       imagePaths.push(resolve(process.cwd(), filePath));
       continue;
     }
+    const absPath = resolve(process.cwd(), filePath);
+    // 审计第 20 条：接工具层同一道路径防线（敏感文件 / 系统目录 / symlink 逃逸 /
+    // Unicode 混淆 / 目录黑白名单）。此前这里直接 readFile 零校验，一个 `@.env`
+    // 就能把密钥明文注入上下文并发往模型服务端，而同路径经 read 工具会被拦下
+    // （checker.ts Step 4）——用户对"哪些文件不会被读"的心智模型与实际行为不一致。
+    //
+    // 复用 checker 内部的 PathValidator 实例（非新建），以继承 /add-dir 的运行时授权。
+    // checker 缺席时（无头/测试路径）不做校验：此处是"补上工具层已有的校验"，
+    // 而非新增一道独立防线，没有 checker 就意味着整个权限体系未装配。
+    const validator = permissionChecker?.getPathValidator?.();
+    if (validator) {
+      const verdict = validator.validateAccess(absPath, "read");
+      if (!verdict.allowed) {
+        // fail-closed 且可观测：不注入，并记账供下面告知用户。
+        blocked.push({ path: filePath, reason: verdict.reason || "路径校验未通过" });
+        getLogger().info("AT_REF", `@${filePath} 被路径校验拦截，未注入: ${verdict.reason}`);
+        continue;
+      }
+    }
     try {
-      const absPath = resolve(process.cwd(), filePath);
       const content = await readFile(absPath, "utf-8");
       fileContents.push(`以下是文件 \`${filePath}\` 的内容：\n\`\`\`${extname(filePath).slice(1)}\n${content}\n\`\`\``);
     } catch {
@@ -186,6 +213,14 @@ async function expandAtReferences(
   }
 
   if (fileContents.length > 0) parts.push(fileContents.join("\n\n"));
+  if (blocked.length > 0) {
+    // 告知**模型**这些提及未注入——否则模型会以为用户给了文件却看不到内容，
+    // 转而用 read 工具重试（同样会被拦），白烧一轮。用户侧的可见提示由调用方给。
+    const list = blocked.map((b) => `- \`${b.path}\`：${b.reason}`).join("\n");
+    parts.push(
+      `以下 @ 提及的文件被权限规则拦截，内容**未注入**（请勿假设已读到，也不要改用 Read 工具绕行）：\n${list}`,
+    );
+  }
   if (imagePaths.length > 0) {
     // 引导模型主动 Read 图片：Read 工具读图会产出 mediaBlocks，交给支持 vision 的 provider。
     const list = imagePaths.map((p) => `- ${p}`).join("\n");
@@ -197,6 +232,7 @@ async function expandAtReferences(
     injectedContent: parts.length > 0
       ? `<system-reminder>\n${parts.join("\n\n")}\n</system-reminder>`
       : null,
+    blockedPaths: blocked.length > 0 ? blocked : undefined,
   };
 }
 
@@ -5671,7 +5707,21 @@ export class App {
           this.abortController = new AbortController();
           // @ 文件注入：展开用户输入中的 @path 引用
           // 文件内容用 <system-reminder> 包裹，TUI 渲染时剥离，模型正常读取
-          const { displayText, injectedContent } = await expandAtReferences(text, this.mcpManager);
+          const { displayText, injectedContent, blockedPaths } = await expandAtReferences(
+            text,
+            this.mcpManager,
+            this.permissionChecker,
+          );
+          // 审计第 20 条：被路径校验拦下的 @ 提及必须让用户看见——静默跳过会让用户
+          // 以为文件已给到模型，而模型侧只收到"未注入"说明，两边认知错位。
+          if (blockedPaths && blockedPaths.length > 0) {
+            const summary = blockedPaths.map((b) => `@${b.path}`).join("、");
+            addTransientStatusMessage(
+              "at_ref_blocked",
+              `⚠ ${summary} 被权限规则拦截，未注入（${blockedPaths[0]!.reason}）`,
+              5000,
+            );
+          }
           const finalInput = injectedContent ? `${displayText}\n\n${injectedContent}` : displayText;
           await tuiAgentLoop(finalInput, opts?.displayCommand);
           // 正常完成 → 丢弃暂存,不回填
