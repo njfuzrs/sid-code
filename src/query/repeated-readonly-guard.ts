@@ -170,7 +170,13 @@ export function isReadonlyProbeCommand(command: string): boolean {
  */
 export function makeSignature(command: string, output: string): string {
   const norm = (s: string) => s.replace(/\s+/g, " ").trim();
-  return `${norm(command)} ${norm(output)}`;
+  // 分隔符用**转义写法** `\x1f`（US，单元分隔符）而非裸控制字节：语义比 NUL 更贴切
+  // （它就是为"分隔字段"设计的），且 `\s` 不匹配它，norm 折叠空白时不会被吃掉。
+  // ★为什么必须是转义写法：源码里出现**裸 NUL 字节**会让 `grep` 把整个文件判为二进制而
+  // 静默跳过（exit=1 与"真的没匹配"不可区分），全文件所有符号都搜不到——2026-07-30 审计
+  // 实测本文件正因此对 grep 完全失明，而它是唯一默认开启且能强制收尾的止损阀，最不该被
+  // 搜索工具漏掉。改为转义后运行时行为等价，源码字节不含控制字符。
+  return `${norm(command)}\x1f${norm(output)}`;
 }
 
 /** processObservation 的决策结果。 */

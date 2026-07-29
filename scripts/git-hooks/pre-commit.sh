@@ -90,6 +90,58 @@ if [ -n "$STAGED_CMD_SOURCES" ] || [ -n "$STAGED_GUIDE_PAGES" ]; then
 fi
 
 # ============================================================================
+# 源码裸 NUL 字节门禁（负收益防线审计 发现 6，2026-07-30）
+#
+# 为什么这值得一道 pre-commit 门禁：源码里出现**裸 NUL 字节（0x00）**会让 grep 把
+# 整个文件判为二进制而**静默跳过**——不是"漏掉 NUL 之后的部分"，是全文件所有符号都
+# 搜不到，且 exit=1 与"真的没有匹配"不可区分。实测 repeated-readonly-guard.ts 就因
+# 一个用作复合键分隔符的裸 `\0` 对 grep 完全失明，而它是唯一默认开启且能强制收尾的
+# 止损阀——审计开局差点因此写出"16 条死防线"的假结论。
+#
+# 合法需求（拿控制字符做键分隔符）用**转义写法**满足即可：`"\x1f"`（US，单元分隔符）
+# 运行时等价，源码字节不含控制字符。故本门禁只拦裸字节，不限制语义。
+#
+# 刻意只查 NUL(0x00)，不查其它控制字符：run-statusline.ts 里的 SOH(0x01) 实测对
+# grep 无影响，扩大到全部控制字符只会制造无收益的误报。
+# ============================================================================
+STAGED_SOURCES=$(git diff --cached --name-only --diff-filter=ACMR \
+  | grep -E '\.(ts|tsx|js|jsx|mjs|cjs|sh|json|md)$' \
+  | grep -v -E '^(vendor/|src/ink/_vendor/)' || true)
+
+if [ -n "$STAGED_SOURCES" ]; then
+  NUL_HITS=""
+  for f in $STAGED_SOURCES; do
+    # 读 staged 内容（而非工作区）——门禁必须校验真正要进仓库的字节。
+    #
+    # 检测手段刻意用 `tr -d` 前后字节数差，而不是 `grep`：
+    #   - `grep -q "$(printf '\000')"` 是**陷阱**——shell 的命令替换会剥掉 NUL，模式退化成
+    #     空串，于是它匹配所有干净文件、漏掉真含 NUL 的文件（判定完全反转，已实测）。
+    #   - grep 本身对二进制文件的行为又正是本门禁要防的东西，用它自查等于用坏尺子量尺子。
+    # tr 逐字节删除、wc -c 数字节，两者都不受 NUL / locale 影响。
+    _staged_bytes=$(git show ":$f" 2>/dev/null | wc -c | tr -d ' ')
+    _stripped_bytes=$(git show ":$f" 2>/dev/null | LC_ALL=C tr -d '\000' | wc -c | tr -d ' ')
+    if [ -n "$_staged_bytes" ] && [ "$_staged_bytes" != "$_stripped_bytes" ]; then
+      NUL_HITS="$NUL_HITS $f"
+    fi
+  done
+
+  if [ -n "$NUL_HITS" ]; then
+    echo "[pre-commit] ❌ 检测到源码含裸 NUL 字节（0x00），commit 中止："
+    for f in $NUL_HITS; do echo "               - $f"; done
+    # 下面几行必须用 `printf '%s\n'` + 单引号，不能用 echo：/bin/sh（dash）的 echo 会
+    # **解释** \xNN 转义，把提示文案里的 \x1f / \x00 就地变成真的控制字节输出——一道防
+    # 控制字节的门禁自己吐控制字节，荒谬且会污染终端。
+    printf '%s\n' "             后果：grep 会把整个文件当二进制静默跳过，全文件符号都搜不到"
+    printf '%s\n' "                   （exit=1 与'真的没匹配'不可区分，排查时极易误判成死代码）。"
+    printf '%s\n' '             修复：把字符串里的裸控制字节改成转义写法，如 \x1f（US，单元分隔符）'
+    printf '%s\n' "                   —— 运行时等价，源码字节干净。参考 src/query/repeated-readonly-guard.ts"
+    printf '%s\n' '                   的 makeSignature。定位：perl -ne '"'"'print "line $.\n" if /\x00/'"'"' <文件>'
+    echo "             如确认误报，可加 --no-verify 跳过单次（不建议）"
+    exit 1
+  fi
+fi
+
+# ============================================================================
 # B7-7: SKILL.md 改动 → 提示 holdout execution 回归（§13.4.4 v1.3 蒸馏护栏 2）
 # ============================================================================
 STAGED_SKILLS=$(git diff --cached --name-only --diff-filter=ACM | grep -E '(^src/skill/builtin/.*/SKILL\.md$|^.*\.sid-code/skills/.*\.md$)' || true)

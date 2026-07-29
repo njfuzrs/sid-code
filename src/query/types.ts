@@ -226,12 +226,26 @@ export interface LoopState {
    */
   lastInjectedProgressReminderText?: string;
   /**
-   * 封顶（对话重播幻觉修复）：连续注入 todo/progress 催促而 todo 无进展
+   * 封顶（对话重播幻觉修复）：连续注入 **todo 回注**催促而 todo 无进展
    * （writeVersion 未变化）的累计次数。达 MAX_NO_PROGRESS_NAGS 后本条用户消息
-   * 剩余轮次停止注入催促——模型显然不会再改 todo，继续催只会造更多幻影。
+   * 剩余轮次停止注入该催促——模型显然不会再改 todo，继续催只会造更多幻影。
    * writeVersion 变化（模型确实更新了清单=有进展）时清零。
+   *
+   * ★为什么与 progressNagCount 分成两个字段（负收益防线审计 发现 3，2026-07-30）：
+   * 二者原先共用一个 `noProgressNagCount`，而 cap 只有 2——先到的一方会**静默吃掉
+   * 另一方的全部额度**。极端情形已用真实 decideNagInjection 复现：todo 连注 2 次耗尽
+   * cap 后，work-log 摘要**首次**尝试注入（lastInjectedText=undefined，绝无重复可能）
+   * 就被抑制，它一次都没注过就已经没额度了（互相饿死，D 类反向失效）。
+   * 而两者各自本就有独立的逐字节去重字段（lastInjectedTodoReminderText /
+   * lastInjectedProgressReminderText），说明设计意图一直是彼此独立——共享封顶是实现疏漏。
+   * 注意修法是**拆计数器、不是提高 cap**：cap=2 本身经实证是合理的，串台才是问题。
    */
-  noProgressNagCount?: number;
+  todoNagCount?: number;
+  /**
+   * 封顶：连续注入 **work-log 摘要**催促而 todo 无进展的累计次数。
+   * 语义与预算均与 todoNagCount 完全对称、彼此独立（见该字段注释里的饿死复现）。
+   */
+  progressNagCount?: number;
   /**
    * 上次观察到的上下文压力档位（"warn" / "urgent" / undefined=未达阈值）。
    * 与本轮不同（升档）→ 强注入一次压力提醒；同档持续 → 每 N 轮低频重述。
@@ -254,6 +268,20 @@ export interface LoopState {
    * 缺口 C：上次注入 permission mode reminder 的轮次（非 default mode 持续时低频重述节流）。
    */
   lastPermissionModeReminderTurn?: number;
+  /**
+   * 去重：上次注入的 permission mode reminder 文本（负收益防线审计 发现 4，2026-07-30）。
+   *
+   * 为什么这条也需要逐字节去重（它原先刻意绕开了 decideNagInjection）：实测 481 轮里
+   * 它注入 **34 次（7.1%，8 个会话）——是所有周期性提醒里最频繁的一条**，而把 34 条
+   * 文案去重后**不同文案数 = 1**：145 字符 × 34 次 ≈ 4930 字符零新信息的重复注入。
+   * 它与 context-pressure 的区别正在这里：pressure 文案嵌实时百分比、逐字节去重对它
+   * 天然无效（故只能走 cadence），而 mode 文案在同一 mode 下**恒定不变**，去重 100% 适用。
+   * 重复注入 user 通道提醒正是"对话重播/截断幻觉"的根因（见 context-pressure.ts:41-45）。
+   *
+   * 注意：mode 刚切换那一轮（changed=true）仍**强制注入**、绕过去重——那一次有真实的
+   * 时机价值（模型必须立刻知道约束变了），且切换本身即是"有新信息"。
+   */
+  lastInjectedPermissionModeText?: string;
   /**
    * F1：空参数 tool_use 退化的连续重试次数（DeepSeek 大上下文退化兜底）。
    * 工具成功执行或正常 end_turn 收尾后清零，确保只对"连续退化"计数。

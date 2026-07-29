@@ -199,6 +199,89 @@ function isTimeoutError(err: unknown, turnSignal?: AbortSignal | null): boolean 
   return false;
 }
 
+/**
+ * 把一次"无进展催促"注入落成结构化 trace 事件（events.jsonl）。
+ *
+ * 为什么需要它（负收益防线审计 发现 3，2026-07-30）：todo / work-log 两条催促通道原先
+ * 只有 `log.info`，而 log.info **不落盘**——`~/.sid-code/` 下搜不到任何"无进展催促"字样。
+ * 后果是这两条通道的封顶行为在现网**完全不可观测**：审计要核"共享计数器是否真饿死了某条
+ * 通道"，只能靠离线重放 decideNagInjection 模拟，拿不到真实注入证据。
+ * 落成事件后，`kind` 字段把两条通道分开计数，trace-digest 可直接统计各自的注入次数与
+ * 封顶命中——发现 3 修完到底有没有生效，下一轮审计能用真实数据回答而不是再模拟一遍。
+ *
+ * 与 HypothesisGuideInjected / GoalGateDecision 同机制：deps 未提供 sink 时静默跳过，
+ * 写入异常一律吞掉——可观测性埋点绝不能反过来阻断主循环。
+ */
+function emitNagInjectedEvent(
+  deps: QueryDeps,
+  sessionId: string,
+  data: {
+    /** 催促通道，用于把两条独立通道分开统计（原共享计数器的受害方就靠它区分）。 */
+    kind: "todo" | "work-log";
+    turn: number;
+    nagCount: number;
+    cap: number;
+    countedAsNoProgress: boolean;
+    afterCompact: boolean;
+  },
+): void {
+  if (!deps.traceAppendEvent) return;
+  try {
+    deps.traceAppendEvent({
+      event: "NoProgressNagInjected",
+      session_id: sessionId,
+      timestamp: new Date().toISOString(),
+      data,
+    });
+  } catch {
+    /* trace 写入失败不阻断主循环 */
+  }
+}
+
+/**
+ * 把 repeated-readonly-guard（无进展只读命令止损阀）的一次触发落成结构化 trace 事件。
+ *
+ * 为什么单独给这道阀补埋点（负收益防线审计 发现 1，2026-07-30）：它是全 harness 里
+ * **唯一默认全局开启、且能 `yield done` 强制掐断用户任务**的检测器（loop-detection /
+ * output-stall / thinking-divergence 都默认关闭），可它触发与否此前**完全不可观测**——
+ * `~/.sid-code/` 下搜不到任何相关字样，只有不落盘的 log.warn。
+ * 审计在 481 轮真实轨迹上重放它的 processObservation：产生只读探查的轮次 182（37.8%），
+ * 而 remind / terminate 触发均为 **0**，观察到的最长连续相同签名只有 1（阈值需 3）。
+ * 这不是"阈值差一点"，是它设计要防的 git-status 死锁族在当前样本里不复现（那次事故来自
+ * deepseek-v4-pro，本批 481 轮以 glm-5.2 为主）。结论是**误伤实测为 0、收益不可知**，
+ * 故刻意不动 STUCK_REPEAT_THRESHOLD——只补埋点，让死锁下次复发时能确认这道阀有没有拦住。
+ * 这是"更安全"方向上的度量缺口，不是防线缺陷。
+ *
+ * `action` 区分 remind（软注入）与 terminate（强制收尾）——后者代价高得多，必须能单独统计。
+ */
+function emitStuckGuardEvent(
+  deps: QueryDeps,
+  sessionId: string,
+  data: {
+    /** remind = 注入收敛提醒；terminate = 强制收尾（唯一会掐断用户任务的动作）。 */
+    action: "remind" | "terminate";
+    turn: number;
+    /** 连续相同签名次数（阈值 STUCK_REPEAT_THRESHOLD），用于事后核对判据是否过紧/过松。 */
+    repeatCount: number;
+    reminderCount: number;
+    /** 命中的代表命令，截断到 200 字符——只为归类死锁形态，不必留全文。 */
+    command: string;
+    probeCount: number;
+  },
+): void {
+  if (!deps.traceAppendEvent) return;
+  try {
+    deps.traceAppendEvent({
+      event: "RepeatedReadonlyGuardTriggered",
+      session_id: sessionId,
+      timestamp: new Date().toISOString(),
+      data,
+    });
+  } catch {
+    /* trace 写入失败不阻断主循环 */
+  }
+}
+
 /** queryLoop 配置 */
 export interface QueryLoopConfig {
   config: Config;
@@ -583,6 +666,14 @@ export async function* queryLoop(
     // plan mode 另有 getPlanModeReminder 每轮注入兜住，故这里跳过 plan 避免重复。
     // delta 策略：mode 与上轮不同的那一轮强注入（防时机缺失）；非 default mode 持续时
     // 每 N 轮低频重述一次（防遗忘）。default mode 不注入（无额外约束）。
+    //
+    // 去重（负收益防线审计 发现 4，2026-07-30）：周期性重述那一路**接入逐字节去重**。
+    // 实测它是所有周期性提醒里注入最频繁的一条（34/481 = 7.1%，8 个会话），而 34 条文案
+    // 去重后只有 1 种——145 字符 × 34 次的零新信息重复注入，正是"幻影用户消息 → 弱模型
+    // 误判对话被截断/重播"的根因（见 context-pressure.ts:41-45 同源分析）。
+    // 与 pressure 的差异是关键：pressure 文案嵌实时百分比、去重天然失效（只能靠 cadence），
+    // 而 mode 文案在同一 mode 下恒定，去重 100% 适用——这条恰是"去重完全适用却没接"的场景。
+    // changed=true（mode 刚切换）仍强注入：那一次有真实时机价值，且切换本身就是新信息。
     if (deps.getCurrentPermissionMode) {
       const mode = deps.getCurrentPermissionMode();
       if (mode && mode !== "default" && mode !== "plan") {
@@ -590,8 +681,16 @@ export async function* queryLoop(
         const turnsSinceMode = state.turnCount - (state.lastPermissionModeReminderTurn ?? 0);
         if (changed || turnsSinceMode >= PERMISSION_MODE_REMINDER_INTERVAL) {
           const modeReminder = buildPermissionModeReminder(mode, changed);
-          if (modeReminder) {
+          // 周期性重述：与上次注入逐字节相同 → 零新信息 → 跳过（但仍推进 cadence，
+          // 否则下一轮立刻又算"到期"，白重算一遍）。切换那一轮无条件放行。
+          const isDuplicate = !changed
+            && modeReminder !== null
+            && modeReminder === state.lastInjectedPermissionModeText;
+          if (modeReminder && !isDuplicate) {
             reminderParts.push(modeReminder);
+            state.lastPermissionModeReminderTurn = state.turnCount;
+            state.lastInjectedPermissionModeText = modeReminder;
+          } else if (isDuplicate) {
             state.lastPermissionModeReminderTurn = state.turnCount;
           }
         }
@@ -651,7 +750,10 @@ export async function* queryLoop(
           // 对话重播幻觉修复（Fix 2/3）：writeVersion 变化 = 模型确实更新了清单 = 有进展。
           // 清零"无进展催促"计数（恢复注入能力），并刷新 end_turn todo gate 预算——
           // 同一条用户消息内模型完成部分项后，gate 不该继续消耗上一段停滞攒下的续命额度。
-          state.noProgressNagCount = 0;
+          // 两个计数器都要清：它们各自独立封顶（见 types.ts todoNagCount 注释里的饿死复现），
+          // 但"有进展"这个信号对两者同等有效，漏清任何一个都会让那条通道提前哑掉。
+          state.todoNagCount = 0;
+          state.progressNagCount = 0;
           state.todoGateRetryCount = 0;
           // 误判自愈：writeVersion 变化 = 模型确实推进了清单 = 属"真没做完后继续干"的良性路径，
           // 清零"有产出却不翻状态位"计数（该计数只统计连续的 B 类：交付了却忘标记）。
@@ -670,12 +772,14 @@ export async function* queryLoop(
             // 模型上下文里的 todo 清单已丢失，必须恢复一次，否则任务列表永久消失（违背
             // todoReminderPendingAfterCompact 的设计意图）；且不计入封顶（真实上下文事件，非无进展催促）。
             const candidate = buildTodoReminder(todoState.todos);
+            // 封顶预算用**专属**的 todoNagCount（原先与 work-log 共用一个字段，先到的
+            // 一方会吃掉另一方全部额度 → 互相饿死。见 types.ts todoNagCount 注释）。
             const decision = afterCompact
               ? { inject: true, countedAsNoProgress: false }
               : decideNagInjection({
                   candidate,
                   lastInjectedText: state.lastInjectedTodoReminderText,
-                  noProgressNagCount: state.noProgressNagCount ?? 0,
+                  noProgressNagCount: state.todoNagCount ?? 0,
                 });
             if (decision.inject) {
               reminderParts.push(candidate);
@@ -684,9 +788,21 @@ export async function* queryLoop(
               state.lastInjectedTodoReminderText = candidate;
               // 本轮 writeVersion 未变化（进入 else 分支即代表无进展），计入封顶计数
               if (decision.countedAsNoProgress) {
-                state.noProgressNagCount = (state.noProgressNagCount ?? 0) + 1;
+                state.todoNagCount = (state.todoNagCount ?? 0) + 1;
               }
-              log.info("QUERY_LOOP", `P0-2：回注 todo 清单（${countUnfinished(todoState.todos)} 项未完成，无进展催促 ${state.noProgressNagCount}/${MAX_NO_PROGRESS_NAGS}）`);
+              log.info("QUERY_LOOP", `P0-2：回注 todo 清单（${countUnfinished(todoState.todos)} 项未完成，无进展催促 ${state.todoNagCount}/${MAX_NO_PROGRESS_NAGS}）`);
+              // 可观测性（负收益防线审计 发现 3 的验证前置条件）：把催促注入落成结构化
+              // trace 事件。原先只有 log.info，而 log.info 不落盘——`~/.sid-code/` 下搜不到
+              // "无进展催促"字样，导致"计数器串台是否真的饿死了某条通道"在现网无法验证。
+              // 与 HypothesisGuideInjected 同机制，try/catch 兜底不阻断主循环。
+              emitNagInjectedEvent(deps, sessionState.sessionId, {
+                kind: "todo",
+                turn: state.turnCount,
+                nagCount: state.todoNagCount ?? 0,
+                cap: MAX_NO_PROGRESS_NAGS,
+                countedAsNoProgress: decision.countedAsNoProgress,
+                afterCompact,
+              });
             } else {
               // 仍推进 cadence，避免下一轮立刻又算"到期"反复重算
               state.lastTodoReminderTurn = state.turnCount;
@@ -704,19 +820,29 @@ export async function* queryLoop(
           // 去重 + 封顶（对话重播幻觉修复 Fix 1/2）：与 todo 回注同机制。P2-2 摘要在
           // todo 长期停滞时内容几乎逐字节相同（idx 41/87/112 就是这样的三连重复），
           // 是造"幻影用户消息"的重灾区，必须去重 + 封顶。
+          // 封顶预算用**专属**的 progressNagCount，与 todo 回注彼此独立——原先共用时，
+          // todo 先注满 2 次即让本通道"首次注入就被抑制"（它一次都没注过就没额度了）。
           const decision = decideNagInjection({
             candidate: progressReminder,
             lastInjectedText: state.lastInjectedProgressReminderText,
-            noProgressNagCount: state.noProgressNagCount ?? 0,
+            noProgressNagCount: state.progressNagCount ?? 0,
           });
           if (decision.inject && progressReminder) {
             reminderParts.push(progressReminder);
             state.lastProgressReminderTurn = state.turnCount;
             state.lastInjectedProgressReminderText = progressReminder;
             if (decision.countedAsNoProgress) {
-              state.noProgressNagCount = (state.noProgressNagCount ?? 0) + 1;
+              state.progressNagCount = (state.progressNagCount ?? 0) + 1;
             }
-            log.info("QUERY_LOOP", `P2-2：回注工作日志摘要（已完成 ${snap.completed.length} / 待办 ${snap.pending.length}，无进展催促 ${state.noProgressNagCount}/${MAX_NO_PROGRESS_NAGS}）`);
+            log.info("QUERY_LOOP", `P2-2：回注工作日志摘要（已完成 ${snap.completed.length} / 待办 ${snap.pending.length}，无进展催促 ${state.progressNagCount}/${MAX_NO_PROGRESS_NAGS}）`);
+            emitNagInjectedEvent(deps, sessionState.sessionId, {
+              kind: "work-log",
+              turn: state.turnCount,
+              nagCount: state.progressNagCount ?? 0,
+              cap: MAX_NO_PROGRESS_NAGS,
+              countedAsNoProgress: decision.countedAsNoProgress,
+              afterCompact: false,
+            });
           } else {
             // 跳过注入仍推进 cadence，避免每轮重算
             state.lastProgressReminderTurn = state.turnCount;
@@ -2604,6 +2730,14 @@ export async function* queryLoop(
             `无进展止损：连续 ${state.repeatedReadonly.repeatCount} 轮空跑只读命令 \`${decision.command.trim()}\`，` +
               `下一轮经 reminder 通道注入实时 git 状态收敛提醒（第 ${state.repeatedReadonly.reminderCount}/${2} 次）`,
           );
+          emitStuckGuardEvent(deps, sessionState.sessionId, {
+            action: "remind",
+            turn: state.turnCount,
+            repeatCount: state.repeatedReadonly.repeatCount,
+            reminderCount: state.repeatedReadonly.reminderCount,
+            command: decision.command.trim().slice(0, 200),
+            probeCount: probes.length,
+          });
           yield { kind: "system", level: "warning", text: `检测到反复执行同一只读命令且结果不变，已注入实时状态并提示收敛` };
           setTransition(state, { type: "tool_use" }, deps, sessionState.sessionId);
           continue;
@@ -2619,6 +2753,16 @@ export async function* queryLoop(
             "QUERY_LOOP",
             `无进展止损：连续空跑只读命令 \`${decision.command.trim()}\` 且提醒无效，强制收尾（避免无限循环）`,
           );
+          // 埋点务必在 yield done 之前发：这是全 harness 唯一会**掐断用户任务**的动作，
+          // 若埋在 return 之后就永远不会执行，而它恰恰是最需要留痕的一次。
+          emitStuckGuardEvent(deps, sessionState.sessionId, {
+            action: "terminate",
+            turn: state.turnCount,
+            repeatCount: state.repeatedReadonly?.repeatCount ?? 0,
+            reminderCount: state.repeatedReadonly?.reminderCount ?? 0,
+            command: decision.command.trim().slice(0, 200),
+            probeCount: probes.length,
+          });
           yield { kind: "system", level: "warning", text: `连续空转于同一只读命令，已强制结束以避免无限循环` };
           yield { kind: "done", turns: state.turnCount };
           return;
