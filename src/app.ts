@@ -1702,6 +1702,10 @@ export class App {
         this.fallback.reset();
         this.resetTodoTool();
         this.resetHypothesisLedger();
+        // 负收益防线审计发现 1：resetDenialTracking() 此前**只有定义、无任何生产调用方**，
+        // 注释说"新一轮对话时调用"但没人调 → totalDenials 单调不减。/clear 是"新一轮对话"
+        // 的确切时机，在此归零（与 todo/假设登记表等会话级状态同批重置）。
+        this.permissionChecker?.resetDenialTracking?.();
         this.clearInactiveBackgroundTasks();
         // P2-1：/clear 清空对话 → 回退点全部失效（对应的消息已不存在），一并清空。
         this.rewindManager?.clear();

@@ -13,6 +13,8 @@ import {
   HypothesisLedger,
   extractCues,
   buildContradictionReminder,
+  collectEvidenceTexts,
+  isEmptyResultText,
 } from "../../src/query/hypothesis-ledger.ts";
 
 describe("extractCues（Top 5：收紧 cue 长度）", () => {
@@ -29,13 +31,23 @@ describe("extractCues（Top 5：收紧 cue 长度）", () => {
     expect(cues).toEqual([]);
   });
 
-  test("英文 token 要求长度 ≥5，过滤 err/pid/cpu 等易撞车短词", () => {
-    const cues = extractCues("process crashed pid err cpu");
-    expect(cues).toContain("process");
-    expect(cues).toContain("crashed");
+  test("英文 token 要求长度 ≥8（发现 2 收紧），过滤 pid/err/cpu 等易撞车短词", () => {
+    // 2026-07-30 负收益防线审计 发现 2：阈值 5 → 8。
+    // 旧阈值下 process(7) 会成为 cue；实测 config/output/tools/start 这类 5-7 字母词
+    // 在真实 tool_result 上命中率 15%-31%，是 6 次注入全为假阳性的直接原因。
+    const cues = extractCues("process_alive crashed pid err cpu");
+    expect(cues).toContain("process_alive");
+    expect(cues).not.toContain("crashed"); // 7 字母 → 收紧后不再纳入
     expect(cues).not.toContain("pid");
     expect(cues).not.toContain("err");
     expect(cues).not.toContain("cpu");
+  });
+
+  test("发现 2：泛化词 config/output/tools/start/length 不再成为 cue", () => {
+    const cues = extractCues("若 config 的 output 里 tools 的 start 与 length 不符则推翻");
+    for (const w of ["config", "output", "tools", "start", "length"]) {
+      expect(cues).not.toContain(w);
+    }
   });
 
   test("空 falsifier → 空数组", () => {
@@ -117,5 +129,130 @@ describe("HypothesisLedger 基本行为（机制1/3 未受本次改动影响）"
     ledger.challenge({ id: h.id, verdict: "confirm", evidence: { note: "确证" }, turn: 2 });
     expect(ledger.hasOpen()).toBe(false);
     expect(ledger.unsettled().length).toBe(0);
+  });
+});
+
+// ─── 负收益防线审计 发现 2（2026-07-30）：自触发 + 空结果 ───
+
+describe("发现 2：剔除假设工具自身回执（自触发）", () => {
+  const resolve = (m: Record<string, string>) => (id: string | undefined) => m[id ?? ""] ?? "";
+
+  test("hypothesis_register 的回执不作为证据（回执逐字复述 falsifier，必然自命中）", () => {
+    const results = [
+      { type: "tool_result", tool_use_id: "t1", content: "已登记假设 H1。证伪条件: 若 enableSandbox 不存在则推翻" },
+      { type: "tool_result", tool_use_id: "t2", content: "grep 输出：src/config.ts:12 enableSandbox" },
+    ];
+    const texts = collectEvidenceTexts(results, resolve({ t1: "hypothesis_register", t2: "grep" }));
+    expect(texts.length).toBe(1);
+    expect(texts[0]).toContain("grep 输出");
+  });
+
+  test("hypothesis_challenge 的回执同样剔除", () => {
+    const results = [{ type: "tool_result", tool_use_id: "t1", content: "已裁决 H1 → refuted" }];
+    expect(collectEvidenceTexts(results, resolve({ t1: "hypothesis_challenge" })).length).toBe(0);
+  });
+
+  test("端到端：register 回执经 collectEvidenceTexts 过滤后不再触发矛盾中断", () => {
+    const ledger = new HypothesisLedger();
+    const falsifier = "若 enable_sandbox_flag 不存在则假设被推翻";
+    ledger.register({ statement: "沙箱开关在 config.ts", falsifier, turn: 1 });
+    const receipt = `已登记假设 H1(状态 open)。\n证伪条件: ${falsifier}`;
+
+    // 未过滤（旧行为）：回执命中自己的 cue —— 这正是审计实测到的 2 次自触发
+    const unfiltered = new HypothesisLedger();
+    unfiltered.register({ statement: "沙箱开关在 config.ts", falsifier, turn: 1 });
+    expect(unfiltered.detectContradictions(receipt).length).toBe(1);
+
+    // 过滤后：回执压根不进证据集，零命中
+    const texts = collectEvidenceTexts(
+      [{ type: "tool_result", tool_use_id: "t1", content: receipt }],
+      resolve({ t1: "hypothesis_register" }),
+    );
+    expect(ledger.detectContradictions(texts).length).toBe(0);
+  });
+
+  test("非 tool_result 块与空内容被跳过", () => {
+    const results = [
+      { type: "text", tool_use_id: "t0", content: "含 alpha" },
+      { type: "tool_result", tool_use_id: "t1", content: "" },
+      { type: "tool_result", tool_use_id: "t2", content: "真证据" },
+    ];
+    expect(collectEvidenceTexts(results, resolve({ t2: "grep" }))).toEqual(["真证据"]);
+  });
+});
+
+describe("发现 2：纯空结果不构成证据", () => {
+  test("isEmptyResultText 识别常见空结果文案", () => {
+    expect(isEmptyResultText("未找到匹配的内容")).toBe(true);
+    expect(isEmptyResultText("  未找到匹配的文件 ")).toBe(true);
+    expect(isEmptyResultText("No matches found")).toBe(true);
+    // 带后续信息的输出不算空结果（保守判据：必须完全相等）
+    expect(isEmptyResultText("未找到匹配的内容，但目录存在 foo.ts")).toBe(false);
+    expect(isEmptyResultText("找到 3 处匹配")).toBe(false);
+  });
+
+  test("空结果不触发矛盾中断，真证据仍触发", () => {
+    const ledger = new HypothesisLedger();
+    ledger.register({ statement: "S", falsifier: "若出现 dump_tools_registry 则推翻", turn: 1 });
+    expect(ledger.detectContradictions("未找到匹配的内容").length).toBe(0);
+    expect(ledger.detectContradictions("代码里有 dump_tools_registry 调用").length).toBe(1);
+  });
+});
+
+// ─── 负收益防线审计 发现 3（2026-07-30）：指纹伪碰撞致漏报 ───
+
+describe("发现 3：证据指纹改全文 hash（消除前 120 字符伪碰撞）", () => {
+  // 真实语料里的高频重复前缀，长度已超 120 字符
+  const PREFIX =
+    "文件已编辑: /Users/x/Code/person/sid-code/docs/reference/官网文档覆盖度核对报告.md（替换了 1 处）"
+    + "该文件较长，仅展示改动附近内容以便核对上下文，请确认无误后再继续后续步骤，"
+    + "如需回退可使用 undo 命令恢复到本次编辑之前的状态：";
+
+  test("前 120 字符相同但内容不同 → 第二条的真矛盾不再被静默吞掉", () => {
+    expect(PREFIX.length).toBeGreaterThan(120);
+    const ledger = new HypothesisLedger();
+    ledger.register({ statement: "S", falsifier: "若存在 index_of_end_raw 裸调用则推翻", turn: 1 });
+
+    // 第 1 轮：同前缀、无矛盾
+    expect(ledger.detectContradictions(PREFIX + "第一轮改的是标题层级，无关内容").length).toBe(0);
+    // 第 2 轮：同前缀、含真矛盾。旧 slice(0,120) 指纹会判为"同一证据"直接跳过 → 漏报
+    const hits = ledger.detectContradictions(PREFIX + "第二轮改的是 index_of_end_raw 裸调用处");
+    expect(hits.length).toBe(1);
+    expect(hits[0].matchedCue).toBe("index_of_end_raw");
+  });
+
+  test("真实重复的同一条证据仍被去重（不能改坏去重本意）", () => {
+    const ledger = new HypothesisLedger();
+    ledger.register({ statement: "S", falsifier: "若存在 index_of_end_raw 则推翻", turn: 1 });
+    const same = "输出里有 index_of_end_raw";
+    expect(ledger.detectContradictions(same).length).toBe(1);
+    expect(ledger.detectContradictions(same).length).toBe(0);
+    // 仅空白差异视为同一条
+    expect(ledger.detectContradictions("输出里有   index_of_end_raw  ").length).toBe(0);
+  });
+
+  test("逐条数组入参：各条各算指纹，一条被去重不影响其它条", () => {
+    const ledger = new HypothesisLedger();
+    ledger.register({ statement: "S1", falsifier: "若存在 alpha_marker_long 则推翻", turn: 1 });
+    ledger.register({ statement: "S2", falsifier: "若存在 beta_marker_long 则推翻", turn: 1 });
+    const hits = ledger.detectContradictions(["含 alpha_marker_long", "含 beta_marker_long"]);
+    expect(hits.length).toBe(2);
+    expect(hits.map((h) => h.hypothesisId).sort()).toEqual(["H1", "H2"]);
+  });
+
+  test("同一轮内多条证据都撞同一假设 → 只产出一条命中（不重复打扰）", () => {
+    const ledger = new HypothesisLedger();
+    ledger.register({ statement: "S", falsifier: "若存在 alpha_marker_long 则推翻", turn: 1 });
+    const hits = ledger.detectContradictions([
+      "第一条含 alpha_marker_long",
+      "第二条也含 alpha_marker_long",
+    ]);
+    expect(hits.length).toBe(1);
+  });
+
+  test("字符串入参向后兼容（视为单条证据）", () => {
+    const ledger = new HypothesisLedger();
+    ledger.register({ statement: "S", falsifier: "若存在 alpha_marker_long 则推翻", turn: 1 });
+    expect(ledger.detectContradictions("含 alpha_marker_long").length).toBe(1);
   });
 });

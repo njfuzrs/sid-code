@@ -27,6 +27,23 @@ import { PERMISSION_MODE_DESCRIPTIONS } from "../config/attachments.ts";
 export const PERMISSION_MODE_REMINDER_INTERVAL = 8;
 
 /**
+ * 是否算「运行时真实切换」。
+ *
+ * 负收益防线审计 发现 4（2026-07-30）：`lastSeen === undefined` 是**会话首轮的基线初始化**，
+ * 不是切换。旧判据 `lastSeen !== mode` 把它算成 changed，导致每个以非 default mode 启动的
+ * 会话首轮都强注入一条"权限模式已切换为…"——实测 24 个会话全程 mode 从未变过，
+ * 三个会话 turn#1 的注入逐字节完全相同，共 37 次零新信息注入。
+ *
+ * 为什么首轮不该注入：首轮的 system prompt 正是本会话第一次构造（尚未被 5 分钟缓存冻结），
+ * 里面已含同一份 mode 行为指南。缺口 C 要修的是「运行时切 mode 后 system prompt 不刷新」，
+ * 首轮压根没有这个缺口。
+ */
+export function isRuntimeModeSwitch(lastSeen: string | undefined, mode: string): boolean {
+  if (lastSeen === undefined) return false; // 基线初始化，非切换
+  return lastSeen !== mode;
+}
+
+/**
  * 构造 permission mode system-reminder。
  *
  * @param mode 当前权限模式（调用方已保证非 default、非 plan）

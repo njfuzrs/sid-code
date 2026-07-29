@@ -249,7 +249,21 @@ export class Registry {
   /** 返回所有工具的 LLM 定义（用于发送给 AI） */
   definitions(options?: AssembleOptions): ToolDefinition[] {
     const tools = options ? this.assembleToolPool(options) : this.all();
-    const descCtx = options?.descriptionContext;
+    return this.definitionsForTools(tools, options?.descriptionContext);
+  }
+
+  /**
+   * 把已过滤的工具列表转为 LLM 定义（正路径）。
+   *
+   * 封装 `toolToDefinition` + 字典序排序，供 spawn 子代理等需要传入
+   * 外部已过滤工具列表的场景复用——杜绝手写 `{name, description, inputSchema}`
+   * 三字段映射，那会丢失 `usageGuide()` 拼接（实测丢 86.1% 描述）、`strict`
+   * 标记与 `zodSchema` 优先链（审计第 18 条）。
+   */
+  definitionsForTools(
+    tools: LegacyTool[],
+    descCtx?: ToolDescriptionContext,
+  ): ToolDefinition[] {
     const defs = tools.map((t) => toolToDefinition(t, descCtx));
     // D2 前缀稳定性：工具定义按 name 固定字典序输出，杜绝注册顺序抖动（尤其 MCP 异步连接顺序）。
     // P2-2: StructuredOutput 始终排最后——其动态 schema 变化只影响自身的 cache 命中，

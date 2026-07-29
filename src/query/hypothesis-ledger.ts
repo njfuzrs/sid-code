@@ -93,6 +93,25 @@ const STOPWORDS = new Set([
 ]);
 
 /**
+ * 英文 cue 的最小长度。
+ *
+ * 2026-07-30 负收益防线审计 发现 2:现值 5 仍会产出 `config` / `output` / `tools` /
+ * `start` / `length` 这类泛化词。在 554 条真实 tool_result 上的命中率实测:
+ * `config` 31.2% / `output` 22.0% / `tools` 17.9% / `start` 15.5%——这些 cue 几乎必然
+ * 命中任意后续工具输出,是 6 次真实注入全为假阳性的直接原因。
+ *
+ * 反事实(英文 cue 最小长度 vs 泛化程度):
+ * | 阈值 | cue 数 | 平均命中率 | 泛化 cue 数(>20% 语料) |
+ * |---|---|---|---|
+ * | 3 | 24 | 6.3% | 3 |
+ * | 5(旧值) | 15 | 7.6% | 2 |
+ * | **8(现值)** | **6** | **2.2%** | **0** |
+ * | 12 | 3 | 0.9% | 0 |
+ * 取 8 是"泛化 cue 归零"的最小阈值;再提到 12 只剩 3 个 cue,召回损失不换来额外精度。
+ */
+const MIN_EN_CUE_LENGTH = 8;
+
+/**
  * 从 falsifier 文本提取关键线索词(机制2 的匹配基础)。
  *
  * 2026-07-07 约束型误伤修复(Top 5):收紧 cue 提取,要求线索词更长更具体。
@@ -102,12 +121,16 @@ const STOPWORDS = new Set([
  *   - 中文:只取整段(≥4 连续汉字),不再加 2-3 字短片段、不再加 4 字前缀;
  *   - 英文/数字 token:长度≥5(过滤掉 err/pid/cpu 等极易撞车的短词)。
  * 仍是粗召回而非精确 NLP,但把"高频短词一碰就中"的最大误伤面收掉。
+ *
+ * 2026-07-30 负收益防线审计 发现 2:英文阈值 5 → 8(见 MIN_EN_CUE_LENGTH 反事实表)。
+ * 显式给出的 falsifierCues 不受此约束(register 里另走一路),用户/模型自己指定的短 cue 仍尊重。
  */
 export function extractCues(falsifier: string): string[] {
   if (!falsifier) return [];
   const cues = new Set<string>();
-  // 英文/数字 token(长度≥5,过滤极短易撞车词)
-  for (const m of falsifier.toLowerCase().matchAll(/[a-z_][a-z0-9_]{4,}/g)) {
+  // 英文/数字 token(长度≥MIN_EN_CUE_LENGTH,过滤泛化易撞车词)
+  const enPattern = new RegExp(`[a-z_][a-z0-9_]{${MIN_EN_CUE_LENGTH - 1},}`, "g");
+  for (const m of falsifier.toLowerCase().matchAll(enPattern)) {
     const w = m[0];
     if (!STOPWORDS.has(w)) cues.add(w);
   }
@@ -119,10 +142,92 @@ export function extractCues(falsifier: string): string[] {
   return [...cues];
 }
 
-/** 稳定指纹:用于证据去重,避免同一证据反复触发中断 */
+/**
+ * "纯空结果"识别:工具明确报告"什么都没找到"的输出不构成证据。
+ *
+ * 负收益防线审计 发现 2 第 4 条假阳性就是这个:grep 返回"未找到匹配的内容",
+ * 却因为 cue `dump-tools` 出现在**假设自己的措辞**里而触发矛盾中断。空结果是
+ * "没有信息",既不支持也不反驳任何假设,拿它打断模型纯属噪音。
+ *
+ * 判据保守:整条输出去掉空白后必须**完全等于**已知空结果文案之一才短路,
+ * 不做子串匹配(否则"未找到匹配的内容,但……"这种带后续信息的输出会被误吞)。
+ */
+const EMPTY_RESULT_TEXTS = new Set([
+  "未找到匹配的内容",
+  "未找到匹配的文件",
+  "未找到结果",
+  "未找到符号",
+  "未找到定义",
+  "未找到实现",
+  "未找到引用",
+  "no matches found",
+  "(no content)",
+  "",
+]);
+
+export function isEmptyResultText(s: string): boolean {
+  return EMPTY_RESULT_TEXTS.has(s.replace(/\s+/g, " ").trim().toLowerCase());
+}
+
+/**
+ * 假设工具自身的名字——它们的 tool_result 是**回执**而非新证据。
+ *
+ * 负收益防线审计 发现 2:6 次真实注入里 2 次是"登记假设的回执触发自己"。
+ * `hypothesis_register` 的 output(fmtHypothesis)会逐字复述 falsifier 全文,
+ * 该 output 进 tool_result 后必然命中刚从同一段 falsifier 提取出的 cue——纯自噬。
+ */
+export const HYPOTHESIS_TOOL_NAMES = new Set(["hypothesis_register", "hypothesis_challenge"]);
+
+/**
+ * 从本轮 tool_result 里挑出可作为"新证据"的文本(机制2 的输入)。
+ *
+ * 纯函数,便于单测(主循环那段拿不到测试夹具)。做两件事:
+ *   1. 剔除假设工具自身的回执(发现 2 自触发);
+ *   2. 逐条返回而非拼成一个大串(发现 3:整轮拼接会让指纹被前缀绑死)。
+ *
+ * `resolveToolName` 由调用方提供(主循环用 tool_use_id 反查 response.content)。
+ */
+export function collectEvidenceTexts(
+  results: Array<{ type?: string; tool_use_id?: string; content?: unknown }>,
+  resolveToolName: (toolUseId: string | undefined) => string,
+): string[] {
+  const out: string[] = [];
+  for (const r of results) {
+    if (r?.type !== "tool_result") continue;
+    if (HYPOTHESIS_TOOL_NAMES.has(resolveToolName(r.tool_use_id))) continue;
+    const text = typeof r.content === "string" ? r.content : JSON.stringify(r.content);
+    if (typeof text === "string" && text.length > 0) out.push(text);
+  }
+  return out;
+}
+
+/**
+ * 稳定指纹:用于证据去重,避免同一证据反复触发中断。
+ *
+ * 2026-07-30 负收益防线审计 发现 3:旧实现是 `slice(0, 120)`——前 120 字符相同就判为
+ * "同一条证据"并静默跳过。真实语料里这个前缀极易重复(`任务清单已更新: …` /
+ * `文件已编辑: …(替换了 1 处)` / 部署脚本的 `>>> [1/12] 前置校验 …`),实测碰撞率:
+ *
+ * | 截断长度 | 被判为"同一证据"的轮次 | 占比 |
+ * |---|---|---|
+ * | 120(旧值) | 53 / 452 | 11.7% |
+ * | 400 | 40 | 8.8% |
+ * | **全文 hash(现值)** | **37** | **8.2%** |
+ *
+ * 即 53 − 37 = 16 次是**纯粹由截断造成的伪碰撞**:内容不同却被当成同一证据,
+ * 真矛盾被静默吞掉(漏报)。改为全文 hash 后剩下的 8.2% 都是真实重复。
+ *
+ * 用 FNV-1a 32 位:纯函数、无依赖、对本用途(会话内去重,规模 ~10^2)碰撞概率可忽略。
+ */
 function fingerprint(s: string): string {
   const clean = s.replace(/\s+/g, " ").trim().toLowerCase();
-  return clean.slice(0, 120);
+  let h = 0x811c9dc5;
+  for (let i = 0; i < clean.length; i++) {
+    h ^= clean.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  // 带长度做二次约束,进一步压低不同长度文本撞同一 hash 的概率
+  return `${h.toString(36)}:${clean.length}`;
 }
 
 /**
@@ -193,26 +298,40 @@ export class HypothesisLedger {
    * 机制2 核心:用一段新证据文本,检测是否与任何 open 假设的 falsifier 线索矛盾。
    * 命中即返回(可能多条),由主循环据此注入矛盾中断。已就同一证据裁决过的不再触发。
    */
-  detectContradictions(evidenceText: string): ContradictionHit[] {
-    if (!evidenceText) return [];
-    const hay = evidenceText.toLowerCase();
-    const fp = fingerprint(evidenceText);
+  detectContradictions(evidence: string | string[]): ContradictionHit[] {
+    // 发现 3 后半:支持**逐条** tool_result 而非整轮拼接串。
+    // 旧调用点把一整轮所有 tool_result join("\n") 成一个大串再算一个指纹——
+    // 这让"某一条 tool_result 变了但拼接串前缀没变"的轮次整体被去重吞掉。
+    // 逐条各算指纹后,一条被去重不影响其它条。字符串入参仍兼容(视为单条)。
+    const items = (Array.isArray(evidence) ? evidence : [evidence]).filter(
+      (t): t is string => typeof t === "string" && t.length > 0,
+    );
+    if (items.length === 0) return [];
+
     const hits: ContradictionHit[] = [];
-    for (const h of this.items.values()) {
-      if (h.status !== "open") continue; // 只挑战未结案的
-      if (h.challengedFingerprints.includes(fp)) continue; // 该证据已处理过
-      for (const cue of h.falsifierCues) {
-        if (cue && hay.includes(cue)) {
-          hits.push({
-            hypothesisId: h.id,
-            statement: h.statement,
-            falsifier: h.falsifier,
-            matchedCue: cue,
-            evidenceSnippet: evidenceText.replace(/\s+/g, " ").trim().slice(0, 200),
-          });
-          // 记入指纹,避免下一轮同证据重复触发(本轮已会注入中断)
-          h.challengedFingerprints.push(fp);
-          break; // 一条假设命中一次即可
+    for (const text of items) {
+      // 发现 2:纯空结果("未找到匹配的内容"等)不是证据,不该打断模型
+      if (isEmptyResultText(text)) continue;
+      const hay = text.toLowerCase();
+      const fp = fingerprint(text);
+      for (const h of this.items.values()) {
+        if (h.status !== "open") continue; // 只挑战未结案的
+        if (h.challengedFingerprints.includes(fp)) continue; // 该证据已处理过
+        // 同一轮内一条假设最多产出一条命中(多条 tool_result 都撞同一假设时不重复打扰)
+        if (hits.some((x) => x.hypothesisId === h.id)) continue;
+        for (const cue of h.falsifierCues) {
+          if (cue && hay.includes(cue)) {
+            hits.push({
+              hypothesisId: h.id,
+              statement: h.statement,
+              falsifier: h.falsifier,
+              matchedCue: cue,
+              evidenceSnippet: text.replace(/\s+/g, " ").trim().slice(0, 200),
+            });
+            // 记入指纹,避免下一轮同证据重复触发(本轮已会注入中断)
+            h.challengedFingerprints.push(fp);
+            break; // 一条假设命中一次即可
+          }
         }
       }
     }

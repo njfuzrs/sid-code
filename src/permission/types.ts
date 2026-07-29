@@ -50,6 +50,15 @@ export interface Checker {
   check(req: PermissionRequest, tool?: unknown, toolContext?: unknown, options?: PermissionCheckOptions): Promise<Decision>;
   /** 记住会话内权限决策（可选） */
   rememberDecision?(req: PermissionRequest, allowed: boolean): void;
+  /**
+   * 记录一次「用户在确认弹窗里拒绝」（可选）。
+   *
+   * 负收益防线审计发现 1：ask 路径此前完全不给 denial tracking 记账，
+   * "模型反复请求同一操作、用户反复拒绝"这种最典型的死循环反而永不熔断。
+   */
+  recordUserDenial?(req: PermissionRequest, reason?: string): void;
+  /** 重置 denial tracking（可选，/clear 新一轮对话时调用） */
+  resetDenialTracking?(): void;
   /** 获取与指定工具相关的阴影规则（可选，供权限对话框展示不可达规则提示） */
   getShadowedRulesForTool?(toolName: string): ShadowedRule[];
   /**

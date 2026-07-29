@@ -43,6 +43,7 @@ import type { AgentTaskResult, LocalAgentTaskState } from "../task/types.ts";
 import {
   type ParentInitMessage,
   type ChildMessage,
+  type ToolDef,
   writeParentMsg,
 } from "./sub-agent-protocol.ts";
 import { drainAgentMessages } from "./message-queue.ts";
@@ -516,29 +517,73 @@ export class SubAgent {
     return typeof Bun !== "undefined" && typeof Bun.spawn === "function";
   }
 
-  /** 从工具注册表获取工具定义列表（用于 spawn init 消息） */
-  private getToolDefs(task: SubAgentTask): { name: string; description: string; inputSchema: Record<string, unknown> }[] {
+  /**
+   * 统一的工具过滤逻辑（spawn 与进程内路径共用）。
+   *
+   * 审计第 2 条修复：此前 `getToolDefs`（spawn 路径）硬编码 `isBuiltIn: true`
+   * 且不透传 `agentDef.tools/disallowedTools`，导致自定义/插件子代理的
+   * `tools:` 白名单与 `disallowedTools:` 黑名单被 fail-open 忽略，拿到全部工具。
+   * 与 `executeInner`（进程内路径，过滤逻辑正确）是「同一逻辑两处并列实现、
+   * 其中一处忘记传参」的结构性缺陷（审计结构性模式 2）。此处收敛为单一函数，
+   * spawn 与进程内路径共用，避免新增过滤字段时再漏一处。
+   */
+  private resolveFilteredToolsForTask(
+    task: SubAgentTask,
+    agentDef?: { tools?: string[]; disallowedTools?: string[] },
+  ): LegacyTool[] {
     const sourceRegistry = task.tools ?? this.toolRegistry;
     const allTools = sourceRegistry.all();
-    const filteredTools = filterToolsForAgent(allTools, {
-      isBuiltIn: true,
-      builtInType: task.type,
+    const isBuiltInType = task.type in BUILTIN_AGENTS;
+    return filterToolsForAgent(allTools, {
+      isBuiltIn: isBuiltInType,
+      builtInType: isBuiltInType ? task.type : undefined,
+      tools: agentDef?.tools,
+      disallowedTools: agentDef?.disallowedTools,
       isAsync: task._isAsync,
     });
-    return filteredTools.map(t => ({
-      name: t.name(),
-      description: t.description(),
-      inputSchema: t.inputSchema(),
+  }
+
+  /**
+   * 从工具注册表获取工具定义列表（用于 spawn init 消息）。
+   *
+   * 审计第 18 条修复：此前手写 `{name, description, inputSchema}` 三字段映射，
+   * 绕过 `registry.definitionsForTools()` → `toolToDefinition()` 正路径，导致
+   * ① `usageGuide()` 拼接丢失（实测描述丢失 86.1%）；② `strict` 标记丢失
+   * （Constrained Decoding 失效）；③ `zodSchema` 优先链被绕过。现改为复用正路径，
+   * 与进程内路径同源。同时本函数复用 `resolveFilteredToolsForTask`（第 2 条），
+   * 两条同源缺陷在此收敛为单一函数一次修掉。
+   *
+   * ⚠️ 前提：spawn 路径在编译二进制中不可达（`HEADLESS_AVAILABLE=false` →
+   * `shouldUseSpawn` 恒退回进程内）。此修复面向源码运行模式与未来 headless embed
+   * 进二进制的场景——一旦后者发生，第 2 条立即升为真 P0（权限越界）。
+   */
+  private getToolDefs(task: SubAgentTask): ToolDef[] {
+    const agentDef = resolveAgent(task.type);
+    const filteredTools = this.resolveFilteredToolsForTask(task, agentDef);
+    const defs = (task.tools ?? this.toolRegistry).definitionsForTools(filteredTools);
+    return defs.map(d => ({
+      name: d.name,
+      description: d.description,
+      inputSchema: d.input_schema,
+      strict: d.strict,
     }));
   }
 
-  /** 获取自定义子代理的工具定义 */
-  private getCustomToolDefs(allowedTools: string[]): { name: string; description: string; inputSchema: Record<string, unknown> }[] {
+  /**
+   * 获取自定义子代理的工具定义（spawn 路径）。
+   *
+   * 与 `getToolDefs` 同源修复（审计第 18 条）：手写三字段映射 → 复用正路径。
+   * 自定义子代理的 `allowedTools` 是显式白名单（由调用方解析自 frontmatter），
+   * 经 `Registry.filter` 精确筛出后走 `definitionsForTools`。
+   */
+  private getCustomToolDefs(allowedTools: string[]): ToolDef[] {
     const filtered = this.toolRegistry.filter(allowedTools);
-    return filtered.all().map(t => ({
-      name: t.name(),
-      description: t.description(),
-      inputSchema: t.inputSchema(),
+    const defs = filtered.definitionsForTools(filtered.all());
+    return defs.map(d => ({
+      name: d.name,
+      description: d.description,
+      inputSchema: d.input_schema,
+      strict: d.strict,
     }));
   }
 
@@ -1000,20 +1045,10 @@ export class SubAgent {
         });
       }
 
-      const sourceRegistry = task.tools ?? this.toolRegistry;
-      const allTools = sourceRegistry.all();
-      // 区分内置类型 vs 动态(自定义/插件)类型：
-      // 内置走 tool-filter 的角色白名单(builtInType)；动态类型该白名单查不到，
-      // 改用其 AgentDefinition 声明的 tools/disallowedTools(对标 cc resolveAgentTools)。
-      // agentDef 已在上方（P1-1 skills 解析处）解析，此处复用。
-      const isBuiltInType = task.type in BUILTIN_AGENTS;
-      const filteredTools = filterToolsForAgent(allTools, {
-        isBuiltIn: isBuiltInType,
-        builtInType: isBuiltInType ? task.type : undefined,
-        tools: agentDef?.tools,
-        disallowedTools: agentDef?.disallowedTools,
-        isAsync: task._isAsync,
-      });
+      // 工具过滤复用 resolveFilteredToolsForTask（与 spawn 路径共用），
+      // 消除此前「进程内/spawn 两处并列调用 filterToolsForAgent、其中 spawn 那处
+      // 忘记传 agentDef.tools/disallowedTools」的结构性缺陷（审计第 2 条）。
+      const filteredTools = this.resolveFilteredToolsForTask(task, agentDef);
       const tools = this.buildIsolatedToolRegistry(filteredTools, task.type);
       // M2: 把 StructuredOutput 工具挂进隔离工具集(在过滤之后,确保不被裁剪掉)
       if (structuredTool) {

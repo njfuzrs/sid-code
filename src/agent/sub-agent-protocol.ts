@@ -24,6 +24,12 @@ export interface ToolDef {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  /**
+   * 是否启用 Constrained Decoding（模型保证 100% JSON 合规）。
+   * 由父进程经 `registry.definitionsForTools()` 正路径派生（与进程内路径同源），
+   * 子进程透传给 provider。此前手写映射丢此字段（审计第 18 条）。
+   */
+  strict?: boolean;
 }
 
 /** 初始化消息：父进程启动子进程后立即发送 */

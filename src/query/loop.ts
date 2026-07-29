@@ -119,8 +119,8 @@ import {
 } from "./context-pressure.ts";
 import { detectInvestigationContext, buildHypothesisGuideReminder } from "./hypothesis-guide.ts";
 import { collectDiagnosticText, getLSPHealthWarning } from "../lsp/manager.ts";
-import { buildPermissionModeReminder, PERMISSION_MODE_REMINDER_INTERVAL } from "./permission-reminder.ts";
-import { buildContradictionReminder, buildDeliveryGateReminder } from "./hypothesis-ledger.ts";
+import { buildPermissionModeReminder, isRuntimeModeSwitch, PERMISSION_MODE_REMINDER_INTERVAL } from "./permission-reminder.ts";
+import { buildContradictionReminder, buildDeliveryGateReminder, collectEvidenceTexts } from "./hypothesis-ledger.ts";
 import { buildGoalReminder } from "../goal/reminder.ts";
 import { collectEvidenceFromTurn } from "../goal/evidence-collector.ts";
 import { handleGoalGate } from "./goal-gate.ts";
@@ -674,12 +674,29 @@ export async function* queryLoop(
     // 与 pressure 的差异是关键：pressure 文案嵌实时百分比、去重天然失效（只能靠 cadence），
     // 而 mode 文案在同一 mode 下恒定，去重 100% 适用——这条恰是"去重完全适用却没接"的场景。
     // changed=true（mode 刚切换）仍强注入：那一次有真实时机价值，且切换本身就是新信息。
+    //
+    // 补齐另一半（负收益防线审计 发现 4，2026-07-30）：上一轮只给"周期性重述"接了去重，
+    // "切换通告"那一路仍逐字节重复了 37 次。根因是 `lastSeenPermissionMode` 初值为 undefined
+    // 导致**每会话首轮必然 changed=true**——实测 24 个会话全程都在同一个 mode 下跑、mode
+    // 从未在会话中途变过，三个会话 turn#1 的注入内容逐字节完全相同。
+    // 上一轮注释说"切换本身就是新信息"，这个前提对**真实切换**成立，对**首轮基线初始化**
+    // 不成立：首轮 system prompt 正是本会话第一次构造（未被 5 分钟缓存冻结），里面已含
+    // mode 行为指南，此时再注入一条等价提醒是零新信息。
+    // 故区分两者：baseline（lastSeenPermissionMode 尚无值）不算切换、首轮不注入；
+    // 只有已有值且发生变化才是运行时真切换。
     if (deps.getCurrentPermissionMode) {
       const mode = deps.getCurrentPermissionMode();
       if (mode && mode !== "default" && mode !== "plan") {
-        const changed = state.lastSeenPermissionMode !== mode;
+        const isBaseline = state.lastSeenPermissionMode === undefined;
+        const changed = isRuntimeModeSwitch(state.lastSeenPermissionMode, mode);
+        if (isBaseline) {
+          // 基线那一轮不注入，并把周期性重述的 cadence 锚在此刻：
+          // 否则恢复会话（turnCount 已 ≥ 间隔）首轮会立刻触发一次"到期"重述，
+          // 又变成首轮零新信息注入（system prompt 刚构造，已含同一份指南）。
+          state.lastPermissionModeReminderTurn = state.turnCount;
+        }
         const turnsSinceMode = state.turnCount - (state.lastPermissionModeReminderTurn ?? 0);
-        if (changed || turnsSinceMode >= PERMISSION_MODE_REMINDER_INTERVAL) {
+        if (!isBaseline && (changed || turnsSinceMode >= PERMISSION_MODE_REMINDER_INTERVAL)) {
           const modeReminder = buildPermissionModeReminder(mode, changed);
           // 周期性重述：与上次注入逐字节相同 → 零新信息 → 跳过（但仍推进 cadence，
           // 否则下一轮立刻又算"到期"，白重算一遍）。切换那一轮无条件放行。
@@ -2575,11 +2592,19 @@ export async function* queryLoop(
         try {
           const ledger = deps.getHypothesisLedger();
           if (ledger && !ledger.isEmpty()) {
-            const evidenceText = toolResults
-              .filter((r): r is typeof r & { type: "tool_result" } => r.type === "tool_result")
-              .map((r) => (typeof r.content === "string" ? r.content : JSON.stringify(r.content)))
-              .join("\n");
-            const hits = ledger.detectContradictions(evidenceText);
+            // 负收益防线审计 发现 2/3（2026-07-30）：证据收集改走 collectEvidenceTexts——
+            //   发现 2：剔除假设工具自身的回执。实测 6 次真实注入里 2 次是"登记假设的回执
+            //     触发自己"：hypothesis_register 的 output（fmtHypothesis）逐字复述 falsifier
+            //     全文 → 进 tool_result → 必然命中刚从同一段 falsifier 提取的 cue，纯自噬。
+            //   发现 3：逐条传入而非 join("\n") 成一个大串，让指纹按 tool_result 各算各的，
+            //     避免"拼接串前 120 字符相同"把整轮真证据连带吞掉（实测 11.7% 伪碰撞）。
+            const evidenceItems = collectEvidenceTexts(toolResults, (id) => {
+              const useBlock = response.content.find(
+                (b) => b.type === "tool_use" && b.id === id,
+              );
+              return useBlock && useBlock.type === "tool_use" ? useBlock.name : "";
+            });
+            const hits = ledger.detectContradictions(evidenceItems);
             if (hits.length > 0) {
               state.pendingContradictions = [...(state.pendingContradictions ?? []), ...hits];
               log.info(

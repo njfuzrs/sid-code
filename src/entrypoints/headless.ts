@@ -186,6 +186,8 @@ async function runAgentLoop(
             name: d.name,
             description: d.description,
             input_schema: d.inputSchema, // camelCase → snake_case
+            // 审计第 18 条：透传 strict（Constrained Decoding），此前手写映射丢失此字段。
+            ...(d.strict !== undefined ? { strict: d.strict } : {}),
           }))
         : undefined;
 

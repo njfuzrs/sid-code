@@ -283,9 +283,57 @@ export class PermissionChecker implements Checker {
     return this.denialTracking;
   }
 
-  /** 重置 denial tracking（新一轮对话时调用） */
+  /** 重置 denial tracking（/clear 新一轮对话时调用，由 app.ts 接线） */
   resetDenialTracking(): void {
     this.denialTracking = createDenialTrackingState();
+  }
+
+  /**
+   * 记录一次「用户在确认弹窗里拒绝」——ask 路径的记账入口。
+   *
+   * 负收益防线审计发现 1：ask 路径此前**完全不记账**，导致"模型反复请求同一个危险操作、
+   * 用户反复点拒绝"这种最典型的死循环反而不会熔断。由上层（tool-executor 拿到用户
+   * 拒绝结果后）调用，与 rememberDecision 同一时机。
+   */
+  recordUserDenial(req: PermissionRequest, reason?: string): void {
+    const resource = (req.input as any)?.file_path || (req.input as any)?.command || "";
+    this.denialTracking = recordDenial(this.denialTracking, req.toolName, reason || "用户拒绝", resource);
+  }
+
+  /**
+   * 构造熔断决策（两个调用点共用：hard deny 路径与 ask 后处理路径）。
+   *
+   * 熔断落地为 needsConfirmation 而非 deny：目的是把"模型在死循环"这件事暴露给用户，
+   * 同时保留人工放行的余地。
+   */
+  private fuseDecision(req: PermissionRequest, resource: string): Decision {
+    const log = getLogger();
+    const consecutive = this.denialTracking.consecutiveDenials;
+    log.warn(
+      "PERMISSION",
+      `同一操作（${req.toolName} ${String(resource).slice(0, 60)}）连续 ${consecutive} 次被拒绝，熔断→回退人工确认`,
+    );
+    const decision: Decision = {
+      allowed: false,
+      needsConfirmation: true,
+      reason: `⚠️ 同一操作已连续 ${consecutive} 次被拒绝。模型可能在重复尝试同一操作，请审慎判断。`,
+      metadata: { denialTrackingTriggered: true },
+      decisionReason: {
+        type: "denialTracking",
+        consecutiveDenials: consecutive,
+        totalDenials: this.denialTracking.totalDenials,
+      },
+    };
+    this.auditLogger.log({
+      timestamp: new Date().toISOString(),
+      type: "tool_use",
+      tool: req.toolName,
+      resource,
+      decision: "deny",
+      reason: decision.reason,
+      decisionReason: decision.decisionReason,
+    });
+    return decision;
   }
 
   constructor(config: Config, rules?: PermissionRule, workspacePath?: string) {
@@ -793,6 +841,13 @@ export class PermissionChecker implements Checker {
     if (this.sessionMemory.has(memKey)) {
       const allowed = this.sessionMemory.get(memKey)!;
       log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → ${allowed ? "允许" : "拒绝"}(会话记忆)`);
+      // 记账（发现 1）：这条快速路径此前在任何计数之前就 return，导致
+      //   - 记忆为 allow 时，该签名的连续拒绝计数不归零（墙已消失却仍算在撞墙）；
+      //   - 记忆为 deny 时，反复撞同一面墙完全不被计数。
+      // 两者都让熔断判据失真，故在此对称补记。
+      this.denialTracking = allowed
+        ? recordSuccess(this.denialTracking, req.toolName, resource)
+        : recordDenial(this.denialTracking, req.toolName, "会话记忆拒绝", resource);
       return { allowed, decisionReason: { type: "sessionMemory" } };
     }
 
@@ -810,7 +865,7 @@ export class PermissionChecker implements Checker {
       // 仅普通 ask（needsConfirmation 且非安全类确认）可被 hook allow 放行；硬 deny 不放行
       if (!result.allowed && result.needsConfirmation && !isSafetyConfirmation) {
         log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(PreToolUse hook permissionDecision:allow)`);
-        this.denialTracking = recordSuccess(this.denialTracking);
+        this.denialTracking = recordSuccess(this.denialTracking, req.toolName, resource);
         this.auditLogger.log({
           timestamp: new Date().toISOString(),
           type: "tool_use",
@@ -847,7 +902,7 @@ export class PermissionChecker implements Checker {
 
     // allow → 重置 denial tracking
     if (result.allowed) {
-      this.denialTracking = recordSuccess(this.denialTracking);
+      this.denialTracking = recordSuccess(this.denialTracking, req.toolName, resource);
       this.auditLogger.log({
         timestamp: new Date().toISOString(),
         type: "tool_use",
@@ -861,8 +916,28 @@ export class PermissionChecker implements Checker {
     }
 
     // deny（非 ask）→ 记录 denial tracking
+    //
+    // 熔断检查在此处（return 之前）执行，而非旧实现的 :994（ask 后处理末尾）。
+    // 负收益防线审计发现 1 的结构性根因正是这个位置：hard deny 是唯一给计数器记账的路，
+    // 却在这里就地 return，永远走不到下方的熔断检查点；而能走到那里的 ask 路径不记账。
+    // 现在改为「记账的那条路自己检查」，判据与检查点归位。
     if (!result.needsConfirmation) {
-      this.denialTracking = recordDenial(this.denialTracking, req.toolName, result.reason || "");
+      // 同一操作签名此前已连续被拒达阈值 → 本次熔断为人工确认（而非继续硬拒）。
+      // 语义：模型显然在对同一面墙反复撞，交给人判断是放行还是让它换路。
+      //
+      // 判定放在 recordDenial **之前**：阈值 3 的语义是"前 3 次照常拒绝、第 4 次尝试才熔断"。
+      // 若先记账再判定，第 3 次尝试本身就会变成确认弹窗——那时模型只被拒过 2 次，属提前打扰
+      // （也与 denial-tracking.ts 文件头反事实表的口径不一致，那张表就是先判定后记账）。
+      //
+      // dontAsk / 非交互无 UI 通道，熔断成确认等于必然失败，故这两种情形维持原硬拒。
+      if (
+        shouldFuse(this.denialTracking, req.toolName, resource)
+        && this.config.permissionMode !== "dontAsk"
+        && !this.isNonInteractive()
+      ) {
+        return this.fuseDecision(req, resource);
+      }
+      this.denialTracking = recordDenial(this.denialTracking, req.toolName, result.reason || "", resource);
       this.auditLogger.log({
         timestamp: new Date().toISOString(),
         type: "tool_use",
@@ -889,7 +964,7 @@ export class PermissionChecker implements Checker {
       const isSafetyConfirmation = dr === "dangerousCommand" || dr === "safetyCheck";
       if (!isSafetyConfirmation) {
         log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(yesMode 自动批准普通 ask)`);
-        this.denialTracking = recordSuccess(this.denialTracking);
+        this.denialTracking = recordSuccess(this.denialTracking, req.toolName, resource);
         this.auditLogger.log({
           timestamp: new Date().toISOString(),
           type: "tool_use",
@@ -927,7 +1002,7 @@ export class PermissionChecker implements Checker {
           });
           if (!classifyResult.classifierUnavailable && classifyResult.safe) {
             log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(auto 模式分类器批准: ${classifyResult.reason})`);
-            this.denialTracking = recordSuccess(this.denialTracking);
+            this.denialTracking = recordSuccess(this.denialTracking, req.toolName, resource);
             this.auditLogger.log({
               timestamp: new Date().toISOString(),
               type: "tool_use",
@@ -950,7 +1025,7 @@ export class PermissionChecker implements Checker {
     // dontAsk 模式：ask → deny（绝不弹窗，对齐 Claude Code 语义）
     if (this.config.permissionMode === "dontAsk") {
       log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(dontAsk模式下ask→deny)`);
-      this.denialTracking = recordDenial(this.denialTracking, req.toolName, result.reason || "");
+      this.denialTracking = recordDenial(this.denialTracking, req.toolName, result.reason || "", resource);
       const dontAskDecision: Decision = {
         allowed: false,
         reason: `dontAsk 模式下自动拒绝: ${result.reason}`,
@@ -971,7 +1046,7 @@ export class PermissionChecker implements Checker {
     // 非交互模式：ask → deny
     if (this.isNonInteractive()) {
       log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(非交互模式)`);
-      this.denialTracking = recordDenial(this.denialTracking, req.toolName, result.reason || "");
+      this.denialTracking = recordDenial(this.denialTracking, req.toolName, result.reason || "", resource);
       const nonInteractiveDecision: Decision = {
         allowed: false,
         reason: `非交互模式下自动拒绝: ${result.reason}`,
@@ -990,30 +1065,13 @@ export class PermissionChecker implements Checker {
     }
 
     // denial tracking 熔断检查：回退人工确认（而非直接 deny）
-    // 让用户知道模型在重复尝试同一操作，但仍允许人工审慎判断放行
-    if (shouldFuse(this.denialTracking)) {
-      log.warn("PERMISSION", `连续 ${this.denialTracking.consecutiveDenials} 次被拒绝，熔断→回退人工确认`);
-      const fuseDecision: Decision = {
-        allowed: false,
-        needsConfirmation: true,
-        reason: `⚠️ 连续 ${this.denialTracking.consecutiveDenials} 次被拒绝。模型可能在重复尝试同一操作，请审慎判断。`,
-        metadata: { denialTrackingTriggered: true },
-        decisionReason: {
-          type: "denialTracking",
-          consecutiveDenials: this.denialTracking.consecutiveDenials,
-          totalDenials: this.denialTracking.totalDenials,
-        },
-      };
-      this.auditLogger.log({
-        timestamp: new Date().toISOString(),
-        type: "tool_use",
-        tool: req.toolName,
-        resource,
-        decision: "deny",
-        reason: fuseDecision.reason,
-        decisionReason: fuseDecision.decisionReason,
-      });
-      return fuseDecision;
+    // 让用户知道模型在重复尝试同一操作，但仍允许人工审慎判断放行。
+    //
+    // 这一路仍保留：ask 路径下模型也可能反复撞同一面墙（如 dontAsk 之外的模式里
+    // 用户连续拒同一操作后模型再试）。判据已改为「按操作签名的连续拒绝」，
+    // 故这里必须把当前请求的 tool/resource 传进去，而不是查全局状态。
+    if (shouldFuse(this.denialTracking, req.toolName, resource)) {
+      return this.fuseDecision(req, resource);
     }
 
     return result;

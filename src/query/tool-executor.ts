@@ -808,6 +808,14 @@ export async function resolveToolPermission(
 
     if (!result.decision.allowed) {
       log.info("PERMISSION", `权限拒绝(${result.source}): ${block.name}`);
+      // 负收益防线审计发现 1：ask 路径的记账入口。此前 ask 被拒（用户点拒绝 / hook 拒 /
+      // 超时）完全不推进 denial tracking 计数器，导致"模型反复请求同一操作、用户反复拒绝"
+      // 这个最典型的死循环永远不会熔断。在此补记：与 rememberDecision 同一时机。
+      try {
+        deps.permissionChecker.recordUserDenial?.(permReq, result.decision.reason);
+      } catch (e) {
+        log.warn("PERMISSION", `记录用户拒绝失败（忽略）: ${(e as Error)?.message}`);
+      }
       return {
         type: "tool_result",
         tool_use_id: block.id,
