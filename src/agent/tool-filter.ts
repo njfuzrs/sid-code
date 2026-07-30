@@ -6,11 +6,13 @@
  * Layer 3（Agent 定义级）：每个 Agent 可声明 tools/disallowedTools
  * Layer 4（异步白名单）：后台 Agent 只允许安全子集
  *
- * MCP 工具始终通过硬性过滤（用户显式配置的）
+ * MCP 工具对非只读子代理始终通过硬性过滤（用户显式配置的）；
+ * 只读子代理（explore/plan/verify）的 MCP 工具也受 Layer 2 白名单约束（见下文）。
  */
 
 import type { LegacyTool as Tool } from "../tool/types.ts";
 import { isNestedSubAgentEnabled } from "./depth-context.ts";
+import { BUILTIN_AGENTS } from "./agent-definition.ts";
 
 /** 所有子代理都不能使用的工具（硬性禁止） */
 const ALL_AGENT_DISALLOWED_TOOLS = new Set([
@@ -118,7 +120,20 @@ export function filterToolsForAgent(
     if (options.isBuiltIn && options.builtInType && !isTeamComm) {
       const allowed = BUILTIN_AGENT_ALLOWED_TOOLS[options.builtInType];
       if (allowed !== undefined && allowed !== null) {
-        if (!isMcp && !allowed.includes(name)) return false;
+        // P0（多 provider MCP 放行收紧）：只读子代理（explore/plan/verify）的
+        // MCP 工具也受白名单约束。对标 CC agentToolUtils.ts:81-85 同样放行 MCP，
+        // 但 CC 靠 claude 模型在 explore system prompt 的 STRICTLY READ-ONLY 约束
+        // 下不乱用浏览器工具；sid-code 多 provider（glm/deepseek 等）不能依赖
+        // 模型遵从，必须在过滤层硬裁——否则只读子代理会在只读任务里调用
+        // playwright/chrome-devtools（2026-07-30 轨迹 20260730-135709 实测事故）。
+        // 逃生舱：Agent 定义级 tools 显式声明的 MCP 工具放行（Layer 3 声明，
+        // Layer 2 放行），允许用户为某个只读子代理显式授权特定 MCP 工具。
+        const isReadOnlyType = BUILTIN_AGENTS[options.builtInType]?.readOnly === true;
+        const mcpBypassed = isMcp && !isReadOnlyType;
+        const explicitlyAllowed = options.tools?.includes(name);
+        if (!mcpBypassed && !explicitlyAllowed && !allowed.includes(name)) {
+          return false;
+        }
       }
     }
 

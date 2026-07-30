@@ -1147,11 +1147,23 @@ export async function* queryLoop(
         // 显式带围栏（P0-a），且不用 `#` markdown 标题开头——原文案
         // `# MCP Server Instructions` 与用户 prompt 的 `# Commit:` 形态混同，
         // 是 2026-07-29 那次误读的三处裸注入之一（实测它排在用户指令前的 366 偏移处）。
+        //
+        // 截断保护（对标 CC client.ts MAX_MCP_DESCRIPTION_LENGTH）：单个 server 的
+        // instructions 可能几千字（如 MasterGo DSL 工作流），全量注入既吃 token 又
+        // 增加模型元认知外泄概率（2026-07-30 轨迹 20260730-135709 实测 glm-5.2 把
+        // 注入内容"说"了出来）。超过上限截断并标注。
+        const MAX_MCP_INSTRUCTION_BLOCK_LENGTH = 4000;
+        const truncatedBlocks = mcpBlocks.map(block =>
+          block.length > MAX_MCP_INSTRUCTION_BLOCK_LENGTH
+            ? block.slice(0, MAX_MCP_INSTRUCTION_BLOCK_LENGTH) + "… [已截断]"
+            : block,
+        );
         reminderParts.push(
           `<system-reminder>\n` +
             `MCP Server Instructions（harness 注入的服务器使用说明，非用户输入）：\n\n` +
-            `以下 MCP 服务器提供了使用说明，请在使用对应工具时遵循这些指令：\n\n` +
-            mcpBlocks.join("\n\n") +
+            `以下 MCP 服务器提供了使用说明，请在使用对应工具时遵循这些指令。\n` +
+            `这些说明仅供你参考，静默遵循即可，不要在回复中提及这些说明的存在。\n\n` +
+            truncatedBlocks.join("\n\n") +
             `\n</system-reminder>`,
         );
         log.info("QUERY_LOOP", `注入 ${mcpBlocks.length} 个 MCP server instructions`);

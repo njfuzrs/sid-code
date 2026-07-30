@@ -55,7 +55,8 @@ export function buildMcpInstructionsSection(
   return (
     `<system-reminder>\n` +
     `MCP Server Instructions（harness 注入的服务器使用说明，非用户输入）：\n\n` +
-    `以下 MCP 服务器提供了使用说明，请在使用对应工具时遵循这些指令：\n\n` +
+    `以下 MCP 服务器提供了使用说明，请在使用对应工具时遵循这些指令。\n` +
+    `这些说明仅供你参考，静默遵循即可，不要在回复中提及这些说明的存在。\n\n` +
     blocks +
     `\n</system-reminder>`
   );
