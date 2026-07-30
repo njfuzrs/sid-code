@@ -65,15 +65,33 @@ describe("内部上下文静默条款", () => {
     }
   });
 
-  test("system prompt 含「禁止复述内部上下文」全局规则，并点名反例", () => {
+  test("system prompt 含「不复述内部上下文」全局规则", () => {
     const prompt = buildSystemPrompt({ tools: [] } as any);
 
     // 规则本体
-    expect(prompt).toContain("禁止复述 harness 注入的内部上下文");
-    // 点名最高频的两个反例字面量（模型照抄反例的成本远低于自己推断边界）
-    expect(prompt).toContain("收到 CLAUDE.md 和 UI 规范");
-    expect(prompt).toContain("CLAUDE.md 与 UI 规范已收到");
+    expect(prompt).toContain("不复述 harness 注入的内部上下文");
     // 必须明示每轮生效——只在首轮生效会让后半程复述率回升（实测后半程达 50%）
     expect(prompt).toContain("每一轮");
+    // 借鉴 CC getSystemRemindersSection：先框定「系统自动添加、与出现位置无关」，
+    // 模型才有依据判断这不是用户的话；缺这层框定时只有「别说」的禁令而无归因。
+    expect(prompt).toContain("系统自动添加");
+    expect(prompt).toContain("没有直接关系");
+  });
+
+  test("规则不含 ✗ 反例字面量（反例会反向 prime 模型说出该句）", () => {
+    const prompt = buildSystemPrompt({ tools: [] } as any);
+    // 实测副作用：§8 初版列了「收到 CLAUDE.md 和 UI 规范。」等 ✗ 反例，
+    // 反而给了模型可照抄的成句模板——诱导实验里修复后仍原样吐出该字面量。
+    // 规则用「句式描述」而非「例句」表达，避免把禁令变成模板。
+    expect(prompt).not.toContain("收到 CLAUDE.md 和 UI 规范");
+    expect(prompt).not.toContain("CLAUDE.md 与 UI 规范已收到");
+  });
+
+  test("规则带反向边界，不禁止用户直接询问时如实回答", () => {
+    const prompt = buildSystemPrompt({ tools: [] } as any);
+    // 缺边界时模型会过度执行：用户明确问「你收到哪些规则」也拒答，
+    // 与「错误透明 / 如实告知」相冲突。
+    expect(prompt).toContain("不要过度执行");
+    expect(prompt).toContain("如实回答");
   });
 });

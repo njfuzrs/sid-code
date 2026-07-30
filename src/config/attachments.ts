@@ -182,7 +182,7 @@ ${sourceLabel}:
 ${content}
 
       重要：此上下文可能与你的当前任务相关，也可能不相关。
-      （请勿向用户提及或复述本提醒——不要在回复中说"收到 CLAUDE.md"之类的话，静默遵循即可）
+      （本提醒由系统自动添加，请勿向用户提及或复述它，静默遵循即可）
 </system-reminder>`,
     priority: PRIORITY.CLAUDE_MD,
   };
