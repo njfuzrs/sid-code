@@ -9,6 +9,9 @@
 import { describe, test, expect } from "bun:test";
 import {
   getMcpInstructionsDelta,
+  // buildMcpInstructionsSection 已标 @deprecated（无生产调用点），IDE 会提示 6385/6387。
+  // 这里刻意继续测它：只要还导出着就仍可能被接线，形态约束（围栏 / 不以 `#` 开头）
+  // 必须由测试守住而不是靠注释提醒——见文件末尾那条事故防回归用例。
   buildMcpInstructionsSection,
 } from "../../src/mcp/instructions-delta.ts";
 import { MCPConnectionStatus } from "../../src/mcp/types.ts";
@@ -72,7 +75,7 @@ describe("buildMcpInstructionsSection", () => {
       status({ name: "a", instructions: "a-guide" }),
       status({ name: "b", instructions: "b-guide" }),
     ]);
-    expect(section).toContain("# MCP Server Instructions");
+    expect(section).toContain("MCP Server Instructions");
     expect(section).toContain("## a");
     expect(section).toContain("a-guide");
     expect(section).toContain("## b");
@@ -81,5 +84,22 @@ describe("buildMcpInstructionsSection", () => {
 
   test("无可用 server → 空串", () => {
     expect(buildMcpInstructionsSection([])).toBe("");
+  });
+
+  /**
+   * 事故防回归（2026-07-29，轨迹 20260729-180624-b8ae8e78）：原实现产出裸
+   * `# MCP Server Instructions`，与用户 prompt 的 `# Commit:` 形态混同，
+   * glm-5.2 因此分不清"谁在说话"。本函数当前虽无生产调用点，但只要还导出着，
+   * 就可能被接线 —— 形态约束必须由测试守住，而非靠注释提醒。
+   */
+  test("带 <system-reminder> 围栏，且不以 `#` markdown 标题开头", () => {
+    const section = buildMcpInstructionsSection([
+      status({ name: "a", instructions: "a-guide" }),
+    ]);
+    expect(section.startsWith("<system-reminder>")).toBe(true);
+    expect(section.trimEnd().endsWith("</system-reminder>")).toBe(true);
+    // 一级标题是与用户 prompt 混同的直接诱因；server 名的 `##` 是围栏内的层级，无碍
+    expect(section).not.toContain("\n# ");
+    expect(section).toContain("非用户输入");
   });
 });

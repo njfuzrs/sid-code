@@ -67,6 +67,103 @@ const FRONTMATTER_RE = /^---\s*\n([\s\S]*?)\n---/;
 const MEMORY_DESC_MAX_LEN = 150;
 
 /**
+ * 公网 IPv4 字面量（用于索引摘要脱敏）。
+ *
+ * 三重收紧，每一重都为压掉一类实测出来的误报：
+ *
+ * 1. **八位组必须合法**（0-255）。否则 `1.2.3.4` 之外的版本号（`10.15.2.300`）也会命中。
+ * 2. **排除私网 / 环回 / 链路本地 / 全零 / 广播段**。`127.0.0.1`、`192.168.1.50`、
+ *    `0.0.0.0` 常出现在"本地起服务在哪个端口"这类记忆里，抹掉纯属噪音。
+ * 3. **前后不得紧邻数字或点**。挡住 `1.2.3.4.5` 这类被从中间截出一段的形态。
+ *
+ * 但**合法公网 IP 与四段版本号在字面上无法区分**（`8.8.8.8` 既是 DNS 也可以是版本号），
+ * 所以正则只是必要条件，是否脱敏还要看语境信号 —— 见 `INFRA_CONTEXT_RE`。
+ *
+ * 刻意**不做**主机名/域名匹配：`example.com`、`gitlab.example.com` 在记忆摘要里是正常
+ * 且必要的指路信息，抹掉会让索引失去价值。这与 secret-redact.ts `db_conn_string`
+ * 那条注释的取舍**方向相反**且都成立："误把真 conn string 放过去比让 example.com 误报
+ * 更危险"是**拒绝写入**场景的权衡；索引脱敏是**有损改写**，宁可漏，不可误伤可读性。
+ */
+const OCTET = "(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)";
+const PUBLIC_IPV4_RE = new RegExp(
+  [
+    "(?<![\\d.])",                                   // 左边界：不紧邻数字/点
+    "(?!(?:10|127|0|255)\\.)",                       // 排除 10./127./0./255.
+    "(?!169\\.254\\.)",                              // 排除链路本地
+    "(?!192\\.168\\.)",                              // 排除 192.168.
+    "(?!172\\.(?:1[6-9]|2\\d|3[01])\\.)",            // 排除 172.16-31.
+    `(?:${OCTET}\\.){3}${OCTET}`,
+    "(?![\\d.])",                                    // 右边界
+  ].join(""),
+  "g",
+);
+
+/**
+ * 基础设施语境信号：出现这些词，才认为同条摘要里的四段数字是**服务器地址**而非版本号。
+ *
+ * 这是把"合法公网 IP"与"四段版本号"分开的唯一可靠手段。宁可漏判（某条摘要写了裸 IP
+ * 却一个语境词都没有 → 不脱敏）也不误伤——漏判的后果是一条摘要多曝光一个地址，
+ * 误伤的后果是索引里的版本号/端口信息变成 `<地址已省略>`，模型据此做出错误判断。
+ */
+const INFRA_CONTEXT_RE =
+  /服务器|主机|机器|部署|发布|上传|登录|ssh|scp|sshpass|nginx|堡垒|跳板|内网|外网|生产环境|host|deploy|server/i;
+
+/** 与基础设施地址同现的特权账号标注，如 `（root）` / `(admin)`。 */
+const PRIVILEGED_ACCOUNT_RE = /[（(]\s*(?:root|admin|administrator)\s*[)）]/gi;
+
+/**
+ * 版本号否决：紧邻匹配点左侧出现版本语汇时，这四段数字是版本号，不是地址。
+ *
+ * `INFRA_CONTEXT_RE` 是**整条摘要**级别的粗筛，会被"部署脚本要求 node 版本 18.20.4.1"
+ * 这种一句话里既有 `部署` 又有版本号的形态骗过（实测误报）。所以再加一道**匹配点近旁**
+ * 的否决：只看左侧 12 字符，够覆盖 `版本 x.y.z.w` / `version x.y.z.w` / `v1.2.3.4`，
+ * 又不会误伤 `服务器：1.2.3.4` 这种真地址。
+ */
+const VERSION_PREFIX_RE = /(?:版本|版本号|version|ver\.?|@|\bv)\s*$/i;
+const VERSION_LOOKBEHIND_CHARS = 12;
+
+/**
+ * 索引摘要脱敏：抹掉基础设施坐标（公网 IP + 特权账号标注）。
+ *
+ * 2026-07-30 实测发现：一条 `reference` 记忆把生产发布服务器的公网 IP 和 `（root）`
+ * 写进了 frontmatter 的 `description`，于是它**随 MEMORY.md 索引进入每一个会话的
+ * system prompt**（索引常驻 core 区，见 config/system-prompt.ts:372）。凭证类 secret
+ * 有 tool/memory.ts 的 detect 拦着，但"公网 IP + root"不在 secret 模式里，畅通无阻。
+ *
+ * 为什么落在这里而不是扩展 secret-redact：
+ *   - secret-redact 的语义是**命中即拒绝写入**（tool/memory.ts:113）。IP 形态天然易误报
+ *     （版本号、私网、示例地址），一旦误报，代价是用户合法记忆存不进去——比泄漏更烦人。
+ *   - 索引摘要是**有损压缩**的产物，脱敏本就是它的分内事；正文完整保留，模型需要时
+ *     Read 那个文件仍拿得到真实地址。信息没丢，只是不再常驻每个会话的 system prompt。
+ *
+ * 因此这里只做"降低常驻曝光面"，不做准入拦截，两条防线职责不重叠。
+ */
+export function redactInfraCoordinates(desc: string): string {
+  // 双条件：形态像公网 IP **且**上下文提到服务器/部署类词汇。缺任一条都不动。
+  if (!INFRA_CONTEXT_RE.test(desc)) return desc;
+  PUBLIC_IPV4_RE.lastIndex = 0;
+  if (!PUBLIC_IPV4_RE.test(desc)) {
+    PUBLIC_IPV4_RE.lastIndex = 0;
+    return desc;
+  }
+  PUBLIC_IPV4_RE.lastIndex = 0;
+  let redactedAny = false;
+  const out = desc.replace(PUBLIC_IPV4_RE, (m, offset: number) => {
+    const left = desc.slice(Math.max(0, offset - VERSION_LOOKBEHIND_CHARS), offset);
+    if (VERSION_PREFIX_RE.test(left)) return m; // 版本号，原样保留
+    redactedAny = true;
+    return "<地址已省略>";
+  });
+  if (!redactedAny) return desc;
+  return out
+    // 账号标注只在**同一条摘要里真抹掉过公网 IP** 时才处理：脱离了主机的 `（root）`
+    // 已无指向性，但同现时二者拼起来就是一份可直接用的登录坐标。
+    .replace(PRIVILEGED_ACCOUNT_RE, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+/**
  * 归一化索引/frontmatter 用的一句话摘要（**写入端根治点**）。
  *
  * 根因（上下文注入淹没用户指令，2026-07-29 复现）：desc 缺省时回退取正文首行，
@@ -96,14 +193,16 @@ export function normalizeMemoryDesc(
       if (t) { raw = t; break; }
     }
   }
-  return raw
+  const cleaned = raw
     .replace(/^#{1,6}\s+/, "")        // markdown 标题标记（`## 标题` → `标题`）
     .replace(/^>\s*/, "")             // 引用标记
     .replace(/^(?:[-*+]|\d+\.)\s+/, "") // 列表标记
     .replace(/\*\*/g, "")             // 强调标记（`**Why:**` → `Why:`）
     .replace(/\s*\n\s*/g, " ")        // 折行压平（description 可能多行）
-    .trim()
-    .slice(0, MEMORY_DESC_MAX_LEN);
+    .trim();
+  // 脱敏在截断**之前**：否则 150 字符边界可能把 IP 切成半截，
+  // 既没抹干净又匹配不上（`121.196.14` 这种残留同样有指向性）。
+  return redactInfraCoordinates(cleaned).slice(0, MEMORY_DESC_MAX_LEN);
 }
 
 /** 根据 key/value 启发式推断记忆类型（迁移与 legacy set 使用） */

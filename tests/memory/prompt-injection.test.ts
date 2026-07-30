@@ -4,6 +4,7 @@
 
 import { describe, test, expect } from "bun:test";
 import { buildMemoryInstructions, buildMemorySystemPrompt } from "../../src/memory/prompt.ts";
+import { normalizeMemoryDesc } from "../../src/memory/store.ts";
 import {
   generateRecalledMemoryAttachment,
   generateSessionMemoryAttachment,
@@ -201,5 +202,73 @@ describe("buildSystemPrompt — 记忆注入集成", () => {
     const prompt = buildSystemPrompt({ tools: [] });
     expect(prompt).not.toContain("recalled-memory");
     expect(prompt).not.toContain("session-memory");
+  });
+});
+
+/**
+ * 基础设施坐标脱敏（2026-07-30，文档「独立立项 B」）。
+ *
+ * 事故：一条 `reference` 记忆把生产发布服务器的公网 IP 和 `（root）` 写进了 frontmatter
+ * 的 `description`，于是它随 MEMORY.md 索引进入**每一个会话**的 system prompt
+ * （索引常驻 core 区，见 config/system-prompt.ts:372）。凭证类 secret 有
+ * tool/memory.ts 的 detect 拦着，但"公网 IP + root"不在 secret 模式里，畅通无阻。
+ *
+ * 这里守两件事：
+ *   1. 真实的服务器坐标被抹（写入端 normalizeMemoryDesc + 渲染端 normalizeIndexContent 双层）；
+ *   2. **误报不能扩散** —— 版本号、私网地址、域名必须原样保留。索引脱敏是有损改写，
+ *      误伤可读性比漏一条更糟（模型据 `<地址已省略>` 的版本号会做出错误判断）。
+ */
+describe("索引摘要脱敏：基础设施坐标", () => {
+  /** 复刻事故里那条真实记忆的 description */
+  const ACCIDENT_DESC =
+    "sid-code 生产发布服务器：121.196.144.227（root），制品路径 " +
+    "/var/www/html/releases/sid-code/，nginx 对外暴露 http://121.196.144.227/releases/";
+
+  test("写入端：公网 IP 与特权账号标注被抹，其余信息保留", () => {
+    const desc = normalizeMemoryDesc(ACCIDENT_DESC, "");
+    expect(desc).not.toContain("121.196.144.227");
+    expect(desc).not.toContain("（root）");
+    expect(desc).toContain("<地址已省略>");
+    // 抹的是坐标，不是这条记忆的用途——路径等指路信息必须留着
+    expect(desc).toContain("生产发布服务器");
+    expect(desc).toContain("/var/www/html/releases/sid-code/");
+  });
+
+  test("渲染端兜底：旧索引文件里的坐标同样不进 system prompt", () => {
+    // 索引只在 save_memory / 同步时重建，磁盘上的旧值要等下次重建才更新，
+    // 注入路径必须自己兜住，否则"已修复"只对新写入的记忆成立。
+    const staleIndex = `# Memory Index\n- [production-deploy-server](reference_production-deploy-server.md) — ${ACCIDENT_DESC}`;
+    const prompt = buildMemorySystemPrompt(staleIndex);
+    expect(prompt).not.toContain("121.196.144.227");
+    expect(prompt).not.toContain("（root）");
+    expect(prompt).toContain("<地址已省略>");
+    expect(prompt).toContain("production-deploy-server");
+  });
+
+  test("脱敏发生在 150 字符截断之前（不留半截 IP）", () => {
+    // 截断先行会把 IP 切成 `121.196.14` 这种残留：既没抹干净又匹配不上。
+    const padded = "生产服务器部署说明。".repeat(12) + "地址 121.196.144.227（root）";
+    const desc = normalizeMemoryDesc(padded, "");
+    expect(desc).not.toContain("121.196");
+  });
+
+  test.each([
+    ["四段版本号", "版本号从 1.2.3.4 升到 1.2.3.5"],
+    ["部署语境里的版本号", "部署脚本要求 node 版本 18.20.4.1 以上"],
+    ["带前缀的版本号", "发布时 app@1.2.3.4 与 v2.0.1.3 都是版本"],
+    ["环回地址", "本地起服务在 127.0.0.1:3000，用 curl 验证"],
+    ["私网地址", "内网 gitlab 部署在 192.168.1.50，走 172.16.3.9 跳板"],
+    ["域名", "网关地址 gitlab.example.com，服务器不带 /v1"],
+    ["超范围八位组", "部署机 10.15.2.300 不是合法 IP"],
+    ["无语境词的裸数字", "四段数字 203.0.113.9 没有任何基础设施语境"],
+    ["孤立的账号标注", "服务器上单独出现 (root) 不该被抹"],
+  ])("不误伤：%s", (_label, input) => {
+    expect(normalizeMemoryDesc(input, "")).toBe(input);
+  });
+
+  test("同句混合：真地址被抹、版本号保留", () => {
+    const desc = normalizeMemoryDesc("服务器：203.0.113.9 部署后 node 版本 18.20.4.1", "");
+    expect(desc).not.toContain("203.0.113.9");
+    expect(desc).toContain("18.20.4.1");
   });
 });

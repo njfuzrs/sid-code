@@ -39,7 +39,14 @@ import { resolveSideCallTimeouts } from "../config/network-profile.ts";
 import type { ModelPricing } from "../api/cost-tracker.ts";
 import { getLogger } from "../debug/logger.ts";
 
-const log = getLogger();
+/**
+ * ⚠ 必须**每次调用时**取 logger，不能写成模块级 `const log = getLogger()`。
+ * 本模块处在 cli.ts → config.ts → cost-tracker.ts → 本模块 这条**静态导入链**上，
+ * 求值时机早于 cli.ts 的 initLogger()。模块级捕获会把 enabled=false 的兜底实例
+ * 永久冻进闭包，其 WARN 走 logger.log() 的 stderr 兜底分支直接泄漏到用户终端
+ * （污染 TUI）且不写入 audit.log。见 logger.ts 的 initLogger/reconfigure 注释。
+ */
+const log = () => getLogger();
 
 /** new-api /api/pricing 单条原始返回（仅声明我们消费的字段）。 */
 interface RawPricingEntry {
@@ -67,6 +74,13 @@ interface EndpointBucket {
   /** 聚合哈希，用于版本比对（内容不变则不写盘） */
   pricing_version: string;
   models: Record<string, GatewayPricingEntry>;
+  /**
+   * 最近一次采集**失败**的时间戳（负缓存）。0/缺失 = 没有未恢复的失败。
+   * 与 fetched_at 独立：失败不该冒充「采过了」去满足 TTL，也不该抹掉上次成功的价格。
+   */
+  failed_at?: number;
+  /** 连续失败次数，驱动指数退避；成功一次即清零。 */
+  fail_count?: number;
 }
 
 /**
@@ -92,6 +106,27 @@ const RATIO_TO_USD_PER_M = 2;
 
 /** 默认采集 TTL：24h。缓存超此时长则后台静默刷新。 */
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * 失败负缓存（failure backoff）—— 修复「端点长期不可达仍每次启动重试」。
+ *
+ * 此前只有**成功**才写 fetched_at，失败什么都不记；于是不可达端点每次启动都重来一次：
+ * 团队默认配置有 3 个不同端点 → 每次启动 3 个并发请求各白烧一个 15s socket，且永不退避。
+ * 定价采集是纯优化项（失败仅退回注册表估价），完全不值得这种开销。
+ *
+ * 策略：把失败也记进端点桶（failed_at + fail_count），按失败次数指数退避，封顶 24h。
+ * 首次失败等 5min（网关重启/短时抖动这类瞬时故障能较快恢复），持续失败迅速拉长到天级。
+ * 成功一次即清零（见 syncGatewayPricing 写盘处不带 failed_at/fail_count）。
+ */
+const FAILURE_BACKOFF_BASE_MS = 5 * 60 * 1000;
+const FAILURE_BACKOFF_MAX_MS = 24 * 60 * 60 * 1000;
+
+/** 依据失败次数算下次允许重试的间隔（指数退避，封顶 24h）。 */
+export function computeFailureBackoffMs(failCount: number): number {
+  if (failCount <= 0) return 0;
+  const exp = FAILURE_BACKOFF_BASE_MS * Math.pow(2, failCount - 1);
+  return Math.min(exp, FAILURE_BACKOFF_MAX_MS);
+}
 
 /**
  * 内存态：归一化端点 key → 该端点的模型价映射。启动时由 loadGatewayCache 载入。
@@ -216,6 +251,9 @@ function parseCacheFile(raw: unknown): GatewayCacheFile | null {
           fetched_at: bucket.fetched_at ?? 0,
           pricing_version: bucket.pricing_version ?? "",
           models: bucket.models,
+          // 负缓存字段（第三方/旧文件可能缺失或类型不对，做有限数值校验后再采纳）。
+          failed_at: isFiniteNonNeg(bucket.failed_at) ? bucket.failed_at : undefined,
+          fail_count: isFiniteNonNeg(bucket.fail_count) ? bucket.fail_count : undefined,
         };
       }
     }
@@ -238,6 +276,35 @@ function parseCacheFile(raw: unknown): GatewayCacheFile | null {
   }
 
   return null;
+}
+
+/**
+ * 记一次采集失败到端点桶（负缓存），用于下次启动的指数退避判断。
+ *
+ * 只动 failed_at / fail_count 两个字段：**保留该桶已有的 models 与 fetched_at**——
+ * 失败不该抹掉上一次成功采到的价格，也不该冒充"采过了"去满足成功 TTL。
+ * 桶不存在（从没采成功过）则建一个空 models 的占位桶，纯粹承载退避状态。
+ * 全程 try/catch 吞掉：负缓存写不进去顶多退化成旧行为（每次重试），绝不能反过来影响启动。
+ */
+function recordFailure(endpointKey: string, url: string): void {
+  try {
+    const file: GatewayCacheFile = readCacheFile() ?? { schema_version: 2, endpoints: {} };
+    const prev = file.endpoints[endpointKey];
+    file.endpoints[endpointKey] = {
+      source_url: prev?.source_url ?? url,
+      fetched_at: prev?.fetched_at ?? 0,
+      pricing_version: prev?.pricing_version ?? "",
+      models: prev?.models ?? {},
+      failed_at: Date.now(),
+      fail_count: (prev?.fail_count ?? 0) + 1,
+    };
+    file.schema_version = 2;
+    const path = sidPaths.gatewayPricing();
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify(file, null, 2), "utf8");
+  } catch {
+    /* 负缓存写入失败：退化为旧行为，不影响启动与计费 */
+  }
 }
 
 /** 从磁盘读缓存文件（含旧版迁移）。失败返回 null。 */
@@ -264,9 +331,9 @@ export function loadGatewayCache(): void {
       memBuckets[key] = bucket.models;
       total += Object.keys(bucket.models).length;
     }
-    log.debug("GATEWAY-PRICING", `载入网关定价缓存 ${total} 条 / ${Object.keys(memBuckets).length} 端点`);
+    log().debug("GATEWAY-PRICING", `载入网关定价缓存 ${total} 条 / ${Object.keys(memBuckets).length} 端点`);
   } catch (e) {
-    log.warn("GATEWAY-PRICING", "载入网关定价缓存失败，回退注册表", { error: String(e) });
+    log().warn("GATEWAY-PRICING", "载入网关定价缓存失败，回退注册表", { error: String(e) });
   }
 }
 
@@ -389,7 +456,13 @@ export async function syncGatewayPricing(opts?: {
 
   const timeoutMs = opts?.timeoutMs ?? resolveSideCallTimeouts().gatewayPricingMs;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // 自己 abort 的要留标记：裸 AbortError 的 message 是 "The operation was aborted."，
+  // 完全看不出是"我们的超时"还是别的原因，排查时只能靠猜（这次线上反馈就卡在这）。
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
 
   let raw: { data?: RawPricingEntry[] };
   try {
@@ -399,14 +472,24 @@ export async function syncGatewayPricing(opts?: {
       signal: controller.signal,
     });
     if (!resp.ok) {
+      recordFailure(endpointKey, url);
       emit({ endpoint: endpointKey, url, outcome: "failed", count: 0, version: "", dropped: 0, reason: `HTTP ${resp.status}` });
       return { updated: false, count: 0, version: "", reason: `HTTP ${resp.status}` };
     }
     raw = (await resp.json()) as { data?: RawPricingEntry[] };
   } catch (e) {
-    log.warn("GATEWAY-PRICING", "采集失败，保留旧缓存", { url, error: String(e) });
-    emit({ endpoint: endpointKey, url, outcome: "failed", count: 0, version: "", dropped: 0, reason: `采集失败: ${String(e)}` });
-    return { updated: false, count: 0, version: "", reason: `采集失败: ${String(e)}` };
+    // 超时说人话（含阈值与可调环境变量），其余错误保留原文。
+    const reason = timedOut
+      ? `采集超时 ${timeoutMs}ms（可用 SID_CODE_GATEWAY_PRICING_TIMEOUT_MS 调整）`
+      : `采集失败: ${String(e)}`;
+    // 定价采集是**纯优化项**：失败只是退回内置注册表估价，功能不受影响，用户无需处置
+    // → 用 debug 级而非 warn。warn 会经 logger 的 stderr 兜底路径打到终端惊扰用户
+    //（本次线上反馈的直接症状），而这条信息对用户不可行动。
+    log().debug("GATEWAY-PRICING", `${reason}，保留旧缓存并回退注册表估价`, { url });
+    // 记负缓存：不可达端点不再每次启动都白烧一个 socket，按指数退避冷却。
+    recordFailure(endpointKey, url);
+    emit({ endpoint: endpointKey, url, outcome: "failed", count: 0, version: "", dropped: 0, reason });
+    return { updated: false, count: 0, version: "", reason };
   } finally {
     clearTimeout(timer);
   }
@@ -422,6 +505,8 @@ export async function syncGatewayPricing(opts?: {
 
   const count = Object.keys(models).length;
   if (count === 0) {
+    // 连得上但返回不可用（非 new-api 网关 / 结构变更）——同样退避，否则每次启动照样白跑一趟。
+    recordFailure(endpointKey, url);
     emit({ endpoint: endpointKey, url, outcome: "failed", count: 0, version: "", dropped, reason: "解析后无有效条目" });
     return { updated: false, count: 0, version: "", reason: "解析后无有效条目" };
   }
@@ -433,13 +518,17 @@ export async function syncGatewayPricing(opts?: {
   const existing = file.endpoints[endpointKey];
 
   // 版本比对：本端点桶内容未变则不写盘（除非 force）。
-  if (!opts?.force && existing && existing.pricing_version === version) {
+  // 例外：桶里还挂着未清的失败态（failed_at/fail_count）时必须落盘一次把它清掉 ——
+  // 否则「端点已恢复但价格恰好没变」会让退避状态永久留存，之后每次都被冷却挡住不再采集。
+  const hasStaleFailure = !!(existing?.failed_at || existing?.fail_count);
+  if (!opts?.force && existing && existing.pricing_version === version && !hasStaleFailure) {
     memBuckets[endpointKey] = models;
     memLoaded = true;
     emit({ endpoint: endpointKey, url, outcome: "unchanged", count, version, dropped, reason: "版本未变，跳过写盘" });
     return { updated: false, count, version, reason: "版本未变，跳过写盘" };
   }
 
+  // 成功即整桶重写：**故意不带** failed_at / fail_count —— 这就是"成功一次清零退避"。
   file.endpoints[endpointKey] = {
     source_url: url,
     fetched_at: Date.now(),
@@ -453,15 +542,33 @@ export async function syncGatewayPricing(opts?: {
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, JSON.stringify(file, null, 2), "utf8");
   } catch (e) {
-    log.warn("GATEWAY-PRICING", "写缓存失败", { error: String(e) });
+    log().warn("GATEWAY-PRICING", "写缓存失败", { error: String(e) });
     // 写盘失败仍刷新内存，本次会话可用。
   }
 
   memBuckets[endpointKey] = models;
   memLoaded = true;
-  log.info("GATEWAY-PRICING", `采集完成 ${count} 条${dropped > 0 ? `（丢弃 ${dropped} 非法条目）` : ""}`, { version, endpoint: endpointKey });
+  log().info("GATEWAY-PRICING", `采集完成 ${count} 条${dropped > 0 ? `（丢弃 ${dropped} 非法条目）` : ""}`, { version, endpoint: endpointKey });
   emit({ endpoint: endpointKey, url, outcome: "updated", count, version, dropped, reason: dropped > 0 ? `成功（丢弃 ${dropped} 非法）` : "成功" });
   return { updated: true, count, version, reason: dropped > 0 ? `成功（丢弃 ${dropped} 非法）` : "成功" };
+}
+
+/**
+ * 该端点是否处于失败冷却期（负缓存未到期）→ 本次启动**直接跳过**，不发请求。
+ *
+ * 这是"端点长期不可达仍每次启动重试"的闸门：不可达端点第 1 次失败后冷却 5min，
+ * 第 2 次 10min、第 3 次 20min…封顶 24h，而非每次启动都白烧一个 15s socket。
+ * 返回剩余冷却毫秒数（>0 表示应跳过），便于日志说明还要等多久。
+ */
+export function getFailureCooldownRemainingMs(baseURL?: string): number {
+  const file = readCacheFile();
+  if (!file) return 0;
+  const bucket = file.endpoints[normalizeBaseURL(baseURL)];
+  if (!bucket?.failed_at || !bucket.fail_count) return 0;
+  const elapsed = Date.now() - bucket.failed_at;
+  // failed_at 在未来（系统时钟回拨/被手改）→ 视为已过期，宁可多采一次也不永久锁死。
+  if (elapsed < 0) return 0;
+  return Math.max(0, computeFailureBackoffMs(bucket.fail_count) - elapsed);
 }
 
 /**
@@ -472,6 +579,8 @@ export async function syncGatewayPricing(opts?: {
 export function maybeRefreshGatewayPricing(baseURL?: string, ttlMs = DEFAULT_TTL_MS): void {
   loadGatewayCache();
   if (!baseURL) return;
+  // 失败冷却期内直接跳过（负缓存）。
+  if (getFailureCooldownRemainingMs(baseURL) > 0) return;
   // 按端点桶判 TTL：该端点没采过或超 TTL 才刷新（不同端点各自独立 TTL）。
   const meta = getGatewayCacheMeta(baseURL);
   const stale = !meta || Date.now() - meta.fetchedAt > ttlMs;
@@ -506,12 +615,23 @@ export function refreshGatewayPricingOnStartup(
 
   for (const baseURL of uniq) {
     if (!force) {
+      // 失败冷却期内直接跳过（负缓存）——不可达端点不再每次启动都白烧一个 socket。
+      const cooldown = getFailureCooldownRemainingMs(baseURL);
+      if (cooldown > 0) {
+        log().debug(
+          "GATEWAY-PRICING",
+          `端点处于失败冷却期，跳过本次采集（剩余 ${Math.ceil(cooldown / 1000)}s）`,
+          { baseURL },
+        );
+        continue;
+      }
       // 日常：按端点桶判 TTL，未过期跳过。
       const meta = getGatewayCacheMeta(baseURL);
       const stale = !meta || Date.now() - meta.fetchedAt > ttlMs;
       if (!stale) continue;
     }
-    // force=true 时忽略 TTL；后台静默刷新，逐端点独立，互不影响。
+    // force=true 时忽略 TTL 与失败冷却（用户 update 或显式 /model discover --pricing 的
+    // 明确意图优先，且能一次性把恢复了的端点从冷却态里救出来）；后台静默刷新，逐端点独立。
     void syncGatewayPricing({ baseURL, force }).catch(() => {});
   }
 }

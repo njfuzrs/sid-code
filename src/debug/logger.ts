@@ -83,7 +83,13 @@ class Logger {
   private sessionWarnLogPath?: string;
 
   constructor(options: Partial<LoggerOptions> = {}) {
-    this.options = {
+    this.options = Logger.normalizeOptions(options);
+    this.setupStreams();
+  }
+
+  /** 把外部传入的部分配置补全为完整 LoggerOptions（构造与 reconfigure 共用，避免两处默认值漂移）。 */
+  private static normalizeOptions(options: Partial<LoggerOptions>): LoggerOptions {
+    return {
       enabled: options.enabled ?? false,
       level: options.level ?? LogLevel.INFO,
       console: options.console ?? true,
@@ -94,6 +100,25 @@ class Logger {
       jsonLogFile: options.jsonLogFile,
       append: options.append ?? false,
     };
+  }
+
+  /**
+   * 按当前 options 打开日志文件流（幂等：先关旧流再开新流）。
+   * 从构造器抽出，供 reconfigure 复用——这是 initLogger 能「原地换配置」而不必换实例的前提。
+   */
+  private setupStreams(): void {
+    // 关掉可能存在的旧流（reconfigure 路径），避免句柄泄漏与两个流写同一文件。
+    if (this.logStream) {
+      this.logStream.end();
+      this.logStream = undefined;
+    }
+    if (this.jsonStream) {
+      this.jsonStream.end();
+      this.jsonStream = undefined;
+    }
+    this.logFilePath = undefined;
+    this.jsonLogPath = undefined;
+    this.currentLogSize = 0;
 
     if (this.options.enabled && this.options.logFile) {
       this.logFilePath = this.options.logFile.startsWith('~')
@@ -309,6 +334,21 @@ class Logger {
     this.options.fileOnly = fileOnly;
   }
 
+  /**
+   * 原地重配置（**不换实例**）——initLogger 的实现基座。
+   *
+   * 为什么必须原地改而不是 new 一个：模块级 `const log = getLogger()` 这种写法会把
+   * "当时那个实例"永久捕获进闭包。若 initLogger 换新实例，早于 initLogger 求值的模块
+   * （如 gateway-pricing.ts ← cost-tracker.ts ← config.ts ← cli.ts 这条静态链）就永远
+   * 持有 enabled=false 的兜底实例，其 WARN/ERROR 会走 log() 里的 stderr 兜底分支直接
+   * 打到用户终端，且**不写进 audit.log**——既污染 TUI，又让日志文件缺失现场。
+   * 原地重配置让所有既有引用（无论抓得多早）立刻跟随新配置生效。
+   */
+  reconfigure(options: Partial<LoggerOptions>): void {
+    this.options = Logger.normalizeOptions(options);
+    this.setupStreams();
+  }
+
   error(category: string, message: string, data?: unknown): void {
     this.log(LogLevel.ERROR, category, message, data);
   }
@@ -414,8 +454,19 @@ class Logger {
 // 全局单例
 let globalLogger: Logger | null = null;
 
+/**
+ * 初始化/重配置全局 logger。
+ *
+ * **恒定返回同一个实例**（首次创建，后续原地 reconfigure）。不可改成 `new Logger()`——
+ * 见 Logger.reconfigure 的注释：换实例会让早于本函数求值的模块级 `getLogger()` 捕获
+ * 永久停在 enabled=false 的兜底实例上，其 WARN 直接泄漏到用户终端且不入 audit.log。
+ */
 export function initLogger(options: Partial<LoggerOptions>): Logger {
-  globalLogger = new Logger(options);
+  if (globalLogger) {
+    globalLogger.reconfigure(options);
+  } else {
+    globalLogger = new Logger(options);
+  }
   return globalLogger;
 }
 

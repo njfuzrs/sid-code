@@ -5,6 +5,7 @@
  * 不应保存什么，以及当前的 MEMORY.md 索引内容。
  */
 
+import { redactInfraCoordinates } from "./store.ts";
 import { MEMORY_TYPE_DESCRIPTIONS } from "./types.ts";
 
 /** 记忆系统指令（静态部分，可缓存） */
@@ -56,6 +57,11 @@ const INDEX_ROLE_DECLARATION =
  * 本次修复前写入的 MEMORY.md 里已经躺着大量 `— ## 标题` 行，而索引文件只在
  * save_memory / 同步时才重建。这一层保证**旧索引文件在下次重建前也不会再诱导模型**。
  *
+ * 同理兜底基础设施坐标脱敏（`redactInfraCoordinates`）：2026-07-30 实测有一条记忆把
+ * 生产服务器公网 IP + `（root）` 写进了 frontmatter description，已随索引常驻每个会话的
+ * system prompt。写入端已根治，但磁盘上的旧索引要等下次重建才会更新——注入路径必须
+ * 自己兜住，否则"已修复"只对新写入的记忆成立。
+ *
  * 只处理 `- [k](f) — desc` 形态的索引行，其余行（段标题、空行、截断警告）原样保留。
  */
 function normalizeIndexContent(content: string): string {
@@ -64,11 +70,13 @@ function normalizeIndexContent(content: string): string {
     .map((line) => {
       const m = line.match(/^(\s*-\s*\[[^\]]*\]\([^)]*\))\s*(?:—|-)\s*(.*)$/);
       if (!m) return line;
-      const desc = m[2]
-        .replace(/^#{1,6}\s+/, "")
-        .replace(/^>\s*/, "")
-        .replace(/\*\*/g, "")
-        .trim();
+      const desc = redactInfraCoordinates(
+        m[2]
+          .replace(/^#{1,6}\s+/, "")
+          .replace(/^>\s*/, "")
+          .replace(/\*\*/g, "")
+          .trim(),
+      );
       // `：`（而非 ` — `）让「链接 → 摘要」的从属关系更明确，也不像破折号那样
       // 容易被读成两个并列的句子片段。
       return desc ? `${m[1]}：${desc}` : m[1];
