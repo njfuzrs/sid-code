@@ -1,8 +1,8 @@
 {
   "generatedAt": "2026-07-30",
-  "currentVersion": "0.1.593",
-  "totalVersions": 12,
-  "totalCommits": 206,
+  "currentVersion": "0.1.594",
+  "totalVersions": 13,
+  "totalCommits": 209,
   "groupMeta": [
     {
       "key": "feat",
@@ -30,6 +30,54 @@
     }
   ],
   "versions": [
+    {
+      "version": "0.1.594",
+      "date": "2026-07-30",
+      "isGenesis": false,
+      "count": 3,
+      "groups": [
+        {
+          "key": "fix",
+          "title": "修复",
+          "commits": [
+            {
+              "scope": "logger",
+              "desc": "落盘级别门控豁免 AUDIT:* 分类，修复审计轨迹被掐断",
+              "hash": "caecceb2",
+              "details": [
+                "豁免的是**分类**而非级别：同配置下普通 INFO 仍被挡住",
+                "仍受 mutedCategories 约束（用户显式静默优先级更高）",
+                "AUDIT 条目每轮仅几行、约 200 字节，不构成写放大",
+                "新增豁免分类的判据：低频 + 缺失即致盲"
+              ]
+            },
+            {
+              "scope": "logger,telemetry",
+              "desc": "日志落盘级别门控 + 缓存遥测轮转修复",
+              "hash": "165cb681",
+              "details": [
+                "日志落盘级别门控：文件写入不再无视 level，修复审计模式下 DEBUG 日志占 90.7% 的写放大（104MB → 应有 1.2MB，87 倍）",
+                "append 模式轮转修复：currentLogSize 起点从 header 字节改为 既有文件大小，修复跨会话累积永不触发轮转的 bug",
+                "缓存遥测加大小轮转：10MB 上限滚动为 .1，保留 1 份历史",
+                "尾部读取优化：从 readFileSync 全量读改为只读尾部 1MB 窗口， 降低 RSS（原 8.5MB/51615 行全量读）",
+                "跨轮转回补：当前文件不足 limit 条时回补 .1 尾部，避免刚 轮转完 /cache --history 显示为空"
+              ]
+            },
+            {
+              "scope": null,
+              "desc": "假压缩误报恢复兜底 + 记忆索引脱敏 + MCP 围栏格式加固",
+              "hash": "1f8edbf2",
+              "details": [
+                "syncGatewayPricing: 端点恢复但价格未变时也清 failed_at（防永久锁死）",
+                "normalizeMemoryDesc: 抹去基础设施坐标（公网 IP / 特权账号）",
+                "buildMcpInstructionsSection: 加 <system-reminder> 围栏，不以 # 开头",
+                "文档: 上下文注入根因分析从 todo 迁至 done"
+              ]
+            }
+          ]
+        }
+      ]
+    },
     {
       "version": "0.1.593",
       "date": "2026-07-30",
