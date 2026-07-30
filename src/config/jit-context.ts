@@ -3,7 +3,7 @@
  * 当工具访问文件时，自动发现并加载该路径上的 CLAUDE.md 上下文
  */
 
-import { dirname, join, relative } from "path";
+import { dirname, join, relative, sep } from "path";
 import { existsSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
 
@@ -79,7 +79,15 @@ export class JitContextManager {
     const foundContexts: Array<{ path: string; content: string }> = [];
     let currentDir = targetDir;
 
-    while (currentDir.startsWith(projectRoot)) {
+    // 边界判定必须按「路径段」而非字符串前缀：`startsWith(projectRoot)` 会把兄弟目录
+    // `/tmp/proj-evil` 判成在 `/tmp/proj` 内（前者确实以后者开头），于是相邻项目/worktree
+    // 的 CLAUDE.md 会被当作本项目规则注入——跨项目规则泄露。
+    // 判据改为 dir === root || dir.startsWith(root + sep)。
+    const rootWithSep = projectRoot.endsWith(sep) ? projectRoot : projectRoot + sep;
+    const isInsideProject = (dir: string): boolean =>
+      dir === projectRoot || dir.startsWith(rootWithSep);
+
+    while (isInsideProject(currentDir)) {
       // 检查当前目录是否有 CLAUDE.md
       for (const filename of CLAUDE_MD_FILES) {
         const candidatePath = join(currentDir, filename);
