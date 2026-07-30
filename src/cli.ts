@@ -493,13 +493,17 @@ function parseCLIArgs(): CLIArgs {
     worktree: values.worktree !== undefined ? (values.worktree || true) : undefined,
     // UI 渲染模式（幽灵残留根治方案乙）：默认全屏 alt-screen 有界视口（config 默认 true）。
     // --inline 逃生舱强制回退旧主屏 Static（false，最高优先级）；--alternate-buffer 兼容保留（显式 true）；
-    // 两者都不给 → undefined → 走 config 默认（true）。
+    // 两者都不给 → undefined → 走 config 默认（true），但对 macOS Terminal.app 自动回退 false
+    // （其 alt screen 下 SGR 1006 鼠标追踪兼容性差，滚轮/触控板滚不动；主屏模式靠终端原生
+    // scrollback 滚动，任何终端都支持。用户可用 --alternate-buffer 显式覆盖此回退）。
     alternateBuffer:
       values["inline"] === true
         ? false
         : values["alternate-buffer"] === true
           ? true
-          : undefined,
+          : process.env.TERM_PROGRAM === "Apple_Terminal"
+            ? false
+            : undefined,
     // 轨迹采集配置。
     // 采集默认启用（--no-trace 关闭）。上传配置完全走配置文件（settings.json trace.upload 段），
     // CLI flag 仅作为覆盖手段——不在代码中硬编码 URL/token。

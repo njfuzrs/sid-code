@@ -25,10 +25,20 @@ export type { MouseEvent, MouseEventName, MouseHandler };
 
 const MAX_MOUSE_BUFFER_SIZE = 4096;
 
-/** 启用鼠标按钮事件 + 拖拽 + 滚轮（?1002h）+ SGR 编码（?1006h） */
-const ENABLE_MOUSE = "\x1b[?1002h\x1b[?1006h";
-/** 禁用鼠标事件 */
-const DISABLE_MOUSE = "\x1b[?1006l\x1b[?1002l";
+/**
+ * 鼠标事件启用序列
+ *
+ * - ?1000h：基本鼠标事件（按下/释放/滚轮）——基础模式，老终端兜底
+ * - ?1002h：按钮事件 + 拖拽（1000 的超集）
+ * - ?1006h：SGR 编码（CSI < btn;col;row M/m），终端支持时优先用
+ * - ?1007h：Alternate scroll —— alt screen 下滚轮转 Up/Down 方向键
+ *   当终端不支持 SGR 1006（如老 macOS Terminal.app）时，1007 兜底
+ *   让滚轮仍能触发键盘滚动。1000/1002 优先级高于 1007，支持 1006
+ *   的终端不受 1007 影响（无害叠加）。
+ */
+const ENABLE_MOUSE = "\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?1007h";
+/** 禁用鼠标事件（逆序关闭） */
+const DISABLE_MOUSE = "\x1b[?1007l\x1b[?1006l\x1b[?1002l\x1b[?1000l";
 
 /** 导出函数：命令式启用鼠标事件（供 Copy Mode 切换使用） */
 export function enableMouseEvents() {
