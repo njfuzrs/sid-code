@@ -63,6 +63,59 @@ describe("Logger 落盘级别门控", () => {
     expect(content).not.toContain("此条 DEBUG 不应落盘");
   });
 
+  // 回归：级别门控初版把 AUDIT:* 一并掐掉，audit.log 恰好丢掉了它存在的唯一理由
+  // （§3.4 审计轨迹 AUDIT:MODEL / AUDIT:TOOL 是 INFO 级）。
+  // 由 tests/trace/collector.test.ts §3.4 的两条测试暴露：门控与审计轨迹是两个
+  // 相互冲突的契约，此处把「豁免」这一侧固化，防止再次被"优化"掉。
+  test("审计模式下 AUDIT:* 豁免级别门控（INFO 级也必须落盘）", async () => {
+    const logFile = join(makeTmpDir(), "audit.log");
+
+    const lg = initLogger({
+      enabled: true,
+      level: LogLevel.WARN,
+      logFile,
+      console: false,
+      fileOnly: true,
+      append: true,
+    });
+
+    lg.info("AUDIT:MODEL", "→ BeforeModel index=1 必须落盘");
+    lg.info("AUDIT:TOOL", "✓ bash id=toolu_ok 必须落盘");
+    lg.info("AUDIT", "裸 AUDIT 分类也豁免");
+    // 非豁免分类在同一配置下仍被挡住 —— 证明豁免是按分类而非放开整个 INFO 级
+    lg.info("T", "普通 INFO 仍不应落盘");
+    await flushed();
+
+    const content = readFileSync(logFile, "utf8");
+    expect(content).toContain("→ BeforeModel index=1 必须落盘");
+    expect(content).toContain("✓ bash id=toolu_ok 必须落盘");
+    expect(content).toContain("裸 AUDIT 分类也豁免");
+    expect(content).not.toContain("普通 INFO 仍不应落盘");
+  });
+
+  // 豁免不得凌驾于 mutedCategories 之上（静默是用户显式意图，优先级更高）
+  test("AUDIT:* 豁免仍尊重 mutedCategories", async () => {
+    const logFile = join(makeTmpDir(), "audit-muted.log");
+
+    const lg = initLogger({
+      enabled: true,
+      level: LogLevel.WARN,
+      logFile,
+      console: false,
+      fileOnly: true,
+      append: true,
+      mutedCategories: ["AUDIT:TOOL"],
+    });
+
+    lg.info("AUDIT:TOOL", "被静默的审计条目");
+    lg.info("AUDIT:MODEL", "未静默的审计条目");
+    await flushed();
+
+    const content = readFileSync(logFile, "utf8");
+    expect(content).not.toContain("被静默的审计条目");
+    expect(content).toContain("未静默的审计条目");
+  });
+
   test("默认 --debug（level=DEBUG）落盘行为不变，全级别保留", async () => {
     const logFile = join(makeTmpDir(), "debug.log");
 

@@ -62,6 +62,18 @@ const CAT_COLOR: Record<string, string> = {
   STREAM: C.gray,
 };
 
+// 落盘级别门控的豁免分类（前缀匹配）。
+//
+// 为什么需要豁免：审计模式（cli.ts，level=WARN）与 --debug 复用同一落盘路径。
+// 级别门控本意是掐掉 DEBUG 噪音（实测占 audit.log 的 90.7%），但 §3.4 的审计轨迹
+// （AUDIT:MODEL 的 BeforeModel/AfterModel 配对、AUDIT:TOOL 的成功条目）是 INFO 级，
+// 一并被掐掉后 audit.log 恰好丢掉了它存在的唯一理由——出问题时看不出"第 N 次请求
+// 有没有拿到响应"。这类条目每轮仅几行、约 200 字节，不构成写放大。
+//
+// 判据：豁免的是**分类**而非级别，且只作用于文件 sink（控制台仍受 level 约束，
+// 审计模式本就 fileOnly，不刷屏）。新增豁免分类必须同时满足：低频 + 缺失即致盲。
+const ALWAYS_PERSIST_CATEGORIES = ["AUDIT"] as const;
+
 // 结构化日志条目
 interface LogEntry {
   ts: string;        // ISO 8601 时间戳
@@ -306,7 +318,10 @@ class Logger {
     //
     // 注意：必须门控在 writeToFile 这一处，不能提前 return——下方 per-session warn.log
     // 与 jsonLog 是**独立 sink**，各有自己的级别语义，连带阻断会造成新的现场缺失。
-    if (level <= this.options.level) {
+    //
+    // ALWAYS_PERSIST_CATEGORIES 豁免：审计轨迹（AUDIT:*）是 INFO 级但恰是 audit.log
+    // 的存在理由，被级别门控掐掉等于把这个文件变成空壳。详见常量定义处的判据。
+    if (level <= this.options.level || this.isAlwaysPersisted(category)) {
       this.writeToFile(formatted);
     }
 
@@ -350,6 +365,16 @@ class Logger {
   }
 
   /** 检查分类是否被静默 */
+  /**
+   * 该分类是否豁免落盘级别门控（前缀匹配，与 isMuted 同语义）。
+   * 仅作用于文件 sink；mutedCategories 优先级更高（已在 log() 上游拦截）。
+   */
+  private isAlwaysPersisted(category: string): boolean {
+    return ALWAYS_PERSIST_CATEGORIES.some(
+      c => category === c || category.startsWith(c + ':'),
+    );
+  }
+
   private isMuted(category: string): boolean {
     const muted = this.options.mutedCategories;
     if (!muted || muted.length === 0) return false;
