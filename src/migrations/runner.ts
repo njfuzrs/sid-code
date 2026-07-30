@@ -11,6 +11,7 @@
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
 import { sidPaths } from "../config/paths.ts";
+import { getLogger } from "../debug/logger.ts";
 import { migrate as backfillTeamDefaults } from "./backfill-team-defaults.ts";
 import { migrate as relocateLossyProjectKey } from "./relocate-lossy-project-key.ts";
 
@@ -53,28 +54,40 @@ function getStoredMigrationVersion(): number {
   }
 }
 
-/** 写入迁移版本号 */
+/**
+ * 写入迁移版本号
+ *
+ * P1-4：整个函数体外层包 try/catch——迁移本就幂等，写版本号失败时降级为
+ * debug 日志，不阻止启动。设计原则第 3 条「失败不阻塞」必须覆盖记录迁移
+ * 结果这一步，而非只包 m.migrate() 那一行。
+ */
 function setStoredMigrationVersion(version: number): void {
-  const stateFile = getStateFilePath();
-  const dir = sidPaths.state();
-
-  // 确保目录存在
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
-
-  // 读取现有状态（保留其他字段）
-  let data: Record<string, unknown> = {};
   try {
-    if (existsSync(stateFile)) {
-      data = JSON.parse(readFileSync(stateFile, "utf-8"));
-    }
-  } catch {
-    // 文件损坏，重建
-  }
+    const stateFile = getStateFilePath();
+    const dir = sidPaths.state();
 
-  data.migrationVersion = version;
-  writeFileSync(stateFile, JSON.stringify(data, null, 2), "utf-8");
+    // 确保目录存在
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
+    }
+
+    // 读取现有状态（保留其他字段）
+    let data: Record<string, unknown> = {};
+    try {
+      if (existsSync(stateFile)) {
+        data = JSON.parse(readFileSync(stateFile, "utf-8"));
+      }
+    } catch {
+      // 文件损坏，重建
+    }
+
+    data.migrationVersion = version;
+    writeFileSync(stateFile, JSON.stringify(data, null, 2), "utf-8");
+  } catch (err) {
+    // 写盘失败（EACCES / 磁盘满 / 只读挂载）→ 降级 debug，不抛
+    // 迁移是幂等的，下次启动会重跑，不影响正确性
+    getLogger().debug("MIGRATION", `写入迁移版本号失败（不阻塞启动）: ${err}`);
+  }
 }
 
 /**
@@ -97,7 +110,11 @@ export function runMigrations(): void {
       m.migrate();
       lastSuccessVersion = m.version;
     } catch (err) {
-      console.warn(`⚠️ 迁移 ${m.name} (v${m.version}) 失败:`, err);
+      // P2-7：降级为 debug，不直写 stderr。runMigrations 在 initLogger 之前调用，
+      // getLogger() 拿到的是 enabled:false 兜底实例，debug 级会被静默吞掉
+      // （logger.ts:288-301 只有 ERROR/WARN 走 stderr，INFO/DEBUG 直接 return），
+      // 不再泄漏终端。迁移失败用户无从处置，判据 A 要求不惊扰。
+      getLogger().debug("MIGRATION", `迁移 ${m.name} (v${m.version}) 失败（不阻塞）: ${err}`);
       allSucceeded = false;
       // 继续执行后续迁移（某些迁移可能互相独立）
     }

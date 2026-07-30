@@ -157,7 +157,16 @@ export class TraceCollector {
     }
     return DEFAULT_MS;
   }
-  /** §3.8：audit.log 起始行号（SessionStart 时快照） */
+  /**
+   * §3.8：audit.log 起始字节 offset（SessionStart 时快照）
+   *
+   * P0-3：原实现是「起始行号」，用 readFileSync 整个文件 → split('\n') → .length
+   * 拿行号。104MB 文件单次调用 111ms、RSS 28→420MB，每会话 2 次（SessionStart +
+   * SessionEnd）。改为字节 offset（statSync().size，O(1)），全量读彻底消除。
+   *
+   * 字段语义从 line 改为 offset——audit_range.json 的 start_line/end_line 同步改为
+   * start_offset/end_offset。已确认全仓无外部消费方（只有本文件写入 audit_range.json）。
+   */
   private auditLogStartLine: number = 0;
   /** §3.8：audit.log 文件路径（SessionStart 时快照） */
   private auditLogPath: string = "";
@@ -511,13 +520,14 @@ export class TraceCollector {
     const sessionWarnLogPath = join(this.writer.getSessionDir(), "warn.log");
     getLogger().setSessionWarnLogPath(sessionWarnLogPath);
 
-    // §3.8：快照 audit.log 起始行号（用于 SessionEnd 写 audit_range.json）
+    // §3.8：快照 audit.log 起始字节 offset（用于 SessionEnd 写 audit_range.json）
     try {
       const logPath = getLogger().getLogFilePath();
       if (logPath && existsSync(logPath)) {
         this.auditLogPath = logPath;
-        const content = readFileSync(logPath, "utf8");
-        this.auditLogStartLine = content.split("\n").length;
+        // P0-3：O(1) 取文件大小，替代 readFileSync+split 数行号
+        // （104MB 文件原实现 111ms / RSS 28→420MB，每会话 2 次）
+        this.auditLogStartLine = statSync(logPath).size;
       }
     } catch { /* 静默：索引是辅助功能 */ }
   }
@@ -1363,15 +1373,15 @@ export class TraceCollector {
     // §3.8：写 audit_range.json（audit.log 按 session 索引）
     if (this.auditLogPath && this.auditLogStartLine > 0) {
       try {
-        let endLine = this.auditLogStartLine;
+        // P0-3：O(1) 取文件大小，替代 readFileSync+split 数行号
+        let endOffset = this.auditLogStartLine;
         if (existsSync(this.auditLogPath)) {
-          const content = readFileSync(this.auditLogPath, "utf8");
-          endLine = content.split("\n").length;
+          endOffset = statSync(this.auditLogPath).size;
         }
         const rangeData = {
           audit_log_path: this.auditLogPath,
-          start_line: this.auditLogStartLine,
-          end_line: endLine,
+          start_offset: this.auditLogStartLine,
+          end_offset: endOffset,
         };
         writeFileSync(
           join(this.writer.getSessionDir(), "audit_range.json"),

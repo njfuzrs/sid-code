@@ -864,8 +864,15 @@ export async function main(): Promise<void> {
     }
 
     // 执行数据迁移（幂等，失败不阻塞）
+    // P1-4：补兜底 try——runner.ts 内部已自兜（setStoredMigrationVersion 包了
+    // try/catch），但调用方也加一层，确保任何逃逸都不阻断启动
     profileCheckpoint("migrations_start");
-    runMigrations();
+    try {
+      runMigrations();
+    } catch (err) {
+      // 迁移幂等，下次启动重跑即可；此处不可阻塞启动
+      getLogger().debug("MIGRATION", `数据迁移失败（不阻塞启动）: ${err}`);
+    }
     profileCheckpoint("migrations_end");
 
     profileCheckpoint("config_load_start");
@@ -922,7 +929,10 @@ export async function main(): Promise<void> {
         }
       }
     } catch (err) {
-      getLogger().warn("POLICY", `企业策略加载跳过: ${err}`);
+      // P2-8：initLogger 之前（此处在 :980 之前）的 warn 命中 stderr 兜底分支，
+      // 无颜色泄漏终端且不写 audit.log——两头落空。用户看到"企业策略加载跳过"
+      // 也无从处置，降级 debug 静默吞掉（enabled:false 兜底实例下 debug 直接 return）
+      getLogger().debug("POLICY", `企业策略加载跳过: ${err}`);
     }
 
     // Coordinator 模式：检查环境变量 SID_CODE_COORDINATOR_MODE=1
@@ -946,7 +956,8 @@ export async function main(): Promise<void> {
       );
       applySafeConfigEnvironmentVariables();
     } catch (err) {
-      getLogger().warn("ENV", `Phase 1 环境变量应用跳过: ${err}`);
+      // P2-8：initLogger 之前的 warn 命中 stderr 兜底分支，降级 debug 静默
+      getLogger().debug("ENV", `Phase 1 环境变量应用跳过: ${err}`);
     }
 
     // AppConfig：加载内部应用状态 + 递增启动计数（write-through，后台 watchFile）
@@ -957,7 +968,8 @@ export async function main(): Promise<void> {
       getAppConfig();
       incrementStartupCount();
     } catch (err) {
-      getLogger().warn("CONFIG", `AppConfig 初始化跳过: ${err}`);
+      // P2-8：initLogger 之前的 warn 命中 stderr 兜底分支，降级 debug 静默
+      getLogger().debug("CONFIG", `AppConfig 初始化跳过: ${err}`);
     }
 
     // 注册会话级插件目录（--plugin-dir），必须在任何插件加载前设置

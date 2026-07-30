@@ -123,7 +123,10 @@ export class UploadManager implements TraceUploaderInterface {
       availableModels: [],
       ...options,
     };
-    this.retryQueuePath = sidPaths.uploadQueue();
+    // P1-5：队列文件从 outputDir 派生，而非全局 sidPaths.uploadQueue()。
+    // 否则测试传 outputDir:tmpDir 以为隔离了，实际每跑一次就往真实 HOME 追加条目
+    // （实测 ~/.sid-code/trajectories/.upload_queue.jsonl 里 1216 条 test-sess-001 垃圾）。
+    this.retryQueuePath = join(this.opts.outputDir, ".upload_queue.jsonl");
   }
 
   // ─── 服务端心跳检测 ───
@@ -364,11 +367,29 @@ export class UploadManager implements TraceUploaderInterface {
 
   /**
    * 追加条目到持久化重试队列
-   * 文件：~/.sid-code/.upload_queue.jsonl
+   * 文件：{outputDir}/.upload_queue.jsonl
    * 进程重启后能恢复未完成的上传
+   *
+   * P1-6：去重——同一 (session_id, file) 已在队列且仍 pending 时跳过，
+   * 不追加新行。原先纯 appendFileSync，同一文件反复失败就反复追加，
+   * 队列里同一条目可以有几十份副本。
    */
   private appendToRetryQueue(sessionId: string, fileName: string): void {
     try {
+      // P1-6：去重——检查是否已有同 (session_id, file) 的 pending 条目
+      if (existsSync(this.retryQueuePath)) {
+        const existing = readFileSync(this.retryQueuePath, "utf-8");
+        const key = `${sessionId}\u0000${fileName}`;
+        for (const line of existing.split("\n")) {
+          if (!line.trim()) continue;
+          try {
+            const entry = JSON.parse(line) as QueueEntry;
+            if (`${entry.session_id}\u0000${entry.file}` === key && entry.status !== "failed") {
+              return; // 已在队列中，跳过
+            }
+          } catch { /* 损坏行跳过 */ }
+        }
+      }
       const entry: QueueEntry = {
         session_id: sessionId,
         file: fileName,
@@ -377,7 +398,8 @@ export class UploadManager implements TraceUploaderInterface {
         last_error: "",
         status: "pending",
       };
-      const dir = sidPaths.trajectories();
+      // P1-5：目录从 outputDir 派生，与 retryQueuePath 保持一致
+      const dir = this.opts.outputDir;
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
       appendFileSync(this.retryQueuePath, JSON.stringify(entry) + "\n");
     } catch (err) {
@@ -456,10 +478,24 @@ export class UploadManager implements TraceUploaderInterface {
       }
     }
 
+    // P1-6：队列条目封顶——超限丢最旧（队列是 append 的，前面的更旧）。
+    // 审计文档实测：attempts>=50 的 failed 条目永久保留无封顶，队列只增不减。
+    // 此处 5000 条上限约覆盖 5000 个 (session_id,file) 组合，超限按 FIFO 丢弃最旧条目。
+    const MAX_QUEUE_ENTRIES = 5000;
+    let finalRemaining = remaining;
+    if (remaining.length > MAX_QUEUE_ENTRIES) {
+      const dropped = remaining.length - MAX_QUEUE_ENTRIES;
+      finalRemaining = remaining.slice(remaining.length - MAX_QUEUE_ENTRIES);
+      getLogger().warn(
+        "TRACE",
+        `重试队列超限（${remaining.length} > ${MAX_QUEUE_ENTRIES}），丢弃最旧 ${dropped} 条`,
+      );
+    }
+
     // 重写队列文件
     try {
-      const newContent = remaining.length
-        ? remaining.join("\n") + "\n"
+      const newContent = finalRemaining.length
+        ? finalRemaining.join("\n") + "\n"
         : "";
       await writeFile(this.retryQueuePath, newContent);
     } catch (err) {
