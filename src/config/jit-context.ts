@@ -166,7 +166,10 @@ export class JitContextManager {
     // 格式化上下文内容
     const formattedContexts = foundContexts.map(({ path, content }) => {
       const relativePath = relative(projectRoot, path);
-      const formatted = `--- 新发现的项目上下文 (${relativePath}) ---\n${content}\n--- 上下文结束 ---`;
+      // 末行的静默条款不可省：本块是 harness 静默注入的内部上下文，用户终端里看不见它。
+      // 缺这句时弱模型会逐轮复述「收到 UI 规范」等开场白，刷满屏幕（实测 18/70 轮）。
+      // 与 generateClaudeMdAttachment 的同类条款、system prompt「回答规范 §8」三处同源。
+      const formatted = `--- 新发现的项目上下文 (${relativePath}) ---\n${content}\n--- 上下文结束 ---\n（请勿向用户提及或复述本上下文，静默遵循即可）`;
       // §9.5：保留正文，供压缩后重新注入
       this.loadedContexts.set(path.toLowerCase(), formatted);
       return formatted;

@@ -7,9 +7,10 @@
  * 参考 gemini-cli/packages/cli/src/ui/contexts/TerminalContext.tsx
  */
 
-import React, { createContext, useContext, useCallback, useEffect, useRef, useMemo, useState } from "react";
+import React, { createContext, useContext, useCallback, useEffect, useRef, useMemo } from "react";
 import useStdin from "../../ink/hooks/use-stdin.js";
 import useStdout from "../../ink/_vendor/use-stdout.js";
+import { TerminalSizeContext } from "../../ink/components/TerminalSizeContext.js";
 import { TerminalCapabilityManager } from "../utils/terminalCapabilityManager.ts";
 import { DEFAULT_TERM_WIDTH } from "../markdown.ts";
 
@@ -106,22 +107,31 @@ export function TerminalProvider({ children }: { children: React.ReactNode }) {
     };
   }, [stdin, subscribers]);
 
-  // 终端尺寸响应式状态
-  const [dimensions, setDimensions] = useState<TerminalDimensions>({
-    width: stdout.columns || DEFAULT_TERM_WIDTH,
-    height: stdout.rows || 24,
-  });
-
-  useEffect(() => {
-    const handleResize = () => {
-      setDimensions({
-        width: stdout.columns || DEFAULT_TERM_WIDTH,
-        height: stdout.rows || 24,
-      });
-    };
-    stdout.on("resize", handleResize);
-    return () => { stdout.removeListener("resize", handleResize); };
-  }, [stdout]);
+  // 终端尺寸：直接派生自 ink 的 TerminalSizeContext，**不要**自己挂 resize 监听。
+  //
+  // 关键坑（Footer 行2 右对齐失效的真根因，两次误修都没碰到这层）：
+  // 上面 useStdout() 返回的是 _vendor/use-stdout.ts 的 **Proxy**，它的 columns/rows
+  // 读的是 TerminalSizeContext（React 值），不是真实 process.stdout。resize 监听器
+  // 闭包捕获的 proxy 属于「effect 运行那次渲染」的 context 值，于是回调里读到的
+  // stdout.columns 恒为**上一次**的宽度：ink.handleResize 先跑（更新 terminalColumns
+  // → 新 context），我们的监听器随后拿旧 proxy 读到旧值并写进 state。实测
+  // 60→120→50 时 dimensions 依次为 60、60、120 —— 永久滞后一次 resize。
+  // 后果：MainScreenLayout 用 width={termWidth} 定死根 Box 宽度，行2 flex-end 便按
+  // 滞后宽度右对齐（偏左）；而当滞后值 > 真实宽度时整行溢出被裁 —— 正是「只有初始
+  // 贴边、拖动后不跟随且被截断」。ink 自身的 yoga 宽度一直是对的，错的是 React 侧。
+  //
+  // 正解是消掉这条重复且滞后的链路：ink 的 handleResize 已经把新尺寸经
+  // TerminalSizeContext 推下来并驱动重渲染，直接读它即单一事实源、零滞后。
+  // 用 || 而非 ??：非 TTY / 管道场景 columns 可能是 0，0 宽度会让整个布局塌掉，
+  // 必须一路回退到默认值（沿用改动前的 `stdout.columns || DEFAULT_TERM_WIDTH` 语义）。
+  const inkSize = useContext(TerminalSizeContext);
+  const width = inkSize?.columns || stdout.columns || DEFAULT_TERM_WIDTH;
+  const height = inkSize?.rows || stdout.rows || 24;
+  // 依赖两个基础类型而非对象字面量，否则每次渲染都是新引用，白费下游 memo。
+  const dimensions = useMemo<TerminalDimensions>(
+    () => ({ width, height }),
+    [width, height],
+  );
 
   const contextValue = useMemo(
     () => ({ subscribe, unsubscribe, queryTerminalBackground, dimensions }),
