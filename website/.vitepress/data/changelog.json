@@ -1,8 +1,8 @@
 {
   "generatedAt": "2026-07-30",
-  "currentVersion": "0.1.594",
-  "totalVersions": 13,
-  "totalCommits": 209,
+  "currentVersion": "0.1.595",
+  "totalVersions": 14,
+  "totalCommits": 211,
   "groupMeta": [
     {
       "key": "feat",
@@ -30,6 +30,40 @@
     }
   ],
   "versions": [
+    {
+      "version": "0.1.595",
+      "date": "2026-07-30",
+      "isGenesis": false,
+      "count": 2,
+      "groups": [
+        {
+          "key": "fix",
+          "title": "修复",
+          "commits": [
+            {
+              "scope": "mcp",
+              "desc": "只读子代理 MCP 工具放行收紧 + 指令静默遵循 + 截断保护",
+              "hash": "90da5aed",
+              "details": [
+                "tool-filter: 只读子代理（explore/plan/verify）MCP 工具不再绕过白名单 （P0 多 provider 安全加固，防止 glm/deepseek 在只读任务中调用浏览器工具）",
+                "agent-definition: 只读子代理 system prompt 追加只读模式约束",
+                "instructions-delta: MCP 注入说明追加\"静默遵循\"指令，降低模型元认知外泄",
+                "loop: MCP instructions 块添加 4000 字符截断保护"
+              ]
+            },
+            {
+              "scope": "tui",
+              "desc": "alt screen 鼠标滚轮兼容性修复（macOS Terminal.app 兜底）",
+              "hash": "c9c87db5",
+              "details": [
+                "cli.ts: TERM_PROGRAM=Apple_Terminal 时 alternateBuffer 自动回退 false， 走主屏原生 scrollback 滚动（任何终端都支持），可用 --alternate-buffer 覆盖",
+                "dec.ts + MouseContext.tsx: 启用 DEC 1007（alternate scroll），alt screen 下滚轮转 Up/Down 方向键，作为终端不支持 SGR 1006 时的兜底； 1000/1002/1003 优先级高于 1007，支持 1006 的终端不受影响（无害叠加）"
+              ]
+            }
+          ]
+        }
+      ]
+    },
     {
       "version": "0.1.594",
       "date": "2026-07-30",
