@@ -6,15 +6,36 @@
 
 import { Manager as ContextManager } from "../context/manager.ts";
 import { getLogger } from "../debug/index.ts";
+// 前缀取单一事实源，不在本文件硬编码字面量（isInternalTextBlock 的剥离判定必须与注入端逐字节一致）
+import {
+  REATTACH_FILE_PREFIX,
+  REATTACH_PLAN_PREFIX,
+  REATTACH_DECISIONS_PREFIX,
+  REATTACH_ORIGINAL_TASK_PREFIX,
+} from "./compact/reattach-markers.ts";
 
 /** 响应式压缩结果 */
 export interface ReactiveCompactResult {
-  /** 是否成功压缩 */
+  /**
+   * 是否成功压缩。
+   *
+   * P0-1（2026-07-29 假压缩误报事故）：此前策略 1 分支**硬编码** `true`，而它调用的
+   * `compactWithSummary` 在无安全分割点时静默 no-op ——于是「消息一条没少」却上报成功，
+   * 上层照此画出「对话已压缩」横幅、并给模型注入「系统已为你精简对话上下文」这句假话
+   * （模型随后 30 条回复持续自我否定）。现在本字段一律由 `messageCountAfter <
+   * messageCountBefore` 实测决定，任何路径都不得再自行宣告成功。
+   */
   success: boolean;
   /** 压缩前消息数 */
   messageCountBefore: number;
   /** 压缩后消息数 */
   messageCountAfter: number;
+  /** 压缩前估算 token（供上层日志/事件展示实据） */
+  tokensBefore?: number;
+  /** 压缩后估算 token */
+  tokensAfter?: number;
+  /** 实际生效的策略（失败时为 "none"） */
+  strategy?: "snip" | "emergency" | "none";
 }
 
 /**
@@ -33,7 +54,12 @@ export function reactiveCompact(ctxMgr: ContextManager): ReactiveCompactResult {
 
   if (messageCountBefore <= 4) {
     log.warn("REACTIVE_COMPACT", "消息太少，无法压缩");
-    return { success: false, messageCountBefore, messageCountAfter: messageCountBefore };
+    return {
+      success: false,
+      messageCountBefore,
+      messageCountAfter: messageCountBefore,
+      strategy: "none",
+    };
   }
 
   // 策略 1：snipCompact — 裁剪最早的消息对（保留最近 60%）
@@ -44,17 +70,53 @@ export function reactiveCompact(ctxMgr: ContextManager): ReactiveCompactResult {
     // 从即将被裁剪的消息中提取任务语义，避免压缩后模型丢失工作方向
     const taskContext = extractTaskContext(ctxMgr.getMessages(), snipCount);
     const summary = buildReactiveCompactSummary(snipCount, taskContext);
-    ctxMgr.compactWithSummary(summary);
-    const messageCountAfter = ctxMgr.messageCount();
-    log.info("REACTIVE_COMPACT", `snipCompact: ${messageCountBefore} → ${messageCountAfter} 条消息`);
-    return { success: true, messageCountBefore, messageCountAfter };
+    // P0-1：success 取自 compactWithSummary 的实测结果，不再硬编码 true。
+    const outcome = ctxMgr.compactWithSummary(summary);
+    if (outcome.success) {
+      log.info(
+        "REACTIVE_COMPACT",
+        `snipCompact: ${outcome.messageCountBefore} → ${outcome.messageCountAfter} 条消息` +
+          `（${outcome.tokensBefore} → ${outcome.tokensAfter} tokens）`,
+      );
+      return {
+        success: true,
+        messageCountBefore: outcome.messageCountBefore,
+        messageCountAfter: outcome.messageCountAfter,
+        tokensBefore: outcome.tokensBefore,
+        tokensAfter: outcome.tokensAfter,
+        strategy: "snip",
+      };
+    }
+    // P0-1 + P0-5 配套：策略 1 没压动**必须降级到策略 2**，而不是原地宣告成功。
+    // 旧代码在这里 return success:true，导致策略 2（emergencyTruncate）永远走不到——
+    // 两个策略在 agent 会话里一起失效，且失效被"成功"二字完全掩盖。
+    log.warn(
+      "REACTIVE_COMPACT",
+      `snipCompact 未生效（reason=${outcome.reason}，${outcome.messageCountBefore} 条消息未变），降级尝试 emergencyTruncate`,
+    );
   }
 
-  // 策略 2：emergencyTruncate
-  ctxMgr.emergencyTruncate();
-  const messageCountAfter = ctxMgr.messageCount();
-  log.info("REACTIVE_COMPACT", `emergencyTruncate: ${messageCountBefore} → ${messageCountAfter} 条消息`);
-  return { success: messageCountAfter < messageCountBefore, messageCountBefore, messageCountAfter };
+  // 策略 2：emergencyTruncate（策略 1 未生效或本就无需 snip 时的兜底）
+  const emergency = ctxMgr.emergencyTruncate();
+  if (emergency.success) {
+    log.info(
+      "REACTIVE_COMPACT",
+      `emergencyTruncate: ${emergency.messageCountBefore} → ${emergency.messageCountAfter} 条消息`,
+    );
+  } else {
+    log.warn(
+      "REACTIVE_COMPACT",
+      `响应式压缩彻底未生效（reason=${emergency.reason}），${messageCountBefore} 条消息保持不变`,
+    );
+  }
+  return {
+    success: emergency.success,
+    messageCountBefore,
+    messageCountAfter: emergency.messageCountAfter,
+    tokensBefore: emergency.tokensBefore,
+    tokensAfter: emergency.tokensAfter,
+    strategy: emergency.success ? "emergency" : "none",
+  };
 }
 
 /**
@@ -73,12 +135,21 @@ function extractTaskContext(
   const snipped = messages.slice(0, snipCount);
 
   // 1. 找第一条 user 消息文本（原始任务）
+  //
+  // 逐 block 判定，而非 join 后 startsWith：原实现把整条消息的 text block join 成一个
+  // 字符串再判前缀，只要**第一个** block 是真实文本，后面夹带的内部注入块就会被整段
+  // 收进"原始任务"；反过来若内部块排在前面，整条消息（含真实指令）又被整段跳过。
+  // 二者都会让摘要里的"用户最初的请求"失真——正是 2026-07-29"模型分不清谁在说话"
+  // 的同类故障（轨迹 20260729-180624-b8ae8e78）。
+  //
+  // 注：注入产物本不该落历史（见 query/reminder-inject.ts 不变量 3 与哨兵测试），
+  // 这里是防御性第二道闸：历史里仍有几类合法直插的内部 user 消息（止损阀终态
+  // notice、上次压缩的 reattach 锚点、hook 反馈），必须逐块滤掉。
   let originalTask = "";
   for (const msg of snipped) {
     if (msg.role !== "user") continue;
-    const text = extractTextFromContent(msg.content);
-    // 跳过系统注入的内部消息（compact-summary / system-reminder 等）
-    if (text.startsWith("[对话摘要]") || text.startsWith("<system-reminder>")) continue;
+    const text = extractRealUserText(msg.content);
+    if (!text) continue; // 整条都是内部注入 → 跳过，继续找下一条
     originalTask = text;
     break;
   }
@@ -112,6 +183,39 @@ function extractTextFromContent(content: any[]): string {
     if (block.type === "text" && block.text) {
       texts.push(block.text);
     }
+  }
+  return texts.join("\n").trim();
+}
+
+/**
+ * 一个 text block 是否是 harness 内部注入（而非用户输入）。
+ *
+ * 前缀取自 compact/reattach-markers.ts 单一事实源，不要在这里硬编码字面量——
+ * 那个文件的注释明写"剥离判定必须与注入端的前缀逐字节一致"，抄一份就会漂移。
+ */
+function isInternalTextBlock(text: string): boolean {
+  const t = text.trimStart();
+  if (t.startsWith("<system-reminder>") || t.startsWith("<available-deferred-tools>")) return true;
+  if (t.startsWith("[对话摘要]") || t.startsWith("[响应式压缩]")) return true;
+  return [
+    REATTACH_FILE_PREFIX,
+    REATTACH_PLAN_PREFIX,
+    REATTACH_DECISIONS_PREFIX,
+    REATTACH_ORIGINAL_TASK_PREFIX,
+  ].some((p) => t.startsWith(p));
+}
+
+/**
+ * 逐 block 提取**真实用户文本**，滤掉 harness 内部注入块。
+ * 整条消息都是内部注入时返回空串（调用方据此跳过整条，继续找下一条）。
+ */
+function extractRealUserText(content: any[]): string {
+  if (!Array.isArray(content)) return "";
+  const texts: string[] = [];
+  for (const block of content) {
+    if (block.type !== "text" || !block.text) continue;
+    if (isInternalTextBlock(block.text)) continue;
+    texts.push(block.text);
   }
   return texts.join("\n").trim();
 }

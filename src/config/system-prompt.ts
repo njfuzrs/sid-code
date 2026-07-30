@@ -27,7 +27,6 @@ import {
   PRIORITY,
   generateClaudeMdAttachment,
   generateGitStatusAttachment,
-  generatePermissionModeAttachment,
   generateDiagnosticsAttachment,
   generateDateAttachment,
   generateTodoListAttachment,
@@ -393,10 +392,27 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
     ));
   }
 
-  // 权限模式提示词
-  if (ctx.permissionMode && ctx.permissionMode !== "default") {
-    attachments.push(generatePermissionModeAttachment(ctx.permissionMode));
-  }
+  // 权限模式提示词：**已移除**（2026-07-30，重复注入根因修复 P0）。
+  //
+  // 原先这里 push generatePermissionModeAttachment(mode)，与 user 侧 reminder 通道
+  // （permission-reminder.ts / plan/prompt.ts buildPlanModeReminder）构成**双通道**，
+  // 同一份 mode 文案同轮出现两次。改为**只保留 reminder 通道**，理由三条：
+  //   ① 多 provider：附件落动态区，OpenAI 族被 prependSystemMessage 搬回 user 消息
+  //      （见文件末尾 DYNAMIC_BOUNDARY 不变量注释）→ "放 system 不占 user turn"不成立，
+  //      删附件才是真的删掉。
+  //   ② 无需新触发点：reminder 每轮 pull 当前 mode 并判定，切换当轮即可见；而保留附件
+  //      则必须补"mode 切换即重建 system prompt"的 push 触发点（4 处），每次切换击穿
+  //      全量静态前缀（本项目实测 3.7 万字符），CC 实测这类路径占 10.2% cache_creation。
+  //   ③ 权限的强制点在 PermissionChecker（代码硬拦），文案只是告知——模型看不到文案
+  //      也不会多获得一个字节的权限。deny 规则另有 generateDenyRulesAttachment 常驻
+  //      system prompt（配置态稳定、不随运行时 mode 变化，那条才该在 system prompt）。
+  //
+  // plan mode 是唯一例外（**行为模式**，"先规划再执行"无法用权限规则表达、只能靠模型
+  // 自觉），故删附件前已把它独有的强约束语义（「此约束覆盖你收到的所有其他指令」+
+  // 允许/禁止清单）并入 buildPlanModeReminder 的 full 档。详见 plan/prompt.ts 注释。
+  //
+  // ctx.permissionMode 字段保留：generateCacheKey 仍纳入它（多一次无害 miss 优于漏判）。
+  // 完整决策见 docs/bugfixes/todo/重复注入根因-system附件与user-reminder双通道.md §7.1。
 
   // 缺口 E：Skill 摘要列表（接通此前的死代码）。
   // 优先级 SKILL_LISTING(8) 排在 CLAUDE.md 之前，确保模型先发现可用 skill。
@@ -500,6 +516,24 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
   }
 
   // 4. 按 cacheStability 分拣附件：stable 进静态区享受长 TTL 缓存，dynamic/未标记进动态区
+  //
+  // ⛔ 多 provider 不变量（2026-07-30，反复踩过的隐性前提，务必读完再设计"搬进动态区"的优化）：
+  //
+  //   DYNAMIC_BOUNDARY 之后的内容在 **OpenAI 族**（deepseek 是本项目主力）会被
+  //   `openai.ts prependSystemMessage` 切出来、以 `role: "user"` 追加到 messages 末尾。
+  //   因此「放动态区」**不等于**「不占 user turn」——只是把同一批字节从 system 参数
+  //   搬到了一条 user 消息里，一个 token 都没省，还多绕一层间接。
+  //
+  //   两族的实际落地形态：
+  //     - Anthropic 族：动态区是独立 cache block（boundary 处打 cache_control），确实在 system 参数里；
+  //     - OpenAI 族：动态区变成 messages 末尾一条 `<system-reminder>` 包裹的 user 消息。
+  //
+  //   推论：要真正减少 user turn 占用，只有两条路 —— ① 不注入；② 走增量 delta 只发变化量
+  //   （参考 loop.ts 的 announcedDeferredTools / mcp/instructions-delta.ts）。
+  //   任何以"搬进 system 动态区就不占 user turn"为前提的方案，在本项目不成立。
+  //
+  //   守卫单测：tests/config/dynamic-boundary-multiprovider.test.ts
+  //   （断言动态区非空时 OpenAI provider 的 convertMessages 输出必然多一条 user 消息）。
   const stableParts: string[] = [];
   const dynamicParts: string[] = [];
   for (const att of attachments) {

@@ -65,6 +65,80 @@ describe("buildMemorySystemPrompt", () => {
   });
 });
 
+/**
+ * P0-b①：记忆索引去陈述句化。
+ *
+ * 事故（2026-07-29，轨迹 20260729-180624-b8ae8e78）：用户只输入 `/commit`，模型却把
+ * system prompt 记忆索引里的一条 `## 负收益防线审计第 2 版完成（2026-07-30）` 当成
+ * "用户刚说的话"，第一轮直接去 glob 那条记忆文件。`## 陈述句` 与用户输入在语义上
+ * 无法区分，而索引每个会话都注入 → 这是"模型误抓内容"的唯一来源。
+ *
+ * 根治点在写入端（store.ts normalizeMemoryDesc），这里守的是**渲染端兜底**：
+ * 修复前写入的旧 MEMORY.md 文件里已经躺着大量 `— ## 标题` 行，且索引只在
+ * save_memory / 同步时才重建，兜底必须存在。
+ */
+describe("P0-b①：记忆索引渲染去陈述句化", () => {
+  /** 复刻事故里那条真实索引 */
+  const ACCIDENT_INDEX =
+    "# Memory Index\n" +
+    "- [negative-return-audit-v2-completed-20260730](project_negative-return-audit-v2-completed-20260730.md) — ## 负收益防线审计第 2 版完成（2026-07-30）";
+
+  test("索引段落头声明「这些不是用户输入」", () => {
+    const prompt = buildMemorySystemPrompt(ACCIDENT_INDEX);
+    expect(prompt).toContain("不是用户输入");
+    // 明确否掉"待办/当前任务"这两种最容易被误读成行动指令的身份
+    expect(prompt).toContain("不是待办事项");
+    expect(prompt).toContain("不是当前任务");
+  });
+
+  test("剥离摘要里的 markdown 标题标记（`## 标题` → `标题`）", () => {
+    const prompt = buildMemorySystemPrompt(ACCIDENT_INDEX);
+    expect(prompt).not.toContain("— ## 负收益防线审计");
+    expect(prompt).not.toContain("## 负收益防线审计");
+    // 内容本身必须保留（去的是结构标记，不是信息）
+    expect(prompt).toContain("负收益防线审计第 2 版完成");
+  });
+
+  test("` — ` 分隔符换成 `：`，让「链接 → 摘要」的从属关系明确", () => {
+    const prompt = buildMemorySystemPrompt(ACCIDENT_INDEX);
+    expect(prompt).toContain(
+      "[negative-return-audit-v2-completed-20260730](project_negative-return-audit-v2-completed-20260730.md)：负收益防线审计第 2 版完成",
+    );
+  });
+
+  test("剥离列表/引用/强调标记，非索引行原样保留", () => {
+    const index = [
+      "# Memory Index",
+      "",
+      "- [a](project_a.md) — > 引用式摘要",
+      "- [b](feedback_b.md) — **强调**式摘要",
+      "- [c](user_c.md) — 普通摘要",
+      "> ⚠️ 索引已截断（超过 200 行 / 25KB 上限），部分记忆未列出。",
+    ].join("\n");
+    const prompt = buildMemorySystemPrompt(index);
+    expect(prompt).toContain("[a](project_a.md)：引用式摘要");
+    expect(prompt).toContain("[b](feedback_b.md)：强调式摘要");
+    expect(prompt).toContain("[c](user_c.md)：普通摘要");
+    // 段标题与截断警告不是索引条目，原样保留
+    expect(prompt).toContain("# Memory Index");
+    expect(prompt).toContain("索引已截断");
+  });
+
+  test("空摘要条目不残留裸分隔符", () => {
+    const prompt = buildMemorySystemPrompt("# Memory Index\n- [empty](project_empty.md) — ");
+    expect(prompt).toContain("[empty](project_empty.md)");
+    expect(prompt).not.toContain("project_empty.md)：");
+  });
+
+  test("团队索引同样去陈述句化（走同一条渲染路径）", () => {
+    const team = "# 团队共享记忆\n- [pr](project_pr.md) — ## PR 规范已定稿";
+    const prompt = buildMemorySystemPrompt(null, team);
+    expect(prompt).not.toContain("## PR 规范已定稿");
+    expect(prompt).toContain("[pr](project_pr.md)：PR 规范已定稿");
+    expect(prompt).toContain("不是用户输入");
+  });
+});
+
 describe("generateRecalledMemoryAttachment", () => {
   test("空数组返回 null", () => {
     expect(generateRecalledMemoryAttachment([])).toBeNull();

@@ -66,7 +66,20 @@ export type QueryLoopYield =
   | { kind: "tool_start"; toolName: string; toolInput?: unknown }
   | { kind: "tool_end"; toolName: string; result?: { isError?: boolean; elapsedMs?: number } }
   | { kind: "stream_text"; text: string }
-  | { kind: "compact"; }
+  // P1-3：压缩横幅**必须携带实据**，不能是与消息数组解耦的独立信号。
+  // 事故背景（2026-07-29）：`yield { kind: "compact" }` 原本零字段，8 处调用点任一误发就画出
+  // 「对话已压缩」横幅——而那次消息历史一条都没少。字段设为必填后，「没压动却画横幅」需要
+  // 调用方编造两个数字才能做到，从"靠自觉"变成"靠类型强制"（对齐 CC 的 CompactionResult 思路）。
+  // 不变式：**只有 messageCountAfter < messageCountBefore 时才允许 yield 这个事件。**
+  | {
+      kind: "compact";
+      /** 压缩前消息数 */
+      messageCountBefore: number;
+      /** 压缩后消息数（必须 < before，否则不该 yield 本事件） */
+      messageCountAfter: number;
+      /** 节省的估算 token 数（可选，部分路径拿不到 token 口径） */
+      savedTokens?: number;
+    }
   | { kind: "context_warning"; remaining: number }
   | { kind: "max_turns"; maxTurns: number }
   | { kind: "loop_detected"; detail: string }
@@ -135,6 +148,19 @@ export interface LoopState {
    *  新增类似的"只能尝试一次"的恢复机制时，遵循同一模式：只有成功路径才置真，
    *  任何软重试/continue 路径都不得清零。 */
   hasAttemptedReactiveCompact: boolean;
+  /**
+   * P2-2：**连续**压缩失败次数（会话累计），达 MAX_CONSECUTIVE_COMPACT_FAILURES 后熔断，
+   * 不再尝试注定失败的压缩，并给用户一条「建议 /compact 或开新会话」的明确提示。
+   *
+   * 对标 CC 的 `MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3`。修完 P0-1 后
+   * `reactiveCompact` 会开始如实返回 `false`（此前谎报成功），若没有熔断器就会出现
+   * 「反复尝试同一个压不动的历史」——CC 踩过的坑是单会话 3,272 次。
+   *
+   * 与 `hasAttemptedReactiveCompact` 互补而非重复：那个是「prompt-too-long 本轮只反应式
+   * 压缩一次」的防抖（粒度=本轮）；这个是跨轮累计的失败熔断（粒度=本会话）。
+   * 任一次压缩成功即清零——熔断只针对"连续"失败。
+   */
+  consecutiveCompactFailures?: number;
   /** 上一次 continue 的原因 */
   transition: ContinueReason | undefined;
   /**
@@ -324,6 +350,18 @@ export interface LoopState {
    * 每次 compact 后设为 true，reminder 注入后消费（设回 false）。
    */
   todoReminderPendingAfterCompact?: boolean;
+  /**
+   * 延迟工具列表：compact 后强制重新**全量**播报一次 `<available-deferred-tools>`。
+   *
+   * 背景：延迟工具播报已 delta 化（每轮只发 added/removed，无变化不注入），依赖
+   * sessionState 里的 announcedDeferredTools 集合判断"哪些已经告诉过模型"。压缩会
+   * 把历史里的播报内容裁掉，但集合还在 → 模型上下文里再也看不到那批工具、delta 又
+   * 认为"已播报过"，净效果是延迟工具对模型永久隐身。故 compact 后清空集合重播一次。
+   *
+   * 每次 compact 后设为 true，播报后消费（设回 false）。对标 CC 在 compact 路径
+   * 对 deferred tools attachment 的同类处理。
+   */
+  deferredToolsPendingAfterCompact?: boolean;
   /**
    * 假设纪律首轮引导是否已注入（每条用户消息内仅一次）。
    * queryLoop 每条用户消息新建 state，此字段保证同一条消息多轮里不重复注入。

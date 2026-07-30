@@ -101,6 +101,10 @@ interface MainScreenLayoutProps {
   cacheSavingsUSD?: number;
   costLimit: number;
   contextPercent: number;
+  /** P1-2：压缩触发点百分比（Footer 显示「17%/82%」） */
+  contextTriggerPercent?: number;
+  /** P1-5：真实压缩档位（Footer 变色据此） */
+  contextLevel?: "none" | "soft" | "hard" | "emergency";
   model: string;
 
   // 通用对话框系统
@@ -166,6 +170,8 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
   cacheSavingsUSD,
   costLimit,
   contextPercent,
+  contextTriggerPercent,
+  contextLevel,
   model,
   activeDialog,
   onDialogClose,
@@ -317,6 +323,8 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
           cacheSavingsUSD={cacheSavingsUSD}
           costLimit={costLimit}
           contextPercent={contextPercent}
+          contextTriggerPercent={contextTriggerPercent}
+          contextLevel={contextLevel}
           model={model}
           termWidth={termWidth}
         />

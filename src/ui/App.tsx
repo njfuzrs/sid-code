@@ -265,6 +265,22 @@ export interface TUIState {
   cacheSavingsUSD: number;
   costLimit: number;
   contextPercent: number;
+  /**
+   * P1-2：压缩触发点对应的满窗口百分比（如 1M 窗口 ≈82）。
+   *
+   * `contextPercent` 的分母是满窗口，而真实压缩触发点在 82% 左右——只显示前者，用户就会
+   * 觉得「才 17% 怎么就压缩了」。Footer 拿这个值把占用率显示成「17%/82%」，把"离被压缩
+   * 还有多远"这件事显式化。0 表示上游未提供（回退为只显示 contextPercent）。
+   */
+  contextTriggerPercent: number;
+  /**
+   * P1-5：当前压缩档位，Footer 变色点据此判定。
+   *
+   * 此前变色阈值是硬编码的 61% / 81%，与真实档位（soft/hard/emergency 由绝对 buffer +
+   * 窗口系数算出）**不同源**：1M 窗口下真实 soft 档在 78%，而 UI 早在 61% 就变黄——
+   * 变色时机与实际风险脱节。改为直读档位后两者恒同源。
+   */
+  contextLevel: "none" | "soft" | "hard" | "emergency";
   permissionMode: string;
   /** 是否处于计划模式（用于 TUI 状态标签显示） */
   isPlanMode: boolean;
@@ -903,8 +919,10 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     costUSD: state.costUSD,
     costLimit: state.costLimit,
     contextPercent: state.contextPercent,
+    contextTriggerPercent: state.contextTriggerPercent,
+    contextLevel: state.contextLevel,
     turnStartOutputTokens: state.turnStartOutputTokens,
-  }), [state.usage, state.costUSD, state.costLimit, state.contextPercent, state.turnStartOutputTokens]);
+  }), [state.usage, state.costUSD, state.costLimit, state.contextPercent, state.contextTriggerPercent, state.contextLevel, state.turnStartOutputTokens]);
 
   // 构建包含流式内容的完整 HistoryItem 数组
   const listData = useMemo((): HistoryItem[] => {
@@ -1143,6 +1161,8 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           cacheSavingsUSD={state.cacheSavingsUSD}
           costLimit={state.costLimit}
           contextPercent={state.contextPercent}
+          contextTriggerPercent={state.contextTriggerPercent}
+          contextLevel={state.contextLevel}
           model={state.model}
           scrollPercent={scrollPercent}
           activeDialog={state.activeDialog}
@@ -1199,6 +1219,8 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           cacheSavingsUSD={state.cacheSavingsUSD}
           costLimit={state.costLimit}
           contextPercent={state.contextPercent}
+          contextTriggerPercent={state.contextTriggerPercent}
+          contextLevel={state.contextLevel}
           model={state.model}
           activeDialog={state.activeDialog}
           onDialogClose={handleDialogClose}

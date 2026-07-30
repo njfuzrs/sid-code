@@ -85,21 +85,42 @@ const RawMarkdownIndicator: React.FC = () => (
   <Text color={theme.status.warning}>{BULLET} RAW</Text>
 );
 
-/** 上下文使用量显示 */
-const ContextUsageDisplay: React.FC<{ contextPercent: number }> = ({ contextPercent }) => {
+/**
+ * 上下文使用量显示。
+ *
+ * P2-4：显示与变色门槛改为**相对压缩触发点**，不再用绝对百分比。
+ *
+ * 旧实现是 `<50 不显示 / ≥70 黄 / ≥90 红`，分母为满窗口。1M 窗口下真实压缩触发点约 82%，
+ * 于是「50%」既不是"该提醒了"、也和压缩没有任何关系；反过来 32K 小窗口下 50% 其实已经
+ * 很接近触发点却按同一档处理。门槛按触发点归一后，各窗口大小行为一致：
+ * 走到触发点 60% 才提示、80% 转黄、100%（即已达触发点）转红。
+ *
+ * `contextTriggerPercent` 缺省（上游未推送）时回退旧的绝对阈值，保证不回归。
+ */
+const ContextUsageDisplay: React.FC<{
+  contextPercent: number;
+  contextTriggerPercent?: number;
+}> = ({ contextPercent, contextTriggerPercent }) => {
+  const hasTrigger = !!contextTriggerPercent && contextTriggerPercent > 0;
+  // 距触发点的进度（0-100+）；无触发点信息时退回满窗口占比
+  const progress = hasTrigger
+    ? Math.round((contextPercent / contextTriggerPercent) * 100)
+    : contextPercent;
+  const [showAt, warnAt, errorAt] = hasTrigger ? [60, 80, 100] : [50, 70, 90];
+
   let textColor = theme.text.secondary;
-  if (contextPercent >= 90) {
+  if (progress >= errorAt) {
     textColor = theme.status.error;
-  } else if (contextPercent >= 70) {
+  } else if (progress >= warnAt) {
     textColor = theme.status.warning;
   }
 
   // 低使用量不显示
-  if (contextPercent < 50) return null;
+  if (progress < showAt) return null;
 
   return (
     <Text color={textColor}>
-      ctx {contextPercent}%
+      ctx {contextPercent}%{hasTrigger ? `/${contextTriggerPercent}%` : ""}
     </Text>
   );
 };
@@ -210,7 +231,12 @@ export const Composer: React.FC<ComposerProps> = ({
   const isIdle = streaming.streamingState === StreamingState.Idle;
   const showLoadingIndicator = isConnecting || isResponding || isWaiting;
   const showRawMarkdownIndicator = !uiState.renderMarkdown;
-  const showContextUsage = session.contextPercent >= 50;
+  // P2-4：与 ContextUsageDisplay 同一套相对门槛（走到压缩触发点的 60% 才提示）。
+  // 两处必须同源，否则外层显示了、内层返回 null（或反之）会出现空占位。
+  const showContextUsage =
+    session.contextTriggerPercent && session.contextTriggerPercent > 0
+      ? Math.round((session.contextPercent / session.contextTriggerPercent) * 100) >= 60
+      : session.contextPercent >= 50;
 
   // ? 键展开/收起快捷键帮助（仅空闲且输入为空时）
   useKeypress(KeypressPriority.Normal, (key) => {
@@ -301,7 +327,10 @@ export const Composer: React.FC<ComposerProps> = ({
         >
           {showContextUsage && !showLoadingIndicator && (
             <Box marginRight={1}>
-              <ContextUsageDisplay contextPercent={session.contextPercent} />
+              <ContextUsageDisplay
+                contextPercent={session.contextPercent}
+                contextTriggerPercent={session.contextTriggerPercent}
+              />
             </Box>
           )}
           {isIdle && !hideShortcutsHint && <ShortcutsHint expanded={shortcutsHelpVisible} />}

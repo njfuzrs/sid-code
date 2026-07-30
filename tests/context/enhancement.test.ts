@@ -48,10 +48,22 @@ describe("findCompressSplitPoint", () => {
     if (splitPoint > 0) {
       const msgs = mgr.getMessages();
       const splitMsg = msgs[splitPoint];
-      // 分割点不应包含 tool_result
+      // 分割点不应包含 tool_result（切在 tool_result 上会让它与 tool_use 失联 → provider 400）
       const hasToolResult = splitMsg.content.some(b => b.type === "tool_result");
       expect(hasToolResult).toBe(false);
-      expect(splitMsg.role).toBe("user");
+      // P0-5：**不再断言 role === "user"**。
+      // 旧契约「只在不含 tool_result 的 user 消息处分割」在 agent 工作流下几乎永不成立
+      // （真实事故会话 156 条历史、78 条 user 消息，合格切点只有 2 个），导致压缩长期 no-op。
+      // 现在切点按「API 轮次组边界」判定，允许落在 assistant 上；真正要守的不变量是
+      // **切开后尾部不残留失配的 tool_result**，由下面这条断言直接表达。
+      const tailToolUseIds = new Set<string>();
+      for (const m of msgs.slice(splitPoint)) {
+        for (const b of m.content) if (b.type === "tool_use") tailToolUseIds.add(b.id);
+      }
+      const orphanResults = msgs
+        .slice(splitPoint)
+        .flatMap(m => m.content.filter(b => b.type === "tool_result" && !tailToolUseIds.has(b.tool_use_id)));
+      expect(orphanResults).toHaveLength(0);
     }
   });
 

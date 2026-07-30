@@ -99,8 +99,29 @@ export function derivePermission(permissionMode: string): {
   return { display, color, isDanger };
 }
 
-/** 上下文百分比 → 语义色（对齐 cc：≤60 灰 / 61-80 黄 / 81%+ 红）。 */
-export function deriveContextColor(contextPercent: number, defaultColor: string): string {
+/**
+ * 上下文占用 → 语义色。
+ *
+ * P1-5：变色点改为**跟随真实压缩档位**，不再用硬编码百分比。
+ *
+ * 旧实现是 `≥61 黄 / ≥81 红`，分母为满窗口，与真实档位不同源：1M 窗口下真实 soft 档在
+ * 剩余 22%（即 78%）才进、hard 档 82%——UI 早在 61% 就变黄，而用户看到 17% 时其实距压缩
+ * 还有极远。变色时机与实际风险脱节，正是「占用率显示与压缩行为对不上」的 UI 侧成因。
+ *
+ * 现优先按 `level`（来自 ctxMgr.getCompactionLevel，与压缩决策同源）着色：
+ * soft → 黄（开始遮罩工具输出），hard/emergency → 红（即将/正在摘要压缩或截断）。
+ * `level` 缺省（上游未推送，如旧状态或非 TUI 路径）时回退到原百分比阈值，保证不回归。
+ */
+export function deriveContextColor(
+  contextPercent: number,
+  defaultColor: string,
+  level?: "none" | "soft" | "hard" | "emergency",
+): string {
+  if (level) {
+    if (level === "hard" || level === "emergency") return theme.status.error;
+    if (level === "soft") return theme.status.warning;
+    return defaultColor;
+  }
   if (contextPercent >= 81) return theme.status.error;
   if (contextPercent >= 61) return theme.status.warning;
   return defaultColor;
@@ -272,6 +293,14 @@ export interface StatusLineInput {
   costUSD: number;
   costLimit: number;
   contextPercent: number;
+  /**
+   * P1-2：压缩触发点对应的满窗口百分比（如 1M 窗口 ≈82）。
+   * 传入后状态栏把上下文显示成「17%/82%」，让"距被压缩还有多远"显式可见。
+   * 省略或 ≤0 → 退回只显示 `contextPercent`（不回归旧行为）。
+   */
+  contextTriggerPercent?: number;
+  /** P1-5：真实压缩档位，用于变色（与 getCompactionLevel 同源，替代硬编码 61/81） */
+  contextLevel?: "none" | "soft" | "hard" | "emergency";
   model: string;
   scrollPercent?: number;
   /** 10.3：会话累计缓存节省金额（美元） */
@@ -296,6 +325,8 @@ export function useStatusLineData(input: StatusLineInput): StatusLineData {
     costUSD,
     costLimit,
     contextPercent,
+    contextTriggerPercent,
+    contextLevel,
     model,
     scrollPercent,
     cacheSavingsUSD,
@@ -331,8 +362,13 @@ export function useStatusLineData(input: StatusLineInput): StatusLineData {
         usage.inputTokens === 0 && usage.outputTokens === 0
           ? null
           : {
-              text: `${contextPercent}%`,
-              color: deriveContextColor(contextPercent, itemColor),
+              // P1-2：带上触发点锚（「17%/82%」）。只显示前一个数字时，用户无从判断
+              // 「17% 算不算高、离压缩还有多远」——这正是本次事故用户困惑的直接来源。
+              text:
+                contextTriggerPercent && contextTriggerPercent > 0
+                  ? `${contextPercent}%/${contextTriggerPercent}%`
+                  : `${contextPercent}%`,
+              color: deriveContextColor(contextPercent, itemColor, contextLevel),
             },
       model,
       scroll: showScroll ? { text: `↑${scrollPercent}%` } : null,
@@ -356,6 +392,8 @@ export function useStatusLineData(input: StatusLineInput): StatusLineData {
     costUSD,
     costLimit,
     contextPercent,
+    contextTriggerPercent,
+    contextLevel,
     model,
     scrollPercent,
     cacheSavingsUSD,

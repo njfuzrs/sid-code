@@ -150,11 +150,22 @@ export type HistoryItemToolGroup = HistoryItemBase & {
   borderBottom?: boolean;
 };
 
-/** 上下文压缩通知 */
+/**
+ * 上下文压缩通知。
+ *
+ * P1-3：横幅**必须携带实据**。此前本项只有 type 一个必填字段，渲染成一句无条件的
+ * 「对话已压缩」——2026-07-29 事故里消息一条都没少却照样画出这条横幅，用户完全无法
+ * 从界面判断压缩是否真的发生。现在消息数由 queryLoop 的实测结果透传进来并显示出来，
+ * 「有横幅」与「真压了」在界面上可被用户自己核对。
+ */
 export type HistoryItemCompression = HistoryItemBase & {
   type: "compression";
   originalTokenCount?: number;
   newTokenCount?: number;
+  /** 压缩前消息数（实测） */
+  messageCountBefore?: number;
+  /** 压缩后消息数（实测，必然 < before——否则上游不会发出本事件） */
+  messageCountAfter?: number;
 };
 
 /** 模型切换通知 */

@@ -63,6 +63,49 @@ export function clearMemorySummaryCache(): void {
 
 const FRONTMATTER_RE = /^---\s*\n([\s\S]*?)\n---/;
 
+/** MEMORY.md 索引单条摘要长度上限（对标 claude-code memdir 的 ~150 字符硬约束） */
+const MEMORY_DESC_MAX_LEN = 150;
+
+/**
+ * 归一化索引/frontmatter 用的一句话摘要（**写入端根治点**）。
+ *
+ * 根因（上下文注入淹没用户指令，2026-07-29 复现）：desc 缺省时回退取正文首行，
+ * 而记忆正文首行绝大多数是 markdown 标题（`## 负收益防线审计第 2 版完成`）。
+ * 这类 `## 陈述句` 进了 MEMORY.md 索引、再随 system prompt 注入每个会话后，
+ * 在模型眼里与"用户刚说的话"无法区分——实测 glm-5.2 把其中一条当成了用户输入，
+ * 第一轮直接跑去 glob 那条记忆文件，完全偏离真实的 /commit 任务。
+ *
+ * 因此这里剥离 markdown 结构标记（标题 `#`、列表 `-`/`*`/`1.`、引用 `>`、
+ * 强调 `**`），只保留纯粹的陈述内容。根治点必须在写入端：这样 MEMORY.md 文件
+ * 本身就是干净的，不依赖渲染端逐行补救（渲染端另有一层兜底，见 memory/prompt.ts）。
+ *
+ * 对标 claude-code `memdir/memdir.ts`：索引格式硬约束为
+ * `- [Title](file.md) — one-line hook`、单条 ~150 字符，且明令
+ * "MEMORY.md is an index, not a memory / Never write memory content directly into MEMORY.md"。
+ */
+export function normalizeMemoryDesc(
+  description: string | undefined,
+  value: string,
+): string {
+  // 优先用显式 description；缺省时取正文第一个**非空**行（原实现只取 [0]，
+  // 正文以空行开头时会得到空串 → 索引里出现 `- [key](file) — ` 空摘要）
+  let raw = (description ?? "").trim();
+  if (!raw) {
+    for (const line of value.split("\n")) {
+      const t = line.trim();
+      if (t) { raw = t; break; }
+    }
+  }
+  return raw
+    .replace(/^#{1,6}\s+/, "")        // markdown 标题标记（`## 标题` → `标题`）
+    .replace(/^>\s*/, "")             // 引用标记
+    .replace(/^(?:[-*+]|\d+\.)\s+/, "") // 列表标记
+    .replace(/\*\*/g, "")             // 强调标记（`**Why:**` → `Why:`）
+    .replace(/\s*\n\s*/g, " ")        // 折行压平（description 可能多行）
+    .trim()
+    .slice(0, MEMORY_DESC_MAX_LEN);
+}
+
 /** 根据 key/value 启发式推断记忆类型（迁移与 legacy set 使用） */
 export function inferMemoryType(key: string, value: string): MemoryType {
   const hay = `${key} ${value}`.toLowerCase();
@@ -111,7 +154,9 @@ function parseMemoryFile(
     value: body,
     scope,
     type,
-    description,
+    // 读侧同样过归一化：本次修复前写入的旧文件，frontmatter 里已经存着 `## 标题`。
+    // 只修写入端的话，那些历史条目会一直把陈述句标题漏进索引（索引重建也照抄 desc）。
+    description: description ? normalizeMemoryDesc(description, body) : undefined,
     createdAt: created ?? mtimeMs,
     updatedAt: updated ?? mtimeMs,
   };
@@ -119,9 +164,7 @@ function parseMemoryFile(
 
 /** 序列化 MemoryEntry 为 .md 文件内容 */
 function serializeMemoryFile(entry: MemoryEntry): string {
-  const desc = (entry.description || entry.value.split("\n")[0] || "")
-    .replace(/\n/g, " ")
-    .slice(0, 150);
+  const desc = normalizeMemoryDesc(entry.description, entry.value);
   const type = entry.type || inferMemoryType(entry.key, entry.value);
   return [
     "---",
@@ -592,7 +635,7 @@ export class MemoryStore {
         break;
       }
       const fn = files.get(e.key) ?? memoryFilename(e.type || "project", e.key);
-      const desc = (e.description || e.value.split("\n")[0] || "").replace(/\n/g, " ").slice(0, 150);
+      const desc = normalizeMemoryDesc(e.description, e.value);
       lines.push(`- [${e.key}](${fn}) — ${desc}`);
     }
     let content = lines.join("\n") + "\n";

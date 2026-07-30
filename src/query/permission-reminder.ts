@@ -4,15 +4,22 @@
  * 对应《Harness-LLM 可见性缺口》缺口 C：permission mode 只进被 5 分钟缓存冻结的
  * system prompt，运行时切换（acceptEdits / readonly / dontAsk 等）不刷新。
  *
- * 根因：generatePermissionModeAttachment 生成的 mode 行为指南经 buildSystemPrompt 注入，
- * 但 system prompt 有缓存（system-prompt.ts:89 CACHE_TTL），且仅在 init / CLAUDE.md
- * 变更时重建，主循环每轮不重建。用户中途切 mode 后，模型上下文里仍是会话启动时的旧值。
+ * 根因：mode 行为指南原先只经 system prompt 附件注入，而 system prompt 有缓存
+ * （system-prompt.ts CACHE_TTL），且仅在 init / CLAUDE.md 变更时重建，主循环每轮不重建。
+ * 用户中途切 mode 后，模型上下文里仍是会话启动时的旧值。
  * plan mode 另有 getPlanModeReminder 每轮注入兜住了"切入 plan"，但其它 mode 之间的切换
  * 没有任何每轮通道。
  *
  * 解决思路（对标 claude-code command_permissions / hook_permission_decision delta 通道）：
- * 把 mode 指南从"只在 system prompt"改为"每轮 reminder 通道也注入"。
+ * 把 mode 指南从"只在 system prompt"改为"走每轮 reminder 通道"。
  * 复用 attachments.ts 的 PERMISSION_MODE_DESCRIPTIONS，避免文案重复维护。
+ *
+ * ⚠️ 现状（2026-07-30 重复注入根因修复 P0）：本通道已是**唯一**通道。
+ * 那条 system 附件通道（generatePermissionModeAttachment）当时与本通道并存，
+ * 导致同一份文案同轮在 system role 与 user role 各出现一次，已删除。
+ * 因此不要因为"system prompt 里反正也有一份"而弱化这里的注入判定——那份已经没有了。
+ * plan mode 例外：它被本通道排除（loop.ts `mode !== "plan"`），约束由
+ * plan/prompt.ts 的 buildPlanModeReminder 承载，见那里的门控注释。
  *
  * 设计原则：纯函数（入 mode，出字符串 | null），便于单测。
  */

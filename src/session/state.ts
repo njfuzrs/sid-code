@@ -185,6 +185,28 @@ export class SessionState {
   }
 
   /**
+   * 重置 reminder 通道的跨轮去重/基线键（/clear 时调用）。
+   *
+   * 这些键挂在 sessionData 上是**故意的**——它们必须跨用户消息存活，否则每条新消息
+   * 都会重建、去重形同白做（见 loop.ts 里 announcedDeferredTools / lastSeenPermissionMode
+   * 的注释，都踩过"挂 LoopState 导致每条消息归零"的坑）。
+   *
+   * 但"跨消息"不等于"跨 /clear"：`/clear` 清空了对话历史，模型对之前播报过的
+   * 延迟工具列表、权限模式提醒完全失忆，而去重键还记着"已经告诉过它了" →
+   * 新一轮对话里**永远不再播报**，延迟工具机制在 /clear 后彻底失效。
+   * 这与 compact 路径的 deferredToolsPendingAfterCompact 是同一类问题，
+   * compact 已处理，/clear 此前漏了（2026-07-30 重复注入根因修复时发现）。
+   *
+   * `resetCounters()` 只动用量统计、不碰 sessionData，故单独一个方法；
+   * 两处 /clear 分支（斜杠命令结构化结果 / 旧 switch 分支）都必须调用。
+   */
+  resetReminderDedupKeys(): void {
+    this.sessionData.delete("announcedDeferredTools");
+    this.sessionData.delete("lastSeenPermissionMode");
+    this.sessionData.delete("lastSeenContextPressureLevel");
+  }
+
+  /**
    * 累加辅助调用花费（影子调用：标题生成/记忆召回/bash分类/摘要压缩/缓存预热等）。
    * 只累加费用，不并入 modelUsage（避免污染 stock 口径的"当前上下文大小"展示）。
    * 由 side-call-sink 在每次 recordSideCall 时回调。

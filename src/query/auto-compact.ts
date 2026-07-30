@@ -421,7 +421,30 @@ async function buildExtraReattach(deps: AutoCompactDeps, toSummarize: Message[])
   // 只有当第一条用户消息确实在被压缩的范围内时才需要重注入。
   try {
     const { REATTACH_ORIGINAL_TASK_PREFIX, REATTACH_ORIGIN } = await import("./compact/reattach-markers.ts");
-    const firstUserMsg = toSummarize.find(m => m.role === "user" && m.content.some(b => b.type === "text"));
+    // 只认**真实用户输入**，跳过 harness 内部注入的 user 消息（防御性过滤）。
+    //
+    // 主防线是"注入产物永不写回 ctxMgr"这条不变量（见 query/reminder-inject.ts 头部
+    // 与 tests/query/reminder-inject-invariant.test.ts 哨兵）。但历史里确实还躺着几类
+    // 合法直插的内部 user 消息：止损阀终态的"强制结束"notice、上一次压缩留下的
+    // reattach 锚点、hook 反馈等。它们同样满足 `role:user + 含 text block`，
+    // 一旦被当成"用户最初的请求"重注入，就会把内部提醒冒充成用户意图——正是
+    // 2026-07-29 那次"模型分不清谁在说话"的同类故障（轨迹 20260729-180624-b8ae8e78）。
+    // 这里按 `_meta.origin` + 围栏/前缀双重识别，两条判据任一命中即跳过。
+    const isInternalUserMsg = (m: typeof toSummarize[number]): boolean => {
+      if ((m as any)._meta?.origin) return true; // reattach / hook 等带来源标记的内部消息
+      const text = m.content
+        .filter(b => b.type === "text")
+        .map(b => (b as { type: "text"; text: string }).text)
+        .join("\n")
+        .trimStart();
+      return text.startsWith("<system-reminder>")
+        || text.startsWith("<available-deferred-tools>")
+        || text.startsWith(REATTACH_ORIGINAL_TASK_PREFIX)
+        || text.startsWith("[对话摘要]");
+    };
+    const firstUserMsg = toSummarize.find(
+      m => m.role === "user" && m.content.some(b => b.type === "text") && !isInternalUserMsg(m),
+    );
     if (firstUserMsg) {
       const userText = firstUserMsg.content
         .filter(b => b.type === "text")

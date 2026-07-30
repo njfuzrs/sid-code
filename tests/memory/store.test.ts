@@ -335,3 +335,79 @@ describe("MemoryStore — 索引可寻址性（2026-07-30 回归）", () => {
     expect(text).toContain("正文-project_reminder-order");
   });
 });
+
+/**
+ * P0-b②：索引摘要写入端剥离 markdown 结构标记。
+ *
+ * 事故（2026-07-29，轨迹 20260729-180624-b8ae8e78）：desc 缺省时回退取正文首行，而
+ * 记忆正文首行绝大多数是 markdown 标题。于是 MEMORY.md 索引里出现
+ * `— ## 负收益防线审计第 2 版完成（2026-07-30）`，随 system prompt 注入每个会话后，
+ * 模型把它当成"用户刚说的话"，用户只输入 `/commit` 却第一轮跑去 glob 那条记忆文件。
+ *
+ * 这是**根治点**：写入端修掉后 MEMORY.md 文件本身就是干净的，不依赖渲染端逐行补救
+ * （渲染端另有一层兜底，见 tests/memory/prompt-injection.test.ts 的 P0-b① 段）。
+ */
+describe("MemoryStore — 索引摘要去 markdown 标记（P0-b②）", () => {
+  test("正文首行是 `## 标题` 时，索引摘要剥离标题标记", async () => {
+    const store = makeStore();
+    await store.set(
+      "negative-return-audit",
+      "## 负收益防线审计第 2 版完成（2026-07-30）\n\n详细结论见正文。",
+      "project",
+    );
+    const index = readFileSync(join(projDir, "MEMORY.md"), "utf8");
+    expect(index).not.toContain("## 负收益防线审计");
+    expect(index).toContain("负收益防线审计第 2 版完成");
+  });
+
+  test("frontmatter 里的 description 同样剥离（不只是索引）", async () => {
+    const store = makeStore();
+    await store.set("audit", "### 三级标题式正文首行\n\n正文", "project");
+    const files = require("fs").readdirSync(projDir).filter((f: string) => f !== "MEMORY.md");
+    const text = readFileSync(join(projDir, files[0]), "utf8");
+    expect(text).toContain("description: 三级标题式正文首行");
+    // 正文本身不动——剥的只是摘要，原始 markdown 结构必须完整保留
+    expect(text).toContain("### 三级标题式正文首行");
+  });
+
+  test("剥离列表 / 引用 / 强调标记", async () => {
+    const store = makeStore();
+    await store.set("a", "- 列表式首行\n\n正文", "project");
+    await store.set("b", "> 引用式首行\n\n正文", "project");
+    await store.set("c", "**Why:** 强调式首行\n\n正文", "project");
+    const index = readFileSync(join(projDir, "MEMORY.md"), "utf8");
+    expect(index).toContain("— 列表式首行");
+    expect(index).toContain("— 引用式首行");
+    expect(index).toContain("— Why: 强调式首行");
+  });
+
+  test("正文以空行开头时取第一个非空行（原实现会得到空摘要）", async () => {
+    const store = makeStore();
+    await store.set("blank-lead", "\n\n## 真正的首行\n\n正文", "project");
+    const index = readFileSync(join(projDir, "MEMORY.md"), "utf8");
+    expect(index).toContain("真正的首行");
+    expect(index).not.toMatch(/—\s*$/m); // 不出现空摘要的裸分隔符
+  });
+
+  test("显式传入的 description 优先，且同样被剥离", async () => {
+    const store = makeStore();
+    await store.set("explicit", "正文首行", "project", { description: "## 显式摘要" });
+    const index = readFileSync(join(projDir, "MEMORY.md"), "utf8");
+    expect(index).toContain("显式摘要");
+    expect(index).not.toContain("## 显式摘要");
+  });
+
+  test("读侧兜底：旧文件 frontmatter 已存 `## 标题` 时，重建索引也剥离", async () => {
+    mkdirSync(projDir, { recursive: true });
+    writeFileSync(
+      join(projDir, "project_legacy.md"),
+      "---\nname: legacy\ndescription: ## 修复前写入的陈述句标题\ntype: project\ncreated: 1\nupdated: 2\n---\n\n## 修复前写入的陈述句标题\n\n正文\n",
+    );
+    const store = makeStore();
+    // 触发一次写入 → 索引重建，旧条目一起被重新渲染
+    await store.set("trigger", "无关内容", "project");
+    const index = readFileSync(join(projDir, "MEMORY.md"), "utf8");
+    expect(index).toContain("修复前写入的陈述句标题");
+    expect(index).not.toContain("## 修复前写入的陈述句标题");
+  });
+});

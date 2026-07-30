@@ -811,11 +811,7 @@ export class App {
       abortCurrentRequest: (reason) => {
         try { this.abortController?.abort(reason ?? "turn-timeout"); } catch { /* ignore */ }
       },
-      getPlanModeReminder: async () => {
-        if (!this.planManager?.isPlanning()) return null;
-        const { buildPlanModeReminder } = await import("./plan/prompt.ts");
-        return buildPlanModeReminder(this.planManager.nextReminderIsFull());
-      },
+      getPlanModeReminder: () => this.buildPlanModeReminderIfActive(),
       // 缺口 C：把运行时可变的 permission mode 暴露给 queryLoop，每轮取最新值。
       // config.permissionMode 会被 enter_plan_mode / CLAUDE.md 规则 / 斜杠命令运行时改写，
       // 而 mode 指南只进有缓存的 system prompt——靠这里走每轮 reminder 通道补上时机缺失。
@@ -1697,6 +1693,9 @@ export class App {
         log.info("TUI:CMD", "清空消息历史，重置上下文");
         this.ctxMgr.clear();
         this.sessionState.resetCounters();
+        // /clear 后模型对"已播报过的延迟工具/权限提醒"完全失忆，去重键必须一并归零，
+        // 否则新一轮对话永远不再播报延迟工具列表（详见 resetReminderDedupKeys 注释）。
+        this.sessionState.resetReminderDedupKeys();
         clearPromptCache();
         this.quotaManager?.resetAlertLevel();
         this.fallback.reset();
@@ -3621,12 +3620,7 @@ export class App {
         this.requestUserConfirmation(desc, permReq, toolName, toolInput, signal),
       handlePlanModeTransitions: (toolBlocks, resultMap) =>
         this.handlePlanModeTransitions(toolBlocks, resultMap),
-      getPlanModeReminder: async () => {
-        if (!this.planManager?.isPlanning()) return null;
-        const { buildPlanModeReminder } = await import("./plan/prompt.ts");
-        // 节流：每 N 轮发完整提醒，中间轮次发简短提醒，省 token
-        return buildPlanModeReminder(this.planManager.nextReminderIsFull());
-      },
+      getPlanModeReminder: () => this.buildPlanModeReminderIfActive(),
       discoverJitContext: (toolBlocks) => this.discoverJitContext(toolBlocks),
       // G5 接线：长跑工具的中间进度。
       // - bash/shell 工具的 output 事件（执行中的 stdout/stderr 尾部）→ 路由到执行中的工具卡片，
@@ -3786,6 +3780,40 @@ export class App {
     }
 
     return followup.length > 0 ? { followup } : {};
+  }
+
+  /**
+   * 构造 plan mode 每轮提醒（两处 queryLoop deps 共用同一个门控，避免漂移）。
+   *
+   * ⚠️ 门控为什么是「isPlanning() **或** config.permissionMode === "plan"」：
+   *
+   * plan 约束此前有两条通道（system 附件 + 本 reminder），2026-07-30 删掉附件通道后
+   * 本函数成为**唯一**通道，门控的任何漏洞就直接等于"模型收不到任何 plan 约束"。
+   *
+   * 原门控只判 `planManager.isPlanning()`，漏了一整条进入路径：
+   *   - `enter_plan_mode` 工具 → planManager.enter() → isPlanning()=true ✅
+   *   - `--permission-mode plan` / config.permissionMode / agent frontmatter
+   *     → 只写 config.permissionMode="plan"，**没有任何代码调 planManager.enter()**
+   *     → isPlanning()=false ❌
+   * 而 loop.ts 的 permission reminder 通道又用 `mode !== "plan"` 把 plan 排除
+   * （避免与本函数重复），两边都不管 → 以 plan 模式启动的会话约束条数为 0。
+   * 实测确认（PlanModeManager 新建实例 isPlanning() 恒为 false）。
+   *
+   * 权限层不受影响（PermissionChecker 读 config.permissionMode 硬拦写操作），
+   * 但 plan 是**行为模式**——"先规划再执行、先出方案等审批"无法用权限规则表达，
+   * 只能靠模型读到约束后自觉，故这条缺失是真实的行为回归，不是纯文案问题。
+   *
+   * 节流沿用 planManager.nextReminderIsFull()（每 N 轮完整版、其余精简版）；
+   * planManager 缺失时（无头/精简装配）退化为恒发完整版——宁可多几个 token，
+   * 也不能让唯一的约束通道静默失声。
+   */
+  private async buildPlanModeReminderIfActive(): Promise<string | null> {
+    const inPlanMode = this.planManager?.isPlanning() === true
+      || this.config.permissionMode === "plan";
+    if (!inPlanMode) return null;
+    const { buildPlanModeReminder } = await import("./plan/prompt.ts");
+    // 节流：每 N 轮发完整提醒，中间轮次发简短提醒，省 token
+    return buildPlanModeReminder(this.planManager?.nextReminderIsFull() ?? true);
   }
 
   /** 激活 Plan Mode：切换权限模式（不重建 system prompt，对标 Claude Code） */
@@ -4824,6 +4852,27 @@ export class App {
   }
 
   /** TUI 模式 */
+  /**
+   * P1-6：Footer 上下文三项状态的**唯一构造处**。
+   *
+   * 此前 `Math.round(estimateTokens(toolCount) / getMaxTokens() * 100)` 在本文件里被逐字
+   * 抄了 4 份（updateState 的各个调用点），任一处漏改即产生"同一会话不同时刻口径不同"的漂移；
+   * 且都只有满窗口占比这一个数字，看不出"距压缩触发点还有多远"（用户困惑的直接来源）。
+   * 现统一走 ctxMgr.getContextUsageForDisplay()（与压缩决策同源），并一并带出触发点与档位。
+   */
+  private contextDisplayState(): {
+    contextPercent: number;
+    contextTriggerPercent: number;
+    contextLevel: "none" | "soft" | "hard" | "emergency";
+  } {
+    const u = this.ctxMgr.getContextUsageForDisplay(this.toolRegistry.size());
+    return {
+      contextPercent: u.percentOfWindow,
+      contextTriggerPercent: u.triggerPercentOfWindow,
+      contextLevel: u.level,
+    };
+  }
+
   async runTUI(initialPrompt?: string): Promise<void> {
     const log = getLogger();
     // TUI 模式下切换为仅文件输出，避免干扰 Ink 渲染
@@ -4862,7 +4911,7 @@ export class App {
       costUSD: this.sessionState.getEffectiveTotalCostUSD(),
       cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
       costLimit: this.config.costLimit ?? 0,
-      contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / this.ctxMgr.getMaxTokens()) * 100),
+      ...this.contextDisplayState(),
       permissionMode: this.config.permissionMode || "default",
       isPlanMode: false,
       gitBranch: (() => { try { return execSync("git rev-parse --abbrev-ref HEAD 2>/dev/null", { encoding: "utf-8" }).trim(); } catch { return ""; } })(),
@@ -5518,7 +5567,7 @@ export class App {
                 stockInputTokens: this.sessionState.getStockPromptTokens(),
                 costUSD: this.sessionState.getEffectiveTotalCostUSD(),
                 cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
-                contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / this.ctxMgr.getMaxTokens()) * 100),
+                ...this.contextDisplayState(),
               });
               // TodoWrite 工具执行后同步 todo 列表到 TUI
               if (event.toolName === "todo_write") {
@@ -5534,12 +5583,16 @@ export class App {
               // 用户只看到少量保留消息（或完全空白）。追加一条持久可见的 compression
               // 历史项作为视觉锚点，告诉用户"之前的对话已被压缩"。
               historyIdCounter += 1;
+              // P1-3：把 queryLoop 实测的前后消息数透传给横幅，让「有横幅」可被用户核对。
               const compressionItem: import("./ui/types.ts").HistoryItem = {
                 id: historyIdCounter,
                 type: "compression",
+                messageCountBefore: event.messageCountBefore,
+                messageCountAfter: event.messageCountAfter,
               };
+              const compactEvidence = `${event.messageCountBefore} → ${event.messageCountAfter} 条消息`;
               const updatedHistoryItems = [...bridge.current.historyItems, compressionItem];
-              const compressionDisplay = [...bridge.current.displayItems, { kind: "system" as const, text: "对话已压缩" }];
+              const compressionDisplay = [...bridge.current.displayItems, { kind: "system" as const, text: `对话已压缩（${compactEvidence}）` }];
               updateState({ historyItems: updatedHistoryItems, displayItems: compressionDisplay });
               break;
             }
@@ -5664,8 +5717,6 @@ export class App {
             }
             case "done": {
               completedNormally = true;
-              const ctxUsed = this.ctxMgr.estimateTokens(this.toolRegistry.size());
-              const ctxPct = Math.round((ctxUsed / this.ctxMgr.getMaxTokens()) * 100);
               streamingFullText = "";
               streamingThinkingFull = "";
               streamSynced = false;
@@ -5675,7 +5726,7 @@ export class App {
                 stockInputTokens: this.sessionState.getStockPromptTokens(),
                 costUSD: this.sessionState.getEffectiveTotalCostUSD(),
                 cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
-                contextPercent: ctxPct,
+                ...this.contextDisplayState(),
                 streamingText: "",
                 streamingThinking: "",
                 streamingThinkingStartMs: undefined,
@@ -5767,7 +5818,7 @@ export class App {
         stockInputTokens: this.sessionState.getStockPromptTokens(),
         costUSD: this.sessionState.getEffectiveTotalCostUSD(),
         cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
-        contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / this.ctxMgr.getMaxTokens()) * 100),
+        ...this.contextDisplayState(),
         // CM3：本轮结束，清除残留的重试/限流提示。
         retryStatus: null,
       });
@@ -5926,7 +5977,7 @@ export class App {
             stockInputTokens: this.sessionState.getStockPromptTokens(),
             costUSD: this.sessionState.getEffectiveTotalCostUSD(),
             cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
-            contextPercent: Math.round((this.ctxMgr.estimateTokens(this.toolRegistry.size()) / this.ctxMgr.getMaxTokens()) * 100),
+            ...this.contextDisplayState(),
           });
           addTransientStatusMessage("error", message, aborted ? 1500 : 5000);
 
@@ -6163,6 +6214,8 @@ export class App {
             log.info("TUI:CMD", "清空消息历史，重置上下文");
             this.ctxMgr.clear();
             this.sessionState.resetCounters();
+            // 同上：reminder 跨轮去重键必须随 /clear 归零（详见 resetReminderDedupKeys 注释）。
+            this.sessionState.resetReminderDedupKeys();
             clearPromptCache();
             this.quotaManager?.resetAlertLevel();
             this.fallback.reset();

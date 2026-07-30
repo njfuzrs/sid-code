@@ -15,8 +15,15 @@ export interface SessionContextValue {
   costUSD: number;
   /** 费用上限 */
   costLimit: number;
-  /** 上下文使用百分比 */
+  /** 上下文使用百分比（分母为满窗口） */
   contextPercent: number;
+  /**
+   * P1-2/P2-4：压缩触发点对应的满窗口百分比（如 1M 窗口 ≈82）。
+   * Composer 的「是否显示 ctx 提示」据此判定"接近压缩"，替代硬编码的绝对 50%。
+   */
+  contextTriggerPercent?: number;
+  /** P1-5：真实压缩档位（与 getCompactionLevel 同源） */
+  contextLevel?: "none" | "soft" | "hard" | "emergency";
   /**
    * 本轮回合开始时的会话累计 outputTokens 起点。
    * 底部 spinner 据此算「本轮新增」token（usage.outputTokens − 此值）,
@@ -46,6 +53,8 @@ export const SessionProvider: React.FC<SessionProviderProps> = ({ children, valu
     value.costUSD,
     value.costLimit,
     value.contextPercent,
+    value.contextTriggerPercent,
+    value.contextLevel,
     value.turnStartOutputTokens,
   ]);
 

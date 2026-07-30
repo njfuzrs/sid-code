@@ -23,6 +23,7 @@ import {
   stripMemoryTypePrefix,
 } from "./paths.ts";
 import { MEMORY_LIMITS, isMemoryType, type MemoryType } from "./types.ts";
+import { normalizeMemoryDesc } from "./store.ts";
 import { getLogger } from "../debug/logger.ts";
 
 /**
@@ -134,7 +135,9 @@ function parseAgentMemoryHead(text: string, filename: string): { key: string; de
   // 这里在解析处收口，读写两侧都走 parseAgentMemoryHead，一处修即全覆盖。
   const rawKey = name || filename.replace(/\.md$/, "");
   const key = stripMemoryTypePrefix(rawKey);
-  if (!description) description = (body.split("\n")[0] || "").slice(0, 150);
+  // 读侧同样过归一化：既有旧文件的 frontmatter 里可能已存着 `## 标题`，
+  // 重建索引时必须在这里剥掉，否则旧数据的陈述句标题会一直漏进索引。
+  description = normalizeMemoryDesc(description, body);
   return { key, description, type: type ?? inferAgentMemoryType(key, body) };
 }
 
@@ -234,9 +237,9 @@ export async function saveAgentMemory(
 
   const dir = ensureAgentMemPath(agentType);
   const type = opts?.type ?? inferAgentMemoryType(cleanKey, cleanValue);
-  const description = (opts?.description || cleanValue.split("\n")[0] || "")
-    .replace(/\n/g, " ")
-    .slice(0, 150);
+  // 与私有/团队索引同一根治点：desc 回退取正文首行时剥离 markdown 标题等结构标记，
+  // 避免 `## 陈述句` 进索引后被模型误当用户输入（见 store.ts normalizeMemoryDesc）。
+  const description = normalizeMemoryDesc(opts?.description, cleanValue);
   const filename = memoryFilename(type, cleanKey);
   const now = Date.now();
 

@@ -161,18 +161,25 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
       );
     }
 
-    case "compression":
+    case "compression": {
+      // P1-3：优先显示消息数实据（压缩最直观的度量），其次 token 数。
+      // 两者都缺才退回裸文案——但正常路径下 queryLoop 一定会带上消息数。
+      const evidence =
+        item.messageCountBefore !== undefined && item.messageCountAfter !== undefined
+          ? `${item.messageCountBefore} → ${item.messageCountAfter} 条消息`
+          : item.originalTokenCount && item.newTokenCount
+            ? `${item.originalTokenCount} → ${item.newTokenCount} tokens`
+            : "";
       return (
         <Box paddingLeft={2} gap={1} marginBottom={1}>
           <Text color={theme.text.accent}>{THINKING_MARK}</Text>
           <Text dimColor>
             {"对话已压缩"}
-            {item.originalTokenCount && item.newTokenCount
-              ? ` (${item.originalTokenCount} → ${item.newTokenCount} tokens)`
-              : ""}
+            {evidence ? ` (${evidence})` : ""}
           </Text>
         </Box>
       );
+    }
 
     case "model":
       return (

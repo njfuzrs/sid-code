@@ -103,6 +103,9 @@ export function getConversationClearedPatch(): Partial<TUIState> {
     costUSD: 0,
     cacheSavingsUSD: 0,
     contextPercent: 0,
+    // P1-2/P1-5：0 / "none" 表示"上游还没推送过"，Footer 会退回只显示 contextPercent
+    contextTriggerPercent: 0,
+    contextLevel: "none",
     statusMessage: "",
     lastToolResult: null,
     streamingText: "",

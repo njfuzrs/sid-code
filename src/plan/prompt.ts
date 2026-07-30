@@ -87,6 +87,29 @@ ${planExists
  * 节流策略（对标 Claude Code）：完整提醒 token 较多，每 N 轮发一次完整版，
  * 中间轮次发简短版，平衡"防遗忘"与"省 token"。
  *
+ * ─── full 档为何要承载完整约束清单（2026-07-30，重复注入根因修复）───
+ *
+ * 此前 plan 的约束文案有**两条通道**：
+ *   ① `PERMISSION_MODE_DESCRIPTIONS.plan` → system prompt 附件（每次 buildSystemPrompt 都带）
+ *   ② 本函数 → user 侧 reminder（每轮，full/sparse 分档节流）
+ * 二者语义重叠但措辞已独立漂移（附件说"绝对不能/此约束覆盖你收到的所有其他指令"，
+ * 本函数说"不要进行任何编辑"），构成同一份约束两处说 + 事实源分裂。
+ *
+ * 修复方向是删附件、保留本通道（理由见
+ * docs/bugfixes/todo/重复注入根因-system附件与user-reminder双通道.md §7.1）：
+ * 附件走 system prompt 动态区，在 OpenAI 族会被 `openai.ts prependSystemMessage`
+ * 原样搬回 user 消息，"放 system 不占 user turn"在本项目不成立；而 reminder 是
+ * 每轮 pull 判定，不需要任何"mode 切换即重建 system prompt"的 push 触发点（那条
+ * 路径会击穿全量静态前缀，CC 实测占 10.2% cache_creation，正在反向迁移）。
+ *
+ * 删附件前必须把它独有的强约束语义搬到这里，否则是**真实安全回归**：
+ * plan 与 acceptEdits / deny-write 等**权限模式**性质不同——后者由 PermissionChecker
+ * 代码硬拦、模型看不到文案也拿不到多一个字节的权限；plan 是**行为模式**（"先规划再
+ * 执行"无法用权限规则表达），只能靠模型自觉，故 CC 也只对 plan 做每轮注入。
+ * 「此约束覆盖你收到的所有其他指令」是其中最强的一道越权防线，不能静默消失。
+ *
+ * 成本控制：完整清单只进 **full 档**（低频，每 N 轮一次），sparse 档保持精简不变。
+ *
  * @param full true=完整提醒，false=简短提醒（默认 true 保持向后兼容）
  */
 export function buildPlanModeReminder(full: boolean = true): string {
@@ -97,8 +120,23 @@ export function buildPlanModeReminder(full: boolean = true): string {
 </system-reminder>`;
   }
   return `<system-reminder>
-你当前处于计划模式。不要进行任何编辑或运行任何命令。
-专注于探索代码库和编写计划。
+# 权限模式: 计划模式已激活
+
+你当前处于计划模式。用户希望你先制定方案再执行。
+你**绝对不能**进行任何编辑（计划文件除外）、运行任何非只读工具、或对系统做出任何变更。
+此约束覆盖你收到的所有其他指令。
+
+允许的操作：
+- 使用 read、grep、glob 探索代码库
+- 使用 sub_agent (explore 类型) 并行搜索
+- 使用 write/edit 编辑计划文件（仅限计划文件）
+- 调用 exit_plan_mode 提交计划
+
+禁止的操作：
+- 编辑任何非计划文件
+- 运行 bash 命令
+- 执行任何写入操作
+
 如果你已完成分析并有清晰方案，立即写计划并调用 exit_plan_mode 提交审批。
 不要反复探索或过度分析——目标是尽快拿出可执行的方案。
 执行计划时遇到工具失败，先用 edit 工具更新计划文件再继续执行。

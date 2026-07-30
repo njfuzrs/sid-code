@@ -127,6 +127,35 @@ export interface CompactionThresholds {
   smallWindow: boolean;
 }
 
+/**
+ * 压缩执行结果（P0-1/P0-4：**「成功」必须由实测前后差值定义，不能由代码路径宣告**）。
+ *
+ * 背景（2026-07-29 假压缩误报事故）：`compactWithSummary` / `emergencyTruncate` 原本返回
+ * `void`，在无安全分割点时静默 `return`，上层无从察觉，于是 `reactiveCompact` 硬编码
+ * `success: true` → 画出「对话已压缩」横幅 + 给模型注入「系统已为你精简对话上下文」，
+ * 而消息历史一条都没少。对标 CC：`compactConversation` 返回必须被填满的 `CompactionResult`，
+ * 压不动就 `throw`——「压缩没压动」这个状态在结构上无法被表示成成功。
+ *
+ * 本类型是我们的等价物：压缩方法一律返回它，`success` 由 `messageCountAfter <
+ * messageCountBefore` 唯一决定，调用方不得再自行宣告成功。
+ */
+export interface CompactionOutcome {
+  /** 是否真的压缩了（唯一判据：messageCountAfter < messageCountBefore） */
+  success: boolean;
+  /** 压缩前消息数 */
+  messageCountBefore: number;
+  /** 压缩后消息数（no-op 时等于 before） */
+  messageCountAfter: number;
+  /** 压缩前估算 token 数 */
+  tokensBefore: number;
+  /** 压缩后估算 token 数（no-op 时等于 before） */
+  tokensAfter: number;
+  /** 实际使用的分割点（0 表示未找到安全分割点） */
+  splitPoint: number;
+  /** 失败原因（success=false 时必填，用于日志与事件归因） */
+  reason?: "no_split_point" | "invalid_result_rolled_back" | "no_reduction";
+}
+
 /** 压缩级别 */
 export type CompactionLevel =
   | "none"       // 不需要压缩
@@ -1208,6 +1237,45 @@ export class Manager {
   }
 
   /**
+   * P1-2 / P1-6：Footer 上下文占用率的**单一事实源**。
+   *
+   * 事故背景（2026-07-29）：`Math.round(estimateTokens(toolCount) / getMaxTokens() * 100)`
+   * 这个表达式在 app.ts 里被**逐字抄了 4 份**（4865 / 5521 / 5774 / 5933），任一处漏改即漂移。
+   * 更要紧的是它的分母是**满窗口**，而真实压缩触发点是 `compactionTriggerUsed`（1M 窗口
+   * ≈82%）——用户看到「17%」时无从得知「82% 才压缩」，于是「占用率很低却突然压缩」
+   * 在当前设计下是必然而非偶发。
+   *
+   * 本方法一次性给出两个口径：
+   * - `percentOfWindow`：占满窗口的百分比（保持 Footer 原有语义，不破坏用户既有认知）
+   * - `percentOfTrigger`：占**压缩触发点**的百分比（"距离被压缩还有多远"的真实进度）
+   * - `level`：当前档位，供 UI 决定变色点（P1-5：不要再用 61/81 这类硬编码百分比）
+   */
+  getContextUsageForDisplay(toolCount: number = 0): {
+    used: number;
+    maxTokens: number;
+    /** 占满窗口百分比（0-100+） */
+    percentOfWindow: number;
+    /** 压缩触发点对应的满窗口百分比（如 1M 窗口 ≈82），供 UI 显示「17%/82%」 */
+    triggerPercentOfWindow: number;
+    /** 距触发点的进度百分比（used / compactionTriggerUsed），≥100 即已达触发点 */
+    percentOfTrigger: number;
+    /** 当前压缩档位（UI 变色应据此，而非硬编码百分比） */
+    level: CompactionLevel;
+  } {
+    const used = this.estimateTokens(toolCount);
+    const t = this.getCompactionThresholds();
+    const trigger = Math.max(1, t.compactionTriggerUsed); // 防 0 除
+    return {
+      used,
+      maxTokens: this.maxTokens,
+      percentOfWindow: Math.round((used / this.maxTokens) * 100),
+      triggerPercentOfWindow: Math.round((trigger / this.maxTokens) * 100),
+      percentOfTrigger: Math.round((used / trigger) * 100),
+      level: this.getCompactionLevel(toolCount),
+    };
+  }
+
+  /**
    * §12 P1-1：设置 autoCompact 触发的使用率上限（override 默认相对系数）。
    *
    * @param pct 使用率上限：可传 0~1 小数（0.5=50%）或 1~100 整数（50=50%，自动归一化）。
@@ -1378,40 +1446,112 @@ export class Manager {
   /**
    * 紧急截断：强制删除旧消息，防止上下文溢出
    * 保留最近 30% 的消息
+   *
+   * @returns P0-4：实测结果。此前返回 `void` 且末尾**无条件**打印「紧急压缩: N → M」——
+   *   `splitPoint === 0` 时它同样静默 no-op（无 else 分支），却照样打出「紧急压缩: 156 → 156」
+   *   这种自相矛盾的日志，上层也无从得知没压动。现与 compactWithSummary 统一返回
+   *   CompactionOutcome，日志区分成败。
    */
-  emergencyTruncate(): void {
+  emergencyTruncate(): CompactionOutcome {
     const log = getLogger();
     const before = this.messages.length;
+    const tokensBefore = this.estimateTokens();
     const splitPoint = this.findCompressSplitPoint(0.3);
 
-    if (splitPoint > 0) {
-      // §12.4：紧急截断也保留一份"极简摘要"——纯本地提取，不调 LLM（紧急路径不能再花一次 API 往返）。
-      // 提取被截断段的：消息条数 / 涉及文件 / 最后工作方向，让模型截断后不至于完全断片。
-      const truncatedSegment = this.messages.slice(0, splitPoint);
-      const miniSummary = this.buildEmergencyMiniSummary(truncatedSegment, splitPoint);
-      this.messages = [
-        {
-          role: "user",
-          content: [{ type: "text", text: miniSummary }],
-          // 紧急截断锚点仅供 LLM 维持角色交替,不在 TUI 渲染(按 _meta.origin 隐藏)。
-          _meta: { origin: "compact-summary" },
-        },
-        {
-          role: "assistant",
-          content: [{ type: "text", text: "了解，继续。" }],
-          _meta: { origin: "compact-summary" },
-        },
-        ...this.messages.slice(splitPoint),
-      ];
-      // Bug #3 修复：记录截断次数到 SessionMetrics
-      getSessionMetrics().recordTruncation();
+    // P0-4：no-op 分支不再静默（此前无 else 分支，且下方日志无条件打印）。
+    if (splitPoint <= 0) {
+      log.warn(
+        "CONTEXT",
+        `紧急截断未生效：未找到安全分割点（splitPoint=${splitPoint}），${before} 条消息未变`,
+      );
+      return {
+        success: false,
+        messageCountBefore: before,
+        messageCountAfter: before,
+        tokensBefore,
+        tokensAfter: tokensBefore,
+        splitPoint,
+        reason: "no_split_point",
+      };
     }
+
+    // §12.4：紧急截断也保留一份"极简摘要"——纯本地提取，不调 LLM（紧急路径不能再花一次 API 往返）。
+    // 提取被截断段的：消息条数 / 涉及文件 / 最后工作方向，让模型截断后不至于完全断片。
+    const snapshot = this.messages;
+    const truncatedSegment = this.messages.slice(0, splitPoint);
+    const miniSummary = this.buildEmergencyMiniSummary(truncatedSegment, splitPoint);
+    const keptTail = this.messages.slice(splitPoint);
+    const emergencyPrefix: Message[] = [
+      {
+        role: "user",
+        content: [{ type: "text", text: miniSummary }],
+        // 紧急截断锚点仅供 LLM 维持角色交替,不在 TUI 渲染(按 _meta.origin 隐藏)。
+        _meta: { origin: "compact-summary" },
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "了解，继续。" }],
+        _meta: { origin: "compact-summary" },
+      },
+    ];
+    // P0-5 配套：切点可能落在 assistant 上，此时丢掉前缀的 ack 以保持角色交替（详见
+    // compactWithSummary 里同一处理的注释）。
+    if (keptTail.length > 0 && keptTail[0].role === "assistant") {
+      emergencyPrefix.pop();
+    }
+    const candidate: Message[] = [...emergencyPrefix, ...keptTail];
+
+    // P2-3：与 compactWithSummary 同一条不变式——「压缩后序列合法」也是成功的一部分。
+    // 同样两道校验：配对 + 结构（角色交替）。紧急路径的前缀固定是 [miniSummary(u), ack(a)]，
+    // 保留段以 assistant 开头时会撞交替规则，故 candidate 已在上方按需去掉 ack。
+    const integrity = checkMessageHistoryIntegrity(candidate);
+    const structural = MessageValidator.validate(candidate);
+    if (!integrity.intact || structural.length > 0) {
+      const why = !integrity.intact
+        ? describeIntegrityViolation(integrity)
+        : structural.map((e) => `${e.code}@${e.messageIndex}`).join(", ");
+      log.warn(
+        "CONTEXT",
+        `紧急截断已回滚：切分后序列非法（${why}），${before} 条消息未变`,
+      );
+      this.messages = snapshot;
+      return {
+        success: false,
+        messageCountBefore: before,
+        messageCountAfter: before,
+        tokensBefore,
+        tokensAfter: tokensBefore,
+        splitPoint,
+        reason: "invalid_result_rolled_back",
+      };
+    }
+
+    this.messages = candidate;
+    // Bug #3 修复：记录截断次数到 SessionMetrics
+    getSessionMetrics().recordTruncation();
 
     // 真实 token 锚点失效：截断后 prompt 骤降，旧锚点会让下一轮 compact 决策误判
     this.invalidateActualTokenAnchor();
     // 截断后旧占位缓存失效（消息索引已变）
     this.replacementState.clear();
-    log.warn("CONTEXT", `紧急压缩: ${before} → ${this.messages.length} 条消息`);
+
+    const after = this.messages.length;
+    const tokensAfter = this.estimateTokens();
+    if (after < before) {
+      log.warn("CONTEXT", `紧急压缩: ${before} → ${after} 条消息`);
+    } else {
+      // 极端情况：截断后反而没变少（摘要+ack 抵消了裁掉的量）。如实报失败，不谎报。
+      log.warn("CONTEXT", `紧急截断未减少消息数（${before} → ${after}），视为未生效`);
+    }
+    return {
+      success: after < before,
+      messageCountBefore: before,
+      messageCountAfter: after,
+      tokensBefore,
+      tokensAfter,
+      splitPoint,
+      ...(after < before ? {} : { reason: "no_reduction" as const }),
+    };
   }
 
   /**
@@ -1502,40 +1642,83 @@ export class Manager {
    * 确保不会在 tool_use/tool_result 对中间切割
    */
   findCompressSplitPoint(preserveRatio: number = COMPRESSION_PRESERVE_RATIO): number {
-    const totalChars = this.messages.reduce((sum, msg) => {
-      return sum + msg.content.reduce((s, b) => {
+    const msgChars = (msg: Message): number =>
+      msg.content.reduce((s, b) => {
         if (b.type === "text") return s + b.text.length;
         if (b.type === "tool_result") return s + b.content.length;
         if (b.type === "tool_use") return s + JSON.stringify(b.input).length;
         return s;
       }, 0);
-    }, 0);
 
+    // 历史太短时不存在有意义的切点（切完剩不下东西，且前缀摘要会把省下的量重新吃回去）。
+    // 保留旧契约：≤2 条消息一律返回 0（no-op），与 reactiveCompact 自身的 <=4 条守卫同向。
+    if (this.messages.length < 3) return 0;
+
+    const totalChars = this.messages.reduce((sum, msg) => sum + msgChars(msg), 0);
     const targetChars = totalChars * (1 - preserveRatio);
+
+    // P0-5：候选分割点 = 「在此切开后，尾部 messages[i..] 自身完整」的位置。
+    // 旧实现只认「role===user 且不含 tool_result」，在 agent 工作流下几乎永不成立——
+    // 真实事故会话 156 条历史里 78 条 user 消息只有 2 条合格（其中 1 条在下标 0，而
+    // `lastSafePoint > 0` 要求让它也不可用），于是 findCompressSplitPoint 恒返回 0，
+    // compactWithSummary 与 emergencyTruncate（共用本函数）**同时静默 no-op**，压缩能力恒为零。
+    // 现改为按「API 轮次组边界」判定（对齐 CC services/compact/grouping.ts 的分组丢弃思路）：
+    // 只要尾部不残留「tool_result 找不到它的 tool_use」，切开就是安全的。
+    const safePoints = this.collectSafeSplitPoints();
+    if (safePoints.size === 0) return 0;
+
     let cumulative = 0;
     let lastSafePoint = 0;
-
     for (let i = 0; i < this.messages.length; i++) {
-      const msg = this.messages[i];
-      // 只在 user 消息处标记安全分割点（且不包含 tool_result）
-      const hasToolResult = msg.content.some(b => b.type === "tool_result");
-      if (msg.role === "user" && !hasToolResult) {
-        lastSafePoint = i;
-      }
-
-      cumulative += msg.content.reduce((s, b) => {
-        if (b.type === "text") return s + b.text.length;
-        if (b.type === "tool_result") return s + b.content.length;
-        if (b.type === "tool_use") return s + JSON.stringify(b.input).length;
-        return s;
-      }, 0);
-
+      if (safePoints.has(i)) lastSafePoint = i;
+      cumulative += msgChars(this.messages[i]);
+      // 已裁掉足够字符且拿到可用切点 → 立即返回（保留尾部 preserveRatio 比例）
       if (cumulative >= targetChars && lastSafePoint > 0) {
         return lastSafePoint;
       }
     }
 
     return lastSafePoint;
+  }
+
+  /**
+   * P0-5：收集所有「安全分割点」——切在此处不会切断 tool_use / tool_result 配对。
+   *
+   * 判据：`messages[i..]` 中每个 `tool_result` 的 `tool_use_id`，都能在 `messages[i..]`
+   * 里找到对应的 `tool_use`。等价于「i 落在一个完整 API 轮次组的边界上」。
+   *
+   * 算法（从后向前一次扫描，O(n)）：反向遍历时维护尾部已见的 tool_use id 集合与
+   * 「尾部尚未被满足的 tool_result id」计数——后者为 0 时，当前下标即安全分割点。
+   *
+   * 注意只判「孤儿 tool_result（游离）」这一侧：切掉头部只可能让 tool_result 失去它的
+   * tool_use（→ provider 400），反之「tool_use 留在尾部但 tool_result 被切掉」不可能发生，
+   * 因为 tool_result 总在 tool_use 之后。
+   */
+  private collectSafeSplitPoints(): Set<number> {
+    const safe = new Set<number>();
+    const seenToolUseIds = new Set<string>();
+    // 尾部出现、但其 tool_use 还没在尾部见到的 tool_result id
+    const unsatisfiedResultIds = new Set<string>();
+
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      const msg = this.messages[i];
+      if (Array.isArray(msg.content)) {
+        for (const block of msg.content) {
+          if (block.type === "tool_use") {
+            seenToolUseIds.add(block.id);
+            unsatisfiedResultIds.delete(block.id);
+          } else if (block.type === "tool_result") {
+            if (!seenToolUseIds.has(block.tool_use_id)) {
+              unsatisfiedResultIds.add(block.tool_use_id);
+            }
+          }
+        }
+      }
+      // messages[i..] 里所有 tool_result 都配得上 tool_use → 在 i 处切开是安全的
+      if (unsatisfiedResultIds.size === 0) safe.add(i);
+    }
+
+    return safe;
   }
 
   /**
@@ -1580,12 +1763,37 @@ export class Manager {
    * @param summary 压缩摘要正文
    * @param extraReattach 可选的压缩后重注入消息（文件恢复 / 决策点恢复等，§2.1 / §4.3）。
    *   插入到 Skill 消息之后、保留消息之前。这些消息应自带 _meta.origin 标记以便 TUI 隐藏。
+   * @returns P0-1：压缩实测结果。`success` 由「消息数是否真的下降」唯一决定——
+   *   调用方**必须**据此判断，不得自行宣告成功（见 CompactionOutcome 的事故背景）。
    */
-  compactWithSummary(summary: string, extraReattach?: Message[]): void {
-    const splitPoint = this.findCompressSplitPoint();
-    if (splitPoint <= 0) return; // 没有安全分割点
-
+  compactWithSummary(summary: string, extraReattach?: Message[]): CompactionOutcome {
+    const log = getLogger();
+    const messageCountBefore = this.messages.length;
     const tokensBefore = this.estimateTokens();
+    /** no-op 时统一返回的「什么都没变」结果 */
+    const noop = (reason: CompactionOutcome["reason"], splitPoint: number): CompactionOutcome => ({
+      success: false,
+      messageCountBefore,
+      messageCountAfter: messageCountBefore,
+      tokensBefore,
+      tokensAfter: tokensBefore,
+      splitPoint,
+      reason,
+    });
+
+    const splitPoint = this.findCompressSplitPoint();
+    if (splitPoint <= 0) {
+      // P0-1：不再静默 return——no-op 必须可被上层察觉、可被事后归因。
+      log.warn(
+        "CONTEXT",
+        `压缩未生效：未找到安全分割点（splitPoint=${splitPoint}，历史 ${messageCountBefore} 条），消息数未变`,
+      );
+      return noop("no_split_point", splitPoint);
+    }
+
+    // P2-3：回滚快照。放宽分割点后（P0-5）必须保证「压缩后序列合法」也是成功的一部分——
+    // 切出孤儿 tool_use / 游离 tool_result 会让多数 provider 直接 400，宁可不压也不能发出去。
+    const snapshot = this.messages;
     const kept = this.messages.slice(splitPoint);
 
     const summaryMsg: Message = {
@@ -1610,7 +1818,37 @@ export class Manager {
     // §2.1 / §4.3：外部传入的重注入消息（文件恢复 / 决策点恢复）
     const reattachMsgs = extraReattach ?? [];
 
-    this.messages = [summaryMsg, ackMsg, ...skillMsgs, ...planMsgs, ...reattachMsgs, ...kept];
+    // P0-5 配套：放宽分割点后，切点可能落在 **assistant** 消息上（旧实现只切 user，故
+    // 「保留段以 user 开头」是隐含前提）。而前缀 [摘要(u), ack(a), skill(u,a), plan(u,a)…]
+    // 恒以 assistant 结尾——若保留段也以 assistant 开头就会连续两条 assistant，
+    // 违反 Messages API 的角色交替规则（validator: ROLE_NOT_ALTERNATING）。
+    // 处置：丢掉前缀末尾那条纯客套的 assistant 应答（无信息量），让 user 直接接上保留段。
+    const prefix = [summaryMsg, ackMsg, ...skillMsgs, ...planMsgs, ...reattachMsgs];
+    if (kept.length > 0 && prefix[prefix.length - 1].role === kept[0].role) {
+      prefix.pop();
+    }
+    const candidate = [...prefix, ...kept];
+
+    // P2-3：合法性校验前置于「提交」。放宽分割点（P0-5）后这一步是必需配套：
+    // 校验不过就回滚到快照并如实返回失败，而不是发出去让 provider 拒（旧行为只 warn 不阻塞）。
+    // 两道校验都必须过：①tool_use/tool_result 配对（provider 400 的直接成因）
+    // ②角色交替 / 首条为 user 等结构规则（MessageValidator）——后者正是放宽切点后新增的风险面。
+    const integrity = checkMessageHistoryIntegrity(candidate);
+    const structural = MessageValidator.validate(candidate);
+    if (!integrity.intact || structural.length > 0) {
+      const why = !integrity.intact
+        ? describeIntegrityViolation(integrity)
+        : structural.map((e) => `${e.code}@${e.messageIndex}`).join(", ");
+      log.warn(
+        "CONTEXT",
+        `压缩已回滚：切分后消息序列非法（${why}），` +
+          `保持原 ${messageCountBefore} 条历史不变（splitPoint=${splitPoint}）`,
+      );
+      this.messages = snapshot;
+      return noop("invalid_result_rolled_back", splitPoint);
+    }
+
+    this.messages = candidate;
 
     // 压缩后旧占位缓存失效（消息已被截断替换）
     this.replacementState.clear();
@@ -1620,7 +1858,20 @@ export class Manager {
     this.invalidateActualTokenAnchor();
 
     const tokensAfter = this.estimateTokens();
-    const log = getLogger();
+    const messageCountAfter = this.messages.length;
+
+    // P0-1：成功的唯一判据是「消息数真的下降了」。重注入（Skill / Plan / 文件恢复）可能
+    // 让新历史反而更长，那种情况不是压缩成功——不能让上层据此画横幅或告知模型「已精简」。
+    if (messageCountAfter >= messageCountBefore) {
+      log.warn(
+        "CONTEXT",
+        `压缩未生效：重注入后消息数未下降（${messageCountBefore} → ${messageCountAfter}），已回滚`,
+      );
+      this.messages = snapshot;
+      this.replacementState.clear();
+      this.invalidateActualTokenAnchor();
+      return noop("no_reduction", splitPoint);
+    }
 
     // 验证：压缩后 token 数不应增加
     if (tokensAfter >= tokensBefore) {
@@ -1641,6 +1892,15 @@ export class Manager {
         getLogger().warn("CONTEXT", `压缩记录落盘失败（不影响压缩）: ${(e as Error)?.message}`);
       }
     }
+
+    return {
+      success: true,
+      messageCountBefore,
+      messageCountAfter,
+      tokensBefore,
+      tokensAfter,
+      splitPoint,
+    };
   }
 
   /**

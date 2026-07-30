@@ -8,7 +8,7 @@ import {
   generateClaudeMdAttachment,
   generateGitStatusAttachment,
   clearGitStatusCache,
-  generatePermissionModeAttachment,
+  PERMISSION_MODE_DESCRIPTIONS,
   generateDiagnosticsAttachment,
   generateTodoListAttachment,
 } from "../../src/config/attachments.ts";
@@ -145,34 +145,36 @@ describe("generateGitStatusAttachment", () => {
   });
 });
 
-describe("generatePermissionModeAttachment", () => {
-  test("默认模式", () => {
-    const attachment = generatePermissionModeAttachment("default");
-    expect(attachment.type).toBe("permissionMode");
-    expect(attachment.priority).toBe(PRIORITY.MODE_REMINDER);
-    expect(attachment.content).toContain("默认");
-  });
-
-  test("plan 模式", () => {
-    const attachment = generatePermissionModeAttachment("plan");
-    expect(attachment.content).toContain("计划模式已激活");
-    expect(attachment.content).toContain("绝对不能");
-  });
-
-  test("未知模式回退到默认", () => {
-    const attachment = generatePermissionModeAttachment("unknown_mode");
-    expect(attachment.content).toContain("默认");
-  });
-
+// generatePermissionModeAttachment 的 describe 已删除（2026-07-30，重复注入根因修复 P0）：
+// 该函数随 system 附件通道一起删除，权限模式文案现在只走 user reminder 通道。
+// 但下面那条「键对齐」守卫**必须保留**——它保护的消费方从"附件 + reminder"变成了
+// 只剩 reminder（buildPermissionModeReminder 取不到键会 return null 静默不注入，
+// 比回退到 default 更隐蔽）。断言主体从函数改为直接查常量表。
+describe("PERMISSION_MODE_DESCRIPTIONS — 键与运行时 mode 对齐", () => {
   // 键盘 Shift+Tab 循环会切到 acceptEdits / auto / always-allow，这些模式必须有专属描述，
-  // 否则 generatePermissionModeAttachment / buildPermissionModeReminder 会静默回退到 default，
-  // 导致模型收到的约束与实际模式不符。
+  // 否则 buildPermissionModeReminder 取不到键会返回 null → 整条提醒静默丢失，
+  // 模型收到的约束与实际模式不符。
   test("键盘循环涉及的模式均有专属描述（非 default 回退）", () => {
     for (const mode of ["acceptEdits", "auto", "always-allow"]) {
-      const attachment = generatePermissionModeAttachment(mode);
-      // 专属描述的标题含模式自身语义，且不等同于 default 的“执行以下操作前必须请求用户确认”
-      expect(attachment.content).not.toBe(generatePermissionModeAttachment("default").content);
+      const description = PERMISSION_MODE_DESCRIPTIONS[mode];
+      expect(description).toBeDefined();
+      expect(description).not.toBe(PERMISSION_MODE_DESCRIPTIONS.default);
     }
+  });
+
+  // 非 default / 非 plan 的运行时 mode 都会走 reminder 通道（loop.ts 只排除 default 与 plan），
+  // 每一个都必须有键，否则该 mode 下模型完全收不到约束文案。
+  test("除 default/plan 外的全部运行时 mode 都有键", () => {
+    for (const mode of ["always-allow", "acceptEdits", "deny-write", "dontAsk", "auto", "dangerously-skip-permissions"]) {
+      expect(PERMISSION_MODE_DESCRIPTIONS[mode]).toBeDefined();
+    }
+  });
+
+  // plan 键已随附件通道一起删除：它的唯一消费方被 loop.ts 的 `mode !== "plan"` 排除，
+  // 文案已并入 plan/prompt.ts 的 buildPlanModeReminder full 档（单一事实源）。
+  // 这条守卫防止有人"看到少个 mode 就补回来"，导致两份 plan 文案再次独立漂移。
+  test("plan 键不得复活（文案单一事实源在 plan/prompt.ts）", () => {
+    expect(PERMISSION_MODE_DESCRIPTIONS.plan).toBeUndefined();
   });
 });
 

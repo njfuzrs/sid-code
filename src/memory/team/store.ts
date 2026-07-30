@@ -15,7 +15,7 @@ import { readdir, readFile, writeFile } from "fs/promises";
 import { getLogger } from "../../debug/logger.ts";
 import { getTeamMemPath } from "./paths.ts";
 import { scanForSecrets } from "./secret-scanner.ts";
-import { inferMemoryType } from "../store.ts";
+import { inferMemoryType, normalizeMemoryDesc } from "../store.ts";
 import { memoryFilename } from "../paths.ts";
 import { MEMORY_LIMITS, type MemoryType } from "../types.ts";
 
@@ -34,7 +34,10 @@ export interface TeamMemoryWriteResult {
 
 /** 序列化为 .md 文件内容（与 store.ts 的 serializeMemoryFile 同格式） */
 function serialize(key: string, value: string, description: string, type: MemoryType, now: number): string {
-  const desc = (description || value.split("\n")[0] || "").replace(/\n/g, " ").slice(0, 150);
+  // 与私有索引同一根治点：desc 缺省回退取正文首行时，必须剥离 markdown 标题等结构
+  // 标记，否则 `## 陈述句` 进索引后随 system prompt 注入，模型会误当成用户输入
+  // （见 store.ts normalizeMemoryDesc 注释里的 2026-07-29 实测事故）。
+  const desc = normalizeMemoryDesc(description, value);
   return [
     "---",
     `name: ${key}`,
@@ -74,7 +77,9 @@ export async function rebuildTeamIndex(dir: string): Promise<void> {
       const nameM = text.match(/^name:\s*(.+)$/m);
       const descM = text.match(/^description:\s*(.+)$/m);
       const name = nameM?.[1]?.trim() || filename.replace(/\.md$/, "");
-      const desc = descM?.[1]?.trim() || "";
+      // 读侧也过归一化：既有旧文件的 frontmatter 里可能已存着 `## 标题`（本次修复前
+      // 写入的），重建索引时剥掉，否则旧数据的陈述句标题会一直漏进注入侧索引。
+      const desc = normalizeMemoryDesc(descM?.[1]?.trim(), "");
       lines.push(`- [${name}](${filename})${desc ? ` — ${desc}` : ""}`);
     } catch {
       /* 跳过损坏文件 */

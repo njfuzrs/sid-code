@@ -150,7 +150,13 @@ export function replaceEmptyParamToolUses(
  * @param hits 本轮命中的空参数工具
  * @param attempt 当前是第几次重试（1-based）
  * @param maxAttempts 最大重试次数
- * @param compacted 本轮是否已执行上下文压缩（用于措辞）
+ * @param compacted 本轮是否**真的**执行了上下文压缩（用于措辞）。
+ *   P0-3（2026-07-29 事故）：调用方过去传的是 `reactiveCompact` 硬编码的 `success: true`，
+ *   于是在「消息一条没少」时也拼上「系统已为你精简对话上下文」。这句假话进了模型上下文后，
+ *   模型此后 30 条回复反复提及「上下文被压缩」、开始给自己的推理打折扣、绕圈子——
+ *   用户报的「模型不停说效果打折扣」就是它造成的，不是模型退化。
+ *   现在调用方传的是实测结果（P0-1），且低占用下压根不压缩（P0-2），本参数为 false
+ *   时**绝不会**出现任何「已精简上下文」字样。
  * @param stopReason 本轮响应的 stop_reason（=max_tokens/length 时归因为"截断"，
  *        给分段写入建议；否则只陈述"参数为空"事实，不臆造根因）
  */

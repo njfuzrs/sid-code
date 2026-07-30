@@ -45,6 +45,7 @@ import {
   getThinkingEnvOverride,
 } from "../llm/effort.ts";
 import { isPromptTooLongError, reactiveCompact, DiminishingReturnsDetector } from "./reactive-compact.ts";
+import type { ReactiveCompactResult } from "./reactive-compact.ts";
 import {
   parseTokenBudgetDirective,
   buildBudgetContinuationMessage,
@@ -197,6 +198,97 @@ function isTimeoutError(err: unknown, turnSignal?: AbortSignal | null): boolean 
     return true;
   }
   return false;
+}
+
+/**
+ * P2-2：连续压缩失败的熔断阈值（对标 CC 的 `MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3`）。
+ * 达到该次数后停止自动压缩尝试，改为如实提示用户手动 /compact 或开新会话。
+ */
+const MAX_CONSECUTIVE_COMPACT_FAILURES = 3;
+
+/**
+ * P1-3 + P2-1：把一次压缩尝试收敛成「唯一的横幅判据 + 唯一的埋点出口」。
+ *
+ * 事故背景（2026-07-29 假压缩误报）：`yield { kind: "compact" }` 是与消息数组**完全解耦**的
+ * 独立 UI 信号，8 处调用点任一误发就画出「对话已压缩」横幅。那次消息历史一条都没少，横幅
+ * 却照画，还顺带给模型注入了「系统已为你精简对话上下文」——模型随后 30 条回复自我否定。
+ *
+ * 本函数把「压缩到底成没成」的判定收成一处：调用方给出压缩前后的消息数，由这里决定
+ * ①要不要 yield 横幅（`after < before` 才 yield）②往 events.jsonl 落一条什么样的
+ * CompactionAttempt 事件（成败都落，这样「压缩了几次、成了几次」可直接统计）。
+ *
+ * 返回 null 表示「没压动」，调用方据此跳过横幅；返回事件对象则由调用方 yield 出去
+ * （generator 的 yield 不能跨函数边界，所以这里只造事件不 yield）。
+ */
+function settleCompaction(
+  deps: QueryDeps,
+  sessionId: string,
+  info: {
+    /** 触发来源，用于区分「阈值压缩」与「错误恢复」两类性质完全不同的压缩 */
+    trigger:
+      | "threshold_blocking"
+      | "threshold_emergency"
+      | "threshold_hard"
+      | "prompt_too_long"
+      | "prompt_too_long_stream"
+      | "context_overflow"
+      | "empty_param_retry"
+      | "ctx_window_exceeded";
+    messageCountBefore: number;
+    messageCountAfter: number;
+    tokensBefore?: number;
+    tokensAfter?: number;
+    /** 生效策略（reactiveCompact 会给出 snip/emergency/none） */
+    strategy?: string;
+  },
+): { kind: "compact"; messageCountBefore: number; messageCountAfter: number; savedTokens?: number } | null {
+  const success = info.messageCountAfter < info.messageCountBefore;
+  const savedTokens =
+    info.tokensBefore !== undefined && info.tokensAfter !== undefined
+      ? info.tokensBefore - info.tokensAfter
+      : undefined;
+
+  // P2-1：成败都落盘。此前压缩路径零结构化埋点，本次排查只能靠交叉比对 messages.json
+  // 的 _meta.origin 反推「压缩到底有没有执行」——这条事件让它可被直接统计。
+  if (deps.traceAppendEvent) {
+    try {
+      deps.traceAppendEvent({
+        event: "CompactionAttempt",
+        session_id: sessionId,
+        timestamp: new Date().toISOString(),
+        data: {
+          trigger: info.trigger,
+          success,
+          messageCountBefore: info.messageCountBefore,
+          messageCountAfter: info.messageCountAfter,
+          ...(savedTokens !== undefined ? { savedTokens } : {}),
+          ...(info.strategy ? { strategy: info.strategy } : {}),
+        },
+      });
+    } catch {
+      /* 埋点失败绝不阻断主循环 */
+    }
+  }
+
+  if (!success) {
+    getLogger().warn(
+      "QUERY_LOOP",
+      `压缩未生效（trigger=${info.trigger}）：消息数 ${info.messageCountBefore} → ${info.messageCountAfter}，不画压缩横幅`,
+    );
+    return null;
+  }
+
+  // 压缩真的发生了 → 前缀必然改变、cache 必然脱落，这是预期而非异常。
+  // P1-4：抑制紧接的一次 cache break 误报，避免把压缩导致的脱落误归因成「服务端波动」
+  // （那会污染项目北极星「更省」赖以度量的 cache 归因数据）。
+  notifyCompaction("main");
+
+  return {
+    kind: "compact",
+    messageCountBefore: info.messageCountBefore,
+    messageCountAfter: info.messageCountAfter,
+    ...(savedTokens !== undefined ? { savedTokens } : {}),
+  };
 }
 
 /**
@@ -473,24 +565,43 @@ export async function* queryLoop(
     if (isBlocking) {
       log.warn("QUERY_LOOP", `上下文阻塞 (剩余 ${remainingTokens} tokens)，强制截断`);
       const msgCountBefore = ctxMgr.messageCount();
-      ctxMgr.emergencyTruncate();
+      const truncated = ctxMgr.emergencyTruncate();
       ctxMgr.addCompactBoundary(`阻塞级压缩：剩余 ${remainingTokens} tokens`, msgCountBefore);
       ctxMgr.releaseBeforeBoundary();
       state.goalReminderPendingAfterCompact = true;
       state.todoReminderPendingAfterCompact = true;
-        yield { kind: "compact" };
+      state.deferredToolsPendingAfterCompact = true;
+      {
+        // P1-3：横幅只在真压动时画。addCompactBoundary 会插入边界消息，故 after 取实测值。
+        const banner = settleCompaction(deps, sessionState.sessionId, {
+          trigger: "threshold_blocking",
+          messageCountBefore: msgCountBefore,
+          messageCountAfter: truncated.messageCountAfter,
+          tokensBefore: truncated.tokensBefore,
+          tokensAfter: truncated.tokensAfter,
+        });
+        if (banner) yield banner;
+      }
     } else {
       switch (compactionLevel) {
       case "emergency":
         log.warn("QUERY_LOOP", `上下文紧急 (${usagePercent.toFixed(0)}%)，强制截断`);
         {
           const msgCountBefore = ctxMgr.messageCount();
-          ctxMgr.emergencyTruncate();
+          const truncated = ctxMgr.emergencyTruncate();
           ctxMgr.addCompactBoundary(`紧急压缩：使用率 ${usagePercent.toFixed(0)}%`, msgCountBefore);
+          state.goalReminderPendingAfterCompact = true;
+          state.todoReminderPendingAfterCompact = true;
+          state.deferredToolsPendingAfterCompact = true;
+          const banner = settleCompaction(deps, sessionState.sessionId, {
+            trigger: "threshold_emergency",
+            messageCountBefore: msgCountBefore,
+            messageCountAfter: truncated.messageCountAfter,
+            tokensBefore: truncated.tokensBefore,
+            tokensAfter: truncated.tokensAfter,
+          });
+          if (banner) yield banner;
         }
-        state.goalReminderPendingAfterCompact = true;
-        state.todoReminderPendingAfterCompact = true;
-        yield { kind: "compact" };
         break;
       case "hard": {
         log.warn("QUERY_LOOP", `上下文接近上限 (${usagePercent.toFixed(0)}%)，启动渐进式压缩管道`);
@@ -550,7 +661,18 @@ export async function* queryLoop(
         ctxMgr.releaseBeforeBoundary();
         state.goalReminderPendingAfterCompact = true;
         state.todoReminderPendingAfterCompact = true;
-        yield { kind: "compact" };
+        state.deferredToolsPendingAfterCompact = true;
+        {
+          // hard 档走的是「渐进式管道 + 可选 autoCompact/collapse」，压缩量不由单个函数返回，
+          // 故 after 取实测消息数——这条路径同样必须满足「没压动就不画横幅」。
+          const banner = settleCompaction(deps, sessionState.sessionId, {
+            trigger: "threshold_hard",
+            messageCountBefore: msgCountBefore,
+            messageCountAfter: ctxMgr.messageCount(),
+            strategy: pipelineResult.steps.join(" → ") || undefined,
+          });
+          if (banner) yield banner;
+        }
         break;
       }
       case "soft":
@@ -626,8 +748,16 @@ export async function* queryLoop(
     // 这里不对 cleanedMessages 做 in-place 修改，而是构建新的 messages 数组。
     let finalMessages = cleanedMessages;
 
-    // 收集本轮要注入的 system-reminder 片段（plan 提醒 + todo 回注）
+    // 收集本轮要注入的 system-reminder 片段（plan 提醒 + todo 回注 + 背景元信息…）。
+    //
+    // ambient 档：背景元信息，注入到**用户指令之后**（见 reminder-inject.ts 不变量 2）。
+    // 2026-07-29 实测事故：所有片段一律前置时，真实 /commit 指令被顶到 user message 的
+    // 40% 偏移，模型第一眼看到的是工具列表和 MCP 说明，转而抓记忆索引标题当用户意图。
     const reminderParts: string[] = [];
+    // critical 档：止损阀，保持前置（"必须在被冻结快照带偏前先读到实时事实"）。
+    // 只在 tool_result 轮触发、彼时无用户新指令，故前置不会淹没任何东西。
+    // ⚠️ 新增成员前先读 reminder-inject.ts 的 ReminderTiers.critical 注释。
+    const criticalReminderParts: string[] = [];
 
     // 缺口 A：上下文压力告知（使用率超阈值才注入）。
     // usagePercent / remaining 已在上方"上下文使用率监控"段算出（loop.ts:146-147）。
@@ -753,10 +883,16 @@ export async function* queryLoop(
       const hasEditCapability = !!(toolRegistry.get("edit") || toolRegistry.get("write"));
       const diagnosticText = hasEditCapability ? collectDiagnosticText() : null;
       if (diagnosticText) {
+        // 显式带围栏（P0-a）：injectReminders 有兜底包裹，但这里自己带上让意图显式化。
+        // 尤其重要的是**别再用 `#` markdown 标题开头**——原文案 `# LSP 诊断…` 与用户
+        // prompt 的 `# Commit:` 形态完全混同，是 2026-07-29 那次"模型分不清谁在说话"
+        // 的三处裸注入之一。
         reminderParts.push(
-          `# LSP 诊断（来自语言服务器的实时反馈）\n\n${diagnosticText}\n\n` +
+          `<system-reminder>\n` +
+            `LSP 诊断（来自语言服务器的实时反馈，非用户输入）：\n\n${diagnosticText}\n\n` +
             `以上是语言服务器对你刚编辑文件的实时分析结果。请关注其中的 Error / Warning，` +
-            `在后续工作中修复这些问题；若与当前任务无关可暂不处理，但不要无视真实的类型/语法错误。`,
+            `在后续工作中修复这些问题；若与当前任务无关可暂不处理，但不要无视真实的类型/语法错误。\n` +
+            `</system-reminder>`,
         );
         log.info("QUERY_LOOP", "G1：注入 LSP 诊断反馈");
       }
@@ -918,10 +1054,15 @@ export async function* queryLoop(
     }
 
     // 环节③ 机制2（矛盾中断·注入端）：上一轮检出的矛盾命中，本轮注入高优先级提醒，
-    // 逼模型停下来用 hypothesis_challenge 裁决。放在 reminderParts 最前（unshift），
+    // 逼模型停下来用 hypothesis_challenge 裁决。走 critical 档（前置于用户指令），
     // 让它在所有提醒里最先被读到——抗沉没成本的关键时刻不能被淹没。
+    //
+    // 原实现是 `reminderParts.unshift(...)`。unshift 排出的优先级此前**已经失效**：
+    // deferred-tools 走第二次 injectReminders 调用、整体压在第一次注入的内容之前
+    // （实测偏移 deferred=0 / MCP=366 / 用户指令=1075，注入顺序与代码书写顺序相反）。
+    // 改分档 + 单次调用后，优先级语义才真正生效。
     if (state.pendingContradictions && state.pendingContradictions.length > 0) {
-      reminderParts.unshift(buildContradictionReminder(state.pendingContradictions));
+      criticalReminderParts.push(buildContradictionReminder(state.pendingContradictions));
       log.info(
         "QUERY_LOOP",
         `注入矛盾中断提醒（${state.pendingContradictions.length} 条假设待裁决）`,
@@ -930,27 +1071,28 @@ export async function* queryLoop(
     }
 
     // 方向 2/4/6（git-status 快照冻结死循环止损阀·注入端）：上一轮检出"卡在只读命令上"，
-    // 本轮经 reminderParts 注入携带实时 git 状态的收敛提醒。放在最前（unshift），确保模型
-    // 在被冻结快照带偏前先读到实时事实。走 reminder 通道（仅本轮注入、不落历史、缓存友好），
+    // 本轮经 reminderParts 注入携带实时 git 状态的收敛提醒。走 critical 档（前置于用户
+    // 指令），确保模型在被冻结快照带偏前先读到实时事实。走 reminder 通道（仅本轮注入、不落历史、缓存友好），
     // 与 pendingContradictions 同机制，注入后清空避免重复。
     if (state.pendingStuckReminder) {
-      reminderParts.unshift(state.pendingStuckReminder);
+      criticalReminderParts.push(state.pendingStuckReminder);
       log.info("QUERY_LOOP", "注入无进展止损收敛提醒（实时 git 状态）");
       state.pendingStuckReminder = undefined;
     }
 
     // 方案③（思考发散·注入端）：上一轮检出的思考发散，本轮经 reminder 通道注入收敛提示。
-    // 放在 unshift 高优先级——分析瘫痪时越早读到越好。注入后清空 pending 标记。
+    // 走 critical 档（前置于用户指令）——分析瘫痪时越早读到越好。注入后清空 pending 标记。
     if (state.pendingThinkingDivergenceReminder) {
-      reminderParts.unshift(buildThinkingDivergenceMessage(state.thinkingLenHistory ?? []));
+      criticalReminderParts.push(buildThinkingDivergenceMessage(state.thinkingLenHistory ?? []));
       log.info("QUERY_LOOP", "方案③：注入思考发散收敛提示");
       state.pendingThinkingDivergenceReminder = false;
     }
 
     // P2-1（产出量停滞·注入端）：上一轮检出连续低产出，本轮经 reminder 通道注入软提醒。
-    // 优先级低于思考发散（push 而非 unshift）——分析瘫痪比"可能卡住"更紧急。注入后清空 pending 标记。
+    // 同属止损阀 → critical 档；但排在思考发散之后（本 push 位置即决定档内次序）——
+    // 分析瘫痪比"可能卡住"更紧急。注入后清空 pending 标记。
     if (state.pendingOutputStallReminder) {
-      reminderParts.push(buildOutputStallMessage(state.outputVolumeHistory ?? []));
+      criticalReminderParts.push(buildOutputStallMessage(state.outputVolumeHistory ?? []));
       log.info("QUERY_LOOP", "P2-1：注入产出停滞提醒");
       state.pendingOutputStallReminder = false;
     }
@@ -1002,10 +1144,15 @@ export async function* queryLoop(
     if (deps.getMcpInstructionsDelta) {
       const mcpBlocks = deps.getMcpInstructionsDelta();
       if (mcpBlocks && mcpBlocks.length > 0) {
+        // 显式带围栏（P0-a），且不用 `#` markdown 标题开头——原文案
+        // `# MCP Server Instructions` 与用户 prompt 的 `# Commit:` 形态混同，
+        // 是 2026-07-29 那次误读的三处裸注入之一（实测它排在用户指令前的 366 偏移处）。
         reminderParts.push(
-          `# MCP Server Instructions\n\n` +
+          `<system-reminder>\n` +
+            `MCP Server Instructions（harness 注入的服务器使用说明，非用户输入）：\n\n` +
             `以下 MCP 服务器提供了使用说明，请在使用对应工具时遵循这些指令：\n\n` +
-            mcpBlocks.join("\n\n"),
+            mcpBlocks.join("\n\n") +
+            `\n</system-reminder>`,
         );
         log.info("QUERY_LOOP", `注入 ${mcpBlocks.length} 个 MCP server instructions`);
       }
@@ -1055,26 +1202,81 @@ export async function* queryLoop(
       }
     }
 
-    if (reminderParts.length > 0) {
-      // 注入逻辑抽到 reminder-inject.ts（纯函数，便于单测）。
-      // 关键：纯 tool_result 轮（plan 探索高频场景）无 text block 时会追加 text block，
-      // 不再放弃注入——修复了工具轮漏注入 reminder 的回归。
-      finalMessages = injectReminders(finalMessages, reminderParts);
-    }
-
-    // 工具延迟加载：每轮注入 <available-deferred-tools> 提醒，告诉模型有哪些工具
-    // 尚未加载、可经 tool_search 调出。不注入则模型对延迟工具完全无感知，
-    // 整个延迟机制形同虚设（对标 claude-code claude.ts deferredToolList 注入）。
-    // 单独处理（不进 reminderParts）：它每轮都注、非节流，且内容独立成块。
+    // 工具延迟加载：注入 <available-deferred-tools> 提醒，告诉模型有哪些工具尚未加载、
+    // 可经 tool_search 调出。不注入则模型对延迟工具完全无感知，整个延迟机制形同虚设
+    // （对标 claude-code claude.ts deferredToolList 注入）。
+    //
+    // P2 delta 化（对标 CC `utils/toolSearch.ts` getDeferredToolsDelta）：原实现每轮**全量**
+    // 重注，实测 11 轮请求里 10 轮内容逐字节相同（4204 字符 × 10 = ~3.8 万字符纯浪费），
+    // 且每轮持续稀释用户指令权重。改为只播报增量：
+    //   - added   ：本轮新出现的延迟工具（如新 MCP server 连上）
+    //   - removed ：本轮消失的延迟工具（**仅**指工具真的没了；被 tool_search 激活的
+    //               走 undeferred 静默路径，不播报——模型刚激活它自然知道，播报"已移除"
+    //               反而误导，对标 CC 注释 `else: undeferred — silent`）
+    //   - 无变化 ：不注入
+    //
+    // announced 集合挂 sessionState（跨消息持久）。这里踩过一次坑：挂 LoopState 的话每条
+    // 新用户消息都会重建 → 集合归零 → 每条消息首轮又全量播报一次，delta 化形同白做
+    // （同 lastSeenContextPressureLevel 的教训，见 loop.ts:658 注释）。
     if (toolSearchEnabled) {
       const deferredNames = toolRegistry.deferredToolNames();
-      if (deferredNames.length > 0) {
-        finalMessages = injectReminders(finalMessages, [
-          `<available-deferred-tools>\n${deferredNames.join("\n")}\n</available-deferred-tools>\n` +
-            `以上工具尚未加载到上下文。需要时用 tool_search 工具按名称（select:<工具名>，多个用逗号分隔）` +
-            `或关键词调出，激活后即可在后续轮次正常调用。`,
-        ]);
+      const announced = (sessionState.get("announcedDeferredTools") as Set<string> | undefined)
+        ?? new Set<string>();
+      // compact 之后必须重新全量播报：历史里的播报记录被裁掉后，模型对延迟工具
+      // 失去感知，只发增量会让它永远看不到那批工具（对标 CC 在 compact 路径的处理）。
+      const needFullRebroadcast = state.deferredToolsPendingAfterCompact === true;
+      if (needFullRebroadcast) {
+        announced.clear();
+        state.deferredToolsPendingAfterCompact = false;
       }
+
+      const current = new Set(deferredNames);
+      const added = deferredNames.filter(n => !announced.has(n));
+      // 已播报但现在不在延迟列表里：可能是被 tool_search 激活（undeferred，静默），
+      // 也可能是工具真的下线（如 MCP server 断连）。二者无法从名单差异区分，
+      // 且"激活"是模型自己的动作、"下线"再调用会自然报错——都不值得占注入预算。
+      // 故一律静默，只把它们从 announced 移出，保证下次重新变成延迟工具时能再播报。
+      const vanished = [...announced].filter(n => !current.has(n));
+
+      if (added.length > 0) {
+        const isFull = needFullRebroadcast || announced.size === 0;
+        // 显式带围栏（P0-a）：`<available-deferred-tools>` 是三处裸注入里字节量最大的一条，
+        // 实测在 2026-07-29 那条轨迹里正好落在偏移 0（用户指令之前 1075 字符处）——
+        // 模型第一眼看到的就是它。裸标签不足以表达"这不是人说的"，必须套 system-reminder。
+        reminderParts.push(
+          `<system-reminder>\n` +
+            `<available-deferred-tools>\n${added.join("\n")}\n</available-deferred-tools>\n` +
+            (isFull
+              ? `以上工具尚未加载到上下文。`
+              : `以上工具**新增**为可延迟加载（此前已播报过的仍然有效）。`) +
+            `需要时用 tool_search 工具按名称（select:<工具名>，多个用逗号分隔）` +
+            `或关键词调出，激活后即可在后续轮次正常调用。\n` +
+            `</system-reminder>`,
+        );
+        log.info(
+          "QUERY_LOOP",
+          `注入延迟工具${isFull ? "全量" : "增量"}播报（新增 ${added.length}，已播报 ${announced.size}）`,
+        );
+      }
+      for (const n of added) announced.add(n);
+      for (const n of vanished) announced.delete(n);
+      sessionState.set("announcedDeferredTools", announced);
+    }
+
+    // ─── 单次注入（P1-a）───
+    // 必须只调用一次 injectReminders。原实现调两次（reminderParts 一次、deferred-tools
+    // 一次），而每次都前置 → **第二次调用的内容压在第一次前面**，实测偏移
+    // deferred=0 / MCP=366 / 用户指令=1075，注入顺序与代码书写顺序完全相反。
+    // 后果是 critical 档辛苦排出的优先级被 deferred-tools 整体压到后面——
+    // 止损阀"最先被读到"的设计意图当时已经失效。合并为单次调用后才真正生效。
+    //
+    // critical 前置于用户指令、ambient 后置，每个片段强制 <system-reminder> 围栏，
+    // 且各自成独立 text block（不与用户指令做字符串拼接）——详见 reminder-inject.ts。
+    if (criticalReminderParts.length > 0 || reminderParts.length > 0) {
+      finalMessages = injectReminders(finalMessages, {
+        critical: criticalReminderParts,
+        ambient: reminderParts,
+      });
     }
 
     const sendParams: SendParams = {
@@ -1284,13 +1486,24 @@ export async function* queryLoop(
           // false（见 types.ts LoopState.hasAttemptedReactiveCompact 注释的 CC 教训）。
           state.hasAttemptedReactiveCompact = true;
           setTransition(state, { type: "reactive_compact" }, deps, sessionState.sessionId);
-          notifyCompaction("main"); // G1：抑制紧接的 cache break 检测
           state.goalReminderPendingAfterCompact = true;
           state.todoReminderPendingAfterCompact = true;
-        yield { kind: "compact" };
+          state.deferredToolsPendingAfterCompact = true;
+          // notifyCompaction 已由 settleCompaction 在确认真压动后统一调用（P1-4）
+          const banner = settleCompaction(deps, sessionState.sessionId, {
+            trigger: "prompt_too_long",
+            messageCountBefore: compactResult.messageCountBefore,
+            messageCountAfter: compactResult.messageCountAfter,
+            tokensBefore: compactResult.tokensBefore,
+            tokensAfter: compactResult.tokensAfter,
+            strategy: compactResult.strategy,
+          });
+          if (banner) yield banner;
           yield { kind: "system", level: "info", text: `响应式压缩: ${compactResult.messageCountBefore} → ${compactResult.messageCountAfter} 条消息` };
           continue; // 重试
         }
+        // P2-2：压缩失败计入会话级熔断计数（连续失败达阈值后不再尝试注定失败的压缩）
+        state.consecutiveCompactFailures = (state.consecutiveCompactFailures ?? 0) + 1;
         log.warn("QUERY_LOOP", "响应式压缩失败，尝试 maxTokens 调整");
       }
 
@@ -1300,12 +1513,41 @@ export async function* queryLoop(
         sendParams.maxTokens = adjusted;
         stream = deps.sendWithRetry(sendParams, composedSignal);
       } else {
+        // P2-2 熔断（连接阶段）：与流式阶段同一道闸。此前本分支既不计失败也不看熔断计数，
+        // 于是「压不动 + 无法调 maxTokens」会一路 continue 到 max_turns 才停——每轮都白发
+        // 一次注定失败的请求（CC 前车之鉴：单会话空烧 3272 次）。
+        if ((state.consecutiveCompactFailures ?? 0) >= MAX_CONSECUTIVE_COMPACT_FAILURES) {
+          log.error(
+            "QUERY_LOOP",
+            `连续 ${state.consecutiveCompactFailures} 次压缩失败（连接阶段），触发熔断`,
+          );
+          yield {
+            kind: "system",
+            level: "error",
+            terminal: true,
+            text:
+              `上下文已超出模型窗口，且连续 ${state.consecutiveCompactFailures} 次自动压缩都未能减少历史，` +
+              `已停止重试以免空烧 API 调用。建议手动执行 /compact 精简上下文，或开一个新会话继续。`,
+          };
+          yield { kind: "done", turns: state.turnCount };
+          return;
+        }
         log.warn("QUERY_LOOP", "上下文溢出且无法调整 maxTokens，触发自动压缩");
-        notifyCompaction("main"); // G1：抑制紧接的 cache break 检测
+        const beforeOverflow = ctxMgr.messageCount();
         await deps.autoCompact();
         state.goalReminderPendingAfterCompact = true;
         state.todoReminderPendingAfterCompact = true;
-        yield { kind: "compact" };
+        state.deferredToolsPendingAfterCompact = true;
+        {
+          const banner = settleCompaction(deps, sessionState.sessionId, {
+            trigger: "context_overflow",
+            messageCountBefore: beforeOverflow,
+            messageCountAfter: ctxMgr.messageCount(),
+          });
+          if (banner) yield banner;
+          // autoCompact 也没压动 → 计入连续失败，让熔断器最终收敛
+          else state.consecutiveCompactFailures = (state.consecutiveCompactFailures ?? 0) + 1;
+        }
         setTransition(state, { type: "context_overflow_retry" }, deps, sessionState.sessionId);
         continue;
       }
@@ -1624,23 +1866,61 @@ export async function* queryLoop(
           // false（见 types.ts LoopState.hasAttemptedReactiveCompact 注释的 CC 教训）。
           state.hasAttemptedReactiveCompact = true;
           setTransition(state, { type: "reactive_compact" }, deps, sessionState.sessionId);
-          notifyCompaction("main"); // G1：抑制紧接的 cache break 检测
           state.goalReminderPendingAfterCompact = true;
           state.todoReminderPendingAfterCompact = true;
-        yield { kind: "compact" };
+          state.deferredToolsPendingAfterCompact = true;
+          state.consecutiveCompactFailures = 0; // 成功即清零（熔断只针对"连续"失败）
+          // notifyCompaction 已由 settleCompaction 在确认真压动后统一调用（P1-4）
+          const banner = settleCompaction(deps, sessionState.sessionId, {
+            trigger: "prompt_too_long_stream",
+            messageCountBefore: compactResult.messageCountBefore,
+            messageCountAfter: compactResult.messageCountAfter,
+            tokensBefore: compactResult.tokensBefore,
+            tokensAfter: compactResult.tokensAfter,
+            strategy: compactResult.strategy,
+          });
+          if (banner) yield banner;
           yield { kind: "system", level: "info", text: `响应式压缩: ${compactResult.messageCountBefore} → ${compactResult.messageCountAfter} 条消息` };
           continue;
         }
+        state.consecutiveCompactFailures = (state.consecutiveCompactFailures ?? 0) + 1;
         log.warn("QUERY_LOOP", "响应式压缩失败，尝试 autoCompact");
       }
 
       // prompt-too-long 兜底：autoCompact 后重试
       if (isPromptTooLongError(err)) {
-        notifyCompaction("main"); // G1：抑制紧接的 cache break 检测
+        // P2-2 熔断：连续压缩失败达阈值 → 不再尝试注定失败的压缩，如实告知用户并结束本轮。
+        // 不熔断的后果（CC 前车之鉴）：同一个压不动的历史每轮重试，单会话烧掉数千次调用。
+        if ((state.consecutiveCompactFailures ?? 0) >= MAX_CONSECUTIVE_COMPACT_FAILURES) {
+          log.error(
+            "QUERY_LOOP",
+            `连续 ${state.consecutiveCompactFailures} 次压缩失败，触发熔断，停止自动压缩尝试`,
+          );
+          yield {
+            kind: "system",
+            level: "error",
+            terminal: true,
+            text:
+              `上下文已超出模型窗口，且连续 ${state.consecutiveCompactFailures} 次自动压缩都未能减少历史，` +
+              `已停止重试以免空烧 API 调用。建议手动执行 /compact 精简上下文，或开一个新会话继续。`,
+          };
+          yield { kind: "done", turns: state.turnCount };
+          return;
+        }
+        const beforeFallback = ctxMgr.messageCount();
         await deps.autoCompact();
         state.goalReminderPendingAfterCompact = true;
         state.todoReminderPendingAfterCompact = true;
-        yield { kind: "compact" };
+        state.deferredToolsPendingAfterCompact = true;
+        {
+          const banner = settleCompaction(deps, sessionState.sessionId, {
+            trigger: "context_overflow",
+            messageCountBefore: beforeFallback,
+            messageCountAfter: ctxMgr.messageCount(),
+          });
+          if (banner) yield banner;
+          else state.consecutiveCompactFailures = (state.consecutiveCompactFailures ?? 0) + 1;
+        }
         setTransition(state, { type: "context_overflow_retry" }, deps, sessionState.sessionId);
         continue;
       }
@@ -1915,16 +2195,53 @@ export async function* queryLoop(
           },
         };
 
-        // 重试前压缩上下文，打击大上下文根因（消息足够多才有意义）
-        const compactResult = reactiveCompact(ctxMgr);
-        if (compactResult.success) {
+        // ─── P0-2：空参数重试的压缩必须过「上下文占用率」门禁 ───
+        //
+        // 事故背景（2026-07-29）：这里原本**无条件**调 reactiveCompact——完全不看占用率。
+        // 那次会话峰值占用只有 17.6%（1M 窗口），任何阈值压缩路径都没触发过，却因为模型吐了
+        // 一个坏 JSON（evidence 值漏引号）走到这条重试路径，于是"压缩"了一把：横幅画出
+        // 「对话已压缩」，还给模型注入「系统已为你精简对话上下文」——而消息一条都没少。
+        // 用户看到的「占用率才 17% 却突然被压缩」正是从这里来的：**它是根本不该发生的压缩**。
+        //
+        // 判据走 getCompactionLevel()（阈值判定的单一事实源，与 /context 展示同源，
+        // 与 provider 无关）：只有已进入 soft 档及以上，"大上下文加剧模型吐坏参数"这个原始
+        // 动机才成立；低占用下空参数是模型偶发退化/截断，压缩既无收益又白烧一次重排。
+        const levelBeforeRetry = ctxMgr.getCompactionLevel(toolCount);
+        let compactResult: ReactiveCompactResult = {
+          success: false,
+          messageCountBefore: ctxMgr.messageCount(),
+          messageCountAfter: ctxMgr.messageCount(),
+          strategy: "none",
+        };
+        if (levelBeforeRetry === "none") {
           log.info(
             "QUERY_LOOP",
-            `F1：空参数重试前压缩上下文 ${compactResult.messageCountBefore} → ${compactResult.messageCountAfter} 条`,
+            `F1：空参数重试跳过压缩——上下文占用未达 soft 档（level=none，${ctxMgr.messageCount()} 条消息），` +
+              `压缩无收益且会误导模型`,
           );
-          state.goalReminderPendingAfterCompact = true;
-          state.todoReminderPendingAfterCompact = true;
-        yield { kind: "compact" };
+        } else {
+          compactResult = reactiveCompact(ctxMgr);
+          if (compactResult.success) {
+            log.info(
+              "QUERY_LOOP",
+              `F1：空参数重试前压缩上下文 ${compactResult.messageCountBefore} → ${compactResult.messageCountAfter} 条（level=${levelBeforeRetry}）`,
+            );
+            state.goalReminderPendingAfterCompact = true;
+            state.todoReminderPendingAfterCompact = true;
+            state.deferredToolsPendingAfterCompact = true;
+            state.consecutiveCompactFailures = 0;
+            const banner = settleCompaction(deps, sessionState.sessionId, {
+              trigger: "empty_param_retry",
+              messageCountBefore: compactResult.messageCountBefore,
+              messageCountAfter: compactResult.messageCountAfter,
+              tokensBefore: compactResult.tokensBefore,
+              tokensAfter: compactResult.tokensAfter,
+              strategy: compactResult.strategy,
+            });
+            if (banner) yield banner;
+          } else {
+            state.consecutiveCompactFailures = (state.consecutiveCompactFailures ?? 0) + 1;
+          }
         }
 
         // 注入"参数为空请重试"提示
@@ -2931,10 +3248,27 @@ export async function* queryLoop(
       log.warn("QUERY_LOOP", "撞到模型 context window 上限，触发上下文压缩后续写");
       yield { kind: "system", level: "info", text: "输出因撞到模型上下文窗口上限被中断，正在压缩上下文后续写" };
 
-      // 尝试压缩上下文释放空间
+      // 尝试压缩上下文释放空间。
+      // 这条路径不加占用率门禁：服务端已明确拒绝（撞到窗口硬上限），是"真溢出"的确凿证据，
+      // 此时无论本地估算多少都该压——与空参数路径（无证据的猜测）性质完全不同。
       const compactResult = reactiveCompact(ctxMgr);
       if (compactResult.success) {
         log.info("QUERY_LOOP", `context_window_exceeded 压缩成功: ${compactResult.messageCountBefore} → ${compactResult.messageCountAfter} 条`);
+        state.consecutiveCompactFailures = 0;
+        const banner = settleCompaction(deps, sessionState.sessionId, {
+          trigger: "ctx_window_exceeded",
+          messageCountBefore: compactResult.messageCountBefore,
+          messageCountAfter: compactResult.messageCountAfter,
+          tokensBefore: compactResult.tokensBefore,
+          tokensAfter: compactResult.tokensAfter,
+          strategy: compactResult.strategy,
+        });
+        // 此前这条路径压缩成功也**不画横幅**（8 处 yield 里独缺这处）——用户看不到上下文
+        // 已被压缩，属于反向的"该报不报"。现与其它路径统一：真压动就如实告知。
+        if (banner) yield banner;
+      } else {
+        state.consecutiveCompactFailures = (state.consecutiveCompactFailures ?? 0) + 1;
+        log.warn("QUERY_LOOP", `context_window_exceeded 压缩未生效（${compactResult.messageCountBefore} 条未变）`);
       }
 
       state.maxOutputTokensRecoveryCount++;

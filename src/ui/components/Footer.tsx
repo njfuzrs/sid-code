@@ -51,6 +51,10 @@ interface FooterProps {
   costUSD: number;
   costLimit: number;
   contextPercent: number;
+  /** P1-2：压缩触发点百分比（显示为「17%/82%」）；≤0 或省略则只显示 contextPercent */
+  contextTriggerPercent?: number;
+  /** P1-5：真实压缩档位，变色据此（与 getCompactionLevel 同源） */
+  contextLevel?: "none" | "soft" | "hard" | "emergency";
   model: string;
   scrollPercent?: number;
   /** 10.3：会话累计缓存节省金额（美元） */

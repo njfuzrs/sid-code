@@ -94,6 +94,10 @@ interface DefaultAppLayoutProps {
   cacheSavingsUSD?: number;
   costLimit: number;
   contextPercent: number;
+  /** P1-2：压缩触发点百分比（Footer 显示「17%/82%」） */
+  contextTriggerPercent?: number;
+  /** P1-5：真实压缩档位（Footer 变色据此） */
+  contextLevel?: "none" | "soft" | "hard" | "emergency";
   model: string;
   scrollPercent?: number;
 
@@ -163,6 +167,8 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
   cacheSavingsUSD,
   costLimit,
   contextPercent,
+  contextTriggerPercent,
+  contextLevel,
   model,
   scrollPercent,
   activeDialog,
@@ -317,6 +323,8 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
           cacheSavingsUSD={cacheSavingsUSD}
           costLimit={costLimit}
           contextPercent={contextPercent}
+          contextTriggerPercent={contextTriggerPercent}
+          contextLevel={contextLevel}
           model={model}
           scrollPercent={scrollPercent}
           termWidth={termWidth}

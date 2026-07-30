@@ -139,20 +139,28 @@ describe("buildSystemPrompt", () => {
     expect(prompt).not.toContain("<git-status>");
   });
 
-  test("包含权限模式附件（非默认模式）", () => {
-    const prompt = buildSystemPrompt({
-      tools: [],
-      permissionMode: "plan",
-    });
-    expect(prompt).toContain("计划模式已激活");
-  });
-
-  test("默认权限模式不注入附件", () => {
-    const prompt1 = buildSystemPrompt({ tools: [] });
-    const prompt2 = buildSystemPrompt({ tools: [], permissionMode: "default" });
-    // 默认模式不注入权限附件
-    expect(prompt1).not.toContain("权限模式");
-    expect(prompt2).not.toContain("权限模式");
+  // 原「包含权限模式附件（非默认模式）」用例已删除（2026-07-30，重复注入根因修复 P0）：
+  // 权限模式文案不再进 system prompt，plan 的约束改由 plan/prompt.ts 的
+  // buildPlanModeReminder（user reminder 通道）承载。
+  //
+  // 下面这条从"default 模式不注入"升级为"**任何** mode 都不注入"的守卫——
+  // 它是防回归的关键：若有人把附件通道加回来，双通道重复注入立刻复现。
+  test("任何权限模式都不往 system prompt 注入 mode 文案（去双通道守卫）", () => {
+    for (const mode of [
+      undefined,
+      "default",
+      "plan",
+      "acceptEdits",
+      "deny-write",
+      "dontAsk",
+      "auto",
+      "always-allow",
+      "dangerously-skip-permissions",
+    ]) {
+      const prompt = buildSystemPrompt({ tools: [], permissionMode: mode });
+      expect(prompt).not.toContain("权限模式");
+      expect(prompt).not.toContain("计划模式已激活");
+    }
   });
 
   test("包含诊断信息附件", () => {

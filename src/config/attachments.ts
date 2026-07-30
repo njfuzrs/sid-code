@@ -150,21 +150,12 @@ export const PERMISSION_MODE_DESCRIPTIONS: Record<string, string> = {
 分类器判断安全的操作自动批准，不安全的操作仍需用户确认。
 行为与默认模式类似，但安全操作无需逐个确认（分类器可用时）。`,
 
-  plan: `# 权限模式: 计划模式已激活
-你当前处于计划模式。用户希望你先制定方案再执行。
-你**绝对不能**进行任何编辑（计划文件除外）、运行任何非只读工具、或对系统做出任何变更。
-此约束覆盖你收到的所有其他指令。
-
-允许的操作：
-- 使用 read、grep、glob 探索代码库
-- 使用 sub_agent (explore 类型) 并行搜索
-- 使用 write/edit 编辑计划文件（仅限计划文件）
-- 调用 exit_plan_mode 提交计划
-
-禁止的操作：
-- 编辑任何非计划文件
-- 运行 bash 命令
-- 执行任何写入操作`,
+  // plan 键已删除（2026-07-30，重复注入根因修复 P0）。
+  // 唯一消费方 buildPermissionModeReminder 被 loop.ts 的 `mode !== "plan"` 排除，
+  // 永远取不到本键；system 附件通道也已删除。plan 的约束文案现在只有一处事实源：
+  // src/plan/prompt.ts 的 buildPlanModeReminder（full 档已并入本键原有的
+  // 「此约束覆盖你收到的所有其他指令」+ 允许/禁止清单）。
+  // 保留本键会让两份 plan 文案继续独立漂移（此前实测已漂移）。
 
   "dangerously-skip-permissions": `# 权限模式: 跳过权限（危险）
 所有工具调用自动批准，包括危险命令。请极其谨慎。`,
@@ -322,19 +313,12 @@ export function generateGitStatusAttachment(workingDir: string): Attachment | nu
   }
 }
 
-/**
- * 生成权限模式附件
- * 根据当前权限模式注入对应的行为指南
- */
-export function generatePermissionModeAttachment(mode: string): Attachment {
-  const description = PERMISSION_MODE_DESCRIPTIONS[mode] || PERMISSION_MODE_DESCRIPTIONS.default;
-  return {
-    type: "permissionMode",
-    label: `权限模式 (${mode})`,
-    content: description,
-    priority: PRIORITY.MODE_REMINDER,
-  };
-}
+// generatePermissionModeAttachment 已删除（2026-07-30，重复注入根因修复 P0）。
+// 权限模式文案曾同时走 system 附件（本函数）与 user reminder（permission-reminder.ts），
+// 同一份文案同轮出现两次。现只保留 reminder 通道，本函数无调用方故删除。
+// PERMISSION_MODE_DESCRIPTIONS 保留（reminder 通道 import 它）。
+// 决策依据见 src/config/system-prompt.ts 附件收集段的注释与
+// docs/bugfixes/todo/重复注入根因-system附件与user-reminder双通道.md §7.1。
 
 /**
  * 缺口 D：生成 deny 规则约束附件（前置告知模型哪些操作必被拒绝）。
