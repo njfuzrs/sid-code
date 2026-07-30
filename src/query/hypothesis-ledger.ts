@@ -123,7 +123,8 @@ const MIN_EN_CUE_LENGTH = 8;
  * 仍是粗召回而非精确 NLP,但把"高频短词一碰就中"的最大误伤面收掉。
  *
  * 2026-07-30 负收益防线审计 发现 2:英文阈值 5 → 8(见 MIN_EN_CUE_LENGTH 反事实表)。
- * 显式给出的 falsifierCues 不受此约束(register 里另走一路),用户/模型自己指定的短 cue 仍尊重。
+ * 2026-07-31 勘误:此前这里写「显式给出的 falsifierCues 不受此约束,用户/模型自己指定的短
+ * cue 仍尊重」——那个豁免让整条防线在生产主路径上失效,见 sanitizeExplicitCues 的说明。
  */
 export function extractCues(falsifier: string): string[] {
   if (!falsifier) return [];
@@ -140,6 +141,54 @@ export function extractCues(falsifier: string): string[] {
     if (!STOPWORDS.has(seg)) cues.add(seg);
   }
   return [...cues];
+}
+
+/**
+ * 对**显式给出**的 falsifierCues 施加同一套泛化门槛(与 extractCues 同口径)。
+ *
+ * 根因(轨迹 20260730-142920-d98e7f16,24 次矛盾中断全为噪音):register 里
+ * 「显式 cues 直接采用、不过滤」这条豁免,让 MIN_EN_CUE_LENGTH=8 的防线在生产
+ * 主路径上**完全失效**——模型每次都会填 falsifier_cues(该会话 6 条假设全带),
+ * 于是 extractCues 那条带门槛的路径一次都没走到。实测命中线索词:
+ *
+ *   9 × `resize`(6 字符) / 3 × `⚠`(1 字符) / 2 × `stringwidth` / 2 × `alignitems` …
+ *
+ * `resize`、`⚠` 都短于阈值 8,本该被过滤。它们几乎必然命中后续任意工具输出
+ * (读渲染相关代码时 `resize` 遍地都是),结果是模型反复写「这是词面撞车」并花
+ * reasoning 去否掉假警报——纯增成本、零收益,正是 MIN_EN_CUE_LENGTH 的反事实表
+ * (阈值 8 → 泛化 cue 归零)要消除的那类误伤。
+ *
+ * 为什么不是简单删掉「显式 cues」这个入参:模型给的 cue 往往比自动提取的更贴合
+ * 意图(如把长 falsifier 里的关键标识符点出来),值得保留。要拦的只是**过短/泛化**
+ * 的那部分。故这里做筛而不做弃:
+ *   - 英文/数字 token:长度≥MIN_EN_CUE_LENGTH 且不在 STOPWORDS;
+ *   - 中文片段:≥4 连续汉字(与 extractCues 一致);
+ *   - 含点/斜杠/连字符的复合标识符(`stdout.columns` / `flex-end` / `a/b`):放行——
+ *     这类本身就足够具体,不受长度门槛限制(否则 `a/b.ts` 这种精确 cue 会被误杀);
+ *   - 全部筛掉时返回空数组,由 register 回落到 extractCues(falsifier)——绝不
+ *     因为「模型填了一堆废 cue」就让这条假设失去矛盾检测能力。
+ */
+export function sanitizeExplicitCues(cues: readonly string[]): string[] {
+  const out = new Set<string>();
+  for (const raw of cues) {
+    if (typeof raw !== "string") continue;
+    const c = raw.trim().toLowerCase();
+    if (!c) continue;
+    if (STOPWORDS.has(c)) continue;
+    // 复合标识符(带 . / - 或空格分隔的多词短语)本身足够具体,免长度门槛。
+    if (/[./\-\s]/.test(c)) {
+      out.add(c);
+      continue;
+    }
+    // 纯中文片段:≥4 连续汉字
+    if (/^[一-龥]+$/.test(c)) {
+      if (c.length >= 4) out.add(c);
+      continue;
+    }
+    // 其余(英文/数字/下划线标识符、单个符号如 ⚠):套用英文长度门槛
+    if (c.length >= MIN_EN_CUE_LENGTH) out.add(c);
+  }
+  return [...out];
 }
 
 /**
@@ -239,6 +288,15 @@ function fingerprint(s: string): string {
 export class HypothesisLedger {
   private items = new Map<string, Hypothesis>();
   private seq = 0;
+  /**
+   * 缺陷3:换策略提示是否已给过(会话级一次性)。
+   *
+   * 为什么挂在 ledger 而不是 LoopState:LoopState 由 createInitialLoopState 在**每次
+   * queryLoop 调用**(即每条用户消息)时新建,而 ledger 是会话级长生命周期对象。
+   * 若把标志放 LoopState,用户下一条消息就会把它清零 → 连续推翻状态未变的情况下
+   * 会再次注入,而提示文案明写"本提醒只出现一次"。跟着 ledger 走才与假设状态同寿。
+   */
+  private strategyNagged = false;
 
   /** 机制1:登记假设,强制带 falsifier。返回新建的假设。 */
   register(input: RegisterInput): Hypothesis {
@@ -251,10 +309,10 @@ export class HypothesisLedger {
     }
     this.seq += 1;
     const id = `H${this.seq}`;
-    const cues =
-      input.falsifierCues && input.falsifierCues.length > 0
-        ? input.falsifierCues.map((c) => c.toLowerCase())
-        : extractCues(falsifier);
+    // 显式 cues 也要过泛化门槛(见 sanitizeExplicitCues:旧豁免让 MIN_EN_CUE_LENGTH
+    // 防线在生产主路径完全失效)。筛完为空则回落到自动提取,不让假设失去矛盾检测能力。
+    const explicit = input.falsifierCues?.length ? sanitizeExplicitCues(input.falsifierCues) : [];
+    const cues = explicit.length > 0 ? explicit : extractCues(falsifier);
     const h: Hypothesis = {
       id,
       statement,
@@ -356,16 +414,90 @@ export class HypothesisLedger {
     return this.items.size === 0;
   }
 
-  /** 当前轮次有 open 假设(供交付门禁提醒判定) */
+  /**
+   * 当前轮次有 open 假设。
+   *
+   * ⚠️ 注意口径:这个方法**只看 open**,不含 refuted。交付门禁请勿用它做闸门——
+   * 用 `hasUnsettled()`(与 `unsettled()` / buildDeliveryGateReminder 同口径)。
+   * 保留本方法是因为「有没有仍在被挑战的活假设」本身是个有意义的独立问题
+   * (矛盾检测只挑战 open 假设),且已有持久化测试依赖其语义。
+   */
   hasOpen(): boolean {
     for (const h of this.items.values()) if (h.status === "open") return true;
     return false;
+  }
+
+  /**
+   * 交付门禁的正确闸门:有任何**未确认**(open 或 refuted)的假设。
+   *
+   * 根因(轨迹 20260730-142920-d98e7f16,交付门禁实测注入 0 次):门禁此前用
+   * `hasOpen()` 判闸,但它的载荷 `unsettled()` 是 `status !== "confirmed"`——
+   * **闸门判据比它自己声明的范围窄了一档**。该会话 H1-H6 全部 refuted、0 open,
+   * 于是闸门不响,尽管这恰恰是最该拦的场景:模型手里没有任何 confirmed 结论,
+   * 6 个假设全被推翻,正是机制3 要防的「把未证实的假设当结论交付」。
+   *
+   * 与三处声明对齐(此前只有闸门一处不对齐):
+   *   - `unsettled()`: status !== "confirmed"
+   *   - `buildDeliveryGateReminder` 文案:「状态为 open **或 refuted**」
+   *   - 模块头注释机制3:「open/refuted 的假设不得作为结论交付」
+   */
+  hasUnsettled(): boolean {
+    for (const h of this.items.values()) if (h.status !== "confirmed") return true;
+    return false;
+  }
+
+  /**
+   * 连续推翻计数:按登记顺序从**末尾**往前数,连续 refuted 的假设有几条
+   * (遇到 confirmed 或 open 即停)。
+   *
+   * 用途(缺陷3,轨迹 20260730-142920-d98e7f16):该会话 H1-H6 全部 refuted、
+   * 0 confirmed,模型连推 6 个假设仍在原地登记第 7 个同类假设,最后靠自己反应过来
+   * ——而且是以自我批判的方式("我一直在凭推理猜方向,这违反纪律")。harness 里
+   * 没有任何机制观察到这个模式:refute 单看是"有价值的纠偏",连续 refute 则是
+   * **搜索空间选错了**的信号,该换方法(查 git 历史 / 加日志实测 / 问用户),
+   * 而不是继续同一路数猜下一个。
+   *
+   * 用"连续"而非"总数"是为了不惩罚正常排查:先错几次再 confirm 是健康的,
+   * confirm 会把计数清零;只有"一直错、一次没对"才是要提示换策略的形态。
+   */
+  consecutiveRefutations(): number {
+    const list = [...this.items.values()];
+    let n = 0;
+    for (let i = list.length - 1; i >= 0; i--) {
+      if (list[i]!.status !== "refuted") break;
+      n++;
+    }
+    return n;
+  }
+
+  /** 是否有任何已确认假设(供"连推 N 条但一条没confirm"的策略提示判定) */
+  hasConfirmed(): boolean {
+    for (const h of this.items.values()) if (h.status === "confirmed") return true;
+    return false;
+  }
+
+  /**
+   * 缺陷3:判定「该给换策略提示了吗」,并在返回 true 时**就地置位**一次性标志。
+   *
+   * 收成一个方法(而非让调用方自己拼 3 个条件 + 自己置位)的理由:判据与"只给一次"
+   * 的语义必须原子,否则调用方漏置位就会每轮刷屏、错置位就永久哑火。
+   * 返回连续推翻条数(>0 表示该提示),0 表示不提示。
+   */
+  claimStrategyNag(threshold: number): number {
+    if (this.strategyNagged) return 0;
+    if (this.hasConfirmed()) return 0;
+    const n = this.consecutiveRefutations();
+    if (n < threshold) return 0;
+    this.strategyNagged = true;
+    return n;
   }
 
   /** /clear 时重置 */
   reset(): void {
     this.items.clear();
     this.seq = 0;
+    // 一次性标志随 /clear 一并清零：新一轮排查是全新的搜索过程，应当重新有机会拿到提示。
+    this.strategyNagged = false;
   }
 
   /**
@@ -377,9 +509,13 @@ export class HypothesisLedger {
    *
    * 全量存储 items(含证据链/证伪线索/状态)+ seq(保持 id 单调递增,避免恢复后 register 撞号)。
    */
-  serialize(): { seq: number; items: Hypothesis[] } {
+  serialize(): { seq: number; items: Hypothesis[]; strategyNagged?: boolean } {
     return {
       seq: this.seq,
+      // 缺陷3：一次性标志随快照走。理由与 items 持久化同源——跨会话续做同一排查时
+      // （`-c` 恢复），若标志不回灌，上个会话已给过的换策略提示会再给一次，
+      // 而文案明写"本提醒只出现一次"。
+      strategyNagged: this.strategyNagged,
       // 深拷贝,防止外部改写快照污染内部状态(与 TodoWriteTool.serialize 同款纪律)
       items: [...this.items.values()].map((h) => ({
         ...h,
@@ -398,7 +534,7 @@ export class HypothesisLedger {
    * seq 取「快照 seq」与「回灌成功的最大 H 编号」的较大值——即使 seq 字段丢失或偏小,也能保证
    * 后续 register 生成的 id 不与已恢复假设撞号。
    */
-  hydrate(snapshot: { seq?: unknown; items?: unknown } | undefined | null): void {
+  hydrate(snapshot: { seq?: unknown; items?: unknown; strategyNagged?: unknown } | undefined | null): void {
     if (!snapshot || typeof snapshot !== "object") return;
     const rawItems = (snapshot as { items?: unknown }).items;
     if (!Array.isArray(rawItems)) return;
@@ -430,6 +566,11 @@ export class HypothesisLedger {
     this.items = restored;
     const snapSeq = typeof (snapshot as { seq?: unknown }).seq === "number" ? (snapshot as { seq: number }).seq : 0;
     this.seq = Math.max(snapSeq, maxSeq);
+    // 缺陷3：一次性标志回灌（缺字段的旧快照 → false，即恢复后仍有一次提示机会，
+    // 这是安全的降级方向：宁可多给一次有用提示，不要静默哑火）。
+    if ((snapshot as { strategyNagged?: unknown }).strategyNagged === true) {
+      this.strategyNagged = true;
+    }
   }
 }
 
@@ -479,5 +620,43 @@ ${lines.join("\n")}
 - 还能验证的 → 去取证后用 hypothesis_challenge 裁决;
 - 已被推翻(refuted)的 → 不要写进结论,或明确标注"此前假设已被证伪";
 - 确实无法定论的 → 在交付物里如实降级为"待验证",不要伪装成已确认的根因。
+</system-reminder>`;
+}
+
+/**
+ * 连续推翻阈值:连推这么多条假设且一条没 confirm,就提示换策略。
+ *
+ * 取 3 的依据(轨迹 20260730-142920-d98e7f16):该会话连推 6 条才由模型自己反应过来,
+ * 中间白烧了约 30 分钟与数万 token。3 条是"已经不是偶然、但还没烧太多"的位置:
+ * 1-2 条连错属正常排查噪音(排查本就是试错),提示会变成打扰;等到 6 条才提示,
+ * 该省的成本已经花掉了。只提示一次(见 loop.ts 的 hypothesisStrategyNagged 一次性标志)。
+ */
+export const CONSECUTIVE_REFUTATION_NAG_THRESHOLD = 3;
+
+/**
+ * 缺陷3:构造"连续推翻 → 换策略"提醒。
+ *
+ * 与矛盾中断/交付门禁的区别:那两个管的是**单条假设**的证据成色,这个管的是
+ * **整体搜索方向**——连推 N 条一条没中,说明假设的来源(凭代码推理/凭注释外推)
+ * 本身不对,该换取证手段而不是换下一个猜测。
+ *
+ * 措辞刻意避免指责:模型在真实轨迹里把这种情形读成了"我违反了纪律"并开始自我批判,
+ * 那是 harness 缺位造成的误读——连续 refute 是**信息**,不是过错。所以这里只给
+ * 事实(连推 N 条)+ 可执行的替代动作,不带任何"你违反了"的措辞。
+ */
+export function buildStrategyShiftReminder(refutedCount: number): string {
+  return `<system-reminder>
+提示(请勿向用户提及本提醒):你已连续推翻 ${refutedCount} 条假设,且还没有任何一条被确认。
+
+这通常不是纪律问题,而是**取证手段**的信号:连续推翻说明这批假设的来源(多为凭代码
+静态推理、凭注释/命名外推)难以覆盖真实根因。与其登记下一条同类假设,不妨换一种能
+直接产出事实的手段:
+
+- 查改动史:\`git log -p\` / \`git blame\` 锁定相关区域最近的改动(尤其"此前反复修过"的地方);
+- 做实测:加临时日志 / 写最小复现脚本,让运行时数据说话,而不是继续推断;
+- 换观察层:去读调用方/上游数据来源,而非在当前文件里继续找;
+- 问用户:补一个关键的复现条件或环境细节,往往比再猜三次都有效。
+
+已推翻的假设是有效产出(缩小了空间),不必回头翻案。本提醒只出现一次。
 </system-reminder>`;
 }

@@ -322,10 +322,19 @@ export interface LoopState {
    */
   pendingContradictions?: import("./hypothesis-ledger.ts").ContradictionHit[];
   /**
-   * 环节③ 机制3：假设交付门禁已软续命的次数。模型试图收尾但仍有 open 假设时，
-   * 注入门禁提醒并续命，最多 N 次，避免无限循环。
+   * 环节③ 机制3：假设交付门禁已软续命的次数。模型试图收尾但仍有未确认
+   * （open 或 refuted）假设时，注入门禁提醒并续命，最多 N 次，避免无限循环。
+   * 续命上限按"还有没有可推进动作"分档：有 open → 2 次；全 refuted（终态，
+   * 无动作可做）→ 1 次。见 loop.ts 交付门禁段。
    */
   hypothesisGateRetryCount?: number;
+  /**
+   * 缺陷3：连续推翻 → 换策略提示的待注入条数（跨轮暂存）。
+   *
+   * 检测发生在假设裁决回流时（连推 N 条且零 confirm），注入发生在下一轮循环开头的
+   * reminder 通道——与 pendingContradictions 同机制。注入后清空。
+   */
+  pendingHypothesisStrategyShift?: number;
   /**
    * G4：LSP 健康告警是否已向用户展示过（一次性，避免每轮刷屏）。
    * 首轮检查 getLSPHealthWarning()，有异常则 yield 一次 system 警告并置位。

@@ -27,7 +27,7 @@ import { ModelFallback } from "../llm/fallback.ts";
 import { isAwaitingHumanInput } from "./human-input-gate.ts";
 import { setSseDumpContext } from "../llm/sse-chunk-dumper.ts";
 import { resolveLoopTimeouts, computeBackoffMs } from "../config/network-profile.ts";
-import { emitTimeoutFired, emitTimeoutRetry, emitTimeoutRetryExhausted, armIneffectiveCheck, emitWatchdogKill, getStreamSnapshot, clearStreamSnapshot, clearAllSnapshots } from "../trace/stream-observer.ts";
+import { emitTimeoutFired, emitTimeoutRetry, emitTimeoutRetryExhausted, armIneffectiveCheck, emitWatchdogKill, emitTimerDrift, TIMER_DRIFT_RATIO, getStreamSnapshot, clearStreamSnapshot, clearAllSnapshots } from "../trace/stream-observer.ts";
 import { SessionState } from "../session/state.ts";
 import { getLogger, getSessionMetrics, getPerfTimer } from "../debug/index.ts";
 import { LoopDetector, LOOP_RECOVERY_PROMPT, LOOP_RECOVERY_FINAL_PROMPT } from "../agent/loop-detection.ts";
@@ -121,7 +121,13 @@ import {
 import { detectInvestigationContext, buildHypothesisGuideReminder } from "./hypothesis-guide.ts";
 import { collectDiagnosticText, getLSPHealthWarning } from "../lsp/manager.ts";
 import { buildPermissionModeReminder, isRuntimeModeSwitch, PERMISSION_MODE_REMINDER_INTERVAL } from "./permission-reminder.ts";
-import { buildContradictionReminder, buildDeliveryGateReminder, collectEvidenceTexts } from "./hypothesis-ledger.ts";
+import {
+  buildContradictionReminder,
+  buildDeliveryGateReminder,
+  buildStrategyShiftReminder,
+  collectEvidenceTexts,
+  CONSECUTIVE_REFUTATION_NAG_THRESHOLD,
+} from "./hypothesis-ledger.ts";
 import { buildGoalReminder } from "../goal/reminder.ts";
 import { collectEvidenceFromTurn } from "../goal/evidence-collector.ts";
 import { handleGoalGate } from "./goal-gate.ts";
@@ -198,6 +204,38 @@ function isTimeoutError(err: unknown, turnSignal?: AbortSignal | null): boolean 
     return true;
   }
   return false;
+}
+
+/**
+ * 可被 abort 提前唤醒的 sleep（用于重试退避）。
+ *
+ * 根因（轨迹 20260730-142920-d98e7f16）：超时重试的退避此前是裸
+ * `await new Promise(r => setTimeout(r, backoffMs))`——睡满才醒，期间会话被
+ * abort 也感知不到。实测 07:37:49.077 触发 session-timeout abort，退避仍睡到
+ * 07:37:53.491 才醒并发出新请求，于是 UI 先弹「已自动结束本轮」、紧接着又弹
+ * 「⟳ 正在重试」。退避基数默认 5s、上限 120s（network-profile DEFAULTS），
+ * 封顶时最坏要拖 2 分钟才能响应中断。
+ *
+ * 语义：正常睡满 → resolve；睡眠期间 signal abort → 立即 resolve（**不 reject**）。
+ * 由调用方在 await 之后复检 `signal.aborted` 决定怎么收尾——这样这个工具既能给
+ * 退避用，也不会把「中断」变成一个需要 catch 的异常路径。
+ * 传入时已 aborted 则同步返回，不白等一轮。
+ * 无论走哪条路径都清理 timer 与 listener（避免 timer 吊住事件循环、listener 泄漏）。
+ */
+export function sleepUnlessAborted(ms: number, signal?: AbortSignal | null): Promise<void> {
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, ms);
+    signal?.addEventListener("abort", finish, { once: true });
+  });
 }
 
 /**
@@ -1070,6 +1108,21 @@ export async function* queryLoop(
       state.pendingContradictions = undefined; // 注入后清空，避免重复
     }
 
+    // 缺陷3（连续推翻 → 换策略·注入端）：上一轮裁决后检出"连推 N 条且零 confirm"，
+    // 本轮经 reminder 通道注入换取证手段的提示。走 critical 档（前置于用户指令）——
+    // 越早读到越省成本，轨迹 20260730-142920-d98e7f16 里模型连推 6 条才自己反应过来，
+    // 中间白烧了约 30 分钟。一次性：注入后清空 pending，且 state 侧有 nagged 永久标志。
+    if (state.pendingHypothesisStrategyShift !== undefined) {
+      criticalReminderParts.push(
+        buildStrategyShiftReminder(state.pendingHypothesisStrategyShift),
+      );
+      log.info(
+        "QUERY_LOOP",
+        `注入换策略提示（连续推翻 ${state.pendingHypothesisStrategyShift} 条假设且零确认）`,
+      );
+      state.pendingHypothesisStrategyShift = undefined;
+    }
+
     // 方向 2/4/6（git-status 快照冻结死循环止损阀·注入端）：上一轮检出"卡在只读命令上"，
     // 本轮经 reminderParts 注入携带实时 git 状态的收敛提醒。走 critical 档（前置于用户
     // 指令），确保模型在被冻结快照带偏前先读到实时事实。走 reminder 通道（仅本轮注入、不落历史、缓存友好），
@@ -1616,9 +1669,29 @@ export async function* queryLoop(
         10,
         Math.min(netTimeouts.watchdogCheckIntervalMs, MAX_TURN_DURATION_MS),
       );
+      // 定时器迟到实测（TimerDrift 埋点）：记上一次 tick 时刻，每 tick 比对实际间隔。
+      // 为什么需要：轨迹 20260730-142920-d98e7f16 里 turn_hard 与 watchdog 双双迟到
+      // 几百秒，但两个候选根因（事件循环被 IO 占满 / humanInputPause 扣减）都无法从
+      // 现有轨迹分辨——见 stream-observer.ts emitTimerDrift 的说明。
+      let turnLastTickAt = Date.now();
       const turnTimeoutPromise = new Promise<never>((_resolve, reject) => {
         turnTimer = setInterval(() => {
           try {
+            // 迟到检测放在最前：任何 early-return 之前都要测到，否则闸门/settle 分支
+            // 一 return 就把这次 tick 的间隔信息丢了（而恰恰是这些分支最可能长时间不动）。
+            {
+              const now = Date.now();
+              const actual = now - turnLastTickAt;
+              turnLastTickAt = now;
+              if (actual > TURN_HARD_CHECK_INTERVAL_MS * TIMER_DRIFT_RATIO) {
+                emitTimerDrift(state.turnCount, {
+                  timer: "turn_hard",
+                  expected_ms: TURN_HARD_CHECK_INTERVAL_MS,
+                  actual_ms: actual,
+                  drift_ms: actual - TURN_HARD_CHECK_INTERVAL_MS,
+                });
+              }
+            }
             // race 已 settle 后不再触发（防冗余 abort）。
             if (raceSettled) return;
             // 闸门：正在阻塞等用户输入（fallback / 抢跑权限弹窗）→ 记录等待段起点，不计硬超时。
@@ -1685,9 +1758,27 @@ export async function* queryLoop(
       // 之前定义，turn_hard 与 watchdog 共享同一套（H6）：两个 setInterval 都在单线程事件循环内
       // 跑，先跑的那个 tick 负责「结束等待→累计→置 null」，后跑的看到 null 即跳过，天然不会重复
       // 累计；共享还保证两条防线对「已扣除多少等待」看法一致，不会一个扣了另一个没扣而口径打架。
+      // 定时器迟到实测（见 turn_hard 处同名注释与 stream-observer.ts emitTimerDrift）。
+      let watchdogLastTickAt = Date.now();
       const watchdogPromise = new Promise<never>((_resolve, reject) => {
         watchdogTimer = setInterval(() => {
           try {
+            // 迟到检测放在所有 early-return 之前（含 isAwaitingHumanInput 闸门）：
+            // 本次事故的静默窗口正是"看门狗该判超时却 899s 没判"，若在闸门之后测，
+            // 闸门 return 的那些 tick 就完全不留痕，等于测不到最需要的那段。
+            {
+              const now = Date.now();
+              const actual = now - watchdogLastTickAt;
+              watchdogLastTickAt = now;
+              if (actual > WATCHDOG_CHECK_INTERVAL_MS * TIMER_DRIFT_RATIO) {
+                emitTimerDrift(state.turnCount, {
+                  timer: "watchdog",
+                  expected_ms: WATCHDOG_CHECK_INTERVAL_MS,
+                  actual_ms: actual,
+                  drift_ms: actual - WATCHDOG_CHECK_INTERVAL_MS,
+                });
+              }
+            }
             // Fix 3/隐患 7：race 已 settle 后不再触发 abort（防冗余）
             if (raceSettled) return;
             // 闸门：正在阻塞等用户输入（如 fallback 询问弹窗）→ 不判无进展。
@@ -1730,6 +1821,14 @@ export async function* queryLoop(
               empty_chunks: snapshot?.emptyChunks ?? 0,
               elapsed_ms: Date.now() - watchdogStartedAt,
               model: config.model,
+              // 迟判归因用（轨迹 20260730-142920-d98e7f16：阈值 300s 却 899s 才判）。
+              // 有了这三个值就能算清「迟到到底被什么吃掉了」：
+              //   raw_no_progress_ms - human_input_pause_accum_ms = noProgressMs（判据），
+              // 若 pause 累计≈0 而 raw 远超阈值 → 是定时器没按时 tick（配 TimerDrift 事件确认）；
+              // 若 pause 累计很大 → 是等待扣减把时长吃掉了（两者修法完全不同）。
+              human_input_pause_accum_ms: humanInputPauseAccumMs,
+              raw_no_progress_ms: Date.now() - lastProgressAt,
+              effective_threshold_ms: effectiveThresholdMs,
             });
             // 尽力而为：主动 abort 上游 fetch（即便对已 hang 的 reader 无效也无害）。
             // Fix 3 根治：只 abort 本轮子 controller，不碰会话级 signal。
@@ -1841,9 +1940,31 @@ export async function* queryLoop(
             model: config.model,
             error: "请求超时",
           });
-          await new Promise(resolve => setTimeout(resolve, backoffMs));
+          // 退避期可被会话级 abort 打断（不再死等满 backoffMs）。
+          // 根因（轨迹 20260730-142920-d98e7f16）：退避用裸 setTimeout 睡满，期间
+          // 会话级硬顶 abort 了也感知不到，醒来直接 continue 发下一个请求——实测
+          // 07:37:49.077 触发 session-timeout abort，07:37:53.491 仍发出 BeforeModel
+          // idx=47。UI 上先弹「会话已运行超过 60 分钟，已自动结束本轮」，紧接着又弹
+          // 「⟳ 正在重试（第 1 次）…」，两个状态机各说各话。
+          // 修法：sleep 期间挂 abort 监听提前唤醒，醒来后再复检一次 signal。
+          await sleepUnlessAborted(backoffMs, deps.getAbortSignal());
           // Fix 2：重试前清除本轮旧快照，防止看门狗读到上次失败的脏 lastContentProgressAt 立即误杀
           clearStreamSnapshot(state.turnCount);
+          // 退避结束后复检：会话已被 abort 就不再发起新请求，交给下方统一收尾。
+          // 只认「会话级 signal」——turn 级子 signal 每轮 race settle 后都会被主动
+          // abort("race-settled")，拿它判会不会把正常重试全掐掉。
+          const abortedDuringBackoff = deps.getAbortSignal();
+          if (abortedDuringBackoff?.aborted) {
+            const r = abortedDuringBackoff.reason;
+            log.warn(
+              "QUERY_LOOP",
+              `退避期间会话被中断（reason=${String(r ?? "unknown")}），放弃本次重试并收尾`,
+            );
+            // 不 yield 额外文案：会话级硬顶/用户取消的专属提示由 app.ts catch 分支统一给出，
+            // 这里再 yield 一条就是第二个说法（正是本次要根治的「两个状态机各说各话」）。
+            yield { kind: "done", turns: state.turnCount };
+            return;
+          }
           continue;
         }
         // 缺口 4：记录超时重试耗尽事件
@@ -2611,15 +2732,27 @@ export async function* queryLoop(
         }
       }
 
-      // 环节③ 机制3（交付门禁）：模型试图收尾，但假设登记表里仍有未确认（open）假设时，
-      // 注入门禁提醒并软续命——逼它先把假设结清（去验证→confirm，或 refute/降级），
+      // 环节③ 机制3（交付门禁）：模型试图收尾，但假设登记表里仍有未确认（open 或 refuted）
+      // 假设时，注入门禁提醒并软续命——逼它先把假设结清（去验证→confirm，或 refute/降级），
       // 而不是把未证实的假设当结论交付。这是 fdb47f30 那类"把猜测写成根因"的最后一道闸。
       // 续命有限次：模型确实无法定论时放行，但门禁提醒已要求它在交付物里如实降级。
+      //
+      // 闸门用 hasUnsettled() 而非 hasOpen()：后者只看 open，与载荷 unsettled()
+      // （status !== confirmed）口径不一致。轨迹 20260730-142920-d98e7f16 实测门禁
+      // 注入 0 次——H1-H6 全 refuted、0 open，闸门不响，而这恰是最该拦的场景。
       if (deps.getHypothesisLedger) {
         const ledger = deps.getHypothesisLedger();
-        if (ledger && ledger.hasOpen()) {
+        if (ledger && ledger.hasUnsettled()) {
           const retries = state.hypothesisGateRetryCount ?? 0;
-          const MAX_HYPOTHESIS_GATE_RETRIES = 2;
+          // 续命预算按"还有没有可推进的动作"分档，而不是一刀切 2 次：
+          //   - 有 open 假设 → 2 次：open 是可推进的（去取证 → confirm/refute），
+          //     多给一次机会换来的是真结论。
+          //   - 全是 refuted（0 open）→ 1 次：refute 是**终态**，裁决不可改，模型
+          //     唯一能做的就是"别把它写成结论/如实标注已证伪"。这一点提醒一次就够，
+          //     再拦第二次纯属多烧一轮 token 且无动作可做——正是本次要避免的
+          //     "多了步骤、没有收益"。
+          const gateHasOpen = ledger.hasOpen();
+          const MAX_HYPOTHESIS_GATE_RETRIES = gateHasOpen ? 2 : 1;
           if (retries < MAX_HYPOTHESIS_GATE_RETRIES) {
             state.hypothesisGateRetryCount = retries + 1;
             const unsettled = ledger.unsettled();
@@ -2955,6 +3088,20 @@ export async function* queryLoop(
               log.info(
                 "QUERY_LOOP",
                 `假设登记表矛盾检测命中 ${hits.length} 条（${hits.map((h) => h.hypothesisId).join(",")}），下一轮注入矛盾中断`,
+              );
+            }
+
+            // 缺陷3（连续推翻 → 换策略·检测端）：连推 N 条假设且一条没 confirm，
+            // 说明取证手段本身不对（多为凭静态推理外推），该换 git 历史/实测/问用户，
+            // 而不是登记下一条同类假设。
+            // 「只给一次」的标志挂在 ledger（会话级）而非 state（每条用户消息重建）——
+            // claimStrategyNag 把判据与置位做成原子，返回 >0 即表示本次该提示。
+            const nagCount = ledger.claimStrategyNag(CONSECUTIVE_REFUTATION_NAG_THRESHOLD);
+            if (nagCount > 0) {
+              state.pendingHypothesisStrategyShift = nagCount;
+              log.info(
+                "QUERY_LOOP",
+                `连续推翻 ${nagCount} 条假设且零确认，下一轮注入换策略提示（仅一次）`,
               );
             }
           }

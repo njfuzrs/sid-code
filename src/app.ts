@@ -5957,7 +5957,7 @@ export class App {
           const message = aborted
             ? "已取消当前响应"
             : sessionTimedOut
-              ? `会话超过 ${sessionTimeoutMin} 分钟上限，已自动结束。可重新输入指令继续。`
+              ? `本轮连续执行超过 ${sessionTimeoutMin} 分钟上限，已自动收尾。直接输入指令即可接着做（会话未结束，上下文保留）。`
               : internalTimeoutLeaked
                 ? `请求超时中断：${err?.message ?? String(err)}`
                 : `错误: ${err.message ?? String(err)}`;
@@ -6029,7 +6029,15 @@ export class App {
             const sessionHint: import("./ui/types.ts").HistoryItem = {
               id: historyIdCounter,
               type: "hint",
-              text: `会话已运行超过 ${sessionTimeoutMin} 分钟，已自动结束本轮 — 直接输入新指令即可继续。`,
+              // 文案口径（2026-07-31 修正）：这个上限计的是「一次用户输入触发的连续自动执行」，
+              // 不是整场会话——sessionTimer 挂在 tuiAgentLoop 内、每次 onUserInput 新建、
+              // finally 里 clearTimeout，新输入即重置。旧文案「会话已运行超过 N 分钟，已自动
+              // 结束本轮」让用户以为整个会话终结、上下文没了（实测轨迹里用户随后输入
+              // 「请继续完成任务」即正常续跑 turn 48-57），是纯粹的表述误导。
+              text:
+                `本轮连续执行已超过 ${sessionTimeoutMin} 分钟上限，已自动收尾 — 直接输入指令即可接着做，` +
+                `会话和上下文都还在。若长任务经常撞上这个上限，可调 settings.json 的 ` +
+                `network.maxSessionDurationMs 或环境变量 SID_CODE_MAX_SESSION_DURATION_MS 放宽。`,
             };
             const prevHistoryItems = bridge.current.historyItems;
             updateState({ historyItems: [...prevHistoryItems, sessionHint] });

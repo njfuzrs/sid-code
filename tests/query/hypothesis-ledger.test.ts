@@ -6,15 +6,28 @@
  * - detectContradictions：长且具体的 cue 仍能命中；短通用词不再一碰就中。
  * - buildContradictionReminder：措辞已从"立即裁决/矛盾中断"降级为"仅供参考、可忽略"。
  * - 机制1/3 基本行为（register 必填 falsifier、unsettled/hasOpen）。
+ *
+ * 2026-07-31 三缺陷根治（证据来自轨迹 20260730-142920-d98e7f16，非推测）：
+ * - 缺陷1 sanitizeExplicitCues：显式 falsifierCues 此前豁免长度门槛，使 MIN_EN_CUE_LENGTH=8
+ *   防线在生产主路径完全失效（模型每次都填 cues → 带门槛的 extractCues 一次没走到）。
+ *   实测 24 次矛盾中断全为噪音，命中词 `resize`(6)×9、`⚠`(1)×3。本文件内原
+ *   "显式 cues 不受长度收紧影响" 一例的期望已随之反转，并记录了反转理由。
+ * - 缺陷2 hasUnsettled：交付门禁闸门用 hasOpen()（只看 open），比载荷 unsettled()
+ *   （!==confirmed）窄一档 → 该会话 H1-H6 全 refuted、0 open，门禁实测注入 0 次。
+ * - 缺陷3 consecutiveRefutations/buildStrategyShiftReminder：连推 N 条零确认时提示换
+ *   取证手段。此前 harness 无此观察，模型连推 6 条才自己反应过来且误读成"我违反纪律"。
  */
 
 import { test, expect, describe } from "bun:test";
 import {
   HypothesisLedger,
   extractCues,
+  sanitizeExplicitCues,
   buildContradictionReminder,
+  buildStrategyShiftReminder,
   collectEvidenceTexts,
   isEmptyResultText,
+  CONSECUTIVE_REFUTATION_NAG_THRESHOLD,
 } from "../../src/query/hypothesis-ledger.ts";
 
 describe("extractCues（Top 5：收紧 cue 长度）", () => {
@@ -80,17 +93,58 @@ describe("detectContradictions（Top 5：长 cue 命中，短通用词不再误�
     expect(hits.length).toBe(0);
   });
 
-  test("显式给出的 falsifierCues 不受长度收紧影响（用户显式指定优先）", () => {
+  // 2026-07-31 期望反转：此前这里断言"显式 falsifierCues 不受长度收紧影响（用户显式指定优先）"，
+  // 用 `exited`（6 字符）作为显式 cue 并期望命中。那条豁免让 MIN_EN_CUE_LENGTH=8 防线在
+  // 生产主路径**完全失效**——模型每次都会填 falsifier_cues，于是带门槛的 extractCues 一次都
+  // 走不到。轨迹 20260730-142920-d98e7f16 实测 24 次矛盾中断全为噪音，命中词是
+  // `resize`(6) ×9 / `⚠`(1) ×3 等，模型反复写"这是词面撞车"并花 reasoning 去否假警报。
+  // 故显式 cues 改为同样过门槛（sanitizeExplicitCues），本组用例随之反转。
+  test("显式 falsifierCues 同样受泛化门槛约束（过短的被筛掉，不再一碰就中）", () => {
     const ledger = new HypothesisLedger();
     ledger.register({
       statement: "假设 B",
+      // resize/⚠ 是真实噪音源；exited 是旧用例的短 cue。三者都短于 MIN_EN_CUE_LENGTH。
       falsifier: "任意",
-      falsifierCues: ["exited"],
+      falsifierCues: ["exited", "resize", "⚠"],
       turn: 1,
     });
-    const hits = ledger.detectContradictions("the worker exited unexpectedly");
+    // 全部被筛掉 → 回落 extractCues("任意")（2 字，不产 cue）→ 无 cue → 不命中
+    expect(ledger.detectContradictions("the worker exited unexpectedly").length).toBe(0);
+    expect(ledger.detectContradictions("触发 resize 后重新布局").length).toBe(0);
+  });
+
+  test("显式 falsifierCues 中足够具体的仍被保留（筛而不弃）", () => {
+    const ledger = new HypothesisLedger();
+    ledger.register({
+      statement: "假设 C",
+      falsifier: "任意",
+      // process_still_alive 够长；stdout.columns 是复合标识符（带点）→ 免长度门槛；
+      // resize 过短 → 应被筛掉。
+      falsifierCues: ["process_still_alive", "stdout.columns", "resize"],
+      turn: 1,
+    });
+    expect(ledger.detectContradictions("日志：process_still_alive=true").length).toBe(1);
+
+    const l2 = new HypothesisLedger();
+    l2.register({ statement: "假设 D", falsifier: "任意", falsifierCues: ["stdout.columns"], turn: 1 });
+    expect(l2.detectContradictions("读取 stdout.columns 得到 120").length).toBe(1);
+
+    const l3 = new HypothesisLedger();
+    l3.register({ statement: "假设 E", falsifier: "任意", falsifierCues: ["resize"], turn: 1 });
+    expect(l3.detectContradictions("触发 resize 事件").length).toBe(0);
+  });
+
+  test("显式 cues 全被筛掉时回落到 falsifier 自动提取（不让假设丧失矛盾检测能力）", () => {
+    const ledger = new HypothesisLedger();
+    ledger.register({
+      statement: "假设 F",
+      falsifier: "若日志出现 process_still_alive 则推翻",
+      falsifierCues: ["resize", "⚠"], // 全部过短 → 筛空 → 回落 extractCues(falsifier)
+      turn: 1,
+    });
+    const hits = ledger.detectContradictions("监控：process_still_alive=true");
     expect(hits.length).toBe(1);
-    expect(hits[0].matchedCue).toBe("exited");
+    expect(hits[0].matchedCue).toBe("process_still_alive");
   });
 });
 
@@ -254,5 +308,165 @@ describe("发现 3：证据指纹改全文 hash（消除前 120 字符伪碰撞�
     const ledger = new HypothesisLedger();
     ledger.register({ statement: "S", falsifier: "若存在 alpha_marker_long 则推翻", turn: 1 });
     expect(ledger.detectContradictions("含 alpha_marker_long").length).toBe(1);
+  });
+});
+
+// ─── 2026-07-31 三缺陷根治（轨迹 20260730-142920-d98e7f16）───
+
+describe("缺陷1：sanitizeExplicitCues（显式 cues 也过泛化门槛）", () => {
+  test("过短的英文/符号 cue 被筛掉（resize/⚠/exited 是实测噪音源）", () => {
+    expect(sanitizeExplicitCues(["resize", "⚠", "exited", "config"])).toEqual([]);
+  });
+
+  test("足够长的标识符保留", () => {
+    expect(sanitizeExplicitCues(["process_still_alive"])).toContain("process_still_alive");
+  });
+
+  test("复合标识符免长度门槛（带点/斜杠/连字符/空格）", () => {
+    const out = sanitizeExplicitCues(["stdout.columns", "flex-end", "a/b.ts", "width 100%"]);
+    expect(out).toContain("stdout.columns");
+    expect(out).toContain("flex-end");
+    expect(out).toContain("a/b.ts");
+    expect(out).toContain("width 100%");
+  });
+
+  test("中文 ≥4 连续汉字保留，短的筛掉（与 extractCues 同口径）", () => {
+    expect(sanitizeExplicitCues(["进程崩溃退出"])).toContain("进程崩溃退出");
+    expect(sanitizeExplicitCues(["进程"])).toEqual([]);
+  });
+
+  test("大小写归一 + 去重 + 空白剔除", () => {
+    expect(sanitizeExplicitCues(["ProcessStillAlive", "processstillalive", "  ", ""]))
+      .toEqual(["processstillalive"]);
+  });
+});
+
+describe("缺陷2：hasUnsettled（交付门禁闸门与载荷同口径）", () => {
+  test("全 refuted、0 open 时闸门仍响（旧 hasOpen() 在此静默——实测门禁 0 次注入的根因）", () => {
+    const ledger = new HypothesisLedger();
+    const h = ledger.register({ statement: "S", falsifier: "足够长的证伪条件描述文本", turn: 1 });
+    ledger.challenge({ id: h.id, verdict: "refute", evidence: { note: "推翻" }, turn: 2 });
+    expect(ledger.hasOpen()).toBe(false);       // 旧闸门：不响
+    expect(ledger.hasUnsettled()).toBe(true);   // 新闸门：响
+    expect(ledger.unsettled().length).toBe(1);  // 与载荷一致
+  });
+
+  test("全 confirmed 时闸门不响（不误拦正常交付）", () => {
+    const ledger = new HypothesisLedger();
+    const h = ledger.register({ statement: "S", falsifier: "足够长的证伪条件描述文本", turn: 1 });
+    ledger.challenge({ id: h.id, verdict: "confirm", evidence: { note: "确证" }, turn: 2 });
+    expect(ledger.hasUnsettled()).toBe(false);
+  });
+
+  test("空登记表不响", () => {
+    expect(new HypothesisLedger().hasUnsettled()).toBe(false);
+  });
+});
+
+describe("缺陷3：连续推翻 → 换策略信号", () => {
+  const mk = (n: number, verdict: "refute" | "confirm" = "refute") => {
+    const ledger = new HypothesisLedger();
+    for (let i = 0; i < n; i++) {
+      const h = ledger.register({ statement: `S${i}`, falsifier: `足够长的证伪条件描述${i}`, turn: i });
+      ledger.challenge({ id: h.id, verdict, evidence: { note: "e" }, turn: i });
+    }
+    return ledger;
+  };
+
+  test("连推达阈值即可检出（实测该会话连推 6 条才由模型自己反应过来）", () => {
+    expect(mk(CONSECUTIVE_REFUTATION_NAG_THRESHOLD).consecutiveRefutations())
+      .toBe(CONSECUTIVE_REFUTATION_NAG_THRESHOLD);
+    expect(mk(6).consecutiveRefutations()).toBe(6);
+  });
+
+  test("未达阈值不触发（1-2 条连错属正常排查噪音，提示会变打扰）", () => {
+    expect(mk(2).consecutiveRefutations()).toBeLessThan(CONSECUTIVE_REFUTATION_NAG_THRESHOLD);
+  });
+
+  test("只数末尾连续段：confirm 会打断计数（不惩罚先错后对的健康排查）", () => {
+    const ledger = new HypothesisLedger();
+    const a = ledger.register({ statement: "A", falsifier: "足够长的证伪条件描述A", turn: 1 });
+    ledger.challenge({ id: a.id, verdict: "refute", evidence: { note: "e" }, turn: 1 });
+    const b = ledger.register({ statement: "B", falsifier: "足够长的证伪条件描述B", turn: 2 });
+    ledger.challenge({ id: b.id, verdict: "confirm", evidence: { note: "e" }, turn: 2 });
+    expect(ledger.consecutiveRefutations()).toBe(0);
+    expect(ledger.hasConfirmed()).toBe(true);
+  });
+
+  test("末尾有 open 假设时不计入（open 仍可推进，不该提示换策略）", () => {
+    const ledger = mk(3);
+    ledger.register({ statement: "新的", falsifier: "足够长的证伪条件描述新", turn: 9 });
+    expect(ledger.consecutiveRefutations()).toBe(0);
+  });
+
+  test("提醒措辞给替代动作、不含指责（模型曾把机制缺位误读成自己违纪）", () => {
+    const msg = buildStrategyShiftReminder(6);
+    expect(msg).toContain("6");
+    expect(msg).toContain("git");
+    // 不含指责性措辞。"不是纪律问题"是**否定式**框定（刻意保留），故不能只搜"纪律"二字。
+    expect(msg).not.toContain("违反");
+    expect(msg).toContain("不是纪律问题");
+  });
+});
+
+describe("缺陷3：claimStrategyNag 一次性语义（会话级，非每条消息级）", () => {
+  const mkRefuted = (n: number) => {
+    const ledger = new HypothesisLedger();
+    for (let i = 0; i < n; i++) {
+      const h = ledger.register({ statement: `S${i}`, falsifier: `足够长的证伪条件描述${i}`, turn: i });
+      ledger.challenge({ id: h.id, verdict: "refute", evidence: { note: "e" }, turn: i });
+    }
+    return ledger;
+  };
+  const TH = CONSECUTIVE_REFUTATION_NAG_THRESHOLD;
+
+  test("首次达阈值返回条数，第二次起返回 0（连推第 4/5/6 条时不再刷屏）", () => {
+    const ledger = mkRefuted(TH);
+    expect(ledger.claimStrategyNag(TH)).toBe(TH);
+    expect(ledger.claimStrategyNag(TH)).toBe(0);
+    // 继续推翻更多条也不再提示
+    const h = ledger.register({ statement: "更多", falsifier: "足够长的证伪条件描述更多", turn: 9 });
+    ledger.challenge({ id: h.id, verdict: "refute", evidence: { note: "e" }, turn: 9 });
+    expect(ledger.claimStrategyNag(TH)).toBe(0);
+  });
+
+  test("未达阈值不置位（不会白白烧掉唯一一次提示机会）", () => {
+    const ledger = mkRefuted(TH - 1);
+    expect(ledger.claimStrategyNag(TH)).toBe(0);
+    const h = ledger.register({ statement: "补一条", falsifier: "足够长的证伪条件描述补", turn: 8 });
+    ledger.challenge({ id: h.id, verdict: "refute", evidence: { note: "e" }, turn: 8 });
+    expect(ledger.claimStrategyNag(TH)).toBe(TH); // 现在才给
+  });
+
+  test("有 confirmed 时不提示（排查已有产出，不该说方向错）", () => {
+    const ledger = mkRefuted(TH);
+    const h = ledger.register({ statement: "对的", falsifier: "足够长的证伪条件描述对", turn: 9 });
+    ledger.challenge({ id: h.id, verdict: "confirm", evidence: { note: "e" }, turn: 9 });
+    expect(ledger.claimStrategyNag(TH)).toBe(0);
+  });
+
+  test("标志跨 serialize/hydrate 保留（-c 恢复后不重复提示）", () => {
+    const ledger = mkRefuted(TH);
+    expect(ledger.claimStrategyNag(TH)).toBe(TH);
+    const restored = new HypothesisLedger();
+    restored.hydrate(ledger.serialize());
+    expect(restored.claimStrategyNag(TH)).toBe(0);
+  });
+
+  test("旧快照缺 strategyNagged 字段 → 恢复后仍有一次机会（安全降级方向）", () => {
+    const ledger = mkRefuted(TH);
+    const snap = ledger.serialize() as Record<string, unknown>;
+    delete snap.strategyNagged;
+    const restored = new HypothesisLedger();
+    restored.hydrate(snap as never);
+    expect(restored.claimStrategyNag(TH)).toBe(TH);
+  });
+
+  test("/clear（reset）后重新有机会（新一轮排查是全新搜索过程）", () => {
+    const ledger = mkRefuted(TH);
+    expect(ledger.claimStrategyNag(TH)).toBe(TH);
+    ledger.reset();
+    const l2 = mkRefuted(TH);
+    expect(l2.claimStrategyNag(TH)).toBe(TH);
   });
 });

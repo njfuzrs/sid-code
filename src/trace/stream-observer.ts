@@ -408,6 +408,15 @@ export function emitWatchdogKill(
     empty_chunks: number;
     elapsed_ms: number;
     model: string;
+    /**
+     * 迟判归因三件套（可选，轨迹 20260730-142920-d98e7f16：阈值 300s 却 899s 才判）。
+     * raw_no_progress_ms - human_input_pause_accum_ms = last_content_progress_ms（判据）。
+     * pause≈0 而 raw 远超阈值 → 定时器没按时 tick（配 TimerDrift 确认）；
+     * pause 很大 → 等待扣减吃掉了时长。两者修法不同，故必须能分辨。
+     */
+    human_input_pause_accum_ms?: number;
+    raw_no_progress_ms?: number;
+    effective_threshold_ms?: number;
   },
 ): void {
   try {
@@ -428,6 +437,66 @@ export function emitWatchdogKill(
     }
   } catch { /* 可观测性不影响正常流程 */ }
 }
+
+// ─── TimerDrift 事件（定时器迟到实测） ───
+
+/**
+ * 记录周期定时器的**实际 tick 间隔**远超预期（定时器迟到）。
+ *
+ * 根因待定的现象（轨迹 20260730-142920-d98e7f16）：两个不同类型的定时器同时迟到几百秒——
+ *   | 定时器 | 阈值 | 实际 | 迟到 |
+ *   |---|---|---|---|
+ *   | sessionTimer（setTimeout，app.ts） | 60min | 66.9min | 417s |
+ *   | watchdog（setInterval，loop.ts） | 300s | 899s | ~600s |
+ * 该窗口内 events.jsonl 完全静默（`first_content` 之后到 WatchdogKill 之间零事件，
+ * 且 WatchdogKill 的 total_chunks=0）。
+ *
+ * 两个候选根因都无法从现有轨迹证实——这正是本埋点存在的理由：
+ *   ① Bun 事件循环被底层 IO hang 占满，定时器回调排不上（loop.ts:1656 注释描述过这个
+ *      失效模式，但当时只有推断，没有实测）；
+ *   ② watchdog 的 humanInputPauseAccumMs 扣减（loop.ts）把无进展时长扣掉了。
+ * heartbeat.txt 的 `event_loop_lag_ms` 只在特定时刻采样（该会话是 07:50，晚于故障窗口
+ * 07:22-07:37），拿不到故障当时的事件循环延迟——所以现象确凿、根因不能定论。
+ *
+ * 本埋点直接测「上一次 tick 到这一次 tick 过了多久」：预期间隔已知（interval 参数），
+ * 实测超过 `expected * TIMER_DRIFT_RATIO` 即落一条事件。这样下次复现时可以直接区分：
+ *   - 有 TimerDrift 事件 → 根因①（定时器真的没按时 fire，事件循环被占满）；
+ *   - 无 TimerDrift 但 watchdog 迟判 → 根因②（tick 正常，是扣减逻辑把时长吃掉了）。
+ * 两者的修法完全不同（①要改超时机制本身，②要改扣减口径），所以必须先能分辨。
+ */
+export function emitTimerDrift(
+  index: number,
+  data: {
+    /** 定时器名称（如 "watchdog" / "turn_hard"） */
+    timer: string;
+    /** 预期 tick 间隔 */
+    expected_ms: number;
+    /** 实测 tick 间隔 */
+    actual_ms: number;
+    /** 迟到量 = actual - expected */
+    drift_ms: number;
+  },
+): void {
+  try {
+    if (_eventWriter && _sessionId) {
+      _eventWriter({
+        event: "TimerDrift",
+        session_id: _sessionId,
+        timestamp: new Date().toISOString(),
+        data: { index, ...data },
+      });
+    }
+  } catch { /* 可观测性不影响正常流程 */ }
+}
+
+/**
+ * 判定「定时器迟到」的倍率阈值：实测间隔超过预期的这个倍数才记事件。
+ *
+ * 取 3 是为了只抓真异常：正常调度抖动（GC、单个长同步任务）通常在预期间隔的
+ * 1-2 倍内，5s 间隔抖到 10s 属常态，不值得落事件；而本次事故是 300s 阈值迟到
+ * 到 899s（3 倍）、60min 迟到 417s——量级远超抖动，3 倍能稳定抓住且几乎不误报。
+ */
+export const TIMER_DRIFT_RATIO = 3;
 
 // ─── StreamStall 事件（大间隔无进展时主动发出） ───
 
