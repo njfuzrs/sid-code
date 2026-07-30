@@ -13,21 +13,31 @@ import DefaultTheme from "vitepress/theme";
 import type { Theme } from "vitepress";
 import CopyPage from "./CopyPage.vue";
 import Changelog from "./Changelog.vue";
+import BlogIndex from "./BlogIndex.vue";
+import BlogMeta from "./BlogMeta.vue";
 import "./brand.css";
 
 export default {
   extends: DefaultTheme,
   Layout() {
+    /**
+     * doc-before 里挂两个组件，顺序即视觉顺序：
+     *   BlogMeta（文章元信息行，仅 /blog/ 下的文章页渲染，自带 v-if 判路径）
+     *   CopyPage（复制整页按钮，全站）
+     * 元信息行在按钮上方——它是文章的一部分（日期/时长/标签），
+     * 而按钮是工具栏。工具栏压在署名之上会让文章头部读起来像先看到一个控件。
+     */
     return h(DefaultTheme.Layout, null, {
-      "doc-before": () => h(CopyPage),
+      "doc-before": () => [h(BlogMeta), h(CopyPage)],
     });
   },
   /**
-   * 全局注册 <Changelog />，让 website/changelog.md 能直接挂载它。
-   * 只注册这一个组件：它的数据源是构建期 JSON，写成 md 会被全站搜索索引
-   * 冲成噪音（详见 Changelog.vue 顶部说明）。
+   * 全局注册在 markdown 里直接用的组件。
+   * 只注册这几个：它们的数据源都是构建期 JSON/扫目录结果，写成 md 会被全站搜索索引
+   * 冲成噪音（详见 Changelog.vue / BlogIndex.vue 顶部说明）。
    */
   enhanceApp({ app }) {
     app.component("Changelog", Changelog);
+    app.component("BlogIndex", BlogIndex);
   },
 } satisfies Theme;

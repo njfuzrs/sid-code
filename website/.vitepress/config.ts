@@ -3,6 +3,15 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { tokenizeCJK } from "./tokenize";
 import { stripFrontmatter } from "./raw-markdown";
+import { loadBlogPosts } from "./blog-meta";
+
+/**
+ * /blog/ 的 sidebar 从磁盘扫出来，**不手写清单**。
+ * 手写必然漂移：新增一篇要改两处（sidebar + 文章文件），漏一处就是
+ * 「站内有页面但 sidebar 点不到」这种静默缺陷。数据源与列表页共用
+ * blog-meta.ts，所以两处顺序与标题永远一致。
+ */
+const blogPosts = loadBlogPosts();
 
 /**
  * sid-code 官网与官方文档站配置。
@@ -40,6 +49,7 @@ export default defineConfig({
       { text: "进阶定制", link: "/extend/", activeMatch: "^/extend/" },
       { text: "参考", link: "/ref/cli", activeMatch: "^/ref/" },
       { text: "企业与团队", link: "/team/defaults", activeMatch: "^/team/" },
+      { text: "文章", link: "/blog/", activeMatch: "^/blog/" },
       { text: "更新日志", link: "/changelog" },
     ],
 
@@ -105,6 +115,19 @@ export default defineConfig({
         {
           text: "术语",
           items: [{ text: "术语表", link: "/ref/glossary" }],
+        },
+      ],
+      /**
+       * 文章 sidebar：第一条固定是列表页（读者点进某篇后要能回到列表），
+       * 其后是全部文章，顺序与列表页一致（同一份 blogPosts，日期倒序）。
+       */
+      "/blog/": [
+        {
+          text: "文章",
+          items: [
+            { text: "全部文章", link: "/blog/" },
+            ...blogPosts.map((p) => ({ text: p.title, link: p.url })),
+          ],
         },
       ],
       "/team/": [

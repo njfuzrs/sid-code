@@ -737,6 +737,7 @@ const SECTION_NAMES: Record<string, string> = {
   extend: "进阶定制",
   ref: "参考（脚本生成）",
   team: "企业与团队",
+  blog: "文章",
   "": "站点",
 };
 
