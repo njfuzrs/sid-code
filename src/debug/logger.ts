@@ -3,7 +3,7 @@
  * 支持分级日志、文件输出、格式化输出
  */
 
-import { createWriteStream, existsSync, mkdirSync, renameSync, unlinkSync, appendFileSync, type WriteStream } from 'node:fs';
+import { createWriteStream, existsSync, mkdirSync, renameSync, unlinkSync, appendFileSync, statSync, type WriteStream } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { maskSensitiveData } from '../permission/sensitive.ts';
@@ -138,7 +138,20 @@ class Logger {
       // 写入头部
       const header = `${'─'.repeat(60)}\n SID-CODE DEBUG LOG  ${new Date().toLocaleString('zh-CN')}\n${'─'.repeat(60)}\n\n`;
       this.logStream.write(header);
-      this.currentLogSize = Buffer.byteLength(header);
+
+      // append 模式必须用**既有文件大小**作为起点，否则轮转永不触发：
+      // 跨会话累积时单次会话写不满 maxLogSize，而 currentLogSize 每次启动都从
+      // header 字节数重新计数 → `currentLogSize >= maxLogSize` 永远撞不到。
+      // 实测后果：用户 audit.log 长到 104MB 且 audit.log.1 从未生成。
+      let existingSize = 0;
+      if (this.options.append) {
+        try {
+          existingSize = statSync(this.logFilePath).size;
+        } catch {
+          // 文件不存在（首次创建）或 stat 失败 → 从 0 起算，退化为原行为
+        }
+      }
+      this.currentLogSize = existingSize + Buffer.byteLength(header);
 
       // JSON Lines 输出
       if (this.options.jsonLog) {
@@ -280,8 +293,22 @@ class Logger {
 
     const formatted = this.formatMessage(level, category, message, data);
 
-    // 文件始终写入所有级别，确保日志文件包含完整信息
-    this.writeToFile(formatted);
+    // 落盘级别门控：文件与控制台统一尊重 options.level。
+    //
+    // 原先此处无条件落盘（注释自称「文件始终写入所有级别，确保完整信息」），使 level
+    // 只门控控制台。审计模式（cli.ts:995，level=WARN）复用同一落盘路径，于是 level
+    // 形同虚设——实测真实 audit.log 中 DEBUG 占 90.7% / INFO 占 8.1%，应落盘 1.2MB
+    // 实际 104MB（写放大 87 倍）。
+    //
+    // 为何这样改是安全的：debugLevel 默认为 "DEBUG"（config.ts:749，cli.ts:973 二次兜底），
+    // 该取值下此门控是**恒等变换**，--debug 用户不丢任何现场。只有显式传
+    // --debug-level INFO/WARN/ERROR 才会过滤，而这正是该 flag 承诺的语义（help.ts:90）。
+    //
+    // 注意：必须门控在 writeToFile 这一处，不能提前 return——下方 per-session warn.log
+    // 与 jsonLog 是**独立 sink**，各有自己的级别语义，连带阻断会造成新的现场缺失。
+    if (level <= this.options.level) {
+      this.writeToFile(formatted);
+    }
 
     // 缺口 7：WARN/ERROR 级别同步追加到 per-session warn.log（不被后续会话覆盖）
     if (level <= LogLevel.WARN && this.sessionWarnLogPath) {
