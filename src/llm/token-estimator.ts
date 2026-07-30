@@ -11,10 +11,11 @@ import { estimateBlockTokens } from "../context/token.ts";
 /** 超过此长度使用快速近似（性能优化） */
 const MAX_CHARS_FOR_FULL_HEURISTIC = 100_000;
 
-/** 未知模型 + 未声明 contextWindow 时的保守兜底窗口（tokens）。
- *  默认 128K（主流模型普遍可达），可经 SID_FALLBACK_CONTEXT_WINDOW 放宽。
- *  非法值（NaN/≤0）静默回退默认，绝不更紧。 */
-const DEFAULT_FALLBACK_CONTEXT_WINDOW = 128_000;
+/** 未知模型 + 未声明 contextWindow 时的兜底窗口（tokens）。
+ *  默认 1M（2026 年主流大模型上下文窗口普遍达 1M：Claude/GPT/DeepSeek/Kimi/Qwen/GLM/Gemini 全系）。
+ *  可经 SID_FALLBACK_CONTEXT_WINDOW 覆盖。非法值（NaN/≤0）静默回退默认，绝不更紧。
+ *  详见 docs/bugfixes/todo/20260730-未知模型contextWindow兜底失真-根因与待修方案.md */
+const DEFAULT_FALLBACK_CONTEXT_WINDOW = 1_000_000;
 
 function resolveFallbackWindow(): number {
   const raw = process.env.SID_FALLBACK_CONTEXT_WINDOW;
@@ -96,7 +97,7 @@ export class TokenEstimator {
    * 优先级（SSOT）：
    *   1. 用户配置 availableModels[].contextWindow —— 权威来源，用户自己声明的最准
    *   2. 内置静态表精确匹配 / 最长前缀 / 家族匹配
-   *   3. 字符启发式兜底（deepseek 系 1M，其余 SID_FALLBACK_CONTEXT_WINDOW / 默认 128K）
+   *   3. 兜底 SID_FALLBACK_CONTEXT_WINDOW / 默认 1M（2026 年主流模型普遍 1M）
    *
    * @param model 模型名
    * @param availableModels 可选，用户配置的模型列表（携带权威 contextWindow）
@@ -116,8 +117,8 @@ export class TokenEstimator {
     const entry = lookupRegistry(model);
     if (entry) return entry.contextWindow;
 
-    // 兜底：含 deepseek 的未知变体按 1M（DeepSeek 全系 1M 上下文），其余回退到可配置的保守默认。
-    if (/deepseek/i.test(model)) return 1_000_000;
+    // 兜底：未知模型回退到可配置的默认值（1M）。
+    // 详见 docs/bugfixes/todo/20260730-未知模型contextWindow兜底失真-根因与待修方案.md
     return resolveFallbackWindow();
   }
 

@@ -169,16 +169,17 @@ describe("TokenEstimator", () => {
       expect(estimator.getContextLimit("claude-sonnet-4-20260101")).toBe(200000);
     });
 
-    test("EST-3：1M 窗口 deepseek 变体不回退到 128K", () => {
-      // 带后缀的 deepseek 变体命名，旧 split(0,3) 前缀逻辑会回退到 128K（分母偏 8 倍）
+    test("EST-3：1M 窗口 deepseek 变体不回退到旧 128K 兜底", () => {
+      // 带后缀的 deepseek 变体命名，靠注册表前缀匹配 + 兜底 1M 命中
       expect(estimator.getContextLimit("deepseek-v4-pro-1m")).toBe(1_000_000);
       expect(estimator.getContextLimit("deepseek-v4-flash-20260101")).toBe(1_000_000);
-      // 完全未知的 deepseek 变体也按 1M 兜底（DeepSeek 全系 1M）
+      // 完全未知的 deepseek 变体也按 1M 兜底（兜底值已从 128K 提至 1M）
       expect(estimator.getContextLimit("deepseek-unknown-variant")).toBe(1_000_000);
     });
 
-    test("未知模型返回默认值 128000", () => {
-      expect(estimator.getContextLimit("unknown-model")).toBe(128000);
+    test("未知模型返回默认值 1_000_000", () => {
+      // 兜底从 128K 提至 1M（2026 年主流模型普遍 1M），详见 docs/bugfixes/todo/20260730-未知模型contextWindow兜底失真-根因与待修方案.md
+      expect(estimator.getContextLimit("unknown-model")).toBe(1_000_000);
     });
 
     test("#10：availableModels 声明的 contextWindow 是权威源，覆盖静态表", () => {
@@ -188,26 +189,26 @@ describe("TokenEstimator", () => {
       ).toBe(256000);
     });
 
-    test("#10：SID_FALLBACK_CONTEXT_WINDOW 放宽未知模型兜底窗口", () => {
+    test("#10：SID_FALLBACK_CONTEXT_WINDOW 覆盖未知模型兜底窗口", () => {
       const saved = process.env.SID_FALLBACK_CONTEXT_WINDOW;
       try {
         process.env.SID_FALLBACK_CONTEXT_WINDOW = "256000";
         // 未知模型 + 未声明 contextWindow → 走可配置兜底
         expect(estimator.getContextLimit("totally-unknown-model")).toBe(256000);
-        // deepseek 系仍按 1M，不受兜底 env 影响
-        expect(estimator.getContextLimit("deepseek-unknown-variant")).toBe(1_000_000);
+        // deepseek 变体现在也走兜底 env（deepseek 特判已删，统一走 resolveFallbackWindow）
+        expect(estimator.getContextLimit("deepseek-unknown-variant")).toBe(256000);
       } finally {
         if (saved === undefined) delete process.env.SID_FALLBACK_CONTEXT_WINDOW;
         else process.env.SID_FALLBACK_CONTEXT_WINDOW = saved;
       }
     });
 
-    test("#10：SID_FALLBACK_CONTEXT_WINDOW 非法值静默回退默认 128000", () => {
+    test("#10：SID_FALLBACK_CONTEXT_WINDOW 非法值静默回退默认 1_000_000", () => {
       const saved = process.env.SID_FALLBACK_CONTEXT_WINDOW;
       try {
         for (const bad of ["0", "-1", "abc", ""]) {
           process.env.SID_FALLBACK_CONTEXT_WINDOW = bad;
-          expect(estimator.getContextLimit("totally-unknown-model")).toBe(128000);
+          expect(estimator.getContextLimit("totally-unknown-model")).toBe(1_000_000);
         }
       } finally {
         if (saved === undefined) delete process.env.SID_FALLBACK_CONTEXT_WINDOW;
