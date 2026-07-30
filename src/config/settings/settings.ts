@@ -13,7 +13,6 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { dirname } from "path";
-import { getLogger } from "../../debug/logger.ts";
 import { resolveEnvVars } from "../env-interpolation.ts";
 import { markInternalWrite } from "./internal-writes.ts";
 import {
@@ -107,54 +106,6 @@ function clone<T>(value: T): T {
   }
 }
 
-/** 已告警过的文件路径，避免每次读取都刷屏（同一进程内仅告警一次） */
-const plaintextWarned = new Set<string>();
-
-/**
- * 检测配置中的明文 API key（sk- 开头）并告警，引导用户迁移到 env 占位符。
- *
- * 安全设计：仅记录字段位置（如 availableModels[0].apiKey），绝不打印 key 值本身。
- * env resolver 已先行展开 "${VAR}"，因此残留的 sk- 明文必定是硬编码而非占位符。
- */
-function warnPlaintextApiKeys(data: unknown, path: string): void {
-  if (plaintextWarned.has(path)) return;
-
-  const hits: string[] = [];
-  const isPlaintextKey = (v: unknown): boolean =>
-    typeof v === "string" && /^sk-[A-Za-z0-9]/.test(v);
-
-  const root = data as Record<string, unknown> | null;
-  if (!root || typeof root !== "object") return;
-
-  // 顶层密钥字段
-  for (const field of ["anthropicKey", "openaiKey"]) {
-    if (isPlaintextKey(root[field])) hits.push(field);
-  }
-  // availableModels[].apiKey
-  if (Array.isArray(root.availableModels)) {
-    root.availableModels.forEach((m: any, i: number) => {
-      if (m && isPlaintextKey(m.apiKey)) hits.push(`availableModels[${i}].apiKey`);
-    });
-  }
-  // search.* 密钥
-  const search = root.search as Record<string, unknown> | undefined;
-  if (search && typeof search === "object") {
-    for (const field of ["braveApiKey", "tavilyApiKey"]) {
-      if (isPlaintextKey(search[field])) hits.push(`search.${field}`);
-    }
-  }
-
-  if (hits.length > 0) {
-    plaintextWarned.add(path);
-    getLogger().warn(
-      "SETTINGS",
-      `检测到 ${path} 含明文 API key（${hits.join(", ")}）。` +
-        `建议改用 env 占位符（如 "\${DEEPSEEK_API_KEY}"）并在 shell 或 settings.json 的 env 段注入，` +
-        `避免密钥随配置泄露。`,
-    );
-  }
-}
-
 /**
  * 解析单个来源的 Settings 文件（带 Level 3 缓存 + clone 保护）。
  */
@@ -184,9 +135,6 @@ function parseSettingsFile(path: string): {
     // 在 Zod 验证前执行，使 api_key 等敏感字段可写成 "${DEEPSEEK_API_KEY}"，
     // 密钥与配置结构分离（对标 claude-code env 注入）。
     const data = resolveEnvVars(raw);
-
-    // 检测明文 API key（sk- 开头），告警引导用户迁移到 env 占位符
-    warnPlaintextApiKeys(data, path);
 
     // 预过滤无效权限规则（不让一条坏规则毒化整个文件）
     const ruleWarnings = filterInvalidPermissionRules(data, path);
